@@ -68,13 +68,14 @@ input[type=text]{width:260px}
 <div class="mode-tabs">
 <label><input type="radio" name="mode" value="aiden" checked onchange="onModeChange()"> Aiden Native</label>
 <label><input type="radio" name="mode" value="mobilegym" onchange="onModeChange()"> MobileGym</label>
+<label><input type="radio" name="mode" value="skillopt" onchange="onModeChange()"> SkillOpt</label>
 <span id="statusText" class="status">idle</span>
 </div>
 <button id="refreshBtn" class="secondary" onclick="refreshBenchmark()">Refresh</button>
 </div>
 <div class="control-grid">
-<div>
-<label class="field-label" for="suiteSelect">Benchmarks</label>
+<div id="suiteControl">
+<label class="field-label" id="suiteSelectLabel" for="suiteSelect">Benchmarks</label>
 <select id="suiteSelect"><option value="">Loading...</option></select>
 <div id="selectedSuiteTags" class="selected-tags" aria-live="polite"></div>
 </div>
@@ -86,6 +87,15 @@ input[type=text]{width:260px}
 <button id="runBtn" onclick="startRun()">Run</button>
 <button id="delBtn" class="del" onclick="deleteSuite()" style="display:none">Delete</button>
 </div>
+</div>
+<div id="skillOptConfig" class="row" style="display:none;margin-top:12px">
+<span class="inline-field"><label class="muted">Skill <select id="skillSelect"><option value="">Loading skills...</option></select></label></span>
+<span class="inline-field"><label class="muted">Backend <select id="skillOptBackendSelect" onchange="syncSkillOptBackend()"><option value="device">Real device</option><option value="mobilegym">MobileGym</option></select></label></span>
+<span class="inline-field"><label class="muted">Train <select id="skillOptTrainSuiteSelect"><option value="">Loading suites...</option></select></label></span>
+<span class="inline-field"><label class="muted">Verification <select id="validationSuiteSelect"><option value="">Loading suites...</option></select></label></span>
+<span class="inline-field"><label class="muted">Budget <input type="number" id="budgetInput" value="10" min="1" max="100" style="width:70px"></label></span>
+<span class="inline-field"><label class="muted">Edit budget <input type="number" id="editBudgetInput" value="4" min="1" max="20" style="width:70px"></label></span>
+<span class="inline-field"><label class="muted">Min delta <input type="text" id="minDeltaInput" value="0.03" style="width:76px"></label></span>
 </div>
 <div id="progressBox" class="progress">
 <div class="progress-bar"><div id="progressFill" class="progress-fill"></div></div>
@@ -148,10 +158,14 @@ var polling=null;
 var suiteIndex={};
 var benchmarkSuiteCount=0;
 var unitSuiteCount=0;
+var skillCount=0;
+var skillOptTargets=[];
+var skillOptTargetBySkill={};
 var logPolling=null;
 var lastBenchmarkStatus={status:'idle'};
 var selectedSuiteKeysState=[];
-function benchmarkEndpoint(path){return getMode()==='mobilegym'?MOBILEGYM_LOCAL_BASE+path:path}
+function usesMobileGymLocal(){return getMode()==='mobilegym'||(getMode()==='skillopt'&&(document.getElementById('skillOptBackendSelect').value||'device')==='mobilegym')}
+function benchmarkEndpoint(path){return usesMobileGymLocal()?MOBILEGYM_LOCAL_BASE+path:path}
 function mobileGymLauncherMessage(e){return 'Start the Mac MobileGym launcher first: '+String(e)}
 function setStartLauncherVisible(visible){document.getElementById('startLauncherBtn').style.display=visible?'inline-block':'none'}
 function showMobileGymLauncherError(e){
@@ -215,32 +229,40 @@ return selectedSuiteKeysState.slice();
 function selectedBenchmarkSuites(){return selectedSuiteKeys().map(function(key){return {key:key,item:suiteIndex[key]}}).filter(function(x){return x.item})}
 function suiteLabel(key){var item=suiteIndex[key];return item?(item.name+(item.task_count?(' · '+item.task_count):'')):key}
 function syncSelectedSuiteKeys(){selectedSuiteKeysState=selectedSuiteKeysState.filter(function(key){return !!suiteIndex[key]})}
-function renderSelectedSuiteTags(){var wrap=document.getElementById('selectedSuiteTags');if(!wrap)return;wrap.style.display='flex';wrap.innerHTML='';syncSelectedSuiteKeys();if(!selectedSuiteKeysState.length){var empty=document.createElement('span');empty.className='selected-tags-empty';empty.textContent=getMode()==='mobilegym'?'Select one or more suites. Run Aiden and built-in suites separately.':'Select one or more benchmark suites.';wrap.appendChild(empty);return}selectedSuiteKeysState.forEach(function(key){var tag=document.createElement('span');tag.className='suite-tag';var label=document.createElement('span');label.textContent=suiteLabel(key);var btn=document.createElement('button');btn.type='button';btn.setAttribute('aria-label','Remove '+suiteLabel(key));btn.textContent='×';btn.onclick=function(){removeSelectedSuiteKey(key)};tag.appendChild(label);tag.appendChild(btn);wrap.appendChild(tag);});}
+function renderSelectedSuiteTags(){var wrap=document.getElementById('selectedSuiteTags');if(!wrap)return;if(getMode()==='skillopt'){wrap.style.display='none';wrap.innerHTML='';return}wrap.style.display='flex';wrap.innerHTML='';syncSelectedSuiteKeys();if(!selectedSuiteKeysState.length){var empty=document.createElement('span');empty.className='selected-tags-empty';empty.textContent=getMode()==='mobilegym'?'Select one or more suites. Run Aiden and built-in suites separately.':'Select one or more benchmark suites.';wrap.appendChild(empty);return}selectedSuiteKeysState.forEach(function(key){var tag=document.createElement('span');tag.className='suite-tag';var label=document.createElement('span');label.textContent=suiteLabel(key);var btn=document.createElement('button');btn.type='button';btn.setAttribute('aria-label','Remove '+suiteLabel(key));btn.textContent='×';btn.onclick=function(){removeSelectedSuiteKey(key)};tag.appendChild(label);tag.appendChild(btn);wrap.appendChild(tag);});}
 function addSelectedSuiteKey(key){if(!key)return;var item=suiteIndex[key];if(!item)return;var current=selectedBenchmarkSuites();if(selectedSuiteKeysState.indexOf(key)<0){if(getMode()==='mobilegym'&&current.length>0&&current.some(function(x){return x.item.type!==item.type})){alert('Run Aiden and built-in MobileGym suites separately');document.getElementById('suiteSelect').value='';return}selectedSuiteKeysState.push(key)}document.getElementById('suiteSelect').value='';renderSelectedSuiteTags();syncDelBtn();syncRunButtons();}
 function removeSelectedSuiteKey(key){selectedSuiteKeysState=selectedSuiteKeysState.filter(function(item){return item!==key});renderSelectedSuiteTags();syncDelBtn();syncRunButtons();}
 function configureSuiteSelect(){var s=document.getElementById('suiteSelect');s.multiple=false;s.size=1;renderSelectedSuiteTags();}
-function syncRunButtons(status){if(status)lastBenchmarkStatus=status;var running=lastBenchmarkStatus&&lastBenchmarkStatus.status==='running';var hasBench=benchmarkSuiteCount>0&&selectedSuiteKeys().length>0;document.getElementById('runBtn').disabled=(running||!hasBench);document.getElementById('runUnitBtn').disabled=(running||unitSuiteCount===0||getMode()==='mobilegym')}
+function syncRunButtons(status){if(status)lastBenchmarkStatus=status;var mode=getMode();var running=lastBenchmarkStatus&&lastBenchmarkStatus.status==='running';var hasBench=mode==='skillopt'?(benchmarkSuiteCount>0&&skillCount>0&&!!document.getElementById('skillOptTrainSuiteSelect').value&&!!document.getElementById('validationSuiteSelect').value):(benchmarkSuiteCount>0&&selectedSuiteKeys().length>0);document.getElementById('runBtn').disabled=(running||!hasBench);document.getElementById('runUnitBtn').disabled=(running||unitSuiteCount===0||mode!=='aiden')}
 function onModeChange(){
-var mg=getMode()==='mobilegym';
-document.getElementById('mgConfig').style.display=mg?'inline-block':'none';
-document.getElementById('unitCard').style.display=mg?'none':'block';
-selectedSuiteKeysState=[];
+var mode=getMode();
+var mg=mode==='mobilegym';
+var skillopt=mode==='skillopt';
+document.getElementById('skillOptConfig').style.display=skillopt?'flex':'none';
+document.getElementById('suiteControl').style.display=skillopt?'none':'block';
+document.getElementById('unitCard').style.display=mode==='aiden'?'block':'none';
+document.getElementById('suiteSelectLabel').textContent=skillopt?'Train suite':'Benchmarks';
+if(!skillopt)selectedSuiteKeysState=[];
 configureSuiteSelect();
+syncSkillOptBackend();
 setStartLauncherVisible(false);
 loadSuites();
+if(!skillopt)loadSkills();
 loadRuns();
 loadStatus();
 }
-function load(){loadSuites();loadRuns();loadStatus()}
-function refreshBenchmark(){loadSuites();loadRuns();loadStatus();loadLog()}
+function load(){loadSuites();if(getMode()!=='skillopt')loadSkills();loadRuns();loadStatus()}
+function refreshBenchmark(){loadSuites();if(getMode()!=='skillopt')loadSkills();loadRuns();loadStatus();loadLog()}
 function loadSuites(){
 var mode=getMode();
+if(mode==='skillopt'){loadSkillOptTargets();return}
 fetch(benchmarkEndpoint('/benchmark/suites')+'?mode='+encodeURIComponent(mode)).then(r=>r.json()).then(d=>{
-var s=document.getElementById('suiteSelect');var u=document.getElementById('unitSelect');
-s.innerHTML='';u.innerHTML='';suiteIndex={};benchmarkSuiteCount=0;unitSuiteCount=0;
+var s=document.getElementById('suiteSelect');var u=document.getElementById('unitSelect');var v=document.getElementById('validationSuiteSelect');
+s.innerHTML='';u.innerHTML='';v.innerHTML='';suiteIndex={};benchmarkSuiteCount=0;unitSuiteCount=0;
 if(!d || !d.length){
 var o=document.createElement('option');o.value='';o.textContent='(no suites)';s.appendChild(o);
 var uo=document.createElement('option');uo.value='';uo.textContent='(no unit suites)';u.appendChild(uo);
+var vo=document.createElement('option');vo.value='';vo.textContent='(no verification suites)';v.appendChild(vo);
 configureSuiteSelect();syncDelBtn();syncRunButtons();return;
 }
 var groups={aiden:[],mobilegym_builtin:[]};
@@ -248,7 +270,7 @@ d.forEach(function(x){
 if(mode!=='mobilegym'&&x.kind==='unit'){unitSuiteCount++;return}
 (groups[x.type]||groups.aiden).push(x);benchmarkSuiteCount++;
 });
-function appendGroup(label,arr){
+function appendGroup(label,arr,target){
 if(!arr.length)return;
 var og=document.createElement('optgroup');og.label=label;
 arr.forEach(function(x){
@@ -259,11 +281,11 @@ o.textContent=n;
 og.appendChild(o);
 suiteIndex[x.path||x.name]=x;
 });
-s.appendChild(og);
+target.appendChild(og);
 }
 var add=document.createElement('option');add.value='';add.textContent='Add suite...';s.appendChild(add);
-appendGroup('Aiden Suites',groups.aiden);
-if(mode==='mobilegym')appendGroup('MobileGym Built-in',groups.mobilegym_builtin);
+appendGroup('Aiden Suites',groups.aiden,s);
+if(mode==='mobilegym')appendGroup('MobileGym Built-in',groups.mobilegym_builtin,s);
 if(!benchmarkSuiteCount){var bo=document.createElement('option');bo.value='';bo.textContent='(no benchmark suites)';s.appendChild(bo)}
 if(mode!=='mobilegym'){
 d.forEach(function(x){
@@ -276,26 +298,92 @@ if(!unitSuiteCount){var uo=document.createElement('option');uo.value='';uo.textC
 }
 configureSuiteSelect();syncDelBtn();syncRunButtons();
 }).catch(function(e){
-var s=document.getElementById('suiteSelect');var u=document.getElementById('unitSelect');s.innerHTML='';u.innerHTML='';suiteIndex={};
+var s=document.getElementById('suiteSelect');var u=document.getElementById('unitSelect');var v=document.getElementById('validationSuiteSelect');s.innerHTML='';u.innerHTML='';v.innerHTML='';suiteIndex={};
 var o=document.createElement('option');o.value='';o.textContent=getMode()==='mobilegym'?'(Start the Mac MobileGym launcher first)':'(failed to load suites)';s.appendChild(o);
 var uo=document.createElement('option');uo.value='';uo.textContent='(failed to load unit suites)';u.appendChild(uo);
+var vo=document.createElement('option');vo.value='';vo.textContent='(failed to load verification suites)';v.appendChild(vo);
 benchmarkSuiteCount=0;unitSuiteCount=0;configureSuiteSelect();syncDelBtn();syncRunButtons();
 if(getMode()==='mobilegym')showMobileGymLauncherError(e);
 });
+}
+function loadSkills(){
+var sel=document.getElementById('skillSelect');
+if(getMode()!=='skillopt'){skillCount=0;return}
+fetch('/benchmark/skills').then(r=>r.json()).then(function(d){
+sel.innerHTML='';skillCount=0;
+if(!d||!d.length){var o=document.createElement('option');o.value='';o.textContent='(no skills)';sel.appendChild(o);loadStatus();return}
+d.forEach(function(x){var o=document.createElement('option');o.value=x.name;o.textContent=x.name;sel.appendChild(o);skillCount++});
+loadStatus();
+}).catch(function(e){skillCount=0;sel.innerHTML='<option value="">(failed to load skills)</option>';logPanelError('Load skills failed',e)});
+}
+function syncSkillOptBackend(){
+var mode=getMode();
+var backend=document.getElementById('skillOptBackendSelect').value||'device';
+document.getElementById('mgConfig').style.display=(mode==='mobilegym'||(mode==='skillopt'&&backend==='mobilegym'))?'inline-block':'none';
+}
+function loadSkillOptTargets(){
+if(getMode()!=='skillopt')return;
+fetch('/benchmark/skillopt-targets').then(jsonOrError).then(function(d){
+skillOptTargets=d||[];skillOptTargetBySkill={};
+skillOptTargets.forEach(function(x){skillOptTargetBySkill[x.skill]=x});
+populateSkillSelectFromTargets();
+syncSkillOptSuites();
+loadStatus();
+}).catch(function(e){
+skillOptTargets=[];
+skillOptTargetBySkill={};
+suiteIndex={};
+skillCount=0;
+benchmarkSuiteCount=0;
+document.getElementById('skillSelect').innerHTML='<option value="">(failed to load skills)</option>';
+document.getElementById('skillOptTrainSuiteSelect').innerHTML='<option value="">(failed to load train suites)</option>';
+document.getElementById('validationSuiteSelect').innerHTML='<option value="">(failed to load verification suites)</option>';
+syncDelBtn();syncRunButtons();
+loadStatus();
+logPanelError('Load SkillOpt targets failed',e);
+});
+}
+function populateSkillSelectFromTargets(){
+var sel=document.getElementById('skillSelect');
+var current=sel.value;
+sel.innerHTML='';skillCount=0;
+if(!skillOptTargets.length){var o=document.createElement('option');o.value='';o.textContent='(no SkillOpt targets)';sel.appendChild(o);return}
+skillOptTargets.forEach(function(x){var o=document.createElement('option');o.value=x.skill;o.textContent=x.skill;sel.appendChild(o);skillCount++});
+if(current&&skillOptTargetBySkill[current])sel.value=current;
+}
+function syncSkillOptSuites(){
+var skill=document.getElementById('skillSelect').value;
+var target=skillOptTargetBySkill[skill]||{};
+var train=document.getElementById('skillOptTrainSuiteSelect');
+var verification=document.getElementById('validationSuiteSelect');
+train.innerHTML='';verification.innerHTML='';suiteIndex={};benchmarkSuiteCount=0;
+function addOptions(labels,select,emptyText,countAsBenchmark){
+if(!labels||!labels.length){var empty=document.createElement('option');empty.value='';empty.textContent=emptyText;select.appendChild(empty);return}
+labels.forEach(function(label){var o=document.createElement('option');o.value=label;o.textContent=label.split('/').pop();select.appendChild(o);suiteIndex[label]={name:label.split('/').pop(),type:'aiden'};if(countAsBenchmark)benchmarkSuiteCount++});
+}
+addOptions(target.train_suites,train,'(no train suites)',true);
+addOptions(target.verification_suites,verification,'(no verification suites)',false);
+if(target.default_train_suite)train.value=target.default_train_suite;
+if(target.default_verification_suite)verification.value=target.default_verification_suite;
+syncDelBtn();
+loadStatus();
 }
 function syncDelBtn(){
 var keys=selectedSuiteKeys();
 var x=keys.length===1?suiteIndex[keys[0]]:null;
 document.getElementById('delBtn').style.display=(x&&x.custom)?'inline-block':'none';
 }
-function mobileGymSuiteName(item,key){
-if(item.type!=='aiden')return item.name;
-var p=item.path||key;
+function aidenSuiteName(item,key){
+var p=(item&&item.path)||key;
 var marker='/suites/';
 var i=p.indexOf(marker);
 if(i>=0)p=p.slice(i+marker.length);
 if(p.endsWith('.json'))p=p.slice(0,-5);
 return p;
+}
+function mobileGymSuiteName(item,key){
+if(item.type!=='aiden')return item.name;
+return aidenSuiteName(item,key);
 }
 function progressText(r){return r.progress||((r.totals&&r.totals.tasks)?((r.totals.tasks)+'/'+(r.totals.tasks)):'—')}
 function appendTextCell(tr,value,className){
@@ -316,17 +404,17 @@ span.textContent='Not ready';
 td.appendChild(span);
 return td;
 }
-var reportHref=r.report_path?benchmarkEndpoint(r.report_path):(benchmarkEndpoint('/benchmark/report/')+encodeURIComponent(r.run_id));
+var reportBase=(getMode()==='skillopt'&&r.__history_source==='mobilegym')?MOBILEGYM_LOCAL_BASE:(usesMobileGymLocal()?MOBILEGYM_LOCAL_BASE:'');
+var reportHref=reportBase+(r.report_path?r.report_path:('/benchmark/report/'+encodeURIComponent(r.run_id)));
 var link=document.createElement('a');
 link.href=reportHref;
 link.textContent='View';
 td.appendChild(link);
 return td;
 }
-function loadRuns(){
-fetch(benchmarkEndpoint('/benchmark/runs')).then(r=>r.json()).then(d=>{
+function renderRuns(d,emptyText){
 var tb=document.getElementById('historyBody');tb.innerHTML='';
-if(!d.length){tb.innerHTML='<tr><td colspan="8">No runs yet</td></tr>';return}
+if(!d.length){tb.innerHTML='<tr><td colspan="8">'+(emptyText||'No runs yet')+'</td></tr>';return}
 d.forEach(function(r){
 var t=r.totals||{};var suite=r.suite||'';
 var sn=suite.split('/').pop().replace('.json','');
@@ -340,7 +428,21 @@ appendTextCell(tr,t.passed||0,'pass');
 appendTextCell(tr,t.failed||0,'fail');
 tr.appendChild(reportCell(r));
 tb.appendChild(tr)});
-}).catch(function(e){
+}
+function isSkillOptRun(r){var id=String((r&&r.run_id)||'');var suite=String((r&&r.suite)||'');return id.indexOf('skillopt-')===0||suite.indexOf('skillopt/')===0}
+function mergeRunLists(lists){var byId={};lists.forEach(function(list){(list||[]).forEach(function(r){if(!isSkillOptRun(r))return;var id=String(r.run_id||'');if(id&&!byId[id])byId[id]=r;});});return Object.keys(byId).sort().reverse().map(function(id){return byId[id]})}
+function loadSkillOptRuns(){
+Promise.allSettled([
+fetch('/benchmark/runs').then(function(r){return r.json()}).then(function(d){return (d||[]).map(function(r){r.__history_source='board';return r})}),
+fetch(MOBILEGYM_LOCAL_BASE+'/benchmark/runs').then(function(r){return r.json()}).then(function(d){return (d||[]).map(function(r){r.__history_source='mobilegym';return r})})
+]).then(function(results){
+var lists=results.filter(function(x){return x.status==='fulfilled'&&Array.isArray(x.value)}).map(function(x){return x.value});
+renderRuns(mergeRunLists(lists),'No SkillOpt runs yet');
+}).catch(function(){renderRuns([],'Failed to load SkillOpt runs')})
+}
+function loadRuns(){
+if(getMode()==='skillopt'){loadSkillOptRuns();return}
+fetch(benchmarkEndpoint('/benchmark/runs')).then(r=>r.json()).then(function(d){renderRuns(d,'No runs yet')}).catch(function(e){
 var tb=document.getElementById('historyBody');
 tb.innerHTML='';
 var tr=document.createElement('tr');
@@ -386,10 +488,32 @@ logPanelError('Start launcher failed',e&&e.name==='AbortError'?'request timed ou
 }).finally(function(){clearTimeout(timer)});
 }
 function startRun(){
-var selected=selectedBenchmarkSuites();
-if(!selected.length){alert('Select a suite');return}
 var mode=getMode();
 var payload={};
+if(mode==='skillopt'){
+var key=document.getElementById('skillOptTrainSuiteSelect').value;
+var item=suiteIndex[key];
+var skill=document.getElementById('skillSelect').value;
+var validationKey=document.getElementById('validationSuiteSelect').value;
+var validationItem=suiteIndex[validationKey];
+if(!key){alert('Select a train suite');return}
+if(!skill){alert('Select a skill');return}
+if(!validationKey){alert('Select a verification suite');return}
+payload.mode='skillopt';
+payload.skillopt_backend=document.getElementById('skillOptBackendSelect').value||'device';
+if(payload.skillopt_backend==='mobilegym')payload.board_url=location.origin;
+payload.mobilegym_parallel=Number(document.getElementById('parallelInput').value)||1;
+payload.skill=skill;
+payload.train_suite=aidenSuiteName(item,key);
+payload.validation_suite=aidenSuiteName(validationItem,validationKey);
+payload.budget=Number(document.getElementById('budgetInput').value)||10;
+payload.edit_budget=Number(document.getElementById('editBudgetInput').value)||4;
+var minDeltaRaw=document.getElementById('minDeltaInput').value;
+var minDelta=Number(minDeltaRaw);
+payload.min_delta=(minDeltaRaw===''||!Number.isFinite(minDelta))?0.03:minDelta;
+} else {
+var selected=selectedBenchmarkSuites();
+if(!selected.length){alert('Select a suite');return}
 if(mode==='aiden'){
 var key=selected[0].key;var item=selected[0].item;
 if(selected.length>1){payload.suites=selected.map(function(x){return x.item.path||x.key});}
@@ -406,6 +530,7 @@ payload.suite_type=item.type;
 payload.mode='mobilegym';
 payload.board_url=location.origin;
 payload.parallel=Number(document.getElementById('parallelInput').value)||4;
+}
 }
 document.getElementById('runBtn').disabled=true;
 document.getElementById('runUnitBtn').disabled=true;
@@ -513,7 +638,9 @@ if(!confirm('Delete suite '+x.name+'?'))return;
 fetch('/benchmark/suites/delete',{method:'POST',headers:{'Content-Type':'application/json'},
 body:JSON.stringify({name:x.name})}).then(function(r){return r.json()}).then(function(){loadSuites()});
 }
-document.getElementById('suiteSelect').addEventListener('change',function(){addSelectedSuiteKey(this.value);});
+document.getElementById('suiteSelect').addEventListener('change',function(){if(getMode()==='skillopt'){syncDelBtn();syncRunButtons();return}addSelectedSuiteKey(this.value);});
+document.getElementById('skillSelect').addEventListener('change',syncSkillOptSuites);
+document.getElementById('skillOptTrainSuiteSelect').addEventListener('change',function(){syncDelBtn();syncRunButtons();});
 load();
 </script></body></html>
 `
