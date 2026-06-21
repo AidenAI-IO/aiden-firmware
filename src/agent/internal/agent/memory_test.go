@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -337,6 +338,40 @@ func TestMemoryManagerSaveDoesNotRegressEventCountWithRuntimeEvents(t *testing.T
 		if event.Sequence != want {
 			t.Fatalf("event %d sequence = %d, want %d; events=%#v", i, event.Sequence, want, events)
 		}
+	}
+}
+
+func TestMemoryManagerWritesRuntimeIDMetadata(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	manager := NewMemoryManager(storageDir)
+
+	if err := manager.AppendSessionEvent(ctx, "default", SessionEvent{
+		Type:    "user_input",
+		Role:    "user",
+		Content: "hello",
+	}, SessionEventMetadata{RuntimeID: "runtime-a"}); err != nil {
+		t.Fatalf("AppendSessionEvent() error = %v", err)
+	}
+
+	eventsPath := filepath.Join(storageDir, "session", "events.jsonl")
+	events := readSessionEvents(t, eventsPath)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d: %#v", len(events), events)
+	}
+	if events[0].RuntimeID != "runtime-a" {
+		t.Fatalf("RuntimeID = %q, want runtime-a", events[0].RuntimeID)
+	}
+
+	data, err := os.ReadFile(eventsPath)
+	if err != nil {
+		t.Fatalf("read events file: %v", err)
+	}
+	if bytes.Contains(data, []byte(`"session_id"`)) {
+		t.Fatalf("event should not write legacy session_id field: %s", data)
+	}
+	if !bytes.Contains(data, []byte(`"runtime_id":"runtime-a"`)) {
+		t.Fatalf("event missing runtime_id field: %s", data)
 	}
 }
 
@@ -1328,6 +1363,85 @@ func TestSessionRotationArchivesActiveSessionDirectory(t *testing.T) {
 	}
 }
 
+func TestSessionRotationDetailedCreatesActiveSessionID(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	manager := NewMemoryManager(storageDir)
+	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
+	now := time.Now().UTC()
+	if _, err := session.AppendEvent(ctx, SessionEvent{
+		EventID: "evt_before_rotate",
+		Ts:      now.Format(time.RFC3339Nano),
+		Type:    "user_input",
+		Role:    "user",
+		Content: "old task",
+	}); err != nil {
+		t.Fatalf("AppendEvent() before rotate error = %v", err)
+	}
+
+	rotation, err := manager.RotateSessionEventsDetailed()
+	if err != nil {
+		t.Fatalf("RotateSessionEventsDetailed() error = %v", err)
+	}
+	if rotation.ArchiveDir == "" {
+		t.Fatal("ArchiveDir is empty")
+	}
+	if rotation.ClosedSessionID != filepath.Base(rotation.ArchiveDir) {
+		t.Fatalf("ClosedSessionID = %q, want archive basename %q", rotation.ClosedSessionID, filepath.Base(rotation.ArchiveDir))
+	}
+	if rotation.ActiveSessionID == "" {
+		t.Fatal("ActiveSessionID is empty")
+	}
+
+	metadata := readSessionMetadataForTest(t, filepath.Join(storageDir, "session", sessionMetadataFileName))
+	if metadata.SessionID != rotation.ActiveSessionID {
+		t.Fatalf("active metadata session_id = %q, want %q", metadata.SessionID, rotation.ActiveSessionID)
+	}
+}
+
+func TestSessionBoundaryLogsProminentNewSessionID(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	var buf bytes.Buffer
+	logger := &Logger{logger: log.New(&buf, "", 0)}
+	manager := NewMemoryManager(storageDir, WithMemoryLogger(logger))
+	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
+	oldTs := time.Now().UTC().Add(-time.Duration(DefaultBoundaryConfig().LongGapSeconds+1) * time.Second)
+	if _, err := session.AppendEvent(ctx, SessionEvent{
+		EventID: "evt_old_task",
+		Ts:      oldTs.Format(time.RFC3339Nano),
+		Type:    "user_input",
+		Role:    "user",
+		Content: "old task",
+	}); err != nil {
+		t.Fatalf("AppendEvent() error = %v", err)
+	}
+
+	sessionManager := newMemoryManagerSessionManager(manager, nil)
+	if _, err := sessionManager.BeginRun(ctx, SessionBeginRequest{
+		AgentName: "default",
+		Input:     "打开微信",
+		Turn:      NewTextTurnInput("打开微信", nil),
+		RuntimeID: "runtime-a",
+	}); err != nil {
+		t.Fatalf("BeginRun() error = %v", err)
+	}
+
+	logText := buf.String()
+	if !strings.Contains(logText, "NEW SESSION STARTED") {
+		t.Fatalf("log missing session banner:\n%s", logText)
+	}
+	if !strings.Contains(logText, "Session ID: ") {
+		t.Fatalf("log missing prominent session id:\n%s", logText)
+	}
+	if !strings.Contains(logText, "Reason: "+BoundaryReasonTimeGapLong) {
+		t.Fatalf("log missing boundary reason:\n%s", logText)
+	}
+	if strings.Contains(logText, "Runtime ID:") {
+		t.Fatalf("session boundary log should not present runtime id as the primary marker:\n%s", logText)
+	}
+}
+
 func TestSessionRotationAppendAfterRotateWritesNewEventsFile(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
@@ -1624,6 +1738,19 @@ func readSessionEvents(t *testing.T, path string) []SessionEvent {
 		t.Fatalf("scan session events: %v", err)
 	}
 	return events
+}
+
+func readSessionMetadataForTest(t *testing.T, path string) sessionMetadata {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read session metadata: %v", err)
+	}
+	var metadata sessionMetadata
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		t.Fatalf("decode session metadata: %v", err)
+	}
+	return metadata
 }
 
 func TestFormatSessionSummaryWithWindowKeepsMaxChunks(t *testing.T) {

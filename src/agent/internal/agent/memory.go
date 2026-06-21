@@ -17,7 +17,21 @@ import (
 	"github.com/tmc/langchaingo/schema"
 )
 
-const defaultLockTimeout = 10 * time.Second
+const (
+	defaultLockTimeout      = 10 * time.Second
+	sessionMetadataFileName = "metadata.json"
+)
+
+type sessionMetadata struct {
+	SessionID string `json:"session_id"`
+	CreatedAt string `json:"created_at"`
+}
+
+type SessionRotationResult struct {
+	ArchiveDir      string
+	ClosedSessionID string
+	ActiveSessionID string
+}
 
 // MemoryHandle wraps a langchain memory instance and its chat history.
 type MemoryHandle struct {
@@ -88,13 +102,16 @@ type MessageRecord struct {
 // SessionEvent represents a single event in the session event stream, capturing
 // conversation turns, tool calls, and system events with metadata.
 type SessionEvent struct {
-	EventID            string          `json:"event_id"`
-	Ts                 string          `json:"ts"`
-	Sequence           int             `json:"sequence,omitempty"`
-	Type               string          `json:"type"`
-	Role               string          `json:"role"`
-	Source             string          `json:"source,omitempty"`
-	SessionID          string          `json:"session_id,omitempty"`
+	EventID  string `json:"event_id"`
+	Ts       string `json:"ts"`
+	Sequence int    `json:"sequence,omitempty"`
+	Type     string `json:"type"`
+	Role     string `json:"role"`
+	Source   string `json:"source,omitempty"`
+	// RuntimeID correlates events produced by one daemon Runtime instance.
+	RuntimeID string `json:"runtime_id,omitempty"`
+	// LegacySessionID reads pre-runtime_id event files; new writes leave it empty.
+	LegacySessionID    string          `json:"session_id,omitempty"`
 	EpisodeID          string          `json:"episode_id,omitempty"`
 	RequestID          string          `json:"request_id,omitempty"`
 	RunID              string          `json:"run_id,omitempty"`
@@ -120,7 +137,7 @@ type SessionEvent struct {
 }
 
 type SessionEventMetadata struct {
-	SessionID string
+	RuntimeID string
 	EpisodeID string
 	RequestID string
 	RunID     string
@@ -546,10 +563,15 @@ func (m *MemoryManager) ensureEventCountLoadedLocked(agentName string) error {
 // by active prompt construction, HasCompressedHistory, maintenance, or chunk
 // recall.
 func (m *MemoryManager) RotateSessionEvents() (string, error) {
+	rotation, err := m.RotateSessionEventsDetailed()
+	return rotation.ArchiveDir, err
+}
+
+func (m *MemoryManager) RotateSessionEventsDetailed() (SessionRotationResult, error) {
 	if m.storageDir == "" {
-		return "", nil
+		return SessionRotationResult{}, nil
 	}
-	archiveDir, err := func() (string, error) {
+	rotation, err := func() (SessionRotationResult, error) {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 
@@ -558,40 +580,55 @@ func (m *MemoryManager) RotateSessionEvents() (string, error) {
 
 		fl := NewFileLock(m.storageDir)
 		if err := fl.Lock(m.lockTimeout); err != nil {
-			return "", fmt.Errorf("lock for rotating session events: %w", err)
+			return SessionRotationResult{}, fmt.Errorf("lock for rotating session events: %w", err)
 		}
 		defer fl.Unlock()
 
 		hasData, err := sessionDirHasData(sessionDir)
 		if err != nil {
-			return "", fmt.Errorf("inspect active session for rotation: %w", err)
+			return SessionRotationResult{}, fmt.Errorf("inspect active session for rotation: %w", err)
 		}
 		if !hasData {
 			if err := os.MkdirAll(sessionDir, 0o755); err != nil {
-				return "", fmt.Errorf("create empty session directory after no-op rotation: %w", err)
+				return SessionRotationResult{}, fmt.Errorf("create empty session directory after no-op rotation: %w", err)
 			}
 			if err := os.WriteFile(eventsPath, nil, 0o644); err != nil {
-				return "", fmt.Errorf("create empty session events after no-op rotation: %w", err)
+				return SessionRotationResult{}, fmt.Errorf("create empty session events after no-op rotation: %w", err)
 			}
-			return "", nil
+			activeMeta, err := ensureActiveSessionMetadata(sessionDir, time.Now().UTC())
+			if err != nil {
+				return SessionRotationResult{}, err
+			}
+			return SessionRotationResult{ActiveSessionID: activeMeta.SessionID}, nil
 		}
 
 		archiveParent := filepath.Join(m.storageDir, "session_archive")
 		if err := os.MkdirAll(archiveParent, 0o755); err != nil {
-			return "", fmt.Errorf("create session archive directory: %w", err)
+			return SessionRotationResult{}, fmt.Errorf("create session archive directory: %w", err)
 		}
-		archiveDir, err := nextSessionArchiveDir(archiveParent, time.Now().UTC())
+		now := time.Now().UTC()
+		closedMeta, _ := readSessionMetadata(filepath.Join(sessionDir, sessionMetadataFileName))
+		closedSessionID := strings.TrimSpace(closedMeta.SessionID)
+		if closedSessionID == "" {
+			closedSessionID = newSessionID(now)
+		}
+		archiveDir, err := nextSessionArchiveDir(archiveParent, closedSessionID)
 		if err != nil {
-			return "", err
+			return SessionRotationResult{}, err
 		}
+		closedSessionID = filepath.Base(archiveDir)
 		if err := os.Rename(sessionDir, archiveDir); err != nil {
-			return "", fmt.Errorf("archive active session: %w", err)
+			return SessionRotationResult{}, fmt.Errorf("archive active session: %w", err)
 		}
 		if err := os.MkdirAll(sessionDir, 0o755); err != nil {
-			return "", fmt.Errorf("create active session directory after rotation: %w", err)
+			return SessionRotationResult{}, fmt.Errorf("create active session directory after rotation: %w", err)
 		}
 		if err := os.WriteFile(eventsPath, nil, 0o644); err != nil {
-			return "", fmt.Errorf("create empty session events after rotation: %w", err)
+			return SessionRotationResult{}, fmt.Errorf("create empty session events after rotation: %w", err)
+		}
+		activeMeta, err := writeNewSessionMetadata(sessionDir, now.Add(time.Nanosecond))
+		if err != nil {
+			return SessionRotationResult{}, err
 		}
 
 		for agentName := range m.eventCount {
@@ -604,16 +641,23 @@ func (m *MemoryManager) RotateSessionEvents() (string, error) {
 				_ = handle.Memory.Clear(context.Background())
 			}
 		}
-		return archiveDir, nil
+		return SessionRotationResult{
+			ArchiveDir:      archiveDir,
+			ClosedSessionID: closedSessionID,
+			ActiveSessionID: activeMeta.SessionID,
+		}, nil
 	}()
 	if err != nil {
-		return "", err
+		return SessionRotationResult{}, err
 	}
 
-	if archiveDir != "" && m.logger != nil {
-		m.logger.Info("[memory] session rotated: archive=%s", filepath.Base(archiveDir))
+	if rotation.ArchiveDir != "" && m.logger != nil {
+		m.logger.Info("[memory] session rotated: closed_session_id=%s active_session_id=%s archive=%s",
+			rotation.ClosedSessionID,
+			rotation.ActiveSessionID,
+			filepath.Base(rotation.ArchiveDir))
 	}
-	return archiveDir, nil
+	return rotation, nil
 }
 
 func sessionDirHasData(sessionDir string) (bool, error) {
@@ -625,6 +669,9 @@ func sessionDirHasData(sessionDir string) (bool, error) {
 		return false, err
 	}
 	for _, entry := range entries {
+		if entry.Name() == sessionMetadataFileName && !entry.IsDir() {
+			continue
+		}
 		if entry.Name() != "events.jsonl" || entry.IsDir() {
 			return true, nil
 		}
@@ -639,9 +686,16 @@ func sessionDirHasData(sessionDir string) (bool, error) {
 	return false, nil
 }
 
-func nextSessionArchiveDir(parent string, now time.Time) (string, error) {
+func nextSessionArchiveDir(parent string, baseID string) (string, error) {
+	baseID = strings.TrimSpace(baseID)
+	if baseID == "" {
+		baseID = newSessionID(time.Now().UTC())
+	}
 	for i := int64(0); i < 100; i++ {
-		id := strconv.FormatInt(now.UnixNano()+i, 10)
+		id := baseID
+		if i > 0 {
+			id = fmt.Sprintf("%s-%d", baseID, i)
+		}
 		path := filepath.Join(parent, id)
 		if _, err := os.Stat(path); err != nil {
 			if os.IsNotExist(err) {
@@ -651,6 +705,48 @@ func nextSessionArchiveDir(parent string, now time.Time) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("allocate session archive path: too many collisions")
+}
+
+func ensureActiveSessionMetadata(sessionDir string, now time.Time) (sessionMetadata, error) {
+	path := filepath.Join(sessionDir, sessionMetadataFileName)
+	if meta, err := readSessionMetadata(path); err == nil && strings.TrimSpace(meta.SessionID) != "" {
+		return meta, nil
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return sessionMetadata{}, err
+	}
+	return writeNewSessionMetadata(sessionDir, now)
+}
+
+func writeNewSessionMetadata(sessionDir string, now time.Time) (sessionMetadata, error) {
+	meta := sessionMetadata{
+		SessionID: newSessionID(now),
+		CreatedAt: now.UTC().Format(time.RFC3339Nano),
+	}
+	data, err := json.Marshal(meta)
+	if err != nil {
+		return sessionMetadata{}, fmt.Errorf("marshal session metadata: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionDir, sessionMetadataFileName), append(data, '\n'), 0o644); err != nil {
+		return sessionMetadata{}, fmt.Errorf("write session metadata: %w", err)
+	}
+	return meta, nil
+}
+
+func readSessionMetadata(path string) (sessionMetadata, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return sessionMetadata{}, err
+	}
+	var meta sessionMetadata
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return sessionMetadata{}, fmt.Errorf("parse session metadata: %w", err)
+	}
+	meta.SessionID = strings.TrimSpace(meta.SessionID)
+	return meta, nil
+}
+
+func newSessionID(now time.Time) string {
+	return "session_" + strconv.FormatInt(now.UTC().UnixNano(), 10)
 }
 
 func (m *MemoryManager) loadPersistedMessages(history *langmemory.ChatMessageHistory, agentName string) error {
@@ -1716,8 +1812,8 @@ func sessionEventFromTurnInput(input TurnInput) SessionEvent {
 }
 
 func applySessionEventMetadata(event SessionEvent, meta SessionEventMetadata) SessionEvent {
-	if event.SessionID == "" {
-		event.SessionID = strings.TrimSpace(meta.SessionID)
+	if event.RuntimeID == "" {
+		event.RuntimeID = strings.TrimSpace(meta.RuntimeID)
 	}
 	if event.EpisodeID == "" {
 		event.EpisodeID = strings.TrimSpace(meta.EpisodeID)

@@ -35,24 +35,24 @@ func effectiveMaxIterations(configured int) int {
 const currentEnvironmentHintMaxAge = 10 * time.Minute
 
 type Runtime struct {
-	config             Config
-	models             ModelResolver
-	memories           *MemoryManager
-	tools              *ToolSet
-	skills             *SkillManager
-	skillsLoaded       bool
-	skillsReloadMu     sync.Mutex
-	skillsDirty        bool
-	runGateInit        sync.Once
-	mergeWorker        *MergeWorker
-	logger             *Logger
-	profileDebouncer   *ProfileDebouncer
-	waitForWakeup      *WaitForWakeupController
-	memoryPlane        MemoryPlane
-	sessionManager     SessionManager
-	telemetrySessionID string
-	mobileGym          *mobileGymSessionStore
-	runGate            chan struct{}
+	config           Config
+	models           ModelResolver
+	memories         *MemoryManager
+	tools            *ToolSet
+	skills           *SkillManager
+	skillsLoaded     bool
+	skillsReloadMu   sync.Mutex
+	skillsDirty      bool
+	runGateInit      sync.Once
+	mergeWorker      *MergeWorker
+	logger           *Logger
+	profileDebouncer *ProfileDebouncer
+	waitForWakeup    *WaitForWakeupController
+	memoryPlane      MemoryPlane
+	sessionManager   SessionManager
+	runtimeID        string
+	mobileGym        *mobileGymSessionStore
+	runGate          chan struct{}
 }
 
 type RunRequest struct {
@@ -324,12 +324,9 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	rt.waitForWakeup = waitForWakeupController
 	rt.mobileGym = mobileGymStore
 
-	// Log session start marker
+	// Log runtime start marker.
 	if logger != nil {
-		logger.Info("========================================")
-		logger.Info("NEW SESSION STARTED")
-		logger.Info("Session ID: %s", rt.telemetrySessionID)
-		logger.Info("========================================")
+		logger.Info("[runtime] started: runtime_id=%s", rt.runtimeID)
 	}
 
 	if len(mergeNeeded) > 0 && cfg.SkillMergeModel != nil {
@@ -362,19 +359,19 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 		skillManager.SetUsagePath(filepath.Join(cfg.ConfigDir, "skill-state", "usage.json"))
 	}
 	rt := &Runtime{
-		config:             cfg,
-		models:             models,
-		memories:           memories,
-		tools:              tools,
-		skills:             skillManager,
-		skillsLoaded:       skillIndex != nil && len(skillIndex.Names()) > 0,
-		waitForWakeup:      waitForWakeupController,
-		telemetrySessionID: uuid.NewString(),
-		mobileGym:          &mobileGymSessionStore{},
+		config:        cfg,
+		models:        models,
+		memories:      memories,
+		tools:         tools,
+		skills:        skillManager,
+		skillsLoaded:  skillIndex != nil && len(skillIndex.Names()) > 0,
+		waitForWakeup: waitForWakeupController,
+		runtimeID:     uuid.NewString(),
+		mobileGym:     &mobileGymSessionStore{},
 	}
-	// Set session ID for raw HTTP logging
+	// Set runtime ID for raw HTTP logging.
 	if modelManager, ok := models.(*ModelManager); ok {
-		modelManager.SetSessionID(rt.telemetrySessionID)
+		modelManager.SetRuntimeID(rt.runtimeID)
 	}
 	if cfg.ConfigDir != "" {
 		rt.memoryPlane = NewFilesystemMemoryPlane(filepath.Join(cfg.ConfigDir, "memory"), LoadMemoryExtractionConfig(cfg.ConfigDir), nil)
@@ -560,7 +557,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		AgentName:    "default",
 		Input:        normalizedInput,
 		Turn:         turnInput,
-		SessionID:    r.telemetrySessionID,
+		RuntimeID:    r.runtimeID,
 		EpisodeID:    episodeID,
 		RequestID:    req.RequestID,
 		RunID:        runID,
@@ -627,14 +624,14 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			logger:                 r.logger,
 			eventHandler:           req.EventHandler,
 			episodeID:              episodeID,
-			sessionID:              r.telemetrySessionID,
+			runtimeID:              r.runtimeID,
 			requestID:              req.RequestID,
 			runID:                  runID,
 		}
 		if persistRuntimeSessionEvents {
 			streamCallbackHandler.sessionEventAppender = func(ctx context.Context, event SessionEvent) error {
 				return r.appendRuntimeSessionEvent(ctx, "default", event, SessionEventMetadata{
-					SessionID: r.telemetrySessionID,
+					RuntimeID: r.runtimeID,
 					EpisodeID: episodeID,
 					RequestID: req.RequestID,
 					RunID:     runID,
@@ -702,7 +699,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		Input:     normalizedInput,
 		Output:    output,
 		Metrics:   metrics,
-		SessionID: r.telemetrySessionID,
+		RuntimeID: r.runtimeID,
 		EpisodeID: episodeID,
 		RequestID: req.RequestID,
 		RunID:     runID,
@@ -776,9 +773,9 @@ func (r *Runtime) persistRunStatusBestEffort(episodeID, requestID, runID string,
 		EpisodeID: episodeID,
 		RequestID: requestID,
 		RunID:     runID,
-		SessionID: r.telemetrySessionID,
+		RuntimeID: r.runtimeID,
 	}, SessionEventMetadata{
-		SessionID: r.telemetrySessionID,
+		RuntimeID: r.runtimeID,
 		EpisodeID: episodeID,
 		RequestID: requestID,
 		RunID:     runID,
@@ -1069,8 +1066,8 @@ func (r *Runtime) enrichEpisodeRuntimeTelemetry(episode *TaskEpisode) {
 	if episode.Extra == nil {
 		episode.Extra = map[string]interface{}{}
 	}
-	if extraString(episode.Extra, "session_id") == "" && r.telemetrySessionID != "" {
-		episode.Extra["session_id"] = r.telemetrySessionID
+	if extraString(episode.Extra, "runtime_id") == "" && r.runtimeID != "" {
+		episode.Extra["runtime_id"] = r.runtimeID
 	}
 	contextWindow := r.effectiveContextWindow()
 	if contextWindow > 0 {
@@ -1175,7 +1172,7 @@ type runtimeCallbackHandler struct {
 	logger                 *Logger
 	eventHandler           func(RunEvent)
 	episodeID              string
-	sessionID              string
+	runtimeID              string
 	requestID              string
 	runID                  string
 	sessionEventAppender   func(context.Context, SessionEvent) error
@@ -1492,7 +1489,7 @@ func sessionEventFromRunEvent(event RunEvent, h *runtimeCallbackHandler) Session
 		Ts:        ts.UTC().Format(time.RFC3339Nano),
 		Type:      event.Type,
 		Role:      role,
-		SessionID: h.sessionID,
+		RuntimeID: h.runtimeID,
 		EpisodeID: firstNonEmptyString([]string{event.EpisodeID, h.episodeID}),
 		RequestID: h.requestID,
 		RunID:     h.runID,
