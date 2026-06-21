@@ -52,7 +52,7 @@ func newLLMRawHTTPLogger(logDir, sessionID string) *llmRawHTTPLogger {
 	}
 }
 
-func (l *llmRawHTTPLogger) Log(model, dir, kind string, statusCode int, raw string) error {
+func (l *llmRawHTTPLogger) Log(model, kind string, statusCode int, raw string) error {
 	if l == nil || strings.TrimSpace(l.dir) == "" {
 		return nil
 	}
@@ -272,7 +272,7 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 	}
 
 	// Log HTTP request body
-	_ = m.logRawHTTP(reqPayload.Model, "request", "request", 0, string(payloadBytes))
+	_ = m.logRawHTTP(reqPayload.Model, "request", 0, string(payloadBytes))
 
 	endpoint := m.baseURL + "/chat/completions"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payloadBytes))
@@ -292,7 +292,7 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		_ = m.logRawHTTP(reqPayload.Model, "response", "response", resp.StatusCode, string(body))
+		_ = m.logRawHTTP(reqPayload.Model, "response", resp.StatusCode, string(body))
 		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -310,7 +310,7 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 		if err != nil {
 			return nil, fmt.Errorf("read response: %w", err)
 		}
-		_ = m.logRawHTTP(reqPayload.Model, "response", "response", resp.StatusCode, string(body))
+		_ = m.logRawHTTP(reqPayload.Model, "response", resp.StatusCode, string(body))
 		if err := json.Unmarshal(body, &decoded); err != nil {
 			return nil, fmt.Errorf("decode response: %w", err)
 		}
@@ -354,7 +354,7 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 	hasRawStream := false
 	logRawStream := func() {
 		if m.rawLogger != nil && hasRawStream {
-			_ = m.logRawHTTP(requestModel, "response", "response", statusCode, rawStream.String())
+			_ = m.logRawHTTP(requestModel, "response", statusCode, rawStream.String())
 		}
 	}
 	defer logRawStream()
@@ -463,11 +463,11 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 	return &llms.ContentResponse{Choices: []*llms.ContentChoice{choice}}, nil
 }
 
-func (m *openAICompatibleModel) logRawHTTP(modelName, dir, kind string, statusCode int, raw string) error {
+func (m *openAICompatibleModel) logRawHTTP(modelName, kind string, statusCode int, raw string) error {
 	if m == nil || m.rawLogger == nil {
 		return nil
 	}
-	return m.rawLogger.Log(modelName, dir, kind, statusCode, raw)
+	return m.rawLogger.Log(modelName, kind, statusCode, raw)
 }
 
 func convertMessageContent(message llms.MessageContent) (compatibleMessage, error) {
