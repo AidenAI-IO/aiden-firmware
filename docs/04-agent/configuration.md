@@ -9,6 +9,7 @@ The Agent expects `-config` to point to a directory, not a single config file. E
 - [Minimal config examples](#minimal-config-examples)
 - [Top-level fields](#top-level-fields)
 - [`[model]`](#model)
+- [`[log]`](#log)
 - [`[audio]`](#audio)
 - [`[hid]`](#hid)
 - [`[stt]` and `[tts]`](#stt-and-tts)
@@ -49,6 +50,7 @@ The page fields cover the following config sections (all detailed later on this 
 - `stt`: provider, api_key, model, base_url, Tencent ASR fields
 - `tts`: provider, api_key, model, voice_id, emotion, speed
 - `audio`: socket, sample_rate, channels, bit_width
+- `log`: LLM HTTP log retention
 - `hid`: keyboard_device, mouse_device, frame_socket
 - `env`: shell-style environment text written to `/userdata/system/env`, including optional proxy variables such as `http_proxy`, `HTTPS_PROXY`, and `NO_PROXY`
 - Wi-Fi: SSID / PSK etc. (written to `/userdata/wpa_supplicant.conf`)
@@ -79,6 +81,9 @@ socket = "/run/audio_service/audio_service.sock"
 sample_rate = 16000
 channels = 1
 bit_width = 16
+
+[log]
+llm_http_retention_days = 7
 
 [hid]
 keyboard_device = "/dev/hidg0"
@@ -192,6 +197,12 @@ When `vad_helper_path` is still the built-in default, switching `vad_backend` au
 | `max_response_tokens` | Maximum output tokens passed to the model on request |
 | `context_window` | Optional total context window override in tokens. Unset or `0` uses provider metadata for OpenRouter/Ollama when available, then the built-in registry, then memory fallback. |
 | `model_max_output_tokens` | Optional advertised max output override in tokens. Unset or `0` uses provider metadata when fetched, then the built-in registry. |
+
+## `[log]`
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `llm_http_retention_days` | `7` | Number of days to keep raw LLM HTTP logs under `<config_dir>/log` (`llm-http-*.log`). Cleanup runs when the agent starts; unset or `0` uses the default. |
 
 ## `[audio]`
 

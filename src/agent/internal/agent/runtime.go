@@ -258,7 +258,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	// Create logger if ConfigDir is set
 	var logger *Logger
 	if cfg.ConfigDir != "" {
-		logger, err = NewLogger(cfg.ConfigDir)
+		logger, err = NewLogger(cfg.ConfigDir, cfg.Log.LLMHTTPRetentionDaysOrDefault())
 		if err != nil {
 			return nil, fmt.Errorf("create logger: %w", err)
 		}

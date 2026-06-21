@@ -92,6 +92,19 @@ func (c AudioArchiveConfig) StoragePathOrDefault() string {
 	return path
 }
 
+// LogConfig controls local runtime log retention.
+type LogConfig struct {
+	LLMHTTPRetentionDays int `toml:"llm_http_retention_days,omitempty"`
+}
+
+// LLMHTTPRetentionDaysOrDefault returns LLMHTTPRetentionDays if positive, else 7.
+func (c LogConfig) LLMHTTPRetentionDaysOrDefault() int {
+	if c.LLMHTTPRetentionDays <= 0 {
+		return defaultLLMHTTPLogRetentionDays
+	}
+	return c.LLMHTTPRetentionDays
+}
+
 type Config struct {
 	Model                      ModelConfig        `toml:"model"`
 	ModelText                  ModelConfig        `toml:"model_text,omitempty"` // Override for STT-then-text mode
@@ -102,6 +115,7 @@ type Config struct {
 	Audio                      AudioConfig        `toml:"audio,omitempty"`
 	AudioArchive               AudioArchiveConfig `toml:"audio_archive,omitempty"`
 	Benchmark                  BenchmarkConfig    `toml:"benchmark,omitempty"`
+	Log                        LogConfig          `toml:"log,omitempty"`
 	Search                     SearchConfig       `toml:"search,omitempty"`
 	LiveActivity               LiveActivityConfig `toml:"live_activity,omitempty"`
 	Instruction                string             `toml:"custom_instruction,omitempty"`
@@ -810,6 +824,9 @@ func (c Config) Validate() error {
 	}
 	if c.TodoReminderToolCalls < 0 {
 		return fmt.Errorf("todo_reminder_tool_calls must be >= 0, got %d", c.TodoReminderToolCalls)
+	}
+	if c.Log.LLMHTTPRetentionDays < 0 {
+		return fmt.Errorf("log.llm_http_retention_days must be >= 0, got %d", c.Log.LLMHTTPRetentionDays)
 	}
 	if c.ScreenshotKeepN < 0 {
 		return fmt.Errorf("screenshot_keep_n must be >= 0, got %d", c.ScreenshotKeepN)

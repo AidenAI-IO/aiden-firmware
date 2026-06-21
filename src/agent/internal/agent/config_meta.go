@@ -189,6 +189,13 @@ func ConfigMeta() ConfigMetadata {
 				},
 			},
 			{
+				Name: "log",
+				Fields: []FieldMeta{
+					{Key: "llm_http_retention_days", Widget: WidgetNumber,
+						Default: defaults.Log.LLMHTTPRetentionDaysOrDefault()},
+				},
+			},
+			{
 				Name: "hid",
 				Fields: []FieldMeta{
 					{Key: "pointer_mode", Widget: WidgetSelect,

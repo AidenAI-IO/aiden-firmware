@@ -38,6 +38,7 @@ type webConfigDTO struct {
 	Audio        audioDTO        `json:"audio"`
 	AudioArchive audioArchiveDTO `json:"audio_archive"`
 	Benchmark    benchmarkDTO    `json:"benchmark"`
+	Log          logDTO          `json:"log"`
 	HID          hidDTO          `json:"hid"`
 	Search       searchDTO       `json:"search"`
 	Telemetry    telemetryDTO    `json:"telemetry"`
@@ -94,6 +95,10 @@ type benchmarkDTO struct {
 	JudgeModel   string `json:"judge_model"`
 	APIKey       string `json:"api_key"`
 	BenchmarkDir string `json:"benchmark_dir"`
+}
+
+type logDTO struct {
+	LLMHTTPRetentionDays int `json:"llm_http_retention_days"`
 }
 
 type hidDTO struct {
@@ -225,6 +230,9 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			APIKey:     d.Benchmark.APIKey,
 			Dir:        d.Benchmark.BenchmarkDir,
 		},
+		Log: agent.LogConfig{
+			LLMHTTPRetentionDays: d.Log.LLMHTTPRetentionDays,
+		},
 		HID: agent.HIDConfig{
 			KeyboardDevice: d.HID.KeyboardDevice,
 			MouseDevice:    d.HID.MouseDevice,
@@ -340,6 +348,9 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			JudgeModel:   cfg.Benchmark.JudgeModel,
 			APIKey:       cfg.Benchmark.APIKey,
 			BenchmarkDir: cfg.Benchmark.Dir,
+		},
+		Log: logDTO{
+			LLMHTTPRetentionDays: cfg.Log.LLMHTTPRetentionDaysOrDefault(),
 		},
 		HID: hidDTO{
 			KeyboardDevice: cfg.HID.KeyboardDeviceOrDefault(),
@@ -634,6 +645,8 @@ func parseValidationErrors(err error) []ValidationError {
 		field = "telemetry.upload_timeout_sec"
 	} else if strings.Contains(errMsg, "telemetry.max_retry") {
 		field = "telemetry.max_retry"
+	} else if strings.Contains(errMsg, "log.llm_http_retention_days") {
+		field = "log.llm_http_retention_days"
 	}
 
 	errors = append(errors, ValidationError{

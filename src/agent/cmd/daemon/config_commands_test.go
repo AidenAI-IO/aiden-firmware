@@ -75,6 +75,10 @@ func TestResolvedWebConfigDTO_MissingFileUsesDefaults(t *testing.T) {
 		t.Fatalf("HID frame_socket = %q, want %q",
 			dto.HID.FrameSocket, agent.DefaultConfig().HID.FrameSocket)
 	}
+	if dto.Log.LLMHTTPRetentionDays != agent.DefaultConfig().Log.LLMHTTPRetentionDaysOrDefault() {
+		t.Fatalf("log.llm_http_retention_days = %d, want %d",
+			dto.Log.LLMHTTPRetentionDays, agent.DefaultConfig().Log.LLMHTTPRetentionDaysOrDefault())
+	}
 	if dto.Agent.CustomInstruction != "" {
 		t.Fatalf("custom_instruction = %q, want empty wire value for built-in runtime default", dto.Agent.CustomInstruction)
 	}
@@ -169,6 +173,9 @@ model = "gpt-4o-mini"
 
 [hid]
 pointer_mode = "touchscreen"
+
+[log]
+llm_http_retention_days = 14
 `), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -197,6 +204,9 @@ pointer_mode = "touchscreen"
 		t.Fatalf("audio.socket = %q, want default %q",
 			dto.Audio.Socket, agent.DefaultConfig().Audio.Socket)
 	}
+	if dto.Log.LLMHTTPRetentionDays != 14 {
+		t.Fatalf("log.llm_http_retention_days = %d, want 14", dto.Log.LLMHTTPRetentionDays)
+	}
 	if !dto.AudioArchive.Enabled || dto.AudioArchive.StoragePath != agent.DefaultConfig().AudioArchive.StoragePath {
 		t.Fatalf("audio_archive defaults = %+v, want enabled default storage", dto.AudioArchive)
 	}
@@ -218,6 +228,9 @@ func TestWebConfigDTOFromAgentConfig_UsesRuntimeDefaults(t *testing.T) {
 	if defaults.HID.FrameSocket == "" || defaults.HID.KeyboardDevice == "" ||
 		defaults.HID.MouseDevice == "" || defaults.HID.PointerMode == "" {
 		t.Fatalf("hid defaults were not populated: %+v", defaults.HID)
+	}
+	if defaults.Log.LLMHTTPRetentionDays != agent.DefaultConfig().Log.LLMHTTPRetentionDaysOrDefault() {
+		t.Fatalf("log defaults were not populated: %+v", defaults.Log)
 	}
 	if defaults.Agent.InputMode != "text" || defaults.Agent.TriggerMode != "manual" {
 		t.Fatalf("agent mode defaults = input %q trigger %q, want text/manual",
@@ -273,6 +286,23 @@ func TestWebConfigDTOMapsAudioArchive(t *testing.T) {
 	if roundTrip.AudioArchive.Enabled || roundTrip.AudioArchive.MaxFiles != 42 ||
 		roundTrip.AudioArchive.MaxSizeMB != 17 || roundTrip.AudioArchive.StoragePath != "/tmp/audio-archive" {
 		t.Fatalf("round-trip AudioArchive = %+v, want DTO values", roundTrip.AudioArchive)
+	}
+}
+
+func TestWebConfigDTOMapsLog(t *testing.T) {
+	dto := webConfigDTO{
+		Model: modelDTO{Provider: "fake"},
+		Log:   logDTO{LLMHTTPRetentionDays: 21},
+	}
+
+	cfg := dto.toAgentConfig()
+	if cfg.Log.LLMHTTPRetentionDays != 21 {
+		t.Fatalf("Log.LLMHTTPRetentionDays = %d, want 21", cfg.Log.LLMHTTPRetentionDays)
+	}
+
+	roundTrip := webConfigDTOFromAgentConfig(agent.Config{Log: agent.LogConfig{LLMHTTPRetentionDays: 21}})
+	if roundTrip.Log.LLMHTTPRetentionDays != 21 {
+		t.Fatalf("round-trip log.llm_http_retention_days = %d, want 21", roundTrip.Log.LLMHTTPRetentionDays)
 	}
 }
 

@@ -57,6 +57,10 @@ struct BenchmarkToml {
     std::string benchmark_dir;
 };
 
+struct LogToml {
+    int llm_http_retention_days = 7;
+};
+
 struct HIDToml {
     std::string keyboard_device;
     std::string mouse_device;
@@ -91,6 +95,7 @@ struct AgentToml {
     AudioToml audio;
     AudioArchiveToml audio_archive;
     BenchmarkToml benchmark;
+    LogToml log;
     HIDToml hid;
     SearchToml search;
     TelemetryToml telemetry;

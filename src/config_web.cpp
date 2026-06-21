@@ -1,5 +1,6 @@
 #include "agent_toml.h"
 #include "config_web_html.h"
+#include "config_web_llm_html.h"
 #include "system_env_parser.h"
 #include "wifi_config.h"
 
@@ -7,6 +8,7 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <ctype.h>
 #include <netinet/in.h>
@@ -26,6 +28,8 @@
 #include <unistd.h>
 
 #include <iostream>
+#include <algorithm>
+#include <functional>
 #include <map>
 #include <set>
 #include <sstream>
@@ -146,6 +150,12 @@ const size_t kAgentLogReadSize = 64 * 1024;
 const size_t kAgentLogDisplaySize = 48 * 1024;
 const size_t kOtaLogReadSize = 128 * 1024;
 const size_t kOtaLogDisplaySize = 96 * 1024;
+// LLM raw HTTP logs live next to the agent config: <dirname(config)>/log.
+// Filenames are llm-http-YYYYMMDD[-session].log. The viewer streams whole
+// files to the browser, so cap the per-file read to keep responses bounded.
+const char* kLlmLogPrefix = "llm-http-";
+const char* kLlmLogSuffix = ".log";
+const size_t kLlmLogMaxReadSize = 16 * 1024 * 1024;
 const size_t kMaxHttpHeaderSize = 8 * 1024;
 const size_t kMaxHttpBodySize = 64 * 1024;
 const int kClientReadTimeoutSeconds = 5;
@@ -516,6 +526,7 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"benchmark", "judge_model", CONFIG_FIELD_STRING},
         {"benchmark", "api_key", CONFIG_FIELD_STRING},
         {"benchmark", "benchmark_dir", CONFIG_FIELD_STRING},
+        {"log", "llm_http_retention_days", CONFIG_FIELD_NUMBER},
         {"hid", "keyboard_device", CONFIG_FIELD_STRING},
         {"hid", "mouse_device", CONFIG_FIELD_STRING},
         {"hid", "frame_socket", CONFIG_FIELD_STRING},
@@ -1208,7 +1219,7 @@ bool validate_agent_config_json(cJSON* root, std::string* error = NULL) {
 
     const char* sections[] = {
         "model", "model_text", "tts", "stt", "audio", "audio_archive",
-        "benchmark", "hid", "search", "telemetry", "agent", NULL,
+        "benchmark", "log", "hid", "search", "telemetry", "agent", NULL,
     };
     for (int i = 0; sections[i]; ++i) {
         cJSON* section = cJSON_GetObjectItem(root, sections[i]);
@@ -1422,6 +1433,9 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
         cJSON_AddBoolToObject(benchmark, "has_api_key", !config.benchmark.api_key.empty());
     }
     cJSON_AddStringToObject(benchmark, "benchmark_dir", config.benchmark.benchmark_dir.c_str());
+
+    cJSON* log_config = add_object(root, "log");
+    cJSON_AddNumberToObject(log_config, "llm_http_retention_days", config.log.llm_http_retention_days);
 
     cJSON* hid = add_object(root, "hid");
     cJSON_AddStringToObject(hid, "keyboard_device", config.hid.keyboard_device.c_str());
@@ -1678,6 +1692,11 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
             }
         }
         set_json_str(&config->benchmark.benchmark_dir, benchmark, "benchmark_dir");
+    }
+
+    cJSON* log_config = cJSON_GetObjectItem(root, "log");
+    if (json_is_object(log_config)) {
+        set_json_int(&config->log.llm_http_retention_days, log_config, "llm_http_retention_days");
     }
 
     cJSON* hid = cJSON_GetObjectItem(root, "hid");
@@ -3157,6 +3176,173 @@ ApiResponse handle_get_agent_log() {
     cJSON_AddItemToObject(root, "agent_log", agent_log_to_json(read_agent_log_snapshot()));
     return make_json_ok(root);
 }
+// LLM_LOG_HANDLERS_PLACEHOLDER
+
+// url_decode expands percent-escapes (%XX) and '+' in a single URL path
+// segment. Invalid escapes are passed through verbatim. Decoding before
+// validation ensures an encoded separator like %2f cannot smuggle a path
+// traversal past is_llm_log_name().
+std::string url_decode(const std::string& in) {
+    std::string out;
+    out.reserve(in.size());
+    for (size_t i = 0; i < in.size(); ++i) {
+        char c = in[i];
+        if (c == '%' && i + 2 < in.size()) {
+            char hi = in[i + 1];
+            char lo = in[i + 2];
+            if (isxdigit(static_cast<unsigned char>(hi)) && isxdigit(static_cast<unsigned char>(lo))) {
+                auto hex_val = [](char h) -> int {
+                    if (h >= '0' && h <= '9') return h - '0';
+                    if (h >= 'a' && h <= 'f') return h - 'a' + 10;
+                    return h - 'A' + 10;
+                };
+                out.push_back(static_cast<char>((hex_val(hi) << 4) | hex_val(lo)));
+                i += 2;
+                continue;
+            }
+        }
+        if (c == '+') {
+            out.push_back(' ');
+            continue;
+        }
+        out.push_back(c);
+    }
+    return out;
+}
+
+// llm_log_dir returns the directory holding the agent's raw LLM HTTP logs.
+// The agent writes them to <config_dir>/log (see runtime.go), so we derive
+// the directory from the config path the server was launched with.
+std::string llm_log_dir(const Options& options) {
+    std::string base = parent_dir(options.agent_config_path);
+    if (base.empty()) {
+        return "log";
+    }
+    if (base == "/") {
+        return "/log";
+    }
+    return base + "/log";
+}
+
+// is_llm_log_name reports whether name is a plain llm-http-*.log filename with
+// no path separators. Used both to filter directory listings and to validate
+// the filename segment of /api/llm-logs/file/<name>.
+bool is_llm_log_name(const std::string& name) {
+    if (name.find('/') != std::string::npos || name.find('\\') != std::string::npos) {
+        return false;
+    }
+    // Reject embedded NUL/control bytes. A decoded '\0' (from %00) would pass
+    // the suffix check on the std::string yet truncate at the NUL once handed
+    // to C file APIs via c_str(), bypassing the .log suffix guard.
+    for (unsigned char ch : name) {
+        if (ch < 0x20 || ch == 0x7f) {
+            return false;
+        }
+    }
+    if (name == "." || name == "..") {
+        return false;
+    }
+    const std::string prefix = kLlmLogPrefix;
+    const std::string suffix = kLlmLogSuffix;
+    if (name.size() <= prefix.size() + suffix.size()) {
+        return false;
+    }
+    if (name.compare(0, prefix.size(), prefix) != 0) {
+        return false;
+    }
+    if (name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0) {
+        return false;
+    }
+    return true;
+}
+
+ApiResponse handle_get_llm_logs(const Options& options) {
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", 1);
+    cJSON* files = add_array(root, "files");
+
+    const std::string dir_path = llm_log_dir(options);
+    DIR* dir = opendir(dir_path.c_str());
+    if (dir) {
+        // Collect matching names, then sort descending so the newest day /
+        // session (which sorts last by the YYYYMMDD-keyed name) shows first.
+        std::vector<std::string> names;
+        struct dirent* entry = NULL;
+        while ((entry = readdir(dir)) != NULL) {
+            std::string name = entry->d_name;
+            if (is_llm_log_name(name)) {
+                names.push_back(name);
+            }
+        }
+        closedir(dir);
+        std::sort(names.begin(), names.end(), std::greater<std::string>());
+
+        for (size_t i = 0; i < names.size(); ++i) {
+            const std::string full = dir_path + "/" + names[i];
+            // lstat (not stat) so a symlink is not followed: only genuine
+            // regular files in the log dir are listed, never a symlink that
+            // could point outside the intended log set.
+            struct stat st;
+            if (lstat(full.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
+                continue;
+            }
+            cJSON* file = cJSON_CreateObject();
+            cJSON_AddStringToObject(file, "name", names[i].c_str());
+            cJSON_AddNumberToObject(file, "size_bytes", static_cast<double>(st.st_size));
+            cJSON_AddNumberToObject(file, "mtime", static_cast<double>(st.st_mtime));
+            cJSON_AddItemToArray(files, file);
+        }
+    }
+    // A missing directory simply yields an empty list -- the agent may not
+    // have produced any logs yet, which is not an error condition.
+    return make_json_ok(root);
+}
+
+ApiResponse handle_get_llm_log_file(const Options& options, const std::string& name) {
+    if (!is_llm_log_name(name)) {
+        return make_json_error(400, "invalid log file name");
+    }
+    const std::string full = llm_log_dir(options) + "/" + name;
+    // O_NOFOLLOW + fstat/S_ISREG: refuse to follow a symlink and confirm the
+    // opened descriptor is a regular file, closing the TOCTOU gap between the
+    // name check and the read so the viewer can never serve a file outside the
+    // log set via a symlink planted in the directory.
+    int fd = open(full.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) {
+        return make_json_error(404, "log file not found");
+    }
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        close(fd);
+        return make_json_error(404, "log file not found");
+    }
+    FILE* f = fdopen(fd, "rb");
+    if (!f) {
+        close(fd);
+        return make_json_error(404, "log file not found");
+    }
+    std::string contents;
+    char buf[8192];
+    size_t total = 0;
+    bool truncated = false;
+    while (size_t n = fread(buf, 1, sizeof(buf), f)) {
+        if (total + n > kLlmLogMaxReadSize) {
+            contents.append(buf, kLlmLogMaxReadSize - total);
+            truncated = true;
+            break;
+        }
+        contents.append(buf, n);
+        total += n;
+    }
+    fclose(f);
+
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", 1);
+    cJSON_AddStringToObject(root, "name", name.c_str());
+    cJSON_AddStringToObject(root, "content", contents.c_str());
+    cJSON_AddBoolToObject(root, "truncated", truncated ? 1 : 0);
+    return make_json_ok(root);
+}
 
 ApiResponse handle_get_ota_log() {
     cJSON* root = cJSON_CreateObject();
@@ -3850,6 +4036,28 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
             if (!exists) all_passed = false;
         }
         cJSON_AddItemToArray(results, dir_r);
+    } else if (section == "log") {
+        cJSON* retention_item = cJSON_GetObjectItem(values, "llm_http_retention_days");
+        cJSON* r = cJSON_CreateObject();
+        cJSON_AddStringToObject(r, "check", "llm_http_retention_days");
+        if (json_is_number(retention_item)) {
+            int days = retention_item->valueint;
+            if (days < 0) {
+                cJSON_AddBoolToObject(r, "passed", 0);
+                std::string msg = "must be >= 0, got " + std::to_string(days);
+                cJSON_AddStringToObject(r, "detail", msg.c_str());
+                all_passed = false;
+            } else {
+                cJSON_AddBoolToObject(r, "passed", 1);
+                std::string detail = std::to_string(days) + (days == 0 ? " (default 7 days)" : " days");
+                cJSON_AddStringToObject(r, "detail", detail.c_str());
+            }
+        } else {
+            cJSON_AddBoolToObject(r, "passed", 0);
+            cJSON_AddStringToObject(r, "detail", "not a number");
+            all_passed = false;
+        }
+        cJSON_AddItemToArray(results, r);
     } else if (section == "hid") {
         const char* dev_keys[] = {"keyboard_device", "mouse_device", NULL};
         for (int i = 0; dev_keys[i]; ++i) {
@@ -4175,6 +4383,25 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
         response.content_type = "text/html; charset=utf-8";
         response.body = CONFIG_WEB_HTML;
         return response;
+    }
+
+    if (request.method == "GET" && request.path == "/llm-logs") {
+        ApiResponse response;
+        response.content_type = "text/html; charset=utf-8";
+        response.body = CONFIG_WEB_LLM_HTML;
+        return response;
+    }
+
+    if (request.method == "GET" && request.path == "/api/llm-logs") {
+        return handle_get_llm_logs(options);
+    }
+
+    {
+        const std::string file_prefix = "/api/llm-logs/file/";
+        if (request.method == "GET" && request.path.compare(0, file_prefix.size(), file_prefix) == 0) {
+            std::string name = url_decode(request.path.substr(file_prefix.size()));
+            return handle_get_llm_log_file(options, name);
+        }
     }
 
     if (request.method == "GET" && request.path == "/api/agent/status") {

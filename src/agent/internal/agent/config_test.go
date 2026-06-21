@@ -200,6 +200,10 @@ provider = "fake"
 	if !cfg.Model.LogRawHTTP {
 		t.Fatal("Model.LogRawHTTP = false, want runtime default true")
 	}
+	if cfg.Log.LLMHTTPRetentionDays != defaultLLMHTTPLogRetentionDays {
+		t.Fatalf("Log.LLMHTTPRetentionDays = %d, want runtime default %d",
+			cfg.Log.LLMHTTPRetentionDays, defaultLLMHTTPLogRetentionDays)
+	}
 	if cfg.ScreenStableTimeoutMs != defaultStableWaitTimeoutMs {
 		t.Fatalf("ScreenStableTimeoutMs = %d, want runtime default %d",
 			cfg.ScreenStableTimeoutMs, defaultStableWaitTimeoutMs)
@@ -229,6 +233,42 @@ log_raw_http = false
 	}
 	if cfg.Model.LogRawHTTP {
 		t.Fatal("Model.LogRawHTTP = true, want explicit false to disable raw HTTP logging")
+	}
+}
+
+func TestLoadRuntimeConfigCanOverrideLLMHTTPRetentionDays(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	if err := os.WriteFile(path, []byte(`
+[model]
+provider = "fake"
+
+[log]
+llm_http_retention_days = 14
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	if cfg.Log.LLMHTTPRetentionDaysOrDefault() != 14 {
+		t.Fatalf("LLMHTTPRetentionDaysOrDefault() = %d, want 14", cfg.Log.LLMHTTPRetentionDaysOrDefault())
+	}
+}
+
+func TestConfigValidateRejectsNegativeLLMHTTPRetentionDays(t *testing.T) {
+	cfg := Config{
+		Model: ModelConfig{Provider: "fake"},
+		Log:   LogConfig{LLMHTTPRetentionDays: -1},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() error = nil, want log.llm_http_retention_days rejection")
+	}
+	if !strings.Contains(err.Error(), "log.llm_http_retention_days") {
+		t.Fatalf("Validate() error = %v, want log.llm_http_retention_days", err)
 	}
 }
 
