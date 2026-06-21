@@ -22,7 +22,7 @@ type SessionBeginRequest struct {
 	AgentName    string
 	Input        string
 	Turn         TurnInput
-	SessionID    string
+	RuntimeID    string
 	EpisodeID    string
 	RequestID    string
 	RunID        string
@@ -48,7 +48,7 @@ type SessionCommitRequest struct {
 	Output    string
 	Steers    []RunSteerMessage
 	Metrics   *RunMetrics
-	SessionID string
+	RuntimeID string
 	EpisodeID string
 	RequestID string
 	RunID     string
@@ -86,7 +86,7 @@ func (m memoryManagerSessionManager) BeginRun(ctx context.Context, req SessionBe
 			agentName = "default"
 		}
 		meta := SessionEventMetadata{
-			SessionID: req.SessionID,
+			RuntimeID: req.RuntimeID,
 			EpisodeID: req.EpisodeID,
 			RequestID: req.RequestID,
 			RunID:     req.RunID,
@@ -140,20 +140,37 @@ func (m memoryManagerSessionManager) handleSessionBoundary(input string) session
 		return telemetry
 	}
 
-	if m.memories.logger != nil {
-		m.memories.logger.Info("[memory] new session started: reason=%s", reason)
-	}
-	archiveDir, err := m.memories.RotateSessionEvents()
+	rotation, err := m.memories.RotateSessionEventsDetailed()
 	if err != nil {
 		if m.memories.logger != nil {
 			m.memories.logger.Warn("[memory] session rotation failed: %v", err)
 		}
 		return telemetry
 	}
-	if archiveDir != "" {
+	if rotation.ArchiveDir != "" {
 		telemetry.Rotated = true
 	}
+	if m.memories.logger != nil {
+		logProminentSessionStart(m.memories.logger, rotation, reason)
+	}
 	return telemetry
+}
+
+func logProminentSessionStart(logger *Logger, rotation SessionRotationResult, reason string) {
+	if logger == nil || rotation.ActiveSessionID == "" {
+		return
+	}
+	logger.Info("========================================")
+	logger.Info("NEW SESSION STARTED")
+	logger.Info("Session ID: %s", rotation.ActiveSessionID)
+	logger.Info("Reason: %s", reason)
+	if rotation.ClosedSessionID != "" {
+		logger.Info("Closed Session ID: %s", rotation.ClosedSessionID)
+	}
+	if rotation.ArchiveDir != "" {
+		logger.Info("Archive: %s", filepath.Base(rotation.ArchiveDir))
+	}
+	logger.Info("========================================")
 }
 
 func (m memoryManagerSessionManager) CommitRun(ctx context.Context, req SessionCommitRequest) (SessionCommitResult, error) {
@@ -174,7 +191,7 @@ func (m memoryManagerSessionManager) CommitRun(ctx context.Context, req SessionC
 	m.memories.SetLastPromptTokens(lastPromptTokens)
 
 	meta := SessionEventMetadata{
-		SessionID: req.SessionID,
+		RuntimeID: req.RuntimeID,
 		EpisodeID: req.EpisodeID,
 		RequestID: req.RequestID,
 		RunID:     req.RunID,

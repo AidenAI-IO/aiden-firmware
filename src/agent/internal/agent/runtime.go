@@ -35,24 +35,24 @@ func effectiveMaxIterations(configured int) int {
 const currentEnvironmentHintMaxAge = 10 * time.Minute
 
 type Runtime struct {
-	config             Config
-	models             ModelResolver
-	memories           *MemoryManager
-	tools              *ToolSet
-	skills             *SkillManager
-	skillsLoaded       bool
-	skillsReloadMu     sync.Mutex
-	skillsDirty        bool
-	runGateInit        sync.Once
-	mergeWorker        *MergeWorker
-	logger             *Logger
-	profileDebouncer   *ProfileDebouncer
-	waitForWakeup      *WaitForWakeupController
-	memoryPlane        MemoryPlane
-	sessionManager     SessionManager
-	telemetrySessionID string
-	mobileGym          *mobileGymSessionStore
-	runGate            chan struct{}
+	config           Config
+	models           ModelResolver
+	memories         *MemoryManager
+	tools            *ToolSet
+	skills           *SkillManager
+	skillsLoaded     bool
+	skillsReloadMu   sync.Mutex
+	skillsDirty      bool
+	runGateInit      sync.Once
+	mergeWorker      *MergeWorker
+	logger           *Logger
+	profileDebouncer *ProfileDebouncer
+	waitForWakeup    *WaitForWakeupController
+	memoryPlane      MemoryPlane
+	sessionManager   SessionManager
+	runtimeID        string
+	mobileGym        *mobileGymSessionStore
+	runGate          chan struct{}
 }
 
 type RunRequest struct {
@@ -258,7 +258,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	// Create logger if ConfigDir is set
 	var logger *Logger
 	if cfg.ConfigDir != "" {
-		logger, err = NewLogger(cfg.ConfigDir)
+		logger, err = NewLogger(cfg.ConfigDir, cfg.Log.LLMHTTPRetentionDaysOrDefault())
 		if err != nil {
 			return nil, fmt.Errorf("create logger: %w", err)
 		}
@@ -324,12 +324,9 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	rt.waitForWakeup = waitForWakeupController
 	rt.mobileGym = mobileGymStore
 
-	// Log session start marker
+	// Log runtime start marker.
 	if logger != nil {
-		logger.Info("========================================")
-		logger.Info("NEW SESSION STARTED")
-		logger.Info("Session ID: %s", rt.telemetrySessionID)
-		logger.Info("========================================")
+		logger.Info("[runtime] started: runtime_id=%s", rt.runtimeID)
 	}
 
 	if len(mergeNeeded) > 0 && cfg.SkillMergeModel != nil {
@@ -362,19 +359,19 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 		skillManager.SetUsagePath(filepath.Join(cfg.ConfigDir, "skill-state", "usage.json"))
 	}
 	rt := &Runtime{
-		config:             cfg,
-		models:             models,
-		memories:           memories,
-		tools:              tools,
-		skills:             skillManager,
-		skillsLoaded:       skillIndex != nil && len(skillIndex.Names()) > 0,
-		waitForWakeup:      waitForWakeupController,
-		telemetrySessionID: uuid.NewString(),
-		mobileGym:          &mobileGymSessionStore{},
+		config:        cfg,
+		models:        models,
+		memories:      memories,
+		tools:         tools,
+		skills:        skillManager,
+		skillsLoaded:  skillIndex != nil && len(skillIndex.Names()) > 0,
+		waitForWakeup: waitForWakeupController,
+		runtimeID:     uuid.NewString(),
+		mobileGym:     &mobileGymSessionStore{},
 	}
-	// Set session ID for raw HTTP logging
+	// Set runtime ID for raw HTTP logging.
 	if modelManager, ok := models.(*ModelManager); ok {
-		modelManager.SetSessionID(rt.telemetrySessionID)
+		modelManager.SetRuntimeID(rt.runtimeID)
 	}
 	if cfg.ConfigDir != "" {
 		rt.memoryPlane = NewFilesystemMemoryPlane(filepath.Join(cfg.ConfigDir, "memory"), LoadMemoryExtractionConfig(cfg.ConfigDir), nil)
@@ -560,7 +557,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		AgentName:    "default",
 		Input:        normalizedInput,
 		Turn:         turnInput,
-		SessionID:    r.telemetrySessionID,
+		RuntimeID:    r.runtimeID,
 		EpisodeID:    episodeID,
 		RequestID:    req.RequestID,
 		RunID:        runID,
@@ -627,14 +624,14 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			logger:                 r.logger,
 			eventHandler:           req.EventHandler,
 			episodeID:              episodeID,
-			sessionID:              r.telemetrySessionID,
+			runtimeID:              r.runtimeID,
 			requestID:              req.RequestID,
 			runID:                  runID,
 		}
 		if persistRuntimeSessionEvents {
 			streamCallbackHandler.sessionEventAppender = func(ctx context.Context, event SessionEvent) error {
 				return r.appendRuntimeSessionEvent(ctx, "default", event, SessionEventMetadata{
-					SessionID: r.telemetrySessionID,
+					RuntimeID: r.runtimeID,
 					EpisodeID: episodeID,
 					RequestID: req.RequestID,
 					RunID:     runID,
@@ -702,7 +699,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		Input:     normalizedInput,
 		Output:    output,
 		Metrics:   metrics,
-		SessionID: r.telemetrySessionID,
+		RuntimeID: r.runtimeID,
 		EpisodeID: episodeID,
 		RequestID: req.RequestID,
 		RunID:     runID,
@@ -776,9 +773,9 @@ func (r *Runtime) persistRunStatusBestEffort(episodeID, requestID, runID string,
 		EpisodeID: episodeID,
 		RequestID: requestID,
 		RunID:     runID,
-		SessionID: r.telemetrySessionID,
+		RuntimeID: r.runtimeID,
 	}, SessionEventMetadata{
-		SessionID: r.telemetrySessionID,
+		RuntimeID: r.runtimeID,
 		EpisodeID: episodeID,
 		RequestID: requestID,
 		RunID:     runID,
@@ -1069,8 +1066,8 @@ func (r *Runtime) enrichEpisodeRuntimeTelemetry(episode *TaskEpisode) {
 	if episode.Extra == nil {
 		episode.Extra = map[string]interface{}{}
 	}
-	if extraString(episode.Extra, "session_id") == "" && r.telemetrySessionID != "" {
-		episode.Extra["session_id"] = r.telemetrySessionID
+	if extraString(episode.Extra, "runtime_id") == "" && r.runtimeID != "" {
+		episode.Extra["runtime_id"] = r.runtimeID
 	}
 	contextWindow := r.effectiveContextWindow()
 	if contextWindow > 0 {
@@ -1170,12 +1167,13 @@ type runtimeCallbackHandler struct {
 	startTime              time.Time
 	firstTokenSeen         bool
 	finalTokenSeen         bool
+	finalStreamLogEmitted  bool
 	finalStreamErr         error
 	streamFinal            bool
 	logger                 *Logger
 	eventHandler           func(RunEvent)
 	episodeID              string
-	sessionID              string
+	runtimeID              string
 	requestID              string
 	runID                  string
 	sessionEventAppender   func(context.Context, SessionEvent) error
@@ -1492,7 +1490,7 @@ func sessionEventFromRunEvent(event RunEvent, h *runtimeCallbackHandler) Session
 		Ts:        ts.UTC().Format(time.RFC3339Nano),
 		Type:      event.Type,
 		Role:      role,
-		SessionID: h.sessionID,
+		RuntimeID: h.runtimeID,
 		EpisodeID: firstNonEmptyString([]string{event.EpisodeID, h.episodeID}),
 		RequestID: h.requestID,
 		RunID:     h.runID,
@@ -1566,7 +1564,9 @@ func (h *runtimeCallbackHandler) HandleStreamingFunc(ctx context.Context, chunk 
 		if _, err := h.writer.Write(chunk); err != nil {
 			h.recordFinalStreamError(err)
 		} else if streamWriterEmitted(h.writer) {
-			h.recordFinalToken()
+			if h.recordFinalToken() {
+				h.logFinalStreamEmitted(ctx, chunk)
+			}
 		}
 	}
 
@@ -1585,6 +1585,7 @@ func (h *runtimeCallbackHandler) EnableFinalStreaming(ctx context.Context) {
 	resetStreamBuffer(h.writer)
 	h.mu.Lock()
 	h.finalTokenSeen = false
+	h.finalStreamLogEmitted = false
 	h.finalStreamErr = nil
 	h.streamFinal = true
 	h.mu.Unlock()
@@ -1654,13 +1655,15 @@ func (h *runtimeCallbackHandler) recordFirstToken() {
 	}
 }
 
-func (h *runtimeCallbackHandler) recordFinalToken() {
+func (h *runtimeCallbackHandler) recordFinalToken() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.finalStreamErr != nil {
-		return
+		return false
 	}
+	first := !h.finalTokenSeen
 	h.finalTokenSeen = true
+	return first
 }
 
 func (h *runtimeCallbackHandler) finalStreamingFailed() bool {
@@ -1683,6 +1686,36 @@ func (h *runtimeCallbackHandler) recordFinalStreamError(err error) {
 	if firstErr && h.logger != nil {
 		h.logger.Warn("Final stream writer failed; falling back to final answer: %v", err)
 	}
+}
+
+func (h *runtimeCallbackHandler) LogFinalStreamingDecision(_ context.Context, role RoleName, providerStreaming bool, reason string) {
+	if h == nil || h.logger == nil || !h.providerFinalStreaming {
+		return
+	}
+	h.logger.Info("Final stream decision: role=%s provider_streaming=%t reason=%s request_id=%s run_id=%s",
+		role, providerStreaming, reason, h.requestID, h.runID)
+}
+
+func (h *runtimeCallbackHandler) logFinalStreamEmitted(ctx context.Context, chunk []byte) {
+	if h == nil || h.logger == nil {
+		return
+	}
+	h.mu.Lock()
+	if h.finalStreamLogEmitted {
+		h.mu.Unlock()
+		return
+	}
+	h.finalStreamLogEmitted = true
+	requestID := h.requestID
+	runID := h.runID
+	h.mu.Unlock()
+
+	role := telemetryRoleFromContext(ctx)
+	if role == "" {
+		role = "post_parse"
+	}
+	h.logger.Info("Final stream emitted: role=%s chunk_len=%d chunk=%s request_id=%s run_id=%s",
+		role, len(chunk), truncateForLog(string(chunk), 120), requestID, runID)
 }
 
 var _ callbacks.Handler = (*runtimeCallbackHandler)(nil)

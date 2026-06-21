@@ -30,6 +30,7 @@ const (
 	defaultAudioArchiveMaxFiles    = 500
 	defaultAudioArchiveMaxSizeMB   = 100
 	defaultBenchmarkJudgeModel     = defaultModelName
+	defaultLLMHTTPLogRetentionDays = 7
 	defaultKeyboardDevice          = "/dev/hidg0"
 	defaultMouseDevice             = "/dev/hidg1"
 	defaultFrameServiceSocket      = "/run/frame_service/frame_service.sock"
@@ -90,6 +91,9 @@ func DefaultConfig() Config {
 		},
 		Benchmark: BenchmarkConfig{
 			JudgeModel: defaultBenchmarkJudgeModel,
+		},
+		Log: LogConfig{
+			LLMHTTPRetentionDays: defaultLLMHTTPLogRetentionDays,
 		},
 		HID: HIDConfig{
 			KeyboardDevice: defaultKeyboardDevice,

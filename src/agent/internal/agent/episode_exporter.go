@@ -181,8 +181,8 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 	if userID := traceUserID(episode); userID != "" {
 		traceBody["userId"] = userID
 	}
-	if sessionID := traceSessionID(episode); sessionID != "" {
-		traceBody["sessionId"] = sessionID
+	if runtimeID := traceRuntimeID(episode); runtimeID != "" {
+		traceBody["sessionId"] = runtimeID
 	}
 	if release := traceReleaseFromEpisode(episode); release != "" {
 		traceBody["release"] = release
@@ -999,9 +999,12 @@ func traceUserID(episode TaskEpisode) string {
 	return ""
 }
 
-func traceSessionID(episode TaskEpisode) string {
-	if sessionID := extraString(episode.Extra, "session_id"); sessionID != "" {
-		return sessionID
+func traceRuntimeID(episode TaskEpisode) string {
+	if runtimeID := extraString(episode.Extra, "runtime_id"); runtimeID != "" {
+		return runtimeID
+	}
+	if legacySessionID := extraString(episode.Extra, "session_id"); legacySessionID != "" {
+		return legacySessionID
 	}
 	return extraString(episode.Extra, "telemetry_session_id")
 }

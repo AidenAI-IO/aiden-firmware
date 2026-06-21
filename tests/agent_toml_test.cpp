@@ -91,6 +91,8 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.benchmark.api_key = "sk-judge-test";
     cfg.benchmark.benchmark_dir = "/userdata/agent/benchmark";
 
+    cfg.log.llm_http_retention_days = 21;
+
     cfg.telemetry.enabled = true;
     cfg.telemetry.provider = "langfuse";
     cfg.telemetry.base_url = "http://langfuse.example.com:3000";
@@ -115,6 +117,8 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
         CHECK(contents.find("custom_instruction = \"Hello \\\"world\\\"\"") != std::string::npos);
         CHECK(contents.rfind("instruction =", 0) != 0);
         CHECK(contents.find("\ninstruction =") == std::string::npos);
+        CHECK(contents.find("[log]") != std::string::npos);
+        CHECK(contents.find("llm_http_retention_days = 21") != std::string::npos);
     }
 
     aiden::AgentToml loaded;
@@ -187,6 +191,8 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.benchmark.judge_model == "custom/judge-v1");
     CHECK(loaded.benchmark.api_key == "sk-judge-test");
     CHECK(loaded.benchmark.benchmark_dir == "/userdata/agent/benchmark");
+
+    CHECK(loaded.log.llm_http_retention_days == 21);
 
     CHECK(loaded.telemetry.enabled == true);
     CHECK(loaded.telemetry.provider == "langfuse");

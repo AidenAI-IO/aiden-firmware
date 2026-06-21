@@ -48,7 +48,7 @@ func TestOpenAICompatibleModelEncodesAudioAsInputAudio(t *testing.T) {
 	model := newOpenAICompatibleModel(server.URL, "test-model", "token", server.Client())
 	audioBytes := []byte("RIFFaudio")
 
-	resp, err := model.GenerateContent(context.Background(), []llms.MessageContent{{
+	resp, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
 		Role: llms.ChatMessageTypeHuman,
 		Parts: []llms.ContentPart{
 			llms.TextPart("transcribe"),
@@ -89,7 +89,7 @@ func TestOpenAICompatibleModelParsesToolCalls(t *testing.T) {
 	defer server.Close()
 
 	model := newOpenAICompatibleModel(server.URL, "test-model", "", server.Client())
-	resp, err := model.GenerateContent(context.Background(), []llms.MessageContent{{
+	resp, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
 		Role:  llms.ChatMessageTypeHuman,
 		Parts: []llms.ContentPart{llms.TextPart("say hello")},
 	}})
@@ -120,7 +120,7 @@ func TestOpenAICompatibleModelLogsRawHTTPWhenEnabled(t *testing.T) {
 		server.Client(),
 		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(logDir, "test-session-1")),
 	)
-	_, err := model.GenerateContent(context.Background(), []llms.MessageContent{{
+	_, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
 		Role:  llms.ChatMessageTypeHuman,
 		Parts: []llms.ContentPart{llms.TextPart("现在几点了？")},
 	}})
@@ -179,7 +179,7 @@ func TestOpenAICompatibleModelRawHTTPLogUsesEffectiveRequestModel(t *testing.T) 
 		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(logDir, "test-session-1")),
 	)
 	_, err := model.GenerateContent(
-		context.Background(),
+		contextWithRawHTTPLog(context.Background()),
 		[]llms.MessageContent{{
 			Role:  llms.ChatMessageTypeHuman,
 			Parts: []llms.ContentPart{llms.TextPart("hello")},
@@ -230,7 +230,7 @@ func TestOpenAICompatibleModelStreamsContent(t *testing.T) {
 	var chunks []string
 	model := newOpenAICompatibleModel(server.URL, "test-model", "", server.Client())
 	resp, err := model.GenerateContent(
-		context.Background(),
+		contextWithRawHTTPLog(context.Background()),
 		[]llms.MessageContent{{
 			Role:  llms.ChatMessageTypeHuman,
 			Parts: []llms.ContentPart{llms.TextPart("hello")},
@@ -274,7 +274,7 @@ func TestOpenAICompatibleModelLogsRawStreamingHTTPWhenEnabled(t *testing.T) {
 		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(logDir, "test-session-1")),
 	)
 	_, err := model.GenerateContent(
-		context.Background(),
+		contextWithRawHTTPLog(context.Background()),
 		[]llms.MessageContent{{
 			Role:  llms.ChatMessageTypeHuman,
 			Parts: []llms.ContentPart{llms.TextPart("现在几点了？")},
@@ -296,7 +296,7 @@ func TestOpenAICompatibleModelLogsRawStreamingHTTPWhenEnabled(t *testing.T) {
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			continue
 		}
-		if entry["kind"] == "stream" {
+		if entry["kind"] == "response" {
 			streamBody, _ = entry["body"].(string)
 			foundStreamResponse = true
 			break
@@ -306,17 +306,35 @@ func TestOpenAICompatibleModelLogsRawStreamingHTTPWhenEnabled(t *testing.T) {
 	if !foundStreamResponse {
 		t.Fatalf("raw streaming HTTP log missing stream response:\n%s", logText)
 	}
-	// Check that stream body contains the SSE events (they are escaped in JSON)
-	if !strings.Contains(streamBody, firstEvent) {
-		t.Fatalf("raw streaming HTTP log missing first SSE event in body:\n%s", streamBody)
+	if strings.Contains(streamBody, "data:") {
+		t.Fatalf("raw streaming HTTP log should store a readable JSON response, not raw SSE:\n%s", streamBody)
 	}
-	if !strings.Contains(streamBody, secondEvent) {
-		t.Fatalf("raw streaming HTTP log missing second SSE event in body:\n%s", streamBody)
+	var logged struct {
+		Stream  bool `json:"stream"`
+		Done    bool `json:"done"`
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
 	}
-	if !strings.Contains(streamBody, "data: [DONE]") {
-		t.Fatalf("raw streaming HTTP log missing [DONE] marker in body:\n%s", streamBody)
+	if err := json.Unmarshal([]byte(streamBody), &logged); err != nil {
+		t.Fatalf("raw streaming HTTP response body should be JSON: %v\n%s", err, streamBody)
 	}
-	if !strings.Contains(logText, `"kind":"stream"`) {
+	if !logged.Stream || !logged.Done {
+		t.Fatalf("raw streaming HTTP response missing stream metadata: %#v", logged)
+	}
+	if len(logged.Choices) != 1 {
+		t.Fatalf("raw streaming HTTP response choices = %#v", logged.Choices)
+	}
+	if logged.Choices[0].Message.Content != "<think>\n需要查当前时间。\n</think>" {
+		t.Fatalf("raw streaming HTTP response content = %q", logged.Choices[0].Message.Content)
+	}
+	if logged.Choices[0].FinishReason != "tool_calls" {
+		t.Fatalf("raw streaming HTTP response finish_reason = %q", logged.Choices[0].FinishReason)
+	}
+	if !strings.Contains(logText, `"kind":"response"`) {
 		t.Fatalf("raw streaming HTTP log missing metadata:\n%s", logText)
 	}
 	assertRawHTTPLogIsValidJSONL(t, logText)
@@ -341,7 +359,7 @@ func TestOpenAICompatibleModelLogsRawStreamingHTTPOnDecodeError(t *testing.T) {
 		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(logDir, "test-session-1")),
 	)
 	_, err := model.GenerateContent(
-		context.Background(),
+		contextWithRawHTTPLog(context.Background()),
 		[]llms.MessageContent{{
 			Role:  llms.ChatMessageTypeHuman,
 			Parts: []llms.ContentPart{llms.TextPart("stream please")},
@@ -359,15 +377,229 @@ func TestOpenAICompatibleModelLogsRawStreamingHTTPOnDecodeError(t *testing.T) {
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			continue
 		}
-		if entry["kind"] == "stream" {
+		if entry["kind"] == "response" {
 			streamBody, _ = entry["body"].(string)
 			break
 		}
 	}
-	if !strings.Contains(streamBody, validEvent) || !strings.Contains(streamBody, malformedEvent) {
-		t.Fatalf("raw streaming HTTP log missing failed SSE events:\nlog=%s\nstream=%s", logText, streamBody)
+	var logged struct {
+		Stream  bool   `json:"stream"`
+		Error   string `json:"error"`
+		RawSSE  string `json:"raw_sse"`
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal([]byte(streamBody), &logged); err != nil {
+		t.Fatalf("raw streaming error response body should be JSON: %v\n%s", err, streamBody)
+	}
+	if !logged.Stream {
+		t.Fatalf("raw streaming error response missing stream marker: %#v", logged)
+	}
+	if !strings.Contains(logged.Error, "decode stream event") {
+		t.Fatalf("raw streaming error response missing decode error: %#v", logged)
+	}
+	if len(logged.Choices) != 1 || logged.Choices[0].Message.Content != "hello" {
+		t.Fatalf("raw streaming error response missing partial content: %#v", logged.Choices)
+	}
+	if !strings.Contains(logged.RawSSE, validEvent) || !strings.Contains(logged.RawSSE, malformedEvent) {
+		t.Fatalf("raw streaming error response missing failed SSE events:\nlog=%s\nstream=%s", logText, streamBody)
 	}
 	assertRawHTTPLogIsValidJSONL(t, logText)
+}
+
+func TestOpenAICompatibleModelRawHTTPLogKeepsRunInRequestMinuteFile(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"OK\"},\"finish_reason\":\"stop\"}]}\n\n"))
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	logDir := t.TempDir()
+	logger := newLLMRawHTTPLogger(logDir, "test-runtime")
+	times := []time.Time{
+		time.Date(2026, 6, 21, 9, 4, 59, 0, time.UTC),
+		time.Date(2026, 6, 21, 9, 4, 59, 0, time.UTC),
+		time.Date(2026, 6, 21, 9, 5, 1, 0, time.UTC),
+	}
+	logger.now = func() time.Time {
+		if len(times) == 0 {
+			return time.Date(2026, 6, 21, 9, 5, 1, 0, time.UTC)
+		}
+		next := times[0]
+		times = times[1:]
+		return next
+	}
+
+	model := newOpenAICompatibleModel(
+		server.URL,
+		"test-model",
+		"",
+		server.Client(),
+		withOpenAICompatibleRawHTTPLogger(logger),
+	)
+	_, err := model.GenerateContent(
+		contextWithRawHTTPLog(context.Background()),
+		[]llms.MessageContent{{
+			Role:  llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{llms.TextPart("hello")},
+		}},
+		llms.WithStreamingFunc(func(ctx context.Context, chunk []byte) error { return nil }),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	matches, err := filepath.Glob(filepath.Join(logDir, "llm-http-*.log"))
+	if err != nil {
+		t.Fatalf("glob raw HTTP logs: %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("raw HTTP request/response should stay in one file, got %d: %#v", len(matches), matches)
+	}
+	if !strings.Contains(filepath.Base(matches[0]), "llm-http-202606210904-test-runtime.log") {
+		t.Fatalf("raw HTTP file should use request minute, got %s", filepath.Base(matches[0]))
+	}
+	logText := readRawHTTPLog(t, logDir)
+	counts := countRawHTTPKinds(t, logText)
+	if counts["request"] != 1 || counts["response"] != 1 {
+		t.Fatalf("raw HTTP log should contain one request and one response:\n%s", logText)
+	}
+}
+
+// countRawHTTPKinds returns how many log entries carry each kind, so tests can
+// assert the request/response pairing invariant the log viewer relies on.
+func countRawHTTPKinds(t *testing.T, logText string) map[string]int {
+	t.Helper()
+	counts := map[string]int{}
+	for _, line := range strings.Split(strings.TrimSpace(logText), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var entry map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("invalid JSONL line: %v\nline: %s", err, line)
+		}
+		kind, _ := entry["kind"].(string)
+		counts[kind]++
+	}
+	return counts
+}
+
+func TestOpenAICompatibleModelLogsResponseOnTransportError(t *testing.T) {
+	// Point the model at a server that is already closed so httpClient.Do
+	// fails at the transport layer before any HTTP response exists.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	closedURL := server.URL
+	client := server.Client()
+	server.Close()
+
+	logDir := t.TempDir()
+	model := newOpenAICompatibleModel(
+		closedURL,
+		"test-model",
+		"",
+		client,
+		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(logDir, "test-session-1")),
+	)
+	_, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
+		Role:  llms.ChatMessageTypeHuman,
+		Parts: []llms.ContentPart{llms.TextPart("hello")},
+	}})
+	if err == nil {
+		t.Fatal("expected transport error, got nil")
+	}
+
+	logText := readRawHTTPLog(t, logDir)
+	counts := countRawHTTPKinds(t, logText)
+	if counts["request"] != 1 {
+		t.Fatalf("expected 1 request entry, got %d:\n%s", counts["request"], logText)
+	}
+	if counts["response"] != 1 {
+		t.Fatalf("expected 1 response entry on transport failure, got %d:\n%s", counts["response"], logText)
+	}
+	if !strings.Contains(logText, "transport error:") {
+		t.Fatalf("response entry missing transport error detail:\n%s", logText)
+	}
+	if !strings.Contains(logText, `"status":0`) {
+		t.Fatalf("transport failure should log status 0:\n%s", logText)
+	}
+	assertRawHTTPLogIsValidJSONL(t, logText)
+}
+
+func TestOpenAICompatibleModelSkipsRawHTTPLogWithoutContextMarker(t *testing.T) {
+	// Background tasks (summarization, profile rebuilds, skill merge) share the
+	// model and logger but call with a plain context. Those calls must not be
+	// logged, so their requests don't interleave with the main loop's entries.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	logDir := t.TempDir()
+	model := newOpenAICompatibleModel(
+		server.URL,
+		"test-model",
+		"",
+		server.Client(),
+		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(logDir, "test-session-1")),
+	)
+	// Plain context, no contextWithRawHTTPLog marker.
+	_, err := model.GenerateContent(context.Background(), []llms.MessageContent{{
+		Role:  llms.ChatMessageTypeHuman,
+		Parts: []llms.ContentPart{llms.TextPart("hello")},
+	}})
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	if _, statErr := os.Stat(rawHTTPLogPath(logDir)); statErr == nil {
+		t.Fatalf("raw HTTP log was written for a call without the context marker:\n%s", readRawHTTPLog(t, logDir))
+	} else if !os.IsNotExist(statErr) {
+		t.Fatalf("unexpected error stating log path: %v", statErr)
+	}
+}
+
+func TestOpenAICompatibleModelDoesNotBufferRawHTTPResponseWithoutContextMarker(t *testing.T) {
+	responseBody := &failOnSecondReadBody{
+		payload: []byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`),
+	}
+	client := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body:       responseBody,
+			}, nil
+		}),
+	}
+
+	model := newOpenAICompatibleModel(
+		"https://example.test",
+		"test-model",
+		"",
+		client,
+		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(t.TempDir(), "test-session-1")),
+	)
+
+	resp, err := model.GenerateContent(context.Background(), []llms.MessageContent{{
+		Role:  llms.ChatMessageTypeHuman,
+		Parts: []llms.ContentPart{llms.TextPart("hello")},
+	}})
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	if got := resp.Choices[0].Content; got != "ok" {
+		t.Fatalf("response content = %q, want ok", got)
+	}
+	if responseBody.reads != 1 {
+		t.Fatalf("response body reads = %d, want 1", responseBody.reads)
+	}
 }
 
 func TestModelManagerEnablesRawHTTPLoggingFromModelConfig(t *testing.T) {
@@ -389,7 +621,7 @@ func TestModelManagerEnablesRawHTTPLoggingFromModelConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
-	_, err = model.GenerateContent(context.Background(), []llms.MessageContent{{
+	_, err = model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
 		Role:  llms.ChatMessageTypeHuman,
 		Parts: []llms.ContentPart{llms.TextPart("hello")},
 	}})
@@ -437,7 +669,7 @@ func TestModelManagerEnablesRawHTTPLoggingFromDefaultConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
-	_, err = model.GenerateContent(context.Background(), []llms.MessageContent{{
+	_, err = model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
 		Role:  llms.ChatMessageTypeHuman,
 		Parts: []llms.ContentPart{llms.TextPart("hello")},
 	}})
@@ -484,7 +716,7 @@ func TestModelManagerDoesNotLogRawHTTPWhenDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
-	_, err = model.GenerateContent(context.Background(), []llms.MessageContent{{
+	_, err = model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
 		Role:  llms.ChatMessageTypeHuman,
 		Parts: []llms.ContentPart{llms.TextPart("hello")},
 	}})
@@ -508,7 +740,7 @@ func TestOpenAICompatibleModelStreamsToolCalls(t *testing.T) {
 
 	model := newOpenAICompatibleModel(server.URL, "test-model", "", server.Client())
 	resp, err := model.GenerateContent(
-		context.Background(),
+		contextWithRawHTTPLog(context.Background()),
 		[]llms.MessageContent{{
 			Role:  llms.ChatMessageTypeHuman,
 			Parts: []llms.ContentPart{llms.TextPart("say hello")},
@@ -549,7 +781,7 @@ func TestOpenAICompatibleModelMergesSystemMessages(t *testing.T) {
 	defer server.Close()
 
 	model := newOpenAICompatibleModel(server.URL, "test-model", "", server.Client())
-	_, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+	_, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{
 		{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextPart("System A")}},
 		{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextPart("System B")}},
 		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("hello")}},
@@ -577,7 +809,7 @@ func TestOpenAICompatibleModelIncludesUsageInGenerationInfo(t *testing.T) {
 	defer server.Close()
 
 	model := newOpenAICompatibleModel(server.URL, "test-model", "", server.Client())
-	resp, err := model.GenerateContent(context.Background(), []llms.MessageContent{{
+	resp, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
 		Role:  llms.ChatMessageTypeHuman,
 		Parts: []llms.ContentPart{llms.TextPart("hello")},
 	}})
@@ -606,7 +838,7 @@ func rawHTTPLogPath(logDir string) string {
 	if len(matches) > 0 {
 		return matches[len(matches)-1]
 	}
-	return filepath.Join(logDir, "llm-http-"+time.Now().Format("20060102")+".log")
+	return filepath.Join(logDir, "llm-http-"+time.Now().Format("200601021504")+".log")
 }
 
 func assertRawHTTPLogIsValidJSONL(t *testing.T, logText string) {
@@ -658,6 +890,23 @@ func findLogLineContaining(logText, substring string) bool {
 	return false
 }
 
+type failOnSecondReadBody struct {
+	payload []byte
+	reads   int
+}
+
+func (b *failOnSecondReadBody) Read(p []byte) (int, error) {
+	b.reads++
+	if b.reads == 1 {
+		return copy(p, b.payload), nil
+	}
+	return 0, io.ErrUnexpectedEOF
+}
+
+func (b *failOnSecondReadBody) Close() error {
+	return nil
+}
+
 func assertEveryLineIsCompleteRecord(t *testing.T, logText string) {
 	// This is now covered by assertRawHTTPLogIsValidJSONL
 	t.Helper()
@@ -698,7 +947,7 @@ func TestModelManagerOpenRouterRetriesEOFInModelCall(t *testing.T) {
 		t.Fatalf("Get model: %v", err)
 	}
 
-	resp, err := model.GenerateContent(context.Background(), []llms.MessageContent{{
+	resp, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
 		Role:  llms.ChatMessageTypeHuman,
 		Parts: []llms.ContentPart{llms.TextPart("hello")},
 	}})
