@@ -29,6 +29,24 @@ type openAICompatibleModel struct {
 
 type openAICompatibleModelOption func(*openAICompatibleModel)
 
+// rawHTTPLogContextKey gates raw HTTP logging to the calls that opt in via
+// contextWithRawHTTPLog. The main conversation loop sets it; background tasks
+// (summarization, profile rebuilds, skill merge) share the same model instance
+// and logger, so without this gate their requests would interleave with the
+// main loop in the shared log file and break request/response pairing.
+type rawHTTPLogContextKey struct{}
+
+// contextWithRawHTTPLog marks ctx so model calls made under it are written to
+// the raw HTTP log. Only the main conversation loop should set this.
+func contextWithRawHTTPLog(ctx context.Context) context.Context {
+	return context.WithValue(ctx, rawHTTPLogContextKey{}, true)
+}
+
+func rawHTTPLogEnabled(ctx context.Context) bool {
+	enabled, _ := ctx.Value(rawHTTPLogContextKey{}).(bool)
+	return enabled
+}
+
 func withOpenAICompatibleRawHTTPLogger(logger *llmRawHTTPLogger) openAICompatibleModelOption {
 	return func(m *openAICompatibleModel) {
 		m.rawLogger = logger
@@ -272,14 +290,14 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 	}
 
 	// Log HTTP request body
-	_ = m.logRawHTTP(reqPayload.Model, "request", 0, string(payloadBytes))
+	_ = m.logRawHTTP(ctx, reqPayload.Model, "request", 0, string(payloadBytes))
 
 	endpoint := m.baseURL + "/chat/completions"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payloadBytes))
 	if err != nil {
 		// statusCode 0 marks a failure with no HTTP response, keeping every
 		// logged request paired with a response entry the viewer can match.
-		_ = m.logRawHTTP(reqPayload.Model, "response", 0, "create request error: "+err.Error())
+		_ = m.logRawHTTP(ctx, reqPayload.Model, "response", 0, "create request error: "+err.Error())
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -292,14 +310,14 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 		// Transport-level failure (timeout, connection refused, context
 		// cancelled): no HTTP response arrives, so log status 0 with the error
 		// rather than leaving the request entry unpaired.
-		_ = m.logRawHTTP(reqPayload.Model, "response", 0, "transport error: "+err.Error())
+		_ = m.logRawHTTP(ctx, reqPayload.Model, "response", 0, "transport error: "+err.Error())
 		return nil, fmt.Errorf("send request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		_ = m.logRawHTTP(reqPayload.Model, "response", resp.StatusCode, string(body))
+		_ = m.logRawHTTP(ctx, reqPayload.Model, "response", resp.StatusCode, string(body))
 		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -317,10 +335,10 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 		if err != nil {
 			// HTTP status arrived but the body could not be read: log the real
 			// status with the read error so the request still has a response.
-			_ = m.logRawHTTP(reqPayload.Model, "response", resp.StatusCode, "read response error: "+err.Error())
+			_ = m.logRawHTTP(ctx, reqPayload.Model, "response", resp.StatusCode, "read response error: "+err.Error())
 			return nil, fmt.Errorf("read response: %w", err)
 		}
-		_ = m.logRawHTTP(reqPayload.Model, "response", resp.StatusCode, string(body))
+		_ = m.logRawHTTP(ctx, reqPayload.Model, "response", resp.StatusCode, string(body))
 		if err := json.Unmarshal(body, &decoded); err != nil {
 			return nil, fmt.Errorf("decode response: %w", err)
 		}
@@ -370,11 +388,11 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 		// data or fails mid-read. Status 0 + error text for scanner failures;
 		// the actual HTTP status + captured SSE body otherwise.
 		if hasRawStream {
-			_ = m.logRawHTTP(requestModel, "response", statusCode, rawStream.String())
+			_ = m.logRawHTTP(ctx, requestModel, "response", statusCode, rawStream.String())
 		} else if scanErr != nil {
-			_ = m.logRawHTTP(requestModel, "response", 0, "stream read error: "+scanErr.Error())
+			_ = m.logRawHTTP(ctx, requestModel, "response", 0, "stream read error: "+scanErr.Error())
 		} else {
-			_ = m.logRawHTTP(requestModel, "response", statusCode, "(empty stream response)")
+			_ = m.logRawHTTP(ctx, requestModel, "response", statusCode, "(empty stream response)")
 		}
 	}
 	var scanErr error
@@ -485,8 +503,14 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 	return &llms.ContentResponse{Choices: []*llms.ContentChoice{choice}}, nil
 }
 
-func (m *openAICompatibleModel) logRawHTTP(modelName, kind string, statusCode int, raw string) error {
+func (m *openAICompatibleModel) logRawHTTP(ctx context.Context, modelName, kind string, statusCode int, raw string) error {
 	if m == nil || m.rawLogger == nil {
+		return nil
+	}
+	// Only log calls that opted in (the main conversation loop). Background
+	// tasks share this model and logger; logging them would interleave entries
+	// in the shared file and break the viewer's request/response pairing.
+	if !rawHTTPLogEnabled(ctx) {
 		return nil
 	}
 	return m.rawLogger.Log(modelName, kind, statusCode, raw)

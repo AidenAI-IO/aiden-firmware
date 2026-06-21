@@ -48,7 +48,7 @@ func TestOpenAICompatibleModelEncodesAudioAsInputAudio(t *testing.T) {
 	model := newOpenAICompatibleModel(server.URL, "test-model", "token", server.Client())
 	audioBytes := []byte("RIFFaudio")
 
-	resp, err := model.GenerateContent(context.Background(), []llms.MessageContent{{
+	resp, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
 		Role: llms.ChatMessageTypeHuman,
 		Parts: []llms.ContentPart{
 			llms.TextPart("transcribe"),
@@ -89,7 +89,7 @@ func TestOpenAICompatibleModelParsesToolCalls(t *testing.T) {
 	defer server.Close()
 
 	model := newOpenAICompatibleModel(server.URL, "test-model", "", server.Client())
-	resp, err := model.GenerateContent(context.Background(), []llms.MessageContent{{
+	resp, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
 		Role:  llms.ChatMessageTypeHuman,
 		Parts: []llms.ContentPart{llms.TextPart("say hello")},
 	}})
@@ -120,7 +120,7 @@ func TestOpenAICompatibleModelLogsRawHTTPWhenEnabled(t *testing.T) {
 		server.Client(),
 		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(logDir, "test-session-1")),
 	)
-	_, err := model.GenerateContent(context.Background(), []llms.MessageContent{{
+	_, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
 		Role:  llms.ChatMessageTypeHuman,
 		Parts: []llms.ContentPart{llms.TextPart("现在几点了？")},
 	}})
@@ -179,7 +179,7 @@ func TestOpenAICompatibleModelRawHTTPLogUsesEffectiveRequestModel(t *testing.T) 
 		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(logDir, "test-session-1")),
 	)
 	_, err := model.GenerateContent(
-		context.Background(),
+		contextWithRawHTTPLog(context.Background()),
 		[]llms.MessageContent{{
 			Role:  llms.ChatMessageTypeHuman,
 			Parts: []llms.ContentPart{llms.TextPart("hello")},
@@ -230,7 +230,7 @@ func TestOpenAICompatibleModelStreamsContent(t *testing.T) {
 	var chunks []string
 	model := newOpenAICompatibleModel(server.URL, "test-model", "", server.Client())
 	resp, err := model.GenerateContent(
-		context.Background(),
+		contextWithRawHTTPLog(context.Background()),
 		[]llms.MessageContent{{
 			Role:  llms.ChatMessageTypeHuman,
 			Parts: []llms.ContentPart{llms.TextPart("hello")},
@@ -274,7 +274,7 @@ func TestOpenAICompatibleModelLogsRawStreamingHTTPWhenEnabled(t *testing.T) {
 		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(logDir, "test-session-1")),
 	)
 	_, err := model.GenerateContent(
-		context.Background(),
+		contextWithRawHTTPLog(context.Background()),
 		[]llms.MessageContent{{
 			Role:  llms.ChatMessageTypeHuman,
 			Parts: []llms.ContentPart{llms.TextPart("现在几点了？")},
@@ -341,7 +341,7 @@ func TestOpenAICompatibleModelLogsRawStreamingHTTPOnDecodeError(t *testing.T) {
 		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(logDir, "test-session-1")),
 	)
 	_, err := model.GenerateContent(
-		context.Background(),
+		contextWithRawHTTPLog(context.Background()),
 		[]llms.MessageContent{{
 			Role:  llms.ChatMessageTypeHuman,
 			Parts: []llms.ContentPart{llms.TextPart("stream please")},
@@ -405,7 +405,7 @@ func TestOpenAICompatibleModelLogsResponseOnTransportError(t *testing.T) {
 		client,
 		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(logDir, "test-session-1")),
 	)
-	_, err := model.GenerateContent(context.Background(), []llms.MessageContent{{
+	_, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
 		Role:  llms.ChatMessageTypeHuman,
 		Parts: []llms.ContentPart{llms.TextPart("hello")},
 	}})
@@ -430,6 +430,40 @@ func TestOpenAICompatibleModelLogsResponseOnTransportError(t *testing.T) {
 	assertRawHTTPLogIsValidJSONL(t, logText)
 }
 
+func TestOpenAICompatibleModelSkipsRawHTTPLogWithoutContextMarker(t *testing.T) {
+	// Background tasks (summarization, profile rebuilds, skill merge) share the
+	// model and logger but call with a plain context. Those calls must not be
+	// logged, so their requests don't interleave with the main loop's entries.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	logDir := t.TempDir()
+	model := newOpenAICompatibleModel(
+		server.URL,
+		"test-model",
+		"",
+		server.Client(),
+		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(logDir, "test-session-1")),
+	)
+	// Plain context, no contextWithRawHTTPLog marker.
+	_, err := model.GenerateContent(context.Background(), []llms.MessageContent{{
+		Role:  llms.ChatMessageTypeHuman,
+		Parts: []llms.ContentPart{llms.TextPart("hello")},
+	}})
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	if _, statErr := os.Stat(rawHTTPLogPath(logDir)); statErr == nil {
+		t.Fatalf("raw HTTP log was written for a call without the context marker:\n%s", readRawHTTPLog(t, logDir))
+	} else if !os.IsNotExist(statErr) {
+		t.Fatalf("unexpected error stating log path: %v", statErr)
+	}
+}
+
 func TestModelManagerEnablesRawHTTPLoggingFromModelConfig(t *testing.T) {
 	rawResponse := `{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -449,7 +483,7 @@ func TestModelManagerEnablesRawHTTPLoggingFromModelConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
-	_, err = model.GenerateContent(context.Background(), []llms.MessageContent{{
+	_, err = model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
 		Role:  llms.ChatMessageTypeHuman,
 		Parts: []llms.ContentPart{llms.TextPart("hello")},
 	}})
@@ -497,7 +531,7 @@ func TestModelManagerEnablesRawHTTPLoggingFromDefaultConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
-	_, err = model.GenerateContent(context.Background(), []llms.MessageContent{{
+	_, err = model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
 		Role:  llms.ChatMessageTypeHuman,
 		Parts: []llms.ContentPart{llms.TextPart("hello")},
 	}})
@@ -544,7 +578,7 @@ func TestModelManagerDoesNotLogRawHTTPWhenDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
-	_, err = model.GenerateContent(context.Background(), []llms.MessageContent{{
+	_, err = model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
 		Role:  llms.ChatMessageTypeHuman,
 		Parts: []llms.ContentPart{llms.TextPart("hello")},
 	}})
@@ -568,7 +602,7 @@ func TestOpenAICompatibleModelStreamsToolCalls(t *testing.T) {
 
 	model := newOpenAICompatibleModel(server.URL, "test-model", "", server.Client())
 	resp, err := model.GenerateContent(
-		context.Background(),
+		contextWithRawHTTPLog(context.Background()),
 		[]llms.MessageContent{{
 			Role:  llms.ChatMessageTypeHuman,
 			Parts: []llms.ContentPart{llms.TextPart("say hello")},
@@ -609,7 +643,7 @@ func TestOpenAICompatibleModelMergesSystemMessages(t *testing.T) {
 	defer server.Close()
 
 	model := newOpenAICompatibleModel(server.URL, "test-model", "", server.Client())
-	_, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+	_, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{
 		{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextPart("System A")}},
 		{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextPart("System B")}},
 		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("hello")}},
@@ -637,7 +671,7 @@ func TestOpenAICompatibleModelIncludesUsageInGenerationInfo(t *testing.T) {
 	defer server.Close()
 
 	model := newOpenAICompatibleModel(server.URL, "test-model", "", server.Client())
-	resp, err := model.GenerateContent(context.Background(), []llms.MessageContent{{
+	resp, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
 		Role:  llms.ChatMessageTypeHuman,
 		Parts: []llms.ContentPart{llms.TextPart("hello")},
 	}})
@@ -758,7 +792,7 @@ func TestModelManagerOpenRouterRetriesEOFInModelCall(t *testing.T) {
 		t.Fatalf("Get model: %v", err)
 	}
 
-	resp, err := model.GenerateContent(context.Background(), []llms.MessageContent{{
+	resp, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
 		Role:  llms.ChatMessageTypeHuman,
 		Parts: []llms.ContentPart{llms.TextPart("hello")},
 	}})

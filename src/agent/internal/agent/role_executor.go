@@ -1076,6 +1076,11 @@ func (e *roleCollaborativeExecutor) generateRoleContent(ctx context.Context, rol
 	callCtx, cancel := context.WithTimeout(ctx, roleModelCallTimeout)
 	defer cancel()
 	callCtx = contextWithTelemetryRole(callCtx, role)
+	// Opt this call into raw HTTP logging. Only the main conversation loop
+	// flows through here; background tasks (summarization, profile rebuilds,
+	// skill merge) share the same model and logger but stay unlogged so their
+	// requests don't interleave with the main loop in the shared log file.
+	callCtx = contextWithRawHTTPLog(callCtx)
 	messages = e.guardMessagesWithinContextWindow(messages, options)
 	res, err := e.Model.GenerateContent(callCtx, messages, options...)
 	if errors.Is(err, context.DeadlineExceeded) {
