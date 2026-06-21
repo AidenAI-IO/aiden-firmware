@@ -130,6 +130,13 @@ func (m memoryManagerSessionManager) handleSessionBoundary(input string) session
 	telemetry.Reason = reason
 
 	if boundary != BoundaryNew || len(events) == 0 {
+		// No rotation happens here (either a "continue" decision, or "new" with
+		// no prior events to archive). Log at Debug so the decision and its
+		// reason are observable on every turn without spamming Info — otherwise
+		// a wrongly-kept session is silent and only diagnosable by code archaeology.
+		if m.memories.logger != nil {
+			m.memories.logger.Debug("[memory] session boundary: decision=%s reason=%s (no rotation)", boundary, reason)
+		}
 		return telemetry
 	}
 

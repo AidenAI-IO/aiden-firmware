@@ -163,6 +163,24 @@ func TestClassifyTurnBoundary_SmallSessionContinuesUnrelatedMidGap(t *testing.T)
 	}
 }
 
+func TestClassifyTurnBoundary_SmallSessionContinuesNeutralMidGapWithoutEpisode(t *testing.T) {
+	// Regression guard for removing HasActive: the small-session bias is an
+	// independent continue path. A mid-range neutral follow-up (no marker, no
+	// action verb) in a small session, with no running/finished episode signal,
+	// must still continue purely on the small-session floor.
+	cfg := DefaultBoundaryConfig()
+	now := time.Now()
+	prev := eventsAt(now.Add(-8*time.Minute), cfg.SmallSessionEventThreshold, "user_input", "查一下今天天气")
+
+	boundary, reason := ClassifyTurnBoundary(prev, "你有什么爱好？", now, cfg, BoundaryEpisodeContext{})
+	if boundary != BoundaryContinue {
+		t.Fatalf("small session + neutral mid-range input should continue, got %q (reason=%s)", boundary, reason)
+	}
+	if reason != BoundaryReasonSmallSession {
+		t.Fatalf("expected reason %q, got %q", BoundaryReasonSmallSession, reason)
+	}
+}
+
 func TestClassifyTurnBoundary_RunningEpisodeBiasesContinue(t *testing.T) {
 	// Mid-range gap + neutral input + running episode → continue.
 	// Same input + no episode → new (default bias).
