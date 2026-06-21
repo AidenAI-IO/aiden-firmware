@@ -454,9 +454,33 @@ def _render_report_html(manifest: dict, result: OptimizationResult, original_ski
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>SkillOpt Report</title>
 <style>
+:root{{--bg:#f6f7fb;--surface:#fbfcff;--fg:#273142;--muted:#475569;--border:#e6eaf2;--accent:#2563eb;--font-mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}}
 body{{font-family:system-ui,-apple-system,sans-serif;background:#f6f7fb;color:#273142;margin:0;padding:28px;max-width:1100px}}
 .card{{background:#fbfcff;border:1px solid #e6eaf2;border-radius:14px;padding:18px;margin:0 0 16px}}
 h1{{font-size:24px;margin:0 0 8px}} p{{color:#475569}} table{{width:100%;border-collapse:collapse;font-size:13px}} td,th{{border-bottom:1px solid #edf0f6;padding:8px;text-align:left;vertical-align:top}} pre{{background:#111827;color:#d1fae5;border-radius:12px;padding:14px;overflow:auto;font-size:12px;line-height:1.5}} code{{background:#eef2ff;border-radius:6px;padding:2px 6px}} a{{color:#2563eb}}
+.artifact-link{{font-weight:650;text-decoration:none}}
+.artifact-link:hover{{text-decoration:underline}}
+.drawer-backdrop{{position:fixed;inset:0;z-index:40;background:color-mix(in oklch,var(--fg) 18%,transparent);opacity:0;pointer-events:none;transition:opacity 180ms ease}}
+.drawer{{position:fixed;top:0;right:0;bottom:0;z-index:50;width:min(720px,100vw);background:var(--surface);border-left:1px solid var(--border);box-shadow:-24px 0 80px color-mix(in oklch,var(--fg) 10%,transparent);transform:translateX(100%);transition:transform 220ms ease;display:flex;flex-direction:column}}
+body.open .drawer-backdrop{{opacity:1;pointer-events:auto}}
+body.open .drawer{{transform:translateX(0)}}
+.drawer-top{{padding:18px;border-bottom:1px solid var(--border);background:linear-gradient(to bottom,color-mix(in oklch,var(--bg) 72%,white),var(--surface));flex-shrink:0}}
+.drawer-top h2{{font-size:18px;letter-spacing:-0.02em;margin:0 42px 8px 0}}
+.drawer-chips{{display:flex;flex-wrap:wrap;gap:6px}}
+.chip{{display:inline-flex;align-items:center;height:24px;padding:0 8px;border-radius:999px;border:1px solid var(--border);background:var(--surface);color:var(--muted);font-size:11px}}
+.close-btn{{position:absolute;top:16px;right:16px;width:30px;height:30px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--fg);font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center}}
+.drawer-body{{flex:1;min-height:0;overflow-y:scroll;-webkit-overflow-scrolling:touch;padding:16px}}
+.drawer-body>.block{{margin-bottom:12px}}
+.drawer-body>.block:last-child{{margin-bottom:0}}
+.block{{border:1px solid var(--border);border-radius:12px;overflow:hidden;background:var(--surface)}}
+.block-head{{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border-bottom:1px solid var(--border);background:color-mix(in oklch,var(--bg) 72%,white)}}
+.block-head strong{{font-size:11px;letter-spacing:0.04em;text-transform:uppercase}}
+.block-head span{{color:var(--muted);font-family:var(--font-mono);font-size:10px}}
+.block-body{{padding:12px 14px;font-size:13px;line-height:1.6}}
+pre.block-body{{margin:0;white-space:pre-wrap;word-break:break-word;font-family:var(--font-mono);font-size:12px;line-height:1.65;background:var(--surface);color:var(--fg);border-radius:0}}
+.error-block{{border-color:color-mix(in oklch,oklch(60% 0.18 28) 28%,var(--border))}}
+.error-block .block-head{{background:color-mix(in oklch,oklch(60% 0.18 28) 7%,white);border-bottom-color:color-mix(in oklch,oklch(60% 0.18 28) 20%,var(--border))}}
+@media (max-width:768px){{.drawer{{width:100vw}}body{{padding:18px}}}}
 </style></head><body>
 <h1>SkillOpt Report</h1>
 <div class="card"><p><strong>Skill:</strong> {skill}</p><p><strong>Train:</strong> {train_suite}</p><p><strong>Verification:</strong> {validation_suite}</p><p><strong>Initial score:</strong> {result.initial_score:.3f} <strong>Best score:</strong> {result.best_score:.3f}</p><p><strong>Stop reason:</strong> {stop_reason}</p><p><strong>Skill size:</strong> {original_len} lines to {best_len} lines</p></div>
@@ -465,6 +489,7 @@ h1{{font-size:24px;margin:0 0 8px}} p{{color:#475569}} table{{width:100%;border-
 <div class="card"><h2>Edits</h2><table><thead><tr><th>Step</th><th>Status</th><th>Reasoning</th><th>Edits</th></tr></thead><tbody>{edit_rows}</tbody></table></div>
 <div class="card"><h2>Artifacts</h2><table><thead><tr><th>Name</th><th>Path</th></tr></thead><tbody>{artifact_rows}</tbody></table></div>
 <div class="card"><h2>Diff</h2><pre>{diff}</pre></div>
+{_artifact_drawer_markup()}
 </body></html>"""
 
 
@@ -572,11 +597,18 @@ def _render_artifact_rows(manifest: dict) -> str:
     run_id = str(manifest.get("run_id") or "")
     for name, path in (manifest.get("artifacts") or {}).items():
         href = _report_artifact_href(run_id, str(path))
+        name_html = html.escape(str(name))
         path_html = html.escape(str(path))
-        cell = f'<a href="{html.escape(href)}">{path_html}</a>' if href else f"<code>{path_html}</code>"
+        href_html = html.escape(href)
+        cell = (
+            f'<a class="artifact-link" href="{href_html}" data-artifact-name="{name_html}" '
+            f'data-artifact-url="{href_html}">{path_html}</a>'
+            if href
+            else f"<code>{path_html}</code>"
+        )
         rows.append(
             "<tr>"
-            f"<td>{html.escape(str(name))}</td>"
+            f"<td>{name_html}</td>"
             f"<td>{cell}</td>"
             "</tr>"
         )
@@ -595,6 +627,61 @@ def _report_artifact_href(run_id: str, path: str) -> str:
     if _validate_run_id(run_id) or not _valid_safe_relative_label(path):
         return ""
     return "/benchmark/report/" + quote(run_id, safe="") + "/" + "/".join(quote(part, safe="") for part in parts)
+
+
+def _artifact_drawer_markup() -> str:
+    return """
+<div class="drawer-backdrop" id="artifactBackdrop"></div>
+<aside class="drawer" id="artifactDrawer" aria-label="Artifact preview">
+  <div class="drawer-top" style="position:relative">
+    <h2 id="artifactTitle">Artifact</h2>
+    <div class="drawer-chips" id="artifactChips"></div>
+    <button class="close-btn" id="artifactCloseBtn" type="button" aria-label="Close artifact preview">&times;</button>
+  </div>
+  <div class="drawer-body" id="artifactBody"></div>
+</aside>
+<script>
+const artifactBackdrop = document.getElementById("artifactBackdrop");
+const artifactCloseBtn = document.getElementById("artifactCloseBtn");
+const artifactBody = document.getElementById("artifactBody");
+const artifactTitle = document.getElementById("artifactTitle");
+const artifactChips = document.getElementById("artifactChips");
+function esc(s) { var d = document.createElement("div"); d.textContent = s || ""; return d.innerHTML; }
+function closeArtifactDrawer() { document.body.classList.remove("open"); }
+function setArtifactDrawer(name, url, content, isError) {
+  artifactTitle.textContent = name;
+  artifactChips.innerHTML = '<span class="chip">artifact</span><span class="chip">' + esc(url.split('/').pop()) + '</span>';
+  var blockClass = isError ? 'block error-block' : 'block';
+  var label = isError ? 'load failed' : 'content';
+  artifactBody.innerHTML = '<div class="' + blockClass + '"><div class="block-head"><strong>' + esc(name) + '</strong><span>' + label + '</span></div><pre class="block-body">' + esc(content) + '</pre></div>' +
+    '<div class="block"><div class="block-head"><strong>Raw file</strong><span>fallback</span></div><div class="block-body"><a href="' + esc(url) + '">Open raw file</a></div></div>';
+}
+async function openArtifactDrawer(event) {
+  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+  event.preventDefault();
+  var link = event.currentTarget;
+  var url = link.dataset.artifactUrl || link.href;
+  var name = link.dataset.artifactName || link.textContent || 'artifact';
+  artifactTitle.textContent = name;
+  artifactChips.innerHTML = '<span class="chip">artifact</span><span class="chip">loading</span>';
+  artifactBody.innerHTML = '<div class="block"><div class="block-head"><strong>Loading</strong><span>fetch</span></div><div class="block-body">Loading artifact content...</div></div>';
+  document.body.classList.add("open");
+  try {
+    var response = await fetch(url);
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    setArtifactDrawer(name, url, await response.text(), false);
+  } catch (err) {
+    setArtifactDrawer(name, url, 'Could not load artifact: ' + (err && err.message ? err.message : String(err)), true);
+  }
+}
+document.querySelectorAll("[data-artifact-url]").forEach(function(link) {
+  link.addEventListener("click", openArtifactDrawer);
+});
+artifactBackdrop.addEventListener("click", closeArtifactDrawer);
+artifactCloseBtn.addEventListener("click", closeArtifactDrawer);
+window.addEventListener("keydown", function(event) { if (event.key === "Escape") closeArtifactDrawer(); });
+</script>
+"""
 
 
 if __name__ == "__main__":

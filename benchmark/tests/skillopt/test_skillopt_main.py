@@ -272,6 +272,11 @@ def test_cli_writes_aggregated_skillopt_summary_report(monkeypatch, tmp_path: Pa
     assert 'href="/benchmark/report/skillopt-summary-run/best_skill.md"' in report
     assert 'href="/benchmark/report/skillopt-summary-run/diff.patch"' in report
     assert 'href="/benchmark/report/skillopt-summary-run/result.json"' in report
+    assert 'class="artifact-link"' in report
+    assert 'data-artifact-url="/benchmark/report/skillopt-summary-run/best_skill.md"' in report
+    assert 'drawer-backdrop' in report
+    assert 'class="drawer"' in report
+    assert "function openArtifactDrawer" in report
     assert "/benchmark/report/skillopt-summary-run-step_01_train" in report
 
 
