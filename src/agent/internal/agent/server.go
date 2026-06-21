@@ -1569,6 +1569,20 @@ func (w *finalStreamFanoutWriter) ResetStreamState() {
 	w.mu.Unlock()
 }
 
+// ResetBuffer forwards a buffer reset to every fanned-out writer that supports
+// it (e.g. the TTS stream writer), so residual buffered speech does not leak
+// across turns on the streaming chat path.
+func (w *finalStreamFanoutWriter) ResetBuffer() {
+	if w == nil {
+		return
+	}
+	for _, writer := range w.writers {
+		if resetter, ok := writer.(ttsBufferResetter); ok {
+			resetter.ResetBuffer()
+		}
+	}
+}
+
 func (w *finalStreamFanoutWriter) StreamEmitted() bool {
 	if w == nil {
 		return false
