@@ -33,6 +33,15 @@ type PlaybackStartResult struct {
 	SessionID uint64 `json:"session_id"`
 }
 
+type audioStatusError struct {
+	op     string
+	status string
+}
+
+func (e *audioStatusError) Error() string {
+	return fmt.Sprintf("%s failed: %s", e.op, e.status)
+}
+
 // AudioHealthResult contains audio service health status
 type AudioHealthResult struct {
 	RecordingActive  bool   `json:"recording_active"`
@@ -370,7 +379,7 @@ func (c *AudioServiceClient) StartPlayback(format AudioFormat) (*PlaybackStartRe
 	}
 
 	if resp.Status != "OK" {
-		return nil, fmt.Errorf("start_playback failed: %s", resp.Status)
+		return nil, &audioStatusError{op: "start_playback", status: resp.Status}
 	}
 
 	return &PlaybackStartResult{SessionID: uint64(resp.SessionID)}, nil

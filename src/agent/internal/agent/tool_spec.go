@@ -24,6 +24,7 @@ type ToolSpec struct {
 	ExampleInput string
 	HTTPExposed  bool
 	AgentExposed bool
+	AgentRoles   []RoleName
 }
 
 type ToolSpecs struct {
@@ -58,6 +59,7 @@ type toolSpecMetadata struct {
 	ExampleInput string
 	HTTPExposed  *bool
 	AgentExposed *bool
+	AgentRoles   []RoleName
 }
 
 var builtInToolSpecMetadata = map[string]toolSpecMetadata{
@@ -70,6 +72,11 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		Category:     "system",
 		InputMode:    toolInputModeText,
 		ExampleInput: `{"timezone":"Asia/Shanghai"}`,
+	},
+	toolWaitForWakeup: {
+		Category:     "system",
+		InputMode:    toolInputModeJSON,
+		ExampleInput: `{"reason":"user asked me to wait for wakeup"}`,
 	},
 	"inspect_episode": {
 		Category:     "memory",
@@ -125,6 +132,7 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		Category:     "memory",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"type":"procedure","title":"Login flow","content":"...","tags":["login"]}`,
+		AgentRoles:   []RoleName{RolePlanner},
 	},
 	"forget_memory": {
 		Category:     "memory",
@@ -288,7 +296,23 @@ func NewToolSpec(tool langtools.Tool) ToolSpec {
 		ExampleInput: meta.ExampleInput,
 		HTTPExposed:  httpExposed,
 		AgentExposed: agentExposed,
+		AgentRoles:   append([]RoleName{}, meta.AgentRoles...),
 	}
+}
+
+func (spec ToolSpec) AgentExposedToRole(role RoleName) bool {
+	if !spec.AgentExposed {
+		return false
+	}
+	if len(spec.AgentRoles) == 0 {
+		return true
+	}
+	for _, allowed := range spec.AgentRoles {
+		if strings.EqualFold(string(allowed), string(role)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *ToolSpecs) Lookup(name string) (ToolSpec, bool) {

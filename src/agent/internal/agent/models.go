@@ -40,6 +40,8 @@ type ModelManager struct {
 	providerSpecFetchStarted  bool
 	metadataHTTPClient        *http.Client
 	providerMetadataCachePath string
+	rawHTTPLogDir             string
+	sessionID                 string
 }
 
 type ModelManagerOption func(*ModelManager)
@@ -47,6 +49,12 @@ type ModelManagerOption func(*ModelManager)
 func WithProviderModelMetadataCachePath(path string) ModelManagerOption {
 	return func(m *ModelManager) {
 		m.providerMetadataCachePath = strings.TrimSpace(path)
+	}
+}
+
+func WithLLMRawHTTPLogDir(path string) ModelManagerOption {
+	return func(m *ModelManager) {
+		m.rawHTTPLogDir = strings.TrimSpace(path)
 	}
 }
 
@@ -58,6 +66,10 @@ func NewModelManager(config ModelConfig, proxy ProxyConfig, opts ...ModelManager
 		}
 	}
 	return m
+}
+
+func (m *ModelManager) SetSessionID(sessionID string) {
+	m.sessionID = sessionID
 }
 
 func (m *ModelManager) Get() (llms.Model, error) {
@@ -115,7 +127,7 @@ func (m *ModelManager) build(cfg ModelConfig) (llms.Model, error) {
 		if baseURL == "" {
 			baseURL = "https://api.openai.com/v1"
 		}
-		return newOpenAICompatibleModel(baseURL, cfg.Model, resolveToken(cfg), newRetryHTTPClient(m.proxy)), nil
+		return newOpenAICompatibleModel(baseURL, cfg.Model, resolveToken(cfg), newRetryHTTPClient(m.proxy), m.openAICompatibleOptions(cfg)...), nil
 	case "openrouter":
 		token := resolveToken(cfg)
 		if token == "" {
@@ -125,7 +137,7 @@ func (m *ModelManager) build(cfg ModelConfig) (llms.Model, error) {
 		if baseURL == "" {
 			baseURL = "https://openrouter.ai/api/v1"
 		}
-		return newOpenAICompatibleModel(baseURL, cfg.Model, token, newRetryHTTPClient(m.proxy)), nil
+		return newOpenAICompatibleModel(baseURL, cfg.Model, token, newRetryHTTPClient(m.proxy), m.openAICompatibleOptions(cfg)...), nil
 	case "ollama":
 		options := []ollama.Option{ollama.WithModel(cfg.Model), ollama.WithHTTPClient(newProxyHTTPClient(m.proxy))}
 		if cfg.BaseURL != "" {
@@ -136,6 +148,15 @@ func (m *ModelManager) build(cfg ModelConfig) (llms.Model, error) {
 		return fakellm.NewFakeLLM(cfg.Responses), nil
 	default:
 		return nil, fmt.Errorf("unsupported provider %q", cfg.Provider)
+	}
+}
+
+func (m *ModelManager) openAICompatibleOptions(cfg ModelConfig) []openAICompatibleModelOption {
+	if !cfg.LogRawHTTP || strings.TrimSpace(m.rawHTTPLogDir) == "" {
+		return nil
+	}
+	return []openAICompatibleModelOption{
+		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(m.rawHTTPLogDir, m.sessionID)),
 	}
 }
 

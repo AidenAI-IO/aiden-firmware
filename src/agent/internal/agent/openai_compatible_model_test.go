@@ -7,7 +7,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -99,6 +104,114 @@ func TestOpenAICompatibleModelParsesToolCalls(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleModelLogsRawHTTPWhenEnabled(t *testing.T) {
+	rawResponse := `{"choices":[{"message":{"content":"<think>\n需要查当前时间。\n</think>","tool_calls":[{"id":"call_1","type":"function","function":{"name":"current_time","arguments":"{\"timezone\":\"local\"}"}}]},"finish_reason":"tool_calls"}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(rawResponse))
+	}))
+	defer server.Close()
+
+	logDir := t.TempDir()
+	model := newOpenAICompatibleModel(
+		server.URL,
+		"test-model",
+		"",
+		server.Client(),
+		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(logDir, "test-session-1")),
+	)
+	_, err := model.GenerateContent(context.Background(), []llms.MessageContent{{
+		Role:  llms.ChatMessageTypeHuman,
+		Parts: []llms.ContentPart{llms.TextPart("现在几点了？")},
+	}})
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	logText := readRawHTTPLog(t, logDir)
+
+	// Parse JSONL and check for expected content
+	var foundResponse, foundRequest bool
+	lines := strings.Split(strings.TrimSpace(logText), "\n")
+	for _, line := range lines {
+		var entry map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		body, _ := entry["body"].(string)
+		if strings.Contains(body, "finish_reason") && strings.Contains(body, "tool_calls") {
+			foundResponse = true
+		}
+		if strings.Contains(body, "现在几点了") {
+			foundRequest = true
+		}
+	}
+
+	if !foundResponse {
+		t.Fatalf("raw HTTP log missing response:\n%s", logText)
+	}
+	if !foundRequest {
+		t.Fatalf("raw HTTP log missing request:\n%s", logText)
+	}
+	if !strings.Contains(logText, `"kind":"response"`) {
+		t.Fatalf("raw HTTP log missing response metadata:\n%s", logText)
+	}
+	if !strings.Contains(logText, `"kind":"request"`) {
+		t.Fatalf("raw HTTP log missing request record:\n%s", logText)
+	}
+	assertRawHTTPLogIsValidJSONL(t, logText)
+}
+
+func TestOpenAICompatibleModelRawHTTPLogUsesEffectiveRequestModel(t *testing.T) {
+	rawResponse := `{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(rawResponse))
+	}))
+	defer server.Close()
+
+	logDir := t.TempDir()
+	model := newOpenAICompatibleModel(
+		server.URL,
+		"configured-model",
+		"",
+		server.Client(),
+		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(logDir, "test-session-1")),
+	)
+	_, err := model.GenerateContent(
+		context.Background(),
+		[]llms.MessageContent{{
+			Role:  llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{llms.TextPart("hello")},
+		}},
+		llms.WithModel("override-model"),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	logText := readRawHTTPLog(t, logDir)
+
+	// Parse JSONL and check for model in request body
+	var foundModel bool
+	lines := strings.Split(strings.TrimSpace(logText), "\n")
+	for _, line := range lines {
+		var entry map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		body, _ := entry["body"].(string)
+		if strings.Contains(body, `"model":"override-model"`) {
+			foundModel = true
+			break
+		}
+	}
+
+	if !foundModel {
+		t.Fatalf("raw HTTP log should use effective model in request body:\n%s", logText)
+	}
+}
+
 func TestOpenAICompatibleModelStreamsContent(t *testing.T) {
 	var captured struct {
 		Stream bool `json:"stream"`
@@ -138,6 +251,249 @@ func TestOpenAICompatibleModelStreamsContent(t *testing.T) {
 	}
 	if len(chunks) != 2 || chunks[0] != "hello " || chunks[1] != "world" {
 		t.Fatalf("unexpected stream chunks: %#v", chunks)
+	}
+}
+
+func TestOpenAICompatibleModelLogsRawStreamingHTTPWhenEnabled(t *testing.T) {
+	firstEvent := `data: {"choices":[{"delta":{"content":"<think>\n"}}]}`
+	secondEvent := `data: {"choices":[{"delta":{"content":"需要查当前时间。\n</think>"},"finish_reason":"tool_calls"}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte(firstEvent + "\n\n"))
+		w.Write([]byte(secondEvent + "\n\n"))
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	logDir := t.TempDir()
+	model := newOpenAICompatibleModel(
+		server.URL,
+		"test-model",
+		"",
+		server.Client(),
+		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(logDir, "test-session-1")),
+	)
+	_, err := model.GenerateContent(
+		context.Background(),
+		[]llms.MessageContent{{
+			Role:  llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{llms.TextPart("现在几点了？")},
+		}},
+		llms.WithStreamingFunc(func(ctx context.Context, chunk []byte) error { return nil }),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	logText := readRawHTTPLog(t, logDir)
+
+	// Parse JSONL and check stream body contains expected events
+	var foundStreamResponse bool
+	var streamBody string
+	lines := strings.Split(strings.TrimSpace(logText), "\n")
+	for _, line := range lines {
+		var entry map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if entry["kind"] == "stream" {
+			streamBody, _ = entry["body"].(string)
+			foundStreamResponse = true
+			break
+		}
+	}
+
+	if !foundStreamResponse {
+		t.Fatalf("raw streaming HTTP log missing stream response:\n%s", logText)
+	}
+	// Check that stream body contains the SSE events (they are escaped in JSON)
+	if !strings.Contains(streamBody, firstEvent) {
+		t.Fatalf("raw streaming HTTP log missing first SSE event in body:\n%s", streamBody)
+	}
+	if !strings.Contains(streamBody, secondEvent) {
+		t.Fatalf("raw streaming HTTP log missing second SSE event in body:\n%s", streamBody)
+	}
+	if !strings.Contains(streamBody, "data: [DONE]") {
+		t.Fatalf("raw streaming HTTP log missing [DONE] marker in body:\n%s", streamBody)
+	}
+	if !strings.Contains(logText, `"kind":"stream"`) {
+		t.Fatalf("raw streaming HTTP log missing metadata:\n%s", logText)
+	}
+	assertRawHTTPLogIsValidJSONL(t, logText)
+}
+
+func TestOpenAICompatibleModelLogsRawStreamingHTTPOnDecodeError(t *testing.T) {
+	validEvent := `data: {"choices":[{"delta":{"content":"hello"}}]}`
+	malformedEvent := `data: {"choices":[`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte(validEvent + "\n\n"))
+		w.Write([]byte(malformedEvent + "\n\n"))
+	}))
+	defer server.Close()
+
+	logDir := t.TempDir()
+	model := newOpenAICompatibleModel(
+		server.URL,
+		"test-model",
+		"",
+		server.Client(),
+		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(logDir, "test-session-1")),
+	)
+	_, err := model.GenerateContent(
+		context.Background(),
+		[]llms.MessageContent{{
+			Role:  llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{llms.TextPart("stream please")},
+		}},
+		llms.WithStreamingFunc(func(ctx context.Context, chunk []byte) error { return nil }),
+	)
+	if err == nil || !strings.Contains(err.Error(), "decode stream event") {
+		t.Fatalf("GenerateContent() error = %v, want decode stream event", err)
+	}
+
+	logText := readRawHTTPLog(t, logDir)
+	var streamBody string
+	for _, line := range strings.Split(strings.TrimSpace(logText), "\n") {
+		var entry map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if entry["kind"] == "stream" {
+			streamBody, _ = entry["body"].(string)
+			break
+		}
+	}
+	if !strings.Contains(streamBody, validEvent) || !strings.Contains(streamBody, malformedEvent) {
+		t.Fatalf("raw streaming HTTP log missing failed SSE events:\nlog=%s\nstream=%s", logText, streamBody)
+	}
+	assertRawHTTPLogIsValidJSONL(t, logText)
+}
+
+func TestModelManagerEnablesRawHTTPLoggingFromModelConfig(t *testing.T) {
+	rawResponse := `{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(rawResponse))
+	}))
+	defer server.Close()
+
+	logDir := t.TempDir()
+	manager := NewModelManager(ModelConfig{
+		Provider:   "openai",
+		Model:      "test-model",
+		BaseURL:    server.URL,
+		LogRawHTTP: true,
+	}, ProxyConfig{}, WithLLMRawHTTPLogDir(logDir))
+	model, err := manager.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	_, err = model.GenerateContent(context.Background(), []llms.MessageContent{{
+		Role:  llms.ChatMessageTypeHuman,
+		Parts: []llms.ContentPart{llms.TextPart("hello")},
+	}})
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	logText := readRawHTTPLog(t, logDir)
+
+	// Parse JSONL and check for expected content
+	var foundResponse bool
+	lines := strings.Split(strings.TrimSpace(logText), "\n")
+	for _, line := range lines {
+		var entry map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		body, _ := entry["body"].(string)
+		if strings.Contains(body, "finish_reason") && strings.Contains(body, "ok") {
+			foundResponse = true
+			break
+		}
+	}
+
+	if !foundResponse {
+		t.Fatalf("raw HTTP log missing response from model manager config:\n%s", logText)
+	}
+}
+
+func TestModelManagerEnablesRawHTTPLoggingFromDefaultConfig(t *testing.T) {
+	rawResponse := `{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(rawResponse))
+	}))
+	defer server.Close()
+
+	logDir := t.TempDir()
+	cfg := DefaultConfig().Model
+	cfg.Provider = "openai"
+	cfg.Model = "test-model"
+	cfg.BaseURL = server.URL
+	manager := NewModelManager(cfg, ProxyConfig{}, WithLLMRawHTTPLogDir(logDir))
+	model, err := manager.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	_, err = model.GenerateContent(context.Background(), []llms.MessageContent{{
+		Role:  llms.ChatMessageTypeHuman,
+		Parts: []llms.ContentPart{llms.TextPart("hello")},
+	}})
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	logText := readRawHTTPLog(t, logDir)
+
+	// Parse JSONL and check for expected content
+	var foundResponse bool
+	lines := strings.Split(strings.TrimSpace(logText), "\n")
+	for _, line := range lines {
+		var entry map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		body, _ := entry["body"].(string)
+		if strings.Contains(body, "finish_reason") && strings.Contains(body, "ok") {
+			foundResponse = true
+			break
+		}
+	}
+
+	if !foundResponse {
+		t.Fatalf("raw HTTP log missing response from default config:\n%s", logText)
+	}
+}
+
+func TestModelManagerDoesNotLogRawHTTPWhenDisabled(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	logDir := t.TempDir()
+	manager := NewModelManager(ModelConfig{
+		Provider: "openai",
+		Model:    "test-model",
+		BaseURL:  server.URL,
+	}, ProxyConfig{}, WithLLMRawHTTPLogDir(logDir))
+	model, err := manager.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	_, err = model.GenerateContent(context.Background(), []llms.MessageContent{{
+		Role:  llms.ChatMessageTypeHuman,
+		Parts: []llms.ContentPart{llms.TextPart("hello")},
+	}})
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	if _, err := os.Stat(rawHTTPLogPath(logDir)); !os.IsNotExist(err) {
+		t.Fatalf("raw HTTP log should not exist when disabled, err=%v", err)
 	}
 }
 
@@ -233,6 +589,78 @@ func TestOpenAICompatibleModelIncludesUsageInGenerationInfo(t *testing.T) {
 	if got["prompt_tokens"] != 11 || got["completion_tokens"] != 7 || got["total_tokens"] != 18 {
 		t.Fatalf("unexpected generation info: %#v", got)
 	}
+}
+
+func readRawHTTPLog(t *testing.T, logDir string) string {
+	t.Helper()
+	data, err := os.ReadFile(rawHTTPLogPath(logDir))
+	if err != nil {
+		t.Fatalf("read raw HTTP log: %v", err)
+	}
+	return string(data)
+}
+
+func rawHTTPLogPath(logDir string) string {
+	matches, _ := filepath.Glob(filepath.Join(logDir, "llm-http-*.log"))
+	sort.Strings(matches)
+	if len(matches) > 0 {
+		return matches[len(matches)-1]
+	}
+	return filepath.Join(logDir, "llm-http-"+time.Now().Format("20060102")+".log")
+}
+
+func assertRawHTTPLogIsValidJSONL(t *testing.T, logText string) {
+	t.Helper()
+	trimmed := strings.TrimSpace(logText)
+	if trimmed == "" {
+		t.Fatal("raw HTTP log is empty")
+	}
+	lines := strings.Split(trimmed, "\n")
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var entry map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("line %d is not valid JSON: %v\nline: %s", i+1, err, line)
+		}
+		// Check required fields
+		if _, ok := entry["ts"]; !ok {
+			t.Fatalf("line %d missing 'ts' field: %s", i+1, line)
+		}
+		if _, ok := entry["kind"]; !ok {
+			t.Fatalf("line %d missing 'kind' field: %s", i+1, line)
+		}
+		if _, ok := entry["status"]; !ok {
+			t.Fatalf("line %d missing 'status' field: %s", i+1, line)
+		}
+		if _, ok := entry["body"]; !ok {
+			t.Fatalf("line %d missing 'body' field: %s", i+1, line)
+		}
+		// Validate timestamp format
+		ts, ok := entry["ts"].(string)
+		if !ok {
+			t.Fatalf("line %d 'ts' is not a string: %s", i+1, line)
+		}
+		if _, err := time.Parse("15:04:05", ts); err != nil {
+			t.Fatalf("line %d 'ts' format invalid (want HH:MM:SS): %v", i+1, err)
+		}
+	}
+}
+
+func findLogLineContaining(logText, substring string) bool {
+	lines := strings.Split(logText, "\n")
+	for _, line := range lines {
+		if strings.Contains(line, substring) {
+			return true
+		}
+	}
+	return false
+}
+
+func assertEveryLineIsCompleteRecord(t *testing.T, logText string) {
+	// This is now covered by assertRawHTTPLogIsValidJSONL
+	t.Helper()
 }
 
 func TestModelManagerOpenRouterRetriesEOFInModelCall(t *testing.T) {

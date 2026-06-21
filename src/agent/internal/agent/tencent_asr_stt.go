@@ -15,10 +15,10 @@ import (
 )
 
 const (
-	tencentASRHost    = "asr.tencentcloudapi.com"
-	tencentASRService = "asr"
-	tencentASRAction   = "SentenceRecognition"
-	tencentASRVersion  = "2019-06-14"
+	tencentASRHost      = "asr.tencentcloudapi.com"
+	tencentASRService   = "asr"
+	tencentASRAction    = "SentenceRecognition"
+	tencentASRVersion   = "2019-06-14"
 	tencentASRAlgorithm = "TC3-HMAC-SHA256"
 )
 
@@ -35,10 +35,10 @@ type TencentASRSTT struct {
 // NewTencentASRSTT creates a Tencent ASR STT client.
 func NewTencentASRSTT(secretID, secretKey, region, engineModelType string, httpClients ...*http.Client) *TencentASRSTT {
 	if region == "" {
-		region = "ap-guangzhou"
+		region = defaultTencentASRRegion
 	}
 	if engineModelType == "" {
-		engineModelType = "16k_zh"
+		engineModelType = defaultTencentASREngineModel
 	}
 	httpClient := http.DefaultClient
 	if len(httpClients) > 0 && httpClients[0] != nil {

@@ -18,6 +18,8 @@ const (
 	phaseExecution loopPhase = "execution"
 )
 
+const defaultCompletionCriterion = "Satisfy the current user request."
+
 type plannerTurnKind int
 
 const (
@@ -26,16 +28,21 @@ const (
 	plannerTurnEnterPlan
 	plannerTurnUseSimpleMode
 	plannerTurnCommitPlan
+	plannerTurnSetTodo
 	plannerTurnCancelPlan
 	plannerTurnInvalidMeta
+	plannerTurnSleep
+	plannerTurnSteer
 )
 
 type plannerTurnResult struct {
-	Kind            plannerTurnKind
-	Answer          string
-	Step            *schema.AgentStep
-	CommittedPlan   plannerDecision
-	InvalidMetaStep *schema.AgentStep
+	Kind               plannerTurnKind
+	Answer             string
+	Step               *schema.AgentStep
+	CommittedPlan      plannerDecision
+	Todo               TodoState
+	TodoSpeechEligible bool
+	InvalidMetaStep    *schema.AgentStep
 }
 
 type routeMode string
@@ -49,6 +56,8 @@ const (
 type routeDecision struct {
 	Mode        routeMode `json:"mode"`
 	FinalAnswer string    `json:"final_answer,omitempty"`
+	Speech      string    `json:"speech,omitempty"`
+	Text        string    `json:"text,omitempty"`
 	Reason      string    `json:"reason,omitempty"`
 	Confidence  float64   `json:"confidence,omitempty"`
 }
@@ -60,6 +69,8 @@ const (
 	executorTurnFinishStep
 	executorTurnAbortStep
 	executorTurnInvalidMeta
+	executorTurnSleep
+	executorTurnSteer
 )
 
 type executorTurnResult struct {
@@ -99,11 +110,45 @@ func toolNameEqual(got, want string) bool {
 	return strings.EqualFold(strings.TrimSpace(got), strings.TrimSpace(want))
 }
 
+func isWaitForWakeupTool(name string) bool {
+	return toolNameEqual(name, toolWaitForWakeup)
+}
+
+func waitForWakeupFinalAnswer(step *schema.AgentStep) string {
+	if step != nil {
+		if content := toolContentFromAction(step.Action); content != "" {
+			return content
+		}
+		if message := toolObservationMessage(step.Observation); message != "" {
+			return message
+		}
+	}
+	return "I will wait for the next wakeup."
+}
+
+func toolObservationMessage(observation string) string {
+	observation = strings.TrimSpace(observation)
+	if observation == "" || !strings.HasPrefix(observation, "{") {
+		return ""
+	}
+	var payload struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(observation), &payload); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(payload.Message)
+}
+
 func (s roleLoopState) canAcceptPlannerFinal(answer string) bool {
 	if s.Phase != phasePlan || s.PlanCommitRequired || strings.TrimSpace(answer) == "" {
 		return false
 	}
 	return s.PlanCommitted || s.PlanExhausted || len(s.PlanStepResults) > 0 || len(s.VerifierResults) > 0
+}
+
+func (s roleLoopState) isFinalCommittedPlanStep() bool {
+	return s.PlanCommitted && len(s.Plan) > 0 && s.PlanStepIndex >= len(s.Plan)-1
 }
 
 func (s *roleLoopState) beginStepExecution() {
@@ -224,7 +269,7 @@ func parseCommitPlanInput(raw string) (plannerDecision, error) {
 		decision.Objective = decision.Plan[0]
 	}
 	if len(decision.CompletionCriteria) == 0 {
-		decision.CompletionCriteria = []string{"Satisfy every explicit requirement in the original user request."}
+		decision.CompletionCriteria = []string{defaultCompletionCriterion}
 	}
 	return decision, nil
 }
@@ -355,6 +400,13 @@ func parseOptionalReasonInput(raw string) string {
 func normalizeRouteDecision(decision routeDecision, request string) routeDecision {
 	decision.Mode = normalizeRouteMode(decision.Mode)
 	decision.FinalAnswer = strings.TrimSpace(decision.FinalAnswer)
+	decision.Speech = strings.TrimSpace(decision.Speech)
+	decision.Text = strings.TrimSpace(decision.Text)
+	if decision.Text != "" && (decision.Mode == "" || decision.Mode == routeModeDirectAnswer) {
+		if decision.FinalAnswer == "" {
+			decision.FinalAnswer = decision.Text
+		}
+	}
 	decision.Reason = strings.TrimSpace(decision.Reason)
 	if decision.Confidence < 0 {
 		decision.Confidence = 0
@@ -432,11 +484,11 @@ func routeShouldUsePlan(request string) bool {
 
 func plannerTaskForPhase(phase loopPhase, state roleLoopState, forceSimpleLoop bool) string {
 	if forceSimpleLoop {
-		return "Simple loop mode: plan-mode tools are disabled by configuration. Use available tools directly and return a final answer when the request is satisfied."
+		return "Single-agent simple loop mode: delegated plan mode is disabled by configuration. Use available tools directly and return a final answer when the request is satisfied. If the task becomes multi-step, use set_todo to maintain a visible todo list without switching modes."
 	}
 	switch phase {
 	case phaseDecision:
-		return "Route phase: decide the execution path before normal tools are exposed. Return only JSON: {\"mode\":\"direct_answer|simple|plan\",\"final_answer\":\"only for direct_answer\",\"reason\":\"brief rationale\",\"confidence\":0.0-1.0}. Use direct_answer only when the final user-facing answer is available now without tools. Use simple for ordinary one-pass execution such as direct tool use, straightforward arithmetic, or short comparisons. Use plan for tasks that need explicit planning, checkpoints, delegated execution, information gathering before acting, multiple independent stages, record aggregation, reconciliation, branching, or several required output facts. Examples: a single expression or comparing two expressions is simple; invoice reconciliation across stages and expense/category aggregation are plan."
+		return "Route phase: decide the execution path before normal tools are exposed. Return only JSON: {\"mode\":\"direct_answer|simple|plan\",\"final_answer\":\"plain text only for direct_answer\",\"reason\":\"brief rationale\",\"confidence\":0.0-1.0}. Voice interaction is the core use case, so keep direct answers brief and natural for TTS. Use direct_answer only when the final user-facing answer is available now without tools; leave final_answer empty for simple or plan. Use simple for ordinary one-pass execution such as direct tool use, straightforward arithmetic, or short comparisons. Use plan for tasks that need explicit planning, checkpoints, information gathering before acting, multiple independent stages, record aggregation, reconciliation, branching, or several required output facts. Examples: a single expression or comparing two expressions is simple; invoice reconciliation across stages and expense/category aggregation are plan."
 	case phasePlan:
 		task := "Plan mode: create or revise a structured delegated plan. You may use read-only information-gathering tools before committing if context is missing. Do not use execution, computation, or state-changing tools in plan mode. Call commit_plan to hand concrete steps to the executor, call cancel_plan only when planning should be abandoned, or return a final answer only when existing execution evidence already proves the task complete."
 		if state.PlanCommitRequired {
@@ -452,7 +504,7 @@ func plannerTaskForPhase(phase loopPhase, state roleLoopState, forceSimpleLoop b
 		}
 		return task
 	default:
-		return "Simple/default mode: the route phase selected ordinary execution. Use available tools directly as needed and return a final answer when the request is satisfied."
+		return "Single-agent default mode: use available tools directly as needed and return a final answer when the request is satisfied. If the task becomes multi-step, use set_todo to maintain a visible todo list without switching to delegated plan mode."
 	}
 }
 
@@ -463,14 +515,16 @@ func writeLoopMode(builder *strings.Builder, state roleLoopState) {
 	builder.WriteByte('\n')
 	if state.ForceSimpleLoop {
 		builder.WriteString("- force_simple_loop: true\n")
-		builder.WriteString("- plan mode tools are disabled; use available tools directly and return a final answer when done.\n")
+		builder.WriteString("- delegated plan mode tools are disabled; use available tools directly and return a final answer when done.\n")
+		builder.WriteString("- set_todo is available when this single-agent task needs explicit multi-step tracking.\n")
 		return
 	}
 	if state.Phase == phaseDecision {
 		builder.WriteString("- this is the upfront route decision before normal tool execution.\n")
 		builder.WriteString("- no tools are available in this phase.\n")
 		builder.WriteString("- return only JSON with mode direct_answer, simple, or plan.\n")
-		builder.WriteString("- direct_answer requires a final_answer value ready for the user.\n")
+		builder.WriteString("- direct_answer requires final_answer ready for the user as brief plain text suitable for TTS.\n")
+		builder.WriteString("- simple and plan must leave final_answer empty.\n")
 		builder.WriteString("- plan is required for explicit planning, checkpoints, information gathering before acting, multi-stage reconciliation, record aggregation, branching, or several required output facts.\n")
 	}
 	if state.Phase == phasePlan {
@@ -494,6 +548,7 @@ func writeLoopMode(builder *strings.Builder, state roleLoopState) {
 	if state.Phase == phaseDefault {
 		builder.WriteString("- final answers in default mode end the run directly without verifier.\n")
 		builder.WriteString("- commit_plan is not available in default mode.\n")
-		builder.WriteString("- this request was routed to simple/default mode; complete it directly without a delegated plan unless the user changes the task.\n")
+		builder.WriteString("- set_todo is available if this single-agent task needs explicit multi-step tracking.\n")
+		builder.WriteString("- complete directly without a delegated plan unless the user changes the task or the task needs explicit planning.\n")
 	}
 }

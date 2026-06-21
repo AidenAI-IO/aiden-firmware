@@ -1,32 +1,30 @@
 package agent
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
 
-	"github.com/tmc/langchaingo/callbacks"
-	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/llms"
-	"github.com/tmc/langchaingo/prompts"
 	"github.com/tmc/langchaingo/schema"
 	langtools "github.com/tmc/langchaingo/tools"
 )
 
 type FunctionAgent struct {
-	LLM               llms.Model
-	Prompt            prompts.FormatPrompter
 	Tools             []langtools.Tool
-	InputAttachments  []InputAttachment
 	OutputKey         string
-	CallbacksHandler  callbacks.Handler
 	ScreenshotPruning ScreenshotPruningConfig
 }
 
 type visualObservationTool interface {
 	ReturnsVisualObservation() bool
+}
+
+type visualScreenshotObservation struct {
+	Result     postActionScreenshotResult
+	ImageBytes []byte
+	MIMEType   string
 }
 
 type structuredInputTool interface {
@@ -64,104 +62,13 @@ func (c ScreenshotPruningConfig) PrunedCount(total int) int {
 }
 
 type toolActionLog struct {
-	Version         int    `json:"aiden_action_log_version"`
-	Message         string `json:"message"`
-	ToolDescription string `json:"tool_description,omitempty"`
+	Version     int    `json:"aiden_action_log_version"`
+	Message     string `json:"message"`
+	ToolContent string `json:"tool_content,omitempty"`
 }
 
 type toolInvocation struct {
-	Input       string
-	Description string
-}
-
-func NewFunctionAgent(
-	llm llms.Model,
-	tools []langtools.Tool,
-	systemMessage string,
-	extraMessages []prompts.MessageFormatter,
-	inputAttachments []InputAttachment,
-	callbackHandler callbacks.Handler,
-) *FunctionAgent {
-	messageFormatters := []prompts.MessageFormatter{
-		prompts.NewSystemMessagePromptTemplate(systemMessage, nil),
-	}
-	messageFormatters = append(messageFormatters, extraMessages...)
-
-	return &FunctionAgent{
-		LLM:               llm,
-		Prompt:            prompts.NewChatPromptTemplate(messageFormatters),
-		Tools:             tools,
-		InputAttachments:  append([]InputAttachment{}, inputAttachments...),
-		OutputKey:         "output",
-		CallbacksHandler:  callbackHandler,
-		ScreenshotPruning: ScreenshotPruningConfig{}.WithDefaults(),
-	}
-}
-
-func (a *FunctionAgent) Plan(
-	ctx context.Context,
-	intermediateSteps []schema.AgentStep,
-	inputs map[string]string,
-	options ...chains.ChainCallOption,
-) ([]schema.AgentAction, *schema.AgentFinish, error) {
-	fullInputs := make(map[string]any, len(inputs))
-	for key, value := range inputs {
-		fullInputs[key] = value
-	}
-
-	var stream func(ctx context.Context, chunk []byte) error
-	if a.CallbacksHandler != nil {
-		stream = func(ctx context.Context, chunk []byte) error {
-			a.CallbacksHandler.HandleStreamingFunc(ctx, chunk)
-			return nil
-		}
-	}
-
-	prompt, err := a.Prompt.FormatPrompt(fullInputs)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	messages := make([]llms.MessageContent, 0, len(prompt.Messages())+len(intermediateSteps)*3)
-	for _, msg := range prompt.Messages() {
-		messages = append(messages, chatMessageToContent(msg))
-	}
-	messages = append(messages, llms.MessageContent{
-		Role:  llms.ChatMessageTypeHuman,
-		Parts: buildUserMessageParts(inputs["input"], a.InputAttachments),
-	})
-	messages = append(messages, a.constructFunctionScratchPad(intermediateSteps)...)
-
-	llmOptions := []llms.CallOption{
-		llms.WithTools(a.toolsAsLLM()),
-		llms.WithStreamingFunc(stream),
-	}
-	llmOptions = append(llmOptions, chains.GetLLMCallOptions(options...)...)
-
-	result, err := a.LLM.GenerateContent(ctx, messages, llmOptions...)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return a.ParseOutput(result)
-}
-
-func (a *FunctionAgent) GetInputKeys() []string {
-	inputs := append([]string{}, a.Prompt.GetInputVariables()...)
-	for _, key := range inputs {
-		if key == "input" {
-			return inputs
-		}
-	}
-	return append(inputs, "input")
-}
-
-func (a *FunctionAgent) GetOutputKeys() []string {
-	return []string{a.OutputKey}
-}
-
-func (a *FunctionAgent) GetTools() []langtools.Tool {
-	return a.Tools
+	Input string
 }
 
 func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema.AgentAction, *schema.AgentFinish, error) {
@@ -172,6 +79,7 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 
 	if len(choice.ToolCalls) > 0 {
 		actions := make([]schema.AgentAction, 0, len(choice.ToolCalls))
+		contentConsumed := false
 		for _, toolCall := range choice.ToolCalls {
 			if toolCall.FunctionCall == nil {
 				continue
@@ -179,17 +87,21 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 			functionName := toolCall.FunctionCall.Name
 			toolInputStr := toolCall.FunctionCall.Arguments
 			invocation := extractToolInvocation(toolInputStr)
-			invocation.Description = toolCallSpeechText(choice.Content, invocation.Description)
+			toolCallContent := ""
+			if !contentConsumed {
+				toolCallContent = strings.TrimSpace(choice.Content)
+				contentConsumed = true
+			}
 
 			contentMsg := "\n"
-			if choice.Content != "" {
-				contentMsg = fmt.Sprintf("responded: %s\n", choice.Content)
+			if toolCallContent != "" {
+				contentMsg = fmt.Sprintf("responded: %s\n", toolCallContent)
 			}
 
 			actions = append(actions, schema.AgentAction{
 				Tool:      functionName,
 				ToolInput: invocation.Input,
-				Log:       formatToolActionLog(functionName, toolInputStr, invocation.Description, contentMsg),
+				Log:       formatToolActionLog(functionName, toolInputStr, toolCallContent, contentMsg),
 				ToolID:    ensureToolCallID(toolCall.ID, len(actions)),
 			})
 		}
@@ -200,17 +112,17 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 		functionName := choice.FuncCall.Name
 		toolInputStr := choice.FuncCall.Arguments
 		invocation := extractToolInvocation(toolInputStr)
-		invocation.Description = toolCallSpeechText(choice.Content, invocation.Description)
+		toolCallContent := strings.TrimSpace(choice.Content)
 
 		contentMsg := "\n"
-		if choice.Content != "" {
-			contentMsg = fmt.Sprintf("responded: %s\n", choice.Content)
+		if toolCallContent != "" {
+			contentMsg = fmt.Sprintf("responded: %s\n", toolCallContent)
 		}
 
 		return []schema.AgentAction{{
 			Tool:      functionName,
 			ToolInput: invocation.Input,
-			Log:       formatToolActionLog(functionName, toolInputStr, invocation.Description, contentMsg),
+			Log:       formatToolActionLog(functionName, toolInputStr, toolCallContent, contentMsg),
 			ToolID:    ensureToolCallID("", 0),
 		}}, nil, nil
 	}
@@ -257,13 +169,6 @@ func toolParametersSchema(schema map[string]any) map[string]any {
 	return parameters
 }
 
-func chatMessageToContent(msg llms.ChatMessage) llms.MessageContent {
-	return llms.MessageContent{
-		Role:  msg.GetType(),
-		Parts: []llms.ContentPart{llms.TextPart(msg.GetContent())},
-	}
-}
-
 func (a *FunctionAgent) constructFunctionScratchPad(steps []schema.AgentStep) []llms.MessageContent {
 	if len(steps) == 0 {
 		return nil
@@ -294,8 +199,8 @@ func (a *FunctionAgent) constructFunctionScratchPad(steps []schema.AgentStep) []
 		}
 
 		toolCallParts := make([]llms.ContentPart, 0, groupEnd-i+1)
-		if description := toolDescriptionFromAction(steps[i].Action); description != "" {
-			toolCallParts = append(toolCallParts, llms.TextPart(description))
+		if content := toolContentFromAction(steps[i].Action); content != "" {
+			toolCallParts = append(toolCallParts, llms.TextPart(content))
 		}
 		for j := i; j < groupEnd; j++ {
 			toolCallParts = append(toolCallParts, llms.ToolCall{
@@ -351,27 +256,12 @@ func scratchpadToolCallID(action schema.AgentAction, groupStart, index int) stri
 }
 
 func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includeVisual bool) (string, []llms.MessageContent) {
-	if !a.isVisualObservationTool(step.Action.Tool) {
+	visual, ok := a.visualScreenshotObservation(step)
+	if !ok {
 		return compactToolObservation(step.Observation), nil
 	}
+	result := visual.Result
 
-	var result postActionScreenshotResult
-	if err := json.Unmarshal([]byte(step.Observation), &result); err != nil {
-		return compactToolObservation(step.Observation), nil
-	}
-	if result.Data == "" {
-		return compactToolObservation(step.Observation), nil
-	}
-
-	imageBytes, err := base64.StdEncoding.DecodeString(result.Data)
-	if err != nil {
-		return compactToolObservation(step.Observation), nil
-	}
-	if len(imageBytes) == 0 {
-		return compactToolObservation(step.Observation), nil
-	}
-
-	mimeType := "image/jpeg"
 	imageAvailability := "The image is attached in the next message."
 	if !includeVisual {
 		imageAvailability = "The image is replaced with a placeholder in the next message."
@@ -398,9 +288,6 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includ
 			imageAvailability,
 		)
 	}
-	if result.Format != "" && result.Format != "jpeg" {
-		mimeType = "image/" + result.Format
-	}
 	caption := fmt.Sprintf("This image is the screenshot observation returned by the %s tool. Use it when answering the original request.", step.Action.Tool)
 	if !includeVisual {
 		return toolContent, []llms.MessageContent{{
@@ -416,7 +303,7 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includ
 		Role: llms.ChatMessageTypeHuman,
 		Parts: []llms.ContentPart{
 			llms.TextPart(caption),
-			buildImagePart(mimeType, imageBytes),
+			buildImagePart(visual.MIMEType, visual.ImageBytes),
 		},
 	}}
 }
@@ -432,22 +319,65 @@ func (a *FunctionAgent) countVisualObservations(steps []schema.AgentStep) int {
 }
 
 func (a *FunctionAgent) hasVisualObservation(step schema.AgentStep) bool {
-	if !a.isVisualObservationTool(step.Action.Tool) {
-		return false
-	}
+	_, ok := a.visualScreenshotObservation(step)
+	return ok
+}
 
-	var result postActionScreenshotResult
-	if err := json.Unmarshal([]byte(step.Observation), &result); err != nil {
-		return false
+func (a *FunctionAgent) visualScreenshotObservation(step schema.AgentStep) (visualScreenshotObservation, bool) {
+	if !a.isVisualObservationTool(step.Action.Tool) {
+		return visualScreenshotObservation{}, false
 	}
-	if result.Data == "" {
-		return false
+	return parseScreenshotObservation(step.Observation)
+}
+
+func parseScreenshotObservation(observation string) (visualScreenshotObservation, bool) {
+	var result postActionScreenshotResult
+	if err := json.Unmarshal([]byte(observation), &result); err != nil {
+		return visualScreenshotObservation{}, false
+	}
+	if result.Width <= 0 || result.Height <= 0 || strings.TrimSpace(result.Data) == "" {
+		return visualScreenshotObservation{}, false
 	}
 	imageBytes, err := base64.StdEncoding.DecodeString(result.Data)
 	if err != nil || len(imageBytes) == 0 {
-		return false
+		return visualScreenshotObservation{}, false
 	}
-	return true
+	format, ok := normalizeScreenshotFormat(result.Format)
+	if !ok {
+		return visualScreenshotObservation{}, false
+	}
+	result.Format = format
+	if result.Size <= 0 {
+		result.Size = len(imageBytes)
+	}
+	return visualScreenshotObservation{
+		Result:     result,
+		ImageBytes: imageBytes,
+		MIMEType:   screenshotMIMEType(format),
+	}, true
+}
+
+func normalizeScreenshotFormat(format string) (string, bool) {
+	format = strings.ToLower(strings.TrimSpace(format))
+	format = strings.TrimPrefix(format, "image/")
+	switch format {
+	case "":
+		return "jpeg", true
+	case "jpg", "jpeg":
+		return "jpeg", true
+	case "png", "webp", "gif":
+		return format, true
+	default:
+		return "", false
+	}
+}
+
+func screenshotMIMEType(format string) string {
+	format, ok := normalizeScreenshotFormat(format)
+	if !ok {
+		format = "jpeg"
+	}
+	return "image/" + format
 }
 
 func compactToolObservation(observation string) string {
@@ -532,29 +462,24 @@ func extractToolInvocation(raw string) toolInvocation {
 		invocation.Input = input
 		hasGenericInput = true
 	}
-	if description, ok := toolInputMap["description"].(string); ok {
-		invocation.Description = strings.TrimSpace(description)
-		if !hasLegacyArg && !hasGenericInput {
-			delete(toolInputMap, "description")
-			if encoded, err := json.Marshal(toolInputMap); err == nil {
-				invocation.Input = string(encoded)
-			}
+	if !hasLegacyArg && !hasGenericInput {
+		if encoded, err := json.Marshal(toolInputMap); err == nil {
+			invocation.Input = string(encoded)
 		}
 	}
 	return invocation
 }
 
 func isGenericStringInputWrapper(fields map[string]any) bool {
-	if len(fields) == 1 {
-		_, ok := fields["input"]
-		return ok
+	if _, ok := fields["input"]; !ok {
+		return false
 	}
-	if len(fields) == 2 {
-		_, hasInput := fields["input"]
-		_, hasDescription := fields["description"]
-		return hasInput && hasDescription
+	for key := range fields {
+		if key != "input" {
+			return false
+		}
 	}
-	return false
+	return true
 }
 
 func extractToolInput(raw string) string {
@@ -582,12 +507,12 @@ func encodeToolArguments(input string) string {
 	return string(encoded)
 }
 
-func formatToolActionLog(name, arguments, description, contentMsg string) string {
+func formatToolActionLog(name, arguments, content, contentMsg string) string {
 	message := fmt.Sprintf("Invoking: %s with %s %s", name, arguments, contentMsg)
 	metadata := toolActionLog{
-		Version:         toolActionLogVersion,
-		Message:         message,
-		ToolDescription: strings.TrimSpace(description),
+		Version:     toolActionLogVersion,
+		Message:     message,
+		ToolContent: strings.TrimSpace(content),
 	}
 	encoded, err := json.Marshal(metadata)
 	if err != nil {
@@ -596,7 +521,7 @@ func formatToolActionLog(name, arguments, description, contentMsg string) string
 	return string(encoded)
 }
 
-func toolDescriptionFromAction(action schema.AgentAction) string {
+func toolContentFromAction(action schema.AgentAction) string {
 	var metadata toolActionLog
 	if err := json.Unmarshal([]byte(action.Log), &metadata); err != nil {
 		return ""
@@ -604,14 +529,7 @@ func toolDescriptionFromAction(action schema.AgentAction) string {
 	if metadata.Version != toolActionLogVersion {
 		return ""
 	}
-	return strings.TrimSpace(metadata.ToolDescription)
-}
-
-func toolCallSpeechText(content, legacyDescription string) string {
-	if content = strings.TrimSpace(content); content != "" {
-		return content
-	}
-	return strings.TrimSpace(legacyDescription)
+	return strings.TrimSpace(metadata.ToolContent)
 }
 
 func extractFinalAnswer(content string) string {

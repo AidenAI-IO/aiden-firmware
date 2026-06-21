@@ -31,10 +31,10 @@ func TestDeviceMemoryProcedureStepsExtraction(t *testing.T) {
 		},
 		Events: []TaskEpisodeEvent{
 			{
-				Type:            "tool_call",
-				ToolName:        "launch_app",
-				ToolInput:       `{"app_name":"美团"}`,
-				ToolDescription: "打开美团App",
+				Type:      runEventToolCall,
+				ToolName:  "launch_app",
+				ToolInput: `{"app_name":"美团"}`,
+				Content:   "打开美团App",
 			},
 			{
 				Type:        "tool_result",
@@ -49,10 +49,10 @@ func TestDeviceMemoryProcedureStepsExtraction(t *testing.T) {
 				},
 			},
 			{
-				Type:            "tool_call",
-				ToolName:        "touch_gesture",
-				ToolInput:       `{"__arg1":"{\"type\":\"tap\",\"point\":{\"x\":500,\"y\":850},\"description\":\"点击购物车按钮\"}"}`,
-				ToolDescription: "点击购物车按钮",
+				Type:      runEventToolCall,
+				ToolName:  "touch_gesture",
+				ToolInput: `{"__arg1":"{\"type\":\"tap\",\"point\":{\"x\":500,\"y\":850},\"description\":\"点击购物车按钮\"}"}`,
+				Content:   "点击购物车按钮",
 			},
 			{
 				Type:        "tool_result",
@@ -67,10 +67,10 @@ func TestDeviceMemoryProcedureStepsExtraction(t *testing.T) {
 				},
 			},
 			{
-				Type:            "tool_call",
-				ToolName:        "ui_query",
-				ToolInput:       `{"text":"蜜雪冰城"}`,
-				ToolDescription: "搜索蜜雪冰城",
+				Type:      runEventToolCall,
+				ToolName:  "ui_query",
+				ToolInput: `{"text":"蜜雪冰城"}`,
+				Content:   "搜索蜜雪冰城",
 			},
 			{
 				Type:        "tool_result",
@@ -105,7 +105,7 @@ func TestDeviceMemoryProcedureStepsExtraction(t *testing.T) {
 	}
 	// 验证 description 被保留
 	if !strings.Contains(content, "点击购物车按钮") {
-		t.Errorf("procedure steps should contain tool description\n%s", content)
+		t.Errorf("procedure steps should contain tool content\n%s", content)
 	}
 	// 验证 page_name 被记录
 	if !strings.Contains(content, "page_name: 购物车") || !strings.Contains(content, "page_name: 首页") {
@@ -132,7 +132,7 @@ func TestDeviceMemoryPageIndexing(t *testing.T) {
 		},
 		Outcome: TaskEpisodeOutcome{Success: true},
 		Events: []TaskEpisodeEvent{
-			{Type: "tool_call", ToolName: "echo", ToolInput: "{}"},
+			{Type: runEventToolCall, ToolName: "echo", ToolInput: "{}"},
 			{Type: "tool_result", ToolName: "echo"},
 			{
 				Type: "verifier_decision",
@@ -194,10 +194,10 @@ func TestDeviceMemoryNavigationFacts(t *testing.T) {
 				},
 			},
 			{
-				Type:            "tool_call",
-				ToolName:        "touch_gesture",
-				ToolInput:       `{"__arg1":"{\"type\":\"tap\",\"point\":{\"x\":800,\"y\":900},\"description\":\"点击购物车\"}"}`,
-				ToolDescription: "点击购物车",
+				Type:      runEventToolCall,
+				ToolName:  "touch_gesture",
+				ToolInput: `{"__arg1":"{\"type\":\"tap\",\"point\":{\"x\":800,\"y\":900},\"description\":\"点击购物车\"}"}`,
+				Content:   "点击购物车",
 			},
 			{Type: "tool_result", ToolName: "touch_gesture"},
 			{
@@ -255,7 +255,7 @@ func TestDeviceMemoryAppProfileAccumulation(t *testing.T) {
 		},
 		Outcome: TaskEpisodeOutcome{Success: true},
 		Events: []TaskEpisodeEvent{
-			{Type: "tool_call", ToolName: "launch_app"},
+			{Type: runEventToolCall, ToolName: "launch_app"},
 			{Type: "tool_result", ToolName: "launch_app"},
 			{
 				Type: "verifier_decision",
@@ -284,7 +284,7 @@ func TestDeviceMemoryAppProfileAccumulation(t *testing.T) {
 		},
 		Outcome: TaskEpisodeOutcome{Success: true},
 		Events: []TaskEpisodeEvent{
-			{Type: "tool_call", ToolName: "touch_gesture"},
+			{Type: runEventToolCall, ToolName: "touch_gesture"},
 			{Type: "tool_result", ToolName: "touch_gesture"},
 			{
 				Type: "verifier_decision",
@@ -356,7 +356,7 @@ func TestDeviceMemoryAppProfileFailureTracking(t *testing.T) {
 			FailureReason: "网络超时",
 		},
 		Events: []TaskEpisodeEvent{
-			{Type: "tool_call", ToolName: "launch_app"},
+			{Type: runEventToolCall, ToolName: "launch_app"},
 			{Type: "tool_result", ToolName: "launch_app"},
 			{
 				Type: "verifier_decision",

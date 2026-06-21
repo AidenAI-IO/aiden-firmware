@@ -1,67 +1,68 @@
-# Agent 概览
+# Agent Overview
 
-Aiden Go Agent 位于 `src/agent/`，基于 `github.com/tmc/langchaingo` 构建。它既是长运行 daemon，也是设备端工具控制面。
+The Aiden Go Agent is located in `src/agent/` and is built on `github.com/tmc/langchaingo`. It serves as both a long-running daemon and the device-side tool control plane.
 
-## 二进制
+## Binaries
 
-| 入口 | 说明 |
+| Entry Point | Description |
 | --- | --- |
-| `cmd/daemon` | 长运行 daemon，支持 Web UI 模式或设备语音模式 |
-| `cmd/demo` | 本地 CLI runner，用于开发测试 |
+| `cmd/daemon` | Long-running daemon supporting Web UI mode or device voice mode |
+| `cmd/demo` | Local CLI runner for development testing |
 
-交叉编译后的 daemon 产物为：
+After cross-compilation, the daemon binary is:
 
 ```text
 build/bin/agent
 ```
 
-固件中默认安装到：
+In the firmware, it is installed by default to:
 
 ```text
 /oem/usr/bin/agent
 ```
 
-## 当前能力
+## Current Capabilities
 
-- OpenAI-compatible 模型调用：`openai`、`openrouter`；
-- 本地文本模型：`ollama`；
-- 内置工具调用：HID、截图、音频音量、shell；
-- HTTP Tool API，供 Web UI、外部 Agent 或手工调用；
-- 从 `SKILL.md` 自动发现并运行时激活 skills；
-- 三阶段 role loop（`default` / `plan` / `execution`），简单任务由 planner 直执，复杂任务经 `commit_plan` 进入 executor-verifier 协作；详见 [Agent Context Lifecycle](context-lifecycle.md)；
-- conversation memory 持久化，session memory compaction 见 [Session Memory Compaction](session-memory.md)；
-- Device / Task Episode memory 设计见 [Memory Plane 设计](memory-plane.md)；
-- Web UI：聊天历史、浏览器录音、附件、Tool Lab、Skill Export；
-- 设备侧语音链路：VAD / STT / TTS。
+- OpenAI-compatible model calls: `openai`, `openrouter`
+- Local text models: `ollama`
+- Built-in tool calling: HID, screenshots, audio volume, shell
+- HTTP Tool API for Web UI, external agents, or manual invocation
+- Auto-discovery and runtime activation of skills from `SKILL.md`
+- Three-stage role loop (`default` / `plan` / `execution`): simple tasks are directly executed by the planner, complex tasks go through `commit_plan` into executor-verifier collaboration; see [Agent Context Lifecycle](context-lifecycle.md)
+- Conversation memory persistence, session memory compaction; see [Session Memory Compaction](session-memory.md)
+- Device / Task Episode memory design; see [Memory Plane Design](memory-plane.md)
+- Web UI: chat history, browser recording, attachments, Tool Lab, Skill Export
+- iOS Live Activity / Dynamic Island task status; see [Live Activity / Dynamic Island](live-activity.md)
+- Device-side voice pipeline: VAD / STT / TTS
 
-## 运行模式
+## Run Modes
 
-由 `agent.toml` 的 `input_mode` 决定：
+Determined by `input_mode` in `agent.toml`:
 
-| 模式 | 行为 |
+| Mode | Behavior |
 | --- | --- |
-| `text` | 启动 HTTP server 和 Web UI |
-| `stt` | 设备录音 → VAD → STT → LLM → TTS |
-| `audio` | 设备录音 → 音频附件给 LLM → TTS |
+| `text` | Start HTTP server and Web UI |
+| `stt` | Device recording → VAD → STT → LLM → TTS |
+| `audio` | Device recording → audio attachment to LLM → TTS |
 
-当前一个 daemon 实例只能运行一种模式：Web UI 模式和设备语音模式不能在同一进程中同时运行。
+Currently, one daemon instance can only run in one mode: Web UI mode and device voice mode cannot run simultaneously in the same process.
 
-## 启动
+## Startup
 
-本地开发：
+Local development:
 
 ```bash
 cd src/agent
 go run ./cmd/daemon -config ./config -addr :8080
 ```
 
-设备服务：
+Device service:
 
 ```bash
 /oem/usr/bin/aiden-env-run /oem/usr/bin/agent -config /userdata/agent -addr :8080
 ```
 
-CLI demo：
+CLI runner:
 
 ```bash
 cd src/agent
@@ -70,7 +71,7 @@ go run ./cmd/demo -config ./config -skills my-skill -input "Inspect the UI"
 go run ./cmd/demo -config ./config -clear-memory -show-memory -input "Start fresh"
 ```
 
-## 内置工具
+## Built-in Tools
 
 - `skill_list`
 - `skill_read`
@@ -86,4 +87,4 @@ go run ./cmd/demo -config ./config -clear-memory -show-memory -input "Start fres
 - `audio_volume`
 - `shell`
 
-工具详情与 HTTP 调用方式见 [工具 HTTP API](tools-http-api.md)。
+For tool details and HTTP invocation methods, see [Tools HTTP API](tools-http-api.md).

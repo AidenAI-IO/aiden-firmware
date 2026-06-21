@@ -20,19 +20,25 @@ import (
 )
 
 type roleCollaborativeExecutor struct {
-	Model             llms.Model
-	Profiles          RoleProfiles
-	Tools             []langtools.Tool
-	Memory            schema.Memory
-	CallbacksHandler  callbacks.Handler
-	MaxIterations     int
-	InputAttachments  []InputAttachment
-	OutputKey         string
-	Recorder          *EpisodeRecorder
-	ScreenshotPruning ScreenshotPruningConfig
-	InitialWorldState worldState
-	ForceSimpleLoop   bool
-	SteerProvider     func(context.Context) (RunSteerMessage, bool)
+	Model                 llms.Model
+	Profiles              RoleProfiles
+	Tools                 []langtools.Tool
+	Memory                schema.Memory
+	CallbacksHandler      callbacks.Handler
+	MaxIterations         int
+	TodoReminderToolCalls int
+	ConversationHistory   []llms.MessageContent
+	InputAttachments      []InputAttachment
+	OutputKey             string
+	Recorder              *EpisodeRecorder
+	ScreenshotPruning     ScreenshotPruningConfig
+	InitialWorldState     worldState
+	ForceSimpleLoop       bool
+	SteerProvider         func(context.Context) (RunSteerMessage, bool)
+	FinalSteerProvider    func(context.Context) (RunSteerMessage, bool)
+	SteerInterrupt        func() <-chan struct{}
+	SteerWaiter           func(context.Context) (RunSteerMessage, bool, error)
+	handledSteerInterrupt <-chan struct{}
 }
 
 const roleModelCallTimeout = 120 * time.Second
@@ -49,6 +55,8 @@ type plannerDecision struct {
 type verifierDecision struct {
 	CanFinish     bool               `json:"can_finish"`
 	FinalAnswer   string             `json:"final_answer,omitempty"`
+	Speech        string             `json:"speech,omitempty"`
+	Text          string             `json:"text,omitempty"`
 	NeedsReplan   bool               `json:"needs_replan,omitempty"`
 	Reason        string             `json:"reason,omitempty"`
 	ObservedState observedWorldState `json:"observed_state,omitempty"`
@@ -72,34 +80,41 @@ type planStepResult struct {
 }
 
 type roleLoopState struct {
-	Phase                loopPhase
-	ForceSimpleLoop      bool
-	PlanStepIndex        int
-	PlanCommitted        bool
-	PlanExhausted        bool
-	DraftPlan            plannerDecision
-	Objective            string
-	CompletionCriteria   []string
-	Plan                 []string
-	NextStep             string
-	PlannerReason        string
-	PlanCommitRequired   bool
-	World                worldState
-	ToolSteps            []schema.AgentStep
-	StepToolSteps        []schema.AgentStep
-	StepExecutionResults []roleExecutionResult
-	StepExecutionActive  bool
-	ExecutorStepOutcome  string
-	ExecutorStepSummary  string
-	ExecutorStepKeyInfo  []string
-	PlanStepResults      []planStepResult
-	ExecutionResults     []roleExecutionResult
-	PlannerEvidence      []roleExecutionResult
-	VerifierResults      []verifierDecision
-	SteerMessages        []RunSteerMessage
+	Phase                          loopPhase
+	ForceSimpleLoop                bool
+	Todo                           TodoState
+	PlanStepIndex                  int
+	PlanCommitted                  bool
+	PlanExhausted                  bool
+	DraftPlan                      plannerDecision
+	Objective                      string
+	CompletionCriteria             []string
+	Plan                           []string
+	NextStep                       string
+	PlannerReason                  string
+	PlanCommitRequired             bool
+	World                          worldState
+	ToolSteps                      []schema.AgentStep
+	StepToolSteps                  []schema.AgentStep
+	StepExecutionResults           []roleExecutionResult
+	StepExecutionActive            bool
+	ExecutorStepOutcome            string
+	ExecutorStepSummary            string
+	ExecutorStepKeyInfo            []string
+	PlanStepResults                []planStepResult
+	ExecutionResults               []roleExecutionResult
+	PlannerEvidence                []roleExecutionResult
+	VerifierResults                []verifierDecision
+	SteerMessages                  []RunSteerMessage
+	DefaultToolCallsSinceTodoTouch int
+	PendingTodoReminder            string
+	TodoReminderToolCalls          int
 }
 
 type worldState struct {
+	// LatestScreenshot is verifier-only visual evidence. Planner and executor
+	// receive screenshots through tool scratchpads/results so their world-state
+	// prompt prefix stays stable for model cache reuse.
 	LatestScreenshot  *worldScreenshot
 	Observation       *worldStateObservation
 	DeviceEnvironment *worldDeviceEnvironment
@@ -143,6 +158,14 @@ var _ callbacks.HandlerHaver = (*roleCollaborativeExecutor)(nil)
 
 type roleOutputHandler interface {
 	HandleRoleOutput(ctx context.Context, role, content string)
+}
+
+type plannerDecisionHandler interface {
+	HandlePlannerDecision(ctx context.Context, decision plannerDecision)
+}
+
+type verifierDecisionHandler interface {
+	HandleVerifierDecision(ctx context.Context, decision verifierDecision)
 }
 
 type steerMessageHandler interface {
@@ -196,34 +219,70 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 	if _, ok := inputs["history"]; !ok {
 		inputs["history"] = ""
 	}
+	for _, key := range []string{sessionContextInputKey, rootRequestInputKey, latestUserInputKey} {
+		if _, ok := inputs[key]; !ok {
+			inputs[key] = ""
+		}
+	}
 
-	toolSpecs := NewToolSpecs(e.Tools)
+	plannerToolSpecs := toolSpecsForRole(RolePlanner, e.Tools)
+	executorToolSpecs := toolSpecsForRole(RoleExecutor, e.Tools)
 	initialPhase := phaseDecision
 	if e.ForceSimpleLoop {
 		initialPhase = phaseDefault
 	}
-	state := roleLoopState{Phase: initialPhase, ForceSimpleLoop: e.ForceSimpleLoop, World: e.InitialWorldState}
+	state := roleLoopState{
+		Phase:                 initialPhase,
+		ForceSimpleLoop:       e.ForceSimpleLoop,
+		Todo:                  TodoState{Mode: TodoModeNone},
+		World:                 e.InitialWorldState,
+		TodoReminderToolCalls: e.TodoReminderToolCalls,
+	}
 	for i := 0; i < e.MaxIterations; i++ {
+		consumedInterrupt, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
+		if err != nil {
+			return nil, err
+		}
+		if consumedInterrupt {
+			continue
+		}
 		switch state.Phase {
 		case phaseDecision, phaseDefault, phasePlan:
-			turn, err := e.callPlannerTurn(ctx, inputs, &state, toolSpecs, options...)
+			turn, err := e.callPlannerTurn(ctx, inputs, &state, plannerToolSpecs, options...)
 			if err != nil {
 				return nil, err
 			}
 			switch turn.Kind {
+			case plannerTurnSteer:
+				continue
 			case plannerTurnFinish:
-				consumed, err := e.consumePendingSteer(ctx, inputs, &state)
+				consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
 				if err != nil {
 					return nil, err
 				}
 				if consumed {
 					continue
 				}
-				if state.Phase == phaseDecision || state.Phase == phaseDefault || state.canAcceptPlannerFinal(turn.Answer) {
+				canFinish := state.Phase == phaseDecision || state.Phase == phaseDefault || state.canAcceptPlannerFinal(turn.Answer)
+				if canFinish {
+					consumed, err = e.consumeFinalPendingSteer(ctx, inputs, &state)
+					if err != nil {
+						return nil, err
+					}
+					if consumed {
+						continue
+					}
 					if e.Recorder != nil {
 						e.Recorder.RecordDefaultFinish(turn.Answer)
 					}
-					return e.finishRun(ctx, turn.Answer, turn.Answer)
+					return e.finishRun(ctx, turn.Answer, turn.Answer, &state)
+				}
+				consumed, err = e.consumePendingSteer(ctx, inputs, &state)
+				if err != nil {
+					return nil, err
+				}
+				if consumed {
+					continue
 				}
 				continue
 			case plannerTurnUseSimpleMode:
@@ -239,9 +298,22 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 				if turn.Step != nil {
 					state.ToolSteps = append(state.ToolSteps, *turn.Step)
 				}
+				if state.Todo.Mode != TodoModeNone && len(state.Todo.Items) > 0 {
+					e.emitTodoUpdate(ctx, state.Todo, state.Todo.SummaryText(), false)
+				}
 				if e.Recorder != nil {
 					e.Recorder.RecordPlannerDecision(turn.CommittedPlan)
 					e.Recorder.RecordLoopPhase(phaseExecution, "commit_plan")
+				}
+				if handler, ok := e.CallbacksHandler.(plannerDecisionHandler); ok {
+					handler.HandlePlannerDecision(ctx, turn.CommittedPlan)
+				}
+			case plannerTurnSetTodo:
+				if turn.Step != nil {
+					state.ToolSteps = append(state.ToolSteps, *turn.Step)
+				}
+				if turn.Todo.Mode != TodoModeNone && len(turn.Todo.Items) > 0 {
+					e.emitTodoUpdate(ctx, turn.Todo, turn.Todo.CurrentSpeech(), turn.TodoSpeechEligible)
 				}
 			case plannerTurnCancelPlan:
 				if turn.Step != nil {
@@ -250,32 +322,66 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 				if e.Recorder != nil {
 					e.Recorder.RecordLoopPhase(phaseDefault, "cancel_plan")
 				}
-			case plannerTurnTool, plannerTurnInvalidMeta:
+			case plannerTurnTool, plannerTurnInvalidMeta, plannerTurnSleep:
 				if turn.Step != nil {
 					state.ToolSteps = append(state.ToolSteps, *turn.Step)
-					state.World.UpdateFromStep(*turn.Step, len(state.ToolSteps))
+					state.World.UpdateFromStep(*turn.Step, len(state.ToolSteps), e.Tools)
 				}
 				if turn.Kind == plannerTurnTool {
+					consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
+					if err != nil {
+						return nil, err
+					}
+					if consumed {
+						continue
+					}
 					if _, err := e.consumePendingSteer(ctx, inputs, &state); err != nil {
 						return nil, err
 					}
+					state.noteDefaultToolCallAndMaybeTodoReminder()
+				}
+				if turn.Kind == plannerTurnSleep {
+					consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
+					if err != nil {
+						return nil, err
+					}
+					if consumed {
+						continue
+					}
+					consumed, err = e.consumeFinalPendingSteer(ctx, inputs, &state)
+					if err != nil {
+						return nil, err
+					}
+					if consumed {
+						continue
+					}
+					answer := waitForWakeupFinalAnswer(turn.Step)
+					if e.Recorder != nil {
+						e.Recorder.RecordDefaultFinish(answer)
+					}
+					return e.finishRunWithoutStreaming(ctx, answer, answer, &state)
 				}
 			}
 		case phaseExecution:
 			if !state.StepExecutionActive {
 				state.syncNextStepFromPlanIndex()
 				state.beginStepExecution()
+				if todo, ok := state.startCurrentTodoStep(); ok {
+					e.emitTodoUpdate(ctx, todo, todo.CurrentSpeech(), true)
+				}
 			}
-			turn, err := e.callExecutorTurn(ctx, inputs, &state, toolSpecs, options...)
+			turn, err := e.callExecutorTurn(ctx, inputs, &state, executorToolSpecs, options...)
 			if err != nil {
 				return nil, err
 			}
 			switch turn.Kind {
-			case executorTurnTool, executorTurnInvalidMeta:
+			case executorTurnSteer:
+				continue
+			case executorTurnTool, executorTurnInvalidMeta, executorTurnSleep:
 				if turn.Step != nil {
 					state.ToolSteps = append(state.ToolSteps, *turn.Step)
 					state.StepToolSteps = append(state.StepToolSteps, *turn.Step)
-					state.World.UpdateFromStep(*turn.Step, len(state.ToolSteps))
+					state.World.UpdateFromStep(*turn.Step, len(state.ToolSteps), e.Tools)
 				}
 				if turn.Kind == executorTurnTool {
 					execution := roleExecutionResult{Action: turn.Action, Step: turn.Step}
@@ -284,9 +390,37 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 					if e.Recorder != nil {
 						e.Recorder.RecordExecution(execution)
 					}
+					consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
+					if err != nil {
+						return nil, err
+					}
+					if consumed {
+						continue
+					}
 					if _, err := e.consumePendingSteer(ctx, inputs, &state); err != nil {
 						return nil, err
 					}
+				}
+				if turn.Kind == executorTurnSleep {
+					consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
+					if err != nil {
+						return nil, err
+					}
+					if consumed {
+						continue
+					}
+					consumed, err = e.consumeFinalPendingSteer(ctx, inputs, &state)
+					if err != nil {
+						return nil, err
+					}
+					if consumed {
+						continue
+					}
+					answer := waitForWakeupFinalAnswer(turn.Step)
+					if e.Recorder != nil {
+						e.Recorder.RecordDefaultFinish(answer)
+					}
+					return e.finishRunWithoutStreaming(ctx, answer, answer, &state)
 				}
 			case executorTurnFinishStep, executorTurnAbortStep:
 				if turn.Step != nil {
@@ -303,11 +437,16 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 				if e.Recorder != nil {
 					e.Recorder.RecordVerifierDecision(verification)
 				}
+				if handler, ok := e.CallbacksHandler.(verifierDecisionHandler); ok {
+					handler.HandleVerifierDecision(ctx, verification)
+				}
 				stepSummary := strings.TrimSpace(state.ExecutorStepSummary)
 				state.recordPlanStepResult(verification)
-				state.clearStepExecution()
-
 				if verification.NeedsReplan {
+					if todo, ok := state.blockCurrentTodoStep(verification.Reason); ok {
+						e.emitTodoUpdate(ctx, todo, todo.CurrentSpeech(), false)
+					}
+					state.clearStepExecution()
 					state.Phase = phasePlan
 					state.PlanExhausted = false
 					if e.Recorder != nil {
@@ -316,11 +455,15 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 					continue
 				}
 				if verification.CanFinish {
+					if todo, ok := state.finishCurrentTodoStep(); ok {
+						e.emitTodoUpdate(ctx, todo, todo.CurrentSpeech(), false)
+					}
+					state.clearStepExecution()
 					finalAnswer := strings.TrimSpace(verification.FinalAnswer)
 					if finalAnswer == "" {
 						finalAnswer = stepSummary
 					}
-					consumed, err := e.consumePendingSteer(ctx, inputs, &state)
+					consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
 					if err != nil {
 						return nil, err
 					}
@@ -328,14 +471,32 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 						state.Phase = phaseDefault
 						continue
 					}
-					return e.finishRun(ctx, finalAnswer, verification.Reason)
+					consumed, err = e.consumeFinalPendingSteer(ctx, inputs, &state)
+					if err != nil {
+						return nil, err
+					}
+					if consumed {
+						state.Phase = phaseDefault
+						continue
+					}
+					return e.finishRun(ctx, finalAnswer, verification.Reason, &state)
 				}
-				if state.advancePlanStepOrExhaust() {
+				doneTodo, doneChanged := state.finishCurrentTodoStep()
+				state.clearStepExecution()
+				if exhausted := state.advancePlanStepOrExhaust(); exhausted {
+					if doneChanged {
+						e.emitTodoUpdate(ctx, doneTodo, doneTodo.CurrentSpeech(), false)
+					}
 					state.Phase = phasePlan
 					if e.Recorder != nil {
 						e.Recorder.RecordLoopPhase(phasePlan, "plan_exhausted")
 					}
 					continue
+				}
+				if todo, ok := state.startCurrentTodoStep(); ok {
+					e.emitTodoUpdate(ctx, todo, todo.CurrentSpeech(), true)
+				} else if doneChanged {
+					e.emitTodoUpdate(ctx, doneTodo, doneTodo.CurrentSpeech(), false)
 				}
 			}
 		}
@@ -362,25 +523,49 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 
 	task := plannerTaskForPhase(state.Phase, *state, e.ForceSimpleLoop)
 	messages := e.roleMessages(e.Profiles.Planner, inputs, *state, task)
-	plannerTools := e.Tools
-	if !e.ForceSimpleLoop {
+	state.PendingTodoReminder = ""
+	plannerTools := toolsForRole(RolePlanner, e.Tools)
+	if e.ForceSimpleLoop {
+		plannerTools = appendSimpleTodoMetaTools(plannerTools)
+	} else {
 		switch state.Phase {
 		case phasePlan:
-			plannerTools = appendPlannerReadOnlyTools(loopMetaTools(), e.Tools)
+			plannerTools = appendPlannerReadOnlyTools(loopMetaTools(), plannerTools)
 		default:
-			plannerTools = appendLoopMetaTools(e.Tools)
+			plannerTools = appendDefaultLoopMetaTools(plannerTools)
 		}
 	}
 	parser := &FunctionAgent{
 		Tools:     plannerTools,
 		OutputKey: e.OutputKey,
 	}
-	callOptions := append(chains.GetLLMCallOptions(options...), llms.WithTools(parser.toolsAsLLM()))
-	res, err := e.generateRoleContent(ctx, RolePlanner, messages, callOptions...)
+	baseOptions := append(chains.GetLLMCallOptions(options...), llms.WithTools(parser.toolsAsLLM()))
+	finalStreaming := state.Phase == phaseDefault || e.ForceSimpleLoop
+	callOptions := baseOptions
+	if finalStreaming {
+		callOptions = e.finalStreamingCallOptions(baseOptions)
+	}
+	generate := func() (*llms.ContentResponse, error) {
+		return e.generateRoleContent(ctx, RolePlanner, messages, callOptions...)
+	}
+	var (
+		res *llms.ContentResponse
+		err error
+	)
+	if finalStreaming {
+		res, err = e.withFinalStreaming(ctx, generate)
+	} else {
+		res, err = generate()
+	}
 	if err != nil {
 		return plannerTurnResult{}, err
 	}
 	e.emitRoleOutput(ctx, RolePlanner, roleResponseDebugText(res))
+	if consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, state); err != nil {
+		return plannerTurnResult{}, err
+	} else if consumed {
+		return plannerTurnResult{Kind: plannerTurnSteer}, nil
+	}
 
 	actions, finish, err := parser.ParseOutput(res)
 	if errors.Is(err, agents.ErrUnableToParseOutput) {
@@ -436,7 +621,7 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 		if e.CallbacksHandler != nil {
 			e.CallbacksHandler.HandleAgentAction(ctx, action)
 		}
-		if e.ForceSimpleLoop {
+		if e.ForceSimpleLoop && !toolNameEqual(action.Tool, toolSetTodo) {
 			return plannerTurnResult{
 				Kind: plannerTurnInvalidMeta,
 				Step: &schema.AgentStep{
@@ -464,13 +649,21 @@ func (e *roleCollaborativeExecutor) callRouteTurn(
 ) (plannerTurnResult, error) {
 	task := plannerTaskForPhase(phaseDecision, *state, e.ForceSimpleLoop)
 	messages := e.roleMessages(e.Profiles.Planner, inputs, *state, task)
-	res, err := e.generateRoleContent(ctx, RolePlanner, messages, chains.GetLLMCallOptions(options...)...)
+	callOptions := e.finalStreamingCallOptions(chains.GetLLMCallOptions(options...))
+	res, err := e.withFinalStreaming(ctx, func() (*llms.ContentResponse, error) {
+		return e.generateRoleContent(ctx, RolePlanner, messages, callOptions...)
+	})
 	if err != nil {
 		return plannerTurnResult{}, err
 	}
 	e.emitRoleOutput(ctx, RolePlanner, roleResponseDebugText(res))
+	if consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, state); err != nil {
+		return plannerTurnResult{}, err
+	} else if consumed {
+		return plannerTurnResult{Kind: plannerTurnSteer}, nil
+	}
 
-	parser := &FunctionAgent{Tools: appendLoopMetaTools(e.Tools), OutputKey: e.OutputKey}
+	parser := &FunctionAgent{Tools: appendLoopMetaTools(toolsForRole(RolePlanner, e.Tools)), OutputKey: e.OutputKey}
 	actions, _, parseErr := parser.ParseOutput(res)
 	if parseErr != nil && !errors.Is(parseErr, agents.ErrUnableToParseOutput) {
 		return plannerTurnResult{}, parseErr
@@ -525,12 +718,12 @@ func (e *roleCollaborativeExecutor) executePlannerToolAction(
 	toolSpecs *ToolSpecs,
 	action schema.AgentAction,
 ) (plannerTurnResult, error) {
-	toolExecution := executeToolCall(ctx, ToolCallExecution{
+	toolExecution := e.executeToolCall(ctx, ToolCallExecution{
 		Specs:    toolSpecs,
 		Action:   action,
 		Callback: e.CallbacksHandler,
 	})
-	if toolExecution.Error != nil {
+	if toolExecution.Error != nil && !(errors.Is(toolExecution.Error, context.Canceled) && e.steerInterruptSignaled(ctx)) {
 		return plannerTurnResult{}, toolExecution.Error
 	}
 	execution := roleExecutionResult{
@@ -542,19 +735,107 @@ func (e *roleCollaborativeExecutor) executePlannerToolAction(
 	if e.Recorder != nil {
 		e.Recorder.RecordPlannerExecution(execution)
 	}
-	return plannerTurnResult{Kind: plannerTurnTool, Step: &toolExecution.Step}, nil
+	kind := plannerTurnTool
+	if isWaitForWakeupTool(toolExecution.Step.Action.Tool) && !toolExecution.Result.IsError {
+		kind = plannerTurnSleep
+	}
+	return plannerTurnResult{Kind: kind, Step: &toolExecution.Step}, nil
 }
 
-func (e *roleCollaborativeExecutor) finishRun(ctx context.Context, finalAnswer, log string) (map[string]any, error) {
+func (e *roleCollaborativeExecutor) finishRun(ctx context.Context, finalAnswer, log string, state *roleLoopState) (map[string]any, error) {
+	return e.finishRunWithStreaming(ctx, finalAnswer, log, state, true)
+}
+
+func (e *roleCollaborativeExecutor) finishRunWithoutStreaming(ctx context.Context, finalAnswer, log string, state *roleLoopState) (map[string]any, error) {
+	return e.finishRunWithStreaming(ctx, finalAnswer, log, state, false)
+}
+
+func (e *roleCollaborativeExecutor) finishRunWithStreaming(ctx context.Context, finalAnswer, log string, state *roleLoopState, stream bool) (map[string]any, error) {
 	finalAnswer = strings.TrimSpace(finalAnswer)
 	if e.CallbacksHandler != nil {
-		e.streamFinalAnswer(ctx, finalAnswer)
+		if stream {
+			e.streamFinalAnswer(ctx, finalAnswer)
+		}
 		e.CallbacksHandler.HandleAgentFinish(ctx, schema.AgentFinish{
 			ReturnValues: map[string]any{e.OutputKey: finalAnswer},
 			Log:          log,
 		})
 	}
+	if state != nil && state.Todo.Mode != TodoModeNone && len(state.Todo.Items) > 0 {
+		e.emitTodoClosed(ctx, state.Todo, "final_answer")
+	}
 	return map[string]any{e.OutputKey: finalAnswer}, nil
+}
+
+type todoUpdateHandler interface {
+	HandleTodoUpdate(ctx context.Context, todo TodoState, content string, speechEligible bool)
+}
+
+type todoClosedHandler interface {
+	HandleTodoClosed(ctx context.Context, todo TodoState, reason string)
+}
+
+func (e *roleCollaborativeExecutor) emitTodoUpdate(ctx context.Context, todo TodoState, content string, speechEligible bool) {
+	if e == nil {
+		return
+	}
+	content = strings.TrimSpace(content)
+	snapshot := todo.Clone()
+	if e.Recorder != nil {
+		e.Recorder.RecordTodoUpdate(snapshot, content, speechEligible)
+	}
+	if e.CallbacksHandler == nil {
+		return
+	}
+	handler, ok := e.CallbacksHandler.(todoUpdateHandler)
+	if !ok {
+		return
+	}
+	handler.HandleTodoUpdate(ctx, snapshot, content, speechEligible)
+}
+
+func (e *roleCollaborativeExecutor) emitTodoClosed(ctx context.Context, todo TodoState, reason string) {
+	if e == nil {
+		return
+	}
+	reason = strings.TrimSpace(reason)
+	snapshot := todo.Clone()
+	if e.Recorder != nil {
+		e.Recorder.RecordTodoClosed(snapshot, reason)
+	}
+	if e.CallbacksHandler == nil {
+		return
+	}
+	handler, ok := e.CallbacksHandler.(todoClosedHandler)
+	if !ok {
+		return
+	}
+	handler.HandleTodoClosed(ctx, snapshot, reason)
+}
+
+func (e *roleCollaborativeExecutor) executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallExecutionResult {
+	interruptCh := (<-chan struct{})(nil)
+	if e != nil && e.SteerInterrupt != nil {
+		interruptCh = e.SteerInterrupt()
+	}
+	if interruptCh == nil {
+		return executeToolCall(ctx, execution)
+	}
+
+	toolCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-interruptCh:
+			cancel()
+		case <-toolCtx.Done():
+		case <-done:
+		}
+	}()
+	result := executeToolCall(toolCtx, execution)
+	close(done)
+	cancel()
+	return result
 }
 
 func (e *roleCollaborativeExecutor) consumePendingSteer(ctx context.Context, inputs map[string]string, state *roleLoopState) (bool, error) {
@@ -563,6 +844,85 @@ func (e *roleCollaborativeExecutor) consumePendingSteer(ctx context.Context, inp
 	}
 	steer, ok := e.SteerProvider(ctx)
 	if !ok {
+		return false, nil
+	}
+	return e.appendSteerMessage(ctx, inputs, state, steer)
+}
+
+func (e *roleCollaborativeExecutor) consumeFinalPendingSteer(ctx context.Context, inputs map[string]string, state *roleLoopState) (bool, error) {
+	if e == nil || state == nil {
+		return false, nil
+	}
+	provider := e.FinalSteerProvider
+	if provider == nil {
+		provider = e.SteerProvider
+	}
+	if provider == nil {
+		return false, nil
+	}
+	steer, ok := provider(ctx)
+	if !ok {
+		return false, nil
+	}
+	return e.appendSteerMessage(ctx, inputs, state, steer)
+}
+
+func (e *roleCollaborativeExecutor) consumeSteerInterruptIfSignaled(ctx context.Context, inputs map[string]string, state *roleLoopState) (bool, error) {
+	if e == nil || e.SteerInterrupt == nil || e.SteerWaiter == nil || state == nil {
+		return false, nil
+	}
+	interruptCh := e.SteerInterrupt()
+	if interruptCh == nil {
+		return false, nil
+	}
+	if e.handledSteerInterrupt == interruptCh {
+		return false, nil
+	}
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-interruptCh:
+	default:
+		return false, nil
+	}
+	e.handledSteerInterrupt = interruptCh
+
+	steer, ok, err := e.SteerWaiter(ctx)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, nil
+	}
+	if consumed, err := e.appendSteerMessage(ctx, inputs, state, steer); err != nil || !consumed {
+		return consumed, err
+	}
+	state.Phase = phaseDefault
+	state.clearStepExecution()
+	state.PlanExhausted = false
+	return true, nil
+}
+
+func (e *roleCollaborativeExecutor) steerInterruptSignaled(ctx context.Context) bool {
+	if e == nil || e.SteerInterrupt == nil {
+		return false
+	}
+	interruptCh := e.SteerInterrupt()
+	if interruptCh == nil {
+		return false
+	}
+	select {
+	case <-ctx.Done():
+		return false
+	case <-interruptCh:
+		return true
+	default:
+		return false
+	}
+}
+
+func (e *roleCollaborativeExecutor) appendSteerMessage(ctx context.Context, inputs map[string]string, state *roleLoopState, steer RunSteerMessage) (bool, error) {
+	if e == nil || state == nil {
 		return false, nil
 	}
 	if steer.Timestamp.IsZero() {
@@ -588,7 +948,7 @@ func (e *roleCollaborativeExecutor) callExecutorTurn(
 	options ...chains.ChainCallOption,
 ) (executorTurnResult, error) {
 	messages := e.roleMessages(e.Profiles.Executor, inputs, *state, "Executor task: work on the current next_step across multiple tool calls if needed, then call finish_step when the step is ready for verification or abort_step if blocked.")
-	executorTools := appendExecutorMetaTools(e.Tools)
+	executorTools := appendExecutorMetaTools(toolsForRole(RoleExecutor, e.Tools))
 	parser := &FunctionAgent{
 		Tools:     executorTools,
 		OutputKey: e.OutputKey,
@@ -599,6 +959,11 @@ func (e *roleCollaborativeExecutor) callExecutorTurn(
 		return executorTurnResult{}, err
 	}
 	e.emitRoleOutput(ctx, RoleExecutor, roleResponseDebugText(res))
+	if consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, state); err != nil {
+		return executorTurnResult{}, err
+	} else if consumed {
+		return executorTurnResult{Kind: executorTurnSteer}, nil
+	}
 
 	actions, finish, err := parser.ParseOutput(res)
 	if errors.Is(err, agents.ErrUnableToParseOutput) {
@@ -662,17 +1027,21 @@ func (e *roleCollaborativeExecutor) callExecutorTurn(
 		return turn, nil
 	}
 
-	toolExecution := executeToolCall(ctx, ToolCallExecution{
+	toolExecution := e.executeToolCall(ctx, ToolCallExecution{
 		Specs:    toolSpecs,
 		Action:   action,
 		Callback: e.CallbacksHandler,
 	})
-	if toolExecution.Error != nil {
+	if toolExecution.Error != nil && !(errors.Is(toolExecution.Error, context.Canceled) && e.steerInterruptSignaled(ctx)) {
 		return executorTurnResult{}, toolExecution.Error
 	}
 	actionCopy := toolExecution.Step.Action
+	kind := executorTurnTool
+	if isWaitForWakeupTool(toolExecution.Step.Action.Tool) && !toolExecution.Result.IsError {
+		kind = executorTurnSleep
+	}
 	return executorTurnResult{
-		Kind:   executorTurnTool,
+		Kind:   kind,
 		Action: &actionCopy,
 		Step:   &toolExecution.Step,
 	}, nil
@@ -680,7 +1049,22 @@ func (e *roleCollaborativeExecutor) callExecutorTurn(
 
 func (e *roleCollaborativeExecutor) callVerifier(ctx context.Context, inputs map[string]string, state roleLoopState, options ...chains.ChainCallOption) (verifierDecision, error) {
 	messages := e.roleMessages(e.Profiles.Verifier, inputs, state, "Verifier task: decide whether the current executor step succeeded. Return the required JSON.")
-	res, err := e.generateRoleContent(ctx, RoleVerifier, messages, chains.GetLLMCallOptions(options...)...)
+	baseOptions := chains.GetLLMCallOptions(options...)
+	generate := func(callOptions []llms.CallOption) (*llms.ContentResponse, error) {
+		return e.generateRoleContent(ctx, RoleVerifier, messages, callOptions...)
+	}
+	var (
+		res *llms.ContentResponse
+		err error
+	)
+	if state.isFinalCommittedPlanStep() {
+		callOptions := e.finalStreamingCallOptions(baseOptions)
+		res, err = e.withFinalStreaming(ctx, func() (*llms.ContentResponse, error) {
+			return generate(callOptions)
+		})
+	} else {
+		res, err = generate(baseOptions)
+	}
 	if err != nil {
 		return verifierDecision{}, err
 	}
@@ -692,6 +1076,7 @@ func (e *roleCollaborativeExecutor) generateRoleContent(ctx context.Context, rol
 	callCtx, cancel := context.WithTimeout(ctx, roleModelCallTimeout)
 	defer cancel()
 	callCtx = contextWithTelemetryRole(callCtx, role)
+	messages = e.guardMessagesWithinContextWindow(messages, options)
 	res, err := e.Model.GenerateContent(callCtx, messages, options...)
 	if errors.Is(err, context.DeadlineExceeded) {
 		return nil, fmt.Errorf("%s role model call timed out after %s", role, roleModelCallTimeout)
@@ -704,19 +1089,25 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 		Role:  llms.ChatMessageTypeSystem,
 		Parts: []llms.ContentPart{llms.TextPart(profile.SystemPrompt)},
 	}}
+	if profile.Name == RolePlanner {
+		messages = append(messages, e.ConversationHistory...)
+	}
 
 	if profile.Name == RoleExecutor && len(state.StepToolSteps) > 0 {
-		scratchpad := (&FunctionAgent{Tools: appendExecutorMetaTools(e.Tools), ScreenshotPruning: e.ScreenshotPruning}).constructFunctionScratchPad(state.StepToolSteps)
+		scratchpad := (&FunctionAgent{Tools: appendExecutorMetaTools(toolsForRole(RoleExecutor, e.Tools)), ScreenshotPruning: e.ScreenshotPruning}).constructFunctionScratchPad(state.StepToolSteps)
 		messages = append(messages, scratchpad...)
 	} else if roleSeesToolScratchpad(profile.Name) && len(state.ToolSteps) > 0 {
-		scratchpad := (&FunctionAgent{Tools: e.Tools, ScreenshotPruning: e.ScreenshotPruning}).constructFunctionScratchPad(state.ToolSteps)
+		scratchpad := (&FunctionAgent{Tools: toolsForRole(profile.Name, e.Tools), ScreenshotPruning: e.ScreenshotPruning}).constructFunctionScratchPad(state.ToolSteps)
 		messages = append(messages, scratchpad...)
 	}
 
-	statePrompt := buildRoleStatePrompt(profile.Name, inputs, state, task)
+	includeWorldStateLatestScreenshot := profile.Name == RoleVerifier
+	statePrompt := buildRoleStatePromptWithOptions(profile.Name, inputs, state, task, roleStatePromptOptions{
+		IncludeWorldStateLatestScreenshot: includeWorldStateLatestScreenshot,
+	})
 	messages = append(messages, llms.MessageContent{
 		Role:  llms.ChatMessageTypeHuman,
-		Parts: buildRoleUserMessageParts(statePrompt, e.InputAttachments, state.World),
+		Parts: buildRoleUserMessageParts(statePrompt, e.InputAttachments, state.World, includeWorldStateLatestScreenshot),
 	})
 	for _, steer := range state.SteerMessages {
 		messages = append(messages, llms.MessageContent{
@@ -806,13 +1197,23 @@ func roleSeesToolScratchpad(role RoleName) bool {
 }
 
 func buildRoleStatePrompt(role RoleName, inputs map[string]string, state roleLoopState, task string) string {
+	return buildRoleStatePromptWithOptions(role, inputs, state, task, roleStatePromptOptions{})
+}
+
+type roleStatePromptOptions struct {
+	IncludeWorldStateLatestScreenshot bool
+}
+
+func buildRoleStatePromptWithOptions(role RoleName, inputs map[string]string, state roleLoopState, task string, options roleStatePromptOptions) string {
 	switch role {
 	case RolePlanner:
 		return buildPlannerStatePrompt(inputs, state, task)
 	case RoleExecutor:
 		return buildExecutorStatePrompt(inputs, state, task)
 	case RoleVerifier:
-		return buildVerifierStatePrompt(inputs, state, task)
+		return buildVerifierStatePromptWithOptions(inputs, state, task, worldStatePromptOptions{
+			IncludeLatestScreenshot: options.IncludeWorldStateLatestScreenshot,
+		})
 	default:
 		return buildPlannerStatePrompt(inputs, state, task)
 	}
@@ -823,11 +1224,14 @@ func buildPlannerStatePrompt(inputs map[string]string, state roleLoopState, task
 	builder.WriteString(task)
 	writeLoopMode(&builder, state)
 	writeWorldState(&builder, state.World)
-	writeRequestObjectiveAndCriteria(&builder, inputs, state)
+	writeRequestContextAndCriteria(&builder, inputs, state)
+	writeSessionContext(&builder, inputs)
 	if history := strings.TrimSpace(inputs["history"]); history != "" {
 		builder.WriteString("\n\nConversation history:\n")
 		builder.WriteString(history)
 	}
+	writeTodoState(&builder, state)
+	writeTodoReminder(&builder, state)
 	writeCurrentPlan(&builder, state)
 	writeExecutorResults(&builder, state)
 	writeVerifierFeedback(&builder, state)
@@ -838,7 +1242,8 @@ func buildExecutorStatePrompt(inputs map[string]string, state roleLoopState, tas
 	var builder strings.Builder
 	builder.WriteString(task)
 	writeWorldState(&builder, state.World)
-	writeRequestObjectiveAndCriteria(&builder, inputs, state)
+	writeRequestContextAndCriteria(&builder, inputs, state)
+	writeSessionContext(&builder, inputs)
 	if history := strings.TrimSpace(inputs["history"]); history != "" {
 		builder.WriteString("\n\nConversation history:\n")
 		builder.WriteString(history)
@@ -870,10 +1275,15 @@ func buildExecutorStatePrompt(inputs map[string]string, state roleLoopState, tas
 }
 
 func buildVerifierStatePrompt(inputs map[string]string, state roleLoopState, task string) string {
+	return buildVerifierStatePromptWithOptions(inputs, state, task, worldStatePromptOptions{})
+}
+
+func buildVerifierStatePromptWithOptions(inputs map[string]string, state roleLoopState, task string, worldOptions worldStatePromptOptions) string {
 	var builder strings.Builder
 	builder.WriteString(task)
-	writeWorldState(&builder, state.World)
-	writeRequestObjectiveAndCriteria(&builder, inputs, state)
+	writeWorldStateWithOptions(&builder, state.World, worldOptions)
+	writeRequestContextAndCriteria(&builder, inputs, state)
+	writeSessionContext(&builder, inputs)
 	writeCurrentPlan(&builder, state)
 	writePriorPlanStepResults(&builder, state)
 	writeCurrentStepForVerifier(&builder, state)
@@ -1014,15 +1424,23 @@ func compactPromptLine(value string, max int) string {
 	return truncateForLog(singleLineHistoryText(value), max)
 }
 
-func buildRoleUserMessageParts(input string, attachments []InputAttachment, world worldState) []llms.ContentPart {
+func buildRoleUserMessageParts(input string, attachments []InputAttachment, world worldState, includeWorldStateLatestScreenshot bool) []llms.ContentPart {
 	parts := buildUserMessageParts(input, attachments)
-	if world.LatestScreenshot == nil || len(world.LatestScreenshot.Data) == 0 {
+	if !includeWorldStateLatestScreenshot || world.LatestScreenshot == nil || len(world.LatestScreenshot.Data) == 0 {
 		return parts
 	}
 	return append(parts, buildImagePart(world.LatestScreenshot.MIMEType(), world.LatestScreenshot.Data))
 }
 
+type worldStatePromptOptions struct {
+	IncludeLatestScreenshot bool
+}
+
 func writeWorldState(builder *strings.Builder, world worldState) {
+	writeWorldStateWithOptions(builder, world, worldStatePromptOptions{})
+}
+
+func writeWorldStateWithOptions(builder *strings.Builder, world worldState, options worldStatePromptOptions) {
 	builder.WriteString("\n\nWorld State (shared across planner, executor, and verifier):\n")
 	if world.DeviceEnvironment != nil {
 		env := world.DeviceEnvironment
@@ -1059,28 +1477,30 @@ func writeWorldState(builder *strings.Builder, world worldState) {
 			builder.WriteByte('\n')
 		}
 	}
-	if world.LatestScreenshot == nil {
-		builder.WriteString("- Latest screenshot: none yet.\n")
-	} else {
-		screenshot := world.LatestScreenshot
-		builder.WriteString(fmt.Sprintf(
-			"- Latest screenshot: step=%d source_tool=%s size=%dx%d format=%s bytes=%d. The current screenshot image is attached to this message.\n",
-			screenshot.StepNumber,
-			screenshot.SourceTool,
-			screenshot.Width,
-			screenshot.Height,
-			screenshot.Format,
-			screenshot.Size,
-		))
-		if input := strings.TrimSpace(screenshot.ToolInput); input != "" {
-			builder.WriteString("- Screenshot source input: ")
-			builder.WriteString(input)
-			builder.WriteByte('\n')
-		}
-		if actionOutput := strings.TrimSpace(screenshot.ActionOutput); actionOutput != "" {
-			builder.WriteString("- Post-action output before screenshot: ")
-			builder.WriteString(compactToolObservation(actionOutput))
-			builder.WriteByte('\n')
+	if options.IncludeLatestScreenshot {
+		if world.LatestScreenshot == nil {
+			builder.WriteString("- Latest screenshot: none yet.\n")
+		} else {
+			screenshot := world.LatestScreenshot
+			builder.WriteString(fmt.Sprintf(
+				"- Latest screenshot: step=%d source_tool=%s size=%dx%d format=%s bytes=%d. The current screenshot image is attached to this message.\n",
+				screenshot.StepNumber,
+				screenshot.SourceTool,
+				screenshot.Width,
+				screenshot.Height,
+				screenshot.Format,
+				screenshot.Size,
+			))
+			if input := strings.TrimSpace(screenshot.ToolInput); input != "" {
+				builder.WriteString("- Screenshot source input: ")
+				builder.WriteString(input)
+				builder.WriteByte('\n')
+			}
+			if actionOutput := strings.TrimSpace(screenshot.ActionOutput); actionOutput != "" {
+				builder.WriteString("- Post-action output before screenshot: ")
+				builder.WriteString(compactToolObservation(actionOutput))
+				builder.WriteByte('\n')
+			}
 		}
 	}
 	if world.Observation != nil {
@@ -1103,7 +1523,7 @@ func writeWorldState(builder *strings.Builder, world worldState) {
 			if obs.SourceRole != "" {
 				builder.WriteString(fmt.Sprintf(" source_role=%s", obs.SourceRole))
 			}
-			if obs.ScreenshotStep > 0 {
+			if options.IncludeLatestScreenshot && obs.ScreenshotStep > 0 {
 				builder.WriteString(fmt.Sprintf(" screenshot_step=%d", obs.ScreenshotStep))
 			}
 			builder.WriteByte('\n')
@@ -1138,20 +1558,25 @@ func intLabel(label string, value *int) string {
 	return fmt.Sprintf("%s=%d", label, *value)
 }
 
-func writeRequestObjectiveAndCriteria(builder *strings.Builder, inputs map[string]string, state roleLoopState) {
-	builder.WriteString("\n\nOriginal user request (authoritative; do not replace it with a subtask):\n")
-	builder.WriteString(inputs["input"])
-	builder.WriteString("\n\nCurrent objective:\n")
-	if objective := strings.TrimSpace(state.Objective); objective != "" {
-		builder.WriteString(objective)
-	} else {
-		builder.WriteString(inputs["input"])
+func writeRequestContextAndCriteria(builder *strings.Builder, inputs map[string]string, state roleLoopState) {
+	rootRequest := strings.TrimSpace(inputs[rootRequestInputKey])
+	if rootRequest == "" {
+		rootRequest = strings.TrimSpace(inputs["input"])
 	}
-	builder.WriteString("\n\nCompletion criteria:\n")
+	latestUserMessage := strings.TrimSpace(inputs[latestUserInputKey])
+	if latestUserMessage == "" {
+		latestUserMessage = strings.TrimSpace(inputs["input"])
+	}
+	builder.WriteString("\n\nOriginal user request / root request:\n")
+	builder.WriteString(rootRequest)
+	if latestUserMessage != "" && latestUserMessage != rootRequest {
+		builder.WriteString("\n\nLatest user message:\n")
+		builder.WriteString(latestUserMessage)
+	}
 	if len(state.CompletionCriteria) == 0 {
-		builder.WriteString("- Satisfy every explicit requirement in the original user request.\n")
 		return
 	}
+	builder.WriteString("\n\nCompletion criteria:\n")
 	for _, criterion := range state.CompletionCriteria {
 		if criterion = strings.TrimSpace(criterion); criterion != "" {
 			builder.WriteString("- ")
@@ -1159,6 +1584,15 @@ func writeRequestObjectiveAndCriteria(builder *strings.Builder, inputs map[strin
 			builder.WriteByte('\n')
 		}
 	}
+}
+
+func writeSessionContext(builder *strings.Builder, inputs map[string]string) {
+	contextView := strings.TrimSpace(inputs[sessionContextInputKey])
+	if contextView == "" {
+		return
+	}
+	builder.WriteString("\n\n")
+	builder.WriteString(contextView)
 }
 
 func writeCurrentPlan(builder *strings.Builder, state roleLoopState) {
@@ -1178,6 +1612,47 @@ func writeCurrentPlan(builder *strings.Builder, state roleLoopState) {
 		builder.WriteString("\n\nPlanner reason:\n")
 		builder.WriteString(reason)
 	}
+}
+
+func writeTodoState(builder *strings.Builder, state roleLoopState) {
+	if state.Todo.Mode == TodoModeNone || len(state.Todo.Items) == 0 {
+		return
+	}
+	builder.WriteString("\n\nCurrent todo state:\n")
+	builder.WriteString(fmt.Sprintf("- mode: %s\n", state.Todo.Mode))
+	builder.WriteString(fmt.Sprintf("- revision: %d\n", state.Todo.Revision))
+	if objective := strings.TrimSpace(state.Todo.Objective); objective != "" {
+		builder.WriteString("- objective: ")
+		builder.WriteString(objective)
+		builder.WriteByte('\n')
+	}
+	for _, item := range state.Todo.Items {
+		marker := " "
+		if item.ID == state.Todo.CurrentID {
+			marker = "*"
+		}
+		builder.WriteString(fmt.Sprintf("%s %d. [%s] %s\n", marker, item.StepIndex, item.Status, item.Text))
+	}
+	switch state.Todo.Mode {
+	case TodoModeSimple:
+		if state.Phase == phaseDefault {
+			builder.WriteString("Use set_todo if this todo state is stale; otherwise continue normally.\n")
+		} else {
+			builder.WriteString("This todo was created in single-agent mode; a committed plan will replace it.\n")
+		}
+	case TodoModePlanned:
+		builder.WriteString("This todo state is derived from the committed plan and updates through plan execution.\n")
+	}
+}
+
+func writeTodoReminder(builder *strings.Builder, state roleLoopState) {
+	reminder := strings.TrimSpace(state.PendingTodoReminder)
+	if reminder == "" {
+		return
+	}
+	builder.WriteString("\n\nTodo reminder:\n")
+	builder.WriteString(reminder)
+	builder.WriteByte('\n')
 }
 
 func writeExecutorResults(builder *strings.Builder, state roleLoopState) {
@@ -1316,8 +1791,8 @@ func (s roleLoopState) latestExecutionResult() (roleExecutionResult, bool) {
 	return s.ExecutionResults[len(s.ExecutionResults)-1], true
 }
 
-func (s *worldState) UpdateFromStep(step schema.AgentStep, stepNumber int) {
-	screenshot, ok := screenshotFromStep(step, stepNumber)
+func (s *worldState) UpdateFromStep(step schema.AgentStep, stepNumber int, tools []langtools.Tool) {
+	screenshot, ok := screenshotFromVisualStep(step, stepNumber, tools)
 	if !ok {
 		return
 	}
@@ -1396,44 +1871,38 @@ func normalizeObservedWorldState(observed observedWorldState) observedWorldState
 }
 
 func screenshotFromStep(step schema.AgentStep, stepNumber int) (worldScreenshot, bool) {
-	var result postActionScreenshotResult
-	if err := json.Unmarshal([]byte(step.Observation), &result); err != nil {
+	visual, ok := parseScreenshotObservation(step.Observation)
+	if !ok {
 		return worldScreenshot{}, false
 	}
-	if result.Width <= 0 || result.Height <= 0 || result.Data == "" {
+	return worldScreenshotFromVisualObservation(step, stepNumber, visual), true
+}
+
+func screenshotFromVisualStep(step schema.AgentStep, stepNumber int, tools []langtools.Tool) (worldScreenshot, bool) {
+	visual, ok := (&FunctionAgent{Tools: tools}).visualScreenshotObservation(step)
+	if !ok {
 		return worldScreenshot{}, false
 	}
-	imageBytes, err := base64.StdEncoding.DecodeString(result.Data)
-	if err != nil || len(imageBytes) == 0 {
-		return worldScreenshot{}, false
-	}
-	format := strings.TrimSpace(result.Format)
-	if format == "" {
-		format = "jpeg"
-	}
-	size := result.Size
-	if size <= 0 {
-		size = len(imageBytes)
-	}
+	return worldScreenshotFromVisualObservation(step, stepNumber, visual), true
+}
+
+func worldScreenshotFromVisualObservation(step schema.AgentStep, stepNumber int, visual visualScreenshotObservation) worldScreenshot {
+	result := visual.Result
 	return worldScreenshot{
 		SourceTool:   step.Action.Tool,
 		ToolInput:    normalizeToolInput(step.Action.ToolInput),
 		ActionOutput: strings.TrimSpace(result.ActionOutput),
 		Width:        result.Width,
 		Height:       result.Height,
-		Format:       format,
-		Size:         size,
-		Data:         imageBytes,
+		Format:       result.Format,
+		Size:         result.Size,
+		Data:         visual.ImageBytes,
 		StepNumber:   stepNumber,
-	}, true
+	}
 }
 
 func (s worldScreenshot) MIMEType() string {
-	format := strings.TrimSpace(s.Format)
-	if format == "" {
-		format = "jpeg"
-	}
-	return "image/" + format
+	return screenshotMIMEType(s.Format)
 }
 
 func (s roleLoopState) lastCandidateAnswer() string {
@@ -1535,7 +2004,7 @@ func parsePlannerDecision(res *llms.ContentResponse, fallbackStep string) planne
 		if toolDesc != "" {
 			return plannerDecision{
 				Objective:          strings.TrimSpace(fallbackStep),
-				CompletionCriteria: uniqueNonEmpty([]string{"Satisfy every explicit requirement in the original user request."}),
+				CompletionCriteria: uniqueNonEmpty([]string{defaultCompletionCriterion}),
 				Plan:               uniqueNonEmpty([]string{toolDesc}),
 				NextStep:           toolDesc,
 				Reason:             "planner incorrectly returned tool_call instead of JSON; extracted description field as next_step",
@@ -1550,7 +2019,7 @@ func parsePlannerDecision(res *llms.ContentResponse, fallbackStep string) planne
 	}
 	return plannerDecision{
 		Objective:          strings.TrimSpace(fallbackStep),
-		CompletionCriteria: uniqueNonEmpty([]string{"Satisfy every explicit requirement in the original user request."}),
+		CompletionCriteria: uniqueNonEmpty([]string{defaultCompletionCriterion}),
 		Plan:               uniqueNonEmpty([]string{text}),
 		NextStep:           text,
 		Reason:             "planner returned non-JSON content",
@@ -1561,6 +2030,11 @@ func parseVerifierDecision(raw, fallbackAnswer string) verifierDecision {
 	var decision verifierDecision
 	if decodeRoleJSON(raw, &decision) == nil {
 		decision.FinalAnswer = strings.TrimSpace(decision.FinalAnswer)
+		decision.Speech = strings.TrimSpace(decision.Speech)
+		decision.Text = strings.TrimSpace(decision.Text)
+		if decision.Text != "" && decision.FinalAnswer == "" {
+			decision.FinalAnswer = decision.Text
+		}
 		decision.Reason = strings.TrimSpace(decision.Reason)
 		decision.ObservedState = normalizeObservedWorldState(decision.ObservedState)
 		if decision.NeedsReplan {
@@ -1725,9 +2199,60 @@ type streamingFuncHandler interface {
 	HandleStreamingFunc(context.Context, []byte)
 }
 
+type finalStreamingController interface {
+	EnableFinalStreaming(context.Context)
+	DisableFinalStreaming(context.Context)
+	HasFinalStreamingToken(context.Context) bool
+}
+
+type providerFinalStreamingController interface {
+	ProviderFinalStreamingEnabled() bool
+}
+
+func (e *roleCollaborativeExecutor) withFinalStreaming(ctx context.Context, fn func() (*llms.ContentResponse, error)) (*llms.ContentResponse, error) {
+	controller, ok := e.CallbacksHandler.(finalStreamingController)
+	if !ok {
+		return fn()
+	}
+	controller.EnableFinalStreaming(ctx)
+	defer controller.DisableFinalStreaming(ctx)
+	return fn()
+}
+
+func (e *roleCollaborativeExecutor) finalStreamingCallOptions(options []llms.CallOption) []llms.CallOption {
+	controller, ok := e.CallbacksHandler.(providerFinalStreamingController)
+	if !ok || !controller.ProviderFinalStreamingEnabled() {
+		return options
+	}
+	streamer, ok := e.CallbacksHandler.(streamingFuncHandler)
+	if !ok {
+		return options
+	}
+	var current llms.CallOptions
+	for _, option := range options {
+		option(&current)
+	}
+	if current.StreamingFunc != nil {
+		return options
+	}
+	callOptions := append([]llms.CallOption{}, options...)
+	callOptions = append(callOptions, llms.WithStreamingFunc(func(ctx context.Context, chunk []byte) error {
+		streamer.HandleStreamingFunc(ctx, chunk)
+		return nil
+	}))
+	return callOptions
+}
+
 func (e *roleCollaborativeExecutor) streamFinalAnswer(ctx context.Context, finalAnswer string) {
 	if finalAnswer == "" {
 		return
+	}
+	if controller, ok := e.CallbacksHandler.(finalStreamingController); ok {
+		if controller.HasFinalStreamingToken(ctx) {
+			return
+		}
+		controller.EnableFinalStreaming(ctx)
+		defer controller.DisableFinalStreaming(ctx)
 	}
 	streamer, ok := e.CallbacksHandler.(streamingFuncHandler)
 	if !ok {
@@ -1750,4 +2275,16 @@ func (e *roleCollaborativeExecutor) GetMemory() schema.Memory {
 
 func (e *roleCollaborativeExecutor) GetCallbackHandler() callbacks.Handler {
 	return e.CallbacksHandler
+}
+
+func executorInputsToString(inputValues map[string]any) (map[string]string, error) {
+	inputs := make(map[string]string, len(inputValues))
+	for key, value := range inputValues {
+		valueStr, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("%w: %s", agents.ErrExecutorInputNotString, key)
+		}
+		inputs[key] = valueStr
+	}
+	return inputs, nil
 }

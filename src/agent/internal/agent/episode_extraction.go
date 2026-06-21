@@ -8,27 +8,6 @@ import (
 	"strings"
 )
 
-// extractToolCallDescription 从工具调用的 ToolInput JSON 中尽力提取出可读的 description
-// 字段。不同模型/工具会把它放在 top-level 或包在 __arg1 这样的字符串里，这里尝试两层。
-func extractToolCallDescription(toolInput string) string {
-	input := strings.TrimSpace(toolInput)
-	if input == "" || input[0] != '{' {
-		return ""
-	}
-	if desc := lookupStringField(input, "description"); desc != "" {
-		return desc
-	}
-	// __arg1 通常是又一个 JSON 字符串 — 解一层再找。
-	if arg := lookupStringField(input, "__arg1"); arg != "" {
-		if strings.HasPrefix(strings.TrimSpace(arg), "{") {
-			if desc := lookupStringField(arg, "description"); desc != "" {
-				return desc
-			}
-		}
-	}
-	return ""
-}
-
 func lookupStringField(jsonText, field string) string {
 	var probe map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(jsonText), &probe); err != nil {
@@ -143,12 +122,12 @@ func episodeProcedureSteps(events []TaskEpisodeEvent) []ProcedureStep {
 			pendingApp, pendingPage = evt.ObservedState.AppName, evt.ObservedState.PageName
 			continue
 		}
-		if evt.Type != "tool_call" || strings.TrimSpace(evt.ToolName) == "" {
+		if evt.Type != runEventToolCall || strings.TrimSpace(evt.ToolName) == "" {
 			continue
 		}
 		step := ProcedureStep{
 			Tool:        evt.ToolName,
-			Description: evt.ToolDescription,
+			Description: strings.TrimSpace(evt.Content),
 			Coords:      extractToolCallCoords(evt.ToolInput),
 			Text:        extractToolCallText(evt.ToolInput),
 			AppName:     pendingApp,
@@ -166,7 +145,7 @@ func episodeProcedureSteps(events []TaskEpisodeEvent) []ProcedureStep {
 				nextApp, nextPage = next.ObservedState.AppName, next.ObservedState.PageName
 				break
 			}
-			if next.Type == "tool_call" {
+			if next.Type == runEventToolCall {
 				break
 			}
 		}
@@ -285,7 +264,7 @@ func observedToolsByApp(events []TaskEpisodeEvent) map[string][]string {
 
 	// 扫描 tool_call，归属到当前 app（如果为空，往后找最近的）
 	for i, evt := range events {
-		if evt.Type != "tool_call" || strings.TrimSpace(evt.ToolName) == "" {
+		if evt.Type != runEventToolCall || strings.TrimSpace(evt.ToolName) == "" {
 			continue
 		}
 		app := appAtIndex[i]
@@ -348,7 +327,7 @@ func pageTransitions(events []TaskEpisodeEvent) []pageTransition {
 						ToApp:       nextApp,
 						ToPage:      nextPage,
 						Tool:        pending.ToolName,
-						Description: pending.ToolDescription,
+						Description: strings.TrimSpace(pending.Content),
 						Coords:      extractToolCallCoords(pending.ToolInput),
 						Text:        extractToolCallText(pending.ToolInput),
 					})
@@ -356,7 +335,7 @@ func pageTransitions(events []TaskEpisodeEvent) []pageTransition {
 			}
 			curApp, curPage = nextApp, nextPage
 			pending = nil
-		case "tool_call":
+		case runEventToolCall:
 			cp := evt
 			pending = &cp
 		}

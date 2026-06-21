@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/binary"
 	"fmt"
 	"strings"
 )
@@ -8,6 +9,12 @@ import (
 const (
 	AttachmentKindImage = "image"
 	AttachmentKindAudio = "audio"
+
+	TurnModalityText  = "text"
+	TurnModalitySTT   = "stt"
+	TurnModalityAudio = "audio"
+
+	voiceAudioInputPlaceholder = "Voice audio input"
 )
 
 type InputAttachment struct {
@@ -17,11 +24,27 @@ type InputAttachment struct {
 	Data     []byte
 }
 
-type AudioInputResult struct {
-	InputText   string
-	Attachments []InputAttachment
-	Transcript  string
+type InputArtifact struct {
+	Kind       string `json:"kind"`
+	Name       string `json:"name,omitempty"`
+	MIMEType   string `json:"mime_type,omitempty"`
+	Path       string `json:"path,omitempty"`
+	DurationMS int64  `json:"duration_ms,omitempty"`
+	Size       int64  `json:"size,omitempty"`
+	Data       []byte `json:"-"`
 }
+
+type TurnInput struct {
+	InputText    string
+	OriginalText string
+	Modality     string
+	Source       string
+	Attachments  []InputAttachment
+	Transcript   string
+	Artifacts    []InputArtifact
+}
+
+type AudioInputResult = TurnInput
 
 func NewSTTClientFromConfig(cfg Config) (STTClient, error) {
 	provider := strings.ToLower(strings.TrimSpace(cfg.STT.Provider))
@@ -40,24 +63,35 @@ func NewSTTClientFromConfig(cfg Config) (STTClient, error) {
 		return NewOpenAIWhisperSTT(cfg.STT.APIKey, cfg.STT.Model, cfg.STT.BaseURL, httpClient), nil
 	case "openrouter":
 		return NewOpenRouterSTT(cfg.STT.APIKey, cfg.STT.Model, cfg.STT.BaseURL, httpClient), nil
-	case "tencent", "tencent_asr":
+	case tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider:
 		return NewTencentASRSTT(cfg.STT.SecretID, cfg.STT.SecretKey, cfg.STT.Region, cfg.STT.EngineModelType, httpClient), nil
 	default:
 		return nil, fmt.Errorf("unsupported STT provider: %s", cfg.STT.Provider)
 	}
 }
 
+func NewTextTurnInput(userText string, attachments []InputAttachment) TurnInput {
+	trimmedText := strings.TrimSpace(userText)
+	return normalizeTurnInput(TurnInput{
+		InputText:    normalizeRunInput(trimmedText, attachments),
+		OriginalText: trimmedText,
+		Modality:     TurnModalityText,
+		Attachments:  cloneInputAttachments(attachments),
+		Artifacts:    artifactsFromAttachments(attachments),
+	})
+}
+
 func PrepareAudioInput(mode string, sttClient STTClient, wavData []byte, userText string, attachments []InputAttachment) (AudioInputResult, error) {
 	resolvedMode := strings.ToLower(strings.TrimSpace(mode))
 	if resolvedMode == "" {
-		resolvedMode = "stt"
+		resolvedMode = TurnModalitySTT
 	}
 
 	finalAttachments := append([]InputAttachment{}, attachments...)
 	trimmedText := strings.TrimSpace(userText)
 
 	switch resolvedMode {
-	case "stt":
+	case TurnModalitySTT:
 		if sttClient == nil {
 			return AudioInputResult{}, fmt.Errorf("STT mode enabled but STT client is unavailable")
 		}
@@ -71,23 +105,42 @@ func PrepareAudioInput(mode string, sttClient STTClient, wavData []byte, userTex
 			return AudioInputResult{}, fmt.Errorf("STT returned empty transcript")
 		}
 
-		return AudioInputResult{
-			InputText:   normalizeRunInput(mergeUserTextAndTranscript(trimmedText, transcript), finalAttachments),
-			Attachments: finalAttachments,
-			Transcript:  transcript,
-		}, nil
+		return normalizeTurnInput(TurnInput{
+			InputText:    normalizeRunInput(mergeUserTextAndTranscript(trimmedText, transcript), finalAttachments),
+			OriginalText: trimmedText,
+			Modality:     TurnModalitySTT,
+			Source:       "voice",
+			Attachments:  finalAttachments,
+			Transcript:   transcript,
+			Artifacts:    artifactsFromAttachments(finalAttachments),
+		}), nil
 
-	case "audio":
-		finalAttachments = append(finalAttachments, InputAttachment{
+	case TurnModalityAudio:
+		audioAttachment := InputAttachment{
 			Kind:     AttachmentKindAudio,
 			Name:     "recording.wav",
 			MIMEType: "audio/wav",
 			Data:     wavData,
+		}
+		finalAttachments = append(finalAttachments, InputAttachment{
+			Kind:     audioAttachment.Kind,
+			Name:     audioAttachment.Name,
+			MIMEType: audioAttachment.MIMEType,
+			Data:     audioAttachment.Data,
 		})
-		return AudioInputResult{
-			InputText:   normalizeRunInput(trimmedText, finalAttachments),
-			Attachments: finalAttachments,
-		}, nil
+		inputText := trimmedText
+		if inputText == "" {
+			inputText = voiceAudioInputPlaceholder
+		}
+		artifacts := append(artifactsFromAttachments(attachments), audioArtifactFromWAV(audioAttachment.Name, audioAttachment.MIMEType, "", wavData))
+		return normalizeTurnInput(TurnInput{
+			InputText:    inputText,
+			OriginalText: trimmedText,
+			Modality:     TurnModalityAudio,
+			Source:       "voice",
+			Attachments:  finalAttachments,
+			Artifacts:    artifacts,
+		}), nil
 
 	default:
 		return AudioInputResult{}, fmt.Errorf("invalid audio input mode: %s", mode)
@@ -141,4 +194,198 @@ func normalizeRunInput(input string, attachments []InputAttachment) string {
 	default:
 		return "Please analyze the attached content."
 	}
+}
+
+func normalizeTurnInput(input TurnInput) TurnInput {
+	input.InputText = strings.TrimSpace(input.InputText)
+	input.OriginalText = strings.TrimSpace(input.OriginalText)
+	input.Transcript = strings.TrimSpace(input.Transcript)
+	input.Modality = strings.ToLower(strings.TrimSpace(input.Modality))
+	input.Source = strings.TrimSpace(input.Source)
+	input.Attachments = cloneInputAttachments(input.Attachments)
+	input.Artifacts = sanitizeInputArtifacts(input.Artifacts)
+
+	if input.Modality == "" {
+		input.Modality = TurnModalityText
+	}
+	if input.Source == "" && (input.Modality == TurnModalitySTT || input.Modality == TurnModalityAudio) {
+		input.Source = "voice"
+	}
+	if input.InputText == "" {
+		switch {
+		case input.Modality == TurnModalitySTT && input.Transcript != "":
+			input.InputText = input.Transcript
+		case input.Modality == TurnModalityAudio:
+			input.InputText = voiceAudioInputPlaceholder
+		case input.OriginalText != "":
+			input.InputText = input.OriginalText
+		default:
+			input.InputText = normalizeRunInput("", input.Attachments)
+		}
+	}
+	return input
+}
+
+func cloneInputAttachments(attachments []InputAttachment) []InputAttachment {
+	if len(attachments) == 0 {
+		return nil
+	}
+	cloned := make([]InputAttachment, 0, len(attachments))
+	for _, attachment := range attachments {
+		copyAttachment := attachment
+		if len(attachment.Data) > 0 {
+			copyAttachment.Data = append([]byte(nil), attachment.Data...)
+		}
+		cloned = append(cloned, copyAttachment)
+	}
+	return cloned
+}
+
+func sanitizeInputArtifacts(artifacts []InputArtifact) []InputArtifact {
+	if len(artifacts) == 0 {
+		return nil
+	}
+	sanitized := make([]InputArtifact, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		artifact.Kind = strings.TrimSpace(artifact.Kind)
+		artifact.Name = strings.TrimSpace(artifact.Name)
+		artifact.MIMEType = strings.TrimSpace(artifact.MIMEType)
+		artifact.Path = strings.TrimSpace(artifact.Path)
+		artifact.Data = nil
+		if artifact.Kind == "" && artifact.MIMEType == "" && artifact.Path == "" && artifact.Name == "" && artifact.Size == 0 && artifact.DurationMS == 0 {
+			continue
+		}
+		sanitized = append(sanitized, artifact)
+	}
+	if len(sanitized) == 0 {
+		return nil
+	}
+	return sanitized
+}
+
+func artifactsFromAttachments(attachments []InputAttachment) []InputArtifact {
+	if len(attachments) == 0 {
+		return nil
+	}
+	artifacts := make([]InputArtifact, 0, len(attachments))
+	for _, attachment := range attachments {
+		kind := strings.TrimSpace(attachment.Kind)
+		mimeType := strings.TrimSpace(attachment.MIMEType)
+		name := strings.TrimSpace(attachment.Name)
+		if kind == "" && mimeType == "" && name == "" && len(attachment.Data) == 0 {
+			continue
+		}
+		artifacts = append(artifacts, InputArtifact{
+			Kind:     kind,
+			Name:     name,
+			MIMEType: mimeType,
+			Size:     int64(len(attachment.Data)),
+		})
+	}
+	return sanitizeInputArtifacts(artifacts)
+}
+
+func audioArtifactFromWAV(name, mimeType, path string, wavData []byte) InputArtifact {
+	if strings.TrimSpace(name) == "" {
+		name = "recording.wav"
+	}
+	if strings.TrimSpace(mimeType) == "" {
+		mimeType = "audio/wav"
+	}
+	return InputArtifact{
+		Kind:       AttachmentKindAudio,
+		Name:       name,
+		MIMEType:   mimeType,
+		Path:       strings.TrimSpace(path),
+		DurationMS: wavDurationMS(wavData),
+		Size:       int64(len(wavData)),
+	}
+}
+
+func withAudioArtifactPath(input TurnInput, path string, durationMS int64, size int64) TurnInput {
+	input = normalizeTurnInput(input)
+	path = strings.TrimSpace(path)
+	if durationMS < 0 {
+		durationMS = 0
+	}
+	if size < 0 {
+		size = 0
+	}
+	for i := range input.Artifacts {
+		if input.Artifacts[i].Kind != AttachmentKindAudio {
+			continue
+		}
+		if path != "" {
+			input.Artifacts[i].Path = path
+		}
+		if durationMS > 0 {
+			input.Artifacts[i].DurationMS = durationMS
+		}
+		if size > 0 {
+			input.Artifacts[i].Size = size
+		}
+		return normalizeTurnInput(input)
+	}
+	if path != "" || input.Modality == TurnModalityAudio {
+		input.Artifacts = append(input.Artifacts, InputArtifact{
+			Kind:       AttachmentKindAudio,
+			Name:       "recording.wav",
+			MIMEType:   "audio/wav",
+			Path:       path,
+			DurationMS: durationMS,
+			Size:       size,
+		})
+	}
+	return normalizeTurnInput(input)
+}
+
+func firstAudioArtifact(input TurnInput) (InputArtifact, bool) {
+	for _, artifact := range input.Artifacts {
+		if artifact.Kind == AttachmentKindAudio {
+			return artifact, true
+		}
+	}
+	return InputArtifact{}, false
+}
+
+func wavDurationMS(wavData []byte) int64 {
+	if len(wavData) < 44 || string(wavData[0:4]) != "RIFF" || string(wavData[8:12]) != "WAVE" {
+		return 0
+	}
+	channels := int(binary.LittleEndian.Uint16(wavData[22:24]))
+	sampleRate := int(binary.LittleEndian.Uint32(wavData[24:28]))
+	bitsPerSample := int(binary.LittleEndian.Uint16(wavData[34:36]))
+	if channels <= 0 || sampleRate <= 0 || bitsPerSample <= 0 {
+		return 0
+	}
+	dataSize := 0
+	for offset := 12; offset+8 <= len(wavData); {
+		chunkID := string(wavData[offset : offset+4])
+		chunkSize := int(binary.LittleEndian.Uint32(wavData[offset+4 : offset+8]))
+		dataStart := offset + 8
+		if chunkID == "data" {
+			dataSize = chunkSize
+			if dataStart+dataSize > len(wavData) {
+				dataSize = len(wavData) - dataStart
+			}
+			break
+		}
+		next := dataStart + chunkSize
+		if chunkSize%2 == 1 {
+			next++
+		}
+		if next <= offset {
+			break
+		}
+		offset = next
+	}
+	if dataSize <= 0 {
+		dataSize = len(wavData) - 44
+	}
+	bytesPerFrame := channels * bitsPerSample / 8
+	if bytesPerFrame <= 0 {
+		return 0
+	}
+	denominator := int64(bytesPerFrame * sampleRate)
+	return (int64(dataSize)*1000 + denominator - 1) / denominator
 }

@@ -8,21 +8,23 @@ import (
 	"time"
 )
 
-func TestPromptIncludesCurrentChineseDate(t *testing.T) {
+func TestRolePromptsIncludeCurrentDate(t *testing.T) {
 	originalNow := promptNow
 	promptNow = func() time.Time {
 		return time.Date(2026, time.June, 1, 8, 0, 0, 0, time.FixedZone("CST", 8*60*60))
 	}
 	t.Cleanup(func() { promptNow = originalNow })
 
-	want := "今天的日期是: 2026年06月01日 星期一"
-	msg := buildFunctionAgentSystemMessage(AgentConfig{}, ResolvedSkills{})
-	if !strings.Contains(msg, want) {
-		t.Fatalf("function system message missing current date %q:\n%s", want, msg)
+	want := "Current date: 2026-06-01 (星期一)"
+	profiles := buildRoleProfiles(AgentConfig{}, ResolvedSkills{}, nil, MemoryContext{})
+	for _, profile := range []RoleProfile{profiles.Planner, profiles.Executor, profiles.Verifier} {
+		if !strings.Contains(profile.SystemPrompt, want) {
+			t.Fatalf("%s system prompt missing current date %q:\n%s", profile.Name, want, profile.SystemPrompt)
+		}
 	}
 }
 
-func TestPromptIncludesRealHostRuntimeInfo(t *testing.T) {
+func TestRolePromptsIncludeRealHostRuntimeInfo(t *testing.T) {
 	hostname, err := os.Hostname()
 	if err != nil {
 		t.Fatalf("Hostname() error = %v", err)
@@ -32,22 +34,14 @@ func TestPromptIncludesRealHostRuntimeInfo(t *testing.T) {
 	wantLine := "Host: os=" + operatingSystem + ", hostname=" + hostname + ", arch=" + architecture
 	wantEnvironmentLine := "- You run on the Aiden hardware controller (" + wantLine + "); you are not the device shown in screenshots."
 
-	msg := buildFunctionAgentSystemMessage(AgentConfig{}, ResolvedSkills{})
-	if !strings.Contains(msg, wantEnvironmentLine) {
-		t.Fatalf("function system message missing host info in environment guidance %q:\n%s", wantEnvironmentLine, msg)
-	}
-	if strings.Contains(msg, "kernel=") {
-		t.Fatalf("system message should not include kernel info:\n%s", msg)
-	}
-}
-
-func TestFunctionAgentSystemMessageIdentifiesAidenAI(t *testing.T) {
-	msg := buildFunctionAgentSystemMessage(AgentConfig{}, ResolvedSkills{})
-	if !strings.HasPrefix(msg, "You are Aiden AI agent.\n") {
-		t.Fatalf("system message should identify Aiden AI agent, got:\n%s", msg)
-	}
-	if strings.Contains(msg, "You are agent.\n") {
-		t.Fatalf("system message should not use generic agent identity:\n%s", msg)
+	profiles := buildRoleProfiles(AgentConfig{}, ResolvedSkills{}, nil, MemoryContext{})
+	for _, profile := range []RoleProfile{profiles.Planner, profiles.Executor} {
+		if !strings.Contains(profile.SystemPrompt, wantEnvironmentLine) {
+			t.Fatalf("%s system prompt missing host info in environment guidance %q:\n%s", profile.Name, wantEnvironmentLine, profile.SystemPrompt)
+		}
+		if strings.Contains(profile.SystemPrompt, "kernel=") {
+			t.Fatalf("%s system prompt should not include kernel info:\n%s", profile.Name, profile.SystemPrompt)
+		}
 	}
 }
 
@@ -64,84 +58,170 @@ func mustUname(t *testing.T, flag string) string {
 	return value
 }
 
-func TestFunctionAgentSystemMessageIncludesGlobalEnvironmentAndDeviceGuidance(t *testing.T) {
-	msg := buildFunctionAgentSystemMessage(
+func TestRolePromptsIncludeGlobalEnvironmentAndDeviceGuidance(t *testing.T) {
+	profiles := buildRoleProfiles(
 		AgentConfig{
 			Instruction:      "base instruction",
 			AdditionalPrompt: "extra prompt",
 		},
 		ResolvedSkills{},
+		nil,
+		MemoryContext{},
 	)
 
-	for _, want := range []string{
-		"base instruction",
-		"extra prompt",
-		"### Environment",
-		"### Default Behavior",
-		"Default to replying in Simplified Chinese",
+	for _, profile := range []RoleProfile{profiles.Planner, profiles.Executor} {
+		for _, want := range []string{
+			"base instruction",
+			"extra prompt",
+			"## Environment",
+			"## Default behavior",
+			"Default to replying in Simplified Chinese",
+			"Aiden hardware controller",
+			"not the device shown in screenshots",
+			"shell, local files, processes, and system commands only affect the Aiden hardware controller",
+			"Do not infer target device information from the host OS or architecture",
+			"do not use local system commands instead of target control tools",
+			"Infer the target device and target OS from screenshots",
+			"weak prior, not a detected fact",
+			"Use shell only on the Aiden controller",
+			"do not operate the target UI in screenshots",
+			"recall_memory",
+			"do not answer from general knowledge alone",
+			"For text-only arithmetic, comparison, summarization, translation, or simple Q&A tasks",
+			"do not observe, wait on, or operate the connected display",
+			"suitable for TTS",
+			"device-operator",
+			"visible target UI",
+			"wait_for_stable_screen screenshot",
+			"Do not repeat the same click",
+			"prefer search over blind scrolling",
+			"Base visible UI actions on the latest screenshot",
+			"Prefer direct or semantic tools",
+			"repeated swipes or scrolling",
+			"image_diff feedback",
+			"request confirmation",
+			"probe once with medium",
+			"save_memory with app name, control location, direction, strength/distance, and delta",
+		} {
+			if !strings.Contains(profile.SystemPrompt, want) {
+				t.Fatalf("%s system prompt missing %q:\n%s", profile.Name, want, profile.SystemPrompt)
+			}
+		}
+
+		for _, unwanted := range []string{
+			"## 环境",
+			"## 默认行为",
+			"宿主机:",
+			"默认用简体中文回答",
+			"Aiden 硬件控制器",
+			"滑动操作策略",
+			"不要因为没有单独的拨打电话工具就说做不到",
+			"osascript",
+			"AppleScript",
+			"PowerShell",
+			"xdotool",
+			"kernel=",
+		} {
+			if strings.Contains(profile.SystemPrompt, unwanted) {
+				t.Fatalf("%s system prompt should not contain old localized guidance %q:\n%s", profile.Name, unwanted, profile.SystemPrompt)
+			}
+		}
+
+		if strings.Contains(profile.SystemPrompt, "Use long-term memory if relevant") {
+			t.Fatalf("%s system prompt should not contain benchmark-specific memory trigger:\n%s", profile.Name, profile.SystemPrompt)
+		}
+	}
+}
+
+func TestDefaultAgentBehaviorExcludesEnvironmentGuidance(t *testing.T) {
+	behavior := defaultAgentBehavior(AgentConfig{})
+
+	for _, unexpected := range []string{
+		"Environment",
 		"Aiden hardware controller",
 		"not the device shown in screenshots",
-		"shell, local files, processes, and system commands only affect the Aiden hardware controller",
-		"Do not infer target device information from the host OS or architecture",
-		"do not use local system commands instead of target control tools",
-		"Infer the target device and target OS from screenshots",
-		"weak prior, not a detected fact",
-		"Use shell only on the Aiden controller",
-		"do not operate the target UI in screenshots",
-		"recall_memory",
-		"do not answer from general knowledge alone",
-		"For text-only arithmetic, comparison, summarization, translation, or simple Q&A tasks",
-		"do not observe, wait on, or operate the connected display",
-		"suitable for TTS",
-		"device-operator",
-		"visible target UI",
-		"Use wait_for_stable_screen only while operating a visible target UI",
-		"Do not call it for text-only reasoning",
-		"Do not repeat the same click",
-		"prefer search over blind scrolling",
-		"US-keyboard ASCII",
-		"prefer the audio_volume tool",
-		"Prefer coord_space:\"normalized\"",
-		"Use coord_space:\"pixel\" only when calibrated",
-		"prefer quick_action",
-		"quick_action {\"action\":\"back\",\"platform\":\"android\"}",
-		"Fall back to lower-level tools",
-		"type back/home",
-		"request confirmation",
-		"Swipe strategy",
+		hostRuntimeInfoContext(),
+	} {
+		if strings.Contains(behavior, unexpected) {
+			t.Fatalf("defaultAgentBehavior should not include environment guidance %q:\n%s", unexpected, behavior)
+		}
+	}
+}
+
+func TestGlobalPromptsExcludeKeyboardTextInputDetails(t *testing.T) {
+	for name, prompt := range map[string]string{
+		"defaultAgentBehavior": defaultAgentBehavior(AgentConfig{}),
+		"defaultInstruction":   defaultInstruction,
+	} {
+		for _, unexpected := range []string{
+			`{"text":"App Store"}`,
+			"US-keyboard ASCII",
+			"must receive JSON",
+			"不要传裸字符串",
+			"非键盘字符",
+			"拼音/英文关键词",
+		} {
+			if strings.Contains(prompt, unexpected) {
+				t.Fatalf("%s should not include keyboard_text input detail %q:\n%s", name, unexpected, prompt)
+			}
+		}
+	}
+}
+
+func TestDefaultAgentBehaviorExcludesMigratedToolDetails(t *testing.T) {
+	behavior := defaultAgentBehavior(AgentConfig{})
+	for _, unexpected := range []string{
+		"stable=false means",
+		"audio_volume tool",
+		"Use the Delete key only",
+		"coord_space:\"normalized\"",
+		"coord_space:\"pixel\"",
+		`quick_action {"action":"back","platform":"android"}`,
+		"For phone edge navigation",
+		"Directional swipe names describe finger movement",
 		"Precision swipe loop",
-		"probe once with medium",
-		"strength/direction -> UI movement",
-		"Downshift when close to the target",
-		"if oscillating, use only tiny",
-		"save_memory with app name, control location, direction, strength/distance, and delta",
+		"Horizontal carousels",
 	} {
-		if !strings.Contains(msg, want) {
-			t.Fatalf("system message missing %q:\n%s", want, msg)
+		if strings.Contains(behavior, unexpected) {
+			t.Fatalf("defaultAgentBehavior should not include migrated tool detail %q:\n%s", unexpected, behavior)
 		}
 	}
+}
 
-	for _, unwanted := range []string{
-		"## 环境",
-		"## 默认行为",
-		"宿主机:",
-		"默认用简体中文回答",
-		"Aiden 硬件控制器",
-		"滑动操作策略",
-		"不要因为没有单独的拨打电话工具就说做不到",
-		"osascript",
-		"AppleScript",
-		"PowerShell",
-		"xdotool",
-		"kernel=",
-	} {
-		if strings.Contains(msg, unwanted) {
-			t.Fatalf("system message should not contain old localized guidance %q:\n%s", unwanted, msg)
+func TestRolePromptsRequireToolCallSpeechForExternalStateTools(t *testing.T) {
+	enabled := true
+	profiles := buildRoleProfiles(
+		AgentConfig{
+			VoiceToolCallSpeech: &enabled,
+			TTSConfigured:       true,
+		},
+		ResolvedSkills{},
+		nil,
+		MemoryContext{},
+	)
+
+	for _, profile := range []RoleProfile{profiles.Planner, profiles.Executor} {
+		for _, want := range []string{
+			"The system prompt already includes the current date and weekday",
+			"Do not call current_time for ordinary date or weekday questions",
+			"when a precise clock time, timezone conversion, offset, timestamp, or elapsed-time calculation is required",
+			"Put a brief assistant content message before every tool call that observes, waits for, reads, or changes external state",
+			"screenshot, wait_for_stable_screen, quick_action, mouse_click, touch_gesture, keyboard_text, keyboard_tap, open_app, recall_memory",
+			"assistant content is spoken aloud by the runtime before the tool runs",
+			"Do not put the final answer in tool-call assistant content",
+			"TTS is configured, so user-facing text output will be spoken aloud",
+			"Do not duplicate the same sentence in tool-call assistant content and the final answer",
+		} {
+			if !strings.Contains(profile.SystemPrompt, want) {
+				t.Fatalf("%s prompt missing tool-call speech requirement %q:\n%s", profile.Name, want, profile.SystemPrompt)
+			}
 		}
-	}
-
-	if strings.Contains(msg, "Use long-term memory if relevant") {
-		t.Fatalf("system message should not contain benchmark-specific memory trigger:\n%s", msg)
+		if strings.Contains(profile.SystemPrompt, "user-visible tool") {
+			t.Fatalf("%s prompt should not use ambiguous user-visible tool wording:\n%s", profile.Name, profile.SystemPrompt)
+		}
+		if strings.Contains(profile.SystemPrompt, "When voice tool-call speech is enabled") {
+			t.Fatalf("%s prompt should not ask the model to reason about whether voice tool-call speech is enabled:\n%s", profile.Name, profile.SystemPrompt)
+		}
 	}
 }
 
@@ -151,7 +231,7 @@ func TestCombinedAgentInstructionFallsBackWhenEmpty(t *testing.T) {
 	}
 }
 
-func TestFunctionAgentSystemMessageGuidesSkillCatalogAndPreloadedSkills(t *testing.T) {
+func TestRolePromptsGuideSkillCatalogAndPreloadedSkills(t *testing.T) {
 	index := NewSkillIndex()
 	index.skills["planner"] = &SkillDefinition{Name: "planner", Description: "Plan before acting", Instructions: "Make a plan."}
 	manager := NewSkillManager(index)
@@ -162,48 +242,35 @@ func TestFunctionAgentSystemMessageGuidesSkillCatalogAndPreloadedSkills(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	msg := buildFunctionAgentSystemMessage(AgentConfig{}, skills)
+	profiles := buildRoleProfiles(AgentConfig{}, skills, nil, MemoryContext{})
 
-	for _, want := range []string{
-		"## Skills",
-		"Skills 是可复用的操作流程，不是 memory",
-		"适合 App 操作、排障、设备流程、表单/授权/支付、重复任务",
-		"### 可用信息",
-		"### 使用规则",
-		"### 维护规则",
-		"Available skills:",
-		"- planner: Plan before acting",
-		"Active skills:",
-		"[planner] Make a plan.",
-		"行动前先查看 Available skills",
-		"如果 Available skills 不够判断，再用 skill_list 搜索",
-		"找到相关 skill 后，先 skill_read，再执行",
-		"不要读取所有 skill",
-		"已加载 skill 是本次任务 SOP",
-		"用户指令、安全规则、当前屏幕状态或工具结果冲突",
-		"实际按某个 skill 执行后，如果有 skill_mark_used 工具，就用该 skill 名称调用它",
-		"只有可复用流程才写入或更新 skill",
-		"不要保存一次性进度、临时状态、秘密、原始日志或个人事实",
-		"修改已有 skill 前必须先 skill_read",
-		"小改优先 skill_manage action=patch",
-		"skill_manage 只能维护 configDir/skills",
-		"不要直接修改 bundled source 或 configDir/skill-state 文件",
-	} {
-		if !strings.Contains(msg, want) {
-			t.Fatalf("system message missing %q:\n%s", want, msg)
+	for _, profile := range []RoleProfile{profiles.Planner, profiles.Executor} {
+		for _, want := range []string{
+			"## Available skills",
+			"- planner: Plan before acting",
+			"## Active skills",
+			"[planner] Make a plan.",
+		} {
+			if !strings.Contains(profile.SystemPrompt, want) {
+				t.Fatalf("%s system prompt missing %q:\n%s", profile.Name, want, profile.SystemPrompt)
+			}
 		}
 	}
 }
 
-func TestFunctionAgentSystemMessageIncludesRuntimeContext(t *testing.T) {
+func TestRolePromptsIncludeRuntimeContext(t *testing.T) {
 	runtimeContext := "Phone bridge status:\n- connected: true"
-	msg := buildFunctionAgentSystemMessage(
+	profiles := buildRoleProfiles(
 		AgentConfig{RuntimeContext: runtimeContext},
 		ResolvedSkills{},
+		nil,
+		MemoryContext{},
 	)
 
-	if !strings.Contains(msg, "Runtime context:\n"+runtimeContext) {
-		t.Fatalf("system message missing runtime context:\n%s", msg)
+	for _, profile := range []RoleProfile{profiles.Planner, profiles.Executor} {
+		if !strings.Contains(profile.SystemPrompt, "## Runtime context\n"+runtimeContext) {
+			t.Fatalf("%s system prompt missing runtime context:\n%s", profile.Name, profile.SystemPrompt)
+		}
 	}
 }
 
@@ -288,16 +355,8 @@ func TestPhoneBridgeRuntimeContextIncludesPhoneEnvironment(t *testing.T) {
 
 func TestPhoneBridgeRuntimeContextDisconnected(t *testing.T) {
 	got := phoneBridgeRuntimeContext(PhoneBridgeStatus{})
-
-	for _, want := range []string{
-		"Phone bridge status:",
-		"- connected: false",
-		"The phone companion app is not connected",
-		"Do not assume open_app, clipboard, calendar, contacts, or notification tools can control the phone",
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("runtime context missing %q:\n%s", want, got)
-		}
+	if got != "" {
+		t.Fatalf("disconnected phone bridge should not add runtime context, got:\n%s", got)
 	}
 }
 

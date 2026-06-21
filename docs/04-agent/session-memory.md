@@ -1,12 +1,12 @@
 # Session Memory Compaction
 
-This document describes Aiden Agent's session-level conversation memory compaction. The mechanism turns a growing event stream into chunk summaries and keeps only the latest hot window in the planner prompt.
+This document describes Aiden Agent's session-level conversation memory compaction. The mechanism turns a growing event stream into chunk summaries and keeps only the latest hot window available to the planner as native chat messages.
 
 This is separate from the [Memory Plane design](memory-plane.md). Memory Plane handles device and task-episode experience memory; session memory handles the dialogue history for one active session.
 
 ## Flow
 
-After each runtime turn, the Agent persists the hot-window events and schedules `MemoryManager.RequestMaintenance`. `MemoryManager.Save` runs the same maintenance path synchronously for callers that use it directly.
+Runtime appends the current user input at run begin and the assistant output at run commit. After commit, the Agent schedules `MemoryManager.RequestMaintenance`. `MemoryManager.Save` runs the same maintenance path synchronously for callers that use it directly.
 
 ```text
 read session/events.jsonl under FileLock
@@ -178,11 +178,15 @@ The Rolling Summary currently has a 100-line cap (`maxRollingSummaryLines`). Whe
 ## Hot-Window Prompt Placement
 
 Compressed session summaries are loaded into the role memory context, while the
-retained hot-window events are restored as normal `ChatMessageHistory` records.
-At prompt time the planner sees those records under the regular
-`Conversation history:` section of its task prompt. Compressed-history state is
-not exposed through a hot-window label, and no synthetic hot-window start/end
-markers are added.
+retained hot-window events are converted into native chat messages and inserted
+between the planner system prompt and the current planner task message. They are
+not rendered inside a `Conversation history:` text block. Compressed-history
+state is not exposed through a hot-window label, and no synthetic hot-window
+start/end markers are added. The session compaction thresholds and model context
+budget are the controls for prompt growth.
+
+**Note**: The `chat_history` store, while persisted, is NOT injected into the
+planner context. See `context-lifecycle.md` for rationale.
 
 Synthetic prompt text must not be persisted into `ChatMessageHistory`.
 `Snapshot()` reads history verbatim and `appendSessionEvents()` writes records

@@ -179,4 +179,20 @@ func TestRecallToolDescriptionsGuideAgentUsage(t *testing.T) {
 			t.Fatalf("recall_memory description missing %q:\n%s", want, memoryDescription)
 		}
 	}
+
+	saveDescription := NewSaveMemoryTool(NewLongTermMemoryStore(t.TempDir())).Description()
+	for _, want := range []string{
+		"Mandatory use",
+		"call save_memory before saying it is remembered or saved",
+		"Do not claim a memory was remembered or saved until this tool returns saved or ignored as a duplicate",
+		"type=profile",
+		"location, home city, timezone",
+		"future defaults",
+		"type=fact only",
+		"synthesized user profile",
+	} {
+		if !strings.Contains(saveDescription, want) {
+			t.Fatalf("save_memory description missing %q:\n%s", want, saveDescription)
+		}
+	}
 }

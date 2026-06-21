@@ -1,31 +1,31 @@
-# 启动服务与运行时布局
+# Boot Services and Runtime Layout
 
-固件集成通过 `overlay/etc/init.d/` 中的脚本完成。多数长运行服务都带有轻量 watchdog：脚本本身启动一个循环，子进程退出后等待 2 秒重启。
+Firmware integration is done through scripts in `overlay/etc/init.d/`. Most long-running services come with a lightweight watchdog: the script itself starts a loop that waits 2 seconds and restarts the child process after it exits.
 
-## 启动脚本
+## Boot Scripts
 
-| 脚本 | 作用 |
+| Script | Purpose |
 | --- | --- |
-| `S20oemslot` | 根据 `aiden.slot_suffix` 挂载 slot-specific `/oem` |
+| `S20oemslot` | Mount the slot-specific `/oem` based on `aiden.slot_suffix` |
 | `S43wlan_guard` | WLAN connectivity guard |
-| `S49ntp` | 启动 `ntpd` daemon；周期同步由 `S50ntp_watchdog` 触发 |
-| `S49usbhid` | 初始化 USB HID gadget |
-| `S50ntp_watchdog` | 周期检查时钟同步状态，未同步时触发 `S49ntp step` |
-| `S50usbdevice` | USB device 相关初始化 |
-| `S52frame_service` | 启动并守护 HDMI 帧服务 |
-| `S53audio_service` | 启动并守护音频服务 |
-| `S53agent` | 启动并守护 Go Agent |
-| `S54ota` | 启动并守护 OTA daemon |
-| `S55aiden_usb_dhcp` | USB 网络 DHCP / dnsmasq 相关服务 |
-| `S56config_web` | 启动配置网页 |
-| `S99rtcinit` | 覆盖 SDK 默认 RTC 脚本；RTC 异常且系统时间仍早于基线时写入默认日期 |
-| `S99usb0config` | USB 网络接口后置配置 |
+| `S49ntp` | Start the `ntpd` daemon; periodic sync is triggered by `S50ntp_watchdog` |
+| `S49usbhid` | Initialize the USB HID gadget |
+| `S50ntp_watchdog` | Periodically check clock sync status, and trigger `S49ntp step` when not synced |
+| `S50usbdevice` | USB device related initialization |
+| `S52frame_service` | Start and supervise the HDMI frame service |
+| `S53audio_service` | Start and supervise the audio service |
+| `S53agent` | Start and supervise the Go Agent |
+| `S54ota` | Run the OTA health handling once at boot |
+| `S55aiden_usb_dhcp` | USB network DHCP / dnsmasq related services |
+| `S56config_web` | Start the config web page |
+| `S99rtcinit` | Override the SDK default RTC script; write the default date when the RTC is abnormal and the system time is still earlier than the baseline |
+| `S99usb0config` | USB network interface post-configuration |
 
 ## Frame Service
 
-配置文件：`/etc/aiden_frame_service.conf`
+Config file: `/etc/aiden_frame_service.conf`
 
-默认值：
+Default values:
 
 ```sh
 FRAME_SERVICE_BIN=/oem/usr/bin/frame_service
@@ -35,7 +35,7 @@ PID_FILE=/run/frame_service/frame_service.pid
 WATCHDOG_PID_FILE=/run/frame_service/frame_service_watchdog.pid
 ```
 
-常用命令：
+Common commands:
 
 ```bash
 /etc/init.d/S52frame_service start
@@ -46,9 +46,9 @@ WATCHDOG_PID_FILE=/run/frame_service/frame_service_watchdog.pid
 
 ## Audio Service
 
-配置文件：`/etc/aiden_audio_service.conf`
+Config file: `/etc/aiden_audio_service.conf`
 
-默认值：
+Default values:
 
 ```sh
 AUDIO_SERVICE_BIN=/oem/usr/bin/audio_service
@@ -60,61 +60,61 @@ WATCHDOG_PID_FILE=/run/audio_service/audio_service_watchdog.pid
 
 ## Agent
 
-默认启动命令：
+Default startup command:
 
 ```bash
 /oem/usr/bin/aiden-env-run /oem/usr/bin/agent -config /userdata/agent -addr :8080
 ```
 
-运行时目录：
+Runtime directory:
 
 ```text
 /userdata/agent/
 ├── agent.toml
-├── skills/       # 可选
-├── log/          # Agent runtime 日志目录，由程序使用
-└── memory/       # 对话记忆持久化目录
+├── skills/       # optional
+├── log/          # Agent runtime log directory, used by the program
+└── memory/       # conversation memory persistence directory
 ```
 
-外层 init 脚本日志：`/var/log/agent/agent.log`。
+Outer init script log: `/var/log/agent/agent.log`.
 
 ## OTA
 
-默认启动命令：
+Default startup command:
 
 ```bash
-/oem/usr/bin/aiden-env-run /oem/usr/bin/ota daemon
+/oem/usr/bin/aiden-env-run /oem/usr/bin/ota health
 ```
 
-运行时目录：
+Runtime directory:
 
 ```text
 /userdata/ota/
-├── config.json          # 首刷镜像内置的 repo/channel/factory baseline
-├── state.json           # OTA 状态机和 per-slot partition hashes
-├── downloads/           # 下载缓存
-├── pending_boot.json    # 目标 slot health pending 状态
-└── health.ok            # 应用 ready 后写入的健康确认 marker
+├── config.json          # repo/channel/factory baseline built into the first-flashed image
+├── state.json           # OTA state machine and per-slot partition hashes
+├── downloads/           # download cache
+├── pending_boot.json    # target slot health pending status
+└── health.ok            # health confirmation marker written after the app is ready
 ```
 
-更多说明见 [OTA 概览](../09-ota/README.md)。
+For more details see [OTA Overview](../08-ota/README.md).
 
 ## Config Web
 
-默认启动命令：
+Default startup command:
 
 ```bash
-/oem/usr/bin/aiden-env-run /oem/usr/bin/config_web --bind=0.0.0.0 --config=/userdata/agent/agent.toml --wifi-config=/userdata/wpa_supplicant.conf --system-env=/userdata/system/env
+/oem/usr/bin/aiden-env-run /oem/usr/bin/config_web --bind=0.0.0.0 --port=80 --config=/userdata/agent/agent.toml --wifi-config=/userdata/wpa_supplicant.conf --system-env=/userdata/system/env
 ```
 
-用途：通过网页维护 Agent 配置和 Wi-Fi 配置。默认 bind / port 见 [Config Web](../03-services/config-web.md)。
+Purpose: maintain the Agent configuration and Wi-Fi configuration through a web page. For the default bind / port see [Config Web](../04-agent/configuration.md#config-web-the-device-config-page).
 
 ## System Environment
 
 `/userdata/system/env` is the device-wide environment file. `aiden-env-run` loads it before starting services, and SSH login shells load the same file through `/etc/profile.d/aiden-env.sh`. Proxy variables, API keys, and other shell-style environment values can live there instead of in `agent.toml`.
 
-## 开发调试建议
+## Development and Debugging Tips
 
-- 修改二进制后可直接替换 `/oem/usr/bin/<name>` 并重启对应服务。
-- 如果服务反复重启，先查看 `/var/log/<service>/<service>.log`。
-- 若需要独占摄像头做 one-shot 测试，先停止 `S52frame_service`。
+- After modifying a binary, you can directly replace `/oem/usr/bin/<name>` and restart the corresponding service.
+- If a service keeps restarting, first check `/var/log/<service>/<service>.log`.
+- If you need exclusive access to the camera for a one-shot test, stop `S52frame_service` first.

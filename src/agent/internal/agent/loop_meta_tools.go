@@ -16,6 +16,7 @@ const (
 	toolEnterPlanMode = "enter_plan_mode"
 	toolCommitPlan    = "commit_plan"
 	toolCancelPlan    = "cancel_plan"
+	toolSetTodo       = "set_todo"
 )
 
 type loopMetaTool struct {
@@ -72,7 +73,37 @@ func loopMetaTools() []langtools.Tool {
 	}
 }
 
+func simpleTodoMetaTools() []langtools.Tool {
+	return []langtools.Tool{
+		&loopMetaTool{
+			name:        toolSetTodo,
+			description: "Create or replace the todo list in single-agent/default mode when the task has become multi-step. This does not switch to delegated plan mode. Input JSON: {\"objective\":\"task\",\"items\":[\"step\"],\"current_index\":1,\"completed_indices\":[1],\"blocked_indices\":[2],\"reason\":\"brief reason\"}. Use 1-based indices.",
+			schema: objectArgsSchema(map[string]any{
+				"objective":         stringArgSchema("Task objective for this todo list."),
+				"items":             stringArrayArgSchema("Ordered todo items for the current single-agent task."),
+				"current_index":     minIntegerArgSchema("1-based index of the item currently being worked on.", 1),
+				"completed_indices": integerArrayArgSchema("1-based item indices that are already done."),
+				"blocked_indices":   integerArrayArgSchema("1-based item indices that are blocked."),
+				"reason":            stringArgSchema("Brief reason for creating or updating the todo list."),
+			}, "items", "current_index"),
+		},
+	}
+}
+
 func appendLoopMetaTools(tools []langtools.Tool) []langtools.Tool {
+	return appendUniqueTools(tools, loopMetaTools())
+}
+
+func appendDefaultLoopMetaTools(tools []langtools.Tool) []langtools.Tool {
+	combined := appendUniqueTools(tools, loopMetaTools())
+	return appendUniqueTools(combined, simpleTodoMetaTools())
+}
+
+func appendSimpleTodoMetaTools(tools []langtools.Tool) []langtools.Tool {
+	return appendUniqueTools(tools, simpleTodoMetaTools())
+}
+
+func appendUniqueTools(tools []langtools.Tool, additions []langtools.Tool) []langtools.Tool {
 	combined := append([]langtools.Tool{}, tools...)
 	seen := map[string]bool{}
 	for _, tool := range combined {
@@ -80,7 +111,7 @@ func appendLoopMetaTools(tools []langtools.Tool) []langtools.Tool {
 			seen[strings.ToUpper(tool.Name())] = true
 		}
 	}
-	for _, tool := range loopMetaTools() {
+	for _, tool := range additions {
 		if seen[strings.ToUpper(tool.Name())] {
 			continue
 		}
@@ -92,7 +123,7 @@ func appendLoopMetaTools(tools []langtools.Tool) []langtools.Tool {
 
 func isLoopMetaTool(name string) bool {
 	switch strings.ToUpper(strings.TrimSpace(name)) {
-	case strings.ToUpper(toolUseSimpleMode), strings.ToUpper(toolEnterPlanMode), strings.ToUpper(toolCommitPlan), strings.ToUpper(toolCancelPlan):
+	case strings.ToUpper(toolUseSimpleMode), strings.ToUpper(toolEnterPlanMode), strings.ToUpper(toolCommitPlan), strings.ToUpper(toolCancelPlan), strings.ToUpper(toolSetTodo):
 		return true
 	default:
 		return false
@@ -166,6 +197,7 @@ func (e *roleCollaborativeExecutor) handlePlannerMetaTool(
 			}
 		}
 		state.applyCommittedPlan(decision)
+		state.applyCommittedPlanTodo(decision)
 		state.Phase = phaseExecution
 		payload, _ := json.Marshal(map[string]any{
 			"status": "committed",
@@ -176,6 +208,40 @@ func (e *roleCollaborativeExecutor) handlePlannerMetaTool(
 			Kind:          plannerTurnCommitPlan,
 			CommittedPlan: decision,
 			Step:          &schema.AgentStep{Action: action, Observation: string(payload)},
+		}
+
+	case strings.ToUpper(toolSetTodo):
+		if phase != phaseDefault {
+			return plannerTurnResult{
+				Kind: plannerTurnInvalidMeta,
+				InvalidMetaStep: &schema.AgentStep{
+					Action:      action,
+					Observation: "set_todo is only available in single-agent/default mode",
+				},
+			}
+		}
+		update, err := parseSetTodoInput(input)
+		if err != nil {
+			return plannerTurnResult{
+				Kind: plannerTurnInvalidMeta,
+				InvalidMetaStep: &schema.AgentStep{
+					Action:      action,
+					Observation: fmt.Sprintf("set_todo failed: %v", err),
+				},
+			}
+		}
+		todo, speechEligible := state.applySimpleTodoUpdate(update)
+		payload, _ := json.Marshal(map[string]any{
+			"status":        "updated",
+			"mode":          "simple",
+			"items":         len(todo.Items),
+			"current_index": todoCurrentStepIndex(todo),
+		})
+		return plannerTurnResult{
+			Kind:               plannerTurnSetTodo,
+			Todo:               todo,
+			TodoSpeechEligible: speechEligible,
+			Step:               &schema.AgentStep{Action: action, Observation: string(payload)},
 		}
 
 	case strings.ToUpper(toolCancelPlan):

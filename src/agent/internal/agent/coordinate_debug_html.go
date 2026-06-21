@@ -175,6 +175,19 @@ function imagePixelToSourcePixel(pixelX, pixelY) {
 
 function sourcePixelToNormalized(pixelX, pixelY) {
     const meta = currentScreenshotMeta || defaultScreenshotMeta(canvas.width, canvas.height);
+    const active = normalizeActiveArea(meta);
+    // Normalized coordinates are relative to active_area (0-1000 maps to visible content)
+    if (active) {
+        const activeWidth = Math.max(active.width, 1);
+        const activeHeight = Math.max(active.height, 1);
+        const activePixelX = clamp(pixelX - active.x, 0, active.width - 1);
+        const activePixelY = clamp(pixelY - active.y, 0, active.height - 1);
+        return {
+            x: clamp(Math.round((activePixelX / Math.max(activeWidth - 1, 1)) * 1000), 0, 1000),
+            y: clamp(Math.round((activePixelY / Math.max(activeHeight - 1, 1)) * 1000), 0, 1000)
+        };
+    }
+    // Fallback: no active_area, treat as full frame
     const sourceWidth = Math.max(meta.source_width || canvas.width, 1);
     const sourceHeight = Math.max(meta.source_height || canvas.height, 1);
     const maxPixelX = Math.max(sourceWidth - 1, 1);
@@ -187,6 +200,19 @@ function sourcePixelToNormalized(pixelX, pixelY) {
 
 function normalizedToSourcePixel(x, y) {
     const meta = currentScreenshotMeta || defaultScreenshotMeta(canvas.width, canvas.height);
+    const active = normalizeActiveArea(meta);
+    // Normalized coordinates are relative to active_area (0-1000 maps to visible content)
+    if (active) {
+        const activeWidth = Math.max(active.width, 1);
+        const activeHeight = Math.max(active.height, 1);
+        const activePixelX = clamp(Math.round((x / 1000) * Math.max(activeWidth - 1, 0)), 0, activeWidth - 1);
+        const activePixelY = clamp(Math.round((y / 1000) * Math.max(activeHeight - 1, 0)), 0, activeHeight - 1);
+        return {
+            pixelX: clamp(activePixelX + active.x, 0, (meta.source_width || canvas.width) - 1),
+            pixelY: clamp(activePixelY + active.y, 0, (meta.source_height || canvas.height) - 1)
+        };
+    }
+    // Fallback: no active_area, treat as full frame
     const sourceWidth = Math.max(meta.source_width || canvas.width, 1);
     const sourceHeight = Math.max(meta.source_height || canvas.height, 1);
     return {

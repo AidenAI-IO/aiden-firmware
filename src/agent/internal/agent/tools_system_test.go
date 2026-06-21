@@ -33,6 +33,20 @@ func TestCurrentTimeToolSupportsIANAAndOffsetTimezones(t *testing.T) {
 	}
 }
 
+func TestCurrentTimeToolDescriptionAvoidsOrdinaryDateQuestions(t *testing.T) {
+	description := NewCurrentTimeTool().Description()
+
+	for _, want := range []string{
+		"Do not use this tool for ordinary date or weekday questions",
+		"the system prompt already provides today's date and weekday",
+		"Use this tool only when a precise clock time, timezone conversion, UTC offset, Unix timestamp, or elapsed-time calculation is required",
+	} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("current_time description missing %q:\n%s", want, description)
+		}
+	}
+}
+
 func TestBuiltinToolSetRegistersSystemTools(t *testing.T) {
 	tools := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
 	for _, name := range []string{"current_time", "weather"} {
@@ -40,8 +54,8 @@ func TestBuiltinToolSetRegistersSystemTools(t *testing.T) {
 			t.Fatalf("builtin tool %q was not registered", name)
 		}
 	}
-	if _, ok := tools.Get("enter_sleep"); ok {
-		t.Fatal("enter_sleep should not be registered")
+	if _, ok := tools.Get("wait_for_wakeup"); ok {
+		t.Fatal("wait_for_wakeup should not be registered")
 	}
 }
 

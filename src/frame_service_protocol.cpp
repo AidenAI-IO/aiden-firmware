@@ -1,6 +1,5 @@
 #include "frame_service_protocol.h"
 #include "service_status.h"
-#include <string.h>
 
 namespace aiden {
 
@@ -42,14 +41,14 @@ static uint64_t read_le64(const uint8_t* data) {
 
 std::vector<uint8_t> encode_frame_wire_prefix(uint32_t header_len, uint64_t payload_len) {
     std::vector<uint8_t> out;
-    out.reserve(12);
+    out.reserve(kFrameWirePrefixSize);
     write_le32(out, header_len);
     write_le64(out, payload_len);
     return out;
 }
 
 bool decode_frame_wire_prefix(const uint8_t* data, size_t len, FrameWirePrefix* out) {
-    if (!data || !out || len < 12) {
+    if (!data || !out || len < kFrameWirePrefixSize) {
         return false;
     }
     out->header_len = read_le32(data);

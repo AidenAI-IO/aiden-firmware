@@ -106,16 +106,12 @@ To avoid typing parameters every time:
 cat > /userdata/ota/config.json << 'EOF'
 {
   "manifest_url": "https://your-server.com/firmware/latest/manifest.json",
-  "public_key_path": "/userdata/ota/your_pubkey.pem",
-  "interval_seconds": 3600
+  "public_key_path": "/userdata/ota/your_pubkey.pem"
 }
 EOF
-
-# Restart OTA service
-/etc/init.d/S54ota restart
 ```
 
-Now the device will automatically check your custom source every hour!
+Run `ota update` whenever you want the device to check and install from this source.
 
 ## Security Notes
 

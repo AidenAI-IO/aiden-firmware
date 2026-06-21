@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -55,8 +56,14 @@ func (d ScreenStableDefaults) InputJSON() string {
 }
 
 type WaitStableScreenTool struct {
-	client   *FrameServiceClient
+	client   waitStableFrameClient
 	defaults ScreenStableDefaults
+	screen   *screenState
+}
+
+type waitStableFrameClient interface {
+	LatestFrame() (*frameMetadata, []byte, error)
+	LatestFrameWithFormat(format string, quality int) (*frameMetadata, []byte, error)
 }
 
 type waitStableScreenResult struct {
@@ -66,24 +73,42 @@ type waitStableScreenResult struct {
 	LastDiff  *float64 `json:"last_diff,omitempty"`
 }
 
-func NewWaitStableScreenTool(socketPath string, defaults ScreenStableDefaults) *WaitStableScreenTool {
+type waitStableScreenObservationResult struct {
+	screenshotResult
+	OK           bool     `json:"ok"`
+	Stable       bool     `json:"stable"`
+	ElapsedMs    int64    `json:"elapsed_ms"`
+	ScreenStable *bool    `json:"screen_stable,omitempty"`
+	StableWaitMs *int64   `json:"stable_wait_ms,omitempty"`
+	LastDiff     *float64 `json:"last_diff,omitempty"`
+}
+
+func NewWaitStableScreenTool(socketPath string, defaults ScreenStableDefaults, screens ...*screenState) *WaitStableScreenTool {
+	var screen *screenState
+	if len(screens) > 0 {
+		screen = screens[0]
+	}
 	return &WaitStableScreenTool{
 		client:   NewFrameServiceClient(socketPath),
 		defaults: defaults,
+		screen:   screen,
 	}
 }
 
 func (t *WaitStableScreenTool) Name() string { return "wait_for_stable_screen" }
 
+func (t *WaitStableScreenTool) ReturnsVisualObservation() bool { return true }
+
 func (t *WaitStableScreenTool) Description() string {
 	resolved := t.defaults.Resolved()
 	return fmt.Sprintf(
-		`Wait until the connected display stops changing before taking a screenshot or judging UI result. `+
+		`Wait until the connected display stops changing before judging UI result. `+
+			`Use only while operating a visible target UI, after a UI action or known UI transition that may animate, navigate, or load; do not call for text-only reasoning, arithmetic, comparison, or memory lookup. `+
 			`Input JSON: {"timeout_ms":%d,"stable_ms":%d,"diff_threshold":%g}. `+
 			`Omitted fields use agent config defaults. `+
 			`The screen is stable when consecutive frames stay below diff_threshold for stable_ms. `+
-			`Returns {"ok":true,"stable":true/false,"elapsed_ms":N}. `+
-			`stable=false means the wait timed out while the screen was still changing (for example video playback); that is not an error and you may continue operating.`,
+			`Returns {"ok":true,"stable":true/false,"elapsed_ms":N,...} plus a screenshot observation with width, height, format, size, and base64 JPEG data. `+
+			`stable=false means the wait timed out while the screen was still changing (for example video playback); that is not an error and the screenshot is still captured as a best-effort observation.`,
 		resolved.TimeoutMs,
 		resolved.StableMs,
 		resolved.DiffThreshold,
@@ -103,8 +128,49 @@ func (t *WaitStableScreenTool) Call(ctx context.Context, input string) (string, 
 	if err != nil {
 		return fmt.Sprintf("error: %v", err), nil
 	}
-	out, _ := json.Marshal(result)
+	screenshot, err := t.captureScreenshot()
+	if err != nil {
+		return fmt.Sprintf("error: stable-screen wait completed with stable=%v elapsed_ms=%d, but screenshot failed: %v", result.Stable, result.ElapsedMs, err), nil
+	}
+	stable := result.Stable
+	elapsed := result.ElapsedMs
+	out, _ := json.Marshal(waitStableScreenObservationResult{
+		screenshotResult: screenshot,
+		OK:               result.OK,
+		Stable:           result.Stable,
+		ElapsedMs:        result.ElapsedMs,
+		ScreenStable:     &stable,
+		StableWaitMs:     &elapsed,
+		LastDiff:         result.LastDiff,
+	})
 	return string(out), nil
+}
+
+func (t *WaitStableScreenTool) captureScreenshot() (screenshotResult, error) {
+	meta, jpegData, err := t.client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality)
+	if err != nil {
+		return screenshotResult{}, err
+	}
+	if meta.PixelFormat != "jpeg" {
+		return screenshotResult{}, fmt.Errorf("expected jpeg format, got %s", meta.PixelFormat)
+	}
+	active := detectScreenshotActiveArea(jpegData, int(meta.Width), int(meta.Height))
+	if t.screen != nil {
+		t.screen.UpdateActiveArea(int(meta.Width), int(meta.Height), active)
+	}
+	result := screenshotResult{
+		Width:  int(meta.Width),
+		Height: int(meta.Height),
+		Format: "jpeg",
+		Size:   len(jpegData),
+		Data:   base64.StdEncoding.EncodeToString(jpegData),
+	}
+	if active.Valid && (active.X != 0 || active.Y != 0 || active.Width != result.Width || active.Height != result.Height) {
+		result.ActiveArea = &active
+		result.ActiveWidth = active.Width
+		result.ActiveHeight = active.Height
+	}
+	return result, nil
 }
 
 func (t *WaitStableScreenTool) wait(ctx context.Context, input string) (waitStableScreenResult, error) {

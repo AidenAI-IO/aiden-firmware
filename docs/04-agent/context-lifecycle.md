@@ -8,17 +8,17 @@ Each run is assembled from several layers. Some layers are persisted memory, whi
 
 | Layer | Source | Visibility | Persistence |
 | --- | --- | --- | --- |
-| Base instruction | `agent.toml` `instruction` and `additional_prompt` | planner, executor, verifier | configuration |
-| Runtime defaults | built-in prompt rules, current date, host runtime information | planner, executor, verifier | not persisted |
-| Skills | skill index plus active `SKILL.md` content | planner, executor, verifier | skill files and skill state |
-| Runtime context | `RunRequest.RuntimeContext`, for example phone bridge state | planner, executor, verifier | not persisted |
+| Base instruction | built-in runtime instruction, optional `agent.toml` `custom_instruction`, and `additional_prompt` | planner and executor | configuration |
+| Runtime defaults | built-in prompt rules, current date, host runtime information | planner and executor receive all defaults; verifier receives current date and verifier role rules only | not persisted |
+| Skills | skill index plus active `SKILL.md` content | planner and executor | skill files and skill state |
+| Runtime context | `RunRequest.RuntimeContext`, for example phone bridge state | planner and executor | not persisted |
 | Tool catalog | resolved built-in tools plus skill tools | planner and executor can call; verifier does not receive a tool catalog | not persisted in memory |
 | Planner loop meta tools | `use_simple_mode`, `enter_plan_mode`, `commit_plan`, `cancel_plan` | planner only | not persisted in memory |
 | Executor loop meta tools | `finish_step`, `abort_step` | executor only | not persisted in memory |
-| Retrieved memory context | `MemoryPlane.Retrieve` output | planner and verifier only | filesystem memory |
+| Retrieved memory context | `MemoryPlane.Retrieve` output | planner receives common and planner memory; verifier receives failure/conflict caution memory only | filesystem memory |
 | Planner conversation history | hot-window memory, optional compressed-history markers, optional persisted chat history | planner only | filesystem memory |
 | Role loop state | phase, objective, plan, `plan_step_index`, next step, tool evidence, verifier feedback, world state | role-specific | current run only |
-| Input attachments | `RunRequest.Attachments`, plus latest screenshot image when available | role user messages | current run only |
+| Input attachments | `RunRequest.Attachments`; verifier-only latest screenshot image when world state has one | role user messages | current run only |
 
 The executor intentionally does not receive global memory or full conversation history. It receives the planner-approved `next_step`, latest world state, and the latest local execution result only.
 
@@ -82,7 +82,7 @@ Simple tasks should stay in `default` (direct answer, one tool call, or at most 
 
 ## Prompt Shape
 
-For the current multi-role loop, `Runtime.Run` builds `RoleProfiles` before execution. Each role system prompt contains:
+For the current multi-role loop, `Runtime.Run` builds `RoleProfiles` before execution. Planner and executor system prompts contain:
 
 1. role identity;
 2. base instruction;
@@ -91,16 +91,18 @@ For the current multi-role loop, `Runtime.Run` builds `RoleProfiles` before exec
 5. active skill instructions;
 6. request-local runtime context, if provided;
 7. role rules;
-8. available tool information, except verifier;
+8. available tool information;
 9. role-specific rendered memory context, if any.
+
+The verifier system prompt is intentionally narrower. It contains the current date, verifier role rules, and an optional `## Verifier memory cautions` block. It does not receive base instruction, default behavior, skills, runtime context, tool catalog, common memory, or planner memory.
 
 The per-call user message is then built from the current loop state:
 
 - planner sees the current loop mode, world state, original request, conversation history, draft or committed plan, executor results, and verifier feedback;
 - executor sees the current world state and the planner-approved `next_step`;
-- verifier sees the current world state, the step under verification (`step_index`, `step_text`, `is_final_committed_step`), and the latest executor result for that step only.
+- verifier sees the current world state, the step under verification (`step_index`, `step_text`, `is_final_committed_step`), the latest executor result for that step, and the latest world-state screenshot image when available.
 
-Planner and executor receive the tool scratchpad after tools have run. The latest screenshot image is attached to the role message when the world state has screenshot bytes.
+Planner and executor receive tool scratchpads after tools have run. `WorldState.LatestScreenshot` is retained as verifier-only visual evidence: planner and executor do not receive it through World State, which keeps their world-state prompt prefix stable for model cache reuse.
 
 ## Retrieved Memory Context
 
@@ -114,7 +116,7 @@ type MemoryContext struct {
 }
 ```
 
-`Common` is rendered for both planner and verifier. It currently includes:
+`Common` is rendered into planner memory context. It currently includes:
 
 - `session/summary.md`, the compressed session summary;
 - `long_term/profile.md`, the synthesized user profile.
@@ -133,6 +135,8 @@ Verifier-specific retrieval includes:
 - conflicting memories;
 - failed task episodes relevant to the current request.
 
+Verifier-specific retrieval is rendered as `## Verifier memory cautions`. These entries are historical failure/conflict warnings only; they are not proof of completion. Verifier approval must still be based on the current executor outcome, tool observations, screenshots, or current step evidence.
+
 Each hit is filtered by applicability, ranked by the store search logic, routed by memory type, and trimmed per category before rendering.
 
 ## Run Lifecycle
@@ -149,6 +153,9 @@ normalize input and activate requested skills
 resolve model, context window, tools, and memory handle
   |
   v
+begin session: detect/rotate boundary and append current user input
+  |
+  v
 MemoryPlane.Retrieve(input, attachments, skills, tools, current hints)
   |
   v
@@ -161,7 +168,7 @@ build role profiles and planner memory
 phased role loop (decision / default / plan / execution)
   |
   v
-append conversation exchange and save snapshot
+commit session: append assistant output and save snapshot
   |
   v
 request session-memory maintenance
@@ -178,9 +185,21 @@ commit task episode and extract reusable memory
 
 Runtime context is supplied per request and is not written back into memory. The phone bridge is the main producer today. It keeps connection status, platform, heartbeat time, and the latest phone environment. Each run receives only a compact summary: connection state, system type and version, locale/timezone, screen size, and confirmed launchable third-party app candidates. When the bridge disconnects, stale environment data is cleared.
 
+External runtime signals may add model-facing facts to runtime context without
+overriding session-boundary detection. For example, when the physical wakeup
+button interrupts an in-flight voice turn, the next voice input receives runtime
+context describing that interruption. Session continuation still follows the
+normal boundary rules, such as the short-gap continuation rule. A normal wakeup
+after the previous turn has finished goes through the same automatic detection.
+These signal facts are not persisted as session-event relationship labels.
+
 ### Session Hot Window
 
-After a run completes, `MemoryManager.AppendExchange` records the user input and final answer. `SaveSnapshot` persists the current window, and `RequestMaintenance` schedules filesystem maintenance.
+At run begin, session management detects whether the input starts a new session
+and appends the current user input to `memory/session/events.jsonl`. At run
+commit, it appends the assistant output, persists the current snapshot with
+`SaveSnapshot`, and schedules filesystem maintenance with
+`RequestMaintenance`.
 
 The hot window lives in:
 
@@ -188,8 +207,10 @@ The hot window lives in:
 memory/session/events.jsonl
 ```
 
-At prompt time, retained hot-window events render as normal planner
-`Conversation history:`. Prompt construction does not add hot-window labels or
+At prompt time, retained hot-window events are converted into native chat
+messages and inserted between the planner system prompt and the current planner
+task message. Prompt construction does not render them inside a
+`Conversation history:` text block and does not add hot-window labels or
 boundary markers.
 
 When session-boundary detection classifies a user turn as a new session, the
@@ -267,7 +288,19 @@ Successful episodes can create or update procedures, navigation memory, app prof
 
 ### Persisted Chat History
 
-When a chat-history store exists, planner memory also loads a compact view of recent persisted UI chat history. This is appended to the planner conversation-history string and capped by message and rune limits. It is separate from `session/events.jsonl` and does not change the executor visibility boundary.
+**NOTE: As of this branch, chat_history injection into planner context is DISABLED.**
+
+The `chat_history/` store persists UI-level conversation logs but is NOT automatically injected into the planner's context. This prevents:
+- Duplicate, uncompressed context competing with the session system
+- Unbounded growth of planner prompts
+- Confusion between active session and archived history
+
+For "resume interrupted task" scenarios, use explicit session restore or recall tools instead. The session system already provides comprehensive history management with compaction, archiving, and recall capabilities.
+
+The chat_history store remains available for:
+- UI display of conversation history across sessions
+- Audit logging
+- Future explicit session restore features
 
 ## Storage Map
 

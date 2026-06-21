@@ -84,7 +84,7 @@ void request_latest_frame_raw(int fd) {
 }
 
 void read_response_header(int fd, aiden::FrameWirePrefix* prefix) {
-    uint8_t prefix_bytes[12];
+    uint8_t prefix_bytes[aiden::kFrameWirePrefixSize];
     read_exact_or_fail(fd, prefix_bytes, sizeof(prefix_bytes));
     REQUIRE(aiden::decode_frame_wire_prefix(prefix_bytes, sizeof(prefix_bytes), prefix));
     std::vector<uint8_t> header(prefix->header_len);

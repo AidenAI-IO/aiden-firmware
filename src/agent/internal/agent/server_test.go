@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image/jpeg"
 	"net"
@@ -46,7 +47,10 @@ func firstMessageOfType(messages []Message, messageType string) (Message, bool) 
 
 func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	model := &scriptedModel{
-		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先读取当前音量。"}`, "The current audio volume is 42."),
+		responses: []*llms.ContentResponse{
+			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, "我先读取当前音量。"),
+			contentResponse("The current audio volume is 42."),
+		},
 	}
 	tool := &stubTool{
 		name:        "audio_volume",
@@ -99,12 +103,12 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	if !ok || roleOutput.Role != "planner" {
 		t.Fatalf("expected planner role_output in history: %#v", resp.History)
 	}
-	toolCall, ok := firstMessageOfType(resp.History, "tool_call")
+	toolCall, ok := firstMessageOfType(resp.History, runEventToolCall)
 	if !ok || toolCall.ToolName != "audio_volume" || toolCall.ToolInput != "{}" {
 		t.Fatalf("unexpected tool_call message: %#v", resp.History)
 	}
-	if toolCall.Description != "我先读取当前音量。" || toolCall.Content != "我先读取当前音量。" {
-		t.Fatalf("unexpected tool_call description: %#v", toolCall)
+	if toolCall.Content != "我先读取当前音量。" {
+		t.Fatalf("unexpected tool_call content: %#v", toolCall)
 	}
 	toolResult, ok := firstMessageOfType(resp.History, "tool_result")
 	if !ok || toolResult.ToolName != "audio_volume" || toolResult.Content != `{"volume":42}` {
@@ -247,7 +251,7 @@ func TestServerHandleChatStreamsRoleToolAndAssistantMessages(t *testing.T) {
 				if event.Message.Role == "planner" {
 					sawPlanner = true
 				}
-			case "tool_call":
+			case runEventToolCall:
 				sawToolCall = event.Message.ToolName == "audio_volume"
 			case "tool_result":
 				sawToolResult = event.Message.ToolName == "audio_volume" && event.Message.Content == `{"volume":42}`
@@ -262,6 +266,232 @@ func TestServerHandleChatStreamsRoleToolAndAssistantMessages(t *testing.T) {
 	if !sawPlanner || !sawToolCall || !sawToolResult || !sawAssistant || !sawDone {
 		t.Fatalf("missing expected stream events: planner=%v tool_call=%v tool_result=%v assistant=%v done=%v events=%#v",
 			sawPlanner, sawToolCall, sawToolResult, sawAssistant, sawDone, events)
+	}
+}
+
+func TestServerHandleChatStreamEmitsAssistantDeltasBeforeDone(t *testing.T) {
+	const expectedAnswer = "Complete answer."
+
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			contentResponse(`{"mode":"direct_answer","speech":"Short answer.","text":"Complete answer.","final_answer":"Complete answer.","reason":"direct"}`),
+		},
+		streamChunks: [][]string{
+			{
+				`{"mode":"direct_answer","speech":"Short answer.","text":"Complete`,
+				` answer.","final_answer":"Complete answer.","reason":"direct"}`,
+			},
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Answer directly.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0", "")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"hello","request_id":"web-req-stream"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/x-ndjson")
+	req.Header.Set("X-Aiden-Stream", "ndjson")
+	rec := httptest.NewRecorder()
+
+	server.handleChat(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var (
+		deltaText              strings.Builder
+		sawDeltaBeforeDone     bool
+		sawAssistantBeforeDone bool
+		assistantContent       string
+		sawDone                bool
+		events                 []ChatStreamEvent
+	)
+	scanner := bufio.NewScanner(strings.NewReader(rec.Body.String()))
+	for scanner.Scan() {
+		var event ChatStreamEvent
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			t.Fatalf("decode stream event %q: %v", scanner.Text(), err)
+		}
+		events = append(events, event)
+		switch event.Type {
+		case "assistant_delta":
+			if sawDone {
+				t.Fatalf("assistant_delta arrived after done: %#v", events)
+			}
+			sawDeltaBeforeDone = true
+			deltaText.WriteString(event.Delta)
+		case "message":
+			if event.Message != nil && event.Message.Type == "assistant" && !sawDone {
+				sawAssistantBeforeDone = true
+				assistantContent = event.Message.Content
+			}
+		case "done":
+			sawDone = true
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan stream: %v", err)
+	}
+
+	if !sawDeltaBeforeDone {
+		t.Fatalf("expected assistant_delta before done, events=%#v", events)
+	}
+	if !sawAssistantBeforeDone || !sawDone {
+		t.Fatalf("expected final assistant message and done, assistant=%v done=%v events=%#v", sawAssistantBeforeDone, sawDone, events)
+	}
+	if got := deltaText.String(); got != expectedAnswer {
+		t.Fatalf("assistant deltas = %q, want %q", got, expectedAnswer)
+	}
+	if assistantContent != expectedAnswer {
+		t.Fatalf("assistant message content = %q, want %q", assistantContent, expectedAnswer)
+	}
+	if len(model.sawStreaming) != 1 || !model.sawStreaming[0] {
+		t.Fatalf("expected web chat stream to enable provider streaming, got %#v", model.sawStreaming)
+	}
+}
+
+type failingStreamWriter struct {
+	err error
+}
+
+func (w failingStreamWriter) Write([]byte) (int, error) {
+	return 0, w.err
+}
+
+func TestFinalStreamFanoutWriterReturnsInputLengthWhenLaterWriterFails(t *testing.T) {
+	writeErr := errors.New("fanout write failed")
+	var first strings.Builder
+	fanout := newFinalStreamFanoutWriter(&first, failingStreamWriter{err: writeErr})
+
+	n, err := fanout.Write([]byte("chunk"))
+
+	if !errors.Is(err, writeErr) {
+		t.Fatalf("Write() error = %v, want %v", err, writeErr)
+	}
+	if n != len("chunk") {
+		t.Fatalf("Write() bytes = %d, want %d", n, len("chunk"))
+	}
+	if first.String() != "chunk" {
+		t.Fatalf("first writer received %q, want chunk", first.String())
+	}
+}
+
+func TestFinalStreamFanoutWriterResetsAssistantDeltaDraftBeforeFallback(t *testing.T) {
+	writeErr := errors.New("fanout write failed")
+	rec := httptest.NewRecorder()
+	stream, ok := newChatStreamWriter(rec)
+	if !ok {
+		t.Fatal("httptest recorder must support streaming")
+	}
+	fanout := newFinalStreamFanoutWriter(
+		newChatAssistantFinalStreamWriter(stream, "episode-reset", "request-reset"),
+		failingStreamWriter{err: writeErr},
+	)
+
+	if _, err := fanout.Write([]byte(`{"text":"Partial`)); !errors.Is(err, writeErr) {
+		t.Fatalf("first Write() error = %v, want %v", err, writeErr)
+	}
+	resetStreamWriterState(fanout)
+	if _, err := fanout.Write([]byte("Complete answer.")); !errors.Is(err, writeErr) {
+		t.Fatalf("fallback Write() error = %v, want %v", err, writeErr)
+	}
+
+	var events []ChatStreamEvent
+	scanner := bufio.NewScanner(strings.NewReader(rec.Body.String()))
+	for scanner.Scan() {
+		var event ChatStreamEvent
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			t.Fatalf("decode stream event %q: %v", scanner.Text(), err)
+		}
+		events = append(events, event)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan stream: %v", err)
+	}
+
+	resetIndex := -1
+	for i, event := range events {
+		if event.Type == "assistant_delta_reset" {
+			if resetIndex >= 0 {
+				t.Fatalf("expected one assistant_delta_reset, events=%#v", events)
+			}
+			resetIndex = i
+		}
+	}
+	if resetIndex <= 0 || resetIndex >= len(events)-1 {
+		t.Fatalf("assistant_delta_reset index = %d, want between deltas: %#v", resetIndex, events)
+	}
+
+	var beforeReset strings.Builder
+	var afterReset strings.Builder
+	for i, event := range events {
+		if event.Type != "assistant_delta" {
+			continue
+		}
+		if i < resetIndex {
+			beforeReset.WriteString(event.Delta)
+		} else {
+			afterReset.WriteString(event.Delta)
+		}
+	}
+	if beforeReset.String() != "Partial" {
+		t.Fatalf("delta before reset = %q, want Partial", beforeReset.String())
+	}
+	if afterReset.String() != "Complete answer." {
+		t.Fatalf("delta after reset = %q, want Complete answer.", afterReset.String())
+	}
+}
+
+func TestFinalStreamFanoutWriterReportsAnyChildEmission(t *testing.T) {
+	var webDelta strings.Builder
+	var speech strings.Builder
+
+	fanout := newFinalStreamFanoutWriter(
+		NewJSONFieldOrPlainStreamWriter(&webDelta, "text"),
+		NewSpeechStreamWriter(&speech),
+	)
+	tracker, ok := fanout.(streamOutputTracker)
+	if !ok {
+		t.Fatal("fanout writer must track stream emission")
+	}
+
+	if _, err := fanout.Write([]byte(`{"speech":"Short answer.","final_answer":"Complete answer."}`)); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	if webDelta.String() != "" {
+		t.Fatalf("web delta stream = %q, want empty when text field is absent", webDelta.String())
+	}
+	if speech.String() != "Short answer." {
+		t.Fatalf("speech stream = %q, want Short answer.", speech.String())
+	}
+	if !tracker.StreamEmitted() {
+		t.Fatal("fanout should report emitted when any child stream emitted")
+	}
+}
+
+func TestServerEventStreamAllowsRunEventMessages(t *testing.T) {
+	for _, messageType := range []string{
+		"user",
+		"assistant",
+		"role_output",
+		runEventToolCall,
+		"tool_result",
+		runEventTodoUpdate,
+		runEventTodoClosed,
+	} {
+		if !shouldStreamEventMessage(Message{Type: messageType}) {
+			t.Fatalf("message type %q should be streamed to web clients", messageType)
+		}
 	}
 }
 
@@ -376,6 +606,10 @@ func TestServerHandleChatStreamTagsHistoryWithRequestID(t *testing.T) {
 	}
 	if assistant.RequestID != "web-req-1" {
 		t.Fatalf("assistant request_id = %q, want web-req-1", assistant.RequestID)
+	}
+	state := server.liveActivity.Snapshot("web-req-1")
+	if state == nil || state.Status != LiveActivityStatusCompleted {
+		t.Fatalf("stream live activity state = %#v, want completed", state)
 	}
 }
 
@@ -542,7 +776,7 @@ func TestHandleCoordinateDebugTapRecapturesUncroppedScreenshot(t *testing.T) {
 	}
 }
 
-func TestServerSpeakToolDescriptionUsesTTS(t *testing.T) {
+func TestServerSpeakToolContentUsesTTS(t *testing.T) {
 	provider := &recordingTTSProvider{name: "server-provider"}
 	server := &Server{
 		runtime: NewRuntimeWithDeps(
@@ -556,23 +790,29 @@ func TestServerSpeakToolDescriptionUsesTTS(t *testing.T) {
 		audioClient: NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
 	}
 
-	server.speakToolDescription(context.Background(), " 我先读取当前音量。 ")
+	server.speakToolContent(context.Background(), " 我先读取当前音量。 ")
 
 	if got := provider.texts(); len(got) != 1 || got[0] != "我先读取当前音量。" {
 		t.Fatalf("unexpected TTS texts: %#v", got)
 	}
 }
 
-func TestServerHandleChatDoesNotWaitForToolDescriptionTTS(t *testing.T) {
+func TestServerHandleChatDoesNotWaitForToolContentTTSWhenEnabled(t *testing.T) {
+	speech := "读取音量。"
 	model := &scriptedModel{
-		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先读取当前音量。"}`, "The current audio volume is 42."),
+		responses: []*llms.ContentResponse{
+			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, speech),
+			contentResponse("The current audio volume is 42."),
+		},
 	}
 	streamingDisabled := false
+	toolSpeechEnabled := true
 	runtime := NewRuntimeWithDeps(
 		Config{
 			Model:                    ModelConfig{Provider: "fake"},
 			Instruction:              "Use tools when external state is requested.",
 			VoiceStreamingTTSEnabled: &streamingDisabled,
+			VoiceToolCallSpeech:      &toolSpeechEnabled,
 		},
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
@@ -586,7 +826,7 @@ func TestServerHandleChatDoesNotWaitForToolDescriptionTTS(t *testing.T) {
 		NewSkillIndex(),
 	)
 	server := NewServer(runtime, ":0", "")
-	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: "我先读取当前音量。"}
+	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: speech}
 	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
 	server.audioClient = NewAudioServiceClient("/tmp/audio.sock")
 
@@ -607,21 +847,64 @@ func TestServerHandleChatDoesNotWaitForToolDescriptionTTS(t *testing.T) {
 	case <-time.After(500 * time.Millisecond):
 		cancel()
 		<-done
-		t.Fatal("handleChat waited for tool description TTS")
+		t.Fatal("handleChat waited for tool content TTS")
 	}
 	select {
 	case <-provider.started:
 	case <-time.After(500 * time.Millisecond):
-		t.Fatal("tool description TTS was not started")
+		t.Fatal("tool content TTS was not started")
 	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
 	}
 }
 
-func TestServerHandleChatSkipsToolDescriptionTTSWhenDisabled(t *testing.T) {
+func TestServerHandleChatDoesNotSpeakWaitForWakeup(t *testing.T) {
+	toolSpeechEnabled := true
+	streamingDisabled := false
 	model := &scriptedModel{
-		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先读取当前音量。"}`, "The current audio volume is 42."),
+		responses: []*llms.ContentResponse{
+			toolCallResponse("wait_1", "wait_for_wakeup", `{"reason":"user asked","speech":"我先待命。"}`),
+		},
+	}
+	controller := NewWaitForWakeupController()
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:                    ModelConfig{Provider: "fake"},
+			Instruction:              "Use tools.",
+			VoiceStreamingTTSEnabled: &streamingDisabled,
+			VoiceToolCallSpeech:      &toolSpeechEnabled,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"wait_for_wakeup": NewWaitForWakeupTool(controller),
+		}},
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0", "")
+	provider := &recordingTTSProvider{name: "server-provider"}
+	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
+	server.audioClient = NewAudioServiceClient(startTTSPlaybackAudioSocket(t))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"go to sleep"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.handleChat(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	assertNoProviderTextWithin(t, provider, 200*time.Millisecond)
+}
+
+func TestServerHandleChatSkipsToolContentTTSWhenDisabled(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, "我先读取当前音量。"),
+			contentResponse("The current audio volume is 42."),
+		},
 	}
 	streamingDisabled := false
 	toolSpeechDisabled := false
@@ -659,7 +942,7 @@ func TestServerHandleChatSkipsToolDescriptionTTSWhenDisabled(t *testing.T) {
 	}
 	select {
 	case <-provider.started:
-		t.Fatal("tool description TTS started despite voice_tool_call_speech=false")
+		t.Fatal("tool content TTS started despite voice_tool_call_speech=false")
 	case <-time.After(50 * time.Millisecond):
 	}
 }
@@ -814,7 +1097,7 @@ func TestWebUISteerModeControlsArePresent(t *testing.T) {
 		"/api/chat/steer",
 		"/api/chat/steer/cancel",
 		"async function submitSteerMessage()",
-		"sendBtn.textContent = isLoading ? 'Steer' : 'Send';",
+		"sendBtn.textContent = currentChatRequestId ? 'Steer' : 'Send';",
 		"id=\"pendingSteer\"",
 	} {
 		if !strings.Contains(webUI, want) {
@@ -868,7 +1151,7 @@ func TestServerHandleChatStreamDuplicateRequestIDDoesNotAppendHistory(t *testing
 	}
 }
 
-func TestServerSpeakToolDescriptionUsesCallerContext(t *testing.T) {
+func TestServerSpeakToolContentUsesCallerContext(t *testing.T) {
 	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: "我先读取当前音量。"}
 	server := &Server{
 		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
@@ -878,7 +1161,7 @@ func TestServerSpeakToolDescriptionUsesCallerContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		server.speakToolDescription(ctx, "我先读取当前音量。")
+		server.speakToolContent(ctx, "我先读取当前音量。")
 		close(done)
 	}()
 
@@ -886,13 +1169,13 @@ func TestServerSpeakToolDescriptionUsesCallerContext(t *testing.T) {
 	case <-provider.started:
 	case <-time.After(500 * time.Millisecond):
 		cancel()
-		t.Fatal("tool description TTS was not started")
+		t.Fatal("tool content TTS was not started")
 	}
 	cancel()
 	select {
 	case <-done:
 	case <-time.After(500 * time.Millisecond):
-		t.Fatal("tool description TTS did not stop after caller context cancellation")
+		t.Fatal("tool content TTS did not stop after caller context cancellation")
 	}
 }
 
@@ -970,7 +1253,7 @@ func TestServerHistoryEndpointIncludesToolMessages(t *testing.T) {
 		),
 		history: []Message{
 			{Type: "user", Content: "hello"},
-			{Type: "tool_call", ToolName: "screenshot", ToolInput: "{}"},
+			{Type: runEventToolCall, ToolName: "screenshot", ToolInput: "{}"},
 			{Type: "tool_result", ToolName: "screenshot", Content: `{"width":100}`},
 		},
 	}
@@ -990,7 +1273,7 @@ func TestServerHistoryEndpointIncludesToolMessages(t *testing.T) {
 	if len(history) != 3 {
 		t.Fatalf("expected 3 history entries, got %d", len(history))
 	}
-	if history[1].Type != "tool_call" || history[2].Type != "tool_result" {
+	if history[1].Type != runEventToolCall || history[2].Type != "tool_result" {
 		t.Fatalf("unexpected history payload: %#v", history)
 	}
 }

@@ -41,6 +41,7 @@ struct Options {
     std::string wifi_config_path = "/userdata/wpa_supplicant.conf";
     std::string wifi_interface = "wlan0";
     std::string ota_state_path = "/userdata/ota/state.json";
+    std::string cmdline_path = "/proc/cmdline";
     std::string system_env_path = "/userdata/system/env";
 };
 
@@ -111,7 +112,6 @@ const char* kAnyBindAddress = "0.0.0.0";
 const char* kUsbBindAddress = "192.168.42.1";
 const char* kLoopbackBindAddress = "127.0.0.1";
 const char* kAgentInitScript = "/etc/init.d/S53agent";
-const char* kOtaInitScript = "/etc/init.d/S54ota";
 const char* kAgentLogPath = "/var/log/agent/agent.log";
 // Default path to the agent binary on device. Tests override this via the
 // AIDEN_AGENT_BIN environment variable, resolved once on first use to keep
@@ -134,6 +134,7 @@ const char* agent_bin_path() {
 }
 const char* kOtaBin = "/oem/usr/bin/ota";
 const char* kEnvRunBin = "/oem/usr/bin/aiden-env-run";
+const char* kOtaHealthLogPath = "/var/log/ota/ota.log";
 const char* kOtaWebUpdateLockPath = "/tmp/config_web_ota_update.lock";
 const char* kOtaWebUpdateLogPath = "/tmp/config_web_ota_update.log";
 const char* kAgentPortHost = "127.0.0.1";
@@ -153,6 +154,7 @@ const int kSystemEnvCommandTimeoutMs = 1500;
 const size_t kMaxSystemEnvSize = 64 * 1024;
 
 std::string read_file_contents(const char* path, size_t max_size);
+bool read_file_contents_checked(const char* path, size_t max_size, std::string* contents, std::string* error);
 std::string validate_proxy_url(const std::string& url);
 std::string lowercase_copy(const std::string& text);
 std::string parent_dir(const std::string& path);
@@ -240,6 +242,10 @@ std::string ota_update_log_path() {
     return env_path_or_default("AIDEN_CONFIG_WEB_OTA_UPDATE_LOG", kOtaWebUpdateLogPath);
 }
 
+std::string ota_health_log_path() {
+    return env_path_or_default("AIDEN_CONFIG_WEB_OTA_HEALTH_LOG", kOtaHealthLogPath);
+}
+
 std::string trim_copy(const std::string& input) {
     size_t start = 0;
     while (start < input.size() && isspace(static_cast<unsigned char>(input[start]))) {
@@ -307,38 +313,6 @@ bool json_is_bool(cJSON* item) {
     return json_is_type(item, cJSON_True) || json_is_type(item, cJSON_False);
 }
 
-bool config_required_object(cJSON* root, const char* key) {
-    if (!root) {
-        return false;
-    }
-    return json_is_object(cJSON_GetObjectItem(root, key));
-}
-
-bool config_required_string(cJSON* obj, const char* key, bool allow_empty = false) {
-    if (!obj) {
-        return false;
-    }
-    cJSON* item = cJSON_GetObjectItem(obj, key);
-    if (!json_is_string(item)) {
-        return false;
-    }
-    return allow_empty || !trim_copy(item->valuestring).empty();
-}
-
-bool config_required_number(cJSON* obj, const char* key) {
-    if (!obj) {
-        return false;
-    }
-    return json_is_number(cJSON_GetObjectItem(obj, key));
-}
-
-bool config_required_bool(cJSON* obj, const char* key) {
-    if (!obj) {
-        return false;
-    }
-    return json_is_bool(cJSON_GetObjectItem(obj, key));
-}
-
 std::string json_type_name(cJSON* item) {
     if (!item) {
         return "missing";
@@ -389,24 +363,21 @@ enum ConfigFieldKind {
     CONFIG_FIELD_ARRAY,
 };
 
-bool validate_config_field(cJSON* obj,
-                           const char* section,
-                           const char* key,
-                           ConfigFieldKind kind,
-                           bool allow_empty,
-                           std::string* error) {
+bool validate_config_field_type(cJSON* obj,
+                                const char* section,
+                                const char* key,
+                                ConfigFieldKind kind,
+                                std::string* error) {
     cJSON* item = obj ? cJSON_GetObjectItem(obj, key) : NULL;
+    if (!item) {
+        return true;
+    }
+
     const std::string path = config_field_path(section, key);
     switch (kind) {
         case CONFIG_FIELD_STRING:
             if (!json_is_string(item)) {
-                return config_schema_error(error, path, allow_empty ? "string" : "non-empty string", item);
-            }
-            if (!allow_empty && trim_copy(item->valuestring).empty()) {
-                if (error) {
-                    *error = "agent config invalid field " + path + ": expected non-empty string, got empty string";
-                }
-                return false;
+                return config_schema_error(error, path, "string", item);
             }
             return true;
         case CONFIG_FIELD_NUMBER:
@@ -426,6 +397,185 @@ bool validate_config_field(cJSON* obj,
             return true;
     }
     return config_schema_error(error, path, "known field kind", item);
+}
+
+bool validate_required_string(cJSON* obj,
+                              const char* section,
+                              const char* key,
+                              bool allow_empty,
+                              std::string* error) {
+    cJSON* item = obj ? cJSON_GetObjectItem(obj, key) : NULL;
+    const std::string path = config_field_path(section, key);
+    if (!json_is_string(item)) {
+        return config_schema_error(error, path, allow_empty ? "string" : "non-empty string", item);
+    }
+    if (!allow_empty && trim_copy(item->valuestring).empty()) {
+        if (error) {
+            *error = "agent config invalid field " + path + ": expected non-empty string, got empty string";
+        }
+        return false;
+    }
+    return true;
+}
+
+bool validate_model_section(cJSON* root, std::string* error) {
+    cJSON* model = cJSON_GetObjectItem(root, "model");
+    if (!json_is_object(model)) {
+        return config_schema_error(error, "model", "object", model);
+    }
+
+    if (!validate_required_string(model, "model", "provider", false, error)) {
+        return false;
+    }
+    cJSON* provider_item = cJSON_GetObjectItem(model, "provider");
+    const std::string provider = json_is_string(provider_item) ? trim_copy(provider_item->valuestring) : "";
+    if (provider != "fake" && !validate_required_string(model, "model", "model", false, error)) {
+        return false;
+    }
+    return true;
+}
+
+bool validate_search_secret_presence(cJSON* root, std::string* error) {
+    cJSON* search = cJSON_GetObjectItem(root, "search");
+    if (!search) {
+        return true;
+    }
+    if (!json_is_object(search)) {
+        return config_schema_error(error, "search", "object", search);
+    }
+    if (!validate_config_field_type(search, "search", "provider", CONFIG_FIELD_STRING, error) ||
+        !validate_config_field_type(search, "search", "api_key", CONFIG_FIELD_STRING, error) ||
+        !validate_config_field_type(search, "search", "has_api_key", CONFIG_FIELD_BOOL, error)) {
+        return false;
+    }
+
+    cJSON* provider_item = cJSON_GetObjectItem(search, "provider");
+    const std::string provider = json_is_string(provider_item) ? trim_copy(provider_item->valuestring) : "";
+    if (provider != "brave" && provider != "brave-free" && provider != "tavily") {
+        return true;
+    }
+
+    cJSON* key_item = cJSON_GetObjectItem(search, "api_key");
+    if (json_is_string(key_item) && !trim_copy(key_item->valuestring).empty()) {
+        return true;
+    }
+    cJSON* has_key_item = cJSON_GetObjectItem(search, "has_api_key");
+    if (!has_key_item) {
+        return config_schema_error(error, "search.has_api_key", "bool", has_key_item);
+    }
+    return true;
+}
+
+bool validate_known_config_field_types(cJSON* root, std::string* error) {
+    struct FieldSpec {
+        const char* section;
+        const char* key;
+        ConfigFieldKind kind;
+    };
+    const FieldSpec fields[] = {
+        {"model", "provider", CONFIG_FIELD_STRING},
+        {"model", "model", CONFIG_FIELD_STRING},
+        {"model", "api_key", CONFIG_FIELD_STRING},
+        {"model", "base_url", CONFIG_FIELD_STRING},
+        {"model", "token_env", CONFIG_FIELD_STRING},
+        {"model", "temperature", CONFIG_FIELD_NUMBER},
+        {"model", "max_response_tokens", CONFIG_FIELD_NUMBER},
+        {"model", "context_window", CONFIG_FIELD_NUMBER},
+        {"model", "model_max_output_tokens", CONFIG_FIELD_NUMBER},
+        {"model_text", "provider", CONFIG_FIELD_STRING},
+        {"model_text", "model", CONFIG_FIELD_STRING},
+        {"model_text", "api_key", CONFIG_FIELD_STRING},
+        {"model_text", "base_url", CONFIG_FIELD_STRING},
+        {"model_text", "token_env", CONFIG_FIELD_STRING},
+        {"model_text", "temperature", CONFIG_FIELD_NUMBER},
+        {"model_text", "max_response_tokens", CONFIG_FIELD_NUMBER},
+        {"model_text", "context_window", CONFIG_FIELD_NUMBER},
+        {"model_text", "model_max_output_tokens", CONFIG_FIELD_NUMBER},
+        {"tts", "provider", CONFIG_FIELD_STRING},
+        {"tts", "api_key", CONFIG_FIELD_STRING},
+        {"tts", "model", CONFIG_FIELD_STRING},
+        {"tts", "voice_id", CONFIG_FIELD_STRING},
+        {"tts", "emotion", CONFIG_FIELD_STRING},
+        {"tts", "speed", CONFIG_FIELD_NUMBER},
+        {"stt", "provider", CONFIG_FIELD_STRING},
+        {"stt", "api_key", CONFIG_FIELD_STRING},
+        {"stt", "model", CONFIG_FIELD_STRING},
+        {"stt", "base_url", CONFIG_FIELD_STRING},
+        {"stt", "secret_id", CONFIG_FIELD_STRING},
+        {"stt", "secret_key", CONFIG_FIELD_STRING},
+        {"stt", "region", CONFIG_FIELD_STRING},
+        {"stt", "engine_model_type", CONFIG_FIELD_STRING},
+        {"audio", "socket", CONFIG_FIELD_STRING},
+        {"audio", "sample_rate", CONFIG_FIELD_NUMBER},
+        {"audio", "channels", CONFIG_FIELD_NUMBER},
+        {"audio", "bit_width", CONFIG_FIELD_NUMBER},
+        {"audio_archive", "enabled", CONFIG_FIELD_BOOL},
+        {"audio_archive", "storage_path", CONFIG_FIELD_STRING},
+        {"audio_archive", "max_files", CONFIG_FIELD_NUMBER},
+        {"audio_archive", "max_size_mb", CONFIG_FIELD_NUMBER},
+        {"benchmark", "judge_model", CONFIG_FIELD_STRING},
+        {"benchmark", "api_key", CONFIG_FIELD_STRING},
+        {"benchmark", "benchmark_dir", CONFIG_FIELD_STRING},
+        {"hid", "keyboard_device", CONFIG_FIELD_STRING},
+        {"hid", "mouse_device", CONFIG_FIELD_STRING},
+        {"hid", "frame_socket", CONFIG_FIELD_STRING},
+        {"hid", "pointer_mode", CONFIG_FIELD_STRING},
+        {"search", "provider", CONFIG_FIELD_STRING},
+        {"search", "api_key", CONFIG_FIELD_STRING},
+        {"search", "has_api_key", CONFIG_FIELD_BOOL},
+        {"telemetry", "enabled", CONFIG_FIELD_BOOL},
+        {"telemetry", "provider", CONFIG_FIELD_STRING},
+        {"telemetry", "base_url", CONFIG_FIELD_STRING},
+        {"telemetry", "public_key", CONFIG_FIELD_STRING},
+        {"telemetry", "secret_key", CONFIG_FIELD_STRING},
+        {"telemetry", "upload_screenshots", CONFIG_FIELD_BOOL},
+        {"telemetry", "upload_timeout_sec", CONFIG_FIELD_NUMBER},
+        {"telemetry", "max_retry", CONFIG_FIELD_NUMBER},
+        {"telemetry", "tags", CONFIG_FIELD_ARRAY},
+        {"telemetry", "environment", CONFIG_FIELD_STRING},
+        {"agent", "custom_instruction", CONFIG_FIELD_STRING},
+        {"agent", "additional_prompt", CONFIG_FIELD_STRING},
+        {"agent", "input_mode", CONFIG_FIELD_STRING},
+        {"agent", "trigger_mode", CONFIG_FIELD_STRING},
+        {"agent", "vad_backend", CONFIG_FIELD_STRING},
+        {"agent", "vad_model_path", CONFIG_FIELD_STRING},
+        {"agent", "vad_helper_path", CONFIG_FIELD_STRING},
+        {"agent", "vad_speech_threshold", CONFIG_FIELD_NUMBER},
+        {"agent", "silence_ms", CONFIG_FIELD_NUMBER},
+        {"agent", "min_speech_ms", CONFIG_FIELD_NUMBER},
+        {"agent", "voice_followup_enabled", CONFIG_FIELD_BOOL},
+        {"agent", "voice_followup_timeout_ms", CONFIG_FIELD_NUMBER},
+        {"agent", "voice_first_turn_timeout_ms", CONFIG_FIELD_NUMBER},
+        {"agent", "voice_max_turns", CONFIG_FIELD_NUMBER},
+        {"agent", "voice_interrupt_on_wakeup", CONFIG_FIELD_BOOL},
+        {"agent", "voice_streaming_tts_enabled", CONFIG_FIELD_BOOL},
+        {"agent", "voice_tool_call_speech", CONFIG_FIELD_BOOL},
+        {"agent", "voice_progress_speech_enabled", CONFIG_FIELD_BOOL},
+        {"agent", "voice_max_response_tokens", CONFIG_FIELD_NUMBER},
+        {"agent", "max_iterations", CONFIG_FIELD_NUMBER},
+        {"agent", "force_simple_loop", CONFIG_FIELD_BOOL},
+        {"agent", "screenshot_keep_n", CONFIG_FIELD_NUMBER},
+        {"agent", "screenshot_prune_interval", CONFIG_FIELD_NUMBER},
+        {"agent", "screen_stable_timeout_ms", CONFIG_FIELD_NUMBER},
+        {"agent", "screen_stable_ms", CONFIG_FIELD_NUMBER},
+        {"agent", "screen_stable_diff_threshold", CONFIG_FIELD_NUMBER},
+        {NULL, NULL, CONFIG_FIELD_STRING},
+    };
+
+    for (int i = 0; fields[i].section; ++i) {
+        cJSON* section = cJSON_GetObjectItem(root, fields[i].section);
+        if (!section) {
+            continue;
+        }
+        if (!validate_config_field_type(section,
+                                        fields[i].section,
+                                        fields[i].key,
+                                        fields[i].kind,
+                                        error)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 cJSON* add_object(cJSON* parent, const char* key) {
@@ -814,6 +964,35 @@ std::string extract_iw_ssid(const std::string& text) {
     return "";
 }
 
+// Extract the IPv4 address from `ifconfig` output, supporting both the
+// BusyBox ("inet addr:192.168.1.2") and iproute/glibc ("inet 192.168.1.2")
+// formats. Returns an empty string when no IPv4 address is present.
+std::string extract_ifconfig_ipv4(const std::string& text) {
+    std::istringstream input(text);
+    std::string line;
+    while (std::getline(input, line)) {
+        std::string trimmed = trim_copy(line);
+        std::string value;
+        if (starts_with(trimmed, "inet addr:")) {
+            value = trimmed.substr(std::string("inet addr:").size());
+        } else if (starts_with(trimmed, "inet ") && !starts_with(trimmed, "inet6")) {
+            value = trimmed.substr(std::string("inet ").size());
+        } else {
+            continue;
+        }
+        // The address is the first whitespace-delimited token.
+        size_t end = value.find_first_of(" \t");
+        if (end != std::string::npos) {
+            value = value.substr(0, end);
+        }
+        value = trim_copy(value);
+        if (!value.empty()) {
+            return value;
+        }
+    }
+    return "";
+}
+
 bool write_all(int fd, const void* data, size_t size) {
     const char* bytes = static_cast<const char*>(data);
     size_t offset = 0;
@@ -1028,140 +1207,18 @@ bool validate_agent_config_json(cJSON* root, std::string* error = NULL) {
     }
 
     const char* sections[] = {
-        "model", "model_text", "tts", "stt", "audio", "benchmark",
-        "hid", "search", "telemetry", "agent", NULL,
+        "model", "model_text", "tts", "stt", "audio", "audio_archive",
+        "benchmark", "hid", "search", "telemetry", "agent", NULL,
     };
     for (int i = 0; sections[i]; ++i) {
         cJSON* section = cJSON_GetObjectItem(root, sections[i]);
-        if (!json_is_object(section)) {
+        if (section && !json_is_object(section)) {
             return config_schema_error(error, sections[i], "object", section);
         }
     }
-
-    cJSON* model = cJSON_GetObjectItem(root, "model");
-    if (!validate_config_field(model, "model", "provider", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(model, "model", "model", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(model, "model", "api_key", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(model, "model", "base_url", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(model, "model", "token_env", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(model, "model", "temperature", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(model, "model", "max_response_tokens", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(model, "model", "context_window", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(model, "model", "model_max_output_tokens", CONFIG_FIELD_NUMBER, false, error)) {
-        return false;
-    }
-
-    cJSON* model_text = cJSON_GetObjectItem(root, "model_text");
-    if (!validate_config_field(model_text, "model_text", "provider", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(model_text, "model_text", "model", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(model_text, "model_text", "api_key", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(model_text, "model_text", "base_url", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(model_text, "model_text", "token_env", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(model_text, "model_text", "temperature", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(model_text, "model_text", "max_response_tokens", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(model_text, "model_text", "context_window", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(model_text, "model_text", "model_max_output_tokens", CONFIG_FIELD_NUMBER, false, error)) {
-        return false;
-    }
-
-    cJSON* tts = cJSON_GetObjectItem(root, "tts");
-    if (!validate_config_field(tts, "tts", "provider", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(tts, "tts", "api_key", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(tts, "tts", "model", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(tts, "tts", "voice_id", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(tts, "tts", "emotion", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(tts, "tts", "speed", CONFIG_FIELD_NUMBER, false, error)) {
-        return false;
-    }
-
-    cJSON* stt = cJSON_GetObjectItem(root, "stt");
-    if (!validate_config_field(stt, "stt", "provider", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(stt, "stt", "api_key", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(stt, "stt", "model", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(stt, "stt", "base_url", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(stt, "stt", "secret_id", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(stt, "stt", "secret_key", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(stt, "stt", "region", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(stt, "stt", "engine_model_type", CONFIG_FIELD_STRING, true, error)) {
-        return false;
-    }
-
-    cJSON* audio = cJSON_GetObjectItem(root, "audio");
-    if (!validate_config_field(audio, "audio", "socket", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(audio, "audio", "sample_rate", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(audio, "audio", "channels", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(audio, "audio", "bit_width", CONFIG_FIELD_NUMBER, false, error)) {
-        return false;
-    }
-
-    cJSON* audio_archive = cJSON_GetObjectItem(root, "audio_archive");
-    if (!validate_config_field(audio_archive, "audio_archive", "enabled", CONFIG_FIELD_BOOL, false, error) ||
-        !validate_config_field(audio_archive, "audio_archive", "storage_path", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(audio_archive, "audio_archive", "max_files", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(audio_archive, "audio_archive", "max_size_mb", CONFIG_FIELD_NUMBER, false, error)) {
-        return false;
-    }
-
-    cJSON* benchmark = cJSON_GetObjectItem(root, "benchmark");
-    if (!validate_config_field(benchmark, "benchmark", "judge_model", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(benchmark, "benchmark", "api_key", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(benchmark, "benchmark", "benchmark_dir", CONFIG_FIELD_STRING, true, error)) {
-        return false;
-    }
-
-    cJSON* hid = cJSON_GetObjectItem(root, "hid");
-    if (!validate_config_field(hid, "hid", "keyboard_device", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(hid, "hid", "mouse_device", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(hid, "hid", "frame_socket", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(hid, "hid", "pointer_mode", CONFIG_FIELD_STRING, false, error)) {
-        return false;
-    }
-
-    cJSON* search = cJSON_GetObjectItem(root, "search");
-    if (!validate_config_field(search, "search", "provider", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(search, "search", "has_api_key", CONFIG_FIELD_BOOL, false, error)) {
-        return false;
-    }
-
-    cJSON* telemetry = cJSON_GetObjectItem(root, "telemetry");
-    if (!validate_config_field(telemetry, "telemetry", "enabled", CONFIG_FIELD_BOOL, false, error) ||
-        !validate_config_field(telemetry, "telemetry", "provider", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(telemetry, "telemetry", "base_url", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(telemetry, "telemetry", "public_key", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(telemetry, "telemetry", "secret_key", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(telemetry, "telemetry", "upload_screenshots", CONFIG_FIELD_BOOL, false, error) ||
-        !validate_config_field(telemetry, "telemetry", "upload_timeout_sec", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(telemetry, "telemetry", "max_retry", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(telemetry, "telemetry", "tags", CONFIG_FIELD_ARRAY, false, error) ||
-        !validate_config_field(telemetry, "telemetry", "environment", CONFIG_FIELD_STRING, false, error)) {
-        return false;
-    }
-
-    cJSON* agent = cJSON_GetObjectItem(root, "agent");
-    if (!validate_config_field(agent, "agent", "instruction", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(agent, "agent", "additional_prompt", CONFIG_FIELD_STRING, true, error) ||
-        !validate_config_field(agent, "agent", "input_mode", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(agent, "agent", "trigger_mode", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(agent, "agent", "vad_backend", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(agent, "agent", "vad_model_path", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(agent, "agent", "vad_helper_path", CONFIG_FIELD_STRING, false, error) ||
-        !validate_config_field(agent, "agent", "vad_speech_threshold", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(agent, "agent", "silence_ms", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(agent, "agent", "min_speech_ms", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(agent, "agent", "voice_session_enabled", CONFIG_FIELD_BOOL, false, error) ||
-        !validate_config_field(agent, "agent", "voice_followup_timeout_ms", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(agent, "agent", "voice_first_turn_timeout_ms", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(agent, "agent", "voice_max_turns", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(agent, "agent", "voice_interrupt_on_wakeup", CONFIG_FIELD_BOOL, false, error) ||
-        !validate_config_field(agent, "agent", "voice_streaming_tts_enabled", CONFIG_FIELD_BOOL, false, error) ||
-        !validate_config_field(agent, "agent", "voice_tool_call_speech", CONFIG_FIELD_BOOL, false, error) ||
-        !validate_config_field(agent, "agent", "voice_max_response_tokens", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(agent, "agent", "max_iterations", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(agent, "agent", "screenshot_keep_n", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(agent, "agent", "screenshot_prune_interval", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(agent, "agent", "screen_stable_timeout_ms", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(agent, "agent", "screen_stable_ms", CONFIG_FIELD_NUMBER, false, error) ||
-        !validate_config_field(agent, "agent", "screen_stable_diff_threshold", CONFIG_FIELD_NUMBER, false, error)) {
+    if (!validate_model_section(root, error) ||
+        !validate_known_config_field_types(root, error) ||
+        !validate_search_secret_presence(root, error)) {
         return false;
     }
     return true;
@@ -1268,6 +1325,24 @@ void preserve_redacted_agent_secrets(const Options& options, aiden::AgentToml* c
     }
 }
 
+bool json_bool_value(cJSON* obj, const char* key) {
+    cJSON* item = cJSON_GetObjectItem(obj, key);
+    return json_is_bool(item) && json_is_type(item, cJSON_True);
+}
+
+bool json_has_nonempty_string(cJSON* obj, const char* key) {
+    cJSON* item = cJSON_GetObjectItem(obj, key);
+    return json_is_string(item) && !trim_copy(item->valuestring).empty();
+}
+
+bool json_secret_present(cJSON* obj, const char* key) {
+    if (json_has_nonempty_string(obj, key)) {
+        return true;
+    }
+    const std::string has_key = std::string("has_") + key;
+    return json_bool_value(obj, has_key.c_str());
+}
+
 void load_current_wifi_config(const Options& options,
                               aiden::WifiNetworkConfig* config,
                               std::string* load_error) {
@@ -1372,7 +1447,7 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddStringToObject(telemetry, "environment", config.telemetry.environment.c_str());
 
     cJSON* agent = add_object(root, "agent");
-    cJSON_AddStringToObject(agent, "instruction", config.instruction.c_str());
+    cJSON_AddStringToObject(agent, "custom_instruction", config.custom_instruction.c_str());
     cJSON_AddStringToObject(agent, "additional_prompt", config.additional_prompt.c_str());
     cJSON_AddStringToObject(agent, "input_mode", config.input_mode.c_str());
     cJSON_AddStringToObject(agent, "trigger_mode", config.trigger_mode.c_str());
@@ -1382,13 +1457,14 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddNumberToObject(agent, "vad_speech_threshold", config.vad_speech_threshold);
     cJSON_AddNumberToObject(agent, "silence_ms", config.silence_ms);
     cJSON_AddNumberToObject(agent, "min_speech_ms", config.min_speech_ms);
-    cJSON_AddBoolToObject(agent, "voice_session_enabled", config.voice_session_enabled ? 1 : 0);
+    cJSON_AddBoolToObject(agent, "voice_followup_enabled", config.voice_followup_enabled ? 1 : 0);
     cJSON_AddNumberToObject(agent, "voice_followup_timeout_ms", config.voice_followup_timeout_ms);
     cJSON_AddNumberToObject(agent, "voice_first_turn_timeout_ms", config.voice_first_turn_timeout_ms);
     cJSON_AddNumberToObject(agent, "voice_max_turns", config.voice_max_turns);
     cJSON_AddBoolToObject(agent, "voice_interrupt_on_wakeup", config.voice_interrupt_on_wakeup ? 1 : 0);
     cJSON_AddBoolToObject(agent, "voice_streaming_tts_enabled", config.voice_streaming_tts_enabled ? 1 : 0);
     cJSON_AddBoolToObject(agent, "voice_tool_call_speech", config.voice_tool_call_speech ? 1 : 0);
+    cJSON_AddBoolToObject(agent, "voice_progress_speech_enabled", config.voice_progress_speech_enabled ? 1 : 0);
     cJSON_AddNumberToObject(agent, "voice_max_response_tokens", config.voice_max_response_tokens);
     cJSON_AddNumberToObject(agent, "max_iterations", config.max_iterations);
     cJSON_AddBoolToObject(agent, "force_simple_loop", config.force_simple_loop ? 1 : 0);
@@ -1406,6 +1482,17 @@ cJSON* wifi_to_json(const aiden::WifiNetworkConfig& wifi) {
     cJSON_AddStringToObject(root, "ssid", wifi.ssid.c_str());
     cJSON_AddStringToObject(root, "psk", wifi.psk.c_str());
     cJSON_AddStringToObject(root, "country", wifi.country.c_str());
+    cJSON* networks = add_array(root, "networks");
+    for (size_t i = 0; i < wifi.networks.size(); ++i) {
+        const aiden::WifiNetwork& network = wifi.networks[i];
+        cJSON* item = cJSON_CreateObject();
+        cJSON_AddStringToObject(item, "ssid", network.ssid.c_str());
+        cJSON_AddStringToObject(item, "psk", network.psk.c_str());
+        cJSON_AddNumberToObject(item, "priority", network.priority);
+        cJSON_AddBoolToObject(item, "scan_ssid", network.scan_ssid ? 1 : 0);
+        cJSON_AddBoolToObject(item, "disabled", network.disabled ? 1 : 0);
+        cJSON_AddItemToArray(networks, item);
+    }
     return root;
 }
 
@@ -1434,6 +1521,7 @@ ApiResponse make_json_error(int status_code, const std::string& message) {
     response.status_code = status_code;
     switch (status_code) {
         case 400: response.status_text = "Bad Request"; break;
+        case 404: response.status_text = "Not Found"; break;
         case 503: response.status_text = "Service Unavailable"; break;
         default:  response.status_text = "Internal Server Error"; break;
     }
@@ -1627,7 +1715,7 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
 
     cJSON* agent = cJSON_GetObjectItem(root, "agent");
     if (json_is_object(agent)) {
-        set_json_str(&config->instruction, agent, "instruction");
+        set_json_str(&config->custom_instruction, agent, "custom_instruction");
         set_json_str(&config->additional_prompt, agent, "additional_prompt");
         set_json_str(&config->input_mode, agent, "input_mode");
         set_json_str(&config->trigger_mode, agent, "trigger_mode");
@@ -1637,13 +1725,14 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_double(&config->vad_speech_threshold, agent, "vad_speech_threshold");
         set_json_int(&config->silence_ms, agent, "silence_ms");
         set_json_int(&config->min_speech_ms, agent, "min_speech_ms");
-        set_json_bool(&config->voice_session_enabled, agent, "voice_session_enabled");
+        set_json_bool(&config->voice_followup_enabled, agent, "voice_followup_enabled");
         set_json_int(&config->voice_followup_timeout_ms, agent, "voice_followup_timeout_ms");
         set_json_int(&config->voice_first_turn_timeout_ms, agent, "voice_first_turn_timeout_ms");
         set_json_int(&config->voice_max_turns, agent, "voice_max_turns");
         set_json_bool(&config->voice_interrupt_on_wakeup, agent, "voice_interrupt_on_wakeup");
         set_json_bool(&config->voice_streaming_tts_enabled, agent, "voice_streaming_tts_enabled");
         set_json_bool(&config->voice_tool_call_speech, agent, "voice_tool_call_speech");
+        set_json_bool(&config->voice_progress_speech_enabled, agent, "voice_progress_speech_enabled");
         set_json_int(&config->voice_max_response_tokens, agent, "voice_max_response_tokens");
         set_json_int(&config->max_iterations, agent, "max_iterations");
         set_json_bool(&config->force_simple_loop, agent, "force_simple_loop");
@@ -1749,9 +1838,55 @@ void update_wifi_from_json(cJSON* root, aiden::WifiNetworkConfig* wifi) {
     if (!root || !wifi) {
         return;
     }
+    cJSON* legacy_ssid = cJSON_GetObjectItem(root, "ssid");
+    cJSON* legacy_psk = cJSON_GetObjectItem(root, "psk");
+    bool has_legacy_ssid = json_is_string(legacy_ssid);
+    bool has_legacy_psk = json_is_string(legacy_psk);
     set_json_str(&wifi->ssid, root, "ssid");
     set_json_str(&wifi->psk, root, "psk");
     set_json_str(&wifi->country, root, "country");
+    cJSON* networks = cJSON_GetObjectItem(root, "networks");
+    if (json_is_array(networks)) {
+        wifi->networks.clear();
+        int network_count = cJSON_GetArraySize(networks);
+        for (int i = 0; i < network_count; ++i) {
+            cJSON* child = cJSON_GetArrayItem(networks, i);
+            if (!json_is_object(child)) {
+                continue;
+            }
+            aiden::WifiNetwork network;
+            set_json_str(&network.ssid, child, "ssid");
+            set_json_str(&network.psk, child, "psk");
+            set_json_int(&network.priority, child, "priority");
+            set_json_bool(&network.scan_ssid, child, "scan_ssid");
+            set_json_bool(&network.disabled, child, "disabled");
+            if (!network.ssid.empty()) {
+                wifi->networks.push_back(network);
+            }
+        }
+        aiden::normalize_wifi_priorities(wifi);
+        aiden::sync_legacy_wifi_fields(wifi);
+    } else if ((has_legacy_ssid || has_legacy_psk) && !wifi->ssid.empty()) {
+        aiden::WifiNetwork network;
+        int existing_index = aiden::find_wifi_network_index(*wifi, wifi->ssid);
+        if (existing_index >= 0) {
+            network = wifi->networks[static_cast<size_t>(existing_index)];
+        }
+        network.ssid = wifi->ssid;
+        if (has_legacy_psk) {
+            network.psk = wifi->psk;
+        } else if (existing_index < 0) {
+            network.psk.clear();
+        }
+        aiden::upsert_wifi_network(wifi, network);
+        aiden::promote_wifi_network(wifi, wifi->ssid);
+    } else if (!wifi->ssid.empty() && wifi->networks.empty()) {
+        aiden::WifiNetwork network;
+        network.ssid = wifi->ssid;
+        network.psk = wifi->psk;
+        network.priority = 1;
+        aiden::upsert_wifi_network(wifi, network);
+    }
     if (wifi->country.empty()) {
         wifi->country = "CN";
     }
@@ -1834,6 +1969,41 @@ bool wait_for_wpa_completed(const Options& options, std::ostringstream& log, int
     return false;
 }
 
+// Poll until the interface has obtained an IPv4 address (DHCP lease), up to
+// max_seconds. `dhcpcd -n` only signals the running daemon and returns
+// immediately, so the lease is not yet in place when it exits; without this
+// wait the connect-confirmation check sees an empty ip_address and rolls back
+// a connection that would have succeeded a second or two later.
+bool wait_for_ip(const Options& options, std::ostringstream& log, int max_seconds) {
+    for (int i = 0; i < max_seconds; ++i) {
+        if (command_exists("wpa_cli")) {
+            CommandResult status = run_shell_command(
+                "wpa_cli -i " + shell_quote(options.wifi_interface) + " status 2>&1");
+            if (status.exit_code == 0) {
+                std::string ip = find_key_value_line(status.output, "ip_address");
+                if (!ip.empty()) {
+                    log << "$ wpa_cli status -> ip_address=" << ip << " after "
+                        << (i + 1) << "s\n";
+                    return true;
+                }
+            }
+        }
+        if (command_exists("ifconfig")) {
+            CommandResult status = run_shell_command(
+                "ifconfig " + shell_quote(options.wifi_interface) + " 2>&1");
+            std::string ip = extract_ifconfig_ipv4(status.output);
+            if (!ip.empty()) {
+                log << "$ ifconfig " << options.wifi_interface << " -> inet " << ip
+                    << " after " << (i + 1) << "s\n";
+                return true;
+            }
+        }
+        sleep(1);
+    }
+    log << "$ no IPv4 address obtained within " << max_seconds << "s\n";
+    return false;
+}
+
 void restart_wpa_supplicant(const Options& options, std::ostringstream& log) {
     CommandResult killed = run_shell_command("killall wpa_supplicant 2>&1");
     log << "$ killall wpa_supplicant\n" << killed.output;
@@ -1857,10 +2027,6 @@ void schedule_init_script_restart(const char* init_script) {
 
 void schedule_agent_restart() {
     schedule_init_script_restart(kAgentInitScript);
-}
-
-void schedule_ota_restart() {
-    schedule_init_script_restart(kOtaInitScript);
 }
 
 int acquire_ota_update_launch_lock(std::string* error) {
@@ -1939,7 +2105,7 @@ bool launch_ota_update_supervisor(int lock_fd, const std::string& log_path, std:
         setsid();
         set_fd_cloexec(lock_fd, NULL);
         // Keep the launch lock in this supervisor while `ota update` runs,
-        // but keep it out of the ota/update-daemon exec tree.
+        // but keep it out of the ota update exec tree.
         std::string cmd = build_ota_update_command(log_path);
         int rc = system(cmd.c_str());
         (void)rc;
@@ -1990,7 +2156,7 @@ void schedule_poweroff() {
     (void)rc;
 }
 
-CommandResult apply_wifi_config(const Options& options) {
+CommandResult apply_wifi_config(const Options& options, bool force_restart = false) {
     CommandResult result;
     result.exit_code = 0;
     std::ostringstream log;
@@ -2006,7 +2172,7 @@ CommandResult apply_wifi_config(const Options& options) {
     bool supplicant_ready = false;
     bool associated = false;
 
-    if (command_exists("wpa_cli")) {
+    if (!force_restart && command_exists("wpa_cli")) {
         CommandResult ping = run_shell_command("wpa_cli -i " + shell_quote(options.wifi_interface) + " ping 2>&1");
         log << "$ wpa_cli -i " << options.wifi_interface << " ping\n" << ping.output;
         supplicant_ready = ping.exit_code == 0 && ping.output.find("PONG") != std::string::npos;
@@ -2032,16 +2198,19 @@ CommandResult apply_wifi_config(const Options& options) {
         if (command_exists("dhcpcd")) {
             CommandResult dhcp = run_shell_command("dhcpcd -n " + shell_quote(options.wifi_interface) + " 2>&1");
             log << "$ dhcpcd -n " << options.wifi_interface << "\n" << dhcp.output;
-            dhcp_ok = dhcp.exit_code == 0;
+            // `dhcpcd -n` only signals the running daemon and returns
+            // immediately, so its exit code says nothing about whether a lease
+            // was actually obtained. Wait for the IPv4 address to appear.
+            dhcp_ok = dhcp.exit_code == 0 && wait_for_ip(options, log, 15);
             if (!dhcp_ok) {
-                result.exit_code = dhcp.exit_code;
+                result.exit_code = dhcp.exit_code != 0 ? dhcp.exit_code : 1;
             }
         } else if (command_exists("dhclient")) {
             CommandResult dhcp = run_shell_command("dhclient " + shell_quote(options.wifi_interface) + " 2>&1");
             log << "$ dhclient " << options.wifi_interface << "\n" << dhcp.output;
-            dhcp_ok = dhcp.exit_code == 0;
+            dhcp_ok = dhcp.exit_code == 0 && wait_for_ip(options, log, 15);
             if (!dhcp_ok) {
-                result.exit_code = dhcp.exit_code;
+                result.exit_code = dhcp.exit_code != 0 ? dhcp.exit_code : 1;
             }
         } else {
             log << "No supported DHCP client found (need dhcpcd or dhclient).\n";
@@ -2079,6 +2248,15 @@ WifiRuntimeStatus query_wifi_status(const Options& options) {
             status.ssid = find_key_value_line(result.output, "ssid");
             status.ip_address = find_key_value_line(result.output, "ip_address");
             status.connected = status.state == "COMPLETED" && !status.ssid.empty();
+            // wpa_supplicant is not wired to DHCP on this device (dhcpcd runs
+            // separately), so `wpa_cli status` never reports ip_address=. Fall
+            // back to ifconfig for the IPv4 lease so the connect-confirmation
+            // gate and the UI status see the same address wait_for_ip() trusts.
+            if (status.ip_address.empty() && status.connected && command_exists("ifconfig")) {
+                CommandResult ifc = run_shell_command(
+                    "ifconfig " + shell_quote(options.wifi_interface) + " 2>&1");
+                status.ip_address = extract_ifconfig_ipv4(ifc.output);
+            }
             if (!status.state.empty() || !status.ssid.empty()) {
                 return status;
             }
@@ -2105,25 +2283,73 @@ WifiRuntimeStatus query_wifi_status(const Options& options) {
     return status;
 }
 
-std::string read_file_contents(const char* path, size_t max_size = 64 * 1024) {
+bool read_file_contents_checked(const char* path, size_t max_size, std::string* contents, std::string* error) {
+    if (contents) {
+        contents->clear();
+    }
+    if (!path) {
+        if (error) *error = "path is null";
+        return false;
+    }
     FILE* f = fopen(path, "r");
     if (!f) {
-        return "";
+        if (error) *error = std::string("open ") + path + ": " + strerror(errno);
+        return false;
     }
-    fseek(f, 0, SEEK_END);
-    long file_size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (file_size < 0 || static_cast<size_t>(file_size) > max_size) {
+    if (fseek(f, 0, SEEK_END) != 0) {
+        if (error) *error = std::string("seek ") + path + ": " + strerror(errno);
         fclose(f);
-        return "";
+        return false;
     }
-    std::string contents;
-    contents.reserve(static_cast<size_t>(file_size));
+    long file_size = ftell(f);
+    if (file_size < 0) {
+        if (error) *error = std::string("tell ") + path + ": " + strerror(errno);
+        fclose(f);
+        return false;
+    }
+    if (static_cast<size_t>(file_size) > max_size) {
+        if (error) {
+            *error = std::string("file too large: ") + path + " (" +
+                     std::to_string(file_size) + " bytes)";
+        }
+        fclose(f);
+        return false;
+    }
+    if (fseek(f, 0, SEEK_SET) != 0) {
+        if (error) *error = std::string("seek ") + path + ": " + strerror(errno);
+        fclose(f);
+        return false;
+    }
+    std::string result;
+    result.reserve(static_cast<size_t>(file_size));
     char buf[1024];
     while (size_t n = fread(buf, 1, sizeof(buf), f)) {
-        contents.append(buf, n);
+        result.append(buf, n);
     }
-    fclose(f);
+    if (ferror(f)) {
+        if (error) *error = std::string("read ") + path + ": " + strerror(errno);
+        fclose(f);
+        return false;
+    }
+    if (fclose(f) != 0) {
+        if (error) *error = std::string("close ") + path + ": " + strerror(errno);
+        return false;
+    }
+    if (contents) {
+        *contents = result;
+    }
+    if (error) {
+        error->clear();
+    }
+    return true;
+}
+
+std::string read_file_contents(const char* path, size_t max_size = 64 * 1024) {
+    std::string contents;
+    std::string error;
+    if (!read_file_contents_checked(path, max_size, &contents, &error)) {
+        return "";
+    }
     return contents;
 }
 
@@ -2396,8 +2622,13 @@ AgentLogSnapshot read_agent_log_snapshot() {
 }
 
 AgentLogSnapshot read_ota_log_snapshot() {
-    std::string log_path = ota_update_log_path();
-    return read_log_snapshot(log_path.c_str(), kOtaLogReadSize, kOtaLogDisplaySize);
+    std::string update_log_path = ota_update_log_path();
+    return read_log_snapshot(update_log_path.c_str(), kOtaLogReadSize, kOtaLogDisplaySize);
+}
+
+AgentLogSnapshot read_ota_health_log_snapshot() {
+    std::string health_log_path = ota_health_log_path();
+    return read_log_snapshot(health_log_path.c_str(), kOtaLogReadSize, kOtaLogDisplaySize);
 }
 
 std::string lowercase_copy(const std::string& text) {
@@ -2683,12 +2914,111 @@ cJSON* ota_log_to_json(const AgentLogSnapshot& snapshot) {
     return log_snapshot_to_json(snapshot);
 }
 
+std::string json_string_value(cJSON* obj, const char* key) {
+    cJSON* item = cJSON_GetObjectItem(obj, key);
+    return json_is_string(item) ? item->valuestring : "";
+}
+
+std::string normalize_slot_name(const std::string& raw) {
+    std::string value = lowercase_copy(trim_copy(raw));
+    if (value == "a" || value == "_a" || value == "slot_a" || value == "0") {
+        return "a";
+    }
+    if (value == "b" || value == "_b" || value == "slot_b" || value == "1") {
+        return "b";
+    }
+    return "";
+}
+
+std::string slot_name_from_json(cJSON* item) {
+    if (json_is_number(item)) {
+        if (item->valueint == 0) {
+            return "a";
+        }
+        if (item->valueint == 1) {
+            return "b";
+        }
+        return "";
+    }
+    if (json_is_string(item)) {
+        return normalize_slot_name(item->valuestring);
+    }
+    return "";
+}
+
+bool string_has_suffix(const std::string& text, const std::string& suffix) {
+    return text.size() >= suffix.size()
+        && text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+std::string slot_from_root_value(const std::string& root) {
+    std::string value = lowercase_copy(trim_copy(root));
+    if (value == "partlabel=rootfs_a" || value == "rootfs_a"
+        || value == "/dev/mmcblk0p9" || string_has_suffix(value, "/rootfs_a")) {
+        return "a";
+    }
+    if (value == "partlabel=rootfs_b" || value == "rootfs_b"
+        || value == "/dev/mmcblk0p10" || string_has_suffix(value, "/rootfs_b")) {
+        return "b";
+    }
+    return "";
+}
+
+std::string current_slot_from_cmdline(const std::string& cmdline) {
+    std::istringstream in(cmdline);
+    std::string field;
+    std::string root_slot;
+    while (in >> field) {
+        const std::string slot_prefix = "aiden.slot_suffix=";
+        if (field.compare(0, slot_prefix.size(), slot_prefix) == 0) {
+            std::string slot = normalize_slot_name(field.substr(slot_prefix.size()));
+            if (!slot.empty()) {
+                return slot;
+            }
+        }
+        const std::string root_prefix = "root=";
+        if (field.compare(0, root_prefix.size(), root_prefix) == 0) {
+            root_slot = slot_from_root_value(field.substr(root_prefix.size()));
+        }
+    }
+    return root_slot;
+}
+
+bool running_slot_matches_target(const std::string& running_slot,
+                                 const std::string& target_slot) {
+    return !running_slot.empty() && !target_slot.empty() && running_slot == target_slot;
+}
+
+std::string firmware_health_status(const std::string& phase,
+                                   const std::string& last_error,
+                                   bool showing_running_target) {
+    if (phase == "health" && !last_error.empty()) {
+        return "failed";
+    }
+    if (phase == "pending-reboot" && showing_running_target) {
+        return "pending";
+    }
+    if (phase == "committed") {
+        return "success";
+    }
+    if (phase == "rolled-back") {
+        return "rolled_back";
+    }
+    return "";
+}
+
 cJSON* firmware_info_to_json(const Options& options) {
     cJSON* fw = cJSON_CreateObject();
     if (!file_exists(options.ota_state_path.c_str())) {
         cJSON_AddStringToObject(fw, "version", "");
         cJSON_AddStringToObject(fw, "build_time", "");
         cJSON_AddStringToObject(fw, "phase", "");
+        cJSON_AddStringToObject(fw, "health_status", "");
+        cJSON_AddStringToObject(fw, "health_error", "");
+        cJSON_AddStringToObject(fw, "previous_version", "");
+        cJSON_AddStringToObject(fw, "previous_build_time", "");
+        cJSON_AddStringToObject(fw, "running_slot", "");
+        cJSON_AddStringToObject(fw, "target_slot", "");
         return fw;
     }
     std::string contents = read_file_contents(options.ota_state_path.c_str());
@@ -2697,17 +3027,44 @@ cJSON* firmware_info_to_json(const Options& options) {
         cJSON_AddStringToObject(fw, "version", "");
         cJSON_AddStringToObject(fw, "build_time", "");
         cJSON_AddStringToObject(fw, "phase", "");
+        cJSON_AddStringToObject(fw, "health_status", "");
+        cJSON_AddStringToObject(fw, "health_error", "");
+        cJSON_AddStringToObject(fw, "previous_version", "");
+        cJSON_AddStringToObject(fw, "previous_build_time", "");
+        cJSON_AddStringToObject(fw, "running_slot", "");
+        cJSON_AddStringToObject(fw, "target_slot", "");
         return fw;
     }
-    cJSON* version = cJSON_GetObjectItem(state, "current_version");
-    cJSON* build_time = cJSON_GetObjectItem(state, "current_build_time");
-    cJSON* phase = cJSON_GetObjectItem(state, "phase");
-    cJSON_AddStringToObject(fw, "version",
-                            json_is_string(version) ? version->valuestring : "");
-    cJSON_AddStringToObject(fw, "build_time",
-                            json_is_string(build_time) ? build_time->valuestring : "");
-    cJSON_AddStringToObject(fw, "phase",
-                            json_is_string(phase) ? phase->valuestring : "");
+
+    const std::string current_version = json_string_value(state, "current_version");
+    const std::string current_build_time = json_string_value(state, "current_build_time");
+    const std::string target_version = json_string_value(state, "target_version");
+    const std::string target_build_time = json_string_value(state, "target_build_time");
+    const std::string phase = json_string_value(state, "phase");
+    const std::string last_error = json_string_value(state, "last_error");
+    const std::string target_slot = slot_name_from_json(cJSON_GetObjectItem(state, "target_slot"));
+    const std::string running_slot = current_slot_from_cmdline(
+        read_file_contents(options.cmdline_path.c_str(), 16 * 1024));
+    const bool show_target =
+        !target_version.empty()
+        && (phase == "pending-reboot" || phase == "health")
+        && running_slot_matches_target(running_slot, target_slot);
+
+    cJSON_AddStringToObject(fw, "version", show_target ? target_version.c_str() : current_version.c_str());
+    cJSON_AddStringToObject(fw, "build_time", show_target ? target_build_time.c_str() : current_build_time.c_str());
+    cJSON_AddStringToObject(fw, "phase", phase.c_str());
+    cJSON_AddStringToObject(fw, "current_version", current_version.c_str());
+    cJSON_AddStringToObject(fw, "current_build_time", current_build_time.c_str());
+    cJSON_AddStringToObject(fw, "target_version", target_version.c_str());
+    cJSON_AddStringToObject(fw, "target_build_time", target_build_time.c_str());
+    cJSON_AddStringToObject(fw, "previous_version", show_target ? current_version.c_str() : "");
+    cJSON_AddStringToObject(fw, "previous_build_time", show_target ? current_build_time.c_str() : "");
+    cJSON_AddStringToObject(fw, "running_slot", running_slot.c_str());
+    cJSON_AddStringToObject(fw, "target_slot", target_slot.c_str());
+    std::string health_status = firmware_health_status(phase, last_error, show_target);
+    cJSON_AddStringToObject(fw, "health_status", health_status.c_str());
+    cJSON_AddStringToObject(fw, "health_error",
+                            health_status == "failed" ? last_error.c_str() : "");
     cJSON_Delete(state);
     return fw;
 }
@@ -2805,6 +3162,7 @@ ApiResponse handle_get_ota_log() {
     cJSON* root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "ok", 1);
     cJSON_AddItemToObject(root, "ota_log", ota_log_to_json(read_ota_log_snapshot()));
+    cJSON_AddItemToObject(root, "ota_health_log", ota_log_to_json(read_ota_health_log_snapshot()));
     return make_json_ok(root);
 }
 
@@ -2837,26 +3195,18 @@ ApiResponse handle_post_system_env(const Options& options, const std::string& bo
     std::string system_env = env_item->valuestring;
     cJSON_Delete(root);
 
-    std::string original_system_env = read_file_contents(options.system_env_path.c_str(), kMaxSystemEnvSize);
     std::string save_error;
     if (!save_system_env_content(options.system_env_path, system_env, &save_error)) {
         return make_json_error(400, save_error);
     }
 
-    std::string updated_system_env = read_file_contents(options.system_env_path.c_str(), kMaxSystemEnvSize);
-    bool system_env_changed = original_system_env != updated_system_env;
     schedule_agent_restart();
-    if (system_env_changed) {
-        schedule_ota_restart();
-    }
 
     cJSON* response = cJSON_CreateObject();
     cJSON_AddBoolToObject(response, "ok", 1);
-    cJSON_AddStringToObject(response, "message",
-                            system_env_changed ? "system env saved; services restarting"
-                                               : "system env saved; agent restarting");
+    cJSON_AddStringToObject(response, "message", "system env saved; agent restarting");
     cJSON_AddBoolToObject(response, "agent_restart_scheduled", 1);
-    cJSON_AddBoolToObject(response, "ota_restart_scheduled", system_env_changed ? 1 : 0);
+    cJSON_AddBoolToObject(response, "ota_restart_scheduled", 0);
     cJSON_AddStringToObject(response, "system_env",
                             read_file_contents(options.system_env_path.c_str(), kMaxSystemEnvSize).c_str());
     cJSON* paths = add_object(response, "paths");
@@ -2916,7 +3266,7 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
         return make_json_error(500, save_error);
     }
 
-    bool should_save_wifi = !wifi.ssid.empty() || file_exists(options.wifi_config_path.c_str());
+    bool should_save_wifi = !wifi.ssid.empty() || !wifi.networks.empty() || file_exists(options.wifi_config_path.c_str());
     if (should_save_wifi && !aiden::save_wifi_config(options.wifi_config_path.c_str(), wifi, &save_error)) {
         return make_json_error(500, save_error);
     }
@@ -2975,14 +3325,203 @@ ApiResponse handle_wifi_connect(const Options& options, const std::string& body)
         return make_json_error(400, "invalid JSON body");
     }
 
-    aiden::WifiNetworkConfig wifi;
-    std::string ignore_error;
-    load_current_wifi_config(options, &wifi, &ignore_error);
-    update_wifi_from_json(root, &wifi);
+    cJSON* ssid_item = cJSON_GetObjectItem(root, "ssid");
+    if (!json_is_string(ssid_item) || trim_copy(ssid_item->valuestring).empty()) {
+        cJSON_Delete(root);
+        return make_json_error(400, "ssid is required");
+    }
+
+    const std::string target_ssid = ssid_item->valuestring;
+    cJSON* psk_item = cJSON_GetObjectItem(root, "psk");
+    const bool has_psk = json_is_string(psk_item);
+    std::string requested_psk = has_psk ? std::string(psk_item->valuestring) : std::string();
+    cJSON* country_item = cJSON_GetObjectItem(root, "country");
+    std::string requested_country = json_is_string(country_item) ? trim_copy(country_item->valuestring) : std::string();
     cJSON_Delete(root);
 
-    if (wifi.ssid.empty()) {
+    aiden::WifiNetworkConfig original;
+    std::string ignore_error;
+    const bool had_original_config = file_exists(options.wifi_config_path.c_str());
+    std::string original_wifi_config_text;
+    if (had_original_config) {
+        struct stat st;
+        if (stat(options.wifi_config_path.c_str(), &st) != 0) {
+            return make_json_error(500,
+                                   std::string("failed to stat existing wifi config for rollback: ") +
+                                       strerror(errno));
+        }
+        if (st.st_size < 0) {
+            return make_json_error(500, "failed to stat existing wifi config for rollback: invalid size");
+        }
+        std::string snapshot_error;
+        if (!read_file_contents_checked(options.wifi_config_path.c_str(),
+                                        static_cast<size_t>(st.st_size) + 1,
+                                        &original_wifi_config_text,
+                                        &snapshot_error)) {
+            return make_json_error(500, "failed to read existing wifi config for rollback: " + snapshot_error);
+        }
+    }
+    load_current_wifi_config(options, &original, &ignore_error);
+
+    aiden::WifiNetworkConfig attempt = original;
+    if (!requested_country.empty()) {
+        attempt.country = requested_country;
+    }
+    if (attempt.country.empty()) {
+        attempt.country = "CN";
+    }
+
+    aiden::WifiNetwork network;
+    int existing_index = aiden::find_wifi_network_index(attempt, target_ssid);
+    if (existing_index >= 0) {
+        network = attempt.networks[static_cast<size_t>(existing_index)];
+    }
+    network.ssid = target_ssid;
+    if (has_psk || existing_index < 0) {
+        network.psk = requested_psk;
+    }
+
+    aiden::upsert_wifi_network(&attempt, network);
+    aiden::promote_wifi_network(&attempt, target_ssid);
+
+    std::string save_error;
+    Options attempt_options = options;
+    attempt_options.wifi_config_path = options.wifi_config_path + ".candidate";
+    if (!aiden::save_wifi_config(attempt_options.wifi_config_path.c_str(), attempt, &save_error)) {
+        return make_json_error(500, save_error);
+    }
+
+    CommandResult wifi_apply = apply_wifi_config(attempt_options, true);
+    WifiRuntimeStatus wifi_status = query_wifi_status(options);
+    auto is_connected_to_target = [&](const WifiRuntimeStatus& status) {
+        return status.connected &&
+               status.state == "COMPLETED" &&
+               status.ssid == target_ssid &&
+               !status.ip_address.empty();
+    };
+    bool connected_to_target =
+        wifi_apply.exit_code == 0 &&
+        is_connected_to_target(wifi_status);
+
+    aiden::WifiNetworkConfig response_wifi = attempt;
+    if (connected_to_target) {
+        aiden::promote_wifi_network(&attempt, target_ssid);
+        if (!aiden::save_wifi_config(options.wifi_config_path.c_str(), attempt, &save_error)) {
+            unlink(attempt_options.wifi_config_path.c_str());
+            return make_json_error(500, save_error);
+        }
+        CommandResult final_apply = apply_wifi_config(options, true);
+        if (!trim_trailing_newlines(final_apply.output).empty()) {
+            wifi_apply.output = trim_trailing_newlines(wifi_apply.output) +
+                "\n[config_web] final apply output:\n" +
+                trim_trailing_newlines(final_apply.output);
+        }
+        wifi_status = query_wifi_status(options);
+        if (final_apply.exit_code != 0 || !is_connected_to_target(wifi_status)) {
+            connected_to_target = false;
+            if (wifi_apply.exit_code == 0) {
+                wifi_apply.exit_code = final_apply.exit_code == 0 ? 1 : final_apply.exit_code;
+            }
+
+            if (had_original_config) {
+                if (!atomic_write_file(options.wifi_config_path,
+                                       original_wifi_config_text,
+                                       0600,
+                                       &save_error)) {
+                    unlink(attempt_options.wifi_config_path.c_str());
+                    return make_json_error(500, "failed to restore previous wifi config: " + save_error);
+                }
+            } else if (unlink(options.wifi_config_path.c_str()) != 0 && errno != ENOENT) {
+                unlink(attempt_options.wifi_config_path.c_str());
+                return make_json_error(500,
+                                       std::string("failed to remove wifi config during restore: ") +
+                                           strerror(errno));
+            }
+
+            CommandResult restore_apply;
+            if (had_original_config && (!original.networks.empty() || !original.ssid.empty())) {
+                restore_apply = apply_wifi_config(options, true);
+            } else {
+                restore_apply = run_shell_command("wpa_cli -i " + shell_quote(options.wifi_interface) +
+                                                  " disconnect 2>&1");
+            }
+            std::ostringstream restored_output;
+            restored_output << trim_trailing_newlines(wifi_apply.output);
+            restored_output << "\n[config_web] saved Wi-Fi was not confirmed; restored previous Wi-Fi config.";
+            if (!trim_trailing_newlines(restore_apply.output).empty()) {
+                restored_output << "\n[config_web] restore apply output:\n"
+                                << trim_trailing_newlines(restore_apply.output);
+            }
+            wifi_apply.output = restored_output.str();
+            response_wifi = original;
+            wifi_status = query_wifi_status(options);
+        } else {
+            response_wifi = attempt;
+        }
+    } else {
+        CommandResult restore_apply;
+        if (had_original_config && (!original.networks.empty() || !original.ssid.empty())) {
+            restore_apply = apply_wifi_config(options, true);
+        } else {
+            restore_apply = run_shell_command("wpa_cli -i " + shell_quote(options.wifi_interface) + " disconnect 2>&1");
+        }
+        std::ostringstream restored_output;
+        restored_output << trim_trailing_newlines(wifi_apply.output);
+        restored_output << "\n[config_web] target Wi-Fi was not confirmed; restored previous Wi-Fi config.";
+        if (!trim_trailing_newlines(restore_apply.output).empty()) {
+            restored_output << "\n[config_web] restore apply output:\n"
+                            << trim_trailing_newlines(restore_apply.output);
+        }
+        wifi_apply.output = restored_output.str();
+        if (wifi_apply.exit_code == 0) {
+            wifi_apply.exit_code = 1;
+        }
+        response_wifi = original;
+        wifi_status = query_wifi_status(options);
+    }
+    unlink(attempt_options.wifi_config_path.c_str());
+
+    cJSON* response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "ok", connected_to_target ? 1 : 0);
+    cJSON_AddItemToObject(response, "wifi", wifi_to_json(response_wifi));
+    cJSON_AddItemToObject(response, "wifi_status", wifi_status_to_json(wifi_status));
+    cJSON_AddStringToObject(response,
+                            "message",
+                            connected_to_target ? "wifi connected and saved" : "wifi connect failed; config restored");
+
+    cJSON* apply = add_object(response, "wifi_apply");
+    cJSON_AddBoolToObject(apply, "ok", connected_to_target ? 1 : 0);
+    cJSON_AddNumberToObject(apply, "exit_code", wifi_apply.exit_code);
+    cJSON_AddStringToObject(apply, "output", trim_trailing_newlines(wifi_apply.output).c_str());
+    if (!connected_to_target) {
+        cJSON_AddStringToObject(apply, "error", "failed to apply wifi config");
+    }
+
+    return make_json_ok(response);
+}
+
+ApiResponse handle_wifi_forget(const Options& options, const std::string& body) {
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (!root) {
+        return make_json_error(400, "invalid JSON body");
+    }
+
+    cJSON* ssid_item = cJSON_GetObjectItem(root, "ssid");
+    if (!json_is_string(ssid_item) || trim_copy(ssid_item->valuestring).empty()) {
+        cJSON_Delete(root);
         return make_json_error(400, "ssid is required");
+    }
+    const std::string ssid = ssid_item->valuestring;
+    cJSON_Delete(root);
+
+    aiden::WifiNetworkConfig wifi;
+    std::string load_error;
+    load_current_wifi_config(options, &wifi, &load_error);
+    if (!load_error.empty()) {
+        return make_json_error(500, load_error);
+    }
+    if (!aiden::remove_wifi_network(&wifi, ssid)) {
+        return make_json_error(404, "wifi network not found");
     }
 
     std::string save_error;
@@ -2990,25 +3529,30 @@ ApiResponse handle_wifi_connect(const Options& options, const std::string& body)
         return make_json_error(500, save_error);
     }
 
-    CommandResult wifi_apply = apply_wifi_config(options);
-    WifiRuntimeStatus wifi_status = query_wifi_status(options);
-
-    cJSON* response = cJSON_CreateObject();
-    cJSON_AddBoolToObject(response, "ok", wifi_apply.exit_code == 0);
-    cJSON_AddItemToObject(response, "wifi", wifi_to_json(wifi));
-    cJSON_AddItemToObject(response, "wifi_status", wifi_status_to_json(wifi_status));
-    cJSON_AddStringToObject(response,
-                            "message",
-                            wifi_apply.exit_code == 0 ? "wifi connect attempted" : "wifi connect failed");
-
-    cJSON* apply = add_object(response, "wifi_apply");
-    cJSON_AddBoolToObject(apply, "ok", wifi_apply.exit_code == 0);
-    cJSON_AddNumberToObject(apply, "exit_code", wifi_apply.exit_code);
-    cJSON_AddStringToObject(apply, "output", trim_trailing_newlines(wifi_apply.output).c_str());
-    if (wifi_apply.exit_code != 0) {
-        cJSON_AddStringToObject(apply, "error", "failed to apply wifi config");
+    CommandResult wifi_apply;
+    wifi_apply.exit_code = 0;
+    if (!wifi.networks.empty()) {
+        wifi_apply = apply_wifi_config(options);
+    } else {
+        wifi_apply = run_shell_command("wpa_cli -i " + shell_quote(options.wifi_interface) + " disconnect 2>&1");
     }
 
+    cJSON* response = cJSON_CreateObject();
+    const bool applied = wifi_apply.exit_code == 0;
+    cJSON_AddBoolToObject(response, "ok", applied ? 1 : 0);
+    cJSON_AddItemToObject(response, "wifi", wifi_to_json(wifi));
+    cJSON_AddItemToObject(response, "wifi_status", wifi_status_to_json(query_wifi_status(options)));
+    cJSON_AddStringToObject(response,
+                            "message",
+                            applied ? "wifi network forgotten"
+                                    : "wifi network forgotten but failed to apply runtime changes");
+    cJSON* apply = add_object(response, "wifi_apply");
+    cJSON_AddBoolToObject(apply, "ok", applied ? 1 : 0);
+    cJSON_AddNumberToObject(apply, "exit_code", wifi_apply.exit_code);
+    cJSON_AddStringToObject(apply, "output", trim_trailing_newlines(wifi_apply.output).c_str());
+    if (!applied) {
+        cJSON_AddStringToObject(apply, "error", "failed to apply wifi config");
+    }
     return make_json_ok(response);
 }
 
@@ -3032,7 +3576,7 @@ std::string validate_proxy_url(const std::string& url) {
 }
 
 static bool is_tencent_asr_provider(const std::string& provider) {
-    return provider == "tencent" || provider == "tencent_asr";
+    return provider == "tencent-asr" || provider == "tencent" || provider == "tencent_asr";
 }
 
 std::string provider_default_url(const std::string& provider) {
@@ -3132,6 +3676,7 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
 
         cJSON* api_key_item = cJSON_GetObjectItem(values, "api_key");
         std::string api_key = json_is_string(api_key_item) ? trim_copy(api_key_item->valuestring) : "";
+        bool api_key_present = json_secret_present(values, "api_key");
 
         cJSON* r = cJSON_CreateObject();
         cJSON_AddStringToObject(r, "check", "endpoint_reachable");
@@ -3151,30 +3696,28 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         cJSON_AddItemToArray(results, r);
 
         if (tencent_stt) {
-            cJSON* secret_id_item = cJSON_GetObjectItem(values, "secret_id");
-            cJSON* secret_key_item = cJSON_GetObjectItem(values, "secret_key");
-            std::string secret_id = json_is_string(secret_id_item) ? trim_copy(secret_id_item->valuestring) : "";
-            std::string secret_key = json_is_string(secret_key_item) ? trim_copy(secret_key_item->valuestring) : "";
+            bool secret_id_present = json_secret_present(values, "secret_id");
+            bool secret_key_present = json_secret_present(values, "secret_key");
 
             cJSON* r_sid = cJSON_CreateObject();
             cJSON_AddStringToObject(r_sid, "check", "secret_id_present");
-            cJSON_AddBoolToObject(r_sid, "passed", !secret_id.empty() ? 1 : 0);
-            cJSON_AddStringToObject(r_sid, "detail", secret_id.empty() ? "secret_id is empty" : "secret_id is set");
-            if (secret_id.empty()) all_passed = false;
+            cJSON_AddBoolToObject(r_sid, "passed", secret_id_present ? 1 : 0);
+            cJSON_AddStringToObject(r_sid, "detail", secret_id_present ? "secret_id is set" : "secret_id is empty");
+            if (!secret_id_present) all_passed = false;
             cJSON_AddItemToArray(results, r_sid);
 
             cJSON* r_skey = cJSON_CreateObject();
             cJSON_AddStringToObject(r_skey, "check", "secret_key_present");
-            cJSON_AddBoolToObject(r_skey, "passed", !secret_key.empty() ? 1 : 0);
-            cJSON_AddStringToObject(r_skey, "detail", secret_key.empty() ? "secret_key is empty" : "secret_key is set");
-            if (secret_key.empty()) all_passed = false;
+            cJSON_AddBoolToObject(r_skey, "passed", secret_key_present ? 1 : 0);
+            cJSON_AddStringToObject(r_skey, "detail", secret_key_present ? "secret_key is set" : "secret_key is empty");
+            if (!secret_key_present) all_passed = false;
             cJSON_AddItemToArray(results, r_skey);
         } else {
             cJSON* r2 = cJSON_CreateObject();
             cJSON_AddStringToObject(r2, "check", "api_key_present");
-            cJSON_AddBoolToObject(r2, "passed", !api_key.empty() ? 1 : 0);
-            cJSON_AddStringToObject(r2, "detail", api_key.empty() ? "api_key is empty" : "api_key is set");
-            if (api_key.empty()) all_passed = false;
+            cJSON_AddBoolToObject(r2, "passed", api_key_present ? 1 : 0);
+            cJSON_AddStringToObject(r2, "detail", api_key_present ? "api_key is set" : "api_key is empty");
+            if (!api_key_present) all_passed = false;
             cJSON_AddItemToArray(results, r2);
         }
 
@@ -3519,17 +4062,16 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
 
         const char* key_fields[] = {"public_key", "secret_key", NULL};
         for (int i = 0; key_fields[i]; ++i) {
-            cJSON* item = cJSON_GetObjectItem(values, key_fields[i]);
-            std::string key_value = json_is_string(item) ? trim_copy(item->valuestring) : "";
+            bool key_present = json_secret_present(values, key_fields[i]);
             cJSON* r = cJSON_CreateObject();
             cJSON_AddStringToObject(r, "check", key_fields[i]);
-            if (enabled && key_value.empty()) {
+            if (enabled && !key_present) {
                 cJSON_AddBoolToObject(r, "passed", 0);
                 cJSON_AddStringToObject(r, "detail", "required when telemetry.enabled is true");
                 all_passed = false;
             } else {
                 cJSON_AddBoolToObject(r, "passed", 1);
-                cJSON_AddStringToObject(r, "detail", key_value.empty() ? "empty; telemetry disabled or not configured" : "set");
+                cJSON_AddStringToObject(r, "detail", key_present ? "set" : "empty; telemetry disabled or not configured");
             }
             cJSON_AddItemToArray(results, r);
         }
@@ -3586,15 +4128,14 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         }
         cJSON_AddItemToArray(results, r);
 
-        cJSON* api_key_item = cJSON_GetObjectItem(values, "api_key");
-        std::string api_key = json_is_string(api_key_item) ? trim_copy(api_key_item->valuestring) : "";
+        bool api_key_present = json_secret_present(values, "api_key");
         cJSON* r2 = cJSON_CreateObject();
         cJSON_AddStringToObject(r2, "check", "api_key");
         if (provider == "duckduckgo") {
             cJSON_AddBoolToObject(r2, "passed", 1);
-            cJSON_AddStringToObject(r2, "detail", api_key.empty() ? "not required for duckduckgo" : "set (not required for duckduckgo)");
+            cJSON_AddStringToObject(r2, "detail", api_key_present ? "set (not required for duckduckgo)" : "not required for duckduckgo");
         } else if (provider == "brave" || provider == "brave-free" || provider == "tavily") {
-            if (api_key.empty()) {
+            if (!api_key_present) {
                 cJSON_AddBoolToObject(r2, "passed", 0);
                 std::string msg = "required for " + provider;
                 cJSON_AddStringToObject(r2, "detail", msg.c_str());
@@ -3605,7 +4146,7 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
             }
         } else {
             cJSON_AddBoolToObject(r2, "passed", 1);
-            cJSON_AddStringToObject(r2, "detail", api_key.empty() ? "empty (may be required for paid providers)" : "set");
+            cJSON_AddStringToObject(r2, "detail", api_key_present ? "set" : "empty (may be required for paid providers)");
         }
         cJSON_AddItemToArray(results, r2);
     } else {
@@ -3680,6 +4221,10 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
         return handle_wifi_connect(options, request.body);
     }
 
+    if (request.method == "POST" && request.path == "/api/wifi/forget") {
+        return handle_wifi_forget(options, request.body);
+    }
+
     if (request.method == "POST" && request.path == "/api/config/test") {
         return handle_config_test(options, request.body);
     }
@@ -3711,7 +4256,7 @@ bool parse_int(const char* text, int min_value, int max_value, int* value) {
 void print_usage(const char* argv0) {
     std::cerr << "Usage: " << argv0 << " [--bind=IP] [--port=PORT]"
               << " [--config=PATH] [--wifi-config=PATH] [--wifi-iface=NAME]"
-              << " [--system-env=PATH]" << std::endl;
+              << " [--ota-state=PATH] [--cmdline=PATH] [--system-env=PATH]" << std::endl;
 }
 
 bool parse_args(int argc, char** argv, Options* options) {
@@ -3730,6 +4275,8 @@ bool parse_args(int argc, char** argv, Options* options) {
         } else if (consume_prefix(arg, "--config=", &options->agent_config_path)) {
         } else if (consume_prefix(arg, "--wifi-config=", &options->wifi_config_path)) {
         } else if (consume_prefix(arg, "--wifi-iface=", &options->wifi_interface)) {
+        } else if (consume_prefix(arg, "--ota-state=", &options->ota_state_path)) {
+        } else if (consume_prefix(arg, "--cmdline=", &options->cmdline_path)) {
         } else if (consume_prefix(arg, "--system-env=", &options->system_env_path)) {
         } else {
             return false;

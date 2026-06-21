@@ -1,18 +1,18 @@
-# 工具 HTTP API
+# Tools HTTP API
 
-Agent 在 Web UI 模式下暴露可通过 HTTP 安全调用的 Agent-owned tools，供浏览器 Tool Lab、外部 Agent 或手工调用。维护型内部工具（如 `skill_manage`）不通过 HTTP 暴露。
+In Web UI mode, the Agent exposes Agent-owned tools that can be safely invoked via HTTP for the browser Tool Lab, external agents, or manual calls. Internal maintenance tools (such as `skill_manage`) are not exposed via HTTP.
 
-## 端点
+## Endpoints
 
-| Method | Path | 说明 |
+| Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/api/tools` | 列出所有工具及描述、输入模式、示例、HTTP 绑定 |
-| `POST` | `/api/tools/{tool_name}` | 调用指定工具 |
-| `GET` | `/api/tool-skills` | 生成适合外部 Agent 使用的 `SKILL.md` bundle |
+| `GET` | `/api/tools` | List all tools with descriptions, input modes, examples, and HTTP bindings |
+| `POST` | `/api/tools/{tool_name}` | Invoke the specified tool |
+| `GET` | `/api/tool-skills` | Generate a `SKILL.md` bundle suitable for external agents |
 
-## 请求格式
+## Request Format
 
-JSON 对象输入：
+JSON object input:
 
 ```json
 {
@@ -20,7 +20,7 @@ JSON 对象输入：
 }
 ```
 
-原始字符串输入：
+Raw string input:
 
 ```json
 {
@@ -28,7 +28,7 @@ JSON 对象输入：
 }
 ```
 
-需要传原始字符串时可使用 `raw_input`。多数工具（包括 skill tools）在 catalog 中以 JSON 示例描述输入：
+Use `raw_input` when you need to pass a raw string. Most tools (including skill tools) describe their input with JSON examples in the catalog:
 
 ```json
 {
@@ -36,7 +36,7 @@ JSON 对象输入：
 }
 ```
 
-## 响应格式
+## Response Format
 
 ```json
 {
@@ -59,19 +59,19 @@ JSON 对象输入：
 }
 ```
 
-工具执行失败也会以 JSON 形式返回，需检查：
+Tool execution failures are also returned in JSON format. Check:
 
 - `is_error`
-- `output` 中是否包含错误信息
-- HTTP transport 是否成功
+- Whether `output` contains error information
+- Whether the HTTP transport succeeded
 
-## 当前工具清单
+## Current Tool List
 
-| 工具 | 类别 | 输入示例 |
+| Tool | Category | Example Input |
 | --- | --- | --- |
 | `audio_volume` | audio | `{}` |
 | `current_time` | system | `{"timezone":"Asia/Shanghai"}` |
-| `enter_sleep` | system | `{"reason":"user asked me to sleep"}` |
+| `wait_for_wakeup` | system | `{"reason":"user asked me to wait for wakeup"}` |
 | `keyboard_tap` | input | `{"keys":["ctrl","c"]}` |
 | `keyboard_text` | input | `{"text":"hello world"}` |
 | `mouse_click` | input | `{"x":500,"y":500,"button":"left","coord_space":"normalized"}` |
@@ -85,9 +85,9 @@ JSON 对象输入：
 | `touch_gesture` | input | `{"type":"tap","point":{"x":500,"y":500}}` / `{"type":"back"}` / `{"type":"home"}` |
 | `weather` | system | `{"location":"Shanghai"}` |
 
-`skill_manage` 是运行时 Agent 内部可用的 skill 维护工具，不通过 HTTP Tool API 暴露。
+`skill_manage` is an internal skill maintenance tool available to the runtime Agent but not exposed via the HTTP Tool API.
 
-## curl 示例
+## curl Examples
 
 ```bash
 curl http://127.0.0.1:8080/api/tools
@@ -113,19 +113,20 @@ curl -X POST http://127.0.0.1:8080/api/tools/weather \
   -d '{"input":{"location":"Shanghai"}}'
 ```
 
-`screenshot` 成功输出通常包含 `width`、`height`、`format`、`size` 和 base64 JPEG `data`。
-`keyboard_tap`、`keyboard_text`、`mouse_click`、`mouse_move`、`mouse_scroll` 和 `touch_gesture` 成功执行后，会等待 1s 再自动截屏；其 `output` 为 JSON，包含原动作结果 `action_output`，以及截图的 `width`、`height`、`format`、`size` 和 base64 JPEG `data`。
-`touch_gesture` 的 `back` 会从左物理边缘附近开始滑动，`home` 会从底部物理边缘附近开始上滑；normalized 坐标使用 0-1000 范围，手写 `swipe` 时也应使用贴边起点，例如 `start.x=1` 或 `start.y=999`。
-`current_time` 支持 IANA 时区名（如 `Asia/Shanghai`、`America/New_York`）、`UTC`、`local` 和 UTC offset（如 `+08:00`）。
-`weather` 支持地点名或经纬度，运行时通过 Open-Meteo 获取 geocoding、当前天气和短期预报。
-`enter_sleep` 会让语音连续对话 session 在当前轮结束后关闭，回到等待下一次 wakeup 的模式。
+A successful `screenshot` output typically includes `width`, `height`, `format`, `size`, and base64 JPEG `data`.
+A successful `wait_for_stable_screen` output includes stability fields `ok`, `stable`, `elapsed_ms`, and also returns a screenshot with `width`, `height`, `format`, `size`, and base64 JPEG `data`; `stable=false` indicates the screen is still changing but the screenshot can still be used as a current observation.
+After successful execution of `keyboard_tap`, `keyboard_text`, `mouse_click`, `mouse_move`, `mouse_scroll`, and `touch_gesture`, the system waits 1s and automatically takes a screenshot; their `output` is JSON containing the original action result `action_output`, plus the screenshot's `width`, `height`, `format`, `size`, and base64 JPEG `data`.
+For `touch_gesture`, `back` swipes from near the left physical edge, and `home` swipes up from near the bottom physical edge; normalized coordinates use the 0-1000 range. When manually writing `swipe`, also use edge-aligned start points, e.g., `start.x=1` or `start.y=999`.
+`current_time` supports IANA timezone names (e.g., `Asia/Shanghai`, `America/New_York`), `UTC`, `local`, and UTC offsets (e.g., `+08:00`).
+`weather` supports location names or latitude/longitude coordinates, fetching geocoding, current weather, and short-term forecasts from Open-Meteo at runtime.
+`wait_for_wakeup` is a terminating runtime tool. After a successful tool call, it immediately ends the current Agent run and returns the voice interaction to waiting for the next wakeup; it does not ask the model to provide an additional final answer. The run result will set `wait_for_wakeup_requested` / `wait_for_wakeup_reason`; the old fields `sleep_requested` / `sleep_reason` are retained as compatibility aliases only.
 
-## 外部 Agent 使用建议
+## Recommendations for External Agents
 
-- 优先通过 `GET /api/tools` 做能力发现；
-- 需要屏幕操作时，先 `screenshot`，再点击/输入；
-- 点击/输入等动作成功后直接检查该工具返回的 post-action screenshot，不需要再立刻调用一次 `screenshot`；
-- 鼠标和触控优先使用 `coord_space: "normalized"` 的 0-1000 坐标；
-- 私有 IP 或 USB 网卡访问时注意代理绕过：设置 `NO_PROXY` / `no_proxy`；
-- `shell` 的长任务应按工具说明使用后台 session，并在结束时停止。
-- 用户要求“休眠 / 停止监听 / 等我下次唤醒”时，使用 `enter_sleep`，不要用普通文本回复假装已经休眠。
+- Prioritize capability discovery via `GET /api/tools`
+- When screen operations are needed, `screenshot` first, then click/input
+- After successful click/input actions, directly check the post-action screenshot returned by that tool; no need to immediately call `screenshot` again
+- For mouse and touch, prefer `coord_space: "normalized"` with 0-1000 coordinates
+- When accessing via private IP or USB network adapter, note proxy bypass: set `NO_PROXY` / `no_proxy`
+- For long-running `shell` tasks, use background sessions as described in the tool documentation, and stop them when done
+- When the user requests "sleep / stop listening / wait for my next wakeup", use `wait_for_wakeup` rather than pretending to return to waiting for wakeup with a normal text reply

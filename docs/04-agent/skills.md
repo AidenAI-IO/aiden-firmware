@@ -1,8 +1,8 @@
-# Skills 和 RoleProfile 机制
+# Skills and RoleProfile Mechanism
 
-Agent 支持从配置目录中自动发现 `SKILL.md`，在 system prompt 中展示 Available skills catalog，并通过 `skill_read` 按需加载相关 skill 的完整说明。激活后的 skill 进入多角色 `RoleProfile`：`planner`、`executor`、`verifier`。
+The Agent automatically discovers `SKILL.md` files from the config directory, displays an Available skills catalog in the system prompt, and loads the complete instructions of relevant skills on demand via `skill_read`. Activated skills enter the multi-role `RoleProfile`: `planner`, `executor`, `verifier`.
 
-## 目录
+## Directory Structure
 
 ```text
 /userdata/agent/
@@ -11,13 +11,13 @@ Agent 支持从配置目录中自动发现 `SKILL.md`，在 system prompt 中展
         └── SKILL.md
 ```
 
-扫描规则：
+Scan rules:
 
 ```text
 configDir/skills/**/SKILL.md
 ```
 
-## 示例
+## Example
 
 ```markdown
 ---
@@ -31,83 +31,83 @@ Take a screenshot before interacting with an unfamiliar UI.
 Prefer describing what you see before clicking.
 ```
 
-## 当前已实现能力
+## Currently Implemented Capabilities
 
-- 自动发现 `SKILL.md`；
-- 在 prompt 中展示 Available skills，并通过 `skill_read` 运行时加载完整 `SKILL.md`；
-- 将 skill instructions 注入三个角色的 `RoleProfile` 的 system prompt；
-- 支持 `allowed_tools` 限制普通任务工具；`skill_list` / `skill_read` / `skill_manage` / `skill_mark_used` 作为 skill meta-tools 默认保留；
-- 提供 `skill_list` / `skill_read` / `skill_manage` / `skill_mark_used`；
-- `skill_read` 支持读取 `SKILL.md`，以及 `references/`、`templates/`、`scripts/`、`assets/` 下的 UTF-8 supporting files；
-- 记录 `usage.json` 中的 view/use/modify 统计；
-- 支持 `active` / `stale` / `archived` lifecycle 状态，`skill_list` 默认过滤 archived；
-- 对 `source: agent` 或 `created_by: agent` 的 skill，`skill_list` 会按最近使用时间自动执行 lifecycle：90 天未使用进入 `stale`，180 天未使用进入 `archived`；该自动扫描最多 24 小时运行一次；
-- `skill_mark_used` 会把 `stale` / `archived` skill 自动恢复为 `active`。
+- Automatically discover `SKILL.md`;
+- Display Available skills in the prompt and load complete `SKILL.md` at runtime via `skill_read`;
+- Inject skill instructions into the system prompt of the three roles' `RoleProfile`;
+- Support `allowed_tools` to restrict ordinary task tools; `skill_list` / `skill_read` / `skill_manage` / `skill_mark_used` are retained by default as skill meta-tools;
+- Provide `skill_list` / `skill_read` / `skill_manage` / `skill_mark_used`;
+- `skill_read` supports reading `SKILL.md` as well as UTF-8 supporting files under `references/`, `templates/`, `scripts/`, `assets/`;
+- Record view/use/modify statistics in `usage.json`;
+- Support `active` / `stale` / `archived` lifecycle states; `skill_list` filters out archived by default;
+- For skills with `source: agent` or `created_by: agent`, `skill_list` automatically executes lifecycle based on last use time: enter `stale` after 90 days of non-use, enter `archived` after 180 days; this automatic scan runs at most once every 24 hours;
+- `skill_mark_used` automatically restores `stale` / `archived` skills to `active`.
 
-## 角色权限
+## Role Permissions
 
-Agent loop 采用 `default` / `plan` / `execution` 三阶段状态机，详见 [Agent Context Lifecycle](context-lifecycle.md)。
+The Agent loop uses a `default` / `plan` / `execution` three-phase state machine. See [Agent Context Lifecycle](context-lifecycle.md) for details.
 
-- `planner`：
-  - 在 `default` 模式下仅处理简单任务（直接回答、单次工具调用或最多两步）；预计需要 **3 步及以上** 时必须先 `enter_plan_mode`，不得继续在 default 中直接执行；
-  - 在 `plan` 模式下可探索、维护 draft plan，并通过 `commit_plan` / `cancel_plan` 切换阶段；
-  - 是唯一允许创建或修改计划的角色；
-  - 额外可见 loop meta tools：`use_simple_mode`、`enter_plan_mode`、`commit_plan`、`cancel_plan`。
-- `executor`：仅在 `execution` 阶段运行；只能执行 planner 已提交的 `next_step`，通过 `finish_step` / `abort_step` 进入 verifier 复核，不能修改计划或决定结束。
-- `verifier`：仅在 `execution` 阶段运行；system prompt 仅含 `## Role rules`；每次只验证当前 executor 执行的 `step_text` 是否完成；中间步成功则继续下一步，最后一步成功才 `can_finish`；step 失败才 `needs_replan`；不接收工具目录或全局 memory。
+- `planner`:
+  - In `default` mode, only handles simple tasks (direct answer, single tool call, or at most two steps); when **3 or more steps** are expected, must first `enter_plan_mode`, and must not continue executing directly in default;
+  - In `plan` mode, can explore and maintain draft plan, and switch phases via `commit_plan` / `cancel_plan`;
+  - Is the only role allowed to create or modify plans;
+  - Additionally sees loop meta tools: `use_simple_mode`, `enter_plan_mode`, `commit_plan`, `cancel_plan`.
+- `executor`: Runs only in `execution` phase; can only execute the `next_step` already committed by planner, enters verifier review via `finish_step` / `abort_step`, cannot modify plan or decide to end.
+- `verifier`: runs only in `execution`; its system prompt contains the current date, `## Role rules`, and optional `## Verifier memory cautions`; each turn verifies only the current executor `step_text`; intermediate step success advances to the next step, and only final-step success may set `can_finish`; step failure sets `needs_replan`; it does not receive the tool catalog, skills, base instruction, runtime context, or global memory.
 
-`planner` 和 `executor` 都会收到可调用的 function tools。`verifier` 不调用工具，只基于 executor 证据做复核。
+Both `planner` and `executor` receive callable function tools. `verifier` does not call tools, only performs review based on executor evidence.
 
-## 已解析但未完全执行的字段
+## Parsed but Not Fully Enforced Fields
 
 - `preferred_model`
 - `allowed_children`
 
-这些字段可以作为未来扩展的元数据，但不要依赖当前 runtime 强制执行。
+These fields can serve as metadata for future extensions but should not be relied upon for current runtime enforcement.
 
 ## HTTP Tool Skill Export
 
-Agent 提供：
+The Agent provides:
 
 ```text
 GET /api/tool-skills
 ```
 
-该端点会生成一个描述 Aiden HTTP Tool API 的 skill bundle，便于 Codex 等外部 Agent 按统一方式调用设备工具。
+This endpoint generates a skill bundle describing the Aiden HTTP Tool API, making it convenient for external Agents like Codex to call device tools in a unified manner.
 
-## 使用建议
+## Usage Recommendations
 
-- skill 内容应描述高层策略，不要硬编码易变坐标；
-- 对 UI 操作类 skill，建议要求先截图再点击；
-- `allowed_tools` 应尽量收敛，避免无关工具被激活；
-- `allowed_tools` 只能引用当前已注册工具，或 `delegate_<child>` 形式的子 Agent 委派 pseudo-tool；
-- 不要把一次性任务进度、临时状态、秘密、原始日志或个人事实写进 skill；这些不属于可复用流程。
+- Skill content should describe high-level strategies; do not hardcode volatile coordinates;
+- For UI operation skills, recommend requiring screenshot before clicking;
+- `allowed_tools` should be narrowed as much as possible to avoid activating unrelated tools;
+- `allowed_tools` can only reference currently registered tools or `delegate_<child>` form child Agent delegation pseudo-tools;
+- Do not write one-time task progress, temporary state, secrets, raw logs, or personal facts into skills; these do not belong to reusable procedures.
 
-## 后续设计：内置同步 + LLM 合并
+## Future Design: Bundled Sync + LLM Merge
 
-最新方案采用单一运行时来源：
+The latest design adopts a single runtime source:
 
 ```text
-内置只读 skills
+Read-only bundled skills
   ↓ seed / sync / merge
-configDir/skills 作为 effective skill 真源
+configDir/skills as effective skill source of truth
   ↓
-运行时只加载 configDir/skills
+Runtime only loads configDir/skills
 ```
 
-核心规则：
+Core rules:
 
-- 内置 skills 随固件 / 代码发布，但运行时不直接扫描内置目录；
-- 启动或更新时，把内置 skills 同步到 `configDir/skills`；
-- `.bundled_manifest.json` 记录 `origin_hash`、`effective_hash`、`base_path` 和最近合并结果；
-- `origin_hash` 表示上次同步 / 合并对应的 bundled baseline；
-- `effective_hash` 表示同步器上次写入用户目录后的 effective copy hash，用于稳定识别 `merged` 状态；
-- 本地 effective copy 与 bundled baseline 有差异且 bundled 也更新时，后台串行 LLM 根据 base / upstream / local 生成合并候选；
-- LLM 结果先写临时文件，校验通过且用户文件未被异步改动时才覆盖 `configDir/skills/<name>/SKILL.md`；
-- 所有合并失败、校验失败或应用失败都记录 `last_failed_merge_key`，避免同一组输入反复重试；
-- MVP 不支持恢复覆盖前的历史用户版本；临时文件只用于防止失败候选污染用户目录，不是回滚机制。
+- Bundled skills are released with firmware / code, but runtime does not directly scan the bundled directory;
+- On startup or update, sync bundled skills to `configDir/skills`;
+- `.bundled_manifest.json` records `origin_hash`, `effective_hash`, `base_path`, and recent merge results;
+- `origin_hash` represents the bundled baseline corresponding to the last sync / merge;
+- `effective_hash` represents the effective copy hash after the syncer last wrote to the user directory, used to stably identify `merged` status;
+- When local effective copy differs from bundled baseline and bundled has also updated, background serial LLM generates merge candidate based on base / upstream / local;
+- LLM result is first written to a temp file; only overwritten to `configDir/skills/<name>/SKILL.md` after validation passes and user file has not been asynchronously modified;
+- All merge failures, validation failures, or application failures record `last_failed_merge_key` to avoid repeated retry of the same input set;
+- MVP does not support restoring historical user versions before overwrite; temp files only prevent failed candidates from polluting user directory, not a rollback mechanism.
 
-详细方案见：
+For detailed design, see:
 
 ```text
 docs/04-agent/skills-merge-design.md

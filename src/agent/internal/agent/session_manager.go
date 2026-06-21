@@ -19,7 +19,13 @@ type SessionManager interface {
 
 // SessionBeginRequest contains the run data needed before prompt construction.
 type SessionBeginRequest struct {
+	AgentName    string
 	Input        string
+	Turn         TurnInput
+	SessionID    string
+	EpisodeID    string
+	RequestID    string
+	RunID        string
 	CurrentHints CurrentEnvironmentHints
 }
 
@@ -42,6 +48,10 @@ type SessionCommitRequest struct {
 	Output    string
 	Steers    []RunSteerMessage
 	Metrics   *RunMetrics
+	SessionID string
+	EpisodeID string
+	RequestID string
+	RunID     string
 }
 
 // SessionCommitResult contains the session snapshot exposed on RunResult.
@@ -65,7 +75,27 @@ func (m memoryManagerSessionManager) BeginRun(ctx context.Context, req SessionBe
 	if err := ctx.Err(); err != nil {
 		return SessionBeginResult{}, err
 	}
-	return SessionBeginResult{Boundary: m.handleSessionBoundary(req.Input)}, nil
+	turn := normalizeTurnInput(req.Turn)
+	if turn.InputText == "" {
+		turn = NewTextTurnInput(req.Input, nil)
+	}
+	boundary := m.handleSessionBoundary(turn.InputText)
+	if m.memories != nil {
+		agentName := req.AgentName
+		if agentName == "" {
+			agentName = "default"
+		}
+		meta := SessionEventMetadata{
+			SessionID: req.SessionID,
+			EpisodeID: req.EpisodeID,
+			RequestID: req.RequestID,
+			RunID:     req.RunID,
+		}
+		if err := m.memories.AppendSessionEvent(ctx, agentName, sessionEventFromTurnInput(turn), meta); err != nil {
+			return SessionBeginResult{}, err
+		}
+	}
+	return SessionBeginResult{Boundary: boundary}, nil
 }
 
 func (m memoryManagerSessionManager) handleSessionBoundary(input string) sessionBoundaryTelemetry {
@@ -131,14 +161,20 @@ func (m memoryManagerSessionManager) CommitRun(ctx context.Context, req SessionC
 	if req.Metrics != nil {
 		lastPromptTokens = req.Metrics.LastPromptTokens
 	}
+	if floor := m.memories.ConsumePromptTokenFloor(); floor > lastPromptTokens {
+		lastPromptTokens = floor
+	}
 	m.memories.SetLastPromptTokens(lastPromptTokens)
 
-	if len(req.Steers) > 0 {
-		if err := m.memories.AppendMessages(ctx, agentName, steeredExchangeRecords(req.Input, req.Steers, req.Output)); err != nil {
-			return SessionCommitResult{}, err
-		}
-	} else {
-		if err := m.memories.AppendExchange(ctx, agentName, req.Input, req.Output); err != nil {
+	meta := SessionEventMetadata{
+		SessionID: req.SessionID,
+		EpisodeID: req.EpisodeID,
+		RequestID: req.RequestID,
+		RunID:     req.RunID,
+	}
+	records := []MessageRecord{{Role: "ai", Content: req.Output}}
+	if len(records) > 0 {
+		if err := m.memories.AppendMessagesWithMetadata(ctx, agentName, records, meta); err != nil {
 			return SessionCommitResult{}, err
 		}
 	}

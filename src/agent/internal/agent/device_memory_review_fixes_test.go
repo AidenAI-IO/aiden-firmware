@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"testing"
+
+	"github.com/tmc/langchaingo/schema"
 )
 
 // TestEpisodeRecorderFinishRespectsVerifierRejection ensures a clean run whose
@@ -41,6 +43,30 @@ func TestEpisodeRecorderFinishAcceptsVerifierApproval(t *testing.T) {
 	if episode.Outcome.FinalAnswer != "done" {
 		t.Errorf("final answer = %q, want verifier final answer", episode.Outcome.FinalAnswer)
 	}
+}
+
+func TestEpisodeRecorderPersistsToolContent(t *testing.T) {
+	action := schema.AgentAction{
+		Tool:      "echo",
+		ToolInput: "hello",
+		Log:       formatToolActionLog("echo", `{"input":"hello","speech":"Saying hi."}`, "I will echo.", "\n"),
+	}
+
+	recorder := NewEpisodeRecorder(MemoryRetrieveRequest{Input: "test"}, MemoryContext{})
+	recorder.RecordExecution(roleExecutionResult{Action: &action})
+	episode := recorder.Finish("", nil, nil, nil, nil)
+	if got := firstToolCallEventContent(episode.Events); got != "I will echo." {
+		t.Fatalf("tool event content = %q", got)
+	}
+}
+
+func firstToolCallEventContent(events []TaskEpisodeEvent) string {
+	for _, event := range events {
+		if event.Type == runEventToolCall {
+			return event.Content
+		}
+	}
+	return ""
 }
 
 // TestDeviceMemoryConflictTypeFiltering ensures conflicted records are matched
