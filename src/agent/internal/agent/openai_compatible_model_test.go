@@ -564,6 +564,44 @@ func TestOpenAICompatibleModelSkipsRawHTTPLogWithoutContextMarker(t *testing.T) 
 	}
 }
 
+func TestOpenAICompatibleModelDoesNotBufferRawHTTPResponseWithoutContextMarker(t *testing.T) {
+	responseBody := &failOnSecondReadBody{
+		payload: []byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`),
+	}
+	client := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body:       responseBody,
+			}, nil
+		}),
+	}
+
+	model := newOpenAICompatibleModel(
+		"https://example.test",
+		"test-model",
+		"",
+		client,
+		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(t.TempDir(), "test-session-1")),
+	)
+
+	resp, err := model.GenerateContent(context.Background(), []llms.MessageContent{{
+		Role:  llms.ChatMessageTypeHuman,
+		Parts: []llms.ContentPart{llms.TextPart("hello")},
+	}})
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	if got := resp.Choices[0].Content; got != "ok" {
+		t.Fatalf("response content = %q, want ok", got)
+	}
+	if responseBody.reads != 1 {
+		t.Fatalf("response body reads = %d, want 1", responseBody.reads)
+	}
+}
+
 func TestModelManagerEnablesRawHTTPLoggingFromModelConfig(t *testing.T) {
 	rawResponse := `{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -850,6 +888,23 @@ func findLogLineContaining(logText, substring string) bool {
 		}
 	}
 	return false
+}
+
+type failOnSecondReadBody struct {
+	payload []byte
+	reads   int
+}
+
+func (b *failOnSecondReadBody) Read(p []byte) (int, error) {
+	b.reads++
+	if b.reads == 1 {
+		return copy(p, b.payload), nil
+	}
+	return 0, io.ErrUnexpectedEOF
+}
+
+func (b *failOnSecondReadBody) Close() error {
+	return nil
 }
 
 func assertEveryLineIsCompleteRecord(t *testing.T, logText string) {

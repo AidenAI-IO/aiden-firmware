@@ -244,6 +244,27 @@ TEST_CASE("config web exposes the LLM HTTP log viewer") {
     CHECK(llm_html.find("function renderMessages") != std::string::npos);
     CHECK(llm_html.find("function renderDiff") != std::string::npos);
     CHECK(llm_html.find("tool_calls") != std::string::npos);
+    CHECK(llm_html.find(".msg-head,.diff-msg-head{") != std::string::npos);
+    CHECK(llm_html.find("font-size:12px;line-height:1.2") != std::string::npos);
+    CHECK(llm_html.find("function renderMessageHead") != std::string::npos);
+    CHECK(llm_html.find("class=\\\"msg-index\\\">#' + index") != std::string::npos);
+    CHECK(llm_html.find("renderMessageHead('msg-head role-'") != std::string::npos);
+    CHECK(llm_html.find("renderMessages([msg], false)") != std::string::npos);
+    CHECK(llm_html.find("function messageNeedsCollapse") != std::string::npos);
+    CHECK(llm_html.find("diff-line.collapsed") != std::string::npos);
+    CHECK(llm_html.find("msg-content diff-line") != std::string::npos);
+    CHECK(llm_html.find("diffMsgBlock(newMsgs[j], 'same',") != std::string::npos);
+    CHECK(llm_html.find("diffMsgBlock(oldMsgs[i], 'removed',") != std::string::npos);
+    CHECK(llm_html.find("diffMsgBlock(newMsgs[j], 'added',") != std::string::npos);
+    CHECK(llm_html.find("renderMessageHead('diff-msg-head'") != std::string::npos);
+    CHECK(llm_html.find("function renderMessageContent") != std::string::npos);
+    CHECK(llm_html.find("function renderContentPart") != std::string::npos);
+    CHECK(llm_html.find("function imageUrlFromPart") != std::string::npos);
+    CHECK(llm_html.find("function isRenderableImageDataUrl") != std::string::npos);
+    CHECK(llm_html.find("data:image/") != std::string::npos);
+    CHECK(llm_html.find(";base64,") != std::string::npos);
+    CHECK(llm_html.find("class=\\\"msg-image\\\"") != std::string::npos);
+    CHECK(llm_html.find("<img src=\\\"' + escAttr(url)") != std::string::npos);
 
     // Messages view appends a Response section so request and response render
     // on the same screen. Covers OpenAI JSON, SSE streams, and raw fallbacks.
@@ -919,6 +940,36 @@ TEST_CASE("config web exposes benchmark settings section") {
     CHECK(html.find("sectionValues['has_'+key]") != std::string::npos);
     CHECK(html.find("save-benchmark") != std::string::npos);
     CHECK(html.find("enterEditSection('benchmark')") != std::string::npos);
+}
+
+TEST_CASE("config web exposes log settings section") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(source.find("cJSON* log_config = add_object(root, \"log\")") != std::string::npos);
+    CHECK(source.find("config.log.llm_http_retention_days") != std::string::npos);
+    CHECK(source.find("cJSON* log_config = cJSON_GetObjectItem(root, \"log\")") != std::string::npos);
+    CHECK(source.find("set_json_int(&config->log.llm_http_retention_days, log_config, \"llm_http_retention_days\")") != std::string::npos);
+    CHECK(source.find("{\"log\", \"llm_http_retention_days\", CONFIG_FIELD_NUMBER}") != std::string::npos);
+
+    CHECK(html.find("section-log") != std::string::npos);
+    CHECK(html.find("<h3>[log]</h3>") != std::string::npos);
+    CHECK(html.find("log_llm_http_retention_days") != std::string::npos);
+    CHECK(html.find("save-log") != std::string::npos);
+    CHECK(html.find("enterEditSection('log')") != std::string::npos);
 }
 
 TEST_CASE("config web does not restart ota for system env changes") {

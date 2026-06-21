@@ -75,6 +75,10 @@ max_files = 500             # Keep most recent N audio files
 max_size_mb = 100           # Or stop when total size exceeds this (MB)
 storage_path = "/userdata/audio"  # Where to store audio files
 
+# Log retention configuration
+[log]
+llm_http_retention_days = 7  # Keep llm-http-*.log files for this many days
+
 # Speech-to-Text (STT) configuration
 # Required when input_mode = "stt"
 [stt]

@@ -178,6 +178,7 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"storage_path\":\"/userdata/audio\"},"
         "\"benchmark\":{\"judge_model\":\"bytedance-seed/seed-2.0-lite\",\"api_key\":\"\","
         "\"benchmark_dir\":\"\"},"
+        "\"log\":{\"llm_http_retention_days\":7},"
         "\"hid\":{\"keyboard_device\":\"/dev/hidg0\",\"mouse_device\":\"/dev/hidg1\","
         "\"frame_socket\":\"/run/frame_service/frame_service.sock\",\"pointer_mode\":\"absolute\"},"
         "\"search\":{\"provider\":\"") + search_provider + "\",\"has_api_key\":" +
@@ -583,6 +584,23 @@ TEST_CASE("config_web: POST /api/config accepts empty audio_archive storage_path
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
     CHECK(resp.status == 200);
+}
+
+TEST_CASE("config_web: POST /api/config writes log section") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string body =
+        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
+        "\"log\":{\"llm_http_retention_days\":14},"
+        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    CHECK(resp.status == 200);
+
+    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+    CHECK(saved.find("[log]") != std::string::npos);
+    CHECK(saved.find("llm_http_retention_days = 14") != std::string::npos);
 }
 
 TEST_CASE("config_web: POST /api/config writes custom_instruction") {

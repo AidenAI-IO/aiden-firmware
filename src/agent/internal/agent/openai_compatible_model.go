@@ -374,7 +374,8 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 	}
 
 	var decoded compatibleChatResponse
-	if m.rawLogger == nil {
+	rawLoggingEnabled := m.rawLogger != nil && rawHTTPLogEnabled(ctx)
+	if !rawLoggingEnabled {
 		if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
 			return nil, fmt.Errorf("decode response: %w", err)
 		}
@@ -429,8 +430,9 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 	var rawStream strings.Builder
 	hasRawStream := false
 	streamDone := false
+	rawLoggingEnabled := m.rawLogger != nil && rawHTTPLogEnabled(ctx)
 	logRawStream := func(scanErr error) {
-		if m.rawLogger == nil {
+		if !rawLoggingEnabled {
 			return
 		}
 		// Pair every request with a response, even when the stream yields no
@@ -454,7 +456,7 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 
 	for scanner.Scan() {
 		rawLine := scanner.Text()
-		if m.rawLogger != nil {
+		if rawLoggingEnabled {
 			if hasRawStream {
 				rawStream.WriteByte('\n')
 			}

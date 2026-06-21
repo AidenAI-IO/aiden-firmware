@@ -526,6 +526,7 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"benchmark", "judge_model", CONFIG_FIELD_STRING},
         {"benchmark", "api_key", CONFIG_FIELD_STRING},
         {"benchmark", "benchmark_dir", CONFIG_FIELD_STRING},
+        {"log", "llm_http_retention_days", CONFIG_FIELD_NUMBER},
         {"hid", "keyboard_device", CONFIG_FIELD_STRING},
         {"hid", "mouse_device", CONFIG_FIELD_STRING},
         {"hid", "frame_socket", CONFIG_FIELD_STRING},
@@ -1218,7 +1219,7 @@ bool validate_agent_config_json(cJSON* root, std::string* error = NULL) {
 
     const char* sections[] = {
         "model", "model_text", "tts", "stt", "audio", "audio_archive",
-        "benchmark", "hid", "search", "telemetry", "agent", NULL,
+        "benchmark", "log", "hid", "search", "telemetry", "agent", NULL,
     };
     for (int i = 0; sections[i]; ++i) {
         cJSON* section = cJSON_GetObjectItem(root, sections[i]);
@@ -1432,6 +1433,9 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
         cJSON_AddBoolToObject(benchmark, "has_api_key", !config.benchmark.api_key.empty());
     }
     cJSON_AddStringToObject(benchmark, "benchmark_dir", config.benchmark.benchmark_dir.c_str());
+
+    cJSON* log_config = add_object(root, "log");
+    cJSON_AddNumberToObject(log_config, "llm_http_retention_days", config.log.llm_http_retention_days);
 
     cJSON* hid = add_object(root, "hid");
     cJSON_AddStringToObject(hid, "keyboard_device", config.hid.keyboard_device.c_str());
@@ -1688,6 +1692,11 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
             }
         }
         set_json_str(&config->benchmark.benchmark_dir, benchmark, "benchmark_dir");
+    }
+
+    cJSON* log_config = cJSON_GetObjectItem(root, "log");
+    if (json_is_object(log_config)) {
+        set_json_int(&config->log.llm_http_retention_days, log_config, "llm_http_retention_days");
     }
 
     cJSON* hid = cJSON_GetObjectItem(root, "hid");
@@ -4027,6 +4036,28 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
             if (!exists) all_passed = false;
         }
         cJSON_AddItemToArray(results, dir_r);
+    } else if (section == "log") {
+        cJSON* retention_item = cJSON_GetObjectItem(values, "llm_http_retention_days");
+        cJSON* r = cJSON_CreateObject();
+        cJSON_AddStringToObject(r, "check", "llm_http_retention_days");
+        if (json_is_number(retention_item)) {
+            int days = retention_item->valueint;
+            if (days < 0) {
+                cJSON_AddBoolToObject(r, "passed", 0);
+                std::string msg = "must be >= 0, got " + std::to_string(days);
+                cJSON_AddStringToObject(r, "detail", msg.c_str());
+                all_passed = false;
+            } else {
+                cJSON_AddBoolToObject(r, "passed", 1);
+                std::string detail = std::to_string(days) + (days == 0 ? " (default 7 days)" : " days");
+                cJSON_AddStringToObject(r, "detail", detail.c_str());
+            }
+        } else {
+            cJSON_AddBoolToObject(r, "passed", 0);
+            cJSON_AddStringToObject(r, "detail", "not a number");
+            all_passed = false;
+        }
+        cJSON_AddItemToArray(results, r);
     } else if (section == "hid") {
         const char* dev_keys[] = {"keyboard_device", "mouse_device", NULL};
         for (int i = 0; dev_keys[i]; ++i) {

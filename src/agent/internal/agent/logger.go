@@ -11,8 +11,6 @@ import (
 	"time"
 )
 
-const logRetention = 48 * time.Hour
-
 // Logger provides structured logging to stdout/stderr
 // Output is captured by the init script and written to /var/log/agent/agent.log
 type Logger struct {
@@ -22,7 +20,7 @@ type Logger struct {
 
 // NewLogger creates a new logger that writes to stdout/stderr
 // The init script redirects output to /var/log/agent/agent.log
-func NewLogger(configDir string) (*Logger, error) {
+func NewLogger(configDir string, llmHTTPRetentionDays int) (*Logger, error) {
 	logger := log.New(os.Stderr, "", log.LstdFlags)
 	log.SetOutput(os.Stderr)
 	log.SetFlags(log.LstdFlags)
@@ -30,7 +28,7 @@ func NewLogger(configDir string) (*Logger, error) {
 	// Cleanup old llm-http logs in configDir if set
 	if configDir != "" {
 		llmLogDir := filepath.Join(configDir, "log")
-		if err := cleanupOldLogFiles(llmLogDir, time.Now()); err != nil {
+		if err := cleanupOldLogFiles(llmLogDir, time.Now(), llmHTTPRetentionDays); err != nil {
 			logger.Printf("[WARN] log cleanup failed: %v", err)
 		}
 	}
@@ -40,12 +38,15 @@ func NewLogger(configDir string) (*Logger, error) {
 	}, nil
 }
 
-func cleanupOldLogFiles(logDir string, now time.Time) error {
+func cleanupOldLogFiles(logDir string, now time.Time, llmHTTPRetentionDays int) error {
 	entries, err := os.ReadDir(logDir)
 	if err != nil {
 		return fmt.Errorf("read log directory: %w", err)
 	}
-	cutoff := now.Add(-logRetention)
+	retention := time.Duration(LogConfig{
+		LLMHTTPRetentionDays: llmHTTPRetentionDays,
+	}.LLMHTTPRetentionDaysOrDefault()) * 24 * time.Hour
+	cutoff := now.Add(-retention)
 	var errs []error
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".log") {
@@ -85,6 +86,8 @@ func logFileTime(name string, modTime time.Time) time.Time {
 	}
 	dateTimeStr := parts[:12]
 	if parsed, err := time.ParseInLocation("200601021504", dateTimeStr, time.Local); err == nil {
+		// Keep parsed log-file timestamps through the whole named day by adding
+		// a 24-hour grace period before comparing them with the retention cutoff.
 		return parsed.Add(24 * time.Hour)
 	}
 	return modTime
