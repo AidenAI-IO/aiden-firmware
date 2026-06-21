@@ -37,18 +37,18 @@ func withOpenAICompatibleRawHTTPLogger(logger *llmRawHTTPLogger) openAICompatibl
 
 type llmRawHTTPLogger struct {
 	dir       string
-	sessionID string
+	runtimeID string
 	mu        sync.Mutex
 }
 
-func newLLMRawHTTPLogger(logDir, sessionID string) *llmRawHTTPLogger {
+func newLLMRawHTTPLogger(logDir, runtimeID string) *llmRawHTTPLogger {
 	logDir = strings.TrimSpace(logDir)
 	if logDir == "" {
 		return nil
 	}
 	return &llmRawHTTPLogger{
 		dir:       logDir,
-		sessionID: sessionID,
+		runtimeID: runtimeID,
 	}
 }
 
@@ -91,11 +91,11 @@ func (l *llmRawHTTPLogger) Log(model, dir, kind string, statusCode int, raw stri
 		return err
 	}
 
-	// File name includes both date and session ID
+	// File name includes both date and runtime ID.
 	dateStr := now.Format("20060102")
 	fileName := "llm-http-" + dateStr + ".log"
-	if l.sessionID != "" {
-		fileName = "llm-http-" + dateStr + "-" + l.sessionID + ".log"
+	if l.runtimeID != "" {
+		fileName = "llm-http-" + dateStr + "-" + l.runtimeID + ".log"
 	}
 
 	path := filepath.Join(l.dir, fileName)

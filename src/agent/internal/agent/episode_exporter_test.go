@@ -260,7 +260,7 @@ func TestBuildLangfuseBatchAddsTraceIdentityAndFailureScore(t *testing.T) {
 			FailureReason: "verifier rejected completion",
 		},
 		Extra: map[string]interface{}{
-			"session_id": "session-a",
+			"runtime_id": "runtime-a",
 		},
 	}
 
@@ -287,8 +287,8 @@ func TestBuildLangfuseBatchAddsTraceIdentityAndFailureScore(t *testing.T) {
 	if traceBody["userId"] != "device-a" {
 		t.Fatalf("trace userId = %v, want device-a", traceBody["userId"])
 	}
-	if traceBody["sessionId"] != "session-a" {
-		t.Fatalf("trace sessionId = %v, want session-a", traceBody["sessionId"])
+	if traceBody["sessionId"] != "runtime-a" {
+		t.Fatalf("trace sessionId = %v, want runtime-a", traceBody["sessionId"])
 	}
 	if traceBody["public"] != false {
 		t.Fatalf("trace public = %v, want false", traceBody["public"])
