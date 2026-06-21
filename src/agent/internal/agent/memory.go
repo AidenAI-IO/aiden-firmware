@@ -466,8 +466,13 @@ func (m *MemoryManager) AppendMessagesWithMetadata(ctx context.Context, agentNam
 	}
 	defer fl.Unlock()
 
-	if err := os.MkdirAll(filepath.Dir(m.sessionEventsPath()), 0o755); err != nil {
+	sessionDir := filepath.Dir(m.sessionEventsPath())
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
 		return fmt.Errorf("create session memory directory: %w", err)
+	}
+	now := time.Now().UTC()
+	if _, err := ensureActiveSessionMetadata(sessionDir, now); err != nil {
+		return fmt.Errorf("ensure active session metadata: %w", err)
 	}
 	if err := m.ensureEventCountLoadedLocked(agentName); err != nil {
 		return err
@@ -478,7 +483,6 @@ func (m *MemoryManager) AppendMessagesWithMetadata(ctx context.Context, agentNam
 	}
 	defer file.Close()
 
-	now := time.Now().UTC()
 	encoder := json.NewEncoder(file)
 	records = sanitizeMessageRecords(records)
 	for i, record := range records {
@@ -515,8 +519,13 @@ func (m *MemoryManager) AppendSessionEvent(ctx context.Context, agentName string
 	}
 	defer fl.Unlock()
 
-	if err := os.MkdirAll(filepath.Dir(m.sessionEventsPath()), 0o755); err != nil {
+	sessionDir := filepath.Dir(m.sessionEventsPath())
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
 		return fmt.Errorf("create session memory directory: %w", err)
+	}
+	now := time.Now().UTC()
+	if _, err := ensureActiveSessionMetadata(sessionDir, now); err != nil {
+		return fmt.Errorf("ensure active session metadata: %w", err)
 	}
 	if err := m.ensureEventCountLoadedLocked(agentName); err != nil {
 		return err
@@ -527,7 +536,6 @@ func (m *MemoryManager) AppendSessionEvent(ctx context.Context, agentName string
 	}
 	defer file.Close()
 
-	now := time.Now().UTC()
 	event = normalizeSessionEventForAppend(event, now, m.eventCount[agentName]+1)
 	event = applySessionEventMetadata(event, meta)
 	if err := json.NewEncoder(file).Encode(event); err != nil {

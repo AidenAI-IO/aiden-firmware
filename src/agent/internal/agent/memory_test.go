@@ -375,6 +375,37 @@ func TestMemoryManagerWritesRuntimeIDMetadata(t *testing.T) {
 	}
 }
 
+func TestMemoryManagerCreatesSessionMetadataOnFirstAppend(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	manager := NewMemoryManager(storageDir)
+
+	if err := manager.AppendSessionEvent(ctx, "default", SessionEvent{
+		Type:    "user_input",
+		Role:    "user",
+		Content: "first request",
+	}, SessionEventMetadata{RuntimeID: "runtime-a"}); err != nil {
+		t.Fatalf("AppendSessionEvent() error = %v", err)
+	}
+
+	metadataPath := filepath.Join(storageDir, "session", sessionMetadataFileName)
+	metadata := readSessionMetadataForTest(t, metadataPath)
+	if metadata.SessionID == "" {
+		t.Fatal("active metadata session_id is empty")
+	}
+
+	rotation, err := manager.RotateSessionEventsDetailed()
+	if err != nil {
+		t.Fatalf("RotateSessionEventsDetailed() error = %v", err)
+	}
+	if rotation.ClosedSessionID != metadata.SessionID {
+		t.Fatalf("ClosedSessionID = %q, want original active session_id %q", rotation.ClosedSessionID, metadata.SessionID)
+	}
+	if filepath.Base(rotation.ArchiveDir) != metadata.SessionID {
+		t.Fatalf("archive basename = %q, want original active session_id %q", filepath.Base(rotation.ArchiveDir), metadata.SessionID)
+	}
+}
+
 func TestMemoryManagerAppendSessionEventContinuesExistingEventStream(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
