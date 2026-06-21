@@ -539,24 +539,18 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 		Tools:     plannerTools,
 		OutputKey: e.OutputKey,
 	}
-	baseOptions := append(chains.GetLLMCallOptions(options...), llms.WithTools(parser.toolsAsLLM()))
-	finalStreaming := state.Phase == phaseDefault || e.ForceSimpleLoop
-	callOptions := baseOptions
-	if finalStreaming {
-		callOptions = e.finalStreamingCallOptions(baseOptions)
-	}
+	callOptions := append(chains.GetLLMCallOptions(options...), llms.WithTools(parser.toolsAsLLM()))
 	generate := func() (*llms.ContentResponse, error) {
 		return e.generateRoleContent(ctx, RolePlanner, messages, callOptions...)
 	}
-	var (
-		res *llms.ContentResponse
-		err error
-	)
-	if finalStreaming {
-		res, err = e.withFinalStreaming(ctx, generate)
-	} else {
-		res, err = generate()
+	// Planner turns with tool schemas are tool-capable. Do not provider-stream
+	// their content as final speech before ParseOutput proves the response is
+	// not a tool call; finishRun streams confirmed final answers after parsing.
+	if diagnostics, ok := e.CallbacksHandler.(finalStreamingDecisionLogger); ok {
+		diagnostics.LogFinalStreamingDecision(ctx, RolePlanner, false,
+			fmt.Sprintf("tool_capable_planner_turn phase=%s force_simple=%t tools=%d", state.Phase, e.ForceSimpleLoop, len(plannerTools)))
 	}
+	res, err := generate()
 	if err != nil {
 		return plannerTurnResult{}, err
 	}
@@ -2212,6 +2206,10 @@ type finalStreamingController interface {
 
 type providerFinalStreamingController interface {
 	ProviderFinalStreamingEnabled() bool
+}
+
+type finalStreamingDecisionLogger interface {
+	LogFinalStreamingDecision(context.Context, RoleName, bool, string)
 }
 
 func (e *roleCollaborativeExecutor) withFinalStreaming(ctx context.Context, fn func() (*llms.ContentResponse, error)) (*llms.ContentResponse, error) {
