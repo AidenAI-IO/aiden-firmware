@@ -244,6 +244,13 @@ TEST_CASE("config web exposes the LLM HTTP log viewer") {
     CHECK(llm_html.find("function renderMessages") != std::string::npos);
     CHECK(llm_html.find("function renderDiff") != std::string::npos);
     CHECK(llm_html.find("tool_calls") != std::string::npos);
+
+    // Messages view appends a Response section so request and response render
+    // on the same screen. Covers OpenAI JSON, SSE streams, and raw fallbacks.
+    CHECK(llm_html.find("function renderMessagesView") != std::string::npos);
+    CHECK(llm_html.find("function renderResponseBlock") != std::string::npos);
+    CHECK(llm_html.find("function extractResponseMessage") != std::string::npos);
+    CHECK(llm_html.find("response-section") != std::string::npos);
 }
 
 TEST_CASE("config web exposes audio archive switch") {
