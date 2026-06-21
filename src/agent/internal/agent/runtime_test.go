@@ -3956,17 +3956,25 @@ func TestRuntimeRunKeepsSmallSessionOnUnrelatedInput(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunKeepsNeutralFollowUpWithActiveEpisode(t *testing.T) {
+func TestRuntimeRunRotatesNeutralFollowUpAfterFinishedEpisode(t *testing.T) {
+	// A finished (non-running) episode must not, on its own, keep a stale
+	// session alive across a mid-range gap. The session here is large enough to
+	// defeat the small-session bias, and the input is neutral with no
+	// continuation marker, so the only thing that could force "continue" is a
+	// recently-finished episode — which is exactly the signal we removed.
 	configDir := t.TempDir()
 	storageDir := filepath.Join(configDir, "memory")
 	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
-	now := time.Now().UTC().Add(-6 * time.Minute)
-	for i, content := range []string{"查一下今天天气", "今天多云"} {
+	now := time.Now().UTC().Add(-8 * time.Minute)
+	const prevEventCount = 18 // > SmallSessionEventThreshold (16)
+	for i := 0; i < prevEventCount; i++ {
 		role := "user"
 		eventType := "user_input"
-		if i == 1 {
+		content := "查一下今天天气"
+		if i%2 == 1 {
 			role = "assistant"
 			eventType = "assistant_output"
+			content = "今天多云"
 		}
 		if _, err := session.AppendEvent(context.Background(), SessionEvent{
 			EventID: fmt.Sprintf("evt_prev_%d", i),
@@ -3984,7 +3992,7 @@ func TestRuntimeRunKeepsNeutralFollowUpWithActiveEpisode(t *testing.T) {
 		ID:        "ep_weather_done",
 		Status:    "active",
 		StartedAt: now.Add(-30 * time.Second).Format(time.RFC3339Nano),
-		EndedAt:   now.Add(time.Second).Format(time.RFC3339Nano),
+		EndedAt:   now.Add(prevEventCount * time.Second).Format(time.RFC3339Nano),
 		UserGoal:  "查一下今天天气",
 		Outcome:   TaskEpisodeOutcome{Success: true, FinalAnswer: "今天多云"},
 	}); err != nil {
@@ -4007,35 +4015,29 @@ func TestRuntimeRunKeepsNeutralFollowUpWithActiveEpisode(t *testing.T) {
 	)
 	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
 
-	result, err := runtime.Run(context.Background(), RunRequest{Input: "好的"})
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "你有什么爱好？"})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
-	}
-	if len(result.Memory) != 4 || result.Memory[0].Content != "查一下今天天气" {
-		t.Fatalf("neutral follow-up should keep previous session context, got %#v", result.Memory)
 	}
 
 	archiveDirs, err := filepath.Glob(filepath.Join(storageDir, "session_archive", "*"))
 	if err != nil {
 		t.Fatalf("Glob archived sessions: %v", err)
 	}
-	if len(archiveDirs) != 0 {
-		t.Fatalf("neutral follow-up with active episode rotated session: %v", archiveDirs)
+	if len(archiveDirs) != 1 {
+		t.Fatalf("neutral follow-up after a finished episode should rotate the session, got %d archives: %v", len(archiveDirs), archiveDirs)
 	}
 
 	episode, err := episodeStore.Get(context.Background(), result.EpisodeID)
 	if err != nil {
 		t.Fatalf("Get episode: %v", err)
 	}
-	if got := episode.Extra["session_boundary_decision"]; got != BoundaryContinue {
-		t.Fatalf("session_boundary_decision = %#v, want %q", got, BoundaryContinue)
-	}
-	if got := episode.Extra["session_boundary_reason"]; got != BoundaryReasonActiveEpisode {
-		t.Fatalf("session_boundary_reason = %#v, want %q", got, BoundaryReasonActiveEpisode)
+	if got := episode.Extra["session_boundary_decision"]; got != BoundaryNew {
+		t.Fatalf("session_boundary_decision = %#v, want %q", got, BoundaryNew)
 	}
 }
 
-func TestRecentEpisodeContextIncludesRunningAndRecentActiveEpisodes(t *testing.T) {
+func TestRecentEpisodeContextDetectsRunningEpisode(t *testing.T) {
 	storageDir := filepath.Join(t.TempDir(), "memory")
 	store := NewTaskEpisodeStore(filepath.Join(storageDir, "episodes"))
 	now := time.Now().UTC()
@@ -4047,6 +4049,7 @@ func TestRecentEpisodeContextIncludesRunningAndRecentActiveEpisodes(t *testing.T
 	}); err != nil {
 		t.Fatalf("StartEpisode() error = %v", err)
 	}
+	// A finished episode alongside the running one must not disturb detection.
 	if _, err := store.AddEpisode(context.Background(), TaskEpisode{
 		ID:        "ep_active_recent",
 		Status:    "active",
@@ -4059,25 +4062,22 @@ func TestRecentEpisodeContextIncludesRunningAndRecentActiveEpisodes(t *testing.T
 	}
 
 	plane := NewFilesystemMemoryPlane(storageDir, DefaultMemoryExtractionConfig(), nil)
-	ctx := recentEpisodeContext(plane, now, 5*time.Minute)
+	ctx := recentEpisodeContext(plane)
 	if !ctx.HasRunning {
 		t.Fatalf("expected running episode context")
 	}
-	if !ctx.HasActive {
-		t.Fatalf("expected recent active episode context")
-	}
 }
 
-func TestRecentEpisodeContextIgnoresOldActiveEpisode(t *testing.T) {
+func TestRecentEpisodeContextFinishedEpisodeIsNotASignal(t *testing.T) {
 	storageDir := filepath.Join(t.TempDir(), "memory")
 	store := NewTaskEpisodeStore(filepath.Join(storageDir, "episodes"))
 	now := time.Now().UTC()
 
 	if _, err := store.AddEpisode(context.Background(), TaskEpisode{
-		ID:        "ep_active_old",
+		ID:        "ep_active_recent",
 		Status:    "active",
-		StartedAt: now.Add(-10 * time.Minute).Format(time.RFC3339Nano),
-		EndedAt:   now.Add(-6 * time.Minute).Format(time.RFC3339Nano),
+		StartedAt: now.Add(-3 * time.Minute).Format(time.RFC3339Nano),
+		EndedAt:   now.Add(-time.Minute).Format(time.RFC3339Nano),
 		UserGoal:  "查天气",
 		Outcome:   TaskEpisodeOutcome{Success: true},
 	}); err != nil {
@@ -4085,9 +4085,9 @@ func TestRecentEpisodeContextIgnoresOldActiveEpisode(t *testing.T) {
 	}
 
 	plane := NewFilesystemMemoryPlane(storageDir, DefaultMemoryExtractionConfig(), nil)
-	ctx := recentEpisodeContext(plane, now, 5*time.Minute)
-	if ctx.HasActive {
-		t.Fatalf("old active episode should not bias session boundary")
+	ctx := recentEpisodeContext(plane)
+	if ctx.HasRunning {
+		t.Fatalf("a finished episode must not produce a running-episode signal")
 	}
 }
 
