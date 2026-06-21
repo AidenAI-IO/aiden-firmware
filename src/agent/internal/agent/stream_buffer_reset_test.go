@@ -38,3 +38,25 @@ func TestResetStreamBufferNoopWithoutSupport(t *testing.T) {
 	resetStreamBuffer(&bytes.Buffer{})
 	resetStreamBuffer(nil)
 }
+
+// TestResetStreamBufferReachesTerminalThroughFanout verifies that a buffer
+// reset propagates through the streaming-chat fanout writer down to the TTS
+// leg. handleChatStream wraps the TTS writer chain in a finalStreamFanoutWriter
+// alongside the SSE writer; without ResetBuffer forwarding here, residual
+// speech would leak across turns on the streaming chat path.
+func TestResetStreamBufferReachesTerminalThroughFanout(t *testing.T) {
+	terminal := &bufferResetRecorder{}
+	ttsLeg := newCancelOnFirstWriteWriter(
+		NewJSONFieldOrPlainStreamWriter(terminal, "final_answer"),
+		func() {},
+	)
+	// The SSE leg has no buffer to reset and must be skipped cleanly.
+	sseLeg := &bytes.Buffer{}
+	fanout := newFinalStreamFanoutWriter(sseLeg, ttsLeg)
+
+	resetStreamBuffer(fanout)
+
+	if terminal.resetCalls != 1 {
+		t.Fatalf("expected ResetBuffer to reach TTS terminal once through fanout, got %d", terminal.resetCalls)
+	}
+}
