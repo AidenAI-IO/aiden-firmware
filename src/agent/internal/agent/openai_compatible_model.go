@@ -385,12 +385,18 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 			return
 		}
 		// Pair every request with a response, even when the stream yields no
-		// data or fails mid-read. Status 0 + error text for scanner failures;
-		// the actual HTTP status + captured SSE body otherwise.
-		if hasRawStream {
+		// data or fails mid-read. Scanner failures take precedence: status 0 +
+		// error text whether or not partial SSE data was captured (a misleading
+		// "200 OK" + partial body would hide the failure). Otherwise log the
+		// actual HTTP status + whatever SSE data arrived.
+		if scanErr != nil {
+			body := "stream read error: " + scanErr.Error()
+			if hasRawStream {
+				body = rawStream.String() + "\n" + body
+			}
+			_ = m.logRawHTTP(ctx, requestModel, "response", 0, body)
+		} else if hasRawStream {
 			_ = m.logRawHTTP(ctx, requestModel, "response", statusCode, rawStream.String())
-		} else if scanErr != nil {
-			_ = m.logRawHTTP(ctx, requestModel, "response", 0, "stream read error: "+scanErr.Error())
 		} else {
 			_ = m.logRawHTTP(ctx, requestModel, "response", statusCode, "(empty stream response)")
 		}
