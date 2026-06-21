@@ -625,17 +625,11 @@ func (m *MemoryManager) RotateSessionEventsDetailed() (SessionRotationResult, er
 			return SessionRotationResult{}, err
 		}
 		closedSessionID = filepath.Base(archiveDir)
-		if err := os.Rename(sessionDir, archiveDir); err != nil {
-			return SessionRotationResult{}, fmt.Errorf("archive active session: %w", err)
-		}
-		if err := os.MkdirAll(sessionDir, 0o755); err != nil {
-			return SessionRotationResult{}, fmt.Errorf("create active session directory after rotation: %w", err)
-		}
-		if err := os.WriteFile(eventsPath, nil, 0o644); err != nil {
-			return SessionRotationResult{}, fmt.Errorf("create empty session events after rotation: %w", err)
-		}
-		activeMeta, err := writeNewSessionMetadata(sessionDir, now.Add(time.Nanosecond))
+		activeTempDir, activeMeta, err := prepareStagedActiveSessionDir(m.storageDir, now)
 		if err != nil {
+			return SessionRotationResult{}, err
+		}
+		if err := replaceActiveSessionDir(sessionDir, archiveDir, activeTempDir); err != nil {
 			return SessionRotationResult{}, err
 		}
 
@@ -699,6 +693,9 @@ func nextSessionArchiveDir(parent string, baseID string) (string, error) {
 	if baseID == "" {
 		baseID = newSessionID(time.Now().UTC())
 	}
+	if err := validateSessionArchiveBaseID(baseID); err != nil {
+		return "", err
+	}
 	for i := int64(0); i < 100; i++ {
 		id := baseID
 		if i > 0 {
@@ -713,6 +710,53 @@ func nextSessionArchiveDir(parent string, baseID string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("allocate session archive path: too many collisions")
+}
+
+func validateSessionArchiveBaseID(baseID string) error {
+	if baseID == "" || baseID == "." || baseID != filepath.Base(baseID) || strings.ContainsAny(baseID, `/\`) || strings.Contains(baseID, "..") {
+		return fmt.Errorf("unsafe session archive id %q", baseID)
+	}
+	return nil
+}
+
+func prepareStagedActiveSessionDir(parent string, now time.Time) (string, sessionMetadata, error) {
+	for i := int64(0); i < 100; i++ {
+		activeAt := now.Add(time.Duration(i+1) * time.Nanosecond)
+		tempDir := filepath.Join(parent, ".session-"+strconv.FormatInt(activeAt.UTC().UnixNano(), 10)+".tmp")
+		if err := os.Mkdir(tempDir, 0o755); err != nil {
+			if os.IsExist(err) {
+				continue
+			}
+			return "", sessionMetadata{}, fmt.Errorf("create staged active session directory: %w", err)
+		}
+		if err := os.WriteFile(filepath.Join(tempDir, "events.jsonl"), nil, 0o644); err != nil {
+			_ = os.RemoveAll(tempDir)
+			return "", sessionMetadata{}, fmt.Errorf("create staged active session events: %w", err)
+		}
+		activeMeta, err := writeNewSessionMetadata(tempDir, activeAt)
+		if err != nil {
+			_ = os.RemoveAll(tempDir)
+			return "", sessionMetadata{}, err
+		}
+		return tempDir, activeMeta, nil
+	}
+	return "", sessionMetadata{}, fmt.Errorf("allocate staged active session directory: too many collisions")
+}
+
+func replaceActiveSessionDir(sessionDir string, archiveDir string, activeTempDir string) error {
+	if err := os.Rename(sessionDir, archiveDir); err != nil {
+		_ = os.RemoveAll(activeTempDir)
+		return fmt.Errorf("archive active session: %w", err)
+	}
+	if err := os.Rename(activeTempDir, sessionDir); err != nil {
+		rollbackErr := os.Rename(archiveDir, sessionDir)
+		cleanupErr := os.RemoveAll(activeTempDir)
+		if rollbackErr != nil || cleanupErr != nil {
+			return fmt.Errorf("activate staged session: %w; rollback: %v; cleanup: %v", err, rollbackErr, cleanupErr)
+		}
+		return fmt.Errorf("activate staged session: %w", err)
+	}
+	return nil
 }
 
 func ensureActiveSessionMetadata(sessionDir string, now time.Time) (sessionMetadata, error) {

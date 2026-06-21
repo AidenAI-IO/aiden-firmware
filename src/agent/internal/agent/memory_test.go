@@ -1481,6 +1481,63 @@ func TestSessionRotationDetailedCreatesActiveSessionID(t *testing.T) {
 	}
 }
 
+func TestSessionRotationRejectsUnsafeMetadataSessionID(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	manager := NewMemoryManager(storageDir)
+	sessionDir := filepath.Join(storageDir, "session")
+	session := NewSessionMemoryStore(sessionDir)
+	now := time.Now().UTC()
+	if _, err := session.AppendEvent(ctx, SessionEvent{
+		EventID: "evt_unsafe_session_id",
+		Ts:      now.Format(time.RFC3339Nano),
+		Type:    "user_input",
+		Role:    "user",
+		Content: "old task",
+	}); err != nil {
+		t.Fatalf("AppendEvent() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionDir, sessionMetadataFileName), []byte(`{"session_id":"../escape","created_at":"2026-06-21T00:00:00Z"}`+"\n"), 0o644); err != nil {
+		t.Fatalf("write unsafe metadata: %v", err)
+	}
+
+	if _, err := manager.RotateSessionEventsDetailed(); err == nil {
+		t.Fatal("RotateSessionEventsDetailed() succeeded with unsafe metadata session_id")
+	}
+	if _, err := os.Stat(filepath.Join(sessionDir, "events.jsonl")); err != nil {
+		t.Fatalf("active session events should remain after rejected rotation: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(storageDir, "escape")); !os.IsNotExist(err) {
+		t.Fatalf("unsafe archive path should not be created, stat err = %v", err)
+	}
+}
+
+func TestReplaceActiveSessionDirRollsBackWhenStagedActivationFails(t *testing.T) {
+	root := t.TempDir()
+	sessionDir := filepath.Join(root, "session")
+	archiveDir := filepath.Join(root, "session_archive", "session_a")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatalf("create active session: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(archiveDir), 0o755); err != nil {
+		t.Fatalf("create archive parent: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionDir, "events.jsonl"), []byte("active\n"), 0o644); err != nil {
+		t.Fatalf("write active session marker: %v", err)
+	}
+
+	err := replaceActiveSessionDir(sessionDir, archiveDir, filepath.Join(root, "missing-staged-session"))
+	if err == nil {
+		t.Fatal("replaceActiveSessionDir() succeeded with missing staged session")
+	}
+	if data, readErr := os.ReadFile(filepath.Join(sessionDir, "events.jsonl")); readErr != nil || string(data) != "active\n" {
+		t.Fatalf("active session was not restored, data=%q err=%v", data, readErr)
+	}
+	if _, statErr := os.Stat(archiveDir); !os.IsNotExist(statErr) {
+		t.Fatalf("archive should have been rolled back, stat err=%v", statErr)
+	}
+}
+
 func TestSessionBoundaryLogsProminentNewSessionID(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
