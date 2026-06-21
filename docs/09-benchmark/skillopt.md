@@ -33,8 +33,9 @@ cd src/agent
 cd benchmark
 python -m runner.skillopt \
     --skill device-operator \
-    --train-suite skillopt/device_operator_skillopt_v1 \
-    --validation-suite skillopt/device_operator_skillopt_validation_v1 \
+    --backend device \
+    --train-suite skillopt/device-operator/device_operator_train \
+    --validation-suite skillopt/device-operator/device_operator_verification \
     --budget 10 \
     --output /tmp/device-operator-optimized.md
 
@@ -118,12 +119,21 @@ def with_candidate_skill(skill_path: Path, candidate: str):
 
 No need to add `skill_overrides` field on Go side.
 
+## Backend Selection
+
+SkillOpt has one shared core: optimization loop, scoring/gate, edit application, `best_skill.md`, and reports are shared. The only difference is the rollout backend:
+
+- `--backend device`: use the current Aiden daemon and a real device to run the suite.
+- `--backend mobilegym`: use the MobileGym Docker runner to execute the same Aiden suite tasks.
+
+The MobileGym backend does not directly trust raw `passed` / `success` values. It reads Aiden response, chat history, and task metadata from MobileGym artifacts, then runs Aiden-native `TaskResult` evaluation logic (hard assertions, expected answer/memory, trace observations, judge) before converting results to SkillOpt rollout scores. This keeps MobileGym and real-device backends semantically aligned when they enter the SkillOpt core.
+
 ## Dataset
 
-**Phase 1 directly reuses existing benchmark suites**, no LLM generation:
+SkillOpt suites are organized by skill, with a default train and held-out verification set:
 
-- `benchmark/suites/skillopt/device_operator_skillopt_v1.json` — For optimizing device-operator
-- `benchmark/suites/skillopt/device_operator_skillopt_validation_v1.json` — device-operator held-out validation
+- `benchmark/suites/skillopt/device-operator/device_operator_train.json` — For optimizing device-operator
+- `benchmark/suites/skillopt/device-operator/device_operator_verification.json` — device-operator held-out verification
 - `benchmark/suites/memory_v1.json` — For optimizing memory-related skills
 - Other suites as needed
 
@@ -140,10 +150,13 @@ Or explicitly specify in CLI:
 ```bash
 python -m runner.skillopt \
     --skill device-operator \
-    --train-suite skillopt/device_operator_skillopt_v1 \
-    --validation-suite skillopt/device_operator_skillopt_validation_v1 \
+    --backend device \
+    --train-suite skillopt/device-operator/device_operator_train \
+    --validation-suite skillopt/device-operator/device_operator_verification \
     ...
 ```
+
+In the benchmark UI, selecting `SkillOpt` loads `/benchmark/skillopt-targets`. Choosing a skill auto-populates the matching train and verification suites from `benchmark/suites/skillopt/<skill>/`; then choose the backend (`Real device` or `MobileGym`) and start the run.
 
 ## Task Isolation
 
@@ -238,7 +251,7 @@ benchmark/runner/skillopt/
 ## Output
 
 ```text
-runs/skillopt-<run_id>/
+runs/skillopt/<run_id>/
 ├── manifest.json                 # Run metadata (skill, suite, budget, model)
 ├── result.json                   # Optimization results (initial_score, best_score, accepted/rejected)
 ├── best_skill.md                 # Final best skill
@@ -260,6 +273,8 @@ runs/skillopt-<run_id>/
 ```bash
 python -m runner.skillopt \
     --skill <skill-name> \
+    [--backend device|mobilegym] \
+    [--mobilegym-parallel 1] \
     [--suite <suite-name> | --train-suite <suite-name> --validation-suite <suite-name>] \
     [--budget 10] \
     [--edit-budget 4] \
@@ -269,6 +284,18 @@ python -m runner.skillopt \
     [--agent-url http://localhost:8080] \
     [--output <path>] \
     [--dry-run]              # Don't actually write files, only output diff
+```
+
+MobileGym example:
+
+```bash
+python -m runner.skillopt \
+    --skill device-operator \
+    --backend mobilegym \
+    --mobilegym-parallel 4 \
+    --train-suite skillopt/device-operator/device_operator_train \
+    --validation-suite skillopt/device-operator/device_operator_verification \
+    --budget 10
 ```
 
 ## Effort Estimation
@@ -291,7 +318,7 @@ python -m runner.skillopt \
 - ❌ Slow update / meta skill (official epoch-level mechanism)
 - ❌ Auto-generate dataset (use existing suites)
 - ❌ Built-in agent feature / conversation trigger
-- ❌ User-visible optimization mode
+- ❌ End-user-facing optimization mode
 - ❌ Auto-submit PR (submit manually after review)
 - ❌ Go-side `skill_overrides` HTTP field
 - ❌ History/Memory isolation mechanism

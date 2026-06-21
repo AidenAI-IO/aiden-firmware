@@ -62,6 +62,19 @@ type suiteListItem struct {
 	Concurrent  bool   `json:"concurrent"`
 }
 
+type skillListItem struct {
+	Name string `json:"name"`
+	Path string `json:"path,omitempty"`
+}
+
+type skillOptTargetItem struct {
+	Skill                    string   `json:"skill"`
+	TrainSuites              []string `json:"train_suites"`
+	VerificationSuites       []string `json:"verification_suites"`
+	DefaultTrainSuite        string   `json:"default_train_suite,omitempty"`
+	DefaultVerificationSuite string   `json:"default_verification_suite,omitempty"`
+}
+
 func benchmarkSuiteKind(path string) string {
 	data, err := os.ReadFile(path)
 	if err != nil || len(data) > 256*1024 {
@@ -169,6 +182,186 @@ func scanMobileGymBuiltinSuites(benchmarkDir string) []suiteListItem {
 			Concurrent: true,
 		})
 	}
+	return items
+}
+
+func (s *Server) handleBenchmarkSkills(w http.ResponseWriter, r *http.Request) {
+	items := scanBenchmarkSkills(s.benchmarkSkillDirs())
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(items)
+}
+
+func (s *Server) handleBenchmarkSkillOptTargets(w http.ResponseWriter, r *http.Request) {
+	if s.benchmarkDir == "" {
+		http.Error(w, `{"error":"benchmark directory not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+	items := scanSkillOptTargets(s.benchmarkDir)
+	items = mergeSkillOptTargetsWithSkills(items, scanBenchmarkSkills(s.benchmarkSkillDirs()))
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(items)
+}
+
+func mergeSkillOptTargetsWithSkills(targets []skillOptTargetItem, skills []skillListItem) []skillOptTargetItem {
+	bySkill := map[string]skillOptTargetItem{}
+	for _, target := range targets {
+		bySkill[target.Skill] = target
+	}
+	for _, skill := range skills {
+		if _, exists := bySkill[skill.Name]; exists {
+			continue
+		}
+		bySkill[skill.Name] = skillOptTargetItem{
+			Skill:              skill.Name,
+			TrainSuites:        []string{},
+			VerificationSuites: []string{},
+		}
+	}
+	items := make([]skillOptTargetItem, 0, len(bySkill))
+	for _, item := range bySkill {
+		items = append(items, item)
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Skill < items[j].Skill })
+	return items
+}
+
+func scanSkillOptTargets(benchmarkDir string) []skillOptTargetItem {
+	skillOptDir := filepath.Join(benchmarkDir, "suites", "skillopt")
+	entries, err := os.ReadDir(skillOptDir)
+	if err != nil {
+		return []skillOptTargetItem{}
+	}
+
+	items := []skillOptTargetItem{}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		skill := entry.Name()
+		suiteDir := filepath.Join(skillOptDir, skill)
+		files, err := os.ReadDir(suiteDir)
+		if err != nil {
+			continue
+		}
+		item := skillOptTargetItem{Skill: skill}
+		for _, file := range files {
+			name := file.Name()
+			if file.IsDir() || strings.HasPrefix(name, "._") || !strings.HasSuffix(name, ".json") {
+				continue
+			}
+			base := strings.TrimSuffix(name, ".json")
+			label := filepath.ToSlash(filepath.Join("skillopt", skill, base))
+			lower := strings.ToLower(base)
+			switch {
+			case strings.Contains(lower, "train"):
+				item.TrainSuites = append(item.TrainSuites, label)
+			case strings.Contains(lower, "verification") || strings.Contains(lower, "validation"):
+				item.VerificationSuites = append(item.VerificationSuites, label)
+			}
+		}
+		sort.Strings(item.TrainSuites)
+		sort.Strings(item.VerificationSuites)
+		if len(item.TrainSuites) > 0 {
+			item.DefaultTrainSuite = item.TrainSuites[0]
+		}
+		if len(item.VerificationSuites) > 0 {
+			item.DefaultVerificationSuite = item.VerificationSuites[0]
+		}
+		if len(item.TrainSuites) > 0 || len(item.VerificationSuites) > 0 {
+			items = append(items, item)
+		}
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Skill < items[j].Skill })
+	return items
+}
+
+func (s *Server) benchmarkSkillDirs() []string {
+	seen := map[string]bool{}
+	dirs := []string{}
+	add := func(dir string) {
+		dir = strings.TrimSpace(dir)
+		if dir == "" || seen[dir] {
+			return
+		}
+		seen[dir] = true
+		dirs = append(dirs, dir)
+	}
+	if env := os.Getenv("AIDEN_SKILLS_DIR"); env != "" {
+		for _, dir := range strings.Split(env, string(os.PathListSeparator)) {
+			add(dir)
+		}
+	}
+	if s.runtime != nil {
+		for _, dir := range s.runtime.config.SkillsDirs {
+			add(dir)
+		}
+		if s.runtime.config.ConfigDir != "" {
+			add(filepath.Join(s.runtime.config.ConfigDir, "skills"))
+		}
+	}
+	if s.benchmarkDir != "" {
+		add(filepath.Join(s.benchmarkDir, "config", "skills"))
+		add(filepath.Join(s.benchmarkDir, "mobilegym", "config", "skills"))
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		add(filepath.Join(cwd, "src", "agent", "config", "skills"))
+		add(filepath.Join(cwd, "config", "skills"))
+	}
+	return dirs
+}
+
+func (s *Server) benchmarkPrimarySkillsDir() string {
+	for _, dir := range s.benchmarkSkillDirs() {
+		if strings.TrimSpace(dir) != "" {
+			return dir
+		}
+	}
+	return ""
+}
+
+func (s *Server) benchmarkSkillOptSkillsDirFor(skill string) string {
+	mobileGymTemplate := ""
+	if s.benchmarkDir != "" {
+		mobileGymTemplate = filepath.Clean(filepath.Join(s.benchmarkDir, "mobilegym", "config", "skills"))
+	}
+	for _, dir := range s.benchmarkSkillDirs() {
+		clean := filepath.Clean(dir)
+		if mobileGymTemplate != "" && clean == mobileGymTemplate {
+			continue
+		}
+		if info, err := os.Stat(filepath.Join(clean, skill, "SKILL.md")); err == nil && !info.IsDir() {
+			return clean
+		}
+	}
+	return ""
+}
+
+func scanBenchmarkSkills(dirs []string) []skillListItem {
+	byName := map[string]skillListItem{}
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			name := entry.Name()
+			skillPath := filepath.Join(dir, name, "SKILL.md")
+			if info, err := os.Stat(skillPath); err != nil || info.IsDir() {
+				continue
+			}
+			if _, exists := byName[name]; !exists {
+				byName[name] = skillListItem{Name: name, Path: skillPath}
+			}
+		}
+	}
+	items := make([]skillListItem, 0, len(byName))
+	for _, item := range byName {
+		items = append(items, item)
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
 	return items
 }
 
@@ -338,18 +531,42 @@ func (s *Server) handleBenchmarkReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := strings.TrimPrefix(r.URL.Path, "/benchmark/report/")
-	safe := sanitizeRunID(id)
-	if safe == "" {
+	path, contentType, ok := benchmarkReportFileFor(s.benchmarkDir, id)
+	if !ok {
 		http.NotFound(w, r)
 		return
 	}
-	data, err := os.ReadFile(filepath.Join(s.benchmarkDir, "runs", safe, "report.html"))
+	data, err := os.ReadFile(path)
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Type", contentType)
 	w.Write(data)
+}
+
+var skillOptArtifactContentTypes = map[string]string{
+	"best_skill.md": "text/markdown; charset=utf-8",
+	"diff.patch":    "text/plain; charset=utf-8",
+	"result.json":   "application/json; charset=utf-8",
+}
+
+func benchmarkReportFileFor(benchmarkDir, reportID string) (string, string, bool) {
+	parts := strings.Split(reportID, "/")
+	if len(parts) == 0 || sanitizeRunID(parts[0]) != parts[0] || parts[0] == "" {
+		return "", "", false
+	}
+	if len(parts) == 1 {
+		return filepath.Join(benchmarkDir, "runs", parts[0], "report.html"), "text/html; charset=utf-8", true
+	}
+	if len(parts) == 2 {
+		contentType, ok := skillOptArtifactContentTypes[parts[1]]
+		if !ok {
+			return "", "", false
+		}
+		return filepath.Join(benchmarkDir, "runs", parts[0], parts[1]), contentType, true
+	}
+	return "", "", false
 }
 
 func sanitizeRunID(id string) string {
@@ -416,7 +633,7 @@ func (s *Server) benchmarkRunnerAlive() bool {
 		}
 	}
 	out, err := exec.Command("sh", "-c",
-		"ps -w 2>/dev/null | grep -E 'runner.main|parallel_run.sh' | grep -v grep | head -1").Output()
+		"ps -w 2>/dev/null | grep -E 'runner.main|runner.skillopt|parallel_run.sh' | grep -v grep | head -1").Output()
 	if err != nil {
 		return true
 	}
@@ -431,6 +648,8 @@ func (s *Server) handleBenchmarkLog(w http.ResponseWriter, r *http.Request) {
 	if logPath == "" {
 		if mode == "mobilegym" {
 			logPath = "/tmp/mobilegym_run.log"
+		} else if mode == "skillopt" {
+			logPath = "/tmp/skillopt_run.log"
 		} else {
 			logPath = "/tmp/benchmark_run.log"
 		}

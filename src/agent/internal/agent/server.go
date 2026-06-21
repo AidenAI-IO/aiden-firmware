@@ -39,6 +39,7 @@ type Server struct {
 	benchmarkStatePath         string
 	benchmarkLauncher          func(spec benchmarkLaunchSpec, judge, apiKey, agentModel string) error
 	benchmarkMobileGymLauncher func(suite, suiteType string, parallel, limit int) error
+	benchmarkSkillOptLauncher  func(spec benchmarkSkillOptLaunchSpec, optimizerModel, judgeModel, apiKey, agentModel, skillsDir string) error
 	benchmarkSuiteValidator    func(path string) error
 	benchmarkSuiteLocks        sync.Map
 	userFilesReportPath        string
@@ -431,6 +432,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/benchmark", s.handleBenchmarkIndex)
 	mux.HandleFunc("/benchmark/record", s.handleBenchmarkRecord)
 	mux.HandleFunc("/benchmark/suites", s.handleBenchmarkSuites)
+	mux.HandleFunc("/benchmark/skills", s.handleBenchmarkSkills)
+	mux.HandleFunc("/benchmark/skillopt-targets", s.handleBenchmarkSkillOptTargets)
 	mux.HandleFunc("/benchmark/runs", s.handleBenchmarkRuns)
 	mux.HandleFunc("/benchmark/report/", s.handleBenchmarkReport)
 	mux.HandleFunc("/benchmark/status", s.handleBenchmarkStatus)
