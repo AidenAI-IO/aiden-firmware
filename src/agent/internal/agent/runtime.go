@@ -380,8 +380,8 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 		rt.memoryPlane = NewFilesystemMemoryPlane(filepath.Join(cfg.ConfigDir, "memory"), LoadMemoryExtractionConfig(cfg.ConfigDir), nil)
 		rt.markInterruptedEpisodesBestEffort()
 	}
-	rt.sessionManager = newMemoryManagerSessionManager(memories, func(now time.Time, activeMaxAge time.Duration) BoundaryEpisodeContext {
-		return recentEpisodeContext(rt.memoryPlane, now, activeMaxAge)
+	rt.sessionManager = newMemoryManagerSessionManager(memories, func() BoundaryEpisodeContext {
+		return recentEpisodeContext(rt.memoryPlane)
 	})
 	rt.initRunGate()
 	return rt
