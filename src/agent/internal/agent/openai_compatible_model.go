@@ -427,7 +427,8 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 
 		var event compatibleChatStreamResponse
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
-			return nil, fmt.Errorf("decode stream event: %w", err)
+			scanErr = fmt.Errorf("decode stream event: %w", err)
+			return nil, scanErr
 		}
 		if event.Usage != nil {
 			generationInfo = map[string]any{
@@ -449,7 +450,8 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 			content.WriteString(chunk)
 			if stream != nil {
 				if err := stream(ctx, []byte(chunk)); err != nil {
-					return nil, err
+					scanErr = err
+					return nil, scanErr
 				}
 			}
 		}
