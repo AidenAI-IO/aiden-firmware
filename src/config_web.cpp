@@ -3222,6 +3222,14 @@ bool is_llm_log_name(const std::string& name) {
     if (name.find('/') != std::string::npos || name.find('\\') != std::string::npos) {
         return false;
     }
+    // Reject embedded NUL/control bytes. A decoded '\0' (from %00) would pass
+    // the suffix check on the std::string yet truncate at the NUL once handed
+    // to C file APIs via c_str(), bypassing the .log suffix guard.
+    for (unsigned char ch : name) {
+        if (ch < 0x20 || ch == 0x7f) {
+            return false;
+        }
+    }
     if (name == "." || name == "..") {
         return false;
     }
@@ -3262,16 +3270,17 @@ ApiResponse handle_get_llm_logs(const Options& options) {
 
         for (size_t i = 0; i < names.size(); ++i) {
             const std::string full = dir_path + "/" + names[i];
+            // lstat (not stat) so a symlink is not followed: only genuine
+            // regular files in the log dir are listed, never a symlink that
+            // could point outside the intended log set.
+            struct stat st;
+            if (lstat(full.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
+                continue;
+            }
             cJSON* file = cJSON_CreateObject();
             cJSON_AddStringToObject(file, "name", names[i].c_str());
-            struct stat st;
-            if (stat(full.c_str(), &st) == 0) {
-                cJSON_AddNumberToObject(file, "size_bytes", static_cast<double>(st.st_size));
-                cJSON_AddNumberToObject(file, "mtime", static_cast<double>(st.st_mtime));
-            } else {
-                cJSON_AddNumberToObject(file, "size_bytes", 0);
-                cJSON_AddNumberToObject(file, "mtime", 0);
-            }
+            cJSON_AddNumberToObject(file, "size_bytes", static_cast<double>(st.st_size));
+            cJSON_AddNumberToObject(file, "mtime", static_cast<double>(st.st_mtime));
             cJSON_AddItemToArray(files, file);
         }
     }
@@ -3285,8 +3294,22 @@ ApiResponse handle_get_llm_log_file(const Options& options, const std::string& n
         return make_json_error(400, "invalid log file name");
     }
     const std::string full = llm_log_dir(options) + "/" + name;
-    FILE* f = fopen(full.c_str(), "rb");
+    // O_NOFOLLOW + fstat/S_ISREG: refuse to follow a symlink and confirm the
+    // opened descriptor is a regular file, closing the TOCTOU gap between the
+    // name check and the read so the viewer can never serve a file outside the
+    // log set via a symlink planted in the directory.
+    int fd = open(full.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) {
+        return make_json_error(404, "log file not found");
+    }
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        close(fd);
+        return make_json_error(404, "log file not found");
+    }
+    FILE* f = fdopen(fd, "rb");
     if (!f) {
+        close(fd);
         return make_json_error(404, "log file not found");
     }
     std::string contents;

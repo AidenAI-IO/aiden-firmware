@@ -1295,6 +1295,34 @@ TEST_CASE("config_web: GET /api/llm-logs/file rejects path traversal and bad nam
     // A well-formed name that does not exist.
     HttpResponse missing = http_request(handle->port, "GET", "/api/llm-logs/file/llm-http-19990101.log");
     CHECK(missing.status == 404);
+
+    // Encoded NUL byte: %00 decodes to '\0', which would truncate at the C
+    // file API and bypass the .log suffix check. Must be rejected.
+    HttpResponse nul = http_request(handle->port, "GET", "/api/llm-logs/file/llm-http-x%00.log");
+    CHECK(nul.status == 400);
+}
+
+TEST_CASE("config_web: GET /api/llm-logs does not list or serve symlinked files") {
+    StubEnv env;
+    auto handle = start_server(env);
+    const std::string log_dir = handle->tmp_dir + "/log";
+    REQUIRE(::mkdir(log_dir.c_str(), 0755) == 0);
+
+    // A real log file alongside a symlink that matches the naming pattern but
+    // points outside the log set. The symlink must neither be listed nor read.
+    write_file(log_dir + "/llm-http-20260103.log", "{}\n");
+    const std::string secret = handle->tmp_dir + "/secret.txt";
+    write_file(secret, "TOP SECRET");
+    REQUIRE(::symlink(secret.c_str(), (log_dir + "/llm-http-evil.log").c_str()) == 0);
+
+    HttpResponse list = http_request(handle->port, "GET", "/api/llm-logs");
+    REQUIRE(list.status == 200);
+    CHECK(list.body.find("llm-http-20260103.log") != std::string::npos);
+    CHECK(list.body.find("llm-http-evil.log") == std::string::npos);
+
+    HttpResponse served = http_request(handle->port, "GET", "/api/llm-logs/file/llm-http-evil.log");
+    CHECK(served.status == 404);
+    CHECK(served.body.find("TOP SECRET") == std::string::npos);
 }
 
 TEST_CASE("config_web: GET /llm-logs serves the viewer sub-page") {
