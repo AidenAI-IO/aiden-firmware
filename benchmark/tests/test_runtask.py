@@ -99,6 +99,52 @@ def test_run_one_task_fails_without_judge_when_expected_answer_is_wrong(tmp_path
     assert result.metrics["predicted_answer"] == "(b)"
 
 
+def test_evaluate_task_history_applies_hard_assertions_and_expected_answer(tmp_path: Path):
+    from runner.runtask import evaluate_task_history
+
+    suite = Suite(
+        name="s",
+        global_reset={},
+        tasks=[],
+        sha256="sha",
+        source_path=tmp_path / "s.json",
+    )
+    task = TaskSpec(
+        id="answer_case",
+        category="single_step",
+        description_for_judge="Answer C.",
+        prompt="Pick C",
+        rubric=[],
+        hard_assertions=HardAssertions(
+            min_tool_calls=0,
+            max_tool_calls=2,
+            response_required=True,
+        ),
+        expected_answer="(c)",
+        answer_format="option_letter",
+    )
+    history = [{"type": "assistant", "content": "<final_answer>(c)</final_answer>"}]
+
+    result = evaluate_task_history(
+        suite=suite,
+        task=task,
+        history=history,
+        attempt=1,
+        artifact_dir=tmp_path / "artifacts",
+        judge_cfg=None,
+        judge_cache_dir=None,
+        run_id="run-1",
+        timed_out=False,
+        metrics={},
+    )
+
+    assert result.status == "passed"
+    assert result.hard_assertions is not None
+    assert result.hard_assertions.expected_answer is True
+    assert (tmp_path / "artifacts" / "history.json").exists()
+    assert (tmp_path / "artifacts" / "trace.json").exists()
+
+
 def test_run_one_task_applies_suite_prompt_prefix(tmp_path: Path):
     suite = Suite(
         name="persona",

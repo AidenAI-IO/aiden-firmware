@@ -1,8 +1,8 @@
-# 语音能力：VAD / STT / TTS
+# Voice Capabilities: VAD / STT / TTS
 
-Go Agent 支持设备侧语音交互，主要由 `internal/agent/audio_client.go`、`audio_dialog.go`、`vad.go`、`stt.go` 和 `tts/` provider 组成。
+The Go Agent supports device-side voice interaction, primarily consisting of `internal/agent/audio_client.go`, `audio_dialog.go`, `vad.go`, `stt.go`, and the `tts/` provider.
 
-## 架构
+## Architecture
 
 ```text
 ┌─────────────┐
@@ -15,55 +15,55 @@ Go Agent 支持设备侧语音交互，主要由 `internal/agent/audio_client.go
                                    │
                                    ├─ AudioServiceClient
                                    ├─ VAD
-                                   ├─ STT（stt 模式）
+                                   ├─ STT (stt mode)
                                    ├─ LLM
                                    └─ TTS
 ```
 
-## 组件
+## Components
 
-| 组件 | 文件 | 说明 |
+| Component | Files | Description |
 | --- | --- | --- |
-| Audio client | `audio_client.go` | 连接 `audio_service`，启动录音/播放 session，读写 PCM chunk |
-| VAD | `vad.go` + `/oem/usr/bin/rknn_vad` 或 `/oem/usr/bin/cpu_vad` | Silero VAD 推理；输入固定为 16 kHz、512 samples/32 ms，并在 helper 中维护 `state` 状态 |
-| STT | `stt.go`, `tencent_asr_stt.go` | OpenAI Whisper / OpenRouter / 腾讯云 ASR（`tencent-asr`；旧值 `tencent` / `tencent_asr` 兼容） |
-| TTS | `tts/`、`tts_helpers.go` | 可插拔 TTS provider，输出 PCM 后通过 `audio_service` 播放；必要时自动重采样到设备播放采样率 |
-| Dialog manager | `audio_dialog.go` | 编排录音、VAD、STT/LLM/TTS 流程 |
+| Audio client | `audio_client.go` | Connects to `audio_service`, starts recording/playback sessions, reads/writes PCM chunks |
+| VAD | `vad.go` + `/oem/usr/bin/rknn_vad` or `/oem/usr/bin/cpu_vad` | Silero VAD inference; input is fixed at 16 kHz, 512 samples/32 ms, with `state` maintained in helper |
+| STT | `stt.go`, `tencent_asr_stt.go` | OpenAI Whisper / OpenRouter / Tencent Cloud ASR (`tencent-asr`; legacy values `tencent` / `tencent_asr` are compatible) |
+| TTS | `tts/`, `tts_helpers.go` | Pluggable TTS provider, outputs PCM for playback via `audio_service`; automatically resamples to device playback sample rate when necessary |
+| Dialog manager | `audio_dialog.go` | Orchestrates recording, VAD, STT/LLM/TTS flow |
 
-## 输入模式
+## Input Modes
 
 ### `input_mode = "text"`
 
-启动 HTTP server 和 Web UI。浏览器可以上传/录音：
+Starts HTTP server and Web UI. Browser can upload/record audio:
 
-- 若 `[stt]` 已配置，浏览器音频会先转写为文本；
-- 否则音频作为模型附件传递。
+- If `[stt]` is configured, browser audio is transcribed to text first;
+- Otherwise audio is passed as model attachment.
 
 ### `input_mode = "stt"`
 
-设备侧音频 loop：
+Device-side audio loop:
 
-1. 通过 `audio_service` 录 PCM；
-2. VAD 判断一句话的边界；
-3. 将 WAV 发给 STT；
-4. STT 文本送给 Agent runtime；
-5. TTS 合成回复并通过 `audio_service` 播放。
+1. Records PCM via `audio_service`;
+2. VAD determines sentence boundaries;
+3. Sends WAV to STT;
+4. STT text goes to Agent runtime;
+5. TTS synthesizes reply and plays via `audio_service`.
 
 ### `input_mode = "audio"`
 
-设备侧录音后直接作为 audio attachment 送给模型，再 TTS 回复。仅在所选 provider/model path 支持音频输入时使用。
+Device-side recording is sent directly as audio attachment to the model, then TTS replies. Only use when the selected provider/model path supports audio input.
 
-## 触发方式
+## Trigger Modes
 
 ### `trigger_mode = "manual"`
 
-按 Enter 开始录音，再按 Enter 停止，或由 VAD 判断静音结束。
+Press Enter to start recording, press Enter again to stop, or let VAD determine silence end.
 
 ### `trigger_mode = "wakeup"`
 
-等待 GPIO 33 或 GPIO 32 falling edge 触发后录音，两路触发进入同一套 wakeup 流程。`input_mode = "stt"` 且 `voice_followup_enabled = true` 时，wakeup 打开一个连续语音 session：首轮仍需要 GPIO，Agent 回复后会在 `voice_followup_timeout_ms` 窗口内继续听追问，`voice_first_turn_timeout_ms` 控制首轮等待窗口，`voice_max_turns` 控制单个 session 的轮数上限。监听或录音阶段重复触发 wakeup 会被合并或忽略，不会重启录音或丢弃已录音频；thinking 阶段再次触发 wakeup 是否取消当前 LLM 请求由 `voice_interrupt_on_wakeup` 控制；TTS 播放期间默认不开麦，播放结束后才继续录音；播放中再次触发 wakeup 会打断当前轮并立即开始录音。需要 Linux GPIO sysfs 可用，并完成硬件连线。
+Waits for GPIO 33 or GPIO 32 falling edge trigger to start recording; both trigger paths enter the same wakeup flow. When `input_mode = "stt"` and `voice_followup_enabled = true`, wakeup opens a continuous voice session: the first turn still requires GPIO, but after the Agent replies it will continue listening for follow-up questions within the `voice_followup_timeout_ms` window. `voice_first_turn_timeout_ms` controls the first-turn waiting window, and `voice_max_turns` controls the maximum number of turns per session. Repeated wakeup triggers during listening or recording are merged or ignored and will not restart recording or discard already-recorded audio; whether triggering wakeup again during thinking cancels the current LLM request is controlled by `voice_interrupt_on_wakeup`; the microphone is not open by default during TTS playback, and recording continues only after playback ends; triggering wakeup again during playback will interrupt the current turn and immediately start recording. Requires Linux GPIO sysfs to be available and hardware wiring to be completed.
 
-## 配置片段
+## Configuration Snippet
 
 ```toml
 input_mode = "stt"
@@ -107,17 +107,17 @@ emotion = "happy"
 speed = 1.0
 ```
 
-### 工具调用口播
+### Tool Call Speech
 
-`voice_tool_call_speech = true` 时，运行时会在工具调用事件到达时异步 TTS 播放该事件的 `content`。这个 `content` 只来自同一次 LLM tool-call 响应中的 assistant content，不来自工具参数。
+When `voice_tool_call_speech = true`, the runtime will asynchronously TTS and play the `content` of tool call events when they arrive. This `content` comes only from the assistant content in the same LLM tool-call response, not from tool parameters.
 
-如果 LLM 没有在 tool call 同一响应中生成 assistant content，该工具调用保持静默。运行时不会从工具参数里的 `speech`、`description` 或其他上下文字段派生短口播。
+If the LLM does not generate assistant content in the same response as the tool call, that tool call remains silent. The runtime does not derive short speech announcements from `speech`, `description`, or other context fields in tool parameters.
 
-## TTS provider 使用方式
+## TTS Provider Usage
 
-`[tts]` 的通用字段是 `provider`、`api_key`、`model`、`voice_id`、`emotion`、`speed` 和 `reference_id`。不同 provider 对字段的解释不同，完整说明见 [Agent 配置参考](configuration.md#stt-和-tts)。以下示例省略 `api_key`，只展示 adapter 行为相关配置。
+Common fields in `[tts]` are `provider`, `api_key`, `model`, `voice_id`, `emotion`, `speed`, and `reference_id`. Different providers interpret fields differently; see [Agent Configuration Reference](configuration.md#stt-and-tts) for full details. The following examples omit `api_key` and only show adapter behavior-related configuration.
 
-所有 TTS provider 都通过统一的 streaming session 调用：Agent 把 LLM 输出片段写入 adapter，adapter 再决定何时向后端发送。Fish Audio、阿里云和火山引擎是真流式 WebSocket 链路；Minimax WebSocket adapter 会在内部按句子边界缓冲后发送，上层不需要区分“真流式”或“句子级流式”。运行时可通过 `POST /api/settings/tts` 切换 provider，已开始的播放会继续使用旧 provider，后续请求使用新 provider。
+All TTS providers are called through a unified streaming session: the Agent writes LLM output fragments to the adapter, and the adapter decides when to send to the backend. Fish Audio, Alicloud, and Volcengine are true streaming WebSocket links; the Minimax WebSocket adapter buffers internally at sentence boundaries before sending, so the upper layer doesn't need to distinguish between “true streaming” or “sentence-level streaming”. The runtime can switch providers via `POST /api/settings/tts`; playback that has already started will continue using the old provider, and subsequent requests will use the new provider.
 
 ```toml
 # Minimax WebSocket
@@ -139,7 +139,7 @@ speed = 1.0
 ```
 
 ```toml
-# 阿里云 Qwen-TTS Realtime
+# Alicloud Qwen-TTS Realtime
 [tts]
 provider = "alicloud"
 model = "qwen3-tts-flash-realtime"
@@ -148,7 +148,7 @@ speed = 1.0
 ```
 
 ```toml
-# 火山引擎 WebSocket 双向流式 V3
+# Volcengine WebSocket Bidirectional Streaming V3
 [tts]
 provider = "volcengine"
 model = "seed-tts-2.0"
@@ -156,25 +156,24 @@ voice_id = "zh_female_vv_uranus_bigtts"
 speed = 1.0
 ```
 
-## 依赖
+## Dependencies
 
-- `audio_service` 必须运行；
-- TTS adapter 直接输出 PCM 并写入 `audio_service`；
-- `rknn_vad` / `cpu_vad` helper 必须可执行；`vad_backend="rknn"` 时 `vad_model_path` 指向已转换好的 encoder RKNN，`vad_backend="cpu"` 时 helper 默认切到 `/oem/usr/bin/cpu_vad`；
-- STT/TTS 需要外部 API key；
-- `wakeup` 模式需要 GPIO 33 或 GPIO 32 硬件触发条件。
+- `audio_service` must be running;
+- TTS adapter outputs PCM directly and writes to `audio_service`;
+- `rknn_vad` / `cpu_vad` helper must be executable; when `vad_backend="rknn"`, `vad_model_path` points to a converted encoder RKNN; when `vad_backend="cpu"`, helper defaults to `/oem/usr/bin/cpu_vad`;
+- STT/TTS require external API keys;
+- `wakeup` mode requires GPIO 33 or GPIO 32 hardware trigger condition.
 
-可在板端直接验证 VAD helper：
+VAD helper can be verified directly on the board:
 
 ```bash
 /oem/usr/bin/rknn_vad --model /oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn --weights /oem/usr/model/silero_vad_6_2_lstm_decoder_weights.bin --self-test
 /oem/usr/bin/cpu_vad --weights /oem/usr/model/silero_vad_6_2_lstm_decoder_weights.bin --self-test
 ```
 
-成功时会输出一行 `P <probability>`；如果仍有 RKNN 输入配置问题，会直接输出 `ERR ...`。
+On success, it will output a line `P <probability>`; if there are still RKNN input configuration issues, it will directly output `ERR ...`.
 
-## 已知限制
+## Known Limitations
 
-- Web UI 和设备语音 loop 当前不能在同一 daemon 实例同时运行；
-- Tencent ASR 尚未完整实现；
-- Direct audio 模式依赖模型/provider 支持音频输入。
+- Web UI and device voice loop currently cannot run simultaneously in the same daemon instance;
+- Direct audio mode depends on model/provider support for audio input.

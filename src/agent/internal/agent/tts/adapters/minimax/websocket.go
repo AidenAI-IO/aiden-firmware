@@ -82,6 +82,15 @@ func (s *wsSession) Flush() error {
 	return nil
 }
 
+// ResetBuffer discards any text buffered but not yet synthesized. This is used
+// to drop residual content streamed during a turn that ultimately returned a
+// tool call rather than a final answer, so it cannot leak into the next turn.
+func (s *wsSession) ResetBuffer() {
+	if s.buf != nil {
+		s.buf.Reset()
+	}
+}
+
 func (s *wsSession) Close() error {
 	if err := s.Flush(); err != nil {
 		return err

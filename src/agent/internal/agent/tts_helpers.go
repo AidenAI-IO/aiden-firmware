@@ -296,6 +296,25 @@ func (w *streamSessionWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// ttsBufferResetter is implemented by TTS sessions that buffer text internally
+// (e.g. sentence-boundary buffering in non-incremental providers) and can drop
+// that buffer on demand.
+type ttsBufferResetter interface {
+	ResetBuffer()
+}
+
+// ResetBuffer discards any text buffered by the underlying TTS session but not
+// yet synthesized. Used to prevent residual content from a tool-call turn from
+// leaking into a later final-answer turn.
+func (w *streamSessionWriter) ResetBuffer() {
+	w.mu.Lock()
+	session := w.session
+	w.mu.Unlock()
+	if resetter, ok := session.(ttsBufferResetter); ok {
+		resetter.ResetBuffer()
+	}
+}
+
 func (w *streamSessionWriter) interrupt() {
 	w.mu.Lock()
 	if w.interrupted {

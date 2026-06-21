@@ -163,6 +163,24 @@ func TestClassifyTurnBoundary_SmallSessionContinuesUnrelatedMidGap(t *testing.T)
 	}
 }
 
+func TestClassifyTurnBoundary_SmallSessionContinuesNeutralMidGapWithoutEpisode(t *testing.T) {
+	// Regression guard for removing HasActive: the small-session bias is an
+	// independent continue path. A mid-range neutral follow-up (no marker, no
+	// action verb) in a small session, with no running/finished episode signal,
+	// must still continue purely on the small-session floor.
+	cfg := DefaultBoundaryConfig()
+	now := time.Now()
+	prev := eventsAt(now.Add(-8*time.Minute), cfg.SmallSessionEventThreshold, "user_input", "查一下今天天气")
+
+	boundary, reason := ClassifyTurnBoundary(prev, "你有什么爱好？", now, cfg, BoundaryEpisodeContext{})
+	if boundary != BoundaryContinue {
+		t.Fatalf("small session + neutral mid-range input should continue, got %q (reason=%s)", boundary, reason)
+	}
+	if reason != BoundaryReasonSmallSession {
+		t.Fatalf("expected reason %q, got %q", BoundaryReasonSmallSession, reason)
+	}
+}
+
 func TestClassifyTurnBoundary_RunningEpisodeBiasesContinue(t *testing.T) {
 	// Mid-range gap + neutral input + running episode → continue.
 	// Same input + no episode → new (default bias).
@@ -184,17 +202,26 @@ func TestClassifyTurnBoundary_RunningEpisodeBiasesContinue(t *testing.T) {
 	}
 }
 
-func TestClassifyTurnBoundary_ActiveEpisodeBiasesNeutralFollowUpContinue(t *testing.T) {
+func TestClassifyTurnBoundary_FinishedEpisodeDoesNotForceContinue(t *testing.T) {
+	// A finished episode is no longer a boundary signal: "recently finished" is
+	// just the time gap re-encoded, so in the mid-range a neutral follow-up in a
+	// large session must fall through to the default "new" decision. Only an
+	// in-flight (running) episode biases toward continue.
 	cfg := DefaultBoundaryConfig()
 	now := time.Now()
-	prev := eventsAt(now.Add(-6*time.Minute), cfg.SmallSessionEventThreshold+1, "user_input", "查一下今天天气")
+	// Large session (> SmallSessionEventThreshold) so the small-session bias
+	// can't mask the effect, and a mid-range gap (between short and long).
+	prev := eventsAt(now.Add(-8*time.Minute), cfg.SmallSessionEventThreshold+2, "user_input", "查一下今天天气")
 
-	boundary, reason := ClassifyTurnBoundary(prev, "确认", now, cfg, BoundaryEpisodeContext{HasActive: true})
-	if boundary != BoundaryContinue {
-		t.Fatalf("active episode + neutral confirmation should yield 'continue', got %q (reason=%s)", boundary, reason)
+	boundary, reason := ClassifyTurnBoundary(prev, "你有什么爱好？", now, cfg, BoundaryEpisodeContext{})
+	if boundary != BoundaryNew {
+		t.Fatalf("neutral mid-range follow-up with no running episode should yield 'new', got %q (reason=%s)", boundary, reason)
 	}
-	if reason != BoundaryReasonActiveEpisode {
-		t.Fatalf("expected reason %q, got %q", BoundaryReasonActiveEpisode, reason)
+
+	// Sanity: the same input flips to continue once a task is actually running.
+	boundary, _ = ClassifyTurnBoundary(prev, "你有什么爱好？", now, cfg, BoundaryEpisodeContext{HasRunning: true})
+	if boundary != BoundaryContinue {
+		t.Fatalf("running episode should still bias neutral follow-up to 'continue', got %q", boundary)
 	}
 }
 

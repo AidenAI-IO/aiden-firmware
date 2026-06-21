@@ -61,12 +61,12 @@ type SessionCommitResult struct {
 
 type memoryManagerSessionManager struct {
 	memories       *MemoryManager
-	episodeContext func(now time.Time, activeMaxAge time.Duration) BoundaryEpisodeContext
+	episodeContext func() BoundaryEpisodeContext
 }
 
 func newMemoryManagerSessionManager(
 	memories *MemoryManager,
-	episodeContext func(now time.Time, activeMaxAge time.Duration) BoundaryEpisodeContext,
+	episodeContext func() BoundaryEpisodeContext,
 ) SessionManager {
 	return memoryManagerSessionManager{memories: memories, episodeContext: episodeContext}
 }
@@ -123,18 +123,25 @@ func (m memoryManagerSessionManager) handleSessionBoundary(input string) session
 	now := time.Now().UTC()
 	episodeCtx := BoundaryEpisodeContext{}
 	if m.episodeContext != nil {
-		episodeCtx = m.episodeContext(now, time.Duration(boundaryCfg.LongGapSeconds)*time.Second)
+		episodeCtx = m.episodeContext()
 	}
 	boundary, reason := ClassifyTurnBoundary(events, input, now, boundaryCfg, episodeCtx)
 	telemetry.Decision = boundary
 	telemetry.Reason = reason
 
 	if boundary != BoundaryNew || len(events) == 0 {
+		// No rotation happens here (either a "continue" decision, or "new" with
+		// no prior events to archive). Log at Debug so the decision and its
+		// reason are observable on every turn without spamming Info — otherwise
+		// a wrongly-kept session is silent and only diagnosable by code archaeology.
+		if m.memories.logger != nil {
+			m.memories.logger.Debug("[memory] session boundary: decision=%s reason=%s (no rotation)", boundary, reason)
+		}
 		return telemetry
 	}
 
 	if m.memories.logger != nil {
-		m.memories.logger.Info("[memory] session boundary detected: reason=%s", reason)
+		m.memories.logger.Info("[memory] new session started: reason=%s", reason)
 	}
 	archiveDir, err := m.memories.RotateSessionEvents()
 	if err != nil {
@@ -215,7 +222,7 @@ func loadLastNSessionEvents(manager *MemoryManager, n int) ([]SessionEvent, erro
 	return append([]SessionEvent(nil), events[len(events)-n:]...), nil
 }
 
-func recentEpisodeContext(plane MemoryPlane, now time.Time, activeMaxAge time.Duration) BoundaryEpisodeContext {
+func recentEpisodeContext(plane MemoryPlane) BoundaryEpisodeContext {
 	var ctx BoundaryEpisodeContext
 	fs, ok := plane.(*FilesystemMemoryPlane)
 	if !ok || fs == nil || fs.episodes == nil {
@@ -226,29 +233,10 @@ func recentEpisodeContext(plane MemoryPlane, now time.Time, activeMaxAge time.Du
 		return ctx
 	}
 	for _, entry := range index.Episodes {
-		switch entry.Status {
-		case "running":
+		if entry.Status == "running" {
 			ctx.HasRunning = true
-		case "active":
-			if recentEpisodeEndedAt(entry.EndedAt, now, activeMaxAge) {
-				ctx.HasActive = true
-			}
-		}
-		if ctx.HasRunning && ctx.HasActive {
 			return ctx
 		}
 	}
 	return ctx
-}
-
-func recentEpisodeEndedAt(endedAt string, now time.Time, maxAge time.Duration) bool {
-	if maxAge <= 0 {
-		return false
-	}
-	ended, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(endedAt))
-	if err != nil {
-		return false
-	}
-	age := now.Sub(ended)
-	return age >= 0 && age <= maxAge
 }

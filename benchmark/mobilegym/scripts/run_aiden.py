@@ -328,6 +328,11 @@ def build_parser() -> argparse.ArgumentParser:
              "Tasks are converted to MobileGym format on the fly. "
              "Mutually exclusive with --task-id/--suite/--split.",
     )
+    target.add_argument(
+        "--aiden-task-ids",
+        help="Comma-separated Aiden task ids to keep when using --aiden-suite. "
+             "Accepts full <suite>.<task> ids or short task ids.",
+    )
     target.add_argument("--split", help="Restrict task selection to a MobileGym split, for example test.")
     target.add_argument("--limit", type=_non_negative_int, help="Limit selected tasks for smoke runs.")
 
@@ -476,6 +481,9 @@ async def _run_serial(args: argparse.Namespace, config: Any, factory: Any, Seria
     from mobilegym.bridge.server import BridgeServer
 
     tasks = factory.load_tasks(config) if not args.aiden_suite else _load_aiden_suite_as_mobilegym_tasks(args.aiden_suite)
+    aiden_task_ids = getattr(args, "aiden_task_ids", "")
+    if args.aiden_suite and aiden_task_ids:
+        tasks = _filter_aiden_tasks(tasks, aiden_task_ids)
     if args.limit is not None:
         tasks = tasks[: args.limit]
     if not tasks:
@@ -579,8 +587,30 @@ def _validate_selection(args: argparse.Namespace) -> None:
         raise LauncherError(
             "--aiden-suite is mutually exclusive with --task-id/--suite/--split"
         )
+    if getattr(args, "aiden_task_ids", "") and not args.aiden_suite:
+        raise LauncherError("--aiden-task-ids requires --aiden-suite")
     if args.shard_index >= args.shard_count:
         raise LauncherError("--shard-index must be less than --shard-count")
+
+
+def _filter_aiden_tasks(tasks: list[Any], raw_ids: str) -> list[Any]:
+    requested = [part.strip() for part in raw_ids.split(",") if part.strip()]
+    if not requested:
+        raise LauncherError("--aiden-task-ids must include at least one non-empty id")
+    requested_set = set(requested)
+    found: set[str] = set()
+    selected = []
+    for task in tasks:
+        full_id = _task_id(task)
+        short_id = full_id.rsplit(".", 1)[-1]
+        matches = ({full_id, short_id} & requested_set)
+        if matches:
+            found.update(matches)
+            selected.append(task)
+    missing = [task_id for task_id in requested if task_id not in found]
+    if missing:
+        raise LauncherError(f"Aiden task ids not found: {', '.join(missing)}")
+    return selected
 
 
 def _shard_tasks(tasks: list[Any], *, shard_index: int, shard_count: int) -> list[Any]:

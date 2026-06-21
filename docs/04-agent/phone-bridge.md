@@ -1,196 +1,196 @@
-# Phone Bridge：手机中转 App 方案
+# Phone Bridge: Phone Relay App Solution
 
-## 定位
+## Purpose
 
-在被控手机上安装一个中转 App，通过 USB ECM 网络通道连接硬件板子，接收板子的快捷指令，执行系统允许的本地操作，弥补纯硬件“找图标、滑屏、点击、等动画”慢的问题。
+Install a relay app on the controlled phone that connects to the hardware board via USB ECM network channel, receives quick commands from the board, and executes system-allowed local operations to compensate for the slowness of pure hardware "find icon, swipe, tap, wait for animation" approach.
 
-硬件负责看屏幕、决策和 HID 兜底；中转 App 负责快速执行公开系统能力。
+Hardware handles screen viewing, decision-making, and HID fallback; relay app handles fast execution of public system capabilities.
 
-## 第一期能力
+## Phase One Capabilities
 
-| 能力 | iOS | Android | 解决的问题 |
+| Capability | iOS | Android | Problem Solved |
 | --- | --- | --- | --- |
-| 打开指定 App | URL Scheme / Universal Link / `openURL` | 包名 / Intent | 省去找图标和点击流程 |
-| 剪贴板读写 | UIPasteboard | Clipboard API | 作为跨 App 内容中转 |
-| 日历 / 提醒 | EventKit | Calendar / Alarm / Reminder 能力 | 快速写入系统事项 |
-| 通讯录 | Contacts | Contacts Provider | 查询 / 新增联系人 |
-| 通知 | Local Notification | Notification | 提醒用户或拉回中转 App |
-| 与板子通信 | WebSocket client | WebSocket client / foreground service | 接收板子快捷指令 |
+| Open specified App | URL Scheme / Universal Link / `openURL` | Package name / Intent | Skip icon finding and tapping process |
+| Clipboard read/write | UIPasteboard | Clipboard API | Serve as cross-app content relay |
+| Calendar / Reminders | EventKit | Calendar / Alarm / Reminder capability | Quickly write system items |
+| Contacts | Contacts | Contacts Provider | Query / add contacts |
+| Notification | Local Notification | Notification | Remind user or bring relay app to foreground |
+| Communicate with board | WebSocket client | WebSocket client / foreground service | Receive board quick commands |
 
-## 通信方式
+## Communication Method
 
-板子在 USB 网络中的固定地址是 `192.168.42.1`，所以推荐由手机中转 App 主动连接板子，而不是让板子反连手机 App。
+The board's fixed address in the USB network is `192.168.42.1`, so it's recommended that the phone relay app actively connects to the board, rather than having the board reverse-connect to the phone app.
 
-推荐路径：
+Recommended path:
 
 ```text
-手机中转 App -> ws://192.168.42.1:8080/api/phone-bridge
+Phone relay app -> ws://192.168.42.1:8080/api/phone-bridge
 ```
 
-也可以单独开端口：
+Alternative with separate port:
 
 ```text
-手机中转 App -> ws://192.168.42.1:18080/phone-bridge
+Phone relay app -> ws://192.168.42.1:18080/phone-bridge
 ```
 
-也就是：板子做 WebSocket server，App 做 WebSocket client。
+In other words: the board acts as WebSocket server, the app as WebSocket client.
 
-这样不用猜手机 IP，不需要手机 App 开本地 HTTP 服务，重连和配网更简单。现有 `192.168.42.1:80` 配网页和 `192.168.42.1:8080` agent 测试页可以保留，只需新增一个 bridge path 或端口。
+This way there's no need to guess the phone IP, no need for the phone app to open a local HTTP service, and reconnection and network configuration are simpler. The existing `192.168.42.1:80` config page and `192.168.42.1:8080` agent test page can be retained; just add a new bridge path or port.
 
-## 打开 App 流程
+## App Opening Flow
 
 ```text
-板子 HDMI 看到屏幕 / 用户下达任务
+Board HDMI sees screen / user issues task
         │
         ▼
-AI 识别目标 App，比如“微信”
+AI identifies target app, e.g., "WeChat"
         │
         ▼
-查映射表
+Look up mapping table
 iOS: weixin://
 Android: com.tencent.mm
         │
         ▼
-如果中转 App 已连接：
-    发 open_app 指令
-否则：
-    先用 HID 打开 Aiden 中转 App
-    等 App 自动连上板子
-    再发 open_app 指令
+If relay app already connected:
+    Send open_app command
+Otherwise:
+    First use HID to open Aiden relay app
+    Wait for app to auto-connect to board
+    Then send open_app command
         │
         ▼
-中转 App 执行：
+Relay app executes:
 iOS: openURL("weixin://")
-Android: Intent 启动包名
+Android: Intent launch package name
         │
-        ├─ HDMI 验证成功 -> 继续下一步
-        └─ 失败 / 超时 -> 回退硬件模拟：找图标坐标 + HID 点击
+        ├─ HDMI verification success -> continue next step
+        └─ Failure / timeout -> fallback to hardware simulation: find icon coordinates + HID tap
 ```
 
-## 关键边界
+## Key Boundaries
 
-iOS 上，中转 App 不是后台常驻系统代理。它更像一个前台快路径执行器：
+On iOS, the relay app is not a background-resident system agent. It's more like a foreground fast-path executor:
 
 ```text
-Aiden App 前台
--> 收到板子命令
--> openURL 打开微信
--> Aiden App 进入后台
--> 后续由硬件继续 HDMI 观察 + HID 操作
+Aiden App foreground
+-> Receives board command
+-> openURL opens WeChat
+-> Aiden App enters background
+-> Subsequent operations continue via hardware HDMI observation + HID operation
 ```
 
-所以 iOS 不能承诺 App 在后台长期接收指令。Android 可以通过 foreground service 做得更稳定，后台长连能力更强。
+So iOS cannot promise long-term background command reception. Android can be more stable through foreground service, with stronger background long-connection capability.
 
-## iOS 关键点
+## iOS Key Points
 
-- 不要用 `canOpenURL` 做大规模预检。
-- 直接调用 `openURL(url)` 尝试打开。
-- `LSApplicationQueriesSchemes` 主要限制 `canOpenURL` 查询，不限制动态尝试 `openURL`。
-- scheme 映射表放板子侧或云端维护，不打包进 App，方便更新。
-- `openURL` 返回成功也不等于目标页面完全可用，最终以 HDMI 视觉验证为准。
+- Don't use `canOpenURL` for large-scale pre-checking.
+- Directly call `openURL(url)` to attempt opening.
+- `LSApplicationQueriesSchemes` mainly limits `canOpenURL` queries, not dynamic `openURL` attempts.
+- Maintain scheme mapping table on board side or cloud for easy updates.
+- `openURL` returning success doesn't mean target page is fully usable; ultimately verify via HDMI visually.
 
-## Android 关键点
+## Android Key Points
 
-- 优先用包名启动：`getLaunchIntentForPackage("com.tencent.mm")`。
-- Android 11+ 有 package visibility 限制，需要配置 `<queries>`，或为特定场景评估 `QUERY_ALL_PACKAGES`。
-- 后台启动 Activity 有系统限制，但 foreground service、通知和用户授权后的可用性比 iOS 强。
+- Prioritize launching by package name: `getLaunchIntentForPackage("com.tencent.mm")`.
+- Android 11+ has package visibility restrictions, need to configure `<queries>`, or evaluate `QUERY_ALL_PACKAGES` for specific scenarios.
+- Background Activity launching has system restrictions, but availability after foreground service, notifications, and user authorization is stronger than iOS.
 
-## 技术选型
+## Technology Selection
 
-React Native 可以作为 UI 和业务框架，但不能假设完全不需要 Native：
+React Native can serve as UI and business framework, but cannot assume completely native-free:
 
-- 简单 `openURL`、WebSocket、UI：RN 可直接覆盖。
-- Android 包名启动、前台服务、package visibility：需要 Kotlin / Java native module。
-- iOS 本地网络权限、日历、联系人、HealthKit、App Intents：需要 Swift / 原生配置。
-- 不建议 Expo Go；建议 bare React Native，或 Expo Prebuild + config plugin。长期看 bare RN 更稳。
+- Simple `openURL`, WebSocket, UI: RN can cover directly.
+- Android package name launch, foreground service, package visibility: need Kotlin / Java native module.
+- iOS local network permissions, calendar, contacts, HealthKit, App Intents: need Swift / native configuration.
+- Not recommended Expo Go; recommend bare React Native, or Expo Prebuild + config plugin. Long-term bare RN is more stable.
 
-### 是否找现成模板改
+### Whether to Modify Existing Template
 
-终态会演进到「聊天 + 配置 + Skill + 记忆管理 + 桥接执行」，是一个完整 App，不是一个简单 dispatcher。但**不建议直接 fork GitHub 上的 AI 对话模板**：
+The final form will evolve to "chat + config + Skill + memory management + bridge execution", a complete app, not a simple dispatcher. But **not recommended to directly fork AI conversation templates from GitHub**:
 
-- 大多绑死 OpenAI / 直连 LLM，与「接板子 WebSocket」的定位冲突
-- 常自带登录、订阅、云同步等无关功能，删除成本高于自建
-- 多数基于 Expo Go，与本项目需要 native module 的方向冲突
-- 教程级项目居多，不是生产级代码
+- Most are tied to OpenAI / direct LLM connection, conflicting with "connect to board WebSocket" positioning
+- Often bundled with login, subscription, cloud sync and other unrelated features; removal cost higher than building from scratch
+- Most based on Expo Go, conflicting with this project's need for native modules
+- Tutorial-level projects mostly, not production-grade code
 
-可以**参考**结构和片段（如 `react-native-gifted-chat` 官方 example、chatbot-ui 类项目的消息流处理思路），但不直接作为代码基线。
+Can **reference** structure and fragments (like `react-native-gifted-chat` official example, chatbot-ui project message flow handling ideas), but not directly as code baseline.
 
-### 推荐组合：bare RN + 成熟组件库
+### Recommended Combination: bare RN + mature component libraries
 
-不找完整模板，站在轮子上拼：
+Don't look for complete templates; stand on wheels and assemble:
 
-| 需求 | 推荐 |
+| Need | Recommendation |
 | --- | --- |
-| 项目骨架 | `npx @react-native-community/cli init AidenBridge`（bare RN） |
-| 导航 | `@react-navigation/native` + native-stack |
-| 聊天 UI | `react-native-gifted-chat`，或自己用 `FlashList` 搭 |
-| 状态管理 | `zustand`（轻量，不像 Redux 那么重） |
-| 配置 / 记忆存储 | `react-native-mmkv`（比 AsyncStorage 快几十倍） |
-| Markdown 渲染 | `react-native-markdown-display` |
-| WebSocket | RN 内置 `WebSocket` API |
+| Project skeleton | `npx @react-native-community/cli init AidenBridge` (bare RN) |
+| Navigation | `@react-navigation/native` + native-stack |
+| Chat UI | `react-native-gifted-chat`, or build with `FlashList` |
+| State management | `zustand` (lightweight, not as heavy as Redux) |
+| Config / memory storage | `react-native-mmkv` (tens of times faster than AsyncStorage) |
+| Markdown rendering | `react-native-markdown-display` |
+| WebSocket | RN built-in `WebSocket` API |
 
-理由：
+Rationale:
 
-1. 第一期只要 WebSocket + `openURL`，几天就能上板子联调，不会被 UI 阻塞
-2. 聊天界面后期增量加，不影响核心桥接链路
-3. native module（包名启动、Calendar、Contacts、前台服务）必须自己写，模板帮不上忙
-4. 维护自己懂的代码库 > 维护一个改过的别人代码库
+1. Phase one only needs WebSocket + `openURL`, can get on board for joint debugging in a few days, won't be blocked by UI
+2. Chat interface can be added incrementally later, doesn't affect core bridge link
+3. Native modules (package name launch, Calendar, Contacts, foreground service) must be written yourself, templates can't help
+4. Maintaining your own understood codebase > maintaining a modified someone else's codebase
 
-## 为什么 USB 网络之外还要 WebSocket
+## Why WebSocket on Top of USB Network
 
-USB ECM（`192.168.42.1`）和 WebSocket 是两层：
+USB ECM (`192.168.42.1`) and WebSocket are two layers:
 
-| 层 | 作用 |
+| Layer | Function |
 | --- | --- |
-| USB ECM | 网络链路——让手机和板子之间能通 IP 包 |
-| WebSocket | 应用协议——在这条链路上传指令和回执 |
+| USB ECM | Network link — enables IP packet communication between phone and board |
+| WebSocket | Application protocol — transmits commands and acknowledgments on this link |
 
-USB ECM 是"路修好了"，WebSocket 是"路上跑的车"。
+USB ECM is "road is built", WebSocket is "vehicles running on the road".
 
-现有 `192.168.42.1:80` 配网页是 HTTP 请求-响应模式，适合人操作网页。但板子需要**主动推指令给手机 App**（比如"现在打开微信"），HTTP 做不到——HTTP 是 client 发起的，server 不能主动找 client 说话。
+The existing `192.168.42.1:80` config page is HTTP request-response mode, suitable for human web operations. But the board needs to **actively push commands to phone app** (like "open WeChat now"), which HTTP cannot do — HTTP is client-initiated, server cannot actively talk to client.
 
-WebSocket 的核心价值：
+WebSocket's core value:
 
-- **双向实时**：板子随时能推命令给 App，App 随时能回执
-- **长连接**：不用每次重建连接，延迟低
-- **状态感知**：连着即在线，断开立即可知，触发 HID 回退
+- **Bidirectional real-time**: Board can push commands to app anytime, app can reply anytime
+- **Long connection**: No need to rebuild connection each time, low latency
+- **State awareness**: Connected means online, disconnection immediately known, triggers HID fallback
 
-## 第一期实现建议
+## Phase One Implementation Suggestions
 
-1. 板子 agent 新增 `phone_bridge` WebSocket 通道。
-2. 中转 App 启动后自动连接 `ws://192.168.42.1:8080/api/phone-bridge`。
-3. App 定时发 heartbeat。
-4. App 在连接成功、从后台回到前台时主动上报 `phone_environment`，包括系统版本、语言地区、时区、屏幕/电池、系统 App、第三方候选 App 可用性等。
-5. 板子维护 `bridge_connected`、`platform`、`last_heartbeat_at`、`environment` 状态。完整环境通过 status API 暴露；Agent runtime context 只注入系统类型/版本、语言地区/时区、屏幕尺寸、已确认可打开第三方候选 App 等摘要。
+1. Board agent adds `phone_bridge` WebSocket channel.
+2. Relay app auto-connects to `ws://192.168.42.1:8080/api/phone-bridge` after startup.
+3. App sends periodic heartbeat.
+4. App actively reports `phone_environment` upon connection success and returning from background to foreground, including system version, language/region, timezone, screen/battery, system apps, third-party candidate app availability, etc.
+5. Board maintains `bridge_connected`, `platform`, `last_heartbeat_at`, `environment` status. Complete environment exposed via status API; Agent runtime context only injects system type/version, language/region/timezone, screen dimensions, confirmed openable third-party candidate apps, etc.
 
-### 命令协议
+### Command Protocol
 
-板子通过 WebSocket 向 App 发送 `BridgeCommand`，App 执行后回复 `BridgeCommandResponse`。
+Board sends `BridgeCommand` to app via WebSocket, app executes and replies with `BridgeCommandResponse`.
 
-#### 通用字段
+#### Common Fields
 
-**BridgeCommand (板子 → App)**:
+**BridgeCommand (board → app)**:
 ```json
 {
   "id": "cmd_001",
   "type": "open_app | clipboard_read | clipboard_write | calendar_create | calendar_query | calendar_delete",
   "timeout_ms": 5000,
-  "payload": { }  // 可选，命令相关的 JSON (剪贴板文本、日历事件等)
+  "payload": { }  // Optional, command-related JSON (clipboard text, calendar event, etc.)
 }
 ```
 
-**BridgeCommandResponse (App → 板子)**:
+**BridgeCommandResponse (app → board)**:
 ```json
 {
   "id": "cmd_001",
   "ok": true,
   "method": "open_url | clipboard | calendar",
-  "error": "...",  // ok=false 时填充
-  "data": { }      // 可选，返回的 JSON (读剪贴板内容、日历事件列表等)
+  "error": "...",  // Filled when ok=false
+  "data": { }      // Optional, returned JSON (clipboard content read, calendar event list, etc.)
 }
 ```
 
-**App 主动事件 (App → 板子)**:
+**App Active Event (app → board)**:
 ```json
 {
   "id": "phone_environment",
@@ -214,12 +214,12 @@ WebSocket 的核心价值：
 }
 ```
 
-`phone_environment` 不对应板子命令 ID，板子只更新 bridge status，不会把它当作工具调用回执。
-`system_apps` 是系统内置 App/能力清单，`third_party_apps` 才是安装/可打开性探测结果。`available_apps` 仅保留为旧板子兼容字段。
+`phone_environment` does not correspond to board command ID; board only updates bridge status, won't treat it as tool call acknowledgment.
+`system_apps` is system built-in app/capability list; `third_party_apps` is installation/openability probe result. `available_apps` retained only as legacy field for old boards.
 
-#### 命令类型
+#### Command Types
 
-##### 1. `open_app` — 打开 App
+##### 1. `open_app` — Open App
 
 ```json
 {
@@ -231,7 +231,7 @@ WebSocket 的核心价值：
 }
 ```
 
-回复:
+Reply:
 ```json
 {
   "id": "open_001",
@@ -240,11 +240,11 @@ WebSocket 的核心价值：
 }
 ```
 
-App 侧 `method` 表示底层机制（例如 `ios_url_scheme`、`ios_shortcut`、`android_intent`、`android_deeplink`、`launch_package`、`dial`、`open_url`）。Agent 的 `open_app` 工具会把它归一化为任务语义：打开 App 返回 `method:"open_app"`，打开网页返回 `method:"open_url"`，底层机制放在 `mechanism`。
+App-side `method` represents underlying mechanism (e.g., `ios_url_scheme`, `ios_shortcut`, `android_intent`, `android_deeplink`, `launch_package`, `dial`, `open_url`). Agent's `open_app` tool normalizes it to task semantics: opening app returns `method:"open_app"`, opening webpage returns `method:"open_url"`, underlying mechanism goes in `mechanism`.
 
-浏览器语义和固定网页语义分开：打开浏览器入口时使用浏览器 URL scheme / Android browser intent；打开固定网页时传具体 `http`/`https` URL（iOS 放入 `ios_urls`，Android 使用 `android.intent.action.VIEW:<url>`）。
+Browser semantics and fixed webpage semantics are separated: when opening browser entry use browser URL scheme / Android browser intent; when opening fixed webpage pass specific `http`/`https` URL (iOS puts in `ios_urls`, Android uses `android.intent.action.VIEW:<url>`).
 
-##### 2. `clipboard_read` — 读剪贴板
+##### 2. `clipboard_read` — Read Clipboard
 
 ```json
 {
@@ -254,31 +254,31 @@ App 侧 `method` 表示底层机制（例如 `ios_url_scheme`、`ios_shortcut`�
 }
 ```
 
-回复:
+Reply:
 ```json
 {
   "id": "clip_read_001",
   "ok": true,
   "data": {
-    "text": "剪贴板内容"
+    "text": "clipboard content"
   }
 }
 ```
 
-##### 3. `clipboard_write` — 写剪贴板
+##### 3. `clipboard_write` — Write Clipboard
 
 ```json
 {
   "id": "clip_write_001",
   "type": "clipboard_write",
   "payload": {
-    "text": "要复制的内容"
+    "text": "content to copy"
   },
   "timeout_ms": 5000
 }
 ```
 
-回复:
+Reply:
 ```json
 {
   "id": "clip_write_001",
@@ -286,26 +286,26 @@ App 侧 `method` 表示底层机制（例如 `ios_url_scheme`、`ios_shortcut`�
 }
 ```
 
-##### 4. `calendar_create` — 创建日历事件
+##### 4. `calendar_create` — Create Calendar Event
 
 ```json
 {
   "id": "cal_create_001",
   "type": "calendar_create",
   "payload": {
-    "title": "牙医预约",
+    "title": "Dentist appointment",
     "start": "2026-06-02T15:00:00+08:00",
     "end": "2026-06-02T16:00:00+08:00",
     "all_day": false,
-    "location": "诊所",
-    "notes": "带医保卡",
+    "location": "Clinic",
+    "notes": "Bring insurance card",
     "alarm_minutes_before": 30
   },
   "timeout_ms": 8000
 }
 ```
 
-回复:
+Reply:
 ```json
 {
   "id": "cal_create_001",
@@ -316,7 +316,7 @@ App 侧 `method` 表示底层机制（例如 `ios_url_scheme`、`ios_shortcut`�
 }
 ```
 
-##### 5. `calendar_query` — 查询日历事件
+##### 5. `calendar_query` — Query Calendar Events
 
 ```json
 {
@@ -330,7 +330,7 @@ App 侧 `method` 表示底层机制（例如 `ios_url_scheme`、`ios_shortcut`�
 }
 ```
 
-回复:
+Reply:
 ```json
 {
   "id": "cal_query_001",
@@ -339,17 +339,17 @@ App 侧 `method` 表示底层机制（例如 `ios_url_scheme`、`ios_shortcut`�
     "events": [
       {
         "event_id": "...",
-        "title": "牙医预约",
+        "title": "Dentist appointment",
         "start": "2026-06-02T15:00:00+08:00",
         "end": "2026-06-02T16:00:00+08:00",
-        "location": "诊所"
+        "location": "Clinic"
       }
     ]
   }
 }
 ```
 
-##### 6. `calendar_delete` — 删除日历事件
+##### 6. `calendar_delete` — Delete Calendar Event
 
 ```json
 {
@@ -362,7 +362,7 @@ App 侧 `method` 表示底层机制（例如 `ios_url_scheme`、`ios_shortcut`�
 }
 ```
 
-回复:
+Reply:
 ```json
 {
   "id": "cal_delete_001",
@@ -370,21 +370,21 @@ App 侧 `method` 表示底层机制（例如 `ios_url_scheme`、`ios_shortcut`�
 }
 ```
 
-##### 7. `contacts_query` — 查询通讯录
+##### 7. `contacts_query` — Query Contacts
 
 ```json
 {
   "id": "contacts_query_001",
   "type": "contacts_query",
   "payload": {
-    "query": "张三",
+    "query": "Zhang San",
     "limit": 20
   },
   "timeout_ms": 8000
 }
 ```
 
-回复:
+Reply:
 ```json
 {
   "id": "contacts_query_001",
@@ -393,7 +393,7 @@ App 侧 `method` 表示底层机制（例如 `ios_url_scheme`、`ios_shortcut`�
     "contacts": [
       {
         "contact_id": "contact_123",
-        "name": "张三",
+        "name": "Zhang San",
         "phone_numbers": ["+86 138 1234 5678"],
         "emails": ["zhangsan@example.com"]
       }
@@ -402,24 +402,24 @@ App 侧 `method` 表示底层机制（例如 `ios_url_scheme`、`ios_shortcut`�
 }
 ```
 
-##### 8. `contacts_create` — 新增联系人
+##### 8. `contacts_create` — Add Contact
 
 ```json
 {
   "id": "contacts_create_001",
   "type": "contacts_create",
   "payload": {
-    "name": "李四",
+    "name": "Li Si",
     "phone_numbers": ["+86 139 8765 4321"],
     "emails": ["lisi@example.com"],
-    "organization": "公司名",
-    "notes": "备注信息"
+    "organization": "Company name",
+    "notes": "Notes"
   },
   "timeout_ms": 8000
 }
 ```
 
-回复:
+Reply:
 ```json
 {
   "id": "contacts_create_001",
@@ -430,7 +430,7 @@ App 侧 `method` 表示底层机制（例如 `ios_url_scheme`、`ios_shortcut`�
 }
 ```
 
-##### 9. `contacts_update` — 修改联系人
+##### 9. `contacts_update` — Update Contact
 
 ```json
 {
@@ -438,7 +438,7 @@ App 侧 `method` 表示底层机制（例如 `ios_url_scheme`、`ios_shortcut`�
   "type": "contacts_update",
   "payload": {
     "contact_id": "contact_123",
-    "name": "李四（更新）",
+    "name": "Li Si (updated)",
     "phone_numbers": ["+86 139 8765 4321", "+86 010 1234 5678"],
     "emails": ["lisi_new@example.com"]
   },
@@ -446,7 +446,7 @@ App 侧 `method` 表示底层机制（例如 `ios_url_scheme`、`ios_shortcut`�
 }
 ```
 
-回复:
+Reply:
 ```json
 {
   "id": "contacts_update_001",
@@ -454,15 +454,15 @@ App 侧 `method` 表示底层机制（例如 `ios_url_scheme`、`ios_shortcut`�
 }
 ```
 
-##### 10. `notification_send` — 发送通知
+##### 10. `notification_send` — Send Notification
 
 ```json
 {
   "id": "notification_001",
   "type": "notification_send",
   "payload": {
-    "title": "提醒",
-    "body": "该吃药了",
+    "title": "Reminder",
+    "body": "Time to take medicine",
     "schedule_at": "2026-06-04T18:00:00+08:00",
     "sound": true,
     "badge": 1
@@ -471,7 +471,7 @@ App 侧 `method` 表示底层机制（例如 `ios_url_scheme`、`ios_shortcut`�
 }
 ```
 
-回复:
+Reply:
 ```json
 {
   "id": "notification_001",
@@ -482,33 +482,33 @@ App 侧 `method` 表示底层机制（例如 `ios_url_scheme`、`ios_shortcut`�
 }
 ```
 
-### 时间格式
+### Time Format
 
-所有时间字段统一用 **RFC3339 with offset**，例如：
-- `2026-06-02T15:00:00+08:00` (东八区下午3点)
-- `2026-06-02T07:00:00Z` (UTC 早上7点)
+All time fields must be **RFC3339 format with timezone offset**, e.g.:
+- `2026-06-02T15:00:00+08:00` (3pm GMT+8)
+- `2026-06-02T07:00:00Z` (7am UTC)
 
-板子侧的 `current_time` 工具可以给模型提供当前时区基准。
+The board-side `current_time` tool can provide the model with current timezone baseline.
 
-### 权限与隐私
+### Permissions and Privacy
 
-- **剪贴板读取**: iOS 16+ 会弹一次性授权横幅，频繁读会影响体验。Android 10+ 要求前台 app 或 foreground service。
-- **日历读写**: iOS 和 Android 都需要运行时权限，首次调用时弹授权框。App 收到命令时如果权限未授予，应返回 `ok:false, error:"需要日历权限"`，超时由板子侧 `timeout_ms` 控制。
-- **通讯录读写**: iOS 需要 `NSContactsUsageDescription` 权限，Android 需要 `READ_CONTACTS` 和 `WRITE_CONTACTS` 权限。未授权时返回 `ok:false, error:"需要通讯录权限"`。
-- **通知权限**: iOS 需要通过 `UNUserNotificationCenter` 请求授权，Android 13+ 需要 `POST_NOTIFICATIONS` 权限。未授权时返回 `ok:false, error:"需要通知权限"`。
+- **Clipboard read**: iOS 16+ shows one-time authorization banner, frequent reads affect experience. Android 10+ requires foreground app or foreground service.
+- **Calendar read/write**: Both iOS and Android need runtime permissions, authorization popup on first call. When app receives command and permission not granted, should return `ok:false, error:"Calendar permission required"`; timeout controlled by board-side `timeout_ms`.
+- **Contacts read/write**: iOS needs `NSContactsUsageDescription` permission, Android needs `READ_CONTACTS` and `WRITE_CONTACTS` permissions. When unauthorized return `ok:false, error:"Contacts permission required"`.
+- **Notification permission**: iOS needs to request authorization via `UNUserNotificationCenter`, Android 13+ needs `POST_NOTIFICATIONS` permission. When unauthorized return `ok:false, error:"Notification permission required"`.
 
-### 实施注意
+### Implementation Notes
 
-7. 板子再通过 HDMI 验证目标 App 是否打开（仅 `open_app`）。
-8. 验证失败自动回退 HID（仅 `open_app`；剪贴板/日历无 HID 兜底，失败直接告诉用户）。
+7. Board then verifies via HDMI whether target app opened (only `open_app`).
+8. Verification failure auto-fallback to HID (only `open_app`; clipboard/calendar have no HID fallback, failure directly tells user).
 
-## 最终定位
+## Final Positioning
 
-这套方案不是替代硬件控制，而是增加一条软件快路径：
+This solution doesn't replace hardware control, but adds a software fast path:
 
 ```text
-能软件快速完成的，走中转 App；
-软件做不到或不稳定的，继续走 HDMI + HID。
+What can be completed quickly via software, go through relay app;
+What software cannot do or is unstable, continue via HDMI + HID.
 ```
 
-iOS 以“前台快路径 + 硬件兜底”为主。Android 可以逐步增强为“后台常驻中转 + 硬件兜底”。
+iOS focuses on "foreground fast path + hardware fallback". Android can gradually enhance to "background resident relay + hardware fallback".

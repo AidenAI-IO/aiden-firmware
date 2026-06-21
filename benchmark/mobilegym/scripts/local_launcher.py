@@ -28,6 +28,11 @@ LOG_PATH = _USER_TEMP / "mobilegym_run.log"
 PID_PATH = _USER_TEMP / "mobilegym_runner.pid"
 STATE_NAME = "state.json"
 TAIL_BYTES = 64 * 1024
+SKILLOPT_ARTIFACT_CONTENT_TYPES = {
+    "best_skill.md": "text/markdown; charset=utf-8",
+    "diff.patch": "text/plain; charset=utf-8",
+    "result.json": "application/json; charset=utf-8",
+}
 
 _SAFE_SUITE_SEGMENT = re.compile(r"^[A-Za-z0-9_.\-]+$")
 _SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9_\-]+$")
@@ -60,6 +65,20 @@ def valid_suite_name(suite: str) -> bool:
         if part in {"", ".", ".."} or not _SAFE_SUITE_SEGMENT.match(part):
             return False
     return True
+
+
+def valid_skill_name(skill: str) -> bool:
+    return bool(
+        skill
+        and skill not in {".", ".."}
+        and "/" not in skill
+        and "\\" not in skill
+        and _SAFE_SUITE_SEGMENT.match(skill)
+    )
+
+
+def valid_skillopt_suite_for_skill(skill: str, suite: str) -> bool:
+    return valid_suite_name(suite) and suite.startswith(f"skillopt/{skill}/")
 
 
 def is_safe_run_id(run_id: str) -> bool:
@@ -157,6 +176,20 @@ def build_run_command(
     payload: dict[str, Any] | None = None,
 ) -> RunCommand:
     payload = payload or {}
+    mode = str(payload.get("mode") or "mobilegym")
+    if mode == "skillopt":
+        return build_skillopt_run_command(benchmark_root, payload)
+    if mode not in {"mobilegym", ""}:
+        raise LauncherError(f"unsupported local launcher mode: {mode!r}")
+
+    return build_mobilegym_run_command(benchmark_root, payload)
+
+
+def build_mobilegym_run_command(
+    benchmark_root: str | Path = BENCHMARK_ROOT,
+    payload: dict[str, Any] | None = None,
+) -> RunCommand:
+    payload = payload or {}
     suites = selected_suites(payload)
     suite_type = str(payload.get("suite_type") or "mobilegym_builtin")
     if len(suites) > 1 and suite_type not in {"mobilegym_builtin", "aiden"}:
@@ -208,7 +241,81 @@ def build_run_command(
     return RunCommand(argv=argv, cwd=docker_dir, env=env)
 
 
+def build_skillopt_run_command(
+    benchmark_root: str | Path = BENCHMARK_ROOT,
+    payload: dict[str, Any] | None = None,
+) -> RunCommand:
+    payload = payload or {}
+    backend = str(payload.get("skillopt_backend") or "")
+    if backend != "mobilegym":
+        raise LauncherError("Mac-local SkillOpt requires skillopt_backend=mobilegym")
+
+    skill = str(payload.get("skill") or "").strip()
+    train_suite = str(payload.get("train_suite") or "").strip()
+    validation_suite = str(payload.get("validation_suite") or "").strip()
+    if not valid_skill_name(skill):
+        raise LauncherError(f"invalid skill name: {skill!r}")
+    if not valid_skillopt_suite_for_skill(skill, train_suite):
+        raise LauncherError(f"invalid train_suite for {skill!r}: {train_suite!r}")
+    if not valid_skillopt_suite_for_skill(skill, validation_suite):
+        raise LauncherError(f"invalid validation_suite for {skill!r}: {validation_suite!r}")
+
+    root = Path(benchmark_root)
+    env = os.environ.copy()
+    add_common_cli_paths(env)
+    env.update(model_config_from_payload(payload))
+    env.update(benchmark_config_from_payload(payload))
+
+    run_id = "skillopt-" + datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d_%H%M%S-%f")
+    artifact_root = root / "runs" / "skillopt"
+    output_path = artifact_root / run_id / "best_skill.md"
+    argv = [
+        sys.executable,
+        "-m",
+        "runner.skillopt",
+        "--skill",
+        skill,
+        "--backend",
+        "mobilegym",
+        "--mobilegym-parallel",
+        str(int(payload.get("mobilegym_parallel") or payload.get("parallel") or 1)),
+        "--train-suite",
+        train_suite,
+        "--validation-suite",
+        validation_suite,
+        "--budget",
+        str(int(payload.get("budget") or 10)),
+        "--edit-budget",
+        str(int(payload.get("edit_budget") or 4)),
+        "--min-delta",
+        str(payload.get("min_delta") if payload.get("min_delta") is not None else 0.03),
+        "--artifact-root",
+        str(artifact_root),
+        "--run-id",
+        run_id,
+        "--output",
+        str(output_path),
+    ]
+    optimizer_model = str(payload.get("optimizer_model") or "").strip()
+    if optimizer_model:
+        argv.extend(["--optimizer-model", optimizer_model])
+    judge_model = str(payload.get("judge_model") or env.get("AIDEN_BENCHMARK_JUDGE_MODEL") or "").strip()
+    if judge_model:
+        argv.extend(["--judge-model", judge_model])
+    agent_url = str(payload.get("board_url") or "").strip()
+    if agent_url:
+        argv.extend(["--agent-url", agent_url.rstrip("/")])
+
+    return RunCommand(argv=argv, cwd=root, env=env)
+
+
 def start_run(benchmark_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    if str(payload.get("mode") or "mobilegym") == "skillopt":
+        return start_skillopt_run(benchmark_root, payload)
+    return start_mobilegym_run(benchmark_root, payload)
+
+
+def start_mobilegym_run(benchmark_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
     global _process
     with _process_lock:
         if _process is not None and _process.poll() is None:
@@ -245,6 +352,48 @@ def start_run(benchmark_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
                 "total": int(payload.get("limit") or 0),
                 "current": 1 if int(payload.get("limit") or 0) else 0,
                 "completed": 0,
+                "model": current_model_label(command.env),
+            },
+        )
+        threading.Thread(target=watch_process, args=(benchmark_root, _process), daemon=True).start()
+        return {"ok": True, "status": "running", "pid": _process.pid}
+
+
+def start_skillopt_run(benchmark_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    global _process
+    with _process_lock:
+        if _process is not None and _process.poll() is None:
+            raise LauncherError("MobileGym benchmark is already running")
+
+        command = build_run_command(benchmark_root, payload)
+        validate_model_environment(command.env)
+        validate_skillopt_environment(command.env)
+        LOG_PATH.write_text("Starting Mac-local SkillOpt MobileGym benchmark...\n", encoding="utf-8")
+        log_file = LOG_PATH.open("ab")
+        try:
+            _process = subprocess.Popen(
+                command.argv,
+                cwd=command.cwd,
+                env=command.env,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        finally:
+            log_file.close()
+
+        PID_PATH.write_text(str(_process.pid), encoding="utf-8")
+        run_id = command.argv[command.argv.index("--run-id") + 1]
+        write_state(
+            benchmark_root,
+            {
+                "status": "running",
+                "mode": "skillopt",
+                "run_id": run_id,
+                "skill": payload.get("skill") or "",
+                "backend": "mobilegym",
+                "suite": payload.get("train_suite") or "",
+                "validation_suite": payload.get("validation_suite") or "",
                 "model": current_model_label(command.env),
             },
         )
@@ -300,6 +449,14 @@ def read_log() -> str:
 
 
 def list_runs(benchmark_root: Path) -> list[dict[str, Any]]:
+    return sorted(
+        list_mobilegym_runs(benchmark_root) + list_skillopt_runs(benchmark_root),
+        key=lambda item: str(item.get("run_id") or ""),
+        reverse=True,
+    )[:20]
+
+
+def list_mobilegym_runs(benchmark_root: Path) -> list[dict[str, Any]]:
     runs_dir = benchmark_root / "runs" / "mobilegym"
     state = read_json_file(benchmark_root / STATE_NAME)
     try:
@@ -316,6 +473,37 @@ def list_runs(benchmark_root: Path) -> list[dict[str, Any]]:
             items.extend(rows)
             continue
         items.extend(state_run_items(run_id, state_for_run, progress))
+    return items
+
+
+def list_skillopt_runs(benchmark_root: Path) -> list[dict[str, Any]]:
+    runs_dir = benchmark_root / "runs" / "skillopt"
+    state = read_json_file(benchmark_root / STATE_NAME)
+    try:
+        run_ids = sorted((p.name for p in runs_dir.iterdir() if p.is_dir()), reverse=True)
+    except OSError:
+        return []
+    items = []
+    for run_id in run_ids[:20]:
+        manifest = read_json_file(runs_dir / run_id / "manifest.json")
+        state_for_run = state if state.get("run_id") == run_id and state.get("status") == "running" else {}
+        status = str(state_for_run.get("status") or "done")
+        suite = str(manifest.get("train_suite") or state_for_run.get("suite") or "skillopt")
+        totals = manifest.get("totals") if isinstance(manifest.get("totals"), dict) else {}
+        item = {
+            "run_id": run_id,
+            "suite": suite,
+            "status": status,
+            "progress": "",
+            "model": str(manifest.get("model") or state_for_run.get("model") or current_model_label()),
+            "totals": {
+                "tasks": int(totals.get("tasks") or 0),
+                "passed": int(totals.get("passed") or 0),
+                "failed": int(totals.get("failed") or 0),
+            },
+            "report_path": "/benchmark/report/" + quote(run_id, safe=""),
+        }
+        items.append(item)
     return items
 
 
@@ -370,8 +558,14 @@ def report_file_for(root: Path, report_id: str) -> Path | None:
         return None
     run_dir = root / "runs" / "mobilegym" / parts[0]
     if len(parts) == 1:
+        skillopt_report = root / "runs" / "skillopt" / parts[0] / "report.html"
+        if skillopt_report.is_file():
+            return skillopt_report
         return run_dir / "index.html"
     artifact_names = {"index.html", "llm_analysis.md", "llm_analysis.json", "llm_analysis_error.txt"}
+    if len(parts) == 2 and parts[1] in SKILLOPT_ARTIFACT_CONTENT_TYPES:
+        artifact = root / "runs" / "skillopt" / parts[0] / parts[1]
+        return artifact if artifact.is_file() else None
     if parts[-1] in artifact_names:
         if len(parts) == 2:
             return run_dir / parts[-1]
@@ -383,6 +577,18 @@ def report_file_for(root: Path, report_id: str) -> Path | None:
     if not valid_suite_name(suite):
         return None
     return run_dir / suite / "index.html"
+
+
+def report_content_type(path: Path) -> str:
+    return SKILLOPT_ARTIFACT_CONTENT_TYPES.get(
+        path.name,
+        {
+            ".html": "text/html; charset=utf-8",
+            ".md": "text/markdown; charset=utf-8",
+            ".json": "application/json; charset=utf-8",
+            ".txt": "text/plain; charset=utf-8",
+        }.get(path.suffix, "application/octet-stream"),
+    )
 
 
 def state_run_items(run_id: str, state_for_run: dict[str, Any], progress: dict[str, Any]) -> list[dict[str, Any]]:
@@ -564,11 +770,29 @@ def model_config_from_payload(payload: dict[str, Any]) -> dict[str, str]:
     return fetch_board_model_config(board_url)
 
 
+def benchmark_config_from_payload(payload: dict[str, Any]) -> dict[str, str]:
+    board_url = str(payload.get("board_url") or "").strip()
+    if not board_url:
+        return {}
+    return fetch_board_benchmark_config(board_url)
+
+
 def fetch_board_model_config(board_url: str) -> dict[str, str]:
+    return parse_agent_model_config(fetch_board_toml_section(board_url, "model"))
+
+
+def fetch_board_benchmark_config(board_url: str) -> dict[str, str]:
+    return parse_agent_benchmark_config(fetch_board_toml_section(board_url, "benchmark"))
+
+
+def fetch_board_toml_section(board_url: str, section: str) -> str:
     base = board_url.rstrip("/")
     if not base.startswith(("http://", "https://")):
         raise LauncherError("invalid board_url")
-    command = "awk '/^\\[model\\]/{in_model=1;next} /^\\[/{in_model=0} in_model{print}' /userdata/agent/agent.toml"
+    command = (
+        "awk '/^\\[" + section + "\\]/{in_section=1;next} "
+        "/^\\[/{in_section=0} in_section{print}' /userdata/agent/agent.toml"
+    )
     body = json.dumps({"input": {"command": command, "timeout": 5}}).encode("utf-8")
     request = Request(
         base + "/api/tools/shell",
@@ -580,7 +804,7 @@ def fetch_board_model_config(board_url: str) -> dict[str, str]:
         with urlopen(request, timeout=8) as response:
             raw = response.read().decode("utf-8", errors="replace")
     except OSError as exc:
-        raise LauncherError(f"failed to fetch board model config: {exc}") from exc
+        raise LauncherError(f"failed to fetch board config: {exc}") from exc
 
     try:
         data = json.loads(raw)
@@ -588,29 +812,11 @@ def fetch_board_model_config(board_url: str) -> dict[str, str]:
         output = raw
     else:
         output = str(data.get("output") or data.get("Output") or raw) if isinstance(data, dict) else raw
-    return parse_agent_model_config(output)
+    return output
 
 
 def parse_agent_model_config(text: str) -> dict[str, str]:
-    in_model = "[model]" not in text
-    values: dict[str, str] = {}
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("[") and line.endswith("]"):
-            in_model = line == "[model]"
-            continue
-        if not in_model or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip().split(" #", 1)[0].strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
-            value = value[1:-1]
-        if key in {"provider", "model", "base_url", "api_key"} and value:
-            values[key] = value
-
+    values = parse_toml_assignments(toml_section(text, "model"), {"provider", "model", "base_url", "api_key"})
     mapping = {
         "provider": "MODEL_PROVIDER",
         "model": "MODEL_NAME",
@@ -618,6 +824,52 @@ def parse_agent_model_config(text: str) -> dict[str, str]:
         "api_key": "MODEL_API_KEY",
     }
     return {env_key: values[key] for key, env_key in mapping.items() if key in values}
+
+
+def parse_agent_benchmark_config(text: str) -> dict[str, str]:
+    values = parse_toml_assignments(toml_section(text, "benchmark"), {"api_key", "judge_model"})
+    env: dict[str, str] = {}
+    if values.get("api_key"):
+        env["OPENROUTER_API_KEY"] = values["api_key"]
+    if values.get("judge_model"):
+        env["AIDEN_BENCHMARK_JUDGE_MODEL"] = values["judge_model"]
+    return env
+
+
+def parse_toml_assignments(text: str, allowed_keys: set[str]) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().split(" #", 1)[0].strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1]
+        if key in allowed_keys and value:
+            values[key] = value
+    return values
+
+
+def toml_section(text: str, section: str) -> str:
+    found = False
+    in_section = False
+    lines: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if line.startswith("[") and line.endswith("]"):
+            name = line.strip("[]").strip()
+            if name == section:
+                found = True
+                in_section = True
+                continue
+            if in_section:
+                break
+            continue
+        if in_section:
+            lines.append(raw_line)
+    return "\n".join(lines) if found else text
 
 
 def validate_model_environment(env: dict[str, str] | None = None) -> None:
@@ -629,6 +881,14 @@ def validate_model_environment(env: dict[str, str] | None = None) -> None:
         raise LauncherError(
             "MobileGym model config missing: set MODEL_API_KEY or OPENROUTER_API_KEY "
             "before starting the Mac MobileGym launcher"
+        )
+
+
+def validate_skillopt_environment(env: dict[str, str] | None = None) -> None:
+    env = env or os.environ
+    if not env.get("OPENROUTER_API_KEY"):
+        raise LauncherError(
+            "SkillOpt benchmark api_key missing: set OPENROUTER_API_KEY or configure benchmark.api_key on the board"
         )
 
 
@@ -706,13 +966,7 @@ def make_handler(benchmark_root: str | Path = BENCHMARK_ROOT) -> type[BaseHTTPRe
                 self.send_error(404, "not found")
                 return
             self.send_response(200)
-            content_type = {
-                ".html": "text/html; charset=utf-8",
-                ".md": "text/markdown; charset=utf-8",
-                ".json": "application/json; charset=utf-8",
-                ".txt": "text/plain; charset=utf-8",
-            }.get(report_path.suffix, "application/octet-stream")
-            self.send_common_headers(content_type)
+            self.send_common_headers(report_content_type(report_path))
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
