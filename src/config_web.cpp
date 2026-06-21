@@ -1,5 +1,6 @@
 #include "agent_toml.h"
 #include "config_web_html.h"
+#include "config_web_llm_html.h"
 #include "system_env_parser.h"
 #include "wifi_config.h"
 
@@ -7,6 +8,7 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <ctype.h>
 #include <netinet/in.h>
@@ -26,6 +28,8 @@
 #include <unistd.h>
 
 #include <iostream>
+#include <algorithm>
+#include <functional>
 #include <map>
 #include <set>
 #include <sstream>
@@ -146,6 +150,12 @@ const size_t kAgentLogReadSize = 64 * 1024;
 const size_t kAgentLogDisplaySize = 48 * 1024;
 const size_t kOtaLogReadSize = 128 * 1024;
 const size_t kOtaLogDisplaySize = 96 * 1024;
+// LLM raw HTTP logs live next to the agent config: <dirname(config)>/log.
+// Filenames are llm-http-YYYYMMDD[-session].log. The viewer streams whole
+// files to the browser, so cap the per-file read to keep responses bounded.
+const char* kLlmLogPrefix = "llm-http-";
+const char* kLlmLogSuffix = ".log";
+const size_t kLlmLogMaxReadSize = 16 * 1024 * 1024;
 const size_t kMaxHttpHeaderSize = 8 * 1024;
 const size_t kMaxHttpBodySize = 64 * 1024;
 const int kClientReadTimeoutSeconds = 5;
@@ -3157,6 +3167,150 @@ ApiResponse handle_get_agent_log() {
     cJSON_AddItemToObject(root, "agent_log", agent_log_to_json(read_agent_log_snapshot()));
     return make_json_ok(root);
 }
+// LLM_LOG_HANDLERS_PLACEHOLDER
+
+// url_decode expands percent-escapes (%XX) and '+' in a single URL path
+// segment. Invalid escapes are passed through verbatim. Decoding before
+// validation ensures an encoded separator like %2f cannot smuggle a path
+// traversal past is_llm_log_name().
+std::string url_decode(const std::string& in) {
+    std::string out;
+    out.reserve(in.size());
+    for (size_t i = 0; i < in.size(); ++i) {
+        char c = in[i];
+        if (c == '%' && i + 2 < in.size()) {
+            char hi = in[i + 1];
+            char lo = in[i + 2];
+            if (isxdigit(static_cast<unsigned char>(hi)) && isxdigit(static_cast<unsigned char>(lo))) {
+                auto hex_val = [](char h) -> int {
+                    if (h >= '0' && h <= '9') return h - '0';
+                    if (h >= 'a' && h <= 'f') return h - 'a' + 10;
+                    return h - 'A' + 10;
+                };
+                out.push_back(static_cast<char>((hex_val(hi) << 4) | hex_val(lo)));
+                i += 2;
+                continue;
+            }
+        }
+        if (c == '+') {
+            out.push_back(' ');
+            continue;
+        }
+        out.push_back(c);
+    }
+    return out;
+}
+
+// llm_log_dir returns the directory holding the agent's raw LLM HTTP logs.
+// The agent writes them to <config_dir>/log (see runtime.go), so we derive
+// the directory from the config path the server was launched with.
+std::string llm_log_dir(const Options& options) {
+    std::string base = parent_dir(options.agent_config_path);
+    if (base.empty()) {
+        return "log";
+    }
+    if (base == "/") {
+        return "/log";
+    }
+    return base + "/log";
+}
+
+// is_llm_log_name reports whether name is a plain llm-http-*.log filename with
+// no path separators. Used both to filter directory listings and to validate
+// the filename segment of /api/llm-logs/file/<name>.
+bool is_llm_log_name(const std::string& name) {
+    if (name.find('/') != std::string::npos || name.find('\\') != std::string::npos) {
+        return false;
+    }
+    if (name == "." || name == "..") {
+        return false;
+    }
+    const std::string prefix = kLlmLogPrefix;
+    const std::string suffix = kLlmLogSuffix;
+    if (name.size() <= prefix.size() + suffix.size()) {
+        return false;
+    }
+    if (name.compare(0, prefix.size(), prefix) != 0) {
+        return false;
+    }
+    if (name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0) {
+        return false;
+    }
+    return true;
+}
+
+ApiResponse handle_get_llm_logs(const Options& options) {
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", 1);
+    cJSON* files = add_array(root, "files");
+
+    const std::string dir_path = llm_log_dir(options);
+    DIR* dir = opendir(dir_path.c_str());
+    if (dir) {
+        // Collect matching names, then sort descending so the newest day /
+        // session (which sorts last by the YYYYMMDD-keyed name) shows first.
+        std::vector<std::string> names;
+        struct dirent* entry = NULL;
+        while ((entry = readdir(dir)) != NULL) {
+            std::string name = entry->d_name;
+            if (is_llm_log_name(name)) {
+                names.push_back(name);
+            }
+        }
+        closedir(dir);
+        std::sort(names.begin(), names.end(), std::greater<std::string>());
+
+        for (size_t i = 0; i < names.size(); ++i) {
+            const std::string full = dir_path + "/" + names[i];
+            cJSON* file = cJSON_CreateObject();
+            cJSON_AddStringToObject(file, "name", names[i].c_str());
+            struct stat st;
+            if (stat(full.c_str(), &st) == 0) {
+                cJSON_AddNumberToObject(file, "size_bytes", static_cast<double>(st.st_size));
+                cJSON_AddNumberToObject(file, "mtime", static_cast<double>(st.st_mtime));
+            } else {
+                cJSON_AddNumberToObject(file, "size_bytes", 0);
+                cJSON_AddNumberToObject(file, "mtime", 0);
+            }
+            cJSON_AddItemToArray(files, file);
+        }
+    }
+    // A missing directory simply yields an empty list -- the agent may not
+    // have produced any logs yet, which is not an error condition.
+    return make_json_ok(root);
+}
+
+ApiResponse handle_get_llm_log_file(const Options& options, const std::string& name) {
+    if (!is_llm_log_name(name)) {
+        return make_json_error(400, "invalid log file name");
+    }
+    const std::string full = llm_log_dir(options) + "/" + name;
+    FILE* f = fopen(full.c_str(), "rb");
+    if (!f) {
+        return make_json_error(404, "log file not found");
+    }
+    std::string contents;
+    char buf[8192];
+    size_t total = 0;
+    bool truncated = false;
+    while (size_t n = fread(buf, 1, sizeof(buf), f)) {
+        if (total + n > kLlmLogMaxReadSize) {
+            contents.append(buf, kLlmLogMaxReadSize - total);
+            truncated = true;
+            break;
+        }
+        contents.append(buf, n);
+        total += n;
+    }
+    fclose(f);
+
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", 1);
+    cJSON_AddStringToObject(root, "name", name.c_str());
+    cJSON_AddStringToObject(root, "content", contents.c_str());
+    cJSON_AddBoolToObject(root, "truncated", truncated ? 1 : 0);
+    return make_json_ok(root);
+}
 
 ApiResponse handle_get_ota_log() {
     cJSON* root = cJSON_CreateObject();
@@ -4175,6 +4329,25 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
         response.content_type = "text/html; charset=utf-8";
         response.body = CONFIG_WEB_HTML;
         return response;
+    }
+
+    if (request.method == "GET" && request.path == "/llm-logs") {
+        ApiResponse response;
+        response.content_type = "text/html; charset=utf-8";
+        response.body = CONFIG_WEB_LLM_HTML;
+        return response;
+    }
+
+    if (request.method == "GET" && request.path == "/api/llm-logs") {
+        return handle_get_llm_logs(options);
+    }
+
+    {
+        const std::string file_prefix = "/api/llm-logs/file/";
+        if (request.method == "GET" && request.path.compare(0, file_prefix.size(), file_prefix) == 0) {
+            std::string name = url_decode(request.path.substr(file_prefix.size()));
+            return handle_get_llm_log_file(options, name);
+        }
     }
 
     if (request.method == "GET" && request.path == "/api/agent/status") {

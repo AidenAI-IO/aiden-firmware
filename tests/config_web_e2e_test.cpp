@@ -1203,3 +1203,106 @@ TEST_CASE("config_web: GET /api/ota/logs keeps update and health logs separate")
     CHECK(required_json_string(health, "log").find("[config_web] ota update") == std::string::npos);
     cJSON_Delete(parsed);
 }
+
+// ----- LLM HTTP log viewer -------------------------------------------------
+//
+// The viewer reads JSONL files named llm-http-*.log from the directory
+// <dirname(config)>/log. The e2e tests inject files by writing into
+// <tmp_dir>/log, since start_server() points --config at <tmp_dir>/agent.toml.
+
+TEST_CASE("config_web: GET /api/llm-logs lists llm-http log files newest first") {
+    StubEnv env;
+    auto handle = start_server(env);
+    const std::string log_dir = handle->tmp_dir + "/log";
+    REQUIRE(::mkdir(log_dir.c_str(), 0755) == 0);
+
+    write_file(log_dir + "/llm-http-20260101.log", "{\"ts\":\"00:00:01\",\"kind\":\"request\",\"status\":0,\"body\":\"{}\"}\n");
+    write_file(log_dir + "/llm-http-20260102-sess.log", "{\"ts\":\"00:00:02\",\"kind\":\"request\",\"status\":0,\"body\":\"{}\"}\n");
+    // A non-matching file must be ignored.
+    write_file(log_dir + "/agent.log", "noise\n");
+
+    HttpResponse resp = http_request(handle->port, "GET", "/api/llm-logs");
+    REQUIRE(resp.status == 200);
+
+    cJSON* parsed = cJSON_Parse(resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    cJSON* files = cJSON_GetObjectItem(parsed, "files");
+    REQUIRE(files != nullptr);
+    REQUIRE((files->type & 0xff) == cJSON_Array);
+    REQUIRE(cJSON_GetArraySize(files) == 2);
+
+    // Newest (by name, descending) first.
+    cJSON* first = cJSON_GetArrayItem(files, 0);
+    cJSON* second = cJSON_GetArrayItem(files, 1);
+    CHECK(required_json_string(first, "name") == "llm-http-20260102-sess.log");
+    CHECK(required_json_string(second, "name") == "llm-http-20260101.log");
+    CHECK(cJSON_GetObjectItem(first, "size_bytes") != nullptr);
+    cJSON_Delete(parsed);
+}
+
+TEST_CASE("config_web: GET /api/llm-logs returns empty list when log dir is absent") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    HttpResponse resp = http_request(handle->port, "GET", "/api/llm-logs");
+    REQUIRE(resp.status == 200);
+
+    cJSON* parsed = cJSON_Parse(resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    cJSON* files = cJSON_GetObjectItem(parsed, "files");
+    REQUIRE(files != nullptr);
+    REQUIRE((files->type & 0xff) == cJSON_Array);
+    CHECK(cJSON_GetArraySize(files) == 0);
+    cJSON_Delete(parsed);
+}
+
+TEST_CASE("config_web: GET /api/llm-logs/file/<name> returns raw JSONL content") {
+    StubEnv env;
+    auto handle = start_server(env);
+    const std::string log_dir = handle->tmp_dir + "/log";
+    REQUIRE(::mkdir(log_dir.c_str(), 0755) == 0);
+
+    const std::string content =
+        "{\"ts\":\"00:00:01\",\"kind\":\"request\",\"status\":0,\"body\":\"{\\\"messages\\\":[]}\"}\n"
+        "{\"ts\":\"00:00:02\",\"kind\":\"response\",\"status\":200,\"body\":\"{}\"}\n";
+    write_file(log_dir + "/llm-http-20260103.log", content);
+
+    HttpResponse resp = http_request(handle->port, "GET", "/api/llm-logs/file/llm-http-20260103.log");
+    REQUIRE(resp.status == 200);
+
+    cJSON* parsed = cJSON_Parse(resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    CHECK(required_json_string(parsed, "name") == "llm-http-20260103.log");
+    CHECK(required_json_string(parsed, "content") == content);
+    cJSON_Delete(parsed);
+}
+
+TEST_CASE("config_web: GET /api/llm-logs/file rejects path traversal and bad names") {
+    StubEnv env;
+    auto handle = start_server(env);
+    const std::string log_dir = handle->tmp_dir + "/log";
+    REQUIRE(::mkdir(log_dir.c_str(), 0755) == 0);
+    write_file(log_dir + "/llm-http-20260103.log", "{}\n");
+
+    // Path traversal attempt.
+    HttpResponse traversal = http_request(handle->port, "GET", "/api/llm-logs/file/..%2f..%2fetc%2fpasswd");
+    CHECK(traversal.status == 400);
+
+    // A name that does not match llm-http-*.log.
+    HttpResponse bad = http_request(handle->port, "GET", "/api/llm-logs/file/agent.log");
+    CHECK(bad.status == 400);
+
+    // A well-formed name that does not exist.
+    HttpResponse missing = http_request(handle->port, "GET", "/api/llm-logs/file/llm-http-19990101.log");
+    CHECK(missing.status == 404);
+}
+
+TEST_CASE("config_web: GET /llm-logs serves the viewer sub-page") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    HttpResponse resp = http_request(handle->port, "GET", "/llm-logs");
+    REQUIRE(resp.status == 200);
+    CHECK(resp.body.find("<!DOCTYPE html>") != std::string::npos);
+    CHECK(resp.body.find("/api/llm-logs") != std::string::npos);
+}

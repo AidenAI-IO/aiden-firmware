@@ -296,7 +296,7 @@ func TestOpenAICompatibleModelLogsRawStreamingHTTPWhenEnabled(t *testing.T) {
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			continue
 		}
-		if entry["kind"] == "stream" {
+		if entry["kind"] == "response" {
 			streamBody, _ = entry["body"].(string)
 			foundStreamResponse = true
 			break
@@ -316,7 +316,7 @@ func TestOpenAICompatibleModelLogsRawStreamingHTTPWhenEnabled(t *testing.T) {
 	if !strings.Contains(streamBody, "data: [DONE]") {
 		t.Fatalf("raw streaming HTTP log missing [DONE] marker in body:\n%s", streamBody)
 	}
-	if !strings.Contains(logText, `"kind":"stream"`) {
+	if !strings.Contains(logText, `"kind":"response"`) {
 		t.Fatalf("raw streaming HTTP log missing metadata:\n%s", logText)
 	}
 	assertRawHTTPLogIsValidJSONL(t, logText)
@@ -359,7 +359,7 @@ func TestOpenAICompatibleModelLogsRawStreamingHTTPOnDecodeError(t *testing.T) {
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			continue
 		}
-		if entry["kind"] == "stream" {
+		if entry["kind"] == "response" {
 			streamBody, _ = entry["body"].(string)
 			break
 		}

@@ -202,6 +202,50 @@ TEST_CASE("config web colors live log lines by frontend classification") {
     CHECK(html.find(".log-line.log-update{color:#44bbff}") != std::string::npos);
 }
 
+TEST_CASE("config web exposes the LLM HTTP log viewer") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    const std::string llm_html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_llm_html.h";
+    std::ifstream llm_in(llm_html_path.c_str());
+    REQUIRE(llm_in.good());
+
+    std::ostringstream llm_buffer;
+    llm_buffer << llm_in.rdbuf();
+    const std::string llm_html = llm_buffer.str();
+
+    // Backend wires the three new routes and serves the standalone page.
+    CHECK(source.find("\"/llm-logs\"") != std::string::npos);
+    CHECK(source.find("\"/api/llm-logs\"") != std::string::npos);
+    CHECK(source.find("/api/llm-logs/file/") != std::string::npos);
+    CHECK(source.find("handle_get_llm_logs") != std::string::npos);
+    CHECK(source.find("handle_get_llm_log_file") != std::string::npos);
+    CHECK(source.find("is_llm_log_name") != std::string::npos);
+    CHECK(source.find("CONFIG_WEB_LLM_HTML") != std::string::npos);
+
+    // Main config page links to the viewer.
+    CHECK(html.find("href=\\\"/llm-logs\\\"") != std::string::npos);
+
+    // Sub-page implements grouping, full message rendering, and inline diff.
+    CHECK(llm_html.find("function groupEntries") != std::string::npos);
+    CHECK(llm_html.find("function renderMessages") != std::string::npos);
+    CHECK(llm_html.find("function renderDiff") != std::string::npos);
+    CHECK(llm_html.find("tool_calls") != std::string::npos);
+}
+
 TEST_CASE("config web exposes audio archive switch") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());

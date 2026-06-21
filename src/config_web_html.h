@@ -106,6 +106,7 @@ static const char* CONFIG_WEB_HTML =
     "          <div id=\"agentLogMeta\" class=\"agent-log-meta\">读取中</div>\n"
     "        </div>\n"
     "        <div class=\"toolbar\">\n"
+    "          <a class=\"button ghost\" href=\"/llm-logs\" style=\"text-decoration:none;display:inline-flex;align-items:center\">LLM HTTP \xe6\x97\xa5\xe5\xbf\x97</a>\n"
     "          <button id=\"autoScrollAgentLogBtn\" class=\"button primary\" onclick=\"toggleAgentLogAutoScroll()\">自动滚动</button>\n"
     "          <button id=\"refreshAgentLogBtn\" class=\"button ghost\" onclick=\"refreshAgentLog(true)\">刷新日志</button>\n"
     "        </div>\n"

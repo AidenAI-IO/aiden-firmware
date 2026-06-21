@@ -292,7 +292,7 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		_ = m.logRawHTTP(reqPayload.Model, "response", "error", resp.StatusCode, string(body))
+		_ = m.logRawHTTP(reqPayload.Model, "response", "response", resp.StatusCode, string(body))
 		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -354,7 +354,7 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 	hasRawStream := false
 	logRawStream := func() {
 		if m.rawLogger != nil && hasRawStream {
-			_ = m.logRawHTTP(requestModel, "response", "stream", statusCode, rawStream.String())
+			_ = m.logRawHTTP(requestModel, "response", "response", statusCode, rawStream.String())
 		}
 	}
 	defer logRawStream()
