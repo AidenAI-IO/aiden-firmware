@@ -1636,12 +1636,19 @@ func (m *MemoryManager) appendSessionEvents(agentName string, records []MessageR
 
 	existingRecords := conversationRecordsFromSessionEvents(events)
 	start := snapshotAppendStart(existingRecords, records)
+	hasSessionEvents := len(events) > 0 || start < len(records)
+	if hasSessionEvents {
+		sessionDir := filepath.Dir(path)
+		if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+			return fmt.Errorf("create session memory directory: %w", err)
+		}
+		if _, err := ensureActiveSessionMetadata(sessionDir, time.Now().UTC()); err != nil {
+			return fmt.Errorf("ensure active session metadata: %w", err)
+		}
+	}
 	if start >= len(records) {
 		m.eventCount[agentName] = len(events)
 		return nil
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create session memory directory: %w", err)
 	}
 
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)

@@ -48,6 +48,57 @@ func TestMemoryManagerSaveWritesSessionEvents(t *testing.T) {
 	}
 }
 
+func TestMemoryManagerSaveCreatesSessionMetadataOnFirstWrite(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	manager := NewMemoryManager(storageDir)
+	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if err := handle.History.SetMessages(ctx, []llms.ChatMessage{
+		llms.HumanChatMessage{Content: "hello"},
+		llms.AIChatMessage{Content: "hi"},
+	}); err != nil {
+		t.Fatalf("SetMessages() error = %v", err)
+	}
+
+	if err := manager.Save(ctx, "default"); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	metadata := readSessionMetadataForTest(t, filepath.Join(storageDir, "session", sessionMetadataFileName))
+	rotation, err := manager.RotateSessionEventsDetailed()
+	if err != nil {
+		t.Fatalf("RotateSessionEventsDetailed() error = %v", err)
+	}
+	if rotation.ClosedSessionID != metadata.SessionID {
+		t.Fatalf("ClosedSessionID = %q, want active session_id %q", rotation.ClosedSessionID, metadata.SessionID)
+	}
+}
+
+func TestMemoryManagerSaveSnapshotCreatesSessionMetadataOnFirstWrite(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	manager := NewMemoryManager(storageDir)
+
+	if err := manager.SaveSnapshot(ctx, "default", []MessageRecord{
+		{Role: string(llms.ChatMessageTypeHuman), Content: "hello"},
+		{Role: string(llms.ChatMessageTypeAI), Content: "hi"},
+	}); err != nil {
+		t.Fatalf("SaveSnapshot() error = %v", err)
+	}
+
+	metadata := readSessionMetadataForTest(t, filepath.Join(storageDir, "session", sessionMetadataFileName))
+	rotation, err := manager.RotateSessionEventsDetailed()
+	if err != nil {
+		t.Fatalf("RotateSessionEventsDetailed() error = %v", err)
+	}
+	if rotation.ClosedSessionID != metadata.SessionID {
+		t.Fatalf("ClosedSessionID = %q, want active session_id %q", rotation.ClosedSessionID, metadata.SessionID)
+	}
+}
+
 func TestSnapshotAppendStartFindsExistingSuffixOverlap(t *testing.T) {
 	human := func(content string) MessageRecord {
 		return MessageRecord{Role: "human", Content: content}
