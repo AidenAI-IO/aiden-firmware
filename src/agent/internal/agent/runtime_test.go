@@ -2928,7 +2928,7 @@ func TestRuntimeRunDirectRouteUsesProviderFinalStreaming(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunDefaultModeFinalAnswerUsesProviderFinalStreaming(t *testing.T) {
+func TestRuntimeRunDefaultModeFinalAnswerStreamsAfterParsing(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
 			contentResponse(`{"mode":"simple","reason":"ordinary one-pass answer"}`),
@@ -2965,8 +2965,8 @@ func TestRuntimeRunDefaultModeFinalAnswerUsesProviderFinalStreaming(t *testing.T
 		t.Fatalf("Run() error = %v", err)
 	}
 
-	if got, want := model.sawStreaming, []bool{true, true}; !slices.Equal(got, want) {
-		t.Fatalf("expected route and default final calls to use provider streaming, got %#v", got)
+	if got, want := model.sawStreaming, []bool{true, false}; !slices.Equal(got, want) {
+		t.Fatalf("expected route streaming and non-streaming default planner call, got %#v", got)
 	}
 	if stream.String() != "Complete answer." {
 		t.Fatalf("stream = %q, want default final answer", stream.String())
@@ -2977,10 +2977,14 @@ func TestRuntimeRunDefaultModeFinalAnswerUsesProviderFinalStreaming(t *testing.T
 }
 
 func TestRuntimeRunFinalStreamingDoesNotStreamIntermediateToolCalls(t *testing.T) {
+	toolSpeech := "我先读取当前音量。"
 	model := &scriptedModel{
-		responses: roleToolResponses("audio_volume", `{"__arg1":"{}"}`, "The current audio volume is 42."),
+		responses: []*llms.ContentResponse{
+			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, toolSpeech),
+			contentResponse("The current audio volume is 42."),
+		},
 		streamChunks: [][]string{
-			{},
+			{toolSpeech},
 			{"The current audio volume is 42."},
 		},
 	}
@@ -3019,8 +3023,8 @@ func TestRuntimeRunFinalStreamingDoesNotStreamIntermediateToolCalls(t *testing.T
 	if len(tool.inputs) != 1 || tool.inputs[0] != "{}" {
 		t.Fatalf("unexpected tool inputs: %#v", tool.inputs)
 	}
-	if got, want := model.sawStreaming, []bool{true, true}; !slices.Equal(got, want) {
-		t.Fatalf("expected default-mode model calls to use provider streaming, got %#v", got)
+	if got, want := model.sawStreaming, []bool{false, false}; !slices.Equal(got, want) {
+		t.Fatalf("expected default-mode tool-capable model calls to avoid provider streaming, got %#v", got)
 	}
 	if stream.String() != "The current audio volume is 42." {
 		t.Fatalf("unexpected stream output: %q", stream.String())

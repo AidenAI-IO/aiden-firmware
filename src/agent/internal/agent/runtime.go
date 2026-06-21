@@ -1167,6 +1167,7 @@ type runtimeCallbackHandler struct {
 	startTime              time.Time
 	firstTokenSeen         bool
 	finalTokenSeen         bool
+	finalStreamLogEmitted  bool
 	finalStreamErr         error
 	streamFinal            bool
 	logger                 *Logger
@@ -1563,7 +1564,9 @@ func (h *runtimeCallbackHandler) HandleStreamingFunc(ctx context.Context, chunk 
 		if _, err := h.writer.Write(chunk); err != nil {
 			h.recordFinalStreamError(err)
 		} else if streamWriterEmitted(h.writer) {
-			h.recordFinalToken()
+			if h.recordFinalToken() {
+				h.logFinalStreamEmitted(ctx, chunk)
+			}
 		}
 	}
 
@@ -1582,6 +1585,7 @@ func (h *runtimeCallbackHandler) EnableFinalStreaming(ctx context.Context) {
 	resetStreamBuffer(h.writer)
 	h.mu.Lock()
 	h.finalTokenSeen = false
+	h.finalStreamLogEmitted = false
 	h.finalStreamErr = nil
 	h.streamFinal = true
 	h.mu.Unlock()
@@ -1651,13 +1655,15 @@ func (h *runtimeCallbackHandler) recordFirstToken() {
 	}
 }
 
-func (h *runtimeCallbackHandler) recordFinalToken() {
+func (h *runtimeCallbackHandler) recordFinalToken() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.finalStreamErr != nil {
-		return
+		return false
 	}
+	first := !h.finalTokenSeen
 	h.finalTokenSeen = true
+	return first
 }
 
 func (h *runtimeCallbackHandler) finalStreamingFailed() bool {
@@ -1680,6 +1686,36 @@ func (h *runtimeCallbackHandler) recordFinalStreamError(err error) {
 	if firstErr && h.logger != nil {
 		h.logger.Warn("Final stream writer failed; falling back to final answer: %v", err)
 	}
+}
+
+func (h *runtimeCallbackHandler) LogFinalStreamingDecision(_ context.Context, role RoleName, providerStreaming bool, reason string) {
+	if h == nil || h.logger == nil || !h.providerFinalStreaming {
+		return
+	}
+	h.logger.Info("Final stream decision: role=%s provider_streaming=%t reason=%s request_id=%s run_id=%s",
+		role, providerStreaming, reason, h.requestID, h.runID)
+}
+
+func (h *runtimeCallbackHandler) logFinalStreamEmitted(ctx context.Context, chunk []byte) {
+	if h == nil || h.logger == nil {
+		return
+	}
+	h.mu.Lock()
+	if h.finalStreamLogEmitted {
+		h.mu.Unlock()
+		return
+	}
+	h.finalStreamLogEmitted = true
+	requestID := h.requestID
+	runID := h.runID
+	h.mu.Unlock()
+
+	role := telemetryRoleFromContext(ctx)
+	if role == "" {
+		role = "post_parse"
+	}
+	h.logger.Info("Final stream emitted: role=%s chunk_len=%d chunk=%s request_id=%s run_id=%s",
+		role, len(chunk), truncateForLog(string(chunk), 120), requestID, runID)
 }
 
 var _ callbacks.Handler = (*runtimeCallbackHandler)(nil)
