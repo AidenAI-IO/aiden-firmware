@@ -134,7 +134,7 @@ func (m memoryManagerSessionManager) handleSessionBoundary(input string) session
 	}
 
 	if m.memories.logger != nil {
-		m.memories.logger.Info("[memory] session boundary detected: reason=%s", reason)
+		m.memories.logger.Info("[memory] new session started: reason=%s", reason)
 	}
 	archiveDir, err := m.memories.RotateSessionEvents()
 	if err != nil {
