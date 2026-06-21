@@ -306,15 +306,33 @@ func TestOpenAICompatibleModelLogsRawStreamingHTTPWhenEnabled(t *testing.T) {
 	if !foundStreamResponse {
 		t.Fatalf("raw streaming HTTP log missing stream response:\n%s", logText)
 	}
-	// Check that stream body contains the SSE events (they are escaped in JSON)
-	if !strings.Contains(streamBody, firstEvent) {
-		t.Fatalf("raw streaming HTTP log missing first SSE event in body:\n%s", streamBody)
+	if strings.Contains(streamBody, "data:") {
+		t.Fatalf("raw streaming HTTP log should store a readable JSON response, not raw SSE:\n%s", streamBody)
 	}
-	if !strings.Contains(streamBody, secondEvent) {
-		t.Fatalf("raw streaming HTTP log missing second SSE event in body:\n%s", streamBody)
+	var logged struct {
+		Stream  bool `json:"stream"`
+		Done    bool `json:"done"`
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
 	}
-	if !strings.Contains(streamBody, "data: [DONE]") {
-		t.Fatalf("raw streaming HTTP log missing [DONE] marker in body:\n%s", streamBody)
+	if err := json.Unmarshal([]byte(streamBody), &logged); err != nil {
+		t.Fatalf("raw streaming HTTP response body should be JSON: %v\n%s", err, streamBody)
+	}
+	if !logged.Stream || !logged.Done {
+		t.Fatalf("raw streaming HTTP response missing stream metadata: %#v", logged)
+	}
+	if len(logged.Choices) != 1 {
+		t.Fatalf("raw streaming HTTP response choices = %#v", logged.Choices)
+	}
+	if logged.Choices[0].Message.Content != "<think>\n需要查当前时间。\n</think>" {
+		t.Fatalf("raw streaming HTTP response content = %q", logged.Choices[0].Message.Content)
+	}
+	if logged.Choices[0].FinishReason != "tool_calls" {
+		t.Fatalf("raw streaming HTTP response finish_reason = %q", logged.Choices[0].FinishReason)
 	}
 	if !strings.Contains(logText, `"kind":"response"`) {
 		t.Fatalf("raw streaming HTTP log missing metadata:\n%s", logText)
@@ -364,10 +382,92 @@ func TestOpenAICompatibleModelLogsRawStreamingHTTPOnDecodeError(t *testing.T) {
 			break
 		}
 	}
-	if !strings.Contains(streamBody, validEvent) || !strings.Contains(streamBody, malformedEvent) {
-		t.Fatalf("raw streaming HTTP log missing failed SSE events:\nlog=%s\nstream=%s", logText, streamBody)
+	var logged struct {
+		Stream  bool   `json:"stream"`
+		Error   string `json:"error"`
+		RawSSE  string `json:"raw_sse"`
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal([]byte(streamBody), &logged); err != nil {
+		t.Fatalf("raw streaming error response body should be JSON: %v\n%s", err, streamBody)
+	}
+	if !logged.Stream {
+		t.Fatalf("raw streaming error response missing stream marker: %#v", logged)
+	}
+	if !strings.Contains(logged.Error, "decode stream event") {
+		t.Fatalf("raw streaming error response missing decode error: %#v", logged)
+	}
+	if len(logged.Choices) != 1 || logged.Choices[0].Message.Content != "hello" {
+		t.Fatalf("raw streaming error response missing partial content: %#v", logged.Choices)
+	}
+	if !strings.Contains(logged.RawSSE, validEvent) || !strings.Contains(logged.RawSSE, malformedEvent) {
+		t.Fatalf("raw streaming error response missing failed SSE events:\nlog=%s\nstream=%s", logText, streamBody)
 	}
 	assertRawHTTPLogIsValidJSONL(t, logText)
+}
+
+func TestOpenAICompatibleModelRawHTTPLogKeepsRunInRequestMinuteFile(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"OK\"},\"finish_reason\":\"stop\"}]}\n\n"))
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	logDir := t.TempDir()
+	logger := newLLMRawHTTPLogger(logDir, "test-runtime")
+	times := []time.Time{
+		time.Date(2026, 6, 21, 9, 4, 59, 0, time.UTC),
+		time.Date(2026, 6, 21, 9, 4, 59, 0, time.UTC),
+		time.Date(2026, 6, 21, 9, 5, 1, 0, time.UTC),
+	}
+	logger.now = func() time.Time {
+		if len(times) == 0 {
+			return time.Date(2026, 6, 21, 9, 5, 1, 0, time.UTC)
+		}
+		next := times[0]
+		times = times[1:]
+		return next
+	}
+
+	model := newOpenAICompatibleModel(
+		server.URL,
+		"test-model",
+		"",
+		server.Client(),
+		withOpenAICompatibleRawHTTPLogger(logger),
+	)
+	_, err := model.GenerateContent(
+		contextWithRawHTTPLog(context.Background()),
+		[]llms.MessageContent{{
+			Role:  llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{llms.TextPart("hello")},
+		}},
+		llms.WithStreamingFunc(func(ctx context.Context, chunk []byte) error { return nil }),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	matches, err := filepath.Glob(filepath.Join(logDir, "llm-http-*.log"))
+	if err != nil {
+		t.Fatalf("glob raw HTTP logs: %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("raw HTTP request/response should stay in one file, got %d: %#v", len(matches), matches)
+	}
+	if !strings.Contains(filepath.Base(matches[0]), "llm-http-202606210904-test-runtime.log") {
+		t.Fatalf("raw HTTP file should use request minute, got %s", filepath.Base(matches[0]))
+	}
+	logText := readRawHTTPLog(t, logDir)
+	counts := countRawHTTPKinds(t, logText)
+	if counts["request"] != 1 || counts["response"] != 1 {
+		t.Fatalf("raw HTTP log should contain one request and one response:\n%s", logText)
+	}
 }
 
 // countRawHTTPKinds returns how many log entries carry each kind, so tests can
