@@ -838,6 +838,7 @@ def test_generate_reports_triggers_llm_analysis_when_env_enabled(monkeypatch, tm
 
     assert calls and calls[0][0] == batch
     assert "mobilegym analysis" in (batch / "index.html").read_text(encoding="utf-8")
+    assert "mobilegym analysis" in (batch / "clock" / "index.html").read_text(encoding="utf-8")
 
 
 def test_generate_reports_keeps_summary_when_llm_analysis_fails(monkeypatch, tmp_path):

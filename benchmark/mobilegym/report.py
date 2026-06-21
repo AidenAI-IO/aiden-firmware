@@ -30,6 +30,7 @@ def generate_reports(batch_dir: str | Path) -> dict[str, Any]:
         return _generate_direct_run_report(batch)
 
     suite_summaries = []
+    suite_reports: list[tuple[Path, list[dict[str, Any]], dict[str, Any]]] = []
     all_rows: list[dict[str, Any]] = []
     for suite_dir in sorted(path for path in batch.iterdir() if path.is_dir()):
         shard_dirs = _suite_shard_dirs(suite_dir)
@@ -44,12 +45,15 @@ def generate_reports(batch_dir: str | Path) -> dict[str, Any]:
         suite_name = _summary_suite_name(suite_dir.name, shard_metadatas)
         summary = _summary_for(batch.name, suite_name, rows, shard_metadatas)
         _write_suite_report(suite_dir, rows, summary)
+        suite_reports.append((suite_dir, rows, summary))
         suite_summaries.append(summary)
         all_rows.extend(rows)
 
     batch_summary = _batch_summary(batch.name, suite_summaries, all_rows)
     _write_batch_report(batch, suite_summaries, batch_summary)
     if _run_analysis_if_enabled(batch):
+        for suite_dir, rows, summary in suite_reports:
+            _write_suite_report(suite_dir, rows, summary, analysis_dir=batch)
         _write_batch_report(batch, suite_summaries, batch_summary)
     return batch_summary
 
@@ -553,9 +557,14 @@ def _model_from_summaries(summaries: list[dict[str, Any]]) -> str:
     return ""
 
 
-def _write_suite_report(suite_dir: Path, rows: list[dict[str, Any]], summary: dict[str, Any]) -> None:
+def _write_suite_report(
+    suite_dir: Path,
+    rows: list[dict[str, Any]],
+    summary: dict[str, Any],
+    analysis_dir: Path | None = None,
+) -> None:
     (suite_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
-    (suite_dir / "index.html").write_text(_drawer_html(summary["suite"], summary, rows, suite_dir), encoding="utf-8")
+    (suite_dir / "index.html").write_text(_drawer_html(summary["suite"], summary, rows, analysis_dir or suite_dir), encoding="utf-8")
 
 
 def _write_batch_report(batch_dir: Path, suite_summaries: list[dict[str, Any]], summary: dict[str, Any]) -> None:

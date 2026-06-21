@@ -43,8 +43,9 @@ class AnalysisError(RuntimeError):
 
 
 SECRET_NAME_RE = re.compile(
-    r"(?i)\b(api[_-]?key|token|password|secret|bearer|authorization|OPENROUTER_API_KEY|MODEL_API_KEY|AIDEN_MODEL_API_KEY|AIDEN_CONTROL_TOKEN)\b\s*[:=]\s*[^\s,'\"]+"
+    r"(?i)(?P<prefix>[\"']?\b(api[_-]?key|token|password|secret|bearer|authorization|OPENROUTER_API_KEY|MODEL_API_KEY|AIDEN_MODEL_API_KEY|AIDEN_CONTROL_TOKEN)\b[\"']?\s*[:=]\s*)(?P<quote>[\"']?)(?P<value>[^\"'\s,}]+)(?P=quote)?"
 )
+BASIC_AUTH_RE = re.compile(r"(?i)authorization\s*:\s*basic\s+[A-Za-z0-9._~+/=-]{8,}")
 BEARER_RE = re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]{12,}")
 SK_KEY_RE = re.compile(r"\bsk-[A-Za-z0-9._-]{8,}\b")
 JWTISH_RE = re.compile(r"\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
@@ -99,11 +100,12 @@ def resolve_analysis_api_key(cfg: AnalysisConfig) -> tuple[str, str]:
 def redact_text(text: str, cfg: AnalysisConfig) -> str:
     if not text:
         return text
-    redacted = SECRET_NAME_RE.sub(
-        lambda m: m.group(0).split("=", 1)[0].split(":", 1)[0] + "=[REDACTED]",
-        text,
-    )
+    redacted = BASIC_AUTH_RE.sub("Authorization: Basic [REDACTED]", text)
     redacted = BEARER_RE.sub("Bearer [REDACTED]", redacted)
+    redacted = SECRET_NAME_RE.sub(
+        lambda m: f"{m.group('prefix')}{m.group('quote')}[REDACTED]{m.group('quote')}",
+        redacted,
+    )
     redacted = SK_KEY_RE.sub("[REDACTED_SK_KEY]", redacted)
     redacted = JWTISH_RE.sub("[REDACTED_JWT]", redacted)
     names = [cfg.api_key_env] if cfg.api_key_env else []
@@ -255,6 +257,55 @@ def _read_excerpt(path: Path, max_bytes: int, cfg: AnalysisConfig, warnings: lis
     return redact_text(data.decode("utf-8", errors="replace"), cfg), truncated
 
 
+def _safe_child_path(root: Path, *parts: str) -> Path | None:
+    try:
+        root_resolved = root.resolve()
+        candidate = root.joinpath(*parts).resolve()
+        candidate.relative_to(root_resolved)
+    except (OSError, ValueError):
+        return None
+    return candidate
+
+
+def _safe_path_within(root: Path, path: Path) -> Path | None:
+    candidate = path if path.is_absolute() else root / path
+    try:
+        root_resolved = root.resolve()
+        candidate = candidate.resolve()
+        candidate.relative_to(root_resolved)
+    except (OSError, ValueError):
+        return None
+    return candidate
+
+
+def _native_artifact_dirs(run_dir: Path, task_dir: Path | None, row: dict[str, Any]) -> list[Path]:
+    dirs: list[Path] = []
+
+    def add(path: Path | None) -> None:
+        if path is None or path in dirs or not path.is_dir():
+            return
+        dirs.append(path)
+
+    artifact_dir = str(row.get("artifact_dir") or "")
+    if artifact_dir:
+        add(_safe_path_within(run_dir, Path(artifact_dir)))
+    if task_dir is not None:
+        add(task_dir)
+        try:
+            attempt = int(row.get("attempt") or 0)
+        except (TypeError, ValueError):
+            attempt = 0
+        if attempt > 1:
+            add(_safe_child_path(task_dir, f"attempt_{attempt}"))
+        for attempt_dir in sorted(task_dir.glob("attempt_*")):
+            add(_safe_path_within(run_dir, attempt_dir))
+    return dirs
+
+
+def _join_artifact_excerpts(items: list[tuple[str, str]]) -> str:
+    return "\n\n".join(f"### {path}\n{excerpt}" for path, excerpt in items if excerpt)
+
+
 def _collect_native_context(
     run_dir: Path, repo_root: Path, cfg: AnalysisConfig, warnings: list[str]
 ) -> dict[str, Any]:
@@ -274,21 +325,35 @@ def _collect_native_context(
         if status not in FAIL_STATUSES:
             continue
         task_id = str(row.get("task_id") or row.get("id") or "")
-        task_dir = run_dir / "tasks" / task_id
-        trace_excerpt = ""
-        history_excerpt = ""
-        judge_excerpt = ""
-        if (task_dir / "trace.json").exists():
-            trace_excerpt, _ = _read_excerpt(task_dir / "trace.json", cfg.max_log_bytes, cfg, warnings)
-        if (task_dir / "history.json").exists():
-            history_excerpt, _ = _read_excerpt(task_dir / "history.json", cfg.max_log_bytes, cfg, warnings)
-        if (task_dir / "judge.json").exists():
-            judge_excerpt, _ = _read_excerpt(task_dir / "judge.json", cfg.max_log_bytes, cfg, warnings)
-        screenshot_refs = [
-            str(path.relative_to(run_dir))
-            for path in sorted(task_dir.glob("**/*"))
-            if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
-        ]
+        task_dir = _safe_child_path(run_dir / "tasks", task_id)
+        if task_id and task_dir is None:
+            warnings.append(f"skipped unsafe task artifact path for task_id={task_id!r}")
+        artifact_dirs = _native_artifact_dirs(run_dir, task_dir, row)
+        trace_items: list[tuple[str, str]] = []
+        history_items: list[tuple[str, str]] = []
+        judge_items: list[tuple[str, str]] = []
+        artifact_refs: list[str] = []
+        screenshot_refs: list[str] = []
+        for artifact_dir in artifact_dirs:
+            for name, items in (
+                ("trace.json", trace_items),
+                ("history.json", history_items),
+                ("judge.json", judge_items),
+            ):
+                path = _safe_child_path(artifact_dir, name)
+                if path is not None and path.exists():
+                    excerpt, _ = _read_excerpt(path, cfg.max_log_bytes, cfg, warnings)
+                    rel = str(path.relative_to(run_dir))
+                    items.append((rel, excerpt))
+                    artifact_refs.append(rel)
+            for path in sorted(artifact_dir.glob("**/*")):
+                if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}:
+                    rel = str(path.relative_to(run_dir))
+                    screenshot_refs.append(rel)
+                    artifact_refs.append(rel)
+        trace_excerpt = _join_artifact_excerpts(trace_items)
+        history_excerpt = _join_artifact_excerpts(history_items)
+        judge_excerpt = _join_artifact_excerpts(judge_items)
         errors = _extract_errors(row)
         terms.update(
             _terms_from_text(
@@ -312,12 +377,7 @@ def _collect_native_context(
                 "history_excerpt": history_excerpt,
                 "judge_excerpt": judge_excerpt,
                 "log_refs": [],
-                "artifact_refs": [
-                    str((task_dir / name).relative_to(run_dir))
-                    for name in ("trace.json", "history.json", "judge.json")
-                    if (task_dir / name).exists()
-                ]
-                + screenshot_refs,
+                "artifact_refs": list(dict.fromkeys(artifact_refs)),
                 "screenshot_refs": screenshot_refs,
             }
         )
