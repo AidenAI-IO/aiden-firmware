@@ -405,6 +405,18 @@ func (w *JSONFieldOrPlainStreamWriter) ResetStreamState() {
 	w.emitted = false
 }
 
+// ResetBuffer forwards a buffer reset to the underlying target writer. The
+// JSON-field extraction layer itself holds no synthesizable buffer, but the
+// downstream TTS session may.
+func (w *JSONFieldOrPlainStreamWriter) ResetBuffer() {
+	if w == nil {
+		return
+	}
+	if resetter, ok := w.target.(ttsBufferResetter); ok {
+		resetter.ResetBuffer()
+	}
+}
+
 func (w *JSONFieldOrPlainStreamWriter) StreamEmitted() bool {
 	if w == nil {
 		return false
