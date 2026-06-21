@@ -700,7 +700,7 @@ func rawHTTPLogPath(logDir string) string {
 	if len(matches) > 0 {
 		return matches[len(matches)-1]
 	}
-	return filepath.Join(logDir, "llm-http-"+time.Now().Format("20060102")+".log")
+	return filepath.Join(logDir, "llm-http-"+time.Now().Format("200601021504")+".log")
 }
 
 func assertRawHTTPLogIsValidJSONL(t *testing.T, logText string) {

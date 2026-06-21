@@ -12,9 +12,9 @@ func TestCleanupOldLogFilesRemovesLogsOlderThanTwoDays(t *testing.T) {
 	now := time.Date(2026, 6, 19, 12, 0, 0, 0, time.Local)
 
 	// Only llm-http logs are cleaned up
-	writeTestLogFile(t, logDir, "llm-http-20260616-session1.log", now)
-	writeTestLogFile(t, logDir, "llm-http-20260617-session2.log", now.Add(-72*time.Hour))
-	writeTestLogFile(t, logDir, "llm-http-20260618-session3.log", now.Add(-72*time.Hour))
+	writeTestLogFile(t, logDir, "llm-http-202606160900-session1.log", now)
+	writeTestLogFile(t, logDir, "llm-http-202606171030-session2.log", now.Add(-72*time.Hour))
+	writeTestLogFile(t, logDir, "llm-http-202606181445-session3.log", now.Add(-72*time.Hour))
 
 	// These should not be touched
 	writeTestLogFile(t, logDir, "agent-20260616.log", now)
@@ -26,11 +26,11 @@ func TestCleanupOldLogFilesRemovesLogsOlderThanTwoDays(t *testing.T) {
 	}
 
 	// Old llm-http logs should be removed
-	assertPathMissing(t, filepath.Join(logDir, "llm-http-20260616-session1.log"))
+	assertPathMissing(t, filepath.Join(logDir, "llm-http-202606160900-session1.log"))
 
 	// Recent llm-http logs should remain
-	assertPathExists(t, filepath.Join(logDir, "llm-http-20260617-session2.log"))
-	assertPathExists(t, filepath.Join(logDir, "llm-http-20260618-session3.log"))
+	assertPathExists(t, filepath.Join(logDir, "llm-http-202606171030-session2.log"))
+	assertPathExists(t, filepath.Join(logDir, "llm-http-202606181445-session3.log"))
 
 	// Non-llm-http logs should not be touched
 	assertPathExists(t, filepath.Join(logDir, "agent-20260616.log"))
@@ -45,7 +45,7 @@ func TestNewLoggerCleansOldLogFilesOnStartup(t *testing.T) {
 		t.Fatalf("create log dir: %v", err)
 	}
 	// Create old llm-http log
-	oldLog := filepath.Join(logDir, "llm-http-20000101-session1.log")
+	oldLog := filepath.Join(logDir, "llm-http-200001010000-session1.log")
 	if err := os.WriteFile(oldLog, []byte("old"), 0644); err != nil {
 		t.Fatalf("write old log: %v", err)
 	}

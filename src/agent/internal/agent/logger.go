@@ -77,14 +77,14 @@ func logFileTime(name string, modTime time.Time) time.Time {
 	if !strings.HasPrefix(name, "llm-http-") || !strings.HasSuffix(name, ".log") {
 		return modTime
 	}
-	// Extract date from llm-http-YYYYMMDD-*.log
+	// Extract datetime from llm-http-YYYYMMDDHHMM-*.log
 	parts := strings.TrimPrefix(name, "llm-http-")
 	parts = strings.TrimSuffix(parts, ".log")
-	if len(parts) < 8 {
+	if len(parts) < 12 {
 		return modTime
 	}
-	dateStr := parts[:8]
-	if parsed, err := time.ParseInLocation("20060102", dateStr, time.Local); err == nil {
+	dateTimeStr := parts[:12]
+	if parsed, err := time.ParseInLocation("200601021504", dateTimeStr, time.Local); err == nil {
 		return parsed.Add(24 * time.Hour)
 	}
 	return modTime

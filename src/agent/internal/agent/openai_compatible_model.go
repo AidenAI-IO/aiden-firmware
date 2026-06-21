@@ -109,11 +109,11 @@ func (l *llmRawHTTPLogger) Log(model, kind string, statusCode int, raw string) e
 		return err
 	}
 
-	// File name includes both date and session ID
-	dateStr := now.Format("20060102")
-	fileName := "llm-http-" + dateStr + ".log"
+	// File name includes date, time (hour+minute), and session ID
+	dateTimeStr := now.Format("200601021504")
+	fileName := "llm-http-" + dateTimeStr + ".log"
 	if l.sessionID != "" {
-		fileName = "llm-http-" + dateStr + "-" + l.sessionID + ".log"
+		fileName = "llm-http-" + dateTimeStr + "-" + l.sessionID + ".log"
 	}
 
 	path := filepath.Join(l.dir, fileName)

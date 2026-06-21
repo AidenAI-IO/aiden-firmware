@@ -1216,8 +1216,8 @@ TEST_CASE("config_web: GET /api/llm-logs lists llm-http log files newest first")
     const std::string log_dir = handle->tmp_dir + "/log";
     REQUIRE(::mkdir(log_dir.c_str(), 0755) == 0);
 
-    write_file(log_dir + "/llm-http-20260101.log", "{\"ts\":\"00:00:01\",\"kind\":\"request\",\"status\":0,\"body\":\"{}\"}\n");
-    write_file(log_dir + "/llm-http-20260102-sess.log", "{\"ts\":\"00:00:02\",\"kind\":\"request\",\"status\":0,\"body\":\"{}\"}\n");
+    write_file(log_dir + "/llm-http-202601010830.log", "{\"ts\":\"00:00:01\",\"kind\":\"request\",\"status\":0,\"body\":\"{}\"}\n");
+    write_file(log_dir + "/llm-http-202601021445-sess.log", "{\"ts\":\"00:00:02\",\"kind\":\"request\",\"status\":0,\"body\":\"{}\"}\n");
     // A non-matching file must be ignored.
     write_file(log_dir + "/agent.log", "noise\n");
 
@@ -1234,8 +1234,8 @@ TEST_CASE("config_web: GET /api/llm-logs lists llm-http log files newest first")
     // Newest (by name, descending) first.
     cJSON* first = cJSON_GetArrayItem(files, 0);
     cJSON* second = cJSON_GetArrayItem(files, 1);
-    CHECK(required_json_string(first, "name") == "llm-http-20260102-sess.log");
-    CHECK(required_json_string(second, "name") == "llm-http-20260101.log");
+    CHECK(required_json_string(first, "name") == "llm-http-202601021445-sess.log");
+    CHECK(required_json_string(second, "name") == "llm-http-202601010830.log");
     CHECK(cJSON_GetObjectItem(first, "size_bytes") != nullptr);
     cJSON_Delete(parsed);
 }
@@ -1265,14 +1265,14 @@ TEST_CASE("config_web: GET /api/llm-logs/file/<name> returns raw JSONL content")
     const std::string content =
         "{\"ts\":\"00:00:01\",\"kind\":\"request\",\"status\":0,\"body\":\"{\\\"messages\\\":[]}\"}\n"
         "{\"ts\":\"00:00:02\",\"kind\":\"response\",\"status\":200,\"body\":\"{}\"}\n";
-    write_file(log_dir + "/llm-http-20260103.log", content);
+    write_file(log_dir + "/llm-http-202601031530.log", content);
 
-    HttpResponse resp = http_request(handle->port, "GET", "/api/llm-logs/file/llm-http-20260103.log");
+    HttpResponse resp = http_request(handle->port, "GET", "/api/llm-logs/file/llm-http-202601031530.log");
     REQUIRE(resp.status == 200);
 
     cJSON* parsed = cJSON_Parse(resp.body.c_str());
     REQUIRE(parsed != nullptr);
-    CHECK(required_json_string(parsed, "name") == "llm-http-20260103.log");
+    CHECK(required_json_string(parsed, "name") == "llm-http-202601031530.log");
     CHECK(required_json_string(parsed, "content") == content);
     cJSON_Delete(parsed);
 }
@@ -1282,7 +1282,7 @@ TEST_CASE("config_web: GET /api/llm-logs/file rejects path traversal and bad nam
     auto handle = start_server(env);
     const std::string log_dir = handle->tmp_dir + "/log";
     REQUIRE(::mkdir(log_dir.c_str(), 0755) == 0);
-    write_file(log_dir + "/llm-http-20260103.log", "{}\n");
+    write_file(log_dir + "/llm-http-202601031530.log", "{}\n");
 
     // Path traversal attempt.
     HttpResponse traversal = http_request(handle->port, "GET", "/api/llm-logs/file/..%2f..%2fetc%2fpasswd");
@@ -1293,7 +1293,7 @@ TEST_CASE("config_web: GET /api/llm-logs/file rejects path traversal and bad nam
     CHECK(bad.status == 400);
 
     // A well-formed name that does not exist.
-    HttpResponse missing = http_request(handle->port, "GET", "/api/llm-logs/file/llm-http-19990101.log");
+    HttpResponse missing = http_request(handle->port, "GET", "/api/llm-logs/file/llm-http-199901010000.log");
     CHECK(missing.status == 404);
 
     // Encoded NUL byte: %00 decodes to '\0', which would truncate at the C
@@ -1310,17 +1310,17 @@ TEST_CASE("config_web: GET /api/llm-logs does not list or serve symlinked files"
 
     // A real log file alongside a symlink that matches the naming pattern but
     // points outside the log set. The symlink must neither be listed nor read.
-    write_file(log_dir + "/llm-http-20260103.log", "{}\n");
+    write_file(log_dir + "/llm-http-202601031530.log", "{}\n");
     const std::string secret = handle->tmp_dir + "/secret.txt";
     write_file(secret, "TOP SECRET");
-    REQUIRE(::symlink(secret.c_str(), (log_dir + "/llm-http-evil.log").c_str()) == 0);
+    REQUIRE(::symlink(secret.c_str(), (log_dir + "/llm-http-202601040900-evil.log").c_str()) == 0);
 
     HttpResponse list = http_request(handle->port, "GET", "/api/llm-logs");
     REQUIRE(list.status == 200);
-    CHECK(list.body.find("llm-http-20260103.log") != std::string::npos);
-    CHECK(list.body.find("llm-http-evil.log") == std::string::npos);
+    CHECK(list.body.find("llm-http-202601031530.log") != std::string::npos);
+    CHECK(list.body.find("llm-http-202601040900-evil.log") == std::string::npos);
 
-    HttpResponse served = http_request(handle->port, "GET", "/api/llm-logs/file/llm-http-evil.log");
+    HttpResponse served = http_request(handle->port, "GET", "/api/llm-logs/file/llm-http-202601040900-evil.log");
     CHECK(served.status == 404);
     CHECK(served.body.find("TOP SECRET") == std::string::npos);
 }
