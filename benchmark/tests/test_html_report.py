@@ -120,3 +120,35 @@ def test_generate_report_includes_tool_hard_assertion_failures(tmp_path: Path):
 
     assert "Required Tools" in html
     assert "Forbidden Tools" in html
+
+
+def test_generate_report_includes_llm_analysis_section(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "manifest.json").write_text(
+        json.dumps({"run_id": "run", "totals": {"tasks": 0, "passed": 0, "failed": 0}}),
+        encoding="utf-8",
+    )
+    (run_dir / "results.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "llm_analysis.md").write_text(
+        "# LLM Benchmark Analysis\n\nRoot cause summary", encoding="utf-8"
+    )
+
+    html = generate_report_html(run_dir)
+
+    assert "LLM Analysis" in html
+    assert "Root cause summary" in html
+
+
+def test_upload_report_uploads_analysis_artifacts(tmp_path: Path):
+    run_dir = tmp_path / "run-1"
+    run_dir.mkdir()
+    (run_dir / "manifest.json").write_text('{"run_id":"run-1"}', encoding="utf-8")
+    (run_dir / "llm_analysis.md").write_text("analysis md", encoding="utf-8")
+    (run_dir / "llm_analysis.json").write_text('{"summary":"analysis"}', encoding="utf-8")
+    client = RecordingClient()
+
+    assert upload_report(client, "<html></html>", run_dir) is True
+    command = client.calls[0][1]["command"]
+    assert "llm_analysis.md" in command
+    assert "llm_analysis.json" in command

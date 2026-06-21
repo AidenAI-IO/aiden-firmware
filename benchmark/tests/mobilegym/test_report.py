@@ -806,3 +806,67 @@ def test_report_module_cli_rejects_missing_batch_dir(tmp_path):
 
     assert result.returncode == 2
     assert "not found" in result.stderr.lower()
+
+
+def test_generate_reports_triggers_llm_analysis_when_env_enabled(monkeypatch, tmp_path):
+    from mobilegym import report
+
+    batch = tmp_path / "batch-analysis"
+    shard = batch / "clock" / "shard-0"
+    write_json(
+        shard / "shard.json",
+        {
+            "batch_id": "batch-analysis",
+            "suite": "clock",
+            "selected_task_count": 1,
+            "selected_task_ids": ["clock.Task"],
+            "exit_code": 0,
+        },
+    )
+    write_jsonl(shard / "raw" / "run" / "results.jsonl", [{"id": "clock.Task", "is_success": True}])
+    calls = []
+
+    def fake_analyze(run_dir, repo_root, cfg):
+        calls.append((run_dir, repo_root, cfg))
+        (run_dir / "llm_analysis.md").write_text("mobilegym analysis", encoding="utf-8")
+        return report.AnalysisResult(ok=True, markdown_path=run_dir / "llm_analysis.md")
+
+    monkeypatch.setenv("AIDEN_BENCHMARK_LLM_ANALYSIS", "1")
+    monkeypatch.setattr(report, "analyze_run", fake_analyze)
+
+    report.generate_reports(batch)
+
+    assert calls and calls[0][0] == batch
+    assert "mobilegym analysis" in (batch / "index.html").read_text(encoding="utf-8")
+
+
+def test_generate_reports_keeps_summary_when_llm_analysis_fails(monkeypatch, tmp_path):
+    from mobilegym import report
+
+    batch = tmp_path / "batch-analysis-fail"
+    shard = batch / "clock" / "shard-0"
+    write_json(
+        shard / "shard.json",
+        {
+            "batch_id": "batch-analysis-fail",
+            "suite": "clock",
+            "selected_task_count": 1,
+            "selected_task_ids": ["clock.Task"],
+            "exit_code": 0,
+        },
+    )
+    write_jsonl(shard / "raw" / "run" / "results.jsonl", [{"id": "clock.Task", "is_success": True}])
+
+    monkeypatch.setenv("AIDEN_BENCHMARK_LLM_ANALYSIS", "1")
+    monkeypatch.setattr(
+        report,
+        "analyze_run",
+        lambda run_dir, repo_root, cfg: report.AnalysisResult(
+            ok=False, warning="boom", error_path=run_dir / "llm_analysis_error.txt"
+        ),
+    )
+
+    summary = report.generate_reports(batch)
+
+    assert summary["passed"] == 1
+    assert (batch / "index.html").exists()

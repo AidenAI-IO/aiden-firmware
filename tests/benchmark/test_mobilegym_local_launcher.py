@@ -129,6 +129,25 @@ def test_build_run_command_adds_common_docker_cli_paths(launcher_module, tmp_pat
     assert "/Applications/Docker.app/Contents/Resources/bin" in path_parts
 
 
+def test_build_run_command_maps_llm_analysis_payload_to_env(launcher_module, tmp_path):
+    docker_dir = tmp_path / "mobilegym" / "docker"
+    docker_dir.mkdir(parents=True)
+    (docker_dir / "parallel_run.sh").write_text("#!/usr/bin/env bash\n")
+
+    command = launcher_module.build_run_command(
+        tmp_path,
+        {
+            "suite": "clock",
+            "suite_type": "mobilegym_builtin",
+            "llm_analysis": True,
+            "analysis_model": "anthropic/claude-sonnet-4-6",
+        },
+    )
+
+    assert command.env["AIDEN_BENCHMARK_LLM_ANALYSIS"] == "1"
+    assert command.env["AIDEN_BENCHMARK_ANALYSIS_MODEL"] == "anthropic/claude-sonnet-4-6"
+
+
 def test_build_run_command_rejects_path_traversal(launcher_module, tmp_path):
     with pytest.raises(launcher_module.LauncherError, match="invalid suite name"):
         launcher_module.build_run_command(
@@ -247,6 +266,7 @@ def test_handler_serves_mobilegym_suite_report(launcher_module, tmp_path):
     report_dir = tmp_path / "runs" / "mobilegym" / "batch-20260611-010101" / "perception" / "perception_v1"
     report_dir.mkdir(parents=True)
     (report_dir / "index.html").write_text("<html>Perception report</html>")
+
     server = HTTPServer(("127.0.0.1", 0), launcher_module.make_handler(tmp_path))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -258,6 +278,43 @@ def test_handler_serves_mobilegym_suite_report(launcher_module, tmp_path):
             assert resp.status == 200
             assert "text/html" in resp.headers["Content-Type"]
             assert resp.read().decode() == "<html>Perception report</html>"
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+
+def test_handler_serves_mobilegym_analysis_artifact(launcher_module, tmp_path):
+    report_dir = tmp_path / "runs" / "mobilegym" / "batch-20260611-010101"
+    report_dir.mkdir(parents=True)
+    (report_dir / "index.html").write_text("<html>MobileGym report</html>")
+    (report_dir / "llm_analysis.md").write_text("analysis body")
+    server = HTTPServer(("127.0.0.1", 0), launcher_module.make_handler(tmp_path))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{server.server_port}/benchmark/report/batch-20260611-010101/llm_analysis.md",
+            timeout=2,
+        ) as resp:
+            assert resp.status == 200
+            assert "text/markdown" in resp.headers["Content-Type"]
+            assert resp.read().decode() == "analysis body"
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+
+def test_handler_rejects_unsafe_report_artifact(launcher_module, tmp_path):
+    server = HTTPServer(("127.0.0.1", 0), launcher_module.make_handler(tmp_path))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(
+                f"http://127.0.0.1:{server.server_port}/benchmark/report/batch-20260611-010101/../../secret",
+                timeout=2,
+            )
+        assert exc.value.code == 404
     finally:
         server.shutdown()
         thread.join(timeout=2)

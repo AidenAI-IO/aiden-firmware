@@ -191,6 +191,17 @@ def build_run_command(
     env = os.environ.copy()
     add_common_cli_paths(env)
     env.update(model_config_from_payload(payload))
+    if payload.get("llm_analysis") is True:
+        env["AIDEN_BENCHMARK_LLM_ANALYSIS"] = "1"
+    for payload_key, env_key in {
+        "analysis_model": "AIDEN_BENCHMARK_ANALYSIS_MODEL",
+        "analysis_max_log_bytes": "AIDEN_BENCHMARK_ANALYSIS_MAX_LOG_BYTES",
+        "analysis_max_code_bytes": "AIDEN_BENCHMARK_ANALYSIS_MAX_CODE_BYTES",
+        "analysis_timeout_sec": "AIDEN_BENCHMARK_ANALYSIS_TIMEOUT_SEC",
+    }.items():
+        value = payload.get(payload_key)
+        if value not in (None, ""):
+            env[env_key] = str(value)
     env["PARALLEL"] = str(parallel)
     env["MOBILEGYM_RUNS_ROOT"] = str(root / "runs" / "mobilegym")
     env.setdefault("MOBILEGYM_BATCH_ID", "batch-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
@@ -360,6 +371,14 @@ def report_file_for(root: Path, report_id: str) -> Path | None:
     run_dir = root / "runs" / "mobilegym" / parts[0]
     if len(parts) == 1:
         return run_dir / "index.html"
+    artifact_names = {"index.html", "llm_analysis.md", "llm_analysis.json", "llm_analysis_error.txt"}
+    if parts[-1] in artifact_names:
+        if len(parts) == 2:
+            return run_dir / parts[-1]
+        suite = "/".join(parts[1:-1])
+        if not valid_suite_name(suite):
+            return None
+        return run_dir / suite / parts[-1]
     suite = "/".join(parts[1:])
     if not valid_suite_name(suite):
         return None
@@ -687,7 +706,13 @@ def make_handler(benchmark_root: str | Path = BENCHMARK_ROOT) -> type[BaseHTTPRe
                 self.send_error(404, "not found")
                 return
             self.send_response(200)
-            self.send_common_headers("text/html; charset=utf-8")
+            content_type = {
+                ".html": "text/html; charset=utf-8",
+                ".md": "text/markdown; charset=utf-8",
+                ".json": "application/json; charset=utf-8",
+                ".txt": "text/plain; charset=utf-8",
+            }.get(report_path.suffix, "application/octet-stream")
+            self.send_common_headers(content_type)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)

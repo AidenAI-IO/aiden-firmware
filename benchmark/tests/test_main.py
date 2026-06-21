@@ -2,6 +2,7 @@ import time
 import json
 
 from runner.agent_client import ToolInvokeResult
+from runner.analysis import AnalysisResult
 from runner.models import HardAssertionResults, RubricVerdict, TaskResult
 import runner.main as main
 
@@ -122,3 +123,66 @@ def test_run_manifest_records_agent_model(monkeypatch, tmp_path):
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["agent_model"] == "qwen3.6-35b"
     assert manifest["judge_config"] is None
+
+
+def test_run_triggers_llm_analysis_when_enabled(monkeypatch, tmp_path):
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(json.dumps({"name": "empty_suite", "tasks": []}), encoding="utf-8")
+    calls = []
+
+    class FakeClient:
+        def __init__(self, base_url):
+            self.base_url = base_url
+
+        def health(self):
+            return True
+
+        def close(self):
+            pass
+
+    def fake_analyze(run_dir, repo_root, cfg):
+        calls.append((run_dir, repo_root, cfg))
+        (run_dir / "llm_analysis.md").write_text("analysis", encoding="utf-8")
+        return AnalysisResult(ok=True, markdown_path=run_dir / "llm_analysis.md")
+
+    monkeypatch.setattr(main, "AgentClient", FakeClient)
+    monkeypatch.setattr(main, "wait_for_agent_clock", lambda *args, **kwargs: True)
+    monkeypatch.setattr(main, "upload_report", lambda *args, **kwargs: False)
+    monkeypatch.setattr(main, "analyze_run", fake_analyze)
+
+    rc = main.cli(
+        ["run", "--suite", str(suite_path), "--out", str(tmp_path / "runs"), "--no-judge", "--llm-analysis"]
+    )
+
+    assert rc == 0
+    assert calls and calls[0][2].enabled is True
+
+
+def test_run_keeps_exit_code_when_analysis_fails(monkeypatch, tmp_path):
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(json.dumps({"name": "empty_suite", "tasks": []}), encoding="utf-8")
+
+    class FakeClient:
+        def __init__(self, base_url):
+            pass
+
+        def health(self):
+            return True
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(main, "AgentClient", FakeClient)
+    monkeypatch.setattr(main, "wait_for_agent_clock", lambda *args, **kwargs: True)
+    monkeypatch.setattr(main, "upload_report", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        main,
+        "analyze_run",
+        lambda run_dir, repo_root, cfg: AnalysisResult(ok=False, warning="boom"),
+    )
+
+    rc = main.cli(
+        ["run", "--suite", str(suite_path), "--out", str(tmp_path / "runs"), "--no-judge", "--llm-analysis"]
+    )
+
+    assert rc == 0

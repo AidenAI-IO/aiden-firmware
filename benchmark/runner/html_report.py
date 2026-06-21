@@ -12,6 +12,22 @@ def _esc(s: str) -> str:
     return html_mod.escape(str(s)) if s else ""
 
 
+def _analysis_html(run_dir: Path) -> str:
+    md = run_dir / "llm_analysis.md"
+    err = run_dir / "llm_analysis_error.txt"
+    if md.exists():
+        text = md.read_text("utf-8")[:20000]
+        return f'<section class="analysis"><h2>LLM Analysis</h2><pre>{_esc(text)}</pre></section>'
+    if err.exists():
+        text = err.read_text("utf-8")[:4000]
+        return f'<section class="analysis warning"><h2>LLM Analysis</h2><pre>{_esc(text)}</pre></section>'
+    return ""
+
+
+def analysis_html_for_run_dir(run_dir: Path) -> str:
+    return _analysis_html(run_dir)
+
+
 def generate_report_html(run_dir: Path) -> str:
     manifest = json.loads((run_dir / "manifest.json").read_text("utf-8"))
     results_path = run_dir / "results.jsonl"
@@ -168,6 +184,7 @@ def generate_report_html(run_dir: Path) -> str:
         rows_html=rows_html, tasks_json=tasks_json,
         completed=completed, timeout=timeout, judge_error=judge_error,
         pass_pct=pass_pct, fail_pct=fail_pct, skip_pct=skip_pct,
+        analysis_html=_analysis_html(run_dir),
     )
 
 
@@ -192,6 +209,18 @@ def upload_report(client: AgentClient, html: str, run_dir: Path | None = None) -
                 f"printf '%s' '{manifest_encoded}' | base64 -d > {board_run_dir}/manifest.json && "
                 f"cp {board_run_dir}/report.html /userdata/agent/benchmark/report.html"
             )
+            analysis_parts = []
+            for name in ("llm_analysis.md", "llm_analysis.json", "llm_analysis_error.txt"):
+                path = run_dir / name
+                if not path.exists():
+                    continue
+                text = path.read_text("utf-8")
+                encoded_part = base64.b64encode(text.encode("utf-8")).decode("ascii")
+                analysis_parts.append(
+                    f"printf '%s' '{encoded_part}' | base64 -d > {board_run_dir}/{name}"
+                )
+            if analysis_parts:
+                cmd += " && " + " && ".join(analysis_parts)
         result = client.invoke_tool("shell", {"command": cmd})
         return not result.is_error
     except Exception:
@@ -245,6 +274,10 @@ body {{ min-height: 100vh; background: linear-gradient(to bottom, var(--surface)
 .progress-legend i.pass {{ background: oklch(58% 0.16 145) }}
 .progress-legend i.fail {{ background: oklch(60% 0.18 28) }}
 .progress-legend i.skip {{ background: oklch(70% 0.14 75) }}
+.analysis {{ border: 1px solid var(--border); border-radius: 16px; background: var(--surface); padding: 16px; margin-bottom: 20px }}
+.analysis h2 {{ font-size: 14px; margin-bottom: 10px }}
+.analysis pre {{ white-space: pre-wrap; font-family: var(--font-mono); font-size: 12px; line-height: 1.5; color: var(--fg) }}
+.analysis.warning {{ border-color: color-mix(in oklch, oklch(60% 0.18 28) 35%, var(--border)) }}
 .panel {{ border: 1px solid var(--border); border-radius: 16px; background: var(--surface); overflow: hidden }}
 .panel-header {{ display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; border-bottom: 1px solid var(--border) }}
 .panel-title {{ font-size: 14px; font-weight: 650 }}
@@ -331,6 +364,7 @@ pre.block-body {{ margin: 0; white-space: pre-wrap; word-break: break-word; font
     <span><i class="fail"></i>Judge Error {judge_error}</span>
   </div>
 </section>
+{analysis_html}
 <section class="panel">
   <div class="panel-header">
     <h2 class="panel-title">Task Records</h2>

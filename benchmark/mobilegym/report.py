@@ -8,7 +8,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from runner.html_report import HTML_TEMPLATE
+from runner.analysis import AnalysisResult, analyze_run, config_from_env
+from runner.html_report import HTML_TEMPLATE, analysis_html_for_run_dir
+
+
+BENCHMARK_ROOT = Path(__file__).resolve().parents[1]
 
 
 TASK_STATUSES = ("passed", "failed", "timeout", "error", "unknown", "worker_failed")
@@ -45,6 +49,8 @@ def generate_reports(batch_dir: str | Path) -> dict[str, Any]:
 
     batch_summary = _batch_summary(batch.name, suite_summaries, all_rows)
     _write_batch_report(batch, suite_summaries, batch_summary)
+    if _run_analysis_if_enabled(batch):
+        _write_batch_report(batch, suite_summaries, batch_summary)
     return batch_summary
 
 
@@ -92,6 +98,8 @@ def _generate_direct_run_report(run_dir: Path) -> dict[str, Any]:
     if model:
         summary["model"] = model
     _write_direct_run_report(run_dir, rows, summary)
+    if _run_analysis_if_enabled(run_dir):
+        _write_direct_run_report(run_dir, rows, summary)
     return summary
 
 
@@ -547,7 +555,7 @@ def _model_from_summaries(summaries: list[dict[str, Any]]) -> str:
 
 def _write_suite_report(suite_dir: Path, rows: list[dict[str, Any]], summary: dict[str, Any]) -> None:
     (suite_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
-    (suite_dir / "index.html").write_text(_drawer_html(summary["suite"], summary, rows), encoding="utf-8")
+    (suite_dir / "index.html").write_text(_drawer_html(summary["suite"], summary, rows, suite_dir), encoding="utf-8")
 
 
 def _write_batch_report(batch_dir: Path, suite_summaries: list[dict[str, Any]], summary: dict[str, Any]) -> None:
@@ -555,17 +563,17 @@ def _write_batch_report(batch_dir: Path, suite_summaries: list[dict[str, Any]], 
     serializable.pop("rows", None)
     (batch_dir / "summary.json").write_text(json.dumps(serializable, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
     rows = summary.get("rows") or []
-    (batch_dir / "index.html").write_text(_drawer_html(summary["batch_id"], serializable, rows), encoding="utf-8")
+    (batch_dir / "index.html").write_text(_drawer_html(summary["batch_id"], serializable, rows, batch_dir), encoding="utf-8")
 
 
 def _write_direct_run_report(run_dir: Path, rows: list[dict[str, Any]], summary: dict[str, Any]) -> None:
     serializable = dict(summary)
     serializable.pop("rows", None)
     (run_dir / "summary.json").write_text(json.dumps(serializable, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
-    (run_dir / "index.html").write_text(_drawer_html(summary["batch_id"], serializable, rows), encoding="utf-8")
+    (run_dir / "index.html").write_text(_drawer_html(summary["batch_id"], serializable, rows, run_dir), encoding="utf-8")
 
 
-def _drawer_html(title: str, summary: dict[str, Any], rows: list[dict[str, Any]]) -> str:
+def _drawer_html(title: str, summary: dict[str, Any], rows: list[dict[str, Any]], run_dir: Path | None = None) -> str:
     total = int(summary.get("tasks") or 0)
     passed = int(summary.get("passed") or 0)
     timeout = int(summary.get("timeout") or 0)
@@ -600,7 +608,18 @@ def _drawer_html(title: str, summary: dict[str, Any], rows: list[dict[str, Any]]
         pass_pct=pct(passed),
         fail_pct=pct(failed),
         skip_pct=pct(skipped),
+        analysis_html=analysis_html_for_run_dir(run_dir) if run_dir else "",
     )
+
+
+def _run_analysis_if_enabled(run_dir: Path) -> AnalysisResult | None:
+    cfg = config_from_env()
+    if not cfg.enabled:
+        return None
+    result = analyze_run(run_dir, BENCHMARK_ROOT.parent, cfg)
+    if not result.ok:
+        print(f"warning: MobileGym LLM analysis failed for {run_dir}: {result.warning}", file=sys.stderr)
+    return result
 
 
 def _drawer_task(row: dict[str, Any]) -> dict[str, Any]:
