@@ -380,8 +380,8 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 		rt.memoryPlane = NewFilesystemMemoryPlane(filepath.Join(cfg.ConfigDir, "memory"), LoadMemoryExtractionConfig(cfg.ConfigDir), nil)
 		rt.markInterruptedEpisodesBestEffort()
 	}
-	rt.sessionManager = newMemoryManagerSessionManager(memories, func(now time.Time, activeMaxAge time.Duration) BoundaryEpisodeContext {
-		return recentEpisodeContext(rt.memoryPlane, now, activeMaxAge)
+	rt.sessionManager = newMemoryManagerSessionManager(memories, func() BoundaryEpisodeContext {
+		return recentEpisodeContext(rt.memoryPlane)
 	})
 	rt.initRunGate()
 	return rt
@@ -1576,6 +1576,13 @@ func (h *runtimeCallbackHandler) HandleStreamingFunc(ctx context.Context, chunk 
 
 func (h *runtimeCallbackHandler) EnableFinalStreaming(ctx context.Context) {
 	resetStreamWriterState(h.writer)
+	// Drop any text the previous turn streamed that the TTS layer buffered but
+	// never synthesized. Without this, residual content from a turn that
+	// returned a tool call (e.g. the assistant's "我查下天气。" preamble) stays
+	// in the sentence buffer and gets prepended to this turn's final answer,
+	// causing it to be spoken twice. Resetting here (before this turn streams
+	// anything) clears the leftover without touching the current turn's text.
+	resetStreamBuffer(h.writer)
 	h.mu.Lock()
 	h.finalTokenSeen = false
 	h.finalStreamErr = nil
@@ -1613,6 +1620,12 @@ func resetStreamWriterState(writer io.Writer) {
 		return
 	}
 	resetter.ResetStreamState()
+}
+
+func resetStreamBuffer(writer io.Writer) {
+	if resetter, ok := writer.(ttsBufferResetter); ok {
+		resetter.ResetBuffer()
+	}
 }
 
 func streamWriterEmitted(writer io.Writer) bool {

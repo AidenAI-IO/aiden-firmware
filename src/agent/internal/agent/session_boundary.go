@@ -22,7 +22,6 @@ const (
 	BoundaryReasonContinuationWord = "continuation_word"
 	BoundaryReasonActionVerb       = "action_verb"
 	BoundaryReasonRunningEpisode   = "running_episode"
-	BoundaryReasonActiveEpisode    = "active_episode"
 	BoundaryReasonSmallSession     = "small_session"
 	BoundaryReasonDefaultNew       = "default_new"
 	BoundaryReasonScoreContinue    = "score_continue"
@@ -66,12 +65,10 @@ func DefaultBoundaryConfig() BoundaryConfig {
 type BoundaryEpisodeContext struct {
 	// HasRunning is true when there is an in-flight TaskEpisode. It biases
 	// toward "continue" because the user is mid-task and is unlikely to be
-	// opening a new one.
+	// opening a new one. Unlike a finished episode, "running" is a genuine
+	// state signal that is independent of the time gap: a task is in-flight no
+	// matter how long the user paused before the next turn.
 	HasRunning bool
-	// HasActive is true when a TaskEpisode recently finished into the active
-	// episode index. Neutral confirmations after completion often refer back
-	// to the just-finished task.
-	HasActive bool
 }
 
 // continuationMarkerRe matches sentence-initial continuation cues.
@@ -161,18 +158,18 @@ func ClassifyTurnBoundary(
 			primaryReason = BoundaryReasonActionVerb
 		}
 	}
-	if episode.HasRunning || episode.HasActive {
-		// An in-flight or just-finished episode means a neutral utterance is
-		// overwhelmingly a continuation. Weight equals the continue threshold
-		// so this signal alone carries the decision when no other evidence
-		// contradicts it.
+	if episode.HasRunning {
+		// An in-flight episode means a neutral utterance is overwhelmingly a
+		// continuation. Weight equals the continue threshold so this signal
+		// alone carries the decision when no other evidence contradicts it.
+		// A *finished* episode is deliberately not used here: "recently
+		// finished" is just the time gap re-encoded (the episode's EndedAt is
+		// the most recent event), so it carries no information the gap shortcut
+		// hasn't already spent, and in the mid-range it is always true — which
+		// silently collapses the scoring into a 30-minute cliff.
 		score += 2
 		if primaryReason == BoundaryReasonDefaultNew {
-			if episode.HasRunning {
-				primaryReason = BoundaryReasonRunningEpisode
-			} else {
-				primaryReason = BoundaryReasonActiveEpisode
-			}
+			primaryReason = BoundaryReasonRunningEpisode
 		}
 	}
 	if smallSession {
