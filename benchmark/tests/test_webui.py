@@ -580,6 +580,117 @@ def test_read_task_log_returns_task_worker_logs(tmp_path: Path):
     assert "daemon output" in text
 
 
+def test_refresh_job_report_merges_task_runs_into_single_report(tmp_path: Path):
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+        )
+    )
+    raw_runs_dir = tmp_path / "runs" / "job-test" / "raw"
+    raw_runs_dir.mkdir(parents=True)
+
+    def write_task_run(run_id: str, suite_key: str, task_id: str, status: str) -> None:
+        run_dir = raw_runs_dir / run_id
+        artifact_dir = run_dir / "tasks" / task_id
+        artifact_dir.mkdir(parents=True)
+        (artifact_dir / "trace.json").write_text(
+            json.dumps({"tool_calls": [], "final_response": f"done {task_id}"}),
+            encoding="utf-8",
+        )
+        (artifact_dir / "history.json").write_text(
+            json.dumps([{"type": "user", "content": f"prompt {task_id}"}]),
+            encoding="utf-8",
+        )
+        (run_dir / "results.jsonl").write_text(
+            json.dumps(
+                {
+                    "suite": suite_key,
+                    "run_id": run_id,
+                    "task_id": task_id,
+                    "category": "diagnostic",
+                    "attempt": 1,
+                    "status": status,
+                    "rubric": [],
+                    "rubric_pass_count": 1 if status == "passed" else 0,
+                    "rubric_total": 1,
+                    "metrics": {"wall_ms": 7, "tool_calls": 0},
+                    "artifact_dir": str(artifact_dir),
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    write_task_run("run-a", "suite/a.json", "same-task", "passed")
+    write_task_run("run-b", "suite/b.json", "same-task", "failed")
+    job = webui.Job(
+        id="job-test",
+        endpoint="http://127.0.0.1:19090",
+        docker_endpoint="http://host.docker.internal:19090",
+        suites=["suite/a.json", "suite/b.json"],
+        raw_runs_dir=str(raw_runs_dir),
+        runner_log=str(tmp_path / "runs" / "job-test" / "runner.log"),
+        started_at="2026-06-22T00:00:00+00:00",
+        suite_results=[
+            {"suite": "suite/a.json", "task_id": "same-task", "exit_code": 0, "run_id": "run-a"},
+            {"suite": "suite/b.json", "task_id": "same-task", "exit_code": 1, "run_id": "run-b"},
+        ],
+    )
+
+    app._refresh_job_report(job)
+
+    assert job.report_url == "/reports/job-test/_job-report/report.html"
+    report_dir = raw_runs_dir / "_job-report"
+    manifest = json.loads((report_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["totals"] == {"tasks": 2, "passed": 1, "failed": 1, "skipped": 0, "judge_error": 0, "timeout": 0}
+    rows = [
+        json.loads(line)
+        for line in (report_dir / "results.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(rows) == 2
+    assert rows[0]["task_id"] != rows[1]["task_id"]
+    assert rows[0]["metrics"]["source_task_id"] == "same-task"
+    assert rows[1]["metrics"]["source_task_id"] == "same-task"
+    for row in rows:
+        assert (report_dir / "tasks" / row["task_id"] / "trace.json").exists()
+    html = (report_dir / "report.html").read_text(encoding="utf-8")
+    assert "Benchmark:" in html
+    assert rows[0]["task_id"] in html
+    assert rows[1]["task_id"] in html
+
+
+def test_refresh_job_report_falls_back_to_single_existing_report(tmp_path: Path):
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+        )
+    )
+    raw_runs_dir = tmp_path / "runs" / "job-test" / "raw"
+    raw_runs_dir.mkdir(parents=True)
+    job = webui.Job(
+        id="job-test",
+        endpoint="http://127.0.0.1:19090",
+        docker_endpoint="http://host.docker.internal:19090",
+        suites=["unit.json"],
+        raw_runs_dir=str(raw_runs_dir),
+        runner_log=str(tmp_path / "runs" / "job-test" / "runner.log"),
+        suite_results=[
+            {
+                "suite": "unit.json",
+                "exit_code": 0,
+                "run_id": "unit-run",
+                "report_url": "/reports/job-test/unit-run/report.html",
+            }
+        ],
+    )
+
+    app._refresh_job_report(job)
+
+    assert job.report_url == "/reports/job-test/unit-run/report.html"
+
+
 def test_stop_job_marks_stopping_terminates_runner_and_removes_container(tmp_path: Path, monkeypatch):
     app = webui.BenchmarkWebApp(
         webui.WebUIConfig(
@@ -800,6 +911,8 @@ def test_index_html_exposes_judge_settings_panel():
     assert "task_records" in webui.INDEX_HTML
     assert "/tasks/${encodeURIComponent(task.id)}/log" in webui.INDEX_HTML
     assert "screen_url" in webui.INDEX_HTML
+    assert "const report = job.report_url" in webui.INDEX_HTML
+    assert "(job.suite_results || []).filter(r => r.report_url)" not in webui.INDEX_HTML
 
 
 def test_run_job_uses_saved_webui_agent_config(tmp_path: Path, monkeypatch):

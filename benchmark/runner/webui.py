@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from runner.agent_client import AgentClient
+from runner.html_report import generate_report_html
 from runner.judge import JudgeConfig
 from runner.reset import ResetError, call_environment_release
 from runner.suite import load_suite
@@ -45,6 +46,7 @@ WEBUI_SETTINGS_FILE = "webui-settings.json"
 LOG_TAIL_BYTES = 96 * 1024
 TERMINAL_JOB_STATUSES = {"passed", "failed", "stopped", "canceled"}
 STOP_REQUESTED_JOB_STATUSES = {"stopping", "stopped", "canceled"}
+JOB_REPORT_RUN_ID = "_job-report"
 
 
 class JobStopped(RuntimeError):
@@ -111,6 +113,7 @@ class Job:
     state_file: str = ""
     runner_log: str = ""
     daemon_log: str = ""
+    report_url: str = ""
     suite_results: list[dict[str, Any]] = dc.field(default_factory=list)
     task_records: list[TaskRecord] = dc.field(default_factory=list)
     no_judge: bool = False
@@ -591,6 +594,7 @@ class BenchmarkWebApp:
                     self._raise_if_job_stop_requested(job)
                     self._run_mobilegym_suite_parallel(job, suite_key)
                 self._raise_if_job_stop_requested(job)
+                self._refresh_job_report(job)
                 final_status = "passed" if job.suite_results and all(item.get("exit_code") == 0 for item in job.suite_results) else "failed"
                 self._set_job(job, status=final_status, finished_at=now_iso(), message="")
                 return
@@ -617,6 +621,7 @@ class BenchmarkWebApp:
                     log_proc.terminate()
                 stop_daemon_compose(job)
             self._raise_if_job_stop_requested(job)
+            self._refresh_job_report(job)
             final_status = "passed" if job.suite_results and all(item.get("exit_code") == 0 for item in job.suite_results) else "failed"
             self._set_job(job, status=final_status, finished_at=now_iso(), message="")
         except JobStopped:
@@ -635,6 +640,17 @@ class BenchmarkWebApp:
                 self._job_judge_api_keys.pop(job.id, None)
                 self._job_daemon_jobs.pop(job.id, None)
                 self._job_runner_procs.pop(job.id, None)
+
+    def _refresh_job_report(self, job: Job) -> None:
+        try:
+            report_url = write_job_report(job)
+        except Exception as exc:
+            append_log(Path(job.runner_log), f"warning: failed to write job report: {exc}")
+            return
+        if not report_url:
+            report_url = single_suite_report_url(job.suite_results)
+        if report_url:
+            self._set_job(job, report_url=report_url)
 
     def _wait_for_daemon(self, job: Job, *, stop_job: Job | None = None) -> None:
         client = AgentClient(job.agent_url)
@@ -1681,6 +1697,180 @@ def aggregate_totals(results: list[dict[str, Any]]) -> dict[str, int]:
     return totals
 
 
+def single_suite_report_url(results: list[dict[str, Any]]) -> str:
+    urls = [str(result.get("report_url") or "") for result in results if result.get("report_url")]
+    return urls[0] if len(urls) == 1 else ""
+
+
+def write_job_report(job: Job) -> str:
+    raw_runs_dir = Path(job.raw_runs_dir)
+    if not raw_runs_dir.exists():
+        return ""
+    report_dir = raw_runs_dir / JOB_REPORT_RUN_ID
+    rows = merged_job_report_rows(job)
+    if not rows:
+        return ""
+    if report_dir.exists():
+        shutil.rmtree(report_dir)
+    (report_dir / "tasks").mkdir(parents=True, exist_ok=True)
+    for row in rows:
+        source_artifact = str(row.pop("_source_artifact_dir", "") or "")
+        report_task_id = str(row.get("task_id") or "")
+        if source_artifact and Path(source_artifact).exists() and report_task_id:
+            source_artifact_dir = Path(source_artifact)
+            shutil.copytree(source_artifact_dir, report_dir / "tasks" / report_task_id, dirs_exist_ok=True)
+        row["artifact_dir"] = str(report_dir / "tasks" / report_task_id) if report_task_id else ""
+    manifest = {
+        "run_id": JOB_REPORT_RUN_ID,
+        "job_id": job.id,
+        "suite_path": ", ".join(job.suites),
+        "selected_task_ids": [str(row.get("task_id") or "") for row in rows],
+        "agent_url": job.agent_url,
+        "environment_url": job.environment_endpoint or None,
+        "judge_config": None if job.no_judge else {"provider": "openrouter", "model": job.judge_model or DEFAULT_JUDGE_MODEL},
+        "started_at": job.started_at,
+        "finished_at": job.finished_at or now_iso(),
+        "totals": totals_from_report_rows(rows),
+    }
+    write_json_atomic(report_dir / "manifest.json", manifest)
+    with (report_dir / "results.jsonl").open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+    (report_dir / "report.html").write_text(generate_report_html(report_dir), encoding="utf-8")
+    return f"/reports/{job.id}/{JOB_REPORT_RUN_ID}/report.html"
+
+
+def merged_job_report_rows(job: Job) -> list[dict[str, Any]]:
+    raw_runs_dir = Path(job.raw_runs_dir)
+    rows: list[dict[str, Any]] = []
+    used_ids: set[str] = set()
+    for index, suite_result in enumerate(job.suite_results, start=1):
+        run_id = str(suite_result.get("run_id") or "")
+        run_dir = raw_runs_dir / run_id if run_id else None
+        result_rows = read_results_jsonl(run_dir / "results.jsonl") if run_dir is not None else []
+        if not result_rows:
+            fallback = fallback_report_row(suite_result, job.id, index, used_ids)
+            if fallback is not None:
+                rows.append(fallback)
+            continue
+        for row in result_rows:
+            source_task_id = str(row.get("task_id") or suite_result.get("task_id") or f"task-{index}")
+            source_suite = str(suite_result.get("suite") or row.get("suite") or "")
+            attempt = int(row.get("attempt") or 1)
+            report_task_id = unique_report_task_id(source_suite, source_task_id, attempt, used_ids)
+            metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
+            metrics = dict(metrics)
+            metrics.setdefault("source_task_id", source_task_id)
+            metrics.setdefault("source_suite", source_suite)
+            row = dict(row)
+            row["task_id"] = report_task_id
+            row["run_id"] = JOB_REPORT_RUN_ID
+            row["suite"] = source_suite
+            row["metrics"] = metrics
+            if source_suite:
+                category = str(row.get("category") or "")
+                row["category"] = f"{source_suite} / {category}" if category else source_suite
+            row["_source_artifact_dir"] = resolve_artifact_dir(row, run_dir, source_task_id)
+            rows.append(row)
+    return rows
+
+
+def read_results_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            rows.append(item)
+    return rows
+
+
+def resolve_artifact_dir(row: dict[str, Any], run_dir: Path | None, source_task_id: str) -> str:
+    raw = str(row.get("artifact_dir") or "").strip()
+    if raw:
+        path = Path(raw)
+        if not path.is_absolute() and run_dir is not None:
+            path = run_dir / path
+        if path.exists():
+            return str(path)
+    if run_dir is None:
+        return ""
+    attempt = int(row.get("attempt") or 1)
+    candidates = [run_dir / "tasks" / source_task_id]
+    if attempt > 1:
+        candidates.insert(0, run_dir / "tasks" / source_task_id / f"attempt_{attempt}")
+    for path in candidates:
+        if path.exists():
+            return str(path)
+    return ""
+
+
+def unique_report_task_id(suite_key: str, task_id: str, attempt: int, used_ids: set[str]) -> str:
+    attempt_suffix = f"-attempt-{attempt}" if attempt > 1 else ""
+    raw = f"{suite_key}-{task_id}{attempt_suffix}"
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]
+    slug = re.sub(r"[^a-z0-9_.-]+", "-", raw.lower()).strip("-_.")
+    slug = slug[:56].strip("-_.") or "task"
+    candidate = f"{slug}-{digest}"
+    suffix = 2
+    while candidate in used_ids:
+        candidate = f"{slug}-{digest}-{suffix}"
+        suffix += 1
+    used_ids.add(candidate)
+    return candidate
+
+
+def fallback_report_row(
+    suite_result: dict[str, Any],
+    job_id: str,
+    index: int,
+    used_ids: set[str],
+) -> dict[str, Any] | None:
+    task_id = str(suite_result.get("task_id") or "").strip()
+    if not task_id:
+        return None
+    suite = str(suite_result.get("suite") or "")
+    status = "skipped" if suite_result.get("stopped") else "passed" if suite_result.get("exit_code") == 0 else "failed"
+    report_task_id = unique_report_task_id(suite, task_id or f"task-{index}", 1, used_ids)
+    error = str(suite_result.get("error") or "")
+    return {
+        "suite": suite,
+        "run_id": JOB_REPORT_RUN_ID,
+        "task_id": report_task_id,
+        "category": suite,
+        "attempt": 1,
+        "status": status,
+        "rubric": [],
+        "rubric_pass_count": 0,
+        "rubric_total": 0,
+        "metrics": {
+            "source_task_id": task_id,
+            "source_suite": suite,
+            "source_job_id": job_id,
+            **({"error": error} if error else {}),
+        },
+        "artifact_dir": "",
+        "_source_artifact_dir": "",
+    }
+
+
+def totals_from_report_rows(rows: list[dict[str, Any]]) -> dict[str, int]:
+    totals = {"tasks": len(rows), "passed": 0, "failed": 0, "skipped": 0, "judge_error": 0, "timeout": 0}
+    for row in rows:
+        status = str(row.get("status") or "")
+        if status in totals and status != "tasks":
+            totals[status] += 1
+        elif status:
+            totals["failed"] += 1
+    return totals
+
+
 def read_json_file(path: Path) -> dict[str, Any] | None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -2597,7 +2787,7 @@ INDEX_HTML = r"""<!doctype html>
         </div>
         <div class="table-wrap job-table-wrap">
           <table>
-            <thead><tr><th>Job</th><th>Environment</th><th style="width:120px">Status</th><th style="width:120px">Reports</th><th style="width:96px"></th></tr></thead>
+            <thead><tr><th>Job</th><th>Environment</th><th style="width:120px">Status</th><th style="width:120px">Report</th><th style="width:96px"></th></tr></thead>
             <tbody id="jobRows"></tbody>
           </table>
         </div>
@@ -3049,7 +3239,9 @@ INDEX_HTML = r"""<!doctype html>
         tbody.innerHTML = '<tr><td class="empty-row" colspan="5">No jobs yet</td></tr>';
       }
       jobs.forEach(job => {
-        const reports = (job.suite_results || []).filter(r => r.report_url).map(r => `<a href="${escapeHtml(r.report_url)}" target="_blank" rel="noreferrer">report</a>`).join(' ');
+        const report = job.report_url
+          ? `<a href="${escapeHtml(job.report_url)}" target="_blank" rel="noreferrer">report</a>`
+          : '';
         const envLabel = job.environment_name || job.endpoint;
         const envType = job.environment_type || 'device';
         const screenLink = job.environment_web_url
@@ -3062,7 +3254,7 @@ INDEX_HTML = r"""<!doctype html>
         tr.innerHTML = `<td><div class="cell-main"><a href="#" data-job="${job.id}">${escapeHtml(job.id)}</a><small>${escapeHtml(job.created_at || '')}</small></div></td>
           <td title="${escapeHtml(job.endpoint)}"><div class="cell-main"><span>${escapeHtml(envLabel)}</span><small>${escapeHtml(envType)} - ${escapeHtml((job.suites || []).length)} suites${screenLink}</small></div></td>
           <td><span class="status ${cssToken(job.status)}">${escapeHtml(job.status)}</span></td>
-          <td>${reports || '<span class="muted">none</span>'}</td>
+          <td>${report || '<span class="muted">none</span>'}</td>
           <td>${actionHtml}</td>`;
         tr.querySelector('[data-job]').onclick = e => { e.preventDefault(); activeJobId = job.id; activeTaskLogId = null; loadActiveJob(); };
         const stop = tr.querySelector('[data-stop-job]');
