@@ -22,7 +22,7 @@ type SessionBeginRequest struct {
 	AgentName    string
 	Input        string
 	Turn         TurnInput
-	SessionID    string
+	RuntimeID    string
 	EpisodeID    string
 	RequestID    string
 	RunID        string
@@ -48,7 +48,7 @@ type SessionCommitRequest struct {
 	Output    string
 	Steers    []RunSteerMessage
 	Metrics   *RunMetrics
-	SessionID string
+	RuntimeID string
 	EpisodeID string
 	RequestID string
 	RunID     string
@@ -61,12 +61,12 @@ type SessionCommitResult struct {
 
 type memoryManagerSessionManager struct {
 	memories       *MemoryManager
-	episodeContext func(now time.Time, activeMaxAge time.Duration) BoundaryEpisodeContext
+	episodeContext func() BoundaryEpisodeContext
 }
 
 func newMemoryManagerSessionManager(
 	memories *MemoryManager,
-	episodeContext func(now time.Time, activeMaxAge time.Duration) BoundaryEpisodeContext,
+	episodeContext func() BoundaryEpisodeContext,
 ) SessionManager {
 	return memoryManagerSessionManager{memories: memories, episodeContext: episodeContext}
 }
@@ -79,18 +79,17 @@ func (m memoryManagerSessionManager) BeginRun(ctx context.Context, req SessionBe
 	if turn.InputText == "" {
 		turn = NewTextTurnInput(req.Input, nil)
 	}
-	boundary, relation := m.handleSessionBoundary(turn.InputText)
+	boundary := m.handleSessionBoundary(turn.InputText)
 	if m.memories != nil {
 		agentName := req.AgentName
 		if agentName == "" {
 			agentName = "default"
 		}
 		meta := SessionEventMetadata{
-			SessionID: req.SessionID,
+			RuntimeID: req.RuntimeID,
 			EpisodeID: req.EpisodeID,
 			RequestID: req.RequestID,
 			RunID:     req.RunID,
-			Relation:  relation,
 		}
 		if err := m.memories.AppendSessionEvent(ctx, agentName, sessionEventFromTurnInput(turn), meta); err != nil {
 			return SessionBeginResult{}, err
@@ -99,21 +98,21 @@ func (m memoryManagerSessionManager) BeginRun(ctx context.Context, req SessionBe
 	return SessionBeginResult{Boundary: boundary}, nil
 }
 
-func (m memoryManagerSessionManager) handleSessionBoundary(input string) (sessionBoundaryTelemetry, string) {
+func (m memoryManagerSessionManager) handleSessionBoundary(input string) sessionBoundaryTelemetry {
 	var telemetry sessionBoundaryTelemetry
 	if m.memories == nil || m.memories.storageDir == "" {
-		return telemetry, FollowUpRootRequest
+		return telemetry
 	}
 	cfg := m.memories.extraction
 	if !cfg.SessionBoundaryEnabled {
-		return telemetry, FollowUpRootRequest
+		return telemetry
 	}
 	events, err := loadLastNSessionEvents(m.memories, 20)
 	if err != nil {
 		if m.memories.logger != nil {
 			m.memories.logger.Warn("[memory] session boundary load failed: %v", err)
 		}
-		return telemetry, FollowUpRootRequest
+		return telemetry
 	}
 	boundaryCfg := BoundaryConfig{
 		ShortGapSeconds:            cfg.SessionBoundaryShortGapSeconds,
@@ -124,31 +123,54 @@ func (m memoryManagerSessionManager) handleSessionBoundary(input string) (sessio
 	now := time.Now().UTC()
 	episodeCtx := BoundaryEpisodeContext{}
 	if m.episodeContext != nil {
-		episodeCtx = m.episodeContext(now, time.Duration(boundaryCfg.LongGapSeconds)*time.Second)
+		episodeCtx = m.episodeContext()
 	}
 	boundary, reason := ClassifyTurnBoundary(events, input, now, boundaryCfg, episodeCtx)
 	telemetry.Decision = boundary
 	telemetry.Reason = reason
-	relation := ClassifyFollowUpRelation(events, input, boundary)
 
 	if boundary != BoundaryNew || len(events) == 0 {
-		return telemetry, relation
+		// No rotation happens here (either a "continue" decision, or "new" with
+		// no prior events to archive). Log at Debug so the decision and its
+		// reason are observable on every turn without spamming Info — otherwise
+		// a wrongly-kept session is silent and only diagnosable by code archaeology.
+		if m.memories.logger != nil {
+			m.memories.logger.Debug("[memory] session boundary: decision=%s reason=%s (no rotation)", boundary, reason)
+		}
+		return telemetry
 	}
 
-	if m.memories.logger != nil {
-		m.memories.logger.Info("[memory] session boundary detected: reason=%s", reason)
-	}
-	archiveDir, err := m.memories.RotateSessionEvents()
+	rotation, err := m.memories.RotateSessionEventsDetailed()
 	if err != nil {
 		if m.memories.logger != nil {
 			m.memories.logger.Warn("[memory] session rotation failed: %v", err)
 		}
-		return telemetry, relation
+		return telemetry
 	}
-	if archiveDir != "" {
+	if rotation.ArchiveDir != "" {
 		telemetry.Rotated = true
 	}
-	return telemetry, FollowUpRootRequest
+	if m.memories.logger != nil {
+		logProminentSessionStart(m.memories.logger, rotation, reason)
+	}
+	return telemetry
+}
+
+func logProminentSessionStart(logger *Logger, rotation SessionRotationResult, reason string) {
+	if logger == nil || rotation.ActiveSessionID == "" {
+		return
+	}
+	logger.Info("========================================")
+	logger.Info("NEW SESSION STARTED")
+	logger.Info("Session ID: %s", rotation.ActiveSessionID)
+	logger.Info("Reason: %s", reason)
+	if rotation.ClosedSessionID != "" {
+		logger.Info("Closed Session ID: %s", rotation.ClosedSessionID)
+	}
+	if rotation.ArchiveDir != "" {
+		logger.Info("Archive: %s", filepath.Base(rotation.ArchiveDir))
+	}
+	logger.Info("========================================")
 }
 
 func (m memoryManagerSessionManager) CommitRun(ctx context.Context, req SessionCommitRequest) (SessionCommitResult, error) {
@@ -169,7 +191,7 @@ func (m memoryManagerSessionManager) CommitRun(ctx context.Context, req SessionC
 	m.memories.SetLastPromptTokens(lastPromptTokens)
 
 	meta := SessionEventMetadata{
-		SessionID: req.SessionID,
+		RuntimeID: req.RuntimeID,
 		EpisodeID: req.EpisodeID,
 		RequestID: req.RequestID,
 		RunID:     req.RunID,
@@ -217,7 +239,7 @@ func loadLastNSessionEvents(manager *MemoryManager, n int) ([]SessionEvent, erro
 	return append([]SessionEvent(nil), events[len(events)-n:]...), nil
 }
 
-func recentEpisodeContext(plane MemoryPlane, now time.Time, activeMaxAge time.Duration) BoundaryEpisodeContext {
+func recentEpisodeContext(plane MemoryPlane) BoundaryEpisodeContext {
 	var ctx BoundaryEpisodeContext
 	fs, ok := plane.(*FilesystemMemoryPlane)
 	if !ok || fs == nil || fs.episodes == nil {
@@ -228,29 +250,10 @@ func recentEpisodeContext(plane MemoryPlane, now time.Time, activeMaxAge time.Du
 		return ctx
 	}
 	for _, entry := range index.Episodes {
-		switch entry.Status {
-		case "running":
+		if entry.Status == "running" {
 			ctx.HasRunning = true
-		case "active":
-			if recentEpisodeEndedAt(entry.EndedAt, now, activeMaxAge) {
-				ctx.HasActive = true
-			}
-		}
-		if ctx.HasRunning && ctx.HasActive {
 			return ctx
 		}
 	}
 	return ctx
-}
-
-func recentEpisodeEndedAt(endedAt string, now time.Time, maxAge time.Duration) bool {
-	if maxAge <= 0 {
-		return false
-	}
-	ended, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(endedAt))
-	if err != nil {
-		return false
-	}
-	age := now.Sub(ended)
-	return age >= 0 && age <= maxAge
 }

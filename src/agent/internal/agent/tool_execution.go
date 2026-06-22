@@ -13,12 +13,11 @@ import (
 )
 
 type ToolCall struct {
-	Spec        ToolSpec
-	Action      schema.AgentAction
-	Input       string
-	Description string
-	Speech      string
-	StartedAt   time.Time
+	Spec      ToolSpec
+	Action    schema.AgentAction
+	Input     string
+	Content   string
+	StartedAt time.Time
 }
 
 type ToolResult struct {
@@ -77,12 +76,11 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 	action.Tool = spec.Name
 	action.ToolInput = input
 	call := ToolCall{
-		Spec:        spec,
-		Action:      action,
-		Input:       input,
-		Description: toolDescriptionFromAction(action),
-		Speech:      toolSpeechFromAction(action),
-		StartedAt:   startedAt,
+		Spec:      spec,
+		Action:    action,
+		Input:     input,
+		Content:   toolContentFromAction(action),
+		StartedAt: startedAt,
 	}
 
 	emitToolStart(ctx, execution.Callback, call)
@@ -131,12 +129,11 @@ func invalidToolCall(action schema.AgentAction, startedAt time.Time) ToolCall {
 	action.ToolInput = normalizeToolInput(action.ToolInput)
 	toolName := strings.TrimSpace(action.Tool)
 	return ToolCall{
-		Spec:        ToolSpec{Name: toolName},
-		Action:      action,
-		Input:       action.ToolInput,
-		Description: toolDescriptionFromAction(action),
-		Speech:      toolSpeechFromAction(action),
-		StartedAt:   startedAt,
+		Spec:      ToolSpec{Name: toolName},
+		Action:    action,
+		Input:     action.ToolInput,
+		Content:   toolContentFromAction(action),
+		StartedAt: startedAt,
 	}
 }
 

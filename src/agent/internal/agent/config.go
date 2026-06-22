@@ -92,6 +92,19 @@ func (c AudioArchiveConfig) StoragePathOrDefault() string {
 	return path
 }
 
+// LogConfig controls local runtime log retention.
+type LogConfig struct {
+	LLMHTTPRetentionDays int `toml:"llm_http_retention_days,omitempty"`
+}
+
+// LLMHTTPRetentionDaysOrDefault returns LLMHTTPRetentionDays if positive, else 7.
+func (c LogConfig) LLMHTTPRetentionDaysOrDefault() int {
+	if c.LLMHTTPRetentionDays <= 0 {
+		return defaultLLMHTTPLogRetentionDays
+	}
+	return c.LLMHTTPRetentionDays
+}
+
 type Config struct {
 	Model                      ModelConfig        `toml:"model"`
 	ModelText                  ModelConfig        `toml:"model_text,omitempty"` // Override for STT-then-text mode
@@ -102,6 +115,7 @@ type Config struct {
 	Audio                      AudioConfig        `toml:"audio,omitempty"`
 	AudioArchive               AudioArchiveConfig `toml:"audio_archive,omitempty"`
 	Benchmark                  BenchmarkConfig    `toml:"benchmark,omitempty"`
+	Log                        LogConfig          `toml:"log,omitempty"`
 	Search                     SearchConfig       `toml:"search,omitempty"`
 	LiveActivity               LiveActivityConfig `toml:"live_activity,omitempty"`
 	Instruction                string             `toml:"custom_instruction,omitempty"`
@@ -122,7 +136,6 @@ type Config struct {
 	VoiceStreamingTTSEnabled   *bool              `toml:"voice_streaming_tts_enabled,omitempty"`
 	VoiceToolCallSpeech        *bool              `toml:"voice_tool_call_speech,omitempty"`
 	VoiceProgressSpeechEnabled *bool              `toml:"voice_progress_speech_enabled,omitempty"`
-	VoiceSpeechSummaryEnabled  *bool              `toml:"voice_speech_summary_enabled,omitempty"`
 	VoiceMaxResponseTokens     int                `toml:"voice_max_response_tokens,omitempty"`
 	TodoReminderToolCalls      int                `toml:"todo_reminder_tool_calls,omitempty"`
 	MaxIterations              int                `toml:"max_iterations,omitempty"`
@@ -396,6 +409,7 @@ type ModelConfig struct {
 	TokenEnv          string  `toml:"token_env,omitempty"`
 	Temperature       float64 `toml:"temperature,omitempty"`
 	MaxResponseTokens int     `toml:"max_response_tokens,omitempty"`
+	LogRawHTTP        bool    `toml:"log_raw_http,omitempty"`
 	// These override static model metadata; zero means use the registry/fallback.
 	ContextWindow        int      `toml:"context_window,omitempty"`
 	ModelMaxOutputTokens int      `toml:"model_max_output_tokens,omitempty"`
@@ -404,12 +418,12 @@ type ModelConfig struct {
 
 // AgentConfig is used internally by the runtime prompt builder.
 type AgentConfig struct {
-	Instruction               string
-	AdditionalPrompt          string
-	RuntimeContext            string
-	ForceSimpleLoop           bool
-	VoiceSpeechSummaryEnabled *bool
-	VoiceToolCallSpeech       *bool
+	Instruction         string
+	AdditionalPrompt    string
+	RuntimeContext      string
+	ForceSimpleLoop     bool
+	VoiceToolCallSpeech *bool
+	TTSConfigured       bool
 }
 
 // MemoryConfig is used internally by the memory manager.
@@ -812,6 +826,9 @@ func (c Config) Validate() error {
 	if c.TodoReminderToolCalls < 0 {
 		return fmt.Errorf("todo_reminder_tool_calls must be >= 0, got %d", c.TodoReminderToolCalls)
 	}
+	if c.Log.LLMHTTPRetentionDays < 0 {
+		return fmt.Errorf("log.llm_http_retention_days must be >= 0, got %d", c.Log.LLMHTTPRetentionDays)
+	}
 	if c.ScreenshotKeepN < 0 {
 		return fmt.Errorf("screenshot_keep_n must be >= 0, got %d", c.ScreenshotKeepN)
 	}
@@ -1044,19 +1061,12 @@ func (c Config) VoiceToolCallSpeechOrDefault() bool {
 	if c.VoiceToolCallSpeech != nil {
 		return *c.VoiceToolCallSpeech
 	}
-	return false
+	return true
 }
 
 func (c Config) VoiceProgressSpeechEnabledOrDefault() bool {
 	if c.VoiceProgressSpeechEnabled != nil {
 		return *c.VoiceProgressSpeechEnabled
-	}
-	return true
-}
-
-func (c Config) VoiceSpeechSummaryEnabledOrDefault() bool {
-	if c.VoiceSpeechSummaryEnabled != nil {
-		return *c.VoiceSpeechSummaryEnabled
 	}
 	return true
 }

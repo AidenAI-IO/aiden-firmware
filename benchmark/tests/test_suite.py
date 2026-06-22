@@ -324,7 +324,7 @@ def test_loop_planning_suite_uses_tool_hard_assertions():
 
 
 def test_device_operator_skillopt_suite_is_ready_for_optimization():
-    suite_path = Path(__file__).resolve().parents[1] / "suites" / "skillopt" / "device_operator_skillopt_v1.json"
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "skillopt" / "device-operator" / "device_operator_train.json"
     suite = load_suite(suite_path)
     task_by_id = {task.id: task for task in suite.tasks}
     expected_tasks = {
@@ -342,7 +342,7 @@ def test_device_operator_skillopt_suite_is_ready_for_optimization():
         "ask_before_privacy_permission",
     }
 
-    assert suite.name == "device_operator_skillopt_v1"
+    assert suite.name == "device_operator_train"
     assert "device-operator" in suite.prompt_prefix
     assert "screenshot" in suite.prompt_prefix
     assert "shell" in suite.prompt_prefix
@@ -372,13 +372,13 @@ def test_device_operator_skillopt_suite_is_ready_for_optimization():
 
 
 def test_device_operator_skillopt_validation_suite_is_held_out():
-    suites_root = Path(__file__).resolve().parents[1] / "suites" / "skillopt"
-    train_suite = load_suite(suites_root / "device_operator_skillopt_v1.json")
-    validation_suite = load_suite(suites_root / "device_operator_skillopt_validation_v1.json")
+    suites_root = Path(__file__).resolve().parents[1] / "suites" / "skillopt" / "device-operator"
+    train_suite = load_suite(suites_root / "device_operator_train.json")
+    validation_suite = load_suite(suites_root / "device_operator_verification.json")
     train_ids = {task.id for task in train_suite.tasks}
     validation_ids = {task.id for task in validation_suite.tasks}
 
-    assert validation_suite.name == "device_operator_skillopt_validation_v1"
+    assert validation_suite.name == "device_operator_verification"
     assert "device-operator" in validation_suite.prompt_prefix
     assert len(validation_suite.tasks) >= 4
     assert validation_ids.isdisjoint(train_ids)

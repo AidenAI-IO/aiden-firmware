@@ -45,18 +45,10 @@ func TestAgentExposedToolsDoNotExposeLegacyArg1Schema(t *testing.T) {
 				t.Fatalf("schema missing properties: %#v", schema)
 			}
 			if _, ok := props["description"]; ok {
-				t.Fatalf("schema exposes tool-call speech description property: %#v", schema)
+				t.Fatalf("schema exposes tool-call metadata description property: %#v", schema)
 			}
 			if _, ok := props["speech"]; ok {
-				t.Fatalf("schema exposes speech while tool-call speech is disabled: %#v", schema)
-			}
-			enabledSchema := NewToolSpec(tool).LLMSchemaWithSpeech(true)
-			enabledProps, ok := enabledSchema["properties"].(map[string]any)
-			if !ok {
-				t.Fatalf("enabled schema missing properties: %#v", enabledSchema)
-			}
-			if _, ok := enabledProps["speech"]; !ok {
-				t.Fatalf("enabled schema missing speech property: %#v", enabledSchema)
+				t.Fatalf("schema exposes tool-call speech metadata: %#v", schema)
 			}
 		})
 	}

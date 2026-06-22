@@ -503,7 +503,9 @@ func TestKeyboardTextDescriptionWarnsAgainstNonASCII(t *testing.T) {
 		"ASCII",
 		"Do NOT pass non-ASCII",
 		"enter_text_in_field",
-		`{"text":"Settings"}`,
+		"pinyin",
+		`{"text":"App Store"}`,
+		"do not pass a bare string",
 	} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q:\n%s", want, desc)
@@ -1210,7 +1212,16 @@ func TestTouchGestureHomeStartsAtBottomPhysicalEdge(t *testing.T) {
 
 func TestTouchGestureDescriptionDocumentsEdgeGestureAliases(t *testing.T) {
 	desc := (&TouchGestureTool{}).Description()
-	for _, want := range []string{`"back"`, `"home"`, "x=1", "y=999", "prefer quick_action first", "low-level fallback", "finger movement", "older messages", `not "swipe_up"`} {
+	for _, want := range []string{`"back"`, `"home"`, "x=1", "y=999", "prefer quick_action first", "low-level fallback", "finger movement", "older messages", `not "swipe_up"`, "latest screenshot", "locally scrollable regions", "visible bounds"} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("description missing %q:\n%s", want, desc)
+		}
+	}
+}
+
+func TestMouseClickDescriptionDocumentsTargetCenter(t *testing.T) {
+	desc := (&MouseClickTool{}).Description()
+	for _, want := range []string{"visual center", "latest screenshot", "small controls", "midpoint", `coord_space:"pixel" only when calibrated`} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q:\n%s", want, desc)
 		}

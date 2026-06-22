@@ -38,6 +38,7 @@ type webConfigDTO struct {
 	Audio        audioDTO        `json:"audio"`
 	AudioArchive audioArchiveDTO `json:"audio_archive"`
 	Benchmark    benchmarkDTO    `json:"benchmark"`
+	Log          logDTO          `json:"log"`
 	HID          hidDTO          `json:"hid"`
 	Search       searchDTO       `json:"search"`
 	Telemetry    telemetryDTO    `json:"telemetry"`
@@ -96,6 +97,10 @@ type benchmarkDTO struct {
 	BenchmarkDir string `json:"benchmark_dir"`
 }
 
+type logDTO struct {
+	LLMHTTPRetentionDays int `json:"llm_http_retention_days"`
+}
+
 type hidDTO struct {
 	KeyboardDevice string `json:"keyboard_device"`
 	MouseDevice    string `json:"mouse_device"`
@@ -141,7 +146,6 @@ type agentDTO struct {
 	VoiceStreamingTTSEnabled   bool    `json:"voice_streaming_tts_enabled"`
 	VoiceToolCallSpeech        bool    `json:"voice_tool_call_speech"`
 	VoiceProgressSpeechEnabled bool    `json:"voice_progress_speech_enabled"`
-	VoiceSpeechSummaryEnabled  bool    `json:"voice_speech_summary_enabled"`
 	VoiceMaxResponseTokens     int     `json:"voice_max_response_tokens"`
 	MaxIterations              int     `json:"max_iterations"`
 	ForceSimpleLoop            bool    `json:"force_simple_loop"`
@@ -227,6 +231,9 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			APIKey:     d.Benchmark.APIKey,
 			Dir:        d.Benchmark.BenchmarkDir,
 		},
+		Log: agent.LogConfig{
+			LLMHTTPRetentionDays: d.Log.LLMHTTPRetentionDays,
+		},
 		HID: agent.HIDConfig{
 			KeyboardDevice: d.HID.KeyboardDevice,
 			MouseDevice:    d.HID.MouseDevice,
@@ -267,7 +274,6 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 		VoiceStreamingTTSEnabled:   boolPtr(d.Agent.VoiceStreamingTTSEnabled),
 		VoiceToolCallSpeech:        boolPtr(d.Agent.VoiceToolCallSpeech),
 		VoiceProgressSpeechEnabled: boolPtr(d.Agent.VoiceProgressSpeechEnabled),
-		VoiceSpeechSummaryEnabled:  boolPtr(d.Agent.VoiceSpeechSummaryEnabled),
 		VoiceMaxResponseTokens:     d.Agent.VoiceMaxResponseTokens,
 		MaxIterations:              d.Agent.MaxIterations,
 		ForceSimpleLoop:            d.Agent.ForceSimpleLoop,
@@ -344,6 +350,9 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			APIKey:       cfg.Benchmark.APIKey,
 			BenchmarkDir: cfg.Benchmark.Dir,
 		},
+		Log: logDTO{
+			LLMHTTPRetentionDays: cfg.Log.LLMHTTPRetentionDaysOrDefault(),
+		},
 		HID: hidDTO{
 			KeyboardDevice: cfg.HID.KeyboardDeviceOrDefault(),
 			MouseDevice:    cfg.HID.MouseDeviceOrDefault(),
@@ -385,7 +394,6 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			VoiceStreamingTTSEnabled:   cfg.VoiceStreamingTTSEnabledOrDefault(),
 			VoiceToolCallSpeech:        cfg.VoiceToolCallSpeechOrDefault(),
 			VoiceProgressSpeechEnabled: cfg.VoiceProgressSpeechEnabledOrDefault(),
-			VoiceSpeechSummaryEnabled:  cfg.VoiceSpeechSummaryEnabledOrDefault(),
 			VoiceMaxResponseTokens:     cfg.VoiceMaxResponseTokensOrDefault(),
 			MaxIterations:              cfg.MaxIterations,
 			ForceSimpleLoop:            cfg.ForceSimpleLoop,
@@ -639,6 +647,8 @@ func parseValidationErrors(err error) []ValidationError {
 		field = "telemetry.upload_timeout_sec"
 	} else if strings.Contains(errMsg, "telemetry.max_retry") {
 		field = "telemetry.max_retry"
+	} else if strings.Contains(errMsg, "log.llm_http_retention_days") {
+		field = "log.llm_http_retention_days"
 	}
 
 	errors = append(errors, ValidationError{

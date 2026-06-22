@@ -114,6 +114,7 @@ func ConfigMeta() ConfigMetadata {
 						VisibleWhen: all(ne("model.provider", "openrouter"))},
 					{Key: "temperature", Widget: WidgetNumber, Default: defaults.Model.Temperature},
 					{Key: "max_response_tokens", Widget: WidgetNumber, Default: defaults.Model.MaxResponseTokens},
+					{Key: "log_raw_http", Widget: WidgetBoolean, Default: defaults.Model.LogRawHTTP},
 					{Key: "context_window", Widget: WidgetNumber, Default: defaults.Model.ContextWindow},
 					{Key: "model_max_output_tokens", Widget: WidgetNumber, Default: defaults.Model.ModelMaxOutputTokens},
 				},
@@ -185,6 +186,13 @@ func ConfigMeta() ConfigMetadata {
 						Default: defaults.Benchmark.JudgeModel},
 					{Key: "api_key", Widget: WidgetText, Secret: true},
 					{Key: "benchmark_dir", Widget: WidgetText},
+				},
+			},
+			{
+				Name: "log",
+				Fields: []FieldMeta{
+					{Key: "llm_http_retention_days", Widget: WidgetNumber,
+						Default: defaults.Log.LLMHTTPRetentionDaysOrDefault()},
 				},
 			},
 			{
@@ -301,8 +309,6 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "voice_tool_call_speech", Widget: WidgetBoolean, Default: defaults.VoiceToolCallSpeechOrDefault(),
 						VisibleWhen: all(in("agent.input_mode", "stt", "audio"))},
 					{Key: "voice_progress_speech_enabled", Widget: WidgetBoolean, Default: defaults.VoiceProgressSpeechEnabledOrDefault(),
-						VisibleWhen: all(in("agent.input_mode", "stt", "audio"))},
-					{Key: "voice_speech_summary_enabled", Widget: WidgetBoolean, Default: defaults.VoiceSpeechSummaryEnabledOrDefault(),
 						VisibleWhen: all(in("agent.input_mode", "stt", "audio"))},
 					{Key: "voice_max_response_tokens", Widget: WidgetNumber, Default: defaults.VoiceMaxResponseTokens,
 						VisibleWhen: all(in("agent.input_mode", "stt", "audio"))},

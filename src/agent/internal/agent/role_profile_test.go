@@ -17,10 +17,14 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 		Names:        []string{"ui"},
 		Instructions: []string{"[ui] inspect before acting"},
 	}
-	tools := []langtools.Tool{&stubTool{name: "screenshot", description: "Capture screen."}}
+	tools := []langtools.Tool{
+		&stubTool{name: "screenshot", description: "Capture screen."},
+		&stubTool{name: "save_memory", description: "Save memory."},
+	}
+	toolSpeechDisabled := false
 
 	profiles := buildRoleProfiles(
-		AgentConfig{Instruction: "base", AdditionalPrompt: "extra"},
+		AgentConfig{Instruction: "base", AdditionalPrompt: "extra", VoiceToolCallSpeech: &toolSpeechDisabled},
 		skills,
 		tools,
 		"MEMORY CONTEXT",
@@ -44,9 +48,8 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 		}
 		for _, want := range []string{
 			"## Base instruction",
+			"## Environment",
 			"## Default behavior",
-			"### Environment",
-			"### Default Behavior",
 			"## Available skills",
 			"## Active skills",
 			"## Role rules",
@@ -57,6 +60,11 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 		}
 		if strings.Contains(profile.SystemPrompt, "## Available tools") {
 			t.Fatalf("%s profile should not duplicate tool catalog in prompt:\n%s", profile.Name, profile.SystemPrompt)
+		}
+		for _, unexpected := range []string{"### Environment", "### Default Behavior"} {
+			if strings.Contains(profile.SystemPrompt, unexpected) {
+				t.Fatalf("%s profile should not include nested default prompt section %q:\n%s", profile.Name, unexpected, profile.SystemPrompt)
+			}
 		}
 	}
 	if !strings.Contains(profiles.Verifier.SystemPrompt, "## Role rules") {
@@ -73,7 +81,7 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 		"extra",
 	} {
 		if strings.Contains(profiles.Verifier.SystemPrompt, unexpected) {
-			t.Fatalf("verifier profile should only keep role rules, found %q:\n%s", unexpected, profiles.Verifier.SystemPrompt)
+			t.Fatalf("verifier profile should not include general prompt context, found %q:\n%s", unexpected, profiles.Verifier.SystemPrompt)
 		}
 	}
 	if !strings.Contains(profiles.Planner.SystemPrompt, "MEMORY CONTEXT") {
@@ -103,6 +111,12 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 	if !hasProfileTool(profiles.Planner, "screenshot") || !hasProfileTool(profiles.Planner, "enter_plan_mode") {
 		t.Fatalf("planner profile should retain callable tools and loop meta tools: %#v", profiles.Planner.Tools)
 	}
+	if !hasProfileTool(profiles.Planner, "save_memory") {
+		t.Fatalf("planner profile should retain save_memory: %#v", profiles.Planner.Tools)
+	}
+	if hasProfileTool(profiles.Executor, "save_memory") {
+		t.Fatalf("executor profile should not expose save_memory by default: %#v", profiles.Executor.Tools)
+	}
 	if !strings.Contains(profiles.Planner.SystemPrompt, "Route phase chooses direct_answer, simple, or plan") {
 		t.Fatalf("planner prompt should describe route-selected execution:\n%s", profiles.Planner.SystemPrompt)
 	}
@@ -117,20 +131,117 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 		strings.Contains(profiles.Verifier.SystemPrompt, "open_app") {
 		t.Fatalf("role prompts should not mention open_app when that tool is unavailable: planner=%q verifier=%q", profiles.Planner.SystemPrompt, profiles.Verifier.SystemPrompt)
 	}
-	if !strings.Contains(profiles.Planner.SystemPrompt, "plan quick_action first") ||
-		!strings.Contains(profiles.Planner.SystemPrompt, "quick_action action=back platform=android") ||
-		!strings.Contains(profiles.Executor.SystemPrompt, "try quick_action first") ||
-		!strings.Contains(profiles.Executor.SystemPrompt, "fall back to keyboard_tap") {
+	if !strings.Contains(profiles.Planner.SystemPrompt, "plan quick_action when a matching action may exist") ||
+		!strings.Contains(profiles.Planner.SystemPrompt, "observed_state.platform") ||
+		!strings.Contains(profiles.Executor.SystemPrompt, "prefer quick_action when a matching action exists") ||
+		!strings.Contains(profiles.Executor.SystemPrompt, "switch to keyboard_tap") {
 		t.Fatalf("role prompts should prefer quick_action before low-level fallback: planner=%q executor=%q", profiles.Planner.SystemPrompt, profiles.Executor.SystemPrompt)
 	}
 	if !strings.Contains(profiles.Planner.SystemPrompt, "platform (ios/android/mac)") ||
-		!strings.Contains(profiles.Executor.SystemPrompt, "pass it explicitly") ||
+		!strings.Contains(profiles.Executor.SystemPrompt, "platform shown in World State") ||
 		!strings.Contains(profiles.Verifier.SystemPrompt, `"platform":""`) {
 		t.Fatalf("role prompts should propagate observed platform for platform-specific tools: planner=%q executor=%q verifier=%q", profiles.Planner.SystemPrompt, profiles.Executor.SystemPrompt, profiles.Verifier.SystemPrompt)
 	}
 	if !strings.Contains(profiles.Verifier.SystemPrompt, "current executor step") ||
 		!strings.Contains(profiles.Verifier.SystemPrompt, "final committed plan step") {
 		t.Fatalf("verifier prompt should focus on per-step verification:\n%s", profiles.Verifier.SystemPrompt)
+	}
+}
+
+func TestBuildRoleProfilesOmitsActiveSkillsSectionWhenEmpty(t *testing.T) {
+	profiles := buildRoleProfiles(
+		AgentConfig{},
+		ResolvedSkills{},
+		nil,
+		MemoryContext{},
+	)
+
+	for _, profile := range []RoleProfile{profiles.Planner, profiles.Executor} {
+		for _, unexpected := range []string{
+			"## Active skills",
+			"No extra skill is active.",
+		} {
+			if strings.Contains(profile.SystemPrompt, unexpected) {
+				t.Fatalf("%s profile should omit empty active skills section, found %q:\n%s", profile.Name, unexpected, profile.SystemPrompt)
+			}
+		}
+	}
+}
+
+func TestBuildRoleProfilesInjectsVerifierCautionMemory(t *testing.T) {
+	skills := ResolvedSkills{
+		Names:        []string{"ui"},
+		Instructions: []string{"[ui] skill instruction should stay out"},
+	}
+	memory := MemoryContext{
+		Common: RoleMemoryContext{
+			SessionSummary: "COMMON SESSION SHOULD STAY OUT",
+			Profile:        "COMMON PROFILE SHOULD STAY OUT",
+		},
+		Planner: RoleMemoryContext{
+			Procedures: []MemoryHit{{
+				ID:      "planner_proc",
+				Type:    "procedure",
+				Summary: "planner procedure should stay out",
+			}},
+		},
+		Verifier: RoleMemoryContext{
+			FailureModes: []MemoryHit{
+				{
+					ID:      "failure_mem",
+					Type:    "failure",
+					Summary: "require fresh screen evidence before approving",
+				},
+				{
+					ID:      "failed_episode",
+					Type:    "task_episode_failure",
+					Summary: "prior failed episode approved a stale screen",
+				},
+			},
+			Conflicts: []MemoryHit{{
+				ID:      "conflict_mem",
+				Type:    "conflict",
+				Summary: "old route conflicts with the current layout",
+			}},
+		},
+	}
+
+	profiles := buildRoleProfiles(
+		AgentConfig{Instruction: "BASE SHOULD STAY OUT"},
+		skills,
+		nil,
+		memory,
+	)
+	prompt := profiles.Verifier.SystemPrompt
+
+	for _, want := range []string{
+		"## Verifier memory cautions",
+		"historical failure/conflict warnings only",
+		"not proof of completion",
+		"current executor_outcome, tool observations, screenshots, or current step evidence",
+		"failure_mem",
+		"require fresh screen evidence before approving",
+		"failed_episode",
+		"prior failed episode approved a stale screen",
+		"conflict_mem",
+		"old route conflicts with the current layout",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("verifier prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, unexpected := range []string{
+		"## Base instruction",
+		"BASE SHOULD STAY OUT",
+		"[ui] skill instruction should stay out",
+		"COMMON SESSION SHOULD STAY OUT",
+		"COMMON PROFILE SHOULD STAY OUT",
+		"planner_proc",
+		"planner procedure should stay out",
+	} {
+		if strings.Contains(prompt, unexpected) {
+			t.Fatalf("verifier caution memory leaked %q:\n%s", unexpected, prompt)
+		}
 	}
 }
 
@@ -148,9 +259,9 @@ func TestBuildRoleProfilesIncludesOpenAppRulesOnlyWhenAvailable(t *testing.T) {
 	}
 }
 
-func TestBuildRoleProfilesOmitsStructuredSpeechWhenSpeechSummaryDisabled(t *testing.T) {
+func TestBuildRoleProfilesUsePlainFinalAnswersForVoiceFirstOutput(t *testing.T) {
 	profiles := buildRoleProfiles(
-		AgentConfig{VoiceSpeechSummaryEnabled: boolPtrRoleProfile(false)},
+		AgentConfig{},
 		ResolvedSkills{},
 		nil,
 		MemoryContext{},
@@ -158,10 +269,10 @@ func TestBuildRoleProfilesOmitsStructuredSpeechWhenSpeechSummaryDisabled(t *test
 
 	for _, profile := range []RoleProfile{profiles.Planner, profiles.Verifier} {
 		if strings.Contains(profile.SystemPrompt, `"speech":`) {
-			t.Fatalf("%s prompt should not require structured speech when speech summary is disabled:\n%s", profile.Name, profile.SystemPrompt)
+			t.Fatalf("%s prompt should not require structured speech:\n%s", profile.Name, profile.SystemPrompt)
 		}
-		if profile.Name == RolePlanner && (!strings.Contains(profile.SystemPrompt, "plain text") || !strings.Contains(profile.SystemPrompt, "not JSON")) {
-			t.Fatalf("planner prompt should ask for plain text final answers when speech summary is disabled:\n%s", profile.SystemPrompt)
+		if profile.Name == RolePlanner && (!strings.Contains(profile.SystemPrompt, "Voice interaction is the core use case") || !strings.Contains(profile.SystemPrompt, "plain text")) {
+			t.Fatalf("planner prompt should ask for concise plain-text final answers:\n%s", profile.SystemPrompt)
 		}
 		if profile.Name == RoleVerifier && !strings.Contains(profile.SystemPrompt, "final_answer") {
 			t.Fatalf("verifier prompt should keep final_answer as the plain user-facing answer:\n%s", profile.SystemPrompt)
@@ -218,6 +329,58 @@ func TestRoleCollaborativeExecutorPassesToolsViaWithTools(t *testing.T) {
 		if strings.Contains(plannerPrompt, unexpected) {
 			t.Fatalf("planner prompt should not duplicate tool catalog %q:\n%s", unexpected, plannerPrompt)
 		}
+	}
+}
+
+func TestExecutorRoleDoesNotExposePlannerOnlySaveMemoryTool(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			toolCallResponse("save_1", "save_memory", `{"type":"profile","title":"Location","content":"The user is in Shanghai."}`),
+		},
+	}
+	executor := newRoleCollaborativeExecutor(
+		model,
+		RoleProfiles{
+			Executor: RoleProfile{Name: RoleExecutor, SystemPrompt: "executor"},
+		},
+		[]langtools.Tool{
+			&stubTool{name: "screenshot", description: "Capture screen."},
+			&stubTool{name: "save_memory", description: "Save memory.", output: `{"status":"saved"}`},
+		},
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{
+		Phase:               phaseExecution,
+		PlanCommitted:       true,
+		StepExecutionActive: true,
+		NextStep:            "remember the user's location",
+	}
+	inputs := map[string]string{"input": "remember that my location is Shanghai", "history": ""}
+
+	turn, err := executor.callExecutorTurn(context.Background(), inputs, state, toolSpecsForRole(RoleExecutor, executor.Tools))
+	if err != nil {
+		t.Fatalf("executor turn error: %v", err)
+	}
+	if len(model.tools) != 1 {
+		t.Fatalf("expected one executor model call, got %d", len(model.tools))
+	}
+	if !llmToolsContain(model.tools[0], "screenshot") || !llmToolsContain(model.tools[0], toolFinishStep) {
+		t.Fatalf("executor should receive ordinary executor tools and step meta tools: %#v", model.tools[0])
+	}
+	if llmToolsContain(model.tools[0], "save_memory") {
+		t.Fatalf("executor received planner-only save_memory tool: %#v", model.tools[0])
+	}
+	if turn.Kind != executorTurnTool || turn.Step == nil {
+		t.Fatalf("executor turn = %#v, want invalid tool step", turn)
+	}
+	if !strings.Contains(turn.Step.Observation, "save_memory is not a valid tool") {
+		t.Fatalf("executor should reject planner-only save_memory at execution time: %q", turn.Step.Observation)
 	}
 }
 
@@ -473,7 +636,7 @@ func TestRoleCollaborativeExecutorShowsCurrentStepForVerifier(t *testing.T) {
 	verifierUserPrompt := messageText([]llms.MessageContent{model.messages[4][len(model.messages[4])-1]})
 	if strings.Contains(verifierSystemPrompt, "## Base instruction") ||
 		strings.Contains(verifierSystemPrompt, "## Available skills") {
-		t.Fatalf("verifier system prompt should only contain role rules:\n%s", verifierSystemPrompt)
+		t.Fatalf("verifier system prompt should not include base instructions or skills:\n%s", verifierSystemPrompt)
 	}
 	for _, want := range []string{
 		"Original user request",
@@ -632,9 +795,10 @@ func TestRoleCollaborativeExecutorReplansAfterRepeatedVerifierFailures(t *testin
 	}
 }
 
-func TestRoleCollaborativeExecutorSharesScreenshotWorldStateAcrossRoles(t *testing.T) {
+func TestRoleCollaborativeExecutorSharesScreenshotWorldStateOnlyWithVerifier(t *testing.T) {
 	jpegBytes := []byte("world-state-jpeg")
 	encodedImage := base64.StdEncoding.EncodeToString(jpegBytes)
+	imageURL := "data:image/jpeg;base64," + encodedImage
 	model := &scriptedModel{
 		responses: roleCommittedExecutionResponses(
 			[]string{"inspect screen", "answer from current screen"},
@@ -671,7 +835,7 @@ func TestRoleCollaborativeExecutorSharesScreenshotWorldStateAcrossRoles(t *testi
 		t.Fatalf("model call count = %d, want 7", model.callCount)
 	}
 
-	for _, idx := range []int{4, 5, 6} {
+	for _, idx := range []int{4, 6} {
 		prompt := messageText(model.messages[idx])
 		for _, want := range []string{
 			"World State (shared across planner, executor, and verifier):",
@@ -679,15 +843,30 @@ func TestRoleCollaborativeExecutorSharesScreenshotWorldStateAcrossRoles(t *testi
 			"The current screenshot image is attached to this message.",
 		} {
 			if !strings.Contains(prompt, want) {
-				t.Fatalf("model call %d missing world state %q:\n%s", idx, want, prompt)
+				t.Fatalf("verifier model call %d missing world-state screenshot text %q:\n%s", idx, want, prompt)
 			}
 		}
-		if !hasImageURL(model.messages[idx], "data:image/jpeg;base64,"+encodedImage) {
-			t.Fatalf("model call %d missing world-state screenshot image: %#v", idx, model.messages[idx])
+		if got := imageURLCount(model.messages[idx], imageURL); got != 1 {
+			t.Fatalf("verifier model call %d should receive one world-state screenshot image, got %d", idx, got)
 		}
-		if !finalHumanMessageHasTextBeforeImage(model.messages[idx], "data:image/jpeg;base64,"+encodedImage) {
-			t.Fatalf("model call %d should place text before world-state screenshot image: %#v", idx, model.messages[idx])
+		if !finalHumanMessageHasTextBeforeImage(model.messages[idx], imageURL) {
+			t.Fatalf("verifier model call %d should place text before world-state screenshot image: %#v", idx, model.messages[idx])
 		}
+	}
+
+	executorPrompt := messageText(model.messages[5])
+	for _, unexpected := range []string{
+		"Latest screenshot:",
+		"The current screenshot image is attached to this message.",
+		"Screenshot source input:",
+		"Post-action output before screenshot:",
+	} {
+		if strings.Contains(executorPrompt, unexpected) {
+			t.Fatalf("executor should not receive world-state screenshot text %q:\n%s", unexpected, executorPrompt)
+		}
+	}
+	if got := imageURLCount(model.messages[5], imageURL); got != 0 {
+		t.Fatalf("executor should not receive world-state screenshot image, got %d copies", got)
 	}
 
 	secondExecutorPrompt := messageText(model.messages[5])
@@ -708,6 +887,135 @@ func TestRoleCollaborativeExecutorSharesScreenshotWorldStateAcrossRoles(t *testi
 	}
 }
 
+func TestRoleCollaborativeExecutorOmitsWorldStateLatestScreenshotWhenLatestExecutorToolResultIsScreenshot(t *testing.T) {
+	jpegBytes := []byte("executor-scratchpad-jpeg")
+	encodedImage := base64.StdEncoding.EncodeToString(jpegBytes)
+	imageURL := "data:image/jpeg;base64," + encodedImage
+	model := &scriptedModel{
+		responses: roleCommittedExecutionResponses(
+			[]string{"inspect screen"},
+			toolCallResponse("call_1", "screenshot", `{"__arg1":"{}"}`),
+			finishStepToolCall("inspected screen"),
+			verifierFinishResponse("done"),
+		),
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"screenshot": &stubTool{
+				name:        "screenshot",
+				description: "Capture screen.",
+				visual:      true,
+				output:      `{"width":320,"height":240,"format":"jpeg","size":16,"data":"` + encodedImage + `"}`,
+			},
+		}},
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "inspect current screen"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "done" {
+		t.Fatalf("unexpected output: %q", result.Output)
+	}
+	if model.callCount != 5 {
+		t.Fatalf("model call count = %d, want 5", model.callCount)
+	}
+
+	executorFollowup := model.messages[3]
+	prompt := messageText(executorFollowup)
+	if !hasMessageRole(executorFollowup, llms.ChatMessageTypeTool) {
+		t.Fatalf("executor follow-up should receive current step scratchpad: %#v", executorFollowup)
+	}
+	if got := imageURLCount(executorFollowup, imageURL); got != 1 {
+		t.Fatalf("executor follow-up should include screenshot only from scratchpad, got %d copies", got)
+	}
+	for _, want := range []string{
+		"World State (shared across planner, executor, and verifier):",
+		"This image is the screenshot observation returned by the screenshot tool.",
+		"Original user request",
+		"inspect current screen",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("executor follow-up missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, unexpected := range []string{
+		"Latest screenshot:",
+		"The current screenshot image is attached to this message.",
+		"Screenshot source input:",
+	} {
+		if strings.Contains(prompt, unexpected) {
+			t.Fatalf("executor follow-up should not include world-state screenshot text %q:\n%s", unexpected, prompt)
+		}
+	}
+}
+
+func TestRoleMessagesAttachCurrentStepScreenshotOnlyFromScratchpad(t *testing.T) {
+	worldBytes := []byte("stale-world-screenshot")
+	stepBytes := []byte("latest-tool-screenshot")
+	state := roleLoopState{
+		World:         worldState{LatestScreenshot: testWorldScreenshot(worldBytes)},
+		StepToolSteps: []schema.AgentStep{testScreenshotObservationStep("keyboard_tap", stepBytes)},
+	}
+	executor := &roleCollaborativeExecutor{
+		Tools: []langtools.Tool{&stubTool{name: "keyboard_tap", visual: true}},
+	}
+
+	messages := executor.roleMessages(RoleProfile{Name: RoleExecutor, SystemPrompt: "executor"}, map[string]string{"input": "inspect"}, state, "Executor task.")
+	prompt := messageText(messages)
+	worldImageURL := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(worldBytes)
+	stepImageURL := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(stepBytes)
+
+	if strings.Contains(prompt, "Latest screenshot:") ||
+		strings.Contains(prompt, "The current screenshot image is attached to this message.") {
+		t.Fatalf("executor prompt should omit world latest screenshot when latest tool result is a screenshot:\n%s", prompt)
+	}
+	if hasImageURL(messages, worldImageURL) {
+		t.Fatalf("executor messages should not attach world-state screenshot: %#v", messages)
+	}
+	if got := imageURLCount(messages, stepImageURL); got != 1 {
+		t.Fatalf("executor messages should include latest tool-result screenshot once, got %d", got)
+	}
+}
+
+func TestRoleMessagesAttachWorldScreenshotOnlyForVerifier(t *testing.T) {
+	worldBytes := []byte("verifier-world-screenshot")
+	state := roleLoopState{
+		World: worldState{LatestScreenshot: testWorldScreenshot(worldBytes)},
+	}
+	executor := &roleCollaborativeExecutor{}
+	imageURL := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(worldBytes)
+
+	plannerMessages := executor.roleMessages(RoleProfile{Name: RolePlanner, SystemPrompt: "planner"}, map[string]string{"input": "inspect"}, state, "Planner task.")
+	executorMessages := executor.roleMessages(RoleProfile{Name: RoleExecutor, SystemPrompt: "executor"}, map[string]string{"input": "inspect"}, state, "Executor task.")
+	verifierMessages := executor.roleMessages(RoleProfile{Name: RoleVerifier, SystemPrompt: "verifier"}, map[string]string{"input": "inspect"}, state, "Verifier task.")
+
+	for role, messages := range map[string][]llms.MessageContent{
+		"planner":  plannerMessages,
+		"executor": executorMessages,
+	} {
+		prompt := messageText(messages)
+		if strings.Contains(prompt, "Latest screenshot:") {
+			t.Fatalf("%s should not receive world-state latest screenshot text:\n%s", role, prompt)
+		}
+		if hasImageURL(messages, imageURL) {
+			t.Fatalf("%s should not receive world-state latest screenshot image: %#v", role, messages)
+		}
+	}
+
+	verifierPrompt := messageText(verifierMessages)
+	if !strings.Contains(verifierPrompt, "Latest screenshot: step=1 source_tool=screenshot size=320x240 format=jpeg bytes=25") {
+		t.Fatalf("verifier should receive world-state latest screenshot text:\n%s", verifierPrompt)
+	}
+	if !hasImageURL(verifierMessages, imageURL) {
+		t.Fatalf("verifier should receive world-state latest screenshot image: %#v", verifierMessages)
+	}
+}
+
 func TestWorldStateUpdatesFromPostActionScreenshot(t *testing.T) {
 	jpegBytes := []byte("post-action-jpeg")
 	state := worldState{}
@@ -718,7 +1026,7 @@ func TestWorldStateUpdatesFromPostActionScreenshot(t *testing.T) {
 		},
 		Observation: `{"action_output":"ok","width":640,"height":480,"format":"jpeg","size":16,"data":"` +
 			base64.StdEncoding.EncodeToString(jpegBytes) + `"}`,
-	}, 3)
+	}, 3, []langtools.Tool{&stubTool{name: "keyboard_tap", visual: true}})
 
 	if state.LatestScreenshot == nil {
 		t.Fatal("expected world state screenshot")
@@ -731,7 +1039,7 @@ func TestWorldStateUpdatesFromPostActionScreenshot(t *testing.T) {
 	}
 
 	var builder strings.Builder
-	writeWorldState(&builder, state)
+	writeWorldStateWithOptions(&builder, state, worldStatePromptOptions{IncludeLatestScreenshot: true})
 	text := builder.String()
 	for _, want := range []string{
 		"source_tool=keyboard_tap",
@@ -739,8 +1047,33 @@ func TestWorldStateUpdatesFromPostActionScreenshot(t *testing.T) {
 		"Post-action output before screenshot: ok",
 	} {
 		if !strings.Contains(text, want) {
-			t.Fatalf("world state text missing %q:\n%s", want, text)
+			t.Fatalf("verifier world state text missing %q:\n%s", want, text)
 		}
+	}
+}
+
+func TestDefaultWorldStateDoesNotRenderLatestScreenshot(t *testing.T) {
+	state := worldState{LatestScreenshot: testWorldScreenshot([]byte("default-hidden-screenshot"))}
+
+	var builder strings.Builder
+	writeWorldState(&builder, state)
+	text := builder.String()
+	if strings.Contains(text, "Latest screenshot:") ||
+		strings.Contains(text, "The current screenshot image is attached to this message.") {
+		t.Fatalf("world state should not render latest screenshot fields:\n%s", text)
+	}
+}
+
+func TestWorldStateIgnoresScreenshotShapedObservationFromNonVisualTool(t *testing.T) {
+	worldBytes := []byte("previous-world-screenshot")
+	state := worldState{LatestScreenshot: testWorldScreenshot(worldBytes)}
+	state.UpdateFromStep(testScreenshotObservationStep("metadata_dump", []byte("metadata-image-shaped-payload")), 3, []langtools.Tool{&stubTool{name: "metadata_dump"}})
+
+	if state.LatestScreenshot == nil {
+		t.Fatal("expected previous world screenshot to remain")
+	}
+	if string(state.LatestScreenshot.Data) != string(worldBytes) {
+		t.Fatalf("world screenshot was overwritten by non visual tool: %#v", state.LatestScreenshot)
 	}
 }
 
@@ -825,7 +1158,7 @@ func TestRoleCollaborativeExecutorUpdatesWorldStateFromObservedState(t *testing.
 
 	secondPlannerPrompt := messageText(model.messages[5])
 	for _, want := range []string{
-		"Observed app/page: 微信 / 聊天列表 platform=android confidence=0.82 source_role=verifier screenshot_step=3",
+		"Observed app/page: 微信 / 聊天列表 platform=android confidence=0.82 source_role=verifier",
 		"Visible text: 微信 | 通讯录",
 		"Dialogs: 权限提示",
 	} {
@@ -834,9 +1167,16 @@ func TestRoleCollaborativeExecutorUpdatesWorldStateFromObservedState(t *testing.
 		}
 	}
 
-	secondExecutorPrompt := messageText(model.messages[7])
+	secondExecutorPrompt := messageText(model.messages[6])
 	if !strings.Contains(secondExecutorPrompt, "Observed app/page: 微信 / 聊天列表 platform=android") {
 		t.Fatalf("executor should receive structured observed world state:\n%s", secondExecutorPrompt)
+	}
+	if strings.Contains(secondPlannerPrompt, "screenshot_step=") || strings.Contains(secondExecutorPrompt, "screenshot_step=") {
+		t.Fatalf("planner/executor should not receive screenshot_step from verifier-only screenshot state:\nplanner:\n%s\nexecutor:\n%s", secondPlannerPrompt, secondExecutorPrompt)
+	}
+	finalVerifierPrompt := messageText(model.messages[7])
+	if !strings.Contains(finalVerifierPrompt, "screenshot_step=3") {
+		t.Fatalf("verifier should receive screenshot_step with verifier-only screenshot state:\n%s", finalVerifierPrompt)
 	}
 }
 
@@ -851,6 +1191,34 @@ func messageText(messages []llms.MessageContent) string {
 		}
 	}
 	return builder.String()
+}
+
+func testWorldScreenshot(data []byte) *worldScreenshot {
+	return &worldScreenshot{
+		SourceTool: "screenshot",
+		Width:      320,
+		Height:     240,
+		Format:     "jpeg",
+		Size:       len(data),
+		Data:       data,
+		StepNumber: 1,
+	}
+}
+
+func testScreenshotObservationStep(tool string, data []byte) schema.AgentStep {
+	observation, _ := json.Marshal(postActionScreenshotResult{
+		screenshotResult: screenshotResult{
+			Width:  320,
+			Height: 240,
+			Format: "jpeg",
+			Size:   len(data),
+			Data:   base64.StdEncoding.EncodeToString(data),
+		},
+	})
+	return schema.AgentStep{
+		Action:      schema.AgentAction{Tool: tool},
+		Observation: string(observation),
+	}
 }
 
 func hasMessageRole(messages []llms.MessageContent, role llms.ChatMessageType) bool {
@@ -872,6 +1240,19 @@ func hasImageURL(messages []llms.MessageContent, want string) bool {
 		}
 	}
 	return false
+}
+
+func imageURLCount(messages []llms.MessageContent, want string) int {
+	count := 0
+	for _, msg := range messages {
+		for _, part := range msg.Parts {
+			image, ok := part.(llms.ImageURLContent)
+			if ok && image.URL == want {
+				count++
+			}
+		}
+	}
+	return count
 }
 
 func finalHumanMessageHasTextBeforeImage(messages []llms.MessageContent, imageURL string) bool {

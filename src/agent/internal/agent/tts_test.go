@@ -102,6 +102,64 @@ func TestPlayPromptSoundReturnsContextErrorWhenCanceledBeforeRetry(t *testing.T)
 	}
 }
 
+func TestAudioDialogInterruptOutputStopsAgentSendPromptSound(t *testing.T) {
+	audioServer := newTestAudioService(t)
+	audioServer.healthPlaybackSessions = []uint32{1}
+	firstStart := make(chan struct{})
+	var once sync.Once
+	audioServer.onStartPlayback = func() {
+		once.Do(func() {
+			close(firstStart)
+		})
+	}
+	dialog := &AudioDialog{
+		audioClient: NewAudioServiceClient(audioServer.socketPath),
+	}
+
+	done := make(chan struct{})
+	go func() {
+		dialog.playPromptSound(promptSoundAgentSend, "agent send", true)
+		close(done)
+	}()
+
+	waitForTestSignal(t, firstStart, "prompt sound playback to start")
+	dialog.InterruptOutput()
+	waitForTestSignal(t, done, "prompt sound to stop")
+
+	if got := audioServer.countOp("stop_playback"); got != 1 {
+		t.Fatalf("stop_playback count = %d, want 1", got)
+	}
+}
+
+func TestAudioDialogInterruptOutputDoesNotStopRecordingPromptSound(t *testing.T) {
+	audioServer := newTestAudioService(t)
+	audioServer.healthPlaybackSessions = []uint32{0}
+	firstStart := make(chan struct{})
+	var once sync.Once
+	audioServer.onStartPlayback = func() {
+		once.Do(func() {
+			close(firstStart)
+		})
+	}
+	dialog := &AudioDialog{
+		audioClient: NewAudioServiceClient(audioServer.socketPath),
+	}
+
+	done := make(chan struct{})
+	go func() {
+		dialog.playPromptSound(promptSoundRecordingStart, "recording", true)
+		close(done)
+	}()
+
+	waitForTestSignal(t, firstStart, "recording prompt sound playback to start")
+	dialog.InterruptOutput()
+	waitForTestSignal(t, done, "recording prompt sound to finish")
+
+	if got := audioServer.countOp("stop_playback"); got != 0 {
+		t.Fatalf("stop_playback count = %d, want recording prompt to ignore InterruptOutput", got)
+	}
+}
+
 type testAudioService struct {
 	socketPath               string
 	listener                 net.Listener

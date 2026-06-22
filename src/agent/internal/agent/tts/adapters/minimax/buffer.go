@@ -51,6 +51,14 @@ func (b *sentenceBuffer) Flush() string {
 	return rest
 }
 
+// Reset discards any buffered text without synthesizing it. Used to drop
+// residual content left over from a turn that did not produce a final answer.
+func (b *sentenceBuffer) Reset() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.buf.Reset()
+}
+
 // nextChunk extracts one sentence-bounded chunk if possible.
 // Returns the chunk and true; if no boundary is reached and flush=false,
 // returns "", false. With flush=true, returns whatever remains.

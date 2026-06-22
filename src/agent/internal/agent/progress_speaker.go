@@ -190,6 +190,16 @@ func (w *cancelOnFirstWriteWriter) ResetStreamState() {
 	w.mu.Unlock()
 }
 
+// ResetBuffer forwards a buffer reset to the inner writer if it supports it.
+func (w *cancelOnFirstWriteWriter) ResetBuffer() {
+	if w == nil {
+		return
+	}
+	if resetter, ok := w.inner.(ttsBufferResetter); ok {
+		resetter.ResetBuffer()
+	}
+}
+
 func (w *cancelOnFirstWriteWriter) StreamEmitted() bool {
 	if w == nil {
 		return false

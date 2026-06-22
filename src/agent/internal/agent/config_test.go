@@ -43,8 +43,8 @@ func TestConfigScreenshotPruningDefaultsAndOverrides(t *testing.T) {
 		t.Fatalf("Validate() error = %v", err)
 	}
 	pruning := cfg.ScreenshotPruningOrDefault()
-	if pruning.KeepN != 3 || pruning.Interval != 25 {
-		t.Fatalf("default screenshot pruning = %#v, want keep_n=3 interval=25", pruning)
+	if pruning.KeepN != 3 || pruning.Interval != 2 {
+		t.Fatalf("default screenshot pruning = %#v, want keep_n=3 interval=2", pruning)
 	}
 
 	cfg.ScreenshotKeepN = 5
@@ -197,6 +197,13 @@ provider = "fake"
 		t.Fatalf("VoiceMaxResponseTokens = %d, want runtime default %d",
 			cfg.VoiceMaxResponseTokens, defaultVoiceMaxResponseTokens)
 	}
+	if !cfg.Model.LogRawHTTP {
+		t.Fatal("Model.LogRawHTTP = false, want runtime default true")
+	}
+	if cfg.Log.LLMHTTPRetentionDays != defaultLLMHTTPLogRetentionDays {
+		t.Fatalf("Log.LLMHTTPRetentionDays = %d, want runtime default %d",
+			cfg.Log.LLMHTTPRetentionDays, defaultLLMHTTPLogRetentionDays)
+	}
 	if cfg.ScreenStableTimeoutMs != defaultStableWaitTimeoutMs {
 		t.Fatalf("ScreenStableTimeoutMs = %d, want runtime default %d",
 			cfg.ScreenStableTimeoutMs, defaultStableWaitTimeoutMs)
@@ -206,6 +213,62 @@ provider = "fake"
 	}
 	if cfg.STT.Provider != "" {
 		t.Fatalf("STT.Provider = %q, want empty when text mode did not configure STT", cfg.STT.Provider)
+	}
+}
+
+func TestLoadRuntimeConfigCanDisableRawHTTPLogging(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	if err := os.WriteFile(path, []byte(`
+[model]
+provider = "fake"
+log_raw_http = false
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	if cfg.Model.LogRawHTTP {
+		t.Fatal("Model.LogRawHTTP = true, want explicit false to disable raw HTTP logging")
+	}
+}
+
+func TestLoadRuntimeConfigCanOverrideLLMHTTPRetentionDays(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	if err := os.WriteFile(path, []byte(`
+[model]
+provider = "fake"
+
+[log]
+llm_http_retention_days = 14
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	if cfg.Log.LLMHTTPRetentionDaysOrDefault() != 14 {
+		t.Fatalf("LLMHTTPRetentionDaysOrDefault() = %d, want 14", cfg.Log.LLMHTTPRetentionDaysOrDefault())
+	}
+}
+
+func TestConfigValidateRejectsNegativeLLMHTTPRetentionDays(t *testing.T) {
+	cfg := Config{
+		Model: ModelConfig{Provider: "fake"},
+		Log:   LogConfig{LLMHTTPRetentionDays: -1},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() error = nil, want log.llm_http_retention_days rejection")
+	}
+	if !strings.Contains(err.Error(), "log.llm_http_retention_days") {
+		t.Fatalf("Validate() error = %v, want log.llm_http_retention_days", err)
 	}
 }
 
@@ -862,14 +925,11 @@ func TestVoiceSessionConfigDefaults(t *testing.T) {
 	if !cfg.VoiceStreamingTTSEnabledOrDefault() {
 		t.Fatal("VoiceStreamingTTSEnabledOrDefault() = false, want true")
 	}
-	if cfg.VoiceToolCallSpeechOrDefault() {
-		t.Fatal("VoiceToolCallSpeechOrDefault() = true, want false")
+	if !cfg.VoiceToolCallSpeechOrDefault() {
+		t.Fatal("VoiceToolCallSpeechOrDefault() = false, want true")
 	}
 	if !cfg.VoiceProgressSpeechEnabledOrDefault() {
 		t.Fatal("VoiceProgressSpeechEnabledOrDefault() = false, want true")
-	}
-	if !cfg.VoiceSpeechSummaryEnabledOrDefault() {
-		t.Fatal("VoiceSpeechSummaryEnabledOrDefault() = false, want true")
 	}
 	if cfg.VoiceMaxResponseTokensOrDefault() != 300 {
 		t.Fatalf("VoiceMaxResponseTokensOrDefault() = %d, want 300", cfg.VoiceMaxResponseTokensOrDefault())
@@ -882,7 +942,6 @@ func TestVoiceSessionConfigOverrides(t *testing.T) {
 	streamingDisabled := false
 	toolSpeech := false
 	progressSpeechDisabled := false
-	summaryDisabled := false
 	cfg := Config{
 		VoiceFollowupEnabled:       &followupEnabled,
 		VoiceFirstTurnTimeoutMs:    1234,
@@ -891,7 +950,6 @@ func TestVoiceSessionConfigOverrides(t *testing.T) {
 		VoiceStreamingTTSEnabled:   &streamingDisabled,
 		VoiceToolCallSpeech:        &toolSpeech,
 		VoiceProgressSpeechEnabled: &progressSpeechDisabled,
-		VoiceSpeechSummaryEnabled:  &summaryDisabled,
 		VoiceMaxResponseTokens:     123,
 	}
 
@@ -915,9 +973,6 @@ func TestVoiceSessionConfigOverrides(t *testing.T) {
 	}
 	if cfg.VoiceProgressSpeechEnabledOrDefault() {
 		t.Fatal("VoiceProgressSpeechEnabledOrDefault() = true, want false")
-	}
-	if cfg.VoiceSpeechSummaryEnabledOrDefault() {
-		t.Fatal("VoiceSpeechSummaryEnabledOrDefault() = true, want false")
 	}
 	if cfg.VoiceMaxResponseTokensOrDefault() != 123 {
 		t.Fatalf("VoiceMaxResponseTokensOrDefault() = %d, want 123", cfg.VoiceMaxResponseTokensOrDefault())

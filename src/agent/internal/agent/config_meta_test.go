@@ -97,7 +97,7 @@ func TestConfigMeta_Valid(t *testing.T) {
 		}
 	}
 
-	for _, name := range []string{"model", "tts", "stt", "audio", "benchmark", "hid", "search", "telemetry", "live_activity", "agent"} {
+	for _, name := range []string{"model", "tts", "stt", "audio", "audio_archive", "benchmark", "hid", "search", "log", "telemetry", "live_activity", "agent"} {
 		if !seenSections[name] {
 			t.Errorf("expected section %q to be present", name)
 		}
@@ -197,6 +197,7 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"model.model", defaults.Model.Model},
 		{"model.temperature", defaults.Model.Temperature},
 		{"model.max_response_tokens", defaults.Model.MaxResponseTokens},
+		{"model.log_raw_http", defaults.Model.LogRawHTTP},
 		{"tts.provider", defaults.TTS.Provider},
 		{"tts.voice_id", defaults.TTS.VoiceID},
 		{"tts.emotion", defaults.TTS.Emotion},
@@ -212,6 +213,7 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"audio_archive.max_size_mb", defaults.AudioArchive.MaxSizeMBOrDefault()},
 		{"audio_archive.storage_path", defaults.AudioArchive.StoragePathOrDefault()},
 		{"benchmark.judge_model", defaults.Benchmark.JudgeModel},
+		{"log.llm_http_retention_days", defaults.Log.LLMHTTPRetentionDaysOrDefault()},
 		{"hid.keyboard_device", defaults.HID.KeyboardDevice},
 		{"hid.mouse_device", defaults.HID.MouseDevice},
 		{"hid.frame_socket", defaults.HID.FrameSocket},
@@ -233,7 +235,6 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"agent.voice_streaming_tts_enabled", defaults.VoiceStreamingTTSEnabledOrDefault()},
 		{"agent.voice_tool_call_speech", defaults.VoiceToolCallSpeechOrDefault()},
 		{"agent.voice_progress_speech_enabled", defaults.VoiceProgressSpeechEnabledOrDefault()},
-		{"agent.voice_speech_summary_enabled", defaults.VoiceSpeechSummaryEnabledOrDefault()},
 		{"agent.voice_max_response_tokens", defaults.VoiceMaxResponseTokens},
 		{"agent.todo_reminder_tool_calls", defaults.TodoReminderToolCallsOrDefault()},
 		{"agent.max_iterations", defaults.MaxIterations},
@@ -361,6 +362,7 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 		{"benchmark", reflect.TypeOf(BenchmarkConfig{}), nil},
 		{"hid", reflect.TypeOf(HIDConfig{}), nil},
 		{"search", reflect.TypeOf(SearchConfig{}), nil},
+		{"log", reflect.TypeOf(LogConfig{}), nil},
 		{"telemetry", reflect.TypeOf(TelemetryConfig{}), nil},
 		{"live_activity", reflect.TypeOf(LiveActivityConfig{}), nil},
 	}
@@ -382,7 +384,7 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 	// fields are surfaced under their own sections or not at all.
 	agentSkip := map[string]bool{
 		"model": true, "model_text": true, "tts": true, "stt": true, "hid": true,
-		"audio": true, "search": true, "telemetry": true, "live_activity": true,
+		"audio": true, "search": true, "log": true, "telemetry": true, "live_activity": true,
 		"skills_dirs": true, "bundled_skills_dir": true,
 	}
 	cfgType := reflect.TypeOf(Config{})

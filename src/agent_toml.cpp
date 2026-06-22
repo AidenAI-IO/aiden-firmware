@@ -281,8 +281,6 @@ void apply_kv(AgentToml& cfg,
             if (!assign_bool(&cfg.voice_tool_call_speech, raw, &sub_err)) fail(sub_err);
         } else if (key == "voice_progress_speech_enabled") {
             if (!assign_bool(&cfg.voice_progress_speech_enabled, raw, &sub_err)) fail(sub_err);
-        } else if (key == "voice_speech_summary_enabled") {
-            if (!assign_bool(&cfg.voice_speech_summary_enabled, raw, &sub_err)) fail(sub_err);
         } else if (key == "voice_max_response_tokens") {
             if (!assign_int(&cfg.voice_max_response_tokens, raw, &sub_err)) fail(sub_err);
         } else if (key == "max_iterations") {
@@ -357,6 +355,9 @@ void apply_kv(AgentToml& cfg,
         if (key == "judge_model") assign_string(&cfg.benchmark.judge_model, raw, &sub_err);
         else if (key == "api_key") assign_string(&cfg.benchmark.api_key, raw, &sub_err);
         else if (key == "benchmark_dir") assign_string(&cfg.benchmark.benchmark_dir, raw, &sub_err);
+        if (!sub_err.empty()) fail(sub_err);
+    } else if (section == "log") {
+        if (key == "llm_http_retention_days") assign_non_negative_int(&cfg.log.llm_http_retention_days, raw, &sub_err);
         if (!sub_err.empty()) fail(sub_err);
     } else if (section == "hid") {
         if (key == "keyboard_device") assign_string(&cfg.hid.keyboard_device, raw, &sub_err);
@@ -620,7 +621,6 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
     emit_bool(out, "voice_streaming_tts_enabled", cfg.voice_streaming_tts_enabled);
     emit_bool(out, "voice_tool_call_speech", cfg.voice_tool_call_speech);
     emit_bool(out, "voice_progress_speech_enabled", cfg.voice_progress_speech_enabled);
-    emit_bool(out, "voice_speech_summary_enabled", cfg.voice_speech_summary_enabled);
     if (cfg.voice_max_response_tokens != 0) emit_int(out, "voice_max_response_tokens", cfg.voice_max_response_tokens);
     if (cfg.max_iterations != 0) emit_int(out, "max_iterations", cfg.max_iterations);
     emit_bool(out, "force_simple_loop", cfg.force_simple_loop);
@@ -675,6 +675,10 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
     if (!cfg.benchmark.judge_model.empty()) emit_string(out, "judge_model", cfg.benchmark.judge_model);
     if (!cfg.benchmark.api_key.empty()) emit_string(out, "api_key", cfg.benchmark.api_key);
     if (!cfg.benchmark.benchmark_dir.empty()) emit_string(out, "benchmark_dir", cfg.benchmark.benchmark_dir);
+    out << "\n";
+
+    out << "[log]\n";
+    if (cfg.log.llm_http_retention_days != 0) emit_int(out, "llm_http_retention_days", cfg.log.llm_http_retention_days);
     out << "\n";
 
     out << "[hid]\n";

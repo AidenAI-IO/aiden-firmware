@@ -850,6 +850,31 @@ func (c MemoryContext) RenderForRole(role RoleName) string {
 	return strings.TrimSpace(strings.Join(parts, "\n\n"))
 }
 
+func (c MemoryContext) RenderVerifierCautionBlock() string {
+	if len(c.Verifier.FailureModes) == 0 && len(c.Verifier.Conflicts) == 0 {
+		return ""
+	}
+	var builder strings.Builder
+	builder.WriteString("## Verifier memory cautions\n")
+	builder.WriteString("Use these entries as historical failure/conflict warnings only. They are not proof of completion. Approve only when current executor_outcome, tool observations, screenshots, or current step evidence proves the current step.\n")
+	appendSection := func(name string, hits []MemoryHit) {
+		if len(hits) == 0 {
+			return
+		}
+		builder.WriteString("\n### ")
+		builder.WriteString(name)
+		builder.WriteByte('\n')
+		for _, hit := range hits {
+			builder.WriteString("- ")
+			builder.WriteString(renderMemoryHitLine(hit))
+			builder.WriteByte('\n')
+		}
+	}
+	appendSection("Failure modes", c.Verifier.FailureModes)
+	appendSection("Conflicts", c.Verifier.Conflicts)
+	return strings.TrimSpace(builder.String())
+}
+
 func (c *MemoryContext) trim(limit int) {
 	trimHits := func(values []MemoryHit) []MemoryHit {
 		if limit <= 0 || len(values) <= limit {

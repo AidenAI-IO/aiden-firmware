@@ -216,7 +216,7 @@ func truncateRunes(s string, max int) string {
 
 func (r ResolvedSkills) CombinedInstructions() string {
 	if len(r.Instructions) == 0 {
-		return "No extra skill is active."
+		return ""
 	}
 	return strings.Join(r.Instructions, "\n")
 }

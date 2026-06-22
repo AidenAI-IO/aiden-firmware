@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -16,11 +17,13 @@ const (
 
 // AudioServiceSink implements AudioSink by writing PCM to AudioServiceClient.
 type AudioServiceSink struct {
+	mu        sync.Mutex
 	audio     AudioServiceBackend
 	format    AudioFormat
 	sessionID uint64
 	started   bool
 	stopped   bool
+	finalSent bool
 	pcmBytes  int
 	pending   []byte
 }
@@ -41,7 +44,9 @@ func NewAudioServiceSink(audio AudioServiceBackend, format AudioFormat) *AudioSe
 func (s *AudioServiceSink) Format() AudioFormat { return s.format }
 
 func (s *AudioServiceSink) WritePCM(data []byte) error {
-	if s.stopped {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stopped || s.finalSent {
 		return ErrSessionClosed
 	}
 	if len(data) == 0 {
@@ -111,30 +116,59 @@ func (s *AudioServiceSink) pcmBytesForDuration(d time.Duration) int {
 }
 
 // PCMBytes returns how many PCM bytes were accepted by the audio backend.
-func (s *AudioServiceSink) PCMBytes() int { return s.pcmBytes }
+func (s *AudioServiceSink) PCMBytes() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pcmBytes
+}
 
 func (s *AudioServiceSink) Drain(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.mu.Lock()
 	if s.stopped {
+		s.mu.Unlock()
 		return nil
 	}
-	if err := s.flushPending(); err != nil {
-		return err
-	}
-	if !s.started {
-		return nil
-	}
-	if tailBytes := s.pcmBytesForDuration(playbackTailSilenceDuration); tailBytes > 0 {
-		if err := s.writePCMChunks(make([]byte, tailBytes)); err != nil {
-			return fmt.Errorf("write tail silence: %w", err)
+	if !s.finalSent {
+		if err := ctx.Err(); err != nil {
+			s.mu.Unlock()
+			return err
 		}
+		if err := s.flushPending(); err != nil {
+			s.mu.Unlock()
+			return err
+		}
+		if !s.started {
+			s.stopped = true
+			s.mu.Unlock()
+			return nil
+		}
+		if tailBytes := s.pcmBytesForDuration(playbackTailSilenceDuration); tailBytes > 0 {
+			if err := ctx.Err(); err != nil {
+				s.mu.Unlock()
+				return err
+			}
+			if err := s.writePCMChunks(make([]byte, tailBytes)); err != nil {
+				s.mu.Unlock()
+				return fmt.Errorf("write tail silence: %w", err)
+			}
+		}
+		// Send final chunk to signal end of stream.
+		if err := ctx.Err(); err != nil {
+			s.mu.Unlock()
+			return err
+		}
+		if err := s.audio.WritePlayChunk(s.sessionID, nil, true); err != nil {
+			s.mu.Unlock()
+			return fmt.Errorf("send final chunk: %w", err)
+		}
+		s.finalSent = true
 	}
-	// Send final chunk to signal end of stream.
-	if err := s.audio.WritePlayChunk(s.sessionID, nil, true); err != nil {
-		return fmt.Errorf("send final chunk: %w", err)
-	}
-	s.stopped = true
-
 	wait := EstimatedPlaybackDrainDuration(s.format, s.pcmBytes)
+	s.mu.Unlock()
+
 	waitCtx, cancel := context.WithTimeout(ctx, drainTimeout)
 	defer cancel()
 	if err := waitForEstimatedDrain(waitCtx, wait); err != nil {
@@ -143,28 +177,38 @@ func (s *AudioServiceSink) Drain(ctx context.Context) error {
 		}
 		return err
 	}
+	s.mu.Lock()
+	if !s.stopped {
+		s.stopped = true
+	}
+	s.mu.Unlock()
 	return nil
 }
 
 func (s *AudioServiceSink) Stop() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.stopped {
 		return nil
 	}
 	if !s.started {
 		s.pending = nil
 		s.stopped = true
+		s.finalSent = true
 		return nil
 	}
 	err := s.audio.StopPlayback(s.sessionID)
 	if err == nil {
 		s.pending = nil
 		s.stopped = true
+		s.finalSent = true
 		return nil
 	}
 	msg := strings.ToLower(err.Error())
 	if strings.Contains(msg, "session_not_found") || strings.Contains(msg, "not found") {
 		s.pending = nil
 		s.stopped = true
+		s.finalSent = true
 		return nil
 	}
 	return err

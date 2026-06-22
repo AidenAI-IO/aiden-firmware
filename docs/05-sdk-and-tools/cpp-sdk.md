@@ -1,18 +1,18 @@
-# C++ SDK 参考
+# C++ SDK Reference
 
-`libaiden.a` 是项目的 C++ 硬件 SDK，入口头文件为：
+`libaiden.a` is the project's C++ hardware SDK, with the main header file:
 
 ```cpp
 #include "aiden_sdk.h"
 ```
 
-主要能力：
+Key capabilities:
 
-1. GPIO wakeup event；
-2. 音频采集；
-3. 音频播放；
-4. HDMI / camera frame capture；
-5. USB HID 辅助能力。
+1. GPIO wakeup event;
+2. Audio capture;
+3. Audio playback;
+4. HDMI / camera frame capture;
+5. USB HID auxiliary capabilities.
 
 ## AudioConfig
 
@@ -62,7 +62,7 @@ listener.start(33, on_wakeup);
 listener.stop();
 ```
 
-GPIO 33/GPIO 32 通常用于按钮或唤醒信号，falling edge 触发。需要同时监听两路时，可创建两个 `WakeupListener`，并绑定同一个回调。
+GPIO 33/GPIO 32 are typically used for button or wakeup signals, triggered on falling edge. When you need to listen on both pins simultaneously, create two `WakeupListener` instances and bind them to the same callback.
 
 ## AudioCapture
 
@@ -98,7 +98,7 @@ player.stop();
 
 ## CameraCapture
 
-流式捕获：
+Streaming capture:
 
 ```cpp
 aiden::CameraConfig config;
@@ -115,11 +115,11 @@ camera.start([](const aiden::VideoFrame& frame) {
 camera.stop();
 ```
 
-一次性捕获并复制到 caller-owned buffer：
+One-shot capture and copy to caller-owned buffer:
 
 ```cpp
 aiden::CameraConfig config;
-config.edid_path = nullptr; // 使用内置 1080p30-only CTA EDID
+config.edid_path = nullptr; // Use built-in 1080p30-only CTA EDID
 
 aiden::CameraCapture camera;
 aiden::VideoFrame frame;
@@ -130,15 +130,15 @@ if (camera.capture_once(config, frame, bytes)) {
 }
 ```
 
-## 依赖
+## Dependencies
 
-- Rockchip MPI / Rockit / MPP / RGA / IVE 库；
-- opencv-mobile；
-- pthread、m 等系统库；
-- 对应头文件和库路径在 `CMakeLists.txt` 中配置。
+- Rockchip MPI / Rockit / MPP / RGA / IVE libraries;
+- opencv-mobile;
+- System libraries such as pthread, m;
+- Corresponding header and library paths are configured in `CMakeLists.txt`.
 
-## 注意事项
+## Notes
 
-- SDK 会在首次使用时初始化 `RK_MPI_SYS_Init()`；
-- 阻塞操作支持按服务逻辑优雅停止；
-- 使用 `frame_service` 后，业务通常不应直接打开 `/dev/video0`。
+- The SDK initializes `RK_MPI_SYS_Init()` on first use;
+- Blocking operations support graceful shutdown according to service logic;
+- When using `frame_service`, applications should typically not open `/dev/video0` directly.

@@ -103,6 +103,7 @@ func (t *WaitStableScreenTool) Description() string {
 	resolved := t.defaults.Resolved()
 	return fmt.Sprintf(
 		`Wait until the connected display stops changing before judging UI result. `+
+			`Use only while operating a visible target UI, after a UI action or known UI transition that may animate, navigate, or load; do not call for text-only reasoning, arithmetic, comparison, or memory lookup. `+
 			`Input JSON: {"timeout_ms":%d,"stable_ms":%d,"diff_threshold":%g}. `+
 			`Omitted fields use agent config defaults. `+
 			`The screen is stable when consecutive frames stay below diff_threshold for stable_ms. `+

@@ -1,14 +1,14 @@
-# 测试与验证
+# Testing and Validation
 
-## Host 单元测试
+## Host Unit Tests
 
-项目使用 doctest，并提供 host-native 测试构建：
+The project uses doctest and provides a host-native test build:
 
 ```bash
 make test
 ```
 
-或手动执行：
+Or execute manually:
 
 ```bash
 cmake -S . -B build-host -DAIDEN_TESTS=ON
@@ -16,11 +16,11 @@ cmake --build build-host
 build-host/tests/aiden_tests
 ```
 
-测试覆盖 UDS 消息、Frame Service 协议、Audio Service 协议、Ring Buffer、Wi-Fi / Agent TOML 配置解析、图像处理等模块。
+Tests cover UDS messaging, Frame Service protocol, Audio Service protocol, Ring Buffer, Wi-Fi / Agent TOML configuration parsing, image processing, and other modules.
 
-## Frame Service 验证
+## Frame Service Validation
 
-服务运行后：
+After the service is running:
 
 ```bash
 ./build/bin/frame_service_cli --socket /run/frame_service/frame_service.sock health
@@ -29,14 +29,14 @@ build-host/tests/aiden_tests
 ./build/bin/frame_service_cli --socket /run/frame_service/frame_service.sock list-frames
 ```
 
-开发机临时运行服务默认 socket 是 `/tmp/frame_service.sock`：
+For temporary service execution on development machines, the default socket is `/tmp/frame_service.sock`:
 
 ```bash
 ./build/bin/frame_service --socket /tmp/frame_service.sock
 ./build/bin/frame_service_cli --socket /tmp/frame_service.sock health
 ```
 
-## Audio Service 验证
+## Audio Service Validation
 
 ```bash
 ./build/bin/audio_service_cli --socket /run/audio_service/audio_service.sock health
@@ -44,19 +44,19 @@ build-host/tests/aiden_tests
 ./build/bin/audio_service_cli --socket /run/audio_service/audio_service.sock set-volume --volume 80
 ```
 
-录音到 PCM：
+Record to PCM:
 
 ```bash
 ./build/bin/audio_service_cli --socket /run/audio_service/audio_service.sock record-stream --seconds 3 > /tmp/record.pcm
 ```
 
-播放 PCM：
+Play PCM:
 
 ```bash
 cat /tmp/record.pcm | ./build/bin/audio_service_cli --socket /run/audio_service/audio_service.sock play-stream --rate 16000 --ch 1 --bits 16
 ```
 
-## USB HID 验证
+## USB HID Validation
 
 ```bash
 sudo ./build/bin/example_usb_hid setup composite
@@ -65,21 +65,21 @@ sudo ./build/bin/example_usb_hid keyboard text "hello from pico"
 sudo ./build/bin/example_usb_hid touch click 16000 16000
 ```
 
-## Agent 验证
+## Agent Validation
 
-在设备上检查服务：
+Check the service on the device:
 
 ```bash
 /etc/init.d/S53agent status
 ```
 
-Web UI 模式下打开：
+In Web UI mode, open:
 
 ```text
 http://<device-ip>:8080
 ```
 
-工具 API：
+Tool API:
 
 ```bash
 curl http://<device-ip>:8080/api/tools
@@ -88,16 +88,16 @@ curl -X POST http://<device-ip>:8080/api/tools/shell \
   -d '{"input":{"command":"pwd"}}'
 ```
 
-## 音频模型回环脚本
+## Audio Model Roundtrip Script
 
-`scripts/test_audio_roundtrip.sh` 用于通过 OpenRouter audio model 生成音频，再把音频作为输入发回识别：
+`scripts/test_audio_roundtrip.sh` is used to generate audio via OpenRouter audio model, then send the audio back as input for recognition:
 
 ```bash
 export OPENROUTER_KEY=sk-or-...
 ./scripts/test_audio_roundtrip.sh
 ```
 
-可选设置代理：
+Optionally set proxy:
 
 ```bash
 export HTTP_PROXY=http://127.0.0.1:7890

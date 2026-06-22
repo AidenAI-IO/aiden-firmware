@@ -1,42 +1,42 @@
-# Frame Service：HDMI 帧捕获服务
+# Frame Service: HDMI Frame Capture Service
 
-`frame_service` 是 C++ 长运行服务，负责独占 `/dev/video0`，持续从 TC358743 HDMI capture path 读取帧，并通过 Unix domain socket 对外提供最近帧、截图和健康状态。
+`frame_service` is a long-running C++ service that exclusively owns `/dev/video0`, continuously reads frames from the TC358743 HDMI capture path, and provides the latest frames, screenshots, and health status externally through a Unix domain socket.
 
-## 为什么需要 Frame Service
+## Why Frame Service is Needed
 
-直接让多个进程打开 `/dev/video0` 会导致资源冲突和状态不稳定。`frame_service` 将视频设备集中管理：
+Allowing multiple processes to directly open `/dev/video0` can lead to resource conflicts and unstable states. `frame_service` centralizes video device management:
 
-- 启动时完成 HDMI sync / EDID / DV timings / VI 初始化；
-- 按固定 FPS 将帧复制到 ring buffer；
-- 通过 socket 为 Agent、CLI、HTTP demo 等消费者提供帧；
-- 出错时支持重启 capture manager。
+- Completes HDMI sync / EDID / DV timings / VI initialization at startup;
+- Copies frames to a ring buffer at a fixed FPS;
+- Provides frames to consumers (Agent, CLI, HTTP examples, etc.) through a socket;
+- Supports restarting the capture manager on errors.
 
-## 默认参数
+## Default Parameters
 
-| 参数 | 默认值 | 说明 |
+| Parameter | Default Value | Description |
 | --- | --- | --- |
-| Socket（开发直接运行） | `/tmp/frame_service.sock` | `frame_service_main.cpp` 默认值 |
-| Socket（固件服务） | `/run/frame_service/frame_service.sock` | init 配置默认值 |
-| EDID | 内置 1080p30 CTA EDID | 未传 `--edid` 时使用 |
+| Socket (development direct run) | `/tmp/frame_service.sock` | Default value in `frame_service_main.cpp` |
+| Socket (firmware service) | `/run/frame_service/frame_service.sock` | Default value in init configuration |
+| EDID | Built-in 1080p30 CTA EDID | Used when `--edid` is not provided |
 | Ring size | `3` | `kDefaultFrameServiceRingSize` |
-| FPS | `3.0` | 默认 1080p 输入，服务采样 FPS 保持较低以控制 CPU、内存带宽和发热 |
-| Screenshot max edge | `960` | Go screenshot 工具默认压缩策略相关 |
+| FPS | `3.0` | For default 1080p input, the service sampling FPS is kept low to control CPU, memory bandwidth, and heat |
+| Screenshot max edge | `960` | Related to Go screenshot tool default compression strategy |
 
-## 启动
+## Startup
 
-开发模式：
+Development mode:
 
 ```bash
 ./build/bin/frame_service --socket /tmp/frame_service.sock
 ```
 
-固件服务：
+Firmware service:
 
 ```bash
 /etc/init.d/S52frame_service start
 ```
 
-## 参数
+## Parameters
 
 ```text
 frame_service [--socket PATH] [--device PATH] [--width N] [--height N]
@@ -45,20 +45,20 @@ frame_service [--socket PATH] [--device PATH] [--width N] [--height N]
               [--require-exact-resolution]
 ```
 
-| 参数 | 说明 |
+| Parameter | Description |
 | --- | --- |
-| `--socket PATH` | UDS socket 路径 |
-| `--device PATH` | V4L2 capture device，默认 `/dev/video0` |
-| `--width N` / `--height N` | HDMI sync 前的目标分辨率提示值，默认 1920x1080；默认接受实际协商到的输入分辨率 |
-| `--pixel-format FMT` | `nv12`、`nv16`、`uyvy`、`yuyv`，默认 `uyvy` |
-| `--subdev PATH` | HDMI bridge subdev，默认 `/dev/v4l-subdev2` |
-| `--edid PATH` | 自定义 EDID hex；为空时使用内置 1080p30-only CTA EDID |
-| `--ring-size N` | ring buffer 容量 |
-| `--fps N` | 采样 FPS；`0` 表示尽可能快 |
-| `--no-hdmi-sync` | 跳过 HDMI sync 辅助流程 |
-| `--require-exact-resolution` | 严格要求实际输入分辨率与 `--width/--height` 一致；默认关闭，便于 720p/竖屏等模式直接截图 |
+| `--socket PATH` | UDS socket path |
+| `--device PATH` | V4L2 capture device, defaults to `/dev/video0` |
+| `--width N` / `--height N` | Target resolution hint before HDMI sync, defaults to 1920x1080; accepts the actual negotiated input resolution by default |
+| `--pixel-format FMT` | `nv12`, `nv16`, `uyvy`, `yuyv`, defaults to `uyvy` |
+| `--subdev PATH` | HDMI bridge subdev, defaults to `/dev/v4l-subdev2` |
+| `--edid PATH` | Custom EDID hex; uses built-in 1080p30-only CTA EDID when empty |
+| `--ring-size N` | Ring buffer capacity |
+| `--fps N` | Sampling FPS; `0` means as fast as possible |
+| `--no-hdmi-sync` | Skip HDMI sync helper flow |
+| `--require-exact-resolution` | Strictly require actual input resolution to match `--width/--height`; disabled by default for convenience with 720p/portrait modes and direct screenshots |
 
-也可使用环境变量：
+Environment variables can also be used:
 
 ```bash
 export FRAME_SERVICE_SOCKET=/tmp/frame_service.sock
@@ -70,7 +70,7 @@ export FRAME_SERVICE_SOCKET=/tmp/frame_service.sock
 frame_service_cli [--socket PATH] <health|latest-frame|screenshot|list-frames|restart> [--out PATH]
 ```
 
-示例：
+Examples:
 
 ```bash
 ./build/bin/frame_service_cli --socket /tmp/frame_service.sock health
@@ -80,20 +80,20 @@ frame_service_cli [--socket PATH] <health|latest-frame|screenshot|list-frames|re
 ./build/bin/frame_service_cli --socket /tmp/frame_service.sock restart
 ```
 
-## 与 Agent 的关系
+## Relationship with Agent
 
-Go Agent 的 `screenshot` 工具通过 `FrameServiceClient` 访问 `frame_service`。配置项：
+The Go Agent's `screenshot` tool accesses `frame_service` through `FrameServiceClient`. Configuration:
 
 ```toml
 [hid]
 frame_socket = "/run/frame_service/frame_service.sock"
 ```
 
-截图解释要求模型/provider 支持图像输入。文本模型可以调用 `screenshot`，但无法理解像素内容。
+Screenshot interpretation requires the model/provider to support image input. Text-only models can call `screenshot` but cannot understand pixel content.
 
-## 与直接相机示例的冲突
+## Conflicts with Direct Camera Examples
 
-`frame_service` 运行期间会独占 `/dev/video0`。如果要运行 `example_camera_capture`：
+`frame_service` exclusively owns `/dev/video0` while running. To run `example_camera_capture`:
 
 ```bash
 /etc/init.d/S52frame_service stop

@@ -45,33 +45,25 @@ func TestEpisodeRecorderFinishAcceptsVerifierApproval(t *testing.T) {
 	}
 }
 
-func TestEpisodeRecorderPersistsToolSpeechOnlyWhenEnabled(t *testing.T) {
+func TestEpisodeRecorderPersistsToolContent(t *testing.T) {
 	action := schema.AgentAction{
 		Tool:      "echo",
 		ToolInput: "hello",
-		Log:       formatToolActionLog("echo", `{"input":"hello","speech":"Saying hi."}`, "I will echo.", "Saying hi.", "\n"),
+		Log:       formatToolActionLog("echo", `{"input":"hello","speech":"Saying hi."}`, "I will echo.", "\n"),
 	}
 
-	disabled := NewEpisodeRecorder(MemoryRetrieveRequest{Input: "test"}, MemoryContext{})
-	disabled.RecordExecution(roleExecutionResult{Action: &action})
-	disabledEpisode := disabled.Finish("", nil, nil, nil, nil)
-	if got := firstToolCallEventSpeech(disabledEpisode.Events); got != "" {
-		t.Fatalf("disabled recorder speech = %q, want empty", got)
-	}
-
-	enabled := NewEpisodeRecorder(MemoryRetrieveRequest{Input: "test"}, MemoryContext{})
-	enabled.ToolCallSpeech = true
-	enabled.RecordExecution(roleExecutionResult{Action: &action})
-	enabledEpisode := enabled.Finish("", nil, nil, nil, nil)
-	if got := firstToolCallEventSpeech(enabledEpisode.Events); got != "Saying hi." {
-		t.Fatalf("enabled recorder speech = %q", got)
+	recorder := NewEpisodeRecorder(MemoryRetrieveRequest{Input: "test"}, MemoryContext{})
+	recorder.RecordExecution(roleExecutionResult{Action: &action})
+	episode := recorder.Finish("", nil, nil, nil, nil)
+	if got := firstToolCallEventContent(episode.Events); got != "I will echo." {
+		t.Fatalf("tool event content = %q", got)
 	}
 }
 
-func firstToolCallEventSpeech(events []TaskEpisodeEvent) string {
+func firstToolCallEventContent(events []TaskEpisodeEvent) string {
 	for _, event := range events {
 		if event.Type == runEventToolCall {
-			return event.Speech
+			return event.Content
 		}
 	}
 	return ""

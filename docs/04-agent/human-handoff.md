@@ -1,81 +1,81 @@
 # Human Handoff Feature
 
-## 概述
+## Overview
 
-Human Handoff（人工接管）功能允许 Agent 在遇到需要人类判断、输入凭证或执行超出其能力范围的操作时，主动请求人工介入。
+The Human Handoff feature allows the Agent to proactively request human intervention when it encounters situations requiring human judgment, credential input, or operations beyond its capabilities.
 
-这个功能参考了 [Open-AutoGLM](https://github.com/zai-org/Open-AutoGLM) 项目的 `take_over` 机制，但采用了**非阻塞的对话流程设计**，更适合语音连续对话场景。
+This feature is inspired by the `take_over` mechanism in the [Open-AutoGLM](https://github.com/zai-org/Open-AutoGLM) project, but adopts a **non-blocking conversational flow design** that is better suited for continuous voice conversation scenarios.
 
-## 核心设计
+## Core Design
 
-与传统的阻塞回调不同，这个实现采用**自然对话流程**：
+Unlike traditional blocking callbacks, this implementation uses a **natural conversation flow**:
 
-1. Agent 调用 `request_human_handoff` 工具
-2. **工具立即返回**，告诉 Agent 需要通知用户什么
-3. Agent 通过 TTS 或文本告诉用户需要做什么
-4. **对话轮次结束**，等待用户的下一条消息
-5. 用户完成任务后说"好了"/"继续"等
-6. **新的对话轮次开始**，Agent 截图验证并继续执行
+1. Agent calls the `request_human_handoff` tool
+2. **Tool returns immediately**, telling the Agent what to notify the user about
+3. Agent tells the user what needs to be done via TTS or text
+4. **Conversation turn ends**, waiting for the user's next message
+5. User completes the task and says "done"/"continue" etc.
+6. **New conversation turn begins**, Agent takes a screenshot to verify and continues execution
 
-这就像人与人对话一样自然：
+This is as natural as human-to-human conversation:
 ```
-用户: "帮我登录 App Store"
-Agent: "我需要你的帮助。请在屏幕上输入你的 Apple ID 密码，然后点击登录。完成后告诉我继续。"
-[用户输入密码]
-用户: "好了"
-Agent: [截图] "好的，我看到已经成功登录了。现在..."
+User: "Help me log into App Store"
+Agent: "I need your help. Please enter your Apple ID password on the screen, then tap login. Tell me to continue when you're done."
+[User enters password]
+User: "Done"
+Agent: [Takes screenshot] "Good, I see login was successful. Now..."
 ```
 
-## 使用场景
+## Use Cases
 
-Agent 可以在以下场景下请求人工接管：
+The Agent can request human handoff in the following scenarios:
 
-### 1. **认证场景** (`authentication`)
-- 登录界面需要用户名和密码
-- 需要输入 Agent 无法获取的凭证
-- 需要多因素认证
+### 1. **Authentication** (`authentication`)
+- Login screen requires username and password
+- Need to input credentials the Agent cannot access
+- Multi-factor authentication required
 
-### 2. **验证码场景** (`captcha`, `verification_code`)
-- 图形验证码（CAPTCHA）
-- 短信验证码
-- 邮箱验证码
-- 身份验证挑战
+### 2. **Verification Codes** (`captcha`, `verification_code`)
+- Graphical CAPTCHA
+- SMS verification code
+- Email verification code
+- Identity verification challenge
 
-### 3. **敏感操作** (`sensitive_operation`)
-- 支付确认
-- 银行转账
-- 删除重要数据
-- 权限变更
+### 3. **Sensitive Operations** (`sensitive_operation`)
+- Payment confirmation
+- Bank transfer
+- Deleting important data
+- Permission changes
 
-### 4. **屏幕不可见** (`black_screen`)
-- 截图返回黑屏
-- 敏感页面（支付、银行应用）自动屏蔽截图
-- 无法获取屏幕内容
+### 4. **Screen Not Visible** (`black_screen`)
+- Screenshot returns black screen
+- Sensitive pages (payment, banking apps) automatically block screenshots
+- Cannot obtain screen content
 
-### 5. **模糊情况** (`ambiguous_situation`)
-- 不确定应该选择哪个选项
-- 需要用户偏好决策
-- 多个可能的操作路径
+### 5. **Ambiguous Situation** (`ambiguous_situation`)
+- Uncertain which option to choose
+- Requires user preference decision
+- Multiple possible action paths
 
-### 6. **不支持的操作** (`unsupported_action`)
-- 需要的功能超出工具能力
-- 硬件限制
-- 系统限制
+### 6. **Unsupported Action** (`unsupported_action`)
+- Required functionality exceeds tool capabilities
+- Hardware limitations
+- System limitations
 
-### 7. **卡住** (`stuck`)
-- 多次尝试后仍然无法继续
-- 遇到未知错误
-- 界面状态异常
+### 7. **Stuck** (`stuck`)
+- Unable to continue after multiple attempts
+- Encountered unknown error
+- Abnormal interface state
 
-### 8. **其他** (`other`)
-- 其他需要人工介入的情况
+### 8. **Other** (`other`)
+- Other situations requiring human intervention
 
-## 工具使用
+## Tool Usage
 
-### Tool 名称
+### Tool Name
 `request_human_handoff`
 
-### 输入格式
+### Input Format
 
 ```json
 {
@@ -85,15 +85,15 @@ Agent 可以在以下场景下请求人工接管：
 }
 ```
 
-### 参数说明
+### Parameter Description
 
-- **reason** (必需): 请求接管的原因类别，可选值见上述使用场景
-- **details** (必需): 详细描述当前情况，让人类了解发生了什么
-- **suggested_action** (可选): 建议人类采取的操作
+- **reason** (required): Category of the handoff request, see use cases above
+- **details** (required): Detailed description of the current situation so humans understand what happened
+- **suggested_action** (optional): Suggested action for the human to take
 
-### 输出
+### Output
 
-工具**立即返回**，不会阻塞。返回格式：
+The tool **returns immediately** without blocking. Return format:
 
 ```
 HUMAN_HANDOFF_REQUESTED. You need to ask the user to perform a manual action. 
@@ -103,13 +103,13 @@ Then ask the user to tell you when they have completed the task (e.g., say 'done
 After the user confirms, take a screenshot to verify the current state before proceeding.
 ```
 
-Agent 会理解这个返回值，并将其转化为对用户的语音或文本提示。
+The Agent will understand this return value and convert it into a voice or text prompt for the user.
 
-## 代码集成
+## Code Integration
 
-### 简单集成（推荐）
+### Simple Integration (Recommended)
 
-不需要任何回调函数，工具会自动注册：
+No callback functions needed, the tool is automatically registered:
 
 ```go
 package main
@@ -119,7 +119,7 @@ import (
 )
 
 func main() {
-    // 直接创建 ToolSet，human_handoff 工具会自动注册
+    // Create ToolSet directly, human_handoff tool is automatically registered
     toolSet := agent.NewBuiltinToolSet(
         hidCfg,
         audioCfg,
@@ -127,16 +127,16 @@ func main() {
         proxyCfg,
     )
     
-    // 验证工具已注册
+    // Verify tool is registered
     if tool, ok := toolSet.Get("request_human_handoff"); ok {
         fmt.Printf("Human handoff tool ready: %s\n", tool.Name())
     }
 }
 ```
 
-### 在 Agent 提示词中说明
+### Explaining in Agent Prompt
 
-在系统提示词中告知 Agent 可以使用这个工具：
+Inform the Agent in the system prompt that it can use this tool:
 
 ```
 When you encounter situations that require human intervention, use the request_human_handoff tool:
@@ -151,48 +151,48 @@ then wait for the user to tell you they have completed the task in their next me
 After they confirm, take a screenshot to verify the result before continuing.
 ```
 
-## 交互流程示例
+## Interaction Flow Examples
 
-### 语音模式
+### Voice Mode
 
-**Turn 1 - Agent 请求接管**:
+**Turn 1 - Agent requests handoff**:
 ```
-用户 (语音): "帮我登录微信"
-Agent: [截图分析] → [判断需要密码] → [调用 request_human_handoff]
-       Tool 返回: "HUMAN_HANDOFF_REQUESTED. Tell user to enter password..."
-Agent (TTS): "我需要你的帮助。微信登录需要输入密码。请在屏幕上输入你的密码并点击登录。完成后告诉我'继续'。"
-[对话轮次结束]
-```
-
-**用户操作**:
-```
-[用户在手机上输入密码，点击登录]
+User (voice): "Help me log into WeChat"
+Agent: [Analyzes screenshot] → [Determines password needed] → [Calls request_human_handoff]
+       Tool returns: "HUMAN_HANDOFF_REQUESTED. Tell user to enter password..."
+Agent (TTS): "I need your help. WeChat login requires a password. Please enter your password on the screen and tap login. Tell me 'continue' when you're done."
+[Conversation turn ends]
 ```
 
-**Turn 2 - 用户确认完成**:
+**User action**:
 ```
-用户 (语音): "好了" / "继续" / "我登录完了"
-Agent: [截图] → [分析验证]
-Agent (TTS): "很好，我看到已经成功登录了。现在我帮你..."
-[继续执行后续任务]
+[User enters password on phone and taps login]
 ```
 
-### 文本对话模式
-
-同样的流程，只是用文字代替语音：
-
+**Turn 2 - User confirms completion**:
 ```
-用户: 帮我打开支付宝并充值话费
-Agent: [导航到支付宝充值页面] → [发现需要支付密码]
-Agent: 我需要你的帮助。支付页面需要输入支付密码来确认充值 50 元话费。请在手机上输入你的支付密码并确认。完成后告诉我"继续"。
-[等待用户输入]
-用户: 好了
-Agent: [截图验证] 支付成功！话费已经充值到你的手机号。
+User (voice): "Done" / "Continue" / "I've logged in"
+Agent: [Takes screenshot] → [Analyzes verification]
+Agent (TTS): "Great, I see login was successful. Now I'll help you..."
+[Continues with subsequent tasks]
 ```
 
-## Agent 行为指导
+### Text Conversation Mode
 
-在 Agent 的系统提示词中，建议包含以下指导：
+Same flow, but using text instead of voice:
+
+```
+User: Help me open Alipay and recharge my phone
+Agent: [Navigates to Alipay recharge page] → [Discovers payment password needed]
+Agent: I need your help. The payment page requires your payment password to confirm recharging 50 yuan. Please enter your payment password on your phone and confirm. Tell me "continue" when you're done.
+[Waits for user input]
+User: Done
+Agent: [Verifies with screenshot] Payment successful! Your phone has been recharged.
+```
+
+## Agent Behavior Guidelines
+
+In the Agent's system prompt, it is recommended to include the following guidance:
 
 ```markdown
 ## Human Handoff Guidelines
@@ -218,140 +218,140 @@ After you tell the user what to do:
 3. Verify the result before proceeding with the task
 ```
 
-## 测试
+## Testing
 
-运行单元测试：
+Run unit tests:
 
 ```bash
 cd src/agent/internal/agent
 go test -v -run TestHumanHandoff
 ```
 
-## 示例场景
+## Example Scenarios
 
-### 场景 1: 登录需要密码
+### Scenario 1: Login Requires Password
 
 ```json
 {
   "tool": "request_human_handoff",
   "input": {
     "reason": "authentication",
-    "details": "App Store 登录界面要求输入 Apple ID 密码。我无法访问用户的密码。",
-    "suggested_action": "请在密码输入框中输入您的 Apple ID 密码，然后点击登录按钮。"
+    "details": "App Store login screen requires Apple ID password. I cannot access the user's password.",
+    "suggested_action": "Please enter your Apple ID password in the password field, then tap the login button."
   }
 }
 ```
 
-**Agent 的响应流程**：
-1. 调用工具，工具立即返回指令
-2. Agent 对用户说："我需要你的帮助。App Store 登录界面要求输入 Apple ID 密码。请在密码输入框中输入您的 Apple ID 密码，然后点击登录按钮。完成后告诉我'继续'。"
-3. 等待用户回复
-4. 用户说"好了"后，Agent 截图验证登录状态
+**Agent's response flow**:
+1. Calls the tool, tool returns instructions immediately
+2. Agent tells the user: "I need your help. The App Store login screen requires your Apple ID password. Please enter your Apple ID password in the password field, then tap the login button. Tell me 'continue' when you're done."
+3. Waits for user reply
+4. After user says "done", Agent takes a screenshot to verify login status
 
-### 场景 2: 遇到验证码
+### Scenario 2: Encountered Verification Code
 
 ```json
 {
   "tool": "request_human_handoff",
   "input": {
     "reason": "captcha",
-    "details": "网站显示图形验证码，需要识别并输入图片中的字符。",
-    "suggested_action": "请查看屏幕上的验证码图片，输入正确的字符。"
+    "details": "Website displays a graphical CAPTCHA that requires identifying and entering characters from the image.",
+    "suggested_action": "Please look at the CAPTCHA image on screen and enter the correct characters."
   }
 }
 ```
 
-**交互流程**：
+**Interaction flow**:
 ```
-Agent: "我遇到了验证码。请查看屏幕上的验证码图片，输入正确的字符。完成后告诉我。"
-[用户输入验证码]
-用户: "输完了"
-Agent: [截图验证] "好的，验证码已通过，继续..."
+Agent: "I encountered a CAPTCHA. Please look at the CAPTCHA image on screen and enter the correct characters. Tell me when you're done."
+[User enters CAPTCHA]
+User: "Entered it"
+Agent: [Verifies with screenshot] "Okay, CAPTCHA passed, continuing..."
 ```
 
-### 场景 3: 支付确认
+### Scenario 3: Payment Confirmation
 
 ```json
 {
   "tool": "request_human_handoff",
   "input": {
     "reason": "sensitive_operation",
-    "details": "即将执行支付操作，金额为 ¥299。这是敏感操作，需要用户确认。",
-    "suggested_action": "请检查支付金额和收款方是否正确，然后确认支付。"
+    "details": "About to execute payment operation, amount is ¥299. This is a sensitive operation that requires user confirmation.",
+    "suggested_action": "Please check that the payment amount and recipient are correct, then confirm the payment."
   }
 }
 ```
 
-**交互流程**：
+**Interaction flow**:
 ```
-Agent: "我需要你确认一个支付操作。即将支付 ¥299。请检查支付金额和收款方是否正确，然后确认支付。完成后告诉我。"
-[用户检查并确认支付]
-用户: "支付完了"
-Agent: [截图验证] "支付成功！订单已确认。"
+Agent: "I need you to confirm a payment operation. About to pay ¥299. Please check that the payment amount and recipient are correct, then confirm the payment. Tell me when you're done."
+[User checks and confirms payment]
+User: "Payment done"
+Agent: [Verifies with screenshot] "Payment successful! Order confirmed."
 ```
 
-### 场景 4: 黑屏
+### Scenario 4: Black Screen
 
 ```json
 {
   "tool": "request_human_handoff",
   "input": {
     "reason": "black_screen",
-    "details": "屏幕截图返回全黑图像，可能是银行应用启用了防截屏保护。",
-    "suggested_action": "请手动完成银行应用中的操作，完成后通知我继续。"
+    "details": "Screenshot returns completely black image, possibly because the banking app has enabled anti-screenshot protection.",
+    "suggested_action": "Please manually complete the operations in the banking app, then notify me to continue."
   }
 }
 ```
 
-**交互流程**：
+**Interaction flow**:
 ```
-Agent: "我无法看到屏幕内容，可能是银行应用启用了防截屏保护。请手动完成银行应用中的操作，完成后通知我继续。"
-[用户完成操作]
-用户: "完成了"
-Agent: [尝试截图或执行下一步操作]
+Agent: "I cannot see the screen content, possibly because the banking app has enabled anti-screenshot protection. Please manually complete the operations in the banking app, then notify me to continue."
+[User completes operations]
+User: "Done"
+Agent: [Attempts screenshot or executes next step]
 ```
 
-## 与阻塞模式的区别
+## Differences from Blocking Mode
 
-### 阻塞模式（Open-AutoGLM 原始设计）
-适合**脚本式一次性任务执行**：
+### Blocking Mode (Open-AutoGLM Original Design)
+Suitable for **script-style one-off task execution**:
 ```python
-agent.run("在京东买一本《三体》")
-# → 遇到登录
-# → 工具调用阻塞
-# → 用户按 Enter
-# → 继续执行
-# → 完成购买
+agent.run("Buy a copy of 'The Three-Body Problem' on JD.com")
+# → Encounters login
+# → Tool call blocks
+# → User presses Enter
+# → Continues execution
+# → Completes purchase
 ```
 
-### 非阻塞模式（本实现）
-适合**连续语音/文本对话**：
+### Non-Blocking Mode (This Implementation)
+Suitable for **continuous voice/text conversation**:
 ```
-用户: "在京东买一本《三体》"
-Agent: "好的，正在打开京东... 我需要你的帮助。请输入你的京东账号密码。完成后告诉我。"
-[对话轮次结束，等待用户]
-用户: "好了"
-[新对话轮次开始]
-Agent: "登录成功。正在搜索《三体》..."
+User: "Buy a copy of 'The Three-Body Problem' on JD.com"
+Agent: "Okay, opening JD.com... I need your help. Please enter your JD.com account password. Tell me when you're done."
+[Conversation turn ends, waits for user]
+User: "Done"
+[New conversation turn begins]
+Agent: "Login successful. Searching for 'The Three-Body Problem'..."
 ```
 
-## 优势
+## Advantages
 
-1. **自然对话流程**：符合人类对话习惯
-2. **适合语音交互**：通过 TTS 告知用户，用户语音回复即可
-3. **无需回调实现**：简化集成，只需注册工具即可
-4. **状态清晰**：每个对话轮次都是独立的，不会出现"卡住"的感觉
-5. **易于理解**：对于用户来说，就像和真人助手对话一样
+1. **Natural conversation flow**: Conforms to human conversation habits
+2. **Suitable for voice interaction**: Informs user via TTS, user can reply by voice
+3. **No callback implementation needed**: Simplifies integration, just register the tool
+4. **Clear state**: Each conversation turn is independent, no feeling of being "stuck"
+5. **Easy to understand**: For users, it's like talking to a real human assistant
 
-## 注意事项
+## Notes
 
-1. **验证结果**：Agent 在用户确认完成后，务必截图验证结果
-2. **提示词指导**：需要在系统提示词中明确告诉 Agent 这个工具的工作方式
-3. **用户确认关键词**：Agent 应该能识别多种确认表达（"好了"/"继续"/"完成了"/"OK"等）
-4. **超时处理**：如果用户长时间没有回复，应该有合理的超时机制
+1. **Verify results**: After user confirms completion, Agent must take a screenshot to verify results
+2. **Prompt guidance**: Need to clearly tell Agent in system prompt how this tool works
+3. **User confirmation keywords**: Agent should recognize multiple confirmation expressions ("done"/"continue"/"finished"/"OK" etc.)
+4. **Timeout handling**: Should have reasonable timeout mechanism if user doesn't reply for a long time
 
-## 相关文件
+## Related Files
 
-- `src/agent/internal/agent/tools_human_handoff.go` - 核心实现
-- `src/agent/internal/agent/tools_human_handoff_test.go` - 单元测试
-- `src/agent/internal/agent/tools.go` - ToolSet 集成
+- `src/agent/internal/agent/tools_human_handoff.go` - Core implementation
+- `src/agent/internal/agent/tools_human_handoff_test.go` - Unit tests
+- `src/agent/internal/agent/tools.go` - ToolSet integration

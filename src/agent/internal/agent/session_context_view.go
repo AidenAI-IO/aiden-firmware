@@ -4,39 +4,24 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/tmc/langchaingo/schema"
 )
 
 const (
-	FollowUpRootRequest  = "root_request"
-	FollowUpContinuation = "continuation"
-	FollowUpCorrection   = "correction"
-	FollowUpReplacement  = "replacement"
-	FollowUpNewTask      = "new_task"
-
 	sessionContextInputKey = "session_context"
 	rootRequestInputKey    = "root_request"
 	latestUserInputKey     = "latest_user_message"
-	followUpRelationKey    = "follow_up_relation"
 )
 
 const maxSessionContextEvents = 200
 
-var (
-	correctionCueRe  = regexp.MustCompile(`(?i)(听错|看错|不是|应该是|是\s*[^，。,.!?！？]+$|改成|改为|更正|纠正|说错|写错|typo|correction|correct|actually|should be|not .+ but)`)
-	replacementCueRe = regexp.MustCompile(`(?i)^\s*(取消|不用|别|先别|算了|重新|从头|换成|改为新的|replace|instead|start over|new task)\b?`)
-)
-
 type sessionContextView struct {
 	RootUserRequest       string
 	LatestUserMessage     string
-	FollowUpRelation      string
 	LatestCommittedPlan   *plannerDecision
 	LatestVerifierSummary string
-	LatestCorrection      string
 }
 
 type sessionContextPlannerMemory struct {
@@ -61,7 +46,7 @@ func (m *sessionContextPlannerMemory) GetMemoryKey(ctx context.Context) string {
 
 func (m *sessionContextPlannerMemory) MemoryVariables(ctx context.Context) []string {
 	variables := append([]string(nil), m.inner.MemoryVariables(ctx)...)
-	for _, key := range []string{sessionContextInputKey, rootRequestInputKey, latestUserInputKey, followUpRelationKey} {
+	for _, key := range []string{sessionContextInputKey, rootRequestInputKey, latestUserInputKey} {
 		if !slicesContainsString(variables, key) {
 			variables = append(variables, key)
 		}
@@ -93,9 +78,6 @@ func (m *sessionContextPlannerMemory) LoadMemoryVariables(ctx context.Context, i
 	if view.LatestUserMessage != "" {
 		values[latestUserInputKey] = view.LatestUserMessage
 	}
-	if view.FollowUpRelation != "" {
-		values[followUpRelationKey] = view.FollowUpRelation
-	}
 	return values, nil
 }
 
@@ -123,28 +105,9 @@ func currentInputFromMemoryInputs(inputs map[string]any) string {
 	}
 }
 
-func ClassifyFollowUpRelation(prevEvents []SessionEvent, input string, boundary string) string {
-	trimmed := strings.TrimSpace(input)
-	if trimmed == "" {
-		return FollowUpRootRequest
-	}
-	if boundary == BoundaryNew || len(prevEvents) == 0 {
-		return FollowUpRootRequest
-	}
-	if replacementCueRe.MatchString(trimmed) {
-		return FollowUpReplacement
-	}
-	if correctionCueRe.MatchString(trimmed) {
-		return FollowUpCorrection
-	}
-	if actionVerbStartRe.MatchString(trimmed) && !continuationMarkerRe.MatchString(trimmed) {
-		return FollowUpNewTask
-	}
-	return FollowUpContinuation
-}
-
 func BuildSessionContextView(events []SessionEvent, currentInput string) sessionContextView {
 	currentInput = strings.TrimSpace(currentInput)
+	events = runtimeSessionContextEvents(events)
 	if len(events) == 0 && currentInput == "" {
 		return sessionContextView{}
 	}
@@ -157,39 +120,44 @@ func BuildSessionContextView(events []SessionEvent, currentInput string) session
 	if latestContent == "" {
 		latestContent = currentInput
 	}
-	relation := strings.TrimSpace(latestUser.Relation)
-	if relation == "" {
-		relation = ClassifyFollowUpRelation(eventsBefore(events, latestUserIndex), latestContent, BoundaryContinue)
-	}
-	if relation == "" {
-		relation = FollowUpRootRequest
-	}
 
 	root := latestContent
-	taskRootIndex := latestUserIndex
-	if relation != FollowUpReplacement && relation != FollowUpNewTask {
-		if taskRoot, index := taskRootUserInput(events, latestUserIndex); taskRoot != "" {
-			root = taskRoot
-			taskRootIndex = index
-		}
+	rootIndex := latestUserIndex
+	if sessionRoot, index := activeSessionRootUserInput(events, latestUserIndex); sessionRoot != "" {
+		root = sessionRoot
+		rootIndex = index
 	}
 	view := sessionContextView{
 		RootUserRequest:   root,
 		LatestUserMessage: latestContent,
-		FollowUpRelation:  relation,
 	}
-	if relation == FollowUpCorrection {
-		view.LatestCorrection = latestContent
+	if decision, ok := latestCommittedPlan(events, rootIndex, latestUserIndex); ok {
+		view.LatestCommittedPlan = &decision
 	}
-	if relation != FollowUpReplacement && relation != FollowUpNewTask {
-		if decision, ok := latestCommittedPlan(events, taskRootIndex, latestUserIndex); ok {
-			view.LatestCommittedPlan = &decision
-		}
-		if summary := latestVerifierSummary(events, taskRootIndex, latestUserIndex); summary != "" {
-			view.LatestVerifierSummary = summary
-		}
+	if summary := latestVerifierSummary(events, rootIndex, latestUserIndex); summary != "" {
+		view.LatestVerifierSummary = summary
 	}
 	return view
+}
+
+func runtimeSessionContextEvents(events []SessionEvent) []SessionEvent {
+	hasRuntimeEvents := false
+	for _, event := range events {
+		if strings.TrimSpace(event.RunID) != "" {
+			hasRuntimeEvents = true
+			break
+		}
+	}
+	if !hasRuntimeEvents {
+		return events
+	}
+	scoped := make([]SessionEvent, 0, len(events))
+	for _, event := range events {
+		if strings.TrimSpace(event.RunID) != "" {
+			scoped = append(scoped, event)
+		}
+	}
+	return scoped
 }
 
 func latestUserEventIndex(events []SessionEvent, currentInput string) int {
@@ -209,56 +177,42 @@ func latestUserEventIndex(events []SessionEvent, currentInput string) int {
 	return -1
 }
 
-func eventsBefore(events []SessionEvent, index int) []SessionEvent {
-	if index <= 0 || index > len(events) {
-		return nil
-	}
-	return events[:index]
-}
-
-func taskRootUserInput(events []SessionEvent, latestUserIndex int) (string, int) {
+func activeSessionRootUserInput(events []SessionEvent, latestUserIndex int) (string, int) {
 	limit := len(events)
 	if latestUserIndex >= 0 && latestUserIndex < limit {
 		limit = latestUserIndex + 1
 	}
-	for i := limit - 1; i >= 0; i-- {
+	for i := 0; i < limit; i++ {
 		event := events[i]
 		if event.Type != "user_input" {
 			continue
 		}
 		content := strings.TrimSpace(event.Content)
-		if content == "" {
-			continue
-		}
-		relation := strings.TrimSpace(event.Relation)
-		switch relation {
-		case FollowUpRootRequest, FollowUpNewTask, FollowUpReplacement:
+		if content != "" {
 			return content, i
-		}
-	}
-	for i := 0; i < limit; i++ {
-		if events[i].Type == "user_input" {
-			if content := strings.TrimSpace(events[i].Content); content != "" {
-				return content, i
-			}
 		}
 	}
 	return "", -1
 }
 
-func latestCommittedPlan(events []SessionEvent, taskRootIndex, latestUserIndex int) (plannerDecision, bool) {
+func sessionDecisionScanWindow(events []SessionEvent, rootIndex, latestUserIndex int) (int, int) {
 	limit := latestUserIndex
 	if limit < 0 || limit > len(events) {
 		limit = len(events)
 	}
 	start := 0
-	if taskRootIndex >= 0 && taskRootIndex < limit {
-		start = taskRootIndex + 1
+	if rootIndex >= 0 && rootIndex < len(events) {
+		start = rootIndex + 1
 	}
-	for i := limit - 1; i >= 0; i-- {
-		if i < start {
-			break
-		}
+	if start > limit {
+		start = limit
+	}
+	return start, limit
+}
+
+func latestCommittedPlan(events []SessionEvent, rootIndex, latestUserIndex int) (plannerDecision, bool) {
+	start, limit := sessionDecisionScanWindow(events, rootIndex, latestUserIndex)
+	for i := limit - 1; i >= start; i-- {
 		event := events[i]
 		if event.Type != "planner_decision" {
 			continue
@@ -292,19 +246,9 @@ func plannerDecisionFromSessionEvent(event SessionEvent) (plannerDecision, bool)
 	return decision, len(decision.Plan) > 0 || decision.Objective != "" || decision.NextStep != ""
 }
 
-func latestVerifierSummary(events []SessionEvent, taskRootIndex, latestUserIndex int) string {
-	limit := latestUserIndex
-	if limit < 0 || limit > len(events) {
-		limit = len(events)
-	}
-	start := 0
-	if taskRootIndex >= 0 && taskRootIndex < limit {
-		start = taskRootIndex + 1
-	}
-	for i := limit - 1; i >= 0; i-- {
-		if i < start {
-			break
-		}
+func latestVerifierSummary(events []SessionEvent, rootIndex, latestUserIndex int) string {
+	start, limit := sessionDecisionScanWindow(events, rootIndex, latestUserIndex)
+	for i := limit - 1; i >= start; i-- {
 		event := events[i]
 		if event.Type != "verifier_decision" {
 			continue
@@ -329,8 +273,6 @@ func latestVerifierSummary(events []SessionEvent, taskRootIndex, latestUserIndex
 
 func formatSessionContextView(view sessionContextView) string {
 	if strings.TrimSpace(view.LatestUserMessage) == "" &&
-		strings.TrimSpace(view.FollowUpRelation) == "" &&
-		strings.TrimSpace(view.LatestCorrection) == "" &&
 		view.LatestCommittedPlan == nil &&
 		strings.TrimSpace(view.LatestVerifierSummary) == "" {
 		return ""
@@ -340,16 +282,6 @@ func formatSessionContextView(view sessionContextView) string {
 	if latest := strings.TrimSpace(view.LatestUserMessage); latest != "" {
 		builder.WriteString("- Latest user message: ")
 		builder.WriteString(singleLineHistoryText(latest))
-		builder.WriteByte('\n')
-	}
-	if relation := strings.TrimSpace(view.FollowUpRelation); relation != "" {
-		builder.WriteString("- Follow-up classification: ")
-		builder.WriteString(relation)
-		builder.WriteByte('\n')
-	}
-	if correction := strings.TrimSpace(view.LatestCorrection); correction != "" {
-		builder.WriteString("- Latest correction: ")
-		builder.WriteString(singleLineHistoryText(correction))
 		builder.WriteByte('\n')
 	}
 	if view.LatestCommittedPlan != nil {

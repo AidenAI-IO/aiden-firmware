@@ -14,6 +14,7 @@ CONTAINER_RUNS_ROOT="${MOBILEGYM_CONTAINER_RUNS_ROOT:-/app/benchmark/runs/mobile
 SOURCE_CONFIG_DIR="${AIDEN_SOURCE_CONFIG_DIR:-$SCRIPT_DIR/../config}"
 CONFIG_TMP_ROOT="${MOBILEGYM_CONFIG_TMP_ROOT:-${TMPDIR:-/tmp}/mobilegym-parallel-configs-$BATCH_ID}"
 LIMIT=""
+AIDEN_TASK_IDS=""
 STOPPING=0
 FAILED=0
 PIDS=()
@@ -48,6 +49,14 @@ validate_suite_name() {
     done
 }
 
+validate_task_id_list() {
+    local value="$1"
+    if [[ -z "$value" || ! "$value" =~ ^[A-Za-z0-9_.-]+(,[A-Za-z0-9_.-]+)*$ ]]; then
+        echo "Error: invalid Aiden task id list: '$value'" >&2
+        exit 2
+    fi
+}
+
 require_positive_int PARALLEL "$PARALLEL"
 if [[ -n "${MAX_JOBS:-}" ]]; then
     require_positive_int MAX_JOBS "$MAX_JOBS"
@@ -55,7 +64,7 @@ fi
 
 usage() {
     cat <<'EOF'
-Usage: ./parallel_run.sh <task-id> [task-id...] | --suite <suite> [--limit N] | --suites <suite-a,suite-b> [--limit N] | --aiden-suite <name> [--limit N] | --aiden-suites <name-a,name-b> [--limit N]
+Usage: ./parallel_run.sh <task-id> [task-id...] | --suite <suite> [--limit N] | --suites <suite-a,suite-b> [--limit N] | --aiden-suite <name> [--aiden-task-ids id[,id...]] [--limit N] | --aiden-suites <name-a,name-b> [--limit N]
 
 Examples:
   ./parallel_run.sh clock.CountAlarms clock.ToggleAlarm
@@ -511,8 +520,13 @@ run_worker() {
 
     set +e
     if [[ "$kind" == "aiden_suite" ]]; then
+        local -a aiden_task_id_args=()
+        if [[ -n "$AIDEN_TASK_IDS" ]]; then
+            aiden_task_id_args+=(--aiden-task-ids "$AIDEN_TASK_IDS")
+        fi
         compose_for_worker "$project" "$config_dir" --profile test run --rm test \
             --aiden-suite "$suite" \
+            ${aiden_task_id_args[@]+"${aiden_task_id_args[@]}"} \
             --shard-index "$shard_index" \
             --shard-count "$shard_count" \
             --env-url http://mobilegym:4173 \
@@ -665,6 +679,15 @@ while [[ $# -gt 0 ]]; do
             LIMIT="$2"
             shift 2
             ;;
+        --aiden-task-ids)
+            if [[ $# -lt 2 || -z "$2" ]]; then
+                echo "Error: --aiden-task-ids requires a comma-separated task id list" >&2
+                exit 2
+            fi
+            validate_task_id_list "$2"
+            AIDEN_TASK_IDS="$2"
+            shift 2
+            ;;
         *)
             ARGS+=("$1")
             shift
@@ -696,6 +719,10 @@ if [[ "$1" == "--aiden-suite" ]]; then
         WORK_ITEMS+=("aiden_suite|$2|$i|$PARALLEL||shard-$i")
     done
 elif [[ "$1" == "--aiden-suites" ]]; then
+    if [[ -n "$AIDEN_TASK_IDS" ]]; then
+        echo "Error: --aiden-task-ids requires --aiden-suite" >&2
+        exit 2
+    fi
     if [[ $# -lt 2 || -z "$2" ]]; then
         echo "Error: --aiden-suites requires a comma-separated suite list" >&2
         exit 2
@@ -708,6 +735,10 @@ elif [[ "$1" == "--aiden-suites" ]]; then
         done
     done
 elif [[ "$1" == "--suite" ]]; then
+    if [[ -n "$AIDEN_TASK_IDS" ]]; then
+        echo "Error: --aiden-task-ids requires --aiden-suite" >&2
+        exit 2
+    fi
     if [[ $# -lt 2 || -z "$2" ]]; then
         echo "Error: --suite requires a suite name" >&2
         exit 1
@@ -717,6 +748,10 @@ elif [[ "$1" == "--suite" ]]; then
         WORK_ITEMS+=("suite|$2|$i|$PARALLEL||shard-$i")
     done
 elif [[ "$1" == "--suites" ]]; then
+    if [[ -n "$AIDEN_TASK_IDS" ]]; then
+        echo "Error: --aiden-task-ids requires --aiden-suite" >&2
+        exit 2
+    fi
     if [[ $# -lt 2 || -z "$2" ]]; then
         echo "Error: --suites requires a comma-separated suite list" >&2
         exit 1
@@ -729,6 +764,10 @@ elif [[ "$1" == "--suites" ]]; then
         done
     done
 else
+    if [[ -n "$AIDEN_TASK_IDS" ]]; then
+        echo "Error: --aiden-task-ids requires --aiden-suite" >&2
+        exit 2
+    fi
     index=0
     for task in "$@"; do
         slug="$(slugify "$task")-$(short_hash "$task")"

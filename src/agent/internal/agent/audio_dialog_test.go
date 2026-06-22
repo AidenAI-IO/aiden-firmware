@@ -231,7 +231,7 @@ func TestProcessUtteranceAudioModeSendsWAVAttachmentToRuntime(t *testing.T) {
 
 func TestProcessUtteranceSpeaksFullOutputWhenSpeechMissing(t *testing.T) {
 	output := "已完成设置，当前音量是 42。\n\n- 读取音量\n- 确认状态\n\n这段详细说明保留给屏幕。"
-	expectedSpeech := "已完成设置，当前音量是 42。\n\n读取音量\n确认状态\n\n这段详细说明保留给屏幕。"
+	expectedSpeech := output
 	model := &scriptedModel{
 		responses: roleDirectResponses(output),
 	}
@@ -250,11 +250,10 @@ func TestProcessUtteranceSpeaksFullOutputWhenSpeechMissing(t *testing.T) {
 	provider := &recordingTTSProvider{name: "dialog-provider"}
 	dialog := &AudioDialog{
 		config: Config{
-			Model:                     ModelConfig{Provider: "fake"},
-			Audio:                     AudioConfig{SampleRate: 16000},
-			InputMode:                 "audio",
-			VoiceStreamingTTSEnabled:  boolPtr(false),
-			VoiceSpeechSummaryEnabled: boolPtr(true),
+			Model:                    ModelConfig{Provider: "fake"},
+			Audio:                    AudioConfig{SampleRate: 16000},
+			InputMode:                "audio",
+			VoiceStreamingTTSEnabled: boolPtr(false),
 		},
 		audioClient:  NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
 		ttsManager:   ttsmodule.NewProviderManager(provider, nil),
@@ -271,7 +270,7 @@ func TestProcessUtteranceSpeaksFullOutputWhenSpeechMissing(t *testing.T) {
 		t.Fatalf("unexpected TTS texts: %#v", texts)
 	}
 	if texts[0] != expectedSpeech {
-		t.Fatalf("TTS should use normalized full output, got %q want %q", texts[0], expectedSpeech)
+		t.Fatalf("TTS should use result output directly, got %q want %q", texts[0], expectedSpeech)
 	}
 
 	messages, err := store.Load(context.Background())
@@ -287,10 +286,13 @@ func TestProcessUtteranceSpeaksFullOutputWhenSpeechMissing(t *testing.T) {
 	}
 }
 
-func TestAudioDialogSpeaksToolDescriptionAsynchronously(t *testing.T) {
+func TestAudioDialogSpeaksToolContentAsynchronously(t *testing.T) {
 	toolSpeech := true
 	model := &scriptedModel{
-		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我会检查当前音量。","speech":"检查音量。"}`, "当前音量是 42。"),
+		responses: []*llms.ContentResponse{
+			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, "检查音量。"),
+			contentResponse("当前音量是 42。"),
+		},
 	}
 	runtime := NewRuntimeWithDeps(
 		Config{
@@ -329,14 +331,14 @@ func TestAudioDialogSpeaksToolDescriptionAsynchronously(t *testing.T) {
 	waitForProviderTextCount(t, provider, 2)
 	texts := provider.texts()
 	if len(texts) != 2 {
-		t.Fatalf("expected tool description and final answer TTS, got %#v", texts)
+		t.Fatalf("expected tool content and final answer TTS, got %#v", texts)
 	}
 	if !containsString(texts, "检查音量。") || !containsString(texts, "当前音量是 42。") {
 		t.Fatalf("unexpected TTS texts: %#v", texts)
 	}
 }
 
-func TestAudioDialogDoesNotSpeakWaitForWakeupToolDescription(t *testing.T) {
+func TestAudioDialogDoesNotSpeakWaitForWakeupToolContent(t *testing.T) {
 	toolSpeech := true
 	provider := &recordingTTSProvider{name: "dialog-provider"}
 	dialog := &AudioDialog{
@@ -348,16 +350,15 @@ func TestAudioDialogDoesNotSpeakWaitForWakeupToolDescription(t *testing.T) {
 	}
 
 	dialog.HandleRunEvent(context.Background(), RunEvent{
-		Type:        runEventToolCall,
-		ToolName:    toolWaitForWakeup,
-		Description: "用户让我休息，我准备回到等待唤醒状态。",
-		Speech:      "我准备回到等待唤醒状态。",
+		Type:     runEventToolCall,
+		ToolName: toolWaitForWakeup,
+		Content:  "我准备回到等待唤醒状态。",
 	})
 
 	assertNoProviderTextWithin(t, provider, 200*time.Millisecond)
 }
 
-func TestAudioDialogSpeaksToolCallSpeechField(t *testing.T) {
+func TestAudioDialogSpeaksToolCallContent(t *testing.T) {
 	toolSpeech := true
 	provider := &recordingTTSProvider{name: "dialog-provider"}
 	dialog := &AudioDialog{
@@ -369,10 +370,9 @@ func TestAudioDialogSpeaksToolCallSpeechField(t *testing.T) {
 	}
 
 	dialog.HandleRunEvent(context.Background(), RunEvent{
-		Type:        runEventToolCall,
-		ToolName:    "audio_volume",
-		Description: "完整工具描述保留给事件和上下文，不应该直接播报。",
-		Speech:      "读取当前音量。",
+		Type:     runEventToolCall,
+		ToolName: "audio_volume",
+		Content:  "读取当前音量。",
 	})
 
 	waitForProviderTextCount(t, provider, 1)
@@ -381,7 +381,7 @@ func TestAudioDialogSpeaksToolCallSpeechField(t *testing.T) {
 	}
 }
 
-func TestAudioDialogDoesNotFallbackToToolCallDescriptionForSpeech(t *testing.T) {
+func TestAudioDialogDoesNotSpeakToolCallWithoutContent(t *testing.T) {
 	toolSpeech := true
 	provider := &recordingTTSProvider{name: "dialog-provider"}
 	dialog := &AudioDialog{
@@ -393,9 +393,8 @@ func TestAudioDialogDoesNotFallbackToToolCallDescriptionForSpeech(t *testing.T) 
 	}
 
 	dialog.HandleRunEvent(context.Background(), RunEvent{
-		Type:        runEventToolCall,
-		ToolName:    "audio_volume",
-		Description: "完整工具描述保留给事件和上下文。",
+		Type:     runEventToolCall,
+		ToolName: "audio_volume",
 	})
 
 	assertNoProviderTextWithin(t, provider, 200*time.Millisecond)
@@ -747,6 +746,261 @@ func TestAudioDialogRunAgentTurnAppendsRunEventsToVoiceHistory(t *testing.T) {
 	}
 }
 
+func TestAudioDialogRunAgentTurnConsumesQueuedSteer(t *testing.T) {
+	firstCallStarted := make(chan struct{})
+	releaseFirstCall := make(chan struct{})
+	model := &blockingFirstCallModel{
+		firstCallStarted: firstCallStarted,
+		releaseFirstCall: releaseFirstCall,
+		responses: []*llms.ContentResponse{
+			contentResponse("first answer"),
+			contentResponse("steered answer"),
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:           ModelConfig{Provider: "fake"},
+			Instruction:     "Answer directly.",
+			ForceSimpleLoop: true,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	dialog := &AudioDialog{
+		config: Config{
+			Model: ModelConfig{Provider: "fake"},
+		},
+	}
+	var messages []Message
+	dialog.SetHistoryAppender(func(message Message) {
+		messages = append(messages, message)
+	})
+
+	resultCh := make(chan struct {
+		result RunResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := dialog.RunAgentTurn(context.Background(), TurnInput{InputText: "original"}, runtime)
+		resultCh <- struct {
+			result RunResult
+			err    error
+		}{result: result, err: err}
+	}()
+
+	select {
+	case <-firstCallStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first model call did not start")
+	}
+	if !dialog.QueueSteer(TurnInput{InputText: "change direction", Transcript: "change direction"}) {
+		t.Fatal("QueueSteer returned false while voice run was active")
+	}
+	close(releaseFirstCall)
+
+	var runResult struct {
+		result RunResult
+		err    error
+	}
+	select {
+	case runResult = <-resultCh:
+	case <-time.After(time.Second):
+		t.Fatal("RunAgentTurn did not finish")
+	}
+	if runResult.err != nil {
+		t.Fatalf("RunAgentTurn() error = %v", runResult.err)
+	}
+	if runResult.result.Output != "steered answer" {
+		t.Fatalf("Output = %q, want steered answer", runResult.result.Output)
+	}
+	steerMessage, ok := firstAudioDialogTestMessageOfType(messages, "steer")
+	if !ok {
+		t.Fatalf("missing steer history message: %#v", messages)
+	}
+	if steerMessage.Content != "change direction" {
+		t.Fatalf("steer content = %q, want change direction", steerMessage.Content)
+	}
+	if !strings.HasPrefix(steerMessage.RequestID, "voice-") {
+		t.Fatalf("steer request_id = %q, want voice-*", steerMessage.RequestID)
+	}
+	if dialog.QueueSteer(TurnInput{InputText: "too late"}) {
+		t.Fatal("QueueSteer returned true after voice run completed")
+	}
+}
+
+func TestAudioDialogRejectsSteerAfterRuntimeFinishesBeforeVoiceHistoryPersist(t *testing.T) {
+	model := &scriptedModel{responses: roleDirectResponses("final answer")}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:           ModelConfig{Provider: "fake"},
+			Instruction:     "Answer directly.",
+			ForceSimpleLoop: true,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	dialog := &AudioDialog{
+		config: Config{
+			Model: ModelConfig{Provider: "fake"},
+		},
+	}
+
+	assistantAppendStarted := make(chan struct{})
+	releaseAssistantAppend := make(chan struct{})
+	dialog.SetHistoryAppender(func(message Message) {
+		if message.Type != "assistant" {
+			return
+		}
+		close(assistantAppendStarted)
+		<-releaseAssistantAppend
+	})
+
+	resultCh := make(chan struct {
+		result RunResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := dialog.RunVoiceTurnWithContext(context.Background(), TurnInput{InputText: "original"}, nil, runtime, VoiceTurnContext{})
+		resultCh <- struct {
+			result RunResult
+			err    error
+		}{result: result, err: err}
+	}()
+
+	select {
+	case <-assistantAppendStarted:
+	case <-time.After(time.Second):
+		t.Fatal("assistant history append did not start")
+	}
+	if dialog.QueueSteer(TurnInput{InputText: "too late", Transcript: "too late"}) {
+		t.Fatal("QueueSteer returned true after runtime finished consuming steer")
+	}
+	close(releaseAssistantAppend)
+
+	select {
+	case runResult := <-resultCh:
+		if runResult.err != nil {
+			t.Fatalf("RunVoiceTurnWithContext() error = %v", runResult.err)
+		}
+		if runResult.result.Output != "final answer" {
+			t.Fatalf("Output = %q, want final answer", runResult.result.Output)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("RunVoiceTurnWithContext did not finish")
+	}
+}
+
+func TestAudioDialogBeginSteerInterruptWaitsForQueuedCorrection(t *testing.T) {
+	firstCallStarted := make(chan struct{})
+	releaseFirstCall := make(chan struct{})
+	model := &blockingFirstCallModel{
+		firstCallStarted: firstCallStarted,
+		releaseFirstCall: releaseFirstCall,
+		responses: []*llms.ContentResponse{
+			contentResponse("stale answer"),
+			contentResponse("corrected answer"),
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:           ModelConfig{Provider: "fake"},
+			Instruction:     "Answer directly.",
+			ForceSimpleLoop: true,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	dialog := &AudioDialog{
+		config: Config{
+			Model: ModelConfig{Provider: "fake"},
+		},
+	}
+
+	resultCh := make(chan struct {
+		result RunResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := dialog.RunAgentTurn(context.Background(), TurnInput{InputText: "original"}, runtime)
+		resultCh <- struct {
+			result RunResult
+			err    error
+		}{result: result, err: err}
+	}()
+
+	select {
+	case <-firstCallStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first model call did not start")
+	}
+	if !dialog.BeginSteerInterrupt() {
+		t.Fatal("BeginSteerInterrupt returned false while voice run was active")
+	}
+	if !dialog.QueueSteer(TurnInput{InputText: "change direction", Transcript: "change direction"}) {
+		t.Fatal("QueueSteer returned false for interrupted voice run")
+	}
+	close(releaseFirstCall)
+
+	var runResult struct {
+		result RunResult
+		err    error
+	}
+	select {
+	case runResult = <-resultCh:
+	case <-time.After(time.Second):
+		t.Fatal("RunAgentTurn did not finish")
+	}
+	if runResult.err != nil {
+		t.Fatalf("RunAgentTurn() error = %v", runResult.err)
+	}
+	if runResult.result.Output != "corrected answer" {
+		t.Fatalf("Output = %q, want corrected answer", runResult.result.Output)
+	}
+	if dialog.ResumeSteerInterrupt() {
+		t.Fatal("ResumeSteerInterrupt returned true after interrupted steer was consumed")
+	}
+}
+
+func TestAudioDialogRunVoiceTurnDoesNotPersistUserWhenVoiceRunActive(t *testing.T) {
+	dialog := &AudioDialog{
+		config: Config{
+			Model:        ModelConfig{Provider: "fake"},
+			Audio:        AudioConfig{SampleRate: 16000},
+			AudioArchive: AudioArchiveConfig{Enabled: false},
+		},
+		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
+	}
+	var messages []Message
+	dialog.SetHistoryAppender(func(message Message) {
+		messages = append(messages, message)
+	})
+
+	if !dialog.beginVoiceRunControl("existing-request") {
+		t.Fatal("beginVoiceRunControl returned false for setup")
+	}
+	defer dialog.endVoiceRunControl("existing-request")
+
+	_, err := dialog.RunVoiceTurnWithContext(
+		context.Background(),
+		TurnInput{InputText: "late correction", Transcript: "late correction"},
+		[]int16{100, -100},
+		nil,
+		VoiceTurnContext{RuntimeContext: "voice interruption"},
+	)
+	if err == nil || !strings.Contains(err.Error(), "voice run already active") {
+		t.Fatalf("RunVoiceTurnWithContext() error = %v, want voice run already active", err)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("persisted messages = %#v, want none when voice run is already active", messages)
+	}
+}
+
 func TestAudioDialogRunVoiceTurnPersistsUserBeforeRunEvents(t *testing.T) {
 	configDir := t.TempDir()
 	model := &scriptedModel{
@@ -888,6 +1142,41 @@ func TestAudioDialogProcessUtteranceSavesAudioFile(t *testing.T) {
 	if _, err := os.Stat(userMsg.AudioFile); err != nil {
 		t.Errorf("Audio file should exist at %s: %v", userMsg.AudioFile, err)
 	}
+}
+
+type blockingFirstCallModel struct {
+	firstCallStarted chan struct{}
+	releaseFirstCall chan struct{}
+	responses        []*llms.ContentResponse
+	callCount        int
+}
+
+func (m *blockingFirstCallModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	call := m.callCount
+	m.callCount++
+	if call == 0 {
+		close(m.firstCallStarted)
+		select {
+		case <-m.releaseFirstCall:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	if call >= len(m.responses) {
+		return contentResponse(""), nil
+	}
+	return m.responses[call], nil
+}
+
+func (m *blockingFirstCallModel) Call(ctx context.Context, prompt string, options ...llms.CallOption) (string, error) {
+	resp, err := m.GenerateContent(ctx, nil, options...)
+	if err != nil {
+		return "", err
+	}
+	if resp == nil || len(resp.Choices) == 0 || resp.Choices[0] == nil {
+		return "", nil
+	}
+	return resp.Choices[0].Content, nil
 }
 
 func boolPtr(value bool) *bool {

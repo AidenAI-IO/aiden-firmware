@@ -24,6 +24,7 @@ type ToolSpec struct {
 	ExampleInput string
 	HTTPExposed  bool
 	AgentExposed bool
+	AgentRoles   []RoleName
 }
 
 type ToolSpecs struct {
@@ -58,6 +59,7 @@ type toolSpecMetadata struct {
 	ExampleInput string
 	HTTPExposed  *bool
 	AgentExposed *bool
+	AgentRoles   []RoleName
 }
 
 var builtInToolSpecMetadata = map[string]toolSpecMetadata{
@@ -135,6 +137,7 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		Category:     "memory",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"type":"procedure","title":"Login flow","content":"...","tags":["login"]}`,
+		AgentRoles:   []RoleName{RolePlanner},
 	},
 	"forget_memory": {
 		Category:     "memory",
@@ -298,7 +301,23 @@ func NewToolSpec(tool langtools.Tool) ToolSpec {
 		ExampleInput: meta.ExampleInput,
 		HTTPExposed:  httpExposed,
 		AgentExposed: agentExposed,
+		AgentRoles:   append([]RoleName{}, meta.AgentRoles...),
 	}
+}
+
+func (spec ToolSpec) AgentExposedToRole(role RoleName) bool {
+	if !spec.AgentExposed {
+		return false
+	}
+	if len(spec.AgentRoles) == 0 {
+		return true
+	}
+	for _, allowed := range spec.AgentRoles {
+		if strings.EqualFold(string(allowed), string(role)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *ToolSpecs) Lookup(name string) (ToolSpec, bool) {
@@ -359,31 +378,23 @@ func (spec ToolSpec) Descriptor() ToolDescriptor {
 }
 
 func (spec ToolSpec) LLMTool() llms.Tool {
-	return spec.LLMToolWithSpeech(false)
-}
-
-func (spec ToolSpec) LLMToolWithSpeech(includeSpeech bool) llms.Tool {
 	return llms.Tool{
 		Type: "function",
 		Function: &llms.FunctionDefinition{
 			Name:        spec.Name,
 			Description: strings.TrimSpace(spec.Description),
-			Parameters:  spec.LLMSchemaWithSpeech(includeSpeech),
+			Parameters:  spec.LLMSchema(),
 		},
 	}
 }
 
 func (spec ToolSpec) LLMSchema() map[string]any {
-	return spec.LLMSchemaWithSpeech(false)
-}
-
-func (spec ToolSpec) LLMSchemaWithSpeech(includeSpeech bool) map[string]any {
 	if structured, ok := spec.Tool.(structuredInputTool); ok {
 		if schema := structured.ArgsSchema(); len(schema) > 0 {
-			return toolParametersSchema(schema, includeSpeech)
+			return toolParametersSchema(schema)
 		}
 	}
-	return genericToolParameters(includeSpeech)
+	return genericToolParameters()
 }
 
 func (spec ToolSpec) NormalizeInput(input string) string {

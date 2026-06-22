@@ -39,6 +39,7 @@ type Server struct {
 	benchmarkStatePath         string
 	benchmarkLauncher          func(spec benchmarkLaunchSpec, judge, apiKey, agentModel string) error
 	benchmarkMobileGymLauncher func(suite, suiteType string, parallel, limit int) error
+	benchmarkSkillOptLauncher  func(spec benchmarkSkillOptLaunchSpec, optimizerModel, judgeModel, apiKey, agentModel, skillsDir string) error
 	benchmarkSuiteValidator    func(path string) error
 	benchmarkSuiteLocks        sync.Map
 	userFilesReportPath        string
@@ -110,10 +111,8 @@ type Message struct {
 	Content         string              `json:"content"`
 	Todo            *TodoState          `json:"todo,omitempty"`
 	SpeechEligible  bool                `json:"speech_eligible,omitempty"`
-	Speech          string              `json:"speech,omitempty"`
 	ToolName        string              `json:"tool_name,omitempty"`
 	ToolInput       string              `json:"tool_input,omitempty"`
-	Description     string              `json:"description,omitempty"`
 	Attachments     []MessageAttachment `json:"attachments,omitempty"`
 	Artifacts       []InputArtifact     `json:"artifacts,omitempty"`
 	Source          string              `json:"source,omitempty"`
@@ -144,10 +143,8 @@ func messageFromRunEvent(event RunEvent, fallbackEpisodeID string, requestID str
 		Content:        event.Content,
 		Todo:           cloneTodoStatePtr(event.Todo),
 		SpeechEligible: event.SpeechEligible,
-		Speech:         event.Speech,
 		ToolName:       event.ToolName,
 		ToolInput:      event.ToolInput,
-		Description:    event.Description,
 		Timestamp:      event.Timestamp,
 		IsError:        event.IsError,
 	}
@@ -435,6 +432,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/benchmark", s.handleBenchmarkIndex)
 	mux.HandleFunc("/benchmark/record", s.handleBenchmarkRecord)
 	mux.HandleFunc("/benchmark/suites", s.handleBenchmarkSuites)
+	mux.HandleFunc("/benchmark/skills", s.handleBenchmarkSkills)
+	mux.HandleFunc("/benchmark/skillopt-targets", s.handleBenchmarkSkillOptTargets)
 	mux.HandleFunc("/benchmark/runs", s.handleBenchmarkRuns)
 	mux.HandleFunc("/benchmark/report/", s.handleBenchmarkReport)
 	mux.HandleFunc("/benchmark/status", s.handleBenchmarkStatus)
@@ -829,7 +828,7 @@ func (s *Server) handleChatAsync(
 			}
 
 			if s.shouldSpeakToolCall(event) {
-				go s.speakToolDescription(runCtx, event.Speech)
+				go s.speakToolContent(runCtx, event.Content)
 			}
 			if event.Type == runEventTodoUpdate && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
 				if text, ok := progressSpeechTextForEvent(event); ok {
@@ -878,7 +877,7 @@ func (s *Server) handleChatAsync(
 			if closeErr != nil && s.logger != nil {
 				s.logger.Error("new TTS stream failed: %v", closeErr)
 			}
-			result.SpeechStreamed = closeErr == nil && newStream.spoke
+			result.SpeechStreamed = closeErr == nil && newStream.spokeSuccessfully()
 		}
 
 		pending.mu.Lock()
@@ -1095,7 +1094,7 @@ func (s *Server) handleChatSync(
 		EventHandler: func(event RunEvent) {
 			s.appendHistory(messageFromRunEvent(event, episodeID, ""))
 			if s.shouldSpeakToolCall(event) {
-				go s.speakToolDescription(r.Context(), event.Speech)
+				go s.speakToolContent(r.Context(), event.Content)
 			}
 			if event.Type == runEventTodoUpdate && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
 				if text, ok := progressSpeechTextForEvent(event); ok {
@@ -1129,7 +1128,7 @@ func (s *Server) handleChatSync(
 		if closeErr != nil && s.logger != nil {
 			s.logger.Error("new TTS stream failed: %v", closeErr)
 		}
-		result.SpeechStreamed = closeErr == nil && newStream.spoke
+		result.SpeechStreamed = closeErr == nil && newStream.spokeSuccessfully()
 	}
 
 	if err != nil {
@@ -1274,7 +1273,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 				s.liveActivity.UpdateFromRunEvent(req.RequestID, event)
 			}
 			if s.shouldSpeakToolCall(event) {
-				go s.speakToolDescription(ctx, event.Speech)
+				go s.speakToolContent(ctx, event.Content)
 			}
 			if event.Type == runEventTodoUpdate && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
 				if text, ok := progressSpeechTextForEvent(event); ok {
@@ -1311,7 +1310,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		if closeErr != nil && s.logger != nil {
 			s.logger.Error("new TTS stream failed: %v", closeErr)
 		}
-		result.SpeechStreamed = closeErr == nil && newStream.spoke
+		result.SpeechStreamed = closeErr == nil && newStream.spokeSuccessfully()
 	}
 	if err != nil {
 		if req.RequestID != "" && s.liveActivity != nil {
@@ -1573,6 +1572,20 @@ func (w *finalStreamFanoutWriter) ResetStreamState() {
 	w.mu.Unlock()
 }
 
+// ResetBuffer forwards a buffer reset to every fanned-out writer that supports
+// it (e.g. the TTS stream writer), so residual buffered speech does not leak
+// across turns on the streaming chat path.
+func (w *finalStreamFanoutWriter) ResetBuffer() {
+	if w == nil {
+		return
+	}
+	for _, writer := range w.writers {
+		if resetter, ok := writer.(ttsBufferResetter); ok {
+			resetter.ResetBuffer()
+		}
+	}
+}
+
 func (w *finalStreamFanoutWriter) StreamEmitted() bool {
 	if w == nil {
 		return false
@@ -1591,22 +1604,22 @@ func (w *finalStreamFanoutWriter) StreamEmitted() bool {
 	return false
 }
 
-func (s *Server) speakToolDescription(ctx context.Context, description string) {
-	description = strings.TrimSpace(description)
-	if description == "" || s.audioClient == nil {
+func (s *Server) speakToolContent(ctx context.Context, content string) {
+	content = strings.TrimSpace(content)
+	if content == "" || s.audioClient == nil {
 		return
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ttsCtx, cancel := context.WithTimeout(ctx, toolDescriptionSpeechTimeout)
+	ttsCtx, cancel := context.WithTimeout(ctx, toolContentSpeechTimeout)
 	defer cancel()
 	if s.logger != nil {
-		s.logger.Info("Tool description TTS playback: %q", description)
+		s.logger.Info("Tool content TTS playback: %q", content)
 	}
-	if err := s.speakText(ttsCtx, description, 0); err != nil {
+	if err := s.speakText(ttsCtx, content, 0); err != nil {
 		if s.logger != nil {
-			s.logger.Error("Tool description TTS playback failed: %v", err)
+			s.logger.Error("Tool content TTS playback failed: %v", err)
 		}
 	}
 }
@@ -1632,7 +1645,7 @@ func (s *Server) newRunProgressSpeaker() *progressSpeaker {
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		ttsCtx, cancel := context.WithTimeout(ctx, toolDescriptionSpeechTimeout)
+		ttsCtx, cancel := context.WithTimeout(ctx, toolContentSpeechTimeout)
 		defer cancel()
 		if s.logger != nil {
 			s.logger.Info("Progress TTS playback: %q", text)
