@@ -41,7 +41,7 @@ type ModelManager struct {
 	metadataHTTPClient        *http.Client
 	providerMetadataCachePath string
 	rawHTTPLogDir             string
-	runtimeID                 string
+	rawHTTPLogSessionID       func() string
 }
 
 type ModelManagerOption func(*ModelManager)
@@ -68,8 +68,11 @@ func NewModelManager(config ModelConfig, proxy ProxyConfig, opts ...ModelManager
 	return m
 }
 
-func (m *ModelManager) SetRuntimeID(runtimeID string) {
-	m.runtimeID = runtimeID
+func (m *ModelManager) SetRawHTTPLogSessionIDProvider(provider func() string) {
+	m.rawHTTPLogSessionID = provider
+	if model, ok := m.model.(*openAICompatibleModel); ok && model.rawLogger != nil {
+		model.rawLogger.SetSessionIDProvider(provider)
+	}
 }
 
 func (m *ModelManager) Get() (llms.Model, error) {
@@ -155,8 +158,10 @@ func (m *ModelManager) openAICompatibleOptions(cfg ModelConfig) []openAICompatib
 	if !cfg.LogRawHTTP || strings.TrimSpace(m.rawHTTPLogDir) == "" {
 		return nil
 	}
+	logger := newLLMRawHTTPLogger(m.rawHTTPLogDir, "")
+	logger.SetSessionIDProvider(m.rawHTTPLogSessionID)
 	return []openAICompatibleModelOption{
-		withOpenAICompatibleRawHTTPLogger(newLLMRawHTTPLogger(m.rawHTTPLogDir, m.runtimeID)),
+		withOpenAICompatibleRawHTTPLogger(logger),
 	}
 }
 
