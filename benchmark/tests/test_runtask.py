@@ -3,8 +3,11 @@ import json
 from pathlib import Path
 
 from runner.agent_client import AgentTimeoutError, ChatResponse, ToolInvokeResult
+from runner.judge import JudgeConfig, JudgeOutput
+from runner.models import RubricVerdict
 from runner.runtask import run_one_task
 from runner.suite import HardAssertions, RubricItem, Suite, TaskSpec
+import runner.runtask as runtask_mod
 
 
 class FakeClient:
@@ -214,3 +217,66 @@ def test_run_one_task_preserves_history_after_timeout(tmp_path: Path):
     assert result.metrics["tool_calls"] == 1
     history = json.loads((tmp_path / "artifacts" / "history.json").read_text())
     assert history[0]["tool_name"] == "screenshot"
+
+
+class SummaryHistoryClient(FakeClient):
+    """Mimics the current agent: history omits base64 image data and the
+    tool_result content is a plain text summary instead."""
+
+    def chat(self, message, timeout_sec=None, attachments=None, skills=None):
+        self.messages.append(message)
+        return ChatResponse(
+            response="done",
+            history=[
+                {"type": "tool_call", "tool_name": "screenshot", "tool_input": "{}"},
+                {"type": "tool_result", "tool_name": "screenshot",
+                 "content": ("screenshot returned a screenshot observation: "
+                             "format=jpeg width=1080 height=2400 size=167770 bytes. "
+                             "Image data omitted from text summary.")},
+                {"type": "assistant", "content": "done"},
+            ],
+        )
+
+
+def test_run_one_task_sends_live_post_screenshot_to_judge(tmp_path: Path, monkeypatch):
+    suite = Suite(
+        name="phone",
+        global_reset={},
+        tasks=[],
+        sha256="sha",
+        source_path=tmp_path / "suite.json",
+    )
+    task = TaskSpec(
+        id="open_settings",
+        category="phone",
+        description_for_judge="Open the Settings app.",
+        prompt="open settings",
+        rubric=[RubricItem(id="settings_open", check="Settings app is open.")],
+        hard_assertions=HardAssertions(min_tool_calls=0, max_tool_calls=4),
+    )
+
+    captured: dict = {}
+
+    def fake_judge_task(*, post_screenshot, **kwargs):
+        captured["post_screenshot"] = post_screenshot
+        return JudgeOutput(
+            verdicts=[RubricVerdict(id="settings_open", verdict="yes", reason="visible")],
+            overall_notes="",
+            cache_key="k",
+            raw_response="{}",
+        )
+
+    monkeypatch.setattr(runtask_mod, "judge_task", fake_judge_task)
+
+    result = run_one_task(
+        SummaryHistoryClient(), suite, task, 1, tmp_path / "artifacts",
+        JudgeConfig(), None, "run-1",
+    )
+
+    # The judge must receive a real, existing post-screenshot file even though
+    # the history carried no embedded image data.
+    assert captured["post_screenshot"] is not None
+    assert captured["post_screenshot"].exists()
+    assert captured["post_screenshot"] == tmp_path / "artifacts" / "post.jpg"
+    assert result.status == "passed"
+    assert result.rubric_pass_count == 1

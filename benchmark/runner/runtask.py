@@ -65,6 +65,7 @@ def evaluate_task_history(
     timed_out: bool,
     metrics: dict[str, Any] | None = None,
     pre_screenshot: Path | None = None,
+    post_screenshot: Path | None = None,
     started_at: str | None = None,
     started_mono: float | None = None,
 ) -> TaskResult:
@@ -119,6 +120,12 @@ def evaluate_task_history(
         p = steps_dir / f"step_{i:02d}_{safe_name}.jpg"
         write_step_screenshot(p, b64)
         last_shot_path = p
+    # Prefer a live post-screenshot captured from the device. Newer agent
+    # history omits base64 image data, so extract_step_screenshots() yields
+    # nothing in the online path; fall back to the last embedded step shot
+    # (still present in the offline MobileGym path) when no live shot exists.
+    if post_screenshot is not None and post_screenshot.exists():
+        last_shot_path = post_screenshot
     base.metrics.update({"wall_ms": wall_ms, "tool_calls": trace.total_tool_calls,
                          "screenshots_taken": sum(1 for tc in trace.tool_calls if tc.has_screenshot)})
     outcome = evaluate_hard_assertions(trace, task.hard_assertions, timed_out=timed_out)
@@ -251,6 +258,14 @@ def run_one_task(
     except Exception as e:
         history = client_history_or_empty(client)
         base.metrics["agent_error"] = str(e)[:300]
+    # Capture the final device state directly from the agent. The agent history
+    # no longer embeds base64 image data (it emits a text summary instead), so
+    # the post-screenshot must be grabbed live rather than extracted from history.
+    post_path = artifact_dir / "post.jpg"
+    try:
+        take_screenshot(client, post_path)
+    except Exception:
+        post_path = None
     return evaluate_task_history(
         suite=suite,
         task=task,
@@ -263,6 +278,7 @@ def run_one_task(
         timed_out=timed_out,
         metrics=base.metrics,
         pre_screenshot=pre_path if pre_path.exists() else None,
+        post_screenshot=post_path if post_path and post_path.exists() else None,
         started_at=started,
         started_mono=started_mono,
     )

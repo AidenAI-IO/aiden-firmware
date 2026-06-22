@@ -28,8 +28,13 @@ def extract_trace(history: list[dict[str, Any]]) -> Trace:
             pending = {"step": step, "tool": msg.get("tool_name", ""),
                        "input": args, "has_screenshot": False}
         elif mtype == "tool_result" and pending is not None:
-            content = _safe_loads(msg.get("content", ""))
+            raw = msg.get("content", "")
+            content = _safe_loads(raw)
             if isinstance(content, dict) and content.get("data"):
+                pending["has_screenshot"] = True
+            elif isinstance(raw, str) and "screenshot observation" in raw:
+                # New agent history omits base64 image data and emits a text
+                # summary instead (e.g. "... returned a screenshot observation ...").
                 pending["has_screenshot"] = True
             tool_calls.append(ToolCall(**pending))
             pending = None
