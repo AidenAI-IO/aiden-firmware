@@ -240,6 +240,22 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     std::remove(path.c_str());
 }
 
+TEST_CASE("agent_toml rejects negative live_activity timeout") {
+    std::string path = make_temp_path("negative_live_activity_timeout.toml");
+    {
+        std::ofstream out(path);
+        out << "[live_activity]\n"
+            << "timeout_sec = -1\n";
+    }
+
+    aiden::AgentToml loaded;
+    std::string err;
+    CHECK_FALSE(aiden::load_agent_toml(path.c_str(), loaded, &err));
+    CHECK(err.find("must be >= 0") != std::string::npos);
+
+    std::remove(path.c_str());
+}
+
 TEST_CASE("agent_toml no longer writes legacy proxy section") {
     aiden::AgentToml cfg;
     cfg.model.provider = "fake";

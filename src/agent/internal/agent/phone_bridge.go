@@ -350,9 +350,17 @@ func (pb *PhoneBridge) handleAppStateEvent(resp BridgeCommandResponse) bool {
 		}
 		return true
 	}
+	appStateAt := time.Now()
+	if ts := strings.TrimSpace(payload.ReportedAt); ts != "" {
+		if parsed, err := time.Parse(time.RFC3339, ts); err == nil {
+			appStateAt = parsed
+		} else if pb.logger != nil {
+			pb.logger.Warn("phone-bridge: invalid reported_at=%q: %v", payload.ReportedAt, err)
+		}
+	}
 	pb.mu.Lock()
 	pb.appState = appState
-	pb.appStateAt = time.Now()
+	pb.appStateAt = appStateAt
 	if payload.ReturnEntryAvailable != nil {
 		pb.returnEntryOK = *payload.ReturnEntryAvailable
 		pb.returnEntrySeen = true

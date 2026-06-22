@@ -1163,13 +1163,9 @@ type LiveActivityRelayClient struct {
 }
 
 func NewLiveActivityRelayClient(cfg LiveActivityConfig) (*LiveActivityRelayClient, error) {
-	endpoint := strings.TrimRight(strings.TrimSpace(cfg.RelayURL), "/")
-	if endpoint == "" {
-		return nil, errors.New("missing live activity relay_url")
-	}
-	parsed, err := url.Parse(endpoint)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return nil, fmt.Errorf("invalid live activity relay_url: %s", cfg.RelayURL)
+	endpoint, err := normalizeLiveActivityRelayURL(cfg.RelayURL)
+	if err != nil {
+		return nil, err
 	}
 	return &LiveActivityRelayClient{
 		httpClient: &http.Client{Timeout: cfg.TimeoutOrDefault()},

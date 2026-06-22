@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 func TestPhoneBridgeHandlesEnvironmentEvent(t *testing.T) {
@@ -89,6 +90,9 @@ func TestPhoneBridgeHandlesAppStateEvent(t *testing.T) {
 	}
 	if status.AppStateUpdatedAt == nil {
 		t.Fatal("expected app_state_updated_at")
+	}
+	if got := status.AppStateUpdatedAt.UTC().Format(time.RFC3339); got != "2026-06-01T02:03:06Z" {
+		t.Fatalf("app_state_updated_at = %q, want reported_at", got)
 	}
 	if status.ReturnEntry != "dynamic_island" {
 		t.Fatalf("return_entry = %q, want dynamic_island", status.ReturnEntry)

@@ -741,7 +741,8 @@ TEST_CASE("config web preserves loaded secret values when password inputs are le
     const std::string html = html_buffer.str();
 
     CHECK(html.find("const values=Object.assign({},(appState.config&&appState.config[section])||{});") != std::string::npos);
-    CHECK(html.find("if(el.type==='password'&&raw===''){return;}") != std::string::npos);
+    CHECK(html.find("function isSecretField(el)") != std::string::npos);
+    CHECK(html.find("if(isSecretField(el)&&raw===''){return;}") != std::string::npos);
     CHECK(html.find("if(el.type==='password'&&raw===''){delete values[key];return;}") == std::string::npos);
 }
 
@@ -1016,11 +1017,14 @@ TEST_CASE("config web exposes live activity settings section") {
 
     CHECK(html.find("section-live_activity") != std::string::npos);
     CHECK(html.find("<h3>[live_activity]</h3>") != std::string::npos);
-    CHECK(html.find("live_activity_relay_url") != std::string::npos);
-    CHECK(html.find("live_activity_relay_api_key") != std::string::npos);
+    CHECK(html.find("live_activity_relay_url") == std::string::npos);
+    CHECK(html.find("live_activity_relay_api_key") == std::string::npos);
     CHECK(html.find("live_activity_board_id") != std::string::npos);
     CHECK(html.find("live_activity_phone_id") != std::string::npos);
-    CHECK(html.find("live_activity_private_key_pem") != std::string::npos);
+    CHECK(html.find("live_activity_private_key_path") == std::string::npos);
+    CHECK(html.find("live_activity_private_key_pem") == std::string::npos);
+    CHECK(html.find("live_activity_timeout_sec") == std::string::npos);
+    CHECK(html.find("function isSecretField(el)") != std::string::npos);
     CHECK(html.find("save-live_activity") != std::string::npos);
     CHECK(html.find("enterEditSection('live_activity')") != std::string::npos);
 

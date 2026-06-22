@@ -134,7 +134,7 @@ func TestLiveActivityManagerSnapshotActive(t *testing.T) {
 
 func TestLiveActivityManagerPublishesToRelay(t *testing.T) {
 	requests := make(chan map[string]interface{}, 1)
-	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	relay := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/boards/board-1/live-activity/state" {
 			t.Errorf("relay path = %s, want board state path", r.URL.Path)
 		}
@@ -158,6 +158,7 @@ func TestLiveActivityManagerPublishesToRelay(t *testing.T) {
 		BoardID:     "board-1",
 		PhoneID:     "phone-1",
 	}, nil)
+	manager.relay.httpClient = relay.Client()
 	manager.StartTask("req-1", "Open Settings")
 
 	select {
@@ -174,8 +175,8 @@ func TestLiveActivityManagerPublishesToRelay(t *testing.T) {
 }
 
 func TestLiveActivityManagerPublishesTerminalStateToRelayAsStandby(t *testing.T) {
-	requests := make(chan map[string]interface{}, 2)
-	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	requests := make(chan map[string]interface{}, 3)
+	relay := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload map[string]interface{}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Errorf("decode relay payload: %v", err)
@@ -191,6 +192,7 @@ func TestLiveActivityManagerPublishesTerminalStateToRelayAsStandby(t *testing.T)
 		RelayURL: relay.URL,
 		BoardID:  "board-1",
 	}, nil)
+	manager.relay.httpClient = relay.Client()
 	manager.StartTask("req-1", "Open Settings")
 	manager.CompleteTask("req-1", "Done")
 
@@ -204,6 +206,11 @@ func TestLiveActivityManagerPublishesTerminalStateToRelayAsStandby(t *testing.T)
 		case <-time.After(2 * time.Second):
 			t.Fatal("timed out waiting for relay publish")
 		}
+	}
+	select {
+	case extra := <-requests:
+		t.Fatalf("unexpected extra relay payload: %#v", extra)
+	case <-time.After(150 * time.Millisecond):
 	}
 	if terminalPayload == nil {
 		t.Fatal("missing standby relay payload after completion")

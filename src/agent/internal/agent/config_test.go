@@ -1250,3 +1250,22 @@ func TestLiveActivityTimeoutDefaultsAndValidation(t *testing.T) {
 		t.Fatalf("Validate() error = %v, want live_activity.timeout_sec validation error", err)
 	}
 }
+
+func TestLiveActivityRelayURLValidation(t *testing.T) {
+	cases := []string{
+		"http://relay.example.com",
+		"https://user:pass@relay.example.com",
+		"https://relay.example.com?token=abc",
+		"https://relay.example.com/#fragment",
+	}
+	for _, relayURL := range cases {
+		cfg := Config{
+			Model:        ModelConfig{Provider: "fake"},
+			LiveActivity: LiveActivityConfig{RelayURL: relayURL},
+		}
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "live_activity.relay_url") {
+			t.Fatalf("Validate() with relay_url %q error = %v, want live_activity.relay_url validation error", relayURL, err)
+		}
+	}
+}

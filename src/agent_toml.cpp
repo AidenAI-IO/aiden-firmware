@@ -400,7 +400,7 @@ void apply_kv(AgentToml& cfg,
         else if (key == "private_key_pem") {
             assign_string(&cfg.live_activity.private_key_pem, raw, &sub_err);
             cfg.live_activity.has_private_key_pem = !cfg.live_activity.private_key_pem.empty();
-        } else if (key == "timeout_sec") assign_int(&cfg.live_activity.timeout_sec, raw, &sub_err);
+        } else if (key == "timeout_sec") assign_non_negative_int(&cfg.live_activity.timeout_sec, raw, &sub_err);
         if (!sub_err.empty()) fail(sub_err);
     }
     // Unknown sections / keys are ignored.
