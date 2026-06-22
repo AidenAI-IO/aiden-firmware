@@ -3244,15 +3244,12 @@ INDEX_HTML = r"""<!doctype html>
           : '';
         const envLabel = job.environment_name || job.endpoint;
         const envType = job.environment_type || 'device';
-        const screenLink = job.environment_web_url
-          ? ` · <a href="${escapeHtml(job.environment_web_url)}" target="_blank" rel="noreferrer">screen</a>`
-          : '';
         const actionHtml = jobCanStop(job)
           ? `<button class="danger" data-stop-job="${escapeHtml(job.id)}" ${job.status === 'stopping' ? 'disabled' : ''}>Stop</button>`
           : '';
         const tr = document.createElement('tr');
         tr.innerHTML = `<td><div class="cell-main"><a href="#" data-job="${job.id}">${escapeHtml(job.id)}</a><small>${escapeHtml(job.created_at || '')}</small></div></td>
-          <td title="${escapeHtml(job.endpoint)}"><div class="cell-main"><span>${escapeHtml(envLabel)}</span><small>${escapeHtml(envType)} - ${escapeHtml((job.suites || []).length)} suites${screenLink}</small></div></td>
+          <td title="${escapeHtml(job.endpoint)}"><div class="cell-main"><span>${escapeHtml(envLabel)}</span><small>${escapeHtml(envType)} - ${escapeHtml((job.suites || []).length)} suites</small></div></td>
           <td><span class="status ${cssToken(job.status)}">${escapeHtml(job.status)}</span></td>
           <td>${report || '<span class="muted">none</span>'}</td>
           <td>${actionHtml}</td>`;
@@ -3287,10 +3284,7 @@ INDEX_HTML = r"""<!doctype html>
 
     function renderActiveJob(job){
       const activeLabel = document.getElementById('activeJobLabel');
-      const screenLink = job.environment_web_url
-        ? ` · <a href="${escapeHtml(job.environment_web_url)}" target="_blank" rel="noreferrer">screen</a>`
-        : '';
-      activeLabel.innerHTML = `${escapeHtml(job.id)} - ${escapeHtml(job.agent_url)}${screenLink}`;
+      activeLabel.textContent = `${job.id} - ${job.agent_url}`;
       const st = document.getElementById('activeJobStatus');
       st.className = 'status ' + job.status;
       st.textContent = job.status;

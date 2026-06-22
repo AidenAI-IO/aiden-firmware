@@ -902,11 +902,12 @@ def test_index_html_exposes_judge_settings_panel():
     assert 'id="activeStopJob"' in webui.INDEX_HTML
     assert "function stopJob" in webui.INDEX_HTML
     assert "/api/jobs/${encodeURIComponent(id)}/stop" in webui.INDEX_HTML
-    assert "environment_web_url" in webui.INDEX_HTML
     assert "web_url: env.web_url" in webui.INDEX_HTML
     assert 'id="mobilegymParallelEnvs"' in webui.INDEX_HTML
     assert "parallel_envs" in webui.INDEX_HTML
     assert ">screen</a>" in webui.INDEX_HTML
+    assert "job.environment_web_url" not in webui.INDEX_HTML
+    assert "screenLink" not in webui.INDEX_HTML
     assert 'id="taskRows"' in webui.INDEX_HTML
     assert "task_records" in webui.INDEX_HTML
     assert "/tasks/${encodeURIComponent(task.id)}/log" in webui.INDEX_HTML
