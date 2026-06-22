@@ -235,6 +235,8 @@ type ChatCancelRequest struct {
 	EventDetail    int    `json:"event_detail,omitempty"`
 	EventTrusted   *bool  `json:"event_trusted,omitempty"`
 	PointerType    string `json:"pointer_type,omitempty"`
+	ClientX        *int   `json:"client_x,omitempty"`
+	ClientY        *int   `json:"client_y,omitempty"`
 	SincePointerMs int64  `json:"since_pointer_ms,omitempty"`
 	SinceSendMs    int64  `json:"since_send_ms,omitempty"`
 	ActiveElement  string `json:"active_element,omitempty"`
@@ -641,6 +643,9 @@ func (req ChatCancelRequest) clientSource() string {
 	}
 	if strings.TrimSpace(req.PointerType) != "" {
 		parts = append(parts, "pointer_type="+truncateLogField(strings.TrimSpace(req.PointerType), 30))
+	}
+	if req.ClientX != nil && req.ClientY != nil {
+		parts = append(parts, fmt.Sprintf("client_xy=%d,%d", *req.ClientX, *req.ClientY))
 	}
 	if req.SincePointerMs >= 0 {
 		parts = append(parts, fmt.Sprintf("since_pointer_ms=%d", req.SincePointerMs))
@@ -4007,6 +4012,8 @@ const webUI = `<!DOCTYPE html>
         let currentChatCancelRequested = false;
         let currentChatStartedAt = 0;
         let stopRunPointer = null;
+        let stopRunArmedUntil = 0;
+        let stopRunArmTimer = null;
         let pendingSteer = null;
         let pendingSteerSubmitting = false;
         let episodeCache = {};
@@ -4350,6 +4357,7 @@ const webUI = `<!DOCTYPE html>
             currentChatAbortController = new AbortController();
             currentChatCancelRequested = false;
             currentChatStartedAt = Date.now();
+            resetStopRunArm();
 
             addMessage({
                 type: 'user',
@@ -4405,6 +4413,7 @@ const webUI = `<!DOCTYPE html>
                 currentChatAbortController = null;
                 currentChatCancelRequested = false;
                 currentChatStartedAt = 0;
+                resetStopRunArm();
                 pendingSteer = null;
                 renderPendingSteer();
                 setComposerState(false);
@@ -4492,6 +4501,30 @@ const webUI = `<!DOCTYPE html>
             };
         }
 
+        function resetStopRunArm() {
+            stopRunArmedUntil = 0;
+            if (stopRunArmTimer) {
+                clearTimeout(stopRunArmTimer);
+                stopRunArmTimer = null;
+            }
+            if (stopRunBtn) {
+                stopRunBtn.textContent = 'Stop';
+            }
+        }
+
+        function armStopRun() {
+            stopRunArmedUntil = Date.now() + 3000;
+            stopRunBtn.textContent = 'Click again to stop';
+            if (stopRunArmTimer) {
+                clearTimeout(stopRunArmTimer);
+            }
+            stopRunArmTimer = setTimeout(function() {
+                if (Date.now() >= stopRunArmedUntil) {
+                    resetStopRunArm();
+                }
+            }, 3100);
+        }
+
         async function refreshCurrentLiveActivity() {
             if (currentChatRequestId) return;
             try {
@@ -4538,6 +4571,11 @@ const webUI = `<!DOCTYPE html>
                 });
                 return;
             }
+            if (now >= stopRunArmedUntil) {
+                armStopRun();
+                return;
+            }
+            resetStopRunArm();
             currentChatCancelRequested = true;
             stopRunBtn.disabled = true;
             stopRunBtn.textContent = 'Stopping...';
@@ -4558,6 +4596,8 @@ const webUI = `<!DOCTYPE html>
                     event_detail: eventDetail,
                     event_trusted: event ? event.isTrusted === true : false,
                     pointer_type: stopRunPointer && stopRunPointer.pointerType ? stopRunPointer.pointerType : '',
+                    client_x: event && typeof event.clientX === 'number' ? Math.round(event.clientX) : -1,
+                    client_y: event && typeof event.clientY === 'number' ? Math.round(event.clientY) : -1,
                     since_pointer_ms: sincePointerMs,
                     since_send_ms: currentChatStartedAt ? now - currentChatStartedAt : -1,
                     active_element: document.activeElement ? (
@@ -5083,7 +5123,13 @@ const webUI = `<!DOCTYPE html>
             imageBtn.disabled = isLoading || recorderState.isRecording || recorderState.isStopping;
             recordBtn.disabled = isLoading || recorderState.isStopping;
             stopRunBtn.disabled = !isLoading;
-            stopRunBtn.textContent = 'Stop';
+            if (!isLoading) {
+                resetStopRunArm();
+            } else if (Date.now() < stopRunArmedUntil) {
+                stopRunBtn.textContent = 'Click again to stop';
+            } else {
+                stopRunBtn.textContent = 'Stop';
+            }
             loadingDiv.classList.toggle('active', isLoading);
             renderPendingSteer();
             updateRecordButton();
