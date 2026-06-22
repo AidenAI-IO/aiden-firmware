@@ -178,6 +178,51 @@ def test_aiden_go_agent_records_chat_history_on_task_for_suite_evaluate():
     assert action.data["aiden_last_chat_history"][0]["tool_name"] == "recall_memory"
 
 
+def test_aiden_go_agent_resolves_prompt_string_to_aiden_suite_task(tmp_path):
+    module = importlib.import_module("mobilegym.adapter.aiden_go_agent")
+
+    instruction = (
+        "You are completing text-only tasks. End with <final_answer>(b)</final_answer>.\n\n"
+        "No computation is needed. Select option (b)."
+    )
+
+    class TaggedHTTPClient(RecordingHTTPClient):
+        def post_json(self, url, payload, *, token=None, timeout=None):
+            self.calls.append((url, payload, token, timeout))
+            if url.endswith("/api/chat"):
+                return {"response": "<final_answer>(b)</final_answer>"}
+            if url.endswith("/episode/end"):
+                return {"ok": True, "data": {"action_log": []}}
+            return {"ok": True}
+
+    task = types.SimpleNamespace(
+        id="loop_planning_v1.direct_answer_no_plan",
+        instruction=instruction,
+        metadata={
+            "aiden_suite_name": "loop_planning_v1",
+            "aiden_task_id": "direct_answer_no_plan",
+        },
+    )
+    agent = module.AidenGoAgent(
+        bridge_url="http://bridge.local",
+        bridge_control_token="bridge-control",
+        daemon=FakeDaemon(),
+        http_client=TaggedHTTPClient(),
+        episode_id_factory=lambda: "ep-prompt-lookup",
+        artifact_dir=tmp_path / "raw" / "run",
+        task_lookup={instruction: task},
+    )
+
+    agent.reset(instruction)
+    action = agent.act(obs=None)
+
+    assert agent.task is task
+    assert task.metadata["aiden_last_response"] == "<final_answer>(b)</final_answer>"
+    assert action.data["aiden_last_response"] == "<final_answer>(b)</final_answer>"
+    meta_path = tmp_path / "raw" / "run" / "trajectory" / "loop_planning_v1_direct_answer_no_plan" / "meta.json"
+    assert json.loads(meta_path.read_text(encoding="utf-8"))["task_id"] == "loop_planning_v1.direct_answer_no_plan"
+
+
 def test_aiden_go_agent_writes_task_meta_with_aiden_evidence(tmp_path):
     module = importlib.import_module("mobilegym.adapter.aiden_go_agent")
 

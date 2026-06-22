@@ -224,8 +224,8 @@ def build_mobilegym_run_command(
     env = os.environ.copy()
     add_common_cli_paths(env)
     env.update(model_config_from_payload(payload))
-    if payload.get("llm_analysis") is True:
-        env["AIDEN_BENCHMARK_LLM_ANALYSIS"] = "1"
+    env.update(benchmark_config_from_payload(payload))
+    env["AIDEN_BENCHMARK_LLM_ANALYSIS"] = "1"
     for payload_key, env_key in {
         "analysis_model": "AIDEN_BENCHMARK_ANALYSIS_MODEL",
         "analysis_max_log_bytes": "AIDEN_BENCHMARK_ANALYSIS_MAX_LOG_BYTES",
@@ -235,6 +235,8 @@ def build_mobilegym_run_command(
         value = payload.get(payload_key)
         if value not in (None, ""):
             env[env_key] = str(value)
+    if "AIDEN_BENCHMARK_ANALYSIS_MODEL" not in env and env.get("AIDEN_BENCHMARK_JUDGE_MODEL"):
+        env["AIDEN_BENCHMARK_ANALYSIS_MODEL"] = env["AIDEN_BENCHMARK_JUDGE_MODEL"]
     env["PARALLEL"] = str(parallel)
     env["MOBILEGYM_RUNS_ROOT"] = str(root / "runs" / "mobilegym")
     env.setdefault("MOBILEGYM_BATCH_ID", "batch-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
@@ -265,6 +267,9 @@ def build_skillopt_run_command(
     add_common_cli_paths(env)
     env.update(model_config_from_payload(payload))
     env.update(benchmark_config_from_payload(payload))
+    env["AIDEN_BENCHMARK_LLM_ANALYSIS"] = "1"
+    if "AIDEN_BENCHMARK_ANALYSIS_MODEL" not in env and env.get("AIDEN_BENCHMARK_JUDGE_MODEL"):
+        env["AIDEN_BENCHMARK_ANALYSIS_MODEL"] = env["AIDEN_BENCHMARK_JUDGE_MODEL"]
 
     run_id = "skillopt-" + datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d_%H%M%S-%f")
     artifact_root = root / "runs" / "skillopt"
@@ -449,11 +454,60 @@ def read_log() -> str:
 
 
 def list_runs(benchmark_root: Path) -> list[dict[str, Any]]:
+    mobilegym_runs = list_mobilegym_runs(benchmark_root)
+    skillopt_runs = list_skillopt_runs(benchmark_root)
     return sorted(
-        list_mobilegym_runs(benchmark_root) + list_skillopt_runs(benchmark_root),
+        nest_skillopt_phase_runs(mobilegym_runs, skillopt_runs),
         key=lambda item: str(item.get("run_id") or ""),
         reverse=True,
     )[:20]
+
+
+def nest_skillopt_phase_runs(
+    mobilegym_runs: list[dict[str, Any]],
+    skillopt_runs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    skillopt_by_id = {str(item.get("run_id") or ""): item for item in skillopt_runs}
+    top_level_mobilegym = []
+    for item in mobilegym_runs:
+        run_id = str(item.get("run_id") or "")
+        parent_id, phase = skillopt_phase_parent(run_id)
+        parent = skillopt_by_id.get(parent_id)
+        if parent is None:
+            top_level_mobilegym.append(item)
+            continue
+        child = dict(item)
+        child["phase"] = phase
+        child["kind"] = skillopt_phase_kind(phase)
+        parent.setdefault("children", []).append(child)
+
+    for item in skillopt_runs:
+        children = item.get("children")
+        if isinstance(children, list):
+            children.sort(key=lambda child: skillopt_phase_sort_key(str(child.get("phase") or "")))
+    return top_level_mobilegym + skillopt_runs
+
+
+def skillopt_phase_parent(run_id: str) -> tuple[str, str]:
+    match = re.match(r"^(skillopt-.+)-(baseline_selection|step_\d{2}_(?:train|selection))$", run_id)
+    if not match:
+        return "", ""
+    return match.group(1), match.group(2)
+
+
+def skillopt_phase_kind(phase: str) -> str:
+    if phase.endswith("_train"):
+        return "train"
+    return "verification"
+
+
+def skillopt_phase_sort_key(phase: str) -> tuple[int, int]:
+    if phase == "baseline_selection":
+        return (0, 0)
+    match = re.match(r"step_(\d{2})_(train|selection)$", phase)
+    if not match:
+        return (999, 0)
+    return (int(match.group(1)), 0 if match.group(2) == "train" else 1)
 
 
 def list_mobilegym_runs(benchmark_root: Path) -> list[dict[str, Any]]:

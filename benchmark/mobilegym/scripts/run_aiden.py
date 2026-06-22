@@ -523,6 +523,7 @@ async def _run_serial(args: argparse.Namespace, config: Any, factory: Any, Seria
             daemon=daemon,
             chat_timeout_sec=args.chat_timeout_sec,
             episode_timeout_sec=args.episode_timeout_sec,
+            task_lookup=_aiden_task_lookup(tasks) if args.aiden_suite else {},
         )
         evaluator = factory.create_evaluator(config, None)
         recorder.start_run(
@@ -575,6 +576,15 @@ def _runner_args(args: argparse.Namespace) -> argparse.Namespace:
         num_browsers=0,
         monitor=False,
     )
+
+
+def _aiden_task_lookup(tasks: list[Any]) -> dict[str, Any]:
+    lookup: dict[str, Any] = {}
+    for task in tasks:
+        instruction = getattr(task, "instruction", None)
+        if instruction:
+            lookup[str(instruction)] = task
+    return lookup
 
 
 def _validate_selection(args: argparse.Namespace) -> None:

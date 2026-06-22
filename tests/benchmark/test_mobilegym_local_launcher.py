@@ -129,7 +129,7 @@ def test_build_run_command_adds_common_docker_cli_paths(launcher_module, tmp_pat
     assert "/Applications/Docker.app/Contents/Resources/bin" in path_parts
 
 
-def test_build_run_command_maps_llm_analysis_payload_to_env(launcher_module, tmp_path):
+def test_build_run_command_enables_llm_analysis_by_default(launcher_module, tmp_path):
     docker_dir = tmp_path / "mobilegym" / "docker"
     docker_dir.mkdir(parents=True)
     (docker_dir / "parallel_run.sh").write_text("#!/usr/bin/env bash\n")
@@ -139,13 +139,53 @@ def test_build_run_command_maps_llm_analysis_payload_to_env(launcher_module, tmp
         {
             "suite": "clock",
             "suite_type": "mobilegym_builtin",
-            "llm_analysis": True,
             "analysis_model": "anthropic/claude-sonnet-4-6",
         },
     )
 
     assert command.env["AIDEN_BENCHMARK_LLM_ANALYSIS"] == "1"
     assert command.env["AIDEN_BENCHMARK_ANALYSIS_MODEL"] == "anthropic/claude-sonnet-4-6"
+
+
+def test_build_skillopt_run_command_enables_llm_analysis_by_default(launcher_module, tmp_path):
+    (tmp_path / "suites" / "skillopt" / "device-operator").mkdir(parents=True)
+    (tmp_path / "mobilegym" / "docker").mkdir(parents=True)
+    (tmp_path / "mobilegym" / "docker" / "parallel_run.sh").write_text("#!/usr/bin/env bash\n")
+
+    command = launcher_module.build_skillopt_run_command(
+        tmp_path,
+        {
+            "mode": "skillopt",
+            "skillopt_backend": "mobilegym",
+            "skill": "device-operator",
+            "train_suite": "skillopt/device-operator/device_operator_train",
+            "validation_suite": "skillopt/device-operator/device_operator_verification",
+        },
+    )
+
+    assert command.env["AIDEN_BENCHMARK_LLM_ANALYSIS"] == "1"
+
+
+def test_build_run_command_uses_benchmark_judge_model_for_analysis(launcher_module, monkeypatch, tmp_path):
+    docker_dir = tmp_path / "mobilegym" / "docker"
+    docker_dir.mkdir(parents=True)
+    (docker_dir / "parallel_run.sh").write_text("#!/usr/bin/env bash\n")
+    monkeypatch.setattr(launcher_module, "fetch_board_model_config", lambda board_url: {})
+    monkeypatch.setattr(
+        launcher_module,
+        "fetch_board_benchmark_config",
+        lambda board_url: {
+            "OPENROUTER_API_KEY": "sk-test",
+            "AIDEN_BENCHMARK_JUDGE_MODEL": "bytedance-seed/seed-2.0-lite",
+        },
+    )
+
+    command = launcher_module.build_run_command(
+        tmp_path,
+        {"suite": "clock", "suite_type": "mobilegym_builtin", "board_url": "http://board.local"},
+    )
+
+    assert command.env["AIDEN_BENCHMARK_ANALYSIS_MODEL"] == "bytedance-seed/seed-2.0-lite"
 
 
 def test_build_run_command_rejects_path_traversal(launcher_module, tmp_path):
@@ -383,6 +423,48 @@ def test_list_runs_expands_multiple_summary_suites(launcher_module, tmp_path):
         "/benchmark/report/batch-20260611-130000/clock",
         "/benchmark/report/batch-20260611-130000/phone_control_v1",
     ]
+
+
+def test_list_runs_nests_skillopt_mobilegym_phases_under_parent(launcher_module, tmp_path):
+    skillopt_dir = tmp_path / "runs" / "skillopt" / "skillopt-20260622-010101-abc123"
+    skillopt_dir.mkdir(parents=True)
+    (skillopt_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "train_suite": "skillopt/device-operator/device_operator_train",
+                "model": "qwen3.6-35b",
+                "totals": {"tasks": 6, "passed": 6, "failed": 0},
+            }
+        )
+    )
+    for phase, suite, passed, failed in [
+        ("baseline_selection", "skillopt/device-operator/device_operator_verification", 5, 1),
+        ("step_01_train", "skillopt/device-operator/device_operator_train", 9, 3),
+        ("step_01_selection", "skillopt/device-operator/device_operator_verification", 6, 0),
+    ]:
+        run_dir = tmp_path / "runs" / "mobilegym" / f"skillopt-20260622-010101-abc123-{phase}"
+        run_dir.mkdir(parents=True)
+        (run_dir / "index.html").write_text("report")
+        (run_dir / "summary.json").write_text(
+            json.dumps(
+                {
+                    "tasks": passed + failed,
+                    "passed": passed,
+                    "failed": failed,
+                    "model": "qwen3.6-35b",
+                    "suites": [{"suite": suite, "tasks": passed + failed, "passed": passed, "failed": failed}],
+                }
+            )
+        )
+
+    runs = launcher_module.list_runs(tmp_path)
+
+    assert [run["run_id"] for run in runs] == ["skillopt-20260622-010101-abc123"]
+    children = runs[0]["children"]
+    assert [child["phase"] for child in children] == ["baseline_selection", "step_01_train", "step_01_selection"]
+    assert [child["kind"] for child in children] == ["verification", "train", "verification"]
+    assert children[1]["run_id"] == "skillopt-20260622-010101-abc123-step_01_train"
+    assert children[1]["report_path"] == "/benchmark/report/skillopt-20260622-010101-abc123-step_01_train"
 
 
 def test_list_runs_marks_current_run_not_done_without_summary(launcher_module, tmp_path):

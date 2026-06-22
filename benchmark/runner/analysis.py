@@ -68,7 +68,9 @@ def config_from_env() -> AnalysisConfig:
     }
     return AnalysisConfig(
         enabled=enabled,
-        model=os.environ.get("AIDEN_BENCHMARK_ANALYSIS_MODEL") or DEFAULT_MODEL,
+        model=os.environ.get("AIDEN_BENCHMARK_ANALYSIS_MODEL")
+        or os.environ.get("AIDEN_BENCHMARK_JUDGE_MODEL")
+        or DEFAULT_MODEL,
         max_log_bytes=_int_env("AIDEN_BENCHMARK_ANALYSIS_MAX_LOG_BYTES", DEFAULT_MAX_LOG_BYTES),
         max_code_bytes=_int_env("AIDEN_BENCHMARK_ANALYSIS_MAX_CODE_BYTES", DEFAULT_MAX_CODE_BYTES),
         total_context_bytes=_int_env(

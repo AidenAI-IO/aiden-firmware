@@ -342,3 +342,87 @@ def test_run_serial_sets_agent_artifact_dir_to_recorder_run_dir(monkeypatch, tmp
 
     assert asyncio.run(module._run_serial(args, object(), FakeFactory, FakeRunner)) == 0
     assert captured["agent"].artifact_dir == tmp_path / "run"
+
+
+def test_run_serial_passes_aiden_suite_task_lookup_to_agent(monkeypatch, tmp_path):
+    module = load_run_aiden_module()
+    captured = {}
+    task = module.MobileGymTaskAdapter(
+        task_id="loop_planning_v1.direct_answer_no_plan",
+        instruction="Select option (b).",
+        metadata={"aiden_suite_name": "loop_planning_v1"},
+    )
+
+    class FakeRecorder:
+        run_dir = tmp_path / "run"
+
+        def start_run(self, **kwargs):
+            self.run_dir.mkdir()
+
+    class FakeFactory:
+        @staticmethod
+        def load_tasks(config):
+            raise AssertionError("Aiden suite tasks should come from _load_aiden_suite_as_mobilegym_tasks")
+
+        @staticmethod
+        def create_recorder(config):
+            return FakeRecorder()
+
+        @staticmethod
+        async def create_env(config):
+            return object()
+
+        @staticmethod
+        def create_evaluator(config, value):
+            return object()
+
+    class FakeBridge:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            return "http://bridge.local"
+
+        def stop(self):
+            pass
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            self.artifact_dir = None
+            captured["agent_kwargs"] = kwargs
+
+    class FakeRunner:
+        @staticmethod
+        def build_run_meta(config, tasks):
+            return {"tasks": tasks}
+
+        def __init__(self, *args):
+            pass
+
+        async def run(self):
+            pass
+
+    monkeypatch.setattr(module, "_load_aiden_suite_as_mobilegym_tasks", lambda suite: [task])
+    monkeypatch.setitem(sys.modules, "bench_env.logger", types.SimpleNamespace(add_log_file=lambda path: None))
+    monkeypatch.setitem(sys.modules, "mobilegym.adapter.aiden_go_agent", types.SimpleNamespace(AidenGoAgent=FakeAgent))
+    monkeypatch.setitem(sys.modules, "mobilegym.adapter.daemon", types.SimpleNamespace(AidenDaemonHandle=lambda **kwargs: object()))
+    monkeypatch.setitem(sys.modules, "mobilegym.bridge.episode", types.SimpleNamespace(BridgeEpisodeState=lambda *args, **kwargs: object()))
+    monkeypatch.setitem(sys.modules, "mobilegym.bridge.protocol", types.SimpleNamespace(BridgeTokens=lambda **kwargs: object()))
+    monkeypatch.setitem(sys.modules, "mobilegym.bridge.server", types.SimpleNamespace(BridgeServer=FakeBridge))
+    monkeypatch.setattr(module, "_generate_run_report_best_effort", lambda run_dir: None)
+
+    args = types.SimpleNamespace(
+        aiden_suite="loop_planning_v1",
+        aiden_task_ids="",
+        limit=None,
+        shard_index=0,
+        shard_count=1,
+        shard_metadata_file=None,
+        aiden_daemon_url="http://daemon.local",
+        aiden_control_token="token",
+        chat_timeout_sec=1,
+        episode_timeout_sec=1,
+    )
+
+    assert asyncio.run(module._run_serial(args, object(), FakeFactory, FakeRunner)) == 0
+    assert captured["agent_kwargs"]["task_lookup"] == {"Select option (b).": task}

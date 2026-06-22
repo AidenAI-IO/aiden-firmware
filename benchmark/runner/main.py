@@ -66,7 +66,7 @@ def cli(argv: list[str] | None = None) -> int:
     p_run.add_argument("--llm-analysis", action="store_true", help="Run post-run LLM RCA analysis")
     p_run.add_argument(
         "--analysis-model",
-        default=os.environ.get("AIDEN_BENCHMARK_ANALYSIS_MODEL", "anthropic/claude-sonnet-4-6"),
+        default=os.environ.get("AIDEN_BENCHMARK_ANALYSIS_MODEL"),
     )
     p_run.add_argument(
         "--analysis-max-log-bytes",
@@ -325,7 +325,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if args.llm_analysis:
         analysis_result = analyze_run(run_dir, REPO_ROOT, AnalysisConfig(
             enabled=True,
-            model=args.analysis_model,
+            model=args.analysis_model or args.judge_model,
             max_log_bytes=args.analysis_max_log_bytes,
             max_code_bytes=args.analysis_max_code_bytes,
             timeout_sec=args.analysis_timeout_sec,

@@ -151,11 +151,22 @@ def test_run_triggers_llm_analysis_when_enabled(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "analyze_run", fake_analyze)
 
     rc = main.cli(
-        ["run", "--suite", str(suite_path), "--out", str(tmp_path / "runs"), "--no-judge", "--llm-analysis"]
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--out",
+            str(tmp_path / "runs"),
+            "--no-judge",
+            "--judge-model",
+            "bytedance-seed/seed-2.0-lite",
+            "--llm-analysis",
+        ]
     )
 
     assert rc == 0
     assert calls and calls[0][2].enabled is True
+    assert calls[0][2].model == "bytedance-seed/seed-2.0-lite"
 
 
 def test_run_llm_analysis_env_limits_fall_back_on_invalid_values(monkeypatch, tmp_path):

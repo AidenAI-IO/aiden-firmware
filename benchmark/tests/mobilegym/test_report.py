@@ -841,6 +841,39 @@ def test_generate_reports_triggers_llm_analysis_when_env_enabled(monkeypatch, tm
     assert "mobilegym analysis" in (batch / "clock" / "index.html").read_text(encoding="utf-8")
 
 
+def test_generate_reports_triggers_llm_analysis_for_failed_batch(monkeypatch, tmp_path):
+    from mobilegym import report
+
+    batch = tmp_path / "batch-analysis-failed-tasks"
+    shard = batch / "clock" / "shard-0"
+    write_json(
+        shard / "shard.json",
+        {
+            "batch_id": "batch-analysis-failed-tasks",
+            "suite": "clock",
+            "selected_task_count": 1,
+            "selected_task_ids": ["clock.Task"],
+            "exit_code": 0,
+        },
+    )
+    write_jsonl(shard / "raw" / "run" / "results.jsonl", [{"id": "clock.Task", "is_success": False}])
+    calls = []
+
+    def fake_analyze(run_dir, repo_root, cfg):
+        calls.append((run_dir, repo_root, cfg))
+        (run_dir / "llm_analysis.md").write_text("failed batch analysis", encoding="utf-8")
+        return report.AnalysisResult(ok=True, markdown_path=run_dir / "llm_analysis.md")
+
+    monkeypatch.setenv("AIDEN_BENCHMARK_LLM_ANALYSIS", "1")
+    monkeypatch.setattr(report, "analyze_run", fake_analyze)
+
+    summary = report.generate_reports(batch)
+
+    assert summary["failed"] == 1
+    assert calls and calls[0][0] == batch
+    assert "failed batch analysis" in (batch / "index.html").read_text(encoding="utf-8")
+
+
 def test_generate_reports_keeps_summary_when_llm_analysis_fails(monkeypatch, tmp_path):
     from mobilegym import report
 
