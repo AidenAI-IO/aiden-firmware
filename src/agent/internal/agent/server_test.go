@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
 	"image/jpeg"
 	"net"
 	"net/http"
@@ -713,12 +715,24 @@ func TestHandleScreenshotJPEGCanDisableBlackBarCropping(t *testing.T) {
 }
 
 func TestHandleScreenshotJPEGUpdatesSharedScreenStateFromPhoneAspectRatio(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 16, 9))
+	for y := 0; y < 9; y++ {
+		for x := 5; x < 10; x++ {
+			img.Set(x, y, color.RGBA{R: 240, G: 240, B: 240, A: 255})
+		}
+	}
+	var jpegBuf bytes.Buffer
+	if err := jpeg.Encode(&jpegBuf, img, &jpeg.Options{Quality: 100}); err != nil {
+		t.Fatalf("encode jpeg fixture: %v", err)
+	}
+	jpegData := jpegBuf.Bytes()
+
 	frameSocket := startFakeFrameServiceSocket(t, func(req map[string]any) (string, []byte) {
 		if format, _ := req["format"].(string); format != "raw" {
 			t.Fatalf("expected raw format request, got %#v", req["format"])
 		}
-		header := `{"type":"response","method":"latest_frame","status":"OK","frame":{"seq":1,"width":16,"height":9,"pixel_format":"uyvy","stride":32,"bytes":288,"stale":false}}`
-		return header, bytes.Repeat([]byte{16, 128, 16, 128}, 72)
+		header := fmt.Sprintf(`{"type":"response","method":"latest_frame","status":"OK","frame":{"seq":1,"width":16,"height":9,"pixel_format":"jpeg","stride":0,"bytes":%d,"stale":false}}`, len(jpegData))
+		return header, jpegData
 	})
 
 	runtime := NewRuntimeWithDeps(
@@ -736,8 +750,10 @@ func TestHandleScreenshotJPEGUpdatesSharedScreenStateFromPhoneAspectRatio(t *tes
 	envData, err := json.Marshal(PhoneEnvironment{
 		Platform: "android",
 		Screen: PhoneScreenInfo{
-			WidthPixels:  intPtr(1080),
-			HeightPixels: intPtr(1920),
+			WidthPixels:        intPtr(1080),
+			HeightPixels:       intPtr(1920),
+			NativeWidthPixels:  intPtr(1080),
+			NativeHeightPixels: intPtr(2400),
 		},
 	})
 	if err != nil {
@@ -762,6 +778,12 @@ func TestHandleScreenshotJPEGUpdatesSharedScreenStateFromPhoneAspectRatio(t *tes
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Original-Screen-Width"); got != "1080" {
+		t.Fatalf("X-Original-Screen-Width = %q, want 1080", got)
+	}
+	if got := rec.Header().Get("X-Original-Screen-Height"); got != "2400" {
+		t.Fatalf("X-Original-Screen-Height = %q, want 2400", got)
 	}
 
 	width, height, active, _, ok := runtime.tools.screen.ActiveAreaWithAge()

@@ -17,9 +17,11 @@ type coordinateDebugScreenshotOptions struct {
 
 type coordinateDebugScreenshotResult struct {
 	screenshotResult
-	SourceWidth      int               `json:"source_width"`
-	SourceHeight     int               `json:"source_height"`
-	SourceActiveArea *screenActiveArea `json:"source_active_area,omitempty"`
+	SourceWidth                int               `json:"source_width"`
+	SourceHeight               int               `json:"source_height"`
+	SourceActiveArea           *screenActiveArea `json:"source_active_area,omitempty"`
+	OriginalScreenWidthPixels  *int              `json:"original_screen_width_pixels,omitempty"`
+	OriginalScreenHeightPixels *int              `json:"original_screen_height_pixels,omitempty"`
 }
 
 func parseCoordinateDebugScreenshotOptions(r *http.Request) coordinateDebugScreenshotOptions {
@@ -93,10 +95,28 @@ func (s *Server) captureCoordinateDebugScreenshot(options coordinateDebugScreens
 		SourceWidth:  sourceWidth,
 		SourceHeight: sourceHeight,
 	}
+	if screen != nil {
+		if width, height, ok := preferredPhoneScreenPixels(screen.PhoneScreenInfo()); ok {
+			result.OriginalScreenWidthPixels = &width
+			result.OriginalScreenHeightPixels = &height
+		}
+	}
 	if displayActiveArea != nil {
 		result.SourceActiveArea = displayActiveArea
 	}
 	return result, displayJPEGData, nil
+}
+
+func preferredPhoneScreenPixels(screen PhoneScreenInfo) (int, int, bool) {
+	if screen.NativeWidthPixels != nil && screen.NativeHeightPixels != nil &&
+		*screen.NativeWidthPixels > 0 && *screen.NativeHeightPixels > 0 {
+		return *screen.NativeWidthPixels, *screen.NativeHeightPixels, true
+	}
+	if screen.WidthPixels != nil && screen.HeightPixels != nil &&
+		*screen.WidthPixels > 0 && *screen.HeightPixels > 0 {
+		return *screen.WidthPixels, *screen.HeightPixels, true
+	}
+	return 0, 0, false
 }
 
 func (s *Server) captureCoordinateDebugScreenshotResult(options coordinateDebugScreenshotOptions) (*coordinateDebugScreenshotResult, error) {
