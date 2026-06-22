@@ -33,6 +33,9 @@ a:hover{text-decoration:underline}
 .pass{color:#16a34a;font-weight:600}
 .fail{color:#dc2626;font-weight:600}
 .not-ready{color:#94a3b8;font-size:12px}
+.run-child td{background:#f9fbff;color:#475569;font-size:12px}
+.run-child .child-phase{padding-left:22px;position:relative}
+.run-child .child-phase:before{content:'↳';position:absolute;left:8px;color:#94a3b8}
 .badge{display:inline-block;font-size:11px;background:#e0e7ff;color:#3730a3;padding:1px 6px;border-radius:4px;margin-left:6px}
 .progress{margin-top:14px;font-size:13px;color:#444;display:none}
 .progress-bar{height:8px;background:#e5e7eb;border-radius:999px;overflow:hidden;margin-top:6px;width:100%}
@@ -412,29 +415,36 @@ link.textContent='View';
 td.appendChild(link);
 return td;
 }
-function renderRuns(d,emptyText){
-var tb=document.getElementById('historyBody');tb.innerHTML='';
-if(!d.length){tb.innerHTML='<tr><td colspan="8">'+(emptyText||'No runs yet')+'</td></tr>';return}
-d.forEach(function(r){
+function renderRunRow(r,isChild,parentSource){
 var t=r.totals||{};var suite=r.suite||'';
-var sn=suite.split('/').pop().replace('.json','');
+var sn=isChild?(r.phase||suite.split('/').pop().replace('.json','')):suite.split('/').pop().replace('.json','');
+if(parentSource&&!r.__history_source)r.__history_source=parentSource;
 var tr=document.createElement('tr');
+if(isChild)tr.className='run-child';
 appendTextCell(tr,r.run_id);
-appendTextCell(tr,sn);
+appendTextCell(tr,sn,isChild?'child-phase':'');
 appendTextCell(tr,r.status||'done');
 appendTextCell(tr,progressText(r));
 appendTextCell(tr,r.model||'—');
 appendTextCell(tr,t.passed||0,'pass');
 appendTextCell(tr,t.failed||0,'fail');
 tr.appendChild(reportCell(r));
-tb.appendChild(tr)});
+return tr;
+}
+function renderRuns(d,emptyText){
+var tb=document.getElementById('historyBody');tb.innerHTML='';
+if(!d.length){tb.innerHTML='<tr><td colspan="8">'+(emptyText||'No runs yet')+'</td></tr>';return}
+d.forEach(function(r){
+tb.appendChild(renderRunRow(r,false,''));
+(r.children||[]).forEach(function(child){tb.appendChild(renderRunRow(child,true,r.__history_source||''))});
+});
 }
 function isSkillOptRun(r){var id=String((r&&r.run_id)||'');var suite=String((r&&r.suite)||'');return id.indexOf('skillopt-')===0||suite.indexOf('skillopt/')===0}
-function mergeRunLists(lists){var byId={};lists.forEach(function(list){(list||[]).forEach(function(r){if(!isSkillOptRun(r))return;var id=String(r.run_id||'');if(id&&!byId[id])byId[id]=r;});});return Object.keys(byId).sort().reverse().map(function(id){return byId[id]})}
+function mergeRunLists(lists){var byId={};lists.forEach(function(list){(list||[]).forEach(function(r){if(!isSkillOptRun(r))return;var id=String(r.run_id||'');if(!id)return;if(!byId[id]){byId[id]=r;return}if((r.children||[]).length){byId[id].children=r.children;byId[id].__history_source=r.__history_source||byId[id].__history_source}});});return Object.keys(byId).sort().reverse().map(function(id){return byId[id]})}
 function loadSkillOptRuns(){
 Promise.allSettled([
-fetch('/benchmark/runs').then(function(r){return r.json()}).then(function(d){return (d||[]).map(function(r){r.__history_source='board';return r})}),
-fetch(MOBILEGYM_LOCAL_BASE+'/benchmark/runs').then(function(r){return r.json()}).then(function(d){return (d||[]).map(function(r){r.__history_source='mobilegym';return r})})
+fetch('/benchmark/runs').then(function(r){return r.json()}).then(function(d){return (d||[]).map(function(r){r.__history_source='board';(r.children||[]).forEach(function(c){c.__history_source='board'});return r})}),
+fetch(MOBILEGYM_LOCAL_BASE+'/benchmark/runs').then(function(r){return r.json()}).then(function(d){return (d||[]).map(function(r){r.__history_source='mobilegym';(r.children||[]).forEach(function(c){c.__history_source='mobilegym'});return r})})
 ]).then(function(results){
 var lists=results.filter(function(x){return x.status==='fulfilled'&&Array.isArray(x.value)}).map(function(x){return x.value});
 renderRuns(mergeRunLists(lists),'No SkillOpt runs yet');

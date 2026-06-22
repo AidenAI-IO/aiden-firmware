@@ -481,8 +481,9 @@ async def _run_serial(args: argparse.Namespace, config: Any, factory: Any, Seria
     from mobilegym.bridge.server import BridgeServer
 
     tasks = factory.load_tasks(config) if not args.aiden_suite else _load_aiden_suite_as_mobilegym_tasks(args.aiden_suite)
-    if args.aiden_suite and args.aiden_task_ids:
-        tasks = _filter_aiden_tasks(tasks, args.aiden_task_ids)
+    aiden_task_ids = getattr(args, "aiden_task_ids", "")
+    if args.aiden_suite and aiden_task_ids:
+        tasks = _filter_aiden_tasks(tasks, aiden_task_ids)
     if args.limit is not None:
         tasks = tasks[: args.limit]
     if not tasks:
@@ -522,6 +523,7 @@ async def _run_serial(args: argparse.Namespace, config: Any, factory: Any, Seria
             daemon=daemon,
             chat_timeout_sec=args.chat_timeout_sec,
             episode_timeout_sec=args.episode_timeout_sec,
+            task_lookup=_aiden_task_lookup(tasks) if args.aiden_suite else {},
         )
         evaluator = factory.create_evaluator(config, None)
         recorder.start_run(
@@ -576,6 +578,20 @@ def _runner_args(args: argparse.Namespace) -> argparse.Namespace:
     )
 
 
+def _aiden_task_lookup(tasks: list[Any]) -> dict[str, Any]:
+    lookup: dict[str, Any] = {}
+    for task in tasks:
+        instruction = getattr(task, "instruction", None)
+        if instruction:
+            key = str(instruction)
+            if key in lookup:
+                raise LauncherError(
+                    "Aiden suite contains duplicate task instructions; cannot build unique task lookup."
+                )
+            lookup[key] = task
+    return lookup
+
+
 def _validate_selection(args: argparse.Namespace) -> None:
     selectors = [args.task_id, args.suite, args.split, args.aiden_suite]
     if not any(selectors):
@@ -586,7 +602,7 @@ def _validate_selection(args: argparse.Namespace) -> None:
         raise LauncherError(
             "--aiden-suite is mutually exclusive with --task-id/--suite/--split"
         )
-    if args.aiden_task_ids and not args.aiden_suite:
+    if getattr(args, "aiden_task_ids", "") and not args.aiden_suite:
         raise LauncherError("--aiden-task-ids requires --aiden-suite")
     if args.shard_index >= args.shard_count:
         raise LauncherError("--shard-index must be less than --shard-count")

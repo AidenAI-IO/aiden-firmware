@@ -61,7 +61,7 @@ func (s *Server) launchBenchmarkRunner(spec benchmarkLaunchSpec, judgeModel, ope
 			suites = []string{spec.Suite}
 		}
 		for _, suite := range suites {
-			runnerArgs := "run --suite " + shellQuote(suite) + " --agent-url http://127.0.0.1:8080 --judge-model " + shellQuote(judgeModel) + " --agent-model " + shellQuote(agentModel) + " --state-file " + shellQuote(statePath) + " "
+			runnerArgs := "run --suite " + shellQuote(suite) + " --agent-url http://127.0.0.1:8080 --judge-model " + shellQuote(judgeModel) + " --agent-model " + shellQuote(agentModel) + " --state-file " + shellQuote(statePath) + " --llm-analysis --analysis-model " + shellQuote(judgeModel) + " "
 			runnerCommands = append(runnerCommands, `python3 -c 'import sys;sys.path.insert(0,".");from runner.main import cli;sys.exit(cli())' `+runnerArgs+`>> `+shellQuote(logPath)+` 2>&1`)
 		}
 	}
@@ -81,12 +81,23 @@ func (s *Server) launchBenchmarkRunner(spec benchmarkLaunchSpec, judgeModel, ope
 		`echo 'Starting benchmark...' > %s; `+
 		`runner_rc=0; `+
 		`runner_pid=$$; echo $runner_pid > /tmp/benchmark_runner.pid; `+
-		`%s; `+
+		`%s `+
 		`rm -f /tmp/benchmark_runner.pid; `+
 		`echo '{"status":"idle"}' > %s; `+
-		`exit $runner_rc) &`,
+		`exit $runner_rc)`,
 		shellQuote(benchmarkDir), shellQuote(openRouterAPIKey), shellQuote(logPath), runnerScript, shellQuote(statePath))
-	return exec.Command("sh", "-c", script).Start()
+	return startShellScript(script)
+}
+
+func startShellScript(script string) error {
+	cmd := exec.Command("sh", "-c", script)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() {
+		_ = cmd.Wait()
+	}()
+	return nil
 }
 
 func shellQuote(s string) string {
@@ -423,7 +434,7 @@ func (s *Server) launchSkillOptRunner(spec benchmarkSkillOptLaunchSpec, optimize
 	if err != nil {
 		return err
 	}
-	return exec.Command("sh", "-c", script).Start()
+	return startShellScript(script)
 }
 
 func buildSkillOptLaunchScript(benchmarkDir string, spec benchmarkSkillOptLaunchSpec, optimizerModel, judgeModel, openRouterAPIKey, agentModel, skillsDir string) (string, error) {
@@ -477,6 +488,8 @@ func buildSkillOptLaunchScriptWithStatePath(benchmarkDir, statePath string, spec
 	}
 
 	envPrefix := fmt.Sprintf("export OPENROUTER_API_KEY=%s && ", shellQuote(openRouterAPIKey))
+	envPrefix += "export AIDEN_BENCHMARK_LLM_ANALYSIS='1' && "
+	envPrefix += fmt.Sprintf("export AIDEN_BENCHMARK_ANALYSIS_MODEL=%s && ", shellQuote(judgeModel))
 	if strings.TrimSpace(skillsDir) != "" {
 		envPrefix += fmt.Sprintf("export AIDEN_SKILLS_DIR=%s && ", shellQuote(skillsDir))
 	}
@@ -501,7 +514,7 @@ func buildSkillOptLaunchScriptWithStatePath(benchmarkDir, statePath string, spec
 		`>> %s 2>&1 & `+
 		`runner_pid=$!; echo $runner_pid > %s; `+
 		`wait $runner_pid; rm -f %s; `+
-		`echo '{"status":"idle"}' > %s) &`,
+		`echo '{"status":"idle"}' > %s)`,
 		shellQuote(benchmarkDir), envPrefix, shellQuote(logPath), runnerArgs,
 		shellQuote(logPath), shellQuote(pidFile), shellQuote(pidFile), shellQuote(statePath)), nil
 }
@@ -524,7 +537,7 @@ func (s *Server) launchMobileGymRunner(suite, suiteType string, parallel, limit 
 	if err != nil {
 		return err
 	}
-	return exec.Command("sh", "-c", script).Start()
+	return startShellScript(script)
 }
 
 func buildMobileGymLaunchScript(benchmarkDir, suite, suiteType string, parallel, limit int) (string, error) {
@@ -564,13 +577,15 @@ func buildMobileGymLaunchScript(benchmarkDir, suite, suiteType string, parallel,
 	mobileGymDockerDir := filepath.Join(benchmarkDir, "mobilegym", "docker")
 
 	return fmt.Sprintf(`cd %s && `+
+		`export AIDEN_BENCHMARK_LLM_ANALYSIS='1' && `+
+		`export AIDEN_BENCHMARK_ANALYSIS_MODEL=%s && `+
 		`(`+
 		`echo 'Starting MobileGym benchmark...' > /tmp/mobilegym_run.log; `+
 		`PARALLEL=%d ./parallel_run.sh %s %s `+
 		`>> /tmp/mobilegym_run.log 2>&1 & `+
 		`runner_pid=$!; echo $runner_pid > %s; `+
 		`wait $runner_pid; rm -f %s; `+
-		`echo '{"status":"idle"}' > %s) &`,
-		shellQuote(mobileGymDockerDir), parallel, suiteFlag, limitFlag,
+		`echo '{"status":"idle"}' > %s)`,
+		shellQuote(mobileGymDockerDir), shellQuote(defaultBenchmarkJudgeModel), parallel, suiteFlag, limitFlag,
 		shellQuote(pidFile), shellQuote(pidFile), shellQuote(statePath)), nil
 }

@@ -8,7 +8,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from runner.html_report import HTML_TEMPLATE
+from runner.analysis import AnalysisResult, analyze_run, config_from_env
+from runner.html_report import HTML_TEMPLATE, analysis_html_for_run_dir
+
+
+BENCHMARK_ROOT = Path(__file__).resolve().parents[1]
 
 
 TASK_STATUSES = ("passed", "failed", "timeout", "error", "unknown", "worker_failed")
@@ -26,6 +30,7 @@ def generate_reports(batch_dir: str | Path) -> dict[str, Any]:
         return _generate_direct_run_report(batch)
 
     suite_summaries = []
+    suite_reports: list[tuple[Path, list[dict[str, Any]], dict[str, Any]]] = []
     all_rows: list[dict[str, Any]] = []
     for suite_dir in sorted(path for path in batch.iterdir() if path.is_dir()):
         shard_dirs = _suite_shard_dirs(suite_dir)
@@ -40,11 +45,16 @@ def generate_reports(batch_dir: str | Path) -> dict[str, Any]:
         suite_name = _summary_suite_name(suite_dir.name, shard_metadatas)
         summary = _summary_for(batch.name, suite_name, rows, shard_metadatas)
         _write_suite_report(suite_dir, rows, summary)
+        suite_reports.append((suite_dir, rows, summary))
         suite_summaries.append(summary)
         all_rows.extend(rows)
 
     batch_summary = _batch_summary(batch.name, suite_summaries, all_rows)
     _write_batch_report(batch, suite_summaries, batch_summary)
+    if _run_analysis_if_enabled(batch):
+        for suite_dir, rows, summary in suite_reports:
+            _write_suite_report(suite_dir, rows, summary, analysis_dir=batch)
+        _write_batch_report(batch, suite_summaries, batch_summary)
     return batch_summary
 
 
@@ -92,6 +102,8 @@ def _generate_direct_run_report(run_dir: Path) -> dict[str, Any]:
     if model:
         summary["model"] = model
     _write_direct_run_report(run_dir, rows, summary)
+    if _run_analysis_if_enabled(run_dir):
+        _write_direct_run_report(run_dir, rows, summary)
     return summary
 
 
@@ -545,9 +557,14 @@ def _model_from_summaries(summaries: list[dict[str, Any]]) -> str:
     return ""
 
 
-def _write_suite_report(suite_dir: Path, rows: list[dict[str, Any]], summary: dict[str, Any]) -> None:
+def _write_suite_report(
+    suite_dir: Path,
+    rows: list[dict[str, Any]],
+    summary: dict[str, Any],
+    analysis_dir: Path | None = None,
+) -> None:
     (suite_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
-    (suite_dir / "index.html").write_text(_drawer_html(summary["suite"], summary, rows), encoding="utf-8")
+    (suite_dir / "index.html").write_text(_drawer_html(summary["suite"], summary, rows, analysis_dir or suite_dir), encoding="utf-8")
 
 
 def _write_batch_report(batch_dir: Path, suite_summaries: list[dict[str, Any]], summary: dict[str, Any]) -> None:
@@ -555,17 +572,17 @@ def _write_batch_report(batch_dir: Path, suite_summaries: list[dict[str, Any]], 
     serializable.pop("rows", None)
     (batch_dir / "summary.json").write_text(json.dumps(serializable, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
     rows = summary.get("rows") or []
-    (batch_dir / "index.html").write_text(_drawer_html(summary["batch_id"], serializable, rows), encoding="utf-8")
+    (batch_dir / "index.html").write_text(_drawer_html(summary["batch_id"], serializable, rows, batch_dir), encoding="utf-8")
 
 
 def _write_direct_run_report(run_dir: Path, rows: list[dict[str, Any]], summary: dict[str, Any]) -> None:
     serializable = dict(summary)
     serializable.pop("rows", None)
     (run_dir / "summary.json").write_text(json.dumps(serializable, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
-    (run_dir / "index.html").write_text(_drawer_html(summary["batch_id"], serializable, rows), encoding="utf-8")
+    (run_dir / "index.html").write_text(_drawer_html(summary["batch_id"], serializable, rows, run_dir), encoding="utf-8")
 
 
-def _drawer_html(title: str, summary: dict[str, Any], rows: list[dict[str, Any]]) -> str:
+def _drawer_html(title: str, summary: dict[str, Any], rows: list[dict[str, Any]], run_dir: Path | None = None) -> str:
     total = int(summary.get("tasks") or 0)
     passed = int(summary.get("passed") or 0)
     timeout = int(summary.get("timeout") or 0)
@@ -600,7 +617,18 @@ def _drawer_html(title: str, summary: dict[str, Any], rows: list[dict[str, Any]]
         pass_pct=pct(passed),
         fail_pct=pct(failed),
         skip_pct=pct(skipped),
+        analysis_html=analysis_html_for_run_dir(run_dir) if run_dir else "",
     )
+
+
+def _run_analysis_if_enabled(run_dir: Path) -> AnalysisResult | None:
+    cfg = config_from_env()
+    if not cfg.enabled:
+        return None
+    result = analyze_run(run_dir, BENCHMARK_ROOT.parent, cfg)
+    if not result.ok:
+        print(f"warning: MobileGym LLM analysis failed for {run_dir}: {result.warning}", file=sys.stderr)
+    return result
 
 
 def _drawer_task(row: dict[str, Any]) -> dict[str, Any]:
@@ -642,11 +670,51 @@ def _drawer_task(row: dict[str, Any]) -> dict[str, Any]:
         "response": response,
         "tool_calls_detail": tool_calls_detail,
         "artifacts_detail": links_text,
+        "error_log_detail": _task_error_log_detail(status, row, result, error, execution),
         "rubric": rubric,
         "hard_assertions": hard_assertions,
         "errors": _dedupe_errors(errors),
         "trace_observations": [],
     }
+
+
+def _task_error_log_detail(
+    status: str,
+    row: dict[str, Any],
+    result: dict[str, Any],
+    error: dict[str, Any],
+    execution: dict[str, Any],
+) -> str:
+    if status not in {"failed", "timeout", "error", "unknown", "worker_failed"} and not error:
+        return ""
+    parts: list[str] = []
+    if error:
+        parts.append("### Error row\n" + _json_excerpt(error))
+    execution_error = execution.get("error") or result.get("error")
+    if execution_error or execution.get("stop_reason"):
+        parts.append(
+            "### Execution failure\n"
+            + _json_excerpt(
+                {
+                    "status": status,
+                    "reason": row.get("reason"),
+                    "error": execution_error,
+                    "stop_reason": execution.get("stop_reason"),
+                    "agent_answer": execution.get("agent_answer"),
+                    "agent_message": execution.get("agent_message"),
+                }
+            )
+        )
+    history = result.get("aiden_last_chat_history")
+    if not isinstance(history, list):
+        history = execution.get("aiden_last_chat_history")
+    if isinstance(history, list) and history:
+        parts.append("### Aiden chat history\n" + _json_excerpt(history))
+    return "\n\n".join(parts)
+
+
+def _json_excerpt(value: Any, max_chars: int = 8000) -> str:
+    return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)[:max_chars]
 
 
 def _rubric_rows(result: dict[str, Any], row: dict[str, Any]) -> list[list[str]]:
