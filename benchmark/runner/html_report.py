@@ -12,6 +12,75 @@ def _esc(s: str) -> str:
     return html_mod.escape(str(s)) if s else ""
 
 
+def _safe_child_path(root: Path, *parts: str) -> Path | None:
+    try:
+        root_resolved = root.resolve()
+        candidate = root.joinpath(*parts).resolve()
+        candidate.relative_to(root_resolved)
+    except (OSError, ValueError):
+        return None
+    return candidate
+
+
+def _read_excerpt(path: Path, max_chars: int = 6000) -> str:
+    try:
+        return path.read_text("utf-8", errors="replace")[:max_chars]
+    except OSError:
+        return ""
+
+
+def _task_artifact_dirs(run_dir: Path, task_id: str) -> list[Path]:
+    task_dir = _safe_child_path(run_dir / "tasks", task_id)
+    if task_dir is None or not task_dir.is_dir():
+        return []
+    dirs = [task_dir]
+    for path in sorted(task_dir.glob("attempt_*")):
+        safe = _safe_child_path(run_dir, str(path.relative_to(run_dir)))
+        if safe is not None and safe.is_dir():
+            dirs.append(safe)
+    return dirs
+
+
+FAIL_STATUSES = {"failed", "timeout", "judge_error"}
+
+
+def _task_artifact_refs(run_dir: Path, task_id: str) -> str:
+    artifact_refs: list[str] = []
+    for artifact_dir in _task_artifact_dirs(run_dir, task_id):
+        for name in ("trace.json", "history.json", "judge.json"):
+            path = artifact_dir / name
+            if not path.exists():
+                continue
+            artifact_refs.append(str(path.relative_to(run_dir)))
+        for path in sorted(artifact_dir.glob("**/*")):
+            if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}:
+                artifact_refs.append(str(path.relative_to(run_dir)))
+    return "\n".join(dict.fromkeys(artifact_refs))
+
+
+def _task_error_log(
+    run_dir: Path,
+    task_id: str,
+    status: str,
+    errors: list[list[Any]],
+    hard_assertions: list[list[Any]],
+) -> str:
+    if status not in FAIL_STATUSES and not errors and not hard_assertions:
+        return ""
+    parts: list[str] = []
+    if hard_assertions:
+        lines = [f"- {item[0]}: {item[1]}" for item in hard_assertions]
+        parts.append("### Hard assertion failures\n" + "\n".join(lines))
+    if errors:
+        lines = [f"- {item[0]}: {item[1]}" for item in errors]
+        parts.append("### Runtime errors\n" + "\n".join(lines))
+    for artifact_dir in _task_artifact_dirs(run_dir, task_id):
+        judge_path = artifact_dir / "judge.json"
+        if judge_path.exists():
+            parts.append(f"### {judge_path.relative_to(run_dir)}\n" + _read_excerpt(judge_path, 4000))
+    return "\n\n".join(part for part in parts if part.strip())
+
+
 def _analysis_html(run_dir: Path) -> str:
     md = run_dir / "llm_analysis.md"
     err = run_dir / "llm_analysis_error.txt"
@@ -29,6 +98,7 @@ def analysis_html_for_run_dir(run_dir: Path) -> str:
 
 
 def generate_report_html(run_dir: Path) -> str:
+    run_dir = run_dir.resolve()
     manifest = json.loads((run_dir / "manifest.json").read_text("utf-8"))
     results_path = run_dir / "results.jsonl"
     results: list[dict[str, Any]] = []
@@ -62,8 +132,9 @@ def generate_report_html(run_dir: Path) -> str:
     tasks_js_items = []
     for r in results:
         tid = r.get("task_id", "")
-        trace_path = run_dir / "tasks" / tid / "trace.json"
-        history_path = run_dir / "tasks" / tid / "history.json"
+        task_dir = _safe_child_path(run_dir / "tasks", tid) if tid else None
+        trace_path = task_dir / "trace.json" if task_dir is not None else run_dir / "__missing_trace.json"
+        history_path = task_dir / "history.json" if task_dir is not None else run_dir / "__missing_history.json"
         trace_data: dict[str, Any] = {}
         prompt = ""
         if trace_path.exists():
@@ -132,6 +203,8 @@ def generate_report_html(run_dir: Path) -> str:
             errors.append(["Agent Error", metrics["agent_error"]])
         if "judge_error" in metrics:
             errors.append(["Judge Error", metrics["judge_error"]])
+        artifacts_detail = _task_artifact_refs(run_dir, tid)
+        error_log_detail = _task_error_log(run_dir, tid, str(status), errors, ha_failures)
 
         tasks_js_items.append({
             "id": tid,
@@ -149,6 +222,8 @@ def generate_report_html(run_dir: Path) -> str:
             "rubric": rubric_js,
             "hard_assertions": ha_failures,
             "errors": errors,
+            "error_log_detail": error_log_detail,
+            "artifacts_detail": artifacts_detail,
             "trace_observations": [
                 [
                     obs.get("id", ""),
@@ -411,6 +486,9 @@ function openDrawer(i) {{
   }}
   if (t.artifacts_detail) {{
     body += '<div class="block"><div class="block-head"><strong>Artifacts</strong><span>files</span></div><pre class="block-body">' + esc(t.artifacts_detail) + '</pre></div>';
+  }}
+  if (t.error_log_detail) {{
+    body += '<div class="block error-block"><div class="block-head"><strong>Error Log</strong><span>task failure details</span></div><pre class="block-body">' + esc(t.error_log_detail) + '</pre></div>';
   }}
   body += '<div class="block"><div class="block-head"><strong>Agent Response</strong><span>final reply</span></div><pre class="block-body">' + esc(t.response) + '</pre></div>';
   if (t.errors && t.errors.length) {{

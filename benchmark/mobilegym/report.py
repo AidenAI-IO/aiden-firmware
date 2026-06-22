@@ -670,11 +670,51 @@ def _drawer_task(row: dict[str, Any]) -> dict[str, Any]:
         "response": response,
         "tool_calls_detail": tool_calls_detail,
         "artifacts_detail": links_text,
+        "error_log_detail": _task_error_log_detail(status, row, result, error, execution),
         "rubric": rubric,
         "hard_assertions": hard_assertions,
         "errors": _dedupe_errors(errors),
         "trace_observations": [],
     }
+
+
+def _task_error_log_detail(
+    status: str,
+    row: dict[str, Any],
+    result: dict[str, Any],
+    error: dict[str, Any],
+    execution: dict[str, Any],
+) -> str:
+    if status not in {"failed", "timeout", "error", "unknown", "worker_failed"} and not error:
+        return ""
+    parts: list[str] = []
+    if error:
+        parts.append("### Error row\n" + _json_excerpt(error))
+    execution_error = execution.get("error") or result.get("error")
+    if execution_error or execution.get("stop_reason"):
+        parts.append(
+            "### Execution failure\n"
+            + _json_excerpt(
+                {
+                    "status": status,
+                    "reason": row.get("reason"),
+                    "error": execution_error,
+                    "stop_reason": execution.get("stop_reason"),
+                    "agent_answer": execution.get("agent_answer"),
+                    "agent_message": execution.get("agent_message"),
+                }
+            )
+        )
+    history = result.get("aiden_last_chat_history")
+    if not isinstance(history, list):
+        history = execution.get("aiden_last_chat_history")
+    if isinstance(history, list) and history:
+        parts.append("### Aiden chat history\n" + _json_excerpt(history))
+    return "\n\n".join(parts)
+
+
+def _json_excerpt(value: Any, max_chars: int = 8000) -> str:
+    return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)[:max_chars]
 
 
 def _rubric_rows(result: dict[str, Any], row: dict[str, Any]) -> list[list[str]]:
