@@ -10,9 +10,10 @@ import (
 
 // ToolSet is a fixed collection of built-in tools, keyed by name.
 type ToolSet struct {
-	tools       map[string]langtools.Tool
-	screen      *screenState
-	phoneBridge *PhoneBridge
+	tools               map[string]langtools.Tool
+	screen              *screenState
+	phoneBridge         *PhoneBridge
+	phoneBridgeRestorer *PhoneBridgeRestorer
 }
 
 // NewBuiltinToolSet returns all built-in tools. Tools are not configurable;
@@ -91,7 +92,11 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	// Always register human handoff tool - no callback needed for non-blocking version
 	tools["request_human_handoff"] = NewHumanHandoffTool()
 
-	return &ToolSet{tools: tools, screen: screen}
+	return &ToolSet{
+		tools:               tools,
+		screen:              screen,
+		phoneBridgeRestorer: NewPhoneBridgeRestorer(nil, pointer),
+	}
 }
 
 func (s *ToolSet) Get(name string) (langtools.Tool, bool) {
@@ -135,7 +140,7 @@ func (s *ToolSet) toolAvailable(name string) bool {
 	if !isPhoneBridgeToolName(name) {
 		return true
 	}
-	return s.phoneBridge != nil && s.phoneBridge.Connected()
+	return s.phoneBridge != nil
 }
 
 func (s *ToolSet) CurrentEnvironmentHints(maxAge time.Duration) CurrentEnvironmentHints {

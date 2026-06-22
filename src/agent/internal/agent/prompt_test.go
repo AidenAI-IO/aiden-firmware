@@ -312,8 +312,9 @@ func TestPhoneBridgeRuntimeContextBackgroundAppGuidesDynamicIslandRecovery(t *te
 		"- app_state: background",
 		"- return_entry: dynamic_island available=true",
 		"The Aiden companion app is backgrounded or inactive",
-		"tap it to reopen Aiden",
-		"retry open_app, clipboard, calendar, contacts, or notification before searching the home screen or using HID fallback",
+		"will first tap the Aiden Dynamic Island or Live Activity entry",
+		"then send the command",
+		"Use screenshot/HID fallback only if the tool reports the return entry is unavailable or restore failed",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("runtime context missing %q:\n%s", want, got)
@@ -402,7 +403,8 @@ func TestPhoneBridgeRuntimeContextDisconnectedBackgroundAppGuidesRecovery(t *tes
 		"- app_state: background",
 		"- return_entry: live_activity available=true",
 		"Phone Bridge commands may time out until Aiden returns to foreground",
-		"tap it to reopen Aiden",
+		"will first tap the Aiden Dynamic Island or Live Activity entry",
+		"then send the command",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("runtime context missing %q:\n%s", want, got)

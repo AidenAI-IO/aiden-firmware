@@ -112,11 +112,16 @@ func loadAppMappingForConfig(configDir string, logger *Logger) {
 }
 
 type OpenAppTool struct {
-	bridge *PhoneBridge
+	bridge   *PhoneBridge
+	restorer *PhoneBridgeRestorer
 }
 
-func NewOpenAppTool(bridge *PhoneBridge) *OpenAppTool {
-	return &OpenAppTool{bridge: bridge}
+func NewOpenAppTool(bridge *PhoneBridge, restorer ...*PhoneBridgeRestorer) *OpenAppTool {
+	var r *PhoneBridgeRestorer
+	if len(restorer) > 0 {
+		r = restorer[0]
+	}
+	return &OpenAppTool{bridge: bridge, restorer: r}
 }
 
 func (t *OpenAppTool) Name() string { return "open_app" }
@@ -133,7 +138,7 @@ func (t *OpenAppTool) Description() string {
 		`Camera(相机), Photos(相册), Maps(地图), Notes(备忘录), Calendar(日历), Reminders(提醒事项), ` +
 		`Contacts(通讯录), Mail(邮件), AppStore(应用商店), Music(音乐), Files(文件), Clock(时钟), Health(健康), ` +
 		`Taobao(淘宝), Douyin(抖音), Meituan(美团), Didi(滴滴), Xiaohongshu(小红书), Bilibili(哔哩哔哩), JD(京东), Eleme(饿了么). ` +
-		`If the phone bridge is not connected, restore Aiden from the Dynamic Island/Live Activity when available before using HID fallback.`
+		`On iOS, if Aiden is in background and a Live Activity/Dynamic Island return entry is available, this tool restores Aiden to foreground and waits for WebSocket reconnect before opening the target.`
 }
 
 func (t *OpenAppTool) ArgsSchema() map[string]any {
@@ -379,15 +384,6 @@ func openAppResultMechanism(args openAppArgs, responseMethod string) string {
 }
 
 func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
-	status := t.bridge.Status()
-	if !status.Connected {
-		return jsonString(map[string]interface{}{
-			"ok":       false,
-			"error":    "phone bridge not connected",
-			"fallback": phoneBridgeRecoveryGuidance(status),
-		}), nil
-	}
-
 	var args openAppArgs
 	trimmed := strings.TrimSpace(input)
 	if strings.HasPrefix(trimmed, "{") {
@@ -405,6 +401,15 @@ func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 		}), nil
 	}
 
+	restored, err := ensurePhoneBridgeReadyForCommand(ctx, t.bridge, t.restorer)
+	if err != nil {
+		return jsonString(map[string]interface{}{
+			"ok":       false,
+			"error":    err.Error(),
+			"fallback": "If a Live Activity/Dynamic Island entry is visible, tap it to reopen Aiden, wait for Phone Bridge to reconnect, then retry; otherwise use HID actions.",
+		}), nil
+	}
+
 	cmdID := fmt.Sprintf("open_%d_%d", time.Now().UnixMilli(), openAppCmdSeq.Add(1))
 	cmd := BridgeCommand{
 		ID:              cmdID,
@@ -416,7 +421,10 @@ func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 
 	resp, err := t.bridge.SendCommand(ctx, cmd)
 	if err != nil {
-		status := t.bridge.Status()
+		status := PhoneBridgeStatus{}
+		if t.bridge != nil {
+			status = t.bridge.Status()
+		}
 		return jsonString(map[string]interface{}{
 			"ok":       false,
 			"error":    err.Error(),
@@ -428,6 +436,9 @@ func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 		"ok":     resp.OK,
 		"method": openAppResultMethod(args),
 	}
+	if restored {
+		result["restored_from_return_entry"] = true
+	}
 	if target := openAppResultTarget(args); target != "" {
 		result["target"] = target
 	}
@@ -436,7 +447,11 @@ func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 	}
 	if !resp.OK {
 		result["error"] = resp.Error
-		result["fallback"] = phoneBridgeRecoveryGuidance(t.bridge.Status())
+		status := PhoneBridgeStatus{}
+		if t.bridge != nil {
+			status = t.bridge.Status()
+		}
+		result["fallback"] = phoneBridgeRecoveryGuidance(status)
 	}
 	return jsonString(result), nil
 }
@@ -446,11 +461,14 @@ func (s *ToolSet) RegisterPhoneBridge(bridge *PhoneBridge) {
 		return
 	}
 	s.phoneBridge = bridge
-	s.tools["open_app"] = NewOpenAppTool(bridge)
-	s.tools["clipboard"] = NewClipboardTool(bridge)
-	s.tools["calendar"] = NewCalendarTool(bridge)
-	s.tools["contacts"] = NewContactsTool(bridge)
-	s.tools["notification"] = NewNotificationTool(bridge)
+	if s.phoneBridgeRestorer != nil {
+		s.phoneBridgeRestorer.SetBridge(bridge)
+	}
+	s.tools["open_app"] = NewOpenAppTool(bridge, s.phoneBridgeRestorer)
+	s.tools["clipboard"] = NewClipboardTool(bridge, s.phoneBridgeRestorer)
+	s.tools["calendar"] = NewCalendarTool(bridge, s.phoneBridgeRestorer)
+	s.tools["contacts"] = NewContactsTool(bridge, s.phoneBridgeRestorer)
+	s.tools["notification"] = NewNotificationTool(bridge, s.phoneBridgeRestorer)
 }
 
 func isPhoneBridgeToolName(name string) bool {

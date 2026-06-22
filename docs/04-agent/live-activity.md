@@ -13,7 +13,7 @@ The product goal of Live Activity is to give Aiden a system-level status entry p
 
 - `ready` / `connected`: app has connected to hardware, starts a "Aiden Ready" Live Activity when switching to background, showing device is available and tapping can return to Aiden. This state is mainly an entry point and connection indicator, does not represent the app gaining background persistence capability.
 - `running`: when agent is executing a task, Live Activity displays task title, current step, progress, whether user needs to return to app. Tasks can be initiated from app foreground chat or from agent Web UI.
-- `needs_app`: when agent needs phone bridge, clipboard, contacts, calendar, or open app capabilities from companion app, Live Activity should prompt user to tap back to Aiden to restore foreground bridge.
+- `needs_app`: when agent needs Phone Bridge, clipboard, contacts, calendar, open app, or other companion app capabilities, Live Activity is the system entry point for restoring foreground bridge. Board-side tools can click Dynamic Island / Live Activity when `return_entry_available=true`, wait for reconnection, and then send the command.
 - `completed` / `failed` / `canceled`: displays brief result after task ends. If hardware is still connected, can return to `ready`; if device disconnects, session expires, or user closes entry point, end Live Activity.
 
 Key boundaries:
@@ -180,7 +180,7 @@ iOS app includes `AidenLiveActivityExtension` Widget Extension and `AidenLiveAct
 - When polling detects `completed`, `failed`, or `canceled`, app ends local Live Activity.
 - After task ends, if the entry point still needs to be retained, app can fall back Live Activity to `ready`. When the iOS app is already backgrounded, ordinary WebSocket disconnection should not immediately clear standby, otherwise Agent loses the fastest entry back to Aiden.
 - Background remote updates after app has been suspended by iOS, continuous background task status refresh, and background display after initiating new task from agent Web UI are handled by APNs/backend path, and do not depend on RN foreground polling path.
-- When user taps Dynamic Island/lock screen Live Activity, system returns to Aiden app.
+- When user or board-side HID taps Dynamic Island / lock screen Live Activity, the system returns to Aiden app, and the foreground WebSocket bridge should reconnect quickly.
 
 ## Joint Debugging Sequence
 
