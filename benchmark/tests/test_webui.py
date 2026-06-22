@@ -1093,6 +1093,14 @@ def test_index_html_exposes_judge_settings_panel():
     assert 'id="activeStopJob"' in webui.INDEX_HTML
     assert "function stopJob" in webui.INDEX_HTML
     assert "/api/jobs/${encodeURIComponent(id)}/stop" in webui.INDEX_HTML
+    assert 'id="runEnvDialog"' in webui.INDEX_HTML
+    assert 'id="confirmRunBtn"' in webui.INDEX_HTML
+    assert "document.getElementById('runBtn').onclick = openRunEnvironmentDialog" in webui.INDEX_HTML
+    assert "document.getElementById('confirmRunBtn').onclick = confirmRun" in webui.INDEX_HTML
+    assert "document.getElementById('runBtn').disabled = selectedSuites.size === 0" in webui.INDEX_HTML
+    assert "document.getElementById('runEnvDialog').hidden = false" in webui.INDEX_HTML
+    assert "async function startRun(env)" in webui.INDEX_HTML
+    assert "if(started) closeRunEnvironmentDialog()" in webui.INDEX_HTML
     assert "function stopTask" in webui.INDEX_HTML
     assert "/tasks/${encodeURIComponent(taskId)}/stop" in webui.INDEX_HTML
     assert "data-stop-task" in webui.INDEX_HTML

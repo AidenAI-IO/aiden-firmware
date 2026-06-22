@@ -2702,7 +2702,7 @@ INDEX_HTML = r"""<!doctype html>
       overflow: auto;
       background: var(--layer);
     }
-    .suite-table-wrap { max-height: calc(100vh - 360px); min-height: 360px; }
+    .suite-table-wrap { max-height: calc(100vh - 180px); min-height: 520px; }
     .job-table-wrap { max-height: 240px; }
     .task-table-wrap { max-height: 280px; min-height: 180px; }
     table {
@@ -2879,6 +2879,48 @@ INDEX_HTML = r"""<!doctype html>
       min-height: 300px;
       max-height: 520px;
     }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: rgba(22, 22, 22, 0.42);
+    }
+    .modal-backdrop[hidden] { display: none; }
+    .modal {
+      width: min(960px, 100%);
+      max-height: calc(100vh - 48px);
+      overflow: auto;
+      background: var(--layer);
+      border: 1px solid var(--border-strong);
+      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.22);
+    }
+    .modal-header,
+    .modal-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    .modal-footer {
+      justify-content: flex-end;
+      border-top: 1px solid var(--border);
+      border-bottom: 0;
+    }
+    .modal-body {
+      padding: 16px;
+    }
+    .modal-env-grid {
+      display: grid;
+      grid-template-columns: minmax(220px, 0.42fr) minmax(420px, 1fr);
+      gap: 16px;
+      align-items: start;
+    }
+    .modal-env-table { max-height: 360px; border: 1px solid var(--border); }
     pre {
       margin: 0;
       min-height: 300px;
@@ -2908,6 +2950,7 @@ INDEX_HTML = r"""<!doctype html>
       .run-config-grid { grid-template-columns: 1fr; align-items: stretch; }
       .judge-inline { grid-template-columns: 1fr; align-items: stretch; }
       .detail-grid { grid-template-columns: 1fr; }
+      .modal-env-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -2921,39 +2964,6 @@ INDEX_HTML = r"""<!doctype html>
   </header>
   <main class="layout">
     <aside class="side">
-      <section class="tile">
-        <div class="tile-header">
-          <div>
-            <h2 class="tile-title">Environments</h2>
-            <div class="tile-kicker">device / mobilegym</div>
-          </div>
-        </div>
-        <div class="segmented" role="tablist" aria-label="Environment type">
-          <button id="deviceTab" class="active" type="button">Device</button>
-          <button id="mobilegymTab" type="button">MobileGym</button>
-        </div>
-        <div id="devicePanel" class="env-panel">
-          <div class="form-grid">
-            <div class="field"><label for="envName">Name</label><input id="envName" autocomplete="off"></div>
-            <div class="field"><label for="envEndpoint">Endpoint</label><input id="envEndpoint" placeholder="http://host:8080" autocomplete="off"></div>
-            <button id="saveEnv" class="primary" type="button">Save device</button>
-          </div>
-        </div>
-        <div id="mobilegymPanel" class="env-panel" hidden>
-          <div class="form-grid">
-            <div class="field"><label for="mobilegymName">Name</label><input id="mobilegymName" placeholder="MobileGym" autocomplete="off"></div>
-            <div class="field"><label for="mobilegymParallelEnvs">Envs</label><input id="mobilegymParallelEnvs" type="number" min="1" step="1" value="5"></div>
-            <button id="startMobileGym" class="primary" type="button">Start MobileGym</button>
-          </div>
-        </div>
-        <div class="table-wrap" style="margin-top:16px; max-height:220px">
-          <table>
-            <thead><tr><th style="width:40px"></th><th style="width:128px">Environment</th><th>Endpoint</th><th style="width:160px"></th></tr></thead>
-            <tbody id="envRows"></tbody>
-          </table>
-        </div>
-      </section>
-
       <section class="tile">
         <div class="toolbar">
           <div>
@@ -2985,7 +2995,7 @@ INDEX_HTML = r"""<!doctype html>
             <div class="field"><label for="judgeApiKey">API key</label><input id="judgeApiKey" type="password" autocomplete="off" placeholder="OPENROUTER_API_KEY"></div>
           </div>
           <div class="run-actions">
-            <button id="runBtn" class="primary">Run selected</button>
+            <button id="runBtn" class="primary">Run selected suites</button>
           </div>
         </div>
       </section>
@@ -3075,6 +3085,53 @@ INDEX_HTML = r"""<!doctype html>
       </div>
     </section>
   </main>
+  <div id="runEnvDialog" class="modal-backdrop" hidden>
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="runEnvTitle">
+      <div class="modal-header">
+        <div>
+          <h2 id="runEnvTitle" class="tile-title">Choose Environment</h2>
+          <div class="tile-kicker">device / mobilegym</div>
+        </div>
+        <button id="closeRunEnv" class="ghost-button table-button" type="button">Close</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-env-grid">
+          <section>
+            <div class="segmented" role="tablist" aria-label="Environment type">
+              <button id="deviceTab" class="active" type="button">Device</button>
+              <button id="mobilegymTab" type="button">MobileGym</button>
+            </div>
+            <div id="devicePanel" class="env-panel">
+              <div class="form-grid">
+                <div class="field"><label for="envName">Name</label><input id="envName" autocomplete="off"></div>
+                <div class="field"><label for="envEndpoint">Endpoint</label><input id="envEndpoint" placeholder="http://host:8080" autocomplete="off"></div>
+                <button id="saveEnv" class="primary" type="button">Save device</button>
+              </div>
+            </div>
+            <div id="mobilegymPanel" class="env-panel" hidden>
+              <div class="form-grid">
+                <div class="field"><label for="mobilegymName">Name</label><input id="mobilegymName" placeholder="MobileGym" autocomplete="off"></div>
+                <div class="field"><label for="mobilegymParallelEnvs">Envs</label><input id="mobilegymParallelEnvs" type="number" min="1" step="1" value="5"></div>
+                <button id="startMobileGym" class="primary" type="button">Start MobileGym</button>
+              </div>
+            </div>
+          </section>
+          <section>
+            <div class="table-wrap modal-env-table">
+              <table>
+                <thead><tr><th style="width:40px"></th><th style="width:128px">Environment</th><th>Endpoint</th><th style="width:160px"></th></tr></thead>
+                <tbody id="envRows"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="cancelRunEnv" class="ghost-button" type="button">Cancel</button>
+        <button id="confirmRunBtn" class="primary" type="button">Run selected suites</button>
+      </div>
+    </section>
+  </div>
   <script>
     const DEFAULT_JUDGE_MODEL = 'anthropic/claude-sonnet-4-6';
     let deviceEnvironments = [];
@@ -3436,21 +3493,40 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById('selectedSuitesLabel').textContent = `${selectedSuites.size} suites`;
       document.getElementById('selectedEnvLabel').textContent = env ? env.name : 'No environment';
       document.getElementById('selectedJudgeLabel').textContent = judge.enabled ? `judge: ${judge.model}` : 'judge: off';
-      document.getElementById('runBtn').disabled = !envCanRun(env) || selectedSuites.size === 0;
+      document.getElementById('runBtn').disabled = selectedSuites.size === 0;
+      const confirm = document.getElementById('confirmRunBtn');
+      if(confirm) confirm.disabled = !envCanRun(env) || selectedSuites.size === 0;
     }
 
-    async function startRun(){
+    async function openRunEnvironmentDialog(){
+      if(selectedSuites.size === 0) return;
+      await loadMobileGymEnvironments();
+      renderEnvs();
+      syncRunState();
+      document.getElementById('runEnvDialog').hidden = false;
+    }
+
+    function closeRunEnvironmentDialog(){
+      document.getElementById('runEnvDialog').hidden = true;
+    }
+
+    async function confirmRun(){
       const env = selectedEnv();
       if(!envCanRun(env) || selectedSuites.size === 0) return;
+      const started = await startRun(env);
+      if(started) closeRunEnvironmentDialog();
+    }
+
+    async function startRun(env){
       if(!agentConfigLoaded) await loadAgentConfig();
       if(agentConfigDirty){
         const saved = await saveAgentConfig({silent: true});
-        if(!saved) return;
+        if(!saved) return false;
       }
       const judge = currentJudgeSettings();
       selectedEnvironmentId = env.id;
       const settingsSaved = await saveWebuiSettings({keepInputs: true});
-      if(!settingsSaved) return;
+      if(!settingsSaved) return false;
       const res = await fetch('/api/jobs', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -3464,10 +3540,11 @@ INDEX_HTML = r"""<!doctype html>
         })
       });
       const body = await res.json();
-      if(!res.ok){ document.getElementById('logBox').textContent = body.error || 'failed'; return; }
+      if(!res.ok){ document.getElementById('logBox').textContent = body.error || 'failed'; return false; }
       activeJobId = body.job.id;
       activeTaskLogId = null;
       await refreshJobs();
+      return true;
     }
 
     async function refreshJobs(){
@@ -3647,7 +3724,13 @@ INDEX_HTML = r"""<!doctype html>
       setAgentConfigStatus('Modified');
     };
     document.getElementById('suiteFilter').oninput = renderSuites;
-    document.getElementById('runBtn').onclick = startRun;
+    document.getElementById('runBtn').onclick = openRunEnvironmentDialog;
+    document.getElementById('closeRunEnv').onclick = closeRunEnvironmentDialog;
+    document.getElementById('cancelRunEnv').onclick = closeRunEnvironmentDialog;
+    document.getElementById('confirmRunBtn').onclick = confirmRun;
+    document.getElementById('runEnvDialog').onclick = e => {
+      if(e.target.id === 'runEnvDialog') closeRunEnvironmentDialog();
+    };
     document.getElementById('activeStopJob').onclick = () => { if(activeJobId) stopJob(activeJobId); };
     document.getElementById('showJobLog').onclick = () => { activeTaskLogId = null; if(activeJobId) loadActiveJob(); };
     setAgentConfigEditing(false);
