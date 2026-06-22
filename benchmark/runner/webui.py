@@ -2779,6 +2779,12 @@ INDEX_HTML = r"""<!doctype html>
       align-items: center;
       min-width: 0;
     }
+    .env-actions {
+      justify-content: flex-end;
+      gap: 8px;
+      overflow: visible;
+    }
+    .env-actions button { flex: 0 0 auto; }
     .table-button {
       height: 28px;
       padding: 0 8px;
@@ -2942,7 +2948,7 @@ INDEX_HTML = r"""<!doctype html>
         </div>
         <div class="table-wrap" style="margin-top:16px; max-height:220px">
           <table>
-            <thead><tr><th style="width:40px"></th><th style="width:128px">Environment</th><th>Endpoint</th><th style="width:104px"></th></tr></thead>
+            <thead><tr><th style="width:40px"></th><th style="width:128px">Environment</th><th>Endpoint</th><th style="width:160px"></th></tr></thead>
             <tbody id="envRows"></tbody>
           </table>
         </div>
@@ -3279,7 +3285,7 @@ INDEX_HTML = r"""<!doctype html>
         tr.innerHTML = `<td><input type="radio" name="activeEnv" ${current && current.id === env.id ? 'checked' : ''} ${selectable ? '' : 'disabled'}></td>
           <td title="${escapeHtml(env.name)}"><div class="cell-main"><span>${escapeHtml(env.name)}</span><small>${escapeHtml(status)}</small></div></td>
           <td title="${escapeHtml(env.endpoint)}"><div class="cell-main"><span>${escapeHtml(displayEndpoint)}</span><small>${escapeHtml(endpointDetail)}</small></div></td>
-          <td>${actionHtml}</td>`;
+          <td><div class="inline-actions env-actions">${actionHtml}</div></td>`;
         tr.querySelector('input').onchange = () => setSelectedEnv(env.id);
         const edit = tr.querySelector('[data-edit]');
         if(edit) edit.onclick = () => {

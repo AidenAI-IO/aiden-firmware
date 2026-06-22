@@ -1096,6 +1096,8 @@ def test_index_html_exposes_judge_settings_panel():
     assert "function stopTask" in webui.INDEX_HTML
     assert "/tasks/${encodeURIComponent(taskId)}/stop" in webui.INDEX_HTML
     assert "data-stop-task" in webui.INDEX_HTML
+    assert '<th style="width:160px"></th>' in webui.INDEX_HTML
+    assert 'class="inline-actions env-actions"' in webui.INDEX_HTML
     assert "web_url: env.web_url" in webui.INDEX_HTML
     assert 'id="mobilegymParallelEnvs"' in webui.INDEX_HTML
     assert 'id="mobilegymParallelEnvs" type="number" min="1" step="1" value="5"' in webui.INDEX_HTML
