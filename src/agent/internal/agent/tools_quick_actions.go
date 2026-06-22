@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 )
 
@@ -35,8 +36,16 @@ type quickActionBinding struct {
 	Status       string               `json:"status"`
 	Tool         string               `json:"tool"`
 	Input        json.RawMessage      `json:"input"`
+	Steps        []quickActionStep    `json:"steps,omitempty"`
 	Note         string               `json:"note,omitempty"`
 	Alternatives []quickActionBinding `json:"alternatives,omitempty"`
+}
+
+type quickActionStep struct {
+	Tool         string          `json:"tool"`
+	Input        json.RawMessage `json:"input"`
+	DelayMsAfter int             `json:"delay_ms_after,omitempty"`
+	Note         string          `json:"note,omitempty"`
 }
 
 type quickActionDefinition struct {
@@ -451,34 +460,83 @@ func (t *QuickActionTool) Call(ctx context.Context, input string) (string, error
 	}
 
 	toolName := strings.TrimSpace(selected.Tool)
-	if toolName == "" {
-		note := strings.TrimSpace(selected.Note)
-		if note == "" {
-			note = "no tool binding configured"
+	var payload []byte
+	var output string
+	var stepResults []map[string]interface{}
+	if len(selected.Steps) > 0 {
+		output = "ok"
+		stepResults = make([]map[string]interface{}, 0, len(selected.Steps))
+		for i, step := range selected.Steps {
+			stepTool := strings.TrimSpace(step.Tool)
+			if stepTool == "" {
+				return t.errorJSON(fmt.Sprintf("action %q step %d has no tool binding configured", actionID, i+1)), nil
+			}
+			stepPayload, err := json.Marshal(step.Input)
+			if err != nil {
+				return t.errorJSON(fmt.Sprintf("invalid action step %d input: %v", i+1, err)), nil
+			}
+			stepOutput, err := t.delegate(ctx, stepTool, string(stepPayload))
+			if err != nil {
+				return fmt.Sprintf("error: %v", err), nil
+			}
+			stepResult := map[string]interface{}{
+				"index":  i + 1,
+				"tool":   stepTool,
+				"input":  json.RawMessage(stepPayload),
+				"output": stepOutput,
+			}
+			if step.DelayMsAfter > 0 {
+				stepResult["delay_ms_after"] = step.DelayMsAfter
+			}
+			stepResults = append(stepResults, stepResult)
+			if strings.HasPrefix(stepOutput, "error:") {
+				return jsonString(map[string]interface{}{
+					"ok":          false,
+					"action":      actionID,
+					"label":       action.Label,
+					"platform":    platform,
+					"binding":     selectedSource,
+					"tool":        "sequence",
+					"failed_step": i + 1,
+					"output":      stepOutput,
+					"steps":       stepResults,
+				}), nil
+			}
+			if err := sleepQuickActionDelay(ctx, step.DelayMsAfter); err != nil {
+				return "", err
+			}
 		}
-		return t.errorJSON(note), nil
-	}
+	} else {
+		if toolName == "" {
+			note := strings.TrimSpace(selected.Note)
+			if note == "" {
+				note = "no tool binding configured"
+			}
+			return t.errorJSON(note), nil
+		}
 
-	payload, err := json.Marshal(selected.Input)
-	if err != nil {
-		return t.errorJSON(fmt.Sprintf("invalid action input: %v", err)), nil
-	}
+		var err error
+		payload, err = json.Marshal(selected.Input)
+		if err != nil {
+			return t.errorJSON(fmt.Sprintf("invalid action input: %v", err)), nil
+		}
 
-	output, err := t.delegate(ctx, toolName, string(payload))
-	if err != nil {
-		return fmt.Sprintf("error: %v", err), nil
-	}
-	if strings.HasPrefix(output, "error:") {
-		return jsonString(map[string]interface{}{
-			"ok":       false,
-			"action":   actionID,
-			"label":    action.Label,
-			"platform": platform,
-			"binding":  selectedSource,
-			"tool":     toolName,
-			"input":    json.RawMessage(payload),
-			"output":   output,
-		}), nil
+		output, err = t.delegate(ctx, toolName, string(payload))
+		if err != nil {
+			return fmt.Sprintf("error: %v", err), nil
+		}
+		if strings.HasPrefix(output, "error:") {
+			return jsonString(map[string]interface{}{
+				"ok":       false,
+				"action":   actionID,
+				"label":    action.Label,
+				"platform": platform,
+				"binding":  selectedSource,
+				"tool":     toolName,
+				"input":    json.RawMessage(payload),
+				"output":   output,
+			}), nil
+		}
 	}
 
 	result := map[string]interface{}{
@@ -487,9 +545,14 @@ func (t *QuickActionTool) Call(ctx context.Context, input string) (string, error
 		"label":    action.Label,
 		"platform": platform,
 		"binding":  selectedSource,
-		"tool":     toolName,
-		"input":    json.RawMessage(payload),
 		"output":   output,
+	}
+	if len(selected.Steps) > 0 {
+		result["tool"] = "sequence"
+		result["steps"] = stepResults
+	} else {
+		result["tool"] = toolName
+		result["input"] = json.RawMessage(payload)
 	}
 	if note := strings.TrimSpace(selected.Note); note != "" {
 		result["note"] = note
@@ -523,6 +586,20 @@ func (t *QuickActionTool) delegate(ctx context.Context, toolName, payload string
 		return t.touch.Call(ctx, payload)
 	default:
 		return "", fmt.Errorf("unsupported delegated tool %q", toolName)
+	}
+}
+
+func sleepQuickActionDelay(ctx context.Context, delayMs int) error {
+	if delayMs <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(time.Duration(delayMs) * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 
