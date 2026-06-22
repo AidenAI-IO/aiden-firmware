@@ -619,9 +619,10 @@ def test_mobilegym_task_worker_uses_task_id_for_daemon_and_runner(tmp_path: Path
         captured["compose_log_path"] = kwargs["log_path"]
         return "container-id"
 
-    def fake_run_runner_process(parent_job, cmd, env, *, owner_job_id=None):
+    def fake_run_runner_process(parent_job, cmd, env, *, owner_job_id=None, extra_owner_ids=None):
         captured["runner_job"] = parent_job
         captured["owner_job_id"] = owner_job_id
+        captured["extra_owner_ids"] = extra_owner_ids
         captured["cmd"] = cmd
         run_id = cmd[cmd.index("--run-id") + 1]
         run_path = raw_runs_dir / run_id
@@ -644,6 +645,7 @@ def test_mobilegym_task_worker_uses_task_id_for_daemon_and_runner(tmp_path: Path
     assert captured["compose_log_path"] == Path(captured["worker_job"].runner_log)
     assert captured["runner_job"].runner_log == captured["worker_job"].runner_log
     assert captured["owner_job_id"] == job.id
+    assert captured["extra_owner_ids"] == [webui.task_worker_key(job.id, job.task_records[0].id)]
     assert captured["cmd"][captured["cmd"].index("--task-id") + 1] == "t1"
     assert captured["cmd"][captured["cmd"].index("--benchmark-task-id") + 1] == "suite.json:t1"
     assert captured["cmd"][captured["cmd"].index("--environment-url") + 1] == "http://127.0.0.1:19090"
@@ -855,6 +857,72 @@ def test_stop_job_marks_stopping_terminates_runner_and_removes_container(tmp_pat
     assert "STOP requested" in Path(job.runner_log).read_text(encoding="utf-8")
 
 
+def test_stop_task_worker_marks_stopping_and_terminates_only_that_worker(tmp_path: Path, monkeypatch):
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+        )
+    )
+    job_dir = tmp_path / "runs" / "job-test"
+    worker_dir = job_dir / "workers"
+    worker_dir.mkdir(parents=True)
+    record = webui.TaskRecord(
+        id="suite-json-t1",
+        suite="suite.json",
+        task_id="t1",
+        benchmark_task_id="suite.json:t1",
+        status="running",
+        state_file=str(worker_dir / "suite-json-t1.state.json"),
+        runner_log=str(worker_dir / "suite-json-t1.runner.log"),
+        daemon_log=str(worker_dir / "suite-json-t1.daemon.log"),
+        container_name="aiden-benchmark-agent-job-test-suite-json-t1",
+        run_id="job-test-suite-json-t1",
+    )
+    job = webui.Job(
+        id="job-test",
+        endpoint="http://127.0.0.1:19090",
+        docker_endpoint="http://host.docker.internal:19090",
+        suites=["suite.json"],
+        status="running",
+        runner_log=str(job_dir / "runner.log"),
+        task_records=[record],
+    )
+    worker_job = webui.Job(
+        id="job-test-suite-json-t1",
+        endpoint=job.endpoint,
+        docker_endpoint=job.docker_endpoint,
+        suites=["suite.json"],
+        container_name=record.container_name,
+    )
+    proc = object()
+    task_key = webui.task_worker_key(job.id, record.id)
+    app._jobs[job.id] = job
+    app._job_runner_procs[job.id] = object()
+    app._job_runner_procs[task_key] = proc
+    app._task_daemon_jobs[task_key] = [worker_job]
+    terminated = []
+    stopped_projects = []
+
+    monkeypatch.setattr(webui, "terminate_process_tree", lambda p: terminated.append(p))
+    monkeypatch.setattr(
+        webui,
+        "stop_daemon_compose",
+        lambda stopped_job: stopped_projects.append(webui.daemon_compose_project(stopped_job)),
+    )
+
+    stopped = app.stop_task_worker(job.id, record.id)
+
+    assert stopped is not None
+    assert stopped["status"] == "running"
+    assert stopped["task_records"][0]["status"] == "stopping"
+    assert stopped["task_records"][0]["message"] == "stop requested"
+    assert terminated == [proc]
+    assert stopped_projects == [record.container_name]
+    assert json.loads(Path(record.state_file).read_text(encoding="utf-8"))["status"] == "stopping"
+    assert "STOP requested" in Path(record.runner_log).read_text(encoding="utf-8")
+
+
 def test_run_suite_tracks_runner_process_and_finishes_stopped(tmp_path: Path, monkeypatch):
     suites = tmp_path / "suites"
     suites.mkdir()
@@ -1024,6 +1092,9 @@ def test_index_html_exposes_judge_settings_panel():
     assert 'id="activeStopJob"' in webui.INDEX_HTML
     assert "function stopJob" in webui.INDEX_HTML
     assert "/api/jobs/${encodeURIComponent(id)}/stop" in webui.INDEX_HTML
+    assert "function stopTask" in webui.INDEX_HTML
+    assert "/tasks/${encodeURIComponent(taskId)}/stop" in webui.INDEX_HTML
+    assert "data-stop-task" in webui.INDEX_HTML
     assert "web_url: env.web_url" in webui.INDEX_HTML
     assert 'id="mobilegymParallelEnvs"' in webui.INDEX_HTML
     assert 'id="mobilegymParallelEnvs" type="number" min="1" step="1" value="5"' in webui.INDEX_HTML

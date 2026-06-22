@@ -56,6 +56,10 @@ class JobStopped(RuntimeError):
     pass
 
 
+class TaskStopped(RuntimeError):
+    pass
+
+
 @dc.dataclass(frozen=True)
 class WebUIConfig:
     suites_dir: Path = DEFAULT_SUITES_DIR
@@ -157,6 +161,7 @@ class BenchmarkWebApp:
         self._job_judge_api_keys: dict[str, str] = {}
         self._job_runner_procs: dict[str, Any] = {}
         self._job_daemon_jobs: dict[str, list[Job]] = {}
+        self._task_daemon_jobs: dict[str, list[Job]] = {}
         self._mobilegym_environments: dict[str, MobileGymEnvironment] = {}
         self._mobilegym_log_procs: dict[str, subprocess.Popen] = {}
         self._load_persisted_jobs()
@@ -490,6 +495,34 @@ class BenchmarkWebApp:
             stop_daemon_compose(daemon_job)
         return self._job_payload(job)
 
+    def stop_task_worker(self, job_id: str, task_record_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return None
+            record = next((item for item in job.task_records if item.id == task_record_id), None)
+            if record is None:
+                return None
+            if record.status in TERMINAL_TASK_STATUSES:
+                return self._job_payload(job)
+            record.status = "stopping"
+            record.message = "stop requested"
+            task_key = task_worker_key(job.id, record.id)
+            procs = runner_procs_for_stop(self._job_runner_procs.get(task_key))
+            daemon_jobs = list(self._task_daemon_jobs.get(task_key, []))
+            runner_log = Path(record.runner_log) if record.runner_log else None
+            state_file = Path(record.state_file) if record.state_file else None
+        if runner_log is not None:
+            append_log(runner_log, "STOP requested")
+        if state_file is not None:
+            update_state_status(state_file, "stopping", run_id=record.run_id or job.id)
+        self._persist_job(job)
+        for proc in procs:
+            terminate_process_tree(proc)
+        for daemon_job in daemon_jobs:
+            stop_daemon_compose(daemon_job)
+        return self._job_payload(job)
+
     def _set_job(self, job: Job, **updates: Any) -> None:
         with self._lock:
             if job.status in STOP_REQUESTED_JOB_STATUSES and updates.get("status") not in STOP_REQUESTED_JOB_STATUSES:
@@ -511,6 +544,16 @@ class BenchmarkWebApp:
     def _raise_if_job_stop_requested(self, job: Job) -> None:
         if self._job_stop_requested(job):
             raise JobStopped("job stop requested")
+
+    def _task_stop_requested(self, job: Job, record_id: str) -> bool:
+        with self._lock:
+            record = next((item for item in job.task_records if item.id == record_id), None)
+            return bool(record and record.status in STOP_REQUESTED_JOB_STATUSES)
+
+    def _raise_if_task_worker_stop_requested(self, job: Job, record_id: str) -> None:
+        self._raise_if_job_stop_requested(job)
+        if self._task_stop_requested(job, record_id):
+            raise TaskStopped("task stop requested")
 
     def _finish_stopped_job(self, job: Job) -> None:
         if job.state_file:
@@ -606,6 +649,9 @@ class BenchmarkWebApp:
             record = next((item for item in job.task_records if item.id == record_id), None)
             if record is None:
                 return
+            if record.status in STOP_REQUESTED_JOB_STATUSES and updates.get("status") not in STOP_REQUESTED_JOB_STATUSES:
+                updates.pop("status", None)
+                updates.pop("message", None)
             for key, value in updates.items():
                 if hasattr(record, key):
                     setattr(record, key, value)
@@ -685,6 +731,12 @@ class BenchmarkWebApp:
                 self._job_judge_api_keys.pop(job.id, None)
                 self._job_daemon_jobs.pop(job.id, None)
                 self._job_runner_procs.pop(job.id, None)
+                for key in list(self._task_daemon_jobs):
+                    if key.startswith(f"{job.id}:"):
+                        self._task_daemon_jobs.pop(key, None)
+                for key in list(self._job_runner_procs):
+                    if key.startswith(f"{job.id}:"):
+                        self._job_runner_procs.pop(key, None)
 
     def _refresh_job_report(self, job: Job) -> None:
         try:
@@ -697,12 +749,21 @@ class BenchmarkWebApp:
         if report_url:
             self._set_job(job, report_url=report_url)
 
-    def _wait_for_daemon(self, job: Job, *, stop_job: Job | None = None) -> None:
+    def _wait_for_daemon(
+        self,
+        job: Job,
+        *,
+        stop_job: Job | None = None,
+        stop_check: Callable[[], None] | None = None,
+    ) -> None:
         client = AgentClient(job.agent_url)
         deadline = time.monotonic() + max(1, self.config.daemon_ready_timeout_sec)
         control_job = stop_job or job
         while time.monotonic() < deadline:
-            self._raise_if_job_stop_requested(control_job)
+            if stop_check is not None:
+                stop_check()
+            else:
+                self._raise_if_job_stop_requested(control_job)
             if client.health():
                 return
             time.sleep(1)
@@ -766,6 +827,16 @@ class BenchmarkWebApp:
                         exit_code=-15,
                         finished_at=now_iso(),
                     )
+                except TaskStopped:
+                    result = {"suite": suite_key, "task_id": task.id, "exit_code": -15, "run_id": "", "stopped": True}
+                    self._set_task_record(
+                        job,
+                        worker_token(suite_key, task.id),
+                        status="stopped",
+                        message="stop requested",
+                        exit_code=-15,
+                        finished_at=now_iso(),
+                    )
                 except Exception as exc:
                     append_log(Path(job.runner_log), f"ERROR: {suite_key} {task.id}: {exc}")
                     result = {"suite": suite_key, "task_id": task.id, "exit_code": 1, "run_id": "", "error": str(exc)}
@@ -806,6 +877,7 @@ class BenchmarkWebApp:
         record = self._ensure_task_record(job, suite_key, task_id)
         token = record.id
         benchmark_task_id = record.benchmark_task_id
+        self._raise_if_task_worker_stop_requested(job, token)
         host_port = reserve_free_port()
         worker_job = Job(
             id=f"{job.id}-{token}",
@@ -843,23 +915,37 @@ class BenchmarkWebApp:
             daemon_log=worker_job.daemon_log,
         )
         self._register_daemon_job(job.id, worker_job)
+        self._register_task_daemon_job(job.id, token, worker_job)
         log_proc: subprocess.Popen | None = None
         try:
-            container_id = start_daemon_compose(
-                worker_job,
-                image=self.config.daemon_image,
-                host_port=host_port,
-                config_dir=Path(job.config_dir),
-                tool_proxy_endpoint=job.docker_endpoint,
-                benchmark_task_id=benchmark_task_id,
-                log_path=Path(worker_job.runner_log),
-                stop_requested=lambda: self._job_stop_requested(job),
-            )
+            try:
+                container_id = start_daemon_compose(
+                    worker_job,
+                    image=self.config.daemon_image,
+                    host_port=host_port,
+                    config_dir=Path(job.config_dir),
+                    tool_proxy_endpoint=job.docker_endpoint,
+                    benchmark_task_id=benchmark_task_id,
+                    log_path=Path(worker_job.runner_log),
+                    stop_requested=lambda: (
+                        self._job_stop_requested(job)
+                        or self._task_stop_requested(job, token)
+                    ),
+                )
+            except JobStopped:
+                if self._task_stop_requested(job, token) and not self._job_stop_requested(job):
+                    raise TaskStopped("task stop requested")
+                raise
+            self._raise_if_task_worker_stop_requested(job, token)
             append_log(Path(job.runner_log), f"worker {task_id} container {container_id}")
             append_log(Path(worker_job.runner_log), f"container {container_id}")
             log_proc = start_daemon_logs(worker_job, Path(worker_job.daemon_log))
-            self._wait_for_daemon(worker_job, stop_job=job)
-            self._raise_if_job_stop_requested(job)
+            self._wait_for_daemon(
+                worker_job,
+                stop_job=job,
+                stop_check=lambda: self._raise_if_task_worker_stop_requested(job, token),
+            )
+            self._raise_if_task_worker_stop_requested(job, token)
             run_id = f"{job.id}-{token}"
             self._set_task_record(job, token, status="running", message="running task", run_id=run_id)
             cmd = [
@@ -896,7 +982,13 @@ class BenchmarkWebApp:
                     judge_api_key = self._job_judge_api_keys.get(job.id, "")
                 if judge_api_key:
                     env["OPENROUTER_API_KEY"] = judge_api_key
-            exit_code = self._run_runner_process(worker_job, cmd, env, owner_job_id=job.id)
+            exit_code = self._run_runner_process(
+                worker_job,
+                cmd,
+                env,
+                owner_job_id=job.id,
+                extra_owner_ids=[task_worker_key(job.id, token)],
+            )
             run_path = Path(job.raw_runs_dir) / run_id
             result: dict[str, Any] = {
                 "suite": suite_key,
@@ -910,18 +1002,30 @@ class BenchmarkWebApp:
                 result["report_url"] = f"/reports/{job.id}/{run_id}/report.html"
             if self._job_stop_requested(job):
                 result["stopped"] = True
+            if self._task_stop_requested(job, token):
+                result["stopped"] = True
             final_status = "stopped" if result.get("stopped") else "passed" if exit_code == 0 else "failed"
             self._set_task_record(
                 job,
                 token,
                 status=final_status,
-                message="",
+                message="stop requested" if final_status == "stopped" else "",
                 finished_at=now_iso(),
                 exit_code=exit_code,
                 run_id=result.get("run_id") or run_id,
                 report_url=str(result.get("report_url") or ""),
             )
             return result
+        except TaskStopped:
+            self._set_task_record(
+                job,
+                token,
+                status="stopped",
+                message="stop requested",
+                finished_at=now_iso(),
+                exit_code=-15,
+            )
+            raise
         except JobStopped:
             self._set_task_record(
                 job,
@@ -954,6 +1058,7 @@ class BenchmarkWebApp:
                 log_proc.terminate()
             stop_daemon_compose(worker_job)
             self._unregister_daemon_job(job.id, worker_job)
+            self._unregister_task_daemon_job(job.id, token, worker_job)
 
     def _run_runner_process(
         self,
@@ -962,6 +1067,7 @@ class BenchmarkWebApp:
         env: dict[str, str],
         *,
         owner_job_id: str | None = None,
+        extra_owner_ids: list[str] | None = None,
     ) -> int:
         append_log(Path(job.runner_log), "\n$ " + " ".join(cmd))
         popen_kwargs: dict[str, Any] = {}
@@ -978,10 +1084,14 @@ class BenchmarkWebApp:
                 **popen_kwargs,
             )
             self._register_runner_proc(proc_job_id, proc)
+            for extra_owner_id in extra_owner_ids or []:
+                self._register_runner_proc(extra_owner_id, proc)
             try:
                 return int(proc.wait())
             finally:
                 self._unregister_runner_proc(proc_job_id, proc)
+                for extra_owner_id in extra_owner_ids or []:
+                    self._unregister_runner_proc(extra_owner_id, proc)
 
     def _register_runner_proc(self, job_id: str, proc: subprocess.Popen) -> None:
         with self._lock:
@@ -1015,6 +1125,20 @@ class BenchmarkWebApp:
             self._job_daemon_jobs[job_id] = [item for item in jobs if item is not daemon_job]
             if not self._job_daemon_jobs[job_id]:
                 self._job_daemon_jobs.pop(job_id, None)
+
+    def _register_task_daemon_job(self, job_id: str, task_record_id: str, daemon_job: Job) -> None:
+        with self._lock:
+            self._task_daemon_jobs.setdefault(task_worker_key(job_id, task_record_id), []).append(daemon_job)
+
+    def _unregister_task_daemon_job(self, job_id: str, task_record_id: str, daemon_job: Job) -> None:
+        task_key = task_worker_key(job_id, task_record_id)
+        with self._lock:
+            jobs = self._task_daemon_jobs.get(task_key)
+            if not jobs:
+                return
+            self._task_daemon_jobs[task_key] = [item for item in jobs if item is not daemon_job]
+            if not self._task_daemon_jobs[task_key]:
+                self._task_daemon_jobs.pop(task_key, None)
 
     def _run_suite(self, job: Job, suite_key: str) -> None:
         self._raise_if_job_stop_requested(job)
@@ -1178,6 +1302,10 @@ def worker_token(suite_key: str, task_id: str) -> str:
     slug = re.sub(r"[^a-z0-9_-]+", "-", raw.lower()).strip("-_")
     slug = slug[:42].strip("-_") or "task"
     return f"{slug}-{digest}"
+
+
+def task_worker_key(job_id: str, task_record_id: str) -> str:
+    return f"{job_id}:{task_record_id}"
 
 
 def runner_procs_for_stop(value: Any) -> list[subprocess.Popen]:
@@ -2153,8 +2281,21 @@ class WebHandler(BaseHTTPRequestHandler):
                 return
             self._send_json({"environment": environment})
             return
+        if path.startswith("/api/jobs/"):
+            parts = path.strip("/").split("/")
+            if len(parts) == 6 and parts[3] == "tasks" and parts[5] == "stop":
+                job = self.server.app.stop_task_worker(parts[2], parts[4])
+                if job is None:
+                    self.send_error(HTTPStatus.NOT_FOUND)
+                    return
+                self._send_json({"job": job})
+                return
         if path.startswith("/api/jobs/") and path.endswith("/stop"):
-            job_id = path.split("/")[3]
+            parts = path.strip("/").split("/")
+            if len(parts) != 4:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            job_id = parts[2]
             job = self.server.app.stop_job(job_id)
             if job is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
@@ -2162,7 +2303,11 @@ class WebHandler(BaseHTTPRequestHandler):
             self._send_json({"job": job})
             return
         if path.startswith("/api/jobs/") and path.endswith("/cancel"):
-            job_id = path.split("/")[3]
+            parts = path.strip("/").split("/")
+            if len(parts) != 4:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            job_id = parts[2]
             job = self.server.app.cancel_job(job_id)
             if job is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
@@ -3418,6 +3563,7 @@ INDEX_HTML = r"""<!doctype html>
         if(task.screen_url) links.push(`<a href="${escapeHtml(task.screen_url)}" target="_blank" rel="noreferrer">screen</a>`);
         if(task.report_url) links.push(`<a href="${escapeHtml(task.report_url)}" target="_blank" rel="noreferrer">report</a>`);
         links.push(`<button class="ghost-button table-button" data-task-log="${escapeHtml(task.id)}" type="button">log</button>`);
+        if(taskCanStop(task)) links.push(`<button class="danger table-button" data-stop-task="${escapeHtml(task.id)}" type="button" ${task.status === 'stopping' ? 'disabled' : ''}>Stop</button>`);
         const agent = task.agent_url || task.container_name || '';
         const detail = task.run_id || task.benchmark_task_id || task.message || '';
         const tr = document.createElement('tr');
@@ -3428,6 +3574,8 @@ INDEX_HTML = r"""<!doctype html>
           <td><div class="inline-actions">${links.join(' ')}</div></td>`;
         const logButton = tr.querySelector('[data-task-log]');
         if(logButton) logButton.onclick = () => { activeTaskLogId = task.id; loadActiveJob(); };
+        const stopButton = tr.querySelector('[data-stop-task]');
+        if(stopButton) stopButton.onclick = () => stopTask(job.id, task.id);
         tbody.appendChild(tr);
       });
     }
@@ -3452,10 +3600,20 @@ INDEX_HTML = r"""<!doctype html>
       return job && !['passed', 'failed', 'stopped', 'canceled'].includes(job.status || '');
     }
 
+    function taskCanStop(task){
+      return task && !['passed', 'failed', 'stopped', 'canceled'].includes(task.status || '');
+    }
+
     async function stopJob(id){
       const res = await fetch(`/api/jobs/${encodeURIComponent(id)}/stop`, {method: 'POST'});
       if(!res.ok) document.getElementById('logBox').textContent = await res.text();
       await refreshJobs();
+    }
+
+    async function stopTask(jobId, taskId){
+      const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/tasks/${encodeURIComponent(taskId)}/stop`, {method: 'POST'});
+      if(!res.ok) document.getElementById('logBox').textContent = await res.text();
+      await loadActiveJob();
     }
 
     function cssToken(value){
