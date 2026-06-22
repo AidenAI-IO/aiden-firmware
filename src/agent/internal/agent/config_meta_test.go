@@ -298,7 +298,7 @@ func TestConfigMeta_STTTencentASRProviderMetadata(t *testing.T) {
 		want any
 	}{
 		{"stt.region", "ap-guangzhou"},
-		{"stt.engine_model_type", "16k_zh"},
+		{"stt.language", "zh"},
 	}
 	for _, tt := range tests {
 		field, ok := idx[tt.path]
@@ -356,7 +356,7 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 	sections := []sectionType{
 		{"model", reflect.TypeOf(ModelConfig{}), map[string]bool{"responses": true}},
 		{"tts", reflect.TypeOf(TTSConfig{}), map[string]bool{"reference_id": true, "credentials": true}},
-		{"stt", reflect.TypeOf(STTConfig{}), nil},
+		{"stt", reflect.TypeOf(STTConfig{}), map[string]bool{"engine_model_type": true}},
 		{"audio", reflect.TypeOf(AudioConfig{}), nil},
 		{"audio_archive", reflect.TypeOf(AudioArchiveConfig{}), nil},
 		{"benchmark", reflect.TypeOf(BenchmarkConfig{}), nil},

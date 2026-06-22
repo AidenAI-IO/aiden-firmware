@@ -28,6 +28,7 @@ struct TTSToml {
 
 struct STTToml {
     std::string provider;
+    std::string language;
     std::string api_key;
     std::string model;
     std::string base_url;
