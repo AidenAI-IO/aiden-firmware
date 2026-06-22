@@ -96,18 +96,34 @@ func TestMemoryManagerActiveSessionIDCreatesSessionMetadata(t *testing.T) {
 }
 
 func TestMemoryManagerActiveSessionIDRejectsUnsafeMetadata(t *testing.T) {
-	storageDir := t.TempDir()
-	sessionDir := filepath.Join(storageDir, "session")
-	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
-		t.Fatalf("create session dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(sessionDir, sessionMetadataFileName), []byte(`{"session_id":"../escape","created_at":"2026-06-21T00:00:00Z"}`+"\n"), 0o644); err != nil {
-		t.Fatalf("write metadata: %v", err)
-	}
-	manager := NewMemoryManager(storageDir)
+	for _, sessionID := range []string{
+		"../escape",
+		"session\nescape",
+		"session\x7fescape",
+	} {
+		t.Run(fmt.Sprintf("%q", sessionID), func(t *testing.T) {
+			storageDir := t.TempDir()
+			sessionDir := filepath.Join(storageDir, "session")
+			if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+				t.Fatalf("create session dir: %v", err)
+			}
+			metadata := sessionMetadata{
+				SessionID: sessionID,
+				CreatedAt: "2026-06-21T00:00:00Z",
+			}
+			data, err := json.Marshal(metadata)
+			if err != nil {
+				t.Fatalf("marshal metadata: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(sessionDir, sessionMetadataFileName), append(data, '\n'), 0o644); err != nil {
+				t.Fatalf("write metadata: %v", err)
+			}
+			manager := NewMemoryManager(storageDir)
 
-	if _, err := manager.ActiveSessionID(); err == nil {
-		t.Fatal("ActiveSessionID() succeeded with unsafe metadata session_id")
+			if _, err := manager.ActiveSessionID(); err == nil {
+				t.Fatal("ActiveSessionID() succeeded with unsafe metadata session_id")
+			}
+		})
 	}
 }
 

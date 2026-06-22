@@ -742,6 +742,12 @@ func validateSessionIDPathComponent(sessionID string) error {
 	if sessionID == "" || sessionID == "." || sessionID != filepath.Base(sessionID) || strings.ContainsAny(sessionID, `/\`) || strings.Contains(sessionID, "..") {
 		return fmt.Errorf("unsafe session id %q", sessionID)
 	}
+	for i := 0; i < len(sessionID); i++ {
+		ch := sessionID[i]
+		if ch < 0x20 || ch == 0x7f {
+			return fmt.Errorf("unsafe session id %q", sessionID)
+		}
+	}
 	return nil
 }
 
