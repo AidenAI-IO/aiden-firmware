@@ -230,7 +230,7 @@ def test_cli_writes_aggregated_skillopt_summary_report(monkeypatch, tmp_path: Pa
                     edits_applied=[Edit(op="append", content="new rule")],
                     train_score=train_score,
                     candidate_selection_score=candidate_score,
-                    patch_reasoning="failure analyst found missing launch guidance",
+                    patch_reasoning="failure analyst found missing launch guidance\nSecond line should wrap cleanly",
                 )
             ],
             accepted_count=1,
@@ -266,6 +266,10 @@ def test_cli_writes_aggregated_skillopt_summary_report(monkeypatch, tmp_path: Pa
     assert "0.25" in report
     assert "0.75" in report
     assert "failure analyst found missing launch guidance" in report
+    assert "Second line should wrap cleanly" in report
+    assert "pre.skillopt-reasoning" in report
+    assert "white-space:pre-wrap" in report
+    assert '<pre class="skillopt-reasoning">' in report
     assert "new rule" in report
     assert "best_skill.md" in report
     assert "diff.patch" in report

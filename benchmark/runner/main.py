@@ -8,6 +8,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from runner.agent_client import AgentClient
+from runner.analysis import AnalysisConfig, _int_env, analyze_run
 from runner.html_report import generate_report_html, upload_report
 from runner.judge import JudgeConfig
 from runner.report import git_sha, write_jsonl, write_manifest, write_summary, now_iso
@@ -62,6 +63,26 @@ def cli(argv: list[str] | None = None) -> int:
     p_run.add_argument("--agent-recovery-timeout-sec", type=int, default=90,
                        help="Extra wait after timeout/skipped before next task")
     p_run.add_argument("--inter-task-cooldown-sec", type=float, default=2.0)
+    p_run.add_argument("--llm-analysis", action="store_true", help="Run post-run LLM RCA analysis")
+    p_run.add_argument(
+        "--analysis-model",
+        default=os.environ.get("AIDEN_BENCHMARK_ANALYSIS_MODEL"),
+    )
+    p_run.add_argument(
+        "--analysis-max-log-bytes",
+        type=int,
+        default=_int_env("AIDEN_BENCHMARK_ANALYSIS_MAX_LOG_BYTES", 64 * 1024),
+    )
+    p_run.add_argument(
+        "--analysis-max-code-bytes",
+        type=int,
+        default=_int_env("AIDEN_BENCHMARK_ANALYSIS_MAX_CODE_BYTES", 128 * 1024),
+    )
+    p_run.add_argument(
+        "--analysis-timeout-sec",
+        type=int,
+        default=_int_env("AIDEN_BENCHMARK_ANALYSIS_TIMEOUT_SEC", 180),
+    )
     p_unit = sub.add_parser("unit")
     p_unit.add_argument("--suite")
     p_unit.add_argument("--suite-dir")
@@ -301,6 +322,23 @@ def _cmd_run(args: argparse.Namespace) -> int:
     write_summary(run_dir / "summary.md", suite.name, manifest, results)
     html = generate_report_html(run_dir)
     (run_dir / "report.html").write_text(html, encoding="utf-8")
+    if args.llm_analysis:
+        analysis_result = analyze_run(run_dir, REPO_ROOT, AnalysisConfig(
+            enabled=True,
+            model=args.analysis_model or args.judge_model,
+            max_log_bytes=args.analysis_max_log_bytes,
+            max_code_bytes=args.analysis_max_code_bytes,
+            timeout_sec=args.analysis_timeout_sec,
+            api_key_env=os.environ.get("AIDEN_BENCHMARK_ANALYSIS_API_KEY_ENV") or None,
+        ))
+        if not analysis_result.ok:
+            print(
+                f"Warning: benchmark LLM analysis failed: {analysis_result.warning}",
+                file=sys.stderr,
+                flush=True,
+            )
+        html = generate_report_html(run_dir)
+        (run_dir / "report.html").write_text(html, encoding="utf-8")
 
     # Print final summary
     print("\n" + "="*60, flush=True)
