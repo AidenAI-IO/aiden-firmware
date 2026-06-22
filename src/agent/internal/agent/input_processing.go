@@ -61,8 +61,6 @@ func NewSTTClientFromConfig(cfg Config) (STTClient, error) {
 	switch provider {
 	case "openai", "openai-whisper":
 		return NewOpenAIWhisperSTT(cfg.STT.APIKey, cfg.STT.Model, cfg.STT.BaseURL, cfg.STT.Language, httpClient), nil
-	case "openrouter":
-		return NewOpenRouterSTT(cfg.STT.APIKey, cfg.STT.Model, cfg.STT.BaseURL, httpClient), nil
 	case tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider:
 		return NewTencentASRSTT(cfg.STT.SecretID, cfg.STT.SecretKey, cfg.STT.Region, cfg.STT.EngineModelType, cfg.STT.Language, httpClient), nil
 	default:

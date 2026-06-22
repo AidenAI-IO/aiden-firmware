@@ -217,7 +217,7 @@ type TTSProviderCredentials struct {
 }
 
 type STTConfig struct {
-	Provider        string `toml:"provider"` // "openai", "openai-whisper", "openrouter", "tencent-asr" (legacy: "tencent", "tencent_asr")
+	Provider        string `toml:"provider"` // "openai-whisper", "tencent-asr" (legacy: "openai", "tencent", "tencent_asr")
 	APIKey          string `toml:"api_key,omitempty"`
 	Model           string `toml:"model,omitempty"`
 	BaseURL         string `toml:"base_url,omitempty"`
