@@ -274,14 +274,50 @@ def test_load_suite_duplicate_ids_raise(tmp_path: Path):
         load_suite(p)
 
 
-def test_phone_control_suite_constrains_agent_to_iphone_ui():
+def test_phone_control_suite_constrains_agent_to_phone_ui():
     suite_path = Path(__file__).resolve().parents[1] / "suites" / "phone_control_v1.json"
     suite = load_suite(suite_path)
 
-    assert "iPhone" in suite.prompt_prefix
+    assert "手机" in suite.prompt_prefix
+    assert "iOS" in suite.prompt_prefix
+    assert "Android" in suite.prompt_prefix
+    assert "iPhone" not in suite.prompt_prefix
     assert "macOS" in suite.prompt_prefix
     assert "shell" in suite.prompt_prefix
     assert "osascript" in suite.prompt_prefix
+
+
+def test_phone_control_navigation_tasks_have_setup_pages():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "phone_control_v1.json"
+    suite = load_suite(suite_path)
+    task_by_id = {task.id: task for task in suite.tasks}
+
+    for task_id in ["tap_back", "scroll_page_down", "scroll_to_bottom"]:
+        setup = task_by_id[task_id].setup
+        assert setup is not None
+        assert setup["type"] == "agent_prompt"
+        assert "系统设置" in setup["prompt"]
+        assert setup["clear_history_after"] is True
+
+
+def test_phone_control_wifi_toggle_is_split_into_on_and_off_tasks():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "phone_control_v1.json"
+    suite = load_suite(suite_path)
+    task_by_id = {task.id: task for task in suite.tasks}
+
+    assert "toggle_wifi" not in task_by_id
+    off_task = task_by_id["toggle_wifi_off"]
+    on_task = task_by_id["toggle_wifi_on"]
+
+    assert "关闭 Wi-Fi" in off_task.prompt
+    assert off_task.setup is not None
+    assert "开启状态" in off_task.setup["prompt"]
+    assert any(item.id == "wifi_off_final" for item in off_task.rubric)
+
+    assert "开启 Wi-Fi" in on_task.prompt
+    assert on_task.setup is not None
+    assert "关闭状态" in on_task.setup["prompt"]
+    assert any(item.id == "wifi_on_final" for item in on_task.rubric)
 
 
 def test_phone_control_bluetooth_task_uses_chinese_keyword():
