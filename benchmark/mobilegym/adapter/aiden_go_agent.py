@@ -158,7 +158,12 @@ class AidenGoAgent(_MobileGymBaseAgent):
 
     def _resolve_task(self, task: Any) -> Any:
         if isinstance(task, str):
-            return self.task_lookup.get(task, task)
+            if self.task_lookup:
+                resolved = self.task_lookup.get(task)
+                if resolved is None:
+                    raise AidenAdapterError("Aiden task lookup miss for string task reference")
+                return resolved
+            return task
         return task
 
     def act(self, obs: Any) -> Any:

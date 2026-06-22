@@ -583,7 +583,12 @@ def _aiden_task_lookup(tasks: list[Any]) -> dict[str, Any]:
     for task in tasks:
         instruction = getattr(task, "instruction", None)
         if instruction:
-            lookup[str(instruction)] = task
+            key = str(instruction)
+            if key in lookup:
+                raise LauncherError(
+                    "Aiden suite contains duplicate task instructions; cannot build unique task lookup."
+                )
+            lookup[key] = task
     return lookup
 
 

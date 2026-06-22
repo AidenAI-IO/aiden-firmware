@@ -166,6 +166,30 @@ def test_build_skillopt_run_command_enables_llm_analysis_by_default(launcher_mod
     assert command.env["AIDEN_BENCHMARK_LLM_ANALYSIS"] == "1"
 
 
+def test_build_skillopt_run_command_forwards_analysis_tuning_fields(launcher_module, tmp_path):
+    (tmp_path / "suites" / "skillopt" / "device-operator").mkdir(parents=True)
+
+    command = launcher_module.build_skillopt_run_command(
+        tmp_path,
+        {
+            "mode": "skillopt",
+            "skillopt_backend": "mobilegym",
+            "skill": "device-operator",
+            "train_suite": "skillopt/device-operator/device_operator_train",
+            "validation_suite": "skillopt/device-operator/device_operator_verification",
+            "analysis_model": "bytedance-seed/seed-2.0-lite",
+            "analysis_max_log_bytes": 1234,
+            "analysis_max_code_bytes": 5678,
+            "analysis_timeout_sec": 90,
+        },
+    )
+
+    assert command.env["AIDEN_BENCHMARK_ANALYSIS_MODEL"] == "bytedance-seed/seed-2.0-lite"
+    assert command.env["AIDEN_BENCHMARK_ANALYSIS_MAX_LOG_BYTES"] == "1234"
+    assert command.env["AIDEN_BENCHMARK_ANALYSIS_MAX_CODE_BYTES"] == "5678"
+    assert command.env["AIDEN_BENCHMARK_ANALYSIS_TIMEOUT_SEC"] == "90"
+
+
 def test_build_run_command_uses_benchmark_judge_model_for_analysis(launcher_module, monkeypatch, tmp_path):
     docker_dir = tmp_path / "mobilegym" / "docker"
     docker_dir.mkdir(parents=True)

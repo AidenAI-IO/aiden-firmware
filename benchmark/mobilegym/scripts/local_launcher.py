@@ -268,6 +268,15 @@ def build_skillopt_run_command(
     env.update(model_config_from_payload(payload))
     env.update(benchmark_config_from_payload(payload))
     env["AIDEN_BENCHMARK_LLM_ANALYSIS"] = "1"
+    for payload_key, env_key in {
+        "analysis_model": "AIDEN_BENCHMARK_ANALYSIS_MODEL",
+        "analysis_max_log_bytes": "AIDEN_BENCHMARK_ANALYSIS_MAX_LOG_BYTES",
+        "analysis_max_code_bytes": "AIDEN_BENCHMARK_ANALYSIS_MAX_CODE_BYTES",
+        "analysis_timeout_sec": "AIDEN_BENCHMARK_ANALYSIS_TIMEOUT_SEC",
+    }.items():
+        value = payload.get(payload_key)
+        if value not in (None, ""):
+            env[env_key] = str(value)
     if "AIDEN_BENCHMARK_ANALYSIS_MODEL" not in env and env.get("AIDEN_BENCHMARK_JUDGE_MODEL"):
         env["AIDEN_BENCHMARK_ANALYSIS_MODEL"] = env["AIDEN_BENCHMARK_JUDGE_MODEL"]
 

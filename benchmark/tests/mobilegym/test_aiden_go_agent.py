@@ -223,6 +223,20 @@ def test_aiden_go_agent_resolves_prompt_string_to_aiden_suite_task(tmp_path):
     assert json.loads(meta_path.read_text(encoding="utf-8"))["task_id"] == "loop_planning_v1.direct_answer_no_plan"
 
 
+def test_aiden_go_agent_fails_on_unknown_string_task_when_lookup_is_configured():
+    module = importlib.import_module("mobilegym.adapter.aiden_go_agent")
+    agent = module.AidenGoAgent(
+        bridge_url="http://bridge.local",
+        bridge_control_token="bridge-control",
+        daemon=FakeDaemon(),
+        http_client=RecordingHTTPClient(),
+        task_lookup={"known instruction": object()},
+    )
+
+    with pytest.raises(module.AidenAdapterError, match="task lookup miss"):
+        agent.reset("unknown instruction")
+
+
 def test_aiden_go_agent_writes_task_meta_with_aiden_evidence(tmp_path):
     module = importlib.import_module("mobilegym.adapter.aiden_go_agent")
 

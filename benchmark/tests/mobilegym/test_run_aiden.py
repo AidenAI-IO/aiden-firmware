@@ -236,6 +236,17 @@ def test_filter_aiden_tasks_rejects_empty_parsed_ids():
         module._filter_aiden_tasks(tasks, " , , \t")
 
 
+def test_aiden_task_lookup_rejects_duplicate_instructions():
+    module = load_run_aiden_module()
+    tasks = [
+        module.MobileGymTaskAdapter(task_id="suite.case_one", instruction="same", metadata={}),
+        module.MobileGymTaskAdapter(task_id="suite.case_two", instruction="same", metadata={}),
+    ]
+
+    with pytest.raises(module.LauncherError, match="duplicate task instructions"):
+        module._aiden_task_lookup(tasks)
+
+
 def test_mobilegym_task_adapter_evaluate_uses_runner_action_response_when_metadata_is_empty():
     module = load_run_aiden_module()
     task = module.MobileGymTaskAdapter(
