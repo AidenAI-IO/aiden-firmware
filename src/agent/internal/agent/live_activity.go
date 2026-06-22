@@ -487,8 +487,15 @@ func (m *LiveActivityManager) runAPNsPublisher(apns *APNsClient, queue <-chan li
 		state, final := liveActivityRemotePushState(req.state, req.final)
 		err := apns.Push(ctx, req.pushToken, state, final)
 		cancel()
-		if err != nil && m.logger != nil {
-			m.logger.Error("live activity: APNs push failed request_id=%s: %v", req.requestID, err)
+		if m.logger == nil {
+			continue
+		}
+		if err != nil {
+			m.logger.Error("live activity: APNs push failed request_id=%s status=%s sent_status=%s final=%t sent_final=%t: %v", req.requestID, req.state.Status, state.Status, req.final, final, err)
+			continue
+		}
+		if req.final || isFinalLiveActivityStatus(req.state.Status) || state.Status == LiveActivityStatusReady {
+			m.logger.Info("live activity: APNs push ok request_id=%s status=%s sent_status=%s final=%t sent_final=%t", req.requestID, req.state.Status, state.Status, req.final, final)
 		}
 	}
 }
@@ -524,8 +531,15 @@ func (m *LiveActivityManager) runRelayPublisher(relay *LiveActivityRelayClient, 
 		state, final := liveActivityRemotePushState(req.state, req.final)
 		err := relay.Push(ctx, state, final)
 		cancel()
-		if err != nil && m.logger != nil {
-			m.logger.Error("live activity: relay push failed request_id=%s: %v", req.requestID, err)
+		if m.logger == nil {
+			continue
+		}
+		if err != nil {
+			m.logger.Error("live activity: relay push failed request_id=%s status=%s sent_status=%s final=%t sent_final=%t endpoint=%s: %v", req.requestID, req.state.Status, state.Status, req.final, final, relay.endpoint, err)
+			continue
+		}
+		if req.final || isFinalLiveActivityStatus(req.state.Status) || state.Status == LiveActivityStatusReady {
+			m.logger.Info("live activity: relay push ok request_id=%s status=%s sent_status=%s final=%t sent_final=%t endpoint=%s", req.requestID, req.state.Status, state.Status, req.final, final, relay.endpoint)
 		}
 	}
 }

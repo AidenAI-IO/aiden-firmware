@@ -84,6 +84,9 @@ type RunRequest struct {
 	// SteerWaiter waits for the out-of-band steering capture to resolve. ok=false
 	// means the interruption produced no usable input and the run may continue.
 	SteerWaiter func(context.Context) (RunSteerMessage, bool, error)
+	// AsyncEpisodeMaintenance keeps the episode trace write synchronous but moves
+	// lesson extraction and referenced-memory maintenance off the response path.
+	AsyncEpisodeMaintenance bool
 }
 
 type RunResult struct {
@@ -696,7 +699,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 		if err != nil {
 			r.persistRunStatusBestEffort(episodeID, req.RequestID, runID, err)
-			r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture, boundaryTelemetry)
+			r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture, boundaryTelemetry, req.AsyncEpisodeMaintenance)
 			return RunResult{}, err
 		}
 	}
@@ -719,10 +722,10 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 
 	commitResult, err := r.commitSession(ctx, commitReq)
 	if err != nil {
-		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture, boundaryTelemetry)
+		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture, boundaryTelemetry, req.AsyncEpisodeMaintenance)
 		return RunResult{}, err
 	}
-	r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, nil, promptCapture, boundaryTelemetry)
+	r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, nil, promptCapture, boundaryTelemetry, req.AsyncEpisodeMaintenance)
 
 	waitForWakeupRequested, waitForWakeupReason := false, ""
 	if r.waitForWakeup != nil {
@@ -1026,7 +1029,13 @@ func countPendingRecallResults(output string) int {
 	return count
 }
 
-func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input string, output string, metrics *RunMetrics, runErr error, promptCapture *telemetryPromptCapture, boundary sessionBoundaryTelemetry) {
+type episodeMaintenancePlane interface {
+	MemoryPlane
+	commitEpisodeTrace(ctx context.Context, episode TaskEpisode) error
+	commitEpisodeMaintenance(ctx context.Context, episode TaskEpisode)
+}
+
+func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input string, output string, metrics *RunMetrics, runErr error, promptCapture *telemetryPromptCapture, boundary sessionBoundaryTelemetry, asyncMaintenance bool) {
 	if recorder == nil || r.memoryPlane == nil {
 		return
 	}
@@ -1044,6 +1053,21 @@ func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input strin
 	enrichEpisodeSessionBoundaryTelemetry(&episode, boundary)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	if asyncMaintenance {
+		if plane, ok := r.memoryPlane.(episodeMaintenancePlane); ok {
+			if err := plane.commitEpisodeTrace(ctx, episode); err != nil && r.logger != nil {
+				r.logger.Warn("[memory] commit episode trace failed: %v", err)
+				return
+			}
+			r.exportEpisodeBestEffort(episode, promptCapture)
+			go func() {
+				maintenanceCtx, maintenanceCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer maintenanceCancel()
+				plane.commitEpisodeMaintenance(maintenanceCtx, episode)
+			}()
+			return
+		}
+	}
 	if err := r.memoryPlane.CommitEpisode(ctx, episode); err != nil && r.logger != nil {
 		r.logger.Warn("[memory] commit episode failed: %v", err)
 		return
