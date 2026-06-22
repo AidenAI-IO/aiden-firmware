@@ -282,6 +282,128 @@ def test_start_job_records_judge_settings_without_exposing_api_key(tmp_path: Pat
     assert app._job_judge_api_keys[job["id"]] == "sk-judge-secret"
 
 
+def test_start_job_persists_job_record_without_api_key(tmp_path: Path, monkeypatch):
+    suites = tmp_path / "suites"
+    suites.mkdir()
+    (suites / "suite.json").write_text(
+        json.dumps({"name": "suite", "tasks": [{"id": "t1", "category": "diagnostic"}]}),
+        encoding="utf-8",
+    )
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            suites_dir=suites,
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+        )
+    )
+
+    class FakeThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(webui.threading, "Thread", FakeThread)
+    monkeypatch.setattr(webui, "reserve_free_port", lambda: 18080)
+
+    job = app.start_job(
+        {
+            "endpoint": "http://127.0.0.1:9090",
+            "suites": ["suite.json"],
+            "judge_api_key": "sk-judge-secret",
+        }
+    )
+
+    record_path = tmp_path / "runs" / job["id"] / webui.JOB_RECORD_FILE
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert record["id"] == job["id"]
+    assert record["suites"] == ["suite.json"]
+    assert record["judge_api_key_set"] is True
+    assert "judge_api_key" not in record
+
+
+def test_webui_loads_persisted_job_records_and_marks_active_stopped(tmp_path: Path):
+    runs_dir = tmp_path / "runs"
+    job_dir = runs_dir / "job-test"
+    raw_runs_dir = job_dir / "raw"
+    raw_runs_dir.mkdir(parents=True)
+    state_file = job_dir / "state.json"
+    state_file.write_text(json.dumps({"status": "running", "run_id": "job-test"}), encoding="utf-8")
+    job = webui.Job(
+        id="job-test",
+        endpoint="http://127.0.0.1:19090",
+        docker_endpoint="http://host.docker.internal:19090",
+        suites=["suite.json"],
+        status="running",
+        created_at="2026-06-22T00:00:00+00:00",
+        raw_runs_dir=str(raw_runs_dir),
+        state_file=str(state_file),
+        runner_log=str(job_dir / "runner.log"),
+        daemon_log=str(job_dir / "daemon.log"),
+        task_records=[
+            webui.TaskRecord(
+                id="suite-json-t1",
+                suite="suite.json",
+                task_id="t1",
+                benchmark_task_id="suite.json:t1",
+                status="running",
+                runner_log=str(job_dir / "workers" / "suite-json-t1.runner.log"),
+                daemon_log=str(job_dir / "workers" / "suite-json-t1.daemon.log"),
+            )
+        ],
+    )
+    webui.persist_job_record(job)
+
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            runs_dir=runs_dir,
+            base_config_dir=tmp_path / "config",
+        )
+    )
+    loaded = app.get_job("job-test")
+
+    assert loaded is not None
+    assert loaded["status"] == "stopped"
+    assert loaded["message"] == "restored after WebUI restart"
+    assert loaded["progress"]["status"] == "stopped"
+    assert loaded["task_records"][0]["benchmark_task_id"] == "suite.json:t1"
+    assert loaded["task_records"][0]["status"] == "stopped"
+    record = json.loads((job_dir / webui.JOB_RECORD_FILE).read_text(encoding="utf-8"))
+    assert record["status"] == "stopped"
+    assert record["task_records"][0]["status"] == "stopped"
+
+
+def test_task_record_updates_are_persisted(tmp_path: Path):
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+        )
+    )
+    raw_runs_dir = tmp_path / "runs" / "job-test" / "raw"
+    raw_runs_dir.mkdir(parents=True)
+    job = webui.Job(
+        id="job-test",
+        endpoint="http://127.0.0.1:19090",
+        docker_endpoint="http://host.docker.internal:19090",
+        suites=["suite.json"],
+        environment_endpoint="http://127.0.0.1:19090",
+        raw_runs_dir=str(raw_runs_dir),
+        state_file=str(tmp_path / "runs" / "job-test" / "state.json"),
+        runner_log=str(tmp_path / "runs" / "job-test" / "runner.log"),
+        daemon_log=str(tmp_path / "runs" / "job-test" / "daemon.log"),
+    )
+    app._jobs[job.id] = job
+
+    record = app._ensure_task_record(job, "suite.json", "t1")
+    app._set_task_record(job, record.id, status="running", agent_url="http://127.0.0.1:18081")
+
+    persisted = json.loads((tmp_path / "runs" / "job-test" / webui.JOB_RECORD_FILE).read_text(encoding="utf-8"))
+    assert persisted["task_records"][0]["status"] == "running"
+    assert persisted["task_records"][0]["agent_url"] == "http://127.0.0.1:18081"
+
+
 def test_start_job_derives_mobilegym_environment_endpoint(tmp_path: Path, monkeypatch):
     suites = tmp_path / "suites"
     suites.mkdir()

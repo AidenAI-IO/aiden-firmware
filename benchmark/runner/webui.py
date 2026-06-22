@@ -43,8 +43,10 @@ DEFAULT_DAEMON_READY_TIMEOUT_SEC = 90
 DEFAULT_MOBILEGYM_READY_TIMEOUT_SEC = 120
 DEFAULT_JUDGE_MODEL = JudgeConfig().model
 WEBUI_SETTINGS_FILE = "webui-settings.json"
+JOB_RECORD_FILE = "job.json"
 LOG_TAIL_BYTES = 96 * 1024
 TERMINAL_JOB_STATUSES = {"passed", "failed", "stopped", "canceled"}
+TERMINAL_TASK_STATUSES = {"passed", "failed", "stopped", "canceled"}
 STOP_REQUESTED_JOB_STATUSES = {"stopping", "stopped", "canceled"}
 JOB_REPORT_RUN_ID = "_job-report"
 
@@ -156,6 +158,7 @@ class BenchmarkWebApp:
         self._job_daemon_jobs: dict[str, list[Job]] = {}
         self._mobilegym_environments: dict[str, MobileGymEnvironment] = {}
         self._mobilegym_log_procs: dict[str, subprocess.Popen] = {}
+        self._load_persisted_jobs()
 
     def list_suites(self) -> list[dict[str, Any]]:
         return list_benchmark_suites(self.config.suites_dir)
@@ -446,6 +449,7 @@ class BenchmarkWebApp:
             self._jobs[job.id] = job
             if judge_api_key and not no_judge:
                 self._job_judge_api_keys[job.id] = judge_api_key
+        self._persist_job(job)
         thread = threading.Thread(target=self._run_job, args=(job,), name=f"benchmark-{job.id}", daemon=True)
         thread.start()
         return self._job_payload(job)
@@ -470,6 +474,7 @@ class BenchmarkWebApp:
             append_log(runner_log, "STOP requested")
         if state_file is not None:
             update_state_status(state_file, "stopping", run_id=job.id)
+        self._persist_job(job)
         for proc in procs:
             terminate_process_tree(proc)
         for daemon_job in daemon_jobs:
@@ -483,6 +488,7 @@ class BenchmarkWebApp:
                 updates.pop("message", None)
             for key, value in updates.items():
                 setattr(job, key, value)
+        self._persist_job(job)
 
     def _set_mobilegym_environment(self, env: MobileGymEnvironment, **updates: Any) -> None:
         with self._lock:
@@ -507,6 +513,34 @@ class BenchmarkWebApp:
 
     def _webui_settings_path(self) -> Path:
         return self.config.runs_dir / WEBUI_SETTINGS_FILE
+
+    def _load_persisted_jobs(self) -> None:
+        restored: dict[str, Job] = {}
+        for path in sorted(self.config.runs_dir.glob(f"*/{JOB_RECORD_FILE}")):
+            job = load_job_record(path)
+            if job is None:
+                continue
+            if job.status not in TERMINAL_JOB_STATUSES:
+                job.status = "stopped"
+                job.message = "restored after WebUI restart"
+                if not job.finished_at:
+                    job.finished_at = now_iso()
+                for record in job.task_records:
+                    if record.status not in TERMINAL_TASK_STATUSES:
+                        record.status = "stopped"
+                        record.message = "restored after WebUI restart"
+                        if not record.finished_at:
+                            record.finished_at = job.finished_at
+                if job.state_file:
+                    update_state_status(Path(job.state_file), "stopped", run_id=job.id)
+                self._persist_job(job)
+            restored[job.id] = job
+        with self._lock:
+            self._jobs.update(restored)
+
+    def _persist_job(self, job: Job) -> None:
+        with self._lock:
+            persist_job_record(job)
 
     def _load_webui_settings(self, include_secrets: bool = False) -> dict[str, Any]:
         return load_webui_settings(self._webui_settings_path(), include_secrets=include_secrets)
@@ -555,7 +589,8 @@ class BenchmarkWebApp:
             if existing is not None:
                 return existing
             job.task_records.append(record)
-            return record
+        self._persist_job(job)
+        return record
 
     def _set_task_record(self, job: Job, record_id: str, **updates: Any) -> None:
         with self._lock:
@@ -565,6 +600,7 @@ class BenchmarkWebApp:
             for key, value in updates.items():
                 if hasattr(record, key):
                     setattr(record, key, value)
+        self._persist_job(job)
 
     def _stop_mobilegym_log_proc(self, environment_id: str) -> None:
         with self._lock:
@@ -693,6 +729,7 @@ class BenchmarkWebApp:
         if not suite.tasks:
             with self._lock:
                 job.suite_results.append({"suite": suite_key, "exit_code": 0, "run_id": ""})
+            self._persist_job(job)
             update_state_status(Path(job.state_file), "done", run_id=job.id)
             return
 
@@ -735,6 +772,7 @@ class BenchmarkWebApp:
                 completed += task_counts.get(task.id, 1)
                 with self._lock:
                     job.suite_results.append(result)
+                self._persist_job(job)
                 write_state(
                     Path(job.state_file),
                     {
@@ -1062,6 +1100,7 @@ class BenchmarkWebApp:
             result["stopped"] = True
         with self._lock:
             job.suite_results.append(result)
+        self._persist_job(job)
         if self._job_stop_requested(job):
             raise JobStopped("job stop requested")
 
@@ -1695,6 +1734,56 @@ def aggregate_totals(results: list[dict[str, Any]]) -> dict[str, int]:
             if isinstance(value, int):
                 totals[key] = totals.get(key, 0) + value
     return totals
+
+
+def job_record_path(job: Job) -> Path | None:
+    if job.raw_runs_dir:
+        return Path(job.raw_runs_dir).parent / JOB_RECORD_FILE
+    if job.state_file:
+        return Path(job.state_file).parent / JOB_RECORD_FILE
+    return None
+
+
+def persist_job_record(job: Job) -> None:
+    path = job_record_path(job)
+    if path is None:
+        return
+    write_json_atomic(path, dc.asdict(job))
+
+
+def load_job_record(path: Path) -> Job | None:
+    data = read_json_file(path)
+    if not isinstance(data, dict):
+        return None
+    task_records = []
+    raw_task_records = data.get("task_records") if isinstance(data.get("task_records"), list) else []
+    for raw in raw_task_records:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            task_records.append(TaskRecord(**dataclass_kwargs(TaskRecord, raw)))
+        except TypeError:
+            continue
+    data = dict(data)
+    data["task_records"] = task_records
+    try:
+        job = Job(**dataclass_kwargs(Job, data))
+    except TypeError:
+        return None
+    if not job.raw_runs_dir:
+        job.raw_runs_dir = str(path.parent / "raw")
+    if not job.state_file:
+        job.state_file = str(path.parent / "state.json")
+    if not job.runner_log:
+        job.runner_log = str(path.parent / "runner.log")
+    if not job.daemon_log:
+        job.daemon_log = str(path.parent / "daemon.log")
+    return job
+
+
+def dataclass_kwargs(cls: type[Any], data: dict[str, Any]) -> dict[str, Any]:
+    names = {field.name for field in dc.fields(cls)}
+    return {key: value for key, value in data.items() if key in names}
 
 
 def single_suite_report_url(results: list[dict[str, Any]]) -> str:
