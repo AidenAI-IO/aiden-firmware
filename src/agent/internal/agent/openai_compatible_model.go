@@ -37,6 +37,7 @@ type openAICompatibleModelOption func(*openAICompatibleModel)
 type rawHTTPLogContextKey struct{}
 
 type rawHTTPLogFileTimeContextKey struct{}
+type rawHTTPLogFileSessionIDContextKey struct{}
 
 // contextWithRawHTTPLog marks ctx so model calls made under it are written to
 // the raw HTTP log. Only the main conversation loop should set this.
@@ -58,6 +59,15 @@ func rawHTTPLogFileTime(ctx context.Context) (time.Time, bool) {
 	return fileTime, ok && !fileTime.IsZero()
 }
 
+func contextWithRawHTTPLogFileSessionID(ctx context.Context, sessionID string) context.Context {
+	return context.WithValue(ctx, rawHTTPLogFileSessionIDContextKey{}, strings.TrimSpace(sessionID))
+}
+
+func rawHTTPLogFileSessionID(ctx context.Context) (string, bool) {
+	sessionID, ok := ctx.Value(rawHTTPLogFileSessionIDContextKey{}).(string)
+	return strings.TrimSpace(sessionID), ok
+}
+
 func withOpenAICompatibleRawHTTPLogger(logger *llmRawHTTPLogger) openAICompatibleModelOption {
 	return func(m *openAICompatibleModel) {
 		m.rawLogger = logger
@@ -65,22 +75,32 @@ func withOpenAICompatibleRawHTTPLogger(logger *llmRawHTTPLogger) openAICompatibl
 }
 
 type llmRawHTTPLogger struct {
-	dir       string
-	runtimeID string
-	now       func() time.Time
-	mu        sync.Mutex
+	dir               string
+	sessionID         string
+	sessionIDProvider func() string
+	now               func() time.Time
+	mu                sync.Mutex
 }
 
-func newLLMRawHTTPLogger(logDir, runtimeID string) *llmRawHTTPLogger {
+func newLLMRawHTTPLogger(logDir, sessionID string) *llmRawHTTPLogger {
 	logDir = strings.TrimSpace(logDir)
 	if logDir == "" {
 		return nil
 	}
 	return &llmRawHTTPLogger{
 		dir:       logDir,
-		runtimeID: runtimeID,
+		sessionID: strings.TrimSpace(sessionID),
 		now:       time.Now,
 	}
+}
+
+func (l *llmRawHTTPLogger) SetSessionIDProvider(provider func() string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.sessionIDProvider = provider
 }
 
 func (l *llmRawHTTPLogger) Log(model, kind string, statusCode int, raw string) error {
@@ -88,6 +108,10 @@ func (l *llmRawHTTPLogger) Log(model, kind string, statusCode int, raw string) e
 }
 
 func (l *llmRawHTTPLogger) LogWithFileTime(model, kind string, statusCode int, raw string, fileTime time.Time) error {
+	return l.LogWithFileScope(model, kind, statusCode, raw, fileTime, l.currentSessionID())
+}
+
+func (l *llmRawHTTPLogger) LogWithFileScope(model, kind string, statusCode int, raw string, fileTime time.Time, sessionID string) error {
 	if l == nil || strings.TrimSpace(l.dir) == "" {
 		return nil
 	}
@@ -129,11 +153,11 @@ func (l *llmRawHTTPLogger) LogWithFileTime(model, kind string, statusCode int, r
 		return err
 	}
 
-	// File name includes date, time (hour+minute), and runtime ID.
+	// File name includes date, time (hour+minute), and session ID.
 	dateTimeStr := fileTime.Format("200601021504")
 	fileName := "llm-http-" + dateTimeStr + ".log"
-	if l.runtimeID != "" {
-		fileName = "llm-http-" + dateTimeStr + "-" + l.runtimeID + ".log"
+	if sessionID = strings.TrimSpace(sessionID); sessionID != "" {
+		fileName = "llm-http-" + dateTimeStr + "-" + sessionID + ".log"
 	}
 
 	path := filepath.Join(l.dir, fileName)
@@ -151,6 +175,22 @@ func (l *llmRawHTTPLogger) currentTime() time.Time {
 		return time.Now()
 	}
 	return l.now()
+}
+
+func (l *llmRawHTTPLogger) currentSessionID() string {
+	if l == nil {
+		return ""
+	}
+	l.mu.Lock()
+	provider := l.sessionIDProvider
+	fallback := l.sessionID
+	l.mu.Unlock()
+	if provider != nil {
+		if sessionID := strings.TrimSpace(provider()); sessionID != "" {
+			return sessionID
+		}
+	}
+	return strings.TrimSpace(fallback)
 }
 
 type compatibleChatRequest struct {
@@ -602,7 +642,8 @@ func (m *openAICompatibleModel) logRawHTTP(ctx context.Context, modelName, kind 
 		return nil
 	}
 	if fileTime, ok := rawHTTPLogFileTime(ctx); ok {
-		return m.rawLogger.LogWithFileTime(modelName, kind, statusCode, raw, fileTime)
+		sessionID, _ := rawHTTPLogFileSessionID(ctx)
+		return m.rawLogger.LogWithFileScope(modelName, kind, statusCode, raw, fileTime, sessionID)
 	}
 	return m.rawLogger.Log(modelName, kind, statusCode, raw)
 }
@@ -612,9 +653,13 @@ func (m *openAICompatibleModel) withRawHTTPLogFileTime(ctx context.Context) cont
 		return ctx
 	}
 	if _, ok := rawHTTPLogFileTime(ctx); ok {
-		return ctx
+		if _, hasSessionID := rawHTTPLogFileSessionID(ctx); hasSessionID {
+			return ctx
+		}
+		return contextWithRawHTTPLogFileSessionID(ctx, m.rawLogger.currentSessionID())
 	}
-	return contextWithRawHTTPLogFileTime(ctx, m.rawLogger.currentTime())
+	ctx = contextWithRawHTTPLogFileTime(ctx, m.rawLogger.currentTime())
+	return contextWithRawHTTPLogFileSessionID(ctx, m.rawLogger.currentSessionID())
 }
 
 func convertMessageContent(message llms.MessageContent) (compatibleMessage, error) {

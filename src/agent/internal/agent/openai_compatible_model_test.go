@@ -411,7 +411,9 @@ func TestOpenAICompatibleModelLogsRawStreamingHTTPOnDecodeError(t *testing.T) {
 }
 
 func TestOpenAICompatibleModelRawHTTPLogKeepsRunInRequestMinuteFile(t *testing.T) {
+	sessionID := "session-a"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sessionID = "session-b"
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"OK\"},\"finish_reason\":\"stop\"}]}\n\n"))
 		w.Write([]byte("data: [DONE]\n\n"))
@@ -419,7 +421,8 @@ func TestOpenAICompatibleModelRawHTTPLogKeepsRunInRequestMinuteFile(t *testing.T
 	defer server.Close()
 
 	logDir := t.TempDir()
-	logger := newLLMRawHTTPLogger(logDir, "test-runtime")
+	logger := newLLMRawHTTPLogger(logDir, "")
+	logger.SetSessionIDProvider(func() string { return sessionID })
 	times := []time.Time{
 		time.Date(2026, 6, 21, 9, 4, 59, 0, time.UTC),
 		time.Date(2026, 6, 21, 9, 4, 59, 0, time.UTC),
@@ -460,13 +463,154 @@ func TestOpenAICompatibleModelRawHTTPLogKeepsRunInRequestMinuteFile(t *testing.T
 	if len(matches) != 1 {
 		t.Fatalf("raw HTTP request/response should stay in one file, got %d: %#v", len(matches), matches)
 	}
-	if !strings.Contains(filepath.Base(matches[0]), "llm-http-202606210904-test-runtime.log") {
+	if !strings.Contains(filepath.Base(matches[0]), "llm-http-202606210904-session-a.log") {
 		t.Fatalf("raw HTTP file should use request minute, got %s", filepath.Base(matches[0]))
 	}
 	logText := readRawHTTPLog(t, logDir)
 	counts := countRawHTTPKinds(t, logText)
 	if counts["request"] != 1 || counts["response"] != 1 {
 		t.Fatalf("raw HTTP log should contain one request and one response:\n%s", logText)
+	}
+}
+
+func TestRuntimeConfiguresRawHTTPLogWithActiveMemorySessionID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	rootDir := t.TempDir()
+	logDir := filepath.Join(rootDir, "log")
+	memoryDir := filepath.Join(rootDir, "memory")
+	manager := NewModelManager(ModelConfig{
+		Provider:   "openai",
+		BaseURL:    server.URL,
+		Model:      "test-model",
+		LogRawHTTP: true,
+	}, ProxyConfig{}, WithLLMRawHTTPLogDir(logDir))
+	memories := NewMemoryManager(memoryDir)
+	NewRuntimeWithDeps(Config{}, manager, memories, nil, nil)
+
+	model, err := manager.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	compatible, ok := model.(*openAICompatibleModel)
+	if !ok {
+		t.Fatalf("model = %T, want *openAICompatibleModel", model)
+	}
+	compatible.rawLogger.now = func() time.Time {
+		return time.Date(2026, 6, 21, 9, 4, 59, 0, time.UTC)
+	}
+
+	_, err = model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
+		Role:  llms.ChatMessageTypeHuman,
+		Parts: []llms.ContentPart{llms.TextPart("hello")},
+	}})
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	metadata := readSessionMetadataForTest(t, filepath.Join(memoryDir, "session", sessionMetadataFileName))
+	matches, err := filepath.Glob(filepath.Join(logDir, "llm-http-*.log"))
+	if err != nil {
+		t.Fatalf("glob raw HTTP logs: %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("expected one raw HTTP log file, got %d: %#v", len(matches), matches)
+	}
+	wantName := "llm-http-202606210904-" + metadata.SessionID + ".log"
+	if filepath.Base(matches[0]) != wantName {
+		t.Fatalf("raw HTTP file = %q, want %q", filepath.Base(matches[0]), wantName)
+	}
+}
+
+func TestRuntimeRawHTTPLogSwitchesSessionFileAfterRotation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	rootDir := t.TempDir()
+	logDir := filepath.Join(rootDir, "log")
+	memoryDir := filepath.Join(rootDir, "memory")
+	manager := NewModelManager(ModelConfig{
+		Provider:   "openai",
+		BaseURL:    server.URL,
+		Model:      "test-model",
+		LogRawHTTP: true,
+	}, ProxyConfig{}, WithLLMRawHTTPLogDir(logDir))
+	memories := NewMemoryManager(memoryDir)
+	NewRuntimeWithDeps(Config{}, manager, memories, nil, nil)
+
+	model, err := manager.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	compatible, ok := model.(*openAICompatibleModel)
+	if !ok {
+		t.Fatalf("model = %T, want *openAICompatibleModel", model)
+	}
+	compatible.rawLogger.now = func() time.Time {
+		return time.Date(2026, 6, 21, 9, 4, 59, 0, time.UTC)
+	}
+
+	runLLM := func(prompt string) {
+		t.Helper()
+		_, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
+			Role:  llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{llms.TextPart(prompt)},
+		}})
+		if err != nil {
+			t.Fatalf("GenerateContent(%q) error = %v", prompt, err)
+		}
+	}
+
+	runLLM("before rotation")
+	firstMeta := readSessionMetadataForTest(t, filepath.Join(memoryDir, "session", sessionMetadataFileName))
+
+	session := NewSessionMemoryStore(filepath.Join(memoryDir, "session"))
+	if _, err := session.AppendEvent(context.Background(), SessionEvent{
+		EventID: "evt_before_rotation",
+		Ts:      time.Date(2026, 6, 21, 9, 5, 0, 0, time.UTC).Format(time.RFC3339Nano),
+		Type:    "user_input",
+		Role:    "user",
+		Content: "old task",
+	}); err != nil {
+		t.Fatalf("AppendEvent() before rotation error = %v", err)
+	}
+	rotation, err := memories.RotateSessionEventsDetailed()
+	if err != nil {
+		t.Fatalf("RotateSessionEventsDetailed() error = %v", err)
+	}
+	if rotation.ActiveSessionID == "" || rotation.ActiveSessionID == firstMeta.SessionID {
+		t.Fatalf("ActiveSessionID after rotation = %q, first session = %q", rotation.ActiveSessionID, firstMeta.SessionID)
+	}
+
+	runLLM("after rotation")
+
+	matches, err := filepath.Glob(filepath.Join(logDir, "llm-http-*.log"))
+	if err != nil {
+		t.Fatalf("glob raw HTTP logs: %v", err)
+	}
+	if len(matches) != 2 {
+		t.Fatalf("expected two raw HTTP log files after rotation, got %d: %#v", len(matches), matches)
+	}
+	wantNames := map[string]bool{
+		"llm-http-202606210904-" + firstMeta.SessionID + ".log":      false,
+		"llm-http-202606210904-" + rotation.ActiveSessionID + ".log": false,
+	}
+	for _, match := range matches {
+		if _, ok := wantNames[filepath.Base(match)]; ok {
+			wantNames[filepath.Base(match)] = true
+		}
+	}
+	for name, found := range wantNames {
+		if !found {
+			t.Fatalf("missing raw HTTP log file %q; got %#v", name, matches)
+		}
 	}
 }
 

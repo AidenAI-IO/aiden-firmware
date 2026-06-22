@@ -370,9 +370,18 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 		runtimeID:     uuid.NewString(),
 		mobileGym:     &mobileGymSessionStore{},
 	}
-	// Set runtime ID for raw HTTP logging.
+	// Use the active memory session ID for raw HTTP log partitioning.
 	if modelManager, ok := models.(*ModelManager); ok {
-		modelManager.SetRuntimeID(rt.runtimeID)
+		modelManager.SetRawHTTPLogSessionIDProvider(func() string {
+			if memories == nil {
+				return ""
+			}
+			sessionID, err := memories.ActiveSessionID()
+			if err != nil {
+				return ""
+			}
+			return sessionID
+		})
 	}
 	if cfg.ConfigDir != "" {
 		rt.memoryPlane = NewFilesystemMemoryPlane(filepath.Join(cfg.ConfigDir, "memory"), LoadMemoryExtractionConfig(cfg.ConfigDir), nil)
