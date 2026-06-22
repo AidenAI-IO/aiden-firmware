@@ -2531,7 +2531,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     .layout {
       display: grid;
-      grid-template-columns: 360px minmax(0, 1fr);
+      grid-template-columns: 440px minmax(0, 1fr);
       min-height: calc(100vh - 48px);
       gap: 1px;
       background: var(--border);

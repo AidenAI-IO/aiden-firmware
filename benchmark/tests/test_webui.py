@@ -1080,6 +1080,7 @@ def test_ensure_daemon_image_uses_compose_build(tmp_path: Path, monkeypatch):
 
 
 def test_index_html_exposes_judge_settings_panel():
+    assert "grid-template-columns: 440px minmax(0, 1fr);" in webui.INDEX_HTML
     assert 'id="judgeEnabled"' in webui.INDEX_HTML
     assert 'id="judgeModel"' in webui.INDEX_HTML
     assert 'id="judgeApiKey"' in webui.INDEX_HTML
