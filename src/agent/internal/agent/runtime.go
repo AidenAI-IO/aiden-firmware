@@ -50,7 +50,9 @@ type Runtime struct {
 	waitForWakeup      *WaitForWakeupController
 	memoryPlane        MemoryPlane
 	sessionManager     SessionManager
+	runtimeID          string
 	telemetrySessionID string
+	mobileGym          *mobileGymSessionStore
 	toolProxy          *ToolProxyClient
 	runGate            chan struct{}
 }
@@ -74,11 +76,20 @@ type RunRequest struct {
 	MaxTokens         int
 	EventHandler      func(RunEvent)
 	SteerProvider     func(context.Context) (RunSteerMessage, bool)
+	// FinalSteerProvider is called at terminal executor boundaries. It should
+	// atomically consume one last pending steer if available; otherwise it should
+	// close the request's steer acceptance window.
+	FinalSteerProvider func(context.Context) (RunSteerMessage, bool)
+	// SteerInterrupt signals that the current run should pause before scheduling
+	// more model/tool work while an out-of-band steering input is being captured.
+	SteerInterrupt func() <-chan struct{}
+	// SteerWaiter waits for the out-of-band steering capture to resolve. ok=false
+	// means the interruption produced no usable input and the run may continue.
+	SteerWaiter func(context.Context) (RunSteerMessage, bool, error)
 }
 
 type RunResult struct {
 	Output                 string          `json:"output"`
-	SpeechText             string          `json:"-"`
 	Skills                 []string        `json:"skills"`
 	EpisodeID              string          `json:"episode_id,omitempty"`
 	Memory                 []MessageRecord `json:"memory,omitempty"`
@@ -110,9 +121,6 @@ func canonicalTurnInputFromRunRequest(req RunRequest) TurnInput {
 }
 
 func (r RunResult) SpokenText() string {
-	if text := strings.TrimSpace(r.SpeechText); text != "" {
-		return text
-	}
 	return strings.TrimSpace(r.Output)
 }
 
@@ -120,17 +128,7 @@ func (r RunResult) SpokenTextForConfig(cfg Config) string {
 	if r.WaitForWakeupRequested {
 		return ""
 	}
-	if !cfg.VoiceSpeechSummaryEnabledOrDefault() {
-		return strings.TrimSpace(r.Output)
-	}
-	if text := strings.TrimSpace(r.SpeechText); text != "" {
-		return text
-	}
-	text := BuildSpeechText(r.Output, cfg)
-	if text != "" {
-		return text
-	}
-	return r.SpokenText()
+	return strings.TrimSpace(r.Output)
 }
 
 type RunSteerMessage struct {
@@ -168,8 +166,6 @@ type RunEvent struct {
 	EpisodeID      string     `json:"episode_id,omitempty"`
 	ToolName       string     `json:"tool_name,omitempty"`
 	ToolInput      string     `json:"tool_input,omitempty"`
-	Description    string     `json:"description,omitempty"`
-	Speech         string     `json:"speech,omitempty"`
 	Content        string     `json:"content,omitempty"`
 	Todo           *TodoState `json:"todo,omitempty"`
 	SpeechEligible bool       `json:"speech_eligible,omitempty"`
@@ -264,7 +260,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	// Create logger if ConfigDir is set
 	var logger *Logger
 	if cfg.ConfigDir != "" {
-		logger, err = NewLogger(cfg.ConfigDir)
+		logger, err = NewLogger(cfg.ConfigDir, cfg.Log.LLMHTTPRetentionDaysOrDefault())
 		if err != nil {
 			return nil, fmt.Errorf("create logger: %w", err)
 		}
@@ -291,6 +287,9 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	modelManagerOptions := []ModelManagerOption{}
 	if cfg.ConfigDir != "" {
 		modelManagerOptions = append(modelManagerOptions, WithProviderModelMetadataCachePath(filepath.Join(cfg.ConfigDir, "cache", "provider_model_metadata.json")))
+		if cfg.Model.LogRawHTTP {
+			modelManagerOptions = append(modelManagerOptions, WithLLMRawHTTPLogDir(filepath.Join(cfg.ConfigDir, "log")))
+		}
 	}
 	modelManager := NewModelManager(cfg.Model, proxy, modelManagerOptions...)
 	modelManager.prefetchProviderModelSpecIfNeeded()
@@ -323,6 +322,11 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	rt.logger = logger
 	rt.profileDebouncer = debouncer
 	rt.waitForWakeup = waitForWakeupController
+
+	// Log runtime start marker.
+	if logger != nil {
+		logger.Info("[runtime] started: runtime_id=%s", rt.runtimeID)
+	}
 
 	if len(mergeNeeded) > 0 && cfg.SkillMergeModel != nil {
 		manifestPath := filepath.Join(cfg.ConfigDir, "skill-state", ".bundled_manifest.json")
@@ -367,15 +371,21 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 		skills:             skillManager,
 		skillsLoaded:       skillIndex != nil && len(skillIndex.Names()) > 0,
 		waitForWakeup:      waitForWakeupController,
+		runtimeID:          uuid.NewString(),
 		telemetrySessionID: uuid.NewString(),
+		mobileGym:          &mobileGymSessionStore{},
 		toolProxy:          toolProxy,
+	}
+	// Set runtime ID for raw HTTP logging.
+	if modelManager, ok := models.(*ModelManager); ok {
+		modelManager.SetRuntimeID(rt.runtimeID)
 	}
 	if cfg.ConfigDir != "" {
 		rt.memoryPlane = NewFilesystemMemoryPlane(filepath.Join(cfg.ConfigDir, "memory"), LoadMemoryExtractionConfig(cfg.ConfigDir), nil)
 		rt.markInterruptedEpisodesBestEffort()
 	}
-	rt.sessionManager = newMemoryManagerSessionManager(memories, func(now time.Time, activeMaxAge time.Duration) BoundaryEpisodeContext {
-		return recentEpisodeContext(rt.memoryPlane, now, activeMaxAge)
+	rt.sessionManager = newMemoryManagerSessionManager(memories, func() BoundaryEpisodeContext {
+		return recentEpisodeContext(rt.memoryPlane)
 	})
 	rt.initRunGate()
 	return rt
@@ -554,7 +564,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		AgentName:    "default",
 		Input:        normalizedInput,
 		Turn:         turnInput,
-		SessionID:    r.telemetrySessionID,
+		RuntimeID:    r.runtimeID,
 		EpisodeID:    episodeID,
 		RequestID:    req.RequestID,
 		RunID:        runID,
@@ -594,7 +604,6 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if r.memoryPlane != nil {
 		episodeRecorder = r.memoryPlane.NewEpisodeRecorder(retrieveReq, memoryContext)
 		if episodeRecorder != nil {
-			episodeRecorder.ToolCallSpeech = r.config.VoiceToolCallSpeechOrDefault()
 			retrieveReq.EpisodeID = episodeRecorder.ID()
 			if err := episodeRecorder.Start(ctx); err != nil && r.logger != nil {
 				r.logger.Warn("[memory] start episode failed: %v", err)
@@ -622,15 +631,14 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			logger:                 r.logger,
 			eventHandler:           req.EventHandler,
 			episodeID:              episodeID,
-			sessionID:              r.telemetrySessionID,
+			runtimeID:              r.runtimeID,
 			requestID:              req.RequestID,
 			runID:                  runID,
-			toolCallSpeechEnabled:  r.config.VoiceToolCallSpeechOrDefault(),
 		}
 		if persistRuntimeSessionEvents {
 			streamCallbackHandler.sessionEventAppender = func(ctx context.Context, event SessionEvent) error {
 				return r.appendRuntimeSessionEvent(ctx, "default", event, SessionEventMetadata{
-					SessionID: r.telemetrySessionID,
+					RuntimeID: r.runtimeID,
 					EpisodeID: episodeID,
 					RequestID: req.RequestID,
 					RunID:     runID,
@@ -671,6 +679,9 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	executor.ToolCallSpeech = r.config.VoiceToolCallSpeechOrDefault()
 	executor.ToolProxy = r.toolProxy
 	executor.ForwardTools = r.config.ToolProxy.ForwardTools
+	executor.SteerInterrupt = req.SteerInterrupt
+	executor.SteerWaiter = req.SteerWaiter
+	executor.FinalSteerProvider = req.FinalSteerProvider
 
 	output, err := chains.Run(ctx, executor, normalizedInput, callOptions...)
 	if err != nil {
@@ -691,14 +702,14 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 	}
 
-	output, speechText := finalizeSpeechOutput(output, r.config)
+	output = finalizeAssistantOutput(output)
 	metrics.TotalDuration = float64(time.Since(startTime).Milliseconds())
 	commitReq := SessionCommitRequest{
 		AgentName: "default",
 		Input:     normalizedInput,
 		Output:    output,
 		Metrics:   metrics,
-		SessionID: r.telemetrySessionID,
+		RuntimeID: r.runtimeID,
 		EpisodeID: episodeID,
 		RequestID: req.RequestID,
 		RunID:     runID,
@@ -720,7 +731,6 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	return RunResult{
 		Output:                 output,
-		SpeechText:             speechText,
 		Skills:                 runSkills.GetActivatedSkills(),
 		EpisodeID:              episodeID,
 		Memory:                 commitResult.Memory,
@@ -773,9 +783,9 @@ func (r *Runtime) persistRunStatusBestEffort(episodeID, requestID, runID string,
 		EpisodeID: episodeID,
 		RequestID: requestID,
 		RunID:     runID,
-		SessionID: r.telemetrySessionID,
+		RuntimeID: r.runtimeID,
 	}, SessionEventMetadata{
-		SessionID: r.telemetrySessionID,
+		RuntimeID: r.runtimeID,
 		EpisodeID: episodeID,
 		RequestID: requestID,
 		RunID:     runID,
@@ -1066,8 +1076,8 @@ func (r *Runtime) enrichEpisodeRuntimeTelemetry(episode *TaskEpisode) {
 	if episode.Extra == nil {
 		episode.Extra = map[string]interface{}{}
 	}
-	if extraString(episode.Extra, "session_id") == "" && r.telemetrySessionID != "" {
-		episode.Extra["session_id"] = r.telemetrySessionID
+	if extraString(episode.Extra, "runtime_id") == "" && r.runtimeID != "" {
+		episode.Extra["runtime_id"] = r.runtimeID
 	}
 	contextWindow := r.effectiveContextWindow()
 	if contextWindow > 0 {
@@ -1129,12 +1139,12 @@ func (r *Runtime) buildRoleProfiles(skills ResolvedSkills, availableTools []lang
 	}
 	return buildRoleProfiles(
 		AgentConfig{
-			Instruction:               r.config.Instruction,
-			AdditionalPrompt:          r.config.AdditionalPrompt,
-			RuntimeContext:            runtimeContext,
-			ForceSimpleLoop:           r.config.ForceSimpleLoop,
-			VoiceSpeechSummaryEnabled: r.config.VoiceSpeechSummaryEnabled,
-			VoiceToolCallSpeech:       r.config.VoiceToolCallSpeech,
+			Instruction:         r.config.Instruction,
+			AdditionalPrompt:    r.config.AdditionalPrompt,
+			RuntimeContext:      runtimeContext,
+			ForceSimpleLoop:     r.config.ForceSimpleLoop,
+			VoiceToolCallSpeech: r.config.VoiceToolCallSpeech,
+			TTSConfigured:       strings.TrimSpace(r.config.TTS.Provider) != "",
 		},
 		skills,
 		availableTools,
@@ -1167,16 +1177,16 @@ type runtimeCallbackHandler struct {
 	startTime              time.Time
 	firstTokenSeen         bool
 	finalTokenSeen         bool
+	finalStreamLogEmitted  bool
 	finalStreamErr         error
 	streamFinal            bool
 	logger                 *Logger
 	eventHandler           func(RunEvent)
 	episodeID              string
-	sessionID              string
+	runtimeID              string
 	requestID              string
 	runID                  string
 	sessionEventAppender   func(context.Context, SessionEvent) error
-	toolCallSpeechEnabled  bool
 	mu                     sync.Mutex
 	pendingActions         []schema.AgentAction
 }
@@ -1337,32 +1347,23 @@ func (h *runtimeCallbackHandler) HandleNamedToolError(ctx context.Context, name,
 }
 
 func (h *runtimeCallbackHandler) HandleToolCallStart(ctx context.Context, call ToolCall) {
-	description := call.Description
-	speech := call.Speech
+	content := strings.TrimSpace(call.Content)
 	if h.logger != nil {
-		if description != "" && speech != "" {
-			h.logger.Info("Tool call: name=%s input=%s description=%s speech=%s",
-				call.Spec.Name, truncateForLog(call.Input, 240), truncateForLog(description, 240), truncateForLog(speech, 120))
-		} else if description != "" {
-			h.logger.Info("Tool call: name=%s input=%s description=%s",
-				call.Spec.Name, truncateForLog(call.Input, 240), truncateForLog(description, 240))
-		} else if speech != "" {
-			h.logger.Info("Tool call: name=%s input=%s speech=%s",
-				call.Spec.Name, truncateForLog(call.Input, 240), truncateForLog(speech, 120))
+		if content != "" {
+			h.logger.Info("Tool call: name=%s input=%s content=%s",
+				call.Spec.Name, truncateForLog(call.Input, 240), truncateForLog(content, 240))
 		} else {
 			h.logger.Info("Tool call: name=%s input=%s",
 				call.Spec.Name, truncateForLog(call.Input, 240))
 		}
 	}
 	h.emitRunEvent(ctx, RunEvent{
-		Type:        runEventToolCall,
-		EpisodeID:   h.episodeID,
-		ToolName:    call.Spec.Name,
-		ToolInput:   call.Input,
-		Description: description,
-		Speech:      h.toolCallSpeech(speech),
-		Content:     description,
-		Timestamp:   time.Now(),
+		Type:      runEventToolCall,
+		EpisodeID: h.episodeID,
+		ToolName:  call.Spec.Name,
+		ToolInput: call.Input,
+		Content:   content,
+		Timestamp: time.Now(),
 	})
 }
 
@@ -1395,18 +1396,11 @@ func (h *runtimeCallbackHandler) HandleToolCallResult(ctx context.Context, call 
 }
 
 func (h *runtimeCallbackHandler) HandleAgentAction(ctx context.Context, action schema.AgentAction) {
-	description := toolDescriptionFromAction(action)
-	speech := toolSpeechFromAction(action)
+	content := toolContentFromAction(action)
 	if h.logger != nil {
-		if description != "" && speech != "" {
-			h.logger.Info("Tool call: name=%s input=%s description=%s speech=%s",
-				action.Tool, truncateForLog(action.ToolInput, 240), truncateForLog(description, 240), truncateForLog(speech, 120))
-		} else if description != "" {
-			h.logger.Info("Tool call: name=%s input=%s description=%s",
-				action.Tool, truncateForLog(action.ToolInput, 240), truncateForLog(description, 240))
-		} else if speech != "" {
-			h.logger.Info("Tool call: name=%s input=%s speech=%s",
-				action.Tool, truncateForLog(action.ToolInput, 240), truncateForLog(speech, 120))
+		if content != "" {
+			h.logger.Info("Tool call: name=%s input=%s content=%s",
+				action.Tool, truncateForLog(action.ToolInput, 240), truncateForLog(content, 240))
 		} else {
 			h.logger.Info("Tool call: name=%s input=%s",
 				action.Tool, truncateForLog(action.ToolInput, 240))
@@ -1416,14 +1410,12 @@ func (h *runtimeCallbackHandler) HandleAgentAction(ctx context.Context, action s
 		h.pushPendingAction(action)
 	}
 	h.emitRunEvent(ctx, RunEvent{
-		Type:        runEventToolCall,
-		EpisodeID:   h.episodeID,
-		ToolName:    action.Tool,
-		ToolInput:   action.ToolInput,
-		Description: description,
-		Speech:      h.toolCallSpeech(speech),
-		Content:     description,
-		Timestamp:   time.Now(),
+		Type:      runEventToolCall,
+		EpisodeID: h.episodeID,
+		ToolName:  action.Tool,
+		ToolInput: action.ToolInput,
+		Content:   content,
+		Timestamp: time.Now(),
 	})
 }
 
@@ -1505,21 +1497,17 @@ func sessionEventFromRunEvent(event RunEvent, h *runtimeCallbackHandler) Session
 		ts = time.Now()
 	}
 	sessionEvent := SessionEvent{
-		Ts:          ts.UTC().Format(time.RFC3339Nano),
-		Type:        event.Type,
-		Role:        role,
-		SessionID:   h.sessionID,
-		EpisodeID:   firstNonEmptyString([]string{event.EpisodeID, h.episodeID}),
-		RequestID:   h.requestID,
-		RunID:       h.runID,
-		Content:     event.Content,
-		ToolName:    event.ToolName,
-		ToolInput:   event.ToolInput,
-		Description: event.Description,
-		IsError:     event.IsError,
-	}
-	if event.Type == "steer" {
-		sessionEvent.Relation = FollowUpCorrection
+		Ts:        ts.UTC().Format(time.RFC3339Nano),
+		Type:      event.Type,
+		Role:      role,
+		RuntimeID: h.runtimeID,
+		EpisodeID: firstNonEmptyString([]string{event.EpisodeID, h.episodeID}),
+		RequestID: h.requestID,
+		RunID:     h.runID,
+		Content:   event.Content,
+		ToolName:  event.ToolName,
+		ToolInput: event.ToolInput,
+		IsError:   event.IsError,
 	}
 	return sessionEvent
 }
@@ -1586,7 +1574,9 @@ func (h *runtimeCallbackHandler) HandleStreamingFunc(ctx context.Context, chunk 
 		if _, err := h.writer.Write(chunk); err != nil {
 			h.recordFinalStreamError(err)
 		} else if streamWriterEmitted(h.writer) {
-			h.recordFinalToken()
+			if h.recordFinalToken() {
+				h.logFinalStreamEmitted(ctx, chunk)
+			}
 		}
 	}
 
@@ -1596,8 +1586,16 @@ func (h *runtimeCallbackHandler) HandleStreamingFunc(ctx context.Context, chunk 
 
 func (h *runtimeCallbackHandler) EnableFinalStreaming(ctx context.Context) {
 	resetStreamWriterState(h.writer)
+	// Drop any text the previous turn streamed that the TTS layer buffered but
+	// never synthesized. Without this, residual content from a turn that
+	// returned a tool call (e.g. the assistant's "我查下天气。" preamble) stays
+	// in the sentence buffer and gets prepended to this turn's final answer,
+	// causing it to be spoken twice. Resetting here (before this turn streams
+	// anything) clears the leftover without touching the current turn's text.
+	resetStreamBuffer(h.writer)
 	h.mu.Lock()
 	h.finalTokenSeen = false
+	h.finalStreamLogEmitted = false
 	h.finalStreamErr = nil
 	h.streamFinal = true
 	h.mu.Unlock()
@@ -1635,6 +1633,12 @@ func resetStreamWriterState(writer io.Writer) {
 	resetter.ResetStreamState()
 }
 
+func resetStreamBuffer(writer io.Writer) {
+	if resetter, ok := writer.(ttsBufferResetter); ok {
+		resetter.ResetBuffer()
+	}
+}
+
 func streamWriterEmitted(writer io.Writer) bool {
 	tracker, ok := writer.(streamOutputTracker)
 	if !ok {
@@ -1661,13 +1665,15 @@ func (h *runtimeCallbackHandler) recordFirstToken() {
 	}
 }
 
-func (h *runtimeCallbackHandler) recordFinalToken() {
+func (h *runtimeCallbackHandler) recordFinalToken() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.finalStreamErr != nil {
-		return
+		return false
 	}
+	first := !h.finalTokenSeen
 	h.finalTokenSeen = true
+	return first
 }
 
 func (h *runtimeCallbackHandler) finalStreamingFailed() bool {
@@ -1692,16 +1698,37 @@ func (h *runtimeCallbackHandler) recordFinalStreamError(err error) {
 	}
 }
 
-var _ callbacks.Handler = (*runtimeCallbackHandler)(nil)
-
-func (h *runtimeCallbackHandler) toolCallSpeech(speech string) string {
-	if h == nil || !h.toolCallSpeechEnabled {
-		return ""
+func (h *runtimeCallbackHandler) LogFinalStreamingDecision(_ context.Context, role RoleName, providerStreaming bool, reason string) {
+	if h == nil || h.logger == nil || !h.providerFinalStreaming {
+		return
 	}
-	// Intentionally do not derive speech from the tool description. Missing
-	// LLM-generated tool-call speech means this tool call stays silent.
-	return strings.TrimSpace(speech)
+	h.logger.Info("Final stream decision: role=%s provider_streaming=%t reason=%s request_id=%s run_id=%s",
+		role, providerStreaming, reason, h.requestID, h.runID)
 }
+
+func (h *runtimeCallbackHandler) logFinalStreamEmitted(ctx context.Context, chunk []byte) {
+	if h == nil || h.logger == nil {
+		return
+	}
+	h.mu.Lock()
+	if h.finalStreamLogEmitted {
+		h.mu.Unlock()
+		return
+	}
+	h.finalStreamLogEmitted = true
+	requestID := h.requestID
+	runID := h.runID
+	h.mu.Unlock()
+
+	role := telemetryRoleFromContext(ctx)
+	if role == "" {
+		role = "post_parse"
+	}
+	h.logger.Info("Final stream emitted: role=%s chunk_len=%d chunk=%s request_id=%s run_id=%s",
+		role, len(chunk), truncateForLog(string(chunk), 120), requestID, runID)
+}
+
+var _ callbacks.Handler = (*runtimeCallbackHandler)(nil)
 
 func (h *runtimeCallbackHandler) pushPendingAction(action schema.AgentAction) {
 	h.mu.Lock()

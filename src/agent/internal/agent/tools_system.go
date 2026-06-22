@@ -34,7 +34,10 @@ func NewCurrentTimeTool() *CurrentTimeTool {
 func (t *CurrentTimeTool) Name() string { return "current_time" }
 
 func (t *CurrentTimeTool) Description() string {
-	return `Get the current date and time. Input JSON: {"timezone":"Asia/Shanghai"} or a bare timezone string. ` +
+	return `Get the precise current clock time, timezone data, UTC offset, Unix timestamp, or data needed for elapsed-time calculations. ` +
+		`Do not use this tool for ordinary date or weekday questions because the system prompt already provides today's date and weekday. ` +
+		`Use this tool only when a precise clock time, timezone conversion, UTC offset, Unix timestamp, or elapsed-time calculation is required. ` +
+		`Input JSON: {"timezone":"Asia/Shanghai"} or a bare timezone string. ` +
 		`The timezone may be an IANA name such as "America/New_York", "UTC", "local", or a UTC offset such as "+08:00".`
 }
 

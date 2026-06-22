@@ -1,5 +1,5 @@
 {
-  "name": "device_operator_skillopt_v1",
+  "name": "device_operator_train",
   "description": "SkillOpt-ready suite for optimizing the device-operator skill on a visible iPhone-style target device.",
   "trace_observations": [
     {

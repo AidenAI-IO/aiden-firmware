@@ -1,21 +1,21 @@
-# 音量初始化与调节
+# Audio Volume Initialization and Adjustment
 
-`scripts/setup_audio_volume.sh` 用于在 Luckfox Pico Zero 上将音频输出相关 mixer 音量设置到最大。
+`scripts/setup_audio_volume.sh` is used to set audio output mixer volumes to maximum on Luckfox Pico Zero.
 
-## 默认设置
+## Default Settings
 
-脚本会设置：
+The script sets:
 
-- `DAC HPMIX`: `2/2`（100%）
-- `DAC LINEOUT`: `30/30`（100%）
+- `DAC HPMIX`: `2/2` (100%)
+- `DAC LINEOUT`: `30/30` (100%)
 
-## 部署脚本
+## Deploy Script
 
 ```bash
 scp scripts/setup_audio_volume.sh root@<device-ip>:/root/
 ```
 
-登录设备后执行：
+After logging into the device, execute:
 
 ```bash
 cd /root
@@ -23,19 +23,19 @@ chmod +x setup_audio_volume.sh
 ./setup_audio_volume.sh
 ```
 
-## 开机自动执行
+## Auto-Execute on Boot
 
-### 方法一：`/etc/rc.local`
+### Method 1: `/etc/rc.local`
 
-在 `exit 0` 之前加入：
+Add before `exit 0`:
 
 ```sh
 /root/setup_audio_volume.sh
 ```
 
-### 方法二：systemd service
+### Method 2: systemd service
 
-如果系统使用 systemd：
+If the system uses systemd:
 
 ```bash
 cat > /etc/systemd/system/audio-volume.service << 'EOF'
@@ -58,7 +58,7 @@ systemctl start audio-volume.service
 systemctl status audio-volume.service
 ```
 
-### 方法三：应用启动脚本
+### Method 3: Application startup script
 
 ```sh
 #!/bin/sh
@@ -66,28 +66,28 @@ systemctl status audio-volume.service
 /path/to/your/app
 ```
 
-## 验证
+## Verification
 
 ```bash
 amixer sget 'DAC HPMIX'
 amixer sget 'DAC LINEOUT'
 ```
 
-预期看到：
+Expected output:
 
 - `DAC HPMIX`: `Mono: 2 [100%]`
 - `DAC LINEOUT`: `Mono: 30 [100%]`
 
-## 手动调节
+## Manual Adjustment
 
 ```bash
 amixer sset 'DAC HPMIX' 2
 amixer sset 'DAC LINEOUT' 30
-alsactl store   # 可选，保存 ALSA 设置
+alsactl store   # Optional, save ALSA settings
 ```
 
-## 与 audio_service 音量的关系
+## Relationship with audio_service Volume
 
-- mixer 音量决定底层硬件输出上限；
-- `audio_service_cli set-volume --volume N` 设置服务内的逻辑音量 `0..100`；
-- 如果硬件 mixer 太低，即使逻辑音量为 100，实际声音仍可能偏小。
+- Mixer volume determines the hardware output upper limit;
+- `audio_service_cli set-volume --volume N` sets the logical volume `0..100` within the service;
+- If hardware mixer is too low, even if logical volume is 100, actual sound may still be quiet.

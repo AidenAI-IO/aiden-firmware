@@ -51,6 +51,10 @@ struct AudioArchiveToml {
     std::string storage_path = "/userdata/audio";
 };
 
+struct LogToml {
+    int llm_http_retention_days = 7;
+};
+
 struct HIDToml {
     std::string keyboard_device;
     std::string mouse_device;
@@ -84,6 +88,7 @@ struct AgentToml {
     STTToml stt;
     AudioToml audio;
     AudioArchiveToml audio_archive;
+    LogToml log;
     HIDToml hid;
     SearchToml search;
     TelemetryToml telemetry;
@@ -104,14 +109,13 @@ struct AgentToml {
     int voice_max_turns = 0;
     bool voice_interrupt_on_wakeup = true;
     bool voice_streaming_tts_enabled = true;
-    bool voice_tool_call_speech = false;
+    bool voice_tool_call_speech = true;
     bool voice_progress_speech_enabled = true;
-    bool voice_speech_summary_enabled = true;
     int voice_max_response_tokens = 300;
     int max_iterations = -1;
     bool force_simple_loop = false;
     int screenshot_keep_n = 3;
-    int screenshot_prune_interval = 25;
+    int screenshot_prune_interval = 2;
     int screen_stable_timeout_ms = 3500;
     int screen_stable_ms = 500;
     double screen_stable_diff_threshold = 2.0;

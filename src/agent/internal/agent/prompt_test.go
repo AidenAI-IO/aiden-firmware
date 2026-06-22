@@ -15,7 +15,7 @@ func TestRolePromptsIncludeCurrentDate(t *testing.T) {
 	}
 	t.Cleanup(func() { promptNow = originalNow })
 
-	want := "Current date: 2026-06-01 (2026年06月01日 星期一)"
+	want := "Current date: 2026-06-01 (星期一)"
 	profiles := buildRoleProfiles(AgentConfig{}, ResolvedSkills{}, nil, MemoryContext{})
 	for _, profile := range []RoleProfile{profiles.Planner, profiles.Executor, profiles.Verifier} {
 		if !strings.Contains(profile.SystemPrompt, want) {
@@ -73,8 +73,8 @@ func TestRolePromptsIncludeGlobalEnvironmentAndDeviceGuidance(t *testing.T) {
 		for _, want := range []string{
 			"base instruction",
 			"extra prompt",
-			"### Environment",
-			"### Default Behavior",
+			"## Environment",
+			"## Default behavior",
 			"Default to replying in Simplified Chinese",
 			"Aiden hardware controller",
 			"not the device shown in screenshots",
@@ -92,30 +92,15 @@ func TestRolePromptsIncludeGlobalEnvironmentAndDeviceGuidance(t *testing.T) {
 			"suitable for TTS",
 			"device-operator",
 			"visible target UI",
-			"Use wait_for_stable_screen only while operating a visible target UI",
-			"Do not call it for text-only reasoning",
+			"wait_for_stable_screen screenshot",
 			"Do not repeat the same click",
 			"prefer search over blind scrolling",
-			"US-keyboard ASCII",
-			"use backspace for ordinary deletion",
-			"Use the Delete key only for intentional forward-delete",
-			"prefer the audio_volume tool",
-			"Prefer coord_space:\"normalized\"",
-			"Use coord_space:\"pixel\" only when calibrated",
-			"prefer quick_action",
-			"delete backward/delete forward",
-			"quick_action {\"action\":\"back\",\"platform\":\"android\"}",
-			"Fall back to lower-level tools",
-			"type back/home",
+			"Base visible UI actions on the latest screenshot",
+			"Prefer direct or semantic tools",
+			"repeated swipes or scrolling",
+			"image_diff feedback",
 			"request confirmation",
-			"Swipe strategy",
-			"Directional swipe names describe finger movement",
-			"older chat/message history",
-			"Precision swipe loop",
 			"probe once with medium",
-			"strength/direction -> UI movement",
-			"Downshift when close to the target",
-			"if oscillating, use only tiny",
 			"save_memory with app name, control location, direction, strength/distance, and delta",
 		} {
 			if !strings.Contains(profile.SystemPrompt, want) {
@@ -144,6 +129,98 @@ func TestRolePromptsIncludeGlobalEnvironmentAndDeviceGuidance(t *testing.T) {
 
 		if strings.Contains(profile.SystemPrompt, "Use long-term memory if relevant") {
 			t.Fatalf("%s system prompt should not contain legacy memory trigger:\n%s", profile.Name, profile.SystemPrompt)
+		}
+	}
+}
+
+func TestDefaultAgentBehaviorExcludesEnvironmentGuidance(t *testing.T) {
+	behavior := defaultAgentBehavior(AgentConfig{})
+
+	for _, unexpected := range []string{
+		"Environment",
+		"Aiden hardware controller",
+		"not the device shown in screenshots",
+		hostRuntimeInfoContext(),
+	} {
+		if strings.Contains(behavior, unexpected) {
+			t.Fatalf("defaultAgentBehavior should not include environment guidance %q:\n%s", unexpected, behavior)
+		}
+	}
+}
+
+func TestGlobalPromptsExcludeKeyboardTextInputDetails(t *testing.T) {
+	for name, prompt := range map[string]string{
+		"defaultAgentBehavior": defaultAgentBehavior(AgentConfig{}),
+		"defaultInstruction":   defaultInstruction,
+	} {
+		for _, unexpected := range []string{
+			`{"text":"App Store"}`,
+			"US-keyboard ASCII",
+			"must receive JSON",
+			"不要传裸字符串",
+			"非键盘字符",
+			"拼音/英文关键词",
+		} {
+			if strings.Contains(prompt, unexpected) {
+				t.Fatalf("%s should not include keyboard_text input detail %q:\n%s", name, unexpected, prompt)
+			}
+		}
+	}
+}
+
+func TestDefaultAgentBehaviorExcludesMigratedToolDetails(t *testing.T) {
+	behavior := defaultAgentBehavior(AgentConfig{})
+	for _, unexpected := range []string{
+		"stable=false means",
+		"audio_volume tool",
+		"Use the Delete key only",
+		"coord_space:\"normalized\"",
+		"coord_space:\"pixel\"",
+		`quick_action {"action":"back","platform":"android"}`,
+		"For phone edge navigation",
+		"Directional swipe names describe finger movement",
+		"Precision swipe loop",
+		"Horizontal carousels",
+	} {
+		if strings.Contains(behavior, unexpected) {
+			t.Fatalf("defaultAgentBehavior should not include migrated tool detail %q:\n%s", unexpected, behavior)
+		}
+	}
+}
+
+func TestRolePromptsRequireToolCallSpeechForExternalStateTools(t *testing.T) {
+	enabled := true
+	profiles := buildRoleProfiles(
+		AgentConfig{
+			VoiceToolCallSpeech: &enabled,
+			TTSConfigured:       true,
+		},
+		ResolvedSkills{},
+		nil,
+		MemoryContext{},
+	)
+
+	for _, profile := range []RoleProfile{profiles.Planner, profiles.Executor} {
+		for _, want := range []string{
+			"The system prompt already includes the current date and weekday",
+			"Do not call current_time for ordinary date or weekday questions",
+			"when a precise clock time, timezone conversion, offset, timestamp, or elapsed-time calculation is required",
+			"Put a brief assistant content message before every tool call that observes, waits for, reads, or changes external state",
+			"screenshot, wait_for_stable_screen, quick_action, mouse_click, touch_gesture, keyboard_text, keyboard_tap, open_app, recall_memory",
+			"assistant content is spoken aloud by the runtime before the tool runs",
+			"Do not put the final answer in tool-call assistant content",
+			"TTS is configured, so user-facing text output will be spoken aloud",
+			"Do not duplicate the same sentence in tool-call assistant content and the final answer",
+		} {
+			if !strings.Contains(profile.SystemPrompt, want) {
+				t.Fatalf("%s prompt missing tool-call speech requirement %q:\n%s", profile.Name, want, profile.SystemPrompt)
+			}
+		}
+		if strings.Contains(profile.SystemPrompt, "user-visible tool") {
+			t.Fatalf("%s prompt should not use ambiguous user-visible tool wording:\n%s", profile.Name, profile.SystemPrompt)
+		}
+		if strings.Contains(profile.SystemPrompt, "When voice tool-call speech is enabled") {
+			t.Fatalf("%s prompt should not ask the model to reason about whether voice tool-call speech is enabled:\n%s", profile.Name, profile.SystemPrompt)
 		}
 	}
 }

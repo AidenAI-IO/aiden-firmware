@@ -5,6 +5,7 @@ import json
 import shutil
 import time
 from pathlib import Path
+from typing import Any
 from runner.agent_client import AgentClient, AgentRequestError, AgentTimeoutError
 from runner.assertions import (
     evaluate_expected_answer,
@@ -51,76 +52,47 @@ def skipped_task_result(
     )
 
 
-def run_one_task(
-    client: AgentClient,
+def evaluate_task_history(
+    *,
     suite: Suite,
     task: TaskSpec,
+    history: list[dict[str, Any]],
     attempt: int,
     artifact_dir: Path,
     judge_cfg: JudgeConfig | None,
     judge_cache_dir: Path | None,
     run_id: str,
-    environment_url: str | None = None,
+    timed_out: bool,
+    metrics: dict[str, Any] | None = None,
+    pre_screenshot: Path | None = None,
+    started_at: str | None = None,
+    started_mono: float | None = None,
 ) -> TaskResult:
     artifact_dir.mkdir(parents=True, exist_ok=True)
-    started = now_iso()
-    started_mono = time.monotonic()
+    started = started_at or now_iso()
     base = TaskResult(
-        suite=suite.name, run_id=run_id, task_id=task.id, category=task.category,
-        attempt=attempt, status="failed",
-        rubric=[], rubric_pass_count=0, rubric_total=len(task.rubric),
-        artifact_dir=str(artifact_dir), started_at=started,
+        suite=suite.name,
+        run_id=run_id,
+        task_id=task.id,
+        category=task.category,
+        attempt=attempt,
+        status="failed",
+        rubric=[],
+        rubric_pass_count=0,
+        rubric_total=len(task.rubric),
+        artifact_dir=str(artifact_dir),
+        started_at=started,
         description_for_judge=task.description_for_judge,
         rubric_spec=[dc.asdict(r) for r in task.rubric],
+        metrics=dict(metrics or {}),
     )
-    try:
-        prepare_task_isolation(client, suite, task, environment_url=environment_url)
-    except (ResetError, AgentTimeoutError, AgentRequestError) as e:
-        base.status = "skipped"
-        base.metrics = {"error": f"setup: {e}"}
-        base.finished_at = now_iso()
-        return base
-    pre_path = artifact_dir / "pre.jpg"
-    # Resolve input_screenshot: use static image as pre and send as attachment
-    attachments = None
-    if task.input_screenshot:
-        screenshot_path = suite.source_path.parent / task.input_screenshot
-        if not screenshot_path.exists():
-            base.status = "skipped"
-            base.metrics = {"error": f"input_screenshot not found: {screenshot_path}"}
-            base.finished_at = now_iso()
-            return base
-        shutil.copy(screenshot_path, pre_path)
-        img_b64 = base64.b64encode(screenshot_path.read_bytes()).decode("ascii")
-        attachments = [{"kind": "image", "mime_type": "image/jpeg", "data": img_b64}]
-    else:
-        try:
-            take_screenshot(client, pre_path)
-        except Exception:
-            pass
-    timed_out = False
-    try:
-        prompt = task.prompt
-        if suite.prompt_prefix:
-            prompt = f"{suite.prompt_prefix.rstrip()}\n\n{task.prompt}"
-        chat = client.chat(
-            prompt,
-            timeout_sec=task.hard_assertions.must_complete_within_sec,
-            attachments=attachments,
-        )
-        history = chat.history
-    except AgentTimeoutError:
-        timed_out = True
-        history = client_history_or_empty(client)
-        if not recover_agent_after_timeout(client):
-            base.metrics["recovery_failed"] = True
-    except Exception as e:
-        history = client_history_or_empty(client)
-        base.metrics["agent_error"] = str(e)[:300]
     (artifact_dir / "history.json").write_text(
         json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
     trace = extract_trace(history)
-    wall_ms = int((time.monotonic() - started_mono) * 1000)
+    if started_mono is None:
+        wall_ms = 0
+    else:
+        wall_ms = int((time.monotonic() - started_mono) * 1000)
     if suite.trace_observations:
         observation_results = evaluate_trace_observations(trace, suite.trace_observations)
         base.metrics["trace_observations"] = [
@@ -189,7 +161,7 @@ def run_one_task(
         verdict = judge_task(
             description=task.description_for_judge,
             rubric=task.rubric,
-            pre_screenshot=pre_path if pre_path.exists() else None,
+            pre_screenshot=pre_screenshot if pre_screenshot and pre_screenshot.exists() else None,
             post_screenshot=last_shot_path,
             trace=trace_dict,
             final_response=trace.final_response,
@@ -211,6 +183,88 @@ def run_one_task(
     base.status = "passed" if base.rubric_pass_count == base.rubric_total else "failed"
     base.finished_at = now_iso()
     return base
+
+
+def run_one_task(
+    client: AgentClient,
+    suite: Suite,
+    task: TaskSpec,
+    attempt: int,
+    artifact_dir: Path,
+    judge_cfg: JudgeConfig | None,
+    judge_cache_dir: Path | None,
+    run_id: str,
+) -> TaskResult:
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    started = now_iso()
+    started_mono = time.monotonic()
+    base = TaskResult(
+        suite=suite.name, run_id=run_id, task_id=task.id, category=task.category,
+        attempt=attempt, status="failed",
+        rubric=[], rubric_pass_count=0, rubric_total=len(task.rubric),
+        artifact_dir=str(artifact_dir), started_at=started,
+        description_for_judge=task.description_for_judge,
+        rubric_spec=[dc.asdict(r) for r in task.rubric],
+    )
+    try:
+        prepare_task_isolation(client, suite, task)
+    except (ResetError, AgentTimeoutError, AgentRequestError) as e:
+        base.status = "skipped"
+        base.metrics = {"error": f"setup: {e}"}
+        base.finished_at = now_iso()
+        return base
+    pre_path = artifact_dir / "pre.jpg"
+    # Resolve input_screenshot: use static image as pre and send as attachment
+    attachments = None
+    if task.input_screenshot:
+        screenshot_path = suite.source_path.parent / task.input_screenshot
+        if not screenshot_path.exists():
+            base.status = "skipped"
+            base.metrics = {"error": f"input_screenshot not found: {screenshot_path}"}
+            base.finished_at = now_iso()
+            return base
+        shutil.copy(screenshot_path, pre_path)
+        img_b64 = base64.b64encode(screenshot_path.read_bytes()).decode("ascii")
+        attachments = [{"kind": "image", "mime_type": "image/jpeg", "data": img_b64}]
+    else:
+        try:
+            take_screenshot(client, pre_path)
+        except Exception:
+            pass
+    timed_out = False
+    try:
+        prompt = task.prompt
+        if suite.prompt_prefix:
+            prompt = f"{suite.prompt_prefix.rstrip()}\n\n{task.prompt}"
+        chat = client.chat(
+            prompt,
+            timeout_sec=task.hard_assertions.must_complete_within_sec,
+            attachments=attachments,
+        )
+        history = chat.history
+    except AgentTimeoutError:
+        timed_out = True
+        history = client_history_or_empty(client)
+        if not recover_agent_after_timeout(client):
+            base.metrics["recovery_failed"] = True
+    except Exception as e:
+        history = client_history_or_empty(client)
+        base.metrics["agent_error"] = str(e)[:300]
+    return evaluate_task_history(
+        suite=suite,
+        task=task,
+        history=history,
+        attempt=attempt,
+        artifact_dir=artifact_dir,
+        judge_cfg=judge_cfg,
+        judge_cache_dir=judge_cache_dir,
+        run_id=run_id,
+        timed_out=timed_out,
+        metrics=base.metrics,
+        pre_screenshot=pre_path if pre_path.exists() else None,
+        started_at=started,
+        started_mono=started_mono,
+    )
 
 
 def client_history_or_empty(client: AgentClient) -> list[dict]:

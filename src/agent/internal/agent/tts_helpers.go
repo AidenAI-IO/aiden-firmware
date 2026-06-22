@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"strings"
+	"sync"
 	"time"
 
 	"aiden-agent/internal/agent/tts"
@@ -134,7 +135,13 @@ func beginManagedTTSStream(ctx context.Context, manager *tts.ProviderManager, au
 	return &streamSessionWriter{session: session, sink: targetSink}, nil
 }
 
+type ttsStreamObserver func(*streamSessionWriter) func()
+
 func speakWithTTSManager(ctx context.Context, manager *tts.ProviderManager, audio *AudioServiceClient, cfg Config, text string) (bool, error) {
+	return speakWithTTSManagerObserved(ctx, manager, audio, cfg, text, nil)
+}
+
+func speakWithTTSManagerObserved(ctx context.Context, manager *tts.ProviderManager, audio *AudioServiceClient, cfg Config, text string, observe ttsStreamObserver) (bool, error) {
 	text = strings.TrimSpace(text)
 	if text == "" || manager == nil || audio == nil {
 		return false, nil
@@ -161,9 +168,16 @@ func speakWithTTSManager(ctx context.Context, manager *tts.ProviderManager, audi
 			}
 			return false, err
 		}
+		unobserve := func() {}
+		if observe != nil {
+			if cleanup := observe(stream); cleanup != nil {
+				unobserve = cleanup
+			}
+		}
 
 		if _, err := stream.Write([]byte(text)); err != nil {
 			_ = stream.closeAndWait()
+			unobserve()
 			lastErr = err
 			if isTransientTTSError(err) && attempt < maxRetries {
 				continue
@@ -172,14 +186,16 @@ func speakWithTTSManager(ctx context.Context, manager *tts.ProviderManager, audi
 		}
 
 		if err := stream.closeAndWait(); err != nil {
+			unobserve()
 			lastErr = err
 			if isTransientTTSError(err) && attempt < maxRetries {
 				continue
 			}
 			return false, err
 		}
+		unobserve()
 
-		return stream.spoke, nil
+		return stream.spokeSuccessfully(), nil
 	}
 	return false, lastErr
 }
@@ -242,28 +258,108 @@ func (a *ttsLoggerAdapter) Warn(format string, args ...any) {
 // LLM streaming output is written byte-slice by byte-slice; we forward each
 // fragment to the TTS session immediately.
 type streamSessionWriter struct {
-	session tts.StreamSession
-	sink    *tts.AudioServiceSink
-	spoke   bool
-	lastErr error
+	mu          sync.Mutex
+	session     tts.StreamSession
+	sink        *tts.AudioServiceSink
+	cancel      context.CancelFunc
+	spoke       bool
+	lastErr     error
+	interrupted bool
+}
+
+func (w *streamSessionWriter) setCancel(cancel context.CancelFunc) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.cancel = cancel
 }
 
 func (w *streamSessionWriter) Write(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
-	if err := w.session.WriteText(string(p)); err != nil {
-		if w.lastErr == nil {
+	w.mu.Lock()
+	if w.interrupted {
+		w.mu.Unlock()
+		return len(p), nil
+	}
+	session := w.session
+	w.mu.Unlock()
+
+	if err := session.WriteText(string(p)); err != nil {
+		w.mu.Lock()
+		if w.lastErr == nil && !w.interrupted {
 			w.lastErr = err
 		}
+		w.mu.Unlock()
 	}
 	// Always return success so the LLM stream is not interrupted by TTS errors.
 	return len(p), nil
 }
 
+// ttsBufferResetter is implemented by TTS sessions that buffer text internally
+// (e.g. sentence-boundary buffering in non-incremental providers) and can drop
+// that buffer on demand.
+type ttsBufferResetter interface {
+	ResetBuffer()
+}
+
+// ResetBuffer discards any text buffered by the underlying TTS session but not
+// yet synthesized. Used to prevent residual content from a tool-call turn from
+// leaking into a later final-answer turn.
+func (w *streamSessionWriter) ResetBuffer() {
+	w.mu.Lock()
+	session := w.session
+	w.mu.Unlock()
+	if resetter, ok := session.(ttsBufferResetter); ok {
+		resetter.ResetBuffer()
+	}
+}
+
+func (w *streamSessionWriter) interrupt() {
+	w.mu.Lock()
+	if w.interrupted {
+		w.mu.Unlock()
+		return
+	}
+	w.interrupted = true
+	w.spoke = false
+	sink := w.sink
+	cancel := w.cancel
+	w.mu.Unlock()
+
+	if sink != nil {
+		_ = sink.Stop()
+	}
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (w *streamSessionWriter) spokeSuccessfully() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.spoke && !w.interrupted
+}
+
 // closeAndWait flushes the session and waits for playback to drain.
 func (w *streamSessionWriter) closeAndWait() error {
-	closeErr := w.session.Close()
+	w.mu.Lock()
+	if w.interrupted {
+		w.spoke = false
+		w.mu.Unlock()
+		return nil
+	}
+	session := w.session
+	w.mu.Unlock()
+
+	closeErr := session.Close()
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.interrupted {
+		w.spoke = false
+		return nil
+	}
 	if w.lastErr != nil {
 		return w.lastErr
 	}

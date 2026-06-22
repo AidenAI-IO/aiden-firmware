@@ -1,15 +1,15 @@
-# Unix Domain Socket 通用协议
+# Unix Domain Socket Protocol
 
-本项目使用 Unix domain sockets 连接 C++ 硬件服务和其他进程。协议设计目标是简单、跨语言、可携带大块二进制数据。
+This project uses Unix domain sockets to connect C++ hardware services with other processes. The protocol is designed to be simple, cross-language, and capable of carrying large binary data blocks.
 
-## 消息 Envelope
+## Message Envelope
 
-每条消息是一个完整 frame：
+Each message is a complete frame:
 
-1. `uint32` little-endian：JSON header 长度；
-2. `uint64` little-endian：binary payload 长度；
-3. UTF-8 JSON header bytes；
-4. 可选 binary payload bytes。
+1. `uint32` little-endian: JSON header length;
+2. `uint64` little-endian: binary payload length;
+3. UTF-8 JSON header bytes;
+4. Optional binary payload bytes.
 
 ```text
 +----------------------+-----------------------+----------------+------------------+
@@ -17,33 +17,33 @@
 +----------------------+-----------------------+----------------+------------------+
 ```
 
-JSON header 描述请求或响应；大型二进制数据（如 raw HDMI frame、PCM chunk）放在 payload 中，避免 base64 编码开销。
+JSON header describes the request or response; large binary data (such as raw HDMI frame, PCM chunk) goes in the payload to avoid base64 encoding overhead.
 
-## C++ 实现
+## C++ Implementation
 
-| 文件 | 说明 |
+| File | Description |
 | --- | --- |
-| `src/uds_message.*` | envelope 读写 |
-| `src/uds_client.*` | 一次请求/响应 client |
-| `src/uds_server.*` | bind/listen/accept/thread 生命周期，并分发到服务 handler |
-| `src/frame_ipc.*` | frame service 兼容 wrapper |
+| `src/uds_message.*` | Envelope read/write |
+| `src/uds_client.*` | Single request/response client |
+| `src/uds_server.*` | bind/listen/accept/thread lifecycle and dispatch to service handler |
+| `src/frame_ipc.*` | Frame service compatibility wrapper |
 
-## 跨语言客户端
+## Cross-Language Clients
 
-Go 或其他语言不需要 C++ ABI / cgo，只需：
+Go or other languages don't need C++ ABI / cgo, just:
 
-1. 连接 service socket；
-2. 写入 12-byte envelope prefix；
-3. 写入 JSON header 和可选 payload；
-4. 按同样格式读取响应。
+1. Connect to service socket;
+2. Write 12-byte envelope prefix;
+3. Write JSON header and optional payload;
+4. Read response in the same format.
 
-## 大整数处理
+## Large Integer Handling
 
-某些字段可能超过 JavaScript safe integer 范围。跨语言客户端应与现有服务保持一致：必要时将大整数编码为 JSON string。
+Some fields may exceed JavaScript safe integer range. Cross-language clients should remain consistent with existing services: encode large integers as JSON strings when necessary.
 
-## 状态值
+## Status Values
 
-服务共享 `AidenServiceStatus`，常见值包括：
+Services share `AidenServiceStatus`, common values include:
 
 - `OK`
 - `NO_NEW_FRAME`
@@ -54,4 +54,4 @@ Go 或其他语言不需要 C++ ABI / cgo，只需：
 - `TRANSPORT_ERROR`
 - `INTERNAL_ERROR`
 
-具体业务语义见各服务协议。
+See individual service protocols for specific business semantics.

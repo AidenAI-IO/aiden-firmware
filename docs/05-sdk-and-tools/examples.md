@@ -1,6 +1,6 @@
-# 示例程序
+# Example Programs
 
-CMake 会构建多个 `example_*` 可执行文件，用于验证 SDK 和设备能力。
+CMake builds multiple `example_*` executables to verify SDK and device capabilities.
 
 ## Wakeup
 
@@ -8,7 +8,7 @@ CMake 会构建多个 `example_*` 可执行文件，用于验证 SDK 和设备�
 ./build/bin/example_wakeup
 ```
 
-监听 GPIO 33/GPIO 32 falling edge。典型硬件连接：按钮连接 GPIO 与 GND，内部上拉。
+Listens for GPIO 33/GPIO 32 falling edge. Typical hardware connection: button connects GPIO to GND with internal pull-up.
 
 ## Audio Capture
 
@@ -16,7 +16,7 @@ CMake 会构建多个 `example_*` 可执行文件，用于验证 SDK 和设备�
 ./build/bin/example_audio_capture [device_name]
 ```
 
-采集音频并打印 frame 信息。可选传入 ALSA device name。
+Captures audio and prints frame information. Optionally pass in ALSA device name.
 
 ## Audio Playback
 
@@ -24,7 +24,7 @@ CMake 会构建多个 `example_*` 可执行文件，用于验证 SDK 和设备�
 ./build/bin/example_audio_play [device_name]
 ```
 
-播放 440Hz 测试音约 2 秒。
+Plays back a PCM audio file (`audio_capture_debug.pcm`) through the specified ALSA device. The PCM file must exist in the current directory or the path where the binary is run.
 
 ## Camera Capture
 
@@ -34,24 +34,24 @@ CMake 会构建多个 `example_*` 可执行文件，用于验证 SDK 和设备�
 ./build/bin/example_camera_capture --edid /mnt/tmp/hdmi_1080p30_cta.hex
 ```
 
-常用参数：
+Common parameters:
 
 ```text
 example_camera_capture [device_path] [width] [height] [pixfmt] [skip_frames] [options]
 ```
 
-支持 `--device`、`--subdev`、`--edid`、`--force-trigger`、`--capture-retries`、`--output` 等选项，详见 `--help`。
+Supports options like `--device`, `--subdev`, `--edid`, `--force-trigger`, `--capture-retries`, `--output`, etc. See `--help` for details.
 
-默认 one-shot 流程会：
+Default one-shot flow:
 
-- 先查询当前 DV timings；
-- 必要时推送内置 1080p30-only CTA EDID；
-- 等待 `/dev/v4l-subdev2` HDMI sync；
-- stream-on 后丢弃过渡帧；
-- 通过 V4L2 MMAP 从 `/dev/video0` 捕获；
-- 默认保存可查看的 `/mnt/tmp/frame.ppm`。
+- First queries current DV timings;
+- Pushes built-in 1080p30-only CTA EDID if necessary;
+- Waits for `/dev/v4l-subdev2` HDMI sync;
+- Discards transitional frames after stream-on;
+- Captures from `/dev/video0` via V4L2 MMAP;
+- Saves viewable `/mnt/tmp/frame.ppm` by default.
 
-> 若 `frame_service` 正在运行，需要先停止它，否则 `/dev/video0` 会被占用。
+> If `frame_service` is running, stop it first, otherwise `/dev/video0` will be busy.
 
 ## USB HID
 
@@ -63,15 +63,15 @@ sudo ./build/bin/example_usb_hid touch click 16000 16000
 sudo ./build/bin/example_usb_hid cleanup
 ```
 
-更多信息见 [USB HID 与设备控制](../03-services/usb-hid.md)。
+For more information, see [USB HID and Device Control](../03-services/usb-hid.md).
 
-## 其他工具
+## Other Tools
 
-| 程序 | 说明 |
+| Program | Description |
 | --- | --- |
-| `hello` | 基础 C 程序验证 |
-| `trigger` | GPIO / 触发相关小工具 |
-| `audio_stream` | 音频流示例工具 |
-| `config_web` | 配置网页服务 |
-| `frame_service_cli` | Frame Service 调试 CLI |
-| `audio_service_cli` | Audio Service 调试 CLI |
+| `hello` | Basic C program verification |
+| `trigger` | GPIO / trigger-related utility |
+| `audio_stream` | Audio stream example tool |
+| `config_web` | Configuration web service |
+| `frame_service_cli` | Frame Service debugging CLI |
+| `audio_service_cli` | Audio Service debugging CLI |

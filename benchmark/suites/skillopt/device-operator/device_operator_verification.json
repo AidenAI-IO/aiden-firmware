@@ -1,5 +1,5 @@
 {
-  "name": "device_operator_skillopt_validation_v1",
+  "name": "device_operator_verification",
   "description": "Held-out validation suite for SkillOpt optimization of the device-operator skill.",
   "trace_observations": [
     {

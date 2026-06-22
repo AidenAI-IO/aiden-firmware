@@ -190,6 +190,22 @@ class RolloutResult:
 
 
 @dc.dataclass
+class ScoreSummary:
+    hard: float = 0.0
+    soft: float = 0.0
+    n: int = 0
+    n_passed: int = 0
+
+
+@dc.dataclass
+class PhaseSummary:
+    phase: str
+    kind: str
+    suite_name: str
+    score: ScoreSummary
+
+
+@dc.dataclass
 class StepDecision:
     """Result of one optimization step (one apply + selection eval)."""
 
@@ -200,6 +216,11 @@ class StepDecision:
     reason: str = ""
     edits_applied: list[Edit] = dc.field(default_factory=list)
     edits_rejected: list[Edit] = dc.field(default_factory=list)
+    train_score: ScoreSummary | None = None
+    candidate_selection_score: ScoreSummary | None = None
+    patch_reasoning: str = ""
+    patch_reports: list[dict[str, Any]] = dc.field(default_factory=list)
+    raw_patches: list[RawPatch] = dc.field(default_factory=list)
 
 
 @dc.dataclass
@@ -213,3 +234,5 @@ class OptimizationResult:
     steps: list[StepDecision] = dc.field(default_factory=list)
     accepted_count: int = 0
     rejected_count: int = 0
+    phase_summaries: list[PhaseSummary] = dc.field(default_factory=list)
+    stop_reason: str = ""

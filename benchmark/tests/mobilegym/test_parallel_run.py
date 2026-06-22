@@ -26,6 +26,19 @@ def install_fake_docker(tmp_path):
     return log_path
 
 
+def install_arg_logging_fake_docker(tmp_path):
+    log_path = tmp_path / "docker.log"
+    fake_docker = tmp_path / "docker"
+    fake_docker.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s|%s|%s\n' \"${COMPOSE_PROJECT_NAME:-}\" \"${AIDEN_CONFIG_DIR:-}\" \"$*\" >> \"$DOCKER_LOG\"\n"
+        "if [[ \"$*\" == *\" run \"* ]]; then for arg in \"$@\"; do printf 'ARG|%s\n' \"$arg\" >> \"$DOCKER_LOG\"; done; fi\n"
+        "if [[ \"$*\" == *\" logs\"* ]]; then printf 'compose logs for %s\n' \"${COMPOSE_PROJECT_NAME:-}\"; fi\n"
+    )
+    fake_docker.chmod(0o755)
+    return log_path
+
+
 def install_image_check_fake_docker(tmp_path):
     log_path = tmp_path / "docker.log"
     built_marker = tmp_path / "images-built"
@@ -359,6 +372,40 @@ def test_parallel_run_allows_nested_aiden_suite_names(tmp_path):
     run_line = command_lines(lines, " run --rm test ")[0]
     assert "--aiden-suite perception/perception_v1" in run_line
     assert (batch_dir / "perception" / "perception_v1" / "shard-0").exists()
+
+
+def test_parallel_run_passes_aiden_task_ids_as_single_argument(tmp_path):
+    script = (DOCKER_DIR / "parallel_run.sh").read_text()
+    assert "local -a aiden_task_id_args=()" in script
+    assert '${AIDEN_TASK_IDS:+--aiden-task-ids "$AIDEN_TASK_IDS"}' not in script
+
+    log_path = install_arg_logging_fake_docker(tmp_path)
+    env = make_env(
+        tmp_path,
+        log_path,
+        PARALLEL="1",
+    )
+
+    result = subprocess.run(
+        [
+            "./parallel_run.sh",
+            "--aiden-suite",
+            "skillopt/device-operator/device_operator_train",
+            "--aiden-task-ids",
+            "case_one,case_two",
+        ],
+        cwd=DOCKER_DIR,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    arg_lines = [line for line in log_path.read_text().splitlines() if line.startswith("ARG|")]
+    assert "ARG|--aiden-task-ids" in arg_lines
+    assert "ARG|case_one,case_two" in arg_lines
 
 
 def test_parallel_run_renders_agent_template_from_environment(tmp_path):

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -68,6 +69,56 @@ func TestEnterPlanModePreservesToolSteps(t *testing.T) {
 	if len(state.ToolSteps) != 1 {
 		t.Fatalf("tool steps = %d, want 1", len(state.ToolSteps))
 	}
+}
+
+func TestExecutorScratchpadDoesNotReplaySpeechArgumentAsContent(t *testing.T) {
+	executor := newRoleCollaborativeExecutor(
+		&scriptedModel{},
+		RoleProfiles{},
+		nil,
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := roleLoopState{
+		StepToolSteps: []schema.AgentStep{{
+			Action: schema.AgentAction{
+				Tool:      "mouse_click",
+				ToolInput: `{"button":"left","x":500,"y":850}`,
+				Log:       formatToolActionLog("mouse_click", `{"button":"left","speech":"点击支付按钮","x":500,"y":850}`, "", "\n"),
+				ToolID:    "call_1",
+			},
+			Observation: "ok",
+		}},
+	}
+
+	messages := executor.roleMessages(
+		RoleProfile{Name: RoleExecutor, SystemPrompt: "system"},
+		map[string]string{"input": "continue"},
+		state,
+		"task",
+	)
+	for _, message := range messages {
+		for _, part := range message.Parts {
+			toolCall, ok := part.(llms.ToolCall)
+			if !ok || toolCall.FunctionCall == nil || toolCall.FunctionCall.Name != "mouse_click" {
+				continue
+			}
+			var args map[string]any
+			if err := json.Unmarshal([]byte(toolCall.FunctionCall.Arguments), &args); err != nil {
+				t.Fatalf("decode scratchpad tool arguments: %v", err)
+			}
+			if _, ok := args["speech"]; ok {
+				t.Fatalf("scratchpad should not replay previous tool-call speech as an argument; args=%#v", args)
+			}
+			return
+		}
+	}
+	t.Fatalf("scratchpad mouse_click tool call not found: %#v", messages)
 }
 
 func TestCommitPlanOnlyInPlanMode(t *testing.T) {
@@ -810,10 +861,10 @@ func TestRecordPlanStepResultSurvivesStepClear(t *testing.T) {
 
 func TestRequestContextPromptDoesNotMarkRootRequestAuthoritative(t *testing.T) {
 	inputs := map[string]string{
-		"input":             "打开微信",
-		rootRequestInputKey: "查天气",
-		latestUserInputKey:  "打开微信",
-		followUpRelationKey: FollowUpContinuation,
+		"input":              "打开微信",
+		rootRequestInputKey:  "查天气",
+		latestUserInputKey:   "打开微信",
+		"follow_up_relation": "continuation",
 	}
 	prompt := buildPlannerStatePrompt(inputs, roleLoopState{}, "Planner task.")
 
@@ -822,6 +873,8 @@ func TestRequestContextPromptDoesNotMarkRootRequestAuthoritative(t *testing.T) {
 		"authoritative; do not replace it with a subtask",
 		"Current objective:",
 		"Satisfy every explicit requirement in the original user request.",
+		"Follow-up classification:",
+		"follow_up_relation",
 	} {
 		if strings.Contains(prompt, unwanted) {
 			t.Fatalf("planner prompt should not contain %q:\n%s", unwanted, prompt)

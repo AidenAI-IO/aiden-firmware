@@ -181,8 +181,8 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 	if userID := traceUserID(episode); userID != "" {
 		traceBody["userId"] = userID
 	}
-	if sessionID := traceSessionID(episode); sessionID != "" {
-		traceBody["sessionId"] = sessionID
+	if runtimeID := traceRuntimeID(episode); runtimeID != "" {
+		traceBody["sessionId"] = runtimeID
 	}
 	if release := traceReleaseFromEpisode(episode); release != "" {
 		traceBody["release"] = release
@@ -467,13 +467,11 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 				end = pair.ResultTime
 			}
 			metadata := map[string]interface{}{
-				"event_id":         event.EventID,
-				"tool_name":        event.ToolName,
-				"tool_description": event.ToolDescription,
-				"speech":           event.Speech,
-				"has_tool_result":  paired && pair.HasResult,
-				"role":             event.Role,
-				"phase":            currentPhase,
+				"event_id":        event.EventID,
+				"tool_name":       event.ToolName,
+				"has_tool_result": paired && pair.HasResult,
+				"role":            event.Role,
+				"phase":           currentPhase,
 			}
 			if paired && pair.ResultEventID != "" {
 				metadata["result_event_id"] = pair.ResultEventID
@@ -1001,9 +999,12 @@ func traceUserID(episode TaskEpisode) string {
 	return ""
 }
 
-func traceSessionID(episode TaskEpisode) string {
-	if sessionID := extraString(episode.Extra, "session_id"); sessionID != "" {
-		return sessionID
+func traceRuntimeID(episode TaskEpisode) string {
+	if runtimeID := extraString(episode.Extra, "runtime_id"); runtimeID != "" {
+		return runtimeID
+	}
+	if legacySessionID := extraString(episode.Extra, "session_id"); legacySessionID != "" {
+		return legacySessionID
 	}
 	return extraString(episode.Extra, "telemetry_session_id")
 }
@@ -1372,11 +1373,8 @@ func toolCallInput(event TaskEpisodeEvent) map[string]interface{} {
 	if strings.TrimSpace(event.ToolInput) != "" {
 		input["tool_input"] = event.ToolInput
 	}
-	if strings.TrimSpace(event.ToolDescription) != "" {
-		input["description"] = event.ToolDescription
-	}
-	if strings.TrimSpace(event.Speech) != "" {
-		input["speech"] = event.Speech
+	if strings.TrimSpace(event.Content) != "" {
+		input["content"] = event.Content
 	}
 	return input
 }

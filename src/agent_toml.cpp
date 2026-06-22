@@ -281,8 +281,6 @@ void apply_kv(AgentToml& cfg,
             if (!assign_bool(&cfg.voice_tool_call_speech, raw, &sub_err)) fail(sub_err);
         } else if (key == "voice_progress_speech_enabled") {
             if (!assign_bool(&cfg.voice_progress_speech_enabled, raw, &sub_err)) fail(sub_err);
-        } else if (key == "voice_speech_summary_enabled") {
-            if (!assign_bool(&cfg.voice_speech_summary_enabled, raw, &sub_err)) fail(sub_err);
         } else if (key == "voice_max_response_tokens") {
             if (!assign_int(&cfg.voice_max_response_tokens, raw, &sub_err)) fail(sub_err);
         } else if (key == "max_iterations") {
@@ -350,6 +348,9 @@ void apply_kv(AgentToml& cfg,
         else if (key == "max_files") assign_int(&cfg.audio_archive.max_files, raw, &sub_err);
         else if (key == "max_size_mb") assign_int(&cfg.audio_archive.max_size_mb, raw, &sub_err);
         else if (key == "storage_path") assign_string(&cfg.audio_archive.storage_path, raw, &sub_err);
+        if (!sub_err.empty()) fail(sub_err);
+    } else if (section == "log") {
+        if (key == "llm_http_retention_days") assign_non_negative_int(&cfg.log.llm_http_retention_days, raw, &sub_err);
         if (!sub_err.empty()) fail(sub_err);
     } else if (section == "hid") {
         if (key == "keyboard_device") assign_string(&cfg.hid.keyboard_device, raw, &sub_err);
@@ -613,7 +614,6 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
     emit_bool(out, "voice_streaming_tts_enabled", cfg.voice_streaming_tts_enabled);
     emit_bool(out, "voice_tool_call_speech", cfg.voice_tool_call_speech);
     emit_bool(out, "voice_progress_speech_enabled", cfg.voice_progress_speech_enabled);
-    emit_bool(out, "voice_speech_summary_enabled", cfg.voice_speech_summary_enabled);
     if (cfg.voice_max_response_tokens != 0) emit_int(out, "voice_max_response_tokens", cfg.voice_max_response_tokens);
     if (cfg.max_iterations != 0) emit_int(out, "max_iterations", cfg.max_iterations);
     emit_bool(out, "force_simple_loop", cfg.force_simple_loop);
@@ -661,6 +661,10 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
     if (cfg.audio_archive.max_files != 0) emit_int(out, "max_files", cfg.audio_archive.max_files);
     if (cfg.audio_archive.max_size_mb != 0) emit_int(out, "max_size_mb", cfg.audio_archive.max_size_mb);
     emit_string(out, "storage_path", cfg.audio_archive.storage_path);
+    out << "\n";
+
+    out << "[log]\n";
+    if (cfg.log.llm_http_retention_days != 0) emit_int(out, "llm_http_retention_days", cfg.log.llm_http_retention_days);
     out << "\n";
 
     out << "[hid]\n";
