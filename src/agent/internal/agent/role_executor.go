@@ -27,6 +27,7 @@ type roleCollaborativeExecutor struct {
 	CallbacksHandler      callbacks.Handler
 	MaxIterations         int
 	TodoReminderToolCalls int
+	ToolCallSpeech        bool
 	ConversationHistory   []llms.MessageContent
 	InputAttachments      []InputAttachment
 	OutputKey             string

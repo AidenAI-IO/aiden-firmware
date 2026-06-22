@@ -52,7 +52,6 @@ type Runtime struct {
 	sessionManager     SessionManager
 	runtimeID          string
 	telemetrySessionID string
-	mobileGym          *mobileGymSessionStore
 	toolProxy          *ToolProxyClient
 	runGate            chan struct{}
 }
@@ -373,7 +372,6 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 		waitForWakeup:      waitForWakeupController,
 		runtimeID:          uuid.NewString(),
 		telemetrySessionID: uuid.NewString(),
-		mobileGym:          &mobileGymSessionStore{},
 		toolProxy:          toolProxy,
 	}
 	// Set runtime ID for raw HTTP logging.
