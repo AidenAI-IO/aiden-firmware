@@ -77,6 +77,40 @@ func TestMemoryManagerSaveCreatesSessionMetadataOnFirstWrite(t *testing.T) {
 	}
 }
 
+func TestMemoryManagerActiveSessionIDCreatesSessionMetadata(t *testing.T) {
+	storageDir := t.TempDir()
+	manager := NewMemoryManager(storageDir)
+
+	sessionID, err := manager.ActiveSessionID()
+	if err != nil {
+		t.Fatalf("ActiveSessionID() error = %v", err)
+	}
+	if sessionID == "" {
+		t.Fatal("ActiveSessionID() returned empty session ID")
+	}
+
+	metadata := readSessionMetadataForTest(t, filepath.Join(storageDir, "session", sessionMetadataFileName))
+	if metadata.SessionID != sessionID {
+		t.Fatalf("metadata session_id = %q, want %q", metadata.SessionID, sessionID)
+	}
+}
+
+func TestMemoryManagerActiveSessionIDRejectsUnsafeMetadata(t *testing.T) {
+	storageDir := t.TempDir()
+	sessionDir := filepath.Join(storageDir, "session")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatalf("create session dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionDir, sessionMetadataFileName), []byte(`{"session_id":"../escape","created_at":"2026-06-21T00:00:00Z"}`+"\n"), 0o644); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+	manager := NewMemoryManager(storageDir)
+
+	if _, err := manager.ActiveSessionID(); err == nil {
+		t.Fatal("ActiveSessionID() succeeded with unsafe metadata session_id")
+	}
+}
+
 func TestMemoryManagerSaveSnapshotCreatesSessionMetadataOnFirstWrite(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()

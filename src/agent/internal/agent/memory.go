@@ -214,6 +214,32 @@ func NewMemoryManager(storageDir string, opts ...MemoryManagerOption) *MemoryMan
 	return manager
 }
 
+// ActiveSessionID returns the current filesystem session ID, creating active
+// session metadata when the session directory has not been initialized yet.
+func (m *MemoryManager) ActiveSessionID() (string, error) {
+	if m == nil || strings.TrimSpace(m.storageDir) == "" {
+		return "", nil
+	}
+	fl := NewFileLock(m.storageDir)
+	if err := fl.Lock(m.lockTimeout); err != nil {
+		return "", fmt.Errorf("lock active session metadata: %w", err)
+	}
+	defer fl.Unlock()
+
+	sessionDir := filepath.Join(m.storageDir, "session")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		return "", fmt.Errorf("create active session directory: %w", err)
+	}
+	meta, err := ensureActiveSessionMetadata(sessionDir, time.Now().UTC())
+	if err != nil {
+		return "", err
+	}
+	if err := validateSessionIDPathComponent(meta.SessionID); err != nil {
+		return "", err
+	}
+	return meta.SessionID, nil
+}
+
 // SetLastPromptTokens updates the token count from the most recent prompt.
 func (m *MemoryManager) SetLastPromptTokens(tokens int) {
 	m.mu.Lock()
@@ -693,7 +719,7 @@ func nextSessionArchiveDir(parent string, baseID string) (string, error) {
 	if baseID == "" {
 		baseID = newSessionID(time.Now().UTC())
 	}
-	if err := validateSessionArchiveBaseID(baseID); err != nil {
+	if err := validateSessionIDPathComponent(baseID); err != nil {
 		return "", err
 	}
 	for i := int64(0); i < 100; i++ {
@@ -712,9 +738,9 @@ func nextSessionArchiveDir(parent string, baseID string) (string, error) {
 	return "", fmt.Errorf("allocate session archive path: too many collisions")
 }
 
-func validateSessionArchiveBaseID(baseID string) error {
-	if baseID == "" || baseID == "." || baseID != filepath.Base(baseID) || strings.ContainsAny(baseID, `/\`) || strings.Contains(baseID, "..") {
-		return fmt.Errorf("unsafe session archive id %q", baseID)
+func validateSessionIDPathComponent(sessionID string) error {
+	if sessionID == "" || sessionID == "." || sessionID != filepath.Base(sessionID) || strings.ContainsAny(sessionID, `/\`) || strings.Contains(sessionID, "..") {
+		return fmt.Errorf("unsafe session id %q", sessionID)
 	}
 	return nil
 }
