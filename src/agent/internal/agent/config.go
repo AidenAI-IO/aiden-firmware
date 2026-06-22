@@ -218,14 +218,15 @@ type TTSProviderCredentials struct {
 }
 
 type STTConfig struct {
-	Provider        string `toml:"provider"` // "openai", "openai-whisper", "openrouter", "tencent-asr" (legacy: "tencent", "tencent_asr")
+	Provider        string `toml:"provider"` // "openai-whisper", "tencent-asr" (legacy: "openai", "tencent", "tencent_asr")
 	APIKey          string `toml:"api_key,omitempty"`
 	Model           string `toml:"model,omitempty"`
 	BaseURL         string `toml:"base_url,omitempty"`
+	Language        string `toml:"language,omitempty"` // "zh" (Chinese) or "en" (English)
 	SecretID        string `toml:"secret_id,omitempty"`
 	SecretKey       string `toml:"secret_key,omitempty"`
 	Region          string `toml:"region,omitempty"`
-	EngineModelType string `toml:"engine_model_type,omitempty"`
+	EngineModelType string `toml:"engine_model_type,omitempty"` // Deprecated: use Language instead
 }
 
 type AudioConfig struct {

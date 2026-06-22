@@ -508,6 +508,7 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"tts", "emotion", CONFIG_FIELD_STRING},
         {"tts", "speed", CONFIG_FIELD_NUMBER},
         {"stt", "provider", CONFIG_FIELD_STRING},
+        {"stt", "language", CONFIG_FIELD_STRING},
         {"stt", "api_key", CONFIG_FIELD_STRING},
         {"stt", "model", CONFIG_FIELD_STRING},
         {"stt", "base_url", CONFIG_FIELD_STRING},
@@ -1406,6 +1407,7 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
 
     cJSON* stt = add_object(root, "stt");
     cJSON_AddStringToObject(stt, "provider", config.stt.provider.c_str());
+    cJSON_AddStringToObject(stt, "language", config.stt.language.c_str());
     cJSON_AddStringToObject(stt, "api_key", config.stt.api_key.c_str());
     cJSON_AddStringToObject(stt, "model", config.stt.model.c_str());
     cJSON_AddStringToObject(stt, "base_url", config.stt.base_url.c_str());
@@ -1658,6 +1660,7 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
     cJSON* stt = cJSON_GetObjectItem(root, "stt");
     if (json_is_object(stt)) {
         set_json_str(&config->stt.provider, stt, "provider");
+        set_json_str(&config->stt.language, stt, "language");
         set_json_str(&config->stt.api_key, stt, "api_key");
         set_json_str(&config->stt.model, stt, "model");
         set_json_str(&config->stt.base_url, stt, "base_url");
@@ -4427,7 +4430,8 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
         return handle_get_config(options);
     }
 
-    if (request.method == "GET" && request.path == "/api/config/meta") {
+    if (request.method == "GET" &&
+        (request.path == "/api/config-meta" || request.path == "/api/config/meta")) {
         return handle_get_config_meta();
     }
 
