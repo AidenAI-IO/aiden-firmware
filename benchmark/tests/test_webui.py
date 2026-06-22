@@ -1101,6 +1101,10 @@ def test_index_html_exposes_judge_settings_panel():
     assert "document.getElementById('runEnvDialog').hidden = false" in webui.INDEX_HTML
     assert "async function startRun(env)" in webui.INDEX_HTML
     assert "if(started) closeRunEnvironmentDialog()" in webui.INDEX_HTML
+    assert '<th style="width:220px">Suite</th>' in webui.INDEX_HTML
+    assert 'colspan="6">No jobs yet' in webui.INDEX_HTML
+    assert "function suiteDisplayName" in webui.INDEX_HTML
+    assert "const suiteNames = suiteKeys.map(suiteDisplayName)" in webui.INDEX_HTML
     assert "function stopTask" in webui.INDEX_HTML
     assert "/tasks/${encodeURIComponent(taskId)}/stop" in webui.INDEX_HTML
     assert "data-stop-task" in webui.INDEX_HTML

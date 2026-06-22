@@ -3046,7 +3046,7 @@ INDEX_HTML = r"""<!doctype html>
         </div>
         <div class="table-wrap job-table-wrap">
           <table>
-            <thead><tr><th>Job</th><th>Environment</th><th style="width:120px">Status</th><th style="width:120px">Report</th><th style="width:96px"></th></tr></thead>
+            <thead><tr><th>Job</th><th style="width:220px">Suite</th><th>Environment</th><th style="width:120px">Status</th><th style="width:120px">Report</th><th style="width:96px"></th></tr></thead>
             <tbody id="jobRows"></tbody>
           </table>
         </div>
@@ -3462,6 +3462,7 @@ INDEX_HTML = r"""<!doctype html>
       const res = await fetch('/api/suites');
       suites = (await res.json()).suites || [];
       renderSuites();
+      if(jobs.length) renderJobs();
     }
 
     function renderSuites(){
@@ -3485,6 +3486,11 @@ INDEX_HTML = r"""<!doctype html>
         tbody.appendChild(tr);
       });
       syncRunState();
+    }
+
+    function suiteDisplayName(key){
+      const suite = suites.find(s => s.key === key);
+      return suite ? suite.name : key;
     }
 
     function syncRunState(){
@@ -3562,9 +3568,13 @@ INDEX_HTML = r"""<!doctype html>
       const tbody = document.getElementById('jobRows');
       tbody.innerHTML = '';
       if(!jobs.length){
-        tbody.innerHTML = '<tr><td class="empty-row" colspan="5">No jobs yet</td></tr>';
+        tbody.innerHTML = '<tr><td class="empty-row" colspan="6">No jobs yet</td></tr>';
       }
       jobs.forEach(job => {
+        const suiteKeys = (job.suites || []).map(key => String(key));
+        const suiteNames = suiteKeys.map(suiteDisplayName);
+        const suiteLabel = suiteNames.length ? suiteNames.join(', ') : 'No suites';
+        const suiteDetail = suiteKeys.join(', ');
         const report = job.report_url
           ? `<a href="${escapeHtml(job.report_url)}" target="_blank" rel="noreferrer">report</a>`
           : '';
@@ -3575,7 +3585,8 @@ INDEX_HTML = r"""<!doctype html>
           : '';
         const tr = document.createElement('tr');
         tr.innerHTML = `<td><div class="cell-main"><a href="#" data-job="${job.id}">${escapeHtml(job.id)}</a><small>${escapeHtml(job.created_at || '')}</small></div></td>
-          <td title="${escapeHtml(job.endpoint)}"><div class="cell-main"><span>${escapeHtml(envLabel)}</span><small>${escapeHtml(envType)} - ${escapeHtml((job.suites || []).length)} suites</small></div></td>
+          <td title="${escapeHtml(suiteDetail || suiteLabel)}"><div class="cell-main"><span>${escapeHtml(suiteLabel)}</span><small>${escapeHtml(suiteDetail)}</small></div></td>
+          <td title="${escapeHtml(job.endpoint)}"><div class="cell-main"><span>${escapeHtml(envLabel)}</span><small>${escapeHtml(envType)}</small></div></td>
           <td><span class="status ${cssToken(job.status)}">${escapeHtml(job.status)}</span></td>
           <td>${report || '<span class="muted">none</span>'}</td>
           <td>${actionHtml}</td>`;
