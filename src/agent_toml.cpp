@@ -329,6 +329,7 @@ void apply_kv(AgentToml& cfg,
         if (!sub_err.empty()) fail(sub_err);
     } else if (section == "stt") {
         if (key == "provider") assign_string(&cfg.stt.provider, raw, &sub_err);
+        else if (key == "language") assign_string(&cfg.stt.language, raw, &sub_err);
         else if (key == "api_key") assign_string(&cfg.stt.api_key, raw, &sub_err);
         else if (key == "model") assign_string(&cfg.stt.model, raw, &sub_err);
         else if (key == "base_url") assign_string(&cfg.stt.base_url, raw, &sub_err);
@@ -645,6 +646,7 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
 
     out << "[stt]\n";
     emit_string(out, "provider", cfg.stt.provider);
+    if (!cfg.stt.language.empty()) emit_string(out, "language", cfg.stt.language);
     if (!cfg.stt.api_key.empty()) emit_string(out, "api_key", cfg.stt.api_key);
     if (!cfg.stt.model.empty()) emit_string(out, "model", cfg.stt.model);
     if (!cfg.stt.base_url.empty()) emit_string(out, "base_url", cfg.stt.base_url);
