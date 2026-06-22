@@ -1,8 +1,7 @@
-import base64
 import json
 from pathlib import Path
 
-from runner.agent_client import AgentTimeoutError, ChatResponse, ToolInvokeResult
+from runner.agent_client import AgentTimeoutError, ChatResponse
 from runner.judge import JudgeConfig, JudgeOutput
 from runner.models import RubricVerdict
 from runner.runtask import run_one_task
@@ -25,14 +24,7 @@ class FakeClient:
         return True
 
     def invoke_tool(self, name, args):
-        assert name == "screenshot"
-        payload = {
-            "width": 1,
-            "height": 1,
-            "format": "jpeg",
-            "data": base64.b64encode(b"x").decode("ascii"),
-        }
-        return ToolInvokeResult(output=json.dumps(payload), is_error=False, duration_ms=1)
+        raise AssertionError(f"unexpected tool invoke: {name}")
 
     def chat(self, message, timeout_sec=None, attachments=None, skills=None):
         self.messages.append(message)
@@ -267,10 +259,31 @@ def test_run_one_task_sends_live_post_screenshot_to_judge(tmp_path: Path, monkey
         )
 
     monkeypatch.setattr(runtask_mod, "judge_task", fake_judge_task)
+    monkeypatch.setattr(runtask_mod, "prepare_task_isolation", lambda *args, **kwargs: None)
+
+    capture_calls = []
+
+    def fake_take_environment_screenshot(
+        environment_url,
+        out_path,
+        benchmark_task_id=None,
+    ):
+        capture_calls.append((environment_url, out_path.name, benchmark_task_id))
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(b"jpeg")
+        return (1, 1)
+
+    monkeypatch.setattr(
+        runtask_mod,
+        "take_environment_screenshot",
+        fake_take_environment_screenshot,
+    )
 
     result = run_one_task(
         SummaryHistoryClient(), suite, task, 1, tmp_path / "artifacts",
         JudgeConfig(), None, "run-1",
+        environment_url="http://127.0.0.1:19090",
+        benchmark_task_id="suite.json:open_settings",
     )
 
     # The judge must receive a real, existing post-screenshot file even though
@@ -278,5 +291,9 @@ def test_run_one_task_sends_live_post_screenshot_to_judge(tmp_path: Path, monkey
     assert captured["post_screenshot"] is not None
     assert captured["post_screenshot"].exists()
     assert captured["post_screenshot"] == tmp_path / "artifacts" / "post.jpg"
+    assert capture_calls == [
+        ("http://127.0.0.1:19090", "pre.jpg", "suite.json:open_settings"),
+        ("http://127.0.0.1:19090", "post.jpg", "suite.json:open_settings"),
+    ]
     assert result.status == "passed"
     assert result.rubric_pass_count == 1

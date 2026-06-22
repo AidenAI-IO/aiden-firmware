@@ -13,7 +13,7 @@ from runner.assertions import (
     evaluate_hard_assertions,
     evaluate_trace_observations,
 )
-from runner.capture import take_screenshot
+from runner.capture import take_environment_screenshot
 from runner.judge import judge_task, JudgeConfig
 from runner.models import TaskResult, RubricVerdict, HardAssertionResults
 from runner.recovery import prepare_task_isolation, recover_agent_after_timeout
@@ -235,10 +235,19 @@ def run_one_task(
         img_b64 = base64.b64encode(screenshot_path.read_bytes()).decode("ascii")
         attachments = [{"kind": "image", "mime_type": "image/jpeg", "data": img_b64}]
     else:
-        try:
-            take_screenshot(client, pre_path, benchmark_task_id=benchmark_task_id)
-        except Exception as e:
-            base.metrics["pre_screenshot_error"] = str(e)[:300]
+        if environment_url:
+            try:
+                take_environment_screenshot(
+                    environment_url,
+                    pre_path,
+                    benchmark_task_id=benchmark_task_id,
+                )
+            except Exception as e:
+                base.metrics["pre_screenshot_error"] = str(e)[:300]
+        else:
+            base.metrics["pre_screenshot_error"] = (
+                "environment_url is required for live screenshot capture"
+            )
     timed_out = False
     try:
         prompt = task.prompt
@@ -258,14 +267,24 @@ def run_one_task(
     except Exception as e:
         history = client_history_or_empty(client)
         base.metrics["agent_error"] = str(e)[:300]
-    # Capture the final device state directly from the agent. The agent history
-    # no longer embeds base64 image data (it emits a text summary instead), so
-    # the post-screenshot must be grabbed live rather than extracted from history.
+    # Capture the final device state directly from the environment screen API.
+    # The agent history no longer embeds base64 image data, so the post-screenshot
+    # must be grabbed live rather than extracted from history.
     post_path = artifact_dir / "post.jpg"
-    try:
-        take_screenshot(client, post_path, benchmark_task_id=benchmark_task_id)
-    except Exception as e:
-        base.metrics["post_screenshot_error"] = str(e)[:300]
+    if environment_url:
+        try:
+            take_environment_screenshot(
+                environment_url,
+                post_path,
+                benchmark_task_id=benchmark_task_id,
+            )
+        except Exception as e:
+            base.metrics["post_screenshot_error"] = str(e)[:300]
+            post_path = None
+    else:
+        base.metrics["post_screenshot_error"] = (
+            "environment_url is required for live screenshot capture"
+        )
         post_path = None
     return evaluate_task_history(
         suite=suite,
