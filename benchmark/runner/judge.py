@@ -27,6 +27,8 @@ class JudgeOutput:
     overall_notes: str
     cache_key: str
     raw_response: str
+    image_count: int = 0
+    image_labels: list[str] = dc.field(default_factory=list)
 
 JUDGE_TEMPLATE = """You are evaluating whether an agent completed a task.
 
@@ -70,6 +72,26 @@ def _cache_key(pre: Path | None, post: Path | None, trace_json: str, rubric: lis
     h.update(JUDGE_PROMPT_VERSION.encode())
     return h.hexdigest()
 
+def _judge_images(
+    pre_screenshot: Path | None,
+    post_screenshot: Path | None,
+) -> list[tuple[str, Path]]:
+    images: list[tuple[str, Path]] = []
+    seen: set[Path] = set()
+
+    def add(label: str, path: Path | None) -> None:
+        if path is None or not path.exists():
+            return
+        resolved = path.resolve()
+        if resolved in seen:
+            return
+        seen.add(resolved)
+        images.append((label, path))
+
+    add("PRE-SCREENSHOT", pre_screenshot)
+    add("POST-SCREENSHOT", post_screenshot)
+    return images
+
 def judge_task(
     description: str,
     rubric: list[RubricItem],
@@ -81,6 +103,8 @@ def judge_task(
     cache_dir: Path | None = None,
 ) -> JudgeOutput:
     trace_json = json.dumps(trace, ensure_ascii=False, sort_keys=True)
+    image_items = _judge_images(pre_screenshot, post_screenshot)
+    image_labels = [label for label, _ in image_items]
     key = _cache_key(pre_screenshot, post_screenshot, trace_json, rubric, description,
                      final_response, cfg.model)
     if cache_dir is not None:
@@ -89,7 +113,8 @@ def judge_task(
             data = json.loads(cached.read_text("utf-8"))
             verdicts = [RubricVerdict(**v) for v in data["verdicts"]]
             return JudgeOutput(verdicts=verdicts, overall_notes=data["overall_notes"],
-                               cache_key=key, raw_response=data["raw_response"])
+                               cache_key=key, raw_response=data["raw_response"],
+                               image_count=len(image_items), image_labels=image_labels)
     rubric_lines = "\n".join(f"{i+1}. {{\"id\": \"{r.id}\", \"check\": \"{r.check}\"}}"
                               for i, r in enumerate(rubric))
     prompt = JUDGE_TEMPLATE.format(
@@ -97,17 +122,11 @@ def judge_task(
     )
     # Build OpenAI-compatible multimodal content
     user_content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
-    if pre_screenshot is not None and pre_screenshot.exists():
+    for label, path in image_items:
         user_content += [
-            {"type": "text", "text": "PRE-SCREENSHOT:"},
+            {"type": "text", "text": f"{label}:"},
             {"type": "image_url", "image_url": {
-                "url": f"data:image/jpeg;base64,{_read_image_b64(pre_screenshot)}"}},
-        ]
-    if post_screenshot is not None and post_screenshot.exists():
-        user_content += [
-            {"type": "text", "text": "POST-SCREENSHOT:"},
-            {"type": "image_url", "image_url": {
-                "url": f"data:image/jpeg;base64,{_read_image_b64(post_screenshot)}"}},
+                "url": f"data:image/jpeg;base64,{_read_image_b64(path)}"}},
         ]
     user_content += [
         {"type": "text", "text": f"TOOL TRACE:\n{trace_json}"},
@@ -145,13 +164,16 @@ def judge_task(
     verdicts = [RubricVerdict(id=v["id"], verdict=v["verdict"], reason=v["reason"])
                 for v in parsed["items"]]
     out = JudgeOutput(verdicts=verdicts, overall_notes=parsed.get("overall_notes", ""),
-                      cache_key=key, raw_response=raw)
+                      cache_key=key, raw_response=raw,
+                      image_count=len(image_items), image_labels=image_labels)
     if cache_dir is not None:
         cache_dir.mkdir(parents=True, exist_ok=True)
         (cache_dir / f"{key}.json").write_text(json.dumps({
             "verdicts": [dc.asdict(v) for v in verdicts],
             "overall_notes": out.overall_notes,
             "raw_response": raw,
+            "image_count": out.image_count,
+            "image_labels": out.image_labels,
         }), encoding="utf-8")
     return out
 

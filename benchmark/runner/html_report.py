@@ -30,20 +30,6 @@ def _image_data_uri(path: Path) -> str:
     return f"data:{mime};base64,{encoded}"
 
 
-def _payload_image_data_uri(payload: dict[str, Any]) -> str:
-    data = str(payload.get("data") or "")
-    if not data:
-        return ""
-    fmt = str(payload.get("format") or "").lower()
-    if fmt in {"png", "image/png"}:
-        mime = "image/png"
-    elif fmt in {"jpg", "jpeg", "image/jpeg"}:
-        mime = "image/jpeg"
-    else:
-        mime = "image/jpeg"
-    return f"data:{mime};base64,{data}"
-
-
 def _safe_json_loads(text: Any) -> Any:
     if not isinstance(text, str):
         return None
@@ -65,7 +51,6 @@ def _compact_tool_result(raw: str) -> str:
 
 
 def _full_trace_payload(task_dir: Path, history: list[dict[str, Any]]) -> dict[str, Any]:
-    step_images = iter(sorted((task_dir / "steps").glob("*.jpg")))
     events: list[dict[str, str]] = []
     tool_step = 0
     last_tool = ""
@@ -84,18 +69,11 @@ def _full_trace_payload(task_dir: Path, history: list[dict[str, Any]]) -> dict[s
             })
         elif mtype == "tool_result":
             raw = str(msg.get("content") or "")
-            content = _safe_json_loads(raw)
-            image = ""
-            if isinstance(content, dict) and content.get("data"):
-                image_path = next(step_images, None)
-                image = _image_data_uri(image_path) if image_path is not None else ""
-                if not image:
-                    image = _payload_image_data_uri(content)
             events.append({
                 "kind": "tool-result",
                 "title": f"Tool result: {msg.get('tool_name') or last_tool}",
                 "detail": _compact_tool_result(raw),
-                "image": image,
+                "image": "",
             })
         elif mtype == "assistant":
             events.append({
@@ -506,10 +484,9 @@ function renderTraceShot(label, src) {{
 function renderTraceEvent(event, index) {{
   var kind = token(event.kind || "message");
   var detail = event.detail ? '<pre>' + esc(event.detail) + '</pre>' : '';
-  var image = event.image ? '<img src="' + esc(event.image) + '" alt="' + esc(event.title || ("trace step " + index)) + ' screenshot">' : '';
   return '<section class="trace-event ' + kind + '">' +
     '<div class="trace-event-head"><strong>' + esc(event.title || ("Trace event " + index)) + '</strong><span class="trace-kind">' + esc(event.kind || "message") + '</span></div>' +
-    detail + image + '</section>';
+    detail + '</section>';
 }}
 function renderFullTrace(t) {{
   var ft = t.full_trace || {{}};

@@ -195,5 +195,5 @@ def test_generate_report_includes_full_trace_with_screenshots(tmp_path: Path):
     assert "<base64 image data" in html
     assert f"data:image/png;base64,{base64.b64encode(pre).decode('ascii')}" in html
     assert f"data:image/jpeg;base64,{base64.b64encode(post).decode('ascii')}" in html
-    assert f"data:image/jpeg;base64,{base64.b64encode(step).decode('ascii')}" in html
+    assert f"data:image/jpeg;base64,{base64.b64encode(step).decode('ascii')}" not in html
     assert image_payload not in html

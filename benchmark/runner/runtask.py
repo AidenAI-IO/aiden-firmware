@@ -13,13 +13,13 @@ from runner.assertions import (
     evaluate_hard_assertions,
     evaluate_trace_observations,
 )
-from runner.capture import take_screenshot, write_step_screenshot
+from runner.capture import take_screenshot
 from runner.judge import judge_task, JudgeConfig
 from runner.models import TaskResult, RubricVerdict, HardAssertionResults
 from runner.recovery import prepare_task_isolation, recover_agent_after_timeout
 from runner.reset import ResetError
 from runner.suite import Suite, TaskSpec
-from runner.trace import extract_trace, extract_step_screenshots
+from runner.trace import extract_trace
 from runner.report import now_iso
 
 
@@ -112,22 +112,11 @@ def evaluate_task_history(
     }
     (artifact_dir / "trace.json").write_text(
         json.dumps(trace_dict, ensure_ascii=False, indent=2), encoding="utf-8")
-    steps_dir = artifact_dir / "steps"
-    last_shot_path: Path | None = None
-    for i, (tool_name, b64) in enumerate(extract_step_screenshots(history), start=1):
-        # Sanitize tool_name to prevent path traversal
-        safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in tool_name)[:50]
-        p = steps_dir / f"step_{i:02d}_{safe_name}.jpg"
-        write_step_screenshot(p, b64)
-        last_shot_path = p
-    # Prefer a live post-screenshot captured from the device. Newer agent
-    # history omits base64 image data, so extract_step_screenshots() yields
-    # nothing in the online path; fall back to the last embedded step shot
-    # (still present in the offline MobileGym path) when no live shot exists.
-    if post_screenshot is not None and post_screenshot.exists():
-        last_shot_path = post_screenshot
+    last_shot_path = post_screenshot if post_screenshot is not None and post_screenshot.exists() else None
     base.metrics.update({"wall_ms": wall_ms, "tool_calls": trace.total_tool_calls,
-                         "screenshots_taken": sum(1 for tc in trace.tool_calls if tc.has_screenshot)})
+                         "screenshots_taken": sum(1 for tc in trace.tool_calls if tc.has_screenshot),
+                         "pre_screenshot_file": bool(pre_screenshot and pre_screenshot.exists()),
+                         "post_screenshot_file": bool(post_screenshot and post_screenshot.exists())})
     outcome = evaluate_hard_assertions(trace, task.hard_assertions, timed_out=timed_out)
     base.hard_assertions = outcome.results
     if not outcome.all_passed:
@@ -182,10 +171,14 @@ def evaluate_task_history(
         return base
     base.rubric = verdict.verdicts
     base.rubric_pass_count = sum(1 for v in verdict.verdicts if v.verdict == "yes")
+    base.metrics["judge_image_count"] = verdict.image_count
+    base.metrics["judge_image_labels"] = verdict.image_labels
     (artifact_dir / "judge.json").write_text(json.dumps({
         "verdicts": [dc.asdict(v) for v in verdict.verdicts],
         "overall_notes": verdict.overall_notes,
         "cache_key": verdict.cache_key,
+        "image_count": verdict.image_count,
+        "image_labels": verdict.image_labels,
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     base.status = "passed" if base.rubric_pass_count == base.rubric_total else "failed"
     base.finished_at = now_iso()
@@ -243,9 +236,9 @@ def run_one_task(
         attachments = [{"kind": "image", "mime_type": "image/jpeg", "data": img_b64}]
     else:
         try:
-            take_screenshot(client, pre_path)
-        except Exception:
-            pass
+            take_screenshot(client, pre_path, benchmark_task_id=benchmark_task_id)
+        except Exception as e:
+            base.metrics["pre_screenshot_error"] = str(e)[:300]
     timed_out = False
     try:
         prompt = task.prompt
@@ -270,8 +263,9 @@ def run_one_task(
     # the post-screenshot must be grabbed live rather than extracted from history.
     post_path = artifact_dir / "post.jpg"
     try:
-        take_screenshot(client, post_path)
-    except Exception:
+        take_screenshot(client, post_path, benchmark_task_id=benchmark_task_id)
+    except Exception as e:
+        base.metrics["post_screenshot_error"] = str(e)[:300]
         post_path = None
     return evaluate_task_history(
         suite=suite,

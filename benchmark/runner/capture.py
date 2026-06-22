@@ -8,9 +8,18 @@ from runner.agent_client import AgentClient
 class CaptureError(RuntimeError):
     pass
 
-def take_screenshot(client: AgentClient, out_path: Path) -> tuple[int, int]:
+def take_screenshot(
+    client: AgentClient,
+    out_path: Path,
+    benchmark_task_id: str | None = None,
+) -> tuple[int, int]:
     """Invoke the screenshot tool and write the JPEG bytes to out_path. Returns (width, height)."""
-    result = client.invoke_tool("screenshot", {})
+    if str(benchmark_task_id or "").strip():
+        result = client.invoke_tool(
+            "screenshot", {}, benchmark_task_id=benchmark_task_id
+        )
+    else:
+        result = client.invoke_tool("screenshot", {})
     if result.is_error:
         raise CaptureError(f"screenshot failed: {result.output}")
     try:
