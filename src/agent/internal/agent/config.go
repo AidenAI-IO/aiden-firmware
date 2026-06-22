@@ -221,10 +221,11 @@ type STTConfig struct {
 	APIKey          string `toml:"api_key,omitempty"`
 	Model           string `toml:"model,omitempty"`
 	BaseURL         string `toml:"base_url,omitempty"`
+	Language        string `toml:"language,omitempty"` // "zh" (Chinese) or "en" (English)
 	SecretID        string `toml:"secret_id,omitempty"`
 	SecretKey       string `toml:"secret_key,omitempty"`
 	Region          string `toml:"region,omitempty"`
-	EngineModelType string `toml:"engine_model_type,omitempty"`
+	EngineModelType string `toml:"engine_model_type,omitempty"` // Deprecated: use Language instead
 }
 
 type AudioConfig struct {

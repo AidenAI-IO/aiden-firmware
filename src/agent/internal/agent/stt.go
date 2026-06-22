@@ -23,11 +23,12 @@ type OpenAIWhisperSTT struct {
 	apiKey     string
 	model      string
 	baseURL    string
+	language   string
 	httpClient *http.Client
 }
 
 // NewOpenAIWhisperSTT creates a new OpenAI Whisper STT client
-func NewOpenAIWhisperSTT(apiKey, model, baseURL string, httpClients ...*http.Client) *OpenAIWhisperSTT {
+func NewOpenAIWhisperSTT(apiKey, model, baseURL, language string, httpClients ...*http.Client) *OpenAIWhisperSTT {
 	if baseURL == "" {
 		baseURL = "https://api.openai.com/v1"
 	}
@@ -42,6 +43,7 @@ func NewOpenAIWhisperSTT(apiKey, model, baseURL string, httpClients ...*http.Cli
 		apiKey:     apiKey,
 		model:      model,
 		baseURL:    baseURL,
+		language:   language,
 		httpClient: httpClient,
 	}
 }
@@ -63,6 +65,13 @@ func (s *OpenAIWhisperSTT) TranscribeWAV(wavData []byte) (string, error) {
 	// Add model field
 	if err := writer.WriteField("model", s.model); err != nil {
 		return "", fmt.Errorf("write model field: %w", err)
+	}
+
+	// Add language field if specified
+	if s.language != "" {
+		if err := writer.WriteField("language", s.language); err != nil {
+			return "", fmt.Errorf("write language field: %w", err)
+		}
 	}
 
 	if err := writer.Close(); err != nil {

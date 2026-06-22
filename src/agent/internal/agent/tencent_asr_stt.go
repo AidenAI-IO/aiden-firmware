@@ -28,17 +28,30 @@ type TencentASRSTT struct {
 	secretKey       string
 	region          string
 	engineModelType string
+	language        string
 	httpClient      *http.Client
 	apiURL          string // optional override for tests
 }
 
 // NewTencentASRSTT creates a Tencent ASR STT client.
-func NewTencentASRSTT(secretID, secretKey, region, engineModelType string, httpClients ...*http.Client) *TencentASRSTT {
+func NewTencentASRSTT(secretID, secretKey, region, engineModelType, language string, httpClients ...*http.Client) *TencentASRSTT {
 	if region == "" {
 		region = defaultTencentASRRegion
 	}
+	// Map unified language to engine_model_type if not explicitly provided
 	if engineModelType == "" {
-		engineModelType = defaultTencentASREngineModel
+		if language != "" {
+			switch language {
+			case "zh":
+				engineModelType = "16k_zh"
+			case "en":
+				engineModelType = "16k_en"
+			default:
+				engineModelType = defaultTencentASREngineModel
+			}
+		} else {
+			engineModelType = defaultTencentASREngineModel
+		}
 	}
 	httpClient := http.DefaultClient
 	if len(httpClients) > 0 && httpClients[0] != nil {
@@ -49,6 +62,7 @@ func NewTencentASRSTT(secretID, secretKey, region, engineModelType string, httpC
 		secretKey:       strings.TrimSpace(secretKey),
 		region:          region,
 		engineModelType: engineModelType,
+		language:        language,
 		httpClient:      httpClient,
 	}
 }
