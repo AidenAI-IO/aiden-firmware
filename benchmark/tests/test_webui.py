@@ -1026,6 +1026,9 @@ def test_index_html_exposes_judge_settings_panel():
     assert "/api/jobs/${encodeURIComponent(id)}/stop" in webui.INDEX_HTML
     assert "web_url: env.web_url" in webui.INDEX_HTML
     assert 'id="mobilegymParallelEnvs"' in webui.INDEX_HTML
+    assert 'id="mobilegymParallelEnvs" type="number" min="1" step="1" value="5"' in webui.INDEX_HTML
+    assert "mobilegymParallelEnvs').value || '5'" in webui.INDEX_HTML
+    assert "env.parallel_envs || 1" not in webui.INDEX_HTML
     assert "parallel_envs" in webui.INDEX_HTML
     assert ">screen</a>" in webui.INDEX_HTML
     assert "job.environment_web_url" not in webui.INDEX_HTML
@@ -1194,6 +1197,33 @@ def test_start_mobilegym_environment_returns_docker_reachable_endpoint(tmp_path:
     assert health_urls == [("http://127.0.0.1:19090/health", webui.DEFAULT_MOBILEGYM_READY_TIMEOUT_SEC)]
     assert commands and "aiden-mobilegym-env-" in commands[0][5]
     assert "--parallel-envs 2" in commands[0][-1]
+
+
+def test_start_mobilegym_environment_defaults_to_five_envs(tmp_path: Path, monkeypatch):
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+            build_mobilegym_image=False,
+        )
+    )
+    ports = iter([18173, 19090])
+    commands = []
+
+    monkeypatch.setattr(webui, "reserve_free_port", lambda: next(ports))
+    monkeypatch.setattr(webui, "ensure_mobilegym_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui, "wait_for_http_health", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui, "start_docker_logs", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        webui.subprocess,
+        "check_output",
+        lambda command, cwd=None, text=False: commands.append(command) or "container-id\n",
+    )
+
+    env = app.start_mobilegym_environment({"name": "MobileGym smoke"})
+
+    assert env["parallel_envs"] == webui.DEFAULT_MOBILEGYM_PARALLEL_ENVS == 5
+    assert commands and "--parallel-envs 5" in commands[0][-1]
 
 
 def test_stop_mobilegym_environment_removes_container(tmp_path: Path, monkeypatch):

@@ -41,6 +41,7 @@ MOBILEGYM_DOCKER_DIR = BENCHMARK_ROOT / "mobilegym" / "docker"
 WEBUI_DAEMON_COMPOSE_FILE = MOBILEGYM_DOCKER_DIR / "docker-compose.webui-daemon.yml"
 DEFAULT_DAEMON_READY_TIMEOUT_SEC = 90
 DEFAULT_MOBILEGYM_READY_TIMEOUT_SEC = 120
+DEFAULT_MOBILEGYM_PARALLEL_ENVS = 5
 DEFAULT_JUDGE_MODEL = JudgeConfig().model
 WEBUI_SETTINGS_FILE = "webui-settings.json"
 JOB_RECORD_FILE = "job.json"
@@ -144,7 +145,7 @@ class MobileGymEnvironment:
     image: str = ""
     log_path: str = ""
     type: str = "mobilegym"
-    parallel_envs: int = 1
+    parallel_envs: int = DEFAULT_MOBILEGYM_PARALLEL_ENVS
 
 
 class BenchmarkWebApp:
@@ -268,7 +269,11 @@ class BenchmarkWebApp:
 
     def start_mobilegym_environment(self, payload: dict[str, Any]) -> dict[str, Any]:
         name = str(payload.get("name") or "").strip() or "MobileGym"
-        parallel_envs = parse_positive_int(payload.get("parallel_envs"), default=1, field="parallel_envs")
+        parallel_envs = parse_positive_int(
+            payload.get("parallel_envs"),
+            default=DEFAULT_MOBILEGYM_PARALLEL_ENVS,
+            field="parallel_envs",
+        )
         env_id = new_environment_id()
         env_dir = self.config.runs_dir / "environments" / env_id
         env_dir.mkdir(parents=True, exist_ok=True)
@@ -416,7 +421,11 @@ class BenchmarkWebApp:
                 if public_endpoint:
                     environment_endpoint = public_endpoint.rstrip("/")
             if mobilegym_env is None and isinstance(environment_payload, dict) and environment_payload.get("parallel_envs") not in (None, ""):
-                parallel_tasks = parse_positive_int(environment_payload.get("parallel_envs"), default=1, field="parallel_envs")
+                parallel_tasks = parse_positive_int(
+                    environment_payload.get("parallel_envs"),
+                    default=DEFAULT_MOBILEGYM_PARALLEL_ENVS,
+                    field="parallel_envs",
+                )
             if environment_endpoint:
                 environment_web_url = mobilegym_screen_url(environment_endpoint)
 
@@ -1400,7 +1409,7 @@ def build_mobilegym_environment_command(
     host_bridge_port: int,
     benchmark_dir: Path,
     bridge_port: int = 9090,
-    parallel_envs: int = 1,
+    parallel_envs: int = DEFAULT_MOBILEGYM_PARALLEL_ENVS,
 ) -> list[str]:
     parallel_envs = max(1, int(parallel_envs))
     script = "\n".join(
@@ -2782,7 +2791,7 @@ INDEX_HTML = r"""<!doctype html>
         <div id="mobilegymPanel" class="env-panel" hidden>
           <div class="form-grid">
             <div class="field"><label for="mobilegymName">Name</label><input id="mobilegymName" placeholder="MobileGym" autocomplete="off"></div>
-            <div class="field"><label for="mobilegymParallelEnvs">Envs</label><input id="mobilegymParallelEnvs" type="number" min="1" step="1" value="1"></div>
+            <div class="field"><label for="mobilegymParallelEnvs">Envs</label><input id="mobilegymParallelEnvs" type="number" min="1" step="1" value="5"></div>
             <button id="startMobileGym" class="primary" type="button">Start MobileGym</button>
           </div>
         </div>
@@ -3116,7 +3125,7 @@ INDEX_HTML = r"""<!doctype html>
       envs.forEach(env => {
         const selectable = envCanRun(env);
         const displayEndpoint = env.type === 'mobilegym' ? (env.public_endpoint || env.endpoint) : env.endpoint;
-        const endpointDetail = env.type === 'mobilegym' ? `${env.endpoint} · ${env.parallel_envs || 1} envs` : 'manual';
+        const endpointDetail = env.type === 'mobilegym' ? `${env.endpoint} · ${env.parallel_envs || 5} envs` : 'manual';
         const status = env.type === 'mobilegym' ? (env.status || 'mobilegym') : 'device';
         const actionHtml = env.type === 'device'
           ? `<button class="ghost-button" data-edit="${escapeHtml(env.id)}">Edit</button> <button class="danger" data-delete="${escapeHtml(env.id)}">Delete</button>`
@@ -3192,7 +3201,7 @@ INDEX_HTML = r"""<!doctype html>
 
     async function startMobileGym(){
       const name = document.getElementById('mobilegymName').value.trim() || 'MobileGym';
-      const parallelEnvs = Math.max(1, parseInt(document.getElementById('mobilegymParallelEnvs').value || '1', 10) || 1);
+      const parallelEnvs = Math.max(1, parseInt(document.getElementById('mobilegymParallelEnvs').value || '5', 10) || 5);
       const button = document.getElementById('startMobileGym');
       const previous = button.textContent;
       button.disabled = true;
@@ -3296,9 +3305,9 @@ INDEX_HTML = r"""<!doctype html>
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
           endpoint: env.endpoint,
-          environment: {id: env.id, name: env.name, type: env.type, public_endpoint: env.public_endpoint || '', web_url: env.web_url || '', parallel_envs: env.parallel_envs || 1},
+          environment: {id: env.id, name: env.name, type: env.type, public_endpoint: env.public_endpoint || '', web_url: env.web_url || '', parallel_envs: env.parallel_envs || 5},
           suites: Array.from(selectedSuites),
-          parallel_tasks: env.type === 'mobilegym' ? (env.parallel_envs || 1) : 1,
+          parallel_tasks: env.type === 'mobilegym' ? (env.parallel_envs || 5) : 1,
           no_judge: !judge.enabled,
           judge_model: judge.model
         })
