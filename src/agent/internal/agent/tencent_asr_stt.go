@@ -38,18 +38,14 @@ func NewTencentASRSTT(secretID, secretKey, region, engineModelType, language str
 	if region == "" {
 		region = defaultTencentASRRegion
 	}
-	// Map unified language to engine_model_type if not explicitly provided
-	if engineModelType == "" {
-		if language != "" {
-			switch language {
-			case "zh":
-				engineModelType = "16k_zh"
-			case "en":
-				engineModelType = "16k_en"
-			default:
-				engineModelType = defaultTencentASREngineModel
-			}
-		} else {
+	// Map unified language to engine_model_type, ignoring legacy explicit value
+	switch language {
+	case "zh":
+		engineModelType = "16k_zh"
+	case "en":
+		engineModelType = "16k_en"
+	default:
+		if engineModelType == "" {
 			engineModelType = defaultTencentASREngineModel
 		}
 	}

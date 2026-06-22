@@ -190,8 +190,9 @@ func TestTencentASRLanguageMapping(t *testing.T) {
 	}{
 		{"zh maps to 16k_zh", "zh", "", "16k_zh"},
 		{"en maps to 16k_en", "en", "", "16k_en"},
-		{"explicit engine takes precedence", "zh", "8k_en", "8k_en"},
+		{"language overrides explicit engine", "zh", "8k_en", "16k_zh"},
 		{"unknown language uses default", "ja", "", "16k_zh"},
+		{"empty language uses explicit engine", "", "8k_en", "8k_en"},
 	}
 
 	for _, tt := range tests {
