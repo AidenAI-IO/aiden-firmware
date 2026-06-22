@@ -175,6 +175,25 @@ func TestResolvePointerPositionNormalizedUsesActiveArea(t *testing.T) {
 	}
 }
 
+func TestResolvePointerPositionTouchscreenNormalizedUsesFrameSpaceWithinActiveArea(t *testing.T) {
+	screen := &screenState{}
+	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true})
+
+	x, y, err := resolvePointerPositionForSurface(screen, true, 627, 180, "normalized", coordinateSpaceNormalized)
+	if err != nil {
+		t.Fatalf("resolvePointerPositionForSurface returned error: %v", err)
+	}
+
+	wantX := scalePixelToAbsolute(float64(656)+(627.0/1000.0)*float64(608-1), 1920)
+	wantY := scalePixelToAbsolute((180.0/1000.0)*float64(1080-1), 1080)
+	if x != wantX {
+		t.Fatalf("x = %d, want %d", x, wantX)
+	}
+	if y != wantY {
+		t.Fatalf("y = %d, want %d", y, wantY)
+	}
+}
+
 func TestResolvePointerPositionPixelRejectsBlackBar(t *testing.T) {
 	screen := &screenState{}
 	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true})
@@ -509,6 +528,36 @@ func TestTouchscreenTapWritesTouchDownAndUp(t *testing.T) {
 	for i := 1; i < len(reports); i++ {
 		if reports[i].flags != 0x00 || reports[i].contactID != 1 || reports[i].x != 16384 || reports[i].y != 8192 {
 			t.Fatalf("up report %d = %+v, want release at (16384,8192)", i, reports[i])
+		}
+	}
+}
+
+func TestTouchscreenTapUsesFrameSpaceForActiveArea(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	screen := &screenState{}
+	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true})
+	tool := &TouchGestureTool{pc: testTouchscreenPointerController(dev, &pointerState{}), screen: screen}
+
+	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":627,"y":180}}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("Call output = %q, want ok", out)
+	}
+
+	reports := readTouchscreenReports(t, dev, path)
+	if len(reports) != 1+touchReleaseReportCount {
+		t.Fatalf("len(reports) = %d, want %d (down, repeated up)", len(reports), 1+touchReleaseReportCount)
+	}
+	wantX := uint16(scalePixelToAbsolute(float64(656)+(627.0/1000.0)*float64(608-1), 1920))
+	wantY := uint16(scalePixelToAbsolute((180.0/1000.0)*float64(1080-1), 1080))
+	if reports[0].flags != 0x03 || reports[0].contactID != 1 || reports[0].x != wantX || reports[0].y != wantY {
+		t.Fatalf("down report = %+v, want touch at (%d,%d)", reports[0], wantX, wantY)
+	}
+	for i := 1; i < len(reports); i++ {
+		if reports[i].flags != 0x00 || reports[i].contactID != 1 || reports[i].x != wantX || reports[i].y != wantY {
+			t.Fatalf("up report %d = %+v, want release at (%d,%d)", i, reports[i], wantX, wantY)
 		}
 	}
 }
