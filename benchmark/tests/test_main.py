@@ -158,6 +158,43 @@ def test_run_triggers_llm_analysis_when_enabled(monkeypatch, tmp_path):
     assert calls and calls[0][2].enabled is True
 
 
+def test_run_llm_analysis_env_limits_fall_back_on_invalid_values(monkeypatch, tmp_path):
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(json.dumps({"name": "empty_suite", "tasks": []}), encoding="utf-8")
+    calls = []
+
+    class FakeClient:
+        def __init__(self, base_url):
+            self.base_url = base_url
+
+        def health(self):
+            return True
+
+        def close(self):
+            pass
+
+    def fake_analyze(run_dir, repo_root, cfg):
+        calls.append(cfg)
+        return AnalysisResult(ok=True, markdown_path=run_dir / "llm_analysis.md")
+
+    monkeypatch.setenv("AIDEN_BENCHMARK_ANALYSIS_MAX_LOG_BYTES", "not-an-int")
+    monkeypatch.setenv("AIDEN_BENCHMARK_ANALYSIS_MAX_CODE_BYTES", "not-an-int")
+    monkeypatch.setenv("AIDEN_BENCHMARK_ANALYSIS_TIMEOUT_SEC", "not-an-int")
+    monkeypatch.setattr(main, "AgentClient", FakeClient)
+    monkeypatch.setattr(main, "wait_for_agent_clock", lambda *args, **kwargs: True)
+    monkeypatch.setattr(main, "upload_report", lambda *args, **kwargs: False)
+    monkeypatch.setattr(main, "analyze_run", fake_analyze)
+
+    rc = main.cli(
+        ["run", "--suite", str(suite_path), "--out", str(tmp_path / "runs"), "--no-judge", "--llm-analysis"]
+    )
+
+    assert rc == 0
+    assert calls[0].max_log_bytes == 64 * 1024
+    assert calls[0].max_code_bytes == 128 * 1024
+    assert calls[0].timeout_sec == 180
+
+
 def test_run_keeps_exit_code_when_analysis_fails(monkeypatch, tmp_path):
     suite_path = tmp_path / "suite.json"
     suite_path.write_text(json.dumps({"name": "empty_suite", "tasks": []}), encoding="utf-8")

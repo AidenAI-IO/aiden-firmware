@@ -188,6 +188,15 @@ api_key = "tts-key"
     }
 
 
+def test_parse_board_agent_config_ignores_missing_sections(launcher_module):
+    assert launcher_module.parse_agent_model_config(
+        '[tts]\nprovider = "minimax-ws"\napi_key = "tts-key"\n'
+    ) == {}
+    assert launcher_module.parse_agent_benchmark_config(
+        '[model]\nprovider = "openai"\napi_key = "model-key"\n'
+    ) == {}
+
+
 def test_fetch_board_model_config_uses_shell_tool(launcher_module):
     class Handler(launcher_module.BaseHTTPRequestHandler):
         def do_POST(self):

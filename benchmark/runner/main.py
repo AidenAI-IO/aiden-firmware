@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from runner.agent_client import AgentClient
-from runner.analysis import AnalysisConfig, analyze_run
+from runner.analysis import AnalysisConfig, _int_env, analyze_run
 from runner.html_report import generate_report_html, upload_report
 from runner.judge import JudgeConfig
 from runner.report import git_sha, write_jsonl, write_manifest, write_summary, now_iso
@@ -71,17 +71,17 @@ def cli(argv: list[str] | None = None) -> int:
     p_run.add_argument(
         "--analysis-max-log-bytes",
         type=int,
-        default=int(os.environ.get("AIDEN_BENCHMARK_ANALYSIS_MAX_LOG_BYTES", 64 * 1024)),
+        default=_int_env("AIDEN_BENCHMARK_ANALYSIS_MAX_LOG_BYTES", 64 * 1024),
     )
     p_run.add_argument(
         "--analysis-max-code-bytes",
         type=int,
-        default=int(os.environ.get("AIDEN_BENCHMARK_ANALYSIS_MAX_CODE_BYTES", 128 * 1024)),
+        default=_int_env("AIDEN_BENCHMARK_ANALYSIS_MAX_CODE_BYTES", 128 * 1024),
     )
     p_run.add_argument(
         "--analysis-timeout-sec",
         type=int,
-        default=int(os.environ.get("AIDEN_BENCHMARK_ANALYSIS_TIMEOUT_SEC", 180)),
+        default=_int_env("AIDEN_BENCHMARK_ANALYSIS_TIMEOUT_SEC", 180),
     )
     p_unit = sub.add_parser("unit")
     p_unit.add_argument("--suite")

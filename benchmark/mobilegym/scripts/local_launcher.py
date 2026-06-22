@@ -778,11 +778,11 @@ def benchmark_config_from_payload(payload: dict[str, Any]) -> dict[str, str]:
 
 
 def fetch_board_model_config(board_url: str) -> dict[str, str]:
-    return parse_agent_model_config(fetch_board_toml_section(board_url, "model"))
+    return parse_agent_model_assignments(fetch_board_toml_section(board_url, "model"))
 
 
 def fetch_board_benchmark_config(board_url: str) -> dict[str, str]:
-    return parse_agent_benchmark_config(fetch_board_toml_section(board_url, "benchmark"))
+    return parse_agent_benchmark_assignments(fetch_board_toml_section(board_url, "benchmark"))
 
 
 def fetch_board_toml_section(board_url: str, section: str) -> str:
@@ -816,7 +816,11 @@ def fetch_board_toml_section(board_url: str, section: str) -> str:
 
 
 def parse_agent_model_config(text: str) -> dict[str, str]:
-    values = parse_toml_assignments(toml_section(text, "model"), {"provider", "model", "base_url", "api_key"})
+    return parse_agent_model_assignments(toml_section(text, "model"))
+
+
+def parse_agent_model_assignments(text: str) -> dict[str, str]:
+    values = parse_toml_assignments(text, {"provider", "model", "base_url", "api_key"})
     mapping = {
         "provider": "MODEL_PROVIDER",
         "model": "MODEL_NAME",
@@ -827,7 +831,11 @@ def parse_agent_model_config(text: str) -> dict[str, str]:
 
 
 def parse_agent_benchmark_config(text: str) -> dict[str, str]:
-    values = parse_toml_assignments(toml_section(text, "benchmark"), {"api_key", "judge_model"})
+    return parse_agent_benchmark_assignments(toml_section(text, "benchmark"))
+
+
+def parse_agent_benchmark_assignments(text: str) -> dict[str, str]:
+    values = parse_toml_assignments(text, {"api_key", "judge_model"})
     env: dict[str, str] = {}
     if values.get("api_key"):
         env["OPENROUTER_API_KEY"] = values["api_key"]
@@ -869,7 +877,7 @@ def toml_section(text: str, section: str) -> str:
             continue
         if in_section:
             lines.append(raw_line)
-    return "\n".join(lines) if found else text
+    return "\n".join(lines) if found else ""
 
 
 def validate_model_environment(env: dict[str, str] | None = None) -> None:
