@@ -42,6 +42,7 @@ func (s *Server) captureCoordinateDebugScreenshot(options coordinateDebugScreens
 	if s == nil || s.runtime == nil {
 		return nil, nil, fmt.Errorf("runtime not configured")
 	}
+	_ = s.bridgeEnvironment()
 
 	client := NewFrameServiceClient(s.runtime.config.HID.FrameSocketOrDefault())
 	meta, frameData, err := client.LatestFrame()
@@ -54,7 +55,14 @@ func (s *Server) captureCoordinateDebugScreenshot(options coordinateDebugScreens
 	}
 	sourceWidth := int(meta.Width)
 	sourceHeight := int(meta.Height)
-	sourceActive := detectScreenshotActiveArea(rawJPEGData, sourceWidth, sourceHeight)
+	var screen *screenState
+	if s.runtime.tools != nil {
+		screen = s.runtime.tools.screen
+	}
+	sourceActive := detectScreenshotActiveAreaForScreen(screen, rawJPEGData, sourceWidth, sourceHeight)
+	if screen != nil {
+		screen.UpdateActiveArea(sourceWidth, sourceHeight, sourceActive)
+	}
 	displayJPEGData := rawJPEGData
 	displayWidth := sourceWidth
 	displayHeight := sourceHeight

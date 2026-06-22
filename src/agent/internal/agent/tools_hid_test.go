@@ -31,6 +31,33 @@ func TestResolvePointerPositionNormalized(t *testing.T) {
 	}
 }
 
+func TestToolSetUpdateDeviceEnvironmentTracksPhoneScreenInfo(t *testing.T) {
+	tools := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
+	env := &PhoneEnvironment{
+		Screen: PhoneScreenInfo{
+			WidthPixels:  intPtr(1080),
+			HeightPixels: intPtr(1920),
+		},
+	}
+
+	tools.UpdateDeviceEnvironment(env)
+
+	screen := tools.screen.PhoneScreenInfo()
+	if screen.WidthPixels == nil || screen.HeightPixels == nil {
+		t.Fatalf("screen info = %+v, want width/height pixels", screen)
+	}
+	if *screen.WidthPixels != 1080 || *screen.HeightPixels != 1920 {
+		t.Fatalf("screen pixels = %v x %v, want 1080 x 1920", *screen.WidthPixels, *screen.HeightPixels)
+	}
+
+	tools.UpdateDeviceEnvironment(nil)
+
+	screen = tools.screen.PhoneScreenInfo()
+	if screen.WidthPixels != nil || screen.HeightPixels != nil || screen.Width != nil || screen.Height != nil {
+		t.Fatalf("screen info should be cleared, got %+v", screen)
+	}
+}
+
 func TestHIDToolsExposeStructuredSchemas(t *testing.T) {
 	for name, tool := range map[string]structuredInputTool{
 		"keyboard_tap":  &KeyboardTapTool{},
@@ -128,6 +155,23 @@ func TestResolvePointerPositionPixelUses720pActiveArea(t *testing.T) {
 	}
 	if y != 16406 {
 		t.Fatalf("y = %d, want 16406", y)
+	}
+}
+
+func TestResolvePointerPositionNormalizedUsesActiveArea(t *testing.T) {
+	screen := &screenState{}
+	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true})
+
+	x, y, err := resolvePointerPosition(screen, 0, 500, "normalized", coordinateSpaceNormalized)
+	if err != nil {
+		t.Fatalf("resolvePointerPosition returned error: %v", err)
+	}
+	if x != 0 {
+		t.Fatalf("x = %d, want 0 at left edge of active_area", x)
+	}
+	wantY := scalePixelToAbsolute(float64(1079)/2, 1080)
+	if y != wantY {
+		t.Fatalf("y = %d, want %d", y, wantY)
 	}
 }
 

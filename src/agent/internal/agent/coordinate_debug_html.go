@@ -176,7 +176,7 @@ function imagePixelToSourcePixel(pixelX, pixelY) {
 function sourcePixelToNormalized(pixelX, pixelY) {
     const meta = currentScreenshotMeta || defaultScreenshotMeta(canvas.width, canvas.height);
     const active = normalizeActiveArea(meta);
-    // Normalized coordinates are relative to active_area (0-1000 maps to visible content)
+    // Normalized coordinates are relative to active_area (0-1000 maps to the mirrored phone touch region)
     if (active) {
         const activeWidth = Math.max(active.width, 1);
         const activeHeight = Math.max(active.height, 1);
@@ -201,7 +201,7 @@ function sourcePixelToNormalized(pixelX, pixelY) {
 function normalizedToSourcePixel(x, y) {
     const meta = currentScreenshotMeta || defaultScreenshotMeta(canvas.width, canvas.height);
     const active = normalizeActiveArea(meta);
-    // Normalized coordinates are relative to active_area (0-1000 maps to visible content)
+    // Normalized coordinates are relative to active_area (0-1000 maps to the mirrored phone touch region)
     if (active) {
         const activeWidth = Math.max(active.width, 1);
         const activeHeight = Math.max(active.height, 1);

@@ -712,6 +712,71 @@ func TestHandleScreenshotJPEGCanDisableBlackBarCropping(t *testing.T) {
 	}
 }
 
+func TestHandleScreenshotJPEGUpdatesSharedScreenStateFromPhoneAspectRatio(t *testing.T) {
+	frameSocket := startFakeFrameServiceSocket(t, func(req map[string]any) (string, []byte) {
+		if format, _ := req["format"].(string); format != "raw" {
+			t.Fatalf("expected raw format request, got %#v", req["format"])
+		}
+		header := `{"type":"response","method":"latest_frame","status":"OK","frame":{"seq":1,"width":16,"height":9,"pixel_format":"uyvy","stride":32,"bytes":288,"stale":false}}`
+		return header, bytes.Repeat([]byte{16, 128, 16, 128}, 72)
+	})
+
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model: ModelConfig{Provider: "fake"},
+			HID:   HIDConfig{FrameSocket: frameSocket},
+		},
+		&testModelResolver{},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{FrameSocket: frameSocket}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0", "")
+
+	envData, err := json.Marshal(PhoneEnvironment{
+		Platform: "android",
+		Screen: PhoneScreenInfo{
+			WidthPixels:  intPtr(1080),
+			HeightPixels: intPtr(1920),
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal environment: %v", err)
+	}
+	if !server.bridge.handleAppEvent(BridgeCommandResponse{
+		ID:     "phone_environment",
+		Method: "phone_environment",
+		OK:     true,
+		Data:   envData,
+	}) {
+		t.Fatal("expected phone_environment event to be handled")
+	}
+	server.bridge.mu.Lock()
+	server.bridge.connected = true
+	server.bridge.mu.Unlock()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/screenshot.jpg", nil)
+	rec := httptest.NewRecorder()
+
+	server.handleScreenshotJPEG(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	width, height, active, _, ok := runtime.tools.screen.ActiveAreaWithAge()
+	if !ok {
+		t.Fatal("expected shared screen state to be updated")
+	}
+	if width != 16 || height != 9 {
+		t.Fatalf("screen dimensions = %dx%d, want 16x9", width, height)
+	}
+	want := screenActiveArea{X: 5, Y: 0, Width: 5, Height: 9, Valid: true}
+	if active != want {
+		t.Fatalf("active area = %+v, want %+v", active, want)
+	}
+}
+
 func TestHandleCoordinateDebugTapRecapturesUncroppedScreenshot(t *testing.T) {
 	frameSocket := startFakeFrameServiceSocket(t, func(req map[string]any) (string, []byte) {
 		if format, _ := req["format"].(string); format != "raw" {

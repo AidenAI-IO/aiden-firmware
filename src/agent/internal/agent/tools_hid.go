@@ -136,13 +136,19 @@ type HIDDevice struct {
 }
 
 type screenState struct {
-	mu        sync.RWMutex
-	width     int
-	height    int
-	active    screenActiveArea
-	updatedAt time.Time
+	mu          sync.RWMutex
+	width       int
+	height      int
+	active      screenActiveArea
+	phoneScreen PhoneScreenInfo
+	updatedAt   time.Time
 }
 
+// screenActiveArea represents the mirrored phone touch region inside the
+// captured HDMI frame. When the companion app reports the phone's original
+// screen dimensions, this is the largest centered region in the frame with the
+// same aspect ratio. Falling back to "visible non-black content" is only an
+// approximation for when accurate phone screen info is unavailable.
 type screenActiveArea struct {
 	X      int  `json:"x"`
 	Y      int  `json:"y"`
@@ -160,6 +166,33 @@ type pointerState struct {
 
 func (s *screenState) Update(width, height int) {
 	s.UpdateActiveArea(width, height, screenActiveArea{})
+}
+
+func (s *screenState) UpdatePhoneScreenInfo(info PhoneScreenInfo) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.phoneScreen = info
+}
+
+func (s *screenState) ClearPhoneScreenInfo() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.phoneScreen = PhoneScreenInfo{}
+}
+
+func (s *screenState) PhoneScreenInfo() PhoneScreenInfo {
+	if s == nil {
+		return PhoneScreenInfo{}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.phoneScreen
 }
 
 func (s *screenState) UpdateActiveArea(width, height int, active screenActiveArea) {
@@ -1201,19 +1234,18 @@ func resolvePointerPosition(screen *screenState, x, y float64, coordSpace string
 		}
 		return pixelToAbsolutePoint(x, y, width, height, active)
 	case coordinateSpaceNormalized:
-		// Normalized coordinates are relative to active_area (0-1000 maps to visible content).
-		// Convert to pixel coordinates within active_area, then to absolute HID coordinates.
+		// Normalized coordinates are relative to active_area (0-1000 maps to the
+		// mirrored phone touch region inside the HDMI frame).
+		// Convert to pixel coordinates within active_area, then scale within that
+		// touch region to HID absolute coordinates.
 		if screen != nil {
-			if width, height, active, age, ok := screen.ActiveAreaWithAge(); ok && age < screenDimensionsStaleAfter && active.Valid {
+			if _, _, active, age, ok := screen.ActiveAreaWithAge(); ok && age < screenDimensionsStaleAfter && active.Valid {
 				// Step 1: Map normalized (0-1000) to pixel within active_area (0 to active.Width-1)
 				activePixelX := (x / 1000.0) * float64(active.Width-1)
 				activePixelY := (y / 1000.0) * float64(active.Height-1)
-				// Step 2: Add active_area offset to get full-frame pixel coordinates
-				fullFramePixelX := activePixelX + float64(active.X)
-				fullFramePixelY := activePixelY + float64(active.Y)
-				// Step 3: Scale full-frame pixel (0 to width-1) to HID absolute (0 to 32767)
-				absX := int(math.Round((fullFramePixelX / float64(width-1)) * float64(absMouseMaxPos)))
-				absY := int(math.Round((fullFramePixelY / float64(height-1)) * float64(absMouseMaxPos)))
+				// Step 2: Scale within active_area's own coordinate system.
+				absX := scalePixelToAbsolute(activePixelX, active.Width)
+				absY := scalePixelToAbsolute(activePixelY, active.Height)
 				return absX, absY, nil
 			}
 		}

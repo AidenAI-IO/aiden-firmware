@@ -154,7 +154,7 @@ func (t *WaitStableScreenTool) captureScreenshot() (screenshotResult, error) {
 	if meta.PixelFormat != "jpeg" {
 		return screenshotResult{}, fmt.Errorf("expected jpeg format, got %s", meta.PixelFormat)
 	}
-	active := detectScreenshotActiveArea(jpegData, int(meta.Width), int(meta.Height))
+	active := detectScreenshotActiveAreaForScreen(t.screen, jpegData, int(meta.Width), int(meta.Height))
 	if t.screen != nil {
 		t.screen.UpdateActiveArea(int(meta.Width), int(meta.Height), active)
 	}

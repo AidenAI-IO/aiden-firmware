@@ -113,3 +113,48 @@ func TestCropJPEGToActiveArea(t *testing.T) {
 		t.Fatalf("decoded bounds = %v, want 2x2", bounds)
 	}
 }
+
+func TestDeriveActiveAreaFromPhoneScreenUsesReportedAspectRatio(t *testing.T) {
+	approx := screenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true}
+	active, ok := deriveActiveAreaFromPhoneScreen(1920, 1080, PhoneScreenInfo{
+		WidthPixels:  intPtr(1080),
+		HeightPixels: intPtr(1920),
+	}, approx)
+	if !ok {
+		t.Fatal("expected aspect-ratio derived active area")
+	}
+	want := screenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true}
+	if active != want {
+		t.Fatalf("active area = %+v, want %+v", active, want)
+	}
+}
+
+func TestDeriveActiveAreaFromNativePhoneScreenUsesApproxToChooseOrientation(t *testing.T) {
+	approx := screenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true}
+	active, ok := deriveActiveAreaFromPhoneScreen(1920, 1080, PhoneScreenInfo{
+		NativeWidthPixels:  intPtr(1920),
+		NativeHeightPixels: intPtr(1080),
+	}, approx)
+	if !ok {
+		t.Fatal("expected active area derived from native screen dimensions")
+	}
+	want := screenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true}
+	if active != want {
+		t.Fatalf("active area = %+v, want %+v", active, want)
+	}
+}
+
+func TestDeriveActiveAreaFromReportedPhoneScreenCanChooseRotatedOrientation(t *testing.T) {
+	approx := screenActiveArea{X: 0, Y: 97, Width: 1920, Height: 886, Valid: true}
+	active, ok := deriveActiveAreaFromPhoneScreen(1920, 1080, PhoneScreenInfo{
+		WidthPixels:  intPtr(1080),
+		HeightPixels: intPtr(2340),
+	}, approx)
+	if !ok {
+		t.Fatal("expected rotated active area derived from reported screen dimensions")
+	}
+	want := screenActiveArea{X: 0, Y: 97, Width: 1920, Height: 886, Valid: true}
+	if active != want {
+		t.Fatalf("active area = %+v, want %+v", active, want)
+	}
+}
