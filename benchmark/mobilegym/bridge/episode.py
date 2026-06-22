@@ -80,6 +80,15 @@ class BridgeTaskRouter:
             self._state_to_task[state] = task_id
             return state
 
+    def existing_state_for_task_id(self, task_id: str | None) -> "BridgeEpisodeState | None":
+        task_id = str(task_id or "").strip()
+        if not task_id:
+            if len(self.states) > 1:
+                raise MissingBenchmarkTaskIDError(f"{BENCHMARK_TASK_ID_HEADER} header is required")
+            return self.default_state
+        with self._lock:
+            return self._task_to_state.get(task_id)
+
     def release_task_id(self, task_id: str | None) -> bool:
         task_id = str(task_id or "").strip()
         if not task_id:

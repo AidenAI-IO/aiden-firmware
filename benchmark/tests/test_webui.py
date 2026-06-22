@@ -67,6 +67,10 @@ def test_endpoint_for_docker_rewrites_localhost():
 def test_mobilegym_screen_url_points_at_bridge_screen():
     assert webui.mobilegym_screen_url("http://127.0.0.1:19090") == "http://127.0.0.1:19090/screen"
     assert webui.mobilegym_screen_url("http://127.0.0.1:19090/bridge/") == "http://127.0.0.1:19090/bridge/screen"
+    assert (
+        webui.mobilegym_screen_url("http://127.0.0.1:19090", "suite.json:t1")
+        == "http://127.0.0.1:19090/screen?benchmark-task-id=suite.json%3At1"
+    )
 
 
 def test_prepare_run_config_renders_template(tmp_path: Path, monkeypatch):
@@ -487,11 +491,15 @@ def test_mobilegym_task_worker_uses_task_id_for_daemon_and_runner(tmp_path: Path
     )
 
     def fake_start_daemon_compose(*args, **kwargs):
+        captured["worker_job"] = args[0]
         captured["benchmark_task_id"] = kwargs["benchmark_task_id"]
         captured["host_port"] = kwargs["host_port"]
+        captured["compose_log_path"] = kwargs["log_path"]
         return "container-id"
 
-    def fake_run_runner_process(parent_job, cmd, env):
+    def fake_run_runner_process(parent_job, cmd, env, *, owner_job_id=None):
+        captured["runner_job"] = parent_job
+        captured["owner_job_id"] = owner_job_id
         captured["cmd"] = cmd
         run_id = cmd[cmd.index("--run-id") + 1]
         run_path = raw_runs_dir / run_id
@@ -509,12 +517,67 @@ def test_mobilegym_task_worker_uses_task_id_for_daemon_and_runner(tmp_path: Path
 
     assert captured["host_port"] == 18081
     assert captured["benchmark_task_id"] == "suite.json:t1"
+    assert captured["worker_job"].runner_log != job.runner_log
+    assert captured["worker_job"].daemon_log != job.daemon_log
+    assert captured["compose_log_path"] == Path(captured["worker_job"].runner_log)
+    assert captured["runner_job"].runner_log == captured["worker_job"].runner_log
+    assert captured["owner_job_id"] == job.id
     assert captured["cmd"][captured["cmd"].index("--task-id") + 1] == "t1"
     assert captured["cmd"][captured["cmd"].index("--benchmark-task-id") + 1] == "suite.json:t1"
     assert captured["cmd"][captured["cmd"].index("--environment-url") + 1] == "http://127.0.0.1:19090"
     assert releases == [("http://127.0.0.1:19090", 2, "suite.json:t1")]
     assert result["exit_code"] == 0
     assert result["manifest"]["totals"]["passed"] == 1
+    assert len(job.task_records) == 1
+    task_record = job.task_records[0]
+    assert task_record.status == "passed"
+    assert task_record.benchmark_task_id == "suite.json:t1"
+    assert task_record.agent_url == "http://127.0.0.1:18081"
+    assert task_record.report_url == f"/reports/{job.id}/{result['run_id']}/report.html"
+    assert task_record.screen_url == "http://127.0.0.1:19090/screen?benchmark-task-id=suite.json%3At1"
+
+
+def test_read_task_log_returns_task_worker_logs(tmp_path: Path):
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+        )
+    )
+    job_dir = tmp_path / "runs" / "job-test"
+    worker_dir = job_dir / "workers"
+    worker_dir.mkdir(parents=True)
+    runner_log = worker_dir / "suite-json-t1.runner.log"
+    daemon_log = worker_dir / "suite-json-t1.daemon.log"
+    runner_log.write_text("runner output\n", encoding="utf-8")
+    daemon_log.write_text("daemon output\n", encoding="utf-8")
+    job = webui.Job(
+        id="job-test",
+        endpoint="http://127.0.0.1:19090",
+        docker_endpoint="http://host.docker.internal:19090",
+        suites=["suite.json"],
+        runner_log=str(job_dir / "runner.log"),
+        daemon_log=str(job_dir / "daemon.log"),
+        task_records=[
+            webui.TaskRecord(
+                id="suite-json-t1",
+                suite="suite.json",
+                task_id="t1",
+                benchmark_task_id="suite.json:t1",
+                runner_log=str(runner_log),
+                daemon_log=str(daemon_log),
+            )
+        ],
+    )
+    app._jobs[job.id] = job
+
+    text = app.read_task_log("job-test", "suite-json-t1")
+
+    assert text is not None
+    assert "== runner ==" in text
+    assert "runner output" in text
+    assert "== daemon ==" in text
+    assert "daemon output" in text
 
 
 def test_stop_job_marks_stopping_terminates_runner_and_removes_container(tmp_path: Path, monkeypatch):
@@ -733,6 +796,10 @@ def test_index_html_exposes_judge_settings_panel():
     assert 'id="mobilegymParallelEnvs"' in webui.INDEX_HTML
     assert "parallel_envs" in webui.INDEX_HTML
     assert ">screen</a>" in webui.INDEX_HTML
+    assert 'id="taskRows"' in webui.INDEX_HTML
+    assert "task_records" in webui.INDEX_HTML
+    assert "/tasks/${encodeURIComponent(task.id)}/log" in webui.INDEX_HTML
+    assert "screen_url" in webui.INDEX_HTML
 
 
 def test_run_job_uses_saved_webui_agent_config(tmp_path: Path, monkeypatch):

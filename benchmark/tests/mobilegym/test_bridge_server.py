@@ -11,7 +11,7 @@ from enum import Enum
 
 import pytest
 
-from mobilegym.bridge.episode import BridgeEpisodeState
+from mobilegym.bridge.episode import BridgeEpisodeState, BridgeTaskRouter
 from mobilegym.bridge.actions import action_to_dict
 from mobilegym.bridge.server import BridgeServer
 
@@ -329,6 +329,39 @@ def test_screen_page_snapshots_active_execution_state():
             }
         ]
         assert "screenshot" not in data["actions"][0]
+
+
+def test_screen_page_snapshot_routes_by_query_task_id():
+    with OwnerLoop() as owner:
+        envs = [FakeEnv(owner.loop), FakeEnv(owner.loop)]
+        states = [BridgeEpisodeState(env, owner_loop=owner.loop) for env in envs]
+        states[0].active_episode_id = "ep-alpha"
+        states[1].active_episode_id = "ep-beta"
+        server = BridgeServer(BridgeTaskRouter(states), host="127.0.0.1", port=0)
+        try:
+            server.start()
+            status, html = request_text(server.base_url, "GET", "/screen?benchmark-task-id=task.alpha")
+            assert status == 200
+            assert "window.location.search" in html
+            assert "taskId" in html
+
+            status, body = request_json(server.base_url, "GET", "/screen/snapshot?benchmark-task-id=task.alpha")
+            assert status == 200
+            assert body["data"]["status"] == "waiting"
+            assert server.router.task_map() == {}
+
+            server.router.state_for_task_id("task.alpha")
+            server.router.state_for_task_id("task.beta")
+
+            status, body = request_json(server.base_url, "GET", "/screen/snapshot?benchmark-task-id=task.alpha")
+            assert status == 200
+            assert body["data"]["active_episode_id"] == "ep-alpha"
+
+            status, body = request_json(server.base_url, "GET", "/screen/snapshot?benchmark-task-id=task.beta")
+            assert status == 200
+            assert body["data"]["active_episode_id"] == "ep-beta"
+        finally:
+            server.stop()
 
 
 def test_tools_api_touch_gestures_use_active_reset_episode_and_normalized_coordinates():

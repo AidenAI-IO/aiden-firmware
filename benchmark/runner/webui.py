@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from runner.agent_client import AgentClient
 from runner.judge import JudgeConfig
@@ -66,6 +66,29 @@ class WebUIConfig:
 
 
 @dc.dataclass
+class TaskRecord:
+    id: str
+    suite: str
+    task_id: str
+    benchmark_task_id: str
+    status: str = "queued"
+    message: str = ""
+    created_at: str = ""
+    started_at: str = ""
+    finished_at: str = ""
+    agent_url: str = ""
+    container_name: str = ""
+    run_id: str = ""
+    state_file: str = ""
+    runner_log: str = ""
+    daemon_log: str = ""
+    screen_url: str = ""
+    report_url: str = ""
+    exit_code: int | None = None
+    error: str = ""
+
+
+@dc.dataclass
 class Job:
     id: str
     endpoint: str
@@ -89,6 +112,7 @@ class Job:
     runner_log: str = ""
     daemon_log: str = ""
     suite_results: list[dict[str, Any]] = dc.field(default_factory=list)
+    task_records: list[TaskRecord] = dc.field(default_factory=list)
     no_judge: bool = False
     judge_model: str = DEFAULT_JUDGE_MODEL
     judge_api_key_set: bool = False
@@ -209,6 +233,21 @@ class BenchmarkWebApp:
             if job is None:
                 return None
             paths = [Path(job.runner_log), Path(job.daemon_log)]
+        parts = []
+        for title, path in (("runner", paths[0]), ("daemon", paths[1])):
+            parts.append(f"== {title} ==")
+            parts.append(tail_text(path, LOG_TAIL_BYTES))
+        return "\n".join(parts)
+
+    def read_task_log(self, job_id: str, task_record_id: str) -> str | None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return None
+            record = next((item for item in job.task_records if item.id == task_record_id), None)
+            if record is None:
+                return None
+            paths = [Path(record.runner_log), Path(record.daemon_log)]
         parts = []
         for title, path in (("runner", paths[0]), ("daemon", paths[1])):
             parts.append(f"== {title} ==")
@@ -470,16 +509,59 @@ class BenchmarkWebApp:
         return load_webui_settings(self._webui_settings_path(), include_secrets=include_secrets)
 
     def _job_payload(self, job: Job) -> dict[str, Any]:
-        payload = dc.asdict(job)
+        with self._lock:
+            payload = dc.asdict(job)
         payload["progress"] = read_json_file(Path(job.state_file))
-        payload["suite_results"] = list(job.suite_results)
-        payload["totals"] = aggregate_totals(job.suite_results)
+        payload["suite_results"] = list(payload.get("suite_results") or [])
+        payload["task_records"] = list(payload.get("task_records") or [])
+        payload["totals"] = aggregate_totals(payload["suite_results"])
         return payload
 
     def _mobilegym_environment_payload(self, env: MobileGymEnvironment) -> dict[str, Any]:
         payload = dc.asdict(env)
         payload["log_tail"] = tail_text(Path(env.log_path), LOG_TAIL_BYTES)
         return payload
+
+    def _new_task_record(self, job: Job, suite_key: str, task_id: str) -> TaskRecord:
+        token = worker_token(suite_key, task_id)
+        benchmark_task_id = f"{suite_key}:{task_id}"
+        workers_dir = Path(job.raw_runs_dir).parent / "workers"
+        workers_dir.mkdir(parents=True, exist_ok=True)
+        return TaskRecord(
+            id=token,
+            suite=suite_key,
+            task_id=task_id,
+            benchmark_task_id=benchmark_task_id,
+            status="queued",
+            created_at=now_iso(),
+            state_file=str(workers_dir / f"{token}.state.json"),
+            runner_log=str(workers_dir / f"{token}.runner.log"),
+            daemon_log=str(workers_dir / f"{token}.daemon.log"),
+            screen_url=mobilegym_screen_url(job.environment_endpoint, benchmark_task_id),
+        )
+
+    def _ensure_task_record(self, job: Job, suite_key: str, task_id: str) -> TaskRecord:
+        token = worker_token(suite_key, task_id)
+        with self._lock:
+            existing = next((item for item in job.task_records if item.id == token), None)
+            if existing is not None:
+                return existing
+        record = self._new_task_record(job, suite_key, task_id)
+        with self._lock:
+            existing = next((item for item in job.task_records if item.id == token), None)
+            if existing is not None:
+                return existing
+            job.task_records.append(record)
+            return record
+
+    def _set_task_record(self, job: Job, record_id: str, **updates: Any) -> None:
+        with self._lock:
+            record = next((item for item in job.task_records if item.id == record_id), None)
+            if record is None:
+                return
+            for key, value in updates.items():
+                if hasattr(record, key):
+                    setattr(record, key, value)
 
     def _stop_mobilegym_log_proc(self, environment_id: str) -> None:
         with self._lock:
@@ -598,6 +680,9 @@ class BenchmarkWebApp:
             update_state_status(Path(job.state_file), "done", run_id=job.id)
             return
 
+        for task in suite.tasks:
+            self._ensure_task_record(job, suite_key, task.id)
+
         completed = 0
         max_workers = min(max(1, job.parallel_tasks), len(suite.tasks))
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=f"bench-{job.id}") as executor:
@@ -611,9 +696,26 @@ class BenchmarkWebApp:
                     result = future.result()
                 except JobStopped:
                     result = {"suite": suite_key, "task_id": task.id, "exit_code": -15, "run_id": "", "stopped": True}
+                    self._set_task_record(
+                        job,
+                        worker_token(suite_key, task.id),
+                        status="stopped",
+                        message="stop requested",
+                        exit_code=-15,
+                        finished_at=now_iso(),
+                    )
                 except Exception as exc:
                     append_log(Path(job.runner_log), f"ERROR: {suite_key} {task.id}: {exc}")
                     result = {"suite": suite_key, "task_id": task.id, "exit_code": 1, "run_id": "", "error": str(exc)}
+                    self._set_task_record(
+                        job,
+                        worker_token(suite_key, task.id),
+                        status="failed",
+                        message=str(exc),
+                        error=str(exc),
+                        exit_code=1,
+                        finished_at=now_iso(),
+                    )
                 completed += task_counts.get(task.id, 1)
                 with self._lock:
                     job.suite_results.append(result)
@@ -638,8 +740,9 @@ class BenchmarkWebApp:
 
     def _run_mobilegym_task_worker(self, job: Job, suite_key: str, suite_path: Path, task_id: str) -> dict[str, Any]:
         self._raise_if_job_stop_requested(job)
-        token = worker_token(suite_key, task_id)
-        benchmark_task_id = f"{suite_key}:{task_id}"
+        record = self._ensure_task_record(job, suite_key, task_id)
+        token = record.id
+        benchmark_task_id = record.benchmark_task_id
         host_port = reserve_free_port()
         worker_job = Job(
             id=f"{job.id}-{token}",
@@ -655,14 +758,26 @@ class BenchmarkWebApp:
             container_name=f"{job.container_name}-{token}",
             config_dir=job.config_dir,
             raw_runs_dir=job.raw_runs_dir,
-            state_file=str(Path(job.raw_runs_dir).parent / "workers" / f"{token}.state.json"),
-            runner_log=job.runner_log,
-            daemon_log=job.daemon_log,
+            state_file=record.state_file,
+            runner_log=record.runner_log,
+            daemon_log=record.daemon_log,
             no_judge=job.no_judge,
             judge_model=job.judge_model,
             judge_api_key_set=job.judge_api_key_set,
             repeats=job.repeats,
             parallel_tasks=1,
+        )
+        self._set_task_record(
+            job,
+            token,
+            status="starting_agent",
+            message="starting docker agent",
+            started_at=now_iso(),
+            agent_url=worker_job.agent_url,
+            container_name=worker_job.container_name,
+            state_file=worker_job.state_file,
+            runner_log=worker_job.runner_log,
+            daemon_log=worker_job.daemon_log,
         )
         self._register_daemon_job(job.id, worker_job)
         log_proc: subprocess.Popen | None = None
@@ -674,14 +789,16 @@ class BenchmarkWebApp:
                 config_dir=Path(job.config_dir),
                 tool_proxy_endpoint=job.docker_endpoint,
                 benchmark_task_id=benchmark_task_id,
-                log_path=Path(job.runner_log),
+                log_path=Path(worker_job.runner_log),
                 stop_requested=lambda: self._job_stop_requested(job),
             )
             append_log(Path(job.runner_log), f"worker {task_id} container {container_id}")
-            log_proc = start_daemon_logs(worker_job, Path(job.daemon_log))
+            append_log(Path(worker_job.runner_log), f"container {container_id}")
+            log_proc = start_daemon_logs(worker_job, Path(worker_job.daemon_log))
             self._wait_for_daemon(worker_job, stop_job=job)
             self._raise_if_job_stop_requested(job)
             run_id = f"{job.id}-{token}"
+            self._set_task_record(job, token, status="running", message="running task", run_id=run_id)
             cmd = [
                 sys.executable,
                 "-m",
@@ -716,7 +833,7 @@ class BenchmarkWebApp:
                     judge_api_key = self._job_judge_api_keys.get(job.id, "")
                 if judge_api_key:
                     env["OPENROUTER_API_KEY"] = judge_api_key
-            exit_code = self._run_runner_process(job, cmd, env)
+            exit_code = self._run_runner_process(worker_job, cmd, env, owner_job_id=job.id)
             run_path = Path(job.raw_runs_dir) / run_id
             result: dict[str, Any] = {
                 "suite": suite_key,
@@ -730,23 +847,64 @@ class BenchmarkWebApp:
                 result["report_url"] = f"/reports/{job.id}/{run_id}/report.html"
             if self._job_stop_requested(job):
                 result["stopped"] = True
+            final_status = "stopped" if result.get("stopped") else "passed" if exit_code == 0 else "failed"
+            self._set_task_record(
+                job,
+                token,
+                status=final_status,
+                message="",
+                finished_at=now_iso(),
+                exit_code=exit_code,
+                run_id=result.get("run_id") or run_id,
+                report_url=str(result.get("report_url") or ""),
+            )
             return result
+        except JobStopped:
+            self._set_task_record(
+                job,
+                token,
+                status="stopped",
+                message="stop requested",
+                finished_at=now_iso(),
+                exit_code=-15,
+            )
+            raise
+        except Exception as exc:
+            self._set_task_record(
+                job,
+                token,
+                status="failed",
+                message=str(exc),
+                error=str(exc),
+                finished_at=now_iso(),
+                exit_code=1,
+            )
+            raise
         finally:
             if job.environment_endpoint:
                 try:
                     call_environment_release(job.environment_endpoint, timeout=2, task_id=benchmark_task_id)
                 except ResetError as exc:
                     append_log(Path(job.runner_log), f"warning: failed to release {benchmark_task_id}: {exc}")
+                    append_log(Path(worker_job.runner_log), f"warning: failed to release {benchmark_task_id}: {exc}")
             if log_proc is not None:
                 log_proc.terminate()
             stop_daemon_compose(worker_job)
             self._unregister_daemon_job(job.id, worker_job)
 
-    def _run_runner_process(self, job: Job, cmd: list[str], env: dict[str, str]) -> int:
+    def _run_runner_process(
+        self,
+        job: Job,
+        cmd: list[str],
+        env: dict[str, str],
+        *,
+        owner_job_id: str | None = None,
+    ) -> int:
         append_log(Path(job.runner_log), "\n$ " + " ".join(cmd))
         popen_kwargs: dict[str, Any] = {}
         if os.name == "posix":
             popen_kwargs["start_new_session"] = True
+        proc_job_id = owner_job_id or job.id
         with Path(job.runner_log).open("ab") as log:
             proc = subprocess.Popen(
                 cmd,
@@ -756,11 +914,11 @@ class BenchmarkWebApp:
                 env=env,
                 **popen_kwargs,
             )
-            self._register_runner_proc(job.id, proc)
+            self._register_runner_proc(proc_job_id, proc)
             try:
                 return int(proc.wait())
             finally:
-                self._unregister_runner_proc(job.id, proc)
+                self._unregister_runner_proc(proc_job_id, proc)
 
     def _register_runner_proc(self, job_id: str, proc: subprocess.Popen) -> None:
         with self._lock:
@@ -1163,13 +1321,14 @@ def endpoint_for_docker(endpoint: str) -> str:
     return urllib.parse.urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)).rstrip("/")
 
 
-def mobilegym_screen_url(endpoint: str) -> str:
+def mobilegym_screen_url(endpoint: str, benchmark_task_id: str = "") -> str:
     raw = str(endpoint or "").strip().rstrip("/")
     if not raw:
         return ""
     parsed = urllib.parse.urlparse(raw)
     path = (parsed.path.rstrip("/") if parsed.path else "") + "/screen"
-    return urllib.parse.urlunparse(parsed._replace(path=path, params="", query="", fragment="")).rstrip("/")
+    query = urllib.parse.urlencode({"benchmark-task-id": benchmark_task_id}) if benchmark_task_id else ""
+    return urllib.parse.urlunparse(parsed._replace(path=path, params="", query=query, fragment="")).rstrip("/")
 
 
 def reserve_free_port() -> int:
@@ -1759,6 +1918,13 @@ class WebHandler(BaseHTTPRequestHandler):
                 return
             self._send_text(text)
             return
+        if len(parts) == 6 and parts[3] == "tasks" and parts[5] == "log":
+            text = self.server.app.read_task_log(parts[2], parts[4])
+            if text is None:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            self._send_text(text)
+            return
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def _handle_report(self, path: str) -> None:
@@ -1949,7 +2115,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     .workspace {
       display: grid;
-      grid-template-rows: auto auto auto minmax(360px, 1fr);
+      grid-template-rows: auto auto auto auto minmax(360px, 1fr);
       gap: 1px;
     }
     .tile {
@@ -2105,6 +2271,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     .suite-table-wrap { max-height: calc(100vh - 360px); min-height: 360px; }
     .job-table-wrap { max-height: 240px; }
+    .task-table-wrap { max-height: 280px; min-height: 180px; }
     table {
       width: 100%;
       border-collapse: collapse;
@@ -2128,6 +2295,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     tbody tr { background: var(--layer); }
     tbody tr:hover { background: #f4f4f4; }
+    tbody tr.selected-row { box-shadow: inset 3px 0 0 var(--blue); }
     td:first-child input[type="checkbox"],
     td:first-child input[type="radio"] {
       display: block;
@@ -2163,7 +2331,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     .status.passed { background: #defbe6; color: var(--green); }
     .status.failed { background: #fff1f1; color: var(--red); }
-    .status.running, .status.starting, .status.starting_agent, .status.preparing, .status.building { background: #edf5ff; color: var(--blue); }
+    .status.running, .status.queued, .status.starting, .status.starting_agent, .status.preparing, .status.building { background: #edf5ff; color: var(--blue); }
     .status.canceled, .status.stopping { background: #fff8e1; color: var(--orange); }
     .status.stopped, .status.device { background: #e0e0e0; color: #525252; }
     .status.mobilegym { background: #e8daff; color: var(--purple); }
@@ -2171,6 +2339,18 @@ INDEX_HTML = r"""<!doctype html>
       display: flex;
       gap: 8px;
       align-items: center;
+    }
+    .inline-actions {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      min-width: 0;
+    }
+    .table-button {
+      height: 28px;
+      padding: 0 8px;
+      min-width: 0;
+      font-size: 12px;
     }
     .progress {
       height: 8px;
@@ -2396,6 +2576,21 @@ INDEX_HTML = r"""<!doctype html>
       <section class="tile">
         <div class="tile-header">
           <div>
+            <h2 class="tile-title">Task workers</h2>
+            <div class="tile-kicker">Concurrent MobileGym task records</div>
+          </div>
+        </div>
+        <div class="table-wrap task-table-wrap">
+          <table>
+            <thead><tr><th>Task</th><th style="width:132px">Status</th><th>Agent</th><th style="width:220px">Screen / log</th></tr></thead>
+            <tbody id="taskRows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="tile">
+        <div class="tile-header">
+          <div>
             <h2 class="tile-title">Jobs</h2>
             <div class="tile-kicker">Recent benchmark runs</div>
           </div>
@@ -2432,8 +2627,9 @@ INDEX_HTML = r"""<!doctype html>
           <div class="tile-header">
             <div>
               <h2 class="tile-title">Log</h2>
-              <div class="tile-kicker">Runner and daemon output</div>
+              <div id="logScopeLabel" class="tile-kicker">Runner and daemon output</div>
             </div>
+            <button id="showJobLog" class="ghost-button table-button" type="button">Job log</button>
           </div>
           <pre id="logBox"></pre>
         </section>
@@ -2450,6 +2646,7 @@ INDEX_HTML = r"""<!doctype html>
     let selectedSuites = new Set();
     let jobs = [];
     let activeJobId = null;
+    let activeTaskLogId = null;
     let agentConfigDirty = false;
     let agentConfigLoaded = false;
     let agentConfigEditing = false;
@@ -2830,14 +3027,17 @@ INDEX_HTML = r"""<!doctype html>
       const body = await res.json();
       if(!res.ok){ document.getElementById('logBox').textContent = body.error || 'failed'; return; }
       activeJobId = body.job.id;
+      activeTaskLogId = null;
       await refreshJobs();
     }
 
     async function refreshJobs(){
       const res = await fetch('/api/jobs');
       jobs = (await res.json()).jobs || [];
+      const previousActiveJobId = activeJobId;
       if(!activeJobId && jobs.length) activeJobId = jobs[0].id;
       if(activeJobId && !jobs.find(job => job.id === activeJobId)) activeJobId = jobs[0] ? jobs[0].id : null;
+      if(previousActiveJobId !== activeJobId) activeTaskLogId = null;
       renderJobs();
       if(activeJobId) await loadActiveJob(); else resetActiveJob();
     }
@@ -2864,7 +3064,7 @@ INDEX_HTML = r"""<!doctype html>
           <td><span class="status ${cssToken(job.status)}">${escapeHtml(job.status)}</span></td>
           <td>${reports || '<span class="muted">none</span>'}</td>
           <td>${actionHtml}</td>`;
-        tr.querySelector('[data-job]').onclick = e => { e.preventDefault(); activeJobId = job.id; loadActiveJob(); };
+        tr.querySelector('[data-job]').onclick = e => { e.preventDefault(); activeJobId = job.id; activeTaskLogId = null; loadActiveJob(); };
         const stop = tr.querySelector('[data-stop-job]');
         if(stop) stop.onclick = () => stopJob(job.id);
         tbody.appendChild(tr);
@@ -2876,8 +3076,21 @@ INDEX_HTML = r"""<!doctype html>
       if(!res.ok) return;
       const job = (await res.json()).job;
       renderActiveJob(job);
-      const logRes = await fetch(`/api/jobs/${activeJobId}/log`);
+      await loadActiveLog(job);
+    }
+
+    async function loadActiveLog(job){
+      const tasks = job.task_records || [];
+      const task = activeTaskLogId ? tasks.find(item => item.id === activeTaskLogId) : null;
+      if(activeTaskLogId && !task) activeTaskLogId = null;
+      const logUrl = task
+        ? `/api/jobs/${encodeURIComponent(job.id)}/tasks/${encodeURIComponent(task.id)}/log`
+        : `/api/jobs/${encodeURIComponent(job.id)}/log`;
+      const logRes = await fetch(logUrl);
       document.getElementById('logBox').textContent = await logRes.text();
+      document.getElementById('logScopeLabel').textContent = task
+        ? `${task.suite || ''}:${task.task_id || ''} runner and daemon output`
+        : 'Runner and daemon output';
     }
 
     function renderActiveJob(job){
@@ -2904,9 +3117,39 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById('mJudge').textContent = totals.judge_error || 0;
       document.getElementById('mTimeout').textContent = totals.timeout || 0;
       document.getElementById('headerStatus').textContent = job.status;
+      renderTaskRows(job);
+    }
+
+    function renderTaskRows(job){
+      const tbody = document.getElementById('taskRows');
+      const tasks = job.task_records || [];
+      tbody.innerHTML = '';
+      if(!tasks.length){
+        tbody.innerHTML = '<tr><td class="empty-row" colspan="4">No task workers for this job</td></tr>';
+        return;
+      }
+      if(activeTaskLogId && !tasks.find(task => task.id === activeTaskLogId)) activeTaskLogId = null;
+      tasks.forEach(task => {
+        const links = [];
+        if(task.screen_url) links.push(`<a href="${escapeHtml(task.screen_url)}" target="_blank" rel="noreferrer">screen</a>`);
+        if(task.report_url) links.push(`<a href="${escapeHtml(task.report_url)}" target="_blank" rel="noreferrer">report</a>`);
+        links.push(`<button class="ghost-button table-button" data-task-log="${escapeHtml(task.id)}" type="button">log</button>`);
+        const agent = task.agent_url || task.container_name || '';
+        const detail = task.run_id || task.benchmark_task_id || task.message || '';
+        const tr = document.createElement('tr');
+        tr.className = activeTaskLogId === task.id ? 'selected-row' : '';
+        tr.innerHTML = `<td title="${escapeHtml(task.benchmark_task_id || '')}"><div class="cell-main"><span>${escapeHtml(task.task_id || task.id)}</span><small>${escapeHtml(task.suite || '')}</small></div></td>
+          <td><span class="status ${cssToken(task.status)}">${escapeHtml(task.status || 'queued')}</span></td>
+          <td title="${escapeHtml(agent)}"><div class="cell-main"><span>${escapeHtml(agent || 'pending')}</span><small>${escapeHtml(detail)}</small></div></td>
+          <td><div class="inline-actions">${links.join(' ')}</div></td>`;
+        const logButton = tr.querySelector('[data-task-log]');
+        if(logButton) logButton.onclick = () => { activeTaskLogId = task.id; loadActiveJob(); };
+        tbody.appendChild(tr);
+      });
     }
 
     function resetActiveJob(){
+      activeTaskLogId = null;
       document.getElementById('activeJobLabel').textContent = 'No active job';
       const st = document.getElementById('activeJobStatus');
       st.className = 'status';
@@ -2917,6 +3160,8 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById('progressBar').style.width = '0%';
       ['mTasks', 'mPassed', 'mFailed', 'mSkipped', 'mJudge', 'mTimeout'].forEach(id => document.getElementById(id).textContent = '0');
       document.getElementById('headerStatus').textContent = 'Idle';
+      document.getElementById('taskRows').innerHTML = '<tr><td class="empty-row" colspan="4">No active job</td></tr>';
+      document.getElementById('logScopeLabel').textContent = 'Runner and daemon output';
     }
 
     function jobCanStop(job){
@@ -2956,6 +3201,7 @@ INDEX_HTML = r"""<!doctype html>
     document.getElementById('suiteFilter').oninput = renderSuites;
     document.getElementById('runBtn').onclick = startRun;
     document.getElementById('activeStopJob').onclick = () => { if(activeJobId) stopJob(activeJobId); };
+    document.getElementById('showJobLog').onclick = () => { activeTaskLogId = null; if(activeJobId) loadActiveJob(); };
     setAgentConfigEditing(false);
     renderEnvs();
     loadWebuiSettings();

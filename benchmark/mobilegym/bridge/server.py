@@ -206,8 +206,8 @@ def _handler_for(bridge: BridgeServer):
             self._send_text(200, "text/html; charset=utf-8", SCREEN_HTML)
 
         def _handle_screen_snapshot(self) -> None:
-            state = self._request_state()
-            if not state.active_episode_id:
+            state = self._request_screen_state()
+            if state is None or not state.active_episode_id:
                 self._send_json(200, bridge_ok(_screen_snapshot_payload()))
                 return
 
@@ -263,6 +263,16 @@ def _handler_for(bridge: BridgeServer):
 
         def _request_state(self) -> BridgeEpisodeState:
             return bridge.router.state_for_headers(self.headers)
+
+        def _request_screen_state(self) -> BridgeEpisodeState | None:
+            task_id = benchmark_task_id_from_headers(self.headers)
+            if not task_id:
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                values = query.get("benchmark-task-id") or query.get("task_id") or []
+                task_id = str(values[0]).strip() if values else ""
+            if task_id:
+                return bridge.router.existing_state_for_task_id(task_id)
+            return bridge.router.state_for_task_id(task_id)
 
         def _read_json(self) -> dict[str, Any] | None:
             try:
@@ -337,6 +347,7 @@ SCREEN_HTML = """<!doctype html>
   <header>
     <strong>MobileGym Screen</strong>
     <span id="status">connecting</span>
+    <span id="taskId"></span>
     <span id="updated"></span>
   </header>
   <main>
@@ -347,6 +358,7 @@ SCREEN_HTML = """<!doctype html>
     <aside>
       <h2>Task State</h2>
       <dl>
+        <dt>Task</dt><dd id="taskState">default</dd>
         <dt>Status</dt><dd id="stateStatus">unknown</dd>
         <dt>Episode</dt><dd id="episode">none</dd>
         <dt>Actions</dt><dd id="actionCount">0</dd>
@@ -358,6 +370,8 @@ SCREEN_HTML = """<!doctype html>
   </main>
   <script>
     const statusEl = document.getElementById('status');
+    const taskIdEl = document.getElementById('taskId');
+    const taskStateEl = document.getElementById('taskState');
     const updatedEl = document.getElementById('updated');
     const stateStatusEl = document.getElementById('stateStatus');
     const episodeEl = document.getElementById('episode');
@@ -366,6 +380,10 @@ SCREEN_HTML = """<!doctype html>
     const shotEl = document.getElementById('shot');
     const placeholderEl = document.getElementById('placeholder');
     const actionsEl = document.getElementById('actions');
+    const taskId = new URLSearchParams(window.location.search).get('benchmark-task-id') || '';
+    const snapshotPath = '/screen/snapshot' + window.location.search;
+    taskIdEl.textContent = taskId ? `task ${taskId}` : '';
+    taskStateEl.textContent = taskId || 'default';
 
     function renderActions(actions) {
       actionsEl.replaceChildren();
@@ -390,7 +408,7 @@ SCREEN_HTML = """<!doctype html>
 
     async function refresh() {
       try {
-        const res = await fetch('/screen/snapshot', {cache: 'no-store'});
+        const res = await fetch(snapshotPath, {cache: 'no-store'});
         const body = await res.json();
         if (!res.ok || !body.ok) throw new Error(body.error?.message || res.statusText);
         const data = body.data || {};
