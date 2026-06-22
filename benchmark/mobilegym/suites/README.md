@@ -23,12 +23,12 @@ docker compose run --rm test --suite clock --limit 5
 docker compose run --rm test --suite phone_control_v1 --limit 3
 ```
 
-### 方式 3：并发隔离运行
+### 方式 3：Benchmark WebUI 并发
 
-```bash
-cd ../docker
-./parallel_run.sh clock.CountAlarms clock.ToggleAlarm phone_control_v1.MakeCall
-```
+使用 `python -m runner.main webui` 启动 benchmark WebUI。创建 MobileGym
+environment 时把 `Envs` 设为大于 1，随后选择该 environment 运行 Aiden JSON suite。
+WebUI 会为并发 task worker 启动独立 daemon，并通过 `benchmark-task-id` 路由到同一
+MobileGym instance 内的不同 env。
 
 ## YAML 格式（保留供未来加载逻辑使用）
 

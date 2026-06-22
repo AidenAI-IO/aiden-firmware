@@ -58,6 +58,7 @@ func main() {
 		toolProxyMode     = flag.Bool("tool-proxy-mode", false, "Enable tool proxy mode (forward selected tool calls to a remote daemon; see --forward-tools)")
 		toolProxyEndpoint = flag.String("tool-proxy-endpoint", "", "Remote daemon endpoint for tool proxy mode (e.g., http://192.168.50.123:8080)")
 		forwardTools      = flag.String("forward-tools", "", "Comma-separated tool names or glob patterns to forward when tool-proxy-mode is on, e.g. \"keyboard_*,mouse_*,screenshot\" or \"*\" to forward all. Required with --tool-proxy-mode.")
+		benchmarkTaskID   = flag.String("benchmark-task-id", "", "Benchmark task id to include on proxied tool calls for environment routing")
 	)
 	flag.Parse()
 
@@ -87,6 +88,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "tool-proxy-mode requires --forward-tools (comma-separated tool names or glob patterns, e.g. \"keyboard_*,mouse_*,screenshot\" or \"*\" to forward all)")
 			os.Exit(1)
 		}
+		cfg.ToolProxy.BenchmarkTaskID = strings.TrimSpace(*benchmarkTaskID)
 	}
 
 	proxyConfig := agent.ProxyConfigFromEnvironment()
@@ -119,6 +121,9 @@ func main() {
 	if cfg.ToolProxy.Enabled {
 		fmt.Printf("🔀 Tool proxy mode: forwarding to %s\n", cfg.ToolProxy.Endpoint)
 		fmt.Printf("   Forward tools: %v\n", cfg.ToolProxy.ForwardTools)
+		if cfg.ToolProxy.BenchmarkTaskID != "" {
+			fmt.Printf("   Benchmark task id: %s\n", cfg.ToolProxy.BenchmarkTaskID)
+		}
 	}
 	if _, port, err := net.SplitHostPort(*addr); err == nil && port != "" {
 		fmt.Printf("🌐 Web UI: http://localhost:%s\n", port)

@@ -1,5 +1,0 @@
-services:
-  mobilegym:
-    ports: !reset []
-  daemon:
-    ports: !reset []

@@ -1,7 +1,14 @@
 import pytest
 
 from runner.agent_client import AgentRequestError, AgentTimeoutError
-from runner.reset import ResetError, call_environment_reset, environment_reset_endpoint, per_task_setup
+from runner.reset import (
+    ResetError,
+    call_environment_release,
+    call_environment_reset,
+    environment_release_endpoint,
+    environment_reset_endpoint,
+    per_task_setup,
+)
 
 
 class FailingChatClient:
@@ -85,6 +92,11 @@ def test_environment_reset_endpoint_is_derived_from_environment_endpoint():
     assert environment_reset_endpoint("http://127.0.0.1:9090/api/reset") == "http://127.0.0.1:9090/api/reset"
 
 
+def test_environment_release_endpoint_is_derived_from_environment_endpoint():
+    assert environment_release_endpoint("http://127.0.0.1:9090") == "http://127.0.0.1:9090/api/release"
+    assert environment_release_endpoint("http://127.0.0.1:9090/api/reset") == "http://127.0.0.1:9090/api/release"
+
+
 def test_call_environment_reset_posts_to_api_reset(monkeypatch):
     seen = {}
 
@@ -104,6 +116,7 @@ def test_call_environment_reset_posts_to_api_reset(monkeypatch):
         seen["url"] = req.full_url
         seen["method"] = req.get_method()
         seen["body"] = req.data
+        seen["task_id"] = req.headers.get("Benchmark-task-id")
         seen["timeout"] = timeout
         return FakeResponse()
 
@@ -115,6 +128,67 @@ def test_call_environment_reset_posts_to_api_reset(monkeypatch):
         "url": "http://127.0.0.1:9090/api/reset",
         "method": "POST",
         "body": b"{}",
+        "task_id": None,
         "timeout": 12,
     }
     assert result["data"]["episode_id"] == "reset-1"
+
+
+def test_call_environment_reset_sends_benchmark_task_id_header(monkeypatch):
+    seen = {}
+
+    class FakeResponse:
+        status = 200
+
+        def read(self):
+            return b'{"ok": true}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        seen["task_id"] = req.headers.get("Benchmark-task-id")
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    call_environment_reset("http://127.0.0.1:9090", task_id="clock.CountAlarms")
+
+    assert seen["task_id"] == "clock.CountAlarms"
+
+
+def test_call_environment_release_sends_benchmark_task_id_header(monkeypatch):
+    seen = {}
+
+    class FakeResponse:
+        status = 200
+
+        def read(self):
+            return b'{"ok": true, "data": {"released": true}}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        seen["url"] = req.full_url
+        seen["method"] = req.get_method()
+        seen["body"] = req.data
+        seen["task_id"] = req.headers.get("Benchmark-task-id")
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    call_environment_release("http://127.0.0.1:9090", task_id="clock.CountAlarms")
+
+    assert seen == {
+        "url": "http://127.0.0.1:9090/api/release",
+        "method": "POST",
+        "body": b"{}",
+        "task_id": "clock.CountAlarms",
+    }

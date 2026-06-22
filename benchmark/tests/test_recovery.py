@@ -97,7 +97,7 @@ def test_prepare_task_isolation_uses_environment_reset_without_agent_side_setup(
     reset_calls = []
     monkeypatch.setattr(
         "runner.recovery.call_environment_reset",
-        lambda environment_url: reset_calls.append(environment_url),
+        lambda environment_url, task_id=None: reset_calls.append((environment_url, task_id)),
     )
     client = SetupClient()
     suite = Suite(
@@ -122,11 +122,12 @@ def test_prepare_task_isolation_uses_environment_reset_without_agent_side_setup(
         suite,
         task,
         environment_url="http://127.0.0.1:9090",
+        benchmark_task_id="suite.json:open_settings",
         ready_timeout_sec=10,
         setup_attempts=1,
     )
 
-    assert reset_calls == ["http://127.0.0.1:9090"]
+    assert reset_calls == [("http://127.0.0.1:9090", "suite.json:open_settings")]
     assert client.clears == 1
 
 

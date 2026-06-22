@@ -97,13 +97,14 @@ Output which tasks flipped status, latency differences, etc. between two runs.
 Benchmark supports two execution modes:
 
 - **Aiden Native** — Runs on local agent via `benchmark/runner/main.py`, serial execution.
-- **MobileGym** — Runs on Docker emulator via `benchmark/mobilegym/scripts/run_aiden.py`,
-  supports parallelism (`PARALLEL=N ./parallel_run.sh`).
+- **MobileGym** — Runs through `python -m runner.main webui`; the WebUI starts a
+  MobileGym simulator/bridge container and can create multiple envs in one
+  instance for concurrent task workers.
 
 The same `benchmark/suites/*.json` files can execute in both modes. MobileGym built-in suites
 (clock, alipay, wechat, etc.) are only available in MobileGym mode, discovered and aggregated from
 `benchmark/mobilegym/suites/all_tasks.txt`.
 
-The web UI `/benchmark` page has an "Aiden Native / MobileGym" radio button to switch between modes.
-MobileGym mode currently only provides parallelism control; the `/benchmark` page does not provide
-a task limit input box and will not send `limit` in the launch payload.
+The benchmark WebUI is the supported entry point for MobileGym concurrency.
+Start a MobileGym environment with `Envs > 1`, select it for a job, and the
+runner starts task workers with matching `benchmark-task-id` routing.

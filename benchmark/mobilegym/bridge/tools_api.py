@@ -14,7 +14,7 @@ from http.server import BaseHTTPRequestHandler
 from typing import Any
 
 from .actions import action_to_dict, build_action
-from .episode import BridgeEpisodeState
+from .episode import BridgeEpisodeState, BridgeTaskRouter, MissingBenchmarkTaskIDError, NoBridgeEnvAvailableError
 from .protocol import encode_screenshot
 
 
@@ -41,8 +41,9 @@ US_KEYBOARD_TEXT_CHARS = set(
 class ToolsAPIHandler:
     """Handler for /api/tools endpoint compatible with Go agent tool proxy."""
 
-    def __init__(self, state: BridgeEpisodeState, request_timeout_sec: float = 30):
-        self.state = state
+    def __init__(self, state: BridgeEpisodeState | BridgeTaskRouter, request_timeout_sec: float = 30):
+        self.router = BridgeTaskRouter.from_state(state)
+        self.state = self.router.default_state
         self.request_timeout_sec = request_timeout_sec
 
     def handle_request(self, handler: BaseHTTPRequestHandler, path: str) -> None:
@@ -273,7 +274,23 @@ class ToolsAPIHandler:
             return
 
         # Check active episode
-        session, ok = self._get_active_session(tool_input)
+        try:
+            state = self.router.state_for_headers(handler.headers)
+        except MissingBenchmarkTaskIDError as exc:
+            self._send_json(
+                handler,
+                400,
+                {"error": "missing_benchmark_task_id", "output": str(exc), "is_error": True},
+            )
+            return
+        except NoBridgeEnvAvailableError as exc:
+            self._send_json(
+                handler,
+                429,
+                {"error": "no_bridge_env_available", "output": str(exc), "is_error": True},
+            )
+            return
+        session, ok = self._get_active_session(state, tool_input)
         if not ok:
             self._send_json(
                 handler,
@@ -285,7 +302,7 @@ class ToolsAPIHandler:
         # Execute tool
         started_at = time.time()
         try:
-            result = self._submit_tool_call(tool_name, tool_input)
+            result = self._submit_tool_call(state, tool_name, tool_input)
             duration_ms = int((time.time() - started_at) * 1000)
 
             response = {
@@ -350,49 +367,49 @@ class ToolsAPIHandler:
 
         return ""
 
-    def _get_active_session(self, tool_input: dict[str, Any]) -> tuple[dict[str, str], bool]:
+    def _get_active_session(self, state: BridgeEpisodeState, tool_input: dict[str, Any]) -> tuple[dict[str, str], bool]:
         """Get active episode session."""
-        episode_id = self.state.active_episode_id
+        episode_id = state.active_episode_id
         if not episode_id:
             return {}, False
         return {"episode_id": episode_id}, True
 
-    def _submit_tool_call(self, tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
+    def _submit_tool_call(self, state: BridgeEpisodeState, tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
         """Submit tool call to MobileGym environment."""
-        episode_id = self.state.active_episode_id
+        episode_id = state.active_episode_id
 
         if tool_name == "screenshot":
-            return self._call_screenshot(episode_id)
+            return self._call_screenshot(state, episode_id)
         elif tool_name == "touch_gesture":
-            return self._call_touch_gesture(tool_input, episode_id)
+            return self._call_touch_gesture(state, tool_input, episode_id)
         elif tool_name == "keyboard_text":
-            return self._call_keyboard_text(tool_input, episode_id)
+            return self._call_keyboard_text(state, tool_input, episode_id)
         elif tool_name == "keyboard_tap":
-            return self._call_keyboard_tap(tool_input, episode_id)
+            return self._call_keyboard_tap(state, tool_input, episode_id)
         elif tool_name == "mouse_click":
-            return self._call_mouse_click(tool_input, episode_id)
+            return self._call_mouse_click(state, tool_input, episode_id)
         elif tool_name == "mouse_move":
-            return self._call_mouse_move(tool_input, episode_id)
+            return self._call_mouse_move(state, tool_input, episode_id)
         elif tool_name == "mouse_scroll":
-            return self._call_mouse_scroll(tool_input, episode_id)
+            return self._call_mouse_scroll(state, tool_input, episode_id)
         elif tool_name == "quick_action":
-            return self._call_quick_action(tool_input, episode_id)
+            return self._call_quick_action(state, tool_input, episode_id)
         else:
             return {"output": f"unknown tool: {tool_name}", "is_error": True, "error": "unknown_tool"}
 
-    def _call_screenshot(self, episode_id: str) -> dict[str, Any]:
+    def _call_screenshot(self, state: BridgeEpisodeState, episode_id: str) -> dict[str, Any]:
         """Execute screenshot tool."""
 
         async def get_screenshot(env: Any) -> dict[str, Any]:
-            self.state.require_active(episode_id)
+            state.require_active(episode_id)
             observation = await _maybe_await(env.get_observation())
             screenshot = _encode_observation_screenshot(observation)
             return {"output": json.dumps(screenshot), "is_error": False}
 
-        future = asyncio.run_coroutine_threadsafe(self.state.run_env(get_screenshot), self.state.owner_loop)
+        future = asyncio.run_coroutine_threadsafe(state.run_env(get_screenshot), state.owner_loop)
         return future.result(timeout=self.request_timeout_sec)
 
-    def _call_touch_gesture(self, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
+    def _call_touch_gesture(self, state: BridgeEpisodeState, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
         """Execute touch_gesture tool."""
         gesture_type = tool_input.get("type", "").strip().lower()
         if not gesture_type:
@@ -452,9 +469,9 @@ class ToolsAPIHandler:
         except (TypeError, ValueError) as exc:
             return {"output": f"error: {exc}", "is_error": True}
 
-        return self._execute_action(action, episode_id)
+        return self._execute_action(state, action, episode_id)
 
-    def _call_mouse_click(self, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
+    def _call_mouse_click(self, state: BridgeEpisodeState, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
         """Execute mouse_click as a MobileGym tap."""
         button = str(tool_input.get("button", "left") or "left").strip().lower()
         if button not in ("", "left", "right", "middle"):
@@ -464,9 +481,9 @@ class ToolsAPIHandler:
         except (TypeError, ValueError) as exc:
             return {"output": f"error: {exc}", "is_error": True}
         action = build_action("tap", point)
-        return self._execute_action(action, episode_id)
+        return self._execute_action(state, action, episode_id)
 
-    def _call_mouse_move(self, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
+    def _call_mouse_move(self, state: BridgeEpisodeState, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
         """Validate mouse_move input and return a screenshot.
 
         MobileGym has no hover/pointer state, but accepting the tool keeps the
@@ -476,21 +493,21 @@ class ToolsAPIHandler:
             _normalized_point_arg(tool_input, default_space="auto")
         except (TypeError, ValueError) as exc:
             return {"output": f"error: {exc}", "is_error": True}
-        return self._call_noop_with_screenshot(episode_id)
+        return self._call_noop_with_screenshot(state, episode_id)
 
-    def _call_mouse_scroll(self, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
+    def _call_mouse_scroll(self, state: BridgeEpisodeState, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
         """Execute mouse_scroll as an approximate vertical swipe."""
         try:
             delta = int(tool_input.get("delta", 0))
         except (TypeError, ValueError) as exc:
             return {"output": f"error: invalid delta: {exc}", "is_error": True}
         if delta == 0:
-            return self._call_noop_with_screenshot(episode_id)
+            return self._call_noop_with_screenshot(state, episode_id)
         strength = "medium" if abs(delta) >= 3 else "small"
         gesture_type = "swipe_up" if delta < 0 else "swipe_down"
-        return self._call_touch_gesture({"type": gesture_type, "strength": strength}, episode_id)
+        return self._call_touch_gesture(state, {"type": gesture_type, "strength": strength}, episode_id)
 
-    def _call_quick_action(self, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
+    def _call_quick_action(self, state: BridgeEpisodeState, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
         """Execute a small MobileGym-compatible quick_action subset."""
         platform = str(tool_input.get("platform", "") or "").strip().lower()
         if platform not in ("ios", "android", "mac"):
@@ -514,21 +531,21 @@ class ToolsAPIHandler:
             return {"output": "error: mobilegym quick_action does not define alternative bindings", "is_error": True}
 
         if action == "back":
-            return self._call_touch_gesture({"type": "back"}, episode_id)
+            return self._call_touch_gesture(state, {"type": "back"}, episode_id)
         if action == "home":
-            return self._call_touch_gesture({"type": "home"}, episode_id)
+            return self._call_touch_gesture(state, {"type": "home"}, episode_id)
         if action == "notification_center":
-            return self._call_touch_gesture({"type": "swipe_down", "strength": "medium", "anchor": 500}, episode_id)
+            return self._call_touch_gesture(state, {"type": "swipe_down", "strength": "medium", "anchor": 500}, episode_id)
         if action == "quick_settings":
             action = build_action(
                 "swipe",
                 {"start_x": 850, "start_y": 0, "end_x": 850, "end_y": 700, "duration_ms": 500},
             )
-            return self._execute_action(action, episode_id)
+            return self._execute_action(state, action, episode_id)
 
         return {"output": f"error: unsupported quick_action: {tool_input.get('action')!r}", "is_error": True}
 
-    def _call_keyboard_text(self, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
+    def _call_keyboard_text(self, state: BridgeEpisodeState, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
         """Execute keyboard_text tool."""
         text = tool_input.get("text", "")
         if not isinstance(text, str):
@@ -542,9 +559,9 @@ class ToolsAPIHandler:
                 "is_error": True,
             }
         action = build_action("type_text", {"text": text})
-        return self._execute_action(action, episode_id)
+        return self._execute_action(state, action, episode_id)
 
-    def _call_keyboard_tap(self, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
+    def _call_keyboard_tap(self, state: BridgeEpisodeState, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
         """Execute keyboard_tap tool."""
         keys = tool_input.get("keys", [])
         if not keys:
@@ -563,7 +580,7 @@ class ToolsAPIHandler:
             if has_meta and len(non_modifiers) == 0:
                 action = build_action("home", {})
             elif len(non_modifiers) == 0:
-                return self._call_noop_with_screenshot(episode_id)
+                return self._call_noop_with_screenshot(state, episode_id)
             elif has_meta and len(non_modifiers) == 1 and non_modifiers[0] == "h":
                 action = build_action("home", {})
             elif len(non_modifiers) == 1:
@@ -581,14 +598,14 @@ class ToolsAPIHandler:
         except (TypeError, ValueError) as exc:
             return {"output": f"error: {exc}", "is_error": True}
 
-        return self._execute_action(action, episode_id)
+        return self._execute_action(state, action, episode_id)
 
-    def _execute_action(self, action: Any, episode_id: str) -> dict[str, Any]:
+    def _execute_action(self, state: BridgeEpisodeState, action: Any, episode_id: str) -> dict[str, Any]:
         """Execute a MobileGym action and return result with screenshot."""
         action_payload = action_to_dict(action)
 
         async def step_env(env: Any) -> dict[str, Any]:
-            self.state.require_active(episode_id)
+            state.require_active(episode_id)
             started = time.time()
             step_result = await _maybe_await(env.step(action))
             duration_ms = int((time.time() - started) * 1000)
@@ -610,12 +627,12 @@ class ToolsAPIHandler:
 
             return {"output": json.dumps(output_data), "is_error": False}
 
-        future = asyncio.run_coroutine_threadsafe(self.state.run_env(step_env), self.state.owner_loop)
+        future = asyncio.run_coroutine_threadsafe(state.run_env(step_env), state.owner_loop)
         return future.result(timeout=self.request_timeout_sec)
 
-    def _call_noop_with_screenshot(self, episode_id: str) -> dict[str, Any]:
+    def _call_noop_with_screenshot(self, state: BridgeEpisodeState, episode_id: str) -> dict[str, Any]:
         async def get_screenshot(env: Any) -> dict[str, Any]:
-            self.state.require_active(episode_id)
+            state.require_active(episode_id)
             observation = await _maybe_await(env.get_observation())
             screenshot = _encode_observation_screenshot(observation)
             output_data = {
@@ -627,7 +644,7 @@ class ToolsAPIHandler:
             }
             return {"output": json.dumps(output_data), "is_error": False}
 
-        future = asyncio.run_coroutine_threadsafe(self.state.run_env(get_screenshot), self.state.owner_loop)
+        future = asyncio.run_coroutine_threadsafe(state.run_env(get_screenshot), state.owner_loop)
         return future.result(timeout=self.request_timeout_sec)
 
     def _send_json(self, handler: BaseHTTPRequestHandler, status: int, payload: dict[str, Any]) -> None:

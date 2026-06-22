@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -133,6 +134,32 @@ func TestToolProxyTransportFailureIsError(t *testing.T) {
 	}
 	if proxied.Output == "" {
 		t.Fatal("expected non-empty error output on transport failure")
+	}
+}
+
+func TestToolProxySendsBenchmarkTaskIDHeader(t *testing.T) {
+	seen := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.Header.Get(BenchmarkTaskIDHeader)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"output":      "ok",
+			"is_error":    false,
+			"duration_ms": 1,
+		})
+	}))
+	defer server.Close()
+
+	client := NewToolProxyClient(server.URL, WithToolProxyBenchmarkTaskID("clock.CountAlarms"))
+	output, isError, err := client.CallTool(context.Background(), "screenshot", "{}")
+	if err != nil {
+		t.Fatalf("CallTool returned error: %v", err)
+	}
+	if isError {
+		t.Fatalf("CallTool is_error = true, output=%q", output)
+	}
+	if got := <-seen; got != "clock.CountAlarms" {
+		t.Fatalf("%s header = %q, want %q", BenchmarkTaskIDHeader, got, "clock.CountAlarms")
 	}
 }
 

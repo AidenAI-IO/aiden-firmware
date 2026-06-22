@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import dataclasses as dc
+import hashlib
 import json
 import os
+import re
 import signal
 import shutil
 import socket
@@ -21,6 +24,8 @@ from typing import Any, Callable
 
 from runner.agent_client import AgentClient
 from runner.judge import JudgeConfig
+from runner.reset import ResetError, call_environment_release
+from runner.suite import load_suite
 from runner.unit import is_unit_suite
 
 
@@ -88,6 +93,7 @@ class Job:
     judge_model: str = DEFAULT_JUDGE_MODEL
     judge_api_key_set: bool = False
     repeats: int | None = None
+    parallel_tasks: int = 1
 
 
 @dc.dataclass
@@ -109,6 +115,7 @@ class MobileGymEnvironment:
     image: str = ""
     log_path: str = ""
     type: str = "mobilegym"
+    parallel_envs: int = 1
 
 
 class BenchmarkWebApp:
@@ -118,7 +125,8 @@ class BenchmarkWebApp:
         self._lock = threading.RLock()
         self._jobs: dict[str, Job] = {}
         self._job_judge_api_keys: dict[str, str] = {}
-        self._job_runner_procs: dict[str, subprocess.Popen] = {}
+        self._job_runner_procs: dict[str, Any] = {}
+        self._job_daemon_jobs: dict[str, list[Job]] = {}
         self._mobilegym_environments: dict[str, MobileGymEnvironment] = {}
         self._mobilegym_log_procs: dict[str, subprocess.Popen] = {}
 
@@ -215,6 +223,7 @@ class BenchmarkWebApp:
 
     def start_mobilegym_environment(self, payload: dict[str, Any]) -> dict[str, Any]:
         name = str(payload.get("name") or "").strip() or "MobileGym"
+        parallel_envs = parse_positive_int(payload.get("parallel_envs"), default=1, field="parallel_envs")
         env_id = new_environment_id()
         env_dir = self.config.runs_dir / "environments" / env_id
         env_dir.mkdir(parents=True, exist_ok=True)
@@ -234,6 +243,7 @@ class BenchmarkWebApp:
             web_port=web_port,
             image=self.config.mobilegym_image,
             log_path=str(env_dir / "mobilegym.log"),
+            parallel_envs=parallel_envs,
         )
         with self._lock:
             self._mobilegym_environments[env.id] = env
@@ -247,6 +257,7 @@ class BenchmarkWebApp:
                 host_web_port=web_port,
                 host_bridge_port=bridge_port,
                 benchmark_dir=BENCHMARK_ROOT,
+                parallel_envs=parallel_envs,
             )
             append_log(Path(env.log_path), "$ " + " ".join(command))
             container_id = subprocess.check_output(command, cwd=REPO_ROOT, text=True).strip()
@@ -347,16 +358,20 @@ class BenchmarkWebApp:
         environment_name = str(payload.get("environment_name") or environment_payload.get("name") or "")
         environment_endpoint = str(payload.get("environment_endpoint") or "").strip()
         environment_web_url = str(payload.get("environment_web_url") or environment_payload.get("web_url") or "").strip()
+        parallel_tasks = parse_positive_int(payload.get("parallel_tasks"), default=1, field="parallel_tasks")
         if environment_type == "mobilegym":
             with self._lock:
                 mobilegym_env = self._mobilegym_environments.get(environment_id)
             if mobilegym_env is not None:
                 environment_endpoint = mobilegym_env.public_endpoint.rstrip("/")
                 environment_web_url = mobilegym_screen_url(environment_endpoint)
+                parallel_tasks = mobilegym_env.parallel_envs
             elif not environment_endpoint:
                 public_endpoint = str(environment_payload.get("public_endpoint") or "").strip()
                 if public_endpoint:
                     environment_endpoint = public_endpoint.rstrip("/")
+            if mobilegym_env is None and isinstance(environment_payload, dict) and environment_payload.get("parallel_envs") not in (None, ""):
+                parallel_tasks = parse_positive_int(environment_payload.get("parallel_envs"), default=1, field="parallel_envs")
             if environment_endpoint:
                 environment_web_url = mobilegym_screen_url(environment_endpoint)
 
@@ -383,6 +398,7 @@ class BenchmarkWebApp:
             judge_model=judge_model,
             judge_api_key_set=bool(judge_api_key) and not no_judge,
             repeats=repeats_value,
+            parallel_tasks=parallel_tasks,
         )
         with self._lock:
             self._jobs[job.id] = job
@@ -404,15 +420,18 @@ class BenchmarkWebApp:
                 return self._job_payload(job)
             job.status = "stopping"
             job.message = "stop requested"
-            proc = self._job_runner_procs.get(job.id)
+            procs = runner_procs_for_stop(self._job_runner_procs.get(job.id))
+            daemon_jobs = [job, *self._job_daemon_jobs.get(job.id, [])]
             runner_log = Path(job.runner_log) if job.runner_log else None
             state_file = Path(job.state_file) if job.state_file else None
         if runner_log is not None:
             append_log(runner_log, "STOP requested")
         if state_file is not None:
             update_state_status(state_file, "stopping", run_id=job.id)
-        terminate_process_tree(proc)
-        stop_daemon_compose(job)
+        for proc in procs:
+            terminate_process_tree(proc)
+        for daemon_job in daemon_jobs:
+            stop_daemon_compose(daemon_job)
         return self._job_payload(job)
 
     def _set_job(self, job: Job, **updates: Any) -> None:
@@ -484,6 +503,15 @@ class BenchmarkWebApp:
                 stop_requested=lambda: self._job_stop_requested(job),
             )
             self._raise_if_job_stop_requested(job)
+            if self._uses_mobilegym_task_workers(job):
+                self._set_job(job, status="running", message="running suites")
+                for suite_key in job.suites:
+                    self._raise_if_job_stop_requested(job)
+                    self._run_mobilegym_suite_parallel(job, suite_key)
+                self._raise_if_job_stop_requested(job)
+                final_status = "passed" if job.suite_results and all(item.get("exit_code") == 0 for item in job.suite_results) else "failed"
+                self._set_job(job, status=final_status, finished_at=now_iso(), message="")
+                return
             container_id = start_daemon_compose(
                 job,
                 image=self.config.daemon_image,
@@ -523,16 +551,249 @@ class BenchmarkWebApp:
         finally:
             with self._lock:
                 self._job_judge_api_keys.pop(job.id, None)
+                self._job_daemon_jobs.pop(job.id, None)
+                self._job_runner_procs.pop(job.id, None)
 
-    def _wait_for_daemon(self, job: Job) -> None:
+    def _wait_for_daemon(self, job: Job, *, stop_job: Job | None = None) -> None:
         client = AgentClient(job.agent_url)
         deadline = time.monotonic() + max(1, self.config.daemon_ready_timeout_sec)
+        control_job = stop_job or job
         while time.monotonic() < deadline:
-            self._raise_if_job_stop_requested(job)
+            self._raise_if_job_stop_requested(control_job)
             if client.health():
                 return
             time.sleep(1)
         raise RuntimeError(f"agent daemon did not become ready at {job.agent_url}")
+
+    def _uses_mobilegym_task_workers(self, job: Job) -> bool:
+        return job.environment_type == "mobilegym" and job.parallel_tasks > 1 and bool(job.environment_endpoint)
+
+    def _run_mobilegym_suite_parallel(self, job: Job, suite_key: str) -> None:
+        self._raise_if_job_stop_requested(job)
+        suite_path = resolve_suite_path(self.config.suites_dir, suite_key)
+        if is_unit_suite(suite_path):
+            raise RuntimeError("unit suites are not supported with MobileGym parallel task workers")
+
+        suite = load_suite(suite_path)
+        task_counts = {
+            task.id: max(1, job.repeats if job.repeats is not None else task.repeats)
+            for task in suite.tasks
+        }
+        total_runs = sum(task_counts.values())
+        write_state(
+            Path(job.state_file),
+            {
+                "status": "running",
+                "suite": suite_key,
+                "run_id": job.id,
+                "total": total_runs,
+                "completed": 0,
+                "current": 0,
+                "parallel": job.parallel_tasks,
+            },
+        )
+        if not suite.tasks:
+            with self._lock:
+                job.suite_results.append({"suite": suite_key, "exit_code": 0, "run_id": ""})
+            update_state_status(Path(job.state_file), "done", run_id=job.id)
+            return
+
+        completed = 0
+        max_workers = min(max(1, job.parallel_tasks), len(suite.tasks))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=f"bench-{job.id}") as executor:
+            future_to_task = {
+                executor.submit(self._run_mobilegym_task_worker, job, suite_key, suite_path, task.id): task
+                for task in suite.tasks
+            }
+            for future in concurrent.futures.as_completed(future_to_task):
+                task = future_to_task[future]
+                try:
+                    result = future.result()
+                except JobStopped:
+                    result = {"suite": suite_key, "task_id": task.id, "exit_code": -15, "run_id": "", "stopped": True}
+                except Exception as exc:
+                    append_log(Path(job.runner_log), f"ERROR: {suite_key} {task.id}: {exc}")
+                    result = {"suite": suite_key, "task_id": task.id, "exit_code": 1, "run_id": "", "error": str(exc)}
+                completed += task_counts.get(task.id, 1)
+                with self._lock:
+                    job.suite_results.append(result)
+                write_state(
+                    Path(job.state_file),
+                    {
+                        "status": "stopped" if self._job_stop_requested(job) else "running",
+                        "suite": suite_key,
+                        "run_id": job.id,
+                        "total": total_runs,
+                        "completed": min(completed, total_runs),
+                        "current": min(completed, total_runs),
+                        "current_task": task.id,
+                        "last_result": "stopped" if result.get("stopped") else "passed" if result.get("exit_code") == 0 else "failed",
+                        "parallel": job.parallel_tasks,
+                    },
+                )
+        if self._job_stop_requested(job):
+            update_state_status(Path(job.state_file), "stopped", run_id=job.id)
+            raise JobStopped("job stop requested")
+        update_state_status(Path(job.state_file), "done", run_id=job.id)
+
+    def _run_mobilegym_task_worker(self, job: Job, suite_key: str, suite_path: Path, task_id: str) -> dict[str, Any]:
+        self._raise_if_job_stop_requested(job)
+        token = worker_token(suite_key, task_id)
+        benchmark_task_id = f"{suite_key}:{task_id}"
+        host_port = reserve_free_port()
+        worker_job = Job(
+            id=f"{job.id}-{token}",
+            endpoint=job.endpoint,
+            docker_endpoint=job.docker_endpoint,
+            suites=[suite_key],
+            environment_endpoint=job.environment_endpoint,
+            environment_id=job.environment_id,
+            environment_name=job.environment_name,
+            environment_type=job.environment_type,
+            environment_web_url=job.environment_web_url,
+            agent_url=f"http://127.0.0.1:{host_port}",
+            container_name=f"{job.container_name}-{token}",
+            config_dir=job.config_dir,
+            raw_runs_dir=job.raw_runs_dir,
+            state_file=str(Path(job.raw_runs_dir).parent / "workers" / f"{token}.state.json"),
+            runner_log=job.runner_log,
+            daemon_log=job.daemon_log,
+            no_judge=job.no_judge,
+            judge_model=job.judge_model,
+            judge_api_key_set=job.judge_api_key_set,
+            repeats=job.repeats,
+            parallel_tasks=1,
+        )
+        self._register_daemon_job(job.id, worker_job)
+        log_proc: subprocess.Popen | None = None
+        try:
+            container_id = start_daemon_compose(
+                worker_job,
+                image=self.config.daemon_image,
+                host_port=host_port,
+                config_dir=Path(job.config_dir),
+                tool_proxy_endpoint=job.docker_endpoint,
+                benchmark_task_id=benchmark_task_id,
+                log_path=Path(job.runner_log),
+                stop_requested=lambda: self._job_stop_requested(job),
+            )
+            append_log(Path(job.runner_log), f"worker {task_id} container {container_id}")
+            log_proc = start_daemon_logs(worker_job, Path(job.daemon_log))
+            self._wait_for_daemon(worker_job, stop_job=job)
+            self._raise_if_job_stop_requested(job)
+            run_id = f"{job.id}-{token}"
+            cmd = [
+                sys.executable,
+                "-m",
+                "runner.main",
+                "run",
+                "--suite",
+                str(suite_path),
+                "--task-id",
+                task_id,
+                "--run-id",
+                run_id,
+                "--benchmark-task-id",
+                benchmark_task_id,
+                "--agent-url",
+                worker_job.agent_url,
+                "--out",
+                job.raw_runs_dir,
+                "--state-file",
+                worker_job.state_file,
+                "--environment-url",
+                job.environment_endpoint,
+            ]
+            if job.no_judge:
+                cmd.append("--no-judge")
+            else:
+                cmd.extend(["--judge-model", job.judge_model or DEFAULT_JUDGE_MODEL])
+            if job.repeats:
+                cmd.extend(["--repeats", str(job.repeats)])
+            env = os.environ.copy()
+            if not job.no_judge:
+                with self._lock:
+                    judge_api_key = self._job_judge_api_keys.get(job.id, "")
+                if judge_api_key:
+                    env["OPENROUTER_API_KEY"] = judge_api_key
+            exit_code = self._run_runner_process(job, cmd, env)
+            run_path = Path(job.raw_runs_dir) / run_id
+            result: dict[str, Any] = {
+                "suite": suite_key,
+                "task_id": task_id,
+                "exit_code": exit_code,
+                "run_id": run_id if run_path.exists() else "",
+            }
+            if run_path.exists():
+                manifest = read_json_file(run_path / "manifest.json") or {}
+                result["manifest"] = manifest
+                result["report_url"] = f"/reports/{job.id}/{run_id}/report.html"
+            if self._job_stop_requested(job):
+                result["stopped"] = True
+            return result
+        finally:
+            if job.environment_endpoint:
+                try:
+                    call_environment_release(job.environment_endpoint, timeout=2, task_id=benchmark_task_id)
+                except ResetError as exc:
+                    append_log(Path(job.runner_log), f"warning: failed to release {benchmark_task_id}: {exc}")
+            if log_proc is not None:
+                log_proc.terminate()
+            stop_daemon_compose(worker_job)
+            self._unregister_daemon_job(job.id, worker_job)
+
+    def _run_runner_process(self, job: Job, cmd: list[str], env: dict[str, str]) -> int:
+        append_log(Path(job.runner_log), "\n$ " + " ".join(cmd))
+        popen_kwargs: dict[str, Any] = {}
+        if os.name == "posix":
+            popen_kwargs["start_new_session"] = True
+        with Path(job.runner_log).open("ab") as log:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=BENCHMARK_ROOT,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                env=env,
+                **popen_kwargs,
+            )
+            self._register_runner_proc(job.id, proc)
+            try:
+                return int(proc.wait())
+            finally:
+                self._unregister_runner_proc(job.id, proc)
+
+    def _register_runner_proc(self, job_id: str, proc: subprocess.Popen) -> None:
+        with self._lock:
+            current = self._job_runner_procs.get(job_id)
+            if current is None:
+                self._job_runner_procs[job_id] = {proc}
+            elif isinstance(current, set):
+                current.add(proc)
+            else:
+                self._job_runner_procs[job_id] = {current, proc}
+
+    def _unregister_runner_proc(self, job_id: str, proc: subprocess.Popen) -> None:
+        with self._lock:
+            current = self._job_runner_procs.get(job_id)
+            if isinstance(current, set):
+                current.discard(proc)
+                if not current:
+                    self._job_runner_procs.pop(job_id, None)
+            elif current is proc:
+                self._job_runner_procs.pop(job_id, None)
+
+    def _register_daemon_job(self, job_id: str, daemon_job: Job) -> None:
+        with self._lock:
+            self._job_daemon_jobs.setdefault(job_id, []).append(daemon_job)
+
+    def _unregister_daemon_job(self, job_id: str, daemon_job: Job) -> None:
+        with self._lock:
+            jobs = self._job_daemon_jobs.get(job_id)
+            if not jobs:
+                return
+            self._job_daemon_jobs[job_id] = [item for item in jobs if item is not daemon_job]
+            if not self._job_daemon_jobs[job_id]:
+                self._job_daemon_jobs.pop(job_id, None)
 
     def _run_suite(self, job: Job, suite_key: str) -> None:
         self._raise_if_job_stop_requested(job)
@@ -592,14 +853,11 @@ class BenchmarkWebApp:
                 env=env,
                 **popen_kwargs,
             )
-            with self._lock:
-                self._job_runner_procs[job.id] = proc
+            self._register_runner_proc(job.id, proc)
             try:
                 exit_code = proc.wait()
             finally:
-                with self._lock:
-                    if self._job_runner_procs.get(job.id) is proc:
-                        self._job_runner_procs.pop(job.id, None)
+                self._unregister_runner_proc(job.id, proc)
         new_runs = sorted(
             (p for p in Path(job.raw_runs_dir).iterdir() if p.is_dir() and p.name not in existing),
             key=lambda p: p.stat().st_mtime,
@@ -678,6 +936,34 @@ def resolve_suite_path(suites_dir: Path, key: str) -> Path:
     if not path.exists() or not path.is_file():
         raise ValueError(f"suite not found: {key}")
     return path
+
+
+def parse_positive_int(value: Any, *, default: int, field: str) -> int:
+    if value in (None, ""):
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be a positive integer") from exc
+    if parsed < 1:
+        raise ValueError(f"{field} must be a positive integer")
+    return parsed
+
+
+def worker_token(suite_key: str, task_id: str) -> str:
+    raw = f"{suite_key}-{task_id}"
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]
+    slug = re.sub(r"[^a-z0-9_-]+", "-", raw.lower()).strip("-_")
+    slug = slug[:42].strip("-_") or "task"
+    return f"{slug}-{digest}"
+
+
+def runner_procs_for_stop(value: Any) -> list[subprocess.Popen]:
+    if value is None:
+        return []
+    if isinstance(value, (set, list, tuple)):
+        return list(value)
+    return [value]
 
 
 def prepare_run_config(base_config_dir: Path, dest_dir: Path, agent_config_text: str | None = None) -> None:
@@ -900,7 +1186,9 @@ def build_mobilegym_environment_command(
     host_bridge_port: int,
     benchmark_dir: Path,
     bridge_port: int = 9090,
+    parallel_envs: int = 1,
 ) -> list[str]:
+    parallel_envs = max(1, int(parallel_envs))
     script = "\n".join(
         [
             "set -eu",
@@ -936,6 +1224,7 @@ def build_mobilegym_environment_command(
                 "--env-url http://127.0.0.1:4173 "
                 "--bridge-host 0.0.0.0 "
                 f"--bridge-port {bridge_port} "
+                f"--parallel-envs {parallel_envs} "
                 "--headless"
             ),
         ]
@@ -1076,6 +1365,7 @@ def daemon_compose_env(
     host_port: int | None = None,
     config_dir: Path | None = None,
     tool_proxy_endpoint: str = "",
+    benchmark_task_id: str = "",
 ) -> dict[str, str]:
     env = dict(os.environ)
     env["AIDEN_DAEMON_IMAGE"] = image
@@ -1088,6 +1378,8 @@ def daemon_compose_env(
         no_proxy = docker_no_proxy(tool_proxy_endpoint)
         env["NO_PROXY"] = no_proxy
         env["no_proxy"] = no_proxy
+    if benchmark_task_id:
+        env["AIDEN_BENCHMARK_TASK_ID"] = benchmark_task_id
     return env
 
 
@@ -1099,6 +1391,7 @@ def start_daemon_compose(
     config_dir: Path,
     tool_proxy_endpoint: str,
     log_path: Path,
+    benchmark_task_id: str = "",
     stop_requested: Callable[[], bool] | None = None,
 ) -> str:
     project = daemon_compose_project(job)
@@ -1107,6 +1400,7 @@ def start_daemon_compose(
         host_port=host_port,
         config_dir=config_dir,
         tool_proxy_endpoint=tool_proxy_endpoint,
+        benchmark_task_id=benchmark_task_id,
     )
     run_logged_command(
         daemon_compose_command(
@@ -1708,6 +2002,7 @@ INDEX_HTML = r"""<!doctype html>
     input[type="text"],
     input:not([type]),
     input[type="url"],
+    input[type="number"],
     input[type="password"],
     input[type="search"],
     select,
@@ -1723,6 +2018,7 @@ INDEX_HTML = r"""<!doctype html>
     input[type="text"],
     input:not([type]),
     input[type="url"],
+    input[type="number"],
     input[type="password"],
     input[type="search"],
     select {
@@ -2027,6 +2323,7 @@ INDEX_HTML = r"""<!doctype html>
         <div id="mobilegymPanel" class="env-panel" hidden>
           <div class="form-grid">
             <div class="field"><label for="mobilegymName">Name</label><input id="mobilegymName" placeholder="MobileGym" autocomplete="off"></div>
+            <div class="field"><label for="mobilegymParallelEnvs">Envs</label><input id="mobilegymParallelEnvs" type="number" min="1" step="1" value="1"></div>
             <button id="startMobileGym" class="primary" type="button">Start MobileGym</button>
           </div>
         </div>
@@ -2343,7 +2640,7 @@ INDEX_HTML = r"""<!doctype html>
       envs.forEach(env => {
         const selectable = envCanRun(env);
         const displayEndpoint = env.type === 'mobilegym' ? (env.public_endpoint || env.endpoint) : env.endpoint;
-        const endpointDetail = env.type === 'mobilegym' ? env.endpoint : 'manual';
+        const endpointDetail = env.type === 'mobilegym' ? `${env.endpoint} · ${env.parallel_envs || 1} envs` : 'manual';
         const status = env.type === 'mobilegym' ? (env.status || 'mobilegym') : 'device';
         const actionHtml = env.type === 'device'
           ? `<button class="ghost-button" data-edit="${escapeHtml(env.id)}">Edit</button> <button class="danger" data-delete="${escapeHtml(env.id)}">Delete</button>`
@@ -2419,6 +2716,7 @@ INDEX_HTML = r"""<!doctype html>
 
     async function startMobileGym(){
       const name = document.getElementById('mobilegymName').value.trim() || 'MobileGym';
+      const parallelEnvs = Math.max(1, parseInt(document.getElementById('mobilegymParallelEnvs').value || '1', 10) || 1);
       const button = document.getElementById('startMobileGym');
       const previous = button.textContent;
       button.disabled = true;
@@ -2427,7 +2725,7 @@ INDEX_HTML = r"""<!doctype html>
         const res = await fetch('/api/environments/mobilegym', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({name})
+          body: JSON.stringify({name, parallel_envs: parallelEnvs})
         });
         const body = await res.json();
         if(!res.ok){
@@ -2522,8 +2820,9 @@ INDEX_HTML = r"""<!doctype html>
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
           endpoint: env.endpoint,
-          environment: {id: env.id, name: env.name, type: env.type, public_endpoint: env.public_endpoint || '', web_url: env.web_url || ''},
+          environment: {id: env.id, name: env.name, type: env.type, public_endpoint: env.public_endpoint || '', web_url: env.web_url || '', parallel_envs: env.parallel_envs || 1},
           suites: Array.from(selectedSuites),
+          parallel_tasks: env.type === 'mobilegym' ? (env.parallel_envs || 1) : 1,
           no_judge: !judge.enabled,
           judge_model: judge.model
         })

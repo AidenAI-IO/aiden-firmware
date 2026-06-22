@@ -39,6 +39,7 @@ def prepare_task_isolation(
     task: TaskSpec,
     *,
     environment_url: str | None = None,
+    benchmark_task_id: str | None = None,
     ready_timeout_sec: int = 120,
     setup_attempts: int = 3,
 ) -> None:
@@ -52,7 +53,7 @@ def prepare_task_isolation(
         try:
             client.clear_history()
             if environment_url and not task.input_screenshot:
-                call_environment_reset(environment_url)
+                call_environment_reset(environment_url, task_id=benchmark_task_id or task.id)
             elif not task.input_screenshot:
                 per_task_setup(client, task.setup)
             return

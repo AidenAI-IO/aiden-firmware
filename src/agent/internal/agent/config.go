@@ -17,9 +17,10 @@ type SearchConfig struct {
 }
 
 type ToolProxyConfig struct {
-	Enabled      bool     `toml:"-"` // Only set via CLI, not config file
-	Endpoint     string   `toml:"-"` // Only set via CLI, not config file
-	ForwardTools []string `toml:"-"` // Only set via CLI, not config file
+	Enabled         bool     `toml:"-"` // Only set via CLI, not config file
+	Endpoint        string   `toml:"-"` // Only set via CLI, not config file
+	ForwardTools    []string `toml:"-"` // Only set via CLI, not config file
+	BenchmarkTaskID string   `toml:"-"` // Only set via CLI, not config file
 }
 
 const (

@@ -32,6 +32,9 @@ if [ "${AIDEN_TOOL_PROXY_MODE:-}" = "1" ] || [ "${AIDEN_TOOL_PROXY_MODE:-}" = "t
         exit 1
     fi
     set -- "$@" --tool-proxy-mode --tool-proxy-endpoint "$TOOL_PROXY_ENDPOINT" --forward-tools "${AIDEN_FORWARD_TOOLS:-$default_forward_tools}"
+    if [ -n "${AIDEN_BENCHMARK_TASK_ID:-}" ]; then
+        set -- "$@" --benchmark-task-id "$AIDEN_BENCHMARK_TASK_ID"
+    fi
 fi
 
 exec "$@"

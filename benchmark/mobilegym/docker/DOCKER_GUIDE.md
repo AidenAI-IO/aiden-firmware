@@ -132,19 +132,20 @@ docker compose build daemon
 docker compose up -d daemon
 ```
 
-## 🆚 单容器 vs 并发隔离
+## 🆚 Compose 调试 vs WebUI 并发
 
-MobileGym 官方支持本地 `--parallel` 并发；下表只针对 Aiden 集成。当前 Aiden Go daemon 的 MobileGym session、conversation 和 memory 是 daemon 级状态，所以同一个 daemon 内并发会互相污染。
+当前支持的 Aiden MobileGym 并发入口是 benchmark WebUI。WebUI 会在同一个
+MobileGym bridge 后创建多个 env，并给每个并发 task worker 启动独立 daemon。
 
 | 方式                                        | 优点                                    | 缺点                          |
 | ------------------------------------------- | --------------------------------------- | ----------------------------- |
-| 单容器 (`docker compose run --rm test ...`) | 启动快、调试友好                        | 任务间共享 daemon，状态会污染 |
-| 并发隔离 (`./parallel_run.sh`)              | 每 worker 独立 daemon/simulator/network | 资源占用大                    |
+| 单容器 (`docker compose run --rm test ...`) | 启动快、调试友好                        | 不适合作为 Aiden 并发入口     |
+| Benchmark WebUI                             | task worker 独立 daemon，共享 env pool  | 需要先启动 WebUI              |
 
 建议：
 
 - 调试单个任务：用 `docker compose run --rm test ...`
-- 跑套件 / 多任务：用 `./parallel_run.sh`，详见 [README.md](README.md) "并发测试"
+- 跑套件 / 多任务：用 `python -m runner.main webui`，创建 MobileGym environment 时设置 `Envs`
 
 ## 🔍 故障排查
 

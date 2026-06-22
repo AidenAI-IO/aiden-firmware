@@ -181,9 +181,9 @@ A: 需要将 MobileGym suite 转换为 `benchmark/suites/*.json` 格式。参考
 ### Q3: 并发测试怎么办？
 
 A: 新架构下，可以：
-1. 启动多个模拟器实例（不同端口）
-2. 使用 `benchmark/runner` 的并发支持
-3. 或保持 `docker/parallel_run.sh` 思路（每个 worker 独立模拟器）
+1. 使用 benchmark WebUI 创建 `Envs > 1` 的 MobileGym environment
+2. 由 WebUI 为并发 task worker 启动独立 daemon
+3. 通过每个请求携带的 `benchmark-task-id` 路由到对应 env
 
 ### Q4: Bridge server 的 API 有变化吗？
 

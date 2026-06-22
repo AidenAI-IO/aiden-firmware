@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import Awaitable, Callable
 from typing import Any
+
+
+BENCHMARK_TASK_ID_HEADER = "benchmark-task-id"
 
 
 class BridgeEpisodeError(RuntimeError):
@@ -11,6 +15,100 @@ class BridgeEpisodeError(RuntimeError):
 
 class StaleEpisodeError(BridgeEpisodeError):
     pass
+
+
+class MissingBenchmarkTaskIDError(ValueError):
+    pass
+
+
+class NoBridgeEnvAvailableError(BridgeEpisodeError):
+    pass
+
+
+def benchmark_task_id_from_headers(headers: Any) -> str:
+    if headers is None:
+        return ""
+    for name in (BENCHMARK_TASK_ID_HEADER, "x-benchmark-task-id"):
+        try:
+            value = headers.get(name)
+        except AttributeError:
+            value = None
+        if value:
+            return str(value).strip()
+    return ""
+
+
+class BridgeTaskRouter:
+    """Maps benchmark task ids to bridge states.
+
+    In multi-env mode every request must carry ``benchmark-task-id``. The
+    router uses that explicit id on each request; it does not infer the task id
+    from a prior reset or episode call.
+    """
+
+    def __init__(self, states: list["BridgeEpisodeState"]):
+        if not states:
+            raise ValueError("at least one bridge state is required")
+        self.states = list(states)
+        self.default_state = self.states[0]
+        self._lock = threading.Lock()
+        self._task_to_state: dict[str, BridgeEpisodeState] = {}
+        self._state_to_task: dict[BridgeEpisodeState, str] = {}
+        self._next_index = 0
+
+    @classmethod
+    def from_state(cls, state: "BridgeEpisodeState | BridgeTaskRouter") -> "BridgeTaskRouter":
+        if isinstance(state, BridgeTaskRouter):
+            return state
+        return cls([state])
+
+    def state_for_headers(self, headers: Any) -> "BridgeEpisodeState":
+        return self.state_for_task_id(benchmark_task_id_from_headers(headers))
+
+    def state_for_task_id(self, task_id: str | None) -> "BridgeEpisodeState":
+        task_id = str(task_id or "").strip()
+        if not task_id:
+            if len(self.states) > 1:
+                raise MissingBenchmarkTaskIDError(f"{BENCHMARK_TASK_ID_HEADER} header is required")
+            return self.default_state
+        with self._lock:
+            existing = self._task_to_state.get(task_id)
+            if existing is not None:
+                return existing
+            state = self._choose_state_locked()
+            self._task_to_state[task_id] = state
+            self._state_to_task[state] = task_id
+            return state
+
+    def release_task_id(self, task_id: str | None) -> bool:
+        task_id = str(task_id or "").strip()
+        if not task_id:
+            if len(self.states) > 1:
+                raise MissingBenchmarkTaskIDError(f"{BENCHMARK_TASK_ID_HEADER} header is required")
+            return False
+        with self._lock:
+            state = self._task_to_state.pop(task_id, None)
+            if state is None:
+                return False
+            self._state_to_task.pop(state, None)
+            return True
+
+    def task_map(self) -> dict[str, int]:
+        with self._lock:
+            return {
+                task_id: self.states.index(state)
+                for task_id, state in self._task_to_state.items()
+                if state in self.states
+            }
+
+    def _choose_state_locked(self) -> "BridgeEpisodeState":
+        for offset in range(len(self.states)):
+            index = (self._next_index + offset) % len(self.states)
+            state = self.states[index]
+            if state not in self._state_to_task:
+                self._next_index = (index + 1) % len(self.states)
+                return state
+        raise NoBridgeEnvAvailableError("no MobileGym bridge environment is available for a new benchmark task")
 
 
 class BridgeEpisodeState:

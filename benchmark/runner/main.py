@@ -12,6 +12,7 @@ from runner.html_report import generate_report_html, upload_report
 from runner.judge import JudgeConfig
 from runner.report import git_sha, write_jsonl, write_manifest, write_summary, now_iso
 from runner.recovery import recover_agent_after_timeout, wait_for_agent_ready
+from runner.reset import ResetError, call_environment_release
 from runner.runtask import run_one_task, skipped_task_result
 from runner.suite import load_suite
 
@@ -58,6 +59,14 @@ def cli(argv: list[str] | None = None) -> int:
     p_run.add_argument("--repeats", type=int, default=None)
     p_run.add_argument("--out", default=str(REPO_ROOT / "benchmark" / "runs"))
     p_run.add_argument("--state-file", default=os.environ.get("BENCHMARK_STATE_FILE"))
+    p_run.add_argument("--task-id", action="append", default=[],
+                       help="Run only this task id; can be repeated")
+    p_run.add_argument("--task-ids", default="",
+                       help="Comma-separated task ids to run")
+    p_run.add_argument("--run-id", default="",
+                       help="Optional run directory name under --out")
+    p_run.add_argument("--benchmark-task-id", default="",
+                       help="Task routing id to use for environment reset/release")
     p_run.add_argument("--skip-clock-wait", action="store_true")
     p_run.add_argument("--clock-timeout-sec", type=int, default=180)
     p_run.add_argument("--agent-ready-timeout-sec", type=int, default=120)
@@ -201,9 +210,35 @@ def _write_state(path: str | None, payload: dict) -> None:
         print(f"warning: failed to write benchmark state: {e}", file=sys.stderr, flush=True)
 
 
+def _selected_task_ids(args: argparse.Namespace) -> list[str]:
+    ids: list[str] = []
+    for value in list(args.task_id or []) + [args.task_ids or ""]:
+        for item in str(value).split(","):
+            task_id = item.strip()
+            if task_id and task_id not in ids:
+                ids.append(task_id)
+    return ids
+
+
+def _valid_run_id(run_id: str) -> bool:
+    return bool(run_id and "/" not in run_id and "\\" not in run_id and run_id not in {".", ".."})
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     suite = load_suite(Path(args.suite))
-    run_id = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
+    selected_task_ids = _selected_task_ids(args)
+    if selected_task_ids:
+        by_id = {task.id: task for task in suite.tasks}
+        missing = [task_id for task_id in selected_task_ids if task_id not in by_id]
+        if missing:
+            print(f"Error: task id(s) not found in suite: {', '.join(missing)}", file=sys.stderr)
+            return 2
+        suite.tasks = [by_id[task_id] for task_id in selected_task_ids]
+
+    run_id = str(args.run_id or "").strip() or datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
+    if not _valid_run_id(run_id):
+        print(f"Error: invalid --run-id: {run_id!r}", file=sys.stderr)
+        return 2
     run_dir = Path(args.out) / run_id
     client = AgentClient(base_url=args.agent_url)
     if not client.health():
@@ -242,35 +277,59 @@ def _cmd_run(args: argparse.Namespace) -> int:
             n = args.repeats if args.repeats is not None else task.repeats
             if n <= 0:
                 n = 1
-            for attempt in range(1, n + 1):
-                current_index = completed + 1
-                progress = f"{current_index}/{total_runs}"
-                _write_state(args.state_file, {
-                    **base_state,
-                    "completed": completed,
-                    "current": current_index,
-                    "current_task": task.id,
-                    "current_attempt": attempt,
-                })
-                print(f"[{progress}] RUNNING    {task.id} attempt={attempt}", flush=True)
-                if not wait_for_agent_ready(
-                    client, timeout_sec=args.agent_ready_timeout_sec
-                ):
-                    print(
-                        f"[{progress}] SKIPPED    {task.id} attempt={attempt} "
-                        f"rubric=0/{len(task.rubric)} wall=Nonems "
-                        f"(agent not ready)",
-                        flush=True,
-                    )
-                    results.append(
-                        skipped_task_result(
-                            suite, task, attempt,
-                            run_dir / "tasks" / task.id
-                            / (f"attempt_{attempt}" if n > 1 else ""),
-                            run_id,
-                            f"agent not ready within {args.agent_ready_timeout_sec}s",
+            task_benchmark_id = str(args.benchmark_task_id or "").strip() or task.id
+            try:
+                for attempt in range(1, n + 1):
+                    current_index = completed + 1
+                    progress = f"{current_index}/{total_runs}"
+                    _write_state(args.state_file, {
+                        **base_state,
+                        "completed": completed,
+                        "current": current_index,
+                        "current_task": task.id,
+                        "current_attempt": attempt,
+                    })
+                    print(f"[{progress}] RUNNING    {task.id} attempt={attempt}", flush=True)
+                    if not wait_for_agent_ready(
+                        client, timeout_sec=args.agent_ready_timeout_sec
+                    ):
+                        print(
+                            f"[{progress}] SKIPPED    {task.id} attempt={attempt} "
+                            f"rubric=0/{len(task.rubric)} wall=Nonems "
+                            f"(agent not ready)",
+                            flush=True,
                         )
-                    )
+                        results.append(
+                            skipped_task_result(
+                                suite, task, attempt,
+                                run_dir / "tasks" / task.id
+                                / (f"attempt_{attempt}" if n > 1 else ""),
+                                run_id,
+                                f"agent not ready within {args.agent_ready_timeout_sec}s",
+                            )
+                        )
+                        completed += 1
+                        _write_state(args.state_file, {
+                            **base_state,
+                            "completed": completed,
+                            "current": current_index,
+                            "current_task": task.id,
+                            "current_attempt": attempt,
+                            "last_result": "skipped",
+                        })
+                        continue
+
+                    art_dir = run_dir / "tasks" / task.id / (f"attempt_{attempt}" if n > 1 else "")
+                    try:
+                        r = run_one_task(client, suite, task, attempt, art_dir,
+                                         judge_cfg, judge_cache, run_id,
+                                         environment_url=args.environment_url or None,
+                                         benchmark_task_id=task_benchmark_id)
+                    except Exception as e:
+                        print(f"[{progress}] ERROR      {task.id} attempt={attempt} — {e}", flush=True)
+                        r = skipped_task_result(suite, task, attempt, art_dir, run_id, str(e))
+                    _log_task_result(task.id, attempt, r, verbose=args.verbose, progress=progress)
+                    results.append(r)
                     completed += 1
                     _write_state(args.state_file, {
                         **base_state,
@@ -278,44 +337,30 @@ def _cmd_run(args: argparse.Namespace) -> int:
                         "current": current_index,
                         "current_task": task.id,
                         "current_attempt": attempt,
-                        "last_result": "skipped",
+                        "last_result": r.status,
                     })
-                    continue
 
-                art_dir = run_dir / "tasks" / task.id / (f"attempt_{attempt}" if n > 1 else "")
-                try:
-                    r = run_one_task(client, suite, task, attempt, art_dir,
-                                     judge_cfg, judge_cache, run_id,
-                                     environment_url=args.environment_url or None)
-                except Exception as e:
-                    print(f"[{progress}] ERROR      {task.id} attempt={attempt} — {e}", flush=True)
-                    r = skipped_task_result(suite, task, attempt, art_dir, run_id, str(e))
-                _log_task_result(task.id, attempt, r, verbose=args.verbose, progress=progress)
-                results.append(r)
-                completed += 1
-                _write_state(args.state_file, {
-                    **base_state,
-                    "completed": completed,
-                    "current": current_index,
-                    "current_task": task.id,
-                    "current_attempt": attempt,
-                    "last_result": r.status,
-                })
-
-                if r.status in {"timeout", "skipped", "judge_error", "failed"}:
-                    if not recover_agent_after_timeout(
-                        client, timeout_sec=args.agent_recovery_timeout_sec
-                    ):
-                        wait_for_agent_ready(
+                    if r.status in {"timeout", "skipped", "judge_error", "failed"}:
+                        if not recover_agent_after_timeout(
                             client, timeout_sec=args.agent_recovery_timeout_sec
-                        )
-                if args.inter_task_cooldown_sec > 0:
-                    time.sleep(args.inter_task_cooldown_sec)
+                        ):
+                            wait_for_agent_ready(
+                                client, timeout_sec=args.agent_recovery_timeout_sec
+                            )
+                    if args.inter_task_cooldown_sec > 0:
+                        time.sleep(args.inter_task_cooldown_sec)
+            finally:
+                if args.environment_url:
+                    try:
+                        call_environment_release(args.environment_url, task_id=task_benchmark_id)
+                    except ResetError as exc:
+                        print(f"warning: failed to release environment task route for {task_benchmark_id}: {exc}", file=sys.stderr, flush=True)
     finally:
         client.close()
     manifest = {
         "run_id": run_id, "git_sha": sha, "git_dirty": dirty,
         "suite_path": str(suite.source_path), "suite_sha256": suite.sha256,
+        "selected_task_ids": selected_task_ids,
         "agent_url": args.agent_url,
         "environment_url": args.environment_url or None,
         "agent_model": args.agent_model,

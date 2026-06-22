@@ -17,6 +17,7 @@ services:
       AIDEN_TOOL_PROXY_MODE: "1"
       AIDEN_FORWARD_TOOLS: "screenshot,touch_gesture,keyboard_text,keyboard_tap,mouse_click,mouse_move,mouse_scroll,quick_action"
       TOOL_PROXY_ENDPOINT: ${TOOL_PROXY_ENDPOINT:-}
+      AIDEN_BENCHMARK_TASK_ID: ${AIDEN_BENCHMARK_TASK_ID:-}
       AIDEN_RUNTIME_CONFIG_DIR: /tmp/aiden-config
       HTTPS_PROXY: ${HTTPS_PROXY:-}
       HTTP_PROXY: ${HTTP_PROXY:-}

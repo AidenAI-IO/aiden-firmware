@@ -3,13 +3,10 @@ from __future__ import annotations
 import os
 import re
 import shutil
-import subprocess
-import tempfile
 from pathlib import Path
 
 from runner.judge import JudgeConfig
 from runner.suite import Suite, TaskSpec
-from runner.skillopt import mobilegym_results
 from runner.skillopt.types import RolloutResult
 
 
@@ -45,54 +42,8 @@ class MobileGymBackend:
         run_root: Path,
         judge_cfg: JudgeConfig | None,
     ) -> list[RolloutResult]:
-        del skill_path
-        suite_label = self._suite_label(suite)
-        batch_id = _sanitize_batch_id(f"{run_id}-{phase}")
-        batch_dir = self.benchmark_root / "runs" / "mobilegym" / batch_id
-
-        with tempfile.TemporaryDirectory(prefix="skillopt-mobilegym-") as tmp:
-            source_config = Path(tmp) / "config"
-            self._prepare_source_config(source_config, skill_name, skill_text)
-            command = ["./parallel_run.sh", "--aiden-suite", suite_label]
-            if tasks:
-                command.extend(["--aiden-task-ids", ",".join(task.id for task in tasks)])
-            timeout_sec = int(self.env.get(
-                "MOBILEGYM_RUN_TIMEOUT_SEC",
-                os.environ.get("MOBILEGYM_RUN_TIMEOUT_SEC", "3600"),
-            ))
-            try:
-                result = subprocess.run(
-                    command,
-                    cwd=self.benchmark_root / "mobilegym" / "docker",
-                    env=self._run_env(source_config, batch_id),
-                    text=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    check=False,
-                    timeout=timeout_sec,
-                )
-            except subprocess.TimeoutExpired as exc:
-                raise RuntimeError(
-                    f"MobileGym runner timed out after {timeout_sec}s (batch_dir={batch_dir})"
-                ) from exc
-
-        if result.returncode != 0 and not _has_readable_task_rows(batch_dir):
-            raise RuntimeError(
-                "MobileGym runner failed "
-                f"(exit={result.returncode}, batch_dir={batch_dir})\n"
-                f"stdout:\n{result.stdout}\n"
-                f"stderr:\n{result.stderr}"
-            )
-
-        return mobilegym_results.load_aiden_suite_rollouts(
-            batch_dir=batch_dir,
-            suite=suite,
-            tasks=tasks,
-            run_id=run_id,
-            phase_artifact_dir=run_root / phase,
-            judge_cfg=judge_cfg,
-            judge_cache_dir=run_root / "_judge_cache",
-        )
+        del suite, tasks, skill_name, skill_path, skill_text, phase, run_id, run_root, judge_cfg
+        raise RuntimeError("SkillOpt MobileGym rollouts have moved to the benchmark WebUI runner")
 
     def _suite_label(self, suite: Suite) -> str:
         suites_root = self.benchmark_root / "suites"

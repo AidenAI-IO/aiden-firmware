@@ -120,32 +120,95 @@ async def create_mobilegym_env(env_url: str, headless: bool, device: str = "sim"
         return env, config
 
 
+async def create_mobilegym_env_pool(
+    env_url: str,
+    headless: bool,
+    device: str,
+    n: int,
+    isolation: str = "pages",
+    num_browsers: int = 0,
+) -> tuple[Any, list[Any], Any]:
+    """Create a pool of MobileGym environments for task-id routing."""
+    if n <= 1:
+        env, config = await create_mobilegym_env(env_url, headless=headless, device=device)
+        return None, [env], config
+    if device != "sim":
+        raise SimulatorError("--parallel-envs > 1 is only supported with --device sim")
+
+    try:
+        from bench_env.env import EnvPool
+    except ModuleNotFoundError as exc:
+        raise SimulatorError(
+            "Unable to import MobileGym EnvPool. "
+            "Install dependencies with: "
+            "`pip install -r bench_env/requirements.txt && playwright install chromium`"
+        ) from exc
+
+    pool = EnvPool(
+        url=env_url,
+        n=n,
+        isolation=isolation,
+        num_browsers=num_browsers,
+        headless=headless,
+        coord_space="norm_0_1000",
+        delay_after_action=1.0,
+        verbose=True,
+    )
+    await pool.__aenter__()
+    envs = list(pool.envs)
+    for env in envs:
+        try:
+            await env.reset(app_ids=[])
+        except TypeError:
+            await env.reset()
+    config = {
+        "env_url": env_url,
+        "headless": headless,
+        "device": "sim",
+        "coord_space": "norm_0_1000",
+        "delay_after_action": 1.0,
+        "parallel_envs": n,
+        "isolation": isolation,
+        "num_browsers": num_browsers,
+    }
+    return pool, envs, config
+
+
 async def run_simulator(args: argparse.Namespace) -> int:
     """Run MobileGym simulator with Bridge server."""
+    if args.parallel_envs < 1:
+        raise SimulatorError("--parallel-envs must be positive")
+
     # Resolve and validate MobileGym installation
     mobilegym_root, source = resolve_mobilegym_root(args.mobilegym_root)
     validate_mobilegym_root(mobilegym_root, source)
     prepare_import_paths(mobilegym_root)
 
     # Import bridge components (no agent registration needed)
-    from mobilegym.bridge.episode import BridgeEpisodeState
+    from mobilegym.bridge.episode import BridgeEpisodeState, BridgeTaskRouter
     from mobilegym.bridge.server import BridgeServer
 
     print(f"Creating MobileGym simulator environment...", flush=True)
     print(f"  Simulator URL: {args.env_url}", flush=True)
     print(f"  Headless: {args.headless}", flush=True)
+    print(f"  Parallel envs: {args.parallel_envs}", flush=True)
 
-    # Create environment
-    env, env_config = await create_mobilegym_env(
+    # Create environment(s)
+    env_pool, envs, env_config = await create_mobilegym_env_pool(
         env_url=args.env_url,
         headless=args.headless,
         device=args.device,
+        n=args.parallel_envs,
+        isolation=args.env_isolation,
+        num_browsers=args.env_browsers,
     )
 
-    print(f"✓ MobileGym environment created", flush=True)
+    print(f"✓ MobileGym environment(s) created: {len(envs)}", flush=True)
 
     # Create bridge
-    bridge_state = BridgeEpisodeState(env, asyncio.get_running_loop())
+    owner_loop = asyncio.get_running_loop()
+    bridge_states = [BridgeEpisodeState(env, owner_loop) for env in envs]
+    bridge_state = bridge_states[0] if len(bridge_states) == 1 else BridgeTaskRouter(bridge_states)
     bridge = BridgeServer(
         bridge_state,
         host=args.bridge_host,
@@ -188,6 +251,10 @@ async def run_simulator(args: argparse.Namespace) -> int:
         print("Shutting down bridge server...", flush=True)
         bridge.stop()
         print("✓ Bridge stopped", flush=True)
+        if env_pool is not None:
+            print("Shutting down MobileGym env pool...", flush=True)
+            await env_pool.__aexit__(None, None, None)
+            print("✓ MobileGym env pool stopped", flush=True)
 
     return 0
 
@@ -218,6 +285,24 @@ def build_parser() -> argparse.ArgumentParser:
         default="sim",
         choices=["sim", "real"],
         help="Device type (default: sim)",
+    )
+    mobilegym.add_argument(
+        "--parallel-envs",
+        type=int,
+        default=int(os.getenv("MOBILEGYM_PARALLEL_ENVS", "1")),
+        help="Number of MobileGym envs behind one bridge (default: 1)",
+    )
+    mobilegym.add_argument(
+        "--env-isolation",
+        default=os.getenv("MOBILEGYM_ENV_ISOLATION", "pages"),
+        choices=["pages", "contexts", "browsers"],
+        help="MobileGym EnvPool isolation mode when --parallel-envs > 1 (default: pages)",
+    )
+    mobilegym.add_argument(
+        "--env-browsers",
+        type=int,
+        default=int(os.getenv("MOBILEGYM_ENV_BROWSERS", "0")),
+        help="Browser process count for EnvPool when --parallel-envs > 1 (default: auto)",
     )
 
     bridge = parser.add_argument_group("Bridge server")

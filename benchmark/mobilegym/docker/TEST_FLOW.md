@@ -78,18 +78,15 @@ open "../../runs/mobilegym/$LATEST/index.html"
 open "../../runs/mobilegym/$LATEST/phone_control_v1/index.html"
 ```
 
-并发运行示例：
+并发运行使用 benchmark WebUI：
 
 ```bash
-# 单 suite 分片并发
-PARALLEL=4 ./parallel_run.sh --suite phone_control_v1
-
-# 多 suites，并限制同时运行的 compose projects
-PARALLEL=2 MAX_JOBS=2 ./parallel_run.sh --suites clock,phone_control_v1
-
-# 位置参数按单任务隔离执行
-./parallel_run.sh clock.CountAlarms clock.ToggleAlarm
+python -m runner.main webui
 ```
+
+在 WebUI 中启动 MobileGym environment 时设置 `Envs`，然后选择该 environment 和
+suite 运行。WebUI 会为并发 task worker 启动独立 daemon，并通过
+`benchmark-task-id` 路由到不同 env。
 
 ### 6. 查看日志
 

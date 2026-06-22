@@ -359,7 +359,10 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 
 	var toolProxy *ToolProxyClient
 	if cfg.ToolProxy.Enabled && cfg.ToolProxy.Endpoint != "" {
-		toolProxy = NewToolProxyClient(cfg.ToolProxy.Endpoint)
+		toolProxy = NewToolProxyClient(
+			cfg.ToolProxy.Endpoint,
+			WithToolProxyBenchmarkTaskID(cfg.ToolProxy.BenchmarkTaskID),
+		)
 	}
 
 	rt := &Runtime{

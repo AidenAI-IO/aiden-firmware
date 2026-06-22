@@ -11,21 +11,38 @@ import (
 	"time"
 )
 
+const BenchmarkTaskIDHeader = "benchmark-task-id"
+
 // ToolProxyClient forwards tool calls to a remote daemon's /api/tools endpoint.
 type ToolProxyClient struct {
-	endpoint   string
-	httpClient *http.Client
+	endpoint        string
+	benchmarkTaskID string
+	httpClient      *http.Client
+}
+
+type ToolProxyClientOption func(*ToolProxyClient)
+
+func WithToolProxyBenchmarkTaskID(taskID string) ToolProxyClientOption {
+	return func(c *ToolProxyClient) {
+		c.benchmarkTaskID = strings.TrimSpace(taskID)
+	}
 }
 
 // NewToolProxyClient creates a client that forwards tool calls to the remote endpoint.
-func NewToolProxyClient(endpoint string) *ToolProxyClient {
+func NewToolProxyClient(endpoint string, opts ...ToolProxyClientOption) *ToolProxyClient {
 	endpoint = strings.TrimRight(endpoint, "/")
-	return &ToolProxyClient{
+	c := &ToolProxyClient{
 		endpoint: endpoint,
 		httpClient: &http.Client{
 			Timeout: 5 * time.Minute, // Match typical tool execution timeout
 		},
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(c)
+		}
+	}
+	return c
 }
 
 // CallTool forwards a tool invocation to the remote daemon and returns the result.
@@ -47,6 +64,9 @@ func (c *ToolProxyClient) CallTool(ctx context.Context, toolName, input string) 
 		return "", true, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if c.benchmarkTaskID != "" {
+		req.Header.Set(BenchmarkTaskIDHeader, c.benchmarkTaskID)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

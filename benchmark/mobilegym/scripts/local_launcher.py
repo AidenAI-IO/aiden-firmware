@@ -132,7 +132,6 @@ def scan_suites(benchmark_root: str | Path = BENCHMARK_ROOT) -> list[dict[str, A
                 }
             )
 
-    items.extend(scan_mobilegym_builtins(root))
     return sorted(items, key=lambda item: (item["type"] != "aiden", item["name"]))
 
 
@@ -189,45 +188,7 @@ def build_mobilegym_run_command(
     benchmark_root: str | Path = BENCHMARK_ROOT,
     payload: dict[str, Any] | None = None,
 ) -> RunCommand:
-    payload = payload or {}
-    suites = selected_suites(payload)
-    suite_type = str(payload.get("suite_type") or "mobilegym_builtin")
-    if len(suites) > 1 and suite_type not in {"mobilegym_builtin", "aiden"}:
-        raise LauncherError("multiple suites are only supported for mobilegym_builtin or aiden")
-
-    root = Path(benchmark_root)
-    docker_dir = root / "mobilegym" / "docker"
-    runner = docker_dir / "parallel_run.sh"
-    if not runner.exists():
-        raise LauncherError(f"missing runner script: {runner}")
-
-    if suite_type == "aiden":
-        if len(suites) > 1:
-            argv = ["./parallel_run.sh", "--aiden-suites", ",".join(suites)]
-        else:
-            argv = ["./parallel_run.sh", "--aiden-suite", suites[0]]
-    elif suite_type in {"mobilegym_builtin", ""}:
-        if len(suites) > 1:
-            argv = ["./parallel_run.sh", "--suites", ",".join(suites)]
-        else:
-            argv = ["./parallel_run.sh", "--suite", suites[0]]
-    else:
-        raise LauncherError(f"unknown suite_type: {suite_type!r}")
-
-    limit = int(payload.get("limit") or 0)
-    if limit > 0:
-        argv.extend(["--limit", str(limit)])
-
-    parallel = int(payload.get("parallel") or 4)
-    if parallel < 1:
-        parallel = 1
-    env = os.environ.copy()
-    add_common_cli_paths(env)
-    env.update(model_config_from_payload(payload))
-    env["PARALLEL"] = str(parallel)
-    env["MOBILEGYM_RUNS_ROOT"] = str(root / "runs" / "mobilegym")
-    env.setdefault("MOBILEGYM_BATCH_ID", "batch-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
-    return RunCommand(argv=argv, cwd=docker_dir, env=env)
+    raise LauncherError("Mac-local MobileGym runs have moved to the benchmark WebUI")
 
 
 def build_skillopt_run_command(

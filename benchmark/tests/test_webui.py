@@ -299,6 +299,7 @@ def test_start_job_derives_mobilegym_environment_endpoint(tmp_path: Path, monkey
         public_endpoint="http://127.0.0.1:19090",
         web_url="http://127.0.0.1:18173",
         status="running",
+        parallel_envs=3,
     )
 
     class FakeThread:
@@ -324,6 +325,7 @@ def test_start_job_derives_mobilegym_environment_endpoint(tmp_path: Path, monkey
     assert job["environment_endpoint"] == "http://127.0.0.1:19090"
     assert job["environment_type"] == "mobilegym"
     assert job["environment_web_url"] == "http://127.0.0.1:19090/screen"
+    assert job["parallel_tasks"] == 3
 
 
 def test_run_suite_passes_judge_model_and_api_key_env(tmp_path: Path, monkeypatch):
@@ -421,6 +423,98 @@ def test_run_suite_passes_mobilegym_environment_url(tmp_path: Path, monkeypatch)
 
     assert "--environment-url" in captured["cmd"]
     assert captured["cmd"][captured["cmd"].index("--environment-url") + 1] == "http://127.0.0.1:19090"
+
+
+def test_mobilegym_task_worker_uses_task_id_for_daemon_and_runner(tmp_path: Path, monkeypatch):
+    suites = tmp_path / "suites"
+    suites.mkdir()
+    suite_path = suites / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "name": "suite",
+                "tasks": [
+                    {
+                        "id": "t1",
+                        "category": "diagnostic",
+                        "description_for_judge": "judge",
+                        "prompt": "prompt",
+                        "rubric": [{"id": "ok", "check": "ok"}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            suites_dir=suites,
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+            build_daemon_image=False,
+        )
+    )
+    raw_runs_dir = tmp_path / "runs" / "job-test" / "raw"
+    raw_runs_dir.mkdir(parents=True)
+    job = webui.Job(
+        id="job-test",
+        endpoint="http://host.docker.internal:19090",
+        docker_endpoint="http://host.docker.internal:19090",
+        environment_endpoint="http://127.0.0.1:19090",
+        suites=["suite.json"],
+        environment_type="mobilegym",
+        agent_url="http://127.0.0.1:18080",
+        container_name="aiden-benchmark-agent-job-test",
+        config_dir=str(tmp_path / "runs" / "job-test" / "config"),
+        raw_runs_dir=str(raw_runs_dir),
+        state_file=str(tmp_path / "runs" / "job-test" / "state.json"),
+        runner_log=str(tmp_path / "runs" / "job-test" / "runner.log"),
+        daemon_log=str(tmp_path / "runs" / "job-test" / "daemon.log"),
+        no_judge=True,
+        parallel_tasks=2,
+    )
+    captured = {}
+    releases = []
+
+    monkeypatch.setattr(webui, "reserve_free_port", lambda: 18081)
+    monkeypatch.setattr(app, "_wait_for_daemon", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui, "start_daemon_logs", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui, "stop_daemon_compose", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        webui,
+        "call_environment_release",
+        lambda environment_url, timeout=30, task_id=None: releases.append((environment_url, timeout, task_id)),
+    )
+
+    def fake_start_daemon_compose(*args, **kwargs):
+        captured["benchmark_task_id"] = kwargs["benchmark_task_id"]
+        captured["host_port"] = kwargs["host_port"]
+        return "container-id"
+
+    def fake_run_runner_process(parent_job, cmd, env):
+        captured["cmd"] = cmd
+        run_id = cmd[cmd.index("--run-id") + 1]
+        run_path = raw_runs_dir / run_id
+        run_path.mkdir(parents=True)
+        (run_path / "manifest.json").write_text(
+            json.dumps({"totals": {"tasks": 1, "passed": 1}}),
+            encoding="utf-8",
+        )
+        return 0
+
+    monkeypatch.setattr(webui, "start_daemon_compose", fake_start_daemon_compose)
+    monkeypatch.setattr(app, "_run_runner_process", fake_run_runner_process)
+
+    result = app._run_mobilegym_task_worker(job, "suite.json", suite_path, "t1")
+
+    assert captured["host_port"] == 18081
+    assert captured["benchmark_task_id"] == "suite.json:t1"
+    assert captured["cmd"][captured["cmd"].index("--task-id") + 1] == "t1"
+    assert captured["cmd"][captured["cmd"].index("--benchmark-task-id") + 1] == "suite.json:t1"
+    assert captured["cmd"][captured["cmd"].index("--environment-url") + 1] == "http://127.0.0.1:19090"
+    assert releases == [("http://127.0.0.1:19090", 2, "suite.json:t1")]
+    assert result["exit_code"] == 0
+    assert result["manifest"]["totals"]["passed"] == 1
 
 
 def test_stop_job_marks_stopping_terminates_runner_and_removes_container(tmp_path: Path, monkeypatch):
@@ -636,6 +730,8 @@ def test_index_html_exposes_judge_settings_panel():
     assert "/api/jobs/${encodeURIComponent(id)}/stop" in webui.INDEX_HTML
     assert "environment_web_url" in webui.INDEX_HTML
     assert "web_url: env.web_url" in webui.INDEX_HTML
+    assert 'id="mobilegymParallelEnvs"' in webui.INDEX_HTML
+    assert "parallel_envs" in webui.INDEX_HTML
     assert ">screen</a>" in webui.INDEX_HTML
 
 
@@ -693,6 +789,7 @@ def test_daemon_compose_command_and_env_forward_tools_to_environment(tmp_path: P
         host_port=18081,
         config_dir=config,
         tool_proxy_endpoint="http://host.docker.internal:18080",
+        benchmark_task_id="suite.json:t1",
     )
 
     assert cmd[:4] == ["docker", "compose", "-f", str(webui.WEBUI_DAEMON_COMPOSE_FILE)]
@@ -703,6 +800,7 @@ def test_daemon_compose_command_and_env_forward_tools_to_environment(tmp_path: P
     assert env["AIDEN_DAEMON_HOST_PORT"] == "18081"
     assert env["AIDEN_CONFIG_DIR"] == str(config.resolve())
     assert env["TOOL_PROXY_ENDPOINT"] == "http://host.docker.internal:18080"
+    assert env["AIDEN_BENCHMARK_TASK_ID"] == "suite.json:t1"
     assert "host.docker.internal" in env["NO_PROXY"]
     compose_text = webui.WEBUI_DAEMON_COMPOSE_FILE.read_text(encoding="utf-8")
     entrypoint_text = (webui.MOBILEGYM_DOCKER_DIR / "daemon-entrypoint.sh").read_text(
@@ -714,6 +812,7 @@ def test_daemon_compose_command_and_env_forward_tools_to_environment(tmp_path: P
     )
     assert 'AIDEN_TOOL_PROXY_MODE: "1"' in compose_text
     assert f'AIDEN_FORWARD_TOOLS: "{expected_forward_tools}"' in compose_text
+    assert "AIDEN_BENCHMARK_TASK_ID" in compose_text
     assert "--tool-proxy-mode" in entrypoint_text
     assert '--tool-proxy-endpoint "$TOOL_PROXY_ENDPOINT"' in entrypoint_text
     assert '--forward-tools "${AIDEN_FORWARD_TOOLS:-$default_forward_tools}"' in entrypoint_text
@@ -729,6 +828,7 @@ def test_build_mobilegym_environment_command_starts_preview_and_bridge(tmp_path:
         host_web_port=18173,
         host_bridge_port=19090,
         benchmark_dir=benchmark_dir,
+        parallel_envs=3,
     )
 
     assert cmd[:5] == ["docker", "run", "--rm", "-d", "--name"]
@@ -748,6 +848,7 @@ def test_build_mobilegym_environment_command_starts_preview_and_bridge(tmp_path:
     assert "--env-url http://127.0.0.1:4173" in script
     assert "--bridge-host 0.0.0.0" in script
     assert "--bridge-port 9090" in script
+    assert "--parallel-envs 3" in script
     assert "--headless" in script
     assert webui.DEFAULT_MOBILEGYM_IMAGE in cmd
 
@@ -777,7 +878,7 @@ def test_start_mobilegym_environment_returns_docker_reachable_endpoint(tmp_path:
 
     monkeypatch.setattr(webui.subprocess, "check_output", fake_check_output)
 
-    env = app.start_mobilegym_environment({"name": "MobileGym smoke"})
+    env = app.start_mobilegym_environment({"name": "MobileGym smoke", "parallel_envs": 2})
 
     assert env["name"] == "MobileGym smoke"
     assert env["type"] == "mobilegym"
@@ -786,8 +887,10 @@ def test_start_mobilegym_environment_returns_docker_reachable_endpoint(tmp_path:
     assert env["public_endpoint"] == "http://127.0.0.1:19090"
     assert env["web_url"] == "http://127.0.0.1:18173"
     assert env["container_id"] == "container-id"
+    assert env["parallel_envs"] == 2
     assert health_urls == [("http://127.0.0.1:19090/health", webui.DEFAULT_MOBILEGYM_READY_TIMEOUT_SEC)]
     assert commands and "aiden-mobilegym-env-" in commands[0][5]
+    assert "--parallel-envs 2" in commands[0][-1]
 
 
 def test_stop_mobilegym_environment_removes_container(tmp_path: Path, monkeypatch):

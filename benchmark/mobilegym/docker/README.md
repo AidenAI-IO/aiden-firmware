@@ -96,40 +96,26 @@ docker compose run --rm test \
 
 ### 并发测试
 
-使用 `parallel_run.sh` 在独立 Docker Compose project 中并发运行 Aiden benchmark。每个 worker 都有独立的 MobileGym 模拟器、daemon、配置/token、network、volume 和日志；只有结果根目录共享。
+使用 benchmark WebUI 运行 Aiden MobileGym 并发：
 
 ```bash
-# 每个任务独立容器
-./parallel_run.sh clock.CountAlarms clock.ToggleAlarm
-
-# 多个隔离 worker 跑同一套件（按 shard 分配任务）
-PARALLEL=4 ./parallel_run.sh --suite phone_control_v1
-
-# 多个 suites，各自单独汇总
-PARALLEL=2 MAX_JOBS=2 ./parallel_run.sh --suites clock,phone_control_v1
-
-# 使用国内 compose 文件
-COMPOSE_FILES=docker-compose.cn.yml PARALLEL=2 ./parallel_run.sh --suite clock
+python -m runner.main webui
 ```
 
-**特点：** 完全隔离（独立模拟器 + daemon + config + network + volume），无状态干扰，适合所有测试。
-
-`MAX_JOBS` 限制同时运行的 compose projects，默认等于 `PARALLEL`。某个 worker 失败不会取消已排队任务，但最终退出码会是非零。按 `Ctrl-C` 会尽量保存日志并清理正在运行的 projects。
-
-> ⚠️ `docker-compose.parallel.yml` 使用 `!reset` 语法重置端口，需要 **Docker Compose v2.24+**。可用 `docker compose version` 查看；老版本请升级 Docker Desktop 或 docker-compose-plugin。
-
-**注意：** 对本集成来说，`run_aiden.py --parallel N` 会在同一 Aiden daemon 内共享 session、history 和 memory，可能导致状态干扰；需要并发时优先用 `parallel_run.sh`。
+在 WebUI 中创建 MobileGym environment 时把 `Envs` 设为大于 1。WebUI 会启动一个
+MobileGym simulator/bridge container，内部创建多个 env；运行 job 时，每个并发
+task worker 使用独立 daemon，并在 reset/tool-proxy 请求中附带相同的
+`benchmark-task-id`，由 bridge 路由到对应 env。
 
 ## 四、查看结果
 
 ```bash
 ls ../../runs/mobilegym/
 open ../../runs/mobilegym/<run-id>/index.html            # direct run 报告
-open ../../runs/mobilegym/<batch-id>/index.html          # parallel batch 总览
-open ../../runs/mobilegym/<batch-id>/<suite>/index.html  # parallel 单个 suite
+open ../../runs/webui/<job-id>/raw/<run-id>/report.html  # WebUI task/suite report
 ```
 
-普通 `docker compose run ... test` 会在 run 目录生成 `index.html`、`summary.json` 和原始 MobileGym 输出。`parallel_run.sh` 的每个 shard 目录还会保留 `runner.log`、`compose.log`、`shard.json`。
+普通 `docker compose run ... test` 会在 run 目录生成 `index.html`、`summary.json` 和原始 MobileGym 输出。WebUI runs 保存在 `benchmark/runs/webui/`。
 
 ## 五、停止
 
@@ -145,8 +131,6 @@ docker compose down
 | `docker-compose.yml`          | 服务编排                     | ✅                       |
 | `daemon-entrypoint.sh`        | Daemon 启动脚本              | ✅                       |
 | `init.sh`                     | 一键初始化                   | ✅                       |
-| `parallel_run.sh`             | 并发隔离 orchestrator        | ✅                       |
-| `docker-compose.parallel.yml` | 并发模式 overlay（重置端口） | ✅                       |
 | `.env.example`                | 配置模板                     | ✅                       |
 | `.dockerignore`               | 构建排除                     | ✅                       |
 | `.env`                        | 实际配置（含代理）           | ❌ ignored               |

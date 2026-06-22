@@ -117,7 +117,7 @@ def cli(argv: list[str] | None = None) -> int:
         "--backend",
         choices=["device", "mobilegym"],
         default="device",
-        help="Rollout backend: device uses the current Aiden daemon; mobilegym uses MobileGym execution.",
+        help="Rollout backend: device uses the current Aiden daemon; mobilegym is pending migration to the benchmark WebUI runner.",
     )
     parser.add_argument("--suite", help="Suite name to split 70/30 (e.g. phone_control_v1)")
     parser.add_argument("--train-suite", help="Explicit train suite name (e.g. skillopt/device-operator/device_operator_train)")
@@ -130,7 +130,7 @@ def cli(argv: list[str] | None = None) -> int:
     parser.add_argument("--budget", type=int, default=10, help="Max optimization steps")
     parser.add_argument("--edit-budget", type=int, default=4, help="Edits per step")
     parser.add_argument("--min-delta", type=float, default=0.03, help="Validation gate threshold")
-    parser.add_argument("--mobilegym-parallel", type=int, default=1, help="MobileGym isolated worker count")
+    parser.add_argument("--mobilegym-parallel", type=int, default=1, help="Legacy MobileGym worker count; pending WebUI migration")
     parser.add_argument(
         "--optimizer-model",
         default="anthropic/claude-opus-4-7",

@@ -202,6 +202,7 @@ def run_one_task(
     judge_cache_dir: Path | None,
     run_id: str,
     environment_url: str | None = None,
+    benchmark_task_id: str | None = None,
 ) -> TaskResult:
     artifact_dir.mkdir(parents=True, exist_ok=True)
     started = now_iso()
@@ -215,7 +216,13 @@ def run_one_task(
         rubric_spec=[dc.asdict(r) for r in task.rubric],
     )
     try:
-        prepare_task_isolation(client, suite, task, environment_url=environment_url)
+        prepare_task_isolation(
+            client,
+            suite,
+            task,
+            environment_url=environment_url,
+            benchmark_task_id=benchmark_task_id,
+        )
     except (ResetError, AgentTimeoutError, AgentRequestError) as e:
         base.status = "skipped"
         base.metrics = {"error": f"setup: {e}"}

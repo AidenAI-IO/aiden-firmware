@@ -26,12 +26,38 @@ def environment_reset_endpoint(environment_url: str) -> str:
     return urllib.parse.urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
 
 
-def call_environment_reset(environment_url: str, timeout: int = 30) -> dict[str, Any]:
-    url = environment_reset_endpoint(environment_url)
+def environment_release_endpoint(environment_url: str) -> str:
+    raw = str(environment_url or "").strip()
+    if not raw:
+        raise ResetError("environment_url is required")
+    parsed = urllib.parse.urlparse(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ResetError(f"invalid environment_url: {environment_url!r}")
+    path = parsed.path.rstrip("/")
+    if path in {"", "/"}:
+        path = "/api/release"
+    elif path == "/api/reset":
+        path = "/api/release"
+    elif path == "/reset":
+        path = "/release"
+    elif path not in {"/api/release", "/release"}:
+        path = f"{path}/api/release"
+    return urllib.parse.urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
+
+
+def _environment_headers(task_id: str | None = None) -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    task_id = str(task_id or "").strip()
+    if task_id:
+        headers["benchmark-task-id"] = task_id
+    return headers
+
+
+def _post_environment(endpoint: str, *, timeout: int, headers: dict[str, str], action: str) -> dict[str, Any]:
     req = urllib.request.Request(
-        url,
+        endpoint,
         data=b"{}",
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     try:
@@ -42,18 +68,36 @@ def call_environment_reset(environment_url: str, timeout: int = 30) -> dict[str,
             body = e.read()
         except Exception:
             body = b""
-        raise ResetError(f"reset endpoint failed HTTP {e.code}: {body[:200]!r}") from e
+        raise ResetError(f"{action} endpoint failed HTTP {e.code}: {body[:200]!r}") from e
     except urllib.error.URLError as e:
-        raise ResetError(f"reset endpoint request failed: {e}") from e
+        raise ResetError(f"{action} endpoint request failed: {e}") from e
     except TimeoutError as e:
-        raise ResetError(f"reset endpoint timed out: {e}") from e
+        raise ResetError(f"{action} endpoint timed out: {e}") from e
     try:
         payload = json.loads(body.decode("utf-8")) if body else {}
     except (UnicodeDecodeError, json.JSONDecodeError) as e:
-        raise ResetError(f"reset endpoint returned invalid JSON: {body[:200]!r}") from e
+        raise ResetError(f"{action} endpoint returned invalid JSON: {body[:200]!r}") from e
     if isinstance(payload, dict) and payload.get("ok") is False:
-        raise ResetError(f"reset endpoint failed: {payload.get('error') or payload}")
+        raise ResetError(f"{action} endpoint failed: {payload.get('error') or payload}")
     return payload if isinstance(payload, dict) else {}
+
+
+def call_environment_reset(environment_url: str, timeout: int = 30, task_id: str | None = None) -> dict[str, Any]:
+    return _post_environment(
+        environment_reset_endpoint(environment_url),
+        timeout=timeout,
+        headers=_environment_headers(task_id),
+        action="reset",
+    )
+
+
+def call_environment_release(environment_url: str, timeout: int = 30, task_id: str | None = None) -> dict[str, Any]:
+    return _post_environment(
+        environment_release_endpoint(environment_url),
+        timeout=timeout,
+        headers=_environment_headers(task_id),
+        action="release",
+    )
 
 
 def per_task_setup(client: AgentClient, setup: dict[str, Any] | None) -> None:

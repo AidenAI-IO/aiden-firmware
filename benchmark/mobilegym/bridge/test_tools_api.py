@@ -8,7 +8,7 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-from .episode import BridgeEpisodeState
+from .episode import BridgeEpisodeState, BridgeTaskRouter
 from .actions import action_to_dict
 from .server import BridgeServer
 
@@ -16,7 +16,10 @@ from .server import BridgeServer
 @pytest.fixture
 def mock_env():
     """Mock MobileGym environment."""
+    return mock_env_factory()
 
+
+def mock_env_factory():
     class MockEnv:
         def __init__(self):
             self.last_action = None
@@ -396,3 +399,136 @@ def test_decode_tool_input_formats(bridge_server):
         assert resp.status == 200
         data = json.loads(resp.read().decode())
     assert data["is_error"] is False
+
+
+def test_multi_env_tools_require_benchmark_task_id_header():
+    import asyncio
+    from urllib.error import HTTPError
+
+    loop = asyncio.new_event_loop()
+    thread = Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+
+    envs = [mock_env_factory(), mock_env_factory()]
+    states = [BridgeEpisodeState(env, loop) for env in envs]
+    for index, state in enumerate(states):
+        state.active_episode_id = f"ep-{index}"
+    server = BridgeServer(BridgeTaskRouter(states), host="127.0.0.1", port=0)
+    base_url = server.start()
+    try:
+        request_body = json.dumps({"input": "{}"}).encode()
+        req = Request(
+            f"{base_url}/api/tools/screenshot",
+            data=request_body,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with pytest.raises(HTTPError) as exc_info:
+            urlopen(req, timeout=5)
+        assert exc_info.value.code == 400
+        data = json.loads(exc_info.value.read().decode())
+        assert data["error"] == "missing_benchmark_task_id"
+    finally:
+        server.stop()
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2)
+
+
+def test_multi_env_tools_route_by_benchmark_task_id_header():
+    import asyncio
+
+    loop = asyncio.new_event_loop()
+    thread = Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+
+    envs = [mock_env_factory(), mock_env_factory()]
+    states = [BridgeEpisodeState(env, loop) for env in envs]
+    for index, state in enumerate(states):
+        state.active_episode_id = f"ep-{index}"
+    server = BridgeServer(BridgeTaskRouter(states), host="127.0.0.1", port=0)
+    base_url = server.start()
+    try:
+        for task_id, point in [
+            ("task.alpha", {"x": 111, "y": 222}),
+            ("task.beta", {"x": 333, "y": 444}),
+        ]:
+            request_body = json.dumps({"input": {"x": point["x"], "y": point["y"]}}).encode()
+            req = Request(
+                f"{base_url}/api/tools/mouse_click",
+                data=request_body,
+                method="POST",
+                headers={"Content-Type": "application/json", "benchmark-task-id": task_id},
+            )
+            with urlopen(req, timeout=5) as resp:
+                assert resp.status == 200
+                data = json.loads(resp.read().decode())
+                assert data["is_error"] is False
+
+        assert action_to_dict(envs[0].last_action) == {
+            "action_type": "CLICK",
+            "data": {"point": [111.0, 222.0]},
+        }
+        assert action_to_dict(envs[1].last_action) == {
+            "action_type": "CLICK",
+            "data": {"point": [333.0, 444.0]},
+        }
+    finally:
+        server.stop()
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2)
+
+
+def test_multi_env_tools_return_capacity_error_until_task_released():
+    import asyncio
+    from urllib.error import HTTPError
+
+    loop = asyncio.new_event_loop()
+    thread = Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+
+    envs = [mock_env_factory()]
+    states = [BridgeEpisodeState(envs[0], loop)]
+    states[0].active_episode_id = "ep-0"
+    server = BridgeServer(BridgeTaskRouter(states), host="127.0.0.1", port=0)
+    base_url = server.start()
+    try:
+        for task_id in ("task.alpha", "task.beta"):
+            request_body = json.dumps({"input": "{}"}).encode()
+            req = Request(
+                f"{base_url}/api/tools/screenshot",
+                data=request_body,
+                method="POST",
+                headers={"Content-Type": "application/json", "benchmark-task-id": task_id},
+            )
+            if task_id == "task.alpha":
+                with urlopen(req, timeout=5) as resp:
+                    assert resp.status == 200
+            else:
+                with pytest.raises(HTTPError) as exc_info:
+                    urlopen(req, timeout=5)
+                assert exc_info.value.code == 429
+                data = json.loads(exc_info.value.read().decode())
+                assert data["error"] == "no_bridge_env_available"
+
+        release_req = Request(
+            f"{base_url}/api/release",
+            data=b"{}",
+            method="POST",
+            headers={"Content-Type": "application/json", "benchmark-task-id": "task.alpha"},
+        )
+        with urlopen(release_req, timeout=5) as resp:
+            assert resp.status == 200
+
+        request_body = json.dumps({"input": "{}"}).encode()
+        req = Request(
+            f"{base_url}/api/tools/screenshot",
+            data=request_body,
+            method="POST",
+            headers={"Content-Type": "application/json", "benchmark-task-id": "task.beta"},
+        )
+        with urlopen(req, timeout=5) as resp:
+            assert resp.status == 200
+    finally:
+        server.stop()
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2)
