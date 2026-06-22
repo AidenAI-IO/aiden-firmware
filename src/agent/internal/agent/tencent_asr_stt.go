@@ -38,6 +38,7 @@ func NewTencentASRSTT(secretID, secretKey, region, engineModelType, language str
 	if region == "" {
 		region = defaultTencentASRRegion
 	}
+	language = strings.ToLower(strings.TrimSpace(language))
 	// Map unified language to engine_model_type, ignoring legacy explicit value
 	switch language {
 	case "zh":

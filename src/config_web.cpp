@@ -4427,7 +4427,8 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
         return handle_get_config(options);
     }
 
-    if (request.method == "GET" && request.path == "/api/config-meta") {
+    if (request.method == "GET" &&
+        (request.path == "/api/config-meta" || request.path == "/api/config/meta")) {
         return handle_get_config_meta();
     }
 
