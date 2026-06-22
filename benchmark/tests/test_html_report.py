@@ -1,3 +1,4 @@
+import base64
 import json
 from pathlib import Path
 
@@ -120,3 +121,79 @@ def test_generate_report_includes_tool_hard_assertion_failures(tmp_path: Path):
 
     assert "Required Tools" in html
     assert "Forbidden Tools" in html
+
+
+def test_generate_report_includes_full_trace_with_screenshots(tmp_path: Path):
+    run_dir = tmp_path / "2026-05-28_091421"
+    task_dir = run_dir / "tasks" / "task-1"
+    steps_dir = task_dir / "steps"
+    steps_dir.mkdir(parents=True)
+    pre = b"\x89PNG\r\n\x1a\npre-shot"
+    post = b"\xff\xd8post-shot"
+    step = b"\xff\xd8step-shot"
+    (task_dir / "pre.jpg").write_bytes(pre)
+    (task_dir / "post.jpg").write_bytes(post)
+    (steps_dir / "step_01_screenshot.jpg").write_bytes(step)
+    image_payload = base64.b64encode(b"history-shot").decode("ascii")
+    (task_dir / "history.json").write_text(
+        json.dumps(
+            [
+                {"type": "user", "content": "open settings"},
+                {"type": "tool_call", "tool_name": "screenshot", "tool_input": "{}"},
+                {
+                    "type": "tool_result",
+                    "tool_name": "screenshot",
+                    "content": json.dumps({"data": image_payload, "width": 10, "height": 20, "format": "jpeg"}),
+                },
+                {"type": "assistant", "content": "done"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (task_dir / "trace.json").write_text(
+        json.dumps(
+            {
+                "tool_calls": [{"step": 1, "tool": "screenshot", "input": {}, "has_screenshot": True}],
+                "final_response": "done",
+                "total_tool_calls": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "2026-05-28_091421",
+                "suite_path": "suite.json",
+                "totals": {"tasks": 1, "passed": 1, "failed": 0, "skipped": 0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "results.jsonl").write_text(
+        json.dumps(
+            {
+                "task_id": "task-1",
+                "category": "diagnostic",
+                "status": "passed",
+                "rubric_pass_count": 1,
+                "rubric_total": 1,
+                "rubric": [{"id": "ok", "reason": "looks correct", "verdict": "yes"}],
+                "metrics": {"tool_calls": 1, "wall_ms": 9, "screenshots_taken": 1},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    html = generate_report_html(run_dir)
+
+    assert "View full trace" in html
+    assert "Pre screenshot" in html
+    assert "Post screenshot" in html
+    assert "Tool call #1: screenshot" in html
+    assert "<base64 image data" in html
+    assert f"data:image/png;base64,{base64.b64encode(pre).decode('ascii')}" in html
+    assert f"data:image/jpeg;base64,{base64.b64encode(post).decode('ascii')}" in html
+    assert f"data:image/jpeg;base64,{base64.b64encode(step).decode('ascii')}" in html
+    assert image_payload not in html

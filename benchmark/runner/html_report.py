@@ -1,5 +1,6 @@
 """Generate a self-contained HTML benchmark report with drawer UI."""
 from __future__ import annotations
+import base64
 import html as html_mod
 import json
 from pathlib import Path
@@ -10,6 +11,118 @@ from runner.agent_client import AgentClient
 
 def _esc(s: str) -> str:
     return html_mod.escape(str(s)) if s else ""
+
+
+def _image_data_uri(path: Path) -> str:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return ""
+    if not data:
+        return ""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        mime = "image/png"
+    elif data.startswith(b"\xff\xd8"):
+        mime = "image/jpeg"
+    else:
+        mime = "image/jpeg"
+    encoded = base64.b64encode(data).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
+
+
+def _payload_image_data_uri(payload: dict[str, Any]) -> str:
+    data = str(payload.get("data") or "")
+    if not data:
+        return ""
+    fmt = str(payload.get("format") or "").lower()
+    if fmt in {"png", "image/png"}:
+        mime = "image/png"
+    elif fmt in {"jpg", "jpeg", "image/jpeg"}:
+        mime = "image/jpeg"
+    else:
+        mime = "image/jpeg"
+    return f"data:{mime};base64,{data}"
+
+
+def _safe_json_loads(text: Any) -> Any:
+    if not isinstance(text, str):
+        return None
+    try:
+        return json.loads(text) if text else None
+    except json.JSONDecodeError:
+        return None
+
+
+def _compact_tool_result(raw: str) -> str:
+    content = _safe_json_loads(raw)
+    if isinstance(content, dict):
+        content = dict(content)
+        if content.get("data"):
+            size = len(str(content.get("data") or ""))
+            content["data"] = f"<base64 image data, {size} chars>"
+        return json.dumps(content, ensure_ascii=False, indent=2)
+    return str(raw or "")
+
+
+def _full_trace_payload(task_dir: Path, history: list[dict[str, Any]]) -> dict[str, Any]:
+    step_images = iter(sorted((task_dir / "steps").glob("*.jpg")))
+    events: list[dict[str, str]] = []
+    tool_step = 0
+    last_tool = ""
+    for index, msg in enumerate(history, start=1):
+        mtype = str(msg.get("type") or "")
+        if mtype == "tool_call":
+            tool_step += 1
+            last_tool = str(msg.get("tool_name") or "")
+            tool_input = _safe_json_loads(msg.get("tool_input", "")) or msg.get("tool_input", "")
+            detail = json.dumps(tool_input, ensure_ascii=False, indent=2) if not isinstance(tool_input, str) else tool_input
+            events.append({
+                "kind": "tool-call",
+                "title": f"Tool call #{tool_step}: {last_tool}",
+                "detail": detail,
+                "image": "",
+            })
+        elif mtype == "tool_result":
+            raw = str(msg.get("content") or "")
+            content = _safe_json_loads(raw)
+            image = ""
+            if isinstance(content, dict) and content.get("data"):
+                image_path = next(step_images, None)
+                image = _image_data_uri(image_path) if image_path is not None else ""
+                if not image:
+                    image = _payload_image_data_uri(content)
+            events.append({
+                "kind": "tool-result",
+                "title": f"Tool result: {msg.get('tool_name') or last_tool}",
+                "detail": _compact_tool_result(raw),
+                "image": image,
+            })
+        elif mtype == "assistant":
+            events.append({
+                "kind": "assistant",
+                "title": "Assistant",
+                "detail": str(msg.get("content") or ""),
+                "image": "",
+            })
+        elif mtype == "user":
+            events.append({
+                "kind": "user",
+                "title": "User",
+                "detail": str(msg.get("content") or ""),
+                "image": "",
+            })
+        else:
+            events.append({
+                "kind": mtype or "message",
+                "title": f"Message #{index}: {mtype or 'unknown'}",
+                "detail": json.dumps(msg, ensure_ascii=False, indent=2),
+                "image": "",
+            })
+    return {
+        "pre_screenshot": _image_data_uri(task_dir / "pre.jpg"),
+        "post_screenshot": _image_data_uri(task_dir / "post.jpg"),
+        "events": events,
+    }
 
 
 def generate_report_html(run_dir: Path) -> str:
@@ -46,9 +159,11 @@ def generate_report_html(run_dir: Path) -> str:
     tasks_js_items = []
     for r in results:
         tid = r.get("task_id", "")
-        trace_path = run_dir / "tasks" / tid / "trace.json"
-        history_path = run_dir / "tasks" / tid / "history.json"
+        task_dir = run_dir / "tasks" / tid
+        trace_path = task_dir / "trace.json"
+        history_path = task_dir / "history.json"
         trace_data: dict[str, Any] = {}
+        history: list[dict[str, Any]] = []
         prompt = ""
         if trace_path.exists():
             try:
@@ -57,12 +172,14 @@ def generate_report_html(run_dir: Path) -> str:
                 pass
         if history_path.exists():
             try:
-                history = json.loads(history_path.read_text("utf-8"))
+                loaded_history = json.loads(history_path.read_text("utf-8"))
+                history = [msg for msg in loaded_history if isinstance(msg, dict)] if isinstance(loaded_history, list) else []
                 for msg in history:
                     if msg.get("type") == "user":
                         prompt = msg.get("content", "")
                         break
             except Exception:
+                history = []
                 pass
 
         tool_calls = trace_data.get("tool_calls", [])
@@ -133,6 +250,7 @@ def generate_report_html(run_dir: Path) -> str:
             "rubric": rubric_js,
             "hard_assertions": ha_failures,
             "errors": errors,
+            "full_trace": _full_trace_payload(task_dir, history),
             "trace_observations": [
                 [
                     obs.get("id", ""),
@@ -293,9 +411,25 @@ pre.block-body {{ margin: 0; white-space: pre-wrap; word-break: break-word; font
 .error-msg {{ font-family: var(--font-mono); font-size: 12px; color: var(--muted); line-height: 1.5 }}
 .warning-block {{ border-color: color-mix(in oklch, oklch(70% 0.14 75) 34%, var(--border)) }}
 .warning-block .block-head {{ background: color-mix(in oklch, oklch(70% 0.14 75) 10%, white); border-bottom-color: color-mix(in oklch, oklch(70% 0.14 75) 25%, var(--border)) }}
+.trace-actions {{ display: flex; justify-content: flex-start; margin-bottom: 12px }}
+.trace-toggle {{ height: 34px; border: 1px solid var(--border); border-radius: 8px; background: var(--fg); color: white; padding: 0 12px; font: inherit; font-size: 12px; font-weight: 650; cursor: pointer }}
+.trace-toggle:hover {{ background: color-mix(in oklch, var(--fg) 88%, var(--accent)) }}
+.full-trace {{ display: grid; gap: 12px; margin-bottom: 12px }}
+.full-trace[hidden] {{ display: none }}
+.trace-shots {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px }}
+.trace-shot {{ border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: color-mix(in oklch, var(--bg) 72%, white) }}
+.trace-shot figcaption {{ padding: 8px 10px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase }}
+.trace-shot img {{ display: block; width: 100%; height: auto; max-height: 520px; object-fit: contain; background: #050505 }}
+.trace-event {{ border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--surface) }}
+.trace-event-head {{ display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 11px; border-bottom: 1px solid var(--border); background: color-mix(in oklch, var(--bg) 72%, white) }}
+.trace-event-head strong {{ font-size: 12px }}
+.trace-kind {{ color: var(--muted); font-family: var(--font-mono); font-size: 10px; text-transform: uppercase }}
+.trace-event pre {{ margin: 0; padding: 10px 11px; white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono); font-size: 11px; line-height: 1.55; color: var(--muted) }}
+.trace-event img {{ display: block; width: 100%; max-height: 620px; object-fit: contain; background: #050505; border-top: 1px solid var(--border) }}
 .pager {{ padding: 12px 16px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--border) }}
 @media (max-width: 768px) {{
   .summary {{ grid-template-columns: repeat(2, 1fr) }}
+  .trace-shots {{ grid-template-columns: 1fr }}
   .drawer {{ width: 100vw }}
   .page {{ width: calc(100vw - 24px) }}
 }}
@@ -360,6 +494,32 @@ const rows = document.querySelectorAll("tbody tr[data-task]");
 const backdrop = document.getElementById("backdrop");
 const closeBtn = document.getElementById("closeBtn");
 function esc(s) {{ var d = document.createElement("div"); d.textContent = s || ""; return d.innerHTML; }}
+function token(s) {{ return String(s || "").toLowerCase().replace(/[^a-z0-9_-]/g, "-"); }}
+function hasFullTrace(t) {{
+  var ft = t.full_trace || {{}};
+  return !!(ft.pre_screenshot || ft.post_screenshot || (ft.events && ft.events.length));
+}}
+function renderTraceShot(label, src) {{
+  if (!src) return "";
+  return '<figure class="trace-shot"><figcaption>' + esc(label) + '</figcaption><img src="' + esc(src) + '" alt="' + esc(label) + ' screenshot"></figure>';
+}}
+function renderTraceEvent(event, index) {{
+  var kind = token(event.kind || "message");
+  var detail = event.detail ? '<pre>' + esc(event.detail) + '</pre>' : '';
+  var image = event.image ? '<img src="' + esc(event.image) + '" alt="' + esc(event.title || ("trace step " + index)) + ' screenshot">' : '';
+  return '<section class="trace-event ' + kind + '">' +
+    '<div class="trace-event-head"><strong>' + esc(event.title || ("Trace event " + index)) + '</strong><span class="trace-kind">' + esc(event.kind || "message") + '</span></div>' +
+    detail + image + '</section>';
+}}
+function renderFullTrace(t) {{
+  var ft = t.full_trace || {{}};
+  var shots = renderTraceShot("Pre screenshot", ft.pre_screenshot) + renderTraceShot("Post screenshot", ft.post_screenshot);
+  var body = shots ? '<div class="trace-shots">' + shots + '</div>' : '';
+  var events = ft.events || [];
+  if (events.length) body += events.map(function(event, index) {{ return renderTraceEvent(event, index + 1); }}).join("");
+  if (!body) body = '<div class="block"><div class="block-body">No trace artifacts were captured for this task.</div></div>';
+  return body;
+}}
 function openDrawer(i) {{
   var t = TASKS[i]; if (!t) return;
   document.getElementById("dTitle").textContent = t.id;
@@ -372,6 +532,10 @@ function openDrawer(i) {{
   var body = "";
   body += '<div class="block"><div class="block-head"><strong>Prompt</strong><span>user input</span></div><pre class="block-body">' + esc(t.prompt) + '</pre></div>';
   body += '<div class="block"><div class="block-head"><strong>Task Description</strong><span>for judge</span></div><div class="block-body">' + esc(t.description) + '</div></div>';
+  if (hasFullTrace(t)) {{
+    body += '<div class="trace-actions"><button id="traceToggle" class="trace-toggle" type="button">View full trace</button></div>';
+    body += '<div id="fullTrace" class="full-trace" hidden>' + renderFullTrace(t) + '</div>';
+  }}
   if (t.tool_calls_detail) {{
     body += '<div class="block"><div class="block-head"><strong>Tool Calls</strong><span>' + t.tool_calls_count + ' calls</span></div><pre class="block-body">' + esc(t.tool_calls_detail) + '</pre></div>';
   }}
@@ -406,6 +570,16 @@ function openDrawer(i) {{
     body += '<div class="block"><div class="block-head"><strong>Trace observations</strong><span>informational</span></div><div class="block-body">' + ob + '</div></div>';
   }}
   document.getElementById("dBody").innerHTML = body;
+  var traceToggle = document.getElementById("traceToggle");
+  if (traceToggle) {{
+    traceToggle.addEventListener("click", function() {{
+      var fullTrace = document.getElementById("fullTrace");
+      if (!fullTrace) return;
+      var willOpen = fullTrace.hasAttribute("hidden");
+      if (willOpen) fullTrace.removeAttribute("hidden"); else fullTrace.setAttribute("hidden", "");
+      traceToggle.textContent = willOpen ? "Hide full trace" : "View full trace";
+    }});
+  }}
   rows.forEach(function(r) {{ r.classList.toggle("active", Number(r.dataset.task) === i); }});
   document.body.classList.add("open");
 }}
