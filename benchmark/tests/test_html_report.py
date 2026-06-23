@@ -1,5 +1,6 @@
 import base64
 import json
+import re
 from pathlib import Path
 
 from runner.agent_client import ToolInvokeResult
@@ -13,6 +14,12 @@ class RecordingClient:
     def invoke_tool(self, name, args):
         self.calls.append((name, args))
         return ToolInvokeResult(output="", is_error=False, duration_ms=1)
+
+
+def _report_tasks(html: str) -> list[dict]:
+    match = re.search(r"const TASKS = (.*?);\nconst rows", html, re.S)
+    assert match, "report TASKS payload missing"
+    return json.loads(match.group(1))
 
 
 def test_upload_report_uploads_run_artifacts_for_benchmark_page(tmp_path: Path):
@@ -106,10 +113,20 @@ def test_generate_report_includes_tool_hard_assertion_failures(tmp_path: Path):
                 "status": "failed",
                 "rubric_pass_count": 0,
                 "rubric_total": 1,
-                "hard_assertions": {
-                    "required_tools": False,
-                    "forbidden_tools": False,
-                },
+                "hard_assertion_failures": [
+                    {
+                        "id": "required_tools",
+                        "label": "Required Tools",
+                        "requirement": "Must call: screenshot, tap.",
+                        "actual": "Missing: tap. Used: screenshot.",
+                    },
+                    {
+                        "id": "forbidden_tools",
+                        "label": "Forbidden Tools",
+                        "requirement": "Must not call: shell.",
+                        "actual": "Forbidden calls: shell at step 2. Used: screenshot, shell.",
+                    },
+                ],
                 "metrics": {"tool_calls": 2, "wall_ms": 9},
             }
         )
@@ -121,6 +138,23 @@ def test_generate_report_includes_tool_hard_assertion_failures(tmp_path: Path):
 
     assert "Required Tools" in html
     assert "Forbidden Tools" in html
+    assert "Requirement" in html
+    assert "Actual" in html
+    task = _report_tasks(html)[0]
+    assert task["hard_assertion_failures"] == [
+        {
+            "id": "required_tools",
+            "label": "Required Tools",
+            "requirement": "Must call: screenshot, tap.",
+            "actual": "Missing: tap. Used: screenshot.",
+        },
+        {
+            "id": "forbidden_tools",
+            "label": "Forbidden Tools",
+            "requirement": "Must not call: shell.",
+            "actual": "Forbidden calls: shell at step 2. Used: screenshot, shell.",
+        },
+    ]
 
 
 def test_generate_report_includes_full_trace_with_screenshots(tmp_path: Path):

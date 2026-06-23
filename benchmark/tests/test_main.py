@@ -2,7 +2,7 @@ import time
 import json
 
 from runner.agent_client import ToolInvokeResult
-from runner.models import HardAssertionResults, RubricVerdict, TaskResult
+from runner.models import HardAssertionFailure, HardAssertionResults, RubricVerdict, TaskResult
 import runner.main as main
 import runner.webui as webui
 
@@ -48,6 +48,20 @@ def _task_result_with_details():
             required_tools=False,
             forbidden_tools=False,
         ),
+        hard_assertion_failures=[
+            HardAssertionFailure(
+                id="required_tools",
+                label="Required Tools",
+                requirement="Must call: screenshot.",
+                actual="Missing: screenshot. Used: none.",
+            ),
+            HardAssertionFailure(
+                id="forbidden_tools",
+                label="Forbidden Tools",
+                requirement="Must not call: shell.",
+                actual="Forbidden calls: shell at step 1. Used: shell.",
+            ),
+        ],
         metrics={"error": "boom", "agent_error": "agent boom", "judge_error": "judge boom"},
     )
 
@@ -70,8 +84,12 @@ def test_log_task_result_shows_details_in_verbose_mode(capsys):
     out = capsys.readouterr().out
     assert "FAILED" in out
     assert "Hard assertion failures" in out
-    assert "required_tools" in out
-    assert "forbidden_tools" in out
+    assert "Required Tools" in out
+    assert "Requirement: Must call: screenshot." in out
+    assert "Actual: Missing: screenshot. Used: none." in out
+    assert "Forbidden Tools" in out
+    assert "Requirement: Must not call: shell." in out
+    assert "Actual: Forbidden calls: shell at step 1. Used: shell." in out
     assert "Error: boom" in out
     assert "Agent Error" in out
     assert "Judge Error" in out

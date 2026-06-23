@@ -179,28 +179,16 @@ def generate_report_html(run_dir: Path) -> str:
             for s in rubric_spec:
                 rubric_js.append([s.get("id",""), s.get("check",""), "\u2014"])
 
-        # Extract hard assertions
-        hard_assertions = r.get("hard_assertions", {})
-        ha_failures = []
-        if hard_assertions:
-            if hard_assertions.get("timeout") is False:
-                ha_failures.append(["Timeout", "Task did not complete within time limit", "no"])
-            if hard_assertions.get("response_exists") is False:
-                ha_failures.append(["Response Exists", "Agent did not produce a response", "no"])
-            if hard_assertions.get("min_tool_calls") is False:
-                ha_failures.append(["Min Tool Calls", "Did not meet minimum tool call requirement", "no"])
-            if hard_assertions.get("max_tool_calls") is False:
-                ha_failures.append(["Max Tool Calls", "Exceeded maximum tool call limit", "no"])
-            if hard_assertions.get("required_tools") is False:
-                ha_failures.append(["Required Tools", "Missing one or more required tool calls", "no"])
-            if hard_assertions.get("forbidden_tools") is False:
-                ha_failures.append(["Forbidden Tools", "Used one or more forbidden tools", "no"])
-            if hard_assertions.get("expected_answer") is False:
-                expected = r.get("metrics", {}).get("expected_answer", "")
-                predicted = r.get("metrics", {}).get("predicted_answer", "")
-                ha_failures.append(["Expected Answer", f"Expected: {expected}, Got: {predicted}", "no"])
-            if hard_assertions.get("expected_recalled_memory") is False:
-                ha_failures.append(["Expected Recalled Memory", "Did not recall expected memory items", "no"])
+        hard_assertion_failures = [
+            {
+                "id": str(item.get("id") or ""),
+                "label": str(item.get("label") or item.get("id") or ""),
+                "requirement": str(item.get("requirement") or ""),
+                "actual": str(item.get("actual") or ""),
+            }
+            for item in r.get("hard_assertion_failures") or []
+            if isinstance(item, dict)
+        ]
 
         # Extract errors
         errors = []
@@ -226,7 +214,7 @@ def generate_report_html(run_dir: Path) -> str:
             "response": trace_data.get("final_response", ""),
             "tool_calls_detail": tool_calls_str.strip(),
             "rubric": rubric_js,
-            "hard_assertions": ha_failures,
+            "hard_assertion_failures": hard_assertion_failures,
             "errors": errors,
             "full_trace": _full_trace_payload(task_dir, history),
             "trace_observations": [
@@ -381,6 +369,12 @@ pre.block-body {{ margin: 0; white-space: pre-wrap; word-break: break-word; font
 .rubric-row b {{ text-align: right; font-variant-numeric: tabular-nums }}
 .rubric-row b.yes {{ color: oklch(42% 0.13 150) }}
 .rubric-row b.no {{ color: oklch(48% 0.16 28) }}
+.assertion-row {{ display: grid; grid-template-columns: 1fr 54px; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 12px }}
+.assertion-row:last-child {{ border-bottom: 0 }}
+.assertion-row .rid {{ font-weight: 650; margin-bottom: 6px }}
+.assertion-detail {{ display: grid; grid-template-columns: 92px 1fr; gap: 4px 8px; color: var(--muted) }}
+.assertion-detail strong {{ color: var(--text); font-weight: 650 }}
+.assertion-row b {{ text-align: right; color: oklch(48% 0.16 28); font-variant-numeric: tabular-nums }}
 .error-block {{ border-color: color-mix(in oklch, oklch(60% 0.18 28) 28%, var(--border)) }}
 .error-block .block-head {{ background: color-mix(in oklch, oklch(60% 0.18 28) 7%, white); border-bottom-color: color-mix(in oklch, oklch(60% 0.18 28) 20%, var(--border)) }}
 .error-item {{ padding: 8px 0; border-bottom: 1px solid var(--border) }}
@@ -526,11 +520,13 @@ function openDrawer(i) {{
     }}).join("");
     body += '<div class="block error-block"><div class="block-head"><strong>❌ Errors</strong><span>' + t.errors.length + ' error(s)</span></div><div class="block-body">' + err + '</div></div>';
   }}
-  if (t.hard_assertions && t.hard_assertions.length) {{
-    var ha = t.hard_assertions.map(function(r) {{
-      return '<div class="rubric-row"><div><div class="rid">' + esc(r[0]) + '</div><div class="reason">' + esc(r[1]) + '</div></div><b class="no">' + r[2] + '</b></div>';
+  if (t.hard_assertion_failures && t.hard_assertion_failures.length) {{
+    var ha = t.hard_assertion_failures.map(function(r) {{
+      return '<div class="assertion-row"><div><div class="rid">' + esc(r.label || r.id) + '</div>' +
+        '<div class="assertion-detail"><strong>Requirement</strong><span>' + esc(r.requirement) + '</span>' +
+        '<strong>Actual</strong><span>' + esc(r.actual) + '</span></div></div><b>no</b></div>';
     }}).join("");
-    body += '<div class="block warning-block"><div class="block-head"><strong>⚠️ Hard Assertion Failures</strong><span>' + t.hard_assertions.length + ' failure(s)</span></div><div class="block-body">' + ha + '</div></div>';
+    body += '<div class="block warning-block"><div class="block-head"><strong>⚠️ Hard Assertion Failures</strong><span>' + t.hard_assertion_failures.length + ' failure(s)</span></div><div class="block-body">' + ha + '</div></div>';
   }}
   if (t.rubric && t.rubric.length) {{
     var rb = t.rubric.map(function(r) {{

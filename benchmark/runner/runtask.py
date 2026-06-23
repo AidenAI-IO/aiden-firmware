@@ -15,7 +15,7 @@ from runner.assertions import (
 )
 from runner.capture import take_environment_screenshot
 from runner.judge import judge_task, JudgeConfig
-from runner.models import TaskResult, RubricVerdict, HardAssertionResults
+from runner.models import HardAssertionFailure, HardAssertionResults, RubricVerdict, TaskResult
 from runner.recovery import prepare_task_isolation, recover_agent_after_timeout
 from runner.reset import ResetError
 from runner.suite import Suite, TaskSpec
@@ -119,6 +119,7 @@ def evaluate_task_history(
                          "post_screenshot_file": bool(post_screenshot and post_screenshot.exists())})
     outcome = evaluate_hard_assertions(trace, task.hard_assertions, timed_out=timed_out)
     base.hard_assertions = outcome.results
+    base.hard_assertion_failures = list(outcome.failures)
     if not outcome.all_passed:
         base.status = "timeout" if timed_out else "failed"
         base.finished_at = now_iso()
@@ -134,6 +135,14 @@ def evaluate_task_history(
         })
         base.hard_assertions.expected_answer = answer_outcome.passed
         if not answer_outcome.passed:
+            base.hard_assertion_failures.append(
+                HardAssertionFailure(
+                    id="expected_answer",
+                    label="Expected Answer",
+                    requirement=f"Final answer must be {answer_outcome.expected_answer or 'unparseable expected answer'}.",
+                    actual=f"Predicted answer was {answer_outcome.predicted_answer or 'none'}.",
+                )
+            )
             base.status = "failed"
             base.finished_at = now_iso()
             return base
@@ -146,6 +155,22 @@ def evaluate_task_history(
         })
         base.hard_assertions.expected_recalled_memory = recall_outcome.passed
         if not recall_outcome.passed:
+            missing_memory_ids = [
+                memory_id
+                for memory_id in recall_outcome.expected_memory_ids
+                if memory_id not in recall_outcome.recalled_memory_ids
+            ]
+            base.hard_assertion_failures.append(
+                HardAssertionFailure(
+                    id="expected_recalled_memory",
+                    label="Expected Recalled Memory",
+                    requirement=f"Must recall memory id(s): {_format_csv(recall_outcome.expected_memory_ids)}.",
+                    actual=(
+                        f"Missing: {_format_csv(missing_memory_ids)}. "
+                        f"Recalled: {_format_csv(recall_outcome.recalled_memory_ids)}."
+                    ),
+                )
+            )
             base.status = "failed"
             base.finished_at = now_iso()
             return base
@@ -310,3 +335,7 @@ def client_history_or_empty(client: AgentClient) -> list[dict]:
     except Exception:
         pass
     return []
+
+
+def _format_csv(items: list[str]) -> str:
+    return ", ".join(items) if items else "none"

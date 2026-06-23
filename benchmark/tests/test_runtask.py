@@ -92,6 +92,9 @@ def test_run_one_task_fails_without_judge_when_expected_answer_is_wrong(tmp_path
     assert result.status == "failed"
     assert result.metrics["expected_answer_match"] is False
     assert result.metrics["predicted_answer"] == "(b)"
+    assert result.hard_assertion_failures[-1].id == "expected_answer"
+    assert result.hard_assertion_failures[-1].requirement == "Final answer must be (c)."
+    assert result.hard_assertion_failures[-1].actual == "Predicted answer was (b)."
 
 
 def test_evaluate_task_history_applies_hard_assertions_and_expected_answer(tmp_path: Path):
@@ -138,6 +141,61 @@ def test_evaluate_task_history_applies_hard_assertions_and_expected_answer(tmp_p
     assert result.hard_assertions.expected_answer is True
     assert (tmp_path / "artifacts" / "history.json").exists()
     assert (tmp_path / "artifacts" / "trace.json").exists()
+
+
+def test_evaluate_task_history_records_expected_memory_failure_details(tmp_path: Path):
+    from runner.runtask import evaluate_task_history
+
+    suite = Suite(
+        name="s",
+        global_reset={},
+        tasks=[],
+        sha256="sha",
+        source_path=tmp_path / "s.json",
+    )
+    task = TaskSpec(
+        id="memory_case",
+        category="memory",
+        description_for_judge="Recall a memory.",
+        prompt="What do I prefer?",
+        rubric=[],
+        hard_assertions=HardAssertions(min_tool_calls=1, max_tool_calls=2),
+        expected_recalled_memory_ids=["personamem_solo_travel"],
+    )
+    history = [
+        {
+            "type": "tool_call",
+            "tool_name": "recall_memory",
+            "tool_input": "{}",
+        },
+        {
+            "type": "tool_result",
+            "tool_name": "recall_memory",
+            "content": json.dumps({"results": [{"id": "personamem_campfire_storytelling"}]}),
+        },
+        {"type": "assistant", "content": "I found a different memory."},
+    ]
+
+    result = evaluate_task_history(
+        suite=suite,
+        task=task,
+        history=history,
+        attempt=1,
+        artifact_dir=tmp_path / "artifacts",
+        judge_cfg=None,
+        judge_cache_dir=None,
+        run_id="run-1",
+        timed_out=False,
+        metrics={},
+    )
+
+    assert result.status == "failed"
+    assert result.hard_assertion_failures[-1].id == "expected_recalled_memory"
+    assert result.hard_assertion_failures[-1].requirement == "Must recall memory id(s): personamem_solo_travel."
+    assert (
+        result.hard_assertion_failures[-1].actual
+        == "Missing: personamem_solo_travel. Recalled: personamem_campfire_storytelling."
+    )
 
 
 def test_run_one_task_applies_suite_prompt_prefix(tmp_path: Path):

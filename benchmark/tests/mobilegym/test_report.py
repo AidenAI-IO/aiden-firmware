@@ -571,14 +571,14 @@ def test_report_maps_aiden_suite_rubric_and_hard_assertions_into_drawer_payload(
                     {"id": "memory_recall", "check": "Mentions the saved preference."},
                     {"id": "direct_answer", "reason": "Answered with B, expected C.", "verdict": "no"},
                 ],
-                "hard_assertions": {
-                    "expected_answer": False,
-                    "expected_recalled_memory": True,
-                },
-                "expected_answer_match": False,
-                "normalized_expected_answer": "C",
-                "predicted_answer": "B",
-                "expected_recalled_memory_match": True,
+                "hard_assertion_failures": [
+                    {
+                        "id": "expected_answer",
+                        "label": "Expected Answer",
+                        "requirement": "Final answer must be C.",
+                        "actual": "Predicted answer was B.",
+                    }
+                ],
             }
         ],
     )
@@ -593,7 +593,14 @@ def test_report_maps_aiden_suite_rubric_and_hard_assertions_into_drawer_payload(
     ]
     assert task["rubric_pass"] == 0
     assert task["rubric_total"] == 2
-    assert ["Expected Answer", "Expected: C, Got: B", "no"] in task["hard_assertions"]
+    assert task["hard_assertion_failures"] == [
+        {
+            "id": "expected_answer",
+            "label": "Expected Answer",
+            "requirement": "Final answer must be C.",
+            "actual": "Predicted answer was B.",
+        }
+    ]
     assert task["rubric"] != [["mobilegym_status", "is_success false", "no"]]
 
 
@@ -618,7 +625,14 @@ def test_report_uses_shard_task_metadata_when_result_omits_aiden_rubric(tmp_path
                     "rubric": [
                         {"id": "memory_recall", "check": "Mentions the saved preference."},
                     ],
-                    "hard_assertions": {"expected_answer": False},
+                    "hard_assertion_failures": [
+                        {
+                            "id": "expected_answer",
+                            "label": "Expected Answer",
+                            "requirement": "Final answer must be C.",
+                            "actual": "Predicted answer was B.",
+                        }
+                    ],
                 }
             },
         },
@@ -630,9 +644,6 @@ def test_report_uses_shard_task_metadata_when_result_omits_aiden_rubric(tmp_path
                 "id": "personamem_lt_recall_v1.case_one",
                 "suite": "personamem_lt_recall_v1",
                 "is_success": False,
-                "expected_answer_match": False,
-                "normalized_expected_answer": "C",
-                "predicted_answer": "B",
             }
         ],
     )
@@ -642,7 +653,14 @@ def test_report_uses_shard_task_metadata_when_result_omits_aiden_rubric(tmp_path
     task = read_report_tasks(batch / "index.html")[0]
     assert task["description"] == "Recall the saved preference."
     assert task["rubric"] == [["memory_recall", "Mentions the saved preference.", "—"]]
-    assert ["Expected Answer", "Expected: C, Got: B", "no"] in task["hard_assertions"]
+    assert task["hard_assertion_failures"] == [
+        {
+            "id": "expected_answer",
+            "label": "Expected Answer",
+            "requirement": "Final answer must be C.",
+            "actual": "Predicted answer was B.",
+        }
+    ]
 
 
 def test_drawer_task_deduplicates_mobilegym_errors():

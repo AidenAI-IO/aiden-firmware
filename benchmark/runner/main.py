@@ -179,29 +179,12 @@ def _log_task_result(task_id: str, attempt: int, result, verbose: bool = False,
                 if len(reason_lines) > 3:
                     print(f"        → ... ({len(reason_lines) - 3} more lines)", flush=True)
 
-    # Show hard assertion failures (verbose mode)
-    if verbose and result.hard_assertions:
-        ha = result.hard_assertions
-        failures = []
-        if ha.timeout is False:
-            failures.append("timeout")
-        if ha.response_exists is False:
-            failures.append("no response")
-        if ha.min_tool_calls is False:
-            failures.append("min_tool_calls")
-        if ha.max_tool_calls is False:
-            failures.append("max_tool_calls")
-        if ha.required_tools is False:
-            failures.append("required_tools")
-        if ha.forbidden_tools is False:
-            failures.append("forbidden_tools")
-        if ha.expected_answer is False:
-            failures.append("expected_answer")
-        if ha.expected_recalled_memory is False:
-            failures.append("expected_recalled_memory")
-
-        if failures:
-            print(f"  ⚠️  Hard assertion failures: {', '.join(failures)}", flush=True)
+    if verbose and result.hard_assertion_failures:
+        print("  ⚠️  Hard assertion failures:", flush=True)
+        for failure in result.hard_assertion_failures:
+            print(f"    - {failure.label}", flush=True)
+            print(f"        Requirement: {failure.requirement}", flush=True)
+            print(f"        Actual: {failure.actual}", flush=True)
 
     # Show error messages (verbose mode)
     if verbose and "error" in result.metrics:
