@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -267,6 +268,23 @@ class BenchmarkWebApp:
             parts.append(tail_text(path, LOG_TAIL_BYTES))
         return "\n".join(parts)
 
+    def task_screen_payload(self, job_id: str, task_record_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return None
+            record = next((item for item in job.task_records if item.id == task_record_id), None)
+            if record is None:
+                return None
+            endpoint = job.environment_endpoint
+            task_id = record.benchmark_task_id
+        if not endpoint:
+            return {"ok": False, "error": {"code": "missing_environment", "message": "job has no environment endpoint"}}
+        try:
+            return read_environment_bridge_screen(endpoint, task_id)
+        except Exception as exc:
+            return {"ok": False, "error": {"code": "screen_request_failed", "message": str(exc)}}
+
     def list_mobilegym_environments(self) -> list[dict[str, Any]]:
         with self._lock:
             environments = [self._mobilegym_environment_payload(env) for env in self._mobilegym_environments.values()]
@@ -420,7 +438,7 @@ class BenchmarkWebApp:
                 mobilegym_env = self._mobilegym_environments.get(environment_id)
             if mobilegym_env is not None:
                 environment_endpoint = mobilegym_env.public_endpoint.rstrip("/")
-                environment_web_url = mobilegym_screen_url(environment_endpoint)
+                environment_web_url = mobilegym_env.web_url
                 parallel_tasks = mobilegym_env.parallel_envs
             elif not environment_endpoint:
                 public_endpoint = str(environment_payload.get("public_endpoint") or "").strip()
@@ -433,7 +451,6 @@ class BenchmarkWebApp:
                     field="parallel_envs",
                 )
             if environment_endpoint:
-                environment_web_url = mobilegym_screen_url(environment_endpoint)
                 bridge_concurrency = read_environment_bridge_concurrency(environment_endpoint)
                 if bridge_concurrency is not None:
                     parallel_tasks = bridge_concurrency
@@ -630,7 +647,7 @@ class BenchmarkWebApp:
             state_file=str(workers_dir / f"{token}.state.json"),
             runner_log=str(workers_dir / f"{token}.runner.log"),
             daemon_log=str(workers_dir / f"{token}.daemon.log"),
-            screen_url=mobilegym_screen_url(job.environment_endpoint, benchmark_task_id),
+            screen_url=webui_task_screen_url(job.id, token),
         )
 
     def _ensure_task_record(self, job: Job, suite_key: str, task_id: str) -> TaskRecord:
@@ -1517,14 +1534,51 @@ def endpoint_for_docker(endpoint: str) -> str:
     return urllib.parse.urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)).rstrip("/")
 
 
-def mobilegym_screen_url(endpoint: str, benchmark_task_id: str = "") -> str:
-    raw = str(endpoint or "").strip().rstrip("/")
+def webui_task_screen_url(job_id: str, task_record_id: str) -> str:
+    return (
+        "/screens/jobs/"
+        + urllib.parse.quote(str(job_id), safe="")
+        + "/tasks/"
+        + urllib.parse.quote(str(task_record_id), safe="")
+    )
+
+
+def environment_bridge_screen_endpoint(endpoint: str) -> str:
+    raw = str(endpoint or "").strip()
     if not raw:
-        return ""
+        raise ValueError("environment bridge endpoint is required")
     parsed = urllib.parse.urlparse(raw)
-    path = (parsed.path.rstrip("/") if parsed.path else "") + "/screen"
-    query = urllib.parse.urlencode({"benchmark-task-id": benchmark_task_id}) if benchmark_task_id else ""
-    return urllib.parse.urlunparse(parsed._replace(path=path, params="", query=query, fragment="")).rstrip("/")
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"invalid environment bridge endpoint: {endpoint!r}")
+    path = parsed.path.rstrip("/")
+    if path in {"", "/"}:
+        path = "/api/screen"
+    elif path != "/api/screen":
+        path = f"{path}/api/screen"
+    return urllib.parse.urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
+
+
+def read_environment_bridge_screen(endpoint: str, benchmark_task_id: str, *, timeout: float = 5.0) -> dict[str, Any]:
+    headers: dict[str, str] = {}
+    task_id = str(benchmark_task_id or "").strip()
+    if task_id:
+        headers["benchmark-task-id"] = task_id
+    req = urllib.request.Request(environment_bridge_screen_endpoint(endpoint), headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            body = response.read()
+    except urllib.error.HTTPError as exc:
+        try:
+            body = exc.read()
+        except Exception:
+            body = b""
+        raise RuntimeError(f"screen request failed HTTP {exc.code}: {body[:200]!r}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"screen request failed: {exc}") from exc
+    payload = json.loads(body.decode("utf-8")) if body else {}
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"screen request returned unexpected payload: {payload!r}")
+    return payload
 
 
 def environment_bridge_concurrent_endpoint(endpoint: str) -> str:
@@ -2257,6 +2311,9 @@ class WebHandler(BaseHTTPRequestHandler):
         if path == "/api/environments/mobilegym":
             self._send_json({"environments": self.server.app.list_mobilegym_environments()})
             return
+        if path.startswith("/screens/jobs/"):
+            self._handle_screen_viewer(path)
+            return
         if path.startswith("/api/jobs/"):
             self._handle_get_job(path)
             return
@@ -2400,7 +2457,30 @@ class WebHandler(BaseHTTPRequestHandler):
                 return
             self._send_text(text)
             return
+        if len(parts) == 6 and parts[3] == "tasks" and parts[5] == "screen":
+            payload = self.server.app.task_screen_payload(parts[2], parts[4])
+            if payload is None:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            status = HTTPStatus.OK if payload.get("ok") is not False else HTTPStatus.BAD_GATEWAY
+            self._send_json(payload, status=status)
+            return
         self.send_error(HTTPStatus.NOT_FOUND)
+
+    def _handle_screen_viewer(self, path: str) -> None:
+        parts = path.strip("/").split("/")
+        if len(parts) != 5 or parts[0] != "screens" or parts[1] != "jobs" or parts[3] != "tasks":
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        job = self.server.app.get_job(parts[2])
+        if job is None:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        records = job.get("task_records") if isinstance(job.get("task_records"), list) else []
+        if not any(isinstance(record, dict) and record.get("id") == parts[4] for record in records):
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        self._send_html(TASK_SCREEN_HTML)
 
     def _handle_report(self, path: str) -> None:
         parts = path.strip("/").split("/")
@@ -2501,6 +2581,142 @@ def cli(argv: list[str] | None = None) -> int:
         args.port,
     )
     return 0
+
+
+TASK_SCREEN_HTML = r"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Benchmark Task Screen</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { margin: 0; background: #111; color: #f6f7f9; }
+    header { display: flex; align-items: center; gap: 16px; padding: 12px 16px; background: #1b1d22; border-bottom: 1px solid #333842; }
+    header strong { font-size: 14px; }
+    header span { color: #b8c0cc; font-size: 13px; }
+    main { display: grid; grid-template-columns: minmax(0, 1fr) 280px; min-height: calc(100vh - 46px); }
+    .screen { display: grid; place-items: center; padding: 16px; overflow: auto; }
+    img { max-width: min(100%, 420px); width: auto; height: auto; background: #000; box-shadow: 0 12px 40px rgba(0, 0, 0, .45); }
+    .placeholder { color: #9aa3af; border: 1px dashed #46515f; border-radius: 8px; padding: 24px; }
+    aside { border-left: 1px solid #333842; background: #17191f; padding: 14px; overflow: auto; }
+    h2 { margin: 0 0 10px; font-size: 13px; color: #dfe4ea; }
+    dl { display: grid; grid-template-columns: 88px 1fr; gap: 6px 10px; margin: 0 0 18px; font-size: 12px; }
+    dt { color: #8d98a7; }
+    dd { margin: 0; color: #f3f5f8; overflow-wrap: anywhere; }
+    .action { border-top: 1px solid #2c313a; padding: 8px 0; font-size: 12px; }
+    .action strong { display: block; color: #f3f5f8; }
+    .action span { color: #98a2b3; overflow-wrap: anywhere; }
+    .error { color: #ffb4ab; }
+    @media (max-width: 760px) {
+      main { grid-template-columns: 1fr; }
+      aside { border-left: 0; border-top: 1px solid #333842; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <strong>Benchmark Task Screen</strong>
+    <span id="status">connecting</span>
+    <span id="taskId"></span>
+    <span id="updated"></span>
+  </header>
+  <main>
+    <section class="screen">
+      <img id="shot" alt="Current task screenshot" hidden>
+      <div id="placeholder" class="placeholder">Waiting for an active benchmark episode.</div>
+    </section>
+    <aside>
+      <h2>Task State</h2>
+      <dl>
+        <dt>Task</dt><dd id="taskState">unknown</dd>
+        <dt>Status</dt><dd id="stateStatus">unknown</dd>
+        <dt>Episode</dt><dd id="episode">none</dd>
+        <dt>Actions</dt><dd id="actionCount">0</dd>
+        <dt>Size</dt><dd id="size">none</dd>
+      </dl>
+      <h2>Recent Actions</h2>
+      <div id="actions"></div>
+    </aside>
+  </main>
+  <script>
+    const statusEl = document.getElementById('status');
+    const taskIdEl = document.getElementById('taskId');
+    const taskStateEl = document.getElementById('taskState');
+    const updatedEl = document.getElementById('updated');
+    const stateStatusEl = document.getElementById('stateStatus');
+    const episodeEl = document.getElementById('episode');
+    const actionCountEl = document.getElementById('actionCount');
+    const sizeEl = document.getElementById('size');
+    const shotEl = document.getElementById('shot');
+    const placeholderEl = document.getElementById('placeholder');
+    const actionsEl = document.getElementById('actions');
+    const parts = window.location.pathname.split('/').filter(Boolean);
+    const jobId = parts[2] || '';
+    const taskRecordId = parts[4] || '';
+    const screenApi = `/api/jobs/${encodeURIComponent(jobId)}/tasks/${encodeURIComponent(taskRecordId)}/screen`;
+    taskIdEl.textContent = taskRecordId ? `task ${taskRecordId}` : '';
+    taskStateEl.textContent = taskRecordId || 'unknown';
+
+    function renderActions(actions) {
+      actionsEl.replaceChildren();
+      if (!actions.length) {
+        const empty = document.createElement('div');
+        empty.className = 'action';
+        empty.textContent = 'No actions yet.';
+        actionsEl.appendChild(empty);
+        return;
+      }
+      for (const action of actions) {
+        const row = document.createElement('div');
+        row.className = 'action';
+        const title = document.createElement('strong');
+        title.textContent = `${action.action_id || ''} ${action.tool_name || ''}`.trim();
+        const detail = document.createElement('span');
+        detail.textContent = JSON.stringify(action.tool_input || {});
+        row.append(title, detail);
+        actionsEl.appendChild(row);
+      }
+    }
+
+    async function refresh() {
+      try {
+        const res = await fetch(screenApi, {cache: 'no-store'});
+        const body = await res.json();
+        if (!res.ok || !body.ok) throw new Error(body.error?.message || res.statusText);
+        const data = body.data || {};
+        statusEl.textContent = data.status || 'unknown';
+        statusEl.className = '';
+        stateStatusEl.textContent = data.status || 'unknown';
+        episodeEl.textContent = data.active_episode_id || 'none';
+        actionCountEl.textContent = String(data.action_count || 0);
+        updatedEl.textContent = new Date().toLocaleTimeString();
+        const shot = data.screenshot;
+        if (shot && shot.data) {
+          const format = shot.format === 'jpeg' ? 'jpeg' : 'png';
+          shotEl.src = `data:image/${format};base64,${shot.data}`;
+          shotEl.hidden = false;
+          placeholderEl.hidden = true;
+          sizeEl.textContent = `${shot.width || '?'} x ${shot.height || '?'}`;
+        } else {
+          shotEl.hidden = true;
+          placeholderEl.hidden = false;
+          placeholderEl.textContent = 'Waiting for an active benchmark episode.';
+          sizeEl.textContent = 'none';
+        }
+        renderActions(data.actions || []);
+      } catch (err) {
+        statusEl.textContent = String(err.message || err);
+        statusEl.className = 'error';
+      }
+    }
+
+    refresh();
+    setInterval(refresh, 1000);
+  </script>
+</body>
+</html>
+"""
 
 
 INDEX_HTML = r"""<!doctype html>

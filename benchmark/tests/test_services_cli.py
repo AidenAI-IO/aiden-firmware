@@ -36,7 +36,7 @@ def test_start_mobilegym_env_prints_environment_urls(tmp_path: Path, monkeypatch
     assert payload["environment_url"] == "http://127.0.0.1:19090"
     assert payload["docker_environment_url"] == "http://host.docker.internal:19090"
     assert payload["web_url"] == "http://127.0.0.1:18173"
-    assert payload["screen_url"] == "http://127.0.0.1:19090/screen"
+    assert "screen_url" not in payload
     assert payload["container_name"] == "aiden-mobilegym-env-mobilegym-smoke"
     assert payload["parallel_envs"] == 3
     assert payload["agent_daemon_command"] == (

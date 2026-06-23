@@ -64,13 +64,68 @@ def test_endpoint_for_docker_rewrites_localhost():
     assert webui.endpoint_for_docker("http://192.168.1.20:8080") == "http://192.168.1.20:8080"
 
 
-def test_mobilegym_screen_url_points_at_bridge_screen():
-    assert webui.mobilegym_screen_url("http://127.0.0.1:19090") == "http://127.0.0.1:19090/screen"
-    assert webui.mobilegym_screen_url("http://127.0.0.1:19090/bridge/") == "http://127.0.0.1:19090/bridge/screen"
+def test_webui_task_screen_url_points_at_webui_viewer():
     assert (
-        webui.mobilegym_screen_url("http://127.0.0.1:19090", "suite.json:t1")
-        == "http://127.0.0.1:19090/screen?benchmark-task-id=suite.json%3At1"
+        webui.webui_task_screen_url("job-1", "suite.json:t1")
+        == "/screens/jobs/job-1/tasks/suite.json%3At1"
     )
+
+
+def test_task_screen_payload_proxies_bridge_screen_with_task_header(tmp_path: Path, monkeypatch):
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+        )
+    )
+    record = webui.TaskRecord(
+        id="task-record",
+        suite="suite.json",
+        task_id="t1",
+        benchmark_task_id="suite.json:t1",
+    )
+    job = webui.Job(
+        id="job-1",
+        endpoint="http://host.docker.internal:19090",
+        docker_endpoint="http://host.docker.internal:19090",
+        suites=["suite.json"],
+        environment_endpoint="http://127.0.0.1:19090",
+        task_records=[record],
+        state_file=str(tmp_path / "state.json"),
+    )
+    app._jobs[job.id] = job
+    seen = {}
+
+    class FakeResponse:
+        status = 200
+
+        def read(self):
+            return b'{"ok": true, "data": {"status": "waiting", "screenshot": null}}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        seen["url"] = req.full_url
+        seen["headers"] = {key.lower(): value for key, value in req.header_items()}
+        seen["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr(webui.urllib.request, "urlopen", fake_urlopen)
+
+    payload = app.task_screen_payload("job-1", "task-record")
+
+    assert payload["ok"] is True
+    assert seen["url"] == "http://127.0.0.1:19090/api/screen"
+    assert seen["headers"]["benchmark-task-id"] == "suite.json:t1"
+
+
+def test_task_screen_html_fetches_webui_screen_api():
+    assert "/api/jobs/" in webui.TASK_SCREEN_HTML
+    assert "/api/screen" not in webui.TASK_SCREEN_HTML
 
 
 def test_environment_bridge_concurrent_endpoint_points_at_bridge_api():
@@ -475,7 +530,7 @@ def test_start_job_derives_mobilegym_environment_endpoint(tmp_path: Path, monkey
 
     assert job["environment_endpoint"] == "http://127.0.0.1:19090"
     assert job["environment_type"] == "mobilegym"
-    assert job["environment_web_url"] == "http://127.0.0.1:19090/screen"
+    assert job["environment_web_url"] == "http://127.0.0.1:18173"
     assert job["parallel_tasks"] == 4
     assert queried == ["http://127.0.0.1:19090"]
 
@@ -684,7 +739,7 @@ def test_mobilegym_task_worker_uses_task_id_for_daemon_and_runner(tmp_path: Path
     assert task_record.benchmark_task_id == "suite.json:t1"
     assert task_record.agent_url == "http://127.0.0.1:18081"
     assert task_record.report_url == f"/reports/{job.id}/{result['run_id']}/report.html"
-    assert task_record.screen_url == "http://127.0.0.1:19090/screen?benchmark-task-id=suite.json%3At1"
+    assert task_record.screen_url == webui.webui_task_screen_url(job.id, task_record.id)
 
 
 def test_read_task_log_returns_task_worker_logs(tmp_path: Path):

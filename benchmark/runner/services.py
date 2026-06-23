@@ -25,7 +25,6 @@ from runner.webui import (
     endpoint_for_docker,
     ensure_daemon_image,
     ensure_mobilegym_image,
-    mobilegym_screen_url,
     prepare_run_config,
     reserve_free_port,
     start_daemon_compose,
@@ -170,7 +169,6 @@ def cmd_start_mobilegym_env(args: argparse.Namespace) -> int:
 
     public_endpoint = f"http://127.0.0.1:{bridge_port}"
     docker_endpoint = f"http://host.docker.internal:{bridge_port}"
-    screen_url = mobilegym_screen_url(public_endpoint)
 
     try:
         ensure_mobilegym_image(args.mobilegym_image, not args.no_build_mobilegym_image, log_path)
@@ -196,7 +194,6 @@ def cmd_start_mobilegym_env(args: argparse.Namespace) -> int:
         "environment_url": public_endpoint,
         "docker_environment_url": docker_endpoint,
         "web_url": f"http://127.0.0.1:{web_port}",
-        "screen_url": screen_url,
         "container_id": container_id,
         "container_name": container_name,
         "parallel_envs": args.parallel_envs,
@@ -265,7 +262,6 @@ def _print_mobilegym_payload(payload: dict[str, Any], *, json_output: bool) -> N
     _print_kv("environment_url", payload["environment_url"])
     _print_kv("docker_environment_url", payload["docker_environment_url"])
     _print_kv("web_url", payload["web_url"])
-    _print_kv("screen_url", payload["screen_url"])
     _print_kv("parallel_envs", payload["parallel_envs"])
     _print_kv("container_id", payload["container_id"])
     _print_kv("container_name", payload["container_name"])

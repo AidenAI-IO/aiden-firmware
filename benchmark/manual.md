@@ -97,9 +97,7 @@ Bridge server 是具体环境和 Aiden benchmark 之间的 HTTP 适配层。Mobi
 | `POST /api/setup` | 为某个 benchmark task reset/claim env |
 | `POST /api/release` | 释放某个 benchmark task 占用的 env |
 | `GET /api/concurrent` | 返回当前 bridge 支持的并发 task 数量 |
-| `GET /api/screen` | 返回 JSON screenshot，runner 用它保存 pre/post |
-
-MobileGym bridge 额外提供非标准的 `GET /screen` HTML 调试页，WebUI 只把它作为人工查看链接使用；接入新 environment bridge 时不要求实现这个接口。
+| `GET /api/screen` | 返回 JSON screenshot，runner 和 WebUI task screen 页面使用 |
 
 并发 MobileGym 通过 `benchmark-task-id` 路由：
 
@@ -255,7 +253,7 @@ WebUI 会启动 MobileGym container 和 bridge server，并记录：
 
 - Bridge endpoint：供 Docker daemon environment bridge 使用。
 - Public endpoint：供 WebUI 和 runner 调用 `/api/concurrent`、`/api/setup`、`/api/screen`、`/api/release`。
-- Screen URL：每个 task worker 可以打开对应 `/screen?benchmark-task-id=...`。
+- Task screen link：每个 task worker 的 screen 链接由 WebUI 提供，WebUI 后端通过 bridge `/api/screen` 拉取截图。
 
 ### 2.5 运行 job
 
@@ -492,7 +490,6 @@ uv run python -m runner start-mobilegym-env
 - `environment_url`：runner 使用的 `--environment-url`。
 - `docker_environment_url`：agent daemon 容器内访问 bridge 时使用的 endpoint。
 - `web_url`：MobileGym simulator 页面。
-- `screen_url`：bridge screen 页面；多 env 下查看具体 task 时，在访问时附加 `?benchmark-task-id=...`。
 - `stop_command`：停止该 environment 的命令。
 
 常用参数：

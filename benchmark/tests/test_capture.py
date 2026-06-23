@@ -30,8 +30,8 @@ def test_environment_screen_snapshot_endpoint_uses_screen_api():
         == "http://127.0.0.1:19090/bridge/api/screen"
     )
     assert (
-        environment_screen_snapshot_endpoint("http://127.0.0.1:19090/screen")
-        == "http://127.0.0.1:19090/screen/api/screen"
+        environment_screen_snapshot_endpoint("http://127.0.0.1:19090/bridge")
+        == "http://127.0.0.1:19090/bridge/api/screen"
     )
 
 

@@ -14,7 +14,6 @@ device bridge.
 | `POST /api/setup` | Initialize or reset a task route. |
 | `POST /api/release` | Release a task route. |
 | `GET /api/concurrent` | Return bridge concurrency capacity. |
-| `GET /screen` | Human screen viewer for MobileGym. |
 
 MobileGym routes concurrent tasks by the `benchmark-task-id` header. The same id
 must be sent to `/api/setup`, `/api/tools/*`, `/api/screen`, and `/api/release`

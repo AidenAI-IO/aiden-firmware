@@ -95,9 +95,6 @@ def _handler_for(bridge: BridgeServer):
             if path == "/api/concurrent":
                 self._send_json(200, bridge_ok(_concurrent_payload(bridge)))
                 return
-            if path in {"/screen", "/screen/"}:
-                self._handle_screen_page()
-                return
             if path == "/api/screen":
                 try:
                     self._handle_api_screen()
@@ -202,9 +199,6 @@ def _handler_for(bridge: BridgeServer):
             result = bridge.submit_to_state(state, state.run_env(get_screenshot))
             self._send_json(200, result)
 
-        def _handle_screen_page(self) -> None:
-            self._send_text(200, "text/html; charset=utf-8", SCREEN_HTML)
-
         def _handle_api_screen(self) -> None:
             state = self._request_screen_state()
             if state is None or not state.active_episode_id:
@@ -298,9 +292,6 @@ def _handler_for(bridge: BridgeServer):
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self._send_bytes(status, "application/json", data)
 
-        def _send_text(self, status: int, content_type: str, text: str) -> None:
-            self._send_bytes(status, content_type, text.encode("utf-8"))
-
         def _send_bytes(self, status: int, content_type: str, data: bytes) -> None:
             self.send_response(status)
             self.send_header("Content-Type", content_type)
@@ -310,140 +301,6 @@ def _handler_for(bridge: BridgeServer):
             self.wfile.write(data)
 
     return BridgeRequestHandler
-
-
-SCREEN_HTML = """<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>MobileGym Screen</title>
-  <style>
-    :root { color-scheme: light dark; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    body { margin: 0; background: #111; color: #f6f7f9; }
-    header { display: flex; align-items: center; gap: 16px; padding: 12px 16px; background: #1b1d22; border-bottom: 1px solid #333842; }
-    header strong { font-size: 14px; }
-    header span { color: #b8c0cc; font-size: 13px; }
-    main { display: grid; grid-template-columns: minmax(0, 1fr) 280px; min-height: calc(100vh - 46px); }
-    .screen { display: grid; place-items: center; padding: 16px; overflow: auto; }
-    img { max-width: min(100%, 420px); width: auto; height: auto; background: #000; box-shadow: 0 12px 40px rgba(0, 0, 0, .45); }
-    .placeholder { color: #9aa3af; border: 1px dashed #46515f; border-radius: 8px; padding: 24px; }
-    aside { border-left: 1px solid #333842; background: #17191f; padding: 14px; overflow: auto; }
-    h2 { margin: 0 0 10px; font-size: 13px; color: #dfe4ea; }
-    dl { display: grid; grid-template-columns: 88px 1fr; gap: 6px 10px; margin: 0 0 18px; font-size: 12px; }
-    dt { color: #8d98a7; }
-    dd { margin: 0; color: #f3f5f8; overflow-wrap: anywhere; }
-    .action { border-top: 1px solid #2c313a; padding: 8px 0; font-size: 12px; }
-    .action strong { display: block; color: #f3f5f8; }
-    .action span { color: #98a2b3; overflow-wrap: anywhere; }
-    .error { color: #ffb4ab; }
-    @media (max-width: 760px) {
-      main { grid-template-columns: 1fr; }
-      aside { border-left: 0; border-top: 1px solid #333842; }
-    }
-  </style>
-</head>
-<body>
-  <header>
-    <strong>MobileGym Screen</strong>
-    <span id="status">connecting</span>
-    <span id="taskId"></span>
-    <span id="updated"></span>
-  </header>
-  <main>
-    <section class="screen">
-      <img id="shot" alt="Current MobileGym screenshot" hidden>
-      <div id="placeholder" class="placeholder">Waiting for an active benchmark episode.</div>
-    </section>
-    <aside>
-      <h2>Task State</h2>
-      <dl>
-        <dt>Task</dt><dd id="taskState">default</dd>
-        <dt>Status</dt><dd id="stateStatus">unknown</dd>
-        <dt>Episode</dt><dd id="episode">none</dd>
-        <dt>Actions</dt><dd id="actionCount">0</dd>
-        <dt>Size</dt><dd id="size">none</dd>
-      </dl>
-      <h2>Recent Actions</h2>
-      <div id="actions"></div>
-    </aside>
-  </main>
-  <script>
-    const statusEl = document.getElementById('status');
-    const taskIdEl = document.getElementById('taskId');
-    const taskStateEl = document.getElementById('taskState');
-    const updatedEl = document.getElementById('updated');
-    const stateStatusEl = document.getElementById('stateStatus');
-    const episodeEl = document.getElementById('episode');
-    const actionCountEl = document.getElementById('actionCount');
-    const sizeEl = document.getElementById('size');
-    const shotEl = document.getElementById('shot');
-    const placeholderEl = document.getElementById('placeholder');
-    const actionsEl = document.getElementById('actions');
-    const taskId = new URLSearchParams(window.location.search).get('benchmark-task-id') || '';
-    const snapshotPath = '/api/screen' + window.location.search;
-    taskIdEl.textContent = taskId ? `task ${taskId}` : '';
-    taskStateEl.textContent = taskId || 'default';
-
-    function renderActions(actions) {
-      actionsEl.replaceChildren();
-      if (!actions.length) {
-        const empty = document.createElement('div');
-        empty.className = 'action';
-        empty.textContent = 'No actions yet.';
-        actionsEl.appendChild(empty);
-        return;
-      }
-      for (const action of actions) {
-        const row = document.createElement('div');
-        row.className = 'action';
-        const title = document.createElement('strong');
-        title.textContent = `${action.action_id || ''} ${action.tool_name || ''}`.trim();
-        const detail = document.createElement('span');
-        detail.textContent = JSON.stringify(action.tool_input || {});
-        row.append(title, detail);
-        actionsEl.appendChild(row);
-      }
-    }
-
-    async function refresh() {
-      try {
-        const res = await fetch(snapshotPath, {cache: 'no-store'});
-        const body = await res.json();
-        if (!res.ok || !body.ok) throw new Error(body.error?.message || res.statusText);
-        const data = body.data || {};
-        statusEl.textContent = data.status || 'unknown';
-        statusEl.className = '';
-        stateStatusEl.textContent = data.status || 'unknown';
-        episodeEl.textContent = data.active_episode_id || 'none';
-        actionCountEl.textContent = String(data.action_count || 0);
-        updatedEl.textContent = new Date().toLocaleTimeString();
-        const shot = data.screenshot;
-        if (shot && shot.data) {
-          const format = shot.format === 'jpeg' ? 'jpeg' : 'png';
-          shotEl.src = `data:image/${format};base64,${shot.data}`;
-          shotEl.hidden = false;
-          placeholderEl.hidden = true;
-          sizeEl.textContent = `${shot.width || '?'} x ${shot.height || '?'}`;
-        } else {
-          shotEl.hidden = true;
-          placeholderEl.hidden = false;
-          placeholderEl.textContent = 'Waiting for an active benchmark episode.';
-          sizeEl.textContent = 'none';
-        }
-        renderActions(data.actions || []);
-      } catch (err) {
-        statusEl.textContent = String(err.message || err);
-        statusEl.className = 'error';
-      }
-    }
-
-    refresh();
-    setInterval(refresh, 1000);
-  </script>
-</body>
-</html>
-"""
 
 
 def _screen_snapshot_payload(

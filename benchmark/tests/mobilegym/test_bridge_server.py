@@ -296,12 +296,10 @@ def test_health_and_runner_endpoints_do_not_require_authentication():
         assert bridge.env.threads and set(bridge.env.threads) == {"mobilegym-owner-loop"}
 
 
-def test_screen_page_snapshots_active_execution_state():
+def test_api_screen_snapshots_active_execution_state():
     with RunningBridge() as bridge:
-        status, html = request_text(bridge.base_url, "GET", "/screen")
-        assert status == 200
-        assert "MobileGym Screen" in html
-        assert "/api/screen" in html
+        status, _ = request_text(bridge.base_url, "GET", "/screen")
+        assert status == 404
 
         status, body = request_json(bridge.base_url, "GET", "/api/screen")
         assert status == 200
@@ -339,7 +337,7 @@ def test_screen_page_snapshots_active_execution_state():
         assert "screenshot" not in data["actions"][0]
 
 
-def test_screen_page_snapshot_routes_by_query_task_id():
+def test_api_screen_routes_by_query_task_id():
     with OwnerLoop() as owner:
         envs = [FakeEnv(owner.loop), FakeEnv(owner.loop)]
         states = [BridgeEpisodeState(env, owner_loop=owner.loop) for env in envs]
@@ -353,11 +351,6 @@ def test_screen_page_snapshot_routes_by_query_task_id():
             assert body["data"]["concurrent"] == 2
             assert body["data"]["env_count"] == 2
             assert body["data"]["active_routes"] == {}
-
-            status, html = request_text(server.base_url, "GET", "/screen?benchmark-task-id=task.alpha")
-            assert status == 200
-            assert "window.location.search" in html
-            assert "taskId" in html
 
             status, body = request_json(server.base_url, "GET", "/api/screen?benchmark-task-id=task.alpha")
             assert status == 200
