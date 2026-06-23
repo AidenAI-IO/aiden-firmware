@@ -44,7 +44,7 @@
 | `/var/log/frame_service/frame_service.log` | Frame Service log |
 | `/var/log/audio_service/audio_service.log` | Audio Service log |
 | `/var/log/agent/agent.log` | Agent log (includes init script and runtime output) |
-| `/userdata/agent/log/llm-http-YYYYMMDD-{session_id}.log` | LLM HTTP request/response log (JSONL format, organized by session) |
+| `/userdata/agent/log/llm-http-YYYYMMDDHHMMSSmmm.log` | LLM HTTP request/response log (JSONL format, organized by session) |
 
 ## Configuration Files
 
@@ -99,7 +99,7 @@ curl http://<device-ip>:8080/api/tools
 
 # Log viewing
 tail -f /var/log/agent/agent.log
-jq . /userdata/agent/log/llm-http-$(date +%Y%m%d)-*.log
+jq . /userdata/agent/log/llm-http-$(date +%Y%m%d)*.log
 ```
 
 ## Agent Logs
@@ -116,7 +116,7 @@ Agent main log, contains all output from init script and runtime.
 2026/06/20 15:06:16 [INFO] ========================================
 ```
 
-### /userdata/agent/log/llm-http-{YYYYMMDD}-{session_id}.log
+### /userdata/agent/log/llm-http-{YYYYMMDDHHMMSSmmm}.log
 
 LLM HTTP request/response log (JSONL format), separate file per session.
 
@@ -135,7 +135,7 @@ LLM HTTP request/response log (JSONL format), separate file per session.
 **Common queries**:
 ```bash
 # View specific session
-jq . /userdata/agent/log/llm-http-20260620-abc123def.log
+jq . /userdata/agent/log/llm-http-20260620090405123.log
 
 # Only view responses
 jq 'select(.kind | test("response|stream"))' llm-http-*.log

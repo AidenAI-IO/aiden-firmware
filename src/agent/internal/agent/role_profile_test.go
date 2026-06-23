@@ -455,8 +455,8 @@ func TestForceSimpleLoopPlannerCallOmitsPlanMetaTools(t *testing.T) {
 			t.Fatalf("force_simple_loop prompt should not contain %q:\n%s", unexpected, plannerPrompt)
 		}
 	}
-	if !strings.Contains(plannerPrompt, "force_simple_loop: true") {
-		t.Fatalf("force_simple_loop prompt missing loop-mode flag:\n%s", plannerPrompt)
+	if strings.Contains(plannerPrompt, "force_simple_loop: true") || strings.Contains(plannerPrompt, "Loop mode:") {
+		t.Fatalf("force_simple_loop planner prompt should not contain runtime loop state:\n%s", plannerPrompt)
 	}
 }
 
@@ -486,11 +486,10 @@ func TestForceSimpleLoopRejectsUnexpectedPlanMetaToolCall(t *testing.T) {
 		t.Fatalf("model calls = %d, want 2", model.callCount)
 	}
 	secondPrompt := messageText(model.messages[1])
-	if !strings.Contains(secondPrompt, "current_mode: default") {
-		t.Fatalf("force_simple_loop should stay in default mode:\n%s", secondPrompt)
-	}
-	if strings.Contains(secondPrompt, "current_mode: plan") {
-		t.Fatalf("force_simple_loop should not enter plan mode:\n%s", secondPrompt)
+	for _, unexpected := range []string{"current_mode: default", "current_mode: plan", "Loop mode:"} {
+		if strings.Contains(secondPrompt, unexpected) {
+			t.Fatalf("force_simple_loop planner prompt should not expose runtime loop state %q:\n%s", unexpected, secondPrompt)
+		}
 	}
 }
 
@@ -722,14 +721,14 @@ func TestRoleCollaborativeExecutorReplansAfterRepeatedVerifierFailures(t *testin
 	}
 
 	secondPlannerPrompt := messageText(model.messages[5])
-	for _, want := range []string{
+	for _, unexpected := range []string{
 		"Current plan:",
 		"Executor results:",
 		"Verifier feedback:",
 		"not enough progress",
 	} {
-		if !strings.Contains(secondPlannerPrompt, want) {
-			t.Fatalf("second planner prompt missing %q:\n%s", want, secondPlannerPrompt)
+		if strings.Contains(secondPlannerPrompt, unexpected) {
+			t.Fatalf("second planner prompt should not expose runtime state %q:\n%s", unexpected, secondPlannerPrompt)
 		}
 	}
 
@@ -1156,14 +1155,16 @@ func TestRoleCollaborativeExecutorUpdatesWorldStateFromObservedState(t *testing.
 		t.Fatalf("Run() error = %v", err)
 	}
 
-	secondPlannerPrompt := messageText(model.messages[5])
-	for _, want := range []string{
+	secondPlannerMessages := model.messages[5]
+	secondPlannerPrompt := messageText([]llms.MessageContent{secondPlannerMessages[len(secondPlannerMessages)-1]})
+	for _, unexpected := range []string{
+		"World State",
 		"Observed app/page: 微信 / 聊天列表 platform=android confidence=0.82 source_role=verifier",
 		"Visible text: 微信 | 通讯录",
 		"Dialogs: 权限提示",
 	} {
-		if !strings.Contains(secondPlannerPrompt, want) {
-			t.Fatalf("second planner prompt missing %q:\n%s", want, secondPlannerPrompt)
+		if strings.Contains(secondPlannerPrompt, unexpected) {
+			t.Fatalf("second planner prompt should not contain world state field %q:\n%s", unexpected, secondPlannerPrompt)
 		}
 	}
 

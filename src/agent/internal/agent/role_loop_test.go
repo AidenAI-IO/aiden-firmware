@@ -866,9 +866,12 @@ func TestRequestContextPromptDoesNotMarkRootRequestAuthoritative(t *testing.T) {
 		latestUserInputKey:   "打开微信",
 		"follow_up_relation": "continuation",
 	}
-	prompt := buildPlannerStatePrompt(inputs, roleLoopState{}, "Planner task.")
+	prompt := buildRoleStatePrompt(RolePlanner, inputs, roleLoopState{}, "Planner task.")
 
 	for _, unwanted := range []string{
+		"Planner task.",
+		"Loop mode:",
+		"Original user request",
 		"Original user request / root request (authoritative; do not replace it with a subtask)",
 		"authoritative; do not replace it with a subtask",
 		"Current objective:",
@@ -880,8 +883,171 @@ func TestRequestContextPromptDoesNotMarkRootRequestAuthoritative(t *testing.T) {
 			t.Fatalf("planner prompt should not contain %q:\n%s", unwanted, prompt)
 		}
 	}
-	if !strings.Contains(prompt, "Original user request") {
-		t.Fatalf("planner prompt should still include the original request as context:\n%s", prompt)
+	if prompt != "打开微信" {
+		t.Fatalf("planner prompt = %q, want raw current input only", prompt)
+	}
+}
+
+func TestPlannerMessagesOmitRuntimeStateContext(t *testing.T) {
+	executor := &roleCollaborativeExecutor{}
+	state := roleLoopState{
+		Phase: phasePlan,
+		Plan:  []string{"inspect"},
+		World: worldState{
+			Observation: &worldStateObservation{
+				observedWorldState: observedWorldState{
+					AppName:     "微信",
+					PageName:    "聊天列表",
+					Platform:    "android",
+					VisibleText: []string{"微信", "通讯录"},
+					Dialogs:     []string{"权限提示"},
+					Confidence:  0.82,
+				},
+			},
+		},
+	}
+	state.World.UpdateDeviceEnvironment(&PhoneEnvironment{
+		Platform:       "android",
+		SystemName:     "Android",
+		SystemVersion:  "15",
+		ThirdPartyApps: []AvailableAppInfo{{Name: "微信", Available: true}},
+	})
+	inputs := map[string]string{
+		"input":             "fallback request",
+		rootRequestInputKey: "原始用户请求",
+		latestUserInputKey:  "最新用户消息",
+	}
+
+	messages := executor.roleMessages(RoleProfile{Name: RolePlanner, SystemPrompt: "planner system"}, inputs, state, "Planner task.")
+	prompt := messageText(messages)
+	for _, unwanted := range []string{
+		"Planner task.",
+		"Loop mode:",
+		"Original user request",
+		"Latest user message",
+		"Current plan:",
+		"World State",
+		"Device environment:",
+		"Confirmed third-party apps:",
+		"Observed app/page:",
+		"Visible text:",
+		"Dialogs:",
+	} {
+		if strings.Contains(prompt, unwanted) {
+			t.Fatalf("planner prompt should not contain world state field %q:\n%s", unwanted, prompt)
+		}
+	}
+	if !strings.Contains(prompt, "planner system") || !strings.Contains(prompt, "fallback request") {
+		t.Fatalf("planner messages should keep static system prompt and raw input:\n%s", prompt)
+	}
+}
+
+func TestPlannerCurrentUserMessageIsRawInputOnly(t *testing.T) {
+	executor := &roleCollaborativeExecutor{
+		InputAttachments: []InputAttachment{{
+			Kind:     AttachmentKindImage,
+			Name:     "screen.png",
+			MIMEType: "image/png",
+			Data:     []byte{0x89, 0x50, 0x4e, 0x47},
+		}},
+	}
+	state := roleLoopState{
+		Phase: phasePlan,
+		Plan:  []string{"inspect"},
+		World: worldState{
+			Observation: &worldStateObservation{
+				observedWorldState: observedWorldState{
+					AppName:     "微信",
+					PageName:    "聊天列表",
+					VisibleText: []string{"微信"},
+				},
+			},
+		},
+	}
+	inputs := map[string]string{
+		"input":             "当前用户原始输入",
+		rootRequestInputKey: "原始根请求",
+		latestUserInputKey:  "当前用户原始输入",
+	}
+
+	messages := executor.roleMessages(RoleProfile{Name: RolePlanner, SystemPrompt: "planner system"}, inputs, state, "Planner task.")
+	if len(messages) < 2 {
+		t.Fatalf("planner messages = %#v, want system context and user input", messages)
+	}
+	last := messages[len(messages)-1]
+	if last.Role != llms.ChatMessageTypeHuman {
+		t.Fatalf("last planner message role = %s, want human; messages=%#v", last.Role, messages)
+	}
+	var textParts []string
+	var imageParts int
+	for _, part := range last.Parts {
+		switch typed := part.(type) {
+		case llms.TextContent:
+			textParts = append(textParts, typed.Text)
+		case llms.ImageURLContent:
+			imageParts++
+		}
+	}
+	if len(textParts) != 1 || imageParts != 1 {
+		t.Fatalf("last planner message parts = %#v, want one raw text part and one raw image part", last.Parts)
+	}
+	text := textParts[0]
+	if text != "当前用户原始输入" {
+		t.Fatalf("last planner user message = %q, want raw input only", text)
+	}
+	for _, unwanted := range []string{
+		"Planner task.",
+		"Loop mode:",
+		"Original user request",
+		"Latest user message",
+		"Current plan:",
+		"World State",
+		"Observed app/page:",
+		"Attached content:",
+		"screen.png",
+	} {
+		if strings.Contains(text, unwanted) {
+			t.Fatalf("last planner user message should not contain %q:\n%s", unwanted, text)
+		}
+	}
+	systemText := messageText(messages[:1])
+	if strings.TrimSpace(systemText) != "planner system" {
+		t.Fatalf("planner system message should not receive runtime state context:\n%s", systemText)
+	}
+}
+
+func TestPlannerCurrentUserMessagePrecedesToolScratchpad(t *testing.T) {
+	executor := &roleCollaborativeExecutor{}
+	state := roleLoopState{
+		Phase: phaseDefault,
+		ToolSteps: []schema.AgentStep{{
+			Action: schema.AgentAction{
+				Tool:      "recall_memory",
+				ToolInput: `{"tags":["weather","location"]}`,
+				Log:       "我查下默认地点。",
+			},
+			Observation: `{"results":[]}`,
+		}},
+	}
+	inputs := map[string]string{
+		"input": "今天天气怎么样？",
+	}
+
+	messages := executor.roleMessages(RoleProfile{Name: RolePlanner, SystemPrompt: "planner system"}, inputs, state, "Planner task.")
+	if len(messages) != 4 {
+		t.Fatalf("planner messages = %d, want system, user, assistant tool call, tool result: %#v", len(messages), messages)
+	}
+	if messages[0].Role != llms.ChatMessageTypeSystem {
+		t.Fatalf("message[0] role = %s, want system", messages[0].Role)
+	}
+	if messages[1].Role != llms.ChatMessageTypeHuman || messageText(messages[1:2]) != "今天天气怎么样？\n" {
+		t.Fatalf("message[1] should be raw current user input before tool scratchpad, got role=%s text=%q", messages[1].Role, messageText(messages[1:2]))
+	}
+	if messages[2].Role != llms.ChatMessageTypeAI {
+		t.Fatalf("message[2] role = %s, want assistant tool call", messages[2].Role)
+	}
+	if messages[3].Role != llms.ChatMessageTypeTool {
+		t.Fatalf("message[3] role = %s, want tool result", messages[3].Role)
 	}
 }
 

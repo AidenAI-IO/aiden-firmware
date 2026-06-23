@@ -410,7 +410,7 @@ func TestOpenAICompatibleModelLogsRawStreamingHTTPOnDecodeError(t *testing.T) {
 	assertRawHTTPLogIsValidJSONL(t, logText)
 }
 
-func TestOpenAICompatibleModelRawHTTPLogKeepsRunInRequestMinuteFile(t *testing.T) {
+func TestOpenAICompatibleModelRawHTTPLogKeepsRunInInitialSessionFile(t *testing.T) {
 	sessionID := "session-a"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sessionID = "session-b"
@@ -463,8 +463,8 @@ func TestOpenAICompatibleModelRawHTTPLogKeepsRunInRequestMinuteFile(t *testing.T
 	if len(matches) != 1 {
 		t.Fatalf("raw HTTP request/response should stay in one file, got %d: %#v", len(matches), matches)
 	}
-	if !strings.Contains(filepath.Base(matches[0]), "llm-http-202606210904-session-a.log") {
-		t.Fatalf("raw HTTP file should use request minute, got %s", filepath.Base(matches[0]))
+	if filepath.Base(matches[0]) != "llm-http-session-a.log" {
+		t.Fatalf("raw HTTP file should use initial session, got %s", filepath.Base(matches[0]))
 	}
 	logText := readRawHTTPLog(t, logDir)
 	counts := countRawHTTPKinds(t, logText)
@@ -520,9 +520,89 @@ func TestRuntimeConfiguresRawHTTPLogWithActiveMemorySessionID(t *testing.T) {
 	if len(matches) != 1 {
 		t.Fatalf("expected one raw HTTP log file, got %d: %#v", len(matches), matches)
 	}
-	wantName := "llm-http-202606210904-" + metadata.SessionID + ".log"
+	wantName := rawHTTPLogNameForSessionMetadata(t, metadata)
 	if filepath.Base(matches[0]) != wantName {
 		t.Fatalf("raw HTTP file = %q, want %q", filepath.Base(matches[0]), wantName)
+	}
+}
+
+func TestRuntimeRawHTTPLogUsesSessionIDForFileName(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	rootDir := t.TempDir()
+	logDir := filepath.Join(rootDir, "log")
+	memoryDir := filepath.Join(rootDir, "memory")
+	sessionDir := filepath.Join(memoryDir, "session")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatalf("create session dir: %v", err)
+	}
+	createdAt := time.Date(2026, 6, 20, 8, 3, 42, 0, time.UTC)
+	meta := sessionMetadata{
+		SessionID: "20260620080342123",
+		CreatedAt: createdAt.Format(time.RFC3339Nano),
+	}
+	metaBytes, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatalf("marshal metadata: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionDir, sessionMetadataFileName), append(metaBytes, '\n'), 0o644); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+
+	manager := NewModelManager(ModelConfig{
+		Provider:   "openai",
+		BaseURL:    server.URL,
+		Model:      "test-model",
+		LogRawHTTP: true,
+	}, ProxyConfig{}, WithLLMRawHTTPLogDir(logDir))
+	memories := NewMemoryManager(memoryDir)
+	NewRuntimeWithDeps(Config{}, manager, memories, nil, nil)
+
+	model, err := manager.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	compatible, ok := model.(*openAICompatibleModel)
+	if !ok {
+		t.Fatalf("model = %T, want *openAICompatibleModel", model)
+	}
+	current := time.Date(2026, 6, 21, 9, 4, 59, 0, time.UTC)
+	compatible.rawLogger.now = func() time.Time { return current }
+
+	runLLM := func(prompt string) {
+		t.Helper()
+		_, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
+			Role:  llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{llms.TextPart(prompt)},
+		}})
+		if err != nil {
+			t.Fatalf("GenerateContent(%q) error = %v", prompt, err)
+		}
+	}
+
+	runLLM("first")
+	current = time.Date(2026, 6, 21, 9, 5, 1, 0, time.UTC)
+	runLLM("second")
+
+	matches, err := filepath.Glob(filepath.Join(logDir, "llm-http-*.log"))
+	if err != nil {
+		t.Fatalf("glob raw HTTP logs: %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("same session should stay in one raw HTTP log file, got %d: %#v", len(matches), matches)
+	}
+	wantName := "llm-http-20260620080342123.log"
+	if filepath.Base(matches[0]) != wantName {
+		t.Fatalf("raw HTTP file = %q, want %q", filepath.Base(matches[0]), wantName)
+	}
+	logText := readRawHTTPLog(t, logDir)
+	counts := countRawHTTPKinds(t, logText)
+	if counts["request"] != 2 || counts["response"] != 2 {
+		t.Fatalf("raw HTTP log should contain two request/response pairs:\n%s", logText)
 	}
 }
 
@@ -590,6 +670,7 @@ func TestRuntimeRawHTTPLogSwitchesSessionFileAfterRotation(t *testing.T) {
 	}
 
 	runLLM("after rotation")
+	activeMeta := readSessionMetadataForTest(t, filepath.Join(memoryDir, "session", sessionMetadataFileName))
 
 	matches, err := filepath.Glob(filepath.Join(logDir, "llm-http-*.log"))
 	if err != nil {
@@ -599,8 +680,8 @@ func TestRuntimeRawHTTPLogSwitchesSessionFileAfterRotation(t *testing.T) {
 		t.Fatalf("expected two raw HTTP log files after rotation, got %d: %#v", len(matches), matches)
 	}
 	wantNames := map[string]bool{
-		"llm-http-202606210904-" + firstMeta.SessionID + ".log":      false,
-		"llm-http-202606210904-" + rotation.ActiveSessionID + ".log": false,
+		rawHTTPLogNameForSessionMetadata(t, firstMeta):  false,
+		rawHTTPLogNameForSessionMetadata(t, activeMeta): false,
 	}
 	for _, match := range matches {
 		if _, ok := wantNames[filepath.Base(match)]; ok {
@@ -983,6 +1064,14 @@ func rawHTTPLogPath(logDir string) string {
 		return matches[len(matches)-1]
 	}
 	return filepath.Join(logDir, "llm-http-"+time.Now().Format("200601021504")+".log")
+}
+
+func rawHTTPLogNameForSessionMetadata(t *testing.T, meta sessionMetadata) string {
+	t.Helper()
+	if meta.SessionID == "" {
+		t.Fatal("session_id is empty")
+	}
+	return "llm-http-" + meta.SessionID + ".log"
 }
 
 func assertRawHTTPLogIsValidJSONL(t *testing.T, logText string) {

@@ -78,7 +78,8 @@ func logFileTime(name string, modTime time.Time) time.Time {
 	if !strings.HasPrefix(name, "llm-http-") || !strings.HasSuffix(name, ".log") {
 		return modTime
 	}
-	// Extract datetime from llm-http-YYYYMMDDHHMM-*.log
+	// Extract datetime from llm-http-YYYYMMDDHHMMSSmmm.log or legacy
+	// llm-http-YYYYMMDDHHMM-*.log names.
 	parts := strings.TrimPrefix(name, "llm-http-")
 	parts = strings.TrimSuffix(parts, ".log")
 	if len(parts) < 12 {

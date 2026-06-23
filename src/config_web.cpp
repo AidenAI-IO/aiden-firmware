@@ -151,7 +151,7 @@ const size_t kAgentLogDisplaySize = 48 * 1024;
 const size_t kOtaLogReadSize = 128 * 1024;
 const size_t kOtaLogDisplaySize = 96 * 1024;
 // LLM raw HTTP logs live next to the agent config: <dirname(config)>/log.
-// Filenames are llm-http-YYYYMMDD[-session].log. The viewer streams whole
+// Filenames are llm-http-YYYYMMDDHHMMSSmmm.log. The viewer streams whole
 // files to the browser, so cap the per-file read to keep responses bounded.
 const char* kLlmLogPrefix = "llm-http-";
 const char* kLlmLogSuffix = ".log";
@@ -3270,8 +3270,8 @@ ApiResponse handle_get_llm_logs(const Options& options) {
     const std::string dir_path = llm_log_dir(options);
     DIR* dir = opendir(dir_path.c_str());
     if (dir) {
-        // Collect matching names, then sort descending so the newest day /
-        // session (which sorts last by the YYYYMMDD-keyed name) shows first.
+        // Collect matching names, then sort descending so the newest session
+        // (which sorts last by the YYYYMMDDHHMMSSmmm-keyed name) shows first.
         std::vector<std::string> names;
         struct dirent* entry = NULL;
         while ((entry = readdir(dir)) != NULL) {
