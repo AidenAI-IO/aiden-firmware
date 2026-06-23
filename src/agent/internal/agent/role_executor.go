@@ -1112,6 +1112,13 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 	}
 
 	if profile.Name == RolePlanner {
+		statePrompt := buildRoleStatePrompt(profile.Name, inputs, state, task)
+		if strings.TrimSpace(statePrompt) != "" {
+			messages = append(messages, llms.MessageContent{
+				Role:  llms.ChatMessageTypeHuman,
+				Parts: []llms.ContentPart{llms.TextPart(statePrompt)},
+			})
+		}
 		for _, steer := range state.SteerMessages {
 			messages = append(messages, llms.MessageContent{
 				Role:  llms.ChatMessageTypeHuman,
@@ -1251,7 +1258,7 @@ type roleStatePromptOptions struct {
 func buildRoleStatePromptWithOptions(role RoleName, inputs map[string]string, state roleLoopState, task string, options roleStatePromptOptions) string {
 	switch role {
 	case RolePlanner:
-		return plannerCurrentUserMessage(inputs)
+		return buildPlannerStatePrompt(inputs, state, task)
 	case RoleExecutor:
 		return buildExecutorStatePrompt(inputs, state, task)
 	case RoleVerifier:
@@ -1259,8 +1266,40 @@ func buildRoleStatePromptWithOptions(role RoleName, inputs map[string]string, st
 			IncludeLatestScreenshot: options.IncludeWorldStateLatestScreenshot,
 		})
 	default:
-		return plannerCurrentUserMessage(inputs)
+		return buildPlannerStatePrompt(inputs, state, task)
 	}
+}
+
+func buildPlannerStatePrompt(inputs map[string]string, state roleLoopState, task string) string {
+	if state.ForceSimpleLoop {
+		return buildSimpleLoopPlannerStatePrompt(inputs, state)
+	}
+	var builder strings.Builder
+	builder.WriteString("Planner runtime context (synthetic; not a new user request):\n")
+	builder.WriteString(task)
+	writeLoopMode(&builder, state)
+	writeWorldState(&builder, state.World)
+	writeRequestContextAndCriteria(&builder, inputs, state)
+	writeSessionContext(&builder, inputs)
+	writeTodoState(&builder, state)
+	writeTodoReminder(&builder, state)
+	writeCurrentPlan(&builder, state)
+	writePriorPlanStepResults(&builder, state)
+	writeVerifierFeedback(&builder, state)
+	return strings.TrimSpace(builder.String())
+}
+
+func buildSimpleLoopPlannerStatePrompt(inputs map[string]string, state roleLoopState) string {
+	var builder strings.Builder
+	writeWorldStateIfPresent(&builder, state.World)
+	writeSimpleLoopRootRequest(&builder, inputs)
+	writeTodoState(&builder, state)
+	writeTodoReminder(&builder, state)
+	content := strings.TrimSpace(builder.String())
+	if content == "" {
+		return ""
+	}
+	return "Planner runtime context (synthetic; not a new user request):\n" + content
 }
 
 func buildExecutorStatePrompt(inputs map[string]string, state roleLoopState, task string) string {
@@ -1465,6 +1504,13 @@ func writeWorldState(builder *strings.Builder, world worldState) {
 	writeWorldStateWithOptions(builder, world, worldStatePromptOptions{})
 }
 
+func writeWorldStateIfPresent(builder *strings.Builder, world worldState) {
+	if world.DeviceEnvironment == nil && world.Observation == nil {
+		return
+	}
+	writeWorldState(builder, world)
+}
+
 func writeWorldStateWithOptions(builder *strings.Builder, world worldState, options worldStatePromptOptions) {
 	builder.WriteString("\n\nWorld State (shared across planner, executor, and verifier):\n")
 	if world.DeviceEnvironment != nil {
@@ -1609,6 +1655,19 @@ func writeRequestContextAndCriteria(builder *strings.Builder, inputs map[string]
 			builder.WriteByte('\n')
 		}
 	}
+}
+
+func writeSimpleLoopRootRequest(builder *strings.Builder, inputs map[string]string) {
+	currentInput := strings.TrimSpace(plannerCurrentUserMessage(inputs))
+	rootRequest := strings.TrimSpace(inputs[rootRequestInputKey])
+	if rootRequest == "" {
+		rootRequest = currentInput
+	}
+	if rootRequest == "" || rootRequest == currentInput {
+		return
+	}
+	builder.WriteString("\n\nOriginal user request / root request:\n")
+	builder.WriteString(rootRequest)
 }
 
 func writeSessionContext(builder *strings.Builder, inputs map[string]string) {

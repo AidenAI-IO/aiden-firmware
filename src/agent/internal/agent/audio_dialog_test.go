@@ -204,7 +204,15 @@ func TestProcessUtteranceAudioModeSendsWAVAttachmentToRuntime(t *testing.T) {
 		t.Fatalf("expected one default-mode planner model call, got %d", len(model.messages))
 	}
 
-	userMessage := model.messages[0][len(model.messages[0])-1]
+	plannerMessages := model.messages[0]
+	if len(plannerMessages) < 3 {
+		t.Fatalf("expected system, raw audio input, and runtime state messages, got %#v", plannerMessages)
+	}
+	userMessage := plannerMessages[len(plannerMessages)-2]
+	stateMessage := plannerMessages[len(plannerMessages)-1]
+	if stateMessage.Role != llms.ChatMessageTypeHuman || !strings.Contains(messageText(plannerMessages[len(plannerMessages)-1:]), "Planner runtime context (synthetic; not a new user request):") {
+		t.Fatalf("expected final planner message to be runtime state context, got %#v", stateMessage)
+	}
 	var text string
 	var audio []byte
 	for _, part := range userMessage.Parts {

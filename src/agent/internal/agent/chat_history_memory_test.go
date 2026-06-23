@@ -448,7 +448,10 @@ func TestRuntimeRunBudgetsActivePlannerHistoryBeforeModelCall(t *testing.T) {
 	}
 
 	plannerMessages := model.messages[0]
-	historyText := messageText(plannerMessages[1 : len(plannerMessages)-1])
+	if len(plannerMessages) < 4 {
+		t.Fatalf("expected planner system, history, raw input, and state prompt messages, got %#v", plannerMessages)
+	}
+	historyText := messageText(plannerMessages[1 : len(plannerMessages)-2])
 	for _, want := range []string{"PINNED_ROOT_REQUEST", "KEEP_RECENT_USER", "KEEP_RECENT_ASSISTANT"} {
 		if !strings.Contains(historyText, want) {
 			t.Fatalf("budgeted planner history missing %q:\n%s", want, historyText)
