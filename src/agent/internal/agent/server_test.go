@@ -33,6 +33,26 @@ type stubSTTClient struct {
 	inputs     [][]byte
 }
 
+type mappingStateMutatingTool struct {
+	name        string
+	description string
+	output      string
+	screen      *screenState
+	inputs      []string
+}
+
+func (t *mappingStateMutatingTool) Name() string { return t.name }
+
+func (t *mappingStateMutatingTool) Description() string { return t.description }
+
+func (t *mappingStateMutatingTool) Call(_ context.Context, input string) (string, error) {
+	t.inputs = append(t.inputs, input)
+	if t.screen != nil {
+		t.screen.UpdateActiveArea(320, 240, screenActiveArea{})
+	}
+	return t.output, nil
+}
+
 func (s *stubSTTClient) TranscribeWAV(wavData []byte) (string, error) {
 	s.inputs = append(s.inputs, append([]byte(nil), wavData...))
 	return s.transcript, nil
@@ -498,28 +518,38 @@ func TestServerEventStreamAllowsRunEventMessages(t *testing.T) {
 }
 
 func TestHandleCoordinateDebugTap(t *testing.T) {
-	frameSocket := startFakeFrameServiceSocket(t, func(req map[string]any) (string, []byte) {
-		header := `{"type":"response","method":"latest_frame","status":"OK","frame":{"seq":1,"width":2,"height":1,"pixel_format":"uyvy","stride":4,"bytes":4,"stale":false}}`
-		return header, []byte{16, 128, 235, 128}
-	})
-	tool := &stubTool{
+	screen := &screenState{}
+	screen.UpdateActiveArea(1280, 720, screenActiveArea{X: 0, Y: 72, Width: 1280, Height: 576, Valid: true})
+	tool := &mappingStateMutatingTool{
 		name:        "touch_gesture",
 		description: "Touch gesture tool.",
 		output:      `{"width":320,"height":240,"format":"jpeg","size":4,"data":"ZmFrZQ==","action_output":"ok"}`,
+		screen:      screen,
 	}
+	toolSet := &ToolSet{
+		tools: map[string]langtools.Tool{
+			"touch_gesture": tool,
+		},
+		screen: screen,
+	}
+	toolSet.screen.UpdatePhoneScreenInfo(PhoneScreenInfo{
+		NativeWidthPixels:  intPtr(1179),
+		NativeHeightPixels: intPtr(2556),
+	})
 	runtime := NewRuntimeWithDeps(
 		Config{
 			Model: ModelConfig{Provider: "fake"},
-			HID:   HIDConfig{FrameSocket: frameSocket},
 		},
 		&testModelResolver{},
 		NewMemoryManager(""),
-		&ToolSet{tools: map[string]langtools.Tool{
-			"touch_gesture": tool,
-		}},
+		toolSet,
 		NewSkillIndex(),
 	)
 	server := NewServer(runtime, ":0", "")
+	runtime.tools.screen.UpdatePhoneScreenInfo(PhoneScreenInfo{
+		NativeWidthPixels:  intPtr(1179),
+		NativeHeightPixels: intPtr(2556),
+	})
 
 	req := httptest.NewRequest(http.MethodPost, "/api/coordinate-debug/tap", bytes.NewBufferString(`{"x":123,"y":456,"type":"double_tap"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -559,11 +589,27 @@ func TestHandleCoordinateDebugTap(t *testing.T) {
 	if !resp.OK || resp.ActionType != "double_tap" {
 		t.Fatalf("unexpected response: %#v", resp)
 	}
-	if resp.Screenshot == nil || resp.Screenshot.Width != 2 || resp.Screenshot.Height != 1 || resp.Screenshot.Data == "ZmFrZQ==" {
+	if resp.Screenshot == nil || resp.Screenshot.Width != 320 || resp.Screenshot.Height != 240 || resp.Screenshot.Data != "ZmFrZQ==" {
 		t.Fatalf("unexpected screenshot payload: %#v", resp.Screenshot)
 	}
-	if resp.Screenshot.SourceWidth != 2 || resp.Screenshot.SourceHeight != 1 {
+	if resp.Screenshot.SourceWidth != 1280 || resp.Screenshot.SourceHeight != 720 {
 		t.Fatalf("unexpected screenshot source dimensions: %#v", resp.Screenshot)
+	}
+	if resp.Screenshot.SourceActiveArea == nil || *resp.Screenshot.SourceActiveArea != (screenActiveArea{X: 0, Y: 72, Width: 1280, Height: 576, Valid: true}) {
+		t.Fatalf("unexpected screenshot active area: %#v", resp.Screenshot.SourceActiveArea)
+	}
+	if resp.Screenshot.OriginalScreenWidthPixels == nil || *resp.Screenshot.OriginalScreenWidthPixels != 1179 {
+		t.Fatalf("unexpected original screen width: %#v", resp.Screenshot.OriginalScreenWidthPixels)
+	}
+	if resp.Screenshot.OriginalScreenHeightPixels == nil || *resp.Screenshot.OriginalScreenHeightPixels != 2556 {
+		t.Fatalf("unexpected original screen height: %#v", resp.Screenshot.OriginalScreenHeightPixels)
+	}
+	width, height, active, _, ok := toolSet.screen.ActiveAreaWithAge()
+	if !ok || width != 1280 || height != 720 {
+		t.Fatalf("screen state dimensions = %dx%d ok=%v, want 1280x720 true", width, height, ok)
+	}
+	if active != (screenActiveArea{X: 0, Y: 72, Width: 1280, Height: 576, Valid: true}) {
+		t.Fatalf("screen state active area = %+v", active)
 	}
 }
 
@@ -728,10 +774,10 @@ func TestHandleScreenshotJPEGUpdatesSharedScreenStateFromPhoneAspectRatio(t *tes
 	jpegData := jpegBuf.Bytes()
 
 	frameSocket := startFakeFrameServiceSocket(t, func(req map[string]any) (string, []byte) {
-		if format, _ := req["format"].(string); format != "raw" {
-			t.Fatalf("expected raw format request, got %#v", req["format"])
+		if format, _ := req["format"].(string); format != "jpeg" {
+			t.Fatalf("expected jpeg format request, got %#v", req["format"])
 		}
-		header := fmt.Sprintf(`{"type":"response","method":"latest_frame","status":"OK","frame":{"seq":1,"width":16,"height":9,"pixel_format":"jpeg","stride":0,"bytes":%d,"stale":false}}`, len(jpegData))
+		header := fmt.Sprintf(`{"type":"response","method":"latest_frame","status":"OK","frame":{"seq":1,"width":5,"height":9,"source_width":16,"source_height":9,"crop_x":5,"crop_y":0,"crop_width":5,"crop_height":9,"pixel_format":"jpeg","stride":0,"bytes":%d,"stale":false}}`, len(jpegData))
 		return header, jpegData
 	})
 

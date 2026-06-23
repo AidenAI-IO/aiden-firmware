@@ -16,6 +16,12 @@ func TestFrameMetadataUnmarshalSupportsStringNumbers(t *testing.T) {
 		"seq":"123",
 		"width":"1920",
 		"height":"1080",
+		"source_width":"1280",
+		"source_height":"720",
+		"crop_x":"0",
+		"crop_y":"72",
+		"crop_width":"1280",
+		"crop_height":"576",
 		"pixel_format":"jpeg",
 		"stride":"5760",
 		"bytes":"456789",
@@ -35,6 +41,12 @@ func TestFrameMetadataUnmarshalSupportsStringNumbers(t *testing.T) {
 	}
 	if meta.Height != 1080 {
 		t.Fatalf("unexpected height: %d", meta.Height)
+	}
+	if meta.SourceWidth != 1280 || meta.SourceHeight != 720 {
+		t.Fatalf("unexpected source dims: %dx%d", meta.SourceWidth, meta.SourceHeight)
+	}
+	if meta.CropX != 0 || meta.CropY != 72 || meta.CropWidth != 1280 || meta.CropHeight != 576 {
+		t.Fatalf("unexpected crop rect: x=%d y=%d w=%d h=%d", meta.CropX, meta.CropY, meta.CropWidth, meta.CropHeight)
 	}
 	if meta.PixelFormat != "jpeg" {
 		t.Fatalf("unexpected pixel format: %q", meta.PixelFormat)
