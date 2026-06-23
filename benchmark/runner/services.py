@@ -66,7 +66,6 @@ def add_service_parsers(subparsers: argparse._SubParsersAction[argparse.Argument
     p_mobilegym.add_argument("--bridge-port", type=int, default=0, help="Host port for the bridge API (default: auto)")
     p_mobilegym.add_argument("--mobilegym-image", default=DEFAULT_MOBILEGYM_IMAGE)
     p_mobilegym.add_argument("--no-build-mobilegym-image", action="store_true")
-    p_mobilegym.add_argument("--benchmark-task-id", default=DEFAULT_CLI_BENCHMARK_TASK_ID)
     p_mobilegym.add_argument("--ready-timeout-sec", type=int, default=DEFAULT_MOBILEGYM_READY_TIMEOUT_SEC)
     p_mobilegym.add_argument("--json", action="store_true", help="Print machine-readable JSON")
 
@@ -171,8 +170,7 @@ def cmd_start_mobilegym_env(args: argparse.Namespace) -> int:
 
     public_endpoint = f"http://127.0.0.1:{bridge_port}"
     docker_endpoint = f"http://host.docker.internal:{bridge_port}"
-    benchmark_task_id = str(args.benchmark_task_id or "").strip()
-    screen_url = mobilegym_screen_url(public_endpoint, benchmark_task_id)
+    screen_url = mobilegym_screen_url(public_endpoint)
 
     try:
         ensure_mobilegym_image(args.mobilegym_image, not args.no_build_mobilegym_image, log_path)
@@ -202,7 +200,6 @@ def cmd_start_mobilegym_env(args: argparse.Namespace) -> int:
         "container_id": container_id,
         "container_name": container_name,
         "parallel_envs": args.parallel_envs,
-        "benchmark_task_id": benchmark_task_id,
         "log_path": str(log_path),
         "logs_command": f"docker logs -f {container_name}",
         "stop_command": f"docker rm -f {container_name}",
@@ -210,7 +207,6 @@ def cmd_start_mobilegym_env(args: argparse.Namespace) -> int:
     payload["agent_daemon_command"] = (
         "uv run python -m runner start-agent-daemon "
         f"--tool-proxy-endpoint {public_endpoint}"
-        + (f" --benchmark-task-id {benchmark_task_id}" if benchmark_task_id else "")
     )
     _print_mobilegym_payload(payload, json_output=bool(args.json))
     return 0
@@ -271,7 +267,6 @@ def _print_mobilegym_payload(payload: dict[str, Any], *, json_output: bool) -> N
     _print_kv("web_url", payload["web_url"])
     _print_kv("screen_url", payload["screen_url"])
     _print_kv("parallel_envs", payload["parallel_envs"])
-    _print_kv("benchmark_task_id", payload["benchmark_task_id"])
     _print_kv("container_id", payload["container_id"])
     _print_kv("container_name", payload["container_name"])
     _print_kv("log_path", payload["log_path"])

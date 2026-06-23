@@ -26,7 +26,6 @@ def test_start_mobilegym_env_prints_environment_urls(tmp_path: Path, monkeypatch
         bridge_port=19090,
         mobilegym_image="aiden-mobilegym-simulator:test",
         no_build_mobilegym_image=True,
-        benchmark_task_id="suite.json:t1",
         ready_timeout_sec=12,
         json=True,
     )
@@ -37,9 +36,13 @@ def test_start_mobilegym_env_prints_environment_urls(tmp_path: Path, monkeypatch
     assert payload["environment_url"] == "http://127.0.0.1:19090"
     assert payload["docker_environment_url"] == "http://host.docker.internal:19090"
     assert payload["web_url"] == "http://127.0.0.1:18173"
-    assert payload["screen_url"] == "http://127.0.0.1:19090/screen?benchmark-task-id=suite.json%3At1"
+    assert payload["screen_url"] == "http://127.0.0.1:19090/screen"
     assert payload["container_name"] == "aiden-mobilegym-env-mobilegym-smoke"
     assert payload["parallel_envs"] == 3
+    assert payload["agent_daemon_command"] == (
+        "uv run python -m runner start-agent-daemon "
+        "--tool-proxy-endpoint http://127.0.0.1:19090"
+    )
     assert payload["stop_command"] == "docker rm -f aiden-mobilegym-env-mobilegym-smoke"
     assert health_urls == [("http://127.0.0.1:19090/health", 12)]
     command, cwd, text = commands[0]

@@ -472,7 +472,7 @@ uv run python -m runner start-mobilegym-env
 - `environment_url`：runner 使用的 `--environment-url`。
 - `docker_environment_url`：agent daemon 容器内访问 bridge 时使用的 endpoint。
 - `web_url`：MobileGym simulator 页面。
-- `screen_url`：带 `benchmark-task-id` 的人工查看页面。
+- `screen_url`：bridge screen 页面；多 env 下查看具体 task 时，在访问时附加 `?benchmark-task-id=...`。
 - `stop_command`：停止该 environment 的命令。
 
 常用参数：
@@ -484,8 +484,9 @@ uv run python -m runner start-mobilegym-env
 | `--bridge-port` | auto | bridge API 端口 |
 | `--mobilegym-image` | `aiden-mobilegym-simulator:py311` | MobileGym container image |
 | `--no-build-mobilegym-image` | false | 只使用本地已有镜像 |
-| `--benchmark-task-id` | `cli-task` | 打印 screen/run 示例时使用的 route id |
 | `--json` | false | 输出机器可读 JSON |
+
+`start-mobilegym-env` 不绑定 `benchmark-task-id`。Bridge 根据后续每个 `reset`、`screen/snapshot` 或 tool 请求里携带的 `benchmark-task-id` 做路由。
 
 ### 3.8 start-agent-daemon：启动 agent daemon
 
@@ -521,7 +522,7 @@ uv run python -m runner start-agent-daemon \
 推荐的 CLI MobileGym 调试流程：
 
 ```bash
-uv run python -m runner start-mobilegym-env --bridge-port 19090 --benchmark-task-id cli-task
+uv run python -m runner start-mobilegym-env --bridge-port 19090
 uv run python -m runner start-agent-daemon \
   --port 18081 \
   --tool-proxy-endpoint http://127.0.0.1:19090 \
