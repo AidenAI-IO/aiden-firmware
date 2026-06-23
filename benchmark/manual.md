@@ -424,6 +424,23 @@ uv run python -m runner run \
 
 该模式会忽略 `--agent-url`，读取 environment bridge `/api/concurrent`；如果读取失败，按并发 `1` 运行。
 
+Agent 配置说明：
+
+- `runner run --agent-url ...` 只调用一个已经启动的 agent daemon，本身不会读取或修改 `agent.toml`。这种模式下要在启动 daemon 时配置 agent，例如使用 `start-agent-daemon --agent-config path/to/agent.toml`，或按 daemon 自身的方式挂载配置。
+- `runner run --auto-agent-setup` 会为每个并发 task worker 自动准备独立的 agent config 目录并启动 daemon。此时可以通过 `--agent-config path/to/agent.toml` 指定 benchmark 使用的 agent 配置。
+- `--base-config-dir` 默认是 `benchmark/config`，runner 会先把这个目录复制到 worker config 目录，保留其中的 skills、control token 模板等文件。
+- 如果指定 `--agent-config`，该文件内容会写成 worker 的 `agent.toml`；如果不指定，runner 会优先使用 `--base-config-dir/agent.toml.template` 渲染生成 `agent.toml`，再退回默认配置。
+
+示例：
+
+```bash
+uv run python -m runner run \
+  --suite suites/mobilegym_basic.json \
+  --environment-url http://127.0.0.1:19090 \
+  --auto-agent-setup \
+  --agent-config ./local.agent.toml
+```
+
 ### 3.3 unit：运行 tool 单元测试 suite
 
 Unit suite 用于直接调用某个 tool，检查输出结构和错误状态。
@@ -535,6 +552,8 @@ uv run python -m runner start-agent-daemon \
 | `--daemon-image` | `aiden-agent-daemon:local` | agent daemon image |
 | `--no-build-daemon-image` | false | 只使用本地已有镜像 |
 | `--json` | false | 输出机器可读 JSON |
+
+`start-agent-daemon` 使用的 agent 配置规则与 `run --auto-agent-setup` 相同：先复制 `--base-config-dir`，再用 `--agent-config` 覆盖生成的 `agent.toml`；如果没有 `--agent-config`，则使用 `agent.toml.template` 或默认配置。手动启动 daemon 后，再把打印出的 `agent_url` 传给 `runner run --agent-url`。
 
 推荐的 CLI MobileGym 调试流程：
 
