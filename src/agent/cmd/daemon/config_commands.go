@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"aiden-agent/internal/agent"
 )
@@ -21,6 +23,17 @@ type ValidationError struct {
 type ValidationResult struct {
 	Valid  bool              `json:"valid"`
 	Errors []ValidationError `json:"errors"`
+}
+
+type ConfigTestResult struct {
+	OK      bool              `json:"ok"`
+	Results []ConfigTestCheck `json:"results"`
+}
+
+type ConfigTestCheck struct {
+	Check  string `json:"check"`
+	Passed bool   `json:"passed"`
+	Detail string `json:"detail"`
 }
 
 // webConfigDTO mirrors the JSON produced by config_web.cpp's config_to_json().
@@ -65,6 +78,18 @@ type ttsDTO struct {
 	VoiceID  string  `json:"voice_id"`
 	Emotion  string  `json:"emotion"`
 	Speed    float64 `json:"speed"`
+}
+
+func (d ttsDTO) playbackTestRequest(text string) agent.TTSPlaybackTestRequest {
+	return agent.TTSPlaybackTestRequest{
+		Provider: d.Provider,
+		APIKey:   d.APIKey,
+		Model:    d.Model,
+		VoiceID:  d.VoiceID,
+		Emotion:  d.Emotion,
+		Speed:    d.Speed,
+		Text:     text,
+	}
 }
 
 type sttDTO struct {
@@ -617,6 +642,98 @@ func runConfig(args []string) int {
 	return 0
 }
 
+type configTestInput struct {
+	Section string          `json:"section"`
+	Values  json.RawMessage `json:"values"`
+	Text    string          `json:"text"`
+}
+
+// runConfigTest implements `agent config-test` for checks that need agent
+// runtime code instead of config_web's lightweight shell probes.
+func runConfigTest(args []string) int {
+	fs := flag.NewFlagSet("config-test", flag.ExitOnError)
+	formatFlag := fs.String("format", "json", "output format (only json supported)")
+	stdinFlag := fs.Bool("stdin", false, "read test request from stdin")
+	sectionFlag := fs.String("section", "", "config section to test")
+	configFlag := fs.String("config", "", "path to agent.toml or config directory")
+	timeoutFlag := fs.Duration("timeout", 45*time.Second, "test timeout")
+
+	if err := fs.Parse(args); err != nil {
+		writeConfigTestResult(configTestFailure("request", "failed to parse flags: "+err.Error()))
+		return 1
+	}
+	if *formatFlag != "json" {
+		writeConfigTestResult(configTestFailure("request", "only --format=json is supported"))
+		return 1
+	}
+	if !*stdinFlag {
+		writeConfigTestResult(configTestFailure("request", "--stdin flag is required"))
+		return 1
+	}
+	if strings.TrimSpace(*configFlag) == "" {
+		writeConfigTestResult(configTestFailure("request", "--config is required"))
+		return 1
+	}
+
+	var input configTestInput
+	if err := json.NewDecoder(os.Stdin).Decode(&input); err != nil {
+		writeConfigTestResult(configTestFailure("request", "invalid JSON input: "+err.Error()))
+		return 1
+	}
+	section := strings.TrimSpace(input.Section)
+	if section == "" {
+		section = strings.TrimSpace(*sectionFlag)
+	}
+	if section != "tts" {
+		writeConfigTestResult(configTestFailure("request", "unsupported section: "+section))
+		return 1
+	}
+
+	cfg, err := agent.LoadResolvedConfig(*configFlag)
+	if err != nil {
+		writeConfigTestResult(configTestFailure("load_config", err.Error()))
+		return 1
+	}
+
+	var ttsValues ttsDTO
+	if len(input.Values) == 0 || string(input.Values) == "null" {
+		writeConfigTestResult(configTestFailure("request", "missing values object"))
+		return 1
+	}
+	if err := json.Unmarshal(input.Values, &ttsValues); err != nil {
+		writeConfigTestResult(configTestFailure("request", "invalid tts values: "+err.Error()))
+		return 1
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), *timeoutFlag)
+	defer cancel()
+	playback, err := agent.RunTTSPlaybackTest(ctx, cfg, ttsValues.playbackTestRequest(input.Text))
+	if err != nil {
+		writeConfigTestResult(configTestFailure("tts_playback", err.Error()))
+		return 1
+	}
+	writeConfigTestResult(ConfigTestResult{
+		OK: true,
+		Results: []ConfigTestCheck{{
+			Check:  "tts_playback",
+			Passed: true,
+			Detail: fmt.Sprintf("played %q with %s", playback.Text, playback.Provider),
+		}},
+	})
+	return 0
+}
+
+func configTestFailure(check, detail string) ConfigTestResult {
+	return ConfigTestResult{
+		OK: false,
+		Results: []ConfigTestCheck{{
+			Check:  check,
+			Passed: false,
+			Detail: detail,
+		}},
+	}
+}
+
 // parseValidationErrors converts a validation error into structured field errors
 // The Config.Validate() returns simple error strings, we parse them to extract field names
 func parseValidationErrors(err error) []ValidationError {
@@ -737,4 +854,10 @@ func writeConfigCheckError(message string) {
 	}
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.Encode(result)
+}
+
+func writeConfigTestResult(result ConfigTestResult) {
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	_ = encoder.Encode(result)
 }

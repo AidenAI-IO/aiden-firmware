@@ -177,8 +177,12 @@ func (s *wsSession) synthesizeChunk(text string) error {
 	if err := conn.WriteJSON(map[string]any{"event": "task_continue", "text": text}); err != nil {
 		return fmt.Errorf("write task_continue: %w", err)
 	}
+	if err := conn.WriteJSON(map[string]any{"event": "task_finish"}); err != nil {
+		return fmt.Errorf("write task_finish: %w", err)
+	}
 
 	// receive audio
+	wroteAudio := false
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -187,7 +191,20 @@ func (s *wsSession) synthesizeChunk(text string) error {
 		}
 		var resp map[string]any
 		if err := readJSONWithContext(s.ctx, conn, &resp); err != nil {
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) && wroteAudio {
+				log.Printf("[tts] %s: synthesized %d chars\n", s.cfg.provider, len(text))
+				return nil
+			}
 			return fmt.Errorf("read audio: %w", err)
+		}
+		if event, _ := resp["event"].(string); event != "" {
+			switch event {
+			case "task_finished":
+				log.Printf("[tts] %s: synthesized %d chars\n", s.cfg.provider, len(text))
+				return nil
+			case "task_failed":
+				return fmt.Errorf("task failed: %s", minimaxResponseMessage(resp))
+			}
 		}
 		if data, ok := resp["data"].(map[string]any); ok {
 			if audioHex, ok := data["audio"].(string); ok && audioHex != "" {
@@ -199,22 +216,11 @@ func (s *wsSession) synthesizeChunk(text string) error {
 					if err := s.sink.WritePCM(pcm); err != nil {
 						return err
 					}
+					wroteAudio = true
 				}
 			}
 		}
-		if isFinal, _ := resp["is_final"].(bool); isFinal {
-			break
-		}
 	}
-
-	// task_finish
-	_ = conn.WriteJSON(map[string]any{"event": "task_finish"})
-	// read and discard task_finished response
-	var finishResp map[string]any
-	_ = readJSONWithContext(s.ctx, conn, &finishResp)
-
-	log.Printf("[tts] minimax-ws: synthesized %d chars\n", len(text))
-	return nil
 }
 
 func (s *wsSession) dial() (*websocket.Conn, error) {
@@ -243,6 +249,21 @@ func (s *wsSession) dial() (*websocket.Conn, error) {
 		return nil, fmt.Errorf("unexpected connect response: %v", connResp)
 	}
 	return conn, nil
+}
+
+func minimaxResponseMessage(resp map[string]any) string {
+	if base, ok := resp["base_resp"].(map[string]any); ok {
+		if msg, ok := base["status_msg"].(string); ok && msg != "" {
+			return msg
+		}
+		if msg, ok := base["message"].(string); ok && msg != "" {
+			return msg
+		}
+	}
+	if msg, ok := resp["message"].(string); ok && msg != "" {
+		return msg
+	}
+	return fmt.Sprint(resp)
 }
 
 func readJSONWithContext(ctx context.Context, conn *websocket.Conn, v any) error {

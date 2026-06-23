@@ -32,6 +32,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -240,6 +241,62 @@ bool wait_for_port(int port, int timeout_ms) {
     }
     return false;
 }
+
+class HeadProbeServer {
+public:
+    HeadProbeServer() {
+        fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
+        REQUIRE(fd_ >= 0);
+        int opt = 1;
+        REQUIRE(::setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == 0);
+        sockaddr_in addr;
+        std::memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = 0;
+        REQUIRE(::bind(fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
+        socklen_t len = sizeof(addr);
+        REQUIRE(::getsockname(fd_, reinterpret_cast<sockaddr*>(&addr), &len) == 0);
+        port_ = ntohs(addr.sin_port);
+        REQUIRE(::listen(fd_, 8) == 0);
+        worker_ = std::thread([this] { serve(); });
+    }
+
+    ~HeadProbeServer() {
+        stop_ = true;
+        if (fd_ >= 0) {
+            ::shutdown(fd_, SHUT_RDWR);
+            ::close(fd_);
+        }
+        if (worker_.joinable()) {
+            worker_.join();
+        }
+    }
+
+    int port() const { return port_; }
+
+private:
+    void serve() {
+        while (!stop_) {
+            int client = ::accept(fd_, nullptr, nullptr);
+            if (client < 0) {
+                continue;
+            }
+            const char response[] =
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Length: 0\r\n"
+                "Connection: close\r\n"
+                "\r\n";
+            (void)::send(client, response, sizeof(response) - 1, 0);
+            ::close(client);
+        }
+    }
+
+    int fd_ = -1;
+    int port_ = 0;
+    std::atomic<bool> stop_{false};
+    std::thread worker_;
+};
 
 // Captures one HTTP response. Status code is parsed from the status line; the
 // body is the bytes after the first blank line. We don't care about
@@ -836,6 +893,41 @@ TEST_CASE("config_web: config test rejects blank search api key without stored m
     CHECK(test_resp.status == 200);
     CHECK(test_resp.body.find("\"ok\":false") != std::string::npos);
     CHECK(test_resp.body.find("required for brave") != std::string::npos);
+}
+
+TEST_CASE("config_web: tts config test invokes playback of test passed") {
+    auto tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    const std::string log_path = tmp + "/config-test.log";
+    StubEnv env;
+    env.set("AIDEN_AGENT_STUB_CONFIG_TEST_LOG", log_path);
+    auto handle = start_server(env);
+    HeadProbeServer probe;
+
+    const std::string endpoint = "http://127.0.0.1:" + std::to_string(probe.port());
+    const std::string test_body =
+        "{\"section\":\"tts\",\"values\":{"
+        "\"provider\":\"minimax-cn\","
+        "\"api_key\":\"tts-test-key\","
+        "\"model\":\"speech-2.8-hd\","
+        "\"voice_id\":\"male-qn-qingse\","
+        "\"emotion\":\"happy\","
+        "\"speed\":1,"
+        "\"base_url\":\"" + endpoint + "\""
+        "}}";
+
+    HttpResponse test_resp = http_request(handle->port, "POST", "/api/config/test", test_body);
+    CHECK(test_resp.status == 200);
+    CHECK(test_resp.body.find("\"ok\":true") != std::string::npos);
+    CHECK(test_resp.body.find("tts_playback") != std::string::npos);
+    CHECK(test_resp.body.find("test passed") != std::string::npos);
+    REQUIRE(wait_for_file_contains(log_path, "test passed", 1000));
+    const std::string log = read_file(log_path);
+    CHECK(log.find("config-test") != std::string::npos);
+    CHECK(log.find("--section=tts") != std::string::npos);
 }
 
 TEST_CASE("config_web: GET /api/config accepts optional field-level omissions from resolved config") {
