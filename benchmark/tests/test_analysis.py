@@ -226,6 +226,98 @@ def test_collect_context_mobilegym_run_includes_errors_runner_logs_and_bridge_ac
     assert any(item["path"].endswith("clock_runner.py") for item in ctx["code"])
 
 
+def test_collect_context_mobilegym_bridge_inactive_setup_errors_add_known_issue(tmp_path):
+    repo = tmp_path / "repo"
+    run_dir = repo / "benchmark" / "runs" / "mobilegym" / "batch-bridge-inactive"
+    shard = run_dir / "skillopt" / "shard-0"
+    raw = shard / "raw" / "run"
+    raw.mkdir(parents=True)
+    error = (
+        "AidenAdapterError: setup tool keyboard_tap failed: error: "
+        "keyboard_tap failed: mobilegym bridge episode is not active"
+    )
+    (run_dir / "summary.json").write_text(
+        json.dumps({"batch_id": "batch-bridge-inactive", "tasks": 2, "error": 2}),
+        encoding="utf-8",
+    )
+    (shard / "shard.json").write_text(
+        json.dumps({"selected_task_ids": ["suite.task_a", "suite.task_b"]}), encoding="utf-8"
+    )
+    (raw / "errors.jsonl").write_text(
+        json.dumps({"id": "suite.task_a", "error": error})
+        + "\n"
+        + json.dumps({"id": "suite.task_b", "error": error})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    ctx = analysis.collect_context(run_dir, repo, analysis.AnalysisConfig(enabled=True))
+
+    assert ctx["known_issues"] == [
+        {
+            "id": "mobilegym_setup_before_episode_start",
+            "category": "benchmark_infra_issue",
+            "task_ids": ["suite.task_a", "suite.task_b"],
+            "summary": "MobileGym setup tools ran before the bridge episode was active.",
+            "evidence": [
+                "AidenAdapterError: setup tool keyboard_tap failed: error: keyboard_tap failed: mobilegym bridge episode is not active"
+            ],
+            "suspected_cause": (
+                "AidenGoAgent reset/setup lifecycle invoked setup tool_sequence before "
+                "bridge /episode/start and daemon /api/mobilegym/episode/start bound an active episode."
+            ),
+        }
+    ]
+
+
+def test_analyze_run_normalizes_bridge_inactive_analysis_payload(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    run_dir = repo / "benchmark" / "runs" / "mobilegym" / "batch-bridge-inactive"
+    shard = run_dir / "skillopt" / "shard-0"
+    raw = shard / "raw" / "run"
+    raw.mkdir(parents=True)
+    error = (
+        "AidenAdapterError: setup tool keyboard_tap failed: error: "
+        "keyboard_tap failed: mobilegym bridge episode is not active"
+    )
+    (run_dir / "summary.json").write_text(
+        json.dumps({"batch_id": "batch-bridge-inactive", "tasks": 1, "error": 1}),
+        encoding="utf-8",
+    )
+    (shard / "shard.json").write_text(
+        json.dumps({"selected_task_ids": ["suite.task_a"]}), encoding="utf-8"
+    )
+    (raw / "errors.jsonl").write_text(json.dumps({"id": "suite.task_a", "error": error}) + "\n", encoding="utf-8")
+
+    def fake_chat(cfg, context, api_key):
+        assert context["known_issues"][0]["id"] == "mobilegym_setup_before_episode_start"
+        return json.dumps(
+            {
+                "summary": "All tasks failed because the bridge episode was inactive.",
+                "classification_counts": {"benchmark_infra_issue": 1, "agent_behavior_issue": 0},
+                "failure_clusters": [{}],
+                "recommendations": [
+                    "Resolve the container platform mismatch.",
+                    "Fix the missing benchmark directory.",
+                ],
+                "evidence_gaps": [],
+            }
+        )
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(analysis, "chat_analysis_model", fake_chat)
+
+    result = analysis.analyze_run(run_dir, repo, analysis.AnalysisConfig(enabled=True))
+
+    payload = json.loads((run_dir / "llm_analysis.json").read_text(encoding="utf-8"))
+    markdown = (run_dir / "llm_analysis.md").read_text(encoding="utf-8")
+    assert result.ok is True
+    assert payload["failure_clusters"][0]["category"] == "benchmark_infra_issue"
+    assert payload["failure_clusters"][0]["task_ids"] == ["suite.task_a"]
+    assert "MobileGym setup ran before bridge episode activation" in markdown
+    assert "Category: `unknown`" not in markdown
+
+
 def test_collect_context_records_warnings_for_malformed_artifacts(tmp_path):
     repo = tmp_path / "repo"
     run_dir = repo / "benchmark" / "runs" / "mobilegym" / "batch-bad"

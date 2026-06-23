@@ -16,6 +16,19 @@ DEFAULT_MAX_LOG_BYTES = 64 * 1024
 DEFAULT_MAX_CODE_BYTES = 128 * 1024
 DEFAULT_TOTAL_CONTEXT_BYTES = 320 * 1024
 DEFAULT_TIMEOUT_SEC = 180
+ROOT_CAUSE_CATEGORIES = {
+    "suite_issue",
+    "project_code_issue",
+    "agent_behavior_issue",
+    "benchmark_infra_issue",
+    "environment_issue",
+    "evaluation_issue",
+    "insufficient_evidence",
+}
+BRIDGE_INACTIVE_SETUP_RE = re.compile(
+    r"AidenAdapterError:\s*setup tool\s+\S+\s+failed:.*mobilegym bridge episode is not active",
+    re.IGNORECASE,
+)
 
 
 @dc.dataclass
@@ -393,6 +406,7 @@ def _collect_native_context(
         "suite": {"path": str(suite_path), "content_excerpt": suite_excerpt},
         "summary_excerpt": summary_excerpt,
         "failures": failures,
+        "known_issues": _known_issue_hints(failures),
         "logs": [],
         "code": _collect_code_context(repo_root, terms, cfg, warnings),
     }
@@ -587,6 +601,7 @@ def _collect_mobilegym_context(
                 "artifact_refs": row.get("artifact_refs") or [],
             }
         )
+    known_issues = _known_issue_hints(failures)
     return {
         "run": {
             "id": str(summary.get("batch_id") or run_dir.name),
@@ -600,9 +615,54 @@ def _collect_mobilegym_context(
         },
         "suite": {"path": "", "content_excerpt": ""},
         "failures": failures,
+        "known_issues": known_issues,
         "logs": logs,
         "code": _collect_code_context(repo_root, terms, cfg, warnings),
     }
+
+
+def _known_issue_hints(failures: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    bridge_inactive_tasks: list[str] = []
+    bridge_inactive_evidence: list[str] = []
+    for failure in failures:
+        task_id = str(failure.get("task_id") or "")
+        candidates = [str(item) for item in failure.get("errors") or []]
+        for key in ("trace_excerpt", "history_excerpt", "judge_excerpt"):
+            if failure.get(key):
+                candidates.append(str(failure.get(key)))
+        for text in candidates:
+            match = BRIDGE_INACTIVE_SETUP_RE.search(text)
+            if not match:
+                continue
+            if task_id and task_id not in bridge_inactive_tasks:
+                bridge_inactive_tasks.append(task_id)
+            evidence = _clean_error_evidence(match.group(0))
+            if evidence not in bridge_inactive_evidence:
+                bridge_inactive_evidence.append(evidence)
+            break
+    if not bridge_inactive_tasks:
+        return []
+    return [
+        {
+            "id": "mobilegym_setup_before_episode_start",
+            "category": "benchmark_infra_issue",
+            "task_ids": bridge_inactive_tasks,
+            "summary": "MobileGym setup tools ran before the bridge episode was active.",
+            "evidence": bridge_inactive_evidence,
+            "suspected_cause": (
+                "AidenGoAgent reset/setup lifecycle invoked setup tool_sequence before "
+                "bridge /episode/start and daemon /api/mobilegym/episode/start bound an active episode."
+            ),
+        }
+    ]
+
+
+def _clean_error_evidence(text: str) -> str:
+    text = str(text).strip()
+    for prefix in ("error: ", "agent_error: ", "execution.error: "):
+        if text.startswith(prefix):
+            return text[len(prefix) :].strip()
+    return text
 
 
 def _mobilegym_status(row: dict[str, Any]) -> tuple[str, str]:
@@ -631,6 +691,11 @@ def _analysis_user_prompt(context: dict[str, Any]) -> str:
 summary, failure_clusters, recommendations, classification_counts, evidence_gaps.
 Root-cause categories must be one of: suite_issue, project_code_issue, agent_behavior_issue,
 benchmark_infra_issue, environment_issue, evaluation_issue, insufficient_evidence.
+If CONTEXT JSON contains known_issues, treat them as evidence-backed root-cause hints and either
+use them directly or explain why stronger evidence overrides them. Do not infer environment causes
+such as platform mismatch or missing directories unless the failure excerpts/logs directly show
+those errors. For "setup tool ... mobilegym bridge episode is not active", prefer a
+benchmark_infra_issue about MobileGym adapter episode/setup lifecycle ordering over agent behavior.
 
 CONTEXT JSON:
 """ + json.dumps(context, ensure_ascii=False, indent=2)
@@ -690,6 +755,115 @@ def extract_analysis_json(raw: str) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {"summary": str(parsed)}
 
 
+def _normalize_analysis_payload(context: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {"summary": str(payload)}
+    payload = dict(payload)
+    _apply_known_issues_to_payload(context, payload)
+    _normalize_failure_cluster_categories(payload)
+    return payload
+
+
+def _apply_known_issues_to_payload(context: dict[str, Any], payload: dict[str, Any]) -> None:
+    known_issues = context.get("known_issues") if isinstance(context.get("known_issues"), list) else []
+    if not known_issues:
+        return
+    clusters = payload.get("failure_clusters")
+    if not isinstance(clusters, list):
+        clusters = []
+    clusters = [cluster if isinstance(cluster, dict) else {} for cluster in clusters]
+    payload["failure_clusters"] = clusters
+    counts = payload.get("classification_counts")
+    if not isinstance(counts, dict):
+        counts = {}
+        payload["classification_counts"] = counts
+
+    for issue in known_issues:
+        if not isinstance(issue, dict):
+            continue
+        issue_id = str(issue.get("id") or "")
+        if issue_id == "mobilegym_setup_before_episode_start":
+            _apply_bridge_inactive_issue(issue, payload)
+
+
+def _apply_bridge_inactive_issue(issue: dict[str, Any], payload: dict[str, Any]) -> None:
+    task_ids = [str(task_id) for task_id in issue.get("task_ids") or []]
+    cluster = {
+        "title": "MobileGym setup ran before bridge episode activation",
+        "category": "benchmark_infra_issue",
+        "confidence": "high",
+        "task_ids": task_ids,
+        "suspected_cause": issue.get("suspected_cause") or issue.get("summary") or "",
+        "evidence": issue.get("evidence") or [],
+    }
+    clusters = payload.setdefault("failure_clusters", [])
+    target_index = None
+    for index, existing in enumerate(clusters):
+        if not isinstance(existing, dict):
+            continue
+        text = json.dumps(existing, ensure_ascii=False).lower()
+        category = str(existing.get("category") or "").strip()
+        if "mobilegym bridge episode is not active" in text or category in {"", "unknown"}:
+            target_index = index
+            break
+    if target_index is None:
+        clusters.insert(0, cluster)
+    else:
+        existing = clusters[target_index] if isinstance(clusters[target_index], dict) else {}
+        merged = {**existing, **cluster}
+        clusters[target_index] = merged
+    counts = payload.setdefault("classification_counts", {})
+    if isinstance(counts, dict):
+        current = _safe_int(counts.get("benchmark_infra_issue"))
+        counts["benchmark_infra_issue"] = max(current, len(task_ids) or 1)
+    recommendations = payload.get("recommendations")
+    if not isinstance(recommendations, list):
+        recommendations = []
+        payload["recommendations"] = recommendations
+    lifecycle_rec = {
+        "priority": "high",
+        "target": "benchmark/mobilegym/adapter/aiden_go_agent.py",
+        "suggestion": "Run Aiden suite global_reset/setup only after bridge /episode/start and daemon /api/mobilegym/episode/start have activated the MobileGym episode.",
+    }
+    if not any("/api/mobilegym/episode/start" in json.dumps(item, ensure_ascii=False) for item in recommendations):
+        recommendations.insert(0, lifecycle_rec)
+
+
+def _normalize_failure_cluster_categories(payload: dict[str, Any]) -> None:
+    clusters = payload.get("failure_clusters")
+    if not isinstance(clusters, list):
+        return
+    fallback = _dominant_classification(payload.get("classification_counts"))
+    for cluster in clusters:
+        if not isinstance(cluster, dict):
+            continue
+        category = str(cluster.get("category") or "").strip()
+        if category not in ROOT_CAUSE_CATEGORIES:
+            cluster["category"] = fallback or "insufficient_evidence"
+        if not str(cluster.get("confidence") or "").strip():
+            cluster["confidence"] = "medium"
+
+
+def _dominant_classification(counts: Any) -> str:
+    if not isinstance(counts, dict):
+        return ""
+    positive = [
+        (str(category), _safe_int(value))
+        for category, value in counts.items()
+        if str(category) in ROOT_CAUSE_CATEGORIES and _safe_int(value) > 0
+    ]
+    if len(positive) != 1:
+        return ""
+    return positive[0][0]
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _atomic_write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -706,6 +880,7 @@ def analyze_run(run_dir: Path, repo_root: Path, cfg: AnalysisConfig) -> Analysis
         context = json.loads(redact_text(json.dumps(context, ensure_ascii=False), cfg))
         raw = chat_analysis_model(cfg, context, api_key)
         payload = extract_analysis_json(redact_text(raw, cfg))
+        payload = _normalize_analysis_payload(context, payload)
         payload.setdefault("metadata", {})
         payload["metadata"].update({"model": cfg.model, "api_key_env": key_name, "run_dir": str(run_dir)})
         json_path = run_dir / "llm_analysis.json"

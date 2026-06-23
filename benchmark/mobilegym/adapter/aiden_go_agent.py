@@ -154,7 +154,7 @@ class AidenGoAgent(_MobileGymBaseAgent):
 
     def reset(self, task: Any) -> None:
         self.task = self._resolve_task(task)
-        self._prepare_aiden_suite_task(self.task)
+        self._clear_aiden_suite_task_evidence(self.task)
 
     def _resolve_task(self, task: Any) -> Any:
         if isinstance(task, str):
@@ -191,6 +191,7 @@ class AidenGoAgent(_MobileGymBaseAgent):
             # don't bleed into this episode's context window. Mirrors what
             # benchmark/runner/recovery.py does for the HDMI backend.
             self._post_daemon("/api/clear", {}, timeout=self.episode_timeout_sec)
+            self._prepare_aiden_suite_task(self.task)
             chat_started = True
             chat_result = self._post_daemon(
                 "/api/chat",
@@ -284,14 +285,18 @@ class AidenGoAgent(_MobileGymBaseAgent):
             timeout=timeout,
         )
 
-    def _prepare_aiden_suite_task(self, task: Any) -> None:
+    def _clear_aiden_suite_task_evidence(self, task: Any) -> None:
         metadata = _task_metadata(task)
         if not metadata or not _is_aiden_suite_task(metadata):
             return
         metadata.pop("aiden_last_response", None)
         metadata.pop("aiden_last_chat_history", None)
+
+    def _prepare_aiden_suite_task(self, task: Any) -> None:
+        metadata = _task_metadata(task)
+        if not metadata or not _is_aiden_suite_task(metadata):
+            return
         try:
-            self._post_daemon("/api/clear", {}, timeout=self.episode_timeout_sec)
             self._run_setup(metadata.get("global_reset"))
             self._run_setup(metadata.get("setup"))
         except AidenAdapterError:

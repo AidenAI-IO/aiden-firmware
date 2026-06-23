@@ -82,7 +82,71 @@ def test_aiden_go_agent_act_runs_one_episode_and_returns_complete_action():
     assert client.calls[3][1] == {"message": "count alarms", "episode_id": "ep-test"}
 
 
-def test_aiden_go_agent_reset_runs_aiden_suite_setup_with_runtime_memory_dir(monkeypatch):
+def test_aiden_go_agent_runs_setup_after_mobilegym_episode_is_active():
+    module = importlib.import_module("mobilegym.adapter.aiden_go_agent")
+
+    class BridgeAwareHTTPClient(RecordingHTTPClient):
+        def __init__(self):
+            super().__init__()
+            self.episode_active = False
+
+        def post_json(self, url, payload, *, token=None, timeout=None):
+            self.calls.append((url, payload, token, timeout))
+            if url.endswith("/api/mobilegym/episode/start"):
+                self.episode_active = True
+                return {"ok": True}
+            if url.endswith("/api/mobilegym/episode/end"):
+                self.episode_active = False
+                return {"ok": True}
+            if url.endswith("/api/tools/keyboard_tap"):
+                if not self.episode_active:
+                    return {
+                        "is_error": True,
+                        "output": "error: keyboard_tap failed: mobilegym bridge episode is not active",
+                    }
+                return {"is_error": False, "output": "ok"}
+            if url.endswith("/api/chat"):
+                return {"response": "done"}
+            if url.endswith("/episode/end"):
+                return {"ok": True, "data": {"action_log": []}}
+            return {"ok": True}
+
+    class Task:
+        id = "suite.case_one"
+        instruction = "Do it."
+        metadata = {
+            "aiden_suite_name": "suite",
+            "global_reset": {
+                "tool_sequence": [
+                    {"tool": "keyboard_tap", "args": {"keys": ["meta", "h"]}},
+                ],
+            },
+        }
+
+    client = BridgeAwareHTTPClient()
+    agent = module.AidenGoAgent(
+        bridge_url="http://bridge.local",
+        bridge_control_token="bridge-control",
+        daemon=FakeDaemon(),
+        http_client=client,
+        episode_id_factory=lambda: "ep-setup",
+    )
+
+    agent.reset(Task())
+    agent.act(obs=None)
+
+    assert [call[0] for call in client.calls] == [
+        "http://bridge.local/episode/start",
+        "http://daemon.local/api/mobilegym/episode/start",
+        "http://daemon.local/api/clear",
+        "http://daemon.local/api/tools/keyboard_tap",
+        "http://daemon.local/api/chat",
+        "http://daemon.local/api/mobilegym/episode/end",
+        "http://bridge.local/episode/end",
+    ]
+
+
+def test_aiden_go_agent_act_runs_aiden_suite_setup_with_runtime_memory_dir(monkeypatch):
     module = importlib.import_module("mobilegym.adapter.aiden_go_agent")
     daemon = FakeDaemon()
     client = RecordingHTTPClient()
@@ -96,6 +160,7 @@ def test_aiden_go_agent_reset_runs_aiden_suite_setup_with_runtime_memory_dir(mon
 
     class Task:
         id = "personamem_lt_recall_v1.personamem_music"
+        instruction = "Recall the music preference."
         metadata = {
             "aiden_suite_name": "personamem_lt_recall_v1",
             "global_reset": {
@@ -122,12 +187,21 @@ def test_aiden_go_agent_reset_runs_aiden_suite_setup_with_runtime_memory_dir(mon
 
     agent.reset(Task())
 
+    assert client.calls == []
+
+    agent.act(obs=None)
+
     assert [call[0] for call in client.calls] == [
+        "http://bridge.local/episode/start",
+        "http://daemon.local/api/mobilegym/episode/start",
         "http://daemon.local/api/clear",
         "http://daemon.local/api/tools/shell",
         "http://daemon.local/api/tools/shell",
+        "http://daemon.local/api/chat",
+        "http://daemon.local/api/mobilegym/episode/end",
+        "http://bridge.local/episode/end",
     ]
-    commands = [call[1]["input"]["command"] for call in client.calls[1:]]
+    commands = [call[1]["input"]["command"] for call in client.calls[3:5]]
     assert commands == [
         "rm -rf /tmp/aiden-config/memory/long_term",
         "mkdir -p /tmp/aiden-config/memory/long_term/memories",

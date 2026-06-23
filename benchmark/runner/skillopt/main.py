@@ -34,6 +34,7 @@ from runner.skillopt.types import OptimizationResult
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9_.\-]+$")
+DIFF_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
 def _valid_safe_relative_label(label: str) -> bool:
@@ -349,7 +350,6 @@ def _write_web_artifacts(
     run_dir.mkdir(parents=True, exist_ok=True)
     score_summary = _score_summary(result)
     linked_reports = _linked_reports(cfg.run_id, result, backend)
-    raw_score_summary = _raw_score_summary(cfg, result, backend)
     best_verification = score_summary.get("best_verification") or {}
     validation_total = int(best_verification.get("n") or len(cfg.selection_tasks))
     passed = int(best_verification.get("n_passed") or _passed_count(result.best_score, validation_total))
@@ -369,7 +369,6 @@ def _write_web_artifacts(
         "judge_config": {"provider": "openrouter", "model": judge_model} if judge_model else None,
         "scores": {"initial": result.initial_score, "best": result.best_score},
         "score_summary": score_summary,
-        "raw_score_summary": raw_score_summary,
         "linked_reports": linked_reports,
         "artifacts": {"best_skill": "best_skill.md", "diff": "diff.patch", "result": "result.json"},
         "totals": totals,
@@ -414,40 +413,15 @@ def _linked_reports(run_id: str, result: OptimizationResult, backend: str) -> di
     }
 
 
-def _raw_score_summary(cfg: OptimizationConfig, result: OptimizationResult, backend: str) -> dict[str, dict]:
-    if backend != "mobilegym":
-        return {}
-    mobilegym_root = cfg.artifact_root.parent / "mobilegym"
-    out: dict[str, dict] = {}
-    for summary in result.phase_summaries:
-        path = mobilegym_root / f"{cfg.run_id}-{summary.phase}" / "summary.json"
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if not isinstance(payload, dict):
-            continue
-        row = {
-            "passed": int(payload.get("passed") or 0),
-            "tasks": int(payload.get("tasks") or 0),
-            "failed": int(payload.get("failed") or 0),
-            "error": int(payload.get("error") or 0),
-        }
-        if payload.get("pass_rate") is not None:
-            row["pass_rate"] = payload.get("pass_rate")
-        out[summary.phase] = row
-    return out
-
-
 def _render_report_html(manifest: dict, result: OptimizationResult, original_skill: str, diff_text: str) -> str:
     step_rows = _render_step_rows(result)
     skill = html.escape(manifest["skill"])
     train_suite = html.escape(manifest.get("train_suite", ""))
     validation_suite = html.escape(manifest.get("validation_suite", ""))
-    diff = html.escape(diff_text or "(no diff)")
+    diff = _render_diff_html(diff_text)
     original_len = len(original_skill.splitlines())
     best_len = len(result.best_skill.splitlines())
-    score_rows = _render_score_rows(result, manifest.get("linked_reports", {}), manifest.get("raw_score_summary", {}))
+    score_rows = _render_score_rows(result, manifest.get("linked_reports", {}))
     edit_rows = _render_edit_rows(result)
     artifact_rows = _render_artifact_rows(manifest)
     stop_reason = html.escape(result.stop_reason or "completed budget or accepted best candidate")
@@ -460,6 +434,8 @@ body{{font-family:system-ui,-apple-system,sans-serif;background:#f6f7fb;color:#2
 h1{{font-size:24px;margin:0 0 8px}} p{{color:#475569}} table{{width:100%;border-collapse:collapse;font-size:13px}} td,th{{border-bottom:1px solid #edf0f6;padding:8px;text-align:left;vertical-align:top}} pre{{background:#111827;color:#d1fae5;border-radius:12px;padding:14px;overflow:auto;font-size:12px;line-height:1.5}} code{{background:#eef2ff;border-radius:6px;padding:2px 6px}} a{{color:#2563eb}}
 .artifact-link{{font-weight:650;text-decoration:none}}
 .artifact-link:hover{{text-decoration:underline}}
+.detail-btn{{border:0;background:transparent;color:var(--accent);cursor:pointer;padding:0;font:inherit;font-weight:650}}
+.detail-btn:hover{{text-decoration:underline}}
 .drawer-backdrop{{position:fixed;inset:0;z-index:40;background:color-mix(in oklch,var(--fg) 18%,transparent);opacity:0;pointer-events:none;transition:opacity 180ms ease}}
 .drawer{{position:fixed;top:0;right:0;bottom:0;z-index:50;width:min(720px,100vw);background:var(--surface);border-left:1px solid var(--border);box-shadow:-24px 0 80px color-mix(in oklch,var(--fg) 10%,transparent);transform:translateX(100%);transition:transform 220ms ease;display:flex;flex-direction:column}}
 body.open .drawer-backdrop{{opacity:1;pointer-events:auto}}
@@ -478,20 +454,106 @@ body.open .drawer{{transform:translateX(0)}}
 .block-head span{{color:var(--muted);font-family:var(--font-mono);font-size:10px}}
 .block-body{{padding:12px 14px;font-size:13px;line-height:1.6}}
 pre.block-body{{margin:0;white-space:pre-wrap;word-break:break-word;font-family:var(--font-mono);font-size:12px;line-height:1.65;background:var(--surface);color:var(--fg);border-radius:0}}
-pre.skillopt-reasoning,pre.skillopt-edits{{white-space:pre-wrap;word-break:break-word;background:color-mix(in oklch,var(--bg) 58%,white);color:var(--fg);border:1px solid var(--border);max-width:48ch}}
+.edit-summary{{display:flex;flex-wrap:wrap;gap:6px;align-items:center}}
+.edit-pill{{display:inline-flex;align-items:center;height:24px;border-radius:999px;border:1px solid var(--border);background:color-mix(in oklch,var(--bg) 65%,white);padding:0 8px;color:var(--muted);font-size:11px}}
+.diff-summary{{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px;color:var(--muted);font-size:12px}}
+.diff-pill{{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--border);border-radius:999px;background:color-mix(in oklch,var(--bg) 60%,white);padding:4px 8px}}
+.diff-pill.add{{color:oklch(42% 0.13 154);border-color:color-mix(in oklch,oklch(64% 0.15 154) 34%,var(--border));background:color-mix(in oklch,oklch(92% 0.06 154) 72%,white)}}
+.diff-pill.del{{color:oklch(45% 0.16 28);border-color:color-mix(in oklch,oklch(65% 0.17 28) 30%,var(--border));background:color-mix(in oklch,oklch(93% 0.05 28) 72%,white)}}
+.diff-viewer{{border:1px solid var(--border);border-radius:12px;overflow:auto;background:oklch(98% 0.006 255);font-family:var(--font-mono);font-size:12px;line-height:1.55}}
+.diff-line{{display:grid;grid-template-columns:4.5ch 4.5ch minmax(42rem,1fr);min-height:22px}}
+.diff-line span{{white-space:pre}}
+.diff-old,.diff-new{{padding:2px 7px;text-align:right;color:color-mix(in oklch,var(--muted) 68%,transparent);border-right:1px solid color-mix(in oklch,var(--border) 70%,transparent);user-select:none}}
+.diff-code{{padding:2px 10px}}
+.diff-file .diff-code{{font-weight:700;color:oklch(37% 0.08 255);background:color-mix(in oklch,var(--bg) 82%,white)}}
+.diff-hunk .diff-code{{color:oklch(42% 0.13 270);background:color-mix(in oklch,oklch(92% 0.05 270) 78%,white)}}
+.diff-add{{background:color-mix(in oklch,oklch(94% 0.06 154) 64%,white)}}
+.diff-add .diff-code{{color:oklch(35% 0.11 154)}}
+.diff-del{{background:color-mix(in oklch,oklch(94% 0.06 28) 66%,white)}}
+.diff-del .diff-code{{color:oklch(40% 0.14 28)}}
+.diff-context .diff-code{{color:var(--fg)}}
+.diff-note .diff-code{{color:var(--muted);font-style:italic}}
+.diff-empty{{border:1px dashed var(--border);border-radius:12px;padding:14px;color:var(--muted);background:color-mix(in oklch,var(--bg) 66%,white)}}
 .error-block{{border-color:color-mix(in oklch,oklch(60% 0.18 28) 28%,var(--border))}}
 .error-block .block-head{{background:color-mix(in oklch,oklch(60% 0.18 28) 7%,white);border-bottom-color:color-mix(in oklch,oklch(60% 0.18 28) 20%,var(--border))}}
 @media (max-width:768px){{.drawer{{width:100vw}}body{{padding:18px}}}}
 </style></head><body>
 <h1>SkillOpt Report</h1>
 <div class="card"><p><strong>Skill:</strong> {skill}</p><p><strong>Train:</strong> {train_suite}</p><p><strong>Verification:</strong> {validation_suite}</p><p><strong>Initial score:</strong> {result.initial_score:.3f} <strong>Best score:</strong> {result.best_score:.3f}</p><p><strong>Stop reason:</strong> {stop_reason}</p><p><strong>Skill size:</strong> {original_len} lines to {best_len} lines</p></div>
-<div class="card"><h2>Scores</h2><p>The main result follows the selected backend. For MobileGym runs, <strong>MobileGym result</strong> matches the child report. <strong>Optimization score</strong> is the stricter score used internally for SkillOpt gate decisions. Task pass rate counts completed tasks; rubric pass rate counts rubric checks.</p><table><thead><tr><th>Phase</th><th>Kind</th><th>Suite</th><th>MobileGym result</th><th>Optimization score</th><th>Task pass rate</th><th>Rubric pass rate</th><th>Report</th></tr></thead><tbody>{score_rows}</tbody></table></div>
+<div class="card"><h2>Scores</h2><p><strong>SkillOpt gate</strong> is the only score used to accept or reject edits. Open a phase report when task-level details are needed.</p><table><thead><tr><th>Phase</th><th>Kind</th><th>Suite</th><th>SkillOpt gate</th><th>Gate hard rate</th><th>Report</th></tr></thead><tbody>{score_rows}</tbody></table></div>
 <div class="card"><h2>Steps</h2><table><thead><tr><th>Step</th><th>Decision</th><th>Current</th><th>Candidate</th><th>Reason</th></tr></thead><tbody>{step_rows}</tbody></table></div>
-<div class="card"><h2>Edits</h2><table><thead><tr><th>Step</th><th>Status</th><th>Reasoning</th><th>Edits</th></tr></thead><tbody>{edit_rows}</tbody></table></div>
+<div class="card"><h2>Edits</h2><table><thead><tr><th>Step</th><th>Status</th><th>Summary</th><th>Details</th></tr></thead><tbody>{edit_rows}</tbody></table></div>
 <div class="card"><h2>Artifacts</h2><table><thead><tr><th>Name</th><th>Path</th></tr></thead><tbody>{artifact_rows}</tbody></table></div>
-<div class="card"><h2>Diff</h2><pre>{diff}</pre></div>
-{_artifact_drawer_markup()}
+<div class="card"><h2>Diff</h2>{diff}</div>
+{_artifact_drawer_markup(manifest, result)}
 </body></html>"""
+
+
+def _render_diff_html(diff_text: str) -> str:
+    if not diff_text.strip():
+        return '<div class="diff-empty">No skill text changes were produced.</div>'
+
+    old_line: int | None = None
+    new_line: int | None = None
+    added = 0
+    removed = 0
+    rows = []
+
+    for line in diff_text.splitlines():
+        old_cell = ""
+        new_cell = ""
+        line_class = "diff-context"
+
+        if line.startswith("@@"):
+            match = DIFF_HUNK_RE.match(line)
+            if match:
+                old_line = int(match.group(1))
+                new_line = int(match.group(2))
+            line_class = "diff-hunk"
+        elif line.startswith("--- ") or line.startswith("+++ "):
+            line_class = "diff-file"
+        elif line.startswith("+") and not line.startswith("+++"):
+            line_class = "diff-add"
+            new_cell = str(new_line) if new_line is not None else ""
+            if new_line is not None:
+                new_line += 1
+            added += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            line_class = "diff-del"
+            old_cell = str(old_line) if old_line is not None else ""
+            if old_line is not None:
+                old_line += 1
+            removed += 1
+        elif line.startswith("\\"):
+            line_class = "diff-note"
+        else:
+            old_cell = str(old_line) if old_line is not None else ""
+            new_cell = str(new_line) if new_line is not None else ""
+            if old_line is not None:
+                old_line += 1
+            if new_line is not None:
+                new_line += 1
+
+        rows.append(_render_diff_line(line_class, old_cell, new_cell, line))
+
+    summary = (
+        '<div class="diff-summary">'
+        f'<span class="diff-pill add">+{added} added</span>'
+        f'<span class="diff-pill del">-{removed} removed</span>'
+        '<span class="diff-pill">line numbers show original/new skill</span>'
+        '</div>'
+    )
+    return summary + '<div class="diff-viewer">' + "".join(rows) + "</div>"
+
+
+def _render_diff_line(line_class: str, old_cell: str, new_cell: str, code: str) -> str:
+    return (
+        f'<div class="diff-line {line_class}">'
+        f'<span class="diff-old">{html.escape(old_cell)}</span>'
+        f'<span class="diff-new">{html.escape(new_cell)}</span>'
+        f'<span class="diff-code">{html.escape(code)}</span>'
+        "</div>"
+    )
 
 
 def _render_step_rows(result: OptimizationResult) -> str:
@@ -525,53 +587,46 @@ def _step_label_from_stop_reason(reason: str) -> str:
     return f"Step {match.group(1)}" if match else "-"
 
 
-def _render_score_rows(result: OptimizationResult, linked_reports: dict[str, str], raw_scores: dict[str, dict]) -> str:
+def _render_score_rows(result: OptimizationResult, linked_reports: dict[str, str]) -> str:
     rows = []
     for summary in result.phase_summaries:
         report = linked_reports.get(summary.phase, "")
         report_cell = f'<a href="{html.escape(report)}">open report</a>' if report else ""
-        raw = raw_scores.get(summary.phase) or {}
-        raw_cell = _format_raw_score(raw)
         rows.append(
             "<tr>"
             f"<td>{html.escape(summary.phase)}</td>"
             f"<td>{html.escape(summary.kind)}</td>"
             f"<td>{html.escape(summary.suite_name)}</td>"
-            f"<td>{raw_cell}</td>"
             f"<td>{summary.score.n_passed}/{summary.score.n}</td>"
             f"<td>{summary.score.hard:.3f}</td>"
-            f"<td>{summary.score.soft:.3f}</td>"
             f"<td>{report_cell}</td>"
             "</tr>"
         )
-    return "".join(rows) or "<tr><td colspan=\"8\">No rollout phases recorded.</td></tr>"
+    return "".join(rows) or "<tr><td colspan=\"6\">No rollout phases recorded.</td></tr>"
 
 
-def _format_raw_score(raw: dict) -> str:
-    tasks = int(raw.get("tasks") or 0)
-    if tasks <= 0:
-        return "-"
-    passed = int(raw.get("passed") or 0)
-    extras = []
-    if raw.get("failed"):
-        extras.append(f"failed={int(raw.get('failed') or 0)}")
-    if raw.get("error"):
-        extras.append(f"error={int(raw.get('error') or 0)}")
-    suffix = f" ({', '.join(extras)})" if extras else ""
-    return html.escape(f"{passed}/{tasks}{suffix}")
+def _json_for_script(value) -> str:
+    return json.dumps(value, ensure_ascii=False).replace("</", "<\\/")
 
 
 def _render_edit_rows(result: OptimizationResult) -> str:
     rows = []
     for step in result.steps:
         edits = step.edits_applied if step.accepted else step.edits_rejected
-        edit_text = "\n\n".join(_format_edit(edit) for edit in edits) or "(no edits)"
+        count = len(edits)
+        count_label = f"{count} edit" if count == 1 else f"{count} edits"
+        ops = []
+        for edit in edits:
+            if edit.op not in ops:
+                ops.append(edit.op)
+        op_html = "".join(f'<span class="edit-pill">{html.escape(op)}</span>' for op in ops[:4])
+        summary = f'<div class="edit-summary"><span>{html.escape(count_label)}</span>{op_html}</div>'
         rows.append(
             "<tr>"
             f"<td>{step.step}</td>"
             f"<td>{'applied' if step.accepted else 'rejected'}</td>"
-            f"<td><pre class=\"skillopt-reasoning\">{html.escape(step.patch_reasoning or '(no reasoning)')}</pre></td>"
-            f"<td><pre class=\"skillopt-edits\">{html.escape(edit_text)}</pre></td>"
+            f"<td>{summary}</td>"
+            f"<td><button class=\"detail-btn\" type=\"button\" data-edit-step=\"{step.step}\">View edits</button></td>"
             "</tr>"
         )
     if rows:
@@ -591,6 +646,33 @@ def _format_edit(edit) -> str:
     if edit.content:
         parts.append(f"content:\n{edit.content}")
     return "\n".join(parts)
+
+
+def _edit_detail_drawer_data(result: OptimizationResult | None) -> list[dict]:
+    if result is None:
+        return []
+    out = []
+    for step in result.steps:
+        edits = step.edits_applied if step.accepted else step.edits_rejected
+        out.append({
+            "step": step.step,
+            "status": "applied" if step.accepted else "rejected",
+            "decision_reason": step.reason,
+            "patch_reasoning": step.patch_reasoning,
+            "edits": [
+                {
+                    "op": edit.op,
+                    "target": edit.target,
+                    "content": edit.content,
+                    "support_count": edit.support_count,
+                    "source_type": edit.source_type,
+                    "merge_level": edit.merge_level,
+                    "formatted": _format_edit(edit),
+                }
+                for edit in edits
+            ],
+        })
+    return out
 
 
 def _render_artifact_rows(manifest: dict) -> str:
@@ -630,8 +712,9 @@ def _report_artifact_href(run_id: str, path: str) -> str:
     return "/benchmark/report/" + quote(run_id, safe="") + "/" + "/".join(quote(part, safe="") for part in parts)
 
 
-def _artifact_drawer_markup() -> str:
-    return """
+def _artifact_drawer_markup(manifest: dict | None = None, result: OptimizationResult | None = None) -> str:
+    edit_detail_data = _json_for_script(_edit_detail_drawer_data(result))
+    markup = """
 <div class="drawer-backdrop" id="artifactBackdrop"></div>
 <aside class="drawer" id="artifactDrawer" aria-label="Artifact preview">
   <div class="drawer-top" style="position:relative">
@@ -647,8 +730,14 @@ const artifactCloseBtn = document.getElementById("artifactCloseBtn");
 const artifactBody = document.getElementById("artifactBody");
 const artifactTitle = document.getElementById("artifactTitle");
 const artifactChips = document.getElementById("artifactChips");
+const editDetailData = __EDIT_DETAIL_DATA__;
 function esc(s) { var d = document.createElement("div"); d.textContent = s || ""; return d.innerHTML; }
 function closeArtifactDrawer() { document.body.classList.remove("open"); }
+function attachArtifactLinks(root) {
+  root.querySelectorAll("[data-artifact-url]").forEach(function(link) {
+    link.addEventListener("click", openArtifactDrawer);
+  });
+}
 function setArtifactDrawer(name, url, content, isError) {
   artifactTitle.textContent = name;
   artifactChips.innerHTML = '<span class="chip">artifact</span><span class="chip">' + esc(url.split('/').pop()) + '</span>';
@@ -675,14 +764,39 @@ async function openArtifactDrawer(event) {
     setArtifactDrawer(name, url, 'Could not load artifact: ' + (err && err.message ? err.message : String(err)), true);
   }
 }
-document.querySelectorAll("[data-artifact-url]").forEach(function(link) {
-  link.addEventListener("click", openArtifactDrawer);
+function renderEditBlock(edit, index) {
+  var meta = [];
+  if (edit.target) meta.push('target');
+  if (edit.support_count !== null && edit.support_count !== undefined) meta.push('support=' + edit.support_count);
+  if (edit.source_type) meta.push(edit.source_type);
+  var label = meta.join(' | ') || 'edit ' + String(index + 1);
+  return '<div class="block"><div class="block-head"><strong>' + esc(edit.op || 'edit') + '</strong><span>' + esc(label) + '</span></div><pre class="block-body">' + esc(edit.formatted || '') + '</pre></div>';
+}
+function openEditDrawer(event) {
+  event.preventDefault();
+  var step = Number(event.currentTarget.dataset.editStep || 0);
+  var detail = editDetailData.find(function(item) { return Number(item.step) === step; });
+  if (!detail) return;
+  artifactTitle.textContent = 'Step ' + String(step) + ' edits';
+  var editCount = (detail.edits || []).length;
+  var editLabel = editCount === 1 ? '1 edit' : String(editCount) + ' edits';
+  artifactChips.innerHTML = '<span class="chip">' + esc(detail.status || 'step') + '</span><span class="chip">' + esc(editLabel) + '</span>';
+  var decision = detail.decision_reason ? '<div><strong>Decision:</strong> ' + esc(detail.decision_reason) + '</div>' : '';
+  var reasoning = detail.patch_reasoning ? '<div class="block"><div class="block-head"><strong>Reasoning</strong><span>optimizer</span></div><pre class="block-body">' + esc(detail.patch_reasoning) + '</pre></div>' : '';
+  var edits = (detail.edits || []).map(renderEditBlock).join('') || '<div class="block"><div class="block-body">No edits recorded.</div></div>';
+  artifactBody.innerHTML = '<div class="block"><div class="block-head"><strong>Step summary</strong><span>decision</span></div><div class="block-body">' + decision + '</div></div>' + reasoning + edits;
+  document.body.classList.add("open");
+}
+attachArtifactLinks(document);
+document.querySelectorAll("[data-edit-step]").forEach(function(button) {
+  button.addEventListener("click", openEditDrawer);
 });
 artifactBackdrop.addEventListener("click", closeArtifactDrawer);
 artifactCloseBtn.addEventListener("click", closeArtifactDrawer);
 window.addEventListener("keydown", function(event) { if (event.key === "Escape") closeArtifactDrawer(); });
 </script>
 """
+    return markup.replace("__EDIT_DETAIL_DATA__", edit_detail_data)
 
 
 if __name__ == "__main__":

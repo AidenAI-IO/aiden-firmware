@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from runner.models import HardAssertionResults, TaskResult
 from runner.suite import HardAssertions, Suite, TaskSpec
-from runner.skillopt.types import RolloutResult
 
 
 def _write_mobilegym_config(root: Path) -> Path:
@@ -48,6 +48,24 @@ def _task() -> TaskSpec:
     )
 
 
+def _task_result(*, status: str = "passed", artifact_dir: Path | None = None) -> TaskResult:
+    return TaskResult(
+        suite="device_operator_train",
+        run_id="run-1",
+        task_id="case_one",
+        category="single_step",
+        attempt=1,
+        status=status,
+        rubric=[],
+        rubric_pass_count=0,
+        rubric_total=0,
+        hard_assertions=HardAssertionResults(response_exists=True),
+        artifact_dir=str(artifact_dir or ""),
+        description_for_judge="desc",
+        rubric_spec=[],
+    )
+
+
 def test_mobilegym_backend_injects_candidate_skill_and_preserves_env(monkeypatch, tmp_path: Path):
     from runner.skillopt import mobilegym_backend
 
@@ -66,14 +84,14 @@ def test_mobilegym_backend_injects_candidate_skill_and_preserves_env(monkeypatch
         captured["skill_text"] = (source_config / "skills" / "device-operator" / "SKILL.md").read_text(encoding="utf-8")
         return subprocess.CompletedProcess(command, 0, stdout="ok", stderr="")
 
-    def fake_load_rollouts(**kwargs):
+    def fake_load_task_results(**kwargs):
         captured["batch_dir"] = kwargs["batch_dir"]
-        return [RolloutResult(id="case_one", hard=1, soft=1.0)]
+        return [_task_result(artifact_dir=kwargs["phase_artifact_dir"] / "case_one")]
 
     monkeypatch.setenv("PATH", "/bin:/usr/bin")
     monkeypatch.setenv("MODEL_API_KEY", "model-key")
     monkeypatch.setattr(mobilegym_backend.subprocess, "run", fake_run)
-    monkeypatch.setattr(mobilegym_backend.mobilegym_results, "load_aiden_suite_rollouts", fake_load_rollouts)
+    monkeypatch.setattr(mobilegym_backend.mobilegym_results, "load_aiden_suite_task_results", fake_load_task_results)
 
     backend = mobilegym_backend.MobileGymBackend(
         benchmark_root=benchmark_root,
@@ -113,6 +131,79 @@ def test_mobilegym_backend_injects_candidate_skill_and_preserves_env(monkeypatch
     assert (benchmark_root / "mobilegym" / "config" / "skills" / "device-operator" / "SKILL.md").read_text(encoding="utf-8") == "template skill"
 
 
+def test_mobilegym_backend_child_summary_uses_aiden_judged_results(monkeypatch, tmp_path: Path):
+    from runner.skillopt import mobilegym_backend
+
+    benchmark_root = tmp_path / "benchmark"
+    _write_mobilegym_config(benchmark_root)
+    shared_skills = _write_shared_skills(tmp_path)
+
+    def fake_run(command, *, env, **kwargs):
+        del command, kwargs
+        batch = benchmark_root / "runs" / "mobilegym" / env["MOBILEGYM_BATCH_ID"]
+        batch.mkdir(parents=True)
+        (batch / "summary.json").write_text(json.dumps({
+            "batch_id": env["MOBILEGYM_BATCH_ID"],
+            "tasks": 1,
+            "passed": 1,
+            "failed": 0,
+            "error": 0,
+            "pass_rate": 1.0,
+        }), encoding="utf-8")
+        return subprocess.CompletedProcess([], 0, stdout="ok", stderr="")
+
+    def fake_load_task_results(**kwargs):
+        artifact_dir = kwargs["phase_artifact_dir"] / "case_one"
+        artifact_dir.mkdir(parents=True)
+        (artifact_dir / "history.json").write_text("[]", encoding="utf-8")
+        (artifact_dir / "trace.json").write_text("{}", encoding="utf-8")
+        return [TaskResult(
+            suite="device_operator_train",
+            run_id="run-1",
+            task_id="case_one",
+            category="single_step",
+            attempt=1,
+            status="failed",
+            rubric=[],
+            rubric_pass_count=0,
+            rubric_total=1,
+            hard_assertions=HardAssertionResults(response_exists=False),
+            metrics={"error": "Aiden suite judge failed"},
+            artifact_dir=str(artifact_dir),
+            description_for_judge="desc",
+            rubric_spec=[{"id": "ok", "check": "Task succeeds."}],
+        )]
+
+    monkeypatch.setattr(mobilegym_backend.subprocess, "run", fake_run)
+    monkeypatch.setattr(mobilegym_backend.mobilegym_results, "load_aiden_suite_task_results", fake_load_task_results)
+    backend = mobilegym_backend.MobileGymBackend(benchmark_root=benchmark_root, shared_skills_dir=shared_skills)
+
+    rollouts = backend.run_rollout(
+        suite=_suite(benchmark_root),
+        tasks=[_task()],
+        skill_name="device-operator",
+        skill_path=shared_skills / "device-operator" / "SKILL.md",
+        skill_text="candidate skill",
+        phase="step_01_train",
+        run_id="run-1",
+        run_root=tmp_path / "runs" / "run-1",
+        judge_cfg=None,
+    )
+
+    batch = benchmark_root / "runs" / "mobilegym" / "run-1-step_01_train"
+    summary = json.loads((batch / "summary.json").read_text(encoding="utf-8"))
+    health = json.loads((batch / "run_health.json").read_text(encoding="utf-8"))
+    result_row = json.loads((batch / "results.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert rollouts[0].hard == 0
+    assert summary["judge_source"] == "aiden_suite"
+    assert summary["passed"] == 0
+    assert summary["failed"] == 1
+    assert health["passed"] == 1
+    assert result_row["artifact_dir"] == str(batch / "tasks" / "case_one")
+    assert (batch / "index.html").exists()
+    assert (batch / "tasks" / "case_one" / "trace.json").exists()
+
+
 def test_mobilegym_backend_passes_subprocess_timeout(monkeypatch, tmp_path: Path):
     from runner.skillopt import mobilegym_backend
 
@@ -128,8 +219,8 @@ def test_mobilegym_backend_passes_subprocess_timeout(monkeypatch, tmp_path: Path
     monkeypatch.setattr(mobilegym_backend.subprocess, "run", fake_run)
     monkeypatch.setattr(
         mobilegym_backend.mobilegym_results,
-        "load_aiden_suite_rollouts",
-        lambda **kwargs: [RolloutResult(id="case_one", hard=1, soft=1.0)],
+        "load_aiden_suite_task_results",
+        lambda **kwargs: [_task_result(artifact_dir=kwargs["phase_artifact_dir"] / "case_one")],
     )
     backend = mobilegym_backend.MobileGymBackend(
         benchmark_root=benchmark_root,
@@ -245,12 +336,12 @@ def test_mobilegym_backend_nonzero_with_rows_returns_converted_failures(monkeypa
         path.write_text(json.dumps({"id": "device_operator_train.case_one", "error": "failed"}) + "\n", encoding="utf-8")
         return subprocess.CompletedProcess(command, 7, stdout="out", stderr="err")
 
-    def fake_load_rollouts(**kwargs):
+    def fake_load_task_results(**kwargs):
         captured["batch_dir"] = kwargs["batch_dir"]
-        return [RolloutResult(id="case_one", hard=0, soft=0.0, fail_reason="failed")]
+        return [_task_result(status="failed", artifact_dir=kwargs["phase_artifact_dir"] / "case_one")]
 
     monkeypatch.setattr(mobilegym_backend.subprocess, "run", fake_run)
-    monkeypatch.setattr(mobilegym_backend.mobilegym_results, "load_aiden_suite_rollouts", fake_load_rollouts)
+    monkeypatch.setattr(mobilegym_backend.mobilegym_results, "load_aiden_suite_task_results", fake_load_task_results)
     backend = mobilegym_backend.MobileGymBackend(benchmark_root=benchmark_root, shared_skills_dir=shared_skills)
 
     rollouts = backend.run_rollout(

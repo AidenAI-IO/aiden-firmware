@@ -121,7 +121,7 @@ def test_mobilegym_passed_row_uses_execution_agent_message_as_aiden_response(tmp
     assert results[0].metrics["aiden_history_source"] == "mobilegym_execution_agent_message"
 
 
-def test_mobilegym_passed_row_with_judge_falls_back_when_full_history_missing(tmp_path: Path):
+def test_mobilegym_passed_row_with_mobilegym_judge_still_uses_aiden_checks(tmp_path: Path):
     suite = _suite_with_trace_requirement(tmp_path)
     batch = _write_result(
         tmp_path / "batch",
@@ -140,9 +140,9 @@ def test_mobilegym_passed_row_with_judge_falls_back_when_full_history_missing(tm
 
     results = _load_results(batch, suite, tmp_path)
 
-    assert results[0].status == "passed"
-    assert results[0].rubric_pass_count == 1
-    assert results[0].metrics["aiden_history_source"] == "mobilegym_judge_fallback"
+    assert results[0].status == "failed"
+    assert results[0].rubric_pass_count == 0
+    assert "missing aiden_last_chat_history" in results[0].metrics["error"]
 
 
 def test_mobilegym_passed_row_uses_meta_evidence_and_aiden_checks(tmp_path: Path):

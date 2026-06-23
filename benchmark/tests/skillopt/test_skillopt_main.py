@@ -267,9 +267,13 @@ def test_cli_writes_aggregated_skillopt_summary_report(monkeypatch, tmp_path: Pa
     assert "0.75" in report
     assert "failure analyst found missing launch guidance" in report
     assert "Second line should wrap cleanly" in report
-    assert "pre.skillopt-reasoning" in report
-    assert "white-space:pre-wrap" in report
-    assert '<pre class="skillopt-reasoning">' in report
+    assert "View edits" in report
+    assert 'data-edit-step="1"' in report
+    assert "editDetailData" in report
+    assert "function openEditDrawer" in report
+    assert "pre.skillopt-reasoning" not in report
+    assert '<pre class="skillopt-reasoning">' not in report
+    assert '<pre class="skillopt-edits">' not in report
     assert "new rule" in report
     assert "best_skill.md" in report
     assert "diff.patch" in report
@@ -284,7 +288,7 @@ def test_cli_writes_aggregated_skillopt_summary_report(monkeypatch, tmp_path: Pa
     assert "/benchmark/report/skillopt-summary-run-step_01_train" in report
 
 
-def test_web_report_shows_raw_mobilegym_and_skillopt_scores_for_no_edit_run(tmp_path: Path):
+def test_web_report_hides_run_health_and_gate_failures_for_no_edit_run(tmp_path: Path):
     artifact_root = tmp_path / "benchmark" / "runs" / "skillopt"
     run_id = "skillopt-no-edit-run"
     raw_dir = tmp_path / "benchmark" / "runs" / "mobilegym" / f"{run_id}-step_01_train"
@@ -321,6 +325,17 @@ def test_web_report_shows_raw_mobilegym_and_skillopt_scores_for_no_edit_run(tmp_
         ],
         stop_reason="step 1: aggregate produced 0 edits after dedup",
     )
+    failure_dir = artifact_root / run_id / "step_01_train" / "train_one"
+    failure_dir.mkdir(parents=True)
+    (failure_dir / "judge.json").write_text(json.dumps({
+        "verdicts": [
+            {"id": "opened_settings", "verdict": "no", "reason": "Settings was not visible in the final screenshot."},
+            {"id": "no_desktop_command", "verdict": "yes", "reason": "No forbidden command was used."},
+        ],
+        "overall_notes": "The task did not reach the requested screen.",
+    }), encoding="utf-8")
+    (failure_dir / "trace.json").write_text("{}", encoding="utf-8")
+    (failure_dir / "history.json").write_text("[]", encoding="utf-8")
 
     main._write_web_artifacts(
         cfg=cfg,
@@ -336,25 +351,75 @@ def test_web_report_shows_raw_mobilegym_and_skillopt_scores_for_no_edit_run(tmp_
 
     run_dir = artifact_root / run_id
     manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["raw_score_summary"]["step_01_train"] == {
-        "passed": 11,
-        "tasks": 12,
-        "failed": 0,
-        "error": 1,
-        "pass_rate": 11 / 12,
-    }
+    assert "raw_score_summary" not in manifest
+    assert "gate_failures" not in manifest
     report = (run_dir / "report.html").read_text(encoding="utf-8")
-    assert "MobileGym result" in report
-    assert "Optimization score" in report
-    assert "11/12" in report
+    assert "SkillOpt gate" in report
+    assert "only score used to accept or reject edits" in report
+    assert "Run health" not in report
+    assert "diagnostic only" not in report
+    assert "backend rows" not in report
+    assert "11/12" not in report
     assert "10/12" in report
-    assert "Task pass rate" in report
-    assert "Rubric pass rate" in report
+    assert "Gate hard rate" in report
+    assert "Rubric soft rate" not in report
+    assert "attention: 11/12 backend rows (error=1)" not in report
+    assert "Backend report" not in report
+    assert "MobileGym result" not in report
+    assert "Optimization score" not in report
+    assert "Gate failures" not in report
+    assert 'data-gate-failure-phase="step_01_train"' not in report
+    assert "openGateFailureDrawer" not in report
+    assert "gateFailureData" not in report
+    assert "train_one" not in report
+    assert "opened_settings" not in report
+    assert "Settings was not visible in the final screenshot." not in report
+    assert "step_01_train/train_one/judge.json" not in report
+    assert "step_01_train/train_one/trace.json" not in report
+    assert "step_01_train/train_one/history.json" not in report
+    assert "<td>train_one</td>" not in report
+    assert "<td>Settings was not visible in the final screenshot.</td>" not in report
     assert "Hard" not in report
     assert "Soft" not in report
     assert "Step 1" in report
     assert "stopped before candidate verification" in report
     assert "aggregate produced 0 edits after dedup" in report
+
+
+def test_web_report_renders_diff_with_structured_line_classes():
+    result = OptimizationResult(
+        skill_name="device-operator",
+        initial_score=0.0,
+        best_score=1.0,
+        best_skill="new <rule>\ncontext\n",
+    )
+    diff_text = "\n".join([
+        "--- original",
+        "+++ best_skill",
+        "@@ -1,2 +1,2 @@",
+        "-old <rule>",
+        "+new <rule>",
+        " context",
+        "",
+    ])
+
+    report = main._render_report_html(
+        manifest={"skill": "device-operator", "train_suite": "train", "validation_suite": "verify"},
+        result=result,
+        original_skill="old <rule>\ncontext\n",
+        diff_text=diff_text,
+    )
+
+    assert 'class="diff-viewer"' in report
+    assert 'class="diff-line diff-file"' in report
+    assert 'class="diff-line diff-hunk"' in report
+    assert 'class="diff-line diff-del"' in report
+    assert 'class="diff-line diff-add"' in report
+    assert 'class="diff-line diff-context"' in report
+    assert '<span class="diff-old">1</span>' in report
+    assert '<span class="diff-new">1</span>' in report
+    assert '+new &lt;rule&gt;' in report
+    assert '-old &lt;rule&gt;' in report
 
 
 def test_cli_dry_run_does_not_write_output_or_web_artifacts(monkeypatch, tmp_path: Path):
