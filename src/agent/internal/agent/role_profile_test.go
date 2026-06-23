@@ -455,15 +455,16 @@ func TestForceSimpleLoopPlannerCallOmitsPlanMetaTools(t *testing.T) {
 			t.Fatalf("force_simple_loop prompt should not contain %q:\n%s", unexpected, plannerPrompt)
 		}
 	}
-	for _, want := range []string{
+	for _, unexpected := range []string{
 		"Planner runtime context (synthetic; not a new user request):",
 		"Loop mode:",
 		"force_simple_loop: true",
 		"Original user request / root request:",
-		"set volume to 3",
+		"Latest user message:",
+		"Session context view:",
 	} {
-		if !strings.Contains(plannerPrompt, want) {
-			t.Fatalf("force_simple_loop planner prompt missing runtime context %q:\n%s", want, plannerPrompt)
+		if strings.Contains(plannerPrompt, unexpected) {
+			t.Fatalf("first-turn force_simple_loop planner prompt should not include runtime context %q:\n%s", unexpected, plannerPrompt)
 		}
 	}
 }
@@ -494,18 +495,15 @@ func TestForceSimpleLoopRejectsUnexpectedPlanMetaToolCall(t *testing.T) {
 		t.Fatalf("model calls = %d, want 2", model.callCount)
 	}
 	secondPrompt := messageText(model.messages[1])
-	for _, want := range []string{
+	for _, unexpected := range []string{
 		"Planner runtime context (synthetic; not a new user request):",
 		"current_mode: default",
 		"force_simple_loop: true",
+		"current_mode: plan",
+		"commit_plan is available",
 	} {
-		if !strings.Contains(secondPrompt, want) {
-			t.Fatalf("force_simple_loop planner prompt missing runtime loop state %q:\n%s", want, secondPrompt)
-		}
-	}
-	for _, unexpected := range []string{"current_mode: plan", "commit_plan is available"} {
 		if strings.Contains(secondPrompt, unexpected) {
-			t.Fatalf("force_simple_loop planner prompt should not expose plan-mode state %q:\n%s", unexpected, secondPrompt)
+			t.Fatalf("force_simple_loop planner prompt should not expose runtime context %q:\n%s", unexpected, secondPrompt)
 		}
 	}
 }

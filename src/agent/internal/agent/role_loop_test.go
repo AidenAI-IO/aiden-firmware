@@ -1055,12 +1055,8 @@ func TestForceSimpleLoopPlannerRuntimeContextOmitsDelegatedPlanSections(t *testi
 	prompt := buildRoleStatePrompt(RolePlanner, inputs, state, "Planner task.")
 	for _, want := range []string{
 		"Planner runtime context (synthetic; not a new user request):",
-		"Loop mode:",
-		"force_simple_loop: true",
 		"World State",
 		"Original user request / root request:",
-		"Latest user message:",
-		"Session context view:",
 		"Current todo state:",
 		"Todo reminder:",
 	} {
@@ -1069,6 +1065,11 @@ func TestForceSimpleLoopPlannerRuntimeContextOmitsDelegatedPlanSections(t *testi
 		}
 	}
 	for _, unwanted := range []string{
+		"Planner task.",
+		"Loop mode:",
+		"force_simple_loop: true",
+		"Latest user message:",
+		"Session context view:",
 		"Current plan:",
 		"Prior step results",
 		"Verifier feedback:",

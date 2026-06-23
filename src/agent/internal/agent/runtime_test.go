@@ -1206,14 +1206,16 @@ func TestRuntimeRunVoiceInterruptionContextUsesTimeBoundary(t *testing.T) {
 	for _, want := range []string{
 		"Original user request / root request:",
 		rootRequest,
-		"Latest user message:",
-		correction,
 	} {
 		if !strings.Contains(correctionPrompt, want) {
 			t.Fatalf("correction prompt missing runtime context %q:\n%s", want, correctionPrompt)
 		}
 	}
 	for _, unwanted := range []string{
+		"Planner runtime context (synthetic; not a new user request):\nSingle-agent simple loop mode:",
+		"Loop mode:",
+		"Latest user message:",
+		"Session context view:",
 		"Current plan:",
 		"Prior step results",
 		"Verifier feedback:",
@@ -4708,6 +4710,65 @@ func TestRuntimeRunIncludesRuntimeContextInSystemMessage(t *testing.T) {
 	}
 	if !strings.Contains(systemText.String(), "## Runtime context\n"+runtimeContext) {
 		t.Fatalf("system message missing runtime context:\n%s", systemText.String())
+	}
+}
+
+func TestRuntimeRunDoesNotDuplicateRuntimeContextAcrossTurns(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			contentResponse("first"),
+			contentResponse("second"),
+		},
+	}
+	storageDir := filepath.Join(t.TempDir(), "memory")
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:           ModelConfig{Provider: "fake"},
+			Instruction:     "Answer directly.",
+			ForceSimpleLoop: true,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(storageDir),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	firstRuntimeContext := "RUNTIME_CTX_FIRST_MARKER"
+	if _, err := runtime.Run(context.Background(), RunRequest{
+		Input:          "hello",
+		RuntimeContext: firstRuntimeContext,
+	}); err != nil {
+		t.Fatalf("first Run() error = %v", err)
+	}
+
+	secondRuntimeContext := "RUNTIME_CTX_SECOND_MARKER"
+	if _, err := runtime.Run(context.Background(), RunRequest{
+		Input:          "continue",
+		RuntimeContext: secondRuntimeContext,
+	}); err != nil {
+		t.Fatalf("second Run() error = %v", err)
+	}
+	if len(model.messages) < 2 || len(model.messages[1]) == 0 {
+		t.Fatalf("expected second planner call with messages, got %#v", model.messages)
+	}
+
+	secondCall := model.messages[1]
+	systemPrompt := messageText(secondCall[:1])
+	if strings.Count(systemPrompt, "## Runtime context") != 1 {
+		t.Fatalf("second system prompt should contain exactly one runtime context section:\n%s", systemPrompt)
+	}
+	if strings.Count(systemPrompt, secondRuntimeContext) != 1 {
+		t.Fatalf("second system prompt should contain current runtime context exactly once:\n%s", systemPrompt)
+	}
+	if strings.Contains(systemPrompt, firstRuntimeContext) {
+		t.Fatalf("second system prompt leaked previous runtime context:\n%s", systemPrompt)
+	}
+
+	nonSystemPrompt := messageText(secondCall[1:])
+	for _, unwanted := range []string{firstRuntimeContext, secondRuntimeContext} {
+		if strings.Contains(nonSystemPrompt, unwanted) {
+			t.Fatalf("runtime context should not re-enter prompt outside the system message %q:\n%s", unwanted, nonSystemPrompt)
+		}
 	}
 }
 
