@@ -1,10 +1,10 @@
 services:
   daemon:
-    image: ${AIDEN_DAEMON_IMAGE:-aiden-mobilegym-daemon:local}
+    image: ${AIDEN_DAEMON_IMAGE:-aiden-agent-daemon:local}
     build:
-      context: ../../..
-      dockerfile: benchmark/mobilegym/docker/Dockerfile
-      target: daemon-runtime
+      context: ../..
+      dockerfile: benchmark/docker/Dockerfile.agent-daemon
+      target: agent-daemon-runtime
       args:
         HTTP_PROXY: ${HTTP_PROXY:-}
         HTTPS_PROXY: ${HTTPS_PROXY:-}
@@ -12,7 +12,7 @@ services:
     ports:
       - "127.0.0.1:${AIDEN_DAEMON_HOST_PORT:-8080}:8080"
     volumes:
-      - ${AIDEN_CONFIG_DIR:-../../config}:/config:ro
+      - ${AIDEN_CONFIG_DIR:-../config}:/config:ro
     environment:
       AIDEN_TOOL_PROXY_MODE: "1"
       AIDEN_FORWARD_TOOLS: "screenshot,touch_gesture,keyboard_text,keyboard_tap,mouse_click,mouse_move,mouse_scroll,quick_action"

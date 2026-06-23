@@ -35,10 +35,11 @@ BENCHMARK_ROOT = REPO_ROOT / "benchmark"
 DEFAULT_SUITES_DIR = BENCHMARK_ROOT / "suites"
 DEFAULT_RUNS_DIR = BENCHMARK_ROOT / "runs" / "webui"
 DEFAULT_BASE_CONFIG_DIR = BENCHMARK_ROOT / "config"
-DEFAULT_DAEMON_IMAGE = "aiden-mobilegym-daemon:local"
+DEFAULT_DAEMON_IMAGE = "aiden-agent-daemon:local"
 DEFAULT_MOBILEGYM_IMAGE = "aiden-mobilegym-simulator:py311"
+BENCHMARK_DOCKER_DIR = BENCHMARK_ROOT / "docker"
 MOBILEGYM_DOCKER_DIR = BENCHMARK_ROOT / "mobilegym" / "docker"
-WEBUI_DAEMON_COMPOSE_FILE = MOBILEGYM_DOCKER_DIR / "docker-compose.webui-daemon.yml"
+AGENT_DAEMON_COMPOSE_FILE = BENCHMARK_DOCKER_DIR / "docker-compose.agent-daemon.yml"
 DEFAULT_DAEMON_READY_TIMEOUT_SEC = 90
 DEFAULT_MOBILEGYM_READY_TIMEOUT_SEC = 120
 DEFAULT_MOBILEGYM_PARALLEL_ENVS = 5
@@ -1644,7 +1645,7 @@ def ensure_daemon_image(
     run_logged_command(
         daemon_compose_command("build", "daemon"),
         log_path,
-        cwd=MOBILEGYM_DOCKER_DIR,
+        cwd=BENCHMARK_DOCKER_DIR,
         env=env,
         stop_requested=stop_requested,
     )
@@ -1702,7 +1703,7 @@ def daemon_compose_command(*args: str, project: str | None = None) -> list[str]:
         "docker",
         "compose",
         "-f",
-        str(WEBUI_DAEMON_COMPOSE_FILE),
+        str(AGENT_DAEMON_COMPOSE_FILE),
     ]
     if project:
         command.extend(["-p", project])
@@ -1762,13 +1763,13 @@ def start_daemon_compose(
             project=project,
         ),
         log_path,
-        cwd=MOBILEGYM_DOCKER_DIR,
+        cwd=BENCHMARK_DOCKER_DIR,
         env=env,
         stop_requested=stop_requested,
     )
     ps_command = daemon_compose_command("ps", "-q", "daemon", project=project)
     append_log(log_path, "$ " + " ".join(ps_command))
-    return subprocess.check_output(ps_command, cwd=MOBILEGYM_DOCKER_DIR, env=env, text=True).strip()
+    return subprocess.check_output(ps_command, cwd=BENCHMARK_DOCKER_DIR, env=env, text=True).strip()
 
 
 def stop_daemon_compose(job: Job) -> None:
@@ -1779,7 +1780,7 @@ def stop_daemon_compose(job: Job) -> None:
             "--remove-orphans",
             project=daemon_compose_project(job),
         ),
-        cwd=MOBILEGYM_DOCKER_DIR,
+        cwd=BENCHMARK_DOCKER_DIR,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         check=False,
@@ -1797,7 +1798,7 @@ def start_daemon_logs(job: Job, log_path: Path) -> subprocess.Popen | None:
                     "daemon",
                     project=daemon_compose_project(job),
                 ),
-                cwd=MOBILEGYM_DOCKER_DIR,
+                cwd=BENCHMARK_DOCKER_DIR,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
             )

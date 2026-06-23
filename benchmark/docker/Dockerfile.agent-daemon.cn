@@ -1,0 +1,41 @@
+# Aiden agent daemon image with China mirror defaults.
+
+FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/golang:1.23 AS agent-daemon-builder
+
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+WORKDIR /build
+ENV HTTP_PROXY=${HTTP_PROXY} \
+    HTTPS_PROXY=${HTTPS_PROXY} \
+    NO_PROXY=${NO_PROXY} \
+    GOPROXY=https://goproxy.cn,direct \
+    GOTOOLCHAIN=auto
+
+COPY src/agent/go.mod src/agent/go.sum ./
+RUN go mod download
+
+COPY src/agent/ ./
+RUN CGO_ENABLED=0 GOOS=linux go build -o daemon ./cmd/daemon
+
+FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/debian:bullseye-slim AS agent-daemon-runtime
+
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ENV HTTP_PROXY=${HTTP_PROXY} \
+    HTTPS_PROXY=${HTTPS_PROXY} \
+    NO_PROXY=${NO_PROXY}
+
+RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list && \
+    apt-get update && apt-get install -y ca-certificates curl && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=agent-daemon-builder /build/daemon /usr/local/bin/daemon
+COPY benchmark/docker/agent-daemon-entrypoint.sh /usr/local/bin/agent-daemon-entrypoint
+RUN chmod +x /usr/local/bin/agent-daemon-entrypoint
+
+WORKDIR /app
+EXPOSE 8080
+
+CMD ["agent-daemon-entrypoint"]

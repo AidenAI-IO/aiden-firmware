@@ -67,46 +67,6 @@ ENV PATH="/opt/venv/bin:$PATH"
 EXPOSE 4173
 CMD ["npm", "run", "preview", "--", "--host", "0.0.0.0", "--port", "4173"]
 
-# ============ Go Agent Daemon ============
-FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/golang:1.23 AS daemon-builder
-
-ARG HTTP_PROXY
-ARG HTTPS_PROXY
-ARG NO_PROXY
-WORKDIR /build
-ENV HTTP_PROXY=${HTTP_PROXY} \
-    HTTPS_PROXY=${HTTPS_PROXY} \
-    NO_PROXY=${NO_PROXY} \
-    GOPROXY=https://goproxy.cn,direct \
-    GOTOOLCHAIN=auto
-
-COPY src/agent/go.mod src/agent/go.sum ./
-RUN go mod download
-
-COPY src/agent/ ./
-RUN CGO_ENABLED=0 GOOS=linux go build -o daemon ./cmd/daemon
-
-FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/debian:bullseye-slim AS daemon-runtime
-
-ARG HTTP_PROXY
-ARG HTTPS_PROXY
-ARG NO_PROXY
-ENV HTTP_PROXY=${HTTP_PROXY} \
-    HTTPS_PROXY=${HTTPS_PROXY} \
-    NO_PROXY=${NO_PROXY}
-
-RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list && \
-    apt-get update && apt-get install -y ca-certificates curl && \
-    rm -rf /var/lib/apt/lists/*
-
-COPY --from=daemon-builder /build/daemon /usr/local/bin/daemon
-COPY benchmark/mobilegym/docker/daemon-entrypoint.sh /usr/local/bin/daemon-entrypoint
-RUN chmod +x /usr/local/bin/daemon-entrypoint
-
-WORKDIR /app
-EXPOSE 8080
-CMD ["daemon-entrypoint"]
-
 # ============ Test Runner ============
 FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/python:3.11-slim AS test-runner
 

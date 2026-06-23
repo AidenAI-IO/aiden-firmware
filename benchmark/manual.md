@@ -37,7 +37,7 @@ Benchmark 用来评估 Aiden agent 在手机 UI、记忆、规划、感知等任
 | Agent client | `benchmark/runner/agent_client.py` | 调用 Go agent 的 `/api/chat`、`/api/tools/*`、`/api/history` |
 | Judge | `benchmark/runner/judge.py` | 调用 OpenRouter 兼容接口，使用 pre/post screenshot 和 trace 判分 |
 | MobileGym bridge | `benchmark/mobilegym/bridge/` | 把 MobileGym env 包装成 HTTP tool/screen/reset API |
-| Docker daemon worker | `benchmark/mobilegym/docker/daemon-entrypoint.sh` | WebUI 运行 job 时启动隔离的 agent daemon |
+| Docker daemon worker | `benchmark/docker/Dockerfile.agent-daemon` | WebUI 运行 job 时启动隔离的 agent daemon |
 
 ### 1.3 执行流程
 
@@ -187,7 +187,7 @@ http://127.0.0.1:8765
 | `--runs-dir` | `benchmark/runs/webui` | WebUI job、raw run、日志保存目录 |
 | `--base-config-dir` | `benchmark/config` | agent 配置模板目录 |
 | `--agent-config` | 空 | 指定 WebUI 使用的 agent.toml 保存路径 |
-| `--daemon-image` | `aiden-mobilegym-daemon:local` | job worker daemon 镜像 |
+| `--daemon-image` | `aiden-agent-daemon:local` | job worker daemon 镜像 |
 | `--mobilegym-image` | `aiden-mobilegym-simulator:py311` | MobileGym environment 镜像 |
 | `--no-build-daemon-image` | false | 不自动构建 daemon 镜像 |
 | `--no-build-mobilegym-image` | false | 不自动构建 MobileGym 镜像 |

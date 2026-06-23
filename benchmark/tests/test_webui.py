@@ -1037,7 +1037,7 @@ def test_ensure_docker_image_stops_cancelable_build(tmp_path: Path, monkeypatch)
             "aiden-test:local",
             True,
             tmp_path / "build.log",
-            "daemon-runtime",
+            "mobilegym-base",
             stop_requested=lambda: True,
         )
     except webui.JobStopped:
@@ -1047,7 +1047,7 @@ def test_ensure_docker_image_stops_cancelable_build(tmp_path: Path, monkeypatch)
 
     assert terminated == [captured["proc"]]
     assert "--target" in captured["cmd"]
-    assert "daemon-runtime" in captured["cmd"]
+    assert "mobilegym-base" in captured["cmd"]
     if webui.os.name == "posix":
         assert captured["start_new_session"] is True
 
@@ -1073,7 +1073,7 @@ def test_ensure_daemon_image_uses_compose_build(tmp_path: Path, monkeypatch):
     webui.ensure_daemon_image("aiden-test-daemon:local", True, tmp_path / "build.log")
 
     assert captured["cmd"] == webui.daemon_compose_command("build", "daemon")
-    assert captured["cwd"] == webui.MOBILEGYM_DOCKER_DIR
+    assert captured["cwd"] == webui.BENCHMARK_DOCKER_DIR
     assert captured["env"]["AIDEN_DAEMON_IMAGE"] == "aiden-test-daemon:local"
     if webui.os.name == "posix":
         assert captured["start_new_session"] is True
@@ -1177,25 +1177,25 @@ def test_daemon_compose_command_and_env_forward_tools_to_environment(tmp_path: P
         project="aiden-benchmark-agent-test",
     )
     env = webui.daemon_compose_env(
-        image="aiden-mobilegym-daemon:local",
+        image="aiden-agent-daemon:local",
         host_port=18081,
         config_dir=config,
         tool_proxy_endpoint="http://host.docker.internal:18080",
         benchmark_task_id="suite.json:t1",
     )
 
-    assert cmd[:4] == ["docker", "compose", "-f", str(webui.WEBUI_DAEMON_COMPOSE_FILE)]
+    assert cmd[:4] == ["docker", "compose", "-f", str(webui.AGENT_DAEMON_COMPOSE_FILE)]
     assert "-p" in cmd
     assert "aiden-benchmark-agent-test" in cmd
     assert cmd[-4:] == ["up", "-d", "--force-recreate", "daemon"]
-    assert env["AIDEN_DAEMON_IMAGE"] == "aiden-mobilegym-daemon:local"
+    assert env["AIDEN_DAEMON_IMAGE"] == "aiden-agent-daemon:local"
     assert env["AIDEN_DAEMON_HOST_PORT"] == "18081"
     assert env["AIDEN_CONFIG_DIR"] == str(config.resolve())
     assert env["TOOL_PROXY_ENDPOINT"] == "http://host.docker.internal:18080"
     assert env["AIDEN_BENCHMARK_TASK_ID"] == "suite.json:t1"
     assert "host.docker.internal" in env["NO_PROXY"]
-    compose_text = webui.WEBUI_DAEMON_COMPOSE_FILE.read_text(encoding="utf-8")
-    entrypoint_text = (webui.MOBILEGYM_DOCKER_DIR / "daemon-entrypoint.sh").read_text(
+    compose_text = webui.AGENT_DAEMON_COMPOSE_FILE.read_text(encoding="utf-8")
+    entrypoint_text = (webui.BENCHMARK_DOCKER_DIR / "agent-daemon-entrypoint.sh").read_text(
         encoding="utf-8"
     )
     expected_forward_tools = (

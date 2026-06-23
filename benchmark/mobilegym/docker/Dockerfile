@@ -70,44 +70,6 @@ EXPOSE 4173
 CMD ["npm", "run", "preview", "--", "--host", "0.0.0.0", "--port", "4173"]
 
 
-# ============ Go Agent Daemon ============
-FROM golang:1.23-bullseye AS daemon-builder
-
-ARG HTTP_PROXY
-ARG HTTPS_PROXY
-ARG NO_PROXY
-ENV HTTP_PROXY=${HTTP_PROXY} \
-    HTTPS_PROXY=${HTTPS_PROXY} \
-    NO_PROXY=${NO_PROXY} \
-    GOTOOLCHAIN=auto
-
-WORKDIR /build
-
-# Copy go.mod and go.sum for caching
-COPY src/agent/go.mod src/agent/go.sum ./
-RUN go mod download
-
-# Copy source code
-COPY src/agent/ ./
-
-# Build daemon
-RUN CGO_ENABLED=0 GOOS=linux go build -o daemon ./cmd/daemon
-
-
-FROM debian:bullseye-slim AS daemon-runtime
-
-RUN apt-get update && apt-get install -y ca-certificates curl && rm -rf /var/lib/apt/lists/*
-
-COPY --from=daemon-builder /build/daemon /usr/local/bin/daemon
-COPY benchmark/mobilegym/docker/daemon-entrypoint.sh /usr/local/bin/daemon-entrypoint
-RUN chmod +x /usr/local/bin/daemon-entrypoint
-
-WORKDIR /app
-EXPOSE 8080
-
-CMD ["daemon-entrypoint"]
-
-
 # ============ Test Runner ============
 FROM python:3.11-slim AS test-runner
 

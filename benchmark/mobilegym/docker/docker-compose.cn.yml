@@ -19,11 +19,11 @@ services:
       retries: 5
 
   daemon:
-    image: aiden-mobilegym-daemon:local
+    image: aiden-agent-daemon:local
     build:
       context: ../../..
-      dockerfile: benchmark/mobilegym/docker/Dockerfile.cn
-      target: daemon-runtime
+      dockerfile: benchmark/docker/Dockerfile.agent-daemon.cn
+      target: agent-daemon-runtime
     ports:
       - "${AIDEN_DAEMON_PORT:-8080}:8080"
     volumes:

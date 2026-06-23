@@ -127,9 +127,10 @@ docker compose down
 
 | 文件                          | 说明                         | 是否在 git               |
 | ----------------------------- | ---------------------------- | ------------------------ |
-| `Dockerfile`                  | 镜像构建                     | ✅                       |
+| `Dockerfile`                  | MobileGym/test runner 镜像构建 | ✅                       |
 | `docker-compose.yml`          | 服务编排                     | ✅                       |
-| `daemon-entrypoint.sh`        | Daemon 启动脚本              | ✅                       |
+| `../../docker/Dockerfile.agent-daemon` | Agent daemon 镜像构建       | ✅                       |
+| `../../docker/agent-daemon-entrypoint.sh` | Agent daemon 启动脚本       | ✅                       |
 | `init.sh`                     | 一键初始化                   | ✅                       |
 | `.env.example`                | 配置模板                     | ✅                       |
 | `.dockerignore`               | 构建排除                     | ✅                       |
