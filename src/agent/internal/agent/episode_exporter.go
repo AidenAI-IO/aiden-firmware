@@ -13,7 +13,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const langfuseBatchSize = 40
+const (
+	langfuseBatchSize               = 40
+	langfuseScreenshotUploadTimeout = 2 * time.Second
+	langfuseTraceIngestReserve      = 5 * time.Second
+)
 
 type langfuseIterationWindow struct {
 	Index int
@@ -505,13 +509,17 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 			}
 			var output interface{} = event.Observation
 			if e.cfg.UploadScreenshotsOrDefault() && strings.TrimSpace(event.ScreenshotRef) != "" {
-				mediaRef, err := e.uploadScreenshot(ctx, traceID, resultSpanID, episodeDir, event.ScreenshotRef)
-				if err != nil && e.logger != nil {
-					e.logger.Warn("[telemetry] screenshot upload failed (%s): %v", event.ScreenshotRef, err)
-				} else if mediaRef != "" {
-					output = map[string]interface{}{
-						"observation": event.Observation,
-						"screenshot":  mediaRef,
+				screenshotCtx, cancel, ok := langfuseScreenshotUploadContext(ctx)
+				if ok {
+					mediaRef, err := e.uploadScreenshot(screenshotCtx, traceID, resultSpanID, episodeDir, event.ScreenshotRef)
+					cancel()
+					if err != nil && e.logger != nil {
+						e.logger.Warn("[telemetry] screenshot upload failed (%s): %v", event.ScreenshotRef, err)
+					} else if mediaRef != "" {
+						output = map[string]interface{}{
+							"observation": event.Observation,
+							"screenshot":  mediaRef,
+						}
 					}
 				}
 			}
@@ -698,6 +706,27 @@ func (e *EpisodeExporter) promptGenerationBody(episode TaskEpisode, traceID stri
 		body["version"] = version
 	}
 	return body
+}
+
+func langfuseScreenshotUploadContext(ctx context.Context) (context.Context, context.CancelFunc, bool) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timeout := langfuseScreenshotUploadTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining <= langfuseTraceIngestReserve {
+			return nil, nil, false
+		}
+		if available := remaining - langfuseTraceIngestReserve; available < timeout {
+			timeout = available
+		}
+	}
+	if timeout <= 0 {
+		return nil, nil, false
+	}
+	screenshotCtx, cancel := context.WithTimeout(ctx, timeout)
+	return screenshotCtx, cancel, true
 }
 
 func (e *EpisodeExporter) traceUsageGenerationBody(episode TaskEpisode, traceID string, startTime, endTime time.Time) map[string]interface{} {

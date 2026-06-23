@@ -672,6 +672,99 @@ outcome:
 	}
 }
 
+func TestExportEpisodeDirIngestsTraceWhenScreenshotUploadWouldExhaustDeadline(t *testing.T) {
+	var ingestionCalls int
+	var mediaCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/public/ingestion":
+			ingestionCalls++
+			w.WriteHeader(http.StatusMultiStatus)
+			_, _ = w.Write([]byte(`{"successes":[{"id":"ok","status":201}],"errors":[]}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/public/media":
+			mediaCalls++
+			time.Sleep(200 * time.Millisecond)
+			http.Error(w, "media upload should have been skipped", http.StatusGatewayTimeout)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	episodeDir := t.TempDir()
+	start := time.Date(2026, 6, 23, 9, 30, 0, 0, time.UTC)
+	episode := TaskEpisode{
+		ID:        "ep_export_deadline_test",
+		StartedAt: start.Format(time.RFC3339Nano),
+		EndedAt:   start.Add(5 * time.Second).Format(time.RFC3339Nano),
+		UserGoal:  "失败也要上传 trace",
+		Outcome: TaskEpisodeOutcome{
+			Success:       false,
+			FailureReason: "agent restarted before the task episode completed",
+		},
+	}
+	if err := os.WriteFile(filepath.Join(episodeDir, "episode.yaml"), []byte(`
+id: ep_export_deadline_test
+status: interrupted
+started_at: "`+episode.StartedAt+`"
+ended_at: "`+episode.EndedAt+`"
+user_goal: 失败也要上传 trace
+outcome:
+  success: false
+  failure_reason: agent restarted before the task episode completed
+`), 0o644); err != nil {
+		t.Fatalf("write episode.yaml: %v", err)
+	}
+	if err := writeEpisodeEventsJSONL(filepath.Join(episodeDir, "events.jsonl"), []TaskEpisodeEvent{
+		{
+			EventID:   "evt1",
+			Ts:        start.Format(time.RFC3339Nano),
+			Type:      runEventToolCall,
+			ToolName:  "screenshot",
+			ToolInput: `{}`,
+			Content:   "截图",
+		},
+		{
+			EventID:       "evt2",
+			Ts:            start.Add(time.Second).Format(time.RFC3339Nano),
+			Type:          "tool_result",
+			ToolName:      "screenshot",
+			Observation:   `{"format":"jpeg","size":100}`,
+			ScreenshotRef: "artifacts/step_002.jpeg",
+		},
+	}); err != nil {
+		t.Fatalf("write events.jsonl: %v", err)
+	}
+	artifactsDir := filepath.Join(episodeDir, "artifacts")
+	if err := os.MkdirAll(artifactsDir, 0o755); err != nil {
+		t.Fatalf("mkdir artifacts: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(artifactsDir, "step_002.jpeg"), []byte("fakejpeg"), 0o644); err != nil {
+		t.Fatalf("write screenshot: %v", err)
+	}
+
+	exporter := NewEpisodeExporter(TelemetryConfig{
+		Enabled:           boolPtr(true),
+		BaseURL:           server.URL,
+		PublicKey:         "pk-test",
+		SecretKey:         "sk-test",
+		UploadScreenshots: boolPtr(true),
+		MaxRetry:          0,
+	}, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	if err := exporter.ExportEpisodeDir(ctx, episodeDir, episode); err != nil {
+		t.Fatalf("ExportEpisodeDir() error = %v", err)
+	}
+	if ingestionCalls == 0 {
+		t.Fatal("expected ingestion request even when screenshot upload cannot fit within export deadline")
+	}
+	if mediaCalls != 0 {
+		t.Fatalf("mediaCalls = %d, want screenshot upload skipped to preserve trace ingestion budget", mediaCalls)
+	}
+}
+
 func TestRuntimeStartupExportsInterruptedEpisodeToLangfuse(t *testing.T) {
 	ctx := context.Background()
 	configDir := t.TempDir()
