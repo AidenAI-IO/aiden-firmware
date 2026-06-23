@@ -191,8 +191,8 @@ class AidenGoAgent(_MobileGymBaseAgent):
             # don't bleed into this episode's context window. Mirrors what
             # benchmark/runner/recovery.py does for the HDMI backend.
             self._post_daemon("/api/clear", {}, timeout=self.episode_timeout_sec)
-            self._prepare_aiden_suite_task(self.task)
             chat_started = True
+            self._prepare_aiden_suite_task(self.task)
             chat_result = self._post_daemon(
                 "/api/chat",
                 {"message": self._task_input(), "episode_id": episode_id},
@@ -342,9 +342,12 @@ class AidenGoAgent(_MobileGymBaseAgent):
                 raise AidenAdapterError(f"setup step missing tool: {step!r}")
             if tool == "shell":
                 args = _rewrite_shell_memory_path(args, self._daemon_memory_dir())
+                path = "/api/mobilegym/setup/shell"
+            else:
+                path = f"/api/tools/{tool}"
             timeout = _float_value(step.get("timeout_sec"), 90.0)
             result = self._post_daemon(
-                f"/api/tools/{tool}",
+                path,
                 {"input": args},
                 timeout=timeout,
             )

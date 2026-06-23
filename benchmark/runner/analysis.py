@@ -802,8 +802,7 @@ def _apply_bridge_inactive_issue(issue: dict[str, Any], payload: dict[str, Any])
         if not isinstance(existing, dict):
             continue
         text = json.dumps(existing, ensure_ascii=False).lower()
-        category = str(existing.get("category") or "").strip()
-        if "mobilegym bridge episode is not active" in text or category in {"", "unknown"}:
+        if "mobilegym bridge episode is not active" in text or "bridge episode" in text:
             target_index = index
             break
     if target_index is None:

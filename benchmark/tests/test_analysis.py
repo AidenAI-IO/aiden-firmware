@@ -318,6 +318,37 @@ def test_analyze_run_normalizes_bridge_inactive_analysis_payload(monkeypatch, tm
     assert "Category: `unknown`" not in markdown
 
 
+def test_bridge_inactive_known_issue_does_not_overwrite_unrelated_blank_cluster():
+    context = {
+        "known_issues": [
+            {
+                "id": "mobilegym_setup_before_episode_start",
+                "task_ids": ["suite.bridge"],
+                "summary": "bridge inactive",
+                "evidence": ["mobilegym bridge episode is not active"],
+            }
+        ]
+    }
+    payload = {
+        "classification_counts": {"agent_behavior_issue": 1},
+        "failure_clusters": [
+            {
+                "title": "Agent picked the wrong target",
+                "category": "",
+                "task_ids": ["suite.agent"],
+                "evidence": ["agent tapped settings instead of clock"],
+            }
+        ],
+    }
+
+    normalized = analysis._normalize_analysis_payload(context, payload)
+
+    assert normalized["failure_clusters"][0]["category"] == "benchmark_infra_issue"
+    assert normalized["failure_clusters"][0]["task_ids"] == ["suite.bridge"]
+    assert normalized["failure_clusters"][1]["title"] == "Agent picked the wrong target"
+    assert normalized["failure_clusters"][1]["task_ids"] == ["suite.agent"]
+
+
 def test_collect_context_records_warnings_for_malformed_artifacts(tmp_path):
     repo = tmp_path / "repo"
     run_dir = repo / "benchmark" / "runs" / "mobilegym" / "batch-bad"

@@ -167,14 +167,21 @@ def _read_mobilegym_run_health(batch_dir: Path, *, expected_tasks: int) -> dict:
         payload = {}
     return {
         "source": "mobilegym_backend",
-        "tasks": int(payload.get("tasks") or expected_tasks or 0),
-        "passed": int(payload.get("passed") or 0),
-        "failed": int(payload.get("failed") or 0),
-        "timeout": int(payload.get("timeout") or 0),
-        "error": int(payload.get("error") or 0),
-        "unknown": int(payload.get("unknown") or 0),
-        "worker_failed": int(payload.get("worker_failed") or 0),
+        "tasks": _safe_int(payload.get("tasks"), expected_tasks or 0),
+        "passed": _safe_int(payload.get("passed"), 0),
+        "failed": _safe_int(payload.get("failed"), 0),
+        "timeout": _safe_int(payload.get("timeout"), 0),
+        "error": _safe_int(payload.get("error"), 0),
+        "unknown": _safe_int(payload.get("unknown"), 0),
+        "worker_failed": _safe_int(payload.get("worker_failed"), 0),
     }
+
+
+def _safe_int(value: object, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _write_aiden_judged_phase_report(
@@ -220,7 +227,7 @@ def _copy_task_artifacts(batch_dir: Path, task_results: list[TaskResult]) -> Non
     tasks_dir.mkdir(parents=True, exist_ok=True)
     for result in task_results:
         source = Path(result.artifact_dir) if result.artifact_dir else None
-        target = tasks_dir / result.task_id
+        target = _safe_task_target(tasks_dir, result.task_id)
         if source is None or not source.exists():
             target.mkdir(parents=True, exist_ok=True)
             continue
@@ -234,9 +241,20 @@ def _copy_task_artifacts(batch_dir: Path, task_results: list[TaskResult]) -> Non
         shutil.copytree(source, target)
 
 
+def _safe_task_target(tasks_dir: Path, task_id: str) -> Path:
+    root = tasks_dir.resolve()
+    target = (tasks_dir / task_id).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"unsafe task_id for artifacts: {task_id!r}") from exc
+    return target
+
+
 def _child_task_results(batch_dir: Path, task_results: list[TaskResult]) -> list[TaskResult]:
+    tasks_dir = batch_dir / "tasks"
     return [
-        dc.replace(result, artifact_dir=str(batch_dir / "tasks" / result.task_id))
+        dc.replace(result, artifact_dir=str(_safe_task_target(tasks_dir, result.task_id)))
         for result in task_results
     ]
 

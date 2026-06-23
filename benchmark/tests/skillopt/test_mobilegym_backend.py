@@ -204,6 +204,40 @@ def test_mobilegym_backend_child_summary_uses_aiden_judged_results(monkeypatch, 
     assert (batch / "tasks" / "case_one" / "trace.json").exists()
 
 
+def test_read_mobilegym_run_health_preserves_zero_and_ignores_malformed_counts(tmp_path: Path):
+    from runner.skillopt import mobilegym_backend
+
+    batch = tmp_path / "batch"
+    batch.mkdir()
+    (batch / "summary.json").write_text(
+        json.dumps({"tasks": 0, "passed": "N/A", "failed": "2", "worker_failed": None}),
+        encoding="utf-8",
+    )
+
+    health = mobilegym_backend._read_mobilegym_run_health(batch, expected_tasks=9)
+
+    assert health["tasks"] == 0
+    assert health["passed"] == 0
+    assert health["failed"] == 2
+    assert health["worker_failed"] == 0
+
+
+def test_copy_task_artifacts_rejects_task_id_path_escape(tmp_path: Path):
+    from runner.skillopt import mobilegym_backend
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "trace.json").write_text("{}", encoding="utf-8")
+    batch = tmp_path / "batch"
+    result = _task_result(artifact_dir=source)
+    result.task_id = "../escape"
+
+    with pytest.raises(ValueError, match="unsafe task_id"):
+        mobilegym_backend._copy_task_artifacts(batch, [result])
+
+    assert not (tmp_path / "escape").exists()
+
+
 def test_mobilegym_backend_passes_subprocess_timeout(monkeypatch, tmp_path: Path):
     from runner.skillopt import mobilegym_backend
 

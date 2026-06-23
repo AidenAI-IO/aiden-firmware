@@ -195,8 +195,8 @@ def test_aiden_go_agent_act_runs_aiden_suite_setup_with_runtime_memory_dir(monke
         "http://bridge.local/episode/start",
         "http://daemon.local/api/mobilegym/episode/start",
         "http://daemon.local/api/clear",
-        "http://daemon.local/api/tools/shell",
-        "http://daemon.local/api/tools/shell",
+        "http://daemon.local/api/mobilegym/setup/shell",
+        "http://daemon.local/api/mobilegym/setup/shell",
         "http://daemon.local/api/chat",
         "http://daemon.local/api/mobilegym/episode/end",
         "http://bridge.local/episode/end",
@@ -206,6 +206,49 @@ def test_aiden_go_agent_act_runs_aiden_suite_setup_with_runtime_memory_dir(monke
         "rm -rf /tmp/aiden-config/memory/long_term",
         "mkdir -p /tmp/aiden-config/memory/long_term/memories",
     ]
+
+
+def test_aiden_go_agent_marks_daemon_dirty_when_suite_setup_fails():
+    module = importlib.import_module("mobilegym.adapter.aiden_go_agent")
+
+    class SetupFailHTTPClient(RecordingHTTPClient):
+        def post_json(self, url, payload, *, token=None, timeout=None):
+            self.calls.append((url, payload, token, timeout))
+            if url.endswith("/api/mobilegym/setup/shell"):
+                return {"is_error": True, "output": "setup exploded"}
+            if url.endswith("/episode/end"):
+                return {"ok": True, "data": {"action_log": []}}
+            return {"ok": True}
+
+    class Task:
+        id = "suite.case_one"
+        instruction = "Do it."
+        metadata = {
+            "aiden_suite_name": "suite",
+            "setup": {
+                "tool_sequence": [
+                    {"tool": "shell", "args": {"command": "false"}},
+                ],
+            },
+        }
+
+    daemon = FakeDaemon()
+    agent = module.AidenGoAgent(
+        bridge_url="http://bridge.local",
+        bridge_control_token="bridge-control",
+        daemon=daemon,
+        http_client=SetupFailHTTPClient(),
+        episode_id_factory=lambda: "ep-setup-fail",
+    )
+
+    agent.reset(Task())
+    with pytest.raises(module.AidenAdapterError, match="setup exploded") as exc:
+        agent.act(obs=None)
+
+    assert exc.value.worker_dirty is True
+    assert daemon.dirty is True
+    assert daemon.stop_calls == 1
+    assert daemon.kill_calls == 1
 
 
 def test_aiden_go_agent_records_chat_history_on_task_for_suite_evaluate():

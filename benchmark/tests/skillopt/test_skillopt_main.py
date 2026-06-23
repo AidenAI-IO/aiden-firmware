@@ -54,6 +54,16 @@ def test_resolve_skill_path_prefers_env_skills_dir(monkeypatch, tmp_path: Path):
     assert main._resolve_skill_path("device-operator") == env_skill
 
 
+def test_json_for_script_escapes_unicode_line_separators():
+    rendered = main._json_for_script({"text": "a\u2028b\u2029c</script>"})
+
+    assert "\u2028" not in rendered
+    assert "\u2029" not in rendered
+    assert "\\u2028" in rendered
+    assert "\\u2029" in rendered
+    assert "<\\/script>" in rendered
+
+
 def _write_suite(path: Path, name: str, task_ids: list[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({

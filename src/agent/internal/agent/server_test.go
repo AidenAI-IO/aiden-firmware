@@ -1803,6 +1803,44 @@ func TestServerMobileGymEpisodeEndpointsRequireControlToken(t *testing.T) {
 	}
 }
 
+func TestServerMobileGymSetupShellUsesControlTokenWithoutExposingTool(t *testing.T) {
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "control.token")
+	if err := os.WriteFile(tokenPath, []byte("control-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{
+		Model:  ModelConfig{Provider: "fake"},
+		Device: DeviceConfig{Backend: "mobilegym", ControlTokenFile: tokenPath},
+	}
+	toolSet := NewBuiltinToolSetFromConfig(cfg, ProxyConfig{}, &mobileGymSessionStore{})
+	runtime := NewRuntimeWithDeps(cfg, &testModelResolver{model: &scriptedModel{}}, NewMemoryManager(""), toolSet, NewSkillIndex())
+	server := NewServer(runtime, "127.0.0.1:0", "")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/tools/shell", strings.NewReader(`{"input":{"command":"printf hidden"}}`))
+	server.handleToolInvoke(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("normal shell tool status = %d, want %d body=%s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/mobilegym/setup/shell", strings.NewReader(`{"input":{"command":"printf mobilegym-setup"}}`))
+	req.Header.Set("Authorization", "Bearer control-token")
+	server.handleMobileGymSetupShell(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("setup shell status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var resp ToolInvokeResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode setup shell response: %v", err)
+	}
+	if resp.Tool.Name != "shell" || resp.IsError || !strings.Contains(resp.Output, "mobilegym-setup") {
+		t.Fatalf("unexpected setup shell response: %#v", resp)
+	}
+}
+
 func TestMobileGymControlTokenNotInToolCatalog(t *testing.T) {
 	dir := t.TempDir()
 	tokenPath := filepath.Join(dir, "control.token")

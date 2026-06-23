@@ -407,6 +407,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/tools/", s.handleTools)
 	mux.HandleFunc("/api/mobilegym/episode/start", s.handleMobileGymEpisodeStart)
 	mux.HandleFunc("/api/mobilegym/episode/end", s.handleMobileGymEpisodeEnd)
+	mux.HandleFunc("/api/mobilegym/setup/shell", s.handleMobileGymSetupShell)
 	mux.HandleFunc("/api/tool-skills", s.handleToolSkills)
 	mux.HandleFunc("/api/audio/record/start", s.handleAudioRecordStart)
 	mux.HandleFunc("/api/audio/record/stop", s.handleAudioRecordStop)
@@ -2214,6 +2215,56 @@ func (s *Server) handleToolInvoke(w http.ResponseWriter, r *http.Request) {
 
 	if s.logger != nil {
 		s.logger.Info("HTTP tool invoke: name=%s error=%v", toolName, response.IsError)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func (s *Server) handleMobileGymSetupShell(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.authorizeMobileGymControl(w, r) {
+		return
+	}
+
+	rawInput, err := decodeToolInvokeInput(r.Body)
+	if err != nil {
+		http.Error(w, "Invalid request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	startedAt := time.Now()
+	spec := NewToolSpec(&ShellTool{proxy: ProxyConfigFromEnvironment()})
+	execution := executeToolCall(r.Context(), ToolCallExecution{
+		Specs:  NewToolSpecs([]langtools.Tool{spec.Tool}),
+		Action: schema.AgentAction{Tool: spec.Name, ToolInput: rawInput},
+	})
+	duration := time.Since(startedAt).Milliseconds()
+	callErr := execution.Result.Error
+	if execution.Error != nil {
+		callErr = execution.Error
+	}
+
+	response := ToolInvokeResponse{
+		Tool:       spec.Descriptor(),
+		RawInput:   execution.Call.Input,
+		Output:     execution.Result.Output,
+		IsError:    execution.Result.IsError || execution.Error != nil,
+		DurationMs: duration,
+		CalledAt:   startedAt,
+	}
+	if callErr != nil {
+		response.Error = callErr.Error()
+		if response.Output == "" {
+			response.Output = callErr.Error()
+		}
+	}
+
+	if s.logger != nil {
+		s.logger.Info("MobileGym setup shell invoke: error=%v", response.IsError)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
