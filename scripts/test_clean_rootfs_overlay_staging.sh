@@ -20,18 +20,14 @@ mkdir -p "$dest_overlay/usr/share/aiden"
 
 printf 'service\n' > "$dest_overlay/etc/init.d/S53agent"
 printf 'mapping\n' > "$dest_overlay/usr/share/aiden/app_mapping.json"
+printf 'actions\n' > "$dest_overlay/usr/share/aiden/quick_actions.json"
 printf 'planner\n' > "$dest_overlay/usr/share/aiden/skills/planner/SKILL.md"
 printf 'operator\n' > "$dest_overlay/usr/share/aiden/skills/device-operator/SKILL.md"
 
 "$CLEAN_SCRIPT" --dest-overlay "$dest_overlay"
 
-if [ -e "$dest_overlay/usr/share/aiden/skills" ]; then
-    echo "cleanup script must remove legacy rootfs bundled skills staging" >&2
-    exit 1
-fi
-
-if [ "$(cat "$dest_overlay/usr/share/aiden/app_mapping.json")" != "mapping" ]; then
-    echo "cleanup script must preserve rootfs app mapping staging" >&2
+if [ -e "$dest_overlay/usr/share/aiden" ]; then
+    echo "cleanup script must remove legacy rootfs bundled Aiden share staging" >&2
     exit 1
 fi
 

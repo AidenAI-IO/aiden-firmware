@@ -69,6 +69,7 @@ func TestWaitStableScreenToolReturnsScreenshotObservationJSON(t *testing.T) {
 			{meta: frameMetadata{Seq: 2, Width: 2, Height: 2, PixelFormat: "nv12"}, data: rawFrame},
 		},
 		jpegData: jpegData,
+		jpegMeta: frameMetadata{Seq: 99, Width: 2, Height: 2, PixelFormat: "jpeg", Bytes: uint64(len(jpegData))},
 	}
 	tool := &WaitStableScreenTool{
 		client:   client,
@@ -144,6 +145,67 @@ func TestPostActionScreenshotToolUsesInternalStableWaitWithoutWaitScreenshot(t *
 	}
 }
 
+func TestWaitStableScreenToolUsesJPEGSourceMetadataForSharedScreenState(t *testing.T) {
+	rawFrame := []byte{128, 128, 128, 128, 128, 128}
+	jpegData, err := encodeJPEG([]byte{
+		255, 255, 255, 255, 255, 255,
+		255, 255, 255, 255, 255, 255,
+	}, 2, 2, screenshotJPEGQuality)
+	if err != nil {
+		t.Fatalf("encodeJPEG() error = %v", err)
+	}
+	screen := &screenState{}
+	client := &fakeWaitStableFrameClient{
+		rawFrames: []fakeWaitStableFrame{
+			{meta: frameMetadata{Seq: 1, Width: 2, Height: 2, PixelFormat: "nv12"}, data: rawFrame},
+			{meta: frameMetadata{Seq: 2, Width: 2, Height: 2, PixelFormat: "nv12"}, data: rawFrame},
+		},
+		jpegData: jpegData,
+		jpegMeta: frameMetadata{
+			Seq:          99,
+			Width:        2,
+			Height:       2,
+			SourceWidth:  16,
+			SourceHeight: 9,
+			CropX:        5,
+			CropY:        0,
+			CropWidth:    5,
+			CropHeight:   9,
+			PixelFormat:  "jpeg",
+			Bytes:        uint64(len(jpegData)),
+		},
+	}
+	tool := &WaitStableScreenTool{
+		client:   client,
+		defaults: ScreenStableDefaults{TimeoutMs: 50, StableMs: 1, DiffThreshold: 2},
+		screen:   screen,
+	}
+
+	out, err := tool.Call(context.Background(), `{}`)
+	if err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	if strings.HasPrefix(out, "error:") {
+		t.Fatalf("Call() returned error output: %s", out)
+	}
+
+	var result waitStableScreenObservationResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("output is not valid wait screenshot JSON: %v", err)
+	}
+	if result.ActiveArea != nil {
+		t.Fatalf("expected no active_area in cropped jpeg response, got %#v", result.ActiveArea)
+	}
+	width, height, active, _, ok := screen.ActiveAreaWithAge()
+	if !ok || width != 16 || height != 9 {
+		t.Fatalf("screen dimensions = %dx%d ok=%v, want 16x9 true", width, height, ok)
+	}
+	want := screenActiveArea{X: 5, Y: 0, Width: 5, Height: 9, Valid: true}
+	if active != want {
+		t.Fatalf("active area = %+v, want %+v", active, want)
+	}
+}
+
 type fakeWaitStableFrame struct {
 	meta frameMetadata
 	data []byte
@@ -154,6 +216,7 @@ type fakeWaitStableFrameClient struct {
 	rawCalls  int
 	jpegData  []byte
 	jpegCalls int
+	jpegMeta  frameMetadata
 }
 
 func (c *fakeWaitStableFrameClient) LatestFrame() (*frameMetadata, []byte, error) {
@@ -178,14 +241,17 @@ func (c *fakeWaitStableFrameClient) LatestFrameWithFormat(format string, quality
 		return nil, nil, fmt.Errorf("quality = %d, want %d", quality, screenshotJPEGQuality)
 	}
 	c.jpegCalls++
-	meta := &frameMetadata{
-		Seq:         99,
-		Width:       2,
-		Height:      2,
-		PixelFormat: "jpeg",
-		Bytes:       uint64(len(c.jpegData)),
+	meta := c.jpegMeta
+	if meta.Width == 0 {
+		meta = frameMetadata{
+			Seq:         99,
+			Width:       2,
+			Height:      2,
+			PixelFormat: "jpeg",
+			Bytes:       uint64(len(c.jpegData)),
+		}
 	}
-	return meta, append([]byte(nil), c.jpegData...), nil
+	return &meta, append([]byte(nil), c.jpegData...), nil
 }
 
 type fakeInternalWaitTool struct {

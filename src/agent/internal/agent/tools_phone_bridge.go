@@ -22,9 +22,9 @@ var defaultAppMappingJSON []byte
 // configDir, and the bundled file shipped with the firmware.
 const AppMappingFileName = "app_mapping.json"
 
-// BundledAppMappingPath is the on-device install path, populated by
+// BundledAppMappingPath is the on-device OEM install path, populated by
 // _build_image.sh from src/agent/internal/agent/app_mapping.json.
-const BundledAppMappingPath = "/usr/share/aiden/" + AppMappingFileName
+const BundledAppMappingPath = "/oem/usr/share/aiden/" + AppMappingFileName
 
 type appMappingEntry struct {
 	IOSURLs         []string `json:"ios_urls"`

@@ -23,24 +23,36 @@ func NewFrameServiceClient(socketPath string) *FrameServiceClient {
 }
 
 type frameMetadata struct {
-	Seq         uint64 `json:"seq"`
-	Width       uint32 `json:"width"`
-	Height      uint32 `json:"height"`
-	PixelFormat string `json:"pixel_format"`
-	Stride      uint32 `json:"stride"`
-	Bytes       uint64 `json:"bytes"`
-	Stale       bool   `json:"stale"`
+	Seq          uint64 `json:"seq"`
+	Width        uint32 `json:"width"`
+	Height       uint32 `json:"height"`
+	SourceWidth  uint32 `json:"source_width,omitempty"`
+	SourceHeight uint32 `json:"source_height,omitempty"`
+	CropX        uint32 `json:"crop_x,omitempty"`
+	CropY        uint32 `json:"crop_y,omitempty"`
+	CropWidth    uint32 `json:"crop_width,omitempty"`
+	CropHeight   uint32 `json:"crop_height,omitempty"`
+	PixelFormat  string `json:"pixel_format"`
+	Stride       uint32 `json:"stride"`
+	Bytes        uint64 `json:"bytes"`
+	Stale        bool   `json:"stale"`
 }
 
 func (m *frameMetadata) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		Seq         json.RawMessage `json:"seq"`
-		Width       json.RawMessage `json:"width"`
-		Height      json.RawMessage `json:"height"`
-		PixelFormat string          `json:"pixel_format"`
-		Stride      json.RawMessage `json:"stride"`
-		Bytes       json.RawMessage `json:"bytes"`
-		Stale       json.RawMessage `json:"stale"`
+		Seq          json.RawMessage `json:"seq"`
+		Width        json.RawMessage `json:"width"`
+		Height       json.RawMessage `json:"height"`
+		SourceWidth  json.RawMessage `json:"source_width"`
+		SourceHeight json.RawMessage `json:"source_height"`
+		CropX        json.RawMessage `json:"crop_x"`
+		CropY        json.RawMessage `json:"crop_y"`
+		CropWidth    json.RawMessage `json:"crop_width"`
+		CropHeight   json.RawMessage `json:"crop_height"`
+		PixelFormat  string          `json:"pixel_format"`
+		Stride       json.RawMessage `json:"stride"`
+		Bytes        json.RawMessage `json:"bytes"`
+		Stale        json.RawMessage `json:"stale"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
@@ -58,6 +70,30 @@ func (m *frameMetadata) UnmarshalJSON(data []byte) error {
 	if err != nil {
 		return fmt.Errorf("height: %w", err)
 	}
+	sourceWidth, err := parseFlexibleUint32(raw.SourceWidth)
+	if err != nil {
+		return fmt.Errorf("source_width: %w", err)
+	}
+	sourceHeight, err := parseFlexibleUint32(raw.SourceHeight)
+	if err != nil {
+		return fmt.Errorf("source_height: %w", err)
+	}
+	cropX, err := parseFlexibleUint32(raw.CropX)
+	if err != nil {
+		return fmt.Errorf("crop_x: %w", err)
+	}
+	cropY, err := parseFlexibleUint32(raw.CropY)
+	if err != nil {
+		return fmt.Errorf("crop_y: %w", err)
+	}
+	cropWidth, err := parseFlexibleUint32(raw.CropWidth)
+	if err != nil {
+		return fmt.Errorf("crop_width: %w", err)
+	}
+	cropHeight, err := parseFlexibleUint32(raw.CropHeight)
+	if err != nil {
+		return fmt.Errorf("crop_height: %w", err)
+	}
 	stride, err := parseFlexibleUint32(raw.Stride)
 	if err != nil {
 		return fmt.Errorf("stride: %w", err)
@@ -74,6 +110,12 @@ func (m *frameMetadata) UnmarshalJSON(data []byte) error {
 	m.Seq = seq
 	m.Width = width
 	m.Height = height
+	m.SourceWidth = sourceWidth
+	m.SourceHeight = sourceHeight
+	m.CropX = cropX
+	m.CropY = cropY
+	m.CropWidth = cropWidth
+	m.CropHeight = cropHeight
 	m.PixelFormat = raw.PixelFormat
 	m.Stride = stride
 	m.Bytes = sizeBytes
@@ -119,7 +161,7 @@ func (c *FrameServiceClient) LatestFrameWithFormat(format string, quality int) (
 	if uint64(len(payload)) != resp.Frame.Bytes {
 		return nil, nil, fmt.Errorf("payload size mismatch: got %d, expected %d", len(payload), resp.Frame.Bytes)
 	}
-
+	// Return stale frame but let caller check meta.Stale flag
 	return &resp.Frame, payload, nil
 }
 

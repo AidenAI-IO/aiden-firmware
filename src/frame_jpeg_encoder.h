@@ -20,7 +20,8 @@ namespace aiden {
  */
 bool encode_frame_to_jpeg_hw(const uint8_t* rgb_data, uint32_t width, uint32_t height,
                               int quality, std::vector<uint8_t>* output,
-                              uint32_t* out_width = nullptr, uint32_t* out_height = nullptr);
+                              uint32_t* out_width = nullptr, uint32_t* out_height = nullptr,
+                              uint32_t* out_crop_x = nullptr, uint32_t* out_crop_y = nullptr);
 
 /**
  * Convert YUV frame to RGB and encode to JPEG using hardware encoder.
@@ -38,6 +39,7 @@ bool encode_frame_to_jpeg_hw(const uint8_t* rgb_data, uint32_t width, uint32_t h
 bool encode_yuv_to_jpeg_hw(const std::vector<uint8_t>& yuv_data, uint32_t width, uint32_t height,
                             const std::string& pixel_format, int quality,
                             std::vector<uint8_t>* output,
-                            uint32_t* out_width = nullptr, uint32_t* out_height = nullptr);
+                            uint32_t* out_width = nullptr, uint32_t* out_height = nullptr,
+                            uint32_t* out_crop_x = nullptr, uint32_t* out_crop_y = nullptr);
 
 }  // namespace aiden

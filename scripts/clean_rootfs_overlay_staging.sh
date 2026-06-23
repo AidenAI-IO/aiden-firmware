@@ -55,6 +55,6 @@ remove_stale_path() {
   fi
 }
 
-# Bundled skills moved from rootfs to OEM staging in 6abb8de. Old dev branches
-# can still leave this directory in the shared self-hosted runner workspace.
-remove_stale_path "usr/share/aiden/skills"
+# Bundled Aiden share assets ship in OEM. Old dev branches can still leave these
+# files in the shared self-hosted runner rootfs overlay workspace.
+remove_stale_path "usr/share/aiden"

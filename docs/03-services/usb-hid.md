@@ -102,3 +102,17 @@ Built-in Agent tools:
 It is recommended to use normalized coordinates (`0..1000`, with center at `500,500`) to avoid click position shifts due to display resolution changes.
 For dense targets such as small buttons, list items, and input boxes, prioritize estimating the normalized coordinates of the target center; only explicitly pass `coord_space: "pixel"` when the screenshot pixel coordinates and HID touch coordinates are already calibrated. After successful input tool execution, a post-action screenshot is returned; screen changes should be confirmed before proceeding to avoid duplicate clicks.
 `keyboard_text` simulates a US keyboard and can only input ASCII typeable characters; Chinese input should be completed through pinyin/English search terms and on-screen candidates, and Chinese character strings cannot be passed directly to the tool.
+
+## iOS shortcut paste prerequisite
+
+On iOS, HID text input and HID keyboard shortcuts are separate failure domains. `keyboard_text` can successfully type ASCII while shortcuts such as paste (`keyboard_tap` with `["meta","v"]` / `Cmd+V`) still have no UI effect.
+
+Before validating shortcut-based paste on iPhone or iPad, turn on:
+
+```text
+Settings > Accessibility > Keyboards & Typing > Full Keyboard Access
+```
+
+On some iOS versions this path may be shown as `Settings > Accessibility > Keyboards > Full Keyboard Access`.
+
+Use HDMI visual feedback after the shortcut. A successful `/dev/hidg0` write only means the HID report was accepted by the device node; it does not prove that iOS executed the paste action. If clipboard content is known to be present and plain typing works but `meta+v` / `rmeta+v` does nothing, check Full Keyboard Access first before changing HID timing or retrying the same shortcut path.

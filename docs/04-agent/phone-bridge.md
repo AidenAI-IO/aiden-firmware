@@ -94,6 +94,7 @@ So iOS cannot promise long-term background command reception. Android can be mor
 - `LSApplicationQueriesSchemes` mainly limits `canOpenURL` queries, not dynamic `openURL` attempts.
 - Maintain scheme mapping table on board side or cloud for easy updates.
 - `openURL` returning success doesn't mean target page is fully usable; ultimately verify via HDMI visually.
+- Phone Bridge `clipboard_write` only writes the system clipboard. If the next step pastes into another app through HID `Cmd+V`, iOS must have Full Keyboard Access enabled; see [USB HID iOS shortcut paste prerequisite](../03-services/usb-hid.md#ios-shortcut-paste-prerequisite).
 
 ## Android Key Points
 
