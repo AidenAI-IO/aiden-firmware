@@ -19,6 +19,12 @@
 //                                  verbatim to stdout for `config`.
 //                                  If unset, prints a minimal resolved config.
 //   AIDEN_AGENT_STUB_CONFIG_EXIT   integer exit code for `config` (default 0).
+//   AIDEN_AGENT_STUB_CONFIG_TEST_LOG path where `config-test` writes argv and
+//                                    stdin for assertions.
+//   AIDEN_AGENT_STUB_CONFIG_TEST_FILE path to stdout payload for `config-test`.
+//                                    If unset, prints a passing TTS result.
+//   AIDEN_AGENT_STUB_CONFIG_TEST_EXIT integer exit code for `config-test`
+//                                    (default 0).
 //   AIDEN_AGENT_STUB_SLEEP_MS    if set, sleep this many ms before producing
 //                                output -- used to exercise the timeout path.
 //
@@ -52,7 +58,7 @@ const char* kDefaultConfig =
     "\"context_window\":0,\"model_max_output_tokens\":0},"
     "\"model_text\":{\"provider\":\"\",\"api_key\":\"\",\"model\":\"\",\"base_url\":\"\",\"token_env\":\"\","
     "\"temperature\":0,\"max_response_tokens\":0,\"context_window\":0,\"model_max_output_tokens\":0},"
-    "\"tts\":{\"provider\":\"minimax-ws\",\"api_key\":\"\",\"model\":\"\",\"voice_id\":\"male-qn-qingse\","
+    "\"tts\":{\"provider\":\"minimax-cn\",\"api_key\":\"\",\"model\":\"\",\"voice_id\":\"male-qn-qingse\","
     "\"emotion\":\"happy\",\"speed\":1},"
     "\"stt\":{\"provider\":\"openai-whisper\",\"api_key\":\"\",\"model\":\"whisper-1\",\"base_url\":\"\","
     "\"secret_id\":\"\",\"secret_key\":\"\",\"region\":\"\",\"engine_model_type\":\"\"},"
@@ -80,6 +86,10 @@ const char* kDefaultConfig =
     "\"screen_stable_ms\":500,\"screen_stable_diff_threshold\":2}"
     "}\n";
 
+const char* kDefaultConfigTest =
+    "{\"ok\":true,\"results\":[{\"check\":\"tts_playback\",\"passed\":true,"
+    "\"detail\":\"played test passed\"}]}\n";
+
 void maybe_sleep() {
     const char* sleep_ms = std::getenv("AIDEN_AGENT_STUB_SLEEP_MS");
     if (!sleep_ms || sleep_ms[0] == '\0') {
@@ -106,6 +116,22 @@ bool write_file_contents(const char* env_var, const char* default_text) {
     buf << in.rdbuf();
     std::fputs(buf.str().c_str(), stdout);
     return true;
+}
+
+void maybe_write_config_test_log(int argc, char** argv, const std::string& stdin_body) {
+    const char* path = std::getenv("AIDEN_AGENT_STUB_CONFIG_TEST_LOG");
+    if (!path || path[0] == '\0') {
+        return;
+    }
+    std::ofstream out(path);
+    if (!out.good()) {
+        return;
+    }
+    out << "argv:";
+    for (int i = 1; i < argc; ++i) {
+        out << "\n" << argv[i];
+    }
+    out << "\nstdin:\n" << stdin_body;
 }
 
 int env_int(const char* var, int fallback) {
@@ -155,6 +181,22 @@ int main(int argc, char** argv) {
         }
         std::fflush(stdout);
         return env_int("AIDEN_AGENT_STUB_CONFIG_EXIT", 0);
+    }
+
+    if (sub == "config-test") {
+        std::ostringstream body;
+        char buf[4096];
+        size_t n = 0;
+        while ((n = std::fread(buf, 1, sizeof(buf), stdin)) > 0) {
+            body.write(buf, static_cast<std::streamsize>(n));
+        }
+        maybe_write_config_test_log(argc, argv, body.str());
+        maybe_sleep();
+        if (!write_file_contents("AIDEN_AGENT_STUB_CONFIG_TEST_FILE", kDefaultConfigTest)) {
+            return 1;
+        }
+        std::fflush(stdout);
+        return env_int("AIDEN_AGENT_STUB_CONFIG_TEST_EXIT", 0);
     }
 
     return 99;

@@ -130,7 +130,7 @@ func TestAudioDialogStartRecordingRetriesUntilAudioServiceAvailable(t *testing.T
 func TestNewAudioDialogAudioWakeupUsesDirectAudioPath(t *testing.T) {
 	dialog, err := NewAudioDialog(Config{
 		Model:       ModelConfig{Provider: "fake"},
-		TTS:         TTSConfig{Provider: "minimax-ws", APIKey: "test-key"},
+		TTS:         TTSConfig{Provider: "minimax-cn", APIKey: "test-key"},
 		Audio:       AudioConfig{Socket: "/tmp/audio.sock", SampleRate: 16000},
 		InputMode:   "audio",
 		TriggerMode: "wakeup",

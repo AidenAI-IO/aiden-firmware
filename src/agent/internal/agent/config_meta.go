@@ -89,6 +89,9 @@ func truthy(field string) Condition    { return Condition{Field: field, Op: "tru
 func in(field string, vs ...string) Condition {
 	return Condition{Field: field, Op: "in", Values: vs}
 }
+func notIn(field string, vs ...string) Condition {
+	return Condition{Field: field, Op: "notIn", Values: vs}
+}
 
 func all(conds ...Condition) *VisibleRule { return &VisibleRule{All: conds} }
 
@@ -123,14 +126,14 @@ func ConfigMeta() ConfigMetadata {
 				Name: "tts",
 				Fields: []FieldMeta{
 					{Key: "provider", Widget: WidgetSelect,
-						Enum:    enumOptions("minimax-ws", "fish-audio", "alicloud", "volcengine"),
+						Enum:    enumOptions("minimax", "minimax-cn", "fish-audio", "alicloud", "volcengine"),
 						Default: defaults.TTS.Provider},
 					{Key: "api_key", Widget: WidgetText, Secret: true},
 					{Key: "model", Widget: WidgetText,
-						VisibleWhen: all(ne("tts.provider", "minimax-ws"))},
+						VisibleWhen: all(notIn("tts.provider", "minimax", "minimax-cn"))},
 					{Key: "voice_id", Widget: WidgetText, Default: defaults.TTS.VoiceID},
 					{Key: "emotion", Widget: WidgetText, Default: defaults.TTS.Emotion,
-						VisibleWhen: all(in("tts.provider", "minimax-ws", "volcengine"))},
+						VisibleWhen: all(in("tts.provider", "minimax", "minimax-cn", "volcengine"))},
 					{Key: "speed", Widget: WidgetSelect, Default: defaults.TTS.Speed,
 						Range: &Range{Min: 0.5, Max: 2, Step: 0.1, Precision: 1}},
 				},

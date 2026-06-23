@@ -11,7 +11,7 @@ const (
 	defaultModelTemperature        = 0.2
 	defaultModelMaxResponseTokens  = 1000
 	defaultModelLogRawHTTP         = true
-	defaultTTSProvider             = "minimax-ws"
+	defaultTTSProvider             = "minimax-cn"
 	defaultTTSVoiceID              = "male-qn-qingse"
 	defaultTTSEmotion              = "happy"
 	defaultTTSSpeed                = 1.0

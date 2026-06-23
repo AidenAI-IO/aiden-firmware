@@ -3840,7 +3840,8 @@ static bool is_tencent_asr_provider(const std::string& provider) {
 std::string provider_default_url(const std::string& provider) {
     if (provider == "openrouter") return "https://openrouter.ai/api/v1";
     if (provider == "openai" || provider == "openai-whisper") return "https://api.openai.com/v1";
-    if (provider == "minimax" || provider == "minimax-ws") return "https://api.minimax.chat";
+    if (provider == "minimax") return "https://api.minimax.io";
+    if (provider == "minimax-cn" || provider == "minimax-ws") return "https://api.minimaxi.com";
     if (is_tencent_asr_provider(provider)) return "https://asr.tencentcloudapi.com";
     return "";
 }
@@ -4062,6 +4063,76 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
                 }
             }
             cJSON_AddItemToArray(results, r3);
+        }
+
+        if (section == "tts") {
+            if (!api_key_present) {
+                cJSON* r3 = cJSON_CreateObject();
+                cJSON_AddStringToObject(r3, "check", "tts_playback");
+                cJSON_AddBoolToObject(r3, "passed", 0);
+                cJSON_AddStringToObject(r3, "detail", "skipped because api_key is empty");
+                cJSON_AddItemToArray(results, r3);
+                all_passed = false;
+            } else {
+                cJSON* req = cJSON_CreateObject();
+                cJSON_AddStringToObject(req, "section", "tts");
+                cJSON_AddStringToObject(req, "text", "test passed");
+                cJSON_AddItemToObject(req, "values", cJSON_Duplicate(values, 1));
+                std::string req_body = cjson_to_string(req);
+                cJSON_Delete(req);
+
+                std::string cmd = shell_quote(agent_bin_path()) +
+                                  " config-test --format=json --stdin --section=tts --config=" +
+                                  shell_quote(options.agent_config_path) + " 2>&1";
+                CommandResult cr = run_command_with_stdin(cmd, req_body, 60000);
+
+                bool appended_cli_result = false;
+                bool cli_passed = cr.exit_code == 0 && !cr.timed_out;
+                cJSON* cli_root = cJSON_Parse(cr.output.c_str());
+                if (cli_root) {
+                    cJSON* ok_item = cJSON_GetObjectItem(cli_root, "ok");
+                    if (!json_is_type(ok_item, cJSON_True)) {
+                        cli_passed = false;
+                    }
+                    cJSON* cli_results = cJSON_GetObjectItem(cli_root, "results");
+                    if (json_is_array(cli_results)) {
+                        int result_count = cJSON_GetArraySize(cli_results);
+                        for (int i = 0; i < result_count; ++i) {
+                            cJSON* item = cJSON_GetArrayItem(cli_results, i);
+                            cJSON* passed_item = cJSON_GetObjectItem(item, "passed");
+                            if (!json_is_type(passed_item, cJSON_True)) {
+                                cli_passed = false;
+                            }
+                            cJSON_AddItemToArray(results, cJSON_Duplicate(item, 1));
+                            appended_cli_result = true;
+                        }
+                    }
+                    cJSON_Delete(cli_root);
+                }
+
+                if (!appended_cli_result) {
+                    cJSON* r3 = cJSON_CreateObject();
+                    cJSON_AddStringToObject(r3, "check", "tts_playback");
+                    cJSON_AddBoolToObject(r3, "passed", 0);
+                    std::string detail;
+                    if (cr.timed_out) {
+                        detail = "agent config-test timed out";
+                    } else if (cr.output.empty()) {
+                        detail = "agent config-test returned exit code " + std::to_string(cr.exit_code);
+                    } else {
+                        detail = trim_trailing_newlines(cr.output);
+                        if (detail.size() > 400) {
+                            detail = detail.substr(0, 400) + "...";
+                        }
+                    }
+                    cJSON_AddStringToObject(r3, "detail", detail.c_str());
+                    cJSON_AddItemToArray(results, r3);
+                    cli_passed = false;
+                }
+                if (!cli_passed) {
+                    all_passed = false;
+                }
+            }
         }
     } else if (section == "audio") {
         cJSON* socket_item = cJSON_GetObjectItem(values, "socket");

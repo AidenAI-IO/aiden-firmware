@@ -102,6 +102,10 @@ provider = "openai"
 model = "qwen3.6-35b"
 base_url = "https://proxy.seeklab.io/qwen/v1"
 api_key = "secret-key"
+
+[tts]
+provider = "minimax-cn"
+api_key = "tts-key"
 '''
     )
 
@@ -115,7 +119,7 @@ api_key = "secret-key"
 
 def test_parse_board_agent_config_ignores_missing_sections(launcher_module):
     assert launcher_module.parse_agent_model_config(
-        '[tts]\nprovider = "minimax-ws"\napi_key = "tts-key"\n'
+        '[tts]\nprovider = "minimax-cn"\napi_key = "tts-key"\n'
     ) == {}
     assert launcher_module.parse_agent_benchmark_config(
         '[model]\nprovider = "openai"\napi_key = "model-key"\n'

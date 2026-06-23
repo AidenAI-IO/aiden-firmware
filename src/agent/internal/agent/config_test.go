@@ -14,7 +14,7 @@ import (
 func TestConfigValidateAcceptsAudioWakeup(t *testing.T) {
 	cfg := Config{
 		Model:       ModelConfig{Provider: "fake"},
-		TTS:         TTSConfig{Provider: "minimax-ws"},
+		TTS:         TTSConfig{Provider: "minimax-cn"},
 		InputMode:   " audio ",
 		TriggerMode: " wakeup ",
 	}
@@ -686,7 +686,7 @@ func TestProxyConfigFromEnvironmentPreservesRawWhitespace(t *testing.T) {
 func TestConfigValidateRejectsInvalidTriggerMode(t *testing.T) {
 	cfg := Config{
 		Model:       ModelConfig{Provider: "fake"},
-		TTS:         TTSConfig{Provider: "minimax-ws"},
+		TTS:         TTSConfig{Provider: "minimax-cn"},
 		InputMode:   "audio",
 		TriggerMode: "gpio",
 	}
@@ -853,7 +853,7 @@ func TestConfigValidateRejectsUnsupportedAudioFormatForVoiceInput(t *testing.T) 
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := Config{
 				Model:       ModelConfig{Provider: "fake"},
-				TTS:         TTSConfig{Provider: "minimax-ws"},
+				TTS:         TTSConfig{Provider: "minimax-cn"},
 				Audio:       tt.audio,
 				InputMode:   "audio",
 				TriggerMode: "wakeup",

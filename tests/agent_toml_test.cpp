@@ -59,7 +59,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.model.context_window = 64000;
     cfg.model.model_max_output_tokens = 4096;
 
-    cfg.tts.provider = "minimax-ws";
+    cfg.tts.provider = "minimax-cn";
     cfg.tts.api_key = "mx-test";
     cfg.tts.voice_id = "male-qn-qingse";
     cfg.tts.emotion = "happy";
@@ -166,7 +166,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.model.context_window == 64000);
     CHECK(loaded.model.model_max_output_tokens == 4096);
 
-    CHECK(loaded.tts.provider == "minimax-ws");
+    CHECK(loaded.tts.provider == "minimax-cn");
     CHECK(loaded.tts.api_key == "mx-test");
     CHECK(loaded.tts.voice_id == "male-qn-qingse");
     CHECK(loaded.tts.emotion == "happy");

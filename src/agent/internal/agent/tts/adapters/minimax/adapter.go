@@ -6,17 +6,27 @@
 // boundary is reached, then performs a full task_start/task_continue/task_finish
 // cycle for that sentence.
 //
-// The only supported provider name is "minimax-ws". The adapter opens a
-// WebSocket connection per sentence because the server closes after task_finish.
+// Supported provider names are "minimax" for the global endpoint and
+// "minimax-cn" for the mainland China endpoint. The adapter opens a WebSocket
+// connection per sentence because the server closes after task_finish.
 package minimax
 
-import "aiden-agent/internal/agent/tts"
+import (
+	"fmt"
+	"strings"
+
+	"aiden-agent/internal/agent/tts"
+)
 
 func init() {
-	tts.Register("minimax-ws", NewWebSocket)
+	tts.Register(ProviderName, NewWebSocket)
+	tts.Register(ProviderNameCN, NewWebSocket)
 }
 
 const (
+	ProviderName   = "minimax"
+	ProviderNameCN = "minimax-cn"
+
 	defaultModel      = "speech-2.8-hd"
 	defaultSampleRate = 16000
 	defaultChannels   = 1
@@ -27,6 +37,7 @@ const (
 
 // commonConfig holds the fields shared by HTTP and WebSocket adapters.
 type commonConfig struct {
+	provider string
 	apiKey   string
 	model    string
 	voiceID  string
@@ -37,6 +48,7 @@ type commonConfig struct {
 }
 
 func parseConfig(cfg tts.ProviderConfig, defaultEndpoint string) commonConfig {
+	provider := normalizeProvider(cfg.Provider)
 	voiceID := cfg.Voice
 	if voiceID == "" {
 		voiceID = defaultVoiceID
@@ -58,6 +70,7 @@ func parseConfig(cfg tts.ProviderConfig, defaultEndpoint string) commonConfig {
 		endpoint = defaultEndpoint
 	}
 	return commonConfig{
+		provider: provider,
 		apiKey:   cfg.APIKey,
 		model:    model,
 		voiceID:  voiceID,
@@ -65,6 +78,28 @@ func parseConfig(cfg tts.ProviderConfig, defaultEndpoint string) commonConfig {
 		speed:    speed,
 		proxy:    cfg.Proxy,
 		endpoint: endpoint,
+	}
+}
+
+func normalizeProvider(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case ProviderName:
+		return ProviderName
+	case ProviderNameCN, "":
+		return ProviderNameCN
+	default:
+		return strings.ToLower(strings.TrimSpace(provider))
+	}
+}
+
+func defaultEndpointForProvider(provider string) (string, error) {
+	switch normalizeProvider(provider) {
+	case ProviderName:
+		return wsEndpoint, nil
+	case ProviderNameCN:
+		return wsEndpointCN, nil
+	default:
+		return "", fmt.Errorf("unsupported minimax provider: %s", provider)
 	}
 }
 
