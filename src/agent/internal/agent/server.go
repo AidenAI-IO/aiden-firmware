@@ -2222,6 +2222,13 @@ func (s *Server) handleToolInvoke(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleMobileGymSetupShell(w http.ResponseWriter, r *http.Request) {
+	// This control-only endpoint intentionally bypasses the normal HTTPExposed
+	// tool gate so trusted MobileGym benchmark setup can run shell commands while
+	// shell remains hidden from the model-visible MobileGym toolset. Possession of
+	// the MobileGym control token for this route is equivalent to arbitrary
+	// command execution on the agent host. Treat the token file as a high-value
+	// secret, never log its contents, rotate it if exposed, and bind/expose the
+	// daemon only on trusted internal networks for MobileGym runs.
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
