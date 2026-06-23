@@ -785,6 +785,9 @@ func TestHandleScreenshotJPEGUpdatesSharedScreenStateFromPhoneAspectRatio(t *tes
 	if got := rec.Header().Get("X-Original-Screen-Height"); got != "2400" {
 		t.Fatalf("X-Original-Screen-Height = %q, want 2400", got)
 	}
+	if got := rec.Header().Get("X-Original-Screen-Valid"); got != "true" {
+		t.Fatalf("X-Original-Screen-Valid = %q, want true", got)
+	}
 
 	width, height, active, _, ok := runtime.tools.screen.ActiveAreaWithAge()
 	if !ok {

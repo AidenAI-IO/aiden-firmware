@@ -35,8 +35,10 @@ func TestToolSetUpdateDeviceEnvironmentTracksPhoneScreenInfo(t *testing.T) {
 	tools := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
 	env := &PhoneEnvironment{
 		Screen: PhoneScreenInfo{
-			WidthPixels:  intPtr(1080),
-			HeightPixels: intPtr(1920),
+			WidthPixels:        intPtr(1080),
+			HeightPixels:       intPtr(1920),
+			NativeWidthPixels:  intPtr(1080),
+			NativeHeightPixels: intPtr(1920),
 		},
 	}
 
@@ -53,7 +55,7 @@ func TestToolSetUpdateDeviceEnvironmentTracksPhoneScreenInfo(t *testing.T) {
 	tools.UpdateDeviceEnvironment(nil)
 
 	screen = tools.screen.PhoneScreenInfo()
-	if screen.WidthPixels != nil || screen.HeightPixels != nil || screen.Width != nil || screen.Height != nil {
+	if screen.WidthPixels != nil || screen.HeightPixels != nil || screen.NativeWidthPixels != nil || screen.NativeHeightPixels != nil || screen.Width != nil || screen.Height != nil {
 		t.Fatalf("screen info should be cleared, got %+v", screen)
 	}
 }

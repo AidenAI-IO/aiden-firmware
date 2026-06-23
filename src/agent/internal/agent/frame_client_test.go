@@ -144,6 +144,23 @@ func TestDeriveActiveAreaFromNativePhoneScreenUsesApproxToChooseOrientation(t *t
 	}
 }
 
+func TestDeriveActiveAreaFromPhoneScreenConsidersNativeDimensionsAlongsideCurrent(t *testing.T) {
+	approx := screenActiveArea{X: 717, Y: 0, Width: 486, Height: 1080, Valid: true}
+	active, ok := deriveActiveAreaFromPhoneScreen(1920, 1080, PhoneScreenInfo{
+		WidthPixels:        intPtr(1080),
+		HeightPixels:       intPtr(1920),
+		NativeWidthPixels:  intPtr(1080),
+		NativeHeightPixels: intPtr(2400),
+	}, approx)
+	if !ok {
+		t.Fatal("expected active area derived from current and native screen dimensions")
+	}
+	want := screenActiveArea{X: 717, Y: 0, Width: 486, Height: 1080, Valid: true}
+	if active != want {
+		t.Fatalf("active area = %+v, want %+v", active, want)
+	}
+}
+
 func TestDeriveActiveAreaFromReportedPhoneScreenCanChooseRotatedOrientation(t *testing.T) {
 	approx := screenActiveArea{X: 0, Y: 97, Width: 1920, Height: 886, Valid: true}
 	active, ok := deriveActiveAreaFromPhoneScreen(1920, 1080, PhoneScreenInfo{

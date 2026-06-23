@@ -152,7 +152,6 @@ func phoneScreenAspectRatioCandidates(phoneScreen PhoneScreenInfo) []float64 {
 	candidates := make([]float64, 0, 2)
 	if width, height, ok := currentPhoneScreenDimensions(phoneScreen); ok {
 		candidates = appendAspectRatioOrientations(candidates, width, height)
-		return candidates
 	}
 	if width, height, ok := nativePhoneScreenDimensions(phoneScreen); ok {
 		candidates = appendAspectRatioOrientations(candidates, width, height)
