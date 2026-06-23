@@ -551,11 +551,16 @@ def list_skillopt_runs(benchmark_root: Path) -> list[dict[str, Any]]:
         manifest = read_json_file(runs_dir / run_id / "manifest.json")
         state_for_run = state if state.get("run_id") == run_id and state.get("status") == "running" else {}
         status = str(state_for_run.get("status") or "done")
-        suite = str(manifest.get("train_suite") or state_for_run.get("suite") or "skillopt")
+        train_suite = str(manifest.get("train_suite") or state_for_run.get("suite") or "")
+        validation_suite = str(manifest.get("validation_suite") or state_for_run.get("validation_suite") or "")
+        suite = skillopt_parent_suite_label(str(manifest.get("skill") or state_for_run.get("skill") or ""), train_suite)
         totals = manifest.get("totals") if isinstance(manifest.get("totals"), dict) else {}
         item = {
             "run_id": run_id,
             "suite": suite,
+            "train_suite": train_suite,
+            "validation_suite": validation_suite,
+            "hide_totals": True,
             "status": status,
             "progress": "",
             "model": str(manifest.get("model") or state_for_run.get("model") or current_model_label()),
@@ -568,6 +573,18 @@ def list_skillopt_runs(benchmark_root: Path) -> list[dict[str, Any]]:
         }
         items.append(item)
     return items
+
+
+def skillopt_parent_suite_label(skill: str, train_suite: str) -> str:
+    skill = skill.strip() or skill_from_skillopt_suite(train_suite)
+    return f"{skill} SkillOpt" if skill else "SkillOpt"
+
+
+def skill_from_skillopt_suite(suite: str) -> str:
+    parts = suite.split("/")
+    if len(parts) >= 2 and parts[0] == "skillopt" and parts[1]:
+        return parts[1]
+    return ""
 
 
 def summary_run_items(

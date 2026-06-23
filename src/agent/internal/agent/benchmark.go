@@ -366,12 +366,15 @@ func scanBenchmarkSkills(dirs []string) []skillListItem {
 }
 
 type runListItem struct {
-	RunID    string         `json:"run_id"`
-	Suite    string         `json:"suite,omitempty"`
-	Status   string         `json:"status,omitempty"`
-	Progress string         `json:"progress,omitempty"`
-	Model    string         `json:"model,omitempty"`
-	Totals   map[string]int `json:"totals,omitempty"`
+	RunID           string         `json:"run_id"`
+	Suite           string         `json:"suite,omitempty"`
+	TrainSuite      string         `json:"train_suite,omitempty"`
+	ValidationSuite string         `json:"validation_suite,omitempty"`
+	HideTotals      bool           `json:"hide_totals,omitempty"`
+	Status          string         `json:"status,omitempty"`
+	Progress        string         `json:"progress,omitempty"`
+	Model           string         `json:"model,omitempty"`
+	Totals          map[string]int `json:"totals,omitempty"`
 }
 
 func (s *Server) handleBenchmarkRuns(w http.ResponseWriter, r *http.Request) {
@@ -413,12 +416,16 @@ func (s *Server) handleBenchmarkRuns(w http.ResponseWriter, r *http.Request) {
 		manifestPath := filepath.Join(s.benchmarkDir, "runs", n, "manifest.json")
 		if data, err := os.ReadFile(manifestPath); err == nil {
 			var raw struct {
-				SuitePath   string         `json:"suite_path"`
-				Totals      map[string]int `json:"totals"`
-				JudgeConfig map[string]any `json:"judge_config"`
-				Model       string         `json:"model"`
-				AgentModel  string         `json:"agent_model"`
-				ModelName   string         `json:"model_name"`
+				Mode            string         `json:"mode"`
+				Skill           string         `json:"skill"`
+				SuitePath       string         `json:"suite_path"`
+				TrainSuite      string         `json:"train_suite"`
+				ValidationSuite string         `json:"validation_suite"`
+				Totals          map[string]int `json:"totals"`
+				JudgeConfig     map[string]any `json:"judge_config"`
+				Model           string         `json:"model"`
+				AgentModel      string         `json:"agent_model"`
+				ModelName       string         `json:"model_name"`
 			}
 			if json.Unmarshal(data, &raw) == nil {
 				if raw.SuitePath != "" {
@@ -428,6 +435,12 @@ func (s *Server) handleBenchmarkRuns(w http.ResponseWriter, r *http.Request) {
 				item.Totals = raw.Totals
 				item.Model = benchmarkRunModel(raw.Model, raw.AgentModel, raw.ModelName)
 				item.Progress = benchmarkRunProgress(raw.Totals)
+				if raw.Mode == "skillopt" || raw.TrainSuite != "" || raw.ValidationSuite != "" {
+					item.Suite = skillOptParentSuiteLabel(raw.Skill, raw.TrainSuite)
+					item.TrainSuite = raw.TrainSuite
+					item.ValidationSuite = raw.ValidationSuite
+					item.HideTotals = true
+				}
 			}
 		}
 		items = append(items, item)
@@ -444,14 +457,17 @@ func (s *Server) currentBenchmarkRunListItem() *runListItem {
 		return nil
 	}
 	var state struct {
-		Status      string `json:"status"`
-		RunID       string `json:"run_id"`
-		Suite       string `json:"suite"`
-		Total       int    `json:"total"`
-		Current     int    `json:"current"`
-		Completed   int    `json:"completed"`
-		CurrentTask string `json:"current_task"`
-		Model       string `json:"model"`
+		Status          string `json:"status"`
+		Mode            string `json:"mode"`
+		RunID           string `json:"run_id"`
+		Skill           string `json:"skill"`
+		Suite           string `json:"suite"`
+		ValidationSuite string `json:"validation_suite"`
+		Total           int    `json:"total"`
+		Current         int    `json:"current"`
+		Completed       int    `json:"completed"`
+		CurrentTask     string `json:"current_task"`
+		Model           string `json:"model"`
 	}
 	if json.Unmarshal(data, &state) != nil || state.Status != "running" {
 		return nil
@@ -471,7 +487,7 @@ func (s *Server) currentBenchmarkRunListItem() *runListItem {
 	if model == "" && s.runtime != nil {
 		model = s.runtime.config.Model.Model
 	}
-	return &runListItem{
+	item := &runListItem{
 		RunID:    firstNonEmptyBenchmarkValue(state.RunID, "running"),
 		Suite:    displaySuiteName(state.Suite),
 		Status:   "running",
@@ -479,6 +495,13 @@ func (s *Server) currentBenchmarkRunListItem() *runListItem {
 		Model:    model,
 		Totals:   map[string]int{"tasks": state.Total, "completed": state.Completed},
 	}
+	if state.Mode == "skillopt" || state.ValidationSuite != "" {
+		item.Suite = skillOptParentSuiteLabel(state.Skill, state.Suite)
+		item.TrainSuite = state.Suite
+		item.ValidationSuite = state.ValidationSuite
+		item.HideTotals = true
+	}
+	return item
 }
 
 func benchmarkRunModel(model, agentModel, modelName string) string {
@@ -514,6 +537,25 @@ func displaySuiteName(suite string) string {
 		return ""
 	}
 	return filepath.Base(suite)
+}
+
+func skillOptParentSuiteLabel(skill, trainSuite string) string {
+	skill = strings.TrimSpace(skill)
+	if skill == "" {
+		skill = skillFromSkillOptSuite(trainSuite)
+	}
+	if skill == "" {
+		return "SkillOpt"
+	}
+	return skill + " SkillOpt"
+}
+
+func skillFromSkillOptSuite(suite string) string {
+	parts := strings.Split(suite, "/")
+	if len(parts) >= 2 && parts[0] == "skillopt" && parts[1] != "" {
+		return parts[1]
+	}
+	return ""
 }
 
 func firstNonEmptyBenchmarkValue(values ...string) string {

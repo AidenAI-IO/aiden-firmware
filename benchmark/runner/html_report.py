@@ -74,10 +74,6 @@ def _task_error_log(
     if errors:
         lines = [f"- {item[0]}: {item[1]}" for item in errors]
         parts.append("### Runtime errors\n" + "\n".join(lines))
-    for artifact_dir in _task_artifact_dirs(run_dir, task_id):
-        judge_path = artifact_dir / "judge.json"
-        if judge_path.exists():
-            parts.append(f"### {judge_path.relative_to(run_dir)}\n" + _read_excerpt(judge_path, 4000))
     return "\n\n".join(part for part in parts if part.strip())
 
 

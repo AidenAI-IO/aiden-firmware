@@ -238,6 +238,84 @@ func TestHandleBenchmarkRuns_IncludesModelStatusAndProgress(t *testing.T) {
 	}
 }
 
+func TestHandleBenchmarkRuns_RunningSkillOptUsesSummarySuiteLabel(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "runs"), 0o755)
+	os.WriteFile(filepath.Join(root, "state.json"), []byte(`{
+		"status":"running",
+		"mode":"skillopt",
+		"run_id":"skillopt-2026-06-22_110638-909249",
+		"skill":"device-operator",
+		"suite":"skillopt/device-operator/device_operator_train",
+		"validation_suite":"skillopt/device-operator/device_operator_verification",
+		"total":6,
+		"completed":2
+	}`), 0o644)
+
+	s := &Server{benchmarkDir: root}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/benchmark/runs", nil)
+	s.handleBenchmarkRuns(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	var got []map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &got)
+	if len(got) < 1 {
+		t.Fatalf("expected running row, got %+v", got)
+	}
+	if got[0]["suite"] != "device-operator SkillOpt" {
+		t.Fatalf("running SkillOpt suite label = %q, want device-operator SkillOpt", got[0]["suite"])
+	}
+	if got[0]["hide_totals"] != true {
+		t.Fatalf("running SkillOpt hide_totals = %v, want true", got[0]["hide_totals"])
+	}
+}
+
+func TestHandleBenchmarkRuns_CompletedSkillOptUsesSummarySuiteLabel(t *testing.T) {
+	root := t.TempDir()
+	runID := "skillopt-2026-06-22_083731-289198483"
+	runDir := filepath.Join(root, "runs", runID)
+	os.MkdirAll(runDir, 0o755)
+	os.WriteFile(filepath.Join(runDir, "manifest.json"), []byte(`{
+		"run_id":"skillopt-2026-06-22_083731-289198483",
+		"mode":"skillopt",
+		"skill":"device-operator",
+		"suite_path":"skillopt:device-operator",
+		"train_suite":"skillopt/device-operator/device_operator_train",
+		"validation_suite":"skillopt/device-operator/device_operator_verification",
+		"model":"qwen3.6-35b",
+		"totals":{"tasks":6,"passed":0,"failed":6}
+	}`), 0o644)
+
+	s := &Server{benchmarkDir: root}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/benchmark/runs", nil)
+	s.handleBenchmarkRuns(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	var got []map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &got)
+	if len(got) != 1 {
+		t.Fatalf("expected one completed run, got %+v", got)
+	}
+	if got[0]["suite"] != "device-operator SkillOpt" {
+		t.Fatalf("completed SkillOpt suite label = %q, want device-operator SkillOpt", got[0]["suite"])
+	}
+	if got[0]["hide_totals"] != true {
+		t.Fatalf("completed SkillOpt hide_totals = %v, want true", got[0]["hide_totals"])
+	}
+	if got[0]["train_suite"] != "skillopt/device-operator/device_operator_train" {
+		t.Fatalf("completed SkillOpt train_suite = %q", got[0]["train_suite"])
+	}
+	if got[0]["validation_suite"] != "skillopt/device-operator/device_operator_verification" {
+		t.Fatalf("completed SkillOpt validation_suite = %q", got[0]["validation_suite"])
+	}
+}
+
 func TestHandleBenchmarkRuns_CompletedRunDoesNotUseJudgeModelAsAgentModel(t *testing.T) {
 	root := t.TempDir()
 	runID := "2026-06-11_120000"
@@ -440,6 +518,8 @@ func TestHandleBenchmarkIndex_ServesHTMLWithRouterButtons(t *testing.T) {
 		`function loadSkillOptTargets()`,
 		`function syncSkillOptSuites()`,
 		`function loadSkillOptRuns()`,
+		`function metricText(r,key)`,
+		`if(r.hide_totals)return '—';`,
 		`Promise.allSettled`,
 		`MOBILEGYM_LOCAL_BASE+'/benchmark/runs'`,
 		`skillOptTargets=[];`,

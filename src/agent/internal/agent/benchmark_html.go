@@ -388,7 +388,12 @@ function mobileGymSuiteName(item,key){
 if(item.type!=='aiden')return item.name;
 return aidenSuiteName(item,key);
 }
-function progressText(r){return r.progress||((r.totals&&r.totals.tasks)?((r.totals.tasks)+'/'+(r.totals.tasks)):'—')}
+function progressText(r){if(r.hide_totals)return '—';return r.progress||((r.totals&&r.totals.tasks)?((r.totals.tasks)+'/'+(r.totals.tasks)):'—')}
+function metricText(r,key){
+if(r.hide_totals)return '—';
+var t=r.totals||{};
+return t[key]||0;
+}
 function appendTextCell(tr,value,className){
 var td=document.createElement('td');
 if(className)td.className=className;
@@ -426,8 +431,8 @@ appendTextCell(tr,sn,isChild?'child-phase':'');
 appendTextCell(tr,r.status||'done');
 appendTextCell(tr,progressText(r));
 appendTextCell(tr,r.model||'—');
-appendTextCell(tr,t.passed||0,'pass');
-appendTextCell(tr,t.failed||0,'fail');
+appendTextCell(tr,metricText(r,'passed'),'pass');
+appendTextCell(tr,metricText(r,'failed'),'fail');
 tr.appendChild(reportCell(r));
 return tr;
 }

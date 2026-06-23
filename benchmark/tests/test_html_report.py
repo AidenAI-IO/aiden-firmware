@@ -166,10 +166,11 @@ def test_generate_report_embeds_failed_task_error_log(tmp_path: Path):
     task = read_report_tasks(html)[0]
 
     assert "Max Tool Calls" in task["error_log_detail"]
-    assert "JudgeBoom" in task["error_log_detail"]
+    assert "JudgeBoom" not in task["error_log_detail"]
     assert "evidence_detail" not in task
     assert "tasks/task-1/trace.json" in task["artifacts_detail"]
     assert "tasks/task-1/history.json" in task["artifacts_detail"]
+    assert "tasks/task-1/judge.json" in task["artifacts_detail"]
     assert "<strong>Error Log</strong>" in html
 
 
@@ -211,7 +212,8 @@ def test_generate_report_accepts_relative_run_dir_with_task_artifacts(tmp_path: 
     task = read_report_tasks(html)[0]
 
     assert "tasks/task-1/trace.json" in task["artifacts_detail"]
-    assert "JudgeBoom" in task["error_log_detail"]
+    assert "tasks/task-1/judge.json" in task["artifacts_detail"]
+    assert "JudgeBoom" not in task["error_log_detail"]
 
 
 def test_generate_report_includes_llm_analysis_section(tmp_path: Path):

@@ -77,3 +77,30 @@ def test_report_file_for_serves_skillopt_artifact(tmp_path: Path):
     artifact.write_text("skill contents", encoding="utf-8")
 
     assert module.report_file_for(tmp_path, "skillopt-run/best_skill.md") == artifact
+
+
+def test_list_skillopt_runs_labels_parent_run_as_skillopt_summary(tmp_path: Path):
+    module = load_local_launcher_module()
+    run_dir = tmp_path / "runs" / "skillopt" / "skillopt-run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "manifest.json").write_text(
+        """
+        {
+          "mode": "skillopt",
+          "skill": "device-operator",
+          "train_suite": "skillopt/device-operator/device_operator_train",
+          "validation_suite": "skillopt/device-operator/device_operator_verification",
+          "totals": {"tasks": 6, "passed": 4, "failed": 2}
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    runs = module.list_skillopt_runs(tmp_path)
+
+    assert len(runs) == 1
+    assert runs[0]["suite"] == "device-operator SkillOpt"
+    assert runs[0]["hide_totals"] is True
+    assert runs[0]["totals"] == {"tasks": 6, "passed": 4, "failed": 2}
+    assert runs[0]["train_suite"] == "skillopt/device-operator/device_operator_train"
+    assert runs[0]["validation_suite"] == "skillopt/device-operator/device_operator_verification"
