@@ -312,6 +312,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	}
 
 	toolSet.RegisterMemoryTools(memoryDir, profileFn, extractionCfg.SummaryMaxChunks, debouncer)
+	toolSet.RegisterEnterTextInFieldTool(modelManager, nil) // platformFn set per-request
 
 	rt := NewRuntimeWithDeps(cfg, modelManager, NewMemoryManager(memoryDir, WithExtractionConfig(extractionCfg), WithSummarizeFn(summarizeFn), WithStructuredSummarizeFn(structuredSummarizeFn), WithProfileFn(profileFn), WithContextWindowFn(contextWindowFn), WithMemoryProfileDebouncer(debouncer), WithMemoryLogger(logger)), toolSet, skillIndex)
 
@@ -678,7 +679,40 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			steerStatus = status
 		}
 	}
-	executor := newRoleCollaborativeExecutor(model, profiles, availableTools, plannerMemory, maxIterations, turnInput.Attachments, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault(), req.DeviceEnvironment, req.SteerProvider)
+
+	// Apply default platform from config if not set by bridge app
+	deviceEnv := req.DeviceEnvironment
+	defaultPlatform := strings.TrimSpace(r.config.DefaultPlatform)
+	if deviceEnv == nil {
+		if defaultPlatform != "" {
+			deviceEnv = &PhoneEnvironment{Platform: defaultPlatform}
+		}
+	} else if strings.TrimSpace(deviceEnv.Platform) == "" {
+		if defaultPlatform != "" {
+			deviceEnv.Platform = defaultPlatform
+		}
+	}
+
+	// Set platformFn for enter_text_in_field tool (bridge > config > LLM)
+	if textInputTool, ok := r.tools.Get("enter_text_in_field"); ok {
+		// The tool may be wrapped (e.g., postActionScreenshotTool), so we use
+		// an interface to check if it supports SetPlatformFn
+		type platformConfigurable interface {
+			SetPlatformFn(func() string)
+		}
+		if tool, ok := textInputTool.(platformConfigurable); ok {
+			tool.SetPlatformFn(func() string {
+				if deviceEnv != nil {
+					if p := strings.TrimSpace(deviceEnv.Platform); p != "" {
+						return p
+					}
+				}
+				return defaultPlatform
+			})
+		}
+	}
+
+	executor := newRoleCollaborativeExecutor(model, profiles, availableTools, plannerMemory, maxIterations, turnInput.Attachments, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault(), deviceEnv, req.SteerProvider)
 	executor.ConversationHistory = conversationHistory
 	executor.TodoReminderToolCalls = r.config.TodoReminderToolCallsOrDefault()
 	executor.SteerInterrupt = req.SteerInterrupt
