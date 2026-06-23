@@ -427,6 +427,7 @@ TEST_CASE("config web exposes the LLM HTTP log viewer") {
     CHECK(llm_html.find("function groupEntries") != std::string::npos);
     CHECK(llm_html.find("function renderMessages") != std::string::npos);
     CHECK(llm_html.find("function renderDiff") != std::string::npos);
+    CHECK(llm_html.find("function renderToolCalls") != std::string::npos);
     CHECK(llm_html.find("tool_calls") != std::string::npos);
     CHECK(llm_html.find(".msg-head,.diff-msg-head{") != std::string::npos);
     CHECK(llm_html.find("font-size:12px;line-height:1.2") != std::string::npos);
@@ -452,6 +453,7 @@ TEST_CASE("config web exposes the LLM HTTP log viewer") {
     CHECK(llm_html.find("cost[i][j] === cost[i + 1][j + 1] + modifyCost") != std::string::npos);
     CHECK(llm_html.find("line-diff-row") != std::string::npos);
     CHECK(llm_html.find("renderMessageHead('diff-msg-head role-'") != std::string::npos);
+    CHECK(llm_html.find("content + renderToolCalls(m)") != std::string::npos);
     CHECK(llm_html.find("function renderMessageContent") != std::string::npos);
     CHECK(llm_html.find("function renderContentPart") != std::string::npos);
     CHECK(llm_html.find("function imageUrlFromPart") != std::string::npos);

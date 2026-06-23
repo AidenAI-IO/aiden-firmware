@@ -165,6 +165,7 @@ type RunEvent struct {
 	Type           string     `json:"type"`
 	Role           string     `json:"role,omitempty"`
 	EpisodeID      string     `json:"episode_id,omitempty"`
+	ToolCallID     string     `json:"tool_call_id,omitempty"`
 	ToolName       string     `json:"tool_name,omitempty"`
 	ToolInput      string     `json:"tool_input,omitempty"`
 	Content        string     `json:"content,omitempty"`
@@ -1339,12 +1340,13 @@ func (h *runtimeCallbackHandler) HandleToolEnd(ctx context.Context, output strin
 	action, ok := h.popPendingAction()
 	if ok {
 		h.emitRunEvent(ctx, RunEvent{
-			Type:      "tool_result",
-			EpisodeID: h.episodeID,
-			ToolName:  action.Tool,
-			ToolInput: normalizeToolInput(action.ToolInput),
-			Content:   output,
-			Timestamp: time.Now(),
+			Type:       "tool_result",
+			EpisodeID:  h.episodeID,
+			ToolCallID: action.ToolID,
+			ToolName:   action.Tool,
+			ToolInput:  normalizeToolInput(action.ToolInput),
+			Content:    output,
+			Timestamp:  time.Now(),
 		})
 	}
 }
@@ -1356,13 +1358,14 @@ func (h *runtimeCallbackHandler) HandleToolError(ctx context.Context, err error)
 	action, ok := h.popPendingAction()
 	if ok {
 		h.emitRunEvent(ctx, RunEvent{
-			Type:      "tool_result",
-			EpisodeID: h.episodeID,
-			ToolName:  action.Tool,
-			ToolInput: normalizeToolInput(action.ToolInput),
-			Content:   "error: " + err.Error(),
-			Timestamp: time.Now(),
-			IsError:   true,
+			Type:       "tool_result",
+			EpisodeID:  h.episodeID,
+			ToolCallID: action.ToolID,
+			ToolName:   action.Tool,
+			ToolInput:  normalizeToolInput(action.ToolInput),
+			Content:    "error: " + err.Error(),
+			Timestamp:  time.Now(),
+			IsError:    true,
 		})
 	}
 }
@@ -1415,12 +1418,13 @@ func (h *runtimeCallbackHandler) HandleToolCallStart(ctx context.Context, call T
 		}
 	}
 	h.emitRunEvent(ctx, RunEvent{
-		Type:      runEventToolCall,
-		EpisodeID: h.episodeID,
-		ToolName:  call.Spec.Name,
-		ToolInput: call.Input,
-		Content:   content,
-		Timestamp: time.Now(),
+		Type:       runEventToolCall,
+		EpisodeID:  h.episodeID,
+		ToolCallID: call.Action.ToolID,
+		ToolName:   call.Spec.Name,
+		ToolInput:  call.Input,
+		Content:    content,
+		Timestamp:  time.Now(),
 	})
 }
 
@@ -1442,13 +1446,14 @@ func (h *runtimeCallbackHandler) HandleToolCallResult(ctx context.Context, call 
 		}
 	}
 	h.emitRunEvent(ctx, RunEvent{
-		Type:      "tool_result",
-		EpisodeID: h.episodeID,
-		ToolName:  call.Spec.Name,
-		ToolInput: call.Input,
-		Content:   output,
-		Timestamp: time.Now(),
-		IsError:   result.IsError,
+		Type:       "tool_result",
+		EpisodeID:  h.episodeID,
+		ToolCallID: call.Action.ToolID,
+		ToolName:   call.Spec.Name,
+		ToolInput:  call.Input,
+		Content:    output,
+		Timestamp:  time.Now(),
+		IsError:    result.IsError,
 	})
 }
 
@@ -1467,12 +1472,13 @@ func (h *runtimeCallbackHandler) HandleAgentAction(ctx context.Context, action s
 		h.pushPendingAction(action)
 	}
 	h.emitRunEvent(ctx, RunEvent{
-		Type:      runEventToolCall,
-		EpisodeID: h.episodeID,
-		ToolName:  action.Tool,
-		ToolInput: action.ToolInput,
-		Content:   content,
-		Timestamp: time.Now(),
+		Type:       runEventToolCall,
+		EpisodeID:  h.episodeID,
+		ToolCallID: action.ToolID,
+		ToolName:   action.Tool,
+		ToolInput:  action.ToolInput,
+		Content:    content,
+		Timestamp:  time.Now(),
 	})
 }
 
@@ -1541,8 +1547,10 @@ func sessionEventFromRunEvent(event RunEvent, h *runtimeCallbackHandler) Session
 	role := strings.TrimSpace(event.Role)
 	if role == "" {
 		switch event.Type {
-		case runEventToolCall, "tool_result":
+		case "tool_result":
 			role = "tool"
+		case runEventToolCall:
+			role = string(llms.ChatMessageTypeAI)
 		case "steer":
 			role = "user"
 		default:
@@ -1554,17 +1562,18 @@ func sessionEventFromRunEvent(event RunEvent, h *runtimeCallbackHandler) Session
 		ts = time.Now()
 	}
 	sessionEvent := SessionEvent{
-		Ts:        ts.UTC().Format(time.RFC3339Nano),
-		Type:      event.Type,
-		Role:      role,
-		RuntimeID: h.runtimeID,
-		EpisodeID: firstNonEmptyString([]string{event.EpisodeID, h.episodeID}),
-		RequestID: h.requestID,
-		RunID:     h.runID,
-		Content:   event.Content,
-		ToolName:  event.ToolName,
-		ToolInput: event.ToolInput,
-		IsError:   event.IsError,
+		Ts:         ts.UTC().Format(time.RFC3339Nano),
+		Type:       event.Type,
+		Role:       role,
+		RuntimeID:  h.runtimeID,
+		EpisodeID:  firstNonEmptyString([]string{event.EpisodeID, h.episodeID}),
+		RequestID:  h.requestID,
+		RunID:      h.runID,
+		Content:    event.Content,
+		ToolCallID: event.ToolCallID,
+		ToolName:   event.ToolName,
+		ToolInput:  event.ToolInput,
+		IsError:    event.IsError,
 	}
 	return sessionEvent
 }

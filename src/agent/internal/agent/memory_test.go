@@ -93,6 +93,19 @@ func TestMemoryManagerActiveSessionIDCreatesSessionMetadata(t *testing.T) {
 	if metadata.SessionID != sessionID {
 		t.Fatalf("metadata session_id = %q, want %q", metadata.SessionID, sessionID)
 	}
+	if len(sessionID) != len("20260621090405123") {
+		t.Fatalf("session_id length = %d, want millisecond timestamp length: %q", len(sessionID), sessionID)
+	}
+	if strings.Contains(sessionID, "session_") {
+		t.Fatalf("session_id should be the compact timestamp, got %q", sessionID)
+	}
+}
+
+func TestNewSessionIDUsesUTCMillisecondTimestamp(t *testing.T) {
+	now := time.Date(2026, 6, 21, 9, 4, 5, 123456789, time.FixedZone("offset", 8*60*60))
+	if got, want := newSessionID(now), "20260621010405123"; got != want {
+		t.Fatalf("newSessionID() = %q, want %q", got, want)
+	}
 }
 
 func TestMemoryManagerActiveSessionIDRecoversEmptySessionMetadata(t *testing.T) {

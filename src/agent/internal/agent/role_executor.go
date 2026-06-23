@@ -1090,6 +1090,10 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 	}}
 	if profile.Name == RolePlanner {
 		messages = append(messages, e.ConversationHistory...)
+		messages = append(messages, llms.MessageContent{
+			Role:  llms.ChatMessageTypeHuman,
+			Parts: plannerCurrentUserMessageParts(inputs, e.InputAttachments),
+		})
 	}
 
 	if profile.Name == RoleExecutor && len(state.StepToolSteps) > 0 {
@@ -1098,6 +1102,16 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 	} else if roleSeesToolScratchpad(profile.Name) && len(state.ToolSteps) > 0 {
 		scratchpad := (&FunctionAgent{Tools: toolsForRole(profile.Name, e.Tools), ScreenshotPruning: e.ScreenshotPruning}).constructFunctionScratchPad(state.ToolSteps)
 		messages = append(messages, scratchpad...)
+	}
+
+	if profile.Name == RolePlanner {
+		for _, steer := range state.SteerMessages {
+			messages = append(messages, llms.MessageContent{
+				Role:  llms.ChatMessageTypeHuman,
+				Parts: []llms.ContentPart{llms.TextPart(steerHumanMessageContent(steer))},
+			})
+		}
+		return messages
 	}
 
 	includeWorldStateLatestScreenshot := profile.Name == RoleVerifier
@@ -1115,6 +1129,30 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 		})
 	}
 	return messages
+}
+
+func plannerCurrentUserMessage(inputs map[string]string) string {
+	for _, key := range []string{"input", latestUserInputKey, rootRequestInputKey} {
+		if value := inputs[key]; strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func plannerCurrentUserMessageParts(inputs map[string]string, attachments []InputAttachment) []llms.ContentPart {
+	parts := []llms.ContentPart{llms.TextPart(plannerCurrentUserMessage(inputs))}
+	for _, attachment := range attachments {
+		if len(attachment.Data) == 0 {
+			continue
+		}
+		if attachment.Kind == AttachmentKindImage {
+			parts = append(parts, buildImagePart(attachment.MIMEType, attachment.Data))
+			continue
+		}
+		parts = append(parts, llms.BinaryPart(attachment.MIMEType, attachment.Data))
+	}
+	return parts
 }
 
 func steerHumanMessageContent(steer RunSteerMessage) string {
@@ -1206,7 +1244,7 @@ type roleStatePromptOptions struct {
 func buildRoleStatePromptWithOptions(role RoleName, inputs map[string]string, state roleLoopState, task string, options roleStatePromptOptions) string {
 	switch role {
 	case RolePlanner:
-		return buildPlannerStatePrompt(inputs, state, task)
+		return plannerCurrentUserMessage(inputs)
 	case RoleExecutor:
 		return buildExecutorStatePrompt(inputs, state, task)
 	case RoleVerifier:
@@ -1214,27 +1252,8 @@ func buildRoleStatePromptWithOptions(role RoleName, inputs map[string]string, st
 			IncludeLatestScreenshot: options.IncludeWorldStateLatestScreenshot,
 		})
 	default:
-		return buildPlannerStatePrompt(inputs, state, task)
+		return plannerCurrentUserMessage(inputs)
 	}
-}
-
-func buildPlannerStatePrompt(inputs map[string]string, state roleLoopState, task string) string {
-	var builder strings.Builder
-	builder.WriteString(task)
-	writeLoopMode(&builder, state)
-	writeWorldState(&builder, state.World)
-	writeRequestContextAndCriteria(&builder, inputs, state)
-	writeSessionContext(&builder, inputs)
-	if history := strings.TrimSpace(inputs["history"]); history != "" {
-		builder.WriteString("\n\nConversation history:\n")
-		builder.WriteString(history)
-	}
-	writeTodoState(&builder, state)
-	writeTodoReminder(&builder, state)
-	writeCurrentPlan(&builder, state)
-	writeExecutorResults(&builder, state)
-	writeVerifierFeedback(&builder, state)
-	return strings.TrimSpace(builder.String())
 }
 
 func buildExecutorStatePrompt(inputs map[string]string, state roleLoopState, task string) string {

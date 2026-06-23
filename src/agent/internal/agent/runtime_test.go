@@ -1084,20 +1084,17 @@ func TestRuntimeRunResumeCorrectionUsesRootRequestAndCommittedPlan(t *testing.T)
 		t.Fatalf("expected second run planner prompt, got %#v", model.messages)
 	}
 	resumePrompt := messageText(model.messages[2])
-	for _, want := range []string{
-		"Original user request / root request",
-		rootRequest,
-		"Latest user message",
-		correction,
-		"Latest committed plan",
-		"在微信群发送100块钱红包",
-		"发送100块钱红包",
-	} {
-		if !strings.Contains(resumePrompt, want) {
-			t.Fatalf("resume planner prompt missing %q:\n%s", want, resumePrompt)
-		}
+	role, lastText, ok := runtimeLastMessageText(model.messages[2])
+	if !ok || role != llms.ChatMessageTypeHuman || lastText != correction {
+		t.Fatalf("resume planner current user message = role %s text %q, want raw correction %q", role, lastText, correction)
 	}
 	for _, unwanted := range []string{
+		"Original user request / root request",
+		"Latest user message",
+		"Latest committed plan",
+		"Current plan:",
+		"Executor results:",
+		"Verifier feedback:",
 		"Follow-up classification:",
 		"follow_up_relation",
 		"Latest correction",
@@ -1167,20 +1164,25 @@ func TestRuntimeRunVoiceInterruptionContextUsesTimeBoundary(t *testing.T) {
 		t.Fatalf("expected second model prompt, got %#v", model.messages)
 	}
 	correctionPrompt := messageText(model.messages[1])
+	role, lastText, ok := runtimeLastMessageText(model.messages[1])
+	if !ok || role != llms.ChatMessageTypeHuman || lastText != correction {
+		t.Fatalf("correction planner current user message = role %s text %q, want raw correction %q", role, lastText, correction)
+	}
 	for _, want := range []string{
 		"## Runtime context",
 		"physical wakeup",
 		"after interrupting the previous voice turn",
-		"Original user request / root request",
-		rootRequest,
-		"Latest user message",
-		correction,
 	} {
 		if !strings.Contains(correctionPrompt, want) {
 			t.Fatalf("correction prompt missing %q:\n%s", want, correctionPrompt)
 		}
 	}
 	for _, unwanted := range []string{
+		"Original user request / root request",
+		"Latest user message",
+		"Current plan:",
+		"Executor results:",
+		"Verifier feedback:",
 		"Follow-up classification:",
 		"follow_up_relation",
 		"Latest correction",
@@ -2015,6 +2017,68 @@ func TestRuntimeRunFakeProviderUsesFunctionAgentToolCalls(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunRestoresPlannerToolCallsIntoNextRunPrompt(t *testing.T) {
+	model := &scriptedModel{
+		responses: append(
+			roleToolResponses("echo", `{"__arg1":"{}"}`, "first run done"),
+			contentResponse("second run done"),
+		),
+	}
+	tool := &stubTool{
+		name:        "echo",
+		description: "Echo test tool.",
+		output:      "echo result",
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use tools when needed.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(t.TempDir()),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"echo": tool,
+		}},
+		NewSkillIndex(),
+	)
+
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "call echo"}); err != nil {
+		t.Fatalf("first Run() error = %v", err)
+	}
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "continue"}); err != nil {
+		t.Fatalf("second Run() error = %v", err)
+	}
+	if len(model.messages) < 3 {
+		t.Fatalf("model calls = %d, want second run planner prompt", len(model.messages))
+	}
+
+	secondRunPrompt := model.messages[2]
+	var foundToolCall, foundToolResponse bool
+	for _, msg := range secondRunPrompt {
+		for _, part := range msg.Parts {
+			switch typed := part.(type) {
+			case llms.ToolCall:
+				if msg.Role == llms.ChatMessageTypeAI &&
+					typed.ID == "call_1" &&
+					typed.FunctionCall != nil &&
+					typed.FunctionCall.Name == "echo" {
+					foundToolCall = true
+				}
+			case llms.ToolCallResponse:
+				if msg.Role == llms.ChatMessageTypeTool &&
+					typed.ToolCallID == "call_1" &&
+					strings.Contains(typed.Content, "echo result") {
+					foundToolResponse = true
+				}
+			}
+		}
+	}
+	if !foundToolCall || !foundToolResponse {
+		t.Fatalf("second run planner prompt missing persisted tool scratchpad: found call=%v response=%v messages=%#v",
+			foundToolCall, foundToolResponse, secondRunPrompt)
+	}
+}
+
 func TestRuntimeRunExecutesOnlyFirstToolCallPerIteration(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
@@ -2821,8 +2885,8 @@ func TestRuntimeSimpleLoopTodoReminderAfterSeveralToolCalls(t *testing.T) {
 		t.Fatalf("expected fourth model call after reminder, got %d", len(model.messages))
 	}
 	prompt := messageText(model.messages[3])
-	if !strings.Contains(prompt, "Todo reminder") || !strings.Contains(prompt, "call set_todo") {
-		t.Fatalf("fourth prompt missing todo reminder:\n%s", prompt)
+	if strings.Contains(prompt, "Todo reminder") || strings.Contains(prompt, "call set_todo") {
+		t.Fatalf("fourth planner prompt should not expose todo reminder runtime state:\n%s", prompt)
 	}
 }
 
@@ -2850,8 +2914,8 @@ func TestRuntimeSimpleLoopTodoReminderUsesConfiguredToolCallThreshold(t *testing
 		t.Fatalf("expected third model call after configured reminder, got %d", len(model.messages))
 	}
 	prompt := messageText(model.messages[2])
-	if !strings.Contains(prompt, "Todo reminder") || !strings.Contains(prompt, "call set_todo") {
-		t.Fatalf("third prompt missing configured todo reminder:\n%s", prompt)
+	if strings.Contains(prompt, "Todo reminder") || strings.Contains(prompt, "call set_todo") {
+		t.Fatalf("third planner prompt should not expose configured todo reminder runtime state:\n%s", prompt)
 	}
 }
 
@@ -4682,8 +4746,13 @@ func TestRuntimeRunIncludesUserAttachments(t *testing.T) {
 		}
 	}
 
-	if !strings.Contains(textContent, "photo.png") || !strings.Contains(textContent, "note.wav") {
-		t.Fatalf("expected attachment names in prompt text, got %q", textContent)
+	for _, unexpected := range []string{"photo.png", "note.wav", "Attached content"} {
+		if strings.Contains(textContent, unexpected) {
+			t.Fatalf("planner user message text should not contain attachment description %q: %q", unexpected, textContent)
+		}
+	}
+	if textContent != "Describe the uploaded media." {
+		t.Fatalf("planner user message text = %q, want raw input", textContent)
 	}
 	if imageURL == "" || !strings.HasPrefix(imageURL, "data:image/png;base64,") {
 		t.Fatalf("expected image attachment as data URL, got %q", imageURL)

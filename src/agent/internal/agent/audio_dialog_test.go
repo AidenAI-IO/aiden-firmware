@@ -218,8 +218,8 @@ func TestProcessUtteranceAudioModeSendsWAVAttachmentToRuntime(t *testing.T) {
 		}
 	}
 
-	if !strings.Contains(text, "recording.wav") {
-		t.Fatalf("expected audio attachment name in prompt text, got %q", text)
+	if text != "Voice audio input" || strings.Contains(text, "recording.wav") || strings.Contains(text, "Attached content") {
+		t.Fatalf("expected raw audio input text without attachment description, got %q", text)
 	}
 	if len(audio) < 48 || string(audio[:4]) != "RIFF" || string(audio[8:12]) != "WAVE" {
 		t.Fatalf("expected WAV binary attachment, got %d bytes", len(audio))
