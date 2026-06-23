@@ -20,25 +20,28 @@ import (
 )
 
 type roleCollaborativeExecutor struct {
-	Model                 llms.Model
-	Profiles              RoleProfiles
-	Tools                 []langtools.Tool
-	Memory                schema.Memory
-	CallbacksHandler      callbacks.Handler
-	MaxIterations         int
-	TodoReminderToolCalls int
-	ConversationHistory   []llms.MessageContent
-	InputAttachments      []InputAttachment
-	OutputKey             string
-	Recorder              *EpisodeRecorder
-	ScreenshotPruning     ScreenshotPruningConfig
-	InitialWorldState     worldState
-	ForceSimpleLoop       bool
-	SteerProvider         func(context.Context) (RunSteerMessage, bool)
-	FinalSteerProvider    func(context.Context) (RunSteerMessage, bool)
-	SteerInterrupt        func() <-chan struct{}
-	SteerWaiter           func(context.Context) (RunSteerMessage, bool, error)
-	handledSteerInterrupt <-chan struct{}
+	Model                  llms.Model
+	Profiles               RoleProfiles
+	Tools                  []langtools.Tool
+	Memory                 schema.Memory
+	CallbacksHandler       callbacks.Handler
+	MaxIterations          int
+	TodoReminderToolCalls  int
+	ToolCallSpeech         bool
+	ConversationHistory    []llms.MessageContent
+	InputAttachments       []InputAttachment
+	OutputKey              string
+	Recorder               *EpisodeRecorder
+	ScreenshotPruning      ScreenshotPruningConfig
+	InitialWorldState      worldState
+	ForceSimpleLoop        bool
+	SteerProvider          func(context.Context) (RunSteerMessage, bool)
+	FinalSteerProvider     func(context.Context) (RunSteerMessage, bool)
+	SteerInterrupt         func() <-chan struct{}
+	SteerWaiter            func(context.Context) (RunSteerMessage, bool, error)
+	handledSteerInterrupt  <-chan struct{}
+	EnvironmentBridge      *EnvironmentBridgeClient
+	EnvironmentBridgeTools []string
 }
 
 const roleModelCallTimeout = 120 * time.Second
@@ -713,9 +716,11 @@ func (e *roleCollaborativeExecutor) executePlannerToolAction(
 	action schema.AgentAction,
 ) (plannerTurnResult, error) {
 	toolExecution := e.executeToolCall(ctx, ToolCallExecution{
-		Specs:    toolSpecs,
-		Action:   action,
-		Callback: e.CallbacksHandler,
+		Specs:                  toolSpecs,
+		Action:                 action,
+		Callback:               e.CallbacksHandler,
+		EnvironmentBridge:      e.EnvironmentBridge,
+		EnvironmentBridgeTools: e.EnvironmentBridgeTools,
 	})
 	if toolExecution.Error != nil && !(errors.Is(toolExecution.Error, context.Canceled) && e.steerInterruptSignaled(ctx)) {
 		return plannerTurnResult{}, toolExecution.Error
@@ -1022,9 +1027,11 @@ func (e *roleCollaborativeExecutor) callExecutorTurn(
 	}
 
 	toolExecution := e.executeToolCall(ctx, ToolCallExecution{
-		Specs:    toolSpecs,
-		Action:   action,
-		Callback: e.CallbacksHandler,
+		Specs:                  toolSpecs,
+		Action:                 action,
+		Callback:               e.CallbacksHandler,
+		EnvironmentBridge:      e.EnvironmentBridge,
+		EnvironmentBridgeTools: e.EnvironmentBridgeTools,
 	})
 	if toolExecution.Error != nil && !(errors.Is(toolExecution.Error, context.Canceled) && e.steerInterruptSignaled(ctx)) {
 		return executorTurnResult{}, toolExecution.Error

@@ -37,7 +37,6 @@ type webConfigDTO struct {
 	STT          sttDTO          `json:"stt"`
 	Audio        audioDTO        `json:"audio"`
 	AudioArchive audioArchiveDTO `json:"audio_archive"`
-	Benchmark    benchmarkDTO    `json:"benchmark"`
 	Log          logDTO          `json:"log"`
 	HID          hidDTO          `json:"hid"`
 	Search       searchDTO       `json:"search"`
@@ -90,12 +89,6 @@ type audioArchiveDTO struct {
 	MaxFiles    int    `json:"max_files"`
 	MaxSizeMB   int    `json:"max_size_mb"`
 	StoragePath string `json:"storage_path"`
-}
-
-type benchmarkDTO struct {
-	JudgeModel   string `json:"judge_model"`
-	APIKey       string `json:"api_key"`
-	BenchmarkDir string `json:"benchmark_dir"`
 }
 
 type logDTO struct {
@@ -253,11 +246,6 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			MaxSizeMB:   d.AudioArchive.MaxSizeMB,
 			StoragePath: d.AudioArchive.StoragePath,
 		},
-		Benchmark: agent.BenchmarkConfig{
-			JudgeModel: d.Benchmark.JudgeModel,
-			APIKey:     d.Benchmark.APIKey,
-			Dir:        d.Benchmark.BenchmarkDir,
-		},
 		Log: agent.LogConfig{
 			LLMHTTPRetentionDays: d.Log.LLMHTTPRetentionDays,
 		},
@@ -386,11 +374,6 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			MaxFiles:    audioArchive.MaxFilesOrDefault(),
 			MaxSizeMB:   audioArchive.MaxSizeMBOrDefault(),
 			StoragePath: audioArchive.StoragePathOrDefault(),
-		},
-		Benchmark: benchmarkDTO{
-			JudgeModel:   cfg.Benchmark.JudgeModel,
-			APIKey:       cfg.Benchmark.APIKey,
-			BenchmarkDir: cfg.Benchmark.Dir,
 		},
 		Log: logDTO{
 			LLMHTTPRetentionDays: cfg.Log.LLMHTTPRetentionDaysOrDefault(),

@@ -594,23 +594,6 @@ sync_generated_binaries_from_source "$SCRIPT_DIR/build/bin" "$OVERLAY/oem/usr/bi
 echo "  ✓ Binaries copied to overlay/oem/usr/bin"
 repair_generated_binaries_from_manifest "overlay-oem-usr-bin" "$SCRIPT_DIR/build/bin" "$OVERLAY/oem/usr/bin" "$GENERATED_BINARY_MANIFEST"
 
-BENCHMARK_SRC="$SCRIPT_DIR/benchmark"
-BENCHMARK_DEST="$OVERLAY/userdata/agent/benchmark"
-BENCHMARK_RSYNC_EXCLUDES=(--exclude '__pycache__/' --exclude '*.pyc' --exclude '.DS_Store' --exclude '._*')
-if [ ! -d "$BENCHMARK_SRC/runner" ] || [ ! -d "$BENCHMARK_SRC/suites" ]; then
-    echo "  ✗ Error: benchmark runner or suites missing under $BENCHMARK_SRC" >&2
-    exit 1
-fi
-mkdir -p "$BENCHMARK_DEST/runner" "$BENCHMARK_DEST/suites"
-rsync -a --delete "${BENCHMARK_RSYNC_EXCLUDES[@]}" "$BENCHMARK_SRC/runner/" "$BENCHMARK_DEST/runner/"
-rsync -a --delete "${BENCHMARK_RSYNC_EXCLUDES[@]}" "$BENCHMARK_SRC/suites/" "$BENCHMARK_DEST/suites/"
-if [ -f "$BENCHMARK_SRC/pyproject.toml" ]; then
-    cp "$BENCHMARK_SRC/pyproject.toml" "$BENCHMARK_DEST/pyproject.toml"
-else
-    rm -f "$BENCHMARK_DEST/pyproject.toml"
-fi
-echo "  ✓ Benchmark runner and suites staged to overlay/userdata/agent/benchmark"
-
 AGENT_TOOLS_DEST="$OVERLAY/userdata/agent_tools"
 mkdir -p "$AGENT_TOOLS_DEST"
 cp "$SCRIPT_DIR/scripts/generate_agent_files_report.py" "$AGENT_TOOLS_DEST/"

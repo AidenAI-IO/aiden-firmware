@@ -228,7 +228,7 @@ Field mapping:
 
 ```bash
 cd benchmark
-uv run python -m runner.main --suite suites/phone_control_v1.json --agent-url http://device:8080
+uv run python -m runner run --suite suites/phone_control_v1.json --agent-url http://device:8080
 ```
 
 After new tasks are added to the suite, use the benchmark runner for automated regression; Langfuse continues collecting new production traces, forming a closed loop.

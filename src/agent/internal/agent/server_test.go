@@ -93,7 +93,7 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 		}},
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	body := bytes.NewBufferString(`{"message":"当前音量是多少？"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/chat", body)
@@ -162,7 +162,7 @@ func TestServerPersistsChatHistoryWithEpisodeReference(t *testing.T) {
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"做一个任务"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -184,7 +184,7 @@ func TestServerPersistsChatHistoryWithEpisodeReference(t *testing.T) {
 		t.Fatalf("user and assistant episode ids differ: %#v", resp.History)
 	}
 
-	reloaded := NewServer(runtime, ":0", "")
+	reloaded := NewServer(runtime, ":0")
 	historyReq := httptest.NewRequest(http.MethodGet, "/api/history", nil)
 	historyRec := httptest.NewRecorder()
 	reloaded.handleHistory(historyRec, historyReq)
@@ -235,7 +235,7 @@ func TestServerHandleChatStreamsRoleToolAndAssistantMessages(t *testing.T) {
 		}},
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"当前音量是多少？"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -315,7 +315,7 @@ func TestServerHandleChatStreamEmitsAssistantDeltasBeforeDone(t *testing.T) {
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"hello","request_id":"web-req-stream"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -545,11 +545,7 @@ func TestHandleCoordinateDebugTap(t *testing.T) {
 		toolSet,
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
-	runtime.tools.screen.UpdatePhoneScreenInfo(PhoneScreenInfo{
-		NativeWidthPixels:  intPtr(1179),
-		NativeHeightPixels: intPtr(2556),
-	})
+	server := NewServer(runtime, ":0")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/coordinate-debug/tap", bytes.NewBufferString(`{"x":123,"y":456,"type":"double_tap"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -627,7 +623,7 @@ func TestServerHandleChatStreamTagsHistoryWithRequestID(t *testing.T) {
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"hello","request_id":"web-req-1"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -669,7 +665,7 @@ func TestHandleCoordinateDebugTapRejectsInvalidType(t *testing.T) {
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/coordinate-debug/tap", bytes.NewBufferString(`{"x":100,"y":200,"type":"swipe"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -693,7 +689,7 @@ func TestHandleCoordinateDebugTapRejectsNonJSONContentType(t *testing.T) {
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/coordinate-debug/tap", bytes.NewBufferString(`{"x":100,"y":200,"type":"tap"}`))
 	req.Header.Set("Content-Type", "text/plain")
@@ -731,7 +727,7 @@ func TestHandleScreenshotJPEGCanDisableBlackBarCropping(t *testing.T) {
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/screenshot.jpg?crop_black_bars=false", nil)
 	rec := httptest.NewRecorder()
@@ -791,7 +787,7 @@ func TestHandleScreenshotJPEGUpdatesSharedScreenStateFromPhoneAspectRatio(t *tes
 		NewBuiltinToolSet(HIDConfig{FrameSocket: frameSocket}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	envData, err := json.Marshal(PhoneEnvironment{
 		Platform: "android",
@@ -873,7 +869,7 @@ func TestHandleCoordinateDebugTapRecapturesUncroppedScreenshot(t *testing.T) {
 		}},
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/coordinate-debug/tap", bytes.NewBufferString(`{"x":123,"y":456,"type":"tap","crop_black_bars":false}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -945,7 +941,7 @@ func TestHandleCoordinateDebugTapRecapturesScreenshotWhenMappingUnavailable(t *t
 		}},
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/coordinate-debug/tap", bytes.NewBufferString(`{"x":123,"y":456,"type":"tap","crop_black_bars":true}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -1028,7 +1024,7 @@ func TestServerHandleChatDoesNotWaitForToolContentTTSWhenEnabled(t *testing.T) {
 		}},
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: speech}
 	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
 	server.audioClient = NewAudioServiceClient("/tmp/audio.sock")
@@ -1085,7 +1081,7 @@ func TestServerHandleChatDoesNotSpeakWaitForWakeup(t *testing.T) {
 		}},
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 	provider := &recordingTTSProvider{name: "server-provider"}
 	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
 	server.audioClient = NewAudioServiceClient(startTTSPlaybackAudioSocket(t))
@@ -1129,7 +1125,7 @@ func TestServerHandleChatSkipsToolContentTTSWhenDisabled(t *testing.T) {
 		}},
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: "我先读取当前音量。"}
 	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
 	server.audioClient = NewAudioServiceClient("/tmp/audio.sock")
@@ -1159,7 +1155,7 @@ func TestServerHandleChatUsesRequestContextForRun(t *testing.T) {
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"hello"}`)).WithContext(ctx)
@@ -1555,6 +1551,63 @@ func TestServerHandleClearRemovesRuntimeMemory(t *testing.T) {
 	}
 }
 
+func TestServerHandleSetupReturnsSuccessWithoutClearingHistory(t *testing.T) {
+	server := &Server{
+		history: []Message{{Type: "user", Content: "hello"}},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/setup", nil)
+	rec := httptest.NewRecorder()
+	server.handleSetup(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			Setup bool `json:"setup"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !got.OK {
+		t.Fatalf("expected ok response: %#v", got)
+	}
+	if got.Data.Setup {
+		t.Fatalf("expected setup=false for Go agent no-op response")
+	}
+	if len(server.history) != 1 || server.history[0].Content != "hello" {
+		t.Fatalf("setup should not clear history, got %#v", server.history)
+	}
+}
+
+func TestServerHandleConcurrentReturnsSingleCapacity(t *testing.T) {
+	server := &Server{}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/concurrent", nil)
+	rec := httptest.NewRecorder()
+	server.handleConcurrent(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			BridgeType string `json:"bridge_type"`
+			Concurrent int    `json:"concurrent"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !got.OK || got.Data.BridgeType != "go-agent" || got.Data.Concurrent != 1 {
+		t.Fatalf("unexpected concurrent response: %#v", got)
+	}
+}
+
 func TestServerHandleSkillsReloadMarksDirty(t *testing.T) {
 	storageDir := t.TempDir()
 	server := &Server{
@@ -1730,7 +1783,7 @@ func TestServerDeviceAudioRecordingEndpointsReturnWAVAttachment(t *testing.T) {
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	startReq := httptest.NewRequest(http.MethodPost, "/api/audio/record/start", nil)
 	startRec := httptest.NewRecorder()
@@ -1819,7 +1872,7 @@ func TestServerDeviceAudioRecordingStartRecoversStaleSession(t *testing.T) {
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 	server.webRecording = &webAudioRecording{
 		sessionID:  99,
 		sampleRate: 16000,
@@ -1852,7 +1905,7 @@ func TestServerToolCatalogEndpoint(t *testing.T) {
 		}},
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/tools", nil)
 	rec := httptest.NewRecorder()
@@ -1868,17 +1921,21 @@ func TestServerToolCatalogEndpoint(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 
-	if len(resp.Tools) != 1 {
-		t.Fatalf("expected 1 tool, got %d", len(resp.Tools))
+	var shell ToolDescriptor
+	for _, descriptor := range resp.Tools {
+		if descriptor.Name == "shell" {
+			shell = descriptor
+			break
+		}
 	}
-	if resp.Tools[0].Name != "shell" {
-		t.Fatalf("unexpected tool descriptor: %#v", resp.Tools[0])
+	if shell.Name == "" {
+		t.Fatalf("expected shell in tool catalog: %#v", resp.Tools)
 	}
-	if resp.Tools[0].HTTP.Path != "/api/tools/shell" {
-		t.Fatalf("unexpected tool path: %#v", resp.Tools[0].HTTP)
+	if shell.HTTP.Path != "/api/tools/shell" {
+		t.Fatalf("unexpected tool path: %#v", shell.HTTP)
 	}
-	if resp.Tools[0].ExampleInput != `{"command":"pwd"}` {
-		t.Fatalf("unexpected example input: %q", resp.Tools[0].ExampleInput)
+	if shell.ExampleInput != `{"command":"pwd"}` {
+		t.Fatalf("unexpected example input: %q", shell.ExampleInput)
 	}
 }
 
@@ -1897,7 +1954,7 @@ func TestServerToolInvokeEndpointAcceptsStructuredJSON(t *testing.T) {
 		}},
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	body := bytes.NewBufferString(`{"input":{"command":"pwd"}}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/tools/shell", body)
@@ -1937,7 +1994,7 @@ func TestServerToolInvokeUsesUnifiedExecutionAndNormalizesInput(t *testing.T) {
 		}},
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	body := bytes.NewBufferString(`{"raw_input":"{\"command\":\"pwd\"}\nObservation:"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/tools/shell", body)
@@ -1962,105 +2019,6 @@ func TestServerToolInvokeUsesUnifiedExecutionAndNormalizesInput(t *testing.T) {
 	}
 }
 
-func TestServerMobileGymEpisodeStartEnd(t *testing.T) {
-	dir := t.TempDir()
-	tokenPath := filepath.Join(dir, "control.token")
-	if err := os.WriteFile(tokenPath, []byte("control-token"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg := Config{
-		Model:  ModelConfig{Provider: "fake"},
-		Device: DeviceConfig{Backend: "mobilegym", ControlTokenFile: tokenPath},
-	}
-	runtime := NewRuntimeWithDeps(cfg, &testModelResolver{model: &scriptedModel{}}, NewMemoryManager(""), NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}), NewSkillIndex())
-	server := NewServer(runtime, "127.0.0.1:0", "")
-
-	body := strings.NewReader(`{"episode_id":"ep1","bridge_url":"http://127.0.0.1:19001","bridge_token":"tok"}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/mobilegym/episode/start", body)
-	req.Header.Set("Authorization", "Bearer control-token")
-	rec := httptest.NewRecorder()
-	server.handleMobileGymEpisodeStart(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("start status = %d body=%s", rec.Code, rec.Body.String())
-	}
-	if session, ok := runtime.mobileGym.Get(); !ok || session.EpisodeID != "ep1" {
-		t.Fatalf("session = %#v ok=%v", session, ok)
-	}
-
-	req = httptest.NewRequest(http.MethodPost, "/api/mobilegym/episode/end", strings.NewReader(`{"episode_id":"ep1"}`))
-	req.Header.Set("Authorization", "Bearer control-token")
-	rec = httptest.NewRecorder()
-	server.handleMobileGymEpisodeEnd(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("end status = %d body=%s", rec.Code, rec.Body.String())
-	}
-	if _, ok := runtime.mobileGym.Get(); ok {
-		t.Fatal("session still active after end")
-	}
-}
-
-func TestServerMobileGymEpisodeEndpointsRequireControlToken(t *testing.T) {
-	dir := t.TempDir()
-	tokenPath := filepath.Join(dir, "control.token")
-	if err := os.WriteFile(tokenPath, []byte("control-token"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg := Config{
-		Model:  ModelConfig{Provider: "fake"},
-		Device: DeviceConfig{Backend: "mobilegym", ControlTokenFile: tokenPath},
-	}
-	runtime := NewRuntimeWithDeps(cfg, &testModelResolver{model: &scriptedModel{}}, NewMemoryManager(""), NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}), NewSkillIndex())
-	server := NewServer(runtime, "127.0.0.1:0", "")
-
-	for _, tt := range []struct {
-		name     string
-		auth     string
-		wantCode int
-	}{
-		{name: "missing", wantCode: http.StatusUnauthorized},
-		{name: "wrong", auth: "Bearer wrong", wantCode: http.StatusUnauthorized},
-		{name: "correct", auth: "Bearer control-token", wantCode: http.StatusOK},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/api/mobilegym/episode/start", strings.NewReader(`{"episode_id":"ep1","bridge_url":"http://127.0.0.1:19001","bridge_token":"tok"}`))
-			if tt.auth != "" {
-				req.Header.Set("Authorization", tt.auth)
-			}
-			rec := httptest.NewRecorder()
-			server.handleMobileGymEpisodeStart(rec, req)
-			if rec.Code != tt.wantCode {
-				t.Fatalf("status = %d, want %d body=%s", rec.Code, tt.wantCode, rec.Body.String())
-			}
-		})
-	}
-}
-
-func TestMobileGymControlTokenNotInToolCatalog(t *testing.T) {
-	dir := t.TempDir()
-	tokenPath := filepath.Join(dir, "control.token")
-	if err := os.WriteFile(tokenPath, []byte("control-token"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg := Config{
-		Model:  ModelConfig{Provider: "fake"},
-		Device: DeviceConfig{Backend: "mobilegym", ControlTokenFile: tokenPath},
-	}
-	runtime := NewRuntimeWithDeps(cfg, &testModelResolver{model: &scriptedModel{}}, NewMemoryManager(""), NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}), NewSkillIndex())
-
-	catalogJSON, err := json.Marshal(runtime.ToolDescriptors())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(catalogJSON), "control-token") {
-		t.Fatalf("tool catalog contains control token: %s", catalogJSON)
-	}
-	for _, skill := range runtime.HTTPToolSkills("http://127.0.0.1:8080") {
-		if strings.Contains(skill.Markdown, "control-token") {
-			t.Fatalf("tool skill markdown contains control token: %s", skill.Markdown)
-		}
-	}
-}
-
 func TestServerDoesNotExposeActivateSkillOverHTTP(t *testing.T) {
 	index := NewSkillIndex()
 	index.skills["planner"] = &SkillDefinition{
@@ -2075,7 +2033,7 @@ func TestServerDoesNotExposeActivateSkillOverHTTP(t *testing.T) {
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		index,
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	catalogReq := httptest.NewRequest(http.MethodGet, "/api/tools", nil)
 	catalogRec := httptest.NewRecorder()
@@ -2097,7 +2055,7 @@ func TestServerDoesNotExposeActivateSkillOverHTTP(t *testing.T) {
 	}
 }
 
-func TestServerDoesNotExposeSkillManageOverHTTP(t *testing.T) {
+func TestServerExposesSkillManageOverHTTP(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
 		Config{Model: ModelConfig{Provider: "fake"}},
 		&testModelResolver{model: &scriptedModel{}},
@@ -2108,7 +2066,7 @@ func TestServerDoesNotExposeSkillManageOverHTTP(t *testing.T) {
 		}},
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	catalogReq := httptest.NewRequest(http.MethodGet, "/api/tools", nil)
 	catalogRec := httptest.NewRecorder()
@@ -2116,18 +2074,18 @@ func TestServerDoesNotExposeSkillManageOverHTTP(t *testing.T) {
 	if catalogRec.Code != http.StatusOK {
 		t.Fatalf("unexpected catalog status: %d body=%s", catalogRec.Code, catalogRec.Body.String())
 	}
-	if bytes.Contains(catalogRec.Body.Bytes(), []byte("skill_manage")) {
-		t.Fatalf("skill_manage should not be advertised over HTTP: %s", catalogRec.Body.String())
+	if !bytes.Contains(catalogRec.Body.Bytes(), []byte("skill_manage")) {
+		t.Fatalf("expected skill_manage advertised over HTTP: %s", catalogRec.Body.String())
 	}
 	if !bytes.Contains(catalogRec.Body.Bytes(), []byte("skill_list")) {
-		t.Fatalf("expected non-mutating skill tool to remain exposed: %s", catalogRec.Body.String())
+		t.Fatalf("expected skill_list to remain exposed: %s", catalogRec.Body.String())
 	}
 
-	invokeReq := httptest.NewRequest(http.MethodPost, "/api/tools/skill_manage", bytes.NewBufferString(`{"raw_input":"{}"}`))
+	invokeReq := httptest.NewRequest(http.MethodPost, "/api/tools/skill_manage", bytes.NewBufferString(`{"raw_input":"{\"action\":\"list\"}"}`))
 	invokeRec := httptest.NewRecorder()
 	server.handleToolInvoke(invokeRec, invokeReq)
-	if invokeRec.Code != http.StatusNotFound {
-		t.Fatalf("expected skill_manage HTTP invoke to be blocked, got %d body=%s", invokeRec.Code, invokeRec.Body.String())
+	if invokeRec.Code != http.StatusOK {
+		t.Fatalf("expected skill_manage HTTP invoke to succeed, got %d body=%s", invokeRec.Code, invokeRec.Body.String())
 	}
 }
 
@@ -2146,7 +2104,7 @@ func TestServerToolSkillsEndpointReturnsGeneratedSkills(t *testing.T) {
 		}},
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0", "")
+	server := NewServer(runtime, ":0")
 
 	req := httptest.NewRequest(http.MethodGet, "https://device.example/api/tool-skills", nil)
 	req.Header.Set("X-Forwarded-Host", "203.0.113.57:8080")
@@ -2171,7 +2129,14 @@ func TestServerToolSkillsEndpointReturnsGeneratedSkills(t *testing.T) {
 	if skill.Name != "aiden-http-tool-suite" {
 		t.Fatalf("unexpected skill name: %#v", skill)
 	}
-	if len(skill.ToolNames) != 1 || skill.ToolNames[0] != "shell" {
+	hasShell := false
+	for _, name := range skill.ToolNames {
+		if name == "shell" {
+			hasShell = true
+			break
+		}
+	}
+	if !hasShell {
 		t.Fatalf("unexpected tool list: %#v", skill.ToolNames)
 	}
 	if !bytes.Contains([]byte(skill.Markdown), []byte("/api/tools/{tool_name}")) {

@@ -1,22 +1,19 @@
 import pytest
 
 from runner.agent_client import AgentRequestError, AgentTimeoutError
-from runner.reset import ResetError, per_task_setup
+from runner.reset import (
+    ResetError,
+    call_environment_release,
+    call_environment_setup,
+    environment_release_endpoint,
+    environment_setup_endpoint,
+    per_task_setup,
+)
 
 
 class FailingChatClient:
     def chat(self, message, timeout_sec=None):
         raise AgentRequestError("HTTP 500: missing auth")
-
-
-class FailingToolClient:
-    def invoke_tool(self, name, args):
-        raise AgentRequestError("HTTP 404: unknown tool")
-
-
-class TimeoutToolClient:
-    def invoke_tool(self, name, args):
-        raise AgentTimeoutError("timed out")
 
 
 class FailingClearHistoryClient:
@@ -25,6 +22,11 @@ class FailingClearHistoryClient:
 
     def clear_history(self):
         raise AgentRequestError("HTTP 500: clear failed")
+
+
+class TimeoutChatClient:
+    def chat(self, message, timeout_sec=None):
+        raise AgentTimeoutError("timed out")
 
 
 class RecordingSetupClient:
@@ -45,18 +47,11 @@ def test_agent_prompt_setup_wraps_chat_errors_as_reset_error():
         per_task_setup(FailingChatClient(), setup)
 
 
-def test_tool_sequence_wraps_tool_errors_as_reset_error():
-    setup = {"tool_sequence": [{"tool": "missing_tool", "args": {}}]}
+def test_agent_prompt_setup_wraps_timeouts_as_reset_error():
+    setup = {"type": "agent_prompt", "prompt": "remember this", "timeout_sec": 5}
 
-    with pytest.raises(ResetError, match="tool missing_tool failed"):
-        per_task_setup(FailingToolClient(), setup)
-
-
-def test_tool_sequence_wraps_tool_timeouts_as_reset_error():
-    setup = {"tool_sequence": [{"tool": "touch_gesture", "args": {"type": "home"}}]}
-
-    with pytest.raises(ResetError, match="tool touch_gesture timed out"):
-        per_task_setup(TimeoutToolClient(), setup)
+    with pytest.raises(ResetError, match="setup agent_prompt timed out"):
+        per_task_setup(TimeoutChatClient(), setup)
 
 
 def test_agent_prompt_setup_wraps_clear_history_errors_as_reset_error():
@@ -91,3 +86,113 @@ def test_agent_prompt_setup_can_make_history_clear_explicit():
     )
 
     assert client.calls[-1] == ("clear_history",)
+
+def test_environment_setup_endpoint_is_derived_from_environment_endpoint():
+    assert environment_setup_endpoint("http://127.0.0.1:9090") == "http://127.0.0.1:9090/api/setup"
+    assert environment_setup_endpoint("http://127.0.0.1:9090/api/setup") == "http://127.0.0.1:9090/api/setup"
+    assert environment_setup_endpoint("http://127.0.0.1:9090/api/release") == "http://127.0.0.1:9090/api/setup"
+    assert environment_setup_endpoint("http://127.0.0.1:9090/api/screen") == "http://127.0.0.1:9090/api/setup"
+
+
+def test_environment_release_endpoint_is_derived_from_environment_endpoint():
+    assert environment_release_endpoint("http://127.0.0.1:9090") == "http://127.0.0.1:9090/api/release"
+    assert environment_release_endpoint("http://127.0.0.1:9090/api/setup") == "http://127.0.0.1:9090/api/release"
+    assert environment_release_endpoint("http://127.0.0.1:9090/api/release") == "http://127.0.0.1:9090/api/release"
+    assert environment_release_endpoint("http://127.0.0.1:9090/api/screen") == "http://127.0.0.1:9090/api/release"
+
+
+def test_call_environment_setup_posts_to_api_setup(monkeypatch):
+    seen = {}
+
+    class FakeResponse:
+        status = 200
+
+        def read(self):
+            return b'{"ok": true, "data": {"episode_id": "reset-1", "reset": true}}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        seen["url"] = req.full_url
+        seen["method"] = req.get_method()
+        seen["body"] = req.data
+        seen["task_id"] = req.headers.get("Benchmark-task-id")
+        seen["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = call_environment_setup("http://127.0.0.1:9090", timeout=12)
+
+    assert seen == {
+        "url": "http://127.0.0.1:9090/api/setup",
+        "method": "POST",
+        "body": b"{}",
+        "task_id": None,
+        "timeout": 12,
+    }
+    assert result["data"]["episode_id"] == "reset-1"
+
+
+def test_call_environment_setup_sends_benchmark_task_id_header(monkeypatch):
+    seen = {}
+
+    class FakeResponse:
+        status = 200
+
+        def read(self):
+            return b'{"ok": true}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        seen["task_id"] = req.headers.get("Benchmark-task-id")
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    call_environment_setup("http://127.0.0.1:9090", task_id="clock.CountAlarms")
+
+    assert seen["task_id"] == "clock.CountAlarms"
+
+
+def test_call_environment_release_sends_benchmark_task_id_header(monkeypatch):
+    seen = {}
+
+    class FakeResponse:
+        status = 200
+
+        def read(self):
+            return b'{"ok": true, "data": {"released": true}}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        seen["url"] = req.full_url
+        seen["method"] = req.get_method()
+        seen["body"] = req.data
+        seen["task_id"] = req.headers.get("Benchmark-task-id")
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    call_environment_release("http://127.0.0.1:9090", task_id="clock.CountAlarms")
+
+    assert seen == {
+        "url": "http://127.0.0.1:9090/api/release",
+        "method": "POST",
+        "body": b"{}",
+        "task_id": "clock.CountAlarms",
+    }

@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -52,9 +53,12 @@ func main() {
 
 	// Default: run as daemon
 	var (
-		configDir    = flag.String("config", "", "path to config directory (required)")
-		addr         = flag.String("addr", "0.0.0.0:8080", "HTTP server address")
-		benchmarkDir = flag.String("benchmark-dir", "", "Override benchmark root directory (default: auto-detect)")
+		configDir                 = flag.String("config", "", "path to config directory (required)")
+		addr                      = flag.String("addr", "0.0.0.0:8080", "HTTP server address")
+		environmentBridgeMode     = flag.Bool("environment-bridge-mode", false, "Enable environment bridge mode (forward selected tool calls to an environment bridge; see --environment-bridge-tools)")
+		environmentBridgeEndpoint = flag.String("environment-bridge-endpoint", "", "Environment bridge endpoint (e.g., http://192.168.50.123:8080)")
+		environmentBridgeTools    = flag.String("environment-bridge-tools", "", "Comma-separated tool names or glob patterns to forward when environment-bridge-mode is on, e.g. \"keyboard_*,mouse_*,screenshot\" or \"*\". Required with --environment-bridge-mode.")
+		benchmarkTaskID           = flag.String("benchmark-task-id", "", "Benchmark task id to include on environment bridge requests for task routing")
 	)
 	flag.Parse()
 
@@ -67,6 +71,24 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
 		os.Exit(1)
+	}
+
+	// Apply CLI flags to override config file
+	if *environmentBridgeMode {
+		cfg.EnvironmentBridge.Enabled = true
+		if *environmentBridgeEndpoint != "" {
+			cfg.EnvironmentBridge.Endpoint = *environmentBridgeEndpoint
+		}
+		if cfg.EnvironmentBridge.Endpoint == "" {
+			fmt.Fprintln(os.Stderr, "environment-bridge-mode requires --environment-bridge-endpoint")
+			os.Exit(1)
+		}
+		cfg.EnvironmentBridge.Tools = parseCommaSeparated(*environmentBridgeTools)
+		if len(cfg.EnvironmentBridge.Tools) == 0 {
+			fmt.Fprintln(os.Stderr, "environment-bridge-mode requires --environment-bridge-tools (comma-separated tool names or glob patterns, e.g. \"keyboard_*,mouse_*,screenshot\" or \"*\" to forward all)")
+			os.Exit(1)
+		}
+		cfg.EnvironmentBridge.BenchmarkTaskID = strings.TrimSpace(*benchmarkTaskID)
 	}
 
 	proxyConfig := agent.ProxyConfigFromEnvironment()
@@ -90,21 +112,18 @@ func main() {
 
 	inputMode := cfg.InputModeOrDefault()
 
-	// Resolve benchmark directory (allow override via flag, default to auto-detect)
-	resolvedBenchmarkDir, err := agent.ResolveBenchmarkDir(*benchmarkDir, cfg.Benchmark)
-	if err != nil {
-		log.Printf("[benchmark] Failed to resolve benchmark directory: %v. Benchmark routes will return 503.", err)
-		resolvedBenchmarkDir = "" // Pass empty string to NewServer
-	}
-
 	// HTTP server runs in all input modes so the web UI is available even
 	// during voice (audio/stt) interactions.
-	server := agent.NewServer(runtime, *addr, resolvedBenchmarkDir)
+	server := agent.NewServer(runtime, *addr)
 
 	fmt.Printf("🚀 Aiden Agent daemon starting on %s\n", *addr)
 	fmt.Printf("📂 Config directory: %s\n", *configDir)
-	if resolvedBenchmarkDir != "" {
-		fmt.Printf("📊 Benchmark directory: %s\n", resolvedBenchmarkDir)
+	if cfg.EnvironmentBridge.Enabled {
+		fmt.Printf("🔀 Environment bridge mode: forwarding to %s\n", cfg.EnvironmentBridge.Endpoint)
+		fmt.Printf("   Environment bridge tools: %v\n", cfg.EnvironmentBridge.Tools)
+		if cfg.EnvironmentBridge.BenchmarkTaskID != "" {
+			fmt.Printf("   Benchmark task id: %s\n", cfg.EnvironmentBridge.BenchmarkTaskID)
+		}
 	}
 	if _, port, err := net.SplitHostPort(*addr); err == nil && port != "" {
 		fmt.Printf("🌐 Web UI: http://localhost:%s\n", port)
@@ -235,6 +254,20 @@ func floatOrDefault(value, fallback float64) float64 {
 		return value
 	}
 	return fallback
+}
+
+func parseCommaSeparated(input string) []string {
+	if strings.TrimSpace(input) == "" {
+		return nil
+	}
+	parts := strings.Split(input, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
 }
 
 type wakeupWatcherFactory func(pin int, callback func()) (wakeupWatcher, error)

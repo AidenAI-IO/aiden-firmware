@@ -52,12 +52,6 @@ struct AudioArchiveToml {
     std::string storage_path = "/userdata/audio";
 };
 
-struct BenchmarkToml {
-    std::string judge_model;
-    std::string api_key;
-    std::string benchmark_dir;
-};
-
 struct LogToml {
     int llm_http_retention_days = 7;
 };
@@ -113,7 +107,6 @@ struct AgentToml {
     STTToml stt;
     AudioToml audio;
     AudioArchiveToml audio_archive;
-    BenchmarkToml benchmark;
     LogToml log;
     HIDToml hid;
     SearchToml search;

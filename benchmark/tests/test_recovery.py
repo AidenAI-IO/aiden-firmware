@@ -61,6 +61,12 @@ class SetupClient:
         if self.clears <= self.fail_clears:
             raise AgentTimeoutError("clear timed out")
 
+    def invoke_tool(self, name, args):
+        raise AssertionError("unexpected agent-side tool call")
+
+    def chat(self, message, timeout_sec=None):
+        raise AssertionError("unexpected agent-side setup chat")
+
 
 def test_prepare_task_isolation_retries_clear(monkeypatch):
     sleeps = []
@@ -85,6 +91,44 @@ def test_prepare_task_isolation_retries_clear(monkeypatch):
     prepare_task_isolation(client, suite, task, ready_timeout_sec=10, setup_attempts=3)
 
     assert client.clears == 2
+
+
+def test_prepare_task_isolation_uses_environment_setup_without_agent_side_setup(monkeypatch):
+    setup_calls = []
+    monkeypatch.setattr(
+        "runner.recovery.call_environment_setup",
+        lambda environment_url, task_id=None: setup_calls.append((environment_url, task_id)),
+    )
+    client = SetupClient()
+    suite = Suite(
+        name="phone",
+        global_reset={},
+        tasks=[],
+        sha256="sha",
+        source_path=__import__("pathlib").Path("suite.json"),
+    )
+    task = TaskSpec(
+        id="open_settings",
+        category="single_step",
+        description_for_judge="Open settings.",
+        prompt="open settings",
+        rubric=[RubricItem(id="ok", check="ok")],
+        hard_assertions=HardAssertions(min_tool_calls=1, max_tool_calls=3),
+        setup={"type": "agent_prompt", "prompt": "should not run"},
+    )
+
+    prepare_task_isolation(
+        client,
+        suite,
+        task,
+        environment_url="http://127.0.0.1:9090",
+        benchmark_task_id="suite.json:open_settings",
+        ready_timeout_sec=10,
+        setup_attempts=1,
+    )
+
+    assert setup_calls == [("http://127.0.0.1:9090", "suite.json:open_settings")]
+    assert client.clears == 1
 
 
 def test_prepare_task_isolation_raises_after_exhausting_retries(monkeypatch):

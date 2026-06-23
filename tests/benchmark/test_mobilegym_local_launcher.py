@@ -19,7 +19,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 LAUNCHER_PATH = REPO_ROOT / "benchmark" / "mobilegym" / "scripts" / "local_launcher.py"
 HELPER_PATH = REPO_ROOT / "benchmark" / "mobilegym" / "scripts" / "local_launcher_helper.py"
 INSTALLER_PATH = REPO_ROOT / "benchmark" / "mobilegym" / "scripts" / "install_local_launcher.sh"
-PARALLEL_RUN_PATH = REPO_ROOT / "benchmark" / "mobilegym" / "docker" / "parallel_run.sh"
 
 
 @pytest.fixture
@@ -38,182 +37,48 @@ def helper_module():
     return mod
 
 
-def test_scan_suites_includes_nested_aiden_and_builtins(launcher_module, tmp_path):
+def test_scan_suites_includes_nested_aiden(launcher_module, tmp_path):
     suites_dir = tmp_path / "suites" / "perception"
     suites_dir.mkdir(parents=True)
     (suites_dir / "perception_v1.json").write_text('{"tasks":[{},{}]}')
-    mobilegym_suites = tmp_path / "mobilegym" / "suites"
-    mobilegym_suites.mkdir(parents=True)
-    (mobilegym_suites / "all_tasks.txt").write_text("clock.AddAlarm\nclock.CountAlarms\nalipay.Pay\n")
 
     suites = launcher_module.scan_suites(tmp_path)
 
     by_type = {(item["type"], item["name"]): item for item in suites}
     assert by_type[("aiden", "perception_v1")]["path"].endswith("perception/perception_v1.json")
     assert by_type[("aiden", "perception_v1")]["task_count"] == 2
-    assert by_type[("mobilegym_builtin", "clock")]["task_count"] == 2
-    assert by_type[("mobilegym_builtin", "alipay")]["task_count"] == 1
 
 
-def test_build_run_command_uses_nested_aiden_suite(launcher_module, tmp_path):
-    docker_dir = tmp_path / "mobilegym" / "docker"
-    docker_dir.mkdir(parents=True)
-    (docker_dir / "parallel_run.sh").write_text("#!/usr/bin/env bash\n")
-
-    command = launcher_module.build_run_command(
-        tmp_path,
-        {"suite": "perception/perception_v1", "suite_type": "aiden", "parallel": 3, "limit": 1},
-    )
-
-    assert command.cwd == docker_dir
-    assert command.argv == ["./parallel_run.sh", "--aiden-suite", "perception/perception_v1", "--limit", "1"]
-    assert command.env["PARALLEL"] == "3"
+def test_build_run_command_reports_mobilegym_runs_moved_to_webui(launcher_module, tmp_path):
+    with pytest.raises(launcher_module.LauncherError, match="benchmark WebUI"):
+        launcher_module.build_run_command(
+            tmp_path,
+            {"suite": "perception/perception_v1", "suite_type": "aiden", "parallel": 3, "limit": 1},
+        )
 
 
-def test_build_run_command_uses_mobilegym_builtin_suite(launcher_module, tmp_path):
-    docker_dir = tmp_path / "mobilegym" / "docker"
-    docker_dir.mkdir(parents=True)
-    (docker_dir / "parallel_run.sh").write_text("#!/usr/bin/env bash\n")
-
-    command = launcher_module.build_run_command(
-        tmp_path,
-        {"suite": "clock", "suite_type": "mobilegym_builtin", "parallel": 2},
-    )
-
-    assert command.cwd == docker_dir
-    assert command.argv == ["./parallel_run.sh", "--suite", "clock"]
-    assert command.env["PARALLEL"] == "2"
+def test_build_run_command_reports_mobilegym_runs_moved_to_webui_with_analysis_payload(launcher_module, tmp_path):
+    with pytest.raises(launcher_module.LauncherError, match="benchmark WebUI"):
+        launcher_module.build_run_command(
+            tmp_path,
+            {
+                "suite": "clock",
+                "suite_type": "mobilegym_builtin",
+                "analysis_model": "anthropic/claude-sonnet-4-6",
+            },
+        )
 
 
-def test_build_run_command_uses_mobilegym_builtin_suites(launcher_module, tmp_path):
-    docker_dir = tmp_path / "mobilegym" / "docker"
-    docker_dir.mkdir(parents=True)
-    (docker_dir / "parallel_run.sh").write_text("#!/usr/bin/env bash\n")
-
-    command = launcher_module.build_run_command(
-        tmp_path,
-        {"suites": ["clock", "phone_control_v1"], "suite_type": "mobilegym_builtin", "parallel": 2},
-    )
-
-    assert command.cwd == docker_dir
-    assert command.argv == ["./parallel_run.sh", "--suites", "clock,phone_control_v1"]
-    assert command.env["PARALLEL"] == "2"
-
-
-def test_build_run_command_uses_multiple_aiden_suites(launcher_module, tmp_path):
-    docker_dir = tmp_path / "mobilegym" / "docker"
-    docker_dir.mkdir(parents=True)
-    (docker_dir / "parallel_run.sh").write_text("#!/usr/bin/env bash\n")
-
-    command = launcher_module.build_run_command(
-        tmp_path,
-        {"suites": ["memory_v1", "perception_v1"], "suite_type": "aiden", "parallel": 1},
-    )
-
-    assert command.argv == ["./parallel_run.sh", "--aiden-suites", "memory_v1,perception_v1"]
-
-
-def test_build_run_command_adds_common_docker_cli_paths(launcher_module, tmp_path):
-    docker_dir = tmp_path / "mobilegym" / "docker"
-    docker_dir.mkdir(parents=True)
-    (docker_dir / "parallel_run.sh").write_text("#!/usr/bin/env bash\n")
-
-    command = launcher_module.build_run_command(
-        tmp_path,
-        {"suite": "clock", "suite_type": "mobilegym_builtin", "parallel": 1},
-    )
-
-    path_parts = command.env["PATH"].split(os.pathsep)
-    assert "/usr/local/bin" in path_parts
-    assert "/opt/homebrew/bin" in path_parts
-    assert "/Applications/Docker.app/Contents/Resources/bin" in path_parts
-
-
-def test_build_run_command_enables_llm_analysis_by_default(launcher_module, tmp_path):
-    docker_dir = tmp_path / "mobilegym" / "docker"
-    docker_dir.mkdir(parents=True)
-    (docker_dir / "parallel_run.sh").write_text("#!/usr/bin/env bash\n")
-
-    command = launcher_module.build_run_command(
-        tmp_path,
-        {
-            "suite": "clock",
-            "suite_type": "mobilegym_builtin",
-            "analysis_model": "anthropic/claude-sonnet-4-6",
-        },
-    )
-
-    assert command.env["AIDEN_BENCHMARK_LLM_ANALYSIS"] == "1"
-    assert command.env["AIDEN_BENCHMARK_ANALYSIS_MODEL"] == "anthropic/claude-sonnet-4-6"
-
-
-def test_build_skillopt_run_command_enables_llm_analysis_by_default(launcher_module, tmp_path):
-    (tmp_path / "suites" / "skillopt" / "device-operator").mkdir(parents=True)
-    (tmp_path / "mobilegym" / "docker").mkdir(parents=True)
-    (tmp_path / "mobilegym" / "docker" / "parallel_run.sh").write_text("#!/usr/bin/env bash\n")
-
-    command = launcher_module.build_skillopt_run_command(
-        tmp_path,
-        {
-            "mode": "skillopt",
-            "skillopt_backend": "mobilegym",
-            "skill": "device-operator",
-            "train_suite": "skillopt/device-operator/device_operator_train",
-            "validation_suite": "skillopt/device-operator/device_operator_verification",
-        },
-    )
-
-    assert command.env["AIDEN_BENCHMARK_LLM_ANALYSIS"] == "1"
-
-
-def test_build_skillopt_run_command_forwards_analysis_tuning_fields(launcher_module, tmp_path):
-    (tmp_path / "suites" / "skillopt" / "device-operator").mkdir(parents=True)
-
-    command = launcher_module.build_skillopt_run_command(
-        tmp_path,
-        {
-            "mode": "skillopt",
-            "skillopt_backend": "mobilegym",
-            "skill": "device-operator",
-            "train_suite": "skillopt/device-operator/device_operator_train",
-            "validation_suite": "skillopt/device-operator/device_operator_verification",
-            "analysis_model": "bytedance-seed/seed-2.0-lite",
-            "analysis_max_log_bytes": 1234,
-            "analysis_max_code_bytes": 5678,
-            "analysis_timeout_sec": 90,
-        },
-    )
-
-    assert command.env["AIDEN_BENCHMARK_ANALYSIS_MODEL"] == "bytedance-seed/seed-2.0-lite"
-    assert command.env["AIDEN_BENCHMARK_ANALYSIS_MAX_LOG_BYTES"] == "1234"
-    assert command.env["AIDEN_BENCHMARK_ANALYSIS_MAX_CODE_BYTES"] == "5678"
-    assert command.env["AIDEN_BENCHMARK_ANALYSIS_TIMEOUT_SEC"] == "90"
-
-
-def test_build_run_command_uses_benchmark_judge_model_for_analysis(launcher_module, monkeypatch, tmp_path):
-    docker_dir = tmp_path / "mobilegym" / "docker"
-    docker_dir.mkdir(parents=True)
-    (docker_dir / "parallel_run.sh").write_text("#!/usr/bin/env bash\n")
-    monkeypatch.setattr(launcher_module, "fetch_board_model_config", lambda board_url: {})
-    monkeypatch.setattr(
-        launcher_module,
-        "fetch_board_benchmark_config",
-        lambda board_url: {
-            "OPENROUTER_API_KEY": "sk-test",
-            "AIDEN_BENCHMARK_JUDGE_MODEL": "bytedance-seed/seed-2.0-lite",
-        },
-    )
-
-    command = launcher_module.build_run_command(
-        tmp_path,
-        {"suite": "clock", "suite_type": "mobilegym_builtin", "board_url": "http://board.local"},
-    )
-
-    assert command.env["AIDEN_BENCHMARK_ANALYSIS_MODEL"] == "bytedance-seed/seed-2.0-lite"
+def test_build_run_command_rejects_unknown_mode(launcher_module, tmp_path):
+    with pytest.raises(launcher_module.LauncherError, match="unsupported local launcher mode"):
+        launcher_module.build_run_command(
+            tmp_path,
+            {"mode": "unknown", "suite": "perception/perception_v1"},
+        )
 
 
 def test_build_run_command_rejects_path_traversal(launcher_module, tmp_path):
-    with pytest.raises(launcher_module.LauncherError, match="invalid suite name"):
+    with pytest.raises(launcher_module.LauncherError, match="benchmark WebUI"):
         launcher_module.build_run_command(
             tmp_path,
             {"suite": "..", "suite_type": "aiden", "parallel": 1},
@@ -237,10 +102,6 @@ provider = "openai"
 model = "qwen3.6-35b"
 base_url = "https://proxy.seeklab.io/qwen/v1"
 api_key = "secret-key"
-
-[tts]
-provider = "minimax-ws"
-api_key = "tts-key"
 '''
     )
 
@@ -449,48 +310,6 @@ def test_list_runs_expands_multiple_summary_suites(launcher_module, tmp_path):
     ]
 
 
-def test_list_runs_nests_skillopt_mobilegym_phases_under_parent(launcher_module, tmp_path):
-    skillopt_dir = tmp_path / "runs" / "skillopt" / "skillopt-20260622-010101-abc123"
-    skillopt_dir.mkdir(parents=True)
-    (skillopt_dir / "manifest.json").write_text(
-        json.dumps(
-            {
-                "train_suite": "skillopt/device-operator/device_operator_train",
-                "model": "qwen3.6-35b",
-                "totals": {"tasks": 6, "passed": 6, "failed": 0},
-            }
-        )
-    )
-    for phase, suite, passed, failed in [
-        ("baseline_selection", "skillopt/device-operator/device_operator_verification", 5, 1),
-        ("step_01_train", "skillopt/device-operator/device_operator_train", 9, 3),
-        ("step_01_selection", "skillopt/device-operator/device_operator_verification", 6, 0),
-    ]:
-        run_dir = tmp_path / "runs" / "mobilegym" / f"skillopt-20260622-010101-abc123-{phase}"
-        run_dir.mkdir(parents=True)
-        (run_dir / "index.html").write_text("report")
-        (run_dir / "summary.json").write_text(
-            json.dumps(
-                {
-                    "tasks": passed + failed,
-                    "passed": passed,
-                    "failed": failed,
-                    "model": "qwen3.6-35b",
-                    "suites": [{"suite": suite, "tasks": passed + failed, "passed": passed, "failed": failed}],
-                }
-            )
-        )
-
-    runs = launcher_module.list_runs(tmp_path)
-
-    assert [run["run_id"] for run in runs] == ["skillopt-20260622-010101-abc123"]
-    children = runs[0]["children"]
-    assert [child["phase"] for child in children] == ["baseline_selection", "step_01_train", "step_01_selection"]
-    assert [child["kind"] for child in children] == ["verification", "train", "verification"]
-    assert children[1]["run_id"] == "skillopt-20260622-010101-abc123-step_01_train"
-    assert children[1]["report_path"] == "/benchmark/report/skillopt-20260622-010101-abc123-step_01_train"
-
-
 def test_list_runs_marks_current_run_not_done_without_summary(launcher_module, tmp_path):
     run_dir = tmp_path / "runs" / "mobilegym" / "batch-20260611-205808"
     (run_dir / "launcher" / "shard-0").mkdir(parents=True)
@@ -636,20 +455,6 @@ def test_list_runs_reports_running_mobilegym_progress_from_shard_artifacts(launc
             "totals": {"tasks": 3, "passed": 0, "failed": 0},
         }
     ]
-
-
-def test_parallel_run_passes_limit_to_suite_workers():
-    script = PARALLEL_RUN_PATH.read_text()
-
-    assert "LIMIT=\"\"" in script
-    assert "--limit \"$LIMIT\"" in script
-
-
-def test_parallel_run_supports_multiple_aiden_suites():
-    script = PARALLEL_RUN_PATH.read_text()
-
-    assert "--aiden-suites" in script
-    assert "aiden_suite|$suite|$i|$PARALLEL" in script
 
 
 def test_helper_start_invokes_launchctl_for_local_launcher(helper_module, monkeypatch):

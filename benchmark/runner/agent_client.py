@@ -38,13 +38,21 @@ class AgentClient:
         self.base_url = base_url.rstrip("/")
         self._default_timeout = default_timeout_sec
 
-    def _post(self, path: str, payload: dict[str, Any] | None = None,
-              timeout: int = 30) -> tuple[int, bytes]:
+    def _post(
+        self,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        timeout: int = 30,
+        headers: dict[str, str] | None = None,
+    ) -> tuple[int, bytes]:
         data = json.dumps(payload or {}, ensure_ascii=False).encode("utf-8")
+        request_headers = {"Content-Type": "application/json"}
+        if headers:
+            request_headers.update(headers)
         req = urllib.request.Request(
             f"{self.base_url}{path}",
             data=data,
-            headers={"Content-Type": "application/json"},
+            headers=request_headers,
             method="POST",
         )
         try:
@@ -123,10 +131,17 @@ class AgentClient:
         )
 
     def invoke_tool(
-        self, name: str, args: dict[str, Any], timeout: int = 90
+        self,
+        name: str,
+        args: dict[str, Any],
+        timeout: int = 90,
+        benchmark_task_id: str | None = None,
     ) -> ToolInvokeResult:
+        headers = {}
+        if str(benchmark_task_id or "").strip():
+            headers["benchmark-task-id"] = str(benchmark_task_id).strip()
         status, body_bytes = self._post(
-            f"/api/tools/{name}", {"input": args}, timeout=timeout
+            f"/api/tools/{name}", {"input": args}, timeout=timeout, headers=headers
         )
         if status != 200:
             raise AgentRequestError(f"invoke {name} returned {status}")

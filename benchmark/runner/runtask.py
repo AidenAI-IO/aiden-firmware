@@ -13,13 +13,13 @@ from runner.assertions import (
     evaluate_hard_assertions,
     evaluate_trace_observations,
 )
-from runner.capture import take_screenshot, write_step_screenshot
+from runner.capture import take_environment_screenshot
 from runner.judge import judge_task, JudgeConfig
-from runner.models import TaskResult, RubricVerdict, HardAssertionResults
+from runner.models import HardAssertionFailure, HardAssertionResults, RubricVerdict, TaskResult
 from runner.recovery import prepare_task_isolation, recover_agent_after_timeout
 from runner.reset import ResetError
 from runner.suite import Suite, TaskSpec
-from runner.trace import extract_trace, extract_step_screenshots
+from runner.trace import extract_trace
 from runner.report import now_iso
 
 
@@ -65,6 +65,7 @@ def evaluate_task_history(
     timed_out: bool,
     metrics: dict[str, Any] | None = None,
     pre_screenshot: Path | None = None,
+    post_screenshot: Path | None = None,
     started_at: str | None = None,
     started_mono: float | None = None,
 ) -> TaskResult:
@@ -111,18 +112,14 @@ def evaluate_task_history(
     }
     (artifact_dir / "trace.json").write_text(
         json.dumps(trace_dict, ensure_ascii=False, indent=2), encoding="utf-8")
-    steps_dir = artifact_dir / "steps"
-    last_shot_path: Path | None = None
-    for i, (tool_name, b64) in enumerate(extract_step_screenshots(history), start=1):
-        # Sanitize tool_name to prevent path traversal
-        safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in tool_name)[:50]
-        p = steps_dir / f"step_{i:02d}_{safe_name}.jpg"
-        write_step_screenshot(p, b64)
-        last_shot_path = p
+    last_shot_path = post_screenshot if post_screenshot is not None and post_screenshot.exists() else None
     base.metrics.update({"wall_ms": wall_ms, "tool_calls": trace.total_tool_calls,
-                         "screenshots_taken": sum(1 for tc in trace.tool_calls if tc.has_screenshot)})
+                         "screenshots_taken": sum(1 for tc in trace.tool_calls if tc.has_screenshot),
+                         "pre_screenshot_file": bool(pre_screenshot and pre_screenshot.exists()),
+                         "post_screenshot_file": bool(post_screenshot and post_screenshot.exists())})
     outcome = evaluate_hard_assertions(trace, task.hard_assertions, timed_out=timed_out)
     base.hard_assertions = outcome.results
+    base.hard_assertion_failures = list(outcome.failures)
     if not outcome.all_passed:
         base.status = "timeout" if timed_out else "failed"
         base.finished_at = now_iso()
@@ -138,6 +135,14 @@ def evaluate_task_history(
         })
         base.hard_assertions.expected_answer = answer_outcome.passed
         if not answer_outcome.passed:
+            base.hard_assertion_failures.append(
+                HardAssertionFailure(
+                    id="expected_answer",
+                    label="Expected Answer",
+                    requirement=f"Final answer must be {answer_outcome.expected_answer or 'unparseable expected answer'}.",
+                    actual=f"Predicted answer was {answer_outcome.predicted_answer or 'none'}.",
+                )
+            )
             base.status = "failed"
             base.finished_at = now_iso()
             return base
@@ -150,6 +155,22 @@ def evaluate_task_history(
         })
         base.hard_assertions.expected_recalled_memory = recall_outcome.passed
         if not recall_outcome.passed:
+            missing_memory_ids = [
+                memory_id
+                for memory_id in recall_outcome.expected_memory_ids
+                if memory_id not in recall_outcome.recalled_memory_ids
+            ]
+            base.hard_assertion_failures.append(
+                HardAssertionFailure(
+                    id="expected_recalled_memory",
+                    label="Expected Recalled Memory",
+                    requirement=f"Must recall memory id(s): {_format_csv(recall_outcome.expected_memory_ids)}.",
+                    actual=(
+                        f"Missing: {_format_csv(missing_memory_ids)}. "
+                        f"Recalled: {_format_csv(recall_outcome.recalled_memory_ids)}."
+                    ),
+                )
+            )
             base.status = "failed"
             base.finished_at = now_iso()
             return base
@@ -175,10 +196,14 @@ def evaluate_task_history(
         return base
     base.rubric = verdict.verdicts
     base.rubric_pass_count = sum(1 for v in verdict.verdicts if v.verdict == "yes")
+    base.metrics["judge_image_count"] = verdict.image_count
+    base.metrics["judge_image_labels"] = verdict.image_labels
     (artifact_dir / "judge.json").write_text(json.dumps({
         "verdicts": [dc.asdict(v) for v in verdict.verdicts],
         "overall_notes": verdict.overall_notes,
         "cache_key": verdict.cache_key,
+        "image_count": verdict.image_count,
+        "image_labels": verdict.image_labels,
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     base.status = "passed" if base.rubric_pass_count == base.rubric_total else "failed"
     base.finished_at = now_iso()
@@ -194,6 +219,8 @@ def run_one_task(
     judge_cfg: JudgeConfig | None,
     judge_cache_dir: Path | None,
     run_id: str,
+    environment_url: str | None = None,
+    benchmark_task_id: str | None = None,
 ) -> TaskResult:
     artifact_dir.mkdir(parents=True, exist_ok=True)
     started = now_iso()
@@ -207,7 +234,13 @@ def run_one_task(
         rubric_spec=[dc.asdict(r) for r in task.rubric],
     )
     try:
-        prepare_task_isolation(client, suite, task)
+        prepare_task_isolation(
+            client,
+            suite,
+            task,
+            environment_url=environment_url,
+            benchmark_task_id=benchmark_task_id,
+        )
     except (ResetError, AgentTimeoutError, AgentRequestError) as e:
         base.status = "skipped"
         base.metrics = {"error": f"setup: {e}"}
@@ -227,10 +260,19 @@ def run_one_task(
         img_b64 = base64.b64encode(screenshot_path.read_bytes()).decode("ascii")
         attachments = [{"kind": "image", "mime_type": "image/jpeg", "data": img_b64}]
     else:
-        try:
-            take_screenshot(client, pre_path)
-        except Exception:
-            pass
+        if environment_url:
+            try:
+                take_environment_screenshot(
+                    environment_url,
+                    pre_path,
+                    benchmark_task_id=benchmark_task_id,
+                )
+            except Exception as e:
+                base.metrics["pre_screenshot_error"] = str(e)[:300]
+        else:
+            base.metrics["pre_screenshot_error"] = (
+                "environment_url is required for live screenshot capture"
+            )
     timed_out = False
     try:
         prompt = task.prompt
@@ -250,6 +292,25 @@ def run_one_task(
     except Exception as e:
         history = client_history_or_empty(client)
         base.metrics["agent_error"] = str(e)[:300]
+    # Capture the final device state directly from the environment screen API.
+    # The agent history no longer embeds base64 image data, so the post-screenshot
+    # must be grabbed live rather than extracted from history.
+    post_path = artifact_dir / "post.jpg"
+    if environment_url:
+        try:
+            take_environment_screenshot(
+                environment_url,
+                post_path,
+                benchmark_task_id=benchmark_task_id,
+            )
+        except Exception as e:
+            base.metrics["post_screenshot_error"] = str(e)[:300]
+            post_path = None
+    else:
+        base.metrics["post_screenshot_error"] = (
+            "environment_url is required for live screenshot capture"
+        )
+        post_path = None
     return evaluate_task_history(
         suite=suite,
         task=task,
@@ -262,6 +323,7 @@ def run_one_task(
         timed_out=timed_out,
         metrics=base.metrics,
         pre_screenshot=pre_path if pre_path.exists() else None,
+        post_screenshot=post_path if post_path and post_path.exists() else None,
         started_at=started,
         started_mono=started_mono,
     )
@@ -273,3 +335,7 @@ def client_history_or_empty(client: AgentClient) -> list[dict]:
     except Exception:
         pass
     return []
+
+
+def _format_csv(items: list[str]) -> str:
+    return ", ".join(items) if items else "none"

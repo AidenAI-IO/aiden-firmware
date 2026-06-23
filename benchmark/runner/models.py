@@ -34,6 +34,13 @@ class HardAssertionResults:
     expected_recalled_memory: bool | None = None
 
 @dc.dataclass
+class HardAssertionFailure:
+    id: str
+    label: str
+    requirement: str
+    actual: str
+
+@dc.dataclass
 class TaskResult:
     suite: str
     run_id: str
@@ -45,6 +52,7 @@ class TaskResult:
     rubric_pass_count: int = 0
     rubric_total: int = 0
     hard_assertions: HardAssertionResults | None = None
+    hard_assertion_failures: list[HardAssertionFailure] = dc.field(default_factory=list)
     metrics: dict[str, Any] = dc.field(default_factory=dict)
     artifact_dir: str = ""
     started_at: str = ""

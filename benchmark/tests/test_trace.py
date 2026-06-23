@@ -25,6 +25,17 @@ def test_extract_trace_marks_has_screenshot_when_data_present():
     assert trace.tool_calls[0].has_screenshot is True
     assert trace.tool_calls[1].has_screenshot is True
 
+
+def test_extract_trace_detects_case_insensitive_screenshot_observation_text():
+    history = [
+        {"type": "tool_call", "tool_name": "mouse_click", "tool_input": "{}"},
+        {"type": "tool_result", "tool_name": "mouse_click", "content": "Returned a Screenshot Observation after settling."},
+    ]
+
+    trace = extract_trace(history)
+
+    assert trace.tool_calls[0].has_screenshot is True
+
 def test_extract_step_screenshots_returns_base64_payloads():
     shots = extract_step_screenshots(HISTORY)
     assert len(shots) == 2

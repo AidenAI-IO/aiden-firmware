@@ -524,9 +524,6 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"audio_archive", "storage_path", CONFIG_FIELD_STRING},
         {"audio_archive", "max_files", CONFIG_FIELD_NUMBER},
         {"audio_archive", "max_size_mb", CONFIG_FIELD_NUMBER},
-        {"benchmark", "judge_model", CONFIG_FIELD_STRING},
-        {"benchmark", "api_key", CONFIG_FIELD_STRING},
-        {"benchmark", "benchmark_dir", CONFIG_FIELD_STRING},
         {"log", "llm_http_retention_days", CONFIG_FIELD_NUMBER},
         {"hid", "keyboard_device", CONFIG_FIELD_STRING},
         {"hid", "mouse_device", CONFIG_FIELD_STRING},
@@ -1236,7 +1233,7 @@ bool validate_agent_config_json(cJSON* root, std::string* error = NULL) {
 
     const char* sections[] = {
         "model", "model_text", "tts", "stt", "audio", "audio_archive",
-        "benchmark", "log", "hid", "search", "telemetry", "live_activity", "agent", NULL,
+        "log", "hid", "search", "telemetry", "live_activity", "agent", NULL,
     };
     for (int i = 0; sections[i]; ++i) {
         cJSON* section = cJSON_GetObjectItem(root, sections[i]);
@@ -1458,15 +1455,6 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddStringToObject(audio_archive, "storage_path", config.audio_archive.storage_path.c_str());
     cJSON_AddNumberToObject(audio_archive, "max_files", config.audio_archive.max_files);
     cJSON_AddNumberToObject(audio_archive, "max_size_mb", config.audio_archive.max_size_mb);
-
-    cJSON* benchmark = add_object(root, "benchmark");
-    cJSON_AddStringToObject(benchmark, "judge_model", config.benchmark.judge_model.c_str());
-    if (include_secrets) {
-        cJSON_AddStringToObject(benchmark, "api_key", config.benchmark.api_key.c_str());
-    } else {
-        cJSON_AddBoolToObject(benchmark, "has_api_key", !config.benchmark.api_key.empty());
-    }
-    cJSON_AddStringToObject(benchmark, "benchmark_dir", config.benchmark.benchmark_dir.c_str());
 
     cJSON* log_config = add_object(root, "log");
     cJSON_AddNumberToObject(log_config, "llm_http_retention_days", config.log.llm_http_retention_days);
@@ -1742,19 +1730,6 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_str(&config->audio_archive.storage_path, audio_archive, "storage_path");
         set_json_int(&config->audio_archive.max_files, audio_archive, "max_files");
         set_json_int(&config->audio_archive.max_size_mb, audio_archive, "max_size_mb");
-    }
-
-    cJSON* benchmark = cJSON_GetObjectItem(root, "benchmark");
-    if (json_is_object(benchmark)) {
-        set_json_str(&config->benchmark.judge_model, benchmark, "judge_model");
-        cJSON* key_item = cJSON_GetObjectItem(benchmark, "api_key");
-        if (json_is_string(key_item)) {
-            std::string api_key = trim_copy(key_item->valuestring);
-            if (!api_key.empty()) {
-                config->benchmark.api_key = api_key;
-            }
-        }
-        set_json_str(&config->benchmark.benchmark_dir, benchmark, "benchmark_dir");
     }
 
     cJSON* log_config = cJSON_GetObjectItem(root, "log");
@@ -4107,32 +4082,6 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
             if (!exists) all_passed = false;
         }
         cJSON_AddItemToArray(results, r);
-    } else if (section == "benchmark") {
-        cJSON* judge_item = cJSON_GetObjectItem(values, "judge_model");
-        std::string judge_model = json_is_string(judge_item) ? trim_copy(judge_item->valuestring) : "";
-        cJSON* judge_r = cJSON_CreateObject();
-        cJSON_AddStringToObject(judge_r, "check", "judge_model");
-        cJSON_AddBoolToObject(judge_r, "passed", 1);
-        cJSON_AddStringToObject(judge_r, "detail", judge_model.empty() ? "empty; defaults to bytedance-seed/seed-2.0-lite" : judge_model.c_str());
-        cJSON_AddItemToArray(results, judge_r);
-
-        cJSON* dir_item = cJSON_GetObjectItem(values, "benchmark_dir");
-        std::string benchmark_dir = json_is_string(dir_item) ? trim_copy(dir_item->valuestring) : "";
-        cJSON* dir_r = cJSON_CreateObject();
-        cJSON_AddStringToObject(dir_r, "check", "benchmark_dir");
-        if (benchmark_dir.empty()) {
-            cJSON_AddBoolToObject(dir_r, "passed", 1);
-            cJSON_AddStringToObject(dir_r, "detail", "empty; agent will auto-detect benchmark root");
-        } else {
-            std::string cmd = "test -d " + shell_quote(benchmark_dir) + " && echo OK || echo MISSING";
-            CommandResult cr = run_shell_command(cmd);
-            bool exists = cr.output.find("OK") != std::string::npos;
-            cJSON_AddBoolToObject(dir_r, "passed", exists ? 1 : 0);
-            std::string detail = benchmark_dir + (exists ? " exists" : " not found");
-            cJSON_AddStringToObject(dir_r, "detail", detail.c_str());
-            if (!exists) all_passed = false;
-        }
-        cJSON_AddItemToArray(results, dir_r);
     } else if (section == "log") {
         cJSON* retention_item = cJSON_GetObjectItem(values, "llm_http_retention_days");
         cJSON* r = cJSON_CreateObject();
