@@ -12,7 +12,7 @@
   - 不使用 MobileGym 测试框架
   - 直接创建 `MobileEnv` 而不通过 `factory`
   - 启动 Bridge HTTP server 供 Aiden daemon 调用
-  
+
 - ✅ `scripts/configure_daemon.py` - 配置 Aiden daemon 连接 bridge
   - 通过 `/api/mobilegym/bridge/configure` 端点配置
   - 支持从文件读取 token
@@ -23,13 +23,13 @@
   - 架构图展示纯模拟器模式
   - 本地和 Docker 两种使用方式
   - 与旧版本对比说明
-  
+
 - ✅ `REFACTOR_PLAN.md` - 详细的重构计划
   - 问题分析
   - 目标架构
   - 实现步骤
   - 组件保留/移除清单
-  
+
 - ✅ `MIGRATION.md` - 迁移指南
   - 文件变更清单
   - 逐步迁移说明
@@ -43,11 +43,11 @@
   - `mobilegym-simulator`: 模拟器 + Bridge server
   - `aiden-daemon`: Aiden Go daemon
   - `runner`: 使用 `benchmark/runner` 运行测试
-  
+
 - ✅ `docker/Dockerfile.simulator` - 模拟器镜像
   - 只包含模拟器和 bridge 代码
   - 不包含测试框架组件
-  
+
 - ✅ `docker/Dockerfile.runner` - Runner 镜像
   - 包含 `benchmark/runner` 代码
   - 执行统一的测试流程
@@ -236,6 +236,6 @@ open runs/webui/<job-id>/raw/<run-id>/report.html
 
 ---
 
-**重构完成时间**: 2026-06-17  
-**主要变更**: 从测试框架模式重构为纯模拟器模式  
+**重构完成时间**: 2026-06-17
+**主要变更**: 从测试框架模式重构为纯模拟器模式
 **影响范围**: `benchmark/mobilegym/` 目录

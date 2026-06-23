@@ -34,7 +34,6 @@ playwright install chromium
 python benchmark/mobilegym/scripts/start_simulator.py \
   --env-url http://localhost:4173 \
   --bridge-port 8888 \
-  --token-dir /tmp/mobilegym-tokens \
   --bridge-url-file /tmp/mobilegym-bridge-url
 
 # 5. 健康检查
@@ -48,40 +47,22 @@ uv run python -m runner run \
   --auto-agent-setup
 ```
 
-### 方式 3：Docker 运行（推荐）
+### 方式 3：WebUI / CLI services（推荐）
 
 ```bash
-cd benchmark/mobilegym/docker
-
-# 1. 使用新的 compose 文件
-cp docker-compose.new.yml docker-compose.yml
-cp init.new.sh init.sh
-
-# 2. 初始化配置
-./init.sh
-
-# 3. 编辑 agent.toml，填入真实的 API key
-vim ../config/agent.toml
-
-# 4. 构建镜像
-docker compose build
-
-# 5. 启动所有服务
-docker compose up -d
-
-# 6. 检查服务状态
-docker compose ps
-
-# 7. 查看日志
-docker compose logs mobilegym-simulator
-docker compose logs aiden-daemon
-
-# 8. 运行测试
-cd ../..
+# WebUI 会按需构建 MobileGym simulator image 和 agent daemon image。
+cd benchmark
 uv run python -m runner webui
 
-# 9. 查看结果
+# 查看结果
 ls runs/
+```
+
+CLI 也可以直接启动 MobileGym environment：
+
+```bash
+cd benchmark
+uv run python -m runner start-mobilegym-env --envs 5
 ```
 
 ## 📋 提交的变更
@@ -109,7 +90,7 @@ Key changes:
 ### 立即验证
 
 1. **检查脚本运行**：尝试运行 `start_simulator.py` 看是否能正常启动
-2. **测试 Docker 构建**：`docker compose -f docker-compose.new.yml build`
+2. **测试 WebUI/CLI 入口**：`cd benchmark && uv run python -m runner start-mobilegym-env --help`
 3. **验证 suite 加载**：确认 `python -m runner` 能正确加载 `mobilegym_basic.json`
 
 ### 迁移现有测试

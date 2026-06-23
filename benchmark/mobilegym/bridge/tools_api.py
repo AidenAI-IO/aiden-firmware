@@ -409,7 +409,15 @@ class ToolsAPIHandler:
         future = asyncio.run_coroutine_threadsafe(state.run_env(get_screenshot), state.owner_loop)
         return future.result(timeout=self.request_timeout_sec)
 
-    def _call_touch_gesture(self, state: BridgeEpisodeState, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
+    def _call_touch_gesture(
+        self,
+        state: BridgeEpisodeState,
+        tool_input: dict[str, Any],
+        episode_id: str,
+        *,
+        log_tool_name: str = "touch_gesture",
+        log_tool_input: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Execute touch_gesture tool."""
         gesture_type = tool_input.get("type", "").strip().lower()
         if not gesture_type:
@@ -469,7 +477,13 @@ class ToolsAPIHandler:
         except (TypeError, ValueError) as exc:
             return {"output": f"error: {exc}", "is_error": True}
 
-        return self._execute_action(state, action, episode_id)
+        return self._execute_action(
+            state,
+            action,
+            episode_id,
+            tool_name=log_tool_name,
+            tool_input=tool_input if log_tool_input is None else log_tool_input,
+        )
 
     def _call_mouse_click(self, state: BridgeEpisodeState, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
         """Execute mouse_click as a MobileGym tap."""
@@ -481,7 +495,7 @@ class ToolsAPIHandler:
         except (TypeError, ValueError) as exc:
             return {"output": f"error: {exc}", "is_error": True}
         action = build_action("tap", point)
-        return self._execute_action(state, action, episode_id)
+        return self._execute_action(state, action, episode_id, tool_name="mouse_click", tool_input=tool_input)
 
     def _call_mouse_move(self, state: BridgeEpisodeState, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
         """Validate mouse_move input and return a screenshot.
@@ -505,7 +519,13 @@ class ToolsAPIHandler:
             return self._call_noop_with_screenshot(state, episode_id)
         strength = "medium" if abs(delta) >= 3 else "small"
         gesture_type = "swipe_up" if delta < 0 else "swipe_down"
-        return self._call_touch_gesture(state, {"type": gesture_type, "strength": strength}, episode_id)
+        return self._call_touch_gesture(
+            state,
+            {"type": gesture_type, "strength": strength},
+            episode_id,
+            log_tool_name="mouse_scroll",
+            log_tool_input=tool_input,
+        )
 
     def _call_quick_action(self, state: BridgeEpisodeState, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
         """Execute a small MobileGym-compatible quick_action subset."""
@@ -531,17 +551,35 @@ class ToolsAPIHandler:
             return {"output": "error: mobilegym quick_action does not define alternative bindings", "is_error": True}
 
         if action == "back":
-            return self._call_touch_gesture(state, {"type": "back"}, episode_id)
+            return self._call_touch_gesture(
+                state,
+                {"type": "back"},
+                episode_id,
+                log_tool_name="quick_action",
+                log_tool_input=tool_input,
+            )
         if action == "home":
-            return self._call_touch_gesture(state, {"type": "home"}, episode_id)
+            return self._call_touch_gesture(
+                state,
+                {"type": "home"},
+                episode_id,
+                log_tool_name="quick_action",
+                log_tool_input=tool_input,
+            )
         if action == "notification_center":
-            return self._call_touch_gesture(state, {"type": "swipe_down", "strength": "medium", "anchor": 500}, episode_id)
+            return self._call_touch_gesture(
+                state,
+                {"type": "swipe_down", "strength": "medium", "anchor": 500},
+                episode_id,
+                log_tool_name="quick_action",
+                log_tool_input=tool_input,
+            )
         if action == "quick_settings":
             action = build_action(
                 "swipe",
                 {"start_x": 850, "start_y": 0, "end_x": 850, "end_y": 700, "duration_ms": 500},
             )
-            return self._execute_action(state, action, episode_id)
+            return self._execute_action(state, action, episode_id, tool_name="quick_action", tool_input=tool_input)
 
         return {"output": f"error: unsupported quick_action: {tool_input.get('action')!r}", "is_error": True}
 
@@ -559,7 +597,7 @@ class ToolsAPIHandler:
                 "is_error": True,
             }
         action = build_action("type_text", {"text": text})
-        return self._execute_action(state, action, episode_id)
+        return self._execute_action(state, action, episode_id, tool_name="keyboard_text", tool_input=tool_input)
 
     def _call_keyboard_tap(self, state: BridgeEpisodeState, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
         """Execute keyboard_tap tool."""
@@ -598,23 +636,40 @@ class ToolsAPIHandler:
         except (TypeError, ValueError) as exc:
             return {"output": f"error: {exc}", "is_error": True}
 
-        return self._execute_action(state, action, episode_id)
+        return self._execute_action(state, action, episode_id, tool_name="keyboard_tap", tool_input=tool_input)
 
-    def _execute_action(self, state: BridgeEpisodeState, action: Any, episode_id: str) -> dict[str, Any]:
+    def _execute_action(
+        self,
+        state: BridgeEpisodeState,
+        action: Any,
+        episode_id: str,
+        *,
+        tool_name: str,
+        tool_input: dict[str, Any],
+    ) -> dict[str, Any]:
         """Execute a MobileGym action and return result with screenshot."""
         action_payload = action_to_dict(action)
 
         async def step_env(env: Any) -> dict[str, Any]:
             state.require_active(episode_id)
-            started = time.time()
+            started = time.monotonic()
             step_result = await _maybe_await(env.step(action))
-            duration_ms = int((time.time() - started) * 1000)
+            duration_ms = int((time.monotonic() - started) * 1000)
 
             observation = _observation_value(step_result, "observation")
             if observation is None:
                 observation = await _maybe_await(env.get_observation())
 
             screenshot = _encode_observation_screenshot(observation)
+            state.log_action(
+                tool_name=tool_name,
+                tool_input=tool_input,
+                mobilegym_action=action_payload,
+                duration_ms=duration_ms,
+                error=None,
+                episode_id=episode_id,
+                screenshot=screenshot,
+            )
 
             # Format output as post-action screenshot result
             output_data = {

@@ -53,30 +53,24 @@ uv run python -m runner run \
 
 **注意**：现在使用统一的 environment bridge 模式，不再需要 `device.backend=mobilegym` 配置。
 
-### 方式 2：Docker（推荐）
+### 方式 2：WebUI / CLI services（推荐）
 
 ```bash
-cd benchmark/mobilegym/docker
-
-# 1. 初始化配置
-./init.sh
-
-# 2. 编辑 agent.toml 填入 API key
-vim ../config/agent.toml
-
-# 3. 构建镜像
-docker compose build
-
-# 4. 启动所有服务
-docker compose up -d
-
-# 5. 或者从 benchmark WebUI 运行并发 job
-cd ../..
+# WebUI 会按需构建 MobileGym simulator image 和 agent daemon image。
+cd benchmark
 uv run python -m runner webui
+```
 
-# 6. 查看结果
-ls runs/
-open runs/webui/<job-id>/raw/<run-id>/report.html
+也可以从 CLI 启动环境和 daemon：
+
+```bash
+cd benchmark
+uv run python -m runner start-mobilegym-env --envs 5
+uv run python -m runner start-agent-daemon --environment-bridge-endpoint http://127.0.0.1:<bridge-port>
+uv run python -m runner run \
+  --suite suites/mobilegym_basic.json \
+  --agent-url http://127.0.0.1:<agent-port> \
+  --environment-url http://127.0.0.1:<bridge-port>
 ```
 
 ## 📁 目录结构
@@ -93,11 +87,9 @@ benchmark/mobilegym/
 ├── config/                         # Aiden 配置
 │   ├── agent.toml.template         # 配置模板
 │   └── skills/device-operator/     # MobileGym skill
-├── docker/                         # Docker 编排
-│   ├── Dockerfile.simulator        # 模拟器镜像
-│   ├── Dockerfile.runner           # Runner 镜像
-│   ├── docker-compose.yml          # 服务编排
-│   └── init.sh                     # 初始化脚本
+├── docker/                         # WebUI/CLI 使用的 MobileGym base image
+│   ├── Dockerfile                  # mobilegym-base target
+│   └── README.md                   # 当前 Docker 入口说明
 ├── scripts/                        # 启动脚本 ⭐
 │   ├── start_simulator.py          # 启动纯模拟器
 │   └── configure_daemon.py         # 配置 daemon bridge

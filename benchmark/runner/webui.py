@@ -433,6 +433,8 @@ class BenchmarkWebApp:
         environment_endpoint = str(payload.get("environment_endpoint") or "").strip()
         environment_web_url = str(payload.get("environment_web_url") or environment_payload.get("web_url") or "").strip()
         parallel_tasks = parse_positive_int(payload.get("parallel_tasks"), default=1, field="parallel_tasks")
+        if environment_type == "device" and not environment_endpoint:
+            environment_endpoint = endpoint.rstrip("/")
         if environment_type == "mobilegym":
             with self._lock:
                 mobilegym_env = self._mobilegym_environments.get(environment_id)

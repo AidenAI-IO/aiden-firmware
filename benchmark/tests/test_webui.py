@@ -535,6 +535,44 @@ def test_start_job_derives_mobilegym_environment_endpoint(tmp_path: Path, monkey
     assert queried == ["http://127.0.0.1:19090"]
 
 
+def test_start_job_uses_device_endpoint_as_environment_url(tmp_path: Path, monkeypatch):
+    suites = tmp_path / "suites"
+    suites.mkdir()
+    (suites / "suite.json").write_text(
+        json.dumps({"name": "suite", "tasks": [{"id": "t1", "category": "diagnostic"}]}),
+        encoding="utf-8",
+    )
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            suites_dir=suites,
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+        )
+    )
+
+    class FakeThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(webui.threading, "Thread", FakeThread)
+    monkeypatch.setattr(webui, "reserve_free_port", lambda: 18080)
+
+    job = app.start_job(
+        {
+            "endpoint": "http://127.0.0.1:19090/",
+            "environment": {"id": "dev-1", "name": "Desk bridge", "type": "device"},
+            "suites": ["suite.json"],
+            "no_judge": True,
+        }
+    )
+
+    assert job["environment_endpoint"] == "http://127.0.0.1:19090"
+    assert job["environment_type"] == "device"
+
+
 def test_run_suite_passes_judge_model_and_api_key_env(tmp_path: Path, monkeypatch):
     suites = tmp_path / "suites"
     suites.mkdir()
