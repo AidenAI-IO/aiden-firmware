@@ -1193,6 +1193,7 @@ def test_daemon_compose_command_and_env_forward_tools_to_environment(tmp_path: P
     assert env["AIDEN_CONFIG_DIR"] == str(config.resolve())
     assert env["TOOL_PROXY_ENDPOINT"] == "http://host.docker.internal:18080"
     assert env["AIDEN_BENCHMARK_TASK_ID"] == "suite.json:t1"
+    assert env["AIDEN_TOOL_PROXY_MODE"] == "1"
     assert "host.docker.internal" in env["NO_PROXY"]
     compose_text = webui.AGENT_DAEMON_COMPOSE_FILE.read_text(encoding="utf-8")
     entrypoint_text = (webui.BENCHMARK_DOCKER_DIR / "agent-daemon-entrypoint.sh").read_text(
@@ -1202,7 +1203,7 @@ def test_daemon_compose_command_and_env_forward_tools_to_environment(tmp_path: P
         "screenshot,touch_gesture,keyboard_text,keyboard_tap,"
         "mouse_click,mouse_move,mouse_scroll,quick_action"
     )
-    assert 'AIDEN_TOOL_PROXY_MODE: "1"' in compose_text
+    assert "AIDEN_TOOL_PROXY_MODE: ${AIDEN_TOOL_PROXY_MODE:-1}" in compose_text
     assert f'AIDEN_FORWARD_TOOLS: "{expected_forward_tools}"' in compose_text
     assert "AIDEN_BENCHMARK_TASK_ID" in compose_text
     assert "--tool-proxy-mode" in entrypoint_text

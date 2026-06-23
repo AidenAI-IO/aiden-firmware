@@ -96,6 +96,8 @@ def cli(argv: list[str] | None = None) -> int:
     p_webui.add_argument("--mobilegym-image", default="aiden-mobilegym-simulator:py311")
     p_webui.add_argument("--no-build-daemon-image", action="store_true")
     p_webui.add_argument("--no-build-mobilegym-image", action="store_true")
+    from runner.services import add_service_parsers
+    add_service_parsers(sub)
     args = parser.parse_args(argv)
     if args.cmd == "run":
         return _cmd_run(args)
@@ -126,6 +128,12 @@ def cli(argv: list[str] | None = None) -> int:
         if args.no_build_mobilegym_image:
             forwarded.append("--no-build-mobilegym-image")
         return webui_cli(forwarded)
+    if args.cmd == "start-agent-daemon":
+        from runner.services import cmd_start_agent_daemon
+        return cmd_start_agent_daemon(args)
+    if args.cmd == "start-mobilegym-env":
+        from runner.services import cmd_start_mobilegym_env
+        return cmd_start_mobilegym_env(args)
     return 2
 
 

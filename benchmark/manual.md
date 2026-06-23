@@ -459,6 +459,83 @@ uv run python -m runner webui \
 
 这个命令和第 2 节 WebUI 使用的是同一个入口。
 
+### 3.7 start-mobilegym-env：启动 MobileGym environment
+
+如果不使用 WebUI，也可以从 CLI 启动一个 detached MobileGym simulator + bridge container：
+
+```bash
+uv run python -m runner start-mobilegym-env
+```
+
+命令会打印：
+
+- `environment_url`：runner 使用的 `--environment-url`。
+- `docker_environment_url`：agent daemon 容器内访问 bridge 时使用的 endpoint。
+- `web_url`：MobileGym simulator 页面。
+- `screen_url`：带 `benchmark-task-id` 的人工查看页面。
+- `stop_command`：停止该 environment 的命令。
+
+常用参数：
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `--envs` / `--parallel-envs` | `1` | bridge 后面的 MobileGym env 数量 |
+| `--web-port` | auto | MobileGym web 页面端口 |
+| `--bridge-port` | auto | bridge API 端口 |
+| `--mobilegym-image` | `aiden-mobilegym-simulator:py311` | MobileGym container image |
+| `--no-build-mobilegym-image` | false | 只使用本地已有镜像 |
+| `--benchmark-task-id` | `cli-task` | 打印 screen/run 示例时使用的 route id |
+| `--json` | false | 输出机器可读 JSON |
+
+### 3.8 start-agent-daemon：启动 agent daemon
+
+启动一个 detached benchmark agent daemon container：
+
+```bash
+uv run python -m runner start-agent-daemon \
+  --tool-proxy-endpoint http://127.0.0.1:19090 \
+  --benchmark-task-id cli-task
+```
+
+命令会打印：
+
+- `agent_url`：runner 使用的 `--agent-url`。
+- `tool_proxy_endpoint`：宿主机视角的 environment endpoint。
+- `docker_tool_proxy_endpoint`：容器内视角的 environment endpoint。
+- `benchmark_task_id`：daemon tool proxy 请求会携带的 route id。
+- `stop_command`：停止该 daemon 的命令。
+
+常用参数：
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `--port` | auto | agent daemon API 端口 |
+| `--tool-proxy-endpoint` | 空 | 设备或 MobileGym bridge endpoint；为空时不启用 tool proxy |
+| `--benchmark-task-id` | `cli-task` | tool proxy 请求使用的 route id |
+| `--agent-config` | 空 | 指定 agent.toml |
+| `--base-config-dir` | `benchmark/config` | agent 配置模板目录 |
+| `--daemon-image` | `aiden-agent-daemon:local` | agent daemon image |
+| `--no-build-daemon-image` | false | 只使用本地已有镜像 |
+| `--json` | false | 输出机器可读 JSON |
+
+推荐的 CLI MobileGym 调试流程：
+
+```bash
+uv run python -m runner start-mobilegym-env --bridge-port 19090 --benchmark-task-id cli-task
+uv run python -m runner start-agent-daemon \
+  --port 18081 \
+  --tool-proxy-endpoint http://127.0.0.1:19090 \
+  --benchmark-task-id cli-task
+
+uv run python -m runner run \
+  --suite suites/mobilegym_basic.json \
+  --agent-url http://127.0.0.1:18081 \
+  --environment-url http://127.0.0.1:19090 \
+  --benchmark-task-id cli-task
+```
+
+注意：如果 MobileGym bridge 后面有多个 env，`reset`、`screen/snapshot` 和 agent tool proxy 都必须使用同一个 `benchmark-task-id`。CLI 手动启动一个长期 agent daemon 时，建议用固定 route id，例如 `cli-task`；需要并发跑多个 task 时，优先使用 WebUI，让每个 task worker 拥有独立 daemon 和独立 route id。
+
 ## 4. 输出与报告
 
 普通 CLI run 默认输出：

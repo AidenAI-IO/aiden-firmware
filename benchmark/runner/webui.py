@@ -1718,9 +1718,12 @@ def daemon_compose_env(
     config_dir: Path | None = None,
     tool_proxy_endpoint: str = "",
     benchmark_task_id: str = "",
+    tool_proxy_mode: bool | None = None,
 ) -> dict[str, str]:
     env = dict(os.environ)
     env["AIDEN_DAEMON_IMAGE"] = image
+    proxy_enabled = bool(tool_proxy_endpoint) if tool_proxy_mode is None else bool(tool_proxy_mode)
+    env["AIDEN_TOOL_PROXY_MODE"] = "1" if proxy_enabled else "0"
     if host_port is not None:
         env["AIDEN_DAEMON_HOST_PORT"] = str(host_port)
     if config_dir is not None:
@@ -1744,6 +1747,7 @@ def start_daemon_compose(
     tool_proxy_endpoint: str,
     log_path: Path,
     benchmark_task_id: str = "",
+    tool_proxy_mode: bool | None = None,
     stop_requested: Callable[[], bool] | None = None,
 ) -> str:
     project = daemon_compose_project(job)
@@ -1753,6 +1757,7 @@ def start_daemon_compose(
         config_dir=config_dir,
         tool_proxy_endpoint=tool_proxy_endpoint,
         benchmark_task_id=benchmark_task_id,
+        tool_proxy_mode=tool_proxy_mode,
     )
     run_logged_command(
         daemon_compose_command(
