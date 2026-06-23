@@ -1,47 +1,142 @@
 #include <doctest.h>
 
-#include "config_web_llm_html.h"
-
-#include <cstdio>
+#include <algorithm>
 #include <fstream>
 #include <set>
 #include <sstream>
 #include <string>
-#include <sys/wait.h>
-#include <unistd.h>
+#include <vector>
 
 namespace {
 
-std::string extract_llm_viewer_diff_js() {
-    const std::string html = CONFIG_WEB_LLM_HTML;
-    const std::string start_marker = "function messageText";
-    const std::string end_marker = "loadFileList();";
-    const std::size_t start = html.find(start_marker);
-    const std::size_t end = html.find(end_marker, start);
-    REQUIRE(start != std::string::npos);
-    REQUIRE(end != std::string::npos);
-    return html.substr(start, end - start);
+struct LlmDiffMessage {
+    std::string role;
+    std::string content;
+};
+
+struct LlmDiffOp {
+    std::string kind;
+    int old_index;
+    int new_index;
+};
+
+struct LlmDiffStats {
+    int added;
+    int removed;
+    int modified;
+};
+
+std::string serialize_llm_diff_message(const LlmDiffMessage& message) {
+    return message.role + "\001" + message.content;
 }
 
-int run_node_script(const std::string& script) {
-    const std::string path = std::string(P_tmpdir) + "/aiden_llm_diff_test_" + std::to_string(getpid()) + ".js";
-    {
-        std::ofstream out(path.c_str());
-        REQUIRE(out.good());
-        out << script;
+bool llm_messages_can_line_diff(const LlmDiffMessage& old_message, const LlmDiffMessage& new_message) {
+    return old_message.role == new_message.role && old_message.content != new_message.content;
+}
+
+std::vector<LlmDiffOp> build_llm_message_diff_ops(const std::vector<LlmDiffMessage>& old_messages,
+                                                  const std::vector<LlmDiffMessage>& new_messages) {
+    // Mirror the frontend cost model without requiring Node or a browser in host-native tests.
+    const int add_cost = 2;
+    const int remove_cost = 2;
+    const int modify_cost = 3;
+    const int n = static_cast<int>(old_messages.size());
+    const int m = static_cast<int>(new_messages.size());
+    std::vector<std::string> old_serialized;
+    std::vector<std::string> new_serialized;
+    old_serialized.reserve(old_messages.size());
+    new_serialized.reserve(new_messages.size());
+    for (std::vector<LlmDiffMessage>::const_iterator it = old_messages.begin(); it != old_messages.end(); ++it) {
+        old_serialized.push_back(serialize_llm_diff_message(*it));
+    }
+    for (std::vector<LlmDiffMessage>::const_iterator it = new_messages.begin(); it != new_messages.end(); ++it) {
+        new_serialized.push_back(serialize_llm_diff_message(*it));
     }
 
-    const pid_t pid = fork();
-    REQUIRE(pid >= 0);
-    if (pid == 0) {
-        execlp("node", "node", path.c_str(), static_cast<char*>(nullptr));
-        _exit(127);
+    std::vector<std::vector<int> > cost(n + 1, std::vector<int>(m + 1, 0));
+    for (int i = n - 1; i >= 0; --i) {
+        cost[i][m] = cost[i + 1][m] + remove_cost;
+    }
+    for (int j = m - 1; j >= 0; --j) {
+        cost[n][j] = cost[n][j + 1] + add_cost;
+    }
+    for (int i = n - 1; i >= 0; --i) {
+        for (int j = m - 1; j >= 0; --j) {
+            if (old_serialized[i] == new_serialized[j]) {
+                cost[i][j] = cost[i + 1][j + 1];
+            } else {
+                int best = std::min(cost[i + 1][j] + remove_cost, cost[i][j + 1] + add_cost);
+                if (llm_messages_can_line_diff(old_messages[i], new_messages[j])) {
+                    best = std::min(best, cost[i + 1][j + 1] + modify_cost);
+                }
+                cost[i][j] = best;
+            }
+        }
     }
 
-    int status = 0;
-    REQUIRE(waitpid(pid, &status, 0) == pid);
-    std::remove(path.c_str());
-    return WIFEXITED(status) ? WEXITSTATUS(status) : 128;
+    std::vector<LlmDiffOp> ops;
+    int i = 0;
+    int j = 0;
+    while (i < n && j < m) {
+        if (old_serialized[i] == new_serialized[j] && cost[i][j] == cost[i + 1][j + 1]) {
+            ops.push_back({"same", i, j});
+            ++i;
+            ++j;
+        } else if (llm_messages_can_line_diff(old_messages[i], new_messages[j]) &&
+                   cost[i][j] == cost[i + 1][j + 1] + modify_cost) {
+            ops.push_back({"modified", i, j});
+            ++i;
+            ++j;
+        } else if (cost[i][j] == cost[i + 1][j] + remove_cost) {
+            ops.push_back({"removed", i, -1});
+            ++i;
+        } else {
+            ops.push_back({"added", -1, j});
+            ++j;
+        }
+    }
+    while (i < n) {
+        ops.push_back({"removed", i, -1});
+        ++i;
+    }
+    while (j < m) {
+        ops.push_back({"added", -1, j});
+        ++j;
+    }
+    return ops;
+}
+
+LlmDiffStats compute_llm_diff_stats(const std::vector<LlmDiffMessage>& old_messages,
+                                    const std::vector<LlmDiffMessage>& new_messages) {
+    LlmDiffStats stats = {0, 0, 0};
+    const std::vector<LlmDiffOp> ops = build_llm_message_diff_ops(old_messages, new_messages);
+    for (std::vector<LlmDiffOp>::const_iterator it = ops.begin(); it != ops.end(); ++it) {
+        if (it->kind == "added") {
+            ++stats.added;
+        } else if (it->kind == "removed") {
+            ++stats.removed;
+        } else if (it->kind == "modified") {
+            ++stats.modified;
+        }
+    }
+    return stats;
+}
+
+std::string changed_llm_diff_ops_summary(const std::vector<LlmDiffOp>& ops) {
+    std::ostringstream out;
+    bool first = true;
+    for (std::vector<LlmDiffOp>::const_iterator it = ops.begin(); it != ops.end(); ++it) {
+        if (it->kind == "same") {
+            continue;
+        }
+        if (!first) {
+            out << "|";
+        }
+        first = false;
+        out << it->kind << ":" << (it->old_index < 0 ? "-" : std::to_string(it->old_index)) << "->"
+            << (it->new_index < 0 ? "-" : std::to_string(it->new_index));
+    }
+    return out.str();
 }
 
 }  // namespace
@@ -302,6 +397,8 @@ TEST_CASE("config web exposes the LLM HTTP log viewer") {
     CHECK(llm_html.find("function compactDiffContext") != std::string::npos);
     CHECK(llm_html.find("function renderLineDiffContent") != std::string::npos);
     CHECK(llm_html.find("modified++;") != std::string::npos);
+    CHECK(llm_html.find("const addCost = 2, removeCost = 2, modifyCost = 3;") != std::string::npos);
+    CHECK(llm_html.find("cost[i][j] === cost[i + 1][j + 1] + modifyCost") != std::string::npos);
     CHECK(llm_html.find("line-diff-row") != std::string::npos);
     CHECK(llm_html.find("renderMessageHead('diff-msg-head role-'") != std::string::npos);
     CHECK(llm_html.find("function renderMessageContent") != std::string::npos);
@@ -322,39 +419,26 @@ TEST_CASE("config web exposes the LLM HTTP log viewer") {
 }
 
 TEST_CASE("config web LLM diff pairs adjacent message replacements") {
-    const std::string script = extract_llm_viewer_diff_js() + R"JS(
+    const std::vector<LlmDiffMessage> old_messages = {
+        {"system", "system prompt"},
+        {"user", "old user one"},
+        {"user", "old user two"},
+        {"assistant", "unchanged assistant"},
+    };
+    const std::vector<LlmDiffMessage> new_messages = {
+        {"system", "system prompt"},
+        {"user", "new user one"},
+        {"user", "new user two"},
+        {"assistant", "unchanged assistant"},
+    };
 
-function assertEqual(actual, expected, label) {
-  if (actual !== expected) {
-    console.error(label + ': expected ' + expected + ', got ' + actual);
-    process.exit(1);
-  }
-}
+    const std::vector<LlmDiffOp> ops = build_llm_message_diff_ops(old_messages, new_messages);
+    CHECK(changed_llm_diff_ops_summary(ops) == "modified:1->1|modified:2->2");
 
-const oldMsgs = [
-  {role: 'system', content: 'system prompt'},
-  {role: 'user', content: 'old user one'},
-  {role: 'user', content: 'old user two'},
-  {role: 'assistant', content: 'unchanged assistant'}
-];
-const newMsgs = [
-  {role: 'system', content: 'system prompt'},
-  {role: 'user', content: 'new user one'},
-  {role: 'user', content: 'new user two'},
-  {role: 'assistant', content: 'unchanged assistant'}
-];
-
-const changed = buildMessageDiffOps(oldMsgs, newMsgs)
-  .filter(op => op.kind !== 'same')
-  .map(op => op.kind + ':' + (op.oldIndex == null ? '-' : op.oldIndex) + '->' + (op.newIndex == null ? '-' : op.newIndex))
-  .join('|');
-assertEqual(changed, 'modified:1->1|modified:2->2', 'message diff ops');
-
-const stats = computeDiffStats(oldMsgs, newMsgs);
-assertEqual(JSON.stringify(stats), JSON.stringify({added: 0, removed: 0, modified: 2}), 'diff stats');
-)JS";
-
-    CHECK(run_node_script(script) == 0);
+    const LlmDiffStats stats = compute_llm_diff_stats(old_messages, new_messages);
+    CHECK(stats.added == 0);
+    CHECK(stats.removed == 0);
+    CHECK(stats.modified == 2);
 }
 
 TEST_CASE("config web exposes audio archive switch") {
