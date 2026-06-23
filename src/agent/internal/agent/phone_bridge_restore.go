@@ -13,12 +13,10 @@ const (
 	phoneBridgeRestorePollInterval = 100 * time.Millisecond
 	returnEntryDynamicIslandX      = 500.0
 	returnEntryDynamicIslandY      = 30.0
-	returnEntryLiveActivityX       = 500.0
-	returnEntryLiveActivityY       = 120.0
 )
 
-// PhoneBridgeRestorer turns a confirmed Live Activity/Dynamic Island return
-// entry into a foreground bridge before app-side tools send their command.
+// PhoneBridgeRestorer turns a confirmed Dynamic Island return entry into a
+// foreground bridge before app-side tools send their command.
 type PhoneBridgeRestorer struct {
 	mu             sync.Mutex
 	bridge         *PhoneBridge
@@ -68,7 +66,7 @@ func (r *PhoneBridgeRestorer) EnsureForeground(ctx context.Context) (bool, error
 		bridge.logger.Info("phone-bridge: restoring foreground via %s before app command", firstNonEmptyPhoneField(status.ReturnEntry, "return_entry"))
 	}
 	if err := r.tap(ctx, status); err != nil {
-		return false, fmt.Errorf("tap Live Activity return entry: %w", err)
+		return false, fmt.Errorf("tap Dynamic Island return entry: %w", err)
 	}
 	if _, err := r.waitForeground(ctx); err != nil {
 		return true, err
@@ -88,7 +86,7 @@ func (r *PhoneBridgeRestorer) tap(ctx context.Context, status PhoneBridgeStatus)
 		return ctx.Err()
 	default:
 	}
-	x, y := phoneBridgeReturnEntryTapPoint(status.ReturnEntry)
+	x, y := phoneBridgeDynamicIslandTapPoint()
 	absX, absY := normalizedToAbsolutePoint(x, y)
 	return tapPointer(r.pc, absX, absY, mouseButtonByte("left"))
 }
@@ -158,7 +156,7 @@ func phoneBridgeCanRestoreFromReturnEntry(status PhoneBridgeStatus) bool {
 		return false
 	}
 	entry := strings.ToLower(strings.TrimSpace(status.ReturnEntry))
-	return entry != "none"
+	return entry == "dynamic_island"
 }
 
 func phoneBridgeRestoreUnavailableError(status PhoneBridgeStatus) error {
@@ -167,16 +165,11 @@ func phoneBridgeRestoreUnavailableError(status PhoneBridgeStatus) error {
 		if state == "" {
 			return fmt.Errorf("phone bridge is connected but not ready for foreground command")
 		}
-		return fmt.Errorf("phone bridge app is %s and no Live Activity/Dynamic Island return entry is available", state)
+		return fmt.Errorf("phone bridge app is %s and no supported Dynamic Island return entry is available", state)
 	}
-	return fmt.Errorf("phone bridge not connected and no Live Activity/Dynamic Island return entry is available")
+	return fmt.Errorf("phone bridge not connected and no supported Dynamic Island return entry is available")
 }
 
-func phoneBridgeReturnEntryTapPoint(entry string) (float64, float64) {
-	switch strings.ToLower(strings.TrimSpace(entry)) {
-	case "live_activity", "lock_screen", "standby":
-		return returnEntryLiveActivityX, returnEntryLiveActivityY
-	default:
-		return returnEntryDynamicIslandX, returnEntryDynamicIslandY
-	}
+func phoneBridgeDynamicIslandTapPoint() (float64, float64) {
+	return returnEntryDynamicIslandX, returnEntryDynamicIslandY
 }

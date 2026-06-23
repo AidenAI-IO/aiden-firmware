@@ -11,7 +11,7 @@ This document defines the WebSocket command protocol between the hardware board 
 - **Direction**: App acts as WebSocket client actively connecting to board (WebSocket server)
 - **Network**: Via USB ECM established `192.168.42.0/24` subnet, board fixed IP `192.168.42.1`
 
-WebSocket is the foreground fast path. The board also exposes `/api/phone-bridge/commands` and `/api/phone-bridge/results` HTTP queue endpoints, but React Native app execution, JS timers, and WebSocket in the iOS background must not be treated as a reliable tool execution path. On iOS, Phone Bridge tools are foreground capabilities: if the app is backgrounded and `return_entry_available=true`, board-side tools restore Aiden through the Live Activity / Dynamic Island entry, wait for WebSocket reconnection and active app state, then execute the command.
+WebSocket is the foreground fast path. The board also exposes `/api/phone-bridge/commands` and `/api/phone-bridge/results` HTTP queue endpoints, but React Native app execution, JS timers, and WebSocket in the iOS background must not be treated as a reliable tool execution path. On iOS, Phone Bridge tools are foreground capabilities: if the app is backgrounded and reports `return_entry=dynamic_island` with `return_entry_available=true`, board-side tools restore Aiden through Dynamic Island, wait for WebSocket reconnection and active app state, then execute the command. Lock-screen Live Activity entries require visual confirmation instead of blind tapping.
 
 ## Heartbeat
 

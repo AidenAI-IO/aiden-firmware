@@ -76,8 +76,37 @@ func TestPhoneBridgeRestorerDoesNotTapWithoutReturnEntry(t *testing.T) {
 	if restored {
 		t.Fatal("EnsureForeground() restored = true, want false")
 	}
-	if !strings.Contains(err.Error(), "no Live Activity/Dynamic Island return entry") {
+	if !strings.Contains(err.Error(), "no supported Dynamic Island return entry") {
 		t.Fatalf("EnsureForeground() error = %v, want return entry message", err)
+	}
+}
+
+func TestPhoneBridgeRestorerDoesNotTapLockScreenLiveActivity(t *testing.T) {
+	bridge := NewPhoneBridge(nil)
+	defer bridge.queue.Stop()
+	bridge.mu.Lock()
+	bridge.platform = "ios"
+	bridge.appState = "background"
+	bridge.returnEntry = "live_activity"
+	bridge.returnEntrySeen = true
+	bridge.returnEntryOK = true
+	bridge.mu.Unlock()
+
+	restorer := NewPhoneBridgeRestorer(bridge, nil)
+	restorer.tapReturnEntry = func(context.Context, PhoneBridgeStatus) error {
+		t.Fatal("tapReturnEntry should not be called for lock-screen Live Activity")
+		return nil
+	}
+
+	restored, err := restorer.EnsureForeground(context.Background())
+	if err == nil {
+		t.Fatal("EnsureForeground() error = nil, want unsupported return entry error")
+	}
+	if restored {
+		t.Fatal("EnsureForeground() restored = true, want false")
+	}
+	if !strings.Contains(err.Error(), "no supported Dynamic Island return entry") {
+		t.Fatalf("EnsureForeground() error = %v, want unsupported Dynamic Island message", err)
 	}
 }
 

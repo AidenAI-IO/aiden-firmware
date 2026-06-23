@@ -13,7 +13,7 @@ The product goal of Live Activity is to give Aiden a system-level status entry p
 
 - `ready` / `connected`: app has connected to hardware, starts a "Aiden Ready" Live Activity when switching to background, showing device is available and tapping can return to Aiden. This state is mainly an entry point and connection indicator, does not represent the app gaining background persistence capability.
 - `running`: when agent is executing a task, Live Activity displays task title, current step, progress, whether user needs to return to app. Tasks can be initiated from app foreground chat or from agent Web UI.
-- `needs_app`: when agent needs Phone Bridge, clipboard, contacts, calendar, open app, or other companion app capabilities, Live Activity is the system entry point for restoring foreground bridge. Board-side tools can click Dynamic Island / Live Activity when `return_entry_available=true`, wait for reconnection, and then send the command.
+- `needs_app`: when agent needs Phone Bridge, clipboard, contacts, calendar, open app, or other companion app capabilities, Live Activity is the system entry point for restoring foreground bridge. Board-side tools can automatically click Dynamic Island when `return_entry=dynamic_island` and `return_entry_available=true`, wait for reconnection, and then send the command. Lock-screen Live Activity entries require screenshot/HID confirmation instead of blind tapping.
 - `completed` / `failed` / `canceled`: displays brief result after task ends. If hardware is still connected, can return to `ready`; if device disconnects, session expires, or user closes entry point, end Live Activity.
 
 Key boundaries:
@@ -24,7 +24,7 @@ Key boundaries:
 - If app has already been suspended/killed by system and there is no existing Live Activity, making Live Activity appear remotely requires APNs push-to-start or waiting for user to reopen app.
 - USB ECM connectivity only means the phone and board can still exchange IP packets; it does not mean the iOS app is running in background. `phone_bridge.connected=true` primarily means the app WebSocket is still active, usually while the app is foreground or inside the short background window.
 - When `phone_bridge.connected=false` but USB is still physically connected, the agent cannot push status to the app over WebSocket. If relay has a valid Live Activity token for the board, the agent should still update Dynamic Island through relay/APNs.
-- When agent needs Phone Bridge capability and a visible Aiden Dynamic Island / Live Activity entry exists, treat it as the recovery entry: tap back to Aiden, wait for bridge recovery, then call `open_app`, `clipboard`, `calendar`, `contacts`, or `notification` instead of searching the home screen for the target app icon first.
+- When agent needs Phone Bridge capability and a visible Aiden Dynamic Island entry exists, treat it as the automatic recovery entry: tap back to Aiden, wait for bridge recovery, then call `open_app`, `clipboard`, `calendar`, `contacts`, or `notification` instead of searching the home screen for the target app icon first. For lock-screen Live Activity cards, use screenshot/HID fallback or visual confirmation.
 
 ## State Model
 

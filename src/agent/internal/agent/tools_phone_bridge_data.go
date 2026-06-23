@@ -57,12 +57,8 @@ type ClipboardTool struct {
 	restorer *PhoneBridgeRestorer
 }
 
-func NewClipboardTool(bridge *PhoneBridge, restorer ...*PhoneBridgeRestorer) *ClipboardTool {
-	var r *PhoneBridgeRestorer
-	if len(restorer) > 0 {
-		r = restorer[0]
-	}
-	return &ClipboardTool{bridge: bridge, restorer: r}
+func NewClipboardTool(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) *ClipboardTool {
+	return &ClipboardTool{bridge: bridge, restorer: restorer}
 }
 
 func (t *ClipboardTool) Name() string { return "clipboard" }
@@ -72,7 +68,7 @@ func (t *ClipboardTool) Description() string {
 		`Input JSON: {"action":"read"} returns {"ok":true,"text":"..."}; ` +
 		`{"action":"write","text":"content"} sets the clipboard and returns {"ok":true}. ` +
 		`Use this as a fast cross-app content channel for long or non-ASCII text: write the clipboard in Aiden, switch to the target app, then paste. ` +
-		`On iOS, if Aiden is in background and a Live Activity/Dynamic Island return entry is available, this tool restores Aiden to foreground and waits for WebSocket reconnect before using the clipboard.`
+		`On iOS, if Aiden is in background and a Dynamic Island return entry is available, this tool restores Aiden to foreground and waits for WebSocket reconnect before using the clipboard.`
 }
 
 func (t *ClipboardTool) ArgsSchema() map[string]any {
@@ -163,12 +159,8 @@ type CalendarTool struct {
 	restorer *PhoneBridgeRestorer
 }
 
-func NewCalendarTool(bridge *PhoneBridge, restorer ...*PhoneBridgeRestorer) *CalendarTool {
-	var r *PhoneBridgeRestorer
-	if len(restorer) > 0 {
-		r = restorer[0]
-	}
-	return &CalendarTool{bridge: bridge, restorer: r}
+func NewCalendarTool(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) *CalendarTool {
+	return &CalendarTool{bridge: bridge, restorer: restorer}
 }
 
 func (t *CalendarTool) Name() string { return "calendar" }
@@ -179,7 +171,7 @@ func (t *CalendarTool) Description() string {
 		`Create: {"action":"create","title":"Dentist","start_at":"2026-06-02T15:00:00+08:00","end_at":"2026-06-02T16:00:00+08:00","all_day":false,"location":"Clinic","notes":"...","alarm_minutes_before":30} -> {"ok":true,"event_id":"..."}. ` +
 		`Query: {"action":"query","from":"2026-06-02T00:00:00+08:00","to":"2026-06-03T00:00:00+08:00"} -> {"ok":true,"events":[{"event_id","title","start_at","end_at","location"}]}. ` +
 		`Delete: {"action":"delete","event_id":"..."} -> {"ok":true}. ` +
-		`Confirm details with the user before creating or deleting events. On iOS, if Aiden is in background and a Live Activity/Dynamic Island return entry is available, this tool restores Aiden before sending the calendar command.`
+		`Confirm details with the user before creating or deleting events. On iOS, if Aiden is in background and a Dynamic Island return entry is available, this tool restores Aiden before sending the calendar command.`
 }
 
 func (t *CalendarTool) ArgsSchema() map[string]any {
@@ -346,12 +338,8 @@ type ContactsTool struct {
 	restorer *PhoneBridgeRestorer
 }
 
-func NewContactsTool(bridge *PhoneBridge, restorer ...*PhoneBridgeRestorer) *ContactsTool {
-	var r *PhoneBridgeRestorer
-	if len(restorer) > 0 {
-		r = restorer[0]
-	}
-	return &ContactsTool{bridge: bridge, restorer: r}
+func NewContactsTool(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) *ContactsTool {
+	return &ContactsTool{bridge: bridge, restorer: restorer}
 }
 
 func (t *ContactsTool) Name() string { return "contacts" }
@@ -361,7 +349,7 @@ func (t *ContactsTool) Description() string {
 		`Query: {"action":"query","query":"张三","limit":20} -> {"ok":true,"contacts":[{"contact_id","name","phone_numbers","emails"}]}. ` +
 		`Create: {"action":"create","name":"李四","phone_numbers":["+86 139 8765 4321"],"emails":["lisi@example.com"],"organization":"公司","notes":"备注"} -> {"ok":true,"contact_id":"..."}. ` +
 		`Update: {"action":"update","contact_id":"...","name":"新名字","phone_numbers":[...],"emails":[...]} -> {"ok":true}. ` +
-		`Confirm details with the user before creating or updating contacts. On iOS, if Aiden is in background and a Live Activity/Dynamic Island return entry is available, this tool restores Aiden before sending the contacts command.`
+		`Confirm details with the user before creating or updating contacts. On iOS, if Aiden is in background and a Dynamic Island return entry is available, this tool restores Aiden before sending the contacts command.`
 }
 
 func (t *ContactsTool) ArgsSchema() map[string]any {
@@ -530,12 +518,8 @@ type NotificationTool struct {
 	restorer *PhoneBridgeRestorer
 }
 
-func NewNotificationTool(bridge *PhoneBridge, restorer ...*PhoneBridgeRestorer) *NotificationTool {
-	var r *PhoneBridgeRestorer
-	if len(restorer) > 0 {
-		r = restorer[0]
-	}
-	return &NotificationTool{bridge: bridge, restorer: r}
+func NewNotificationTool(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) *NotificationTool {
+	return &NotificationTool{bridge: bridge, restorer: restorer}
 }
 
 func (t *NotificationTool) Name() string { return "notification" }
@@ -546,7 +530,7 @@ func (t *NotificationTool) Description() string {
 		`The schedule_at field is optional (RFC3339 with timezone); if omitted, the notification is sent immediately. ` +
 		`Returns {"ok":true,"notification_id":"..."} on success. ` +
 		`Use this to remind the user or bring the companion app back to foreground. ` +
-		`On iOS, if Aiden is in background and a Live Activity/Dynamic Island return entry is available, this tool restores Aiden before sending the notification command.`
+		`On iOS, if Aiden is in background and a Dynamic Island return entry is available, this tool restores Aiden before sending the notification command.`
 }
 
 func (t *NotificationTool) ArgsSchema() map[string]any {

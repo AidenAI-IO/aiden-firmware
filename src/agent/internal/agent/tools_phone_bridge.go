@@ -116,12 +116,8 @@ type OpenAppTool struct {
 	restorer *PhoneBridgeRestorer
 }
 
-func NewOpenAppTool(bridge *PhoneBridge, restorer ...*PhoneBridgeRestorer) *OpenAppTool {
-	var r *PhoneBridgeRestorer
-	if len(restorer) > 0 {
-		r = restorer[0]
-	}
-	return &OpenAppTool{bridge: bridge, restorer: r}
+func NewOpenAppTool(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) *OpenAppTool {
+	return &OpenAppTool{bridge: bridge, restorer: restorer}
 }
 
 func (t *OpenAppTool) Name() string { return "open_app" }
@@ -129,7 +125,7 @@ func (t *OpenAppTool) Name() string { return "open_app" }
 func (t *OpenAppTool) Description() string {
 	return `Open an app or dial a phone number on the connected phone via the phone bridge. ` +
 		`Use this instead of manually finding and tapping app icons when the phone bridge is connected. ` +
-		`If the Aiden companion app is backgrounded on iOS and the Dynamic Island/Live Activity is visible, reopen Aiden from that entry first, then use this tool before searching the home screen. ` +
+		`If the Aiden companion app is backgrounded on iOS and the Dynamic Island entry is visible, reopen Aiden from that entry first, then use this tool before searching the home screen. ` +
 		`Input JSON: {"app":"WeChat"}, {"app":"browser"}, {"url":"https://example.com"}, {"app":"https://example.com"}, or {"ios_urls":["weixin://"],"android_packages":["com.tencent.mm"]}. ` +
 		`If this tool returns {"ok":true}, the app launch request is complete; answer the user immediately unless they asked for additional actions inside that app. ` +
 		`To dial a phone number, use: {"app":"phone","phone_number":"10086"} or just {"phone_number":"10086"}. ` +
@@ -138,7 +134,7 @@ func (t *OpenAppTool) Description() string {
 		`Camera(相机), Photos(相册), Maps(地图), Notes(备忘录), Calendar(日历), Reminders(提醒事项), ` +
 		`Contacts(通讯录), Mail(邮件), AppStore(应用商店), Music(音乐), Files(文件), Clock(时钟), Health(健康), ` +
 		`Taobao(淘宝), Douyin(抖音), Meituan(美团), Didi(滴滴), Xiaohongshu(小红书), Bilibili(哔哩哔哩), JD(京东), Eleme(饿了么). ` +
-		`On iOS, if Aiden is in background and a Live Activity/Dynamic Island return entry is available, this tool restores Aiden to foreground and waits for WebSocket reconnect before opening the target.`
+		`On iOS, if Aiden is in background and a Dynamic Island return entry is available, this tool restores Aiden to foreground and waits for WebSocket reconnect before opening the target.`
 }
 
 func (t *OpenAppTool) ArgsSchema() map[string]any {
@@ -406,7 +402,7 @@ func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 		return jsonString(map[string]interface{}{
 			"ok":       false,
 			"error":    err.Error(),
-			"fallback": "If a Live Activity/Dynamic Island entry is visible, tap it to reopen Aiden, wait for Phone Bridge to reconnect, then retry; otherwise use HID actions.",
+			"fallback": "If a Dynamic Island entry is visible, tap it to reopen Aiden, wait for Phone Bridge to reconnect, then retry; otherwise use HID actions.",
 		}), nil
 	}
 

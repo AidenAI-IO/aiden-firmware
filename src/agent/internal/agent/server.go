@@ -229,17 +229,7 @@ type ChatRequest struct {
 }
 
 type ChatCancelRequest struct {
-	RequestID      string `json:"request_id"`
-	Reason         string `json:"reason,omitempty"`
-	EventType      string `json:"event_type,omitempty"`
-	EventDetail    int    `json:"event_detail,omitempty"`
-	EventTrusted   *bool  `json:"event_trusted,omitempty"`
-	PointerType    string `json:"pointer_type,omitempty"`
-	ClientX        *int   `json:"client_x,omitempty"`
-	ClientY        *int   `json:"client_y,omitempty"`
-	SincePointerMs int64  `json:"since_pointer_ms,omitempty"`
-	SinceSendMs    int64  `json:"since_send_ms,omitempty"`
-	ActiveElement  string `json:"active_element,omitempty"`
+	RequestID string `json:"request_id"`
 }
 
 type ChatCancelResponse struct {
@@ -570,9 +560,6 @@ func (s *Server) handleChatCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	source := chatCancelRequestSource(r)
-	if clientSource := req.clientSource(); clientSource != "" {
-		source += " client=" + clientSource
-	}
 
 	if s.cancelActiveRun(requestID) {
 		if s.logger != nil {
@@ -627,39 +614,6 @@ func chatCancelRequestSource(r *http.Request) string {
 		return "unknown"
 	}
 	return strings.Join(parts, " ")
-}
-
-func (req ChatCancelRequest) clientSource() string {
-	parts := make([]string, 0, 8)
-	if strings.TrimSpace(req.Reason) != "" {
-		parts = append(parts, "reason="+truncateLogField(strings.TrimSpace(req.Reason), 60))
-	}
-	if strings.TrimSpace(req.EventType) != "" {
-		parts = append(parts, "event_type="+truncateLogField(strings.TrimSpace(req.EventType), 30))
-	}
-	parts = append(parts, fmt.Sprintf("event_detail=%d", req.EventDetail))
-	if req.EventTrusted != nil {
-		parts = append(parts, fmt.Sprintf("event_trusted=%t", *req.EventTrusted))
-	}
-	if strings.TrimSpace(req.PointerType) != "" {
-		parts = append(parts, "pointer_type="+truncateLogField(strings.TrimSpace(req.PointerType), 30))
-	}
-	if req.ClientX != nil && req.ClientY != nil {
-		parts = append(parts, fmt.Sprintf("client_xy=%d,%d", *req.ClientX, *req.ClientY))
-	}
-	if req.SincePointerMs >= 0 {
-		parts = append(parts, fmt.Sprintf("since_pointer_ms=%d", req.SincePointerMs))
-	}
-	if req.SinceSendMs >= 0 {
-		parts = append(parts, fmt.Sprintf("since_send_ms=%d", req.SinceSendMs))
-	}
-	if strings.TrimSpace(req.ActiveElement) != "" {
-		parts = append(parts, "active_element="+truncateLogField(strings.TrimSpace(req.ActiveElement), 80))
-	}
-	if len(parts) == 1 && parts[0] == "event_detail=0" {
-		return ""
-	}
-	return strings.Join(parts, ",")
 }
 
 func truncateLogField(value string, limit int) string {
@@ -4563,12 +4517,7 @@ const webUI = `<!DOCTYPE html>
                 sincePointerMs >= 0 &&
                 sincePointerMs < 1500;
             if (!isPointerClick) {
-                console.warn('Ignored chat cancel without explicit pointer click', {
-                    event_type: event ? event.type : '',
-                    event_detail: eventDetail,
-                    event_trusted: event ? event.isTrusted === true : false,
-                    since_pointer_ms: sincePointerMs
-                });
+                console.warn('Ignored chat cancel without explicit pointer click');
                 return;
             }
             if (now >= stopRunArmedUntil) {
@@ -4590,22 +4539,7 @@ const webUI = `<!DOCTYPE html>
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    request_id: requestId,
-                    reason: 'stop_button',
-                    event_type: event ? event.type : '',
-                    event_detail: eventDetail,
-                    event_trusted: event ? event.isTrusted === true : false,
-                    pointer_type: stopRunPointer && stopRunPointer.pointerType ? stopRunPointer.pointerType : '',
-                    client_x: event && typeof event.clientX === 'number' ? Math.round(event.clientX) : -1,
-                    client_y: event && typeof event.clientY === 'number' ? Math.round(event.clientY) : -1,
-                    since_pointer_ms: sincePointerMs,
-                    since_send_ms: currentChatStartedAt ? now - currentChatStartedAt : -1,
-                    active_element: document.activeElement ? (
-                        document.activeElement.id ||
-                        document.activeElement.name ||
-                        document.activeElement.tagName ||
-                        ''
-                    ) : ''
+                    request_id: requestId
                 }),
                 keepalive: true
             }).catch(function(err) {
