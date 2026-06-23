@@ -1,4 +1,4 @@
-"""Integration test: Go agent tool proxy → MobileGym Bridge Server."""
+"""Integration test: Go agent environment bridge mode -> MobileGym Bridge Server."""
 
 import asyncio
 import json
@@ -69,9 +69,9 @@ def bridge_server(mock_env):
     thread.join(timeout=2)
 
 
-def test_go_agent_tool_proxy_client(bridge_server):
-    """Test that Go agent's ToolProxyClient can call Bridge Server."""
-    # This test simulates what Go agent's ToolProxyClient does
+def test_go_agent_environment_bridge_client(bridge_server):
+    """Test that Go agent's EnvironmentBridgeClient can call Bridge Server."""
+    # This test simulates what Go agent's EnvironmentBridgeClient does.
     import urllib.request
 
     base_url = bridge_server["base_url"]

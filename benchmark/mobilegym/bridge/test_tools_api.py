@@ -194,7 +194,7 @@ def test_invoke_touch_gesture_tap(bridge_server):
 
 
 def test_invoke_touch_gesture_tap_accepts_top_level_string_coordinates(bridge_server):
-    """Regression test for Go tool-proxy payloads that include top-level x/y."""
+    """Regression test for Go environment bridge payloads that include top-level x/y."""
     server, base_url, state = bridge_server
     state.active_episode_id = "test-episode-002b"
 

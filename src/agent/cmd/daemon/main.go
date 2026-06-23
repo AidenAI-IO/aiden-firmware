@@ -53,12 +53,12 @@ func main() {
 
 	// Default: run as daemon
 	var (
-		configDir         = flag.String("config", "", "path to config directory (required)")
-		addr              = flag.String("addr", "0.0.0.0:8080", "HTTP server address")
-		toolProxyMode     = flag.Bool("tool-proxy-mode", false, "Enable tool proxy mode (forward selected tool calls to a remote daemon; see --forward-tools)")
-		toolProxyEndpoint = flag.String("tool-proxy-endpoint", "", "Remote daemon endpoint for tool proxy mode (e.g., http://192.168.50.123:8080)")
-		forwardTools      = flag.String("forward-tools", "", "Comma-separated tool names or glob patterns to forward when tool-proxy-mode is on, e.g. \"keyboard_*,mouse_*,screenshot\" or \"*\" to forward all. Required with --tool-proxy-mode.")
-		benchmarkTaskID   = flag.String("benchmark-task-id", "", "Benchmark task id to include on proxied tool calls for environment routing")
+		configDir                 = flag.String("config", "", "path to config directory (required)")
+		addr                      = flag.String("addr", "0.0.0.0:8080", "HTTP server address")
+		environmentBridgeMode     = flag.Bool("environment-bridge-mode", false, "Enable environment bridge mode (forward selected tool calls to an environment bridge; see --environment-bridge-tools)")
+		environmentBridgeEndpoint = flag.String("environment-bridge-endpoint", "", "Environment bridge endpoint (e.g., http://192.168.50.123:8080)")
+		environmentBridgeTools    = flag.String("environment-bridge-tools", "", "Comma-separated tool names or glob patterns to forward when environment-bridge-mode is on, e.g. \"keyboard_*,mouse_*,screenshot\" or \"*\". Required with --environment-bridge-mode.")
+		benchmarkTaskID           = flag.String("benchmark-task-id", "", "Benchmark task id to include on environment bridge requests for task routing")
 	)
 	flag.Parse()
 
@@ -74,21 +74,21 @@ func main() {
 	}
 
 	// Apply CLI flags to override config file
-	if *toolProxyMode {
-		cfg.ToolProxy.Enabled = true
-		if *toolProxyEndpoint != "" {
-			cfg.ToolProxy.Endpoint = *toolProxyEndpoint
+	if *environmentBridgeMode {
+		cfg.EnvironmentBridge.Enabled = true
+		if *environmentBridgeEndpoint != "" {
+			cfg.EnvironmentBridge.Endpoint = *environmentBridgeEndpoint
 		}
-		if cfg.ToolProxy.Endpoint == "" {
-			fmt.Fprintln(os.Stderr, "tool-proxy-mode requires --tool-proxy-endpoint")
+		if cfg.EnvironmentBridge.Endpoint == "" {
+			fmt.Fprintln(os.Stderr, "environment-bridge-mode requires --environment-bridge-endpoint")
 			os.Exit(1)
 		}
-		cfg.ToolProxy.ForwardTools = parseCommaSeparated(*forwardTools)
-		if len(cfg.ToolProxy.ForwardTools) == 0 {
-			fmt.Fprintln(os.Stderr, "tool-proxy-mode requires --forward-tools (comma-separated tool names or glob patterns, e.g. \"keyboard_*,mouse_*,screenshot\" or \"*\" to forward all)")
+		cfg.EnvironmentBridge.Tools = parseCommaSeparated(*environmentBridgeTools)
+		if len(cfg.EnvironmentBridge.Tools) == 0 {
+			fmt.Fprintln(os.Stderr, "environment-bridge-mode requires --environment-bridge-tools (comma-separated tool names or glob patterns, e.g. \"keyboard_*,mouse_*,screenshot\" or \"*\" to forward all)")
 			os.Exit(1)
 		}
-		cfg.ToolProxy.BenchmarkTaskID = strings.TrimSpace(*benchmarkTaskID)
+		cfg.EnvironmentBridge.BenchmarkTaskID = strings.TrimSpace(*benchmarkTaskID)
 	}
 
 	proxyConfig := agent.ProxyConfigFromEnvironment()
@@ -118,11 +118,11 @@ func main() {
 
 	fmt.Printf("🚀 Aiden Agent daemon starting on %s\n", *addr)
 	fmt.Printf("📂 Config directory: %s\n", *configDir)
-	if cfg.ToolProxy.Enabled {
-		fmt.Printf("🔀 Tool proxy mode: forwarding to %s\n", cfg.ToolProxy.Endpoint)
-		fmt.Printf("   Forward tools: %v\n", cfg.ToolProxy.ForwardTools)
-		if cfg.ToolProxy.BenchmarkTaskID != "" {
-			fmt.Printf("   Benchmark task id: %s\n", cfg.ToolProxy.BenchmarkTaskID)
+	if cfg.EnvironmentBridge.Enabled {
+		fmt.Printf("🔀 Environment bridge mode: forwarding to %s\n", cfg.EnvironmentBridge.Endpoint)
+		fmt.Printf("   Environment bridge tools: %v\n", cfg.EnvironmentBridge.Tools)
+		if cfg.EnvironmentBridge.BenchmarkTaskID != "" {
+			fmt.Printf("   Benchmark task id: %s\n", cfg.EnvironmentBridge.BenchmarkTaskID)
 		}
 	}
 	if _, port, err := net.SplitHostPort(*addr); err == nil && port != "" {

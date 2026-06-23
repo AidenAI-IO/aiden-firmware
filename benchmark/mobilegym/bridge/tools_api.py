@@ -1,7 +1,7 @@
-"""Unified /api/tools endpoint compatible with Go agent tool proxy.
+"""Unified /api/tools endpoint for environment bridge implementations.
 
 This module implements a tool catalog and invocation API that matches the Go agent's
-/api/tools interface, making the MobileGym bridge server compatible as a tool-proxy-endpoint.
+/api/tools interface, making the MobileGym bridge server usable as an environment bridge.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ US_KEYBOARD_TEXT_CHARS = set(
 
 
 class ToolsAPIHandler:
-    """Handler for /api/tools endpoint compatible with Go agent tool proxy."""
+    """Handler for the environment bridge /api/tools endpoint."""
 
     def __init__(self, state: BridgeEpisodeState | BridgeTaskRouter, request_timeout_sec: float = 30):
         self.router = BridgeTaskRouter.from_state(state)

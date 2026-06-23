@@ -389,12 +389,14 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/events", s.handleEvents)
 	mux.HandleFunc("/api/history", s.handleHistory)
 	mux.HandleFunc("/api/episodes/", s.handleEpisodes)
-	mux.HandleFunc("/api/reset", s.handleReset)
+	mux.HandleFunc("/api/setup", s.handleSetup)
 	mux.HandleFunc("/api/clear", s.handleClear)
 	mux.HandleFunc("/api/clear-all", s.handleClearAll)
 	mux.HandleFunc("/api/skills/reload", s.handleSkillsReload)
 	mux.HandleFunc("/api/tools", s.handleTools)
 	mux.HandleFunc("/api/tools/", s.handleTools)
+	mux.HandleFunc("/api/screen", s.handleScreen)
+	mux.HandleFunc("/api/concurrent", s.handleConcurrent)
 	mux.HandleFunc("/api/tool-skills", s.handleToolSkills)
 	mux.HandleFunc("/api/audio/record/start", s.handleAudioRecordStart)
 	mux.HandleFunc("/api/audio/record/stop", s.handleAudioRecordStop)
@@ -1754,7 +1756,7 @@ func (s *Server) handleEpisodes(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(EpisodeResponse{Episode: episode})
 }
 
-func (s *Server) handleReset(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -1763,7 +1765,60 @@ func (s *Server) handleReset(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{
 		"ok": true,
 		"data": map[string]bool{
-			"reset": false,
+			"setup": false,
+		},
+	})
+}
+
+func (s *Server) handleScreen(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	spec, ok := s.lookupOwnedToolSpec("screenshot")
+	if !ok {
+		http.Error(w, "screenshot tool not available", http.StatusNotFound)
+		return
+	}
+	execution := executeToolCall(r.Context(), ToolCallExecution{
+		Specs:  NewToolSpecs([]langtools.Tool{spec.Tool}),
+		Action: schema.AgentAction{Tool: spec.Name, ToolInput: "{}"},
+	})
+	if execution.Error != nil {
+		http.Error(w, execution.Error.Error(), http.StatusInternalServerError)
+		return
+	}
+	if execution.Result.IsError {
+		http.Error(w, execution.Result.Output, http.StatusInternalServerError)
+		return
+	}
+	var screenshot any
+	if err := json.Unmarshal([]byte(execution.Result.Output), &screenshot); err != nil {
+		http.Error(w, "invalid screenshot payload: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"ok": true,
+		"data": map[string]any{
+			"status":     "running",
+			"screenshot": screenshot,
+		},
+	})
+}
+
+func (s *Server) handleConcurrent(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"ok": true,
+		"data": map[string]any{
+			"bridge_type": "go-agent",
+			"concurrent":  1,
 		},
 	})
 }

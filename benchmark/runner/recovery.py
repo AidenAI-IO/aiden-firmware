@@ -4,7 +4,7 @@ import time
 from typing import TYPE_CHECKING
 
 from runner.agent_client import AgentClient, AgentRequestError, AgentTimeoutError
-from runner.reset import ResetError, call_environment_reset, per_task_setup
+from runner.reset import ResetError, call_environment_setup, per_task_setup
 
 if TYPE_CHECKING:
     from runner.suite import Suite, TaskSpec
@@ -53,7 +53,7 @@ def prepare_task_isolation(
         try:
             client.clear_history()
             if environment_url and not task.input_screenshot:
-                call_environment_reset(environment_url, task_id=benchmark_task_id or task.id)
+                call_environment_setup(environment_url, task_id=benchmark_task_id or task.id)
             elif not task.input_screenshot:
                 per_task_setup(client, task.setup)
             return

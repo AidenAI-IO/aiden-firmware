@@ -104,7 +104,7 @@ python -m runner.main webui
 
 在 WebUI 中创建 MobileGym environment 时把 `Envs` 设为大于 1。WebUI 会启动一个
 MobileGym simulator/bridge container，内部创建多个 env；运行 job 时，每个并发
-task worker 使用独立 daemon，并在 reset/tool-proxy 请求中附带相同的
+task worker 使用独立 daemon，并在 setup/environment bridge 请求中附带相同的
 `benchmark-task-id`，由 bridge 路由到对应 env。
 
 ## 四、查看结果

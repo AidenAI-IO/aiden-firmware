@@ -1323,14 +1323,14 @@ func TestServerHandleClearRemovesRuntimeMemory(t *testing.T) {
 	}
 }
 
-func TestServerHandleResetReturnsSuccessWithoutClearingHistory(t *testing.T) {
+func TestServerHandleSetupReturnsSuccessWithoutClearingHistory(t *testing.T) {
 	server := &Server{
 		history: []Message{{Type: "user", Content: "hello"}},
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/reset", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/setup", nil)
 	rec := httptest.NewRecorder()
-	server.handleReset(rec, req)
+	server.handleSetup(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
@@ -1338,7 +1338,7 @@ func TestServerHandleResetReturnsSuccessWithoutClearingHistory(t *testing.T) {
 	var got struct {
 		OK   bool `json:"ok"`
 		Data struct {
-			Reset bool `json:"reset"`
+			Setup bool `json:"setup"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
@@ -1347,11 +1347,36 @@ func TestServerHandleResetReturnsSuccessWithoutClearingHistory(t *testing.T) {
 	if !got.OK {
 		t.Fatalf("expected ok response: %#v", got)
 	}
-	if got.Data.Reset {
-		t.Fatalf("expected reset=false for Go agent no-op response")
+	if got.Data.Setup {
+		t.Fatalf("expected setup=false for Go agent no-op response")
 	}
 	if len(server.history) != 1 || server.history[0].Content != "hello" {
-		t.Fatalf("reset should not clear history, got %#v", server.history)
+		t.Fatalf("setup should not clear history, got %#v", server.history)
+	}
+}
+
+func TestServerHandleConcurrentReturnsSingleCapacity(t *testing.T) {
+	server := &Server{}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/concurrent", nil)
+	rec := httptest.NewRecorder()
+	server.handleConcurrent(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			BridgeType string `json:"bridge_type"`
+			Concurrent int    `json:"concurrent"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !got.OK || got.Data.BridgeType != "go-agent" || got.Data.Concurrent != 1 {
+		t.Fatalf("unexpected concurrent response: %#v", got)
 	}
 }
 

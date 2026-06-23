@@ -11,7 +11,7 @@ class ResetError(RuntimeError):
     pass
 
 
-def environment_reset_endpoint(environment_url: str) -> str:
+def environment_setup_endpoint(environment_url: str) -> str:
     raw = str(environment_url or "").strip()
     if not raw:
         raise ResetError("environment_url is required")
@@ -20,9 +20,9 @@ def environment_reset_endpoint(environment_url: str) -> str:
         raise ResetError(f"invalid environment_url: {environment_url!r}")
     path = parsed.path.rstrip("/")
     if path in {"", "/"}:
-        path = "/api/reset"
-    elif path not in {"/api/reset", "/reset"}:
-        path = f"{path}/api/reset"
+        path = "/api/setup"
+    elif path != "/api/setup":
+        path = f"{path}/api/setup"
     return urllib.parse.urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
 
 
@@ -36,11 +36,9 @@ def environment_release_endpoint(environment_url: str) -> str:
     path = parsed.path.rstrip("/")
     if path in {"", "/"}:
         path = "/api/release"
-    elif path == "/api/reset":
+    elif path == "/api/setup":
         path = "/api/release"
-    elif path == "/reset":
-        path = "/release"
-    elif path not in {"/api/release", "/release"}:
+    elif path != "/api/release":
         path = f"{path}/api/release"
     return urllib.parse.urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
 
@@ -82,12 +80,12 @@ def _post_environment(endpoint: str, *, timeout: int, headers: dict[str, str], a
     return payload if isinstance(payload, dict) else {}
 
 
-def call_environment_reset(environment_url: str, timeout: int = 30, task_id: str | None = None) -> dict[str, Any]:
+def call_environment_setup(environment_url: str, timeout: int = 30, task_id: str | None = None) -> dict[str, Any]:
     return _post_environment(
-        environment_reset_endpoint(environment_url),
+        environment_setup_endpoint(environment_url),
         timeout=timeout,
         headers=_environment_headers(task_id),
-        action="reset",
+        action="setup",
     )
 
 

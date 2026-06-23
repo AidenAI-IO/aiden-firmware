@@ -26,12 +26,12 @@ fi
 default_forward_tools="screenshot,touch_gesture,keyboard_text,keyboard_tap,mouse_click,mouse_move,mouse_scroll,quick_action"
 set -- daemon -config "$runtime_config_dir" -addr "${AIDEN_DAEMON_ADDR:-0.0.0.0:8080}"
 
-if [ "${AIDEN_TOOL_PROXY_MODE:-}" = "1" ] || [ "${AIDEN_TOOL_PROXY_MODE:-}" = "true" ]; then
-    if [ -z "${TOOL_PROXY_ENDPOINT:-}" ]; then
-        echo "TOOL_PROXY_ENDPOINT is required when AIDEN_TOOL_PROXY_MODE is enabled" >&2
+if [ "${AIDEN_ENVIRONMENT_BRIDGE_MODE:-}" = "1" ] || [ "${AIDEN_ENVIRONMENT_BRIDGE_MODE:-}" = "true" ]; then
+    if [ -z "${ENVIRONMENT_BRIDGE_ENDPOINT:-}" ]; then
+        echo "ENVIRONMENT_BRIDGE_ENDPOINT is required when AIDEN_ENVIRONMENT_BRIDGE_MODE is enabled" >&2
         exit 1
     fi
-    set -- "$@" --tool-proxy-mode --tool-proxy-endpoint "$TOOL_PROXY_ENDPOINT" --forward-tools "${AIDEN_FORWARD_TOOLS:-$default_forward_tools}"
+    set -- "$@" --environment-bridge-mode --environment-bridge-endpoint "$ENVIRONMENT_BRIDGE_ENDPOINT" --environment-bridge-tools "${AIDEN_ENVIRONMENT_BRIDGE_TOOLS:-$default_forward_tools}"
     if [ -n "${AIDEN_BENCHMARK_TASK_ID:-}" ]; then
         set -- "$@" --benchmark-task-id "$AIDEN_BENCHMARK_TASK_ID"
     fi

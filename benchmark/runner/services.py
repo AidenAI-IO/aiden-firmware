@@ -50,7 +50,7 @@ def add_service_parsers(subparsers: argparse._SubParsersAction[argparse.Argument
     p_agent.add_argument("--agent-config", default="", help="Optional agent.toml to use instead of the base config template")
     p_agent.add_argument("--daemon-image", default=DEFAULT_DAEMON_IMAGE)
     p_agent.add_argument("--no-build-daemon-image", action="store_true")
-    p_agent.add_argument("--tool-proxy-endpoint", default="", help="Environment/tool endpoint to forward device tools to")
+    p_agent.add_argument("--environment-bridge-endpoint", default="", help="Environment bridge endpoint to forward device tools to")
     p_agent.add_argument("--benchmark-task-id", default=DEFAULT_CLI_BENCHMARK_TASK_ID)
     p_agent.add_argument("--ready-timeout-sec", type=int, default=DEFAULT_DAEMON_READY_TIMEOUT_SEC)
     p_agent.add_argument("--json", action="store_true", help="Print machine-readable JSON")
@@ -91,14 +91,14 @@ def cmd_start_agent_daemon(args: argparse.Namespace) -> int:
         agent_config_text = Path(args.agent_config).read_text(encoding="utf-8")
     prepare_run_config(Path(args.base_config_dir), config_dir, agent_config_text=agent_config_text)
 
-    tool_proxy_endpoint = str(args.tool_proxy_endpoint or "").strip().rstrip("/")
-    docker_tool_proxy_endpoint = endpoint_for_docker(tool_proxy_endpoint) if tool_proxy_endpoint else ""
+    environment_bridge_endpoint = str(args.environment_bridge_endpoint or "").strip().rstrip("/")
+    docker_environment_bridge_endpoint = endpoint_for_docker(environment_bridge_endpoint) if environment_bridge_endpoint else ""
     benchmark_task_id = str(args.benchmark_task_id or "").strip()
     agent_url = f"http://127.0.0.1:{host_port}"
     job = Job(
         id=service_id,
-        endpoint=tool_proxy_endpoint,
-        docker_endpoint=docker_tool_proxy_endpoint,
+        endpoint=environment_bridge_endpoint,
+        docker_endpoint=docker_environment_bridge_endpoint,
         suites=[],
         agent_url=agent_url,
         container_name=project,
@@ -113,9 +113,9 @@ def cmd_start_agent_daemon(args: argparse.Namespace) -> int:
             image=args.daemon_image,
             host_port=host_port,
             config_dir=config_dir,
-            tool_proxy_endpoint=docker_tool_proxy_endpoint,
-            benchmark_task_id=benchmark_task_id if docker_tool_proxy_endpoint else "",
-            tool_proxy_mode=bool(docker_tool_proxy_endpoint),
+            environment_bridge_endpoint=docker_environment_bridge_endpoint,
+            benchmark_task_id=benchmark_task_id if docker_environment_bridge_endpoint else "",
+            environment_bridge_mode=bool(docker_environment_bridge_endpoint),
             log_path=log_path,
         )
         _wait_for_agent(agent_url, args.ready_timeout_sec)
@@ -132,9 +132,9 @@ def cmd_start_agent_daemon(args: argparse.Namespace) -> int:
         "compose_project": project,
         "config_dir": str(config_dir),
         "log_path": str(log_path),
-        "tool_proxy_endpoint": tool_proxy_endpoint,
-        "docker_tool_proxy_endpoint": docker_tool_proxy_endpoint,
-        "benchmark_task_id": benchmark_task_id if docker_tool_proxy_endpoint else "",
+        "environment_bridge_endpoint": environment_bridge_endpoint,
+        "docker_environment_bridge_endpoint": docker_environment_bridge_endpoint,
+        "benchmark_task_id": benchmark_task_id if docker_environment_bridge_endpoint else "",
         "stop_command": " ".join(
             daemon_compose_command(
                 "down",
@@ -206,7 +206,7 @@ def cmd_start_mobilegym_env(args: argparse.Namespace) -> int:
     }
     payload["agent_daemon_command"] = (
         "uv run python -m runner start-agent-daemon "
-        f"--tool-proxy-endpoint {public_endpoint}"
+        f"--environment-bridge-endpoint {public_endpoint}"
     )
     _print_mobilegym_payload(payload, json_output=bool(args.json))
     return 0
@@ -241,9 +241,9 @@ def _print_agent_payload(payload: dict[str, Any], *, json_output: bool) -> None:
         return
     print("Agent daemon started", flush=True)
     _print_kv("agent_url", payload["agent_url"])
-    if payload.get("tool_proxy_endpoint"):
-        _print_kv("tool_proxy_endpoint", payload["tool_proxy_endpoint"])
-        _print_kv("docker_tool_proxy_endpoint", payload["docker_tool_proxy_endpoint"])
+    if payload.get("environment_bridge_endpoint"):
+        _print_kv("environment_bridge_endpoint", payload["environment_bridge_endpoint"])
+        _print_kv("docker_environment_bridge_endpoint", payload["docker_environment_bridge_endpoint"])
         _print_kv("benchmark_task_id", payload["benchmark_task_id"])
     _print_kv("container_id", payload["container_id"])
     _print_kv("compose_project", payload["compose_project"])
@@ -289,8 +289,8 @@ def _agent_run_command(payload: dict[str, Any]) -> str:
         "--suite <suite.json>",
         f"--agent-url {payload['agent_url']}",
     ]
-    if payload.get("tool_proxy_endpoint"):
-        parts.append(f"--environment-url {payload['tool_proxy_endpoint']}")
+    if payload.get("environment_bridge_endpoint"):
+        parts.append(f"--environment-url {payload['environment_bridge_endpoint']}")
     if payload.get("benchmark_task_id"):
         parts.append(f"--benchmark-task-id {payload['benchmark_task_id']}")
     return " ".join(parts)

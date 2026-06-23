@@ -14,9 +14,9 @@ services:
     volumes:
       - ${AIDEN_CONFIG_DIR:-../config}:/config:ro
     environment:
-      AIDEN_TOOL_PROXY_MODE: ${AIDEN_TOOL_PROXY_MODE:-1}
-      AIDEN_FORWARD_TOOLS: "screenshot,touch_gesture,keyboard_text,keyboard_tap,mouse_click,mouse_move,mouse_scroll,quick_action"
-      TOOL_PROXY_ENDPOINT: ${TOOL_PROXY_ENDPOINT:-}
+      AIDEN_ENVIRONMENT_BRIDGE_MODE: ${AIDEN_ENVIRONMENT_BRIDGE_MODE:-1}
+      AIDEN_ENVIRONMENT_BRIDGE_TOOLS: "screenshot,touch_gesture,keyboard_text,keyboard_tap,mouse_click,mouse_move,mouse_scroll,quick_action"
+      ENVIRONMENT_BRIDGE_ENDPOINT: ${ENVIRONMENT_BRIDGE_ENDPOINT:-}
       AIDEN_BENCHMARK_TASK_ID: ${AIDEN_BENCHMARK_TASK_ID:-}
       AIDEN_RUNTIME_CONFIG_DIR: /tmp/aiden-config
       HTTPS_PROXY: ${HTTPS_PROXY:-}

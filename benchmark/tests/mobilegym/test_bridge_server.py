@@ -259,11 +259,19 @@ def test_health_and_runner_endpoints_do_not_require_authentication():
         status, body = request_json(bridge.base_url, "GET", "/health")
         assert status == 200
         assert body["data"]["status"] == "ok"
+        assert body["data"]["concurrent"] == 1
+        assert "/api/concurrent" in body["data"]["interfaces"]
+
+        status, body = request_json(bridge.base_url, "GET", "/api/concurrent")
+        assert status == 200
+        assert body["data"]["bridge_type"] == "mobilegym"
+        assert body["data"]["concurrent"] == 1
+        assert body["data"]["env_count"] == 1
 
         status, _ = request_json(bridge.base_url, "POST", "/episode/start", {"episode_id": "ep1"})
         assert status == 200
 
-        status, body = request_json(bridge.base_url, "POST", "/api/reset", {"episode_id": "reset-ep1"})
+        status, body = request_json(bridge.base_url, "POST", "/api/setup", {"episode_id": "reset-ep1"})
         assert status == 200
         assert body["data"] == {"episode_id": "reset-ep1", "reset": True}
         assert bridge.state.active_episode_id == "reset-ep1"
@@ -293,9 +301,9 @@ def test_screen_page_snapshots_active_execution_state():
         status, html = request_text(bridge.base_url, "GET", "/screen")
         assert status == 200
         assert "MobileGym Screen" in html
-        assert "/screen/snapshot" in html
+        assert "/api/screen" in html
 
-        status, body = request_json(bridge.base_url, "GET", "/screen/snapshot")
+        status, body = request_json(bridge.base_url, "GET", "/api/screen")
         assert status == 200
         assert body["data"]["status"] == "waiting"
         assert body["data"]["active_episode_id"] is None
@@ -310,7 +318,7 @@ def test_screen_page_snapshots_active_execution_state():
         )
         assert status == 200
 
-        status, body = request_json(bridge.base_url, "GET", "/screen/snapshot")
+        status, body = request_json(bridge.base_url, "GET", "/api/screen")
         assert status == 200
         data = body["data"]
         assert data["status"] == "running"
@@ -340,24 +348,34 @@ def test_screen_page_snapshot_routes_by_query_task_id():
         server = BridgeServer(BridgeTaskRouter(states), host="127.0.0.1", port=0)
         try:
             server.start()
+            status, body = request_json(server.base_url, "GET", "/api/concurrent")
+            assert status == 200
+            assert body["data"]["concurrent"] == 2
+            assert body["data"]["env_count"] == 2
+            assert body["data"]["active_routes"] == {}
+
             status, html = request_text(server.base_url, "GET", "/screen?benchmark-task-id=task.alpha")
             assert status == 200
             assert "window.location.search" in html
             assert "taskId" in html
 
-            status, body = request_json(server.base_url, "GET", "/screen/snapshot?benchmark-task-id=task.alpha")
+            status, body = request_json(server.base_url, "GET", "/api/screen?benchmark-task-id=task.alpha")
             assert status == 200
             assert body["data"]["status"] == "waiting"
             assert server.router.task_map() == {}
 
             server.router.state_for_task_id("task.alpha")
             server.router.state_for_task_id("task.beta")
+            status, body = request_json(server.base_url, "GET", "/api/concurrent")
+            assert status == 200
+            assert body["data"]["concurrent"] == 2
+            assert body["data"]["active_routes"] == {"task.alpha": 0, "task.beta": 1}
 
-            status, body = request_json(server.base_url, "GET", "/screen/snapshot?benchmark-task-id=task.alpha")
+            status, body = request_json(server.base_url, "GET", "/api/screen?benchmark-task-id=task.alpha")
             assert status == 200
             assert body["data"]["active_episode_id"] == "ep-alpha"
 
-            status, body = request_json(server.base_url, "GET", "/screen/snapshot?benchmark-task-id=task.beta")
+            status, body = request_json(server.base_url, "GET", "/api/screen?benchmark-task-id=task.beta")
             assert status == 200
             assert body["data"]["active_episode_id"] == "ep-beta"
         finally:
@@ -366,7 +384,7 @@ def test_screen_page_snapshot_routes_by_query_task_id():
 
 def test_tools_api_touch_gestures_use_active_reset_episode_and_normalized_coordinates():
     with RunningBridge() as bridge:
-        status, body = request_json(bridge.base_url, "POST", "/api/reset", {"episode_id": "reset-ep1"})
+        status, body = request_json(bridge.base_url, "POST", "/api/setup", {"episode_id": "reset-ep1"})
         assert status == 200
         assert body["data"] == {"episode_id": "reset-ep1", "reset": True}
 
@@ -422,7 +440,7 @@ def test_tools_api_touch_gestures_use_active_reset_episode_and_normalized_coordi
 
 def test_tools_api_mouse_and_quick_action_inputs_map_to_mobilegym_actions():
     with RunningBridge() as bridge:
-        status, body = request_json(bridge.base_url, "POST", "/api/reset", {"episode_id": "reset-ep1"})
+        status, body = request_json(bridge.base_url, "POST", "/api/setup", {"episode_id": "reset-ep1"})
         assert status == 200
         assert body["data"] == {"episode_id": "reset-ep1", "reset": True}
 
@@ -498,7 +516,7 @@ def test_tools_api_mouse_and_quick_action_inputs_map_to_mobilegym_actions():
 
 def test_tools_api_keyboard_inputs_match_agent_proxy_contract():
     with RunningBridge() as bridge:
-        status, body = request_json(bridge.base_url, "POST", "/api/reset", {"episode_id": "reset-ep1"})
+        status, body = request_json(bridge.base_url, "POST", "/api/setup", {"episode_id": "reset-ep1"})
         assert status == 200
         assert body["data"] == {"episode_id": "reset-ep1", "reset": True}
 

@@ -23,15 +23,15 @@ class FakeResponse:
 def test_environment_screen_snapshot_endpoint_uses_screen_api():
     assert (
         environment_screen_snapshot_endpoint("http://127.0.0.1:19090")
-        == "http://127.0.0.1:19090/screen/snapshot"
+        == "http://127.0.0.1:19090/api/screen"
     )
     assert (
         environment_screen_snapshot_endpoint("http://127.0.0.1:19090/bridge/")
-        == "http://127.0.0.1:19090/bridge/screen/snapshot"
+        == "http://127.0.0.1:19090/bridge/api/screen"
     )
     assert (
         environment_screen_snapshot_endpoint("http://127.0.0.1:19090/screen")
-        == "http://127.0.0.1:19090/screen/snapshot"
+        == "http://127.0.0.1:19090/screen/api/screen"
     )
 
 
@@ -69,7 +69,7 @@ def test_take_environment_screenshot_writes_screen_snapshot(tmp_path):
         )
 
     assert seen["method"] == "GET"
-    assert seen["url"] == "http://127.0.0.1:19090/screen/snapshot"
+    assert seen["url"] == "http://127.0.0.1:19090/api/screen"
     assert seen["headers"]["benchmark-task-id"] == "suite.json:t1"
     assert seen["timeout"] == 7
     assert out.read_bytes() == image

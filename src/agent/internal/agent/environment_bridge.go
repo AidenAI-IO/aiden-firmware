@@ -13,25 +13,25 @@ import (
 
 const BenchmarkTaskIDHeader = "benchmark-task-id"
 
-// ToolProxyClient forwards tool calls to a remote daemon's /api/tools endpoint.
-type ToolProxyClient struct {
+// EnvironmentBridgeClient forwards selected tool calls to an environment bridge's /api/tools endpoint.
+type EnvironmentBridgeClient struct {
 	endpoint        string
 	benchmarkTaskID string
 	httpClient      *http.Client
 }
 
-type ToolProxyClientOption func(*ToolProxyClient)
+type EnvironmentBridgeClientOption func(*EnvironmentBridgeClient)
 
-func WithToolProxyBenchmarkTaskID(taskID string) ToolProxyClientOption {
-	return func(c *ToolProxyClient) {
+func WithEnvironmentBridgeBenchmarkTaskID(taskID string) EnvironmentBridgeClientOption {
+	return func(c *EnvironmentBridgeClient) {
 		c.benchmarkTaskID = strings.TrimSpace(taskID)
 	}
 }
 
-// NewToolProxyClient creates a client that forwards tool calls to the remote endpoint.
-func NewToolProxyClient(endpoint string, opts ...ToolProxyClientOption) *ToolProxyClient {
+// NewEnvironmentBridgeClient creates a client that forwards tool calls to the bridge endpoint.
+func NewEnvironmentBridgeClient(endpoint string, opts ...EnvironmentBridgeClientOption) *EnvironmentBridgeClient {
 	endpoint = strings.TrimRight(endpoint, "/")
-	c := &ToolProxyClient{
+	c := &EnvironmentBridgeClient{
 		endpoint: endpoint,
 		httpClient: &http.Client{
 			Timeout: 5 * time.Minute, // Match typical tool execution timeout
@@ -45,9 +45,9 @@ func NewToolProxyClient(endpoint string, opts ...ToolProxyClientOption) *ToolPro
 	return c
 }
 
-// CallTool forwards a tool invocation to the remote daemon and returns the result.
+// CallTool forwards a tool invocation to the environment bridge and returns the result.
 // The response format matches local tool execution (ToolInvokeResponse from server.go).
-func (c *ToolProxyClient) CallTool(ctx context.Context, toolName, input string) (output string, isError bool, err error) {
+func (c *EnvironmentBridgeClient) CallTool(ctx context.Context, toolName, input string) (output string, isError bool, err error) {
 	url := fmt.Sprintf("%s/api/tools/%s", c.endpoint, toolName)
 
 	// Prepare request body matching server.go's decodeToolInvokeInput expectations
@@ -95,6 +95,6 @@ func (c *ToolProxyClient) CallTool(ctx context.Context, toolName, input string) 
 		return "", true, fmt.Errorf("parse response: %w (body: %s)", err, string(respBody))
 	}
 
-	// Return exactly what the remote daemon returned, preserving error semantics
+	// Return exactly what the environment bridge returned, preserving error semantics.
 	return invokeResp.Output, invokeResp.IsError, nil
 }

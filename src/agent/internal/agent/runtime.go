@@ -52,7 +52,7 @@ type Runtime struct {
 	sessionManager     SessionManager
 	runtimeID          string
 	telemetrySessionID string
-	toolProxy          *ToolProxyClient
+	environmentBridge  *EnvironmentBridgeClient
 	runGate            chan struct{}
 }
 
@@ -357,11 +357,11 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 		skillManager.SetUsagePath(filepath.Join(cfg.ConfigDir, "skill-state", "usage.json"))
 	}
 
-	var toolProxy *ToolProxyClient
-	if cfg.ToolProxy.Enabled && cfg.ToolProxy.Endpoint != "" {
-		toolProxy = NewToolProxyClient(
-			cfg.ToolProxy.Endpoint,
-			WithToolProxyBenchmarkTaskID(cfg.ToolProxy.BenchmarkTaskID),
+	var environmentBridge *EnvironmentBridgeClient
+	if cfg.EnvironmentBridge.Enabled && cfg.EnvironmentBridge.Endpoint != "" {
+		environmentBridge = NewEnvironmentBridgeClient(
+			cfg.EnvironmentBridge.Endpoint,
+			WithEnvironmentBridgeBenchmarkTaskID(cfg.EnvironmentBridge.BenchmarkTaskID),
 		)
 	}
 
@@ -375,7 +375,7 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 		waitForWakeup:      waitForWakeupController,
 		runtimeID:          uuid.NewString(),
 		telemetrySessionID: uuid.NewString(),
-		toolProxy:          toolProxy,
+		environmentBridge:  environmentBridge,
 	}
 	// Set runtime ID for raw HTTP logging.
 	if modelManager, ok := models.(*ModelManager); ok {
@@ -678,8 +678,8 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	executor.ConversationHistory = conversationHistory
 	executor.TodoReminderToolCalls = r.config.TodoReminderToolCallsOrDefault()
 	executor.ToolCallSpeech = r.config.VoiceToolCallSpeechOrDefault()
-	executor.ToolProxy = r.toolProxy
-	executor.ForwardTools = r.config.ToolProxy.ForwardTools
+	executor.EnvironmentBridge = r.environmentBridge
+	executor.EnvironmentBridgeTools = r.config.EnvironmentBridge.Tools
 	executor.SteerInterrupt = req.SteerInterrupt
 	executor.SteerWaiter = req.SteerWaiter
 	executor.FinalSteerProvider = req.FinalSteerProvider

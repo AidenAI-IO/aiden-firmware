@@ -1,212 +1,109 @@
-# Bridge Server Unified Tool API
+# MobileGym Environment Bridge API
 
-## 概述
+MobileGym Bridge Server implements the benchmark environment bridge protocol.
+The same protocol is also exposed by the Go agent when it is used as a real
+device bridge.
 
-MobileGym Bridge Server 现在提供统一的 `/api/tools` endpoint，与 Go agent 的 tool proxy 接口完全兼容。这意味着：
+## Endpoints
 
-1. **统一接口**：Bridge Server 和硬件板子上的 Go agent 使用相同的 API 格式
-2. **无需特殊适配**：Go agent 可以通过 `--tool-proxy-endpoint` 参数连接任何兼容的 tool server
-3. **简化架构**：移除了 MobileGym 特定的 bridge client 代码
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/tools` | List tools exposed by the environment. |
+| `POST /api/tools/{tool_name}` | Invoke an environment tool. |
+| `GET /api/screen` | Return the current screen snapshot for pre/post capture. |
+| `POST /api/setup` | Initialize or reset a task route. |
+| `POST /api/release` | Release a task route. |
+| `GET /api/concurrent` | Return bridge concurrency capacity. |
+| `GET /screen` | Human screen viewer for MobileGym. |
 
-## API 规范
+MobileGym routes concurrent tasks by the `benchmark-task-id` header. The same id
+must be sent to `/api/setup`, `/api/tools/*`, `/api/screen`, and `/api/release`
+for a task worker.
 
-### GET /api/tools
+## Tool Catalog
 
-返回可用工具列表。
-
-**Response:**
-```json
-{
-  "tools": [
-    {
-      "name": "screenshot",
-      "description": "Capture a screenshot...",
-      "args_schema": {
-        "type": "object",
-        "properties": {},
-        "additionalProperties": false
-      }
-    },
-    {
-      "name": "touch_gesture",
-      "description": "Perform touch gestures...",
-      "args_schema": {
-        "type": "object",
-        "properties": {
-          "type": {"type": "string", "enum": ["tap", "swipe", ...]},
-          "point": {"type": "object", ...}
-        }
-      }
-    }
-  ]
-}
+```bash
+curl http://localhost:8888/api/tools
 ```
 
-### POST /api/tools/{tool_name}
+The response contains a `tools` array. Each entry includes `name`,
+`description`, and `args_schema`.
 
-执行指定工具。
+## Tool Invocation
 
-**Headers:**
-- `Content-Type: application/json`
-
-**Request Body:**
-```json
-{
-  "input": {"text": "hello world"},
-  // 或
-  "raw_input": "{\"text\": \"hello world\"}"
-}
+```bash
+curl -X POST http://localhost:8888/api/tools/screenshot \
+  -H "Content-Type: application/json" \
+  -H "benchmark-task-id: suite.json:task-1" \
+  -d '{"input": {}}'
 ```
 
-**Response:**
+Request bodies may use either structured `input` or string `raw_input`:
+
+```json
+{"input": {"text": "hello world"}}
+```
+
+```json
+{"raw_input": "{\"text\":\"hello world\"}"}
+```
+
+The response matches Go agent `ToolInvokeResponse`:
+
 ```json
 {
   "tool": {"name": "keyboard_text"},
-  "raw_input": "{\"text\": \"hello world\"}",
-  "output": "{\"action_output\": \"ok\", \"data\": \"...\", \"width\": 1080, \"height\": 2400}",
+  "raw_input": "{\"text\":\"hello world\"}",
+  "output": "{\"action_output\":\"ok\"}",
   "is_error": false,
   "duration_ms": 123
 }
 ```
 
-## 可用工具
+## Screen Capture
 
-### screenshot
-获取屏幕截图。
+```bash
+curl -H "benchmark-task-id: suite.json:task-1" \
+  http://localhost:8888/api/screen
+```
 
-**Input:** `{}` (空对象)
+The benchmark runner uses this endpoint to save `pre.jpg` and `post.jpg`.
 
-**Output:**
+## Setup And Release
+
+```bash
+curl -X POST http://localhost:8888/api/setup \
+  -H "Content-Type: application/json" \
+  -H "benchmark-task-id: suite.json:task-1" \
+  -d '{}'
+
+curl -X POST http://localhost:8888/api/release \
+  -H "Content-Type: application/json" \
+  -H "benchmark-task-id: suite.json:task-1" \
+  -d '{}'
+```
+
+`/api/setup` claims an env route and resets it. `/api/release` frees that route
+for later tasks.
+
+## Concurrency
+
+```bash
+curl http://localhost:8888/api/concurrent
+```
+
+MobileGym returns the env pool size:
+
 ```json
 {
-  "data": "base64_encoded_jpeg...",
-  "width": 1080,
-  "height": 2400,
-  "format": "jpeg"
+  "ok": true,
+  "data": {
+    "bridge_type": "mobilegym",
+    "concurrent": 5,
+    "env_count": 5,
+    "active_routes": {}
+  }
 }
 ```
 
-### touch_gesture
-执行触摸手势。
-
-**Input:**
-```json
-{
-  "type": "tap",           // tap, double_tap, long_press, swipe, drag, back, home
-  "point": {"x": 500, "y": 800},  // 归一化坐标 (0-1000)
-  "duration_ms": 300       // 可选
-}
-```
-
-**Output:** 包含动作结果和截图的 JSON
-
-### keyboard_text
-输入文本。
-
-**Input:**
-```json
-{
-  "text": "hello world"
-}
-```
-
-### keyboard_tap
-按键盘按键。
-
-**Input:**
-```json
-{
-  "keys": ["enter"]        // 或 ["meta", "h"] 表示 meta+h
-}
-```
-
-## 使用方式
-
-### 方式 1: Go Agent 通过 Tool Proxy 连接
-
-```bash
-# 启动 Bridge Server
-python benchmark/mobilegym/scripts/start_simulator.py \
-  --bridge-port 8888 &
-
-# 启动 Go agent 使用 tool proxy
-go run src/agent/cmd/daemon/main.go \
-  --tool-proxy-endpoint http://localhost:8888 \
-  --tool-proxy-forward screenshot,touch_gesture,keyboard_text,keyboard_tap
-```
-
-### 方式 2: 直接 HTTP 调用
-
-```bash
-# 获取工具列表
-curl http://localhost:8888/api/tools
-
-# 执行 screenshot
-curl -X POST http://localhost:8888/api/tools/screenshot \
-  -H "Content-Type: application/json" \
-  -d '{"input": {}}'
-
-# 执行 tap
-curl -X POST http://localhost:8888/api/tools/touch_gesture \
-  -H "Content-Type: application/json" \
-  -d '{"input": {"type": "tap", "point": {"x": 500, "y": 800}}}'
-```
-
-### 方式 3: Python Tool Proxy Client
-
-```python
-from agent.tool_proxy import ToolProxyClient
-
-client = ToolProxyClient("http://localhost:8888")
-
-# 调用工具
-output, is_error, err = client.CallTool(
-    ctx, 
-    "screenshot", 
-    "{}"
-)
-```
-
-## Episode 管理
-
-在使用工具之前，需要启动一个 episode：
-
-```bash
-# 启动 episode
-curl -X POST http://localhost:8888/episode/start \
-  -H "Content-Type: application/json" \
-  -d '{"episode_id": "task-001"}'
-
-# 使用工具...
-
-# 结束 episode
-curl -X POST http://localhost:8888/episode/end \
-  -H "Content-Type: application/json" \
-  -d '{"episode_id": "task-001"}'
-```
-
-## 兼容性
-
-- ✅ 与 Go agent tool proxy 完全兼容
-- ✅ 支持所有现有的 MobileGym 工具
-- ✅ 向后兼容 episode 管理 API
-
-## 测试
-
-运行单元测试验证 API：
-
-```bash
-cd benchmark
-python -m pytest mobilegym/bridge/test_tools_api.py -v
-```
-
-## 故障排查
-
-### 409 Conflict (no active episode)
-需要先调用 `/episode/start` 启动 episode。
-
-### 504 Timeout
-工具执行超时（默认 30 秒），检查 MobileGym 环境是否正常运行。
-
-### Unknown tool
-检查工具名称是否正确，使用 `GET /api/tools` 查看可用工具列表。
+The Go agent bridge returns `concurrent: 1`.

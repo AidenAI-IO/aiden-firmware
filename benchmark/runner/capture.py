@@ -22,11 +22,9 @@ def environment_screen_snapshot_endpoint(environment_url: str) -> str:
         raise CaptureError(f"invalid environment_url: {environment_url!r}")
     path = parsed.path.rstrip("/")
     if path in {"", "/"}:
-        path = "/screen/snapshot"
-    elif path == "/screen":
-        path = "/screen/snapshot"
-    elif path != "/screen/snapshot":
-        path = f"{path}/screen/snapshot"
+        path = "/api/screen"
+    elif path != "/api/screen":
+        path = f"{path}/api/screen"
     return urllib.parse.urlunparse(
         parsed._replace(path=path, params="", query="", fragment="")
     )
@@ -38,7 +36,7 @@ def take_environment_screenshot(
     benchmark_task_id: str | None = None,
     timeout: int = 30,
 ) -> tuple[int, int]:
-    """Read the MobileGym screen snapshot API and write screenshot bytes to out_path."""
+    """Read the environment bridge screen API and write screenshot bytes to out_path."""
     endpoint = environment_screen_snapshot_endpoint(environment_url)
     headers: dict[str, str] = {}
     task_id = str(benchmark_task_id or "").strip()
@@ -54,37 +52,37 @@ def take_environment_screenshot(
         except Exception:
             body = b""
         raise CaptureError(
-            f"screen snapshot failed HTTP {e.code}: {body[:200]!r}"
+            f"screen request failed HTTP {e.code}: {body[:200]!r}"
         ) from e
     except urllib.error.URLError as e:
-        raise CaptureError(f"screen snapshot request failed: {e}") from e
+        raise CaptureError(f"screen request failed: {e}") from e
     except TimeoutError as e:
-        raise CaptureError(f"screen snapshot timed out: {e}") from e
+        raise CaptureError(f"screen request timed out: {e}") from e
 
     try:
         payload = json.loads(body.decode("utf-8")) if body else {}
     except (UnicodeDecodeError, json.JSONDecodeError) as e:
         raise CaptureError(
-            f"screen snapshot returned invalid JSON: {body[:200]!r}"
+            f"screen request returned invalid JSON: {body[:200]!r}"
         ) from e
     screenshot = _extract_screenshot_payload(payload)
-    return _write_screenshot_payload(screenshot, out_path, context="screen snapshot")
+    return _write_screenshot_payload(screenshot, out_path, context="screen")
 
 
 def _extract_screenshot_payload(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
-        raise CaptureError(f"screen snapshot returned unexpected payload: {payload!r}")
+        raise CaptureError(f"screen returned unexpected payload: {payload!r}")
     if payload.get("ok") is False:
-        raise CaptureError(f"screen snapshot failed: {payload.get('error') or payload}")
+        raise CaptureError(f"screen failed: {payload.get('error') or payload}")
     data = payload.get("data")
     if isinstance(data, dict) and "screenshot" in data:
         screenshot = data.get("screenshot")
         if not screenshot:
             status = data.get("status") or "no active screen"
-            raise CaptureError(f"screen snapshot returned no screenshot: {status}")
+            raise CaptureError(f"screen returned no screenshot: {status}")
         if not isinstance(screenshot, dict):
             raise CaptureError(
-                f"screen snapshot returned invalid screenshot: {screenshot!r}"
+                f"screen returned invalid screenshot: {screenshot!r}"
             )
         return screenshot
     if "screenshot" in payload:
@@ -93,7 +91,7 @@ def _extract_screenshot_payload(payload: Any) -> dict[str, Any]:
             return screenshot
     if "data" in payload and "width" in payload and "height" in payload:
         return payload
-    raise CaptureError(f"screen snapshot returned no screenshot field: {payload!r}")
+    raise CaptureError(f"screen returned no screenshot field: {payload!r}")
 
 
 def _write_screenshot_payload(

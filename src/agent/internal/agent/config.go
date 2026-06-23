@@ -16,10 +16,10 @@ type SearchConfig struct {
 	APIKey   string `toml:"api_key,omitempty"`
 }
 
-type ToolProxyConfig struct {
+type EnvironmentBridgeConfig struct {
 	Enabled         bool     `toml:"-"` // Only set via CLI, not config file
 	Endpoint        string   `toml:"-"` // Only set via CLI, not config file
-	ForwardTools    []string `toml:"-"` // Only set via CLI, not config file
+	Tools           []string `toml:"-"` // Only set via CLI, not config file
 	BenchmarkTaskID string   `toml:"-"` // Only set via CLI, not config file
 }
 
@@ -113,50 +113,50 @@ func (c LogConfig) LLMHTTPRetentionDaysOrDefault() int {
 }
 
 type Config struct {
-	Model                      ModelConfig        `toml:"model"`
-	ModelText                  ModelConfig        `toml:"model_text,omitempty"` // Override for STT-then-text mode
-	TTS                        TTSConfig          `toml:"tts,omitempty"`
-	STT                        STTConfig          `toml:"stt,omitempty"`
-	HID                        HIDConfig          `toml:"hid"`
-	Device                     DeviceConfig       `toml:"device,omitempty"`
-	Audio                      AudioConfig        `toml:"audio,omitempty"`
-	AudioArchive               AudioArchiveConfig `toml:"audio_archive,omitempty"`
-	Log                        LogConfig          `toml:"log,omitempty"`
-	Search                     SearchConfig       `toml:"search,omitempty"`
-	ToolProxy                  ToolProxyConfig    `toml:"-"` // Only set via CLI flags, never from config file
-	LiveActivity               LiveActivityConfig `toml:"live_activity,omitempty"`
-	Instruction                string             `toml:"custom_instruction,omitempty"`
-	AdditionalPrompt           string             `toml:"additional_prompt,omitempty"`
-	InputMode                  string             `toml:"input_mode,omitempty"`   // "text", "audio", "stt"
-	TriggerMode                string             `toml:"trigger_mode,omitempty"` // "manual", "wakeup"
-	VADBackend                 string             `toml:"vad_backend,omitempty"`  // "rknn", "cpu"
-	VADModelPath               string             `toml:"vad_model_path,omitempty"`
-	VADHelperPath              string             `toml:"vad_helper_path,omitempty"`
-	VADSpeechThreshold         float64            `toml:"vad_speech_threshold,omitempty"`
-	SilenceMs                  int                `toml:"silence_ms,omitempty"`
-	MinSpeechMs                int                `toml:"min_speech_ms,omitempty"`
-	VoiceFollowupEnabled       *bool              `toml:"voice_followup_enabled,omitempty"`
-	VoiceFollowupTimeoutMs     int                `toml:"voice_followup_timeout_ms,omitempty"`
-	VoiceFirstTurnTimeoutMs    int                `toml:"voice_first_turn_timeout_ms,omitempty"`
-	VoiceMaxTurns              int                `toml:"voice_max_turns,omitempty"`
-	VoiceInterruptOnWakeup     *bool              `toml:"voice_interrupt_on_wakeup,omitempty"`
-	VoiceStreamingTTSEnabled   *bool              `toml:"voice_streaming_tts_enabled,omitempty"`
-	VoiceToolCallSpeech        *bool              `toml:"voice_tool_call_speech,omitempty"`
-	VoiceProgressSpeechEnabled *bool              `toml:"voice_progress_speech_enabled,omitempty"`
-	VoiceMaxResponseTokens     int                `toml:"voice_max_response_tokens,omitempty"`
-	TodoReminderToolCalls      int                `toml:"todo_reminder_tool_calls,omitempty"`
-	MaxIterations              int                `toml:"max_iterations,omitempty"`
-	ForceSimpleLoop            bool               `toml:"force_simple_loop,omitempty"`
-	ScreenshotKeepN            int                `toml:"screenshot_keep_n,omitempty"`
-	ScreenshotPruneInterval    int                `toml:"screenshot_prune_interval,omitempty"`
-	ScreenStableTimeoutMs      int                `toml:"screen_stable_timeout_ms,omitempty"`
-	ScreenStableMs             int                `toml:"screen_stable_ms,omitempty"`
-	ScreenStableDiffThreshold  float64            `toml:"screen_stable_diff_threshold,omitempty"`
-	SkillsDirs                 []string           `toml:"skills_dirs"`
-	BundledSkillsDir           string             `toml:"bundled_skills_dir,omitempty"`
-	SkillMergeModel            SkillMergeModel    `toml:"-"`
-	Telemetry                  TelemetryConfig    `toml:"telemetry,omitempty"`
-	ConfigDir                  string             `toml:"-"`
+	Model                      ModelConfig             `toml:"model"`
+	ModelText                  ModelConfig             `toml:"model_text,omitempty"` // Override for STT-then-text mode
+	TTS                        TTSConfig               `toml:"tts,omitempty"`
+	STT                        STTConfig               `toml:"stt,omitempty"`
+	HID                        HIDConfig               `toml:"hid"`
+	Device                     DeviceConfig            `toml:"device,omitempty"`
+	Audio                      AudioConfig             `toml:"audio,omitempty"`
+	AudioArchive               AudioArchiveConfig      `toml:"audio_archive,omitempty"`
+	Log                        LogConfig               `toml:"log,omitempty"`
+	Search                     SearchConfig            `toml:"search,omitempty"`
+	EnvironmentBridge          EnvironmentBridgeConfig `toml:"-"` // Only set via CLI flags, never from config file
+	LiveActivity               LiveActivityConfig      `toml:"live_activity,omitempty"`
+	Instruction                string                  `toml:"custom_instruction,omitempty"`
+	AdditionalPrompt           string                  `toml:"additional_prompt,omitempty"`
+	InputMode                  string                  `toml:"input_mode,omitempty"`   // "text", "audio", "stt"
+	TriggerMode                string                  `toml:"trigger_mode,omitempty"` // "manual", "wakeup"
+	VADBackend                 string                  `toml:"vad_backend,omitempty"`  // "rknn", "cpu"
+	VADModelPath               string                  `toml:"vad_model_path,omitempty"`
+	VADHelperPath              string                  `toml:"vad_helper_path,omitempty"`
+	VADSpeechThreshold         float64                 `toml:"vad_speech_threshold,omitempty"`
+	SilenceMs                  int                     `toml:"silence_ms,omitempty"`
+	MinSpeechMs                int                     `toml:"min_speech_ms,omitempty"`
+	VoiceFollowupEnabled       *bool                   `toml:"voice_followup_enabled,omitempty"`
+	VoiceFollowupTimeoutMs     int                     `toml:"voice_followup_timeout_ms,omitempty"`
+	VoiceFirstTurnTimeoutMs    int                     `toml:"voice_first_turn_timeout_ms,omitempty"`
+	VoiceMaxTurns              int                     `toml:"voice_max_turns,omitempty"`
+	VoiceInterruptOnWakeup     *bool                   `toml:"voice_interrupt_on_wakeup,omitempty"`
+	VoiceStreamingTTSEnabled   *bool                   `toml:"voice_streaming_tts_enabled,omitempty"`
+	VoiceToolCallSpeech        *bool                   `toml:"voice_tool_call_speech,omitempty"`
+	VoiceProgressSpeechEnabled *bool                   `toml:"voice_progress_speech_enabled,omitempty"`
+	VoiceMaxResponseTokens     int                     `toml:"voice_max_response_tokens,omitempty"`
+	TodoReminderToolCalls      int                     `toml:"todo_reminder_tool_calls,omitempty"`
+	MaxIterations              int                     `toml:"max_iterations,omitempty"`
+	ForceSimpleLoop            bool                    `toml:"force_simple_loop,omitempty"`
+	ScreenshotKeepN            int                     `toml:"screenshot_keep_n,omitempty"`
+	ScreenshotPruneInterval    int                     `toml:"screenshot_prune_interval,omitempty"`
+	ScreenStableTimeoutMs      int                     `toml:"screen_stable_timeout_ms,omitempty"`
+	ScreenStableMs             int                     `toml:"screen_stable_ms,omitempty"`
+	ScreenStableDiffThreshold  float64                 `toml:"screen_stable_diff_threshold,omitempty"`
+	SkillsDirs                 []string                `toml:"skills_dirs"`
+	BundledSkillsDir           string                  `toml:"bundled_skills_dir,omitempty"`
+	SkillMergeModel            SkillMergeModel         `toml:"-"`
+	Telemetry                  TelemetryConfig         `toml:"telemetry,omitempty"`
+	ConfigDir                  string                  `toml:"-"`
 }
 
 type TelemetryConfig struct {

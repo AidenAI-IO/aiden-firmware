@@ -92,12 +92,15 @@ def _handler_for(bridge: BridgeServer):
             if path == "/api/tools":
                 bridge.tools_api.handle_request(self, path)
                 return
+            if path == "/api/concurrent":
+                self._send_json(200, bridge_ok(_concurrent_payload(bridge)))
+                return
             if path in {"/screen", "/screen/"}:
                 self._handle_screen_page()
                 return
-            if path == "/screen/snapshot":
+            if path == "/api/screen":
                 try:
-                    self._handle_screen_snapshot()
+                    self._handle_api_screen()
                 except MissingBenchmarkTaskIDError as exc:
                     self._send_error(400, "missing_benchmark_task_id", str(exc))
                 except NoBridgeEnvAvailableError as exc:
@@ -106,10 +109,7 @@ def _handler_for(bridge: BridgeServer):
             if path != "/health":
                 self._send_error(404, "not_found", "unknown endpoint")
                 return
-            self._send_json(
-                200,
-                bridge_ok({"status": "ok", "active_episode_id": bridge.state.active_episode_id}),
-            )
+            self._send_json(200, bridge_ok(_health_payload(bridge)))
 
         def do_POST(self) -> None:
             # Handle /api/tools/{tool_name} invocation
@@ -126,8 +126,8 @@ def _handler_for(bridge: BridgeServer):
                     self._handle_episode_start(payload)
                 elif path == "episode/end":
                     self._handle_episode_end(payload)
-                elif path in {"api/reset", "reset"}:
-                    self._handle_reset(payload)
+                elif path == "api/setup":
+                    self._handle_setup(payload)
                 elif path in {"api/release", "release"}:
                     self._handle_release()
                 elif path == "state":
@@ -166,7 +166,7 @@ def _handler_for(bridge: BridgeServer):
             result = bridge.submit_to_state(state, state.end_episode(str(payload.get("episode_id", ""))))
             self._send_json(200, bridge_ok(result))
 
-        def _handle_reset(self, payload: dict[str, Any]) -> None:
+        def _handle_setup(self, payload: dict[str, Any]) -> None:
             state = self._request_state()
             episode_id = str(payload.get("episode_id") or "").strip()
             if not episode_id:
@@ -205,7 +205,7 @@ def _handler_for(bridge: BridgeServer):
         def _handle_screen_page(self) -> None:
             self._send_text(200, "text/html; charset=utf-8", SCREEN_HTML)
 
-        def _handle_screen_snapshot(self) -> None:
+        def _handle_api_screen(self) -> None:
             state = self._request_screen_state()
             if state is None or not state.active_episode_id:
                 self._send_json(200, bridge_ok(_screen_snapshot_payload()))
@@ -381,7 +381,7 @@ SCREEN_HTML = """<!doctype html>
     const placeholderEl = document.getElementById('placeholder');
     const actionsEl = document.getElementById('actions');
     const taskId = new URLSearchParams(window.location.search).get('benchmark-task-id') || '';
-    const snapshotPath = '/screen/snapshot' + window.location.search;
+    const snapshotPath = '/api/screen' + window.location.search;
     taskIdEl.textContent = taskId ? `task ${taskId}` : '';
     taskStateEl.textContent = taskId || 'default';
 
@@ -459,6 +459,27 @@ def _screen_snapshot_payload(
         "screenshot": screenshot,
         "action_count": len(action_log or []),
         "actions": actions,
+    }
+
+
+def _health_payload(bridge: BridgeServer) -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "bridge_type": "mobilegym",
+        "env_count": len(bridge.router.states),
+        "concurrent": len(bridge.router.states),
+        "active_episode_id": bridge.state.active_episode_id,
+        "active_routes": bridge.router.task_map(),
+        "interfaces": ["/api/tools", "/api/screen", "/api/setup", "/api/release", "/api/concurrent"],
+    }
+
+
+def _concurrent_payload(bridge: BridgeServer) -> dict[str, Any]:
+    return {
+        "bridge_type": "mobilegym",
+        "concurrent": len(bridge.router.states),
+        "env_count": len(bridge.router.states),
+        "active_routes": bridge.router.task_map(),
     }
 
 

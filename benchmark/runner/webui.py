@@ -434,6 +434,9 @@ class BenchmarkWebApp:
                 )
             if environment_endpoint:
                 environment_web_url = mobilegym_screen_url(environment_endpoint)
+                bridge_concurrency = read_environment_bridge_concurrency(environment_endpoint)
+                if bridge_concurrency is not None:
+                    parallel_tasks = bridge_concurrency
 
         job = Job(
             id=job_id,
@@ -695,7 +698,7 @@ class BenchmarkWebApp:
                 image=self.config.daemon_image,
                 host_port=host_port,
                 config_dir=Path(job.config_dir),
-                tool_proxy_endpoint=job.docker_endpoint,
+                environment_bridge_endpoint=job.docker_endpoint,
                 log_path=Path(job.runner_log),
                 stop_requested=lambda: self._job_stop_requested(job),
             )
@@ -925,7 +928,7 @@ class BenchmarkWebApp:
                     image=self.config.daemon_image,
                     host_port=host_port,
                     config_dir=Path(job.config_dir),
-                    tool_proxy_endpoint=job.docker_endpoint,
+                    environment_bridge_endpoint=job.docker_endpoint,
                     benchmark_task_id=benchmark_task_id,
                     log_path=Path(worker_job.runner_log),
                     stop_requested=lambda: (
@@ -1524,6 +1527,39 @@ def mobilegym_screen_url(endpoint: str, benchmark_task_id: str = "") -> str:
     return urllib.parse.urlunparse(parsed._replace(path=path, params="", query=query, fragment="")).rstrip("/")
 
 
+def environment_bridge_concurrent_endpoint(endpoint: str) -> str:
+    raw = str(endpoint or "").strip()
+    if not raw:
+        raise ValueError("environment bridge endpoint is required")
+    parsed = urllib.parse.urlparse(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"invalid environment bridge endpoint: {endpoint!r}")
+    path = parsed.path.rstrip("/")
+    if path in {"", "/"}:
+        path = "/api/concurrent"
+    elif path != "/api/concurrent":
+        path = f"{path}/api/concurrent"
+    return urllib.parse.urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
+
+
+def read_environment_bridge_concurrency(endpoint: str, *, timeout: float = 2.0) -> int | None:
+    try:
+        url = environment_bridge_concurrent_endpoint(endpoint)
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            body = response.read()
+        payload = json.loads(body.decode("utf-8")) if body else {}
+    except Exception:
+        return None
+    if not isinstance(payload, dict) or payload.get("ok") is False:
+        return None
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    try:
+        concurrent_value = int(data.get("concurrent"))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return concurrent_value if concurrent_value > 0 else None
+
+
 def reserve_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
@@ -1716,21 +1752,21 @@ def daemon_compose_env(
     image: str,
     host_port: int | None = None,
     config_dir: Path | None = None,
-    tool_proxy_endpoint: str = "",
+    environment_bridge_endpoint: str = "",
     benchmark_task_id: str = "",
-    tool_proxy_mode: bool | None = None,
+    environment_bridge_mode: bool | None = None,
 ) -> dict[str, str]:
     env = dict(os.environ)
     env["AIDEN_DAEMON_IMAGE"] = image
-    proxy_enabled = bool(tool_proxy_endpoint) if tool_proxy_mode is None else bool(tool_proxy_mode)
-    env["AIDEN_TOOL_PROXY_MODE"] = "1" if proxy_enabled else "0"
+    bridge_enabled = bool(environment_bridge_endpoint) if environment_bridge_mode is None else bool(environment_bridge_mode)
+    env["AIDEN_ENVIRONMENT_BRIDGE_MODE"] = "1" if bridge_enabled else "0"
     if host_port is not None:
         env["AIDEN_DAEMON_HOST_PORT"] = str(host_port)
     if config_dir is not None:
         env["AIDEN_CONFIG_DIR"] = str(config_dir.resolve())
-    if tool_proxy_endpoint:
-        env["TOOL_PROXY_ENDPOINT"] = tool_proxy_endpoint
-        no_proxy = docker_no_proxy(tool_proxy_endpoint)
+    if environment_bridge_endpoint:
+        env["ENVIRONMENT_BRIDGE_ENDPOINT"] = environment_bridge_endpoint
+        no_proxy = docker_no_proxy(environment_bridge_endpoint)
         env["NO_PROXY"] = no_proxy
         env["no_proxy"] = no_proxy
     if benchmark_task_id:
@@ -1744,10 +1780,10 @@ def start_daemon_compose(
     image: str,
     host_port: int,
     config_dir: Path,
-    tool_proxy_endpoint: str,
+    environment_bridge_endpoint: str,
     log_path: Path,
     benchmark_task_id: str = "",
-    tool_proxy_mode: bool | None = None,
+    environment_bridge_mode: bool | None = None,
     stop_requested: Callable[[], bool] | None = None,
 ) -> str:
     project = daemon_compose_project(job)
@@ -1755,9 +1791,9 @@ def start_daemon_compose(
         image=image,
         host_port=host_port,
         config_dir=config_dir,
-        tool_proxy_endpoint=tool_proxy_endpoint,
+        environment_bridge_endpoint=environment_bridge_endpoint,
         benchmark_task_id=benchmark_task_id,
-        tool_proxy_mode=tool_proxy_mode,
+        environment_bridge_mode=environment_bridge_mode,
     )
     run_logged_command(
         daemon_compose_command(

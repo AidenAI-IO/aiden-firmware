@@ -4,9 +4,9 @@ from runner.agent_client import AgentRequestError, AgentTimeoutError
 from runner.reset import (
     ResetError,
     call_environment_release,
-    call_environment_reset,
+    call_environment_setup,
     environment_release_endpoint,
-    environment_reset_endpoint,
+    environment_setup_endpoint,
     per_task_setup,
 )
 
@@ -87,17 +87,17 @@ def test_agent_prompt_setup_can_make_history_clear_explicit():
 
     assert client.calls[-1] == ("clear_history",)
 
-def test_environment_reset_endpoint_is_derived_from_environment_endpoint():
-    assert environment_reset_endpoint("http://127.0.0.1:9090") == "http://127.0.0.1:9090/api/reset"
-    assert environment_reset_endpoint("http://127.0.0.1:9090/api/reset") == "http://127.0.0.1:9090/api/reset"
+def test_environment_setup_endpoint_is_derived_from_environment_endpoint():
+    assert environment_setup_endpoint("http://127.0.0.1:9090") == "http://127.0.0.1:9090/api/setup"
+    assert environment_setup_endpoint("http://127.0.0.1:9090/api/setup") == "http://127.0.0.1:9090/api/setup"
 
 
 def test_environment_release_endpoint_is_derived_from_environment_endpoint():
     assert environment_release_endpoint("http://127.0.0.1:9090") == "http://127.0.0.1:9090/api/release"
-    assert environment_release_endpoint("http://127.0.0.1:9090/api/reset") == "http://127.0.0.1:9090/api/release"
+    assert environment_release_endpoint("http://127.0.0.1:9090/api/setup") == "http://127.0.0.1:9090/api/release"
 
 
-def test_call_environment_reset_posts_to_api_reset(monkeypatch):
+def test_call_environment_setup_posts_to_api_setup(monkeypatch):
     seen = {}
 
     class FakeResponse:
@@ -122,10 +122,10 @@ def test_call_environment_reset_posts_to_api_reset(monkeypatch):
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
-    result = call_environment_reset("http://127.0.0.1:9090", timeout=12)
+    result = call_environment_setup("http://127.0.0.1:9090", timeout=12)
 
     assert seen == {
-        "url": "http://127.0.0.1:9090/api/reset",
+        "url": "http://127.0.0.1:9090/api/setup",
         "method": "POST",
         "body": b"{}",
         "task_id": None,
@@ -134,7 +134,7 @@ def test_call_environment_reset_posts_to_api_reset(monkeypatch):
     assert result["data"]["episode_id"] == "reset-1"
 
 
-def test_call_environment_reset_sends_benchmark_task_id_header(monkeypatch):
+def test_call_environment_setup_sends_benchmark_task_id_header(monkeypatch):
     seen = {}
 
     class FakeResponse:
@@ -155,7 +155,7 @@ def test_call_environment_reset_sends_benchmark_task_id_header(monkeypatch):
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
-    call_environment_reset("http://127.0.0.1:9090", task_id="clock.CountAlarms")
+    call_environment_setup("http://127.0.0.1:9090", task_id="clock.CountAlarms")
 
     assert seen["task_id"] == "clock.CountAlarms"
 

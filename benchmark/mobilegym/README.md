@@ -9,7 +9,7 @@ MobileGym **仅作为设备模拟器**，通过统一的 `/api/tools` endpoint �
 ```
 benchmark/runner/main.py (测试编排)
   ↓ /api/chat
-Aiden Go Daemon (tool-proxy-endpoint)
+Aiden Go Daemon (environment-bridge mode)
   ↓ /api/tools/* (统一工具接口)
 MobileGym Bridge Server (HTTP ↔ env.step)
   ↓ env.step(action)
@@ -19,8 +19,8 @@ MobileGym Simulator (bench_env)
 **关键点**：
 - ✅ 使用 `benchmark/runner` 统一测试流程
 - ✅ 使用 `benchmark/suites/*.json` 定义测试任务
-- ✅ Bridge Server 提供 `/api/tools` 统一接口，与 Go agent 完全兼容
-- ✅ 通过 tool proxy 模式连接，无需特殊配置
+- ✅ Bridge Server 提供 environment bridge 接口，与 Go agent 调度协议对齐
+- ✅ 通过 environment bridge 模式连接，无需特殊配置
 - ❌ 不使用 MobileGym 的 `SerialRunner`、`factory`、agent 注册
 
 ## 🚀 快速开始
@@ -33,12 +33,13 @@ python benchmark/mobilegym/scripts/start_simulator.py \
   --env-url http://localhost:4173 \
   --bridge-port 8888 &
 
-# 2. 启动 Aiden daemon 使用 tool proxy 模式
-# 启动 daemon，指定 tool proxy endpoint
+# 2. 启动 Aiden daemon 使用 environment bridge 模式
+# 启动 daemon，指定 environment bridge endpoint
 go run src/agent/cmd/daemon/main.go \
   --config /path/to/agent.toml \
-  --tool-proxy-endpoint http://localhost:8888 \
-  --tool-proxy-forward screenshot,touch_gesture,keyboard_text,keyboard_tap &
+  --environment-bridge-mode \
+  --environment-bridge-endpoint http://localhost:8888 \
+  --environment-bridge-tools screenshot,touch_gesture,keyboard_text,keyboard_tap &
 
 # 3. 运行 benchmark（使用标准 runner）
 python -m benchmark.runner run \
@@ -46,7 +47,7 @@ python -m benchmark.runner run \
   --agent-url http://localhost:8080
 ```
 
-**注意**：现在使用统一的 tool proxy 模式，不再需要 `device.backend=mobilegym` 配置。
+**注意**：现在使用统一的 environment bridge 模式，不再需要 `device.backend=mobilegym` 配置。
 
 ### 方式 2：Docker（推荐）
 
@@ -148,15 +149,16 @@ benchmark/mobilegym/
 
 ## 🔧 配置说明
 
-### Tool Proxy 模式
+### Environment Bridge 模式
 
 使用命令行参数启动 daemon：
 
 ```bash
 go run cmd/daemon/main.go \
   --config agent.toml \
-  --tool-proxy-endpoint http://localhost:8888 \
-  --tool-proxy-forward screenshot,touch_gesture,keyboard_text,keyboard_tap
+  --environment-bridge-mode \
+  --environment-bridge-endpoint http://localhost:8888 \
+  --environment-bridge-tools screenshot,touch_gesture,keyboard_text,keyboard_tap
 ```
 
 ### Bridge 环境变量

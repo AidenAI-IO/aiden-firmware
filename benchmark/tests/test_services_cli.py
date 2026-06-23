@@ -41,7 +41,7 @@ def test_start_mobilegym_env_prints_environment_urls(tmp_path: Path, monkeypatch
     assert payload["parallel_envs"] == 3
     assert payload["agent_daemon_command"] == (
         "uv run python -m runner start-agent-daemon "
-        "--tool-proxy-endpoint http://127.0.0.1:19090"
+        "--environment-bridge-endpoint http://127.0.0.1:19090"
     )
     assert payload["stop_command"] == "docker rm -f aiden-mobilegym-env-mobilegym-smoke"
     assert health_urls == [("http://127.0.0.1:19090/health", 12)]
@@ -54,7 +54,7 @@ def test_start_mobilegym_env_prints_environment_urls(tmp_path: Path, monkeypatch
     assert "--parallel-envs 3" in command[-1]
 
 
-def test_start_agent_daemon_prints_agent_url_and_rewrites_tool_proxy(tmp_path: Path, monkeypatch, capsys):
+def test_start_agent_daemon_prints_agent_url_and_rewrites_environment_bridge(tmp_path: Path, monkeypatch, capsys):
     captured = {}
 
     monkeypatch.setattr(services, "ensure_daemon_image", lambda *args, **kwargs: None)
@@ -76,7 +76,7 @@ def test_start_agent_daemon_prints_agent_url_and_rewrites_tool_proxy(tmp_path: P
         agent_config="",
         daemon_image="aiden-agent-daemon:test",
         no_build_daemon_image=True,
-        tool_proxy_endpoint="http://127.0.0.1:19090",
+        environment_bridge_endpoint="http://127.0.0.1:19090",
         benchmark_task_id="suite.json:t1",
         ready_timeout_sec=9,
         json=True,
@@ -86,8 +86,8 @@ def test_start_agent_daemon_prints_agent_url_and_rewrites_tool_proxy(tmp_path: P
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["agent_url"] == "http://127.0.0.1:18081"
-    assert payload["tool_proxy_endpoint"] == "http://127.0.0.1:19090"
-    assert payload["docker_tool_proxy_endpoint"] == "http://host.docker.internal:19090"
+    assert payload["environment_bridge_endpoint"] == "http://127.0.0.1:19090"
+    assert payload["docker_environment_bridge_endpoint"] == "http://host.docker.internal:19090"
     assert payload["benchmark_task_id"] == "suite.json:t1"
     assert payload["container_id"] == "agent-container"
     assert payload["compose_project"] == "aiden-benchmark-agent-agent-smoke"
@@ -98,12 +98,12 @@ def test_start_agent_daemon_prints_agent_url_and_rewrites_tool_proxy(tmp_path: P
     kwargs = captured["kwargs"]
     assert kwargs["image"] == "aiden-agent-daemon:test"
     assert kwargs["host_port"] == 18081
-    assert kwargs["tool_proxy_endpoint"] == "http://host.docker.internal:19090"
+    assert kwargs["environment_bridge_endpoint"] == "http://host.docker.internal:19090"
     assert kwargs["benchmark_task_id"] == "suite.json:t1"
-    assert kwargs["tool_proxy_mode"] is True
+    assert kwargs["environment_bridge_mode"] is True
 
 
-def test_start_agent_daemon_allows_no_tool_proxy(tmp_path: Path, monkeypatch, capsys):
+def test_start_agent_daemon_allows_no_environment_bridge(tmp_path: Path, monkeypatch, capsys):
     captured = {}
 
     monkeypatch.setattr(services, "ensure_daemon_image", lambda *args, **kwargs: None)
@@ -124,7 +124,7 @@ def test_start_agent_daemon_allows_no_tool_proxy(tmp_path: Path, monkeypatch, ca
         agent_config="",
         daemon_image="aiden-agent-daemon:test",
         no_build_daemon_image=True,
-        tool_proxy_endpoint="",
+        environment_bridge_endpoint="",
         benchmark_task_id="suite.json:t1",
         ready_timeout_sec=9,
         json=True,
@@ -133,11 +133,11 @@ def test_start_agent_daemon_allows_no_tool_proxy(tmp_path: Path, monkeypatch, ca
     assert services.cmd_start_agent_daemon(args) == 0
 
     payload = json.loads(capsys.readouterr().out)
-    assert payload["tool_proxy_endpoint"] == ""
+    assert payload["environment_bridge_endpoint"] == ""
     assert payload["benchmark_task_id"] == ""
-    assert captured["kwargs"]["tool_proxy_endpoint"] == ""
+    assert captured["kwargs"]["environment_bridge_endpoint"] == ""
     assert captured["kwargs"]["benchmark_task_id"] == ""
-    assert captured["kwargs"]["tool_proxy_mode"] is False
+    assert captured["kwargs"]["environment_bridge_mode"] is False
 
 
 def _ns(**kwargs):

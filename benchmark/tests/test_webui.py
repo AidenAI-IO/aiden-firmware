@@ -73,6 +73,17 @@ def test_mobilegym_screen_url_points_at_bridge_screen():
     )
 
 
+def test_environment_bridge_concurrent_endpoint_points_at_bridge_api():
+    assert (
+        webui.environment_bridge_concurrent_endpoint("http://127.0.0.1:19090")
+        == "http://127.0.0.1:19090/api/concurrent"
+    )
+    assert (
+        webui.environment_bridge_concurrent_endpoint("http://127.0.0.1:19090/bridge/")
+        == "http://127.0.0.1:19090/bridge/api/concurrent"
+    )
+
+
 def test_prepare_run_config_renders_template(tmp_path: Path, monkeypatch):
     base = tmp_path / "base"
     base.mkdir()
@@ -306,6 +317,13 @@ def test_start_job_persists_job_record_without_api_key(tmp_path: Path, monkeypat
 
     monkeypatch.setattr(webui.threading, "Thread", FakeThread)
     monkeypatch.setattr(webui, "reserve_free_port", lambda: 18080)
+    queried = []
+
+    def fake_read_concurrency(endpoint: str):
+        queried.append(endpoint)
+        return 4
+
+    monkeypatch.setattr(webui, "read_environment_bridge_concurrency", fake_read_concurrency)
 
     job = app.start_job(
         {
@@ -437,6 +455,13 @@ def test_start_job_derives_mobilegym_environment_endpoint(tmp_path: Path, monkey
 
     monkeypatch.setattr(webui.threading, "Thread", FakeThread)
     monkeypatch.setattr(webui, "reserve_free_port", lambda: 18080)
+    queried = []
+
+    def fake_read_concurrency(endpoint: str):
+        queried.append(endpoint)
+        return 4
+
+    monkeypatch.setattr(webui, "read_environment_bridge_concurrency", fake_read_concurrency)
 
     job = app.start_job(
         {
@@ -451,7 +476,8 @@ def test_start_job_derives_mobilegym_environment_endpoint(tmp_path: Path, monkey
     assert job["environment_endpoint"] == "http://127.0.0.1:19090"
     assert job["environment_type"] == "mobilegym"
     assert job["environment_web_url"] == "http://127.0.0.1:19090/screen"
-    assert job["parallel_tasks"] == 3
+    assert job["parallel_tasks"] == 4
+    assert queried == ["http://127.0.0.1:19090"]
 
 
 def test_run_suite_passes_judge_model_and_api_key_env(tmp_path: Path, monkeypatch):
@@ -1180,7 +1206,7 @@ def test_daemon_compose_command_and_env_forward_tools_to_environment(tmp_path: P
         image="aiden-agent-daemon:local",
         host_port=18081,
         config_dir=config,
-        tool_proxy_endpoint="http://host.docker.internal:18080",
+        environment_bridge_endpoint="http://host.docker.internal:18080",
         benchmark_task_id="suite.json:t1",
     )
 
@@ -1191,9 +1217,9 @@ def test_daemon_compose_command_and_env_forward_tools_to_environment(tmp_path: P
     assert env["AIDEN_DAEMON_IMAGE"] == "aiden-agent-daemon:local"
     assert env["AIDEN_DAEMON_HOST_PORT"] == "18081"
     assert env["AIDEN_CONFIG_DIR"] == str(config.resolve())
-    assert env["TOOL_PROXY_ENDPOINT"] == "http://host.docker.internal:18080"
+    assert env["ENVIRONMENT_BRIDGE_ENDPOINT"] == "http://host.docker.internal:18080"
     assert env["AIDEN_BENCHMARK_TASK_ID"] == "suite.json:t1"
-    assert env["AIDEN_TOOL_PROXY_MODE"] == "1"
+    assert env["AIDEN_ENVIRONMENT_BRIDGE_MODE"] == "1"
     assert "host.docker.internal" in env["NO_PROXY"]
     compose_text = webui.AGENT_DAEMON_COMPOSE_FILE.read_text(encoding="utf-8")
     entrypoint_text = (webui.BENCHMARK_DOCKER_DIR / "agent-daemon-entrypoint.sh").read_text(
@@ -1203,12 +1229,12 @@ def test_daemon_compose_command_and_env_forward_tools_to_environment(tmp_path: P
         "screenshot,touch_gesture,keyboard_text,keyboard_tap,"
         "mouse_click,mouse_move,mouse_scroll,quick_action"
     )
-    assert "AIDEN_TOOL_PROXY_MODE: ${AIDEN_TOOL_PROXY_MODE:-1}" in compose_text
-    assert f'AIDEN_FORWARD_TOOLS: "{expected_forward_tools}"' in compose_text
+    assert "AIDEN_ENVIRONMENT_BRIDGE_MODE: ${AIDEN_ENVIRONMENT_BRIDGE_MODE:-1}" in compose_text
+    assert f'AIDEN_ENVIRONMENT_BRIDGE_TOOLS: "{expected_forward_tools}"' in compose_text
     assert "AIDEN_BENCHMARK_TASK_ID" in compose_text
-    assert "--tool-proxy-mode" in entrypoint_text
-    assert '--tool-proxy-endpoint "$TOOL_PROXY_ENDPOINT"' in entrypoint_text
-    assert '--forward-tools "${AIDEN_FORWARD_TOOLS:-$default_forward_tools}"' in entrypoint_text
+    assert "--environment-bridge-mode" in entrypoint_text
+    assert '--environment-bridge-endpoint "$ENVIRONMENT_BRIDGE_ENDPOINT"' in entrypoint_text
+    assert '--environment-bridge-tools "${AIDEN_ENVIRONMENT_BRIDGE_TOOLS:-$default_forward_tools}"' in entrypoint_text
 
 
 def test_build_mobilegym_environment_command_starts_preview_and_bridge(tmp_path: Path):

@@ -31,13 +31,13 @@ type ToolResult struct {
 }
 
 type ToolCallExecution struct {
-	Specs        *ToolSpecs
-	Action       schema.AgentAction
-	Before       BeforeToolCallHook
-	After        AfterToolCallHook
-	Callback     callbacks.Handler
-	ProxyClient  *ToolProxyClient
-	ForwardTools []string // Tool name globs to forward; empty forwards nothing (see shouldProxyTool)
+	Specs                  *ToolSpecs
+	Action                 schema.AgentAction
+	Before                 BeforeToolCallHook
+	After                  AfterToolCallHook
+	Callback               callbacks.Handler
+	EnvironmentBridge      *EnvironmentBridgeClient
+	EnvironmentBridgeTools []string // Tool name globs to forward; empty forwards nothing (see shouldForwardToEnvironmentBridge)
 }
 
 type ToolCallExecutionResult struct {
@@ -63,14 +63,14 @@ type toolCallStartCallbackHandler interface {
 	HandleToolCallStart(ctx context.Context, call ToolCall)
 }
 
-// shouldProxyTool determines whether a tool call should be forwarded to the
-// remote daemon. A tool is forwarded when its name matches any pattern in
-// forwardTools. Patterns use shell-style globbing (path.Match), so "*" matches
+// shouldForwardToEnvironmentBridge determines whether a tool call should be forwarded to the
+// environment bridge. A tool is forwarded when its name matches any pattern in
+// environmentBridgeTools. Patterns use shell-style globbing (path.Match), so "*" matches
 // every tool, "keyboard_*" matches all keyboard tools, and an exact name like
-// "screenshot" matches only that tool. An empty forwardTools list forwards
+// "screenshot" matches only that tool. An empty environmentBridgeTools list forwards
 // nothing, so the caller is responsible for supplying the device-tool patterns.
-func shouldProxyTool(toolName string, forwardTools []string) bool {
-	for _, pattern := range forwardTools {
+func shouldForwardToEnvironmentBridge(toolName string, environmentBridgeTools []string) bool {
+	for _, pattern := range environmentBridgeTools {
 		pattern = strings.TrimSpace(pattern)
 		if pattern == "" {
 			continue
@@ -135,17 +135,17 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 		return resultForToolCall(call, result, nil)
 	}
 
-	// If tool proxy is enabled, forward the call to the remote daemon. When the
+	// If environment bridge is enabled, forward the call to the bridge. When the
 	// HTTP call succeeds the remote output/is_error are passed through verbatim,
 	// because the remote ran the same executeToolCall path and already produced
 	// the exact response (including any "error: X failed" formatting) the LLM
 	// would see locally. Only transport failures are formatted here, mirroring
 	// how a local tool error is surfaced.
 	//
-	// Only forward tools whose name matches one of the configured ForwardTools
-	// patterns (see shouldProxyTool). Everything else runs locally.
-	if execution.ProxyClient != nil && shouldProxyTool(spec.Name, execution.ForwardTools) {
-		output, remoteIsError, err := execution.ProxyClient.CallTool(ctx, spec.Name, input)
+	// Only forward tools whose name matches one of the configured EnvironmentBridgeTools
+	// patterns (see shouldForwardToEnvironmentBridge). Everything else runs locally.
+	if execution.EnvironmentBridge != nil && shouldForwardToEnvironmentBridge(spec.Name, execution.EnvironmentBridgeTools) {
+		output, remoteIsError, err := execution.EnvironmentBridge.CallTool(ctx, spec.Name, input)
 		if err != nil {
 			result := ToolResult{
 				Error:    err,
