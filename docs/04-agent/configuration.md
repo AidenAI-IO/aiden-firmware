@@ -126,7 +126,7 @@ api_key = "OPENROUTER_API_KEY"
 model = "qwen/qwen3-asr-flash-2026-02-10"
 
 [tts]
-provider = "minimax-cn"
+provider = "minimax"
 model = "speech-2.8-hd"
 voice_id = "male-qn-qingse"
 emotion = "happy"
@@ -281,7 +281,7 @@ Minimax WebSocket:
 
 ```toml
 [tts]
-provider = "minimax-cn"
+provider = "minimax"
 model = "speech-2.8-hd"
 voice_id = "male-qn-qingse"
 emotion = "happy"
@@ -336,7 +336,7 @@ If you need to store the keys of multiple providers in the same config, use per-
 
 ```toml
 [tts]
-provider = "minimax-cn"
+provider = "minimax"
 model = "speech-2.8-hd"
 voice_id = "male-qn-qingse"
 
