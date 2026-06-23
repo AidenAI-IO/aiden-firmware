@@ -523,7 +523,7 @@ func TestHandleCoordinateDebugTap(t *testing.T) {
 	tool := &mappingStateMutatingTool{
 		name:        "touch_gesture",
 		description: "Touch gesture tool.",
-		output:      `{"width":320,"height":240,"format":"jpeg","size":4,"data":"ZmFrZQ==","action_output":"ok"}`,
+		output:      `{"width":1280,"height":576,"format":"jpeg","size":4,"data":"ZmFrZQ==","action_output":"ok"}`,
 		screen:      screen,
 	}
 	toolSet := &ToolSet{
@@ -589,7 +589,7 @@ func TestHandleCoordinateDebugTap(t *testing.T) {
 	if !resp.OK || resp.ActionType != "double_tap" {
 		t.Fatalf("unexpected response: %#v", resp)
 	}
-	if resp.Screenshot == nil || resp.Screenshot.Width != 320 || resp.Screenshot.Height != 240 || resp.Screenshot.Data != "ZmFrZQ==" {
+	if resp.Screenshot == nil || resp.Screenshot.Width != 1280 || resp.Screenshot.Height != 576 || resp.Screenshot.Data != "ZmFrZQ==" {
 		t.Fatalf("unexpected screenshot payload: %#v", resp.Screenshot)
 	}
 	if resp.Screenshot.SourceWidth != 1280 || resp.Screenshot.SourceHeight != 720 {
@@ -909,6 +909,73 @@ func TestHandleCoordinateDebugTapRecapturesUncroppedScreenshot(t *testing.T) {
 	}
 	if bounds := img.Bounds(); bounds.Dx() != 2 || bounds.Dy() != 1 {
 		t.Fatalf("decoded bounds = %v, want 2x1", bounds)
+	}
+}
+
+func TestHandleCoordinateDebugTapRecapturesScreenshotWhenMappingUnavailable(t *testing.T) {
+	rgb := make([]byte, 5*9*3)
+	for i := range rgb {
+		rgb[i] = 255
+	}
+	jpegData, err := encodeJPEG(rgb, 5, 9, screenshotJPEGQuality)
+	if err != nil {
+		t.Fatalf("encodeJPEG() error = %v", err)
+	}
+	frameSocket := startFakeFrameServiceSocket(t, func(req map[string]any) (string, []byte) {
+		if format, _ := req["format"].(string); format != "jpeg" {
+			t.Fatalf("expected jpeg format request when remapping cropped screenshot, got %#v", req["format"])
+		}
+		header := fmt.Sprintf(`{"type":"response","method":"latest_frame","status":"OK","frame":{"seq":2,"width":5,"height":9,"source_width":16,"source_height":9,"crop_x":5,"crop_y":0,"crop_width":5,"crop_height":9,"pixel_format":"jpeg","stride":0,"bytes":%d,"stale":false}}`, len(jpegData))
+		return header, jpegData
+	})
+	tool := &stubTool{
+		name:        "touch_gesture",
+		description: "Touch gesture tool.",
+		output:      `{"width":1,"height":1,"format":"jpeg","size":4,"data":"ZmFrZQ==","action_output":"ok"}`,
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model: ModelConfig{Provider: "fake"},
+			HID:   HIDConfig{FrameSocket: frameSocket},
+		},
+		&testModelResolver{},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"touch_gesture": tool,
+		}},
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0", "")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/coordinate-debug/tap", bytes.NewBufferString(`{"x":123,"y":456,"type":"tap","crop_black_bars":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.handleCoordinateDebugTap(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var resp coordinateDebugTapResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Screenshot == nil {
+		t.Fatal("expected screenshot in response")
+	}
+	if resp.Screenshot.Data == "ZmFrZQ==" {
+		t.Fatalf("expected recaptured screenshot instead of tool screenshot: %#v", resp.Screenshot)
+	}
+	if resp.Screenshot.Width != 5 || resp.Screenshot.Height != 9 {
+		t.Fatalf("unexpected screenshot dimensions: %#v", resp.Screenshot)
+	}
+	if resp.Screenshot.SourceWidth != 16 || resp.Screenshot.SourceHeight != 9 {
+		t.Fatalf("unexpected screenshot source dimensions: %#v", resp.Screenshot)
+	}
+	want := &screenActiveArea{X: 5, Y: 0, Width: 5, Height: 9, Valid: true}
+	if resp.Screenshot.SourceActiveArea == nil || *resp.Screenshot.SourceActiveArea != *want {
+		t.Fatalf("unexpected screenshot active area: %#v", resp.Screenshot.SourceActiveArea)
 	}
 }
 

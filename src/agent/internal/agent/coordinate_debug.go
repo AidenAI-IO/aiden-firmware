@@ -179,7 +179,8 @@ func (s *Server) handleCoordinateDebugTap(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var screenshotPayload coordinateDebugPostActionScreenshotResult
-	if options.CropBlackBars && actionResult.Data != "" && actionResult.Format != "" {
+	if options.CropBlackBars && actionResult.Data != "" && actionResult.Format != "" &&
+		coordinateDebugScreenshotMatchesMapping(actionResult.screenshotResult, mappingState) {
 		screenshotPayload = coordinateDebugPostActionScreenshotResult{
 			coordinateDebugScreenshotResult: *s.coordinateDebugScreenshotResultFromScreenState(actionResult.screenshotResult),
 			ActionOutput:                    actionResult.ActionOutput,

@@ -62,6 +62,30 @@ func TestFrameMetadataUnmarshalSupportsStringNumbers(t *testing.T) {
 	}
 }
 
+func TestFrameMetadataUnmarshalAllowsOmittedSourceAndCropFields(t *testing.T) {
+	input := []byte(`{
+		"seq":"123",
+		"width":"1920",
+		"height":"1080",
+		"pixel_format":"jpeg",
+		"stride":"5760",
+		"bytes":"456789",
+		"stale":"false"
+	}`)
+
+	var meta frameMetadata
+	if err := json.Unmarshal(input, &meta); err != nil {
+		t.Fatalf("unmarshal frameMetadata: %v", err)
+	}
+
+	if meta.SourceWidth != 0 || meta.SourceHeight != 0 {
+		t.Fatalf("unexpected source dims: %dx%d", meta.SourceWidth, meta.SourceHeight)
+	}
+	if meta.CropX != 0 || meta.CropY != 0 || meta.CropWidth != 0 || meta.CropHeight != 0 {
+		t.Fatalf("unexpected crop rect: x=%d y=%d w=%d h=%d", meta.CropX, meta.CropY, meta.CropWidth, meta.CropHeight)
+	}
+}
+
 func TestParseCoordinateDebugScreenshotOptionsDefaultsToCropping(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/screenshot.jpg", nil)
 	options := parseCoordinateDebugScreenshotOptions(req)

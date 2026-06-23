@@ -96,6 +96,27 @@ func (s *Server) coordinateDebugScreenshotResultFromScreenState(display screensh
 	return s.newCoordinateDebugScreenshotResult(display, sourceWidth, sourceHeight, sourceActive)
 }
 
+func coordinateDebugScreenshotMatchesMapping(display screenshotResult, state screenMappingState) bool {
+	if state.width <= 0 || state.height <= 0 {
+		return false
+	}
+	active := state.active
+	if !active.Valid {
+		active = screenActiveArea{
+			X:      0,
+			Y:      0,
+			Width:  state.width,
+			Height: state.height,
+			Valid:  true,
+		}
+	}
+	if active.X < 0 || active.Y < 0 || active.Width <= 0 || active.Height <= 0 ||
+		active.X+active.Width > state.width || active.Y+active.Height > state.height {
+		return false
+	}
+	return display.Width == active.Width && display.Height == active.Height
+}
+
 func coordinateDebugDisplayScreenshot(jpegData []byte, width, height int) screenshotResult {
 	return screenshotResult{
 		Width:  width,
