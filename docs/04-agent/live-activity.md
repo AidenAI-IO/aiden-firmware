@@ -144,7 +144,7 @@ Advanced deployments can override relay config. Do not put Apple APNs `.p8` file
 ```toml
 [live_activity]
 enabled = true
-relay_url = "https://relay.aiden.ai"
+relay_url = "https://apns-test.aidenai.io"
 relay_api_key = "shared-relay-token"
 board_id = "board-001" # must match the app LIVE_ACTIVITY_BOARD_ID
 phone_id = "phone-001" # optional; empty lets relay use this board's default/latest registered phone
