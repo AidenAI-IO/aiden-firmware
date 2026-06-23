@@ -4,6 +4,7 @@ import json
 from runner.agent_client import ToolInvokeResult
 from runner.models import HardAssertionResults, RubricVerdict, TaskResult
 import runner.main as main
+import runner.webui as webui
 
 
 class FakeClockClient:
@@ -122,3 +123,89 @@ def test_run_manifest_records_agent_model(monkeypatch, tmp_path):
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["agent_model"] == "qwen3.6-35b"
     assert manifest["judge_config"] is None
+
+
+def test_auto_agent_setup_injects_environment_url_as_bridge_endpoint(monkeypatch, tmp_path):
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "name": "mobile_suite",
+                "tasks": [
+                    {
+                        "id": "open_clock",
+                        "category": "diagnostic",
+                        "prompt": "open clock",
+                        "description_for_judge": "open clock",
+                        "rubric": [{"id": "done", "check": "done"}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeClient:
+        def __init__(self, base_url):
+            self.base_url = base_url
+
+        def close(self):
+            pass
+
+    captured = {}
+    monkeypatch.setattr(main, "AgentClient", FakeClient)
+    monkeypatch.setattr(main, "wait_for_agent_ready", lambda *args, **kwargs: True)
+    monkeypatch.setattr(main, "wait_for_agent_clock", lambda *args, **kwargs: True)
+    monkeypatch.setattr(main, "generate_report_html", lambda run_dir: "<html></html>")
+    monkeypatch.setattr(main, "call_environment_release", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui, "ensure_daemon_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui, "read_environment_bridge_concurrency", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(webui, "prepare_run_config", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui, "reserve_free_port", lambda: 18081)
+    monkeypatch.setattr(webui, "start_daemon_logs", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui, "stop_daemon_compose", lambda *args, **kwargs: None)
+
+    def fake_start_daemon_compose(job, **kwargs):
+        captured["job"] = job
+        captured["kwargs"] = kwargs
+        return "container-id"
+
+    monkeypatch.setattr(webui, "start_daemon_compose", fake_start_daemon_compose)
+
+    def fake_run_one_task(client, suite, task, attempt, artifact_dir, *args, **kwargs):
+        return TaskResult(
+            suite=suite.name,
+            run_id="auto-run",
+            task_id=task.id,
+            category=task.category,
+            attempt=attempt,
+            status="passed",
+            rubric=[],
+            rubric_pass_count=0,
+            rubric_total=0,
+            artifact_dir=str(artifact_dir),
+        )
+
+    monkeypatch.setattr(main, "run_one_task", fake_run_one_task)
+
+    rc = main.cli(
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--out",
+            str(tmp_path / "runs"),
+            "--run-id",
+            "auto-run",
+            "--environment-url",
+            "http://127.0.0.1:19090",
+            "--auto-agent-setup",
+            "--no-judge",
+        ]
+    )
+
+    assert rc == 0
+    assert captured["job"].endpoint == "http://127.0.0.1:19090"
+    assert captured["job"].docker_endpoint == "http://host.docker.internal:19090"
+    assert captured["kwargs"]["environment_bridge_endpoint"] == "http://host.docker.internal:19090"
+    assert captured["kwargs"]["environment_bridge_mode"] is True
