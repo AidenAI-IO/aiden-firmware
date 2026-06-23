@@ -1084,23 +1084,33 @@ func TestRuntimeRunResumeCorrectionUsesRootRequestAndCommittedPlan(t *testing.T)
 		t.Fatalf("expected second run planner prompt, got %#v", model.messages)
 	}
 	resumePrompt := messageText(model.messages[2])
-	role, lastText, ok := runtimeLastMessageText(model.messages[2])
-	if !ok || role != llms.ChatMessageTypeHuman || lastText != correction {
-		t.Fatalf("resume planner current user message = role %s text %q, want raw correction %q", role, lastText, correction)
+	resumeMessages := model.messages[2]
+	if len(resumeMessages) < 2 {
+		t.Fatalf("resume planner prompt missing raw input and runtime context: %#v", resumeMessages)
+	}
+	rawMessage := resumeMessages[len(resumeMessages)-2]
+	if rawMessage.Role != llms.ChatMessageTypeHuman || strings.TrimSpace(messageText(resumeMessages[len(resumeMessages)-2:len(resumeMessages)-1])) != correction {
+		t.Fatalf("resume planner current user message = role %s text %q, want raw correction %q", rawMessage.Role, messageText(resumeMessages[len(resumeMessages)-2:len(resumeMessages)-1]), correction)
+	}
+	if statePrompt := messageText(resumeMessages[len(resumeMessages)-1:]); !strings.Contains(statePrompt, "Planner runtime context (synthetic; not a new user request):") {
+		t.Fatalf("resume planner final message should be runtime state context:\n%s", statePrompt)
 	}
 	for _, unwanted := range []string{
-		"Original user request / root request",
-		"Latest user message",
-		"Latest committed plan",
-		"Current plan:",
-		"Executor results:",
-		"Verifier feedback:",
 		"Follow-up classification:",
 		"follow_up_relation",
 		"Latest correction",
 	} {
 		if strings.Contains(resumePrompt, unwanted) {
-			t.Fatalf("resume planner prompt should not expose follow-up relation judgement %q:\n%s", unwanted, resumePrompt)
+			t.Fatalf("resume planner prompt should not expose legacy follow-up judgement %q:\n%s", unwanted, resumePrompt)
+		}
+	}
+	for _, want := range []string{
+		"Session context view:",
+		"Latest committed plan",
+		"目标群是 Aden AI agent",
+	} {
+		if !strings.Contains(resumePrompt, want) {
+			t.Fatalf("resume planner prompt missing session context %q:\n%s", want, resumePrompt)
 		}
 	}
 	if strings.Contains(resumePrompt, "发介绍") {
@@ -1164,9 +1174,16 @@ func TestRuntimeRunVoiceInterruptionContextUsesTimeBoundary(t *testing.T) {
 		t.Fatalf("expected second model prompt, got %#v", model.messages)
 	}
 	correctionPrompt := messageText(model.messages[1])
-	role, lastText, ok := runtimeLastMessageText(model.messages[1])
-	if !ok || role != llms.ChatMessageTypeHuman || lastText != correction {
-		t.Fatalf("correction planner current user message = role %s text %q, want raw correction %q", role, lastText, correction)
+	correctionMessages := model.messages[1]
+	if len(correctionMessages) < 2 {
+		t.Fatalf("correction planner prompt missing raw input and runtime context: %#v", correctionMessages)
+	}
+	rawMessage := correctionMessages[len(correctionMessages)-2]
+	if rawMessage.Role != llms.ChatMessageTypeHuman || strings.TrimSpace(messageText(correctionMessages[len(correctionMessages)-2:len(correctionMessages)-1])) != correction {
+		t.Fatalf("correction planner current user message = role %s text %q, want raw correction %q", rawMessage.Role, messageText(correctionMessages[len(correctionMessages)-2:len(correctionMessages)-1]), correction)
+	}
+	if statePrompt := messageText(correctionMessages[len(correctionMessages)-1:]); !strings.Contains(statePrompt, "Planner runtime context (synthetic; not a new user request):") {
+		t.Fatalf("correction planner final message should be runtime state context:\n%s", statePrompt)
 	}
 	for _, want := range []string{
 		"## Runtime context",
@@ -1178,17 +1195,23 @@ func TestRuntimeRunVoiceInterruptionContextUsesTimeBoundary(t *testing.T) {
 		}
 	}
 	for _, unwanted := range []string{
-		"Original user request / root request",
-		"Latest user message",
-		"Current plan:",
-		"Executor results:",
-		"Verifier feedback:",
 		"Follow-up classification:",
 		"follow_up_relation",
 		"Latest correction",
 	} {
 		if strings.Contains(correctionPrompt, unwanted) {
-			t.Fatalf("correction prompt should not expose follow-up relation judgement %q:\n%s", unwanted, correctionPrompt)
+			t.Fatalf("correction prompt should not expose legacy follow-up judgement %q:\n%s", unwanted, correctionPrompt)
+		}
+	}
+	for _, want := range []string{
+		"Original user request / root request:",
+		rootRequest,
+		"Latest user message:",
+		correction,
+		"Current plan:",
+	} {
+		if !strings.Contains(correctionPrompt, want) {
+			t.Fatalf("correction prompt missing runtime context %q:\n%s", want, correctionPrompt)
 		}
 	}
 
@@ -2885,8 +2908,8 @@ func TestRuntimeSimpleLoopTodoReminderAfterSeveralToolCalls(t *testing.T) {
 		t.Fatalf("expected fourth model call after reminder, got %d", len(model.messages))
 	}
 	prompt := messageText(model.messages[3])
-	if strings.Contains(prompt, "Todo reminder") || strings.Contains(prompt, "call set_todo") {
-		t.Fatalf("fourth planner prompt should not expose todo reminder runtime state:\n%s", prompt)
+	if !strings.Contains(prompt, "Todo reminder") || !strings.Contains(prompt, "call set_todo") {
+		t.Fatalf("fourth planner prompt missing todo reminder runtime state:\n%s", prompt)
 	}
 }
 
@@ -2914,8 +2937,8 @@ func TestRuntimeSimpleLoopTodoReminderUsesConfiguredToolCallThreshold(t *testing
 		t.Fatalf("expected third model call after configured reminder, got %d", len(model.messages))
 	}
 	prompt := messageText(model.messages[2])
-	if strings.Contains(prompt, "Todo reminder") || strings.Contains(prompt, "call set_todo") {
-		t.Fatalf("third planner prompt should not expose configured todo reminder runtime state:\n%s", prompt)
+	if !strings.Contains(prompt, "Todo reminder") || !strings.Contains(prompt, "call set_todo") {
+		t.Fatalf("third planner prompt missing configured todo reminder runtime state:\n%s", prompt)
 	}
 }
 
@@ -4724,12 +4747,16 @@ func TestRuntimeRunIncludesUserAttachments(t *testing.T) {
 	}
 
 	lastCall := model.messages[0]
-	if len(lastCall) == 0 {
+	if len(lastCall) < 3 {
 		t.Fatalf("expected messages in model call")
 	}
-	userMessage := lastCall[len(lastCall)-1]
+	userMessage := lastCall[len(lastCall)-2]
 	if userMessage.Role != llms.ChatMessageTypeHuman {
-		t.Fatalf("expected final message to be human, got %q", userMessage.Role)
+		t.Fatalf("expected raw user message to be human, got %q", userMessage.Role)
+	}
+	stateMessage := lastCall[len(lastCall)-1]
+	if stateMessage.Role != llms.ChatMessageTypeHuman || !strings.Contains(messageText(lastCall[len(lastCall)-1:]), "Planner runtime context (synthetic; not a new user request):") {
+		t.Fatalf("expected final planner message to be runtime state context, got %#v", stateMessage)
 	}
 
 	var textContent string

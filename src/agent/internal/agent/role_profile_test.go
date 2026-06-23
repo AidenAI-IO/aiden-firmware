@@ -455,8 +455,16 @@ func TestForceSimpleLoopPlannerCallOmitsPlanMetaTools(t *testing.T) {
 			t.Fatalf("force_simple_loop prompt should not contain %q:\n%s", unexpected, plannerPrompt)
 		}
 	}
-	if strings.Contains(plannerPrompt, "force_simple_loop: true") || strings.Contains(plannerPrompt, "Loop mode:") {
-		t.Fatalf("force_simple_loop planner prompt should not contain runtime loop state:\n%s", plannerPrompt)
+	for _, want := range []string{
+		"Planner runtime context (synthetic; not a new user request):",
+		"Loop mode:",
+		"force_simple_loop: true",
+		"Original user request / root request:",
+		"set volume to 3",
+	} {
+		if !strings.Contains(plannerPrompt, want) {
+			t.Fatalf("force_simple_loop planner prompt missing runtime context %q:\n%s", want, plannerPrompt)
+		}
 	}
 }
 
@@ -486,9 +494,18 @@ func TestForceSimpleLoopRejectsUnexpectedPlanMetaToolCall(t *testing.T) {
 		t.Fatalf("model calls = %d, want 2", model.callCount)
 	}
 	secondPrompt := messageText(model.messages[1])
-	for _, unexpected := range []string{"current_mode: default", "current_mode: plan", "Loop mode:"} {
+	for _, want := range []string{
+		"Planner runtime context (synthetic; not a new user request):",
+		"current_mode: default",
+		"force_simple_loop: true",
+	} {
+		if !strings.Contains(secondPrompt, want) {
+			t.Fatalf("force_simple_loop planner prompt missing runtime loop state %q:\n%s", want, secondPrompt)
+		}
+	}
+	for _, unexpected := range []string{"current_mode: plan", "commit_plan is available"} {
 		if strings.Contains(secondPrompt, unexpected) {
-			t.Fatalf("force_simple_loop planner prompt should not expose runtime loop state %q:\n%s", unexpected, secondPrompt)
+			t.Fatalf("force_simple_loop planner prompt should not expose plan-mode state %q:\n%s", unexpected, secondPrompt)
 		}
 	}
 }
@@ -721,14 +738,18 @@ func TestRoleCollaborativeExecutorReplansAfterRepeatedVerifierFailures(t *testin
 	}
 
 	secondPlannerPrompt := messageText(model.messages[5])
-	for _, unexpected := range []string{
+	for _, want := range []string{
+		"Planner runtime context (synthetic; not a new user request):",
 		"Current plan:",
 		"Executor results:",
+		"Prior step results",
 		"Verifier feedback:",
 		"not enough progress",
+		"needs_replan=true",
+		"repeat same tool",
 	} {
-		if strings.Contains(secondPlannerPrompt, unexpected) {
-			t.Fatalf("second planner prompt should not expose runtime state %q:\n%s", unexpected, secondPlannerPrompt)
+		if !strings.Contains(secondPlannerPrompt, want) {
+			t.Fatalf("second planner prompt missing %q:\n%s", want, secondPlannerPrompt)
 		}
 	}
 
@@ -1157,14 +1178,20 @@ func TestRoleCollaborativeExecutorUpdatesWorldStateFromObservedState(t *testing.
 
 	secondPlannerMessages := model.messages[5]
 	secondPlannerPrompt := messageText([]llms.MessageContent{secondPlannerMessages[len(secondPlannerMessages)-1]})
-	for _, unexpected := range []string{
+	for _, want := range []string{
+		"Planner runtime context (synthetic; not a new user request):",
 		"World State",
 		"Observed app/page: 微信 / 聊天列表 platform=android confidence=0.82 source_role=verifier",
 		"Visible text: 微信 | 通讯录",
 		"Dialogs: 权限提示",
 	} {
-		if strings.Contains(secondPlannerPrompt, unexpected) {
-			t.Fatalf("second planner prompt should not contain world state field %q:\n%s", unexpected, secondPlannerPrompt)
+		if !strings.Contains(secondPlannerPrompt, want) {
+			t.Fatalf("second planner prompt missing world state field %q:\n%s", want, secondPlannerPrompt)
+		}
+	}
+	for _, part := range secondPlannerMessages[len(secondPlannerMessages)-1].Parts {
+		if _, ok := part.(llms.ImageURLContent); ok {
+			t.Fatalf("planner runtime state should be compact text without world-state image: %#v", secondPlannerMessages[len(secondPlannerMessages)-1])
 		}
 	}
 
