@@ -95,6 +95,38 @@ func TestMemoryManagerActiveSessionIDCreatesSessionMetadata(t *testing.T) {
 	}
 }
 
+func TestMemoryManagerActiveSessionIDRecoversEmptySessionMetadata(t *testing.T) {
+	storageDir := t.TempDir()
+	sessionDir := filepath.Join(storageDir, "session")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatalf("create session dir: %v", err)
+	}
+	metadataPath := filepath.Join(sessionDir, sessionMetadataFileName)
+	if err := os.WriteFile(metadataPath, nil, 0o644); err != nil {
+		t.Fatalf("write empty metadata: %v", err)
+	}
+
+	manager := NewMemoryManager(storageDir)
+	sessionID, err := manager.ActiveSessionID()
+	if err != nil {
+		t.Fatalf("ActiveSessionID() error = %v", err)
+	}
+	if sessionID == "" {
+		t.Fatal("ActiveSessionID() returned empty session ID")
+	}
+	metadata := readSessionMetadataForTest(t, metadataPath)
+	if metadata.SessionID != sessionID {
+		t.Fatalf("metadata session_id = %q, want %q", metadata.SessionID, sessionID)
+	}
+	info, err := os.Stat(metadataPath)
+	if err != nil {
+		t.Fatalf("stat metadata: %v", err)
+	}
+	if info.Size() == 0 {
+		t.Fatal("metadata file was not rewritten")
+	}
+}
+
 func TestMemoryManagerActiveSessionIDRejectsUnsafeMetadata(t *testing.T) {
 	for _, sessionID := range []string{
 		"../escape",
