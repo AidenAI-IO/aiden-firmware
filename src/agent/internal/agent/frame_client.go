@@ -161,7 +161,7 @@ func (c *FrameServiceClient) LatestFrameWithFormat(format string, quality int) (
 	if uint64(len(payload)) != resp.Frame.Bytes {
 		return nil, nil, fmt.Errorf("payload size mismatch: got %d, expected %d", len(payload), resp.Frame.Bytes)
 	}
-
+	// Return stale frame but let caller check meta.Stale flag
 	return &resp.Frame, payload, nil
 }
 

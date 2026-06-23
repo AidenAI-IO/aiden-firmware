@@ -147,20 +147,25 @@ func (s *Server) captureCoordinateDebugScreenshot(options coordinateDebugScreens
 	client := NewFrameServiceClient(s.runtime.config.HID.FrameSocketOrDefault())
 	if options.CropBlackBars {
 		meta, jpegData, err := client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality)
-		if err == nil && meta != nil && meta.PixelFormat == "jpeg" {
-			if sourceWidth, sourceHeight, sourceActive, ok := frameMetadataSourceActiveArea(meta); ok {
-				screen := s.coordinateDebugScreen()
-				if screen != nil {
-					screen.UpdateActiveArea(sourceWidth, sourceHeight, sourceActive)
+		if err == nil && meta != nil {
+			if meta.Stale {
+				return nil, nil, fmt.Errorf("frame service: STALE_FRAME")
+			}
+			if meta.PixelFormat == "jpeg" {
+				if sourceWidth, sourceHeight, sourceActive, ok := frameMetadataSourceActiveArea(meta); ok {
+					screen := s.coordinateDebugScreen()
+					if screen != nil {
+						screen.UpdateActiveArea(sourceWidth, sourceHeight, sourceActive)
+					}
+					display := coordinateDebugDisplayScreenshot(jpegData, int(meta.Width), int(meta.Height))
+					result := s.newCoordinateDebugScreenshotResult(
+						display,
+						sourceWidth,
+						sourceHeight,
+						coordinateDebugSourceActiveArea(sourceActive, sourceWidth, sourceHeight),
+					)
+					return result, jpegData, nil
 				}
-				display := coordinateDebugDisplayScreenshot(jpegData, int(meta.Width), int(meta.Height))
-				result := s.newCoordinateDebugScreenshotResult(
-					display,
-					sourceWidth,
-					sourceHeight,
-					coordinateDebugSourceActiveArea(sourceActive, sourceWidth, sourceHeight),
-				)
-				return result, jpegData, nil
 			}
 		}
 	}
@@ -168,6 +173,9 @@ func (s *Server) captureCoordinateDebugScreenshot(options coordinateDebugScreens
 	meta, frameData, err := client.LatestFrame()
 	if err != nil {
 		return nil, nil, err
+	}
+	if meta.Stale {
+		return nil, nil, fmt.Errorf("frame service: STALE_FRAME")
 	}
 	rawJPEGData, err := encodeFrameAsJPEG(meta, frameData, screenshotJPEGQuality)
 	if err != nil {
