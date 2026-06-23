@@ -87,7 +87,7 @@ Bridge server 是具体环境和 Aiden benchmark 之间的 HTTP 适配层。Mobi
 
 接入新环境时参考 [`benchmark/environment_bridge.md`](environment_bridge.md)。
 
-主要接口：
+标准 environment bridge 接口：
 
 | Endpoint | 用途 |
 | --- | --- |
@@ -97,8 +97,9 @@ Bridge server 是具体环境和 Aiden benchmark 之间的 HTTP 适配层。Mobi
 | `POST /api/setup` | 为某个 benchmark task reset/claim env |
 | `POST /api/release` | 释放某个 benchmark task 占用的 env |
 | `GET /api/concurrent` | 返回当前 bridge 支持的并发 task 数量 |
-| `GET /screen` | 人工查看当前屏幕的页面 |
 | `GET /api/screen` | 返回 JSON screenshot，runner 用它保存 pre/post |
+
+MobileGym bridge 额外提供非标准的 `GET /screen` HTML 调试页，WebUI 只把它作为人工查看链接使用；接入新 environment bridge 时不要求实现这个接口。
 
 并发 MobileGym 通过 `benchmark-task-id` 路由：
 
