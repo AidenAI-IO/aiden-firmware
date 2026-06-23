@@ -25,10 +25,43 @@ type screenshotResult struct {
 	Data         string            `json:"data"`
 }
 
+type screenshotFrameClient interface {
+	LatestFrameWithFormat(format string, quality int) (*frameMetadata, []byte, error)
+}
+
 // ScreenshotTool captures a screenshot from the frame service.
 type ScreenshotTool struct {
-	client *FrameServiceClient
+	client screenshotFrameClient
 	screen *screenState
+}
+
+func frameMetadataSourceActiveArea(meta *frameMetadata) (sourceWidth, sourceHeight int, active screenActiveArea, ok bool) {
+	if meta == nil || meta.SourceWidth == 0 || meta.SourceHeight == 0 {
+		return 0, 0, screenActiveArea{}, false
+	}
+	sourceWidth = int(meta.SourceWidth)
+	sourceHeight = int(meta.SourceHeight)
+	active = screenActiveArea{
+		X:      int(meta.CropX),
+		Y:      int(meta.CropY),
+		Width:  int(meta.CropWidth),
+		Height: int(meta.CropHeight),
+		Valid:  meta.CropWidth > 0 && meta.CropHeight > 0,
+	}
+	if !active.Valid {
+		active = screenActiveArea{
+			X:      0,
+			Y:      0,
+			Width:  sourceWidth,
+			Height: sourceHeight,
+			Valid:  true,
+		}
+	}
+	if active.X < 0 || active.Y < 0 || active.Width <= 0 || active.Height <= 0 ||
+		active.X+active.Width > sourceWidth || active.Y+active.Height > sourceHeight {
+		return 0, 0, screenActiveArea{}, false
+	}
+	return sourceWidth, sourceHeight, active, true
 }
 
 func NewScreenshotTool(socketPath string, screen *screenState) *ScreenshotTool {
@@ -61,16 +94,27 @@ func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
 	if meta.PixelFormat != "jpeg" {
 		return "", fmt.Errorf("expected jpeg format, got %s", meta.PixelFormat)
 	}
-	active := detectScreenshotActiveAreaForScreen(t.screen, jpegData, int(meta.Width), int(meta.Height))
+	active := screenActiveArea{}
+	sourceWidth := int(meta.Width)
+	sourceHeight := int(meta.Height)
+	alreadyCropped := false
+	if fullWidth, fullHeight, sourceActive, ok := frameMetadataSourceActiveArea(meta); ok {
+		sourceWidth = fullWidth
+		sourceHeight = fullHeight
+		active = sourceActive
+		alreadyCropped = true
+	} else {
+		active = detectScreenshotActiveAreaForScreen(t.screen, jpegData, int(meta.Width), int(meta.Height))
+	}
 	if t.screen != nil {
-		t.screen.UpdateActiveArea(int(meta.Width), int(meta.Height), active)
+		t.screen.UpdateActiveArea(sourceWidth, sourceHeight, active)
 	}
 
 	// Crop to active_area so LLM sees only the mirrored phone touch region.
 	displayWidth := int(meta.Width)
 	displayHeight := int(meta.Height)
 	displayData := jpegData
-	if active.Valid && (active.X != 0 || active.Y != 0 || active.Width != displayWidth || active.Height != displayHeight) {
+	if !alreadyCropped && active.Valid && (active.X != 0 || active.Y != 0 || active.Width != displayWidth || active.Height != displayHeight) {
 		croppedData, croppedWidth, croppedHeight, err := cropJPEGToActiveArea(jpegData, active, screenshotJPEGQuality)
 		if err == nil {
 			displayWidth = croppedWidth

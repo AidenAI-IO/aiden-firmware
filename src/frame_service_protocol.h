@@ -23,6 +23,12 @@ struct FrameMetadata {
     uint64_t capture_ts_ns = 0;
     uint32_t width = 0;
     uint32_t height = 0;
+    uint32_t source_width = 0;
+    uint32_t source_height = 0;
+    uint32_t crop_x = 0;
+    uint32_t crop_y = 0;
+    uint32_t crop_width = 0;
+    uint32_t crop_height = 0;
     std::string pixel_format;
     uint32_t stride = 0;
     uint64_t bytes = 0;

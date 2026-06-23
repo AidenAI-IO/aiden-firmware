@@ -144,6 +144,13 @@ type screenState struct {
 	updatedAt   time.Time
 }
 
+type screenMappingState struct {
+	width     int
+	height    int
+	active    screenActiveArea
+	updatedAt time.Time
+}
+
 // screenActiveArea represents the mirrored phone touch region inside the
 // captured HDMI frame. When the companion app reports the phone's original
 // screen dimensions, this is the largest centered region in the frame with the
@@ -241,6 +248,32 @@ func (s *screenState) ActiveAreaWithAge() (width, height int, active screenActiv
 		return s.width, s.height, active, 0, true
 	}
 	return s.width, s.height, active, time.Since(s.updatedAt), true
+}
+
+func (s *screenState) MappingState() screenMappingState {
+	if s == nil {
+		return screenMappingState{}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return screenMappingState{
+		width:     s.width,
+		height:    s.height,
+		active:    s.active,
+		updatedAt: s.updatedAt,
+	}
+}
+
+func (s *screenState) RestoreMappingState(state screenMappingState) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.width = state.width
+	s.height = state.height
+	s.active = state.active
+	s.updatedAt = state.updatedAt
 }
 
 func (s *pointerState) Update(x, y int) {
