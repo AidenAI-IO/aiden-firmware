@@ -12,37 +12,26 @@ fi
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
-bad_suite="$tmpdir/bad_suite.json"
-cat >"$bad_suite" <<'EOF'
-{
-  "name": "bad_coords_fixture",
-  "tasks": [
-    {
-      "id": "bad",
-      "setup": {
-        "tool_sequence": [
-          {
-            "tool": "touch_gesture",
-            "args": { "type": "tap", "point": { "x": 0.5, "y": 320 } }
-          }
-        ]
-      }
-    }
-  ]
+bad_go_test="$tmpdir/bad_coords_test.go"
+cat >"$bad_go_test" <<'EOF'
+package agent
+
+func badPointFixture() string {
+	return `{"point":{"x":0.5,"y":320}}`
 }
 EOF
 
-python3 - "$repo_root/scripts" "$bad_suite" <<'PY'
+python3 - "$repo_root/scripts" "$bad_go_test" <<'PY'
 import sys
 from pathlib import Path
 
 sys.path.insert(0, sys.argv[1])
-from check_normalized_coords import check_benchmark_suite
+from check_normalized_coords import check_go_test_file
 
-bad_suite = Path(sys.argv[2])
-violations = check_benchmark_suite(bad_suite)
+bad_go_test = Path(sys.argv[2])
+violations = check_go_test_file(bad_go_test)
 if not violations:
-    raise SystemExit("expected fixture suite to fail coordinate check")
+    raise SystemExit("expected fixture Go test to fail coordinate check")
 print("fixture rejected as expected")
 PY
 

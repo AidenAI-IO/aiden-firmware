@@ -205,16 +205,11 @@ if grep -Fq '"usr/ko"' "$ROOT_DIR/_build_image.sh"; then
     exit 1
 fi
 
-if ! grep -Fq 'BENCHMARK_SRC="$SCRIPT_DIR/benchmark"' "$ROOT_DIR/_build_image.sh" || \
-   ! grep -Fq 'BENCHMARK_DEST="$OVERLAY/userdata/agent/benchmark"' "$ROOT_DIR/_build_image.sh" || \
-   ! grep -Fq -- "--exclude '__pycache__/'" "$ROOT_DIR/_build_image.sh" || \
-   ! grep -Fq -- "--exclude '*.pyc'" "$ROOT_DIR/_build_image.sh" || \
-   ! grep -Fq -- "--exclude '.DS_Store'" "$ROOT_DIR/_build_image.sh" || \
-   ! grep -Fq -- "--exclude '._*'" "$ROOT_DIR/_build_image.sh" || \
-   ! grep -Fq 'rsync -a --delete "${BENCHMARK_RSYNC_EXCLUDES[@]}" "$BENCHMARK_SRC/runner/" "$BENCHMARK_DEST/runner/"' "$ROOT_DIR/_build_image.sh" || \
-   ! grep -Fq 'rsync -a --delete "${BENCHMARK_RSYNC_EXCLUDES[@]}" "$BENCHMARK_SRC/suites/" "$BENCHMARK_DEST/suites/"' "$ROOT_DIR/_build_image.sh" || \
-   ! grep -Fq 'rm -f "$BENCHMARK_DEST/pyproject.toml"' "$ROOT_DIR/_build_image.sh"; then
-    echo "_build_image.sh must stage benchmark runner and suites into userdata" >&2
+if grep -Fq 'BENCHMARK_SRC="$SCRIPT_DIR/benchmark"' "$ROOT_DIR/_build_image.sh" || \
+   grep -Fq 'BENCHMARK_DEST="$OVERLAY/userdata/agent/benchmark"' "$ROOT_DIR/_build_image.sh" || \
+   grep -Fq 'Benchmark runner and suites staged' "$ROOT_DIR/_build_image.sh" || \
+   grep -Fq 'rsync -a --delete "${BENCHMARK_RSYNC_EXCLUDES[@]}"' "$ROOT_DIR/_build_image.sh"; then
+    echo "_build_image.sh must not stage benchmark runner or suites into agent userdata" >&2
     exit 1
 fi
 
@@ -257,8 +252,8 @@ if ! grep -q 'overlay/userdata' "$BUILD_IMAGE_SH"; then
     exit 1
 fi
 
-if ! grep -q '^/overlay/userdata/agent/benchmark/$' "$GITIGNORE"; then
-    echo "generated benchmark userdata staging directory must be gitignored" >&2
+if grep -q '^/overlay/userdata/agent/benchmark/$' "$GITIGNORE"; then
+    echo "agent benchmark userdata staging is no longer generated and must not be gitignored" >&2
     exit 1
 fi
 

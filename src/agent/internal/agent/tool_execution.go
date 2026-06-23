@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 	"strings"
 	"time"
 
@@ -30,11 +31,13 @@ type ToolResult struct {
 }
 
 type ToolCallExecution struct {
-	Specs    *ToolSpecs
-	Action   schema.AgentAction
-	Before   BeforeToolCallHook
-	After    AfterToolCallHook
-	Callback callbacks.Handler
+	Specs                  *ToolSpecs
+	Action                 schema.AgentAction
+	Before                 BeforeToolCallHook
+	After                  AfterToolCallHook
+	Callback               callbacks.Handler
+	EnvironmentBridge      *EnvironmentBridgeClient
+	EnvironmentBridgeTools []string // Tool name globs to forward; empty forwards nothing (see shouldForwardToEnvironmentBridge)
 }
 
 type ToolCallExecutionResult struct {
@@ -58,6 +61,34 @@ type toolResultCallbackHandler interface {
 
 type toolCallStartCallbackHandler interface {
 	HandleToolCallStart(ctx context.Context, call ToolCall)
+}
+
+// shouldForwardToEnvironmentBridge determines whether a tool call should be forwarded to the
+// environment bridge. A tool is forwarded when its name matches any pattern in
+// environmentBridgeTools. Patterns use shell-style globbing (path.Match), so "*" matches
+// every tool, "keyboard_*" matches all keyboard tools, and an exact name like
+// "screenshot" matches only that tool. An empty environmentBridgeTools list forwards
+// nothing, so the caller is responsible for supplying the device-tool patterns.
+func shouldForwardToEnvironmentBridge(toolName string, environmentBridgeTools []string) bool {
+	for _, pattern := range environmentBridgeTools {
+		pattern = strings.TrimSpace(pattern)
+		if pattern == "" {
+			continue
+		}
+		// path.Match only errors on malformed patterns; treat a malformed
+		// pattern as a literal exact-match fallback so a stray character never
+		// silently forwards or drops a tool.
+		if matched, err := path.Match(pattern, toolName); err == nil {
+			if matched {
+				return true
+			}
+			continue
+		}
+		if pattern == toolName {
+			return true
+		}
+	}
+	return false
 }
 
 func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallExecutionResult {
@@ -99,6 +130,43 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 			Error:   err,
 		}
 		result.Duration = time.Since(call.StartedAt)
+		result = runAfterToolCallHook(ctx, execution, call, result)
+		emitToolResult(ctx, execution.Callback, call, result)
+		return resultForToolCall(call, result, nil)
+	}
+
+	// If environment bridge is enabled, forward the call to the bridge. When the
+	// HTTP call succeeds the remote output/is_error are passed through verbatim,
+	// because the remote ran the same executeToolCall path and already produced
+	// the exact response (including any "error: X failed" formatting) the LLM
+	// would see locally. Only transport failures are formatted here, mirroring
+	// how a local tool error is surfaced.
+	//
+	// Only forward tools whose name matches one of the configured EnvironmentBridgeTools
+	// patterns (see shouldForwardToEnvironmentBridge). Everything else runs locally.
+	if execution.EnvironmentBridge != nil && shouldForwardToEnvironmentBridge(spec.Name, execution.EnvironmentBridgeTools) {
+		output, remoteIsError, err := execution.EnvironmentBridge.CallTool(ctx, spec.Name, input)
+		if err != nil {
+			result := ToolResult{
+				Error:    err,
+				IsError:  true,
+				Duration: time.Since(call.StartedAt),
+			}
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				result = runAfterToolCallHook(ctx, execution, call, result)
+				emitToolResult(ctx, execution.Callback, call, result)
+				return ToolCallExecutionResult{Call: call, Result: result, Error: err}
+			}
+			result.Output = fmt.Sprintf("error: %s failed: %v", spec.Name, err)
+			result = runAfterToolCallHook(ctx, execution, call, result)
+			emitToolResult(ctx, execution.Callback, call, result)
+			return resultForToolCall(call, result, nil)
+		}
+		result := ToolResult{
+			Output:   output,
+			IsError:  remoteIsError,
+			Duration: time.Since(call.StartedAt),
+		}
 		result = runAfterToolCallHook(ctx, execution, call, result)
 		emitToolResult(ctx, execution.Callback, call, result)
 		return resultForToolCall(call, result, nil)

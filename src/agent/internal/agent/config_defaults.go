@@ -30,7 +30,6 @@ const (
 	defaultAudioArchiveStoragePath = "/userdata/audio"
 	defaultAudioArchiveMaxFiles    = 500
 	defaultAudioArchiveMaxSizeMB   = 100
-	defaultBenchmarkJudgeModel     = defaultModelName
 	defaultLLMHTTPLogRetentionDays = 7
 	defaultKeyboardDevice          = "/dev/hidg0"
 	defaultMouseDevice             = "/dev/hidg1"
@@ -90,9 +89,6 @@ func DefaultConfig() Config {
 			MaxFiles:    defaultAudioArchiveMaxFiles,
 			MaxSizeMB:   defaultAudioArchiveMaxSizeMB,
 			StoragePath: defaultAudioArchiveStoragePath,
-		},
-		Benchmark: BenchmarkConfig{
-			JudgeModel: defaultBenchmarkJudgeModel,
 		},
 		Log: LogConfig{
 			LLMHTTPRetentionDays: defaultLLMHTTPLogRetentionDays,

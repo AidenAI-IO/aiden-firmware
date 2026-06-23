@@ -35,24 +35,25 @@ func effectiveMaxIterations(configured int) int {
 const currentEnvironmentHintMaxAge = 10 * time.Minute
 
 type Runtime struct {
-	config           Config
-	models           ModelResolver
-	memories         *MemoryManager
-	tools            *ToolSet
-	skills           *SkillManager
-	skillsLoaded     bool
-	skillsReloadMu   sync.Mutex
-	skillsDirty      bool
-	runGateInit      sync.Once
-	mergeWorker      *MergeWorker
-	logger           *Logger
-	profileDebouncer *ProfileDebouncer
-	waitForWakeup    *WaitForWakeupController
-	memoryPlane      MemoryPlane
-	sessionManager   SessionManager
-	runtimeID        string
-	mobileGym        *mobileGymSessionStore
-	runGate          chan struct{}
+	config             Config
+	models             ModelResolver
+	memories           *MemoryManager
+	tools              *ToolSet
+	skills             *SkillManager
+	skillsLoaded       bool
+	skillsReloadMu     sync.Mutex
+	skillsDirty        bool
+	runGateInit        sync.Once
+	mergeWorker        *MergeWorker
+	logger             *Logger
+	profileDebouncer   *ProfileDebouncer
+	waitForWakeup      *WaitForWakeupController
+	memoryPlane        MemoryPlane
+	sessionManager     SessionManager
+	runtimeID          string
+	telemetrySessionID string
+	environmentBridge  *EnvironmentBridgeClient
+	runGate            chan struct{}
 }
 
 type RunRequest struct {
@@ -279,11 +280,9 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	if err := proxy.Validate(); err != nil {
 		return nil, fmt.Errorf("proxy environment: %w", err)
 	}
-	mobileGymStore := &mobileGymSessionStore{}
 	toolSet := NewBuiltinToolSetFromConfig(
 		cfg,
 		proxy,
-		mobileGymStore,
 		WithWaitForWakeupController(waitForWakeupController),
 		WithScreenStableDefaults(cfg.ScreenStableDefaults()),
 	)
@@ -327,7 +326,6 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	rt.logger = logger
 	rt.profileDebouncer = debouncer
 	rt.waitForWakeup = waitForWakeupController
-	rt.mobileGym = mobileGymStore
 
 	// Log runtime start marker.
 	if logger != nil {
@@ -363,16 +361,26 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 	if cfg.ConfigDir != "" {
 		skillManager.SetUsagePath(filepath.Join(cfg.ConfigDir, "skill-state", "usage.json"))
 	}
+
+	var environmentBridge *EnvironmentBridgeClient
+	if cfg.EnvironmentBridge.Enabled && cfg.EnvironmentBridge.Endpoint != "" {
+		environmentBridge = NewEnvironmentBridgeClient(
+			cfg.EnvironmentBridge.Endpoint,
+			WithEnvironmentBridgeBenchmarkTaskID(cfg.EnvironmentBridge.BenchmarkTaskID),
+		)
+	}
+
 	rt := &Runtime{
-		config:        cfg,
-		models:        models,
-		memories:      memories,
-		tools:         tools,
-		skills:        skillManager,
-		skillsLoaded:  skillIndex != nil && len(skillIndex.Names()) > 0,
-		waitForWakeup: waitForWakeupController,
-		runtimeID:     uuid.NewString(),
-		mobileGym:     &mobileGymSessionStore{},
+		config:             cfg,
+		models:             models,
+		memories:           memories,
+		tools:              tools,
+		skills:             skillManager,
+		skillsLoaded:       skillIndex != nil && len(skillIndex.Names()) > 0,
+		waitForWakeup:      waitForWakeupController,
+		runtimeID:          uuid.NewString(),
+		telemetrySessionID: uuid.NewString(),
+		environmentBridge:  environmentBridge,
 	}
 	// Use the active memory session ID for raw HTTP log partitioning.
 	if modelManager, ok := models.(*ModelManager); ok {
@@ -716,6 +724,9 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	executor := newRoleCollaborativeExecutor(model, profiles, availableTools, plannerMemory, maxIterations, turnInput.Attachments, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault(), deviceEnv, req.SteerProvider)
 	executor.ConversationHistory = conversationHistory
 	executor.TodoReminderToolCalls = r.config.TodoReminderToolCallsOrDefault()
+	executor.ToolCallSpeech = r.config.VoiceToolCallSpeechOrDefault()
+	executor.EnvironmentBridge = r.environmentBridge
+	executor.EnvironmentBridgeTools = r.config.EnvironmentBridge.Tools
 	executor.SteerInterrupt = req.SteerInterrupt
 	executor.SteerWaiter = req.SteerWaiter
 	executor.FinalSteerProvider = req.FinalSteerProvider

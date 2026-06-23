@@ -17,6 +17,13 @@ type SearchConfig struct {
 	APIKey   string `toml:"api_key,omitempty"`
 }
 
+type EnvironmentBridgeConfig struct {
+	Enabled         bool     `toml:"-"` // Only set via CLI, not config file
+	Endpoint        string   `toml:"-"` // Only set via CLI, not config file
+	Tools           []string `toml:"-"` // Only set via CLI, not config file
+	BenchmarkTaskID string   `toml:"-"` // Only set via CLI, not config file
+}
+
 const (
 	searchProviderDuckDuckGo = "duckduckgo"
 	searchProviderTavily     = "tavily"
@@ -107,51 +114,51 @@ func (c LogConfig) LLMHTTPRetentionDaysOrDefault() int {
 }
 
 type Config struct {
-	Model                      ModelConfig        `toml:"model"`
-	ModelText                  ModelConfig        `toml:"model_text,omitempty"` // Override for STT-then-text mode
-	TTS                        TTSConfig          `toml:"tts,omitempty"`
-	STT                        STTConfig          `toml:"stt,omitempty"`
-	HID                        HIDConfig          `toml:"hid"`
-	Device                     DeviceConfig       `toml:"device,omitempty"`
-	Audio                      AudioConfig        `toml:"audio,omitempty"`
-	AudioArchive               AudioArchiveConfig `toml:"audio_archive,omitempty"`
-	Benchmark                  BenchmarkConfig    `toml:"benchmark,omitempty"`
-	Log                        LogConfig          `toml:"log,omitempty"`
-	Search                     SearchConfig       `toml:"search,omitempty"`
-	LiveActivity               LiveActivityConfig `toml:"live_activity,omitempty"`
-	Instruction                string             `toml:"custom_instruction,omitempty"`
-	AdditionalPrompt           string             `toml:"additional_prompt,omitempty"`
-	InputMode                  string             `toml:"input_mode,omitempty"`   // "text", "audio", "stt"
-	TriggerMode                string             `toml:"trigger_mode,omitempty"` // "manual", "wakeup"
-	VADBackend                 string             `toml:"vad_backend,omitempty"`  // "rknn", "cpu"
-	VADModelPath               string             `toml:"vad_model_path,omitempty"`
-	VADHelperPath              string             `toml:"vad_helper_path,omitempty"`
-	VADSpeechThreshold         float64            `toml:"vad_speech_threshold,omitempty"`
-	SilenceMs                  int                `toml:"silence_ms,omitempty"`
-	MinSpeechMs                int                `toml:"min_speech_ms,omitempty"`
-	VoiceFollowupEnabled       *bool              `toml:"voice_followup_enabled,omitempty"`
-	VoiceFollowupTimeoutMs     int                `toml:"voice_followup_timeout_ms,omitempty"`
-	VoiceFirstTurnTimeoutMs    int                `toml:"voice_first_turn_timeout_ms,omitempty"`
-	VoiceMaxTurns              int                `toml:"voice_max_turns,omitempty"`
-	VoiceInterruptOnWakeup     *bool              `toml:"voice_interrupt_on_wakeup,omitempty"`
-	VoiceStreamingTTSEnabled   *bool              `toml:"voice_streaming_tts_enabled,omitempty"`
-	VoiceToolCallSpeech        *bool              `toml:"voice_tool_call_speech,omitempty"`
-	VoiceProgressSpeechEnabled *bool              `toml:"voice_progress_speech_enabled,omitempty"`
-	VoiceMaxResponseTokens     int                `toml:"voice_max_response_tokens,omitempty"`
-	TodoReminderToolCalls      int                `toml:"todo_reminder_tool_calls,omitempty"`
-	MaxIterations              int                `toml:"max_iterations,omitempty"`
-	ForceSimpleLoop            bool               `toml:"force_simple_loop,omitempty"`
-	ScreenshotKeepN            int                `toml:"screenshot_keep_n,omitempty"`
-	ScreenshotPruneInterval    int                `toml:"screenshot_prune_interval,omitempty"`
-	ScreenStableTimeoutMs      int                `toml:"screen_stable_timeout_ms,omitempty"`
-	ScreenStableMs             int                `toml:"screen_stable_ms,omitempty"`
-	ScreenStableDiffThreshold  float64            `toml:"screen_stable_diff_threshold,omitempty"`
-	DefaultPlatform            string             `toml:"default_platform,omitempty"` // "ios", "android", "mac"
-	SkillsDirs                 []string           `toml:"skills_dirs"`
-	BundledSkillsDir           string             `toml:"bundled_skills_dir,omitempty"`
-	SkillMergeModel            SkillMergeModel    `toml:"-"`
-	Telemetry                  TelemetryConfig    `toml:"telemetry,omitempty"`
-	ConfigDir                  string             `toml:"-"`
+	Model                      ModelConfig             `toml:"model"`
+	ModelText                  ModelConfig             `toml:"model_text,omitempty"` // Override for STT-then-text mode
+	TTS                        TTSConfig               `toml:"tts,omitempty"`
+	STT                        STTConfig               `toml:"stt,omitempty"`
+	HID                        HIDConfig               `toml:"hid"`
+	Device                     DeviceConfig            `toml:"device,omitempty"`
+	Audio                      AudioConfig             `toml:"audio,omitempty"`
+	AudioArchive               AudioArchiveConfig      `toml:"audio_archive,omitempty"`
+	Log                        LogConfig               `toml:"log,omitempty"`
+	Search                     SearchConfig            `toml:"search,omitempty"`
+	EnvironmentBridge          EnvironmentBridgeConfig `toml:"-"` // Only set via CLI flags, never from config file
+	LiveActivity               LiveActivityConfig      `toml:"live_activity,omitempty"`
+	Instruction                string                  `toml:"custom_instruction,omitempty"`
+	AdditionalPrompt           string                  `toml:"additional_prompt,omitempty"`
+	InputMode                  string                  `toml:"input_mode,omitempty"`   // "text", "audio", "stt"
+	TriggerMode                string                  `toml:"trigger_mode,omitempty"` // "manual", "wakeup"
+	VADBackend                 string                  `toml:"vad_backend,omitempty"`  // "rknn", "cpu"
+	VADModelPath               string                  `toml:"vad_model_path,omitempty"`
+	VADHelperPath              string                  `toml:"vad_helper_path,omitempty"`
+	VADSpeechThreshold         float64                 `toml:"vad_speech_threshold,omitempty"`
+	SilenceMs                  int                     `toml:"silence_ms,omitempty"`
+	MinSpeechMs                int                     `toml:"min_speech_ms,omitempty"`
+	VoiceFollowupEnabled       *bool                   `toml:"voice_followup_enabled,omitempty"`
+	VoiceFollowupTimeoutMs     int                     `toml:"voice_followup_timeout_ms,omitempty"`
+	VoiceFirstTurnTimeoutMs    int                     `toml:"voice_first_turn_timeout_ms,omitempty"`
+	VoiceMaxTurns              int                     `toml:"voice_max_turns,omitempty"`
+	VoiceInterruptOnWakeup     *bool                   `toml:"voice_interrupt_on_wakeup,omitempty"`
+	VoiceStreamingTTSEnabled   *bool                   `toml:"voice_streaming_tts_enabled,omitempty"`
+	VoiceToolCallSpeech        *bool                   `toml:"voice_tool_call_speech,omitempty"`
+	VoiceProgressSpeechEnabled *bool                   `toml:"voice_progress_speech_enabled,omitempty"`
+	VoiceMaxResponseTokens     int                     `toml:"voice_max_response_tokens,omitempty"`
+	TodoReminderToolCalls      int                     `toml:"todo_reminder_tool_calls,omitempty"`
+	MaxIterations              int                     `toml:"max_iterations,omitempty"`
+	ForceSimpleLoop            bool                    `toml:"force_simple_loop,omitempty"`
+	ScreenshotKeepN            int                     `toml:"screenshot_keep_n,omitempty"`
+	ScreenshotPruneInterval    int                     `toml:"screenshot_prune_interval,omitempty"`
+	ScreenStableTimeoutMs      int                     `toml:"screen_stable_timeout_ms,omitempty"`
+	ScreenStableMs             int                     `toml:"screen_stable_ms,omitempty"`
+	ScreenStableDiffThreshold  float64                 `toml:"screen_stable_diff_threshold,omitempty"`
+	DefaultPlatform            string                  `toml:"default_platform,omitempty"` // "ios", "android", "mac"
+	SkillsDirs                 []string                `toml:"skills_dirs"`
+	BundledSkillsDir           string                  `toml:"bundled_skills_dir,omitempty"`
+	SkillMergeModel            SkillMergeModel         `toml:"-"`
+	Telemetry                  TelemetryConfig         `toml:"telemetry,omitempty"`
+	ConfigDir                  string                  `toml:"-"`
 }
 
 type TelemetryConfig struct {
@@ -239,21 +246,6 @@ type AudioConfig struct {
 	SampleRate int    `toml:"sample_rate,omitempty"`
 	Channels   int    `toml:"channels,omitempty"`
 	BitWidth   int    `toml:"bit_width,omitempty"`
-}
-
-// BenchmarkConfig configures the benchmark management endpoints in the agent
-// (migrated from config_web). All fields are optional; empty strings fall back
-// to runtime defaults.
-type BenchmarkConfig struct {
-	// JudgeModel is the OpenRouter model name passed to runner.main as
-	// --judge-model. Defaults to "bytedance-seed/seed-2.0-lite" when empty.
-	JudgeModel string `toml:"judge_model,omitempty"`
-	// APIKey is exported as OPENROUTER_API_KEY for benchmark judge calls.
-	APIKey string `toml:"api_key,omitempty"`
-	// Dir overrides the auto-detected benchmark root. When empty, the
-	// agent probes -benchmark-dir flag, AIDEN_BENCHMARK_DIR env,
-	// /userdata/agent/benchmark, then <cwd>/benchmark.
-	Dir string `toml:"benchmark_dir,omitempty"`
 }
 
 type ProxyConfig struct {
@@ -355,19 +347,13 @@ type HIDConfig struct {
 }
 
 type DeviceConfig struct {
-	Backend          string   `toml:"backend,omitempty"`
-	BridgeURL        string   `toml:"bridge_url,omitempty"`
-	BridgeTokenFile  string   `toml:"bridge_token_file,omitempty"`
-	ControlTokenFile string   `toml:"control_token_file,omitempty"`
-	ToolAllowlist    []string `toml:"tool_allowlist,omitempty"`
+	Backend string `toml:"backend,omitempty"`
 }
 
 func (d DeviceConfig) BackendOrDefault() string {
 	switch strings.ToLower(strings.TrimSpace(d.Backend)) {
 	case "", "hdmi", "hardware":
 		return "hdmi"
-	case "mobilegym":
-		return "mobilegym"
 	default:
 		return strings.ToLower(strings.TrimSpace(d.Backend))
 	}
@@ -749,12 +735,9 @@ func (c Config) Validate() error {
 	}
 	backend := c.Device.BackendOrDefault()
 	switch backend {
-	case "hdmi", "mobilegym":
+	case "hdmi":
 	default:
-		return fmt.Errorf("invalid device.backend: %s (expected hdmi or mobilegym)", c.Device.Backend)
-	}
-	if backend == "mobilegym" && strings.TrimSpace(c.Device.ControlTokenFile) == "" {
-		return errors.New("device.control_token_file is required when device.backend=mobilegym")
+		return fmt.Errorf("invalid device.backend: %s (expected hdmi)", c.Device.Backend)
 	}
 	if c.Model.MaxResponseTokens < 0 {
 		return fmt.Errorf("model.max_response_tokens must be >= 0, got %d", c.Model.MaxResponseTokens)

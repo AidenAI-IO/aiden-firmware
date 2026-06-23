@@ -241,7 +241,7 @@ def _merge_task_metadata(result: dict[str, Any] | None, metadata: dict[str, Any]
     if not metadata:
         return result
     merged = dict(result or {})
-    for key in ("description_for_judge", "rubric", "rubric_spec", "hard_assertions"):
+    for key in ("description_for_judge", "rubric", "rubric_spec", "hard_assertion_failures", "hard_assertions"):
         if key in metadata and key not in merged:
             merged[key] = metadata[key]
     return merged
@@ -655,7 +655,7 @@ def _drawer_task(row: dict[str, Any]) -> dict[str, Any]:
     if error:
         errors.append(["error", str(error.get("error") or error.get("message") or error)])
     rubric = _rubric_rows(result, row)
-    hard_assertions = _hard_assertion_rows(result)
+    hard_assertion_failures = _hard_assertion_failures(result)
     return {
         "id": str(row.get("task_id") or row.get("suite") or "-"),
         "category": str(row.get("suite") or "MobileGym"),
@@ -672,7 +672,7 @@ def _drawer_task(row: dict[str, Any]) -> dict[str, Any]:
         "artifacts_detail": links_text,
         "error_log_detail": _task_error_log_detail(status, row, result, error, execution),
         "rubric": rubric,
-        "hard_assertions": hard_assertions,
+        "hard_assertion_failures": hard_assertion_failures,
         "errors": _dedupe_errors(errors),
         "trace_observations": [],
     }
@@ -770,17 +770,36 @@ def _rubric_pass_count(rubric: list[list[str]], status: str) -> int:
     return 1 if status == "passed" else 0
 
 
-def _hard_assertion_rows(result: dict[str, Any]) -> list[list[str]]:
-    hard_assertions = result.get("hard_assertions")
-    if not isinstance(hard_assertions, dict):
+def _hard_assertion_failures(result: dict[str, Any]) -> list[dict[str, str]]:
+    failures = result.get("hard_assertion_failures")
+    if not isinstance(failures, list):
+        legacy = result.get("hard_assertions")
+        if isinstance(legacy, dict):
+            nested = legacy.get("hard_assertion_failures") or legacy.get("failures")
+            if isinstance(nested, list):
+                failures = nested
+            else:
+                failures = [
+                    {"id": key, "actual": "failed"}
+                    for key, value in legacy.items()
+                    if value is False
+                ]
+        else:
+            failures = legacy
+    if not isinstance(failures, list):
         return []
-    rows: list[list[str]] = []
-    if hard_assertions.get("expected_answer") is False or result.get("expected_answer_match") is False:
-        expected = result.get("normalized_expected_answer") or result.get("expected_answer") or ""
-        predicted = result.get("predicted_answer") or ""
-        rows.append(["Expected Answer", f"Expected: {expected}, Got: {predicted}", "no"])
-    if hard_assertions.get("expected_recalled_memory") is False or result.get("expected_recalled_memory_match") is False:
-        rows.append(["Expected Recalled Memory", "Did not recall expected memory items", "no"])
+    rows: list[dict[str, str]] = []
+    for item in failures:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            {
+                "id": str(item.get("id") or ""),
+                "label": str(item.get("label") or item.get("id") or ""),
+                "requirement": str(item.get("requirement") or ""),
+                "actual": str(item.get("actual") or ""),
+            }
+        )
     return rows
 
 

@@ -189,10 +189,6 @@ provider = "fake"
 	if cfg.HID.FrameSocket != defaultFrameServiceSocket {
 		t.Fatalf("HID.FrameSocket = %q, want runtime default %q", cfg.HID.FrameSocket, defaultFrameServiceSocket)
 	}
-	if cfg.Benchmark.JudgeModel != defaultBenchmarkJudgeModel {
-		t.Fatalf("Benchmark.JudgeModel = %q, want runtime default %q",
-			cfg.Benchmark.JudgeModel, defaultBenchmarkJudgeModel)
-	}
 	if cfg.VoiceMaxResponseTokens != defaultVoiceMaxResponseTokens {
 		t.Fatalf("VoiceMaxResponseTokens = %d, want runtime default %d",
 			cfg.VoiceMaxResponseTokens, defaultVoiceMaxResponseTokens)
@@ -747,39 +743,6 @@ func TestDeviceConfigBackendDefaultsToHDMI(t *testing.T) {
 	}
 }
 
-func TestLoadConfigAcceptsMobileGymDeviceBackend(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "agent.toml")
-	content := `
-custom_instruction = "test"
-input_mode = "text"
-max_iterations = 20
-force_simple_loop = true
-
-[model]
-provider = "fake"
-
-[device]
-backend = "mobilegym"
-bridge_url = "http://127.0.0.1:19001"
-bridge_token_file = "/tmp/device-token"
-control_token_file = "/tmp/control-token"
-`
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := LoadConfig(path)
-	if err != nil {
-		t.Fatalf("LoadConfig() error = %v", err)
-	}
-	if got := cfg.Device.BackendOrDefault(); got != "mobilegym" {
-		t.Fatalf("backend = %q, want mobilegym", got)
-	}
-	if cfg.Instruction != "test" || cfg.InputMode != "text" || cfg.MaxIterations != 20 || !cfg.ForceSimpleLoop {
-		t.Fatalf("root config not decoded: instruction=%q input_mode=%q max_iterations=%d force_simple_loop=%v", cfg.Instruction, cfg.InputMode, cfg.MaxIterations, cfg.ForceSimpleLoop)
-	}
-}
-
 func TestLoadConfigRejectsUnknownDeviceBackend(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
@@ -1135,55 +1098,6 @@ storage_path = "/custom/path"
 	}
 	if cfg.AudioArchive.StoragePath != "/custom/path" {
 		t.Errorf("StoragePath: got %q, want %q", cfg.AudioArchive.StoragePath, "/custom/path")
-	}
-}
-
-func TestLoadConfig_BenchmarkSection(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "agent.toml")
-	body := `
-[model]
-provider = "openrouter"
-api_key = "x"
-model = "y"
-
-[benchmark]
-judge_model = "custom/model-v1"
-benchmark_dir = "/tmp/bench"
-`
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := LoadConfig(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Benchmark.JudgeModel != "custom/model-v1" {
-		t.Errorf("JudgeModel = %q", cfg.Benchmark.JudgeModel)
-	}
-	if cfg.Benchmark.Dir != "/tmp/bench" {
-		t.Errorf("Dir = %q", cfg.Benchmark.Dir)
-	}
-}
-
-func TestLoadConfig_BenchmarkDefaults(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "agent.toml")
-	body := `
-[model]
-provider = "openrouter"
-api_key = "x"
-model = "y"
-`
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := LoadConfig(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Benchmark.JudgeModel != "" {
-		t.Errorf("expected empty JudgeModel default, got %q", cfg.Benchmark.JudgeModel)
 	}
 }
 

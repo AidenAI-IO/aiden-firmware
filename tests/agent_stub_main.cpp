@@ -66,8 +66,6 @@ const char* kDefaultConfig =
     "\"channels\":1,\"bit_width\":16},"
     "\"audio_archive\":{\"enabled\":true,\"max_files\":500,\"max_size_mb\":100,"
     "\"storage_path\":\"/userdata/audio\"},"
-    "\"benchmark\":{\"judge_model\":\"bytedance-seed/seed-2.0-lite\",\"api_key\":\"\","
-    "\"benchmark_dir\":\"\"},"
     "\"hid\":{\"keyboard_device\":\"/dev/hidg0\",\"mouse_device\":\"/dev/hidg1\","
     "\"frame_socket\":\"/run/frame_service/frame_service.sock\",\"pointer_mode\":\"absolute\"},"
     "\"search\":{\"provider\":\"duckduckgo\",\"has_api_key\":false},"

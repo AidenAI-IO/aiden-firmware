@@ -75,4 +75,7 @@ This documentation hub is the structured entry point for the project. The root `
 - [Quick Start](09-benchmark/README.md)
 - [Architecture Design](09-benchmark/architecture.md)
 - [Detailed Guide](09-benchmark/quickstart.md)
-- [SkillOpt Workflow](09-benchmark/skillopt.md)
+
+### 10. SkillOpt
+
+- [SkillOpt Workflow](10-skillopt/README.md)

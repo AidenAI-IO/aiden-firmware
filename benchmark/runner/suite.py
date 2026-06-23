@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-VALID_CATEGORIES = {"diagnostic", "single_step", "multi_step", "memory", "perception"}
+VALID_CATEGORIES = {"diagnostic", "single_step", "multi_step", "memory", "perception", "device_operation"}
 
 class SuiteValidationError(ValueError):
     pass
@@ -78,7 +78,14 @@ def load_suite(path: Path) -> Suite:
         rubric_raw = raw.get("rubric") or []
         if not rubric_raw:
             raise SuiteValidationError(f"task {tid}: empty rubric")
-        rubric = [RubricItem(id=r["id"], check=r["check"]) for r in rubric_raw]
+        rubric: list[RubricItem] = []
+        for r in rubric_raw:
+            if not isinstance(r, dict):
+                raise SuiteValidationError(f"task {tid}: rubric items must be objects")
+            check = r.get("check", r.get("description"))
+            if not r.get("id") or not check:
+                raise SuiteValidationError(f"task {tid}: rubric items require id and check")
+            rubric.append(RubricItem(id=r["id"], check=check))
         ha = raw.get("hard_assertions") or {}
         # Validate hard_assertions types
         rr = ha.get("response_required", True)

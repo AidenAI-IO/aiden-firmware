@@ -11,10 +11,9 @@ from enum import Enum
 
 import pytest
 
-from mobilegym.bridge.episode import BridgeEpisodeState
+from mobilegym.bridge.episode import BridgeEpisodeState, BridgeTaskRouter
 from mobilegym.bridge.actions import action_to_dict
 from mobilegym.bridge.server import BridgeServer
-from mobilegym.bridge.protocol import BridgeTokens
 
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\nmobilegym-png"
@@ -147,12 +146,7 @@ class RunningBridge:
         self.owner = OwnerLoop().__enter__()
         self.env = FakeEnv(self.owner.loop)
         self.state = BridgeEpisodeState(self.env, owner_loop=self.owner.loop)
-        self.server = BridgeServer(
-            self.state,
-            BridgeTokens(control_token="control-token", device_token="device-token"),
-            host="127.0.0.1",
-            port=0,
-        )
+        self.server = BridgeServer(self.state, host="127.0.0.1", port=0)
         self.server.start()
         self.base_url = self.server.base_url
         return self
@@ -162,14 +156,12 @@ class RunningBridge:
         OwnerLoop.__exit__(self.owner, *exc)
 
 
-def request_json(base_url, method, path, payload=None, token=None, timeout=2):
+def request_json(base_url, method, path, payload=None, timeout=2):
     data = None
     headers = {}
     if method != "GET":
         data = json.dumps(payload or {}).encode("utf-8")
         headers["Content-Type"] = "application/json"
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(f"{base_url}{path}", data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -178,13 +170,21 @@ def request_json(base_url, method, path, payload=None, token=None, timeout=2):
         return exc.code, json.loads(exc.read().decode("utf-8"))
 
 
+def request_text(base_url, method, path, timeout=2):
+    req = urllib.request.Request(f"{base_url}{path}", method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8")
+
+
 def start_episode(bridge, episode_id="ep1"):
     return request_json(
         bridge.base_url,
         "POST",
         "/episode/start",
         {"episode_id": episode_id},
-        token="control-token",
     )
 
 
@@ -204,7 +204,6 @@ def test_bridge_base_url_uses_public_host_override():
         state = BridgeEpisodeState(env, owner_loop=owner.loop)
         server = BridgeServer(
             state,
-            BridgeTokens(control_token="control-token", device_token="device-token"),
             host="127.0.0.1",
             port=0,
             public_host="bridge-container",
@@ -225,7 +224,6 @@ def test_bridge_base_url_resolves_container_ip_when_bound_to_wildcard(monkeypatc
         state = BridgeEpisodeState(env, owner_loop=owner.loop)
         server = BridgeServer(
             state,
-            BridgeTokens(control_token="control-token", device_token="device-token"),
             host="0.0.0.0",
             port=0,
         )
@@ -246,7 +244,6 @@ def test_bridge_base_url_falls_back_to_hostname_when_container_ip_unavailable(mo
         state = BridgeEpisodeState(env, owner_loop=owner.loop)
         server = BridgeServer(
             state,
-            BridgeTokens(control_token="control-token", device_token="device-token"),
             host="0.0.0.0",
             port=0,
         )
@@ -257,52 +254,341 @@ def test_bridge_base_url_falls_back_to_hostname_when_container_ip_unavailable(mo
             server.stop()
 
 
-def test_health_and_runner_endpoints_require_control_token_before_env_mutation():
+def test_health_and_runner_endpoints_do_not_require_authentication():
     with RunningBridge() as bridge:
         status, body = request_json(bridge.base_url, "GET", "/health")
         assert status == 200
         assert body["data"]["status"] == "ok"
+        assert body["data"]["concurrent"] == 1
+        assert "/api/concurrent" in body["data"]["interfaces"]
+
+        status, body = request_json(bridge.base_url, "GET", "/api/concurrent")
+        assert status == 200
+        assert body["data"]["bridge_type"] == "mobilegym"
+        assert body["data"]["concurrent"] == 1
+        assert body["data"]["env_count"] == 1
 
         status, _ = request_json(bridge.base_url, "POST", "/episode/start", {"episode_id": "ep1"})
-        assert status == 401
-        status, _ = request_json(
-            bridge.base_url, "POST", "/episode/start", {"episode_id": "ep1"}, token="device-token"
-        )
-        assert status == 401
-
-        status, _ = start_episode(bridge)
         assert status == 200
 
-        status, _ = request_json(bridge.base_url, "POST", "/reset", {}, token="wrong-token")
-        assert status == 401
-        assert bridge.env.reset_calls == 0
-
-        status, _ = request_json(bridge.base_url, "POST", "/reset", {}, token="control-token")
+        status, body = request_json(bridge.base_url, "POST", "/api/setup", {"episode_id": "reset-ep1"})
         assert status == 200
+        assert body["data"] == {"episode_id": "reset-ep1", "reset": True}
+        assert bridge.state.active_episode_id == "reset-ep1"
         assert bridge.env.reset_calls == 1
 
-        status, body = request_json(bridge.base_url, "POST", "/state", {}, token="control-token")
+        status, body = request_json(bridge.base_url, "POST", "/api/tools/screenshot", {"input": {}})
+        assert status == 200
+        assert body["is_error"] is False
+
+        status, body = request_json(bridge.base_url, "POST", "/state", {})
         assert status == 200
         assert body["data"] == bridge.env.state
 
-        status, body = request_json(bridge.base_url, "POST", "/route", {}, token="control-token")
+        status, body = request_json(bridge.base_url, "POST", "/route", {})
         assert status == 200
         assert body["data"] == bridge.env.route
 
-        status, _ = request_json(
-            bridge.base_url, "POST", "/episode/end", {"episode_id": "ep1"}, token="device-token"
-        )
-        assert status == 401
-        status, _ = request_json(
-            bridge.base_url, "POST", "/episode/end", {"episode_id": "ep1"}, token="control-token"
-        )
+        status, _ = request_json(bridge.base_url, "POST", "/episode/end", {"episode_id": "reset-ep1"})
         assert status == 200
 
         assert bridge.env.loop_matches and all(bridge.env.loop_matches)
         assert bridge.env.threads and set(bridge.env.threads) == {"mobilegym-owner-loop"}
 
 
-def test_device_endpoints_require_active_episode_and_device_token():
+def test_api_screen_snapshots_active_execution_state():
+    with RunningBridge() as bridge:
+        status, _ = request_text(bridge.base_url, "GET", "/screen")
+        assert status == 404
+
+        status, body = request_json(bridge.base_url, "GET", "/api/screen")
+        assert status == 200
+        assert body["data"]["status"] == "waiting"
+        assert body["data"]["active_episode_id"] is None
+        assert body["data"]["screenshot"] is None
+
+        assert start_episode(bridge)[0] == 200
+        status, _ = request_json(
+            bridge.base_url,
+            "POST",
+            "/tap",
+            {"episode_id": "ep1", "x": 100, "y": 200},
+        )
+        assert status == 200
+
+        status, body = request_json(bridge.base_url, "GET", "/api/screen")
+        assert status == 200
+        data = body["data"]
+        assert data["status"] == "running"
+        assert data["active_episode_id"] == "ep1"
+        assert data["screenshot"] == expected_screenshot()
+        assert data["action_count"] == 1
+        assert data["actions"] == [
+            {
+                "episode_id": "ep1",
+                "action_id": "ep1:0001",
+                "tool_name": "tap",
+                "tool_input": {"x": 100, "y": 200},
+                "duration_ms": data["actions"][0]["duration_ms"],
+                "error": None,
+                "has_screenshot": True,
+            }
+        ]
+        assert "screenshot" not in data["actions"][0]
+
+
+def test_api_screen_routes_by_query_task_id():
+    with OwnerLoop() as owner:
+        envs = [FakeEnv(owner.loop), FakeEnv(owner.loop)]
+        states = [BridgeEpisodeState(env, owner_loop=owner.loop) for env in envs]
+        states[0].active_episode_id = "ep-alpha"
+        states[1].active_episode_id = "ep-beta"
+        server = BridgeServer(BridgeTaskRouter(states), host="127.0.0.1", port=0)
+        try:
+            server.start()
+            status, body = request_json(server.base_url, "GET", "/api/concurrent")
+            assert status == 200
+            assert body["data"]["concurrent"] == 2
+            assert body["data"]["env_count"] == 2
+            assert body["data"]["active_routes"] == {}
+
+            status, body = request_json(server.base_url, "GET", "/api/screen?benchmark-task-id=task.alpha")
+            assert status == 200
+            assert body["data"]["status"] == "waiting"
+            assert server.router.task_map() == {}
+
+            server.router.state_for_task_id("task.alpha")
+            server.router.state_for_task_id("task.beta")
+            status, body = request_json(server.base_url, "GET", "/api/concurrent")
+            assert status == 200
+            assert body["data"]["concurrent"] == 2
+            assert body["data"]["active_routes"] == {"task.alpha": 0, "task.beta": 1}
+
+            status, body = request_json(server.base_url, "GET", "/api/screen?benchmark-task-id=task.alpha")
+            assert status == 200
+            assert body["data"]["active_episode_id"] == "ep-alpha"
+
+            status, body = request_json(server.base_url, "GET", "/api/screen?benchmark-task-id=task.beta")
+            assert status == 200
+            assert body["data"]["active_episode_id"] == "ep-beta"
+        finally:
+            server.stop()
+
+
+def test_tools_api_touch_gestures_use_active_reset_episode_and_normalized_coordinates():
+    with RunningBridge() as bridge:
+        status, body = request_json(bridge.base_url, "POST", "/api/setup", {"episode_id": "reset-ep1"})
+        assert status == 200
+        assert body["data"] == {"episode_id": "reset-ep1", "reset": True}
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/tools/touch_gesture",
+            {"input": {"type": "tap", "point": {"x": 500, "y": 800}}},
+        )
+        assert status == 200
+        assert body["is_error"] is False
+        assert action_to_dict(bridge.env.actions[-1]) == {
+            "action_type": "CLICK",
+            "data": {"point": [500.0, 800.0]},
+        }
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/tools/touch_gesture",
+            {"input": {"type": "tap", "coord_space": "normalized", "x": "135", "y": "705"}},
+        )
+        assert status == 200
+        assert body["is_error"] is False
+        assert action_to_dict(bridge.env.actions[-1]) == {
+            "action_type": "CLICK",
+            "data": {"point": [135.0, 705.0]},
+        }
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/tools/touch_gesture",
+            {"input": {"type": "swipe_up", "strength": "small", "anchor": 600}},
+        )
+        assert status == 200
+        assert body["is_error"] is False
+        assert action_to_dict(bridge.env.actions[-1]) == {
+            "action_type": "SWIPE",
+            "data": {"point1": [600.0, 700.0], "point2": [600.0, 500.0], "duration": 420.0},
+        }
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/tools/touch_gesture",
+            {"input": {"type": "swipe_up", "strength": "extreme"}},
+        )
+        assert status == 200
+        assert body["is_error"] is True
+        assert "unsupported strength" in body["output"]
+
+
+def test_tools_api_actions_are_visible_in_screen_action_log():
+    with RunningBridge() as bridge:
+        status, body = request_json(bridge.base_url, "POST", "/api/setup", {"episode_id": "reset-ep1"})
+        assert status == 200
+        assert body["data"] == {"episode_id": "reset-ep1", "reset": True}
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/tools/mouse_click",
+            {"input": {"x": 321, "y": 654, "button": "left", "coord_space": "normalized"}},
+        )
+        assert status == 200
+        assert body["is_error"] is False
+
+        status, body = request_json(bridge.base_url, "GET", "/api/screen")
+        assert status == 200
+        assert body["data"]["action_count"] == 1
+        assert body["data"]["actions"] == [
+            {
+                "episode_id": "reset-ep1",
+                "action_id": "reset-ep1:0001",
+                "tool_name": "mouse_click",
+                "tool_input": {"x": 321, "y": 654, "button": "left", "coord_space": "normalized"},
+                "duration_ms": body["data"]["actions"][0]["duration_ms"],
+                "error": None,
+                "has_screenshot": True,
+            }
+        ]
+
+
+def test_tools_api_mouse_and_quick_action_inputs_map_to_mobilegym_actions():
+    with RunningBridge() as bridge:
+        status, body = request_json(bridge.base_url, "POST", "/api/setup", {"episode_id": "reset-ep1"})
+        assert status == 200
+        assert body["data"] == {"episode_id": "reset-ep1", "reset": True}
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/tools/mouse_click",
+            {"input": {"x": 321, "y": 654, "button": "right", "coord_space": "normalized"}},
+        )
+        assert status == 200
+        assert body["is_error"] is False
+        assert action_to_dict(bridge.env.actions[-1]) == {
+            "action_type": "CLICK",
+            "data": {"point": [321.0, 654.0]},
+        }
+
+        before = len(bridge.env.actions)
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/tools/mouse_move",
+            {"input": {"x": 111, "y": 222, "coord_space": "normalized"}},
+        )
+        assert status == 200
+        assert body["is_error"] is False
+        assert len(bridge.env.actions) == before
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/tools/mouse_move",
+            {"input": {"y": 222, "coord_space": "normalized"}},
+        )
+        assert status == 200
+        assert body["is_error"] is True
+        assert "point is required" in body["output"]
+        assert len(bridge.env.actions) == before
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/tools/mouse_scroll",
+            {"input": {"delta": -3}},
+        )
+        assert status == 200
+        assert body["is_error"] is False
+        assert action_to_dict(bridge.env.actions[-1])["action_type"] == "SWIPE"
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/tools/quick_action",
+            {"input": {"action": "back", "platform": "android"}},
+        )
+        assert status == 200
+        assert body["is_error"] is False
+        assert action_to_dict(bridge.env.actions[-1]) == {"action_type": "BACK", "data": {}}
+
+        before = len(bridge.env.actions)
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/tools/quick_action",
+            {"input": {"action": "list", "platform": "android"}},
+        )
+        assert status == 200
+        assert body["is_error"] is False
+        output = json.loads(body["output"])
+        assert output["ok"] is True
+        assert output["platform"] == "android"
+        assert len(bridge.env.actions) == before
+
+
+def test_tools_api_keyboard_inputs_match_agent_proxy_contract():
+    with RunningBridge() as bridge:
+        status, body = request_json(bridge.base_url, "POST", "/api/setup", {"episode_id": "reset-ep1"})
+        assert status == 200
+        assert body["data"] == {"episode_id": "reset-ep1", "reset": True}
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/tools/keyboard_text",
+            {"raw_input": "plain text"},
+        )
+        assert status == 200
+        assert body["is_error"] is False
+        assert action_to_dict(bridge.env.actions[-1]) == {
+            "action_type": "TYPE",
+            "data": {"value": "plain text"},
+        }
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/tools/keyboard_text",
+            {"input": {"text": "中文"}},
+        )
+        assert status == 200
+        assert body["is_error"] is True
+        assert "US-keyboard ASCII" in body["output"]
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/tools/keyboard_tap",
+            {"input": {"keys": ["meta"], "hold_ms": 120}},
+        )
+        assert status == 200
+        assert body["is_error"] is False
+        assert action_to_dict(bridge.env.actions[-1]) == {"action_type": "HOME", "data": {}}
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/tools/keyboard_tap",
+            {"input": {"keys": ["ctrl", "c"]}},
+        )
+        assert status == 200
+        assert body["is_error"] is True
+        assert "does not support key" in body["output"]
+
+
+def test_device_endpoints_require_active_episode_without_authentication():
     with RunningBridge() as bridge:
         assert start_episode(bridge)[0] == 200
 
@@ -310,18 +596,7 @@ def test_device_endpoints_require_active_episode_and_device_token():
             bridge.base_url,
             "POST",
             "/tap",
-            {"episode_id": "ep1", "x": 500, "y": 250},
-            token="wrong-token",
-        )
-        assert status == 401
-        assert bridge.env.actions == []
-
-        status, _ = request_json(
-            bridge.base_url,
-            "POST",
-            "/tap",
             {"episode_id": "old", "x": 500, "y": 250},
-            token="device-token",
         )
         assert status == 409
         assert bridge.env.actions == []
@@ -331,7 +606,6 @@ def test_device_endpoints_require_active_episode_and_device_token():
             "POST",
             "/screenshot",
             {"episode_id": "ep1"},
-            token="device-token",
         )
         assert status == 200
         assert body == expected_screenshot()
@@ -368,7 +642,7 @@ def test_device_endpoints_require_active_episode_and_device_token():
             ("/wait", {"episode_id": "ep1", "duration_ms": 10}, "WAIT"),
         ]
         for index, (path, payload, _) in enumerate(action_requests, start=1):
-            status, body = request_json(bridge.base_url, "POST", path, payload, token="device-token")
+            status, body = request_json(bridge.base_url, "POST", path, payload)
             assert status == 200
             assert body == {
                 "ok": True,
@@ -396,7 +670,6 @@ def test_key_endpoint_supports_mobilegym_action_type_without_key_and_rejects_uns
             "POST",
             "/key",
             {"episode_id": "ep1", "key": "enter"},
-            token="device-token",
         )
         assert status == 200
         assert body["ok"] is True
@@ -408,7 +681,6 @@ def test_key_endpoint_supports_mobilegym_action_type_without_key_and_rejects_uns
             "POST",
             "/key",
             {"episode_id": "ep1", "key": "volume_up"},
-            token="device-token",
         )
         assert status == 400
         assert body["ok"] is False
@@ -428,7 +700,6 @@ def test_screenshot_infers_format_from_bytes_when_mime_type_is_absent(payload, f
             "POST",
             "/screenshot",
             {"episode_id": "ep1"},
-            token="device-token",
         )
 
         assert status == 200
@@ -444,7 +715,6 @@ def test_episode_end_returns_action_log_entries_with_screenshots():
             "POST",
             "/tap",
             {"episode_id": "ep1", "x": 100, "y": 200},
-            token="device-token",
         )
         assert status == 200
 
@@ -453,7 +723,6 @@ def test_episode_end_returns_action_log_entries_with_screenshots():
             "POST",
             "/episode/end",
             {"episode_id": "ep1"},
-            token="control-token",
         )
 
         assert status == 200
@@ -473,7 +742,6 @@ def test_episode_end_waits_for_in_flight_env_work_before_returning():
                 "POST",
                 "/wait",
                 {"episode_id": "ep1", "duration_ms": 1},
-                token="device-token",
                 timeout=3,
             )
             action_done.set()
@@ -484,7 +752,6 @@ def test_episode_end_waits_for_in_flight_env_work_before_returning():
                 "POST",
                 "/episode/end",
                 {"episode_id": "ep1"},
-                token="control-token",
                 timeout=3,
             )
             assert status == 200
@@ -517,7 +784,6 @@ def test_env_work_is_serialized_and_bridge_serves_screenshot_while_chat_is_block
                 "POST",
                 "/wait",
                 {"episode_id": "ep1", "duration_ms": 1},
-                token="device-token",
                 timeout=3,
             )
             assert status == 200
@@ -546,7 +812,6 @@ def test_env_work_is_serialized_and_bridge_serves_screenshot_while_chat_is_block
             "POST",
             "/screenshot",
             {"episode_id": "ep1"},
-            token="device-token",
             timeout=2,
         )
         assert status == 200

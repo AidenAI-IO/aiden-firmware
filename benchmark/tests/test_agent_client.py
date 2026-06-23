@@ -28,6 +28,7 @@ def _captured(seen, status=200, body=None):
     def fake_urlopen(req, timeout=None):
         seen["url"] = req.full_url
         seen["method"] = req.get_method()
+        seen["headers"] = {k.lower(): v for k, v in req.header_items()}
         try:
             seen["body"] = req.data.decode("utf-8") if req.data else ""
         except Exception:
@@ -123,6 +124,16 @@ def test_invoke_tool_returns_output():
     assert seen["timeout"] == 90
     assert out.is_error is False
     assert out.duration_ms == 12
+
+
+def test_invoke_tool_can_send_benchmark_task_id_header():
+    seen = {}
+    client = AgentClient(base_url="http://test")
+    with patch("urllib.request.urlopen",
+               _captured(seen, body={"output": "{}", "is_error": False, "duration_ms": 12})):
+        client.invoke_tool("screenshot", {}, benchmark_task_id="suite.json:t1")
+
+    assert seen["headers"]["benchmark-task-id"] == "suite.json:t1"
 
 
 def test_health_returns_true_when_tools_endpoint_ok():

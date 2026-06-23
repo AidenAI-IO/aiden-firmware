@@ -1,3 +1,4 @@
+import base64
 import json
 import re
 from pathlib import Path
@@ -15,7 +16,7 @@ class RecordingClient:
         return ToolInvokeResult(output="", is_error=False, duration_ms=1)
 
 
-def read_report_tasks(html: str):
+def _report_tasks(html: str) -> list[dict]:
     match = re.search(r"const TASKS = (.*?);\nconst rows", html, re.S)
     assert match, "report TASKS payload missing"
     return json.loads(match.group(1))
@@ -112,10 +113,20 @@ def test_generate_report_includes_tool_hard_assertion_failures(tmp_path: Path):
                 "status": "failed",
                 "rubric_pass_count": 0,
                 "rubric_total": 1,
-                "hard_assertions": {
-                    "required_tools": False,
-                    "forbidden_tools": False,
-                },
+                "hard_assertion_failures": [
+                    {
+                        "id": "required_tools",
+                        "label": "Required Tools",
+                        "requirement": "Must call: screenshot, tap.",
+                        "actual": "Missing: tap. Used: screenshot.",
+                    },
+                    {
+                        "id": "forbidden_tools",
+                        "label": "Forbidden Tools",
+                        "requirement": "Must not call: shell.",
+                        "actual": "Forbidden calls: shell at step 2. Used: screenshot, shell.",
+                    },
+                ],
                 "metrics": {"tool_calls": 2, "wall_ms": 9},
             }
         )
@@ -127,6 +138,23 @@ def test_generate_report_includes_tool_hard_assertion_failures(tmp_path: Path):
 
     assert "Required Tools" in html
     assert "Forbidden Tools" in html
+    assert "Requirement" in html
+    assert "Actual" in html
+    task = _report_tasks(html)[0]
+    assert task["hard_assertion_failures"] == [
+        {
+            "id": "required_tools",
+            "label": "Required Tools",
+            "requirement": "Must call: screenshot, tap.",
+            "actual": "Missing: tap. Used: screenshot.",
+        },
+        {
+            "id": "forbidden_tools",
+            "label": "Forbidden Tools",
+            "requirement": "Must not call: shell.",
+            "actual": "Forbidden calls: shell at step 2. Used: screenshot, shell.",
+        },
+    ]
 
 
 def test_generate_report_embeds_failed_task_error_log(tmp_path: Path):
@@ -151,7 +179,14 @@ def test_generate_report_embeds_failed_task_error_log(tmp_path: Path):
                 "status": "failed",
                 "rubric_pass_count": 0,
                 "rubric_total": 1,
-                "hard_assertions": {"max_tool_calls": False},
+                "hard_assertion_failures": [
+                    {
+                        "id": "max_tool_calls",
+                        "label": "Max Tool Calls",
+                        "requirement": "Use at most 1 tool call(s).",
+                        "actual": "Used 2 tool call(s).",
+                    }
+                ],
                 "metrics": {"tool_calls": 2, "wall_ms": 9},
             }
         )
@@ -163,9 +198,11 @@ def test_generate_report_embeds_failed_task_error_log(tmp_path: Path):
     (task_dir / "judge.json").write_text(json.dumps({"reason": "JudgeBoom"}), encoding="utf-8")
 
     html = generate_report_html(run_dir)
-    task = read_report_tasks(html)[0]
+    task = _report_tasks(html)[0]
 
     assert "Max Tool Calls" in task["error_log_detail"]
+    assert "Requirement: Use at most 1 tool call(s)." in task["error_log_detail"]
+    assert "Actual: Used 2 tool call(s)." in task["error_log_detail"]
     assert "JudgeBoom" in task["error_log_detail"]
     assert "evidence_detail" not in task
     assert "tasks/task-1/trace.json" in task["artifacts_detail"]
@@ -208,10 +245,143 @@ def test_generate_report_accepts_relative_run_dir_with_task_artifacts(tmp_path: 
 
     monkeypatch.chdir(workspace)
     html = generate_report_html(Path("runs") / "2026-05-28_091421")
-    task = read_report_tasks(html)[0]
+    task = _report_tasks(html)[0]
 
     assert "tasks/task-1/trace.json" in task["artifacts_detail"]
     assert "JudgeBoom" in task["error_log_detail"]
+
+
+def test_generate_report_includes_full_trace_with_screenshots(tmp_path: Path):
+    run_dir = tmp_path / "2026-05-28_091421"
+    task_dir = run_dir / "tasks" / "task-1"
+    steps_dir = task_dir / "steps"
+    steps_dir.mkdir(parents=True)
+    pre = b"\x89PNG\r\n\x1a\npre-shot"
+    post = b"\xff\xd8post-shot"
+    step = b"\xff\xd8step-shot"
+    (task_dir / "pre.jpg").write_bytes(pre)
+    (task_dir / "post.jpg").write_bytes(post)
+    (steps_dir / "step_01_screenshot.jpg").write_bytes(step)
+    image_payload = base64.b64encode(b"history-shot").decode("ascii")
+    (task_dir / "history.json").write_text(
+        json.dumps(
+            [
+                {"type": "user", "content": "open settings"},
+                {"type": "tool_call", "tool_name": "screenshot", "tool_input": "{}"},
+                {
+                    "type": "tool_result",
+                    "tool_name": "screenshot",
+                    "content": json.dumps({"data": image_payload, "width": 10, "height": 20, "format": "jpeg"}),
+                },
+                {"type": "assistant", "content": "done"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (task_dir / "trace.json").write_text(
+        json.dumps(
+            {
+                "tool_calls": [{"step": 1, "tool": "screenshot", "input": {}, "has_screenshot": True}],
+                "final_response": "done",
+                "total_tool_calls": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "2026-05-28_091421",
+                "suite_path": "suite.json",
+                "totals": {"tasks": 1, "passed": 1, "failed": 0, "skipped": 0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "results.jsonl").write_text(
+        json.dumps(
+            {
+                "task_id": "task-1",
+                "category": "diagnostic",
+                "status": "passed",
+                "rubric_pass_count": 1,
+                "rubric_total": 1,
+                "rubric": [{"id": "ok", "reason": "looks correct", "verdict": "yes"}],
+                "metrics": {"tool_calls": 1, "wall_ms": 9, "screenshots_taken": 1},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    html = generate_report_html(run_dir)
+
+    assert "View full trace" in html
+    assert "Pre screenshot" in html
+    assert "Post screenshot" in html
+    assert "Tool call #1: screenshot" in html
+    assert "<base64 image data" in html
+    assert f"data:image/png;base64,{base64.b64encode(pre).decode('ascii')}" in html
+    assert f"data:image/jpeg;base64,{base64.b64encode(post).decode('ascii')}" in html
+    assert f"data:image/jpeg;base64,{base64.b64encode(step).decode('ascii')}" not in html
+    assert image_payload not in html
+
+
+def test_generate_report_uses_result_artifact_dir_for_attempt_trace(tmp_path: Path):
+    run_dir = tmp_path / "2026-05-28_091421"
+    base_dir = run_dir / "tasks" / "task-1"
+    attempt_dir = base_dir / "attempt_2"
+    base_dir.mkdir(parents=True)
+    attempt_dir.mkdir(parents=True)
+    base_post = b"\xff\xd8base-post"
+    attempt_pre = b"\xff\xd8attempt-pre"
+    attempt_post = b"\xff\xd8attempt-post"
+    (base_dir / "post.jpg").write_bytes(base_post)
+    (attempt_dir / "pre.jpg").write_bytes(attempt_pre)
+    (attempt_dir / "post.jpg").write_bytes(attempt_post)
+    (attempt_dir / "history.json").write_text(
+        json.dumps([{"type": "user", "content": "attempt prompt"}]),
+        encoding="utf-8",
+    )
+    (attempt_dir / "trace.json").write_text(
+        json.dumps({"tool_calls": [], "final_response": "attempt response"}),
+        encoding="utf-8",
+    )
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "2026-05-28_091421",
+                "suite_path": "suite.json",
+                "totals": {"tasks": 1, "passed": 1, "failed": 0, "skipped": 0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "results.jsonl").write_text(
+        json.dumps(
+            {
+                "task_id": "task-1",
+                "category": "diagnostic",
+                "attempt": 2,
+                "status": "passed",
+                "rubric_pass_count": 1,
+                "rubric_total": 1,
+                "metrics": {"tool_calls": 0, "wall_ms": 9},
+                "artifact_dir": str(attempt_dir),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    task = _report_tasks(generate_report_html(run_dir))[0]
+
+    assert task["prompt"] == "attempt prompt"
+    assert task["response"] == "attempt response"
+    assert f"data:image/jpeg;base64,{base64.b64encode(attempt_pre).decode('ascii')}" == task["full_trace"]["pre_screenshot"]
+    assert f"data:image/jpeg;base64,{base64.b64encode(attempt_post).decode('ascii')}" == task["full_trace"]["post_screenshot"]
+    assert base64.b64encode(base_post).decode("ascii") not in json.dumps(task)
+    assert "tasks/task-1/attempt_2/trace.json" in task["artifacts_detail"]
 
 
 def test_generate_report_includes_llm_analysis_section(tmp_path: Path):

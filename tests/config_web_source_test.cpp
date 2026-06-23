@@ -302,14 +302,12 @@ TEST_CASE("config web exposes live agent logs") {
     CHECK(source.find("\"truncated\"") != std::string::npos);
     CHECK(source.find("tail -f") == std::string::npos);
 
-    CHECK(html.find("Agent Live Logs") != std::string::npos);
+    CHECK(html.find("Agent 实时日志") != std::string::npos);
     CHECK(html.find("agentLogText") != std::string::npos);
     CHECK(html.find("agentLogMeta") != std::string::npos);
     CHECK(html.find("refreshAgentLog") != std::string::npos);
-    CHECK(html.find("autoRefreshAgentLog") != std::string::npos);
     CHECK(html.find("/api/agent/logs") != std::string::npos);
-    CHECK(html.find("setInterval(function(){autoRefreshAgentLog();},2000)") != std::string::npos);
-    CHECK(html.find("setInterval(function(){refreshAgentLog(false);},2000)") == std::string::npos);
+    CHECK(html.find("setInterval(function(){refreshAgentLog(false);},2000)") != std::string::npos);
 }
 
 TEST_CASE("config web auto-scrolls agent logs only while pinned to bottom") {
@@ -327,10 +325,6 @@ TEST_CASE("config web auto-scrolls agent logs only while pinned to bottom") {
     CHECK(html.find("function setAgentLogAutoScroll(enabled)") != std::string::npos);
     CHECK(html.find("function syncAgentLogAutoScroll()") != std::string::npos);
     CHECK(html.find("function toggleAgentLogAutoScroll()") != std::string::npos);
-    CHECK(html.find("function autoRefreshAgentLog()") != std::string::npos);
-    CHECK(html.find("isLogViewerSelectionActive(textEl)") != std::string::npos);
-    CHECK(html.find("bindLogViewerSelectionGuard('agentLogText')") != std::string::npos);
-    CHECK(html.find("!appState.agentLogAutoScroll||!isAgentLogAtBottom(textEl)||isLogViewerSelectionActive(textEl)") != std::string::npos);
     CHECK(html.find("byId('agentLogText').addEventListener('scroll',syncAgentLogAutoScroll)") != std::string::npos);
     CHECK(html.find("if(appState.agentLogAutoScroll){textEl.scrollTop=textEl.scrollHeight;}") != std::string::npos);
     CHECK(html.find("btn.className='button '+(appState.agentLogAutoScroll?'primary':'ghost')") != std::string::npos);
@@ -568,7 +562,7 @@ TEST_CASE("config web exposes audio archive switch") {
     CHECK(html.find("agent.input_mode = stt") != std::string::npos);
     CHECK(html.find("testSection('audio_archive')") == std::string::npos);
     CHECK(html.find("[audio_archive]") != std::string::npos);
-    CHECK(html.find("STT voice recordings as WAV") != std::string::npos);
+    CHECK(html.find("保存 STT 语音录音 WAV") != std::string::npos);
 }
 
 TEST_CASE("config web docs list token_env in model fields") {
@@ -639,7 +633,7 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(source.find("close(lock_fd)") != std::string::npos);
     CHECK(source.find("tail -f") == std::string::npos);
 
-    CHECK(html.find("OTA Update") != std::string::npos);
+    CHECK(html.find("OTA 更新") != std::string::npos);
     CHECK(html.find("fwActions") != std::string::npos);
     CHECK(html.find("otaUpdateBtn") != std::string::npos);
     CHECK(html.find("actionBanner") != std::string::npos);
@@ -649,7 +643,7 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     const std::string::size_type action_banner_pos = html.find("id=\\\"actionBanner\\\"");
     const std::string::size_type action_details_pos = html.find("id=\\\"actionDetails\\\"");
     const std::string::size_type ota_log_panel_pos = html.find("id=\\\"otaLogPanel\\\"");
-    const std::string::size_type wifi_heading_pos = html.find("Wi-Fi Configuration");
+    const std::string::size_type wifi_heading_pos = html.find("Wi-Fi 配置");
     REQUIRE(fw_actions_pos != std::string::npos);
     REQUIRE(ota_button_pos != std::string::npos);
     REQUIRE(action_banner_pos != std::string::npos);
@@ -662,7 +656,7 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(action_details_pos < wifi_heading_pos);
     CHECK(action_details_pos < ota_log_panel_pos);
     CHECK(ota_log_panel_pos < wifi_heading_pos);
-    CHECK(html.find("OTA Live Logs") != std::string::npos);
+    CHECK(html.find("OTA 实时日志") != std::string::npos);
     CHECK(html.find("otaLogPanel") != std::string::npos);
     CHECK(html.find("id=\\\"otaLogPanel\\\" class=\\\"ota-log-panel\\\"") != std::string::npos);
     CHECK(html.find("id=\\\"otaLogPanel\\\" class=\\\"card ota-log-panel\\\"") == std::string::npos);
@@ -675,12 +669,12 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(html.find("otaLogHasNewProgress") != std::string::npos);
     CHECK(html.find("extractOtaExitCode") != std::string::npos);
     CHECK(html.find("[config_web] ota update exited rc=") != std::string::npos);
-    CHECK(html.find("OTA update failed (rc=") != std::string::npos);
-    CHECK(html.find("Recent OTA logs:\\\\n") != std::string::npos);
+    CHECK(html.find("OTA 更新失败（rc=") != std::string::npos);
+    CHECK(html.find("最近 OTA 日志：\\\\n") != std::string::npos);
     CHECK(html.find("setOtaLogPending") != std::string::npos);
-    CHECK(html.find("OTA update started, waiting for log output...") != std::string::npos);
-    CHECK(html.find("setOtaLogPending('OTA update started, waiting for log output...',Number(payload.ota_log_start_size_bytes||0));") != std::string::npos);
-    CHECK(html.find("renderOtaLog(snapshot,{preservePending:true})") != std::string::npos);
+    CHECK(html.find("OTA 更新已开始，等待日志输出...") != std::string::npos);
+    CHECK(html.find("setOtaLogPending('OTA 更新已开始，等待日志输出...',Number(payload.ota_log_start_size_bytes||0));") != std::string::npos);
+    CHECK(html.find("renderOtaLog(snapshot, {preservePending:true})") != std::string::npos);
     CHECK(html.find("payload.ota_health_log") != std::string::npos);
     CHECK(html.find("extractOtaExitCode((payload.ota_log||{}).log||'')") != std::string::npos);
     CHECK(html.find("triggerOtaUpdate(){const btn=byId('otaUpdateBtn');setOtaLogPending(") != std::string::npos);
@@ -689,20 +683,16 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(html.find("function setDetails(text,options)") != std::string::npos);
     CHECK(html.find("if(!(options&&options.keepOtaLog)){hideOtaLogPanel();}") != std::string::npos);
     CHECK(html.find("setDetails('',{keepOtaLog:true})") != std::string::npos);
-    CHECK(html.find("setDetails('Recent OTA logs:\\\\n'+String(text||'').slice(-4000),{keepOtaLog:true})") != std::string::npos);
+    CHECK(html.find("setDetails('最近 OTA 日志：\\\\n'+String(text||'').slice(-4000),{keepOtaLog:true})") != std::string::npos);
     CHECK(html.find("setDetails(err.message,{keepOtaLog:true})") != std::string::npos);
     CHECK(html.find("otaLogText") != std::string::npos);
     CHECK(html.find("otaLogMeta") != std::string::npos);
     CHECK(html.find("triggerOtaUpdate") != std::string::npos);
     CHECK(html.find("refreshOtaLog") != std::string::npos);
-    CHECK(html.find("autoRefreshOtaLog") != std::string::npos);
     CHECK(html.find("/api/ota/update") != std::string::npos);
     CHECK(html.find("/api/ota/check-now") == std::string::npos);
     CHECK(html.find("/api/ota/logs") != std::string::npos);
-    CHECK(html.find("bindLogViewerSelectionGuard('otaLogText')") != std::string::npos);
-    CHECK(html.find("!appState.otaLogVisible||!isAgentLogAtBottom(textEl)||isLogViewerSelectionActive(textEl)") != std::string::npos);
-    CHECK(html.find("setInterval(function(){autoRefreshOtaLog();},2000)") != std::string::npos);
-    CHECK(html.find("setInterval(function(){refreshOtaLog(false);},2000)") == std::string::npos);
+    CHECK(html.find("setInterval(function(){refreshOtaLog(false);},2000)") != std::string::npos);
 }
 
 TEST_CASE("config web exposes running firmware version and ota health status separately") {
@@ -730,7 +720,7 @@ TEST_CASE("config web exposes running firmware version and ota health status sep
 
     CHECK(html.find("fwHealth") != std::string::npos);
     CHECK(html.find("renderFirmwareInfo") != std::string::npos);
-    CHECK(html.find("OTA Status") != std::string::npos);
+    CHECK(html.find("OTA 状态") != std::string::npos);
     CHECK(html.find("health_error") != std::string::npos);
     CHECK(html.find("previous_version") != std::string::npos);
 }
@@ -901,7 +891,7 @@ TEST_CASE("config web renders finite choice fields as selects") {
     CHECK(html.find("function fieldDefaultPlaceholder") != std::string::npos);
     CHECK(html.find("applyDefaultPlaceholder(name,field)") != std::string::npos);
     CHECK(html.find("getAttribute('placeholder')") != std::string::npos);
-    CHECK(html.find("Default value: ") != std::string::npos);
+    CHECK(html.find("默认值: ") != std::string::npos);
     // rangeOptions is now invoked with metadata-provided bounds, not literals.
     CHECK(html.find("rangeOptions(field.range.min,field.range.max,field.range.step") != std::string::npos);
     // The legacy hard-coded option table must be gone.
@@ -956,12 +946,12 @@ TEST_CASE("config web collapses wifi list after a successful connection") {
     CHECK(html.find("function connectedWifiSsid()") != std::string::npos);
     CHECK(html.find("function visibleWifiNames(names)") != std::string::npos);
     CHECK(html.find("function toggleWifiListExpanded()") != std::string::npos);
-    CHECK(html.find("Show other Wi-Fi") != std::string::npos);
-    CHECK(html.find("Collapse other Wi-Fi") != std::string::npos);
+    CHECK(html.find("显示其他 Wi-Fi") != std::string::npos);
+    CHECK(html.find("收起其他 Wi-Fi") != std::string::npos);
     CHECK(html.find("const visibleNames=visibleWifiNames(names);") != std::string::npos);
     CHECK(html.find("names.forEach(function(name)") == std::string::npos);
     CHECK(html.find("function initialReadyMessage(metaOk)") != std::string::npos);
-    CHECK(html.find("if(connectedWifiSsid())return 'Wi-Fi connected.';") != std::string::npos);
+    CHECK(html.find("if(connectedWifiSsid())return 'Wi-Fi 已连接。';") != std::string::npos);
     CHECK(html.find("setBanner(initialReadyMessage(metaOk),!metaOk);") != std::string::npos);
 }
 
@@ -1118,7 +1108,7 @@ TEST_CASE("config web exposes a single system env editor backed by the env file"
     CHECK(html.find("http_proxy=http://127.0.0.1:7890") == std::string::npos);
     CHECK(html.find("NO_PROXY=localhost,127.0.0.1,::1") == std::string::npos);
 
-    const size_t agent_card = html.find("<h2>Agent Configuration</h2>");
+    const size_t agent_card = html.find("<h2>Agent 配置</h2>");
     const size_t telemetry_section = html.find("id=\\\"section-telemetry\\\"");
     const size_t system_env_section = html.find("id=\\\"section-system_env\\\"");
     REQUIRE(agent_card != std::string::npos);
@@ -1167,7 +1157,7 @@ TEST_CASE("config web exposes telemetry settings section") {
     CHECK(html.find("<textarea id=\\\"telemetry_tags\\\"") != std::string::npos);
 }
 
-TEST_CASE("config web exposes benchmark settings section") {
+TEST_CASE("config web does not expose benchmark settings section") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
     REQUIRE(source_in.good());
@@ -1184,31 +1174,20 @@ TEST_CASE("config web exposes benchmark settings section") {
     html_buffer << html_in.rdbuf();
     const std::string html = html_buffer.str();
 
-    CHECK(source.find("cJSON* benchmark = add_object(root, \"benchmark\")") != std::string::npos);
-    CHECK(source.find("config.benchmark.judge_model") != std::string::npos);
-    CHECK(source.find("config.benchmark.api_key") != std::string::npos);
-    CHECK(source.find("config.benchmark.benchmark_dir") != std::string::npos);
-    CHECK(source.find("cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = false)") != std::string::npos);
-    CHECK(source.find("if (include_secrets)") != std::string::npos);
-    CHECK(source.find("cJSON_AddBoolToObject(benchmark, \"has_api_key\", !config.benchmark.api_key.empty())") != std::string::npos);
-    CHECK(source.find("cJSON_AddStringToObject(benchmark, \"api_key\", config.benchmark.api_key.c_str())") != std::string::npos);
-    CHECK(source.find("cJSON* benchmark = cJSON_GetObjectItem(root, \"benchmark\")") != std::string::npos);
-    CHECK(source.find("set_json_str(&config->benchmark.judge_model, benchmark, \"judge_model\")") != std::string::npos);
-    CHECK(source.find("std::string api_key = trim_copy(key_item->valuestring)") != std::string::npos);
-    CHECK(source.find("config->benchmark.api_key = api_key") != std::string::npos);
-    CHECK(source.find("set_json_str(&config->benchmark.benchmark_dir, benchmark, \"benchmark_dir\")") != std::string::npos);
-    CHECK(source.find("cJSON* config_json = config_to_json(config, true)") != std::string::npos);
-    CHECK(source.find("section == \"benchmark\"") != std::string::npos);
-    CHECK(source.find("defaults to bytedance-seed/seed-2.0-lite") != std::string::npos);
+    CHECK(source.find("add_object(root, \"benchmark\")") == std::string::npos);
+    CHECK(source.find("config.benchmark") == std::string::npos);
+    CHECK(source.find("cJSON_GetObjectItem(root, \"benchmark\")") == std::string::npos);
+    CHECK(source.find("section == \"benchmark\"") == std::string::npos);
+    CHECK(source.find("defaults to bytedance-seed/seed-2.0-lite") == std::string::npos);
 
-    CHECK(html.find("section-benchmark") != std::string::npos);
-    CHECK(html.find("<h3>[benchmark]</h3>") != std::string::npos);
-    CHECK(html.find("benchmark_judge_model") != std::string::npos);
-    CHECK(html.find("benchmark_api_key") != std::string::npos);
-    CHECK(html.find("benchmark_benchmark_dir") != std::string::npos);
+    CHECK(html.find("section-benchmark") == std::string::npos);
+    CHECK(html.find("<h3>[benchmark]</h3>") == std::string::npos);
+    CHECK(html.find("benchmark_judge_model") == std::string::npos);
+    CHECK(html.find("benchmark_api_key") == std::string::npos);
+    CHECK(html.find("benchmark_benchmark_dir") == std::string::npos);
     CHECK(html.find("sectionValues['has_'+key]") != std::string::npos);
-    CHECK(html.find("save-benchmark") != std::string::npos);
-    CHECK(html.find("enterEditSection('benchmark')") != std::string::npos);
+    CHECK(html.find("save-benchmark") == std::string::npos);
+    CHECK(html.find("enterEditSection('benchmark')") == std::string::npos);
 }
 
 TEST_CASE("config web exposes log settings section") {
@@ -1494,10 +1473,10 @@ TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhi
     CHECK(source.find("config metadata unavailable: agent binary not found") != std::string::npos);
     CHECK(html.find("hid_pointer_mode") != std::string::npos);
     CHECK(html.find("<select id=\\\"hid_pointer_mode\\\"") != std::string::npos);
-    CHECK(html.find("pointer_mode takes effect after a shutdown and restart") != std::string::npos);
+    CHECK(html.find("pointer_mode 需要关机重启后生效") != std::string::npos);
     CHECK(html.find("window.confirm") != std::string::npos);
     CHECK(html.find("/api/poweroff") != std::string::npos);
-    CHECK(html.find("Poweroff command sent") != std::string::npos);
+    CHECK(html.find("poweroff 指令已下发") != std::string::npos);
 }
 
 TEST_CASE("config web usbhid init script does not orchestrate dependent service restarts") {

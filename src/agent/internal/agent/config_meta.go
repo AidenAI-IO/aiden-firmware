@@ -184,15 +184,6 @@ func ConfigMeta() ConfigMetadata {
 				},
 			},
 			{
-				Name: "benchmark",
-				Fields: []FieldMeta{
-					{Key: "judge_model", Widget: WidgetText,
-						Default: defaults.Benchmark.JudgeModel},
-					{Key: "api_key", Widget: WidgetText, Secret: true},
-					{Key: "benchmark_dir", Widget: WidgetText},
-				},
-			},
-			{
 				Name: "log",
 				Fields: []FieldMeta{
 					{Key: "llm_http_retention_days", Widget: WidgetNumber,

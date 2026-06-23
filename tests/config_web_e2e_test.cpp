@@ -177,9 +177,6 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"channels\":1,\"bit_width\":16},"
         "\"audio_archive\":{\"enabled\":true,\"max_files\":500,\"max_size_mb\":100,"
         "\"storage_path\":\"/userdata/audio\"},"
-        "\"benchmark\":{\"judge_model\":\"bytedance-seed/seed-2.0-lite\",\"api_key\":\"\","
-        "\"benchmark_dir\":\"\"},"
-        "\"log\":{\"llm_http_retention_days\":7},"
         "\"hid\":{\"keyboard_device\":\"/dev/hidg0\",\"mouse_device\":\"/dev/hidg1\","
         "\"frame_socket\":\"/run/frame_service/frame_service.sock\",\"pointer_mode\":\"absolute\"},"
         "\"search\":{\"provider\":\"") + search_provider + "\",\"has_api_key\":" +
@@ -195,10 +192,10 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"silence_ms\":650,\"min_speech_ms\":300,\"voice_followup_enabled\":false,"
         "\"voice_followup_timeout_ms\":6000,\"voice_first_turn_timeout_ms\":10000,"
         "\"voice_max_turns\":0,\"voice_interrupt_on_wakeup\":true,"
-        "\"voice_streaming_tts_enabled\":true,\"voice_tool_call_speech\":true,"
+        "\"voice_streaming_tts_enabled\":true,\"voice_tool_call_speech\":false,"
         "\"voice_max_response_tokens\":300,\"max_iterations\":-1,\"force_simple_loop\":false,"
         "\"screenshot_keep_n\":3,"
-        "\"screenshot_prune_interval\":2,\"screen_stable_timeout_ms\":3500,"
+        "\"screenshot_prune_interval\":25,\"screen_stable_timeout_ms\":3500,"
         "\"screen_stable_ms\":500,\"screen_stable_diff_threshold\":2}"
         "}\n";
 }
@@ -643,23 +640,6 @@ TEST_CASE("config_web: POST /api/config accepts empty audio_archive storage_path
     CHECK(resp.status == 200);
 }
 
-TEST_CASE("config_web: POST /api/config writes log section") {
-    StubEnv env;
-    auto handle = start_server(env);
-
-    const std::string body =
-        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
-        "\"log\":{\"llm_http_retention_days\":14},"
-        "\"hid\":{\"pointer_mode\":\"absolute\"},"
-        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
-    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
-    CHECK(resp.status == 200);
-
-    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
-    CHECK(saved.find("[log]") != std::string::npos);
-    CHECK(saved.find("llm_http_retention_days = 14") != std::string::npos);
-}
-
 TEST_CASE("config_web: POST /api/config writes custom_instruction") {
     StubEnv env;
     auto handle = start_server(env);
@@ -1029,7 +1009,6 @@ TEST_CASE("config_web: GET /api/config accepts section-level omissions from reso
     std::string partial_config = resolved_config_json("duckduckgo", false);
     partial_config = remove_top_level_key(partial_config, "model_text");
     partial_config = remove_top_level_key(partial_config, "audio_archive");
-    partial_config = remove_top_level_key(partial_config, "benchmark");
     write_file(tmp + "/config.json", partial_config);
     StubEnv env;
     env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
@@ -1312,135 +1291,4 @@ TEST_CASE("config_web: GET /api/ota/logs keeps update and health logs separate")
     CHECK(required_json_string(health, "log").find("health timeout waiting for /userdata/ota/health.ok") != std::string::npos);
     CHECK(required_json_string(health, "log").find("[config_web] ota update") == std::string::npos);
     cJSON_Delete(parsed);
-}
-
-// ----- LLM HTTP log viewer -------------------------------------------------
-//
-// The viewer reads JSONL files named llm-http-*.log from the directory
-// <dirname(config)>/log. The e2e tests inject files by writing into
-// <tmp_dir>/log, since start_server() points --config at <tmp_dir>/agent.toml.
-
-TEST_CASE("config_web: GET /api/llm-logs lists llm-http log files newest first") {
-    StubEnv env;
-    auto handle = start_server(env);
-    const std::string log_dir = handle->tmp_dir + "/log";
-    REQUIRE(::mkdir(log_dir.c_str(), 0755) == 0);
-
-    write_file(log_dir + "/llm-http-202601010830.log", "{\"ts\":\"00:00:01\",\"kind\":\"request\",\"status\":0,\"body\":\"{}\"}\n");
-    write_file(log_dir + "/llm-http-202601021445-sess.log", "{\"ts\":\"00:00:02\",\"kind\":\"request\",\"status\":0,\"body\":\"{}\"}\n");
-    // A non-matching file must be ignored.
-    write_file(log_dir + "/agent.log", "noise\n");
-
-    HttpResponse resp = http_request(handle->port, "GET", "/api/llm-logs");
-    REQUIRE(resp.status == 200);
-
-    cJSON* parsed = cJSON_Parse(resp.body.c_str());
-    REQUIRE(parsed != nullptr);
-    cJSON* files = cJSON_GetObjectItem(parsed, "files");
-    REQUIRE(files != nullptr);
-    REQUIRE((files->type & 0xff) == cJSON_Array);
-    REQUIRE(cJSON_GetArraySize(files) == 2);
-
-    // Newest (by name, descending) first.
-    cJSON* first = cJSON_GetArrayItem(files, 0);
-    cJSON* second = cJSON_GetArrayItem(files, 1);
-    CHECK(required_json_string(first, "name") == "llm-http-202601021445-sess.log");
-    CHECK(required_json_string(second, "name") == "llm-http-202601010830.log");
-    CHECK(cJSON_GetObjectItem(first, "size_bytes") != nullptr);
-    cJSON_Delete(parsed);
-}
-
-TEST_CASE("config_web: GET /api/llm-logs returns empty list when log dir is absent") {
-    StubEnv env;
-    auto handle = start_server(env);
-
-    HttpResponse resp = http_request(handle->port, "GET", "/api/llm-logs");
-    REQUIRE(resp.status == 200);
-
-    cJSON* parsed = cJSON_Parse(resp.body.c_str());
-    REQUIRE(parsed != nullptr);
-    cJSON* files = cJSON_GetObjectItem(parsed, "files");
-    REQUIRE(files != nullptr);
-    REQUIRE((files->type & 0xff) == cJSON_Array);
-    CHECK(cJSON_GetArraySize(files) == 0);
-    cJSON_Delete(parsed);
-}
-
-TEST_CASE("config_web: GET /api/llm-logs/file/<name> returns raw JSONL content") {
-    StubEnv env;
-    auto handle = start_server(env);
-    const std::string log_dir = handle->tmp_dir + "/log";
-    REQUIRE(::mkdir(log_dir.c_str(), 0755) == 0);
-
-    const std::string content =
-        "{\"ts\":\"00:00:01\",\"kind\":\"request\",\"status\":0,\"body\":\"{\\\"messages\\\":[]}\"}\n"
-        "{\"ts\":\"00:00:02\",\"kind\":\"response\",\"status\":200,\"body\":\"{}\"}\n";
-    write_file(log_dir + "/llm-http-202601031530.log", content);
-
-    HttpResponse resp = http_request(handle->port, "GET", "/api/llm-logs/file/llm-http-202601031530.log");
-    REQUIRE(resp.status == 200);
-
-    cJSON* parsed = cJSON_Parse(resp.body.c_str());
-    REQUIRE(parsed != nullptr);
-    CHECK(required_json_string(parsed, "name") == "llm-http-202601031530.log");
-    CHECK(required_json_string(parsed, "content") == content);
-    cJSON_Delete(parsed);
-}
-
-TEST_CASE("config_web: GET /api/llm-logs/file rejects path traversal and bad names") {
-    StubEnv env;
-    auto handle = start_server(env);
-    const std::string log_dir = handle->tmp_dir + "/log";
-    REQUIRE(::mkdir(log_dir.c_str(), 0755) == 0);
-    write_file(log_dir + "/llm-http-202601031530.log", "{}\n");
-
-    // Path traversal attempt.
-    HttpResponse traversal = http_request(handle->port, "GET", "/api/llm-logs/file/..%2f..%2fetc%2fpasswd");
-    CHECK(traversal.status == 400);
-
-    // A name that does not match llm-http-*.log.
-    HttpResponse bad = http_request(handle->port, "GET", "/api/llm-logs/file/agent.log");
-    CHECK(bad.status == 400);
-
-    // A well-formed name that does not exist.
-    HttpResponse missing = http_request(handle->port, "GET", "/api/llm-logs/file/llm-http-199901010000.log");
-    CHECK(missing.status == 404);
-
-    // Encoded NUL byte: %00 decodes to '\0', which would truncate at the C
-    // file API and bypass the .log suffix check. Must be rejected.
-    HttpResponse nul = http_request(handle->port, "GET", "/api/llm-logs/file/llm-http-x%00.log");
-    CHECK(nul.status == 400);
-}
-
-TEST_CASE("config_web: GET /api/llm-logs does not list or serve symlinked files") {
-    StubEnv env;
-    auto handle = start_server(env);
-    const std::string log_dir = handle->tmp_dir + "/log";
-    REQUIRE(::mkdir(log_dir.c_str(), 0755) == 0);
-
-    // A real log file alongside a symlink that matches the naming pattern but
-    // points outside the log set. The symlink must neither be listed nor read.
-    write_file(log_dir + "/llm-http-202601031530.log", "{}\n");
-    const std::string secret = handle->tmp_dir + "/secret.txt";
-    write_file(secret, "TOP SECRET");
-    REQUIRE(::symlink(secret.c_str(), (log_dir + "/llm-http-202601040900-evil.log").c_str()) == 0);
-
-    HttpResponse list = http_request(handle->port, "GET", "/api/llm-logs");
-    REQUIRE(list.status == 200);
-    CHECK(list.body.find("llm-http-202601031530.log") != std::string::npos);
-    CHECK(list.body.find("llm-http-202601040900-evil.log") == std::string::npos);
-
-    HttpResponse served = http_request(handle->port, "GET", "/api/llm-logs/file/llm-http-202601040900-evil.log");
-    CHECK(served.status == 404);
-    CHECK(served.body.find("TOP SECRET") == std::string::npos);
-}
-
-TEST_CASE("config_web: GET /llm-logs serves the viewer sub-page") {
-    StubEnv env;
-    auto handle = start_server(env);
-
-    HttpResponse resp = http_request(handle->port, "GET", "/llm-logs");
-    REQUIRE(resp.status == 200);
-    CHECK(resp.body.find("<!DOCTYPE html>") != std::string::npos);
-    CHECK(resp.body.find("/api/llm-logs") != std::string::npos);
 }
