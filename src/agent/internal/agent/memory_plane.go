@@ -196,8 +196,26 @@ func (p *FilesystemMemoryPlane) CommitEpisode(ctx context.Context, episode TaskE
 	if p == nil || p.memoryDir == "" || strings.TrimSpace(episode.UserGoal) == "" {
 		return nil
 	}
+	if err := p.commitEpisodeTrace(ctx, episode); err != nil {
+		return err
+	}
+	p.commitEpisodeMaintenance(ctx, episode)
+	return nil
+}
+
+func (p *FilesystemMemoryPlane) commitEpisodeTrace(ctx context.Context, episode TaskEpisode) error {
+	if p == nil || p.memoryDir == "" || strings.TrimSpace(episode.UserGoal) == "" {
+		return nil
+	}
 	if _, err := p.episodes.AddEpisode(ctx, episode); err != nil {
 		return err
+	}
+	return nil
+}
+
+func (p *FilesystemMemoryPlane) commitEpisodeMaintenance(ctx context.Context, episode TaskEpisode) {
+	if p == nil || p.memoryDir == "" || strings.TrimSpace(episode.UserGoal) == "" {
+		return
 	}
 	if err := p.extractLongTermLessons(ctx, episode); err != nil && p.logger != nil {
 		p.logger.Warn("[memory] episode lesson extraction failed: %v", err)
@@ -208,7 +226,6 @@ func (p *FilesystemMemoryPlane) CommitEpisode(ctx context.Context, episode TaskE
 	if err := p.updateReferencedMemoryOutcomes(ctx, episode); err != nil && p.logger != nil {
 		p.logger.Warn("[memory] referenced memory update failed: %v", err)
 	}
-	return nil
 }
 
 func (p *FilesystemMemoryPlane) queryFromRequest(req MemoryRetrieveRequest) memorySearchQuery {
