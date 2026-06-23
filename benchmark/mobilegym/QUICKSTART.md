@@ -67,7 +67,7 @@ uv run python -m runner start-mobilegym-env --envs 5
 
 ## 📋 提交的变更
 
-```
+```text
 Commit: 64773f5
 Message: refactor(benchmark): convert mobilegym from test framework to pure simulator
 

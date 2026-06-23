@@ -2,7 +2,6 @@
 """Demo script: Using MobileGym Bridge Server unified /api/tools API."""
 
 import json
-import time
 import urllib.request
 
 
@@ -31,7 +30,7 @@ def start_episode(base_url: str, episode_id: str) -> None:
     """Start an episode (required before using tools)."""
     request_body = json.dumps({"episode_id": episode_id}).encode()
     req = urllib.request.Request(
-        f"{base_url}/episode/start",
+        f"{base_url}/api/setup",
         data=request_body,
         method="POST",
         headers={"Content-Type": "application/json"},
@@ -42,9 +41,9 @@ def start_episode(base_url: str, episode_id: str) -> None:
 
 def end_episode(base_url: str, episode_id: str) -> None:
     """End an episode."""
-    request_body = json.dumps({"episode_id": episode_id}).encode()
+    request_body = b"{}"
     req = urllib.request.Request(
-        f"{base_url}/episode/end",
+        f"{base_url}/api/release",
         data=request_body,
         method="POST",
         headers={"Content-Type": "application/json"},
@@ -109,7 +108,7 @@ def main():
         if result["is_error"]:
             print(f"   ✗ Error: {result['output']}")
         else:
-            print(f"   ✓ Text typed")
+            print("   ✓ Text typed")
             print(f"   Duration: {result['duration_ms']}ms")
         print()
 
@@ -139,7 +138,7 @@ def main():
         if result["is_error"]:
             print(f"   ✗ Error: {result['output']}")
         else:
-            print(f"   ✓ Back pressed")
+            print("   ✓ Back pressed")
             print(f"   Duration: {result['duration_ms']}ms")
         print()
 

@@ -194,69 +194,74 @@ def test_cli_writes_aggregated_skillopt_summary_report(monkeypatch, tmp_path: Pa
     skill_path = tmp_path / "src" / "agent" / "config" / "skills" / "device-operator" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text("original skill\n", encoding="utf-8")
-    _write_device_operator_suites(tmp_path)
     artifact_root = tmp_path / "skillopt" / "runs"
 
-    def fake_optimize_skill(cfg):
-        train_score = ScoreSummary(hard=0.25, soft=0.50, n=4, n_passed=1)
-        candidate_score = ScoreSummary(hard=0.75, soft=0.875, n=4, n_passed=3)
-        return OptimizationResult(
-            skill_name=cfg.skill_name,
-            initial_score=0.50,
-            best_score=0.75,
-            best_skill="optimized skill\n",
-            phase_summaries=[
-                PhaseSummary(
-                    phase="baseline_selection",
-                    kind="verification",
-                    suite_name="device_operator_verification",
-                    score=ScoreSummary(hard=0.50, soft=0.75, n=4, n_passed=2),
-                ),
-                PhaseSummary(
-                    phase="step_01_train",
-                    kind="train",
-                    suite_name="device_operator_train",
-                    score=train_score,
-                ),
-                PhaseSummary(
-                    phase="step_01_selection",
-                    kind="verification",
-                    suite_name="device_operator_verification",
-                    score=candidate_score,
-                ),
-            ],
-            steps=[
-                StepDecision(
-                    step=1,
-                    candidate_score=0.75,
-                    current_score=0.50,
-                    accepted=True,
-                    reason="candidate improved",
-                    edits_applied=[Edit(op="append", content="new rule")],
-                    train_score=train_score,
-                    candidate_selection_score=candidate_score,
-                    patch_reasoning="failure analyst found missing launch guidance\nSecond line should wrap cleanly",
-                )
-            ],
-            accepted_count=1,
-            rejected_count=0,
-        )
+    train_score = ScoreSummary(hard=0.25, soft=0.50, n=4, n_passed=1)
+    candidate_score = ScoreSummary(hard=0.75, soft=0.875, n=4, n_passed=3)
+    result = OptimizationResult(
+        skill_name="device-operator",
+        initial_score=0.50,
+        best_score=0.75,
+        best_skill="optimized skill\n",
+        phase_summaries=[
+            PhaseSummary(
+                phase="baseline_selection",
+                kind="verification",
+                suite_name="device_operator_verification",
+                score=ScoreSummary(hard=0.50, soft=0.75, n=4, n_passed=2),
+            ),
+            PhaseSummary(
+                phase="step_01_train",
+                kind="train",
+                suite_name="device_operator_train",
+                score=train_score,
+            ),
+            PhaseSummary(
+                phase="step_01_selection",
+                kind="verification",
+                suite_name="device_operator_verification",
+                score=candidate_score,
+            ),
+        ],
+        steps=[
+            StepDecision(
+                step=1,
+                candidate_score=0.75,
+                current_score=0.50,
+                accepted=True,
+                reason="candidate improved",
+                edits_applied=[Edit(op="append", content="new rule")],
+                train_score=train_score,
+                candidate_selection_score=candidate_score,
+                patch_reasoning="failure analyst found missing launch guidance\nSecond line should wrap cleanly",
+            )
+        ],
+        accepted_count=1,
+        rejected_count=0,
+    )
+    cfg = main.OptimizationConfig(
+        skill_name="device-operator",
+        skill_path=skill_path,
+        suite=object(),
+        train_tasks=[object()] * 4,
+        selection_tasks=[object()] * 4,
+        artifact_root=artifact_root,
+        run_id="skillopt-summary-run",
+        optimizer_cfg=main.OptimizerConfig(),
+    )
 
-    _set_roots(monkeypatch, tmp_path)
-    monkeypatch.setattr(main, "optimize_skill", fake_optimize_skill)
-    monkeypatch.setattr(main, "MobileGymBackend", FakeMobileGymBackend, raising=False)
+    main._write_web_artifacts(
+        cfg=cfg,
+        result=result,
+        original_skill="original skill\n",
+        diff_text="-original skill\n+optimized skill\n",
+        optimizer_model="optimizer",
+        judge_model="judge",
+        train_suite_label=TRAIN_LABEL,
+        selection_suite_label=VERIFICATION_LABEL,
+        backend="mobilegym",
+    )
 
-    rc = main.cli([
-        "--backend", "mobilegym",
-        "--skill", "device-operator",
-        "--train-suite", TRAIN_LABEL,
-        "--validation-suite", VERIFICATION_LABEL,
-        "--artifact-root", str(artifact_root),
-        "--run-id", "skillopt-summary-run",
-        "--output", str(artifact_root / "skillopt-summary-run" / "best_skill.md"),
-    ])
-
-    assert rc == 0
     run_dir = artifact_root / "skillopt-summary-run"
     manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["score_summary"]["baseline_verification"]["hard"] == 0.50
@@ -512,40 +517,23 @@ def test_cli_rejects_invalid_backend():
         ])
 
 
-def test_cli_constructs_mobilegym_backend(monkeypatch, tmp_path: Path):
+def test_cli_rejects_mobilegym_backend(monkeypatch, tmp_path: Path, capsys):
     skill_path = tmp_path / "src" / "agent" / "config" / "skills" / "device-operator" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text("skill", encoding="utf-8")
     _write_device_operator_suites(tmp_path)
-    captured = {}
-
-    def fake_optimize_skill(cfg):
-        captured["rollout_backend"] = cfg.rollout_backend
-        return OptimizationResult(
-            skill_name=cfg.skill_name,
-            initial_score=0.0,
-            best_score=1.0,
-            best_skill="optimized skill",
-        )
 
     _set_roots(monkeypatch, tmp_path)
-    monkeypatch.setattr(main, "optimize_skill", fake_optimize_skill)
-    monkeypatch.setattr(main, "MobileGymBackend", FakeMobileGymBackend, raising=False)
 
-    rc = main.cli([
-        "--backend", "mobilegym",
-        "--mobilegym-parallel", "3",
-        "--skill", "device-operator",
-        "--train-suite", TRAIN_LABEL,
-        "--validation-suite", VERIFICATION_LABEL,
-    ])
-
-    assert rc == 0
-    backend = captured["rollout_backend"]
-    assert isinstance(backend, FakeMobileGymBackend)
-    assert backend.benchmark_root == tmp_path / "benchmark"
-    assert backend.shared_skills_dir == tmp_path / "src" / "agent" / "config" / "skills"
-    assert backend.parallel == 3
+    with pytest.raises(SystemExit):
+        main.cli([
+            "--backend", "mobilegym",
+            "--mobilegym-parallel", "3",
+            "--skill", "device-operator",
+            "--train-suite", TRAIN_LABEL,
+            "--validation-suite", VERIFICATION_LABEL,
+        ])
+    assert "mobilegym backend is not available" in capsys.readouterr().err
 
 
 def test_resolve_skill_path_prefers_shared_skill_over_mobilegym_template(monkeypatch, tmp_path: Path):

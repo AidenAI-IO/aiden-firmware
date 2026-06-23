@@ -126,7 +126,7 @@ def main(argv: list[str] | None = None) -> int:
             bridge_device_token=bridge_token,
             control_token=control_token,
         )
-        print(f"✓ Daemon configured successfully", flush=True)
+        print("✓ Daemon configured successfully", flush=True)
         print(f"  Bridge URL: {args.bridge_url}", flush=True)
         if result.get("status") == "configured":
             print(f"  Status: {result.get('message', 'OK')}", flush=True)

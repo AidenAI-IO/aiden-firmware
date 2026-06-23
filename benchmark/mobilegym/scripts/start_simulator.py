@@ -17,6 +17,7 @@ import os
 import signal
 import sys
 from pathlib import Path
+from collections.abc import Awaitable
 from typing import Any
 
 SCRIPT_PATH = Path(__file__).resolve()
@@ -188,7 +189,7 @@ async def run_simulator(args: argparse.Namespace) -> int:
     from mobilegym.bridge.episode import BridgeEpisodeState, BridgeTaskRouter
     from mobilegym.bridge.server import BridgeServer
 
-    print(f"Creating MobileGym simulator environment...", flush=True)
+    print("Creating MobileGym simulator environment...", flush=True)
     print(f"  Simulator URL: {args.env_url}", flush=True)
     print(f"  Headless: {args.headless}", flush=True)
     print(f"  Parallel envs: {args.parallel_envs}", flush=True)
@@ -255,6 +256,16 @@ async def run_simulator(args: argparse.Namespace) -> int:
             print("Shutting down MobileGym env pool...", flush=True)
             await env_pool.__aexit__(None, None, None)
             print("✓ MobileGym env pool stopped", flush=True)
+        else:
+            print("Shutting down MobileGym environment...", flush=True)
+            for env in envs:
+                close_fn = getattr(env, "close", None) or getattr(env, "stop", None)
+                if close_fn is None:
+                    continue
+                result = close_fn()
+                if asyncio.iscoroutine(result) or isinstance(result, Awaitable):
+                    await result
+            print("✓ MobileGym environment stopped", flush=True)
 
     return 0
 

@@ -32,7 +32,7 @@ def extract_trace(history: list[dict[str, Any]]) -> Trace:
             content = _safe_loads(raw)
             if isinstance(content, dict) and content.get("data"):
                 pending["has_screenshot"] = True
-            elif isinstance(raw, str) and "screenshot observation" in raw:
+            elif isinstance(raw, str) and "screenshot observation" in raw.lower():
                 # New agent history omits base64 image data and emits a text
                 # summary instead (e.g. "... returned a screenshot observation ...").
                 pending["has_screenshot"] = True

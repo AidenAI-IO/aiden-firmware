@@ -8,7 +8,6 @@ def test_start_mobilegym_env_prints_environment_urls(tmp_path: Path, monkeypatch
     commands = []
     health_urls = []
 
-    monkeypatch.setattr(services, "reserve_free_port", lambda: 19090)
     monkeypatch.setattr(services, "ensure_mobilegym_image", lambda *args, **kwargs: None)
     monkeypatch.setattr(services, "wait_for_http_health", lambda url, timeout: health_urls.append((url, timeout)))
 
@@ -52,6 +51,47 @@ def test_start_mobilegym_env_prints_environment_urls(tmp_path: Path, monkeypatch
     assert "127.0.0.1:18173:4173" in command
     assert "19090:9090" in command
     assert "--parallel-envs 3" in command[-1]
+
+
+def test_start_mobilegym_env_uses_docker_assigned_ports_when_auto(tmp_path: Path, monkeypatch, capsys):
+    commands = []
+    health_urls = []
+
+    monkeypatch.setattr(services, "ensure_mobilegym_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(services, "wait_for_http_health", lambda url, timeout: health_urls.append((url, timeout)))
+    monkeypatch.setattr(
+        services,
+        "docker_published_port",
+        lambda container_name, container_port: 18173 if container_port == 4173 else 19090,
+    )
+
+    def fake_check_output(command, cwd=None, text=False):
+        commands.append((command, cwd, text))
+        return "mobilegym-container\n"
+
+    monkeypatch.setattr(services.subprocess, "check_output", fake_check_output)
+
+    args = _ns(
+        name="auto",
+        runs_dir=str(tmp_path),
+        parallel_envs=2,
+        web_port=0,
+        bridge_port=0,
+        mobilegym_image="aiden-mobilegym-simulator:test",
+        no_build_mobilegym_image=True,
+        ready_timeout_sec=12,
+        json=True,
+    )
+
+    assert services.cmd_start_mobilegym_env(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["environment_url"] == "http://127.0.0.1:19090"
+    assert payload["web_url"] == "http://127.0.0.1:18173"
+    assert health_urls == [("http://127.0.0.1:19090/health", 12)]
+    command = commands[0][0]
+    assert "127.0.0.1::4173" in command
+    assert "127.0.0.1::9090" in command
 
 
 def test_start_agent_daemon_prints_agent_url_and_rewrites_environment_bridge(tmp_path: Path, monkeypatch, capsys):
@@ -138,6 +178,43 @@ def test_start_agent_daemon_allows_no_environment_bridge(tmp_path: Path, monkeyp
     assert captured["kwargs"]["environment_bridge_endpoint"] == ""
     assert captured["kwargs"]["benchmark_task_id"] == ""
     assert captured["kwargs"]["environment_bridge_mode"] is False
+
+
+def test_start_agent_daemon_uses_docker_assigned_port_when_auto(tmp_path: Path, monkeypatch, capsys):
+    captured = {}
+
+    monkeypatch.setattr(services, "ensure_daemon_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(services, "_wait_for_agent", lambda *args, **kwargs: None)
+    monkeypatch.setattr(services, "docker_published_port", lambda container_id, container_port: 18081)
+
+    def fake_start_daemon_compose(job, **kwargs):
+        captured["job"] = job
+        captured["kwargs"] = kwargs
+        return "agent-container"
+
+    monkeypatch.setattr(services, "start_daemon_compose", fake_start_daemon_compose)
+    monkeypatch.setattr(services, "stop_daemon_compose", lambda *args, **kwargs: None)
+
+    args = _ns(
+        port=0,
+        name="auto",
+        runs_dir=str(tmp_path),
+        base_config_dir=str(tmp_path / "base"),
+        agent_config="",
+        daemon_image="aiden-agent-daemon:test",
+        no_build_daemon_image=True,
+        environment_bridge_endpoint="",
+        benchmark_task_id="suite.json:t1",
+        ready_timeout_sec=9,
+        json=True,
+    )
+
+    assert services.cmd_start_agent_daemon(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["agent_url"] == "http://127.0.0.1:18081"
+    assert captured["kwargs"]["host_port"] == 0
+    assert captured["job"].agent_url == "http://127.0.0.1:18081"
 
 
 def _ns(**kwargs):

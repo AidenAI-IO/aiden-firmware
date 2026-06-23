@@ -123,6 +123,12 @@ def test_task_screen_payload_proxies_bridge_screen_with_task_header(tmp_path: Pa
     assert seen["headers"]["benchmark-task-id"] == "suite.json:t1"
 
 
+def test_environment_bridge_screen_endpoint_normalizes_api_suffixes():
+    assert webui.environment_bridge_screen_endpoint("http://127.0.0.1:19090/api/setup") == "http://127.0.0.1:19090/api/screen"
+    assert webui.environment_bridge_screen_endpoint("http://127.0.0.1:19090/api/release") == "http://127.0.0.1:19090/api/screen"
+    assert webui.environment_bridge_screen_endpoint("http://127.0.0.1:19090/api/concurrent") == "http://127.0.0.1:19090/api/screen"
+
+
 def test_task_screen_html_fetches_webui_screen_api():
     assert "/api/jobs/" in webui.TASK_SCREEN_HTML
     assert "/api/screen" not in webui.TASK_SCREEN_HTML
@@ -136,6 +142,10 @@ def test_environment_bridge_concurrent_endpoint_points_at_bridge_api():
     assert (
         webui.environment_bridge_concurrent_endpoint("http://127.0.0.1:19090/bridge/")
         == "http://127.0.0.1:19090/bridge/api/concurrent"
+    )
+    assert (
+        webui.environment_bridge_concurrent_endpoint("http://127.0.0.1:19090/api/setup")
+        == "http://127.0.0.1:19090/api/concurrent"
     )
 
 
@@ -256,8 +266,11 @@ def test_webui_settings_persist_judge_and_device_environments(tmp_path: Path):
     assert saved["device_environments"][0]["name"] == "Bench board"
     assert saved["selected_environment_id"] == "dev-1"
 
-    persisted = json.loads((tmp_path / "runs" / webui.WEBUI_SETTINGS_FILE).read_text(encoding="utf-8"))
-    assert persisted["judge"]["api_key"] == "sk-judge-secret"
+    settings_text = (tmp_path / "runs" / webui.WEBUI_SETTINGS_FILE).read_text(encoding="utf-8")
+    persisted = json.loads(settings_text)
+    assert persisted["judge"]["has_api_key"] is True
+    assert "api_key" not in persisted["judge"]
+    assert "sk-judge-secret" not in settings_text
 
     reloaded = webui.BenchmarkWebApp(
         webui.WebUIConfig(
@@ -266,6 +279,35 @@ def test_webui_settings_persist_judge_and_device_environments(tmp_path: Path):
         )
     )
     assert reloaded.get_webui_settings() == saved
+
+
+def test_webui_settings_migrates_legacy_plaintext_judge_key(tmp_path: Path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    (runs_dir / webui.WEBUI_SETTINGS_FILE).write_text(
+        json.dumps(
+            {
+                "judge": {
+                    "enabled": True,
+                    "model": "anthropic/test-judge",
+                    "api_key": "sk-legacy-secret",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            runs_dir=runs_dir,
+            base_config_dir=tmp_path / "config",
+        )
+    )
+
+    assert app.get_webui_settings()["judge"]["has_api_key"] is True
+    settings_text = (runs_dir / webui.WEBUI_SETTINGS_FILE).read_text(encoding="utf-8")
+    assert "api_key" not in json.loads(settings_text)["judge"]
+    assert "sk-legacy-secret" not in settings_text
 
 
 def test_start_job_uses_persisted_judge_settings(tmp_path: Path, monkeypatch):
@@ -1322,7 +1364,7 @@ def test_daemon_compose_command_and_env_forward_tools_to_environment(tmp_path: P
         "screenshot,touch_gesture,keyboard_text,keyboard_tap,"
         "mouse_click,mouse_move,mouse_scroll,quick_action"
     )
-    assert "AIDEN_ENVIRONMENT_BRIDGE_MODE: ${AIDEN_ENVIRONMENT_BRIDGE_MODE:-1}" in compose_text
+    assert "AIDEN_ENVIRONMENT_BRIDGE_MODE: ${AIDEN_ENVIRONMENT_BRIDGE_MODE:-0}" in compose_text
     assert f'AIDEN_ENVIRONMENT_BRIDGE_TOOLS: "{expected_forward_tools}"' in compose_text
     assert "AIDEN_BENCHMARK_TASK_ID" in compose_text
     assert "--environment-bridge-mode" in entrypoint_text
@@ -1375,14 +1417,17 @@ def test_start_mobilegym_environment_returns_docker_reachable_endpoint(tmp_path:
             build_mobilegym_image=False,
         )
     )
-    ports = iter([18173, 19090])
     health_urls = []
     commands = []
 
-    monkeypatch.setattr(webui, "reserve_free_port", lambda: next(ports))
     monkeypatch.setattr(webui, "ensure_mobilegym_image", lambda *args, **kwargs: None)
     monkeypatch.setattr(webui, "wait_for_http_health", lambda url, timeout: health_urls.append((url, timeout)))
     monkeypatch.setattr(webui, "start_docker_logs", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        webui,
+        "docker_published_port",
+        lambda container_name, container_port: 18173 if container_port == 4173 else 19090,
+    )
 
     def fake_check_output(command, cwd=None, text=False):
         commands.append(command)
@@ -1402,6 +1447,8 @@ def test_start_mobilegym_environment_returns_docker_reachable_endpoint(tmp_path:
     assert env["parallel_envs"] == 2
     assert health_urls == [("http://127.0.0.1:19090/health", webui.DEFAULT_MOBILEGYM_READY_TIMEOUT_SEC)]
     assert commands and "aiden-mobilegym-env-" in commands[0][5]
+    assert "127.0.0.1::4173" in commands[0]
+    assert "127.0.0.1::9090" in commands[0]
     assert "--parallel-envs 2" in commands[0][-1]
 
 
@@ -1413,13 +1460,16 @@ def test_start_mobilegym_environment_defaults_to_five_envs(tmp_path: Path, monke
             build_mobilegym_image=False,
         )
     )
-    ports = iter([18173, 19090])
     commands = []
 
-    monkeypatch.setattr(webui, "reserve_free_port", lambda: next(ports))
     monkeypatch.setattr(webui, "ensure_mobilegym_image", lambda *args, **kwargs: None)
     monkeypatch.setattr(webui, "wait_for_http_health", lambda *args, **kwargs: None)
     monkeypatch.setattr(webui, "start_docker_logs", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        webui,
+        "docker_published_port",
+        lambda container_name, container_port: 18173 if container_port == 4173 else 19090,
+    )
     monkeypatch.setattr(
         webui.subprocess,
         "check_output",

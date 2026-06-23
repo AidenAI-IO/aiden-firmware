@@ -20,13 +20,16 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o daemon ./cmd/daemon
 
 FROM debian:bullseye-slim AS agent-daemon-runtime
 
-RUN apt-get update && apt-get install -y ca-certificates curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
 
 COPY --from=agent-daemon-builder /build/daemon /usr/local/bin/daemon
 COPY benchmark/docker/agent-daemon-entrypoint.sh /usr/local/bin/agent-daemon-entrypoint
 RUN chmod +x /usr/local/bin/agent-daemon-entrypoint
+RUN useradd --system --create-home --uid 10001 agent && \
+    mkdir -p /app && chown -R agent:agent /app
 
 WORKDIR /app
 EXPOSE 8080
+USER agent
 
 CMD ["agent-daemon-entrypoint"]

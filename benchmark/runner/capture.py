@@ -13,6 +13,16 @@ class CaptureError(RuntimeError):
     pass
 
 
+def _screen_path(path: str) -> str:
+    path = path.rstrip("/")
+    if path in {"", "/"}:
+        return "/api/screen"
+    for suffix in ("/api/setup", "/api/release", "/api/screen"):
+        if path == suffix or path.endswith(suffix):
+            return f"{path[:-len(suffix)]}/api/screen"
+    return f"{path}/api/screen"
+
+
 def environment_screen_snapshot_endpoint(environment_url: str) -> str:
     raw = str(environment_url or "").strip()
     if not raw:
@@ -20,11 +30,7 @@ def environment_screen_snapshot_endpoint(environment_url: str) -> str:
     parsed = urllib.parse.urlparse(raw)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise CaptureError(f"invalid environment_url: {environment_url!r}")
-    path = parsed.path.rstrip("/")
-    if path in {"", "/"}:
-        path = "/api/screen"
-    elif path != "/api/screen":
-        path = f"{path}/api/screen"
+    path = _screen_path(parsed.path)
     return urllib.parse.urlunparse(
         parsed._replace(path=path, params="", query="", fragment="")
     )

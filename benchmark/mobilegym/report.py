@@ -241,7 +241,7 @@ def _merge_task_metadata(result: dict[str, Any] | None, metadata: dict[str, Any]
     if not metadata:
         return result
     merged = dict(result or {})
-    for key in ("description_for_judge", "rubric", "rubric_spec", "hard_assertion_failures"):
+    for key in ("description_for_judge", "rubric", "rubric_spec", "hard_assertion_failures", "hard_assertions"):
         if key in metadata and key not in merged:
             merged[key] = metadata[key]
     return merged
@@ -772,6 +772,20 @@ def _rubric_pass_count(rubric: list[list[str]], status: str) -> int:
 
 def _hard_assertion_failures(result: dict[str, Any]) -> list[dict[str, str]]:
     failures = result.get("hard_assertion_failures")
+    if not isinstance(failures, list):
+        legacy = result.get("hard_assertions")
+        if isinstance(legacy, dict):
+            nested = legacy.get("hard_assertion_failures") or legacy.get("failures")
+            if isinstance(nested, list):
+                failures = nested
+            else:
+                failures = [
+                    {"id": key, "actual": "failed"}
+                    for key, value in legacy.items()
+                    if value is False
+                ]
+        else:
+            failures = legacy
     if not isinstance(failures, list):
         return []
     rows: list[dict[str, str]] = []

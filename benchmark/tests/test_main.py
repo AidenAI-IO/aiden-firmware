@@ -339,3 +339,89 @@ def test_auto_agent_setup_injects_environment_url_as_bridge_endpoint(monkeypatch
     assert captured["job"].docker_endpoint == "http://host.docker.internal:19090"
     assert captured["kwargs"]["environment_bridge_endpoint"] == "http://host.docker.internal:19090"
     assert captured["kwargs"]["environment_bridge_mode"] is True
+
+
+def test_run_releases_environment_route_per_non_auto_attempt(monkeypatch, tmp_path):
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "name": "mobile_suite",
+                "tasks": [
+                    {
+                        "id": "open_clock",
+                        "category": "diagnostic",
+                        "prompt": "open clock",
+                        "description_for_judge": "open clock",
+                        "rubric": [{"id": "done", "check": "done"}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    route_ids = []
+    releases = []
+
+    class FakeClient:
+        def __init__(self, base_url):
+            self.base_url = base_url
+
+        def health(self):
+            return True
+
+        def close(self):
+            pass
+
+    def fake_run_one_task(client, suite, task, attempt, artifact_dir, *args, **kwargs):
+        route_ids.append(kwargs["benchmark_task_id"])
+        return TaskResult(
+            suite=suite.name,
+            run_id="route-run",
+            task_id=task.id,
+            category=task.category,
+            attempt=attempt,
+            status="passed",
+            rubric=[],
+            rubric_pass_count=0,
+            rubric_total=0,
+            artifact_dir=str(artifact_dir),
+        )
+
+    monkeypatch.setattr(main, "AgentClient", FakeClient)
+    monkeypatch.setattr(main, "wait_for_agent_ready", lambda *args, **kwargs: True)
+    monkeypatch.setattr(main, "wait_for_agent_clock", lambda *args, **kwargs: True)
+    monkeypatch.setattr(main, "run_one_task", fake_run_one_task)
+    monkeypatch.setattr(main, "generate_report_html", lambda run_dir: "<html></html>")
+    monkeypatch.setattr(main, "upload_report", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        main,
+        "call_environment_release",
+        lambda environment_url, task_id=None, **kwargs: releases.append((environment_url, task_id)),
+    )
+
+    rc = main.cli(
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--out",
+            str(tmp_path / "runs"),
+            "--run-id",
+            "route-run",
+            "--environment-url",
+            "http://127.0.0.1:19090",
+            "--repeats",
+            "2",
+            "--inter-task-cooldown-sec",
+            "0",
+            "--no-judge",
+        ]
+    )
+
+    assert rc == 0
+    assert route_ids == ["suite.json:open_clock:attempt-1", "suite.json:open_clock:attempt-2"]
+    assert releases == [
+        ("http://127.0.0.1:19090", "suite.json:open_clock:attempt-1"),
+        ("http://127.0.0.1:19090", "suite.json:open_clock:attempt-2"),
+    ]

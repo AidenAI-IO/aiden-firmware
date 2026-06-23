@@ -1,8 +1,6 @@
 """Tests for unified /api/tools endpoint."""
 
 import json
-from http.server import HTTPServer
-from pathlib import Path
 from threading import Thread
 from urllib.request import Request, urlopen
 
@@ -66,6 +64,7 @@ def bridge_server(mock_env):
     server.stop()
     loop.call_soon_threadsafe(loop.stop)
     thread.join(timeout=2)
+    loop.close()
 
 
 def test_get_tools_catalog(bridge_server):
@@ -288,6 +287,27 @@ def test_invoke_keyboard_text_accepts_plain_text_fallback(bridge_server):
     }
 
 
+def test_invoke_rejects_non_object_json_body(bridge_server):
+    from urllib.error import HTTPError
+
+    server, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-bad-body"
+
+    req = Request(
+        f"{base_url}/api/tools/screenshot",
+        data=json.dumps([]).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with pytest.raises(HTTPError) as exc_info:
+        urlopen(req, timeout=5)
+    assert exc_info.value.code == 400
+    data = json.loads(exc_info.value.read().decode())
+    assert data["is_error"] is True
+    assert data["error"] == "bad_json"
+
+
 def test_invoke_without_episode_returns_error(bridge_server):
     """Test tool invocation without active episode fails."""
     from urllib.error import HTTPError
@@ -303,13 +323,59 @@ def test_invoke_without_episode_returns_error(bridge_server):
     )
 
     try:
-        with urlopen(req, timeout=5) as resp:
+        with urlopen(req, timeout=5):
             pytest.fail("Expected HTTPError 409")
     except HTTPError as e:
         assert e.code == 409
         data = json.loads(e.read().decode())
         assert data["is_error"] is True
         assert "no active episode" in data["output"].lower()
+
+
+def test_invoke_stale_episode_returns_conflict(bridge_server, monkeypatch):
+    from urllib.error import HTTPError
+
+    from .episode import StaleEpisodeError
+
+    server, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-stale"
+
+    def fail_require_active(episode_id):
+        raise StaleEpisodeError("stale episode_id")
+
+    monkeypatch.setattr(state, "require_active", fail_require_active)
+    request_body = json.dumps({"input": "{}"}).encode()
+    req = Request(
+        f"{base_url}/api/tools/screenshot",
+        data=request_body,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with pytest.raises(HTTPError) as exc_info:
+        urlopen(req, timeout=5)
+    assert exc_info.value.code == 409
+    data = json.loads(exc_info.value.read().decode())
+    assert data["error"] == "stale_episode"
+
+
+def test_touch_gesture_rejects_non_string_type(bridge_server):
+    server, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-bad-gesture"
+
+    request_body = json.dumps({"input": {"type": {"kind": "tap"}, "point": {"x": 500, "y": 800}}}).encode()
+    req = Request(
+        f"{base_url}/api/tools/touch_gesture",
+        data=request_body,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+    assert data["is_error"] is True
+    assert "type must be a string" in data["output"]
 
 
 def test_invoke_without_token_still_works(bridge_server):
@@ -432,6 +498,7 @@ def test_multi_env_tools_require_benchmark_task_id_header():
         server.stop()
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=2)
+        loop.close()
 
 
 def test_multi_env_tools_route_by_benchmark_task_id_header():
@@ -476,6 +543,7 @@ def test_multi_env_tools_route_by_benchmark_task_id_header():
         server.stop()
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=2)
+        loop.close()
 
 
 def test_multi_env_tools_return_capacity_error_until_task_released():
@@ -532,3 +600,4 @@ def test_multi_env_tools_return_capacity_error_until_task_released():
         server.stop()
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=2)
+        loop.close()

@@ -160,12 +160,14 @@ class BenchmarkWebApp:
         self.config.runs_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._jobs: dict[str, Job] = {}
+        self._webui_judge_api_key = ""
         self._job_judge_api_keys: dict[str, str] = {}
         self._job_runner_procs: dict[str, Any] = {}
         self._job_daemon_jobs: dict[str, list[Job]] = {}
         self._task_daemon_jobs: dict[str, list[Job]] = {}
         self._mobilegym_environments: dict[str, MobileGymEnvironment] = {}
         self._mobilegym_log_procs: dict[str, subprocess.Popen] = {}
+        self._migrate_persisted_webui_secret()
         self._load_persisted_jobs()
 
     def list_suites(self) -> list[dict[str, Any]]:
@@ -223,7 +225,9 @@ class BenchmarkWebApp:
         if "api_key" in incoming_judge:
             api_key = str(incoming_judge.get("api_key") or "").strip()
             if api_key:
-                current_judge["api_key"] = api_key
+                with self._lock:
+                    self._webui_judge_api_key = api_key
+                current_judge["has_api_key"] = True
 
         if "device_environments" in payload:
             current["device_environments"] = normalize_device_environments(payload.get("device_environments"))
@@ -231,8 +235,11 @@ class BenchmarkWebApp:
             current["selected_environment_id"] = str(payload.get("selected_environment_id") or "")
 
         normalized = normalize_webui_settings(current, include_secrets=True)
-        write_json_atomic(self._webui_settings_path(), normalized)
-        return sanitize_webui_settings(normalized)
+        with self._lock:
+            normalized["judge"]["api_key"] = self._webui_judge_api_key
+        sanitized = self._settings_without_secrets(normalized)
+        write_json_atomic(self._webui_settings_path(), sanitized)
+        return sanitized
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -301,14 +308,14 @@ class BenchmarkWebApp:
         env_id = new_environment_id()
         env_dir = self.config.runs_dir / "environments" / env_id
         env_dir.mkdir(parents=True, exist_ok=True)
-        web_port = reserve_free_port()
-        bridge_port = reserve_free_port()
+        web_port = 0
+        bridge_port = 0
         env = MobileGymEnvironment(
             id=env_id,
             name=name,
-            endpoint=f"http://host.docker.internal:{bridge_port}",
-            public_endpoint=f"http://127.0.0.1:{bridge_port}",
-            web_url=f"http://127.0.0.1:{web_port}",
+            endpoint="",
+            public_endpoint="",
+            web_url="",
             status="building",
             message="ensuring Docker image",
             created_at=now_iso(),
@@ -335,7 +342,19 @@ class BenchmarkWebApp:
             )
             append_log(Path(env.log_path), "$ " + " ".join(command))
             container_id = subprocess.check_output(command, cwd=REPO_ROOT, text=True).strip()
-            self._set_mobilegym_environment(env, container_id=container_id, started_at=now_iso(), message="waiting for bridge")
+            web_port = docker_published_port(env.container_name, 4173)
+            bridge_port = docker_published_port(env.container_name, 9090)
+            self._set_mobilegym_environment(
+                env,
+                container_id=container_id,
+                bridge_port=bridge_port,
+                web_port=web_port,
+                endpoint=f"http://host.docker.internal:{bridge_port}",
+                public_endpoint=f"http://127.0.0.1:{bridge_port}",
+                web_url=f"http://127.0.0.1:{web_port}",
+                started_at=now_iso(),
+                message="waiting for bridge",
+            )
             log_proc = start_docker_logs(env.container_name, Path(env.log_path))
             if log_proc is not None:
                 with self._lock:
@@ -589,6 +608,26 @@ class BenchmarkWebApp:
     def _webui_settings_path(self) -> Path:
         return self.config.runs_dir / WEBUI_SETTINGS_FILE
 
+    def _settings_without_secrets(self, settings: dict[str, Any]) -> dict[str, Any]:
+        sanitized = sanitize_webui_settings(settings)
+        with self._lock:
+            has_api_key = bool(self._webui_judge_api_key)
+        if has_api_key:
+            sanitized["judge"]["has_api_key"] = True
+        return sanitized
+
+    def _migrate_persisted_webui_secret(self) -> None:
+        path = self._webui_settings_path()
+        if not path.exists():
+            return
+        settings = load_webui_settings(path, include_secrets=True)
+        judge = settings.get("judge") if isinstance(settings.get("judge"), dict) else {}
+        api_key = str(judge.get("api_key") or "").strip()
+        if not api_key:
+            return
+        self._webui_judge_api_key = api_key
+        write_json_atomic(path, self._settings_without_secrets(settings))
+
     def _load_persisted_jobs(self) -> None:
         restored: dict[str, Job] = {}
         for path in sorted(self.config.runs_dir.glob(f"*/{JOB_RECORD_FILE}")):
@@ -618,7 +657,15 @@ class BenchmarkWebApp:
             persist_job_record(job)
 
     def _load_webui_settings(self, include_secrets: bool = False) -> dict[str, Any]:
-        return load_webui_settings(self._webui_settings_path(), include_secrets=include_secrets)
+        settings = load_webui_settings(self._webui_settings_path(), include_secrets=False)
+        with self._lock:
+            api_key = self._webui_judge_api_key
+        if include_secrets:
+            settings = normalize_webui_settings(settings, include_secrets=True)
+            settings["judge"]["api_key"] = api_key
+        elif api_key:
+            settings["judge"]["has_api_key"] = True
+        return settings
 
     def _job_payload(self, job: Job) -> dict[str, Any]:
         with self._lock:
@@ -1546,6 +1593,16 @@ def webui_task_screen_url(job_id: str, task_record_id: str) -> str:
     )
 
 
+def environment_bridge_api_path(path: str, endpoint: str) -> str:
+    path = path.rstrip("/")
+    if path in {"", "/"}:
+        return f"/api/{endpoint}"
+    for suffix in ("/api/setup", "/api/release", "/api/screen", "/api/concurrent"):
+        if path == suffix or path.endswith(suffix):
+            return f"{path[:-len(suffix)]}/api/{endpoint}"
+    return f"{path}/api/{endpoint}"
+
+
 def environment_bridge_screen_endpoint(endpoint: str) -> str:
     raw = str(endpoint or "").strip()
     if not raw:
@@ -1553,11 +1610,7 @@ def environment_bridge_screen_endpoint(endpoint: str) -> str:
     parsed = urllib.parse.urlparse(raw)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError(f"invalid environment bridge endpoint: {endpoint!r}")
-    path = parsed.path.rstrip("/")
-    if path in {"", "/"}:
-        path = "/api/screen"
-    elif path != "/api/screen":
-        path = f"{path}/api/screen"
+    path = environment_bridge_api_path(parsed.path, "screen")
     return urllib.parse.urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
 
 
@@ -1591,11 +1644,7 @@ def environment_bridge_concurrent_endpoint(endpoint: str) -> str:
     parsed = urllib.parse.urlparse(raw)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError(f"invalid environment bridge endpoint: {endpoint!r}")
-    path = parsed.path.rstrip("/")
-    if path in {"", "/"}:
-        path = "/api/concurrent"
-    elif path != "/api/concurrent":
-        path = f"{path}/api/concurrent"
+    path = environment_bridge_api_path(parsed.path, "concurrent")
     return urllib.parse.urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
 
 
@@ -1621,6 +1670,26 @@ def reserve_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+def docker_publish_arg(host_port: int, container_port: int, *, bind_host: str = "") -> str:
+    host_port = int(host_port)
+    if host_port == 0:
+        return f"{bind_host}::{container_port}" if bind_host else str(container_port)
+    return f"{bind_host}:{host_port}:{container_port}" if bind_host else f"{host_port}:{container_port}"
+
+
+def docker_published_port(container_name: str, container_port: int) -> int:
+    output = subprocess.check_output(
+        ["docker", "port", container_name, f"{int(container_port)}/tcp"],
+        text=True,
+    ).strip()
+    for line in output.splitlines():
+        try:
+            return int(line.rsplit(":", 1)[1])
+        except (IndexError, ValueError):
+            continue
+    raise RuntimeError(f"could not determine published port for {container_name}:{container_port}")
 
 
 def build_mobilegym_environment_command(
@@ -1685,9 +1754,13 @@ def build_mobilegym_environment_command(
         "--add-host",
         "host.docker.internal:host-gateway",
         "-p",
-        f"127.0.0.1:{host_web_port}:4173",
+        docker_publish_arg(host_web_port, 4173, bind_host="127.0.0.1"),
         "-p",
-        f"{host_bridge_port}:{bridge_port}",
+        docker_publish_arg(
+            host_bridge_port,
+            bridge_port,
+            bind_host="127.0.0.1" if int(host_bridge_port) == 0 else "",
+        ),
         "-v",
         f"{benchmark_dir.resolve()}:/app/benchmark:ro",
         "-e",

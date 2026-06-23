@@ -140,7 +140,7 @@ uv run python -m runner webui
 
 ### 旧架构（框架模式）
 
-```
+```text
 run_aiden.py
   ↓
 MobileGym SerialRunner
@@ -154,7 +154,7 @@ MobileGym env
 
 ### 新架构（模拟器模式）
 
-```
+```text
 runner.main
   ↓ /api/chat
 Aiden Daemon

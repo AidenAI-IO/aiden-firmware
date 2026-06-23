@@ -14,7 +14,13 @@ from http.server import BaseHTTPRequestHandler
 from typing import Any
 
 from .actions import action_to_dict, build_action
-from .episode import BridgeEpisodeState, BridgeTaskRouter, MissingBenchmarkTaskIDError, NoBridgeEnvAvailableError
+from .episode import (
+    BridgeEpisodeState,
+    BridgeTaskRouter,
+    MissingBenchmarkTaskIDError,
+    NoBridgeEnvAvailableError,
+    StaleEpisodeError,
+)
 from .protocol import encode_screenshot
 
 
@@ -232,6 +238,9 @@ class ToolsAPIHandler:
         except json.JSONDecodeError:
             self._send_json(handler, 400, {"error": "bad_json", "output": "invalid JSON body", "is_error": True})
             return
+        if not isinstance(request_body, dict):
+            self._send_json(handler, 400, {"error": "bad_json", "output": "JSON body must be an object", "is_error": True})
+            return
 
         # Decode input (matches Go agent's decodeToolInvokeInput)
         raw_input = self._decode_tool_input(request_body)
@@ -295,7 +304,7 @@ class ToolsAPIHandler:
             self._send_json(
                 handler,
                 409,
-                {"error": "no_active_episode", "output": "no active episode; call episode/start first", "is_error": True},
+                {"error": "no_active_episode", "output": "no active episode; call /api/setup first", "is_error": True},
             )
             return
 
@@ -326,6 +335,18 @@ class ToolsAPIHandler:
                     "output": "tool execution timed out",
                     "is_error": True,
                     "error": "timeout",
+                    "duration_ms": duration_ms,
+                },
+            )
+        except StaleEpisodeError:
+            duration_ms = int((time.time() - started_at) * 1000)
+            self._send_json(
+                handler,
+                409,
+                {
+                    "output": "stale episode",
+                    "is_error": True,
+                    "error": "stale_episode",
                     "duration_ms": duration_ms,
                 },
             )
@@ -419,7 +440,10 @@ class ToolsAPIHandler:
         log_tool_input: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Execute touch_gesture tool."""
-        gesture_type = tool_input.get("type", "").strip().lower()
+        raw_gesture_type = tool_input.get("type", "")
+        if not isinstance(raw_gesture_type, str):
+            return {"output": "error: type must be a string", "is_error": True}
+        gesture_type = raw_gesture_type.strip().lower()
         if not gesture_type:
             return {"output": "error: type is required", "is_error": True}
 

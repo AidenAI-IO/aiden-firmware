@@ -11,7 +11,7 @@ class ResetError(RuntimeError):
     pass
 
 
-def environment_setup_endpoint(environment_url: str) -> str:
+def _environment_api_endpoint(environment_url: str, endpoint: str) -> str:
     raw = str(environment_url or "").strip()
     if not raw:
         raise ResetError("environment_url is required")
@@ -20,27 +20,23 @@ def environment_setup_endpoint(environment_url: str) -> str:
         raise ResetError(f"invalid environment_url: {environment_url!r}")
     path = parsed.path.rstrip("/")
     if path in {"", "/"}:
-        path = "/api/setup"
-    elif path != "/api/setup":
-        path = f"{path}/api/setup"
+        path = f"/api/{endpoint}"
+    else:
+        for suffix in ("/api/setup", "/api/release", "/api/screen"):
+            if path == suffix or path.endswith(suffix):
+                path = f"{path[:-len(suffix)]}/api/{endpoint}"
+                break
+        else:
+            path = f"{path}/api/{endpoint}"
     return urllib.parse.urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
+
+
+def environment_setup_endpoint(environment_url: str) -> str:
+    return _environment_api_endpoint(environment_url, "setup")
 
 
 def environment_release_endpoint(environment_url: str) -> str:
-    raw = str(environment_url or "").strip()
-    if not raw:
-        raise ResetError("environment_url is required")
-    parsed = urllib.parse.urlparse(raw)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ResetError(f"invalid environment_url: {environment_url!r}")
-    path = parsed.path.rstrip("/")
-    if path in {"", "/"}:
-        path = "/api/release"
-    elif path == "/api/setup":
-        path = "/api/release"
-    elif path != "/api/release":
-        path = f"{path}/api/release"
-    return urllib.parse.urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
+    return _environment_api_endpoint(environment_url, "release")
 
 
 def _environment_headers(task_id: str | None = None) -> dict[str, str]:

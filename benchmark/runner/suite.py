@@ -80,6 +80,8 @@ def load_suite(path: Path) -> Suite:
             raise SuiteValidationError(f"task {tid}: empty rubric")
         rubric: list[RubricItem] = []
         for r in rubric_raw:
+            if not isinstance(r, dict):
+                raise SuiteValidationError(f"task {tid}: rubric items must be objects")
             check = r.get("check", r.get("description"))
             if not r.get("id") or not check:
                 raise SuiteValidationError(f"task {tid}: rubric items require id and check")

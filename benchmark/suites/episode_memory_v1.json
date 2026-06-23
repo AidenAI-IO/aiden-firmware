@@ -38,7 +38,7 @@
     {
       "id": "failure_memory_guides_verifier_policy",
       "category": "memory",
-      "description_for_judge": "The setup writes a device failure memory saying direct Chinese input via keyboard_text fails and pinyin/candidate selection should be used. The agent should surface that failure lesson when asked whether direct Chinese keyboard_text is acceptable.",
+      "description_for_judge": "The task asks whether direct Chinese input via keyboard_text is acceptable. The agent should surface the device failure lesson that pinyin/candidate selection is more reliable.",
       "prompt": "我要在手机输入框里直接用 keyboard_text 输入中文“张三”。根据设备失败经验，这样做稳吗？应该怎么做？",
       "rubric": [
         {
@@ -64,7 +64,7 @@
     {
       "id": "conflicted_memory_not_used_as_plan",
       "category": "memory",
-      "description_for_judge": "The setup writes a conflicted device procedure. Conflicted memories should not be used as ordinary planner procedures; they should be surfaced as verifier/conflict cautions. The response should avoid relying on the conflicted path and should require fresh observation.",
+      "description_for_judge": "The task asks about a known conflicted device procedure. Conflicted memories should not be used as ordinary planner procedures; they should be surfaced as verifier/conflict cautions. The response should avoid relying on the conflicted path and should require fresh observation.",
       "prompt": "我想打开一个 App。根据已有设备经验，是否应该直接采用反复桌面翻页这个路径？请只给结论和一句理由。",
       "rubric": [
         {

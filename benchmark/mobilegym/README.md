@@ -6,7 +6,7 @@ MobileGym 作为纯模拟器集成到 Aiden benchmark，使用统一的 `benchma
 
 MobileGym **仅作为设备模拟器**，通过统一的 environment bridge API 提供服务：
 
-```
+```text
 benchmark/runner/main.py (测试编排)
   ↓ /api/chat
 Aiden Go Daemon (environment-bridge mode)

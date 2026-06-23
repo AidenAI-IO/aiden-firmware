@@ -22,11 +22,11 @@ from runner.webui import (
     append_log,
     build_mobilegym_environment_command,
     daemon_compose_command,
+    docker_published_port,
     endpoint_for_docker,
     ensure_daemon_image,
     ensure_mobilegym_image,
     prepare_run_config,
-    reserve_free_port,
     start_daemon_compose,
     stop_daemon_compose,
     wait_for_http_health,
@@ -77,7 +77,7 @@ def cmd_start_agent_daemon(args: argparse.Namespace) -> int:
         print("Error: --ready-timeout-sec must be positive", file=sys.stderr)
         return 2
 
-    host_port = args.port or reserve_free_port()
+    host_port = int(args.port or 0)
     service_id = _service_id("agent", args.name)
     project = f"aiden-benchmark-agent-{service_id}"
     service_dir = Path(args.runs_dir) / service_id
@@ -117,6 +117,10 @@ def cmd_start_agent_daemon(args: argparse.Namespace) -> int:
             environment_bridge_mode=bool(docker_environment_bridge_endpoint),
             log_path=log_path,
         )
+        if host_port == 0:
+            host_port = docker_published_port(container_id, 8080)
+            agent_url = f"http://127.0.0.1:{host_port}"
+            job.agent_url = agent_url
         _wait_for_agent(agent_url, args.ready_timeout_sec)
     except Exception as exc:
         stop_daemon_compose(job)
@@ -159,16 +163,13 @@ def cmd_start_mobilegym_env(args: argparse.Namespace) -> int:
         print("Error: --ready-timeout-sec must be positive", file=sys.stderr)
         return 2
 
-    web_port = args.web_port or reserve_free_port()
-    bridge_port = args.bridge_port or reserve_free_port()
+    web_port = int(args.web_port or 0)
+    bridge_port = int(args.bridge_port or 0)
     service_id = _service_id("mobilegym", args.name)
     container_name = f"aiden-mobilegym-env-{service_id}"
     service_dir = Path(args.runs_dir) / service_id
     log_path = service_dir / "mobilegym-env.log"
     service_dir.mkdir(parents=True, exist_ok=True)
-
-    public_endpoint = f"http://127.0.0.1:{bridge_port}"
-    docker_endpoint = f"http://host.docker.internal:{bridge_port}"
 
     try:
         ensure_mobilegym_image(args.mobilegym_image, not args.no_build_mobilegym_image, log_path)
@@ -182,6 +183,12 @@ def cmd_start_mobilegym_env(args: argparse.Namespace) -> int:
         )
         append_log(log_path, "$ " + " ".join(command))
         container_id = subprocess.check_output(command, cwd=BENCHMARK_ROOT.parent, text=True).strip()
+        if web_port == 0:
+            web_port = docker_published_port(container_name, 4173)
+        if bridge_port == 0:
+            bridge_port = docker_published_port(container_name, 9090)
+        public_endpoint = f"http://127.0.0.1:{bridge_port}"
+        docker_endpoint = f"http://host.docker.internal:{bridge_port}"
         wait_for_http_health(f"{public_endpoint}/health", args.ready_timeout_sec)
     except Exception as exc:
         subprocess.run(["docker", "rm", "-f", container_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)

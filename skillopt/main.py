@@ -174,6 +174,8 @@ def cli(argv: list[str] | None = None) -> int:
     )
 
     args = parser.parse_args(argv)
+    if args.backend == "mobilegym":
+        parser.error("mobilegym backend is not available in the standalone SkillOpt CLI; use benchmark WebUI/CLI flows instead")
     if args.suite and (args.train_suite or args.selection_suite):
         parser.error("--suite cannot be combined with --train-suite/--selection-suite")
     if bool(args.train_suite) != bool(args.selection_suite):

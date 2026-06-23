@@ -327,6 +327,63 @@ def test_generate_report_includes_full_trace_with_screenshots(tmp_path: Path):
     assert image_payload not in html
 
 
+def test_generate_report_uses_result_artifact_dir_for_attempt_trace(tmp_path: Path):
+    run_dir = tmp_path / "2026-05-28_091421"
+    base_dir = run_dir / "tasks" / "task-1"
+    attempt_dir = base_dir / "attempt_2"
+    base_dir.mkdir(parents=True)
+    attempt_dir.mkdir(parents=True)
+    base_post = b"\xff\xd8base-post"
+    attempt_pre = b"\xff\xd8attempt-pre"
+    attempt_post = b"\xff\xd8attempt-post"
+    (base_dir / "post.jpg").write_bytes(base_post)
+    (attempt_dir / "pre.jpg").write_bytes(attempt_pre)
+    (attempt_dir / "post.jpg").write_bytes(attempt_post)
+    (attempt_dir / "history.json").write_text(
+        json.dumps([{"type": "user", "content": "attempt prompt"}]),
+        encoding="utf-8",
+    )
+    (attempt_dir / "trace.json").write_text(
+        json.dumps({"tool_calls": [], "final_response": "attempt response"}),
+        encoding="utf-8",
+    )
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "2026-05-28_091421",
+                "suite_path": "suite.json",
+                "totals": {"tasks": 1, "passed": 1, "failed": 0, "skipped": 0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "results.jsonl").write_text(
+        json.dumps(
+            {
+                "task_id": "task-1",
+                "category": "diagnostic",
+                "attempt": 2,
+                "status": "passed",
+                "rubric_pass_count": 1,
+                "rubric_total": 1,
+                "metrics": {"tool_calls": 0, "wall_ms": 9},
+                "artifact_dir": str(attempt_dir),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    task = _report_tasks(generate_report_html(run_dir))[0]
+
+    assert task["prompt"] == "attempt prompt"
+    assert task["response"] == "attempt response"
+    assert f"data:image/jpeg;base64,{base64.b64encode(attempt_pre).decode('ascii')}" == task["full_trace"]["pre_screenshot"]
+    assert f"data:image/jpeg;base64,{base64.b64encode(attempt_post).decode('ascii')}" == task["full_trace"]["post_screenshot"]
+    assert base64.b64encode(base_post).decode("ascii") not in json.dumps(task)
+    assert "tasks/task-1/attempt_2/trace.json" in task["artifacts_detail"]
+
+
 def test_generate_report_includes_llm_analysis_section(tmp_path: Path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()

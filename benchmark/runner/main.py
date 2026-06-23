@@ -188,7 +188,7 @@ def _log_task_result(task_id: str, attempt: int, result, verbose: bool = False,
 
     # Show detailed rubric results in verbose mode
     if verbose and result.rubric:
-        print(f"  📋 Rubric Details:", flush=True)
+        print("  📋 Rubric Details:", flush=True)
         for i, v in enumerate(result.rubric, 1):
             verdict_symbol = "✅" if v.verdict == "yes" else "❌"
             print(f"    {verdict_symbol} [{i}/{len(result.rubric)}] {v.id}: {v.verdict.upper()}", flush=True)
@@ -474,9 +474,13 @@ def _cmd_run(args: argparse.Namespace) -> int:
     run_dir = Path(args.out) / run_id
     if args.auto_agent_setup:
         return _cmd_run_auto_agent_setup(args, suite, selected_task_ids, run_id, run_dir)
+    if args.repeats is not None and args.repeats <= 0:
+        print(f"Error: --repeats must be positive, got {args.repeats}", file=sys.stderr)
+        return 2
     client = AgentClient(base_url=args.agent_url)
     if not client.health():
         print(f"agent at {args.agent_url} is not reachable", file=sys.stderr)
+        client.close()
         return 2
     if not args.skip_clock_wait and not wait_for_agent_clock(client, timeout_sec=args.clock_timeout_sec):
         print("agent board clock did not sync before benchmark start", file=sys.stderr)
@@ -487,10 +491,6 @@ def _cmd_run(args: argparse.Namespace) -> int:
     sha, dirty = git_sha(REPO_ROOT)
     started = now_iso()
     results = []
-    # Validate --repeats
-    if args.repeats is not None and args.repeats <= 0:
-        print(f"Error: --repeats must be positive, got {args.repeats}", file=sys.stderr)
-        return 2
     # Compute total number of executions (accounting for repeats) for progress display
     total_runs = 0
     for task in suite.tasks:
@@ -511,9 +511,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
             n = args.repeats if args.repeats is not None else task.repeats
             if n <= 0:
                 n = 1
-            task_benchmark_id = str(args.benchmark_task_id or "").strip() or task.id
-            try:
-                for attempt in range(1, n + 1):
+            for attempt in range(1, n + 1):
+                task_benchmark_id = _task_route_id(args, suite, task.id, attempt, n)
+                try:
                     current_index = completed + 1
                     progress = f"{current_index}/{total_runs}"
                     _write_state(args.state_file, {
@@ -583,12 +583,12 @@ def _cmd_run(args: argparse.Namespace) -> int:
                             )
                     if args.inter_task_cooldown_sec > 0:
                         time.sleep(args.inter_task_cooldown_sec)
-            finally:
-                if args.environment_url:
-                    try:
-                        call_environment_release(args.environment_url, task_id=task_benchmark_id)
-                    except ResetError as exc:
-                        print(f"warning: failed to release environment task route for {task_benchmark_id}: {exc}", file=sys.stderr, flush=True)
+                finally:
+                    if args.environment_url:
+                        try:
+                            call_environment_release(args.environment_url, task_id=task_benchmark_id)
+                        except ResetError as exc:
+                            print(f"warning: failed to release environment task route for {task_benchmark_id}: {exc}", file=sys.stderr, flush=True)
     finally:
         client.close()
     manifest = {

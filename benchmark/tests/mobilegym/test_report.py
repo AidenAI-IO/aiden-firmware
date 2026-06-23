@@ -704,6 +704,59 @@ def test_report_uses_shard_task_metadata_when_result_omits_aiden_rubric(tmp_path
     ]
 
 
+def test_report_accepts_legacy_hard_assertions_metadata_key(tmp_path):
+    from mobilegym import report
+
+    batch = tmp_path / "batch-legacy-hard-assertions"
+    shard = batch / "personamem_lt_recall_v1" / "shard-0"
+    write_json(
+        shard / "shard.json",
+        {
+            "batch_id": "batch-legacy-hard-assertions",
+            "suite": "personamem_lt_recall_v1",
+            "shard_index": 0,
+            "shard_count": 1,
+            "selected_task_count": 1,
+            "selected_task_ids": ["personamem_lt_recall_v1.case_one"],
+            "exit_code": 0,
+            "task_metadata": {
+                "personamem_lt_recall_v1.case_one": {
+                    "hard_assertions": [
+                        {
+                            "id": "required_tools",
+                            "label": "Required Tools",
+                            "requirement": "Must call screenshot.",
+                            "actual": "No screenshot call.",
+                        }
+                    ],
+                }
+            },
+        },
+    )
+    write_jsonl(
+        shard / "raw" / "run" / "results.jsonl",
+        [
+            {
+                "id": "personamem_lt_recall_v1.case_one",
+                "suite": "personamem_lt_recall_v1",
+                "is_success": False,
+            }
+        ],
+    )
+
+    report.generate_reports(batch)
+
+    task = read_report_tasks(batch / "index.html")[0]
+    assert task["hard_assertion_failures"] == [
+        {
+            "id": "required_tools",
+            "label": "Required Tools",
+            "requirement": "Must call screenshot.",
+            "actual": "No screenshot call.",
+        }
+    ]
+
+
 def test_drawer_task_deduplicates_mobilegym_errors():
     from mobilegym import report
 

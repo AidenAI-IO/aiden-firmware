@@ -74,7 +74,7 @@
 
 ### 新增文件 (7个)
 
-```
+```text
 benchmark/mobilegym/
 ├── scripts/
 │   ├── start_simulator.py          # 启动纯模拟器
@@ -94,7 +94,7 @@ benchmark/suites/
 
 ### 保留文件 (已重命名，供参考)
 
-```
+```text
 benchmark/mobilegym/
 ├── scripts/run_aiden.old.py        # 旧测试入口
 ├── adapter/register.old.py         # 旧 agent 注册
@@ -104,7 +104,7 @@ benchmark/mobilegym/
 
 ### 保持不变的文件
 
-```
+```text
 benchmark/mobilegym/
 ├── bridge/                         # Bridge server（核心组件）
 │   ├── server.py
@@ -123,7 +123,7 @@ benchmark/mobilegym/
 
 ### 旧架构（框架模式）
 
-```
+```text
 scripts/run_aiden.py
   ├─ MobileGym SerialRunner (测试编排)
   └─ AidenGoAgent (实现 MobileGym Agent 接口)
@@ -134,7 +134,7 @@ scripts/run_aiden.py
 
 ### 新架构（模拟器模式）
 
-```
+```text
 benchmark/runner/main.py (统一测试编排)
   └─ AgentClient → Aiden daemon /api/chat
       └─ device-operator skill → Bridge HTTP

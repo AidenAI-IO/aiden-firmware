@@ -51,6 +51,9 @@ The response should follow the Go agent tool response shape:
 ### `GET /api/screen`
 
 Returns the current screen snapshot for runner pre/post capture.
+The task route is normally selected with the `benchmark-task-id` header. Screen
+viewers may also pass `benchmark-task-id` as a query parameter when setting
+custom headers is not practical.
 
 ```json
 {

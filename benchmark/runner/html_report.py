@@ -79,12 +79,40 @@ def _task_artifact_dirs(run_dir: Path, task_id: str) -> list[Path]:
     return dirs
 
 
+def _result_artifact_dir(run_dir: Path, row: dict[str, Any], task_dir: Path | None) -> Path | None:
+    raw = row.get("artifact_dir")
+    if isinstance(raw, str) and raw.strip():
+        candidate = Path(raw.strip())
+        if not candidate.is_absolute():
+            candidate = run_dir / candidate
+        try:
+            resolved = candidate.resolve()
+            resolved.relative_to(run_dir.resolve())
+            if resolved.is_dir():
+                return resolved
+        except (OSError, ValueError):
+            pass
+    if task_dir is not None:
+        try:
+            attempt = int(row.get("attempt") or 1)
+        except (TypeError, ValueError):
+            attempt = 1
+        if attempt > 1:
+            attempt_dir = task_dir / f"attempt_{attempt}"
+            if attempt_dir.is_dir():
+                return attempt_dir
+        if task_dir.is_dir():
+            return task_dir
+    return None
+
+
 FAIL_STATUSES = {"failed", "timeout", "judge_error"}
 
 
-def _task_artifact_refs(run_dir: Path, task_id: str) -> str:
+def _task_artifact_refs(run_dir: Path, task_id: str, artifact_dir: Path | None = None) -> str:
     artifact_refs: list[str] = []
-    for artifact_dir in _task_artifact_dirs(run_dir, task_id):
+    artifact_dirs = [artifact_dir] if artifact_dir is not None else _task_artifact_dirs(run_dir, task_id)
+    for artifact_dir in artifact_dirs:
         for name in ("trace.json", "history.json", "judge.json"):
             path = artifact_dir / name
             if path.exists():
@@ -101,6 +129,7 @@ def _task_error_log(
     status: str,
     errors: list[list[Any]],
     hard_assertion_failures: list[dict[str, str]],
+    artifact_dir: Path | None = None,
 ) -> str:
     if status not in FAIL_STATUSES and not errors and not hard_assertion_failures:
         return ""
@@ -116,7 +145,8 @@ def _task_error_log(
     if errors:
         lines = [f"- {item[0]}: {item[1]}" for item in errors]
         parts.append("### Runtime errors\n" + "\n".join(lines))
-    for artifact_dir in _task_artifact_dirs(run_dir, task_id):
+    artifact_dirs = [artifact_dir] if artifact_dir is not None else _task_artifact_dirs(run_dir, task_id)
+    for artifact_dir in artifact_dirs:
         judge_path = artifact_dir / "judge.json"
         if judge_path.exists():
             parts.append(f"### {judge_path.relative_to(run_dir)}\n" + _read_excerpt(judge_path, 4000))
@@ -227,7 +257,8 @@ def generate_report_html(run_dir: Path) -> str:
     tasks_js_items = []
     for r in results:
         tid = r.get("task_id", "")
-        task_dir = _safe_child_path(run_dir / "tasks", tid) if tid else None
+        fallback_task_dir = _safe_child_path(run_dir / "tasks", tid) if tid else None
+        task_dir = _result_artifact_dir(run_dir, r, fallback_task_dir)
         trace_path = task_dir / "trace.json" if task_dir is not None else run_dir / "__missing_trace.json"
         history_path = task_dir / "history.json" if task_dir is not None else run_dir / "__missing_history.json"
         trace_data: dict[str, Any] = {}
@@ -289,8 +320,8 @@ def generate_report_html(run_dir: Path) -> str:
             errors.append(["Agent Error", metrics["agent_error"]])
         if "judge_error" in metrics:
             errors.append(["Judge Error", metrics["judge_error"]])
-        artifacts_detail = _task_artifact_refs(run_dir, tid)
-        error_log_detail = _task_error_log(run_dir, tid, str(status), errors, hard_assertion_failures)
+        artifacts_detail = _task_artifact_refs(run_dir, tid, task_dir)
+        error_log_detail = _task_error_log(run_dir, tid, str(status), errors, hard_assertion_failures, task_dir)
 
         tasks_js_items.append({
             "id": tid,

@@ -109,15 +109,17 @@ def _handler_for(bridge: BridgeServer):
             self._send_json(200, bridge_ok(_health_payload(bridge)))
 
         def do_POST(self) -> None:
+            parsed = urllib.parse.urlparse(self.path)
+            request_path = parsed.path
             # Handle /api/tools/{tool_name} invocation
-            if self.path.startswith("/api/tools/"):
-                bridge.tools_api.handle_request(self, self.path)
+            if request_path.startswith("/api/tools/"):
+                bridge.tools_api.handle_request(self, request_path)
                 return
 
             payload = self._read_json()
             if payload is None:
                 return
-            path = self.path.strip("/")
+            path = request_path.strip("/")
             try:
                 if path == "episode/start":
                     self._handle_episode_start(payload)
