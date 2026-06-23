@@ -559,10 +559,11 @@ func (s *Server) handleChatCancel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing request_id", http.StatusBadRequest)
 		return
 	}
+	source := chatCancelRequestSource(r)
 
 	if s.cancelActiveRun(requestID) {
 		if s.logger != nil {
-			s.logger.Info("Chat request canceled: request_id=%s", requestID)
+			s.logger.Info("Chat request canceled: request_id=%s source=%s", requestID, source)
 		}
 		if s.liveActivity != nil {
 			s.liveActivity.CancelTask(requestID)
@@ -572,8 +573,57 @@ func (s *Server) handleChatCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.liveActivity != nil {
+		if state := s.liveActivity.Snapshot(requestID); state != nil && isCancelableLiveActivityStatus(state.Status) {
+			s.liveActivity.CancelTask(requestID)
+			if s.logger != nil {
+				s.logger.Info("Chat request live activity canceled without active run: request_id=%s source=%s", requestID, source)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(ChatCancelResponse{RequestID: requestID, Status: "canceled"})
+			return
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(ChatCancelResponse{RequestID: requestID, Status: "not_running"})
+}
+
+func chatCancelRequestSource(r *http.Request) string {
+	if r == nil {
+		return "unknown"
+	}
+	remote := strings.TrimSpace(r.RemoteAddr)
+	forwardedFor := strings.TrimSpace(r.Header.Get("X-Forwarded-For"))
+	userAgent := strings.TrimSpace(r.UserAgent())
+	referer := strings.TrimSpace(r.Referer())
+	parts := make([]string, 0, 4)
+	if remote != "" {
+		parts = append(parts, "remote="+remote)
+	}
+	if forwardedFor != "" {
+		parts = append(parts, "xff="+forwardedFor)
+	}
+	if userAgent != "" {
+		parts = append(parts, "ua="+truncateLogField(userAgent, 120))
+	}
+	if referer != "" {
+		parts = append(parts, "referer="+truncateLogField(referer, 160))
+	}
+	if len(parts) == 0 {
+		return "unknown"
+	}
+	return strings.Join(parts, " ")
+}
+
+func truncateLogField(value string, limit int) string {
+	if limit <= 0 || len(value) <= limit {
+		return value
+	}
+	if limit <= 3 {
+		return value[:limit]
+	}
+	return value[:limit-3] + "..."
 }
 
 func (s *Server) handleChatSteer(w http.ResponseWriter, r *http.Request) {
@@ -838,16 +888,17 @@ func (s *Server) handleChatAsync(
 		}
 
 		runReq := RunRequest{
-			Input:             inputText,
-			Attachments:       turnInput.Attachments,
-			Turn:              turnInput,
-			Skills:            req.Skills,
-			EpisodeID:         userMsg.EpisodeID,
-			RequestID:         requestID,
-			DeviceEnvironment: s.bridgeEnvironment(),
-			RuntimeContext:    s.runtimeContext(),
-			EventHandler:      eventHandler,
-			StreamFinalChunks: true,
+			Input:                   inputText,
+			Attachments:             turnInput.Attachments,
+			Turn:                    turnInput,
+			Skills:                  req.Skills,
+			EpisodeID:               userMsg.EpisodeID,
+			RequestID:               requestID,
+			DeviceEnvironment:       s.bridgeEnvironment(),
+			RuntimeContext:          s.runtimeContext(),
+			EventHandler:            eventHandler,
+			StreamFinalChunks:       true,
+			AsyncEpisodeMaintenance: true,
 			SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
 				return s.consumePendingSteer(requestID)
 			},
@@ -1241,7 +1292,9 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	if req.RequestID != "" {
-		runCtx, cancel := context.WithCancel(ctx)
+		// A request_id marks a resumable run. Keep it alive if the streaming
+		// HTTP client disconnects; only /api/chat/cancel should stop it.
+		runCtx, cancel := context.WithCancel(context.Background())
 		if !s.registerActiveRun(req.RequestID, cancel) {
 			cancel()
 			http.Error(w, "request_id already in use", http.StatusConflict)
@@ -1262,15 +1315,16 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	runReq := RunRequest{
-		Input:             inputText,
-		Attachments:       turnInput.Attachments,
-		Turn:              turnInput,
-		Skills:            req.Skills,
-		EpisodeID:         episodeID,
-		RequestID:         req.RequestID,
-		DeviceEnvironment: s.bridgeEnvironment(),
-		RuntimeContext:    s.runtimeContext(),
-		StreamFinalChunks: true,
+		Input:                   inputText,
+		Attachments:             turnInput.Attachments,
+		Turn:                    turnInput,
+		Skills:                  req.Skills,
+		EpisodeID:               episodeID,
+		RequestID:               req.RequestID,
+		DeviceEnvironment:       s.bridgeEnvironment(),
+		RuntimeContext:          s.runtimeContext(),
+		StreamFinalChunks:       true,
+		AsyncEpisodeMaintenance: req.RequestID != "",
 		SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
 			return s.consumePendingSteer(req.RequestID)
 		},
@@ -2633,6 +2687,7 @@ func (s *Server) handleLiveActivityRegistrations(w http.ResponseWriter, r *http.
 			OK:      true,
 			State:   state,
 			APNs:    apnsStatus,
+			Relay:   s.liveActivity.RelayStatus(),
 			Message: "registered",
 		})
 	case http.MethodDelete:
@@ -3789,7 +3844,7 @@ const webUI = `<!DOCTYPE html>
             <div class="loading" id="loading">
                 <span class="spinner" aria-hidden="true"></span>
                 <span>Working on it...</span>
-                <button type="button" class="stop-run-btn" id="stopRunBtn" onclick="cancelCurrentRun()" disabled>Stop</button>
+                <button type="button" class="stop-run-btn" id="stopRunBtn" onpointerdown="markStopRunPointer(event)" onclick="cancelCurrentRun(event)" disabled>Stop</button>
             </div>
 
             <div class="pending-steer hidden" id="pendingSteer">
@@ -3918,6 +3973,10 @@ const webUI = `<!DOCTYPE html>
         let externalActiveRequestId = '';
         let currentChatAbortController = null;
         let currentChatCancelRequested = false;
+        let currentChatStartedAt = 0;
+        let stopRunPointer = null;
+        let stopRunArmedUntil = 0;
+        let stopRunArmTimer = null;
         let pendingSteer = null;
         let pendingSteerSubmitting = false;
         let episodeCache = {};
@@ -4260,6 +4319,8 @@ const webUI = `<!DOCTYPE html>
             externalActiveRequestId = '';
             currentChatAbortController = new AbortController();
             currentChatCancelRequested = false;
+            currentChatStartedAt = Date.now();
+            resetStopRunArm();
 
             addMessage({
                 type: 'user',
@@ -4314,6 +4375,8 @@ const webUI = `<!DOCTYPE html>
                 currentChatRequestId = '';
                 currentChatAbortController = null;
                 currentChatCancelRequested = false;
+                currentChatStartedAt = 0;
+                resetStopRunArm();
                 pendingSteer = null;
                 renderPendingSteer();
                 setComposerState(false);
@@ -4392,6 +4455,39 @@ const webUI = `<!DOCTYPE html>
             return currentChatRequestId || externalActiveRequestId || '';
         }
 
+        function markStopRunPointer(event) {
+            stopRunPointer = {
+                at: Date.now(),
+                pointerType: event && event.pointerType ? event.pointerType : '',
+                button: event && typeof event.button === 'number' ? event.button : -1,
+                isPrimary: !event || event.isPrimary !== false
+            };
+        }
+
+        function resetStopRunArm() {
+            stopRunArmedUntil = 0;
+            if (stopRunArmTimer) {
+                clearTimeout(stopRunArmTimer);
+                stopRunArmTimer = null;
+            }
+            if (stopRunBtn) {
+                stopRunBtn.textContent = 'Stop';
+            }
+        }
+
+        function armStopRun() {
+            stopRunArmedUntil = Date.now() + 3000;
+            stopRunBtn.textContent = 'Click again to stop';
+            if (stopRunArmTimer) {
+                clearTimeout(stopRunArmTimer);
+            }
+            stopRunArmTimer = setTimeout(function() {
+                if (Date.now() >= stopRunArmedUntil) {
+                    resetStopRunArm();
+                }
+            }, 3100);
+        }
+
         async function refreshCurrentLiveActivity() {
             if (currentChatRequestId) return;
             try {
@@ -4407,9 +4503,37 @@ const webUI = `<!DOCTYPE html>
             }
         }
 
-        async function cancelCurrentRun() {
+        async function cancelCurrentRun(event) {
+            if (event) {
+                event.preventDefault();
+                event.stopPropagation();
+            }
             const requestId = activeChatRequestId();
             if (!requestId) return;
+            const now = Date.now();
+            const sincePointerMs = stopRunPointer ? now - stopRunPointer.at : -1;
+            const eventDetail = event && typeof event.detail === 'number' ? event.detail : 0;
+            const isPrimaryPointer =
+                stopRunPointer &&
+                stopRunPointer.isPrimary &&
+                (stopRunPointer.button === 0 || stopRunPointer.button === -1);
+            const isPointerClick =
+                event &&
+                event.isTrusted === true &&
+                event.type === 'click' &&
+                eventDetail > 0 &&
+                isPrimaryPointer &&
+                sincePointerMs >= 0 &&
+                sincePointerMs < 1500;
+            if (!isPointerClick) {
+                console.warn('Ignored chat cancel without explicit pointer click');
+                return;
+            }
+            if (now >= stopRunArmedUntil) {
+                armStopRun();
+                return;
+            }
+            resetStopRunArm();
             currentChatCancelRequested = true;
             stopRunBtn.disabled = true;
             stopRunBtn.textContent = 'Stopping...';
@@ -4423,7 +4547,9 @@ const webUI = `<!DOCTYPE html>
             fetch('/api/chat/cancel', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ request_id: requestId }),
+                body: JSON.stringify({
+                    request_id: requestId
+                }),
                 keepalive: true
             }).catch(function(err) {
                 console.error('Failed to cancel chat request:', err);
@@ -4940,7 +5066,13 @@ const webUI = `<!DOCTYPE html>
             imageBtn.disabled = isLoading || recorderState.isRecording || recorderState.isStopping;
             recordBtn.disabled = isLoading || recorderState.isStopping;
             stopRunBtn.disabled = !isLoading;
-            stopRunBtn.textContent = 'Stop';
+            if (!isLoading) {
+                resetStopRunArm();
+            } else if (Date.now() < stopRunArmedUntil) {
+                stopRunBtn.textContent = 'Click again to stop';
+            } else {
+                stopRunBtn.textContent = 'Stop';
+            }
             loadingDiv.classList.toggle('active', isLoading);
             renderPendingSteer();
             updateRecordButton();

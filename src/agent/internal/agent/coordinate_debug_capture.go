@@ -40,6 +40,104 @@ func parseCoordinateDebugScreenshotOptions(r *http.Request) coordinateDebugScree
 	return options
 }
 
+func (s *Server) coordinateDebugScreen() *screenState {
+	if s == nil || s.runtime == nil || s.runtime.tools == nil {
+		return nil
+	}
+	return s.runtime.tools.screen
+}
+
+func (s *Server) coordinateDebugOriginalScreenSize() (*int, *int) {
+	screen := s.coordinateDebugScreen()
+	if screen == nil {
+		return nil, nil
+	}
+	width, height, ok := preferredPhoneScreenPixels(screen.PhoneScreenInfo())
+	if !ok {
+		return nil, nil
+	}
+	return &width, &height
+}
+
+func (s *Server) newCoordinateDebugScreenshotResult(display screenshotResult, sourceWidth, sourceHeight int, sourceActive *screenActiveArea) *coordinateDebugScreenshotResult {
+	if sourceWidth <= 0 {
+		sourceWidth = display.Width
+	}
+	if sourceHeight <= 0 {
+		sourceHeight = display.Height
+	}
+	result := &coordinateDebugScreenshotResult{
+		screenshotResult: display,
+		SourceWidth:      sourceWidth,
+		SourceHeight:     sourceHeight,
+	}
+	if sourceActive != nil {
+		result.SourceActiveArea = sourceActive
+	}
+	result.OriginalScreenWidthPixels, result.OriginalScreenHeightPixels = s.coordinateDebugOriginalScreenSize()
+	return result
+}
+
+func (s *Server) coordinateDebugScreenshotResultFromScreenState(display screenshotResult) *coordinateDebugScreenshotResult {
+	sourceWidth := display.Width
+	sourceHeight := display.Height
+	var sourceActive *screenActiveArea
+	screen := s.coordinateDebugScreen()
+	if screen != nil {
+		if width, height, active, age, ok := screen.ActiveAreaWithAge(); ok && age < screenDimensionsStaleAfter {
+			sourceWidth = width
+			sourceHeight = height
+			if active.Valid && (active.X != 0 || active.Y != 0 || active.Width != width || active.Height != height) {
+				activeCopy := active
+				sourceActive = &activeCopy
+			}
+		}
+	}
+	return s.newCoordinateDebugScreenshotResult(display, sourceWidth, sourceHeight, sourceActive)
+}
+
+func coordinateDebugScreenshotMatchesMapping(display screenshotResult, state screenMappingState) bool {
+	if state.width <= 0 || state.height <= 0 {
+		return false
+	}
+	active := state.active
+	if !active.Valid {
+		active = screenActiveArea{
+			X:      0,
+			Y:      0,
+			Width:  state.width,
+			Height: state.height,
+			Valid:  true,
+		}
+	}
+	if active.X < 0 || active.Y < 0 || active.Width <= 0 || active.Height <= 0 ||
+		active.X+active.Width > state.width || active.Y+active.Height > state.height {
+		return false
+	}
+	return display.Width == active.Width && display.Height == active.Height
+}
+
+func coordinateDebugDisplayScreenshot(jpegData []byte, width, height int) screenshotResult {
+	return screenshotResult{
+		Width:  width,
+		Height: height,
+		Format: "jpeg",
+		Size:   len(jpegData),
+		Data:   base64.StdEncoding.EncodeToString(jpegData),
+	}
+}
+
+func coordinateDebugSourceActiveArea(active screenActiveArea, sourceWidth, sourceHeight int) *screenActiveArea {
+	if !active.Valid {
+		return nil
+	}
+	if active.X == 0 && active.Y == 0 && active.Width == sourceWidth && active.Height == sourceHeight {
+		return nil
+	}
+	activeCopy := active
+	return &activeCopy
+}
+
 func (s *Server) captureCoordinateDebugScreenshot(options coordinateDebugScreenshotOptions) (*coordinateDebugScreenshotResult, []byte, error) {
 	if s == nil || s.runtime == nil {
 		return nil, nil, fmt.Errorf("runtime not configured")
@@ -47,9 +145,37 @@ func (s *Server) captureCoordinateDebugScreenshot(options coordinateDebugScreens
 	_ = s.bridgeEnvironment()
 
 	client := NewFrameServiceClient(s.runtime.config.HID.FrameSocketOrDefault())
+	if options.CropBlackBars {
+		meta, jpegData, err := client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality)
+		if err == nil && meta != nil {
+			if meta.Stale {
+				return nil, nil, fmt.Errorf("frame service: STALE_FRAME")
+			}
+			if meta.PixelFormat == "jpeg" {
+				if sourceWidth, sourceHeight, sourceActive, ok := frameMetadataSourceActiveArea(meta); ok {
+					screen := s.coordinateDebugScreen()
+					if screen != nil {
+						screen.UpdateActiveArea(sourceWidth, sourceHeight, sourceActive)
+					}
+					display := coordinateDebugDisplayScreenshot(jpegData, int(meta.Width), int(meta.Height))
+					result := s.newCoordinateDebugScreenshotResult(
+						display,
+						sourceWidth,
+						sourceHeight,
+						coordinateDebugSourceActiveArea(sourceActive, sourceWidth, sourceHeight),
+					)
+					return result, jpegData, nil
+				}
+			}
+		}
+	}
+
 	meta, frameData, err := client.LatestFrame()
 	if err != nil {
 		return nil, nil, err
+	}
+	if meta.Stale {
+		return nil, nil, fmt.Errorf("frame service: STALE_FRAME")
 	}
 	rawJPEGData, err := encodeFrameAsJPEG(meta, frameData, screenshotJPEGQuality)
 	if err != nil {
@@ -57,10 +183,7 @@ func (s *Server) captureCoordinateDebugScreenshot(options coordinateDebugScreens
 	}
 	sourceWidth := int(meta.Width)
 	sourceHeight := int(meta.Height)
-	var screen *screenState
-	if s.runtime.tools != nil {
-		screen = s.runtime.tools.screen
-	}
+	screen := s.coordinateDebugScreen()
 	sourceActive := detectScreenshotActiveAreaForScreen(screen, rawJPEGData, sourceWidth, sourceHeight)
 	if screen != nil {
 		screen.UpdateActiveArea(sourceWidth, sourceHeight, sourceActive)
@@ -84,26 +207,12 @@ func (s *Server) captureCoordinateDebugScreenshot(options coordinateDebugScreens
 		displayActiveArea = &activeCopy
 	}
 
-	result := &coordinateDebugScreenshotResult{
-		screenshotResult: screenshotResult{
-			Width:  displayWidth,
-			Height: displayHeight,
-			Format: "jpeg",
-			Size:   len(displayJPEGData),
-			Data:   base64.StdEncoding.EncodeToString(displayJPEGData),
-		},
-		SourceWidth:  sourceWidth,
-		SourceHeight: sourceHeight,
-	}
-	if screen != nil {
-		if width, height, ok := preferredPhoneScreenPixels(screen.PhoneScreenInfo()); ok {
-			result.OriginalScreenWidthPixels = &width
-			result.OriginalScreenHeightPixels = &height
-		}
-	}
-	if displayActiveArea != nil {
-		result.SourceActiveArea = displayActiveArea
-	}
+	result := s.newCoordinateDebugScreenshotResult(
+		coordinateDebugDisplayScreenshot(displayJPEGData, displayWidth, displayHeight),
+		sourceWidth,
+		sourceHeight,
+		displayActiveArea,
+	)
 	return result, displayJPEGData, nil
 }
 

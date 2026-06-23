@@ -1,9 +1,193 @@
 #include <doctest.h>
 
+#include <algorithm>
 #include <fstream>
 #include <set>
 #include <sstream>
 #include <string>
+#include <utility>
+#include <vector>
+
+namespace {
+
+struct LlmDiffMessage {
+    std::string role;
+    std::string content;
+    std::vector<std::string> content_parts;
+    std::vector<std::pair<std::string, std::string> > tool_calls;
+    std::string tool_call_id;
+};
+
+struct LlmDiffOp {
+    std::string kind;
+    int old_index;
+    int new_index;
+};
+
+struct LlmDiffStats {
+    int added;
+    int removed;
+    int modified;
+};
+
+void append_llm_diff_line(std::string* text, const std::string& line) {
+    if (!text->empty()) {
+        text->append("\n");
+    }
+    text->append(line);
+}
+
+std::string llm_message_text(const LlmDiffMessage& message) {
+    if (!message.content_parts.empty()) {
+        std::string text;
+        for (std::vector<std::string>::const_iterator it = message.content_parts.begin();
+             it != message.content_parts.end(); ++it) {
+            if (it->empty()) {
+                continue;
+            }
+            append_llm_diff_line(&text, *it);
+        }
+        return text;
+    }
+    return message.content;
+}
+
+std::string llm_message_diff_text(const LlmDiffMessage& message) {
+    std::string text = llm_message_text(message);
+    for (std::vector<std::pair<std::string, std::string> >::const_iterator it = message.tool_calls.begin();
+         it != message.tool_calls.end(); ++it) {
+        append_llm_diff_line(&text, "tool_call " + it->first + " " + it->second);
+    }
+    if (!message.tool_call_id.empty()) {
+        append_llm_diff_line(&text, "tool_call_id " + message.tool_call_id);
+    }
+    return text;
+}
+
+std::string serialize_llm_diff_message(const LlmDiffMessage& message) {
+    return message.role + "\001" + llm_message_diff_text(message);
+}
+
+bool llm_messages_can_line_diff(const LlmDiffMessage* old_message, const LlmDiffMessage* new_message) {
+    if (!old_message || !new_message) {
+        return false;
+    }
+    if (old_message->role != new_message->role) {
+        return false;
+    }
+    return llm_message_diff_text(*old_message) != llm_message_diff_text(*new_message);
+}
+
+bool llm_messages_can_line_diff(const LlmDiffMessage& old_message, const LlmDiffMessage& new_message) {
+    return llm_messages_can_line_diff(&old_message, &new_message);
+}
+
+std::vector<LlmDiffOp> build_llm_message_diff_ops(const std::vector<LlmDiffMessage>& old_messages,
+                                                  const std::vector<LlmDiffMessage>& new_messages) {
+    // Mirror the frontend cost model without requiring Node or a browser in host-native tests.
+    const int add_cost = 2;
+    const int remove_cost = 2;
+    const int modify_cost = 3;
+    const int n = static_cast<int>(old_messages.size());
+    const int m = static_cast<int>(new_messages.size());
+    std::vector<std::string> old_serialized;
+    std::vector<std::string> new_serialized;
+    old_serialized.reserve(old_messages.size());
+    new_serialized.reserve(new_messages.size());
+    for (std::vector<LlmDiffMessage>::const_iterator it = old_messages.begin(); it != old_messages.end(); ++it) {
+        old_serialized.push_back(serialize_llm_diff_message(*it));
+    }
+    for (std::vector<LlmDiffMessage>::const_iterator it = new_messages.begin(); it != new_messages.end(); ++it) {
+        new_serialized.push_back(serialize_llm_diff_message(*it));
+    }
+
+    std::vector<std::vector<int> > cost(n + 1, std::vector<int>(m + 1, 0));
+    for (int i = n - 1; i >= 0; --i) {
+        cost[i][m] = cost[i + 1][m] + remove_cost;
+    }
+    for (int j = m - 1; j >= 0; --j) {
+        cost[n][j] = cost[n][j + 1] + add_cost;
+    }
+    for (int i = n - 1; i >= 0; --i) {
+        for (int j = m - 1; j >= 0; --j) {
+            if (old_serialized[i] == new_serialized[j]) {
+                cost[i][j] = cost[i + 1][j + 1];
+            } else {
+                int best = std::min(cost[i + 1][j] + remove_cost, cost[i][j + 1] + add_cost);
+                if (llm_messages_can_line_diff(old_messages[i], new_messages[j])) {
+                    best = std::min(best, cost[i + 1][j + 1] + modify_cost);
+                }
+                cost[i][j] = best;
+            }
+        }
+    }
+
+    std::vector<LlmDiffOp> ops;
+    int i = 0;
+    int j = 0;
+    while (i < n && j < m) {
+        if (old_serialized[i] == new_serialized[j] && cost[i][j] == cost[i + 1][j + 1]) {
+            ops.push_back({"same", i, j});
+            ++i;
+            ++j;
+        } else if (llm_messages_can_line_diff(old_messages[i], new_messages[j]) &&
+                   cost[i][j] == cost[i + 1][j + 1] + modify_cost) {
+            ops.push_back({"modified", i, j});
+            ++i;
+            ++j;
+        } else if (cost[i][j] == cost[i + 1][j] + remove_cost) {
+            ops.push_back({"removed", i, -1});
+            ++i;
+        } else {
+            ops.push_back({"added", -1, j});
+            ++j;
+        }
+    }
+    while (i < n) {
+        ops.push_back({"removed", i, -1});
+        ++i;
+    }
+    while (j < m) {
+        ops.push_back({"added", -1, j});
+        ++j;
+    }
+    return ops;
+}
+
+LlmDiffStats compute_llm_diff_stats(const std::vector<LlmDiffMessage>& old_messages,
+                                    const std::vector<LlmDiffMessage>& new_messages) {
+    LlmDiffStats stats = {0, 0, 0};
+    const std::vector<LlmDiffOp> ops = build_llm_message_diff_ops(old_messages, new_messages);
+    for (std::vector<LlmDiffOp>::const_iterator it = ops.begin(); it != ops.end(); ++it) {
+        if (it->kind == "added") {
+            ++stats.added;
+        } else if (it->kind == "removed") {
+            ++stats.removed;
+        } else if (it->kind == "modified") {
+            ++stats.modified;
+        }
+    }
+    return stats;
+}
+
+std::string changed_llm_diff_ops_summary(const std::vector<LlmDiffOp>& ops) {
+    std::ostringstream out;
+    bool first = true;
+    for (std::vector<LlmDiffOp>::const_iterator it = ops.begin(); it != ops.end(); ++it) {
+        if (it->kind == "same") {
+            continue;
+        }
+        if (!first) {
+            out << "|";
+        }
+        first = false;
+        out << it->kind << ":" << (it->old_index < 0 ? "-" : std::to_string(it->old_index)) << "->"
+            << (it->new_index < 0 ? "-" : std::to_string(it->new_index));
+    }
+    return out.str();
+}
+
+}  // namespace
 
 TEST_CASE("config web agent tests do not reference legacy energy threshold") {
     const std::string path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
@@ -254,11 +438,22 @@ TEST_CASE("config web exposes the LLM HTTP log viewer") {
     CHECK(llm_html.find("function messageNeedsCollapse") != std::string::npos);
     CHECK(llm_html.find("diff-line.collapsed") != std::string::npos);
     CHECK(llm_html.find("msg-content diff-line") != std::string::npos);
-    CHECK(llm_html.find("diffMsgBlock(newMsgs[j], 'same',") != std::string::npos);
-    CHECK(llm_html.find("diffMsgBlock(oldMsgs[i], 'removed',") != std::string::npos);
-    CHECK(llm_html.find("diffMsgBlock(newMsgs[j], 'added',") != std::string::npos);
+    CHECK(llm_html.find("diffMsgBlock(newMsgs[op.newIndex], 'same',") != std::string::npos);
+    CHECK(llm_html.find("diffMsgBlock(oldMsgs[op.oldIndex], 'removed',") != std::string::npos);
+    CHECK(llm_html.find("diffMsgBlock(newMsgs[op.newIndex], 'added',") != std::string::npos);
+    CHECK(llm_html.find("diffMsgBlock(newMsgs[op.newIndex], 'modified'") != std::string::npos);
+    CHECK(llm_html.find("function buildLineDiffRows") != std::string::npos);
+    CHECK(llm_html.find("function compactDiffContext") != std::string::npos);
+    CHECK(llm_html.find("function renderLineDiffContent") != std::string::npos);
+    CHECK(llm_html.find("modified++;") != std::string::npos);
+    CHECK(llm_html.find("const addCost = 2, removeCost = 2, modifyCost = 3;") != std::string::npos);
+    CHECK(llm_html.find("const oldDiffText = oldMsgs.map(messageDiffText);") != std::string::npos);
+    CHECK(llm_html.find("const newDiffText = newMsgs.map(messageDiffText);") != std::string::npos);
+    CHECK(llm_html.find("const canLineDiff = (i, j) =>") != std::string::npos);
+    CHECK(llm_html.find("cost[i][j] === cost[i + 1][j + 1] + modifyCost") != std::string::npos);
+    CHECK(llm_html.find("line-diff-row") != std::string::npos);
     CHECK(llm_html.find("renderMessageHead('diff-msg-head role-'") != std::string::npos);
-    CHECK(llm_html.find("renderMessageContent(m) + renderToolCalls(m)") != std::string::npos);
+    CHECK(llm_html.find("content + renderToolCalls(m)") != std::string::npos);
     CHECK(llm_html.find("function renderMessageContent") != std::string::npos);
     CHECK(llm_html.find("function renderContentPart") != std::string::npos);
     CHECK(llm_html.find("function imageUrlFromPart") != std::string::npos);
@@ -274,6 +469,77 @@ TEST_CASE("config web exposes the LLM HTTP log viewer") {
     CHECK(llm_html.find("function renderResponseBlock") != std::string::npos);
     CHECK(llm_html.find("function extractResponseMessage") != std::string::npos);
     CHECK(llm_html.find("response-section") != std::string::npos);
+}
+
+TEST_CASE("config web LLM diff pairs adjacent message replacements") {
+    const std::vector<LlmDiffMessage> old_messages = {
+        {"system", "system prompt"},
+        {"user", "old user one"},
+        {"user", "old user two"},
+        {"assistant", "unchanged assistant"},
+    };
+    const std::vector<LlmDiffMessage> new_messages = {
+        {"system", "system prompt"},
+        {"user", "new user one"},
+        {"user", "new user two"},
+        {"assistant", "unchanged assistant"},
+    };
+
+    const std::vector<LlmDiffOp> ops = build_llm_message_diff_ops(old_messages, new_messages);
+    CHECK(changed_llm_diff_ops_summary(ops) == "modified:1->1|modified:2->2");
+
+    const LlmDiffStats stats = compute_llm_diff_stats(old_messages, new_messages);
+    CHECK(stats.added == 0);
+    CHECK(stats.removed == 0);
+    CHECK(stats.modified == 2);
+}
+
+TEST_CASE("config web LLM diff mirror compares normalized message text") {
+    LlmDiffMessage old_message;
+    old_message.role = "user";
+    old_message.content_parts.push_back("old text part");
+
+    LlmDiffMessage new_message;
+    new_message.role = "user";
+    new_message.content_parts.push_back("new text part");
+
+    CHECK(llm_messages_can_line_diff(old_message, new_message));
+
+    const std::vector<LlmDiffOp> ops = build_llm_message_diff_ops({old_message}, {new_message});
+    CHECK(changed_llm_diff_ops_summary(ops) == "modified:0->0");
+}
+
+TEST_CASE("config web LLM diff mirror compares tool metadata") {
+    LlmDiffMessage old_tool_call;
+    old_tool_call.role = "assistant";
+    old_tool_call.content = "same";
+    old_tool_call.tool_calls.push_back(std::make_pair("lookup", "{\"q\":\"old\"}"));
+
+    LlmDiffMessage new_tool_call = old_tool_call;
+    new_tool_call.tool_calls[0].second = "{\"q\":\"new\"}";
+
+    CHECK(llm_messages_can_line_diff(old_tool_call, new_tool_call));
+    CHECK(changed_llm_diff_ops_summary(build_llm_message_diff_ops({old_tool_call}, {new_tool_call})) == "modified:0->0");
+
+    LlmDiffMessage old_tool_result;
+    old_tool_result.role = "tool";
+    old_tool_result.content = "same";
+    old_tool_result.tool_call_id = "call-old";
+
+    LlmDiffMessage new_tool_result = old_tool_result;
+    new_tool_result.tool_call_id = "call-new";
+
+    CHECK(llm_messages_can_line_diff(old_tool_result, new_tool_result));
+    CHECK(changed_llm_diff_ops_summary(build_llm_message_diff_ops({old_tool_result}, {new_tool_result})) == "modified:0->0");
+}
+
+TEST_CASE("config web LLM diff mirror rejects missing messages") {
+    LlmDiffMessage message;
+    message.role = "user";
+    message.content = "content";
+
+    CHECK_FALSE(llm_messages_can_line_diff(static_cast<const LlmDiffMessage*>(0), &message));
+    CHECK_FALSE(llm_messages_can_line_diff(&message, static_cast<const LlmDiffMessage*>(0)));
 }
 
 TEST_CASE("config web exposes audio archive switch") {
@@ -743,7 +1009,8 @@ TEST_CASE("config web preserves loaded secret values when password inputs are le
     const std::string html = html_buffer.str();
 
     CHECK(html.find("const values=Object.assign({},(appState.config&&appState.config[section])||{});") != std::string::npos);
-    CHECK(html.find("if(el.type==='password'&&raw===''){return;}") != std::string::npos);
+    CHECK(html.find("function isSecretField(el)") != std::string::npos);
+    CHECK(html.find("if(isSecretField(el)&&raw===''){return;}") != std::string::npos);
     CHECK(html.find("if(el.type==='password'&&raw===''){delete values[key];return;}") == std::string::npos);
 }
 
@@ -972,6 +1239,68 @@ TEST_CASE("config web exposes log settings section") {
     CHECK(html.find("log_llm_http_retention_days") != std::string::npos);
     CHECK(html.find("save-log") != std::string::npos);
     CHECK(html.find("enterEditSection('log')") != std::string::npos);
+}
+
+TEST_CASE("config web exposes live activity settings section") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    const std::string toml_header_path = std::string(AIDEN_SOURCE_DIR) + "/src/agent_toml.h";
+    std::ifstream toml_header_in(toml_header_path.c_str());
+    REQUIRE(toml_header_in.good());
+
+    std::ostringstream toml_header_buffer;
+    toml_header_buffer << toml_header_in.rdbuf();
+    const std::string toml_header = toml_header_buffer.str();
+
+    const std::string toml_source_path = std::string(AIDEN_SOURCE_DIR) + "/src/agent_toml.cpp";
+    std::ifstream toml_source_in(toml_source_path.c_str());
+    REQUIRE(toml_source_in.good());
+
+    std::ostringstream toml_source_buffer;
+    toml_source_buffer << toml_source_in.rdbuf();
+    const std::string toml_source = toml_source_buffer.str();
+
+    CHECK(source.find("\"live_activity\"") != std::string::npos);
+    CHECK(source.find("cJSON* live_activity = add_object(root, \"live_activity\")") != std::string::npos);
+    CHECK(source.find("config.live_activity.relay_url") != std::string::npos);
+    CHECK(source.find("has_relay_api_key") != std::string::npos);
+    CHECK(source.find("has_private_key_pem") != std::string::npos);
+    CHECK(source.find("preserve_redacted_agent_secrets") != std::string::npos);
+    CHECK(source.find("stored.live_activity.relay_api_key") != std::string::npos);
+    CHECK(source.find("stored.live_activity.private_key_pem") != std::string::npos);
+
+    CHECK(html.find("section-live_activity") != std::string::npos);
+    CHECK(html.find("<h3>[live_activity]</h3>") != std::string::npos);
+    CHECK(html.find("live_activity_relay_url") == std::string::npos);
+    CHECK(html.find("live_activity_relay_api_key") == std::string::npos);
+    CHECK(html.find("live_activity_board_id") != std::string::npos);
+    CHECK(html.find("live_activity_phone_id") != std::string::npos);
+    CHECK(html.find("live_activity_private_key_path") == std::string::npos);
+    CHECK(html.find("live_activity_private_key_pem") == std::string::npos);
+    CHECK(html.find("live_activity_timeout_sec") == std::string::npos);
+    CHECK(html.find("function isSecretField(el)") != std::string::npos);
+    CHECK(html.find("save-live_activity") != std::string::npos);
+    CHECK(html.find("enterEditSection('live_activity')") != std::string::npos);
+
+    CHECK(toml_header.find("struct LiveActivityToml") != std::string::npos);
+    CHECK(toml_header.find("LiveActivityToml live_activity") != std::string::npos);
+    CHECK(toml_source.find("section == \"live_activity\"") != std::string::npos);
+    CHECK(toml_source.find("\"relay_api_key\"") != std::string::npos);
+    CHECK(toml_source.find("[live_activity]") != std::string::npos);
 }
 
 TEST_CASE("config web does not restart ota for system env changes") {

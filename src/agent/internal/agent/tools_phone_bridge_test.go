@@ -5,6 +5,12 @@ import (
 	"testing"
 )
 
+func TestBundledAppMappingPathUsesOEMPartition(t *testing.T) {
+	if BundledAppMappingPath != "/oem/usr/share/aiden/app_mapping.json" {
+		t.Fatalf("BundledAppMappingPath = %q, want OEM path", BundledAppMappingPath)
+	}
+}
+
 func TestResolveOpenAppTargetsBrowserDoesNotUseFixedWebsite(t *testing.T) {
 	args := openAppArgs{App: "browser"}
 

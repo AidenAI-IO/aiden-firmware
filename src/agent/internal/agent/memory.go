@@ -805,7 +805,7 @@ func ensureActiveSessionMetadata(sessionDir string, now time.Time) (sessionMetad
 	path := filepath.Join(sessionDir, sessionMetadataFileName)
 	if meta, err := readSessionMetadata(path); err == nil && strings.TrimSpace(meta.SessionID) != "" {
 		return meta, nil
-	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) && !isTruncatedJSONLineError(err) {
 		return sessionMetadata{}, err
 	}
 	return writeNewSessionMetadata(sessionDir, now)

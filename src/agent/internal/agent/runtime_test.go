@@ -348,6 +348,93 @@ func (m *recordingSessionManager) CommitRun(ctx context.Context, req SessionComm
 	return m.result, nil
 }
 
+type blockingEpisodeMaintenancePlane struct {
+	traceCommitted     atomic.Bool
+	maintenanceStarted atomic.Bool
+	released           atomic.Bool
+	started            chan struct{}
+	release            chan struct{}
+}
+
+func newBlockingEpisodeMaintenancePlane() *blockingEpisodeMaintenancePlane {
+	return &blockingEpisodeMaintenancePlane{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (p *blockingEpisodeMaintenancePlane) Retrieve(context.Context, MemoryRetrieveRequest) (MemoryContext, error) {
+	return MemoryContext{}, nil
+}
+
+func (p *blockingEpisodeMaintenancePlane) NewEpisodeRecorder(req MemoryRetrieveRequest, retrieved MemoryContext) *EpisodeRecorder {
+	return NewEpisodeRecorder(req, retrieved)
+}
+
+func (p *blockingEpisodeMaintenancePlane) CommitEpisode(context.Context, TaskEpisode) error {
+	return errors.New("sync CommitEpisode should not be called")
+}
+
+func (p *blockingEpisodeMaintenancePlane) commitEpisodeTrace(context.Context, TaskEpisode) error {
+	p.traceCommitted.Store(true)
+	return nil
+}
+
+func (p *blockingEpisodeMaintenancePlane) commitEpisodeMaintenance(ctx context.Context, episode TaskEpisode) {
+	if p.maintenanceStarted.CompareAndSwap(false, true) {
+		close(p.started)
+	}
+	select {
+	case <-ctx.Done():
+	case <-p.release:
+	}
+}
+
+func (p *blockingEpisodeMaintenancePlane) releaseMaintenance() {
+	if p.released.CompareAndSwap(false, true) {
+		close(p.release)
+	}
+}
+
+func TestRuntimeRunAsyncEpisodeMaintenanceDoesNotBlock(t *testing.T) {
+	plane := newBlockingEpisodeMaintenancePlane()
+	defer plane.releaseMaintenance()
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
+		&testModelResolver{model: &scriptedModel{responses: roleDirectResponses("ok")}},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.memoryPlane = plane
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := runtime.Run(context.Background(), RunRequest{
+			Input:                   "hello",
+			AsyncEpisodeMaintenance: true,
+		})
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Run() blocked on async episode maintenance")
+	}
+	if !plane.traceCommitted.Load() {
+		t.Fatal("episode trace was not committed before Run returned")
+	}
+	select {
+	case <-plane.started:
+	case <-time.After(time.Second):
+		t.Fatal("async episode maintenance did not start")
+	}
+}
+
 func TestRuntimeRunAttachesPendingSteerToNextToolCall(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleToolResponses("echo", `{"__arg1":"original action"}`, "Changed course."),
