@@ -526,6 +526,49 @@ func TestConversationHistoryCompactionPrefixMergesIntoAssistantTail(t *testing.T
 	}
 }
 
+func TestConversationHistoryRestoresLegacyToolEventsWithSyntheticCallID(t *testing.T) {
+	events := []SessionEvent{
+		{
+			EventID: "user",
+			Type:    "user_input",
+			Role:    "user",
+			Content: "call echo",
+		},
+		{
+			EventID:   "tool-call",
+			Type:      runEventToolCall,
+			Role:      "tool",
+			ToolName:  "echo",
+			ToolInput: "{}",
+			Content:   "checking",
+		},
+		{
+			EventID:   "tool-result",
+			Type:      "tool_result",
+			Role:      "tool",
+			ToolName:  "echo",
+			ToolInput: "{}",
+			Content:   "echo ok",
+		},
+	}
+
+	messages := conversationHistoryMessageContentsFromEvents(events, "", 0)
+	if len(messages) != 3 {
+		t.Fatalf("messages = %#v, want user plus tool call/result", messages)
+	}
+	toolCall, ok := messages[1].Parts[len(messages[1].Parts)-1].(llms.ToolCall)
+	if !ok || messages[1].Role != llms.ChatMessageTypeAI || toolCall.FunctionCall == nil || toolCall.FunctionCall.Name != "echo" {
+		t.Fatalf("restored tool call message = %#v", messages[1])
+	}
+	toolResponse, ok := messages[2].Parts[0].(llms.ToolCallResponse)
+	if !ok || messages[2].Role != llms.ChatMessageTypeTool {
+		t.Fatalf("restored tool response message = %#v", messages[2])
+	}
+	if toolCall.ID == "" || toolResponse.ToolCallID != toolCall.ID {
+		t.Fatalf("restored tool IDs do not match: call=%q response=%q", toolCall.ID, toolResponse.ToolCallID)
+	}
+}
+
 func TestConversationHistoryCompactionPrefixChoosesAssistantWhenTailAllows(t *testing.T) {
 	events := []SessionEvent{
 		{

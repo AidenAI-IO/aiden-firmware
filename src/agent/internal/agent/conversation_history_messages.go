@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/tmc/langchaingo/llms"
@@ -105,6 +106,7 @@ func conversationHistoryMessageContents(ctx context.Context, history *langmemory
 func conversationHistoryMessageContentsFromEvents(events []SessionEvent, currentRunID string, maxTokens int) []llms.MessageContent {
 	entries := make([]conversationHistorySelectionEntry, 0, len(events))
 	firstUserInputIndex := firstSelectableUserInputIndex(events, currentRunID)
+	toolIDs := newSessionToolHistoryIDTracker()
 	for i, event := range events {
 		if eventBelongsToRun(event, currentRunID) {
 			continue
@@ -130,15 +132,7 @@ func conversationHistoryMessageContentsFromEvents(events []SessionEvent, current
 			})
 			continue
 		}
-		record, ok := messageRecordFromSessionEvent(event)
-		if !ok {
-			continue
-		}
-		content := strings.TrimSpace(record.Content)
-		if content == "" {
-			continue
-		}
-		message, ok := messageContentFromChatMessage(llms.ChatMessageType(record.Role), content)
+		message, ok := messageContentFromSessionEvent(event, i, toolIDs)
 		if !ok {
 			continue
 		}
@@ -177,12 +171,8 @@ func nextPromptHistoryRole(events []SessionEvent, start int, currentRunID string
 		if eventBelongsToRun(event, currentRunID) || event.Source == EventSourceCompactionPrefix {
 			continue
 		}
-		record, ok := messageRecordFromSessionEvent(event)
-		if !ok || strings.TrimSpace(record.Content) == "" {
-			continue
-		}
-		role := llms.ChatMessageType(record.Role)
-		if _, ok := messageContentFromChatMessage(role, record.Content); !ok {
+		role, ok := conversationHistoryRoleFromSessionEvent(event)
+		if !ok {
 			continue
 		}
 		return i, role, true
@@ -398,7 +388,7 @@ func conversationHistoryMessagesFromEntries(entries []conversationHistorySelecti
 	for _, entry := range entries {
 		result = append(result, entry.message)
 	}
-	return result
+	return removeUnpairedToolHistoryMessages(result)
 }
 
 func mergeSelectedCompactionReferenceEntries(entries []conversationHistorySelectionEntry) []llms.MessageContent {
@@ -447,7 +437,7 @@ func mergeSelectedCompactionReferenceEntries(entries []conversationHistorySelect
 		}
 		result = append(result, entry.message)
 	}
-	return result
+	return removeUnpairedToolHistoryMessages(result)
 }
 
 func singleTextMessage(message llms.MessageContent) (string, bool) {
@@ -459,6 +449,174 @@ func singleTextMessage(message llms.MessageContent) (string, bool) {
 		return "", false
 	}
 	return strings.TrimSpace(text.Text), true
+}
+
+type sessionToolHistoryIDTracker struct {
+	next    int
+	pending []sessionToolHistoryID
+}
+
+type sessionToolHistoryID struct {
+	id    string
+	name  string
+	input string
+}
+
+func newSessionToolHistoryIDTracker() *sessionToolHistoryIDTracker {
+	return &sessionToolHistoryIDTracker{}
+}
+
+func (t *sessionToolHistoryIDTracker) toolCallID(event SessionEvent, eventIndex int) string {
+	id := strings.TrimSpace(event.ToolCallID)
+	if id == "" {
+		t.next++
+		id = fmt.Sprintf("session_tool_call_%d_%d", eventIndex, t.next)
+	}
+	t.pending = append(t.pending, sessionToolHistoryID{
+		id:    id,
+		name:  strings.TrimSpace(event.ToolName),
+		input: normalizeToolInput(event.ToolInput),
+	})
+	return id
+}
+
+func (t *sessionToolHistoryIDTracker) toolResultID(event SessionEvent, eventIndex int) string {
+	if id := strings.TrimSpace(event.ToolCallID); id != "" {
+		t.removePendingByID(id)
+		return id
+	}
+	name := strings.TrimSpace(event.ToolName)
+	input := normalizeToolInput(event.ToolInput)
+	for i, pending := range t.pending {
+		if pending.name == name && pending.input == input {
+			t.pending = append(t.pending[:i], t.pending[i+1:]...)
+			return pending.id
+		}
+	}
+	if len(t.pending) > 0 {
+		pending := t.pending[0]
+		t.pending = t.pending[1:]
+		return pending.id
+	}
+	t.next++
+	return fmt.Sprintf("session_tool_result_%d_%d", eventIndex, t.next)
+}
+
+func (t *sessionToolHistoryIDTracker) removePendingByID(id string) {
+	for i, pending := range t.pending {
+		if pending.id == id {
+			t.pending = append(t.pending[:i], t.pending[i+1:]...)
+			return
+		}
+	}
+}
+
+func messageContentFromSessionEvent(event SessionEvent, eventIndex int, toolIDs *sessionToolHistoryIDTracker) (llms.MessageContent, bool) {
+	switch event.Type {
+	case runEventToolCall:
+		name := strings.TrimSpace(event.ToolName)
+		if name == "" {
+			return llms.MessageContent{}, false
+		}
+		id := toolIDs.toolCallID(event, eventIndex)
+		parts := make([]llms.ContentPart, 0, 2)
+		if content := strings.TrimSpace(event.Content); content != "" {
+			parts = append(parts, llms.TextPart(content))
+		}
+		parts = append(parts, llms.ToolCall{
+			ID:   id,
+			Type: "function",
+			FunctionCall: &llms.FunctionCall{
+				Name:      name,
+				Arguments: encodeToolArguments(normalizeToolInput(event.ToolInput)),
+			},
+		})
+		return llms.MessageContent{Role: llms.ChatMessageTypeAI, Parts: parts}, true
+	case "tool_result":
+		if strings.TrimSpace(event.Content) == "" {
+			return llms.MessageContent{}, false
+		}
+		id := toolIDs.toolResultID(event, eventIndex)
+		return llms.MessageContent{
+			Role: llms.ChatMessageTypeTool,
+			Parts: []llms.ContentPart{llms.ToolCallResponse{
+				ToolCallID: id,
+				Name:       strings.TrimSpace(event.ToolName),
+				Content:    event.Content,
+			}},
+		}, true
+	default:
+		record, ok := messageRecordFromSessionEvent(event)
+		if !ok || strings.TrimSpace(record.Content) == "" {
+			return llms.MessageContent{}, false
+		}
+		return messageContentFromChatMessage(llms.ChatMessageType(record.Role), record.Content)
+	}
+}
+
+func conversationHistoryRoleFromSessionEvent(event SessionEvent) (llms.ChatMessageType, bool) {
+	switch event.Type {
+	case runEventToolCall:
+		return llms.ChatMessageTypeAI, strings.TrimSpace(event.ToolName) != ""
+	case "tool_result":
+		return llms.ChatMessageTypeTool, strings.TrimSpace(event.Content) != ""
+	default:
+		record, ok := messageRecordFromSessionEvent(event)
+		if !ok || strings.TrimSpace(record.Content) == "" {
+			return "", false
+		}
+		role := llms.ChatMessageType(record.Role)
+		_, ok = messageContentFromChatMessage(role, record.Content)
+		return role, ok
+	}
+}
+
+func removeUnpairedToolHistoryMessages(messages []llms.MessageContent) []llms.MessageContent {
+	if len(messages) == 0 {
+		return messages
+	}
+	callIDs := map[string]int{}
+	responseIDs := map[string]int{}
+	for i, message := range messages {
+		for _, part := range message.Parts {
+			switch typed := part.(type) {
+			case llms.ToolCall:
+				if id := strings.TrimSpace(typed.ID); id != "" {
+					callIDs[id] = i
+				}
+			case llms.ToolCallResponse:
+				if id := strings.TrimSpace(typed.ToolCallID); id != "" {
+					responseIDs[id] = i
+				}
+			}
+		}
+	}
+	if len(callIDs) == 0 && len(responseIDs) == 0 {
+		return messages
+	}
+
+	keep := make([]bool, len(messages))
+	for i := range keep {
+		keep[i] = true
+	}
+	for id, index := range callIDs {
+		if _, ok := responseIDs[id]; !ok {
+			keep[index] = false
+		}
+	}
+	for id, index := range responseIDs {
+		if _, ok := callIDs[id]; !ok {
+			keep[index] = false
+		}
+	}
+
+	result := make([]llms.MessageContent, 0, len(messages))
+	for i, message := range messages {
+		if keep[i] {
+			result = append(result, message)
+		}
+	}
+	return result
 }
 
 func fitConversationHistoryMessage(message llms.MessageContent, tokens int, budget int) (llms.MessageContent, int, bool) {

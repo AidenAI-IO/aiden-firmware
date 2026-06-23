@@ -1930,6 +1930,68 @@ func TestRuntimeRunFakeProviderUsesFunctionAgentToolCalls(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunRestoresPlannerToolCallsIntoNextRunPrompt(t *testing.T) {
+	model := &scriptedModel{
+		responses: append(
+			roleToolResponses("echo", `{"__arg1":"{}"}`, "first run done"),
+			contentResponse("second run done"),
+		),
+	}
+	tool := &stubTool{
+		name:        "echo",
+		description: "Echo test tool.",
+		output:      "echo result",
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use tools when needed.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(t.TempDir()),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"echo": tool,
+		}},
+		NewSkillIndex(),
+	)
+
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "call echo"}); err != nil {
+		t.Fatalf("first Run() error = %v", err)
+	}
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "continue"}); err != nil {
+		t.Fatalf("second Run() error = %v", err)
+	}
+	if len(model.messages) < 3 {
+		t.Fatalf("model calls = %d, want second run planner prompt", len(model.messages))
+	}
+
+	secondRunPrompt := model.messages[2]
+	var foundToolCall, foundToolResponse bool
+	for _, msg := range secondRunPrompt {
+		for _, part := range msg.Parts {
+			switch typed := part.(type) {
+			case llms.ToolCall:
+				if msg.Role == llms.ChatMessageTypeAI &&
+					typed.ID == "call_1" &&
+					typed.FunctionCall != nil &&
+					typed.FunctionCall.Name == "echo" {
+					foundToolCall = true
+				}
+			case llms.ToolCallResponse:
+				if msg.Role == llms.ChatMessageTypeTool &&
+					typed.ToolCallID == "call_1" &&
+					strings.Contains(typed.Content, "echo result") {
+					foundToolResponse = true
+				}
+			}
+		}
+	}
+	if !foundToolCall || !foundToolResponse {
+		t.Fatalf("second run planner prompt missing persisted tool scratchpad: found call=%v response=%v messages=%#v",
+			foundToolCall, foundToolResponse, secondRunPrompt)
+	}
+}
+
 func TestRuntimeRunExecutesOnlyFirstToolCallPerIteration(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
