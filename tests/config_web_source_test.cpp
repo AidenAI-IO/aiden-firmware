@@ -5,6 +5,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -12,6 +13,9 @@ namespace {
 struct LlmDiffMessage {
     std::string role;
     std::string content;
+    std::vector<std::string> content_parts;
+    std::vector<std::pair<std::string, std::string> > tool_calls;
+    std::string tool_call_id;
 };
 
 struct LlmDiffOp {
@@ -26,12 +30,56 @@ struct LlmDiffStats {
     int modified;
 };
 
+void append_llm_diff_line(std::string* text, const std::string& line) {
+    if (!text->empty()) {
+        text->append("\n");
+    }
+    text->append(line);
+}
+
+std::string llm_message_text(const LlmDiffMessage& message) {
+    if (!message.content_parts.empty()) {
+        std::string text;
+        for (std::vector<std::string>::const_iterator it = message.content_parts.begin();
+             it != message.content_parts.end(); ++it) {
+            if (it->empty()) {
+                continue;
+            }
+            append_llm_diff_line(&text, *it);
+        }
+        return text;
+    }
+    return message.content;
+}
+
+std::string llm_message_diff_text(const LlmDiffMessage& message) {
+    std::string text = llm_message_text(message);
+    for (std::vector<std::pair<std::string, std::string> >::const_iterator it = message.tool_calls.begin();
+         it != message.tool_calls.end(); ++it) {
+        append_llm_diff_line(&text, "tool_call " + it->first + " " + it->second);
+    }
+    if (!message.tool_call_id.empty()) {
+        append_llm_diff_line(&text, "tool_call_id " + message.tool_call_id);
+    }
+    return text;
+}
+
 std::string serialize_llm_diff_message(const LlmDiffMessage& message) {
-    return message.role + "\001" + message.content;
+    return message.role + "\001" + llm_message_diff_text(message);
+}
+
+bool llm_messages_can_line_diff(const LlmDiffMessage* old_message, const LlmDiffMessage* new_message) {
+    if (!old_message || !new_message) {
+        return false;
+    }
+    if (old_message->role != new_message->role) {
+        return false;
+    }
+    return llm_message_diff_text(*old_message) != llm_message_diff_text(*new_message);
 }
 
 bool llm_messages_can_line_diff(const LlmDiffMessage& old_message, const LlmDiffMessage& new_message) {
-    return old_message.role == new_message.role && old_message.content != new_message.content;
+    return llm_messages_can_line_diff(&old_message, &new_message);
 }
 
 std::vector<LlmDiffOp> build_llm_message_diff_ops(const std::vector<LlmDiffMessage>& old_messages,
@@ -398,6 +446,9 @@ TEST_CASE("config web exposes the LLM HTTP log viewer") {
     CHECK(llm_html.find("function renderLineDiffContent") != std::string::npos);
     CHECK(llm_html.find("modified++;") != std::string::npos);
     CHECK(llm_html.find("const addCost = 2, removeCost = 2, modifyCost = 3;") != std::string::npos);
+    CHECK(llm_html.find("const oldDiffText = oldMsgs.map(messageDiffText);") != std::string::npos);
+    CHECK(llm_html.find("const newDiffText = newMsgs.map(messageDiffText);") != std::string::npos);
+    CHECK(llm_html.find("const canLineDiff = (i, j) =>") != std::string::npos);
     CHECK(llm_html.find("cost[i][j] === cost[i + 1][j + 1] + modifyCost") != std::string::npos);
     CHECK(llm_html.find("line-diff-row") != std::string::npos);
     CHECK(llm_html.find("renderMessageHead('diff-msg-head role-'") != std::string::npos);
@@ -439,6 +490,54 @@ TEST_CASE("config web LLM diff pairs adjacent message replacements") {
     CHECK(stats.added == 0);
     CHECK(stats.removed == 0);
     CHECK(stats.modified == 2);
+}
+
+TEST_CASE("config web LLM diff mirror compares normalized message text") {
+    LlmDiffMessage old_message;
+    old_message.role = "user";
+    old_message.content_parts.push_back("old text part");
+
+    LlmDiffMessage new_message;
+    new_message.role = "user";
+    new_message.content_parts.push_back("new text part");
+
+    CHECK(llm_messages_can_line_diff(old_message, new_message));
+
+    const std::vector<LlmDiffOp> ops = build_llm_message_diff_ops({old_message}, {new_message});
+    CHECK(changed_llm_diff_ops_summary(ops) == "modified:0->0");
+}
+
+TEST_CASE("config web LLM diff mirror compares tool metadata") {
+    LlmDiffMessage old_tool_call;
+    old_tool_call.role = "assistant";
+    old_tool_call.content = "same";
+    old_tool_call.tool_calls.push_back(std::make_pair("lookup", "{\"q\":\"old\"}"));
+
+    LlmDiffMessage new_tool_call = old_tool_call;
+    new_tool_call.tool_calls[0].second = "{\"q\":\"new\"}";
+
+    CHECK(llm_messages_can_line_diff(old_tool_call, new_tool_call));
+    CHECK(changed_llm_diff_ops_summary(build_llm_message_diff_ops({old_tool_call}, {new_tool_call})) == "modified:0->0");
+
+    LlmDiffMessage old_tool_result;
+    old_tool_result.role = "tool";
+    old_tool_result.content = "same";
+    old_tool_result.tool_call_id = "call-old";
+
+    LlmDiffMessage new_tool_result = old_tool_result;
+    new_tool_result.tool_call_id = "call-new";
+
+    CHECK(llm_messages_can_line_diff(old_tool_result, new_tool_result));
+    CHECK(changed_llm_diff_ops_summary(build_llm_message_diff_ops({old_tool_result}, {new_tool_result})) == "modified:0->0");
+}
+
+TEST_CASE("config web LLM diff mirror rejects missing messages") {
+    LlmDiffMessage message;
+    message.role = "user";
+    message.content = "content";
+
+    CHECK_FALSE(llm_messages_can_line_diff(static_cast<const LlmDiffMessage*>(0), &message));
+    CHECK_FALSE(llm_messages_can_line_diff(&message, static_cast<const LlmDiffMessage*>(0)));
 }
 
 TEST_CASE("config web exposes audio archive switch") {
