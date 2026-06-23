@@ -62,19 +62,7 @@ func TestHumanHandoffTool_Call_Success(t *testing.T) {
 }
 
 func TestHumanHandoffTool_Call_AllReasons(t *testing.T) {
-	validReasons := []string{
-		"authentication",
-		"captcha",
-		"verification_code",
-		"sensitive_operation",
-		"black_screen",
-		"ambiguous_situation",
-		"unsupported_action",
-		"stuck",
-		"other",
-	}
-
-	for _, reason := range validReasons {
+	for _, reason := range validHandoffReasonValues {
 		t.Run(reason, func(t *testing.T) {
 			tool := NewHumanHandoffTool()
 

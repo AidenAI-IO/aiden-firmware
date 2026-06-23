@@ -3286,8 +3286,8 @@ func TestRuntimeRunScreenshotAddsBinaryImageObservation(t *testing.T) {
 	if result.Output != "The screenshot shows a UI." {
 		t.Fatalf("unexpected output: %q", result.Output)
 	}
-	if len(model.messages) != 2 {
-		t.Fatalf("expected 2 default-mode planner calls, got %d", len(model.messages))
+	if len(model.messages) < 3 {
+		t.Fatalf("expected screenshot follow-up plus default final review, got %d model calls", len(model.messages))
 	}
 
 	secondCall := model.messages[1]
@@ -3358,8 +3358,8 @@ func TestRuntimeRunScreenshotImageSurvivesCallbackToolWrapping(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 
-	if len(model.messages) != 2 {
-		t.Fatalf("expected 2 default-mode planner calls, got %d", len(model.messages))
+	if len(model.messages) < 3 {
+		t.Fatalf("expected screenshot follow-up plus default final review, got %d model calls", len(model.messages))
 	}
 
 	var foundToolResponse, foundImageURL bool

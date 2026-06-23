@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -10,6 +11,15 @@ import (
 	"github.com/tmc/langchaingo/schema"
 	langtools "github.com/tmc/langchaingo/tools"
 )
+
+func toolCallsContain(calls []ToolCall, name string) bool {
+	for _, call := range calls {
+		if toolNameEqual(call.Action.Tool, name) {
+			return true
+		}
+	}
+	return false
+}
 
 func TestDefaultModeFinishesWithoutVerifier(t *testing.T) {
 	model := &scriptedModel{responses: roleDirectResponses("done")}
@@ -227,6 +237,125 @@ func TestDecisionPhaseUseSimpleModeSwitchesToDefaultWithoutToolStep(t *testing.T
 	}
 }
 
+func TestDefaultModeExposesHumanHandoffTool(t *testing.T) {
+	model := &scriptedModel{responses: []*llms.ContentResponse{
+		toolCallResponse("handoff_1", toolHumanHandoffStep, `{"reason":"authentication","details":"manual login confirmation is required"}`),
+	}}
+	executor := newRoleCollaborativeExecutor(
+		model,
+		RoleProfiles{Planner: RoleProfile{Name: RolePlanner, SystemPrompt: "planner"}},
+		[]langtools.Tool{NewHumanHandoffTool()},
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{Phase: phaseDefault}
+	inputs := map[string]string{"input": "登录当前页面", "history": ""}
+
+	turn, err := executor.callPlannerTurn(context.Background(), inputs, state, toolSpecsForRole(RolePlanner, executor.Tools))
+	if err != nil {
+		t.Fatalf("planner turn error: %v", err)
+	}
+	if turn.Kind != plannerTurnSleep || turn.Step == nil {
+		t.Fatalf("turn = %#v, want handoff tool execution that pauses the run", turn)
+	}
+	if turn.Step.Action.Tool != toolHumanHandoffStep {
+		t.Fatalf("tool = %q, want %q", turn.Step.Action.Tool, toolHumanHandoffStep)
+	}
+	if !strings.Contains(turn.Step.Observation, "HUMAN_HANDOFF_REQUESTED") {
+		t.Fatalf("observation = %q", turn.Step.Observation)
+	}
+}
+
+func TestHumanHandoffToolPausesRun(t *testing.T) {
+	handoffContent := "请在手机上选择登录方式，完成后告诉我继续。"
+	model := &scriptedModel{responses: []*llms.ContentResponse{
+		toolCallResponseWithContent("handoff_1", toolHumanHandoffStep, `{"reason":"login_method_selection","details":"manual login method selection is required"}`, handoffContent),
+		contentResponse("should not be used"),
+	}}
+	executor := newRoleCollaborativeExecutor(
+		model,
+		RoleProfiles{Planner: RoleProfile{Name: RolePlanner, SystemPrompt: "planner"}},
+		[]langtools.Tool{NewHumanHandoffTool()},
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+
+	result, err := executor.Call(context.Background(), map[string]any{
+		"input":   "登录当前页面",
+		"history": "",
+	})
+	if err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	if output := strings.TrimSpace(fmt.Sprint(result["output"])); output != handoffContent {
+		t.Fatalf("output = %q, want %q", output, handoffContent)
+	}
+	if model.callCount != 1 {
+		t.Fatalf("model call count = %d, want 1", model.callCount)
+	}
+}
+
+func TestDefaultFinalReviewConvertsHumanQuestionToHandoff(t *testing.T) {
+	review := `{
+		"can_finish": false,
+		"needs_human_handoff": true,
+		"handoff_reason": "login_method_selection",
+		"handoff_details": "The current screen requires the user to choose a login method before the login can continue.",
+		"suggested_action": "Please choose the login method on the phone, then tell me to continue.",
+		"reason": "manual login method selection is required"
+	}`
+	model := &scriptedModel{responses: []*llms.ContentResponse{
+		toolCallResponse("screen_1", "screenshot", `{"__arg1":"{}"}`),
+		contentResponse("请问你想用哪种方式登录？"),
+		contentResponse(review),
+	}}
+	handler := &toolExecutionCallbackRecorder{}
+	executor := newRoleCollaborativeExecutor(
+		model,
+		RoleProfiles{
+			Planner: RoleProfile{Name: RolePlanner, SystemPrompt: "planner"},
+		},
+		[]langtools.Tool{
+			&staticTool{name: "screenshot", output: `{"format":"jpeg","width":497,"height":1080,"size":10}`},
+			NewHumanHandoffTool(),
+		},
+		nil,
+		10,
+		nil,
+		handler,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+
+	result, err := executor.Call(context.Background(), map[string]any{
+		"input":   "启动小红书 登录我的账号",
+		"history": "",
+	})
+	if err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	if output := strings.TrimSpace(fmt.Sprint(result["output"])); output != "Please choose the login method on the phone, then tell me to continue." {
+		t.Fatalf("output = %q", output)
+	}
+	if !toolCallsContain(handler.calls, toolHumanHandoffStep) {
+		t.Fatalf("tool calls = %#v, want synthesized %s", handler.calls, toolHumanHandoffStep)
+	}
+	if model.callCount != 3 {
+		t.Fatalf("model call count = %d, want 3", model.callCount)
+	}
+}
+
 func TestRoutePolicyOverridesSimpleForMultiStageRequests(t *testing.T) {
 	model := &scriptedModel{responses: []*llms.ContentResponse{
 		contentResponse(`{"mode":"simple","reason":"model underestimated task"}`),
@@ -373,6 +502,46 @@ func TestPlanModeAllowsReadOnlyToolBeforeCommit(t *testing.T) {
 	}
 	if len(state.PlannerEvidence) != 1 {
 		t.Fatalf("planner evidence = %#v, want one readonly result", state.PlannerEvidence)
+	}
+}
+
+func TestPlanModeAllowsHumanHandoffBeforeCommit(t *testing.T) {
+	payload := `{"reason":"authentication","details":"Login screen requires the user's password","suggested_action":"Please enter the password on the phone and tell me when finished."}`
+	model := &scriptedModel{responses: []*llms.ContentResponse{
+		toolCallResponse("handoff_1", toolHumanHandoffStep, payload),
+	}}
+	tool := NewHumanHandoffTool()
+	executor := newRoleCollaborativeExecutor(
+		model,
+		RoleProfiles{},
+		[]langtools.Tool{tool},
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{Phase: phasePlan, PlanCommitRequired: true}
+	toolSpecs := NewToolSpecs([]langtools.Tool{tool})
+	inputs := map[string]string{"input": "登录当前页面", "history": ""}
+
+	turn, err := executor.callPlannerTurn(context.Background(), inputs, state, toolSpecs)
+	if err != nil {
+		t.Fatalf("planner turn error: %v", err)
+	}
+	if turn.Kind != plannerTurnSleep || turn.Step == nil {
+		t.Fatalf("turn = %#v, want handoff planner tool that pauses the run", turn)
+	}
+	if turn.Step.Action.Tool != toolHumanHandoffStep {
+		t.Fatalf("tool = %q, want %q", turn.Step.Action.Tool, toolHumanHandoffStep)
+	}
+	if !strings.Contains(turn.Step.Observation, "HUMAN_HANDOFF_REQUESTED") {
+		t.Fatalf("observation = %q", turn.Step.Observation)
+	}
+	if state.Phase != phasePlan || !state.PlanCommitRequired {
+		t.Fatalf("state = %#v, want plan phase with commit still required", state)
 	}
 }
 

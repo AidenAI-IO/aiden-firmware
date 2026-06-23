@@ -39,16 +39,54 @@ type HumanHandoffRequest struct {
 type HandoffReason string
 
 const (
-	HandoffReasonAuthentication HandoffReason = "authentication"
-	HandoffReasonCAPTCHA        HandoffReason = "captcha"
-	HandoffReasonVerification   HandoffReason = "verification_code"
-	HandoffReasonSensitive      HandoffReason = "sensitive_operation"
-	HandoffReasonBlackScreen    HandoffReason = "black_screen"
-	HandoffReasonAmbiguous      HandoffReason = "ambiguous_situation"
-	HandoffReasonUnsupported    HandoffReason = "unsupported_action"
-	HandoffReasonStuck          HandoffReason = "stuck"
-	HandoffReasonOther          HandoffReason = "other"
+	HandoffReasonAuthentication         HandoffReason = "authentication"
+	HandoffReasonLoginMethodSelection   HandoffReason = "login_method_selection"
+	HandoffReasonCAPTCHA                HandoffReason = "captcha"
+	HandoffReasonVerification           HandoffReason = "verification_code"
+	HandoffReasonSensitive              HandoffReason = "sensitive_operation"
+	HandoffReasonRedirectConfirmation   HandoffReason = "redirect_confirmation"
+	HandoffReasonPermissionConfirmation HandoffReason = "permission_confirmation"
+	HandoffReasonBlackScreen            HandoffReason = "black_screen"
+	HandoffReasonAmbiguous              HandoffReason = "ambiguous_situation"
+	HandoffReasonUnsupported            HandoffReason = "unsupported_action"
+	HandoffReasonStuck                  HandoffReason = "stuck"
+	HandoffReasonOther                  HandoffReason = "other"
 )
+
+var validHandoffReasonValues = []string{
+	string(HandoffReasonAuthentication),
+	string(HandoffReasonLoginMethodSelection),
+	string(HandoffReasonCAPTCHA),
+	string(HandoffReasonVerification),
+	string(HandoffReasonSensitive),
+	string(HandoffReasonRedirectConfirmation),
+	string(HandoffReasonPermissionConfirmation),
+	string(HandoffReasonBlackScreen),
+	string(HandoffReasonAmbiguous),
+	string(HandoffReasonUnsupported),
+	string(HandoffReasonStuck),
+	string(HandoffReasonOther),
+}
+
+func normalizeHandoffReason(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	for _, valid := range validHandoffReasonValues {
+		if value == valid {
+			return value
+		}
+	}
+	return string(HandoffReasonOther)
+}
+
+func isValidHandoffReason(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	for _, valid := range validHandoffReasonValues {
+		if value == valid {
+			return true
+		}
+	}
+	return false
+}
 
 // NewHumanHandoffTool creates a new HumanHandoffTool
 func NewHumanHandoffTool() *HumanHandoffTool {
@@ -62,13 +100,16 @@ func (t *HumanHandoffTool) Name() string {
 func (t *HumanHandoffTool) Description() string {
 	return `Request human intervention when you encounter a situation that requires human judgment, credentials, or actions beyond your capabilities. ` +
 		`Input JSON: {"reason": "authentication", "details": "Login screen requires password", "suggested_action": "Please enter your credentials"}. ` +
-		`Valid reasons: "authentication" (login/credentials required), "captcha" (CAPTCHA challenge), "verification_code" (SMS/email code needed), ` +
-		`"sensitive_operation" (payment/banking/security), "black_screen" (screen not visible), "ambiguous_situation" (unclear what to do), ` +
+		`Valid reasons: "authentication" (login/credentials required), "login_method_selection" (the user must choose a login method), ` +
+		`"captcha" (CAPTCHA challenge), "verification_code" (SMS/email code needed), "sensitive_operation" (payment/banking/security), ` +
+		`"redirect_confirmation" (system/app redirect confirmation dialog), "permission_confirmation" (permission dialog confirmation), ` +
+		`"black_screen" (screen not visible), "ambiguous_situation" (unclear what to do), ` +
 		`"unsupported_action" (action not possible with available tools), "stuck" (unable to make progress), "other" (specify in details). ` +
 		`The "details" field should clearly explain the situation. The "suggested_action" field optionally tells the human what to do. ` +
 		`This tool returns immediately with instructions for you to communicate to the user. Wait for the user to complete the task and tell you to continue in their next message. ` +
 		`Use this when: you need credentials you don't have, encounter CAPTCHA, need verification codes, face sensitive operations requiring human approval, ` +
-		`see a black/blank screen preventing progress, are genuinely stuck after multiple attempts, or the task fundamentally requires human judgment. ` +
+		`need the user to choose a login method, need a system/app redirect or permission dialog confirmed, see a black/blank screen preventing progress, ` +
+		`are genuinely stuck after multiple attempts, or the task fundamentally requires human judgment. ` +
 		`After the user confirms completion in their next message, take a screenshot to verify the result before continuing.`
 }
 
@@ -77,9 +118,12 @@ func (t *HumanHandoffTool) ArgsSchema() map[string]any {
 		"reason": stringEnumArgSchema(
 			"Why human handoff is needed.",
 			string(HandoffReasonAuthentication),
+			string(HandoffReasonLoginMethodSelection),
 			string(HandoffReasonCAPTCHA),
 			string(HandoffReasonVerification),
 			string(HandoffReasonSensitive),
+			string(HandoffReasonRedirectConfirmation),
+			string(HandoffReasonPermissionConfirmation),
 			string(HandoffReasonBlackScreen),
 			string(HandoffReasonAmbiguous),
 			string(HandoffReasonUnsupported),
@@ -113,19 +157,8 @@ func (t *HumanHandoffTool) Call(ctx context.Context, input string) (string, erro
 
 	// Normalize reason
 	reason := strings.ToLower(strings.TrimSpace(args.Reason))
-	validReasons := map[string]bool{
-		"authentication":      true,
-		"captcha":             true,
-		"verification_code":   true,
-		"sensitive_operation": true,
-		"black_screen":        true,
-		"ambiguous_situation": true,
-		"unsupported_action":  true,
-		"stuck":               true,
-		"other":               true,
-	}
-	if !validReasons[reason] {
-		return "", fmt.Errorf("invalid reason: %q, must be one of: authentication, captcha, verification_code, sensitive_operation, black_screen, ambiguous_situation, unsupported_action, stuck, other", args.Reason)
+	if !isValidHandoffReason(reason) {
+		return "", fmt.Errorf("invalid reason: %q, must be one of: %s", args.Reason, strings.Join(validHandoffReasonValues, ", "))
 	}
 
 	details := strings.TrimSpace(args.Details)
@@ -146,10 +179,16 @@ func (t *HumanHandoffTool) Call(ctx context.Context, input string) (string, erro
 		switch reason {
 		case "authentication":
 			response.WriteString("Tell the user to enter their credentials. ")
+		case "login_method_selection":
+			response.WriteString("Tell the user to choose the login method on the device. ")
 		case "captcha", "verification_code":
 			response.WriteString("Tell the user to complete the verification. ")
 		case "sensitive_operation":
 			response.WriteString("Tell the user to review and confirm the sensitive operation. ")
+		case "redirect_confirmation":
+			response.WriteString("Tell the user to confirm the system or app redirect on the device. ")
+		case "permission_confirmation":
+			response.WriteString("Tell the user to review and confirm the permission dialog on the device. ")
 		case "black_screen":
 			response.WriteString("Tell the user to manually complete the action on the screen. ")
 		default:

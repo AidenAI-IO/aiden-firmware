@@ -114,6 +114,18 @@ func isWaitForWakeupTool(name string) bool {
 	return toolNameEqual(name, toolWaitForWakeup)
 }
 
+func isHumanHandoffTool(name string) bool {
+	return toolNameEqual(name, toolHumanHandoffStep)
+}
+
+func isRunPausingTool(name string) bool {
+	return isWaitForWakeupTool(name) || isHumanHandoffTool(name)
+}
+
+func runPausingToolFinalAnswer(step *schema.AgentStep) string {
+	return waitForWakeupFinalAnswer(step)
+}
+
 func waitForWakeupFinalAnswer(step *schema.AgentStep) string {
 	if step != nil {
 		if content := toolContentFromAction(step.Action); content != "" {
