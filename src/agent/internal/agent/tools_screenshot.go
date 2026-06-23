@@ -90,6 +90,9 @@ func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if meta.Stale {
+		return "", fmt.Errorf("frame service: STALE_FRAME")
+	}
 
 	if meta.PixelFormat != "jpeg" {
 		return "", fmt.Errorf("expected jpeg format, got %s", meta.PixelFormat)
