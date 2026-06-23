@@ -741,7 +741,6 @@ func TestRoleCollaborativeExecutorReplansAfterRepeatedVerifierFailures(t *testin
 	for _, want := range []string{
 		"Planner runtime context (synthetic; not a new user request):",
 		"Current plan:",
-		"Executor results:",
 		"Prior step results",
 		"Verifier feedback:",
 		"not enough progress",
@@ -751,6 +750,9 @@ func TestRoleCollaborativeExecutorReplansAfterRepeatedVerifierFailures(t *testin
 		if !strings.Contains(secondPlannerPrompt, want) {
 			t.Fatalf("second planner prompt missing %q:\n%s", want, secondPlannerPrompt)
 		}
+	}
+	if strings.Contains(secondPlannerPrompt, "Executor results:") {
+		t.Fatalf("planner runtime context should not duplicate execution history as executor results:\n%s", secondPlannerPrompt)
 	}
 
 	secondExecutorMessages := model.messages[7]

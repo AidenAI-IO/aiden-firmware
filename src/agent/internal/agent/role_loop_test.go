@@ -1079,15 +1079,20 @@ func TestPlannerCurrentUserMessageIsRawInputOnly(t *testing.T) {
 
 func TestPlannerCurrentUserMessagePrecedesToolScratchpad(t *testing.T) {
 	executor := &roleCollaborativeExecutor{}
+	toolStep := schema.AgentStep{
+		Action: schema.AgentAction{
+			Tool:      "recall_memory",
+			ToolInput: `{"tags":["weather","location"]}`,
+			Log:       "我查下默认地点。",
+		},
+		Observation: `{"results":[]}`,
+	}
 	state := roleLoopState{
-		Phase: phaseDefault,
-		ToolSteps: []schema.AgentStep{{
-			Action: schema.AgentAction{
-				Tool:      "recall_memory",
-				ToolInput: `{"tags":["weather","location"]}`,
-				Log:       "我查下默认地点。",
-			},
-			Observation: `{"results":[]}`,
+		Phase:     phaseDefault,
+		ToolSteps: []schema.AgentStep{toolStep},
+		ExecutionResults: []roleExecutionResult{{
+			Action: &toolStep.Action,
+			Step:   &toolStep,
 		}},
 	}
 	inputs := map[string]string{
@@ -1112,6 +1117,9 @@ func TestPlannerCurrentUserMessagePrecedesToolScratchpad(t *testing.T) {
 	}
 	if messages[4].Role != llms.ChatMessageTypeHuman || !strings.Contains(messageText(messages[4:5]), "Planner runtime context") {
 		t.Fatalf("message[4] should be planner runtime state, got role=%s text=%q", messages[4].Role, messageText(messages[4:5]))
+	}
+	if strings.Contains(messageText(messages[4:5]), "Executor results:") {
+		t.Fatalf("planner runtime state should not summarize planner tool scratchpad as executor results:\n%s", messageText(messages[4:5]))
 	}
 }
 
