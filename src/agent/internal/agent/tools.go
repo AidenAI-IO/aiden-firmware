@@ -174,6 +174,17 @@ func (s *ToolSet) CurrentEnvironmentHints(maxAge time.Duration) CurrentEnvironme
 	}
 }
 
+func (s *ToolSet) UpdateDeviceEnvironment(env *PhoneEnvironment) {
+	if s == nil || s.screen == nil {
+		return
+	}
+	if env == nil {
+		s.screen.ClearPhoneScreenInfo()
+		return
+	}
+	s.screen.UpdatePhoneScreenInfo(env.Screen)
+}
+
 func (s *ToolSet) RegisterMemoryTools(memoryDir string, profileFn ProfileFn, summaryMaxChunks int, debouncer *ProfileDebouncer) {
 	if memoryDir == "" {
 		return

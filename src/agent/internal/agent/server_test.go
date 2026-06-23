@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
 	"image/jpeg"
 	"net"
 	"net/http"
@@ -709,6 +711,94 @@ func TestHandleScreenshotJPEGCanDisableBlackBarCropping(t *testing.T) {
 	}
 	if bounds := img.Bounds(); bounds.Dx() != 2 || bounds.Dy() != 1 {
 		t.Fatalf("decoded bounds = %v, want 2x1", bounds)
+	}
+}
+
+func TestHandleScreenshotJPEGUpdatesSharedScreenStateFromPhoneAspectRatio(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 16, 9))
+	for y := 0; y < 9; y++ {
+		for x := 5; x < 10; x++ {
+			img.Set(x, y, color.RGBA{R: 240, G: 240, B: 240, A: 255})
+		}
+	}
+	var jpegBuf bytes.Buffer
+	if err := jpeg.Encode(&jpegBuf, img, &jpeg.Options{Quality: 100}); err != nil {
+		t.Fatalf("encode jpeg fixture: %v", err)
+	}
+	jpegData := jpegBuf.Bytes()
+
+	frameSocket := startFakeFrameServiceSocket(t, func(req map[string]any) (string, []byte) {
+		if format, _ := req["format"].(string); format != "raw" {
+			t.Fatalf("expected raw format request, got %#v", req["format"])
+		}
+		header := fmt.Sprintf(`{"type":"response","method":"latest_frame","status":"OK","frame":{"seq":1,"width":16,"height":9,"pixel_format":"jpeg","stride":0,"bytes":%d,"stale":false}}`, len(jpegData))
+		return header, jpegData
+	})
+
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model: ModelConfig{Provider: "fake"},
+			HID:   HIDConfig{FrameSocket: frameSocket},
+		},
+		&testModelResolver{},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{FrameSocket: frameSocket}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0", "")
+
+	envData, err := json.Marshal(PhoneEnvironment{
+		Platform: "android",
+		Screen: PhoneScreenInfo{
+			WidthPixels:        intPtr(1080),
+			HeightPixels:       intPtr(1920),
+			NativeWidthPixels:  intPtr(1080),
+			NativeHeightPixels: intPtr(2400),
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal environment: %v", err)
+	}
+	if !server.bridge.handleAppEvent(BridgeCommandResponse{
+		ID:     "phone_environment",
+		Method: "phone_environment",
+		OK:     true,
+		Data:   envData,
+	}) {
+		t.Fatal("expected phone_environment event to be handled")
+	}
+	server.bridge.mu.Lock()
+	server.bridge.connected = true
+	server.bridge.mu.Unlock()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/screenshot.jpg", nil)
+	rec := httptest.NewRecorder()
+
+	server.handleScreenshotJPEG(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Original-Screen-Width"); got != "1080" {
+		t.Fatalf("X-Original-Screen-Width = %q, want 1080", got)
+	}
+	if got := rec.Header().Get("X-Original-Screen-Height"); got != "2400" {
+		t.Fatalf("X-Original-Screen-Height = %q, want 2400", got)
+	}
+	if got := rec.Header().Get("X-Original-Screen-Valid"); got != "true" {
+		t.Fatalf("X-Original-Screen-Valid = %q, want true", got)
+	}
+
+	width, height, active, _, ok := runtime.tools.screen.ActiveAreaWithAge()
+	if !ok {
+		t.Fatal("expected shared screen state to be updated")
+	}
+	if width != 16 || height != 9 {
+		t.Fatalf("screen dimensions = %dx%d, want 16x9", width, height)
+	}
+	want := screenActiveArea{X: 5, Y: 0, Width: 5, Height: 9, Valid: true}
+	if active != want {
+		t.Fatalf("active area = %+v, want %+v", active, want)
 	}
 }
 

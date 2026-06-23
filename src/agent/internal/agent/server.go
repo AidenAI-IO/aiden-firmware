@@ -1184,13 +1184,22 @@ func (s *Server) runtimeContext() string {
 
 func (s *Server) bridgeEnvironment() *PhoneEnvironment {
 	if s == nil || s.bridge == nil {
+		if s != nil && s.runtime != nil && s.runtime.tools != nil {
+			s.runtime.tools.UpdateDeviceEnvironment(nil)
+		}
 		return nil
 	}
 	status := s.bridge.Status()
 	if status.Environment == nil {
+		if s.runtime != nil && s.runtime.tools != nil {
+			s.runtime.tools.UpdateDeviceEnvironment(nil)
+		}
 		return nil
 	}
 	env := clonePhoneEnvironment(*status.Environment)
+	if s.runtime != nil && s.runtime.tools != nil {
+		s.runtime.tools.UpdateDeviceEnvironment(&env)
+	}
 	return &env
 }
 
