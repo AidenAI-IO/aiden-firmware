@@ -136,13 +136,19 @@ type HIDDevice struct {
 }
 
 type screenState struct {
-	mu        sync.RWMutex
-	width     int
-	height    int
-	active    screenActiveArea
-	updatedAt time.Time
+	mu          sync.RWMutex
+	width       int
+	height      int
+	active      screenActiveArea
+	phoneScreen PhoneScreenInfo
+	updatedAt   time.Time
 }
 
+// screenActiveArea represents the mirrored phone touch region inside the
+// captured HDMI frame. When the companion app reports the phone's original
+// screen dimensions, this is the largest centered region in the frame with the
+// same aspect ratio. Falling back to "visible non-black content" is only an
+// approximation for when accurate phone screen info is unavailable.
 type screenActiveArea struct {
 	X      int  `json:"x"`
 	Y      int  `json:"y"`
@@ -160,6 +166,33 @@ type pointerState struct {
 
 func (s *screenState) Update(width, height int) {
 	s.UpdateActiveArea(width, height, screenActiveArea{})
+}
+
+func (s *screenState) UpdatePhoneScreenInfo(info PhoneScreenInfo) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.phoneScreen = info
+}
+
+func (s *screenState) ClearPhoneScreenInfo() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.phoneScreen = PhoneScreenInfo{}
+}
+
+func (s *screenState) PhoneScreenInfo() PhoneScreenInfo {
+	if s == nil {
+		return PhoneScreenInfo{}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.phoneScreen
 }
 
 func (s *screenState) UpdateActiveArea(width, height int, active screenActiveArea) {
@@ -626,7 +659,7 @@ func (t *MouseClickTool) Call(_ context.Context, input string) (string, error) {
 		return fmt.Sprintf("error: invalid input: %v. Expected JSON format: {\"x\": 500, \"y\": 300, \"button\": \"left\", \"coord_space\": \"normalized\"}. Common mistakes: x and y must be numbers, missing quotes around field names", err), nil
 	}
 
-	absX, absY, err := resolvePointerPosition(t.screen, args.X.Float64(), args.Y.Float64(), args.CoordSpace, coordinateSpaceAuto)
+	absX, absY, err := resolvePointerPositionForSurface(t.screen, t.pc.touchscreen, args.X.Float64(), args.Y.Float64(), args.CoordSpace, coordinateSpaceAuto)
 	if err != nil {
 		return fmt.Sprintf("error: %v", err), nil
 	}
@@ -678,7 +711,7 @@ func (t *MouseMoveTool) Call(_ context.Context, input string) (string, error) {
 		return fmt.Sprintf("error: invalid input: %v. Expected JSON format: {\"x\": 500, \"y\": 300, \"coord_space\": \"normalized\"}. Common mistakes: x and y must be numbers, missing quotes around field names", err), nil
 	}
 
-	absX, absY, err := resolvePointerPosition(t.screen, args.X.Float64(), args.Y.Float64(), args.CoordSpace, coordinateSpaceAuto)
+	absX, absY, err := resolvePointerPositionForSurface(t.screen, t.pc.touchscreen, args.X.Float64(), args.Y.Float64(), args.CoordSpace, coordinateSpaceAuto)
 	if err != nil {
 		return fmt.Sprintf("error: %v", err), nil
 	}
@@ -827,7 +860,7 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 
 	switch gestureType {
 	case "tap":
-		point, err := resolveRequiredPoint(t.screen, args.Point, coordSpace)
+		point, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.Point, coordSpace)
 		if err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
@@ -835,7 +868,7 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 			return fmt.Sprintf("error: %v", err), nil
 		}
 	case "double_tap":
-		point, err := resolveRequiredPoint(t.screen, args.Point, coordSpace)
+		point, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.Point, coordSpace)
 		if err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
@@ -848,7 +881,7 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 			return fmt.Sprintf("error: %v", err), nil
 		}
 	case "long_press":
-		point, err := resolveRequiredPoint(t.screen, args.Point, coordSpace)
+		point, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.Point, coordSpace)
 		if err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
@@ -874,7 +907,7 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 		if err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
-		start, end, err := directionalSwipeEndpoints(gestureType, args.Distance, args.Anchor, preset)
+		start, end, err := directionalSwipeEndpoints(t.screen, t.pc.touchscreen, gestureType, args.Distance, args.Anchor, preset)
 		if err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
@@ -891,11 +924,11 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 			return fmt.Sprintf("error: %v", err), nil
 		}
 	case "drag":
-		start, err := resolveRequiredPoint(t.screen, args.Start, coordSpace)
+		start, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.Start, coordSpace)
 		if err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
-		end, err := resolveRequiredPoint(t.screen, args.End, coordSpace)
+		end, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.End, coordSpace)
 		if err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
@@ -912,11 +945,11 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 			return fmt.Sprintf("error: %v", err), nil
 		}
 	case "swipe":
-		start, err := resolveRequiredPoint(t.screen, args.Start, coordSpace)
+		start, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.Start, coordSpace)
 		if err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
-		end, err := resolveRequiredPoint(t.screen, args.End, coordSpace)
+		end, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.End, coordSpace)
 		if err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
@@ -933,11 +966,11 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 			return fmt.Sprintf("error: %v", err), nil
 		}
 	case "back", "edge_back", "left_edge_back":
-		start, err := resolvePointOrDefaultNormalized(t.screen, args.Start, coordSpace, phoneBackStartX, phoneBackY)
+		start, err := resolvePointOrDefaultNormalized(t.screen, t.pc.touchscreen, args.Start, coordSpace, phoneBackStartX, phoneBackY)
 		if err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
-		end, err := resolvePointOrDefaultNormalized(t.screen, args.End, coordSpace, phoneBackEndX, phoneBackY)
+		end, err := resolvePointOrDefaultNormalized(t.screen, t.pc.touchscreen, args.End, coordSpace, phoneBackEndX, phoneBackY)
 		if err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
@@ -954,11 +987,11 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 			return fmt.Sprintf("error: %v", err), nil
 		}
 	case "home", "home_swipe", "bottom_edge_home":
-		start, err := resolvePointOrDefaultNormalized(t.screen, args.Start, coordSpace, phoneHomeX, phoneHomeStartY)
+		start, err := resolvePointOrDefaultNormalized(t.screen, t.pc.touchscreen, args.Start, coordSpace, phoneHomeX, phoneHomeStartY)
 		if err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
-		end, err := resolvePointOrDefaultNormalized(t.screen, args.End, coordSpace, phoneHomeX, phoneHomeEndY)
+		end, err := resolvePointOrDefaultNormalized(t.screen, t.pc.touchscreen, args.End, coordSpace, phoneHomeX, phoneHomeEndY)
 		if err != nil {
 			return fmt.Sprintf("error: %v", err), nil
 		}
@@ -1152,32 +1185,39 @@ const (
 	coordinateSpaceAbsolute   = "absolute"
 )
 
-func resolveRequiredPoint(screen *screenState, point *pointerPoint, coordSpace string) (resolvedPointerPoint, error) {
+func resolveRequiredPoint(screen *screenState, touchscreen bool, point *pointerPoint, coordSpace string) (resolvedPointerPoint, error) {
 	if point == nil {
 		return resolvedPointerPoint{}, fmt.Errorf("point is required")
 	}
 
-	x, y, err := resolvePointerPosition(screen, point.X.Float64(), point.Y.Float64(), coordSpace, coordinateSpaceNormalized)
+	x, y, err := resolvePointerPositionForSurface(screen, touchscreen, point.X.Float64(), point.Y.Float64(), coordSpace, coordinateSpaceNormalized)
 	if err != nil {
 		return resolvedPointerPoint{}, err
 	}
 	return resolvedPointerPoint{x: x, y: y}, nil
 }
 
-func resolvePointOrDefaultNormalized(screen *screenState, point *pointerPoint, coordSpace string, defaultX, defaultY float64) (resolvedPointerPoint, error) {
+func resolvePointOrDefaultNormalized(screen *screenState, touchscreen bool, point *pointerPoint, coordSpace string, defaultX, defaultY float64) (resolvedPointerPoint, error) {
 	if point != nil {
-		return resolveRequiredPoint(screen, point, coordSpace)
+		return resolveRequiredPoint(screen, touchscreen, point, coordSpace)
 	}
 
 	if _, err := normalizeCoordinateSpace(coordSpace, coordinateSpaceNormalized); err != nil {
 		return resolvedPointerPoint{}, err
 	}
 
-	x, y := normalizedToAbsolutePoint(defaultX, defaultY)
+	x, y, err := resolvePointerPositionForSurface(screen, touchscreen, defaultX, defaultY, coordinateSpaceNormalized, coordinateSpaceNormalized)
+	if err != nil {
+		return resolvedPointerPoint{}, err
+	}
 	return resolvedPointerPoint{x: x, y: y}, nil
 }
 
 func resolvePointerPosition(screen *screenState, x, y float64, coordSpace string, defaultSpace string) (int, int, error) {
+	return resolvePointerPositionForSurface(screen, false, x, y, coordSpace, defaultSpace)
+}
+
+func resolvePointerPositionForSurface(screen *screenState, touchscreen bool, x, y float64, coordSpace string, defaultSpace string) (int, int, error) {
 	space, err := normalizeCoordinateSpace(coordSpace, defaultSpace)
 	if err != nil {
 		return 0, 0, err
@@ -1186,7 +1226,10 @@ func resolvePointerPosition(screen *screenState, x, y float64, coordSpace string
 	switch space {
 	case coordinateSpaceAuto:
 		if looksLikeNormalizedPoint(x, y) {
-			absX, absY := normalizedToAbsolutePoint(x, y)
+			absX, absY, err := normalizedToAbsolutePointForSurface(screen, touchscreen, x, y)
+			if err != nil {
+				return 0, 0, err
+			}
 			return absX, absY, nil
 		}
 		if screen != nil {
@@ -1208,30 +1251,44 @@ func resolvePointerPosition(screen *screenState, x, y float64, coordSpace string
 		}
 		return pixelToAbsolutePoint(x, y, width, height, active)
 	case coordinateSpaceNormalized:
-		// Normalized coordinates are relative to active_area (0-1000 maps to visible content).
-		// Convert to pixel coordinates within active_area, then to absolute HID coordinates.
-		if screen != nil {
-			if width, height, active, age, ok := screen.ActiveAreaWithAge(); ok && age < screenDimensionsStaleAfter && active.Valid {
-				// Step 1: Map normalized (0-1000) to pixel within active_area (0 to active.Width-1)
-				activePixelX := (x / 1000.0) * float64(active.Width-1)
-				activePixelY := (y / 1000.0) * float64(active.Height-1)
-				// Step 2: Add active_area offset to get full-frame pixel coordinates
-				fullFramePixelX := activePixelX + float64(active.X)
-				fullFramePixelY := activePixelY + float64(active.Y)
-				// Step 3: Scale full-frame pixel (0 to width-1) to HID absolute (0 to 32767)
-				absX := int(math.Round((fullFramePixelX / float64(width-1)) * float64(absMouseMaxPos)))
-				absY := int(math.Round((fullFramePixelY / float64(height-1)) * float64(absMouseMaxPos)))
-				return absX, absY, nil
-			}
+		absX, absY, err := normalizedToAbsolutePointForSurface(screen, touchscreen, x, y)
+		if err != nil {
+			return 0, 0, err
 		}
-		// Fallback: no active_area available, treat as full-frame normalized
-		absX, absY := normalizedToAbsolutePoint(x, y)
 		return absX, absY, nil
 	case coordinateSpaceAbsolute:
 		return int(clampFloat(math.Round(x), 0, absMouseMaxPos)), int(clampFloat(math.Round(y), 0, absMouseMaxPos)), nil
 	}
 
 	return 0, 0, fmt.Errorf("unsupported coord_space: %q", coordSpace)
+}
+
+func normalizedToAbsolutePointForSurface(screen *screenState, touchscreen bool, x, y float64) (int, int, error) {
+	// Normalized coordinates are always interpreted within active_area:
+	// 0-1000 maps to the mirrored phone touch region inside the HDMI frame.
+	//
+	// pointer_mode absolute:
+	// Scale within active_area's own coordinate system because the absolute
+	// HID cursor surface tracks the de-blackbarred phone region.
+	//
+	// pointer_mode touchscreen:
+	// First project the normalized point into the active_area inside the HDMI
+	// frame, then scale against the full frame because the touchscreen HID
+	// surface covers the complete mirrored frame.
+	if screen != nil {
+		if width, height, active, age, ok := screen.ActiveAreaWithAge(); ok && age < screenDimensionsStaleAfter && active.Valid {
+			activePixelX := (clampFloat(x, 0, 1000) / 1000.0) * float64(active.Width-1)
+			activePixelY := (clampFloat(y, 0, 1000) / 1000.0) * float64(active.Height-1)
+			if touchscreen {
+				fullFramePixelX := float64(active.X) + activePixelX
+				fullFramePixelY := float64(active.Y) + activePixelY
+				return scalePixelToAbsolute(fullFramePixelX, width), scalePixelToAbsolute(fullFramePixelY, height), nil
+			}
+			return scalePixelToAbsolute(activePixelX, active.Width), scalePixelToAbsolute(activePixelY, active.Height), nil
+		}
+	}
+	absX, absY := normalizedToAbsolutePoint(x, y)
+	return absX, absY, nil
 }
 
 func looksLikeNormalizedPoint(x, y float64) bool {
@@ -1395,7 +1452,7 @@ func directionalSwipePreset(strength string) (directionalSwipeSettings, error) {
 	}
 }
 
-func directionalSwipeEndpoints(gestureType string, distance, anchor *float64, preset directionalSwipeSettings) (resolvedPointerPoint, resolvedPointerPoint, error) {
+func directionalSwipeEndpoints(screen *screenState, touchscreen bool, gestureType string, distance, anchor *float64, preset directionalSwipeSettings) (resolvedPointerPoint, resolvedPointerPoint, error) {
 	travel := preset.distance
 	if travel <= 0 {
 		travel = defaultDirectionalSwipeDistance
@@ -1427,8 +1484,14 @@ func directionalSwipeEndpoints(gestureType string, distance, anchor *float64, pr
 		return resolvedPointerPoint{}, resolvedPointerPoint{}, fmt.Errorf("unsupported directional swipe: %q", gestureType)
 	}
 
-	startAbsX, startAbsY := normalizedToAbsolutePoint(startX, startY)
-	endAbsX, endAbsY := normalizedToAbsolutePoint(endX, endY)
+	startAbsX, startAbsY, err := normalizedToAbsolutePointForSurface(screen, touchscreen, startX, startY)
+	if err != nil {
+		return resolvedPointerPoint{}, resolvedPointerPoint{}, err
+	}
+	endAbsX, endAbsY, err := normalizedToAbsolutePointForSurface(screen, touchscreen, endX, endY)
+	if err != nil {
+		return resolvedPointerPoint{}, resolvedPointerPoint{}, err
+	}
 	return resolvedPointerPoint{x: startAbsX, y: startAbsY}, resolvedPointerPoint{x: endAbsX, y: endAbsY}, nil
 }
 

@@ -211,29 +211,49 @@
       "platforms": {
         "ios": {
           "status": "active",
-          "tool": "keyboard_tap",
-          "input": { "keys": ["meta", "space"] },
-          "note": "external keyboard: Cmd+Space Spotlight Search (HID meta=0x08, space=0x2c)",
+          "steps": [
+            { "tool": "keyboard_tap", "input": { "keys": ["meta", "space"] }, "delay_ms_after": 600 },
+            { "tool": "keyboard_tap", "input": { "keys": ["meta", "a"] }, "delay_ms_after": 60 },
+            { "tool": "keyboard_tap", "input": { "keys": ["backspace"] }, "delay_ms_after": 60 },
+            { "tool": "keyboard_tap", "input": { "keys": ["meta", "a"] }, "delay_ms_after": 60 },
+            { "tool": "keyboard_tap", "input": { "keys": ["backspace"] } }
+          ],
+          "note": "external keyboard: Cmd+Space Spotlight Search, then Cmd+A Backspace twice to clear stale query",
           "alternatives": [
             {
               "status": "active",
-              "tool": "touch_gesture",
-              "input": { "type": "swipe_down", "strength": "medium", "anchor": 500 },
-              "note": "touch fallback: swipe down on home screen"
+              "steps": [
+                { "tool": "touch_gesture", "input": { "type": "swipe_down", "strength": "medium", "anchor": 500 }, "delay_ms_after": 600 },
+                { "tool": "keyboard_tap", "input": { "keys": ["meta", "a"] }, "delay_ms_after": 60 },
+                { "tool": "keyboard_tap", "input": { "keys": ["backspace"] }, "delay_ms_after": 60 },
+                { "tool": "keyboard_tap", "input": { "keys": ["meta", "a"] }, "delay_ms_after": 60 },
+                { "tool": "keyboard_tap", "input": { "keys": ["backspace"] } }
+              ],
+              "note": "touch fallback: swipe down on home screen, then clear stale query"
             }
           ]
         },
         "android": {
           "status": "active",
-          "tool": "keyboard_tap",
-          "input": { "keys": ["meta"] },
-          "note": "verified: Meta alone opens app / global search"
+          "steps": [
+            { "tool": "keyboard_tap", "input": { "keys": ["meta"] }, "delay_ms_after": 600 },
+            { "tool": "keyboard_tap", "input": { "keys": ["ctrl", "a"] }, "delay_ms_after": 60 },
+            { "tool": "keyboard_tap", "input": { "keys": ["backspace"] }, "delay_ms_after": 60 },
+            { "tool": "keyboard_tap", "input": { "keys": ["ctrl", "a"] }, "delay_ms_after": 60 },
+            { "tool": "keyboard_tap", "input": { "keys": ["backspace"] } }
+          ],
+          "note": "verified: Meta alone opens app / global search, then Ctrl+A Backspace twice to clear stale query"
         },
         "mac": {
           "status": "active",
-          "tool": "keyboard_tap",
-          "input": { "keys": ["meta", "space"] },
-          "note": "Spotlight (Cmd+Space)"
+          "steps": [
+            { "tool": "keyboard_tap", "input": { "keys": ["meta", "space"] }, "delay_ms_after": 600 },
+            { "tool": "keyboard_tap", "input": { "keys": ["meta", "a"] }, "delay_ms_after": 60 },
+            { "tool": "keyboard_tap", "input": { "keys": ["backspace"] }, "delay_ms_after": 60 },
+            { "tool": "keyboard_tap", "input": { "keys": ["meta", "a"] }, "delay_ms_after": 60 },
+            { "tool": "keyboard_tap", "input": { "keys": ["backspace"] } }
+          ],
+          "note": "Spotlight (Cmd+Space), then Cmd+A Backspace twice to clear stale query"
         }
       }
     },

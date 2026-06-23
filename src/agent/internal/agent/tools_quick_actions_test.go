@@ -179,6 +179,69 @@ func TestQuickActionExecutesDelegatedKeyboardTap(t *testing.T) {
 	}
 }
 
+func TestQuickActionSpotlightSearchClearsSearchField(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	tool := &QuickActionTool{
+		keyboard: &KeyboardTapTool{dev: dev},
+	}
+	out, err := tool.Call(context.Background(), `{"action":"spotlight_search","platform":"ios"}`)
+	if err != nil {
+		t.Fatalf("Call failed: %v", err)
+	}
+	if !quickActionResultOK(t, out) {
+		t.Fatalf("unexpected output: %s", out)
+	}
+
+	reports := readKeyboardReports(t, dev, path)
+	if got, want := len(reports), 10; got != want {
+		t.Fatalf("keyboard reports = %d, want %d (Cmd+Space, two Cmd+A/Backspace clear passes): %v", got, want, reports)
+	}
+	assertKeyboardReport(t, reports[0], hidModifierMap["meta"], hidKeyboardMap["space"], "Cmd+Space")
+	assertReleaseReport(t, reports[1], "release after Cmd+Space")
+	assertKeyboardReport(t, reports[2], hidModifierMap["meta"], hidKeyboardMap["a"], "first Cmd+A")
+	assertReleaseReport(t, reports[3], "release after first Cmd+A")
+	assertKeyboardReport(t, reports[4], 0, hidKeyboardMap["backspace"], "first Backspace")
+	assertReleaseReport(t, reports[5], "release after first Backspace")
+	assertKeyboardReport(t, reports[6], hidModifierMap["meta"], hidKeyboardMap["a"], "second Cmd+A")
+	assertReleaseReport(t, reports[7], "release after second Cmd+A")
+	assertKeyboardReport(t, reports[8], 0, hidKeyboardMap["backspace"], "second Backspace")
+	assertReleaseReport(t, reports[9], "release after second Backspace")
+}
+
+func readKeyboardReports(t *testing.T, dev *HIDDevice, path string) [][]byte {
+	t.Helper()
+
+	dev.Close()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if len(data)%8 != 0 {
+		t.Fatalf("keyboard report data length = %d, want multiple of 8", len(data))
+	}
+	reports := make([][]byte, 0, len(data)/8)
+	for i := 0; i < len(data); i += 8 {
+		reports = append(reports, data[i:i+8])
+	}
+	return reports
+}
+
+func assertKeyboardReport(t *testing.T, report []byte, modifier, key uint8, label string) {
+	t.Helper()
+	if report[0] != modifier || report[2] != key {
+		t.Fatalf("%s report = %v, want modifier 0x%02x key 0x%02x", label, report, modifier, key)
+	}
+}
+
+func assertReleaseReport(t *testing.T, report []byte, label string) {
+	t.Helper()
+	for _, b := range report {
+		if b != 0 {
+			t.Fatalf("%s = %v, want all zeros", label, report)
+		}
+	}
+}
+
 func TestQuickActionDeleteBackwardUsesBackspace(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := &QuickActionTool{

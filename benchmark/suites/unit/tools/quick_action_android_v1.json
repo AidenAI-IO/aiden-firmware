@@ -69,7 +69,7 @@
       },
       "expect": {
         "ok": true,
-        "contains": ["spotlight_search"],
+        "contains": ["spotlight_search", "sequence", "backspace", "delay_ms_after"],
         "json": {
           "width": { "type": "number" },
           "height": { "type": "number" },
