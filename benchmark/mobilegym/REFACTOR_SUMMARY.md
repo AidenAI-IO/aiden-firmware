@@ -176,16 +176,12 @@ benchmark/runner/main.py (统一测试编排)
 python benchmark/mobilegym/scripts/start_simulator.py \
   --bridge-port 8888 &
 
-# 2. 配置 daemon（假设 daemon 已启动）
-python benchmark/mobilegym/scripts/configure_daemon.py \
-  --daemon-url http://localhost:8080 \
-  --bridge-url http://localhost:8888 \
-  --bridge-token-file /tmp/mobilegym-tokens/bridge_device_token
-
-# 3. 运行测试
-python -m benchmark.runner run \
-  --suite benchmark/suites/mobilegym_basic.json \
-  --agent-url http://localhost:8080
+# 2. 运行测试。推荐让 runner 自动启动隔离 agent daemon。
+cd benchmark
+uv run python -m runner run \
+  --suite suites/mobilegym_basic.json \
+  --environment-url http://localhost:8888 \
+  --auto-agent-setup
 ```
 
 ### Docker 运行
@@ -202,15 +198,13 @@ vim ../config/agent.toml  # 填入 API key
 # 2. 启动服务
 docker compose up -d
 
-# 3. 运行测试
-docker compose run --rm runner \
-  python -m benchmark.runner run \
-  --suite /benchmark/suites/mobilegym_basic.json \
-  --agent-url http://aiden-daemon:8080
+# 3. 使用 WebUI 创建 MobileGym environment 并运行 job
+cd ../..
+uv run python -m runner webui
 
 # 4. 查看结果
-ls ../../runs/
-open ../../runs/<run-id>/report.html
+ls runs/
+open runs/webui/<job-id>/raw/<run-id>/report.html
 ```
 
 ## 🔍 后续建议

@@ -40,19 +40,12 @@ python benchmark/mobilegym/scripts/start_simulator.py \
 # 5. 健康检查
 curl http://localhost:8888/health
 
-# 6. 启动 Aiden daemon（假设已配置）
-# ./aiden-go --config benchmark/mobilegym/config/agent.toml --port 8080
-
-# 7. 配置 daemon 连接 bridge
-python benchmark/mobilegym/scripts/configure_daemon.py \
-  --daemon-url http://localhost:8080 \
-  --bridge-url $(cat /tmp/mobilegym-bridge-url) \
-  --bridge-token-file /tmp/mobilegym-tokens/bridge_device_token
-
-# 8. 运行测试
-python -m benchmark.runner run \
-  --suite benchmark/suites/mobilegym_basic.json \
-  --agent-url http://localhost:8080
+# 6. 运行测试。推荐让 runner 自动启动隔离 agent daemon。
+cd benchmark
+uv run python -m runner run \
+  --suite suites/mobilegym_basic.json \
+  --environment-url http://localhost:8888 \
+  --auto-agent-setup
 ```
 
 ### 方式 3：Docker 运行（推荐）
@@ -84,13 +77,11 @@ docker compose logs mobilegym-simulator
 docker compose logs aiden-daemon
 
 # 8. 运行测试
-docker compose run --rm runner \
-  python -m benchmark.runner run \
-  --suite /benchmark/suites/mobilegym_basic.json \
-  --agent-url http://aiden-daemon:8080
+cd ../..
+uv run python -m runner webui
 
 # 9. 查看结果
-ls ../../runs/
+ls runs/
 ```
 
 ## 📋 提交的变更
@@ -119,7 +110,7 @@ Key changes:
 
 1. **检查脚本运行**：尝试运行 `start_simulator.py` 看是否能正常启动
 2. **测试 Docker 构建**：`docker compose -f docker-compose.new.yml build`
-3. **验证 suite 加载**：确认 `benchmark.runner` 能正确加载 `mobilegym_basic.json`
+3. **验证 suite 加载**：确认 `python -m runner` 能正确加载 `mobilegym_basic.json`
 
 ### 迁移现有测试
 

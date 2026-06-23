@@ -117,7 +117,7 @@ FAILED     task_002 attempt=1 rubric=1/3 wall=1820ms (tools=3, screenshots=1)
   - `history.json` - 完整的对话历史
   - `trace.json` - 工具调用追踪
   - `judge.json` - 评判结果详情
-  - `pre.jpg` / `steps/` - 截图文件
+  - `pre.jpg` / `post.jpg` - environment bridge 提供的 judge 截图
 
 ## 技术实现
 

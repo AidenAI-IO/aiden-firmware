@@ -145,7 +145,7 @@ MobileGym bridge 后创建多个 env，并给每个并发 task worker 启动独�
 建议：
 
 - 调试单个任务：用 `docker compose run --rm test ...`
-- 跑套件 / 多任务：用 `python -m runner.main webui`，创建 MobileGym environment 时设置 `Envs`
+- 跑套件 / 多任务：从仓库根目录运行 `cd benchmark && uv run python -m runner webui`，创建 MobileGym environment 时设置 `Envs`
 
 ## 🔍 故障排查
 

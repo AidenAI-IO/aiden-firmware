@@ -12,7 +12,7 @@ MobileGym 从**测试框架模式**重构为**纯模拟器模式**。
 | **测试编排** | `bench_env.runner.SerialRunner` | `benchmark/runner/main.py` |
 | **测试定义** | MobileGym suites + Aiden JSON | 统一的 `benchmark/suites/*.json` |
 | **Agent 实现** | 注册 `AidenGoAgent` 到 MobileGym | Aiden daemon 通过 HTTP 调用设备 |
-| **启动方式** | `scripts/run_aiden.py` | `scripts/start_simulator.py` + `benchmark.runner` |
+| **启动方式** | `scripts/run_aiden.py` | `scripts/start_simulator.py` + `python -m runner` |
 
 ## 文件变更清单
 
@@ -111,16 +111,12 @@ python benchmark/mobilegym/scripts/start_simulator.py \
   --bridge-port 8888 \
   --token-dir /tmp/mobilegym &
 
-# 配置 daemon
-python benchmark/mobilegym/scripts/configure_daemon.py \
-  --daemon-url http://localhost:8080 \
-  --bridge-url http://localhost:8888 \
-  --bridge-token-file /tmp/mobilegym/bridge_device_token
-
-# 运行测试
-python -m benchmark.runner run \
-  --suite benchmark/suites/mobilegym_basic.json \
-  --agent-url http://localhost:8080
+# 运行测试。推荐让 runner 自动启动隔离 agent daemon。
+cd benchmark
+uv run python -m runner run \
+  --suite suites/mobilegym_basic.json \
+  --environment-url http://localhost:8888 \
+  --auto-agent-setup
 ```
 
 ### 5. Docker 使用方式
@@ -135,11 +131,9 @@ docker compose run --rm test --suite clock --limit 5
 # 启动服务
 docker compose up -d
 
-# 运行测试
-docker compose run --rm runner \
-  python -m benchmark.runner run \
-  --suite /benchmark/suites/mobilegym_basic.json \
-  --agent-url http://aiden-daemon:8080
+# 推荐使用 WebUI 创建 MobileGym environment 并运行 job
+cd benchmark
+uv run python -m runner webui
 ```
 
 ## 架构对比
@@ -161,11 +155,11 @@ MobileGym env
 ### 新架构（模拟器模式）
 
 ```
-benchmark.runner.main
+runner.main
   ↓ /api/chat
 Aiden Daemon
-  ↓ Bridge HTTP
-MobileGym Simulator (start_simulator.py)
+  ↓ /api/tools/* through environment bridge
+MobileGym Bridge + Simulator
 ```
 
 ## 常见问题

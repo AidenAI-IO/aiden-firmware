@@ -41,7 +41,7 @@ MobileGym **仅作为模拟器**，提供设备环境：
 │  - 通过 bridge 调用设备工具               │
 └──────────────┬──────────────────────────┘
                │
-               ├─ /tap, /swipe, /screenshot (Bridge HTTP)
+               ├─ /api/tools/*, /api/screen (environment bridge HTTP)
                │
                v
 ┌─────────────────────────────────────────┐
@@ -73,8 +73,8 @@ MobileGym **仅作为模拟器**，提供设备环境：
 - 保留 `adapter/daemon.py`（daemon 生命周期管理）
 
 ### 3. 集成到现有 benchmark runner
-- `benchmark/runner/main.py` 添加 `--simulator mobilegym` 选项
-- 启动 MobileGym 模拟器作为后台服务
+- 使用 `--environment-url` 连接 MobileGym environment bridge
+- 使用 `--auto-agent-setup` 按 `/api/concurrent` 自动启动隔离 agent daemon
 - 使用标准的 `AgentClient` + `benchmark/suites/*.json` 流程
 
 ### 4. Docker 编排调整
@@ -111,13 +111,9 @@ docker compose run --rm test --suite clock --limit 5
 # 1. 启动模拟器（后台）
 docker compose up -d mobilegym-simulator
 
-# 2. 启动 Aiden daemon（后台）
-docker compose up -d aiden-daemon
-
-# 3. 运行 benchmark（使用标准 runner）
-python -m benchmark.runner run \
-  --suite benchmark/suites/mobilegym_basic.json \
-  --agent-url http://localhost:8080
+# 2. 使用 WebUI 创建 MobileGym environment 并运行 benchmark
+cd benchmark
+uv run python -m runner webui
 ```
 
 ## 优势

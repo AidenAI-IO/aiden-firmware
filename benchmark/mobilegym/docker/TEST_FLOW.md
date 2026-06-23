@@ -81,7 +81,8 @@ open "../../runs/mobilegym/$LATEST/phone_control_v1/index.html"
 并发运行使用 benchmark WebUI：
 
 ```bash
-python -m runner.main webui
+cd benchmark
+uv run python -m runner webui
 ```
 
 在 WebUI 中启动 MobileGym environment 时设置 `Envs`，然后选择该 environment 和

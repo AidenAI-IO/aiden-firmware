@@ -4,7 +4,7 @@ MobileGym 作为纯模拟器集成到 Aiden benchmark，使用统一的 `benchma
 
 ## 🎯 架构设计
 
-MobileGym **仅作为设备模拟器**，通过统一的 `/api/tools` endpoint 提供服务：
+MobileGym **仅作为设备模拟器**，通过统一的 environment bridge API 提供服务：
 
 ```
 benchmark/runner/main.py (测试编排)
@@ -33,18 +33,22 @@ python benchmark/mobilegym/scripts/start_simulator.py \
   --env-url http://localhost:4173 \
   --bridge-port 8888 &
 
-# 2. 启动 Aiden daemon 使用 environment bridge 模式
-# 启动 daemon，指定 environment bridge endpoint
+# 2. 启动 Aiden daemon 使用 environment bridge 模式。
+# 手动调试单 task 时，daemon 和 runner 要使用同一个 benchmark-task-id。
 go run src/agent/cmd/daemon/main.go \
   --config /path/to/agent.toml \
   --environment-bridge-mode \
   --environment-bridge-endpoint http://localhost:8888 \
-  --environment-bridge-tools screenshot,touch_gesture,keyboard_text,keyboard_tap &
+  --environment-bridge-tools screenshot,touch_gesture,keyboard_text,keyboard_tap \
+  --benchmark-task-id cli-task &
 
 # 3. 运行 benchmark（使用标准 runner）
-python -m benchmark.runner run \
-  --suite benchmark/suites/mobilegym_basic.json \
-  --agent-url http://localhost:8080
+cd benchmark
+uv run python -m runner run \
+  --suite suites/mobilegym_basic.json \
+  --agent-url http://localhost:8080 \
+  --environment-url http://localhost:8888 \
+  --benchmark-task-id cli-task
 ```
 
 **注意**：现在使用统一的 environment bridge 模式，不再需要 `device.backend=mobilegym` 配置。
@@ -66,14 +70,13 @@ docker compose build
 # 4. 启动所有服务
 docker compose up -d
 
-# 5. 运行 benchmark
-docker compose run --rm runner \
-  --suite /benchmark/suites/mobilegym_basic.json \
-  --agent-url http://aiden-daemon:8080
+# 5. 或者从 benchmark WebUI 运行并发 job
+cd ../..
+uv run python -m runner webui
 
 # 6. 查看结果
-ls ../../runs/
-open ../../runs/<run-id>/report.html
+ls runs/
+open runs/webui/<job-id>/raw/<run-id>/report.html
 ```
 
 ## 📁 目录结构
@@ -130,17 +133,17 @@ benchmark/mobilegym/
       "rubric": [
         {
           "id": "opened_clock_app",
-          "description": "成功打开时钟应用"
+          "check": "Post-screenshot shows the Clock app."
         },
         {
           "id": "counted_alarms",
-          "description": "正确识别并报告闹钟数量"
+          "check": "Final response reports the correct alarm count."
         }
       ],
       "hard_assertions": {
         "must_complete_within_sec": 120,
         "min_tool_calls": 2,
-        "required_tools": ["screenshot", "tap"]
+        "required_tools": ["screenshot", "touch_gesture"]
       }
     }
   ]
@@ -158,7 +161,8 @@ go run cmd/daemon/main.go \
   --config agent.toml \
   --environment-bridge-mode \
   --environment-bridge-endpoint http://localhost:8888 \
-  --environment-bridge-tools screenshot,touch_gesture,keyboard_text,keyboard_tap
+  --environment-bridge-tools screenshot,touch_gesture,keyboard_text,keyboard_tap \
+  --benchmark-task-id cli-task
 ```
 
 ### Bridge 环境变量
@@ -176,15 +180,29 @@ go run cmd/daemon/main.go \
 # 检查模拟器健康状态
 curl http://localhost:8888/health
 
-# 测试 bridge 操作
-curl -X POST http://localhost:8888/screenshot \
+# claim 一个 task route
+curl -X POST http://localhost:8888/api/setup \
   -H "Content-Type: application/json" \
-  -d '{"episode_id": "test-001"}'
+  -H "benchmark-task-id: cli-task" \
+  -d '{}'
+
+# 获取 runner/judge 使用的截图
+curl -H "benchmark-task-id: cli-task" \
+  http://localhost:8888/api/screen
+
+# 测试 bridge tool 操作
+curl -X POST http://localhost:8888/api/tools/screenshot \
+  -H "Content-Type: application/json" \
+  -H "benchmark-task-id: cli-task" \
+  -d '{"input": {}}'
 
 # 运行单个测试
-python -m benchmark.runner run \
-  --suite benchmark/suites/mobilegym_basic.json \
+cd benchmark
+uv run python -m runner run \
+  --suite suites/mobilegym_basic.json \
   --agent-url http://localhost:8080 \
+  --environment-url http://localhost:8888 \
+  --benchmark-task-id cli-task \
   --no-judge  # 快速验证，跳过 judge
 ```
 
@@ -213,9 +231,9 @@ curl http://localhost:8888/health
 
 ### Daemon 无法调用设备工具
 ```bash
-# 确认 device backend 配置
-curl http://localhost:8080/api/mobilegym/bridge/status
+# 确认 daemon 健康
+curl http://localhost:8080/health
 
-# 如果使用 configure_daemon.py，确认已成功配置
-curl http://localhost:8080/api/mobilegym/bridge/status
+# 确认 bridge tool catalog
+curl http://localhost:8888/api/tools
 ```

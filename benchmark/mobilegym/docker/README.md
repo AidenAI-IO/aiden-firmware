@@ -99,7 +99,10 @@ docker compose run --rm test \
 使用 benchmark WebUI 运行 Aiden MobileGym 并发：
 
 ```bash
-python -m runner.main webui
+# 如果当前在 benchmark/mobilegym/docker，先回到仓库根目录
+cd ../../..
+cd benchmark
+uv run python -m runner webui
 ```
 
 在 WebUI 中创建 MobileGym environment 时把 `Envs` 设为大于 1。WebUI 会启动一个

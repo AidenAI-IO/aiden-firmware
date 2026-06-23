@@ -1,8 +1,9 @@
 # 自定义测试套件
 
-`run_aiden.py --aiden-suite <name>` 会从 `benchmark/suites/<name>.json` 加载 Aiden JSON
-suite 并即时转换为 MobileGym Task。Web UI（`/benchmark`，MobileGym 模式）也会列出
-这些 suite。本目录下的 YAML 暂不被加载。
+Aiden benchmark suite 使用 `benchmark/suites/<name>.json`。MobileGym 作为
+environment bridge 运行时，benchmark WebUI 会列出这些 Aiden JSON suite，并通过
+`benchmark-task-id` 把并发 task worker 路由到同一个 MobileGym instance 内的不同 env。
+本目录下的 YAML 暂不被 benchmark runner 加载。
 
 ## 当前可工作的方式
 
@@ -25,7 +26,14 @@ docker compose run --rm test --suite phone_control_v1 --limit 3
 
 ### 方式 3：Benchmark WebUI 并发
 
-使用 `python -m runner.main webui` 启动 benchmark WebUI。创建 MobileGym
+使用以下命令启动 benchmark WebUI：
+
+```bash
+cd benchmark
+uv run python -m runner webui
+```
+
+创建 MobileGym
 environment 时把 `Envs` 设为大于 1，随后选择该 environment 运行 Aiden JSON suite。
 WebUI 会为并发 task worker 启动独立 daemon，并通过 `benchmark-task-id` 路由到同一
 MobileGym instance 内的不同 env。
