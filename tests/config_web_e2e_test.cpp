@@ -168,7 +168,7 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"context_window\":0,\"model_max_output_tokens\":0},"
         "\"model_text\":{\"provider\":\"\",\"api_key\":\"\",\"model\":\"\",\"base_url\":\"\",\"token_env\":\"\","
         "\"temperature\":0,\"max_response_tokens\":0,\"context_window\":0,\"model_max_output_tokens\":0},"
-        "\"tts\":{\"provider\":\"minimax-ws\",\"api_key\":\"\",\"model\":\"\",\"voice_id\":\"male-qn-qingse\","
+        "\"tts\":{\"provider\":\"minimax-cn\",\"api_key\":\"\",\"model\":\"\",\"voice_id\":\"male-qn-qingse\","
         "\"emotion\":\"happy\",\"speed\":1},"
         "\"stt\":{\"provider\":\"openai-whisper\",\"api_key\":\"\",\"model\":\"whisper-1\",\"base_url\":\"\","
         "\"secret_id\":\"\",\"secret_key\":\"\",\"region\":\"\",\"engine_model_type\":\"\"},"

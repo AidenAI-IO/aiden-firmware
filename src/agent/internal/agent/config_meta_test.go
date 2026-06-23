@@ -145,6 +145,16 @@ func TestConfigMeta_EnumsMatchValidation(t *testing.T) {
 		}
 	}
 
+	ttsEnum := enumValues("tts.provider")
+	for _, p := range []string{"minimax", "minimax-cn", "fish-audio", "alicloud", "volcengine"} {
+		if !contains(ttsEnum, p) {
+			t.Errorf("tts.provider enum missing provider %q", p)
+		}
+	}
+	if contains(ttsEnum, "minimax-ws") {
+		t.Errorf("tts.provider enum still includes legacy provider minimax-ws")
+	}
+
 	// hid.pointer_mode enum must match Validate()'s accepted set.
 	pmEnum := enumValues("hid.pointer_mode")
 	for _, m := range []string{"absolute", "touchscreen"} {
@@ -252,7 +262,7 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 	}
 }
 
-func TestConfigMeta_TTSModelHiddenForMinimaxWebSocket(t *testing.T) {
+func TestConfigMeta_TTSModelHiddenForMinimaxProviders(t *testing.T) {
 	idx := fieldIndex(t)
 	model, ok := idx["tts.model"]
 	if !ok {
@@ -261,7 +271,7 @@ func TestConfigMeta_TTSModelHiddenForMinimaxWebSocket(t *testing.T) {
 	if model.VisibleWhen == nil {
 		t.Fatal("tts.model has no visibleWhen rule")
 	}
-	want := VisibleRule{All: []Condition{{Field: "tts.provider", Op: "ne", Value: "minimax-ws"}}}
+	want := VisibleRule{All: []Condition{{Field: "tts.provider", Op: "notIn", Values: []string{"minimax", "minimax-cn"}}}}
 	if !reflect.DeepEqual(*model.VisibleWhen, want) {
 		t.Fatalf("tts.model visibleWhen = %#v, want %#v", *model.VisibleWhen, want)
 	}

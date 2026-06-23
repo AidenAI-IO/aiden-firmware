@@ -120,9 +120,9 @@ Common fields in `[tts]` are `provider`, `api_key`, `model`, `voice_id`, `emotio
 All TTS providers are called through a unified streaming session: the Agent writes LLM output fragments to the adapter, and the adapter decides when to send to the backend. Fish Audio, Alicloud, and Volcengine are true streaming WebSocket links; the Minimax WebSocket adapter buffers internally at sentence boundaries before sending, so the upper layer doesn't need to distinguish between “true streaming” or “sentence-level streaming”. The runtime can switch providers via `POST /api/settings/tts`; playback that has already started will continue using the old provider, and subsequent requests will use the new provider.
 
 ```toml
-# Minimax WebSocket
+# Minimax WebSocket (mainland China endpoint)
 [tts]
-provider = "minimax-ws"
+provider = "minimax-cn"
 model = "speech-2.8-hd"
 voice_id = "male-qn-qingse"
 emotion = "happy"

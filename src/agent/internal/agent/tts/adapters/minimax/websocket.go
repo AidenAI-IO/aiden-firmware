@@ -14,7 +14,8 @@ import (
 )
 
 const (
-	wsEndpoint    = "wss://api.minimaxi.com/ws/v1/t2a_v2"
+	wsEndpoint    = "wss://api.minimax.io/ws/v1/t2a_v2"
+	wsEndpointCN  = "wss://api.minimaxi.com/ws/v1/t2a_v2"
 	wsConnTimeout = 10 * time.Second
 )
 
@@ -27,13 +28,19 @@ var _ tts.TTSProvider = (*WebSocketAdapter)(nil)
 
 // NewWebSocket creates a Minimax WebSocket provider.
 func NewWebSocket(cfg tts.ProviderConfig) (tts.TTSProvider, error) {
+	provider := normalizeProvider(cfg.Provider)
 	if cfg.APIKey == "" {
-		return nil, fmt.Errorf("minimax-ws: api_key is required")
+		return nil, fmt.Errorf("%s: api_key is required", provider)
 	}
-	return &WebSocketAdapter{cfg: parseConfig(cfg, wsEndpoint)}, nil
+	endpoint, err := defaultEndpointForProvider(provider)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Provider = provider
+	return &WebSocketAdapter{cfg: parseConfig(cfg, endpoint)}, nil
 }
 
-func (a *WebSocketAdapter) Name() string                   { return "minimax-ws" }
+func (a *WebSocketAdapter) Name() string                   { return a.cfg.provider }
 func (a *WebSocketAdapter) Capabilities() tts.Capabilities { return capabilities() }
 func (a *WebSocketAdapter) Close() error                   { return nil }
 

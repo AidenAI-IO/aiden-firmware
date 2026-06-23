@@ -126,7 +126,7 @@ api_key = "OPENROUTER_API_KEY"
 model = "qwen/qwen3-asr-flash-2026-02-10"
 
 [tts]
-provider = "minimax-ws"
+provider = "minimax-cn"
 model = "speech-2.8-hd"
 voice_id = "male-qn-qingse"
 emotion = "happy"
@@ -245,7 +245,8 @@ STT:
 
 TTS:
 
-- `provider = "minimax-ws"`: Minimax WebSocket;
+- `provider = "minimax"`: Minimax WebSocket, global endpoint `api.minimax.io`;
+- `provider = "minimax-cn"`: Minimax WebSocket, mainland China endpoint `api.minimaxi.com`;
 - `provider = "fish-audio"`: Fish Audio WebSocket;
 - `provider = "alicloud"`: Alibaba Cloud Qwen-TTS Realtime;
 - `provider = "volcengine"`: Volcengine WebSocket bidirectional streaming V3. Currently only the new console's `X-Api-Key` authentication is supported: `api_key` maps to `X-Api-Key`, `model` maps to `X-Api-Resource-Id` (default `seed-tts-2.0`), and `voice_id` maps to the speaker.
@@ -254,7 +255,7 @@ TTS:
 
 | Field | Description |
 | --- | --- |
-| `provider` | Required. One of `minimax-ws`, `fish-audio`, `alicloud`, `volcengine` |
+| `provider` | Required. One of `minimax`, `minimax-cn`, `fish-audio`, `alicloud`, `volcengine` |
 | `api_key` | Required. The authentication key for each provider; the examples below omit this field to avoid writing keys into the docs |
 | `model` | Optional. Minimax model name, Fish Audio model header, Alibaba Cloud Realtime model name, Volcengine `X-Api-Resource-Id` |
 | `voice_id` | Optional. Minimax voice id, Alibaba Cloud voice, Volcengine speaker; Fish Audio can use it as a reference id |
@@ -268,7 +269,8 @@ Common TTS adapter configs:
 
 | Provider | `model` example | Voice/reference field | Description |
 | --- | --- | --- | --- |
-| `minimax-ws` | `speech-2.8-hd` | `voice_id = "male-qn-qingse"` | Minimax WebSocket; `emotion` is passed through to Minimax |
+| `minimax` | `speech-2.8-hd` | `voice_id = "male-qn-qingse"` | Minimax WebSocket via `api.minimax.io`; `emotion` is passed through to Minimax |
+| `minimax-cn` | `speech-2.8-hd` | `voice_id = "male-qn-qingse"` | Minimax WebSocket via `api.minimaxi.com`; `emotion` is passed through to Minimax |
 | `fish-audio` | `s2-pro` | `reference_id = "98655a12fa944e26b274c535e5e03842"` | WebSocket live TTS; `model` is sent via the handshake header, `reference_id` takes priority over `voice_id` |
 | `alicloud` | `qwen3-tts-flash-realtime` | `voice_id = "Cherry"` | DashScope Realtime; the adapter outputs 24 kHz PCM, automatically resampling when the sample rate differs |
 | `volcengine` | `seed-tts-2.0` | `voice_id = "zh_female_vv_uranus_bigtts"` | `model` maps to `X-Api-Resource-Id`, `voice_id` maps to the speaker, and the two must match |
@@ -279,7 +281,7 @@ Minimax WebSocket:
 
 ```toml
 [tts]
-provider = "minimax-ws"
+provider = "minimax-cn"
 model = "speech-2.8-hd"
 voice_id = "male-qn-qingse"
 emotion = "happy"
@@ -334,7 +336,7 @@ If you need to store the keys of multiple providers in the same config, use per-
 
 ```toml
 [tts]
-provider = "minimax-ws"
+provider = "minimax-cn"
 model = "speech-2.8-hd"
 voice_id = "male-qn-qingse"
 

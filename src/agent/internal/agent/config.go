@@ -184,7 +184,7 @@ type LiveActivityConfig struct {
 }
 
 type TTSConfig struct {
-	Provider    string  `toml:"provider"` // "minimax-ws", "fish-audio", "alicloud", "volcengine"
+	Provider    string  `toml:"provider"` // "minimax", "minimax-cn", "fish-audio", "alicloud", "volcengine"
 	APIKey      string  `toml:"api_key,omitempty"`
 	Model       string  `toml:"model,omitempty"`
 	VoiceID     string  `toml:"voice_id,omitempty"`
@@ -198,7 +198,7 @@ type TTSConfig struct {
 	//
 	// Example agent.toml:
 	//   [tts]
-	//   provider = "minimax-ws"
+	//   provider = "minimax-cn"
 	//   api_key = "<minimax-key>"   # used as fallback for any provider
 	//
 	//   [tts.credentials.fish-audio]
@@ -540,8 +540,11 @@ func applyRuntimeOptionalProviderDefaults(cfg *Config, metadata toml.MetaData) {
 
 	if !metadata.IsDefined("tts", "provider") || strings.TrimSpace(cfg.TTS.Provider) == "" {
 		cfg.TTS = TTSConfig{}
-	} else if normalizeTTSProvider(cfg.TTS.Provider) != defaultTTSProvider {
-		clearDefaultTTSProviderFields(cfg, metadata)
+	} else {
+		cfg.TTS.Provider = normalizeTTSProvider(cfg.TTS.Provider)
+		if cfg.TTS.Provider != defaultTTSProvider {
+			clearDefaultTTSProviderFields(cfg, metadata)
+		}
 	}
 	if !metadata.IsDefined("stt", "provider") || strings.TrimSpace(cfg.STT.Provider) == "" {
 		cfg.STT = STTConfig{}
@@ -551,7 +554,12 @@ func applyRuntimeOptionalProviderDefaults(cfg *Config, metadata toml.MetaData) {
 }
 
 func normalizeTTSProvider(provider string) string {
-	return strings.ToLower(strings.TrimSpace(provider))
+	switch normalized := strings.ToLower(strings.TrimSpace(provider)); normalized {
+	case "minimax-ws":
+		return defaultTTSProvider
+	default:
+		return normalized
+	}
 }
 
 func clearDefaultTTSProviderFields(cfg *Config, metadata toml.MetaData) {

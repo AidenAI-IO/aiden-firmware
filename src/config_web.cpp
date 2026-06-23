@@ -3865,7 +3865,8 @@ static bool is_tencent_asr_provider(const std::string& provider) {
 std::string provider_default_url(const std::string& provider) {
     if (provider == "openrouter") return "https://openrouter.ai/api/v1";
     if (provider == "openai" || provider == "openai-whisper") return "https://api.openai.com/v1";
-    if (provider == "minimax" || provider == "minimax-ws") return "https://api.minimax.chat";
+    if (provider == "minimax") return "https://api.minimax.io";
+    if (provider == "minimax-cn" || provider == "minimax-ws") return "https://api.minimaxi.com";
     if (is_tencent_asr_provider(provider)) return "https://asr.tencentcloudapi.com";
     return "";
 }
