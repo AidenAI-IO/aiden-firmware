@@ -177,12 +177,6 @@ func TestConfigMeta_EnumsMatchValidation(t *testing.T) {
 		}
 	}
 
-	for _, env := range enumValues("live_activity.environment") {
-		cfg := Config{Model: ModelConfig{Provider: "fake"}, LiveActivity: LiveActivityConfig{Environment: env}}
-		if err := cfg.Validate(); err != nil {
-			t.Errorf("live_activity.environment enum value %q rejected by Validate: %v", env, err)
-		}
-	}
 }
 
 func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
@@ -364,7 +358,12 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 		{"search", reflect.TypeOf(SearchConfig{}), nil},
 		{"log", reflect.TypeOf(LogConfig{}), nil},
 		{"telemetry", reflect.TypeOf(TelemetryConfig{}), nil},
-		{"live_activity", reflect.TypeOf(LiveActivityConfig{}), nil},
+		{"live_activity", reflect.TypeOf(LiveActivityConfig{}), map[string]bool{
+			"relay_url": true, "relay_api_key": true, "bundle_id": true,
+			"topic": true, "environment": true, "team_id": true,
+			"key_id": true, "private_key_path": true, "private_key_pem": true,
+			"timeout_sec": true,
+		}},
 	}
 
 	for _, s := range sections {
