@@ -12,3 +12,15 @@ Algorithm vendored from microsoft/SkillOpt with the following adaptations:
     agent via POST /api/skills/reload.
   - We do not implement slow_update / meta_skill in the first version.
 """
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_BENCHMARK_ROOT = _REPO_ROOT / "benchmark"
+if _BENCHMARK_ROOT.exists():
+    _benchmark_path = str(_BENCHMARK_ROOT)
+    if _benchmark_path not in sys.path:
+        sys.path.insert(0, _benchmark_path)

@@ -72,7 +72,7 @@ def _write_evidence(batch: Path, suite: Suite, task: TaskSpec, evidence: dict) -
 
 
 def _load_results(batch: Path, suite: Suite, tmp_path: Path):
-    from runner.skillopt import mobilegym_results
+    from skillopt import mobilegym_results
 
     return mobilegym_results.load_aiden_suite_task_results(
         batch_dir=batch,
@@ -272,7 +272,7 @@ def test_mobilegym_unknown_status_becomes_failed_task_result(tmp_path: Path):
 
 
 def test_mobilegym_worker_failure_without_rows_fails_loudly(tmp_path: Path):
-    from runner.skillopt import mobilegym_results
+    from skillopt import mobilegym_results
 
     suite = _suite(tmp_path)
     batch = tmp_path / "batch"

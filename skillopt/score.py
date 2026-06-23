@@ -8,7 +8,7 @@ from __future__ import annotations
 import dataclasses as dc
 
 from runner.models import TaskResult
-from runner.skillopt.types import RolloutResult
+from skillopt.types import RolloutResult
 
 
 # Default acceptance threshold (validation_score gain).

@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 import pytest
-from runner.skillopt.optimizer_client import OptimizerConfig, OptimizerError, chat_optimizer, extract_json
+from skillopt.optimizer_client import OptimizerConfig, OptimizerError, chat_optimizer, extract_json
 
 
 def test_extract_json_bare():

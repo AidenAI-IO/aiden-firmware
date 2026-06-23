@@ -2,7 +2,7 @@
 import pytest
 
 from runner.agent_client import AgentRequestError
-from runner.skillopt.skill_override import with_skill_override
+from skillopt.skill_override import with_skill_override
 
 
 class RecordingClient:

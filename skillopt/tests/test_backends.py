@@ -3,7 +3,7 @@ from pathlib import Path
 
 from runner.models import TaskResult
 from runner.suite import HardAssertions, Suite, TaskSpec
-from runner.skillopt import backends
+from skillopt import backends
 
 
 def test_aiden_device_backend_overrides_when_skill_text_differs(monkeypatch, tmp_path: Path):

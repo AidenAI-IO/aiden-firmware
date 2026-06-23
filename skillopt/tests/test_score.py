@@ -2,7 +2,7 @@
 import pytest
 
 from runner.models import HardAssertionResults, RubricVerdict, TaskResult
-from runner.skillopt.score import (
+from skillopt.score import (
     aggregate_score,
     task_result_to_rollout,
     validation_gate,

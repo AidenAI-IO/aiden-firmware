@@ -4,8 +4,8 @@ import typing
 
 import pytest
 
-from runner.skillopt import main
-from runner.skillopt.types import Edit, OptimizationResult, PhaseSummary, ScoreSummary, StepDecision
+from skillopt import main
+from skillopt.types import Edit, OptimizationResult, PhaseSummary, ScoreSummary, StepDecision
 
 
 TRAIN_LABEL = "skillopt/device-operator/device_operator_train"
@@ -30,12 +30,17 @@ class FakeMobileGymBackend:
         pass
 
 
+def _set_roots(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(main, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(main, "SKILLOPT_ROOT", tmp_path / "skillopt")
+
+
 def test_resolve_skill_path_uses_packaged_board_skills(monkeypatch, tmp_path: Path):
     monkeypatch.delenv("AIDEN_SKILLS_DIR", raising=False)
     skill_path = tmp_path / "skills" / "device-operator" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text("---\nname: device-operator\n---\n", encoding="utf-8")
-    monkeypatch.setattr(main, "REPO_ROOT", tmp_path)
+    _set_roots(monkeypatch, tmp_path)
 
     assert main._resolve_skill_path("device-operator") == skill_path
 
@@ -48,7 +53,7 @@ def test_resolve_skill_path_prefers_env_skills_dir(monkeypatch, tmp_path: Path):
     env_skill = env_root / "device-operator" / "SKILL.md"
     env_skill.parent.mkdir(parents=True)
     env_skill.write_text("env", encoding="utf-8")
-    monkeypatch.setattr(main, "REPO_ROOT", tmp_path)
+    _set_roots(monkeypatch, tmp_path)
     monkeypatch.setenv("AIDEN_SKILLS_DIR", str(env_root))
 
     assert main._resolve_skill_path("device-operator") == env_skill
@@ -74,12 +79,12 @@ def _write_suite(path: Path, name: str, task_ids: list[str]) -> None:
 
 def _write_device_operator_suites(tmp_path: Path) -> None:
     _write_suite(
-        tmp_path / "benchmark" / "suites" / "skillopt" / "device-operator" / "device_operator_train.json",
+        tmp_path / "skillopt" / "suites" / "device-operator" / "device_operator_train.json",
         "device_operator_train",
         ["train_one", "train_two"],
     )
     _write_suite(
-        tmp_path / "benchmark" / "suites" / "skillopt" / "device-operator" / "device_operator_verification.json",
+        tmp_path / "skillopt" / "suites" / "device-operator" / "device_operator_verification.json",
         "device_operator_verification",
         ["validation_one", "validation_two"],
     )
@@ -105,7 +110,7 @@ def test_cli_uses_explicit_train_and_selection_suites(monkeypatch, tmp_path: Pat
             best_skill="optimized skill",
         )
 
-    monkeypatch.setattr(main, "REPO_ROOT", tmp_path)
+    _set_roots(monkeypatch, tmp_path)
     monkeypatch.setattr(main, "optimize_skill", fake_optimize_skill)
     monkeypatch.setattr(main, "AidenDeviceBackend", FakeDeviceBackend, raising=False)
 
@@ -133,7 +138,7 @@ def test_cli_writes_run_artifacts_for_web_report(monkeypatch, tmp_path: Path):
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text("original skill\n", encoding="utf-8")
     _write_device_operator_suites(tmp_path)
-    artifact_root = tmp_path / "benchmark" / "runs"
+    artifact_root = tmp_path / "skillopt" / "runs"
 
     def fake_optimize_skill(cfg):
         return OptimizationResult(
@@ -155,7 +160,7 @@ def test_cli_writes_run_artifacts_for_web_report(monkeypatch, tmp_path: Path):
             rejected_count=0,
         )
 
-    monkeypatch.setattr(main, "REPO_ROOT", tmp_path)
+    _set_roots(monkeypatch, tmp_path)
     monkeypatch.setattr(main, "optimize_skill", fake_optimize_skill)
     monkeypatch.setattr(main, "AidenDeviceBackend", FakeDeviceBackend, raising=False)
 
@@ -190,7 +195,7 @@ def test_cli_writes_aggregated_skillopt_summary_report(monkeypatch, tmp_path: Pa
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text("original skill\n", encoding="utf-8")
     _write_device_operator_suites(tmp_path)
-    artifact_root = tmp_path / "benchmark" / "runs"
+    artifact_root = tmp_path / "skillopt" / "runs"
 
     def fake_optimize_skill(cfg):
         train_score = ScoreSummary(hard=0.25, soft=0.50, n=4, n_passed=1)
@@ -237,7 +242,7 @@ def test_cli_writes_aggregated_skillopt_summary_report(monkeypatch, tmp_path: Pa
             rejected_count=0,
         )
 
-    monkeypatch.setattr(main, "REPO_ROOT", tmp_path)
+    _set_roots(monkeypatch, tmp_path)
     monkeypatch.setattr(main, "optimize_skill", fake_optimize_skill)
     monkeypatch.setattr(main, "MobileGymBackend", FakeMobileGymBackend, raising=False)
 
@@ -273,11 +278,11 @@ def test_cli_writes_aggregated_skillopt_summary_report(monkeypatch, tmp_path: Pa
     assert "new rule" in report
     assert "best_skill.md" in report
     assert "diff.patch" in report
-    assert 'href="/benchmark/report/skillopt-summary-run/best_skill.md"' in report
-    assert 'href="/benchmark/report/skillopt-summary-run/diff.patch"' in report
-    assert 'href="/benchmark/report/skillopt-summary-run/result.json"' in report
+    assert 'href="best_skill.md"' in report
+    assert 'href="diff.patch"' in report
+    assert 'href="result.json"' in report
     assert 'class="artifact-link"' in report
-    assert 'data-artifact-url="/benchmark/report/skillopt-summary-run/best_skill.md"' in report
+    assert 'data-artifact-url="best_skill.md"' in report
     assert 'drawer-backdrop' in report
     assert 'class="drawer"' in report
     assert "function openArtifactDrawer" in report
@@ -285,9 +290,9 @@ def test_cli_writes_aggregated_skillopt_summary_report(monkeypatch, tmp_path: Pa
 
 
 def test_web_report_shows_raw_mobilegym_and_skillopt_scores_for_no_edit_run(tmp_path: Path):
-    artifact_root = tmp_path / "benchmark" / "runs" / "skillopt"
+    artifact_root = tmp_path / "skillopt" / "runs"
     run_id = "skillopt-no-edit-run"
-    raw_dir = tmp_path / "benchmark" / "runs" / "mobilegym" / f"{run_id}-step_01_train"
+    raw_dir = tmp_path / "skillopt" / "mobilegym" / f"{run_id}-step_01_train"
     raw_dir.mkdir(parents=True)
     (raw_dir / "summary.json").write_text(json.dumps({
         "tasks": 12,
@@ -362,7 +367,7 @@ def test_cli_dry_run_does_not_write_output_or_web_artifacts(monkeypatch, tmp_pat
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text("original skill\n", encoding="utf-8")
     _write_device_operator_suites(tmp_path)
-    artifact_root = tmp_path / "benchmark" / "runs"
+    artifact_root = tmp_path / "skillopt" / "runs"
     output_path = tmp_path / "optimized.md"
 
     def fake_optimize_skill(cfg):
@@ -373,7 +378,7 @@ def test_cli_dry_run_does_not_write_output_or_web_artifacts(monkeypatch, tmp_pat
             best_skill="optimized skill\n",
         )
 
-    monkeypatch.setattr(main, "REPO_ROOT", tmp_path)
+    _set_roots(monkeypatch, tmp_path)
     monkeypatch.setattr(main, "optimize_skill", fake_optimize_skill)
     monkeypatch.setattr(main, "AidenDeviceBackend", FakeDeviceBackend, raising=False)
 
@@ -400,7 +405,7 @@ def test_web_artifact_type_hints_resolve():
 
 @pytest.mark.parametrize("skill", ["../device-operator", ".", ".."])
 def test_cli_rejects_unsafe_skill_names(monkeypatch, tmp_path: Path, capsys, skill: str):
-    monkeypatch.setattr(main, "REPO_ROOT", tmp_path)
+    _set_roots(monkeypatch, tmp_path)
 
     rc = main.cli([
         "--skill", skill,
@@ -416,7 +421,7 @@ def test_cli_rejects_cross_skill_skillopt_suite(monkeypatch, tmp_path: Path, cap
     skill_path = tmp_path / "src" / "agent" / "config" / "skills" / "device-operator" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text("skill", encoding="utf-8")
-    monkeypatch.setattr(main, "REPO_ROOT", tmp_path)
+    _set_roots(monkeypatch, tmp_path)
 
     rc = main.cli([
         "--skill", "device-operator",
@@ -432,7 +437,7 @@ def test_cli_rejects_unsafe_suite_traversal(monkeypatch, tmp_path: Path, capsys)
     skill_path = tmp_path / "src" / "agent" / "config" / "skills" / "device-operator" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text("skill", encoding="utf-8")
-    monkeypatch.setattr(main, "REPO_ROOT", tmp_path)
+    _set_roots(monkeypatch, tmp_path)
 
     rc = main.cli([
         "--skill", "device-operator",
@@ -448,7 +453,7 @@ def test_cli_rejects_unsafe_split_suite_traversal(monkeypatch, tmp_path: Path, c
     skill_path = tmp_path / "src" / "agent" / "config" / "skills" / "device-operator" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text("skill", encoding="utf-8")
-    monkeypatch.setattr(main, "REPO_ROOT", tmp_path)
+    _set_roots(monkeypatch, tmp_path)
 
     rc = main.cli([
         "--skill", "device-operator",
@@ -463,7 +468,7 @@ def test_cli_rejects_cross_skill_split_suite(monkeypatch, tmp_path: Path, capsys
     skill_path = tmp_path / "src" / "agent" / "config" / "skills" / "device-operator" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text("skill", encoding="utf-8")
-    monkeypatch.setattr(main, "REPO_ROOT", tmp_path)
+    _set_roots(monkeypatch, tmp_path)
 
     rc = main.cli([
         "--skill", "device-operator",
@@ -479,7 +484,7 @@ def test_cli_rejects_invalid_run_id(monkeypatch, tmp_path: Path, capsys):
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text("skill", encoding="utf-8")
     _write_device_operator_suites(tmp_path)
-    monkeypatch.setattr(main, "REPO_ROOT", tmp_path)
+    _set_roots(monkeypatch, tmp_path)
     monkeypatch.setattr(
         main,
         "optimize_skill",
@@ -523,7 +528,7 @@ def test_cli_constructs_mobilegym_backend(monkeypatch, tmp_path: Path):
             best_skill="optimized skill",
         )
 
-    monkeypatch.setattr(main, "REPO_ROOT", tmp_path)
+    _set_roots(monkeypatch, tmp_path)
     monkeypatch.setattr(main, "optimize_skill", fake_optimize_skill)
     monkeypatch.setattr(main, "MobileGymBackend", FakeMobileGymBackend, raising=False)
 
@@ -550,7 +555,7 @@ def test_resolve_skill_path_prefers_shared_skill_over_mobilegym_template(monkeyp
     template = tmp_path / "benchmark" / "mobilegym" / "config" / "skills" / "device-operator" / "SKILL.md"
     template.parent.mkdir(parents=True)
     template.write_text("template", encoding="utf-8")
-    monkeypatch.setattr(main, "REPO_ROOT", tmp_path)
+    _set_roots(monkeypatch, tmp_path)
     monkeypatch.delenv("AIDEN_SKILLS_DIR", raising=False)
 
     assert main._resolve_skill_path("device-operator") == shared
@@ -561,7 +566,7 @@ def test_cli_does_not_use_mobilegym_template_as_skill_source(monkeypatch, tmp_pa
     template.parent.mkdir(parents=True)
     template.write_text("template", encoding="utf-8")
     _write_device_operator_suites(tmp_path)
-    monkeypatch.setattr(main, "REPO_ROOT", tmp_path)
+    _set_roots(monkeypatch, tmp_path)
     monkeypatch.delenv("AIDEN_SKILLS_DIR", raising=False)
 
     rc = main.cli([

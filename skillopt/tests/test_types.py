@@ -1,6 +1,6 @@
 """Unit tests for SkillOpt dataclasses."""
 
-from runner.skillopt.types import FailureSummaryEntry, RawPatch
+from skillopt.types import FailureSummaryEntry, RawPatch
 
 
 def test_failure_summary_entry_defaults_malformed_count_to_zero():

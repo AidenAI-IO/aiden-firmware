@@ -7,7 +7,7 @@ from pathlib import Path
 
 from runner.judge import JudgeConfig
 from runner.suite import Suite, TaskSpec
-from runner.skillopt.types import RolloutResult
+from skillopt.types import RolloutResult
 
 
 class MobileGymBackend:
@@ -43,7 +43,7 @@ class MobileGymBackend:
         judge_cfg: JudgeConfig | None,
     ) -> list[RolloutResult]:
         del suite, tasks, skill_name, skill_path, skill_text, phase, run_id, run_root, judge_cfg
-        raise RuntimeError("SkillOpt MobileGym rollouts have moved to the benchmark WebUI runner")
+        raise RuntimeError("SkillOpt MobileGym rollouts are not available in the standalone SkillOpt CLI yet")
 
     def _suite_label(self, suite: Suite) -> str:
         suites_root = self.benchmark_root / "suites"

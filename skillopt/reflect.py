@@ -14,13 +14,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from runner.skillopt.optimizer_client import (
+from skillopt.optimizer_client import (
     OptimizerConfig,
     OptimizerError,
     chat_optimizer,
     extract_json,
 )
-from runner.skillopt.types import RawPatch, RolloutResult
+from skillopt.types import RawPatch, RolloutResult
 
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"

@@ -45,15 +45,15 @@ def _task() -> TaskSpec:
     )
 
 
-def test_mobilegym_backend_rollout_reports_webui_migration(tmp_path: Path):
-    from runner.skillopt import mobilegym_backend
+def test_mobilegym_backend_rollout_reports_unavailable_cli_backend(tmp_path: Path):
+    from skillopt import mobilegym_backend
 
     benchmark_root = tmp_path / "benchmark"
     _write_mobilegym_config(benchmark_root)
     shared_skills = _write_shared_skills(tmp_path)
     backend = mobilegym_backend.MobileGymBackend(benchmark_root=benchmark_root, shared_skills_dir=shared_skills)
 
-    with pytest.raises(RuntimeError, match="benchmark WebUI"):
+    with pytest.raises(RuntimeError, match="standalone SkillOpt CLI"):
         backend.run_rollout(
             suite=_suite(benchmark_root),
             tasks=[_task()],
@@ -68,7 +68,7 @@ def test_mobilegym_backend_rollout_reports_webui_migration(tmp_path: Path):
 
 
 def test_prepare_source_config_rejects_skill_name_escape(tmp_path: Path):
-    from runner.skillopt import mobilegym_backend
+    from skillopt import mobilegym_backend
 
     benchmark_root = tmp_path / "benchmark"
     _write_mobilegym_config(benchmark_root)

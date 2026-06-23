@@ -355,62 +355,6 @@ def test_loop_planning_suite_uses_tool_hard_assertions():
         assert "keyboard_text" in forbidden
 
 
-def test_device_operator_skillopt_suite_is_ready_for_optimization():
-    suite_path = Path(__file__).resolve().parents[1] / "suites" / "skillopt" / "device-operator" / "device_operator_train.json"
-    suite = load_suite(suite_path)
-    task_by_id = {task.id: task for task in suite.tasks}
-    expected_tasks = {
-        "open_settings_from_home",
-        "open_clock_from_home",
-        "spotlight_type_exact_query",
-        "settings_search_bluetooth_zh",
-        "navigate_back_from_settings_detail",
-        "scroll_settings_until_battery_visible",
-        "recover_unknown_state_to_home",
-        "open_notification_shade",
-        "enter_note_text_after_focus",
-        "clear_existing_note_text",
-        "avoid_repeating_failed_target",
-        "ask_before_privacy_permission",
-    }
-
-    assert suite.name == "device_operator_train"
-    assert "device-operator" in suite.prompt_prefix
-    assert "screenshot" in suite.prompt_prefix
-    assert "shell" in suite.prompt_prefix
-    assert expected_tasks <= set(task_by_id)
-    assert len(suite.tasks) >= 12
-    assert all(task.category in {"single_step", "multi_step"} for task in suite.tasks)
-
-    n_train = int(len(suite.tasks) * 0.7)
-    selection_tasks = suite.tasks[n_train:]
-    assert n_train > 0
-    assert selection_tasks
-
-    assert any(obs.skill_name == "device-operator" for obs in suite.trace_observations)
-    assert any(
-        "same coordinate" in item.check or "相同坐标" in item.check
-        for item in task_by_id["avoid_repeating_failed_target"].rubric
-    )
-    assert any(
-        "permission" in item.check or "隐私" in item.check
-        for item in task_by_id["ask_before_privacy_permission"].rubric
-    )
-
-def test_device_operator_skillopt_validation_suite_is_held_out():
-    suites_root = Path(__file__).resolve().parents[1] / "suites" / "skillopt" / "device-operator"
-    train_suite = load_suite(suites_root / "device_operator_train.json")
-    validation_suite = load_suite(suites_root / "device_operator_verification.json")
-    train_ids = {task.id for task in train_suite.tasks}
-    validation_ids = {task.id for task in validation_suite.tasks}
-
-    assert validation_suite.name == "device_operator_verification"
-    assert "device-operator" in validation_suite.prompt_prefix
-    assert len(validation_suite.tasks) >= 4
-    assert validation_ids.isdisjoint(train_ids)
-    assert any(obs.skill_name == "device-operator" for obs in validation_suite.trace_observations)
-    assert all(task.category in {"single_step", "multi_step"} for task in validation_suite.tasks)
-
 def test_memory_suite_covers_representative_memory_behaviors():
     suite_path = Path(__file__).resolve().parents[1] / "suites" / "memory_v1.json"
     suite = load_suite(suite_path)

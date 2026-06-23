@@ -12,7 +12,7 @@ Strategy (simplified from microsoft/SkillOpt):
 from __future__ import annotations
 from collections import OrderedDict
 
-from runner.skillopt.types import Edit, Patch, RawPatch
+from skillopt.types import Edit, Patch, RawPatch
 
 
 def _edit_key(edit: Edit) -> tuple[str, str, str]:

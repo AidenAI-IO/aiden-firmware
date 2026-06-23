@@ -1,6 +1,6 @@
 """Unit tests for patch.py."""
-from runner.skillopt.patch import apply_edit, apply_patch
-from runner.skillopt.types import Edit, Patch
+from skillopt.patch import apply_edit, apply_patch
+from skillopt.types import Edit, Patch
 
 
 def test_apply_edit_append():

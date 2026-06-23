@@ -4,8 +4,8 @@ from pathlib import Path
 import pytest
 
 from runner.suite import HardAssertions, RubricItem, Suite, TaskSpec
-from runner.skillopt import orchestrator
-from runner.skillopt.types import Edit, Patch, RawPatch, RolloutResult
+from skillopt import orchestrator
+from skillopt.types import Edit, Patch, RawPatch, RolloutResult
 
 
 def _task(task_id: str) -> TaskSpec:

@@ -20,17 +20,17 @@ from pathlib import Path
 
 from runner.judge import JudgeConfig
 from runner.suite import Suite, TaskSpec
-from runner.skillopt.aggregate import aggregate, format_rejected_context
-from runner.skillopt.backends import AidenDeviceBackend, SkillOptRolloutBackend
-from runner.skillopt.optimizer_client import OptimizerConfig
-from runner.skillopt.patch import apply_patch_with_report
-from runner.skillopt.reflect import run_reflect
-from runner.skillopt.score import (
+from skillopt.aggregate import aggregate, format_rejected_context
+from skillopt.backends import AidenDeviceBackend, SkillOptRolloutBackend
+from skillopt.optimizer_client import OptimizerConfig
+from skillopt.patch import apply_patch_with_report
+from skillopt.reflect import run_reflect
+from skillopt.score import (
     aggregate_score,
     validation_gate,
     DEFAULT_MIN_DELTA,
 )
-from runner.skillopt.types import Edit, OptimizationResult, PhaseSummary, ScoreSummary, StepDecision
+from skillopt.types import Edit, OptimizationResult, PhaseSummary, ScoreSummary, StepDecision
 
 
 @dc.dataclass
@@ -49,7 +49,7 @@ class OptimizationConfig:
     judge_cfg: JudgeConfig | None = None
     agent_url: str = "http://localhost:8080"
     run_id: str = dc.field(default_factory=lambda: datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S"))
-    artifact_root: Path = Path("runs/skillopt")
+    artifact_root: Path = Path("skillopt/runs")
     early_stop_patience: int = 3         # stop if no improvement for N steps
     rollout_backend: SkillOptRolloutBackend | None = None
 

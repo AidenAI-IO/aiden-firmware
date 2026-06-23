@@ -8,8 +8,8 @@ from runner.judge import JudgeConfig
 from runner.models import HardAssertionResults, RubricVerdict, TaskResult
 from runner.runtask import evaluate_task_history
 from runner.suite import Suite, TaskSpec
-from runner.skillopt.score import task_result_to_rollout
-from runner.skillopt.types import RolloutResult
+from skillopt.score import task_result_to_rollout
+from skillopt.types import RolloutResult
 
 
 class MobileGymResultError(RuntimeError):

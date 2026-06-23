@@ -1264,11 +1264,12 @@ def list_benchmark_suites(suites_dir: Path) -> list[dict[str, Any]]:
     if not suites_dir.exists():
         return suites
     for path in sorted(suites_dir.rglob("*.json")):
+        rel = path.relative_to(suites_dir)
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception as exc:
             item = {
-                "key": path.relative_to(suites_dir).as_posix(),
+                "key": rel.as_posix(),
                 "name": path.stem,
                 "kind": "invalid",
                 "task_count": 0,
@@ -1282,7 +1283,7 @@ def list_benchmark_suites(suites_dir: Path) -> list[dict[str, Any]]:
                 {str(task.get("category")) for task in entries if isinstance(task, dict) and task.get("category")}
             )
             item = {
-                "key": path.relative_to(suites_dir).as_posix(),
+                "key": rel.as_posix(),
                 "name": str(data.get("name") or path.stem),
                 "kind": kind,
                 "task_count": len(entries),

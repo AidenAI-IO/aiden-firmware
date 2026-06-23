@@ -7,9 +7,9 @@ from runner.agent_client import AgentClient
 from runner.judge import JudgeConfig
 from runner.runtask import run_one_task
 from runner.suite import Suite, TaskSpec
-from runner.skillopt.score import task_result_to_rollout
-from runner.skillopt.skill_override import with_skill_override
-from runner.skillopt.types import RolloutResult
+from skillopt.score import task_result_to_rollout
+from skillopt.skill_override import with_skill_override
+from skillopt.types import RolloutResult
 
 
 class SkillOptRolloutBackend(Protocol):

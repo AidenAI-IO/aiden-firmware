@@ -1,6 +1,6 @@
 """Unit tests for aggregate.py."""
-from runner.skillopt.aggregate import aggregate, format_rejected_context
-from runner.skillopt.types import Edit, Patch, RawPatch
+from skillopt.aggregate import aggregate, format_rejected_context
+from skillopt.types import Edit, Patch, RawPatch
 
 
 def test_aggregate_dedupes_identical_edits():

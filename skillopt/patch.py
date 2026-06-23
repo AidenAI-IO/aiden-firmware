@@ -7,7 +7,7 @@ Vendored from microsoft/SkillOpt (skillopt/optimizer/skill.py), simplified:
 from __future__ import annotations
 from typing import Any
 
-from runner.skillopt.types import Edit, Patch
+from skillopt.types import Edit, Patch
 
 
 def _edit_fields(edit: Edit | dict) -> tuple[str, str, str]:
