@@ -49,6 +49,24 @@ static AUDIO_BIT_WIDTH_E to_bit_width(int bits) {
     }
 }
 
+static bool parse_bool_env_01(const char* name, bool& value) {
+    const char* raw = getenv(name);
+    if (!raw) {
+        value = false;
+        return true;
+    }
+    if (strcmp(raw, "0") == 0) {
+        value = false;
+        return true;
+    }
+    if (strcmp(raw, "1") == 0) {
+        value = true;
+        return true;
+    }
+    fprintf(stderr, "[AudioCapture] invalid %s=%s, expected 0 or 1\n", name, raw);
+    return false;
+}
+
 static bool configure_ao_volume_curve(AUDIO_DEV dev_id) {
     AUDIO_VOLUME_CURVE_S volume_curve;
     memset(&volume_curve, 0, sizeof(volume_curve));
@@ -653,17 +671,26 @@ bool AudioCapture::init(const AudioConfig& config) {
         maybe_sys_deinit();
     };
 
-    // Parse VQE environment variables
-    const char* vqe_env = getenv("AIDEN_AUDIO_VQE");
-    impl_->vqe_enabled = (vqe_env && atoi(vqe_env) != 0);
+    // Parse VQE environment variables. Boolean flags intentionally accept only
+    // "0" and "1" so invalid values are not silently coerced by atoi().
+    if (!parse_bool_env_01("AIDEN_AUDIO_VQE_STRICT", impl_->vqe_strict)) {
+        rollback_init();
+        return false;
+    }
+
+    if (!parse_bool_env_01("AIDEN_AUDIO_VQE", impl_->vqe_enabled)) {
+        if (impl_->vqe_strict) {
+            rollback_init();
+            return false;
+        }
+        fprintf(stderr, "[AudioCapture] VQE disabled, falling back to raw capture\n");
+        impl_->vqe_enabled = false;
+    }
 
     const char* vqe_config_env = getenv("AIDEN_AUDIO_VQE_CONFIG");
     if (vqe_config_env) {
         impl_->vqe_config_path = vqe_config_env;
     }
-
-    const char* vqe_strict_env = getenv("AIDEN_AUDIO_VQE_STRICT");
-    impl_->vqe_strict = (vqe_strict_env && atoi(vqe_strict_env) != 0);
 
     // VQE mode requires specific format
     if (impl_->vqe_enabled) {
