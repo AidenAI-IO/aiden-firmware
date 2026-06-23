@@ -1,0 +1,123 @@
+package agent
+
+import (
+	"context"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestPhoneBridgeRestorerReturnsForegroundFromDynamicIsland(t *testing.T) {
+	bridge := NewPhoneBridge(nil)
+	defer bridge.queue.Stop()
+	bridge.mu.Lock()
+	bridge.platform = "ios"
+	bridge.appState = "background"
+	bridge.returnEntry = "dynamic_island"
+	bridge.returnEntrySeen = true
+	bridge.returnEntryOK = true
+	bridge.mu.Unlock()
+
+	restorer := NewPhoneBridgeRestorer(bridge, nil)
+	restorer.waitTimeout = time.Second
+	tapped := false
+	restorer.tapReturnEntry = func(context.Context, PhoneBridgeStatus) error {
+		tapped = true
+		go func() {
+			time.Sleep(10 * time.Millisecond)
+			bridge.mu.Lock()
+			bridge.connected = true
+			bridge.platform = "ios"
+			bridge.appState = "active"
+			bridge.returnEntry = "none"
+			bridge.returnEntrySeen = true
+			bridge.returnEntryOK = false
+			bridge.lastHeartbeatAt = time.Now()
+			bridge.mu.Unlock()
+		}()
+		return nil
+	}
+
+	restored, err := restorer.EnsureForeground(context.Background())
+	if err != nil {
+		t.Fatalf("EnsureForeground() error = %v", err)
+	}
+	if !restored {
+		t.Fatal("EnsureForeground() restored = false, want true")
+	}
+	if !tapped {
+		t.Fatal("return entry was not tapped")
+	}
+	if !phoneBridgeReadyForCommand(bridge.Status()) {
+		t.Fatalf("bridge status not ready after restore: %+v", bridge.Status())
+	}
+}
+
+func TestPhoneBridgeRestorerDoesNotTapWithoutReturnEntry(t *testing.T) {
+	bridge := NewPhoneBridge(nil)
+	defer bridge.queue.Stop()
+	bridge.mu.Lock()
+	bridge.platform = "ios"
+	bridge.appState = "background"
+	bridge.returnEntry = "none"
+	bridge.returnEntryOK = false
+	bridge.mu.Unlock()
+
+	restorer := NewPhoneBridgeRestorer(bridge, nil)
+	restorer.tapReturnEntry = func(context.Context, PhoneBridgeStatus) error {
+		t.Fatal("tapReturnEntry should not be called without a return entry")
+		return nil
+	}
+
+	restored, err := restorer.EnsureForeground(context.Background())
+	if err == nil {
+		t.Fatal("EnsureForeground() error = nil, want missing return entry error")
+	}
+	if restored {
+		t.Fatal("EnsureForeground() restored = true, want false")
+	}
+	if !strings.Contains(err.Error(), "no supported Dynamic Island return entry") {
+		t.Fatalf("EnsureForeground() error = %v, want return entry message", err)
+	}
+}
+
+func TestPhoneBridgeRestorerDoesNotTapLockScreenLiveActivity(t *testing.T) {
+	bridge := NewPhoneBridge(nil)
+	defer bridge.queue.Stop()
+	bridge.mu.Lock()
+	bridge.platform = "ios"
+	bridge.appState = "background"
+	bridge.returnEntry = "live_activity"
+	bridge.returnEntrySeen = true
+	bridge.returnEntryOK = true
+	bridge.mu.Unlock()
+
+	restorer := NewPhoneBridgeRestorer(bridge, nil)
+	restorer.tapReturnEntry = func(context.Context, PhoneBridgeStatus) error {
+		t.Fatal("tapReturnEntry should not be called for lock-screen Live Activity")
+		return nil
+	}
+
+	restored, err := restorer.EnsureForeground(context.Background())
+	if err == nil {
+		t.Fatal("EnsureForeground() error = nil, want unsupported return entry error")
+	}
+	if restored {
+		t.Fatal("EnsureForeground() restored = true, want false")
+	}
+	if !strings.Contains(err.Error(), "no supported Dynamic Island return entry") {
+		t.Fatalf("EnsureForeground() error = %v, want unsupported Dynamic Island message", err)
+	}
+}
+
+func TestPhoneBridgeReadyForCommandRejectsBackgroundIOS(t *testing.T) {
+	if phoneBridgeReadyForCommand(PhoneBridgeStatus{Connected: true, Platform: "ios", AppState: "background"}) {
+		t.Fatal("background iOS bridge should not be considered ready for foreground command")
+	}
+	if !phoneBridgeReadyForCommand(PhoneBridgeStatus{Connected: true, Platform: "ios", AppState: "active"}) {
+		t.Fatal("active iOS bridge should be ready")
+	}
+	if !phoneBridgeReadyForCommand(PhoneBridgeStatus{Connected: true, Platform: "android", AppState: "background"}) {
+		t.Fatal("connected non-iOS bridge should remain ready")
+	}
+}

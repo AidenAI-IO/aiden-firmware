@@ -34,6 +34,13 @@ func (s *Server) handleScreenshotJPEG(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Frame-Height", fmt.Sprintf("%d", result.Height))
 	w.Header().Set("X-Source-Width", fmt.Sprintf("%d", result.SourceWidth))
 	w.Header().Set("X-Source-Height", fmt.Sprintf("%d", result.SourceHeight))
+	if result.OriginalScreenWidthPixels != nil && result.OriginalScreenHeightPixels != nil {
+		w.Header().Set("X-Original-Screen-Width", fmt.Sprintf("%d", *result.OriginalScreenWidthPixels))
+		w.Header().Set("X-Original-Screen-Height", fmt.Sprintf("%d", *result.OriginalScreenHeightPixels))
+		w.Header().Set("X-Original-Screen-Valid", "true")
+	} else {
+		w.Header().Set("X-Original-Screen-Valid", "false")
+	}
 	if result.SourceActiveArea != nil {
 		w.Header().Set("X-Source-Active-X", fmt.Sprintf("%d", result.SourceActiveArea.X))
 		w.Header().Set("X-Source-Active-Y", fmt.Sprintf("%d", result.SourceActiveArea.Y))

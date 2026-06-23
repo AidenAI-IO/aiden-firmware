@@ -3,6 +3,7 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -152,6 +153,7 @@ type Config struct {
 	ScreenStableTimeoutMs      int                     `toml:"screen_stable_timeout_ms,omitempty"`
 	ScreenStableMs             int                     `toml:"screen_stable_ms,omitempty"`
 	ScreenStableDiffThreshold  float64                 `toml:"screen_stable_diff_threshold,omitempty"`
+	DefaultPlatform            string                  `toml:"default_platform,omitempty"` // "ios", "android", "mac"
 	SkillsDirs                 []string                `toml:"skills_dirs"`
 	BundledSkillsDir           string                  `toml:"bundled_skills_dir,omitempty"`
 	SkillMergeModel            SkillMergeModel         `toml:"-"`
@@ -174,6 +176,10 @@ type TelemetryConfig struct {
 
 type LiveActivityConfig struct {
 	Enabled        *bool  `toml:"enabled,omitempty"`
+	RelayURL       string `toml:"relay_url,omitempty"`
+	RelayAPIKey    string `toml:"relay_api_key,omitempty"`
+	BoardID        string `toml:"board_id,omitempty"`
+	PhoneID        string `toml:"phone_id,omitempty"`
 	BundleID       string `toml:"bundle_id,omitempty"`
 	Topic          string `toml:"topic,omitempty"`
 	Environment    string `toml:"environment,omitempty"`
@@ -224,14 +230,15 @@ type TTSProviderCredentials struct {
 }
 
 type STTConfig struct {
-	Provider        string `toml:"provider"` // "openai", "openai-whisper", "openrouter", "tencent-asr" (legacy: "tencent", "tencent_asr")
+	Provider        string `toml:"provider"` // "openai-whisper", "tencent-asr" (legacy: "openai", "tencent", "tencent_asr")
 	APIKey          string `toml:"api_key,omitempty"`
 	Model           string `toml:"model,omitempty"`
 	BaseURL         string `toml:"base_url,omitempty"`
+	Language        string `toml:"language,omitempty"` // "zh" (Chinese) or "en" (English)
 	SecretID        string `toml:"secret_id,omitempty"`
 	SecretKey       string `toml:"secret_key,omitempty"`
 	Region          string `toml:"region,omitempty"`
-	EngineModelType string `toml:"engine_model_type,omitempty"`
+	EngineModelType string `toml:"engine_model_type,omitempty"` // Deprecated: use Language instead
 }
 
 type AudioConfig struct {
@@ -895,6 +902,11 @@ func (l LiveActivityConfig) Validate() error {
 	if l.TimeoutSec < 0 {
 		return fmt.Errorf("live_activity.timeout_sec must be >= 0, got %d (0 uses default)", l.TimeoutSec)
 	}
+	if relayURL := strings.TrimSpace(l.RelayURL); relayURL != "" {
+		if _, err := normalizeLiveActivityRelayURL(relayURL); err != nil {
+			return err
+		}
+	}
 	if !l.APNsConfigured() {
 		return nil
 	}
@@ -902,6 +914,24 @@ func (l LiveActivityConfig) Validate() error {
 		return errors.New("live_activity.bundle_id or live_activity.topic is required when APNs credentials are configured")
 	}
 	return nil
+}
+
+func normalizeLiveActivityRelayURL(raw string) (string, error) {
+	endpoint := strings.TrimRight(strings.TrimSpace(raw), "/")
+	if endpoint == "" {
+		return "", errors.New("missing live_activity.relay_url")
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", fmt.Errorf("invalid live_activity.relay_url: %s", raw)
+	}
+	if !strings.EqualFold(parsed.Scheme, "https") {
+		return "", fmt.Errorf("invalid live_activity.relay_url scheme: %s (https required)", parsed.Scheme)
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", errors.New("invalid live_activity.relay_url: userinfo, query, and fragment are not allowed")
+	}
+	return endpoint, nil
 }
 
 func (l LiveActivityConfig) EnabledOrDefault() bool {
@@ -924,6 +954,17 @@ func (l LiveActivityConfig) APNsConfigured() bool {
 	return strings.TrimSpace(l.TeamID) != "" &&
 		strings.TrimSpace(l.KeyID) != "" &&
 		(strings.TrimSpace(l.PrivateKeyPath) != "" || strings.TrimSpace(l.PrivateKeyPEM) != "")
+}
+
+func (l LiveActivityConfig) RelayConfigured() bool {
+	return strings.TrimSpace(l.RelayURL) != ""
+}
+
+func (l LiveActivityConfig) BoardIDOrDefault() string {
+	if boardID := strings.TrimSpace(l.BoardID); boardID != "" {
+		return boardID
+	}
+	return "default"
 }
 
 func (l LiveActivityConfig) APNsTopic() string {

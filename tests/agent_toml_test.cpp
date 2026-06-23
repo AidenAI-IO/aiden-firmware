@@ -41,7 +41,6 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.voice_streaming_tts_enabled = false;
     cfg.voice_tool_call_speech = false;
     cfg.voice_progress_speech_enabled = false;
-    cfg.voice_speech_summary_enabled = false;
     cfg.voice_max_response_tokens = 240;
     cfg.max_iterations = 6;
     cfg.force_simple_loop = true;
@@ -100,6 +99,20 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.telemetry.tags.push_back("field-test");
     cfg.telemetry.environment = "staging";
 
+    cfg.live_activity.enabled = true;
+    cfg.live_activity.relay_url = "https://relay.example.com";
+    cfg.live_activity.relay_api_key = "relay-secret";
+    cfg.live_activity.board_id = "board-001";
+    cfg.live_activity.phone_id = "phone-001";
+    cfg.live_activity.bundle_id = "com.aiden.bridge";
+    cfg.live_activity.topic = "com.aiden.bridge.push-type.liveactivity";
+    cfg.live_activity.environment = "production";
+    cfg.live_activity.team_id = "TEAM123456";
+    cfg.live_activity.key_id = "KEY123456";
+    cfg.live_activity.private_key_path = "/userdata/agent/AuthKey_KEY123456.p8";
+    cfg.live_activity.private_key_pem = "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----";
+    cfg.live_activity.timeout_sec = 12;
+
     std::string path = make_temp_path("roundtrip.toml");
     std::string err;
     REQUIRE(aiden::save_agent_toml(path.c_str(), cfg, &err));
@@ -135,7 +148,6 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
 	CHECK(loaded.voice_streaming_tts_enabled == false);
 	CHECK(loaded.voice_tool_call_speech == false);
 	CHECK(loaded.voice_progress_speech_enabled == false);
-	CHECK(loaded.voice_speech_summary_enabled == false);
 	CHECK(loaded.voice_max_response_tokens == 240);
 	CHECK(loaded.max_iterations == 6);
 	CHECK(loaded.force_simple_loop == true);
@@ -194,6 +206,38 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.telemetry.tags[0] == "aiden-hardware");
     CHECK(loaded.telemetry.tags[1] == "field-test");
     CHECK(loaded.telemetry.environment == "staging");
+
+    CHECK(loaded.live_activity.enabled == true);
+    CHECK(loaded.live_activity.relay_url == "https://relay.example.com");
+    CHECK(loaded.live_activity.relay_api_key == "relay-secret");
+    CHECK(loaded.live_activity.has_relay_api_key == true);
+    CHECK(loaded.live_activity.board_id == "board-001");
+    CHECK(loaded.live_activity.phone_id == "phone-001");
+    CHECK(loaded.live_activity.bundle_id == "com.aiden.bridge");
+    CHECK(loaded.live_activity.topic == "com.aiden.bridge.push-type.liveactivity");
+    CHECK(loaded.live_activity.environment == "production");
+    CHECK(loaded.live_activity.team_id == "TEAM123456");
+    CHECK(loaded.live_activity.key_id == "KEY123456");
+    CHECK(loaded.live_activity.private_key_path == "/userdata/agent/AuthKey_KEY123456.p8");
+    CHECK(loaded.live_activity.private_key_pem == "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----");
+    CHECK(loaded.live_activity.has_private_key_pem == true);
+    CHECK(loaded.live_activity.timeout_sec == 12);
+
+    std::remove(path.c_str());
+}
+
+TEST_CASE("agent_toml rejects negative live_activity timeout") {
+    std::string path = make_temp_path("negative_live_activity_timeout.toml");
+    {
+        std::ofstream out(path);
+        out << "[live_activity]\n"
+            << "timeout_sec = -1\n";
+    }
+
+    aiden::AgentToml loaded;
+    std::string err;
+    CHECK_FALSE(aiden::load_agent_toml(path.c_str(), loaded, &err));
+    CHECK(err.find("must be >= 0") != std::string::npos);
 
     std::remove(path.c_str());
 }

@@ -157,6 +157,100 @@ def test_generate_report_includes_tool_hard_assertion_failures(tmp_path: Path):
     ]
 
 
+def test_generate_report_embeds_failed_task_error_log(tmp_path: Path):
+    run_dir = tmp_path / "2026-05-28_091421"
+    task_dir = run_dir / "tasks" / "task-1"
+    task_dir.mkdir(parents=True)
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "2026-05-28_091421",
+                "suite_path": "suite.json",
+                "totals": {"tasks": 1, "passed": 0, "failed": 1, "skipped": 0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "results.jsonl").write_text(
+        json.dumps(
+            {
+                "task_id": "task-1",
+                "category": "multi_step",
+                "status": "failed",
+                "rubric_pass_count": 0,
+                "rubric_total": 1,
+                "hard_assertion_failures": [
+                    {
+                        "id": "max_tool_calls",
+                        "label": "Max Tool Calls",
+                        "requirement": "Use at most 1 tool call(s).",
+                        "actual": "Used 2 tool call(s).",
+                    }
+                ],
+                "metrics": {"tool_calls": 2, "wall_ms": 9},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (task_dir / "trace.json").write_text(json.dumps({"final_response": "wrong", "events": ["TraceBoom"]}), encoding="utf-8")
+    (task_dir / "history.json").write_text(json.dumps([{"type": "user", "content": "Do task"}]), encoding="utf-8")
+    (task_dir / "judge.json").write_text(json.dumps({"reason": "JudgeBoom"}), encoding="utf-8")
+
+    html = generate_report_html(run_dir)
+    task = _report_tasks(html)[0]
+
+    assert "Max Tool Calls" in task["error_log_detail"]
+    assert "Requirement: Use at most 1 tool call(s)." in task["error_log_detail"]
+    assert "Actual: Used 2 tool call(s)." in task["error_log_detail"]
+    assert "JudgeBoom" in task["error_log_detail"]
+    assert "evidence_detail" not in task
+    assert "tasks/task-1/trace.json" in task["artifacts_detail"]
+    assert "tasks/task-1/history.json" in task["artifacts_detail"]
+    assert "<strong>Error Log</strong>" in html
+
+
+def test_generate_report_accepts_relative_run_dir_with_task_artifacts(tmp_path: Path, monkeypatch):
+    workspace = tmp_path / "benchmark"
+    run_dir = workspace / "runs" / "2026-05-28_091421"
+    task_dir = run_dir / "tasks" / "task-1"
+    task_dir.mkdir(parents=True)
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "2026-05-28_091421",
+                "suite_path": "suite.json",
+                "totals": {"tasks": 1, "passed": 0, "failed": 1, "skipped": 0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "results.jsonl").write_text(
+        json.dumps(
+            {
+                "task_id": "task-1",
+                "category": "multi_step",
+                "status": "failed",
+                "rubric_pass_count": 0,
+                "rubric_total": 1,
+                "metrics": {"tool_calls": 2, "wall_ms": 9},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (task_dir / "trace.json").write_text(json.dumps({"final_response": "wrong"}), encoding="utf-8")
+    (task_dir / "history.json").write_text(json.dumps([{"type": "user", "content": "Do task"}]), encoding="utf-8")
+    (task_dir / "judge.json").write_text(json.dumps({"reason": "JudgeBoom"}), encoding="utf-8")
+
+    monkeypatch.chdir(workspace)
+    html = generate_report_html(Path("runs") / "2026-05-28_091421")
+    task = _report_tasks(html)[0]
+
+    assert "tasks/task-1/trace.json" in task["artifacts_detail"]
+    assert "JudgeBoom" in task["error_log_detail"]
+
+
 def test_generate_report_includes_full_trace_with_screenshots(tmp_path: Path):
     run_dir = tmp_path / "2026-05-28_091421"
     task_dir = run_dir / "tasks" / "task-1"
@@ -231,3 +325,35 @@ def test_generate_report_includes_full_trace_with_screenshots(tmp_path: Path):
     assert f"data:image/jpeg;base64,{base64.b64encode(post).decode('ascii')}" in html
     assert f"data:image/jpeg;base64,{base64.b64encode(step).decode('ascii')}" not in html
     assert image_payload not in html
+
+
+def test_generate_report_includes_llm_analysis_section(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "manifest.json").write_text(
+        json.dumps({"run_id": "run", "totals": {"tasks": 0, "passed": 0, "failed": 0}}),
+        encoding="utf-8",
+    )
+    (run_dir / "results.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "llm_analysis.md").write_text(
+        "# LLM Benchmark Analysis\n\nRoot cause summary", encoding="utf-8"
+    )
+
+    html = generate_report_html(run_dir)
+
+    assert "LLM Analysis" in html
+    assert "Root cause summary" in html
+
+
+def test_upload_report_uploads_analysis_artifacts(tmp_path: Path):
+    run_dir = tmp_path / "run-1"
+    run_dir.mkdir()
+    (run_dir / "manifest.json").write_text('{"run_id":"run-1"}', encoding="utf-8")
+    (run_dir / "llm_analysis.md").write_text("analysis md", encoding="utf-8")
+    (run_dir / "llm_analysis.json").write_text('{"summary":"analysis"}', encoding="utf-8")
+    client = RecordingClient()
+
+    assert upload_report(client, "<html></html>", run_dir) is True
+    command = client.calls[0][1]["command"]
+    assert "llm_analysis.md" in command
+    assert "llm_analysis.json" in command

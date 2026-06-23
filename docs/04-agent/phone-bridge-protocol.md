@@ -11,6 +11,8 @@ This document defines the WebSocket command protocol between the hardware board 
 - **Direction**: App acts as WebSocket client actively connecting to board (WebSocket server)
 - **Network**: Via USB ECM established `192.168.42.0/24` subnet, board fixed IP `192.168.42.1`
 
+WebSocket is the foreground fast path. The board also exposes `/api/phone-bridge/commands` and `/api/phone-bridge/results` HTTP queue endpoints, but React Native app execution, JS timers, and WebSocket in the iOS background must not be treated as a reliable tool execution path. On iOS, Phone Bridge tools are foreground capabilities: if the app is backgrounded and reports `return_entry=dynamic_island` with `return_entry_available=true`, board-side tools restore Aiden through Dynamic Island, wait for WebSocket reconnection and active app state, then execute the command. Lock-screen Live Activity entries require visual confirmation instead of blind tapping.
+
 ## Heartbeat
 
 The app should send a heartbeat message every 10-15 seconds (JSON with id `"heartbeat"` or `"ping"`), and the board will echo it back. The app uses this to detect connection liveness.
@@ -58,6 +60,7 @@ The app can also actively send event messages. Events reuse the `BridgeCommandRe
 Current events:
 
 - `phone_environment`: App reports phone environment snapshot upon WebSocket connection success and returning from background to foreground.
+- `phone_app_state`: App reports the last visible app lifecycle state when it changes among `active`, `background`, and `inactive`, plus whether a Live Activity / Dynamic Island entry is available to return to Aiden. This state is for diagnostics and strategy decisions; it does not mean the app can execute permanently in iOS background.
 
 Example:
 
@@ -111,7 +114,23 @@ Example:
 }
 ```
 
-The board writes the latest complete environment to the `environment` field of `GET /api/phone-bridge/status`. Each Agent runtime context only injects a streamlined summary: connection status, system type/version, language/region/timezone, screen dimensions, confirmed openable third-party candidate apps. Environment is cleared on disconnection to avoid using stale information.
+The board writes the latest complete environment to the `environment` field of `GET /api/phone-bridge/status`, and keeps `app_state`, `return_entry`, and `return_entry_available` for Agent runtime context. Each Agent runtime context only injects a streamlined summary: connection status, app foreground/background state, return entry, system type/version, language/region/timezone, screen dimensions, and confirmed openable third-party candidate apps. Environment is cleared on disconnection to avoid using stale information, but the latest app foreground/background state can be retained to decide whether Aiden should be restored through Dynamic Island first.
+
+`phone_app_state` example:
+
+```json
+{
+  "id": "phone_app_state",
+  "ok": true,
+  "method": "phone_app_state",
+  "data": {
+    "app_state": "background",
+    "return_entry": "dynamic_island",
+    "return_entry_available": true,
+    "reported_at": "2026-06-10T03:20:05Z"
+  }
+}
+```
 
 `system_apps` represents system built-in apps/capabilities; on iOS doesn't depend on `canOpenURL` to determine existence; `third_party_apps` represents third-party candidate apps, probed via `canOpenURL` on iOS and package launchability on Android. `available_apps` is a legacy third-party candidate summary for old board compatibility; new implementations should prioritize reading the split fields.
 

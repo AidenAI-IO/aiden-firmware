@@ -1,0 +1,329 @@
+import json
+
+from runner import analysis
+
+
+def test_config_from_env_enables_analysis_and_reads_limits(monkeypatch):
+    monkeypatch.setenv("AIDEN_BENCHMARK_LLM_ANALYSIS", "1")
+    monkeypatch.setenv("AIDEN_BENCHMARK_ANALYSIS_MODEL", "anthropic/claude-sonnet-4-6")
+    monkeypatch.setenv("AIDEN_BENCHMARK_ANALYSIS_MAX_LOG_BYTES", "1234")
+    monkeypatch.setenv("AIDEN_BENCHMARK_ANALYSIS_MAX_CODE_BYTES", "5678")
+    monkeypatch.setenv("AIDEN_BENCHMARK_ANALYSIS_TIMEOUT_SEC", "9")
+
+    cfg = analysis.config_from_env()
+
+    assert cfg.enabled is True
+    assert cfg.model == "anthropic/claude-sonnet-4-6"
+    assert cfg.max_log_bytes == 1234
+    assert cfg.max_code_bytes == 5678
+    assert cfg.timeout_sec == 9
+
+
+def test_resolve_analysis_api_key_uses_expected_precedence(monkeypatch):
+    monkeypatch.setenv("AIDEN_BENCHMARK_ANALYSIS_API_KEY_ENV", "CUSTOM_ANALYSIS_KEY")
+    monkeypatch.setenv("CUSTOM_ANALYSIS_KEY", "custom-secret")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-secret")
+    monkeypatch.setenv("MODEL_API_KEY", "model-secret")
+    monkeypatch.setenv("AIDEN_MODEL_API_KEY", "aiden-secret")
+
+    cfg = analysis.AnalysisConfig(enabled=True)
+
+    assert analysis.resolve_analysis_api_key(cfg) == ("CUSTOM_ANALYSIS_KEY", "custom-secret")
+
+    monkeypatch.delenv("AIDEN_BENCHMARK_ANALYSIS_API_KEY_ENV")
+    monkeypatch.delenv("CUSTOM_ANALYSIS_KEY")
+    cfg = analysis.AnalysisConfig(enabled=True)
+    assert analysis.resolve_analysis_api_key(cfg) == ("OPENROUTER_API_KEY", "openrouter-secret")
+
+    monkeypatch.delenv("OPENROUTER_API_KEY")
+    assert analysis.resolve_analysis_api_key(cfg) == ("MODEL_API_KEY", "model-secret")
+
+    monkeypatch.delenv("MODEL_API_KEY")
+    assert analysis.resolve_analysis_api_key(cfg) == ("AIDEN_MODEL_API_KEY", "aiden-secret")
+
+
+def test_redact_removes_known_and_custom_secrets(monkeypatch):
+    monkeypatch.setenv("AIDEN_BENCHMARK_ANALYSIS_API_KEY_ENV", "CUSTOM_ANALYSIS_KEY")
+    monkeypatch.setenv("CUSTOM_ANALYSIS_KEY", "custom-secret-value")
+    text = (
+        "OPENROUTER_API_KEY=sk-or-v1-secret bearer Bearer abcdefghijklmnop "
+        "jwt abcdefgh.ijklmnop.qrstuvwx CUSTOM_ANALYSIS_KEY=custom-secret-value "
+        'api_key = "quoted-secret" {"api_key":"json-secret"} Authorization: Basic basicsecret123'
+    )
+
+    redacted = analysis.redact_text(
+        text, analysis.AnalysisConfig(enabled=True, api_key_env="CUSTOM_ANALYSIS_KEY")
+    )
+
+    assert "sk-or-v1-secret" not in redacted
+    assert "abcdefghijklmnop" not in redacted
+    assert "abcdefgh.ijklmnop.qrstuvwx" not in redacted
+    assert "custom-secret-value" not in redacted
+    assert "quoted-secret" not in redacted
+    assert "json-secret" not in redacted
+    assert "basicsecret123" not in redacted
+    assert "[REDACTED" in redacted
+
+
+def test_render_markdown_includes_clusters_and_recommendations():
+    payload = {
+        "summary": "Two failures share a timeout pattern.",
+        "classification_counts": {"project_code_issue": 1},
+        "failure_clusters": [
+            {
+                "title": "Chat timeout",
+                "task_ids": ["suite.task_a"],
+                "suspected_cause": "Daemon did not answer",
+                "category": "project_code_issue",
+                "confidence": "medium",
+                "evidence": ["console.log: timed out"],
+            }
+        ],
+        "recommendations": [
+            {"priority": "high", "target": "src/agent", "suggestion": "Add timeout logging"}
+        ],
+        "evidence_gaps": ["No daemon stderr log"],
+    }
+
+    md = analysis.render_markdown(payload)
+
+    assert "# LLM Benchmark Analysis" in md
+    assert "Two failures" in md
+    assert "suite.task_a" in md
+    assert "Add timeout logging" in md
+    assert "No daemon stderr log" in md
+
+
+def test_collect_context_native_run_includes_failed_task_suite_trace_and_code(tmp_path):
+    repo = tmp_path / "repo"
+    run_dir = repo / "benchmark" / "runs" / "run-1"
+    task_dir = run_dir / "tasks" / "task_a"
+    task_dir.mkdir(parents=True)
+    suite_path = repo / "benchmark" / "suites" / "demo.json"
+    suite_path.parent.mkdir(parents=True)
+    suite_path.write_text(
+        json.dumps({"name": "demo", "tasks": [{"id": "task_a", "prompt": "do it"}]}),
+        encoding="utf-8",
+    )
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {"run_id": "run-1", "suite_path": str(suite_path), "totals": {"tasks": 1, "failed": 1}}
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "results.jsonl").write_text(
+        json.dumps(
+            {
+                "task_id": "task_a",
+                "status": "failed",
+                "metrics": {"agent_error": "WidgetError in widget_handler"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (task_dir / "trace.json").write_text(
+        json.dumps(
+            {"final_response": "failed", "tool_calls": [{"tool": "shell", "input": {"command": "widget_handler"}}]}
+        ),
+        encoding="utf-8",
+    )
+    (task_dir / "history.json").write_text(
+        json.dumps([{"type": "tool_call", "tool_name": "shell", "input": "widget_handler"}]),
+        encoding="utf-8",
+    )
+    code = repo / "src" / "agent" / "widget_handler.go"
+    code.parent.mkdir(parents=True)
+    code.write_text("package agent\nfunc widget_handler() {}\n", encoding="utf-8")
+
+    ctx = analysis.collect_context(run_dir, repo, analysis.AnalysisConfig(enabled=True))
+
+    assert ctx["run"]["kind"] == "native"
+    assert ctx["suite"]["path"].endswith("demo.json")
+    assert ctx["failures"][0]["task_id"] == "task_a"
+    assert "WidgetError" in json.dumps(ctx)
+    assert any(item["path"].endswith("widget_handler.go") for item in ctx["code"])
+
+
+def test_collect_context_native_run_rejects_unsafe_task_artifact_paths(tmp_path):
+    repo = tmp_path / "repo"
+    run_dir = repo / "benchmark" / "runs" / "run-unsafe"
+    (run_dir / "outside").mkdir(parents=True)
+    (run_dir / "outside" / "trace.json").write_text("leaked secret", encoding="utf-8")
+    (run_dir / "manifest.json").write_text(
+        json.dumps({"run_id": "run-unsafe", "totals": {"failed": 1}}), encoding="utf-8"
+    )
+    (run_dir / "results.jsonl").write_text(
+        json.dumps({"task_id": "../outside", "status": "failed", "metrics": {"error": "boom"}}) + "\n",
+        encoding="utf-8",
+    )
+
+    ctx = analysis.collect_context(run_dir, repo, analysis.AnalysisConfig(enabled=True))
+    encoded = json.dumps(ctx, ensure_ascii=False)
+
+    assert "leaked secret" not in encoded
+    assert any("unsafe task artifact path" in warning for warning in ctx["collection_warnings"])
+
+
+def test_collect_context_native_run_reads_repeated_attempt_artifacts(tmp_path):
+    repo = tmp_path / "repo"
+    run_dir = repo / "benchmark" / "runs" / "run-repeat"
+    attempt_dir = run_dir / "tasks" / "task_a" / "attempt_2"
+    attempt_dir.mkdir(parents=True)
+    (run_dir / "manifest.json").write_text(
+        json.dumps({"run_id": "run-repeat", "totals": {"failed": 1}}), encoding="utf-8"
+    )
+    (run_dir / "results.jsonl").write_text(
+        json.dumps(
+            {
+                "task_id": "task_a",
+                "attempt": 2,
+                "status": "failed",
+                "artifact_dir": str(attempt_dir),
+                "metrics": {"error": "AttemptBoom"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (attempt_dir / "trace.json").write_text(json.dumps({"error": "AttemptBoom"}), encoding="utf-8")
+
+    ctx = analysis.collect_context(run_dir, repo, analysis.AnalysisConfig(enabled=True))
+
+    assert "AttemptBoom" in ctx["failures"][0]["trace_excerpt"]
+    assert "tasks/task_a/attempt_2/trace.json" in ctx["failures"][0]["artifact_refs"]
+
+
+def test_collect_context_mobilegym_run_includes_errors_runner_logs_and_bridge_actions(tmp_path):
+    repo = tmp_path / "repo"
+    run_dir = repo / "benchmark" / "runs" / "mobilegym" / "batch-1"
+    shard = run_dir / "clock" / "shard-0"
+    raw = shard / "raw" / "run"
+    raw.mkdir(parents=True)
+    (run_dir / "summary.json").write_text(
+        json.dumps({"batch_id": "batch-1", "tasks": 1, "error": 1}), encoding="utf-8"
+    )
+    (shard / "shard.json").write_text(
+        json.dumps({"suite": "clock", "selected_task_ids": ["clock.Task"], "selected_task_count": 1}),
+        encoding="utf-8",
+    )
+    (shard / "runner.log").write_text("runner saw ClockBoom in clock_runner", encoding="utf-8")
+    (shard / "compose.log").write_text("compose ok", encoding="utf-8")
+    (raw / "console.log").write_text("console ClockBoom", encoding="utf-8")
+    (raw / "errors.jsonl").write_text(json.dumps({"id": "clock.Task", "error": "ClockBoom"}) + "\n", encoding="utf-8")
+    (raw / "aiden_bridge_actions.json").write_text(
+        json.dumps([{"tool_name": "tap", "error": "ClockBoom"}]), encoding="utf-8"
+    )
+    code = repo / "benchmark" / "mobilegym" / "clock_runner.py"
+    code.parent.mkdir(parents=True)
+    code.write_text("class ClockBoom(Exception): pass\n", encoding="utf-8")
+
+    ctx = analysis.collect_context(run_dir, repo, analysis.AnalysisConfig(enabled=True))
+
+    assert ctx["run"]["kind"] == "mobilegym"
+    assert ctx["failures"][0]["task_id"] == "clock.Task"
+    assert any("runner saw ClockBoom" in item["excerpt"] for item in ctx["logs"])
+    assert any(item["path"].endswith("clock_runner.py") for item in ctx["code"])
+
+
+def test_collect_context_records_warnings_for_malformed_artifacts(tmp_path):
+    repo = tmp_path / "repo"
+    run_dir = repo / "benchmark" / "runs" / "mobilegym" / "batch-bad"
+    run_dir.mkdir(parents=True)
+    (run_dir / "summary.json").write_text("{bad", encoding="utf-8")
+
+    ctx = analysis.collect_context(run_dir, repo, analysis.AnalysisConfig(enabled=True))
+
+    assert ctx["run"]["kind"] == "mobilegym"
+    assert ctx["collection_warnings"]
+
+
+def test_collect_context_redacts_sensitive_files_and_enforces_budget(tmp_path):
+    repo = tmp_path / "repo"
+    run_dir = repo / "benchmark" / "runs" / "run-budget"
+    task_dir = run_dir / "tasks" / "task_a"
+    task_dir.mkdir(parents=True)
+    suite_path = repo / "benchmark" / "suites" / "demo.json"
+    suite_path.parent.mkdir(parents=True)
+    suite_path.write_text(
+        json.dumps({"name": "demo", "tasks": [{"id": "task_a", "prompt": "BudgetBoom"}]}),
+        encoding="utf-8",
+    )
+    (run_dir / "manifest.json").write_text(
+        json.dumps({"run_id": "run-budget", "suite_path": str(suite_path), "totals": {"failed": 1}}),
+        encoding="utf-8",
+    )
+    (run_dir / "summary.md").write_text("BudgetBoom " + "s" * 5000, encoding="utf-8")
+    (run_dir / "results.jsonl").write_text(
+        json.dumps({"task_id": "task_a", "status": "failed", "metrics": {"error": "BudgetBoom"}}) + "\n",
+        encoding="utf-8",
+    )
+    (task_dir / "trace.json").write_text(
+        json.dumps({"final_response": "BudgetBoom " + "x" * 5000}), encoding="utf-8"
+    )
+    sensitive = repo / "src" / "agent" / "agent.toml"
+    sensitive.parent.mkdir(parents=True)
+    sensitive.write_text('api_key = "sk-sensitive"\n# BudgetBoom\n', encoding="utf-8")
+    code = repo / "src" / "agent" / "budget_boom.go"
+    code.write_text("package agent\n// BudgetBoom\n" + "x" * 5000, encoding="utf-8")
+
+    ctx = analysis.collect_context(
+        run_dir,
+        repo,
+        analysis.AnalysisConfig(enabled=True, total_context_bytes=2000, max_code_bytes=2000),
+    )
+    encoded = json.dumps(ctx, ensure_ascii=False)
+
+    assert len(encoded.encode("utf-8")) <= 2500
+    assert "agent.toml" not in encoded
+    assert "sk-sensitive" not in encoded
+    assert ctx["collection_warnings"]
+
+
+def test_analyze_run_writes_json_and_markdown_with_mocked_llm(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    run_dir = repo / "benchmark" / "runs" / "run-1"
+    run_dir.mkdir(parents=True)
+    (run_dir / "manifest.json").write_text(
+        json.dumps({"run_id": "run-1", "totals": {"tasks": 0}}), encoding="utf-8"
+    )
+    (run_dir / "results.jsonl").write_text("", encoding="utf-8")
+
+    def fake_chat(cfg, context, api_key):
+        assert api_key == "test-key"
+        assert context["run"]["id"] == "run-1"
+        return json.dumps(
+            {
+                "summary": "Looks stable",
+                "failure_clusters": [],
+                "recommendations": [],
+                "classification_counts": {},
+                "evidence_gaps": [],
+            }
+        )
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(analysis, "chat_analysis_model", fake_chat)
+
+    result = analysis.analyze_run(run_dir, repo, analysis.AnalysisConfig(enabled=True))
+
+    assert result.ok is True
+    assert (run_dir / "llm_analysis.json").exists()
+    assert (run_dir / "llm_analysis.md").exists()
+    assert "Looks stable" in (run_dir / "llm_analysis.md").read_text(encoding="utf-8")
+
+
+def test_analyze_run_writes_error_artifact_without_raising(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    run_dir = repo / "benchmark" / "runs" / "run-1"
+    run_dir.mkdir(parents=True)
+    (run_dir / "manifest.json").write_text(json.dumps({"run_id": "run-1"}), encoding="utf-8")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("MODEL_API_KEY", raising=False)
+    monkeypatch.delenv("AIDEN_MODEL_API_KEY", raising=False)
+
+    result = analysis.analyze_run(run_dir, repo, analysis.AnalysisConfig(enabled=True))
+
+    assert result.ok is False
+    assert (run_dir / "llm_analysis_error.txt").exists()
+    assert "missing analysis API key" in (run_dir / "llm_analysis_error.txt").read_text(encoding="utf-8")

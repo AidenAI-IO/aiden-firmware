@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
 	"image/jpeg"
 	"net"
 	"net/http"
@@ -712,6 +714,94 @@ func TestHandleScreenshotJPEGCanDisableBlackBarCropping(t *testing.T) {
 	}
 }
 
+func TestHandleScreenshotJPEGUpdatesSharedScreenStateFromPhoneAspectRatio(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 16, 9))
+	for y := 0; y < 9; y++ {
+		for x := 5; x < 10; x++ {
+			img.Set(x, y, color.RGBA{R: 240, G: 240, B: 240, A: 255})
+		}
+	}
+	var jpegBuf bytes.Buffer
+	if err := jpeg.Encode(&jpegBuf, img, &jpeg.Options{Quality: 100}); err != nil {
+		t.Fatalf("encode jpeg fixture: %v", err)
+	}
+	jpegData := jpegBuf.Bytes()
+
+	frameSocket := startFakeFrameServiceSocket(t, func(req map[string]any) (string, []byte) {
+		if format, _ := req["format"].(string); format != "raw" {
+			t.Fatalf("expected raw format request, got %#v", req["format"])
+		}
+		header := fmt.Sprintf(`{"type":"response","method":"latest_frame","status":"OK","frame":{"seq":1,"width":16,"height":9,"pixel_format":"jpeg","stride":0,"bytes":%d,"stale":false}}`, len(jpegData))
+		return header, jpegData
+	})
+
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model: ModelConfig{Provider: "fake"},
+			HID:   HIDConfig{FrameSocket: frameSocket},
+		},
+		&testModelResolver{},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{FrameSocket: frameSocket}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+
+	envData, err := json.Marshal(PhoneEnvironment{
+		Platform: "android",
+		Screen: PhoneScreenInfo{
+			WidthPixels:        intPtr(1080),
+			HeightPixels:       intPtr(1920),
+			NativeWidthPixels:  intPtr(1080),
+			NativeHeightPixels: intPtr(2400),
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal environment: %v", err)
+	}
+	if !server.bridge.handleAppEvent(BridgeCommandResponse{
+		ID:     "phone_environment",
+		Method: "phone_environment",
+		OK:     true,
+		Data:   envData,
+	}) {
+		t.Fatal("expected phone_environment event to be handled")
+	}
+	server.bridge.mu.Lock()
+	server.bridge.connected = true
+	server.bridge.mu.Unlock()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/screenshot.jpg", nil)
+	rec := httptest.NewRecorder()
+
+	server.handleScreenshotJPEG(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Original-Screen-Width"); got != "1080" {
+		t.Fatalf("X-Original-Screen-Width = %q, want 1080", got)
+	}
+	if got := rec.Header().Get("X-Original-Screen-Height"); got != "2400" {
+		t.Fatalf("X-Original-Screen-Height = %q, want 2400", got)
+	}
+	if got := rec.Header().Get("X-Original-Screen-Valid"); got != "true" {
+		t.Fatalf("X-Original-Screen-Valid = %q, want true", got)
+	}
+
+	width, height, active, _, ok := runtime.tools.screen.ActiveAreaWithAge()
+	if !ok {
+		t.Fatal("expected shared screen state to be updated")
+	}
+	if width != 16 || height != 9 {
+		t.Fatalf("screen dimensions = %dx%d, want 16x9", width, height)
+	}
+	want := screenActiveArea{X: 5, Y: 0, Width: 5, Height: 9, Valid: true}
+	if active != want {
+		t.Fatalf("active area = %+v, want %+v", active, want)
+	}
+}
+
 func TestHandleCoordinateDebugTapRecapturesUncroppedScreenshot(t *testing.T) {
 	frameSocket := startFakeFrameServiceSocket(t, func(req map[string]any) (string, []byte) {
 		if format, _ := req["format"].(string); format != "raw" {
@@ -1017,6 +1107,35 @@ func TestServerHandleChatCancelCancelsActiveRun(t *testing.T) {
 	}
 	if resp.Status != "canceled" || resp.RequestID != "req-1" {
 		t.Fatalf("unexpected cancel response: %#v", resp)
+	}
+}
+
+func TestServerHandleChatCancelEndsDanglingLiveActivity(t *testing.T) {
+	server := &Server{
+		activeRuns:   make(map[string]context.CancelFunc),
+		liveActivity: NewLiveActivityManager(LiveActivityConfig{}, nil),
+	}
+	server.liveActivity.StartTask("req-1", "External run")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat/cancel", bytes.NewBufferString(`{"request_id":"req-1"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.handleChatCancel(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp ChatCancelResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Status != "canceled" || resp.RequestID != "req-1" {
+		t.Fatalf("unexpected cancel response: %#v", resp)
+	}
+	state := server.liveActivity.Snapshot("req-1")
+	if state == nil || state.Status != LiveActivityStatusCanceled || state.CanStop {
+		t.Fatalf("live activity state = %#v, want canceled", state)
 	}
 }
 
@@ -1693,17 +1812,21 @@ func TestServerToolCatalogEndpoint(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 
-	if len(resp.Tools) != 1 {
-		t.Fatalf("expected 1 tool, got %d", len(resp.Tools))
+	var shell ToolDescriptor
+	for _, descriptor := range resp.Tools {
+		if descriptor.Name == "shell" {
+			shell = descriptor
+			break
+		}
 	}
-	if resp.Tools[0].Name != "shell" {
-		t.Fatalf("unexpected tool descriptor: %#v", resp.Tools[0])
+	if shell.Name == "" {
+		t.Fatalf("expected shell in tool catalog: %#v", resp.Tools)
 	}
-	if resp.Tools[0].HTTP.Path != "/api/tools/shell" {
-		t.Fatalf("unexpected tool path: %#v", resp.Tools[0].HTTP)
+	if shell.HTTP.Path != "/api/tools/shell" {
+		t.Fatalf("unexpected tool path: %#v", shell.HTTP)
 	}
-	if resp.Tools[0].ExampleInput != `{"command":"pwd"}` {
-		t.Fatalf("unexpected example input: %q", resp.Tools[0].ExampleInput)
+	if shell.ExampleInput != `{"command":"pwd"}` {
+		t.Fatalf("unexpected example input: %q", shell.ExampleInput)
 	}
 }
 
@@ -1897,7 +2020,14 @@ func TestServerToolSkillsEndpointReturnsGeneratedSkills(t *testing.T) {
 	if skill.Name != "aiden-http-tool-suite" {
 		t.Fatalf("unexpected skill name: %#v", skill)
 	}
-	if len(skill.ToolNames) != 1 || skill.ToolNames[0] != "shell" {
+	hasShell := false
+	for _, name := range skill.ToolNames {
+		if name == "shell" {
+			hasShell = true
+			break
+		}
+	}
+	if !hasShell {
 		t.Fatalf("unexpected tool list: %#v", skill.ToolNames)
 	}
 	if !bytes.Contains([]byte(skill.Markdown), []byte("/api/tools/{tool_name}")) {

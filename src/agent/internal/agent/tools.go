@@ -10,9 +10,11 @@ import (
 
 // ToolSet is a fixed collection of built-in tools, keyed by name.
 type ToolSet struct {
-	tools       map[string]langtools.Tool
-	screen      *screenState
-	phoneBridge *PhoneBridge
+	tools               map[string]langtools.Tool
+	screen              *screenState
+	phoneBridge         *PhoneBridge
+	phoneBridgeRestorer *PhoneBridgeRestorer
+	textInputHW         *textInputHardwareDeps
 }
 
 // NewBuiltinToolSet returns all built-in tools. Tools are not configurable;
@@ -59,13 +61,22 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	screenStable := toolOptions.screenStable.Resolved()
 	waitStable := NewWaitStableScreenTool(hidCfg.FrameSocketOrDefault(), screenStable, screen)
 	keyboardTap := &KeyboardTapTool{dev: kbDev}
+	keyboardText := &KeyboardTextTool{dev: kbDev}
 	touchGesture := &TouchGestureTool{pc: pointer, screen: screen}
 	quickAction := &QuickActionTool{keyboard: keyboardTap, touch: touchGesture}
+	mouseClick := &MouseClickTool{pc: pointer, screen: screen}
+	textInputHW := &textInputHardwareDeps{
+		mouseClick:   mouseClick,
+		keyboardTap:  keyboardTap,
+		keyboardText: keyboardText,
+		quickAction:  quickAction,
+		screenshot:   screenshot,
+	}
 
 	tools := map[string]langtools.Tool{
 		"keyboard_tap":           newPostActionStableScreenshotTool(keyboardTap, waitStable, screenshot, postActionScreenshotDelay, screenStable),
-		"keyboard_text":          newPostActionStableScreenshotTool(&KeyboardTextTool{dev: kbDev}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
-		"mouse_click":            newPostActionStableScreenshotTool(&MouseClickTool{pc: pointer, screen: screen}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
+		"keyboard_text":          newPostActionStableScreenshotTool(keyboardText, waitStable, screenshot, postActionScreenshotDelay, screenStable),
+		"mouse_click":            newPostActionStableScreenshotTool(mouseClick, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"mouse_move":             newPostActionStableScreenshotTool(&MouseMoveTool{pc: pointer, screen: screen}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"mouse_scroll":           newPostActionStableScreenshotTool(&MouseScrollTool{pc: pointer}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"touch_gesture":          newPostActionStableScreenshotTool(touchGesture, waitStable, screenshot, postActionScreenshotDelay, screenStable),
@@ -88,7 +99,21 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	// Always register human handoff tool - no callback needed for non-blocking version
 	tools["request_human_handoff"] = NewHumanHandoffTool()
 
-	return &ToolSet{tools: tools, screen: screen}
+	return &ToolSet{
+		tools:               tools,
+		screen:              screen,
+		phoneBridgeRestorer: NewPhoneBridgeRestorer(nil, pointer),
+		textInputHW:         textInputHW,
+	}
+}
+
+func (s *ToolSet) RegisterEnterTextInFieldTool(models ModelResolver, platformFn func() string) {
+	if s == nil || s.textInputHW == nil || models == nil {
+		return
+	}
+	engine := newTextInputEngine(*s.textInputHW, newLLMTextInputVision(models))
+	tool := &EnterTextInFieldTool{engine: engine, platformFn: platformFn}
+	s.tools["enter_text_in_field"] = newPostActionScreenshotTool(tool, s.textInputHW.screenshot, 300*time.Millisecond)
 }
 
 func (s *ToolSet) Get(name string) (langtools.Tool, bool) {
@@ -132,7 +157,7 @@ func (s *ToolSet) toolAvailable(name string) bool {
 	if !isPhoneBridgeToolName(name) {
 		return true
 	}
-	return s.phoneBridge != nil && s.phoneBridge.Connected()
+	return s.phoneBridge != nil
 }
 
 func (s *ToolSet) CurrentEnvironmentHints(maxAge time.Duration) CurrentEnvironmentHints {
@@ -150,6 +175,17 @@ func (s *ToolSet) CurrentEnvironmentHints(maxAge time.Duration) CurrentEnvironme
 		ScreenshotWidth:  width,
 		ScreenshotHeight: height,
 	}
+}
+
+func (s *ToolSet) UpdateDeviceEnvironment(env *PhoneEnvironment) {
+	if s == nil || s.screen == nil {
+		return
+	}
+	if env == nil {
+		s.screen.ClearPhoneScreenInfo()
+		return
+	}
+	s.screen.UpdatePhoneScreenInfo(env.Screen)
 }
 
 func (s *ToolSet) RegisterMemoryTools(memoryDir string, profileFn ProfileFn, summaryMaxChunks int, debouncer *ProfileDebouncer) {

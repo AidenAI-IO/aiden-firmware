@@ -39,7 +39,7 @@ func TestTencentASRSTTTranscribeWAV(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewTencentASRSTT("test-id", "test-key", "ap-guangzhou", "16k_zh", server.Client())
+	client := NewTencentASRSTT("test-id", "test-key", "ap-guangzhou", "16k_zh", "", server.Client())
 	client.apiURL = server.URL
 
 	text, err := client.TranscribeWAV([]byte("RIFFxxxxWAVEfmt "))
@@ -88,7 +88,7 @@ func TestBuildTencentTC3AuthorizationDeterministic(t *testing.T) {
 }
 
 func TestTencentASRSTTRequiresCredentials(t *testing.T) {
-	client := NewTencentASRSTT("", "", "", "")
+	client := NewTencentASRSTT("", "", "", "", "")
 	_, err := client.TranscribeWAV([]byte("wav"))
 	if err == nil || !strings.Contains(err.Error(), "secret_id") {
 		t.Fatalf("TranscribeWAV() error = %v, want missing credentials", err)

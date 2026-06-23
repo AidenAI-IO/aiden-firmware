@@ -41,6 +41,7 @@ type webConfigDTO struct {
 	HID          hidDTO          `json:"hid"`
 	Search       searchDTO       `json:"search"`
 	Telemetry    telemetryDTO    `json:"telemetry"`
+	LiveActivity liveActivityDTO `json:"live_activity"`
 	Agent        agentDTO        `json:"agent"`
 }
 
@@ -120,6 +121,24 @@ type telemetryDTO struct {
 	Environment       string   `json:"environment"`
 }
 
+type liveActivityDTO struct {
+	Enabled          *bool  `json:"enabled"`
+	RelayURL         string `json:"relay_url"`
+	RelayAPIKey      string `json:"relay_api_key,omitempty"`
+	HasRelayAPIKey   bool   `json:"has_relay_api_key"`
+	BoardID          string `json:"board_id"`
+	PhoneID          string `json:"phone_id"`
+	BundleID         string `json:"bundle_id"`
+	Topic            string `json:"topic"`
+	Environment      string `json:"environment"`
+	TeamID           string `json:"team_id"`
+	KeyID            string `json:"key_id"`
+	PrivateKeyPath   string `json:"private_key_path"`
+	PrivateKeyPEM    string `json:"private_key_pem,omitempty"`
+	HasPrivateKeyPEM bool   `json:"has_private_key_pem"`
+	TimeoutSec       int    `json:"timeout_sec"`
+}
+
 type agentDTO struct {
 	CustomInstruction          string  `json:"custom_instruction"`
 	AdditionalPrompt           string  `json:"additional_prompt"`
@@ -147,6 +166,7 @@ type agentDTO struct {
 	ScreenStableTimeoutMs      int     `json:"screen_stable_timeout_ms"`
 	ScreenStableMs             int     `json:"screen_stable_ms"`
 	ScreenStableDiffThreshold  float64 `json:"screen_stable_diff_threshold"`
+	DefaultPlatform            string  `json:"default_platform,omitempty"`
 }
 
 // hasAPIKeyPlaceholder is substituted for a real key when the wire payload
@@ -163,6 +183,14 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 		searchKey = d.Search.APIKey
 	} else if d.Search.HasAPIKey {
 		searchKey = hasAPIKeyPlaceholder
+	}
+	liveActivityRelayAPIKey := d.LiveActivity.RelayAPIKey
+	if strings.TrimSpace(liveActivityRelayAPIKey) == "" && d.LiveActivity.HasRelayAPIKey {
+		liveActivityRelayAPIKey = hasAPIKeyPlaceholder
+	}
+	liveActivityPrivateKeyPEM := d.LiveActivity.PrivateKeyPEM
+	if strings.TrimSpace(liveActivityPrivateKeyPEM) == "" && d.LiveActivity.HasPrivateKeyPEM {
+		liveActivityPrivateKeyPEM = hasAPIKeyPlaceholder
 	}
 
 	return agent.Config{
@@ -242,6 +270,21 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			MaxRetry:          d.Telemetry.MaxRetry,
 			Tags:              d.Telemetry.Tags,
 			Environment:       d.Telemetry.Environment,
+		},
+		LiveActivity: agent.LiveActivityConfig{
+			Enabled:        d.LiveActivity.Enabled,
+			RelayURL:       d.LiveActivity.RelayURL,
+			RelayAPIKey:    liveActivityRelayAPIKey,
+			BoardID:        d.LiveActivity.BoardID,
+			PhoneID:        d.LiveActivity.PhoneID,
+			BundleID:       d.LiveActivity.BundleID,
+			Topic:          d.LiveActivity.Topic,
+			Environment:    d.LiveActivity.Environment,
+			TeamID:         d.LiveActivity.TeamID,
+			KeyID:          d.LiveActivity.KeyID,
+			PrivateKeyPath: d.LiveActivity.PrivateKeyPath,
+			PrivateKeyPEM:  liveActivityPrivateKeyPEM,
+			TimeoutSec:     d.LiveActivity.TimeoutSec,
 		},
 		Instruction:                d.Agent.CustomInstruction,
 		AdditionalPrompt:           d.Agent.AdditionalPrompt,
@@ -357,6 +400,21 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			Tags:              cfg.Telemetry.Tags,
 			Environment:       cfg.Telemetry.EnvironmentOrDefault(),
 		},
+		LiveActivity: liveActivityDTO{
+			Enabled:          boolPtr(cfg.LiveActivity.EnabledOrDefault()),
+			RelayURL:         cfg.LiveActivity.RelayURL,
+			HasRelayAPIKey:   strings.TrimSpace(cfg.LiveActivity.RelayAPIKey) != "",
+			BoardID:          cfg.LiveActivity.BoardIDOrDefault(),
+			PhoneID:          cfg.LiveActivity.PhoneID,
+			BundleID:         cfg.LiveActivity.BundleID,
+			Topic:            cfg.LiveActivity.Topic,
+			Environment:      cfg.LiveActivity.EnvironmentOrDefault(),
+			TeamID:           cfg.LiveActivity.TeamID,
+			KeyID:            cfg.LiveActivity.KeyID,
+			PrivateKeyPath:   cfg.LiveActivity.PrivateKeyPath,
+			HasPrivateKeyPEM: strings.TrimSpace(cfg.LiveActivity.PrivateKeyPEM) != "",
+			TimeoutSec:       int(cfg.LiveActivity.TimeoutOrDefault().Seconds()),
+		},
 		Agent: agentDTO{
 			CustomInstruction:          customInstructionValue(cfg.Instruction),
 			AdditionalPrompt:           cfg.AdditionalPrompt,
@@ -384,6 +442,7 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			ScreenStableTimeoutMs:      cfg.ScreenStableTimeoutMs,
 			ScreenStableMs:             cfg.ScreenStableMs,
 			ScreenStableDiffThreshold:  cfg.ScreenStableDiffThreshold,
+			DefaultPlatform:            cfg.DefaultPlatform,
 		},
 	}
 }
@@ -630,6 +689,14 @@ func parseValidationErrors(err error) []ValidationError {
 		field = "telemetry.max_retry"
 	} else if strings.Contains(errMsg, "log.llm_http_retention_days") {
 		field = "log.llm_http_retention_days"
+	} else if strings.Contains(errMsg, "live_activity.relay_url") {
+		field = "live_activity.relay_url"
+	} else if strings.Contains(errMsg, "live_activity.environment") {
+		field = "live_activity.environment"
+	} else if strings.Contains(errMsg, "live_activity.timeout_sec") {
+		field = "live_activity.timeout_sec"
+	} else if strings.Contains(errMsg, "live_activity.bundle_id") || strings.Contains(errMsg, "live_activity.topic") {
+		field = "live_activity.bundle_id"
 	}
 
 	errors = append(errors, ValidationError{

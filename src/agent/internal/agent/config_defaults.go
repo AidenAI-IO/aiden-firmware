@@ -17,6 +17,7 @@ const (
 	defaultTTSSpeed                = 1.0
 	defaultSTTProvider             = "openai-whisper"
 	defaultSTTModel                = "whisper-1"
+	defaultSTTLanguage             = "zh"
 	tencentASRProvider             = "tencent-asr"
 	legacyTencentProvider          = "tencent"
 	legacyTencentASRProvider       = "tencent_asr"
@@ -75,6 +76,7 @@ func DefaultConfig() Config {
 		STT: STTConfig{
 			Provider: defaultSTTProvider,
 			Model:    defaultSTTModel,
+			Language: defaultSTTLanguage,
 		},
 		Audio: AudioConfig{
 			Socket:     defaultAudioSocket,

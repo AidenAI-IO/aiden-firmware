@@ -215,6 +215,7 @@ def build_skillopt_run_command(
     add_common_cli_paths(env)
     env.update(model_config_from_payload(payload))
     env.update(benchmark_config_from_payload(payload))
+    apply_analysis_env_from_payload(env, payload)
 
     run_id = "skillopt-" + datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d_%H%M%S-%f")
     artifact_root = root / "runs" / "skillopt"
@@ -399,11 +400,60 @@ def read_log() -> str:
 
 
 def list_runs(benchmark_root: Path) -> list[dict[str, Any]]:
+    mobilegym_runs = list_mobilegym_runs(benchmark_root)
+    skillopt_runs = list_skillopt_runs(benchmark_root)
     return sorted(
-        list_mobilegym_runs(benchmark_root) + list_skillopt_runs(benchmark_root),
+        nest_skillopt_phase_runs(mobilegym_runs, skillopt_runs),
         key=lambda item: str(item.get("run_id") or ""),
         reverse=True,
     )[:20]
+
+
+def nest_skillopt_phase_runs(
+    mobilegym_runs: list[dict[str, Any]],
+    skillopt_runs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    skillopt_by_id = {str(item.get("run_id") or ""): item for item in skillopt_runs}
+    top_level_mobilegym = []
+    for item in mobilegym_runs:
+        run_id = str(item.get("run_id") or "")
+        parent_id, phase = skillopt_phase_parent(run_id)
+        parent = skillopt_by_id.get(parent_id)
+        if parent is None:
+            top_level_mobilegym.append(item)
+            continue
+        child = dict(item)
+        child["phase"] = phase
+        child["kind"] = skillopt_phase_kind(phase)
+        parent.setdefault("children", []).append(child)
+
+    for item in skillopt_runs:
+        children = item.get("children")
+        if isinstance(children, list):
+            children.sort(key=lambda child: skillopt_phase_sort_key(str(child.get("phase") or "")))
+    return top_level_mobilegym + skillopt_runs
+
+
+def skillopt_phase_parent(run_id: str) -> tuple[str, str]:
+    match = re.match(r"^(skillopt-.+)-(baseline_selection|step_\d{2}_(?:train|selection))$", run_id)
+    if not match:
+        return "", ""
+    return match.group(1), match.group(2)
+
+
+def skillopt_phase_kind(phase: str) -> str:
+    if phase.endswith("_train"):
+        return "train"
+    return "verification"
+
+
+def skillopt_phase_sort_key(phase: str) -> tuple[int, int]:
+    if phase == "baseline_selection":
+        return (0, 0)
+    match = re.match(r"step_(\d{2})_(train|selection)$", phase)
+    if not match:
+        return (999, 0)
+    return (int(match.group(1)), 0 if match.group(2) == "train" else 1)
 
 
 def list_mobilegym_runs(benchmark_root: Path) -> list[dict[str, Any]]:
@@ -515,6 +565,14 @@ def report_file_for(root: Path, report_id: str) -> Path | None:
     if len(parts) == 2 and parts[1] in SKILLOPT_ARTIFACT_CONTENT_TYPES:
         artifact = root / "runs" / "skillopt" / parts[0] / parts[1]
         return artifact if artifact.is_file() else None
+    artifact_names = {"index.html", "llm_analysis.md", "llm_analysis.json", "llm_analysis_error.txt"}
+    if parts[-1] in artifact_names:
+        if len(parts) == 2:
+            return run_dir / parts[-1]
+        suite = "/".join(parts[1:-1])
+        if not valid_suite_name(suite):
+            return None
+        return run_dir / suite / parts[-1]
     suite = "/".join(parts[1:])
     if not valid_suite_name(suite):
         return None
@@ -522,7 +580,15 @@ def report_file_for(root: Path, report_id: str) -> Path | None:
 
 
 def report_content_type(path: Path) -> str:
-    return SKILLOPT_ARTIFACT_CONTENT_TYPES.get(path.name, "text/html; charset=utf-8")
+    return SKILLOPT_ARTIFACT_CONTENT_TYPES.get(
+        path.name,
+        {
+            ".html": "text/html; charset=utf-8",
+            ".md": "text/markdown; charset=utf-8",
+            ".json": "application/json; charset=utf-8",
+            ".txt": "text/plain; charset=utf-8",
+        }.get(path.suffix, "application/octet-stream"),
+    )
 
 
 def state_run_items(run_id: str, state_for_run: dict[str, Any], progress: dict[str, Any]) -> list[dict[str, Any]]:
@@ -711,12 +777,27 @@ def benchmark_config_from_payload(payload: dict[str, Any]) -> dict[str, str]:
     return fetch_board_benchmark_config(board_url)
 
 
+def apply_analysis_env_from_payload(env: dict[str, str], payload: dict[str, Any]) -> None:
+    env["AIDEN_BENCHMARK_LLM_ANALYSIS"] = "1"
+    for payload_key, env_key in {
+        "analysis_model": "AIDEN_BENCHMARK_ANALYSIS_MODEL",
+        "analysis_max_log_bytes": "AIDEN_BENCHMARK_ANALYSIS_MAX_LOG_BYTES",
+        "analysis_max_code_bytes": "AIDEN_BENCHMARK_ANALYSIS_MAX_CODE_BYTES",
+        "analysis_timeout_sec": "AIDEN_BENCHMARK_ANALYSIS_TIMEOUT_SEC",
+    }.items():
+        value = payload.get(payload_key)
+        if value not in (None, ""):
+            env[env_key] = str(value)
+    if "AIDEN_BENCHMARK_ANALYSIS_MODEL" not in env and env.get("AIDEN_BENCHMARK_JUDGE_MODEL"):
+        env["AIDEN_BENCHMARK_ANALYSIS_MODEL"] = env["AIDEN_BENCHMARK_JUDGE_MODEL"]
+
+
 def fetch_board_model_config(board_url: str) -> dict[str, str]:
-    return parse_agent_model_config(fetch_board_toml_section(board_url, "model"))
+    return parse_agent_model_assignments(fetch_board_toml_section(board_url, "model"))
 
 
 def fetch_board_benchmark_config(board_url: str) -> dict[str, str]:
-    return parse_agent_benchmark_config(fetch_board_toml_section(board_url, "benchmark"))
+    return parse_agent_benchmark_assignments(fetch_board_toml_section(board_url, "benchmark"))
 
 
 def fetch_board_toml_section(board_url: str, section: str) -> str:
@@ -750,6 +831,10 @@ def fetch_board_toml_section(board_url: str, section: str) -> str:
 
 
 def parse_agent_model_config(text: str) -> dict[str, str]:
+    return parse_agent_model_assignments(toml_section(text, "model"))
+
+
+def parse_agent_model_assignments(text: str) -> dict[str, str]:
     values = parse_toml_assignments(text, {"provider", "model", "base_url", "api_key"})
     mapping = {
         "provider": "MODEL_PROVIDER",
@@ -761,6 +846,10 @@ def parse_agent_model_config(text: str) -> dict[str, str]:
 
 
 def parse_agent_benchmark_config(text: str) -> dict[str, str]:
+    return parse_agent_benchmark_assignments(toml_section(text, "benchmark"))
+
+
+def parse_agent_benchmark_assignments(text: str) -> dict[str, str]:
     values = parse_toml_assignments(text, {"api_key", "judge_model"})
     env: dict[str, str] = {}
     if values.get("api_key"):
@@ -784,6 +873,26 @@ def parse_toml_assignments(text: str, allowed_keys: set[str]) -> dict[str, str]:
         if key in allowed_keys and value:
             values[key] = value
     return values
+
+
+def toml_section(text: str, section: str) -> str:
+    found = False
+    in_section = False
+    lines: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if line.startswith("[") and line.endswith("]"):
+            name = line.strip("[]").strip()
+            if name == section:
+                found = True
+                in_section = True
+                continue
+            if in_section:
+                break
+            continue
+        if in_section:
+            lines.append(raw_line)
+    return "\n".join(lines) if found else ""
 
 
 def validate_model_environment(env: dict[str, str] | None = None) -> None:

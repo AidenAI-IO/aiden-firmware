@@ -57,14 +57,13 @@ func NewSTTClientFromConfig(cfg Config) (STTClient, error) {
 		return nil, fmt.Errorf("proxy environment: %w", err)
 	}
 	httpClient := newProxyHTTPClient(proxyConfig)
+	language := strings.ToLower(strings.TrimSpace(cfg.STT.Language))
 
 	switch provider {
 	case "openai", "openai-whisper":
-		return NewOpenAIWhisperSTT(cfg.STT.APIKey, cfg.STT.Model, cfg.STT.BaseURL, httpClient), nil
-	case "openrouter":
-		return NewOpenRouterSTT(cfg.STT.APIKey, cfg.STT.Model, cfg.STT.BaseURL, httpClient), nil
+		return NewOpenAIWhisperSTT(cfg.STT.APIKey, cfg.STT.Model, cfg.STT.BaseURL, language, httpClient), nil
 	case tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider:
-		return NewTencentASRSTT(cfg.STT.SecretID, cfg.STT.SecretKey, cfg.STT.Region, cfg.STT.EngineModelType, httpClient), nil
+		return NewTencentASRSTT(cfg.STT.SecretID, cfg.STT.SecretKey, cfg.STT.Region, cfg.STT.EngineModelType, language, httpClient), nil
 	default:
 		return nil, fmt.Errorf("unsupported STT provider: %s", cfg.STT.Provider)
 	}

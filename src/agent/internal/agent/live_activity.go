@@ -15,6 +15,7 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -23,6 +24,7 @@ import (
 
 const (
 	LiveActivityStatusRunning   = "running"
+	LiveActivityStatusReady     = "ready"
 	LiveActivityStatusNeedsApp  = "needs_app"
 	LiveActivityStatusCompleted = "completed"
 	LiveActivityStatusFailed    = "failed"
@@ -39,6 +41,7 @@ const (
 
 	liveActivityFinalStateRetention = 5 * time.Minute
 	liveActivityAPNsQueueSize       = 16
+	liveActivityRelayQueueSize      = 32
 )
 
 type LiveActivityState struct {
@@ -90,6 +93,7 @@ type LiveActivityRegistrationResponse struct {
 	OK      bool               `json:"ok"`
 	State   *LiveActivityState `json:"state,omitempty"`
 	APNs    string             `json:"apns"`
+	Relay   string             `json:"relay,omitempty"`
 	Message string             `json:"message,omitempty"`
 }
 
@@ -115,6 +119,8 @@ type LiveActivityManager struct {
 	activeRequestID string
 	apns            *APNsClient
 	apnsQueue       chan liveActivityPushRequest
+	relay           *LiveActivityRelayClient
+	relayQueue      chan liveActivityPushRequest
 	logger          *Logger
 }
 
@@ -142,11 +148,33 @@ func NewLiveActivityManager(cfg LiveActivityConfig, logger *Logger) *LiveActivit
 			}
 		}
 	}
+	if cfg.RelayConfigured() {
+		client, err := NewLiveActivityRelayClient(cfg)
+		if err != nil {
+			if logger != nil {
+				logger.Error("live activity: relay disabled: %v", err)
+			}
+		} else {
+			manager.relay = client
+			manager.relayQueue = make(chan liveActivityPushRequest, liveActivityRelayQueueSize)
+			go manager.runRelayPublisher(client, manager.relayQueue)
+			if logger != nil {
+				logger.Info("live activity: relay enabled url=%s board_id=%s", client.endpoint, client.boardID)
+			}
+		}
+	}
 	return manager
 }
 
 func (m *LiveActivityManager) APNsStatus() string {
 	if m == nil || m.apns == nil {
+		return "not_configured"
+	}
+	return "configured"
+}
+
+func (m *LiveActivityManager) RelayStatus() string {
+	if m == nil || m.relay == nil {
 		return "not_configured"
 	}
 	return "configured"
@@ -397,23 +425,35 @@ func (m *LiveActivityManager) SnapshotActive() *LiveActivityState {
 }
 
 func (m *LiveActivityManager) publish(requestID string, final bool) {
-	if m == nil || m.apns == nil {
+	if m == nil {
 		return
 	}
 	m.mu.Lock()
 	state, stateOK := m.states[requestID]
 	registration, regOK := m.registrations[requestID]
-	queue := m.apnsQueue
+	apnsQueue := m.apnsQueue
+	relayQueue := m.relayQueue
+	hasAPNs := m.apns != nil
+	hasRelay := m.relay != nil
 	m.mu.Unlock()
-	if !stateOK || !regOK {
+	if !stateOK {
 		return
 	}
-	m.enqueueAPNsPush(liveActivityPushRequest{
-		requestID: requestID,
-		pushToken: registration.PushToken,
-		state:     state,
-		final:     final,
-	}, queue)
+	if hasAPNs && regOK {
+		m.enqueueAPNsPush(liveActivityPushRequest{
+			requestID: requestID,
+			pushToken: registration.PushToken,
+			state:     state,
+			final:     final,
+		}, apnsQueue)
+	}
+	if hasRelay {
+		m.enqueueRelayPush(liveActivityPushRequest{
+			requestID: requestID,
+			state:     state,
+			final:     final,
+		}, relayQueue)
+	}
 }
 
 func (m *LiveActivityManager) enqueueAPNsPush(req liveActivityPushRequest, queue chan liveActivityPushRequest) {
@@ -444,10 +484,62 @@ func (m *LiveActivityManager) enqueueAPNsPush(req liveActivityPushRequest, queue
 func (m *LiveActivityManager) runAPNsPublisher(apns *APNsClient, queue <-chan liveActivityPushRequest) {
 	for req := range queue {
 		ctx, cancel := context.WithTimeout(context.Background(), apns.timeout)
-		err := apns.Push(ctx, req.pushToken, req.state, req.final)
+		state, final := liveActivityRemotePushState(req.state, req.final)
+		err := apns.Push(ctx, req.pushToken, state, final)
 		cancel()
-		if err != nil && m.logger != nil {
-			m.logger.Error("live activity: APNs push failed request_id=%s: %v", req.requestID, err)
+		if m.logger == nil {
+			continue
+		}
+		if err != nil {
+			m.logger.Error("live activity: APNs push failed request_id=%s status=%s sent_status=%s final=%t sent_final=%t: %v", req.requestID, req.state.Status, state.Status, req.final, final, err)
+			continue
+		}
+		if req.final || isFinalLiveActivityStatus(req.state.Status) || state.Status == LiveActivityStatusReady {
+			m.logger.Info("live activity: APNs push ok request_id=%s status=%s sent_status=%s final=%t sent_final=%t", req.requestID, req.state.Status, state.Status, req.final, final)
+		}
+	}
+}
+
+func (m *LiveActivityManager) enqueueRelayPush(req liveActivityPushRequest, queue chan liveActivityPushRequest) {
+	if queue == nil {
+		return
+	}
+	select {
+	case queue <- req:
+		return
+	default:
+	}
+	if req.final {
+		select {
+		case <-queue:
+		default:
+		}
+		select {
+		case queue <- req:
+			return
+		default:
+		}
+	}
+	if m.logger != nil {
+		m.logger.Warn("live activity: dropping relay push request_id=%s final=%t: queue full", req.requestID, req.final)
+	}
+}
+
+func (m *LiveActivityManager) runRelayPublisher(relay *LiveActivityRelayClient, queue <-chan liveActivityPushRequest) {
+	for req := range queue {
+		ctx, cancel := context.WithTimeout(context.Background(), relay.timeout)
+		state, final := liveActivityRemotePushState(req.state, req.final)
+		err := relay.Push(ctx, state, final)
+		cancel()
+		if m.logger == nil {
+			continue
+		}
+		if err != nil {
+			m.logger.Error("live activity: relay push failed request_id=%s status=%s sent_status=%s final=%t sent_final=%t endpoint=%s: %v", req.requestID, req.state.Status, state.Status, req.final, final, relay.endpoint, err)
+			continue
+		}
+		if req.final || isFinalLiveActivityStatus(req.state.Status) || state.Status == LiveActivityStatusReady {
+			m.logger.Info("live activity: relay push ok request_id=%s status=%s sent_status=%s final=%t sent_final=%t endpoint=%s", req.requestID, req.state.Status, state.Status, req.final, final, relay.endpoint)
 		}
 	}
 }
@@ -488,6 +580,28 @@ func (s LiveActivityState) ContentState() LiveActivityContentState {
 		CanStop:       s.CanStop,
 		RequiresApp:   s.RequiresApp,
 		UpdatedAt:     s.UpdatedAt.Format(time.RFC3339),
+	}
+}
+
+func liveActivityRemotePushState(state LiveActivityState, final bool) (LiveActivityState, bool) {
+	if !final || !isFinalLiveActivityStatus(state.Status) {
+		return state, final
+	}
+	return liveActivityStandbyStateForRemotePush(state), false
+}
+
+func liveActivityStandbyStateForRemotePush(state LiveActivityState) LiveActivityState {
+	return LiveActivityState{
+		RequestID:     state.RequestID,
+		Status:        LiveActivityStatusReady,
+		TaskTitle:     "Aiden",
+		CurrentStep:   "Ready",
+		CurrentAction: "standby",
+		Progress:      0,
+		ShowsProgress: false,
+		CanStop:       false,
+		StartedAt:     state.StartedAt,
+		UpdatedAt:     state.UpdatedAt,
 	}
 }
 
@@ -1016,6 +1130,15 @@ func isFinalLiveActivityStatus(status string) bool {
 	}
 }
 
+func isCancelableLiveActivityStatus(status string) bool {
+	switch status {
+	case LiveActivityStatusRunning, LiveActivityStatusNeedsApp:
+		return true
+	default:
+		return false
+	}
+}
+
 type APNsClient struct {
 	httpClient *http.Client
 	endpoint   string
@@ -1028,6 +1151,82 @@ type APNsClient struct {
 	mu          sync.Mutex
 	cachedJWT   string
 	cachedJWTAt time.Time
+}
+
+type LiveActivityRelayClient struct {
+	httpClient *http.Client
+	endpoint   string
+	apiKey     string
+	boardID    string
+	phoneID    string
+	timeout    time.Duration
+}
+
+func NewLiveActivityRelayClient(cfg LiveActivityConfig) (*LiveActivityRelayClient, error) {
+	endpoint, err := normalizeLiveActivityRelayURL(cfg.RelayURL)
+	if err != nil {
+		return nil, err
+	}
+	return &LiveActivityRelayClient{
+		httpClient: &http.Client{Timeout: cfg.TimeoutOrDefault()},
+		endpoint:   endpoint,
+		apiKey:     strings.TrimSpace(cfg.RelayAPIKey),
+		boardID:    cfg.BoardIDOrDefault(),
+		phoneID:    strings.TrimSpace(cfg.PhoneID),
+		timeout:    cfg.TimeoutOrDefault(),
+	}, nil
+}
+
+func (c *LiveActivityRelayClient) Push(ctx context.Context, state LiveActivityState, final bool) error {
+	if c == nil {
+		return nil
+	}
+	endpoint := c.endpoint + "/v1/boards/" + url.PathEscape(c.boardID) + "/live-activity/state"
+	body := map[string]interface{}{
+		"request_id":     state.RequestID,
+		"status":         state.Status,
+		"phase":          state.Phase,
+		"task_title":     state.TaskTitle,
+		"current_step":   state.CurrentStep,
+		"current_action": state.CurrentAction,
+		"current_target": state.CurrentTarget,
+		"current_app":    state.CurrentApp,
+		"last_tool_name": state.LastToolName,
+		"last_error":     state.LastError,
+		"progress":       state.Progress,
+		"shows_progress": state.ShowsProgress,
+		"can_stop":       state.CanStop,
+		"requires_app":   state.RequiresApp,
+		"updated_at":     state.UpdatedAt.UTC().Format(time.RFC3339),
+	}
+	if c.phoneID != "" {
+		body["phone_id"] = c.phoneID
+	}
+	if final {
+		body["event"] = "end"
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("encode relay payload: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("content-type", "application/json")
+	if c.apiKey != "" {
+		req.Header.Set("authorization", "Bearer "+c.apiKey)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	return fmt.Errorf("relay status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(respBody)))
 }
 
 func NewAPNsClient(cfg LiveActivityConfig) (*APNsClient, error) {

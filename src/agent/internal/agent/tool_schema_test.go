@@ -21,11 +21,11 @@ func TestAgentExposedToolsDoNotExposeLegacyArg1Schema(t *testing.T) {
 		NewSkillReadTool(t.TempDir()),
 		NewSkillMarkUsedTool(t.TempDir(), ""),
 		NewSkillManageTool(t.TempDir(), ""),
-		NewOpenAppTool(nil),
-		NewClipboardTool(nil),
-		NewCalendarTool(nil),
-		NewContactsTool(nil),
-		NewNotificationTool(nil),
+		NewOpenAppTool(nil, nil),
+		NewClipboardTool(nil, nil),
+		NewCalendarTool(nil, nil),
+		NewContactsTool(nil, nil),
+		NewNotificationTool(nil, nil),
 	)
 	tools = appendLoopMetaTools(tools)
 	tools = appendExecutorMetaTools(tools)

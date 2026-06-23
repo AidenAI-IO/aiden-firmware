@@ -31,6 +31,35 @@ func TestResolvePointerPositionNormalized(t *testing.T) {
 	}
 }
 
+func TestToolSetUpdateDeviceEnvironmentTracksPhoneScreenInfo(t *testing.T) {
+	tools := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
+	env := &PhoneEnvironment{
+		Screen: PhoneScreenInfo{
+			WidthPixels:        intPtr(1080),
+			HeightPixels:       intPtr(1920),
+			NativeWidthPixels:  intPtr(1080),
+			NativeHeightPixels: intPtr(1920),
+		},
+	}
+
+	tools.UpdateDeviceEnvironment(env)
+
+	screen := tools.screen.PhoneScreenInfo()
+	if screen.WidthPixels == nil || screen.HeightPixels == nil {
+		t.Fatalf("screen info = %+v, want width/height pixels", screen)
+	}
+	if *screen.WidthPixels != 1080 || *screen.HeightPixels != 1920 {
+		t.Fatalf("screen pixels = %v x %v, want 1080 x 1920", *screen.WidthPixels, *screen.HeightPixels)
+	}
+
+	tools.UpdateDeviceEnvironment(nil)
+
+	screen = tools.screen.PhoneScreenInfo()
+	if screen.WidthPixels != nil || screen.HeightPixels != nil || screen.NativeWidthPixels != nil || screen.NativeHeightPixels != nil || screen.Width != nil || screen.Height != nil {
+		t.Fatalf("screen info should be cleared, got %+v", screen)
+	}
+}
+
 func TestHIDToolsExposeStructuredSchemas(t *testing.T) {
 	for name, tool := range map[string]structuredInputTool{
 		"keyboard_tap":  &KeyboardTapTool{},
@@ -128,6 +157,42 @@ func TestResolvePointerPositionPixelUses720pActiveArea(t *testing.T) {
 	}
 	if y != 16406 {
 		t.Fatalf("y = %d, want 16406", y)
+	}
+}
+
+func TestResolvePointerPositionNormalizedUsesActiveArea(t *testing.T) {
+	screen := &screenState{}
+	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true})
+
+	x, y, err := resolvePointerPosition(screen, 0, 500, "normalized", coordinateSpaceNormalized)
+	if err != nil {
+		t.Fatalf("resolvePointerPosition returned error: %v", err)
+	}
+	if x != 0 {
+		t.Fatalf("x = %d, want 0 at left edge of active_area", x)
+	}
+	wantY := scalePixelToAbsolute(float64(1079)/2, 1080)
+	if y != wantY {
+		t.Fatalf("y = %d, want %d", y, wantY)
+	}
+}
+
+func TestResolvePointerPositionTouchscreenNormalizedUsesFrameSpaceWithinActiveArea(t *testing.T) {
+	screen := &screenState{}
+	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true})
+
+	x, y, err := resolvePointerPositionForSurface(screen, true, 627, 180, "normalized", coordinateSpaceNormalized)
+	if err != nil {
+		t.Fatalf("resolvePointerPositionForSurface returned error: %v", err)
+	}
+
+	wantX := scalePixelToAbsolute(float64(656)+(627.0/1000.0)*float64(608-1), 1920)
+	wantY := scalePixelToAbsolute((180.0/1000.0)*float64(1080-1), 1080)
+	if x != wantX {
+		t.Fatalf("x = %d, want %d", x, wantX)
+	}
+	if y != wantY {
+		t.Fatalf("y = %d, want %d", y, wantY)
 	}
 }
 
@@ -469,6 +534,36 @@ func TestTouchscreenTapWritesTouchDownAndUp(t *testing.T) {
 	}
 }
 
+func TestTouchscreenTapUsesFrameSpaceForActiveArea(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	screen := &screenState{}
+	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true})
+	tool := &TouchGestureTool{pc: testTouchscreenPointerController(dev, &pointerState{}), screen: screen}
+
+	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":627,"y":180}}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("Call output = %q, want ok", out)
+	}
+
+	reports := readTouchscreenReports(t, dev, path)
+	if len(reports) != 1+touchReleaseReportCount {
+		t.Fatalf("len(reports) = %d, want %d (down, repeated up)", len(reports), 1+touchReleaseReportCount)
+	}
+	wantX := uint16(scalePixelToAbsolute(float64(656)+(627.0/1000.0)*float64(608-1), 1920))
+	wantY := uint16(scalePixelToAbsolute((180.0/1000.0)*float64(1080-1), 1080))
+	if reports[0].flags != 0x03 || reports[0].contactID != 1 || reports[0].x != wantX || reports[0].y != wantY {
+		t.Fatalf("down report = %+v, want touch at (%d,%d)", reports[0], wantX, wantY)
+	}
+	for i := 1; i < len(reports); i++ {
+		if reports[i].flags != 0x00 || reports[i].contactID != 1 || reports[i].x != wantX || reports[i].y != wantY {
+			t.Fatalf("up report %d = %+v, want release at (%d,%d)", i, reports[i], wantX, wantY)
+		}
+	}
+}
+
 func TestTouchscreenSwipeWritesTouchSequence(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := &TouchGestureTool{pc: testTouchscreenPointerController(dev, &pointerState{}), screen: &screenState{}}
@@ -501,7 +596,8 @@ func TestKeyboardTextDescriptionWarnsAgainstNonASCII(t *testing.T) {
 	desc := (&KeyboardTextTool{}).Description()
 	for _, want := range []string{
 		"ASCII",
-		"Do NOT pass Chinese",
+		"Do NOT pass non-ASCII",
+		"enter_text_in_field",
 		"pinyin",
 		`{"text":"App Store"}`,
 		"do not pass a bare string",

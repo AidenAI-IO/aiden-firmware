@@ -508,6 +508,7 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"tts", "emotion", CONFIG_FIELD_STRING},
         {"tts", "speed", CONFIG_FIELD_NUMBER},
         {"stt", "provider", CONFIG_FIELD_STRING},
+        {"stt", "language", CONFIG_FIELD_STRING},
         {"stt", "api_key", CONFIG_FIELD_STRING},
         {"stt", "model", CONFIG_FIELD_STRING},
         {"stt", "base_url", CONFIG_FIELD_STRING},
@@ -541,6 +542,21 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"telemetry", "max_retry", CONFIG_FIELD_NUMBER},
         {"telemetry", "tags", CONFIG_FIELD_ARRAY},
         {"telemetry", "environment", CONFIG_FIELD_STRING},
+        {"live_activity", "enabled", CONFIG_FIELD_BOOL},
+        {"live_activity", "relay_url", CONFIG_FIELD_STRING},
+        {"live_activity", "relay_api_key", CONFIG_FIELD_STRING},
+        {"live_activity", "has_relay_api_key", CONFIG_FIELD_BOOL},
+        {"live_activity", "board_id", CONFIG_FIELD_STRING},
+        {"live_activity", "phone_id", CONFIG_FIELD_STRING},
+        {"live_activity", "bundle_id", CONFIG_FIELD_STRING},
+        {"live_activity", "topic", CONFIG_FIELD_STRING},
+        {"live_activity", "environment", CONFIG_FIELD_STRING},
+        {"live_activity", "team_id", CONFIG_FIELD_STRING},
+        {"live_activity", "key_id", CONFIG_FIELD_STRING},
+        {"live_activity", "private_key_path", CONFIG_FIELD_STRING},
+        {"live_activity", "private_key_pem", CONFIG_FIELD_STRING},
+        {"live_activity", "has_private_key_pem", CONFIG_FIELD_BOOL},
+        {"live_activity", "timeout_sec", CONFIG_FIELD_NUMBER},
         {"agent", "custom_instruction", CONFIG_FIELD_STRING},
         {"agent", "additional_prompt", CONFIG_FIELD_STRING},
         {"agent", "input_mode", CONFIG_FIELD_STRING},
@@ -567,6 +583,7 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"agent", "screen_stable_timeout_ms", CONFIG_FIELD_NUMBER},
         {"agent", "screen_stable_ms", CONFIG_FIELD_NUMBER},
         {"agent", "screen_stable_diff_threshold", CONFIG_FIELD_NUMBER},
+        {"agent", "default_platform", CONFIG_FIELD_STRING},
         {NULL, NULL, CONFIG_FIELD_STRING},
     };
 
@@ -1216,7 +1233,7 @@ bool validate_agent_config_json(cJSON* root, std::string* error = NULL) {
 
     const char* sections[] = {
         "model", "model_text", "tts", "stt", "audio", "audio_archive",
-        "log", "hid", "search", "telemetry", "agent", NULL,
+        "log", "hid", "search", "telemetry", "live_activity", "agent", NULL,
     };
     for (int i = 0; sections[i]; ++i) {
         cJSON* section = cJSON_GetObjectItem(root, sections[i]);
@@ -1318,7 +1335,15 @@ void load_current_agent_config(const Options& options,
 }
 
 void preserve_redacted_agent_secrets(const Options& options, aiden::AgentToml* config) {
-    if (!config || !config->search.api_key.empty() || !config->search.has_api_key) {
+    if (!config) {
+        return;
+    }
+    bool need_search_api_key = config->search.api_key.empty() && config->search.has_api_key;
+    bool need_live_activity_relay_api_key =
+        config->live_activity.relay_api_key.empty() && config->live_activity.has_relay_api_key;
+    bool need_live_activity_private_key_pem =
+        config->live_activity.private_key_pem.empty() && config->live_activity.has_private_key_pem;
+    if (!need_search_api_key && !need_live_activity_relay_api_key && !need_live_activity_private_key_pem) {
         return;
     }
 
@@ -1327,9 +1352,17 @@ void preserve_redacted_agent_secrets(const Options& options, aiden::AgentToml* c
     if (!aiden::load_agent_toml(options.agent_config_path.c_str(), stored, &load_error)) {
         return;
     }
-    if (!stored.search.api_key.empty()) {
+    if (need_search_api_key && !stored.search.api_key.empty()) {
         config->search.api_key = stored.search.api_key;
         config->search.has_api_key = true;
+    }
+    if (need_live_activity_relay_api_key && !stored.live_activity.relay_api_key.empty()) {
+        config->live_activity.relay_api_key = stored.live_activity.relay_api_key;
+        config->live_activity.has_relay_api_key = true;
+    }
+    if (need_live_activity_private_key_pem && !stored.live_activity.private_key_pem.empty()) {
+        config->live_activity.private_key_pem = stored.live_activity.private_key_pem;
+        config->live_activity.has_private_key_pem = true;
     }
 }
 
@@ -1402,6 +1435,7 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
 
     cJSON* stt = add_object(root, "stt");
     cJSON_AddStringToObject(stt, "provider", config.stt.provider.c_str());
+    cJSON_AddStringToObject(stt, "language", config.stt.language.c_str());
     cJSON_AddStringToObject(stt, "api_key", config.stt.api_key.c_str());
     cJSON_AddStringToObject(stt, "model", config.stt.model.c_str());
     cJSON_AddStringToObject(stt, "base_url", config.stt.base_url.c_str());
@@ -1448,6 +1482,33 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     add_string_array_to_object(telemetry, "tags", config.telemetry.tags);
     cJSON_AddStringToObject(telemetry, "environment", config.telemetry.environment.c_str());
 
+    cJSON* live_activity = add_object(root, "live_activity");
+    cJSON_AddBoolToObject(live_activity, "enabled", config.live_activity.enabled ? 1 : 0);
+    cJSON_AddStringToObject(live_activity, "relay_url", config.live_activity.relay_url.c_str());
+    if (include_secrets) {
+        cJSON_AddStringToObject(live_activity, "relay_api_key", config.live_activity.relay_api_key.c_str());
+    } else {
+        cJSON_AddBoolToObject(live_activity, "has_relay_api_key",
+                              (config.live_activity.has_relay_api_key ||
+                               !config.live_activity.relay_api_key.empty()) ? 1 : 0);
+    }
+    cJSON_AddStringToObject(live_activity, "board_id", config.live_activity.board_id.c_str());
+    cJSON_AddStringToObject(live_activity, "phone_id", config.live_activity.phone_id.c_str());
+    cJSON_AddStringToObject(live_activity, "bundle_id", config.live_activity.bundle_id.c_str());
+    cJSON_AddStringToObject(live_activity, "topic", config.live_activity.topic.c_str());
+    cJSON_AddStringToObject(live_activity, "environment", config.live_activity.environment.c_str());
+    cJSON_AddStringToObject(live_activity, "team_id", config.live_activity.team_id.c_str());
+    cJSON_AddStringToObject(live_activity, "key_id", config.live_activity.key_id.c_str());
+    cJSON_AddStringToObject(live_activity, "private_key_path", config.live_activity.private_key_path.c_str());
+    if (include_secrets) {
+        cJSON_AddStringToObject(live_activity, "private_key_pem", config.live_activity.private_key_pem.c_str());
+    } else {
+        cJSON_AddBoolToObject(live_activity, "has_private_key_pem",
+                              (config.live_activity.has_private_key_pem ||
+                               !config.live_activity.private_key_pem.empty()) ? 1 : 0);
+    }
+    cJSON_AddNumberToObject(live_activity, "timeout_sec", config.live_activity.timeout_sec);
+
     cJSON* agent = add_object(root, "agent");
     cJSON_AddStringToObject(agent, "custom_instruction", config.custom_instruction.c_str());
     cJSON_AddStringToObject(agent, "additional_prompt", config.additional_prompt.c_str());
@@ -1475,6 +1536,7 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddNumberToObject(agent, "screen_stable_timeout_ms", config.screen_stable_timeout_ms);
     cJSON_AddNumberToObject(agent, "screen_stable_ms", config.screen_stable_ms);
     cJSON_AddNumberToObject(agent, "screen_stable_diff_threshold", config.screen_stable_diff_threshold);
+    cJSON_AddStringToObject(agent, "default_platform", config.default_platform.c_str());
 
     return root;
 }
@@ -1644,6 +1706,7 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
     cJSON* stt = cJSON_GetObjectItem(root, "stt");
     if (json_is_object(stt)) {
         set_json_str(&config->stt.provider, stt, "provider");
+        set_json_str(&config->stt.language, stt, "language");
         set_json_str(&config->stt.api_key, stt, "api_key");
         set_json_str(&config->stt.model, stt, "model");
         set_json_str(&config->stt.base_url, stt, "base_url");
@@ -1707,6 +1770,39 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_str(&config->telemetry.environment, telemetry, "environment");
     }
 
+    cJSON* live_activity = cJSON_GetObjectItem(root, "live_activity");
+    if (json_is_object(live_activity)) {
+        set_json_bool(&config->live_activity.enabled, live_activity, "enabled");
+        set_json_str(&config->live_activity.relay_url, live_activity, "relay_url");
+        set_json_bool(&config->live_activity.has_relay_api_key, live_activity, "has_relay_api_key");
+        cJSON* relay_key_item = cJSON_GetObjectItem(live_activity, "relay_api_key");
+        if (json_is_string(relay_key_item)) {
+            std::string relay_api_key = trim_copy(relay_key_item->valuestring);
+            if (!relay_api_key.empty()) {
+                config->live_activity.relay_api_key = relay_api_key;
+                config->live_activity.has_relay_api_key = true;
+            }
+        }
+        set_json_str(&config->live_activity.board_id, live_activity, "board_id");
+        set_json_str(&config->live_activity.phone_id, live_activity, "phone_id");
+        set_json_str(&config->live_activity.bundle_id, live_activity, "bundle_id");
+        set_json_str(&config->live_activity.topic, live_activity, "topic");
+        set_json_str(&config->live_activity.environment, live_activity, "environment");
+        set_json_str(&config->live_activity.team_id, live_activity, "team_id");
+        set_json_str(&config->live_activity.key_id, live_activity, "key_id");
+        set_json_str(&config->live_activity.private_key_path, live_activity, "private_key_path");
+        set_json_bool(&config->live_activity.has_private_key_pem, live_activity, "has_private_key_pem");
+        cJSON* private_key_item = cJSON_GetObjectItem(live_activity, "private_key_pem");
+        if (json_is_string(private_key_item)) {
+            std::string private_key_pem = private_key_item->valuestring;
+            if (!trim_copy(private_key_pem).empty()) {
+                config->live_activity.private_key_pem = private_key_pem;
+                config->live_activity.has_private_key_pem = true;
+            }
+        }
+        set_json_int(&config->live_activity.timeout_sec, live_activity, "timeout_sec");
+    }
+
     cJSON* agent = cJSON_GetObjectItem(root, "agent");
     if (json_is_object(agent)) {
         set_json_str(&config->custom_instruction, agent, "custom_instruction");
@@ -1735,6 +1831,7 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_int(&config->screen_stable_timeout_ms, agent, "screen_stable_timeout_ms");
         set_json_int(&config->screen_stable_ms, agent, "screen_stable_ms");
         set_json_double(&config->screen_stable_diff_threshold, agent, "screen_stable_diff_threshold");
+        set_json_str(&config->default_platform, agent, "default_platform");
     }
 }
 
@@ -4373,7 +4470,8 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
         return handle_get_config(options);
     }
 
-    if (request.method == "GET" && request.path == "/api/config/meta") {
+    if (request.method == "GET" &&
+        (request.path == "/api/config-meta" || request.path == "/api/config/meta")) {
         return handle_get_config_meta();
     }
 

@@ -478,6 +478,7 @@ body.open .drawer{{transform:translateX(0)}}
 .block-head span{{color:var(--muted);font-family:var(--font-mono);font-size:10px}}
 .block-body{{padding:12px 14px;font-size:13px;line-height:1.6}}
 pre.block-body{{margin:0;white-space:pre-wrap;word-break:break-word;font-family:var(--font-mono);font-size:12px;line-height:1.65;background:var(--surface);color:var(--fg);border-radius:0}}
+pre.skillopt-reasoning,pre.skillopt-edits{{white-space:pre-wrap;word-break:break-word;background:color-mix(in oklch,var(--bg) 58%,white);color:var(--fg);border:1px solid var(--border);max-width:48ch}}
 .error-block{{border-color:color-mix(in oklch,oklch(60% 0.18 28) 28%,var(--border))}}
 .error-block .block-head{{background:color-mix(in oklch,oklch(60% 0.18 28) 7%,white);border-bottom-color:color-mix(in oklch,oklch(60% 0.18 28) 20%,var(--border))}}
 @media (max-width:768px){{.drawer{{width:100vw}}body{{padding:18px}}}}
@@ -569,8 +570,8 @@ def _render_edit_rows(result: OptimizationResult) -> str:
             "<tr>"
             f"<td>{step.step}</td>"
             f"<td>{'applied' if step.accepted else 'rejected'}</td>"
-            f"<td><pre>{html.escape(step.patch_reasoning or '(no reasoning)')}</pre></td>"
-            f"<td><pre>{html.escape(edit_text)}</pre></td>"
+            f"<td><pre class=\"skillopt-reasoning\">{html.escape(step.patch_reasoning or '(no reasoning)')}</pre></td>"
+            f"<td><pre class=\"skillopt-edits\">{html.escape(edit_text)}</pre></td>"
             "</tr>"
         )
     if rows:

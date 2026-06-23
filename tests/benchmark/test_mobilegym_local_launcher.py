@@ -57,6 +57,87 @@ def test_build_run_command_reports_mobilegym_runs_moved_to_webui(launcher_module
         )
 
 
+def test_build_run_command_reports_mobilegym_runs_moved_to_webui_with_analysis_payload(launcher_module, tmp_path):
+    with pytest.raises(launcher_module.LauncherError, match="benchmark WebUI"):
+        launcher_module.build_run_command(
+            tmp_path,
+            {
+                "suite": "clock",
+                "suite_type": "mobilegym_builtin",
+                "analysis_model": "anthropic/claude-sonnet-4-6",
+            },
+        )
+
+
+def test_build_skillopt_run_command_enables_llm_analysis_by_default(launcher_module, tmp_path):
+    (tmp_path / "suites" / "skillopt" / "device-operator").mkdir(parents=True)
+    (tmp_path / "mobilegym" / "docker").mkdir(parents=True)
+    (tmp_path / "mobilegym" / "docker" / "parallel_run.sh").write_text("#!/usr/bin/env bash\n")
+
+    command = launcher_module.build_skillopt_run_command(
+        tmp_path,
+        {
+            "mode": "skillopt",
+            "skillopt_backend": "mobilegym",
+            "skill": "device-operator",
+            "train_suite": "skillopt/device-operator/device_operator_train",
+            "validation_suite": "skillopt/device-operator/device_operator_verification",
+        },
+    )
+
+    assert command.env["AIDEN_BENCHMARK_LLM_ANALYSIS"] == "1"
+
+
+def test_build_skillopt_run_command_forwards_analysis_tuning_fields(launcher_module, tmp_path):
+    (tmp_path / "suites" / "skillopt" / "device-operator").mkdir(parents=True)
+
+    command = launcher_module.build_skillopt_run_command(
+        tmp_path,
+        {
+            "mode": "skillopt",
+            "skillopt_backend": "mobilegym",
+            "skill": "device-operator",
+            "train_suite": "skillopt/device-operator/device_operator_train",
+            "validation_suite": "skillopt/device-operator/device_operator_verification",
+            "analysis_model": "bytedance-seed/seed-2.0-lite",
+            "analysis_max_log_bytes": 1234,
+            "analysis_max_code_bytes": 5678,
+            "analysis_timeout_sec": 90,
+        },
+    )
+
+    assert command.env["AIDEN_BENCHMARK_ANALYSIS_MODEL"] == "bytedance-seed/seed-2.0-lite"
+    assert command.env["AIDEN_BENCHMARK_ANALYSIS_MAX_LOG_BYTES"] == "1234"
+    assert command.env["AIDEN_BENCHMARK_ANALYSIS_MAX_CODE_BYTES"] == "5678"
+    assert command.env["AIDEN_BENCHMARK_ANALYSIS_TIMEOUT_SEC"] == "90"
+
+
+def test_build_skillopt_run_command_uses_benchmark_judge_model_for_analysis(launcher_module, monkeypatch, tmp_path):
+    monkeypatch.setattr(launcher_module, "fetch_board_model_config", lambda board_url: {})
+    monkeypatch.setattr(
+        launcher_module,
+        "fetch_board_benchmark_config",
+        lambda board_url: {
+            "OPENROUTER_API_KEY": "sk-test",
+            "AIDEN_BENCHMARK_JUDGE_MODEL": "bytedance-seed/seed-2.0-lite",
+        },
+    )
+
+    command = launcher_module.build_skillopt_run_command(
+        tmp_path,
+        {
+            "mode": "skillopt",
+            "skillopt_backend": "mobilegym",
+            "skill": "device-operator",
+            "train_suite": "skillopt/device-operator/device_operator_train",
+            "validation_suite": "skillopt/device-operator/device_operator_verification",
+            "board_url": "http://board.local",
+        },
+    )
+
+    assert command.env["AIDEN_BENCHMARK_ANALYSIS_MODEL"] == "bytedance-seed/seed-2.0-lite"
+
+
 def test_build_run_command_rejects_path_traversal(launcher_module, tmp_path):
     with pytest.raises(launcher_module.LauncherError, match="benchmark WebUI"):
         launcher_module.build_run_command(
@@ -91,6 +172,15 @@ api_key = "secret-key"
         "MODEL_BASE_URL": "https://proxy.seeklab.io/qwen/v1",
         "MODEL_API_KEY": "secret-key",
     }
+
+
+def test_parse_board_agent_config_ignores_missing_sections(launcher_module):
+    assert launcher_module.parse_agent_model_config(
+        '[tts]\nprovider = "minimax-ws"\napi_key = "tts-key"\n'
+    ) == {}
+    assert launcher_module.parse_agent_benchmark_config(
+        '[model]\nprovider = "openai"\napi_key = "model-key"\n'
+    ) == {}
 
 
 def test_fetch_board_model_config_uses_shell_tool(launcher_module):
@@ -171,6 +261,7 @@ def test_handler_serves_mobilegym_suite_report(launcher_module, tmp_path):
     report_dir = tmp_path / "runs" / "mobilegym" / "batch-20260611-010101" / "perception" / "perception_v1"
     report_dir.mkdir(parents=True)
     (report_dir / "index.html").write_text("<html>Perception report</html>")
+
     server = HTTPServer(("127.0.0.1", 0), launcher_module.make_handler(tmp_path))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -182,6 +273,43 @@ def test_handler_serves_mobilegym_suite_report(launcher_module, tmp_path):
             assert resp.status == 200
             assert "text/html" in resp.headers["Content-Type"]
             assert resp.read().decode() == "<html>Perception report</html>"
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+
+def test_handler_serves_mobilegym_analysis_artifact(launcher_module, tmp_path):
+    report_dir = tmp_path / "runs" / "mobilegym" / "batch-20260611-010101"
+    report_dir.mkdir(parents=True)
+    (report_dir / "index.html").write_text("<html>MobileGym report</html>")
+    (report_dir / "llm_analysis.md").write_text("analysis body")
+    server = HTTPServer(("127.0.0.1", 0), launcher_module.make_handler(tmp_path))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{server.server_port}/benchmark/report/batch-20260611-010101/llm_analysis.md",
+            timeout=2,
+        ) as resp:
+            assert resp.status == 200
+            assert "text/markdown" in resp.headers["Content-Type"]
+            assert resp.read().decode() == "analysis body"
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+
+def test_handler_rejects_unsafe_report_artifact(launcher_module, tmp_path):
+    server = HTTPServer(("127.0.0.1", 0), launcher_module.make_handler(tmp_path))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(
+                f"http://127.0.0.1:{server.server_port}/benchmark/report/batch-20260611-010101/../../secret",
+                timeout=2,
+            )
+        assert exc.value.code == 404
     finally:
         server.shutdown()
         thread.join(timeout=2)
@@ -241,6 +369,48 @@ def test_list_runs_expands_multiple_summary_suites(launcher_module, tmp_path):
         "/benchmark/report/batch-20260611-130000/clock",
         "/benchmark/report/batch-20260611-130000/phone_control_v1",
     ]
+
+
+def test_list_runs_nests_skillopt_mobilegym_phases_under_parent(launcher_module, tmp_path):
+    skillopt_dir = tmp_path / "runs" / "skillopt" / "skillopt-20260622-010101-abc123"
+    skillopt_dir.mkdir(parents=True)
+    (skillopt_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "train_suite": "skillopt/device-operator/device_operator_train",
+                "model": "qwen3.6-35b",
+                "totals": {"tasks": 6, "passed": 6, "failed": 0},
+            }
+        )
+    )
+    for phase, suite, passed, failed in [
+        ("baseline_selection", "skillopt/device-operator/device_operator_verification", 5, 1),
+        ("step_01_train", "skillopt/device-operator/device_operator_train", 9, 3),
+        ("step_01_selection", "skillopt/device-operator/device_operator_verification", 6, 0),
+    ]:
+        run_dir = tmp_path / "runs" / "mobilegym" / f"skillopt-20260622-010101-abc123-{phase}"
+        run_dir.mkdir(parents=True)
+        (run_dir / "index.html").write_text("report")
+        (run_dir / "summary.json").write_text(
+            json.dumps(
+                {
+                    "tasks": passed + failed,
+                    "passed": passed,
+                    "failed": failed,
+                    "model": "qwen3.6-35b",
+                    "suites": [{"suite": suite, "tasks": passed + failed, "passed": passed, "failed": failed}],
+                }
+            )
+        )
+
+    runs = launcher_module.list_runs(tmp_path)
+
+    assert [run["run_id"] for run in runs] == ["skillopt-20260622-010101-abc123"]
+    children = runs[0]["children"]
+    assert [child["phase"] for child in children] == ["baseline_selection", "step_01_train", "step_01_selection"]
+    assert [child["kind"] for child in children] == ["verification", "train", "verification"]
+    assert children[1]["run_id"] == "skillopt-20260622-010101-abc123-step_01_train"
+    assert children[1]["report_path"] == "/benchmark/report/skillopt-20260622-010101-abc123-step_01_train"
 
 
 def test_list_runs_marks_current_run_not_done_without_summary(launcher_module, tmp_path):

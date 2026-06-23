@@ -85,6 +85,9 @@ type RunRequest struct {
 	// SteerWaiter waits for the out-of-band steering capture to resolve. ok=false
 	// means the interruption produced no usable input and the run may continue.
 	SteerWaiter func(context.Context) (RunSteerMessage, bool, error)
+	// AsyncEpisodeMaintenance keeps the episode trace write synchronous but moves
+	// lesson extraction and referenced-memory maintenance off the response path.
+	AsyncEpisodeMaintenance bool
 }
 
 type RunResult struct {
@@ -308,6 +311,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	}
 
 	toolSet.RegisterMemoryTools(memoryDir, profileFn, extractionCfg.SummaryMaxChunks, debouncer)
+	toolSet.RegisterEnterTextInFieldTool(modelManager, nil) // platformFn set per-request
 
 	rt := NewRuntimeWithDeps(cfg, modelManager, NewMemoryManager(memoryDir, WithExtractionConfig(extractionCfg), WithSummarizeFn(summarizeFn), WithStructuredSummarizeFn(structuredSummarizeFn), WithProfileFn(profileFn), WithContextWindowFn(contextWindowFn), WithMemoryProfileDebouncer(debouncer), WithMemoryLogger(logger)), toolSet, skillIndex)
 
@@ -377,9 +381,18 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 		telemetrySessionID: uuid.NewString(),
 		environmentBridge:  environmentBridge,
 	}
-	// Set runtime ID for raw HTTP logging.
+	// Use the active memory session ID for raw HTTP log partitioning.
 	if modelManager, ok := models.(*ModelManager); ok {
-		modelManager.SetRuntimeID(rt.runtimeID)
+		modelManager.SetRawHTTPLogSessionIDProvider(func() string {
+			if memories == nil {
+				return ""
+			}
+			sessionID, err := memories.ActiveSessionID()
+			if err != nil {
+				return ""
+			}
+			return sessionID
+		})
 	}
 	if cfg.ConfigDir != "" {
 		rt.memoryPlane = NewFilesystemMemoryPlane(filepath.Join(cfg.ConfigDir, "memory"), LoadMemoryExtractionConfig(cfg.ConfigDir), nil)
@@ -674,7 +687,40 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			steerStatus = status
 		}
 	}
-	executor := newRoleCollaborativeExecutor(model, profiles, availableTools, plannerMemory, maxIterations, turnInput.Attachments, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault(), req.DeviceEnvironment, req.SteerProvider)
+
+	// Apply default platform from config if not set by bridge app
+	deviceEnv := req.DeviceEnvironment
+	defaultPlatform := strings.TrimSpace(r.config.DefaultPlatform)
+	if deviceEnv == nil {
+		if defaultPlatform != "" {
+			deviceEnv = &PhoneEnvironment{Platform: defaultPlatform}
+		}
+	} else if strings.TrimSpace(deviceEnv.Platform) == "" {
+		if defaultPlatform != "" {
+			deviceEnv.Platform = defaultPlatform
+		}
+	}
+
+	// Set platformFn for enter_text_in_field tool (bridge > config > LLM)
+	if textInputTool, ok := r.tools.Get("enter_text_in_field"); ok {
+		// The tool may be wrapped (e.g., postActionScreenshotTool), so we use
+		// an interface to check if it supports SetPlatformFn
+		type platformConfigurable interface {
+			SetPlatformFn(func() string)
+		}
+		if tool, ok := textInputTool.(platformConfigurable); ok {
+			tool.SetPlatformFn(func() string {
+				if deviceEnv != nil {
+					if p := strings.TrimSpace(deviceEnv.Platform); p != "" {
+						return p
+					}
+				}
+				return defaultPlatform
+			})
+		}
+	}
+
+	executor := newRoleCollaborativeExecutor(model, profiles, availableTools, plannerMemory, maxIterations, turnInput.Attachments, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault(), deviceEnv, req.SteerProvider)
 	executor.ConversationHistory = conversationHistory
 	executor.TodoReminderToolCalls = r.config.TodoReminderToolCallsOrDefault()
 	executor.ToolCallSpeech = r.config.VoiceToolCallSpeechOrDefault()
@@ -698,7 +744,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 		if err != nil {
 			r.persistRunStatusBestEffort(episodeID, req.RequestID, runID, err)
-			r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture, boundaryTelemetry)
+			r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture, boundaryTelemetry, req.AsyncEpisodeMaintenance)
 			return RunResult{}, err
 		}
 	}
@@ -721,10 +767,10 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 
 	commitResult, err := r.commitSession(ctx, commitReq)
 	if err != nil {
-		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture, boundaryTelemetry)
+		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture, boundaryTelemetry, req.AsyncEpisodeMaintenance)
 		return RunResult{}, err
 	}
-	r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, nil, promptCapture, boundaryTelemetry)
+	r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, nil, promptCapture, boundaryTelemetry, req.AsyncEpisodeMaintenance)
 
 	waitForWakeupRequested, waitForWakeupReason := false, ""
 	if r.waitForWakeup != nil {
@@ -1028,7 +1074,13 @@ func countPendingRecallResults(output string) int {
 	return count
 }
 
-func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input string, output string, metrics *RunMetrics, runErr error, promptCapture *telemetryPromptCapture, boundary sessionBoundaryTelemetry) {
+type episodeMaintenancePlane interface {
+	MemoryPlane
+	commitEpisodeTrace(ctx context.Context, episode TaskEpisode) error
+	commitEpisodeMaintenance(ctx context.Context, episode TaskEpisode)
+}
+
+func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input string, output string, metrics *RunMetrics, runErr error, promptCapture *telemetryPromptCapture, boundary sessionBoundaryTelemetry, asyncMaintenance bool) {
 	if recorder == nil || r.memoryPlane == nil {
 		return
 	}
@@ -1046,6 +1098,21 @@ func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input strin
 	enrichEpisodeSessionBoundaryTelemetry(&episode, boundary)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	if asyncMaintenance {
+		if plane, ok := r.memoryPlane.(episodeMaintenancePlane); ok {
+			if err := plane.commitEpisodeTrace(ctx, episode); err != nil && r.logger != nil {
+				r.logger.Warn("[memory] commit episode trace failed: %v", err)
+				return
+			}
+			r.exportEpisodeBestEffort(episode, promptCapture)
+			go func() {
+				maintenanceCtx, maintenanceCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer maintenanceCancel()
+				plane.commitEpisodeMaintenance(maintenanceCtx, episode)
+			}()
+			return
+		}
+	}
 	if err := r.memoryPlane.CommitEpisode(ctx, episode); err != nil && r.logger != nil {
 		r.logger.Warn("[memory] commit episode failed: %v", err)
 		return

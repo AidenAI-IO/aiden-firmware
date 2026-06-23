@@ -2,16 +2,12 @@ package agent
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
-	"strings"
 )
-
-const openRouterSTTModel = "qwen/qwen3-asr-flash-2026-02-10"
 
 // STTClient is the interface for speech-to-text providers
 type STTClient interface {
@@ -23,11 +19,12 @@ type OpenAIWhisperSTT struct {
 	apiKey     string
 	model      string
 	baseURL    string
+	language   string
 	httpClient *http.Client
 }
 
 // NewOpenAIWhisperSTT creates a new OpenAI Whisper STT client
-func NewOpenAIWhisperSTT(apiKey, model, baseURL string, httpClients ...*http.Client) *OpenAIWhisperSTT {
+func NewOpenAIWhisperSTT(apiKey, model, baseURL, language string, httpClients ...*http.Client) *OpenAIWhisperSTT {
 	if baseURL == "" {
 		baseURL = "https://api.openai.com/v1"
 	}
@@ -42,6 +39,7 @@ func NewOpenAIWhisperSTT(apiKey, model, baseURL string, httpClients ...*http.Cli
 		apiKey:     apiKey,
 		model:      model,
 		baseURL:    baseURL,
+		language:   language,
 		httpClient: httpClient,
 	}
 }
@@ -63,6 +61,13 @@ func (s *OpenAIWhisperSTT) TranscribeWAV(wavData []byte) (string, error) {
 	// Add model field
 	if err := writer.WriteField("model", s.model); err != nil {
 		return "", fmt.Errorf("write model field: %w", err)
+	}
+
+	// Add language field if specified
+	if s.language != "" {
+		if err := writer.WriteField("language", s.language); err != nil {
+			return "", fmt.Errorf("write language field: %w", err)
+		}
 	}
 
 	if err := writer.Close(); err != nil {
@@ -92,82 +97,6 @@ func (s *OpenAIWhisperSTT) TranscribeWAV(wavData []byte) (string, error) {
 	}
 
 	// Parse response
-	var result struct {
-		Text string `json:"text"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("decode response: %w", err)
-	}
-
-	return result.Text, nil
-}
-
-// OpenRouterSTT implements STT using OpenRouter's audio transcription API.
-type OpenRouterSTT struct {
-	apiKey     string
-	model      string
-	baseURL    string
-	httpClient *http.Client
-}
-
-// NewOpenRouterSTT creates a new OpenRouter STT client.
-func NewOpenRouterSTT(apiKey, model, baseURL string, httpClients ...*http.Client) *OpenRouterSTT {
-	if baseURL == "" {
-		baseURL = "https://openrouter.ai/api/v1"
-	}
-	if model == "" {
-		model = openRouterSTTModel
-	}
-	httpClient := http.DefaultClient
-	if len(httpClients) > 0 && httpClients[0] != nil {
-		httpClient = httpClients[0]
-	}
-	return &OpenRouterSTT{
-		apiKey:     apiKey,
-		model:      model,
-		baseURL:    strings.TrimRight(baseURL, "/"),
-		httpClient: httpClient,
-	}
-}
-
-// TranscribeWAV transcribes a WAV file to text through OpenRouter.
-func (s *OpenRouterSTT) TranscribeWAV(wavData []byte) (string, error) {
-	reqBody := struct {
-		Model      string `json:"model"`
-		InputAudio struct {
-			Data   string `json:"data"`
-			Format string `json:"format"`
-		} `json:"input_audio"`
-	}{
-		Model: s.model,
-	}
-	reqBody.InputAudio.Data = base64.StdEncoding.EncodeToString(wavData)
-	reqBody.InputAudio.Format = "wav"
-
-	reqData, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", fmt.Errorf("marshal request: %w", err)
-	}
-
-	url := fmt.Sprintf("%s/audio/transcriptions", s.baseURL)
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(reqData))
-	if err != nil {
-		return "", fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+s.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("API error %d: %s", resp.StatusCode, string(body))
-	}
-
 	var result struct {
 		Text string `json:"text"`
 	}

@@ -130,3 +130,22 @@ FAILED     task_002 attempt=1 rubric=1/3 wall=1820ms (tools=3, screenshots=1)
 ## 向后兼容
 
 所有现有的命令和脚本都保持兼容，默认行为（不使用 `--verbose`）输出简洁的单行结果，与之前基本一致，只是增加了工具调用和截图数量的提示信息。
+
+## LLM Post-Run Analysis
+
+原生 runner 可以使用 `--llm-analysis` 在 benchmark 结束后生成 `llm_analysis.md` 和 `llm_analysis.json`，文件会和 `report.html` 放在同一个 run 目录。该分析会结合 suite 结果、trace/history、runtime logs 和受限的源码片段给出可能根因与修改建议，不会替代 judge/rubric 结果。
+
+MobileGym report 生成可以通过环境变量启用：
+
+```bash
+AIDEN_BENCHMARK_LLM_ANALYSIS=1 uv run python -m mobilegym.report benchmark/runs/mobilegym/<batch-id>
+```
+
+可选控制项：
+
+- `AIDEN_BENCHMARK_ANALYSIS_MODEL`
+- `AIDEN_BENCHMARK_ANALYSIS_MAX_LOG_BYTES`
+- `AIDEN_BENCHMARK_ANALYSIS_MAX_CODE_BYTES`
+- `AIDEN_BENCHMARK_ANALYSIS_TIMEOUT_SEC`
+
+分析失败不会改变 benchmark exit code；失败原因会写入 `llm_analysis_error.txt`。
