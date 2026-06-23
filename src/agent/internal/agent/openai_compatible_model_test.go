@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -411,9 +412,12 @@ func TestOpenAICompatibleModelLogsRawStreamingHTTPOnDecodeError(t *testing.T) {
 }
 
 func TestOpenAICompatibleModelRawHTTPLogKeepsRunInInitialSessionFile(t *testing.T) {
+	var sessionMu sync.Mutex
 	sessionID := "session-a"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sessionMu.Lock()
 		sessionID = "session-b"
+		sessionMu.Unlock()
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"OK\"},\"finish_reason\":\"stop\"}]}\n\n"))
 		w.Write([]byte("data: [DONE]\n\n"))
@@ -422,7 +426,11 @@ func TestOpenAICompatibleModelRawHTTPLogKeepsRunInInitialSessionFile(t *testing.
 
 	logDir := t.TempDir()
 	logger := newLLMRawHTTPLogger(logDir, "")
-	logger.SetSessionIDProvider(func() string { return sessionID })
+	logger.SetSessionIDProvider(func() string {
+		sessionMu.Lock()
+		defer sessionMu.Unlock()
+		return sessionID
+	})
 	times := []time.Time{
 		time.Date(2026, 6, 21, 9, 4, 59, 0, time.UTC),
 		time.Date(2026, 6, 21, 9, 4, 59, 0, time.UTC),
@@ -470,6 +478,28 @@ func TestOpenAICompatibleModelRawHTTPLogKeepsRunInInitialSessionFile(t *testing.
 	counts := countRawHTTPKinds(t, logText)
 	if counts["request"] != 1 || counts["response"] != 1 {
 		t.Fatalf("raw HTTP log should contain one request and one response:\n%s", logText)
+	}
+}
+
+func TestLLMRawHTTPLoggerFallsBackToTimestampForUnsafeSessionID(t *testing.T) {
+	logDir := t.TempDir()
+	logger := newLLMRawHTTPLogger(logDir, "")
+	fileTime := time.Date(2026, 6, 21, 9, 4, 59, 0, time.UTC)
+
+	if err := logger.LogWithFileScope("test-model", "request", http.StatusOK, `{"ok":true}`, fileTime, "..evil"); err != nil {
+		t.Fatalf("LogWithFileScope() error = %v", err)
+	}
+
+	matches, err := filepath.Glob(filepath.Join(logDir, "llm-http-*.log"))
+	if err != nil {
+		t.Fatalf("glob raw HTTP logs: %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("expected one raw HTTP log file, got %d: %#v", len(matches), matches)
+	}
+	wantName := "llm-http-202606210904.log"
+	if filepath.Base(matches[0]) != wantName {
+		t.Fatalf("raw HTTP file = %q, want %q", filepath.Base(matches[0]), wantName)
 	}
 }
 
