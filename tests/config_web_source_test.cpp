@@ -1,9 +1,50 @@
 #include <doctest.h>
 
+#include "config_web_llm_html.h"
+
+#include <cstdio>
 #include <fstream>
 #include <set>
 #include <sstream>
 #include <string>
+#include <sys/wait.h>
+#include <unistd.h>
+
+namespace {
+
+std::string extract_llm_viewer_diff_js() {
+    const std::string html = CONFIG_WEB_LLM_HTML;
+    const std::string start_marker = "function messageText";
+    const std::string end_marker = "loadFileList();";
+    const std::size_t start = html.find(start_marker);
+    const std::size_t end = html.find(end_marker, start);
+    REQUIRE(start != std::string::npos);
+    REQUIRE(end != std::string::npos);
+    return html.substr(start, end - start);
+}
+
+int run_node_script(const std::string& script) {
+    const std::string path = std::string(P_tmpdir) + "/aiden_llm_diff_test_" + std::to_string(getpid()) + ".js";
+    {
+        std::ofstream out(path.c_str());
+        REQUIRE(out.good());
+        out << script;
+    }
+
+    const pid_t pid = fork();
+    REQUIRE(pid >= 0);
+    if (pid == 0) {
+        execlp("node", "node", path.c_str(), static_cast<char*>(nullptr));
+        _exit(127);
+    }
+
+    int status = 0;
+    REQUIRE(waitpid(pid, &status, 0) == pid);
+    std::remove(path.c_str());
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 128;
+}
+
+}  // namespace
 
 TEST_CASE("config web agent tests do not reference legacy energy threshold") {
     const std::string path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
@@ -278,6 +319,42 @@ TEST_CASE("config web exposes the LLM HTTP log viewer") {
     CHECK(llm_html.find("function renderResponseBlock") != std::string::npos);
     CHECK(llm_html.find("function extractResponseMessage") != std::string::npos);
     CHECK(llm_html.find("response-section") != std::string::npos);
+}
+
+TEST_CASE("config web LLM diff pairs adjacent message replacements") {
+    const std::string script = extract_llm_viewer_diff_js() + R"JS(
+
+function assertEqual(actual, expected, label) {
+  if (actual !== expected) {
+    console.error(label + ': expected ' + expected + ', got ' + actual);
+    process.exit(1);
+  }
+}
+
+const oldMsgs = [
+  {role: 'system', content: 'system prompt'},
+  {role: 'user', content: 'old user one'},
+  {role: 'user', content: 'old user two'},
+  {role: 'assistant', content: 'unchanged assistant'}
+];
+const newMsgs = [
+  {role: 'system', content: 'system prompt'},
+  {role: 'user', content: 'new user one'},
+  {role: 'user', content: 'new user two'},
+  {role: 'assistant', content: 'unchanged assistant'}
+];
+
+const changed = buildMessageDiffOps(oldMsgs, newMsgs)
+  .filter(op => op.kind !== 'same')
+  .map(op => op.kind + ':' + (op.oldIndex == null ? '-' : op.oldIndex) + '->' + (op.newIndex == null ? '-' : op.newIndex))
+  .join('|');
+assertEqual(changed, 'modified:1->1|modified:2->2', 'message diff ops');
+
+const stats = computeDiffStats(oldMsgs, newMsgs);
+assertEqual(JSON.stringify(stats), JSON.stringify({added: 0, removed: 0, modified: 2}), 'diff stats');
+)JS";
+
+    CHECK(run_node_script(script) == 0);
 }
 
 TEST_CASE("config web exposes audio archive switch") {
