@@ -145,6 +145,7 @@ type Config struct {
 	ScreenStableTimeoutMs      int                `toml:"screen_stable_timeout_ms,omitempty"`
 	ScreenStableMs             int                `toml:"screen_stable_ms,omitempty"`
 	ScreenStableDiffThreshold  float64            `toml:"screen_stable_diff_threshold,omitempty"`
+	DefaultPlatform            string             `toml:"default_platform,omitempty"` // "ios", "android", "mac"
 	SkillsDirs                 []string           `toml:"skills_dirs"`
 	BundledSkillsDir           string             `toml:"bundled_skills_dir,omitempty"`
 	SkillMergeModel            SkillMergeModel    `toml:"-"`

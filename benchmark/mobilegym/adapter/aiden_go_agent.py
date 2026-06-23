@@ -106,6 +106,7 @@ class AidenGoAgent(_MobileGymBaseAgent):
         chat_timeout_sec: float = 300,
         episode_timeout_sec: float = 30,
         artifact_dir: str | Path | None = None,
+        task_lookup: dict[str, Any] | None = None,
     ):
         try:
             super().__init__()
@@ -121,6 +122,7 @@ class AidenGoAgent(_MobileGymBaseAgent):
         self.chat_timeout_sec = chat_timeout_sec
         self.episode_timeout_sec = episode_timeout_sec
         self.artifact_dir = Path(artifact_dir) if artifact_dir is not None else None
+        self.task_lookup = dict(task_lookup or {})
         self.task: Any | None = None
         self.last_episode_id: str | None = None
 
@@ -151,8 +153,18 @@ class AidenGoAgent(_MobileGymBaseAgent):
         return complete_action(response_text)
 
     def reset(self, task: Any) -> None:
-        self.task = task
-        self._prepare_aiden_suite_task(task)
+        self.task = self._resolve_task(task)
+        self._prepare_aiden_suite_task(self.task)
+
+    def _resolve_task(self, task: Any) -> Any:
+        if isinstance(task, str):
+            if self.task_lookup:
+                resolved = self.task_lookup.get(task)
+                if resolved is None:
+                    raise AidenAdapterError("Aiden task lookup miss for string task reference")
+                return resolved
+            return task
+        return task
 
     def act(self, obs: Any) -> Any:
         del obs

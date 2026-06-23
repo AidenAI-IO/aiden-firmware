@@ -271,6 +271,7 @@ var knownToolNames = map[string]struct{}{
 	"forget_memory":         {},
 	"keyboard_tap":          {},
 	"keyboard_text":         {},
+	"enter_text_in_field":   {},
 	"mouse_click":           {},
 	"mouse_move":            {},
 	"mouse_scroll":          {},

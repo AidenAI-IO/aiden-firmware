@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -474,6 +475,9 @@ func TestHandleBenchmarkIndex_ServesHTMLWithRouterButtons(t *testing.T) {
 		`<th>Status</th><th>Progress</th><th>Model</th>`,
 		`progressText(r)`,
 		`r.model||'—'`,
+		`function renderRunRow(r,isChild,parentSource)`,
+		`(r.children||[]).forEach`,
+		`run-child`,
 		`id="refreshBtn"`,
 		`function refreshBenchmark(){loadSuites();if(getMode()!=='skillopt')loadSkills();loadRuns();loadStatus();loadLog()}`,
 		`function logPanelError(context,e)`,
@@ -1110,6 +1114,26 @@ func TestLaunchBenchmarkRunner_PassesStateFileToPythonRunner(t *testing.T) {
 	if !strings.Contains(script, "--state-file '/userdata/agent/benchmark/state.json'") {
 		t.Fatalf("launch script should pass --state-file to Python runner, got: %s", script)
 	}
+	if !strings.Contains(script, "--llm-analysis") {
+		t.Fatalf("launch script should enable LLM analysis by default, got: %s", script)
+	}
+	if !strings.Contains(script, "--analysis-model 'judge/model'") {
+		t.Fatalf("launch script should use judge model for LLM analysis by default, got: %s", script)
+	}
+	assertLaunchScriptRunsInStartedShell(t, script)
+}
+
+func assertLaunchScriptRunsInStartedShell(t *testing.T, script string) {
+	t.Helper()
+	if strings.HasSuffix(strings.TrimSpace(script), "&") {
+		t.Fatalf("launch script should not background itself after Go has started it: %s", script)
+	}
+	if strings.Contains(script, "; ;") {
+		t.Fatalf("launch script should not include an empty shell command separator: %s", script)
+	}
+	if out, err := exec.Command("sh", "-n", "-c", script).CombinedOutput(); err != nil {
+		t.Fatalf("launch script should have valid shell syntax: %v\n%s\nscript: %s", err, out, script)
+	}
 }
 
 func TestHandleBenchmarkRun_DoesNotWriteRunningStateWhenAidenLaunchFails(t *testing.T) {
@@ -1628,6 +1652,8 @@ func TestBuildSkillOptLaunchScript(t *testing.T) {
 	for _, want := range []string{
 		"cd '/bench'",
 		"export OPENROUTER_API_KEY='sk-test'",
+		"export AIDEN_BENCHMARK_LLM_ANALYSIS='1'",
+		"export AIDEN_BENCHMARK_ANALYSIS_MODEL='judge/model'",
 		"export AIDEN_SKILLS_DIR='/bench/config/skills'",
 		"from runner.skillopt.main import cli",
 		"--skill 'device-operator'",
@@ -1650,6 +1676,7 @@ func TestBuildSkillOptLaunchScript(t *testing.T) {
 			t.Errorf("launch script missing %q: %s", want, script)
 		}
 	}
+	assertLaunchScriptRunsInStartedShell(t, script)
 }
 
 func TestLaunchSkillOptRunnerUsesBenchmarkStateFile(t *testing.T) {
@@ -1751,6 +1778,13 @@ func TestBuildMobileGymLaunchScript_AidenSuite(t *testing.T) {
 	if !strings.Contains(script, "/tmp/mobilegym_runner.pid") {
 		t.Errorf("expected pid file write, got: %s", script)
 	}
+	if !strings.Contains(script, "export AIDEN_BENCHMARK_LLM_ANALYSIS='1'") {
+		t.Errorf("expected MobileGym launch script to enable LLM analysis by default, got: %s", script)
+	}
+	if !strings.Contains(script, "export AIDEN_BENCHMARK_ANALYSIS_MODEL='") {
+		t.Errorf("expected MobileGym launch script to set an analysis model by default, got: %s", script)
+	}
+	assertLaunchScriptRunsInStartedShell(t, script)
 }
 
 func TestBuildMobileGymLaunchScript_AidenSuites(t *testing.T) {

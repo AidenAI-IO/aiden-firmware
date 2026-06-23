@@ -3,7 +3,7 @@ name: device-operator
 description: Use when controlling a visible target device UI through screenshots, touch, mouse, or keyboard.
 metadata:
   preferred_model: primary
-  allowed_tools: [screenshot, quick_action, touch_gesture, mouse_click, mouse_move, mouse_scroll, keyboard_tap, keyboard_text, shell]
+  allowed_tools: [screenshot, quick_action, touch_gesture, mouse_click, mouse_move, mouse_scroll, keyboard_tap, keyboard_text, enter_text_in_field, shell]
 ---
 
 Use this skill when interacting with the connected device screen, app UI, keyboard, touch input, or mouse pointer.
@@ -57,7 +57,9 @@ When reporting a blocker, include the screenshot error, which recovery commands 
 - Use `quick_action` first when the goal matches a catalog shortcut (back, home, app switch, search, copy/paste, browser ops, etc.). Pass the correct `platform` (ios/android/mac).
 - If `quick_action` is reserved, returns `ok=false`, or the screen does not change as expected: do not retry the same binding. Try `alternative=true` once when listed, then fall back to direct input tools and continue.
 - Use `touch_gesture` for taps, swipes, drag, and mobile-style navigation.
-- Use `keyboard_text` for ASCII text entry after confirming the input field is focused. Never pass Chinese or emoji; use pinyin/English keywords and select on-screen candidates.
+- For **input field text entry** (search boxes, forms, chat inputs), use **`enter_text_in_field` once** with field coordinates. It handles IME switch, typing, candidate clicks, and field verification internally.
+- Use `keyboard_text` only for simple standalone ASCII typing when not using `enter_text_in_field`.
+- Never pass Chinese, emoji, or romanization blobs to `keyboard_text`.
 - Use `keyboard_tap` for keys such as enter, escape, tab, arrows, or shortcuts not covered by quick_action.
 - Use `mouse_click`, `mouse_move`, and `mouse_scroll` only when touch gestures are not appropriate.
 
@@ -171,12 +173,20 @@ Do not confirm sensitive dialogs unless the user explicitly asked for that exact
 
 ## Text Entry
 
-Before typing:
+Use **`enter_text_in_field`** for putting text into an input box:
 
-- Confirm the text field is focused.
-- `keyboard_text` is US-keyboard ASCII only (letters, digits, common punctuation). Do not pass Chinese, emoji, or other non-ASCII characters — the tool errors without typing anything.
-- For Chinese content, use pinyin or English keywords in `keyboard_text` (e.g. `weixin`, `zhangsan`), then tap the matching on-screen candidate or search result.
-- Prefer one `keyboard_text` call for normal ASCII text.
+```json
+{"text":"你好","platform":"android","focus":{"x":450,"y":105,"coord_space":"normalized"},"segments":["ni","hao"]}
+```
+
+- One call runs: focus → type segments → vision verify field (not IME candidate bar) → candidate clicks → retry with IME switch when wrong.
+- Success requires `committed:true` and `field_text` exactly matching `text`. **Do not** tell the user text was entered unless `committed:true`.
+- `committed:false` means failure (e.g. text still in IME candidates/preedit, or field still shows pinyin). Retry with a fresh screenshot and corrected focus/segments, or report failure.
+- **Required** `segments` for composition/CJK: IME romanization syllables in typing order. Example: `"text":"你好","segments":["ni","hao"]`. Do not omit segments.
+
+`keyboard_text` remains ASCII-only for non-field or legacy paths. Do not use it for Chinese/CJK field entry.
+
+Before typing:
 - For ordinary deletion in an input field, use `keyboard_tap` with `{"keys":["backspace"]}`. The `delete` key is forward-delete and should only be used when intentionally deleting the character after the cursor.
 - Use `keyboard_tap` for submit or enter only after verifying the text appears.
 - If text does not appear, stop and re-check focus before typing again.

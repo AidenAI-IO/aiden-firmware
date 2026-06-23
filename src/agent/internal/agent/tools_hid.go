@@ -553,8 +553,9 @@ func (t *KeyboardTextTool) Description() string {
 	return `US-keyboard ASCII text input only via USB HID physical keyboard (not the on-screen soft keyboard). ` +
 		`Allowed characters: a-z, A-Z, 0-9, space, and common US-keyboard punctuation. ` +
 		`For model/tool calls, pass JSON only, for example {"text":"App Store"}; do not pass a bare string. ` +
-		`Do NOT pass Chinese/CJK, emoji, or any other non-ASCII text — if any character is unsupported, the tool returns an error and types nothing. ` +
-		`For Chinese targets, never copy the Chinese string into text; use pinyin or English keywords instead (e.g. {"text":"weixin"} or {"text":"zhangsan"}), then tap the on-screen candidate or search result. ` +
+		`Do NOT pass non-ASCII text, emoji, or spaced romanization — use enter_text_in_field for input box entry. ` +
+		`For Chinese targets without enter_text_in_field, use pinyin or English keywords (e.g. {"text":"weixin"}), then tap the on-screen candidate. ` +
+		`keyboard_text remains for simple standalone ASCII typing outside the enter_text_in_field workflow. ` +
 		`Bare plain text is accepted only as a legacy compatibility fallback.`
 }
 
@@ -579,7 +580,13 @@ func (t *KeyboardTextTool) Call(_ context.Context, input string) (string, error)
 	}
 
 	if unsupported := unsupportedKeyboardTextRunes(text); len(unsupported) > 0 {
-		return fmt.Sprintf("error: keyboard_text supports only US-keyboard ASCII characters; unsupported characters: %q", string(unsupported)), nil
+		return fmt.Sprintf(
+			"error: keyboard_text supports only US-keyboard ASCII characters; unsupported characters: %q. Use enter_text_in_field for this target.",
+			string(unsupported),
+		), nil
+	}
+	if looksLikeSpacedRomanizationBlob(text) {
+		return "error: keyboard_text received spaced romanization; use enter_text_in_field instead.", nil
 	}
 
 	releaseReport := make([]byte, 8)
