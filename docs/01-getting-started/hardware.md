@@ -35,6 +35,8 @@ Physical wiring summary:
 3. TC358743XBG CSI output → Pico Zero CSI input (CSI cable between the two boards)
 4. Hub USB-C output → Pico Zero USB-C port (data + power)
 
+The default firmware treats the Pico Zero USB-C port as a USB **peripheral** and exposes HID + USB ECM to the target side. The board image can include an `adb` client binary for `adb connect` or host-mode scenarios, but direct USB ADB from the board to an Android phone is not available under this default HID gadget wiring; that requires a host-mode topology or a network ADB path.
+
 ## iOS HID Prerequisites
 
 To control an iOS device via USB HID, enable on the target iOS device:

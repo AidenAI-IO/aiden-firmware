@@ -54,7 +54,7 @@ pico-sdk/output/image/
 Available methods:
 
 - Hold down the board's BOOT button while plugging in USB-C;
-- If triggering flash mode with the BOOT button doesn't work well, you can first log in to the board via adb or the TTL serial port, then run:
+- If triggering flash mode with the BOOT button doesn't work well, you can first log in to the board via the TTL serial port or another shell entry (for example SSH / USB ECM shell), then run:
 
 ```bash
 reboot loader
