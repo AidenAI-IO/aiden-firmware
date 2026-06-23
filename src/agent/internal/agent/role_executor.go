@@ -1273,6 +1273,9 @@ func buildPlannerStatePrompt(inputs map[string]string, state roleLoopState, task
 	writeSessionContext(&builder, inputs)
 	writeTodoState(&builder, state)
 	writeTodoReminder(&builder, state)
+	if state.ForceSimpleLoop {
+		return strings.TrimSpace(builder.String())
+	}
 	writeCurrentPlan(&builder, state)
 	writePriorPlanStepResults(&builder, state)
 	writeVerifierFeedback(&builder, state)

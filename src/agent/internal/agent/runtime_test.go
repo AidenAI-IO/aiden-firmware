@@ -1208,10 +1208,18 @@ func TestRuntimeRunVoiceInterruptionContextUsesTimeBoundary(t *testing.T) {
 		rootRequest,
 		"Latest user message:",
 		correction,
-		"Current plan:",
 	} {
 		if !strings.Contains(correctionPrompt, want) {
 			t.Fatalf("correction prompt missing runtime context %q:\n%s", want, correctionPrompt)
+		}
+	}
+	for _, unwanted := range []string{
+		"Current plan:",
+		"Prior step results",
+		"Verifier feedback:",
+	} {
+		if strings.Contains(correctionPrompt, unwanted) {
+			t.Fatalf("force_simple_loop correction prompt should not contain delegated-plan runtime context %q:\n%s", unwanted, correctionPrompt)
 		}
 	}
 

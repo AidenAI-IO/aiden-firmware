@@ -996,6 +996,89 @@ func TestPlannerMessagesAppendRuntimeStateContext(t *testing.T) {
 	}
 }
 
+func TestForceSimpleLoopPlannerRuntimeContextOmitsDelegatedPlanSections(t *testing.T) {
+	state := roleLoopState{
+		Phase:           phaseDefault,
+		ForceSimpleLoop: true,
+		Plan:            []string{"inspect", "act"},
+		NextStep:        "inspect",
+		PlanStepResults: []planStepResult{{
+			StepIndex:      1,
+			StepText:       "inspect",
+			Outcome:        "blocked",
+			Summary:        "screen did not change",
+			NeedsReplan:    true,
+			VerifierReason: "not enough progress",
+		}},
+		VerifierResults: []verifierDecision{{
+			NeedsReplan: true,
+			Reason:      "not enough progress",
+		}},
+		Todo: TodoState{
+			Mode:      TodoModeSimple,
+			Objective: "inspect and act",
+			Revision:  2,
+			CurrentID: "todo-simple-2",
+			Items: []TodoItem{{
+				ID:        "todo-simple-1",
+				Text:      "inspect",
+				Status:    TodoDone,
+				Source:    TodoSourceExplicitSimple,
+				StepIndex: 1,
+			}, {
+				ID:        "todo-simple-2",
+				Text:      "act",
+				Status:    TodoInProgress,
+				Source:    TodoSourceExplicitSimple,
+				StepIndex: 2,
+			}},
+		},
+		PendingTodoReminder: "call set_todo if the task now needs an explicit checklist.",
+		World: worldState{
+			Observation: &worldStateObservation{
+				observedWorldState: observedWorldState{
+					AppName:     "微信",
+					PageName:    "聊天列表",
+					Platform:    "android",
+					VisibleText: []string{"微信", "通讯录"},
+				},
+			},
+		},
+	}
+	inputs := map[string]string{
+		"input":                "继续",
+		rootRequestInputKey:    "打开微信后继续处理",
+		latestUserInputKey:     "继续",
+		sessionContextInputKey: "Session context view:\n- Latest user message: 继续",
+	}
+
+	prompt := buildRoleStatePrompt(RolePlanner, inputs, state, "Planner task.")
+	for _, want := range []string{
+		"Planner runtime context (synthetic; not a new user request):",
+		"Loop mode:",
+		"force_simple_loop: true",
+		"World State",
+		"Original user request / root request:",
+		"Latest user message:",
+		"Session context view:",
+		"Current todo state:",
+		"Todo reminder:",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("force_simple_loop planner runtime context missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, unwanted := range []string{
+		"Current plan:",
+		"Prior step results",
+		"Verifier feedback:",
+	} {
+		if strings.Contains(prompt, unwanted) {
+			t.Fatalf("force_simple_loop planner runtime context should not contain %q:\n%s", unwanted, prompt)
+		}
+	}
+}
+
 func TestPlannerCurrentUserMessageIsRawInputOnly(t *testing.T) {
 	executor := &roleCollaborativeExecutor{
 		InputAttachments: []InputAttachment{{
