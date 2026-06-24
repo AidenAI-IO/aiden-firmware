@@ -46,6 +46,17 @@ for defconfig in \
     echo "$(basename "$defconfig") must enable BR2_REPRODUCIBLE so package builds use Buildroot's reproducible timestamp policy" >&2
     exit 1
   fi
+
+  if ! grep -q '^BR2_PACKAGE_ANDROID_TOOLS=y$' "$defconfig" || \
+     ! grep -q '^BR2_PACKAGE_ANDROID_TOOLS_ADB=y$' "$defconfig"; then
+    echo "$(basename "$defconfig") must include the android-tools adb client so the board can act as an ADB host" >&2
+    exit 1
+  fi
+
+  if grep -q '^BR2_PACKAGE_ANDROID_TOOLS_ADBD=y$' "$defconfig"; then
+    echo "$(basename "$defconfig") must not enable adbd; Aiden expects the board to run the adb client instead" >&2
+    exit 1
+  fi
 done
 
 if ! grep -q 'define sync_buildroot_board_config' "$PICO_SDK/sysdrv/Makefile" || \
@@ -101,7 +112,7 @@ if ! printf '%s\n' "$refresh_boardtools_config_state" | grep -q 'tools_board-cle
 fi
 
 if ! printf '%s\n' "$refresh_boardtools_config_state" | grep -q 'tools/board/toolkits/openssl'; then
-  echo "pico-sdk board tool state must include board OpenSSL inputs because adbd links against that cached output" >&2
+  echo "pico-sdk board tool state must include board OpenSSL inputs because adb-related tooling links against that cached output" >&2
   exit 1
 fi
 

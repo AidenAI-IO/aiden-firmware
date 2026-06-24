@@ -9,6 +9,7 @@ WORKFLOW="$ROOT_DIR/.github/workflows/build.yml"
 CI_WORKFLOW="$ROOT_DIR/.github/workflows/ci.yml"
 REPACK_SCRIPT="$ROOT_DIR/scripts/repack_ota_update_image.sh"
 GITIGNORE="$ROOT_DIR/.gitignore"
+AIDEN_BOARD_CONFIG="$ROOT_DIR/pico-sdk/project/cfg/BoardConfig_IPC/BoardConfig-EMMC-Buildroot-RV1106_Luckfox_Pico_Zero-IPC.mk"
 
 if grep -Eq 'go\.dev/dl|wget .*go|curl .*go|tar .*go\$|GO_TARBALL|GO_TARBALL_SHA256' "$BUILD_SH" "$BUILD_IMAGE_SH"; then
     echo "build scripts must not download or extract Go toolchains" >&2
@@ -346,6 +347,11 @@ fi
 
 if ! grep -q 'go env GOROOT' "$BUILD_IMAGE_SH"; then
     echo "build_image.sh must discover the host Go root with go env GOROOT" >&2
+    exit 1
+fi
+
+if ! grep -q '^export RK_ENABLE_ADBD=n$' "$AIDEN_BOARD_CONFIG"; then
+    echo "Aiden board config must disable SDK adbd gadget support because the board should act as an adb host client" >&2
     exit 1
 fi
 
