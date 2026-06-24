@@ -720,7 +720,7 @@ func TestCallExecutorTurnOmitOversizedToolResultBeforeModelCall(t *testing.T) {
 	if strings.Contains(content, strings.Repeat("超", 20)) {
 		t.Fatalf("oversized raw observation leaked into model prompt: %q", content)
 	}
-	if !strings.Contains(content, "tool result omitted") || !strings.Contains(content, "context_window=300") {
+	if !strings.HasPrefix(content, "note:") || !strings.Contains(content, "tool result omitted") || !strings.Contains(content, "would exceed the model context window") || !strings.Contains(content, "tool call already completed") {
 		t.Fatalf("tool response should explain the context-window rejection, got: %q", content)
 	}
 }
