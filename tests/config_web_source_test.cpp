@@ -1024,6 +1024,28 @@ TEST_CASE("config web does not show a star for disconnected saved wifi") {
     CHECK(html.find("forget.textContent='忘记';") != std::string::npos);
 }
 
+TEST_CASE("config web hides wifi apply details after forgetting a network") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    const std::string::size_type forget_start =
+        html.find("async function forgetWifi(ssid)");
+    const std::string::size_type forget_end =
+        html.find("async function poweroffDevice()", forget_start);
+    REQUIRE(forget_start != std::string::npos);
+    REQUIRE(forget_end != std::string::npos);
+    const std::string forget_source =
+        html.substr(forget_start, forget_end - forget_start);
+    CHECK(forget_source.find("setBanner('已忘记 “'+ssid+'”。',false);setDetails('');") !=
+          std::string::npos);
+    CHECK(forget_source.find("wifi_apply") == std::string::npos);
+}
+
 TEST_CASE("config web tolerates metadata sections without rendered controls") {
     const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
     std::ifstream html_in(html_path.c_str());
