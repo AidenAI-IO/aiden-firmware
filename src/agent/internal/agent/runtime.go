@@ -494,7 +494,7 @@ func (r *Runtime) exportInterruptedEpisodesBestEffort(episodes []TaskEpisode) {
 	}
 }
 
-func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
+func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, runErr error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -520,13 +520,59 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		return RunResult{}, errors.New("input is required")
 	}
 
+	runID := "run_" + uuid.NewString()
+	episodeID := strings.TrimSpace(req.EpisodeID)
+	if episodeID == "" && r.memoryPlane != nil {
+		episodeID = newTaskEpisodeID(startTime.UTC())
+	}
+	currentHints := r.currentEnvironmentHints()
+	skillNames := uniqueNonEmpty(req.Skills)
+	promptCapture := newTelemetryPromptCapture(r.config.Telemetry.EnabledOrDefault())
+	var episodeRecorder *EpisodeRecorder
+	var availableTools []langtools.Tool
+	var boundaryTelemetry sessionBoundaryTelemetry
+	var output string
+	episodeCommitted := false
+	defer func() {
+		if runErr == nil || episodeCommitted {
+			return
+		}
+		metrics.TotalDuration = float64(time.Since(startTime).Milliseconds())
+		if episodeRecorder == nil && r.memoryPlane != nil {
+			retrieveReq := MemoryRetrieveRequest{
+				Input:        normalizedInput,
+				Attachments:  turnInput.Attachments,
+				Skills:       skillNames,
+				ToolNames:    toolNamesFromTools(availableTools),
+				EpisodeID:    episodeID,
+				DeviceID:     defaultMemoryDeviceID,
+				CurrentHints: currentHints,
+			}
+			episodeRecorder = r.memoryPlane.NewEpisodeRecorder(retrieveReq, MemoryContext{})
+			if episodeRecorder != nil {
+				episodeID = episodeRecorder.ID()
+				startCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				if err := episodeRecorder.Start(startCtx); err != nil && r.logger != nil {
+					r.logger.Warn("[memory] start failed episode trace failed: %v", err)
+				}
+				cancel()
+			}
+		}
+		if episodeRecorder == nil {
+			return
+		}
+		episodeID = episodeRecorder.ID()
+		r.persistRunStatusBestEffort(episodeID, req.RequestID, runID, runErr)
+		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, runErr, promptCapture, boundaryTelemetry, req.AsyncEpisodeMaintenance)
+		episodeCommitted = true
+	}()
+
 	if err := r.reloadSkillsIfDirty(); err != nil {
 		return RunResult{}, err
 	}
 	runSkills := r.skills.Snapshot()
 
 	// Activate skills
-	skillNames := uniqueNonEmpty(req.Skills)
 	for _, skillName := range skillNames {
 		if err := runSkills.Activate(ctx, skillName); err != nil {
 			if r.logger != nil {
@@ -556,10 +602,8 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			r.logger.Info("Resolved model context window: context_window=%d", contextWindow)
 		}
 	}
-	promptCapture := newTelemetryPromptCapture(r.config.Telemetry.EnabledOrDefault())
 	model = &usageTrackingModel{inner: model, metrics: metrics, promptCapture: promptCapture, contextWindowFn: r.effectiveContextWindow}
 
-	currentHints := r.currentEnvironmentHints()
 	memoryCfg := MemoryConfig{Type: "buffer"}
 	var memoryHandle *MemoryHandle
 	if r.memories != nil {
@@ -569,11 +613,6 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	if err != nil {
 		return RunResult{}, err
-	}
-	runID := "run_" + uuid.NewString()
-	episodeID := strings.TrimSpace(req.EpisodeID)
-	if episodeID == "" && r.memoryPlane != nil {
-		episodeID = newTaskEpisodeID(startTime.UTC())
 	}
 	beginResult, err := r.beginSession(ctx, SessionBeginRequest{
 		AgentName:    "default",
@@ -588,12 +627,12 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, err
 	}
-	boundaryTelemetry := beginResult.Boundary
+	boundaryTelemetry = beginResult.Boundary
 	if boundaryTelemetry.PendingRecallCounter == nil {
 		boundaryTelemetry.PendingRecallCounter = &atomic.Int64{}
 	}
 
-	availableTools := r.resolveTools(resolvedSkills)
+	availableTools = r.resolveTools(resolvedSkills)
 	availableTools = wrapSessionRecallTelemetry(availableTools, boundaryTelemetry.PendingRecallCounter)
 	retrieveReq := MemoryRetrieveRequest{
 		Input:        normalizedInput,
@@ -615,7 +654,6 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			memoryContext = retrieved
 		}
 	}
-	var episodeRecorder *EpisodeRecorder
 	if r.memoryPlane != nil {
 		episodeRecorder = r.memoryPlane.NewEpisodeRecorder(retrieveReq, memoryContext)
 		if episodeRecorder != nil {
@@ -731,7 +769,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	executor.SteerWaiter = req.SteerWaiter
 	executor.FinalSteerProvider = req.FinalSteerProvider
 
-	output, err := chains.Run(ctx, executor, normalizedInput, callOptions...)
+	output, err = chains.Run(ctx, executor, normalizedInput, callOptions...)
 	if err != nil {
 		// If the agent couldn't parse the LLM output format, extract the raw
 		// text and return it as the response instead of failing.
@@ -744,8 +782,6 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			}
 		}
 		if err != nil {
-			r.persistRunStatusBestEffort(episodeID, req.RequestID, runID, err)
-			r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture, boundaryTelemetry, req.AsyncEpisodeMaintenance)
 			return RunResult{}, err
 		}
 	}
@@ -768,10 +804,10 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 
 	commitResult, err := r.commitSession(ctx, commitReq)
 	if err != nil {
-		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture, boundaryTelemetry, req.AsyncEpisodeMaintenance)
 		return RunResult{}, err
 	}
 	r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, nil, promptCapture, boundaryTelemetry, req.AsyncEpisodeMaintenance)
+	episodeCommitted = true
 
 	waitForWakeupRequested, waitForWakeupReason := false, ""
 	if r.waitForWakeup != nil {

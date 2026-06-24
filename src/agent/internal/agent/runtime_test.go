@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -39,12 +41,16 @@ func TestEffectiveMaxIterationsDefaultsAndUnlimited(t *testing.T) {
 
 type testModelResolver struct {
 	model llms.Model
+	err   error
 	calls int
 	spec  ModelSpec
 }
 
 func (r *testModelResolver) Get() (llms.Model, error) {
 	r.calls++
+	if r.err != nil {
+		return nil, r.err
+	}
 	return r.model, nil
 }
 
@@ -77,6 +83,83 @@ func TestRuntimeRun(t *testing.T) {
 	}
 	if len(result.Memory) != 2 {
 		t.Fatalf("expected 2 memory entries, got %d", len(result.Memory))
+	}
+}
+
+func TestRuntimeRunExportsFailedTraceWhenModelBuildFails(t *testing.T) {
+	ingestCh := make(chan langfuseIngestionRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/public/ingestion" {
+			http.NotFound(w, r)
+			return
+		}
+		var req langfuseIngestionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		select {
+		case ingestCh <- req:
+		default:
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"successes":[]}`))
+	}))
+	defer server.Close()
+
+	configDir := t.TempDir()
+	buildErr := errors.New("model unavailable")
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir: configDir,
+			Telemetry: TelemetryConfig{
+				Enabled:          boolPtr(true),
+				BaseURL:          server.URL,
+				PublicKey:        "pk-test",
+				SecretKey:        "sk-test",
+				UploadTimeoutSec: 1,
+			},
+		},
+		&testModelResolver{err: buildErr},
+		NewMemoryManager(filepath.Join(configDir, "memory")),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	_, err := runtime.Run(context.Background(), RunRequest{Input: "turn that should be traced"})
+	if !errors.Is(err, buildErr) {
+		t.Fatalf("Run() error = %v, want %v", err, buildErr)
+	}
+
+	var ingest langfuseIngestionRequest
+	select {
+	case ingest = <-ingestCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected Langfuse ingestion for failed chat")
+	}
+
+	var traceBody map[string]any
+	for _, event := range ingest.Batch {
+		if event.Type != "trace-create" {
+			continue
+		}
+		if err := json.Unmarshal(event.Body, &traceBody); err != nil {
+			t.Fatalf("decode trace body: %v", err)
+		}
+		break
+	}
+	if traceBody == nil {
+		t.Fatalf("ingestion batch missing trace-create: %#v", ingest.Batch)
+	}
+	if got := traceBody["input"]; got != "turn that should be traced" {
+		t.Fatalf("trace input = %#v, want original user input", got)
+	}
+	metadata, ok := traceBody["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("trace metadata missing or invalid: %#v", traceBody["metadata"])
+	}
+	if got := metadata["failure_reason"]; got != buildErr.Error() {
+		t.Fatalf("failure_reason = %#v, want %q", got, buildErr.Error())
 	}
 }
 
