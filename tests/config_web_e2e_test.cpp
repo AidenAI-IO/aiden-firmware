@@ -1292,3 +1292,116 @@ TEST_CASE("config_web: GET /api/ota/logs keeps update and health logs separate")
     CHECK(required_json_string(health, "log").find("[config_web] ota update") == std::string::npos);
     cJSON_Delete(parsed);
 }
+
+TEST_CASE("config_web: exports llm raw log files without JSON wrapping") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string log_dir = handle->tmp_dir + "/log";
+    REQUIRE(::mkdir(log_dir.c_str(), 0755) == 0);
+    const std::string name = "llm-http-20260624153000123.log";
+    const std::string content =
+        "{\"kind\":\"request\",\"ts\":\"2026-06-24T15:30:00Z\"}\n"
+        "{\"kind\":\"response\",\"status\":200}\n";
+    write_file(log_dir + "/" + name, content);
+
+    HttpResponse resp = http_request(handle->port, "GET", "/api/llm-logs/export/" + name);
+    CHECK(resp.status == 200);
+    CHECK(resp.body == content);
+}
+
+TEST_CASE("config_web: legacy llm log JSON file endpoint is removed") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string log_dir = handle->tmp_dir + "/log";
+    REQUIRE(::mkdir(log_dir.c_str(), 0755) == 0);
+    const std::string name = "llm-http-20260624154500999.log";
+    write_file(log_dir + "/" + name, "{\"kind\":\"request\"}\n");
+
+    HttpResponse resp = http_request(handle->port, "GET", "/api/llm-logs/file/" + name);
+    CHECK(resp.status == 404);
+}
+
+TEST_CASE("config_web: exports llm raw log files larger than viewer limit") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string log_dir = handle->tmp_dir + "/log";
+    REQUIRE(::mkdir(log_dir.c_str(), 0755) == 0);
+    const std::string name = "llm-http-20260624170000999.log";
+    const std::string content(16 * 1024 * 1024 + 123, 'x');
+    write_file(log_dir + "/" + name, content);
+
+    HttpResponse resp = http_request(handle->port, "GET", "/api/llm-logs/export/" + name);
+    CHECK(resp.status == 200);
+    CHECK(resp.body.size() == content.size());
+    CHECK(resp.body.compare(0, 128, content, 0, 128) == 0);
+    CHECK(resp.body.compare(resp.body.size() - 128, 128, content, content.size() - 128, 128) == 0);
+}
+
+TEST_CASE("config_web: reports server errors for unreadable llm raw log files") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string log_dir = handle->tmp_dir + "/log";
+    REQUIRE(::mkdir(log_dir.c_str(), 0755) == 0);
+    const std::string name = "llm-http-20260624173000999.log";
+    const std::string path = log_dir + "/" + name;
+    write_file(path, "{\"kind\":\"request\"}\n");
+    REQUIRE(::chmod(path.c_str(), 0000) == 0);
+
+    HttpResponse resp = http_request(handle->port, "GET", "/api/llm-logs/export/" + name);
+    CHECK(resp.status == 500);
+    CHECK(resp.body.find("failed to open log file") != std::string::npos);
+
+    REQUIRE(::chmod(path.c_str(), 0644) == 0);
+}
+
+TEST_CASE("config_web: imports llm raw log files into the viewer log directory") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string name = "llm-http-import-session.log";
+    const std::string content =
+        "{\"kind\":\"request\",\"ts\":\"2026-06-24T16:00:00Z\",\"body\":\"hello\"}\n"
+        "{\"kind\":\"response\",\"status\":500,\"body\":\"upstream failed\"}\n";
+
+    HttpResponse import_resp = http_request(handle->port, "POST", "/api/llm-logs/import/" + name, content);
+    REQUIRE(import_resp.status == 200);
+
+    const std::string imported_path = handle->tmp_dir + "/log/" + name;
+    const std::string imported = read_file(imported_path);
+    const size_t sample_size = std::min<size_t>(128, content.size());
+    CHECK(imported.size() == content.size());
+    CHECK(imported.compare(0, sample_size, content, 0, sample_size) == 0);
+    CHECK(imported.compare(imported.size() - sample_size, sample_size, content, content.size() - sample_size, sample_size) == 0);
+
+    HttpResponse list_resp = http_request(handle->port, "GET", "/api/llm-logs");
+    REQUIRE(list_resp.status == 200);
+    CHECK(list_resp.body.find(name) != std::string::npos);
+
+    HttpResponse export_resp = http_request(handle->port, "GET", "/api/llm-logs/export/" + name);
+    CHECK(export_resp.status == 200);
+    CHECK(export_resp.body == content);
+}
+
+TEST_CASE("config_web: imports llm raw log files larger than viewer limit") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string name = "llm-http-import-large.log";
+    const std::string content(16 * 1024 * 1024 + 321, 'y');
+
+    HttpResponse import_resp = http_request(handle->port, "POST", "/api/llm-logs/import/" + name, content);
+    REQUIRE(import_resp.status == 200);
+
+    const std::string imported_path = handle->tmp_dir + "/log/" + name;
+    CHECK(read_file(imported_path) == content);
+
+    HttpResponse export_resp = http_request(handle->port, "GET", "/api/llm-logs/export/" + name);
+    CHECK(export_resp.status == 200);
+    CHECK(export_resp.body.size() == content.size());
+    CHECK(export_resp.body.compare(0, 128, content, 0, 128) == 0);
+    CHECK(export_resp.body.compare(export_resp.body.size() - 128, 128, content, content.size() - 128, 128) == 0);
+}

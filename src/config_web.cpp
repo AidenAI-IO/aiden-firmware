@@ -53,6 +53,8 @@ struct HttpRequest {
     std::string method;
     std::string path;
     std::string body;
+    std::string body_file_path;
+    size_t body_size = 0;
     int error_status_code = 0;
     std::string error_status_text;
     std::string error_body;
@@ -63,6 +65,8 @@ struct ApiResponse {
     std::string status_text = "OK";
     std::string content_type = "application/json; charset=utf-8";
     std::string body = "{}";
+    int body_fd = -1;
+    unsigned long long body_fd_size = 0;
 };
 
 struct CommandResult {
@@ -151,11 +155,9 @@ const size_t kAgentLogDisplaySize = 48 * 1024;
 const size_t kOtaLogReadSize = 128 * 1024;
 const size_t kOtaLogDisplaySize = 96 * 1024;
 // LLM raw HTTP logs live next to the agent config: <dirname(config)>/log.
-// Filenames are llm-http-YYYYMMDDHHMMSSmmm.log. The viewer streams whole
-// files to the browser, so cap the per-file read to keep responses bounded.
+// Filenames are llm-http-YYYYMMDDHHMMSSmmm.log.
 const char* kLlmLogPrefix = "llm-http-";
 const char* kLlmLogSuffix = ".log";
-const size_t kLlmLogMaxReadSize = 16 * 1024 * 1024;
 const size_t kMaxHttpHeaderSize = 8 * 1024;
 const size_t kMaxHttpBodySize = 64 * 1024;
 const int kClientReadTimeoutSeconds = 5;
@@ -168,11 +170,22 @@ bool read_file_contents_checked(const char* path, size_t max_size, std::string* 
 std::string validate_proxy_url(const std::string& url);
 std::string lowercase_copy(const std::string& text);
 std::string parent_dir(const std::string& path);
+std::string llm_log_dir(const Options& options);
 bool mkdir_p(const std::string& dir, std::string* error);
 bool prepare_ota_update_log_file(const std::string& path, std::string* error);
 bool set_fd_cloexec(int fd, std::string* error);
+bool create_temp_file_in_dir(const std::string& dir,
+                             const std::string& prefix,
+                             mode_t mode,
+                             int* fd,
+                             std::string* path,
+                             std::string* error);
+bool is_llm_log_import_request(const std::string& method, const std::string& path);
+void cleanup_request_temp_file(HttpRequest* request);
+void close_response_stream(ApiResponse* response);
 CommandResult run_command_with_stdin(const std::string& command, const std::string& input, int timeout_ms);
 void update_config_from_json(cJSON* root, aiden::AgentToml* config);
+bool atomic_write_file(const std::string& path, const std::string& content, mode_t mode, std::string* error);
 
 // ValidationOutcome distinguishes "the user submitted something invalid" (the
 // CLI ran and rejected it -> 400) from "we could not run validation at all"
@@ -218,6 +231,13 @@ enum ReadStatus {
     READ_STATUS_ERROR,
     READ_STATUS_TIMEOUT,
     READ_STATUS_LIMIT_EXCEEDED,
+};
+
+enum LlmLogOpenStatus {
+    LLM_LOG_OPEN_OK,
+    LLM_LOG_OPEN_INVALID_NAME,
+    LLM_LOG_OPEN_NOT_FOUND,
+    LLM_LOG_OPEN_ERROR,
 };
 
 void on_signal(int) {
@@ -1100,6 +1120,32 @@ ReadStatus read_exact(int fd, std::string* out, size_t length) {
     return READ_STATUS_OK;
 }
 
+ReadStatus read_exact_to_fd(int in_fd, int out_fd, size_t length) {
+    char buf[16 * 1024];
+    size_t remaining = length;
+    while (remaining > 0) {
+        size_t chunk = remaining < sizeof(buf) ? remaining : sizeof(buf);
+        ssize_t n = read(in_fd, buf, chunk);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            if (is_socket_timeout(errno)) {
+                return READ_STATUS_TIMEOUT;
+            }
+            return READ_STATUS_ERROR;
+        }
+        if (n == 0) {
+            return READ_STATUS_EOF;
+        }
+        if (!write_all(out_fd, buf, static_cast<size_t>(n))) {
+            return READ_STATUS_ERROR;
+        }
+        remaining -= static_cast<size_t>(n);
+    }
+    return READ_STATUS_OK;
+}
+
 void set_request_error(HttpRequest* request,
                        int status_code,
                        const char* status_text,
@@ -1110,6 +1156,30 @@ void set_request_error(HttpRequest* request,
     request->error_status_code = status_code;
     request->error_status_text = status_text ? status_text : "Bad Request";
     request->error_body = body ? body : "invalid request";
+}
+
+bool is_llm_log_import_request(const std::string& method, const std::string& path) {
+    static const std::string prefix = "/api/llm-logs/import/";
+    return method == "POST" && path.compare(0, prefix.size(), prefix) == 0;
+}
+
+void cleanup_request_temp_file(HttpRequest* request) {
+    if (!request || request->body_file_path.empty()) {
+        return;
+    }
+    if (unlink(request->body_file_path.c_str()) != 0 && errno != ENOENT) {
+        // Best-effort cleanup only.
+    }
+    request->body_file_path.clear();
+}
+
+void close_response_stream(ApiResponse* response) {
+    if (!response || response->body_fd < 0) {
+        return;
+    }
+    close(response->body_fd);
+    response->body_fd = -1;
+    response->body_fd_size = 0;
 }
 
 bool parse_size(const std::string& text, size_t* value) {
@@ -1144,7 +1214,7 @@ bool set_socket_recv_timeout(int fd, int timeout_seconds) {
     return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == 0;
 }
 
-HttpRequest parse_request(int client_fd) {
+HttpRequest parse_request(int client_fd, const Options& options) {
     HttpRequest req;
     std::string headers;
     ReadStatus header_status = read_until(client_fd, "\r\n\r\n", kMaxHttpHeaderSize, &headers);
@@ -1191,39 +1261,93 @@ HttpRequest parse_request(int client_fd) {
     }
 
     if (content_length > 0) {
-        if (content_length > kMaxHttpBodySize) {
-            set_request_error(&req, 413, "Payload Too Large", "request body too large");
-            return req;
-        }
+        req.body_size = content_length;
+        if (is_llm_log_import_request(req.method, req.path)) {
+            int temp_fd = -1;
+            std::string temp_path;
+            std::string temp_error;
+            if (!create_temp_file_in_dir(llm_log_dir(options), "llm-log-upload-", 0644, &temp_fd, &temp_path, &temp_error)) {
+                set_request_error(&req, 500, "Internal Server Error",
+                                  temp_error.empty() ? "failed to prepare import body file" : temp_error.c_str());
+                return req;
+            }
+            req.body_file_path = temp_path;
 
-        ReadStatus body_status = read_exact(client_fd, &req.body, content_length);
-        if (body_status == READ_STATUS_TIMEOUT) {
-            set_request_error(&req, 408, "Request Timeout", "request body read timed out");
-            return req;
-        }
-        if (body_status != READ_STATUS_OK) {
-            set_request_error(&req, 400, "Bad Request", "truncated request body");
-            return req;
+            ReadStatus body_status = read_exact_to_fd(client_fd, temp_fd, content_length);
+            if (body_status == READ_STATUS_OK && fsync(temp_fd) != 0) {
+                body_status = READ_STATUS_ERROR;
+            }
+            if (close(temp_fd) != 0 && body_status == READ_STATUS_OK) {
+                body_status = READ_STATUS_ERROR;
+            }
+
+            if (body_status == READ_STATUS_TIMEOUT) {
+                cleanup_request_temp_file(&req);
+                set_request_error(&req, 408, "Request Timeout", "request body read timed out");
+                return req;
+            }
+            if (body_status != READ_STATUS_OK) {
+                cleanup_request_temp_file(&req);
+                set_request_error(&req, 400, "Bad Request", "truncated request body");
+                return req;
+            }
+        } else {
+            if (content_length > kMaxHttpBodySize) {
+                set_request_error(&req, 413, "Payload Too Large", "request body too large");
+                return req;
+            }
+
+            ReadStatus body_status = read_exact(client_fd, &req.body, content_length);
+            if (body_status == READ_STATUS_TIMEOUT) {
+                set_request_error(&req, 408, "Request Timeout", "request body read timed out");
+                return req;
+            }
+            if (body_status != READ_STATUS_OK) {
+                set_request_error(&req, 400, "Bad Request", "truncated request body");
+                return req;
+            }
         }
     }
 
     return req;
 }
 
-void send_response(int client_fd,
-                   int status_code,
-                   const std::string& status_text,
-                   const std::string& content_type,
-                   const std::string& body) {
+void send_response(int client_fd, const ApiResponse& response) {
     std::ostringstream header;
-    header << "HTTP/1.1 " << status_code << " " << status_text << "\r\n";
-    header << "Content-Type: " << content_type << "\r\n";
-    header << "Content-Length: " << body.size() << "\r\n";
+    header << "HTTP/1.1 " << response.status_code << " " << response.status_text << "\r\n";
+    header << "Content-Type: " << response.content_type << "\r\n";
+    if (response.body_fd >= 0) {
+        header << "Content-Length: " << response.body_fd_size << "\r\n";
+    } else {
+        header << "Content-Length: " << response.body.size() << "\r\n";
+    }
     header << "Connection: close\r\n\r\n";
 
     std::string header_text = header.str();
     write_all(client_fd, header_text.data(), header_text.size());
-    write_all(client_fd, body.data(), body.size());
+    if (response.body_fd >= 0) {
+        if (lseek(response.body_fd, 0, SEEK_SET) == static_cast<off_t>(-1)) {
+            return;
+        }
+        char buf[16 * 1024];
+        while (true) {
+            ssize_t n = read(response.body_fd, buf, sizeof(buf));
+            if (n < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                return;
+            }
+            if (n == 0) {
+                break;
+            }
+            if (!write_all(client_fd, buf, static_cast<size_t>(n))) {
+                return;
+            }
+        }
+        return;
+    }
+    write_all(client_fd, response.body.data(), response.body.size());
 }
 
 bool validate_agent_config_json(cJSON* root, std::string* error = NULL) {
@@ -1585,6 +1709,7 @@ ApiResponse make_json_error(int status_code, const std::string& message) {
     response.status_code = status_code;
     switch (status_code) {
         case 400: response.status_text = "Bad Request"; break;
+        case 413: response.status_text = "Payload Too Large"; break;
         case 404: response.status_text = "Not Found"; break;
         case 503: response.status_text = "Service Unavailable"; break;
         default:  response.status_text = "Internal Server Error"; break;
@@ -2503,6 +2628,59 @@ bool prepare_ota_update_log_file(const std::string& path, std::string* error) {
     return true;
 }
 
+bool create_temp_file_in_dir(const std::string& dir,
+                             const std::string& prefix,
+                             mode_t mode,
+                             int* fd,
+                             std::string* path,
+                             std::string* error) {
+    if (fd) {
+        *fd = -1;
+    }
+    if (path) {
+        path->clear();
+    }
+    if (!mkdir_p(dir, error)) {
+        return false;
+    }
+
+    std::string tmpl = dir;
+    if (tmpl.empty() || tmpl[tmpl.size() - 1] != '/') {
+        tmpl += "/";
+    }
+    tmpl += ".";
+    tmpl += prefix.empty() ? "tmp-" : prefix;
+    tmpl += "XXXXXX";
+
+    std::vector<char> buf(tmpl.begin(), tmpl.end());
+    buf.push_back('\0');
+    int tmp_fd = mkstemp(buf.data());
+    if (tmp_fd < 0) {
+        if (error) *error = "mkstemp " + tmpl + ": " + strerror(errno);
+        return false;
+    }
+    std::string cloexec_error;
+    if (!set_fd_cloexec(tmp_fd, &cloexec_error)) {
+        if (error) *error = cloexec_error;
+        close(tmp_fd);
+        unlink(buf.data());
+        return false;
+    }
+    if (fchmod(tmp_fd, mode) != 0) {
+        if (error) *error = "chmod " + std::string(buf.data()) + ": " + strerror(errno);
+        close(tmp_fd);
+        unlink(buf.data());
+        return false;
+    }
+    if (fd) {
+        *fd = tmp_fd;
+    }
+    if (path) {
+        *path = buf.data();
+    }
+    return true;
+}
+
 bool validate_system_proxy_values(const SystemProxy& proxy, std::string* error) {
     struct Field {
         const char* name;
@@ -3296,9 +3474,13 @@ std::string llm_log_dir(const Options& options) {
     return base + "/log";
 }
 
+std::string llm_log_path(const Options& options, const std::string& name) {
+    return llm_log_dir(options) + "/" + name;
+}
+
 // is_llm_log_name reports whether name is a plain llm-http-*.log filename with
 // no path separators. Used both to filter directory listings and to validate
-// the filename segment of /api/llm-logs/file/<name>.
+// the filename segment of the import/export endpoints.
 bool is_llm_log_name(const std::string& name) {
     if (name.find('/') != std::string::npos || name.find('\\') != std::string::npos) {
         return false;
@@ -3326,6 +3508,61 @@ bool is_llm_log_name(const std::string& name) {
         return false;
     }
     return true;
+}
+
+int open_llm_log_file(const Options& options,
+                      const std::string& name,
+                      struct stat* st,
+                      LlmLogOpenStatus* status,
+                      std::string* error) {
+    if (st) {
+        memset(st, 0, sizeof(*st));
+    }
+    if (status) {
+        *status = LLM_LOG_OPEN_ERROR;
+    }
+    if (!is_llm_log_name(name)) {
+        if (status) *status = LLM_LOG_OPEN_INVALID_NAME;
+        if (error) *error = "invalid log file name";
+        return -1;
+    }
+    const std::string full = llm_log_path(options, name);
+    int fd = open(full.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) {
+        const int open_errno = errno;
+        if (open_errno == ENOENT || open_errno == ENOTDIR || open_errno == ELOOP) {
+            if (status) *status = LLM_LOG_OPEN_NOT_FOUND;
+            if (error) *error = "log file not found";
+        } else {
+            if (status) *status = LLM_LOG_OPEN_ERROR;
+            if (error) *error = std::string("failed to open log file: ") + strerror(open_errno);
+        }
+        return -1;
+    }
+    struct stat info;
+    if (fstat(fd, &info) != 0) {
+        const int stat_errno = errno;
+        close(fd);
+        if (status) *status = LLM_LOG_OPEN_ERROR;
+        if (error) *error = std::string("failed to stat log file: ") + strerror(stat_errno);
+        return -1;
+    }
+    if (!S_ISREG(info.st_mode)) {
+        close(fd);
+        if (status) *status = LLM_LOG_OPEN_NOT_FOUND;
+        if (error) *error = "log file not found";
+        return -1;
+    }
+    if (st) {
+        *st = info;
+    }
+    if (status) {
+        *status = LLM_LOG_OPEN_OK;
+    }
+    if (error) {
+        error->clear();
+    }
+    return fd;
 }
 
 ApiResponse handle_get_llm_logs(const Options& options) {
@@ -3370,49 +3607,59 @@ ApiResponse handle_get_llm_logs(const Options& options) {
     return make_json_ok(root);
 }
 
-ApiResponse handle_get_llm_log_file(const Options& options, const std::string& name) {
+ApiResponse handle_export_llm_log_file(const Options& options, const std::string& name) {
+    struct stat st;
+    LlmLogOpenStatus open_status = LLM_LOG_OPEN_ERROR;
+    std::string error;
+    int fd = open_llm_log_file(options, name, &st, &open_status, &error);
+    if (fd < 0) {
+        int status_code = 500;
+        switch (open_status) {
+            case LLM_LOG_OPEN_INVALID_NAME:
+                status_code = 400;
+                break;
+            case LLM_LOG_OPEN_NOT_FOUND:
+                status_code = 404;
+                break;
+            default:
+                status_code = 500;
+                break;
+        }
+        return make_json_error(status_code, error.empty() ? "failed to open log file" : error);
+    }
+    ApiResponse response;
+    response.content_type = "text/plain; charset=utf-8";
+    response.body.clear();
+    response.body_fd = fd;
+    response.body_fd_size = static_cast<unsigned long long>(st.st_size);
+    return response;
+}
+
+ApiResponse handle_import_llm_log_file(const Options& options, const std::string& name, const HttpRequest& request) {
     if (!is_llm_log_name(name)) {
         return make_json_error(400, "invalid log file name");
     }
-    const std::string full = llm_log_dir(options) + "/" + name;
-    // O_NOFOLLOW + fstat/S_ISREG: refuse to follow a symlink and confirm the
-    // opened descriptor is a regular file, closing the TOCTOU gap between the
-    // name check and the read so the viewer can never serve a file outside the
-    // log set via a symlink planted in the directory.
-    int fd = open(full.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-    if (fd < 0) {
-        return make_json_error(404, "log file not found");
-    }
-    struct stat st;
-    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
-        close(fd);
-        return make_json_error(404, "log file not found");
-    }
-    FILE* f = fdopen(fd, "rb");
-    if (!f) {
-        close(fd);
-        return make_json_error(404, "log file not found");
-    }
-    std::string contents;
-    char buf[8192];
-    size_t total = 0;
-    bool truncated = false;
-    while (size_t n = fread(buf, 1, sizeof(buf), f)) {
-        if (total + n > kLlmLogMaxReadSize) {
-            contents.append(buf, kLlmLogMaxReadSize - total);
-            truncated = true;
-            break;
+    const std::string path = llm_log_path(options, name);
+    std::string error;
+    if (!request.body_file_path.empty()) {
+        if (!mkdir_p(parent_dir(path), &error)) {
+            return make_json_error(500, error.empty() ? "failed to prepare log directory" : error);
         }
-        contents.append(buf, n);
-        total += n;
+        if (rename(request.body_file_path.c_str(), path.c_str()) != 0) {
+            return make_json_error(500, std::string("rename ") + request.body_file_path + " -> " + path + ": " + strerror(errno));
+        }
+        if (chmod(path.c_str(), 0644) != 0) {
+            return make_json_error(500, std::string("chmod ") + path + ": " + strerror(errno));
+        }
+    } else if (!atomic_write_file(path, request.body, 0644, &error)) {
+        return make_json_error(500, error.empty() ? "failed to import log file" : error);
     }
-    fclose(f);
 
     cJSON* root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "ok", 1);
     cJSON_AddStringToObject(root, "name", name.c_str());
-    cJSON_AddStringToObject(root, "content", contents.c_str());
-    cJSON_AddBoolToObject(root, "truncated", truncated ? 1 : 0);
+    cJSON_AddNumberToObject(root, "size_bytes", static_cast<double>(request.body_file_path.empty() ? request.body.size() : request.body_size));
+    cJSON_AddStringToObject(root, "message", "llm log imported");
     return make_json_ok(root);
 }
 
@@ -4514,10 +4761,18 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
     }
 
     {
-        const std::string file_prefix = "/api/llm-logs/file/";
-        if (request.method == "GET" && request.path.compare(0, file_prefix.size(), file_prefix) == 0) {
-            std::string name = url_decode(request.path.substr(file_prefix.size()));
-            return handle_get_llm_log_file(options, name);
+        const std::string export_prefix = "/api/llm-logs/export/";
+        if (request.method == "GET" && request.path.compare(0, export_prefix.size(), export_prefix) == 0) {
+            std::string name = url_decode(request.path.substr(export_prefix.size()));
+            return handle_export_llm_log_file(options, name);
+        }
+    }
+
+    {
+        const std::string import_prefix = "/api/llm-logs/import/";
+        if (request.method == "POST" && request.path.compare(0, import_prefix.size(), import_prefix) == 0) {
+            std::string name = url_decode(request.path.substr(import_prefix.size()));
+            return handle_import_llm_log_file(options, name, request);
         }
     }
 
@@ -4717,13 +4972,11 @@ int main(int argc, char** argv) {
             continue;
         }
 
-        HttpRequest request = parse_request(client_fd);
+        HttpRequest request = parse_request(client_fd, options);
         ApiResponse response = handle_request(options, request);
-        send_response(client_fd,
-                      response.status_code,
-                      response.status_text,
-                      response.content_type,
-                      response.body);
+        send_response(client_fd, response);
+        close_response_stream(&response);
+        cleanup_request_temp_file(&request);
         close(client_fd);
     }
 
