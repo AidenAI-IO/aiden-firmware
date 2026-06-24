@@ -96,6 +96,10 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 	if !strings.Contains(profiles.Executor.SystemPrompt, "Execute only the current next_step") {
 		t.Fatalf("executor prompt missing next_step constraint:\n%s", profiles.Executor.SystemPrompt)
 	}
+	if !strings.Contains(profiles.Executor.SystemPrompt, "request_human_handoff before abort_step") ||
+		!strings.Contains(profiles.Executor.SystemPrompt, "never to send credentials in chat") {
+		t.Fatalf("executor prompt should require handoff before credential-sensitive aborts:\n%s", profiles.Executor.SystemPrompt)
+	}
 	if strings.Contains(profiles.Planner.SystemPrompt, "screenshot: Capture screen.") ||
 		strings.Contains(profiles.Planner.SystemPrompt, "enter_plan_mode:") {
 		t.Fatalf("planner prompt should not duplicate callable tool descriptions:\n%s", profiles.Planner.SystemPrompt)
@@ -126,6 +130,10 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 	}
 	if !strings.Contains(profiles.Planner.SystemPrompt, "Prefer direct tools that cover the requested operation") {
 		t.Fatalf("planner prompt should prefer direct tools:\n%s", profiles.Planner.SystemPrompt)
+	}
+	if !strings.Contains(profiles.Planner.SystemPrompt, "Call request_human_handoff") ||
+		!strings.Contains(profiles.Planner.SystemPrompt, "do not ask them to send credentials") {
+		t.Fatalf("planner prompt should call handoff for sensitive user input:\n%s", profiles.Planner.SystemPrompt)
 	}
 	if strings.Contains(profiles.Planner.SystemPrompt, "open_app") ||
 		strings.Contains(profiles.Verifier.SystemPrompt, "open_app") {

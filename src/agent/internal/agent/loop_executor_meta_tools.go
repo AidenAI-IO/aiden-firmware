@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	toolFinishStep = "finish_step"
-	toolAbortStep  = "abort_step"
+	toolFinishStep       = "finish_step"
+	toolAbortStep        = "abort_step"
+	toolHumanHandoffStep = "request_human_handoff"
 )
 
 func executorMetaTools() []langtools.Tool {

@@ -65,6 +65,16 @@ type verifierDecision struct {
 	ObservedState observedWorldState `json:"observed_state,omitempty"`
 }
 
+type defaultFinalReview struct {
+	CanFinish         bool   `json:"can_finish"`
+	FinalAnswer       string `json:"final_answer,omitempty"`
+	NeedsHumanHandoff bool   `json:"needs_human_handoff,omitempty"`
+	HandoffReason     string `json:"handoff_reason,omitempty"`
+	HandoffDetails    string `json:"handoff_details,omitempty"`
+	SuggestedAction   string `json:"suggested_action,omitempty"`
+	Reason            string `json:"reason,omitempty"`
+}
+
 type roleExecutionResult struct {
 	Action          *schema.AgentAction
 	Step            *schema.AgentStep
@@ -275,6 +285,74 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 					if consumed {
 						continue
 					}
+					if state.shouldReviewDefaultFinal(plannerToolSpecs) {
+						review, err := e.callDefaultFinalReview(ctx, inputs, state, turn.Answer, options...)
+						if err != nil {
+							return nil, err
+						}
+						if review.NeedsHumanHandoff {
+							handoffTurn, err := e.executeDefaultFinalHandoff(ctx, &state, plannerToolSpecs, review)
+							if err != nil {
+								return nil, err
+							}
+							if handoffTurn.Step != nil {
+								state.ToolSteps = append(state.ToolSteps, *handoffTurn.Step)
+								state.World.UpdateFromStep(*handoffTurn.Step, len(state.ToolSteps), e.Tools)
+							}
+							if handoffTurn.Kind == plannerTurnTool {
+								consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
+								if err != nil {
+									return nil, err
+								}
+								if consumed {
+									continue
+								}
+								if _, err := e.consumePendingSteer(ctx, inputs, &state); err != nil {
+									return nil, err
+								}
+								state.noteDefaultToolCallAndMaybeTodoReminder()
+							}
+							if handoffTurn.Kind == plannerTurnSleep {
+								consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
+								if err != nil {
+									return nil, err
+								}
+								if consumed {
+									continue
+								}
+								consumed, err = e.consumeFinalPendingSteer(ctx, inputs, &state)
+								if err != nil {
+									return nil, err
+								}
+								if consumed {
+									continue
+								}
+								answer := runPausingToolFinalAnswer(handoffTurn.Step)
+								if e.Recorder != nil {
+									e.Recorder.RecordDefaultFinish(answer)
+								}
+								return e.finishRunWithoutStreaming(ctx, answer, answer, &state)
+							}
+							continue
+						}
+						if !review.CanFinish {
+							state.Phase = phasePlan
+							state.PlanCommitRequired = true
+							state.PlannerReason = defaultString(review.Reason, "default final review requested replanning")
+							state.VerifierResults = append(state.VerifierResults, verifierDecision{
+								CanFinish:   false,
+								NeedsReplan: true,
+								Reason:      state.PlannerReason,
+							})
+							if e.Recorder != nil {
+								e.Recorder.RecordLoopPhase(phasePlan, state.PlannerReason)
+							}
+							continue
+						}
+						if answer := strings.TrimSpace(review.FinalAnswer); answer != "" {
+							turn.Answer = answer
+						}
+					}
 					if e.Recorder != nil {
 						e.Recorder.RecordDefaultFinish(turn.Answer)
 					}
@@ -358,7 +436,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 					if consumed {
 						continue
 					}
-					answer := waitForWakeupFinalAnswer(turn.Step)
+					answer := runPausingToolFinalAnswer(turn.Step)
 					if e.Recorder != nil {
 						e.Recorder.RecordDefaultFinish(answer)
 					}
@@ -419,7 +497,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 					if consumed {
 						continue
 					}
-					answer := waitForWakeupFinalAnswer(turn.Step)
+					answer := runPausingToolFinalAnswer(turn.Step)
 					if e.Recorder != nil {
 						e.Recorder.RecordDefaultFinish(answer)
 					}
@@ -735,7 +813,7 @@ func (e *roleCollaborativeExecutor) executePlannerToolAction(
 		e.Recorder.RecordPlannerExecution(execution)
 	}
 	kind := plannerTurnTool
-	if isWaitForWakeupTool(toolExecution.Step.Action.Tool) && !toolExecution.Result.IsError {
+	if isRunPausingTool(toolExecution.Step.Action.Tool) && !toolExecution.Result.IsError {
 		kind = plannerTurnSleep
 	}
 	return plannerTurnResult{Kind: kind, Step: &toolExecution.Step}, nil
@@ -1038,7 +1116,7 @@ func (e *roleCollaborativeExecutor) callExecutorTurn(
 	}
 	actionCopy := toolExecution.Step.Action
 	kind := executorTurnTool
-	if isWaitForWakeupTool(toolExecution.Step.Action.Tool) && !toolExecution.Result.IsError {
+	if isRunPausingTool(toolExecution.Step.Action.Tool) && !toolExecution.Result.IsError {
 		kind = executorTurnSleep
 	}
 	return executorTurnResult{
@@ -1071,6 +1149,175 @@ func (e *roleCollaborativeExecutor) callVerifier(ctx context.Context, inputs map
 	}
 	e.emitRoleOutput(ctx, RoleVerifier, roleResponseDebugText(res))
 	return parseVerifierDecision(contentResponseText(res), state.lastCandidateAnswer()), nil
+}
+
+func (s roleLoopState) shouldReviewDefaultFinal(toolSpecs *ToolSpecs) bool {
+	if s.Phase != phaseDefault || len(s.ExecutionResults) == 0 {
+		return false
+	}
+	if last := s.lastExecutionTool(); toolNameEqual(last, toolHumanHandoffStep) || isWaitForWakeupTool(last) {
+		return false
+	}
+	for _, result := range s.ExecutionResults {
+		if result.Action == nil {
+			continue
+		}
+		if shouldReviewDefaultFinalTool(result.Action.Tool, toolSpecs) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s roleLoopState) lastExecutionTool() string {
+	for i := len(s.ExecutionResults) - 1; i >= 0; i-- {
+		if s.ExecutionResults[i].Action != nil {
+			return strings.TrimSpace(s.ExecutionResults[i].Action.Tool)
+		}
+	}
+	return ""
+}
+
+func shouldReviewDefaultFinalTool(toolName string, toolSpecs *ToolSpecs) bool {
+	toolName = strings.TrimSpace(toolName)
+	if toolName == "" {
+		return false
+	}
+	category := ""
+	if spec, ok := toolSpecs.Lookup(toolName); ok {
+		category = strings.TrimSpace(spec.Category)
+	} else if meta, ok := builtInToolSpecMetadata[toolName]; ok {
+		category = strings.TrimSpace(meta.Category)
+	}
+	switch category {
+	case "phone", "input", "observation", "handoff":
+		return true
+	default:
+		return false
+	}
+}
+
+func (e *roleCollaborativeExecutor) callDefaultFinalReview(
+	ctx context.Context,
+	inputs map[string]string,
+	state roleLoopState,
+	candidateAnswer string,
+	options ...chains.ChainCallOption,
+) (defaultFinalReview, error) {
+	messages := []llms.MessageContent{
+		{
+			Role: llms.ChatMessageTypeSystem,
+			Parts: []llms.ContentPart{llms.TextPart(
+				"You are a strict final-answer gate for an agent that operates external devices. " +
+					"Return only JSON. Do not solve the task yourself and do not ask the user anything directly.",
+			)},
+		},
+		{
+			Role:  llms.ChatMessageTypeHuman,
+			Parts: buildRoleUserMessageParts(buildDefaultFinalReviewPrompt(inputs, state, candidateAnswer), e.InputAttachments, state.World, true),
+		},
+	}
+	res, err := e.generateRoleContent(ctx, RoleVerifier, messages, chains.GetLLMCallOptions(options...)...)
+	if err != nil {
+		return defaultFinalReview{}, err
+	}
+	e.emitRoleOutput(ctx, RoleVerifier, roleResponseDebugText(res))
+	return parseDefaultFinalReview(contentResponseText(res), candidateAnswer), nil
+}
+
+func buildDefaultFinalReviewPrompt(inputs map[string]string, state roleLoopState, candidateAnswer string) string {
+	var builder strings.Builder
+	builder.WriteString("Default-mode final-answer review.\n")
+	builder.WriteString("Decide whether the candidate final answer may end the run, or whether the runtime must continue.\n")
+	builder.WriteString("Return only JSON: {\"can_finish\":true|false,\"final_answer\":\"optional revised final answer when can_finish is true\",\"needs_human_handoff\":true|false,\"handoff_reason\":\"authentication|login_method_selection|captcha|verification_code|sensitive_operation|redirect_confirmation|permission_confirmation|black_screen|ambiguous_situation|unsupported_action|stuck|other\",\"handoff_details\":\"specific device-side blocker\",\"suggested_action\":\"what the user should do on the device\",\"reason\":\"brief rationale\"}.\n\n")
+	builder.WriteString("Language rule:\n")
+	builder.WriteString("- Use ")
+	builder.WriteString(defaultFinalReviewLanguageHint(inputs))
+	builder.WriteString(" for every free-text JSON value that may be shown to the user or reused in a handoff message, including final_answer, handoff_details, suggested_action, and reason. Keep enum fields such as handoff_reason in English.\n\n")
+	builder.WriteString("Rules:\n")
+	builder.WriteString("- can_finish=true only when the original request is already satisfied by the evidence, or the candidate is a truthful terminal failure/status answer that needs no more user or device action.\n")
+	builder.WriteString("- needs_human_handoff=true when progress is blocked on a human-only action on the target device: private credentials, choosing an account or login path, CAPTCHA, verification, biometric/identity checks, system/app redirect confirmations, permission dialogs, or judgment the tools cannot provide.\n")
+	builder.WriteString("- For handoff, set can_finish=false and fill handoff_reason, handoff_details, and suggested_action. The user must complete the action on the device; do not ask for secrets in chat.\n")
+	builder.WriteString("- If more tool work is possible and no human handoff is required, set can_finish=false and needs_human_handoff=false.\n")
+	writeWorldStateWithOptions(&builder, state.World, worldStatePromptOptions{IncludeLatestScreenshot: true})
+	writeRequestContextAndCriteria(&builder, inputs, state)
+	writeSessionContext(&builder, inputs)
+	writeExecutorEvidence(&builder, state)
+	builder.WriteString("\n\nCandidate final answer:\n")
+	if answer := strings.TrimSpace(candidateAnswer); answer != "" {
+		builder.WriteString(answer)
+	} else {
+		builder.WriteString("(empty)")
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func defaultFinalReviewLanguageHint(inputs map[string]string) string {
+	if containsHanRunes(strings.TrimSpace(inputs["input"])) {
+		return "Simplified Chinese, matching the latest user request"
+	}
+	return "the same language as the latest user request"
+}
+
+func parseDefaultFinalReview(raw, candidateAnswer string) defaultFinalReview {
+	var review defaultFinalReview
+	if decodeRoleJSON(raw, &review) != nil {
+		return defaultFinalReview{
+			CanFinish: false,
+			Reason:    "default final review returned non-JSON; replanning required",
+		}
+	}
+	review.FinalAnswer = strings.TrimSpace(review.FinalAnswer)
+	review.Reason = strings.TrimSpace(review.Reason)
+	review.HandoffReason = normalizeHandoffReason(review.HandoffReason)
+	review.HandoffDetails = strings.TrimSpace(review.HandoffDetails)
+	review.SuggestedAction = strings.TrimSpace(review.SuggestedAction)
+	if review.NeedsHumanHandoff {
+		review.CanFinish = false
+		if review.HandoffDetails == "" {
+			review.HandoffDetails = firstNonEmptyString([]string{
+				review.Reason,
+				"Human action is required before the device task can continue.",
+			})
+		}
+		return review
+	}
+	if review.CanFinish {
+		if review.FinalAnswer == "" {
+			review.FinalAnswer = strings.TrimSpace(candidateAnswer)
+		}
+		return review
+	}
+	if review.Reason == "" {
+		review.Reason = "default final review rejected the candidate final answer"
+	}
+	return review
+}
+
+func (e *roleCollaborativeExecutor) executeDefaultFinalHandoff(
+	ctx context.Context,
+	state *roleLoopState,
+	toolSpecs *ToolSpecs,
+	review defaultFinalReview,
+) (plannerTurnResult, error) {
+	if _, ok := toolSpecs.Lookup(toolHumanHandoffStep); !ok {
+		return plannerTurnResult{}, fmt.Errorf("%s is required by default final review but is unavailable", toolHumanHandoffStep)
+	}
+	payload, _ := json.Marshal(HumanHandoffRequest{
+		Reason:          normalizeHandoffReason(review.HandoffReason),
+		Details:         firstNonEmptyString([]string{review.HandoffDetails, review.Reason, "Human action is required before the device task can continue."}),
+		SuggestedAction: strings.TrimSpace(review.SuggestedAction),
+	})
+	action := schema.AgentAction{
+		Tool:      toolHumanHandoffStep,
+		ToolInput: string(payload),
+		Log: formatToolActionLog(toolHumanHandoffStep, string(payload), firstNonEmptyString([]string{
+			review.SuggestedAction,
+			review.HandoffDetails,
+			review.Reason,
+		}), "\n"),
+	}
+	return e.executePlannerToolAction(ctx, state, toolSpecs, action)
 }
 
 func (e *roleCollaborativeExecutor) generateRoleContent(ctx context.Context, role RoleName, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
@@ -1223,6 +1470,8 @@ func isPlannerReadOnlyTool(name string, specs *ToolSpecs) bool {
 func isPlannerReadOnlyToolSpec(spec ToolSpec) bool {
 	switch strings.ToLower(strings.TrimSpace(spec.Category)) {
 	case "observation", "web":
+		return true
+	case "handoff":
 		return true
 	case "memory":
 		switch spec.Name {
