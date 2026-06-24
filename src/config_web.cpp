@@ -107,20 +107,6 @@ struct AgentLogSnapshot {
     std::string error;
 };
 
-enum LlmLogReadStatus {
-    LLM_LOG_READ_OK,
-    LLM_LOG_READ_NOT_FOUND,
-    LLM_LOG_READ_TOO_LARGE,
-    LLM_LOG_READ_ERROR,
-};
-
-struct LlmLogReadResult {
-    LlmLogReadStatus status = LLM_LOG_READ_OK;
-    bool truncated = false;
-    std::string contents;
-    std::string error;
-};
-
 using SystemProxy = aiden::SystemEnvProxy;
 
 struct TcpPortStatus {
@@ -169,11 +155,9 @@ const size_t kAgentLogDisplaySize = 48 * 1024;
 const size_t kOtaLogReadSize = 128 * 1024;
 const size_t kOtaLogDisplaySize = 96 * 1024;
 // LLM raw HTTP logs live next to the agent config: <dirname(config)>/log.
-// Filenames are llm-http-YYYYMMDDHHMMSSmmm.log. The viewer streams whole
-// files to the browser, so cap the per-file read to keep responses bounded.
+// Filenames are llm-http-YYYYMMDDHHMMSSmmm.log.
 const char* kLlmLogPrefix = "llm-http-";
 const char* kLlmLogSuffix = ".log";
-const size_t kLlmLogMaxReadSize = 16 * 1024 * 1024;
 const size_t kMaxHttpHeaderSize = 8 * 1024;
 const size_t kMaxHttpBodySize = 64 * 1024;
 const int kClientReadTimeoutSeconds = 5;
@@ -3489,7 +3473,7 @@ std::string llm_log_path(const Options& options, const std::string& name) {
 
 // is_llm_log_name reports whether name is a plain llm-http-*.log filename with
 // no path separators. Used both to filter directory listings and to validate
-// the filename segment of /api/llm-logs/file/<name>.
+// the filename segment of the import/export endpoints.
 bool is_llm_log_name(const std::string& name) {
     if (name.find('/') != std::string::npos || name.find('\\') != std::string::npos) {
         return false;
@@ -3548,56 +3532,6 @@ int open_llm_log_file(const Options& options, const std::string& name, struct st
     return fd;
 }
 
-LlmLogReadResult read_llm_log_file(const Options& options, const std::string& name, bool allow_truncate) {
-    LlmLogReadResult result;
-    struct stat st;
-    int fd = open_llm_log_file(options, name, &st, &result.error);
-    if (fd < 0) {
-        result.status = result.error == "invalid log file name" ? LLM_LOG_READ_NOT_FOUND : LLM_LOG_READ_NOT_FOUND;
-        return result;
-    }
-    if (!allow_truncate && static_cast<size_t>(st.st_size) > kLlmLogMaxReadSize) {
-        close(fd);
-        result.status = LLM_LOG_READ_TOO_LARGE;
-        result.error = "log file too large";
-        return result;
-    }
-    FILE* f = fdopen(fd, "rb");
-    if (!f) {
-        close(fd);
-        result.status = LLM_LOG_READ_ERROR;
-        result.error = "failed to open log file stream";
-        return result;
-    }
-
-    char buf[8192];
-    size_t total = 0;
-    while (size_t n = fread(buf, 1, sizeof(buf), f)) {
-        if (total + n > kLlmLogMaxReadSize) {
-            if (!allow_truncate) {
-                fclose(f);
-                result.status = LLM_LOG_READ_TOO_LARGE;
-                result.error = "log file too large";
-                return result;
-            }
-            result.contents.append(buf, kLlmLogMaxReadSize - total);
-            result.truncated = true;
-            break;
-        }
-        result.contents.append(buf, n);
-        total += n;
-    }
-    if (ferror(f)) {
-        fclose(f);
-        result.status = LLM_LOG_READ_ERROR;
-        result.error = "failed to read log file";
-        return result;
-    }
-    fclose(f);
-    result.status = LLM_LOG_READ_OK;
-    return result;
-}
-
 ApiResponse handle_get_llm_logs(const Options& options) {
     cJSON* root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "ok", 1);
@@ -3637,29 +3571,6 @@ ApiResponse handle_get_llm_logs(const Options& options) {
     }
     // A missing directory simply yields an empty list -- the agent may not
     // have produced any logs yet, which is not an error condition.
-    return make_json_ok(root);
-}
-
-ApiResponse handle_get_llm_log_file(const Options& options, const std::string& name) {
-    if (!is_llm_log_name(name)) {
-        return make_json_error(400, "invalid log file name");
-    }
-    LlmLogReadResult read = read_llm_log_file(options, name, true);
-    if (read.status == LLM_LOG_READ_NOT_FOUND) {
-        return make_json_error(404, "log file not found");
-    }
-    if (read.status == LLM_LOG_READ_TOO_LARGE) {
-        return make_json_error(413, "log file too large");
-    }
-    if (read.status != LLM_LOG_READ_OK) {
-        return make_json_error(500, read.error.empty() ? "failed to read log file" : read.error);
-    }
-
-    cJSON* root = cJSON_CreateObject();
-    cJSON_AddBoolToObject(root, "ok", 1);
-    cJSON_AddStringToObject(root, "name", name.c_str());
-    cJSON_AddStringToObject(root, "content", read.contents.c_str());
-    cJSON_AddBoolToObject(root, "truncated", read.truncated ? 1 : 0);
     return make_json_ok(root);
 }
 
@@ -4812,14 +4723,6 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
         if (request.method == "GET" && request.path.compare(0, export_prefix.size(), export_prefix) == 0) {
             std::string name = url_decode(request.path.substr(export_prefix.size()));
             return handle_export_llm_log_file(options, name);
-        }
-    }
-
-    {
-        const std::string file_prefix = "/api/llm-logs/file/";
-        if (request.method == "GET" && request.path.compare(0, file_prefix.size(), file_prefix) == 0) {
-            std::string name = url_decode(request.path.substr(file_prefix.size()));
-            return handle_get_llm_log_file(options, name);
         }
     }
 

@@ -1310,6 +1310,19 @@ TEST_CASE("config_web: exports llm raw log files without JSON wrapping") {
     CHECK(resp.body == content);
 }
 
+TEST_CASE("config_web: legacy llm log JSON file endpoint is removed") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string log_dir = handle->tmp_dir + "/log";
+    REQUIRE(::mkdir(log_dir.c_str(), 0755) == 0);
+    const std::string name = "llm-http-20260624154500999.log";
+    write_file(log_dir + "/" + name, "{\"kind\":\"request\"}\n");
+
+    HttpResponse resp = http_request(handle->port, "GET", "/api/llm-logs/file/" + name);
+    CHECK(resp.status == 404);
+}
+
 TEST_CASE("config_web: exports llm raw log files larger than viewer limit") {
     StubEnv env;
     auto handle = start_server(env);
