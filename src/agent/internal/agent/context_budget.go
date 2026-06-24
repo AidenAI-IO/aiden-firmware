@@ -15,13 +15,12 @@ type contextWindowModel interface {
 }
 
 type toolResponseBudgetCandidate struct {
-	MessageIndex                int
-	PartIndex                   int
-	ToolCallID                  string
-	ToolName                    string
-	Content                     string
-	ContentTokens               int
-	EstimatedPromptTokensSingle int
+	MessageIndex  int
+	PartIndex     int
+	ToolCallID    string
+	ToolName      string
+	Content       string
+	ContentTokens int
 }
 
 type toolResponseBudgetCandidateKey struct {
@@ -75,8 +74,7 @@ func (e *roleCollaborativeExecutor) guardMessagesWithinContextWindow(messages []
 		if singlePromptTokens <= inputBudget {
 			continue
 		}
-		candidate.EstimatedPromptTokensSingle = singlePromptTokens
-		replaceToolResponsePart(sanitized, candidate, omittedToolResultMessage(candidate, contextWindow, inputBudget, callOptions.MaxTokens))
+		replaceToolResponsePart(sanitized, candidate, omittedToolResultMessage(candidate))
 		omitted[candidate.key()] = struct{}{}
 	}
 
@@ -91,8 +89,7 @@ func (e *roleCollaborativeExecutor) guardMessagesWithinContextWindow(messages []
 		if isToolResponseAlreadyOmitted(omitted, candidate) {
 			continue
 		}
-		candidate.EstimatedPromptTokensSingle = estimateSingleToolResponsePromptTokens(messages, candidate) + toolSchemaTokens
-		replaceToolResponsePart(sanitized, candidate, omittedToolResultMessage(candidate, contextWindow, inputBudget, callOptions.MaxTokens))
+		replaceToolResponsePart(sanitized, candidate, omittedToolResultMessage(candidate))
 		omitted[candidate.key()] = struct{}{}
 		if estimateMessagesTokens(sanitized)+toolSchemaTokens <= inputBudget {
 			break
@@ -199,19 +196,14 @@ func isToolResponseAlreadyOmitted(omitted map[toolResponseBudgetCandidateKey]str
 	return ok
 }
 
-func omittedToolResultMessage(candidate toolResponseBudgetCandidate, contextWindow, inputBudget, maxResponseTokens int) string {
+func omittedToolResultMessage(candidate toolResponseBudgetCandidate) string {
 	toolName := strings.TrimSpace(candidate.ToolName)
 	if toolName == "" {
 		toolName = "tool"
 	}
 	return fmt.Sprintf(
-		"error: %s tool result omitted before the next model call because the result is too large for the model context window. context_window=%d available_input_tokens=%d max_response_tokens=%d estimated_prompt_tokens_with_this_result=%d tool_result_estimated_tokens=%d. The original tool call completed, but its raw output was not inserted. Use a narrower query, request a smaller range, or call a tool that returns a concise summary.",
+		"note: %s tool result omitted because including it would exceed the model context window. The tool call already completed, but its raw output was not inserted into the next model call.",
 		toolName,
-		contextWindow,
-		inputBudget,
-		maxResponseTokens,
-		candidate.EstimatedPromptTokensSingle,
-		candidate.ContentTokens,
 	)
 }
 
