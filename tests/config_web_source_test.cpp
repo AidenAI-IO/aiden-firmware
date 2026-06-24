@@ -460,8 +460,10 @@ TEST_CASE("config web exposes the LLM HTTP log viewer") {
     // Messages view appends a Response section so request and response render
     // on the same screen. Covers OpenAI JSON, SSE streams, and raw fallbacks.
     CHECK(llm_html.find("function renderMessagesView") != std::string::npos);
+    CHECK(llm_html.find("function renderDiffView") != std::string::npos);
     CHECK(llm_html.find("function renderResponseBlock") != std::string::npos);
     CHECK(llm_html.find("function extractResponseMessage") != std::string::npos);
+    CHECK(llm_html.find("renderDiff(prevReq.messages || [], req.messages || []) + renderResponseBlock(g)") != std::string::npos);
     CHECK(llm_html.find("response-section") != std::string::npos);
 }
 
