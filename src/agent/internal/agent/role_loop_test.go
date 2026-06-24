@@ -866,7 +866,7 @@ func TestRequestContextPromptDoesNotMarkRootRequestAuthoritative(t *testing.T) {
 		latestUserInputKey:   "打开微信",
 		"follow_up_relation": "continuation",
 	}
-	prompt := buildPlannerStatePrompt(inputs, roleLoopState{}, "Planner task.")
+	prompt := buildRoleStatePrompt(RolePlanner, inputs, roleLoopState{Phase: phasePlan}, "Planner task.")
 
 	for _, unwanted := range []string{
 		"Original user request / root request (authoritative; do not replace it with a subtask)",
@@ -880,8 +880,330 @@ func TestRequestContextPromptDoesNotMarkRootRequestAuthoritative(t *testing.T) {
 			t.Fatalf("planner prompt should not contain %q:\n%s", unwanted, prompt)
 		}
 	}
-	if !strings.Contains(prompt, "Original user request") {
-		t.Fatalf("planner prompt should still include the original request as context:\n%s", prompt)
+	for _, want := range []string{
+		"Planner runtime context (synthetic; not a new user request):",
+		"Planner task.",
+		"Loop mode:",
+		"Original user request / root request:",
+		"查天气",
+		"Latest user message:",
+		"打开微信",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("planner prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestPlannerMessagesAppendRuntimeStateContext(t *testing.T) {
+	executor := &roleCollaborativeExecutor{}
+	state := roleLoopState{
+		Phase:         phasePlan,
+		PlanCommitted: true,
+		Plan:          []string{"inspect", "act"},
+		NextStep:      "inspect",
+		PlanStepResults: []planStepResult{{
+			StepIndex:      1,
+			StepText:       "inspect",
+			Outcome:        "blocked",
+			Summary:        "screen did not change",
+			NeedsReplan:    true,
+			VerifierReason: "not enough progress",
+		}},
+		VerifierResults: []verifierDecision{{
+			NeedsReplan: true,
+			Reason:      "not enough progress",
+		}},
+		Todo: TodoState{
+			Mode:      TodoModePlanned,
+			Objective: "inspect and act",
+			Revision:  1,
+			CurrentID: "todo-r1-step1",
+			Items: []TodoItem{{
+				ID:        "todo-r1-step1",
+				Text:      "inspect",
+				Status:    TodoBlocked,
+				Source:    TodoSourceCommittedPlan,
+				StepIndex: 1,
+			}},
+		},
+		World: worldState{
+			Observation: &worldStateObservation{
+				observedWorldState: observedWorldState{
+					AppName:     "微信",
+					PageName:    "聊天列表",
+					Platform:    "android",
+					VisibleText: []string{"微信", "通讯录"},
+					Dialogs:     []string{"权限提示"},
+					Confidence:  0.82,
+				},
+			},
+		},
+	}
+	state.World.UpdateDeviceEnvironment(&PhoneEnvironment{
+		Platform:       "android",
+		SystemName:     "Android",
+		SystemVersion:  "15",
+		ThirdPartyApps: []AvailableAppInfo{{Name: "微信", Available: true}},
+	})
+	inputs := map[string]string{
+		"input":                "fallback request",
+		rootRequestInputKey:    "原始用户请求",
+		latestUserInputKey:     "最新用户消息",
+		sessionContextInputKey: "Session context view:\n- Latest user message: 最新用户消息",
+	}
+
+	messages := executor.roleMessages(RoleProfile{Name: RolePlanner, SystemPrompt: "planner system"}, inputs, state, "Planner task.")
+	if len(messages) != 3 {
+		t.Fatalf("planner messages = %d, want system, raw user input, runtime state: %#v", len(messages), messages)
+	}
+	if messages[0].Role != llms.ChatMessageTypeSystem {
+		t.Fatalf("message[0] role = %s, want system", messages[0].Role)
+	}
+	if messageText(messages[:1]) != "planner system\n" {
+		t.Fatalf("planner system should not receive runtime state:\n%s", messageText(messages[:1]))
+	}
+	if messages[1].Role != llms.ChatMessageTypeHuman || messageText(messages[1:2]) != "fallback request\n" {
+		t.Fatalf("message[1] should be raw current user input, got role=%s text=%q", messages[1].Role, messageText(messages[1:2]))
+	}
+	statePrompt := messageText(messages[2:])
+	for _, want := range []string{
+		"Planner runtime context (synthetic; not a new user request):",
+		"Planner task.",
+		"Loop mode:",
+		"Original user request",
+		"Latest user message",
+		"Current plan:",
+		"World State",
+		"Device environment: available",
+		"Confirmed third-party apps:",
+		"Observed app/page:",
+		"Visible text:",
+		"Dialogs:",
+		"Session context view:",
+		"Current todo state:",
+		"Prior step results",
+		"summary=\"screen did not change\"",
+		"Verifier feedback:",
+		"not enough progress",
+	} {
+		if !strings.Contains(statePrompt, want) {
+			t.Fatalf("planner runtime state prompt missing %q:\n%s", want, statePrompt)
+		}
+	}
+	if strings.Contains(statePrompt, "Latest screenshot:") {
+		t.Fatalf("planner runtime state should not include world latest screenshot text:\n%s", statePrompt)
+	}
+}
+
+func TestForceSimpleLoopPlannerRuntimeContextOmitsDelegatedPlanSections(t *testing.T) {
+	state := roleLoopState{
+		Phase:           phaseDefault,
+		ForceSimpleLoop: true,
+		Plan:            []string{"inspect", "act"},
+		NextStep:        "inspect",
+		PlanStepResults: []planStepResult{{
+			StepIndex:      1,
+			StepText:       "inspect",
+			Outcome:        "blocked",
+			Summary:        "screen did not change",
+			NeedsReplan:    true,
+			VerifierReason: "not enough progress",
+		}},
+		VerifierResults: []verifierDecision{{
+			NeedsReplan: true,
+			Reason:      "not enough progress",
+		}},
+		Todo: TodoState{
+			Mode:      TodoModeSimple,
+			Objective: "inspect and act",
+			Revision:  2,
+			CurrentID: "todo-simple-2",
+			Items: []TodoItem{{
+				ID:        "todo-simple-1",
+				Text:      "inspect",
+				Status:    TodoDone,
+				Source:    TodoSourceExplicitSimple,
+				StepIndex: 1,
+			}, {
+				ID:        "todo-simple-2",
+				Text:      "act",
+				Status:    TodoInProgress,
+				Source:    TodoSourceExplicitSimple,
+				StepIndex: 2,
+			}},
+		},
+		PendingTodoReminder: "call set_todo if the task now needs an explicit checklist.",
+		World: worldState{
+			Observation: &worldStateObservation{
+				observedWorldState: observedWorldState{
+					AppName:     "微信",
+					PageName:    "聊天列表",
+					Platform:    "android",
+					VisibleText: []string{"微信", "通讯录"},
+				},
+			},
+		},
+	}
+	inputs := map[string]string{
+		"input":                "继续",
+		rootRequestInputKey:    "打开微信后继续处理",
+		latestUserInputKey:     "继续",
+		sessionContextInputKey: "Session context view:\n- Latest user message: 继续",
+	}
+
+	prompt := buildRoleStatePrompt(RolePlanner, inputs, state, "Planner task.")
+	for _, want := range []string{
+		"Planner runtime context (synthetic; not a new user request):",
+		"World State",
+		"Original user request / root request:",
+		"Current todo state:",
+		"Todo reminder:",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("force_simple_loop planner runtime context missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, unwanted := range []string{
+		"Planner task.",
+		"Loop mode:",
+		"force_simple_loop: true",
+		"Latest user message:",
+		"Session context view:",
+		"Current plan:",
+		"Prior step results",
+		"Verifier feedback:",
+	} {
+		if strings.Contains(prompt, unwanted) {
+			t.Fatalf("force_simple_loop planner runtime context should not contain %q:\n%s", unwanted, prompt)
+		}
+	}
+}
+
+func TestPlannerCurrentUserMessageIsRawInputOnly(t *testing.T) {
+	executor := &roleCollaborativeExecutor{
+		InputAttachments: []InputAttachment{{
+			Kind:     AttachmentKindImage,
+			Name:     "screen.png",
+			MIMEType: "image/png",
+			Data:     []byte{0x89, 0x50, 0x4e, 0x47},
+		}},
+	}
+	state := roleLoopState{
+		Phase: phasePlan,
+		Plan:  []string{"inspect"},
+		World: worldState{
+			Observation: &worldStateObservation{
+				observedWorldState: observedWorldState{
+					AppName:     "微信",
+					PageName:    "聊天列表",
+					VisibleText: []string{"微信"},
+				},
+			},
+		},
+	}
+	inputs := map[string]string{
+		"input":             "当前用户原始输入",
+		rootRequestInputKey: "原始根请求",
+		latestUserInputKey:  "当前用户原始输入",
+	}
+
+	messages := executor.roleMessages(RoleProfile{Name: RolePlanner, SystemPrompt: "planner system"}, inputs, state, "Planner task.")
+	if len(messages) < 2 {
+		t.Fatalf("planner messages = %#v, want system context and user input", messages)
+	}
+	raw := messages[1]
+	if raw.Role != llms.ChatMessageTypeHuman {
+		t.Fatalf("raw planner message role = %s, want human; messages=%#v", raw.Role, messages)
+	}
+	var textParts []string
+	var imageParts int
+	for _, part := range raw.Parts {
+		switch typed := part.(type) {
+		case llms.TextContent:
+			textParts = append(textParts, typed.Text)
+		case llms.ImageURLContent:
+			imageParts++
+		}
+	}
+	if len(textParts) != 1 || imageParts != 1 {
+		t.Fatalf("raw planner message parts = %#v, want one raw text part and one raw image part", raw.Parts)
+	}
+	text := textParts[0]
+	if text != "当前用户原始输入" {
+		t.Fatalf("raw planner user message = %q, want raw input only", text)
+	}
+	for _, unwanted := range []string{
+		"Planner task.",
+		"Loop mode:",
+		"Original user request",
+		"Latest user message",
+		"Current plan:",
+		"World State",
+		"Observed app/page:",
+		"Attached content:",
+		"screen.png",
+	} {
+		if strings.Contains(text, unwanted) {
+			t.Fatalf("raw planner user message should not contain %q:\n%s", unwanted, text)
+		}
+	}
+	systemText := messageText(messages[:1])
+	if strings.TrimSpace(systemText) != "planner system" {
+		t.Fatalf("planner system message should not receive runtime state context:\n%s", systemText)
+	}
+	statePrompt := messageText(messages[len(messages)-1:])
+	if !strings.Contains(statePrompt, "Planner runtime context (synthetic; not a new user request):") ||
+		!strings.Contains(statePrompt, "Planner task.") ||
+		strings.Contains(statePrompt, "Attached content:") ||
+		strings.Contains(statePrompt, "screen.png") {
+		t.Fatalf("planner runtime state should be final pure-text context without attachment metadata:\n%s", statePrompt)
+	}
+}
+
+func TestPlannerCurrentUserMessagePrecedesToolScratchpad(t *testing.T) {
+	executor := &roleCollaborativeExecutor{}
+	toolStep := schema.AgentStep{
+		Action: schema.AgentAction{
+			Tool:      "recall_memory",
+			ToolInput: `{"tags":["weather","location"]}`,
+			Log:       "我查下默认地点。",
+		},
+		Observation: `{"results":[]}`,
+	}
+	state := roleLoopState{
+		Phase:     phaseDefault,
+		ToolSteps: []schema.AgentStep{toolStep},
+		ExecutionResults: []roleExecutionResult{{
+			Action: &toolStep.Action,
+			Step:   &toolStep,
+		}},
+	}
+	inputs := map[string]string{
+		"input": "今天天气怎么样？",
+	}
+
+	messages := executor.roleMessages(RoleProfile{Name: RolePlanner, SystemPrompt: "planner system"}, inputs, state, "Planner task.")
+	if len(messages) != 5 {
+		t.Fatalf("planner messages = %d, want system, user, assistant tool call, tool result, runtime state: %#v", len(messages), messages)
+	}
+	if messages[0].Role != llms.ChatMessageTypeSystem {
+		t.Fatalf("message[0] role = %s, want system", messages[0].Role)
+	}
+	if messages[1].Role != llms.ChatMessageTypeHuman || messageText(messages[1:2]) != "今天天气怎么样？\n" {
+		t.Fatalf("message[1] should be raw current user input before tool scratchpad, got role=%s text=%q", messages[1].Role, messageText(messages[1:2]))
+	}
+	if messages[2].Role != llms.ChatMessageTypeAI {
+		t.Fatalf("message[2] role = %s, want assistant tool call", messages[2].Role)
+	}
+	if messages[3].Role != llms.ChatMessageTypeTool {
+		t.Fatalf("message[3] role = %s, want tool result", messages[3].Role)
+	}
+	if messages[4].Role != llms.ChatMessageTypeHuman || !strings.Contains(messageText(messages[4:5]), "Planner runtime context") {
+		t.Fatalf("message[4] should be planner runtime state, got role=%s text=%q", messages[4].Role, messageText(messages[4:5]))
+	}
+	if strings.Contains(messageText(messages[4:5]), "Executor results:") {
+		t.Fatalf("planner runtime state should not summarize planner tool scratchpad as executor results:\n%s", messageText(messages[4:5]))
 	}
 }
 

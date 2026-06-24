@@ -140,6 +140,12 @@ func (s *Server) handleCoordinateDebugTap(w http.ResponseWriter, r *http.Request
 		http.Error(w, `{"ok":false,"error":"touch_gesture tool unavailable"}`, http.StatusServiceUnavailable)
 		return
 	}
+	screen := s.coordinateDebugScreen()
+	mappingState := screenMappingState{}
+	if screen != nil {
+		mappingState = screen.MappingState()
+		defer screen.RestoreMappingState(mappingState)
+	}
 
 	toolInput, err := json.Marshal(map[string]any{
 		"type":        gestureType,
@@ -163,23 +169,38 @@ func (s *Server) handleCoordinateDebugTap(w http.ResponseWriter, r *http.Request
 		http.Error(w, fmt.Sprintf(`{"ok":false,"error":%q}`, output), http.StatusBadRequest)
 		return
 	}
+	if screen != nil {
+		screen.RestoreMappingState(mappingState)
+	}
 
 	var actionResult postActionScreenshotResult
 	if err := json.Unmarshal([]byte(output), &actionResult); err != nil {
 		http.Error(w, fmt.Sprintf(`{"ok":false,"error":"invalid tool output: %s"}`, err), http.StatusInternalServerError)
 		return
 	}
-	screenshotResult, err := s.captureCoordinateDebugScreenshotResult(options)
-	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"ok":false,"error":"post-action screenshot failed: %s"}`, err), http.StatusInternalServerError)
-		return
-	}
-	screenshotPayload := coordinateDebugPostActionScreenshotResult{
-		coordinateDebugScreenshotResult: *screenshotResult,
-		ActionOutput:                    actionResult.ActionOutput,
-		ScreenStable:                    actionResult.ScreenStable,
-		StableWaitMs:                    actionResult.StableWaitMs,
-		LastDiff:                        actionResult.LastDiff,
+	var screenshotPayload coordinateDebugPostActionScreenshotResult
+	if options.CropBlackBars && actionResult.Data != "" && actionResult.Format != "" &&
+		coordinateDebugScreenshotMatchesMapping(actionResult.screenshotResult, mappingState) {
+		screenshotPayload = coordinateDebugPostActionScreenshotResult{
+			coordinateDebugScreenshotResult: *s.coordinateDebugScreenshotResultFromScreenState(actionResult.screenshotResult),
+			ActionOutput:                    actionResult.ActionOutput,
+			ScreenStable:                    actionResult.ScreenStable,
+			StableWaitMs:                    actionResult.StableWaitMs,
+			LastDiff:                        actionResult.LastDiff,
+		}
+	} else {
+		screenshotResult, err := s.captureCoordinateDebugScreenshotResult(options)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"ok":false,"error":"post-action screenshot failed: %s"}`, err), http.StatusInternalServerError)
+			return
+		}
+		screenshotPayload = coordinateDebugPostActionScreenshotResult{
+			coordinateDebugScreenshotResult: *screenshotResult,
+			ActionOutput:                    actionResult.ActionOutput,
+			ScreenStable:                    actionResult.ScreenStable,
+			StableWaitMs:                    actionResult.StableWaitMs,
+			LastDiff:                        actionResult.LastDiff,
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

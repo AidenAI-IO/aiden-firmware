@@ -35,24 +35,25 @@ func effectiveMaxIterations(configured int) int {
 const currentEnvironmentHintMaxAge = 10 * time.Minute
 
 type Runtime struct {
-	config           Config
-	models           ModelResolver
-	memories         *MemoryManager
-	tools            *ToolSet
-	skills           *SkillManager
-	skillsLoaded     bool
-	skillsReloadMu   sync.Mutex
-	skillsDirty      bool
-	runGateInit      sync.Once
-	mergeWorker      *MergeWorker
-	logger           *Logger
-	profileDebouncer *ProfileDebouncer
-	waitForWakeup    *WaitForWakeupController
-	memoryPlane      MemoryPlane
-	sessionManager   SessionManager
-	runtimeID        string
-	mobileGym        *mobileGymSessionStore
-	runGate          chan struct{}
+	config             Config
+	models             ModelResolver
+	memories           *MemoryManager
+	tools              *ToolSet
+	skills             *SkillManager
+	skillsLoaded       bool
+	skillsReloadMu     sync.Mutex
+	skillsDirty        bool
+	runGateInit        sync.Once
+	mergeWorker        *MergeWorker
+	logger             *Logger
+	profileDebouncer   *ProfileDebouncer
+	waitForWakeup      *WaitForWakeupController
+	memoryPlane        MemoryPlane
+	sessionManager     SessionManager
+	runtimeID          string
+	telemetrySessionID string
+	environmentBridge  *EnvironmentBridgeClient
+	runGate            chan struct{}
 }
 
 type RunRequest struct {
@@ -84,6 +85,9 @@ type RunRequest struct {
 	// SteerWaiter waits for the out-of-band steering capture to resolve. ok=false
 	// means the interruption produced no usable input and the run may continue.
 	SteerWaiter func(context.Context) (RunSteerMessage, bool, error)
+	// AsyncEpisodeMaintenance keeps the episode trace write synchronous but moves
+	// lesson extraction and referenced-memory maintenance off the response path.
+	AsyncEpisodeMaintenance bool
 }
 
 type RunResult struct {
@@ -162,6 +166,7 @@ type RunEvent struct {
 	Type           string     `json:"type"`
 	Role           string     `json:"role,omitempty"`
 	EpisodeID      string     `json:"episode_id,omitempty"`
+	ToolCallID     string     `json:"tool_call_id,omitempty"`
 	ToolName       string     `json:"tool_name,omitempty"`
 	ToolInput      string     `json:"tool_input,omitempty"`
 	Content        string     `json:"content,omitempty"`
@@ -275,11 +280,9 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	if err := proxy.Validate(); err != nil {
 		return nil, fmt.Errorf("proxy environment: %w", err)
 	}
-	mobileGymStore := &mobileGymSessionStore{}
 	toolSet := NewBuiltinToolSetFromConfig(
 		cfg,
 		proxy,
-		mobileGymStore,
 		WithWaitForWakeupController(waitForWakeupController),
 		WithScreenStableDefaults(cfg.ScreenStableDefaults()),
 	)
@@ -323,7 +326,6 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	rt.logger = logger
 	rt.profileDebouncer = debouncer
 	rt.waitForWakeup = waitForWakeupController
-	rt.mobileGym = mobileGymStore
 
 	// Log runtime start marker.
 	if logger != nil {
@@ -359,16 +361,26 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 	if cfg.ConfigDir != "" {
 		skillManager.SetUsagePath(filepath.Join(cfg.ConfigDir, "skill-state", "usage.json"))
 	}
+
+	var environmentBridge *EnvironmentBridgeClient
+	if cfg.EnvironmentBridge.Enabled && cfg.EnvironmentBridge.Endpoint != "" {
+		environmentBridge = NewEnvironmentBridgeClient(
+			cfg.EnvironmentBridge.Endpoint,
+			WithEnvironmentBridgeBenchmarkTaskID(cfg.EnvironmentBridge.BenchmarkTaskID),
+		)
+	}
+
 	rt := &Runtime{
-		config:        cfg,
-		models:        models,
-		memories:      memories,
-		tools:         tools,
-		skills:        skillManager,
-		skillsLoaded:  skillIndex != nil && len(skillIndex.Names()) > 0,
-		waitForWakeup: waitForWakeupController,
-		runtimeID:     uuid.NewString(),
-		mobileGym:     &mobileGymSessionStore{},
+		config:             cfg,
+		models:             models,
+		memories:           memories,
+		tools:              tools,
+		skills:             skillManager,
+		skillsLoaded:       skillIndex != nil && len(skillIndex.Names()) > 0,
+		waitForWakeup:      waitForWakeupController,
+		runtimeID:          uuid.NewString(),
+		telemetrySessionID: uuid.NewString(),
+		environmentBridge:  environmentBridge,
 	}
 	// Use the active memory session ID for raw HTTP log partitioning.
 	if modelManager, ok := models.(*ModelManager); ok {
@@ -713,6 +725,9 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	executor := newRoleCollaborativeExecutor(model, profiles, availableTools, plannerMemory, maxIterations, turnInput.Attachments, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault(), deviceEnv, req.SteerProvider)
 	executor.ConversationHistory = conversationHistory
 	executor.TodoReminderToolCalls = r.config.TodoReminderToolCallsOrDefault()
+	executor.ToolCallSpeech = r.config.VoiceToolCallSpeechOrDefault()
+	executor.EnvironmentBridge = r.environmentBridge
+	executor.EnvironmentBridgeTools = r.config.EnvironmentBridge.Tools
 	executor.SteerInterrupt = req.SteerInterrupt
 	executor.SteerWaiter = req.SteerWaiter
 	executor.FinalSteerProvider = req.FinalSteerProvider
@@ -731,7 +746,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 		if err != nil {
 			r.persistRunStatusBestEffort(episodeID, req.RequestID, runID, err)
-			r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture, boundaryTelemetry)
+			r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture, boundaryTelemetry, req.AsyncEpisodeMaintenance)
 			return RunResult{}, err
 		}
 	}
@@ -754,10 +769,10 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 
 	commitResult, err := r.commitSession(ctx, commitReq)
 	if err != nil {
-		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture, boundaryTelemetry)
+		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture, boundaryTelemetry, req.AsyncEpisodeMaintenance)
 		return RunResult{}, err
 	}
-	r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, nil, promptCapture, boundaryTelemetry)
+	r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, nil, promptCapture, boundaryTelemetry, req.AsyncEpisodeMaintenance)
 
 	waitForWakeupRequested, waitForWakeupReason := false, ""
 	if r.waitForWakeup != nil {
@@ -1061,7 +1076,13 @@ func countPendingRecallResults(output string) int {
 	return count
 }
 
-func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input string, output string, metrics *RunMetrics, runErr error, promptCapture *telemetryPromptCapture, boundary sessionBoundaryTelemetry) {
+type episodeMaintenancePlane interface {
+	MemoryPlane
+	commitEpisodeTrace(ctx context.Context, episode TaskEpisode) error
+	commitEpisodeMaintenance(ctx context.Context, episode TaskEpisode)
+}
+
+func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input string, output string, metrics *RunMetrics, runErr error, promptCapture *telemetryPromptCapture, boundary sessionBoundaryTelemetry, asyncMaintenance bool) {
 	if recorder == nil || r.memoryPlane == nil {
 		return
 	}
@@ -1079,6 +1100,21 @@ func (r *Runtime) commitEpisodeBestEffort(recorder *EpisodeRecorder, input strin
 	enrichEpisodeSessionBoundaryTelemetry(&episode, boundary)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	if asyncMaintenance {
+		if plane, ok := r.memoryPlane.(episodeMaintenancePlane); ok {
+			if err := plane.commitEpisodeTrace(ctx, episode); err != nil && r.logger != nil {
+				r.logger.Warn("[memory] commit episode trace failed: %v", err)
+				return
+			}
+			r.exportEpisodeBestEffort(episode, promptCapture)
+			go func() {
+				maintenanceCtx, maintenanceCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer maintenanceCancel()
+				plane.commitEpisodeMaintenance(maintenanceCtx, episode)
+			}()
+			return
+		}
+	}
 	if err := r.memoryPlane.CommitEpisode(ctx, episode); err != nil && r.logger != nil {
 		r.logger.Warn("[memory] commit episode failed: %v", err)
 		return
@@ -1316,12 +1352,13 @@ func (h *runtimeCallbackHandler) HandleToolEnd(ctx context.Context, output strin
 	action, ok := h.popPendingAction()
 	if ok {
 		h.emitRunEvent(ctx, RunEvent{
-			Type:      "tool_result",
-			EpisodeID: h.episodeID,
-			ToolName:  action.Tool,
-			ToolInput: normalizeToolInput(action.ToolInput),
-			Content:   output,
-			Timestamp: time.Now(),
+			Type:       "tool_result",
+			EpisodeID:  h.episodeID,
+			ToolCallID: action.ToolID,
+			ToolName:   action.Tool,
+			ToolInput:  normalizeToolInput(action.ToolInput),
+			Content:    output,
+			Timestamp:  time.Now(),
 		})
 	}
 }
@@ -1333,13 +1370,14 @@ func (h *runtimeCallbackHandler) HandleToolError(ctx context.Context, err error)
 	action, ok := h.popPendingAction()
 	if ok {
 		h.emitRunEvent(ctx, RunEvent{
-			Type:      "tool_result",
-			EpisodeID: h.episodeID,
-			ToolName:  action.Tool,
-			ToolInput: normalizeToolInput(action.ToolInput),
-			Content:   "error: " + err.Error(),
-			Timestamp: time.Now(),
-			IsError:   true,
+			Type:       "tool_result",
+			EpisodeID:  h.episodeID,
+			ToolCallID: action.ToolID,
+			ToolName:   action.Tool,
+			ToolInput:  normalizeToolInput(action.ToolInput),
+			Content:    "error: " + err.Error(),
+			Timestamp:  time.Now(),
+			IsError:    true,
 		})
 	}
 }
@@ -1392,12 +1430,13 @@ func (h *runtimeCallbackHandler) HandleToolCallStart(ctx context.Context, call T
 		}
 	}
 	h.emitRunEvent(ctx, RunEvent{
-		Type:      runEventToolCall,
-		EpisodeID: h.episodeID,
-		ToolName:  call.Spec.Name,
-		ToolInput: call.Input,
-		Content:   content,
-		Timestamp: time.Now(),
+		Type:       runEventToolCall,
+		EpisodeID:  h.episodeID,
+		ToolCallID: call.Action.ToolID,
+		ToolName:   call.Spec.Name,
+		ToolInput:  call.Input,
+		Content:    content,
+		Timestamp:  time.Now(),
 	})
 }
 
@@ -1419,13 +1458,14 @@ func (h *runtimeCallbackHandler) HandleToolCallResult(ctx context.Context, call 
 		}
 	}
 	h.emitRunEvent(ctx, RunEvent{
-		Type:      "tool_result",
-		EpisodeID: h.episodeID,
-		ToolName:  call.Spec.Name,
-		ToolInput: call.Input,
-		Content:   output,
-		Timestamp: time.Now(),
-		IsError:   result.IsError,
+		Type:       "tool_result",
+		EpisodeID:  h.episodeID,
+		ToolCallID: call.Action.ToolID,
+		ToolName:   call.Spec.Name,
+		ToolInput:  call.Input,
+		Content:    output,
+		Timestamp:  time.Now(),
+		IsError:    result.IsError,
 	})
 }
 
@@ -1444,12 +1484,13 @@ func (h *runtimeCallbackHandler) HandleAgentAction(ctx context.Context, action s
 		h.pushPendingAction(action)
 	}
 	h.emitRunEvent(ctx, RunEvent{
-		Type:      runEventToolCall,
-		EpisodeID: h.episodeID,
-		ToolName:  action.Tool,
-		ToolInput: action.ToolInput,
-		Content:   content,
-		Timestamp: time.Now(),
+		Type:       runEventToolCall,
+		EpisodeID:  h.episodeID,
+		ToolCallID: action.ToolID,
+		ToolName:   action.Tool,
+		ToolInput:  action.ToolInput,
+		Content:    content,
+		Timestamp:  time.Now(),
 	})
 }
 
@@ -1518,8 +1559,10 @@ func sessionEventFromRunEvent(event RunEvent, h *runtimeCallbackHandler) Session
 	role := strings.TrimSpace(event.Role)
 	if role == "" {
 		switch event.Type {
-		case runEventToolCall, "tool_result":
+		case "tool_result":
 			role = "tool"
+		case runEventToolCall:
+			role = string(llms.ChatMessageTypeAI)
 		case "steer":
 			role = "user"
 		default:
@@ -1531,17 +1574,18 @@ func sessionEventFromRunEvent(event RunEvent, h *runtimeCallbackHandler) Session
 		ts = time.Now()
 	}
 	sessionEvent := SessionEvent{
-		Ts:        ts.UTC().Format(time.RFC3339Nano),
-		Type:      event.Type,
-		Role:      role,
-		RuntimeID: h.runtimeID,
-		EpisodeID: firstNonEmptyString([]string{event.EpisodeID, h.episodeID}),
-		RequestID: h.requestID,
-		RunID:     h.runID,
-		Content:   event.Content,
-		ToolName:  event.ToolName,
-		ToolInput: event.ToolInput,
-		IsError:   event.IsError,
+		Ts:         ts.UTC().Format(time.RFC3339Nano),
+		Type:       event.Type,
+		Role:       role,
+		RuntimeID:  h.runtimeID,
+		EpisodeID:  firstNonEmptyString([]string{event.EpisodeID, h.episodeID}),
+		RequestID:  h.requestID,
+		RunID:      h.runID,
+		Content:    event.Content,
+		ToolCallID: event.ToolCallID,
+		ToolName:   event.ToolName,
+		ToolInput:  event.ToolInput,
+		IsError:    event.IsError,
 	}
 	return sessionEvent
 }

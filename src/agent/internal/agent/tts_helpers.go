@@ -31,6 +31,8 @@ func buildTTSProviderConfig(cfg Config) tts.ProviderConfig {
 // buildTTSProviderConfigFor resolves the config for a specific provider name,
 // merging per-provider credentials over the top-level [tts] fallbacks.
 func buildTTSProviderConfigFor(cfg Config, provider string) tts.ProviderConfig {
+	provider = normalizeTTSProvider(provider)
+
 	// Defaults from the top-level [tts] section.
 	apiKey := cfg.TTS.APIKey
 	voice := cfg.TTS.VoiceID
@@ -230,9 +232,9 @@ func lookupCredentials(creds map[string]TTSProviderCredentials, provider string)
 	if creds == nil {
 		return TTSProviderCredentials{}, false
 	}
-	target := strings.ToLower(strings.TrimSpace(provider))
+	target := normalizeTTSProvider(provider)
 	for k, v := range creds {
-		if strings.ToLower(strings.TrimSpace(k)) == target {
+		if normalizeTTSProvider(k) == target {
 			return v, true
 		}
 	}

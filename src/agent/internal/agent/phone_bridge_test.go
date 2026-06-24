@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 func TestPhoneBridgeHandlesEnvironmentEvent(t *testing.T) {
@@ -66,5 +67,37 @@ func TestPhoneBridgeHandlesEnvironmentEvent(t *testing.T) {
 	bridge.mu.Unlock()
 	if !pendingStillExists {
 		t.Fatal("environment event should not consume pending command responses")
+	}
+}
+
+func TestPhoneBridgeHandlesAppStateEvent(t *testing.T) {
+	bridge := NewPhoneBridge(nil)
+	defer bridge.queue.Stop()
+
+	handled := bridge.handleAppEvent(BridgeCommandResponse{
+		ID:     "phone_app_state",
+		OK:     true,
+		Method: "phone_app_state",
+		Data:   json.RawMessage(`{"app_state":"background","reported_at":"2026-06-01T02:03:06Z","return_entry":"dynamic_island","return_entry_available":true}`),
+	})
+	if !handled {
+		t.Fatal("app state event was not handled")
+	}
+
+	status := bridge.Status()
+	if status.AppState != "background" {
+		t.Fatalf("app_state = %q, want background", status.AppState)
+	}
+	if status.AppStateUpdatedAt == nil {
+		t.Fatal("expected app_state_updated_at")
+	}
+	if got := status.AppStateUpdatedAt.UTC().Format(time.RFC3339); got != "2026-06-01T02:03:06Z" {
+		t.Fatalf("app_state_updated_at = %q, want reported_at", got)
+	}
+	if status.ReturnEntry != "dynamic_island" {
+		t.Fatalf("return_entry = %q, want dynamic_island", status.ReturnEntry)
+	}
+	if status.ReturnEntryAvailable == nil || !*status.ReturnEntryAvailable {
+		t.Fatalf("return_entry_available = %#v, want true", status.ReturnEntryAvailable)
 	}
 }

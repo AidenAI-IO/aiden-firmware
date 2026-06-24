@@ -3,8 +3,9 @@ import json
 
 from runner.agent_client import ToolInvokeResult
 from runner.analysis import AnalysisResult
-from runner.models import HardAssertionResults, RubricVerdict, TaskResult
+from runner.models import HardAssertionFailure, HardAssertionResults, RubricVerdict, TaskResult
 import runner.main as main
+import runner.webui as webui
 
 
 class FakeClockClient:
@@ -48,6 +49,20 @@ def _task_result_with_details():
             required_tools=False,
             forbidden_tools=False,
         ),
+        hard_assertion_failures=[
+            HardAssertionFailure(
+                id="required_tools",
+                label="Required Tools",
+                requirement="Must call: screenshot.",
+                actual="Missing: screenshot. Used: none.",
+            ),
+            HardAssertionFailure(
+                id="forbidden_tools",
+                label="Forbidden Tools",
+                requirement="Must not call: shell.",
+                actual="Forbidden calls: shell at step 1. Used: shell.",
+            ),
+        ],
         metrics={"error": "boom", "agent_error": "agent boom", "judge_error": "judge boom"},
     )
 
@@ -70,8 +85,12 @@ def test_log_task_result_shows_details_in_verbose_mode(capsys):
     out = capsys.readouterr().out
     assert "FAILED" in out
     assert "Hard assertion failures" in out
-    assert "required_tools" in out
-    assert "forbidden_tools" in out
+    assert "Required Tools" in out
+    assert "Requirement: Must call: screenshot." in out
+    assert "Actual: Missing: screenshot. Used: none." in out
+    assert "Forbidden Tools" in out
+    assert "Requirement: Must not call: shell." in out
+    assert "Actual: Forbidden calls: shell at step 1. Used: shell." in out
     assert "Error: boom" in out
     assert "Agent Error" in out
     assert "Judge Error" in out
@@ -234,3 +253,175 @@ def test_run_keeps_exit_code_when_analysis_fails(monkeypatch, tmp_path):
     )
 
     assert rc == 0
+
+
+def test_auto_agent_setup_injects_environment_url_as_bridge_endpoint(monkeypatch, tmp_path):
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "name": "mobile_suite",
+                "tasks": [
+                    {
+                        "id": "open_clock",
+                        "category": "diagnostic",
+                        "prompt": "open clock",
+                        "description_for_judge": "open clock",
+                        "rubric": [{"id": "done", "check": "done"}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeClient:
+        def __init__(self, base_url):
+            self.base_url = base_url
+
+        def close(self):
+            pass
+
+    captured = {}
+    monkeypatch.setattr(main, "AgentClient", FakeClient)
+    monkeypatch.setattr(main, "wait_for_agent_ready", lambda *args, **kwargs: True)
+    monkeypatch.setattr(main, "wait_for_agent_clock", lambda *args, **kwargs: True)
+    monkeypatch.setattr(main, "generate_report_html", lambda run_dir: "<html></html>")
+    monkeypatch.setattr(main, "call_environment_release", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui, "ensure_daemon_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui, "read_environment_bridge_concurrency", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(webui, "prepare_run_config", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui, "reserve_free_port", lambda: 18081)
+    monkeypatch.setattr(webui, "start_daemon_logs", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui, "stop_daemon_compose", lambda *args, **kwargs: None)
+
+    def fake_start_daemon_compose(job, **kwargs):
+        captured["job"] = job
+        captured["kwargs"] = kwargs
+        return "container-id"
+
+    monkeypatch.setattr(webui, "start_daemon_compose", fake_start_daemon_compose)
+
+    def fake_run_one_task(client, suite, task, attempt, artifact_dir, *args, **kwargs):
+        return TaskResult(
+            suite=suite.name,
+            run_id="auto-run",
+            task_id=task.id,
+            category=task.category,
+            attempt=attempt,
+            status="passed",
+            rubric=[],
+            rubric_pass_count=0,
+            rubric_total=0,
+            artifact_dir=str(artifact_dir),
+        )
+
+    monkeypatch.setattr(main, "run_one_task", fake_run_one_task)
+
+    rc = main.cli(
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--out",
+            str(tmp_path / "runs"),
+            "--run-id",
+            "auto-run",
+            "--environment-url",
+            "http://127.0.0.1:19090",
+            "--auto-agent-setup",
+            "--no-judge",
+        ]
+    )
+
+    assert rc == 0
+    assert captured["job"].endpoint == "http://127.0.0.1:19090"
+    assert captured["job"].docker_endpoint == "http://host.docker.internal:19090"
+    assert captured["kwargs"]["environment_bridge_endpoint"] == "http://host.docker.internal:19090"
+    assert captured["kwargs"]["environment_bridge_mode"] is True
+
+
+def test_run_releases_environment_route_per_non_auto_attempt(monkeypatch, tmp_path):
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "name": "mobile_suite",
+                "tasks": [
+                    {
+                        "id": "open_clock",
+                        "category": "diagnostic",
+                        "prompt": "open clock",
+                        "description_for_judge": "open clock",
+                        "rubric": [{"id": "done", "check": "done"}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    route_ids = []
+    releases = []
+
+    class FakeClient:
+        def __init__(self, base_url):
+            self.base_url = base_url
+
+        def health(self):
+            return True
+
+        def close(self):
+            pass
+
+    def fake_run_one_task(client, suite, task, attempt, artifact_dir, *args, **kwargs):
+        route_ids.append(kwargs["benchmark_task_id"])
+        return TaskResult(
+            suite=suite.name,
+            run_id="route-run",
+            task_id=task.id,
+            category=task.category,
+            attempt=attempt,
+            status="passed",
+            rubric=[],
+            rubric_pass_count=0,
+            rubric_total=0,
+            artifact_dir=str(artifact_dir),
+        )
+
+    monkeypatch.setattr(main, "AgentClient", FakeClient)
+    monkeypatch.setattr(main, "wait_for_agent_ready", lambda *args, **kwargs: True)
+    monkeypatch.setattr(main, "wait_for_agent_clock", lambda *args, **kwargs: True)
+    monkeypatch.setattr(main, "run_one_task", fake_run_one_task)
+    monkeypatch.setattr(main, "generate_report_html", lambda run_dir: "<html></html>")
+    monkeypatch.setattr(main, "upload_report", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        main,
+        "call_environment_release",
+        lambda environment_url, task_id=None, **kwargs: releases.append((environment_url, task_id)),
+    )
+
+    rc = main.cli(
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--out",
+            str(tmp_path / "runs"),
+            "--run-id",
+            "route-run",
+            "--environment-url",
+            "http://127.0.0.1:19090",
+            "--repeats",
+            "2",
+            "--inter-task-cooldown-sec",
+            "0",
+            "--no-judge",
+        ]
+    )
+
+    assert rc == 0
+    assert route_ids == ["suite.json:open_clock:attempt-1", "suite.json:open_clock:attempt-2"]
+    assert releases == [
+        ("http://127.0.0.1:19090", "suite.json:open_clock:attempt-1"),
+        ("http://127.0.0.1:19090", "suite.json:open_clock:attempt-2"),
+    ]

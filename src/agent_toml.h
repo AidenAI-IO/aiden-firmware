@@ -52,12 +52,6 @@ struct AudioArchiveToml {
     std::string storage_path = "/userdata/audio";
 };
 
-struct BenchmarkToml {
-    std::string judge_model;
-    std::string api_key;
-    std::string benchmark_dir;
-};
-
 struct LogToml {
     int llm_http_retention_days = 7;
 };
@@ -88,6 +82,24 @@ struct TelemetryToml {
     std::string environment = "default";
 };
 
+struct LiveActivityToml {
+    bool enabled = true;
+    std::string relay_url;
+    std::string relay_api_key;
+    bool has_relay_api_key = false;
+    std::string board_id;
+    std::string phone_id;
+    std::string bundle_id;
+    std::string topic;
+    std::string environment = "sandbox";
+    std::string team_id;
+    std::string key_id;
+    std::string private_key_path;
+    std::string private_key_pem;
+    bool has_private_key_pem = false;
+    int timeout_sec = 0;
+};
+
 struct AgentToml {
     ModelToml model;
     ModelToml model_text;
@@ -95,11 +107,11 @@ struct AgentToml {
     STTToml stt;
     AudioToml audio;
     AudioArchiveToml audio_archive;
-    BenchmarkToml benchmark;
     LogToml log;
     HIDToml hid;
     SearchToml search;
     TelemetryToml telemetry;
+    LiveActivityToml live_activity;
 
     std::string custom_instruction;
     std::string additional_prompt;

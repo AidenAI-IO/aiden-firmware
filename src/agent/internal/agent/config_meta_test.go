@@ -97,7 +97,7 @@ func TestConfigMeta_Valid(t *testing.T) {
 		}
 	}
 
-	for _, name := range []string{"model", "tts", "stt", "audio", "audio_archive", "benchmark", "hid", "search", "log", "telemetry", "live_activity", "agent"} {
+	for _, name := range []string{"model", "tts", "stt", "audio", "audio_archive", "log", "hid", "search", "telemetry", "live_activity", "agent"} {
 		if !seenSections[name] {
 			t.Errorf("expected section %q to be present", name)
 		}
@@ -145,6 +145,16 @@ func TestConfigMeta_EnumsMatchValidation(t *testing.T) {
 		}
 	}
 
+	ttsEnum := enumValues("tts.provider")
+	for _, p := range []string{"minimax", "minimax-cn", "fish-audio", "alicloud", "volcengine"} {
+		if !contains(ttsEnum, p) {
+			t.Errorf("tts.provider enum missing provider %q", p)
+		}
+	}
+	if contains(ttsEnum, "minimax-ws") {
+		t.Errorf("tts.provider enum still includes legacy provider minimax-ws")
+	}
+
 	// hid.pointer_mode enum must match Validate()'s accepted set.
 	pmEnum := enumValues("hid.pointer_mode")
 	for _, m := range []string{"absolute", "touchscreen"} {
@@ -177,12 +187,6 @@ func TestConfigMeta_EnumsMatchValidation(t *testing.T) {
 		}
 	}
 
-	for _, env := range enumValues("live_activity.environment") {
-		cfg := Config{Model: ModelConfig{Provider: "fake"}, LiveActivity: LiveActivityConfig{Environment: env}}
-		if err := cfg.Validate(); err != nil {
-			t.Errorf("live_activity.environment enum value %q rejected by Validate: %v", env, err)
-		}
-	}
 }
 
 func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
@@ -212,7 +216,6 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"audio_archive.max_files", defaults.AudioArchive.MaxFilesOrDefault()},
 		{"audio_archive.max_size_mb", defaults.AudioArchive.MaxSizeMBOrDefault()},
 		{"audio_archive.storage_path", defaults.AudioArchive.StoragePathOrDefault()},
-		{"benchmark.judge_model", defaults.Benchmark.JudgeModel},
 		{"log.llm_http_retention_days", defaults.Log.LLMHTTPRetentionDaysOrDefault()},
 		{"hid.keyboard_device", defaults.HID.KeyboardDevice},
 		{"hid.mouse_device", defaults.HID.MouseDevice},
@@ -258,7 +261,7 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 	}
 }
 
-func TestConfigMeta_TTSModelHiddenForMinimaxWebSocket(t *testing.T) {
+func TestConfigMeta_TTSModelHiddenForMinimaxProviders(t *testing.T) {
 	idx := fieldIndex(t)
 	model, ok := idx["tts.model"]
 	if !ok {
@@ -267,7 +270,7 @@ func TestConfigMeta_TTSModelHiddenForMinimaxWebSocket(t *testing.T) {
 	if model.VisibleWhen == nil {
 		t.Fatal("tts.model has no visibleWhen rule")
 	}
-	want := VisibleRule{All: []Condition{{Field: "tts.provider", Op: "ne", Value: "minimax-ws"}}}
+	want := VisibleRule{All: []Condition{{Field: "tts.provider", Op: "notIn", Values: []string{"minimax", "minimax-cn"}}}}
 	if !reflect.DeepEqual(*model.VisibleWhen, want) {
 		t.Fatalf("tts.model visibleWhen = %#v, want %#v", *model.VisibleWhen, want)
 	}
@@ -359,12 +362,16 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 		{"stt", reflect.TypeOf(STTConfig{}), map[string]bool{"engine_model_type": true}},
 		{"audio", reflect.TypeOf(AudioConfig{}), nil},
 		{"audio_archive", reflect.TypeOf(AudioArchiveConfig{}), nil},
-		{"benchmark", reflect.TypeOf(BenchmarkConfig{}), nil},
 		{"hid", reflect.TypeOf(HIDConfig{}), nil},
 		{"search", reflect.TypeOf(SearchConfig{}), nil},
 		{"log", reflect.TypeOf(LogConfig{}), nil},
 		{"telemetry", reflect.TypeOf(TelemetryConfig{}), nil},
-		{"live_activity", reflect.TypeOf(LiveActivityConfig{}), nil},
+		{"live_activity", reflect.TypeOf(LiveActivityConfig{}), map[string]bool{
+			"relay_url": true, "relay_api_key": true, "bundle_id": true,
+			"topic": true, "environment": true, "team_id": true,
+			"key_id": true, "private_key_path": true, "private_key_pem": true,
+			"timeout_sec": true,
+		}},
 	}
 
 	for _, s := range sections {

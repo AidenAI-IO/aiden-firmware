@@ -151,7 +151,7 @@ const size_t kAgentLogDisplaySize = 48 * 1024;
 const size_t kOtaLogReadSize = 128 * 1024;
 const size_t kOtaLogDisplaySize = 96 * 1024;
 // LLM raw HTTP logs live next to the agent config: <dirname(config)>/log.
-// Filenames are llm-http-YYYYMMDD[-session].log. The viewer streams whole
+// Filenames are llm-http-YYYYMMDDHHMMSSmmm.log. The viewer streams whole
 // files to the browser, so cap the per-file read to keep responses bounded.
 const char* kLlmLogPrefix = "llm-http-";
 const char* kLlmLogSuffix = ".log";
@@ -524,9 +524,6 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"audio_archive", "storage_path", CONFIG_FIELD_STRING},
         {"audio_archive", "max_files", CONFIG_FIELD_NUMBER},
         {"audio_archive", "max_size_mb", CONFIG_FIELD_NUMBER},
-        {"benchmark", "judge_model", CONFIG_FIELD_STRING},
-        {"benchmark", "api_key", CONFIG_FIELD_STRING},
-        {"benchmark", "benchmark_dir", CONFIG_FIELD_STRING},
         {"log", "llm_http_retention_days", CONFIG_FIELD_NUMBER},
         {"hid", "keyboard_device", CONFIG_FIELD_STRING},
         {"hid", "mouse_device", CONFIG_FIELD_STRING},
@@ -545,6 +542,21 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"telemetry", "max_retry", CONFIG_FIELD_NUMBER},
         {"telemetry", "tags", CONFIG_FIELD_ARRAY},
         {"telemetry", "environment", CONFIG_FIELD_STRING},
+        {"live_activity", "enabled", CONFIG_FIELD_BOOL},
+        {"live_activity", "relay_url", CONFIG_FIELD_STRING},
+        {"live_activity", "relay_api_key", CONFIG_FIELD_STRING},
+        {"live_activity", "has_relay_api_key", CONFIG_FIELD_BOOL},
+        {"live_activity", "board_id", CONFIG_FIELD_STRING},
+        {"live_activity", "phone_id", CONFIG_FIELD_STRING},
+        {"live_activity", "bundle_id", CONFIG_FIELD_STRING},
+        {"live_activity", "topic", CONFIG_FIELD_STRING},
+        {"live_activity", "environment", CONFIG_FIELD_STRING},
+        {"live_activity", "team_id", CONFIG_FIELD_STRING},
+        {"live_activity", "key_id", CONFIG_FIELD_STRING},
+        {"live_activity", "private_key_path", CONFIG_FIELD_STRING},
+        {"live_activity", "private_key_pem", CONFIG_FIELD_STRING},
+        {"live_activity", "has_private_key_pem", CONFIG_FIELD_BOOL},
+        {"live_activity", "timeout_sec", CONFIG_FIELD_NUMBER},
         {"agent", "custom_instruction", CONFIG_FIELD_STRING},
         {"agent", "additional_prompt", CONFIG_FIELD_STRING},
         {"agent", "input_mode", CONFIG_FIELD_STRING},
@@ -1221,7 +1233,7 @@ bool validate_agent_config_json(cJSON* root, std::string* error = NULL) {
 
     const char* sections[] = {
         "model", "model_text", "tts", "stt", "audio", "audio_archive",
-        "benchmark", "log", "hid", "search", "telemetry", "agent", NULL,
+        "log", "hid", "search", "telemetry", "live_activity", "agent", NULL,
     };
     for (int i = 0; sections[i]; ++i) {
         cJSON* section = cJSON_GetObjectItem(root, sections[i]);
@@ -1323,7 +1335,15 @@ void load_current_agent_config(const Options& options,
 }
 
 void preserve_redacted_agent_secrets(const Options& options, aiden::AgentToml* config) {
-    if (!config || !config->search.api_key.empty() || !config->search.has_api_key) {
+    if (!config) {
+        return;
+    }
+    bool need_search_api_key = config->search.api_key.empty() && config->search.has_api_key;
+    bool need_live_activity_relay_api_key =
+        config->live_activity.relay_api_key.empty() && config->live_activity.has_relay_api_key;
+    bool need_live_activity_private_key_pem =
+        config->live_activity.private_key_pem.empty() && config->live_activity.has_private_key_pem;
+    if (!need_search_api_key && !need_live_activity_relay_api_key && !need_live_activity_private_key_pem) {
         return;
     }
 
@@ -1332,9 +1352,17 @@ void preserve_redacted_agent_secrets(const Options& options, aiden::AgentToml* c
     if (!aiden::load_agent_toml(options.agent_config_path.c_str(), stored, &load_error)) {
         return;
     }
-    if (!stored.search.api_key.empty()) {
+    if (need_search_api_key && !stored.search.api_key.empty()) {
         config->search.api_key = stored.search.api_key;
         config->search.has_api_key = true;
+    }
+    if (need_live_activity_relay_api_key && !stored.live_activity.relay_api_key.empty()) {
+        config->live_activity.relay_api_key = stored.live_activity.relay_api_key;
+        config->live_activity.has_relay_api_key = true;
+    }
+    if (need_live_activity_private_key_pem && !stored.live_activity.private_key_pem.empty()) {
+        config->live_activity.private_key_pem = stored.live_activity.private_key_pem;
+        config->live_activity.has_private_key_pem = true;
     }
 }
 
@@ -1428,15 +1456,6 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddNumberToObject(audio_archive, "max_files", config.audio_archive.max_files);
     cJSON_AddNumberToObject(audio_archive, "max_size_mb", config.audio_archive.max_size_mb);
 
-    cJSON* benchmark = add_object(root, "benchmark");
-    cJSON_AddStringToObject(benchmark, "judge_model", config.benchmark.judge_model.c_str());
-    if (include_secrets) {
-        cJSON_AddStringToObject(benchmark, "api_key", config.benchmark.api_key.c_str());
-    } else {
-        cJSON_AddBoolToObject(benchmark, "has_api_key", !config.benchmark.api_key.empty());
-    }
-    cJSON_AddStringToObject(benchmark, "benchmark_dir", config.benchmark.benchmark_dir.c_str());
-
     cJSON* log_config = add_object(root, "log");
     cJSON_AddNumberToObject(log_config, "llm_http_retention_days", config.log.llm_http_retention_days);
 
@@ -1462,6 +1481,33 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddNumberToObject(telemetry, "max_retry", config.telemetry.max_retry);
     add_string_array_to_object(telemetry, "tags", config.telemetry.tags);
     cJSON_AddStringToObject(telemetry, "environment", config.telemetry.environment.c_str());
+
+    cJSON* live_activity = add_object(root, "live_activity");
+    cJSON_AddBoolToObject(live_activity, "enabled", config.live_activity.enabled ? 1 : 0);
+    cJSON_AddStringToObject(live_activity, "relay_url", config.live_activity.relay_url.c_str());
+    if (include_secrets) {
+        cJSON_AddStringToObject(live_activity, "relay_api_key", config.live_activity.relay_api_key.c_str());
+    } else {
+        cJSON_AddBoolToObject(live_activity, "has_relay_api_key",
+                              (config.live_activity.has_relay_api_key ||
+                               !config.live_activity.relay_api_key.empty()) ? 1 : 0);
+    }
+    cJSON_AddStringToObject(live_activity, "board_id", config.live_activity.board_id.c_str());
+    cJSON_AddStringToObject(live_activity, "phone_id", config.live_activity.phone_id.c_str());
+    cJSON_AddStringToObject(live_activity, "bundle_id", config.live_activity.bundle_id.c_str());
+    cJSON_AddStringToObject(live_activity, "topic", config.live_activity.topic.c_str());
+    cJSON_AddStringToObject(live_activity, "environment", config.live_activity.environment.c_str());
+    cJSON_AddStringToObject(live_activity, "team_id", config.live_activity.team_id.c_str());
+    cJSON_AddStringToObject(live_activity, "key_id", config.live_activity.key_id.c_str());
+    cJSON_AddStringToObject(live_activity, "private_key_path", config.live_activity.private_key_path.c_str());
+    if (include_secrets) {
+        cJSON_AddStringToObject(live_activity, "private_key_pem", config.live_activity.private_key_pem.c_str());
+    } else {
+        cJSON_AddBoolToObject(live_activity, "has_private_key_pem",
+                              (config.live_activity.has_private_key_pem ||
+                               !config.live_activity.private_key_pem.empty()) ? 1 : 0);
+    }
+    cJSON_AddNumberToObject(live_activity, "timeout_sec", config.live_activity.timeout_sec);
 
     cJSON* agent = add_object(root, "agent");
     cJSON_AddStringToObject(agent, "custom_instruction", config.custom_instruction.c_str());
@@ -1686,19 +1732,6 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_int(&config->audio_archive.max_size_mb, audio_archive, "max_size_mb");
     }
 
-    cJSON* benchmark = cJSON_GetObjectItem(root, "benchmark");
-    if (json_is_object(benchmark)) {
-        set_json_str(&config->benchmark.judge_model, benchmark, "judge_model");
-        cJSON* key_item = cJSON_GetObjectItem(benchmark, "api_key");
-        if (json_is_string(key_item)) {
-            std::string api_key = trim_copy(key_item->valuestring);
-            if (!api_key.empty()) {
-                config->benchmark.api_key = api_key;
-            }
-        }
-        set_json_str(&config->benchmark.benchmark_dir, benchmark, "benchmark_dir");
-    }
-
     cJSON* log_config = cJSON_GetObjectItem(root, "log");
     if (json_is_object(log_config)) {
         set_json_int(&config->log.llm_http_retention_days, log_config, "llm_http_retention_days");
@@ -1735,6 +1768,39 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_int(&config->telemetry.max_retry, telemetry, "max_retry");
         set_json_string_vector(&config->telemetry.tags, telemetry, "tags");
         set_json_str(&config->telemetry.environment, telemetry, "environment");
+    }
+
+    cJSON* live_activity = cJSON_GetObjectItem(root, "live_activity");
+    if (json_is_object(live_activity)) {
+        set_json_bool(&config->live_activity.enabled, live_activity, "enabled");
+        set_json_str(&config->live_activity.relay_url, live_activity, "relay_url");
+        set_json_bool(&config->live_activity.has_relay_api_key, live_activity, "has_relay_api_key");
+        cJSON* relay_key_item = cJSON_GetObjectItem(live_activity, "relay_api_key");
+        if (json_is_string(relay_key_item)) {
+            std::string relay_api_key = trim_copy(relay_key_item->valuestring);
+            if (!relay_api_key.empty()) {
+                config->live_activity.relay_api_key = relay_api_key;
+                config->live_activity.has_relay_api_key = true;
+            }
+        }
+        set_json_str(&config->live_activity.board_id, live_activity, "board_id");
+        set_json_str(&config->live_activity.phone_id, live_activity, "phone_id");
+        set_json_str(&config->live_activity.bundle_id, live_activity, "bundle_id");
+        set_json_str(&config->live_activity.topic, live_activity, "topic");
+        set_json_str(&config->live_activity.environment, live_activity, "environment");
+        set_json_str(&config->live_activity.team_id, live_activity, "team_id");
+        set_json_str(&config->live_activity.key_id, live_activity, "key_id");
+        set_json_str(&config->live_activity.private_key_path, live_activity, "private_key_path");
+        set_json_bool(&config->live_activity.has_private_key_pem, live_activity, "has_private_key_pem");
+        cJSON* private_key_item = cJSON_GetObjectItem(live_activity, "private_key_pem");
+        if (json_is_string(private_key_item)) {
+            std::string private_key_pem = private_key_item->valuestring;
+            if (!trim_copy(private_key_pem).empty()) {
+                config->live_activity.private_key_pem = private_key_pem;
+                config->live_activity.has_private_key_pem = true;
+            }
+        }
+        set_json_int(&config->live_activity.timeout_sec, live_activity, "timeout_sec");
     }
 
     cJSON* agent = cJSON_GetObjectItem(root, "agent");
@@ -3270,8 +3336,8 @@ ApiResponse handle_get_llm_logs(const Options& options) {
     const std::string dir_path = llm_log_dir(options);
     DIR* dir = opendir(dir_path.c_str());
     if (dir) {
-        // Collect matching names, then sort descending so the newest day /
-        // session (which sorts last by the YYYYMMDD-keyed name) shows first.
+        // Collect matching names, then sort descending so the newest session
+        // (which sorts last by the YYYYMMDDHHMMSSmmm-keyed name) shows first.
         std::vector<std::string> names;
         struct dirent* entry = NULL;
         while ((entry = readdir(dir)) != NULL) {
@@ -3774,7 +3840,8 @@ static bool is_tencent_asr_provider(const std::string& provider) {
 std::string provider_default_url(const std::string& provider) {
     if (provider == "openrouter") return "https://openrouter.ai/api/v1";
     if (provider == "openai" || provider == "openai-whisper") return "https://api.openai.com/v1";
-    if (provider == "minimax" || provider == "minimax-ws") return "https://api.minimax.chat";
+    if (provider == "minimax") return "https://api.minimax.io";
+    if (provider == "minimax-cn" || provider == "minimax-ws") return "https://api.minimaxi.com";
     if (is_tencent_asr_provider(provider)) return "https://asr.tencentcloudapi.com";
     return "";
 }
@@ -3997,6 +4064,76 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
             }
             cJSON_AddItemToArray(results, r3);
         }
+
+        if (section == "tts") {
+            if (!api_key_present) {
+                cJSON* r3 = cJSON_CreateObject();
+                cJSON_AddStringToObject(r3, "check", "tts_playback");
+                cJSON_AddBoolToObject(r3, "passed", 0);
+                cJSON_AddStringToObject(r3, "detail", "skipped because api_key is empty");
+                cJSON_AddItemToArray(results, r3);
+                all_passed = false;
+            } else {
+                cJSON* req = cJSON_CreateObject();
+                cJSON_AddStringToObject(req, "section", "tts");
+                cJSON_AddStringToObject(req, "text", "test passed");
+                cJSON_AddItemToObject(req, "values", cJSON_Duplicate(values, 1));
+                std::string req_body = cjson_to_string(req);
+                cJSON_Delete(req);
+
+                std::string cmd = shell_quote(agent_bin_path()) +
+                                  " config-test --format=json --stdin --section=tts --config=" +
+                                  shell_quote(options.agent_config_path) + " 2>&1";
+                CommandResult cr = run_command_with_stdin(cmd, req_body, 60000);
+
+                bool appended_cli_result = false;
+                bool cli_passed = cr.exit_code == 0 && !cr.timed_out;
+                cJSON* cli_root = cJSON_Parse(cr.output.c_str());
+                if (cli_root) {
+                    cJSON* ok_item = cJSON_GetObjectItem(cli_root, "ok");
+                    if (!json_is_type(ok_item, cJSON_True)) {
+                        cli_passed = false;
+                    }
+                    cJSON* cli_results = cJSON_GetObjectItem(cli_root, "results");
+                    if (json_is_array(cli_results)) {
+                        int result_count = cJSON_GetArraySize(cli_results);
+                        for (int i = 0; i < result_count; ++i) {
+                            cJSON* item = cJSON_GetArrayItem(cli_results, i);
+                            cJSON* passed_item = cJSON_GetObjectItem(item, "passed");
+                            if (!json_is_type(passed_item, cJSON_True)) {
+                                cli_passed = false;
+                            }
+                            cJSON_AddItemToArray(results, cJSON_Duplicate(item, 1));
+                            appended_cli_result = true;
+                        }
+                    }
+                    cJSON_Delete(cli_root);
+                }
+
+                if (!appended_cli_result) {
+                    cJSON* r3 = cJSON_CreateObject();
+                    cJSON_AddStringToObject(r3, "check", "tts_playback");
+                    cJSON_AddBoolToObject(r3, "passed", 0);
+                    std::string detail;
+                    if (cr.timed_out) {
+                        detail = "agent config-test timed out";
+                    } else if (cr.output.empty()) {
+                        detail = "agent config-test returned exit code " + std::to_string(cr.exit_code);
+                    } else {
+                        detail = trim_trailing_newlines(cr.output);
+                        if (detail.size() > 400) {
+                            detail = detail.substr(0, 400) + "...";
+                        }
+                    }
+                    cJSON_AddStringToObject(r3, "detail", detail.c_str());
+                    cJSON_AddItemToArray(results, r3);
+                    cli_passed = false;
+                }
+                if (!cli_passed) {
+                    all_passed = false;
+                }
+            }
+        }
     } else if (section == "audio") {
         cJSON* socket_item = cJSON_GetObjectItem(values, "socket");
         std::string socket_path = json_is_string(socket_item) ? trim_copy(socket_item->valuestring) : "";
@@ -4016,32 +4153,6 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
             if (!exists) all_passed = false;
         }
         cJSON_AddItemToArray(results, r);
-    } else if (section == "benchmark") {
-        cJSON* judge_item = cJSON_GetObjectItem(values, "judge_model");
-        std::string judge_model = json_is_string(judge_item) ? trim_copy(judge_item->valuestring) : "";
-        cJSON* judge_r = cJSON_CreateObject();
-        cJSON_AddStringToObject(judge_r, "check", "judge_model");
-        cJSON_AddBoolToObject(judge_r, "passed", 1);
-        cJSON_AddStringToObject(judge_r, "detail", judge_model.empty() ? "empty; defaults to bytedance-seed/seed-2.0-lite" : judge_model.c_str());
-        cJSON_AddItemToArray(results, judge_r);
-
-        cJSON* dir_item = cJSON_GetObjectItem(values, "benchmark_dir");
-        std::string benchmark_dir = json_is_string(dir_item) ? trim_copy(dir_item->valuestring) : "";
-        cJSON* dir_r = cJSON_CreateObject();
-        cJSON_AddStringToObject(dir_r, "check", "benchmark_dir");
-        if (benchmark_dir.empty()) {
-            cJSON_AddBoolToObject(dir_r, "passed", 1);
-            cJSON_AddStringToObject(dir_r, "detail", "empty; agent will auto-detect benchmark root");
-        } else {
-            std::string cmd = "test -d " + shell_quote(benchmark_dir) + " && echo OK || echo MISSING";
-            CommandResult cr = run_shell_command(cmd);
-            bool exists = cr.output.find("OK") != std::string::npos;
-            cJSON_AddBoolToObject(dir_r, "passed", exists ? 1 : 0);
-            std::string detail = benchmark_dir + (exists ? " exists" : " not found");
-            cJSON_AddStringToObject(dir_r, "detail", detail.c_str());
-            if (!exists) all_passed = false;
-        }
-        cJSON_AddItemToArray(results, dir_r);
     } else if (section == "log") {
         cJSON* retention_item = cJSON_GetObjectItem(values, "llm_http_retention_days");
         cJSON* r = cJSON_CreateObject();

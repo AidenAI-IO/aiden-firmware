@@ -22,9 +22,9 @@ var defaultAppMappingJSON []byte
 // configDir, and the bundled file shipped with the firmware.
 const AppMappingFileName = "app_mapping.json"
 
-// BundledAppMappingPath is the on-device install path, populated by
+// BundledAppMappingPath is the on-device OEM install path, populated by
 // _build_image.sh from src/agent/internal/agent/app_mapping.json.
-const BundledAppMappingPath = "/usr/share/aiden/" + AppMappingFileName
+const BundledAppMappingPath = "/oem/usr/share/aiden/" + AppMappingFileName
 
 type appMappingEntry struct {
 	IOSURLs         []string `json:"ios_urls"`
@@ -112,11 +112,12 @@ func loadAppMappingForConfig(configDir string, logger *Logger) {
 }
 
 type OpenAppTool struct {
-	bridge *PhoneBridge
+	bridge   *PhoneBridge
+	restorer *PhoneBridgeRestorer
 }
 
-func NewOpenAppTool(bridge *PhoneBridge) *OpenAppTool {
-	return &OpenAppTool{bridge: bridge}
+func NewOpenAppTool(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) *OpenAppTool {
+	return &OpenAppTool{bridge: bridge, restorer: restorer}
 }
 
 func (t *OpenAppTool) Name() string { return "open_app" }
@@ -124,6 +125,7 @@ func (t *OpenAppTool) Name() string { return "open_app" }
 func (t *OpenAppTool) Description() string {
 	return `Open an app or dial a phone number on the connected phone via the phone bridge. ` +
 		`Use this instead of manually finding and tapping app icons when the phone bridge is connected. ` +
+		`If the Aiden companion app is backgrounded on iOS and the Dynamic Island entry is visible, reopen Aiden from that entry first, then use this tool before searching the home screen. ` +
 		`Input JSON: {"app":"WeChat"}, {"app":"browser"}, {"url":"https://example.com"}, {"app":"https://example.com"}, or {"ios_urls":["weixin://"],"android_packages":["com.tencent.mm"]}. ` +
 		`If this tool returns {"ok":true}, the app launch request is complete; answer the user immediately unless they asked for additional actions inside that app. ` +
 		`To dial a phone number, use: {"app":"phone","phone_number":"10086"} or just {"phone_number":"10086"}. ` +
@@ -132,7 +134,7 @@ func (t *OpenAppTool) Description() string {
 		`Camera(相机), Photos(相册), Maps(地图), Notes(备忘录), Calendar(日历), Reminders(提醒事项), ` +
 		`Contacts(通讯录), Mail(邮件), AppStore(应用商店), Music(音乐), Files(文件), Clock(时钟), Health(健康), ` +
 		`Taobao(淘宝), Douyin(抖音), Meituan(美团), Didi(滴滴), Xiaohongshu(小红书), Bilibili(哔哩哔哩), JD(京东), Eleme(饿了么). ` +
-		`If the phone bridge is not connected, this tool will fail and you should fall back to HID actions.`
+		`On iOS, if Aiden is in background and a Dynamic Island return entry is available, this tool restores Aiden to foreground and waits for WebSocket reconnect before opening the target.`
 }
 
 func (t *OpenAppTool) ArgsSchema() map[string]any {
@@ -378,14 +380,6 @@ func openAppResultMechanism(args openAppArgs, responseMethod string) string {
 }
 
 func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
-	if !t.bridge.Connected() {
-		return jsonString(map[string]interface{}{
-			"ok":       false,
-			"error":    "phone bridge not connected",
-			"fallback": "Use HID actions (find app icon on screen and tap it)",
-		}), nil
-	}
-
 	var args openAppArgs
 	trimmed := strings.TrimSpace(input)
 	if strings.HasPrefix(trimmed, "{") {
@@ -403,6 +397,15 @@ func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 		}), nil
 	}
 
+	restored, err := ensurePhoneBridgeReadyForCommand(ctx, t.bridge, t.restorer)
+	if err != nil {
+		return jsonString(map[string]interface{}{
+			"ok":       false,
+			"error":    err.Error(),
+			"fallback": "If a Dynamic Island entry is visible, tap it to reopen Aiden, wait for Phone Bridge to reconnect, then retry; otherwise use HID actions.",
+		}), nil
+	}
+
 	cmdID := fmt.Sprintf("open_%d_%d", time.Now().UnixMilli(), openAppCmdSeq.Add(1))
 	cmd := BridgeCommand{
 		ID:              cmdID,
@@ -414,16 +417,23 @@ func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 
 	resp, err := t.bridge.SendCommand(ctx, cmd)
 	if err != nil {
+		status := PhoneBridgeStatus{}
+		if t.bridge != nil {
+			status = t.bridge.Status()
+		}
 		return jsonString(map[string]interface{}{
 			"ok":       false,
 			"error":    err.Error(),
-			"fallback": "Use HID actions (find app icon on screen and tap it)",
+			"fallback": phoneBridgeRecoveryGuidance(status),
 		}), nil
 	}
 
 	result := map[string]interface{}{
 		"ok":     resp.OK,
 		"method": openAppResultMethod(args),
+	}
+	if restored {
+		result["restored_from_return_entry"] = true
 	}
 	if target := openAppResultTarget(args); target != "" {
 		result["target"] = target
@@ -433,7 +443,11 @@ func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 	}
 	if !resp.OK {
 		result["error"] = resp.Error
-		result["fallback"] = "Use HID actions (find app icon on screen and tap it)"
+		status := PhoneBridgeStatus{}
+		if t.bridge != nil {
+			status = t.bridge.Status()
+		}
+		result["fallback"] = phoneBridgeRecoveryGuidance(status)
 	}
 	return jsonString(result), nil
 }
@@ -446,14 +460,15 @@ func (s *ToolSet) RegisterPhoneBridge(bridge *PhoneBridge) {
 	if status := bridge.Status(); status.Environment != nil {
 		env := clonePhoneEnvironment(*status.Environment)
 		s.UpdateDeviceEnvironment(&env)
-	} else {
-		s.UpdateDeviceEnvironment(nil)
 	}
-	s.tools["open_app"] = NewOpenAppTool(bridge)
-	s.tools["clipboard"] = NewClipboardTool(bridge)
-	s.tools["calendar"] = NewCalendarTool(bridge)
-	s.tools["contacts"] = NewContactsTool(bridge)
-	s.tools["notification"] = NewNotificationTool(bridge)
+	if s.phoneBridgeRestorer != nil {
+		s.phoneBridgeRestorer.SetBridge(bridge)
+	}
+	s.tools["open_app"] = NewOpenAppTool(bridge, s.phoneBridgeRestorer)
+	s.tools["clipboard"] = NewClipboardTool(bridge, s.phoneBridgeRestorer)
+	s.tools["calendar"] = NewCalendarTool(bridge, s.phoneBridgeRestorer)
+	s.tools["contacts"] = NewContactsTool(bridge, s.phoneBridgeRestorer)
+	s.tools["notification"] = NewNotificationTool(bridge, s.phoneBridgeRestorer)
 }
 
 func isPhoneBridgeToolName(name string) bool {

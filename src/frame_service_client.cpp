@@ -86,6 +86,12 @@ static void parse_frame_metadata(cJSON* frame_json, FrameMetadata* metadata) {
     metadata->capture_ts_ns = json_u64(frame_json, "capture_ts_ns");
     metadata->width = json_u32(frame_json, "width");
     metadata->height = json_u32(frame_json, "height");
+    metadata->source_width = json_u32(frame_json, "source_width");
+    metadata->source_height = json_u32(frame_json, "source_height");
+    metadata->crop_x = json_u32(frame_json, "crop_x");
+    metadata->crop_y = json_u32(frame_json, "crop_y");
+    metadata->crop_width = json_u32(frame_json, "crop_width");
+    metadata->crop_height = json_u32(frame_json, "crop_height");
     metadata->pixel_format = json_string(frame_json, "pixel_format");
     metadata->stride = json_u32(frame_json, "stride");
     metadata->bytes = json_u64(frame_json, "bytes");

@@ -128,7 +128,7 @@ func TestRolePromptsIncludeGlobalEnvironmentAndDeviceGuidance(t *testing.T) {
 		}
 
 		if strings.Contains(profile.SystemPrompt, "Use long-term memory if relevant") {
-			t.Fatalf("%s system prompt should not contain benchmark-specific memory trigger:\n%s", profile.Name, profile.SystemPrompt)
+			t.Fatalf("%s system prompt should not contain legacy memory trigger:\n%s", profile.Name, profile.SystemPrompt)
 		}
 	}
 }
@@ -297,6 +297,34 @@ func TestPhoneBridgeRuntimeContextConnected(t *testing.T) {
 	}
 }
 
+func TestPhoneBridgeRuntimeContextBackgroundAppGuidesDynamicIslandRecovery(t *testing.T) {
+	lastHeartbeat := time.Date(2026, 6, 1, 2, 3, 4, 0, time.UTC)
+	got := phoneBridgeRuntimeContext(PhoneBridgeStatus{
+		Connected:            true,
+		Platform:             "ios",
+		LastHeartbeatAt:      &lastHeartbeat,
+		AppState:             "background",
+		ReturnEntry:          "dynamic_island",
+		ReturnEntryAvailable: testBoolPtr(true),
+	})
+
+	for _, want := range []string{
+		"- app_state: background",
+		"- return_entry: dynamic_island available=true",
+		"The Aiden companion app is backgrounded or inactive",
+		"will first tap the Aiden Dynamic Island entry",
+		"then send the command",
+		"For lock-screen Live Activity entries, use screenshot/HID fallback",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("runtime context missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "Use open_app as the primary path") {
+		t.Fatalf("backgrounded app context should not present direct open_app as immediately available:\n%s", got)
+	}
+}
+
 func TestPhoneBridgeRuntimeContextIncludesPhoneEnvironment(t *testing.T) {
 	lastHeartbeat := time.Date(2026, 6, 1, 2, 3, 4, 0, time.UTC)
 	environmentUpdatedAt := time.Date(2026, 6, 1, 2, 3, 5, 0, time.UTC)
@@ -357,6 +385,30 @@ func TestPhoneBridgeRuntimeContextDisconnected(t *testing.T) {
 	got := phoneBridgeRuntimeContext(PhoneBridgeStatus{})
 	if got != "" {
 		t.Fatalf("disconnected phone bridge should not add runtime context, got:\n%s", got)
+	}
+}
+
+func TestPhoneBridgeRuntimeContextDisconnectedBackgroundAppGuidesRecovery(t *testing.T) {
+	got := phoneBridgeRuntimeContext(PhoneBridgeStatus{
+		Connected:            false,
+		Platform:             "ios",
+		AppState:             "background",
+		ReturnEntry:          "live_activity",
+		ReturnEntryAvailable: testBoolPtr(true),
+	})
+
+	for _, want := range []string{
+		"- connected: false",
+		"- platform: ios",
+		"- app_state: background",
+		"- return_entry: live_activity available=true",
+		"Phone Bridge commands may time out until Aiden returns to foreground",
+		"return_entry=dynamic_island",
+		"For lock-screen Live Activity entries, use screenshot/HID fallback",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("runtime context missing %q:\n%s", want, got)
+		}
 	}
 }
 

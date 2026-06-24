@@ -31,7 +31,6 @@ func TestConfigCheck_WireFormatContract(t *testing.T) {
 	t.Run("minimal valid config passes", func(t *testing.T) {
 		payload := `{
 			"model":{"provider":"openai","model":"gpt-4"},
-			"benchmark":{"api_key":"sk-judge"},
 			"search":{"provider":"duckduckgo"},
 			"agent":{},
 			"hid":{"pointer_mode":"absolute"}
@@ -160,7 +159,6 @@ func TestConfigCheck_WireCustomInstructionMapsToAgentConfig(t *testing.T) {
 // against the nested "telemetry" wire object.
 func TestConfigCheck_WireTelemetryNested(t *testing.T) {
 	payload := `{"model":{"provider":"openai","model":"gpt-4"},
-		"benchmark":{"api_key":"sk-judge"},
 		"search":{"provider":"duckduckgo"},
 		"telemetry":{"enabled":true},"agent":{}}`
 	result := checkWire(t, payload)
@@ -170,6 +168,39 @@ func TestConfigCheck_WireTelemetryNested(t *testing.T) {
 	if !strings.Contains(result.Errors[0].Field, "telemetry") {
 		t.Errorf("expected telemetry field, got %q", result.Errors[0].Field)
 	}
+}
+
+// TestConfigCheck_WireLiveActivityNested verifies live_activity validation runs
+// against the nested wire object used by config_web.
+func TestConfigCheck_WireLiveActivityNested(t *testing.T) {
+	t.Run("valid relay config passes", func(t *testing.T) {
+		payload := `{"model":{"provider":"openai","model":"gpt-4"},
+			"benchmark":{"api_key":"sk-judge"},
+			"search":{"provider":"duckduckgo"},
+			"live_activity":{"enabled":true,"relay_url":"https://relay.example.com",
+				"has_relay_api_key":true,"board_id":"board-001","phone_id":"phone-001",
+				"environment":"production","timeout_sec":10},"agent":{}}`
+		result := checkWire(t, payload)
+		if !result.Valid {
+			t.Fatalf("expected valid=true, got errors: %+v", result.Errors)
+		}
+	})
+
+	t.Run("invalid relay_url fails", func(t *testing.T) {
+		payload := `{"model":{"provider":"openai","model":"gpt-4"},
+			"benchmark":{"api_key":"sk-judge"},
+			"search":{"provider":"duckduckgo"},
+			"live_activity":{"enabled":true,"relay_url":"://bad"},"agent":{}}`
+		result := checkWire(t, payload)
+		if result.Valid {
+			t.Fatal("expected valid=false for invalid live_activity.relay_url")
+		}
+		joined := result.Errors[0].Field + " " + result.Errors[0].Message
+		if !strings.Contains(joined, "live_activity.relay_url") {
+			t.Errorf("expected live_activity.relay_url error, got field=%q message=%q",
+				result.Errors[0].Field, result.Errors[0].Message)
+		}
+	})
 }
 
 // TestConfigCheck_InvalidJSON ensures malformed input is reported as a decode

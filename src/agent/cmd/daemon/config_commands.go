@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"aiden-agent/internal/agent"
 )
@@ -23,6 +25,17 @@ type ValidationResult struct {
 	Errors []ValidationError `json:"errors"`
 }
 
+type ConfigTestResult struct {
+	OK      bool              `json:"ok"`
+	Results []ConfigTestCheck `json:"results"`
+}
+
+type ConfigTestCheck struct {
+	Check  string `json:"check"`
+	Passed bool   `json:"passed"`
+	Detail string `json:"detail"`
+}
+
 // webConfigDTO mirrors the JSON produced by config_web.cpp's config_to_json().
 // It is the single definition of the config_web <-> agent wire contract: keys
 // are snake_case, agent-level settings live under "agent", and search reports
@@ -37,11 +50,11 @@ type webConfigDTO struct {
 	STT          sttDTO          `json:"stt"`
 	Audio        audioDTO        `json:"audio"`
 	AudioArchive audioArchiveDTO `json:"audio_archive"`
-	Benchmark    benchmarkDTO    `json:"benchmark"`
 	Log          logDTO          `json:"log"`
 	HID          hidDTO          `json:"hid"`
 	Search       searchDTO       `json:"search"`
 	Telemetry    telemetryDTO    `json:"telemetry"`
+	LiveActivity liveActivityDTO `json:"live_activity"`
 	Agent        agentDTO        `json:"agent"`
 }
 
@@ -64,6 +77,18 @@ type ttsDTO struct {
 	VoiceID  string  `json:"voice_id"`
 	Emotion  string  `json:"emotion"`
 	Speed    float64 `json:"speed"`
+}
+
+func (d ttsDTO) playbackTestRequest(text string) agent.TTSPlaybackTestRequest {
+	return agent.TTSPlaybackTestRequest{
+		Provider: d.Provider,
+		APIKey:   d.APIKey,
+		Model:    d.Model,
+		VoiceID:  d.VoiceID,
+		Emotion:  d.Emotion,
+		Speed:    d.Speed,
+		Text:     text,
+	}
 }
 
 type sttDTO struct {
@@ -89,12 +114,6 @@ type audioArchiveDTO struct {
 	MaxFiles    int    `json:"max_files"`
 	MaxSizeMB   int    `json:"max_size_mb"`
 	StoragePath string `json:"storage_path"`
-}
-
-type benchmarkDTO struct {
-	JudgeModel   string `json:"judge_model"`
-	APIKey       string `json:"api_key"`
-	BenchmarkDir string `json:"benchmark_dir"`
 }
 
 type logDTO struct {
@@ -125,6 +144,24 @@ type telemetryDTO struct {
 	MaxRetry          int      `json:"max_retry"`
 	Tags              []string `json:"tags"`
 	Environment       string   `json:"environment"`
+}
+
+type liveActivityDTO struct {
+	Enabled          *bool  `json:"enabled"`
+	RelayURL         string `json:"relay_url"`
+	RelayAPIKey      string `json:"relay_api_key,omitempty"`
+	HasRelayAPIKey   bool   `json:"has_relay_api_key"`
+	BoardID          string `json:"board_id"`
+	PhoneID          string `json:"phone_id"`
+	BundleID         string `json:"bundle_id"`
+	Topic            string `json:"topic"`
+	Environment      string `json:"environment"`
+	TeamID           string `json:"team_id"`
+	KeyID            string `json:"key_id"`
+	PrivateKeyPath   string `json:"private_key_path"`
+	PrivateKeyPEM    string `json:"private_key_pem,omitempty"`
+	HasPrivateKeyPEM bool   `json:"has_private_key_pem"`
+	TimeoutSec       int    `json:"timeout_sec"`
 }
 
 type agentDTO struct {
@@ -171,6 +208,14 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 		searchKey = d.Search.APIKey
 	} else if d.Search.HasAPIKey {
 		searchKey = hasAPIKeyPlaceholder
+	}
+	liveActivityRelayAPIKey := d.LiveActivity.RelayAPIKey
+	if strings.TrimSpace(liveActivityRelayAPIKey) == "" && d.LiveActivity.HasRelayAPIKey {
+		liveActivityRelayAPIKey = hasAPIKeyPlaceholder
+	}
+	liveActivityPrivateKeyPEM := d.LiveActivity.PrivateKeyPEM
+	if strings.TrimSpace(liveActivityPrivateKeyPEM) == "" && d.LiveActivity.HasPrivateKeyPEM {
+		liveActivityPrivateKeyPEM = hasAPIKeyPlaceholder
 	}
 
 	return agent.Config{
@@ -226,11 +271,6 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			MaxSizeMB:   d.AudioArchive.MaxSizeMB,
 			StoragePath: d.AudioArchive.StoragePath,
 		},
-		Benchmark: agent.BenchmarkConfig{
-			JudgeModel: d.Benchmark.JudgeModel,
-			APIKey:     d.Benchmark.APIKey,
-			Dir:        d.Benchmark.BenchmarkDir,
-		},
 		Log: agent.LogConfig{
 			LLMHTTPRetentionDays: d.Log.LLMHTTPRetentionDays,
 		},
@@ -255,6 +295,21 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			MaxRetry:          d.Telemetry.MaxRetry,
 			Tags:              d.Telemetry.Tags,
 			Environment:       d.Telemetry.Environment,
+		},
+		LiveActivity: agent.LiveActivityConfig{
+			Enabled:        d.LiveActivity.Enabled,
+			RelayURL:       d.LiveActivity.RelayURL,
+			RelayAPIKey:    liveActivityRelayAPIKey,
+			BoardID:        d.LiveActivity.BoardID,
+			PhoneID:        d.LiveActivity.PhoneID,
+			BundleID:       d.LiveActivity.BundleID,
+			Topic:          d.LiveActivity.Topic,
+			Environment:    d.LiveActivity.Environment,
+			TeamID:         d.LiveActivity.TeamID,
+			KeyID:          d.LiveActivity.KeyID,
+			PrivateKeyPath: d.LiveActivity.PrivateKeyPath,
+			PrivateKeyPEM:  liveActivityPrivateKeyPEM,
+			TimeoutSec:     d.LiveActivity.TimeoutSec,
 		},
 		Instruction:                d.Agent.CustomInstruction,
 		AdditionalPrompt:           d.Agent.AdditionalPrompt,
@@ -345,11 +400,6 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			MaxSizeMB:   audioArchive.MaxSizeMBOrDefault(),
 			StoragePath: audioArchive.StoragePathOrDefault(),
 		},
-		Benchmark: benchmarkDTO{
-			JudgeModel:   cfg.Benchmark.JudgeModel,
-			APIKey:       cfg.Benchmark.APIKey,
-			BenchmarkDir: cfg.Benchmark.Dir,
-		},
 		Log: logDTO{
 			LLMHTTPRetentionDays: cfg.Log.LLMHTTPRetentionDaysOrDefault(),
 		},
@@ -374,6 +424,21 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			MaxRetry:          cfg.Telemetry.MaxRetryOrDefault(),
 			Tags:              cfg.Telemetry.Tags,
 			Environment:       cfg.Telemetry.EnvironmentOrDefault(),
+		},
+		LiveActivity: liveActivityDTO{
+			Enabled:          boolPtr(cfg.LiveActivity.EnabledOrDefault()),
+			RelayURL:         cfg.LiveActivity.RelayURL,
+			HasRelayAPIKey:   strings.TrimSpace(cfg.LiveActivity.RelayAPIKey) != "",
+			BoardID:          cfg.LiveActivity.BoardIDOrDefault(),
+			PhoneID:          cfg.LiveActivity.PhoneID,
+			BundleID:         cfg.LiveActivity.BundleID,
+			Topic:            cfg.LiveActivity.Topic,
+			Environment:      cfg.LiveActivity.EnvironmentOrDefault(),
+			TeamID:           cfg.LiveActivity.TeamID,
+			KeyID:            cfg.LiveActivity.KeyID,
+			PrivateKeyPath:   cfg.LiveActivity.PrivateKeyPath,
+			HasPrivateKeyPEM: strings.TrimSpace(cfg.LiveActivity.PrivateKeyPEM) != "",
+			TimeoutSec:       int(cfg.LiveActivity.TimeoutOrDefault().Seconds()),
 		},
 		Agent: agentDTO{
 			CustomInstruction:          customInstructionValue(cfg.Instruction),
@@ -560,6 +625,98 @@ func runConfig(args []string) int {
 	return 0
 }
 
+type configTestInput struct {
+	Section string          `json:"section"`
+	Values  json.RawMessage `json:"values"`
+	Text    string          `json:"text"`
+}
+
+// runConfigTest implements `agent config-test` for checks that need agent
+// runtime code instead of config_web's lightweight shell probes.
+func runConfigTest(args []string) int {
+	fs := flag.NewFlagSet("config-test", flag.ExitOnError)
+	formatFlag := fs.String("format", "json", "output format (only json supported)")
+	stdinFlag := fs.Bool("stdin", false, "read test request from stdin")
+	sectionFlag := fs.String("section", "", "config section to test")
+	configFlag := fs.String("config", "", "path to agent.toml or config directory")
+	timeoutFlag := fs.Duration("timeout", 45*time.Second, "test timeout")
+
+	if err := fs.Parse(args); err != nil {
+		writeConfigTestResult(configTestFailure("request", "failed to parse flags: "+err.Error()))
+		return 1
+	}
+	if *formatFlag != "json" {
+		writeConfigTestResult(configTestFailure("request", "only --format=json is supported"))
+		return 1
+	}
+	if !*stdinFlag {
+		writeConfigTestResult(configTestFailure("request", "--stdin flag is required"))
+		return 1
+	}
+	if strings.TrimSpace(*configFlag) == "" {
+		writeConfigTestResult(configTestFailure("request", "--config is required"))
+		return 1
+	}
+
+	var input configTestInput
+	if err := json.NewDecoder(os.Stdin).Decode(&input); err != nil {
+		writeConfigTestResult(configTestFailure("request", "invalid JSON input: "+err.Error()))
+		return 1
+	}
+	section := strings.TrimSpace(input.Section)
+	if section == "" {
+		section = strings.TrimSpace(*sectionFlag)
+	}
+	if section != "tts" {
+		writeConfigTestResult(configTestFailure("request", "unsupported section: "+section))
+		return 1
+	}
+
+	cfg, err := agent.LoadResolvedConfig(*configFlag)
+	if err != nil {
+		writeConfigTestResult(configTestFailure("load_config", err.Error()))
+		return 1
+	}
+
+	var ttsValues ttsDTO
+	if len(input.Values) == 0 || string(input.Values) == "null" {
+		writeConfigTestResult(configTestFailure("request", "missing values object"))
+		return 1
+	}
+	if err := json.Unmarshal(input.Values, &ttsValues); err != nil {
+		writeConfigTestResult(configTestFailure("request", "invalid tts values: "+err.Error()))
+		return 1
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), *timeoutFlag)
+	defer cancel()
+	playback, err := agent.RunTTSPlaybackTest(ctx, cfg, ttsValues.playbackTestRequest(input.Text))
+	if err != nil {
+		writeConfigTestResult(configTestFailure("tts_playback", err.Error()))
+		return 1
+	}
+	writeConfigTestResult(ConfigTestResult{
+		OK: true,
+		Results: []ConfigTestCheck{{
+			Check:  "tts_playback",
+			Passed: true,
+			Detail: fmt.Sprintf("played %q with %s", playback.Text, playback.Provider),
+		}},
+	})
+	return 0
+}
+
+func configTestFailure(check, detail string) ConfigTestResult {
+	return ConfigTestResult{
+		OK: false,
+		Results: []ConfigTestCheck{{
+			Check:  check,
+			Passed: false,
+			Detail: detail,
+		}},
+	}
+}
+
 // parseValidationErrors converts a validation error into structured field errors
 // The Config.Validate() returns simple error strings, we parse them to extract field names
 func parseValidationErrors(err error) []ValidationError {
@@ -649,6 +806,14 @@ func parseValidationErrors(err error) []ValidationError {
 		field = "telemetry.max_retry"
 	} else if strings.Contains(errMsg, "log.llm_http_retention_days") {
 		field = "log.llm_http_retention_days"
+	} else if strings.Contains(errMsg, "live_activity.relay_url") {
+		field = "live_activity.relay_url"
+	} else if strings.Contains(errMsg, "live_activity.environment") {
+		field = "live_activity.environment"
+	} else if strings.Contains(errMsg, "live_activity.timeout_sec") {
+		field = "live_activity.timeout_sec"
+	} else if strings.Contains(errMsg, "live_activity.bundle_id") || strings.Contains(errMsg, "live_activity.topic") {
+		field = "live_activity.bundle_id"
 	}
 
 	errors = append(errors, ValidationError{
@@ -672,4 +837,10 @@ func writeConfigCheckError(message string) {
 	}
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.Encode(result)
+}
+
+func writeConfigTestResult(result ConfigTestResult) {
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	_ = encoder.Encode(result)
 }

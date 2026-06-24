@@ -460,7 +460,7 @@ func (t *EnterTextViaBridgeTool) writeClipboard(ctx context.Context, bridge *Pho
 	if t != nil && t.clipboardWriteFn != nil {
 		return t.clipboardWriteFn(ctx, bridge, text)
 	}
-	clipboard := NewClipboardTool(bridge)
+	clipboard := NewClipboardTool(bridge, nil)
 	clipOut, clipErr := clipboard.Call(ctx, jsonString(map[string]any{"action": "write", "text": text}))
 	if clipErr != nil {
 		return clipErr

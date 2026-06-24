@@ -97,7 +97,7 @@ func TestHandleTTSSettingsPostInitializesManagerWhenAbsent(t *testing.T) {
 	)
 	server := &Server{runtime: runtime}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/settings/tts", bytes.NewBufferString(`{"provider":"minimax-ws","api_key":"test-key"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/tts", bytes.NewBufferString(`{"provider":"minimax-cn","api_key":"test-key"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
@@ -106,8 +106,8 @@ func TestHandleTTSSettingsPostInitializesManagerWhenAbsent(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
 	}
-	if server.ttsManager == nil || server.ttsManager.Current() != "minimax-ws" {
-		t.Fatalf("manager = %#v, want initialized minimax-ws manager", server.ttsManager)
+	if server.ttsManager == nil || server.ttsManager.Current() != "minimax-cn" {
+		t.Fatalf("manager = %#v, want initialized minimax-cn manager", server.ttsManager)
 	}
 }
 
@@ -162,27 +162,31 @@ func TestTTSProviderAliasesAreNotRegistered(t *testing.T) {
 	}
 }
 
-func TestMinimaxHTTPProviderIsNotRegistered(t *testing.T) {
-	_, err := ttsmodule.New(ttsmodule.ProviderConfig{Provider: "minimax", APIKey: "test-key"})
-	if err == nil {
-		t.Fatal("tts.New(minimax) succeeded, want unsupported provider")
-	}
-	if containsProviderName(ttsmodule.AvailableProviders(), "minimax") {
-		t.Fatalf("AvailableProviders() includes minimax: %#v", ttsmodule.AvailableProviders())
+func TestMinimaxTTSProvidersAreRegistered(t *testing.T) {
+	for _, name := range []string{"minimax", "minimax-cn"} {
+		t.Run(name, func(t *testing.T) {
+			provider, err := ttsmodule.New(ttsmodule.ProviderConfig{Provider: name, APIKey: "test-key"})
+			if err != nil {
+				t.Fatalf("tts.New(%s) error = %v", name, err)
+			}
+			defer provider.Close()
+			if provider.Name() != name {
+				t.Fatalf("provider.Name() = %q, want %s", provider.Name(), name)
+			}
+			if !containsProviderName(ttsmodule.AvailableProviders(), name) {
+				t.Fatalf("AvailableProviders() missing %s: %#v", name, ttsmodule.AvailableProviders())
+			}
+		})
 	}
 }
 
-func TestMinimaxWebSocketTTSProviderIsRegistered(t *testing.T) {
-	provider, err := ttsmodule.New(ttsmodule.ProviderConfig{Provider: "minimax-ws", APIKey: "test-key"})
-	if err != nil {
-		t.Fatalf("tts.New(minimax-ws) error = %v", err)
+func TestMinimaxWebSocketLegacyProviderIsNotRegistered(t *testing.T) {
+	_, err := ttsmodule.New(ttsmodule.ProviderConfig{Provider: "minimax-ws", APIKey: "test-key"})
+	if err == nil {
+		t.Fatal("tts.New(minimax-ws) succeeded, want unsupported legacy provider")
 	}
-	defer provider.Close()
-	if provider.Name() != "minimax-ws" {
-		t.Fatalf("provider.Name() = %q, want minimax-ws", provider.Name())
-	}
-	if !containsProviderName(ttsmodule.AvailableProviders(), "minimax-ws") {
-		t.Fatalf("AvailableProviders() missing minimax-ws: %#v", ttsmodule.AvailableProviders())
+	if containsProviderName(ttsmodule.AvailableProviders(), "minimax-ws") {
+		t.Fatalf("AvailableProviders() includes minimax-ws: %#v", ttsmodule.AvailableProviders())
 	}
 }
 

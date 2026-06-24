@@ -59,7 +59,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.model.context_window = 64000;
     cfg.model.model_max_output_tokens = 4096;
 
-    cfg.tts.provider = "minimax-ws";
+    cfg.tts.provider = "minimax-cn";
     cfg.tts.api_key = "mx-test";
     cfg.tts.voice_id = "male-qn-qingse";
     cfg.tts.emotion = "happy";
@@ -87,12 +87,6 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.search.provider = "duckduckgo";
     cfg.search.api_key = "tvly-test";
 
-    cfg.benchmark.judge_model = "custom/judge-v1";
-    cfg.benchmark.api_key = "sk-judge-test";
-    cfg.benchmark.benchmark_dir = "/userdata/agent/benchmark";
-
-    cfg.log.llm_http_retention_days = 21;
-
     cfg.telemetry.enabled = true;
     cfg.telemetry.provider = "langfuse";
     cfg.telemetry.base_url = "http://langfuse.example.com:3000";
@@ -104,6 +98,20 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.telemetry.tags.push_back("aiden-hardware");
     cfg.telemetry.tags.push_back("field-test");
     cfg.telemetry.environment = "staging";
+
+    cfg.live_activity.enabled = true;
+    cfg.live_activity.relay_url = "https://relay.example.com";
+    cfg.live_activity.relay_api_key = "relay-secret";
+    cfg.live_activity.board_id = "board-001";
+    cfg.live_activity.phone_id = "phone-001";
+    cfg.live_activity.bundle_id = "com.aiden.bridge";
+    cfg.live_activity.topic = "com.aiden.bridge.push-type.liveactivity";
+    cfg.live_activity.environment = "production";
+    cfg.live_activity.team_id = "TEAM123456";
+    cfg.live_activity.key_id = "KEY123456";
+    cfg.live_activity.private_key_path = "/userdata/agent/AuthKey_KEY123456.p8";
+    cfg.live_activity.private_key_pem = "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----";
+    cfg.live_activity.timeout_sec = 12;
 
     std::string path = make_temp_path("roundtrip.toml");
     std::string err;
@@ -117,8 +125,6 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
         CHECK(contents.find("custom_instruction = \"Hello \\\"world\\\"\"") != std::string::npos);
         CHECK(contents.rfind("instruction =", 0) != 0);
         CHECK(contents.find("\ninstruction =") == std::string::npos);
-        CHECK(contents.find("[log]") != std::string::npos);
-        CHECK(contents.find("llm_http_retention_days = 21") != std::string::npos);
     }
 
     aiden::AgentToml loaded;
@@ -160,7 +166,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.model.context_window == 64000);
     CHECK(loaded.model.model_max_output_tokens == 4096);
 
-    CHECK(loaded.tts.provider == "minimax-ws");
+    CHECK(loaded.tts.provider == "minimax-cn");
     CHECK(loaded.tts.api_key == "mx-test");
     CHECK(loaded.tts.voice_id == "male-qn-qingse");
     CHECK(loaded.tts.emotion == "happy");
@@ -188,12 +194,6 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.search.provider == "duckduckgo");
     CHECK(loaded.search.api_key == "tvly-test");
 
-    CHECK(loaded.benchmark.judge_model == "custom/judge-v1");
-    CHECK(loaded.benchmark.api_key == "sk-judge-test");
-    CHECK(loaded.benchmark.benchmark_dir == "/userdata/agent/benchmark");
-
-    CHECK(loaded.log.llm_http_retention_days == 21);
-
     CHECK(loaded.telemetry.enabled == true);
     CHECK(loaded.telemetry.provider == "langfuse");
     CHECK(loaded.telemetry.base_url == "http://langfuse.example.com:3000");
@@ -206,6 +206,38 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.telemetry.tags[0] == "aiden-hardware");
     CHECK(loaded.telemetry.tags[1] == "field-test");
     CHECK(loaded.telemetry.environment == "staging");
+
+    CHECK(loaded.live_activity.enabled == true);
+    CHECK(loaded.live_activity.relay_url == "https://relay.example.com");
+    CHECK(loaded.live_activity.relay_api_key == "relay-secret");
+    CHECK(loaded.live_activity.has_relay_api_key == true);
+    CHECK(loaded.live_activity.board_id == "board-001");
+    CHECK(loaded.live_activity.phone_id == "phone-001");
+    CHECK(loaded.live_activity.bundle_id == "com.aiden.bridge");
+    CHECK(loaded.live_activity.topic == "com.aiden.bridge.push-type.liveactivity");
+    CHECK(loaded.live_activity.environment == "production");
+    CHECK(loaded.live_activity.team_id == "TEAM123456");
+    CHECK(loaded.live_activity.key_id == "KEY123456");
+    CHECK(loaded.live_activity.private_key_path == "/userdata/agent/AuthKey_KEY123456.p8");
+    CHECK(loaded.live_activity.private_key_pem == "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----");
+    CHECK(loaded.live_activity.has_private_key_pem == true);
+    CHECK(loaded.live_activity.timeout_sec == 12);
+
+    std::remove(path.c_str());
+}
+
+TEST_CASE("agent_toml rejects negative live_activity timeout") {
+    std::string path = make_temp_path("negative_live_activity_timeout.toml");
+    {
+        std::ofstream out(path);
+        out << "[live_activity]\n"
+            << "timeout_sec = -1\n";
+    }
+
+    aiden::AgentToml loaded;
+    std::string err;
+    CHECK_FALSE(aiden::load_agent_toml(path.c_str(), loaded, &err));
+    CHECK(err.find("must be >= 0") != std::string::npos);
 
     std::remove(path.c_str());
 }
@@ -224,6 +256,9 @@ TEST_CASE("agent_toml no longer writes legacy proxy section") {
     std::string contents((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     CHECK(contents.find("[proxy]") == std::string::npos);
     CHECK(contents.find("http_proxy") == std::string::npos);
+    CHECK(contents.find("[benchmark]") == std::string::npos);
+    CHECK(contents.find("judge_model") == std::string::npos);
+    CHECK(contents.find("benchmark_dir") == std::string::npos);
 
     std::remove(path.c_str());
 }

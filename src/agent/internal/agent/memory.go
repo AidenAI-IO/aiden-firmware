@@ -217,27 +217,37 @@ func NewMemoryManager(storageDir string, opts ...MemoryManagerOption) *MemoryMan
 // ActiveSessionID returns the current filesystem session ID, creating active
 // session metadata when the session directory has not been initialized yet.
 func (m *MemoryManager) ActiveSessionID() (string, error) {
+	meta, err := m.activeSessionMetadata()
+	if err != nil {
+		return "", err
+	}
+	return meta.SessionID, nil
+}
+
+// activeSessionMetadata returns the current filesystem session metadata,
+// creating it when the session directory has not been initialized yet.
+func (m *MemoryManager) activeSessionMetadata() (sessionMetadata, error) {
 	if m == nil || strings.TrimSpace(m.storageDir) == "" {
-		return "", nil
+		return sessionMetadata{}, nil
 	}
 	fl := NewFileLock(m.storageDir)
 	if err := fl.Lock(m.lockTimeout); err != nil {
-		return "", fmt.Errorf("lock active session metadata: %w", err)
+		return sessionMetadata{}, fmt.Errorf("lock active session metadata: %w", err)
 	}
 	defer fl.Unlock()
 
 	sessionDir := filepath.Join(m.storageDir, "session")
 	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
-		return "", fmt.Errorf("create active session directory: %w", err)
+		return sessionMetadata{}, fmt.Errorf("create active session directory: %w", err)
 	}
 	meta, err := ensureActiveSessionMetadata(sessionDir, time.Now().UTC())
 	if err != nil {
-		return "", err
+		return sessionMetadata{}, err
 	}
 	if err := validateSessionIDPathComponent(meta.SessionID); err != nil {
-		return "", err
+		return sessionMetadata{}, err
 	}
-	return meta.SessionID, nil
+	return meta, nil
 }
 
 // SetLastPromptTokens updates the token count from the most recent prompt.
@@ -753,7 +763,7 @@ func validateSessionIDPathComponent(sessionID string) error {
 
 func prepareStagedActiveSessionDir(parent string, now time.Time) (string, sessionMetadata, error) {
 	for i := int64(0); i < 100; i++ {
-		activeAt := now.Add(time.Duration(i+1) * time.Nanosecond)
+		activeAt := now.Add(time.Duration(i+1) * time.Millisecond)
 		tempDir := filepath.Join(parent, ".session-"+strconv.FormatInt(activeAt.UTC().UnixNano(), 10)+".tmp")
 		if err := os.Mkdir(tempDir, 0o755); err != nil {
 			if os.IsExist(err) {
@@ -795,7 +805,7 @@ func ensureActiveSessionMetadata(sessionDir string, now time.Time) (sessionMetad
 	path := filepath.Join(sessionDir, sessionMetadataFileName)
 	if meta, err := readSessionMetadata(path); err == nil && strings.TrimSpace(meta.SessionID) != "" {
 		return meta, nil
-	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) && !isTruncatedJSONLineError(err) {
 		return sessionMetadata{}, err
 	}
 	return writeNewSessionMetadata(sessionDir, now)
@@ -830,7 +840,8 @@ func readSessionMetadata(path string) (sessionMetadata, error) {
 }
 
 func newSessionID(now time.Time) string {
-	return "session_" + strconv.FormatInt(now.UTC().UnixNano(), 10)
+	utc := now.UTC()
+	return utc.Format("20060102150405") + fmt.Sprintf("%03d", utc.Nanosecond()/int(time.Millisecond))
 }
 
 func (m *MemoryManager) loadPersistedMessages(history *langmemory.ChatMessageHistory, agentName string) error {

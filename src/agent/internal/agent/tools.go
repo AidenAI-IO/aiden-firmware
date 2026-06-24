@@ -10,10 +10,11 @@ import (
 
 // ToolSet is a fixed collection of built-in tools, keyed by name.
 type ToolSet struct {
-	tools       map[string]langtools.Tool
-	screen      *screenState
-	phoneBridge *PhoneBridge
-	textInputHW *textInputHardwareDeps
+	tools               map[string]langtools.Tool
+	screen              *screenState
+	phoneBridge         *PhoneBridge
+	phoneBridgeRestorer *PhoneBridgeRestorer
+	textInputHW         *textInputHardwareDeps
 }
 
 // NewBuiltinToolSet returns all built-in tools. Tools are not configurable;
@@ -41,10 +42,7 @@ func NewBuiltinToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg SearchC
 	return newHardwareToolSet(hidCfg, audioCfg, searchCfg, proxyCfg, options...)
 }
 
-func NewBuiltinToolSetFromConfig(cfg Config, proxyCfg ProxyConfig, mobileGym *mobileGymSessionStore, options ...BuiltinToolSetOption) *ToolSet {
-	if cfg.Device.BackendOrDefault() == "mobilegym" {
-		return newMobileGymToolSet(cfg, proxyCfg, mobileGym, options...)
-	}
+func NewBuiltinToolSetFromConfig(cfg Config, proxyCfg ProxyConfig, options ...BuiltinToolSetOption) *ToolSet {
 	return newHardwareToolSet(cfg.HID, cfg.Audio, cfg.Search, proxyCfg, options...)
 }
 
@@ -102,7 +100,12 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	// Always register human handoff tool - no callback needed for non-blocking version
 	tools["request_human_handoff"] = NewHumanHandoffTool()
 
-	return &ToolSet{tools: tools, screen: screen, textInputHW: textInputHW}
+	return &ToolSet{
+		tools:               tools,
+		screen:              screen,
+		phoneBridgeRestorer: NewPhoneBridgeRestorer(nil, pointer),
+		textInputHW:         textInputHW,
+	}
 }
 
 func (s *ToolSet) RegisterEnterTextInFieldTool(models ModelResolver, platformFn func() string) {

@@ -89,6 +89,9 @@ func truthy(field string) Condition    { return Condition{Field: field, Op: "tru
 func in(field string, vs ...string) Condition {
 	return Condition{Field: field, Op: "in", Values: vs}
 }
+func notIn(field string, vs ...string) Condition {
+	return Condition{Field: field, Op: "notIn", Values: vs}
+}
 
 func all(conds ...Condition) *VisibleRule { return &VisibleRule{All: conds} }
 
@@ -123,14 +126,14 @@ func ConfigMeta() ConfigMetadata {
 				Name: "tts",
 				Fields: []FieldMeta{
 					{Key: "provider", Widget: WidgetSelect,
-						Enum:    enumOptions("minimax-ws", "fish-audio", "alicloud", "volcengine"),
+						Enum:    enumOptions("minimax", "minimax-cn", "fish-audio", "alicloud", "volcengine"),
 						Default: defaults.TTS.Provider},
 					{Key: "api_key", Widget: WidgetText, Secret: true},
 					{Key: "model", Widget: WidgetText,
-						VisibleWhen: all(ne("tts.provider", "minimax-ws"))},
+						VisibleWhen: all(notIn("tts.provider", "minimax", "minimax-cn"))},
 					{Key: "voice_id", Widget: WidgetText, Default: defaults.TTS.VoiceID},
 					{Key: "emotion", Widget: WidgetText, Default: defaults.TTS.Emotion,
-						VisibleWhen: all(in("tts.provider", "minimax-ws", "volcengine"))},
+						VisibleWhen: all(in("tts.provider", "minimax", "minimax-cn", "volcengine"))},
 					{Key: "speed", Widget: WidgetSelect, Default: defaults.TTS.Speed,
 						Range: &Range{Min: 0.5, Max: 2, Step: 0.1, Precision: 1}},
 				},
@@ -178,15 +181,6 @@ func ConfigMeta() ConfigMetadata {
 						VisibleWhen: all(eq("agent.input_mode", "stt"), truthy("audio_archive.enabled"))},
 					{Key: "max_size_mb", Widget: WidgetNumber, Default: defaults.AudioArchive.MaxSizeMBOrDefault(),
 						VisibleWhen: all(eq("agent.input_mode", "stt"), truthy("audio_archive.enabled"))},
-				},
-			},
-			{
-				Name: "benchmark",
-				Fields: []FieldMeta{
-					{Key: "judge_model", Widget: WidgetText,
-						Default: defaults.Benchmark.JudgeModel},
-					{Key: "api_key", Widget: WidgetText, Secret: true},
-					{Key: "benchmark_dir", Widget: WidgetText},
 				},
 			},
 			{
@@ -246,23 +240,9 @@ func ConfigMeta() ConfigMetadata {
 				Name: "live_activity",
 				Fields: []FieldMeta{
 					{Key: "enabled", Widget: WidgetBoolean, Default: true},
-					{Key: "bundle_id", Widget: WidgetText,
+					{Key: "board_id", Widget: WidgetText, Default: "default",
 						VisibleWhen: all(truthy("live_activity.enabled"))},
-					{Key: "topic", Widget: WidgetText,
-						VisibleWhen: all(truthy("live_activity.enabled"))},
-					{Key: "environment", Widget: WidgetSelect,
-						Enum:        enumOptions("sandbox", "production"),
-						Default:     "sandbox",
-						VisibleWhen: all(truthy("live_activity.enabled"))},
-					{Key: "team_id", Widget: WidgetText, Secret: true,
-						VisibleWhen: all(truthy("live_activity.enabled"))},
-					{Key: "key_id", Widget: WidgetText, Secret: true,
-						VisibleWhen: all(truthy("live_activity.enabled"))},
-					{Key: "private_key_path", Widget: WidgetText, Secret: true,
-						VisibleWhen: all(truthy("live_activity.enabled"))},
-					{Key: "private_key_pem", Widget: WidgetTextarea, Secret: true,
-						VisibleWhen: all(truthy("live_activity.enabled"))},
-					{Key: "timeout_sec", Widget: WidgetNumber, Default: 10,
+					{Key: "phone_id", Widget: WidgetText,
 						VisibleWhen: all(truthy("live_activity.enabled"))},
 				},
 			},

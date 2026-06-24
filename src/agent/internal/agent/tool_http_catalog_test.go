@@ -15,9 +15,6 @@ func newRuntimeWithTextEntryTools() *Runtime {
 }
 
 func TestQuickActionExposedToAgentAndToolLab(t *testing.T) {
-	if !isHTTPToolExposed("quick_action") {
-		t.Fatal("expected quick_action in Tool Lab HTTP catalog")
-	}
 	if !isAgentToolExposed("quick_action") {
 		t.Fatal("expected quick_action available to conversational agent")
 	}
@@ -27,7 +24,20 @@ func TestQuickActionExposedToAgentAndToolLab(t *testing.T) {
 }
 
 func TestWaitForWakeupExposedToAgentAndToolLab(t *testing.T) {
-	if !isHTTPToolExposed("wait_for_wakeup") {
+	runtime := NewRuntimeWithDeps(
+		Config{},
+		nil,
+		NewMemoryManager(""),
+		NewBuiltinToolSet(
+			HIDConfig{},
+			AudioConfig{},
+			SearchConfig{},
+			ProxyConfig{},
+			WithWaitForWakeupController(NewWaitForWakeupController()),
+		),
+		NewSkillIndex(),
+	)
+	if _, ok := runtime.ToolDescriptorByName("wait_for_wakeup"); !ok {
 		t.Fatal("expected wait_for_wakeup in Tool Lab HTTP catalog")
 	}
 	if !isAgentToolExposed("wait_for_wakeup") {
@@ -35,25 +45,20 @@ func TestWaitForWakeupExposedToAgentAndToolLab(t *testing.T) {
 	}
 }
 
-func TestPhoneBridgeToolsExposedToAgentOnly(t *testing.T) {
+func TestPhoneBridgeToolsExposedToAgent(t *testing.T) {
 	for _, name := range []string{"open_app", "clipboard", "calendar", "contacts", "notification"} {
-		if isHTTPToolExposed(name) {
-			t.Fatalf("expected %s hidden from Tool Lab HTTP catalog", name)
-		}
 		if !isAgentToolExposed(name) {
 			t.Fatalf("expected %s available to conversational agent", name)
 		}
 	}
 }
 
-func TestUnknownToolsFailClosedForHTTP(t *testing.T) {
-	if isHTTPToolExposed("unregistered_tool") {
-		t.Fatal("expected unregistered tool hidden from HTTP catalog")
-	}
-
+func TestAllToolsExposedOverHTTP(t *testing.T) {
+	// Every registered tool, including phone bridge and unregistered tools,
+	// is now exposed through the HTTP catalog.
 	spec := NewToolSpec(&stubTool{name: "unregistered_tool", description: "Unregistered."})
-	if spec.HTTPExposed {
-		t.Fatal("expected unregistered tool spec hidden from HTTP catalog")
+	if spec.Name != "unregistered_tool" {
+		t.Fatalf("unexpected tool spec name: %q", spec.Name)
 	}
 }
 
@@ -80,19 +85,12 @@ func TestResolveToolsIncludesQuickAction(t *testing.T) {
 	}
 }
 
-func TestResolveToolsHidesPhoneBridgeToolsWhenDisconnected(t *testing.T) {
+func TestResolveToolsIncludesPhoneBridgeToolsWhenDisconnected(t *testing.T) {
 	runtime := newRuntimeWithTextEntryTools()
 	runtime.tools.RegisterPhoneBridge(NewPhoneBridge(nil))
 
 	tools := runtime.resolveTools(ResolvedSkills{})
 	names := toolNamesFromTools(tools)
-	for _, notWant := range []string{"clipboard", "calendar", "contacts", "notification"} {
-		for _, name := range names {
-			if name == notWant {
-				t.Fatalf("resolveTools exposed disconnected phone bridge tool %s: %v", notWant, names)
-			}
-		}
-	}
 	for _, want := range []string{"open_app", "enter_text_via_bridge"} {
 		found := false
 		for _, name := range names {
@@ -103,6 +101,13 @@ func TestResolveToolsHidesPhoneBridgeToolsWhenDisconnected(t *testing.T) {
 		}
 		if !found {
 			t.Fatalf("resolveTools missing disconnected bridge recovery tool %s: %v", want, names)
+		}
+	}
+	for _, notWant := range []string{"clipboard", "calendar", "contacts", "notification"} {
+		for _, name := range names {
+			if name == notWant {
+				t.Fatalf("resolveTools exposed disconnected phone bridge tool %s: %v", notWant, names)
+			}
 		}
 	}
 }

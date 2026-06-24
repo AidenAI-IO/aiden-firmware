@@ -153,11 +153,11 @@ func (l *llmRawHTTPLogger) LogWithFileScope(model, kind string, statusCode int, 
 		return err
 	}
 
-	// File name includes date, time (hour+minute), and session ID.
-	dateTimeStr := fileTime.Format("200601021504")
-	fileName := "llm-http-" + dateTimeStr + ".log"
-	if sessionID = strings.TrimSpace(sessionID); sessionID != "" {
-		fileName = "llm-http-" + dateTimeStr + "-" + sessionID + ".log"
+	fileName := "llm-http-" + fileTime.Format("200601021504") + ".log"
+	if sid := strings.TrimSpace(sessionID); sid != "" {
+		if err := validateSessionIDPathComponent(sid); err == nil {
+			fileName = "llm-http-" + sid + ".log"
+		}
 	}
 
 	path := filepath.Join(l.dir, fileName)

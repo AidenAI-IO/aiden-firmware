@@ -114,19 +114,15 @@ pre.block-body { margin: 0; white-space: pre-wrap; word-break: break-word; font-
   <article class="summary-card"><div class="label">Memory Size</div><div class="value">{{MEMORY_SIZE}}</div></article>
   <article class="summary-card"><div class="label">Skills Files</div><div class="value">{{SKILLS_COUNT}}</div></article>
   <article class="summary-card"><div class="label">Skills Size</div><div class="value">{{SKILLS_SIZE}}</div></article>
-  <article class="summary-card"><div class="label">SkillOpt Files</div><div class="value">{{SKILLOPT_COUNT}}</div></article>
-  <article class="summary-card"><div class="label">SkillOpt Size</div><div class="value">{{SKILLOPT_SIZE}}</div></article>
 </section>
 <div class="tabs">
   <button class="tab active" data-tab="memory">Memory</button>
   <button class="tab skills-tab" data-tab="skills">Skills</button>
   <button class="tab" data-tab="skill-state" style="background:color-mix(in oklch,oklch(58% 0.18 150) 8%,white);border-color:color-mix(in oklch,oklch(58% 0.18 150) 32%,var(--border))">Skill State</button>
-  <button class="tab" data-tab="skillopt" style="background:color-mix(in oklch,oklch(62% 0.18 70) 8%,white);border-color:color-mix(in oklch,oklch(62% 0.18 70) 32%,var(--border))">SkillOpt</button>
 </div>
 <div id="memory-content" class="tab-content active"></div>
 <div id="skills-content" class="tab-content"></div>
 <div id="skill-state-content" class="tab-content"></div>
-<div id="skillopt-content" class="tab-content"></div>
 </main>
 <div class="drawer-backdrop" id="backdrop"></div>
 <aside class="drawer" id="drawer">
@@ -141,7 +137,6 @@ pre.block-body { margin: 0; white-space: pre-wrap; word-break: break-word; font-
 const MEMORY_DATA = {{MEMORY_JSON}};
 const SKILLS_DATA = {{SKILLS_JSON}};
 const SKILL_STATE_DATA = {{SKILL_STATE_JSON}};
-const SKILLOPT_DATA = {{SKILLOPT_JSON}};
 
 const backdrop = document.getElementById("backdrop");
 const closeBtn = document.getElementById("closeBtn");
@@ -381,75 +376,6 @@ function renderSkillStateContent() {
   attachDirToggle('skill-state-content');
 }
 
-function renderSkillOptContent() {
-  const files = SKILLOPT_DATA.files || [];
-  if (files.length === 0) {
-    document.getElementById("skillopt-content").innerHTML = '<section class="panel"><div class="empty-state">No SkillOpt files found at ' + esc(SKILLOPT_DATA.path) + '</div></section>';
-    return;
-  }
-
-  const dirTree = {};
-  files.forEach((file, idx) => {
-    file._index = idx;
-    const parts = file.relative_path.split('/');
-    if (parts.length > 1) {
-      const dir = parts.slice(0, -1).join('/');
-      if (!dirTree[dir]) dirTree[dir] = [];
-      dirTree[dir].push(file);
-    } else {
-      if (!dirTree['_root']) dirTree['_root'] = [];
-      dirTree['_root'].push(file);
-    }
-  });
-
-  let html = '<section class="panel">';
-  html += '<div class="panel-header">';
-  html += '<div><h3 class="panel-title">SkillOpt Results Directory</h3><span style="color:var(--muted);font-size:11px;font-family:var(--font-mono)">' + esc(SKILLOPT_DATA.path) + '</span></div>';
-  html += '<div style="display:flex;gap:6px"><button class="toggle-all-btn" data-target="skillopt-content" data-state="expanded" style="padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);cursor:pointer;font-size:11px">Collapse All</button></div>';
-  html += '</div>';
-
-  const sortedDirs = Object.keys(dirTree).sort((a, b) => {
-    if (a === '_root') return -1;
-    if (b === '_root') return 1;
-    return a.localeCompare(b);
-  });
-
-  sortedDirs.forEach(dir => {
-    const dirFiles = dirTree[dir];
-    if (dir === '_root') {
-      html += '<ul class="file-list">';
-    } else {
-      html += '<div class="dir-header" data-dir="' + esc(dir) + '" style="background:linear-gradient(to right,color-mix(in oklch,oklch(62% 0.18 70) 8%,white),color-mix(in oklch,oklch(62% 0.18 70) 3%,white));border-top-color:color-mix(in oklch,oklch(62% 0.18 70) 20%,var(--border))">';
-      html += '<span class="dir-icon" style="color:oklch(62% 0.18 70)">▼</span>';
-      html += '<span class="dir-folder-icon" style="color:oklch(62% 0.18 70)">📁</span>';
-      html += '<span class="dir-name">' + esc(dir) + '</span>';
-      html += '<span class="dir-count">' + dirFiles.length + ' files</span>';
-      html += '</div>';
-      html += '<ul class="file-list" data-dir-list="' + esc(dir) + '">';
-    }
-
-    dirFiles.forEach(file => {
-      const filename = file.relative_path.split('/').pop();
-      html += '<li class="file-item" data-type="skillopt" data-idx="' + file._index + '">';
-      html += '<div><div class="file-name">' + esc(filename);
-      if (file.is_hidden) html += '<span class="badge hidden">hidden</span>';
-      if (file.type === 'text') html += '<span class="badge text">text</span>';
-      if (file.json) html += '<span class="badge json">json</span>';
-      if (file.jsonl) html += '<span class="badge" style="background:color-mix(in oklch,oklch(62% 0.18 70) 8%,white);border-color:color-mix(in oklch,oklch(62% 0.18 70) 32%,var(--border));color:oklch(62% 0.18 70)">jsonl</span>';
-      html += '</div><div class="file-meta">' + formatSize(file.size) + ' &middot; ' + file.modified + '</div></div>';
-      html += '<span style="color:var(--muted);font-size:11px">' + formatSize(file.size) + '</span>';
-      html += '</li>';
-    });
-
-    html += '</ul>';
-  });
-
-  html += '</section>';
-  document.getElementById("skillopt-content").innerHTML = html;
-  attachFileListeners();
-  attachDirToggle('skillopt-content');
-}
-
 function attachDirToggle(containerId) {
   const container = document.getElementById(containerId);
   if (!container) return;
@@ -504,7 +430,7 @@ function attachFileListeners() {
 }
 
 function openDrawer(type, idx) {
-  const dataByType = { memory: MEMORY_DATA, skills: SKILLS_DATA, "skill-state": SKILL_STATE_DATA, skillopt: SKILLOPT_DATA };
+  const dataByType = { memory: MEMORY_DATA, skills: SKILLS_DATA, "skill-state": SKILL_STATE_DATA };
   const data = dataByType[type] || MEMORY_DATA;
   const file = data.files[idx];
 
@@ -581,7 +507,7 @@ function openDrawer(type, idx) {
 function jumpToFile(targetPath) {
   // Try to find matching file in current tab
   const currentTab = document.querySelector('.tab.active').dataset.tab;
-  const dataByType = { memory: MEMORY_DATA, skills: SKILLS_DATA, "skill-state": SKILL_STATE_DATA, skillopt: SKILLOPT_DATA };
+  const dataByType = { memory: MEMORY_DATA, skills: SKILLS_DATA, "skill-state": SKILL_STATE_DATA };
   const data = dataByType[currentTab] || MEMORY_DATA;
 
   // Handle wildcard paths like "episodes/*/ep_xxx/*"
@@ -646,12 +572,6 @@ try {
 } catch (e) {
   console.error('renderSkillStateContent error:', e);
   document.getElementById("skill-state-content").innerHTML = '<div style="padding:20px;color:red">Error: ' + e.message + '</div>';
-}
-try {
-  renderSkillOptContent();
-} catch (e) {
-  console.error('renderSkillOptContent error:', e);
-  document.getElementById("skillopt-content").innerHTML = '<div style="padding:20px;color:red">Error: ' + e.message + '</div>';
 }
 </script>
 </body>

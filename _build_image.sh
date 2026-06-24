@@ -594,23 +594,6 @@ sync_generated_binaries_from_source "$SCRIPT_DIR/build/bin" "$OVERLAY/oem/usr/bi
 echo "  ✓ Binaries copied to overlay/oem/usr/bin"
 repair_generated_binaries_from_manifest "overlay-oem-usr-bin" "$SCRIPT_DIR/build/bin" "$OVERLAY/oem/usr/bin" "$GENERATED_BINARY_MANIFEST"
 
-BENCHMARK_SRC="$SCRIPT_DIR/benchmark"
-BENCHMARK_DEST="$OVERLAY/userdata/agent/benchmark"
-BENCHMARK_RSYNC_EXCLUDES=(--exclude '__pycache__/' --exclude '*.pyc' --exclude '.DS_Store' --exclude '._*')
-if [ ! -d "$BENCHMARK_SRC/runner" ] || [ ! -d "$BENCHMARK_SRC/suites" ]; then
-    echo "  ✗ Error: benchmark runner or suites missing under $BENCHMARK_SRC" >&2
-    exit 1
-fi
-mkdir -p "$BENCHMARK_DEST/runner" "$BENCHMARK_DEST/suites"
-rsync -a --delete "${BENCHMARK_RSYNC_EXCLUDES[@]}" "$BENCHMARK_SRC/runner/" "$BENCHMARK_DEST/runner/"
-rsync -a --delete "${BENCHMARK_RSYNC_EXCLUDES[@]}" "$BENCHMARK_SRC/suites/" "$BENCHMARK_DEST/suites/"
-if [ -f "$BENCHMARK_SRC/pyproject.toml" ]; then
-    cp "$BENCHMARK_SRC/pyproject.toml" "$BENCHMARK_DEST/pyproject.toml"
-else
-    rm -f "$BENCHMARK_DEST/pyproject.toml"
-fi
-echo "  ✓ Benchmark runner and suites staged to overlay/userdata/agent/benchmark"
-
 AGENT_TOOLS_DEST="$OVERLAY/userdata/agent_tools"
 mkdir -p "$AGENT_TOOLS_DEST"
 cp "$SCRIPT_DIR/scripts/generate_agent_files_report.py" "$AGENT_TOOLS_DEST/"
@@ -670,30 +653,6 @@ if [ -d "$OVERLAY/etc" ]; then
     echo "  ✓ etc directory synced"
 fi
 
-# Bundled phone-bridge app mapping: src/agent/internal/agent/app_mapping.json 是
-# Go embed 的单一源，固件里同步落到 /usr/share/aiden/app_mapping.json，方便运维
-# 不重新 build 二进制就能更新映射（agent 启动时优先读 configDir，再读这里，最后
-# 回退到二进制内嵌副本）。
-APP_MAPPING_SRC="$SCRIPT_DIR/src/agent/internal/agent/app_mapping.json"
-APP_MAPPING_DEST="$DEST_OVERLAY/usr/share/aiden/app_mapping.json"
-if [ -f "$APP_MAPPING_SRC" ]; then
-    mkdir -p "$(dirname "$APP_MAPPING_DEST")"
-    cp "$APP_MAPPING_SRC" "$APP_MAPPING_DEST"
-    echo "  ✓ phone-bridge app mapping synced"
-else
-    echo "  ⚠ Warning: $APP_MAPPING_SRC not found; skipping app mapping" >&2
-fi
-
-QUICK_ACTIONS_SRC="$SCRIPT_DIR/src/agent/internal/agent/quick_actions.json"
-QUICK_ACTIONS_DEST="$DEST_OVERLAY/usr/share/aiden/quick_actions.json"
-if [ -f "$QUICK_ACTIONS_SRC" ]; then
-    mkdir -p "$(dirname "$QUICK_ACTIONS_DEST")"
-    cp "$QUICK_ACTIONS_SRC" "$QUICK_ACTIONS_DEST"
-    echo "  ✓ quick actions mapping synced"
-else
-    echo "  ⚠ Warning: $QUICK_ACTIONS_SRC not found; skipping quick actions" >&2
-fi
-
 # Step 4: Run pico-sdk build stages and base firmware packaging.
 echo "[4/6] Running pico-sdk build stages..."
 cd "$PICO_SDK"
@@ -737,13 +696,38 @@ if [ -d "$OVERLAY/oem" ]; then
         "etc/ota_pubkey.pem" \
         "usr/ko/insmod_wifi.sh" \
         "usr/lib/librknnmrt.so" \
-        "usr/model"
+        "usr/model" \
+        "usr/share/aiden"
     clean_generated_binaries "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin"
     rsync -a "$OVERLAY/oem/" "$RK_PROJECT_PACKAGE_OEM_DIR/"
     # Keep generated binaries anchored to build/bin; overlay/oem/usr/bin is only an intermediate staging copy.
     repair_generated_binaries_from_manifest "sdk-oem-usr-bin" "$SCRIPT_DIR/build/bin" "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin" "$GENERATED_BINARY_MANIFEST"
     echo "  ✓ OEM content copied"
     log_generated_binaries_in_dir "sdk-oem-usr-bin" "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin"
+fi
+
+# Bundled phone-bridge app mapping: src/agent/internal/agent/app_mapping.json is
+# the Go embed source and is also shipped in OEM so operations can update it
+# without rebuilding the agent binary. Runtime order is configDir override,
+# bundled OEM file, then embedded defaults.
+APP_MAPPING_SRC="$SCRIPT_DIR/src/agent/internal/agent/app_mapping.json"
+APP_MAPPING_DEST="$RK_PROJECT_PACKAGE_OEM_DIR/usr/share/aiden/app_mapping.json"
+if [ -f "$APP_MAPPING_SRC" ]; then
+    mkdir -p "$(dirname "$APP_MAPPING_DEST")"
+    cp "$APP_MAPPING_SRC" "$APP_MAPPING_DEST"
+    echo "  ✓ phone-bridge app mapping synced to OEM staging"
+else
+    echo "  ⚠ Warning: $APP_MAPPING_SRC not found; skipping app mapping" >&2
+fi
+
+QUICK_ACTIONS_SRC="$SCRIPT_DIR/src/agent/internal/agent/quick_actions.json"
+QUICK_ACTIONS_DEST="$RK_PROJECT_PACKAGE_OEM_DIR/usr/share/aiden/quick_actions.json"
+if [ -f "$QUICK_ACTIONS_SRC" ]; then
+    mkdir -p "$(dirname "$QUICK_ACTIONS_DEST")"
+    cp "$QUICK_ACTIONS_SRC" "$QUICK_ACTIONS_DEST"
+    echo "  ✓ quick actions mapping synced to OEM staging"
+else
+    echo "  ⚠ Warning: $QUICK_ACTIONS_SRC not found; skipping quick actions" >&2
 fi
 
 # Bundled agent skills use src/agent/config/skills as the single source and

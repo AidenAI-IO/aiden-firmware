@@ -1,17 +1,7 @@
 {
   "name": "memory_v1",
   "description": "Agent memory benchmark — verifies save/recall/update/forget and negative memory behavior end-to-end through the runner.",
-  "global_reset": {
-    "tool_sequence": [
-      {
-        "tool": "shell",
-        "args": {
-          "command": "mkdir -p /userdata/agent/memory 2>/dev/null || true; rm -rf /userdata/agent/memory/long_term /userdata/agent/memory/session /userdata/agent/memory/default.json /userdata/agent/memory/profile.md /userdata/agent/memory/summary.md 2>/dev/null || true; ls /userdata/agent/memory/ 2>/dev/null || true"
-        }
-      },
-      { "tool": "wait_ms", "args": { "ms": 300 } }
-    ]
-  },
+  "global_reset": {},
   "tasks": [
     {
       "id": "save_explicit_preference",
@@ -182,16 +172,6 @@
       "id": "use_preference_language",
       "category": "memory",
       "description_for_judge": "Given a stored preference to always answer in Chinese, the agent must recall that preference and answer an English question primarily in Chinese.",
-      "setup": {
-        "tool_sequence": [
-          {
-            "tool": "shell",
-            "args": {
-              "command": "mkdir -p /userdata/agent/memory/long_term/memories; cat > /userdata/agent/memory/long_term/memories/mem_language_zh.md <<'EOF'\n---\nid: mem_language_zh\ntype: preference\nstatus: active\npriority: 85\nconfidence: 0.9\ntags:\n  - language\n  - 中文\ntime_scope: long_term\ncreated_at: \"2026-05-28T00:00:00Z\"\nupdated_at: \"2026-05-28T00:00:00Z\"\ntraceability: full\n---\n\n# Always answer in Chinese\n\n## 内容\n\n用户希望始终用中文回答；即使用户用英文提问，也用中文解释。\n\n## 证据摘录\n\n- 始终用中文回答，包括英文提问。\nEOF"
-            }
-          }
-        ]
-      },
       "prompt": "Explain how Go scheduler picks goroutines.",
       "rubric": [
         {
@@ -218,16 +198,6 @@
       "id": "use_rule_to_block_action",
       "category": "memory",
       "description_for_judge": "Given a stored rule that customer emails require confirmation, the agent must recall the rule and refuse to send or draft-as-sent without confirmation.",
-      "setup": {
-        "tool_sequence": [
-          {
-            "tool": "shell",
-            "args": {
-              "command": "mkdir -p /userdata/agent/memory/long_term/memories; cat > /userdata/agent/memory/long_term/memories/mem_confirm_customer_email.md <<'EOF'\n---\nid: mem_confirm_customer_email\ntype: rule\nstatus: active\npriority: 90\nconfidence: 0.9\ntags:\n  - 邮件\n  - 客户沟通\nentities:\n  - 客户\ntime_scope: long_term\ncreated_at: \"2026-05-28T00:00:00Z\"\nupdated_at: \"2026-05-28T00:00:00Z\"\ntraceability: full\n---\n\n# Confirm before customer emails\n\n## 内容\n\n不要主动帮用户发邮件给客户；发之前必须先向用户确认。\n\n## 证据摘录\n\n- 以后绝对不要主动帮我发邮件给客户，发之前必须先确认。\nEOF"
-            }
-          }
-        ]
-      },
       "prompt": "帮我给客户王总发个会议邀请邮件，主题是月度复盘。",
       "rubric": [
         {
@@ -254,16 +224,6 @@
       "id": "use_procedure_steps",
       "category": "memory",
       "description_for_judge": "Given a stored reimbursement procedure, the agent must recall it and apply the steps in the correct order.",
-      "setup": {
-        "tool_sequence": [
-          {
-            "tool": "shell",
-            "args": {
-              "command": "mkdir -p /userdata/agent/memory/long_term/memories; cat > /userdata/agent/memory/long_term/memories/mem_reimbursement_workflow.md <<'EOF'\n---\nid: mem_reimbursement_workflow\ntype: procedure\nstatus: active\npriority: 85\nconfidence: 0.9\ntags:\n  - 报销\nentities:\n  - 飞书\n  - 招行 App\ntime_scope: long_term\ncreated_at: \"2026-05-28T00:00:00Z\"\nupdated_at: \"2026-05-28T00:00:00Z\"\ntraceability: full\n---\n\n# Reimbursement workflow\n\n## 内容\n\n用户说'走报销流程'时，意思是：先在飞书填表，等审批通过后用招行 App 选'公务报销'付款，最后把付款截图发给用户。\n\n## 证据摘录\n\n- 以后我说'走报销流程'，意思是：先在飞书填表，等审批通过后用招行 App 选'公务报销'付款，最后把付款截图发给我。\nEOF"
-            }
-          }
-        ]
-      },
       "prompt": "这次出差打车 800，走个流程吧。",
       "rubric": [
         {
@@ -321,17 +281,6 @@
       "id": "recall_session_chunk_details",
       "category": "memory",
       "description_for_judge": "Given a compressed session summary that points to chunk_000 but omits the exact details, the agent must call recall_session_chunks and answer using the recalled evidence.",
-      "setup": {
-        "tool_sequence": [
-          {
-            "tool": "shell",
-            "args": {
-              "command": "mkdir -p /userdata/agent/memory/session/chunks; cat > /userdata/agent/memory/session/summary.md <<'EOF'\n# Session History (compressed chunks)\n\nUse recall_session_chunks with a chunk_id to retrieve full conversation details.\n\n- **chunk_000**\n  Earlier conversation discussed 蓝海报销App verification details. The exact code and project name require recalling the chunk.\nEOF\ncat > /userdata/agent/memory/session/chunks/chunk_000.jsonl <<'EOF'\n{\"event_id\":\"evt_001\",\"ts\":\"2026-05-28T00:00:00Z\",\"type\":\"user_input\",\"role\":\"user\",\"content\":\"我刚才在蓝海报销App看到核销码是 ZX-91-ALPHA，项目代号是 海鸥计划。\",\"app_name\":\"蓝海报销App\"}\n{\"event_id\":\"evt_002\",\"ts\":\"2026-05-28T00:00:01Z\",\"type\":\"assistant_output\",\"role\":\"assistant\",\"content\":\"收到。\"}\nEOF\ncat > /userdata/agent/memory/session/chunks/index.yaml <<'EOF'\nversion: 1\nupdated_at: \"2026-05-28T00:00:02Z\"\nchunks:\n  - id: chunk_000\n    file: chunk_000.jsonl\n    status: active\n    summary: Earlier conversation discussed 蓝海报销App verification details. The exact code and project name require recalling the chunk.\n    app_name: 蓝海报销App\n    tags:\n      - 报销\n      - 核销码\n    entities:\n      - 蓝海报销App\n    event_count: 2\n    checksum: sha256:benchmark-seed\nEOF"
-            }
-          },
-          { "tool": "wait_ms", "args": { "ms": 100 } }
-        ]
-      },
       "prompt": "刚才蓝海报销App里提到的核销码和项目代号是什么？",
       "rubric": [
         {
@@ -389,16 +338,6 @@
       "id": "use_filtered_subset",
       "category": "memory",
       "description_for_judge": "Given mixed long-term memories across multiple topics, the agent must recall only the reimbursement subset and avoid unrelated memories.",
-      "setup": {
-        "tool_sequence": [
-          {
-            "tool": "shell",
-            "args": {
-              "command": "mkdir -p /userdata/agent/memory/long_term/memories; cat > /userdata/agent/memory/long_term/memories/mem_reimbursement_threshold.md <<'EOF'\n---\nid: mem_reimbursement_threshold\ntype: rule\nstatus: active\npriority: 90\nconfidence: 0.9\ntags:\n  - 报销\n  - OA\nentities:\n  - OA\ntime_scope: long_term\ncreated_at: \"2026-05-28T00:00:00Z\"\nupdated_at: \"2026-05-28T00:00:00Z\"\ntraceability: full\n---\n\n# Reimbursement threshold rule\n\n## 内容\n\n每次提到报销都要先确认金额是否超过 5000；超过 5000 要走 OA 审批。\n\n## 证据摘录\n\n- 记住，每次提到'报销'都要先确认金额超不超 5000，超了要走 OA 审批。\nEOF\ncat > /userdata/agent/memory/long_term/memories/mem_payment_check.md <<'EOF'\n---\nid: mem_payment_check\ntype: rule\nstatus: active\npriority: 70\nconfidence: 0.9\ntags:\n  - 支付\ntime_scope: long_term\ncreated_at: \"2026-05-28T00:00:00Z\"\nupdated_at: \"2026-05-28T00:00:00Z\"\ntraceability: full\n---\n\n# Payment recipient check\n\n## 内容\n\n支付前先核对收款方和金额。\n\n## 证据摘录\n\n- 支付前先核对收款方和金额。\nEOF\ncat > /userdata/agent/memory/long_term/memories/mem_backend_login.md <<'EOF'\n---\nid: mem_backend_login\ntype: procedure\nstatus: active\npriority: 70\nconfidence: 0.9\ntags:\n  - 登录\nentities:\n  - VPN\ntime_scope: long_term\ncreated_at: \"2026-05-28T00:00:00Z\"\nupdated_at: \"2026-05-28T00:00:00Z\"\ntraceability: full\n---\n\n# Backend login procedure\n\n## 内容\n\n登录后台前先打开 VPN。\n\n## 证据摘录\n\n- 登录后台前先打开 VPN。\nEOF\ncat > /userdata/agent/memory/long_term/memories/mem_project_code.md <<'EOF'\n---\nid: mem_project_code\ntype: fact\nstatus: active\npriority: 60\nconfidence: 0.9\ntags:\n  - 项目编码\nentities:\n  - PX-42\ntime_scope: long_term\ncreated_at: \"2026-05-28T00:00:00Z\"\nupdated_at: \"2026-05-28T00:00:00Z\"\ntraceability: full\n---\n\n# Project code\n\n## 内容\n\n项目编码是 PX-42。\n\n## 证据摘录\n\n- 项目编码是 PX-42。\nEOF\ncat > /userdata/agent/memory/long_term/memories/mem_verification_code_scope.md <<'EOF'\n---\nid: mem_verification_code_scope\ntype: rule\nstatus: active\npriority: 60\nconfidence: 0.9\ntags:\n  - 验证码\ntime_scope: long_term\ncreated_at: \"2026-05-28T00:00:00Z\"\nupdated_at: \"2026-05-28T00:00:00Z\"\ntraceability: full\n---\n\n# Verification code scope\n\n## 内容\n\n验证码只在当前流程使用，不要混入其他主题。\n\n## 证据摘录\n\n- 验证码只在当前流程使用。\nEOF"
-            }
-          }
-        ]
-      },
       "prompt": "关于报销我让你记过什么？",
       "rubric": [
         {
