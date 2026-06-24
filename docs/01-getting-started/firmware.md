@@ -54,11 +54,15 @@ pico-sdk/output/image/
 Available methods:
 
 - Hold down the board's BOOT button while plugging in USB-C;
-- If triggering flash mode with the BOOT button doesn't work well, you can first log in to the board via adb or the TTL serial port, then run:
+- If triggering flash mode with the BOOT button doesn't work well, you can first log in to the board via SSH on the USB network or the TTL serial port, then run:
 
 ```bash
 reboot loader
 ```
+
+The firmware image includes the `adb` client on the board so it can connect to
+external Android devices like a host computer. It does not expose `adbd` for
+host-side `adb shell` login into the board itself.
 
 ### 2. Flash with upgrade_tool
 
