@@ -5,6 +5,7 @@ ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 BUILD_SH="$ROOT_DIR/_build.sh"
 LOCAL_BUILD_SH="$ROOT_DIR/build.sh"
 BUILD_IMAGE_SH="$ROOT_DIR/build_image.sh"
+PREPARE_SH="$ROOT_DIR/prepare.sh"
 WORKFLOW="$ROOT_DIR/.github/workflows/build.yml"
 CI_WORKFLOW="$ROOT_DIR/.github/workflows/ci.yml"
 REPACK_SCRIPT="$ROOT_DIR/scripts/repack_ota_update_image.sh"
@@ -348,6 +349,31 @@ if ! grep -q 'go env GOROOT' "$BUILD_IMAGE_SH"; then
     echo "build_image.sh must discover the host Go root with go env GOROOT" >&2
     exit 1
 fi
+
+if [ ! -x "$PREPARE_SH" ]; then
+    echo "prepare.sh must exist and be executable" >&2
+    exit 1
+fi
+
+for required in \
+    'scripts/validate_ota_pubkey.sh' \
+    'scripts/test_reproducible_rootfs_policy.sh' \
+    'git -C "$WORKSPACE_DIR" submodule update --init --depth=1 pico-sdk' \
+    'git -C "$PICO_SDK_DIR" clean -f -- .gitmodules' \
+    'go env GOROOT' \
+    'go env GOHOSTOS' \
+    'go env GOHOSTARCH' \
+    'output/image/*.img' \
+    'AIDEN_RELEASE_NAME' \
+    'AIDEN_CHANNEL' \
+    'GITHUB_REF_NAME' \
+    'Using current local checkout (skipping actions/checkout)' \
+    '--free-disk-space'; do
+    if ! grep -Fq -- "$required" "$PREPARE_SH"; then
+        echo "prepare.sh must mirror pre-build workflow behavior: missing $required" >&2
+        exit 1
+    fi
+done
 
 if ! grep -q 'GOHOSTOS' "$BUILD_IMAGE_SH" || ! grep -q 'GOHOSTARCH' "$BUILD_IMAGE_SH"; then
     echo "build_image.sh must verify host Go OS and architecture" >&2

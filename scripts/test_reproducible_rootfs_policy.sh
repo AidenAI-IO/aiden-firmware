@@ -46,6 +46,11 @@ for defconfig in \
     echo "$(basename "$defconfig") must enable BR2_REPRODUCIBLE so package builds use Buildroot's reproducible timestamp policy" >&2
     exit 1
   fi
+
+  if ! grep -q '^BR2_TAR_OPTIONS="--no-same-owner"$' "$defconfig"; then
+    echo "$(basename "$defconfig") must set BR2_TAR_OPTIONS=--no-same-owner so Dockerized Buildroot extracts archives without restoring unmappable owners" >&2
+    exit 1
+  fi
 done
 
 if ! grep -q 'define sync_buildroot_board_config' "$PICO_SDK/sysdrv/Makefile" || \

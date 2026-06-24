@@ -26,6 +26,7 @@ AGENTS.md
 agent.conf
 /ota_ed25519_private_key.pem
 /ota_ed25519_public_key.pem
+/.ota-ci/
 
 # Debug artifacts
 screen-memory-debug-*/
