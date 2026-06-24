@@ -532,6 +532,7 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"stt", "api_key", CONFIG_FIELD_STRING},
         {"stt", "model", CONFIG_FIELD_STRING},
         {"stt", "base_url", CONFIG_FIELD_STRING},
+        {"stt", "app_id", CONFIG_FIELD_STRING},
         {"stt", "secret_id", CONFIG_FIELD_STRING},
         {"stt", "secret_key", CONFIG_FIELD_STRING},
         {"stt", "region", CONFIG_FIELD_STRING},
@@ -1563,6 +1564,7 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddStringToObject(stt, "api_key", config.stt.api_key.c_str());
     cJSON_AddStringToObject(stt, "model", config.stt.model.c_str());
     cJSON_AddStringToObject(stt, "base_url", config.stt.base_url.c_str());
+    cJSON_AddStringToObject(stt, "app_id", config.stt.app_id.c_str());
     cJSON_AddStringToObject(stt, "secret_id", config.stt.secret_id.c_str());
     cJSON_AddStringToObject(stt, "secret_key", config.stt.secret_key.c_str());
     cJSON_AddStringToObject(stt, "region", config.stt.region.c_str());
@@ -1835,6 +1837,7 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_str(&config->stt.api_key, stt, "api_key");
         set_json_str(&config->stt.model, stt, "model");
         set_json_str(&config->stt.base_url, stt, "base_url");
+        set_json_str(&config->stt.app_id, stt, "app_id");
         set_json_str(&config->stt.secret_id, stt, "secret_id");
         set_json_str(&config->stt.secret_key, stt, "secret_key");
         set_json_str(&config->stt.region, stt, "region");
@@ -4202,8 +4205,16 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         cJSON_AddItemToArray(results, r);
 
         if (tencent_stt) {
+            bool app_id_present = json_secret_present(values, "app_id");
             bool secret_id_present = json_secret_present(values, "secret_id");
             bool secret_key_present = json_secret_present(values, "secret_key");
+
+            cJSON* r_appid = cJSON_CreateObject();
+            cJSON_AddStringToObject(r_appid, "check", "app_id_present");
+            cJSON_AddBoolToObject(r_appid, "passed", app_id_present ? 1 : 0);
+            cJSON_AddStringToObject(r_appid, "detail", app_id_present ? "app_id is set" : "app_id is empty");
+            if (!app_id_present) all_passed = false;
+            cJSON_AddItemToArray(results, r_appid);
 
             cJSON* r_sid = cJSON_CreateObject();
             cJSON_AddStringToObject(r_sid, "check", "secret_id_present");

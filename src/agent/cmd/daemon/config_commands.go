@@ -96,6 +96,7 @@ type sttDTO struct {
 	APIKey          string `json:"api_key"`
 	Model           string `json:"model"`
 	BaseURL         string `json:"base_url"`
+	AppID           string `json:"app_id"`
 	SecretID        string `json:"secret_id"`
 	SecretKey       string `json:"secret_key"`
 	Region          string `json:"region"`
@@ -254,6 +255,7 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			APIKey:          d.STT.APIKey,
 			Model:           d.STT.Model,
 			BaseURL:         d.STT.BaseURL,
+			AppID:           d.STT.AppID,
 			SecretID:        d.STT.SecretID,
 			SecretKey:       d.STT.SecretKey,
 			Region:          d.STT.Region,
@@ -383,6 +385,7 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			APIKey:          cfg.STT.APIKey,
 			Model:           cfg.STT.Model,
 			BaseURL:         cfg.STT.BaseURL,
+			AppID:           cfg.STT.AppID,
 			SecretID:        cfg.STT.SecretID,
 			SecretKey:       cfg.STT.SecretKey,
 			Region:          cfg.STT.Region,

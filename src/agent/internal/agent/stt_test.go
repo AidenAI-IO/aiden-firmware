@@ -81,7 +81,7 @@ func TestTencentASRLanguageMapping(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client := NewTencentASRSTT("id", "key", "ap-guangzhou", tt.engineModelType, tt.language)
+			client := NewTencentASRSTT("id", "key", "", "ap-guangzhou", tt.engineModelType, tt.language)
 			if client.engineModelType != tt.wantEngine {
 				t.Fatalf("engineModelType = %q, want %q", client.engineModelType, tt.wantEngine)
 			}

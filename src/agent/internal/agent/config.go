@@ -235,6 +235,7 @@ type STTConfig struct {
 	Model           string `toml:"model,omitempty"`
 	BaseURL         string `toml:"base_url,omitempty"`
 	Language        string `toml:"language,omitempty"` // "zh" (Chinese) or "en" (English)
+	AppID           string `toml:"app_id,omitempty"`
 	SecretID        string `toml:"secret_id,omitempty"`
 	SecretKey       string `toml:"secret_key,omitempty"`
 	Region          string `toml:"region,omitempty"`

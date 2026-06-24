@@ -95,6 +95,7 @@ model = "whisper-1"
 
 # For Tencent ASR (alternative to OpenAI Whisper):
 # provider = "tencent-asr"  # legacy aliases: tencent, tencent_asr
+# app_id = "TENCENT_APP_ID"   # Required for realtime upload during recording
 # secret_id = "TENCENT_SECRET_ID"
 # secret_key = "TENCENT_SECRET_KEY"
 # region = "ap-guangzhou"

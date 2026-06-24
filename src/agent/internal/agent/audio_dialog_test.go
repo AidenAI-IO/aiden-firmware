@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -124,6 +125,79 @@ func TestAudioDialogStartRecordingRetriesUntilAudioServiceAvailable(t *testing.T
 	case <-ready:
 	case <-time.After(time.Second):
 		t.Fatal("delayed audio service did not handle start_recording")
+	}
+}
+
+func TestAudioDialogPrepareTurnInputUsesStreamingTranscriptFromRecording(t *testing.T) {
+	stopCh := make(chan struct{})
+	var stopOnce sync.Once
+	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
+		switch req.Op {
+		case "start_recording":
+			return audioResponse{Status: "OK", SessionID: stringUint64(42)}, nil
+		case "read_record_chunk":
+			select {
+			case <-stopCh:
+				return audioResponse{Status: "OK", EndOfStream: true}, nil
+			default:
+				return audioResponse{Status: "OK"}, []byte{1, 0, 2, 0}
+			}
+		case "stop_recording":
+			stopOnce.Do(func() { close(stopCh) })
+			return audioResponse{Status: "OK"}, nil
+		default:
+			return audioResponse{Status: "OK"}, nil
+		}
+	})
+
+	sttClient := &stubSTTClient{
+		supportsStreaming: true,
+		streamUploader:    &stubSTTStreamUploader{transcript: "实时结果"},
+	}
+	dialog := &AudioDialog{
+		config: Config{
+			InputMode: "stt",
+			Audio: AudioConfig{
+				Socket:     socketPath,
+				SampleRate: 16000,
+				Channels:   1,
+				BitWidth:   16,
+			},
+		},
+		audioClient:  NewAudioServiceClient(socketPath),
+		sttClient:    sttClient,
+		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
+	}
+
+	if err := dialog.StartRecording(); err != nil {
+		t.Fatalf("StartRecording() error = %v", err)
+	}
+	chunk, err := dialog.ReadRecordChunk(200)
+	if err != nil {
+		t.Fatalf("ReadRecordChunk() error = %v", err)
+	}
+	if chunk == nil || len(chunk.PCM) == 0 {
+		t.Fatalf("expected PCM chunk, got %#v", chunk)
+	}
+	if err := dialog.StopRecording(); err != nil {
+		t.Fatalf("StopRecording() error = %v", err)
+	}
+
+	input, err := dialog.PrepareTurnInput([]int16{1, 2})
+	if err != nil {
+		t.Fatalf("PrepareTurnInput() error = %v", err)
+	}
+	if input.Transcript != "实时结果" {
+		t.Fatalf("Transcript = %q, want 实时结果", input.Transcript)
+	}
+	if len(sttClient.inputs) != 0 {
+		t.Fatalf("expected streaming transcript to skip TranscribeWAV, got %d calls", len(sttClient.inputs))
+	}
+	if sttClient.streamUploaderUsed != 1 {
+		t.Fatalf("stream uploader begin count = %d, want 1", sttClient.streamUploaderUsed)
+	}
+	if sttClient.streamUploader == nil || len(sttClient.streamUploader.writes) != 1 {
+		t.Fatalf("stream uploader writes = %#v, want one PCM write", sttClient.streamUploader)
 	}
 }
 

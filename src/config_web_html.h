@@ -213,6 +213,7 @@ static const char* CONFIG_WEB_HTML =
     "            <div class=\"field\"><label>provider</label><select id=\"stt_provider\" data-section=\"stt\"></select></div>\n"
     "            <div class=\"field\"><label>language</label><select id=\"stt_language\" data-section=\"stt\"></select></div>\n"
     "            <div class=\"field wide\"><label>api_key</label><input id=\"stt_api_key\" data-section=\"stt\"></div>\n"
+    "            <div class=\"field\"><label>app_id</label><input id=\"stt_app_id\" data-section=\"stt\"></div>\n"
     "            <div class=\"field wide\"><label>model</label><input id=\"stt_model\" data-section=\"stt\"></div>\n"
     "            <div class=\"field wide\"><label>base_url</label><input id=\"stt_base_url\" data-section=\"stt\"></div>\n"
     "            <div class=\"field\"><label>secret_id</label><input id=\"stt_secret_id\" data-section=\"stt\"></div>\n"

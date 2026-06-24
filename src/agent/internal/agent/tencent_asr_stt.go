@@ -2,7 +2,9 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
+	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -10,46 +12,53 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 const (
-	tencentASRHost      = "asr.tencentcloudapi.com"
-	tencentASRService   = "asr"
-	tencentASRAction    = "SentenceRecognition"
-	tencentASRVersion   = "2019-06-14"
-	tencentASRAlgorithm = "TC3-HMAC-SHA256"
+	tencentASRHost                   = "asr.tencentcloudapi.com"
+	tencentASRService                = "asr"
+	tencentASRAction                 = "SentenceRecognition"
+	tencentASRVersion                = "2019-06-14"
+	tencentASRAlgorithm              = "TC3-HMAC-SHA256"
+	tencentRealtimeASRHost           = "asr.cloud.tencent.com"
+	tencentRealtimeASRPathPrefix     = "/asr/v2/"
+	tencentRealtimeASRVoiceFormatPCM = "1"
+	tencentRealtimeASRPacketMillis   = 200
+	tencentRealtimeASREndMessage     = `{"type":"end"}`
+	tencentRealtimeASRURLTTL         = 24 * time.Hour
+	tencentRealtimeASRConnTimeout    = 15 * time.Second
 )
 
-// TencentASRSTT implements one-shot sentence recognition via Tencent Cloud ASR API v3.
+// TencentASRSTT implements Tencent Cloud STT using both sentence recognition
+// and realtime WebSocket streaming when app_id is configured.
 type TencentASRSTT struct {
 	secretID        string
 	secretKey       string
+	appID           string
 	region          string
 	engineModelType string
 	language        string
 	httpClient      *http.Client
+	proxy           ProxyConfig
 	apiURL          string // optional override for tests
+	realtimeURL     string // optional override for tests
 }
 
 // NewTencentASRSTT creates a Tencent ASR STT client.
-func NewTencentASRSTT(secretID, secretKey, region, engineModelType, language string, httpClients ...*http.Client) *TencentASRSTT {
+func NewTencentASRSTT(secretID, secretKey, appID, region, engineModelType, language string, httpClients ...*http.Client) *TencentASRSTT {
 	if region == "" {
 		region = defaultTencentASRRegion
 	}
-	language = strings.ToLower(strings.TrimSpace(language))
-	// Map unified language to engine_model_type, ignoring legacy explicit value
-	switch language {
-	case "zh":
-		engineModelType = "16k_zh"
-	case "en":
-		engineModelType = "16k_en"
-	default:
-		if engineModelType == "" {
-			engineModelType = defaultTencentASREngineModel
-		}
-	}
+	engineModelType = normalizeTencentASREngineModelType(language, engineModelType)
+
 	httpClient := http.DefaultClient
 	if len(httpClients) > 0 && httpClients[0] != nil {
 		httpClient = httpClients[0]
@@ -57,11 +66,31 @@ func NewTencentASRSTT(secretID, secretKey, region, engineModelType, language str
 	return &TencentASRSTT{
 		secretID:        strings.TrimSpace(secretID),
 		secretKey:       strings.TrimSpace(secretKey),
+		appID:           strings.TrimSpace(appID),
 		region:          region,
 		engineModelType: engineModelType,
-		language:        language,
+		language:        strings.ToLower(strings.TrimSpace(language)),
 		httpClient:      httpClient,
 	}
+}
+
+func normalizeTencentASREngineModelType(language, engineModelType string) string {
+	language = strings.ToLower(strings.TrimSpace(language))
+	switch language {
+	case "zh":
+		return "16k_zh"
+	case "en":
+		return "16k_en"
+	default:
+		if strings.TrimSpace(engineModelType) == "" {
+			return defaultTencentASREngineModel
+		}
+		return strings.TrimSpace(engineModelType)
+	}
+}
+
+func (s *TencentASRSTT) Capabilities() STTCapabilities {
+	return STTCapabilities{SupportsStreamingUpload: s.appID != ""}
 }
 
 func (s *TencentASRSTT) TranscribeWAV(wavData []byte) (string, error) {
@@ -137,6 +166,290 @@ func (s *TencentASRSTT) TranscribeWAV(wavData []byte) (string, error) {
 	return text, nil
 }
 
+func (s *TencentASRSTT) NewStreamingUploader(ctx context.Context, cfg STTStreamConfig) (STTStreamUploader, error) {
+	if !s.Capabilities().SupportsStreamingUpload {
+		return nil, fmt.Errorf("tencent ASR realtime upload requires stt.app_id")
+	}
+	if s.secretID == "" || s.secretKey == "" {
+		return nil, fmt.Errorf("tencent ASR: secret_id and secret_key are required")
+	}
+	if cfg.SampleRate <= 0 {
+		return nil, fmt.Errorf("streaming STT requires sample_rate > 0")
+	}
+	if cfg.Channels != 1 {
+		return nil, fmt.Errorf("streaming STT requires mono PCM, got %d channel(s)", cfg.Channels)
+	}
+	if cfg.BitWidth != 16 {
+		return nil, fmt.Errorf("streaming STT requires 16-bit PCM, got %d", cfg.BitWidth)
+	}
+
+	endpoint, err := s.buildRealtimeEndpoint(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	dialer, err := newProxyWebSocketDialer(s.proxy, tencentRealtimeASRConnTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("configure websocket proxy: %w", err)
+	}
+
+	conn, _, err := dialer.DialContext(ctx, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("dial realtime ASR websocket: %w", err)
+	}
+
+	uploader := &tencentASRStreamingUploader{
+		conn:        conn,
+		packetBytes: packetBytesForAudioFormat(cfg),
+		done:        make(chan struct{}),
+		segments:    make(map[int]string),
+	}
+
+	initial, err := uploader.readServerMessage()
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	if err := uploader.handleMessage(initial); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+
+	go uploader.readLoop()
+	return uploader, nil
+}
+
+func (s *TencentASRSTT) buildRealtimeEndpoint(cfg STTStreamConfig) (string, error) {
+	timestamp := time.Now().Unix()
+	expired := timestamp + int64(tencentRealtimeASRURLTTL/time.Second)
+	baseURL := strings.TrimRight(s.realtimeURL, "/")
+	if baseURL == "" {
+		baseURL = "wss://" + tencentRealtimeASRHost
+	}
+
+	params := map[string]string{
+		"engine_model_type": s.engineModelType,
+		"expired":           strconv.FormatInt(expired, 10),
+		"nonce":             strconv.FormatInt(time.Now().UnixNano(), 10),
+		"secretid":          s.secretID,
+		"timestamp":         strconv.FormatInt(timestamp, 10),
+		"voice_format":      tencentRealtimeASRVoiceFormatPCM,
+	}
+	if cfg.SampleRate == 8000 {
+		params["input_sample_rate"] = "8000"
+	}
+
+	signedQuery := encodeTencentRealtimeQuery(params)
+	resource := tencentRealtimeASRHost + tencentRealtimeASRPathPrefix + url.PathEscape(s.appID) + "?" + signedQuery
+	signature := base64.StdEncoding.EncodeToString(hmacSHA1([]byte(s.secretKey), resource))
+	params["signature"] = signature
+
+	return baseURL + tencentRealtimeASRPathPrefix + url.PathEscape(s.appID) + "?" + encodeTencentRealtimeQuery(params), nil
+}
+
+func encodeTencentRealtimeQuery(params map[string]string) string {
+	keys := make([]string, 0, len(params))
+	for key := range params {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	values := url.Values{}
+	for _, key := range keys {
+		values.Set(key, params[key])
+	}
+	return values.Encode()
+}
+
+func packetBytesForAudioFormat(cfg STTStreamConfig) int {
+	bytesPerSecond := cfg.SampleRate * cfg.Channels * (cfg.BitWidth / 8)
+	if bytesPerSecond <= 0 {
+		return 0
+	}
+	return bytesPerSecond * tencentRealtimeASRPacketMillis / 1000
+}
+
+type tencentASRStreamingUploader struct {
+	conn        *websocket.Conn
+	packetBytes int
+
+	mu         sync.Mutex
+	pending    []byte
+	done       chan struct{}
+	ended      bool
+	finished   bool
+	transcript string
+	err        error
+	segments   map[int]string
+	maxIndex   int
+}
+
+func (u *tencentASRStreamingUploader) UploadPCM(pcm []byte) error {
+	if len(pcm) == 0 {
+		return nil
+	}
+
+	u.mu.Lock()
+	if u.ended {
+		u.mu.Unlock()
+		return fmt.Errorf("stream already finalized")
+	}
+	u.pending = append(u.pending, pcm...)
+	chunks := make([][]byte, 0)
+	for u.packetBytes > 0 && len(u.pending) >= u.packetBytes {
+		chunk := append([]byte(nil), u.pending[:u.packetBytes]...)
+		u.pending = u.pending[u.packetBytes:]
+		chunks = append(chunks, chunk)
+	}
+	if u.packetBytes <= 0 && len(u.pending) > 0 {
+		chunks = append(chunks, append([]byte(nil), u.pending...))
+		u.pending = nil
+	}
+	u.mu.Unlock()
+
+	for _, chunk := range chunks {
+		if err := u.conn.WriteMessage(websocket.BinaryMessage, chunk); err != nil {
+			u.finish("", fmt.Errorf("write audio chunk: %w", err))
+			_, readErr := u.readResult()
+			return readErr
+		}
+	}
+	return nil
+}
+
+func (u *tencentASRStreamingUploader) Finalize() (string, error) {
+	u.mu.Lock()
+	if u.finished {
+		transcript, err := u.transcript, u.err
+		u.mu.Unlock()
+		return transcript, err
+	}
+	if !u.ended {
+		u.ended = true
+	}
+	pending := append([]byte(nil), u.pending...)
+	u.pending = nil
+	u.mu.Unlock()
+
+	if len(pending) > 0 {
+		if err := u.conn.WriteMessage(websocket.BinaryMessage, pending); err != nil {
+			u.finish("", fmt.Errorf("write final audio chunk: %w", err))
+			return u.readResult()
+		}
+	}
+	if err := u.conn.WriteMessage(websocket.TextMessage, []byte(tencentRealtimeASREndMessage)); err != nil {
+		u.finish("", fmt.Errorf("write end message: %w", err))
+		return u.readResult()
+	}
+
+	<-u.done
+	_ = u.conn.Close()
+	return u.readResult()
+}
+
+func (u *tencentASRStreamingUploader) Close() error {
+	if u == nil || u.conn == nil {
+		return nil
+	}
+	_ = u.conn.Close()
+	return nil
+}
+
+func (u *tencentASRStreamingUploader) readResult() (string, error) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.transcript, u.err
+}
+
+func (u *tencentASRStreamingUploader) readLoop() {
+	for {
+		msg, err := u.readServerMessage()
+		if err != nil {
+			u.finish("", err)
+			return
+		}
+		if err := u.handleMessage(msg); err != nil {
+			u.finish("", err)
+			return
+		}
+		if msg.Final != 0 {
+			return
+		}
+	}
+}
+
+func (u *tencentASRStreamingUploader) readServerMessage() (tencentASRRealtimeServerMessage, error) {
+	_, payload, err := u.conn.ReadMessage()
+	if err != nil {
+		return tencentASRRealtimeServerMessage{}, fmt.Errorf("read realtime ASR message: %w", err)
+	}
+
+	var msg tencentASRRealtimeServerMessage
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		return tencentASRRealtimeServerMessage{}, fmt.Errorf("decode realtime ASR message: %w", err)
+	}
+	return msg, nil
+}
+
+func (u *tencentASRStreamingUploader) handleMessage(msg tencentASRRealtimeServerMessage) error {
+	if msg.Code != 0 {
+		return fmt.Errorf("tencent realtime ASR error %d: %s", msg.Code, strings.TrimSpace(msg.Message))
+	}
+
+	if msg.Result != nil {
+		index := msg.Result.Index
+		if index < 0 {
+			index = 0
+		}
+		text := strings.TrimSpace(msg.Result.VoiceTextStr)
+		u.mu.Lock()
+		if text != "" {
+			u.segments[index] = text
+			if index > u.maxIndex {
+				u.maxIndex = index
+			}
+		}
+		u.mu.Unlock()
+	}
+
+	if msg.Final != 0 {
+		u.finish(u.joinSegments(), nil)
+	}
+	return nil
+}
+
+func (u *tencentASRStreamingUploader) joinSegments() string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
+	parts := make([]string, 0, u.maxIndex+1)
+	for i := 0; i <= u.maxIndex; i++ {
+		if part := strings.TrimSpace(u.segments[i]); part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, ""))
+}
+
+func (u *tencentASRStreamingUploader) finish(transcript string, err error) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.finished {
+		return
+	}
+	if strings.TrimSpace(transcript) == "" {
+		transcript = u.transcript
+	}
+	u.transcript = strings.TrimSpace(transcript)
+	if err != nil {
+		u.err = err
+	} else if u.transcript == "" {
+		u.err = fmt.Errorf("tencent realtime ASR returned empty transcript")
+	}
+	u.finished = true
+	close(u.done)
+}
+
 type tencentASRRequest struct {
 	EngSerViceType string `json:"EngSerViceType"`
 	SourceType     int    `json:"SourceType"`
@@ -153,6 +466,18 @@ type tencentASRResponse struct {
 			Message string `json:"Message"`
 		} `json:"Error"`
 	} `json:"Response"`
+}
+
+type tencentASRRealtimeServerMessage struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	VoiceID string `json:"voice_id"`
+	Final   int    `json:"final"`
+	Result  *struct {
+		SliceType    int    `json:"slice_type"`
+		Index        int    `json:"index"`
+		VoiceTextStr string `json:"voice_text_str"`
+	} `json:"result"`
 }
 
 func buildTencentTC3Authorization(secretID, secretKey, payload string, timestamp int64) (string, error) {
@@ -205,6 +530,12 @@ func sha256Hex(s string) string {
 
 func hmacSHA256(key []byte, msg string) []byte {
 	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write([]byte(msg))
+	return mac.Sum(nil)
+}
+
+func hmacSHA1(key []byte, msg string) []byte {
+	mac := hmac.New(sha1.New, key)
 	_, _ = mac.Write([]byte(msg))
 	return mac.Sum(nil)
 }

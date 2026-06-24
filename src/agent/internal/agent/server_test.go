@@ -29,8 +29,23 @@ import (
 )
 
 type stubSTTClient struct {
-	transcript string
-	inputs     [][]byte
+	transcript         string
+	transcribeErr      error
+	inputs             [][]byte
+	supportsStreaming  bool
+	streamConfigs      []STTStreamConfig
+	streamUploader     *stubSTTStreamUploader
+	streamUploaderErr  error
+	streamUploaderUsed int
+}
+
+type stubSTTStreamUploader struct {
+	transcript  string
+	finalizeErr error
+	closeErr    error
+	writes      [][]byte
+	finalized   bool
+	closed      bool
 }
 
 type mappingStateMutatingTool struct {
@@ -55,7 +70,44 @@ func (t *mappingStateMutatingTool) Call(_ context.Context, input string) (string
 
 func (s *stubSTTClient) TranscribeWAV(wavData []byte) (string, error) {
 	s.inputs = append(s.inputs, append([]byte(nil), wavData...))
+	if s.transcribeErr != nil {
+		return "", s.transcribeErr
+	}
 	return s.transcript, nil
+}
+
+func (s *stubSTTClient) Capabilities() STTCapabilities {
+	return STTCapabilities{SupportsStreamingUpload: s.supportsStreaming}
+}
+
+func (s *stubSTTClient) NewStreamingUploader(_ context.Context, cfg STTStreamConfig) (STTStreamUploader, error) {
+	s.streamConfigs = append(s.streamConfigs, cfg)
+	if s.streamUploaderErr != nil {
+		return nil, s.streamUploaderErr
+	}
+	if s.streamUploader == nil {
+		s.streamUploader = &stubSTTStreamUploader{}
+	}
+	s.streamUploaderUsed++
+	return s.streamUploader, nil
+}
+
+func (s *stubSTTStreamUploader) UploadPCM(pcm []byte) error {
+	s.writes = append(s.writes, append([]byte(nil), pcm...))
+	return nil
+}
+
+func (s *stubSTTStreamUploader) Finalize() (string, error) {
+	s.finalized = true
+	if s.finalizeErr != nil {
+		return "", s.finalizeErr
+	}
+	return s.transcript, nil
+}
+
+func (s *stubSTTStreamUploader) Close() error {
+	s.closed = true
+	return s.closeErr
 }
 
 func firstMessageOfType(messages []Message, messageType string) (Message, bool) {
@@ -1830,6 +1882,134 @@ func TestServerDeviceAudioRecordingEndpointsReturnWAVAttachment(t *testing.T) {
 	}
 	if len(wavData) != 48 {
 		t.Fatalf("expected 2 PCM16 samples in WAV, got %d bytes", len(wavData))
+	}
+}
+
+func TestServerDeviceAudioRecordingStopIncludesStreamingTranscript(t *testing.T) {
+	stopCh := make(chan struct{})
+	var stopOnce sync.Once
+
+	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
+		switch req.Op {
+		case "start_playback":
+			return audioResponse{Status: "OK", SessionID: stringUint64(7)}, nil
+		case "write_play_chunk", "health":
+			return audioResponse{Status: "OK"}, nil
+		case "start_recording":
+			return audioResponse{Status: "OK", SessionID: stringUint64(42)}, nil
+		case "read_record_chunk":
+			select {
+			case <-stopCh:
+				return audioResponse{Status: "OK", EndOfStream: true}, nil
+			default:
+				return audioResponse{Status: "OK"}, []byte{1, 0, 2, 0}
+			}
+		case "stop_recording":
+			stopOnce.Do(func() { close(stopCh) })
+			return audioResponse{Status: "OK"}, nil
+		default:
+			return audioResponse{Status: "INTERNAL_ERROR"}, nil
+		}
+	})
+
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model: ModelConfig{Provider: "fake"},
+			Audio: AudioConfig{
+				Socket:     socketPath,
+				SampleRate: 16000,
+				Channels:   1,
+				BitWidth:   16,
+			},
+		},
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+	server.sttClient = &stubSTTClient{
+		supportsStreaming: true,
+		streamUploader:    &stubSTTStreamUploader{transcript: "边录边传结果"},
+	}
+
+	startReq := httptest.NewRequest(http.MethodPost, "/api/audio/record/start", nil)
+	startRec := httptest.NewRecorder()
+	server.handleAudioRecordStart(startRec, startReq)
+	if startRec.Code != http.StatusOK {
+		t.Fatalf("unexpected start status: %d body=%s", startRec.Code, startRec.Body.String())
+	}
+
+	stopReq := httptest.NewRequest(http.MethodPost, "/api/audio/record/stop", nil)
+	stopRec := httptest.NewRecorder()
+	server.handleAudioRecordStop(stopRec, stopReq)
+	if stopRec.Code != http.StatusOK {
+		t.Fatalf("unexpected stop status: %d body=%s", stopRec.Code, stopRec.Body.String())
+	}
+
+	var resp AudioRecordStopResponse
+	if err := json.NewDecoder(stopRec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode stop response: %v", err)
+	}
+	if resp.Attachment.Transcript != "边录边传结果" {
+		t.Fatalf("Attachment.Transcript = %q, want 边录边传结果", resp.Attachment.Transcript)
+	}
+}
+
+func TestServerHandleChatUsesAttachmentTranscriptWithoutRetranscribing(t *testing.T) {
+	model := &scriptedModel{
+		responses: roleDirectResponses("已处理"),
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use transcript directly.",
+			InputMode:   "stt",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	stt := &stubSTTClient{transcript: "不该调用"}
+	server := &Server{
+		runtime:   runtime,
+		history:   make([]Message, 0),
+		sttClient: stt,
+	}
+
+	payload, err := json.Marshal(ChatRequest{
+		Attachments: []MessageAttachment{{
+			Kind:       AttachmentKindAudio,
+			Name:       "recording.wav",
+			MIMEType:   "audio/wav",
+			Data:       base64.StdEncoding.EncodeToString([]byte("RIFFtest")),
+			Transcript: "直接复用的转写",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.handleChat(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(stt.inputs) != 0 {
+		t.Fatalf("expected attachment transcript to skip TranscribeWAV, got %d calls", len(stt.inputs))
+	}
+
+	var resp ChatResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.History[0].Content != "直接复用的转写" {
+		t.Fatalf("expected transcript as user content, got %#v", resp.History[0])
 	}
 }
 

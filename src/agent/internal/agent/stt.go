@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,9 +10,27 @@ import (
 	"net/http"
 )
 
+type STTCapabilities struct {
+	SupportsStreamingUpload bool
+}
+
+type STTStreamConfig struct {
+	SampleRate int
+	Channels   int
+	BitWidth   int
+}
+
+type STTStreamUploader interface {
+	UploadPCM(pcm []byte) error
+	Finalize() (string, error)
+	Close() error
+}
+
 // STTClient is the interface for speech-to-text providers
 type STTClient interface {
+	Capabilities() STTCapabilities
 	TranscribeWAV(wavData []byte) (string, error)
+	NewStreamingUploader(ctx context.Context, cfg STTStreamConfig) (STTStreamUploader, error)
 }
 
 // OpenAIWhisperSTT implements STT using OpenAI Whisper API
@@ -105,4 +124,12 @@ func (s *OpenAIWhisperSTT) TranscribeWAV(wavData []byte) (string, error) {
 	}
 
 	return result.Text, nil
+}
+
+func (s *OpenAIWhisperSTT) Capabilities() STTCapabilities {
+	return STTCapabilities{}
+}
+
+func (s *OpenAIWhisperSTT) NewStreamingUploader(_ context.Context, _ STTStreamConfig) (STTStreamUploader, error) {
+	return nil, fmt.Errorf("provider %q does not support streaming upload", "openai-whisper")
 }

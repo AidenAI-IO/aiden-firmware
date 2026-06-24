@@ -67,6 +67,8 @@ type webAudioRecording struct {
 	pending    byte
 	stopping   bool
 	err        error
+	sttSession *streamingSTTSession
+	transcript string
 }
 
 type AudioRecordStartResponse struct {
@@ -2021,6 +2023,20 @@ func (s *Server) handleAudioRecordStart(w http.ResponseWriter, r *http.Request) 
 		done:       make(chan struct{}),
 		samples:    make([]int16, 0, sampleRate),
 	}
+	if s.webAudioInputMode() == TurnModalitySTT && s.sttClient != nil && s.sttClient.Capabilities().SupportsStreamingUpload {
+		streamingSTT, err := beginStreamingSTTSession(r.Context(), s.sttClient, STTStreamConfig{
+			SampleRate: sampleRate,
+			Channels:   1,
+			BitWidth:   16,
+		})
+		if err != nil {
+			if s.logger != nil {
+				s.logger.Warn("Web audio streaming STT unavailable, falling back to one-shot STT: %v", err)
+			}
+		} else {
+			recording.sttSession = streamingSTT
+		}
+	}
 
 	s.recordMu.Lock()
 	if s.webRecording != nil {
@@ -2084,11 +2100,12 @@ func (s *Server) handleAudioRecordStop(w http.ResponseWriter, r *http.Request) {
 	samples := recording.snapshotSamples()
 	wavData := pcm16MonoToWAV(samples, recording.sampleRate)
 	attachment := MessageAttachment{
-		Kind:     AttachmentKindAudio,
-		Name:     "recording.wav",
-		MIMEType: "audio/wav",
-		Data:     base64.StdEncoding.EncodeToString(wavData),
-		Size:     len(wavData),
+		Kind:       AttachmentKindAudio,
+		Name:       "recording.wav",
+		MIMEType:   "audio/wav",
+		Data:       base64.StdEncoding.EncodeToString(wavData),
+		Size:       len(wavData),
+		Transcript: recording.readTranscript(),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -2108,6 +2125,28 @@ func (s *Server) endStaleWebRecording(recording *webAudioRecording) error {
 	return s.endWebRecordingWithTimeout(recording, webRecordingStaleCleanupTimeout)
 }
 
+func (s *Server) finalizeWebRecordingTranscript(recording *webAudioRecording) error {
+	if recording == nil {
+		return nil
+	}
+
+	recording.mu.Lock()
+	session := recording.sttSession
+	recording.sttSession = nil
+	recording.mu.Unlock()
+	if session == nil {
+		return nil
+	}
+
+	transcript, err := session.Finalize()
+	if err != nil {
+		_ = session.Close()
+		return err
+	}
+	recording.storeTranscript(transcript)
+	return session.Close()
+}
+
 func (s *Server) endWebRecordingWithTimeout(recording *webAudioRecording, timeout time.Duration) error {
 	if recording == nil {
 		return nil
@@ -2123,6 +2162,9 @@ func (s *Server) endWebRecordingWithTimeout(recording *webAudioRecording, timeou
 	}
 	if err := recording.readError(); err != nil {
 		return err
+	}
+	if err := s.finalizeWebRecordingTranscript(recording); err != nil && s.logger != nil {
+		s.logger.Warn("Finalize web audio streaming transcript failed: %v", err)
 	}
 	return stopErr
 }
@@ -2140,6 +2182,12 @@ func (s *Server) readWebAudioRecording(recording *webAudioRecording) {
 		}
 		if len(chunk.PCM) > 0 {
 			recording.appendPCM(chunk.PCM)
+			if err := recording.uploadPCM(chunk.PCM); err != nil {
+				recording.clearStreamingSession()
+				if s.logger != nil {
+					s.logger.Warn("Web audio streaming STT upload failed, falling back to one-shot STT: %v", err)
+				}
+			}
 		}
 		if chunk.EndOfStream {
 			return
@@ -2183,6 +2231,38 @@ func (r *webAudioRecording) snapshotSamples() []int16 {
 	samples := make([]int16, len(r.samples))
 	copy(samples, r.samples)
 	return samples
+}
+
+func (r *webAudioRecording) uploadPCM(pcm []byte) error {
+	r.mu.Lock()
+	session := r.sttSession
+	r.mu.Unlock()
+	if session == nil {
+		return nil
+	}
+	return session.UploadPCM(pcm)
+}
+
+func (r *webAudioRecording) clearStreamingSession() {
+	r.mu.Lock()
+	session := r.sttSession
+	r.sttSession = nil
+	r.mu.Unlock()
+	if session != nil {
+		_ = session.Close()
+	}
+}
+
+func (r *webAudioRecording) storeTranscript(transcript string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.transcript = strings.TrimSpace(transcript)
+}
+
+func (r *webAudioRecording) readTranscript() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.transcript
 }
 
 func (s *Server) handleAudioFile(w http.ResponseWriter, r *http.Request) {
@@ -2500,7 +2580,8 @@ func (s *Server) resolveRequestInput(req ChatRequest) (TurnInput, []MessageAttac
 
 	trimmedMessage := strings.TrimSpace(req.Message)
 	if audioAttachment != nil {
-		audioInput, err := PrepareAudioInput(s.webAudioInputMode(), s.sttClient, audioAttachment.Data, trimmedMessage, nonAudioAttachments)
+		audioTranscript := firstAudioAttachmentTranscript(historyAttachments)
+		audioInput, err := PrepareAudioInput(s.webAudioInputMode(), s.sttClient, audioAttachment.Data, audioTranscript, trimmedMessage, nonAudioAttachments)
 		if err != nil {
 			return TurnInput{}, nil, err
 		}
@@ -2569,11 +2650,12 @@ func decodeMessageAttachments(payloads []MessageAttachment) ([]InputAttachment, 
 		})
 
 		history = append(history, MessageAttachment{
-			Kind:     kind,
-			Name:     payload.Name,
-			MIMEType: payload.MIMEType,
-			Data:     payload.Data,
-			Size:     len(raw),
+			Kind:       kind,
+			Name:       payload.Name,
+			MIMEType:   payload.MIMEType,
+			Data:       payload.Data,
+			Size:       len(raw),
+			Transcript: strings.TrimSpace(payload.Transcript),
 		})
 	}
 
@@ -2598,6 +2680,15 @@ func splitAudioAttachment(attachments []InputAttachment) (*InputAttachment, []In
 	}
 
 	return audio, others, nil
+}
+
+func firstAudioAttachmentTranscript(attachments []MessageAttachment) string {
+	for _, attachment := range attachments {
+		if attachment.Kind == AttachmentKindAudio {
+			return strings.TrimSpace(attachment.Transcript)
+		}
+	}
+	return ""
 }
 
 func (s *Server) handleBridgeStatus(w http.ResponseWriter, r *http.Request) {
@@ -5198,7 +5289,8 @@ const webUI = `<!DOCTYPE html>
                             name: attachment.name || 'recording.wav',
                             mime_type: attachment.mime_type || 'audio/wav',
                             data: attachment.data || '',
-                            size: attachment.size || 0
+                            size: attachment.size || 0,
+                            transcript: attachment.transcript || ''
                         });
                     }
                     return;
@@ -5463,7 +5555,8 @@ const webUI = `<!DOCTYPE html>
                     name: attachment.name,
                     mime_type: attachment.mime_type,
                     data: attachment.data,
-                    size: attachment.size
+                    size: attachment.size,
+                    transcript: attachment.transcript || ''
                 };
             });
         }
@@ -5476,7 +5569,8 @@ const webUI = `<!DOCTYPE html>
                     mime_type: attachment.mime_type,
                     data: attachment.data,
                     size: attachment.size,
-                    preview_url: attachment.preview_url || ''
+                    preview_url: attachment.preview_url || '',
+                    transcript: attachment.transcript || ''
                 };
             });
         }

@@ -33,6 +33,8 @@ type AudioDialog struct {
 	recordActive  bool
 	sessionID     uint64
 	recordReader  *AudioRecordChunkReader
+	recordSTT     *streamingSTTSession
+	recordText    string
 	speechMu      sync.Mutex
 	outputMu      sync.Mutex
 	activeOutputs map[*activeTTSOutput]struct{}
@@ -183,6 +185,17 @@ func (d *AudioDialog) StartRecording() error {
 	} else {
 		log.Printf("[audio] Persistent record reader unavailable, using per-request reads: %v\n", err)
 	}
+	d.recordText = ""
+	recordSTT, err := beginStreamingSTTSession(context.Background(), d.sttClient, STTStreamConfig{
+		SampleRate: d.config.Audio.SampleRateOrDefault(),
+		Channels:   d.config.Audio.ChannelsOrDefault(),
+		BitWidth:   d.config.Audio.BitWidthOrDefault(),
+	})
+	if err != nil {
+		log.Printf("[stt] streaming upload unavailable, falling back to one-shot STT: %v\n", err)
+	} else {
+		d.recordSTT = recordSTT
+	}
 	d.recordActive = true
 	if d.vad != nil {
 		if err := d.vad.Reset(); err != nil {
@@ -240,9 +253,11 @@ func (d *AudioDialog) StopRecording() error {
 
 	sessionID := d.sessionID
 	reader := d.recordReader
+	recordSTT := d.recordSTT
 	d.recordActive = false
 	d.sessionID = 0
 	d.recordReader = nil
+	d.recordSTT = nil
 
 	if reader != nil {
 		_ = reader.Close()
@@ -250,6 +265,15 @@ func (d *AudioDialog) StopRecording() error {
 
 	if err := d.audioClient.StopRecording(sessionID); err != nil {
 		return fmt.Errorf("stop recording: %w", err)
+	}
+	if recordSTT != nil {
+		transcript, err := recordSTT.Finalize()
+		if err != nil {
+			log.Printf("[stt] finalize streaming transcript failed, falling back to one-shot STT: %v\n", err)
+		} else {
+			d.recordText = transcript
+		}
+		_ = recordSTT.Close()
 	}
 
 	log.Println("[audio] Record session closed")
@@ -268,13 +292,29 @@ func (d *AudioDialog) ReadRecordChunk(timeoutMs uint32) (*AudioChunkResult, erro
 	if d.recordReader != nil {
 		chunk, err := d.recordReader.Read(timeoutMs)
 		if err == nil {
+			d.uploadRecordChunkToStreamingSTT(chunk)
 			return chunk, nil
 		}
 		log.Printf("[audio] Persistent record reader failed, falling back to per-request reads: %v\n", err)
 		_ = d.recordReader.Close()
 		d.recordReader = nil
 	}
-	return d.audioClient.ReadRecordChunk(d.sessionID, timeoutMs)
+	chunk, err := d.audioClient.ReadRecordChunk(d.sessionID, timeoutMs)
+	if err == nil {
+		d.uploadRecordChunkToStreamingSTT(chunk)
+	}
+	return chunk, err
+}
+
+func (d *AudioDialog) uploadRecordChunkToStreamingSTT(chunk *AudioChunkResult) {
+	if d == nil || chunk == nil || len(chunk.PCM) == 0 || d.recordSTT == nil {
+		return
+	}
+	if err := d.recordSTT.UploadPCM(chunk.PCM); err != nil {
+		log.Printf("[stt] streaming upload failed, falling back to one-shot STT: %v\n", err)
+		_ = d.recordSTT.Close()
+		d.recordSTT = nil
+	}
 }
 
 // ProcessVADFrame processes an audio frame through VAD.
@@ -541,7 +581,7 @@ func (d *AudioDialog) PrepareTurnInput(utterance []int16) (TurnInput, error) {
 	wavData := pcm16MonoToWAV(utterance, d.config.Audio.SampleRateOrDefault())
 	log.Printf("[debug] WAV size: %d bytes\n", len(wavData))
 
-	audioInput, err := PrepareAudioInput(d.config.InputModeOrDefault(), d.sttClient, wavData, "", nil)
+	audioInput, err := PrepareAudioInput(d.config.InputModeOrDefault(), d.sttClient, wavData, d.consumeRecordingTranscript(), "", nil)
 	if err != nil {
 		return TurnInput{}, err
 	}
@@ -550,6 +590,15 @@ func (d *AudioDialog) PrepareTurnInput(utterance []int16) (TurnInput, error) {
 		log.Printf("[stt] Transcript: %s\n", audioInput.Transcript)
 	}
 	return audioInput, nil
+}
+
+func (d *AudioDialog) consumeRecordingTranscript() string {
+	if d == nil {
+		return ""
+	}
+	transcript := strings.TrimSpace(d.recordText)
+	d.recordText = ""
+	return transcript
 }
 
 func (d *AudioDialog) ensureVoiceInputAudioArtifact(input TurnInput, utterance []int16, wavData []byte) TurnInput {
