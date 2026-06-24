@@ -331,6 +331,27 @@ TEST_CASE("config web auto-scrolls agent logs only while pinned to bottom") {
     CHECK(html.find("appState.agentLogPaused&&!showBanner") == std::string::npos);
 }
 
+TEST_CASE("config web preserves agent log selection during background refresh") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find("agentLogPendingSnapshot:null") != std::string::npos);
+    CHECK(html.find("function agentLogBodyText(snapshot)") != std::string::npos);
+    CHECK(html.find("function agentLogBodyEquals(a,b)") != std::string::npos);
+    CHECK(html.find("function agentLogSelectionActive(el)") != std::string::npos);
+    CHECK(html.find("function applyPendingAgentLogSnapshotIfIdle()") != std::string::npos);
+    CHECK(html.find("const contentChanged=!agentLogBodyEquals(previous,snapshot);") != std::string::npos);
+    CHECK(html.find("if(contentChanged){renderLogText(textEl,text,snapshot.exists?'日志为空':'日志文件暂不可读');}") != std::string::npos);
+    CHECK(html.find("if(!showBanner&&agentLogSelectionActive(byId('agentLogText')))") != std::string::npos);
+    CHECK(html.find("if(!agentLogBodyEquals(appState.agentLog,snapshot)){appState.agentLogPendingSnapshot=snapshot;}") != std::string::npos);
+    CHECK(html.find("document.addEventListener('selectionchange',applyPendingAgentLogSnapshotIfIdle)") != std::string::npos);
+}
+
 TEST_CASE("config web colors live log lines by frontend classification") {
     const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
     std::ifstream html_in(html_path.c_str());
