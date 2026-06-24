@@ -152,10 +152,13 @@ func waitForPostActionScreenshot(ctx context.Context, delay time.Duration) error
 	}
 }
 
-// SetPlatformFn delegates to the wrapped EnterTextInFieldTool if present.
+// SetPlatformFn delegates to wrapped text-entry tools if present.
 // This allows runtime configuration of platform precedence (bridge > config > LLM).
 func (t *postActionScreenshotTool) SetPlatformFn(fn func() string) {
-	if tool, ok := t.inner.(*EnterTextInFieldTool); ok {
+	type platformConfigurable interface {
+		SetPlatformFn(func() string)
+	}
+	if tool, ok := t.inner.(platformConfigurable); ok {
 		tool.SetPlatformFn(fn)
 	}
 }
