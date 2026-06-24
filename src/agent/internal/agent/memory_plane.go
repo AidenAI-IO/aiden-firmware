@@ -91,6 +91,17 @@ type sessionPlannerExperienceSnapshot struct {
 	Planner RoleMemoryContext `json:"planner"`
 }
 
+func plannerSnapshotFromSessionState(state *sessionState) (RoleMemoryContext, bool) {
+	if state == nil || state.RetrievedDeviceExperience == nil {
+		return RoleMemoryContext{}, false
+	}
+	snapshot := state.RetrievedDeviceExperience
+	if snapshot.Version != sessionPlannerExperienceSnapshotVersion {
+		return RoleMemoryContext{}, false
+	}
+	return snapshot.Planner, true
+}
+
 type memorySearchQuery struct {
 	Terms    []string
 	Tags     []string
@@ -312,8 +323,7 @@ func (p *FilesystemMemoryPlane) retrieveWithFrozenPlannerSnapshot(retrieve func(
 		_ = fl.Unlock()
 		return MemoryContext{}, err
 	}
-	if meta.State != nil && meta.State.RetrievedDeviceExperience != nil {
-		plannerSnapshot := meta.State.RetrievedDeviceExperience.Planner
+	if plannerSnapshot, ok := plannerSnapshotFromSessionState(meta.State); ok {
 		_ = fl.Unlock()
 
 		out, err := retrieve()

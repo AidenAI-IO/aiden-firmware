@@ -309,6 +309,71 @@ func TestMemoryPlaneRetrieveRefreshesPlannerExperienceAfterSessionRotate(t *test
 	}
 }
 
+func TestMemoryPlaneRetrieveIgnoresPlannerSnapshotWithUnknownVersion(t *testing.T) {
+	ctx := context.Background()
+	memoryDir := filepath.Join(t.TempDir(), "memory")
+	longTerm := NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"))
+	if _, err := longTerm.AddMemory(ctx, MemoryItem{
+		ID:               "mem_open_alipay",
+		Type:             "procedure",
+		Priority:         90,
+		Confidence:       0.9,
+		Entities:         []string{"支付宝App"},
+		Title:            "支付宝打开路径",
+		Content:          "打开支付宝App时先使用搜索。",
+		EvidenceExcerpts: []string{"支付宝路径验证成功。"},
+	}); err != nil {
+		t.Fatalf("AddMemory(mem_open_alipay): %v", err)
+	}
+
+	sessionDir := filepath.Join(memoryDir, "session")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(sessionDir): %v", err)
+	}
+	if err := writeSessionMetadata(filepath.Join(sessionDir, sessionMetadataFileName), sessionMetadata{
+		SessionID: "session_stale_snapshot",
+		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		State: &sessionState{
+			RetrievedDeviceExperience: &sessionPlannerExperienceSnapshot{
+				Version: sessionPlannerExperienceSnapshotVersion + 1,
+				Planner: RoleMemoryContext{
+					Procedures: []MemoryHit{{ID: "mem_stale"}},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("writeSessionMetadata(): %v", err)
+	}
+
+	plane := NewFilesystemMemoryPlane(memoryDir, DefaultMemoryExtractionConfig(), nil)
+	got, err := plane.Retrieve(ctx, MemoryRetrieveRequest{
+		Input:    "打开支付宝App",
+		DeviceID: "default",
+	})
+	if err != nil {
+		t.Fatalf("Retrieve() error = %v", err)
+	}
+	if len(got.Planner.Procedures) == 0 || got.Planner.Procedures[0].ID != "mem_open_alipay" {
+		t.Fatalf("planner procedures = %#v, want fresh retrieval", got.Planner.Procedures)
+	}
+	for _, hit := range got.Planner.Procedures {
+		if hit.ID == "mem_stale" {
+			t.Fatalf("stale planner snapshot should be ignored: %#v", got.Planner.Procedures)
+		}
+	}
+
+	metadata := readSessionMetadataForTest(t, filepath.Join(memoryDir, "session", sessionMetadataFileName))
+	if metadata.State == nil || metadata.State.RetrievedDeviceExperience == nil {
+		t.Fatalf("session metadata missing refreshed planner snapshot: %#v", metadata)
+	}
+	if got := metadata.State.RetrievedDeviceExperience.Version; got != sessionPlannerExperienceSnapshotVersion {
+		t.Fatalf("snapshot version = %d, want %d", got, sessionPlannerExperienceSnapshotVersion)
+	}
+	if got := metadata.State.RetrievedDeviceExperience.Planner.Procedures[0].ID; got != "mem_open_alipay" {
+		t.Fatalf("metadata planner snapshot = %q, want mem_open_alipay", got)
+	}
+}
+
 func TestMemoryPlaneFreezePlannerSnapshotUsesFirstConcurrentRetriever(t *testing.T) {
 	memoryDir := filepath.Join(t.TempDir(), "memory")
 	plane := NewFilesystemMemoryPlane(memoryDir, DefaultMemoryExtractionConfig(), nil)
