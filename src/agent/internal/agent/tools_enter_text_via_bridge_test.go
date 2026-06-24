@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/tmc/langchaingo/llms"
 )
 
 func TestEnterTextViaBridgeUsesClipboardPathAndVerifiesField(t *testing.T) {
@@ -248,6 +250,82 @@ func TestEnterTextViaBridgeSwipesRecentsWhenPreviousAppCardNotInitiallyVisible(t
 	}
 	if !strings.Contains(touch.calls[1], `"type": "swipe_right"`) {
 		t.Fatalf("touch_gesture calls=%v", touch.calls)
+	}
+}
+
+func TestEnterTextViaBridgeCountsBridgeVisionCalls(t *testing.T) {
+	model := &scriptedModel{responses: []*llms.ContentResponse{
+		contentResponse(`{"found":true,"tap_point":{"x":500,"y":220,"coord_space":"normalized"},"label":"Aiden"}`),
+		contentResponse(`{"opened":true,"reason":"Aiden app visible"}`),
+		contentResponse(`{"found":true,"tap_point":{"x":180,"y":290,"coord_space":"normalized"},"label":"Settings"}`),
+		contentResponse(`{"observed_mode":"ascii","field_text":"hello world","composition_pending":false,"wrong_ime_suspected":false,"suggest_switch_ime":false,"candidates":[],"evidence":["verified"]}`),
+	}}
+	resolver := &testModelResolver{model: model}
+	pb := NewPhoneBridge(nil)
+	pb.connected = true
+	tool := &EnterTextViaBridgeTool{
+		hw: &textInputHardwareDeps{
+			mouseClick:   &recordingTextInputTool{name: "mouse_click", out: "ok"},
+			touchGesture: &recordingTextInputTool{name: "touch_gesture", out: "ok"},
+			keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
+			keyboardText: &recordingTextInputTool{name: "keyboard_text", out: "ok"},
+			quickAction:  &recordingTextInputTool{name: "quick_action", out: `{"ok":true}`},
+			screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+		},
+		vision:           newLLMTextInputVision(resolver),
+		bridgeFn:         func() *PhoneBridge { return pb },
+		clipboardWriteFn: func(context.Context, *PhoneBridge, string) error { return nil },
+	}
+	out, err := tool.Call(context.Background(), `{"text":"hello world","focus":{"x":500,"y":100}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"vlm_calls": 4`) {
+		t.Fatalf("unexpected output: %s", out)
+	}
+	if model.callCount != 4 {
+		t.Fatalf("model call count=%d", model.callCount)
+	}
+}
+
+func TestEnterTextViaBridgeReturnsLastObservedFieldTextAfterFailedPasteAttempts(t *testing.T) {
+	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
+		ObservedMode: textInputModeASCII,
+		FieldText:    "hello",
+	}, {
+		ObservedMode: textInputModeASCII,
+		FieldText:    "hello wor",
+	}}}
+	pb := NewPhoneBridge(nil)
+	pb.connected = true
+	tool := &EnterTextViaBridgeTool{
+		hw: &textInputHardwareDeps{
+			mouseClick:   &recordingTextInputTool{name: "mouse_click", out: "ok"},
+			touchGesture: &recordingTextInputTool{name: "touch_gesture", out: "ok"},
+			keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
+			keyboardText: &recordingTextInputTool{name: "keyboard_text", out: "ok"},
+			quickAction:  &recordingTextInputTool{name: "quick_action", out: `{"ok":true}`},
+			screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+		},
+		vision:   vision,
+		bridgeFn: func() *PhoneBridge { return pb },
+		findAppTapFn: func(context.Context, screenshotResult, string) (bridgeSearchResult, error) {
+			return bridgeSearchResult{Found: true, TapPoint: focusPointArgs{X: 500, Y: 220, CoordSpace: "normalized"}, Label: "Aiden"}, nil
+		},
+		confirmAppOpenFn: func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error) {
+			return bridgeAppOpenResult{Opened: true, Reason: "Aiden app visible"}, nil
+		},
+		findPrevAppFn: func(context.Context, screenshotResult) (previousAppCardResult, error) {
+			return previousAppCardResult{Found: true, TapPoint: focusPointArgs{X: 180, Y: 290, CoordSpace: "normalized"}, Label: "Settings"}, nil
+		},
+		clipboardWriteFn: func(context.Context, *PhoneBridge, string) error { return nil },
+	}
+	out, err := tool.Call(context.Background(), `{"text":"hello world","focus":{"x":500,"y":100}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"committed": false`) || !strings.Contains(out, `"field_text": "hello wor"`) {
+		t.Fatalf("unexpected output: %s", out)
 	}
 }
 

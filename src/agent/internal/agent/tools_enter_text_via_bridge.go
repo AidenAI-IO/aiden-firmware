@@ -120,17 +120,18 @@ func (t *EnterTextViaBridgeTool) runBridgeFlow(ctx context.Context, platform str
 		return false, "", 0, nil, fmt.Errorf("phone bridge is not configured")
 	}
 	engine := newTextInputEngine(*t.hw, t.vision)
-	restoreSteps, restoreErr := t.restoreBridgeAppIfNeeded(ctx, engine, bridge, platform)
+	restoreSteps, restoreCalls, restoreErr := t.restoreBridgeAppIfNeeded(ctx, engine, bridge, platform)
 	steps = append(steps, restoreSteps...)
+	vlmCalls += restoreCalls
 	if restoreErr != nil {
-		return false, "", 0, steps, restoreErr
+		return false, "", vlmCalls, steps, restoreErr
 	}
 	bridge = t.currentBridge()
 	if bridge == nil || !bridge.Connected() {
-		return false, "", 0, steps, fmt.Errorf("phone bridge did not connect")
+		return false, "", vlmCalls, steps, fmt.Errorf("phone bridge did not connect")
 	}
 	if err := t.writeClipboard(ctx, bridge, args.Text); err != nil {
-		return false, "", 0, append(steps, "clipboard write failed"), err
+		return false, "", vlmCalls, append(steps, "clipboard write failed"), err
 	}
 	steps = append(steps, "clipboard-first: wrote clipboard in bridge app")
 	time.Sleep(textViaBridgePostWriteDelay)
@@ -139,7 +140,9 @@ func (t *EnterTextViaBridgeTool) runBridgeFlow(ctx context.Context, platform str
 		return false, "", 0, append(steps, "clipboard-first: return to prior app failed"), err
 	}
 	steps = append(steps, "clipboard-first: opened app switcher")
-	if err := t.returnToPreviousApp(ctx, engine); err != nil {
+	returnCalls, err := t.returnToPreviousApp(ctx, engine)
+	vlmCalls += returnCalls
+	if err != nil {
 		return false, "", 0, append(steps, "clipboard-first: select previous app failed"), err
 	}
 	steps = append(steps, "clipboard-first: returned to prior app")
@@ -175,8 +178,8 @@ func (t *EnterTextViaBridgeTool) focusPasteVerify(ctx context.Context, engine *t
 		if err != nil {
 			return false, "", vlmCalls, steps, err
 		}
-		if committed, fieldText := evaluateFieldCommit(analysis, args.Text); committed {
-			return true, fieldText, vlmCalls, steps, nil
+		if committed, committedFieldText := evaluateFieldCommit(analysis, args.Text); committed {
+			return true, committedFieldText, vlmCalls, steps, nil
 		} else {
 			steps = append(steps, fmt.Sprintf("clipboard-first: field verify failed after paste attempt %d", attempt))
 			fieldText = analysis.FieldText
@@ -185,32 +188,33 @@ func (t *EnterTextViaBridgeTool) focusPasteVerify(ctx context.Context, engine *t
 	return false, fieldText, vlmCalls, steps, nil
 }
 
-func (t *EnterTextViaBridgeTool) restoreBridgeAppIfNeeded(ctx context.Context, engine *textInputEngine, bridge *PhoneBridge, platform string) (steps []string, err error) {
+func (t *EnterTextViaBridgeTool) restoreBridgeAppIfNeeded(ctx context.Context, engine *textInputEngine, bridge *PhoneBridge, platform string) (steps []string, vlmCalls int, err error) {
 	if t.hw.quickAction == nil || t.hw.keyboardText == nil || t.hw.touchGesture == nil {
-		return nil, fmt.Errorf("bridge recovery tools are not fully configured")
+		return nil, 0, fmt.Errorf("bridge recovery tools are not fully configured")
 	}
 	searchTerm := textViaBridgeSearchTerm(platform, bridge.Status())
 	var lastOpenReason string
 	for attempt := 1; attempt <= textViaBridgeOpenAttempts; attempt++ {
 		if attempt == 1 {
 			if _, err := t.callQuickAction(ctx, "spotlight_search", platform); err != nil {
-				return append(steps, "clipboard-first: system search failed"), err
+				return append(steps, "clipboard-first: system search failed"), vlmCalls, err
 			}
 			steps = append(steps, "clipboard-first: opened system search")
 			out, err := t.hw.keyboardText.Call(ctx, jsonString(map[string]string{"text": searchTerm}))
 			if err != nil {
-				return append(steps, "clipboard-first: search text failed"), err
+				return append(steps, "clipboard-first: search text failed"), vlmCalls, err
 			}
 			if err := interpretTextInputToolOutput(out); err != nil {
-				return append(steps, "clipboard-first: search text failed"), err
+				return append(steps, "clipboard-first: search text failed"), vlmCalls, err
 			}
 			steps = append(steps, fmt.Sprintf("clipboard-first: searched %q", searchTerm))
 		} else {
 			steps = append(steps, fmt.Sprintf("clipboard-first: retrying app tap on current search page (attempt %d)", attempt))
 		}
-		result, err := t.findBridgeSearchResult(ctx, engine, searchTerm)
+		result, calls, err := t.findBridgeSearchResult(ctx, engine, searchTerm)
+		vlmCalls += calls
 		if err != nil {
-			return append(steps, "clipboard-first: locate bridge app failed"), err
+			return append(steps, "clipboard-first: locate bridge app failed"), vlmCalls, err
 		}
 		if !result.Found {
 			lastOpenReason = fmt.Sprintf("bridge app search result not found for %q", searchTerm)
@@ -218,7 +222,7 @@ func (t *EnterTextViaBridgeTool) restoreBridgeAppIfNeeded(ctx context.Context, e
 			continue
 		}
 		if err := t.tapBridgeSearchResult(ctx, result.TapPoint); err != nil {
-			return append(steps, "clipboard-first: tap bridge app failed"), err
+			return append(steps, "clipboard-first: tap bridge app failed"), vlmCalls, err
 		}
 		if label := strings.TrimSpace(result.Label); label != "" {
 			steps = append(steps, fmt.Sprintf("clipboard-first: tapped bridge app result %q", label))
@@ -226,9 +230,10 @@ func (t *EnterTextViaBridgeTool) restoreBridgeAppIfNeeded(ctx context.Context, e
 			steps = append(steps, "clipboard-first: tapped bridge app result")
 		}
 		time.Sleep(textViaBridgeLaunchDelay)
-		opened, err := t.confirmBridgeAppOpened(ctx, engine, searchTerm)
+		opened, calls, err := t.confirmBridgeAppOpened(ctx, engine, searchTerm)
+		vlmCalls += calls
 		if err != nil {
-			return append(steps, "clipboard-first: bridge app open confirmation failed"), err
+			return append(steps, "clipboard-first: bridge app open confirmation failed"), vlmCalls, err
 		}
 		if opened.Opened {
 			steps = append(steps, "clipboard-first: bridge app open confirmed")
@@ -239,13 +244,13 @@ func (t *EnterTextViaBridgeTool) restoreBridgeAppIfNeeded(ctx context.Context, e
 		steps = append(steps, "clipboard-first: bridge app did not open; retrying")
 	}
 	if lastOpenReason != "" {
-		return append(steps, "clipboard-first: bridge app did not open"), fmt.Errorf("bridge app did not open: %s", lastOpenReason)
+		return append(steps, "clipboard-first: bridge app did not open"), vlmCalls, fmt.Errorf("bridge app did not open: %s", lastOpenReason)
 	}
 	if err := t.waitForBridgeConnection(ctx); err != nil {
-		return append(steps, "clipboard-first: bridge did not reconnect"), err
+		return append(steps, "clipboard-first: bridge did not reconnect"), vlmCalls, err
 	}
 	steps = append(steps, "clipboard-first: bridge connected")
-	return steps, nil
+	return steps, vlmCalls, nil
 }
 
 func (t *EnterTextViaBridgeTool) tapBridgeSearchResult(ctx context.Context, point focusPointArgs) error {
@@ -272,17 +277,18 @@ func (t *EnterTextViaBridgeTool) tapTouchPoint(ctx context.Context, point focusP
 	return interpretTextInputToolOutput(out)
 }
 
-func (t *EnterTextViaBridgeTool) findBridgeSearchResult(ctx context.Context, engine *textInputEngine, appName string) (bridgeSearchResult, error) {
+func (t *EnterTextViaBridgeTool) findBridgeSearchResult(ctx context.Context, engine *textInputEngine, appName string) (bridgeSearchResult, int, error) {
 	shot, err := engine.captureScreenshot(ctx)
 	if err != nil {
-		return bridgeSearchResult{}, err
+		return bridgeSearchResult{}, 0, err
 	}
 	if t != nil && t.findAppTapFn != nil {
-		return t.findAppTapFn(ctx, shot, appName)
+		result, err := t.findAppTapFn(ctx, shot, appName)
+		return result, 0, err
 	}
 	modelVision, ok := t.vision.(*llmTextInputVision)
 	if !ok || modelVision == nil {
-		return bridgeSearchResult{}, fmt.Errorf("bridge app search vision is not configured")
+		return bridgeSearchResult{}, 0, fmt.Errorf("bridge app search vision is not configured")
 	}
 	prompt := strings.TrimSpace(fmt.Sprintf(`Analyze this device screenshot of a system search results page.
 Find the visible search result row that launches the Aiden companion app for query %q.
@@ -300,29 +306,30 @@ Rules:
 - If not visible, return {"found": false, "tap_point": {"x": 0, "y": 0, "coord_space": "normalized"}}.`, appName))
 	raw, err := modelVision.visionJSON(ctx, prompt, shot)
 	if err != nil {
-		return bridgeSearchResult{}, err
+		return bridgeSearchResult{}, 1, err
 	}
 	var result bridgeSearchResult
 	if err := json.Unmarshal([]byte(raw), &result); err != nil {
-		return bridgeSearchResult{}, fmt.Errorf("parse bridge app search result: %w", err)
+		return bridgeSearchResult{}, 1, fmt.Errorf("parse bridge app search result: %w", err)
 	}
 	if strings.TrimSpace(result.TapPoint.CoordSpace) == "" {
 		result.TapPoint.CoordSpace = "normalized"
 	}
-	return result, nil
+	return result, 1, nil
 }
 
-func (t *EnterTextViaBridgeTool) confirmBridgeAppOpened(ctx context.Context, engine *textInputEngine, appName string) (bridgeAppOpenResult, error) {
+func (t *EnterTextViaBridgeTool) confirmBridgeAppOpened(ctx context.Context, engine *textInputEngine, appName string) (bridgeAppOpenResult, int, error) {
 	shot, err := engine.captureScreenshot(ctx)
 	if err != nil {
-		return bridgeAppOpenResult{}, err
+		return bridgeAppOpenResult{}, 0, err
 	}
 	if t != nil && t.confirmAppOpenFn != nil {
-		return t.confirmAppOpenFn(ctx, shot, appName)
+		result, err := t.confirmAppOpenFn(ctx, shot, appName)
+		return result, 0, err
 	}
 	modelVision, ok := t.vision.(*llmTextInputVision)
 	if !ok || modelVision == nil {
-		return bridgeAppOpenResult{}, fmt.Errorf("bridge app open confirmation vision is not configured")
+		return bridgeAppOpenResult{}, 0, fmt.Errorf("bridge app open confirmation vision is not configured")
 	}
 	prompt := strings.TrimSpace(fmt.Sprintf(`Analyze this device screenshot immediately after tapping the Aiden companion app search result for query %q.
 Decide whether the screen has opened the Aiden companion app instead of remaining on the search results page.
@@ -338,32 +345,34 @@ Rules:
 - Keep reason short and concrete.`, appName))
 	raw, err := modelVision.visionJSON(ctx, prompt, shot)
 	if err != nil {
-		return bridgeAppOpenResult{}, err
+		return bridgeAppOpenResult{}, 1, err
 	}
 	var result bridgeAppOpenResult
 	if err := json.Unmarshal([]byte(raw), &result); err != nil {
-		return bridgeAppOpenResult{}, fmt.Errorf("parse bridge app open confirmation: %w", err)
+		return bridgeAppOpenResult{}, 1, fmt.Errorf("parse bridge app open confirmation: %w", err)
 	}
-	return result, nil
+	return result, 1, nil
 }
 
-func (t *EnterTextViaBridgeTool) returnToPreviousApp(ctx context.Context, engine *textInputEngine) error {
+func (t *EnterTextViaBridgeTool) returnToPreviousApp(ctx context.Context, engine *textInputEngine) (int, error) {
+	vlmCalls := 0
 	for attempt := 1; attempt <= textViaBridgeRecentsSwipes+1; attempt++ {
-		result, err := t.findPreviousAppCard(ctx, engine)
+		result, calls, err := t.findPreviousAppCard(ctx, engine)
+		vlmCalls += calls
 		if err != nil {
-			return err
+			return vlmCalls, err
 		}
 		if result.Found {
-			return t.tapTouchPoint(ctx, result.TapPoint)
+			return vlmCalls, t.tapTouchPoint(ctx, result.TapPoint)
 		}
 		if attempt > textViaBridgeRecentsSwipes {
 			break
 		}
 		if err := t.swipeRecentsToFindPreviousApp(ctx); err != nil {
-			return err
+			return vlmCalls, err
 		}
 	}
-	return fmt.Errorf("previous app card not found in app switcher")
+	return vlmCalls, fmt.Errorf("previous app card not found in app switcher")
 }
 
 func (t *EnterTextViaBridgeTool) swipeRecentsToFindPreviousApp(ctx context.Context) error {
@@ -378,17 +387,18 @@ func (t *EnterTextViaBridgeTool) swipeRecentsToFindPreviousApp(ctx context.Conte
 	return interpretTextInputToolOutput(out)
 }
 
-func (t *EnterTextViaBridgeTool) findPreviousAppCard(ctx context.Context, engine *textInputEngine) (previousAppCardResult, error) {
+func (t *EnterTextViaBridgeTool) findPreviousAppCard(ctx context.Context, engine *textInputEngine) (previousAppCardResult, int, error) {
 	shot, err := engine.captureScreenshot(ctx)
 	if err != nil {
-		return previousAppCardResult{}, err
+		return previousAppCardResult{}, 0, err
 	}
 	if t != nil && t.findPrevAppFn != nil {
-		return t.findPrevAppFn(ctx, shot)
+		result, err := t.findPrevAppFn(ctx, shot)
+		return result, 0, err
 	}
 	modelVision, ok := t.vision.(*llmTextInputVision)
 	if !ok || modelVision == nil {
-		return previousAppCardResult{}, fmt.Errorf("previous app selection vision is not configured")
+		return previousAppCardResult{}, 0, fmt.Errorf("previous app selection vision is not configured")
 	}
 	prompt := strings.TrimSpace(`Analyze this device screenshot of the app switcher / recent apps view.
 Find the previous app card that should be tapped to return from the Aiden companion app back to the user's prior task.
@@ -406,16 +416,16 @@ Rules:
 - If not visible, return {"found": false, "tap_point": {"x": 0, "y": 0, "coord_space": "normalized"}}.`)
 	raw, err := modelVision.visionJSON(ctx, prompt, shot)
 	if err != nil {
-		return previousAppCardResult{}, err
+		return previousAppCardResult{}, 1, err
 	}
 	var result previousAppCardResult
 	if err := json.Unmarshal([]byte(raw), &result); err != nil {
-		return previousAppCardResult{}, fmt.Errorf("parse previous app card: %w", err)
+		return previousAppCardResult{}, 1, fmt.Errorf("parse previous app card: %w", err)
 	}
 	if strings.TrimSpace(result.TapPoint.CoordSpace) == "" {
 		result.TapPoint.CoordSpace = "normalized"
 	}
-	return result, nil
+	return result, 1, nil
 }
 
 func (t *EnterTextViaBridgeTool) waitForBridgeConnection(ctx context.Context) error {
