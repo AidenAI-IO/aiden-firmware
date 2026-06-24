@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	langtools "github.com/tmc/langchaingo/tools"
 )
@@ -305,6 +306,84 @@ func TestMemoryPlaneRetrieveRefreshesPlannerExperienceAfterSessionRotate(t *test
 	}
 	if len(afterRotate.Planner.Procedures) == 0 || afterRotate.Planner.Procedures[0].ID != "mem_open_alipay" {
 		t.Fatalf("after rotate planner procedures = %#v", afterRotate.Planner.Procedures)
+	}
+}
+
+func TestMemoryPlaneFreezePlannerSnapshotUsesFirstConcurrentRetriever(t *testing.T) {
+	memoryDir := filepath.Join(t.TempDir(), "memory")
+	plane := NewFilesystemMemoryPlane(memoryDir, DefaultMemoryExtractionConfig(), nil)
+
+	firstComputeStarted := make(chan struct{})
+	firstMayFinish := make(chan struct{})
+	secondCalled := make(chan struct{})
+	secondComputeStarted := make(chan struct{})
+
+	type retrieveResult struct {
+		out MemoryContext
+		err error
+	}
+	firstDone := make(chan retrieveResult, 1)
+	secondDone := make(chan retrieveResult, 1)
+
+	go func() {
+		out, err := plane.retrieveWithFrozenPlannerSnapshot(func() (MemoryContext, error) {
+			close(firstComputeStarted)
+			<-firstMayFinish
+			return MemoryContext{
+				Planner: RoleMemoryContext{
+					Procedures: []MemoryHit{{ID: "mem_first"}},
+				},
+			}, nil
+		})
+		firstDone <- retrieveResult{out: out, err: err}
+	}()
+
+	<-firstComputeStarted
+
+	go func() {
+		close(secondCalled)
+		out, err := plane.retrieveWithFrozenPlannerSnapshot(func() (MemoryContext, error) {
+			close(secondComputeStarted)
+			return MemoryContext{
+				Planner: RoleMemoryContext{
+					Procedures: []MemoryHit{{ID: "mem_second"}},
+				},
+			}, nil
+		})
+		secondDone <- retrieveResult{out: out, err: err}
+	}()
+
+	<-secondCalled
+	select {
+	case <-secondComputeStarted:
+		t.Fatalf("second concurrent retriever started computing before first freeze completed")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(firstMayFinish)
+
+	first := <-firstDone
+	if first.err != nil {
+		t.Fatalf("first retrieveWithFrozenPlannerSnapshot() error = %v", first.err)
+	}
+	second := <-secondDone
+	if second.err != nil {
+		t.Fatalf("second retrieveWithFrozenPlannerSnapshot() error = %v", second.err)
+	}
+
+	if got := first.out.Planner.Procedures[0].ID; got != "mem_first" {
+		t.Fatalf("first planner snapshot = %q, want mem_first", got)
+	}
+	if got := second.out.Planner.Procedures[0].ID; got != "mem_first" {
+		t.Fatalf("second planner snapshot = %q, want mem_first", got)
+	}
+
+	metadata := readSessionMetadataForTest(t, filepath.Join(memoryDir, "session", sessionMetadataFileName))
+	if metadata.State == nil || metadata.State.RetrievedDeviceExperience == nil {
+		t.Fatalf("session metadata missing retrieved device experience snapshot: %#v", metadata)
+	}
+	if got := metadata.State.RetrievedDeviceExperience.Planner.Procedures[0].ID; got != "mem_first" {
+		t.Fatalf("metadata planner snapshot = %q, want mem_first", got)
 	}
 }
 
