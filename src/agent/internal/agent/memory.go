@@ -23,8 +23,13 @@ const (
 )
 
 type sessionMetadata struct {
-	SessionID string `json:"session_id"`
-	CreatedAt string `json:"created_at"`
+	SessionID string        `json:"session_id"`
+	CreatedAt string        `json:"created_at"`
+	State     *sessionState `json:"state,omitempty"`
+}
+
+type sessionState struct {
+	RetrievedDeviceExperience *sessionPlannerExperienceSnapshot `json:"retrieved_device_experience,omitempty"`
 }
 
 type SessionRotationResult struct {
@@ -816,14 +821,18 @@ func writeNewSessionMetadata(sessionDir string, now time.Time) (sessionMetadata,
 		SessionID: newSessionID(now),
 		CreatedAt: now.UTC().Format(time.RFC3339Nano),
 	}
-	data, err := json.Marshal(meta)
-	if err != nil {
-		return sessionMetadata{}, fmt.Errorf("marshal session metadata: %w", err)
-	}
-	if err := os.WriteFile(filepath.Join(sessionDir, sessionMetadataFileName), append(data, '\n'), 0o644); err != nil {
+	if err := writeSessionMetadata(filepath.Join(sessionDir, sessionMetadataFileName), meta); err != nil {
 		return sessionMetadata{}, fmt.Errorf("write session metadata: %w", err)
 	}
 	return meta, nil
+}
+
+func writeSessionMetadata(path string, meta sessionMetadata) error {
+	data, err := json.Marshal(meta)
+	if err != nil {
+		return fmt.Errorf("marshal session metadata: %w", err)
+	}
+	return writeFileAtomic(path, append(data, '\n'), 0o644)
 }
 
 func readSessionMetadata(path string) (sessionMetadata, error) {

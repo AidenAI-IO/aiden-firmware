@@ -84,6 +84,12 @@ type MemoryHit struct {
 }
 
 const defaultMemoryDeviceID = "default"
+const sessionPlannerExperienceSnapshotVersion = 1
+
+type sessionPlannerExperienceSnapshot struct {
+	Version int               `json:"version"`
+	Planner RoleMemoryContext `json:"planner"`
+}
 
 type memorySearchQuery struct {
 	Terms    []string
@@ -116,6 +122,10 @@ func (p *FilesystemMemoryPlane) Retrieve(ctx context.Context, req MemoryRetrieve
 	// prompts or retrieved through the active memory plane.
 	out.Common.SessionSummary = readTextFileIfExists(filepath.Join(p.memoryDir, "session", "summary.md"))
 	out.Common.Profile = readTextFileIfExists(filepath.Join(p.memoryDir, "long_term", "profile.md"))
+	plannerSnapshot, hasPlannerSnapshot, err := p.loadSessionPlannerExperienceSnapshot()
+	if err != nil && p.logger != nil {
+		p.logger.Warn("[memory] session planner experience snapshot load failed: %v", err)
+	}
 
 	query := p.queryFromRequest(req)
 	deviceHits, err := p.device.Search(ctx, DeviceMemoryQuery{
@@ -185,6 +195,13 @@ func (p *FilesystemMemoryPlane) Retrieve(ctx context.Context, req MemoryRetrieve
 	}
 
 	out.trim(4)
+	if hasPlannerSnapshot {
+		out.Planner = plannerSnapshot
+		return out, nil
+	}
+	if err := p.saveSessionPlannerExperienceSnapshot(out.Planner); err != nil && p.logger != nil {
+		p.logger.Warn("[memory] session planner experience snapshot save failed: %v", err)
+	}
 	return out, nil
 }
 
@@ -284,6 +301,58 @@ func (p *FilesystemMemoryPlane) searchLongTerm(ctx context.Context, query memory
 		hits = append(hits, memoryResultToHit(result))
 	}
 	return hits, nil
+}
+
+func (p *FilesystemMemoryPlane) loadSessionPlannerExperienceSnapshot() (RoleMemoryContext, bool, error) {
+	if p == nil || p.memoryDir == "" {
+		return RoleMemoryContext{}, false, nil
+	}
+	fl := NewFileLock(p.memoryDir)
+	if err := fl.Lock(defaultLockTimeout); err != nil {
+		return RoleMemoryContext{}, false, err
+	}
+	defer fl.Unlock()
+
+	sessionDir := filepath.Join(p.memoryDir, "session")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		return RoleMemoryContext{}, false, err
+	}
+	meta, err := ensureActiveSessionMetadata(sessionDir, time.Now().UTC())
+	if err != nil {
+		return RoleMemoryContext{}, false, err
+	}
+	if meta.State == nil || meta.State.RetrievedDeviceExperience == nil {
+		return RoleMemoryContext{}, false, nil
+	}
+	return meta.State.RetrievedDeviceExperience.Planner, true, nil
+}
+
+func (p *FilesystemMemoryPlane) saveSessionPlannerExperienceSnapshot(planner RoleMemoryContext) error {
+	if p == nil || p.memoryDir == "" {
+		return nil
+	}
+	fl := NewFileLock(p.memoryDir)
+	if err := fl.Lock(defaultLockTimeout); err != nil {
+		return err
+	}
+	defer fl.Unlock()
+
+	sessionDir := filepath.Join(p.memoryDir, "session")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		return err
+	}
+	meta, err := ensureActiveSessionMetadata(sessionDir, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	if meta.State == nil {
+		meta.State = &sessionState{}
+	}
+	meta.State.RetrievedDeviceExperience = &sessionPlannerExperienceSnapshot{
+		Version: sessionPlannerExperienceSnapshotVersion,
+		Planner: planner,
+	}
+	return writeSessionMetadata(filepath.Join(sessionDir, sessionMetadataFileName), meta)
 }
 
 func (p *FilesystemMemoryPlane) searchLongTermConflicts(ctx context.Context, query memorySearchQuery) ([]MemoryHit, error) {
