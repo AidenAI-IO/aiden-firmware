@@ -4977,6 +4977,10 @@ func TestRuntimeClearMemoryRemovesPersistedSession(t *testing.T) {
 		t.Fatalf("expected persisted session events at %s: %v", eventsPath, err)
 	}
 	assertNoTopLevelJSONFiles(t, memoryDir)
+	legacyPath := legacyMemorySnapshotPath(memoryDir, "default")
+	if err := os.WriteFile(legacyPath, []byte("[]\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile legacy snapshot: %v", err)
+	}
 
 	if err := runtime.ClearMemory(context.Background()); err != nil {
 		t.Fatalf("ClearMemory() error = %v", err)
@@ -4984,5 +4988,8 @@ func TestRuntimeClearMemoryRemovesPersistedSession(t *testing.T) {
 
 	if _, err := os.Stat(eventsPath); !os.IsNotExist(err) {
 		t.Fatalf("expected session events to be removed, stat err = %v", err)
+	}
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("expected legacy snapshot to be removed, stat err = %v", err)
 	}
 }

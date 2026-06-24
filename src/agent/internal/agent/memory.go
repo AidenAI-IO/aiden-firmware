@@ -986,6 +986,31 @@ func sanitizeMessageRecords(records []MessageRecord) []MessageRecord {
 	return out
 }
 
+func legacyMemorySnapshotPath(storageDir, agentName string) string {
+	agentName = strings.TrimSpace(agentName)
+	if agentName == "" {
+		agentName = "default"
+	}
+	safe := strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' {
+			return r
+		}
+		if r >= 'A' && r <= 'Z' {
+			return r
+		}
+		if r >= '0' && r <= '9' {
+			return r
+		}
+		switch r {
+		case '-', '_', '.':
+			return r
+		default:
+			return '_'
+		}
+	}, agentName)
+	return filepath.Join(storageDir, safe+".json")
+}
+
 func (m *MemoryManager) removeSessionPersisted(agentName string) error {
 	if m.storageDir == "" {
 		return nil
@@ -999,6 +1024,9 @@ func (m *MemoryManager) removeSessionPersisted(agentName string) error {
 	}
 	defer fl.Unlock()
 
+	if err := os.Remove(legacyMemorySnapshotPath(m.storageDir, agentName)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove legacy session memory for %q: %w", agentName, err)
+	}
 	if err := os.RemoveAll(filepath.Join(m.storageDir, "session")); err != nil {
 		return fmt.Errorf("remove session memory for %q: %w", agentName, err)
 	}
@@ -1022,6 +1050,9 @@ func (m *MemoryManager) removeAllPersisted(agentName string) error {
 	}
 	defer fl.Unlock()
 
+	if err := os.Remove(legacyMemorySnapshotPath(m.storageDir, agentName)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove legacy memory for %q: %w", agentName, err)
+	}
 	for _, path := range []string{
 		filepath.Join(m.storageDir, "session"),
 		filepath.Join(m.storageDir, "long_term"),

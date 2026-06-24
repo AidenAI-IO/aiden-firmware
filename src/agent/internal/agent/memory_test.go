@@ -1118,6 +1118,10 @@ func TestMemoryManagerClearAllRemovesFilesystemMemoryArtifacts(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(storageDir, "session", "chunks", "index.yaml")); err != nil {
 		t.Fatalf("expected session chunk index before clear: %v", err)
 	}
+	legacyPath := legacyMemorySnapshotPath(storageDir, "default")
+	if err := os.WriteFile(legacyPath, []byte("[]\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile legacy snapshot: %v", err)
+	}
 
 	if err := manager.ClearAll(ctx, "default"); err != nil {
 		t.Fatalf("ClearAll() error = %v", err)
@@ -1130,6 +1134,9 @@ func TestMemoryManagerClearAllRemovesFilesystemMemoryArtifacts(t *testing.T) {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("expected %s to be removed, stat err = %v", path, err)
 		}
+	}
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("expected legacy snapshot to be removed, stat err = %v", err)
 	}
 }
 
@@ -1177,6 +1184,10 @@ func TestMemoryManagerClearSessionPreservesLongTermMemory(t *testing.T) {
 	if _, err := os.Stat(sessionDir); err != nil {
 		t.Fatalf("expected session dir to exist before clear: %v", err)
 	}
+	legacyPath := legacyMemorySnapshotPath(storageDir, "default")
+	if err := os.WriteFile(legacyPath, []byte("[]\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile legacy snapshot: %v", err)
+	}
 
 	// ClearSession should remove session but preserve long_term and lifecycle
 	if err := manager.ClearSession(ctx, "default"); err != nil {
@@ -1185,6 +1196,9 @@ func TestMemoryManagerClearSessionPreservesLongTermMemory(t *testing.T) {
 
 	if _, err := os.Stat(sessionDir); !os.IsNotExist(err) {
 		t.Fatalf("expected session dir to be removed, stat err = %v", err)
+	}
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("expected legacy snapshot to be removed, stat err = %v", err)
 	}
 	if _, err := os.Stat(profilePath); err != nil {
 		t.Fatalf("expected long_term/profile.md to be preserved: %v", err)
