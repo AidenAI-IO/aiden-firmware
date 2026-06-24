@@ -93,6 +93,16 @@ static std::string frame_metadata_json(const FrameMetadata& metadata) {
         }
         json += "]";
     }
+    if (metadata.source_width > 0 && metadata.source_height > 0) {
+        json += ",\"source_width\":" + std::to_string(metadata.source_width) +
+                ",\"source_height\":" + std::to_string(metadata.source_height);
+    }
+    if (metadata.crop_width > 0 && metadata.crop_height > 0) {
+        json += ",\"crop_x\":" + std::to_string(metadata.crop_x) +
+                ",\"crop_y\":" + std::to_string(metadata.crop_y) +
+                ",\"crop_width\":" + std::to_string(metadata.crop_width) +
+                ",\"crop_height\":" + std::to_string(metadata.crop_height);
+    }
     json += "}";
     return json;
 }
@@ -358,15 +368,25 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
             const std::vector<uint8_t>* payload = &frame->data;
             if (format == "jpeg") {
                 // Encode to JPEG using hardware encoder (includes black bar cropping)
+                uint32_t source_width = metadata.width;
+                uint32_t source_height = metadata.height;
                 uint32_t encoded_width = 0, encoded_height = 0;
+                uint32_t crop_x = 0, crop_y = 0;
                 if (!encode_yuv_to_jpeg_hw(frame->data, metadata.width, metadata.height,
                                            metadata.pixel_format, quality, &encoded_payload,
-                                           &encoded_width, &encoded_height)) {
+                                           &encoded_width, &encoded_height,
+                                           &crop_x, &crop_y)) {
                     write_uds_message(fd, status_response("latest_frame", FrameServiceStatus::INTERNAL_ERROR), std::vector<uint8_t>());
                     cJSON_Delete(root);
                     return;
                 }
                 payload = &encoded_payload;
+                metadata.source_width = source_width;
+                metadata.source_height = source_height;
+                metadata.crop_x = crop_x;
+                metadata.crop_y = crop_y;
+                metadata.crop_width = encoded_width;
+                metadata.crop_height = encoded_height;
                 metadata.width = encoded_width;
                 metadata.height = encoded_height;
                 metadata.stride = 0;

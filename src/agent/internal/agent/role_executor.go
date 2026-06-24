@@ -20,25 +20,28 @@ import (
 )
 
 type roleCollaborativeExecutor struct {
-	Model                 llms.Model
-	Profiles              RoleProfiles
-	Tools                 []langtools.Tool
-	Memory                schema.Memory
-	CallbacksHandler      callbacks.Handler
-	MaxIterations         int
-	TodoReminderToolCalls int
-	ConversationHistory   []llms.MessageContent
-	InputAttachments      []InputAttachment
-	OutputKey             string
-	Recorder              *EpisodeRecorder
-	ScreenshotPruning     ScreenshotPruningConfig
-	InitialWorldState     worldState
-	ForceSimpleLoop       bool
-	SteerProvider         func(context.Context) (RunSteerMessage, bool)
-	FinalSteerProvider    func(context.Context) (RunSteerMessage, bool)
-	SteerInterrupt        func() <-chan struct{}
-	SteerWaiter           func(context.Context) (RunSteerMessage, bool, error)
-	handledSteerInterrupt <-chan struct{}
+	Model                  llms.Model
+	Profiles               RoleProfiles
+	Tools                  []langtools.Tool
+	Memory                 schema.Memory
+	CallbacksHandler       callbacks.Handler
+	MaxIterations          int
+	TodoReminderToolCalls  int
+	ToolCallSpeech         bool
+	ConversationHistory    []llms.MessageContent
+	InputAttachments       []InputAttachment
+	OutputKey              string
+	Recorder               *EpisodeRecorder
+	ScreenshotPruning      ScreenshotPruningConfig
+	InitialWorldState      worldState
+	ForceSimpleLoop        bool
+	SteerProvider          func(context.Context) (RunSteerMessage, bool)
+	FinalSteerProvider     func(context.Context) (RunSteerMessage, bool)
+	SteerInterrupt         func() <-chan struct{}
+	SteerWaiter            func(context.Context) (RunSteerMessage, bool, error)
+	handledSteerInterrupt  <-chan struct{}
+	EnvironmentBridge      *EnvironmentBridgeClient
+	EnvironmentBridgeTools []string
 }
 
 const roleModelCallTimeout = 120 * time.Second
@@ -713,9 +716,11 @@ func (e *roleCollaborativeExecutor) executePlannerToolAction(
 	action schema.AgentAction,
 ) (plannerTurnResult, error) {
 	toolExecution := e.executeToolCall(ctx, ToolCallExecution{
-		Specs:    toolSpecs,
-		Action:   action,
-		Callback: e.CallbacksHandler,
+		Specs:                  toolSpecs,
+		Action:                 action,
+		Callback:               e.CallbacksHandler,
+		EnvironmentBridge:      e.EnvironmentBridge,
+		EnvironmentBridgeTools: e.EnvironmentBridgeTools,
 	})
 	if toolExecution.Error != nil && !(errors.Is(toolExecution.Error, context.Canceled) && e.steerInterruptSignaled(ctx)) {
 		return plannerTurnResult{}, toolExecution.Error
@@ -1022,9 +1027,11 @@ func (e *roleCollaborativeExecutor) callExecutorTurn(
 	}
 
 	toolExecution := e.executeToolCall(ctx, ToolCallExecution{
-		Specs:    toolSpecs,
-		Action:   action,
-		Callback: e.CallbacksHandler,
+		Specs:                  toolSpecs,
+		Action:                 action,
+		Callback:               e.CallbacksHandler,
+		EnvironmentBridge:      e.EnvironmentBridge,
+		EnvironmentBridgeTools: e.EnvironmentBridgeTools,
 	})
 	if toolExecution.Error != nil && !(errors.Is(toolExecution.Error, context.Canceled) && e.steerInterruptSignaled(ctx)) {
 		return executorTurnResult{}, toolExecution.Error
@@ -1090,6 +1097,10 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 	}}
 	if profile.Name == RolePlanner {
 		messages = append(messages, e.ConversationHistory...)
+		messages = append(messages, llms.MessageContent{
+			Role:  llms.ChatMessageTypeHuman,
+			Parts: plannerCurrentUserMessageParts(inputs, e.InputAttachments),
+		})
 	}
 
 	if profile.Name == RoleExecutor && len(state.StepToolSteps) > 0 {
@@ -1098,6 +1109,23 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 	} else if roleSeesToolScratchpad(profile.Name) && len(state.ToolSteps) > 0 {
 		scratchpad := (&FunctionAgent{Tools: toolsForRole(profile.Name, e.Tools), ScreenshotPruning: e.ScreenshotPruning}).constructFunctionScratchPad(state.ToolSteps)
 		messages = append(messages, scratchpad...)
+	}
+
+	if profile.Name == RolePlanner {
+		statePrompt := buildRoleStatePrompt(profile.Name, inputs, state, task)
+		if strings.TrimSpace(statePrompt) != "" {
+			messages = append(messages, llms.MessageContent{
+				Role:  llms.ChatMessageTypeHuman,
+				Parts: []llms.ContentPart{llms.TextPart(statePrompt)},
+			})
+		}
+		for _, steer := range state.SteerMessages {
+			messages = append(messages, llms.MessageContent{
+				Role:  llms.ChatMessageTypeHuman,
+				Parts: []llms.ContentPart{llms.TextPart(steerHumanMessageContent(steer))},
+			})
+		}
+		return messages
 	}
 
 	includeWorldStateLatestScreenshot := profile.Name == RoleVerifier
@@ -1115,6 +1143,30 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 		})
 	}
 	return messages
+}
+
+func plannerCurrentUserMessage(inputs map[string]string) string {
+	for _, key := range []string{"input", latestUserInputKey, rootRequestInputKey} {
+		if value := inputs[key]; strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func plannerCurrentUserMessageParts(inputs map[string]string, attachments []InputAttachment) []llms.ContentPart {
+	parts := []llms.ContentPart{llms.TextPart(plannerCurrentUserMessage(inputs))}
+	for _, attachment := range attachments {
+		if len(attachment.Data) == 0 {
+			continue
+		}
+		if attachment.Kind == AttachmentKindImage {
+			parts = append(parts, buildImagePart(attachment.MIMEType, attachment.Data))
+			continue
+		}
+		parts = append(parts, llms.BinaryPart(attachment.MIMEType, attachment.Data))
+	}
+	return parts
 }
 
 func steerHumanMessageContent(steer RunSteerMessage) string {
@@ -1219,22 +1271,35 @@ func buildRoleStatePromptWithOptions(role RoleName, inputs map[string]string, st
 }
 
 func buildPlannerStatePrompt(inputs map[string]string, state roleLoopState, task string) string {
+	if state.ForceSimpleLoop {
+		return buildSimpleLoopPlannerStatePrompt(inputs, state)
+	}
 	var builder strings.Builder
+	builder.WriteString("Planner runtime context (synthetic; not a new user request):\n")
 	builder.WriteString(task)
 	writeLoopMode(&builder, state)
 	writeWorldState(&builder, state.World)
 	writeRequestContextAndCriteria(&builder, inputs, state)
 	writeSessionContext(&builder, inputs)
-	if history := strings.TrimSpace(inputs["history"]); history != "" {
-		builder.WriteString("\n\nConversation history:\n")
-		builder.WriteString(history)
-	}
 	writeTodoState(&builder, state)
 	writeTodoReminder(&builder, state)
 	writeCurrentPlan(&builder, state)
-	writeExecutorResults(&builder, state)
+	writePriorPlanStepResults(&builder, state)
 	writeVerifierFeedback(&builder, state)
 	return strings.TrimSpace(builder.String())
+}
+
+func buildSimpleLoopPlannerStatePrompt(inputs map[string]string, state roleLoopState) string {
+	var builder strings.Builder
+	writeWorldStateIfPresent(&builder, state.World)
+	writeSimpleLoopRootRequest(&builder, inputs)
+	writeTodoState(&builder, state)
+	writeTodoReminder(&builder, state)
+	content := strings.TrimSpace(builder.String())
+	if content == "" {
+		return ""
+	}
+	return "Planner runtime context (synthetic; not a new user request):\n" + content
 }
 
 func buildExecutorStatePrompt(inputs map[string]string, state roleLoopState, task string) string {
@@ -1439,6 +1504,13 @@ func writeWorldState(builder *strings.Builder, world worldState) {
 	writeWorldStateWithOptions(builder, world, worldStatePromptOptions{})
 }
 
+func writeWorldStateIfPresent(builder *strings.Builder, world worldState) {
+	if world.DeviceEnvironment == nil && world.Observation == nil {
+		return
+	}
+	writeWorldState(builder, world)
+}
+
 func writeWorldStateWithOptions(builder *strings.Builder, world worldState, options worldStatePromptOptions) {
 	builder.WriteString("\n\nWorld State (shared across planner, executor, and verifier):\n")
 	if world.DeviceEnvironment != nil {
@@ -1583,6 +1655,19 @@ func writeRequestContextAndCriteria(builder *strings.Builder, inputs map[string]
 			builder.WriteByte('\n')
 		}
 	}
+}
+
+func writeSimpleLoopRootRequest(builder *strings.Builder, inputs map[string]string) {
+	currentInput := strings.TrimSpace(plannerCurrentUserMessage(inputs))
+	rootRequest := strings.TrimSpace(inputs[rootRequestInputKey])
+	if rootRequest == "" {
+		rootRequest = currentInput
+	}
+	if rootRequest == "" || rootRequest == currentInput {
+		return
+	}
+	builder.WriteString("\n\nOriginal user request / root request:\n")
+	builder.WriteString(rootRequest)
 }
 
 func writeSessionContext(builder *strings.Builder, inputs map[string]string) {

@@ -348,6 +348,93 @@ func (m *recordingSessionManager) CommitRun(ctx context.Context, req SessionComm
 	return m.result, nil
 }
 
+type blockingEpisodeMaintenancePlane struct {
+	traceCommitted     atomic.Bool
+	maintenanceStarted atomic.Bool
+	released           atomic.Bool
+	started            chan struct{}
+	release            chan struct{}
+}
+
+func newBlockingEpisodeMaintenancePlane() *blockingEpisodeMaintenancePlane {
+	return &blockingEpisodeMaintenancePlane{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (p *blockingEpisodeMaintenancePlane) Retrieve(context.Context, MemoryRetrieveRequest) (MemoryContext, error) {
+	return MemoryContext{}, nil
+}
+
+func (p *blockingEpisodeMaintenancePlane) NewEpisodeRecorder(req MemoryRetrieveRequest, retrieved MemoryContext) *EpisodeRecorder {
+	return NewEpisodeRecorder(req, retrieved)
+}
+
+func (p *blockingEpisodeMaintenancePlane) CommitEpisode(context.Context, TaskEpisode) error {
+	return errors.New("sync CommitEpisode should not be called")
+}
+
+func (p *blockingEpisodeMaintenancePlane) commitEpisodeTrace(context.Context, TaskEpisode) error {
+	p.traceCommitted.Store(true)
+	return nil
+}
+
+func (p *blockingEpisodeMaintenancePlane) commitEpisodeMaintenance(ctx context.Context, episode TaskEpisode) {
+	if p.maintenanceStarted.CompareAndSwap(false, true) {
+		close(p.started)
+	}
+	select {
+	case <-ctx.Done():
+	case <-p.release:
+	}
+}
+
+func (p *blockingEpisodeMaintenancePlane) releaseMaintenance() {
+	if p.released.CompareAndSwap(false, true) {
+		close(p.release)
+	}
+}
+
+func TestRuntimeRunAsyncEpisodeMaintenanceDoesNotBlock(t *testing.T) {
+	plane := newBlockingEpisodeMaintenancePlane()
+	defer plane.releaseMaintenance()
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
+		&testModelResolver{model: &scriptedModel{responses: roleDirectResponses("ok")}},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.memoryPlane = plane
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := runtime.Run(context.Background(), RunRequest{
+			Input:                   "hello",
+			AsyncEpisodeMaintenance: true,
+		})
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Run() blocked on async episode maintenance")
+	}
+	if !plane.traceCommitted.Load() {
+		t.Fatal("episode trace was not committed before Run returned")
+	}
+	select {
+	case <-plane.started:
+	case <-time.After(time.Second):
+		t.Fatal("async episode maintenance did not start")
+	}
+}
+
 func TestRuntimeRunAttachesPendingSteerToNextToolCall(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleToolResponses("echo", `{"__arg1":"original action"}`, "Changed course."),
@@ -997,18 +1084,16 @@ func TestRuntimeRunResumeCorrectionUsesRootRequestAndCommittedPlan(t *testing.T)
 		t.Fatalf("expected second run planner prompt, got %#v", model.messages)
 	}
 	resumePrompt := messageText(model.messages[2])
-	for _, want := range []string{
-		"Original user request / root request",
-		rootRequest,
-		"Latest user message",
-		correction,
-		"Latest committed plan",
-		"在微信群发送100块钱红包",
-		"发送100块钱红包",
-	} {
-		if !strings.Contains(resumePrompt, want) {
-			t.Fatalf("resume planner prompt missing %q:\n%s", want, resumePrompt)
-		}
+	resumeMessages := model.messages[2]
+	if len(resumeMessages) < 2 {
+		t.Fatalf("resume planner prompt missing raw input and runtime context: %#v", resumeMessages)
+	}
+	rawMessage := resumeMessages[len(resumeMessages)-2]
+	if rawMessage.Role != llms.ChatMessageTypeHuman || strings.TrimSpace(messageText(resumeMessages[len(resumeMessages)-2:len(resumeMessages)-1])) != correction {
+		t.Fatalf("resume planner current user message = role %s text %q, want raw correction %q", rawMessage.Role, messageText(resumeMessages[len(resumeMessages)-2:len(resumeMessages)-1]), correction)
+	}
+	if statePrompt := messageText(resumeMessages[len(resumeMessages)-1:]); !strings.Contains(statePrompt, "Planner runtime context (synthetic; not a new user request):") {
+		t.Fatalf("resume planner final message should be runtime state context:\n%s", statePrompt)
 	}
 	for _, unwanted := range []string{
 		"Follow-up classification:",
@@ -1016,7 +1101,16 @@ func TestRuntimeRunResumeCorrectionUsesRootRequestAndCommittedPlan(t *testing.T)
 		"Latest correction",
 	} {
 		if strings.Contains(resumePrompt, unwanted) {
-			t.Fatalf("resume planner prompt should not expose follow-up relation judgement %q:\n%s", unwanted, resumePrompt)
+			t.Fatalf("resume planner prompt should not expose legacy follow-up judgement %q:\n%s", unwanted, resumePrompt)
+		}
+	}
+	for _, want := range []string{
+		"Session context view:",
+		"Latest committed plan",
+		"目标群是 Aden AI agent",
+	} {
+		if !strings.Contains(resumePrompt, want) {
+			t.Fatalf("resume planner prompt missing session context %q:\n%s", want, resumePrompt)
 		}
 	}
 	if strings.Contains(resumePrompt, "发介绍") {
@@ -1080,14 +1174,21 @@ func TestRuntimeRunVoiceInterruptionContextUsesTimeBoundary(t *testing.T) {
 		t.Fatalf("expected second model prompt, got %#v", model.messages)
 	}
 	correctionPrompt := messageText(model.messages[1])
+	correctionMessages := model.messages[1]
+	if len(correctionMessages) < 2 {
+		t.Fatalf("correction planner prompt missing raw input and runtime context: %#v", correctionMessages)
+	}
+	rawMessage := correctionMessages[len(correctionMessages)-2]
+	if rawMessage.Role != llms.ChatMessageTypeHuman || strings.TrimSpace(messageText(correctionMessages[len(correctionMessages)-2:len(correctionMessages)-1])) != correction {
+		t.Fatalf("correction planner current user message = role %s text %q, want raw correction %q", rawMessage.Role, messageText(correctionMessages[len(correctionMessages)-2:len(correctionMessages)-1]), correction)
+	}
+	if statePrompt := messageText(correctionMessages[len(correctionMessages)-1:]); !strings.Contains(statePrompt, "Planner runtime context (synthetic; not a new user request):") {
+		t.Fatalf("correction planner final message should be runtime state context:\n%s", statePrompt)
+	}
 	for _, want := range []string{
 		"## Runtime context",
 		"physical wakeup",
 		"after interrupting the previous voice turn",
-		"Original user request / root request",
-		rootRequest,
-		"Latest user message",
-		correction,
 	} {
 		if !strings.Contains(correctionPrompt, want) {
 			t.Fatalf("correction prompt missing %q:\n%s", want, correctionPrompt)
@@ -1099,7 +1200,28 @@ func TestRuntimeRunVoiceInterruptionContextUsesTimeBoundary(t *testing.T) {
 		"Latest correction",
 	} {
 		if strings.Contains(correctionPrompt, unwanted) {
-			t.Fatalf("correction prompt should not expose follow-up relation judgement %q:\n%s", unwanted, correctionPrompt)
+			t.Fatalf("correction prompt should not expose legacy follow-up judgement %q:\n%s", unwanted, correctionPrompt)
+		}
+	}
+	for _, want := range []string{
+		"Original user request / root request:",
+		rootRequest,
+	} {
+		if !strings.Contains(correctionPrompt, want) {
+			t.Fatalf("correction prompt missing runtime context %q:\n%s", want, correctionPrompt)
+		}
+	}
+	for _, unwanted := range []string{
+		"Planner runtime context (synthetic; not a new user request):\nSingle-agent simple loop mode:",
+		"Loop mode:",
+		"Latest user message:",
+		"Session context view:",
+		"Current plan:",
+		"Prior step results",
+		"Verifier feedback:",
+	} {
+		if strings.Contains(correctionPrompt, unwanted) {
+			t.Fatalf("force_simple_loop correction prompt should not contain delegated-plan runtime context %q:\n%s", unwanted, correctionPrompt)
 		}
 	}
 
@@ -1928,6 +2050,68 @@ func TestRuntimeRunFakeProviderUsesFunctionAgentToolCalls(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunRestoresPlannerToolCallsIntoNextRunPrompt(t *testing.T) {
+	model := &scriptedModel{
+		responses: append(
+			roleToolResponses("echo", `{"__arg1":"{}"}`, "first run done"),
+			contentResponse("second run done"),
+		),
+	}
+	tool := &stubTool{
+		name:        "echo",
+		description: "Echo test tool.",
+		output:      "echo result",
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use tools when needed.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(t.TempDir()),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"echo": tool,
+		}},
+		NewSkillIndex(),
+	)
+
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "call echo"}); err != nil {
+		t.Fatalf("first Run() error = %v", err)
+	}
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "continue"}); err != nil {
+		t.Fatalf("second Run() error = %v", err)
+	}
+	if len(model.messages) < 3 {
+		t.Fatalf("model calls = %d, want second run planner prompt", len(model.messages))
+	}
+
+	secondRunPrompt := model.messages[2]
+	var foundToolCall, foundToolResponse bool
+	for _, msg := range secondRunPrompt {
+		for _, part := range msg.Parts {
+			switch typed := part.(type) {
+			case llms.ToolCall:
+				if msg.Role == llms.ChatMessageTypeAI &&
+					typed.ID == "call_1" &&
+					typed.FunctionCall != nil &&
+					typed.FunctionCall.Name == "echo" {
+					foundToolCall = true
+				}
+			case llms.ToolCallResponse:
+				if msg.Role == llms.ChatMessageTypeTool &&
+					typed.ToolCallID == "call_1" &&
+					strings.Contains(typed.Content, "echo result") {
+					foundToolResponse = true
+				}
+			}
+		}
+	}
+	if !foundToolCall || !foundToolResponse {
+		t.Fatalf("second run planner prompt missing persisted tool scratchpad: found call=%v response=%v messages=%#v",
+			foundToolCall, foundToolResponse, secondRunPrompt)
+	}
+}
+
 func TestRuntimeRunExecutesOnlyFirstToolCallPerIteration(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
@@ -2735,7 +2919,7 @@ func TestRuntimeSimpleLoopTodoReminderAfterSeveralToolCalls(t *testing.T) {
 	}
 	prompt := messageText(model.messages[3])
 	if !strings.Contains(prompt, "Todo reminder") || !strings.Contains(prompt, "call set_todo") {
-		t.Fatalf("fourth prompt missing todo reminder:\n%s", prompt)
+		t.Fatalf("fourth planner prompt missing todo reminder runtime state:\n%s", prompt)
 	}
 }
 
@@ -2764,7 +2948,7 @@ func TestRuntimeSimpleLoopTodoReminderUsesConfiguredToolCallThreshold(t *testing
 	}
 	prompt := messageText(model.messages[2])
 	if !strings.Contains(prompt, "Todo reminder") || !strings.Contains(prompt, "call set_todo") {
-		t.Fatalf("third prompt missing configured todo reminder:\n%s", prompt)
+		t.Fatalf("third planner prompt missing configured todo reminder runtime state:\n%s", prompt)
 	}
 }
 
@@ -4529,6 +4713,65 @@ func TestRuntimeRunIncludesRuntimeContextInSystemMessage(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunDoesNotDuplicateRuntimeContextAcrossTurns(t *testing.T) {
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			contentResponse("first"),
+			contentResponse("second"),
+		},
+	}
+	storageDir := filepath.Join(t.TempDir(), "memory")
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:           ModelConfig{Provider: "fake"},
+			Instruction:     "Answer directly.",
+			ForceSimpleLoop: true,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(storageDir),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	firstRuntimeContext := "RUNTIME_CTX_FIRST_MARKER"
+	if _, err := runtime.Run(context.Background(), RunRequest{
+		Input:          "hello",
+		RuntimeContext: firstRuntimeContext,
+	}); err != nil {
+		t.Fatalf("first Run() error = %v", err)
+	}
+
+	secondRuntimeContext := "RUNTIME_CTX_SECOND_MARKER"
+	if _, err := runtime.Run(context.Background(), RunRequest{
+		Input:          "continue",
+		RuntimeContext: secondRuntimeContext,
+	}); err != nil {
+		t.Fatalf("second Run() error = %v", err)
+	}
+	if len(model.messages) < 2 || len(model.messages[1]) == 0 {
+		t.Fatalf("expected second planner call with messages, got %#v", model.messages)
+	}
+
+	secondCall := model.messages[1]
+	systemPrompt := messageText(secondCall[:1])
+	if strings.Count(systemPrompt, "## Runtime context") != 1 {
+		t.Fatalf("second system prompt should contain exactly one runtime context section:\n%s", systemPrompt)
+	}
+	if strings.Count(systemPrompt, secondRuntimeContext) != 1 {
+		t.Fatalf("second system prompt should contain current runtime context exactly once:\n%s", systemPrompt)
+	}
+	if strings.Contains(systemPrompt, firstRuntimeContext) {
+		t.Fatalf("second system prompt leaked previous runtime context:\n%s", systemPrompt)
+	}
+
+	nonSystemPrompt := messageText(secondCall[1:])
+	for _, unwanted := range []string{firstRuntimeContext, secondRuntimeContext} {
+		if strings.Contains(nonSystemPrompt, unwanted) {
+			t.Fatalf("runtime context should not re-enter prompt outside the system message %q:\n%s", unwanted, nonSystemPrompt)
+		}
+	}
+}
+
 func TestRuntimeRunIncludesUserAttachments(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleDirectResponses("processed"),
@@ -4573,12 +4816,16 @@ func TestRuntimeRunIncludesUserAttachments(t *testing.T) {
 	}
 
 	lastCall := model.messages[0]
-	if len(lastCall) == 0 {
+	if len(lastCall) < 3 {
 		t.Fatalf("expected messages in model call")
 	}
-	userMessage := lastCall[len(lastCall)-1]
+	userMessage := lastCall[len(lastCall)-2]
 	if userMessage.Role != llms.ChatMessageTypeHuman {
-		t.Fatalf("expected final message to be human, got %q", userMessage.Role)
+		t.Fatalf("expected raw user message to be human, got %q", userMessage.Role)
+	}
+	stateMessage := lastCall[len(lastCall)-1]
+	if stateMessage.Role != llms.ChatMessageTypeHuman || !strings.Contains(messageText(lastCall[len(lastCall)-1:]), "Planner runtime context (synthetic; not a new user request):") {
+		t.Fatalf("expected final planner message to be runtime state context, got %#v", stateMessage)
 	}
 
 	var textContent string
@@ -4595,8 +4842,13 @@ func TestRuntimeRunIncludesUserAttachments(t *testing.T) {
 		}
 	}
 
-	if !strings.Contains(textContent, "photo.png") || !strings.Contains(textContent, "note.wav") {
-		t.Fatalf("expected attachment names in prompt text, got %q", textContent)
+	for _, unexpected := range []string{"photo.png", "note.wav", "Attached content"} {
+		if strings.Contains(textContent, unexpected) {
+			t.Fatalf("planner user message text should not contain attachment description %q: %q", unexpected, textContent)
+		}
+	}
+	if textContent != "Describe the uploaded media." {
+		t.Fatalf("planner user message text = %q, want raw input", textContent)
 	}
 	if imageURL == "" || !strings.HasPrefix(imageURL, "data:image/png;base64,") {
 		t.Fatalf("expected image attachment as data URL, got %q", imageURL)

@@ -1,0 +1,93 @@
+{
+  "name": "mobilegym_basic",
+  "version": "1.0",
+  "description": "Basic MobileGym device control tests using simulator-only approach",
+  "prompt_prefix": "你正在控制一台 Android 模拟器。使用 screenshot 工具查看屏幕，使用 tap、swipe 等工具进行操作。",
+  "global_reset": {
+    "type": "agent_prompt",
+    "prompt": "请返回主屏幕（如果不在主屏幕，点击 home 按钮）。",
+    "timeout_sec": 30,
+    "clear_history_after": true
+  },
+  "trace_observations": [],
+  "tasks": [
+    {
+      "id": "clock_count_alarms",
+      "category": "device_operation",
+      "prompt": "打开时钟应用，告诉我当前有多少个闹钟。",
+      "description_for_judge": "Agent 应该：1) 打开时钟应用 2) 查看闹钟列表 3) 正确报告闹钟数量",
+      "rubric": [
+        {
+          "id": "opened_clock_app",
+          "description": "成功打开时钟应用（通过点击图标或应用列表）"
+        },
+        {
+          "id": "viewed_alarm_list",
+          "description": "查看了闹钟列表页面"
+        },
+        {
+          "id": "counted_correctly",
+          "description": "正确识别并报告了闹钟数量"
+        }
+      ],
+      "hard_assertions": {
+        "must_complete_within_sec": 120,
+        "min_tool_calls": 2,
+        "required_tools": ["screenshot", "tap"]
+      },
+      "repeats": 1
+    },
+    {
+      "id": "settings_check_wifi",
+      "category": "device_operation",
+      "prompt": "打开设置应用，检查 WiFi 是否已启用，并告诉我当前状态。",
+      "description_for_judge": "Agent 应该：1) 打开设置应用 2) 找到 WiFi 设置 3) 报告 WiFi 是否启用",
+      "rubric": [
+        {
+          "id": "opened_settings",
+          "description": "成功打开设置应用"
+        },
+        {
+          "id": "found_wifi_settings",
+          "description": "找到并查看了 WiFi 设置"
+        },
+        {
+          "id": "reported_status",
+          "description": "正确报告了 WiFi 的启用/禁用状态"
+        }
+      ],
+      "hard_assertions": {
+        "must_complete_within_sec": 120,
+        "min_tool_calls": 3,
+        "required_tools": ["screenshot", "tap"]
+      },
+      "repeats": 1
+    },
+    {
+      "id": "swipe_navigation",
+      "category": "device_operation",
+      "prompt": "在主屏幕上向上滑动打开应用抽屉，然后截图给我看。",
+      "description_for_judge": "Agent 应该：1) 识别当前在主屏幕 2) 执行向上滑动手势 3) 打开应用抽屉并截图",
+      "rubric": [
+        {
+          "id": "performed_swipe",
+          "description": "执行了向上滑动手势"
+        },
+        {
+          "id": "opened_app_drawer",
+          "description": "成功打开了应用抽屉"
+        },
+        {
+          "id": "took_screenshot",
+          "description": "在应用抽屉打开后进行了截图"
+        }
+      ],
+      "hard_assertions": {
+        "must_complete_within_sec": 60,
+        "min_tool_calls": 2,
+        "required_tools": ["screenshot", "swipe"]
+      },
+      "repeats": 1
+    }
+  ]
+}

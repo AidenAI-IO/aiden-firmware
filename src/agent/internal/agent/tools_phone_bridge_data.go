@@ -14,15 +14,30 @@ func nextBridgeCmdID(prefix string) string {
 	return fmt.Sprintf("%s_%d_%d", prefix, time.Now().UnixMilli(), openAppCmdSeq.Add(1))
 }
 
-func bridgeNotConnected() string {
-	return jsonString(map[string]interface{}{
+func bridgeNotConnected(status ...PhoneBridgeStatus) string {
+	result := map[string]interface{}{
 		"ok":    false,
 		"error": "phone bridge not connected",
-	})
+	}
+	if len(status) > 0 {
+		result["fallback"] = phoneBridgeRecoveryGuidance(status[0])
+	}
+	return jsonString(result)
 }
 
-func bridgeRespError(err error) string {
-	return jsonString(map[string]interface{}{"ok": false, "error": err.Error()})
+func bridgeRespError(err error, status ...PhoneBridgeStatus) string {
+	result := map[string]interface{}{"ok": false, "error": err.Error()}
+	if len(status) > 0 {
+		result["fallback"] = phoneBridgeRecoveryGuidance(status[0])
+	}
+	return jsonString(result)
+}
+
+func bridgeStatusForError(bridge *PhoneBridge) []PhoneBridgeStatus {
+	if bridge == nil {
+		return nil
+	}
+	return []PhoneBridgeStatus{bridge.Status()}
 }
 
 // bridgeMsgError returns a JSON envelope for a tool-level error string. Keeps
@@ -38,11 +53,12 @@ func bridgeMsgError(format string, a ...interface{}) string {
 
 // ClipboardTool reads and writes the connected phone's system clipboard.
 type ClipboardTool struct {
-	bridge *PhoneBridge
+	bridge   *PhoneBridge
+	restorer *PhoneBridgeRestorer
 }
 
-func NewClipboardTool(bridge *PhoneBridge) *ClipboardTool {
-	return &ClipboardTool{bridge: bridge}
+func NewClipboardTool(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) *ClipboardTool {
+	return &ClipboardTool{bridge: bridge, restorer: restorer}
 }
 
 func (t *ClipboardTool) Name() string { return "clipboard" }
@@ -51,8 +67,8 @@ func (t *ClipboardTool) Description() string {
 	return `Read or write the connected phone's system clipboard via the phone bridge. ` +
 		`Input JSON: {"action":"read"} returns {"ok":true,"text":"..."}; ` +
 		`{"action":"write","text":"content"} sets the clipboard and returns {"ok":true}. ` +
-		`Use this as a fast cross-app content channel instead of HID copy/paste when the phone bridge is connected. ` +
-		`If the phone bridge is not connected, this tool fails and there is no HID fallback for clipboard access.`
+		`Use this as a fast cross-app content channel for long or non-ASCII text: write the clipboard in Aiden, switch to the target app, then paste. ` +
+		`On iOS, if Aiden is in background and a Dynamic Island return entry is available, this tool restores Aiden to foreground and waits for WebSocket reconnect before using the clipboard.`
 }
 
 func (t *ClipboardTool) ArgsSchema() map[string]any {
@@ -68,10 +84,6 @@ type clipboardArgs struct {
 }
 
 func (t *ClipboardTool) Call(ctx context.Context, input string) (string, error) {
-	if !t.bridge.Connected() {
-		return bridgeNotConnected(), nil
-	}
-
 	var args clipboardArgs
 	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err != nil {
 		return bridgeMsgError("invalid input: %v. Expected JSON format: {\"action\":\"read\"} or {\"action\":\"write\",\"text\":\"content\"}. Common mistakes: action must be \"read\" or \"write\", missing quotes around field names", err), nil
@@ -89,15 +101,18 @@ func (t *ClipboardTool) Call(ctx context.Context, input string) (string, error) 
 }
 
 func (t *ClipboardTool) read(ctx context.Context) (string, error) {
-	resp, err := t.bridge.SendCommand(ctx, BridgeCommand{
+	resp, restored, err := sendForegroundBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
 		ID:        nextBridgeCmdID("clip_read"),
 		Type:      "clipboard_read",
 		TimeoutMs: 5000,
 	})
 	if err != nil {
-		return bridgeRespError(err), nil
+		return bridgeRespError(err, bridgeStatusForError(t.bridge)...), nil
 	}
 	result := map[string]interface{}{"ok": resp.OK}
+	if restored {
+		result["restored_from_return_entry"] = true
+	}
 	if !resp.OK {
 		result["error"] = resp.Error
 		return jsonString(result), nil
@@ -118,16 +133,19 @@ func (t *ClipboardTool) read(ctx context.Context) (string, error) {
 
 func (t *ClipboardTool) write(ctx context.Context, text string) (string, error) {
 	payload, _ := json.Marshal(map[string]string{"text": text})
-	resp, err := t.bridge.SendCommand(ctx, BridgeCommand{
+	resp, restored, err := sendForegroundBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
 		ID:        nextBridgeCmdID("clip_write"),
 		Type:      "clipboard_write",
 		Payload:   payload,
 		TimeoutMs: 5000,
 	})
 	if err != nil {
-		return bridgeRespError(err), nil
+		return bridgeRespError(err, bridgeStatusForError(t.bridge)...), nil
 	}
 	result := map[string]interface{}{"ok": resp.OK}
+	if restored {
+		result["restored_from_return_entry"] = true
+	}
 	if !resp.OK {
 		result["error"] = resp.Error
 	}
@@ -137,11 +155,12 @@ func (t *ClipboardTool) write(ctx context.Context, text string) (string, error) 
 // CalendarTool creates, queries, and deletes system calendar events on the
 // connected phone via the phone bridge.
 type CalendarTool struct {
-	bridge *PhoneBridge
+	bridge   *PhoneBridge
+	restorer *PhoneBridgeRestorer
 }
 
-func NewCalendarTool(bridge *PhoneBridge) *CalendarTool {
-	return &CalendarTool{bridge: bridge}
+func NewCalendarTool(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) *CalendarTool {
+	return &CalendarTool{bridge: bridge, restorer: restorer}
 }
 
 func (t *CalendarTool) Name() string { return "calendar" }
@@ -152,7 +171,7 @@ func (t *CalendarTool) Description() string {
 		`Create: {"action":"create","title":"Dentist","start_at":"2026-06-02T15:00:00+08:00","end_at":"2026-06-02T16:00:00+08:00","all_day":false,"location":"Clinic","notes":"...","alarm_minutes_before":30} -> {"ok":true,"event_id":"..."}. ` +
 		`Query: {"action":"query","from":"2026-06-02T00:00:00+08:00","to":"2026-06-03T00:00:00+08:00"} -> {"ok":true,"events":[{"event_id","title","start_at","end_at","location"}]}. ` +
 		`Delete: {"action":"delete","event_id":"..."} -> {"ok":true}. ` +
-		`Confirm details with the user before creating or deleting events. If the phone bridge is not connected, this tool fails and there is no HID fallback.`
+		`Confirm details with the user before creating or deleting events. On iOS, if Aiden is in background and a Dynamic Island return entry is available, this tool restores Aiden before sending the calendar command.`
 }
 
 func (t *CalendarTool) ArgsSchema() map[string]any {
@@ -186,10 +205,6 @@ type calendarArgs struct {
 }
 
 func (t *CalendarTool) Call(ctx context.Context, input string) (string, error) {
-	if !t.bridge.Connected() {
-		return bridgeNotConnected(), nil
-	}
-
 	var args calendarArgs
 	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err != nil {
 		return bridgeMsgError("invalid input: %v. Expected JSON format: {\"action\":\"create\",\"title\":\"...\",\"start_at\":\"2026-06-02T15:00:00+08:00\",...} or {\"action\":\"query\",\"from\":\"...\",\"to\":\"...\"} or {\"action\":\"delete\",\"event_id\":\"...\"}. Times must be RFC3339 format with timezone", err), nil
@@ -223,16 +238,19 @@ func (t *CalendarTool) create(ctx context.Context, args calendarArgs) (string, e
 		"notes":                args.Notes,
 		"alarm_minutes_before": args.AlarmMinutesBefore,
 	})
-	resp, err := t.bridge.SendCommand(ctx, BridgeCommand{
+	resp, restored, err := sendForegroundBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
 		ID:        nextBridgeCmdID("cal_create"),
 		Type:      "calendar_create",
 		Payload:   payload,
 		TimeoutMs: 8000,
 	})
 	if err != nil {
-		return bridgeRespError(err), nil
+		return bridgeRespError(err, bridgeStatusForError(t.bridge)...), nil
 	}
 	result := map[string]interface{}{"ok": resp.OK}
+	if restored {
+		result["restored_from_return_entry"] = true
+	}
 	if !resp.OK {
 		result["error"] = resp.Error
 		return jsonString(result), nil
@@ -256,16 +274,19 @@ func (t *CalendarTool) query(ctx context.Context, args calendarArgs) (string, er
 		return bridgeMsgError("query requires both from and to times (RFC3339)"), nil
 	}
 	payload, _ := json.Marshal(map[string]string{"from": args.From, "to": args.To})
-	resp, err := t.bridge.SendCommand(ctx, BridgeCommand{
+	resp, restored, err := sendForegroundBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
 		ID:        nextBridgeCmdID("cal_query"),
 		Type:      "calendar_query",
 		Payload:   payload,
 		TimeoutMs: 8000,
 	})
 	if err != nil {
-		return bridgeRespError(err), nil
+		return bridgeRespError(err, bridgeStatusForError(t.bridge)...), nil
 	}
 	result := map[string]interface{}{"ok": resp.OK}
+	if restored {
+		result["restored_from_return_entry"] = true
+	}
 	if !resp.OK {
 		result["error"] = resp.Error
 		return jsonString(result), nil
@@ -292,16 +313,19 @@ func (t *CalendarTool) delete(ctx context.Context, args calendarArgs) (string, e
 		return bridgeMsgError("delete requires an event_id"), nil
 	}
 	payload, _ := json.Marshal(map[string]string{"event_id": args.EventID})
-	resp, err := t.bridge.SendCommand(ctx, BridgeCommand{
+	resp, restored, err := sendForegroundBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
 		ID:        nextBridgeCmdID("cal_delete"),
 		Type:      "calendar_delete",
 		Payload:   payload,
 		TimeoutMs: 8000,
 	})
 	if err != nil {
-		return bridgeRespError(err), nil
+		return bridgeRespError(err, bridgeStatusForError(t.bridge)...), nil
 	}
 	result := map[string]interface{}{"ok": resp.OK}
+	if restored {
+		result["restored_from_return_entry"] = true
+	}
 	if !resp.OK {
 		result["error"] = resp.Error
 	}
@@ -310,11 +334,12 @@ func (t *CalendarTool) delete(ctx context.Context, args calendarArgs) (string, e
 
 // ContactsTool queries, creates, and updates contacts on the connected phone.
 type ContactsTool struct {
-	bridge *PhoneBridge
+	bridge   *PhoneBridge
+	restorer *PhoneBridgeRestorer
 }
 
-func NewContactsTool(bridge *PhoneBridge) *ContactsTool {
-	return &ContactsTool{bridge: bridge}
+func NewContactsTool(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) *ContactsTool {
+	return &ContactsTool{bridge: bridge, restorer: restorer}
 }
 
 func (t *ContactsTool) Name() string { return "contacts" }
@@ -324,7 +349,7 @@ func (t *ContactsTool) Description() string {
 		`Query: {"action":"query","query":"张三","limit":20} -> {"ok":true,"contacts":[{"contact_id","name","phone_numbers","emails"}]}. ` +
 		`Create: {"action":"create","name":"李四","phone_numbers":["+86 139 8765 4321"],"emails":["lisi@example.com"],"organization":"公司","notes":"备注"} -> {"ok":true,"contact_id":"..."}. ` +
 		`Update: {"action":"update","contact_id":"...","name":"新名字","phone_numbers":[...],"emails":[...]} -> {"ok":true}. ` +
-		`Confirm details with the user before creating or updating contacts. If the phone bridge is not connected, this tool fails.`
+		`Confirm details with the user before creating or updating contacts. On iOS, if Aiden is in background and a Dynamic Island return entry is available, this tool restores Aiden before sending the contacts command.`
 }
 
 func (t *ContactsTool) ArgsSchema() map[string]any {
@@ -354,10 +379,6 @@ type contactsArgs struct {
 }
 
 func (t *ContactsTool) Call(ctx context.Context, input string) (string, error) {
-	if !t.bridge.Connected() {
-		return bridgeNotConnected(), nil
-	}
-
 	var args contactsArgs
 	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err != nil {
 		return bridgeMsgError("invalid input: %v. Expected JSON format: {\"action\":\"query\",\"query\":\"name\",\"limit\":20} or {\"action\":\"create\",\"name\":\"...\",\"phone_numbers\":[\"...\"],\"emails\":[\"...\"]} or {\"action\":\"update\",\"contact_id\":\"...\",\"name\":\"...\"}. Arrays must use square brackets", err), nil
@@ -384,16 +405,19 @@ func (t *ContactsTool) query(ctx context.Context, args contactsArgs) (string, er
 		"query": args.Query,
 		"limit": limit,
 	})
-	resp, err := t.bridge.SendCommand(ctx, BridgeCommand{
+	resp, restored, err := sendForegroundBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
 		ID:        nextBridgeCmdID("contacts_query"),
 		Type:      "contacts_query",
 		Payload:   payload,
 		TimeoutMs: 8000,
 	})
 	if err != nil {
-		return bridgeRespError(err), nil
+		return bridgeRespError(err, bridgeStatusForError(t.bridge)...), nil
 	}
 	result := map[string]interface{}{"ok": resp.OK}
+	if restored {
+		result["restored_from_return_entry"] = true
+	}
 	if !resp.OK {
 		result["error"] = resp.Error
 		return jsonString(result), nil
@@ -426,16 +450,19 @@ func (t *ContactsTool) create(ctx context.Context, args contactsArgs) (string, e
 		"organization":  args.Organization,
 		"notes":         args.Notes,
 	})
-	resp, err := t.bridge.SendCommand(ctx, BridgeCommand{
+	resp, restored, err := sendForegroundBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
 		ID:        nextBridgeCmdID("contacts_create"),
 		Type:      "contacts_create",
 		Payload:   payload,
 		TimeoutMs: 8000,
 	})
 	if err != nil {
-		return bridgeRespError(err), nil
+		return bridgeRespError(err, bridgeStatusForError(t.bridge)...), nil
 	}
 	result := map[string]interface{}{"ok": resp.OK}
+	if restored {
+		result["restored_from_return_entry"] = true
+	}
 	if !resp.OK {
 		result["error"] = resp.Error
 		return jsonString(result), nil
@@ -466,16 +493,19 @@ func (t *ContactsTool) update(ctx context.Context, args contactsArgs) (string, e
 		"organization":  args.Organization,
 		"notes":         args.Notes,
 	})
-	resp, err := t.bridge.SendCommand(ctx, BridgeCommand{
+	resp, restored, err := sendForegroundBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
 		ID:        nextBridgeCmdID("contacts_update"),
 		Type:      "contacts_update",
 		Payload:   payload,
 		TimeoutMs: 8000,
 	})
 	if err != nil {
-		return bridgeRespError(err), nil
+		return bridgeRespError(err, bridgeStatusForError(t.bridge)...), nil
 	}
 	result := map[string]interface{}{"ok": resp.OK}
+	if restored {
+		result["restored_from_return_entry"] = true
+	}
 	if !resp.OK {
 		result["error"] = resp.Error
 	}
@@ -484,11 +514,12 @@ func (t *ContactsTool) update(ctx context.Context, args contactsArgs) (string, e
 
 // NotificationTool sends local notifications on the connected phone.
 type NotificationTool struct {
-	bridge *PhoneBridge
+	bridge   *PhoneBridge
+	restorer *PhoneBridgeRestorer
 }
 
-func NewNotificationTool(bridge *PhoneBridge) *NotificationTool {
-	return &NotificationTool{bridge: bridge}
+func NewNotificationTool(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) *NotificationTool {
+	return &NotificationTool{bridge: bridge, restorer: restorer}
 }
 
 func (t *NotificationTool) Name() string { return "notification" }
@@ -499,7 +530,7 @@ func (t *NotificationTool) Description() string {
 		`The schedule_at field is optional (RFC3339 with timezone); if omitted, the notification is sent immediately. ` +
 		`Returns {"ok":true,"notification_id":"..."} on success. ` +
 		`Use this to remind the user or bring the companion app back to foreground. ` +
-		`If the phone bridge is not connected, this tool fails.`
+		`On iOS, if Aiden is in background and a Dynamic Island return entry is available, this tool restores Aiden before sending the notification command.`
 }
 
 func (t *NotificationTool) ArgsSchema() map[string]any {
@@ -521,10 +552,6 @@ type notificationArgs struct {
 }
 
 func (t *NotificationTool) Call(ctx context.Context, input string) (string, error) {
-	if !t.bridge.Connected() {
-		return bridgeNotConnected(), nil
-	}
-
 	var args notificationArgs
 	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err != nil {
 		return bridgeMsgError("invalid input: %v. Expected JSON format: {\"title\":\"Reminder\",\"body\":\"Take medicine\",\"schedule_at\":\"2026-06-04T18:00:00+08:00\",\"sound\":true,\"badge\":1}. schedule_at is optional, sound and badge are boolean/number", err), nil
@@ -541,16 +568,19 @@ func (t *NotificationTool) Call(ctx context.Context, input string) (string, erro
 		"sound":       args.Sound,
 		"badge":       args.Badge,
 	})
-	resp, err := t.bridge.SendCommand(ctx, BridgeCommand{
+	resp, restored, err := sendForegroundBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
 		ID:        nextBridgeCmdID("notification"),
 		Type:      "notification_send",
 		Payload:   payload,
 		TimeoutMs: 5000,
 	})
 	if err != nil {
-		return bridgeRespError(err), nil
+		return bridgeRespError(err, bridgeStatusForError(t.bridge)...), nil
 	}
 	result := map[string]interface{}{"ok": resp.OK}
+	if restored {
+		result["restored_from_return_entry"] = true
+	}
 	if !resp.OK {
 		result["error"] = resp.Error
 		return jsonString(result), nil

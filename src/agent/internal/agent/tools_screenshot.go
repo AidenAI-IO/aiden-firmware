@@ -25,10 +25,43 @@ type screenshotResult struct {
 	Data         string            `json:"data"`
 }
 
+type screenshotFrameClient interface {
+	LatestFrameWithFormat(format string, quality int) (*frameMetadata, []byte, error)
+}
+
 // ScreenshotTool captures a screenshot from the frame service.
 type ScreenshotTool struct {
-	client *FrameServiceClient
+	client screenshotFrameClient
 	screen *screenState
+}
+
+func frameMetadataSourceActiveArea(meta *frameMetadata) (sourceWidth, sourceHeight int, active screenActiveArea, ok bool) {
+	if meta == nil || meta.SourceWidth == 0 || meta.SourceHeight == 0 {
+		return 0, 0, screenActiveArea{}, false
+	}
+	sourceWidth = int(meta.SourceWidth)
+	sourceHeight = int(meta.SourceHeight)
+	active = screenActiveArea{
+		X:      int(meta.CropX),
+		Y:      int(meta.CropY),
+		Width:  int(meta.CropWidth),
+		Height: int(meta.CropHeight),
+		Valid:  meta.CropWidth > 0 && meta.CropHeight > 0,
+	}
+	if !active.Valid {
+		active = screenActiveArea{
+			X:      0,
+			Y:      0,
+			Width:  sourceWidth,
+			Height: sourceHeight,
+			Valid:  true,
+		}
+	}
+	if active.X < 0 || active.Y < 0 || active.Width <= 0 || active.Height <= 0 ||
+		active.X+active.Width > sourceWidth || active.Y+active.Height > sourceHeight {
+		return 0, 0, screenActiveArea{}, false
+	}
+	return sourceWidth, sourceHeight, active, true
 }
 
 func NewScreenshotTool(socketPath string, screen *screenState) *ScreenshotTool {
@@ -57,20 +90,34 @@ func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if meta.Stale {
+		return "", fmt.Errorf("frame service: STALE_FRAME")
+	}
 
 	if meta.PixelFormat != "jpeg" {
 		return "", fmt.Errorf("expected jpeg format, got %s", meta.PixelFormat)
 	}
-	active := detectScreenshotActiveArea(jpegData, int(meta.Width), int(meta.Height))
+	active := screenActiveArea{}
+	sourceWidth := int(meta.Width)
+	sourceHeight := int(meta.Height)
+	alreadyCropped := false
+	if fullWidth, fullHeight, sourceActive, ok := frameMetadataSourceActiveArea(meta); ok {
+		sourceWidth = fullWidth
+		sourceHeight = fullHeight
+		active = sourceActive
+		alreadyCropped = true
+	} else {
+		active = detectScreenshotActiveAreaForScreen(t.screen, jpegData, int(meta.Width), int(meta.Height))
+	}
 	if t.screen != nil {
-		t.screen.UpdateActiveArea(int(meta.Width), int(meta.Height), active)
+		t.screen.UpdateActiveArea(sourceWidth, sourceHeight, active)
 	}
 
-	// Crop to active_area so LLM sees only visible content (normalized coordinates map to this)
+	// Crop to active_area so LLM sees only the mirrored phone touch region.
 	displayWidth := int(meta.Width)
 	displayHeight := int(meta.Height)
 	displayData := jpegData
-	if active.Valid && (active.X != 0 || active.Y != 0 || active.Width != displayWidth || active.Height != displayHeight) {
+	if !alreadyCropped && active.Valid && (active.X != 0 || active.Y != 0 || active.Width != displayWidth || active.Height != displayHeight) {
 		croppedData, croppedWidth, croppedHeight, err := cropJPEGToActiveArea(jpegData, active, screenshotJPEGQuality)
 		if err == nil {
 			displayWidth = croppedWidth
@@ -92,11 +139,159 @@ func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
 }
 
 func detectScreenshotActiveArea(jpegData []byte, expectedWidth, expectedHeight int) screenActiveArea {
+	return detectScreenshotActiveAreaWithPhoneScreen(jpegData, expectedWidth, expectedHeight, nil)
+}
+
+func detectScreenshotActiveAreaForScreen(screen *screenState, jpegData []byte, expectedWidth, expectedHeight int) screenActiveArea {
+	if screen == nil {
+		return detectScreenshotActiveArea(jpegData, expectedWidth, expectedHeight)
+	}
+	phoneScreen := screen.PhoneScreenInfo()
+	return detectScreenshotActiveAreaWithPhoneScreen(jpegData, expectedWidth, expectedHeight, &phoneScreen)
+}
+
+func detectScreenshotActiveAreaWithPhoneScreen(jpegData []byte, expectedWidth, expectedHeight int, phoneScreen *PhoneScreenInfo) screenActiveArea {
 	img, err := jpeg.Decode(bytes.NewReader(jpegData))
 	if err != nil {
 		return screenActiveArea{}
 	}
-	return detectImageActiveArea(img, expectedWidth, expectedHeight)
+	approx := detectImageActiveArea(img, expectedWidth, expectedHeight)
+	if phoneScreen != nil {
+		if derived, ok := deriveActiveAreaFromPhoneScreen(expectedWidth, expectedHeight, *phoneScreen, approx); ok {
+			return derived
+		}
+	}
+	return approx
+}
+
+func deriveActiveAreaFromPhoneScreen(frameWidth, frameHeight int, phoneScreen PhoneScreenInfo, approx screenActiveArea) (screenActiveArea, bool) {
+	if frameWidth <= 0 || frameHeight <= 0 {
+		return screenActiveArea{}, false
+	}
+	candidates := phoneScreenAspectRatioCandidates(phoneScreen)
+	if len(candidates) == 0 {
+		return screenActiveArea{}, false
+	}
+	if len(candidates) > 1 && !approx.Valid {
+		return screenActiveArea{}, false
+	}
+
+	best := screenActiveArea{}
+	bestScore := math.MaxFloat64
+	for _, aspectRatio := range candidates {
+		candidate, ok := projectAspectRatioToFrame(frameWidth, frameHeight, aspectRatio)
+		if !ok {
+			continue
+		}
+		score := scoreActiveAreaCandidate(candidate, approx, frameWidth, frameHeight)
+		if score < bestScore {
+			best = candidate
+			bestScore = score
+		}
+	}
+	if !best.Valid {
+		return screenActiveArea{}, false
+	}
+	return best, true
+}
+
+func phoneScreenAspectRatioCandidates(phoneScreen PhoneScreenInfo) []float64 {
+	candidates := make([]float64, 0, 2)
+	if width, height, ok := currentPhoneScreenDimensions(phoneScreen); ok {
+		candidates = appendAspectRatioOrientations(candidates, width, height)
+	}
+	if width, height, ok := nativePhoneScreenDimensions(phoneScreen); ok {
+		candidates = appendAspectRatioOrientations(candidates, width, height)
+	}
+	return candidates
+}
+
+func currentPhoneScreenDimensions(phoneScreen PhoneScreenInfo) (float64, float64, bool) {
+	switch {
+	case phoneScreen.WidthPixels != nil && phoneScreen.HeightPixels != nil && *phoneScreen.WidthPixels > 0 && *phoneScreen.HeightPixels > 0:
+		return float64(*phoneScreen.WidthPixels), float64(*phoneScreen.HeightPixels), true
+	case phoneScreen.Width != nil && phoneScreen.Height != nil && *phoneScreen.Width > 0 && *phoneScreen.Height > 0:
+		return *phoneScreen.Width, *phoneScreen.Height, true
+	default:
+		return 0, 0, false
+	}
+}
+
+func nativePhoneScreenDimensions(phoneScreen PhoneScreenInfo) (float64, float64, bool) {
+	if phoneScreen.NativeWidthPixels != nil && phoneScreen.NativeHeightPixels != nil &&
+		*phoneScreen.NativeWidthPixels > 0 && *phoneScreen.NativeHeightPixels > 0 {
+		return float64(*phoneScreen.NativeWidthPixels), float64(*phoneScreen.NativeHeightPixels), true
+	}
+	return 0, 0, false
+}
+
+func appendUniqueAspectCandidate(candidates []float64, aspectRatio float64) []float64 {
+	if aspectRatio <= 0 || math.IsNaN(aspectRatio) || math.IsInf(aspectRatio, 0) {
+		return candidates
+	}
+	for _, candidate := range candidates {
+		if math.Abs(candidate-aspectRatio) < 1e-6 {
+			return candidates
+		}
+	}
+	return append(candidates, aspectRatio)
+}
+
+func appendAspectRatioOrientations(candidates []float64, width, height float64) []float64 {
+	if width <= 0 || height <= 0 {
+		return candidates
+	}
+	candidates = appendUniqueAspectCandidate(candidates, width/height)
+	candidates = appendUniqueAspectCandidate(candidates, height/width)
+	return candidates
+}
+
+func projectAspectRatioToFrame(frameWidth, frameHeight int, aspectRatio float64) (screenActiveArea, bool) {
+	if frameWidth <= 0 || frameHeight <= 0 || aspectRatio <= 0 || math.IsNaN(aspectRatio) || math.IsInf(aspectRatio, 0) {
+		return screenActiveArea{}, false
+	}
+	frameAspectRatio := float64(frameWidth) / float64(frameHeight)
+	if frameAspectRatio > aspectRatio {
+		activeWidth := int(math.Round(float64(frameHeight) * aspectRatio))
+		if activeWidth < 1 {
+			return screenActiveArea{}, false
+		}
+		if activeWidth > frameWidth {
+			activeWidth = frameWidth
+		}
+		return screenActiveArea{
+			X:      (frameWidth - activeWidth) / 2,
+			Y:      0,
+			Width:  activeWidth,
+			Height: frameHeight,
+			Valid:  true,
+		}, true
+	}
+
+	activeHeight := int(math.Round(float64(frameWidth) / aspectRatio))
+	if activeHeight < 1 {
+		return screenActiveArea{}, false
+	}
+	if activeHeight > frameHeight {
+		activeHeight = frameHeight
+	}
+	return screenActiveArea{
+		X:      0,
+		Y:      (frameHeight - activeHeight) / 2,
+		Width:  frameWidth,
+		Height: activeHeight,
+		Valid:  true,
+	}, true
+}
+
+func scoreActiveAreaCandidate(candidate, approx screenActiveArea, frameWidth, frameHeight int) float64 {
+	if !approx.Valid || frameWidth <= 0 || frameHeight <= 0 {
+		return 0
+	}
+	return math.Abs(float64(candidate.X-approx.X))/float64(frameWidth) +
+		math.Abs(float64(candidate.Y-approx.Y))/float64(frameHeight) +
+		math.Abs(float64(candidate.Width-approx.Width))/float64(frameWidth) +
+		math.Abs(float64(candidate.Height-approx.Height))/float64(frameHeight)
 }
 
 func detectImageActiveArea(img image.Image, expectedWidth, expectedHeight int) screenActiveArea {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 import argparse
+import concurrent.futures
 import json
 import os
 import re
@@ -13,8 +14,9 @@ from runner.html_report import generate_report_html, upload_report
 from runner.judge import JudgeConfig
 from runner.report import git_sha, write_jsonl, write_manifest, write_summary, now_iso
 from runner.recovery import recover_agent_after_timeout, wait_for_agent_ready
+from runner.reset import ResetError, call_environment_release
 from runner.runtask import run_one_task, skipped_task_result
-from runner.suite import load_suite
+from runner.suite import Suite, TaskSpec, load_suite
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -51,12 +53,28 @@ def cli(argv: list[str] | None = None) -> int:
     p_run = sub.add_parser("run")
     p_run.add_argument("--suite", required=True)
     p_run.add_argument("--agent-url", default=os.environ.get("AIDEN_AGENT_URL", "http://localhost:8080"))
+    p_run.add_argument("--environment-url", default=os.environ.get("AIDEN_ENVIRONMENT_URL", ""),
+                       help="Optional environment bridge endpoint; when set, each task calls /api/setup, /api/screen, and /api/release")
+    p_run.add_argument("--auto-agent-setup", action="store_true",
+                       help="Start isolated agent daemons automatically and ignore --agent-url; concurrency is read from environment bridge /api/concurrent")
+    p_run.add_argument("--daemon-image", default=os.environ.get("AIDEN_DAEMON_IMAGE", "aiden-agent-daemon:local"))
+    p_run.add_argument("--no-build-daemon-image", action="store_true")
+    p_run.add_argument("--base-config-dir", default=str(REPO_ROOT / "benchmark" / "config"))
+    p_run.add_argument("--agent-config", default="")
     p_run.add_argument("--judge-model", default="claude-sonnet-4-6")
     p_run.add_argument("--agent-model", default=os.environ.get("AIDEN_MODEL") or os.environ.get("MODEL_NAME") or os.environ.get("OPENAI_MODEL") or "")
     p_run.add_argument("--no-judge", action="store_true")
     p_run.add_argument("--repeats", type=int, default=None)
     p_run.add_argument("--out", default=str(REPO_ROOT / "benchmark" / "runs"))
     p_run.add_argument("--state-file", default=os.environ.get("BENCHMARK_STATE_FILE"))
+    p_run.add_argument("--task-id", action="append", default=[],
+                       help="Run only this task id; can be repeated")
+    p_run.add_argument("--task-ids", default="",
+                       help="Comma-separated task ids to run")
+    p_run.add_argument("--run-id", default="",
+                       help="Optional run directory name under --out")
+    p_run.add_argument("--benchmark-task-id", default="",
+                       help="Task routing id to use for environment setup/screen/release")
     p_run.add_argument("--skip-clock-wait", action="store_true")
     p_run.add_argument("--clock-timeout-sec", type=int, default=180)
     p_run.add_argument("--agent-ready-timeout-sec", type=int, default=120)
@@ -95,6 +113,19 @@ def cli(argv: list[str] | None = None) -> int:
     p_rejudge.add_argument("--judge-model", default="claude-sonnet-4-6")
     p_compare = sub.add_parser("compare")
     p_compare.add_argument("--runs", nargs=2, required=True)
+    p_webui = sub.add_parser("webui")
+    p_webui.add_argument("--host", default="127.0.0.1")
+    p_webui.add_argument("--port", type=int, default=8765)
+    p_webui.add_argument("--suites-dir", default=str(REPO_ROOT / "benchmark" / "suites"))
+    p_webui.add_argument("--runs-dir", default=str(REPO_ROOT / "benchmark" / "runs" / "webui"))
+    p_webui.add_argument("--base-config-dir", default=str(REPO_ROOT / "benchmark" / "config"))
+    p_webui.add_argument("--agent-config", default="")
+    p_webui.add_argument("--daemon-image", default="aiden-agent-daemon:local")
+    p_webui.add_argument("--mobilegym-image", default="aiden-mobilegym-simulator:py311")
+    p_webui.add_argument("--no-build-daemon-image", action="store_true")
+    p_webui.add_argument("--no-build-mobilegym-image", action="store_true")
+    from runner.services import add_service_parsers
+    add_service_parsers(sub)
     args = parser.parse_args(argv)
     if args.cmd == "run":
         return _cmd_run(args)
@@ -107,6 +138,30 @@ def cli(argv: list[str] | None = None) -> int:
     if args.cmd == "compare":
         from runner.compare import compare_runs
         return compare_runs(Path(args.runs[0]), Path(args.runs[1]))
+    if args.cmd == "webui":
+        from runner.webui import cli as webui_cli
+        forwarded = [
+            "--host", args.host,
+            "--port", str(args.port),
+            "--suites-dir", args.suites_dir,
+            "--runs-dir", args.runs_dir,
+            "--base-config-dir", args.base_config_dir,
+            "--daemon-image", args.daemon_image,
+            "--mobilegym-image", args.mobilegym_image,
+        ]
+        if args.agent_config:
+            forwarded.extend(["--agent-config", args.agent_config])
+        if args.no_build_daemon_image:
+            forwarded.append("--no-build-daemon-image")
+        if args.no_build_mobilegym_image:
+            forwarded.append("--no-build-mobilegym-image")
+        return webui_cli(forwarded)
+    if args.cmd == "start-agent-daemon":
+        from runner.services import cmd_start_agent_daemon
+        return cmd_start_agent_daemon(args)
+    if args.cmd == "start-mobilegym-env":
+        from runner.services import cmd_start_mobilegym_env
+        return cmd_start_mobilegym_env(args)
     return 2
 
 
@@ -133,7 +188,7 @@ def _log_task_result(task_id: str, attempt: int, result, verbose: bool = False,
 
     # Show detailed rubric results in verbose mode
     if verbose and result.rubric:
-        print(f"  📋 Rubric Details:", flush=True)
+        print("  📋 Rubric Details:", flush=True)
         for i, v in enumerate(result.rubric, 1):
             verdict_symbol = "✅" if v.verdict == "yes" else "❌"
             print(f"    {verdict_symbol} [{i}/{len(result.rubric)}] {v.id}: {v.verdict.upper()}", flush=True)
@@ -145,29 +200,12 @@ def _log_task_result(task_id: str, attempt: int, result, verbose: bool = False,
                 if len(reason_lines) > 3:
                     print(f"        → ... ({len(reason_lines) - 3} more lines)", flush=True)
 
-    # Show hard assertion failures (verbose mode)
-    if verbose and result.hard_assertions:
-        ha = result.hard_assertions
-        failures = []
-        if ha.timeout is False:
-            failures.append("timeout")
-        if ha.response_exists is False:
-            failures.append("no response")
-        if ha.min_tool_calls is False:
-            failures.append("min_tool_calls")
-        if ha.max_tool_calls is False:
-            failures.append("max_tool_calls")
-        if ha.required_tools is False:
-            failures.append("required_tools")
-        if ha.forbidden_tools is False:
-            failures.append("forbidden_tools")
-        if ha.expected_answer is False:
-            failures.append("expected_answer")
-        if ha.expected_recalled_memory is False:
-            failures.append("expected_recalled_memory")
-
-        if failures:
-            print(f"  ⚠️  Hard assertion failures: {', '.join(failures)}", flush=True)
+    if verbose and result.hard_assertion_failures:
+        print("  ⚠️  Hard assertion failures:", flush=True)
+        for failure in result.hard_assertion_failures:
+            print(f"    - {failure.label}", flush=True)
+            print(f"        Requirement: {failure.requirement}", flush=True)
+            print(f"        Actual: {failure.actual}", flush=True)
 
     # Show error messages (verbose mode)
     if verbose and "error" in result.metrics:
@@ -191,13 +229,258 @@ def _write_state(path: str | None, payload: dict) -> None:
         print(f"warning: failed to write benchmark state: {e}", file=sys.stderr, flush=True)
 
 
+def _selected_task_ids(args: argparse.Namespace) -> list[str]:
+    ids: list[str] = []
+    for value in list(args.task_id or []) + [args.task_ids or ""]:
+        for item in str(value).split(","):
+            task_id = item.strip()
+            if task_id and task_id not in ids:
+                ids.append(task_id)
+    return ids
+
+
+def _valid_run_id(run_id: str) -> bool:
+    return bool(run_id and "/" not in run_id and "\\" not in run_id and run_id not in {".", ".."})
+
+
+def _task_route_id(args: argparse.Namespace, suite: Suite, task_id: str, attempt: int, repeats: int) -> str:
+    prefix = str(args.benchmark_task_id or "").strip() or Path(str(suite.source_path)).name
+    route_id = f"{prefix}:{task_id}"
+    if repeats > 1:
+        route_id = f"{route_id}:attempt-{attempt}"
+    return route_id
+
+
+def _cmd_run_auto_agent_setup(
+    args: argparse.Namespace,
+    suite: Suite,
+    selected_task_ids: list[str],
+    run_id: str,
+    run_dir: Path,
+) -> int:
+    if not args.environment_url:
+        print("Error: --auto-agent-setup requires --environment-url", file=sys.stderr)
+        return 2
+    if args.repeats is not None and args.repeats <= 0:
+        print(f"Error: --repeats must be positive, got {args.repeats}", file=sys.stderr)
+        return 2
+
+    from runner.webui import (
+        Job,
+        append_log,
+        endpoint_for_docker,
+        ensure_daemon_image,
+        prepare_run_config,
+        read_environment_bridge_concurrency,
+        reserve_free_port,
+        start_daemon_compose,
+        start_daemon_logs,
+        stop_daemon_compose,
+        worker_token,
+    )
+
+    run_dir.mkdir(parents=True, exist_ok=True)
+    workers_dir = run_dir / "workers"
+    workers_dir.mkdir(parents=True, exist_ok=True)
+    setup_log = run_dir / "auto-agent-setup.log"
+    ensure_daemon_image(args.daemon_image, not args.no_build_daemon_image, setup_log)
+
+    concurrency = read_environment_bridge_concurrency(args.environment_url) or 1
+    docker_environment_url = endpoint_for_docker(args.environment_url.rstrip("/"))
+    judge_cfg = None if args.no_judge else JudgeConfig(model=args.judge_model)
+    judge_cache = run_dir / "_judge_cache"
+    sha, dirty = git_sha(REPO_ROOT)
+    started = now_iso()
+    units: list[tuple[int, TaskSpec, int, int]] = []
+    for task in suite.tasks:
+        repeats = args.repeats if args.repeats is not None else task.repeats
+        repeats = repeats if repeats > 0 else 1
+        for attempt in range(1, repeats + 1):
+            units.append((len(units) + 1, task, attempt, repeats))
+
+    total_runs = len(units)
+    base_state = {
+        "status": "running",
+        "suite": str(suite.source_path),
+        "run_id": run_id,
+        "total": total_runs,
+        "completed": 0,
+        "started_at": started,
+        "parallel": min(max(1, concurrency), max(1, total_runs)),
+        "auto_agent_setup": True,
+    }
+    _write_state(args.state_file, base_state)
+
+    agent_config_text = None
+    if args.agent_config:
+        agent_config_text = Path(args.agent_config).read_text(encoding="utf-8")
+
+    def run_unit(index: int, task: TaskSpec, attempt: int, repeats: int):
+        progress = f"{index}/{total_runs}"
+        token = worker_token(str(suite.source_path), f"{task.id}-{attempt}")
+        worker_dir = workers_dir / token
+        config_dir = worker_dir / "config"
+        runner_log = worker_dir / "runner.log"
+        daemon_log = worker_dir / "daemon.log"
+        worker_dir.mkdir(parents=True, exist_ok=True)
+        prepare_run_config(Path(args.base_config_dir), config_dir, agent_config_text=agent_config_text)
+        host_port = reserve_free_port()
+        agent_url = f"http://127.0.0.1:{host_port}"
+        route_id = _task_route_id(args, suite, task.id, attempt, repeats)
+        job = Job(
+            id=f"{run_id}-{token}",
+            endpoint=args.environment_url.rstrip("/"),
+            docker_endpoint=docker_environment_url,
+            suites=[str(suite.source_path)],
+            environment_endpoint=args.environment_url.rstrip("/"),
+            agent_url=agent_url,
+            container_name=f"aiden-benchmark-agent-{run_id}-{token}",
+            config_dir=str(config_dir),
+            runner_log=str(runner_log),
+            daemon_log=str(daemon_log),
+        )
+        log_proc = None
+        client = AgentClient(base_url=agent_url)
+        art_dir = run_dir / "tasks" / task.id / (f"attempt_{attempt}" if repeats > 1 else "")
+        try:
+            print(f"[{progress}] STARTING   {task.id} attempt={attempt}", flush=True)
+            container_id = start_daemon_compose(
+                job,
+                image=args.daemon_image,
+                host_port=host_port,
+                config_dir=config_dir,
+                environment_bridge_endpoint=docker_environment_url,
+                benchmark_task_id=route_id,
+                environment_bridge_mode=True,
+                log_path=runner_log,
+            )
+            append_log(runner_log, f"container {container_id}")
+            log_proc = start_daemon_logs(job, daemon_log)
+            if not wait_for_agent_ready(client, timeout_sec=args.agent_ready_timeout_sec):
+                return skipped_task_result(
+                    suite,
+                    task,
+                    attempt,
+                    art_dir,
+                    run_id,
+                    f"agent not ready within {args.agent_ready_timeout_sec}s",
+                )
+            if not args.skip_clock_wait and not wait_for_agent_clock(client, timeout_sec=args.clock_timeout_sec):
+                return skipped_task_result(suite, task, attempt, art_dir, run_id, "agent board clock did not sync before benchmark start")
+            print(f"[{progress}] RUNNING    {task.id} attempt={attempt}", flush=True)
+            return run_one_task(
+                client,
+                suite,
+                task,
+                attempt,
+                art_dir,
+                judge_cfg,
+                judge_cache,
+                run_id,
+                environment_url=args.environment_url or None,
+                benchmark_task_id=route_id,
+            )
+        except Exception as exc:
+            append_log(runner_log, f"ERROR: {exc}")
+            return skipped_task_result(suite, task, attempt, art_dir, run_id, str(exc))
+        finally:
+            if args.environment_url:
+                try:
+                    call_environment_release(args.environment_url, task_id=route_id)
+                except ResetError as exc:
+                    print(f"warning: failed to release environment task route for {route_id}: {exc}", file=sys.stderr, flush=True)
+            client.close()
+            if log_proc is not None:
+                log_proc.terminate()
+            stop_daemon_compose(job)
+
+    results = []
+    completed = 0
+    max_workers = min(max(1, concurrency), max(1, total_runs))
+    print(f"auto agent setup enabled: concurrency={max_workers} environment={args.environment_url}", flush=True)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=f"bench-cli-{run_id}") as executor:
+        future_to_unit = {
+            executor.submit(run_unit, index, task, attempt, repeats): (index, task, attempt)
+            for index, task, attempt, repeats in units
+        }
+        for future in concurrent.futures.as_completed(future_to_unit):
+            index, task, attempt = future_to_unit[future]
+            result = future.result()
+            _log_task_result(task.id, attempt, result, verbose=args.verbose, progress=f"{index}/{total_runs}")
+            results.append(result)
+            completed += 1
+            _write_state(args.state_file, {
+                **base_state,
+                "completed": completed,
+                "current": index,
+                "current_task": task.id,
+                "current_attempt": attempt,
+                "last_result": result.status,
+            })
+
+    manifest = {
+        "run_id": run_id, "git_sha": sha, "git_dirty": dirty,
+        "suite_path": str(suite.source_path), "suite_sha256": suite.sha256,
+        "selected_task_ids": selected_task_ids,
+        "agent_url": None,
+        "environment_url": args.environment_url or None,
+        "agent_model": args.agent_model,
+        "judge_config": {"provider": "openrouter", "model": args.judge_model} if judge_cfg else None,
+        "judge_prompt_version": "v1",
+        "auto_agent_setup": True,
+        "concurrency": max_workers,
+        "started_at": started, "finished_at": now_iso(),
+        "totals": {"tasks": len(results),
+                   "passed": sum(1 for r in results if r.status == "passed"),
+                   "failed": sum(1 for r in results if r.status == "failed"),
+                   "skipped": sum(1 for r in results if r.status == "skipped"),
+                   "judge_error": sum(1 for r in results if r.status == "judge_error"),
+                   "timeout": sum(1 for r in results if r.status == "timeout")},
+    }
+    write_manifest(run_dir / "manifest.json", manifest)
+    write_jsonl(run_dir / "results.jsonl", results)
+    write_summary(run_dir / "summary.md", suite.name, manifest, results)
+    html = generate_report_html(run_dir)
+    (run_dir / "report.html").write_text(html, encoding="utf-8")
+    _write_state(args.state_file, {**base_state, "status": "done", "completed": completed})
+
+    print("\n" + "="*60, flush=True)
+    print(f"Benchmark Summary - {suite.name}", flush=True)
+    print("="*60, flush=True)
+    print(f"Total Tasks:   {manifest['totals']['tasks']}", flush=True)
+    print(f"Passed:        {manifest['totals']['passed']}", flush=True)
+    print(f"Failed:        {manifest['totals']['failed']}", flush=True)
+    print(f"Skipped:       {manifest['totals']['skipped']}", flush=True)
+    print(f"Results saved to: {run_dir}", flush=True)
+    print("="*60 + "\n", flush=True)
+    return 0 if manifest["totals"]["passed"] == manifest["totals"]["tasks"] else 1
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     suite = load_suite(Path(args.suite))
-    run_id = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
+    selected_task_ids = _selected_task_ids(args)
+    if selected_task_ids:
+        by_id = {task.id: task for task in suite.tasks}
+        missing = [task_id for task_id in selected_task_ids if task_id not in by_id]
+        if missing:
+            print(f"Error: task id(s) not found in suite: {', '.join(missing)}", file=sys.stderr)
+            return 2
+        suite.tasks = [by_id[task_id] for task_id in selected_task_ids]
+
+    run_id = str(args.run_id or "").strip() or datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
+    if not _valid_run_id(run_id):
+        print(f"Error: invalid --run-id: {run_id!r}", file=sys.stderr)
+        return 2
     run_dir = Path(args.out) / run_id
+    if args.auto_agent_setup:
+        return _cmd_run_auto_agent_setup(args, suite, selected_task_ids, run_id, run_dir)
+    if args.repeats is not None and args.repeats <= 0:
+        print(f"Error: --repeats must be positive, got {args.repeats}", file=sys.stderr)
+        return 2
     client = AgentClient(base_url=args.agent_url)
     if not client.health():
         print(f"agent at {args.agent_url} is not reachable", file=sys.stderr)
+        client.close()
         return 2
     if not args.skip_clock_wait and not wait_for_agent_clock(client, timeout_sec=args.clock_timeout_sec):
         print("agent board clock did not sync before benchmark start", file=sys.stderr)
@@ -208,10 +491,6 @@ def _cmd_run(args: argparse.Namespace) -> int:
     sha, dirty = git_sha(REPO_ROOT)
     started = now_iso()
     results = []
-    # Validate --repeats
-    if args.repeats is not None and args.repeats <= 0:
-        print(f"Error: --repeats must be positive, got {args.repeats}", file=sys.stderr)
-        return 2
     # Compute total number of executions (accounting for repeats) for progress display
     total_runs = 0
     for task in suite.tasks:
@@ -233,34 +512,58 @@ def _cmd_run(args: argparse.Namespace) -> int:
             if n <= 0:
                 n = 1
             for attempt in range(1, n + 1):
-                current_index = completed + 1
-                progress = f"{current_index}/{total_runs}"
-                _write_state(args.state_file, {
-                    **base_state,
-                    "completed": completed,
-                    "current": current_index,
-                    "current_task": task.id,
-                    "current_attempt": attempt,
-                })
-                print(f"[{progress}] RUNNING    {task.id} attempt={attempt}", flush=True)
-                if not wait_for_agent_ready(
-                    client, timeout_sec=args.agent_ready_timeout_sec
-                ):
-                    print(
-                        f"[{progress}] SKIPPED    {task.id} attempt={attempt} "
-                        f"rubric=0/{len(task.rubric)} wall=Nonems "
-                        f"(agent not ready)",
-                        flush=True,
-                    )
-                    results.append(
-                        skipped_task_result(
-                            suite, task, attempt,
-                            run_dir / "tasks" / task.id
-                            / (f"attempt_{attempt}" if n > 1 else ""),
-                            run_id,
-                            f"agent not ready within {args.agent_ready_timeout_sec}s",
+                task_benchmark_id = _task_route_id(args, suite, task.id, attempt, n)
+                try:
+                    current_index = completed + 1
+                    progress = f"{current_index}/{total_runs}"
+                    _write_state(args.state_file, {
+                        **base_state,
+                        "completed": completed,
+                        "current": current_index,
+                        "current_task": task.id,
+                        "current_attempt": attempt,
+                    })
+                    print(f"[{progress}] RUNNING    {task.id} attempt={attempt}", flush=True)
+                    if not wait_for_agent_ready(
+                        client, timeout_sec=args.agent_ready_timeout_sec
+                    ):
+                        print(
+                            f"[{progress}] SKIPPED    {task.id} attempt={attempt} "
+                            f"rubric=0/{len(task.rubric)} wall=Nonems "
+                            f"(agent not ready)",
+                            flush=True,
                         )
-                    )
+                        results.append(
+                            skipped_task_result(
+                                suite, task, attempt,
+                                run_dir / "tasks" / task.id
+                                / (f"attempt_{attempt}" if n > 1 else ""),
+                                run_id,
+                                f"agent not ready within {args.agent_ready_timeout_sec}s",
+                            )
+                        )
+                        completed += 1
+                        _write_state(args.state_file, {
+                            **base_state,
+                            "completed": completed,
+                            "current": current_index,
+                            "current_task": task.id,
+                            "current_attempt": attempt,
+                            "last_result": "skipped",
+                        })
+                        continue
+
+                    art_dir = run_dir / "tasks" / task.id / (f"attempt_{attempt}" if n > 1 else "")
+                    try:
+                        r = run_one_task(client, suite, task, attempt, art_dir,
+                                         judge_cfg, judge_cache, run_id,
+                                         environment_url=args.environment_url or None,
+                                         benchmark_task_id=task_benchmark_id)
+                    except Exception as e:
+                        print(f"[{progress}] ERROR      {task.id} attempt={attempt} — {e}", flush=True)
+                        r = skipped_task_result(suite, task, attempt, art_dir, run_id, str(e))
+                    _log_task_result(task.id, attempt, r, verbose=args.verbose, progress=progress)
+                    results.append(r)
                     completed += 1
                     _write_state(args.state_file, {
                         **base_state,
@@ -268,44 +571,32 @@ def _cmd_run(args: argparse.Namespace) -> int:
                         "current": current_index,
                         "current_task": task.id,
                         "current_attempt": attempt,
-                        "last_result": "skipped",
+                        "last_result": r.status,
                     })
-                    continue
 
-                art_dir = run_dir / "tasks" / task.id / (f"attempt_{attempt}" if n > 1 else "")
-                try:
-                    r = run_one_task(client, suite, task, attempt, art_dir,
-                                     judge_cfg, judge_cache, run_id)
-                except Exception as e:
-                    print(f"[{progress}] ERROR      {task.id} attempt={attempt} — {e}", flush=True)
-                    r = skipped_task_result(suite, task, attempt, art_dir, run_id, str(e))
-                _log_task_result(task.id, attempt, r, verbose=args.verbose, progress=progress)
-                results.append(r)
-                completed += 1
-                _write_state(args.state_file, {
-                    **base_state,
-                    "completed": completed,
-                    "current": current_index,
-                    "current_task": task.id,
-                    "current_attempt": attempt,
-                    "last_result": r.status,
-                })
-
-                if r.status in {"timeout", "skipped", "judge_error", "failed"}:
-                    if not recover_agent_after_timeout(
-                        client, timeout_sec=args.agent_recovery_timeout_sec
-                    ):
-                        wait_for_agent_ready(
+                    if r.status in {"timeout", "skipped", "judge_error", "failed"}:
+                        if not recover_agent_after_timeout(
                             client, timeout_sec=args.agent_recovery_timeout_sec
-                        )
-                if args.inter_task_cooldown_sec > 0:
-                    time.sleep(args.inter_task_cooldown_sec)
+                        ):
+                            wait_for_agent_ready(
+                                client, timeout_sec=args.agent_recovery_timeout_sec
+                            )
+                    if args.inter_task_cooldown_sec > 0:
+                        time.sleep(args.inter_task_cooldown_sec)
+                finally:
+                    if args.environment_url:
+                        try:
+                            call_environment_release(args.environment_url, task_id=task_benchmark_id)
+                        except ResetError as exc:
+                            print(f"warning: failed to release environment task route for {task_benchmark_id}: {exc}", file=sys.stderr, flush=True)
     finally:
         client.close()
     manifest = {
         "run_id": run_id, "git_sha": sha, "git_dirty": dirty,
         "suite_path": str(suite.source_path), "suite_sha256": suite.sha256,
+        "selected_task_ids": selected_task_ids,
         "agent_url": args.agent_url,
+        "environment_url": args.environment_url or None,
         "agent_model": args.agent_model,
         "judge_config": {"provider": "openrouter", "model": args.judge_model} if judge_cfg else None,
         "judge_prompt_version": "v1",

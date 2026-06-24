@@ -894,11 +894,21 @@
     },
     "switch_input": {
       "label": "Switch Input Source",
-      "aliases": ["切换输入法", "switch_input", "input_source"],
+      "aliases": ["切换输入法", "switch_input", "input_source", "switch_ime", "ime_next"],
       "category": "system_panel",
       "platforms": {
-        "ios": { "status": "reserved" },
-        "android": { "status": "reserved" },
+        "ios": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["capslock"] },
+          "note": "cycle input method on external keyboard (Caps Lock / Globe)"
+        },
+        "android": {
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["ctrl", "shift"] },
+          "note": "cycle input method (Ctrl+Shift)"
+        },
         "mac": {
           "status": "active",
           "tool": "keyboard_tap",

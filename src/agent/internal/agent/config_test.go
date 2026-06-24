@@ -14,7 +14,7 @@ import (
 func TestConfigValidateAcceptsAudioWakeup(t *testing.T) {
 	cfg := Config{
 		Model:       ModelConfig{Provider: "fake"},
-		TTS:         TTSConfig{Provider: "minimax-ws"},
+		TTS:         TTSConfig{Provider: "minimax-cn"},
 		InputMode:   " audio ",
 		TriggerMode: " wakeup ",
 	}
@@ -188,10 +188,6 @@ provider = "fake"
 	}
 	if cfg.HID.FrameSocket != defaultFrameServiceSocket {
 		t.Fatalf("HID.FrameSocket = %q, want runtime default %q", cfg.HID.FrameSocket, defaultFrameServiceSocket)
-	}
-	if cfg.Benchmark.JudgeModel != defaultBenchmarkJudgeModel {
-		t.Fatalf("Benchmark.JudgeModel = %q, want runtime default %q",
-			cfg.Benchmark.JudgeModel, defaultBenchmarkJudgeModel)
 	}
 	if cfg.VoiceMaxResponseTokens != defaultVoiceMaxResponseTokens {
 		t.Fatalf("VoiceMaxResponseTokens = %d, want runtime default %d",
@@ -690,7 +686,7 @@ func TestProxyConfigFromEnvironmentPreservesRawWhitespace(t *testing.T) {
 func TestConfigValidateRejectsInvalidTriggerMode(t *testing.T) {
 	cfg := Config{
 		Model:       ModelConfig{Provider: "fake"},
-		TTS:         TTSConfig{Provider: "minimax-ws"},
+		TTS:         TTSConfig{Provider: "minimax-cn"},
 		InputMode:   "audio",
 		TriggerMode: "gpio",
 	}
@@ -744,39 +740,6 @@ func TestDeviceConfigBackendDefaultsToHDMI(t *testing.T) {
 	cfg := Config{Model: ModelConfig{Provider: "fake"}}
 	if got := cfg.Device.BackendOrDefault(); got != "hdmi" {
 		t.Fatalf("BackendOrDefault() = %q, want hdmi", got)
-	}
-}
-
-func TestLoadConfigAcceptsMobileGymDeviceBackend(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "agent.toml")
-	content := `
-custom_instruction = "test"
-input_mode = "text"
-max_iterations = 20
-force_simple_loop = true
-
-[model]
-provider = "fake"
-
-[device]
-backend = "mobilegym"
-bridge_url = "http://127.0.0.1:19001"
-bridge_token_file = "/tmp/device-token"
-control_token_file = "/tmp/control-token"
-`
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := LoadConfig(path)
-	if err != nil {
-		t.Fatalf("LoadConfig() error = %v", err)
-	}
-	if got := cfg.Device.BackendOrDefault(); got != "mobilegym" {
-		t.Fatalf("backend = %q, want mobilegym", got)
-	}
-	if cfg.Instruction != "test" || cfg.InputMode != "text" || cfg.MaxIterations != 20 || !cfg.ForceSimpleLoop {
-		t.Fatalf("root config not decoded: instruction=%q input_mode=%q max_iterations=%d force_simple_loop=%v", cfg.Instruction, cfg.InputMode, cfg.MaxIterations, cfg.ForceSimpleLoop)
 	}
 }
 
@@ -890,7 +853,7 @@ func TestConfigValidateRejectsUnsupportedAudioFormatForVoiceInput(t *testing.T) 
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := Config{
 				Model:       ModelConfig{Provider: "fake"},
-				TTS:         TTSConfig{Provider: "minimax-ws"},
+				TTS:         TTSConfig{Provider: "minimax-cn"},
 				Audio:       tt.audio,
 				InputMode:   "audio",
 				TriggerMode: "wakeup",
@@ -1138,55 +1101,6 @@ storage_path = "/custom/path"
 	}
 }
 
-func TestLoadConfig_BenchmarkSection(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "agent.toml")
-	body := `
-[model]
-provider = "openrouter"
-api_key = "x"
-model = "y"
-
-[benchmark]
-judge_model = "custom/model-v1"
-benchmark_dir = "/tmp/bench"
-`
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := LoadConfig(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Benchmark.JudgeModel != "custom/model-v1" {
-		t.Errorf("JudgeModel = %q", cfg.Benchmark.JudgeModel)
-	}
-	if cfg.Benchmark.Dir != "/tmp/bench" {
-		t.Errorf("Dir = %q", cfg.Benchmark.Dir)
-	}
-}
-
-func TestLoadConfig_BenchmarkDefaults(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "agent.toml")
-	body := `
-[model]
-provider = "openrouter"
-api_key = "x"
-model = "y"
-`
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := LoadConfig(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Benchmark.JudgeModel != "" {
-		t.Errorf("expected empty JudgeModel default, got %q", cfg.Benchmark.JudgeModel)
-	}
-}
-
 func TestLoadConfig_LiveActivitySection(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.toml")
@@ -1197,6 +1111,10 @@ api_key = "x"
 model = "y"
 
 [live_activity]
+relay_url = "https://relay.example.com"
+relay_api_key = "relay-secret"
+board_id = "board-001"
+phone_id = "phone-001"
 bundle_id = "com.example.aiden"
 environment = "sandbox"
 team_id = "TEAMID1234"
@@ -1213,6 +1131,15 @@ timeout_sec = 3
 	}
 	if !cfg.LiveActivity.EnabledOrDefault() {
 		t.Fatal("LiveActivity.EnabledOrDefault() = false, want true")
+	}
+	if !cfg.LiveActivity.RelayConfigured() {
+		t.Fatal("LiveActivity.RelayConfigured() = false, want true")
+	}
+	if cfg.LiveActivity.RelayURL != "https://relay.example.com" || cfg.LiveActivity.RelayAPIKey != "relay-secret" {
+		t.Fatalf("relay config = %#v, want configured URL/key", cfg.LiveActivity)
+	}
+	if cfg.LiveActivity.BoardIDOrDefault() != "board-001" || cfg.LiveActivity.PhoneID != "phone-001" {
+		t.Fatalf("relay identity = board %q phone %q", cfg.LiveActivity.BoardIDOrDefault(), cfg.LiveActivity.PhoneID)
 	}
 	if cfg.LiveActivity.APNsTopic() != "com.example.aiden.push-type.liveactivity" {
 		t.Fatalf("APNsTopic() = %q", cfg.LiveActivity.APNsTopic())
@@ -1235,5 +1162,24 @@ func TestLiveActivityTimeoutDefaultsAndValidation(t *testing.T) {
 	err := cfg.Validate()
 	if err == nil || !strings.Contains(err.Error(), "live_activity.timeout_sec") {
 		t.Fatalf("Validate() error = %v, want live_activity.timeout_sec validation error", err)
+	}
+}
+
+func TestLiveActivityRelayURLValidation(t *testing.T) {
+	cases := []string{
+		"http://relay.example.com",
+		"https://user:pass@relay.example.com",
+		"https://relay.example.com?token=abc",
+		"https://relay.example.com/#fragment",
+	}
+	for _, relayURL := range cases {
+		cfg := Config{
+			Model:        ModelConfig{Provider: "fake"},
+			LiveActivity: LiveActivityConfig{RelayURL: relayURL},
+		}
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "live_activity.relay_url") {
+			t.Fatalf("Validate() with relay_url %q error = %v, want live_activity.relay_url validation error", relayURL, err)
+		}
 	}
 }

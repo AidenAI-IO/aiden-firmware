@@ -1,33 +1,33 @@
 # 自定义测试套件
 
-`run_aiden.py --aiden-suite <name>` 会从 `benchmark/suites/<name>.json` 加载 Aiden JSON
-suite 并即时转换为 MobileGym Task。Web UI（`/benchmark`，MobileGym 模式）也会列出
-这些 suite。本目录下的 YAML 暂不被加载。
+Aiden benchmark suite 使用 `benchmark/suites/<name>.json`。MobileGym 作为
+environment bridge 运行时，benchmark WebUI 会列出这些 Aiden JSON suite，并通过
+`benchmark-task-id` 把并发 task worker 路由到同一个 MobileGym instance 内的不同 env。
+本目录下的 YAML 暂不被 benchmark runner 加载。
 
 ## 当前可工作的方式
 
-### 方式 1：列举 task-id
+### 方式 1：Benchmark WebUI 并发
 
 ```bash
-docker compose run --rm test \
-  --task-id clock.CountAlarms \
-  --task-id clock.ToggleAlarm \
-  --task-id phone_control_v1.MakeCall \
-  --aiden-control-token "$(cat ../config/control_token)"
+cd benchmark
+uv run python -m runner webui
 ```
 
-### 方式 2：用内置 suite + `--limit`
+创建 MobileGym environment 时把 `Envs` 设为大于 1，随后选择该 environment 运行 Aiden JSON suite。
+WebUI 会为并发 task worker 启动独立 daemon，并通过 `benchmark-task-id` 路由到同一
+MobileGym instance 内的不同 env。
+
+### 方式 2：Benchmark CLI services
 
 ```bash
-docker compose run --rm test --suite clock --limit 5
-docker compose run --rm test --suite phone_control_v1 --limit 3
-```
-
-### 方式 3：并发隔离运行
-
-```bash
-cd ../docker
-./parallel_run.sh clock.CountAlarms clock.ToggleAlarm phone_control_v1.MakeCall
+cd benchmark
+uv run python -m runner start-mobilegym-env --envs 5
+uv run python -m runner start-agent-daemon --environment-bridge-endpoint http://127.0.0.1:<bridge-port>
+uv run python -m runner run \
+  --suite suites/mobilegym_basic.json \
+  --agent-url http://127.0.0.1:<agent-port> \
+  --environment-url http://127.0.0.1:<bridge-port>
 ```
 
 ## YAML 格式（保留供未来加载逻辑使用）

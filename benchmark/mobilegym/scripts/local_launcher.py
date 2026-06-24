@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import datetime
 import json
 import os
 import re
@@ -28,12 +27,6 @@ LOG_PATH = _USER_TEMP / "mobilegym_run.log"
 PID_PATH = _USER_TEMP / "mobilegym_runner.pid"
 STATE_NAME = "state.json"
 TAIL_BYTES = 64 * 1024
-SKILLOPT_ARTIFACT_CONTENT_TYPES = {
-    "best_skill.md": "text/markdown; charset=utf-8",
-    "diff.patch": "text/plain; charset=utf-8",
-    "result.json": "application/json; charset=utf-8",
-}
-
 _SAFE_SUITE_SEGMENT = re.compile(r"^[A-Za-z0-9_.\-]+$")
 _SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9_\-]+$")
 COMMON_CLI_PATHS = [
@@ -65,20 +58,6 @@ def valid_suite_name(suite: str) -> bool:
         if part in {"", ".", ".."} or not _SAFE_SUITE_SEGMENT.match(part):
             return False
     return True
-
-
-def valid_skill_name(skill: str) -> bool:
-    return bool(
-        skill
-        and skill not in {".", ".."}
-        and "/" not in skill
-        and "\\" not in skill
-        and _SAFE_SUITE_SEGMENT.match(skill)
-    )
-
-
-def valid_skillopt_suite_for_skill(skill: str, suite: str) -> bool:
-    return valid_suite_name(suite) and suite.startswith(f"skillopt/{skill}/")
 
 
 def is_safe_run_id(run_id: str) -> bool:
@@ -132,7 +111,6 @@ def scan_suites(benchmark_root: str | Path = BENCHMARK_ROOT) -> list[dict[str, A
                 }
             )
 
-    items.extend(scan_mobilegym_builtins(root))
     return sorted(items, key=lambda item: (item["type"] != "aiden", item["name"]))
 
 
@@ -177,8 +155,6 @@ def build_run_command(
 ) -> RunCommand:
     payload = payload or {}
     mode = str(payload.get("mode") or "mobilegym")
-    if mode == "skillopt":
-        return build_skillopt_run_command(benchmark_root, payload)
     if mode not in {"mobilegym", ""}:
         raise LauncherError(f"unsupported local launcher mode: {mode!r}")
 
@@ -189,143 +165,10 @@ def build_mobilegym_run_command(
     benchmark_root: str | Path = BENCHMARK_ROOT,
     payload: dict[str, Any] | None = None,
 ) -> RunCommand:
-    payload = payload or {}
-    suites = selected_suites(payload)
-    suite_type = str(payload.get("suite_type") or "mobilegym_builtin")
-    if len(suites) > 1 and suite_type not in {"mobilegym_builtin", "aiden"}:
-        raise LauncherError("multiple suites are only supported for mobilegym_builtin or aiden")
-
-    root = Path(benchmark_root)
-    docker_dir = root / "mobilegym" / "docker"
-    runner = docker_dir / "parallel_run.sh"
-    if not runner.exists():
-        raise LauncherError(f"missing runner script: {runner}")
-
-    if suite_type == "aiden":
-        if len(suites) > 1:
-            argv = ["./parallel_run.sh", "--aiden-suites", ",".join(suites)]
-        else:
-            argv = ["./parallel_run.sh", "--aiden-suite", suites[0]]
-    elif suite_type in {"mobilegym_builtin", ""}:
-        if len(suites) > 1:
-            argv = ["./parallel_run.sh", "--suites", ",".join(suites)]
-        else:
-            argv = ["./parallel_run.sh", "--suite", suites[0]]
-    else:
-        raise LauncherError(f"unknown suite_type: {suite_type!r}")
-
-    limit = int(payload.get("limit") or 0)
-    if limit > 0:
-        argv.extend(["--limit", str(limit)])
-
-    parallel = int(payload.get("parallel") or 4)
-    if parallel < 1:
-        parallel = 1
-    env = os.environ.copy()
-    add_common_cli_paths(env)
-    env.update(model_config_from_payload(payload))
-    env.update(benchmark_config_from_payload(payload))
-    env["AIDEN_BENCHMARK_LLM_ANALYSIS"] = "1"
-    for payload_key, env_key in {
-        "analysis_model": "AIDEN_BENCHMARK_ANALYSIS_MODEL",
-        "analysis_max_log_bytes": "AIDEN_BENCHMARK_ANALYSIS_MAX_LOG_BYTES",
-        "analysis_max_code_bytes": "AIDEN_BENCHMARK_ANALYSIS_MAX_CODE_BYTES",
-        "analysis_timeout_sec": "AIDEN_BENCHMARK_ANALYSIS_TIMEOUT_SEC",
-    }.items():
-        value = payload.get(payload_key)
-        if value not in (None, ""):
-            env[env_key] = str(value)
-    if "AIDEN_BENCHMARK_ANALYSIS_MODEL" not in env and env.get("AIDEN_BENCHMARK_JUDGE_MODEL"):
-        env["AIDEN_BENCHMARK_ANALYSIS_MODEL"] = env["AIDEN_BENCHMARK_JUDGE_MODEL"]
-    env["PARALLEL"] = str(parallel)
-    env["MOBILEGYM_RUNS_ROOT"] = str(root / "runs" / "mobilegym")
-    env.setdefault("MOBILEGYM_BATCH_ID", "batch-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
-    return RunCommand(argv=argv, cwd=docker_dir, env=env)
-
-
-def build_skillopt_run_command(
-    benchmark_root: str | Path = BENCHMARK_ROOT,
-    payload: dict[str, Any] | None = None,
-) -> RunCommand:
-    payload = payload or {}
-    backend = str(payload.get("skillopt_backend") or "")
-    if backend != "mobilegym":
-        raise LauncherError("Mac-local SkillOpt requires skillopt_backend=mobilegym")
-
-    skill = str(payload.get("skill") or "").strip()
-    train_suite = str(payload.get("train_suite") or "").strip()
-    validation_suite = str(payload.get("validation_suite") or "").strip()
-    if not valid_skill_name(skill):
-        raise LauncherError(f"invalid skill name: {skill!r}")
-    if not valid_skillopt_suite_for_skill(skill, train_suite):
-        raise LauncherError(f"invalid train_suite for {skill!r}: {train_suite!r}")
-    if not valid_skillopt_suite_for_skill(skill, validation_suite):
-        raise LauncherError(f"invalid validation_suite for {skill!r}: {validation_suite!r}")
-
-    root = Path(benchmark_root)
-    env = os.environ.copy()
-    add_common_cli_paths(env)
-    env.update(model_config_from_payload(payload))
-    env.update(benchmark_config_from_payload(payload))
-    env["AIDEN_BENCHMARK_LLM_ANALYSIS"] = "1"
-    for payload_key, env_key in {
-        "analysis_model": "AIDEN_BENCHMARK_ANALYSIS_MODEL",
-        "analysis_max_log_bytes": "AIDEN_BENCHMARK_ANALYSIS_MAX_LOG_BYTES",
-        "analysis_max_code_bytes": "AIDEN_BENCHMARK_ANALYSIS_MAX_CODE_BYTES",
-        "analysis_timeout_sec": "AIDEN_BENCHMARK_ANALYSIS_TIMEOUT_SEC",
-    }.items():
-        value = payload.get(payload_key)
-        if value not in (None, ""):
-            env[env_key] = str(value)
-    if "AIDEN_BENCHMARK_ANALYSIS_MODEL" not in env and env.get("AIDEN_BENCHMARK_JUDGE_MODEL"):
-        env["AIDEN_BENCHMARK_ANALYSIS_MODEL"] = env["AIDEN_BENCHMARK_JUDGE_MODEL"]
-
-    run_id = "skillopt-" + datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d_%H%M%S-%f")
-    artifact_root = root / "runs" / "skillopt"
-    output_path = artifact_root / run_id / "best_skill.md"
-    argv = [
-        sys.executable,
-        "-m",
-        "runner.skillopt",
-        "--skill",
-        skill,
-        "--backend",
-        "mobilegym",
-        "--mobilegym-parallel",
-        str(int(payload.get("mobilegym_parallel") or payload.get("parallel") or 1)),
-        "--train-suite",
-        train_suite,
-        "--validation-suite",
-        validation_suite,
-        "--budget",
-        str(int(payload.get("budget") or 10)),
-        "--edit-budget",
-        str(int(payload.get("edit_budget") or 4)),
-        "--min-delta",
-        str(payload.get("min_delta") if payload.get("min_delta") is not None else 0.03),
-        "--artifact-root",
-        str(artifact_root),
-        "--run-id",
-        run_id,
-        "--output",
-        str(output_path),
-    ]
-    optimizer_model = str(payload.get("optimizer_model") or "").strip()
-    if optimizer_model:
-        argv.extend(["--optimizer-model", optimizer_model])
-    judge_model = str(payload.get("judge_model") or env.get("AIDEN_BENCHMARK_JUDGE_MODEL") or "").strip()
-    if judge_model:
-        argv.extend(["--judge-model", judge_model])
-    agent_url = str(payload.get("board_url") or "").strip()
-    if agent_url:
-        argv.extend(["--agent-url", agent_url.rstrip("/")])
-
-    return RunCommand(argv=argv, cwd=root, env=env)
+    raise LauncherError("Mac-local MobileGym runs have moved to the benchmark WebUI")
 
 
 def start_run(benchmark_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
-    if str(payload.get("mode") or "mobilegym") == "skillopt":
-        return start_skillopt_run(benchmark_root, payload)
     return start_mobilegym_run(benchmark_root, payload)
 
 
@@ -366,48 +209,6 @@ def start_mobilegym_run(benchmark_root: Path, payload: dict[str, Any]) -> dict[s
                 "total": int(payload.get("limit") or 0),
                 "current": 1 if int(payload.get("limit") or 0) else 0,
                 "completed": 0,
-                "model": current_model_label(command.env),
-            },
-        )
-        threading.Thread(target=watch_process, args=(benchmark_root, _process), daemon=True).start()
-        return {"ok": True, "status": "running", "pid": _process.pid}
-
-
-def start_skillopt_run(benchmark_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
-    global _process
-    with _process_lock:
-        if _process is not None and _process.poll() is None:
-            raise LauncherError("MobileGym benchmark is already running")
-
-        command = build_run_command(benchmark_root, payload)
-        validate_model_environment(command.env)
-        validate_skillopt_environment(command.env)
-        LOG_PATH.write_text("Starting Mac-local SkillOpt MobileGym benchmark...\n", encoding="utf-8")
-        log_file = LOG_PATH.open("ab")
-        try:
-            _process = subprocess.Popen(
-                command.argv,
-                cwd=command.cwd,
-                env=command.env,
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
-        finally:
-            log_file.close()
-
-        PID_PATH.write_text(str(_process.pid), encoding="utf-8")
-        run_id = command.argv[command.argv.index("--run-id") + 1]
-        write_state(
-            benchmark_root,
-            {
-                "status": "running",
-                "mode": "skillopt",
-                "run_id": run_id,
-                "skill": payload.get("skill") or "",
-                "backend": "mobilegym",
-                "suite": payload.get("train_suite") or "",
-                "validation_suite": payload.get("validation_suite") or "",
                 "model": current_model_label(command.env),
             },
         )
@@ -463,60 +264,11 @@ def read_log() -> str:
 
 
 def list_runs(benchmark_root: Path) -> list[dict[str, Any]]:
-    mobilegym_runs = list_mobilegym_runs(benchmark_root)
-    skillopt_runs = list_skillopt_runs(benchmark_root)
     return sorted(
-        nest_skillopt_phase_runs(mobilegym_runs, skillopt_runs),
+        list_mobilegym_runs(benchmark_root),
         key=lambda item: str(item.get("run_id") or ""),
         reverse=True,
     )[:20]
-
-
-def nest_skillopt_phase_runs(
-    mobilegym_runs: list[dict[str, Any]],
-    skillopt_runs: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    skillopt_by_id = {str(item.get("run_id") or ""): item for item in skillopt_runs}
-    top_level_mobilegym = []
-    for item in mobilegym_runs:
-        run_id = str(item.get("run_id") or "")
-        parent_id, phase = skillopt_phase_parent(run_id)
-        parent = skillopt_by_id.get(parent_id)
-        if parent is None:
-            top_level_mobilegym.append(item)
-            continue
-        child = dict(item)
-        child["phase"] = phase
-        child["kind"] = skillopt_phase_kind(phase)
-        parent.setdefault("children", []).append(child)
-
-    for item in skillopt_runs:
-        children = item.get("children")
-        if isinstance(children, list):
-            children.sort(key=lambda child: skillopt_phase_sort_key(str(child.get("phase") or "")))
-    return top_level_mobilegym + skillopt_runs
-
-
-def skillopt_phase_parent(run_id: str) -> tuple[str, str]:
-    match = re.match(r"^(skillopt-.+)-(baseline_selection|step_\d{2}_(?:train|selection))$", run_id)
-    if not match:
-        return "", ""
-    return match.group(1), match.group(2)
-
-
-def skillopt_phase_kind(phase: str) -> str:
-    if phase.endswith("_train"):
-        return "train"
-    return "verification"
-
-
-def skillopt_phase_sort_key(phase: str) -> tuple[int, int]:
-    if phase == "baseline_selection":
-        return (0, 0)
-    match = re.match(r"step_(\d{2})_(train|selection)$", phase)
-    if not match:
-        return (999, 0)
-    return (int(match.group(1)), 0 if match.group(2) == "train" else 1)
 
 
 def list_mobilegym_runs(benchmark_root: Path) -> list[dict[str, Any]]:
@@ -537,55 +289,6 @@ def list_mobilegym_runs(benchmark_root: Path) -> list[dict[str, Any]]:
             continue
         items.extend(state_run_items(run_id, state_for_run, progress))
     return items
-
-
-def list_skillopt_runs(benchmark_root: Path) -> list[dict[str, Any]]:
-    runs_dir = benchmark_root / "runs" / "skillopt"
-    state = read_json_file(benchmark_root / STATE_NAME)
-    try:
-        run_ids = sorted((p.name for p in runs_dir.iterdir() if p.is_dir()), reverse=True)
-    except OSError:
-        return []
-    items = []
-    for run_id in run_ids[:20]:
-        manifest = read_json_file(runs_dir / run_id / "manifest.json")
-        state_for_run = state if state.get("run_id") == run_id and state.get("status") == "running" else {}
-        status = str(state_for_run.get("status") or "done")
-        train_suite = str(manifest.get("train_suite") or state_for_run.get("suite") or "")
-        validation_suite = str(manifest.get("validation_suite") or state_for_run.get("validation_suite") or "")
-        suite = skillopt_parent_suite_label(str(manifest.get("skill") or state_for_run.get("skill") or ""), train_suite)
-        totals = manifest.get("totals") if isinstance(manifest.get("totals"), dict) else {}
-        item = {
-            "run_id": run_id,
-            "suite": suite,
-            "train_suite": train_suite,
-            "validation_suite": validation_suite,
-            "hide_totals": True,
-            "status": status,
-            "progress": "",
-            "model": str(manifest.get("model") or state_for_run.get("model") or current_model_label()),
-            "totals": {
-                "tasks": int(totals.get("tasks") or 0),
-                "passed": int(totals.get("passed") or 0),
-                "failed": int(totals.get("failed") or 0),
-            },
-            "report_path": "/benchmark/report/" + quote(run_id, safe=""),
-        }
-        items.append(item)
-    return items
-
-
-def skillopt_parent_suite_label(skill: str, train_suite: str) -> str:
-    skill = skill.strip() or skill_from_skillopt_suite(train_suite)
-    return f"{skill} SkillOpt" if skill else "SkillOpt"
-
-
-def skill_from_skillopt_suite(suite: str) -> str:
-    parts = suite.split("/")
-    if len(parts) >= 2 and parts[0] == "skillopt" and parts[1]:
-        return parts[1]
-    return ""
-
 
 def summary_run_items(
     run_id: str,
@@ -638,14 +341,8 @@ def report_file_for(root: Path, report_id: str) -> Path | None:
         return None
     run_dir = root / "runs" / "mobilegym" / parts[0]
     if len(parts) == 1:
-        skillopt_report = root / "runs" / "skillopt" / parts[0] / "report.html"
-        if skillopt_report.is_file():
-            return skillopt_report
         return run_dir / "index.html"
     artifact_names = {"index.html", "llm_analysis.md", "llm_analysis.json", "llm_analysis_error.txt"}
-    if len(parts) == 2 and parts[1] in SKILLOPT_ARTIFACT_CONTENT_TYPES:
-        artifact = root / "runs" / "skillopt" / parts[0] / parts[1]
-        return artifact if artifact.is_file() else None
     if parts[-1] in artifact_names:
         if len(parts) == 2:
             return run_dir / parts[-1]
@@ -660,15 +357,12 @@ def report_file_for(root: Path, report_id: str) -> Path | None:
 
 
 def report_content_type(path: Path) -> str:
-    return SKILLOPT_ARTIFACT_CONTENT_TYPES.get(
-        path.name,
-        {
-            ".html": "text/html; charset=utf-8",
-            ".md": "text/markdown; charset=utf-8",
-            ".json": "application/json; charset=utf-8",
-            ".txt": "text/plain; charset=utf-8",
-        }.get(path.suffix, "application/octet-stream"),
-    )
+    return {
+        ".html": "text/html; charset=utf-8",
+        ".md": "text/markdown; charset=utf-8",
+        ".json": "application/json; charset=utf-8",
+        ".txt": "text/plain; charset=utf-8",
+    }.get(path.suffix, "application/octet-stream")
 
 
 def state_run_items(run_id: str, state_for_run: dict[str, Any], progress: dict[str, Any]) -> list[dict[str, Any]]:
@@ -857,6 +551,21 @@ def benchmark_config_from_payload(payload: dict[str, Any]) -> dict[str, str]:
     return fetch_board_benchmark_config(board_url)
 
 
+def apply_analysis_env_from_payload(env: dict[str, str], payload: dict[str, Any]) -> None:
+    env["AIDEN_BENCHMARK_LLM_ANALYSIS"] = "1"
+    for payload_key, env_key in {
+        "analysis_model": "AIDEN_BENCHMARK_ANALYSIS_MODEL",
+        "analysis_max_log_bytes": "AIDEN_BENCHMARK_ANALYSIS_MAX_LOG_BYTES",
+        "analysis_max_code_bytes": "AIDEN_BENCHMARK_ANALYSIS_MAX_CODE_BYTES",
+        "analysis_timeout_sec": "AIDEN_BENCHMARK_ANALYSIS_TIMEOUT_SEC",
+    }.items():
+        value = payload.get(payload_key)
+        if value not in (None, ""):
+            env[env_key] = str(value)
+    if "AIDEN_BENCHMARK_ANALYSIS_MODEL" not in env and env.get("AIDEN_BENCHMARK_JUDGE_MODEL"):
+        env["AIDEN_BENCHMARK_ANALYSIS_MODEL"] = env["AIDEN_BENCHMARK_JUDGE_MODEL"]
+
+
 def fetch_board_model_config(board_url: str) -> dict[str, str]:
     return parse_agent_model_assignments(fetch_board_toml_section(board_url, "model"))
 
@@ -969,14 +678,6 @@ def validate_model_environment(env: dict[str, str] | None = None) -> None:
         raise LauncherError(
             "MobileGym model config missing: set MODEL_API_KEY or OPENROUTER_API_KEY "
             "before starting the Mac MobileGym launcher"
-        )
-
-
-def validate_skillopt_environment(env: dict[str, str] | None = None) -> None:
-    env = env or os.environ
-    if not env.get("OPENROUTER_API_KEY"):
-        raise LauncherError(
-            "SkillOpt benchmark api_key missing: set OPENROUTER_API_KEY or configure benchmark.api_key on the board"
         )
 
 

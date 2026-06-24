@@ -1571,7 +1571,7 @@ Expected: PASS.
 
 - [ ] **Step 2: Run targeted import smoke checks**
 
-Run: `uv run --project benchmark python -m runner.main --help`
+Run: `uv run --project benchmark python -m runner --help`
 
 Expected: Command exits 0 and shows `--llm-analysis`.
 

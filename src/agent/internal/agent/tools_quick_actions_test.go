@@ -8,6 +8,12 @@ import (
 	"testing"
 )
 
+func TestBundledQuickActionsPathUsesOEMPartition(t *testing.T) {
+	if BundledQuickActionsPath != "/oem/usr/share/aiden/quick_actions.json" {
+		t.Fatalf("BundledQuickActionsPath = %q, want OEM path", BundledQuickActionsPath)
+	}
+}
+
 func TestQuickActionsResolveAliasAndPlatform(t *testing.T) {
 	table := newQuickActionsTable()
 	if _, ok := table.resolveActionID("返回"); !ok {

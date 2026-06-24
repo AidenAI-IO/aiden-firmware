@@ -45,7 +45,7 @@ type CompressOption struct {
 	RiskTypes  []string
 	// CutMeta carries optional token-based cut-point diagnostics. It does not
 	// affect recall or summary rendering; it is persisted on the chunk index
-	// entry for debugging and benchmarking the compaction boundary.
+	// entry for debugging the compaction boundary.
 	CutMeta ChunkCutMetadata
 }
 

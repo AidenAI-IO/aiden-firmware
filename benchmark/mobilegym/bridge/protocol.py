@@ -1,31 +1,7 @@
 from __future__ import annotations
 
 import base64
-import dataclasses as dc
-from collections.abc import Mapping
 from typing import Any
-
-
-@dc.dataclass(frozen=True)
-class BridgeTokens:
-    control_token: str
-    device_token: str
-
-    def require_control(self, headers: Mapping[str, str]) -> bool:
-        return self._bearer_token(headers) == self.control_token and bool(self.control_token)
-
-    def require_device(self, headers: Mapping[str, str]) -> bool:
-        return self._bearer_token(headers) == self.device_token and bool(self.device_token)
-
-    @staticmethod
-    def _bearer_token(headers: Mapping[str, str]) -> str | None:
-        value = _header_value(headers, "Authorization")
-        if not value:
-            return None
-        scheme, _, token = value.partition(" ")
-        if scheme.lower() != "bearer" or not token:
-            return None
-        return token.strip()
 
 
 def bridge_ok(data: Any | None = None) -> dict[str, Any]:
@@ -59,19 +35,6 @@ def encode_screenshot(
         "size": len(payload),
         "data": base64.b64encode(payload).decode("ascii"),
     }
-
-
-def _header_value(headers: Mapping[str, str], name: str) -> str | None:
-    if hasattr(headers, "get"):
-        value = headers.get(name)  # type: ignore[arg-type]
-        if value:
-            return str(value)
-    lowered = name.lower()
-    for key, value in headers.items():
-        if key.lower() == lowered:
-            return str(value)
-    return None
-
 
 def _image_dimensions(payload: bytes) -> tuple[int, int] | None:
     if payload.startswith(b"\x89PNG\r\n\x1a\n") and len(payload) >= 24:

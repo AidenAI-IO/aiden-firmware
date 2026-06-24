@@ -21,9 +21,9 @@ var defaultQuickActionsJSON []byte
 // configDir, and the bundled file shipped with the firmware.
 const QuickActionsFileName = "quick_actions.json"
 
-// BundledQuickActionsPath is the on-device install path, populated by
+// BundledQuickActionsPath is the on-device OEM install path, populated by
 // _build_image.sh from src/agent/internal/agent/quick_actions.json.
-const BundledQuickActionsPath = "/usr/share/aiden/" + QuickActionsFileName
+const BundledQuickActionsPath = "/oem/usr/share/aiden/" + QuickActionsFileName
 
 const (
 	quickActionStatusActive   = "active"

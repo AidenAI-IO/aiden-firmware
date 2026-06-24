@@ -192,6 +192,7 @@ fi
 if ! grep -Fq 'clean_managed_staging_paths "$RK_PROJECT_PACKAGE_OEM_DIR"' "$ROOT_DIR/_build_image.sh" || \
    ! grep -Fq '"usr/model"' "$ROOT_DIR/_build_image.sh" || \
    ! grep -Fq '"usr/ko/insmod_wifi.sh"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq '"usr/share/aiden"' "$ROOT_DIR/_build_image.sh" || \
    ! grep -Fq '"etc/ota_pubkey.pem"' "$ROOT_DIR/_build_image.sh" || \
    ! grep -Fq 'clean_managed_staging_paths "$RK_PROJECT_PACKAGE_USERDATA_DIR"' "$ROOT_DIR/_build_image.sh" || \
    ! grep -Fq '"agent/benchmark"' "$ROOT_DIR/_build_image.sh" || \
@@ -204,22 +205,29 @@ if grep -Fq '"usr/ko"' "$ROOT_DIR/_build_image.sh"; then
     exit 1
 fi
 
-if ! grep -Fq 'BENCHMARK_SRC="$SCRIPT_DIR/benchmark"' "$ROOT_DIR/_build_image.sh" || \
-   ! grep -Fq 'BENCHMARK_DEST="$OVERLAY/userdata/agent/benchmark"' "$ROOT_DIR/_build_image.sh" || \
-   ! grep -Fq -- "--exclude '__pycache__/'" "$ROOT_DIR/_build_image.sh" || \
-   ! grep -Fq -- "--exclude '*.pyc'" "$ROOT_DIR/_build_image.sh" || \
-   ! grep -Fq -- "--exclude '.DS_Store'" "$ROOT_DIR/_build_image.sh" || \
-   ! grep -Fq -- "--exclude '._*'" "$ROOT_DIR/_build_image.sh" || \
-   ! grep -Fq 'rsync -a --delete "${BENCHMARK_RSYNC_EXCLUDES[@]}" "$BENCHMARK_SRC/runner/" "$BENCHMARK_DEST/runner/"' "$ROOT_DIR/_build_image.sh" || \
-   ! grep -Fq 'rsync -a --delete "${BENCHMARK_RSYNC_EXCLUDES[@]}" "$BENCHMARK_SRC/suites/" "$BENCHMARK_DEST/suites/"' "$ROOT_DIR/_build_image.sh" || \
-   ! grep -Fq 'rm -f "$BENCHMARK_DEST/pyproject.toml"' "$ROOT_DIR/_build_image.sh"; then
-    echo "_build_image.sh must stage benchmark runner and suites into userdata" >&2
+if grep -Fq 'BENCHMARK_SRC="$SCRIPT_DIR/benchmark"' "$ROOT_DIR/_build_image.sh" || \
+   grep -Fq 'BENCHMARK_DEST="$OVERLAY/userdata/agent/benchmark"' "$ROOT_DIR/_build_image.sh" || \
+   grep -Fq 'Benchmark runner and suites staged' "$ROOT_DIR/_build_image.sh" || \
+   grep -Fq 'rsync -a --delete "${BENCHMARK_RSYNC_EXCLUDES[@]}"' "$ROOT_DIR/_build_image.sh"; then
+    echo "_build_image.sh must not stage benchmark runner or suites into agent userdata" >&2
     exit 1
 fi
 
 if grep -Fq 'SKILLS_DEST="$OVERLAY/oem/usr/share/aiden/skills"' "$ROOT_DIR/_build_image.sh" || \
    grep -Fq 'SKILLS_DEST="$DEST_OVERLAY/usr/share/aiden/skills"' "$ROOT_DIR/_build_image.sh"; then
     echo "_build_image.sh must not stage bundled skills through repo overlay directories" >&2
+    exit 1
+fi
+
+if grep -Fq 'APP_MAPPING_DEST="$DEST_OVERLAY/usr/share/aiden/app_mapping.json"' "$ROOT_DIR/_build_image.sh" || \
+   grep -Fq 'QUICK_ACTIONS_DEST="$DEST_OVERLAY/usr/share/aiden/quick_actions.json"' "$ROOT_DIR/_build_image.sh"; then
+    echo "_build_image.sh must not stage bundled Aiden share JSON into rootfs overlay" >&2
+    exit 1
+fi
+
+if ! grep -Fq 'APP_MAPPING_DEST="$RK_PROJECT_PACKAGE_OEM_DIR/usr/share/aiden/app_mapping.json"' "$ROOT_DIR/_build_image.sh" || \
+   ! grep -Fq 'QUICK_ACTIONS_DEST="$RK_PROJECT_PACKAGE_OEM_DIR/usr/share/aiden/quick_actions.json"' "$ROOT_DIR/_build_image.sh"; then
+    echo "_build_image.sh must sync bundled Aiden share JSON directly into final OEM staging" >&2
     exit 1
 fi
 
@@ -231,8 +239,11 @@ fi
 
 oem_dir_line=$(grep -n 'RK_PROJECT_PACKAGE_OEM_DIR="${RK_PROJECT_OUTPUT}/oem"' "$ROOT_DIR/_build_image.sh" | sed 's/:.*//' | head -n 1)
 skills_dest_line=$(grep -n 'SKILLS_DEST="$RK_PROJECT_PACKAGE_OEM_DIR/usr/share/aiden/skills"' "$ROOT_DIR/_build_image.sh" | sed 's/:.*//' | head -n 1)
-if [ -z "$oem_dir_line" ] || [ -z "$skills_dest_line" ] || [ "$skills_dest_line" -le "$oem_dir_line" ]; then
-    echo "_build_image.sh must resolve final OEM staging before setting bundled skills destination" >&2
+app_mapping_dest_line=$(grep -n 'APP_MAPPING_DEST="$RK_PROJECT_PACKAGE_OEM_DIR/usr/share/aiden/app_mapping.json"' "$ROOT_DIR/_build_image.sh" | sed 's/:.*//' | head -n 1)
+quick_actions_dest_line=$(grep -n 'QUICK_ACTIONS_DEST="$RK_PROJECT_PACKAGE_OEM_DIR/usr/share/aiden/quick_actions.json"' "$ROOT_DIR/_build_image.sh" | sed 's/:.*//' | head -n 1)
+if [ -z "$oem_dir_line" ] || [ -z "$skills_dest_line" ] || [ -z "$app_mapping_dest_line" ] || [ -z "$quick_actions_dest_line" ] || \
+   [ "$skills_dest_line" -le "$oem_dir_line" ] || [ "$app_mapping_dest_line" -le "$oem_dir_line" ] || [ "$quick_actions_dest_line" -le "$oem_dir_line" ]; then
+    echo "_build_image.sh must resolve final OEM staging before setting bundled Aiden share destinations" >&2
     exit 1
 fi
 
@@ -241,8 +252,8 @@ if ! grep -q 'overlay/userdata' "$BUILD_IMAGE_SH"; then
     exit 1
 fi
 
-if ! grep -q '^/overlay/userdata/agent/benchmark/$' "$GITIGNORE"; then
-    echo "generated benchmark userdata staging directory must be gitignored" >&2
+if grep -q '^/overlay/userdata/agent/benchmark/$' "$GITIGNORE"; then
+    echo "agent benchmark userdata staging is no longer generated and must not be gitignored" >&2
     exit 1
 fi
 

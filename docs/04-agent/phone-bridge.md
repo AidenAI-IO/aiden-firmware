@@ -37,6 +37,8 @@ In other words: the board acts as WebSocket server, the app as WebSocket client.
 
 This way there's no need to guess the phone IP, no need for the phone app to open a local HTTP service, and reconnection and network configuration are simpler. The existing `192.168.42.1:80` config page and `192.168.42.1:8080` agent test page can be retained; just add a new bridge path or port.
 
+The board also exposes `/api/phone-bridge/commands` and `/api/phone-bridge/results` HTTP queue endpoints, but React Native JS, WebSocket, and polling timers in the iOS background must not be treated as a reliable tool execution path. On iOS, Phone Bridge tools are a foreground fast path: if Aiden is backgrounded and the app has reported `return_entry=dynamic_island`, Agent restores Aiden through Dynamic Island, waits for foreground WebSocket bridge reconnection, then executes the requested tool command. Lock-screen Live Activity entries require visual confirmation rather than fixed-coordinate tapping.
+
 ## App Opening Flow
 
 ```text
@@ -53,6 +55,10 @@ Android: com.tencent.mm
         ▼
 If relay app already connected:
     Send open_app command
+If relay app is backgrounded and the Aiden Dynamic Island entry is visible:
+    Tap Dynamic Island to return to Aiden
+    Wait for app to reconnect to board
+    Then send open_app command
 Otherwise:
     First use HID to open Aiden relay app
     Wait for app to auto-connect to board
@@ -69,7 +75,7 @@ Android: Intent launch package name
 
 ## Key Boundaries
 
-On iOS, the relay app is not a background-resident system agent. It's more like a foreground fast-path executor:
+On iOS, the relay app is not a background-resident system agent. It's more like a foreground fast-path executor; Dynamic Island can be used as the automatic entry point back to Aiden, while lock-screen Live Activity cards need visual confirmation:
 
 ```text
 Aiden App foreground
@@ -88,6 +94,7 @@ So iOS cannot promise long-term background command reception. Android can be mor
 - `LSApplicationQueriesSchemes` mainly limits `canOpenURL` queries, not dynamic `openURL` attempts.
 - Maintain scheme mapping table on board side or cloud for easy updates.
 - `openURL` returning success doesn't mean target page is fully usable; ultimately verify via HDMI visually.
+- Phone Bridge `clipboard_write` only writes the system clipboard. If the next step pastes into another app through HID `Cmd+V`, iOS must have Full Keyboard Access enabled; see [USB HID iOS shortcut paste prerequisite](../03-services/usb-hid.md#ios-shortcut-paste-prerequisite).
 
 ## Android Key Points
 
@@ -161,7 +168,12 @@ WebSocket's core value:
 2. Relay app auto-connects to `ws://192.168.42.1:8080/api/phone-bridge` after startup.
 3. App sends periodic heartbeat.
 4. App actively reports `phone_environment` upon connection success and returning from background to foreground, including system version, language/region, timezone, screen/battery, system apps, third-party candidate app availability, etc.
-5. Board maintains `bridge_connected`, `platform`, `last_heartbeat_at`, `environment` status. Complete environment exposed via status API; Agent runtime context only injects system type/version, language/region/timezone, screen dimensions, confirmed openable third-party candidate apps, etc.
+5. App reports `phone_app_state` when the visible lifecycle state changes among `active`, `background`, and `inactive`, including any available Dynamic Island / Live Activity return entry.
+6. Board maintains `bridge_connected`, `platform`, `last_heartbeat_at`, `app_state`, `return_entry`, `return_entry_available`, and `environment` status. Complete environment is exposed through status API; Agent runtime context only injects summarized connection state, app foreground/background state, return entry, system type/version, language/region/timezone, screen dimensions, confirmed openable third-party candidate apps, etc.
+
+`bridge_connected` only means the WebSocket is currently active. It is not equivalent to USB cable connectivity. After the iOS app enters background, WebSocket may disconnect while USB ECM remains reachable; real-time background Dynamic Island updates should go through Live Activity relay/APNs, not the phone bridge WebSocket.
+
+When `app_state=background|inactive`, `return_entry=dynamic_island`, and `return_entry_available=true`, Phone Bridge tools directly click the Aiden Dynamic Island entry, wait for Phone Bridge recovery, then send shortcut commands such as `open_app` or `clipboard`. Lock-screen Live Activity entries are not blind-tapped because their screen position is not stable; use screenshot/HID fallback or visual confirmation instead.
 
 ### Command Protocol
 
@@ -499,8 +511,9 @@ The board-side `current_time` tool can provide the model with current timezone b
 
 ### Implementation Notes
 
-7. Board then verifies via HDMI whether target app opened (only `open_app`).
-8. Verification failure auto-fallback to HID (only `open_app`; clipboard/calendar have no HID fallback, failure directly tells user).
+7. If the iOS Aiden app is backgrounded and `return_entry=dynamic_island` with `return_entry_available=true`, Phone Bridge tools first click Dynamic Island to restore Aiden, wait for foreground bridge reconnection, then send `open_app`, clipboard, calendar, contacts, or notification commands.
+8. Board then verifies via HDMI whether target app opened (only `open_app`).
+9. Verification failure auto-fallback to HID (only `open_app`; clipboard/calendar/contacts/notification have no reliable background HID/API fallback. If no return entry is available, the tool returns a clear bridge unavailable error).
 
 ## Final Positioning
 

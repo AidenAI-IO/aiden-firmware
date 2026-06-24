@@ -154,9 +154,20 @@ func (t *WaitStableScreenTool) captureScreenshot() (screenshotResult, error) {
 	if meta.PixelFormat != "jpeg" {
 		return screenshotResult{}, fmt.Errorf("expected jpeg format, got %s", meta.PixelFormat)
 	}
-	active := detectScreenshotActiveArea(jpegData, int(meta.Width), int(meta.Height))
+	active := screenActiveArea{}
+	sourceWidth := int(meta.Width)
+	sourceHeight := int(meta.Height)
+	fromSourceMeta := false
+	if fullWidth, fullHeight, sourceActive, ok := frameMetadataSourceActiveArea(meta); ok {
+		sourceWidth = fullWidth
+		sourceHeight = fullHeight
+		active = sourceActive
+		fromSourceMeta = true
+	} else {
+		active = detectScreenshotActiveAreaForScreen(t.screen, jpegData, int(meta.Width), int(meta.Height))
+	}
 	if t.screen != nil {
-		t.screen.UpdateActiveArea(int(meta.Width), int(meta.Height), active)
+		t.screen.UpdateActiveArea(sourceWidth, sourceHeight, active)
 	}
 	result := screenshotResult{
 		Width:  int(meta.Width),
@@ -165,7 +176,7 @@ func (t *WaitStableScreenTool) captureScreenshot() (screenshotResult, error) {
 		Size:   len(jpegData),
 		Data:   base64.StdEncoding.EncodeToString(jpegData),
 	}
-	if active.Valid && (active.X != 0 || active.Y != 0 || active.Width != result.Width || active.Height != result.Height) {
+	if !fromSourceMeta && active.Valid && (active.X != 0 || active.Y != 0 || active.Width != result.Width || active.Height != result.Height) {
 		result.ActiveArea = &active
 		result.ActiveWidth = active.Width
 		result.ActiveHeight = active.Height

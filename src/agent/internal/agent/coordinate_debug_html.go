@@ -93,6 +93,7 @@ canvas { border: 2px solid #1f7a63; border-radius: 10px; cursor: crosshair; max-
 <div class="info-panel" id="infoPanel" style="display:none;">
 <h2>📊 当前信息</h2>
 <div class="info-item"><span class="info-label">图片尺寸:</span><span class="info-value" id="imageSize">-</span></div>
+<div class="info-item"><span class="info-label">原始屏幕尺寸:</span><span class="info-value" id="originalScreenSize">-</span></div>
 <div class="info-item"><span class="info-label">点击位置 (像素):</span><span class="info-value" id="clickPixel">-</span></div>
 <div class="info-item"><span class="info-label">归一化坐标:</span><span class="info-value" id="normalizedCoord">-</span></div>
 <div class="info-item"><span class="info-label">标记位置 (像素):</span><span class="info-value" id="markerPixel">-</span></div>
@@ -143,8 +144,18 @@ function defaultScreenshotMeta(width, height) {
         height,
         source_width: width,
         source_height: height,
-        source_active_area: null
+        source_active_area: null,
+        original_screen_width_pixels: null,
+        original_screen_height_pixels: null
     };
+}
+
+function formatOriginalScreenSize(meta) {
+    if (!meta) return '-';
+    const width = meta.original_screen_width_pixels;
+    const height = meta.original_screen_height_pixels;
+    if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) return '-';
+    return width + ' × ' + height + ' px';
 }
 
 function normalizeActiveArea(meta) {
@@ -176,7 +187,7 @@ function imagePixelToSourcePixel(pixelX, pixelY) {
 function sourcePixelToNormalized(pixelX, pixelY) {
     const meta = currentScreenshotMeta || defaultScreenshotMeta(canvas.width, canvas.height);
     const active = normalizeActiveArea(meta);
-    // Normalized coordinates are relative to active_area (0-1000 maps to visible content)
+    // Normalized coordinates are relative to active_area (0-1000 maps to the mirrored phone touch region)
     if (active) {
         const activeWidth = Math.max(active.width, 1);
         const activeHeight = Math.max(active.height, 1);
@@ -201,7 +212,7 @@ function sourcePixelToNormalized(pixelX, pixelY) {
 function normalizedToSourcePixel(x, y) {
     const meta = currentScreenshotMeta || defaultScreenshotMeta(canvas.width, canvas.height);
     const active = normalizeActiveArea(meta);
-    // Normalized coordinates are relative to active_area (0-1000 maps to visible content)
+    // Normalized coordinates are relative to active_area (0-1000 maps to the mirrored phone touch region)
     if (active) {
         const activeWidth = Math.max(active.width, 1);
         const activeHeight = Math.max(active.height, 1);
@@ -268,6 +279,8 @@ async function captureFromDevice() {
             height: parseInt(res.headers.get('X-Frame-Height') || '0', 10) || 0,
             source_width: parseInt(res.headers.get('X-Source-Width') || '0', 10) || 0,
             source_height: parseInt(res.headers.get('X-Source-Height') || '0', 10) || 0,
+            original_screen_width_pixels: res.headers.get('X-Original-Screen-Valid') === 'true' ? (parseInt(res.headers.get('X-Original-Screen-Width') || '0', 10) || 0) : null,
+            original_screen_height_pixels: res.headers.get('X-Original-Screen-Valid') === 'true' ? (parseInt(res.headers.get('X-Original-Screen-Height') || '0', 10) || 0) : null,
             source_active_area: res.headers.get('X-Source-Active-Valid') === 'true' ? {
                 x: parseInt(res.headers.get('X-Source-Active-X') || '0', 10) || 0,
                 y: parseInt(res.headers.get('X-Source-Active-Y') || '0', 10) || 0,
@@ -319,6 +332,7 @@ function loadImageFromUrl(url, statusText, meta) {
             infoPanel.style.display = 'block';
             setCoordinateActionsEnabled(true);
             document.getElementById('imageSize').textContent = img.width + ' × ' + img.height + ' px';
+            document.getElementById('originalScreenSize').textContent = formatOriginalScreenSize(currentScreenshotMeta);
             deviceStatus.textContent = statusText;
             resolve(img);
         };

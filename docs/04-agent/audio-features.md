@@ -122,7 +122,7 @@ All TTS providers are called through a unified streaming session: the Agent writ
 ```toml
 # Minimax WebSocket
 [tts]
-provider = "minimax-ws"
+provider = "minimax"
 model = "speech-2.8-hd"
 voice_id = "male-qn-qingse"
 emotion = "happy"

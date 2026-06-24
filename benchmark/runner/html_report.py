@@ -1,5 +1,6 @@
 """Generate a self-contained HTML benchmark report with drawer UI."""
 from __future__ import annotations
+import base64
 import html as html_mod
 import json
 from pathlib import Path
@@ -10,6 +11,43 @@ from runner.agent_client import AgentClient
 
 def _esc(s: str) -> str:
     return html_mod.escape(str(s)) if s else ""
+
+
+def _image_data_uri(path: Path) -> str:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return ""
+    if not data:
+        return ""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        mime = "image/png"
+    elif data.startswith(b"\xff\xd8"):
+        mime = "image/jpeg"
+    else:
+        mime = "image/jpeg"
+    encoded = base64.b64encode(data).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
+
+
+def _safe_json_loads(text: Any) -> Any:
+    if not isinstance(text, str):
+        return None
+    try:
+        return json.loads(text) if text else None
+    except json.JSONDecodeError:
+        return None
+
+
+def _compact_tool_result(raw: str) -> str:
+    content = _safe_json_loads(raw)
+    if isinstance(content, dict):
+        content = dict(content)
+        if content.get("data"):
+            size = len(str(content.get("data") or ""))
+            content["data"] = f"<base64 image data, {size} chars>"
+        return json.dumps(content, ensure_ascii=False, indent=2)
+    return str(raw or "")
 
 
 def _safe_child_path(root: Path, *parts: str) -> Path | None:
@@ -41,17 +79,44 @@ def _task_artifact_dirs(run_dir: Path, task_id: str) -> list[Path]:
     return dirs
 
 
+def _result_artifact_dir(run_dir: Path, row: dict[str, Any], task_dir: Path | None) -> Path | None:
+    raw = row.get("artifact_dir")
+    if isinstance(raw, str) and raw.strip():
+        candidate = Path(raw.strip())
+        if not candidate.is_absolute():
+            candidate = run_dir / candidate
+        try:
+            resolved = candidate.resolve()
+            resolved.relative_to(run_dir.resolve())
+            if resolved.is_dir():
+                return resolved
+        except (OSError, ValueError):
+            pass
+    if task_dir is not None:
+        try:
+            attempt = int(row.get("attempt") or 1)
+        except (TypeError, ValueError):
+            attempt = 1
+        if attempt > 1:
+            attempt_dir = task_dir / f"attempt_{attempt}"
+            if attempt_dir.is_dir():
+                return attempt_dir
+        if task_dir.is_dir():
+            return task_dir
+    return None
+
+
 FAIL_STATUSES = {"failed", "timeout", "judge_error"}
 
 
-def _task_artifact_refs(run_dir: Path, task_id: str) -> str:
+def _task_artifact_refs(run_dir: Path, task_id: str, artifact_dir: Path | None = None) -> str:
     artifact_refs: list[str] = []
-    for artifact_dir in _task_artifact_dirs(run_dir, task_id):
+    artifact_dirs = [artifact_dir] if artifact_dir is not None else _task_artifact_dirs(run_dir, task_id)
+    for artifact_dir in artifact_dirs:
         for name in ("trace.json", "history.json", "judge.json"):
             path = artifact_dir / name
-            if not path.exists():
-                continue
-            artifact_refs.append(str(path.relative_to(run_dir)))
+            if path.exists():
+                artifact_refs.append(str(path.relative_to(run_dir)))
         for path in sorted(artifact_dir.glob("**/*")):
             if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}:
                 artifact_refs.append(str(path.relative_to(run_dir)))
@@ -63,13 +128,19 @@ def _task_error_log(
     task_id: str,
     status: str,
     errors: list[list[Any]],
-    hard_assertions: list[list[Any]],
+    hard_assertion_failures: list[dict[str, str]],
+    artifact_dir: Path | None = None,
 ) -> str:
-    if status not in FAIL_STATUSES and not errors and not hard_assertions:
+    if status not in FAIL_STATUSES and not errors and not hard_assertion_failures:
         return ""
     parts: list[str] = []
-    if hard_assertions:
-        lines = [f"- {item[0]}: {item[1]}" for item in hard_assertions]
+    if hard_assertion_failures:
+        lines = []
+        for item in hard_assertion_failures:
+            label = item.get("label") or item.get("id") or "hard_assertion"
+            requirement = item.get("requirement") or ""
+            actual = item.get("actual") or ""
+            lines.append(f"- {label}\n  Requirement: {requirement}\n  Actual: {actual}")
         parts.append("### Hard assertion failures\n" + "\n".join(lines))
     if errors:
         lines = [f"- {item[0]}: {item[1]}" for item in errors]
@@ -91,6 +162,59 @@ def _analysis_html(run_dir: Path) -> str:
 
 def analysis_html_for_run_dir(run_dir: Path) -> str:
     return _analysis_html(run_dir)
+
+
+def _full_trace_payload(task_dir: Path | None, history: list[dict[str, Any]]) -> dict[str, Any]:
+    events: list[dict[str, str]] = []
+    tool_step = 0
+    last_tool = ""
+    for index, msg in enumerate(history, start=1):
+        mtype = str(msg.get("type") or "")
+        if mtype == "tool_call":
+            tool_step += 1
+            last_tool = str(msg.get("tool_name") or "")
+            tool_input = _safe_json_loads(msg.get("tool_input", "")) or msg.get("tool_input", "")
+            detail = json.dumps(tool_input, ensure_ascii=False, indent=2) if not isinstance(tool_input, str) else tool_input
+            events.append({
+                "kind": "tool-call",
+                "title": f"Tool call #{tool_step}: {last_tool}",
+                "detail": detail,
+                "image": "",
+            })
+        elif mtype == "tool_result":
+            raw = str(msg.get("content") or "")
+            events.append({
+                "kind": "tool-result",
+                "title": f"Tool result: {msg.get('tool_name') or last_tool}",
+                "detail": _compact_tool_result(raw),
+                "image": "",
+            })
+        elif mtype == "assistant":
+            events.append({
+                "kind": "assistant",
+                "title": "Assistant",
+                "detail": str(msg.get("content") or ""),
+                "image": "",
+            })
+        elif mtype == "user":
+            events.append({
+                "kind": "user",
+                "title": "User",
+                "detail": str(msg.get("content") or ""),
+                "image": "",
+            })
+        else:
+            events.append({
+                "kind": mtype or "message",
+                "title": f"Message #{index}: {mtype or 'unknown'}",
+                "detail": json.dumps(msg, ensure_ascii=False, indent=2),
+                "image": "",
+            })
+    return {
+        "pre_screenshot": _image_data_uri(task_dir / "pre.jpg") if task_dir is not None else "",
+        "post_screenshot": _image_data_uri(task_dir / "post.jpg") if task_dir is not None else "",
+        "events": events,
+    }
 
 
 def generate_report_html(run_dir: Path) -> str:
@@ -128,10 +252,12 @@ def generate_report_html(run_dir: Path) -> str:
     tasks_js_items = []
     for r in results:
         tid = r.get("task_id", "")
-        task_dir = _safe_child_path(run_dir / "tasks", tid) if tid else None
+        fallback_task_dir = _safe_child_path(run_dir / "tasks", tid) if tid else None
+        task_dir = _result_artifact_dir(run_dir, r, fallback_task_dir)
         trace_path = task_dir / "trace.json" if task_dir is not None else run_dir / "__missing_trace.json"
         history_path = task_dir / "history.json" if task_dir is not None else run_dir / "__missing_history.json"
         trace_data: dict[str, Any] = {}
+        history: list[dict[str, Any]] = []
         prompt = ""
         if trace_path.exists():
             try:
@@ -140,12 +266,14 @@ def generate_report_html(run_dir: Path) -> str:
                 pass
         if history_path.exists():
             try:
-                history = json.loads(history_path.read_text("utf-8"))
+                loaded_history = json.loads(history_path.read_text("utf-8"))
+                history = [msg for msg in loaded_history if isinstance(msg, dict)] if isinstance(loaded_history, list) else []
                 for msg in history:
                     if msg.get("type") == "user":
                         prompt = msg.get("content", "")
                         break
             except Exception:
+                history = []
                 pass
 
         tool_calls = trace_data.get("tool_calls", [])
@@ -167,28 +295,16 @@ def generate_report_html(run_dir: Path) -> str:
             for s in rubric_spec:
                 rubric_js.append([s.get("id",""), s.get("check",""), "\u2014"])
 
-        # Extract hard assertions
-        hard_assertions = r.get("hard_assertions", {})
-        ha_failures = []
-        if hard_assertions:
-            if hard_assertions.get("timeout") is False:
-                ha_failures.append(["Timeout", "Task did not complete within time limit", "no"])
-            if hard_assertions.get("response_exists") is False:
-                ha_failures.append(["Response Exists", "Agent did not produce a response", "no"])
-            if hard_assertions.get("min_tool_calls") is False:
-                ha_failures.append(["Min Tool Calls", "Did not meet minimum tool call requirement", "no"])
-            if hard_assertions.get("max_tool_calls") is False:
-                ha_failures.append(["Max Tool Calls", "Exceeded maximum tool call limit", "no"])
-            if hard_assertions.get("required_tools") is False:
-                ha_failures.append(["Required Tools", "Missing one or more required tool calls", "no"])
-            if hard_assertions.get("forbidden_tools") is False:
-                ha_failures.append(["Forbidden Tools", "Used one or more forbidden tools", "no"])
-            if hard_assertions.get("expected_answer") is False:
-                expected = r.get("metrics", {}).get("expected_answer", "")
-                predicted = r.get("metrics", {}).get("predicted_answer", "")
-                ha_failures.append(["Expected Answer", f"Expected: {expected}, Got: {predicted}", "no"])
-            if hard_assertions.get("expected_recalled_memory") is False:
-                ha_failures.append(["Expected Recalled Memory", "Did not recall expected memory items", "no"])
+        hard_assertion_failures = [
+            {
+                "id": str(item.get("id") or ""),
+                "label": str(item.get("label") or item.get("id") or ""),
+                "requirement": str(item.get("requirement") or ""),
+                "actual": str(item.get("actual") or ""),
+            }
+            for item in r.get("hard_assertion_failures") or []
+            if isinstance(item, dict)
+        ]
 
         # Extract errors
         errors = []
@@ -199,8 +315,8 @@ def generate_report_html(run_dir: Path) -> str:
             errors.append(["Agent Error", metrics["agent_error"]])
         if "judge_error" in metrics:
             errors.append(["Judge Error", metrics["judge_error"]])
-        artifacts_detail = _task_artifact_refs(run_dir, tid)
-        error_log_detail = _task_error_log(run_dir, tid, str(status), errors, ha_failures)
+        artifacts_detail = _task_artifact_refs(run_dir, tid, task_dir)
+        error_log_detail = _task_error_log(run_dir, tid, str(status), errors, hard_assertion_failures, task_dir)
 
         tasks_js_items.append({
             "id": tid,
@@ -216,10 +332,11 @@ def generate_report_html(run_dir: Path) -> str:
             "response": trace_data.get("final_response", ""),
             "tool_calls_detail": tool_calls_str.strip(),
             "rubric": rubric_js,
-            "hard_assertions": ha_failures,
+            "hard_assertion_failures": hard_assertion_failures,
             "errors": errors,
             "error_log_detail": error_log_detail,
             "artifacts_detail": artifacts_detail,
+            "full_trace": _full_trace_payload(task_dir, history),
             "trace_observations": [
                 [
                     obs.get("id", ""),
@@ -389,6 +506,12 @@ pre.block-body {{ margin: 0; white-space: pre-wrap; word-break: break-word; font
 .rubric-row b {{ text-align: right; font-variant-numeric: tabular-nums }}
 .rubric-row b.yes {{ color: oklch(42% 0.13 150) }}
 .rubric-row b.no {{ color: oklch(48% 0.16 28) }}
+.assertion-row {{ display: grid; grid-template-columns: 1fr 54px; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 12px }}
+.assertion-row:last-child {{ border-bottom: 0 }}
+.assertion-row .rid {{ font-weight: 650; margin-bottom: 6px }}
+.assertion-detail {{ display: grid; grid-template-columns: 92px 1fr; gap: 4px 8px; color: var(--muted) }}
+.assertion-detail strong {{ color: var(--text); font-weight: 650 }}
+.assertion-row b {{ text-align: right; color: oklch(48% 0.16 28); font-variant-numeric: tabular-nums }}
 .error-block {{ border-color: color-mix(in oklch, oklch(60% 0.18 28) 28%, var(--border)) }}
 .error-block .block-head {{ background: color-mix(in oklch, oklch(60% 0.18 28) 7%, white); border-bottom-color: color-mix(in oklch, oklch(60% 0.18 28) 20%, var(--border)) }}
 .error-item {{ padding: 8px 0; border-bottom: 1px solid var(--border) }}
@@ -397,9 +520,25 @@ pre.block-body {{ margin: 0; white-space: pre-wrap; word-break: break-word; font
 .error-msg {{ font-family: var(--font-mono); font-size: 12px; color: var(--muted); line-height: 1.5 }}
 .warning-block {{ border-color: color-mix(in oklch, oklch(70% 0.14 75) 34%, var(--border)) }}
 .warning-block .block-head {{ background: color-mix(in oklch, oklch(70% 0.14 75) 10%, white); border-bottom-color: color-mix(in oklch, oklch(70% 0.14 75) 25%, var(--border)) }}
+.trace-actions {{ display: flex; justify-content: flex-start; margin-bottom: 12px }}
+.trace-toggle {{ height: 34px; border: 1px solid var(--border); border-radius: 8px; background: var(--fg); color: white; padding: 0 12px; font: inherit; font-size: 12px; font-weight: 650; cursor: pointer }}
+.trace-toggle:hover {{ background: color-mix(in oklch, var(--fg) 88%, var(--accent)) }}
+.full-trace {{ display: grid; gap: 12px; margin-bottom: 12px }}
+.full-trace[hidden] {{ display: none }}
+.trace-shots {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px }}
+.trace-shot {{ border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: color-mix(in oklch, var(--bg) 72%, white) }}
+.trace-shot figcaption {{ padding: 8px 10px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase }}
+.trace-shot img {{ display: block; width: 100%; height: auto; max-height: 520px; object-fit: contain; background: #050505 }}
+.trace-event {{ border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--surface) }}
+.trace-event-head {{ display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 11px; border-bottom: 1px solid var(--border); background: color-mix(in oklch, var(--bg) 72%, white) }}
+.trace-event-head strong {{ font-size: 12px }}
+.trace-kind {{ color: var(--muted); font-family: var(--font-mono); font-size: 10px; text-transform: uppercase }}
+.trace-event pre {{ margin: 0; padding: 10px 11px; white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono); font-size: 11px; line-height: 1.55; color: var(--muted) }}
+.trace-event img {{ display: block; width: 100%; max-height: 620px; object-fit: contain; background: #050505; border-top: 1px solid var(--border) }}
 .pager {{ padding: 12px 16px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--border) }}
 @media (max-width: 768px) {{
   .summary {{ grid-template-columns: repeat(2, 1fr) }}
+  .trace-shots {{ grid-template-columns: 1fr }}
   .drawer {{ width: 100vw }}
   .page {{ width: calc(100vw - 24px) }}
 }}
@@ -465,6 +604,31 @@ const rows = document.querySelectorAll("tbody tr[data-task]");
 const backdrop = document.getElementById("backdrop");
 const closeBtn = document.getElementById("closeBtn");
 function esc(s) {{ var d = document.createElement("div"); d.textContent = s || ""; return d.innerHTML; }}
+function token(s) {{ return String(s || "").toLowerCase().replace(/[^a-z0-9_-]/g, "-"); }}
+function hasFullTrace(t) {{
+  var ft = t.full_trace || {{}};
+  return !!(ft.pre_screenshot || ft.post_screenshot || (ft.events && ft.events.length));
+}}
+function renderTraceShot(label, src) {{
+  if (!src) return "";
+  return '<figure class="trace-shot"><figcaption>' + esc(label) + '</figcaption><img src="' + esc(src) + '" alt="' + esc(label) + ' screenshot"></figure>';
+}}
+function renderTraceEvent(event, index) {{
+  var kind = token(event.kind || "message");
+  var detail = event.detail ? '<pre>' + esc(event.detail) + '</pre>' : '';
+  return '<section class="trace-event ' + kind + '">' +
+    '<div class="trace-event-head"><strong>' + esc(event.title || ("Trace event " + index)) + '</strong><span class="trace-kind">' + esc(event.kind || "message") + '</span></div>' +
+    detail + '</section>';
+}}
+function renderFullTrace(t) {{
+  var ft = t.full_trace || {{}};
+  var shots = renderTraceShot("Pre screenshot", ft.pre_screenshot) + renderTraceShot("Post screenshot", ft.post_screenshot);
+  var body = shots ? '<div class="trace-shots">' + shots + '</div>' : '';
+  var events = ft.events || [];
+  if (events.length) body += events.map(function(event, index) {{ return renderTraceEvent(event, index + 1); }}).join("");
+  if (!body) body = '<div class="block"><div class="block-body">No trace artifacts were captured for this task.</div></div>';
+  return body;
+}}
 function openDrawer(i) {{
   var t = TASKS[i]; if (!t) return;
   document.getElementById("dTitle").textContent = t.id;
@@ -477,6 +641,10 @@ function openDrawer(i) {{
   var body = "";
   body += '<div class="block"><div class="block-head"><strong>Prompt</strong><span>user input</span></div><pre class="block-body">' + esc(t.prompt) + '</pre></div>';
   body += '<div class="block"><div class="block-head"><strong>Task Description</strong><span>for judge</span></div><div class="block-body">' + esc(t.description) + '</div></div>';
+  if (hasFullTrace(t)) {{
+    body += '<div class="trace-actions"><button id="traceToggle" class="trace-toggle" type="button">View full trace</button></div>';
+    body += '<div id="fullTrace" class="full-trace" hidden>' + renderFullTrace(t) + '</div>';
+  }}
   if (t.tool_calls_detail) {{
     body += '<div class="block"><div class="block-head"><strong>Tool Calls</strong><span>' + t.tool_calls_count + ' calls</span></div><pre class="block-body">' + esc(t.tool_calls_detail) + '</pre></div>';
   }}
@@ -493,11 +661,13 @@ function openDrawer(i) {{
     }}).join("");
     body += '<div class="block error-block"><div class="block-head"><strong>❌ Errors</strong><span>' + t.errors.length + ' error(s)</span></div><div class="block-body">' + err + '</div></div>';
   }}
-  if (t.hard_assertions && t.hard_assertions.length) {{
-    var ha = t.hard_assertions.map(function(r) {{
-      return '<div class="rubric-row"><div><div class="rid">' + esc(r[0]) + '</div><div class="reason">' + esc(r[1]) + '</div></div><b class="no">' + r[2] + '</b></div>';
+  if (t.hard_assertion_failures && t.hard_assertion_failures.length) {{
+    var ha = t.hard_assertion_failures.map(function(r) {{
+      return '<div class="assertion-row"><div><div class="rid">' + esc(r.label || r.id) + '</div>' +
+        '<div class="assertion-detail"><strong>Requirement</strong><span>' + esc(r.requirement) + '</span>' +
+        '<strong>Actual</strong><span>' + esc(r.actual) + '</span></div></div><b>no</b></div>';
     }}).join("");
-    body += '<div class="block warning-block"><div class="block-head"><strong>⚠️ Hard Assertion Failures</strong><span>' + t.hard_assertions.length + ' failure(s)</span></div><div class="block-body">' + ha + '</div></div>';
+    body += '<div class="block warning-block"><div class="block-head"><strong>⚠️ Hard Assertion Failures</strong><span>' + t.hard_assertion_failures.length + ' failure(s)</span></div><div class="block-body">' + ha + '</div></div>';
   }}
   if (t.rubric && t.rubric.length) {{
     var rb = t.rubric.map(function(r) {{
@@ -514,6 +684,16 @@ function openDrawer(i) {{
     body += '<div class="block"><div class="block-head"><strong>Trace observations</strong><span>informational</span></div><div class="block-body">' + ob + '</div></div>';
   }}
   document.getElementById("dBody").innerHTML = body;
+  var traceToggle = document.getElementById("traceToggle");
+  if (traceToggle) {{
+    traceToggle.addEventListener("click", function() {{
+      var fullTrace = document.getElementById("fullTrace");
+      if (!fullTrace) return;
+      var willOpen = fullTrace.hasAttribute("hidden");
+      if (willOpen) fullTrace.removeAttribute("hidden"); else fullTrace.setAttribute("hidden", "");
+      traceToggle.textContent = willOpen ? "Hide full trace" : "View full trace";
+    }});
+  }}
   rows.forEach(function(r) {{ r.classList.toggle("active", Number(r.dataset.task) === i); }});
   document.body.classList.add("open");
 }}

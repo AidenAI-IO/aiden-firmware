@@ -19,6 +19,9 @@ def test_below_min_tool_calls_fails():
     out = evaluate_hard_assertions(make_trace(1), spec, timed_out=False)
     assert out.all_passed is False
     assert out.results.min_tool_calls is False
+    assert out.failures[0].id == "min_tool_calls"
+    assert out.failures[0].requirement == "Use at least 2 tool call(s)."
+    assert out.failures[0].actual == "Used 1 tool call(s)."
 
 def test_above_max_tool_calls_fails():
     spec = HardAssertions(min_tool_calls=1, max_tool_calls=2)
@@ -63,6 +66,9 @@ def test_required_tools_fail_when_missing():
 
     assert out.all_passed is False
     assert out.results.required_tools is False
+    assert out.failures[0].id == "required_tools"
+    assert out.failures[0].requirement == "Must call: enter_plan_mode."
+    assert out.failures[0].actual == "Missing: enter_plan_mode. Used: x."
 
 def test_forbidden_tools_fail_when_present():
     trace = Trace(
@@ -77,6 +83,9 @@ def test_forbidden_tools_fail_when_present():
 
     assert out.all_passed is False
     assert out.results.forbidden_tools is False
+    assert out.failures[0].id == "forbidden_tools"
+    assert out.failures[0].requirement == "Must not call: screenshot."
+    assert out.failures[0].actual == "Forbidden calls: screenshot at step 1. Used: screenshot."
 
 def test_expected_option_answer_matches_tagged_final_answer():
     result = assertions.evaluate_expected_answer(

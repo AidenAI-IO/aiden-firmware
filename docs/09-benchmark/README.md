@@ -1,31 +1,75 @@
 # Agent Benchmark
 
-Agent benchmark is a testing framework for evaluating the Go agent's phone control task capabilities.
+Agent benchmark evaluates the Aiden Go agent on phone UI, memory, planning,
+perception, and environment-control tasks. The current recommended entry points
+are:
+
+- WebUI for day-to-day runs, MobileGym concurrency, task-level logs/screens, and reports.
+- CLI for scripted runs, single-suite debugging, rejudge, compare, and unit tool tests.
+
+For the full manual, see [`benchmark/manual.md`](../../benchmark/manual.md).
 
 ## Quick Start
 
-### Running Benchmark
+### Existing Agent
 
 ```bash
 cd benchmark
-uv run python -m runner run --suite suites/memory_v1.json --agent-url http://192.168.1.100:8080
+uv sync
+uv run python -m runner run \
+  --suite suites/memory_v1.json \
+  --agent-url http://192.168.1.100:8080
 ```
 
-### View Reports
+### WebUI
 
-After running, it will automatically:
+```bash
+cd benchmark
+uv run python -m runner webui
+```
 
-- Open local HTML report in browser
-- Upload report to device at `/userdata/agent/benchmark/report.html`
-- Accessible via `http://<board-ip>:8080/benchmark`
+Open:
 
-Report includes:
+```text
+http://127.0.0.1:8765
+```
 
-- Task list (clickable for details)
-- Each task's prompt, tool calls, agent response, rubric scoring
-- Pass rate, failure count, skip count statistics
+The WebUI can start MobileGym environments, read bridge concurrency from
+`/api/concurrent`, start isolated agent daemon workers, and show task-level
+screen/log records.
 
-### Directory Structure
+### MobileGym From CLI
+
+```bash
+cd benchmark
+uv run python -m runner start-mobilegym-env --envs 5 --bridge-port 19090
+
+uv run python -m runner run \
+  --suite suites/mobilegym_basic.json \
+  --environment-url http://127.0.0.1:19090 \
+  --auto-agent-setup
+```
+
+`--auto-agent-setup` ignores `--agent-url`, reads bridge capacity from
+`/api/concurrent`, and starts one isolated agent daemon per active task worker.
+
+## Reports
+
+Runs write a self-contained report under `benchmark/runs/<run-id>/` or, for the
+WebUI, under `benchmark/runs/webui/<job-id>/`.
+
+Reports include:
+
+- Suite/task status and pass rate.
+- Prompt, final response, hard assertion failures, rubric verdicts.
+- Tool trace extracted from agent history.
+- `pre.jpg` and `post.jpg` screenshots when an environment bridge is configured.
+- A `View full trace` action for manual inspection.
+
+Judge uses only the pre/post screenshots plus trace/final response. It does not
+consume every intermediate screenshot.
+
+## Directory Structure
 
 ```text
 benchmark/
@@ -33,77 +77,89 @@ benchmark/
 │   ├── main.py          # CLI entry point
 │   ├── suite.py         # Suite loading
 │   ├── runtask.py       # Task execution
-│   ├── judge.py         # LLM judge
+│   ├── judge.py         # OpenRouter-compatible LLM judge
 │   └── html_report.py   # HTML report generation
-├── suites/              # Task suites
-│   ├── memory_v1.json   # Memory tests (17 tasks)
-│   ├── personamem_lt_recall_v1.json # PersonaMem-derived LT memory recall tests
-│   └── phone_control_v1.json  # Phone control tests
-└── runs/<run_id>/       # Run results
-    ├── manifest.json    # Run metadata
-    ├── results.jsonl    # One task per line
-    └── tasks/<task_id>/ # Detailed data per task
-        ├── history.json # Conversation history
-        ├── trace.json   # Tool call trace
-        └── steps/       # Step-by-step screenshots
+├── suites/              # Benchmark and unit suites
+├── environment_bridge.md
+├── manual.md
+└── runs/<run_id>/       # CLI run results
+    ├── manifest.json
+    ├── results.jsonl
+    ├── summary.md
+    ├── report.html
+    └── tasks/<task_id>/
+        ├── pre.jpg
+        ├── post.jpg
+        ├── history.json
+        ├── trace.json
+        └── judge.json
 ```
 
 ## CLI Commands
 
-### run - Run Benchmark
+### `run`
 
 ```bash
 uv run python -m runner run --suite <suite.json> [options]
 ```
 
-Options:
+Common options:
 
-- `--suite PATH` - Benchmark suite JSON path
-- `--agent-url URL` - Agent HTTP address (default `http://localhost:8080`)
-- `--no-judge` - Skip LLM judge, only run hard assertions
-- `--repeats N` - Repeat each task N times
-- `--filter PATTERN` - Only run tasks matching the ID pattern
-- `--verbose` - Enable verbose output
-- `--state-file PATH` - Path to state file for resume/cooldown tracking
+- `--suite PATH` - Benchmark suite JSON path.
+- `--agent-url URL` - Existing agent daemon URL.
+- `--environment-url URL` - Environment bridge URL for setup, pre/post screen capture, and release.
+- `--auto-agent-setup` - Start isolated agent daemon workers and schedule by bridge concurrency.
+- `--agent-config PATH` - Agent config used for auto-started daemon workers.
+- `--no-judge` - Skip LLM judge and only run hard assertions.
+- `--task-id ID` / `--task-ids A,B` - Run selected tasks.
+- `--repeats N` - Override task repeats.
+- `--state-file PATH` - Write progress JSON for WebUI or scripts.
+- `--verbose` - Print detailed rubric results.
 
-### rejudge - Re-judge
+### `unit`
+
+```bash
+uv run python -m runner unit --suite suites/unit/tools/<suite>.json
+```
+
+Unit suites call tools directly and do not use LLM judge.
+
+### `rejudge`
 
 ```bash
 uv run python -m runner rejudge --run-dir runs/<run_id>
 ```
 
-Re-judge all tasks in an existing run without re-executing tasks.
+Rejudge existing artifacts without re-executing tasks.
 
-### compare - Compare Two Runs
+### `compare`
 
 ```bash
 uv run python -m runner compare --runs runs/<run_a> runs/<run_b>
 ```
 
-Output which tasks flipped status, latency differences, etc. between two runs.
+Compare task status flips, latency, and pass-rate changes between two runs.
 
 ## Environment Variables
 
-- `OPENROUTER_API_KEY` - OpenRouter API key (required for judge)
-- `ANTHROPIC_API_KEY` - Anthropic API key (optional, judge fallback)
+- `OPENROUTER_API_KEY` - Required when judge is enabled.
+- `AIDEN_AGENT_URL` - Default `--agent-url`.
+- `AIDEN_ENVIRONMENT_URL` - Default `--environment-url`.
+- `AIDEN_DAEMON_IMAGE` - Default daemon worker image for auto agent setup.
+
+## Execution Modes
+
+- Existing agent: CLI talks to one already-running Go agent daemon.
+- Auto agent setup: CLI starts isolated daemon workers and uses an environment bridge for tools/screens.
+- WebUI: manages suites, jobs, environments, workers, task screens, logs, and persisted job records.
+
+The benchmark suite format is shared across physical devices and MobileGym.
+SkillOpt is independent and lives under `skillopt/`; it may call benchmark
+runner APIs, but benchmark does not expose SkillOpt runs, suites, or reports.
 
 ## Related Documentation
 
-- [Architecture Design](./architecture.md) - Benchmark design principles and scoring mechanism
-- [Detailed Guide](./quickstart.md) - Complete usage instructions
-
-## Dual-Mode Execution
-
-Benchmark supports two execution modes:
-
-- **Aiden Native** — Runs on local agent via `benchmark/runner/main.py`, serial execution.
-- **MobileGym** — Runs on Docker emulator via `benchmark/mobilegym/scripts/run_aiden.py`,
-  supports parallelism (`PARALLEL=N ./parallel_run.sh`).
-
-The same `benchmark/suites/*.json` files can execute in both modes. MobileGym built-in suites
-(clock, alipay, wechat, etc.) are only available in MobileGym mode, discovered and aggregated from
-`benchmark/mobilegym/suites/all_tasks.txt`.
-
-The web UI `/benchmark` page has an "Aiden Native / MobileGym" radio button to switch between modes.
-MobileGym mode currently only provides parallelism control; the `/benchmark` page does not provide
-a task limit input box and will not send `limit` in the launch payload.
+- [Architecture Design](./architecture.md)
+- [Detailed Guide](./quickstart.md)
+- [Environment Bridge Protocol](../../benchmark/environment_bridge.md)
+- [Full Manual](../../benchmark/manual.md)

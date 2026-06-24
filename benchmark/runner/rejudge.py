@@ -4,8 +4,16 @@ import json
 from pathlib import Path
 from runner.judge import JudgeConfig, judge_task
 from runner.suite import RubricItem
-from runner.models import RubricVerdict
 from runner.report import now_iso
+
+
+def _post_screenshot_path(attempt_dir: Path) -> Path:
+    post = attempt_dir / "post.jpg"
+    if post.exists():
+        return post
+    legacy_steps = sorted((attempt_dir / "steps").glob("*.jpg"))
+    return legacy_steps[-1] if legacy_steps else post
+
 
 def rejudge_run(run_dir: Path, judge_model: str) -> int:
     cfg = JudgeConfig(model=judge_model)
@@ -16,13 +24,12 @@ def rejudge_run(run_dir: Path, judge_model: str) -> int:
         td = run_dir / "tasks" / row["task_id"]
         attempt_dir = td / f"attempt_{row['attempt']}" if (td / f"attempt_{row['attempt']}").exists() else td
         pre = attempt_dir / "pre.jpg"
-        steps = sorted((attempt_dir / "steps").glob("*.jpg")) if (attempt_dir / "steps").exists() else []
-        if not pre.exists() or not steps:
+        post = _post_screenshot_path(attempt_dir)
+        if not pre.exists() or not post.exists():
             row["status"] = "judge_error"
             row["metrics"] = {**row.get("metrics", {}), "rejudge_error": "missing artifacts"}
             new_results.append(row)
             continue
-        post = steps[-1]
         try:
             trace = json.loads((attempt_dir / "trace.json").read_text("utf-8"))
         except Exception as e:

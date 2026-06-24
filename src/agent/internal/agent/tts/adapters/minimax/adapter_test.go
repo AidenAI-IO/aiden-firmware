@@ -51,13 +51,16 @@ func TestWebSocketRequestsSinkSampleRate(t *testing.T) {
 			t.Errorf("read task_continue: %v", err)
 			return
 		}
+
+		var finish map[string]any
+		if err := conn.ReadJSON(&finish); err != nil {
+			t.Errorf("read task_finish: %v", err)
+			return
+		}
 		if err := conn.WriteJSON(map[string]any{"is_final": true}); err != nil {
 			t.Errorf("write final audio response: %v", err)
 			return
 		}
-
-		var finish map[string]any
-		_ = conn.ReadJSON(&finish)
 		_ = conn.WriteJSON(map[string]any{"event": "task_finished"})
 	}))
 	defer server.Close()
@@ -69,7 +72,9 @@ func TestWebSocketRequestsSinkSampleRate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWebSocket() error = %v", err)
 	}
-	session, err := provider.BeginStream(context.Background(), noopSink{format: tts.AudioFormat{SampleRate: 32000, Channels: 1, BitWidth: 16}})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	session, err := provider.BeginStream(ctx, noopSink{format: tts.AudioFormat{SampleRate: 32000, Channels: 1, BitWidth: 16}})
 	if err != nil {
 		t.Fatalf("BeginStream() error = %v", err)
 	}
@@ -87,6 +92,128 @@ func TestWebSocketRequestsSinkSampleRate(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for sample_rate from websocket server")
+	}
+}
+
+func TestWebSocketSendsTaskFinishBeforeWaitingForAudio(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		_ = conn.WriteJSON(map[string]any{"event": "connected_success"})
+		var start map[string]any
+		if err := conn.ReadJSON(&start); err != nil {
+			t.Errorf("read task_start: %v", err)
+			return
+		}
+		_ = conn.WriteJSON(map[string]any{"event": "task_started"})
+		var cont map[string]any
+		if err := conn.ReadJSON(&cont); err != nil {
+			t.Errorf("read task_continue: %v", err)
+			return
+		}
+		var finish map[string]any
+		if err := conn.ReadJSON(&finish); err != nil {
+			t.Errorf("read task_finish: %v", err)
+			return
+		}
+		if event, _ := finish["event"].(string); event != "task_finish" {
+			t.Errorf("finish event = %q, want task_finish", event)
+			return
+		}
+		_ = conn.WriteJSON(map[string]any{
+			"data":     map[string]any{"audio": "0001"},
+			"is_final": true,
+		})
+		_ = conn.WriteJSON(map[string]any{"event": "task_finished"})
+	}))
+	defer server.Close()
+
+	provider, err := NewWebSocket(tts.ProviderConfig{APIKey: "test-key", Endpoint: "ws" + server.URL[len("http"):]})
+	if err != nil {
+		t.Fatalf("NewWebSocket() error = %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	sink := &recordingSink{format: tts.AudioFormat{SampleRate: 32000, Channels: 1, BitWidth: 16}}
+	session, err := provider.BeginStream(ctx, sink)
+	if err != nil {
+		t.Fatalf("BeginStream() error = %v", err)
+	}
+	if err := session.WriteText("test passed."); err != nil {
+		t.Fatalf("WriteText() error = %v", err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if string(sink.data) != "\x00\x01" {
+		t.Fatalf("sink data = %v, want [0 1]", sink.data)
+	}
+}
+
+func TestWebSocketTreatsNormalCloseAfterAudioAsSuccess(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		_ = conn.WriteJSON(map[string]any{"event": "connected_success"})
+		var start map[string]any
+		if err := conn.ReadJSON(&start); err != nil {
+			t.Errorf("read task_start: %v", err)
+			return
+		}
+		_ = conn.WriteJSON(map[string]any{"event": "task_started"})
+		var cont map[string]any
+		if err := conn.ReadJSON(&cont); err != nil {
+			t.Errorf("read task_continue: %v", err)
+			return
+		}
+		var finish map[string]any
+		if err := conn.ReadJSON(&finish); err != nil {
+			t.Errorf("read task_finish: %v", err)
+			return
+		}
+		_ = conn.WriteJSON(map[string]any{
+			"data":     map[string]any{"audio": "0001"},
+			"is_final": true,
+		})
+		_ = conn.WriteControl(
+			websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+			time.Now().Add(time.Second),
+		)
+	}))
+	defer server.Close()
+
+	provider, err := NewWebSocket(tts.ProviderConfig{APIKey: "test-key", Endpoint: "ws" + server.URL[len("http"):]})
+	if err != nil {
+		t.Fatalf("NewWebSocket() error = %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	sink := &recordingSink{format: tts.AudioFormat{SampleRate: 32000, Channels: 1, BitWidth: 16}}
+	session, err := provider.BeginStream(ctx, sink)
+	if err != nil {
+		t.Fatalf("BeginStream() error = %v", err)
+	}
+	if err := session.WriteText("test passed."); err != nil {
+		t.Fatalf("WriteText() error = %v", err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if string(sink.data) != "\x00\x01" {
+		t.Fatalf("sink data = %v, want [0 1]", sink.data)
 	}
 }
 
@@ -158,6 +285,11 @@ func TestWebSocketRejectsInvalidAudioHex(t *testing.T) {
 			t.Errorf("read task_continue: %v", err)
 			return
 		}
+		var finish map[string]any
+		if err := conn.ReadJSON(&finish); err != nil {
+			t.Errorf("read task_finish: %v", err)
+			return
+		}
 		_ = conn.WriteJSON(map[string]any{"data": map[string]any{"audio": "zz"}, "is_final": true})
 	}))
 	defer server.Close()
@@ -166,7 +298,9 @@ func TestWebSocketRejectsInvalidAudioHex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWebSocket() error = %v", err)
 	}
-	session, err := provider.BeginStream(context.Background(), noopSink{format: tts.AudioFormat{SampleRate: 32000, Channels: 1, BitWidth: 16}})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	session, err := provider.BeginStream(ctx, noopSink{format: tts.AudioFormat{SampleRate: 32000, Channels: 1, BitWidth: 16}})
 	if err != nil {
 		t.Fatalf("BeginStream() error = %v", err)
 	}
@@ -193,6 +327,10 @@ func TestWebSocketReadAudioHonorsContextCancellation(t *testing.T) {
 		_ = conn.WriteJSON(map[string]any{"event": "task_started"})
 		var cont map[string]any
 		if err := conn.ReadJSON(&cont); err != nil {
+			return
+		}
+		var finish map[string]any
+		if err := conn.ReadJSON(&finish); err != nil {
 			return
 		}
 		<-r.Context().Done()
@@ -241,3 +379,16 @@ func (s noopSink) Drain(context.Context) error {
 	return nil
 }
 func (s noopSink) Stop() error { return nil }
+
+type recordingSink struct {
+	format tts.AudioFormat
+	data   []byte
+}
+
+func (s *recordingSink) Format() tts.AudioFormat { return s.format }
+func (s *recordingSink) WritePCM(data []byte) error {
+	s.data = append(s.data, data...)
+	return nil
+}
+func (s *recordingSink) Drain(context.Context) error { return nil }
+func (s *recordingSink) Stop() error                 { return nil }
