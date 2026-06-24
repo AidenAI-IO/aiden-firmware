@@ -645,6 +645,40 @@ func TestDrainWakeupEventsWhileListeningLogsDrainedCount(t *testing.T) {
 	}
 }
 
+func TestFormatVADDebugLogOmitsEmptyLastError(t *testing.T) {
+	got := formatVADDebugLog(agent.VADDebugState{
+		Probability:   0.1234,
+		Threshold:     0.5,
+		Speaking:      false,
+		SpeechFrames:  0,
+		SilenceFrames: 0,
+	})
+
+	if strings.Contains(got, "last_error=") {
+		t.Fatalf("log = %q, want last_error omitted when empty", got)
+	}
+	want := "[vad] probability=0.123 threshold=0.500 speaking=false speech_frames=0 silence_frames=0"
+	if got != want {
+		t.Fatalf("log = %q, want %q", got, want)
+	}
+}
+
+func TestFormatVADDebugLogIncludesLastErrorWhenPresent(t *testing.T) {
+	got := formatVADDebugLog(agent.VADDebugState{
+		Probability:   0.5,
+		Threshold:     0.5,
+		Speaking:      true,
+		SpeechFrames:  3,
+		SilenceFrames: 1,
+		LastError:     "model failed",
+	})
+
+	want := `[vad] probability=0.500 threshold=0.500 speaking=true speech_frames=3 silence_frames=1 last_error="model failed"`
+	if got != want {
+		t.Fatalf("log = %q, want %q", got, want)
+	}
+}
+
 func TestSignalWakeupEventCoalescesPendingEvents(t *testing.T) {
 	wakeupEvents := make(chan struct{}, 1)
 
