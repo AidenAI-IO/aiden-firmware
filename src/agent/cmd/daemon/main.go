@@ -355,6 +355,20 @@ type vadDebugReporter interface {
 	VADDebugState() agent.VADDebugState
 }
 
+func formatVADDebugLog(state agent.VADDebugState) string {
+	msg := fmt.Sprintf("[vad] probability=%.3f threshold=%.3f speaking=%v speech_frames=%d silence_frames=%d",
+		state.Probability,
+		state.Threshold,
+		state.Speaking,
+		state.SpeechFrames,
+		state.SilenceFrames,
+	)
+	if state.LastError != "" {
+		msg += fmt.Sprintf(" last_error=%q", state.LastError)
+	}
+	return msg
+}
+
 type voiceEvent int
 
 const (
@@ -1061,14 +1075,7 @@ func captureUtteranceWithTimeout(dialog audioDialogRunner, sigChan chan os.Signa
 					speechDetected = true
 				}
 				if time.Now().After(nextVADLogAt) {
-					log.Printf("[vad] probability=%.3f threshold=%.3f speaking=%v speech_frames=%d silence_frames=%d last_error=%q\n",
-						state.Probability,
-						state.Threshold,
-						state.Speaking,
-						state.SpeechFrames,
-						state.SilenceFrames,
-						state.LastError,
-					)
+					log.Print(formatVADDebugLog(state))
 					nextVADLogAt = time.Now().Add(time.Second)
 				}
 			}
@@ -1184,14 +1191,7 @@ func processAudioUntilUtteranceWithWakeupInterrupt(
 			}
 			if reporter, ok := dialog.(vadDebugReporter); ok && time.Now().After(nextVADLogAt) {
 				state := reporter.VADDebugState()
-				log.Printf("[vad] probability=%.3f threshold=%.3f speaking=%v speech_frames=%d silence_frames=%d last_error=%q\n",
-					state.Probability,
-					state.Threshold,
-					state.Speaking,
-					state.SpeechFrames,
-					state.SilenceFrames,
-					state.LastError,
-				)
+				log.Print(formatVADDebugLog(state))
 				nextVADLogAt = time.Now().Add(time.Second)
 			}
 			if utterance != nil {
