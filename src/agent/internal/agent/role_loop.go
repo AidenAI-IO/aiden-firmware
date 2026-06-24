@@ -123,7 +123,45 @@ func isRunPausingTool(name string) bool {
 }
 
 func runPausingToolFinalAnswer(step *schema.AgentStep) string {
+	if step != nil && isHumanHandoffTool(step.Action.Tool) {
+		return humanHandoffFinalAnswer(step)
+	}
 	return waitForWakeupFinalAnswer(step)
+}
+
+func humanHandoffFinalAnswer(step *schema.AgentStep) string {
+	if step != nil {
+		if content := toolContentFromAction(step.Action); content != "" {
+			return content
+		}
+		if message := humanHandoffMessageFromInput(step.Action.ToolInput); message != "" {
+			return message
+		}
+		if message := humanHandoffMessageFromObservation(step.Observation); message != "" {
+			return message
+		}
+	}
+	return waitForWakeupFinalAnswer(step)
+}
+
+func humanHandoffMessageFromInput(input string) string {
+	var req HumanHandoffRequest
+	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &req); err != nil {
+		return ""
+	}
+	return firstNonEmptyString([]string{req.SuggestedAction, req.Details})
+}
+
+func humanHandoffMessageFromObservation(observation string) string {
+	var payload struct {
+		Message         string `json:"message"`
+		SuggestedAction string `json:"suggested_action"`
+		Details         string `json:"details"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(observation)), &payload); err != nil {
+		return ""
+	}
+	return firstNonEmptyString([]string{payload.Message, payload.SuggestedAction, payload.Details})
 }
 
 func waitForWakeupFinalAnswer(step *schema.AgentStep) string {

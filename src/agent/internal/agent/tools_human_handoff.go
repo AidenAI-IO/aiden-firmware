@@ -18,9 +18,9 @@ import (
 // - Ambiguous situations requiring human judgment
 // - Black screen or inaccessible UI elements
 //
-// Unlike blocking callback approaches, this tool returns immediately with instructions
-// for the agent to communicate to the user. The agent will naturally wait for the user's
-// next message in the conversation flow.
+// Unlike blocking callback approaches, this tool returns immediately with a structured
+// handoff marker. The agent will naturally wait for the user's next message in the
+// conversation flow.
 type HumanHandoffTool struct{}
 
 // HumanHandoffRequest contains details about why human intervention is needed.
@@ -106,7 +106,7 @@ func (t *HumanHandoffTool) Description() string {
 		`"black_screen" (screen not visible), "ambiguous_situation" (unclear what to do), ` +
 		`"unsupported_action" (action not possible with available tools), "stuck" (unable to make progress), "other" (specify in details). ` +
 		`The "details" field should clearly explain the situation. The "suggested_action" field optionally tells the human what to do. ` +
-		`This tool returns immediately with instructions for you to communicate to the user. Wait for the user to complete the task and tell you to continue in their next message. ` +
+		`This tool returns immediately with a structured handoff marker. Wait for the user to complete the task and tell you to continue in their next message. ` +
 		`Use this when: you need credentials you don't have, encounter CAPTCHA, need verification codes, face sensitive operations requiring human approval, ` +
 		`need the user to choose a login method, need a system/app redirect or permission dialog confirmed, see a black/blank screen preventing progress, ` +
 		`are genuinely stuck after multiple attempts, or the task fundamentally requires human judgment. ` +
@@ -164,40 +164,20 @@ func (t *HumanHandoffTool) Call(ctx context.Context, input string) (string, erro
 	details := strings.TrimSpace(args.Details)
 	suggestedAction := strings.TrimSpace(args.SuggestedAction)
 
-	// Build response message for the agent to communicate to the user
-	var response strings.Builder
-	response.WriteString("HUMAN_HANDOFF_REQUESTED. You need to ask the user to perform a manual action. ")
-
-	// Add context about why handoff is needed
-	response.WriteString(fmt.Sprintf("Reason: %s. ", details))
-
-	// Add suggested action if provided
-	if suggestedAction != "" {
-		response.WriteString(fmt.Sprintf("Tell the user: \"%s\" ", suggestedAction))
-	} else {
-		// Provide default instruction based on reason
-		switch reason {
-		case "authentication":
-			response.WriteString("Tell the user to enter their credentials. ")
-		case "login_method_selection":
-			response.WriteString("Tell the user to choose the login method on the device. ")
-		case "captcha", "verification_code":
-			response.WriteString("Tell the user to complete the verification. ")
-		case "sensitive_operation":
-			response.WriteString("Tell the user to review and confirm the sensitive operation. ")
-		case "redirect_confirmation":
-			response.WriteString("Tell the user to confirm the system or app redirect on the device. ")
-		case "permission_confirmation":
-			response.WriteString("Tell the user to review and confirm the permission dialog on the device. ")
-		case "black_screen":
-			response.WriteString("Tell the user to manually complete the action on the screen. ")
-		default:
-			response.WriteString("Tell the user to handle this situation manually. ")
-		}
+	response := struct {
+		Status          string `json:"status"`
+		Reason          string `json:"reason"`
+		Details         string `json:"details"`
+		SuggestedAction string `json:"suggested_action,omitempty"`
+	}{
+		Status:          "HUMAN_HANDOFF_REQUESTED",
+		Reason:          reason,
+		Details:         details,
+		SuggestedAction: suggestedAction,
 	}
-
-	response.WriteString("Then ask the user to tell you when they have completed the task (e.g., say 'done', 'continue', or 'finished'). ")
-	response.WriteString("After the user confirms, take a screenshot to verify the current state before proceeding.")
-
-	return response.String(), nil
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
 }

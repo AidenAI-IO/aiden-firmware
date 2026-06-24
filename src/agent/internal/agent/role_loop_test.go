@@ -310,9 +310,9 @@ func TestDefaultFinalReviewConvertsHumanQuestionToHandoff(t *testing.T) {
 		"can_finish": false,
 		"needs_human_handoff": true,
 		"handoff_reason": "login_method_selection",
-		"handoff_details": "The current screen requires the user to choose a login method before the login can continue.",
-		"suggested_action": "Please choose the login method on the phone, then tell me to continue.",
-		"reason": "manual login method selection is required"
+		"handoff_details": "当前页面需要用户在手机上选择登录方式后才能继续。",
+		"suggested_action": "请在手机上选择登录方式，完成后告诉我继续。",
+		"reason": "需要用户选择登录方式"
 	}`
 	model := &scriptedModel{responses: []*llms.ContentResponse{
 		toolCallResponse("screen_1", "screenshot", `{"__arg1":"{}"}`),
@@ -345,7 +345,7 @@ func TestDefaultFinalReviewConvertsHumanQuestionToHandoff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call() error = %v", err)
 	}
-	if output := strings.TrimSpace(fmt.Sprint(result["output"])); output != "Please choose the login method on the phone, then tell me to continue." {
+	if output := strings.TrimSpace(fmt.Sprint(result["output"])); output != "请在手机上选择登录方式，完成后告诉我继续。" {
 		t.Fatalf("output = %q", output)
 	}
 	if !toolCallsContain(handler.calls, toolHumanHandoffStep) {
@@ -353,6 +353,35 @@ func TestDefaultFinalReviewConvertsHumanQuestionToHandoff(t *testing.T) {
 	}
 	if model.callCount != 3 {
 		t.Fatalf("model call count = %d, want 3", model.callCount)
+	}
+}
+
+func TestDefaultFinalReviewPromptRequestsChineseForChineseInput(t *testing.T) {
+	prompt := buildDefaultFinalReviewPrompt(
+		map[string]string{"input": "打开小红书登录我的账号", "history": ""},
+		roleLoopState{},
+		"请问你想用哪种方式登录？",
+	)
+	if !strings.Contains(prompt, "Simplified Chinese, matching the latest user request") {
+		t.Fatalf("prompt should request Simplified Chinese for Chinese input:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "handoff_details, suggested_action") {
+		t.Fatalf("prompt should apply language rule to handoff fields:\n%s", prompt)
+	}
+}
+
+func TestHumanHandoffPauseUsesSuggestedActionWithoutToolContent(t *testing.T) {
+	action := schema.AgentAction{
+		Tool:      toolHumanHandoffStep,
+		ToolInput: `{"reason":"login_method_selection","details":"当前需要选择登录方式。","suggested_action":"请在手机上选择登录方式，完成后告诉我继续。"}`,
+	}
+	step := &schema.AgentStep{
+		Action:      action,
+		Observation: `{"status":"HUMAN_HANDOFF_REQUESTED","reason":"login_method_selection","details":"当前需要选择登录方式。","suggested_action":"请在手机上选择登录方式，完成后告诉我继续。"}`,
+	}
+
+	if got := runPausingToolFinalAnswer(step); got != "请在手机上选择登录方式，完成后告诉我继续。" {
+		t.Fatalf("final answer = %q", got)
 	}
 }
 

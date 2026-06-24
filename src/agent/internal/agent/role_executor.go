@@ -1223,6 +1223,10 @@ func buildDefaultFinalReviewPrompt(inputs map[string]string, state roleLoopState
 	builder.WriteString("Default-mode final-answer review.\n")
 	builder.WriteString("Decide whether the candidate final answer may end the run, or whether the runtime must continue.\n")
 	builder.WriteString("Return only JSON: {\"can_finish\":true|false,\"final_answer\":\"optional revised final answer when can_finish is true\",\"needs_human_handoff\":true|false,\"handoff_reason\":\"authentication|login_method_selection|captcha|verification_code|sensitive_operation|redirect_confirmation|permission_confirmation|black_screen|ambiguous_situation|unsupported_action|stuck|other\",\"handoff_details\":\"specific device-side blocker\",\"suggested_action\":\"what the user should do on the device\",\"reason\":\"brief rationale\"}.\n\n")
+	builder.WriteString("Language rule:\n")
+	builder.WriteString("- Use ")
+	builder.WriteString(defaultFinalReviewLanguageHint(inputs))
+	builder.WriteString(" for every free-text JSON value that may be shown to the user or reused in a handoff message, including final_answer, handoff_details, suggested_action, and reason. Keep enum fields such as handoff_reason in English.\n\n")
 	builder.WriteString("Rules:\n")
 	builder.WriteString("- can_finish=true only when the original request is already satisfied by the evidence, or the candidate is a truthful terminal failure/status answer that needs no more user or device action.\n")
 	builder.WriteString("- needs_human_handoff=true when progress is blocked on a human-only action on the target device: private credentials, choosing an account or login path, CAPTCHA, verification, biometric/identity checks, system/app redirect confirmations, permission dialogs, or judgment the tools cannot provide.\n")
@@ -1239,6 +1243,13 @@ func buildDefaultFinalReviewPrompt(inputs map[string]string, state roleLoopState
 		builder.WriteString("(empty)")
 	}
 	return strings.TrimSpace(builder.String())
+}
+
+func defaultFinalReviewLanguageHint(inputs map[string]string) string {
+	if containsHanRunes(strings.TrimSpace(inputs["input"])) {
+		return "Simplified Chinese, matching the latest user request"
+	}
+	return "the same language as the latest user request"
 }
 
 func parseDefaultFinalReview(raw, candidateAnswer string) defaultFinalReview {
