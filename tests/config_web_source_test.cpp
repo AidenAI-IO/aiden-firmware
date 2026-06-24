@@ -1095,6 +1095,38 @@ TEST_CASE("config web fills Tencent ASR STT defaults from metadata") {
     CHECK(html.find("p==='tencent-asr'||p==='tencent_asr'||p==='tencent'") != std::string::npos);
 }
 
+TEST_CASE("config web uses board-side recording for STT tests") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find("id=\\\"test-stt\\\"") != std::string::npos);
+    CHECK(html.find("onclick=\\\"toggleSTTTest()\\\"") != std::string::npos);
+    CHECK(html.find("testSection('stt')") == std::string::npos);
+    CHECK(html.find("function toggleSTTTest()") != std::string::npos);
+    CHECK(html.find("function startSTTTest()") != std::string::npos);
+    CHECK(html.find("function stopSTTTest()") != std::string::npos);
+    CHECK(html.find("'/api/config/test/stt/start'") != std::string::npos);
+    CHECK(html.find("'/api/config/test/stt/stop'") != std::string::npos);
+    CHECK(html.find("激活麦克风") != std::string::npos);
+    CHECK(html.find("识别结果") != std::string::npos);
+
+    CHECK(source.find("/api/config/test/stt/start") != std::string::npos);
+    CHECK(source.find("/api/config/test/stt/stop") != std::string::npos);
+}
+
 TEST_CASE("config web exposes a single system env editor backed by the env file") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());

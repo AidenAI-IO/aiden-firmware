@@ -306,6 +306,30 @@ func TestWebConfigDTOMapsLog(t *testing.T) {
 	}
 }
 
+func TestWebConfigDTOMapsSTTLanguage(t *testing.T) {
+	dto := webConfigDTO{
+		STT: sttDTO{
+			Provider: "openai-whisper",
+			Language: "en",
+		},
+	}
+
+	cfg := dto.toAgentConfig()
+	if cfg.STT.Language != "en" {
+		t.Fatalf("STT.Language = %q, want en", cfg.STT.Language)
+	}
+
+	roundTrip := webConfigDTOFromAgentConfig(agent.Config{
+		STT: agent.STTConfig{
+			Provider: "openai-whisper",
+			Language: "zh",
+		},
+	})
+	if roundTrip.STT.Language != "zh" {
+		t.Fatalf("round-trip stt.language = %q, want zh", roundTrip.STT.Language)
+	}
+}
+
 func TestConfigCheck_InvalidSearchProvider(t *testing.T) {
 	invalidConfig := agent.Config{
 		Model: agent.ModelConfig{

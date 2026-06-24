@@ -1,4 +1,5 @@
 #include "agent_toml.h"
+#include "audio_service_client.h"
 #include "config_web_html.h"
 #include "config_web_llm_html.h"
 #include "system_env_parser.h"
@@ -107,6 +108,13 @@ struct AgentLogSnapshot {
     std::string error;
 };
 
+struct STTTestRecordingState {
+    bool active = false;
+    uint64_t session_id = 0;
+    std::string socket_path;
+    aiden::AudioFormat format;
+};
+
 using SystemProxy = aiden::SystemEnvProxy;
 
 struct TcpPortStatus {
@@ -115,6 +123,7 @@ struct TcpPortStatus {
 };
 
 volatile sig_atomic_t g_should_stop = 0;
+STTTestRecordingState g_stt_test_recording;
 
 const char* kAnyBindAddress = "0.0.0.0";
 const char* kUsbBindAddress = "192.168.42.1";
@@ -186,6 +195,26 @@ void close_response_stream(ApiResponse* response);
 CommandResult run_command_with_stdin(const std::string& command, const std::string& input, int timeout_ms);
 void update_config_from_json(cJSON* root, aiden::AgentToml* config);
 bool atomic_write_file(const std::string& path, const std::string& content, mode_t mode, std::string* error);
+std::string cjson_to_string(cJSON* json);
+ApiResponse make_json_error(int status_code, const std::string& message);
+ApiResponse make_json_ok(cJSON* root);
+bool parse_stt_test_audio_request(cJSON* root,
+                                  std::string* socket_path,
+                                  aiden::AudioFormat* format,
+                                  std::string* error);
+bool parse_stt_test_values_request(cJSON* root, cJSON** stt_values, std::string* error);
+void discard_stt_test_recording(const STTTestRecordingState& state);
+bool finish_stt_test_recording(const STTTestRecordingState& state,
+                               std::vector<uint8_t>* pcm,
+                               std::string* error);
+std::string base64_encode_bytes(const uint8_t* data, size_t len);
+std::vector<uint8_t> wrap_pcm_in_wav(const std::vector<uint8_t>& pcm,
+                                     const aiden::AudioFormat& format);
+ApiResponse run_agent_stt_config_test(const Options& options,
+                                      cJSON* stt_values,
+                                      const std::string& audio_base64);
+ApiResponse handle_stt_test_start(const Options& options, const std::string& body);
+ApiResponse handle_stt_test_stop(const Options& options, const std::string& body);
 
 // ValidationOutcome distinguishes "the user submitted something invalid" (the
 // CLI ran and rejected it -> 400) from "we could not run validation at all"
@@ -1507,6 +1536,327 @@ bool json_secret_present(cJSON* obj, const char* key) {
     }
     const std::string has_key = std::string("has_") + key;
     return json_bool_value(obj, has_key.c_str());
+}
+
+bool parse_stt_test_audio_request(cJSON* root,
+                                  std::string* socket_path,
+                                  aiden::AudioFormat* format,
+                                  std::string* error) {
+    if (socket_path) {
+        socket_path->clear();
+    }
+    if (format) {
+        *format = aiden::AudioFormat();
+    }
+
+    cJSON* audio_values = root ? cJSON_GetObjectItem(root, "audio_values") : NULL;
+    if (!json_is_object(audio_values)) {
+        if (error) *error = "missing 'audio_values' object";
+        return false;
+    }
+
+    cJSON* socket_item = cJSON_GetObjectItem(audio_values, "socket");
+    cJSON* sample_rate_item = cJSON_GetObjectItem(audio_values, "sample_rate");
+    cJSON* channels_item = cJSON_GetObjectItem(audio_values, "channels");
+    cJSON* bit_width_item = cJSON_GetObjectItem(audio_values, "bit_width");
+
+    const std::string socket = json_is_string(socket_item) ? trim_copy(socket_item->valuestring) : "";
+    if (socket.empty()) {
+        if (error) *error = "audio.socket is required";
+        return false;
+    }
+    if (!json_is_number(sample_rate_item) || sample_rate_item->valueint <= 0) {
+        if (error) *error = "audio.sample_rate must be > 0";
+        return false;
+    }
+    if (!json_is_number(channels_item) || channels_item->valueint != 1) {
+        if (error) *error = "audio.channels must be 1 for STT test";
+        return false;
+    }
+    if (!json_is_number(bit_width_item) || bit_width_item->valueint != 16) {
+        if (error) *error = "audio.bit_width must be 16 for STT test";
+        return false;
+    }
+
+    if (socket_path) {
+        *socket_path = socket;
+    }
+    if (format) {
+        format->sample_rate = static_cast<uint32_t>(sample_rate_item->valueint);
+        format->channels = static_cast<uint32_t>(channels_item->valueint);
+        format->bit_width = static_cast<uint32_t>(bit_width_item->valueint);
+    }
+    if (error) {
+        error->clear();
+    }
+    return true;
+}
+
+bool parse_stt_test_values_request(cJSON* root, cJSON** stt_values, std::string* error) {
+    if (stt_values) {
+        *stt_values = NULL;
+    }
+    cJSON* values = root ? cJSON_GetObjectItem(root, "stt_values") : NULL;
+    if (!json_is_object(values)) {
+        if (error) *error = "missing 'stt_values' object";
+        return false;
+    }
+    if (stt_values) {
+        *stt_values = values;
+    }
+    if (error) {
+        error->clear();
+    }
+    return true;
+}
+
+void discard_stt_test_recording(const STTTestRecordingState& state) {
+    if (!state.active || state.socket_path.empty() || state.session_id == 0) {
+        return;
+    }
+    aiden::AudioServiceClient client(state.socket_path.c_str());
+    (void)client.stop_recording(state.session_id);
+}
+
+bool finish_stt_test_recording(const STTTestRecordingState& state,
+                               std::vector<uint8_t>* pcm,
+                               std::string* error) {
+    if (pcm) {
+        pcm->clear();
+    }
+    if (!state.active || state.socket_path.empty() || state.session_id == 0) {
+        if (error) *error = "STT test recording is not active";
+        return false;
+    }
+
+    aiden::AudioServiceClient client(state.socket_path.c_str());
+    aiden::AidenServiceStatus stop_status = client.stop_recording(state.session_id);
+    if (stop_status != aiden::AidenServiceStatus::OK) {
+        if (error) {
+            *error = std::string("stop device audio recording: ") +
+                     aiden::service_status_to_string(stop_status);
+        }
+        return false;
+    }
+
+    while (true) {
+        aiden::AudioChunkResult chunk;
+        aiden::AidenServiceStatus read_status = client.read_record_chunk(state.session_id, 1000, &chunk);
+        if (read_status == aiden::AidenServiceStatus::OK) {
+            if (pcm && !chunk.pcm.empty()) {
+                pcm->insert(pcm->end(), chunk.pcm.begin(), chunk.pcm.end());
+            }
+            if (chunk.end_of_stream) {
+                if (error) {
+                    error->clear();
+                }
+                return true;
+            }
+            continue;
+        }
+        if (read_status == aiden::AidenServiceStatus::SESSION_NOT_FOUND) {
+            if (error) {
+                error->clear();
+            }
+            return true;
+        }
+        if (error) {
+            *error = std::string("read recorded audio: ") +
+                     aiden::service_status_to_string(read_status);
+        }
+        return false;
+    }
+}
+
+std::string base64_encode_bytes(const uint8_t* data, size_t len) {
+    static const char table[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    if (!data || len == 0) {
+        return "";
+    }
+
+    std::string out;
+    out.reserve(((len + 2) / 3) * 4);
+    for (size_t i = 0; i < len; i += 3) {
+        const uint32_t b0 = data[i];
+        const uint32_t b1 = (i + 1 < len) ? data[i + 1] : 0;
+        const uint32_t b2 = (i + 2 < len) ? data[i + 2] : 0;
+        const uint32_t triple = (b0 << 16) | (b1 << 8) | b2;
+
+        out.push_back(table[(triple >> 18) & 0x3f]);
+        out.push_back(table[(triple >> 12) & 0x3f]);
+        out.push_back(i + 1 < len ? table[(triple >> 6) & 0x3f] : '=');
+        out.push_back(i + 2 < len ? table[triple & 0x3f] : '=');
+    }
+    return out;
+}
+
+void append_le16(std::vector<uint8_t>* out, uint16_t value) {
+    if (!out) {
+        return;
+    }
+    out->push_back(static_cast<uint8_t>(value & 0xff));
+    out->push_back(static_cast<uint8_t>((value >> 8) & 0xff));
+}
+
+void append_le32(std::vector<uint8_t>* out, uint32_t value) {
+    if (!out) {
+        return;
+    }
+    out->push_back(static_cast<uint8_t>(value & 0xff));
+    out->push_back(static_cast<uint8_t>((value >> 8) & 0xff));
+    out->push_back(static_cast<uint8_t>((value >> 16) & 0xff));
+    out->push_back(static_cast<uint8_t>((value >> 24) & 0xff));
+}
+
+std::vector<uint8_t> wrap_pcm_in_wav(const std::vector<uint8_t>& pcm,
+                                     const aiden::AudioFormat& format) {
+    std::vector<uint8_t> wav;
+    const uint16_t channels = static_cast<uint16_t>(format.channels);
+    const uint16_t bit_width = static_cast<uint16_t>(format.bit_width);
+    const uint32_t sample_rate = format.sample_rate;
+    const uint16_t block_align = static_cast<uint16_t>(channels * (bit_width / 8));
+    const uint32_t byte_rate = sample_rate * block_align;
+    const uint32_t data_size = static_cast<uint32_t>(pcm.size());
+
+    wav.reserve(44 + pcm.size());
+    wav.insert(wav.end(), {'R', 'I', 'F', 'F'});
+    append_le32(&wav, 36 + data_size);
+    wav.insert(wav.end(), {'W', 'A', 'V', 'E'});
+    wav.insert(wav.end(), {'f', 'm', 't', ' '});
+    append_le32(&wav, 16);
+    append_le16(&wav, 1);
+    append_le16(&wav, channels);
+    append_le32(&wav, sample_rate);
+    append_le32(&wav, byte_rate);
+    append_le16(&wav, block_align);
+    append_le16(&wav, bit_width);
+    wav.insert(wav.end(), {'d', 'a', 't', 'a'});
+    append_le32(&wav, data_size);
+    wav.insert(wav.end(), pcm.begin(), pcm.end());
+    return wav;
+}
+
+ApiResponse run_agent_stt_config_test(const Options& options,
+                                      cJSON* stt_values,
+                                      const std::string& audio_base64) {
+    cJSON* req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "section", "stt");
+    cJSON_AddItemToObject(req, "values", cJSON_Duplicate(stt_values, 1));
+    cJSON_AddStringToObject(req, "audio_base64", audio_base64.c_str());
+    std::string req_body = cjson_to_string(req);
+    cJSON_Delete(req);
+
+    std::string cmd = shell_quote(agent_bin_path()) +
+                      " config-test --format=json --stdin --section=stt --config=" +
+                      shell_quote(options.agent_config_path) + " 2>&1";
+    CommandResult cr = run_command_with_stdin(cmd, req_body, 60000);
+    if (cr.timed_out) {
+        return make_json_error(503, "agent config-test timed out");
+    }
+
+    cJSON* root = cJSON_Parse(cr.output.c_str());
+    if (!json_is_object(root)) {
+        if (root) {
+            cJSON_Delete(root);
+        }
+        std::string detail = trim_trailing_newlines(cr.output);
+        if (detail.empty()) {
+            detail = "agent config-test returned an unexpected response";
+        } else if (detail.size() > 400) {
+            detail = detail.substr(0, 400) + "...";
+        }
+        return make_json_error(503, detail);
+    }
+    return make_json_ok(root);
+}
+
+ApiResponse handle_stt_test_start(const Options& options, const std::string& body) {
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (!root) {
+        return make_json_error(400, "invalid JSON body");
+    }
+
+    std::string socket_path;
+    aiden::AudioFormat format;
+    std::string parse_error;
+    if (!parse_stt_test_audio_request(root, &socket_path, &format, &parse_error)) {
+        cJSON_Delete(root);
+        return make_json_error(400, parse_error);
+    }
+    cJSON_Delete(root);
+
+    if (g_stt_test_recording.active) {
+        discard_stt_test_recording(g_stt_test_recording);
+        g_stt_test_recording = STTTestRecordingState();
+    }
+
+    aiden::AudioServiceClient client(socket_path.c_str());
+    aiden::RecordStartResult result;
+    aiden::AidenServiceStatus status = client.start_recording(format, &result);
+    if (status != aiden::AidenServiceStatus::OK) {
+        return make_json_error(503, std::string("start device audio recording: ") +
+                                        aiden::service_status_to_string(status));
+    }
+
+    g_stt_test_recording.active = true;
+    g_stt_test_recording.session_id = result.session_id;
+    g_stt_test_recording.socket_path = socket_path;
+    g_stt_test_recording.format = format;
+
+    cJSON* response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "ok", 1);
+    cJSON_AddStringToObject(response, "status", "recording");
+    cJSON_AddNumberToObject(response, "sample_rate", format.sample_rate);
+    return make_json_ok(response);
+}
+
+ApiResponse handle_stt_test_stop(const Options& options, const std::string& body) {
+    if (!g_stt_test_recording.active) {
+        return make_json_error(400, "STT test recording is not active");
+    }
+
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (!root) {
+        return make_json_error(400, "invalid JSON body");
+    }
+
+    cJSON* stt_values = NULL;
+    std::string parse_error;
+    if (!parse_stt_test_values_request(root, &stt_values, &parse_error)) {
+        cJSON_Delete(root);
+        return make_json_error(400, parse_error);
+    }
+
+    const STTTestRecordingState state = g_stt_test_recording;
+    g_stt_test_recording = STTTestRecordingState();
+
+    std::vector<uint8_t> pcm;
+    std::string finish_error;
+    if (!finish_stt_test_recording(state, &pcm, &finish_error)) {
+        cJSON_Delete(root);
+        return make_json_error(503, finish_error);
+    }
+
+    if (pcm.empty()) {
+        cJSON_Delete(root);
+        cJSON* response = cJSON_CreateObject();
+        cJSON_AddBoolToObject(response, "ok", 0);
+        cJSON_AddStringToObject(response, "transcript", "");
+        cJSON* results = add_array(response, "results");
+        cJSON* item = cJSON_CreateObject();
+        cJSON_AddStringToObject(item, "check", "stt_transcription");
+        cJSON_AddBoolToObject(item, "passed", 0);
+        cJSON_AddStringToObject(item, "detail", "recording captured no audio data");
+        cJSON_AddItemToArray(results, item);
+        return make_json_ok(response);
+    }
+
+    std::vector<uint8_t> wav = wrap_pcm_in_wav(pcm, state.format);
+    ApiResponse response = run_agent_stt_config_test(
+        options, stt_values, base64_encode_bytes(wav.data(), wav.size()));
+    cJSON_Delete(root);
+    return response;
 }
 
 void load_current_wifi_config(const Options& options,
@@ -4834,6 +5184,14 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
 
     if (request.method == "POST" && request.path == "/api/wifi/forget") {
         return handle_wifi_forget(options, request.body);
+    }
+
+    if (request.method == "POST" && request.path == "/api/config/test/stt/start") {
+        return handle_stt_test_start(options, request.body);
+    }
+
+    if (request.method == "POST" && request.path == "/api/config/test/stt/stop") {
+        return handle_stt_test_stop(options, request.body);
     }
 
     if (request.method == "POST" && request.path == "/api/config/test") {

@@ -128,6 +128,12 @@ add_executable(aiden_tests
 add_executable(config_web_for_tests
     ${CMAKE_SOURCE_DIR}/src/config_web.cpp
     ${CMAKE_SOURCE_DIR}/src/agent_toml.cpp
+    ${CMAKE_SOURCE_DIR}/src/audio_service_client.cpp
+    ${CMAKE_SOURCE_DIR}/src/audio_service_protocol.cpp
+    ${CMAKE_SOURCE_DIR}/src/frame_service_protocol.cpp
+    ${CMAKE_SOURCE_DIR}/src/service_status.cpp
+    ${CMAKE_SOURCE_DIR}/src/uds_client.cpp
+    ${CMAKE_SOURCE_DIR}/src/uds_message.cpp
     ${CMAKE_SOURCE_DIR}/src/system_env_parser.cpp
     ${CMAKE_SOURCE_DIR}/src/wifi_config.cpp
     ${CMAKE_SOURCE_DIR}/src/cJSON/cJSON.c
