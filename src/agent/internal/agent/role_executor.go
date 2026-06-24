@@ -1256,9 +1256,8 @@ func parseDefaultFinalReview(raw, candidateAnswer string) defaultFinalReview {
 	var review defaultFinalReview
 	if decodeRoleJSON(raw, &review) != nil {
 		return defaultFinalReview{
-			CanFinish:   true,
-			FinalAnswer: strings.TrimSpace(candidateAnswer),
-			Reason:      "default final review returned non-JSON; accepting candidate answer",
+			CanFinish: false,
+			Reason:    "default final review returned non-JSON; replanning required",
 		}
 	}
 	review.FinalAnswer = strings.TrimSpace(review.FinalAnswer)

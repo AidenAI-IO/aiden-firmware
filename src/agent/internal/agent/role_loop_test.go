@@ -370,6 +370,19 @@ func TestDefaultFinalReviewPromptRequestsChineseForChineseInput(t *testing.T) {
 	}
 }
 
+func TestDefaultFinalReviewFailsClosedOnNonJSON(t *testing.T) {
+	review := parseDefaultFinalReview("not json", "请问你想用哪种方式登录？")
+	if review.CanFinish {
+		t.Fatalf("CanFinish = true, want false")
+	}
+	if review.FinalAnswer != "" {
+		t.Fatalf("FinalAnswer = %q, want empty", review.FinalAnswer)
+	}
+	if !strings.Contains(review.Reason, "non-JSON") {
+		t.Fatalf("Reason = %q, want non-JSON failure reason", review.Reason)
+	}
+}
+
 func TestHumanHandoffPauseUsesSuggestedActionWithoutToolContent(t *testing.T) {
 	action := schema.AgentAction{
 		Tool:      toolHumanHandoffStep,
@@ -553,7 +566,7 @@ func TestPlanModeAllowsHumanHandoffBeforeCommit(t *testing.T) {
 		nil,
 	)
 	state := &roleLoopState{Phase: phasePlan, PlanCommitRequired: true}
-	toolSpecs := NewToolSpecs([]langtools.Tool{tool})
+	toolSpecs := toolSpecsForRole(RolePlanner, executor.Tools)
 	inputs := map[string]string{"input": "登录当前页面", "history": ""}
 
 	turn, err := executor.callPlannerTurn(context.Background(), inputs, state, toolSpecs)

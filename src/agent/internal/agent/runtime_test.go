@@ -1763,6 +1763,11 @@ func roleToolResponses(toolName, arguments, finalAnswer string) []*llms.ContentR
 	return roleDefaultToolResponses(toolName, arguments, finalAnswer)
 }
 
+func roleReviewedToolResponses(toolName, arguments, finalAnswer string) []*llms.ContentResponse {
+	responses := roleToolResponses(toolName, arguments, finalAnswer)
+	return append(responses, verifierFinishResponse(finalAnswer))
+}
+
 func enterPlanModeToolCall() *llms.ContentResponse {
 	return toolCallResponse("enter_1", toolEnterPlanMode, `{"__arg1":"{}","description":"enter plan mode"}`)
 }
@@ -2088,7 +2093,7 @@ func TestRuntimeRunExecutesOnlyFirstToolCallPerIteration(t *testing.T) {
 
 func TestRuntimeRunFeedsToolErrorsBackToModel(t *testing.T) {
 	model := &scriptedModel{
-		responses: roleToolResponses("screenshot", `{"__arg1":"{}"}`, "屏幕暂时获取失败，frame service 正在恢复。"),
+		responses: roleReviewedToolResponses("screenshot", `{"__arg1":"{}"}`, "屏幕暂时获取失败，frame service 正在恢复。"),
 	}
 	runtime := NewRuntimeWithDeps(
 		Config{
@@ -2669,6 +2674,7 @@ func TestRuntimeSimpleLoopDoesNotGenerateImplicitTodo(t *testing.T) {
 			toolCallResponse("call_1", "screenshot", `{"__arg1":"{}"}`),
 			toolCallResponse("call_2", "web_search", `{"__arg1":"Aiden"}`),
 			contentResponse("done"),
+			verifierFinishResponse("done"),
 		},
 	}
 	screenshot := &stubTool{name: "screenshot", description: "Capture screen.", output: "screen"}
@@ -3257,7 +3263,7 @@ func TestRuntimeRunFallsBackWhenProviderStreamWriterErrorsAfterPartialFinalAnswe
 func TestRuntimeRunScreenshotAddsBinaryImageObservation(t *testing.T) {
 	jpegBytes := []byte("fake-jpeg-binary")
 	model := &scriptedModel{
-		responses: roleToolResponses("screenshot", `{"__arg1":"{}"}`, "The screenshot shows a UI."),
+		responses: roleReviewedToolResponses("screenshot", `{"__arg1":"{}"}`, "The screenshot shows a UI."),
 	}
 	tool := &stubTool{
 		name:        "screenshot",
@@ -3328,7 +3334,7 @@ func TestRuntimeRunScreenshotAddsBinaryImageObservation(t *testing.T) {
 func TestRuntimeRunScreenshotImageSurvivesCallbackToolWrapping(t *testing.T) {
 	jpegBytes := []byte("fake-jpeg-binary")
 	model := &scriptedModel{
-		responses: roleToolResponses("screenshot", `{"__arg1":"{}"}`, "The screenshot shows a UI."),
+		responses: roleReviewedToolResponses("screenshot", `{"__arg1":"{}"}`, "The screenshot shows a UI."),
 	}
 	tool := &stubTool{
 		name:        "screenshot",
@@ -3393,7 +3399,7 @@ func TestRuntimeRunScreenshotImageSurvivesCallbackToolWrapping(t *testing.T) {
 func TestRuntimeRunKeyboardToolAddsPostActionImageObservation(t *testing.T) {
 	jpegBytes := []byte("keyboard-post-action-jpeg")
 	model := &scriptedModel{
-		responses: roleToolResponses("keyboard_tap", `{"keys":["enter"]}`, "The keyboard action updated the UI."),
+		responses: roleReviewedToolResponses("keyboard_tap", `{"keys":["enter"]}`, "The keyboard action updated the UI."),
 	}
 	tool := &stubTool{
 		name:        "keyboard_tap",

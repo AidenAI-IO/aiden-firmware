@@ -234,22 +234,12 @@ func TestHumanHandoffTool_Call_OptionalFields(t *testing.T) {
 }
 
 func TestHumanHandoffTool_Call_StructuredOutputForCommonReasons(t *testing.T) {
-	tests := []struct {
-		reason string
-	}{
-		{"authentication"},
-		{"captcha"},
-		{"verification_code"},
-		{"sensitive_operation"},
-		{"black_screen"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.reason, func(t *testing.T) {
+	for _, reason := range validHandoffReasonValues {
+		t.Run(reason, func(t *testing.T) {
 			tool := NewHumanHandoffTool()
 
 			input := map[string]string{
-				"reason":  tt.reason,
+				"reason":  reason,
 				"details": "Test details",
 			}
 			inputJSON, _ := json.Marshal(input)
@@ -269,8 +259,8 @@ func TestHumanHandoffTool_Call_StructuredOutputForCommonReasons(t *testing.T) {
 			if err := json.Unmarshal([]byte(result), &payload); err != nil {
 				t.Fatalf("Result is not structured JSON: %v\n%s", err, result)
 			}
-			if payload.Status != "HUMAN_HANDOFF_REQUESTED" || payload.Reason != tt.reason || payload.Details != "Test details" {
-				t.Errorf("Unexpected payload for %q: %#v", tt.reason, payload)
+			if payload.Status != "HUMAN_HANDOFF_REQUESTED" || payload.Reason != reason || payload.Details != "Test details" {
+				t.Errorf("Unexpected payload for %q: %#v", reason, payload)
 			}
 		})
 	}
