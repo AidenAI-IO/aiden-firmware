@@ -1340,6 +1340,24 @@ TEST_CASE("config_web: exports llm raw log files larger than viewer limit") {
     CHECK(resp.body.compare(resp.body.size() - 128, 128, content, content.size() - 128, 128) == 0);
 }
 
+TEST_CASE("config_web: reports server errors for unreadable llm raw log files") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string log_dir = handle->tmp_dir + "/log";
+    REQUIRE(::mkdir(log_dir.c_str(), 0755) == 0);
+    const std::string name = "llm-http-20260624173000999.log";
+    const std::string path = log_dir + "/" + name;
+    write_file(path, "{\"kind\":\"request\"}\n");
+    REQUIRE(::chmod(path.c_str(), 0000) == 0);
+
+    HttpResponse resp = http_request(handle->port, "GET", "/api/llm-logs/export/" + name);
+    CHECK(resp.status == 500);
+    CHECK(resp.body.find("failed to open log file") != std::string::npos);
+
+    REQUIRE(::chmod(path.c_str(), 0644) == 0);
+}
+
 TEST_CASE("config_web: imports llm raw log files into the viewer log directory") {
     StubEnv env;
     auto handle = start_server(env);

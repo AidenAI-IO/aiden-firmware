@@ -453,6 +453,8 @@ TEST_CASE("config web exposes the LLM HTTP log viewer") {
     CHECK(llm_html.find("downloadSelectedFile") != std::string::npos);
     CHECK(llm_html.find("handleImportSelection") != std::string::npos);
     CHECK(llm_html.find("importFileInput") != std::string::npos);
+    CHECK(llm_html.find("confirm(") != std::string::npos);
+    CHECK(llm_html.find("already exists. Replace it?") != std::string::npos);
     CHECK(llm_html.find("Export Raw") != std::string::npos);
     CHECK(llm_html.find("Import Raw") != std::string::npos);
     CHECK(llm_html.find("function streamLogEntries") != std::string::npos);

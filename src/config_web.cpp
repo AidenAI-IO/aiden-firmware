@@ -233,6 +233,13 @@ enum ReadStatus {
     READ_STATUS_LIMIT_EXCEEDED,
 };
 
+enum LlmLogOpenStatus {
+    LLM_LOG_OPEN_OK,
+    LLM_LOG_OPEN_INVALID_NAME,
+    LLM_LOG_OPEN_NOT_FOUND,
+    LLM_LOG_OPEN_ERROR,
+};
+
 void on_signal(int) {
     g_should_stop = 1;
 }
@@ -3503,28 +3510,54 @@ bool is_llm_log_name(const std::string& name) {
     return true;
 }
 
-int open_llm_log_file(const Options& options, const std::string& name, struct stat* st, std::string* error) {
+int open_llm_log_file(const Options& options,
+                      const std::string& name,
+                      struct stat* st,
+                      LlmLogOpenStatus* status,
+                      std::string* error) {
     if (st) {
         memset(st, 0, sizeof(*st));
     }
+    if (status) {
+        *status = LLM_LOG_OPEN_ERROR;
+    }
     if (!is_llm_log_name(name)) {
+        if (status) *status = LLM_LOG_OPEN_INVALID_NAME;
         if (error) *error = "invalid log file name";
         return -1;
     }
     const std::string full = llm_log_path(options, name);
     int fd = open(full.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
     if (fd < 0) {
-        if (error) *error = "log file not found";
+        const int open_errno = errno;
+        if (open_errno == ENOENT || open_errno == ENOTDIR || open_errno == ELOOP) {
+            if (status) *status = LLM_LOG_OPEN_NOT_FOUND;
+            if (error) *error = "log file not found";
+        } else {
+            if (status) *status = LLM_LOG_OPEN_ERROR;
+            if (error) *error = std::string("failed to open log file: ") + strerror(open_errno);
+        }
         return -1;
     }
     struct stat info;
-    if (fstat(fd, &info) != 0 || !S_ISREG(info.st_mode)) {
+    if (fstat(fd, &info) != 0) {
+        const int stat_errno = errno;
         close(fd);
+        if (status) *status = LLM_LOG_OPEN_ERROR;
+        if (error) *error = std::string("failed to stat log file: ") + strerror(stat_errno);
+        return -1;
+    }
+    if (!S_ISREG(info.st_mode)) {
+        close(fd);
+        if (status) *status = LLM_LOG_OPEN_NOT_FOUND;
         if (error) *error = "log file not found";
         return -1;
     }
     if (st) {
         *st = info;
+    }
+    if (status) {
+        *status = LLM_LOG_OPEN_OK;
     }
     if (error) {
         error->clear();
@@ -3575,15 +3608,24 @@ ApiResponse handle_get_llm_logs(const Options& options) {
 }
 
 ApiResponse handle_export_llm_log_file(const Options& options, const std::string& name) {
-    if (!is_llm_log_name(name)) {
-        return make_json_error(400, "invalid log file name");
-    }
     struct stat st;
+    LlmLogOpenStatus open_status = LLM_LOG_OPEN_ERROR;
     std::string error;
-    int fd = open_llm_log_file(options, name, &st, &error);
+    int fd = open_llm_log_file(options, name, &st, &open_status, &error);
     if (fd < 0) {
-        return make_json_error(error == "invalid log file name" ? 400 : 404,
-                               error.empty() ? "log file not found" : error);
+        int status_code = 500;
+        switch (open_status) {
+            case LLM_LOG_OPEN_INVALID_NAME:
+                status_code = 400;
+                break;
+            case LLM_LOG_OPEN_NOT_FOUND:
+                status_code = 404;
+                break;
+            default:
+                status_code = 500;
+                break;
+        }
+        return make_json_error(status_code, error.empty() ? "failed to open log file" : error);
     }
     ApiResponse response;
     response.content_type = "text/plain; charset=utf-8";
