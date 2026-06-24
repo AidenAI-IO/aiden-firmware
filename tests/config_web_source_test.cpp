@@ -302,7 +302,7 @@ TEST_CASE("config web exposes live agent logs") {
     CHECK(source.find("\"truncated\"") != std::string::npos);
     CHECK(source.find("tail -f") == std::string::npos);
 
-    CHECK(html.find("Agent 实时日志") != std::string::npos);
+    CHECK(html.find("Live Agent Log") != std::string::npos);
     CHECK(html.find("agentLogText") != std::string::npos);
     CHECK(html.find("agentLogMeta") != std::string::npos);
     CHECK(html.find("refreshAgentLog") != std::string::npos);
@@ -346,7 +346,7 @@ TEST_CASE("config web preserves agent log selection during background refresh") 
     CHECK(html.find("function agentLogSelectionActive(el)") != std::string::npos);
     CHECK(html.find("function applyPendingAgentLogSnapshotIfIdle()") != std::string::npos);
     CHECK(html.find("const contentChanged=!agentLogBodyEquals(previous,snapshot);") != std::string::npos);
-    CHECK(html.find("if(contentChanged){renderLogText(textEl,text,snapshot.exists?'日志为空':'日志文件暂不可读');}") != std::string::npos);
+    CHECK(html.find("if(contentChanged){renderLogText(textEl,text,snapshot.exists?'Log is empty':'Log file is unavailable');}") != std::string::npos);
     CHECK(html.find("if(!showBanner&&agentLogSelectionActive(byId('agentLogText')))") != std::string::npos);
     CHECK(html.find("if(!agentLogBodyEquals(appState.agentLog,snapshot)){appState.agentLogPendingSnapshot=snapshot;}") != std::string::npos);
     CHECK(html.find("document.addEventListener('selectionchange',applyPendingAgentLogSnapshotIfIdle)") != std::string::npos);
