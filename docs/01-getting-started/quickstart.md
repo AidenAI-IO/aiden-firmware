@@ -41,7 +41,7 @@ The core flow is to put the board into flashing (Maskrom / Loader) mode first, t
 ./upgrade_tool/upgrade_tool uf ./update.img
 ```
 
-The most common way to enter flashing mode is to hold the BOOT button while plugging in USB-C. **If the BOOT button does not work reliably**, log in to the board over adb or a TTL serial console first and run:
+The most common way to enter flashing mode is to hold the BOOT button while plugging in USB-C. **If the BOOT button does not work reliably**, log in to the board over SSH on the USB network or a TTL serial console first and run:
 
 ```bash
 reboot loader
