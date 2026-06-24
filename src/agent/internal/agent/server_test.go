@@ -2013,6 +2013,205 @@ func TestServerHandleChatUsesAttachmentTranscriptWithoutRetranscribing(t *testin
 	}
 }
 
+func TestServerSTTConfigTestLiveSessionUsesStreamingTranscript(t *testing.T) {
+	sentChunk := false
+	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
+		switch req.Op {
+		case "start_recording":
+			return audioResponse{Status: "OK", SessionID: stringUint64(41)}, nil
+		case "read_record_chunk":
+			timeoutMs := int(req.TimeoutMs)
+			if timeoutMs <= 0 {
+				t.Fatalf("unexpected timeout_ms: %d", timeoutMs)
+			}
+			if !sentChunk {
+				sentChunk = true
+				return audioResponse{Status: "OK"}, []byte{1, 0, 2, 0, 3, 0, 4, 0}
+			}
+			return audioResponse{Status: "OK", EndOfStream: true}, nil
+		case "stop_recording":
+			return audioResponse{Status: "OK"}, nil
+		default:
+			return audioResponse{Status: "INTERNAL_ERROR"}, nil
+		}
+	})
+
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model: ModelConfig{Provider: "fake"},
+			Audio: AudioConfig{
+				Socket:     socketPath,
+				SampleRate: 16000,
+				Channels:   1,
+				BitWidth:   16,
+			},
+		},
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+
+	stt := &stubSTTClient{
+		supportsStreaming: true,
+		streamUploader:    &stubSTTStreamUploader{transcript: "边录边传结果"},
+	}
+	previousFactory := newSTTClientFromConfigForLiveTest
+	newSTTClientFromConfigForLiveTest = func(cfg Config) (STTClient, error) {
+		if cfg.STT.Provider != "tencent-asr" {
+			t.Fatalf("provider = %q, want tencent-asr", cfg.STT.Provider)
+		}
+		if cfg.Audio.Socket != socketPath {
+			t.Fatalf("audio socket = %q, want %q", cfg.Audio.Socket, socketPath)
+		}
+		return stt, nil
+	}
+	defer func() {
+		newSTTClientFromConfigForLiveTest = previousFactory
+	}()
+
+	startBody := `{"stt_values":{"provider":"tencent-asr","app_id":"app-1","secret_id":"id","secret_key":"key","region":"ap-guangzhou","engine_model_type":"16k_zh"},"audio_values":{"socket":"` + socketPath + `","sample_rate":16000,"channels":1,"bit_width":16}}`
+	startReq := httptest.NewRequest(http.MethodPost, "/api/config-test/stt/start", strings.NewReader(startBody))
+	startReq.Header.Set("Content-Type", "application/json")
+	startRec := httptest.NewRecorder()
+	server.handleSTTConfigTestStart(startRec, startReq)
+	if startRec.Code != http.StatusOK {
+		t.Fatalf("unexpected start status: %d body=%s", startRec.Code, startRec.Body.String())
+	}
+
+	stopReq := httptest.NewRequest(http.MethodPost, "/api/config-test/stt/stop", nil)
+	stopRec := httptest.NewRecorder()
+	server.handleSTTConfigTestStop(stopRec, stopReq)
+	if stopRec.Code != http.StatusOK {
+		t.Fatalf("unexpected stop status: %d body=%s", stopRec.Code, stopRec.Body.String())
+	}
+
+	var resp struct {
+		OK         bool   `json:"ok"`
+		Transcript string `json:"transcript"`
+		Results    []struct {
+			Check  string `json:"check"`
+			Passed bool   `json:"passed"`
+			Detail string `json:"detail"`
+		} `json:"results"`
+	}
+	if err := json.NewDecoder(stopRec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode stop response: %v", err)
+	}
+	if !resp.OK {
+		t.Fatalf("expected ok=true, got %#v", resp)
+	}
+	if resp.Transcript != "边录边传结果" {
+		t.Fatalf("transcript = %q, want 边录边传结果", resp.Transcript)
+	}
+	if len(stt.inputs) != 0 {
+		t.Fatalf("expected streaming transcript to skip TranscribeWAV, got %d calls", len(stt.inputs))
+	}
+	if stt.streamUploaderUsed != 1 {
+		t.Fatalf("stream uploader begin count = %d, want 1", stt.streamUploaderUsed)
+	}
+	if stt.streamUploader == nil || len(stt.streamUploader.writes) != 1 {
+		t.Fatalf("stream uploader writes = %#v, want one PCM write", stt.streamUploader)
+	}
+	if len(resp.Results) != 1 || !strings.Contains(resp.Results[0].Detail, "streaming") {
+		t.Fatalf("unexpected results: %#v", resp.Results)
+	}
+}
+
+func TestServerSTTConfigTestLiveSessionFallsBackToOneShot(t *testing.T) {
+	sentChunk := false
+	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
+		switch req.Op {
+		case "start_recording":
+			return audioResponse{Status: "OK", SessionID: stringUint64(42)}, nil
+		case "read_record_chunk":
+			if !sentChunk {
+				sentChunk = true
+				return audioResponse{Status: "OK"}, []byte{10, 0, 11, 0, 12, 0, 13, 0}
+			}
+			return audioResponse{Status: "OK", EndOfStream: true}, nil
+		case "stop_recording":
+			return audioResponse{Status: "OK"}, nil
+		default:
+			return audioResponse{Status: "INTERNAL_ERROR"}, nil
+		}
+	})
+
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model: ModelConfig{Provider: "fake"},
+			Audio: AudioConfig{
+				Socket:     socketPath,
+				SampleRate: 16000,
+				Channels:   1,
+				BitWidth:   16,
+			},
+		},
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+
+	stt := &stubSTTClient{transcript: "一次性结果"}
+	previousFactory := newSTTClientFromConfigForLiveTest
+	newSTTClientFromConfigForLiveTest = func(cfg Config) (STTClient, error) {
+		if cfg.STT.Provider != "openai-whisper" {
+			t.Fatalf("provider = %q, want openai-whisper", cfg.STT.Provider)
+		}
+		return stt, nil
+	}
+	defer func() {
+		newSTTClientFromConfigForLiveTest = previousFactory
+	}()
+
+	startBody := `{"stt_values":{"provider":"openai-whisper","api_key":"sk-test","model":"whisper-1","base_url":"http://127.0.0.1:9"},"audio_values":{"socket":"` + socketPath + `","sample_rate":16000,"channels":1,"bit_width":16}}`
+	startReq := httptest.NewRequest(http.MethodPost, "/api/config-test/stt/start", strings.NewReader(startBody))
+	startReq.Header.Set("Content-Type", "application/json")
+	startRec := httptest.NewRecorder()
+	server.handleSTTConfigTestStart(startRec, startReq)
+	if startRec.Code != http.StatusOK {
+		t.Fatalf("unexpected start status: %d body=%s", startRec.Code, startRec.Body.String())
+	}
+
+	stopReq := httptest.NewRequest(http.MethodPost, "/api/config-test/stt/stop", nil)
+	stopRec := httptest.NewRecorder()
+	server.handleSTTConfigTestStop(stopRec, stopReq)
+	if stopRec.Code != http.StatusOK {
+		t.Fatalf("unexpected stop status: %d body=%s", stopRec.Code, stopRec.Body.String())
+	}
+
+	var resp struct {
+		OK         bool   `json:"ok"`
+		Transcript string `json:"transcript"`
+		Results    []struct {
+			Check  string `json:"check"`
+			Passed bool   `json:"passed"`
+			Detail string `json:"detail"`
+		} `json:"results"`
+	}
+	if err := json.NewDecoder(stopRec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode stop response: %v", err)
+	}
+	if !resp.OK {
+		t.Fatalf("expected ok=true, got %#v", resp)
+	}
+	if resp.Transcript != "一次性结果" {
+		t.Fatalf("transcript = %q, want 一次性结果", resp.Transcript)
+	}
+	if len(stt.inputs) != 1 {
+		t.Fatalf("TranscribeWAV calls = %d, want 1", len(stt.inputs))
+	}
+	if stt.streamUploaderUsed != 0 {
+		t.Fatalf("stream uploader begin count = %d, want 0", stt.streamUploaderUsed)
+	}
+	if len(resp.Results) != 1 || !strings.Contains(resp.Results[0].Detail, "one-shot") {
+		t.Fatalf("unexpected results: %#v", resp.Results)
+	}
+}
+
 func TestServerDeviceAudioRecordingStartRecoversStaleSession(t *testing.T) {
 	stopCh := make(chan struct{})
 	var stopOnce sync.Once

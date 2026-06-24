@@ -12,6 +12,8 @@ target_include_directories(doctest INTERFACE
 
 set(AIDEN_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/agent_toml.cpp
+    ${CMAKE_SOURCE_DIR}/src/audio_playback_session.cpp
+    ${CMAKE_SOURCE_DIR}/src/audio_record_session.cpp
     ${CMAKE_SOURCE_DIR}/src/wifi_config.cpp
     ${CMAKE_SOURCE_DIR}/src/service_status.cpp
     ${CMAKE_SOURCE_DIR}/src/frame_service_protocol.cpp
@@ -26,6 +28,7 @@ set(AIDEN_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/frame_service_server.cpp
     ${CMAKE_SOURCE_DIR}/src/audio_service_protocol.cpp
     ${CMAKE_SOURCE_DIR}/src/audio_service_client.cpp
+    ${CMAKE_SOURCE_DIR}/src/audio_session_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/audio_volume_state.cpp
     ${CMAKE_SOURCE_DIR}/src/cJSON/cJSON.c
 )
@@ -88,6 +91,7 @@ else()
 endif()
 
 list(APPEND AIDEN_IMAGE_TEST_SOURCES frame_jpeg_encoder_stub.cpp)
+list(APPEND AIDEN_IMAGE_TEST_SOURCES aiden_sdk_audio_stub.cpp)
 
 add_executable(aiden_tests
     test_main.cpp
@@ -112,6 +116,7 @@ add_executable(aiden_tests
     audio_service_protocol_test.cpp
     audio_service_client_test.cpp
     audio_playback_session_test.cpp
+    audio_session_manager_test.cpp
     audio_volume_state_test.cpp
     ${CMAKE_SOURCE_DIR}/src/system_env_parser.cpp
     ${AIDEN_IMAGE_TEST_SOURCES}

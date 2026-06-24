@@ -12,6 +12,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <ctype.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdint.h>
@@ -122,6 +123,20 @@ struct TcpPortStatus {
     std::string detail;
 };
 
+struct AgentHttpTarget {
+    std::string host = "127.0.0.1";
+    int port = 8080;
+    std::string base_path;
+};
+
+struct AgentHttpResponse {
+    int status_code = 0;
+    std::string status_text;
+    std::string content_type = "application/json; charset=utf-8";
+    std::string body;
+    std::string error;
+};
+
 volatile sig_atomic_t g_should_stop = 0;
 STTTestRecordingState g_stt_test_recording;
 
@@ -178,6 +193,7 @@ std::string read_file_contents(const char* path, size_t max_size);
 bool read_file_contents_checked(const char* path, size_t max_size, std::string* contents, std::string* error);
 std::string validate_proxy_url(const std::string& url);
 std::string lowercase_copy(const std::string& text);
+bool parse_decimal(const std::string& text, int min_value, int max_value, int* value);
 std::string parent_dir(const std::string& path);
 std::string llm_log_dir(const Options& options);
 bool mkdir_p(const std::string& dir, std::string* error);
@@ -210,9 +226,25 @@ bool finish_stt_test_recording(const STTTestRecordingState& state,
 std::string base64_encode_bytes(const uint8_t* data, size_t len);
 std::vector<uint8_t> wrap_pcm_in_wav(const std::vector<uint8_t>& pcm,
                                      const aiden::AudioFormat& format);
+AgentRuntimeStatus query_agent_status();
 ApiResponse run_agent_stt_config_test(const Options& options,
                                       cJSON* stt_values,
                                       const std::string& audio_base64);
+bool parse_http_base_url(const std::string& base_url,
+                         AgentHttpTarget* target,
+                         std::string* error);
+std::string join_url_path(const std::string& base_path, const std::string& path);
+int connect_tcp_host(const std::string& host, int port, int timeout_ms, std::string* error);
+bool post_agent_http_json(const AgentHttpTarget& target,
+                          const std::string& path,
+                          const std::string& body,
+                          AgentHttpResponse* response);
+bool resolve_agent_http_target(const Options& options,
+                               AgentHttpTarget* target,
+                               std::string* error);
+ApiResponse proxy_agent_stt_test_request(const Options& options,
+                                         const std::string& agent_path,
+                                         const std::string& body);
 ApiResponse handle_stt_test_start(const Options& options, const std::string& body);
 ApiResponse handle_stt_test_stop(const Options& options, const std::string& body);
 
@@ -261,6 +293,8 @@ enum ReadStatus {
     READ_STATUS_TIMEOUT,
     READ_STATUS_LIMIT_EXCEEDED,
 };
+
+ReadStatus read_to_eof(int fd, std::string* out, size_t max_size);
 
 enum LlmLogOpenStatus {
     LLM_LOG_OPEN_OK,
@@ -1771,92 +1805,420 @@ ApiResponse run_agent_stt_config_test(const Options& options,
     return make_json_ok(root);
 }
 
+bool parse_http_base_url(const std::string& base_url,
+                         AgentHttpTarget* target,
+                         std::string* error) {
+    if (target) {
+        *target = AgentHttpTarget();
+    }
+    std::string trimmed = trim_copy(base_url);
+    if (trimmed.empty()) {
+        if (error) *error = "empty agent HTTP base URL";
+        return false;
+    }
+    if (!starts_with(trimmed, "http://")) {
+        if (error) *error = "agent HTTP base URL must start with http://";
+        return false;
+    }
+
+    std::string rest = trimmed.substr(strlen("http://"));
+    size_t slash = rest.find('/');
+    std::string host_port = slash == std::string::npos ? rest : rest.substr(0, slash);
+    std::string base_path = slash == std::string::npos ? "" : rest.substr(slash);
+    if (host_port.empty()) {
+        if (error) *error = "agent HTTP base URL is missing host";
+        return false;
+    }
+
+    std::string host = host_port;
+    int port = 80;
+    if (host_port[0] == '[') {
+        size_t end = host_port.find(']');
+        if (end == std::string::npos) {
+            if (error) *error = "agent HTTP base URL has invalid IPv6 host";
+            return false;
+        }
+        host = host_port.substr(1, end - 1);
+        if (end + 1 < host_port.size()) {
+            if (host_port[end + 1] != ':') {
+                if (error) *error = "agent HTTP base URL has invalid host:port";
+                return false;
+            }
+            if (!parse_decimal(host_port.substr(end + 2), 1, 65535, &port)) {
+                if (error) *error = "agent HTTP base URL has invalid port";
+                return false;
+            }
+        }
+    } else {
+        size_t colon = host_port.rfind(':');
+        if (colon != std::string::npos) {
+            host = host_port.substr(0, colon);
+            if (!parse_decimal(host_port.substr(colon + 1), 1, 65535, &port)) {
+                if (error) *error = "agent HTTP base URL has invalid port";
+                return false;
+            }
+        }
+    }
+
+    host = trim_copy(host);
+    if (host.empty()) {
+        if (error) *error = "agent HTTP base URL is missing host";
+        return false;
+    }
+
+    if (base_path == "/") {
+        base_path.clear();
+    }
+    if (!base_path.empty() && base_path[0] != '/') {
+        base_path.insert(base_path.begin(), '/');
+    }
+
+    if (target) {
+        target->host = host;
+        target->port = port;
+        target->base_path = base_path;
+    }
+    if (error) {
+        error->clear();
+    }
+    return true;
+}
+
+std::string join_url_path(const std::string& base_path, const std::string& path) {
+    if (base_path.empty()) {
+        return path.empty() ? "/" : path;
+    }
+    if (path.empty() || path == "/") {
+        return base_path;
+    }
+    if (base_path[base_path.size() - 1] == '/' && path[0] == '/') {
+        return base_path + path.substr(1);
+    }
+    if (base_path[base_path.size() - 1] != '/' && path[0] != '/') {
+        return base_path + "/" + path;
+    }
+    return base_path + path;
+}
+
+int connect_tcp_host(const std::string& host, int port, int timeout_ms, std::string* error) {
+    if (error) {
+        error->clear();
+    }
+
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+
+    char port_text[16];
+    snprintf(port_text, sizeof(port_text), "%d", port);
+
+    struct addrinfo* results = NULL;
+    int gai = getaddrinfo(host.c_str(), port_text, &hints, &results);
+    if (gai != 0) {
+        if (error) {
+            *error = std::string("resolve agent host: ") + gai_strerror(gai);
+        }
+        return -1;
+    }
+
+    int fd = -1;
+    std::string last_error = "connect failed";
+    for (struct addrinfo* ai = results; ai != NULL; ai = ai->ai_next) {
+        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd < 0) {
+            last_error = std::string("socket failed: ") + strerror(errno);
+            continue;
+        }
+
+        int flags = fcntl(fd, F_GETFL, 0);
+        if (flags >= 0) {
+            (void)fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+        }
+
+        int rc = connect(fd, ai->ai_addr, ai->ai_addrlen);
+        if (rc == 0) {
+            if (flags >= 0) {
+                (void)fcntl(fd, F_SETFL, flags);
+            }
+            break;
+        }
+        if (errno != EINPROGRESS) {
+            last_error = strerror(errno);
+            close(fd);
+            fd = -1;
+            continue;
+        }
+
+        fd_set write_fds;
+        FD_ZERO(&write_fds);
+        FD_SET(fd, &write_fds);
+        struct timeval timeout;
+        timeout.tv_sec = timeout_ms / 1000;
+        timeout.tv_usec = (timeout_ms % 1000) * 1000;
+        rc = select(fd + 1, NULL, &write_fds, NULL, &timeout);
+        if (rc > 0 && FD_ISSET(fd, &write_fds)) {
+            int socket_error = 0;
+            socklen_t socket_error_len = sizeof(socket_error);
+            if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &socket_error, &socket_error_len) == 0 &&
+                socket_error == 0) {
+                if (flags >= 0) {
+                    (void)fcntl(fd, F_SETFL, flags);
+                }
+                break;
+            }
+            last_error = strerror(socket_error == 0 ? errno : socket_error);
+        } else if (rc == 0) {
+            last_error = "connect timed out";
+        } else {
+            last_error = std::string("select failed: ") + strerror(errno);
+        }
+        close(fd);
+        fd = -1;
+    }
+
+    freeaddrinfo(results);
+
+    if (fd < 0 && error) {
+        *error = last_error;
+    }
+    return fd;
+}
+
+ReadStatus read_to_eof(int fd, std::string* out, size_t max_size) {
+    if (out) {
+        out->clear();
+    }
+
+    char buf[16 * 1024];
+    while (true) {
+        ssize_t n = read(fd, buf, sizeof(buf));
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            if (is_socket_timeout(errno)) {
+                return READ_STATUS_TIMEOUT;
+            }
+            return READ_STATUS_ERROR;
+        }
+        if (n == 0) {
+            return READ_STATUS_OK;
+        }
+        if (out) {
+            if (out->size() + static_cast<size_t>(n) > max_size) {
+                return READ_STATUS_LIMIT_EXCEEDED;
+            }
+            out->append(buf, static_cast<size_t>(n));
+        }
+    }
+}
+
+bool post_agent_http_json(const AgentHttpTarget& target,
+                          const std::string& path,
+                          const std::string& body,
+                          AgentHttpResponse* response) {
+    if (response) {
+        *response = AgentHttpResponse();
+    }
+
+    std::string connect_error;
+    int fd = connect_tcp_host(target.host, target.port, 2000, &connect_error);
+    if (fd < 0) {
+        if (response) {
+            response->error = connect_error.empty() ? "connect failed" : connect_error;
+        }
+        return false;
+    }
+
+    if (!set_socket_recv_timeout(fd, kClientReadTimeoutSeconds)) {
+        if (response) {
+            response->error = std::string("set socket timeout failed: ") + strerror(errno);
+        }
+        close(fd);
+        return false;
+    }
+
+    std::string request_path = join_url_path(target.base_path, path);
+    if (request_path.empty()) {
+        request_path = "/";
+    }
+
+    std::ostringstream request;
+    request << "POST " << request_path << " HTTP/1.1\r\n";
+    request << "Host: " << target.host << ":" << target.port << "\r\n";
+    request << "Content-Type: application/json\r\n";
+    request << "Content-Length: " << body.size() << "\r\n";
+    request << "Connection: close\r\n\r\n";
+    request << body;
+    std::string request_text = request.str();
+    if (!write_all(fd, request_text.data(), request_text.size())) {
+        if (response) {
+            response->error = std::string("write request failed: ") + strerror(errno);
+        }
+        close(fd);
+        return false;
+    }
+
+    std::string headers;
+    ReadStatus header_status = read_until(fd, "\r\n\r\n", kMaxHttpHeaderSize, &headers);
+    if (header_status != READ_STATUS_OK) {
+        if (response) {
+            response->error = header_status == READ_STATUS_TIMEOUT
+                ? "agent HTTP response timed out"
+                : "invalid agent HTTP response";
+        }
+        close(fd);
+        return false;
+    }
+
+    std::istringstream header_stream(headers);
+    std::string line;
+    if (!std::getline(header_stream, line)) {
+        if (response) {
+            response->error = "agent HTTP response missing status line";
+        }
+        close(fd);
+        return false;
+    }
+    line = trim_copy(line);
+    std::istringstream status_stream(line);
+    std::string http_version;
+    int status_code = 0;
+    status_stream >> http_version >> status_code;
+    std::string status_text;
+    std::getline(status_stream, status_text);
+    status_text = trim_copy(status_text);
+    if (status_code <= 0) {
+        if (response) {
+            response->error = "agent HTTP response has invalid status code";
+        }
+        close(fd);
+        return false;
+    }
+
+    size_t content_length = 0;
+    bool has_content_length = false;
+    std::string content_type = "application/json; charset=utf-8";
+    while (std::getline(header_stream, line)) {
+        line = trim_copy(line);
+        if (line.empty()) {
+            continue;
+        }
+        std::string lower = lowercase_copy(line);
+        if (starts_with(lower, "content-length:")) {
+            if (!parse_size(trim_copy(line.substr(strlen("Content-Length:"))), &content_length)) {
+                if (response) {
+                    response->error = "agent HTTP response has invalid Content-Length";
+                }
+                close(fd);
+                return false;
+            }
+            has_content_length = true;
+        } else if (starts_with(lower, "content-type:")) {
+            content_type = trim_copy(line.substr(strlen("Content-Type:")));
+        }
+    }
+
+    std::string response_body;
+    if (has_content_length) {
+        if (content_length > kMaxHttpBodySize) {
+            if (response) {
+                response->error = "agent HTTP response body too large";
+            }
+            close(fd);
+            return false;
+        }
+        ReadStatus body_status = read_exact(fd, &response_body, content_length);
+        if (body_status != READ_STATUS_OK) {
+            if (response) {
+                response->error = body_status == READ_STATUS_TIMEOUT
+                    ? "agent HTTP response body timed out"
+                    : "truncated agent HTTP response body";
+            }
+            close(fd);
+            return false;
+        }
+    } else {
+        ReadStatus body_status = read_to_eof(fd, &response_body, kMaxHttpBodySize);
+        if (body_status != READ_STATUS_OK) {
+            if (response) {
+                response->error = body_status == READ_STATUS_TIMEOUT
+                    ? "agent HTTP response body timed out"
+                    : "agent HTTP response body too large";
+            }
+            close(fd);
+            return false;
+        }
+    }
+
+    close(fd);
+
+    if (response) {
+        response->status_code = status_code;
+        response->status_text = status_text.empty() ? "OK" : status_text;
+        response->content_type = content_type.empty() ? "application/json; charset=utf-8" : content_type;
+        response->body = response_body;
+        response->error.clear();
+    }
+    return true;
+}
+
+bool resolve_agent_http_target(const Options& options,
+                               AgentHttpTarget* target,
+                               std::string* error) {
+    if (target) {
+        *target = AgentHttpTarget();
+    }
+
+    const char* override_url = std::getenv("AIDEN_AGENT_HTTP_BASE_URL");
+    if (override_url && override_url[0] != '\0') {
+        return parse_http_base_url(override_url, target, error);
+    }
+
+    AgentRuntimeStatus status = query_agent_status();
+    if (target) {
+        target->host = trim_copy(status.port_host).empty() ? kAgentPortHost : status.port_host;
+        target->port = status.port > 0 ? status.port : kDefaultAgentPort;
+        target->base_path.clear();
+    }
+    if (error) {
+        error->clear();
+    }
+    (void)options;
+    return true;
+}
+
+ApiResponse proxy_agent_stt_test_request(const Options& options,
+                                         const std::string& agent_path,
+                                         const std::string& body) {
+    AgentHttpTarget target;
+    std::string target_error;
+    if (!resolve_agent_http_target(options, &target, &target_error)) {
+        return make_json_error(503, target_error.empty() ? "resolve agent HTTP target failed" : target_error);
+    }
+
+    AgentHttpResponse upstream;
+    if (!post_agent_http_json(target, agent_path, body, &upstream)) {
+        return make_json_error(503, upstream.error.empty() ? "agent HTTP request failed" : upstream.error);
+    }
+
+    ApiResponse response;
+    response.status_code = upstream.status_code > 0 ? upstream.status_code : 200;
+    response.status_text = upstream.status_text.empty() ? "OK" : upstream.status_text;
+    response.content_type = upstream.content_type.empty()
+        ? "application/json; charset=utf-8"
+        : upstream.content_type;
+    response.body = upstream.body;
+    return response;
+}
+
 ApiResponse handle_stt_test_start(const Options& options, const std::string& body) {
-    cJSON* root = cJSON_Parse(body.c_str());
-    if (!root) {
-        return make_json_error(400, "invalid JSON body");
-    }
-
-    std::string socket_path;
-    aiden::AudioFormat format;
-    std::string parse_error;
-    if (!parse_stt_test_audio_request(root, &socket_path, &format, &parse_error)) {
-        cJSON_Delete(root);
-        return make_json_error(400, parse_error);
-    }
-    cJSON_Delete(root);
-
-    if (g_stt_test_recording.active) {
-        discard_stt_test_recording(g_stt_test_recording);
-        g_stt_test_recording = STTTestRecordingState();
-    }
-
-    aiden::AudioServiceClient client(socket_path.c_str());
-    aiden::RecordStartResult result;
-    aiden::AidenServiceStatus status = client.start_recording(format, &result);
-    if (status != aiden::AidenServiceStatus::OK) {
-        return make_json_error(503, std::string("start device audio recording: ") +
-                                        aiden::service_status_to_string(status));
-    }
-
-    g_stt_test_recording.active = true;
-    g_stt_test_recording.session_id = result.session_id;
-    g_stt_test_recording.socket_path = socket_path;
-    g_stt_test_recording.format = format;
-
-    cJSON* response = cJSON_CreateObject();
-    cJSON_AddBoolToObject(response, "ok", 1);
-    cJSON_AddStringToObject(response, "status", "recording");
-    cJSON_AddNumberToObject(response, "sample_rate", format.sample_rate);
-    return make_json_ok(response);
+    return proxy_agent_stt_test_request(options, "/api/config-test/stt/start", body);
 }
 
 ApiResponse handle_stt_test_stop(const Options& options, const std::string& body) {
-    if (!g_stt_test_recording.active) {
-        return make_json_error(400, "STT test recording is not active");
-    }
-
-    cJSON* root = cJSON_Parse(body.c_str());
-    if (!root) {
-        return make_json_error(400, "invalid JSON body");
-    }
-
-    cJSON* stt_values = NULL;
-    std::string parse_error;
-    if (!parse_stt_test_values_request(root, &stt_values, &parse_error)) {
-        cJSON_Delete(root);
-        return make_json_error(400, parse_error);
-    }
-
-    const STTTestRecordingState state = g_stt_test_recording;
-    g_stt_test_recording = STTTestRecordingState();
-
-    std::vector<uint8_t> pcm;
-    std::string finish_error;
-    if (!finish_stt_test_recording(state, &pcm, &finish_error)) {
-        cJSON_Delete(root);
-        return make_json_error(503, finish_error);
-    }
-
-    if (pcm.empty()) {
-        cJSON_Delete(root);
-        cJSON* response = cJSON_CreateObject();
-        cJSON_AddBoolToObject(response, "ok", 0);
-        cJSON_AddStringToObject(response, "transcript", "");
-        cJSON* results = add_array(response, "results");
-        cJSON* item = cJSON_CreateObject();
-        cJSON_AddStringToObject(item, "check", "stt_transcription");
-        cJSON_AddBoolToObject(item, "passed", 0);
-        cJSON_AddStringToObject(item, "detail", "recording captured no audio data");
-        cJSON_AddItemToArray(results, item);
-        return make_json_ok(response);
-    }
-
-    std::vector<uint8_t> wav = wrap_pcm_in_wav(pcm, state.format);
-    ApiResponse response = run_agent_stt_config_test(
-        options, stt_values, base64_encode_bytes(wav.data(), wav.size()));
-    cJSON_Delete(root);
-    return response;
+    return proxy_agent_stt_test_request(options, "/api/config-test/stt/stop", body);
 }
 
 void load_current_wifi_config(const Options& options,

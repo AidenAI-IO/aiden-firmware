@@ -30,30 +30,31 @@ import (
 
 // Server provides HTTP API for agent interactions
 type Server struct {
-	runtime             *Runtime
-	addr                string
-	logger              *Logger
-	userFilesReportPath string
-	userFilesToolsDir   string
-	mu                  sync.Mutex
-	history             []Message
-	historyStore        *ChatHistoryStore
-	episodeStore        *TaskEpisodeStore
-	sttClient           STTClient
-	ttsManager          *tts.ProviderManager
-	ttsMu               sync.RWMutex
-	audioClient         *AudioServiceClient
-	recordMu            sync.Mutex
-	webRecording        *webAudioRecording
-	bridge              *PhoneBridge
-	liveActivity        *LiveActivityManager
-	pendingResults      map[string]*chatPendingResult
-	pendingResultsMu    sync.Mutex
-	activeRuns          map[string]context.CancelFunc
-	activeRunsMu        sync.Mutex
-	pendingSteers       map[string]pendingSteerMessage
-	pendingSteersMu     sync.Mutex
-	eventBroadcaster    *EventBroadcaster
+	runtime              *Runtime
+	addr                 string
+	logger               *Logger
+	userFilesReportPath  string
+	userFilesToolsDir    string
+	mu                   sync.Mutex
+	history              []Message
+	historyStore         *ChatHistoryStore
+	episodeStore         *TaskEpisodeStore
+	sttClient            STTClient
+	ttsManager           *tts.ProviderManager
+	ttsMu                sync.RWMutex
+	audioClient          *AudioServiceClient
+	recordMu             sync.Mutex
+	webRecording         *webAudioRecording
+	sttConfigTestSession *sttConfigTestLiveSession
+	bridge               *PhoneBridge
+	liveActivity         *LiveActivityManager
+	pendingResults       map[string]*chatPendingResult
+	pendingResultsMu     sync.Mutex
+	activeRuns           map[string]context.CancelFunc
+	activeRunsMu         sync.Mutex
+	pendingSteers        map[string]pendingSteerMessage
+	pendingSteersMu      sync.Mutex
+	eventBroadcaster     *EventBroadcaster
 }
 
 type webAudioRecording struct {
@@ -402,6 +403,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/tool-skills", s.handleToolSkills)
 	mux.HandleFunc("/api/audio/record/start", s.handleAudioRecordStart)
 	mux.HandleFunc("/api/audio/record/stop", s.handleAudioRecordStop)
+	mux.HandleFunc("/api/config-test/stt/start", s.handleSTTConfigTestStart)
+	mux.HandleFunc("/api/config-test/stt/stop", s.handleSTTConfigTestStop)
 	mux.HandleFunc("/api/audio/", s.handleAudioFile)
 	mux.HandleFunc("/api/settings/tts", s.handleTTSSettings)
 	mux.HandleFunc("/api/tts/providers", s.handleTTSProviders)
@@ -1986,6 +1989,11 @@ func (s *Server) handleAudioRecordStart(w http.ResponseWriter, r *http.Request) 
 	}
 
 	s.recordMu.Lock()
+	if s.sttConfigTestSession != nil {
+		s.recordMu.Unlock()
+		http.Error(w, "stt config test recording is already active", http.StatusConflict)
+		return
+	}
 	if s.webRecording != nil {
 		stale := s.webRecording
 		s.webRecording = nil
@@ -2039,7 +2047,7 @@ func (s *Server) handleAudioRecordStart(w http.ResponseWriter, r *http.Request) 
 	}
 
 	s.recordMu.Lock()
-	if s.webRecording != nil {
+	if s.webRecording != nil || s.sttConfigTestSession != nil {
 		s.recordMu.Unlock()
 		if err := s.endStaleWebRecording(recording); err != nil && s.logger != nil {
 			s.logger.Warn("Orphaned web audio recording cleanup failed: %v", err)
