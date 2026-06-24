@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -33,9 +34,9 @@ func TestMaintenanceDoesNotClobberConcurrentAppends(t *testing.T) {
 	}
 
 	cfg := MemoryExtractionConfig{
-		HotWindowEvents:         5,
+		HotWindowEvents:          5,
 		CountCompressAfterEvents: 10,
-		CompressAtPercent:       50,
+		CompressAtPercent:        50,
 	}
 
 	mgr := NewMemoryManager(
@@ -150,7 +151,7 @@ func TestAppendAndMaintenanceFileLockSerialization(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			records := []MessageRecord{
-				{Role: "user", Content: "concurrent append"},
+				{Role: "user", Content: fmt.Sprintf("concurrent append %d", id)},
 			}
 			if err := mgr.syncSessionRecords("default", records); err != nil {
 				t.Errorf("goroutine %d syncSessionRecords: %v", id, err)

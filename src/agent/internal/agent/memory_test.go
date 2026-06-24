@@ -377,6 +377,58 @@ func TestMemoryManagerRestoresFromSessionEvents(t *testing.T) {
 	}
 }
 
+func TestMemoryManagerMigratesLegacySnapshotWhenSessionEventsMissing(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	legacyPath := legacyMemorySnapshotPath(storageDir, "default")
+	legacyRecords := []MessageRecord{
+		{Role: string(llms.ChatMessageTypeHuman), Content: "legacy user"},
+		{Role: string(llms.ChatMessageTypeAI), Content: "legacy answer"},
+	}
+	data, err := json.Marshal(legacyRecords)
+	if err != nil {
+		t.Fatalf("marshal legacy snapshot: %v", err)
+	}
+	if err := os.WriteFile(legacyPath, data, 0o644); err != nil {
+		t.Fatalf("write legacy snapshot: %v", err)
+	}
+
+	manager := NewMemoryManager(storageDir)
+	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	messages, err := handle.History.Messages(ctx)
+	if err != nil {
+		t.Fatalf("Messages() error = %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 migrated messages, got %d", len(messages))
+	}
+	if messages[0].GetContent() != "legacy user" || messages[1].GetContent() != "legacy answer" {
+		t.Fatalf("unexpected migrated messages: %#v", messages)
+	}
+
+	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
+	if len(events) != 2 {
+		t.Fatalf("expected 2 migrated session events, got %d: %#v", len(events), events)
+	}
+	if events[0].Type != "user_input" || events[0].Content != "legacy user" {
+		t.Fatalf("unexpected migrated first event: %#v", events[0])
+	}
+	if events[1].Type != "assistant_output" || events[1].Content != "legacy answer" {
+		t.Fatalf("unexpected migrated second event: %#v", events[1])
+	}
+	metadata := readSessionMetadataForTest(t, filepath.Join(storageDir, "session", sessionMetadataFileName))
+	if metadata.SessionID == "" {
+		t.Fatal("expected migrated session metadata to contain a session_id")
+	}
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("expected legacy snapshot to be removed after migration, stat err = %v", err)
+	}
+	assertNoTopLevelJSONFiles(t, storageDir)
+}
+
 func TestMemoryManagerIgnoresRootJSONFilesWithoutSessionData(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()

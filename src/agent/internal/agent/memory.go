@@ -886,6 +886,31 @@ func (m *MemoryManager) loadSessionMessageRecords(agentName string) ([]MessageRe
 	}
 	defer fl.Unlock()
 
+	if records, hotWindowTokens, eventCount, ok, err := m.loadSessionMessageRecordsLocked(agentName); err != nil {
+		return nil, 0, 0, false, err
+	} else if ok {
+		return records, hotWindowTokens, eventCount, true, nil
+	}
+
+	legacyRecords, ok, err := m.loadLegacyMessageRecordsLocked(agentName)
+	if err != nil {
+		return nil, 0, 0, false, err
+	}
+	if !ok {
+		return nil, 0, 0, false, nil
+	}
+	if len(legacyRecords) == 0 {
+		m.removeLegacySnapshotAfterMigration(agentName)
+		return nil, 0, 0, true, nil
+	}
+	if err := m.appendSessionEvents(agentName, legacyRecords); err != nil {
+		return nil, 0, 0, false, fmt.Errorf("migrate legacy persisted memory for %q: %w", agentName, err)
+	}
+	m.removeLegacySnapshotAfterMigration(agentName)
+	return m.loadSessionMessageRecordsLocked(agentName)
+}
+
+func (m *MemoryManager) loadSessionMessageRecordsLocked(agentName string) ([]MessageRecord, int, int, bool, error) {
 	session := NewSessionMemoryStore(filepath.Join(m.storageDir, "session"), m.extraction.SummaryMaxChunks)
 	result, err := session.readActiveEventsRepairingTruncatedTail()
 	if err != nil {
@@ -909,6 +934,28 @@ func (m *MemoryManager) loadSessionMessageRecords(agentName string) ([]MessageRe
 		}
 	}
 	return records, hotWindowTokens, len(result.events), true, nil
+}
+
+func (m *MemoryManager) loadLegacyMessageRecordsLocked(agentName string) ([]MessageRecord, bool, error) {
+	data, err := os.ReadFile(legacyMemorySnapshotPath(m.storageDir, agentName))
+	if err != nil {
+		if isPathNotExistError(err) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("read legacy persisted memory for %q: %w", agentName, err)
+	}
+
+	var records []MessageRecord
+	if err := json.Unmarshal(data, &records); err != nil {
+		return nil, false, fmt.Errorf("decode legacy persisted memory for %q: %w", agentName, err)
+	}
+	return records, true, nil
+}
+
+func (m *MemoryManager) removeLegacySnapshotAfterMigration(agentName string) {
+	if err := os.Remove(legacyMemorySnapshotPath(m.storageDir, agentName)); err != nil && !os.IsNotExist(err) && m.logger != nil {
+		m.logger.Warn("[memory] remove migrated legacy snapshot for %q: %v", agentName, err)
+	}
 }
 
 func (m *MemoryManager) LoadActiveSessionEvents(ctx context.Context, limit int) ([]SessionEvent, error) {
