@@ -426,12 +426,16 @@ TEST_CASE("config web exposes the LLM HTTP log viewer") {
     llm_buffer << llm_in.rdbuf();
     const std::string llm_html = llm_buffer.str();
 
-    // Backend wires the three new routes and serves the standalone page.
+    // Backend wires the routes and serves the standalone page.
     CHECK(source.find("\"/llm-logs\"") != std::string::npos);
     CHECK(source.find("\"/api/llm-logs\"") != std::string::npos);
     CHECK(source.find("/api/llm-logs/file/") != std::string::npos);
+    CHECK(source.find("/api/llm-logs/export/") != std::string::npos);
+    CHECK(source.find("/api/llm-logs/import/") != std::string::npos);
     CHECK(source.find("handle_get_llm_logs") != std::string::npos);
     CHECK(source.find("handle_get_llm_log_file") != std::string::npos);
+    CHECK(source.find("handle_export_llm_log_file") != std::string::npos);
+    CHECK(source.find("handle_import_llm_log_file") != std::string::npos);
     CHECK(source.find("is_llm_log_name") != std::string::npos);
     CHECK(source.find("CONFIG_WEB_LLM_HTML") != std::string::npos);
 
@@ -443,6 +447,11 @@ TEST_CASE("config web exposes the LLM HTTP log viewer") {
     CHECK(llm_html.find("function renderMessages") != std::string::npos);
     CHECK(llm_html.find("function renderDiff") != std::string::npos);
     CHECK(llm_html.find("function renderToolCalls") != std::string::npos);
+    CHECK(llm_html.find("downloadSelectedFile") != std::string::npos);
+    CHECK(llm_html.find("handleImportSelection") != std::string::npos);
+    CHECK(llm_html.find("importFileInput") != std::string::npos);
+    CHECK(llm_html.find("Export Raw") != std::string::npos);
+    CHECK(llm_html.find("Import Raw") != std::string::npos);
     CHECK(llm_html.find("tool_calls") != std::string::npos);
     CHECK(llm_html.find(".msg-head,.diff-msg-head{") != std::string::npos);
     CHECK(llm_html.find("font-size:12px;line-height:1.2") != std::string::npos);

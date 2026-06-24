@@ -103,6 +103,20 @@ struct AgentLogSnapshot {
     std::string error;
 };
 
+enum LlmLogReadStatus {
+    LLM_LOG_READ_OK,
+    LLM_LOG_READ_NOT_FOUND,
+    LLM_LOG_READ_TOO_LARGE,
+    LLM_LOG_READ_ERROR,
+};
+
+struct LlmLogReadResult {
+    LlmLogReadStatus status = LLM_LOG_READ_OK;
+    bool truncated = false;
+    std::string contents;
+    std::string error;
+};
+
 using SystemProxy = aiden::SystemEnvProxy;
 
 struct TcpPortStatus {
@@ -157,7 +171,9 @@ const char* kLlmLogPrefix = "llm-http-";
 const char* kLlmLogSuffix = ".log";
 const size_t kLlmLogMaxReadSize = 16 * 1024 * 1024;
 const size_t kMaxHttpHeaderSize = 8 * 1024;
-const size_t kMaxHttpBodySize = 64 * 1024;
+// Raw LLM log import posts an entire log file body, so the request-body cap
+// must cover the same file size limit the viewer/export endpoints allow.
+const size_t kMaxHttpBodySize = kLlmLogMaxReadSize;
 const int kClientReadTimeoutSeconds = 5;
 const char* kDefaultNoProxy = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16";
 const int kSystemEnvCommandTimeoutMs = 1500;
@@ -173,6 +189,7 @@ bool prepare_ota_update_log_file(const std::string& path, std::string* error);
 bool set_fd_cloexec(int fd, std::string* error);
 CommandResult run_command_with_stdin(const std::string& command, const std::string& input, int timeout_ms);
 void update_config_from_json(cJSON* root, aiden::AgentToml* config);
+bool atomic_write_file(const std::string& path, const std::string& content, mode_t mode, std::string* error);
 
 // ValidationOutcome distinguishes "the user submitted something invalid" (the
 // CLI ran and rejected it -> 400) from "we could not run validation at all"
@@ -1585,6 +1602,7 @@ ApiResponse make_json_error(int status_code, const std::string& message) {
     response.status_code = status_code;
     switch (status_code) {
         case 400: response.status_text = "Bad Request"; break;
+        case 413: response.status_text = "Payload Too Large"; break;
         case 404: response.status_text = "Not Found"; break;
         case 503: response.status_text = "Service Unavailable"; break;
         default:  response.status_text = "Internal Server Error"; break;
@@ -3296,6 +3314,10 @@ std::string llm_log_dir(const Options& options) {
     return base + "/log";
 }
 
+std::string llm_log_path(const Options& options, const std::string& name) {
+    return llm_log_dir(options) + "/" + name;
+}
+
 // is_llm_log_name reports whether name is a plain llm-http-*.log filename with
 // no path separators. Used both to filter directory listings and to validate
 // the filename segment of /api/llm-logs/file/<name>.
@@ -3326,6 +3348,71 @@ bool is_llm_log_name(const std::string& name) {
         return false;
     }
     return true;
+}
+
+LlmLogReadResult read_llm_log_file(const Options& options, const std::string& name, bool allow_truncate) {
+    LlmLogReadResult result;
+    if (!is_llm_log_name(name)) {
+        result.status = LLM_LOG_READ_NOT_FOUND;
+        result.error = "invalid log file name";
+        return result;
+    }
+    const std::string full = llm_log_path(options, name);
+    // O_NOFOLLOW + fstat/S_ISREG keep reads pinned to regular files inside the
+    // log directory even if a malicious symlink appears between requests.
+    int fd = open(full.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) {
+        result.status = LLM_LOG_READ_NOT_FOUND;
+        result.error = "log file not found";
+        return result;
+    }
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        close(fd);
+        result.status = LLM_LOG_READ_NOT_FOUND;
+        result.error = "log file not found";
+        return result;
+    }
+    if (!allow_truncate && static_cast<size_t>(st.st_size) > kLlmLogMaxReadSize) {
+        close(fd);
+        result.status = LLM_LOG_READ_TOO_LARGE;
+        result.error = "log file too large";
+        return result;
+    }
+    FILE* f = fdopen(fd, "rb");
+    if (!f) {
+        close(fd);
+        result.status = LLM_LOG_READ_ERROR;
+        result.error = "failed to open log file stream";
+        return result;
+    }
+
+    char buf[8192];
+    size_t total = 0;
+    while (size_t n = fread(buf, 1, sizeof(buf), f)) {
+        if (total + n > kLlmLogMaxReadSize) {
+            if (!allow_truncate) {
+                fclose(f);
+                result.status = LLM_LOG_READ_TOO_LARGE;
+                result.error = "log file too large";
+                return result;
+            }
+            result.contents.append(buf, kLlmLogMaxReadSize - total);
+            result.truncated = true;
+            break;
+        }
+        result.contents.append(buf, n);
+        total += n;
+    }
+    if (ferror(f)) {
+        fclose(f);
+        result.status = LLM_LOG_READ_ERROR;
+        result.error = "failed to read log file";
+        return result;
+    }
+    fclose(f);
+    result.status = LLM_LOG_READ_OK;
+    return result;
 }
 
 ApiResponse handle_get_llm_logs(const Options& options) {
@@ -3374,45 +3461,62 @@ ApiResponse handle_get_llm_log_file(const Options& options, const std::string& n
     if (!is_llm_log_name(name)) {
         return make_json_error(400, "invalid log file name");
     }
-    const std::string full = llm_log_dir(options) + "/" + name;
-    // O_NOFOLLOW + fstat/S_ISREG: refuse to follow a symlink and confirm the
-    // opened descriptor is a regular file, closing the TOCTOU gap between the
-    // name check and the read so the viewer can never serve a file outside the
-    // log set via a symlink planted in the directory.
-    int fd = open(full.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-    if (fd < 0) {
+    LlmLogReadResult read = read_llm_log_file(options, name, true);
+    if (read.status == LLM_LOG_READ_NOT_FOUND) {
         return make_json_error(404, "log file not found");
     }
-    struct stat st;
-    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
-        close(fd);
-        return make_json_error(404, "log file not found");
+    if (read.status == LLM_LOG_READ_TOO_LARGE) {
+        return make_json_error(413, "log file too large");
     }
-    FILE* f = fdopen(fd, "rb");
-    if (!f) {
-        close(fd);
-        return make_json_error(404, "log file not found");
+    if (read.status != LLM_LOG_READ_OK) {
+        return make_json_error(500, read.error.empty() ? "failed to read log file" : read.error);
     }
-    std::string contents;
-    char buf[8192];
-    size_t total = 0;
-    bool truncated = false;
-    while (size_t n = fread(buf, 1, sizeof(buf), f)) {
-        if (total + n > kLlmLogMaxReadSize) {
-            contents.append(buf, kLlmLogMaxReadSize - total);
-            truncated = true;
-            break;
-        }
-        contents.append(buf, n);
-        total += n;
-    }
-    fclose(f);
 
     cJSON* root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "ok", 1);
     cJSON_AddStringToObject(root, "name", name.c_str());
-    cJSON_AddStringToObject(root, "content", contents.c_str());
-    cJSON_AddBoolToObject(root, "truncated", truncated ? 1 : 0);
+    cJSON_AddStringToObject(root, "content", read.contents.c_str());
+    cJSON_AddBoolToObject(root, "truncated", read.truncated ? 1 : 0);
+    return make_json_ok(root);
+}
+
+ApiResponse handle_export_llm_log_file(const Options& options, const std::string& name) {
+    if (!is_llm_log_name(name)) {
+        return make_json_error(400, "invalid log file name");
+    }
+    LlmLogReadResult read = read_llm_log_file(options, name, false);
+    if (read.status == LLM_LOG_READ_NOT_FOUND) {
+        return make_json_error(404, "log file not found");
+    }
+    if (read.status == LLM_LOG_READ_TOO_LARGE) {
+        return make_json_error(413, "log file too large");
+    }
+    if (read.status != LLM_LOG_READ_OK) {
+        return make_json_error(500, read.error.empty() ? "failed to export log file" : read.error);
+    }
+    ApiResponse response;
+    response.content_type = "text/plain; charset=utf-8";
+    response.body = read.contents;
+    return response;
+}
+
+ApiResponse handle_import_llm_log_file(const Options& options, const std::string& name, const std::string& body) {
+    if (!is_llm_log_name(name)) {
+        return make_json_error(400, "invalid log file name");
+    }
+    if (body.size() > kLlmLogMaxReadSize) {
+        return make_json_error(413, "log file too large");
+    }
+    std::string error;
+    if (!atomic_write_file(llm_log_path(options, name), body, 0644, &error)) {
+        return make_json_error(500, error.empty() ? "failed to import log file" : error);
+    }
+
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", 1);
+    cJSON_AddStringToObject(root, "name", name.c_str());
+    cJSON_AddNumberToObject(root, "size_bytes", static_cast<double>(body.size()));
+    cJSON_AddStringToObject(root, "message", "llm log imported");
     return make_json_ok(root);
 }
 
@@ -4514,10 +4618,26 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
     }
 
     {
+        const std::string export_prefix = "/api/llm-logs/export/";
+        if (request.method == "GET" && request.path.compare(0, export_prefix.size(), export_prefix) == 0) {
+            std::string name = url_decode(request.path.substr(export_prefix.size()));
+            return handle_export_llm_log_file(options, name);
+        }
+    }
+
+    {
         const std::string file_prefix = "/api/llm-logs/file/";
         if (request.method == "GET" && request.path.compare(0, file_prefix.size(), file_prefix) == 0) {
             std::string name = url_decode(request.path.substr(file_prefix.size()));
             return handle_get_llm_log_file(options, name);
+        }
+    }
+
+    {
+        const std::string import_prefix = "/api/llm-logs/import/";
+        if (request.method == "POST" && request.path.compare(0, import_prefix.size(), import_prefix) == 0) {
+            std::string name = url_decode(request.path.substr(import_prefix.size()));
+            return handle_import_llm_log_file(options, name, request.body);
         }
     }
 

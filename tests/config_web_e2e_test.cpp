@@ -1292,3 +1292,44 @@ TEST_CASE("config_web: GET /api/ota/logs keeps update and health logs separate")
     CHECK(required_json_string(health, "log").find("[config_web] ota update") == std::string::npos);
     cJSON_Delete(parsed);
 }
+
+TEST_CASE("config_web: exports llm raw log files without JSON wrapping") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string log_dir = handle->tmp_dir + "/log";
+    REQUIRE(::mkdir(log_dir.c_str(), 0755) == 0);
+    const std::string name = "llm-http-20260624153000123.log";
+    const std::string content =
+        "{\"kind\":\"request\",\"ts\":\"2026-06-24T15:30:00Z\"}\n"
+        "{\"kind\":\"response\",\"status\":200}\n";
+    write_file(log_dir + "/" + name, content);
+
+    HttpResponse resp = http_request(handle->port, "GET", "/api/llm-logs/export/" + name);
+    CHECK(resp.status == 200);
+    CHECK(resp.body == content);
+}
+
+TEST_CASE("config_web: imports llm raw log files into the viewer log directory") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string name = "llm-http-import-session.log";
+    const std::string content =
+        "{\"kind\":\"request\",\"ts\":\"2026-06-24T16:00:00Z\",\"body\":\"hello\"}\n"
+        "{\"kind\":\"response\",\"status\":500,\"body\":\"upstream failed\"}\n";
+
+    HttpResponse import_resp = http_request(handle->port, "POST", "/api/llm-logs/import/" + name, content);
+    REQUIRE(import_resp.status == 200);
+
+    const std::string imported_path = handle->tmp_dir + "/log/" + name;
+    CHECK(read_file(imported_path) == content);
+
+    HttpResponse list_resp = http_request(handle->port, "GET", "/api/llm-logs");
+    REQUIRE(list_resp.status == 200);
+    CHECK(list_resp.body.find(name) != std::string::npos);
+
+    HttpResponse export_resp = http_request(handle->port, "GET", "/api/llm-logs/export/" + name);
+    CHECK(export_resp.status == 200);
+    CHECK(export_resp.body == content);
+}
