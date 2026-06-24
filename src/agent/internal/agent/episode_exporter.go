@@ -14,9 +14,8 @@ import (
 )
 
 const (
-	langfuseBatchSize               = 40
-	langfuseScreenshotUploadTimeout = 2 * time.Second
-	langfuseTraceIngestReserve      = 5 * time.Second
+	langfuseBatchSize          = 40
+	langfuseTraceIngestReserve = 5 * time.Second
 )
 
 type langfuseIterationWindow struct {
@@ -509,7 +508,7 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 			}
 			var output interface{} = event.Observation
 			if e.cfg.UploadScreenshotsOrDefault() && strings.TrimSpace(event.ScreenshotRef) != "" {
-				screenshotCtx, cancel, ok := langfuseScreenshotUploadContext(ctx)
+				screenshotCtx, cancel, ok := langfuseScreenshotUploadContext(ctx, e.cfg.UploadTimeoutOrDefault())
 				if ok {
 					mediaRef, err := e.uploadScreenshot(screenshotCtx, traceID, resultSpanID, episodeDir, event.ScreenshotRef)
 					cancel()
@@ -708,11 +707,13 @@ func (e *EpisodeExporter) promptGenerationBody(episode TaskEpisode, traceID stri
 	return body
 }
 
-func langfuseScreenshotUploadContext(ctx context.Context) (context.Context, context.CancelFunc, bool) {
+func langfuseScreenshotUploadContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc, bool) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	timeout := langfuseScreenshotUploadTimeout
+	if timeout <= 0 {
+		return nil, nil, false
+	}
 	if deadline, ok := ctx.Deadline(); ok {
 		remaining := time.Until(deadline)
 		if remaining <= langfuseTraceIngestReserve {

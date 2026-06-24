@@ -765,6 +765,44 @@ outcome:
 	}
 }
 
+func TestLangfuseScreenshotUploadContextUsesConfiguredTimeout(t *testing.T) {
+	screenshotCtx, cancel, ok := langfuseScreenshotUploadContext(context.Background(), 120*time.Millisecond)
+	if !ok {
+		t.Fatal("langfuseScreenshotUploadContext() ok = false, want true")
+	}
+	defer cancel()
+	deadline, ok := screenshotCtx.Deadline()
+	if !ok {
+		t.Fatal("screenshot context missing deadline")
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 || remaining > 120*time.Millisecond {
+		t.Fatalf("screenshot context timeout = %s, want <= 120ms", remaining)
+	}
+}
+
+func TestLangfuseScreenshotUploadContextReservesTraceIngestionBudget(t *testing.T) {
+	parentCtx, parentCancel := context.WithTimeout(context.Background(), 2*langfuseTraceIngestReserve)
+	defer parentCancel()
+	parentDeadline, ok := parentCtx.Deadline()
+	if !ok {
+		t.Fatal("parent context missing deadline")
+	}
+
+	screenshotCtx, cancel, ok := langfuseScreenshotUploadContext(parentCtx, 30*time.Second)
+	if !ok {
+		t.Fatal("langfuseScreenshotUploadContext() ok = false, want true")
+	}
+	defer cancel()
+	deadline, ok := screenshotCtx.Deadline()
+	if !ok {
+		t.Fatal("screenshot context missing deadline")
+	}
+	if deadline.After(parentDeadline.Add(-langfuseTraceIngestReserve + 100*time.Millisecond)) {
+		t.Fatalf("screenshot deadline = %s, want trace ingestion reserve before parent deadline %s", deadline, parentDeadline)
+	}
+}
+
 func TestRuntimeStartupExportsInterruptedEpisodeToLangfuse(t *testing.T) {
 	ctx := context.Background()
 	configDir := t.TempDir()

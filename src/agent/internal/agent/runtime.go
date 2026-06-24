@@ -541,9 +541,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 			}
 			episodeRecorder = r.memoryPlane.NewEpisodeRecorder(retrieveReq, MemoryContext{})
 			if episodeRecorder != nil {
-				if episodeID == "" {
-					episodeID = episodeRecorder.ID()
-				}
+				episodeID = episodeRecorder.ID()
 				startCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 				if err := episodeRecorder.Start(startCtx); err != nil && r.logger != nil {
 					r.logger.Warn("[memory] start failed episode trace failed: %v", err)
@@ -554,9 +552,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		if episodeRecorder == nil {
 			return
 		}
-		if episodeID == "" {
-			episodeID = episodeRecorder.ID()
-		}
+		episodeID = episodeRecorder.ID()
 		r.persistRunStatusBestEffort(episodeID, req.RequestID, runID, runErr)
 		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, runErr, promptCapture, boundaryTelemetry, req.AsyncEpisodeMaintenance)
 		episodeCommitted = true
