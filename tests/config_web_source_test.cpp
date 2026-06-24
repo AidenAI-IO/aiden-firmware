@@ -1024,7 +1024,7 @@ TEST_CASE("config web does not show a star for disconnected saved wifi") {
     CHECK(html.find("forget.textContent='忘记';") != std::string::npos);
 }
 
-TEST_CASE("config web hides wifi apply details after forgetting a network") {
+TEST_CASE("config web hides successful forget details but reports runtime apply failure") {
     const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
     std::ifstream html_in(html_path.c_str());
     REQUIRE(html_in.good());
@@ -1041,9 +1041,15 @@ TEST_CASE("config web hides wifi apply details after forgetting a network") {
     REQUIRE(forget_end != std::string::npos);
     const std::string forget_source =
         html.substr(forget_start, forget_end - forget_start);
+    CHECK(forget_source.find("if(payload.ok!==false)") != std::string::npos);
     CHECK(forget_source.find("setBanner('已忘记 “'+ssid+'”。',false);setDetails('');") !=
           std::string::npos);
-    CHECK(forget_source.find("wifi_apply") == std::string::npos);
+    CHECK(forget_source.find("已忘记 “'+ssid+'”，但运行时应用失败。") !=
+          std::string::npos);
+    CHECK(forget_source.find("payload.wifi_apply&&payload.wifi_apply.output") !=
+          std::string::npos);
+    CHECK(forget_source.find("网络已从保存列表删除，但运行时配置更新失败。") !=
+          std::string::npos);
 }
 
 TEST_CASE("config web tolerates metadata sections without rendered controls") {
