@@ -66,7 +66,6 @@ Continue using `/userdata/agent/memory`, add `device` and `episodes`. Existing d
 
 ```text
 /userdata/agent/memory/
-├── default.json                 # existing conversation window snapshot
 ├── session/
 │   ├── events.jsonl             # existing hot session events
 │   ├── summary.md               # existing compressed summary

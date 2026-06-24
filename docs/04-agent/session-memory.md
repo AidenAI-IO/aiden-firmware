@@ -199,7 +199,7 @@ Screenshot tool results include base64 image payloads. Before persistence, `stri
 
 The scrubber is idempotent and is used at every session-memory persistence boundary:
 
-- `sanitizeMessageRecords` before writing the legacy `default.json` snapshot.
+- `sanitizeMessageRecords` before synchronizing `MessageRecord` slices into session events.
 - `sessionEventFromRecord` when converting langchain `MessageRecord` values into `SessionEvent` values.
 - `SessionMemoryStore.AppendEvent` for direct writes that bypass the conversion path.
 

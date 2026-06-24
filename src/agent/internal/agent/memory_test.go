@@ -172,19 +172,27 @@ func TestMemoryManagerActiveSessionIDRejectsUnsafeMetadata(t *testing.T) {
 	}
 }
 
-func TestMemoryManagerSaveSnapshotCreatesSessionMetadataOnFirstWrite(t *testing.T) {
+func TestMemoryManagerSaveKeepsMemoryRootSessionOnly(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
 	manager := NewMemoryManager(storageDir)
+	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
 
-	if err := manager.SaveSnapshot(ctx, "default", []MessageRecord{
-		{Role: string(llms.ChatMessageTypeHuman), Content: "hello"},
-		{Role: string(llms.ChatMessageTypeAI), Content: "hi"},
+	if err := handle.History.SetMessages(ctx, []llms.ChatMessage{
+		llms.HumanChatMessage{Content: "hello"},
+		llms.AIChatMessage{Content: "hi"},
 	}); err != nil {
-		t.Fatalf("SaveSnapshot() error = %v", err)
+		t.Fatalf("SetMessages() error = %v", err)
+	}
+	if err := manager.Save(ctx, "default"); err != nil {
+		t.Fatalf("Save() error = %v", err)
 	}
 
 	metadata := readSessionMetadataForTest(t, filepath.Join(storageDir, "session", sessionMetadataFileName))
+	assertNoTopLevelJSONFiles(t, storageDir)
 	rotation, err := manager.RotateSessionEventsDetailed()
 	if err != nil {
 		t.Fatalf("RotateSessionEventsDetailed() error = %v", err)
@@ -291,27 +299,7 @@ func TestSessionEventsStripScreenshotData(t *testing.T) {
 		t.Fatalf("metadata should be preserved: %s", toolEvent.Content)
 	}
 
-	snapshotData, err := os.ReadFile(filepath.Join(storageDir, "default.json"))
-	if err != nil {
-		t.Fatalf("read legacy memory snapshot: %v", err)
-	}
-	var snapshotRecords []MessageRecord
-	if err := json.Unmarshal(snapshotData, &snapshotRecords); err != nil {
-		t.Fatalf("decode legacy memory snapshot: %v", err)
-	}
-	if len(snapshotRecords) != 3 {
-		t.Fatalf("expected 3 snapshot records, got %d", len(snapshotRecords))
-	}
-	snapshotToolContent := snapshotRecords[1].Content
-	if strings.Contains(snapshotToolContent, "dGVzdC1iYXNlNjQtc2NyZWVuc2hvdC1wYXlsb2FkCg==") {
-		t.Fatalf("legacy snapshot should strip screenshot base64 data: %s", snapshotData)
-	}
-	if strings.Contains(snapshotToolContent, `"data"`) {
-		t.Fatalf("legacy snapshot should omit data field: %s", snapshotData)
-	}
-	if !strings.Contains(snapshotToolContent, `"width":1080`) {
-		t.Fatalf("legacy snapshot should preserve metadata: %s", snapshotData)
-	}
+	assertNoTopLevelJSONFiles(t, storageDir)
 }
 
 func TestSessionMemoryAppendEventStripsScreenshotData(t *testing.T) {
@@ -353,7 +341,7 @@ func TestSessionMemoryAppendEventStripsScreenshotData(t *testing.T) {
 	}
 }
 
-func TestMemoryManagerRestoresFromSessionEventsWhenSnapshotMissing(t *testing.T) {
+func TestMemoryManagerRestoresFromSessionEvents(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
 	manager := NewMemoryManager(storageDir)
@@ -371,9 +359,6 @@ func TestMemoryManagerRestoresFromSessionEventsWhenSnapshotMissing(t *testing.T)
 	if err := manager.Save(ctx, "default"); err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}
-	if err := os.Remove(filepath.Join(storageDir, "default.json")); err != nil {
-		t.Fatalf("remove default snapshot: %v", err)
-	}
 
 	reloaded := NewMemoryManager(storageDir)
 	reloadedHandle, err := reloaded.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
@@ -389,6 +374,35 @@ func TestMemoryManagerRestoresFromSessionEventsWhenSnapshotMissing(t *testing.T)
 	}
 	if messages[0].GetContent() != "remember this" || messages[1].GetContent() != "stored" {
 		t.Fatalf("unexpected restored messages: %#v", messages)
+	}
+}
+
+func TestMemoryManagerIgnoresRootJSONFilesWithoutSessionData(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	orphanPath := filepath.Join(storageDir, "orphan-history.json")
+	data, err := json.Marshal([]MessageRecord{
+		{Role: "human", Content: "orphan user"},
+		{Role: "ai", Content: "orphan answer"},
+	})
+	if err != nil {
+		t.Fatalf("marshal orphan root file: %v", err)
+	}
+	if err := os.WriteFile(orphanPath, data, 0o644); err != nil {
+		t.Fatalf("write orphan root file: %v", err)
+	}
+
+	manager := NewMemoryManager(storageDir)
+	handle, err := manager.Get("default", MemoryConfig{Type: "window", WindowSize: 10})
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	messages, err := handle.History.Messages(ctx)
+	if err != nil {
+		t.Fatalf("Messages() error = %v", err)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("root-level JSON files should be ignored without session data, got %#v", messages)
 	}
 }
 
@@ -1985,6 +1999,22 @@ func readSessionMetadataForTest(t *testing.T, path string) sessionMetadata {
 		t.Fatalf("decode session metadata: %v", err)
 	}
 	return metadata
+}
+
+func assertNoTopLevelJSONFiles(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir(%s) error = %v", dir, err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if strings.HasSuffix(entry.Name(), ".json") {
+			t.Fatalf("memory root should not contain top-level JSON files, found %q", entry.Name())
+		}
+	}
 }
 
 func TestFormatSessionSummaryWithWindowKeepsMaxChunks(t *testing.T) {
