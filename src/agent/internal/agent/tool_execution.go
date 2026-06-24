@@ -24,11 +24,12 @@ type ToolCall struct {
 type ToolResult struct {
 	Output    string
 	Summary   string
-	IsError   bool
-	Error     error
+	Error     *ToolError
 	Terminate bool
 	Duration  time.Duration
 }
+
+func (r ToolResult) IsError() bool { return r.Error != nil }
 
 type ToolCallExecution struct {
 	Specs                  *ToolSpecs
@@ -124,12 +125,12 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 	}
 
 	if err := spec.ValidateInput(input); err != nil {
+		msg := fmt.Sprintf("error: %s failed: %v", spec.Name, err)
 		result := ToolResult{
-			Output:  fmt.Sprintf("error: %s failed: %v", spec.Name, err),
-			IsError: true,
-			Error:   err,
+			Output:   msg,
+			Error:    NewToolError(CodeToolExecutionFailed, msg),
+			Duration: time.Since(call.StartedAt),
 		}
-		result.Duration = time.Since(call.StartedAt)
 		result = runAfterToolCallHook(ctx, execution, call, result)
 		emitToolResult(ctx, execution.Callback, call, result)
 		return resultForToolCall(call, result, nil)
@@ -147,9 +148,18 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 	if execution.EnvironmentBridge != nil && shouldForwardToEnvironmentBridge(spec.Name, execution.EnvironmentBridgeTools) {
 		output, remoteIsError, err := execution.EnvironmentBridge.CallTool(ctx, spec.Name, input)
 		if err != nil {
+			var toolErr *ToolError
+			if errors.Is(err, context.Canceled) {
+				toolErr = NewToolError(CodeCanceled, err.Error())
+			} else if errors.Is(err, context.DeadlineExceeded) {
+				toolErr = NewToolError(CodeDeadlineExceeded, err.Error())
+			} else {
+				msg := fmt.Sprintf("error: %s failed: %v", spec.Name, err)
+				toolErr = NewToolError(CodeEnvironmentBridgeTransport, msg)
+			}
 			result := ToolResult{
-				Error:    err,
-				IsError:  true,
+				Output:   toolErr.Message,
+				Error:    toolErr,
 				Duration: time.Since(call.StartedAt),
 			}
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -157,14 +167,17 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 				emitToolResult(ctx, execution.Callback, call, result)
 				return ToolCallExecutionResult{Call: call, Result: result, Error: err}
 			}
-			result.Output = fmt.Sprintf("error: %s failed: %v", spec.Name, err)
 			result = runAfterToolCallHook(ctx, execution, call, result)
 			emitToolResult(ctx, execution.Callback, call, result)
 			return resultForToolCall(call, result, nil)
 		}
+		var remoteErr *ToolError
+		if remoteIsError {
+			remoteErr = NewToolError(CodeToolExecutionFailed, output)
+		}
 		result := ToolResult{
 			Output:   output,
-			IsError:  remoteIsError,
+			Error:    remoteErr,
 			Duration: time.Since(call.StartedAt),
 		}
 		result = runAfterToolCallHook(ctx, execution, call, result)
@@ -173,10 +186,23 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 	}
 
 	output, err := spec.Tool.Call(ctx, input)
+	var toolErr *ToolError
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			toolErr = NewToolError(CodeCanceled, err.Error())
+		} else if errors.Is(err, context.DeadlineExceeded) {
+			toolErr = NewToolError(CodeDeadlineExceeded, err.Error())
+		} else {
+			msg := fmt.Sprintf("error: %s failed: %v", spec.Name, err)
+			toolErr = NewToolError(CodeToolExecutionFailed, msg)
+		}
+	} else if toolOutputLooksLikeError(output) {
+		// Preserve existing string-sniffing behavior (Task 5 will remove this).
+		toolErr = NewToolError(CodeToolExecutionFailed, output)
+	}
 	result := ToolResult{
 		Output:   output,
-		IsError:  err != nil || toolOutputLooksLikeError(output),
-		Error:    err,
+		Error:    toolErr,
 		Duration: time.Since(call.StartedAt),
 	}
 	if err != nil {
@@ -185,7 +211,7 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 			emitToolResult(ctx, execution.Callback, call, result)
 			return ToolCallExecutionResult{Call: call, Result: result, Error: err}
 		}
-		result.Output = fmt.Sprintf("error: %s failed: %v", spec.Name, err)
+		result.Output = toolErr.Message
 	}
 
 	result = runAfterToolCallHook(ctx, execution, call, result)
@@ -210,11 +236,17 @@ func invalidToolResult(call ToolCall) ToolResult {
 	if toolName == "" {
 		toolName = strings.TrimSpace(call.Spec.Name)
 	}
-	output := fmt.Sprintf("%s is not a valid tool, try another one", toolName)
+	var msg string
 	if toolName == "" {
-		output = "requested tool is not a valid tool, try another one"
+		msg = "requested tool is not a valid tool, try another one"
+	} else {
+		msg = fmt.Sprintf("%s is not a valid tool, try another one", toolName)
 	}
-	return ToolResult{Output: output, IsError: true, Duration: time.Since(call.StartedAt)}
+	return ToolResult{
+		Output:   msg,
+		Error:    NewToolError(CodeToolNotFound, msg),
+		Duration: time.Since(call.StartedAt),
+	}
 }
 
 func runBeforeToolCallHook(ctx context.Context, execution ToolCallExecution, call ToolCall) (bool, ToolResult) {
@@ -249,21 +281,24 @@ func normalizeRejectedToolResult(toolName string, result ToolResult) ToolResult 
 	result = normalizeToolResult(result)
 	if strings.TrimSpace(result.Output) == "" {
 		if result.Error != nil {
-			result.Output = "error: " + result.Error.Error()
+			result.Output = "error: " + result.Error.Message
 		} else {
 			result.Output = fmt.Sprintf("error: %s call rejected", toolName)
 		}
 	}
-	result.IsError = true
+	if result.Error == nil {
+		result.Error = NewToolError(CodeToolExecutionFailed, result.Output)
+	}
 	return result
 }
 
 func normalizeToolResult(result ToolResult) ToolResult {
 	if result.Output == "" && result.Error != nil {
-		result.Output = "error: " + result.Error.Error()
+		result.Output = "error: " + result.Error.Message
 	}
-	if toolOutputLooksLikeError(result.Output) {
-		result.IsError = true
+	if result.Error == nil && toolOutputLooksLikeError(result.Output) {
+		// Preserve existing string-sniffing behavior (Task 5 will remove this).
+		result.Error = NewToolError(CodeToolExecutionFailed, result.Output)
 	}
 	return result
 }
@@ -306,14 +341,14 @@ func emitToolResult(ctx context.Context, handler callbacks.Handler, call ToolCal
 	}
 	output := result.EventOutput()
 	if named, ok := handler.(namedToolCallbackHandler); ok {
-		if result.IsError && result.Error != nil {
+		if result.IsError() && result.Error != nil {
 			named.HandleNamedToolError(ctx, call.Spec.Name, call.Input, result.Error)
 			return
 		}
 		named.HandleNamedToolEnd(ctx, call.Spec.Name, call.Input, output)
 		return
 	}
-	if result.IsError && result.Error != nil {
+	if result.IsError() && result.Error != nil {
 		handler.HandleToolError(ctx, result.Error)
 		return
 	}

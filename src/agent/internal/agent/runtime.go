@@ -1486,7 +1486,7 @@ func (h *runtimeCallbackHandler) AfterToolCall(ctx context.Context, call ToolCal
 func (h *runtimeCallbackHandler) HandleToolCallResult(ctx context.Context, call ToolCall, result ToolResult) {
 	output := result.EventOutput()
 	if h.logger != nil {
-		if result.IsError {
+		if result.IsError() {
 			h.logger.Error("Tool result: name=%s output=%s", call.Spec.Name, truncateForLog(output, 240))
 		} else {
 			h.logger.Info("Tool result: name=%s output=%s", call.Spec.Name, truncateForLog(output, 240))
@@ -1500,7 +1500,7 @@ func (h *runtimeCallbackHandler) HandleToolCallResult(ctx context.Context, call 
 		ToolInput:  call.Input,
 		Content:    output,
 		Timestamp:  time.Now(),
-		IsError:    result.IsError,
+		IsError:    result.IsError(),
 	})
 }
 

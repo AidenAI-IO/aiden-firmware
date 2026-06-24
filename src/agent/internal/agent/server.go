@@ -1852,7 +1852,7 @@ func (s *Server) handleScreen(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, execution.Error.Error(), http.StatusInternalServerError)
 		return
 	}
-	if execution.Result.IsError {
+	if execution.Result.IsError() {
 		http.Error(w, execution.Result.Output, http.StatusInternalServerError)
 		return
 	}
@@ -2294,23 +2294,27 @@ func (s *Server) handleToolInvoke(w http.ResponseWriter, r *http.Request) {
 		Action: schema.AgentAction{Tool: spec.Name, ToolInput: rawInput},
 	})
 	duration := time.Since(startedAt).Milliseconds()
-	callErr := execution.Result.Error
+	isError := execution.Result.IsError() || execution.Error != nil
+	var errStr string
+	if execution.Result.Error != nil {
+		errStr = execution.Result.Error.Message
+	}
 	if execution.Error != nil {
-		callErr = execution.Error
+		errStr = execution.Error.Error()
 	}
 
 	response := ToolInvokeResponse{
 		Tool:       spec.Descriptor(),
 		RawInput:   execution.Call.Input,
 		Output:     execution.Result.Output,
-		IsError:    execution.Result.IsError || execution.Error != nil,
+		IsError:    isError,
 		DurationMs: duration,
 		CalledAt:   startedAt,
 	}
-	if callErr != nil {
-		response.Error = callErr.Error()
+	if errStr != "" {
+		response.Error = errStr
 		if response.Output == "" {
-			response.Output = callErr.Error()
+			response.Output = errStr
 		}
 	}
 

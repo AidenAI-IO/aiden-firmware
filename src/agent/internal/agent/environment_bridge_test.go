@@ -79,8 +79,8 @@ func TestEnvironmentBridgeMatchesLocalSuccess(t *testing.T) {
 	if bridged.Output != local.Output {
 		t.Fatalf("output mismatch: bridge=%q local=%q", bridged.Output, local.Output)
 	}
-	if bridged.IsError != local.IsError {
-		t.Fatalf("is_error mismatch: bridge=%v local=%v", bridged.IsError, local.IsError)
+	if bridged.IsError() != local.IsError() {
+		t.Fatalf("is_error mismatch: bridge=%v local=%v", bridged.IsError(), local.IsError())
 	}
 }
 
@@ -100,8 +100,8 @@ func TestEnvironmentBridgeMatchesLocalToolError(t *testing.T) {
 	if bridged.Output != local.Output {
 		t.Fatalf("error output mismatch:\n bridge=%q\n local=%q", bridged.Output, local.Output)
 	}
-	if !bridged.IsError || !local.IsError {
-		t.Fatalf("expected both to be errors: bridge=%v local=%v", bridged.IsError, local.IsError)
+	if !bridged.IsError() || !local.IsError() {
+		t.Fatalf("expected both to be errors: bridge=%v local=%v", bridged.IsError(), local.IsError())
 	}
 }
 
@@ -120,8 +120,8 @@ func TestEnvironmentBridgeMatchesLocalErrorLikeOutput(t *testing.T) {
 	if bridged.Output != local.Output {
 		t.Fatalf("output mismatch: bridge=%q local=%q", bridged.Output, local.Output)
 	}
-	if bridged.IsError != local.IsError {
-		t.Fatalf("is_error mismatch for error-like output: bridge=%v local=%v", bridged.IsError, local.IsError)
+	if bridged.IsError() != local.IsError() {
+		t.Fatalf("is_error mismatch for error-like output: bridge=%v local=%v", bridged.IsError(), local.IsError())
 	}
 }
 
@@ -129,7 +129,7 @@ func TestEnvironmentBridgeTransportFailureIsError(t *testing.T) {
 	// Point the bridge client at a dead endpoint; the call must surface as a tool error
 	// in the same "error: X failed" shape as a local failure.
 	bridged := runViaEnvironmentBridge(t, "http://127.0.0.1:1", "echo", "x")
-	if !bridged.IsError {
+	if !bridged.IsError() {
 		t.Fatal("expected transport failure to be marked as error")
 	}
 	if bridged.Output == "" {

@@ -146,7 +146,7 @@ func TestExecuteToolCallInvalidToolEmitsToolCallAndResult(t *testing.T) {
 		Callback: recorder,
 	})
 
-	if !result.Result.IsError {
+	if !result.Result.IsError() {
 		t.Fatalf("invalid tool should be an error result: %#v", result.Result)
 	}
 	if result.Call.Spec.Name != "missing" || result.Call.Input != "hello" {
@@ -155,7 +155,7 @@ func TestExecuteToolCallInvalidToolEmitsToolCallAndResult(t *testing.T) {
 	if len(recorder.events) != 2 || recorder.events[0] != "start" || recorder.events[1] != "result" {
 		t.Fatalf("callback lifecycle events = %#v, want start then result", recorder.events)
 	}
-	if len(recorder.results) != 1 || !recorder.results[0].IsError {
+	if len(recorder.results) != 1 || !recorder.results[0].IsError() {
 		t.Fatalf("expected one error result callback, got %#v", recorder.results)
 	}
 }
@@ -173,13 +173,13 @@ func TestExecuteToolCallValidationFailureEmitsToolCallAndResult(t *testing.T) {
 		Callback: recorder,
 	})
 
-	if !result.Result.IsError {
+	if !result.Result.IsError() {
 		t.Fatalf("invalid JSON should be an error result: %#v", result.Result)
 	}
 	if len(recorder.calls) != 1 || recorder.calls[0].Input != "not-json" {
 		t.Fatalf("expected one tool_call before validation failure, got %#v", recorder.calls)
 	}
-	if len(recorder.results) != 1 || !recorder.results[0].IsError {
+	if len(recorder.results) != 1 || !recorder.results[0].IsError() {
 		t.Fatalf("expected one error result callback, got %#v", recorder.results)
 	}
 	if len(recorder.events) != 2 || recorder.events[0] != "start" || recorder.events[1] != "result" {
@@ -203,9 +203,8 @@ func TestExecuteToolCallBeforeMayRejectWithToolResult(t *testing.T) {
 		},
 		Before: func(ctx context.Context, call ToolCall) (ToolResult, bool) {
 			return ToolResult{
-				Output:  "blocked by policy",
-				IsError: true,
-				Error:   errors.New("blocked by policy"),
+				Output: "blocked by policy",
+				Error:  NewToolError(CodeToolExecutionFailed, "blocked by policy"),
 			}, false
 		},
 		Callback: recorder,
@@ -214,7 +213,7 @@ func TestExecuteToolCallBeforeMayRejectWithToolResult(t *testing.T) {
 	if len(tool.inputs) != 0 {
 		t.Fatalf("tool should not have been called, inputs=%#v", tool.inputs)
 	}
-	if !result.Result.IsError || result.Result.Output != "blocked by policy" {
+	if !result.Result.IsError() || result.Result.Output != "blocked by policy" {
 		t.Fatalf("unexpected rejection result: %#v", result.Result)
 	}
 	if result.Step.Observation != "blocked by policy" {
@@ -240,7 +239,7 @@ func TestExecuteToolCallWrapsToolErrorsAndContinues(t *testing.T) {
 	if result.Error != nil {
 		t.Fatalf("tool failure should be returned as tool result, got execution error: %v", result.Error)
 	}
-	if !result.Result.IsError {
+	if !result.Result.IsError() {
 		t.Fatalf("result should be marked as error: %#v", result.Result)
 	}
 	if result.Step.Observation != "error: echo failed: boom" {
@@ -267,14 +266,21 @@ func TestExecuteToolCallPropagatesContextErrors(t *testing.T) {
 			if !errors.Is(result.Error, err) {
 				t.Fatalf("execution error = %v, want %v", result.Error, err)
 			}
-			if !errors.Is(result.Result.Error, err) {
-				t.Fatalf("result error = %v, want %v", result.Result.Error, err)
+			if result.Result.Error == nil {
+				t.Fatalf("result.Error is nil, want structured error for %v", err)
+			}
+			wantCode := CodeCanceled
+			if errors.Is(err, context.DeadlineExceeded) {
+				wantCode = CodeDeadlineExceeded
+			}
+			if result.Result.Error.Code != wantCode {
+				t.Fatalf("result error code = %q, want %q", result.Result.Error.Code, wantCode)
 			}
 			if len(recorder.events) != 2 || recorder.events[0] != "start" || recorder.events[1] != "result" {
 				t.Fatalf("callback lifecycle events = %#v, want start then result", recorder.events)
 			}
-			if len(recorder.results) != 1 || !errors.Is(recorder.results[0].Error, err) {
-				t.Fatalf("terminal result callback = %#v, want error %v", recorder.results, err)
+			if len(recorder.results) != 1 || recorder.results[0].Error == nil || recorder.results[0].Error.Code != wantCode {
+				t.Fatalf("terminal result callback = %#v, want error code %v", recorder.results, wantCode)
 			}
 		})
 	}
@@ -313,5 +319,29 @@ func TestDefaultAfterToolCallSummarizesScreenshotAndMarksTerminate(t *testing.T)
 	}
 	if result.Step.Observation != result.Result.Output {
 		t.Fatalf("step observation should preserve raw output")
+	}
+}
+
+func TestToolResultErrorIsStructured(t *testing.T) {
+	ok := ToolResult{Output: "done", Summary: "ok"}
+	if ok.IsError() {
+		t.Errorf("success result reported IsError")
+	}
+	if ok.Error != nil {
+		t.Errorf("success result has non-nil Error: %+v", ok.Error)
+	}
+
+	err := ToolResult{
+		Output: "WeChat is not installed",
+		Error:  NewToolError(CodeAppNotInstalled, "WeChat is not installed"),
+	}
+	if !err.IsError() {
+		t.Errorf("failure result did not report IsError")
+	}
+	if err.Error.Code != CodeAppNotInstalled {
+		t.Errorf("Error.Code = %q", err.Error.Code)
+	}
+	if err.Output != err.Error.Message {
+		t.Errorf("Output must equal Error.Message on failure; got %q vs %q", err.Output, err.Error.Message)
 	}
 }

@@ -813,7 +813,7 @@ func (e *roleCollaborativeExecutor) executePlannerToolAction(
 		e.Recorder.RecordPlannerExecution(execution)
 	}
 	kind := plannerTurnTool
-	if isRunPausingTool(toolExecution.Step.Action.Tool) && !toolExecution.Result.IsError {
+	if isRunPausingTool(toolExecution.Step.Action.Tool) && !toolExecution.Result.IsError() {
 		kind = plannerTurnSleep
 	}
 	return plannerTurnResult{Kind: kind, Step: &toolExecution.Step}, nil
@@ -1116,7 +1116,7 @@ func (e *roleCollaborativeExecutor) callExecutorTurn(
 	}
 	actionCopy := toolExecution.Step.Action
 	kind := executorTurnTool
-	if isRunPausingTool(toolExecution.Step.Action.Tool) && !toolExecution.Result.IsError {
+	if isRunPausingTool(toolExecution.Step.Action.Tool) && !toolExecution.Result.IsError() {
 		kind = executorTurnSleep
 	}
 	return executorTurnResult{
