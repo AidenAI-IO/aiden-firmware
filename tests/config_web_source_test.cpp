@@ -996,14 +996,32 @@ TEST_CASE("config web shows saved wifi modal and connects automatically") {
 
     CHECK(html.find("if(savedNet){connectSavedWifi(name);}") != std::string::npos);
     CHECK(html.find("function connectSavedWifi(ssid)") != std::string::npos);
-    CHECK(html.find("openWifiModal(ssid);if(!saved)return;") != std::string::npos);
+    CHECK(html.find("openWifiModal(ssid,false);if(!saved)return;") != std::string::npos);
     CHECK(html.find("setTimeout(function(){connectWifi(ssid,saved.psk||'');},0);") !=
           std::string::npos);
+    CHECK(html.find("if(focusPassword!==false){byId('wifiPasswordInput').focus();}") !=
+          std::string::npos);
+    CHECK(html.find("btn.disabled=true;btn.textContent='连接中';") != std::string::npos);
+    CHECK(html.find("btn.disabled=false;btn.textContent='连接';") != std::string::npos);
     CHECK(html.find("const connected=!!payload.ok&&connectedWifiSsid()===ssid;") !=
           std::string::npos);
     CHECK(html.find("if(connected){closeWifiModal();") != std::string::npos);
     CHECK(html.find("连接 “'+ssid+'” 失败，请检查密码后重试。") != std::string::npos);
     CHECK(html.find("renderWifiList();closeWifiModal();") == std::string::npos);
+}
+
+TEST_CASE("config web does not show a star for disconnected saved wifi") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find("state='✓';") != std::string::npos);
+    CHECK(html.find("state='★';") == std::string::npos);
+    CHECK(html.find("forget.textContent='忘记';") != std::string::npos);
 }
 
 TEST_CASE("config web tolerates metadata sections without rendered controls") {
