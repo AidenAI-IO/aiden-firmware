@@ -12,6 +12,7 @@ import (
 
 type textInputHardwareDeps struct {
 	mouseClick   langtools.Tool
+	touchGesture langtools.Tool
 	keyboardTap  langtools.Tool
 	keyboardText langtools.Tool
 	quickAction  langtools.Tool

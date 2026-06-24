@@ -272,6 +272,7 @@ var knownToolNames = map[string]struct{}{
 	"keyboard_tap":          {},
 	"keyboard_text":         {},
 	"enter_text_in_field":   {},
+	"enter_text_via_bridge": {},
 	"mouse_click":           {},
 	"mouse_move":            {},
 	"mouse_scroll":          {},

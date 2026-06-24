@@ -98,6 +98,11 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"text":"你好","platform":"android","focus":{"x":450,"y":105,"coord_space":"normalized"},"segments":["ni","hao"]}`,
 	},
+	"enter_text_via_bridge": {
+		Category:     "input",
+		InputMode:    toolInputModeJSON,
+		ExampleInput: `{"text":"hello world","platform":"android","focus":{"x":450,"y":105,"coord_space":"normalized"}}`,
+	},
 	"mouse_click": {
 		Category:     "input",
 		InputMode:    toolInputModeJSON,
