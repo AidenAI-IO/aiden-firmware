@@ -3747,10 +3747,12 @@ func TestRuntimePersistsMemoryUnderConfigDir(t *testing.T) {
 		t.Fatalf("expected 2 memory entries after first run, got %d", len(firstResult.Memory))
 	}
 
-	memoryPath := filepath.Join(configDir, "memory", "default.json")
-	if _, err := os.Stat(memoryPath); err != nil {
-		t.Fatalf("expected persisted memory file at %s: %v", memoryPath, err)
+	memoryDir := filepath.Join(configDir, "memory")
+	eventsPath := filepath.Join(memoryDir, "session", "events.jsonl")
+	if _, err := os.Stat(eventsPath); err != nil {
+		t.Fatalf("expected persisted session events at %s: %v", eventsPath, err)
 	}
+	assertNoTopLevelJSONFiles(t, memoryDir)
 
 	secondRuntime, err := NewRuntime(Config{
 		ConfigDir:     configDir,
@@ -4947,7 +4949,7 @@ func TestRuntimeRunIncludesUserAttachments(t *testing.T) {
 	}
 }
 
-func TestRuntimeClearMemoryRemovesPersistedFile(t *testing.T) {
+func TestRuntimeClearMemoryRemovesPersistedSession(t *testing.T) {
 	configDir := t.TempDir()
 	runtime, err := NewRuntime(Config{
 		ConfigDir:     configDir,
@@ -4969,16 +4971,25 @@ func TestRuntimeClearMemoryRemovesPersistedFile(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 
-	memoryPath := filepath.Join(configDir, "memory", "default.json")
-	if _, err := os.Stat(memoryPath); err != nil {
-		t.Fatalf("expected persisted memory file at %s: %v", memoryPath, err)
+	memoryDir := filepath.Join(configDir, "memory")
+	eventsPath := filepath.Join(memoryDir, "session", "events.jsonl")
+	if _, err := os.Stat(eventsPath); err != nil {
+		t.Fatalf("expected persisted session events at %s: %v", eventsPath, err)
+	}
+	assertNoTopLevelJSONFiles(t, memoryDir)
+	legacyPath := legacyMemorySnapshotPath(memoryDir, "default")
+	if err := os.WriteFile(legacyPath, []byte("[]\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile legacy snapshot: %v", err)
 	}
 
 	if err := runtime.ClearMemory(context.Background()); err != nil {
 		t.Fatalf("ClearMemory() error = %v", err)
 	}
 
-	if _, err := os.Stat(memoryPath); !os.IsNotExist(err) {
-		t.Fatalf("expected memory file to be removed, stat err = %v", err)
+	if _, err := os.Stat(eventsPath); !os.IsNotExist(err) {
+		t.Fatalf("expected session events to be removed, stat err = %v", err)
+	}
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("expected legacy snapshot to be removed, stat err = %v", err)
 	}
 }
