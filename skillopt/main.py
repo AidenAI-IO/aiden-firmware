@@ -25,8 +25,8 @@ from urllib.parse import quote
 
 from runner.judge import JudgeConfig
 from runner.suite import load_suite
+from skillopt.benchmark_backend import BenchmarkRunnerBackend, DEFAULT_DAEMON_IMAGE
 from skillopt.backends import AidenDeviceBackend, SkillOptRolloutBackend
-from skillopt.mobilegym_backend import MobileGymBackend
 from skillopt.optimizer_client import OptimizerConfig
 from skillopt.orchestrator import optimize_skill, OptimizationConfig
 from skillopt.types import OptimizationResult
@@ -102,16 +102,33 @@ def _resolve_suite_path(suite_name: str) -> Path:
 
 
 def _build_rollout_backend(args: argparse.Namespace, skill_path: Path) -> SkillOptRolloutBackend:
+    if args.environment_url:
+        return BenchmarkRunnerBackend(
+            benchmark_root=REPO_ROOT / "benchmark",
+            base_config_dir=Path(args.base_config_dir),
+            shared_skills_dir=skill_path.parent.parent,
+            environment_url=args.environment_url,
+            backend=args.backend,
+            daemon_image=args.daemon_image,
+            build_daemon_image=not args.no_build_daemon_image,
+            agent_config_path=Path(args.agent_config) if args.agent_config else None,
+        )
     if args.backend == "device":
         return AidenDeviceBackend(agent_url=args.agent_url)
-    return MobileGymBackend(
-        benchmark_root=REPO_ROOT / "benchmark",
-        shared_skills_dir=skill_path.parent.parent,
-        parallel=args.mobilegym_parallel,
-    )
+    raise ValueError("mobilegym backend requires environment_url")
+
+
+def webui_cli(argv: list[str] | None = None) -> int:
+    from skillopt.webui import cli as _webui_cli
+
+    return _webui_cli(argv)
 
 
 def cli(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "webui":
+        return webui_cli(argv[1:])
+
     parser = argparse.ArgumentParser(
         prog="python -m skillopt",
         description="SkillOpt: optimize an Aiden skill through rollout reflection.",
@@ -121,7 +138,7 @@ def cli(argv: list[str] | None = None) -> int:
         "--backend",
         choices=["device", "mobilegym"],
         default="device",
-        help="Rollout backend: device uses the current Aiden daemon; mobilegym is not available in the standalone SkillOpt CLI yet.",
+        help="Rollout backend: device uses the current Aiden daemon unless --environment-url is set; mobilegym requires --environment-url and reuses benchmark runner workers.",
     )
     parser.add_argument("--suite", help="Suite name to split 70/30 (e.g. phone_control_v1)")
     parser.add_argument("--train-suite", help="Explicit train suite name (e.g. skillopt/device-operator/device_operator_train)")
@@ -156,6 +173,15 @@ def cli(argv: list[str] | None = None) -> int:
         help="Agent base URL",
     )
     parser.add_argument(
+        "--environment-url",
+        default=os.environ.get("AIDEN_ENVIRONMENT_URL", ""),
+        help="Bridge endpoint for benchmark-runner-backed device/mobilegym rollouts",
+    )
+    parser.add_argument("--daemon-image", default=os.environ.get("AIDEN_DAEMON_IMAGE", DEFAULT_DAEMON_IMAGE))
+    parser.add_argument("--no-build-daemon-image", action="store_true")
+    parser.add_argument("--base-config-dir", default=str(REPO_ROOT / "benchmark" / "config"))
+    parser.add_argument("--agent-config", default="", help="Optional agent.toml to pass to benchmark runner workers")
+    parser.add_argument(
         "--output",
         help="Write best skill to this path (default: overwrite original)",
     )
@@ -175,8 +201,9 @@ def cli(argv: list[str] | None = None) -> int:
     )
 
     args = parser.parse_args(argv)
-    if args.backend == "mobilegym":
-        parser.error("mobilegym backend is not available in the standalone SkillOpt CLI; use benchmark WebUI/CLI flows instead")
+    if args.backend == "mobilegym" and not str(args.environment_url or "").strip():
+        print("Error: --backend mobilegym requires --environment-url", file=sys.stderr)
+        return 2
     if args.suite and (args.train_suite or args.selection_suite):
         parser.error("--suite cannot be combined with --train-suite/--selection-suite")
     if bool(args.train_suite) != bool(args.selection_suite):
@@ -321,7 +348,7 @@ def cli(argv: list[str] | None = None) -> int:
             backend=args.backend,
         )
 
-    return 0 if result.best_score > result.initial_score else 1
+    return 0
 
 
 def _skill_diff(original: str, best: str, fromfile: str, tofile: str) -> str:
@@ -354,7 +381,7 @@ def _write_web_artifacts(
     run_dir = cfg.artifact_root / cfg.run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     score_summary = _score_summary(result)
-    linked_reports = _linked_reports(cfg.run_id, result, backend)
+    linked_reports = _linked_reports(cfg, result, backend)
     raw_score_summary = _raw_score_summary(cfg, result, backend)
     best_verification = score_summary.get("best_verification") or {}
     validation_total = int(best_verification.get("n") or len(cfg.selection_tasks))
@@ -411,24 +438,45 @@ def _score_summary(result: OptimizationResult) -> dict:
     }
 
 
-def _linked_reports(run_id: str, result: OptimizationResult, backend: str) -> dict[str, str]:
-    if backend != "mobilegym":
-        return {}
-    return {
-        summary.phase: f"/benchmark/report/{run_id}-{summary.phase}"
-        for summary in result.phase_summaries
-    }
+def _linked_reports(cfg: OptimizationConfig, result: OptimizationResult, backend: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    run_dir = cfg.artifact_root / cfg.run_id
+    for summary in result.phase_summaries:
+        child_run_id = f"{cfg.run_id}-{summary.phase}"
+        report = run_dir / "benchmark" / child_run_id / "report.html"
+        if report.exists():
+            out[summary.phase] = f"benchmark/{child_run_id}/report.html"
+        elif backend == "mobilegym":
+            out[summary.phase] = f"/benchmark/report/{child_run_id}"
+    return out
 
 
 def _raw_score_summary(cfg: OptimizationConfig, result: OptimizationResult, backend: str) -> dict[str, dict]:
-    if backend != "mobilegym":
-        return {}
-    mobilegym_root = cfg.artifact_root.parent / "mobilegym"
     out: dict[str, dict] = {}
     for summary in result.phase_summaries:
-        path = mobilegym_root / f"{cfg.run_id}-{summary.phase}" / "summary.json"
+        child_run_id = f"{cfg.run_id}-{summary.phase}"
+        manifest_path = cfg.artifact_root / cfg.run_id / "benchmark" / child_run_id / "manifest.json"
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            manifest = None
+        if isinstance(manifest, dict) and isinstance(manifest.get("totals"), dict):
+            totals = manifest["totals"]
+            tasks = int(totals.get("tasks") or 0)
+            passed = int(totals.get("passed") or 0)
+            failed = int(totals.get("failed") or 0)
+            error = int(totals.get("skipped") or 0) + int(totals.get("judge_error") or 0) + int(totals.get("timeout") or 0)
+            row = {"passed": passed, "tasks": tasks, "failed": failed, "error": error}
+            if tasks:
+                row["pass_rate"] = passed / tasks
+            out[summary.phase] = row
+            continue
+
+        if backend != "mobilegym":
+            continue
+        legacy_path = cfg.artifact_root.parent / "mobilegym" / child_run_id / "summary.json"
+        try:
+            payload = json.loads(legacy_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
         if not isinstance(payload, dict):
