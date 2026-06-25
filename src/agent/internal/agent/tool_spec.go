@@ -222,6 +222,21 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"file":"demo.jsonl"}`,
 	},
+	"list_scripts": {
+		Category:     "demo",
+		InputMode:    toolInputModeJSON,
+		ExampleInput: `{}`,
+	},
+	"read_script": {
+		Category:     "demo",
+		InputMode:    toolInputModeJSON,
+		ExampleInput: `{"file":"demo.jsonl"}`,
+	},
+	"write_script": {
+		Category:     "demo",
+		InputMode:    toolInputModeJSON,
+		ExampleInput: `{"file":"demo.jsonl","content":"# 打开设置演示\n{\"type\":\"wait\",\"ms\":500}\n{\"type\":\"tts\",\"text\":\"正在打开设置\"}"}`,
+	},
 	"skill_manage": {
 		Category:     "skills",
 		InputMode:    toolInputModeJSON,

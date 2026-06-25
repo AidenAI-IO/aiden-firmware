@@ -108,7 +108,7 @@ func (t *RunScriptTool) Call(ctx context.Context, input string) (string, error) 
 		lineNo := result.LinesRead + 1
 		result.LinesRead = lineNo
 		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
+		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 		if len(result.Steps) >= maxRunScriptSteps {

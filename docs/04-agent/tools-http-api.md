@@ -74,9 +74,11 @@ Tool execution failures are also returned in JSON format. Check:
 | `wait_for_wakeup` | system | `{"reason":"user asked me to wait for wakeup"}` |
 | `keyboard_tap` | input | `{"keys":["ctrl","c"]}` |
 | `keyboard_text` | input | `{"text":"hello world"}` |
+| `list_scripts` | demo | `{}` |
 | `mouse_click` | input | `{"x":500,"y":500,"button":"left","coord_space":"normalized"}` |
 | `mouse_move` | input | `{"x":500,"y":500,"coord_space":"normalized"}` |
 | `mouse_scroll` | input | `{"delta":-3}` |
+| `read_script` | demo | `{"file":"demo.jsonl"}` |
 | `run_script` | demo | `{"file":"demo.jsonl"}` |
 | `screenshot` | observation | `{}` |
 | `shell` | system | `{"command":"pwd"}` |
@@ -85,6 +87,7 @@ Tool execution failures are also returned in JSON format. Check:
 | `skill_read` | skills | `{"name":"planner"}` |
 | `touch_gesture` | input | `{"type":"tap","point":{"x":500,"y":500}}` / `{"type":"back"}` / `{"type":"home"}` |
 | `weather` | system | `{"location":"Shanghai"}` |
+| `write_script` | demo | `{"file":"demo.jsonl","content":"# 演示\n{\"type\":\"wait\",\"ms\":500}"}` |
 
 `skill_manage` is an internal skill maintenance tool available to the runtime Agent but not exposed via the HTTP Tool API.
 
