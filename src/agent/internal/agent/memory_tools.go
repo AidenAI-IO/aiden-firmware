@@ -46,8 +46,9 @@ func (t *RecallSessionChunksTool) Description() string {
 		"How to recall:",
 		"  - PREFERRED: pass chunk_ids to retrieve specific chunks by ID (works for both active and archived chunks).",
 		"  - FALLBACK: pass tags (content/topic keywords like 'payment', 'login') to search all chunks. Use empty tags [] for recent history.",
-		"  - Set include_archived=true when the user references prior conversations (e.g. 'yesterday', 'last time', 'earlier today').",
-		"  - archived_time_range controls how far back to search archived sessions: 'last_24h' (default), 'last_7d', or 'all'.",
+		"  - Set include_archived=true when the user references prior conversations. Trigger words include any English or non-English equivalents of: 'yesterday', 'last time', 'earlier today', 'before', 'previously', 'recently', 'the other day', 'just now', 'a moment ago'.",
+		"  - RETRY RULE: If you search the current session (include_archived=false) and find no matching chunks, you MUST immediately retry with include_archived=true before telling the user you cannot find it. Sessions rotate after ~30 minutes of inactivity, so 'just now' references may already be in an archived session.",
+		"  - archived_time_range controls how far back to search archived sessions: 'last_24h' (default), 'last_7d', or 'all'. Start with last_24h; widen only if the user references older content.",
 		`Input JSON: {"chunk_ids":["chunk_xxx"]} or {"tags":["topic"],"limit":3,"include_archived":true,"archived_time_range":"last_24h"}`,
 		"Returns JSON with matching conversation chunks (each tagged with source=active|archived and session_id when archived) and their full original events.",
 	}, " ")

@@ -156,6 +156,13 @@ func TestRecallToolDescriptionsGuideAgentUsage(t *testing.T) {
 		"chunk_ids",
 		"PREFERRED",
 		"FALLBACK",
+		"include_archived",
+		"RETRY RULE",
+		"yesterday",
+		"last time",
+		"previously",
+		"archived_time_range",
+		"last_24h",
 	} {
 		if !strings.Contains(sessionDescription, want) {
 			t.Fatalf("recall_session_chunks description missing %q:\n%s", want, sessionDescription)
