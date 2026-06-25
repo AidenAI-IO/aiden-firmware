@@ -170,7 +170,8 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 		return resultForToolCall(call, result, nil)
 	}
 
-	output, err := spec.Tool.Call(ctx, input)
+	ctx2, _ := WithToolError(ctx)
+	output, err := spec.Tool.Call(ctx2, input)
 	var toolErr *ToolError
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -181,9 +182,11 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 			msg := fmt.Sprintf("error: %s failed: %v", spec.Name, err)
 			toolErr = NewToolError(CodeToolExecutionFailed, msg)
 		}
-	} else if toolOutputLooksLikeError(output) {
-		// Preserve existing string-sniffing behavior (Task 5 will remove this).
-		toolErr = NewToolError(CodeToolExecutionFailed, output)
+	} else if attached := ToolErrorFromContext(ctx2); attached != nil {
+		// Tool surfaced a structured error via SetToolError. Adopt it directly
+		// so the LLM-facing Output (already equal to attached.Message) and the
+		// downstream Error stay aligned.
+		toolErr = attached
 	}
 	result := ToolResult{
 		Output:   output,
@@ -284,10 +287,6 @@ func normalizeRejectedToolResult(toolName string, result ToolResult) ToolResult 
 func normalizeToolResult(result ToolResult) ToolResult {
 	if result.Output == "" && result.Error != nil {
 		result.Output = result.Error.Message
-	}
-	if result.Error == nil && toolOutputLooksLikeError(result.Output) {
-		// Preserve existing string-sniffing behavior (Task 5 will remove this).
-		result.Error = NewToolError(CodeToolExecutionFailed, result.Output)
 	}
 	return result
 }

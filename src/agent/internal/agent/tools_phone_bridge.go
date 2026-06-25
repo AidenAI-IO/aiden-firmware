@@ -162,10 +162,10 @@ func isHTTPURL(value string) bool {
 	return strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://")
 }
 
-func applyOpenAppURL(args *openAppArgs, rawURL string) error {
+func applyOpenAppURL(args *openAppArgs, rawURL string) *ToolError {
 	targetURL := strings.TrimSpace(rawURL)
 	if !isHTTPURL(targetURL) {
-		return fmt.Errorf("url must start with http:// or https://")
+		return NewToolError(CodeInvalidArguments, "url must start with http:// or https://")
 	}
 	args.IOSURLs = []string{targetURL}
 	args.AndroidPackages = []string{"android.intent.action.VIEW:" + targetURL}
@@ -185,9 +185,9 @@ func isPhoneAppAlias(value string) bool {
 	}
 }
 
-func resolveOpenAppTargets(args *openAppArgs) error {
+func resolveOpenAppTargets(args *openAppArgs) *ToolError {
 	if args == nil {
-		return fmt.Errorf("missing open_app args")
+		return NewToolError(CodeInvalidArguments, "missing open_app args")
 	}
 	if strings.TrimSpace(args.App) == "" && strings.TrimSpace(args.Name) != "" {
 		args.App = args.Name
@@ -198,10 +198,10 @@ func resolveOpenAppTargets(args *openAppArgs) error {
 
 	if strings.TrimSpace(args.PhoneNumber) != "" {
 		if hasURL || hasExplicitTargets {
-			return fmt.Errorf("phone_number cannot be combined with url, ios_urls, or android_packages")
+			return NewToolError(CodeInvalidArguments, "phone_number cannot be combined with url, ios_urls, or android_packages")
 		}
 		if hasApp && !isPhoneAppAlias(args.App) {
-			return fmt.Errorf("phone_number can only be combined with app/name when the app is phone")
+			return NewToolError(CodeInvalidArguments, "phone_number can only be combined with app/name when the app is phone")
 		}
 		telURL := "tel:" + strings.TrimSpace(args.PhoneNumber)
 		args.IOSURLs = []string{telURL}
@@ -211,13 +211,13 @@ func resolveOpenAppTargets(args *openAppArgs) error {
 
 	if hasURL {
 		if hasApp || hasExplicitTargets {
-			return fmt.Errorf("url cannot be combined with app, name, ios_urls, or android_packages")
+			return NewToolError(CodeInvalidArguments, "url cannot be combined with app, name, ios_urls, or android_packages")
 		}
 		return applyOpenAppURL(args, args.URL)
 	}
 
 	if hasApp && hasExplicitTargets {
-		return fmt.Errorf("app/name cannot be combined with ios_urls or android_packages")
+		return NewToolError(CodeInvalidArguments, "app/name cannot be combined with ios_urls or android_packages")
 	}
 
 	if hasApp {
@@ -228,12 +228,14 @@ func resolveOpenAppTargets(args *openAppArgs) error {
 		} else if isHTTPURL(key) {
 			return applyOpenAppURL(args, args.App)
 		} else {
-			return fmt.Errorf("unknown app %q, please provide url, ios_urls, or android_packages explicitly", args.App)
+			return NewToolErrorWithDetails(CodeUnknownApp,
+				fmt.Sprintf("unknown app %q, please provide url, ios_urls, or android_packages explicitly", args.App),
+				map[string]any{"app": args.App})
 		}
 	}
 
 	if len(args.IOSURLs) == 0 && len(args.AndroidPackages) == 0 {
-		return fmt.Errorf("must provide app name, url, ios_urls, or android_packages")
+		return NewToolError(CodeInvalidArguments, "must provide app name, url, ios_urls, or android_packages")
 	}
 	return nil
 }
@@ -384,26 +386,28 @@ func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 	trimmed := strings.TrimSpace(input)
 	if strings.HasPrefix(trimmed, "{") {
 		if err := json.Unmarshal([]byte(trimmed), &args); err != nil {
-			return fmt.Sprintf("error: invalid input: %v. Expected JSON format: {\"app\": \"WeChat\"} or {\"ios_urls\": [\"url\"], \"android_packages\": [\"pkg\"]}. Common mistakes: missing quotes around field names and string values", err), nil
+			te := NewToolErrorWithDetails(CodeInvalidArguments,
+				fmt.Sprintf("invalid input: %v. Expected JSON like {\"app\": \"WeChat\"} or {\"ios_urls\": [...], \"android_packages\": [...]}", err),
+				map[string]any{"raw_input": trimmed})
+			SetToolError(ctx, te)
+			return toolErrorString(te), nil
 		}
 	} else {
 		args.App = trimmed
 	}
 
-	if err := resolveOpenAppTargets(&args); err != nil {
-		return jsonString(map[string]interface{}{
-			"ok":    false,
-			"error": err.Error(),
-		}), nil
+	if te := resolveOpenAppTargets(&args); te != nil {
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
 	}
 
 	restored, err := ensurePhoneBridgeReadyForCommand(ctx, t.bridge, t.restorer)
 	if err != nil {
-		return jsonString(map[string]interface{}{
-			"ok":       false,
-			"error":    err.Error(),
-			"fallback": "If a Dynamic Island entry is visible, tap it to reopen Aiden, wait for Phone Bridge to reconnect, then retry; otherwise use HID actions.",
-		}), nil
+		te := NewToolErrorWithDetails(CodeBridgeNotConnected,
+			fmt.Sprintf("%v. If a Dynamic Island entry is visible, tap it to reopen Aiden, wait for Phone Bridge to reconnect, then retry; otherwise use HID actions.", err),
+			map[string]any{"fallback": "tap Dynamic Island or use HID"})
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
 	}
 
 	cmdID := fmt.Sprintf("open_%d_%d", time.Now().UnixMilli(), openAppCmdSeq.Add(1))
@@ -421,15 +425,30 @@ func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 		if t.bridge != nil {
 			status = t.bridge.Status()
 		}
-		return jsonString(map[string]interface{}{
-			"ok":       false,
-			"error":    err.Error(),
-			"fallback": phoneBridgeRecoveryGuidance(status),
-		}), nil
+		te := NewToolErrorWithDetails(CodeToolExecutionFailed,
+			fmt.Sprintf("send command: %v", err),
+			map[string]any{"fallback": phoneBridgeRecoveryGuidance(status)})
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
+	}
+
+	if resp.Error != nil {
+		status := PhoneBridgeStatus{}
+		if t.bridge != nil {
+			status = t.bridge.Status()
+		}
+		// Preserve upstream Code/Category; attach app-side fallback hint.
+		te := resp.Error
+		if te.Details == nil {
+			te.Details = map[string]any{}
+		}
+		te.Details["fallback"] = phoneBridgeRecoveryGuidance(status)
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
 	}
 
 	result := map[string]interface{}{
-		"ok":     resp.Error == nil,
+		"ok":     true,
 		"method": openAppResultMethod(args),
 	}
 	if restored {
@@ -440,14 +459,6 @@ func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 	}
 	if mechanism := openAppResultMechanism(args, resp.Method); mechanism != "" {
 		result["mechanism"] = mechanism
-	}
-	if resp.Error != nil {
-		result["error"] = resp.Error.Message
-		status := PhoneBridgeStatus{}
-		if t.bridge != nil {
-			status = t.bridge.Status()
-		}
-		result["fallback"] = phoneBridgeRecoveryGuidance(status)
 	}
 	return jsonString(result), nil
 }

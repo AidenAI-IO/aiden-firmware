@@ -1,5 +1,7 @@
 package agent
 
+import "context"
+
 // Category enumerates the six fixed error categories used by the LLM and
 // downstream consumers to decide what to do about a failure. The set is
 // deliberately small — adding a 7th requires a spec amendment.
@@ -157,6 +159,52 @@ func NewToolErrorWithDetails(code, message string, details map[string]any) *Tool
 // Error makes ToolError implement the error interface so it can be returned
 // alongside Go's error idioms when convenient.
 func (e *ToolError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.Message
+}
+
+// toolErrorSlot is the heap-allocated container used by WithToolError to give
+// tools a way to attach a structured error to their call context. The slot
+// lives in the context but is mutated in place so the caller can read the
+// final value after the tool returns.
+type toolErrorSlot struct{ err *ToolError }
+
+type toolErrorCtxKey struct{}
+
+// WithToolError attaches an empty ToolError slot to ctx and returns the new
+// context plus a setter. Tools that want to surface a structured failure call
+// the setter; the executor reads it back via ToolErrorFromContext after the
+// tool returns. The setter is safe to call zero or one times.
+func WithToolError(ctx context.Context) (context.Context, func(*ToolError)) {
+	slot := &toolErrorSlot{}
+	ctx = context.WithValue(ctx, toolErrorCtxKey{}, slot)
+	return ctx, func(e *ToolError) { slot.err = e }
+}
+
+// ToolErrorFromContext returns the structured error a tool attached to ctx, or
+// nil if none was set (or no slot was installed).
+func ToolErrorFromContext(ctx context.Context) *ToolError {
+	if slot, ok := ctx.Value(toolErrorCtxKey{}).(*toolErrorSlot); ok {
+		return slot.err
+	}
+	return nil
+}
+
+// SetToolError stores e in the context's slot if one was installed by
+// WithToolError. Tools call this just before returning their LLM-facing string
+// so the executor can promote the structured error onto ToolResult.Error.
+func SetToolError(ctx context.Context, e *ToolError) {
+	if slot, ok := ctx.Value(toolErrorCtxKey{}).(*toolErrorSlot); ok {
+		slot.err = e
+	}
+}
+
+// toolErrorString is the LLM-facing string a tool should return alongside
+// SetToolError. By construction it equals e.Message, preserving the
+// Output == Error.Message invariant.
+func toolErrorString(e *ToolError) string {
 	if e == nil {
 		return ""
 	}

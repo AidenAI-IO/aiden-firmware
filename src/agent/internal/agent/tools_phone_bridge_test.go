@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -269,5 +270,40 @@ func TestOpenAppResultMetadataForAndroidIntent(t *testing.T) {
 	}
 	if got := openAppResultMechanism(args, ""); got != "android_intent" {
 		t.Fatalf("fallback mechanism = %q, want android_intent", got)
+	}
+}
+
+func TestOpenAppMissingArgsReturnsInvalidArguments(t *testing.T) {
+	tool := &OpenAppTool{}
+	ctx, _ := WithToolError(context.Background())
+	out, err := tool.Call(ctx, `{}`)
+	if err != nil {
+		t.Fatalf("Call returned err: %v", err)
+	}
+	te := ToolErrorFromContext(ctx)
+	if te == nil {
+		t.Fatalf("expected structured ToolError on context; got nil")
+	}
+	if te.Code != CodeInvalidArguments {
+		t.Errorf("Code = %q want %q", te.Code, CodeInvalidArguments)
+	}
+	if out != te.Message {
+		t.Errorf("Call output (%q) must equal Error.Message (%q)", out, te.Message)
+	}
+}
+
+func TestOpenAppUnknownAppReturnsUnknownApp(t *testing.T) {
+	tool := &OpenAppTool{}
+	ctx, _ := WithToolError(context.Background())
+	out, err := tool.Call(ctx, `{"app":"NoSuchApp12345"}`)
+	if err != nil {
+		t.Fatalf("Call returned err: %v", err)
+	}
+	te := ToolErrorFromContext(ctx)
+	if te == nil || te.Code != CodeUnknownApp {
+		t.Fatalf("expected unknown_app; got %+v", te)
+	}
+	if out != te.Message {
+		t.Errorf("Call output (%q) must equal Error.Message (%q)", out, te.Message)
 	}
 }
