@@ -92,6 +92,10 @@ func (t *RecallSessionChunksTool) Call(ctx context.Context, input string) (strin
 			archiveQuery := query
 			if query.Limit > 0 {
 				archiveQuery.Limit = remaining
+			} else {
+				// Apply the same default cap used by active recall (3) to
+				// prevent unbounded archived chunk scanning.
+				archiveQuery.Limit = 3
 			}
 			archived, err := t.archived.RecallChunks(ctx, archiveQuery)
 			if err == nil {

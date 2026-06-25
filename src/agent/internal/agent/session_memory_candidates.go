@@ -23,7 +23,7 @@ func extractMemoryCandidatesFromSession(ctx context.Context, sessionDir string, 
 		return 0, nil
 	}
 
-	seen := make(map[string]bool)
+	seen := make(map[string]*MemoryItem)
 	saved := 0
 
 	for _, entry := range index.Chunks {
@@ -32,10 +32,17 @@ func extractMemoryCandidatesFromSession(ctx context.Context, sessionDir string, 
 		}
 		for _, candidate := range entry.Structured.MemoryCandidates {
 			normalized := strings.TrimSpace(candidate)
-			if normalized == "" || seen[normalized] {
+			if normalized == "" {
 				continue
 			}
-			seen[normalized] = true
+
+			if existing, found := seen[normalized]; found {
+				// Merge tags, entities, and evidence from duplicate candidates
+				existing.Tags = mergeUnique(existing.Tags, entry.Tags)
+				existing.Entities = mergeUnique(existing.Entities, entry.Entities)
+				existing.EvidenceExcerpts = mergeUnique(existing.EvidenceExcerpts, []string{entry.Summary})
+				continue
+			}
 
 			item := MemoryItem{
 				Type:             "fact",
@@ -48,6 +55,7 @@ func extractMemoryCandidatesFromSession(ctx context.Context, sessionDir string, 
 				EvidenceExcerpts: []string{entry.Summary},
 				TimeScope:        "long_term",
 			}
+			seen[normalized] = &item
 
 			if saveFn != nil {
 				if err := saveFn(ctx, item); err != nil {
@@ -68,16 +76,32 @@ func extractMemoryCandidatesFromSession(ctx context.Context, sessionDir string, 
 }
 
 // truncateForMemoryTitle returns a short title derived from the content.
-// Long candidates are capped at 80 characters for readability in the index.
+// Long candidates are capped at 80 runes for readability in the index.
 func truncateForMemoryTitle(content string) string {
 	const maxLen = 80
-	if len(content) <= maxLen {
+	runes := []rune(content)
+	if len(runes) <= maxLen {
 		return content
 	}
 	// Find a word boundary near the cap rather than cutting mid-word.
-	truncated := content[:maxLen]
-	if idx := strings.LastIndexAny(truncated, " ,，。."); idx > maxLen/2 {
-		truncated = truncated[:idx]
+	truncated := string(runes[:maxLen])
+	if idx := strings.LastIndexAny(truncated, " ,，。."); idx > len([]rune(truncated))/2 {
+		truncated = string([]rune(truncated)[:idx])
 	}
 	return truncated + "..."
+}
+
+// mergeUnique appends items from b to a, skipping duplicates.
+func mergeUnique(a, b []string) []string {
+	seen := make(map[string]bool, len(a))
+	for _, item := range a {
+		seen[item] = true
+	}
+	for _, item := range b {
+		if !seen[item] {
+			a = append(a, item)
+			seen[item] = true
+		}
+	}
+	return a
 }

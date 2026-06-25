@@ -670,8 +670,22 @@ func (m *MemoryManager) RotateSessionEventsDetailed() (SessionRotationResult, er
 		longTermDir := filepath.Join(m.storageDir, "long_term")
 		if longTermStore := NewLongTermMemoryStore(longTermDir); longTermStore != nil {
 			saveFn := func(ctx context.Context, item MemoryItem) error {
-				_, err := longTermStore.AddMemory(ctx, item)
-				return err
+				// Use DecideAction to avoid duplicates when rotation is retried
+				action, existingID, err := longTermStore.DecideAction(ctx, item)
+				if err != nil {
+					return err
+				}
+				switch action {
+				case "ignore":
+					// Already exists, skip silently
+					return nil
+				case "supersede":
+					_, err = longTermStore.SupersedeMemory(ctx, existingID, item)
+					return err
+				default:
+					_, err = longTermStore.AddMemory(ctx, item)
+					return err
+				}
 			}
 			_, _ = extractMemoryCandidatesFromSession(context.Background(), sessionDir, m.logger, saveFn)
 		}

@@ -79,11 +79,13 @@ func (a *ArchivedSessionStore) RecallChunks(ctx context.Context, query ChunkReca
 	})
 
 	// When searching archived chunks, we want to find matches across all
-	// sessions, not just the first N from each. Push the per-session limit
-	// down only when query.Limit is set and small.
-	perSessionLimit := query.Limit
-	if perSessionLimit <= 0 {
-		perSessionLimit = 5
+	// sessions, not just the first N from each. Apply per-session limit only
+	// when query.Limit is explicitly set and small enough to warrant chunking.
+	// Otherwise, let each session return its default set so unbounded recalls
+	// aren't artificially capped at 5 per session.
+	perSessionLimit := 0
+	if query.Limit > 0 && query.Limit <= 10 {
+		perSessionLimit = query.Limit
 	}
 
 	var results []ChunkRecallResult
@@ -98,7 +100,9 @@ func (a *ArchivedSessionStore) RecallChunks(ctx context.Context, query ChunkReca
 		archiveQuery := query
 		archiveQuery.IncludeArchived = false // never recurse
 		archiveQuery.ArchivedTimeRange = ""  // not relevant per-session
-		archiveQuery.Limit = perSessionLimit
+		if perSessionLimit > 0 {
+			archiveQuery.Limit = perSessionLimit
+		}
 
 		hits, err := store.RecallChunks(ctx, archiveQuery)
 		if err != nil {
@@ -141,17 +145,31 @@ func archivedTimeRangeCutoff(rangeKey string, now time.Time) time.Time {
 
 // readArchivedSessionStartedAt extracts the session start time from
 // session.yaml metadata. Falls back to the directory mtime if metadata is
-// missing or unparseable, since archived sessions still have their original
-// timestamps preserved by the rotation rename.
+// missing or unparseable. For recently rotated sessions, use the newer of
+// CreatedAt and directory mtime, since mtime reflects the rotation timestamp
+// and is more representative of the session's latest activity.
 func readArchivedSessionStartedAt(sessionDir string) time.Time {
+	var metaTime time.Time
 	meta, err := readSessionMetadata(filepath.Join(sessionDir, sessionMetadataFileName))
 	if err == nil && strings.TrimSpace(meta.CreatedAt) != "" {
 		if t, err := time.Parse(time.RFC3339Nano, meta.CreatedAt); err == nil {
-			return t.UTC()
+			metaTime = t.UTC()
 		}
 	}
+	var modTime time.Time
 	if info, err := os.Stat(sessionDir); err == nil {
-		return info.ModTime().UTC()
+		modTime = info.ModTime().UTC()
 	}
-	return time.Time{}
+	// Return the newer of the two: this ensures recently rotated sessions are
+	// not excluded by the default last_24h recall.
+	if metaTime.IsZero() {
+		return modTime
+	}
+	if modTime.IsZero() {
+		return metaTime
+	}
+	if modTime.After(metaTime) {
+		return modTime
+	}
+	return metaTime
 }
