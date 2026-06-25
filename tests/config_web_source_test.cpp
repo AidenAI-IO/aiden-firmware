@@ -606,7 +606,7 @@ TEST_CASE("config web exposes audio archive switch") {
     CHECK(html.find("agent.input_mode = stt") != std::string::npos);
     CHECK(html.find("testSection('audio_archive')") == std::string::npos);
     CHECK(html.find("[audio_archive]") != std::string::npos);
-    CHECK(html.find("Save STT voice recording WAV") != std::string::npos);
+    CHECK(html.find("save STT voice recording WAV") != std::string::npos);
 }
 
 TEST_CASE("config web docs list token_env in model fields") {
@@ -764,7 +764,7 @@ TEST_CASE("config web exposes running firmware version and ota health status sep
 
     CHECK(html.find("fwHealth") != std::string::npos);
     CHECK(html.find("renderFirmwareInfo") != std::string::npos);
-    CHECK(html.find("OTA Status") != std::string::npos);
+    CHECK(html.find("OTA status") != std::string::npos);
     CHECK(html.find("health_error") != std::string::npos);
     CHECK(html.find("previous_version") != std::string::npos);
 }
@@ -1121,8 +1121,8 @@ TEST_CASE("config web uses board-side recording for STT tests") {
     CHECK(html.find("function stopSTTTest()") != std::string::npos);
     CHECK(html.find("'/api/config/test/stt/start'") != std::string::npos);
     CHECK(html.find("'/api/config/test/stt/stop'") != std::string::npos);
-    CHECK(html.find("Activate Microphone") != std::string::npos);
-    CHECK(html.find("Recognition Result") != std::string::npos);
+    CHECK(html.find("activate microphone") != std::string::npos);
+    CHECK(html.find("recognition result") != std::string::npos);
 
     CHECK(source.find("/api/config/test/stt/start") != std::string::npos);
     CHECK(source.find("/api/config/test/stt/stop") != std::string::npos);

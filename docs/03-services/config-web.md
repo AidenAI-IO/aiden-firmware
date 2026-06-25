@@ -22,7 +22,7 @@
 
 Connect the device to your computer via USB-C. The device establishes a USB network at `192.168.42.1`. Visit:
 
-```
+```text
 http://192.168.42.1
 ```
 
