@@ -52,9 +52,8 @@ for defconfig in \
     exit 1
   fi
 
-  if ! grep -q '^BR2_PACKAGE_ANDROID_TOOLS=y$' "$defconfig" || \
-     ! grep -q '^BR2_PACKAGE_ANDROID_TOOLS_ADB=y$' "$defconfig"; then
-    echo "$(basename "$defconfig") must include the android-tools adb client so the board can act as an ADB host" >&2
+  if ! grep -q '^BR2_PACKAGE_ANDROID_TOOLS_AIDEN=y$' "$defconfig"; then
+    echo "$(basename "$defconfig") must include the android-tools-aiden adb client (1.0.41) so the board can act as an ADB host" >&2
     exit 1
   fi
 
