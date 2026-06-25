@@ -281,20 +281,24 @@ func normalizeRejectedToolResult(toolName string, result ToolResult) ToolResult 
 	result = normalizeToolResult(result)
 	if strings.TrimSpace(result.Output) == "" {
 		if result.Error != nil {
-			result.Output = "error: " + result.Error.Message
+			result.Output = result.Error.Message
 		} else {
-			result.Output = fmt.Sprintf("error: %s call rejected", toolName)
+			result.Output = fmt.Sprintf("%s call rejected", toolName)
 		}
 	}
 	if result.Error == nil {
 		result.Error = NewToolError(CodeToolExecutionFailed, result.Output)
+	}
+	// Ensure Output == Error.Message invariant.
+	if result.Error != nil && result.Output != result.Error.Message {
+		result.Error.Message = result.Output
 	}
 	return result
 }
 
 func normalizeToolResult(result ToolResult) ToolResult {
 	if result.Output == "" && result.Error != nil {
-		result.Output = "error: " + result.Error.Message
+		result.Output = result.Error.Message
 	}
 	if result.Error == nil && toolOutputLooksLikeError(result.Output) {
 		// Preserve existing string-sniffing behavior (Task 5 will remove this).
@@ -341,14 +345,14 @@ func emitToolResult(ctx context.Context, handler callbacks.Handler, call ToolCal
 	}
 	output := result.EventOutput()
 	if named, ok := handler.(namedToolCallbackHandler); ok {
-		if result.IsError() && result.Error != nil {
+		if result.Error != nil {
 			named.HandleNamedToolError(ctx, call.Spec.Name, call.Input, result.Error)
 			return
 		}
 		named.HandleNamedToolEnd(ctx, call.Spec.Name, call.Input, output)
 		return
 	}
-	if result.IsError() && result.Error != nil {
+	if result.Error != nil {
 		handler.HandleToolError(ctx, result.Error)
 		return
 	}

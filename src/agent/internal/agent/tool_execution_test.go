@@ -322,6 +322,41 @@ func TestDefaultAfterToolCallSummarizesScreenshotAndMarksTerminate(t *testing.T)
 	}
 }
 
+func TestExecuteToolCallBeforeHookRejectWithEmptyOutputSatisfiesInvariant(t *testing.T) {
+	// Regression: normalizeRejectedToolResult called normalizeToolResult which back-filled
+	// Output with "error: " + Error.Message, breaking Output == Error.Message invariant.
+	tool := &stubTool{name: "echo", description: "Echo text.", output: "should-not-run"}
+	specs := NewToolSpecs([]langtools.Tool{tool})
+
+	result := executeToolCall(context.Background(), ToolCallExecution{
+		Specs: specs,
+		Action: schema.AgentAction{
+			Tool:      "echo",
+			ToolInput: "hello",
+		},
+		Before: func(ctx context.Context, call ToolCall) (ToolResult, bool) {
+			// Hook returns Error but leaves Output empty — the bug case.
+			return ToolResult{
+				Error: NewToolError(CodeToolExecutionFailed, "denied"),
+			}, false
+		},
+	})
+
+	if len(tool.inputs) != 0 {
+		t.Fatalf("tool should not have been called, inputs=%#v", tool.inputs)
+	}
+	if strings.TrimSpace(result.Result.Output) == "" {
+		t.Fatalf("Output must be non-empty so LLM sees a message; got empty string")
+	}
+	if result.Result.Error == nil {
+		t.Fatalf("Error must be set on a rejected result")
+	}
+	if result.Result.Output != result.Result.Error.Message {
+		t.Fatalf("Output == Error.Message invariant violated: Output=%q Error.Message=%q",
+			result.Result.Output, result.Result.Error.Message)
+	}
+}
+
 func TestToolResultErrorIsStructured(t *testing.T) {
 	ok := ToolResult{Output: "done", Summary: "ok"}
 	if ok.IsError() {
