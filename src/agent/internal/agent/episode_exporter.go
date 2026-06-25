@@ -608,6 +608,10 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 	}
 	if len(prompts) > 0 {
 		for index, call := range prompts {
+			if call.ID == "" {
+				call.ID = uuid.NewString()
+			}
+			call = e.uploadPromptMedia(ctx, traceID, call)
 			parentID := promptParentObservationID(call, iterations, phaseWindows)
 			usageEvent, err := newLangfuseEvent("generation-create", call.StartedAt, e.promptGenerationBody(episode, traceID, call, index, parentID))
 			if err != nil {
@@ -646,6 +650,48 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 	}
 	batch = append(batch, scoreEvent)
 	return batch, nil
+}
+
+func (e *EpisodeExporter) uploadPromptMedia(ctx context.Context, traceID string, call telemetryPromptCall) telemetryPromptCall {
+	for _, media := range call.Media {
+		replacement := "[media omitted: upload unavailable]"
+		uploadCtx, cancel, ok := langfuseScreenshotUploadContext(ctx, e.cfg.UploadTimeoutOrDefault())
+		if ok {
+			mediaID, err := e.client.uploadMedia(uploadCtx, traceID, call.ID, media.ContentType, media.Data, "input")
+			cancel()
+			if err != nil {
+				if e.logger != nil {
+					e.logger.Warn("[telemetry] prompt media upload failed (%s, %d bytes): %v", media.ContentType, len(media.Data), err)
+				}
+			} else if mediaID != "" {
+				replacement = langfuseMediaToken(media.ContentType, mediaID)
+			}
+		}
+		replaceTelemetryMediaPlaceholder(call.Input, media.Placeholder, replacement)
+	}
+	call.Media = nil
+	return call
+}
+
+func replaceTelemetryMediaPlaceholder(value interface{}, placeholder, replacement string) {
+	switch typed := value.(type) {
+	case []map[string]interface{}:
+		for _, item := range typed {
+			replaceTelemetryMediaPlaceholder(item, placeholder, replacement)
+		}
+	case []interface{}:
+		for _, item := range typed {
+			replaceTelemetryMediaPlaceholder(item, placeholder, replacement)
+		}
+	case map[string]interface{}:
+		for key, item := range typed {
+			if text, ok := item.(string); ok && text == placeholder {
+				typed[key] = replacement
+				continue
+			}
+			replaceTelemetryMediaPlaceholder(item, placeholder, replacement)
+		}
+	}
 }
 
 func (e *EpisodeExporter) promptGenerationBody(episode TaskEpisode, traceID string, call telemetryPromptCall, index int, parentObservationID string) map[string]interface{} {
