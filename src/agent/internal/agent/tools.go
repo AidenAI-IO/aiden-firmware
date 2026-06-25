@@ -67,6 +67,7 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	mouseClick := &MouseClickTool{pc: pointer, screen: screen}
 	textInputHW := &textInputHardwareDeps{
 		mouseClick:   mouseClick,
+		touchGesture: touchGesture,
 		keyboardTap:  keyboardTap,
 		keyboardText: keyboardText,
 		quickAction:  quickAction,
@@ -114,6 +115,8 @@ func (s *ToolSet) RegisterEnterTextInFieldTool(models ModelResolver, platformFn 
 	engine := newTextInputEngine(*s.textInputHW, newLLMTextInputVision(models))
 	tool := &EnterTextInFieldTool{engine: engine, platformFn: platformFn}
 	s.tools["enter_text_in_field"] = newPostActionScreenshotTool(tool, s.textInputHW.screenshot, 300*time.Millisecond)
+	bridgeTool := &EnterTextViaBridgeTool{hw: s.textInputHW, vision: newLLMTextInputVision(models), bridgeFn: func() *PhoneBridge { return s.phoneBridge }, platformFn: platformFn}
+	s.tools["enter_text_via_bridge"] = newPostActionScreenshotTool(bridgeTool, s.textInputHW.screenshot, 300*time.Millisecond)
 }
 
 func (s *ToolSet) Get(name string) (langtools.Tool, bool) {
@@ -154,10 +157,15 @@ func (s *ToolSet) Names() []string {
 }
 
 func (s *ToolSet) toolAvailable(name string) bool {
-	if !isPhoneBridgeToolName(name) {
-		return true
+	switch name {
+	case "open_app", "enter_text_via_bridge":
+		return s.phoneBridge != nil
+	default:
+		if !isPhoneBridgeToolName(name) {
+			return true
+		}
+		return s.phoneBridge != nil && s.phoneBridge.Connected()
 	}
-	return s.phoneBridge != nil
 }
 
 func (s *ToolSet) CurrentEnvironmentHints(maxAge time.Duration) CurrentEnvironmentHints {

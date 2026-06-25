@@ -740,22 +740,23 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		}
 	}
 
-	// Set platformFn for enter_text_in_field tool (bridge > config > LLM)
-	if textInputTool, ok := r.tools.Get("enter_text_in_field"); ok {
-		// The tool may be wrapped (e.g., postActionScreenshotTool), so we use
-		// an interface to check if it supports SetPlatformFn
-		type platformConfigurable interface {
-			SetPlatformFn(func() string)
+	// Set platformFn for text entry tools (bridge > config > LLM).
+	type platformConfigurable interface {
+		SetPlatformFn(func() string)
+	}
+	platformFn := func() string {
+		if deviceEnv != nil {
+			if p := strings.TrimSpace(deviceEnv.Platform); p != "" {
+				return p
+			}
 		}
-		if tool, ok := textInputTool.(platformConfigurable); ok {
-			tool.SetPlatformFn(func() string {
-				if deviceEnv != nil {
-					if p := strings.TrimSpace(deviceEnv.Platform); p != "" {
-						return p
-					}
-				}
-				return defaultPlatform
-			})
+		return defaultPlatform
+	}
+	for _, name := range []string{"enter_text_in_field", "enter_text_via_bridge"} {
+		if textInputTool, ok := r.tools.Get(name); ok {
+			if tool, ok := textInputTool.(platformConfigurable); ok {
+				tool.SetPlatformFn(platformFn)
+			}
 		}
 	}
 

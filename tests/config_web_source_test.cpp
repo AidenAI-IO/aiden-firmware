@@ -999,6 +999,103 @@ TEST_CASE("config web collapses wifi list after a successful connection") {
     CHECK(html.find("setBanner(initialReadyMessage(metaOk),!metaOk);") != std::string::npos);
 }
 
+TEST_CASE("config web keeps saved wifi networks at the top when expanded") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    const std::string::size_type saved_pos =
+        html.find("savedWifiNetworks().slice().sort(function(a,b)");
+    const std::string::size_type connected_pos =
+        html.find("addWifiName(names,seen,connectedWifiSsid());", saved_pos);
+    const std::string::size_type scanned_pos =
+        html.find("(appState.networks||[]).forEach(function(name)", connected_pos);
+    REQUIRE(saved_pos != std::string::npos);
+    REQUIRE(connected_pos != std::string::npos);
+    REQUIRE(scanned_pos != std::string::npos);
+    CHECK(saved_pos < connected_pos);
+    CHECK(connected_pos < scanned_pos);
+
+    CHECK(html.find("return names.filter(function(name){return name===connected;});") !=
+          std::string::npos);
+    CHECK(html.find("return saved[name]||name===connected;") == std::string::npos);
+    CHECK(html.find("const hiddenCount=Math.max(0,totalCount-visibleCount);") !=
+          std::string::npos);
+    CHECK(html.find("totalCount<=1") != std::string::npos);
+    CHECK(html.find("String(hiddenCount)") != std::string::npos);
+}
+
+TEST_CASE("config web shows saved wifi modal and connects automatically") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find("if(savedNet){connectSavedWifi(name);}") != std::string::npos);
+    CHECK(html.find("function connectSavedWifi(ssid)") != std::string::npos);
+    CHECK(html.find("openWifiModal(ssid,false);if(!saved)return;") != std::string::npos);
+    CHECK(html.find("setTimeout(function(){connectWifi(ssid,saved.psk||'');},0);") !=
+          std::string::npos);
+    CHECK(html.find("if(focusPassword!==false){byId('wifiPasswordInput').focus();}") !=
+          std::string::npos);
+    CHECK(html.find("btn.disabled=true;btn.textContent='连接中';") != std::string::npos);
+    CHECK(html.find("btn.disabled=false;btn.textContent='连接';") != std::string::npos);
+    CHECK(html.find("const connected=!!payload.ok&&connectedWifiSsid()===ssid;") !=
+          std::string::npos);
+    CHECK(html.find("if(connected){closeWifiModal();") != std::string::npos);
+    CHECK(html.find("连接 “'+ssid+'” 失败，请检查密码后重试。") != std::string::npos);
+    CHECK(html.find("renderWifiList();closeWifiModal();") == std::string::npos);
+}
+
+TEST_CASE("config web does not show a star for disconnected saved wifi") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find("state='✓';") != std::string::npos);
+    CHECK(html.find("state='★';") == std::string::npos);
+    CHECK(html.find("forget.textContent='忘记';") != std::string::npos);
+}
+
+TEST_CASE("config web hides successful forget details but reports runtime apply failure") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    const std::string::size_type forget_start =
+        html.find("async function forgetWifi(ssid)");
+    const std::string::size_type forget_end =
+        html.find("async function poweroffDevice()", forget_start);
+    REQUIRE(forget_start != std::string::npos);
+    REQUIRE(forget_end != std::string::npos);
+    const std::string forget_source =
+        html.substr(forget_start, forget_end - forget_start);
+    CHECK(forget_source.find("if(payload.ok!==false)") != std::string::npos);
+    CHECK(forget_source.find("setBanner('已忘记 “'+ssid+'”。',false);setDetails('');") !=
+          std::string::npos);
+    CHECK(forget_source.find("已忘记 “'+ssid+'”，但运行时应用失败。") !=
+          std::string::npos);
+    CHECK(forget_source.find("payload.wifi_apply&&payload.wifi_apply.output") !=
+          std::string::npos);
+    CHECK(forget_source.find("网络已从保存列表删除，但运行时配置更新失败。") !=
+          std::string::npos);
+}
+
 TEST_CASE("config web tolerates metadata sections without rendered controls") {
     const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
     std::ifstream html_in(html_path.c_str());
