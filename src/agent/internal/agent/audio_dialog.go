@@ -34,6 +34,7 @@ type AudioDialog struct {
 	recordActive  bool
 	sessionID     uint64
 	recordReader  *AudioRecordChunkReader
+	recordSTTMu   sync.Mutex
 	recordSTT     *streamingSTTSession
 	recordText    string
 	speechMu      sync.Mutex
@@ -196,7 +197,7 @@ func (d *AudioDialog) StartRecording() error {
 		log.Printf("[stt] streaming upload unavailable, falling back to one-shot STT: %v\n", err)
 	} else if recordSTT != nil {
 		log.Println("[stt] streaming upload enabled for realtime transcription")
-		d.recordSTT = recordSTT
+		d.setRecordSTT(recordSTT)
 	}
 	d.recordActive = true
 	if d.vad != nil {
@@ -255,7 +256,7 @@ func (d *AudioDialog) StopRecording() error {
 
 	sessionID := d.sessionID
 	reader := d.recordReader
-	recordSTT := d.recordSTT
+	recordSTT := d.takeRecordSTT()
 	if recordSTT != nil {
 		defer func() {
 			_ = recordSTT.Close()
@@ -264,7 +265,6 @@ func (d *AudioDialog) StopRecording() error {
 	d.recordActive = false
 	d.sessionID = 0
 	d.recordReader = nil
-	d.recordSTT = nil
 
 	if reader != nil {
 		_ = reader.Close()
@@ -313,14 +313,58 @@ func (d *AudioDialog) ReadRecordChunk(timeoutMs uint32) (*AudioChunkResult, erro
 }
 
 func (d *AudioDialog) uploadRecordChunkToStreamingSTT(chunk *AudioChunkResult) {
-	if d == nil || chunk == nil || len(chunk.PCM) == 0 || d.recordSTT == nil {
+	if d == nil || chunk == nil || len(chunk.PCM) == 0 {
 		return
 	}
-	if err := d.recordSTT.UploadPCM(chunk.PCM); err != nil {
-		log.Printf("[stt] streaming upload failed, falling back to one-shot STT: %v\n", err)
-		_ = d.recordSTT.Close()
-		d.recordSTT = nil
+	recordSTT := d.currentRecordSTT()
+	if recordSTT == nil {
+		return
 	}
+	if err := recordSTT.UploadPCM(chunk.PCM); err != nil {
+		log.Printf("[stt] streaming upload failed, falling back to one-shot STT: %v\n", err)
+		// Only clear if this is still the active session; StopRecording may have
+		// already swapped it out from another goroutine.
+		if d.clearRecordSTT(recordSTT) {
+			_ = recordSTT.Close()
+		}
+	}
+}
+
+// setRecordSTT installs the active streaming STT session.
+func (d *AudioDialog) setRecordSTT(session *streamingSTTSession) {
+	d.recordSTTMu.Lock()
+	d.recordSTT = session
+	d.recordSTTMu.Unlock()
+}
+
+// currentRecordSTT returns the active streaming STT session, if any.
+func (d *AudioDialog) currentRecordSTT() *streamingSTTSession {
+	d.recordSTTMu.Lock()
+	defer d.recordSTTMu.Unlock()
+	return d.recordSTT
+}
+
+// takeRecordSTT clears and returns the active streaming STT session, giving the
+// caller sole ownership so it can be closed without racing other goroutines.
+func (d *AudioDialog) takeRecordSTT() *streamingSTTSession {
+	d.recordSTTMu.Lock()
+	defer d.recordSTTMu.Unlock()
+	session := d.recordSTT
+	d.recordSTT = nil
+	return session
+}
+
+// clearRecordSTT clears the active session only if it still matches the given
+// one, returning whether the caller now owns it. This prevents clobbering a
+// session started concurrently by a new recording.
+func (d *AudioDialog) clearRecordSTT(session *streamingSTTSession) bool {
+	d.recordSTTMu.Lock()
+	defer d.recordSTTMu.Unlock()
+	if d.recordSTT != session {
+		return false
+	}
+	d.recordSTT = nil
+	return true
 }
 
 // ProcessVADFrame processes an audio frame through VAD.
