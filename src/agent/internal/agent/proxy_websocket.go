@@ -48,7 +48,11 @@ func newProxyWebSocketDialer(cfg ProxyConfig, handshakeTimeout time.Duration) (w
 		if !ok {
 			return dialer, fmt.Errorf("socks5 proxy does not support context dialing")
 		}
+		direct := &net.Dialer{}
 		dialer.NetDialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if host, port, err := net.SplitHostPort(addr); err == nil && bypassProxy(host, port, cfg.NoProxy) {
+				return direct.DialContext(ctx, network, addr)
+			}
 			return ctxDialer.DialContext(ctx, network, addr)
 		}
 	case "http", "https":

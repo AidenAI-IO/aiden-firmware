@@ -2,17 +2,24 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
+
+var errStreamingSTTFinalizeTimeout = errors.New("streaming STT finalize timed out")
 
 type streamingSTTSession struct {
 	uploader STTStreamUploader
 
-	mu         sync.Mutex
-	transcript string
-	finalized  bool
+	mu           sync.Mutex
+	transcript   string
+	finalizeErr  error
+	finalized    bool
+	finalizing   bool
+	finalizeDone chan struct{}
 }
 
 func beginStreamingSTTSession(ctx context.Context, client STTClient, cfg STTStreamConfig) (*streamingSTTSession, error) {
@@ -37,29 +44,75 @@ func (s *streamingSTTSession) UploadPCM(pcm []byte) error {
 }
 
 func (s *streamingSTTSession) Finalize() (string, error) {
-	if s == nil {
+	if s == nil || s.uploader == nil {
 		return "", nil
 	}
 
 	s.mu.Lock()
 	if s.finalized {
-		transcript := s.transcript
+		transcript, err := s.transcript, s.finalizeErr
 		s.mu.Unlock()
-		return transcript, nil
+		return transcript, err
 	}
+	if s.finalizing {
+		done := s.finalizeDone
+		s.mu.Unlock()
+		<-done
+		s.mu.Lock()
+		transcript, err := s.transcript, s.finalizeErr
+		s.mu.Unlock()
+		return transcript, err
+	}
+	done := make(chan struct{})
+	s.finalizing = true
+	s.finalizeDone = done
+	uploader := s.uploader
 	s.mu.Unlock()
 
-	transcript, err := s.uploader.Finalize()
+	transcript, err := uploader.Finalize()
 	if err != nil {
-		return "", fmt.Errorf("streaming STT finalize: %w", err)
+		err = fmt.Errorf("streaming STT finalize: %w", err)
 	}
 
 	transcript = strings.TrimSpace(transcript)
 	s.mu.Lock()
 	s.transcript = transcript
+	s.finalizeErr = err
 	s.finalized = true
+	s.finalizing = false
+	close(done)
 	s.mu.Unlock()
-	return transcript, nil
+	return transcript, err
+}
+
+func (s *streamingSTTSession) FinalizeWithTimeout(timeout time.Duration) (string, error) {
+	if s == nil || s.uploader == nil {
+		return "", nil
+	}
+	if timeout <= 0 {
+		return s.Finalize()
+	}
+
+	type result struct {
+		transcript string
+		err        error
+	}
+	done := make(chan result, 1)
+	go func() {
+		transcript, err := s.Finalize()
+		done <- result{transcript: transcript, err: err}
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case result := <-done:
+		return result.transcript, result.err
+	case <-timer.C:
+		_ = s.Close()
+		return "", fmt.Errorf("%w after %s", errStreamingSTTFinalizeTimeout, timeout)
+	}
 }
 
 func (s *streamingSTTSession) Close() error {

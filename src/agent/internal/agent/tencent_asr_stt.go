@@ -34,8 +34,9 @@ const (
 	tencentRealtimeASRPacketMillis   = 200
 	tencentRealtimeASREndMessage     = `{"type":"end"}`
 	tencentRealtimeASRURLTTL         = 24 * time.Hour
-	tencentRealtimeASRConnTimeout    = 15 * time.Second
 )
+
+var tencentRealtimeASRConnTimeout = 15 * time.Second
 
 // TencentASRSTT implements Tencent Cloud STT using both sentence recognition
 // and realtime WebSocket streaming when app_id is configured.
@@ -339,6 +340,10 @@ func (u *tencentASRStreamingUploader) Finalize() (string, error) {
 	}
 	if err := u.conn.WriteMessage(websocket.TextMessage, []byte(tencentRealtimeASREndMessage)); err != nil {
 		u.finish("", fmt.Errorf("write end message: %w", err))
+		return u.readResult()
+	}
+	if err := u.conn.SetReadDeadline(time.Now().Add(tencentRealtimeASRConnTimeout)); err != nil {
+		u.finish("", fmt.Errorf("set realtime ASR read deadline: %w", err))
 		return u.readResult()
 	}
 

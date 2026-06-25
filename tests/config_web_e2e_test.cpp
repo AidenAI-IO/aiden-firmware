@@ -1070,6 +1070,30 @@ TEST_CASE("config_web: tts config test invokes playback of test passed") {
     CHECK(log.find("--section=tts") != std::string::npos);
 }
 
+TEST_CASE("config_web: tencent stt config test stays green without app_id") {
+    StubEnv env;
+    auto handle = start_server(env);
+    HeadProbeServer probe;
+
+    const std::string endpoint = "http://127.0.0.1:" + std::to_string(probe.port());
+    const std::string test_body =
+        "{\"section\":\"stt\",\"values\":{"
+        "\"provider\":\"tencent-asr\","
+        "\"base_url\":\"" + endpoint + "\","
+        "\"app_id\":\"\","
+        "\"secret_id\":\"id\","
+        "\"secret_key\":\"key\","
+        "\"region\":\"ap-guangzhou\","
+        "\"engine_model_type\":\"16k_zh\""
+        "}}";
+
+    HttpResponse test_resp = http_request(handle->port, "POST", "/api/config/test", test_body);
+    CHECK(test_resp.status == 200);
+    CHECK(test_resp.body.find("\"ok\":true") != std::string::npos);
+    CHECK(test_resp.body.find("\"check\":\"streaming_app_id\"") != std::string::npos);
+    CHECK(test_resp.body.find("one-shot upload") != std::string::npos);
+}
+
 TEST_CASE("config_web: stt live test proxies start and stop to agent") {
     StubAgentSTTTestServer agent_server;
     StubEnv env;
@@ -1106,6 +1130,7 @@ TEST_CASE("config_web: stt live test proxies start and stop to agent") {
     CHECK(requests[0].method == "POST");
     CHECK(requests[0].path == "/api/config-test/stt/start");
     CHECK(requests[0].body.find("\"provider\":\"tencent-asr\"") != std::string::npos);
+    CHECK(requests[0].body.find("\"app_id\":\"app-1\"") != std::string::npos);
     CHECK(requests[0].body.find("\"socket\":\"/tmp/audio.sock\"") != std::string::npos);
     CHECK(requests[1].method == "POST");
     CHECK(requests[1].path == "/api/config-test/stt/stop");

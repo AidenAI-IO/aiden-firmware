@@ -19,8 +19,9 @@ const (
 )
 
 var (
-	recordingStartRetryTimeout  = 5 * time.Second
-	recordingStartRetryInterval = 250 * time.Millisecond
+	recordingStartRetryTimeout             = 5 * time.Second
+	recordingStartRetryInterval            = 250 * time.Millisecond
+	audioDialogStreamingSTTFinalizeTimeout = 2 * time.Second
 )
 
 // AudioDialog manages the audio conversation loop
@@ -254,6 +255,11 @@ func (d *AudioDialog) StopRecording() error {
 	sessionID := d.sessionID
 	reader := d.recordReader
 	recordSTT := d.recordSTT
+	if recordSTT != nil {
+		defer func() {
+			_ = recordSTT.Close()
+		}()
+	}
 	d.recordActive = false
 	d.sessionID = 0
 	d.recordReader = nil
@@ -267,13 +273,12 @@ func (d *AudioDialog) StopRecording() error {
 		return fmt.Errorf("stop recording: %w", err)
 	}
 	if recordSTT != nil {
-		transcript, err := recordSTT.Finalize()
+		transcript, err := recordSTT.FinalizeWithTimeout(audioDialogStreamingSTTFinalizeTimeout)
 		if err != nil {
 			log.Printf("[stt] finalize streaming transcript failed, falling back to one-shot STT: %v\n", err)
 		} else {
 			d.recordText = transcript
 		}
-		_ = recordSTT.Close()
 	}
 
 	log.Println("[audio] Record session closed")

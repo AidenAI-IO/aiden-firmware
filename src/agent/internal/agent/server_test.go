@@ -82,6 +82,9 @@ func (s *stubSTTClient) Capabilities() STTCapabilities {
 
 func (s *stubSTTClient) NewStreamingUploader(_ context.Context, cfg STTStreamConfig) (STTStreamUploader, error) {
 	s.streamConfigs = append(s.streamConfigs, cfg)
+	if !s.supportsStreaming {
+		return nil, fmt.Errorf("streaming upload is not supported")
+	}
 	if s.streamUploaderErr != nil {
 		return nil, s.streamUploaderErr
 	}
@@ -90,6 +93,15 @@ func (s *stubSTTClient) NewStreamingUploader(_ context.Context, cfg STTStreamCon
 	}
 	s.streamUploaderUsed++
 	return s.streamUploader, nil
+}
+
+func TestStubSTTClientNewStreamingUploaderRequiresStreamingCapability(t *testing.T) {
+	client := &stubSTTClient{}
+
+	_, err := client.NewStreamingUploader(context.Background(), STTStreamConfig{SampleRate: 16000, Channels: 1, BitWidth: 16})
+	if err == nil {
+		t.Fatal("expected streaming capability error")
+	}
 }
 
 func (s *stubSTTStreamUploader) UploadPCM(pcm []byte) error {
@@ -1953,6 +1965,74 @@ func TestServerDeviceAudioRecordingStopIncludesStreamingTranscript(t *testing.T)
 	}
 	if resp.Attachment.Transcript != "边录边传结果" {
 		t.Fatalf("Attachment.Transcript = %q, want 边录边传结果", resp.Attachment.Transcript)
+	}
+}
+
+func TestServerEndWebRecordingClearsStreamingSessionOnDrainTimeout(t *testing.T) {
+	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
+		switch req.Op {
+		case "stop_recording":
+			return audioResponse{Status: "OK"}, nil
+		default:
+			return audioResponse{Status: "OK"}, nil
+		}
+	})
+
+	uploader := newBlockingFinalizeUploader("")
+	server := &Server{audioClient: NewAudioServiceClient(socketPath)}
+	recording := &webAudioRecording{
+		sessionID:  42,
+		sampleRate: 16000,
+		done:       make(chan struct{}),
+		sttSession: &streamingSTTSession{uploader: uploader},
+	}
+
+	err := server.endWebRecordingWithTimeout(recording, 20*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "timed out waiting for audio recording to drain") {
+		t.Fatalf("endWebRecordingWithTimeout() error = %v, want drain timeout", err)
+	}
+	select {
+	case <-uploader.closed:
+	case <-time.After(time.Second):
+		t.Fatal("expected uploader to be closed after drain timeout")
+	}
+}
+
+func TestServerEndWebRecordingReturnsFinalizeTimeout(t *testing.T) {
+	oldTimeout := webRecordingStreamingSTTFinalizeTimeout
+	webRecordingStreamingSTTFinalizeTimeout = 20 * time.Millisecond
+	t.Cleanup(func() {
+		webRecordingStreamingSTTFinalizeTimeout = oldTimeout
+	})
+
+	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
+		switch req.Op {
+		case "stop_recording":
+			return audioResponse{Status: "OK"}, nil
+		default:
+			return audioResponse{Status: "OK"}, nil
+		}
+	})
+
+	done := make(chan struct{})
+	close(done)
+	uploader := newBlockingFinalizeUploader("")
+	server := &Server{audioClient: NewAudioServiceClient(socketPath)}
+	recording := &webAudioRecording{
+		sessionID:  42,
+		sampleRate: 16000,
+		done:       done,
+		sttSession: &streamingSTTSession{uploader: uploader},
+	}
+
+	err := server.endWebRecordingWithTimeout(recording, time.Second)
+	if !errors.Is(err, errStreamingSTTFinalizeTimeout) {
+		t.Fatalf("endWebRecordingWithTimeout() error = %v, want finalize timeout", err)
+	}
+	select {
+	case <-uploader.closed:
+	case <-time.After(time.Second):
+		t.Fatal("expected uploader to be closed after finalize timeout")
 	}
 }
 

@@ -1090,6 +1090,7 @@ TEST_CASE("config web fills Tencent ASR STT defaults from metadata") {
     CHECK(html.find("function applySTTTencentASRDefaults()") != std::string::npos);
     CHECK(html.find("applySTTTencentASRDefaults();applyAudioArchiveAvailability();") != std::string::npos);
     CHECK(html.find("stt_app_id") != std::string::npos);
+    CHECK(html.find("id=\\\"stt_engine_model_type\\\" data-section=\\\"stt\\\"") != std::string::npos);
     CHECK(html.find("fillIfEmpty('region','ap-guangzhou')") != std::string::npos);
     CHECK(html.find("fillIfEmpty('engine_model_type','16k_zh')") != std::string::npos);
     CHECK(html.find("p==='tencent-asr'||p==='tencent_asr'||p==='tencent'") != std::string::npos);

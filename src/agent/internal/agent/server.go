@@ -2125,6 +2125,8 @@ const (
 	webRecordingStaleCleanupTimeout = 200 * time.Millisecond
 )
 
+var webRecordingStreamingSTTFinalizeTimeout = 2 * time.Second
+
 func (s *Server) endWebRecording(recording *webAudioRecording) error {
 	return s.endWebRecordingWithTimeout(recording, webRecordingDrainTimeout)
 }
@@ -2146,7 +2148,7 @@ func (s *Server) finalizeWebRecordingTranscript(recording *webAudioRecording) er
 		return nil
 	}
 
-	transcript, err := session.Finalize()
+	transcript, err := session.FinalizeWithTimeout(webRecordingStreamingSTTFinalizeTimeout)
 	if err != nil {
 		_ = session.Close()
 		return err
@@ -2161,18 +2163,30 @@ func (s *Server) endWebRecordingWithTimeout(recording *webAudioRecording, timeou
 	}
 	recording.setStopping()
 	stopErr := s.audioClient.StopRecording(recording.sessionID)
+	drained := false
 	select {
 	case <-recording.done:
+		drained = true
 	case <-time.After(timeout):
 		if stopErr == nil {
 			stopErr = fmt.Errorf("timed out waiting for audio recording to drain")
 		}
 	}
 	if err := recording.readError(); err != nil {
+		recording.clearStreamingSession()
 		return err
 	}
-	if err := s.finalizeWebRecordingTranscript(recording); err != nil && s.logger != nil {
-		s.logger.Warn("Finalize web audio streaming transcript failed: %v", err)
+	if !drained {
+		recording.clearStreamingSession()
+		return stopErr
+	}
+	if err := s.finalizeWebRecordingTranscript(recording); err != nil {
+		if s.logger != nil {
+			s.logger.Warn("Finalize web audio streaming transcript failed: %v", err)
+		}
+		if errors.Is(err, errStreamingSTTFinalizeTimeout) {
+			stopErr = errors.Join(stopErr, err)
+		}
 	}
 	return stopErr
 }

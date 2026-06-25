@@ -70,10 +70,12 @@ func TestAudioDialogReadRecordChunkRequiresActiveRecording(t *testing.T) {
 
 func TestAudioDialogStopRecordingClearsLocalStateOnStopError(t *testing.T) {
 	missingSocket := filepath.Join(t.TempDir(), "missing-audio.sock")
+	uploader := newBlockingFinalizeUploader("")
 	dialog := &AudioDialog{
 		audioClient:  NewAudioServiceClient(missingSocket),
 		recordActive: true,
 		sessionID:    123,
+		recordSTT:    &streamingSTTSession{uploader: uploader},
 	}
 
 	if err := dialog.StopRecording(); err == nil {
@@ -84,6 +86,11 @@ func TestAudioDialogStopRecordingClearsLocalStateOnStopError(t *testing.T) {
 	}
 	if dialog.sessionID != 0 {
 		t.Fatalf("sessionID = %d, want 0", dialog.sessionID)
+	}
+	select {
+	case <-uploader.closed:
+	case <-time.After(time.Second):
+		t.Fatal("expected streaming session to be closed on stop error")
 	}
 }
 
@@ -198,6 +205,60 @@ func TestAudioDialogPrepareTurnInputUsesStreamingTranscriptFromRecording(t *test
 	}
 	if sttClient.streamUploader == nil || len(sttClient.streamUploader.writes) != 1 {
 		t.Fatalf("stream uploader writes = %#v, want one PCM write", sttClient.streamUploader)
+	}
+}
+
+func TestAudioDialogStopRecordingFallsBackToOneShotWhenStreamingFinalizeTimesOut(t *testing.T) {
+	oldTimeout := audioDialogStreamingSTTFinalizeTimeout
+	audioDialogStreamingSTTFinalizeTimeout = 20 * time.Millisecond
+	t.Cleanup(func() {
+		audioDialogStreamingSTTFinalizeTimeout = oldTimeout
+	})
+
+	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
+		switch req.Op {
+		case "stop_recording":
+			return audioResponse{Status: "OK"}, nil
+		default:
+			return audioResponse{Status: "OK"}, nil
+		}
+	})
+
+	uploader := newBlockingFinalizeUploader("")
+	sttClient := &stubSTTClient{transcript: "一次性结果"}
+	dialog := &AudioDialog{
+		config: Config{
+			InputMode: "stt",
+			Audio: AudioConfig{
+				Socket:     socketPath,
+				SampleRate: 16000,
+			},
+		},
+		audioClient:  NewAudioServiceClient(socketPath),
+		sttClient:    sttClient,
+		recordActive: true,
+		sessionID:    42,
+		recordSTT:    &streamingSTTSession{uploader: uploader},
+	}
+
+	if err := dialog.StopRecording(); err != nil {
+		t.Fatalf("StopRecording() error = %v", err)
+	}
+
+	input, err := dialog.PrepareTurnInput([]int16{1, 2, 3, 4})
+	if err != nil {
+		t.Fatalf("PrepareTurnInput() error = %v", err)
+	}
+	if input.Transcript != "一次性结果" {
+		t.Fatalf("Transcript = %q, want 一次性结果", input.Transcript)
+	}
+	if len(sttClient.inputs) != 1 {
+		t.Fatalf("expected fallback one-shot STT call, got %d", len(sttClient.inputs))
+	}
+	select {
+	case <-uploader.closed:
+	case <-time.After(time.Second):
+		t.Fatal("expected uploader to be closed after finalize timeout")
 	}
 }
 

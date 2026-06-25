@@ -311,6 +311,7 @@ func TestWebConfigDTOMapsSTTLanguage(t *testing.T) {
 		STT: sttDTO{
 			Provider: "openai-whisper",
 			Language: "en",
+			AppID:    "12345",
 		},
 	}
 
@@ -318,15 +319,22 @@ func TestWebConfigDTOMapsSTTLanguage(t *testing.T) {
 	if cfg.STT.Language != "en" {
 		t.Fatalf("STT.Language = %q, want en", cfg.STT.Language)
 	}
+	if cfg.STT.AppID != "12345" {
+		t.Fatalf("STT.AppID = %q, want 12345", cfg.STT.AppID)
+	}
 
 	roundTrip := webConfigDTOFromAgentConfig(agent.Config{
 		STT: agent.STTConfig{
 			Provider: "openai-whisper",
 			Language: "zh",
+			AppID:    "67890",
 		},
 	})
 	if roundTrip.STT.Language != "zh" {
 		t.Fatalf("round-trip stt.language = %q, want zh", roundTrip.STT.Language)
+	}
+	if roundTrip.STT.AppID != "67890" {
+		t.Fatalf("round-trip stt.app_id = %q, want 67890", roundTrip.STT.AppID)
 	}
 }
 

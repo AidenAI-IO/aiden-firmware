@@ -220,6 +220,7 @@ static const char* CONFIG_WEB_HTML =
     "            <div class=\"field\"><label>secret_id</label><input id=\"stt_secret_id\" data-section=\"stt\"></div>\n"
     "            <div class=\"field\"><label>secret_key</label><input id=\"stt_secret_key\" data-section=\"stt\"></div>\n"
     "            <div class=\"field\"><label>region</label><input id=\"stt_region\" data-section=\"stt\"></div>\n"
+    "            <div class=\"field\"><label>engine_model_type</label><input id=\"stt_engine_model_type\" data-section=\"stt\"></div>\n"
     "          </div>\n"
     "        </div>\n"
     "        <div class=\"section-card\" id=\"section-audio\">\n"

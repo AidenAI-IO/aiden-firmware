@@ -18,6 +18,8 @@ const (
 	sttConfigTestLiveStaleCleanupTimeout = 200 * time.Millisecond
 )
 
+var sttConfigLiveStreamingSTTFinalizeTimeout = 2 * time.Second
+
 type sttConfigTestStatusError struct {
 	status int
 	err    error
@@ -391,15 +393,22 @@ func (s *Server) endSTTConfigTestLiveSessionWithTimeout(session *sttConfigTestLi
 
 	session.setStopping()
 	stopErr := session.audioClient.StopRecording(session.sessionID)
+	drained := false
 	select {
 	case <-session.done:
+		drained = true
 	case <-time.After(timeout):
 		if stopErr == nil {
 			stopErr = fmt.Errorf("timed out waiting for STT test recording to drain")
 		}
 	}
 	if err := session.readError(); err != nil {
+		session.clearStreamingSession()
 		return sttConfigTestLiveCapture{}, err
+	}
+	if !drained {
+		session.clearStreamingSession()
+		return sttConfigTestLiveCapture{}, stopErr
 	}
 	if err := s.finalizeSTTConfigTestLiveTranscript(session); err != nil && s.logger != nil {
 		s.logger.Warn("Finalize STT config-test streaming transcript failed: %v", err)
@@ -428,7 +437,7 @@ func (s *Server) finalizeSTTConfigTestLiveTranscript(session *sttConfigTestLiveS
 		return nil
 	}
 
-	transcript, err := stream.Finalize()
+	transcript, err := stream.FinalizeWithTimeout(sttConfigLiveStreamingSTTFinalizeTimeout)
 	if err != nil {
 		_ = stream.Close()
 		return err

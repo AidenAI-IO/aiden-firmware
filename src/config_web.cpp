@@ -4922,10 +4922,14 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
             bool secret_key_present = json_secret_present(values, "secret_key");
 
             cJSON* r_appid = cJSON_CreateObject();
-            cJSON_AddStringToObject(r_appid, "check", "app_id_present");
-            cJSON_AddBoolToObject(r_appid, "passed", app_id_present ? 1 : 0);
-            cJSON_AddStringToObject(r_appid, "detail", app_id_present ? "app_id is set" : "app_id is empty");
-            if (!app_id_present) all_passed = false;
+            cJSON_AddStringToObject(r_appid, "check", "streaming_app_id");
+            cJSON_AddBoolToObject(r_appid, "passed", 1);
+            cJSON_AddStringToObject(
+                r_appid,
+                "detail",
+                app_id_present
+                    ? "app_id is set; realtime upload is available"
+                    : "app_id is empty; recording will fall back to one-shot upload");
             cJSON_AddItemToArray(results, r_appid);
 
             cJSON* r_sid = cJSON_CreateObject();

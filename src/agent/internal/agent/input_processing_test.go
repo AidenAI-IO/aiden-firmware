@@ -95,3 +95,16 @@ func TestPrepareAudioInputSTTUsesTranscriptHintBeforeTranscribing(t *testing.T) 
 		t.Fatalf("expected transcript hint to skip one-shot STT, got %d TranscribeWAV calls", len(client.inputs))
 	}
 }
+
+func TestPrepareAudioInputSTTUsesTranscriptHintWithoutClient(t *testing.T) {
+	wav := pcm16MonoToWAV([]int16{100, -100, 200, -200}, 16000)
+
+	input, err := PrepareAudioInput("stt", nil, wav, "实时转写", "", nil)
+	if err != nil {
+		t.Fatalf("PrepareAudioInput() error = %v", err)
+	}
+
+	if input.Transcript != "实时转写" {
+		t.Fatalf("Transcript = %q, want 实时转写", input.Transcript)
+	}
+}

@@ -93,12 +93,11 @@ func PrepareAudioInput(mode string, sttClient STTClient, wavData []byte, transcr
 
 	switch resolvedMode {
 	case TurnModalitySTT:
-		if sttClient == nil {
-			return AudioInputResult{}, fmt.Errorf("STT mode enabled but STT client is unavailable")
-		}
-
 		transcript := strings.TrimSpace(transcriptHint)
 		if transcript == "" {
+			if sttClient == nil {
+				return AudioInputResult{}, fmt.Errorf("STT mode enabled but STT client is unavailable")
+			}
 			var err error
 			transcript, err = sttClient.TranscribeWAV(wavData)
 			if err != nil {
