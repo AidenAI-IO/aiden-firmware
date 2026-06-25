@@ -295,16 +295,16 @@ func (u *tencentASRStreamingUploader) UploadPCM(pcm []byte) error {
 		u.mu.Unlock()
 		return fmt.Errorf("stream already finalized")
 	}
+	if u.packetBytes <= 0 {
+		u.mu.Unlock()
+		return fmt.Errorf("invalid packet size: audio format produces zero-byte packets (bit_width must be >= 8)")
+	}
 	u.pending = append(u.pending, pcm...)
 	chunks := make([][]byte, 0)
-	for u.packetBytes > 0 && len(u.pending) >= u.packetBytes {
+	for len(u.pending) >= u.packetBytes {
 		chunk := append([]byte(nil), u.pending[:u.packetBytes]...)
 		u.pending = u.pending[u.packetBytes:]
 		chunks = append(chunks, chunk)
-	}
-	if u.packetBytes <= 0 && len(u.pending) > 0 {
-		chunks = append(chunks, append([]byte(nil), u.pending...))
-		u.pending = nil
 	}
 	u.mu.Unlock()
 
