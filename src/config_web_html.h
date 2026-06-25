@@ -397,7 +397,7 @@ static const char* CONFIG_WEB_HTML =
     "    function fieldValue(section,key){const el=byId(section+'_'+key);if(!el)return '';return el.type==='checkbox'?!!el.checked:el.value;}\n"
     "    function isTencentASRProvider(value){const p=String(value||'');return p==='tencent-asr'||p==='tencent_asr'||p==='tencent';}\n"
     "    function fieldDefaultValue(section,key,fallback){const sectionDefaults=fieldDefaults[section]||{};const value=sectionDefaults[key];return value===undefined?fallback:String(value);}\n"
-    "    function applySTTTencentASRDefaults(){if(!isTencentASRProvider(fieldValue('stt','provider')))return;function fillIfEmpty(key,fallback){const el=byId('stt_'+key);if(el&&!el.value)el.value=fieldDefaultValue('stt',key,fallback);}fillIfEmpty('region','ap-guangzhou');fillIfEmpty('engine_model_type','16k_zh');}\n"
+    "    function applySTTTencentASRDefaults(){if(!isTencentASRProvider(fieldValue('stt','provider')))return;function fillIfEmpty(key,fallback){const el=byId('stt_'+key);if(el&&!el.value)el.value=fieldDefaultValue('stt',key,fallback);}fillIfEmpty('region','ap-shanghai');fillIfEmpty('engine_model_type','16k_zh');}\n"
     "    function applyFieldVisibility(){visibilityRules.forEach(function(r){setFieldVisible(r.section,r.key,evalRule(r.rule));});applySTTTencentASRDefaults();applyAudioArchiveAvailability();}\n"
     "    function bindFieldVisibility(){watchedFields.forEach(function(path){const parts=path.split('.');const el=byId(parts[0]+'_'+parts.slice(1).join('.'));if(el){el.addEventListener('change',function(){applyFieldVisibility();});}});}\n"
     "    function setBanner(message,isError){const el=byId('actionBanner');el.textContent=message;el.className='banner'+(isError?' error':'');}\n"

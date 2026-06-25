@@ -45,7 +45,7 @@ func TestTencentASRSTTTranscribeWAV(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewTencentASRSTT("test-id", "test-key", "", "ap-guangzhou", "16k_zh", "", server.Client())
+	client := NewTencentASRSTT("test-id", "test-key", "", "ap-shanghai", "16k_zh", "", server.Client())
 	client.apiURL = server.URL
 
 	text, err := client.TranscribeWAV([]byte("RIFFxxxxWAVEfmt "))
@@ -65,7 +65,7 @@ func TestNewSTTClientTencentASRProviderNames(t *testing.T) {
 					Provider:        provider,
 					SecretID:        "id",
 					SecretKey:       "key",
-					Region:          "ap-guangzhou",
+					Region:          "ap-shanghai",
 					EngineModelType: "16k_zh",
 				},
 			}
@@ -107,7 +107,7 @@ func TestTencentASRSTTStreamingCapabilitiesRequireAppID(t *testing.T) {
 		t.Fatal("expected realtime upload to stay disabled without app_id")
 	}
 
-	client = NewTencentASRSTT("id", "key", "app-1", "ap-guangzhou", "16k_zh", "")
+	client = NewTencentASRSTT("id", "key", "app-1", "ap-shanghai", "16k_zh", "")
 	if !client.Capabilities().SupportsStreamingUpload {
 		t.Fatal("expected realtime upload to be enabled when app_id is configured")
 	}
@@ -197,7 +197,7 @@ func TestTencentASRSTTStreamingUploaderFinalizesTranscript(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewTencentASRSTT("test-id", "test-key", "app-1", "ap-guangzhou", "16k_zh", "")
+	client := NewTencentASRSTT("test-id", "test-key", "app-1", "ap-shanghai", "16k_zh", "")
 	client.realtimeURL = "ws" + strings.TrimPrefix(server.URL, "http")
 
 	uploader, err := client.NewStreamingUploader(context.Background(), STTStreamConfig{
@@ -279,7 +279,7 @@ func TestTencentASRSTTStreamingUploaderFinalizeTimesOut(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewTencentASRSTT("test-id", "test-key", "app-1", "ap-guangzhou", "16k_zh", "")
+	client := NewTencentASRSTT("test-id", "test-key", "app-1", "ap-shanghai", "16k_zh", "")
 	client.realtimeURL = "ws" + strings.TrimPrefix(server.URL, "http")
 
 	uploader, err := client.NewStreamingUploader(context.Background(), STTStreamConfig{

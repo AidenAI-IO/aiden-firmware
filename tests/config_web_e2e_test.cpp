@@ -1083,7 +1083,7 @@ TEST_CASE("config_web: tencent stt config test stays green without app_id") {
         "\"app_id\":\"\","
         "\"secret_id\":\"id\","
         "\"secret_key\":\"key\","
-        "\"region\":\"ap-guangzhou\","
+        "\"region\":\"ap-shanghai\","
         "\"engine_model_type\":\"16k_zh\""
         "}}";
 
@@ -1106,7 +1106,7 @@ TEST_CASE("config_web: stt live test proxies start and stop to agent") {
         "\"app_id\":\"app-1\","
         "\"secret_id\":\"sid\","
         "\"secret_key\":\"skey\","
-        "\"region\":\"ap-guangzhou\","
+        "\"region\":\"ap-shanghai\","
         "\"engine_model_type\":\"16k_zh\""
         "},"
         "\"audio_values\":{"

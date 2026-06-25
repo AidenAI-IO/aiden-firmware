@@ -21,7 +21,7 @@ const (
 	tencentASRProvider             = "tencent-asr"
 	legacyTencentProvider          = "tencent"
 	legacyTencentASRProvider       = "tencent_asr"
-	defaultTencentASRRegion        = "ap-guangzhou"
+	defaultTencentASRRegion        = "ap-shanghai"
 	defaultTencentASREngineModel   = "16k_zh"
 	defaultAudioSocket             = "/run/audio_service/audio_service.sock"
 	defaultAudioSampleRate         = 16000

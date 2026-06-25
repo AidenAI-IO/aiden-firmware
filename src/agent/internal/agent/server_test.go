@@ -2151,7 +2151,7 @@ func TestServerSTTConfigTestLiveSessionUsesStreamingTranscript(t *testing.T) {
 		newSTTClientFromConfigForLiveTest = previousFactory
 	}()
 
-	startBody := `{"stt_values":{"provider":"tencent-asr","app_id":"app-1","secret_id":"id","secret_key":"key","region":"ap-guangzhou","engine_model_type":"16k_zh"},"audio_values":{"socket":"` + socketPath + `","sample_rate":16000,"channels":1,"bit_width":16}}`
+	startBody := `{"stt_values":{"provider":"tencent-asr","app_id":"app-1","secret_id":"id","secret_key":"key","region":"ap-shanghai","engine_model_type":"16k_zh"},"audio_values":{"socket":"` + socketPath + `","sample_rate":16000,"channels":1,"bit_width":16}}`
 	startReq := httptest.NewRequest(http.MethodPost, "/api/config-test/stt/start", strings.NewReader(startBody))
 	startReq.Header.Set("Content-Type", "application/json")
 	startRec := httptest.NewRecorder()
