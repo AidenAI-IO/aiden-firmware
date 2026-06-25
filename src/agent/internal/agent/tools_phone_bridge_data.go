@@ -25,7 +25,7 @@ func bridgeNotConnected(status ...PhoneBridgeStatus) string {
 	return jsonString(result)
 }
 
-func bridgeRespError(err error, status ...PhoneBridgeStatus) string {
+func toolErrorBridgeResp(err error, status ...PhoneBridgeStatus) string {
 	result := map[string]interface{}{"ok": false, "error": err.Error()}
 	if len(status) > 0 {
 		result["fallback"] = phoneBridgeRecoveryGuidance(status[0])
@@ -40,10 +40,10 @@ func bridgeStatusForError(bridge *PhoneBridge) []PhoneBridgeStatus {
 	return []PhoneBridgeStatus{bridge.Status()}
 }
 
-// bridgeMsgError returns a JSON envelope for a tool-level error string. Keeps
+// toolErrorHelper returns a JSON envelope for a tool-level error string. Keeps
 // every branch of these tools on the same {"ok":false,"error":"..."} contract
 // so callers do not have to special-case plain strings vs JSON.
-func bridgeMsgError(format string, a ...interface{}) string {
+func toolErrorHelper(format string, a ...interface{}) string {
 	msg := format
 	if len(a) > 0 {
 		msg = fmt.Sprintf(format, a...)
@@ -86,7 +86,9 @@ type clipboardArgs struct {
 func (t *ClipboardTool) Call(ctx context.Context, input string) (string, error) {
 	var args clipboardArgs
 	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err != nil {
-		return bridgeMsgError("invalid input: %v. Expected JSON format: {\"action\":\"read\"} or {\"action\":\"write\",\"text\":\"content\"}. Common mistakes: action must be \"read\" or \"write\", missing quotes around field names", err), nil
+		te := NewToolError(CodeInvalidArguments, fmt.Sprintf("invalid input: %v. Expected JSON like {\"action\":\"read\"} or {\"action\":\"write\",\"text\":\"...\"}", err))
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
 	}
 
 	action := strings.ToLower(strings.TrimSpace(args.Action))
@@ -96,7 +98,9 @@ func (t *ClipboardTool) Call(ctx context.Context, input string) (string, error) 
 	case "write":
 		return t.write(ctx, args.Text)
 	default:
-		return bridgeMsgError("unknown action %q, expected \"read\" or \"write\"", args.Action), nil
+		te := NewToolError(CodeInvalidArguments, fmt.Sprintf("unknown action %q, expected \"read\" or \"write\"", args.Action))
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
 	}
 }
 
@@ -107,27 +111,28 @@ func (t *ClipboardTool) read(ctx context.Context) (string, error) {
 		TimeoutMs: 5000,
 	})
 	if err != nil {
-		return bridgeRespError(err, bridgeStatusForError(t.bridge)...), nil
-	}
-	result := map[string]interface{}{"ok": resp.Error == nil}
-	if restored {
-		result["restored_from_return_entry"] = true
+		te := NewToolError(CodeBridgeNotConnected, err.Error())
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
 	}
 	if resp.Error != nil {
-		result["error"] = resp.Error.Message
-		return jsonString(result), nil
+		SetToolError(ctx, resp.Error)
+		return toolErrorString(resp.Error), nil
 	}
 	var data struct {
 		Text string `json:"text"`
 	}
 	if len(resp.Data) > 0 {
 		if err := json.Unmarshal(resp.Data, &data); err != nil {
-			result["ok"] = false
-			result["error"] = fmt.Sprintf("decode clipboard data: %v", err)
-			return jsonString(result), nil
+			te := NewToolError(CodeToolExecutionFailed, fmt.Sprintf("decode clipboard data: %v", err))
+			SetToolError(ctx, te)
+			return toolErrorString(te), nil
 		}
 	}
-	result["text"] = data.Text
+	result := map[string]interface{}{"text": data.Text}
+	if restored {
+		result["restored_from_return_entry"] = true
+	}
 	return jsonString(result), nil
 }
 
@@ -140,14 +145,17 @@ func (t *ClipboardTool) write(ctx context.Context, text string) (string, error) 
 		TimeoutMs: 5000,
 	})
 	if err != nil {
-		return bridgeRespError(err, bridgeStatusForError(t.bridge)...), nil
-	}
-	result := map[string]interface{}{"ok": resp.Error == nil}
-	if restored {
-		result["restored_from_return_entry"] = true
+		te := NewToolError(CodeBridgeNotConnected, err.Error())
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
 	}
 	if resp.Error != nil {
-		result["error"] = resp.Error.Message
+		SetToolError(ctx, resp.Error)
+		return toolErrorString(resp.Error), nil
+	}
+	result := map[string]interface{}{}
+	if restored {
+		result["restored_from_return_entry"] = true
 	}
 	return jsonString(result), nil
 }
@@ -207,7 +215,9 @@ type calendarArgs struct {
 func (t *CalendarTool) Call(ctx context.Context, input string) (string, error) {
 	var args calendarArgs
 	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err != nil {
-		return bridgeMsgError("invalid input: %v. Expected JSON format: {\"action\":\"create\",\"title\":\"...\",\"start_at\":\"2026-06-02T15:00:00+08:00\",...} or {\"action\":\"query\",\"from\":\"...\",\"to\":\"...\"} or {\"action\":\"delete\",\"event_id\":\"...\"}. Times must be RFC3339 format with timezone", err), nil
+		te := NewToolError(CodeInvalidArguments, fmt.Sprintf("invalid input: %v. Expected JSON like {\"action\":\"create\",\"title\":\"...\",\"start_at\":\"2026-06-02T15:00:00+08:00\"} or {\"action\":\"query\",\"from\":\"...\",\"to\":\"...\"}", err))
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
 	}
 
 	switch strings.ToLower(strings.TrimSpace(args.Action)) {
@@ -218,16 +228,22 @@ func (t *CalendarTool) Call(ctx context.Context, input string) (string, error) {
 	case "delete":
 		return t.delete(ctx, args)
 	default:
-		return bridgeMsgError("unknown action %q, expected \"create\", \"query\", or \"delete\"", args.Action), nil
+		te := NewToolError(CodeInvalidArguments, fmt.Sprintf("unknown action %q, expected \"create\", \"query\", or \"delete\"", args.Action))
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
 	}
 }
 
 func (t *CalendarTool) create(ctx context.Context, args calendarArgs) (string, error) {
 	if strings.TrimSpace(args.Title) == "" {
-		return bridgeMsgError("create requires a title"), nil
+		te := NewToolError(CodeInvalidArguments, "create requires a title")
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
 	}
 	if strings.TrimSpace(args.StartAt) == "" {
-		return bridgeMsgError("create requires a start_at time (RFC3339)"), nil
+		te := NewToolError(CodeInvalidArguments, "create requires a start_at time (RFC3339)")
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
 	}
 	payload, _ := json.Marshal(map[string]interface{}{
 		"title":                args.Title,
@@ -245,33 +261,36 @@ func (t *CalendarTool) create(ctx context.Context, args calendarArgs) (string, e
 		TimeoutMs: 8000,
 	})
 	if err != nil {
-		return bridgeRespError(err, bridgeStatusForError(t.bridge)...), nil
-	}
-	result := map[string]interface{}{"ok": resp.Error == nil}
-	if restored {
-		result["restored_from_return_entry"] = true
+		te := NewToolError(CodeBridgeNotConnected, err.Error())
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
 	}
 	if resp.Error != nil {
-		result["error"] = resp.Error.Message
-		return jsonString(result), nil
+		SetToolError(ctx, resp.Error)
+		return toolErrorString(resp.Error), nil
 	}
 	var data struct {
 		EventID string `json:"event_id"`
 	}
 	if len(resp.Data) > 0 {
 		if err := json.Unmarshal(resp.Data, &data); err != nil {
-			result["ok"] = false
-			result["error"] = fmt.Sprintf("decode calendar data: %v", err)
-			return jsonString(result), nil
+			te := NewToolError(CodeToolExecutionFailed, fmt.Sprintf("decode calendar data: %v", err))
+			SetToolError(ctx, te)
+			return toolErrorString(te), nil
 		}
 	}
-	result["event_id"] = data.EventID
+	result := map[string]interface{}{"event_id": data.EventID}
+	if restored {
+		result["restored_from_return_entry"] = true
+	}
 	return jsonString(result), nil
 }
 
 func (t *CalendarTool) query(ctx context.Context, args calendarArgs) (string, error) {
 	if strings.TrimSpace(args.From) == "" || strings.TrimSpace(args.To) == "" {
-		return bridgeMsgError("query requires both from and to times (RFC3339)"), nil
+		te := NewToolError(CodeInvalidArguments, "query requires both from and to times (RFC3339)")
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
 	}
 	payload, _ := json.Marshal(map[string]string{"from": args.From, "to": args.To})
 	resp, restored, err := sendForegroundBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
@@ -281,36 +300,39 @@ func (t *CalendarTool) query(ctx context.Context, args calendarArgs) (string, er
 		TimeoutMs: 8000,
 	})
 	if err != nil {
-		return bridgeRespError(err, bridgeStatusForError(t.bridge)...), nil
-	}
-	result := map[string]interface{}{"ok": resp.Error == nil}
-	if restored {
-		result["restored_from_return_entry"] = true
+		te := NewToolError(CodeBridgeNotConnected, err.Error())
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
 	}
 	if resp.Error != nil {
-		result["error"] = resp.Error.Message
-		return jsonString(result), nil
+		SetToolError(ctx, resp.Error)
+		return toolErrorString(resp.Error), nil
 	}
 	var data struct {
 		Events []map[string]interface{} `json:"events"`
 	}
 	if len(resp.Data) > 0 {
 		if err := json.Unmarshal(resp.Data, &data); err != nil {
-			result["ok"] = false
-			result["error"] = fmt.Sprintf("decode calendar data: %v", err)
-			return jsonString(result), nil
+			te := NewToolError(CodeToolExecutionFailed, fmt.Sprintf("decode calendar data: %v", err))
+			SetToolError(ctx, te)
+			return toolErrorString(te), nil
 		}
 	}
 	if data.Events == nil {
 		data.Events = []map[string]interface{}{}
 	}
-	result["events"] = data.Events
+	result := map[string]interface{}{"events": data.Events}
+	if restored {
+		result["restored_from_return_entry"] = true
+	}
 	return jsonString(result), nil
 }
 
 func (t *CalendarTool) delete(ctx context.Context, args calendarArgs) (string, error) {
 	if strings.TrimSpace(args.EventID) == "" {
-		return bridgeMsgError("delete requires an event_id"), nil
+		te := NewToolError(CodeInvalidArguments, "delete requires an event_id")
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
 	}
 	payload, _ := json.Marshal(map[string]string{"event_id": args.EventID})
 	resp, restored, err := sendForegroundBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
@@ -320,14 +342,17 @@ func (t *CalendarTool) delete(ctx context.Context, args calendarArgs) (string, e
 		TimeoutMs: 8000,
 	})
 	if err != nil {
-		return bridgeRespError(err, bridgeStatusForError(t.bridge)...), nil
-	}
-	result := map[string]interface{}{"ok": resp.Error == nil}
-	if restored {
-		result["restored_from_return_entry"] = true
+		te := NewToolError(CodeBridgeNotConnected, err.Error())
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
 	}
 	if resp.Error != nil {
-		result["error"] = resp.Error.Message
+		SetToolError(ctx, resp.Error)
+		return toolErrorString(resp.Error), nil
+	}
+	result := map[string]interface{}{}
+	if restored {
+		result["restored_from_return_entry"] = true
 	}
 	return jsonString(result), nil
 }
@@ -381,7 +406,7 @@ type contactsArgs struct {
 func (t *ContactsTool) Call(ctx context.Context, input string) (string, error) {
 	var args contactsArgs
 	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err != nil {
-		return bridgeMsgError("invalid input: %v. Expected JSON format: {\"action\":\"query\",\"query\":\"name\",\"limit\":20} or {\"action\":\"create\",\"name\":\"...\",\"phone_numbers\":[\"...\"],\"emails\":[\"...\"]} or {\"action\":\"update\",\"contact_id\":\"...\",\"name\":\"...\"}. Arrays must use square brackets", err), nil
+		return toolErrorHelper("invalid input: %v. Expected JSON format: {\"action\":\"query\",\"query\":\"name\",\"limit\":20} or {\"action\":\"create\",\"name\":\"...\",\"phone_numbers\":[\"...\"],\"emails\":[\"...\"]} or {\"action\":\"update\",\"contact_id\":\"...\",\"name\":\"...\"}. Arrays must use square brackets", err), nil
 	}
 
 	switch strings.ToLower(strings.TrimSpace(args.Action)) {
@@ -392,7 +417,7 @@ func (t *ContactsTool) Call(ctx context.Context, input string) (string, error) {
 	case "update":
 		return t.update(ctx, args)
 	default:
-		return bridgeMsgError("unknown action %q, expected \"query\", \"create\", or \"update\"", args.Action), nil
+		return toolErrorHelper("unknown action %q, expected \"query\", \"create\", or \"update\"", args.Action), nil
 	}
 }
 
@@ -412,24 +437,26 @@ func (t *ContactsTool) query(ctx context.Context, args contactsArgs) (string, er
 		TimeoutMs: 8000,
 	})
 	if err != nil {
-		return bridgeRespError(err, bridgeStatusForError(t.bridge)...), nil
+		te := NewToolError(CodeBridgeNotConnected, err.Error())
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
 	}
-	result := map[string]interface{}{"ok": resp.Error == nil}
+	result := map[string]interface{}{}
 	if restored {
 		result["restored_from_return_entry"] = true
 	}
 	if resp.Error != nil {
-		result["error"] = resp.Error.Message
-		return jsonString(result), nil
+		SetToolError(ctx, resp.Error)
+		return toolErrorString(resp.Error), nil
 	}
 	var data struct {
 		Contacts []map[string]interface{} `json:"contacts"`
 	}
 	if len(resp.Data) > 0 {
 		if err := json.Unmarshal(resp.Data, &data); err != nil {
-			result["ok"] = false
-			result["error"] = fmt.Sprintf("decode contacts data: %v", err)
-			return jsonString(result), nil
+			te := NewToolError(CodeToolExecutionFailed, fmt.Sprintf("decode contacts data: %v", err))
+			SetToolError(ctx, te)
+			return toolErrorString(te), nil
 		}
 	}
 	if data.Contacts == nil {
@@ -441,7 +468,9 @@ func (t *ContactsTool) query(ctx context.Context, args contactsArgs) (string, er
 
 func (t *ContactsTool) create(ctx context.Context, args contactsArgs) (string, error) {
 	if strings.TrimSpace(args.Name) == "" {
-		return bridgeMsgError("create requires a name"), nil
+		te := NewToolError(CodeInvalidArguments, fmt.Sprintf("create requires a name"))
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
 	}
 	payload, _ := json.Marshal(map[string]interface{}{
 		"name":          args.Name,
@@ -457,24 +486,26 @@ func (t *ContactsTool) create(ctx context.Context, args contactsArgs) (string, e
 		TimeoutMs: 8000,
 	})
 	if err != nil {
-		return bridgeRespError(err, bridgeStatusForError(t.bridge)...), nil
+		te := NewToolError(CodeBridgeNotConnected, err.Error())
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
 	}
-	result := map[string]interface{}{"ok": resp.Error == nil}
+	result := map[string]interface{}{}
 	if restored {
 		result["restored_from_return_entry"] = true
 	}
 	if resp.Error != nil {
-		result["error"] = resp.Error.Message
-		return jsonString(result), nil
+		SetToolError(ctx, resp.Error)
+		return toolErrorString(resp.Error), nil
 	}
 	var data struct {
 		ContactID string `json:"contact_id"`
 	}
 	if len(resp.Data) > 0 {
 		if err := json.Unmarshal(resp.Data, &data); err != nil {
-			result["ok"] = false
-			result["error"] = fmt.Sprintf("decode contacts data: %v", err)
-			return jsonString(result), nil
+			te := NewToolError(CodeToolExecutionFailed, fmt.Sprintf("decode contacts data: %v", err))
+			SetToolError(ctx, te)
+			return toolErrorString(te), nil
 		}
 	}
 	result["contact_id"] = data.ContactID
@@ -483,7 +514,9 @@ func (t *ContactsTool) create(ctx context.Context, args contactsArgs) (string, e
 
 func (t *ContactsTool) update(ctx context.Context, args contactsArgs) (string, error) {
 	if strings.TrimSpace(args.ContactID) == "" {
-		return bridgeMsgError("update requires a contact_id"), nil
+		te := NewToolError(CodeInvalidArguments, fmt.Sprintf("update requires a contact_id"))
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
 	}
 	payload, _ := json.Marshal(map[string]interface{}{
 		"contact_id":    args.ContactID,
@@ -500,9 +533,11 @@ func (t *ContactsTool) update(ctx context.Context, args contactsArgs) (string, e
 		TimeoutMs: 8000,
 	})
 	if err != nil {
-		return bridgeRespError(err, bridgeStatusForError(t.bridge)...), nil
+		te := NewToolError(CodeBridgeNotConnected, err.Error())
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
 	}
-	result := map[string]interface{}{"ok": resp.Error == nil}
+	result := map[string]interface{}{}
 	if restored {
 		result["restored_from_return_entry"] = true
 	}
@@ -554,11 +589,13 @@ type notificationArgs struct {
 func (t *NotificationTool) Call(ctx context.Context, input string) (string, error) {
 	var args notificationArgs
 	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err != nil {
-		return bridgeMsgError("invalid input: %v. Expected JSON format: {\"title\":\"Reminder\",\"body\":\"Take medicine\",\"schedule_at\":\"2026-06-04T18:00:00+08:00\",\"sound\":true,\"badge\":1}. schedule_at is optional, sound and badge are boolean/number", err), nil
+		return toolErrorHelper("invalid input: %v. Expected JSON format: {\"title\":\"Reminder\",\"body\":\"Take medicine\",\"schedule_at\":\"2026-06-04T18:00:00+08:00\",\"sound\":true,\"badge\":1}. schedule_at is optional, sound and badge are boolean/number", err), nil
 	}
 
 	if strings.TrimSpace(args.Title) == "" {
-		return bridgeMsgError("notification requires a title"), nil
+		te := NewToolError(CodeInvalidArguments, fmt.Sprintf("notification requires a title"))
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
 	}
 
 	payload, _ := json.Marshal(map[string]interface{}{
@@ -575,24 +612,26 @@ func (t *NotificationTool) Call(ctx context.Context, input string) (string, erro
 		TimeoutMs: 5000,
 	})
 	if err != nil {
-		return bridgeRespError(err, bridgeStatusForError(t.bridge)...), nil
+		te := NewToolError(CodeBridgeNotConnected, err.Error())
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
 	}
-	result := map[string]interface{}{"ok": resp.Error == nil}
+	result := map[string]interface{}{}
 	if restored {
 		result["restored_from_return_entry"] = true
 	}
 	if resp.Error != nil {
-		result["error"] = resp.Error.Message
-		return jsonString(result), nil
+		SetToolError(ctx, resp.Error)
+		return toolErrorString(resp.Error), nil
 	}
 	var data struct {
 		NotificationID string `json:"notification_id"`
 	}
 	if len(resp.Data) > 0 {
 		if err := json.Unmarshal(resp.Data, &data); err != nil {
-			result["ok"] = false
-			result["error"] = fmt.Sprintf("decode notification data: %v", err)
-			return jsonString(result), nil
+			te := NewToolError(CodeToolExecutionFailed, fmt.Sprintf("decode notification data: %v", err))
+			SetToolError(ctx, te)
+			return toolErrorString(te), nil
 		}
 	}
 	result["notification_id"] = data.NotificationID
