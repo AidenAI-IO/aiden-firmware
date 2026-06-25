@@ -194,7 +194,8 @@ func (d *AudioDialog) StartRecording() error {
 	})
 	if err != nil {
 		log.Printf("[stt] streaming upload unavailable, falling back to one-shot STT: %v\n", err)
-	} else {
+	} else if recordSTT != nil {
+		log.Println("[stt] streaming upload enabled for realtime transcription")
 		d.recordSTT = recordSTT
 	}
 	d.recordActive = true

@@ -370,7 +370,10 @@ func (s *Server) newSTTConfigTestLiveSession(req sttConfigTestLiveStartRequest) 
 		if s.logger != nil {
 			s.logger.Warn("Live STT config-test streaming unavailable, falling back to one-shot STT: %v", err)
 		}
-	} else {
+	} else if streamingSTT != nil {
+		if s.logger != nil {
+			s.logger.Info("Live STT config-test streaming upload enabled for realtime transcription")
+		}
 		session.sttSession = streamingSTT
 	}
 

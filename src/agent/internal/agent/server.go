@@ -2041,7 +2041,10 @@ func (s *Server) handleAudioRecordStart(w http.ResponseWriter, r *http.Request) 
 			if s.logger != nil {
 				s.logger.Warn("Web audio streaming STT unavailable, falling back to one-shot STT: %v", err)
 			}
-		} else {
+		} else if streamingSTT != nil {
+			if s.logger != nil {
+				s.logger.Info("Web audio streaming STT enabled for realtime transcription")
+			}
 			recording.sttSession = streamingSTT
 		}
 	}
