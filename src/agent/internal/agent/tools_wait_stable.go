@@ -11,8 +11,8 @@ import (
 
 const (
 	defaultStableWaitTimeoutMs = 3500
-	defaultStableDurationMs    = 500
-	defaultDiffThreshold       = 2.0
+	defaultStableDurationMs    = 400
+	defaultDiffThreshold       = 5.0
 	stableWaitPollInterval     = 200 * time.Millisecond
 )
 

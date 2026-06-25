@@ -37,9 +37,9 @@ const (
 	defaultPointerMode             = "absolute"
 	defaultInputMode               = "text"
 	defaultTriggerMode             = "manual"
-	defaultSilenceMs               = 650
+	defaultSilenceMs               = 550
 	defaultMinSpeechMs             = 300
-	defaultVoiceFollowupTimeoutMs  = 6000
+	defaultVoiceFollowupTimeoutMs  = 5000
 	defaultVoiceFirstTurnTimeoutMs = 10000
 	defaultVoiceMaxTurns           = 0
 	defaultVoiceMaxResponseTokens  = 300
