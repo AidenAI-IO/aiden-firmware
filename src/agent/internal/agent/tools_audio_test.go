@@ -69,13 +69,17 @@ func TestAudioVolumeToolSet(t *testing.T) {
 func TestAudioVolumeToolRejectsOutOfRange(t *testing.T) {
 	client := &fakePlaybackVolumeClient{volume: 55}
 	tool := &AudioVolumeTool{client: client}
+	ctx, _ := WithToolError(context.Background())
 
-	out, err := tool.Call(context.Background(), `{"volume":101}`)
+	out, err := tool.Call(ctx, `{"volume":101}`)
 	if err != nil {
 		t.Fatalf("Call() error = %v", err)
 	}
-	if out != "error: volume must be between 0 and 100" {
+	if out != "volume must be between 0 and 100" {
 		t.Fatalf("Call() = %q", out)
+	}
+	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeInvalidArguments || got.Message != out {
+		t.Fatalf("ToolError = %+v, want invalid_arguments with output message", got)
 	}
 	if len(client.sets) != 0 {
 		t.Fatalf("set calls = %v, want none", client.sets)

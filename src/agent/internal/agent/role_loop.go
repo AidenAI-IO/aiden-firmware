@@ -78,6 +78,7 @@ type executorTurnResult struct {
 	Action          *schema.AgentAction
 	Step            *schema.AgentStep
 	InvalidMetaStep *schema.AgentStep
+	ToolError       *ToolError
 }
 
 func plannerCommitRequiredTurn(action schema.AgentAction) plannerTurnResult {

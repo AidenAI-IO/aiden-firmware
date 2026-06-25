@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"strings"
 )
 
@@ -36,7 +35,7 @@ func (t *AudioVolumeTool) ArgsSchema() map[string]any {
 	})
 }
 
-func (t *AudioVolumeTool) Call(_ context.Context, input string) (string, error) {
+func (t *AudioVolumeTool) Call(ctx context.Context, input string) (string, error) {
 	var args struct {
 		Volume *int `json:"volume"`
 	}
@@ -44,22 +43,22 @@ func (t *AudioVolumeTool) Call(_ context.Context, input string) (string, error) 
 	trimmed := strings.TrimSpace(input)
 	if trimmed != "" {
 		if err := json.Unmarshal([]byte(trimmed), &args); err != nil {
-			return fmt.Sprintf("error: invalid input: %v. Expected JSON format: {\"volume\": 70} or {} to read current volume. Volume must be a number between 0 and 100", err), nil
+			return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v. Expected JSON format: {\"volume\": 70} or {} to read current volume. Volume must be a number between 0 and 100", err), nil
 		}
 	}
 
 	if args.Volume != nil {
 		if *args.Volume < 0 || *args.Volume > 100 {
-			return "error: volume must be between 0 and 100", nil
+			return toolErrorResultString(ctx, CodeInvalidArguments, "volume must be between 0 and 100"), nil
 		}
 		if err := t.client.SetPlaybackVolume(*args.Volume); err != nil {
-			return fmt.Sprintf("error: %v", err), nil
+			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
 	}
 
 	volume, err := t.client.GetPlaybackVolume()
 	if err != nil {
-		return fmt.Sprintf("error: %v", err), nil
+		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
 
 	result := struct {

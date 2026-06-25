@@ -94,12 +94,12 @@ func (t *WebSearchTool) ArgsSchema() map[string]any {
 
 func (t *WebSearchTool) Call(ctx context.Context, input string) (string, error) {
 	if t.backend == nil {
-		return "error: web_search tool is not configured (provider=" + t.provider + ")", nil
+		return toolErrorResultString(ctx, CodeModuleUnavailable, "web_search tool is not configured (provider="+t.provider+")"), nil
 	}
 
 	query := strings.TrimSpace(input)
 	if query == "" {
-		return "error: query is required", nil
+		return toolErrorResultString(ctx, CodeInvalidArguments, "query is required"), nil
 	}
 
 	if strings.HasPrefix(query, "{") {
@@ -116,7 +116,7 @@ func (t *WebSearchTool) Call(ctx context.Context, input string) (string, error) 
 
 	result, err := t.backend.Search(callCtx, query)
 	if err != nil {
-		return fmt.Sprintf("error: %v", err), nil
+		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
 	return truncateToolOutput(result), nil
 }
@@ -307,7 +307,7 @@ func (t *WikipediaTool) ArgsSchema() map[string]any {
 func (t *WikipediaTool) Call(ctx context.Context, input string) (string, error) {
 	query := strings.TrimSpace(input)
 	if query == "" {
-		return "error: query is required", nil
+		return toolErrorResultString(ctx, CodeInvalidArguments, "query is required"), nil
 	}
 
 	if strings.HasPrefix(query, "{") {
@@ -324,7 +324,7 @@ func (t *WikipediaTool) Call(ctx context.Context, input string) (string, error) 
 
 	result, err := t.inner.Call(callCtx, query)
 	if err != nil {
-		return fmt.Sprintf("error: %v", err), nil
+		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
 	return truncateToolOutput(result), nil
 }
@@ -356,7 +356,7 @@ func (t *CalculatorTool) ArgsSchema() map[string]any {
 func (t *CalculatorTool) Call(ctx context.Context, input string) (string, error) {
 	expr := strings.TrimSpace(input)
 	if expr == "" {
-		return "error: expression is required", nil
+		return toolErrorResultString(ctx, CodeInvalidArguments, "expression is required"), nil
 	}
 
 	if strings.HasPrefix(expr, "{") {
@@ -370,7 +370,7 @@ func (t *CalculatorTool) Call(ctx context.Context, input string) (string, error)
 
 	result, err := t.inner.Call(ctx, expr)
 	if err != nil {
-		return fmt.Sprintf("error: %v", err), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 	}
 	return result, nil
 }
@@ -403,7 +403,7 @@ func (t *WebScraperTool) ArgsSchema() map[string]any {
 func (t *WebScraperTool) Call(ctx context.Context, input string) (string, error) {
 	rawURL := strings.TrimSpace(input)
 	if rawURL == "" {
-		return "error: url is required", nil
+		return toolErrorResultString(ctx, CodeInvalidArguments, "url is required"), nil
 	}
 
 	if strings.HasPrefix(rawURL, "{") {
@@ -416,7 +416,7 @@ func (t *WebScraperTool) Call(ctx context.Context, input string) (string, error)
 	}
 
 	if err := validateScrapeURL(rawURL); err != nil {
-		return fmt.Sprintf("error: %v", err), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 	}
 
 	callCtx, cancel := contextWithDefaultTimeout(ctx)
@@ -424,7 +424,7 @@ func (t *WebScraperTool) Call(ctx context.Context, input string) (string, error)
 
 	result, err := t.scrape(callCtx, rawURL)
 	if err != nil {
-		return fmt.Sprintf("error: %v", err), nil
+		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
 	return truncateToolOutput(result), nil
 }

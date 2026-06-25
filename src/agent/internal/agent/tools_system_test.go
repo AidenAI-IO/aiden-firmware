@@ -60,12 +60,16 @@ func TestBuiltinToolSetRegistersSystemTools(t *testing.T) {
 }
 
 func TestCurrentTimeToolRejectsUnknownTimezone(t *testing.T) {
-	out, err := NewCurrentTimeTool().Call(context.Background(), `{"timezone":"Mars/Base"}`)
+	ctx, _ := WithToolError(context.Background())
+	out, err := NewCurrentTimeTool().Call(ctx, `{"timezone":"Mars/Base"}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
-	if !strings.HasPrefix(out, "error:") {
-		t.Fatalf("output = %q, want error response", out)
+	if !strings.Contains(out, `unknown timezone "Mars/Base"`) {
+		t.Fatalf("output = %q, want timezone error message", out)
+	}
+	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeInvalidArguments || got.Message != out {
+		t.Fatalf("ToolError = %+v, want invalid_arguments with output message", got)
 	}
 }
 

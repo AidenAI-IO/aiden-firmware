@@ -125,10 +125,10 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 	}
 
 	if err := spec.ValidateInput(input); err != nil {
-		msg := fmt.Sprintf("error: %s failed: %v", spec.Name, err)
+		msg := err.Error()
 		result := ToolResult{
 			Output:   msg,
-			Error:    NewToolError(CodeToolExecutionFailed, msg),
+			Error:    NewToolError(CodeInvalidArguments, msg),
 			Duration: time.Since(call.StartedAt),
 		}
 		result = runAfterToolCallHook(ctx, execution, call, result)
@@ -137,11 +137,10 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 	}
 
 	// If environment bridge is enabled, forward the call to the bridge. When the
-	// HTTP call succeeds the remote output/is_error are passed through verbatim,
-	// because the remote ran the same executeToolCall path and already produced
-	// the exact response (including any "error: X failed" formatting) the LLM
-	// would see locally. Only transport failures are formatted here, mirroring
-	// how a local tool error is surfaced.
+	// HTTP call succeeds the remote ToolResult is passed through verbatim because
+	// the remote ran the same executeToolCall path and already produced the same
+	// structured response the LLM would see locally. Only transport failures are
+	// formatted here, mirroring how a local tool error is surfaced.
 	//
 	// Only forward tools whose name matches one of the configured EnvironmentBridgeTools
 	// patterns (see shouldForwardToEnvironmentBridge). Everything else runs locally.
@@ -179,8 +178,7 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 		} else if errors.Is(err, context.DeadlineExceeded) {
 			toolErr = NewToolError(CodeDeadlineExceeded, err.Error())
 		} else {
-			msg := fmt.Sprintf("error: %s failed: %v", spec.Name, err)
-			toolErr = NewToolError(CodeToolExecutionFailed, msg)
+			toolErr = NewToolError(CodeToolExecutionFailed, err.Error())
 		}
 	} else if attached := ToolErrorFromContext(ctx2); attached != nil {
 		// Tool surfaced a structured error via SetToolError. Adopt it directly
@@ -192,6 +190,9 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 		Output:   output,
 		Error:    toolErr,
 		Duration: time.Since(call.StartedAt),
+	}
+	if err == nil && toolErr != nil {
+		result.Output = toolErr.Message
 	}
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -285,8 +286,12 @@ func normalizeRejectedToolResult(toolName string, result ToolResult) ToolResult 
 }
 
 func normalizeToolResult(result ToolResult) ToolResult {
-	if result.Output == "" && result.Error != nil {
-		result.Output = result.Error.Message
+	if result.Error != nil {
+		if result.Output == "" {
+			result.Output = result.Error.Message
+		} else if result.Output != result.Error.Message {
+			result.Error.Message = result.Output
+		}
 	}
 	return result
 }

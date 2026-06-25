@@ -634,7 +634,15 @@ func (t *QuickActionTool) delegate(ctx context.Context, toolName, payload string
 	if err != nil {
 		return output, nil, err
 	}
-	return output, ToolErrorFromContext(subCtx), nil
+	if te := ToolErrorFromContext(subCtx); te != nil {
+		return output, te, nil
+	}
+	if legacyToolOutputLooksLikeError(output) {
+		trimmed := strings.TrimSpace(output)
+		message := strings.TrimSpace(trimmed[len("error:"):])
+		return output, NewToolError(CodeToolExecutionFailed, message), nil
+	}
+	return output, nil, nil
 }
 
 func sleepQuickActionDelay(ctx context.Context, delayMs int) error {

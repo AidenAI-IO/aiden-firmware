@@ -242,8 +242,75 @@ func TestExecuteToolCallWrapsToolErrorsAndContinues(t *testing.T) {
 	if !result.Result.IsError() {
 		t.Fatalf("result should be marked as error: %#v", result.Result)
 	}
-	if result.Step.Observation != "error: echo failed: boom" {
+	if result.Result.Error == nil || result.Result.Error.Code != CodeToolExecutionFailed || result.Result.Error.Message != "boom" {
+		t.Fatalf("ToolError = %+v, want tool_execution_failed boom", result.Result.Error)
+	}
+	if result.Step.Observation != "boom" {
 		t.Fatalf("observation = %q", result.Step.Observation)
+	}
+}
+
+func TestExecuteToolCallBuiltInStringErrorToolsReturnStructuredErrors(t *testing.T) {
+	tests := []struct {
+		name     string
+		tool     langtools.Tool
+		input    string
+		wantCode string
+	}{
+		{
+			name:     "shell missing command",
+			tool:     &ShellTool{},
+			input:    `{}`,
+			wantCode: CodeInvalidArguments,
+		},
+		{
+			name:     "image diff missing after",
+			tool:     &ImageDiffTool{},
+			input:    `{"before":"x"}`,
+			wantCode: CodeInvalidArguments,
+		},
+		{
+			name:     "web search unconfigured",
+			tool:     &WebSearchTool{provider: "brave"},
+			input:    `{"query":"aiden"}`,
+			wantCode: CodeModuleUnavailable,
+		},
+		{
+			name:     "current time invalid timezone",
+			tool:     &CurrentTimeTool{},
+			input:    `{"timezone":"Not/AZone"}`,
+			wantCode: CodeInvalidArguments,
+		},
+		{
+			name:     "keyboard tap empty keys",
+			tool:     &KeyboardTapTool{},
+			input:    `{"keys":[]}`,
+			wantCode: CodeInvalidArguments,
+		},
+		{
+			name:     "touch gesture missing type",
+			tool:     &TouchGestureTool{},
+			input:    `{}`,
+			wantCode: CodeInvalidArguments,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := executeToolCall(context.Background(), ToolCallExecution{
+				Specs:  NewToolSpecs([]langtools.Tool{tc.tool}),
+				Action: schema.AgentAction{Tool: tc.tool.Name(), ToolInput: tc.input},
+			})
+			if result.Result.Error == nil {
+				t.Fatalf("expected structured ToolError, got result %#v", result.Result)
+			}
+			if result.Result.Error.Code != tc.wantCode {
+				t.Fatalf("Error.Code = %q, want %q (error=%+v)", result.Result.Error.Code, tc.wantCode, result.Result.Error)
+			}
+			if result.Result.Output != result.Result.Error.Message {
+				t.Fatalf("Output must equal Error.Message, got %q vs %q", result.Result.Output, result.Result.Error.Message)
+			}
+		})
 	}
 }
 
@@ -354,6 +421,19 @@ func TestExecuteToolCallBeforeHookRejectWithEmptyOutputSatisfiesInvariant(t *tes
 	if result.Result.Output != result.Result.Error.Message {
 		t.Fatalf("Output == Error.Message invariant violated: Output=%q Error.Message=%q",
 			result.Result.Output, result.Result.Error.Message)
+	}
+}
+
+func TestNormalizeToolResultAlignsNonEmptyErrorMessageToOutput(t *testing.T) {
+	result := normalizeToolResult(ToolResult{
+		Output: "policy override message",
+		Error:  NewToolError(CodeToolExecutionFailed, "original message"),
+	})
+	if result.Error == nil {
+		t.Fatal("expected structured error")
+	}
+	if result.Output != result.Error.Message {
+		t.Fatalf("Output == Error.Message invariant violated: Output=%q Error.Message=%q", result.Output, result.Error.Message)
 	}
 }
 

@@ -40,17 +40,6 @@ func bridgeStatusForError(bridge *PhoneBridge) []PhoneBridgeStatus {
 	return []PhoneBridgeStatus{bridge.Status()}
 }
 
-// toolErrorHelper returns a JSON envelope for a tool-level error string. Keeps
-// every branch of these tools on the same {"ok":false,"error":"..."} contract
-// so callers do not have to special-case plain strings vs JSON.
-func toolErrorHelper(format string, a ...interface{}) string {
-	msg := format
-	if len(a) > 0 {
-		msg = fmt.Sprintf(format, a...)
-	}
-	return jsonString(map[string]interface{}{"ok": false, "error": msg})
-}
-
 // ClipboardTool reads and writes the connected phone's system clipboard.
 type ClipboardTool struct {
 	bridge   *PhoneBridge
@@ -129,7 +118,7 @@ func (t *ClipboardTool) read(ctx context.Context) (string, error) {
 			return toolErrorString(te), nil
 		}
 	}
-	result := map[string]interface{}{"text": data.Text}
+	result := map[string]interface{}{"ok": true, "text": data.Text}
 	if restored {
 		result["restored_from_return_entry"] = true
 	}
@@ -153,7 +142,7 @@ func (t *ClipboardTool) write(ctx context.Context, text string) (string, error) 
 		SetToolError(ctx, resp.Error)
 		return toolErrorString(resp.Error), nil
 	}
-	result := map[string]interface{}{}
+	result := map[string]interface{}{"ok": true}
 	if restored {
 		result["restored_from_return_entry"] = true
 	}
@@ -279,7 +268,7 @@ func (t *CalendarTool) create(ctx context.Context, args calendarArgs) (string, e
 			return toolErrorString(te), nil
 		}
 	}
-	result := map[string]interface{}{"event_id": data.EventID}
+	result := map[string]interface{}{"ok": true, "event_id": data.EventID}
 	if restored {
 		result["restored_from_return_entry"] = true
 	}
@@ -321,7 +310,7 @@ func (t *CalendarTool) query(ctx context.Context, args calendarArgs) (string, er
 	if data.Events == nil {
 		data.Events = []map[string]interface{}{}
 	}
-	result := map[string]interface{}{"events": data.Events}
+	result := map[string]interface{}{"ok": true, "events": data.Events}
 	if restored {
 		result["restored_from_return_entry"] = true
 	}
@@ -350,7 +339,7 @@ func (t *CalendarTool) delete(ctx context.Context, args calendarArgs) (string, e
 		SetToolError(ctx, resp.Error)
 		return toolErrorString(resp.Error), nil
 	}
-	result := map[string]interface{}{}
+	result := map[string]interface{}{"ok": true}
 	if restored {
 		result["restored_from_return_entry"] = true
 	}
@@ -406,7 +395,9 @@ type contactsArgs struct {
 func (t *ContactsTool) Call(ctx context.Context, input string) (string, error) {
 	var args contactsArgs
 	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err != nil {
-		return toolErrorHelper("invalid input: %v. Expected JSON format: {\"action\":\"query\",\"query\":\"name\",\"limit\":20} or {\"action\":\"create\",\"name\":\"...\",\"phone_numbers\":[\"...\"],\"emails\":[\"...\"]} or {\"action\":\"update\",\"contact_id\":\"...\",\"name\":\"...\"}. Arrays must use square brackets", err), nil
+		te := NewToolError(CodeInvalidArguments, fmt.Sprintf("invalid input: %v. Expected JSON format: {\"action\":\"query\",\"query\":\"name\",\"limit\":20} or {\"action\":\"create\",\"name\":\"...\",\"phone_numbers\":[\"...\"],\"emails\":[\"...\"]} or {\"action\":\"update\",\"contact_id\":\"...\",\"name\":\"...\"}. Arrays must use square brackets", err))
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
 	}
 
 	switch strings.ToLower(strings.TrimSpace(args.Action)) {
@@ -417,7 +408,9 @@ func (t *ContactsTool) Call(ctx context.Context, input string) (string, error) {
 	case "update":
 		return t.update(ctx, args)
 	default:
-		return toolErrorHelper("unknown action %q, expected \"query\", \"create\", or \"update\"", args.Action), nil
+		te := NewToolError(CodeInvalidArguments, fmt.Sprintf("unknown action %q, expected \"query\", \"create\", or \"update\"", args.Action))
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
 	}
 }
 
@@ -441,7 +434,7 @@ func (t *ContactsTool) query(ctx context.Context, args contactsArgs) (string, er
 		SetToolError(ctx, te)
 		return toolErrorString(te), nil
 	}
-	result := map[string]interface{}{}
+	result := map[string]interface{}{"ok": true}
 	if restored {
 		result["restored_from_return_entry"] = true
 	}
@@ -490,7 +483,7 @@ func (t *ContactsTool) create(ctx context.Context, args contactsArgs) (string, e
 		SetToolError(ctx, te)
 		return toolErrorString(te), nil
 	}
-	result := map[string]interface{}{}
+	result := map[string]interface{}{"ok": true}
 	if restored {
 		result["restored_from_return_entry"] = true
 	}
@@ -537,12 +530,13 @@ func (t *ContactsTool) update(ctx context.Context, args contactsArgs) (string, e
 		SetToolError(ctx, te)
 		return toolErrorString(te), nil
 	}
-	result := map[string]interface{}{}
+	result := map[string]interface{}{"ok": true}
 	if restored {
 		result["restored_from_return_entry"] = true
 	}
 	if resp.Error != nil {
-		result["error"] = resp.Error.Message
+		SetToolError(ctx, resp.Error)
+		return toolErrorString(resp.Error), nil
 	}
 	return jsonString(result), nil
 }
@@ -589,7 +583,9 @@ type notificationArgs struct {
 func (t *NotificationTool) Call(ctx context.Context, input string) (string, error) {
 	var args notificationArgs
 	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err != nil {
-		return toolErrorHelper("invalid input: %v. Expected JSON format: {\"title\":\"Reminder\",\"body\":\"Take medicine\",\"schedule_at\":\"2026-06-04T18:00:00+08:00\",\"sound\":true,\"badge\":1}. schedule_at is optional, sound and badge are boolean/number", err), nil
+		te := NewToolError(CodeInvalidArguments, fmt.Sprintf("invalid input: %v. Expected JSON format: {\"title\":\"Reminder\",\"body\":\"Take medicine\",\"schedule_at\":\"2026-06-04T18:00:00+08:00\",\"sound\":true,\"badge\":1}. schedule_at is optional, sound and badge are boolean/number", err))
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
 	}
 
 	if strings.TrimSpace(args.Title) == "" {
@@ -616,7 +612,7 @@ func (t *NotificationTool) Call(ctx context.Context, input string) (string, erro
 		SetToolError(ctx, te)
 		return toolErrorString(te), nil
 	}
-	result := map[string]interface{}{}
+	result := map[string]interface{}{"ok": true}
 	if restored {
 		result["restored_from_return_entry"] = true
 	}

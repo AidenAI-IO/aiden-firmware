@@ -167,16 +167,20 @@ func TestShellToolForegroundWorkdir(t *testing.T) {
 func TestShellToolForegroundFailureSurfacesStderr(t *testing.T) {
 	skipOnWindows(t)
 	tool := &ShellTool{}
+	ctx, _ := WithToolError(context.Background())
 
-	out, err := tool.Call(context.Background(), `{"command":"sh -c 'echo boom 1>&2; exit 7'"}`)
+	out, err := tool.Call(ctx, `{"command":"sh -c 'echo boom 1>&2; exit 7'"}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
-	if !strings.HasPrefix(out, "error: Error: ") {
-		t.Fatalf("expected error prefix, got %q", out)
+	if !strings.HasPrefix(out, "Error: ") {
+		t.Fatalf("expected error message, got %q", out)
 	}
 	if !strings.Contains(out, "Stderr:\nboom") {
 		t.Fatalf("expected stderr in output, got %q", out)
+	}
+	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeToolExecutionFailed || got.Message != out {
+		t.Fatalf("ToolError = %+v, want tool_execution_failed with output message", got)
 	}
 }
 

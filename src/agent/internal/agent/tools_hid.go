@@ -516,16 +516,16 @@ func (t *KeyboardTapTool) ArgsSchema() map[string]any {
 	}
 }
 
-func (t *KeyboardTapTool) Call(_ context.Context, input string) (string, error) {
+func (t *KeyboardTapTool) Call(ctx context.Context, input string) (string, error) {
 	var args struct {
 		Keys   []string `json:"keys"`
 		HoldMs int      `json:"hold_ms"`
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
-		return fmt.Sprintf("error: invalid input: %v. Expected JSON format: {\"keys\": [\"ctrl\", \"c\"]}. Common mistakes: missing quotes around key names, incorrect comma placement in array", err), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v. Expected JSON format: {\"keys\": [\"ctrl\", \"c\"]}. Common mistakes: missing quotes around key names, incorrect comma placement in array", err), nil
 	}
 	if len(args.Keys) == 0 {
-		return "error: keys array is required", nil
+		return toolErrorResultString(ctx, CodeInvalidArguments, "keys array is required"), nil
 	}
 
 	var modifier uint8
@@ -537,11 +537,11 @@ func (t *KeyboardTapTool) Call(_ context.Context, input string) (string, error) 
 		} else if code, ok := hidKeyboardMap[k]; ok {
 			keys = append(keys, code)
 		} else {
-			return fmt.Sprintf("error: unknown key: %q", k), nil
+			return toolErrorResultf(ctx, CodeInvalidArguments, "unknown key: %q", k), nil
 		}
 	}
 	if modifier == 0 && len(keys) == 0 {
-		return "error: at least one key or modifier is required", nil
+		return toolErrorResultString(ctx, CodeInvalidArguments, "at least one key or modifier is required"), nil
 	}
 
 	holdMs := args.HoldMs
@@ -553,7 +553,7 @@ func (t *KeyboardTapTool) Call(_ context.Context, input string) (string, error) 
 	}
 
 	if err := t.tapKeyboardChord(modifier, keys, holdMs); err != nil {
-		return fmt.Sprintf("error: %v", err), nil
+		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
 	return "ok", nil
 }
@@ -606,20 +606,22 @@ func (t *KeyboardTextTool) ArgsSchema() map[string]any {
 	}
 }
 
-func (t *KeyboardTextTool) Call(_ context.Context, input string) (string, error) {
+func (t *KeyboardTextTool) Call(ctx context.Context, input string) (string, error) {
 	text, errText := parseKeyboardTextInput(input)
 	if errText != "" {
-		return errText, nil
+		return toolErrorResultString(ctx, CodeInvalidArguments, errText), nil
 	}
 
 	if unsupported := unsupportedKeyboardTextRunes(text); len(unsupported) > 0 {
-		return fmt.Sprintf(
-			"error: keyboard_text supports only US-keyboard ASCII characters; unsupported characters: %q. Use enter_text_in_field for this target.",
+		return toolErrorResultf(
+			ctx,
+			CodeInvalidArguments,
+			"keyboard_text supports only US-keyboard ASCII characters; unsupported characters: %q. Use enter_text_in_field for this target.",
 			string(unsupported),
 		), nil
 	}
 	if looksLikeSpacedRomanizationBlob(text) {
-		return "error: keyboard_text received spaced romanization; use enter_text_in_field instead.", nil
+		return toolErrorResultString(ctx, CodeInvalidArguments, "keyboard_text received spaced romanization; use enter_text_in_field instead."), nil
 	}
 
 	releaseReport := make([]byte, 8)
@@ -633,10 +635,10 @@ func (t *KeyboardTextTool) Call(_ context.Context, input string) (string, error)
 		report[2] = code
 		// Press then release immediately, same as keyboard_tap.
 		if err := t.dev.Write(report); err != nil {
-			return fmt.Sprintf("error: %v", err), nil
+			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
 		if err := t.dev.Write(releaseReport); err != nil {
-			return fmt.Sprintf("error: %v", err), nil
+			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
 	}
 
@@ -681,7 +683,7 @@ func (t *MouseClickTool) ArgsSchema() map[string]any {
 	}
 }
 
-func (t *MouseClickTool) Call(_ context.Context, input string) (string, error) {
+func (t *MouseClickTool) Call(ctx context.Context, input string) (string, error) {
 	var args struct {
 		X          pointerCoordinate `json:"x"`
 		Y          pointerCoordinate `json:"y"`
@@ -689,17 +691,17 @@ func (t *MouseClickTool) Call(_ context.Context, input string) (string, error) {
 		CoordSpace string            `json:"coord_space"`
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
-		return fmt.Sprintf("error: invalid input: %v. Expected JSON format: {\"x\": 500, \"y\": 300, \"button\": \"left\", \"coord_space\": \"normalized\"}. Common mistakes: x and y must be numbers, missing quotes around field names", err), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v. Expected JSON format: {\"x\": 500, \"y\": 300, \"button\": \"left\", \"coord_space\": \"normalized\"}. Common mistakes: x and y must be numbers, missing quotes around field names", err), nil
 	}
 
 	absX, absY, err := resolvePointerPositionForSurface(t.screen, t.pc.touchscreen, args.X.Float64(), args.Y.Float64(), args.CoordSpace, coordinateSpaceAuto)
 	if err != nil {
-		return fmt.Sprintf("error: %v", err), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 	}
 	btn := mouseButtonByte(args.Button)
 
 	if err := tapPointer(t.pc, absX, absY, btn); err != nil {
-		return fmt.Sprintf("error: %v", err), nil
+		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
 
 	return "ok", nil
@@ -734,23 +736,23 @@ func (t *MouseMoveTool) ArgsSchema() map[string]any {
 	}
 }
 
-func (t *MouseMoveTool) Call(_ context.Context, input string) (string, error) {
+func (t *MouseMoveTool) Call(ctx context.Context, input string) (string, error) {
 	var args struct {
 		X          pointerCoordinate `json:"x"`
 		Y          pointerCoordinate `json:"y"`
 		CoordSpace string            `json:"coord_space"`
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
-		return fmt.Sprintf("error: invalid input: %v. Expected JSON format: {\"x\": 500, \"y\": 300, \"coord_space\": \"normalized\"}. Common mistakes: x and y must be numbers, missing quotes around field names", err), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v. Expected JSON format: {\"x\": 500, \"y\": 300, \"coord_space\": \"normalized\"}. Common mistakes: x and y must be numbers, missing quotes around field names", err), nil
 	}
 
 	absX, absY, err := resolvePointerPositionForSurface(t.screen, t.pc.touchscreen, args.X.Float64(), args.Y.Float64(), args.CoordSpace, coordinateSpaceAuto)
 	if err != nil {
-		return fmt.Sprintf("error: %v", err), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 	}
 
 	if err := positionPointer(t.pc, absX, absY, 0); err != nil {
-		return fmt.Sprintf("error: %v", err), nil
+		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
 
 	return "ok", nil
@@ -858,7 +860,7 @@ func nonNegativeIntegerSchema(description string) map[string]any {
 	}
 }
 
-func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error) {
+func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, error) {
 	var args struct {
 		Type         string        `json:"type"`
 		Point        *pointerPoint `json:"point"`
@@ -877,12 +879,12 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 		Strength     string        `json:"strength"`
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
-		return fmt.Sprintf("error: invalid input: %v. Common mistakes: missing quotes around string values, incorrect comma placement, point/start/end must be objects with named keys like {\"x\":500,\"y\":300} not bare values. Example: {\"type\":\"tap\",\"point\":{\"x\":500,\"y\":500}}", err), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v. Common mistakes: missing quotes around string values, incorrect comma placement, point/start/end must be objects with named keys like {\"x\":500,\"y\":300} not bare values. Example: {\"type\":\"tap\",\"point\":{\"x\":500,\"y\":500}}", err), nil
 	}
 
 	gestureType := strings.ToLower(strings.TrimSpace(args.Type))
 	if gestureType == "" {
-		return "error: type is required", nil
+		return toolErrorResultString(ctx, CodeInvalidArguments, "type is required"), nil
 	}
 
 	coordSpace := strings.TrimSpace(args.CoordSpace)
@@ -895,34 +897,34 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 	case "tap":
 		point, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.Point, coordSpace)
 		if err != nil {
-			return fmt.Sprintf("error: %v", err), nil
+			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
 		if err := tapPointerWithHold(t.pc, point.x, point.y, button, intOrDefault(args.HoldMs, defaultTapHoldMs)); err != nil {
-			return fmt.Sprintf("error: %v", err), nil
+			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
 	case "double_tap":
 		point, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.Point, coordSpace)
 		if err != nil {
-			return fmt.Sprintf("error: %v", err), nil
+			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
 		holdMs := intOrDefault(args.HoldMs, defaultTapHoldMs)
 		if err := tapPointerWithHold(t.pc, point.x, point.y, button, holdMs); err != nil {
-			return fmt.Sprintf("error: %v", err), nil
+			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
 		sleepMs(intOrDefault(args.PauseMs, 100))
 		if err := tapPointerWithHold(t.pc, point.x, point.y, button, holdMs); err != nil {
-			return fmt.Sprintf("error: %v", err), nil
+			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
 	case "long_press":
 		point, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.Point, coordSpace)
 		if err != nil {
-			return fmt.Sprintf("error: %v", err), nil
+			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
 		if err := settlePointer(t.pc, point.x, point.y); err != nil {
-			return fmt.Sprintf("error: %v", err), nil
+			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
 		if err := pressPointer(t.pc, point.x, point.y, button); err != nil {
-			return fmt.Sprintf("error: %v", err), nil
+			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
 		released := false
 		defer func() {
@@ -932,17 +934,17 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 		}()
 		sleepMs(intOrDefault(args.DurationMs, 500))
 		if err := releasePointerRepeated(t.pc, point.x, point.y, touchReleaseReportCount, touchReleaseReportDelayMs); err != nil {
-			return fmt.Sprintf("error: %v", err), nil
+			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
 		released = true
 	case "swipe_left", "swipe_right", "swipe_up", "swipe_down":
 		preset, err := directionalSwipePreset(args.Strength)
 		if err != nil {
-			return fmt.Sprintf("error: %v", err), nil
+			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
 		start, end, err := directionalSwipeEndpoints(t.screen, t.pc.touchscreen, gestureType, args.Distance, args.Anchor, preset)
 		if err != nil {
-			return fmt.Sprintf("error: %v", err), nil
+			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
 		if err := runSwipeLikeGesture(
 			t.pc,
@@ -954,16 +956,16 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 			intOrDefault(args.HoldAfterMs, preset.holdAfterMs),
 			positiveIntOrDefault(args.Steps, preset.steps),
 		); err != nil {
-			return fmt.Sprintf("error: %v", err), nil
+			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
 	case "drag":
 		start, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.Start, coordSpace)
 		if err != nil {
-			return fmt.Sprintf("error: %v", err), nil
+			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
 		end, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.End, coordSpace)
 		if err != nil {
-			return fmt.Sprintf("error: %v", err), nil
+			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
 		if err := runPositionedDragGesture(
 			t.pc,
@@ -975,16 +977,16 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 			intOrDefault(args.HoldAfterMs, 0),
 			positiveIntOrDefault(args.Steps, 12),
 		); err != nil {
-			return fmt.Sprintf("error: %v", err), nil
+			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
 	case "swipe":
 		start, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.Start, coordSpace)
 		if err != nil {
-			return fmt.Sprintf("error: %v", err), nil
+			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
 		end, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.End, coordSpace)
 		if err != nil {
-			return fmt.Sprintf("error: %v", err), nil
+			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
 		if err := runSwipeLikeGesture(
 			t.pc,
@@ -996,16 +998,16 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 			intOrDefault(args.HoldAfterMs, defaultSwipeHoldAfterMs),
 			positiveIntOrDefault(args.Steps, defaultSwipeSteps),
 		); err != nil {
-			return fmt.Sprintf("error: %v", err), nil
+			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
 	case "back", "edge_back", "left_edge_back":
 		start, err := resolvePointOrDefaultNormalized(t.screen, t.pc.touchscreen, args.Start, coordSpace, phoneBackStartX, phoneBackY)
 		if err != nil {
-			return fmt.Sprintf("error: %v", err), nil
+			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
 		end, err := resolvePointOrDefaultNormalized(t.screen, t.pc.touchscreen, args.End, coordSpace, phoneBackEndX, phoneBackY)
 		if err != nil {
-			return fmt.Sprintf("error: %v", err), nil
+			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
 		if err := runPositionedDragGesture(
 			t.pc,
@@ -1017,16 +1019,16 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 			intOrDefault(args.HoldAfterMs, defaultSwipeHoldAfterMs),
 			positiveIntOrDefault(args.Steps, defaultSwipeSteps),
 		); err != nil {
-			return fmt.Sprintf("error: %v", err), nil
+			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
 	case "home", "home_swipe", "bottom_edge_home":
 		start, err := resolvePointOrDefaultNormalized(t.screen, t.pc.touchscreen, args.Start, coordSpace, phoneHomeX, phoneHomeStartY)
 		if err != nil {
-			return fmt.Sprintf("error: %v", err), nil
+			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
 		end, err := resolvePointOrDefaultNormalized(t.screen, t.pc.touchscreen, args.End, coordSpace, phoneHomeX, phoneHomeEndY)
 		if err != nil {
-			return fmt.Sprintf("error: %v", err), nil
+			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
 		if err := runPositionedDragGesture(
 			t.pc,
@@ -1038,10 +1040,10 @@ func (t *TouchGestureTool) Call(_ context.Context, input string) (string, error)
 			intOrDefault(args.HoldAfterMs, defaultSwipeHoldAfterMs),
 			positiveIntOrDefault(args.Steps, defaultSwipeSteps),
 		); err != nil {
-			return fmt.Sprintf("error: %v", err), nil
+			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
 	default:
-		return fmt.Sprintf("error: unsupported gesture type: %q", args.Type), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "unsupported gesture type: %q", args.Type), nil
 	}
 
 	return "ok", nil
@@ -1066,12 +1068,12 @@ func (t *MouseScrollTool) ArgsSchema() map[string]any {
 	}, "delta")
 }
 
-func (t *MouseScrollTool) Call(_ context.Context, input string) (string, error) {
+func (t *MouseScrollTool) Call(ctx context.Context, input string) (string, error) {
 	var args struct {
 		Delta int `json:"delta"`
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
-		return fmt.Sprintf("error: invalid input: %v. Expected JSON format: {\"delta\": -3}. Delta must be a number between -127 and 127", err), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v. Expected JSON format: {\"delta\": -3}. Delta must be a number between -127 and 127", err), nil
 	}
 	if args.Delta == 0 {
 		return "ok", nil
@@ -1083,7 +1085,7 @@ func (t *MouseScrollTool) Call(_ context.Context, input string) (string, error) 
 	}
 
 	if err := scrollPointer(t.pc, args.Delta); err != nil {
-		return fmt.Sprintf("error: %v", err), nil
+		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
 
 	return "ok", nil
@@ -1722,7 +1724,7 @@ func charToHIDKey(ch byte) (modifier uint8, code uint8, ok bool) {
 func parseKeyboardTextInput(input string) (string, string) {
 	trimmed := strings.TrimSpace(input)
 	if trimmed == "" {
-		return "", "error: text is required"
+		return "", "text is required"
 	}
 
 	if strings.HasPrefix(trimmed, "{") {
@@ -1730,10 +1732,10 @@ func parseKeyboardTextInput(input string) (string, string) {
 			Text string `json:"text"`
 		}
 		if err := json.Unmarshal([]byte(trimmed), &args); err != nil {
-			return "", fmt.Sprintf("error: invalid input: %v", err)
+			return "", fmt.Sprintf("invalid input: %v", err)
 		}
 		if args.Text == "" {
-			return "", "error: text is required"
+			return "", "text is required"
 		}
 		return args.Text, ""
 	}
@@ -1741,10 +1743,10 @@ func parseKeyboardTextInput(input string) (string, string) {
 	if strings.HasPrefix(trimmed, `"`) {
 		var text string
 		if err := json.Unmarshal([]byte(trimmed), &text); err != nil {
-			return "", fmt.Sprintf("error: invalid input: %v", err)
+			return "", fmt.Sprintf("invalid input: %v", err)
 		}
 		if text == "" {
-			return "", "error: text is required"
+			return "", "text is required"
 		}
 		return text, ""
 	}

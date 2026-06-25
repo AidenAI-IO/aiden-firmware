@@ -127,7 +127,7 @@ func TestEnvironmentBridgeMatchesLocalErrorLikeOutput(t *testing.T) {
 
 func TestEnvironmentBridgeTransportFailureIsError(t *testing.T) {
 	// Point the bridge client at a dead endpoint; the call must surface as a tool error
-	// in the same "error: X failed" shape as a local failure.
+	// in the same structured ToolResult shape as a local failure.
 	bridged := runViaEnvironmentBridge(t, "http://127.0.0.1:1", "echo", "x")
 	if !bridged.IsError() {
 		t.Fatal("expected transport failure to be marked as error")

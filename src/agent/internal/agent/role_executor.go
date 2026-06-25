@@ -78,6 +78,7 @@ type defaultFinalReview struct {
 type roleExecutionResult struct {
 	Action          *schema.AgentAction
 	Step            *schema.AgentStep
+	ToolError       *ToolError
 	CandidateAnswer string
 }
 
@@ -465,7 +466,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 					state.World.UpdateFromStep(*turn.Step, len(state.ToolSteps), e.Tools)
 				}
 				if turn.Kind == executorTurnTool {
-					execution := roleExecutionResult{Action: turn.Action, Step: turn.Step}
+					execution := roleExecutionResult{Action: turn.Action, Step: turn.Step, ToolError: turn.ToolError}
 					state.StepExecutionResults = append(state.StepExecutionResults, execution)
 					state.ExecutionResults = append(state.ExecutionResults, execution)
 					if e.Recorder != nil {
@@ -804,8 +805,9 @@ func (e *roleCollaborativeExecutor) executePlannerToolAction(
 		return plannerTurnResult{}, toolExecution.Error
 	}
 	execution := roleExecutionResult{
-		Action: &toolExecution.Step.Action,
-		Step:   &toolExecution.Step,
+		Action:    &toolExecution.Step.Action,
+		Step:      &toolExecution.Step,
+		ToolError: toolExecution.Result.Error,
 	}
 	state.ExecutionResults = append(state.ExecutionResults, execution)
 	state.PlannerEvidence = append(state.PlannerEvidence, execution)
@@ -1120,9 +1122,10 @@ func (e *roleCollaborativeExecutor) callExecutorTurn(
 		kind = executorTurnSleep
 	}
 	return executorTurnResult{
-		Kind:   kind,
-		Action: &actionCopy,
-		Step:   &toolExecution.Step,
+		Kind:      kind,
+		Action:    &actionCopy,
+		Step:      &toolExecution.Step,
+		ToolError: toolExecution.Result.Error,
 	}, nil
 }
 

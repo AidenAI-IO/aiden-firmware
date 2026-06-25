@@ -145,11 +145,15 @@ func TestCalculatorAcceptsJSONExpression(t *testing.T) {
 }
 
 func TestWebScraperRejectsInvalidURL(t *testing.T) {
-	out, err := NewWebScraperTool(ProxyConfig{}).Call(context.Background(), `{"url":"not a url"}`)
+	ctx, _ := WithToolError(context.Background())
+	out, err := NewWebScraperTool(ProxyConfig{}).Call(ctx, `{"url":"not a url"}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
-	if !strings.HasPrefix(out, "error:") {
-		t.Fatalf("output = %q, want error response", out)
+	if out != "invalid url scheme: only http/https allowed" {
+		t.Fatalf("output = %q, want invalid URL error message", out)
+	}
+	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeInvalidArguments || got.Message != out {
+		t.Fatalf("ToolError = %+v, want invalid_arguments with output message", got)
 	}
 }

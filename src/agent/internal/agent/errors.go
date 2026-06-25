@@ -1,6 +1,9 @@
 package agent
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // Category enumerates the six fixed error categories used by the LLM and
 // downstream consumers to decide what to do about a failure. The set is
@@ -209,4 +212,28 @@ func toolErrorString(e *ToolError) string {
 		return ""
 	}
 	return e.Message
+}
+
+func toolErrorResultString(ctx context.Context, code, message string) string {
+	te := NewToolError(code, message)
+	SetToolError(ctx, te)
+	return toolErrorString(te)
+}
+
+func toolErrorResultf(ctx context.Context, code, format string, args ...any) string {
+	return toolErrorResultString(ctx, code, fmt.Sprintf(format, args...))
+}
+
+func cloneToolError(e *ToolError) *ToolError {
+	if e == nil {
+		return nil
+	}
+	clone := *e
+	if len(e.Details) > 0 {
+		clone.Details = make(map[string]any, len(e.Details))
+		for k, v := range e.Details {
+			clone.Details[k] = v
+		}
+	}
+	return &clone
 }

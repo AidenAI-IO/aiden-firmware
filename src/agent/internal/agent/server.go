@@ -104,6 +104,7 @@ type Message struct {
 	SpeechEligible  bool                `json:"speech_eligible,omitempty"`
 	ToolName        string              `json:"tool_name,omitempty"`
 	ToolInput       string              `json:"tool_input,omitempty"`
+	ToolError       *ToolError          `json:"tool_error,omitempty"`
 	Attachments     []MessageAttachment `json:"attachments,omitempty"`
 	Artifacts       []InputArtifact     `json:"artifacts,omitempty"`
 	Source          string              `json:"source,omitempty"`
@@ -136,6 +137,7 @@ func messageFromRunEvent(event RunEvent, fallbackEpisodeID string, requestID str
 		SpeechEligible: event.SpeechEligible,
 		ToolName:       event.ToolName,
 		ToolInput:      event.ToolInput,
+		ToolError:      cloneToolError(event.ToolError),
 		Timestamp:      event.Timestamp,
 		IsError:        event.IsError,
 	}
@@ -2411,7 +2413,9 @@ func decodeToolInvokeInput(body io.Reader) (string, error) {
 	return trimmed, nil
 }
 
-func toolOutputLooksLikeError(output string) bool {
+func legacyToolOutputLooksLikeError(output string) bool {
+	// Boundary compatibility for older subtools/stubs that still return only a
+	// legacy string. Do not use this as the internal source of error truth.
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(output)), "error:")
 }
 

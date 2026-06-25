@@ -1942,6 +1942,50 @@ func firstRunEventOfType(events []RunEvent, eventType string) (RunEvent, bool) {
 	return RunEvent{}, false
 }
 
+func TestRuntimeCallbackPropagatesToolErrorToEventsAndMessages(t *testing.T) {
+	toolErr := NewToolErrorWithDetails(CodePermissionDenied, "contacts permission denied", map[string]any{"scope": "contacts"})
+	var gotRunEvent RunEvent
+	var gotSessionEvent SessionEvent
+	handler := &runtimeCallbackHandler{
+		episodeID: "ep-1",
+		runtimeID: "runtime-1",
+		requestID: "req-1",
+		runID:     "run-1",
+		eventHandler: func(event RunEvent) {
+			gotRunEvent = event
+		},
+		sessionEventAppender: func(ctx context.Context, event SessionEvent) error {
+			gotSessionEvent = event
+			return nil
+		},
+	}
+	call := ToolCall{
+		Spec: ToolSpec{Name: "contacts"},
+		Action: schema.AgentAction{
+			Tool:      "contacts",
+			ToolID:    "call-1",
+			ToolInput: `{"action":"query"}`,
+		},
+		Input: `{"action":"query"}`,
+	}
+
+	handler.HandleToolCallResult(context.Background(), call, ToolResult{Output: toolErr.Message, Error: toolErr})
+
+	if gotRunEvent.ToolError == nil || gotRunEvent.ToolError.Code != CodePermissionDenied {
+		t.Fatalf("RunEvent.ToolError = %+v, want permission_denied", gotRunEvent.ToolError)
+	}
+	if gotSessionEvent.ToolError == nil || gotSessionEvent.ToolError.Code != CodePermissionDenied {
+		t.Fatalf("SessionEvent.ToolError = %+v, want permission_denied", gotSessionEvent.ToolError)
+	}
+	message := messageFromRunEvent(gotRunEvent, "", "req-1")
+	if message.ToolError == nil || message.ToolError.Code != CodePermissionDenied {
+		t.Fatalf("Message.ToolError = %+v, want permission_denied", message.ToolError)
+	}
+	if gotRunEvent.Content != toolErr.Message || message.Content != toolErr.Message {
+		t.Fatalf("error message content mismatch: run=%q message=%q want=%q", gotRunEvent.Content, message.Content, toolErr.Message)
+	}
+}
+
 func runEventsOfType(events []RunEvent, eventType string) []RunEvent {
 	var matching []RunEvent
 	for _, event := range events {
@@ -2320,12 +2364,15 @@ func TestRuntimeRunFeedsToolErrorsBackToModel(t *testing.T) {
 			}
 		}
 	}
-	if !strings.Contains(toolObservation, "error: screenshot failed: frame service: SERVICE_RECOVERING") {
+	if !strings.Contains(toolObservation, "frame service: SERVICE_RECOVERING") || strings.Contains(toolObservation, "error:") {
 		t.Fatalf("unexpected tool observation: %q", toolObservation)
 	}
 	toolResult, ok := firstRunEventOfType(events, "tool_result")
 	if !ok || !toolResult.IsError {
 		t.Fatalf("expected error tool_result event, got %#v", events)
+	}
+	if toolResult.ToolError == nil || toolResult.ToolError.Code != CodeToolExecutionFailed || toolResult.ToolError.Message != toolObservation {
+		t.Fatalf("tool_result ToolError = %+v, want execution failure matching observation %q", toolResult.ToolError, toolObservation)
 	}
 }
 
