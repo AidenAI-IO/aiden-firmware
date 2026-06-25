@@ -164,9 +164,15 @@ AidenServiceStatus AudioSessionManager::stop_recording(uint64_t session_id) {
 // -----------------------------------------------------------------------
 
 AidenServiceStatus AudioSessionManager::start_playback(const AudioFormat& fmt,
-                                                        PlaybackStartResult* out) {
+                                                         PlaybackStartResult* out) {
     const Clock::time_point now = Clock::now();
     std::lock_guard<std::mutex> lock(mutex_);
+    if (!playback_sessions_.empty() ||
+        draining_playback_count_->load(std::memory_order_relaxed) > 0) {
+        fprintf(stderr,
+                "[audio_service] rejecting playback start while another playback is active or draining\n");
+        return AidenServiceStatus::SERVICE_RECOVERING;
+    }
     uint64_t id = next_session_id();
     auto session = std::make_shared<AudioPlaybackSession>(id, fmt);
     if (!session->start()) {

@@ -63,6 +63,70 @@ func TestPlayPromptSoundRetriesBusyStartPlayback(t *testing.T) {
 	}
 }
 
+func TestAudioClientStartPlaybackRetriesServiceRecovering(t *testing.T) {
+	audioServer := newTestAudioService(t)
+	audioServer.startPlaybackStatuses = []string{"SERVICE_RECOVERING", "SERVICE_RECOVERING", "OK"}
+
+	playback, err := NewAudioServiceClient(audioServer.socketPath).StartPlayback(AudioFormat{SampleRate: 16000, Channels: 1, BitWidth: 16})
+	if err != nil {
+		t.Fatalf("StartPlayback() error = %v", err)
+	}
+	if playback.SessionID != 77 {
+		t.Fatalf("sessionID = %d, want 77", playback.SessionID)
+	}
+	if got := audioServer.countOp("start_playback"); got != 3 {
+		t.Fatalf("start_playback count = %d, want 3", got)
+	}
+}
+
+func TestAudioClientStartPlaybackRetriesLongRecoveringWindow(t *testing.T) {
+	audioServer := newTestAudioService(t)
+	audioServer.startPlaybackStatuses = []string{
+		"SERVICE_RECOVERING",
+		"SERVICE_RECOVERING",
+		"SERVICE_RECOVERING",
+		"SERVICE_RECOVERING",
+		"SERVICE_RECOVERING",
+		"SERVICE_RECOVERING",
+		"SERVICE_RECOVERING",
+		"SERVICE_RECOVERING",
+		"SERVICE_RECOVERING",
+		"OK",
+	}
+
+	playback, err := NewAudioServiceClient(audioServer.socketPath).StartPlayback(AudioFormat{SampleRate: 16000, Channels: 1, BitWidth: 16})
+	if err != nil {
+		t.Fatalf("StartPlayback() error = %v", err)
+	}
+	if playback.SessionID != 77 {
+		t.Fatalf("sessionID = %d, want 77", playback.SessionID)
+	}
+	if got := audioServer.countOp("start_playback"); got != 10 {
+		t.Fatalf("start_playback count = %d, want 10", got)
+	}
+}
+
+func TestAudioClientStartPlaybackWaitsForPlaybackDrainOnServiceRecovering(t *testing.T) {
+	audioServer := newTestAudioService(t)
+	audioServer.startPlaybackStatuses = []string{"SERVICE_RECOVERING", "OK"}
+	audioServer.healthPlaybackSessions = []uint32{1, 1, 0}
+
+	startedAt := time.Now()
+	playback, err := NewAudioServiceClient(audioServer.socketPath).StartPlayback(AudioFormat{SampleRate: 16000, Channels: 1, BitWidth: 16})
+	if err != nil {
+		t.Fatalf("StartPlayback() error = %v", err)
+	}
+	if playback.SessionID != 77 {
+		t.Fatalf("sessionID = %d, want 77", playback.SessionID)
+	}
+	if got := audioServer.countOp("health"); got < 3 {
+		t.Fatalf("health count = %d, want at least 3", got)
+	}
+	if elapsed := time.Since(startedAt); elapsed < 2*playbackDrainPollInterval {
+		t.Fatalf("StartPlayback() returned before waiting for playback drain: %s", elapsed)
+	}
+}
+
 func TestPlayPromptSoundDoesNotRetryNonRetryableStartPlaybackFailure(t *testing.T) {
 	audioServer := newTestAudioService(t)
 	audioServer.startPlaybackStatuses = []string{"INTERNAL_ERROR", "OK"}
