@@ -135,6 +135,9 @@ func TestEnvironmentBridgeTransportFailureIsError(t *testing.T) {
 	if bridged.Output == "" {
 		t.Fatal("expected non-empty error output on transport failure")
 	}
+	if bridged.Error == nil || bridged.Error.Code != CodeEnvironmentBridgeTransport {
+		t.Fatalf("transport Error = %+v, want environment_bridge_transport_failed", bridged.Error)
+	}
 }
 
 func TestEnvironmentBridgeSendsBenchmarkTaskIDHeader(t *testing.T) {

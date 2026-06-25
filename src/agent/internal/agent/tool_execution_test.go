@@ -343,11 +343,17 @@ func TestExecuteToolCallPropagatesContextErrors(t *testing.T) {
 			if result.Result.Error.Code != wantCode {
 				t.Fatalf("result error code = %q, want %q", result.Result.Error.Code, wantCode)
 			}
+			if result.Result.Output != result.Result.Error.Message {
+				t.Fatalf("Output must equal Error.Message, got %q vs %q", result.Result.Output, result.Result.Error.Message)
+			}
 			if len(recorder.events) != 2 || recorder.events[0] != "start" || recorder.events[1] != "result" {
 				t.Fatalf("callback lifecycle events = %#v, want start then result", recorder.events)
 			}
 			if len(recorder.results) != 1 || recorder.results[0].Error == nil || recorder.results[0].Error.Code != wantCode {
 				t.Fatalf("terminal result callback = %#v, want error code %v", recorder.results, wantCode)
+			}
+			if recorder.results[0].Output != recorder.results[0].Error.Message {
+				t.Fatalf("callback Output must equal Error.Message, got %q vs %q", recorder.results[0].Output, recorder.results[0].Error.Message)
 			}
 		})
 	}

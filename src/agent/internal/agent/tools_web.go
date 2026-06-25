@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -25,6 +26,8 @@ const defaultUserAgent = "aiden-agent/1.0 (+https://github.com/AidenAI-IO)"
 const defaultWebToolTimeout = 15 * time.Second
 const maxWebToolOutputBytes = 12_000
 const braveSearchEndpoint = "https://api.search.brave.com/res/v1/web/search"
+
+var lookupScrapeHostIPs = net.LookupIP
 
 // searchBackend abstracts the actual search call.
 type searchBackend interface {
@@ -116,6 +119,9 @@ func (t *WebSearchTool) Call(ctx context.Context, input string) (string, error) 
 
 	result, err := t.backend.Search(callCtx, query)
 	if err != nil {
+		if contextErr := contextError(callCtx, err); contextErr != nil {
+			return "", contextErr
+		}
 		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
 	return truncateToolOutput(result), nil
@@ -324,6 +330,9 @@ func (t *WikipediaTool) Call(ctx context.Context, input string) (string, error) 
 
 	result, err := t.inner.Call(callCtx, query)
 	if err != nil {
+		if contextErr := contextError(callCtx, err); contextErr != nil {
+			return "", contextErr
+		}
 		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
 	return truncateToolOutput(result), nil
@@ -424,6 +433,9 @@ func (t *WebScraperTool) Call(ctx context.Context, input string) (string, error)
 
 	result, err := t.scrape(callCtx, rawURL)
 	if err != nil {
+		if contextErr := contextError(callCtx, err); contextErr != nil {
+			return "", contextErr
+		}
 		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
 	return truncateToolOutput(result), nil
@@ -449,12 +461,18 @@ func (t *WebScraperTool) scrape(ctx context.Context, targetURL string) (string, 
 	scrapedLinksMutex := sync.RWMutex{}
 	pageCount := 0
 	pageCountMutex := sync.Mutex{}
+	var requestErr error
 	const maxPages = 1
 
 	blacklist := []string{"login", "signup", "signin", "register", "logout", "download", "redirect"}
 
 	c.OnRequest(func(r *colly.Request) {
 		if ctx.Err() != nil {
+			r.Abort()
+			return
+		}
+		if err := validateScrapeURL(r.URL.String()); err != nil {
+			requestErr = err
 			r.Abort()
 			return
 		}
@@ -531,6 +549,9 @@ func (t *WebScraperTool) scrape(ctx context.Context, targetURL string) (string, 
 	})
 
 	if err := c.Visit(targetURL); err != nil {
+		if requestErr != nil {
+			return "", requestErr
+		}
 		return "", err
 	}
 
@@ -544,6 +565,9 @@ func (t *WebScraperTool) scrape(ctx context.Context, targetURL string) (string, 
 	case <-ctx.Done():
 		return "", ctx.Err()
 	case <-done:
+	}
+	if requestErr != nil {
+		return "", requestErr
 	}
 
 	return siteData.String(), nil
@@ -565,11 +589,31 @@ func validateScrapeURL(rawURL string) error {
 		return fmt.Errorf("url host is not allowed")
 	}
 	if ip := net.ParseIP(host); ip != nil {
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		if scrapeIPIsDisallowed(ip) {
 			return fmt.Errorf("url host is not allowed")
+		}
+		return nil
+	}
+	addrs, err := lookupScrapeHostIPs(host)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		return fmt.Errorf("resolve url host: %w", err)
+	}
+	if len(addrs) == 0 {
+		return fmt.Errorf("resolve url host: no addresses")
+	}
+	for _, ip := range addrs {
+		if scrapeIPIsDisallowed(ip) {
+			return fmt.Errorf("url host resolves to a private or link-local address")
 		}
 	}
 	return nil
+}
+
+func scrapeIPIsDisallowed(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()
 }
 
 func contextWithDefaultTimeout(ctx context.Context) (context.Context, context.CancelFunc) {

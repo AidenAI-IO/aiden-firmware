@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -178,6 +179,20 @@ func TestWeatherToolAcceptsCoordinatesWithoutGeocoding(t *testing.T) {
 	}
 	if !strings.Contains(out, `"timezone": "UTC"`) {
 		t.Fatalf("unexpected output: %s", out)
+	}
+}
+
+func TestWeatherToolPropagatesContextCancellation(t *testing.T) {
+	tool := &WeatherTool{
+		client:      http.DefaultClient,
+		forecastURL: "https://example.invalid/v1/forecast",
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := tool.Call(ctx, `{"latitude":1,"longitude":2,"location":"point"}`)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Call error = %v, want context.Canceled", err)
 	}
 }
 

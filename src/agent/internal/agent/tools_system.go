@@ -186,6 +186,9 @@ func (t *WeatherTool) Call(ctx context.Context, input string) (string, error) {
 	} else {
 		geo, err := t.geocode(callCtx, args.Location)
 		if err != nil {
+			if contextErr := contextError(callCtx, err); contextErr != nil {
+				return "", contextErr
+			}
 			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
 		locationName = geo.DisplayName()
@@ -195,6 +198,9 @@ func (t *WeatherTool) Call(ctx context.Context, input string) (string, error) {
 
 	forecast, err := t.fetchForecast(callCtx, lat, lon)
 	if err != nil {
+		if contextErr := contextError(callCtx, err); contextErr != nil {
+			return "", contextErr
+		}
 		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
 

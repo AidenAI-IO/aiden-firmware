@@ -1974,12 +1974,21 @@ func TestRuntimeCallbackPropagatesToolErrorToEventsAndMessages(t *testing.T) {
 	if gotRunEvent.ToolError == nil || gotRunEvent.ToolError.Code != CodePermissionDenied {
 		t.Fatalf("RunEvent.ToolError = %+v, want permission_denied", gotRunEvent.ToolError)
 	}
+	if gotRunEvent.ToolError.Details["scope"] != "contacts" {
+		t.Fatalf("RunEvent.ToolError.Details = %+v, want scope=contacts", gotRunEvent.ToolError.Details)
+	}
 	if gotSessionEvent.ToolError == nil || gotSessionEvent.ToolError.Code != CodePermissionDenied {
 		t.Fatalf("SessionEvent.ToolError = %+v, want permission_denied", gotSessionEvent.ToolError)
+	}
+	if gotSessionEvent.ToolError.Details["scope"] != "contacts" {
+		t.Fatalf("SessionEvent.ToolError.Details = %+v, want scope=contacts", gotSessionEvent.ToolError.Details)
 	}
 	message := messageFromRunEvent(gotRunEvent, "", "req-1")
 	if message.ToolError == nil || message.ToolError.Code != CodePermissionDenied {
 		t.Fatalf("Message.ToolError = %+v, want permission_denied", message.ToolError)
+	}
+	if message.ToolError.Details["scope"] != "contacts" {
+		t.Fatalf("Message.ToolError.Details = %+v, want scope=contacts", message.ToolError.Details)
 	}
 	if gotRunEvent.Content != toolErr.Message || message.Content != toolErr.Message {
 		t.Fatalf("error message content mismatch: run=%q message=%q want=%q", gotRunEvent.Content, message.Content, toolErr.Message)

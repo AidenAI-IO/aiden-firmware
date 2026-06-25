@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,18 @@ type fakeSearchBackend struct {
 	query string
 	out   string
 	err   error
+}
+
+func TestWebSearchPropagatesContextErrors(t *testing.T) {
+	for _, wantErr := range []error{context.Canceled, context.DeadlineExceeded} {
+		t.Run(wantErr.Error(), func(t *testing.T) {
+			tool := &WebSearchTool{backend: &fakeSearchBackend{err: wantErr}, provider: "fake"}
+			_, err := tool.Call(context.Background(), `{"query":"golang"}`)
+			if !errors.Is(err, wantErr) {
+				t.Fatalf("Call error = %v, want %v", err, wantErr)
+			}
+		})
+	}
 }
 
 func (b *fakeSearchBackend) Search(ctx context.Context, query string) (string, error) {
@@ -152,6 +165,29 @@ func TestWebScraperRejectsInvalidURL(t *testing.T) {
 	}
 	if out != "invalid url scheme: only http/https allowed" {
 		t.Fatalf("output = %q, want invalid URL error message", out)
+	}
+	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeInvalidArguments || got.Message != out {
+		t.Fatalf("ToolError = %+v, want invalid_arguments with output message", got)
+	}
+}
+
+func TestWebScraperRejectsHostnamesResolvingToPrivateIPs(t *testing.T) {
+	original := lookupScrapeHostIPs
+	lookupScrapeHostIPs = func(host string) ([]net.IP, error) {
+		if host != "public.example" {
+			t.Fatalf("lookup host = %q, want public.example", host)
+		}
+		return []net.IP{net.ParseIP("169.254.169.254")}, nil
+	}
+	defer func() { lookupScrapeHostIPs = original }()
+
+	ctx, _ := WithToolError(context.Background())
+	out, err := NewWebScraperTool(ProxyConfig{}).Call(ctx, `{"url":"https://public.example/page"}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "url host resolves to a private or link-local address" {
+		t.Fatalf("output = %q", out)
 	}
 	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeInvalidArguments || got.Message != out {
 		t.Fatalf("ToolError = %+v, want invalid_arguments with output message", got)

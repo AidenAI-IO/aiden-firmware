@@ -609,6 +609,45 @@ func TestHandleCoordinateDebugTap(t *testing.T) {
 	}
 }
 
+func TestHandleCoordinateDebugTapMapsStructuredToolErrorStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		toolErr    *ToolError
+		wantStatus int
+	}{
+		{name: "invalid input", toolErr: NewToolError(CodeInvalidArguments, "bad tap"), wantStatus: http.StatusBadRequest},
+		{name: "module unavailable", toolErr: NewToolError(CodeModuleUnavailable, "hid unavailable"), wantStatus: http.StatusServiceUnavailable},
+		{name: "execution failed", toolErr: NewToolError(CodeToolExecutionFailed, "hid write failed"), wantStatus: http.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			toolSet := &ToolSet{tools: map[string]langtools.Tool{
+				"touch_gesture": &contextToolErrorStub{name: "touch_gesture", toolErr: tc.toolErr},
+			}}
+			runtime := NewRuntimeWithDeps(
+				Config{Model: ModelConfig{Provider: "fake"}},
+				&testModelResolver{},
+				NewMemoryManager(""),
+				toolSet,
+				NewSkillIndex(),
+			)
+			server := NewServer(runtime, ":0")
+
+			req := httptest.NewRequest(http.MethodPost, "/api/coordinate-debug/tap", bytes.NewBufferString(`{"x":123,"y":456}`))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+
+			server.handleCoordinateDebugTap(rec, req)
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d body=%s, want %d", rec.Code, rec.Body.String(), tc.wantStatus)
+			}
+			if !strings.Contains(rec.Body.String(), tc.toolErr.Message) {
+				t.Fatalf("body = %s, want message %q", rec.Body.String(), tc.toolErr.Message)
+			}
+		})
+	}
+}
+
 func TestServerHandleChatStreamTagsHistoryWithRequestID(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleDirectResponses("你好！"),

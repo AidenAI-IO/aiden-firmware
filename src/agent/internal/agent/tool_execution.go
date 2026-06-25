@@ -147,9 +147,10 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 	if execution.EnvironmentBridge != nil && shouldForwardToEnvironmentBridge(spec.Name, execution.EnvironmentBridgeTools) {
 		remote, err := execution.EnvironmentBridge.CallTool(ctx, spec.Name, input)
 		if err != nil {
-			// Reserved for context.Canceled / DeadlineExceeded only.
-			code := CodeCanceled
-			if errors.Is(err, context.DeadlineExceeded) {
+			code := CodeToolExecutionFailed
+			if errors.Is(err, context.Canceled) {
+				code = CodeCanceled
+			} else if errors.Is(err, context.DeadlineExceeded) {
 				code = CodeDeadlineExceeded
 			}
 			toolErr := NewToolError(code, err.Error())
@@ -195,12 +196,12 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 		result.Output = toolErr.Message
 	}
 	if err != nil {
+		result.Output = toolErr.Message
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			result = runAfterToolCallHook(ctx, execution, call, result)
 			emitToolResult(ctx, execution.Callback, call, result)
 			return ToolCallExecutionResult{Call: call, Result: result, Error: err}
 		}
-		result.Output = toolErr.Message
 	}
 
 	result = runAfterToolCallHook(ctx, execution, call, result)

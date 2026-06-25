@@ -167,7 +167,7 @@ func (s *Server) handleCoordinateDebugTap(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if te := ToolErrorFromContext(toolCtx); te != nil {
-		http.Error(w, fmt.Sprintf(`{"ok":false,"error":%q}`, te.Message), http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf(`{"ok":false,"error":%q}`, te.Message), httpStatusForToolError(te))
 		return
 	}
 	if screen != nil {
@@ -210,4 +210,18 @@ func (s *Server) handleCoordinateDebugTap(w http.ResponseWriter, r *http.Request
 		ActionType: gestureType,
 		Screenshot: &screenshotPayload,
 	})
+}
+
+func httpStatusForToolError(te *ToolError) int {
+	if te == nil {
+		return http.StatusInternalServerError
+	}
+	switch te.Category {
+	case CategoryInvalidInput, CategoryUnsupported:
+		return http.StatusBadRequest
+	case CategoryPreconditionFailed, CategoryUserActionRequired, CategoryTransient:
+		return http.StatusServiceUnavailable
+	default:
+		return http.StatusInternalServerError
+	}
 }

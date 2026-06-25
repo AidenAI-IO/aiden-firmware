@@ -26,6 +26,12 @@ func TestEpisodeRecorderRecordsStructuredToolError(t *testing.T) {
 		if event.ToolError == nil || event.ToolError.Code != CodePermissionDenied {
 			t.Fatalf("TaskEpisodeEvent.ToolError = %+v, want permission_denied", event.ToolError)
 		}
+		if !event.IsError {
+			t.Fatalf("TaskEpisodeEvent.IsError = false, want true")
+		}
+		if event.ToolError.Message != "contacts permission denied" {
+			t.Fatalf("TaskEpisodeEvent.ToolError.Message = %q", event.ToolError.Message)
+		}
 		return
 	}
 	t.Fatal("missing tool_result event")

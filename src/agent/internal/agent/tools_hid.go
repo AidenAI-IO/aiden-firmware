@@ -1078,10 +1078,8 @@ func (t *MouseScrollTool) Call(ctx context.Context, input string) (string, error
 	if args.Delta == 0 {
 		return "ok", nil
 	}
-	if args.Delta < -127 {
-		args.Delta = -127
-	} else if args.Delta > 127 {
-		args.Delta = 127
+	if args.Delta < -127 || args.Delta > 127 {
+		return toolErrorResultString(ctx, CodeInvalidArguments, "delta must be between -127 and 127"), nil
 	}
 
 	if err := scrollPointer(t.pc, args.Delta); err != nil {

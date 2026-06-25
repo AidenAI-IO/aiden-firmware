@@ -1406,9 +1406,7 @@ func (h *runtimeCallbackHandler) HandleToolError(ctx context.Context, err error)
 	action, ok := h.popPendingAction()
 	if ok {
 		var toolErr *ToolError
-		if te, ok := err.(*ToolError); ok {
-			toolErr = te
-		} else {
+		if !errors.As(err, &toolErr) {
 			toolErr = NewToolError(CodeToolExecutionFailed, err.Error())
 		}
 		content := toolErr.Message
@@ -1450,9 +1448,7 @@ func (h *runtimeCallbackHandler) HandleNamedToolError(ctx context.Context, name,
 		h.logger.Error("Tool error: name=%s err=%v", name, err)
 	}
 	var toolErr *ToolError
-	if te, ok := err.(*ToolError); ok {
-		toolErr = te
-	} else {
+	if !errors.As(err, &toolErr) {
 		toolErr = NewToolError(CodeToolExecutionFailed, err.Error())
 	}
 	content := toolErr.Message

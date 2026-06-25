@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -126,6 +127,9 @@ func (t *WaitStableScreenTool) ArgsSchema() map[string]any {
 func (t *WaitStableScreenTool) Call(ctx context.Context, input string) (string, error) {
 	result, err := t.wait(ctx, input)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "", err
+		}
 		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
 	screenshot, err := t.captureScreenshot()

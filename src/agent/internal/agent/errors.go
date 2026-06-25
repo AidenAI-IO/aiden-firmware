@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -236,4 +237,19 @@ func cloneToolError(e *ToolError) *ToolError {
 		}
 	}
 	return &clone
+}
+
+func contextError(ctx context.Context, err error) error {
+	if ctx != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+	}
+	if errors.Is(err, context.Canceled) {
+		return context.Canceled
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return context.DeadlineExceeded
+	}
+	return nil
 }

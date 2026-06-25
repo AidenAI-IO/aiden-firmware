@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 )
 
@@ -57,6 +58,11 @@ func (t *EnterTextInFieldTool) Call(ctx context.Context, input string) (string, 
 	}
 	result, err := t.engine.Run(ctx, args)
 	if err != nil {
+		var toolErr *ToolError
+		if errors.As(err, &toolErr) {
+			SetToolError(ctx, toolErr)
+			return toolErrorString(toolErr), nil
+		}
 		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
 	if !result.Committed {

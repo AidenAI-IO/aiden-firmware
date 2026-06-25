@@ -881,6 +881,22 @@ func TestHIDDeviceWriteReturnsNonRetryableError(t *testing.T) {
 	}
 }
 
+func TestMouseScrollToolRejectsOutOfRangeDelta(t *testing.T) {
+	tool := &MouseScrollTool{}
+	ctx, _ := WithToolError(context.Background())
+
+	out, err := tool.Call(ctx, `{"delta":128}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "delta must be between -127 and 127" {
+		t.Fatalf("output = %q", out)
+	}
+	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeInvalidArguments || got.Message != out {
+		t.Fatalf("ToolError = %+v, want invalid_arguments with output message", got)
+	}
+}
+
 func TestHIDDeviceWriteTimesOutWhenFDWouldBlock(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("requires Linux nonblocking pipe semantics")

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"runtime"
 	"strings"
 	"testing"
@@ -197,6 +198,18 @@ func TestShellToolForegroundTimeout(t *testing.T) {
 	}
 }
 
+func TestShellToolForegroundCancellationReturnsContextError(t *testing.T) {
+	skipOnWindows(t)
+	tool := &ShellTool{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := tool.Call(ctx, `{"command":"sleep 1"}`)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Call error = %v, want context.Canceled", err)
+	}
+}
+
 func TestShellToolMissingCommand(t *testing.T) {
 	tool := &ShellTool{}
 
@@ -370,15 +383,17 @@ func TestShellToolBackgroundSubmitInput(t *testing.T) {
 
 func TestShellToolUnknownAction(t *testing.T) {
 	tool := &ShellTool{}
+	ctx, _ := WithToolError(context.Background())
 
-	out, err := tool.Call(context.Background(), `{"action":"bogus"}`)
+	out, err := tool.Call(ctx, `{"action":"bogus"}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
-	// Unknown actions don't pass shellHasAction, so they fall through to the
-	// foreground path which then complains about a missing command.
-	if !strings.Contains(out, "Missing required parameter: command") {
-		t.Fatalf("expected missing-command error, got %q", out)
+	if !strings.Contains(out, "invalid action: bogus") {
+		t.Fatalf("expected invalid-action error, got %q", out)
+	}
+	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeInvalidArguments || got.Message != out {
+		t.Fatalf("ToolError = %+v, want invalid_arguments with output message", got)
 	}
 }
 

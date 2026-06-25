@@ -71,7 +71,8 @@ func (t *ShellTool) Call(ctx context.Context, input string) (string, error) {
 		}
 	}
 
-	if shellBoolArg(arguments, "background") || shellHasAction(arguments) {
+	_, hasAction := arguments["action"]
+	if shellBoolArg(arguments, "background") || hasAction {
 		out, err := shellExecuteBackground(ctx, arguments, t.proxy)
 		if err != nil {
 			return out, err
@@ -99,6 +100,9 @@ func (t *ShellTool) Call(ctx context.Context, input string) (string, error) {
 	defer cancel()
 
 	result, runErr := shellRunForeground(execCtx, command, workdir, usePTY, t.proxy)
+	if contextErr := contextError(execCtx, runErr); errors.Is(contextErr, context.Canceled) {
+		return "", contextErr
+	}
 	if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
 		return toolErrorResultf(ctx, CodeDeadlineExceeded, "Error: command timed out after %.0f seconds", timeoutSecs), nil
 	}
