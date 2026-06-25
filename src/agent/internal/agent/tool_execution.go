@@ -38,6 +38,7 @@ type ToolCallExecution struct {
 	Callback               callbacks.Handler
 	EnvironmentBridge      *EnvironmentBridgeClient
 	EnvironmentBridgeTools []string // Tool name globs to forward; empty forwards nothing (see shouldForwardToEnvironmentBridge)
+	VisualArtifacts        *visualArtifactStore
 }
 
 type ToolCallExecutionResult struct {
@@ -239,8 +240,16 @@ func runAfterToolCallHook(ctx context.Context, execution ToolCallExecution, call
 	} else {
 		result = normalizeToolResult(DefaultAfterToolCall(ctx, call, result))
 	}
+	if execution.VisualArtifacts != nil && call.Spec.Tool != nil {
+		if visual, ok := call.Spec.Tool.(visualObservationTool); ok && visual.ReturnsVisualObservation() {
+			output, externalized, err := execution.VisualArtifacts.ExternalizeObservation(result.Output)
+			if err == nil && externalized {
+				result.Output = output
+			}
+		}
+	}
 	if handler, ok := execution.Callback.(toolExecutionHookHandler); ok {
-		return normalizeToolResult(handler.AfterToolCall(ctx, call, result))
+		result = normalizeToolResult(handler.AfterToolCall(ctx, call, result))
 	}
 	return result
 }

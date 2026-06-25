@@ -15,6 +15,7 @@ type FunctionAgent struct {
 	Tools             []langtools.Tool
 	OutputKey         string
 	ScreenshotPruning ScreenshotPruningConfig
+	VisualArtifacts   visualArtifactReader
 }
 
 type visualObservationTool interface {
@@ -327,19 +328,31 @@ func (a *FunctionAgent) visualScreenshotObservation(step schema.AgentStep) (visu
 	if !a.isVisualObservationTool(step.Action.Tool) {
 		return visualScreenshotObservation{}, false
 	}
-	return parseScreenshotObservation(step.Observation)
+	return parseScreenshotObservation(step.Observation, a.VisualArtifacts)
 }
 
-func parseScreenshotObservation(observation string) (visualScreenshotObservation, bool) {
+func parseScreenshotObservation(observation string, readers ...visualArtifactReader) (visualScreenshotObservation, bool) {
 	var result postActionScreenshotResult
 	if err := json.Unmarshal([]byte(observation), &result); err != nil {
 		return visualScreenshotObservation{}, false
 	}
-	if result.Width <= 0 || result.Height <= 0 || strings.TrimSpace(result.Data) == "" {
+	if result.Width <= 0 || result.Height <= 0 {
 		return visualScreenshotObservation{}, false
 	}
-	imageBytes, err := base64.StdEncoding.DecodeString(result.Data)
-	if err != nil || len(imageBytes) == 0 {
+	var imageBytes []byte
+	if strings.TrimSpace(result.Data) != "" {
+		var err error
+		imageBytes, err = base64.StdEncoding.DecodeString(result.Data)
+		if err != nil || len(imageBytes) == 0 {
+			return visualScreenshotObservation{}, false
+		}
+	} else if strings.TrimSpace(result.ScreenshotRef) != "" && len(readers) > 0 && readers[0] != nil {
+		var err error
+		imageBytes, err = readers[0].ReadVisualArtifact(result.ScreenshotRef)
+		if err != nil || len(imageBytes) == 0 {
+			return visualScreenshotObservation{}, false
+		}
+	} else {
 		return visualScreenshotObservation{}, false
 	}
 	format, ok := normalizeScreenshotFormat(result.Format)
