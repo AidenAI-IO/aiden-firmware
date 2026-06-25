@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
 
@@ -228,6 +229,9 @@ func (s *TencentASRSTT) buildRealtimeEndpoint(cfg STTStreamConfig) (string, erro
 		baseURL = "wss://" + tencentRealtimeASRHost
 	}
 
+	// Generate 16-character voice_id from UUID
+	voiceID := strings.ReplaceAll(uuid.New().String(), "-", "")[:16]
+
 	params := map[string]string{
 		"engine_model_type": s.engineModelType,
 		"expired":           strconv.FormatInt(expired, 10),
@@ -235,6 +239,7 @@ func (s *TencentASRSTT) buildRealtimeEndpoint(cfg STTStreamConfig) (string, erro
 		"secretid":          s.secretID,
 		"timestamp":         strconv.FormatInt(timestamp, 10),
 		"voice_format":      tencentRealtimeASRVoiceFormatPCM,
+		"voice_id":          voiceID,
 	}
 	if cfg.SampleRate == 8000 {
 		params["input_sample_rate"] = "8000"
