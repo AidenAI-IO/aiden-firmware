@@ -134,7 +134,7 @@ func firstMessageOfType(messages []Message, messageType string) (Message, bool) 
 func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, "我先读取当前音量。"),
+			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, "Let me read the current volume."),
 			contentResponse("The current audio volume is 42."),
 		},
 	}
@@ -159,7 +159,7 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	)
 	server := NewServer(runtime, ":0")
 
-	body := bytes.NewBufferString(`{"message":"当前音量是多少？"}`)
+	body := bytes.NewBufferString(`{"message":"What is the current volume?"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/chat", body)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -182,7 +182,7 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 		t.Fatalf("expected 6 history entries for default-mode planner tool flow, got %d", len(resp.History))
 	}
 
-	if resp.History[0].Type != "user" || resp.History[0].Content != "当前音量是多少？" {
+	if resp.History[0].Type != "user" || resp.History[0].Content != "What is the current volume?" {
 		t.Fatalf("unexpected first history message: %#v", resp.History[0])
 	}
 	roleOutput, ok := firstMessageOfType(resp.History, "role_output")
@@ -193,7 +193,7 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	if !ok || toolCall.ToolName != "audio_volume" || toolCall.ToolInput != "{}" {
 		t.Fatalf("unexpected tool_call message: %#v", resp.History)
 	}
-	if toolCall.Content != "我先读取当前音量。" {
+	if toolCall.Content != "Let me read the current volume." {
 		t.Fatalf("unexpected tool_call content: %#v", toolCall)
 	}
 	toolResult, ok := firstMessageOfType(resp.History, "tool_result")
@@ -210,7 +210,7 @@ func TestServerPersistsChatHistoryWithEpisodeReference(t *testing.T) {
 	configDir := t.TempDir()
 	memoryDir := filepath.Join(configDir, "memory")
 	model := &scriptedModel{
-		responses: roleDirectResponses("已完成"),
+		responses: roleDirectResponses("Completed"),
 	}
 	streamingDisabled := false
 	runtime := NewRuntimeWithDeps(
@@ -228,7 +228,7 @@ func TestServerPersistsChatHistoryWithEpisodeReference(t *testing.T) {
 	)
 	server := NewServer(runtime, ":0")
 
-	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"做一个任务"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"Do a task"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	server.handleChat(rec, req)
@@ -281,7 +281,7 @@ func TestServerPersistsChatHistoryWithEpisodeReference(t *testing.T) {
 
 func TestServerHandleChatStreamsRoleToolAndAssistantMessages(t *testing.T) {
 	model := &scriptedModel{
-		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先读取当前音量。"}`, "The current audio volume is 42."),
+		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"Let me read the current volume."}`, "The current audio volume is 42."),
 	}
 	runtime := NewRuntimeWithDeps(
 		Config{
@@ -301,7 +301,7 @@ func TestServerHandleChatStreamsRoleToolAndAssistantMessages(t *testing.T) {
 	)
 	server := NewServer(runtime, ":0")
 
-	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"当前音量是多少？"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"What is the current volume?"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/x-ndjson")
 	req.Header.Set("X-Aiden-Stream", "ndjson")
@@ -675,7 +675,7 @@ func TestHandleCoordinateDebugTap(t *testing.T) {
 
 func TestServerHandleChatStreamTagsHistoryWithRequestID(t *testing.T) {
 	model := &scriptedModel{
-		responses: roleDirectResponses("你好！"),
+		responses: roleDirectResponses("Hello!"),
 	}
 	runtime := NewRuntimeWithDeps(
 		Config{
@@ -1053,15 +1053,15 @@ func TestServerSpeakToolContentUsesTTS(t *testing.T) {
 		audioClient: NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
 	}
 
-	server.speakToolContent(context.Background(), " 我先读取当前音量。 ")
+	server.speakToolContent(context.Background(), " Let me read the current volume. ")
 
-	if got := provider.texts(); len(got) != 1 || got[0] != "我先读取当前音量。" {
+	if got := provider.texts(); len(got) != 1 || got[0] != "Let me read the current volume." {
 		t.Fatalf("unexpected TTS texts: %#v", got)
 	}
 }
 
 func TestServerHandleChatDoesNotWaitForToolContentTTSWhenEnabled(t *testing.T) {
-	speech := "读取音量。"
+	speech := "Read volume."
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
 			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, speech),
@@ -1095,7 +1095,7 @@ func TestServerHandleChatDoesNotWaitForToolContentTTSWhenEnabled(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"当前音量是多少？"}`)).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"What is the current volume?"}`)).WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
@@ -1127,7 +1127,7 @@ func TestServerHandleChatDoesNotSpeakWaitForWakeup(t *testing.T) {
 	streamingDisabled := false
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			toolCallResponse("wait_1", "wait_for_wakeup", `{"reason":"user asked","speech":"我先待命。"}`),
+			toolCallResponse("wait_1", "wait_for_wakeup", `{"reason":"user asked","speech":"Standby mode."}`),
 		},
 	}
 	controller := NewWaitForWakeupController()
@@ -1165,7 +1165,7 @@ func TestServerHandleChatDoesNotSpeakWaitForWakeup(t *testing.T) {
 func TestServerHandleChatSkipsToolContentTTSWhenDisabled(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, "我先读取当前音量。"),
+			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, "Let me read the current volume."),
 			contentResponse("The current audio volume is 42."),
 		},
 	}
@@ -1190,11 +1190,11 @@ func TestServerHandleChatSkipsToolContentTTSWhenDisabled(t *testing.T) {
 		NewSkillIndex(),
 	)
 	server := NewServer(runtime, ":0")
-	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: "我先读取当前音量。"}
+	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: "Let me read the current volume."}
 	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
 	server.audioClient = NewAudioServiceClient("/tmp/audio.sock")
 
-	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"当前音量是多少？"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"What is the current volume?"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
@@ -1444,7 +1444,7 @@ func TestServerHandleChatStreamDuplicateRequestIDDoesNotAppendHistory(t *testing
 }
 
 func TestServerSpeakToolContentUsesCallerContext(t *testing.T) {
-	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: "我先读取当前音量。"}
+	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: "Let me read the current volume."}
 	server := &Server{
 		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
 		audioClient: NewAudioServiceClient("/tmp/audio.sock"),
@@ -1453,7 +1453,7 @@ func TestServerSpeakToolContentUsesCallerContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		server.speakToolContent(ctx, "我先读取当前音量。")
+		server.speakToolContent(ctx, "Let me read the current volume.")
 		close(done)
 	}()
 
@@ -1578,7 +1578,7 @@ func TestServerHandleClearRemovesRuntimeMemory(t *testing.T) {
 		t.Fatalf("Get() error = %v", err)
 	}
 	if err := handle.History.SetMessages(context.Background(), []llms.ChatMessage{
-		llms.HumanChatMessage{Content: "记一下，以后处理蓝海报销App超过100元必须先确认。"},
+		llms.HumanChatMessage{Content: "Remember, expenses over 100 in the Lanhai reimbursement app must be confirmed first."},
 	}); err != nil {
 		t.Fatalf("SetMessages() error = %v", err)
 	}
@@ -1721,13 +1721,13 @@ func TestServerHandleSkillsReloadRejectsGet(t *testing.T) {
 }
 
 func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
-	stt := &stubSTTClient{transcript: "你好，帮我总结一下"}
+	stt := &stubSTTClient{transcript: "Hello, please summarize this"}
 	runtime := NewRuntimeWithDeps(
 		Config{
 			Model:       ModelConfig{Provider: "fake"},
 			Instruction: "Answer directly.",
 		},
-		&testModelResolver{model: &scriptedModel{responses: roleDirectResponses("已处理")}},
+		&testModelResolver{model: &scriptedModel{responses: roleDirectResponses("Completed")}},
 		NewMemoryManager(""),
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
@@ -1768,23 +1768,23 @@ func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 
-	if resp.Response != "已处理" {
+	if resp.Response != "Completed" {
 		t.Fatalf("unexpected response: %q", resp.Response)
 	}
 	if len(resp.History) != 3 {
 		t.Fatalf("expected 3 history entries for default-mode direct finish, got %d", len(resp.History))
 	}
-	if resp.History[0].Content != "你好，帮我总结一下" {
+	if resp.History[0].Content != "Hello, please summarize this" {
 		t.Fatalf("expected transcript as user content, got %#v", resp.History[0])
 	}
-	if len(resp.History[0].Attachments) != 1 || resp.History[0].Attachments[0].Transcript != "你好，帮我总结一下" {
+	if len(resp.History[0].Attachments) != 1 || resp.History[0].Attachments[0].Transcript != "Hello, please summarize this" {
 		t.Fatalf("expected transcript on audio attachment, got %#v", resp.History[0].Attachments)
 	}
 	if _, ok := firstMessageOfType(resp.History, "role_output"); !ok {
 		t.Fatalf("expected role output messages in history: %#v", resp.History)
 	}
 	assistant, ok := firstMessageOfType(resp.History, "assistant")
-	if !ok || assistant.Content != "已处理" {
+	if !ok || assistant.Content != "Completed" {
 		t.Fatalf("unexpected assistant message: %#v", resp.History)
 	}
 }
@@ -1942,7 +1942,7 @@ func TestServerDeviceAudioRecordingStopIncludesStreamingTranscript(t *testing.T)
 	server := NewServer(runtime, ":0")
 	server.sttClient = &stubSTTClient{
 		supportsStreaming: true,
-		streamUploader:    &stubSTTStreamUploader{transcript: "边录边传结果"},
+		streamUploader:    &stubSTTStreamUploader{transcript: "streaming upload result"},
 	}
 
 	startReq := httptest.NewRequest(http.MethodPost, "/api/audio/record/start", nil)
@@ -1963,8 +1963,8 @@ func TestServerDeviceAudioRecordingStopIncludesStreamingTranscript(t *testing.T)
 	if err := json.NewDecoder(stopRec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode stop response: %v", err)
 	}
-	if resp.Attachment.Transcript != "边录边传结果" {
-		t.Fatalf("Attachment.Transcript = %q, want 边录边传结果", resp.Attachment.Transcript)
+	if resp.Attachment.Transcript != "streaming upload result" {
+		t.Fatalf("Attachment.Transcript = %q, want streaming upload result", resp.Attachment.Transcript)
 	}
 }
 
@@ -2038,7 +2038,7 @@ func TestServerEndWebRecordingReturnsFinalizeTimeout(t *testing.T) {
 
 func TestServerHandleChatUsesAttachmentTranscriptWithoutRetranscribing(t *testing.T) {
 	model := &scriptedModel{
-		responses: roleDirectResponses("已处理"),
+		responses: roleDirectResponses("Completed"),
 	}
 	runtime := NewRuntimeWithDeps(
 		Config{
@@ -2051,7 +2051,7 @@ func TestServerHandleChatUsesAttachmentTranscriptWithoutRetranscribing(t *testin
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
 	)
-	stt := &stubSTTClient{transcript: "不该调用"}
+	stt := &stubSTTClient{transcript: "should not be called"}
 	server := &Server{
 		runtime:   runtime,
 		history:   make([]Message, 0),
@@ -2064,7 +2064,7 @@ func TestServerHandleChatUsesAttachmentTranscriptWithoutRetranscribing(t *testin
 			Name:       "recording.wav",
 			MIMEType:   "audio/wav",
 			Data:       base64.StdEncoding.EncodeToString([]byte("RIFFtest")),
-			Transcript: "直接复用的转写",
+			Transcript: "directly reused transcript",
 		}},
 	})
 	if err != nil {
@@ -2088,7 +2088,7 @@ func TestServerHandleChatUsesAttachmentTranscriptWithoutRetranscribing(t *testin
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if resp.History[0].Content != "直接复用的转写" {
+	if resp.History[0].Content != "directly reused transcript" {
 		t.Fatalf("expected transcript as user content, got %#v", resp.History[0])
 	}
 }
@@ -2135,7 +2135,7 @@ func TestServerSTTConfigTestLiveSessionUsesStreamingTranscript(t *testing.T) {
 
 	stt := &stubSTTClient{
 		supportsStreaming: true,
-		streamUploader:    &stubSTTStreamUploader{transcript: "边录边传结果"},
+		streamUploader:    &stubSTTStreamUploader{transcript: "streaming upload result"},
 	}
 	previousFactory := newSTTClientFromConfigForLiveTest
 	newSTTClientFromConfigForLiveTest = func(cfg Config) (STTClient, error) {
@@ -2182,8 +2182,8 @@ func TestServerSTTConfigTestLiveSessionUsesStreamingTranscript(t *testing.T) {
 	if !resp.OK {
 		t.Fatalf("expected ok=true, got %#v", resp)
 	}
-	if resp.Transcript != "边录边传结果" {
-		t.Fatalf("transcript = %q, want 边录边传结果", resp.Transcript)
+	if resp.Transcript != "streaming upload result" {
+		t.Fatalf("transcript = %q, want streaming upload result", resp.Transcript)
 	}
 	if len(stt.inputs) != 0 {
 		t.Fatalf("expected streaming transcript to skip TranscribeWAV, got %d calls", len(stt.inputs))
@@ -2235,7 +2235,7 @@ func TestServerSTTConfigTestLiveSessionFallsBackToOneShot(t *testing.T) {
 	)
 	server := NewServer(runtime, ":0")
 
-	stt := &stubSTTClient{transcript: "一次性结果"}
+	stt := &stubSTTClient{transcript: "one-shot result"}
 	previousFactory := newSTTClientFromConfigForLiveTest
 	newSTTClientFromConfigForLiveTest = func(cfg Config) (STTClient, error) {
 		if cfg.STT.Provider != "openai-whisper" {
@@ -2278,8 +2278,8 @@ func TestServerSTTConfigTestLiveSessionFallsBackToOneShot(t *testing.T) {
 	if !resp.OK {
 		t.Fatalf("expected ok=true, got %#v", resp)
 	}
-	if resp.Transcript != "一次性结果" {
-		t.Fatalf("transcript = %q, want 一次性结果", resp.Transcript)
+	if resp.Transcript != "one-shot result" {
+		t.Fatalf("transcript = %q, want one-shot result", resp.Transcript)
 	}
 	if len(stt.inputs) != 1 {
 		t.Fatalf("TranscribeWAV calls = %d, want 1", len(stt.inputs))

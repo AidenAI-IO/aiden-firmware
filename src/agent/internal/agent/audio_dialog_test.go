@@ -159,7 +159,7 @@ func TestAudioDialogPrepareTurnInputUsesStreamingTranscriptFromRecording(t *test
 
 	sttClient := &stubSTTClient{
 		supportsStreaming: true,
-		streamUploader:    &stubSTTStreamUploader{transcript: "实时结果"},
+		streamUploader:    &stubSTTStreamUploader{transcript: "streaming result"},
 	}
 	dialog := &AudioDialog{
 		config: Config{
@@ -194,8 +194,8 @@ func TestAudioDialogPrepareTurnInputUsesStreamingTranscriptFromRecording(t *test
 	if err != nil {
 		t.Fatalf("PrepareTurnInput() error = %v", err)
 	}
-	if input.Transcript != "实时结果" {
-		t.Fatalf("Transcript = %q, want 实时结果", input.Transcript)
+	if input.Transcript != "streaming result" {
+		t.Fatalf("Transcript = %q, want streaming result", input.Transcript)
 	}
 	if len(sttClient.inputs) != 0 {
 		t.Fatalf("expected streaming transcript to skip TranscribeWAV, got %d calls", len(sttClient.inputs))
@@ -225,7 +225,7 @@ func TestAudioDialogStopRecordingFallsBackToOneShotWhenStreamingFinalizeTimesOut
 	})
 
 	uploader := newBlockingFinalizeUploader("")
-	sttClient := &stubSTTClient{transcript: "一次性结果"}
+	sttClient := &stubSTTClient{transcript: "one-shot result"}
 	dialog := &AudioDialog{
 		config: Config{
 			InputMode: "stt",
@@ -249,8 +249,8 @@ func TestAudioDialogStopRecordingFallsBackToOneShotWhenStreamingFinalizeTimesOut
 	if err != nil {
 		t.Fatalf("PrepareTurnInput() error = %v", err)
 	}
-	if input.Transcript != "一次性结果" {
-		t.Fatalf("Transcript = %q, want 一次性结果", input.Transcript)
+	if input.Transcript != "one-shot result" {
+		t.Fatalf("Transcript = %q, want one-shot result", input.Transcript)
 	}
 	if len(sttClient.inputs) != 1 {
 		t.Fatalf("expected fallback one-shot STT call, got %d", len(sttClient.inputs))
@@ -373,7 +373,7 @@ func TestProcessUtteranceAudioModeSendsWAVAttachmentToRuntime(t *testing.T) {
 }
 
 func TestProcessUtteranceSpeaksFullOutputWhenSpeechMissing(t *testing.T) {
-	output := "已完成设置，当前音量是 42。\n\n- 读取音量\n- 确认状态\n\n这段详细说明保留给屏幕。"
+	output := "Setup completed, current volume is 42.\n\n- Read volume\n- Confirm status\n\nThis detailed description is reserved for the screen."
 	expectedSpeech := output
 	model := &scriptedModel{
 		responses: roleDirectResponses(output),
@@ -424,7 +424,7 @@ func TestProcessUtteranceSpeaksFullOutputWhenSpeechMissing(t *testing.T) {
 	if !ok {
 		t.Fatalf("assistant history missing: %#v", messages)
 	}
-	if !strings.Contains(assistant.Content, "这段详细说明保留给屏幕") {
+	if !strings.Contains(assistant.Content, "This detailed description is reserved for the screen") {
 		t.Fatalf("history should keep full output, got %q", assistant.Content)
 	}
 }
@@ -433,8 +433,8 @@ func TestAudioDialogSpeaksToolContentAsynchronously(t *testing.T) {
 	toolSpeech := true
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, "检查音量。"),
-			contentResponse("当前音量是 42。"),
+			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, "Check volume."),
+			contentResponse("Current volume is 42."),
 		},
 	}
 	runtime := NewRuntimeWithDeps(
@@ -476,7 +476,7 @@ func TestAudioDialogSpeaksToolContentAsynchronously(t *testing.T) {
 	if len(texts) != 2 {
 		t.Fatalf("expected tool content and final answer TTS, got %#v", texts)
 	}
-	if !containsString(texts, "检查音量。") || !containsString(texts, "当前音量是 42。") {
+	if !containsString(texts, "Check volume.") || !containsString(texts, "Current volume is 42.") {
 		t.Fatalf("unexpected TTS texts: %#v", texts)
 	}
 }
@@ -495,7 +495,7 @@ func TestAudioDialogDoesNotSpeakWaitForWakeupToolContent(t *testing.T) {
 	dialog.HandleRunEvent(context.Background(), RunEvent{
 		Type:     runEventToolCall,
 		ToolName: toolWaitForWakeup,
-		Content:  "我准备回到等待唤醒状态。",
+		Content:  "Preparing to return to waiting for wakeup state.",
 	})
 
 	assertNoProviderTextWithin(t, provider, 200*time.Millisecond)
@@ -515,11 +515,11 @@ func TestAudioDialogSpeaksToolCallContent(t *testing.T) {
 	dialog.HandleRunEvent(context.Background(), RunEvent{
 		Type:     runEventToolCall,
 		ToolName: "audio_volume",
-		Content:  "读取当前音量。",
+		Content:  "Read current volume.",
 	})
 
 	waitForProviderTextCount(t, provider, 1)
-	if got := provider.texts(); len(got) != 1 || got[0] != "读取当前音量。" {
+	if got := provider.texts(); len(got) != 1 || got[0] != "Read current volume." {
 		t.Fatalf("unexpected TTS texts: %#v", got)
 	}
 }

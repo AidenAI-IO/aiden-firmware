@@ -40,7 +40,7 @@ func TestTencentASRSTTTranscribeWAV(t *testing.T) {
 		}
 
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"Response": map[string]string{"Result": "你好"},
+			"Response": map[string]string{"Result": "hello"},
 		})
 	}))
 	defer server.Close()
@@ -52,8 +52,8 @@ func TestTencentASRSTTTranscribeWAV(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TranscribeWAV() error = %v", err)
 	}
-	if text != "你好" {
-		t.Fatalf("text = %q, want 你好", text)
+	if text != "hello" {
+		t.Fatalf("text = %q, want hello", text)
 	}
 }
 
@@ -169,7 +169,7 @@ func TestTencentASRSTTStreamingUploaderFinalizesTranscript(t *testing.T) {
 			"result": map[string]any{
 				"slice_type":     1,
 				"index":          0,
-				"voice_text_str": "你",
+				"voice_text_str": "h",
 			},
 		}); err != nil {
 			t.Fatalf("WriteJSON(partial) error = %v", err)
@@ -181,7 +181,7 @@ func TestTencentASRSTTStreamingUploaderFinalizesTranscript(t *testing.T) {
 			"result": map[string]any{
 				"slice_type":     2,
 				"index":          0,
-				"voice_text_str": "你好",
+				"voice_text_str": "hello",
 			},
 		}); err != nil {
 			t.Fatalf("WriteJSON(stable) error = %v", err)
@@ -216,8 +216,8 @@ func TestTencentASRSTTStreamingUploaderFinalizesTranscript(t *testing.T) {
 		t.Fatalf("Finalize() error = %v", err)
 	}
 
-	if transcript != "你好" {
-		t.Fatalf("transcript = %q, want 你好", transcript)
+	if transcript != "hello" {
+		t.Fatalf("transcript = %q, want hello", transcript)
 	}
 	mu.Lock()
 	gotPathCopy := gotPath

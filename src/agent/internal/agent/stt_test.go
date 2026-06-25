@@ -43,7 +43,7 @@ func TestOpenAIWhisperSTTWithLanguage(t *testing.T) {
 
 		errCh <- nil
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"text":"你好世界"}`))
+		_, _ = w.Write([]byte(`{"text":"hello world"}`))
 	}))
 	defer server.Close()
 
@@ -60,8 +60,8 @@ func TestOpenAIWhisperSTTWithLanguage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TranscribeWAV() error = %v", err)
 	}
-	if text != "你好世界" {
-		t.Fatalf("text = %q, want 你好世界", text)
+	if text != "hello world" {
+		t.Fatalf("text = %q, want hello world", text)
 	}
 }
 

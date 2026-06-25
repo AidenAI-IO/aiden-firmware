@@ -606,7 +606,7 @@ TEST_CASE("config web exposes audio archive switch") {
     CHECK(html.find("agent.input_mode = stt") != std::string::npos);
     CHECK(html.find("testSection('audio_archive')") == std::string::npos);
     CHECK(html.find("[audio_archive]") != std::string::npos);
-    CHECK(html.find("保存 STT 语音录音 WAV") != std::string::npos);
+    CHECK(html.find("Save STT voice recording WAV") != std::string::npos);
 }
 
 TEST_CASE("config web docs list token_env in model fields") {
@@ -677,7 +677,7 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(source.find("close(lock_fd)") != std::string::npos);
     CHECK(source.find("tail -f") == std::string::npos);
 
-    CHECK(html.find("OTA 更新") != std::string::npos);
+    CHECK(html.find("OTA Update") != std::string::npos);
     CHECK(html.find("fwActions") != std::string::npos);
     CHECK(html.find("otaUpdateBtn") != std::string::npos);
     CHECK(html.find("actionBanner") != std::string::npos);
@@ -687,7 +687,7 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     const std::string::size_type action_banner_pos = html.find("id=\\\"actionBanner\\\"");
     const std::string::size_type action_details_pos = html.find("id=\\\"actionDetails\\\"");
     const std::string::size_type ota_log_panel_pos = html.find("id=\\\"otaLogPanel\\\"");
-    const std::string::size_type wifi_heading_pos = html.find("Wi-Fi 配置");
+    const std::string::size_type wifi_heading_pos = html.find("Wi-Fi Configuration");
     REQUIRE(fw_actions_pos != std::string::npos);
     REQUIRE(ota_button_pos != std::string::npos);
     REQUIRE(action_banner_pos != std::string::npos);
@@ -700,7 +700,7 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(action_details_pos < wifi_heading_pos);
     CHECK(action_details_pos < ota_log_panel_pos);
     CHECK(ota_log_panel_pos < wifi_heading_pos);
-    CHECK(html.find("OTA 实时日志") != std::string::npos);
+    CHECK(html.find("OTA Live Log") != std::string::npos);
     CHECK(html.find("otaLogPanel") != std::string::npos);
     CHECK(html.find("id=\\\"otaLogPanel\\\" class=\\\"ota-log-panel\\\"") != std::string::npos);
     CHECK(html.find("id=\\\"otaLogPanel\\\" class=\\\"card ota-log-panel\\\"") == std::string::npos);
@@ -713,11 +713,11 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(html.find("otaLogHasNewProgress") != std::string::npos);
     CHECK(html.find("extractOtaExitCode") != std::string::npos);
     CHECK(html.find("[config_web] ota update exited rc=") != std::string::npos);
-    CHECK(html.find("OTA 更新失败（rc=") != std::string::npos);
-    CHECK(html.find("最近 OTA 日志：\\\\n") != std::string::npos);
+    CHECK(html.find("OTA update failed (rc=") != std::string::npos);
+    CHECK(html.find("Recent OTA log:\\\\n") != std::string::npos);
     CHECK(html.find("setOtaLogPending") != std::string::npos);
-    CHECK(html.find("OTA 更新已开始，等待日志输出...") != std::string::npos);
-    CHECK(html.find("setOtaLogPending('OTA 更新已开始，等待日志输出...',Number(payload.ota_log_start_size_bytes||0));") != std::string::npos);
+    CHECK(html.find("OTA update started, waiting for log output...") != std::string::npos);
+    CHECK(html.find("setOtaLogPending('OTA update started, waiting for log output...',Number(payload.ota_log_start_size_bytes||0));") != std::string::npos);
     CHECK(html.find("renderOtaLog(snapshot, {preservePending:true})") != std::string::npos);
     CHECK(html.find("payload.ota_health_log") != std::string::npos);
     CHECK(html.find("extractOtaExitCode((payload.ota_log||{}).log||'')") != std::string::npos);
@@ -727,7 +727,7 @@ TEST_CASE("config web exposes ota update and live ota logs") {
     CHECK(html.find("function setDetails(text,options)") != std::string::npos);
     CHECK(html.find("if(!(options&&options.keepOtaLog)){hideOtaLogPanel();}") != std::string::npos);
     CHECK(html.find("setDetails('',{keepOtaLog:true})") != std::string::npos);
-    CHECK(html.find("setDetails('最近 OTA 日志：\\\\n'+String(text||'').slice(-4000),{keepOtaLog:true})") != std::string::npos);
+    CHECK(html.find("setDetails('Recent OTA log:\\\\n'+String(text||'').slice(-4000),{keepOtaLog:true})") != std::string::npos);
     CHECK(html.find("setDetails(err.message,{keepOtaLog:true})") != std::string::npos);
     CHECK(html.find("otaLogText") != std::string::npos);
     CHECK(html.find("otaLogMeta") != std::string::npos);
@@ -764,7 +764,7 @@ TEST_CASE("config web exposes running firmware version and ota health status sep
 
     CHECK(html.find("fwHealth") != std::string::npos);
     CHECK(html.find("renderFirmwareInfo") != std::string::npos);
-    CHECK(html.find("OTA 状态") != std::string::npos);
+    CHECK(html.find("OTA Status") != std::string::npos);
     CHECK(html.find("health_error") != std::string::npos);
     CHECK(html.find("previous_version") != std::string::npos);
 }
@@ -935,7 +935,7 @@ TEST_CASE("config web renders finite choice fields as selects") {
     CHECK(html.find("function fieldDefaultPlaceholder") != std::string::npos);
     CHECK(html.find("applyDefaultPlaceholder(name,field)") != std::string::npos);
     CHECK(html.find("getAttribute('placeholder')") != std::string::npos);
-    CHECK(html.find("默认值: ") != std::string::npos);
+    CHECK(html.find("Default: ") != std::string::npos);
     // rangeOptions is now invoked with metadata-provided bounds, not literals.
     CHECK(html.find("rangeOptions(field.range.min,field.range.max,field.range.step") != std::string::npos);
     // The legacy hard-coded option table must be gone.
@@ -990,12 +990,12 @@ TEST_CASE("config web collapses wifi list after a successful connection") {
     CHECK(html.find("function connectedWifiSsid()") != std::string::npos);
     CHECK(html.find("function visibleWifiNames(names)") != std::string::npos);
     CHECK(html.find("function toggleWifiListExpanded()") != std::string::npos);
-    CHECK(html.find("显示其他 Wi-Fi") != std::string::npos);
-    CHECK(html.find("收起其他 Wi-Fi") != std::string::npos);
+    CHECK(html.find("Show other Wi-Fi") != std::string::npos);
+    CHECK(html.find("Hide other Wi-Fi") != std::string::npos);
     CHECK(html.find("const visibleNames=visibleWifiNames(names);") != std::string::npos);
     CHECK(html.find("names.forEach(function(name)") == std::string::npos);
     CHECK(html.find("function initialReadyMessage(metaOk)") != std::string::npos);
-    CHECK(html.find("if(connectedWifiSsid())return 'Wi-Fi 已连接。';") != std::string::npos);
+    CHECK(html.find("if(connectedWifiSsid())return 'Wi-Fi connected.';") != std::string::npos);
     CHECK(html.find("setBanner(initialReadyMessage(metaOk),!metaOk);") != std::string::npos);
 }
 
@@ -1121,8 +1121,8 @@ TEST_CASE("config web uses board-side recording for STT tests") {
     CHECK(html.find("function stopSTTTest()") != std::string::npos);
     CHECK(html.find("'/api/config/test/stt/start'") != std::string::npos);
     CHECK(html.find("'/api/config/test/stt/stop'") != std::string::npos);
-    CHECK(html.find("激活麦克风") != std::string::npos);
-    CHECK(html.find("识别结果") != std::string::npos);
+    CHECK(html.find("Activate Microphone") != std::string::npos);
+    CHECK(html.find("Recognition Result") != std::string::npos);
 
     CHECK(source.find("/api/config/test/stt/start") != std::string::npos);
     CHECK(source.find("/api/config/test/stt/stop") != std::string::npos);
@@ -1186,7 +1186,7 @@ TEST_CASE("config web exposes a single system env editor backed by the env file"
     CHECK(html.find("http_proxy=http://127.0.0.1:7890") == std::string::npos);
     CHECK(html.find("NO_PROXY=localhost,127.0.0.1,::1") == std::string::npos);
 
-    const size_t agent_card = html.find("<h2>Agent 配置</h2>");
+    const size_t agent_card = html.find("<h2>Agent Configuration</h2>");
     const size_t telemetry_section = html.find("id=\\\"section-telemetry\\\"");
     const size_t system_env_section = html.find("id=\\\"section-system_env\\\"");
     REQUIRE(agent_card != std::string::npos);
@@ -1551,10 +1551,10 @@ TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhi
     CHECK(source.find("config metadata unavailable: agent binary not found") != std::string::npos);
     CHECK(html.find("hid_pointer_mode") != std::string::npos);
     CHECK(html.find("<select id=\\\"hid_pointer_mode\\\"") != std::string::npos);
-    CHECK(html.find("pointer_mode 需要关机重启后生效") != std::string::npos);
+    CHECK(html.find("pointer_mode requires power off and restart to take effect") != std::string::npos);
     CHECK(html.find("window.confirm") != std::string::npos);
     CHECK(html.find("/api/poweroff") != std::string::npos);
-    CHECK(html.find("poweroff 指令已下发") != std::string::npos);
+    CHECK(html.find("poweroff command sent") != std::string::npos);
 }
 
 TEST_CASE("config web usbhid init script does not orchestrate dependent service restarts") {
