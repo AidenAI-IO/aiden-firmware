@@ -28,3 +28,5 @@ jobs:
         run: |
           python3 scripts/check_normalized_coords.py
           bash scripts/test_check_normalized_coords.sh
+      - name: Verify swap initialization
+        run: sh scripts/test_swap_init.sh
