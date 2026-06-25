@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -132,6 +133,77 @@ func TestAudioDialogStartRecordingRetriesUntilAudioServiceAvailable(t *testing.T
 	case <-ready:
 	case <-time.After(time.Second):
 		t.Fatal("delayed audio service did not handle start_recording")
+	}
+}
+
+func TestAudioDialogStartRecordingRollsBackOnVADResetFailure(t *testing.T) {
+	var (
+		opMu sync.Mutex
+		ops  []string
+	)
+	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
+		opMu.Lock()
+		ops = append(ops, req.Op)
+		opMu.Unlock()
+		switch req.Op {
+		case "start_recording":
+			return audioResponse{Status: "OK", SessionID: stringUint64(42)}, nil
+		default:
+			return audioResponse{Status: "OK"}, nil
+		}
+	})
+
+	scorer := &sequenceScorer{resetErr: errors.New("vad helper crashed")}
+	vad, err := NewAudioVADWithScorer(AudioVADConfig{
+		SampleRate:      16000,
+		SilenceMs:       650,
+		MinSpeechMs:     300,
+		AlwaysBuffer:    true,
+		SpeechThreshold: 0.5,
+	}, scorer)
+	if err != nil {
+		t.Fatalf("NewAudioVADWithScorer() error = %v", err)
+	}
+
+	sttClient := &stubSTTClient{
+		supportsStreaming: true,
+		streamUploader:    &stubSTTStreamUploader{},
+	}
+	dialog := &AudioDialog{
+		config: Config{
+			InputMode: "stt",
+			Audio:     AudioConfig{Socket: socketPath, SampleRate: 16000, Channels: 1, BitWidth: 16},
+		},
+		audioClient: NewAudioServiceClient(socketPath),
+		sttClient:   sttClient,
+		vad:         vad,
+	}
+
+	if err := dialog.StartRecording(); err == nil {
+		t.Fatal("expected StartRecording error when VAD reset fails")
+	}
+
+	if dialog.recordActive {
+		t.Fatal("recordActive should be false after VAD failure")
+	}
+	if dialog.sessionID != 0 {
+		t.Fatalf("sessionID = %d, want 0 after VAD failure", dialog.sessionID)
+	}
+	if dialog.recordReader != nil {
+		t.Fatal("recordReader should be nil after VAD failure")
+	}
+	if got := dialog.currentRecordSTT(); got != nil {
+		t.Fatal("recordSTT should be nil after VAD failure")
+	}
+	if sttClient.streamUploaderUsed != 0 {
+		t.Fatalf("streamUploaderUsed = %d, want 0; streaming session should not be opened when VAD reset fails", sttClient.streamUploaderUsed)
+	}
+	opMu.Lock()
+	defer opMu.Unlock()
+	for _, op := range ops {
+		if op == "start_recording" {
+			t.Fatalf("audio service received %q before VAD validated; ops = %v", op, ops)
+		}
 	}
 }
 

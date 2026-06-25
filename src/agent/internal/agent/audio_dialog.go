@@ -170,6 +170,15 @@ func (d *AudioDialog) StartRecording() error {
 		return nil
 	}
 
+	// Reset VAD up front so a failed helper aborts before any audio/STT
+	// resources are allocated. Otherwise a successful start_recording plus
+	// streaming STT session would leak when the VAD helper has crashed.
+	if d.vad != nil {
+		if err := d.vad.Reset(); err != nil {
+			return fmt.Errorf("reset vad: %w", err)
+		}
+	}
+
 	log.Println("[audio] Opening record session...")
 	format := AudioFormat{
 		SampleRate: uint32(d.config.Audio.SampleRateOrDefault()),
@@ -200,11 +209,6 @@ func (d *AudioDialog) StartRecording() error {
 		d.setRecordSTT(recordSTT)
 	}
 	d.recordActive = true
-	if d.vad != nil {
-		if err := d.vad.Reset(); err != nil {
-			log.Printf("[vad] reset failed: %v\n", err)
-		}
-	}
 	// Open the mic before the cue tone so speech right after Enter is captured.
 	d.playPromptSoundAsync(promptSoundRecordingStart, "recording")
 	return nil
