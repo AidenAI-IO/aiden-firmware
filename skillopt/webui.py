@@ -75,6 +75,106 @@ class SkillOptWebApp:
             base_config_dir=config.base_config_dir,
             config_path=config.agent_config_path or (config.runs_dir / "agent.toml"),
         )
+        # Load historical jobs from disk
+        self._load_historical_jobs()
+
+    def _load_historical_jobs(self) -> None:
+        """Scan runs_dir for past job directories and reconstruct job records."""
+        runs_dir = self.config.runs_dir
+        if not runs_dir.exists():
+            return
+        for job_dir in sorted(runs_dir.iterdir()):
+            if not job_dir.is_dir():
+                continue
+            if not job_dir.name.startswith("skillopt-"):
+                continue
+            log_path = job_dir / "skillopt.log"
+            if not log_path.exists():
+                continue
+            try:
+                job = self._reconstruct_job_from_disk(job_dir)
+                if job is not None:
+                    self._jobs[job.id] = job
+            except Exception:
+                # Skip malformed job directories silently
+                continue
+
+    def _reconstruct_job_from_disk(self, job_dir: Path) -> SkillOptJob | None:
+        """Build a SkillOptJob from the artifacts left on disk."""
+        job_id = job_dir.name
+        log_path = job_dir / "skillopt.log"
+        manifest_path = job_dir / "manifest.json"
+        report_path = job_dir / "report.html"
+        result_path = job_dir / "result.json"
+
+        # Determine status from artifacts
+        status = "unknown"
+        exit_code: int | None = None
+        message = ""
+        if result_path.exists():
+            try:
+                result = json.loads(result_path.read_text(encoding="utf-8"))
+                if isinstance(result, dict):
+                    if result.get("error"):
+                        status = "failed"
+                        message = str(result.get("error") or "")
+                    else:
+                        status = "passed"
+                        exit_code = 0
+            except Exception:
+                pass
+        if status == "unknown":
+            if report_path.exists():
+                status = "passed"
+                exit_code = 0
+            else:
+                status = "failed"
+
+        # Get timestamps from filesystem
+        created_at = ""
+        try:
+            created_at = datetime.fromtimestamp(
+                log_path.stat().st_ctime, tz=timezone.utc
+            ).isoformat()
+        except Exception:
+            pass
+        finished_at = ""
+        try:
+            if report_path.exists():
+                finished_at = datetime.fromtimestamp(
+                    report_path.stat().st_mtime, tz=timezone.utc
+                ).isoformat()
+            elif log_path.exists():
+                finished_at = datetime.fromtimestamp(
+                    log_path.stat().st_mtime, tz=timezone.utc
+                ).isoformat()
+        except Exception:
+            pass
+
+        # Try to recover the original command from skillopt.log
+        command: list[str] = []
+        try:
+            text = log_path.read_text(encoding="utf-8", errors="replace")
+            for line in text.splitlines():
+                if line.startswith("$ "):
+                    command = line[2:].split()
+                    break
+        except Exception:
+            pass
+
+        return SkillOptJob(
+            id=job_id,
+            command=command,
+            log_path=str(log_path),
+            run_dir=str(job_dir),
+            status=status,
+            created_at=created_at,
+            started_at=created_at,
+            finished_at=finished_at,
+            exit_code=exit_code,
+            message=message,
+            report_url=f"/runs/{job_id}/report.html" if report_path.exists() else "",
+        )
 
     def shutdown(self) -> None:
         self.env_manager.shutdown_all()
@@ -1588,8 +1688,13 @@ INDEX_HTML = r"""<!doctype html>
       const env = selectedEnv();
       const target = selectedTarget();
       if(!envCanRun(env) || !target) return;
+      // Close dialog immediately to give instant feedback
+      closeRunEnvironmentDialog();
       const started = await startRun(env, target);
-      if(started) closeRunEnvironmentDialog();
+      if(!started){
+        // If start failed, reopen so user can retry/adjust
+        document.getElementById('runEnvDialog').hidden = false;
+      }
     }
 
     async function startRun(env, target){
