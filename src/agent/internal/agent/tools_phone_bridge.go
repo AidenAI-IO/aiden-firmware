@@ -429,7 +429,7 @@ func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 	}
 
 	result := map[string]interface{}{
-		"ok":     resp.OK,
+		"ok":     resp.Error == nil,
 		"method": openAppResultMethod(args),
 	}
 	if restored {
@@ -441,8 +441,8 @@ func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 	if mechanism := openAppResultMechanism(args, resp.Method); mechanism != "" {
 		result["mechanism"] = mechanism
 	}
-	if !resp.OK {
-		result["error"] = resp.Error
+	if resp.Error != nil {
+		result["error"] = resp.Error.Message
 		status := PhoneBridgeStatus{}
 		if t.bridge != nil {
 			status = t.bridge.Status()

@@ -804,7 +804,6 @@ func TestHandleScreenshotJPEGUpdatesSharedScreenStateFromPhoneAspectRatio(t *tes
 	if !server.bridge.handleAppEvent(BridgeCommandResponse{
 		ID:     "phone_environment",
 		Method: "phone_environment",
-		OK:     true,
 		Data:   envData,
 	}) {
 		t.Fatal("expected phone_environment event to be handled")

@@ -109,12 +109,12 @@ func (t *ClipboardTool) read(ctx context.Context) (string, error) {
 	if err != nil {
 		return bridgeRespError(err, bridgeStatusForError(t.bridge)...), nil
 	}
-	result := map[string]interface{}{"ok": resp.OK}
+	result := map[string]interface{}{"ok": resp.Error == nil}
 	if restored {
 		result["restored_from_return_entry"] = true
 	}
-	if !resp.OK {
-		result["error"] = resp.Error
+	if resp.Error != nil {
+		result["error"] = resp.Error.Message
 		return jsonString(result), nil
 	}
 	var data struct {
@@ -142,12 +142,12 @@ func (t *ClipboardTool) write(ctx context.Context, text string) (string, error) 
 	if err != nil {
 		return bridgeRespError(err, bridgeStatusForError(t.bridge)...), nil
 	}
-	result := map[string]interface{}{"ok": resp.OK}
+	result := map[string]interface{}{"ok": resp.Error == nil}
 	if restored {
 		result["restored_from_return_entry"] = true
 	}
-	if !resp.OK {
-		result["error"] = resp.Error
+	if resp.Error != nil {
+		result["error"] = resp.Error.Message
 	}
 	return jsonString(result), nil
 }
@@ -247,12 +247,12 @@ func (t *CalendarTool) create(ctx context.Context, args calendarArgs) (string, e
 	if err != nil {
 		return bridgeRespError(err, bridgeStatusForError(t.bridge)...), nil
 	}
-	result := map[string]interface{}{"ok": resp.OK}
+	result := map[string]interface{}{"ok": resp.Error == nil}
 	if restored {
 		result["restored_from_return_entry"] = true
 	}
-	if !resp.OK {
-		result["error"] = resp.Error
+	if resp.Error != nil {
+		result["error"] = resp.Error.Message
 		return jsonString(result), nil
 	}
 	var data struct {
@@ -283,12 +283,12 @@ func (t *CalendarTool) query(ctx context.Context, args calendarArgs) (string, er
 	if err != nil {
 		return bridgeRespError(err, bridgeStatusForError(t.bridge)...), nil
 	}
-	result := map[string]interface{}{"ok": resp.OK}
+	result := map[string]interface{}{"ok": resp.Error == nil}
 	if restored {
 		result["restored_from_return_entry"] = true
 	}
-	if !resp.OK {
-		result["error"] = resp.Error
+	if resp.Error != nil {
+		result["error"] = resp.Error.Message
 		return jsonString(result), nil
 	}
 	var data struct {
@@ -322,12 +322,12 @@ func (t *CalendarTool) delete(ctx context.Context, args calendarArgs) (string, e
 	if err != nil {
 		return bridgeRespError(err, bridgeStatusForError(t.bridge)...), nil
 	}
-	result := map[string]interface{}{"ok": resp.OK}
+	result := map[string]interface{}{"ok": resp.Error == nil}
 	if restored {
 		result["restored_from_return_entry"] = true
 	}
-	if !resp.OK {
-		result["error"] = resp.Error
+	if resp.Error != nil {
+		result["error"] = resp.Error.Message
 	}
 	return jsonString(result), nil
 }
@@ -414,12 +414,12 @@ func (t *ContactsTool) query(ctx context.Context, args contactsArgs) (string, er
 	if err != nil {
 		return bridgeRespError(err, bridgeStatusForError(t.bridge)...), nil
 	}
-	result := map[string]interface{}{"ok": resp.OK}
+	result := map[string]interface{}{"ok": resp.Error == nil}
 	if restored {
 		result["restored_from_return_entry"] = true
 	}
-	if !resp.OK {
-		result["error"] = resp.Error
+	if resp.Error != nil {
+		result["error"] = resp.Error.Message
 		return jsonString(result), nil
 	}
 	var data struct {
@@ -459,12 +459,12 @@ func (t *ContactsTool) create(ctx context.Context, args contactsArgs) (string, e
 	if err != nil {
 		return bridgeRespError(err, bridgeStatusForError(t.bridge)...), nil
 	}
-	result := map[string]interface{}{"ok": resp.OK}
+	result := map[string]interface{}{"ok": resp.Error == nil}
 	if restored {
 		result["restored_from_return_entry"] = true
 	}
-	if !resp.OK {
-		result["error"] = resp.Error
+	if resp.Error != nil {
+		result["error"] = resp.Error.Message
 		return jsonString(result), nil
 	}
 	var data struct {
@@ -502,12 +502,12 @@ func (t *ContactsTool) update(ctx context.Context, args contactsArgs) (string, e
 	if err != nil {
 		return bridgeRespError(err, bridgeStatusForError(t.bridge)...), nil
 	}
-	result := map[string]interface{}{"ok": resp.OK}
+	result := map[string]interface{}{"ok": resp.Error == nil}
 	if restored {
 		result["restored_from_return_entry"] = true
 	}
-	if !resp.OK {
-		result["error"] = resp.Error
+	if resp.Error != nil {
+		result["error"] = resp.Error.Message
 	}
 	return jsonString(result), nil
 }
@@ -577,12 +577,12 @@ func (t *NotificationTool) Call(ctx context.Context, input string) (string, erro
 	if err != nil {
 		return bridgeRespError(err, bridgeStatusForError(t.bridge)...), nil
 	}
-	result := map[string]interface{}{"ok": resp.OK}
+	result := map[string]interface{}{"ok": resp.Error == nil}
 	if restored {
 		result["restored_from_return_entry"] = true
 	}
-	if !resp.OK {
-		result["error"] = resp.Error
+	if resp.Error != nil {
+		result["error"] = resp.Error.Message
 		return jsonString(result), nil
 	}
 	var data struct {
