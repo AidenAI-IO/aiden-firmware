@@ -646,17 +646,17 @@ async function executeScriptStep(step, lineNo) {
                 break;
 
             case 'call':
-                const toolName = step.tool;
+                let toolName = step.tool;
                 let toolInput = step.input;
 
                 // Handle shorthand call format: {"call":{"tool":"...","input":{...}}}
                 if (!toolName && step.call) {
                     const callObj = step.call;
-                    stepResult.tool = callObj.tool;
+                    toolName = callObj.tool;
                     toolInput = callObj.input;
-                } else {
-                    stepResult.tool = toolName;
                 }
+
+                stepResult.tool = toolName;
 
                 if (!stepResult.tool) {
                     stepResult.ok = false;
@@ -664,11 +664,16 @@ async function executeScriptStep(step, lineNo) {
                     break;
                 }
 
+                // Ensure toolInput is always an object, never undefined
+                if (toolInput === undefined || toolInput === null) {
+                    toolInput = {};
+                }
+
                 // Execute tool via HTTP API
                 const toolResponse = await fetch('/api/tools/' + stepResult.tool, {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(toolInput || {})
+                    body: JSON.stringify(toolInput)
                 });
 
                 if (!toolResponse.ok) {

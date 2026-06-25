@@ -1232,7 +1232,6 @@ func TestAudioDialogRunScriptUsesConfiguredTTS(t *testing.T) {
 		t.Fatalf("provider texts = %#v, want script tts text", got)
 	}
 }
-}
 
 func boolPtr(value bool) *bool {
 	return &value
