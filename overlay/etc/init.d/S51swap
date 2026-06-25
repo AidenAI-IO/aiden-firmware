@@ -116,7 +116,7 @@ start() {
     swap_mount_is_ready || return 1
 
     if is_active; then
-        configure_swappiness
+        configure_swappiness || return 1
         echo "swap already active: $SWAP_FILE"
         return 0
     fi
@@ -162,14 +162,14 @@ case "${1:-}" in
         stop
         ;;
     restart|reload)
-        stop
+        stop || exit 1
         start
         ;;
     status)
         status
         ;;
     *)
-        echo "Usage: $0 {start|stop|restart|status}" >&2
+        echo "Usage: $0 {start|stop|restart|reload|status}" >&2
         exit 1
         ;;
 esac

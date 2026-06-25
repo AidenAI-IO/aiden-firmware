@@ -22,6 +22,19 @@ for expected in \
     fi
 done
 
+if sh "$SCRIPT" invalid >"/dev/null" 2>"${TMPDIR:-/tmp}/aiden-swap-usage.$$"; then
+    echo "invalid swap command must fail" >&2
+    rm -f "${TMPDIR:-/tmp}/aiden-swap-usage.$$"
+    exit 1
+fi
+if ! grep -q '{start|stop|restart|reload|status}' "${TMPDIR:-/tmp}/aiden-swap-usage.$$"; then
+    echo "swap usage must document reload" >&2
+    cat "${TMPDIR:-/tmp}/aiden-swap-usage.$$" >&2
+    rm -f "${TMPDIR:-/tmp}/aiden-swap-usage.$$"
+    exit 1
+fi
+rm -f "${TMPDIR:-/tmp}/aiden-swap-usage.$$"
+
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT INT TERM
 
@@ -51,6 +64,9 @@ EOF
 cat > "$MOCK_BIN/swapoff" <<'EOF'
 #!/bin/sh
 printf 'swapoff %s\n' "$1" >> "$COMMAND_LOG"
+if [ "${MOCK_SWAPOFF_FAIL:-0}" = "1" ]; then
+    exit 1
+fi
 tmp="${MOCK_PROC_SWAPS}.tmp"
 grep -v "^$1 " "$MOCK_PROC_SWAPS" > "$tmp"
 mv "$tmp" "$MOCK_PROC_SWAPS"
@@ -106,6 +122,57 @@ if [ "$(wc -l < "$COMMAND_LOG")" != "$commands_after_first_start" ]; then
     echo "repeated start must not recreate or reactivate an active swapfile" >&2
     exit 1
 fi
+
+missing_swappiness_path="$TMP_DIR/missing/swappiness"
+if SWAP_CONFIG_FILE="$TMP_DIR/missing.conf" \
+    ENABLE_SWAP=1 \
+    SWAP_FILE="$SWAP_FILE" \
+    SWAP_MOUNT_POINT="$(dirname "$SWAP_FILE")" \
+    SWAP_REQUIRE_MOUNT=1 \
+    SWAP_SIZE_MB=1 \
+    SWAP_SWAPPINESS=15 \
+    PROC_SWAPS="$PROC_SWAPS" \
+    MOUNTS_PATH="$MOUNTS_PATH" \
+    SWAPPINESS_PATH="$missing_swappiness_path" \
+    sh "$SCRIPT" start >"$TMP_DIR/swappiness.out" 2>"$TMP_DIR/swappiness.err"; then
+    echo "active swap start must fail when swappiness cannot be configured" >&2
+    exit 1
+fi
+if ! grep -q 'cannot set swappiness' "$TMP_DIR/swappiness.err"; then
+    echo "active swap start did not explain swappiness failure" >&2
+    cat "$TMP_DIR/swappiness.err" >&2
+    exit 1
+fi
+
+commands_before_failed_restart="$(wc -l < "$COMMAND_LOG")"
+if SWAP_CONFIG_FILE="$TMP_DIR/missing.conf" \
+    ENABLE_SWAP=1 \
+    SWAP_FILE="$SWAP_FILE" \
+    SWAP_MOUNT_POINT="$(dirname "$SWAP_FILE")" \
+    SWAP_REQUIRE_MOUNT=1 \
+    SWAP_SIZE_MB=1 \
+    SWAP_SWAPPINESS=15 \
+    PROC_SWAPS="$PROC_SWAPS" \
+    MOUNTS_PATH="$MOUNTS_PATH" \
+    SWAPPINESS_PATH="$SWAPPINESS_PATH" \
+    MKSWAP_BIN="$MOCK_BIN/mkswap" \
+    SWAPON_BIN="$MOCK_BIN/swapon" \
+    SWAPOFF_BIN="$MOCK_BIN/swapoff" \
+    COMMAND_LOG="$COMMAND_LOG" \
+    MOCK_PROC_SWAPS="$PROC_SWAPS" \
+    MOCK_SWAPOFF_FAIL=1 \
+    sh "$SCRIPT" restart >"$TMP_DIR/restart.out" 2>"$TMP_DIR/restart.err"; then
+    echo "restart must fail when swapoff fails" >&2
+    exit 1
+fi
+new_commands="$(tail -n "+$((commands_before_failed_restart + 1))" "$COMMAND_LOG")"
+case "$new_commands" in
+    "swapoff $SWAP_FILE") ;;
+    *)
+        echo "restart continued after swapoff failure: $new_commands" >&2
+        exit 1
+        ;;
+esac
 
 status_output="$(run_swap status)"
 case "$status_output" in
