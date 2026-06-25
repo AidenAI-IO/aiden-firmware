@@ -1,0 +1,121 @@
+{
+  "suite_name": "shopping_scenario_verification",
+  "description": "End-to-end e-commerce shopping scenarios using eBay app",
+  "tasks": [
+    {
+      "id": "scenario_search_and_view",
+      "category": "multi_step",
+      "description_for_judge": "Complete shopping flow: open eBay, search product, view details.",
+      "prompt": "打开eBay，搜索wireless mouse，然后点击第一个商品查看详情。",
+      "rubric": [
+        { "id": "ebay_opened", "check": "eBay app was opened successfully." },
+        {
+          "id": "search_completed",
+          "check": "Search for wireless mouse was executed."
+        },
+        {
+          "id": "detail_viewed",
+          "check": "Post-screenshot shows product detail page with price and description."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 3,
+        "max_tool_calls": 25,
+        "must_complete_within_sec": 180
+      }
+    },
+    {
+      "id": "scenario_browse_and_compare",
+      "category": "multi_step",
+      "description_for_judge": "Product browsing: search, scroll results, view multiple products.",
+      "prompt": "在eBay搜索phone case，向下滚动查看更多商品，点击一个商品查看详情，然后返回搜索结果再查看另一个商品。",
+      "rubric": [
+        { "id": "search_completed", "check": "Search was executed." },
+        {
+          "id": "scroll_performed",
+          "check": "Scrolled through search results."
+        },
+        {
+          "id": "multiple_views",
+          "check": "Viewed at least one product detail and returned to results."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 5,
+        "max_tool_calls": 30,
+        "must_complete_within_sec": 240
+      }
+    },
+    {
+      "id": "scenario_add_to_watchlist_flow",
+      "category": "multi_step",
+      "description_for_judge": "Watchlist flow: search, view product, add to watchlist.",
+      "prompt": "在eBay搜索bluetooth speaker，点击一个商品，将它添加到关注列表，然后返回eBay首页。",
+      "rubric": [
+        { "id": "search_completed", "check": "Search was executed." },
+        { "id": "product_viewed", "check": "Product detail page was shown." },
+        {
+          "id": "watchlist_added",
+          "check": "Watchlist or favorite action was performed."
+        },
+        { "id": "returned_home", "check": "Returned to eBay home page." }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 4,
+        "max_tool_calls": 25,
+        "must_complete_within_sec": 200
+      }
+    },
+    {
+      "id": "scenario_category_browse",
+      "category": "multi_step",
+      "description_for_judge": "Category browsing: open categories, browse, search from category.",
+      "prompt": "打开eBay，进入分类浏览菜单，选择一个分类，然后在该分类下搜索商品。",
+      "rubric": [
+        { "id": "ebay_opened", "check": "eBay app was opened." },
+        { "id": "categories_accessed", "check": "Categories menu was opened." },
+        {
+          "id": "category_selected",
+          "check": "A category was selected or browsed."
+        },
+        {
+          "id": "search_in_category",
+          "check": "Search was performed showing category-specific results."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 4,
+        "max_tool_calls": 25,
+        "must_complete_within_sec": 200
+      }
+    },
+    {
+      "id": "scenario_full_shopping_journey",
+      "category": "multi_step",
+      "description_for_judge": "Complete journey: search, browse, view details, scroll detail, return, close app.",
+      "prompt": "打开eBay搜索laptop，向下滚动查看商品，点击一个商品查看详情，在详情页向下滚动，返回搜索结果，然后关闭eBay应用。",
+      "rubric": [
+        { "id": "search_completed", "check": "Searched for laptop." },
+        {
+          "id": "results_scrolled",
+          "check": "Scrolled through search results."
+        },
+        { "id": "detail_viewed", "check": "Viewed product detail page." },
+        { "id": "detail_scrolled", "check": "Scrolled in product detail." },
+        {
+          "id": "returned_to_results",
+          "check": "Navigated back to search results."
+        },
+        {
+          "id": "app_closed",
+          "check": "Post-screenshot shows device home screen."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 6,
+        "max_tool_calls": 35,
+        "must_complete_within_sec": 300
+      }
+    }
+  ]
+}

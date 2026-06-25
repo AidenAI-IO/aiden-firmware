@@ -1,0 +1,204 @@
+{
+  "suite_name": "shopping_scenario_train",
+  "description": "E-commerce shopping training tasks using eBay app",
+  "tasks": [
+    {
+      "id": "open_ebay_app",
+      "category": "single_step",
+      "description_for_judge": "Agent must open the eBay mobile app from the home screen.",
+      "prompt": "打开eBay应用。",
+      "rubric": [
+        {
+          "id": "ebay_opened",
+          "check": "eBay app is visible in post-screenshot with search bar or product listings."
+        },
+        { "id": "no_error", "check": "No crash dialog or error visible." }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 10,
+        "must_complete_within_sec": 90
+      }
+    },
+    {
+      "id": "search_product_in_ebay",
+      "category": "single_step",
+      "description_for_judge": "Agent must use search function in eBay to search for a product.",
+      "prompt": "在eBay搜索bluetooth headphones。",
+      "rubric": [
+        {
+          "id": "search_executed",
+          "check": "Search was performed and results page is shown."
+        },
+        {
+          "id": "query_related",
+          "check": "Search results are related to bluetooth headphones or headphones."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 2,
+        "max_tool_calls": 15,
+        "must_complete_within_sec": 120
+      }
+    },
+    {
+      "id": "scroll_ebay_results",
+      "category": "single_step",
+      "description_for_judge": "Agent must scroll down the eBay search results to see more products.",
+      "prompt": "在eBay搜索结果页向下滚动查看更多商品。",
+      "rubric": [
+        {
+          "id": "scroll_performed",
+          "check": "Page content changed showing different products."
+        },
+        {
+          "id": "still_in_results",
+          "check": "Still showing eBay search results."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 5,
+        "must_complete_within_sec": 60
+      }
+    },
+    {
+      "id": "view_ebay_product_detail",
+      "category": "single_step",
+      "description_for_judge": "Agent must tap on a product listing to view its detail page.",
+      "prompt": "在eBay点击一个商品查看详情。",
+      "rubric": [
+        {
+          "id": "detail_opened",
+          "check": "Product detail page is shown with product info, price, and action buttons."
+        },
+        {
+          "id": "not_list_view",
+          "check": "No longer on search results list view."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 8,
+        "must_complete_within_sec": 90
+      }
+    },
+    {
+      "id": "scroll_ebay_product_detail",
+      "category": "single_step",
+      "description_for_judge": "Agent must scroll down on eBay product detail page.",
+      "prompt": "在eBay商品详情页向下滚动查看更多信息。",
+      "rubric": [
+        {
+          "id": "scroll_in_detail",
+          "check": "Page scrolled showing more product information or description."
+        },
+        { "id": "still_on_detail", "check": "Still on product detail page." }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 5,
+        "must_complete_within_sec": 60
+      }
+    },
+    {
+      "id": "add_to_watchlist",
+      "category": "single_step",
+      "description_for_judge": "Agent must add product to watchlist or favorites in eBay.",
+      "prompt": "在eBay将当前商品添加到关注列表。",
+      "rubric": [
+        {
+          "id": "watchlist_action",
+          "check": "Agent clicked on watchlist, favorite, or heart icon."
+        },
+        {
+          "id": "confirmation",
+          "check": "Action completed with confirmation or list updated."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 10,
+        "must_complete_within_sec": 90
+      }
+    },
+    {
+      "id": "go_back_to_results",
+      "category": "single_step",
+      "description_for_judge": "Agent must navigate back from product detail to search results.",
+      "prompt": "从eBay商品详情页返回搜索结果。",
+      "rubric": [
+        { "id": "back_navigation", "check": "Used back button or gesture." },
+        {
+          "id": "results_shown",
+          "check": "Post-screenshot shows search results list."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 5,
+        "must_complete_within_sec": 60
+      }
+    },
+    {
+      "id": "open_ebay_categories",
+      "category": "single_step",
+      "description_for_judge": "Agent must browse categories or menu in eBay.",
+      "prompt": "在eBay打开分类浏览菜单。",
+      "rubric": [
+        {
+          "id": "menu_opened",
+          "check": "Categories menu or navigation drawer is visible."
+        },
+        {
+          "id": "categories_shown",
+          "check": "Product categories are displayed."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 8,
+        "must_complete_within_sec": 90
+      }
+    },
+    {
+      "id": "return_ebay_home",
+      "category": "single_step",
+      "description_for_judge": "Agent must navigate back to eBay home page.",
+      "prompt": "返回eBay首页。",
+      "rubric": [
+        {
+          "id": "home_shown",
+          "check": "eBay home page with featured items or search bar visible."
+        },
+        {
+          "id": "not_subpage",
+          "check": "Not on search results or product detail."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 8,
+        "must_complete_within_sec": 60
+      }
+    },
+    {
+      "id": "close_ebay_app",
+      "category": "single_step",
+      "description_for_judge": "Agent must close eBay app and return to home screen.",
+      "prompt": "关闭eBay应用返回主屏幕。",
+      "rubric": [
+        { "id": "app_closed", "check": "Device home screen is shown." },
+        {
+          "id": "ebay_not_visible",
+          "check": "eBay app is no longer in foreground."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 5,
+        "must_complete_within_sec": 60
+      }
+    }
+  ]
+}
