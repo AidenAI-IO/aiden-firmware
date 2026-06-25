@@ -737,7 +737,7 @@ func TestPostActionScreenshotToolFallsBackScreenshotWhenScreenUnstable(t *testin
 	if result.Data != "ZmFrZQ==" {
 		t.Fatalf("screenshot data = %q, want fallback capture", result.Data)
 	}
-	if len(waitStable.inputs) != 1 || waitStable.inputs[0] != `{"timeout_ms":3000,"stable_ms":500,"diff_threshold":2}` {
+	if len(waitStable.inputs) != 1 || waitStable.inputs[0] != `{"timeout_ms":3000,"stable_ms":500,"diff_threshold":5}` {
 		t.Fatalf("wait stable inputs = %#v", waitStable.inputs)
 	}
 	if len(screenshot.inputs) != 1 {

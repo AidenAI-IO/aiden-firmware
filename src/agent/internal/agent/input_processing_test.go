@@ -41,7 +41,7 @@ func TestNewSTTClientFromConfigRejectsInvalidProxyEnvironment(t *testing.T) {
 func TestPrepareAudioInputAudioModeBuildsCanonicalTurn(t *testing.T) {
 	wav := pcm16MonoToWAV([]int16{100, -100, 200, -200}, 16000)
 
-	input, err := PrepareAudioInput("audio", nil, wav, "", nil)
+	input, err := PrepareAudioInput("audio", nil, wav, "", "", nil)
 	if err != nil {
 		t.Fatalf("PrepareAudioInput() error = %v", err)
 	}
@@ -76,5 +76,35 @@ func TestPrepareAudioInputAudioModeBuildsCanonicalTurn(t *testing.T) {
 	}
 	if len(artifact.Data) != 0 {
 		t.Fatalf("artifact must not carry binary data: %#v", artifact)
+	}
+}
+
+func TestPrepareAudioInputSTTUsesTranscriptHintBeforeTranscribing(t *testing.T) {
+	wav := pcm16MonoToWAV([]int16{100, -100, 200, -200}, 16000)
+	client := &stubSTTClient{transcript: "should not be used"}
+
+	input, err := PrepareAudioInput("stt", client, wav, "streaming transcript", "", nil)
+	if err != nil {
+		t.Fatalf("PrepareAudioInput() error = %v", err)
+	}
+
+	if input.Transcript != "streaming transcript" {
+		t.Fatalf("Transcript = %q, want streaming transcript", input.Transcript)
+	}
+	if len(client.inputs) != 0 {
+		t.Fatalf("expected transcript hint to skip one-shot STT, got %d TranscribeWAV calls", len(client.inputs))
+	}
+}
+
+func TestPrepareAudioInputSTTUsesTranscriptHintWithoutClient(t *testing.T) {
+	wav := pcm16MonoToWAV([]int16{100, -100, 200, -200}, 16000)
+
+	input, err := PrepareAudioInput("stt", nil, wav, "streaming transcript", "", nil)
+	if err != nil {
+		t.Fatalf("PrepareAudioInput() error = %v", err)
+	}
+
+	if input.Transcript != "streaming transcript" {
+		t.Fatalf("Transcript = %q, want streaming transcript", input.Transcript)
 	}
 }

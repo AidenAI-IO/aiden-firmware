@@ -29,8 +29,23 @@ import (
 )
 
 type stubSTTClient struct {
-	transcript string
-	inputs     [][]byte
+	transcript         string
+	transcribeErr      error
+	inputs             [][]byte
+	supportsStreaming  bool
+	streamConfigs      []STTStreamConfig
+	streamUploader     *stubSTTStreamUploader
+	streamUploaderErr  error
+	streamUploaderUsed int
+}
+
+type stubSTTStreamUploader struct {
+	transcript  string
+	finalizeErr error
+	closeErr    error
+	writes      [][]byte
+	finalized   bool
+	closed      bool
 }
 
 type mappingStateMutatingTool struct {
@@ -55,7 +70,56 @@ func (t *mappingStateMutatingTool) Call(_ context.Context, input string) (string
 
 func (s *stubSTTClient) TranscribeWAV(wavData []byte) (string, error) {
 	s.inputs = append(s.inputs, append([]byte(nil), wavData...))
+	if s.transcribeErr != nil {
+		return "", s.transcribeErr
+	}
 	return s.transcript, nil
+}
+
+func (s *stubSTTClient) Capabilities() STTCapabilities {
+	return STTCapabilities{SupportsStreamingUpload: s.supportsStreaming}
+}
+
+func (s *stubSTTClient) NewStreamingUploader(_ context.Context, cfg STTStreamConfig) (STTStreamUploader, error) {
+	s.streamConfigs = append(s.streamConfigs, cfg)
+	if !s.supportsStreaming {
+		return nil, fmt.Errorf("streaming upload is not supported")
+	}
+	if s.streamUploaderErr != nil {
+		return nil, s.streamUploaderErr
+	}
+	if s.streamUploader == nil {
+		s.streamUploader = &stubSTTStreamUploader{}
+	}
+	s.streamUploaderUsed++
+	return s.streamUploader, nil
+}
+
+func TestStubSTTClientNewStreamingUploaderRequiresStreamingCapability(t *testing.T) {
+	client := &stubSTTClient{}
+
+	_, err := client.NewStreamingUploader(context.Background(), STTStreamConfig{SampleRate: 16000, Channels: 1, BitWidth: 16})
+	if err == nil {
+		t.Fatal("expected streaming capability error")
+	}
+}
+
+func (s *stubSTTStreamUploader) UploadPCM(pcm []byte) error {
+	s.writes = append(s.writes, append([]byte(nil), pcm...))
+	return nil
+}
+
+func (s *stubSTTStreamUploader) Finalize() (string, error) {
+	s.finalized = true
+	if s.finalizeErr != nil {
+		return "", s.finalizeErr
+	}
+	return s.transcript, nil
+}
+
+func (s *stubSTTStreamUploader) Close() error {
+	s.closed = true
+	return s.closeErr
 }
 
 func firstMessageOfType(messages []Message, messageType string) (Message, bool) {
@@ -70,7 +134,7 @@ func firstMessageOfType(messages []Message, messageType string) (Message, bool) 
 func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, "我先读取当前音量。"),
+			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, "Let me read the current volume."),
 			contentResponse("The current audio volume is 42."),
 		},
 	}
@@ -95,7 +159,7 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	)
 	server := NewServer(runtime, ":0")
 
-	body := bytes.NewBufferString(`{"message":"当前音量是多少？"}`)
+	body := bytes.NewBufferString(`{"message":"What is the current volume?"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/chat", body)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -118,7 +182,7 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 		t.Fatalf("expected 6 history entries for default-mode planner tool flow, got %d", len(resp.History))
 	}
 
-	if resp.History[0].Type != "user" || resp.History[0].Content != "当前音量是多少？" {
+	if resp.History[0].Type != "user" || resp.History[0].Content != "What is the current volume?" {
 		t.Fatalf("unexpected first history message: %#v", resp.History[0])
 	}
 	roleOutput, ok := firstMessageOfType(resp.History, "role_output")
@@ -129,7 +193,7 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	if !ok || toolCall.ToolName != "audio_volume" || toolCall.ToolInput != "{}" {
 		t.Fatalf("unexpected tool_call message: %#v", resp.History)
 	}
-	if toolCall.Content != "我先读取当前音量。" {
+	if toolCall.Content != "Let me read the current volume." {
 		t.Fatalf("unexpected tool_call content: %#v", toolCall)
 	}
 	toolResult, ok := firstMessageOfType(resp.History, "tool_result")
@@ -146,7 +210,7 @@ func TestServerPersistsChatHistoryWithEpisodeReference(t *testing.T) {
 	configDir := t.TempDir()
 	memoryDir := filepath.Join(configDir, "memory")
 	model := &scriptedModel{
-		responses: roleDirectResponses("已完成"),
+		responses: roleDirectResponses("Completed"),
 	}
 	streamingDisabled := false
 	runtime := NewRuntimeWithDeps(
@@ -164,7 +228,7 @@ func TestServerPersistsChatHistoryWithEpisodeReference(t *testing.T) {
 	)
 	server := NewServer(runtime, ":0")
 
-	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"做一个任务"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"Do a task"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	server.handleChat(rec, req)
@@ -217,7 +281,7 @@ func TestServerPersistsChatHistoryWithEpisodeReference(t *testing.T) {
 
 func TestServerHandleChatStreamsRoleToolAndAssistantMessages(t *testing.T) {
 	model := &scriptedModel{
-		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先读取当前音量。"}`, "The current audio volume is 42."),
+		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"Let me read the current volume."}`, "The current audio volume is 42."),
 	}
 	runtime := NewRuntimeWithDeps(
 		Config{
@@ -237,7 +301,7 @@ func TestServerHandleChatStreamsRoleToolAndAssistantMessages(t *testing.T) {
 	)
 	server := NewServer(runtime, ":0")
 
-	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"当前音量是多少？"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"What is the current volume?"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/x-ndjson")
 	req.Header.Set("X-Aiden-Stream", "ndjson")
@@ -611,7 +675,7 @@ func TestHandleCoordinateDebugTap(t *testing.T) {
 
 func TestServerHandleChatStreamTagsHistoryWithRequestID(t *testing.T) {
 	model := &scriptedModel{
-		responses: roleDirectResponses("你好！"),
+		responses: roleDirectResponses("Hello!"),
 	}
 	runtime := NewRuntimeWithDeps(
 		Config{
@@ -989,15 +1053,15 @@ func TestServerSpeakToolContentUsesTTS(t *testing.T) {
 		audioClient: NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
 	}
 
-	server.speakToolContent(context.Background(), " 我先读取当前音量。 ")
+	server.speakToolContent(context.Background(), " Let me read the current volume. ")
 
-	if got := provider.texts(); len(got) != 1 || got[0] != "我先读取当前音量。" {
+	if got := provider.texts(); len(got) != 1 || got[0] != "Let me read the current volume." {
 		t.Fatalf("unexpected TTS texts: %#v", got)
 	}
 }
 
 func TestServerHandleChatDoesNotWaitForToolContentTTSWhenEnabled(t *testing.T) {
-	speech := "读取音量。"
+	speech := "Read volume."
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
 			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, speech),
@@ -1031,7 +1095,7 @@ func TestServerHandleChatDoesNotWaitForToolContentTTSWhenEnabled(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"当前音量是多少？"}`)).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"What is the current volume?"}`)).WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
@@ -1063,7 +1127,7 @@ func TestServerHandleChatDoesNotSpeakWaitForWakeup(t *testing.T) {
 	streamingDisabled := false
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			toolCallResponse("wait_1", "wait_for_wakeup", `{"reason":"user asked","speech":"我先待命。"}`),
+			toolCallResponse("wait_1", "wait_for_wakeup", `{"reason":"user asked","speech":"Standby mode."}`),
 		},
 	}
 	controller := NewWaitForWakeupController()
@@ -1101,7 +1165,7 @@ func TestServerHandleChatDoesNotSpeakWaitForWakeup(t *testing.T) {
 func TestServerHandleChatSkipsToolContentTTSWhenDisabled(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, "我先读取当前音量。"),
+			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, "Let me read the current volume."),
 			contentResponse("The current audio volume is 42."),
 		},
 	}
@@ -1126,11 +1190,11 @@ func TestServerHandleChatSkipsToolContentTTSWhenDisabled(t *testing.T) {
 		NewSkillIndex(),
 	)
 	server := NewServer(runtime, ":0")
-	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: "我先读取当前音量。"}
+	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: "Let me read the current volume."}
 	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
 	server.audioClient = NewAudioServiceClient("/tmp/audio.sock")
 
-	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"当前音量是多少？"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"What is the current volume?"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
@@ -1380,7 +1444,7 @@ func TestServerHandleChatStreamDuplicateRequestIDDoesNotAppendHistory(t *testing
 }
 
 func TestServerSpeakToolContentUsesCallerContext(t *testing.T) {
-	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: "我先读取当前音量。"}
+	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: "Let me read the current volume."}
 	server := &Server{
 		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
 		audioClient: NewAudioServiceClient("/tmp/audio.sock"),
@@ -1389,7 +1453,7 @@ func TestServerSpeakToolContentUsesCallerContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		server.speakToolContent(ctx, "我先读取当前音量。")
+		server.speakToolContent(ctx, "Let me read the current volume.")
 		close(done)
 	}()
 
@@ -1514,7 +1578,7 @@ func TestServerHandleClearRemovesRuntimeMemory(t *testing.T) {
 		t.Fatalf("Get() error = %v", err)
 	}
 	if err := handle.History.SetMessages(context.Background(), []llms.ChatMessage{
-		llms.HumanChatMessage{Content: "记一下，以后处理蓝海报销App超过100元必须先确认。"},
+		llms.HumanChatMessage{Content: "Remember, expenses over 100 in the Lanhai reimbursement app must be confirmed first."},
 	}); err != nil {
 		t.Fatalf("SetMessages() error = %v", err)
 	}
@@ -1657,13 +1721,13 @@ func TestServerHandleSkillsReloadRejectsGet(t *testing.T) {
 }
 
 func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
-	stt := &stubSTTClient{transcript: "你好，帮我总结一下"}
+	stt := &stubSTTClient{transcript: "Hello, please summarize this"}
 	runtime := NewRuntimeWithDeps(
 		Config{
 			Model:       ModelConfig{Provider: "fake"},
 			Instruction: "Answer directly.",
 		},
-		&testModelResolver{model: &scriptedModel{responses: roleDirectResponses("已处理")}},
+		&testModelResolver{model: &scriptedModel{responses: roleDirectResponses("Completed")}},
 		NewMemoryManager(""),
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
@@ -1704,23 +1768,23 @@ func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 
-	if resp.Response != "已处理" {
+	if resp.Response != "Completed" {
 		t.Fatalf("unexpected response: %q", resp.Response)
 	}
 	if len(resp.History) != 3 {
 		t.Fatalf("expected 3 history entries for default-mode direct finish, got %d", len(resp.History))
 	}
-	if resp.History[0].Content != "你好，帮我总结一下" {
+	if resp.History[0].Content != "Hello, please summarize this" {
 		t.Fatalf("expected transcript as user content, got %#v", resp.History[0])
 	}
-	if len(resp.History[0].Attachments) != 1 || resp.History[0].Attachments[0].Transcript != "你好，帮我总结一下" {
+	if len(resp.History[0].Attachments) != 1 || resp.History[0].Attachments[0].Transcript != "Hello, please summarize this" {
 		t.Fatalf("expected transcript on audio attachment, got %#v", resp.History[0].Attachments)
 	}
 	if _, ok := firstMessageOfType(resp.History, "role_output"); !ok {
 		t.Fatalf("expected role output messages in history: %#v", resp.History)
 	}
 	assistant, ok := firstMessageOfType(resp.History, "assistant")
-	if !ok || assistant.Content != "已处理" {
+	if !ok || assistant.Content != "Completed" {
 		t.Fatalf("unexpected assistant message: %#v", resp.History)
 	}
 }
@@ -1830,6 +1894,401 @@ func TestServerDeviceAudioRecordingEndpointsReturnWAVAttachment(t *testing.T) {
 	}
 	if len(wavData) != 48 {
 		t.Fatalf("expected 2 PCM16 samples in WAV, got %d bytes", len(wavData))
+	}
+}
+
+func TestServerDeviceAudioRecordingStopIncludesStreamingTranscript(t *testing.T) {
+	stopCh := make(chan struct{})
+	var stopOnce sync.Once
+
+	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
+		switch req.Op {
+		case "start_playback":
+			return audioResponse{Status: "OK", SessionID: stringUint64(7)}, nil
+		case "write_play_chunk", "health":
+			return audioResponse{Status: "OK"}, nil
+		case "start_recording":
+			return audioResponse{Status: "OK", SessionID: stringUint64(42)}, nil
+		case "read_record_chunk":
+			select {
+			case <-stopCh:
+				return audioResponse{Status: "OK", EndOfStream: true}, nil
+			default:
+				return audioResponse{Status: "OK"}, []byte{1, 0, 2, 0}
+			}
+		case "stop_recording":
+			stopOnce.Do(func() { close(stopCh) })
+			return audioResponse{Status: "OK"}, nil
+		default:
+			return audioResponse{Status: "INTERNAL_ERROR"}, nil
+		}
+	})
+
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model: ModelConfig{Provider: "fake"},
+			Audio: AudioConfig{
+				Socket:     socketPath,
+				SampleRate: 16000,
+				Channels:   1,
+				BitWidth:   16,
+			},
+		},
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+	server.sttClient = &stubSTTClient{
+		supportsStreaming: true,
+		streamUploader:    &stubSTTStreamUploader{transcript: "streaming upload result"},
+	}
+
+	startReq := httptest.NewRequest(http.MethodPost, "/api/audio/record/start", nil)
+	startRec := httptest.NewRecorder()
+	server.handleAudioRecordStart(startRec, startReq)
+	if startRec.Code != http.StatusOK {
+		t.Fatalf("unexpected start status: %d body=%s", startRec.Code, startRec.Body.String())
+	}
+
+	stopReq := httptest.NewRequest(http.MethodPost, "/api/audio/record/stop", nil)
+	stopRec := httptest.NewRecorder()
+	server.handleAudioRecordStop(stopRec, stopReq)
+	if stopRec.Code != http.StatusOK {
+		t.Fatalf("unexpected stop status: %d body=%s", stopRec.Code, stopRec.Body.String())
+	}
+
+	var resp AudioRecordStopResponse
+	if err := json.NewDecoder(stopRec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode stop response: %v", err)
+	}
+	if resp.Attachment.Transcript != "streaming upload result" {
+		t.Fatalf("Attachment.Transcript = %q, want streaming upload result", resp.Attachment.Transcript)
+	}
+}
+
+func TestServerEndWebRecordingClearsStreamingSessionOnDrainTimeout(t *testing.T) {
+	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
+		switch req.Op {
+		case "stop_recording":
+			return audioResponse{Status: "OK"}, nil
+		default:
+			return audioResponse{Status: "OK"}, nil
+		}
+	})
+
+	uploader := newBlockingFinalizeUploader("")
+	server := &Server{audioClient: NewAudioServiceClient(socketPath)}
+	recording := &webAudioRecording{
+		sessionID:  42,
+		sampleRate: 16000,
+		done:       make(chan struct{}),
+		sttSession: &streamingSTTSession{uploader: uploader},
+	}
+
+	err := server.endWebRecordingWithTimeout(recording, 20*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "timed out waiting for audio recording to drain") {
+		t.Fatalf("endWebRecordingWithTimeout() error = %v, want drain timeout", err)
+	}
+	select {
+	case <-uploader.closed:
+	case <-time.After(time.Second):
+		t.Fatal("expected uploader to be closed after drain timeout")
+	}
+}
+
+func TestServerEndWebRecordingReturnsFinalizeTimeout(t *testing.T) {
+	oldTimeout := webRecordingStreamingSTTFinalizeTimeout
+	webRecordingStreamingSTTFinalizeTimeout = 20 * time.Millisecond
+	t.Cleanup(func() {
+		webRecordingStreamingSTTFinalizeTimeout = oldTimeout
+	})
+
+	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
+		switch req.Op {
+		case "stop_recording":
+			return audioResponse{Status: "OK"}, nil
+		default:
+			return audioResponse{Status: "OK"}, nil
+		}
+	})
+
+	done := make(chan struct{})
+	close(done)
+	uploader := newBlockingFinalizeUploader("")
+	server := &Server{audioClient: NewAudioServiceClient(socketPath)}
+	recording := &webAudioRecording{
+		sessionID:  42,
+		sampleRate: 16000,
+		done:       done,
+		sttSession: &streamingSTTSession{uploader: uploader},
+	}
+
+	err := server.endWebRecordingWithTimeout(recording, time.Second)
+	if !errors.Is(err, errStreamingSTTFinalizeTimeout) {
+		t.Fatalf("endWebRecordingWithTimeout() error = %v, want finalize timeout", err)
+	}
+	select {
+	case <-uploader.closed:
+	case <-time.After(time.Second):
+		t.Fatal("expected uploader to be closed after finalize timeout")
+	}
+}
+
+func TestServerHandleChatUsesAttachmentTranscriptWithoutRetranscribing(t *testing.T) {
+	model := &scriptedModel{
+		responses: roleDirectResponses("Completed"),
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use transcript directly.",
+			InputMode:   "stt",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	stt := &stubSTTClient{transcript: "should not be called"}
+	server := &Server{
+		runtime:   runtime,
+		history:   make([]Message, 0),
+		sttClient: stt,
+	}
+
+	payload, err := json.Marshal(ChatRequest{
+		Attachments: []MessageAttachment{{
+			Kind:       AttachmentKindAudio,
+			Name:       "recording.wav",
+			MIMEType:   "audio/wav",
+			Data:       base64.StdEncoding.EncodeToString([]byte("RIFFtest")),
+			Transcript: "directly reused transcript",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.handleChat(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(stt.inputs) != 0 {
+		t.Fatalf("expected attachment transcript to skip TranscribeWAV, got %d calls", len(stt.inputs))
+	}
+
+	var resp ChatResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.History[0].Content != "directly reused transcript" {
+		t.Fatalf("expected transcript as user content, got %#v", resp.History[0])
+	}
+}
+
+func TestServerSTTConfigTestLiveSessionUsesStreamingTranscript(t *testing.T) {
+	sentChunk := false
+	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
+		switch req.Op {
+		case "start_recording":
+			return audioResponse{Status: "OK", SessionID: stringUint64(41)}, nil
+		case "read_record_chunk":
+			timeoutMs := int(req.TimeoutMs)
+			if timeoutMs <= 0 {
+				t.Fatalf("unexpected timeout_ms: %d", timeoutMs)
+			}
+			if !sentChunk {
+				sentChunk = true
+				return audioResponse{Status: "OK"}, []byte{1, 0, 2, 0, 3, 0, 4, 0}
+			}
+			return audioResponse{Status: "OK", EndOfStream: true}, nil
+		case "stop_recording":
+			return audioResponse{Status: "OK"}, nil
+		default:
+			return audioResponse{Status: "INTERNAL_ERROR"}, nil
+		}
+	})
+
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model: ModelConfig{Provider: "fake"},
+			Audio: AudioConfig{
+				Socket:     socketPath,
+				SampleRate: 16000,
+				Channels:   1,
+				BitWidth:   16,
+			},
+		},
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+
+	stt := &stubSTTClient{
+		supportsStreaming: true,
+		streamUploader:    &stubSTTStreamUploader{transcript: "streaming upload result"},
+	}
+	previousFactory := newSTTClientFromConfigForLiveTest
+	newSTTClientFromConfigForLiveTest = func(cfg Config) (STTClient, error) {
+		if cfg.STT.Provider != "tencent-asr" {
+			t.Fatalf("provider = %q, want tencent-asr", cfg.STT.Provider)
+		}
+		if cfg.Audio.Socket != socketPath {
+			t.Fatalf("audio socket = %q, want %q", cfg.Audio.Socket, socketPath)
+		}
+		return stt, nil
+	}
+	defer func() {
+		newSTTClientFromConfigForLiveTest = previousFactory
+	}()
+
+	startBody := `{"stt_values":{"provider":"tencent-asr","app_id":"app-1","secret_id":"id","secret_key":"key","region":"ap-shanghai","engine_model_type":"16k_zh"},"audio_values":{"socket":"` + socketPath + `","sample_rate":16000,"channels":1,"bit_width":16}}`
+	startReq := httptest.NewRequest(http.MethodPost, "/api/config-test/stt/start", strings.NewReader(startBody))
+	startReq.Header.Set("Content-Type", "application/json")
+	startRec := httptest.NewRecorder()
+	server.handleSTTConfigTestStart(startRec, startReq)
+	if startRec.Code != http.StatusOK {
+		t.Fatalf("unexpected start status: %d body=%s", startRec.Code, startRec.Body.String())
+	}
+
+	stopReq := httptest.NewRequest(http.MethodPost, "/api/config-test/stt/stop", nil)
+	stopRec := httptest.NewRecorder()
+	server.handleSTTConfigTestStop(stopRec, stopReq)
+	if stopRec.Code != http.StatusOK {
+		t.Fatalf("unexpected stop status: %d body=%s", stopRec.Code, stopRec.Body.String())
+	}
+
+	var resp struct {
+		OK         bool   `json:"ok"`
+		Transcript string `json:"transcript"`
+		Results    []struct {
+			Check  string `json:"check"`
+			Passed bool   `json:"passed"`
+			Detail string `json:"detail"`
+		} `json:"results"`
+	}
+	if err := json.NewDecoder(stopRec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode stop response: %v", err)
+	}
+	if !resp.OK {
+		t.Fatalf("expected ok=true, got %#v", resp)
+	}
+	if resp.Transcript != "streaming upload result" {
+		t.Fatalf("transcript = %q, want streaming upload result", resp.Transcript)
+	}
+	if len(stt.inputs) != 0 {
+		t.Fatalf("expected streaming transcript to skip TranscribeWAV, got %d calls", len(stt.inputs))
+	}
+	if stt.streamUploaderUsed != 1 {
+		t.Fatalf("stream uploader begin count = %d, want 1", stt.streamUploaderUsed)
+	}
+	if stt.streamUploader == nil || len(stt.streamUploader.writes) != 1 {
+		t.Fatalf("stream uploader writes = %#v, want one PCM write", stt.streamUploader)
+	}
+	if len(resp.Results) != 1 || !strings.Contains(resp.Results[0].Detail, "streaming") {
+		t.Fatalf("unexpected results: %#v", resp.Results)
+	}
+}
+
+func TestServerSTTConfigTestLiveSessionFallsBackToOneShot(t *testing.T) {
+	sentChunk := false
+	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
+		switch req.Op {
+		case "start_recording":
+			return audioResponse{Status: "OK", SessionID: stringUint64(42)}, nil
+		case "read_record_chunk":
+			if !sentChunk {
+				sentChunk = true
+				return audioResponse{Status: "OK"}, []byte{10, 0, 11, 0, 12, 0, 13, 0}
+			}
+			return audioResponse{Status: "OK", EndOfStream: true}, nil
+		case "stop_recording":
+			return audioResponse{Status: "OK"}, nil
+		default:
+			return audioResponse{Status: "INTERNAL_ERROR"}, nil
+		}
+	})
+
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model: ModelConfig{Provider: "fake"},
+			Audio: AudioConfig{
+				Socket:     socketPath,
+				SampleRate: 16000,
+				Channels:   1,
+				BitWidth:   16,
+			},
+		},
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+
+	stt := &stubSTTClient{transcript: "one-shot result"}
+	previousFactory := newSTTClientFromConfigForLiveTest
+	newSTTClientFromConfigForLiveTest = func(cfg Config) (STTClient, error) {
+		if cfg.STT.Provider != "openai-whisper" {
+			t.Fatalf("provider = %q, want openai-whisper", cfg.STT.Provider)
+		}
+		return stt, nil
+	}
+	defer func() {
+		newSTTClientFromConfigForLiveTest = previousFactory
+	}()
+
+	startBody := `{"stt_values":{"provider":"openai-whisper","api_key":"sk-test","model":"whisper-1","base_url":"http://127.0.0.1:9"},"audio_values":{"socket":"` + socketPath + `","sample_rate":16000,"channels":1,"bit_width":16}}`
+	startReq := httptest.NewRequest(http.MethodPost, "/api/config-test/stt/start", strings.NewReader(startBody))
+	startReq.Header.Set("Content-Type", "application/json")
+	startRec := httptest.NewRecorder()
+	server.handleSTTConfigTestStart(startRec, startReq)
+	if startRec.Code != http.StatusOK {
+		t.Fatalf("unexpected start status: %d body=%s", startRec.Code, startRec.Body.String())
+	}
+
+	stopReq := httptest.NewRequest(http.MethodPost, "/api/config-test/stt/stop", nil)
+	stopRec := httptest.NewRecorder()
+	server.handleSTTConfigTestStop(stopRec, stopReq)
+	if stopRec.Code != http.StatusOK {
+		t.Fatalf("unexpected stop status: %d body=%s", stopRec.Code, stopRec.Body.String())
+	}
+
+	var resp struct {
+		OK         bool   `json:"ok"`
+		Transcript string `json:"transcript"`
+		Results    []struct {
+			Check  string `json:"check"`
+			Passed bool   `json:"passed"`
+			Detail string `json:"detail"`
+		} `json:"results"`
+	}
+	if err := json.NewDecoder(stopRec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode stop response: %v", err)
+	}
+	if !resp.OK {
+		t.Fatalf("expected ok=true, got %#v", resp)
+	}
+	if resp.Transcript != "one-shot result" {
+		t.Fatalf("transcript = %q, want one-shot result", resp.Transcript)
+	}
+	if len(stt.inputs) != 1 {
+		t.Fatalf("TranscribeWAV calls = %d, want 1", len(stt.inputs))
+	}
+	if stt.streamUploaderUsed != 0 {
+		t.Fatalf("stream uploader begin count = %d, want 0", stt.streamUploaderUsed)
+	}
+	if len(resp.Results) != 1 || !strings.Contains(resp.Results[0].Detail, "one-shot") {
+		t.Fatalf("unexpected results: %#v", resp.Results)
 	}
 }
 

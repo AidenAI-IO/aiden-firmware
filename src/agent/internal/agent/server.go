@@ -30,30 +30,31 @@ import (
 
 // Server provides HTTP API for agent interactions
 type Server struct {
-	runtime             *Runtime
-	addr                string
-	logger              *Logger
-	userFilesReportPath string
-	userFilesToolsDir   string
-	mu                  sync.Mutex
-	history             []Message
-	historyStore        *ChatHistoryStore
-	episodeStore        *TaskEpisodeStore
-	sttClient           STTClient
-	ttsManager          *tts.ProviderManager
-	ttsMu               sync.RWMutex
-	audioClient         *AudioServiceClient
-	recordMu            sync.Mutex
-	webRecording        *webAudioRecording
-	bridge              *PhoneBridge
-	liveActivity        *LiveActivityManager
-	pendingResults      map[string]*chatPendingResult
-	pendingResultsMu    sync.Mutex
-	activeRuns          map[string]context.CancelFunc
-	activeRunsMu        sync.Mutex
-	pendingSteers       map[string]pendingSteerMessage
-	pendingSteersMu     sync.Mutex
-	eventBroadcaster    *EventBroadcaster
+	runtime              *Runtime
+	addr                 string
+	logger               *Logger
+	userFilesReportPath  string
+	userFilesToolsDir    string
+	mu                   sync.Mutex
+	history              []Message
+	historyStore         *ChatHistoryStore
+	episodeStore         *TaskEpisodeStore
+	sttClient            STTClient
+	ttsManager           *tts.ProviderManager
+	ttsMu                sync.RWMutex
+	audioClient          *AudioServiceClient
+	recordMu             sync.Mutex
+	webRecording         *webAudioRecording
+	sttConfigTestSession *sttConfigTestLiveSession
+	bridge               *PhoneBridge
+	liveActivity         *LiveActivityManager
+	pendingResults       map[string]*chatPendingResult
+	pendingResultsMu     sync.Mutex
+	activeRuns           map[string]context.CancelFunc
+	activeRunsMu         sync.Mutex
+	pendingSteers        map[string]pendingSteerMessage
+	pendingSteersMu      sync.Mutex
+	eventBroadcaster     *EventBroadcaster
 }
 
 type webAudioRecording struct {
@@ -67,6 +68,8 @@ type webAudioRecording struct {
 	pending    byte
 	stopping   bool
 	err        error
+	sttSession *streamingSTTSession
+	transcript string
 }
 
 type AudioRecordStartResponse struct {
@@ -400,6 +403,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/tool-skills", s.handleToolSkills)
 	mux.HandleFunc("/api/audio/record/start", s.handleAudioRecordStart)
 	mux.HandleFunc("/api/audio/record/stop", s.handleAudioRecordStop)
+	mux.HandleFunc("/api/config-test/stt/start", s.handleSTTConfigTestStart)
+	mux.HandleFunc("/api/config-test/stt/stop", s.handleSTTConfigTestStop)
 	mux.HandleFunc("/api/audio/", s.handleAudioFile)
 	mux.HandleFunc("/api/settings/tts", s.handleTTSSettings)
 	mux.HandleFunc("/api/tts/providers", s.handleTTSProviders)
@@ -1984,6 +1989,12 @@ func (s *Server) handleAudioRecordStart(w http.ResponseWriter, r *http.Request) 
 	}
 
 	s.recordMu.Lock()
+	defer s.recordMu.Unlock()
+
+	if s.sttConfigTestSession != nil {
+		http.Error(w, "stt config test recording is already active", http.StatusConflict)
+		return
+	}
 	if s.webRecording != nil {
 		stale := s.webRecording
 		s.webRecording = nil
@@ -1994,7 +2005,6 @@ func (s *Server) handleAudioRecordStart(w http.ResponseWriter, r *http.Request) 
 			s.logger.Warn("Stale web audio recording cleanup failed: %v", err)
 		}
 	}
-	s.recordMu.Unlock()
 
 	sampleRate := s.runtime.config.Audio.SampleRateOrDefault()
 	result, err := s.audioClient.StartRecording(AudioFormat{
@@ -2021,18 +2031,25 @@ func (s *Server) handleAudioRecordStart(w http.ResponseWriter, r *http.Request) 
 		done:       make(chan struct{}),
 		samples:    make([]int16, 0, sampleRate),
 	}
-
-	s.recordMu.Lock()
-	if s.webRecording != nil {
-		s.recordMu.Unlock()
-		if err := s.endStaleWebRecording(recording); err != nil && s.logger != nil {
-			s.logger.Warn("Orphaned web audio recording cleanup failed: %v", err)
+	if s.webAudioInputMode() == TurnModalitySTT && s.sttClient != nil && s.sttClient.Capabilities().SupportsStreamingUpload {
+		streamingSTT, err := beginStreamingSTTSession(r.Context(), s.sttClient, STTStreamConfig{
+			SampleRate: sampleRate,
+			Channels:   1,
+			BitWidth:   16,
+		})
+		if err != nil {
+			if s.logger != nil {
+				s.logger.Warn("Web audio streaming STT unavailable, falling back to one-shot STT: %v", err)
+			}
+		} else if streamingSTT != nil {
+			if s.logger != nil {
+				s.logger.Info("Web audio streaming STT enabled for realtime transcription")
+			}
+			recording.sttSession = streamingSTT
 		}
-		http.Error(w, "audio recording is already active", http.StatusConflict)
-		return
 	}
+
 	s.webRecording = recording
-	s.recordMu.Unlock()
 
 	go s.readWebAudioRecording(recording)
 
@@ -2084,11 +2101,12 @@ func (s *Server) handleAudioRecordStop(w http.ResponseWriter, r *http.Request) {
 	samples := recording.snapshotSamples()
 	wavData := pcm16MonoToWAV(samples, recording.sampleRate)
 	attachment := MessageAttachment{
-		Kind:     AttachmentKindAudio,
-		Name:     "recording.wav",
-		MIMEType: "audio/wav",
-		Data:     base64.StdEncoding.EncodeToString(wavData),
-		Size:     len(wavData),
+		Kind:       AttachmentKindAudio,
+		Name:       "recording.wav",
+		MIMEType:   "audio/wav",
+		Data:       base64.StdEncoding.EncodeToString(wavData),
+		Size:       len(wavData),
+		Transcript: recording.readTranscript(),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -2100,6 +2118,8 @@ const (
 	webRecordingStaleCleanupTimeout = 200 * time.Millisecond
 )
 
+var webRecordingStreamingSTTFinalizeTimeout = 2 * time.Second
+
 func (s *Server) endWebRecording(recording *webAudioRecording) error {
 	return s.endWebRecordingWithTimeout(recording, webRecordingDrainTimeout)
 }
@@ -2108,21 +2128,58 @@ func (s *Server) endStaleWebRecording(recording *webAudioRecording) error {
 	return s.endWebRecordingWithTimeout(recording, webRecordingStaleCleanupTimeout)
 }
 
+func (s *Server) finalizeWebRecordingTranscript(recording *webAudioRecording) error {
+	if recording == nil {
+		return nil
+	}
+
+	recording.mu.Lock()
+	session := recording.sttSession
+	recording.sttSession = nil
+	recording.mu.Unlock()
+	if session == nil {
+		return nil
+	}
+
+	transcript, err := session.FinalizeWithTimeout(webRecordingStreamingSTTFinalizeTimeout)
+	if err != nil {
+		_ = session.Close()
+		return err
+	}
+	recording.storeTranscript(transcript)
+	return session.Close()
+}
+
 func (s *Server) endWebRecordingWithTimeout(recording *webAudioRecording, timeout time.Duration) error {
 	if recording == nil {
 		return nil
 	}
 	recording.setStopping()
 	stopErr := s.audioClient.StopRecording(recording.sessionID)
+	drained := false
 	select {
 	case <-recording.done:
+		drained = true
 	case <-time.After(timeout):
 		if stopErr == nil {
 			stopErr = fmt.Errorf("timed out waiting for audio recording to drain")
 		}
 	}
 	if err := recording.readError(); err != nil {
+		recording.clearStreamingSession()
 		return err
+	}
+	if !drained {
+		recording.clearStreamingSession()
+		return stopErr
+	}
+	if err := s.finalizeWebRecordingTranscript(recording); err != nil {
+		if s.logger != nil {
+			s.logger.Warn("Finalize web audio streaming transcript failed: %v", err)
+		}
+		if errors.Is(err, errStreamingSTTFinalizeTimeout) {
+			stopErr = errors.Join(stopErr, err)
+		}
 	}
 	return stopErr
 }
@@ -2140,6 +2197,12 @@ func (s *Server) readWebAudioRecording(recording *webAudioRecording) {
 		}
 		if len(chunk.PCM) > 0 {
 			recording.appendPCM(chunk.PCM)
+			if err := recording.uploadPCM(chunk.PCM); err != nil {
+				recording.clearStreamingSession()
+				if s.logger != nil {
+					s.logger.Warn("Web audio streaming STT upload failed, falling back to one-shot STT: %v", err)
+				}
+			}
 		}
 		if chunk.EndOfStream {
 			return
@@ -2183,6 +2246,38 @@ func (r *webAudioRecording) snapshotSamples() []int16 {
 	samples := make([]int16, len(r.samples))
 	copy(samples, r.samples)
 	return samples
+}
+
+func (r *webAudioRecording) uploadPCM(pcm []byte) error {
+	r.mu.Lock()
+	session := r.sttSession
+	r.mu.Unlock()
+	if session == nil {
+		return nil
+	}
+	return session.UploadPCM(pcm)
+}
+
+func (r *webAudioRecording) clearStreamingSession() {
+	r.mu.Lock()
+	session := r.sttSession
+	r.sttSession = nil
+	r.mu.Unlock()
+	if session != nil {
+		_ = session.Close()
+	}
+}
+
+func (r *webAudioRecording) storeTranscript(transcript string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.transcript = strings.TrimSpace(transcript)
+}
+
+func (r *webAudioRecording) readTranscript() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.transcript
 }
 
 func (s *Server) handleAudioFile(w http.ResponseWriter, r *http.Request) {
@@ -2500,7 +2595,8 @@ func (s *Server) resolveRequestInput(req ChatRequest) (TurnInput, []MessageAttac
 
 	trimmedMessage := strings.TrimSpace(req.Message)
 	if audioAttachment != nil {
-		audioInput, err := PrepareAudioInput(s.webAudioInputMode(), s.sttClient, audioAttachment.Data, trimmedMessage, nonAudioAttachments)
+		audioTranscript := firstAudioAttachmentTranscript(historyAttachments)
+		audioInput, err := PrepareAudioInput(s.webAudioInputMode(), s.sttClient, audioAttachment.Data, audioTranscript, trimmedMessage, nonAudioAttachments)
 		if err != nil {
 			return TurnInput{}, nil, err
 		}
@@ -2569,11 +2665,12 @@ func decodeMessageAttachments(payloads []MessageAttachment) ([]InputAttachment, 
 		})
 
 		history = append(history, MessageAttachment{
-			Kind:     kind,
-			Name:     payload.Name,
-			MIMEType: payload.MIMEType,
-			Data:     payload.Data,
-			Size:     len(raw),
+			Kind:       kind,
+			Name:       payload.Name,
+			MIMEType:   payload.MIMEType,
+			Data:       payload.Data,
+			Size:       len(raw),
+			Transcript: strings.TrimSpace(payload.Transcript),
 		})
 	}
 
@@ -2598,6 +2695,15 @@ func splitAudioAttachment(attachments []InputAttachment) (*InputAttachment, []In
 	}
 
 	return audio, others, nil
+}
+
+func firstAudioAttachmentTranscript(attachments []MessageAttachment) string {
+	for _, attachment := range attachments {
+		if attachment.Kind == AttachmentKindAudio {
+			return strings.TrimSpace(attachment.Transcript)
+		}
+	}
+	return ""
 }
 
 func (s *Server) handleBridgeStatus(w http.ResponseWriter, r *http.Request) {
@@ -2746,7 +2852,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(html))
 }
 
-const coordinateDebugNavLink = `<a href="/coordinate-debug" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">🎯 坐标调试</a>`
+const coordinateDebugNavLink = `<a href="/coordinate-debug" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">🎯 Coordinate Debug</a>`
 
 const webUI = `<!DOCTYPE html>
 <html lang="en">
@@ -3771,7 +3877,7 @@ const webUI = `<!DOCTYPE html>
             <header class="topbar">
                 <h1>Aiden Agent</h1>
                 <div class="topbar-actions">
-                    <a href="/coordinate-debug" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">🎯 坐标调试</a>
+                    <a href="/coordinate-debug" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">🎯 Coordinate Debug</a>
                     <a href="/user_files" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">📁 User files</a>
                     <button type="button" class="new-chat-btn" onclick="clearHistory()">New chat</button>
                     <button type="button" class="new-chat-btn" onclick="resetAllMemory()" style="background:#c0392b;">Reset all memory</button>
@@ -5198,7 +5304,8 @@ const webUI = `<!DOCTYPE html>
                             name: attachment.name || 'recording.wav',
                             mime_type: attachment.mime_type || 'audio/wav',
                             data: attachment.data || '',
-                            size: attachment.size || 0
+                            size: attachment.size || 0,
+                            transcript: attachment.transcript || ''
                         });
                     }
                     return;
@@ -5463,7 +5570,8 @@ const webUI = `<!DOCTYPE html>
                     name: attachment.name,
                     mime_type: attachment.mime_type,
                     data: attachment.data,
-                    size: attachment.size
+                    size: attachment.size,
+                    transcript: attachment.transcript || ''
                 };
             });
         }
@@ -5476,7 +5584,8 @@ const webUI = `<!DOCTYPE html>
                     mime_type: attachment.mime_type,
                     data: attachment.data,
                     size: attachment.size,
-                    preview_url: attachment.preview_url || ''
+                    preview_url: attachment.preview_url || '',
+                    transcript: attachment.transcript || ''
                 };
             });
         }

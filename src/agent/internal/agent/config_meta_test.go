@@ -300,7 +300,8 @@ func TestConfigMeta_STTTencentASRProviderMetadata(t *testing.T) {
 		path string
 		want any
 	}{
-		{"stt.region", "ap-guangzhou"},
+		{"stt.app_id", ""},
+		{"stt.region", "ap-shanghai"},
 		{"stt.language", "zh"},
 	}
 	for _, tt := range tests {

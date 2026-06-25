@@ -157,6 +157,8 @@ func newTestAudioVAD(t *testing.T, alwaysBuffer bool, probabilities []float64) *
 type sequenceScorer struct {
 	probabilities []float64
 	err           error
+	resetErr      error
+	resetCalls    int
 	index         int
 }
 
@@ -176,6 +178,10 @@ func (s *sequenceScorer) Score(samples []int16) (float64, error) {
 }
 
 func (s *sequenceScorer) Reset() error {
+	s.resetCalls++
+	if s.resetErr != nil {
+		return s.resetErr
+	}
 	s.index = 0
 	return nil
 }

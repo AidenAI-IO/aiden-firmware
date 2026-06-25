@@ -153,6 +153,8 @@ func ConfigMeta() ConfigMetadata {
 						VisibleWhen: all(in("stt.provider", "openai-whisper"))},
 					{Key: "base_url", Widget: WidgetText,
 						VisibleWhen: all(in("stt.provider", "openai-whisper"))},
+					{Key: "app_id", Widget: WidgetText, Default: "",
+						VisibleWhen: all(in("stt.provider", tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider))},
 					{Key: "secret_id", Widget: WidgetText, Secret: true,
 						VisibleWhen: all(in("stt.provider", tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider))},
 					{Key: "secret_key", Widget: WidgetText, Secret: true,
