@@ -1,0 +1,175 @@
+#!/bin/sh
+# Configure a persistent swapfile on the writable userdata partition.
+
+CONFIG_FILE=${SWAP_CONFIG_FILE:-/etc/aiden_swap.conf}
+PROC_SWAPS=${PROC_SWAPS:-/proc/swaps}
+MOUNTS_PATH=${MOUNTS_PATH:-/proc/mounts}
+SWAPPINESS_PATH=${SWAPPINESS_PATH:-/proc/sys/vm/swappiness}
+DD_BIN=${DD_BIN:-dd}
+MKSWAP_BIN=${MKSWAP_BIN:-mkswap}
+SWAPON_BIN=${SWAPON_BIN:-swapon}
+SWAPOFF_BIN=${SWAPOFF_BIN:-swapoff}
+
+if [ -f "$CONFIG_FILE" ]; then
+    . "$CONFIG_FILE"
+fi
+
+: "${ENABLE_SWAP:=1}"
+: "${SWAP_FILE:=/userdata/swapfile}"
+: "${SWAP_MOUNT_POINT:=/userdata}"
+: "${SWAP_REQUIRE_MOUNT:=1}"
+: "${SWAP_SIZE_MB:=256}"
+: "${SWAP_SWAPPINESS:=15}"
+
+case "$SWAP_SIZE_MB" in
+    ''|*[!0-9]*|0)
+        echo "invalid SWAP_SIZE_MB: $SWAP_SIZE_MB" >&2
+        exit 1
+        ;;
+esac
+
+case "$SWAP_SWAPPINESS" in
+    ''|*[!0-9]*)
+        echo "invalid SWAP_SWAPPINESS: $SWAP_SWAPPINESS" >&2
+        exit 1
+        ;;
+esac
+
+if [ "$SWAP_SWAPPINESS" -gt 100 ]; then
+    echo "invalid SWAP_SWAPPINESS: $SWAP_SWAPPINESS" >&2
+    exit 1
+fi
+
+expected_bytes=$((SWAP_SIZE_MB * 1024 * 1024))
+
+path_is_mounted() {
+    path="$1"
+    [ -r "$MOUNTS_PATH" ] || return 1
+    awk -v target="$path" '
+        $2 == target { found = 1 }
+        END { exit found ? 0 : 1 }
+    ' "$MOUNTS_PATH"
+}
+
+swap_mount_is_ready() {
+    [ "$SWAP_REQUIRE_MOUNT" = "0" ] && return 0
+    if ! path_is_mounted "$SWAP_MOUNT_POINT"; then
+        echo "swap mount point is not mounted: $SWAP_MOUNT_POINT" >&2
+        return 1
+    fi
+}
+
+is_active() {
+    [ -r "$PROC_SWAPS" ] || return 1
+    while read -r device rest; do
+        if [ "$device" = "$SWAP_FILE" ]; then
+            return 0
+        fi
+    done < "$PROC_SWAPS"
+    return 1
+}
+
+file_has_expected_size() {
+    [ -f "$SWAP_FILE" ] || return 1
+    actual_bytes="$(wc -c < "$SWAP_FILE" 2>/dev/null)" || return 1
+    [ "$actual_bytes" = "$expected_bytes" ]
+}
+
+configure_swappiness() {
+    if [ -w "$SWAPPINESS_PATH" ]; then
+        printf '%s\n' "$SWAP_SWAPPINESS" > "$SWAPPINESS_PATH"
+    else
+        echo "cannot set swappiness: $SWAPPINESS_PATH is not writable" >&2
+        return 1
+    fi
+}
+
+create_swapfile() {
+    swap_dir="$(dirname "$SWAP_FILE")"
+    swap_tmp="${SWAP_FILE}.tmp"
+
+    mkdir -p "$swap_dir" || return 1
+    rm -f "$swap_tmp"
+    if ! "$DD_BIN" if=/dev/zero of="$swap_tmp" bs=1048576 count="$SWAP_SIZE_MB"; then
+        rm -f "$swap_tmp"
+        echo "failed to allocate ${SWAP_SIZE_MB} MB swapfile at $SWAP_FILE" >&2
+        return 1
+    fi
+    chmod 0600 "$swap_tmp" || {
+        rm -f "$swap_tmp"
+        return 1
+    }
+    if ! "$MKSWAP_BIN" "$swap_tmp" >/dev/null; then
+        rm -f "$swap_tmp"
+        echo "failed to initialize swapfile at $SWAP_FILE" >&2
+        return 1
+    fi
+    mv "$swap_tmp" "$SWAP_FILE"
+}
+
+start() {
+    if [ "$ENABLE_SWAP" != "1" ]; then
+        echo "swap disabled by config (ENABLE_SWAP=$ENABLE_SWAP)"
+        return 0
+    fi
+
+    swap_mount_is_ready || return 1
+
+    if is_active; then
+        configure_swappiness
+        echo "swap already active: $SWAP_FILE"
+        return 0
+    fi
+
+    if ! file_has_expected_size; then
+        create_swapfile || return 1
+    else
+        chmod 0600 "$SWAP_FILE" || return 1
+    fi
+
+    configure_swappiness || return 1
+    if ! "$SWAPON_BIN" "$SWAP_FILE"; then
+        echo "failed to enable swapfile: $SWAP_FILE" >&2
+        return 1
+    fi
+    echo "Enabled ${SWAP_SIZE_MB} MB swap at $SWAP_FILE (swappiness=$SWAP_SWAPPINESS)"
+}
+
+stop() {
+    if is_active; then
+        "$SWAPOFF_BIN" "$SWAP_FILE" || {
+            echo "failed to disable swapfile: $SWAP_FILE" >&2
+            return 1
+        }
+    fi
+    echo "Disabled swap at $SWAP_FILE"
+}
+
+status() {
+    if is_active; then
+        echo "swap=active file=$SWAP_FILE size_mb=$SWAP_SIZE_MB swappiness=$SWAP_SWAPPINESS"
+        return 0
+    fi
+    echo "swap=inactive file=$SWAP_FILE size_mb=$SWAP_SIZE_MB"
+    return 1
+}
+
+case "${1:-}" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart|reload)
+        stop
+        start
+        ;;
+    status)
+        status
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status}" >&2
+        exit 1
+        ;;
+esac
