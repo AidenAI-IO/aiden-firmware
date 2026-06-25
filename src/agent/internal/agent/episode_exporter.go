@@ -654,6 +654,11 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 
 func (e *EpisodeExporter) uploadPromptMedia(ctx context.Context, traceID string, call telemetryPromptCall) telemetryPromptCall {
 	for _, media := range call.Media {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(media.ContentType)), "image/") &&
+			!e.cfg.UploadScreenshotsOrDefault() {
+			replaceTelemetryMediaPlaceholder(call.Input, media.Placeholder, "[media omitted: upload disabled]")
+			continue
+		}
 		replacement := "[media omitted: upload unavailable]"
 		uploadCtx, cancel, ok := langfuseScreenshotUploadContext(ctx, e.cfg.UploadTimeoutOrDefault())
 		if ok {
