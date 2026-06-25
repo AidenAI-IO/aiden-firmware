@@ -4575,7 +4575,7 @@ func TestSessionRecallTelemetryIgnoresCompressedChunkWithPendingPrefix(t *testin
 
 	counter := &atomic.Int64{}
 	tool := &sessionRecallTelemetryTool{
-		inner:   NewRecallSessionChunksTool(session),
+		inner:   NewRecallSessionChunksTool(session, nil),
 		counter: counter,
 	}
 	output, err := tool.Call(ctx, `{"chunk_ids":["pending-consumed"]}`)

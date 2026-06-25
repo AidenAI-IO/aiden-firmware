@@ -118,19 +118,23 @@ func parseFlexInt(s string) (int, error) {
 // decodeChunkRecallQuery tolerantly decodes a recall_session_chunks argument.
 func decodeChunkRecallQuery(input string) (ChunkRecallQuery, error) {
 	var flex struct {
-		ChunkIDs flexStringSlice `json:"chunk_ids"`
-		Tags     flexStringSlice `json:"tags"`
-		Entities flexStringSlice `json:"entities"`
-		Limit    flexInt         `json:"limit"`
+		ChunkIDs          flexStringSlice `json:"chunk_ids"`
+		Tags              flexStringSlice `json:"tags"`
+		Entities          flexStringSlice `json:"entities"`
+		Limit             flexInt         `json:"limit"`
+		IncludeArchived   bool            `json:"include_archived"`
+		ArchivedTimeRange string          `json:"archived_time_range"`
 	}
 	if err := json.Unmarshal([]byte(input), &flex); err != nil {
 		return ChunkRecallQuery{}, err
 	}
 	return ChunkRecallQuery{
-		ChunkIDs: flex.ChunkIDs,
-		Tags:     flex.Tags,
-		Entities: flex.Entities,
-		Limit:    int(flex.Limit),
+		ChunkIDs:          flex.ChunkIDs,
+		Tags:              flex.Tags,
+		Entities:          flex.Entities,
+		Limit:             int(flex.Limit),
+		IncludeArchived:   flex.IncludeArchived,
+		ArchivedTimeRange: strings.TrimSpace(flex.ArchivedTimeRange),
 	}, nil
 }
 

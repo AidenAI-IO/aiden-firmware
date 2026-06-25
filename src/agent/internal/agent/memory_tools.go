@@ -8,7 +8,8 @@ import (
 )
 
 type RecallSessionChunksTool struct {
-	store *SessionMemoryStore
+	store    *SessionMemoryStore
+	archived *ArchivedSessionStore
 }
 
 type RecallMemoryTool struct {
@@ -31,31 +32,35 @@ type InspectEpisodeTool struct {
 	store *TaskEpisodeStore
 }
 
-func NewRecallSessionChunksTool(store *SessionMemoryStore) *RecallSessionChunksTool {
-	return &RecallSessionChunksTool{store: store}
+func NewRecallSessionChunksTool(store *SessionMemoryStore, archived *ArchivedSessionStore) *RecallSessionChunksTool {
+	return &RecallSessionChunksTool{store: store, archived: archived}
 }
 
 func (t *RecallSessionChunksTool) Name() string { return "recall_session_chunks" }
 
 func (t *RecallSessionChunksTool) Description() string {
 	return strings.Join([]string{
-		"Recall compressed session history chunks from earlier in this conversation.",
+		"Recall compressed session history chunks from earlier in this conversation, and optionally from previous sessions.",
 		"IMPORTANT: You MUST use this tool when the user asks about something said earlier that you cannot find in your visible conversation context.",
 		"The session summary in your prompt lists recent chunks; older chunks are archived but still recallable.",
 		"How to recall:",
 		"  - PREFERRED: pass chunk_ids to retrieve specific chunks by ID (works for both active and archived chunks).",
 		"  - FALLBACK: pass tags (content/topic keywords like 'payment', 'login') to search all chunks. Use empty tags [] for recent history.",
-		`Input JSON: {"chunk_ids":["chunk_xxx"]} or {"tags":["topic"],"limit":3}`,
-		"Returns JSON with matching conversation chunks, structured summary fields, and their full original events.",
+		"  - Set include_archived=true when the user references prior conversations (e.g. 'yesterday', 'last time', 'earlier today').",
+		"  - archived_time_range controls how far back to search archived sessions: 'last_24h' (default), 'last_7d', or 'all'.",
+		`Input JSON: {"chunk_ids":["chunk_xxx"]} or {"tags":["topic"],"limit":3,"include_archived":true,"archived_time_range":"last_24h"}`,
+		"Returns JSON with matching conversation chunks (each tagged with source=active|archived and session_id when archived) and their full original events.",
 	}, " ")
 }
 
 func (t *RecallSessionChunksTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"chunk_ids": stringArrayArgSchema("Specific session chunk ids to retrieve."),
-		"tags":      stringArrayArgSchema("Topic keywords to search when chunk_ids are not known."),
-		"entities":  stringArrayArgSchema("Named entities to search for."),
-		"limit":     minIntegerArgSchema("Maximum number of chunks to return.", 1),
+		"chunk_ids":           stringArrayArgSchema("Specific session chunk ids to retrieve."),
+		"tags":                stringArrayArgSchema("Topic keywords to search when chunk_ids are not known."),
+		"entities":            stringArrayArgSchema("Named entities to search for."),
+		"limit":               minIntegerArgSchema("Maximum number of chunks to return.", 1),
+		"include_archived":    boolArgSchema("Also search closed sessions stored under session_archive/. Default false."),
+		"archived_time_range": stringEnumArgSchema("How far back to search archived sessions.", archivedTimeRangeLast24h, archivedTimeRangeLast7d, archivedTimeRangeAll),
 	})
 }
 
@@ -71,6 +76,32 @@ func (t *RecallSessionChunksTool) Call(ctx context.Context, input string) (strin
 	if err != nil {
 		return "", err
 	}
+	for i := range results {
+		if results[i].Source == "" {
+			results[i].Source = chunkRecallSourceActive
+		}
+	}
+
+	if query.IncludeArchived && t.archived != nil {
+		remaining := query.Limit
+		if remaining > 0 {
+			remaining -= len(results)
+		}
+		if query.Limit <= 0 || remaining > 0 {
+			archiveQuery := query
+			if query.Limit > 0 {
+				archiveQuery.Limit = remaining
+			}
+			archived, err := t.archived.RecallChunks(ctx, archiveQuery)
+			if err == nil {
+				results = append(results, archived...)
+			}
+			// Archive search failures are non-fatal: a missing or partial
+			// archive directory shouldn't prevent the agent from getting
+			// active-session results back.
+		}
+	}
+
 	return encodeToolJSON(map[string]any{"results": results})
 }
 
