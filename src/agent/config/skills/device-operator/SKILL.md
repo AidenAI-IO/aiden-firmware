@@ -69,6 +69,8 @@ Prefer semantic shortcuts and gestures when available:
 - Use `quick_action` for cataloged keyboard/touch bindings before improvising raw `keyboard_tap` or custom swipes.
 - Use `touch_gesture` with `type: "back"` or `type: "home"` when quick_action is unavailable or ineffective.
 - Use scroll or swipe instead of repeatedly tapping uncertain controls.
+- In app switchers with overlapping cards, tap the visible non-overlapping center of the target card.
+- If the target card is not visible, swipe within the switcher by layout until it enters the visible area, then tap it.
 
 ## Coordinate Discipline
 

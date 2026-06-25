@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -269,5 +270,47 @@ func TestOpenAppResultMetadataForAndroidIntent(t *testing.T) {
 	}
 	if got := openAppResultMechanism(args, ""); got != "android_intent" {
 		t.Fatalf("fallback mechanism = %q, want android_intent", got)
+	}
+}
+
+func TestSearchOpenAppToolAvailable(t *testing.T) {
+	runtime := newRuntimeWithTextEntryTools()
+	if _, ok := runtime.tools.Get("search_launch_app"); !ok {
+		t.Fatal("expected search_launch_app tool to be registered")
+	}
+}
+
+func TestAppSearchOpenFlowCanBeReused(t *testing.T) {
+	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{ObservedMode: textInputModeASCII}}}
+	quick := &recordingTextInputTool{name: "quick_action", out: `{"ok":true}`}
+	touch := &recordingTextInputTool{name: "touch_gesture", out: "ok"}
+	keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
+	hw := &textInputHardwareDeps{quickAction: quick, touchGesture: touch, keyboardText: keyboardText}
+	hw.screenshot = textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`}
+	called := 0
+	result, err := runAppSearchOpenFlow(context.Background(), appSearchOpenFlowConfig{
+		hw:       hw,
+		vision:   vision,
+		platform: "android",
+		searchTerm: "Aiden",
+		findAppTapFn: func(context.Context, screenshotResult, string) (bridgeSearchResult, error) {
+			called++
+			return bridgeSearchResult{Found: true, TapPoint: focusPointArgs{X: 500, Y: 200, CoordSpace: "normalized"}, Label: "Aiden"}, nil
+		},
+		confirmAppOpenFn: func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error) {
+			return bridgeAppOpenResult{Opened: true, Reason: "Aiden app visible"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Opened {
+		t.Fatalf("expected opened result, got %#v", result)
+	}
+	if called != 1 {
+		t.Fatalf("findAppTapFn calls=%d", called)
+	}
+	if len(quick.calls) != 1 || len(keyboardText.calls) != 1 || len(touch.calls) != 1 {
+		t.Fatalf("unexpected tool calls: quick=%v keyboard=%v touch=%v", quick.calls, keyboardText.calls, touch.calls)
 	}
 }

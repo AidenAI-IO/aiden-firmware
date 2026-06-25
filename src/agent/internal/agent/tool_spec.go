@@ -228,6 +228,11 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"name":"App Store"}`,
 	},
+	"search_launch_app": {
+		Category:     "phone",
+		InputMode:    toolInputModeJSON,
+		ExampleInput: `{"app":"WeChat"}`,
+	},
 	"clipboard": {
 		Category:     "phone",
 		InputMode:    toolInputModeJSON,
