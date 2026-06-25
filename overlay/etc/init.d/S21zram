@@ -1,0 +1,147 @@
+#!/bin/sh
+# Aiden compressed in-memory swap.
+
+BOOT_CONF=${BOOT_CONF:-/etc/aiden_boot.conf}
+ZRAM_SYSFS=${ZRAM_SYSFS:-/sys/block/zram0}
+ZRAM_DEVICE=${ZRAM_DEVICE:-/dev/zram0}
+PROC_SWAPS=${PROC_SWAPS:-/proc/swaps}
+PROC_VM=${PROC_VM:-/proc/sys/vm}
+MKSWAP_BIN=${MKSWAP_BIN:-mkswap}
+SWAPON_BIN=${SWAPON_BIN:-swapon}
+SWAPOFF_BIN=${SWAPOFF_BIN:-swapoff}
+MKNOD_BIN=${MKNOD_BIN:-mknod}
+
+if [ -f "$BOOT_CONF" ]; then
+    . "$BOOT_CONF"
+fi
+: "${ENABLE_ZRAM:=1}"
+: "${ZRAM_SIZE_MB:=64}"
+: "${ZRAM_SWAPPINESS:=100}"
+: "${ZRAM_COMP_ALGORITHM:=lzo}"
+
+is_uint() {
+    case "$1" in
+        ''|*[!0-9]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+is_active() {
+    [ -r "$PROC_SWAPS" ] || return 1
+    awk -v device="$ZRAM_DEVICE" 'NR > 1 && $1 == device { found=1 } END { exit !found }' "$PROC_SWAPS"
+}
+
+ensure_device() {
+    [ -e "$ZRAM_DEVICE" ] && return 0
+    [ -r "$ZRAM_SYSFS/dev" ] || return 1
+
+    major_minor="$(cat "$ZRAM_SYSFS/dev" 2>/dev/null)"
+    major="${major_minor%%:*}"
+    minor="${major_minor#*:}"
+    is_uint "$major" && is_uint "$minor" || return 1
+    mkdir -p "$(dirname "$ZRAM_DEVICE")"
+    "$MKNOD_BIN" "$ZRAM_DEVICE" b "$major" "$minor"
+}
+
+set_vm_tuning() {
+    if is_uint "$ZRAM_SWAPPINESS" && [ "$ZRAM_SWAPPINESS" -le 200 ] && [ -w "$PROC_VM/swappiness" ]; then
+        echo "$ZRAM_SWAPPINESS" > "$PROC_VM/swappiness"
+    fi
+    if [ -w "$PROC_VM/page-cluster" ]; then
+        echo 0 > "$PROC_VM/page-cluster"
+    fi
+}
+
+start() {
+    if [ "$ENABLE_ZRAM" != "1" ]; then
+        echo "zram disabled by config (ENABLE_ZRAM=$ENABLE_ZRAM)"
+        return 0
+    fi
+    if is_active; then
+        echo "zram swap already active: $ZRAM_DEVICE"
+        set_vm_tuning
+        return 0
+    fi
+    if ! is_uint "$ZRAM_SIZE_MB" || [ "$ZRAM_SIZE_MB" -le 0 ]; then
+        echo "invalid ZRAM_SIZE_MB: $ZRAM_SIZE_MB" >&2
+        return 1
+    fi
+    if [ ! -d "$ZRAM_SYSFS" ]; then
+        echo "zram kernel device is unavailable: $ZRAM_SYSFS" >&2
+        return 1
+    fi
+
+    if [ -w "$ZRAM_SYSFS/reset" ]; then
+        echo 1 > "$ZRAM_SYSFS/reset"
+    fi
+    if [ -n "$ZRAM_COMP_ALGORITHM" ] && [ -w "$ZRAM_SYSFS/comp_algorithm" ]; then
+        if tr '[]' '  ' < "$ZRAM_SYSFS/comp_algorithm" | grep -qw "$ZRAM_COMP_ALGORITHM"; then
+            echo "$ZRAM_COMP_ALGORITHM" > "$ZRAM_SYSFS/comp_algorithm"
+        else
+            echo "zram compression algorithm unavailable: $ZRAM_COMP_ALGORITHM; using kernel default" >&2
+        fi
+    fi
+
+    size_bytes=$((ZRAM_SIZE_MB * 1024 * 1024))
+    echo "$size_bytes" > "$ZRAM_SYSFS/disksize"
+    if ! ensure_device; then
+        echo "failed to create zram device: $ZRAM_DEVICE" >&2
+        echo 1 > "$ZRAM_SYSFS/reset" 2>/dev/null || true
+        return 1
+    fi
+    if ! "$MKSWAP_BIN" "$ZRAM_DEVICE" >/dev/null; then
+        echo "mkswap failed for $ZRAM_DEVICE" >&2
+        echo 1 > "$ZRAM_SYSFS/reset" 2>/dev/null || true
+        return 1
+    fi
+    if ! "$SWAPON_BIN" "$ZRAM_DEVICE"; then
+        echo "swapon failed for $ZRAM_DEVICE" >&2
+        echo 1 > "$ZRAM_SYSFS/reset" 2>/dev/null || true
+        return 1
+    fi
+
+    set_vm_tuning
+    echo "Started zram swap: device=$ZRAM_DEVICE size=${ZRAM_SIZE_MB}MiB algorithm=$ZRAM_COMP_ALGORITHM swappiness=$ZRAM_SWAPPINESS"
+}
+
+stop() {
+    if is_active; then
+        "$SWAPOFF_BIN" "$ZRAM_DEVICE" || return 1
+    fi
+    if [ -w "$ZRAM_SYSFS/reset" ]; then
+        echo 1 > "$ZRAM_SYSFS/reset"
+    fi
+    echo "Stopped zram swap"
+}
+
+status() {
+    if is_active; then
+        echo "zram=active device=$ZRAM_DEVICE"
+        if [ -r "$ZRAM_SYSFS/mm_stat" ]; then
+            echo "mm_stat=$(cat "$ZRAM_SYSFS/mm_stat" 2>/dev/null)"
+        fi
+    else
+        echo "zram=inactive device=$ZRAM_DEVICE"
+        return 1
+    fi
+}
+
+case "${1:-}" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart|reload)
+        stop
+        start
+        ;;
+    status)
+        status
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status}" >&2
+        exit 1
+        ;;
+esac
