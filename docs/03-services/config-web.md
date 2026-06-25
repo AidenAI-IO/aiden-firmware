@@ -6,7 +6,7 @@
 
 | Parameter | Default Value |
 | --- | --- |
-| Port | `8080` |
+| Port | `80` |
 | Config | `/oem/usr/etc/agent/config.toml` |
 | Binary | `/oem/usr/bin/config_web` |
 
@@ -20,10 +20,10 @@
 
 ## Access
 
-Connect to the device's Wi-Fi hotspot or network, then visit:
+Connect the device to your computer via USB-C. The device establishes a USB network at `192.168.42.1`. Visit:
 
 ```
-http://192.168.42.1:8080
+http://192.168.42.1
 ```
 
 The web interface allows:
