@@ -669,11 +669,15 @@ async function executeScriptStep(step, lineNo) {
                     toolInput = {};
                 }
 
+                // Debug: log what we're sending
+                console.log('Calling tool:', stepResult.tool, 'with input:', toolInput);
+
                 // Execute tool via HTTP API
+                // Backend expects {"input": {...}} format
                 const toolResponse = await fetch('/api/tools/' + stepResult.tool, {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(toolInput)
+                    body: JSON.stringify({input: toolInput})
                 });
 
                 if (!toolResponse.ok) {
