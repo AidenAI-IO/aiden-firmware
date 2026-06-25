@@ -1993,10 +1993,10 @@ ReadStatus read_to_eof(int fd, std::string* out, size_t max_size) {
     char buf[16 * 1024];
     while (true) {
         size_t remaining = out ? (max_size > out->size() ? max_size - out->size() : 0) : sizeof(buf);
-        if (remaining == 0) {
-            return READ_STATUS_LIMIT_EXCEEDED;
-        }
         size_t to_read = remaining < sizeof(buf) ? remaining : sizeof(buf);
+        if (to_read == 0) {
+            to_read = 1;
+        }
 
         ssize_t n = read(fd, buf, to_read);
         if (n < 0) {
@@ -2010,6 +2010,9 @@ ReadStatus read_to_eof(int fd, std::string* out, size_t max_size) {
         }
         if (n == 0) {
             return READ_STATUS_OK;
+        }
+        if (out && out->size() + static_cast<size_t>(n) > max_size) {
+            return READ_STATUS_LIMIT_EXCEEDED;
         }
         if (out) {
             out->append(buf, static_cast<size_t>(n));
