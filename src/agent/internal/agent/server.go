@@ -1989,8 +1989,9 @@ func (s *Server) handleAudioRecordStart(w http.ResponseWriter, r *http.Request) 
 	}
 
 	s.recordMu.Lock()
+	defer s.recordMu.Unlock()
+
 	if s.sttConfigTestSession != nil {
-		s.recordMu.Unlock()
 		http.Error(w, "stt config test recording is already active", http.StatusConflict)
 		return
 	}
@@ -2004,7 +2005,6 @@ func (s *Server) handleAudioRecordStart(w http.ResponseWriter, r *http.Request) 
 			s.logger.Warn("Stale web audio recording cleanup failed: %v", err)
 		}
 	}
-	s.recordMu.Unlock()
 
 	sampleRate := s.runtime.config.Audio.SampleRateOrDefault()
 	result, err := s.audioClient.StartRecording(AudioFormat{
@@ -2049,17 +2049,7 @@ func (s *Server) handleAudioRecordStart(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	s.recordMu.Lock()
-	if s.webRecording != nil || s.sttConfigTestSession != nil {
-		s.recordMu.Unlock()
-		if err := s.endStaleWebRecording(recording); err != nil && s.logger != nil {
-			s.logger.Warn("Orphaned web audio recording cleanup failed: %v", err)
-		}
-		http.Error(w, "audio recording is already active", http.StatusConflict)
-		return
-	}
 	s.webRecording = recording
-	s.recordMu.Unlock()
 
 	go s.readWebAudioRecording(recording)
 
