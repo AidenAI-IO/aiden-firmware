@@ -146,40 +146,25 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 	// Only forward tools whose name matches one of the configured EnvironmentBridgeTools
 	// patterns (see shouldForwardToEnvironmentBridge). Everything else runs locally.
 	if execution.EnvironmentBridge != nil && shouldForwardToEnvironmentBridge(spec.Name, execution.EnvironmentBridgeTools) {
-		output, remoteIsError, err := execution.EnvironmentBridge.CallTool(ctx, spec.Name, input)
+		remote, err := execution.EnvironmentBridge.CallTool(ctx, spec.Name, input)
 		if err != nil {
-			var toolErr *ToolError
-			if errors.Is(err, context.Canceled) {
-				toolErr = NewToolError(CodeCanceled, err.Error())
-			} else if errors.Is(err, context.DeadlineExceeded) {
-				toolErr = NewToolError(CodeDeadlineExceeded, err.Error())
-			} else {
-				msg := fmt.Sprintf("error: %s failed: %v", spec.Name, err)
-				toolErr = NewToolError(CodeEnvironmentBridgeTransport, msg)
+			// Reserved for context.Canceled / DeadlineExceeded only.
+			code := CodeCanceled
+			if errors.Is(err, context.DeadlineExceeded) {
+				code = CodeDeadlineExceeded
 			}
+			toolErr := NewToolError(code, err.Error())
 			result := ToolResult{
 				Output:   toolErr.Message,
 				Error:    toolErr,
 				Duration: time.Since(call.StartedAt),
 			}
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				result = runAfterToolCallHook(ctx, execution, call, result)
-				emitToolResult(ctx, execution.Callback, call, result)
-				return ToolCallExecutionResult{Call: call, Result: result, Error: err}
-			}
 			result = runAfterToolCallHook(ctx, execution, call, result)
 			emitToolResult(ctx, execution.Callback, call, result)
-			return resultForToolCall(call, result, nil)
+			return ToolCallExecutionResult{Call: call, Result: result, Error: err}
 		}
-		var remoteErr *ToolError
-		if remoteIsError {
-			remoteErr = NewToolError(CodeToolExecutionFailed, output)
-		}
-		result := ToolResult{
-			Output:   output,
-			Error:    remoteErr,
-			Duration: time.Since(call.StartedAt),
-		}
+		result := *remote
+		result.Duration = time.Since(call.StartedAt)
 		result = runAfterToolCallHook(ctx, execution, call, result)
 		emitToolResult(ctx, execution.Callback, call, result)
 		return resultForToolCall(call, result, nil)

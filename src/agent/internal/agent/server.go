@@ -308,6 +308,7 @@ type ToolInvokeResponse struct {
 	Output     string         `json:"output"`
 	IsError    bool           `json:"is_error"`
 	Error      string         `json:"error,omitempty"`
+	ToolError  *ToolError     `json:"tool_error,omitempty"`
 	DurationMs int64          `json:"duration_ms"`
 	CalledAt   time.Time      `json:"called_at"`
 }
@@ -2308,6 +2309,7 @@ func (s *Server) handleToolInvoke(w http.ResponseWriter, r *http.Request) {
 		RawInput:   execution.Call.Input,
 		Output:     execution.Result.Output,
 		IsError:    isError,
+		ToolError:  execution.Result.Error,
 		DurationMs: duration,
 		CalledAt:   startedAt,
 	}
