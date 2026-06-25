@@ -180,7 +180,7 @@ type usageTrackingModel struct {
 	inner           llms.Model
 	metrics         *RunMetrics
 	promptCapture   *telemetryPromptCapture
-	contextWindowFn func() int
+	contextWindowFn ContextWindowFn
 }
 
 func (m *usageTrackingModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
@@ -213,8 +213,8 @@ func (m *usageTrackingModel) contextWindow() int {
 		return 0
 	}
 	if m.contextWindowFn != nil {
-		if v := m.contextWindowFn(); v > 0 {
-			return v
+		if spec := m.contextWindowFn(); spec.ContextWindow > 0 {
+			return spec.ContextWindow
 		}
 	}
 	if m.metrics != nil {
@@ -299,7 +299,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	summarizeFn := buildLLMSummarizeFn(modelManager)
 	structuredSummarizeFn := buildLLMStructuredSummarizeFn(modelManager, logger)
 	profileFn := buildLLMProfileFn(modelManager)
-	contextWindowFn := func() int { return modelManager.Spec().ContextWindow }
+	contextWindowFn := func() ModelSpec { return modelManager.Spec() }
 
 	longTermDir := ""
 	if memoryDir != "" {
@@ -602,7 +602,12 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 			r.logger.Info("Resolved model context window: context_window=%d", contextWindow)
 		}
 	}
-	model = &usageTrackingModel{inner: model, metrics: metrics, promptCapture: promptCapture, contextWindowFn: r.effectiveContextWindow}
+	model = &usageTrackingModel{inner: model, metrics: metrics, promptCapture: promptCapture, contextWindowFn: func() ModelSpec {
+		if r.models != nil {
+			return r.models.Spec()
+		}
+		return ModelSpec{}
+	}}
 
 	memoryCfg := MemoryConfig{Type: "buffer"}
 	var memoryHandle *MemoryHandle

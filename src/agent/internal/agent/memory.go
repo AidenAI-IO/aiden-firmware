@@ -54,11 +54,11 @@ type SummarizeFn func(ctx context.Context, events []SessionEvent) string
 // data and prompt rendering remain compatible.
 type StructuredSummarizeFn func(ctx context.Context, events []SessionEvent) ChunkStructuredSummary
 
-// ContextWindowFn returns the current model's context window in tokens. The
-// memory manager calls it on every compression decision so model swaps take
-// effect at runtime without restart. Implementations should return 0 when the
-// window is unknown; callers fall back to the yaml-configured default.
-type ContextWindowFn func() int
+// ContextWindowFn returns the current model's spec. The memory manager calls
+// it on every compression decision so model swaps take effect at runtime without
+// restart. Implementations should return a zero ContextWindow when the window is
+// unknown; callers fall back to the yaml-configured default.
+type ContextWindowFn func() ModelSpec
 
 // MemoryManager maintains session memory, handling compression, chunk management,
 // and long-term profile generation. It coordinates between in-memory chat history
@@ -1159,12 +1159,21 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 
 	promptTokens := m.LastPromptTokens()
 	contextWindow := m.effectiveContextWindow()
+	maxOutput := m.effectiveMaxOutput()
+	// Compute input budget for cut-point planning: reserve space for output.
+	inputBudget := contextWindow
+	if maxOutput > 0 {
+		inputBudget = contextWindow - maxOutput
+		if inputBudget <= 0 {
+			inputBudget = contextWindow / 2 // defensive
+		}
+	}
 	if m.logger != nil {
-		m.logger.Info("[memory] compression triggered: events=%d, prompt_tokens=%d, context_window=%d, threshold=%d%%",
-			len(events), promptTokens, contextWindow, m.extraction.CompressAtPercent)
+		m.logger.Info("[memory] compression triggered: events=%d, prompt_tokens=%d, context_window=%d, max_output=%d, input_budget=%d, threshold=%d%%",
+			len(events), promptTokens, contextWindow, maxOutput, inputBudget, m.extraction.CompressAtPercent)
 	}
 
-	plan := m.planCompaction(events, contextWindow)
+	plan := m.planCompaction(events, inputBudget)
 	if !plan.ok {
 		return nil
 	}
@@ -1540,15 +1549,25 @@ func (m *MemoryManager) shouldCompress(eventCount int) bool {
 	lastPromptTokens := m.LastPromptTokens()
 	contextWindow := m.effectiveContextWindow()
 	if lastPromptTokens > 0 && contextWindow > 0 {
+		// Compute the actual input budget: total window minus output reservation.
+		// When MaxOutput is unknown (0), fall back to the full window (no output
+		// deduction) so compression still triggers based on reserve/percent alone.
+		inputBudget := contextWindow
+		if maxOutput := m.effectiveMaxOutput(); maxOutput > 0 {
+			inputBudget = contextWindow - maxOutput
+			if inputBudget <= 0 {
+				inputBudget = contextWindow / 2 // defensive: output >= window shouldn't happen
+			}
+		}
 		// Reuse clampTokenBudgets so the reserve ceiling (never more than half
 		// the window) stays defined in one place. Only the reserve half matters
 		// for the trigger decision; keep-recent governs the cut location and is
 		// consumed by planCompaction instead.
-		reserve, _ := clampTokenBudgets(m.reserveTokens(), m.keepRecentTokens(), contextWindow)
-		if lastPromptTokens >= contextWindow-reserve {
+		reserve, _ := clampTokenBudgets(m.reserveTokens(), m.keepRecentTokens(), inputBudget)
+		if lastPromptTokens >= inputBudget-reserve {
 			return true
 		}
-		ratio := float64(lastPromptTokens) / float64(contextWindow)
+		ratio := float64(lastPromptTokens) / float64(inputBudget)
 		threshold := float64(m.extraction.CompressAtPercent) / 100.0
 		if ratio >= threshold {
 			return true
@@ -1577,11 +1596,23 @@ func (m *MemoryManager) shouldCompress(eventCount int) bool {
 // "unknown" and falls back to the yaml-configured default.
 func (m *MemoryManager) effectiveContextWindow() int {
 	if m.contextWindowFn != nil {
-		if w := m.contextWindowFn(); w > 0 {
-			return w
+		if spec := m.contextWindowFn(); spec.ContextWindow > 0 {
+			return spec.ContextWindow
 		}
 	}
 	return m.extraction.ContextWindow
+}
+
+// effectiveMaxOutput returns the model's max output tokens. Used in compression
+// decisions to reserve space for the response. Returns 0 when unknown (caller
+// should use a conservative fallback or skip the output reservation).
+func (m *MemoryManager) effectiveMaxOutput() int {
+	if m.contextWindowFn != nil {
+		if spec := m.contextWindowFn(); spec.MaxOutput > 0 {
+			return spec.MaxOutput
+		}
+	}
+	return 0
 }
 
 func summarizeSessionEvents(events []SessionEvent) string {
