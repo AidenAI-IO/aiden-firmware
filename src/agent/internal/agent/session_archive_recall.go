@@ -100,6 +100,7 @@ func (a *ArchivedSessionStore) RecallChunks(ctx context.Context, query ChunkReca
 		archiveQuery := query
 		archiveQuery.IncludeArchived = false // never recurse
 		archiveQuery.ArchivedTimeRange = ""  // not relevant per-session
+		archiveQuery.Limit = 0               // clear inherited limit
 		if perSessionLimit > 0 {
 			archiveQuery.Limit = perSessionLimit
 		}
