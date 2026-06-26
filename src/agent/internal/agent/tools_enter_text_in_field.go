@@ -23,6 +23,7 @@ func (t *EnterTextInFieldTool) Name() string { return "enter_text_in_field" }
 func (t *EnterTextInFieldTool) Description() string {
 	return strings.TrimSpace(`Enter target text into a focused input field with automatic IME handling, candidate selection, and verification. ` +
 		`One call runs: focus → type romanization → merged vision read (field + IME + candidates) → select candidates if needed → retry with IME switch on mismatch → verify committed text. ` +
+		`For search boxes only, set mode:"search" to type one pass and hand control back quickly for higher-level search strategy decisions. ` +
 		`Returns committed:true ONLY when the exact target text is fully committed inside the input field (not merely visible in IME candidates/preedit). ` +
 		`Report success only when committed:true and field_text matches target exactly. ` +
 		`For composition/CJK text (Chinese, Japanese, Korean), segments (IME romanization syllables) are REQUIRED — e.g. segments:["ni","hao"] for 你好, segments:["kon","ni","chi","wa"] for こんにちは. ` +
@@ -37,6 +38,7 @@ func (t *EnterTextInFieldTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
 		"text":         stringArgSchema("Exact text that must appear in the field when done."),
 		"platform":     stringEnumArgSchema("Target platform.", "ios", "android", "mac"),
+		"mode":         stringEnumArgSchema("Interaction mode. Use \"search\" for quick handoff in search boxes; omit for normal form entry.", "form", "search"),
 		"focus":        focusPointArgSchema("Input field coordinates."),
 		"segments":     stringArrayArgSchema("Required for composition/CJK: IME romanization syllables in order, e.g. [\"ni\",\"hao\"] for 你好."),
 		"max_attempts": map[string]any{"type": "integer", "description": "Retry attempts on verify failure (default 3)."},
