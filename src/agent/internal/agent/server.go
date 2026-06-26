@@ -981,7 +981,8 @@ func (s *Server) handleChatAsync(
 
 		pending.mu.Lock()
 		if err != nil {
-			if errors.Is(runCtx.Err(), context.Canceled) {
+			canceled := errors.Is(runCtx.Err(), context.Canceled) || errors.Is(err, context.Canceled)
+			if canceled {
 				if s.liveActivity != nil {
 					s.liveActivity.CancelTask(requestID)
 				}
@@ -1007,7 +1008,11 @@ func (s *Server) handleChatAsync(
 			pending.done = true
 			pending.mu.Unlock()
 			if s.logger != nil {
-				s.logger.Error("Agent run failed: request_id=%s error=%v", requestID, err)
+				if canceled {
+					s.logger.Info("Agent run canceled: request_id=%s", requestID)
+				} else {
+					s.logger.Error("Agent run failed: request_id=%s error=%v", requestID, err)
+				}
 			}
 			return
 		}
@@ -1230,6 +1235,13 @@ func (s *Server) handleChatSync(
 	}
 
 	if err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+			if s.logger != nil {
+				s.logger.Info("Agent run canceled")
+			}
+			http.Error(w, "Request canceled", http.StatusRequestTimeout)
+			return
+		}
 		s.appendHistory(Message{
 			Type:      "episode_status",
 			EpisodeID: episodeID,
@@ -1438,12 +1450,20 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		result.SpeechStreamed = closeErr == nil && newStream.spokeSuccessfully()
 	}
 	if err != nil {
+		canceled := errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled)
 		if req.RequestID != "" && s.liveActivity != nil {
-			if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+			if canceled {
 				s.liveActivity.CancelTask(req.RequestID)
 			} else {
 				s.liveActivity.FailTask(req.RequestID, err.Error())
 			}
+		}
+		if canceled {
+			if s.logger != nil {
+				s.logger.Info("Agent run canceled: request_id=%s", req.RequestID)
+			}
+			stream.Write(ChatStreamEvent{Type: "error", Error: "request canceled", History: s.historySnapshot()})
+			return
 		}
 		errorMessage := Message{
 			Type:      "episode_status",
