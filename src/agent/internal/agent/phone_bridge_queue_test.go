@@ -114,6 +114,23 @@ func TestPollPlatformFilter(t *testing.T) {
 	}
 }
 
+func TestPollForPhoneFiltersScopedCommands(t *testing.T) {
+	q := NewCommandQueue(nil)
+	defer q.Stop()
+
+	q.Enqueue(BridgeCommand{ID: "phone_a", Type: "clipboard_read", PhoneID: "phone-a"})
+	q.Enqueue(BridgeCommand{ID: "phone_b", Type: "clipboard_read", PhoneID: "phone-b"})
+	q.Enqueue(BridgeCommand{ID: "legacy", Type: "clipboard_read"})
+
+	polled := q.PollForPhone("ios", "phone-a", 10)
+	if len(polled) != 2 {
+		t.Fatalf("expected 2 commands for phone-a, got %d: %#v", len(polled), polled)
+	}
+	if polled[0].ID != "phone_a" || polled[1].ID != "legacy" {
+		t.Fatalf("polled commands = %#v, want phone_a and legacy", polled)
+	}
+}
+
 // TestSubmitAndQueryResult tests result storage and query
 func TestSubmitAndQueryResult(t *testing.T) {
 	q := NewCommandQueue(nil)

@@ -46,6 +46,7 @@ const (
 
 type LiveActivityState struct {
 	RequestID     string     `json:"request_id"`
+	PhoneID       string     `json:"phone_id,omitempty"`
 	Status        string     `json:"status"`
 	Phase         string     `json:"phase,omitempty"`
 	TaskTitle     string     `json:"task_title"`
@@ -122,6 +123,7 @@ type LiveActivityManager struct {
 	relay           *LiveActivityRelayClient
 	relayQueue      chan liveActivityPushRequest
 	logger          *Logger
+	defaultPhoneID  string
 }
 
 func NewLiveActivityManager(cfg LiveActivityConfig, logger *Logger) *LiveActivityManager {
@@ -129,9 +131,10 @@ func NewLiveActivityManager(cfg LiveActivityConfig, logger *Logger) *LiveActivit
 		return nil
 	}
 	manager := &LiveActivityManager{
-		states:        make(map[string]LiveActivityState),
-		registrations: make(map[string]liveActivityRegistration),
-		logger:        logger,
+		states:         make(map[string]LiveActivityState),
+		registrations:  make(map[string]liveActivityRegistration),
+		logger:         logger,
+		defaultPhoneID: strings.TrimSpace(cfg.PhoneID),
 	}
 	if cfg.APNsConfigured() {
 		client, err := NewAPNsClient(cfg)
@@ -180,13 +183,19 @@ func (m *LiveActivityManager) RelayStatus() string {
 	return "configured"
 }
 
-func (m *LiveActivityManager) StartTask(requestID, title string) *LiveActivityState {
+func (m *LiveActivityManager) StartTask(requestID, title string, phoneIDs ...string) *LiveActivityState {
 	if m == nil || strings.TrimSpace(requestID) == "" {
 		return nil
 	}
+	phoneID := ""
+	if len(phoneIDs) > 0 {
+		phoneID = firstNonEmptyString(phoneIDs)
+	}
+	phoneID = m.resolvePhoneID(phoneID)
 	now := time.Now()
 	state := LiveActivityState{
 		RequestID:     strings.TrimSpace(requestID),
+		PhoneID:       phoneID,
 		Status:        LiveActivityStatusRunning,
 		Phase:         LiveActivityPhasePlanning,
 		TaskTitle:     truncateLiveActivityText(firstNonEmptyString([]string{title, "Aiden task"}), 80),
@@ -424,6 +433,45 @@ func (m *LiveActivityManager) SnapshotActive() *LiveActivityState {
 	return latest
 }
 
+func (m *LiveActivityManager) SnapshotActiveForPhone(phoneID string) *LiveActivityState {
+	if m == nil {
+		return nil
+	}
+	phoneID = strings.TrimSpace(phoneID)
+	if phoneID == "" {
+		return m.SnapshotActive()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.activeRequestID != "" {
+		if state, ok := m.states[m.activeRequestID]; ok && liveActivityStateMatchesPhoneID(state, phoneID) {
+			return &state
+		}
+	}
+	var latest *LiveActivityState
+	for _, state := range m.states {
+		if !liveActivityStateMatchesPhoneID(state, phoneID) {
+			continue
+		}
+		candidate := state
+		if latest == nil || candidate.UpdatedAt.After(latest.UpdatedAt) {
+			latest = &candidate
+		}
+	}
+	return latest
+}
+
+func (m *LiveActivityManager) resolvePhoneID(phoneID string) string {
+	phoneID = strings.TrimSpace(phoneID)
+	if phoneID != "" {
+		return phoneID
+	}
+	if m == nil {
+		return ""
+	}
+	return strings.TrimSpace(m.defaultPhoneID)
+}
+
 func (m *LiveActivityManager) publish(requestID string, final bool) {
 	if m == nil {
 		return
@@ -593,6 +641,7 @@ func liveActivityRemotePushState(state LiveActivityState, final bool) (LiveActiv
 func liveActivityStandbyStateForRemotePush(state LiveActivityState) LiveActivityState {
 	return LiveActivityState{
 		RequestID:     state.RequestID,
+		PhoneID:       state.PhoneID,
 		Status:        LiveActivityStatusReady,
 		TaskTitle:     "Aiden",
 		CurrentStep:   "Ready",
@@ -603,6 +652,14 @@ func liveActivityStandbyStateForRemotePush(state LiveActivityState) LiveActivity
 		StartedAt:     state.StartedAt,
 		UpdatedAt:     state.UpdatedAt,
 	}
+}
+
+func liveActivityStateMatchesPhoneID(state LiveActivityState, phoneID string) bool {
+	phoneID = strings.TrimSpace(phoneID)
+	if phoneID == "" {
+		return true
+	}
+	return strings.TrimSpace(state.PhoneID) == phoneID
 }
 
 func bumpLiveActivityProgress(current float64) float64 {
@@ -1198,8 +1255,9 @@ func (c *LiveActivityRelayClient) Push(ctx context.Context, state LiveActivitySt
 		"requires_app":   state.RequiresApp,
 		"updated_at":     state.UpdatedAt.UTC().Format(time.RFC3339),
 	}
-	if c.phoneID != "" {
-		body["phone_id"] = c.phoneID
+	phoneID := firstNonEmptyString([]string{state.PhoneID, c.phoneID})
+	if phoneID != "" {
+		body["phone_id"] = phoneID
 	}
 	if final {
 		body["event"] = "end"

@@ -24,6 +24,7 @@ const (
 type BridgeCommand struct {
 	ID              string   `json:"id"`
 	Type            string   `json:"type"`
+	PhoneID         string   `json:"phone_id,omitempty"`
 	IOSURLs         []string `json:"ios_urls,omitempty"`
 	AndroidPackages []string `json:"android_packages,omitempty"`
 	TimeoutMs       int      `json:"timeout_ms,omitempty"`
@@ -99,6 +100,7 @@ type AvailableAppInfo struct {
 type PhoneBridgeStatus struct {
 	Connected            bool              `json:"connected"`
 	Platform             string            `json:"platform,omitempty"`
+	PhoneID              string            `json:"phone_id,omitempty"`
 	LastHeartbeatAt      *time.Time        `json:"last_heartbeat_at,omitempty"`
 	AppState             string            `json:"app_state,omitempty"`
 	AppStateUpdatedAt    *time.Time        `json:"app_state_updated_at,omitempty"`
@@ -113,6 +115,7 @@ type PhoneBridge struct {
 	conn            *websocket.Conn
 	connected       bool
 	platform        string
+	phoneID         string
 	lastHeartbeatAt time.Time
 	appState        string
 	appStateAt      time.Time
@@ -150,6 +153,7 @@ func (pb *PhoneBridge) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	platform := r.URL.Query().Get("platform")
+	phoneID := strings.TrimSpace(r.URL.Query().Get("phone_id"))
 
 	pb.mu.Lock()
 	if pb.conn != nil {
@@ -161,6 +165,7 @@ func (pb *PhoneBridge) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	pb.conn = conn
 	pb.connected = true
 	pb.platform = platform
+	pb.phoneID = phoneID
 	pb.lastHeartbeatAt = time.Now()
 	pb.environment = nil
 	pb.environmentAt = time.Time{}
@@ -169,7 +174,7 @@ func (pb *PhoneBridge) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	pb.mu.Unlock()
 
 	if pb.logger != nil {
-		pb.logger.Info("phone-bridge: client connected (platform=%s)", platform)
+		pb.logger.Info("phone-bridge: client connected (platform=%s phone_id=%s)", platform, phoneID)
 	}
 
 	go pb.monitorHeartbeat(conn, done)
@@ -209,6 +214,7 @@ func (pb *PhoneBridge) readLoop(conn *websocket.Conn, done chan struct{}) {
 		if pb.conn == conn {
 			pb.conn = nil
 			pb.connected = false
+			pb.phoneID = ""
 			pb.environment = nil
 			pb.environmentAt = time.Time{}
 			for id, ch := range pb.pendingCmds {
@@ -396,6 +402,9 @@ func (pb *PhoneBridge) SendCommand(ctx context.Context, cmd BridgeCommand) (Brid
 	ch := make(chan BridgeCommandResponse, 1)
 	pb.pendingCmds[cmd.ID] = ch
 	conn := pb.conn
+	if strings.TrimSpace(cmd.PhoneID) == "" {
+		cmd.PhoneID = pb.phoneID
+	}
 	pb.mu.Unlock()
 
 	data, err := json.Marshal(cmd)
@@ -455,12 +464,22 @@ func (pb *PhoneBridge) Connected() bool {
 	return pb.connected
 }
 
+func (pb *PhoneBridge) currentPhoneID() string {
+	if pb == nil {
+		return ""
+	}
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
+	return strings.TrimSpace(pb.phoneID)
+}
+
 func (pb *PhoneBridge) Status() PhoneBridgeStatus {
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
 	status := PhoneBridgeStatus{
 		Connected: pb.connected,
 		Platform:  pb.platform,
+		PhoneID:   pb.phoneID,
 	}
 	if pb.connected && !pb.lastHeartbeatAt.IsZero() {
 		t := pb.lastHeartbeatAt
@@ -518,6 +537,11 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 	if platform := strings.TrimSpace(status.Platform); platform != "" {
 		builder.WriteString("- platform: ")
 		builder.WriteString(platform)
+		builder.WriteByte('\n')
+	}
+	if phoneID := strings.TrimSpace(status.PhoneID); phoneID != "" {
+		builder.WriteString("- phone_id: ")
+		builder.WriteString(phoneID)
 		builder.WriteByte('\n')
 	}
 	if status.Connected && status.LastHeartbeatAt != nil {
