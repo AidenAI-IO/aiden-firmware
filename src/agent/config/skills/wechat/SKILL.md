@@ -14,12 +14,12 @@ Use this skill when the user asks to open WeChat, find a contact or chat, read m
 
 ## Common rules
 
-- Prefer `open_app` with `{"app":"WeChat"}` to launch WeChat.
+- Prefer `open_app` with `{"app":"WeChat"}` to launch WeChat after Aiden app-side preparation is complete.
 - Prefer search over blind scrolling.
 - Verify the chat title before sending anything.
 - Use WeChat's own visible search field to find contacts or chats. Do not use global `spotlight_search` while already inside WeChat.
-- For iOS/Android chat message body input, use `enter_text_in_field` with the input box coordinates. On iOS, if the message text is known while Aiden is foreground, call `clipboard` with `{"action":"write","text":"..."}` before opening or navigating WeChat; after the chat is open, `enter_text_in_field` focuses the WeChat input, pastes the prepared clipboard, and verifies without reopening Aiden. On Android, it can use connected bridge clipboard/paste without leaving WeChat. It then falls back to HID/IME typing only if clipboard input fails.
-- Do not restore Aiden from an already open WeChat chat just to write clipboard unless the user explicitly asks for that heavier bridge path.
+- For iOS/Android chat message body input, use `enter_text_in_field` with the input box coordinates. On iOS, if the message text is known while Aiden is foreground, call `clipboard` with `{"action":"write","text":"..."}` before opening or navigating WeChat; after the chat is open, `enter_text_in_field` focuses the WeChat input, pastes the prepared clipboard, and verifies without reopening Aiden. If a Contacts/data lookup produces the message text, prepare the final clipboard text before finishing that lookup step. On Android, it can use connected bridge clipboard/paste without leaving WeChat. It then falls back to HID/IME typing only if clipboard input fails.
+- Treat `open_app` into WeChat as a phase boundary: after WeChat/chat is foreground, do not restore Aiden just to write clipboard unless the user explicitly asks for that heavier bridge path.
 - If the user mentions a WeChat name and a separate Contacts name, keep them separate: query Contacts using the Contacts name to get phone data, then search/open the WeChat chat using the WeChat name.
 - Treat message entry as successful only when `committed:true` and the field text exactly matches the requested message.
 - Sending a message is a sensitive external action. Do not send unless the user explicitly asked for the final send.

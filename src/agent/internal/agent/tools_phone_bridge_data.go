@@ -131,7 +131,7 @@ func (t *ClipboardTool) write(ctx context.Context, text string) (string, error) 
 		status = t.bridge.Status()
 	}
 	if !phoneBridgeReadyForCommand(status) {
-		message := "clipboard_write requires Aiden foreground on iOS; prepare clipboard before opening the target app, then use enter_text_in_field in the target field. Do not restore Aiden from an already open target app just to write clipboard."
+		message := "clipboard_write requires Aiden foreground on iOS; prepare clipboard before opening the target app, then use enter_text_in_field in the target field. Do not restore Aiden from an already open target app just to write clipboard, and do not try app switching to recover this clipboard write. Continue with target-preserving enter_text_in_field fallback in the current app, or replan so clipboard is prepared in the earlier data-gathering step."
 		if !strings.EqualFold(strings.TrimSpace(status.Platform), "ios") {
 			message = phoneBridgeRestoreUnavailableError(status).Error()
 		}

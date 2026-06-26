@@ -452,6 +452,8 @@ func TestClipboardWriteDoesNotRestoreIOSBackgroundAiden(t *testing.T) {
 		"clipboard_write requires Aiden foreground",
 		"prepare clipboard before opening the target app",
 		"Do not restore Aiden",
+		"do not try app switching",
+		"prepared in the earlier data-gathering step",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("clipboard write error missing %q: %s", want, out)

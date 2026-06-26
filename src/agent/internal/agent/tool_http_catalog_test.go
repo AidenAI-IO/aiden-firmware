@@ -242,7 +242,9 @@ func TestGeneratedToolSkillPrefersBridgeTextEntryForPhoneApps(t *testing.T) {
 	skill := buildHTTPToolSkillMarkdown("test", "test skill", "http://example.local:8080", nil)
 	for _, want := range []string{
 		"use `enter_text_in_field`",
-		"first call `clipboard` with action=write",
+		"batch Aiden app-side work before target-app navigation",
+		"write the final clipboard text before finishing that lookup step",
+		"Treat `open_app(target)` as the phase boundary",
 		"without reopening Aiden",
 		"Do not rely on background WebSocket/HTTP clipboard delivery as the primary path",
 	} {

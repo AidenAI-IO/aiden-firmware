@@ -155,9 +155,13 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 		!strings.Contains(profiles.Planner.SystemPrompt, "never rewrite the app/chat target to the Contacts/address-book name") {
 		t.Fatalf("planner prompt should preserve distinct app/chat and contacts names: planner=%q", profiles.Planner.SystemPrompt)
 	}
-	if !strings.Contains(profiles.Planner.SystemPrompt, "include clipboard preparation before target-app navigation") ||
-		!strings.Contains(profiles.Planner.SystemPrompt, "write clipboard while Aiden is foreground") ||
-		!strings.Contains(profiles.Executor.SystemPrompt, "prepare the clipboard with clipboard action=write before open_app") ||
+	if !strings.Contains(profiles.Planner.SystemPrompt, "batch all Aiden-foreground work before target-app navigation") ||
+		!strings.Contains(profiles.Planner.SystemPrompt, "first milestone must gather the data, compose the final message, and write it to clipboard") ||
+		!strings.Contains(profiles.Planner.SystemPrompt, "write it to clipboard while Aiden is foreground") ||
+		!strings.Contains(profiles.Planner.SystemPrompt, "do not create a separate target-app launch milestone before clipboard preparation") ||
+		!strings.Contains(profiles.Executor.SystemPrompt, "call clipboard action=write before finish_step") ||
+		!strings.Contains(profiles.Executor.SystemPrompt, "prepare the clipboard with clipboard action=write before target-app launch/navigation") ||
+		!strings.Contains(profiles.Executor.SystemPrompt, "Treat target-app launch/navigation as the boundary") ||
 		!strings.Contains(profiles.Executor.SystemPrompt, "Do not call clipboard after the target app/chat is already foreground") {
 		t.Fatalf("role prompts should front-load iOS clipboard preparation: planner=%q executor=%q", profiles.Planner.SystemPrompt, profiles.Executor.SystemPrompt)
 	}
