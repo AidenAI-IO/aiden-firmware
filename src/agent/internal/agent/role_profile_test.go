@@ -155,6 +155,12 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 		!strings.Contains(profiles.Planner.SystemPrompt, "never rewrite the app/chat target to the Contacts/address-book name") {
 		t.Fatalf("planner prompt should preserve distinct app/chat and contacts names: planner=%q", profiles.Planner.SystemPrompt)
 	}
+	if !strings.Contains(profiles.Planner.SystemPrompt, "include clipboard preparation before target-app navigation") ||
+		!strings.Contains(profiles.Planner.SystemPrompt, "write clipboard while Aiden is foreground") ||
+		!strings.Contains(profiles.Executor.SystemPrompt, "prepare the clipboard with clipboard action=write before open_app") ||
+		!strings.Contains(profiles.Executor.SystemPrompt, "Do not call clipboard after the target app/chat is already foreground") {
+		t.Fatalf("role prompts should front-load iOS clipboard preparation: planner=%q executor=%q", profiles.Planner.SystemPrompt, profiles.Executor.SystemPrompt)
+	}
 	if !strings.Contains(profiles.Planner.SystemPrompt, "platform (ios/android/mac)") ||
 		!strings.Contains(profiles.Executor.SystemPrompt, "platform shown in World State") ||
 		!strings.Contains(profiles.Verifier.SystemPrompt, `"platform":""`) {

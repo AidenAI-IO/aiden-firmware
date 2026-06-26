@@ -419,6 +419,49 @@ func TestClipboardWriteRecordsPreparedText(t *testing.T) {
 	}
 }
 
+func TestClipboardWriteDoesNotRestoreIOSBackgroundAiden(t *testing.T) {
+	message := "你好，请问这个手机号你还用吗？13204503813"
+	bridge := NewPhoneBridge(nil)
+	t.Cleanup(func() { bridge.queue.Stop() })
+	bridge.mu.Lock()
+	bridge.connected = true
+	bridge.platform = "ios"
+	bridge.appState = "background"
+	bridge.returnEntry = "dynamic_island"
+	bridge.returnEntrySeen = true
+	bridge.returnEntryOK = true
+	bridge.mu.Unlock()
+
+	restorer := NewPhoneBridgeRestorer(bridge, nil)
+	restorer.tapReturnEntry = func(context.Context, PhoneBridgeStatus) error {
+		t.Fatal("clipboard write must not restore Aiden from an already open target app")
+		return nil
+	}
+	tool := NewClipboardTool(bridge, restorer)
+	ctx, _ := WithToolError(context.Background())
+
+	out, err := tool.Call(ctx, `{"action":"write","text":"`+message+`"}`)
+	if err != nil {
+		t.Fatalf("Call returned err: %v", err)
+	}
+	te := ToolErrorFromContext(ctx)
+	if te == nil || te.Code != CodeBridgeNotConnected {
+		t.Fatalf("expected bridge_not_connected error, got %+v output=%q", te, out)
+	}
+	for _, want := range []string{
+		"clipboard_write requires Aiden foreground",
+		"prepare clipboard before opening the target app",
+		"Do not restore Aiden",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("clipboard write error missing %q: %s", want, out)
+		}
+	}
+	if bridge.ClipboardRecentlyContains(message, time.Minute) {
+		t.Fatal("failed clipboard write must not be recorded as prepared")
+	}
+}
+
 func newTestPhoneBridgeWithApp(t *testing.T, handle func(BridgeCommand) BridgeCommandResponse) *PhoneBridge {
 	t.Helper()
 	bridge := NewPhoneBridge(nil)

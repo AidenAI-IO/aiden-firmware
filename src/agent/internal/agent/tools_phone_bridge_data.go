@@ -57,7 +57,7 @@ func (t *ClipboardTool) Description() string {
 		`Input JSON: {"action":"read"} returns {"ok":true,"text":"..."}; ` +
 		`{"action":"write","text":"content"} sets the clipboard and returns {"ok":true}. ` +
 		`Use this as a fast cross-app content channel for long or non-ASCII text: write the clipboard in Aiden, switch to the target app, then paste. ` +
-		`On iOS, if Aiden is in background and a Dynamic Island return entry is available, this tool restores Aiden to foreground and waits for WebSocket reconnect before using the clipboard.`
+		`On iOS, clipboard writes are only for foreground preparation while Aiden is already command-ready; do not restore Aiden from an already open target app just to write clipboard.`
 }
 
 func (t *ClipboardTool) ArgsSchema() map[string]any {
@@ -126,6 +126,19 @@ func (t *ClipboardTool) read(ctx context.Context) (string, error) {
 }
 
 func (t *ClipboardTool) write(ctx context.Context, text string) (string, error) {
+	status := PhoneBridgeStatus{}
+	if t.bridge != nil {
+		status = t.bridge.Status()
+	}
+	if !phoneBridgeReadyForCommand(status) {
+		message := "clipboard_write requires Aiden foreground on iOS; prepare clipboard before opening the target app, then use enter_text_in_field in the target field. Do not restore Aiden from an already open target app just to write clipboard."
+		if !strings.EqualFold(strings.TrimSpace(status.Platform), "ios") {
+			message = phoneBridgeRestoreUnavailableError(status).Error()
+		}
+		te := NewToolError(CodeBridgeNotConnected, message)
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
+	}
 	payload, _ := json.Marshal(map[string]string{"text": text})
 	resp, restored, err := sendForegroundBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
 		ID:        nextBridgeCmdID("clip_write"),
