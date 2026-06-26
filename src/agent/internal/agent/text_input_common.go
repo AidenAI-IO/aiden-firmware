@@ -10,10 +10,15 @@ import (
 
 type textInputMode string
 
+type textInputInteractionMode string
+
 const (
 	textInputModeASCII       textInputMode = "ascii"
 	textInputModeComposition textInputMode = "composition"
 	textInputModeUnknown     textInputMode = "unknown"
+
+	textInputModeForm   textInputInteractionMode = "form"
+	textInputModeSearch textInputInteractionMode = "search"
 
 	textInputKeystrokeGap         = 60 * time.Millisecond
 	textInputFocusRestoreDelay    = 250 * time.Millisecond
@@ -24,6 +29,17 @@ const (
 	textInputCandidatePageMax      = 5
 	textInputCandidatePageDelay    = 300 * time.Millisecond
 )
+
+func normalizeTextInputInteractionMode(raw string) textInputInteractionMode {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", string(textInputModeForm):
+		return textInputModeForm
+	case string(textInputModeSearch):
+		return textInputModeSearch
+	default:
+		return textInputModeForm
+	}
+}
 
 func requiredTextInputMode(text string) textInputMode {
 	if needsCompositionInput(text) {

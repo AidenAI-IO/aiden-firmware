@@ -199,6 +199,7 @@ func (t *EnterTextViaBridgeTool) restoreBridgeAppIfNeeded(ctx context.Context, e
 		searchTerm:       searchTerm,
 		findAppTapFn:     t.findAppTapFn,
 		confirmAppOpenFn: t.confirmAppOpenFn,
+		entryTool:        &EnterTextInFieldTool{engine: newTextInputEngine(*t.hw, t.vision), platformFn: t.platformFn},
 		launchDelay:      appSearchOpenLaunchDelay,
 	})
 	vlmCalls += openResult.VLMCalls

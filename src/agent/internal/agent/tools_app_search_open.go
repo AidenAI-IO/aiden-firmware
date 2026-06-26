@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -18,6 +19,7 @@ type appSearchOpenTool struct {
 	confirmAppOpenFn func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error)
 	afterOpenFn      func() error
 	searchTermFn     func(string) string
+	entryTool        *EnterTextInFieldTool
 	launchDelay      time.Duration
 }
 
@@ -72,6 +74,7 @@ func (t *appSearchOpenTool) Call(ctx context.Context, input string) (string, err
 		findAppTapFn:     t.findAppTapFn,
 		confirmAppOpenFn: t.confirmAppOpenFn,
 		afterOpenFn:      t.afterOpenFn,
+		entryTool:        t.entryTool,
 		launchDelay:      t.launchDelay,
 	})
 	if err != nil {
@@ -109,6 +112,7 @@ type appSearchOpenFlowConfig struct {
 	findAppTapFn     func(context.Context, screenshotResult, string) (bridgeSearchResult, error)
 	confirmAppOpenFn func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error)
 	afterOpenFn      func() error
+	entryTool        *EnterTextInFieldTool
 	launchDelay      time.Duration
 }
 
@@ -124,8 +128,11 @@ func runAppSearchOpenFlow(ctx context.Context, cfg appSearchOpenFlowConfig) (app
 	if cfg.hw == nil || cfg.vision == nil {
 		return result, fmt.Errorf("app search open flow is not fully configured")
 	}
-	if cfg.hw.quickAction == nil || cfg.hw.keyboardText == nil || cfg.hw.touchGesture == nil {
+	if cfg.hw.quickAction == nil || cfg.hw.touchGesture == nil {
 		return result, fmt.Errorf("app search open tools are not fully configured")
+	}
+	if cfg.entryTool == nil {
+		return result, fmt.Errorf("app search entry tool is not configured")
 	}
 	searchTerm := strings.TrimSpace(cfg.searchTerm)
 	if searchTerm == "" {
@@ -151,64 +158,150 @@ func runAppSearchOpenFlow(ctx context.Context, cfg appSearchOpenFlowConfig) (app
 		return result, err
 	}
 	steps = append(steps, "opened system search")
-	out, err := cfg.hw.keyboardText.Call(ctx, jsonString(map[string]string{"text": searchTerm}))
-	if err != nil {
-		return result, err
-	}
-	if err := interpretTextInputToolOutput(out); err != nil {
-		return result, err
-	}
-	steps = append(steps, fmt.Sprintf("searched %q", searchTerm))
 	engine := newTextInputEngine(*cfg.hw, cfg.vision)
-	for attempt := 1; attempt <= 2; attempt++ {
-		findResult, calls, err := findSearchOpenAppResult(ctx, cfg, engine, searchTerm)
-		result.VLMCalls += calls
+	searchTerms := appSearchFallbackTerms(searchTerm)
+	for idx, term := range searchTerms {
+		entryResult, err := enterSearchQuery(ctx, cfg, term, idx > 0)
 		if err != nil {
-			result.Steps = append(steps, "locate app failed")
+			result.Steps = append(steps, "search query entry failed")
 			return result, err
 		}
-		if !findResult.Found {
-			steps = append(steps, "app result not found")
-			continue
-		}
-		if err := tapSearchOpenResult(ctx, cfg.hw, findResult.TapPoint); err != nil {
-			result.Steps = append(steps, "tap app result failed")
-			return result, err
-		}
-		if label := strings.TrimSpace(findResult.Label); label != "" {
-			steps = append(steps, fmt.Sprintf("tapped app result %q", label))
-		} else {
-			steps = append(steps, "tapped app result")
-		}
-		time.Sleep(launchDelay)
-		opened, calls, err := confirmSearchOpenApp(ctx, cfg, engine, searchTerm)
-		result.VLMCalls += calls
-		if err != nil {
-			result.Steps = append(steps, "confirm app open failed")
-			return result, err
-		}
-		if opened.Opened {
-			steps = append(steps, "app open confirmed")
-			if cfg.afterOpenFn != nil {
-				if err := cfg.afterOpenFn(); err != nil {
-					result.Steps = append(steps, "after-open hook failed")
-					return result, err
-				}
+		result.VLMCalls += entryResult.VLMCalls
+		steps = append(steps, entryResult.Steps...)
+		steps = append(steps, fmt.Sprintf("searched %q", term))
+		foundForTerm := false
+		for attempt := 1; attempt <= 2; attempt++ {
+			findResult, calls, err := findSearchOpenAppResult(ctx, cfg, engine, term)
+			result.VLMCalls += calls
+			if err != nil {
+				result.Steps = append(steps, "locate app failed")
+				return result, err
 			}
-			result.Opened = true
+			if !findResult.Found {
+				steps = append(steps, fmt.Sprintf("app result not found for %q", term))
+				break
+			}
+			foundForTerm = true
+			if err := tapSearchOpenResult(ctx, cfg.hw, findResult.TapPoint); err != nil {
+				result.Steps = append(steps, "tap app result failed")
+				return result, err
+			}
+			if label := strings.TrimSpace(findResult.Label); label != "" {
+				steps = append(steps, fmt.Sprintf("tapped app result %q", label))
+			} else {
+				steps = append(steps, "tapped app result")
+			}
+			time.Sleep(launchDelay)
+			opened, calls, err := confirmSearchOpenApp(ctx, cfg, engine, term)
+			result.VLMCalls += calls
+			if err != nil {
+				result.Steps = append(steps, "confirm app open failed")
+				return result, err
+			}
+			if opened.Opened {
+				steps = append(steps, "app open confirmed")
+				if cfg.afterOpenFn != nil {
+					if err := cfg.afterOpenFn(); err != nil {
+						result.Steps = append(steps, "after-open hook failed")
+						return result, err
+					}
+				}
+				result.Opened = true
+				result.Reason = strings.TrimSpace(opened.Reason)
+				result.Steps = steps
+				return result, nil
+			}
 			result.Reason = strings.TrimSpace(opened.Reason)
-			result.Steps = steps
-			return result, nil
+			steps = append(steps, "app did not open; retrying")
 		}
-		result.Reason = strings.TrimSpace(opened.Reason)
-		steps = append(steps, "app did not open; retrying")
-		_ = attempt
+		if !foundForTerm && entryResult.WrongIMESuspected {
+			if err := switchSearchIME(ctx, cfg.hw, platform); err == nil {
+				steps = append(steps, "switched IME for fallback")
+			}
+		}
+		if foundForTerm {
+			break
+		}
 	}
 	result.Steps = steps
 	if result.Reason == "" {
 		result.Reason = "app did not open"
 	}
 	return result, nil
+}
+
+func enterSearchQuery(ctx context.Context, cfg appSearchOpenFlowConfig, term string, clearFirst bool) (enterTextInFieldResult, error) {
+	if clearFirst {
+		engine := newTextInputEngine(*cfg.hw, cfg.vision)
+		if err := engine.clearField(ctx, cfg.platform); err != nil {
+			return enterTextInFieldResult{}, err
+		}
+	}
+	input := map[string]any{
+		"text":       term,
+		"mode":       "search",
+		"skip_focus": !clearFirst,
+		"focus":      map[string]any{"x": 500, "y": 120, "coord_space": "normalized"},
+	}
+	out, err := cfg.entryTool.Call(ctx, jsonString(input))
+	if err != nil {
+		return enterTextInFieldResult{}, err
+	}
+	var result enterTextInFieldResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		return enterTextInFieldResult{}, fmt.Errorf("parse search entry result: %w", err)
+	}
+	return result, nil
+}
+
+func appSearchFallbackTerms(searchTerm string) []string {
+	base := strings.TrimSpace(searchTerm)
+	if base == "" {
+		return nil
+	}
+	terms := []string{base}
+	parts := strings.Fields(base)
+	if len(parts) > 1 {
+		terms = append(terms, parts[0])
+	}
+	runes := []rune(base)
+	if len(runes) > 4 {
+		terms = append(terms, string(runes[:4]))
+	}
+	seen := map[string]struct{}{}
+	unique := make([]string, 0, len(terms))
+	for _, term := range terms {
+		term = strings.TrimSpace(term)
+		if term == "" {
+			continue
+		}
+		if _, ok := seen[term]; ok {
+			continue
+		}
+		seen[term] = struct{}{}
+		unique = append(unique, term)
+	}
+	sort.SliceStable(unique, func(i, j int) bool { return len([]rune(unique[i])) > len([]rune(unique[j])) })
+	return unique
+}
+
+func switchSearchIME(ctx context.Context, hw *textInputHardwareDeps, platform string) error {
+	if hw == nil || hw.keyboardTap == nil {
+		return fmt.Errorf("keyboard_tap is not configured")
+	}
+	keys, err := textInputKeyboardKeysForIMESwitch(platform)
+	if err != nil {
+		return err
+	}
+	out, err := hw.keyboardTap.Call(ctx, jsonString(map[string]any{"keys": keys}))
+	if err != nil {
+		return err
+	}
+	if err := interpretTextInputToolOutput(out); err != nil {
+		return err
+	}
+	time.Sleep(textInputIMESwitchSettleDelay)
+	return nil
 }
 
 func findSearchOpenAppResult(ctx context.Context, cfg appSearchOpenFlowConfig, engine *textInputEngine, searchTerm string) (bridgeSearchResult, int, error) {

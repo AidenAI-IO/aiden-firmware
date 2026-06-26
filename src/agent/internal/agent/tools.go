@@ -119,6 +119,7 @@ func (s *ToolSet) RegisterEnterTextInFieldTool(models ModelResolver, platformFn 
 		hw:          s.textInputHW,
 		vision:      newLLMTextInputVision(models),
 		platformFn:  platformFn,
+		entryTool:   tool,
 		launchDelay: appSearchOpenLaunchDelay,
 	}
 	s.tools["search_launch_app"] = searchOpenTool
