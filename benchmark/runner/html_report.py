@@ -153,10 +153,10 @@ def _analysis_html(run_dir: Path) -> str:
     err = run_dir / "llm_analysis_error.txt"
     if md.exists():
         text = md.read_text("utf-8")[:20000]
-        return f'<section class="analysis"><h2>LLM Analysis</h2><pre>{_esc(text)}</pre></section>'
+        return f'<section class="analysis"><h2>LLM 分析</h2><pre>{_esc(text)}</pre></section>'
     if err.exists():
         text = err.read_text("utf-8")[:4000]
-        return f'<section class="analysis warning"><h2>LLM Analysis</h2><pre>{_esc(text)}</pre></section>'
+        return f'<section class="analysis warning"><h2>LLM 分析</h2><pre>{_esc(text)}</pre></section>'
     return ""
 
 

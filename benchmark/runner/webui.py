@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from runner.agent_client import AgentClient
+from runner.analysis import AnalysisResult, analyze_run, config_from_env
 from runner.html_report import generate_report_html
 from runner.judge import JudgeConfig
 from runner.reset import ResetError, call_environment_release
@@ -717,7 +718,9 @@ class BenchmarkWebApp:
 
     def _refresh_job_report(self, job: Job) -> None:
         try:
-            report_url = write_job_report(job)
+            with self._lock:
+                analysis_api_key = self._job_judge_api_keys.get(job.id, "") or self._webui_judge_api_key
+            report_url = write_job_report(job, analysis_api_key=analysis_api_key)
         except Exception as exc:
             append_log(Path(job.runner_log), f"warning: failed to write job report: {exc}")
             return
@@ -2007,7 +2010,7 @@ def single_suite_report_url(results: list[dict[str, Any]]) -> str:
     return urls[0] if len(urls) == 1 else ""
 
 
-def write_job_report(job: Job) -> str:
+def write_job_report(job: Job, *, analysis_api_key: str = "") -> str:
     raw_runs_dir = Path(job.raw_runs_dir)
     if not raw_runs_dir.exists():
         return ""
@@ -2041,8 +2044,34 @@ def write_job_report(job: Job) -> str:
     with (report_dir / "results.jsonl").open("w", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+    _run_job_analysis_if_enabled(report_dir, job, analysis_api_key=analysis_api_key)
     (report_dir / "report.html").write_text(generate_report_html(report_dir), encoding="utf-8")
     return f"/reports/{job.id}/{JOB_REPORT_RUN_ID}/report.html"
+
+
+def _run_job_analysis_if_enabled(
+    report_dir: Path,
+    job: Job,
+    *,
+    analysis_api_key: str = "",
+) -> AnalysisResult | None:
+    cfg = config_from_env()
+    if not _analysis_env_is_set() and not job.no_judge and analysis_api_key:
+        cfg.enabled = True
+    if not cfg.enabled:
+        return None
+    if not os.environ.get("AIDEN_BENCHMARK_ANALYSIS_MODEL") and job.judge_model:
+        cfg.model = job.judge_model or DEFAULT_JUDGE_MODEL
+    if analysis_api_key:
+        cfg.api_key_value = analysis_api_key
+    result = analyze_run(report_dir, REPO_ROOT, cfg)
+    if not result.ok:
+        append_log(Path(job.runner_log), f"warning: WebUI LLM analysis failed: {result.warning}")
+    return result
+
+
+def _analysis_env_is_set() -> bool:
+    return bool(os.environ.get("AIDEN_BENCHMARK_LLM_ANALYSIS", "").strip())
 
 
 def merged_job_report_rows(job: Job) -> list[dict[str, Any]]:

@@ -42,6 +42,17 @@ def test_resolve_analysis_api_key_uses_expected_precedence(monkeypatch):
     assert analysis.resolve_analysis_api_key(cfg) == ("AIDEN_MODEL_API_KEY", "aiden-secret")
 
 
+def test_resolve_analysis_api_key_accepts_explicit_override(monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("MODEL_API_KEY", raising=False)
+    monkeypatch.delenv("AIDEN_MODEL_API_KEY", raising=False)
+
+    cfg = analysis.AnalysisConfig(enabled=True, api_key_value="ui-secret")
+
+    assert analysis.resolve_analysis_api_key(cfg) == ("provided", "ui-secret")
+    assert "ui-secret" not in analysis.redact_text("token ui-secret", cfg)
+
+
 def test_redact_removes_known_and_custom_secrets(monkeypatch):
     monkeypatch.setenv("AIDEN_BENCHMARK_ANALYSIS_API_KEY_ENV", "CUSTOM_ANALYSIS_KEY")
     monkeypatch.setenv("CUSTOM_ANALYSIS_KEY", "custom-secret-value")
@@ -87,7 +98,9 @@ def test_render_markdown_includes_clusters_and_recommendations():
 
     md = analysis.render_markdown(payload)
 
-    assert "# LLM Benchmark Analysis" in md
+    assert "# LLM 基准分析" in md
+    assert "## 失败聚类" in md
+    assert "## 建议" in md
     assert "Two failures" in md
     assert "suite.task_a" in md
     assert "Add timeout logging" in md
@@ -314,8 +327,8 @@ def test_analyze_run_normalizes_bridge_inactive_analysis_payload(monkeypatch, tm
     assert result.ok is True
     assert payload["failure_clusters"][0]["category"] == "benchmark_infra_issue"
     assert payload["failure_clusters"][0]["task_ids"] == ["suite.task_a"]
-    assert "MobileGym setup ran before bridge episode activation" in markdown
-    assert "Category: `unknown`" not in markdown
+    assert "MobileGym setup 早于 bridge episode 激活执行" in markdown
+    assert "分类: `unknown`" not in markdown
 
 
 def test_bridge_inactive_known_issue_does_not_overwrite_unrelated_blank_cluster():

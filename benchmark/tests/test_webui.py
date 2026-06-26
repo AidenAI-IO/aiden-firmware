@@ -946,6 +946,72 @@ def test_refresh_job_report_merges_task_runs_into_single_report(tmp_path: Path):
     assert rows[1]["task_id"] in html
 
 
+def test_refresh_job_report_runs_llm_analysis_by_default_with_webui_judge_key(monkeypatch, tmp_path: Path):
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+        )
+    )
+    raw_runs_dir = tmp_path / "runs" / "job-test" / "raw"
+    run_dir = raw_runs_dir / "run-a"
+    artifact_dir = run_dir / "tasks" / "t1"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "trace.json").write_text(json.dumps({"tool_calls": [], "final_response": ""}), encoding="utf-8")
+    (run_dir / "results.jsonl").write_text(
+        json.dumps(
+            {
+                "suite": "suite.json",
+                "run_id": "run-a",
+                "task_id": "t1",
+                "category": "diagnostic",
+                "attempt": 1,
+                "status": "failed",
+                "rubric": [],
+                "rubric_pass_count": 0,
+                "rubric_total": 1,
+                "metrics": {"wall_ms": 7, "tool_calls": 0},
+                "artifact_dir": str(artifact_dir),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_analyze(run_dir_arg, repo_root, cfg):
+        calls.append((run_dir_arg, repo_root, cfg))
+        (run_dir_arg / "llm_analysis.md").write_text("中文分析", encoding="utf-8")
+        return webui.AnalysisResult(ok=True, markdown_path=run_dir_arg / "llm_analysis.md")
+
+    monkeypatch.delenv("AIDEN_BENCHMARK_LLM_ANALYSIS", raising=False)
+    monkeypatch.setattr(webui, "analyze_run", fake_analyze)
+    with app._lock:
+        app._webui_judge_api_key = "ui-judge-key"
+    job = webui.Job(
+        id="job-test",
+        endpoint="http://127.0.0.1:19090",
+        docker_endpoint="http://host.docker.internal:19090",
+        suites=["suite.json"],
+        raw_runs_dir=str(raw_runs_dir),
+        runner_log=str(tmp_path / "runs" / "job-test" / "runner.log"),
+        started_at="2026-06-22T00:00:00+00:00",
+        judge_model="bytedance-seed/seed-2.0-lite",
+        suite_results=[{"suite": "suite.json", "task_id": "t1", "exit_code": 1, "run_id": "run-a"}],
+    )
+
+    app._refresh_job_report(job)
+
+    report_dir = raw_runs_dir / "_job-report"
+    assert calls and calls[0][0] == report_dir
+    assert calls[0][2].enabled is True
+    assert calls[0][2].model == "bytedance-seed/seed-2.0-lite"
+    assert calls[0][2].api_key_value == "ui-judge-key"
+    html = (report_dir / "report.html").read_text(encoding="utf-8")
+    assert "LLM 分析" in html
+    assert "中文分析" in html
+
+
 def test_refresh_job_report_falls_back_to_single_existing_report(tmp_path: Path):
     app = webui.BenchmarkWebApp(
         webui.WebUIConfig(

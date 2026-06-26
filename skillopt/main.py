@@ -38,6 +38,12 @@ SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9_.\-]+$")
 DIFF_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
+def _default_base_config_dir_for_backend(backend: str) -> Path:
+    if backend == "mobilegym":
+        return REPO_ROOT / "benchmark" / "mobilegym" / "config"
+    return REPO_ROOT / "benchmark" / "config"
+
+
 def _valid_safe_relative_label(label: str) -> bool:
     if not label or label.startswith("/"):
         return False
@@ -179,7 +185,7 @@ def cli(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--daemon-image", default=os.environ.get("AIDEN_DAEMON_IMAGE", DEFAULT_DAEMON_IMAGE))
     parser.add_argument("--no-build-daemon-image", action="store_true")
-    parser.add_argument("--base-config-dir", default=str(REPO_ROOT / "benchmark" / "config"))
+    parser.add_argument("--base-config-dir", default="")
     parser.add_argument("--agent-config", default="", help="Optional agent.toml to pass to benchmark runner workers")
     parser.add_argument(
         "--output",
@@ -216,6 +222,8 @@ def cli(argv: list[str] | None = None) -> int:
     if args.mobilegym_parallel <= 0:
         print("Error: mobilegym_parallel must be positive", file=sys.stderr)
         return 2
+    if not str(args.base_config_dir or "").strip():
+        args.base_config_dir = str(_default_base_config_dir_for_backend(args.backend))
     if args.run_id:
         if err := _validate_run_id(args.run_id):
             print(f"Error: {err}", file=sys.stderr)

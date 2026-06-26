@@ -40,6 +40,7 @@ class AnalysisConfig:
     total_context_bytes: int = DEFAULT_TOTAL_CONTEXT_BYTES
     timeout_sec: int = DEFAULT_TIMEOUT_SEC
     api_key_env: str | None = None
+    api_key_value: str | None = None
 
 
 @dc.dataclass
@@ -95,6 +96,8 @@ def config_from_env() -> AnalysisConfig:
 
 
 def resolve_analysis_api_key(cfg: AnalysisConfig) -> tuple[str, str]:
+    if cfg.api_key_value and cfg.api_key_value.strip():
+        return "provided", cfg.api_key_value.strip()
     names: list[str] = []
     if cfg.api_key_env:
         names.append(cfg.api_key_env)
@@ -125,6 +128,8 @@ def redact_text(text: str, cfg: AnalysisConfig) -> str:
     redacted = JWTISH_RE.sub("[REDACTED_JWT]", redacted)
     names = [cfg.api_key_env] if cfg.api_key_env else []
     names.extend(["OPENROUTER_API_KEY", "MODEL_API_KEY", "AIDEN_MODEL_API_KEY", "AIDEN_CONTROL_TOKEN"])
+    if cfg.api_key_value:
+        redacted = redacted.replace(cfg.api_key_value, "[REDACTED_VALUE]")
     for name in names:
         if not name:
             continue
@@ -135,40 +140,40 @@ def redact_text(text: str, cfg: AnalysisConfig) -> str:
 
 
 def render_markdown(payload: dict[str, Any]) -> str:
-    lines = ["# LLM Benchmark Analysis", "", str(payload.get("summary") or "No summary returned."), ""]
+    lines = ["# LLM 基准分析", "", str(payload.get("summary") or "未返回摘要。"), ""]
     counts = payload.get("classification_counts")
     if isinstance(counts, dict) and counts:
-        lines += ["## Classification Counts", ""]
+        lines += ["## 分类统计", ""]
         for key, value in sorted(counts.items()):
             lines.append(f"- `{key}`: {value}")
         lines.append("")
     clusters = payload.get("failure_clusters") if isinstance(payload.get("failure_clusters"), list) else []
-    lines += ["## Failure Clusters", ""]
+    lines += ["## 失败聚类", ""]
     if not clusters:
-        lines.append("- No failure clusters returned.")
+        lines.append("- 未返回失败聚类。")
     for cluster in clusters:
         if not isinstance(cluster, dict):
             continue
-        title = cluster.get("title") or cluster.get("suspected_cause") or "Cluster"
+        title = cluster.get("title") or cluster.get("suspected_cause") or "聚类"
         task_ids = ", ".join(str(t) for t in cluster.get("task_ids") or [])
         lines += [
             f"### {title}",
             "",
-            f"- Category: `{cluster.get('category', 'unknown')}`",
-            f"- Confidence: `{cluster.get('confidence', 'unknown')}`",
+            f"- 分类: `{cluster.get('category', 'unknown')}`",
+            f"- 置信度: `{cluster.get('confidence', 'unknown')}`",
         ]
         if task_ids:
-            lines.append(f"- Tasks: {task_ids}")
+            lines.append(f"- 任务: {task_ids}")
         if cluster.get("suspected_cause"):
-            lines.append(f"- Suspected cause: {cluster['suspected_cause']}")
+            lines.append(f"- 疑似原因: {cluster['suspected_cause']}")
         evidence = cluster.get("evidence") if isinstance(cluster.get("evidence"), list) else []
         for item in evidence:
-            lines.append(f"- Evidence: {item}")
+            lines.append(f"- 证据: {item}")
         lines.append("")
     recommendations = payload.get("recommendations") if isinstance(payload.get("recommendations"), list) else []
-    lines += ["## Recommendations", ""]
+    lines += ["## 建议", ""]
     if not recommendations:
-        lines.append("- No recommendations returned.")
+        lines.append("- 未返回建议。")
     for rec in recommendations:
         if isinstance(rec, dict):
             lines.append(
@@ -178,7 +183,7 @@ def render_markdown(payload: dict[str, Any]) -> str:
             lines.append(f"- {rec}")
     gaps = payload.get("evidence_gaps") if isinstance(payload.get("evidence_gaps"), list) else []
     if gaps:
-        lines += ["", "## Evidence Gaps", ""]
+        lines += ["", "## 证据缺口", ""]
         lines.extend(f"- {gap}" for gap in gaps)
     return "\n".join(lines).rstrip() + "\n"
 
@@ -681,21 +686,22 @@ def _mobilegym_status(row: dict[str, Any]) -> tuple[str, str]:
     return "unknown", "missing or unrecognized result"
 
 
-SYSTEM_PROMPT = """You are a benchmark root-cause analyst. You are not a judge.
-Analyze benchmark results, trace/history excerpts, runtime logs, and source snippets.
-Ground every claim in evidence. If evidence is missing, say so. Return JSON only."""
+SYSTEM_PROMPT = """你是 benchmark 根因分析专家，不是 judge。
+请分析 benchmark 结果、trace/history 摘要、运行日志和源码片段。
+所有结论必须基于证据；证据不足时要明确说明。只返回 JSON。"""
 
 
 def _analysis_user_prompt(context: dict[str, Any]) -> str:
-    return """Analyze this benchmark run and return JSON with keys:
-summary, failure_clusters, recommendations, classification_counts, evidence_gaps.
-Root-cause categories must be one of: suite_issue, project_code_issue, agent_behavior_issue,
-benchmark_infra_issue, environment_issue, evaluation_issue, insufficient_evidence.
-If CONTEXT JSON contains known_issues, treat them as evidence-backed root-cause hints and either
-use them directly or explain why stronger evidence overrides them. Do not infer environment causes
-such as platform mismatch or missing directories unless the failure excerpts/logs directly show
-those errors. For "setup tool ... mobilegym bridge episode is not active", prefer a
-benchmark_infra_issue about MobileGym adapter episode/setup lifecycle ordering over agent behavior.
+    return """分析这个 benchmark run，并返回 JSON，必须包含这些 key：
+summary, failure_clusters, recommendations, classification_counts, evidence_gaps。
+所有自然语言字段请使用简体中文。
+根因分类必须是以下之一：suite_issue, project_code_issue, agent_behavior_issue,
+benchmark_infra_issue, environment_issue, evaluation_issue, insufficient_evidence。
+如果 CONTEXT JSON 包含 known_issues，请把它们视为已有证据支持的根因提示，直接采用，
+或者说明为什么更强证据推翻了它们。不要在失败摘要/日志没有直接证据时推断环境原因，
+例如平台不匹配或目录缺失。对于 "setup tool ... mobilegym bridge episode is not active"，
+优先归类为 MobileGym adapter episode/setup 生命周期顺序相关的 benchmark_infra_issue，
+不要优先归因于 agent 行为。
 
 CONTEXT JSON:
 """ + json.dumps(context, ensure_ascii=False, indent=2)
@@ -789,7 +795,7 @@ def _apply_known_issues_to_payload(context: dict[str, Any], payload: dict[str, A
 def _apply_bridge_inactive_issue(issue: dict[str, Any], payload: dict[str, Any]) -> None:
     task_ids = [str(task_id) for task_id in issue.get("task_ids") or []]
     cluster = {
-        "title": "MobileGym setup ran before bridge episode activation",
+        "title": "MobileGym setup 早于 bridge episode 激活执行",
         "category": "benchmark_infra_issue",
         "confidence": "high",
         "task_ids": task_ids,
@@ -822,7 +828,7 @@ def _apply_bridge_inactive_issue(issue: dict[str, Any], payload: dict[str, Any])
     lifecycle_rec = {
         "priority": "high",
         "target": "benchmark/mobilegym/adapter/aiden_go_agent.py",
-        "suggestion": "Run Aiden suite global_reset/setup only after bridge /episode/start and daemon /api/mobilegym/episode/start have activated the MobileGym episode.",
+        "suggestion": "仅在 bridge /episode/start 和 daemon /api/mobilegym/episode/start 激活 MobileGym episode 后，再执行 Aiden suite global_reset/setup。",
     }
     if not any("/api/mobilegym/episode/start" in json.dumps(item, ensure_ascii=False) for item in recommendations):
         recommendations.insert(0, lifecycle_rec)

@@ -395,12 +395,12 @@ def test_generate_report_includes_llm_analysis_section(tmp_path: Path):
     )
     (run_dir / "results.jsonl").write_text("", encoding="utf-8")
     (run_dir / "llm_analysis.md").write_text(
-        "# LLM Benchmark Analysis\n\nRoot cause summary", encoding="utf-8"
+        "# LLM 基准分析\n\nRoot cause summary", encoding="utf-8"
     )
 
     html = generate_report_html(run_dir)
 
-    assert "LLM Analysis" in html
+    assert "LLM 分析" in html
     assert "Root cause summary" in html
 
 

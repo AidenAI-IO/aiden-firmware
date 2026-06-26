@@ -700,6 +700,77 @@ def test_cli_uses_benchmark_runner_backend_for_mobilegym(monkeypatch, tmp_path: 
     assert isinstance(backend, FakeBenchmarkRunnerBackend)
     assert backend.kwargs["environment_url"] == "http://127.0.0.1:50196"
     assert backend.kwargs["backend"] == "mobilegym"
+    assert backend.kwargs["base_config_dir"] == tmp_path / "benchmark" / "mobilegym" / "config"
+
+
+def test_cli_uses_device_base_config_by_default_with_bridge(monkeypatch, tmp_path: Path):
+    skill_path = tmp_path / "src" / "agent" / "config" / "skills" / "device-operator" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("skill", encoding="utf-8")
+    _write_device_operator_suites(tmp_path)
+    captured = {}
+
+    def fake_optimize_skill(cfg):
+        captured["backend"] = cfg.rollout_backend
+        return OptimizationResult(
+            skill_name=cfg.skill_name,
+            initial_score=0.0,
+            best_score=1.0,
+            best_skill="optimized skill",
+        )
+
+    _set_roots(monkeypatch, tmp_path)
+    monkeypatch.setattr(main, "optimize_skill", fake_optimize_skill)
+    monkeypatch.setattr(main, "BenchmarkRunnerBackend", FakeBenchmarkRunnerBackend, raising=False)
+
+    rc = main.cli([
+        "--backend", "device",
+        "--environment-url", "http://127.0.0.1:50196",
+        "--skill", "device-operator",
+        "--train-suite", TRAIN_LABEL,
+        "--validation-suite", VERIFICATION_LABEL,
+    ])
+
+    assert rc == 0
+    backend = captured["backend"]
+    assert isinstance(backend, FakeBenchmarkRunnerBackend)
+    assert backend.kwargs["backend"] == "device"
+    assert backend.kwargs["base_config_dir"] == tmp_path / "benchmark" / "config"
+
+
+def test_cli_honors_explicit_base_config_for_mobilegym(monkeypatch, tmp_path: Path):
+    skill_path = tmp_path / "src" / "agent" / "config" / "skills" / "device-operator" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("skill", encoding="utf-8")
+    _write_device_operator_suites(tmp_path)
+    custom_config = tmp_path / "custom-config"
+    captured = {}
+
+    def fake_optimize_skill(cfg):
+        captured["backend"] = cfg.rollout_backend
+        return OptimizationResult(
+            skill_name=cfg.skill_name,
+            initial_score=0.0,
+            best_score=1.0,
+            best_skill="optimized skill",
+        )
+
+    _set_roots(monkeypatch, tmp_path)
+    monkeypatch.setattr(main, "optimize_skill", fake_optimize_skill)
+    monkeypatch.setattr(main, "BenchmarkRunnerBackend", FakeBenchmarkRunnerBackend, raising=False)
+
+    rc = main.cli([
+        "--backend", "mobilegym",
+        "--environment-url", "http://127.0.0.1:50196",
+        "--base-config-dir", str(custom_config),
+        "--skill", "device-operator",
+        "--train-suite", TRAIN_LABEL,
+        "--validation-suite", VERIFICATION_LABEL,
+    ])
+
+    assert rc == 0
+    backend = captured["backend"]
+    assert backend.kwargs["base_config_dir"] == custom_config
 
 
 def test_cli_requires_environment_url_for_mobilegym(monkeypatch, tmp_path: Path, capsys):

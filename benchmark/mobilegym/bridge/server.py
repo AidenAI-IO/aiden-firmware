@@ -33,7 +33,7 @@ class BridgeServer:
         host: str = "127.0.0.1",
         port: int = 0,
         public_host: str | None = None,
-        request_timeout_sec: float = 30,
+        request_timeout_sec: float = 180,
     ):
         self.router = BridgeTaskRouter.from_state(state)
         self.state = self.router.default_state

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import os
 import signal
 import sys
@@ -25,10 +26,67 @@ MOBILEGYM_PACKAGE_ROOT = SCRIPT_PATH.parents[1]
 BENCHMARK_ROOT = SCRIPT_PATH.parents[2]
 DEFAULT_MOBILEGYM_ROOT = MOBILEGYM_PACKAGE_ROOT / "vendor" / "mobilegym"
 DEFAULT_ENV_URL = "http://localhost:4173"
+DEFAULT_BRIDGE_REQUEST_TIMEOUT_SEC = 180
+logger = logging.getLogger(__name__)
 
 
 class SimulatorError(RuntimeError):
     pass
+
+
+def install_resilient_mobilegym_reset(mobilegym_env_cls: type[Any]) -> None:
+    """Patch MobileGymEnv.reset to recover from a crashed Playwright page.
+
+    Upstream reset retries navigation on the same page. Once Chromium reports
+    `Page crashed`/`Target crashed`, that page cannot be repaired with another
+    goto, so recreate the env's owned page/context before one final reset.
+    """
+    if getattr(mobilegym_env_cls, "_aiden_resilient_reset_installed", False):
+        return
+    original_reset = mobilegym_env_cls.reset
+
+    async def resilient_reset(self: Any, app_ids: list[str] | None = None) -> None:
+        try:
+            await original_reset(self, app_ids=app_ids)
+            return
+        except Exception as exc:
+            if not _is_recoverable_page_crash(exc):
+                raise
+            logger.warning("MobileGym reset recovered by recreating page after: %s", exc)
+            await _restart_mobilegym_env(self)
+            await original_reset(self, app_ids=app_ids)
+
+    mobilegym_env_cls._aiden_original_reset = original_reset
+    mobilegym_env_cls.reset = resilient_reset
+    mobilegym_env_cls._aiden_resilient_reset_installed = True
+
+
+def _is_recoverable_page_crash(exc: Exception) -> bool:
+    message = f"{type(exc).__name__}: {exc}".lower()
+    return any(
+        marker in message
+        for marker in (
+            "page crashed",
+            "target crashed",
+            "target closed",
+            "browser closed",
+            "page.goto",
+        )
+    )
+
+
+async def _restart_mobilegym_env(env: Any) -> None:
+    close = getattr(env, "close", None)
+    if close is not None:
+        result = close()
+        if asyncio.iscoroutine(result) or isinstance(result, Awaitable):
+            await result
+    start = getattr(env, "start", None)
+    if start is None:
+        raise RuntimeError("MobileGym env cannot restart after page crash")
+    result = start()
+    if asyncio.iscoroutine(result) or isinstance(result, Awaitable):
+        await result
 
 
 def prepare_import_paths(mobilegym_root: str | Path) -> None:
@@ -104,8 +162,9 @@ async def create_mobilegym_env(env_url: str, headless: bool, device: str = "sim"
             physical_size=(1080, 2400),
             device_scale_factor=3,
         )
+        install_resilient_mobilegym_reset(MobileGymEnv)
         await env.start()
-        await env.reset(app_ids=[])
+        await env.reset()
         return env, config
     else:
         config = EnvConfig(
@@ -144,6 +203,12 @@ async def create_mobilegym_env_pool(
             "Install dependencies with: "
             "`pip install -r bench_env/requirements.txt && playwright install chromium`"
         ) from exc
+    try:
+        from bench_env.env import MobileGymEnv
+    except (ImportError, AttributeError):
+        MobileGymEnv = None
+    if MobileGymEnv is not None:
+        install_resilient_mobilegym_reset(MobileGymEnv)
 
     pool = EnvPool(
         url=env_url,
@@ -159,7 +224,7 @@ async def create_mobilegym_env_pool(
     envs = list(pool.envs)
     for env in envs:
         try:
-            await env.reset(app_ids=[])
+            await env.reset()
         except TypeError:
             await env.reset()
     config = {
@@ -179,6 +244,8 @@ async def run_simulator(args: argparse.Namespace) -> int:
     """Run MobileGym simulator with Bridge server."""
     if args.parallel_envs < 1:
         raise SimulatorError("--parallel-envs must be positive")
+    if args.bridge_request_timeout_sec <= 0:
+        raise SimulatorError("--bridge-request-timeout-sec must be positive")
 
     # Resolve and validate MobileGym installation
     mobilegym_root, source = resolve_mobilegym_root(args.mobilegym_root)
@@ -215,6 +282,7 @@ async def run_simulator(args: argparse.Namespace) -> int:
         host=args.bridge_host,
         port=args.bridge_port,
         public_host=args.bridge_public_host or None,
+        request_timeout_sec=args.bridge_request_timeout_sec,
     )
 
     bridge_url = bridge.start()
@@ -337,6 +405,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--bridge-url-file",
         type=Path,
         help="Write bridge URL to this file",
+    )
+    bridge.add_argument(
+        "--bridge-request-timeout-sec",
+        type=float,
+        default=DEFAULT_BRIDGE_REQUEST_TIMEOUT_SEC,
+        help=f"Bridge request timeout in seconds (default: {DEFAULT_BRIDGE_REQUEST_TIMEOUT_SEC})",
     )
 
     return parser

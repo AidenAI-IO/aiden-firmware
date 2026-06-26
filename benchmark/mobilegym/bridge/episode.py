@@ -7,6 +7,7 @@ from typing import Any
 
 
 BENCHMARK_TASK_ID_HEADER = "benchmark-task-id"
+EPISODE_RESET_TIMEOUT_SEC = 45
 
 
 class BridgeEpisodeError(RuntimeError):
@@ -144,17 +145,48 @@ class BridgeEpisodeState:
         if not episode_id:
             raise ValueError("episode_id is required")
         async with self._env_lock:
-            reset = getattr(self.env, "reset", None)
             reset_ran = False
-            if reset is not None:
-                result = reset()
-                if asyncio.iscoroutine(result) or isinstance(result, Awaitable):
-                    await result
-                reset_ran = True
+            for attempt in range(2):
+                restarted = await self._restart_env_if_supported()
+                reset = getattr(self.env, "reset", None)
+                if reset is None:
+                    break
+                try:
+                    await self._run_reset(reset)
+                    reset_ran = True
+                    break
+                except asyncio.TimeoutError as exc:
+                    if attempt == 0 and restarted:
+                        continue
+                    raise TimeoutError(
+                        f"environment reset timed out after {EPISODE_RESET_TIMEOUT_SEC}s"
+                    ) from exc
             self.active_episode_id = episode_id
             self.action_log = []
             self._action_counter = 0
         return {"episode_id": episode_id, "reset": reset_ran}
+
+    async def _run_reset(self, reset: Callable[[], Any | Awaitable[Any]]) -> None:
+        result = reset()
+        if asyncio.iscoroutine(result) or isinstance(result, Awaitable):
+            await asyncio.wait_for(result, timeout=EPISODE_RESET_TIMEOUT_SEC)
+
+    async def _restart_env_if_supported(self) -> bool:
+        close = getattr(self.env, "close", None)
+        start = getattr(self.env, "start", None)
+        if close is None or start is None:
+            return False
+        close_result = close()
+        if asyncio.iscoroutine(close_result) or isinstance(close_result, Awaitable):
+            await close_result
+        start_result = start()
+        if asyncio.iscoroutine(start_result) or isinstance(start_result, Awaitable):
+            started_env = await start_result
+        else:
+            started_env = start_result
+        if started_env is not None:
+            self.env = started_env
+        return True
 
     async def end_episode(self, episode_id: str) -> dict[str, Any]:
         episode_id = self.require_active(episode_id)

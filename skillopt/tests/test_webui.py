@@ -3,8 +3,26 @@ import io
 import json
 import subprocess
 import threading
+import tomllib
 
+from skillopt import webui
 from skillopt.webui import INDEX_HTML, SkillOptJob, SkillOptWebApp, SkillOptWebUIConfig, build_skillopt_command
+
+
+def test_mobilegym_template_instruction_adds_minimal_simulator_context():
+    template = Path("benchmark/mobilegym/config/agent.toml.template")
+    data = tomllib.loads(template.read_text(encoding="utf-8"))
+    instruction = data["instruction"]
+
+    assert "device-control" in instruction
+    assert "MobileGym simulator" in instruction
+    assert "screenshot" in instruction
+    assert "touch_gesture" in instruction
+    assert "unsupported" in instruction
+    assert "same tool with the same arguments" in instruction
+    assert "Do not call open_app" not in instruction
+    assert "Phone Bridge" not in instruction
+    assert "frame_service" not in instruction
 
 
 def test_build_skillopt_command_uses_bridge_backend_options(tmp_path: Path):
@@ -145,12 +163,42 @@ def test_start_job_writes_benchmark_agent_config(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(app, "_run_job", lambda job: None)
 
-    job = app.start_job({"environment_url": "http://127.0.0.1:50196"})
+    job = app.start_job({"backend": "device", "environment_url": "http://127.0.0.1:50196"})
 
     command = job["command"]
     agent_config = Path(command[command.index("--agent-config") + 1])
     assert agent_config == tmp_path / "runs" / job["id"] / "agent.toml"
     assert agent_config.read_text(encoding="utf-8") == '[model]\nprovider = "openrouter"\napi_key = "sk-test"\n'
+
+
+def test_start_mobilegym_job_applies_mobilegym_default_instruction(tmp_path: Path, monkeypatch):
+    base_config_dir = tmp_path / "benchmark" / "config"
+    base_config_dir.mkdir(parents=True)
+    base_config_dir.joinpath("agent.toml").write_text(
+        'instruction = ""\n[model]\nprovider = "openrouter"\napi_key = "sk-test"\n',
+        encoding="utf-8",
+    )
+    mobilegym_config_dir = tmp_path / "benchmark" / "mobilegym" / "config"
+    mobilegym_config_dir.mkdir(parents=True)
+    mobilegym_config_dir.joinpath("agent.toml").write_text(
+        'instruction = "You are controlling a MobileGym simulator."\n[model]\nprovider = "fake"\napi_key = ""\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(webui, "REPO_ROOT", tmp_path)
+    app = SkillOptWebApp(SkillOptWebUIConfig(
+        runs_dir=tmp_path / "runs",
+        base_config_dir=base_config_dir,
+    ))
+
+    monkeypatch.setattr(app, "_run_job", lambda job: None)
+
+    job = app.start_job({"backend": "mobilegym", "environment_url": "http://127.0.0.1:50196"})
+
+    command = job["command"]
+    agent_config = Path(command[command.index("--agent-config") + 1])
+    content = agent_config.read_text(encoding="utf-8")
+    assert 'instruction = "You are controlling a MobileGym simulator."' in content
+    assert 'api_key = "sk-test"' in content
 
 
 def test_list_targets_discovers_skill_suite_pairs(tmp_path: Path):
@@ -314,7 +362,8 @@ def test_index_html_reuses_benchmark_webui_shell():
     assert 'id="startMobileGym"' in INDEX_HTML
     assert 'id="mobilegymParallelEnvs"' in INDEX_HTML
     assert 'id="activeStopJob"' in INDEX_HTML
-    assert 'id="taskRows"' in INDEX_HTML
+    assert 'id="jobRows"' in INDEX_HTML
+    assert 'id="logBox"' in INDEX_HTML
     assert 'id="judgeEnabled"' in INDEX_HTML
     assert 'id="judgeModel"' in INDEX_HTML
     assert 'id="judgeApiKey"' in INDEX_HTML

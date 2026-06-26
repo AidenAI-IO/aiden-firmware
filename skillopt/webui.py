@@ -574,15 +574,14 @@ def list_skillopt_targets(suites_dir: Path) -> list[dict[str, Any]]:
             train = pair["train"]
             validation = pair["validation"]
 
-            # Generate target ID: skill-name or skill-name-scenario
-            target_id = skill_name if not prefix else f"{skill_name}-{prefix}"
-            # Display name: use prefix if available, otherwise skill name
-            display_name = prefix.replace("_", " ").title() if prefix else skill_name
+            default_pair = not prefix or prefix == skill_name.replace("-", "_")
+            target_id = skill_name if default_pair else f"{skill_name}-{prefix}"
+            display_name = skill_name if default_pair else prefix.replace("_", " ").title()
 
             targets.append({
                 "id": target_id,
                 "skill": skill_name,
-                "name": f"{skill_name}: {display_name}" if prefix else skill_name,
+                "name": skill_name if default_pair else f"{skill_name}: {display_name}",
                 "train_suite": f"skillopt/{skill_name}/{train.stem}",
                 "validation_suite": f"skillopt/{skill_name}/{validation.stem}",
                 "train_task_count": _suite_task_count(train),
@@ -1948,5 +1947,4 @@ INDEX_HTML = r"""<!doctype html>
 </body>
 </html>
 """
-
 

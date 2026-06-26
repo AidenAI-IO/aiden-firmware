@@ -1,64 +1,117 @@
-# SkillOpt Workflow
+# SkillOpt
 
-## Positioning
+SkillOpt is an internal developer workflow for improving agent `SKILL.md`
+files through repeated rollout, reflection, patching, and held-out validation.
+It optimizes skill text, not model weights or benchmark suite definitions.
 
-SkillOpt is an independent developer tool for optimizing `SKILL.md` content. It is not a benchmark suite discovery mode, and benchmark WebUI/runner discovery should not expose SkillOpt-owned suites as normal benchmark suites.
-
-The dependency direction is:
+The dependency direction is intentionally one-way:
 
 ```text
-SkillOpt -> benchmark runner APIs -> environment bridge -> device/MobileGym
+SkillOpt -> benchmark runner APIs -> environment bridge -> device or MobileGym
 ```
 
-Benchmark code should stay generic: it runs suites and produces reports. SkillOpt calls those capabilities during its own optimization loop by launching child benchmark runs for each rollout phase.
+Benchmark stays generic: it runs suites and produces task reports. SkillOpt uses
+those runner capabilities as rollout backends, then decides whether a candidate
+skill should be accepted.
 
-## Usage
+## Start Here
 
-Run SkillOpt manually against an existing Aiden daemon from the repo root:
+- [Quickstart](./quickstart.md) - WebUI, CLI, MobileGym, and common commands.
+- [Architecture](./architecture.md) - Optimization loop, backends, scoring, and artifacts.
+- [Benchmark docs](../09-benchmark/README.md) - Runner, bridge, judge, and report details.
 
-```bash
-uv run --project skillopt python -m skillopt \
-  --skill device-operator \
-  --backend device \
-  --train-suite skillopt/device-operator/device_operator_train \
-  --validation-suite skillopt/device-operator/device_operator_verification \
-  --budget 10 \
-  --output /tmp/device-operator-optimized.md
-```
+## Recommended Entry Points
 
-Run SkillOpt through the current benchmark runner architecture by providing an environment bridge. This is the preferred path for MobileGym and bridge-backed physical devices because it reuses benchmark task setup, screenshots, isolated daemon workers, reports, and bridge concurrency:
+### WebUI
 
-```bash
-uv run --project skillopt python -m skillopt \
-  --skill device-operator \
-  --backend mobilegym \
-  --environment-url http://127.0.0.1:50196 \
-  --no-build-daemon-image \
-  --train-suite skillopt/device-operator/device_operator_train \
-  --validation-suite skillopt/device-operator/device_operator_verification \
-  --budget 10 \
-  --output /tmp/device-operator-optimized.md
-```
-
-Start the standalone SkillOpt WebUI on its own port:
+Use the standalone SkillOpt WebUI for day-to-day optimization runs:
 
 ```bash
 uv run --project skillopt python -m skillopt webui --host 127.0.0.1 --port 8766
 ```
 
-The SkillOpt WebUI can start optimization jobs and optionally read running MobileGym environments from the benchmark WebUI at `http://127.0.0.1:8765`. It still executes rollouts through the same benchmark runner bridge path described above.
+Open `http://127.0.0.1:8766`.
 
-Review the generated skill before applying it:
+The SkillOpt WebUI can discover targets from `skillopt/suites`, manage
+MobileGym environments, run optimization jobs, show phase logs, and open the
+generated SkillOpt report.
+
+### CLI
+
+Use the CLI for scripted runs and debugging:
 
 ```bash
-diff src/agent/config/skills/device-operator/SKILL.md /tmp/device-operator-optimized.md
+uv run --project skillopt python -m skillopt \
+  --skill device-operator \
+  --backend mobilegym \
+  --environment-url http://127.0.0.1:19090 \
+  --train-suite skillopt/device-operator/device_operator_train \
+  --validation-suite skillopt/device-operator/device_operator_verification \
+  --budget 3 \
+  --edit-budget 2 \
+  --no-build-daemon-image \
+  --output /tmp/device-operator-best.md
 ```
 
-SkillOpt-owned suites live under `skillopt/suites`. Benchmark suites can still be used by passing their benchmark suite label to `--suite`; that is SkillOpt calling benchmark runner functionality, not a benchmark feature.
+Review before applying:
 
-## Boundary
+```bash
+diff src/agent/config/skills/device-operator/SKILL.md /tmp/device-operator-best.md
+```
+
+## What SkillOpt Produces
+
+Each run writes a self-contained artifact directory under `skillopt/runs/` or
+`skillopt/runs/webui/`:
+
+```text
+skillopt/runs/<run_id>/
+|-- manifest.json
+|-- result.json
+|-- report.html
+|-- best_skill.md
+|-- diff.patch
+|-- step_01/
+|   |-- candidate.md
+|   |-- patch.json
+|   |-- patch_reports.json
+|   `-- decision.json
+|-- logs/
+`-- benchmark/<run_id>-<phase>/
+```
+
+`best_skill.md` is the accepted best skill text. `diff.patch` shows how it
+differs from the original skill. Child benchmark reports explain each rollout
+phase in task-level detail.
+
+## Boundary With Benchmark
 
 - Benchmark WebUI lists benchmark suites only.
-- SkillOpt WebUI is a separate process, defaulting to port `8766`.
-- SkillOpt bridge-backed runs use benchmark runner child runs, not the deprecated standalone MobileGym backend.
-- SkillOpt-owned suites and reports are managed by SkillOpt, even when their tasks are executed through benchmark runner functions.
+- SkillOpt WebUI is a separate process and defaults to port `8766`.
+- SkillOpt-owned suites live under `skillopt/suites`.
+- Bridge-backed SkillOpt runs use benchmark runner child runs.
+- Benchmark reports are evidence; SkillOpt reports decide which skill text won.
+- `no_judge` runs can be useful for traces, but they are not reliable validation.
+
+## Current Targets
+
+The current repository includes one SkillOpt target family:
+
+```text
+skillopt/suites/device-operator/
+|-- device_operator_train.json
+|-- device_operator_verification.json
+|-- shopping_scenario_train.json
+`-- shopping_scenario_verification.json
+```
+
+Suite labels passed to the CLI omit `suites/` and `.json`, for example
+`skillopt/device-operator/device_operator_train`.
+
+## Related Documentation
+
+- [Quickstart](./quickstart.md)
+- [Architecture](./architecture.md)
+- [Benchmark Quick Start](../09-benchmark/README.md)
+- [Benchmark Architecture](../09-benchmark/architecture.md)
+- [Environment Bridge Protocol](../../benchmark/environment_bridge.md)
