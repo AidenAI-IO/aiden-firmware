@@ -8,7 +8,8 @@ import (
 )
 
 type RecallSessionChunksTool struct {
-	store *SessionMemoryStore
+	store    *SessionMemoryStore
+	archived *ArchivedSessionStore
 }
 
 type RecallMemoryTool struct {
@@ -31,22 +32,22 @@ type InspectEpisodeTool struct {
 	store *TaskEpisodeStore
 }
 
-func NewRecallSessionChunksTool(store *SessionMemoryStore) *RecallSessionChunksTool {
-	return &RecallSessionChunksTool{store: store}
+func NewRecallSessionChunksTool(store *SessionMemoryStore, archived *ArchivedSessionStore) *RecallSessionChunksTool {
+	return &RecallSessionChunksTool{store: store, archived: archived}
 }
 
 func (t *RecallSessionChunksTool) Name() string { return "recall_session_chunks" }
 
 func (t *RecallSessionChunksTool) Description() string {
 	return strings.Join([]string{
-		"Recall compressed session history chunks from earlier in this conversation.",
-		"IMPORTANT: You MUST use this tool when the user asks about something said earlier that you cannot find in your visible conversation context.",
-		"The session summary in your prompt lists recent chunks; older chunks are archived but still recallable.",
+		"Recall compressed session history chunks from this conversation and prior sessions.",
+		"Call this tool whenever the user references or asks about prior conversation content that is not present in your visible context — including denials such as 'we never discussed X'. The visible context is only the recent hot window; older turns are compressed into archived chunks invisible until recalled.",
+		"The tool automatically searches both the active session and the archive in a single call, so do not retry with different parameters.",
 		"How to recall:",
-		"  - PREFERRED: pass chunk_ids to retrieve specific chunks by ID (works for both active and archived chunks).",
-		"  - FALLBACK: pass tags (content/topic keywords like 'payment', 'login') to search all chunks. Use empty tags [] for recent history.",
+		"  - PREFERRED: pass chunk_ids to retrieve specific chunks by ID.",
+		"  - FALLBACK: pass tags (topic keywords inferred from the user's question, e.g. 'payment', 'login', '天气', '京东') to search. Use empty tags [] for recent history.",
 		`Input JSON: {"chunk_ids":["chunk_xxx"]} or {"tags":["topic"],"limit":3}`,
-		"Returns JSON with matching conversation chunks, structured summary fields, and their full original events.",
+		"Returns matching chunks (each tagged with source=active|archived and session_id when archived) and their full original events.",
 	}, " ")
 }
 
@@ -71,6 +72,36 @@ func (t *RecallSessionChunksTool) Call(ctx context.Context, input string) (strin
 	if err != nil {
 		return "", err
 	}
+	for i := range results {
+		if results[i].Source == "" {
+			results[i].Source = chunkRecallSourceActive
+		}
+	}
+
+	if t.archived != nil {
+		remaining := query.Limit
+		if remaining > 0 {
+			remaining -= len(results)
+		}
+		if query.Limit <= 0 || remaining > 0 {
+			archiveQuery := query
+			if query.Limit > 0 {
+				archiveQuery.Limit = remaining
+			} else {
+				// Apply the same default cap used by active recall (3) to
+				// prevent unbounded archived chunk scanning.
+				archiveQuery.Limit = 3
+			}
+			archived, err := t.archived.RecallChunks(ctx, archiveQuery)
+			if err == nil {
+				results = append(results, archived...)
+			}
+			// Archive search failures are non-fatal: a missing or partial
+			// archive directory shouldn't prevent the agent from getting
+			// active-session results back.
+		}
+	}
+
 	return encodeToolJSON(map[string]any{"results": results})
 }
 
