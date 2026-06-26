@@ -193,3 +193,38 @@ func TestWebScraperRejectsHostnamesResolvingToPrivateIPs(t *testing.T) {
 		t.Fatalf("ToolError = %+v, want invalid_arguments with output message", got)
 	}
 }
+
+func TestWebScraperRejectsHostnamesRebindingToPrivateIPsAtDialTime(t *testing.T) {
+	for _, env := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy"} {
+		t.Setenv(env, "")
+	}
+
+	original := lookupScrapeHostIPs
+	lookupCalls := 0
+	lookupScrapeHostIPs = func(host string) ([]net.IP, error) {
+		if host != "rebind.invalid" {
+			t.Fatalf("lookup host = %q, want rebind.invalid", host)
+		}
+		lookupCalls++
+		if lookupCalls < 3 {
+			return []net.IP{net.ParseIP("93.184.216.34")}, nil
+		}
+		return []net.IP{net.ParseIP("169.254.169.254")}, nil
+	}
+	defer func() { lookupScrapeHostIPs = original }()
+
+	ctx, _ := WithToolError(context.Background())
+	out, err := NewWebScraperTool(ProxyConfig{}).Call(ctx, `{"url":"http://rebind.invalid/"}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if lookupCalls < 3 {
+		t.Fatalf("lookup calls = %d, want dial-time validation", lookupCalls)
+	}
+	if !strings.Contains(out, "url host resolves to a private or link-local address") {
+		t.Fatalf("output = %q, want private IP rejection", out)
+	}
+	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeToolExecutionFailed || got.Message != out {
+		t.Fatalf("ToolError = %+v, want tool_execution_failed with output message", got)
+	}
+}

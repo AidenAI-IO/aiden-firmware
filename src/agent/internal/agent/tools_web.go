@@ -446,7 +446,7 @@ func (t *WebScraperTool) scrape(ctx context.Context, targetURL string) (string, 
 		colly.MaxDepth(1),
 		colly.Async(false),
 	)
-	c.WithTransport(newProxyTransport(t.proxy))
+	c.WithTransport(newScrapeTransport(t.proxy))
 
 	if err := c.Limit(&colly.LimitRule{
 		DomainGlob:  "*",
@@ -581,35 +581,81 @@ func validateScrapeURL(rawURL string) error {
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fmt.Errorf("invalid url scheme: only http/https allowed")
 	}
-	host := strings.ToLower(u.Hostname())
+	_, err = lookupAllowedScrapeHostIPs(u.Hostname())
+	return err
+}
+
+func newScrapeTransport(proxy ProxyConfig) http.RoundTripper {
+	transport := newProxyTransport(proxy)
+	httpTransport, ok := transport.(*http.Transport)
+	if !ok {
+		return transport
+	}
+
+	baseDialContext := httpTransport.DialContext
+	if baseDialContext == nil {
+		baseDialContext = (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+	}
+	httpTransport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		return dialAllowedScrapeAddress(ctx, baseDialContext, network, address)
+	}
+	return httpTransport
+}
+
+func dialAllowedScrapeAddress(ctx context.Context, dialContext func(context.Context, string, string) (net.Conn, error), network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	addrs, err := lookupAllowedScrapeHostIPs(host)
+	if err != nil {
+		return nil, err
+	}
+
+	var lastErr error
+	for _, ip := range addrs {
+		conn, err := dialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+		if err == nil {
+			return conn, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+func lookupAllowedScrapeHostIPs(host string) ([]net.IP, error) {
+	host = strings.ToLower(strings.TrimSpace(strings.Trim(host, "[]")))
 	if host == "" {
-		return fmt.Errorf("invalid url: empty host")
+		return nil, fmt.Errorf("invalid url: empty host")
 	}
 	if host == "localhost" {
-		return fmt.Errorf("url host is not allowed")
+		return nil, fmt.Errorf("url host is not allowed")
 	}
 	if ip := net.ParseIP(host); ip != nil {
 		if scrapeIPIsDisallowed(ip) {
-			return fmt.Errorf("url host is not allowed")
+			return nil, fmt.Errorf("url host is not allowed")
 		}
-		return nil
+		return []net.IP{ip}, nil
 	}
 	addrs, err := lookupScrapeHostIPs(host)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return err
+			return nil, err
 		}
-		return fmt.Errorf("resolve url host: %w", err)
+		return nil, fmt.Errorf("resolve url host: %w", err)
 	}
 	if len(addrs) == 0 {
-		return fmt.Errorf("resolve url host: no addresses")
+		return nil, fmt.Errorf("resolve url host: no addresses")
 	}
 	for _, ip := range addrs {
 		if scrapeIPIsDisallowed(ip) {
-			return fmt.Errorf("url host resolves to a private or link-local address")
+			return nil, fmt.Errorf("url host resolves to a private or link-local address")
 		}
 	}
-	return nil
+	return addrs, nil
 }
 
 func scrapeIPIsDisallowed(ip net.IP) bool {
