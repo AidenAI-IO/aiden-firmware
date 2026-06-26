@@ -1315,6 +1315,62 @@ func TestServerHandleChatUsesRequestContextForRun(t *testing.T) {
 	}
 }
 
+func TestServerHandleChatSyncUsesRequestContextForFinalTTS(t *testing.T) {
+	streamingDisabled := false
+	model := &scriptedModel{
+		responses: roleDirectResponses("Hello from sync final TTS."),
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:                    ModelConfig{Provider: "fake"},
+			Instruction:              "Answer directly.",
+			VoiceStreamingTTSEnabled: &streamingDisabled,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	provider := newInterruptibleAudioTTSProvider("server-provider", 48000, true)
+	audioOps := &recordedAudioOps{}
+	server := NewServer(runtime, ":0")
+	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
+	server.audioClient = NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, audioOps))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"hello"}`)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.handleChat(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	waitForTestSignal(t, provider.firstWriteDone(), "sync final TTS playback to start")
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for audioOps.countOp("start_playback") == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("sync final TTS playback never opened a playback session")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancel()
+
+	deadline = time.Now().Add(500 * time.Millisecond)
+	for audioOps.countOp("stop_playback") == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("sync final TTS playback did not stop after request cancellation")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := audioOps.finalChunkCountAfterFirstStop(); got != 0 {
+		t.Fatalf("final write_play_chunk count after stop = %d, want 0", got)
+	}
+}
+
 func TestServerHandleChatCancelCancelsActiveRun(t *testing.T) {
 	server := &Server{activeRuns: make(map[string]context.CancelFunc)}
 	ctx, cancel := context.WithCancel(context.Background())

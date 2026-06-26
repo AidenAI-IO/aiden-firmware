@@ -1043,12 +1043,7 @@ func (s *Server) handleChatAsync(
 		// still see the active run/output and interrupt it reliably.
 		speechText := result.SpokenTextForConfig(s.runtime.config)
 		if s.audioClient != nil && speechText != "" && !result.SpeechStreamed {
-			if s.logger != nil {
-				s.logger.Info("TTS playback: %q", speechText)
-			}
-			if err := s.speakTextForRequest(runCtx, requestID, speechText, 0); err != nil && s.logger != nil {
-				s.logger.Error("TTS playback failed: %v", err)
-			}
+			s.speakFinalText(runCtx, requestID, speechText)
 		}
 	}()
 }
@@ -1269,12 +1264,9 @@ func (s *Server) handleChatSync(
 	speechText := result.SpokenTextForConfig(s.runtime.config)
 	if s.audioClient != nil && speechText != "" && !result.SpeechStreamed {
 		go func(text string) {
-			if s.logger != nil {
-				s.logger.Info("TTS playback: %q", text)
-			}
-			if err := s.speakTextForRequest(context.Background(), req.RequestID, text, 0); err != nil && s.logger != nil {
-				s.logger.Error("TTS playback failed: %v", err)
-			}
+			// Keep legacy sync chat TTS tied to the request lifecycle so a UI stop
+			// or disconnect does not leave playback running in the background.
+			s.speakFinalText(ctx, req.RequestID, text)
 		}(speechText)
 	}
 
@@ -1511,14 +1503,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		}
 		go func(text string, ttsCtx context.Context, finish func()) {
 			defer finish()
-			if s.logger != nil {
-				s.logger.Info("TTS playback: %q", text)
-			}
-			if err := s.speakTextForRequest(ttsCtx, req.RequestID, text, 0); err != nil {
-				if s.logger != nil {
-					s.logger.Error("TTS playback failed: %v", err)
-				}
-			}
+			s.speakFinalText(ttsCtx, req.RequestID, text)
 		}(speechText, finalTTSCtx, finishRun)
 	}
 
@@ -1818,26 +1803,16 @@ func (s *Server) currentTTSManager() *tts.ProviderManager {
 	return s.ttsManager
 }
 
-func (s *Server) speakText(ctx context.Context, text string, timeoutAfterLock time.Duration) error {
-	if ctx == nil {
-		ctx = context.Background()
+func (s *Server) speakFinalText(ctx context.Context, requestID, text string) {
+	if s.logger != nil {
+		s.logger.Info("TTS playback: %q", text)
 	}
-	manager := s.currentTTSManager()
-	if manager != nil {
-		cfg := Config{}
-		if s.runtime != nil {
-			cfg = s.runtime.config
-		}
-		_, err := speakWithTTSManager(ctx, manager, s.audioClient, cfg, text)
-		return err
+	if err := s.speakTextForRequest(ctx, requestID, text, 0); err != nil && s.logger != nil {
+		s.logger.Error("TTS playback failed: %v", err)
 	}
-	return nil
 }
 
-func (s *Server) speakTextForRequest(ctx context.Context, requestID string, text string, timeoutAfterLock time.Duration) error {
-	if requestID == "" {
-		return s.speakText(ctx, text, timeoutAfterLock)
-	}
+func (s *Server) speakTextObserved(ctx context.Context, requestID, text string, timeoutAfterLock time.Duration, registerOutput bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -1851,11 +1826,21 @@ func (s *Server) speakTextForRequest(ctx context.Context, requestID string, text
 	}
 	outputCtx, cancelOutput := context.WithCancel(ctx)
 	output := newActiveTTSOutput(cancelOutput)
-	unregisterOutput := s.registerActiveOutput(requestID, output)
+	unregisterOutput := func() {}
+	if registerOutput {
+		unregisterOutput = s.registerActiveOutput(requestID, output)
+	}
 	defer func() {
 		unregisterOutput()
+		output.finish()
 		cancelOutput()
 	}()
+	if !registerOutput {
+		go func() {
+			<-outputCtx.Done()
+			output.interrupt()
+		}()
+	}
 	if err := outputCtx.Err(); err != nil {
 		return err
 	}
@@ -1876,6 +1861,17 @@ func (s *Server) speakTextForRequest(ctx context.Context, requestID string, text
 		}
 	})
 	return err
+}
+
+func (s *Server) speakText(ctx context.Context, text string, timeoutAfterLock time.Duration) error {
+	return s.speakTextObserved(ctx, "", text, timeoutAfterLock, false)
+}
+
+func (s *Server) speakTextForRequest(ctx context.Context, requestID string, text string, timeoutAfterLock time.Duration) error {
+	if requestID == "" {
+		return s.speakText(ctx, text, timeoutAfterLock)
+	}
+	return s.speakTextObserved(ctx, requestID, text, timeoutAfterLock, true)
 }
 
 func (s *Server) playPromptSoundAsync(kind promptSoundKind, label string) {
