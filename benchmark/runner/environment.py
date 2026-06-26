@@ -81,6 +81,58 @@ class EnvironmentManager:
         from previous sessions are still running. Without this, those containers
         become orphans that can't be stopped or removed via the WebUI.
         """
+        for container in self._list_docker_containers():
+            if container["name"] in {
+                env.container_name for env in self._environments.values()
+            }:
+                continue
+            env = self._build_recovered_env(container)
+            if env is not None:
+                self._environments[env.id] = env
+
+    def list_all(self) -> list[MobileGymEnvironment]:
+        """List all MobileGym environments.
+
+        Syncs with Docker state on each call to handle:
+        - Containers removed by other WebUI processes (will be dropped from list)
+        - New containers started elsewhere (will be discovered)
+        """
+        self._sync_with_docker()
+        with self._lock:
+            return list(self._environments.values())
+
+    def _sync_with_docker(self) -> None:
+        """Reconcile in-memory state with actual Docker container state."""
+        # Get current docker container state
+        current_containers = self._list_docker_containers()
+        current_names = {c["name"] for c in current_containers}
+
+        with self._lock:
+            # Remove environments whose containers no longer exist
+            # Skip envs in transient states (building/starting/stopping) to avoid
+            # racing with our own start/stop operations.
+            stale_ids = []
+            for env_id, env in self._environments.items():
+                if env.container_name and env.container_name not in current_names:
+                    if env.status in ("building", "starting", "stopping"):
+                        continue  # In-flight, leave alone
+                    stale_ids.append(env_id)
+            for env_id in stale_ids:
+                self._environments.pop(env_id, None)
+                self._log_procs.pop(env_id, None)
+
+            # Add containers that exist in Docker but not in our memory
+            known_names = {env.container_name for env in self._environments.values()}
+            for container in current_containers:
+                name = container["name"]
+                if name in known_names:
+                    continue
+                env = self._build_recovered_env(container)
+                if env is not None:
+                    self._environments[env.id] = env
+
+    def _list_docker_containers(self) -> list[dict[str, str]]:
+        """List existing MobileGym Docker containers."""
         try:
             result = subprocess.run(
                 [
@@ -97,62 +149,54 @@ class EnvironmentManager:
                 check=False,
             )
         except (subprocess.SubprocessError, OSError):
-            return
-
+            return []
         if result.returncode != 0:
-            return
-
+            return []
+        containers = []
         for line in result.stdout.strip().splitlines():
             parts = line.split("\t")
             if len(parts) < 4:
                 continue
-            container_name = parts[0]
-            container_id = parts[1]
-            created_at_raw = parts[2]
-            image = parts[3]
+            containers.append({
+                "name": parts[0],
+                "id": parts[1],
+                "created_at": parts[2],
+                "image": parts[3],
+            })
+        return containers
 
-            # Extract environment ID: aiden-mobilegym-env-{id} -> {id}
-            prefix = "aiden-mobilegym-env-"
-            if not container_name.startswith(prefix):
-                continue
-            env_id = container_name[len(prefix):]
+    def _build_recovered_env(self, container: dict[str, str]) -> MobileGymEnvironment | None:
+        """Build a recovered MobileGymEnvironment from a docker container record."""
+        container_name = container["name"]
+        prefix = "aiden-mobilegym-env-"
+        if not container_name.startswith(prefix):
+            return None
+        env_id = container_name[len(prefix):]
 
-            # Get port mappings
-            try:
-                bridge_port = _docker_published_port_safe(container_name, 9090)
-                web_port = _docker_published_port_safe(container_name, 4173)
-            except Exception:
-                bridge_port = 0
-                web_port = 0
+        bridge_port = _docker_published_port_safe(container_name, 9090)
+        web_port = _docker_published_port_safe(container_name, 4173)
+        if bridge_port == 0:
+            return None
 
-            if bridge_port == 0:
-                continue  # Skip containers without proper port mapping
-
-            env_dir = self.runs_dir / "environments" / env_id
-            env = MobileGymEnvironment(
-                id=env_id,
-                name="MobileGym (recovered)",
-                endpoint=f"http://host.docker.internal:{bridge_port}",
-                public_endpoint=f"http://127.0.0.1:{bridge_port}",
-                web_url=f"http://127.0.0.1:{web_port}" if web_port else "",
-                status="running",
-                message="recovered from existing docker container",
-                created_at=created_at_raw,
-                started_at=created_at_raw,
-                container_name=container_name,
-                container_id=container_id,
-                bridge_port=bridge_port,
-                web_port=web_port,
-                image=image,
-                log_path=str(env_dir / "mobilegym.log") if env_dir.exists() else "",
-                parallel_envs=DEFAULT_MOBILEGYM_PARALLEL_ENVS,
-            )
-            self._environments[env_id] = env
-
-    def list_all(self) -> list[MobileGymEnvironment]:
-        """List all MobileGym environments."""
-        with self._lock:
-            return list(self._environments.values())
+        env_dir = self.runs_dir / "environments" / env_id
+        return MobileGymEnvironment(
+            id=env_id,
+            name="MobileGym (recovered)",
+            endpoint=f"http://host.docker.internal:{bridge_port}",
+            public_endpoint=f"http://127.0.0.1:{bridge_port}",
+            web_url=f"http://127.0.0.1:{web_port}" if web_port else "",
+            status="running",
+            message="recovered from existing docker container",
+            created_at=container["created_at"],
+            started_at=container["created_at"],
+            container_name=container_name,
+            container_id=container["id"],
+            bridge_port=bridge_port,
+            web_port=web_port,
+            image=container["image"],
+            log_path=str(env_dir / "mobilegym.log") if env_dir.exists() else "",
+            parallel_envs=DEFAULT_MOBILEGYM_PARALLEL_ENVS,
+        )
 
     def get(self, env_id: str) -> MobileGymEnvironment | None:
         """Get environment by ID."""
