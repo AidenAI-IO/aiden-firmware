@@ -27,21 +27,6 @@ func TestResolveOpenAppTargetsAppAliasStaysSemantic(t *testing.T) {
 	}
 }
 
-func TestResolveOpenAppTargetsNameAlias(t *testing.T) {
-	args := openAppArgs{Name: "微信"}
-
-	if err := resolveOpenAppTargets(&args); err != nil {
-		t.Fatalf("resolveOpenAppTargets returned error: %v", err)
-	}
-
-	if args.App != "微信" {
-		t.Fatalf("app = %q, want name copied into app", args.App)
-	}
-	if args.Name != "微信" {
-		t.Fatalf("name = %q, want original alias preserved", args.Name)
-	}
-}
-
 func TestResolveOpenAppTargetsURL(t *testing.T) {
 	args := openAppArgs{URL: " https://example.com/path?q=1 "}
 
@@ -54,34 +39,21 @@ func TestResolveOpenAppTargetsURL(t *testing.T) {
 	}
 }
 
-func TestResolveOpenAppTargetsAppCanBeURL(t *testing.T) {
+func TestResolveOpenAppTargetsRejectsURLInApp(t *testing.T) {
 	args := openAppArgs{App: "https://example.org"}
 
-	if err := resolveOpenAppTargets(&args); err != nil {
-		t.Fatalf("resolveOpenAppTargets returned error: %v", err)
-	}
-
-	if args.App != "" {
-		t.Fatalf("app = %q, want URL moved out of app", args.App)
-	}
-	if args.URL != "https://example.org" {
-		t.Fatalf("url = %q, want requested URL", args.URL)
+	if err := resolveOpenAppTargets(&args); err == nil {
+		t.Fatal("resolveOpenAppTargets returned nil error, want URL-in-app rejected")
 	}
 }
 
 func TestResolveOpenAppTargetsPhoneNumber(t *testing.T) {
-	args := openAppArgs{App: " phone ", Name: " phone ", PhoneNumber: " 10086 "}
+	args := openAppArgs{PhoneNumber: " 10086 "}
 
 	if err := resolveOpenAppTargets(&args); err != nil {
 		t.Fatalf("resolveOpenAppTargets returned error: %v", err)
 	}
 
-	if args.App != "phone" {
-		t.Fatalf("app = %q, want trimmed phone alias", args.App)
-	}
-	if args.Name != "phone" {
-		t.Fatalf("name = %q, want trimmed phone alias", args.Name)
-	}
 	if args.PhoneNumber != "10086" {
 		t.Fatalf("phone_number = %q, want trimmed phone number", args.PhoneNumber)
 	}
@@ -94,6 +66,7 @@ func TestResolveOpenAppTargetsRejectsInvalidCombinations(t *testing.T) {
 		{URL: "not-a-url"},
 		{App: "微信", URL: "https://example.com"},
 		{App: "微信", PhoneNumber: "10086"},
+		{App: "phone", PhoneNumber: "10086"},
 		{URL: "https://example.com", PhoneNumber: "10086"},
 	}
 
@@ -159,6 +132,25 @@ func TestOpenAppMissingArgsReturnsInvalidArguments(t *testing.T) {
 	tool := &OpenAppTool{}
 	ctx, _ := WithToolError(context.Background())
 	out, err := tool.Call(ctx, `{}`)
+	if err != nil {
+		t.Fatalf("Call returned err: %v", err)
+	}
+	te := ToolErrorFromContext(ctx)
+	if te == nil {
+		t.Fatalf("expected structured ToolError on context; got nil")
+	}
+	if te.Code != CodeInvalidArguments {
+		t.Errorf("Code = %q want %q", te.Code, CodeInvalidArguments)
+	}
+	if out != te.Message {
+		t.Errorf("Call output (%q) must equal Error.Message (%q)", out, te.Message)
+	}
+}
+
+func TestOpenAppNameFieldIsNotAccepted(t *testing.T) {
+	tool := &OpenAppTool{}
+	ctx, _ := WithToolError(context.Background())
+	out, err := tool.Call(ctx, `{"name":"微信"}`)
 	if err != nil {
 		t.Fatalf("Call returned err: %v", err)
 	}

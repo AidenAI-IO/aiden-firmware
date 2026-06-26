@@ -36,7 +36,6 @@ The board records `last_heartbeat_at` timestamp; no heartbeat for more than 60 s
 
   // Following fields used based on type
   app?: string;                  // open_app semantic app name or alias
-  name?: string;                 // open_app alias for app
   url?: string;                  // open_app HTTP/HTTPS URL
   phone_number?: string;         // open_app phone number to dial
   payload?: object;              // JSON payload for other command types
@@ -155,7 +154,7 @@ Open specified app or URL.
 **iOS implementation**: Resolve the semantic app/url/phone request inside the companion app, then open the matching iOS URL scheme or system URL.
 **Android implementation**: Resolve the semantic app/url/phone request inside the companion app, then launch the matching package, intent URI, or system URL.
 
-The board must not send platform launch details. For known apps, send `app`/`name` (for example `"微信"` or `"weixin"`). For webpages, send `url`. For dialing, send `phone_number`.
+The board must not send platform launch details. For known apps, send `app` (for example `"微信"` or `"weixin"`). For webpages, send `url`. For dialing, send `phone_number`. Exactly one of `app`, `url`, or `phone_number` should be set.
 
 **Response**:
 ```json

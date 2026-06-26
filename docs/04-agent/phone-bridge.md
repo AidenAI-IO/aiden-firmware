@@ -253,7 +253,7 @@ Reply:
 
 App-side `method` represents underlying mechanism (e.g., `ios_url_scheme`, `ios_shortcut`, `android_intent`, `android_deeplink`, `launch_package`, `dial`, `open_url`). Agent's `open_app` tool normalizes it to task semantics: opening app returns `method:"open_app"`, opening webpage returns `method:"open_url"`, underlying mechanism goes in `mechanism`.
 
-Browser semantics and fixed webpage semantics are separated: when opening browser entry pass `{"app":"browser"}`; when opening a fixed webpage pass `{"url":"https://example.com"}`. The companion app owns the platform-specific URL/package/intent mapping.
+Browser semantics and fixed webpage semantics are separated: when opening browser entry pass `{"app":"browser"}`; when opening a fixed webpage pass `{"url":"https://example.com"}`. Dialing uses `{"phone_number":"10086"}`. Set exactly one of `app`, `url`, or `phone_number`; the companion app owns the platform-specific URL/package/intent mapping.
 
 ##### 2. `clipboard_read` — Read Clipboard
 

@@ -25,7 +25,6 @@ type BridgeCommand struct {
 	ID          string `json:"id"`
 	Type        string `json:"type"`
 	App         string `json:"app,omitempty"`
-	Name        string `json:"name,omitempty"`
 	URL         string `json:"url,omitempty"`
 	PhoneNumber string `json:"phone_number,omitempty"`
 	TimeoutMs   int    `json:"timeout_ms,omitempty"`

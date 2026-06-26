@@ -26,10 +26,10 @@ func (t *OpenAppTool) Description() string {
 	return `Open an app or dial a phone number on the connected phone via the phone bridge. ` +
 		`Use this instead of manually finding and tapping app icons when the phone bridge is connected. ` +
 		`If the Aiden companion app is backgrounded on iOS and the Dynamic Island entry is visible, reopen Aiden from that entry first, then use this tool before searching the home screen. ` +
-		`Input JSON: {"app":"WeChat"}, {"app":"微信"}, {"app":"weixin"}, {"app":"browser"}, {"url":"https://example.com"}, or {"app":"https://example.com"}. ` +
+		`Input JSON: {"app":"WeChat"}, {"app":"微信"}, {"app":"weixin"}, {"app":"browser"}, {"url":"https://example.com"}, or {"phone_number":"10086"}. ` +
 		`Pass only the desired app, webpage, or phone number; the companion app owns platform-specific launch details. ` +
 		`If this tool returns {"ok":true}, the app launch request is complete; answer the user immediately unless they asked for additional actions inside that app. ` +
-		`To dial a phone number, use: {"app":"phone","phone_number":"10086"} or just {"phone_number":"10086"}. ` +
+		`To dial a phone number, use {"phone_number":"10086"}. ` +
 		`Use {"app":"browser"} to open the browser itself, and {"url":"https://example.com"} to open a specific webpage. ` +
 		`Common apps: WeChat(微信), Alipay(支付宝), Safari, Chrome, Settings(设置), Phone(电话), Messages(短信), ` +
 		`Camera(相机), Photos(相册), Maps(地图), Notes(备忘录), Calendar(日历), Reminders(提醒事项), ` +
@@ -40,8 +40,7 @@ func (t *OpenAppTool) Description() string {
 
 func (t *OpenAppTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"app":          stringArgSchema("Preferred app name or alias, such as WeChat, 微信, weixin, browser, or an HTTP/HTTPS URL."),
-		"name":         stringArgSchema("Alias for app. Prefer app when possible."),
+		"app":          stringArgSchema("Preferred app name or alias, such as WeChat, 微信, weixin, or browser."),
 		"url":          stringArgSchema("HTTP or HTTPS URL to open."),
 		"phone_number": stringArgSchema("Phone number to dial."),
 	})
@@ -49,7 +48,6 @@ func (t *OpenAppTool) ArgsSchema() map[string]any {
 
 type openAppArgs struct {
 	App         string `json:"app"`
-	Name        string `json:"name"`
 	URL         string `json:"url"`
 	PhoneNumber string `json:"phone_number"`
 }
@@ -66,37 +64,19 @@ func applyOpenAppURL(args *openAppArgs, rawURL string) *ToolError {
 	}
 	args.URL = targetURL
 	args.App = ""
-	args.Name = ""
 	return nil
-}
-
-func isPhoneAppAlias(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", "phone", "telephone", "dial", "dialer", "电话":
-		return true
-	default:
-		return false
-	}
 }
 
 func resolveOpenAppTargets(args *openAppArgs) *ToolError {
 	if args == nil {
 		return NewToolError(CodeInvalidArguments, "missing open_app args")
 	}
-	if strings.TrimSpace(args.App) == "" && strings.TrimSpace(args.Name) != "" {
-		args.App = args.Name
-	}
 	hasApp := strings.TrimSpace(args.App) != ""
 	hasURL := strings.TrimSpace(args.URL) != ""
 
 	if strings.TrimSpace(args.PhoneNumber) != "" {
-		args.App = strings.TrimSpace(args.App)
-		args.Name = strings.TrimSpace(args.Name)
-		if hasURL {
-			return NewToolError(CodeInvalidArguments, "phone_number cannot be combined with url")
-		}
-		if hasApp && !isPhoneAppAlias(args.App) {
-			return NewToolError(CodeInvalidArguments, "phone_number can only be combined with app/name when the app is phone")
+		if hasApp || hasURL {
+			return NewToolError(CodeInvalidArguments, "phone_number cannot be combined with app or url")
 		}
 		args.PhoneNumber = strings.TrimSpace(args.PhoneNumber)
 		return nil
@@ -104,7 +84,7 @@ func resolveOpenAppTargets(args *openAppArgs) *ToolError {
 
 	if hasURL {
 		if hasApp {
-			return NewToolError(CodeInvalidArguments, "url cannot be combined with app or name")
+			return NewToolError(CodeInvalidArguments, "url cannot be combined with app")
 		}
 		return applyOpenAppURL(args, args.URL)
 	}
@@ -112,10 +92,9 @@ func resolveOpenAppTargets(args *openAppArgs) *ToolError {
 	if hasApp {
 		key := strings.ToLower(strings.TrimSpace(args.App))
 		if isHTTPURL(key) {
-			return applyOpenAppURL(args, args.App)
+			return NewToolError(CodeInvalidArguments, "app must be an app name or alias; use url for HTTP/HTTPS URLs")
 		}
 		args.App = strings.TrimSpace(args.App)
-		args.Name = strings.TrimSpace(args.Name)
 		return nil
 	}
 
@@ -126,7 +105,7 @@ func openAppResultMethod(args openAppArgs) string {
 	if strings.TrimSpace(args.PhoneNumber) != "" {
 		return "dial"
 	}
-	if strings.TrimSpace(args.URL) != "" || isHTTPURL(args.App) {
+	if strings.TrimSpace(args.URL) != "" {
 		return "open_url"
 	}
 	if strings.TrimSpace(args.App) != "" {
@@ -198,7 +177,6 @@ func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 		ID:          cmdID,
 		Type:        "open_app",
 		App:         strings.TrimSpace(args.App),
-		Name:        strings.TrimSpace(args.Name),
 		URL:         strings.TrimSpace(args.URL),
 		PhoneNumber: strings.TrimSpace(args.PhoneNumber),
 		TimeoutMs:   10000,
