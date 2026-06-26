@@ -125,7 +125,6 @@ type LiveActivityManager struct {
 	relay           *LiveActivityRelayClient
 	relayQueue      chan liveActivityPushRequest
 	logger          *Logger
-	defaultPhoneID  string
 }
 
 func NewLiveActivityManager(cfg LiveActivityConfig, logger *Logger) *LiveActivityManager {
@@ -133,10 +132,9 @@ func NewLiveActivityManager(cfg LiveActivityConfig, logger *Logger) *LiveActivit
 		return nil
 	}
 	manager := &LiveActivityManager{
-		states:         make(map[string]LiveActivityState),
-		registrations:  make(map[string]liveActivityRegistration),
-		logger:         logger,
-		defaultPhoneID: strings.TrimSpace(cfg.PhoneID),
+		states:        make(map[string]LiveActivityState),
+		registrations: make(map[string]liveActivityRegistration),
+		logger:        logger,
 	}
 	if cfg.APNsConfigured() {
 		client, err := NewAPNsClient(cfg)
@@ -193,7 +191,7 @@ func (m *LiveActivityManager) StartTask(requestID, title string, phoneIDs ...str
 	if len(phoneIDs) > 0 {
 		phoneID = firstNonEmptyString(phoneIDs)
 	}
-	phoneID = m.resolvePhoneID(phoneID)
+	phoneID = strings.TrimSpace(phoneID)
 	now := time.Now()
 	state := LiveActivityState{
 		RequestID:     strings.TrimSpace(requestID),
@@ -461,17 +459,6 @@ func (m *LiveActivityManager) SnapshotActiveForPhone(phoneID string) *LiveActivi
 		}
 	}
 	return latest
-}
-
-func (m *LiveActivityManager) resolvePhoneID(phoneID string) string {
-	phoneID = strings.TrimSpace(phoneID)
-	if phoneID != "" {
-		return phoneID
-	}
-	if m == nil {
-		return ""
-	}
-	return strings.TrimSpace(m.defaultPhoneID)
 }
 
 func (m *LiveActivityManager) publish(requestID string, final bool) {
@@ -1215,7 +1202,6 @@ type LiveActivityRelayClient struct {
 	endpoint   string
 	apiKey     string
 	boardID    string
-	phoneID    string
 	timeout    time.Duration
 }
 
@@ -1229,7 +1215,6 @@ func NewLiveActivityRelayClient(cfg LiveActivityConfig) (*LiveActivityRelayClien
 		endpoint:   endpoint,
 		apiKey:     strings.TrimSpace(cfg.RelayAPIKey),
 		boardID:    cfg.BoardIDOrDefault(),
-		phoneID:    strings.TrimSpace(cfg.PhoneID),
 		timeout:    cfg.TimeoutOrDefault(),
 	}, nil
 }
@@ -1256,7 +1241,7 @@ func (c *LiveActivityRelayClient) Push(ctx context.Context, state LiveActivitySt
 		"requires_app":   state.RequiresApp,
 		"updated_at":     state.UpdatedAt.UTC().Format(time.RFC3339),
 	}
-	phoneID := firstNonEmptyString([]string{state.PhoneID, c.phoneID})
+	phoneID := strings.TrimSpace(state.PhoneID)
 	if phoneID == "" {
 		return errLiveActivityRelayPhoneIDRequired
 	}

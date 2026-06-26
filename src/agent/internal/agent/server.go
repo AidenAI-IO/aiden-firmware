@@ -1100,9 +1100,6 @@ func (s *Server) liveActivityPhoneID(req ChatRequest) string {
 			return phoneID
 		}
 	}
-	if s != nil && s.runtime != nil {
-		return strings.TrimSpace(s.runtime.config.LiveActivity.PhoneID)
-	}
 	return ""
 }
 

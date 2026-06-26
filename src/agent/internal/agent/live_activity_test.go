@@ -176,10 +176,9 @@ func TestLiveActivityManagerPublishesToRelay(t *testing.T) {
 		RelayURL:    relay.URL,
 		RelayAPIKey: "relay-secret",
 		BoardID:     "board-1",
-		PhoneID:     "phone-1",
 	}, nil)
 	manager.relay.httpClient = relay.Client()
-	manager.StartTask("req-1", "Open Settings")
+	manager.StartTask("req-1", "Open Settings", "phone-1")
 
 	select {
 	case payload := <-requests:
@@ -211,10 +210,9 @@ func TestLiveActivityManagerPublishesTerminalStateToRelayAsStandby(t *testing.T)
 	manager := NewLiveActivityManager(LiveActivityConfig{
 		RelayURL: relay.URL,
 		BoardID:  "board-1",
-		PhoneID:  "phone-1",
 	}, nil)
 	manager.relay.httpClient = relay.Client()
-	manager.StartTask("req-1", "Open Settings")
+	manager.StartTask("req-1", "Open Settings", "phone-1")
 	manager.CompleteTask("req-1", "Done")
 
 	var terminalPayload map[string]interface{}
