@@ -1664,7 +1664,10 @@ func (s *Server) shouldSpeakToolCall(event RunEvent) bool {
 	if event.Type != runEventToolCall || event.ToolName == toolWaitForWakeup {
 		return false
 	}
-	return s.runtime != nil && s.runtime.config.VoiceToolCallSpeechOrDefault()
+	if s.runtime == nil || !s.runtime.config.VoiceToolCallSpeechOrDefault() {
+		return false
+	}
+	return shouldSpeakToolCallContent(event.ToolName, event.Content)
 }
 
 func (s *Server) newRunProgressSpeaker() *progressSpeaker {

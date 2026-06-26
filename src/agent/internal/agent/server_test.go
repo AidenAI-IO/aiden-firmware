@@ -1146,6 +1146,29 @@ func TestServerHandleChatSkipsToolContentTTSWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestServerShouldSpeakToolCallFiltersLowValueTools(t *testing.T) {
+	toolSpeechEnabled := true
+	server := &Server{
+		runtime: NewRuntimeWithDeps(
+			Config{VoiceToolCallSpeech: &toolSpeechEnabled, Model: ModelConfig{Provider: "fake"}},
+			&testModelResolver{model: &scriptedModel{}},
+			NewMemoryManager(""),
+			NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+			NewSkillIndex(),
+		),
+	}
+
+	if server.shouldSpeakToolCall(RunEvent{Type: runEventToolCall, ToolName: "recall_memory", Content: "I will check your preferences first."}) {
+		t.Fatal("recall_memory tool speech should be filtered")
+	}
+	if server.shouldSpeakToolCall(RunEvent{Type: runEventToolCall, ToolName: "screenshot", Content: "I will inspect the screen first."}) {
+		t.Fatal("screenshot tool speech should be filtered")
+	}
+	if !server.shouldSpeakToolCall(RunEvent{Type: runEventToolCall, ToolName: "audio_volume", Content: "Check the current volume."}) {
+		t.Fatal("audio_volume tool speech should still be spoken")
+	}
+}
+
 func TestServerHandleChatUsesRequestContextForRun(t *testing.T) {
 	model := &cancelAwareModel{started: make(chan struct{}), seen: make(chan error, 1)}
 	runtime := NewRuntimeWithDeps(

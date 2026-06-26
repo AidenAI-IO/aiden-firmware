@@ -380,13 +380,33 @@ func TestAudioDialogSpeaksToolCallContent(t *testing.T) {
 	dialog.HandleRunEvent(context.Background(), RunEvent{
 		Type:     runEventToolCall,
 		ToolName: "audio_volume",
-		Content:  "读取当前音量。",
+		Content:  "Check the current volume.",
 	})
 
 	waitForProviderTextCount(t, provider, 1)
-	if got := provider.texts(); len(got) != 1 || got[0] != "读取当前音量。" {
+	if got := provider.texts(); len(got) != 1 || got[0] != "Check the current volume." {
 		t.Fatalf("unexpected TTS texts: %#v", got)
 	}
+}
+
+func TestAudioDialogDoesNotSpeakFilteredToolCallContent(t *testing.T) {
+	toolSpeech := true
+	provider := &recordingTTSProvider{name: "dialog-provider"}
+	dialog := &AudioDialog{
+		config: Config{
+			VoiceToolCallSpeech: &toolSpeech,
+		},
+		audioClient: NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
+		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
+	}
+
+	dialog.HandleRunEvent(context.Background(), RunEvent{
+		Type:     runEventToolCall,
+		ToolName: "recall_memory",
+		Content:  "I will check your preferences first.",
+	})
+
+	assertNoProviderTextWithin(t, provider, 200*time.Millisecond)
 }
 
 func TestAudioDialogDoesNotSpeakToolCallWithoutContent(t *testing.T) {

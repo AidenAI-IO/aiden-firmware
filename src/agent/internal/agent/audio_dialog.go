@@ -814,6 +814,9 @@ func (d *AudioDialog) HandleRunEvent(ctx context.Context, event RunEvent) {
 	if event.Type != runEventToolCall || !d.config.VoiceToolCallSpeechOrDefault() || event.ToolName == toolWaitForWakeup {
 		return
 	}
+	if !shouldSpeakToolCallContent(event.ToolName, event.Content) {
+		return
+	}
 	// Tool-call speech is only explicit LLM-generated event content.
 	go d.SpeakToolContent(event.Content)
 }
