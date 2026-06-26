@@ -19,11 +19,9 @@ func TestEnqueueAndPoll(t *testing.T) {
 		TimeoutMs: 5000,
 	}
 	cmd2 := BridgeCommand{
-		ID:              "test_2",
-		Type:            "clipboard_read",
-		IOSURLs:         []string{"clipboard://"},
-		AndroidPackages: []string{"com.example.clipboard"},
-		TimeoutMs:       3000,
+		ID:        "test_2",
+		Type:      "clipboard_read",
+		TimeoutMs: 3000,
 	}
 
 	// Enqueue commands
@@ -76,14 +74,14 @@ func TestPollPlatformFilter(t *testing.T) {
 	cmdIOS := BridgeCommand{
 		ID:        "ios_cmd",
 		Type:      "open_app",
-		IOSURLs:   []string{"weixin://"},
+		App:       "微信",
 		TimeoutMs: 5000,
 	}
 	cmdAndroid := BridgeCommand{
-		ID:              "android_cmd",
-		Type:            "open_app",
-		AndroidPackages: []string{"com.tencent.mm"},
-		TimeoutMs:       5000,
+		ID:        "android_cmd",
+		Type:      "open_app",
+		App:       "微信",
+		TimeoutMs: 5000,
 	}
 	cmdGeneric := BridgeCommand{
 		ID:        "generic_cmd",
@@ -95,22 +93,23 @@ func TestPollPlatformFilter(t *testing.T) {
 	q.Enqueue(cmdAndroid)
 	q.Enqueue(cmdGeneric)
 
-	// Poll iOS: should get ios_cmd and generic_cmd
+	// Platform-specific open_app targeting is resolved app-side, so queue
+	// polling no longer filters semantic commands by platform.
 	polledIOS := q.Poll("ios", 10)
-	if len(polledIOS) != 2 {
-		t.Errorf("expected 2 commands for iOS, got %d", len(polledIOS))
+	if len(polledIOS) != 3 {
+		t.Errorf("expected 3 commands for iOS, got %d", len(polledIOS))
 	}
 
 	// Requeue them for next test
 	q.mu.Lock()
 	q.commands["ios_cmd"].Status = StatusQueued
+	q.commands["android_cmd"].Status = StatusQueued
 	q.commands["generic_cmd"].Status = StatusQueued
 	q.mu.Unlock()
 
-	// Poll Android: should get android_cmd and generic_cmd
 	polledAndroid := q.Poll("android", 10)
-	if len(polledAndroid) != 2 {
-		t.Errorf("expected 2 commands for Android, got %d", len(polledAndroid))
+	if len(polledAndroid) != 3 {
+		t.Errorf("expected 3 commands for Android, got %d", len(polledAndroid))
 	}
 }
 
@@ -394,9 +393,3 @@ func TestQueryExpiredCommand(t *testing.T) {
 		t.Errorf("expected nil result for expired command")
 	}
 }
-
-
-
-
-
-

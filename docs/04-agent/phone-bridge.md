@@ -237,8 +237,7 @@ Board sends `BridgeCommand` to app via WebSocket, app executes and replies with 
 {
   "id": "open_001",
   "type": "open_app",
-  "ios_urls": ["weixin://"],
-  "android_packages": ["com.tencent.mm"],
+  "app": "微信",
   "timeout_ms": 10000
 }
 ```
@@ -254,7 +253,7 @@ Reply:
 
 App-side `method` represents underlying mechanism (e.g., `ios_url_scheme`, `ios_shortcut`, `android_intent`, `android_deeplink`, `launch_package`, `dial`, `open_url`). Agent's `open_app` tool normalizes it to task semantics: opening app returns `method:"open_app"`, opening webpage returns `method:"open_url"`, underlying mechanism goes in `mechanism`.
 
-Browser semantics and fixed webpage semantics are separated: when opening browser entry use browser URL scheme / Android browser intent; when opening fixed webpage pass specific `http`/`https` URL (iOS puts in `ios_urls`, Android uses `android.intent.action.VIEW:<url>`).
+Browser semantics and fixed webpage semantics are separated: when opening browser entry pass `{"app":"browser"}`; when opening a fixed webpage pass `{"url":"https://example.com"}`. The companion app owns the platform-specific URL/package/intent mapping.
 
 ##### 2. `clipboard_read` — Read Clipboard
 

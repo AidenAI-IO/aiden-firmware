@@ -219,14 +219,12 @@ if grep -Fq 'SKILLS_DEST="$OVERLAY/oem/usr/share/aiden/skills"' "$ROOT_DIR/_buil
     exit 1
 fi
 
-if grep -Fq 'APP_MAPPING_DEST="$DEST_OVERLAY/usr/share/aiden/app_mapping.json"' "$ROOT_DIR/_build_image.sh" || \
-   grep -Fq 'QUICK_ACTIONS_DEST="$DEST_OVERLAY/usr/share/aiden/quick_actions.json"' "$ROOT_DIR/_build_image.sh"; then
+if grep -Fq 'QUICK_ACTIONS_DEST="$DEST_OVERLAY/usr/share/aiden/quick_actions.json"' "$ROOT_DIR/_build_image.sh"; then
     echo "_build_image.sh must not stage bundled Aiden share JSON into rootfs overlay" >&2
     exit 1
 fi
 
-if ! grep -Fq 'APP_MAPPING_DEST="$RK_PROJECT_PACKAGE_OEM_DIR/usr/share/aiden/app_mapping.json"' "$ROOT_DIR/_build_image.sh" || \
-   ! grep -Fq 'QUICK_ACTIONS_DEST="$RK_PROJECT_PACKAGE_OEM_DIR/usr/share/aiden/quick_actions.json"' "$ROOT_DIR/_build_image.sh"; then
+if ! grep -Fq 'QUICK_ACTIONS_DEST="$RK_PROJECT_PACKAGE_OEM_DIR/usr/share/aiden/quick_actions.json"' "$ROOT_DIR/_build_image.sh"; then
     echo "_build_image.sh must sync bundled Aiden share JSON directly into final OEM staging" >&2
     exit 1
 fi
@@ -239,10 +237,9 @@ fi
 
 oem_dir_line=$(grep -n 'RK_PROJECT_PACKAGE_OEM_DIR="${RK_PROJECT_OUTPUT}/oem"' "$ROOT_DIR/_build_image.sh" | sed 's/:.*//' | head -n 1)
 skills_dest_line=$(grep -n 'SKILLS_DEST="$RK_PROJECT_PACKAGE_OEM_DIR/usr/share/aiden/skills"' "$ROOT_DIR/_build_image.sh" | sed 's/:.*//' | head -n 1)
-app_mapping_dest_line=$(grep -n 'APP_MAPPING_DEST="$RK_PROJECT_PACKAGE_OEM_DIR/usr/share/aiden/app_mapping.json"' "$ROOT_DIR/_build_image.sh" | sed 's/:.*//' | head -n 1)
 quick_actions_dest_line=$(grep -n 'QUICK_ACTIONS_DEST="$RK_PROJECT_PACKAGE_OEM_DIR/usr/share/aiden/quick_actions.json"' "$ROOT_DIR/_build_image.sh" | sed 's/:.*//' | head -n 1)
-if [ -z "$oem_dir_line" ] || [ -z "$skills_dest_line" ] || [ -z "$app_mapping_dest_line" ] || [ -z "$quick_actions_dest_line" ] || \
-   [ "$skills_dest_line" -le "$oem_dir_line" ] || [ "$app_mapping_dest_line" -le "$oem_dir_line" ] || [ "$quick_actions_dest_line" -le "$oem_dir_line" ]; then
+if [ -z "$oem_dir_line" ] || [ -z "$skills_dest_line" ] || [ -z "$quick_actions_dest_line" ] || \
+   [ "$skills_dest_line" -le "$oem_dir_line" ] || [ "$quick_actions_dest_line" -le "$oem_dir_line" ]; then
     echo "_build_image.sh must resolve final OEM staging before setting bundled Aiden share destinations" >&2
     exit 1
 fi

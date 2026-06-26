@@ -36,13 +36,13 @@ const (
 
 // QueuedCommand wraps a BridgeCommand with queue metadata
 type QueuedCommand struct {
-	Command     BridgeCommand `json:"command"`
-	Status      CommandStatus `json:"status"`
-	QueuedAt    time.Time     `json:"queued_at"`
-	InFlightAt  *time.Time    `json:"in_flight_at,omitempty"`
-	ExpireAt    time.Time     `json:"expire_at"`
-	RetryCount  int           `json:"retry_count"`
-	MaxRetries  int           `json:"max_retries"`
+	Command    BridgeCommand `json:"command"`
+	Status     CommandStatus `json:"status"`
+	QueuedAt   time.Time     `json:"queued_at"`
+	InFlightAt *time.Time    `json:"in_flight_at,omitempty"`
+	ExpireAt   time.Time     `json:"expire_at"`
+	RetryCount int           `json:"retry_count"`
+	MaxRetries int           `json:"max_retries"`
 }
 
 // CommandResult holds the execution result of a command
@@ -165,20 +165,8 @@ func (q *CommandQueue) Poll(platform string, limit int) []BridgeCommand {
 }
 
 // matchesPlatform checks if a command is relevant for the given platform
-func (q *CommandQueue) matchesPlatform(cmd *BridgeCommand, platform string) bool {
-	// If no platform-specific fields, command applies to all platforms
-	if len(cmd.IOSURLs) == 0 && len(cmd.AndroidPackages) == 0 {
-		return true
-	}
-
-	switch platform {
-	case "ios":
-		return len(cmd.IOSURLs) > 0
-	case "android":
-		return len(cmd.AndroidPackages) > 0
-	default:
-		return true
-	}
+func (q *CommandQueue) matchesPlatform(_ *BridgeCommand, _ string) bool {
+	return true
 }
 
 // SubmitResult records the execution result and removes the command from the queue
@@ -324,4 +312,3 @@ func (q *CommandQueue) removeCommandID(id string) {
 		}
 	}
 }
-

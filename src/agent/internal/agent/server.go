@@ -343,7 +343,6 @@ func NewServer(runtime *Runtime, addr string) *Server {
 			s.eventBroadcaster.Broadcast(msg)
 		})
 	}
-	loadAppMappingForConfig(runtime.config.ConfigDir, runtime.logger)
 	loadQuickActionsForConfig(runtime.config.ConfigDir, runtime.logger)
 	runtime.tools.RegisterPhoneBridge(bridge)
 	s.loadHistoryFromDisk()

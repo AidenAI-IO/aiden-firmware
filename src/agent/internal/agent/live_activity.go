@@ -869,8 +869,6 @@ func liveActivityTargetFromToolCall(event RunEvent) string {
 			liveActivityString(payload, "name"),
 			liveActivityString(payload, "url"),
 			liveActivityString(payload, "phone_number"),
-			liveActivityFirstString(payload, "ios_urls"),
-			liveActivityFirstString(payload, "android_packages"),
 		})
 	case "calendar":
 		return firstNonEmptyString([]string{

@@ -35,8 +35,10 @@ The board records `last_heartbeat_at` timestamp; no heartbeat for more than 60 s
   timeout_ms?: number;     // Timeout milliseconds (optional, default 5000)
 
   // Following fields used based on type
-  ios_urls?: string[];           // open_app specific
-  android_packages?: string[];   // open_app specific
+  app?: string;                  // open_app semantic app name or alias
+  name?: string;                 // open_app alias for app
+  url?: string;                  // open_app HTTP/HTTPS URL
+  phone_number?: string;         // open_app phone number to dial
   payload?: object;              // JSON payload for other command types
 }
 ```
@@ -145,16 +147,15 @@ Open specified app or URL.
 {
   "id": "open_001",
   "type": "open_app",
-  "ios_urls": ["weixin://"],
-  "android_packages": ["com.tencent.mm"],
+  "app": "微信",
   "timeout_ms": 10000
 }
 ```
 
-**iOS implementation**: Call `UIApplication.shared.open(URL(string: ios_urls[0])!)` to attempt opening the first URL.
-**Android implementation**: Call `packageManager.getLaunchIntentForPackage(android_packages[0])` or parse deeplink.
+**iOS implementation**: Resolve the semantic app/url/phone request inside the companion app, then open the matching iOS URL scheme or system URL.
+**Android implementation**: Resolve the semantic app/url/phone request inside the companion app, then launch the matching package, intent URI, or system URL.
 
-Browser entry should not be tied to a fixed website: when opening browser itself, pass browser URL scheme / Android browser intent; when opening specific webpage, pass specific `http`/`https` URL (Android uses `android.intent.action.VIEW:<url>`).
+The board must not send platform launch details. For known apps, send `app`/`name` (for example `"微信"` or `"weixin"`). For webpages, send `url`. For dialing, send `phone_number`.
 
 **Response**:
 ```json
@@ -644,8 +645,7 @@ Current protocol version 1.1. When extending with new commands in the future:
 {
   "id": "open_1717667890123_1",
   "type": "open_app",
-  "ios_urls": ["weixin://"],
-  "android_packages": ["com.tencent.mm"],
+  "app": "微信",
   "timeout_ms": 10000
 }
 ```

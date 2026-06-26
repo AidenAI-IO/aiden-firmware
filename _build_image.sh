@@ -706,20 +706,6 @@ if [ -d "$OVERLAY/oem" ]; then
     log_generated_binaries_in_dir "sdk-oem-usr-bin" "$RK_PROJECT_PACKAGE_OEM_DIR/usr/bin"
 fi
 
-# Bundled phone-bridge app mapping: src/agent/internal/agent/app_mapping.json is
-# the Go embed source and is also shipped in OEM so operations can update it
-# without rebuilding the agent binary. Runtime order is configDir override,
-# bundled OEM file, then embedded defaults.
-APP_MAPPING_SRC="$SCRIPT_DIR/src/agent/internal/agent/app_mapping.json"
-APP_MAPPING_DEST="$RK_PROJECT_PACKAGE_OEM_DIR/usr/share/aiden/app_mapping.json"
-if [ -f "$APP_MAPPING_SRC" ]; then
-    mkdir -p "$(dirname "$APP_MAPPING_DEST")"
-    cp "$APP_MAPPING_SRC" "$APP_MAPPING_DEST"
-    echo "  ✓ phone-bridge app mapping synced to OEM staging"
-else
-    echo "  ⚠ Warning: $APP_MAPPING_SRC not found; skipping app mapping" >&2
-fi
-
 QUICK_ACTIONS_SRC="$SCRIPT_DIR/src/agent/internal/agent/quick_actions.json"
 QUICK_ACTIONS_DEST="$RK_PROJECT_PACKAGE_OEM_DIR/usr/share/aiden/quick_actions.json"
 if [ -f "$QUICK_ACTIONS_SRC" ]; then
