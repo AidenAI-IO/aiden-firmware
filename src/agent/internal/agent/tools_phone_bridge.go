@@ -90,6 +90,8 @@ func resolveOpenAppTargets(args *openAppArgs) *ToolError {
 	hasURL := strings.TrimSpace(args.URL) != ""
 
 	if strings.TrimSpace(args.PhoneNumber) != "" {
+		args.App = strings.TrimSpace(args.App)
+		args.Name = strings.TrimSpace(args.Name)
 		if hasURL {
 			return NewToolError(CodeInvalidArguments, "phone_number cannot be combined with url")
 		}

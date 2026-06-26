@@ -219,6 +219,11 @@ if grep -Fq 'SKILLS_DEST="$OVERLAY/oem/usr/share/aiden/skills"' "$ROOT_DIR/_buil
     exit 1
 fi
 
+if grep -Fq 'app_mapping.json' "$ROOT_DIR/_build_image.sh"; then
+    echo "_build_image.sh must not stage app_mapping.json after the semantic open_app migration" >&2
+    exit 1
+fi
+
 if grep -Fq 'QUICK_ACTIONS_DEST="$DEST_OVERLAY/usr/share/aiden/quick_actions.json"' "$ROOT_DIR/_build_image.sh"; then
     echo "_build_image.sh must not stage bundled Aiden share JSON into rootfs overlay" >&2
     exit 1

@@ -70,12 +70,18 @@ func TestResolveOpenAppTargetsAppCanBeURL(t *testing.T) {
 }
 
 func TestResolveOpenAppTargetsPhoneNumber(t *testing.T) {
-	args := openAppArgs{App: "phone", PhoneNumber: " 10086 "}
+	args := openAppArgs{App: " phone ", Name: " phone ", PhoneNumber: " 10086 "}
 
 	if err := resolveOpenAppTargets(&args); err != nil {
 		t.Fatalf("resolveOpenAppTargets returned error: %v", err)
 	}
 
+	if args.App != "phone" {
+		t.Fatalf("app = %q, want trimmed phone alias", args.App)
+	}
+	if args.Name != "phone" {
+		t.Fatalf("name = %q, want trimmed phone alias", args.Name)
+	}
 	if args.PhoneNumber != "10086" {
 		t.Fatalf("phone_number = %q, want trimmed phone number", args.PhoneNumber)
 	}
