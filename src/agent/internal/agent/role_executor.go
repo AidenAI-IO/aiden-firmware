@@ -2632,49 +2632,66 @@ func executorInputsToString(inputValues map[string]any) (map[string]string, erro
 	return inputs, nil
 }
 
-// maxRepeatedFailedCalls is the maximum number of consecutive identical tool
-// calls (same tool, same input, same error) the runtime tolerates before
-// stopping the loop. The skill prompt asks the model not to repeat blindly,
-// but in practice the LLM sometimes ignores that and keeps firing the same
-// call. This is a hard ceiling so an unresponsive Agent cannot pin the bridge
-// or burn the wall-clock budget on a single broken call.
+// maxRepeatedFailedCalls is the number of identical failed tool calls the
+// runtime tolerates within a recent window before stopping the loop. The
+// skill prompt asks the model not to repeat blindly, but in practice the
+// LLM sometimes ignores that and keeps firing the same call (sometimes
+// interleaved with a harmless probe like screenshot, which would defeat a
+// strict "consecutive" check). This is a hard ceiling so an unresponsive
+// Agent cannot pin the bridge or burn the wall-clock budget on a single
+// broken call.
 const maxRepeatedFailedCalls = 3
 
-// detectRepeatedFailedToolCall returns true when the most recent executions
-// show maxRepeatedFailedCalls consecutive failures with identical tool name,
-// tool input, and error code.
+// repeatedFailureWindow defines how many recent tool executions are scanned
+// when counting matching failures. Setting this larger than
+// maxRepeatedFailedCalls lets benign probes between retries (e.g. open_app
+// → screenshot → open_app) still count as "the same broken call repeated."
+const repeatedFailureWindow = 8
+
+// detectRepeatedFailedToolCall returns true when the recent executions contain
+// at least maxRepeatedFailedCalls identical failures (same tool name, same
+// tool input, same error code) within the trailing repeatedFailureWindow.
 //
-// Only failures count: a success in the trailing window resets detection. The
-// most recent execution must itself be a failure (we are reacting to it).
+// The most recent execution must itself be a failure (we are reacting to it).
+// Interleaving with other tool calls does not reset detection — only an
+// identical *success* for the same tool+input clears the count, because a
+// success means the bug is now gone.
 func detectRepeatedFailedToolCall(executions []roleExecutionResult) bool {
-	n := maxRepeatedFailedCalls
-	if len(executions) < n {
+	if len(executions) == 0 {
 		return false
 	}
-	window := executions[len(executions)-n:]
-	last := window[n-1]
+	last := executions[len(executions)-1]
 	if last.ToolError == nil || last.Action == nil {
 		return false
 	}
 	lastCode := last.ToolError.Code
 	lastTool := last.Action.Tool
 	lastInput := last.Action.ToolInput
-	for i := 0; i < n-1; i++ {
-		prev := window[i]
-		if prev.Action == nil || prev.ToolError == nil {
-			return false
+
+	start := len(executions) - repeatedFailureWindow
+	if start < 0 {
+		start = 0
+	}
+	matches := 0
+	for i := start; i < len(executions); i++ {
+		exec := executions[i]
+		if exec.Action == nil {
+			continue
 		}
-		if prev.Action.Tool != lastTool {
-			return false
+		if exec.Action.Tool != lastTool || exec.Action.ToolInput != lastInput {
+			continue
 		}
-		if prev.Action.ToolInput != lastInput {
-			return false
+		if exec.ToolError == nil {
+			// Identical tool+input succeeded; the issue is resolved.
+			// Reset the count so a later flake does not immediately trip.
+			matches = 0
+			continue
 		}
-		if prev.ToolError.Code != lastCode {
-			return false
+		if exec.ToolError.Code == lastCode {
+			matches++
 		}
 	}
-	return true
+	return matches >= maxRepeatedFailedCalls
 }
 
 // abortLoopOnRepeatedToolFailure produces a sentinel error that ends the
