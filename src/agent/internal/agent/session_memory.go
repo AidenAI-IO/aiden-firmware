@@ -385,6 +385,13 @@ func (s *SessionMemoryStore) eventsPath() string {
 	return filepath.Join(s.rootDir, "events.jsonl")
 }
 
+// LoadEvents reads all events currently stored in events.jsonl. Returns an
+// empty slice when the file does not exist. Callers that want to compress
+// these into a chunk can use this together with Compress.
+func (s *SessionMemoryStore) LoadEvents() ([]SessionEvent, error) {
+	return s.readEvents(s.eventsPath())
+}
+
 func (s *SessionMemoryStore) readEventsForIndexEntry(entry chunkIndexEntry) ([]SessionEvent, error) {
 	return s.readEvents(filepath.Join(s.chunksDir(), entry.File))
 }
