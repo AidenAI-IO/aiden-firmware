@@ -40,28 +40,23 @@ func (t *RecallSessionChunksTool) Name() string { return "recall_session_chunks"
 
 func (t *RecallSessionChunksTool) Description() string {
 	return strings.Join([]string{
-		"Recall compressed session history chunks from earlier in this conversation, and optionally from previous sessions.",
-		"IMPORTANT: You MUST use this tool when the user asks about something said earlier that you cannot find in your visible conversation context.",
-		"The session summary in your prompt lists recent chunks; older chunks are archived but still recallable.",
+		"Recall compressed session history chunks from this conversation and prior sessions.",
+		"Use this tool when the user references something said earlier that you cannot find in your visible conversation context.",
+		"The tool automatically searches both the active session and archived sessions, so you do not need to retry.",
 		"How to recall:",
-		"  - PREFERRED: pass chunk_ids to retrieve specific chunks by ID (works for both active and archived chunks).",
-		"  - FALLBACK: pass tags (content/topic keywords like 'payment', 'login') to search all chunks. Use empty tags [] for recent history.",
-		"  - Set include_archived=true when the user references prior conversations. Trigger words include any English or non-English equivalents of: 'yesterday', 'last time', 'earlier today', 'before', 'previously', 'recently', 'the other day', 'just now', 'a moment ago'.",
-		"  - RETRY RULE: If you search the current session (include_archived=false) and find no matching chunks, you MUST immediately retry with include_archived=true before telling the user you cannot find it. Sessions rotate after ~30 minutes of inactivity, so 'just now' references may already be in an archived session.",
-		"  - archived_time_range controls how far back to search archived sessions: 'last_24h' (default), 'last_7d', or 'all'. Start with last_24h; widen only if the user references older content.",
-		`Input JSON: {"chunk_ids":["chunk_xxx"]} or {"tags":["topic"],"limit":3,"include_archived":true,"archived_time_range":"last_24h"}`,
-		"Returns JSON with matching conversation chunks (each tagged with source=active|archived and session_id when archived) and their full original events.",
+		"  - PREFERRED: pass chunk_ids to retrieve specific chunks by ID.",
+		"  - FALLBACK: pass tags (content/topic keywords like 'payment', 'login') to search. Use empty tags [] for recent history.",
+		`Input JSON: {"chunk_ids":["chunk_xxx"]} or {"tags":["topic"],"limit":3}`,
+		"Returns matching chunks (each tagged with source=active|archived and session_id when archived) and their full original events.",
 	}, " ")
 }
 
 func (t *RecallSessionChunksTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"chunk_ids":           stringArrayArgSchema("Specific session chunk ids to retrieve."),
-		"tags":                stringArrayArgSchema("Topic keywords to search when chunk_ids are not known."),
-		"entities":            stringArrayArgSchema("Named entities to search for."),
-		"limit":               minIntegerArgSchema("Maximum number of chunks to return.", 1),
-		"include_archived":    boolArgSchema("Also search closed sessions stored under session_archive/. Default false."),
-		"archived_time_range": stringEnumArgSchema("How far back to search archived sessions.", archivedTimeRangeLast24h, archivedTimeRangeLast7d, archivedTimeRangeAll),
+		"chunk_ids": stringArrayArgSchema("Specific session chunk ids to retrieve."),
+		"tags":      stringArrayArgSchema("Topic keywords to search when chunk_ids are not known."),
+		"entities":  stringArrayArgSchema("Named entities to search for."),
+		"limit":     minIntegerArgSchema("Maximum number of chunks to return.", 1),
 	})
 }
 
@@ -83,7 +78,7 @@ func (t *RecallSessionChunksTool) Call(ctx context.Context, input string) (strin
 		}
 	}
 
-	if query.IncludeArchived && t.archived != nil {
+	if t.archived != nil {
 		remaining := query.Limit
 		if remaining > 0 {
 			remaining -= len(results)

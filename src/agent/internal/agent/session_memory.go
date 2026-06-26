@@ -110,13 +110,6 @@ type ChunkRecallQuery struct {
 	Tags     []string `json:"tags,omitempty"`
 	Entities []string `json:"entities,omitempty"`
 	Limit    int      `json:"limit,omitempty"`
-	// IncludeArchived expands the search to closed sessions stored under
-	// session_archive/. Default false preserves the active-only behavior.
-	IncludeArchived bool `json:"include_archived,omitempty"`
-	// ArchivedTimeRange limits how far back to search archived sessions.
-	// Accepted values: "last_24h", "last_7d", "all". Empty defaults to
-	// "last_24h" when IncludeArchived is true. Ignored otherwise.
-	ArchivedTimeRange string `json:"archived_time_range,omitempty"`
 }
 
 // ChunkRecallResult returns a recalled chunk with its summary and events.
@@ -133,12 +126,6 @@ const (
 	chunkRecallSourceActive   = "active"
 	chunkRecallSourcePending  = "pending"
 	chunkRecallSourceArchived = "archived"
-)
-
-const (
-	archivedTimeRangeLast24h = "last_24h"
-	archivedTimeRangeLast7d  = "last_7d"
-	archivedTimeRangeAll     = "all"
 )
 
 type chunkIndex struct {

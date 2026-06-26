@@ -27,9 +27,10 @@ func NewArchivedSessionStore(rootDir string) *ArchivedSessionStore {
 	return &ArchivedSessionStore{rootDir: rootDir}
 }
 
-// RecallChunks scans archived session directories newer than the time range
-// implied by query.ArchivedTimeRange and returns matching chunks. The query is
-// reused as-is against each archived SessionMemoryStore.
+// RecallChunks scans all archived session directories and returns matching
+// chunks. The query is reused as-is against each archived SessionMemoryStore.
+// Sessions are searched newest-first so recent matches surface before deep
+// history.
 func (a *ArchivedSessionStore) RecallChunks(ctx context.Context, query ChunkRecallQuery) ([]ChunkRecallResult, error) {
 	if a == nil || a.rootDir == "" {
 		return nil, nil
@@ -48,8 +49,6 @@ func (a *ArchivedSessionStore) RecallChunks(ctx context.Context, query ChunkReca
 		return nil, err
 	}
 
-	cutoff := archivedTimeRangeCutoff(query.ArchivedTimeRange, time.Now().UTC())
-
 	type archivedDir struct {
 		sessionID string
 		path      string
@@ -61,14 +60,10 @@ func (a *ArchivedSessionStore) RecallChunks(ctx context.Context, query ChunkReca
 			continue
 		}
 		sessionPath := filepath.Join(a.rootDir, entry.Name())
-		startedAt := readArchivedSessionStartedAt(sessionPath)
-		if !cutoff.IsZero() && !startedAt.IsZero() && startedAt.Before(cutoff) {
-			continue
-		}
 		candidates = append(candidates, archivedDir{
 			sessionID: entry.Name(),
 			path:      sessionPath,
-			startedAt: startedAt,
+			startedAt: readArchivedSessionStartedAt(sessionPath),
 		})
 	}
 
@@ -98,9 +93,7 @@ func (a *ArchivedSessionStore) RecallChunks(ctx context.Context, query ChunkReca
 
 		store := NewSessionMemoryStore(candidate.path)
 		archiveQuery := query
-		archiveQuery.IncludeArchived = false // never recurse
-		archiveQuery.ArchivedTimeRange = ""  // not relevant per-session
-		archiveQuery.Limit = 0               // clear inherited limit
+		archiveQuery.Limit = 0 // clear inherited limit
 		if perSessionLimit > 0 {
 			archiveQuery.Limit = perSessionLimit
 		}
@@ -127,23 +120,6 @@ func (a *ArchivedSessionStore) RecallChunks(ctx context.Context, query ChunkReca
 	return results, nil
 }
 
-// archivedTimeRangeCutoff returns the lower bound for archived session
-// timestamps. Archives older than the cutoff are excluded. A zero time means
-// "no lower bound" (search everything).
-func archivedTimeRangeCutoff(rangeKey string, now time.Time) time.Time {
-	switch strings.TrimSpace(rangeKey) {
-	case archivedTimeRangeAll:
-		return time.Time{}
-	case archivedTimeRangeLast7d:
-		return now.Add(-7 * 24 * time.Hour)
-	case archivedTimeRangeLast24h, "":
-		return now.Add(-24 * time.Hour)
-	default:
-		// Unknown values fall back to the safe default rather than erroring.
-		return now.Add(-24 * time.Hour)
-	}
-}
-
 // readArchivedSessionStartedAt extracts the session start time from
 // session.yaml metadata. Falls back to the directory mtime if metadata is
 // missing or unparseable. For recently rotated sessions, use the newer of
@@ -161,8 +137,6 @@ func readArchivedSessionStartedAt(sessionDir string) time.Time {
 	if info, err := os.Stat(sessionDir); err == nil {
 		modTime = info.ModTime().UTC()
 	}
-	// Return the newer of the two: this ensures recently rotated sessions are
-	// not excluded by the default last_24h recall.
 	if metaTime.IsZero() {
 		return modTime
 	}

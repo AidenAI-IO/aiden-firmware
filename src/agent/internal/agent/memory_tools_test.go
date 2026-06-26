@@ -151,18 +151,12 @@ func TestToolSetRegistersMemoryRecallTools(t *testing.T) {
 func TestRecallToolDescriptionsGuideAgentUsage(t *testing.T) {
 	sessionDescription := NewRecallSessionChunksTool(NewSessionMemoryStore(t.TempDir()), nil).Description()
 	for _, want := range []string{
-		"MUST use this tool",
-		"earlier in this conversation",
+		"references something said earlier",
 		"chunk_ids",
 		"PREFERRED",
 		"FALLBACK",
-		"include_archived",
-		"RETRY RULE",
-		"yesterday",
-		"last time",
-		"previously",
-		"archived_time_range",
-		"last_24h",
+		"automatically searches both",
+		"archived",
 	} {
 		if !strings.Contains(sessionDescription, want) {
 			t.Fatalf("recall_session_chunks description missing %q:\n%s", want, sessionDescription)
