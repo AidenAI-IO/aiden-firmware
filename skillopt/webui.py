@@ -55,6 +55,10 @@ class SkillOptJob:
     exit_code: int | None = None
     message: str = ""
     report_url: str = ""
+    suites: list[str] = field(default_factory=list)
+    stage: str = ""  # "baseline" or "train"
+    current_suite: str = ""
+    progress: dict[str, Any] = field(default_factory=dict)
     process: subprocess.Popen | None = field(default=None, repr=False, compare=False)
 
 
@@ -162,6 +166,9 @@ class SkillOptWebApp:
         except Exception:
             pass
 
+        # Extract suites from command
+        suites_info = _extract_suites_from_command(command)
+
         return SkillOptJob(
             id=job_id,
             command=command,
@@ -174,6 +181,10 @@ class SkillOptWebApp:
             exit_code=exit_code,
             message=message,
             report_url=f"/runs/{job_id}/report.html" if report_path.exists() else "",
+            suites=suites_info["suites"],
+            stage="",
+            current_suite="",
+            progress={},
         )
 
     def shutdown(self) -> None:
@@ -208,6 +219,10 @@ class SkillOptWebApp:
             agent_config_path.write_text(agent_config, encoding="utf-8")
             payload["agent_config"] = str(agent_config_path)
         command = build_skillopt_command(payload, run_id=job_id, artifact_root=self.config.runs_dir)
+
+        # Extract suites from command for UI display
+        suites_info = _extract_suites_from_command(command)
+
         job = SkillOptJob(
             id=job_id,
             command=command,
@@ -216,6 +231,10 @@ class SkillOptWebApp:
             status="queued",
             created_at=now_iso(),
             report_url=f"/runs/{job_id}/report.html",
+            suites=suites_info["suites"],
+            stage="baseline",  # Always starts with baseline
+            current_suite="",
+            progress={},
         )
         # Store judge API key for this job if judge is enabled
         # Use provided key, or fall back to saved webui key
@@ -461,6 +480,10 @@ class SkillOptWebApp:
             "exit_code": job.exit_code,
             "message": job.message,
             "report_url": job.report_url,
+            "suites": job.suites,
+            "stage": job.stage,
+            "current_suite": job.current_suite,
+            "progress": job.progress,
         }
         if Path(job.log_path).exists():
             payload["log_tail"] = tail_text(Path(job.log_path))
@@ -644,6 +667,19 @@ def initial_agent_config(base_config_dir: Path) -> str:
     if template.exists():
         return render_agent_template(template.read_text(encoding="utf-8"))
     return ""
+
+
+def _extract_suites_from_command(command: list[str]) -> dict[str, Any]:
+    """Extract suite names from SkillOpt command for UI display."""
+    suites = []
+    for i, arg in enumerate(command):
+        if arg in ("--train-suite", "--validation-suite") and i + 1 < len(command):
+            suite_path = command[i + 1]
+            # Extract last component for display: "skillopt/device-operator/foo" -> "foo"
+            suite_name = suite_path.split("/")[-1] if "/" in suite_path else suite_path
+            if suite_name not in suites:
+                suites.append(suite_name)
+    return {"suites": suites}
 
 
 def apply_backend_default_instruction(content: str, backend: str) -> str:
@@ -1804,8 +1840,11 @@ INDEX_HTML = r"""<!doctype html>
         const actionHtml = jobCanStop(job) ? `<button class="danger" data-stop-job="${escapeHtml(job.id)}" ${job.status === 'stopping' ? 'disabled' : ''}>Stop</button>` : '';
         const tr = document.createElement('tr');
         tr.className = activeJobId === job.id ? 'selected-row' : '';
+        const suitesLabel = (job.suites && job.suites.length > 0) ? job.suites.join(', ') : '';
+        const stageLabel = job.stage ? `[${job.stage}]` : '';
+        const targetInfo = stageLabel || suitesLabel ? `${stageLabel} ${suitesLabel}`.trim() : targetLabel;
         tr.innerHTML = `<td><div class="cell-main"><a href="#" data-job="${escapeHtml(job.id)}">${escapeHtml(job.id)}</a><small>${escapeHtml(job.created_at || '')}</small></div></td>
-          <td title="${escapeHtml(targetLabel)}"><div class="cell-main"><span>${escapeHtml(targetLabel)}</span><small>${escapeHtml(job.run_dir || '')}</small></div></td>
+          <td title="${escapeHtml(targetLabel)}"><div class="cell-main"><span>${escapeHtml(targetInfo)}</span><small>${escapeHtml(job.run_dir || '')}</small></div></td>
           <td title="${escapeHtml(envLabel)}"><div class="cell-main"><span>${escapeHtml(envLabel)}</span><small>mobilegym</small></div></td>
           <td><span class="status ${cssToken(job.status)}">${escapeHtml(job.status)}</span></td>
           <td>${report}</td>
