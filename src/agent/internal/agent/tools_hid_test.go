@@ -778,17 +778,60 @@ func TestPostActionScreenshotToolSkipsScreenshotOnActionErrorOutput(t *testing.T
 		output: `{"width":320,"height":240,"format":"jpeg","size":4,"data":"ZmFrZQ=="}`,
 	}
 	tool := newPostActionScreenshotTool(action, screenshot, 0)
+	ctx, _ := WithToolError(context.Background())
 
-	out, err := tool.Call(context.Background(), `{}`)
+	out, err := tool.Call(ctx, `{}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
-	if out != "error: invalid input" {
-		t.Fatalf("Call output = %q, want original error output", out)
+	if out != "invalid input" {
+		t.Fatalf("Call output = %q, want structured error message", out)
+	}
+	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeToolExecutionFailed || got.Message != out {
+		t.Fatalf("ToolError = %+v, want tool_execution_failed with output message", got)
 	}
 	if len(screenshot.inputs) != 0 {
 		t.Fatalf("screenshot should not be called on action error, got inputs %#v", screenshot.inputs)
 	}
+}
+
+func TestPostActionScreenshotToolSkipsScreenshotOnStructuredActionError(t *testing.T) {
+	toolErr := NewToolError(CodeInvalidArguments, "invalid touch gesture")
+	action := &contextToolErrorStub{name: "touch_gesture", toolErr: toolErr}
+	screenshot := &stubTool{
+		name:   "screenshot",
+		output: `{"width":320,"height":240,"format":"jpeg","size":4,"data":"ZmFrZQ=="}`,
+	}
+	tool := newPostActionScreenshotTool(action, screenshot, 0)
+	ctx, _ := WithToolError(context.Background())
+
+	out, err := tool.Call(ctx, `{}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != toolErr.Message {
+		t.Fatalf("Call output = %q, want structured error message %q", out, toolErr.Message)
+	}
+	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeInvalidArguments {
+		t.Fatalf("context ToolError = %+v, want invalid_arguments", got)
+	}
+	if len(screenshot.inputs) != 0 {
+		t.Fatalf("screenshot should not be called on structured action error, got inputs %#v", screenshot.inputs)
+	}
+}
+
+type contextToolErrorStub struct {
+	name    string
+	toolErr *ToolError
+}
+
+func (t *contextToolErrorStub) Name() string { return t.name }
+
+func (t *contextToolErrorStub) Description() string { return "structured error stub" }
+
+func (t *contextToolErrorStub) Call(ctx context.Context, input string) (string, error) {
+	SetToolError(ctx, t.toolErr)
+	return toolErrorString(t.toolErr), nil
 }
 
 func TestHIDDeviceWriteRetriesAfterEndpointShutdown(t *testing.T) {
@@ -835,6 +878,22 @@ func TestHIDDeviceWriteReturnsNonRetryableError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "permission denied") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestMouseScrollToolRejectsOutOfRangeDelta(t *testing.T) {
+	tool := &MouseScrollTool{}
+	ctx, _ := WithToolError(context.Background())
+
+	out, err := tool.Call(ctx, `{"delta":128}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "delta must be between -127 and 127" {
+		t.Fatalf("output = %q", out)
+	}
+	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeInvalidArguments || got.Message != out {
+		t.Fatalf("ToolError = %+v, want invalid_arguments with output message", got)
 	}
 }
 

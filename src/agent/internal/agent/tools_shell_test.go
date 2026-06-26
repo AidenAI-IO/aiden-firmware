@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"runtime"
 	"strings"
 	"testing"
@@ -167,16 +168,20 @@ func TestShellToolForegroundWorkdir(t *testing.T) {
 func TestShellToolForegroundFailureSurfacesStderr(t *testing.T) {
 	skipOnWindows(t)
 	tool := &ShellTool{}
+	ctx, _ := WithToolError(context.Background())
 
-	out, err := tool.Call(context.Background(), `{"command":"sh -c 'echo boom 1>&2; exit 7'"}`)
+	out, err := tool.Call(ctx, `{"command":"sh -c 'echo boom 1>&2; exit 7'"}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
-	if !strings.HasPrefix(out, "error: Error: ") {
-		t.Fatalf("expected error prefix, got %q", out)
+	if !strings.HasPrefix(out, "Error: ") {
+		t.Fatalf("expected error message, got %q", out)
 	}
 	if !strings.Contains(out, "Stderr:\nboom") {
 		t.Fatalf("expected stderr in output, got %q", out)
+	}
+	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeToolExecutionFailed || got.Message != out {
+		t.Fatalf("ToolError = %+v, want tool_execution_failed with output message", got)
 	}
 }
 
@@ -190,6 +195,18 @@ func TestShellToolForegroundTimeout(t *testing.T) {
 	}
 	if !strings.Contains(out, "timed out") {
 		t.Fatalf("expected timeout message, got %q", out)
+	}
+}
+
+func TestShellToolForegroundCancellationReturnsContextError(t *testing.T) {
+	skipOnWindows(t)
+	tool := &ShellTool{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := tool.Call(ctx, `{"command":"sleep 1"}`)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Call error = %v, want context.Canceled", err)
 	}
 }
 
@@ -366,15 +383,17 @@ func TestShellToolBackgroundSubmitInput(t *testing.T) {
 
 func TestShellToolUnknownAction(t *testing.T) {
 	tool := &ShellTool{}
+	ctx, _ := WithToolError(context.Background())
 
-	out, err := tool.Call(context.Background(), `{"action":"bogus"}`)
+	out, err := tool.Call(ctx, `{"action":"bogus"}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
-	// Unknown actions don't pass shellHasAction, so they fall through to the
-	// foreground path which then complains about a missing command.
-	if !strings.Contains(out, "Missing required parameter: command") {
-		t.Fatalf("expected missing-command error, got %q", out)
+	if !strings.Contains(out, "invalid action: bogus") {
+		t.Fatalf("expected invalid-action error, got %q", out)
+	}
+	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeInvalidArguments || got.Message != out {
+		t.Fatalf("ToolError = %+v, want invalid_arguments with output message", got)
 	}
 }
 

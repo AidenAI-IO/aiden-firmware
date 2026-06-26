@@ -107,6 +107,7 @@ type Message struct {
 	SpeechEligible  bool                `json:"speech_eligible,omitempty"`
 	ToolName        string              `json:"tool_name,omitempty"`
 	ToolInput       string              `json:"tool_input,omitempty"`
+	ToolError       *ToolError          `json:"tool_error,omitempty"`
 	Attachments     []MessageAttachment `json:"attachments,omitempty"`
 	Artifacts       []InputArtifact     `json:"artifacts,omitempty"`
 	Source          string              `json:"source,omitempty"`
@@ -139,6 +140,7 @@ func messageFromRunEvent(event RunEvent, fallbackEpisodeID string, requestID str
 		SpeechEligible: event.SpeechEligible,
 		ToolName:       event.ToolName,
 		ToolInput:      event.ToolInput,
+		ToolError:      cloneToolError(event.ToolError),
 		Timestamp:      event.Timestamp,
 		IsError:        event.IsError,
 	}
@@ -311,6 +313,7 @@ type ToolInvokeResponse struct {
 	Output     string         `json:"output"`
 	IsError    bool           `json:"is_error"`
 	Error      string         `json:"error,omitempty"`
+	ToolError  *ToolError     `json:"tool_error,omitempty"`
 	DurationMs int64          `json:"duration_ms"`
 	CalledAt   time.Time      `json:"called_at"`
 }
@@ -1857,7 +1860,7 @@ func (s *Server) handleScreen(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, execution.Error.Error(), http.StatusInternalServerError)
 		return
 	}
-	if execution.Result.IsError {
+	if execution.Result.IsError() {
 		http.Error(w, execution.Result.Output, http.StatusInternalServerError)
 		return
 	}
@@ -2389,23 +2392,28 @@ func (s *Server) handleToolInvoke(w http.ResponseWriter, r *http.Request) {
 		Action: schema.AgentAction{Tool: spec.Name, ToolInput: rawInput},
 	})
 	duration := time.Since(startedAt).Milliseconds()
-	callErr := execution.Result.Error
+	isError := execution.Result.IsError() || execution.Error != nil
+	var errStr string
+	if execution.Result.Error != nil {
+		errStr = execution.Result.Error.Message
+	}
 	if execution.Error != nil {
-		callErr = execution.Error
+		errStr = execution.Error.Error()
 	}
 
 	response := ToolInvokeResponse{
 		Tool:       spec.Descriptor(),
 		RawInput:   execution.Call.Input,
 		Output:     execution.Result.Output,
-		IsError:    execution.Result.IsError || execution.Error != nil,
+		IsError:    isError,
+		ToolError:  execution.Result.Error,
 		DurationMs: duration,
 		CalledAt:   startedAt,
 	}
-	if callErr != nil {
-		response.Error = callErr.Error()
+	if errStr != "" {
+		response.Error = errStr
 		if response.Output == "" {
-			response.Output = callErr.Error()
+			response.Output = errStr
 		}
 	}
 
@@ -2500,7 +2508,9 @@ func decodeToolInvokeInput(body io.Reader) (string, error) {
 	return trimmed, nil
 }
 
-func toolOutputLooksLikeError(output string) bool {
+func legacyToolOutputLooksLikeError(output string) bool {
+	// Boundary compatibility for older subtools/stubs that still return only a
+	// legacy string. Do not use this as the internal source of error truth.
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(output)), "error:")
 }
 

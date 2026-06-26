@@ -36,13 +36,13 @@ const (
 
 // QueuedCommand wraps a BridgeCommand with queue metadata
 type QueuedCommand struct {
-	Command     BridgeCommand `json:"command"`
-	Status      CommandStatus `json:"status"`
-	QueuedAt    time.Time     `json:"queued_at"`
-	InFlightAt  *time.Time    `json:"in_flight_at,omitempty"`
-	ExpireAt    time.Time     `json:"expire_at"`
-	RetryCount  int           `json:"retry_count"`
-	MaxRetries  int           `json:"max_retries"`
+	Command    BridgeCommand `json:"command"`
+	Status     CommandStatus `json:"status"`
+	QueuedAt   time.Time     `json:"queued_at"`
+	InFlightAt *time.Time    `json:"in_flight_at,omitempty"`
+	ExpireAt   time.Time     `json:"expire_at"`
+	RetryCount int           `json:"retry_count"`
+	MaxRetries int           `json:"max_retries"`
 }
 
 // CommandResult holds the execution result of a command
@@ -214,7 +214,8 @@ func (q *CommandQueue) SubmitResult(resp BridgeCommandResponse) error {
 	}
 
 	if q.logger != nil {
-		q.logger.Info("phone-bridge-queue: result submitted for command %s (ok=%v)", resp.ID, resp.OK)
+		ok := resp.Error == nil
+		q.logger.Info("phone-bridge-queue: result submitted for command %s (ok=%v)", resp.ID, ok)
 	}
 
 	return nil
@@ -324,4 +325,3 @@ func (q *CommandQueue) removeCommandID(id string) {
 		}
 	}
 }
-

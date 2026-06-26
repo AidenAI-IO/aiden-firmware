@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -113,6 +114,26 @@ func TestWaitStableScreenToolReturnsScreenshotObservationJSON(t *testing.T) {
 	visual, ok := any(tool).(visualObservationTool)
 	if !ok || !visual.ReturnsVisualObservation() {
 		t.Fatalf("wait_for_stable_screen must be a visual observation tool")
+	}
+}
+
+func TestWaitStableScreenToolPropagatesContextCancellation(t *testing.T) {
+	rawFrame := []byte{128, 128, 128, 128, 128, 128}
+	client := &fakeWaitStableFrameClient{
+		rawFrames: []fakeWaitStableFrame{
+			{meta: frameMetadata{Seq: 1, Width: 2, Height: 2, PixelFormat: "nv12"}, data: rawFrame},
+		},
+	}
+	tool := &WaitStableScreenTool{
+		client:   client,
+		defaults: ScreenStableDefaults{TimeoutMs: 1000, StableMs: 500, DiffThreshold: 2},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := tool.Call(ctx, `{}`)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Call error = %v, want context.Canceled", err)
 	}
 }
 
