@@ -211,6 +211,7 @@ func TestLiveActivityManagerPublishesTerminalStateToRelayAsStandby(t *testing.T)
 	manager := NewLiveActivityManager(LiveActivityConfig{
 		RelayURL: relay.URL,
 		BoardID:  "board-1",
+		PhoneID:  "phone-1",
 	}, nil)
 	manager.relay.httpClient = relay.Client()
 	manager.StartTask("req-1", "Open Settings")
@@ -243,6 +244,37 @@ func TestLiveActivityManagerPublishesTerminalStateToRelayAsStandby(t *testing.T)
 	}
 	if terminalPayload["can_stop"] != false || terminalPayload["shows_progress"] != false {
 		t.Fatalf("terminal relay payload = %#v, want non-stoppable standby", terminalPayload)
+	}
+	if terminalPayload["phone_id"] != "phone-1" {
+		t.Fatalf("terminal relay payload phone_id = %v, want phone-1", terminalPayload["phone_id"])
+	}
+}
+
+func TestLiveActivityManagerSkipsRelayWithoutPhoneID(t *testing.T) {
+	requests := make(chan map[string]interface{}, 1)
+	relay := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode relay payload: %v", err)
+		}
+		requests <- payload
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer relay.Close()
+
+	manager := NewLiveActivityManager(LiveActivityConfig{
+		RelayURL: relay.URL,
+		BoardID:  "board-1",
+	}, nil)
+	manager.relay.httpClient = relay.Client()
+	manager.StartTask("req-1", "Open Settings")
+
+	select {
+	case payload := <-requests:
+		t.Fatalf("unexpected relay payload without phone_id: %#v", payload)
+	case <-time.After(150 * time.Millisecond):
 	}
 }
 

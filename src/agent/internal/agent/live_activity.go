@@ -44,6 +44,8 @@ const (
 	liveActivityRelayQueueSize      = 32
 )
 
+var errLiveActivityRelayPhoneIDRequired = errors.New("live activity relay phone_id is required")
+
 type LiveActivityState struct {
 	RequestID     string     `json:"request_id"`
 	PhoneID       string     `json:"phone_id,omitempty"`
@@ -583,6 +585,10 @@ func (m *LiveActivityManager) runRelayPublisher(relay *LiveActivityRelayClient, 
 			continue
 		}
 		if err != nil {
+			if errors.Is(err, errLiveActivityRelayPhoneIDRequired) {
+				m.logger.Warn("live activity: relay push skipped request_id=%s status=%s sent_status=%s final=%t sent_final=%t: phone_id missing", req.requestID, req.state.Status, state.Status, req.final, final)
+				continue
+			}
 			m.logger.Error("live activity: relay push failed request_id=%s status=%s sent_status=%s final=%t sent_final=%t endpoint=%s: %v", req.requestID, req.state.Status, state.Status, req.final, final, relay.endpoint, err)
 			continue
 		}
@@ -1251,9 +1257,10 @@ func (c *LiveActivityRelayClient) Push(ctx context.Context, state LiveActivitySt
 		"updated_at":     state.UpdatedAt.UTC().Format(time.RFC3339),
 	}
 	phoneID := firstNonEmptyString([]string{state.PhoneID, c.phoneID})
-	if phoneID != "" {
-		body["phone_id"] = phoneID
+	if phoneID == "" {
+		return errLiveActivityRelayPhoneIDRequired
 	}
+	body["phone_id"] = phoneID
 	if final {
 		body["event"] = "end"
 	}
