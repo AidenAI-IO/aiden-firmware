@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -11,8 +12,8 @@ import (
 
 const (
 	defaultStableWaitTimeoutMs = 3500
-	defaultStableDurationMs    = 500
-	defaultDiffThreshold       = 2.0
+	defaultStableDurationMs    = 400
+	defaultDiffThreshold       = 5.0
 	stableWaitPollInterval     = 200 * time.Millisecond
 )
 
@@ -126,11 +127,14 @@ func (t *WaitStableScreenTool) ArgsSchema() map[string]any {
 func (t *WaitStableScreenTool) Call(ctx context.Context, input string) (string, error) {
 	result, err := t.wait(ctx, input)
 	if err != nil {
-		return fmt.Sprintf("error: %v", err), nil
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "", err
+		}
+		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
 	screenshot, err := t.captureScreenshot()
 	if err != nil {
-		return fmt.Sprintf("error: stable-screen wait completed with stable=%v elapsed_ms=%d, but screenshot failed: %v", result.Stable, result.ElapsedMs, err), nil
+		return toolErrorResultf(ctx, CodeToolExecutionFailed, "stable-screen wait completed with stable=%v elapsed_ms=%d, but screenshot failed: %v", result.Stable, result.ElapsedMs, err), nil
 	}
 	stable := result.Stable
 	elapsed := result.ElapsedMs

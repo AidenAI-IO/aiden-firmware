@@ -36,10 +36,21 @@ func TestLookupModelSpecKnownModels(t *testing.T) {
 		wantContext   int
 		wantMaxOutput int
 	}{
-		{"openrouter gemini flash", "openrouter", "google/gemini-3.5-flash", 1_000_000, 8_192},
+		{"openrouter gemini flash", "openrouter", "google/gemini-3.5-flash", 1_048_576, 65_536},
 		{"claude sonnet 3.5", "openrouter", "anthropic/claude-3.5-sonnet", 200_000, 8_192},
 		{"bytedance seed lite", "openrouter", "bytedance-seed/seed-2.0-lite", 128_000, 8_192},
 		{"gpt-4o", "openai", "openai/gpt-4o", 128_000, 16_384},
+		{"gpt-5.5 prefixed", "openai", "openai/gpt-5.5", 1_050_000, 128_000},
+		{"gpt-5.5 bare", "openai", "gpt-5.5", 1_050_000, 128_000},
+		{"gpt-5.5 pro bare", "openai", "gpt-5.5-pro", 1_050_000, 128_000},
+		{"gpt-5.4 prefixed", "openai", "openai/gpt-5.4", 1_050_000, 128_000},
+		{"gpt-5.4 bare", "openai", "gpt-5.4", 1_050_000, 128_000},
+		{"gpt-5.4 mini bare", "openai", "gpt-5.4-mini", 400_000, 128_000},
+		{"gpt-5.4 nano bare", "openai", "gpt-5.4-nano", 400_000, 128_000},
+		{"claude opus 4.8 bare", "anthropic", "claude-opus-4.8", 1_000_000, 64_000},
+		{"claude sonnet 4.6 prefixed", "openrouter", "anthropic/claude-sonnet-4.6", 1_000_000, 64_000},
+		{"claude haiku 4.5 bare", "anthropic", "claude-haiku-4.5", 200_000, 64_000},
+		{"gemini 3.5 pro bare", "google", "gemini-3.5-pro", 1_048_576, 65_536},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -62,8 +73,8 @@ func TestLookupModelSpecCaseInsensitive(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected case-insensitive lookup to succeed")
 	}
-	if spec.ContextWindow != 1_000_000 {
-		t.Errorf("ContextWindow = %d, want 1_000_000", spec.ContextWindow)
+	if spec.ContextWindow != 1_048_576 {
+		t.Errorf("ContextWindow = %d, want 1_048_576", spec.ContextWindow)
 	}
 }
 
@@ -78,8 +89,8 @@ func TestLookupModelSpecUnknownModelReturnsNotOK(t *testing.T) {
 
 func TestModelManagerSpecUsesConfig(t *testing.T) {
 	mgr := NewModelManager(ModelConfig{Provider: "openrouter", Model: "google/gemini-3.5-flash"}, ProxyConfig{})
-	if got := mgr.Spec().ContextWindow; got != 1_000_000 {
-		t.Errorf("ModelManager.Spec().ContextWindow = %d, want 1_000_000", got)
+	if got := mgr.Spec().ContextWindow; got != 1_048_576 {
+		t.Errorf("ModelManager.Spec().ContextWindow = %d, want 1_048_576", got)
 	}
 
 	unknown := NewModelManager(ModelConfig{Provider: "fake", Model: "vendor/no-such-model"}, ProxyConfig{})
@@ -116,8 +127,8 @@ func TestModelManagerSpecAllowsPartialExplicitConfigOverrides(t *testing.T) {
 	if spec.ContextWindow != 64_000 {
 		t.Errorf("ContextWindow = %d, want 64_000", spec.ContextWindow)
 	}
-	if spec.MaxOutput != 8_192 {
-		t.Errorf("MaxOutput = %d, want registry value 8_192", spec.MaxOutput)
+	if spec.MaxOutput != 65_536 {
+		t.Errorf("MaxOutput = %d, want registry value 65_536", spec.MaxOutput)
 	}
 }
 
@@ -144,11 +155,11 @@ func TestModelManagerSpecUsesRegistryBeforeProviderMetadata(t *testing.T) {
 	mgr := NewModelManager(cfg, ProxyConfig{}, WithProviderModelMetadataCachePath(cachePath))
 
 	spec := mgr.Spec()
-	if spec.ContextWindow != 1_000_000 {
-		t.Fatalf("Spec().ContextWindow = %d, want registry value 1_000_000", spec.ContextWindow)
+	if spec.ContextWindow != 1_048_576 {
+		t.Fatalf("Spec().ContextWindow = %d, want registry value 1_048_576", spec.ContextWindow)
 	}
-	if spec.MaxOutput != 8_192 {
-		t.Fatalf("Spec().MaxOutput = %d, want registry value 8_192", spec.MaxOutput)
+	if spec.MaxOutput != 65_536 {
+		t.Fatalf("Spec().MaxOutput = %d, want registry value 65_536", spec.MaxOutput)
 	}
 	if got := requests.Load(); got != 0 {
 		t.Fatalf("requests = %d, want 0", got)

@@ -32,6 +32,7 @@ struct STTToml {
     std::string api_key;
     std::string model;
     std::string base_url;
+    std::string app_id;
     std::string secret_id;
     std::string secret_key;
     std::string region;

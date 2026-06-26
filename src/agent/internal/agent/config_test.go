@@ -879,8 +879,8 @@ func TestVoiceSessionConfigDefaults(t *testing.T) {
 	if cfg.VoiceFirstTurnTimeoutOrDefault() != 10*time.Second {
 		t.Fatalf("VoiceFirstTurnTimeoutOrDefault() = %s, want 10s", cfg.VoiceFirstTurnTimeoutOrDefault())
 	}
-	if cfg.VoiceFollowupTimeoutOrDefault() != 6*time.Second {
-		t.Fatalf("VoiceFollowupTimeoutOrDefault() = %s, want 6s", cfg.VoiceFollowupTimeoutOrDefault())
+	if cfg.VoiceFollowupTimeoutOrDefault() != 5*time.Second {
+		t.Fatalf("VoiceFollowupTimeoutOrDefault() = %s, want 5s", cfg.VoiceFollowupTimeoutOrDefault())
 	}
 	if !cfg.VoiceInterruptOnWakeupOrDefault() {
 		t.Fatal("VoiceInterruptOnWakeupOrDefault() = false, want true")

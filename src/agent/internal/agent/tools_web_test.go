@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,18 @@ type fakeSearchBackend struct {
 	query string
 	out   string
 	err   error
+}
+
+func TestWebSearchPropagatesContextErrors(t *testing.T) {
+	for _, wantErr := range []error{context.Canceled, context.DeadlineExceeded} {
+		t.Run(wantErr.Error(), func(t *testing.T) {
+			tool := &WebSearchTool{backend: &fakeSearchBackend{err: wantErr}, provider: "fake"}
+			_, err := tool.Call(context.Background(), `{"query":"golang"}`)
+			if !errors.Is(err, wantErr) {
+				t.Fatalf("Call error = %v, want %v", err, wantErr)
+			}
+		})
+	}
 }
 
 func (b *fakeSearchBackend) Search(ctx context.Context, query string) (string, error) {
@@ -145,11 +158,73 @@ func TestCalculatorAcceptsJSONExpression(t *testing.T) {
 }
 
 func TestWebScraperRejectsInvalidURL(t *testing.T) {
-	out, err := NewWebScraperTool(ProxyConfig{}).Call(context.Background(), `{"url":"not a url"}`)
+	ctx, _ := WithToolError(context.Background())
+	out, err := NewWebScraperTool(ProxyConfig{}).Call(ctx, `{"url":"not a url"}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
-	if !strings.HasPrefix(out, "error:") {
-		t.Fatalf("output = %q, want error response", out)
+	if out != "invalid url scheme: only http/https allowed" {
+		t.Fatalf("output = %q, want invalid URL error message", out)
+	}
+	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeInvalidArguments || got.Message != out {
+		t.Fatalf("ToolError = %+v, want invalid_arguments with output message", got)
+	}
+}
+
+func TestWebScraperRejectsHostnamesResolvingToPrivateIPs(t *testing.T) {
+	original := lookupScrapeHostIPs
+	lookupScrapeHostIPs = func(host string) ([]net.IP, error) {
+		if host != "public.example" {
+			t.Fatalf("lookup host = %q, want public.example", host)
+		}
+		return []net.IP{net.ParseIP("169.254.169.254")}, nil
+	}
+	defer func() { lookupScrapeHostIPs = original }()
+
+	ctx, _ := WithToolError(context.Background())
+	out, err := NewWebScraperTool(ProxyConfig{}).Call(ctx, `{"url":"https://public.example/page"}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "url host resolves to a private or link-local address" {
+		t.Fatalf("output = %q", out)
+	}
+	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeInvalidArguments || got.Message != out {
+		t.Fatalf("ToolError = %+v, want invalid_arguments with output message", got)
+	}
+}
+
+func TestWebScraperRejectsHostnamesRebindingToPrivateIPsAtDialTime(t *testing.T) {
+	for _, env := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy"} {
+		t.Setenv(env, "")
+	}
+
+	original := lookupScrapeHostIPs
+	lookupCalls := 0
+	lookupScrapeHostIPs = func(host string) ([]net.IP, error) {
+		if host != "rebind.invalid" {
+			t.Fatalf("lookup host = %q, want rebind.invalid", host)
+		}
+		lookupCalls++
+		if lookupCalls < 3 {
+			return []net.IP{net.ParseIP("93.184.216.34")}, nil
+		}
+		return []net.IP{net.ParseIP("169.254.169.254")}, nil
+	}
+	defer func() { lookupScrapeHostIPs = original }()
+
+	ctx, _ := WithToolError(context.Background())
+	out, err := NewWebScraperTool(ProxyConfig{}).Call(ctx, `{"url":"http://rebind.invalid/"}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if lookupCalls < 3 {
+		t.Fatalf("lookup calls = %d, want dial-time validation", lookupCalls)
+	}
+	if !strings.Contains(out, "url host resolves to a private or link-local address") {
+		t.Fatalf("output = %q, want private IP rejection", out)
+	}
+	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeToolExecutionFailed || got.Message != out {
+		t.Fatalf("ToolError = %+v, want tool_execution_failed with output message", got)
 	}
 }

@@ -14,12 +14,45 @@ type ModelSpec struct {
 
 // modelSpecRegistry covers the chat models referenced from this repo (overlay
 // agent.toml, configuration docs, common OpenRouter routes used in dev/staging)
-// plus a couple of common siblings. Numbers reflect public model cards; when in
-// doubt prefer the smaller advertised window so we err on the side of
-// triggering compression earlier instead of overflowing the prompt.
+// plus the current mainstream multimodal + tool-calling models. Numbers reflect
+// public model cards; when in doubt prefer the smaller advertised window so we
+// err on the side of triggering compression earlier instead of overflowing the
+// prompt. Models are keyed by both their provider-prefixed canonical id and the
+// bare model name so configs that drop the provider prefix (e.g. the openai
+// provider pointed at a proxy with model = "gpt-5.4") still resolve.
+//
+// Only models that support both image input and tool/function calling are
+// listed here, since those are the capabilities the agent relies on.
 var modelSpecRegistry = map[string]ModelSpec{
-	"google/gemini-3.5-flash":      {ContextWindow: 1_000_000, MaxOutput: 8_192},
-	"google/gemini-3.5-pro":        {ContextWindow: 1_000_000, MaxOutput: 8_192},
+	// OpenAI GPT-5.x family (vision + tool calling). ContextWindow is the total
+	// advertised window; compaction logic uses (ContextWindow - MaxOutput) for
+	// the actual input budget.
+	"openai/gpt-5.5":      {ContextWindow: 1_050_000, MaxOutput: 128_000},
+	"gpt-5.5":             {ContextWindow: 1_050_000, MaxOutput: 128_000},
+	"openai/gpt-5.5-pro":  {ContextWindow: 1_050_000, MaxOutput: 128_000},
+	"gpt-5.5-pro":         {ContextWindow: 1_050_000, MaxOutput: 128_000},
+	"openai/gpt-5.4":      {ContextWindow: 1_050_000, MaxOutput: 128_000},
+	"gpt-5.4":             {ContextWindow: 1_050_000, MaxOutput: 128_000},
+	"openai/gpt-5.4-mini": {ContextWindow: 400_000, MaxOutput: 128_000},
+	"gpt-5.4-mini":        {ContextWindow: 400_000, MaxOutput: 128_000},
+	"openai/gpt-5.4-nano": {ContextWindow: 400_000, MaxOutput: 128_000},
+	"gpt-5.4-nano":        {ContextWindow: 400_000, MaxOutput: 128_000},
+
+	// Anthropic Claude 4.x family (vision + tool calling).
+	"anthropic/claude-opus-4.8":   {ContextWindow: 1_000_000, MaxOutput: 64_000},
+	"claude-opus-4.8":             {ContextWindow: 1_000_000, MaxOutput: 64_000},
+	"anthropic/claude-sonnet-4.6": {ContextWindow: 1_000_000, MaxOutput: 64_000},
+	"claude-sonnet-4.6":           {ContextWindow: 1_000_000, MaxOutput: 64_000},
+	"anthropic/claude-haiku-4.5":  {ContextWindow: 200_000, MaxOutput: 64_000},
+	"claude-haiku-4.5":            {ContextWindow: 200_000, MaxOutput: 64_000},
+
+	// Google Gemini 3.5 family (vision + tool calling).
+	"google/gemini-3.5-pro":   {ContextWindow: 1_048_576, MaxOutput: 65_536},
+	"gemini-3.5-pro":          {ContextWindow: 1_048_576, MaxOutput: 65_536},
+	"google/gemini-3.5-flash": {ContextWindow: 1_048_576, MaxOutput: 65_536},
+	"gemini-3.5-flash":        {ContextWindow: 1_048_576, MaxOutput: 65_536},
+
+	// Existing entries retained for back-compat with dev/staging configs.
 	"anthropic/claude-3.5-sonnet":  {ContextWindow: 200_000, MaxOutput: 8_192},
 	"anthropic/claude-3.7-sonnet":  {ContextWindow: 200_000, MaxOutput: 8_192},
 	"bytedance-seed/seed-2.0-lite": {ContextWindow: 128_000, MaxOutput: 8_192},

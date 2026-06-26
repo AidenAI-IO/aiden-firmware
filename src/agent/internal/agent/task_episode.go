@@ -69,6 +69,7 @@ type TaskEpisodeEvent struct {
 	NextStep           string              `json:"next_step,omitempty" yaml:"next_step,omitempty"`
 	ToolName           string              `json:"tool_name,omitempty" yaml:"tool_name,omitempty"`
 	ToolInput          string              `json:"tool_input,omitempty" yaml:"tool_input,omitempty"`
+	ToolError          *ToolError          `json:"tool_error,omitempty" yaml:"tool_error,omitempty"`
 	Content            string              `json:"content,omitempty" yaml:"content,omitempty"`
 	Todo               *TodoState          `json:"todo,omitempty" yaml:"todo,omitempty"`
 	SpeechEligible     bool                `json:"speech_eligible,omitempty" yaml:"speech_eligible,omitempty"`
@@ -309,7 +310,8 @@ func (r *EpisodeRecorder) recordExecutionForRole(result roleExecutionResult, rol
 			Type:        "tool_result",
 			Role:        "tool",
 			Observation: compactToolObservation(result.Step.Observation),
-			IsError:     toolOutputLooksLikeError(result.Step.Observation),
+			IsError:     result.ToolError != nil,
+			ToolError:   cloneToolError(result.ToolError),
 		}
 		if result.Step.Action.Tool != "" {
 			event.ToolName = result.Step.Action.Tool

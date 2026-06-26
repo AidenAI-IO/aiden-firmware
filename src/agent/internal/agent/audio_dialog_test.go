@@ -3,10 +3,12 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -69,10 +71,12 @@ func TestAudioDialogReadRecordChunkRequiresActiveRecording(t *testing.T) {
 
 func TestAudioDialogStopRecordingClearsLocalStateOnStopError(t *testing.T) {
 	missingSocket := filepath.Join(t.TempDir(), "missing-audio.sock")
+	uploader := newBlockingFinalizeUploader("")
 	dialog := &AudioDialog{
 		audioClient:  NewAudioServiceClient(missingSocket),
 		recordActive: true,
 		sessionID:    123,
+		recordSTT:    &streamingSTTSession{uploader: uploader},
 	}
 
 	if err := dialog.StopRecording(); err == nil {
@@ -83,6 +87,11 @@ func TestAudioDialogStopRecordingClearsLocalStateOnStopError(t *testing.T) {
 	}
 	if dialog.sessionID != 0 {
 		t.Fatalf("sessionID = %d, want 0", dialog.sessionID)
+	}
+	select {
+	case <-uploader.closed:
+	case <-time.After(time.Second):
+		t.Fatal("expected streaming session to be closed on stop error")
 	}
 }
 
@@ -124,6 +133,204 @@ func TestAudioDialogStartRecordingRetriesUntilAudioServiceAvailable(t *testing.T
 	case <-ready:
 	case <-time.After(time.Second):
 		t.Fatal("delayed audio service did not handle start_recording")
+	}
+}
+
+func TestAudioDialogStartRecordingRollsBackOnVADResetFailure(t *testing.T) {
+	var (
+		opMu sync.Mutex
+		ops  []string
+	)
+	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
+		opMu.Lock()
+		ops = append(ops, req.Op)
+		opMu.Unlock()
+		switch req.Op {
+		case "start_recording":
+			return audioResponse{Status: "OK", SessionID: stringUint64(42)}, nil
+		default:
+			return audioResponse{Status: "OK"}, nil
+		}
+	})
+
+	scorer := &sequenceScorer{resetErr: errors.New("vad helper crashed")}
+	vad, err := NewAudioVADWithScorer(AudioVADConfig{
+		SampleRate:      16000,
+		SilenceMs:       650,
+		MinSpeechMs:     300,
+		AlwaysBuffer:    true,
+		SpeechThreshold: 0.5,
+	}, scorer)
+	if err != nil {
+		t.Fatalf("NewAudioVADWithScorer() error = %v", err)
+	}
+
+	sttClient := &stubSTTClient{
+		supportsStreaming: true,
+		streamUploader:    &stubSTTStreamUploader{},
+	}
+	dialog := &AudioDialog{
+		config: Config{
+			InputMode: "stt",
+			Audio:     AudioConfig{Socket: socketPath, SampleRate: 16000, Channels: 1, BitWidth: 16},
+		},
+		audioClient: NewAudioServiceClient(socketPath),
+		sttClient:   sttClient,
+		vad:         vad,
+	}
+
+	if err := dialog.StartRecording(); err == nil {
+		t.Fatal("expected StartRecording error when VAD reset fails")
+	}
+
+	if dialog.recordActive {
+		t.Fatal("recordActive should be false after VAD failure")
+	}
+	if dialog.sessionID != 0 {
+		t.Fatalf("sessionID = %d, want 0 after VAD failure", dialog.sessionID)
+	}
+	if dialog.recordReader != nil {
+		t.Fatal("recordReader should be nil after VAD failure")
+	}
+	if got := dialog.currentRecordSTT(); got != nil {
+		t.Fatal("recordSTT should be nil after VAD failure")
+	}
+	if sttClient.streamUploaderUsed != 0 {
+		t.Fatalf("streamUploaderUsed = %d, want 0; streaming session should not be opened when VAD reset fails", sttClient.streamUploaderUsed)
+	}
+	opMu.Lock()
+	defer opMu.Unlock()
+	for _, op := range ops {
+		if op == "start_recording" {
+			t.Fatalf("audio service received %q before VAD validated; ops = %v", op, ops)
+		}
+	}
+}
+
+func TestAudioDialogPrepareTurnInputUsesStreamingTranscriptFromRecording(t *testing.T) {
+	stopCh := make(chan struct{})
+	var stopOnce sync.Once
+	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
+		switch req.Op {
+		case "start_recording":
+			return audioResponse{Status: "OK", SessionID: stringUint64(42)}, nil
+		case "read_record_chunk":
+			select {
+			case <-stopCh:
+				return audioResponse{Status: "OK", EndOfStream: true}, nil
+			default:
+				return audioResponse{Status: "OK"}, []byte{1, 0, 2, 0}
+			}
+		case "stop_recording":
+			stopOnce.Do(func() { close(stopCh) })
+			return audioResponse{Status: "OK"}, nil
+		default:
+			return audioResponse{Status: "OK"}, nil
+		}
+	})
+
+	sttClient := &stubSTTClient{
+		supportsStreaming: true,
+		streamUploader:    &stubSTTStreamUploader{transcript: "streaming result"},
+	}
+	dialog := &AudioDialog{
+		config: Config{
+			InputMode: "stt",
+			Audio: AudioConfig{
+				Socket:     socketPath,
+				SampleRate: 16000,
+				Channels:   1,
+				BitWidth:   16,
+			},
+		},
+		audioClient:  NewAudioServiceClient(socketPath),
+		sttClient:    sttClient,
+		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
+	}
+
+	if err := dialog.StartRecording(); err != nil {
+		t.Fatalf("StartRecording() error = %v", err)
+	}
+	chunk, err := dialog.ReadRecordChunk(200)
+	if err != nil {
+		t.Fatalf("ReadRecordChunk() error = %v", err)
+	}
+	if chunk == nil || len(chunk.PCM) == 0 {
+		t.Fatalf("expected PCM chunk, got %#v", chunk)
+	}
+	if err := dialog.StopRecording(); err != nil {
+		t.Fatalf("StopRecording() error = %v", err)
+	}
+
+	input, err := dialog.PrepareTurnInput([]int16{1, 2})
+	if err != nil {
+		t.Fatalf("PrepareTurnInput() error = %v", err)
+	}
+	if input.Transcript != "streaming result" {
+		t.Fatalf("Transcript = %q, want streaming result", input.Transcript)
+	}
+	if len(sttClient.inputs) != 0 {
+		t.Fatalf("expected streaming transcript to skip TranscribeWAV, got %d calls", len(sttClient.inputs))
+	}
+	if sttClient.streamUploaderUsed != 1 {
+		t.Fatalf("stream uploader begin count = %d, want 1", sttClient.streamUploaderUsed)
+	}
+	if sttClient.streamUploader == nil || len(sttClient.streamUploader.writes) != 1 {
+		t.Fatalf("stream uploader writes = %#v, want one PCM write", sttClient.streamUploader)
+	}
+}
+
+func TestAudioDialogStopRecordingFallsBackToOneShotWhenStreamingFinalizeTimesOut(t *testing.T) {
+	oldTimeout := audioDialogStreamingSTTFinalizeTimeout
+	audioDialogStreamingSTTFinalizeTimeout = 20 * time.Millisecond
+	t.Cleanup(func() {
+		audioDialogStreamingSTTFinalizeTimeout = oldTimeout
+	})
+
+	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
+		switch req.Op {
+		case "stop_recording":
+			return audioResponse{Status: "OK"}, nil
+		default:
+			return audioResponse{Status: "OK"}, nil
+		}
+	})
+
+	uploader := newBlockingFinalizeUploader("")
+	sttClient := &stubSTTClient{transcript: "one-shot result"}
+	dialog := &AudioDialog{
+		config: Config{
+			InputMode: "stt",
+			Audio: AudioConfig{
+				Socket:     socketPath,
+				SampleRate: 16000,
+			},
+		},
+		audioClient:  NewAudioServiceClient(socketPath),
+		sttClient:    sttClient,
+		recordActive: true,
+		sessionID:    42,
+		recordSTT:    &streamingSTTSession{uploader: uploader},
+	}
+
+	if err := dialog.StopRecording(); err != nil {
+		t.Fatalf("StopRecording() error = %v", err)
+	}
+
+	input, err := dialog.PrepareTurnInput([]int16{1, 2, 3, 4})
+	if err != nil {
+		t.Fatalf("PrepareTurnInput() error = %v", err)
+	}
+	if input.Transcript != "one-shot result" {
+		t.Fatalf("Transcript = %q, want one-shot result", input.Transcript)
+	}
+	if len(sttClient.inputs) != 1 {
+		t.Fatalf("expected fallback one-shot STT call, got %d", len(sttClient.inputs))
+	}
+	select {
+	case <-uploader.closed:
+	case <-time.After(time.Second):
+		t.Fatal("expected uploader to be closed after finalize timeout")
 	}
 }
 
@@ -238,7 +445,7 @@ func TestProcessUtteranceAudioModeSendsWAVAttachmentToRuntime(t *testing.T) {
 }
 
 func TestProcessUtteranceSpeaksFullOutputWhenSpeechMissing(t *testing.T) {
-	output := "已完成设置，当前音量是 42。\n\n- 读取音量\n- 确认状态\n\n这段详细说明保留给屏幕。"
+	output := "Setup completed, current volume is 42.\n\n- Read volume\n- Confirm status\n\nThis detailed description is reserved for the screen."
 	expectedSpeech := output
 	model := &scriptedModel{
 		responses: roleDirectResponses(output),
@@ -289,7 +496,7 @@ func TestProcessUtteranceSpeaksFullOutputWhenSpeechMissing(t *testing.T) {
 	if !ok {
 		t.Fatalf("assistant history missing: %#v", messages)
 	}
-	if !strings.Contains(assistant.Content, "这段详细说明保留给屏幕") {
+	if !strings.Contains(assistant.Content, "This detailed description is reserved for the screen") {
 		t.Fatalf("history should keep full output, got %q", assistant.Content)
 	}
 }
@@ -298,8 +505,8 @@ func TestAudioDialogSpeaksToolContentAsynchronously(t *testing.T) {
 	toolSpeech := true
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, "检查音量。"),
-			contentResponse("当前音量是 42。"),
+			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, "Check volume."),
+			contentResponse("Current volume is 42."),
 		},
 	}
 	runtime := NewRuntimeWithDeps(
@@ -341,7 +548,7 @@ func TestAudioDialogSpeaksToolContentAsynchronously(t *testing.T) {
 	if len(texts) != 2 {
 		t.Fatalf("expected tool content and final answer TTS, got %#v", texts)
 	}
-	if !containsString(texts, "检查音量。") || !containsString(texts, "当前音量是 42。") {
+	if !containsString(texts, "Check volume.") || !containsString(texts, "Current volume is 42.") {
 		t.Fatalf("unexpected TTS texts: %#v", texts)
 	}
 }
@@ -360,7 +567,7 @@ func TestAudioDialogDoesNotSpeakWaitForWakeupToolContent(t *testing.T) {
 	dialog.HandleRunEvent(context.Background(), RunEvent{
 		Type:     runEventToolCall,
 		ToolName: toolWaitForWakeup,
-		Content:  "我准备回到等待唤醒状态。",
+		Content:  "Preparing to return to waiting for wakeup state.",
 	})
 
 	assertNoProviderTextWithin(t, provider, 200*time.Millisecond)
@@ -380,11 +587,11 @@ func TestAudioDialogSpeaksToolCallContent(t *testing.T) {
 	dialog.HandleRunEvent(context.Background(), RunEvent{
 		Type:     runEventToolCall,
 		ToolName: "audio_volume",
-		Content:  "Check the current volume.",
+		Content:  "Read current volume.",
 	})
 
 	waitForProviderTextCount(t, provider, 1)
-	if got := provider.texts(); len(got) != 1 || got[0] != "Check the current volume." {
+	if got := provider.texts(); len(got) != 1 || got[0] != "Read current volume." {
 		t.Fatalf("unexpected TTS texts: %#v", got)
 	}
 }

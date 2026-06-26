@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -26,8 +27,9 @@ type ValidationResult struct {
 }
 
 type ConfigTestResult struct {
-	OK      bool              `json:"ok"`
-	Results []ConfigTestCheck `json:"results"`
+	OK         bool              `json:"ok"`
+	Results    []ConfigTestCheck `json:"results"`
+	Transcript string            `json:"transcript,omitempty"`
 }
 
 type ConfigTestCheck struct {
@@ -93,13 +95,31 @@ func (d ttsDTO) playbackTestRequest(text string) agent.TTSPlaybackTestRequest {
 
 type sttDTO struct {
 	Provider        string `json:"provider"`
+	Language        string `json:"language"`
 	APIKey          string `json:"api_key"`
 	Model           string `json:"model"`
 	BaseURL         string `json:"base_url"`
+	AppID           string `json:"app_id"`
 	SecretID        string `json:"secret_id"`
 	SecretKey       string `json:"secret_key"`
 	Region          string `json:"region"`
 	EngineModelType string `json:"engine_model_type"`
+}
+
+func (d sttDTO) transcriptionTestRequest(wavData []byte) agent.STTTranscriptionTestRequest {
+	return agent.STTTranscriptionTestRequest{
+		Provider:        d.Provider,
+		Language:        d.Language,
+		APIKey:          d.APIKey,
+		Model:           d.Model,
+		BaseURL:         d.BaseURL,
+		AppID:           d.AppID,
+		SecretID:        d.SecretID,
+		SecretKey:       d.SecretKey,
+		Region:          d.Region,
+		EngineModelType: d.EngineModelType,
+		WAVData:         wavData,
+	}
 }
 
 type audioDTO struct {
@@ -251,9 +271,11 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 		},
 		STT: agent.STTConfig{
 			Provider:        d.STT.Provider,
+			Language:        d.STT.Language,
 			APIKey:          d.STT.APIKey,
 			Model:           d.STT.Model,
 			BaseURL:         d.STT.BaseURL,
+			AppID:           d.STT.AppID,
 			SecretID:        d.STT.SecretID,
 			SecretKey:       d.STT.SecretKey,
 			Region:          d.STT.Region,
@@ -380,9 +402,11 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 		},
 		STT: sttDTO{
 			Provider:        cfg.STT.Provider,
+			Language:        cfg.STT.Language,
 			APIKey:          cfg.STT.APIKey,
 			Model:           cfg.STT.Model,
 			BaseURL:         cfg.STT.BaseURL,
+			AppID:           cfg.STT.AppID,
 			SecretID:        cfg.STT.SecretID,
 			SecretKey:       cfg.STT.SecretKey,
 			Region:          cfg.STT.Region,
@@ -626,9 +650,10 @@ func runConfig(args []string) int {
 }
 
 type configTestInput struct {
-	Section string          `json:"section"`
-	Values  json.RawMessage `json:"values"`
-	Text    string          `json:"text"`
+	Section     string          `json:"section"`
+	Values      json.RawMessage `json:"values"`
+	Text        string          `json:"text"`
+	AudioBase64 string          `json:"audio_base64"`
 }
 
 // runConfigTest implements `agent config-test` for checks that need agent
@@ -667,7 +692,7 @@ func runConfigTest(args []string) int {
 	if section == "" {
 		section = strings.TrimSpace(*sectionFlag)
 	}
-	if section != "tts" {
+	if section != "tts" && section != "stt" {
 		writeConfigTestResult(configTestFailure("request", "unsupported section: "+section))
 		return 1
 	}
@@ -678,29 +703,58 @@ func runConfigTest(args []string) int {
 		return 1
 	}
 
-	var ttsValues ttsDTO
 	if len(input.Values) == 0 || string(input.Values) == "null" {
 		writeConfigTestResult(configTestFailure("request", "missing values object"))
-		return 1
-	}
-	if err := json.Unmarshal(input.Values, &ttsValues); err != nil {
-		writeConfigTestResult(configTestFailure("request", "invalid tts values: "+err.Error()))
 		return 1
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeoutFlag)
 	defer cancel()
-	playback, err := agent.RunTTSPlaybackTest(ctx, cfg, ttsValues.playbackTestRequest(input.Text))
+	if section == "tts" {
+		var ttsValues ttsDTO
+		if err := json.Unmarshal(input.Values, &ttsValues); err != nil {
+			writeConfigTestResult(configTestFailure("request", "invalid tts values: "+err.Error()))
+			return 1
+		}
+
+		playback, err := agent.RunTTSPlaybackTest(ctx, cfg, ttsValues.playbackTestRequest(input.Text))
+		if err != nil {
+			writeConfigTestResult(configTestFailure("tts_playback", err.Error()))
+			return 1
+		}
+		writeConfigTestResult(ConfigTestResult{
+			OK: true,
+			Results: []ConfigTestCheck{{
+				Check:  "tts_playback",
+				Passed: true,
+				Detail: fmt.Sprintf("played %q with %s", playback.Text, playback.Provider),
+			}},
+		})
+		return 0
+	}
+
+	var sttValues sttDTO
+	if err := json.Unmarshal(input.Values, &sttValues); err != nil {
+		writeConfigTestResult(configTestFailure("request", "invalid stt values: "+err.Error()))
+		return 1
+	}
+	wavData, err := base64.StdEncoding.DecodeString(strings.TrimSpace(input.AudioBase64))
 	if err != nil {
-		writeConfigTestResult(configTestFailure("tts_playback", err.Error()))
+		writeConfigTestResult(configTestFailure("request", "invalid audio_base64: "+err.Error()))
+		return 1
+	}
+	transcription, err := agent.RunSTTTranscriptionTest(ctx, cfg, sttValues.transcriptionTestRequest(wavData))
+	if err != nil {
+		writeConfigTestResult(configTestFailure("stt_transcription", err.Error()))
 		return 1
 	}
 	writeConfigTestResult(ConfigTestResult{
-		OK: true,
+		OK:         true,
+		Transcript: transcription.Transcript,
 		Results: []ConfigTestCheck{{
-			Check:  "tts_playback",
+			Check:  "stt_transcription",
 			Passed: true,
-			Detail: fmt.Sprintf("played %q with %s", playback.Text, playback.Provider),
+			Detail: fmt.Sprintf("transcribed audio with %s", transcription.Provider),
 		}},
 	})
 	return 0
