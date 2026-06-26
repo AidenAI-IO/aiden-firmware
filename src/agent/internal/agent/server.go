@@ -52,6 +52,8 @@ type Server struct {
 	pendingResultsMu     sync.Mutex
 	activeRuns           map[string]context.CancelFunc
 	activeRunsMu         sync.Mutex
+	terminatedRequests   map[string]struct{}
+	terminatedRequestsMu sync.Mutex
 	activeOutputs        map[string]map[*activeTTSOutput]struct{}
 	activeOutputsMu      sync.Mutex
 	pendingSteers        map[string]pendingSteerMessage
@@ -334,6 +336,7 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		liveActivity:        NewLiveActivityManager(runtime.config.LiveActivity, runtime.logger),
 		pendingResults:      make(map[string]*chatPendingResult),
 		activeRuns:          make(map[string]context.CancelFunc),
+		terminatedRequests:  make(map[string]struct{}),
 		pendingSteers:       make(map[string]pendingSteerMessage),
 		eventBroadcaster:    NewEventBroadcaster(),
 	}
@@ -544,6 +547,7 @@ func (s *Server) handleChatCancel(w http.ResponseWriter, r *http.Request) {
 	}
 	source := chatCancelRequestSource(r)
 
+	s.markRequestTerminated(requestID)
 	runCanceled := s.cancelActiveRun(requestID)
 	outputCanceled := s.interruptRequestOutputs(requestID)
 	if runCanceled || outputCanceled {
@@ -679,6 +683,7 @@ func (s *Server) registerActiveRun(requestID string, cancel context.CancelFunc) 
 	if requestID == "" {
 		return true
 	}
+	s.clearRequestTermination(requestID)
 	s.activeRunsMu.Lock()
 	defer s.activeRunsMu.Unlock()
 	if s.activeRuns == nil {
@@ -709,6 +714,37 @@ func (s *Server) cancelActiveRun(requestID string) bool {
 	}
 	cancel()
 	return true
+}
+
+func (s *Server) markRequestTerminated(requestID string) {
+	if s == nil || requestID == "" {
+		return
+	}
+	s.terminatedRequestsMu.Lock()
+	if s.terminatedRequests == nil {
+		s.terminatedRequests = make(map[string]struct{})
+	}
+	s.terminatedRequests[requestID] = struct{}{}
+	s.terminatedRequestsMu.Unlock()
+}
+
+func (s *Server) clearRequestTermination(requestID string) {
+	if s == nil || requestID == "" {
+		return
+	}
+	s.terminatedRequestsMu.Lock()
+	delete(s.terminatedRequests, requestID)
+	s.terminatedRequestsMu.Unlock()
+}
+
+func (s *Server) isRequestTerminated(requestID string) bool {
+	if s == nil || requestID == "" {
+		return false
+	}
+	s.terminatedRequestsMu.Lock()
+	_, terminated := s.terminatedRequests[requestID]
+	s.terminatedRequestsMu.Unlock()
+	return terminated
 }
 
 func (s *Server) registerActiveOutput(requestID string, output *activeTTSOutput) func() {
@@ -1870,6 +1906,9 @@ func (s *Server) speakText(ctx context.Context, text string, timeoutAfterLock ti
 func (s *Server) speakTextForRequest(ctx context.Context, requestID string, text string, timeoutAfterLock time.Duration) error {
 	if requestID == "" {
 		return s.speakText(ctx, text, timeoutAfterLock)
+	}
+	if s.isRequestTerminated(requestID) {
+		return context.Canceled
 	}
 	return s.speakTextObserved(ctx, requestID, text, timeoutAfterLock, true)
 }

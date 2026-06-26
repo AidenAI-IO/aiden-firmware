@@ -1490,9 +1490,10 @@ func TestServerHandleChatCancelStopsCompletedAsyncRequestTTSPlayback(t *testing.
 	audioOps := &recordedAudioOps{}
 	provider := newInterruptibleAudioTTSProvider("server-provider", 48000, true)
 	server := &Server{
-		activeRuns:  make(map[string]context.CancelFunc),
-		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
-		audioClient: NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, audioOps)),
+		activeRuns:          make(map[string]context.CancelFunc),
+		terminatedRequests: make(map[string]struct{}),
+		ttsManager:          ttsmodule.NewProviderManager(provider, nil),
+		audioClient:         NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, audioOps)),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1542,6 +1543,27 @@ func TestServerHandleChatCancelStopsCompletedAsyncRequestTTSPlayback(t *testing.
 		}
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("completed async final request-scoped TTS did not stop after cancel")
+	}
+}
+
+func TestSpeakTextForRequestRefusesTerminatedRequest(t *testing.T) {
+	requestID := "req-terminated"
+	audioOps := &recordedAudioOps{}
+	provider := newInterruptibleAudioTTSProvider("server-provider", 48000, true)
+	server := &Server{
+		activeRuns:          make(map[string]context.CancelFunc),
+		terminatedRequests: make(map[string]struct{}),
+		ttsManager:          ttsmodule.NewProviderManager(provider, nil),
+		audioClient:         NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, audioOps)),
+	}
+	server.markRequestTerminated(requestID)
+
+	err := server.speakTextForRequest(context.Background(), requestID, "should not play", 0)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("speakTextForRequest() error = %v, want context canceled", err)
+	}
+	if got := audioOps.countOp("start_playback"); got != 0 {
+		t.Fatalf("start_playback count = %d, want 0", got)
 	}
 }
 
