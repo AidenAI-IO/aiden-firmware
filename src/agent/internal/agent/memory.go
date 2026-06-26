@@ -1474,7 +1474,12 @@ func (m *MemoryManager) compressRemainingForArchive(sessionDir string) error {
 		return nil
 	}
 
-	ctx := context.Background()
+	// Use a bounded context with timeout to prevent slow LLM calls from
+	// blocking rotation indefinitely. If the LLM times out, buildEventSummary
+	// falls back to local summarization.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	summary, structured := m.buildEventSummary(ctx, events)
 	_, err = session.Compress(ctx, CompressOption{
 		Summary:    summary,
