@@ -174,6 +174,7 @@ type RunEvent struct {
 	SpeechEligible bool       `json:"speech_eligible,omitempty"`
 	Timestamp      time.Time  `json:"timestamp"`
 	IsError        bool       `json:"is_error,omitempty"`
+	ToolError      *ToolError `json:"tool_error,omitempty"`
 }
 
 type usageTrackingModel struct {
@@ -1410,15 +1411,21 @@ func (h *runtimeCallbackHandler) HandleToolError(ctx context.Context, err error)
 	}
 	action, ok := h.popPendingAction()
 	if ok {
+		var toolErr *ToolError
+		if !errors.As(err, &toolErr) {
+			toolErr = NewToolError(CodeToolExecutionFailed, err.Error())
+		}
+		content := toolErr.Message
 		h.emitRunEvent(ctx, RunEvent{
 			Type:       "tool_result",
 			EpisodeID:  h.episodeID,
 			ToolCallID: action.ToolID,
 			ToolName:   action.Tool,
 			ToolInput:  normalizeToolInput(action.ToolInput),
-			Content:    "error: " + err.Error(),
+			Content:    content,
 			Timestamp:  time.Now(),
 			IsError:    true,
+			ToolError:  cloneToolError(toolErr),
 		})
 	}
 }
@@ -1438,7 +1445,6 @@ func (h *runtimeCallbackHandler) HandleNamedToolEnd(ctx context.Context, name, i
 		ToolInput: input,
 		Content:   output,
 		Timestamp: time.Now(),
-		IsError:   toolOutputLooksLikeError(output),
 	})
 }
 
@@ -1447,15 +1453,21 @@ func (h *runtimeCallbackHandler) HandleNamedToolError(ctx context.Context, name,
 	if h.logger != nil {
 		h.logger.Error("Tool error: name=%s err=%v", name, err)
 	}
+	var toolErr *ToolError
+	if !errors.As(err, &toolErr) {
+		toolErr = NewToolError(CodeToolExecutionFailed, err.Error())
+	}
+	content := toolErr.Message
 	h.removePendingAction(name, input)
 	h.emitRunEvent(ctx, RunEvent{
 		Type:      "tool_result",
 		EpisodeID: h.episodeID,
 		ToolName:  name,
 		ToolInput: input,
-		Content:   "error: " + err.Error(),
+		Content:   content,
 		Timestamp: time.Now(),
 		IsError:   true,
+		ToolError: cloneToolError(toolErr),
 	})
 }
 
@@ -1492,7 +1504,7 @@ func (h *runtimeCallbackHandler) AfterToolCall(ctx context.Context, call ToolCal
 func (h *runtimeCallbackHandler) HandleToolCallResult(ctx context.Context, call ToolCall, result ToolResult) {
 	output := result.EventOutput()
 	if h.logger != nil {
-		if result.IsError {
+		if result.IsError() {
 			h.logger.Error("Tool result: name=%s output=%s", call.Spec.Name, truncateForLog(output, 240))
 		} else {
 			h.logger.Info("Tool result: name=%s output=%s", call.Spec.Name, truncateForLog(output, 240))
@@ -1506,7 +1518,8 @@ func (h *runtimeCallbackHandler) HandleToolCallResult(ctx context.Context, call 
 		ToolInput:  call.Input,
 		Content:    output,
 		Timestamp:  time.Now(),
-		IsError:    result.IsError,
+		IsError:    result.IsError(),
+		ToolError:  cloneToolError(result.Error),
 	})
 }
 
@@ -1627,6 +1640,7 @@ func sessionEventFromRunEvent(event RunEvent, h *runtimeCallbackHandler) Session
 		ToolName:   event.ToolName,
 		ToolInput:  event.ToolInput,
 		IsError:    event.IsError,
+		ToolError:  cloneToolError(event.ToolError),
 	}
 	return sessionEvent
 }

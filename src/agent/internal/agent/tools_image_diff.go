@@ -45,43 +45,43 @@ func (t *ImageDiffTool) ArgsSchema() map[string]any {
 	}, "before", "after")
 }
 
-func (t *ImageDiffTool) Call(_ context.Context, input string) (string, error) {
+func (t *ImageDiffTool) Call(ctx context.Context, input string) (string, error) {
 	var args struct {
 		Before string           `json:"before"`
 		After  string           `json:"after"`
 		Region *imageDiffRegion `json:"region"`
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
-		return fmt.Sprintf("error: invalid input: %v. Expected JSON format: {\"before\": \"<base64>\", \"after\": \"<base64>\", \"region\": {\"x\": 300, \"y\": 200, \"w\": 400, \"h\": 600}}. Common mistakes: before/after must be base64-encoded JPEG strings, region is optional but if provided must be an object with x, y, w, h fields", err), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v. Expected JSON format: {\"before\": \"<base64>\", \"after\": \"<base64>\", \"region\": {\"x\": 300, \"y\": 200, \"w\": 400, \"h\": 600}}. Common mistakes: before/after must be base64-encoded JPEG strings, region is optional but if provided must be an object with x, y, w, h fields", err), nil
 	}
 	if args.Before == "" {
-		return "error: before is required", nil
+		return toolErrorResultString(ctx, CodeInvalidArguments, "before is required"), nil
 	}
 	if args.After == "" {
-		return "error: after is required", nil
+		return toolErrorResultString(ctx, CodeInvalidArguments, "after is required"), nil
 	}
 
 	beforeData, err := base64.StdEncoding.DecodeString(args.Before)
 	if err != nil {
-		return fmt.Sprintf("error: decode before: %v", err), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "decode before: %v", err), nil
 	}
 	afterData, err := base64.StdEncoding.DecodeString(args.After)
 	if err != nil {
-		return fmt.Sprintf("error: decode after: %v", err), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "decode after: %v", err), nil
 	}
 
 	beforeImg, err := jpeg.Decode(bytes.NewReader(beforeData))
 	if err != nil {
-		return fmt.Sprintf("error: decode before JPEG: %v", err), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "decode before JPEG: %v", err), nil
 	}
 	afterImg, err := jpeg.Decode(bytes.NewReader(afterData))
 	if err != nil {
-		return fmt.Sprintf("error: decode after JPEG: %v", err), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "decode after JPEG: %v", err), nil
 	}
 
 	fullBounds := beforeImg.Bounds()
 	if afterImg.Bounds() != fullBounds {
-		return "error: before and after images have different dimensions", nil
+		return toolErrorResultString(ctx, CodeInvalidArguments, "before and after images have different dimensions"), nil
 	}
 
 	bounds := fullBounds
@@ -89,13 +89,13 @@ func (t *ImageDiffTool) Call(_ context.Context, input string) (string, error) {
 		var err error
 		bounds, err = args.Region.toPixelRect(fullBounds)
 		if err != nil {
-			return fmt.Sprintf("error: %v", err), nil
+			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
 	}
 
 	result, err := computeImageDiff(beforeImg, afterImg, bounds)
 	if err != nil {
-		return fmt.Sprintf("error: %v", err), nil
+		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
 
 	out, _ := json.Marshal(result)

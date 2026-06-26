@@ -79,8 +79,8 @@ func TestEnvironmentBridgeMatchesLocalSuccess(t *testing.T) {
 	if bridged.Output != local.Output {
 		t.Fatalf("output mismatch: bridge=%q local=%q", bridged.Output, local.Output)
 	}
-	if bridged.IsError != local.IsError {
-		t.Fatalf("is_error mismatch: bridge=%v local=%v", bridged.IsError, local.IsError)
+	if bridged.IsError() != local.IsError() {
+		t.Fatalf("is_error mismatch: bridge=%v local=%v", bridged.IsError(), local.IsError())
 	}
 }
 
@@ -100,8 +100,8 @@ func TestEnvironmentBridgeMatchesLocalToolError(t *testing.T) {
 	if bridged.Output != local.Output {
 		t.Fatalf("error output mismatch:\n bridge=%q\n local=%q", bridged.Output, local.Output)
 	}
-	if !bridged.IsError || !local.IsError {
-		t.Fatalf("expected both to be errors: bridge=%v local=%v", bridged.IsError, local.IsError)
+	if !bridged.IsError() || !local.IsError() {
+		t.Fatalf("expected both to be errors: bridge=%v local=%v", bridged.IsError(), local.IsError())
 	}
 }
 
@@ -120,20 +120,23 @@ func TestEnvironmentBridgeMatchesLocalErrorLikeOutput(t *testing.T) {
 	if bridged.Output != local.Output {
 		t.Fatalf("output mismatch: bridge=%q local=%q", bridged.Output, local.Output)
 	}
-	if bridged.IsError != local.IsError {
-		t.Fatalf("is_error mismatch for error-like output: bridge=%v local=%v", bridged.IsError, local.IsError)
+	if bridged.IsError() != local.IsError() {
+		t.Fatalf("is_error mismatch for error-like output: bridge=%v local=%v", bridged.IsError(), local.IsError())
 	}
 }
 
 func TestEnvironmentBridgeTransportFailureIsError(t *testing.T) {
 	// Point the bridge client at a dead endpoint; the call must surface as a tool error
-	// in the same "error: X failed" shape as a local failure.
+	// in the same structured ToolResult shape as a local failure.
 	bridged := runViaEnvironmentBridge(t, "http://127.0.0.1:1", "echo", "x")
-	if !bridged.IsError {
+	if !bridged.IsError() {
 		t.Fatal("expected transport failure to be marked as error")
 	}
 	if bridged.Output == "" {
 		t.Fatal("expected non-empty error output on transport failure")
+	}
+	if bridged.Error == nil || bridged.Error.Code != CodeEnvironmentBridgeTransport {
+		t.Fatalf("transport Error = %+v, want environment_bridge_transport_failed", bridged.Error)
 	}
 }
 
@@ -151,15 +154,51 @@ func TestEnvironmentBridgeSendsBenchmarkTaskIDHeader(t *testing.T) {
 	defer server.Close()
 
 	client := NewEnvironmentBridgeClient(server.URL, WithEnvironmentBridgeBenchmarkTaskID("clock.CountAlarms"))
-	output, isError, err := client.CallTool(context.Background(), "screenshot", "{}")
+	got, err := client.CallTool(context.Background(), "screenshot", "{}")
 	if err != nil {
 		t.Fatalf("CallTool returned error: %v", err)
 	}
-	if isError {
-		t.Fatalf("CallTool is_error = true, output=%q", output)
+	if got == nil || got.IsError() {
+		t.Fatalf("CallTool result = %+v", got)
 	}
-	if got := <-seen; got != "clock.CountAlarms" {
-		t.Fatalf("%s header = %q, want %q", BenchmarkTaskIDHeader, got, "clock.CountAlarms")
+	if hdr := <-seen; hdr != "clock.CountAlarms" {
+		t.Fatalf("%s header = %q, want %q", BenchmarkTaskIDHeader, hdr, "clock.CountAlarms")
+	}
+}
+
+func TestEnvironmentBridgeCallToolReturnsStructuredToolResult(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Server returns a serialized ToolResult shape (post-Task 4 wire).
+		_, _ = w.Write([]byte(`{"output":"hi","summary":"","error":null,"terminate":false}`))
+	}))
+	defer srv.Close()
+	c := NewEnvironmentBridgeClient(srv.URL)
+	got, err := c.CallTool(context.Background(), "screenshot", "{}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.Output != "hi" || got.IsError() {
+		t.Errorf("CallTool result = %+v", got)
+	}
+}
+
+func TestEnvironmentBridgeCallToolHTTPErrorIsStructuredTransientError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("upstream is down"))
+	}))
+	defer srv.Close()
+	c := NewEnvironmentBridgeClient(srv.URL)
+	got, err := c.CallTool(context.Background(), "screenshot", "{}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || !got.IsError() {
+		t.Fatalf("expected structured error result; got %+v", got)
+	}
+	if got.Error.Code != CodeEnvironmentBridgeRemote {
+		t.Errorf("Error.Code = %q want %q", got.Error.Code, CodeEnvironmentBridgeRemote)
 	}
 }
 

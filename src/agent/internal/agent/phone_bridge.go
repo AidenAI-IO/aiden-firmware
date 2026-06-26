@@ -35,14 +35,10 @@ type BridgeCommand struct {
 }
 
 type BridgeCommandResponse struct {
-	ID     string `json:"id"`
-	OK     bool   `json:"ok"`
-	Method string `json:"method,omitempty"`
-	Error  string `json:"error,omitempty"`
-	// Data carries command-specific JSON returned by the companion app
-	// (clipboard contents, calendar event id, query results, etc.). Empty for
-	// commands that only need an ok/error status.
-	Data json.RawMessage `json:"data,omitempty"`
+	ID     string          `json:"id"`
+	Method string          `json:"method,omitempty"`
+	Error  *ToolError      `json:"error,omitempty"` // nil ⇔ success
+	Data   json.RawMessage `json:"data,omitempty"`
 }
 
 type PhoneEnvironment struct {
@@ -287,9 +283,10 @@ func (pb *PhoneBridge) handleAppEvent(resp BridgeCommandResponse) bool {
 }
 
 func (pb *PhoneBridge) handleEnvironmentEvent(resp BridgeCommandResponse) bool {
-	if !resp.OK {
+	if resp.Error != nil {
 		if pb.logger != nil {
-			pb.logger.Warn("phone-bridge: environment report failed: %s", resp.Error)
+			pb.logger.Warn("phone-bridge: environment report failed: code=%s msg=%s",
+				resp.Error.Code, resp.Error.Message)
 		}
 		return true
 	}
@@ -324,9 +321,10 @@ func (pb *PhoneBridge) handleEnvironmentEvent(resp BridgeCommandResponse) bool {
 }
 
 func (pb *PhoneBridge) handleAppStateEvent(resp BridgeCommandResponse) bool {
-	if !resp.OK {
+	if resp.Error != nil {
 		if pb.logger != nil {
-			pb.logger.Warn("phone-bridge: app state report failed: %s", resp.Error)
+			pb.logger.Warn("phone-bridge: app state report failed: code=%s msg=%s",
+				resp.Error.Code, resp.Error.Message)
 		}
 		return true
 	}
@@ -382,11 +380,19 @@ func (pb *PhoneBridge) SendCommand(ctx context.Context, cmd BridgeCommand) (Brid
 	pb.mu.Lock()
 	if !pb.connected || pb.conn == nil {
 		pb.mu.Unlock()
-		return BridgeCommandResponse{}, fmt.Errorf("phone bridge not connected")
+		return BridgeCommandResponse{
+			ID:    cmd.ID,
+			Error: NewToolError(CodeBridgeNotConnected, "phone bridge not connected"),
+		}, nil
 	}
 	if _, exists := pb.pendingCmds[cmd.ID]; exists {
 		pb.mu.Unlock()
-		return BridgeCommandResponse{}, fmt.Errorf("duplicate command ID %q already in flight", cmd.ID)
+		return BridgeCommandResponse{
+			ID: cmd.ID,
+			Error: NewToolErrorWithDetails(CodeCommandIDCollision,
+				fmt.Sprintf("duplicate command ID %q already in flight", cmd.ID),
+				map[string]any{"command_id": cmd.ID}),
+		}, nil
 	}
 	ch := make(chan BridgeCommandResponse, 1)
 	pb.pendingCmds[cmd.ID] = ch
@@ -398,14 +404,20 @@ func (pb *PhoneBridge) SendCommand(ctx context.Context, cmd BridgeCommand) (Brid
 		pb.mu.Lock()
 		delete(pb.pendingCmds, cmd.ID)
 		pb.mu.Unlock()
-		return BridgeCommandResponse{}, fmt.Errorf("marshal command: %w", err)
+		return BridgeCommandResponse{
+			ID:    cmd.ID,
+			Error: NewToolError(CodeCommandMarshalFailed, fmt.Sprintf("marshal command: %v", err)),
+		}, nil
 	}
 
 	if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
 		pb.mu.Lock()
 		delete(pb.pendingCmds, cmd.ID)
 		pb.mu.Unlock()
-		return BridgeCommandResponse{}, fmt.Errorf("write command: %w", err)
+		return BridgeCommandResponse{
+			ID:    cmd.ID,
+			Error: NewToolError(CodeBridgeWriteFailed, fmt.Sprintf("write command: %v", err)),
+		}, nil
 	}
 
 	timeout := 5 * time.Second
@@ -416,14 +428,20 @@ func (pb *PhoneBridge) SendCommand(ctx context.Context, cmd BridgeCommand) (Brid
 	select {
 	case resp, ok := <-ch:
 		if !ok {
-			return BridgeCommandResponse{}, fmt.Errorf("connection closed")
+			return BridgeCommandResponse{
+				ID:    cmd.ID,
+				Error: NewToolError(CodeBridgeConnectionClosed, "connection closed before response"),
+			}, nil
 		}
 		return resp, nil
 	case <-time.After(timeout):
 		pb.mu.Lock()
 		delete(pb.pendingCmds, cmd.ID)
 		pb.mu.Unlock()
-		return BridgeCommandResponse{}, fmt.Errorf("command timeout")
+		return BridgeCommandResponse{
+			ID:    cmd.ID,
+			Error: NewToolError(CodeBridgeTimeout, "command timeout"),
+		}, nil
 	case <-ctx.Done():
 		pb.mu.Lock()
 		delete(pb.pendingCmds, cmd.ID)

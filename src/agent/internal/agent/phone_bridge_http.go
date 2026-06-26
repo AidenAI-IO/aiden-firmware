@@ -181,7 +181,8 @@ func (pb *PhoneBridge) handleSubmitResult(w http.ResponseWriter, r *http.Request
 	}
 
 	if pb.logger != nil {
-		pb.logger.Info("phone-bridge: result received: id=%s ok=%t", req.ID, req.OK)
+		ok := req.Error == nil
+		pb.logger.Info("phone-bridge: result received: id=%s ok=%t", req.ID, ok)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

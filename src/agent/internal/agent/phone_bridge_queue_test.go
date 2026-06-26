@@ -140,7 +140,6 @@ func TestSubmitAndQueryResult(t *testing.T) {
 	// Submit result
 	resp := BridgeCommandResponse{
 		ID:     "cmd_1",
-		OK:     true,
 		Method: "clipboard",
 		Data:   json.RawMessage(`{"text":"hello"}`),
 	}
@@ -156,8 +155,8 @@ func TestSubmitAndQueryResult(t *testing.T) {
 	if result == nil {
 		t.Fatal("expected non-nil result")
 	}
-	if !result.Response.OK {
-		t.Errorf("expected OK=true")
+	if result.Response.Error != nil {
+		t.Errorf("expected Error=nil, got %v", result.Response.Error)
 	}
 	if result.Response.Method != "clipboard" {
 		t.Errorf("expected method=clipboard, got %v", result.Response.Method)
@@ -171,7 +170,10 @@ func TestSubmitAndQueryResult(t *testing.T) {
 	q.mu.RUnlock()
 
 	// Submit result for non-existent command
-	badResp := BridgeCommandResponse{ID: "nonexistent", OK: false}
+	badResp := BridgeCommandResponse{
+		ID:    "nonexistent",
+		Error: NewToolError(CodeBridgeNotConnected, "test error"),
+	}
 	if err := q.SubmitResult(badResp); err == nil {
 		t.Errorf("expected error for nonexistent command")
 	}
@@ -205,7 +207,7 @@ func TestCommandExpiration(t *testing.T) {
 	cmd2 := BridgeCommand{ID: "result_expire", Type: "test"}
 	q.Enqueue(cmd2)
 	q.Poll("", 10)
-	resp := BridgeCommandResponse{ID: "result_expire", OK: true}
+	resp := BridgeCommandResponse{ID: "result_expire"}
 	q.SubmitResult(resp)
 
 	// Manually expire result
@@ -323,7 +325,7 @@ func TestConcurrentAccess(t *testing.T) {
 	for id := range polledIDs {
 		go func(cmdID string) {
 			defer wg.Done()
-			resp := BridgeCommandResponse{ID: cmdID, OK: true}
+			resp := BridgeCommandResponse{ID: cmdID}
 			q.SubmitResult(resp)
 		}(id)
 	}
@@ -335,8 +337,8 @@ func TestConcurrentAccess(t *testing.T) {
 		if status != StatusCompleted {
 			t.Errorf("command %s expected completed, got %v", id, status)
 		}
-		if result == nil || !result.Response.OK {
-			t.Errorf("command %s missing valid result", id)
+		if result == nil || result.Response.Error != nil {
+			t.Errorf("command %s missing valid result or has error", id)
 		}
 	}
 }

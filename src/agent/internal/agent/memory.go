@@ -131,6 +131,7 @@ type SessionEvent struct {
 	ToolCallID         string          `json:"tool_call_id,omitempty"`
 	ToolName           string          `json:"tool_name,omitempty"`
 	ToolInput          string          `json:"tool_input,omitempty"`
+	ToolError          *ToolError      `json:"tool_error,omitempty"`
 	Objective          string          `json:"objective,omitempty"`
 	CompletionCriteria []string        `json:"completion_criteria,omitempty"`
 	Plan               []string        `json:"plan,omitempty"`

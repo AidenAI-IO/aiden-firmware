@@ -131,16 +131,20 @@ func TestQuickActionDescriptionWarnsAgainstActionList(t *testing.T) {
 
 func TestQuickActionReservedBinding(t *testing.T) {
 	tool := &QuickActionTool{}
-	out, err := tool.Call(context.Background(), `{"action":"app_drawer","platform":"ios"}`)
+	ctx, _ := WithToolError(context.Background())
+	out, err := tool.Call(ctx, `{"action":"app_drawer","platform":"ios"}`)
 	if err != nil {
 		t.Fatalf("Call failed: %v", err)
 	}
-	var payload map[string]interface{}
-	if err := json.Unmarshal([]byte(out), &payload); err != nil {
-		t.Fatalf("invalid json: %v", err)
+	te := ToolErrorFromContext(ctx)
+	if te == nil || te.Code != CodeQuickActionReserved {
+		t.Fatalf("expected quick_action_reserved; got %+v", te)
 	}
-	if payload["ok"] != false || payload["status"] != quickActionStatusReserved {
-		t.Fatalf("expected reserved response, got %v", payload)
+	if te.Category != CategoryUnsupported {
+		t.Errorf("Category = %q, want %q", te.Category, CategoryUnsupported)
+	}
+	if out != te.Message {
+		t.Errorf("Output (%q) must equal Error.Message (%q)", out, te.Message)
 	}
 }
 
@@ -296,23 +300,23 @@ func TestQuickActionAlternativeBinding(t *testing.T) {
 
 func TestQuickActionUnknownAction(t *testing.T) {
 	tool := &QuickActionTool{}
-	out, err := tool.Call(context.Background(), `{"action":"browser backward","platform":"ios"}`)
+	ctx, _ := WithToolError(context.Background())
+	out, err := tool.Call(ctx, `{"action":"browser backward","platform":"ios"}`)
 	if err != nil {
 		t.Fatalf("Call failed: %v", err)
 	}
-	var payload map[string]interface{}
-	if err := json.Unmarshal([]byte(out), &payload); err != nil {
-		t.Fatalf("invalid json: %v", err)
+	te := ToolErrorFromContext(ctx)
+	if te == nil || te.Code != CodeQuickActionUnknown {
+		t.Fatalf("expected quick_action_unknown; got %+v", te)
 	}
-	if payload["ok"] != false {
-		t.Fatalf("expected ok=false, got %s", out)
+	if !strings.Contains(te.Message, "unknown action") {
+		t.Fatalf("unexpected message: %s", te.Message)
 	}
-	errText, _ := payload["error"].(string)
-	if !strings.Contains(errText, "unknown action") {
-		t.Fatalf("unexpected output: %s", out)
+	if !strings.Contains(te.Message, "suggested actions") {
+		t.Fatalf("expected suggested actions in message, got %s", te.Message)
 	}
-	if !strings.Contains(errText, "suggested actions") {
-		t.Fatalf("expected suggested actions, got %s", out)
+	if out != te.Message {
+		t.Errorf("Output (%q) must equal Error.Message (%q)", out, te.Message)
 	}
 }
 

@@ -774,7 +774,7 @@ func liveActivityFinalPhase(status string) string {
 }
 
 func liveActivityEventHasError(event RunEvent) bool {
-	if event.IsError || toolOutputLooksLikeError(event.Content) {
+	if event.ToolError != nil || event.IsError {
 		return true
 	}
 	payload, ok := liveActivityJSONObject(event.Content)
@@ -788,17 +788,16 @@ func liveActivityEventHasError(event RunEvent) bool {
 }
 
 func liveActivityEventErrorText(event RunEvent) string {
+	if event.ToolError != nil && strings.TrimSpace(event.ToolError.Message) != "" {
+		return strings.TrimSpace(event.ToolError.Message)
+	}
 	payload, ok := liveActivityJSONObject(event.Content)
 	if ok {
 		if value, ok := payload["error"].(string); ok && strings.TrimSpace(value) != "" {
 			return strings.TrimSpace(value)
 		}
 	}
-	content := strings.TrimSpace(event.Content)
-	if strings.HasPrefix(strings.ToLower(content), "error:") {
-		return strings.TrimSpace(content[len("error:"):])
-	}
-	return content
+	return strings.TrimSpace(event.Content)
 }
 
 func liveActivityResultNeedsApp(event RunEvent, errText string) bool {

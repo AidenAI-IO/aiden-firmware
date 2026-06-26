@@ -202,7 +202,8 @@ func (q *CommandQueue) SubmitResult(resp BridgeCommandResponse) error {
 	}
 
 	if q.logger != nil {
-		q.logger.Info("phone-bridge-queue: result submitted for command %s (ok=%v)", resp.ID, resp.OK)
+		ok := resp.Error == nil
+		q.logger.Info("phone-bridge-queue: result submitted for command %s (ok=%v)", resp.ID, ok)
 	}
 
 	return nil
