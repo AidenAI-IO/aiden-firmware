@@ -41,11 +41,12 @@ func (t *RecallSessionChunksTool) Name() string { return "recall_session_chunks"
 func (t *RecallSessionChunksTool) Description() string {
 	return strings.Join([]string{
 		"Recall compressed session history chunks from this conversation and prior sessions.",
-		"Use this tool when the user references something said earlier that you cannot find in your visible conversation context.",
-		"The tool automatically searches both the active session and archived sessions, so you do not need to retry.",
+		"MANDATORY: You MUST call this tool BEFORE answering whenever the user references prior content the visible context does not show. Trigger words include any English or non-English equivalents of: '之前', '上次', '以前', '昨天', '刚才', 'previously', 'last time', 'earlier', 'yesterday', 'just now'.",
+		"NEVER claim 'this is our first conversation' or 'no prior chat' or 'we have not discussed X' without calling this tool first. The visible context is only the hot window; prior sessions live in the archive and are invisible until you recall them.",
+		"The tool automatically searches both the active session and archived sessions, so a single call covers all history.",
 		"How to recall:",
 		"  - PREFERRED: pass chunk_ids to retrieve specific chunks by ID.",
-		"  - FALLBACK: pass tags (content/topic keywords like 'payment', 'login') to search. Use empty tags [] for recent history.",
+		"  - FALLBACK: pass tags (content/topic keywords like 'payment', 'login', '京东') to search. Use empty tags [] for recent history.",
 		`Input JSON: {"chunk_ids":["chunk_xxx"]} or {"tags":["topic"],"limit":3}`,
 		"Returns matching chunks (each tagged with source=active|archived and session_id when archived) and their full original events.",
 	}, " ")
