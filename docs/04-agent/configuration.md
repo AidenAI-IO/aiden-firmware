@@ -231,7 +231,6 @@ Used for the iOS companion app Live Activity / Dynamic Island task status. The a
 | `relay_url` | preconfigured in official firmware | Aiden Live Activity relay URL; only advanced deployments need to override it |
 | `relay_api_key` | preconfigured in official firmware | Shared relay Bearer token; must match the app build config and relay server `AIDEN_RELAY_API_KEY` |
 | `board_id` | `default` | Board ID in relay; should match the app `LIVE_ACTIVITY_BOARD_ID` |
-| `phone_id` | - | Phone ID in relay; empty lets relay use the default/latest phone registered for this board |
 
 ## `[stt]` and `[tts]`
 

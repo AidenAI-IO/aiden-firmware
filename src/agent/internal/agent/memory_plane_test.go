@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	langtools "github.com/tmc/langchaingo/tools"
 )
@@ -172,6 +173,282 @@ func TestMemoryPlaneRetrieveRoutesExperienceByRole(t *testing.T) {
 	}
 	if !strings.Contains(renderedVerifier, "Known Failure Modes") || !strings.Contains(renderedVerifier, "mem_wechat_failure") {
 		t.Fatalf("verifier memory prompt missing failure memory:\n%s", renderedVerifier)
+	}
+}
+
+func TestMemoryPlaneRetrieveFreezesPlannerExperienceWithinActiveSession(t *testing.T) {
+	ctx := context.Background()
+	memoryDir := filepath.Join(t.TempDir(), "memory")
+	longTerm := NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"))
+	for _, item := range []MemoryItem{
+		{
+			ID:               "mem_open_wechat",
+			Type:             "procedure",
+			Priority:         90,
+			Confidence:       0.9,
+			Entities:         []string{"微信App"},
+			Title:            "微信打开路径",
+			Content:          "打开微信App时先使用搜索。",
+			EvidenceExcerpts: []string{"微信路径验证成功。"},
+		},
+		{
+			ID:               "mem_open_alipay",
+			Type:             "procedure",
+			Priority:         90,
+			Confidence:       0.9,
+			Entities:         []string{"支付宝App"},
+			Title:            "支付宝打开路径",
+			Content:          "打开支付宝App时先使用搜索。",
+			EvidenceExcerpts: []string{"支付宝路径验证成功。"},
+		},
+	} {
+		if _, err := longTerm.AddMemory(ctx, item); err != nil {
+			t.Fatalf("AddMemory(%s): %v", item.ID, err)
+		}
+	}
+
+	plane := NewFilesystemMemoryPlane(memoryDir, DefaultMemoryExtractionConfig(), nil)
+	first, err := plane.Retrieve(ctx, MemoryRetrieveRequest{
+		Input:    "打开微信App",
+		DeviceID: "default",
+	})
+	if err != nil {
+		t.Fatalf("first Retrieve() error = %v", err)
+	}
+	if len(first.Planner.Procedures) == 0 || first.Planner.Procedures[0].ID != "mem_open_wechat" {
+		t.Fatalf("first planner procedures = %#v", first.Planner.Procedures)
+	}
+	metadata := readSessionMetadataForTest(t, filepath.Join(memoryDir, "session", sessionMetadataFileName))
+	if metadata.State == nil || metadata.State.RetrievedDeviceExperience == nil {
+		t.Fatalf("session metadata missing retrieved device experience snapshot: %#v", metadata)
+	}
+	if got := metadata.State.RetrievedDeviceExperience.Planner.Procedures[0].ID; got != "mem_open_wechat" {
+		t.Fatalf("metadata planner snapshot = %q, want mem_open_wechat", got)
+	}
+	if _, err := os.Stat(filepath.Join(memoryDir, "session", "retrieved_device_experience.json")); !os.IsNotExist(err) {
+		t.Fatalf("unexpected feature-specific snapshot file, stat err = %v", err)
+	}
+
+	second, err := plane.Retrieve(ctx, MemoryRetrieveRequest{
+		Input:    "打开支付宝App",
+		DeviceID: "default",
+	})
+	if err != nil {
+		t.Fatalf("second Retrieve() error = %v", err)
+	}
+	if len(second.Planner.Procedures) == 0 || second.Planner.Procedures[0].ID != "mem_open_wechat" {
+		t.Fatalf("second planner procedures = %#v, want first-session snapshot", second.Planner.Procedures)
+	}
+	for _, hit := range second.Planner.Procedures {
+		if hit.ID == "mem_open_alipay" {
+			t.Fatalf("planner experience should stay frozen within session: %#v", second.Planner.Procedures)
+		}
+	}
+}
+
+func TestMemoryPlaneRetrieveRefreshesPlannerExperienceAfterSessionRotate(t *testing.T) {
+	ctx := context.Background()
+	memoryDir := filepath.Join(t.TempDir(), "memory")
+	longTerm := NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"))
+	for _, item := range []MemoryItem{
+		{
+			ID:               "mem_open_wechat",
+			Type:             "procedure",
+			Priority:         90,
+			Confidence:       0.9,
+			Entities:         []string{"微信App"},
+			Title:            "微信打开路径",
+			Content:          "打开微信App时先使用搜索。",
+			EvidenceExcerpts: []string{"微信路径验证成功。"},
+		},
+		{
+			ID:               "mem_open_alipay",
+			Type:             "procedure",
+			Priority:         90,
+			Confidence:       0.9,
+			Entities:         []string{"支付宝App"},
+			Title:            "支付宝打开路径",
+			Content:          "打开支付宝App时先使用搜索。",
+			EvidenceExcerpts: []string{"支付宝路径验证成功。"},
+		},
+	} {
+		if _, err := longTerm.AddMemory(ctx, item); err != nil {
+			t.Fatalf("AddMemory(%s): %v", item.ID, err)
+		}
+	}
+
+	plane := NewFilesystemMemoryPlane(memoryDir, DefaultMemoryExtractionConfig(), nil)
+	if _, err := plane.Retrieve(ctx, MemoryRetrieveRequest{
+		Input:    "打开微信App",
+		DeviceID: "default",
+	}); err != nil {
+		t.Fatalf("first Retrieve() error = %v", err)
+	}
+
+	manager := NewMemoryManager(memoryDir)
+	if err := manager.AppendSessionEvent(ctx, "default", SessionEvent{
+		Type:    "user_input",
+		Role:    "user",
+		Content: "打开微信App",
+	}, SessionEventMetadata{}); err != nil {
+		t.Fatalf("AppendSessionEvent() error = %v", err)
+	}
+	if _, err := manager.RotateSessionEventsDetailed(); err != nil {
+		t.Fatalf("RotateSessionEventsDetailed() error = %v", err)
+	}
+
+	afterRotate, err := plane.Retrieve(ctx, MemoryRetrieveRequest{
+		Input:    "打开支付宝App",
+		DeviceID: "default",
+	})
+	if err != nil {
+		t.Fatalf("second Retrieve() error = %v", err)
+	}
+	if len(afterRotate.Planner.Procedures) == 0 || afterRotate.Planner.Procedures[0].ID != "mem_open_alipay" {
+		t.Fatalf("after rotate planner procedures = %#v", afterRotate.Planner.Procedures)
+	}
+}
+
+func TestMemoryPlaneRetrieveIgnoresPlannerSnapshotWithUnknownVersion(t *testing.T) {
+	ctx := context.Background()
+	memoryDir := filepath.Join(t.TempDir(), "memory")
+	longTerm := NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"))
+	if _, err := longTerm.AddMemory(ctx, MemoryItem{
+		ID:               "mem_open_alipay",
+		Type:             "procedure",
+		Priority:         90,
+		Confidence:       0.9,
+		Entities:         []string{"支付宝App"},
+		Title:            "支付宝打开路径",
+		Content:          "打开支付宝App时先使用搜索。",
+		EvidenceExcerpts: []string{"支付宝路径验证成功。"},
+	}); err != nil {
+		t.Fatalf("AddMemory(mem_open_alipay): %v", err)
+	}
+
+	sessionDir := filepath.Join(memoryDir, "session")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(sessionDir): %v", err)
+	}
+	if err := writeSessionMetadata(filepath.Join(sessionDir, sessionMetadataFileName), sessionMetadata{
+		SessionID: "session_stale_snapshot",
+		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		State: &sessionState{
+			RetrievedDeviceExperience: &sessionPlannerExperienceSnapshot{
+				Version: sessionPlannerExperienceSnapshotVersion + 1,
+				Planner: RoleMemoryContext{
+					Procedures: []MemoryHit{{ID: "mem_stale"}},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("writeSessionMetadata(): %v", err)
+	}
+
+	plane := NewFilesystemMemoryPlane(memoryDir, DefaultMemoryExtractionConfig(), nil)
+	got, err := plane.Retrieve(ctx, MemoryRetrieveRequest{
+		Input:    "打开支付宝App",
+		DeviceID: "default",
+	})
+	if err != nil {
+		t.Fatalf("Retrieve() error = %v", err)
+	}
+	if len(got.Planner.Procedures) == 0 || got.Planner.Procedures[0].ID != "mem_open_alipay" {
+		t.Fatalf("planner procedures = %#v, want fresh retrieval", got.Planner.Procedures)
+	}
+	for _, hit := range got.Planner.Procedures {
+		if hit.ID == "mem_stale" {
+			t.Fatalf("stale planner snapshot should be ignored: %#v", got.Planner.Procedures)
+		}
+	}
+
+	metadata := readSessionMetadataForTest(t, filepath.Join(memoryDir, "session", sessionMetadataFileName))
+	if metadata.State == nil || metadata.State.RetrievedDeviceExperience == nil {
+		t.Fatalf("session metadata missing refreshed planner snapshot: %#v", metadata)
+	}
+	if got := metadata.State.RetrievedDeviceExperience.Version; got != sessionPlannerExperienceSnapshotVersion {
+		t.Fatalf("snapshot version = %d, want %d", got, sessionPlannerExperienceSnapshotVersion)
+	}
+	if got := metadata.State.RetrievedDeviceExperience.Planner.Procedures[0].ID; got != "mem_open_alipay" {
+		t.Fatalf("metadata planner snapshot = %q, want mem_open_alipay", got)
+	}
+}
+
+func TestMemoryPlaneFreezePlannerSnapshotUsesFirstConcurrentRetriever(t *testing.T) {
+	memoryDir := filepath.Join(t.TempDir(), "memory")
+	plane := NewFilesystemMemoryPlane(memoryDir, DefaultMemoryExtractionConfig(), nil)
+
+	firstComputeStarted := make(chan struct{})
+	firstMayFinish := make(chan struct{})
+	secondCalled := make(chan struct{})
+	secondComputeStarted := make(chan struct{})
+
+	type retrieveResult struct {
+		out MemoryContext
+		err error
+	}
+	firstDone := make(chan retrieveResult, 1)
+	secondDone := make(chan retrieveResult, 1)
+
+	go func() {
+		out, err := plane.retrieveWithFrozenPlannerSnapshot(func() (MemoryContext, error) {
+			close(firstComputeStarted)
+			<-firstMayFinish
+			return MemoryContext{
+				Planner: RoleMemoryContext{
+					Procedures: []MemoryHit{{ID: "mem_first"}},
+				},
+			}, nil
+		})
+		firstDone <- retrieveResult{out: out, err: err}
+	}()
+
+	<-firstComputeStarted
+
+	go func() {
+		close(secondCalled)
+		out, err := plane.retrieveWithFrozenPlannerSnapshot(func() (MemoryContext, error) {
+			close(secondComputeStarted)
+			return MemoryContext{
+				Planner: RoleMemoryContext{
+					Procedures: []MemoryHit{{ID: "mem_second"}},
+				},
+			}, nil
+		})
+		secondDone <- retrieveResult{out: out, err: err}
+	}()
+
+	<-secondCalled
+	select {
+	case <-secondComputeStarted:
+		t.Fatalf("second concurrent retriever started computing before first freeze completed")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(firstMayFinish)
+
+	first := <-firstDone
+	if first.err != nil {
+		t.Fatalf("first retrieveWithFrozenPlannerSnapshot() error = %v", first.err)
+	}
+	second := <-secondDone
+	if second.err != nil {
+		t.Fatalf("second retrieveWithFrozenPlannerSnapshot() error = %v", second.err)
+	}
+
+	if got := first.out.Planner.Procedures[0].ID; got != "mem_first" {
+		t.Fatalf("first planner snapshot = %q, want mem_first", got)
+	}
+	if got := second.out.Planner.Procedures[0].ID; got != "mem_first" {
+		t.Fatalf("second planner snapshot = %q, want mem_first", got)
+	}
+
+	metadata := readSessionMetadataForTest(t, filepath.Join(memoryDir, "session", sessionMetadataFileName))
+	if metadata.State == nil || metadata.State.RetrievedDeviceExperience == nil {
+		t.Fatalf("session metadata missing retrieved device experience snapshot: %#v", metadata)
+	}
+	if got := metadata.State.RetrievedDeviceExperience.Planner.Procedures[0].ID; got != "mem_first" {
+		t.Fatalf("metadata planner snapshot = %q, want mem_first", got)
 	}
 }
 

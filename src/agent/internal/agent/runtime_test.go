@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -39,12 +41,16 @@ func TestEffectiveMaxIterationsDefaultsAndUnlimited(t *testing.T) {
 
 type testModelResolver struct {
 	model llms.Model
+	err   error
 	calls int
 	spec  ModelSpec
 }
 
 func (r *testModelResolver) Get() (llms.Model, error) {
 	r.calls++
+	if r.err != nil {
+		return nil, r.err
+	}
 	return r.model, nil
 }
 
@@ -77,6 +83,83 @@ func TestRuntimeRun(t *testing.T) {
 	}
 	if len(result.Memory) != 2 {
 		t.Fatalf("expected 2 memory entries, got %d", len(result.Memory))
+	}
+}
+
+func TestRuntimeRunExportsFailedTraceWhenModelBuildFails(t *testing.T) {
+	ingestCh := make(chan langfuseIngestionRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/public/ingestion" {
+			http.NotFound(w, r)
+			return
+		}
+		var req langfuseIngestionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		select {
+		case ingestCh <- req:
+		default:
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"successes":[]}`))
+	}))
+	defer server.Close()
+
+	configDir := t.TempDir()
+	buildErr := errors.New("model unavailable")
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir: configDir,
+			Telemetry: TelemetryConfig{
+				Enabled:          boolPtr(true),
+				BaseURL:          server.URL,
+				PublicKey:        "pk-test",
+				SecretKey:        "sk-test",
+				UploadTimeoutSec: 1,
+			},
+		},
+		&testModelResolver{err: buildErr},
+		NewMemoryManager(filepath.Join(configDir, "memory")),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	_, err := runtime.Run(context.Background(), RunRequest{Input: "turn that should be traced"})
+	if !errors.Is(err, buildErr) {
+		t.Fatalf("Run() error = %v, want %v", err, buildErr)
+	}
+
+	var ingest langfuseIngestionRequest
+	select {
+	case ingest = <-ingestCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected Langfuse ingestion for failed chat")
+	}
+
+	var traceBody map[string]any
+	for _, event := range ingest.Batch {
+		if event.Type != "trace-create" {
+			continue
+		}
+		if err := json.Unmarshal(event.Body, &traceBody); err != nil {
+			t.Fatalf("decode trace body: %v", err)
+		}
+		break
+	}
+	if traceBody == nil {
+		t.Fatalf("ingestion batch missing trace-create: %#v", ingest.Batch)
+	}
+	if got := traceBody["input"]; got != "turn that should be traced" {
+		t.Fatalf("trace input = %#v, want original user input", got)
+	}
+	metadata, ok := traceBody["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("trace metadata missing or invalid: %#v", traceBody["metadata"])
+	}
+	if got := metadata["failure_reason"]; got != buildErr.Error() {
+		t.Fatalf("failure_reason = %#v, want %q", got, buildErr.Error())
 	}
 }
 
@@ -1798,6 +1881,11 @@ func roleToolResponses(toolName, arguments, finalAnswer string) []*llms.ContentR
 	return roleDefaultToolResponses(toolName, arguments, finalAnswer)
 }
 
+func roleReviewedToolResponses(toolName, arguments, finalAnswer string) []*llms.ContentResponse {
+	responses := roleToolResponses(toolName, arguments, finalAnswer)
+	return append(responses, verifierFinishResponse(finalAnswer))
+}
+
 func enterPlanModeToolCall() *llms.ContentResponse {
 	return toolCallResponse("enter_1", toolEnterPlanMode, `{"__arg1":"{}","description":"enter plan mode"}`)
 }
@@ -1852,6 +1940,59 @@ func firstRunEventOfType(events []RunEvent, eventType string) (RunEvent, bool) {
 		}
 	}
 	return RunEvent{}, false
+}
+
+func TestRuntimeCallbackPropagatesToolErrorToEventsAndMessages(t *testing.T) {
+	toolErr := NewToolErrorWithDetails(CodePermissionDenied, "contacts permission denied", map[string]any{"scope": "contacts"})
+	var gotRunEvent RunEvent
+	var gotSessionEvent SessionEvent
+	handler := &runtimeCallbackHandler{
+		episodeID: "ep-1",
+		runtimeID: "runtime-1",
+		requestID: "req-1",
+		runID:     "run-1",
+		eventHandler: func(event RunEvent) {
+			gotRunEvent = event
+		},
+		sessionEventAppender: func(ctx context.Context, event SessionEvent) error {
+			gotSessionEvent = event
+			return nil
+		},
+	}
+	call := ToolCall{
+		Spec: ToolSpec{Name: "contacts"},
+		Action: schema.AgentAction{
+			Tool:      "contacts",
+			ToolID:    "call-1",
+			ToolInput: `{"action":"query"}`,
+		},
+		Input: `{"action":"query"}`,
+	}
+
+	handler.HandleToolCallResult(context.Background(), call, ToolResult{Output: toolErr.Message, Error: toolErr})
+
+	if gotRunEvent.ToolError == nil || gotRunEvent.ToolError.Code != CodePermissionDenied {
+		t.Fatalf("RunEvent.ToolError = %+v, want permission_denied", gotRunEvent.ToolError)
+	}
+	if gotRunEvent.ToolError.Details["scope"] != "contacts" {
+		t.Fatalf("RunEvent.ToolError.Details = %+v, want scope=contacts", gotRunEvent.ToolError.Details)
+	}
+	if gotSessionEvent.ToolError == nil || gotSessionEvent.ToolError.Code != CodePermissionDenied {
+		t.Fatalf("SessionEvent.ToolError = %+v, want permission_denied", gotSessionEvent.ToolError)
+	}
+	if gotSessionEvent.ToolError.Details["scope"] != "contacts" {
+		t.Fatalf("SessionEvent.ToolError.Details = %+v, want scope=contacts", gotSessionEvent.ToolError.Details)
+	}
+	message := messageFromRunEvent(gotRunEvent, "", "req-1")
+	if message.ToolError == nil || message.ToolError.Code != CodePermissionDenied {
+		t.Fatalf("Message.ToolError = %+v, want permission_denied", message.ToolError)
+	}
+	if message.ToolError.Details["scope"] != "contacts" {
+		t.Fatalf("Message.ToolError.Details = %+v, want scope=contacts", message.ToolError.Details)
+	}
+	if gotRunEvent.Content != toolErr.Message || message.Content != toolErr.Message {
+		t.Fatalf("error message content mismatch: run=%q message=%q want=%q", gotRunEvent.Content, message.Content, toolErr.Message)
+	}
 }
 
 func runEventsOfType(events []RunEvent, eventType string) []RunEvent {
@@ -2185,7 +2326,7 @@ func TestRuntimeRunExecutesOnlyFirstToolCallPerIteration(t *testing.T) {
 
 func TestRuntimeRunFeedsToolErrorsBackToModel(t *testing.T) {
 	model := &scriptedModel{
-		responses: roleToolResponses("screenshot", `{"__arg1":"{}"}`, "屏幕暂时获取失败，frame service 正在恢复。"),
+		responses: roleReviewedToolResponses("screenshot", `{"__arg1":"{}"}`, "屏幕暂时获取失败，frame service 正在恢复。"),
 	}
 	runtime := NewRuntimeWithDeps(
 		Config{
@@ -2232,12 +2373,15 @@ func TestRuntimeRunFeedsToolErrorsBackToModel(t *testing.T) {
 			}
 		}
 	}
-	if !strings.Contains(toolObservation, "error: screenshot failed: frame service: SERVICE_RECOVERING") {
+	if !strings.Contains(toolObservation, "frame service: SERVICE_RECOVERING") || strings.Contains(toolObservation, "error:") {
 		t.Fatalf("unexpected tool observation: %q", toolObservation)
 	}
 	toolResult, ok := firstRunEventOfType(events, "tool_result")
 	if !ok || !toolResult.IsError {
 		t.Fatalf("expected error tool_result event, got %#v", events)
+	}
+	if toolResult.ToolError == nil || toolResult.ToolError.Code != CodeToolExecutionFailed || toolResult.ToolError.Message != toolObservation {
+		t.Fatalf("tool_result ToolError = %+v, want execution failure matching observation %q", toolResult.ToolError, toolObservation)
 	}
 }
 
@@ -2766,6 +2910,7 @@ func TestRuntimeSimpleLoopDoesNotGenerateImplicitTodo(t *testing.T) {
 			toolCallResponse("call_1", "screenshot", `{"__arg1":"{}"}`),
 			toolCallResponse("call_2", "web_search", `{"__arg1":"Aiden"}`),
 			contentResponse("done"),
+			verifierFinishResponse("done"),
 		},
 	}
 	screenshot := &stubTool{name: "screenshot", description: "Capture screen.", output: "screen"}
@@ -3354,7 +3499,7 @@ func TestRuntimeRunFallsBackWhenProviderStreamWriterErrorsAfterPartialFinalAnswe
 func TestRuntimeRunScreenshotAddsBinaryImageObservation(t *testing.T) {
 	jpegBytes := []byte("fake-jpeg-binary")
 	model := &scriptedModel{
-		responses: roleToolResponses("screenshot", `{"__arg1":"{}"}`, "The screenshot shows a UI."),
+		responses: roleReviewedToolResponses("screenshot", `{"__arg1":"{}"}`, "The screenshot shows a UI."),
 	}
 	tool := &stubTool{
 		name:        "screenshot",
@@ -3383,8 +3528,8 @@ func TestRuntimeRunScreenshotAddsBinaryImageObservation(t *testing.T) {
 	if result.Output != "The screenshot shows a UI." {
 		t.Fatalf("unexpected output: %q", result.Output)
 	}
-	if len(model.messages) != 2 {
-		t.Fatalf("expected 2 default-mode planner calls, got %d", len(model.messages))
+	if len(model.messages) < 3 {
+		t.Fatalf("expected screenshot follow-up plus default final review, got %d model calls", len(model.messages))
 	}
 
 	secondCall := model.messages[1]
@@ -3425,7 +3570,7 @@ func TestRuntimeRunScreenshotAddsBinaryImageObservation(t *testing.T) {
 func TestRuntimeRunScreenshotImageSurvivesCallbackToolWrapping(t *testing.T) {
 	jpegBytes := []byte("fake-jpeg-binary")
 	model := &scriptedModel{
-		responses: roleToolResponses("screenshot", `{"__arg1":"{}"}`, "The screenshot shows a UI."),
+		responses: roleReviewedToolResponses("screenshot", `{"__arg1":"{}"}`, "The screenshot shows a UI."),
 	}
 	tool := &stubTool{
 		name:        "screenshot",
@@ -3455,8 +3600,8 @@ func TestRuntimeRunScreenshotImageSurvivesCallbackToolWrapping(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 
-	if len(model.messages) != 2 {
-		t.Fatalf("expected 2 default-mode planner calls, got %d", len(model.messages))
+	if len(model.messages) < 3 {
+		t.Fatalf("expected screenshot follow-up plus default final review, got %d model calls", len(model.messages))
 	}
 
 	var foundToolResponse, foundImageURL bool
@@ -3490,7 +3635,7 @@ func TestRuntimeRunScreenshotImageSurvivesCallbackToolWrapping(t *testing.T) {
 func TestRuntimeRunKeyboardToolAddsPostActionImageObservation(t *testing.T) {
 	jpegBytes := []byte("keyboard-post-action-jpeg")
 	model := &scriptedModel{
-		responses: roleToolResponses("keyboard_tap", `{"keys":["enter"]}`, "The keyboard action updated the UI."),
+		responses: roleReviewedToolResponses("keyboard_tap", `{"keys":["enter"]}`, "The keyboard action updated the UI."),
 	}
 	tool := &stubTool{
 		name:        "keyboard_tap",
@@ -3658,10 +3803,12 @@ func TestRuntimePersistsMemoryUnderConfigDir(t *testing.T) {
 		t.Fatalf("expected 2 memory entries after first run, got %d", len(firstResult.Memory))
 	}
 
-	memoryPath := filepath.Join(configDir, "memory", "default.json")
-	if _, err := os.Stat(memoryPath); err != nil {
-		t.Fatalf("expected persisted memory file at %s: %v", memoryPath, err)
+	memoryDir := filepath.Join(configDir, "memory")
+	eventsPath := filepath.Join(memoryDir, "session", "events.jsonl")
+	if _, err := os.Stat(eventsPath); err != nil {
+		t.Fatalf("expected persisted session events at %s: %v", eventsPath, err)
 	}
+	assertNoTopLevelJSONFiles(t, memoryDir)
 
 	secondRuntime, err := NewRuntime(Config{
 		ConfigDir:     configDir,
@@ -4484,7 +4631,7 @@ func TestSessionRecallTelemetryIgnoresCompressedChunkWithPendingPrefix(t *testin
 
 	counter := &atomic.Int64{}
 	tool := &sessionRecallTelemetryTool{
-		inner:   NewRecallSessionChunksTool(session),
+		inner:   NewRecallSessionChunksTool(session, nil),
 		counter: counter,
 	}
 	output, err := tool.Call(ctx, `{"chunk_ids":["pending-consumed"]}`)
@@ -4858,7 +5005,7 @@ func TestRuntimeRunIncludesUserAttachments(t *testing.T) {
 	}
 }
 
-func TestRuntimeClearMemoryRemovesPersistedFile(t *testing.T) {
+func TestRuntimeClearMemoryRemovesPersistedSession(t *testing.T) {
 	configDir := t.TempDir()
 	runtime, err := NewRuntime(Config{
 		ConfigDir:     configDir,
@@ -4880,16 +5027,25 @@ func TestRuntimeClearMemoryRemovesPersistedFile(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 
-	memoryPath := filepath.Join(configDir, "memory", "default.json")
-	if _, err := os.Stat(memoryPath); err != nil {
-		t.Fatalf("expected persisted memory file at %s: %v", memoryPath, err)
+	memoryDir := filepath.Join(configDir, "memory")
+	eventsPath := filepath.Join(memoryDir, "session", "events.jsonl")
+	if _, err := os.Stat(eventsPath); err != nil {
+		t.Fatalf("expected persisted session events at %s: %v", eventsPath, err)
+	}
+	assertNoTopLevelJSONFiles(t, memoryDir)
+	legacyPath := legacyMemorySnapshotPath(memoryDir, "default")
+	if err := os.WriteFile(legacyPath, []byte("[]\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile legacy snapshot: %v", err)
 	}
 
 	if err := runtime.ClearMemory(context.Background()); err != nil {
 		t.Fatalf("ClearMemory() error = %v", err)
 	}
 
-	if _, err := os.Stat(memoryPath); !os.IsNotExist(err) {
-		t.Fatalf("expected memory file to be removed, stat err = %v", err)
+	if _, err := os.Stat(eventsPath); !os.IsNotExist(err) {
+		t.Fatalf("expected session events to be removed, stat err = %v", err)
+	}
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("expected legacy snapshot to be removed, stat err = %v", err)
 	}
 }

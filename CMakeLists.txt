@@ -181,6 +181,12 @@ endforeach()
 add_executable(config_web
     src/config_web.cpp
     src/agent_toml.cpp
+    src/audio_service_client.cpp
+    src/audio_service_protocol.cpp
+    src/frame_service_protocol.cpp
+    src/service_status.cpp
+    src/uds_client.cpp
+    src/uds_message.cpp
     src/system_env_parser.cpp
     src/wifi_config.cpp
 )

@@ -38,7 +38,7 @@ def ssh(cmd):
 
 
 def clear_state():
-    ssh(f"rm -rf {MEMORY_DIR}/long_term {MEMORY_DIR}/session {MEMORY_DIR}/default.json")
+    ssh(f"rm -rf {MEMORY_DIR}/long_term {MEMORY_DIR}/session")
     http_post("/api/clear")
 
 

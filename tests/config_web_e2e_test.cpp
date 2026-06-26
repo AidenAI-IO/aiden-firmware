@@ -39,6 +39,7 @@
 #include <cstring>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -172,7 +173,7 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"tts\":{\"provider\":\"minimax-cn\",\"api_key\":\"\",\"model\":\"\",\"voice_id\":\"male-qn-qingse\","
         "\"emotion\":\"happy\",\"speed\":1},"
         "\"stt\":{\"provider\":\"openai-whisper\",\"api_key\":\"\",\"model\":\"whisper-1\",\"base_url\":\"\","
-        "\"secret_id\":\"\",\"secret_key\":\"\",\"region\":\"\",\"engine_model_type\":\"\"},"
+        "\"app_id\":\"\",\"secret_id\":\"\",\"secret_key\":\"\",\"region\":\"\",\"engine_model_type\":\"\"},"
         "\"audio\":{\"socket\":\"/run/audio_service/audio_service.sock\",\"sample_rate\":16000,"
         "\"channels\":1,\"bit_width\":16},"
         "\"audio_archive\":{\"enabled\":true,\"max_files\":500,\"max_size_mb\":100,"
@@ -292,6 +293,165 @@ private:
     int fd_ = -1;
     int port_ = 0;
     std::atomic<bool> stop_{false};
+    std::thread worker_;
+};
+
+struct CapturedHTTPRequest {
+    std::string method;
+    std::string path;
+    std::string body;
+};
+
+class StubAgentSTTTestServer {
+public:
+    StubAgentSTTTestServer() {
+        fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
+        REQUIRE(fd_ >= 0);
+        int opt = 1;
+        REQUIRE(::setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == 0);
+        sockaddr_in addr;
+        std::memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = 0;
+        REQUIRE(::bind(fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
+        socklen_t len = sizeof(addr);
+        REQUIRE(::getsockname(fd_, reinterpret_cast<sockaddr*>(&addr), &len) == 0);
+        port_ = ntohs(addr.sin_port);
+        REQUIRE(::listen(fd_, 8) == 0);
+        worker_ = std::thread([this] { serve(); });
+    }
+
+    ~StubAgentSTTTestServer() {
+        stop_ = true;
+        if (fd_ >= 0) {
+            ::shutdown(fd_, SHUT_RDWR);
+            ::close(fd_);
+        }
+        if (worker_.joinable()) {
+            worker_.join();
+        }
+    }
+
+    int port() const { return port_; }
+
+    std::vector<CapturedHTTPRequest> requests() const {
+        std::lock_guard<std::mutex> lock(mu_);
+        return requests_;
+    }
+
+private:
+    static std::string build_response(const std::string& path) {
+        if (path == "/api/config-test/stt/start") {
+            const std::string body = "{\"ok\":true,\"status\":\"recording\",\"sample_rate\":16000}";
+            std::ostringstream out;
+            out << "HTTP/1.1 200 OK\r\n"
+                << "Content-Type: application/json\r\n"
+                << "Content-Length: " << body.size() << "\r\n"
+                << "Connection: close\r\n"
+                << "\r\n"
+                << body;
+            return out.str();
+        }
+        if (path == "/api/config-test/stt/stop") {
+            const std::string body =
+                "{\"ok\":true,\"transcript\":\"agent live transcript\","
+                "\"results\":[{\"check\":\"stt_transcription\",\"passed\":true,"
+                "\"detail\":\"transcribed live recording with tencent-asr via streaming upload\"}]}";
+            std::ostringstream out;
+            out << "HTTP/1.1 200 OK\r\n"
+                << "Content-Type: application/json\r\n"
+                << "Content-Length: " << body.size() << "\r\n"
+                << "Connection: close\r\n"
+                << "\r\n"
+                << body;
+            return out.str();
+        }
+        const std::string body = "not found";
+        std::ostringstream out;
+        out << "HTTP/1.1 404 Not Found\r\n"
+            << "Content-Type: text/plain\r\n"
+            << "Content-Length: " << body.size() << "\r\n"
+            << "Connection: close\r\n"
+            << "\r\n"
+            << body;
+        return out.str();
+    }
+
+    void serve() {
+        while (!stop_) {
+            int client = ::accept(fd_, nullptr, nullptr);
+            if (client < 0) {
+                continue;
+            }
+
+            std::string raw;
+            char buf[4096];
+            size_t header_end = std::string::npos;
+            size_t content_length = 0;
+            while (true) {
+                ssize_t n = ::recv(client, buf, sizeof(buf), 0);
+                if (n <= 0) {
+                    break;
+                }
+                raw.append(buf, static_cast<size_t>(n));
+                if (header_end == std::string::npos) {
+                    header_end = raw.find("\r\n\r\n");
+                    if (header_end != std::string::npos) {
+                        const std::string headers = raw.substr(0, header_end);
+                        const std::string needle = "Content-Length:";
+                        size_t pos = headers.find(needle);
+                        if (pos != std::string::npos) {
+                            pos += needle.size();
+                            while (pos < headers.size() && headers[pos] == ' ') pos++;
+                            content_length = static_cast<size_t>(std::strtoul(headers.c_str() + pos, nullptr, 10));
+                        }
+                    }
+                }
+                if (header_end != std::string::npos) {
+                    const size_t have_body = raw.size() - (header_end + 4);
+                    if (have_body >= content_length) {
+                        break;
+                    }
+                }
+            }
+
+            std::string method;
+            std::string path;
+            std::string body;
+            const size_t line_end = raw.find("\r\n");
+            if (line_end != std::string::npos) {
+                const std::string line = raw.substr(0, line_end);
+                const size_t sp1 = line.find(' ');
+                const size_t sp2 = sp1 == std::string::npos ? std::string::npos : line.find(' ', sp1 + 1);
+                if (sp1 != std::string::npos && sp2 != std::string::npos) {
+                    method = line.substr(0, sp1);
+                    path = line.substr(sp1 + 1, sp2 - sp1 - 1);
+                }
+            }
+            if (header_end != std::string::npos) {
+                body = raw.substr(header_end + 4);
+                if (body.size() > content_length) {
+                    body.resize(content_length);
+                }
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(mu_);
+                requests_.push_back(CapturedHTTPRequest{method, path, body});
+            }
+
+            const std::string response = build_response(path);
+            (void)::send(client, response.data(), response.size(), 0);
+            ::close(client);
+        }
+    }
+
+    int fd_ = -1;
+    int port_ = 0;
+    mutable std::mutex mu_;
+    std::atomic<bool> stop_{false};
+    std::vector<CapturedHTTPRequest> requests_;
     std::thread worker_;
 };
 
@@ -910,6 +1070,72 @@ TEST_CASE("config_web: tts config test invokes playback of test passed") {
     CHECK(log.find("--section=tts") != std::string::npos);
 }
 
+TEST_CASE("config_web: tencent stt config test stays green without app_id") {
+    StubEnv env;
+    auto handle = start_server(env);
+    HeadProbeServer probe;
+
+    const std::string endpoint = "http://127.0.0.1:" + std::to_string(probe.port());
+    const std::string test_body =
+        "{\"section\":\"stt\",\"values\":{"
+        "\"provider\":\"tencent-asr\","
+        "\"base_url\":\"" + endpoint + "\","
+        "\"app_id\":\"\","
+        "\"secret_id\":\"id\","
+        "\"secret_key\":\"key\","
+        "\"region\":\"ap-shanghai\","
+        "\"engine_model_type\":\"16k_zh\""
+        "}}";
+
+    HttpResponse test_resp = http_request(handle->port, "POST", "/api/config/test", test_body);
+    CHECK(test_resp.status == 200);
+    CHECK(test_resp.body.find("\"ok\":true") != std::string::npos);
+    CHECK(test_resp.body.find("\"check\":\"streaming_app_id\"") != std::string::npos);
+    CHECK(test_resp.body.find("one-shot upload") != std::string::npos);
+}
+
+TEST_CASE("config_web: stt live test proxies start and stop to agent") {
+    StubAgentSTTTestServer agent_server;
+    StubEnv env;
+    env.set("AIDEN_AGENT_HTTP_BASE_URL", "http://127.0.0.1:" + std::to_string(agent_server.port()));
+    auto handle = start_server(env);
+
+    const std::string start_body =
+        "{\"stt_values\":{"
+        "\"provider\":\"tencent-asr\","
+        "\"app_id\":\"app-1\","
+        "\"secret_id\":\"sid\","
+        "\"secret_key\":\"skey\","
+        "\"region\":\"ap-shanghai\","
+        "\"engine_model_type\":\"16k_zh\""
+        "},"
+        "\"audio_values\":{"
+        "\"socket\":\"/tmp/audio.sock\","
+        "\"sample_rate\":16000,"
+        "\"channels\":1,"
+        "\"bit_width\":16"
+        "}}";
+
+    HttpResponse start_resp = http_request(handle->port, "POST", "/api/config/test/stt/start", start_body);
+    CHECK(start_resp.status == 200);
+    CHECK(start_resp.body.find("\"status\":\"recording\"") != std::string::npos);
+
+    HttpResponse stop_resp = http_request(handle->port, "POST", "/api/config/test/stt/stop", "{}");
+    CHECK(stop_resp.status == 200);
+    CHECK(stop_resp.body.find("agent live transcript") != std::string::npos);
+    CHECK(stop_resp.body.find("streaming upload") != std::string::npos);
+
+    const std::vector<CapturedHTTPRequest> requests = agent_server.requests();
+    REQUIRE(requests.size() == 2);
+    CHECK(requests[0].method == "POST");
+    CHECK(requests[0].path == "/api/config-test/stt/start");
+    CHECK(requests[0].body.find("\"provider\":\"tencent-asr\"") != std::string::npos);
+    CHECK(requests[0].body.find("\"app_id\":\"app-1\"") != std::string::npos);
+    CHECK(requests[0].body.find("\"socket\":\"/tmp/audio.sock\"") != std::string::npos);
+    CHECK(requests[1].method == "POST");
+    CHECK(requests[1].path == "/api/config-test/stt/stop");
+}
+
 TEST_CASE("config_web: GET /api/config accepts optional field-level omissions from resolved config") {
     auto tmp = make_temp_dir();
     auto cleanup = std::unique_ptr<void, void(*)(void*)>(
@@ -1291,4 +1517,117 @@ TEST_CASE("config_web: GET /api/ota/logs keeps update and health logs separate")
     CHECK(required_json_string(health, "log").find("health timeout waiting for /userdata/ota/health.ok") != std::string::npos);
     CHECK(required_json_string(health, "log").find("[config_web] ota update") == std::string::npos);
     cJSON_Delete(parsed);
+}
+
+TEST_CASE("config_web: exports llm raw log files without JSON wrapping") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string log_dir = handle->tmp_dir + "/log";
+    REQUIRE(::mkdir(log_dir.c_str(), 0755) == 0);
+    const std::string name = "llm-http-20260624153000123.log";
+    const std::string content =
+        "{\"kind\":\"request\",\"ts\":\"2026-06-24T15:30:00Z\"}\n"
+        "{\"kind\":\"response\",\"status\":200}\n";
+    write_file(log_dir + "/" + name, content);
+
+    HttpResponse resp = http_request(handle->port, "GET", "/api/llm-logs/export/" + name);
+    CHECK(resp.status == 200);
+    CHECK(resp.body == content);
+}
+
+TEST_CASE("config_web: legacy llm log JSON file endpoint is removed") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string log_dir = handle->tmp_dir + "/log";
+    REQUIRE(::mkdir(log_dir.c_str(), 0755) == 0);
+    const std::string name = "llm-http-20260624154500999.log";
+    write_file(log_dir + "/" + name, "{\"kind\":\"request\"}\n");
+
+    HttpResponse resp = http_request(handle->port, "GET", "/api/llm-logs/file/" + name);
+    CHECK(resp.status == 404);
+}
+
+TEST_CASE("config_web: exports llm raw log files larger than viewer limit") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string log_dir = handle->tmp_dir + "/log";
+    REQUIRE(::mkdir(log_dir.c_str(), 0755) == 0);
+    const std::string name = "llm-http-20260624170000999.log";
+    const std::string content(16 * 1024 * 1024 + 123, 'x');
+    write_file(log_dir + "/" + name, content);
+
+    HttpResponse resp = http_request(handle->port, "GET", "/api/llm-logs/export/" + name);
+    CHECK(resp.status == 200);
+    CHECK(resp.body.size() == content.size());
+    CHECK(resp.body.compare(0, 128, content, 0, 128) == 0);
+    CHECK(resp.body.compare(resp.body.size() - 128, 128, content, content.size() - 128, 128) == 0);
+}
+
+TEST_CASE("config_web: reports server errors for unreadable llm raw log files") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string log_dir = handle->tmp_dir + "/log";
+    REQUIRE(::mkdir(log_dir.c_str(), 0755) == 0);
+    const std::string name = "llm-http-20260624173000999.log";
+    const std::string path = log_dir + "/" + name;
+    write_file(path, "{\"kind\":\"request\"}\n");
+    REQUIRE(::chmod(path.c_str(), 0000) == 0);
+
+    HttpResponse resp = http_request(handle->port, "GET", "/api/llm-logs/export/" + name);
+    CHECK(resp.status == 500);
+    CHECK(resp.body.find("failed to open log file") != std::string::npos);
+
+    REQUIRE(::chmod(path.c_str(), 0644) == 0);
+}
+
+TEST_CASE("config_web: imports llm raw log files into the viewer log directory") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string name = "llm-http-import-session.log";
+    const std::string content =
+        "{\"kind\":\"request\",\"ts\":\"2026-06-24T16:00:00Z\",\"body\":\"hello\"}\n"
+        "{\"kind\":\"response\",\"status\":500,\"body\":\"upstream failed\"}\n";
+
+    HttpResponse import_resp = http_request(handle->port, "POST", "/api/llm-logs/import/" + name, content);
+    REQUIRE(import_resp.status == 200);
+
+    const std::string imported_path = handle->tmp_dir + "/log/" + name;
+    const std::string imported = read_file(imported_path);
+    const size_t sample_size = std::min<size_t>(128, content.size());
+    CHECK(imported.size() == content.size());
+    CHECK(imported.compare(0, sample_size, content, 0, sample_size) == 0);
+    CHECK(imported.compare(imported.size() - sample_size, sample_size, content, content.size() - sample_size, sample_size) == 0);
+
+    HttpResponse list_resp = http_request(handle->port, "GET", "/api/llm-logs");
+    REQUIRE(list_resp.status == 200);
+    CHECK(list_resp.body.find(name) != std::string::npos);
+
+    HttpResponse export_resp = http_request(handle->port, "GET", "/api/llm-logs/export/" + name);
+    CHECK(export_resp.status == 200);
+    CHECK(export_resp.body == content);
+}
+
+TEST_CASE("config_web: imports llm raw log files larger than viewer limit") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string name = "llm-http-import-large.log";
+    const std::string content(16 * 1024 * 1024 + 321, 'y');
+
+    HttpResponse import_resp = http_request(handle->port, "POST", "/api/llm-logs/import/" + name, content);
+    REQUIRE(import_resp.status == 200);
+
+    const std::string imported_path = handle->tmp_dir + "/log/" + name;
+    CHECK(read_file(imported_path) == content);
+
+    HttpResponse export_resp = http_request(handle->port, "GET", "/api/llm-logs/export/" + name);
+    CHECK(export_resp.status == 200);
+    CHECK(export_resp.body.size() == content.size());
+    CHECK(export_resp.body.compare(0, 128, content, 0, 128) == 0);
+    CHECK(export_resp.body.compare(export_resp.body.size() - 128, 128, content, content.size() - 128, 128) == 0);
 }

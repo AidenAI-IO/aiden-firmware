@@ -36,7 +36,8 @@ public:
                                          uint32_t timeout_ms,
                                          AudioChunkResult* out);
 
-    // Stop and remove a record session.
+    // Stop a record session. Queued PCM remains readable until EOF, then the
+    // session is removed lazily by read_record_chunk() or the idle reaper.
     AidenServiceStatus stop_recording(uint64_t session_id);
 
     // --- Playback ---

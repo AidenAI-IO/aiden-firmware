@@ -78,6 +78,7 @@ type executorTurnResult struct {
 	Action          *schema.AgentAction
 	Step            *schema.AgentStep
 	InvalidMetaStep *schema.AgentStep
+	ToolError       *ToolError
 }
 
 func plannerCommitRequiredTurn(action schema.AgentAction) plannerTurnResult {
@@ -112,6 +113,56 @@ func toolNameEqual(got, want string) bool {
 
 func isWaitForWakeupTool(name string) bool {
 	return toolNameEqual(name, toolWaitForWakeup)
+}
+
+func isHumanHandoffTool(name string) bool {
+	return toolNameEqual(name, toolHumanHandoffStep)
+}
+
+func isRunPausingTool(name string) bool {
+	return isWaitForWakeupTool(name) || isHumanHandoffTool(name)
+}
+
+func runPausingToolFinalAnswer(step *schema.AgentStep) string {
+	if step != nil && isHumanHandoffTool(step.Action.Tool) {
+		return humanHandoffFinalAnswer(step)
+	}
+	return waitForWakeupFinalAnswer(step)
+}
+
+func humanHandoffFinalAnswer(step *schema.AgentStep) string {
+	if step != nil {
+		if content := toolContentFromAction(step.Action); content != "" {
+			return content
+		}
+		if message := humanHandoffMessageFromInput(step.Action.ToolInput); message != "" {
+			return message
+		}
+		if message := humanHandoffMessageFromObservation(step.Observation); message != "" {
+			return message
+		}
+	}
+	return waitForWakeupFinalAnswer(step)
+}
+
+func humanHandoffMessageFromInput(input string) string {
+	var req HumanHandoffRequest
+	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &req); err != nil {
+		return ""
+	}
+	return firstNonEmptyString([]string{req.SuggestedAction, req.Details})
+}
+
+func humanHandoffMessageFromObservation(observation string) string {
+	var payload struct {
+		Message         string `json:"message"`
+		SuggestedAction string `json:"suggested_action"`
+		Details         string `json:"details"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(observation)), &payload); err != nil {
+		return ""
+	}
+	return firstNonEmptyString([]string{payload.Message, payload.SuggestedAction, payload.Details})
 }
 
 func waitForWakeupFinalAnswer(step *schema.AgentStep) string {
@@ -488,7 +539,7 @@ func plannerTaskForPhase(phase loopPhase, state roleLoopState, forceSimpleLoop b
 	}
 	switch phase {
 	case phaseDecision:
-		return "Route phase: decide the execution path before normal tools are exposed. Return only JSON: {\"mode\":\"direct_answer|simple|plan\",\"final_answer\":\"plain text only for direct_answer\",\"reason\":\"brief rationale\",\"confidence\":0.0-1.0}. Voice interaction is the core use case, so keep direct answers brief and natural for TTS. Use direct_answer only when the final user-facing answer is available now without tools; leave final_answer empty for simple or plan. Use simple for ordinary one-pass execution such as direct tool use, straightforward arithmetic, or short comparisons. Use plan for tasks that need explicit planning, checkpoints, information gathering before acting, multiple independent stages, record aggregation, reconciliation, branching, or several required output facts. Examples: a single expression or comparing two expressions is simple; invoice reconciliation across stages and expense/category aggregation are plan."
+		return "Route phase: decide the execution path before normal tools are exposed. Return only JSON: {\"mode\":\"direct_answer|simple|plan\",\"final_answer\":\"plain text only for direct_answer\",\"reason\":\"brief rationale\",\"confidence\":0.0-1.0}. Voice interaction is the core use case, so keep direct answers brief and natural for TTS. Use direct_answer only when the final user-facing answer is available now without tools; leave final_answer empty for simple or plan. Use simple for ordinary one-pass execution such as direct tool use, straightforward arithmetic, or short comparisons. Use plan for tasks that need explicit planning, checkpoints, information gathering before acting, multiple independent stages, record aggregation, reconciliation, branching, or several required output facts. Examples: a single expression or comparing two expressions is simple; invoice reconciliation across stages and expense/category aggregation are plan. Important: the visible conversation context only contains the recent hot window and a profile snapshot; prior turns are compressed into archived chunks, and long-term facts/preferences/rules live in a separate memory store — both are invisible to you here. If the user's input asks about or references prior conversation content, previously remembered preferences/rules, or anything else you cannot confirm from the visible context (including denials such as 'we never discussed X'), choose simple so the executor can retrieve from history or memory before answering. Do not assume the visible context is the complete record."
 	case phasePlan:
 		task := "Plan mode: create or revise a structured delegated plan. You may use read-only information-gathering tools before committing if context is missing. Do not use execution, computation, or state-changing tools in plan mode. Call commit_plan to hand concrete steps to the executor, call cancel_plan only when planning should be abandoned, or return a final answer only when existing execution evidence already proves the task complete."
 		if state.PlanCommitRequired {

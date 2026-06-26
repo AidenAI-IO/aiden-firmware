@@ -1,88 +1,82 @@
 # Agent instruction and behavior
-custom_instruction = ""
-additional_prompt = ""
-max_iterations = -1
-force_simple_loop = false
+# custom_instruction = ""
+# additional_prompt = ""
+# max_iterations = -1
+# force_simple_loop = false
 
 # Screenshot context pruning:
 # keep the latest N screenshots and batch-prune older screenshots every interval
 # to keep long runs bounded without changing the cached message prefix every turn.
-screenshot_keep_n = 3
-screenshot_prune_interval = 2
+# screenshot_keep_n = 3
+# screenshot_prune_interval = 2
 
 # Input mode:
 # - text: run HTTP server with Web UI
 # - stt: device audio -> STT -> LLM -> TTS
 # - audio: device audio -> LLM audio attachment -> TTS
 #   Use audio mode only with a provider/model path that supports audio input.
-input_mode = "text"
+input_mode = "stt"
 
 # Trigger mode: "manual" (push-to-talk) or "wakeup" (GPIO trigger)
 # Only used when input_mode is "stt" or "audio"
-trigger_mode = "manual"
+trigger_mode = "wakeup"
 
 # RKNN Silero VAD parameters
 # Only used when input_mode is "stt" or "audio"
-vad_backend = "rknn" # "rknn" (NPU encoder + CPU LSTM/decoder) or "cpu"
-vad_model_path = "/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn"
-vad_helper_path = "/oem/usr/bin/rknn_vad"
-vad_speech_threshold = 0.5
-silence_ms = 650          # Silence duration to end utterance (ms)
-min_speech_ms = 300       # Minimum speech duration to accept (ms)
+# vad_backend = "rknn" # "rknn" (NPU encoder + CPU LSTM/decoder) or "cpu"
+# vad_model_path = "/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn"
+# vad_helper_path = "/oem/usr/bin/rknn_vad"
+# vad_speech_threshold = 0.5
+# silence_ms = 550          # Silence duration to end utterance (ms)
+# min_speech_ms = 300       # Minimum speech duration to accept (ms)
 
 # Wakeup voice session parameters
 # Only used when input_mode = "stt" and trigger_mode = "wakeup"
-voice_followup_enabled = false
-voice_followup_timeout_ms = 6000
-voice_first_turn_timeout_ms = 10000
-voice_max_turns = 0
-voice_interrupt_on_wakeup = true
-voice_streaming_tts_enabled = true
-voice_tool_call_speech = true
-voice_progress_speech_enabled = true
-voice_max_response_tokens = 400
+# voice_followup_enabled = false
+# voice_followup_timeout_ms = 5000
+# voice_first_turn_timeout_ms = 10000
+# voice_max_turns = 0
+# voice_interrupt_on_wakeup = true
+# voice_streaming_tts_enabled = true
+# voice_tool_call_speech = true
+# voice_progress_speech_enabled = true
+# voice_max_response_tokens = 300
 
 # Primary LLM model configuration
 [model]
-provider = "openrouter"
-model = "google/gemini-3.5-flash"
-api_key = "OPENROUTER_API_KEY"
-temperature = 0.2
-max_response_tokens = 1000
+provider = "openai"
+model = "gpt-5.5"
+api_key = "OPENAI_API_KEY"
+# base_url = "https://api.openai.com/v1"     # Optional: custom endpoint
+# temperature = 0.2
+# max_response_tokens = 1000
 # Optional model metadata overrides. Leave unset or 0 for provider metadata auto-discovery when available.
 # context_window = 128000
 # model_max_output_tokens = 8192
 
-# Optional future field parsed by config but not currently used by the runtime.
-# [model_text]
-# provider = "openrouter"
-# model = "anthropic/claude-3.5-sonnet"
-# api_key = "OPENROUTER_API_KEY"
-
 # Audio service configuration
 [audio]
-socket = "/run/audio_service/audio_service.sock"
-sample_rate = 16000
-channels = 1
-bit_width = 16
+# socket = "/run/audio_service/audio_service.sock"
+# sample_rate = 16000
+# channels = 1
+# bit_width = 16
 
 # Audio archive configuration (optional)
 # When enabled, saves audio recordings to disk for playback in web UI.
-# Default: enabled.
 [audio_archive]
-enabled = true               # Set false to stop archiving audio files
-max_files = 500             # Keep most recent N audio files
-max_size_mb = 100           # Or stop when total size exceeds this (MB)
-storage_path = "/userdata/audio"  # Where to store audio files
+# enabled = true              # Set false to stop archiving audio files
+# max_files = 500             # Keep most recent N audio files
+# max_size_mb = 100           # Or stop when total size exceeds this (MB)
+# storage_path = "/userdata/audio"  # Where to store audio files
 
 # Log retention configuration
 [log]
-llm_http_retention_days = 7  # Keep llm-http-*.log files for this many days
+# llm_http_retention_days = 7  # Keep llm-http-*.log files for this many days
 
 # Speech-to-Text (STT) configuration
 # Required when input_mode = "stt"
 [stt]
-provider = "openai-whisper"  # "openai-whisper", "openrouter", or "tencent-asr"
+provider = "openai-whisper"  # "openai-whisper", or "tencent-asr"
 api_key = "OPENAI_API_KEY"
 model = "whisper-1"
 # base_url = "https://api.openai.com/v1"  # Optional: custom endpoint
@@ -91,13 +85,13 @@ model = "whisper-1"
 # provider = "openrouter"
 # api_key = "OPENROUTER_API_KEY"
 # model = "qwen/qwen3-asr-flash-2026-02-10"
-# base_url = "https://openrouter.ai/api/v1"  # Optional: custom endpoint
 
 # For Tencent ASR (alternative to OpenAI Whisper):
 # provider = "tencent-asr"  # legacy aliases: tencent, tencent_asr
+# app_id = "TENCENT_APP_ID"   # Required for realtime upload during recording
 # secret_id = "TENCENT_SECRET_ID"
 # secret_key = "TENCENT_SECRET_KEY"
-# region = "ap-guangzhou"
+# region = "ap-shanghai"
 # engine_model_type = "16k_zh"
 
 # Text-to-Speech (TTS) configuration
@@ -105,15 +99,15 @@ model = "whisper-1"
 [tts]
 provider = "minimax-cn"
 api_key = "MINIMAX_API_KEY"
-voice_id = "male-qn-qingse"  # Voice ID from Minimax
+voice_id = "male-qn-qingse"   # Voice ID from Minimax
 emotion = "happy"             # Emotion: happy, sad, angry, etc.
 speed = 1.0                   # Speech speed: 0.5 - 2.0
 
 # HID (Human Interface Device) configuration
 [hid]
-keyboard_device = "/dev/hidg0"
-mouse_device = "/dev/hidg1"
-frame_socket = "/run/frame_service/frame_service.sock"
+# keyboard_device = "/dev/hidg0"
+# mouse_device = "/dev/hidg1"
+# frame_socket = "/run/frame_service/frame_service.sock"
 # pointer_mode = "absolute"     # default, iOS AssistiveTouch / absolute mouse
 # pointer_mode = "touchscreen"  # Android HID touch screen / digitizer
 
@@ -123,9 +117,18 @@ frame_socket = "/run/frame_service/frame_service.sock"
 provider = "duckduckgo"
 api_key = ""
 
+# Live Activity / Dynamic Island.
+# relay_url and relay_api_key are preconfigured for the shared Aiden relay so
+# newly flashed boards can work with the official app without extra setup.
+[live_activity]
+enabled = true
+relay_url = "https://apns-test.aidenai.io"
+relay_api_key = "b3c79446904b60f99cf8bdf90d43ea1342d2e94f4b04c96d47f396680b1e3c8a"
+board_id = "default"
+
 # Episode telemetry (Langfuse). Disabled by default.
 # Set enabled = true and configure base_url + public_key + secret_key.
-# [telemetry]
+[telemetry]
 # enabled = false
 # provider = "langfuse"
 # base_url = "http://langfuse.example.com:3000"
@@ -136,13 +139,3 @@ api_key = ""
 # max_retry = 2
 # environment = "default"
 # tags = ["aiden-hardware"]
-
-# Live Activity / Dynamic Island.
-# relay_url and relay_api_key are preconfigured for the shared Aiden relay so
-# newly flashed boards can work with the official app without extra setup.
-[live_activity]
-enabled = true
-relay_url = "https://apns-test.aidenai.io"
-relay_api_key = "b3c79446904b60f99cf8bdf90d43ea1342d2e94f4b04c96d47f396680b1e3c8a"
-board_id = "default"
-phone_id = ""

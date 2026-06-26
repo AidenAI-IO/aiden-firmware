@@ -22,7 +22,7 @@ func TestRecallSessionChunksToolReturnsMatchingEvidence(t *testing.T) {
 		t.Fatalf("Compress() error = %v", err)
 	}
 
-	tool := NewRecallSessionChunksTool(session)
+	tool := NewRecallSessionChunksTool(session, nil)
 	out, err := tool.Call(ctx, `{"tags":["验证码"],"app_name":"某政务App","limit":1}`)
 	if err != nil {
 		t.Fatalf("Call() error = %v", err)
@@ -70,7 +70,7 @@ func TestRecallSessionChunksToolIgnoresAppNameInput(t *testing.T) {
 		t.Fatalf("Compress() calendar error = %v", err)
 	}
 
-	tool := NewRecallSessionChunksTool(session)
+	tool := NewRecallSessionChunksTool(session, nil)
 	out, err := tool.Call(ctx, `{"app_name":"Mail","limit":10}`)
 	if err != nil {
 		t.Fatalf("Call() error = %v", err)
@@ -149,10 +149,11 @@ func TestToolSetRegistersMemoryRecallTools(t *testing.T) {
 }
 
 func TestRecallToolDescriptionsGuideAgentUsage(t *testing.T) {
-	sessionDescription := NewRecallSessionChunksTool(NewSessionMemoryStore(t.TempDir())).Description()
+	sessionDescription := NewRecallSessionChunksTool(NewSessionMemoryStore(t.TempDir()), nil).Description()
 	for _, want := range []string{
-		"MUST use this tool",
-		"earlier in this conversation",
+		"prior conversation content",
+		"visible context",
+		"archived chunks",
 		"chunk_ids",
 		"PREFERRED",
 		"FALLBACK",

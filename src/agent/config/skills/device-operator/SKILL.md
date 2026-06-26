@@ -3,7 +3,7 @@ name: device-operator
 description: Use when controlling a visible target device UI through screenshots, touch, mouse, or keyboard.
 metadata:
   preferred_model: primary
-  allowed_tools: [screenshot, quick_action, touch_gesture, mouse_click, mouse_move, mouse_scroll, keyboard_tap, keyboard_text, enter_text_in_field, shell]
+  allowed_tools: [screenshot, quick_action, touch_gesture, mouse_click, mouse_move, mouse_scroll, keyboard_tap, keyboard_text, enter_text_in_field, enter_text_via_bridge, shell]
 ---
 
 Use this skill when interacting with the connected device screen, app UI, keyboard, touch input, or mouse pointer.
@@ -57,7 +57,8 @@ When reporting a blocker, include the screenshot error, which recovery commands 
 - Use `quick_action` first when the goal matches a catalog shortcut (back, home, app switch, search, copy/paste, browser ops, etc.). Pass the correct `platform` (ios/android/mac).
 - If `quick_action` is reserved, returns `ok=false`, or the screen does not change as expected: do not retry the same binding. Try `alternative=true` once when listed, then fall back to direct input tools and continue.
 - Use `touch_gesture` for taps, swipes, drag, and mobile-style navigation.
-- For **input field text entry** (search boxes, forms, chat inputs), use **`enter_text_in_field` once** with field coordinates. It handles IME switch, typing, candidate clicks, and field verification internally.
+- For **input field text entry** (search boxes, forms, chat inputs), use **`enter_text_in_field` once** with field coordinates for normal typing. It handles IME switch, typing, candidate clicks, and field verification internally.
+- If the user explicitly says to use the companion app, bridge, or clipboard instead of direct typing, use **`enter_text_via_bridge`**. Do not switch to it unless the user asks for that path.
 - Use `keyboard_text` only for simple standalone ASCII typing when not using `enter_text_in_field`.
 - Never pass Chinese, emoji, or romanization blobs to `keyboard_text`.
 - Use `keyboard_tap` for keys such as enter, escape, tab, arrows, or shortcuts not covered by quick_action.
@@ -68,6 +69,8 @@ Prefer semantic shortcuts and gestures when available:
 - Use `quick_action` for cataloged keyboard/touch bindings before improvising raw `keyboard_tap` or custom swipes.
 - Use `touch_gesture` with `type: "back"` or `type: "home"` when quick_action is unavailable or ineffective.
 - Use scroll or swipe instead of repeatedly tapping uncertain controls.
+- In app switchers with overlapping cards, tap the visible non-overlapping center of the target card.
+- If the target card is not visible, swipe within the switcher by layout until it enters the visible area, then tap it.
 
 ## Coordinate Discipline
 

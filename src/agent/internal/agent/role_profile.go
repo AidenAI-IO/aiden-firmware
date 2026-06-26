@@ -63,6 +63,7 @@ func buildRoleProfiles(cfg AgentConfig, skills ResolvedSkills, availableTools []
 				"You may use multiple tool calls within the current step until it is done or blocked.",
 				"When the step is ready for verification, call finish_step with a summary of what was accomplished and key_info for facts, IDs, values, labels, or observations later steps may need.",
 				"When the step is blocked or cannot be completed, call abort_step with the reason.",
+				"When the blocker requires private credentials, CAPTCHA, verification code, biometric/identity confirmation, a lock-screen unlock, system/app redirect confirmation, permission dialog confirmation, or another sensitive human action, call request_human_handoff before abort_step; ask the user to complete it on the device, never to send credentials in chat.",
 				"Plain-text answers alone do not enter verification; you must call finish_step or abort_step.",
 				"Use prior step results as context for the current next_step, but continue to execute only the current next_step.",
 				"Obey tool restrictions and output-format requirements from the original user request.",
@@ -171,7 +172,7 @@ func plannerRoleRules(cfg AgentConfig, openAppAvailable bool) []string {
 			"For semantic platform actions, use quick_action when a matching action may exist; pass observed_state.platform and the concrete action id when possible, and switch to a low-level fallback after failure/no effect.",
 			"Keep your tool choices tied to the original user request, not just a self-invented subtask.",
 			"If the current screenshot clearly identifies the app/page or device platform, use that observed app, page, platform (ios/android/mac), visible text, and dialogs when choosing tools.",
-			"Use request_human_handoff when the task requires credentials, verification, or human judgment your tools cannot fulfill, or when the user refers to a target you cannot unambiguously identify from the screen. Do not guess.",
+			"Call request_human_handoff when the task requires credentials, login-method selection, verification, system/app redirect confirmation, permission dialog confirmation, or human judgment your tools cannot fulfill, or when the user refers to a target you cannot unambiguously identify from the screen. Ask the user to complete it on the device; do not ask them to send credentials or private verification details in chat.",
 		)
 		if openAppAvailable {
 			rules = append(rules, "For launch-only app, URL, or dialer requests, open_app ok=true is enough unless the user asked to inspect or act inside the opened target.")
@@ -184,7 +185,7 @@ func plannerRoleRules(cfg AgentConfig, openAppAvailable bool) []string {
 		"For semantic platform actions, plan quick_action when a matching action may exist; include observed_state.platform, the concrete action id when possible, and a low-level fallback only after quick_action failure/no effect.",
 		"Keep objective and completion_criteria tied to the original user request, not just the current step.",
 		"If the current screenshot clearly identifies the app/page or device platform, include observed_state with app_name, page_name, platform (ios/android/mac), visible_text, dialogs, and confidence when relevant.",
-		"Plan a request_human_handoff step when the task requires credentials, verification, or human judgment your tools cannot fulfill, or when the user refers to a target you cannot unambiguously identify from the screen. Do not guess.",
+		"Call request_human_handoff when the task requires credentials, login-method selection, verification, system/app redirect confirmation, permission dialog confirmation, or human judgment your tools cannot fulfill, or when the user refers to a target you cannot unambiguously identify from the screen. In plan mode, request_human_handoff is allowed before commit_plan when the blocker is already known. Ask the user to complete it on the device; do not ask them to send credentials or private verification details in chat.",
 	)
 	if openAppAvailable {
 		rules = append(rules, "For launch-only app, URL, or dialer requests, use open_app ok=true as the completion criterion.")

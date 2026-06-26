@@ -23,8 +23,13 @@ const (
 )
 
 type sessionMetadata struct {
-	SessionID string `json:"session_id"`
-	CreatedAt string `json:"created_at"`
+	SessionID string        `json:"session_id"`
+	CreatedAt string        `json:"created_at"`
+	State     *sessionState `json:"state,omitempty"`
+}
+
+type sessionState struct {
+	RetrievedDeviceExperience *sessionPlannerExperienceSnapshot `json:"retrieved_device_experience,omitempty"`
 }
 
 type SessionRotationResult struct {
@@ -49,11 +54,11 @@ type SummarizeFn func(ctx context.Context, events []SessionEvent) string
 // data and prompt rendering remain compatible.
 type StructuredSummarizeFn func(ctx context.Context, events []SessionEvent) ChunkStructuredSummary
 
-// ContextWindowFn returns the current model's context window in tokens. The
-// memory manager calls it on every compression decision so model swaps take
-// effect at runtime without restart. Implementations should return 0 when the
-// window is unknown; callers fall back to the yaml-configured default.
-type ContextWindowFn func() int
+// ContextWindowFn returns the current model's spec. The memory manager calls
+// it on every compression decision so model swaps take effect at runtime without
+// restart. Implementations should return a zero ContextWindow when the window is
+// unknown; callers fall back to the yaml-configured default.
+type ContextWindowFn func() ModelSpec
 
 // MemoryManager maintains session memory, handling compression, chunk management,
 // and long-term profile generation. It coordinates between in-memory chat history
@@ -126,6 +131,7 @@ type SessionEvent struct {
 	ToolCallID         string          `json:"tool_call_id,omitempty"`
 	ToolName           string          `json:"tool_name,omitempty"`
 	ToolInput          string          `json:"tool_input,omitempty"`
+	ToolError          *ToolError      `json:"tool_error,omitempty"`
 	Objective          string          `json:"objective,omitempty"`
 	CompletionCriteria []string        `json:"completion_criteria,omitempty"`
 	Plan               []string        `json:"plan,omitempty"`
@@ -393,24 +399,16 @@ func (m *MemoryManager) ClearAll(ctx context.Context, agentName string) error {
 	return m.removeAllPersisted(agentName)
 }
 
-// Save persists the current memory snapshot and triggers maintenance.
+// Save persists the current memory state into session events and triggers maintenance.
 func (m *MemoryManager) Save(ctx context.Context, agentName string) error {
 	records, err := m.Snapshot(ctx, agentName)
 	if err != nil {
 		return err
 	}
-	if err := m.persistSnapshot(agentName, records); err != nil {
+	if err := m.syncSessionRecords(agentName, records); err != nil {
 		return err
 	}
 	return m.maintainFilesystemMemory(ctx)
-}
-
-// SaveSnapshot persists a given snapshot of message records.
-func (m *MemoryManager) SaveSnapshot(ctx context.Context, agentName string, records []MessageRecord) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	return m.persistSnapshot(agentName, records)
 }
 
 // RequestMaintenance schedules asynchronous memory maintenance.
@@ -665,6 +663,18 @@ func (m *MemoryManager) RotateSessionEventsDetailed() (SessionRotationResult, er
 		if err != nil {
 			return SessionRotationResult{}, err
 		}
+
+		// Compress any remaining hot-window events into a final chunk before
+		// archiving so the session is recallable even if it never crossed the
+		// regular compression threshold. Failures are logged but do not block
+		// rotation: an archive with no chunks is worse than one with a chunk
+		// missing structured summary, but neither should fail a rotation.
+		if err := m.compressRemainingForArchive(sessionDir); err != nil {
+			if m.logger != nil {
+				m.logger.Warn("[memory] final pre-archive compression failed: %v", err)
+			}
+		}
+
 		if err := replaceActiveSessionDir(sessionDir, archiveDir, activeTempDir); err != nil {
 			return SessionRotationResult{}, err
 		}
@@ -816,14 +826,18 @@ func writeNewSessionMetadata(sessionDir string, now time.Time) (sessionMetadata,
 		SessionID: newSessionID(now),
 		CreatedAt: now.UTC().Format(time.RFC3339Nano),
 	}
-	data, err := json.Marshal(meta)
-	if err != nil {
-		return sessionMetadata{}, fmt.Errorf("marshal session metadata: %w", err)
-	}
-	if err := os.WriteFile(filepath.Join(sessionDir, sessionMetadataFileName), append(data, '\n'), 0o644); err != nil {
+	if err := writeSessionMetadata(filepath.Join(sessionDir, sessionMetadataFileName), meta); err != nil {
 		return sessionMetadata{}, fmt.Errorf("write session metadata: %w", err)
 	}
 	return meta, nil
+}
+
+func writeSessionMetadata(path string, meta sessionMetadata) error {
+	data, err := json.Marshal(meta)
+	if err != nil {
+		return fmt.Errorf("marshal session metadata: %w", err)
+	}
+	return writeFileAtomic(path, append(data, '\n'), 0o644)
 }
 
 func readSessionMetadata(path string) (sessionMetadata, error) {
@@ -875,34 +889,6 @@ func (m *MemoryManager) loadPersistedMessages(history *langmemory.ChatMessageHis
 		}
 		return nil
 	}
-
-	fl := NewFileLock(m.storageDir)
-	if err := fl.Lock(m.lockTimeout); err != nil {
-		return fmt.Errorf("lock for loading memory %q: %w", agentName, err)
-	}
-	defer fl.Unlock()
-
-	data, err := os.ReadFile(m.memoryPath(agentName))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("read persisted memory for %q: %w", agentName, err)
-	}
-
-	var records []MessageRecord
-	if err := json.Unmarshal(data, &records); err != nil {
-		return fmt.Errorf("decode persisted memory for %q: %w", agentName, err)
-	}
-
-	messages := make([]llms.ChatMessage, 0, len(records))
-	for _, record := range records {
-		messages = append(messages, messageFromRecord(record))
-	}
-	if err := history.SetMessages(context.Background(), messages); err != nil {
-		return fmt.Errorf("restore persisted memory for %q: %w", agentName, err)
-	}
-	m.eventCount[agentName] = len(records)
 	return nil
 }
 
@@ -913,6 +899,31 @@ func (m *MemoryManager) loadSessionMessageRecords(agentName string) ([]MessageRe
 	}
 	defer fl.Unlock()
 
+	if records, hotWindowTokens, eventCount, ok, err := m.loadSessionMessageRecordsLocked(agentName); err != nil {
+		return nil, 0, 0, false, err
+	} else if ok {
+		return records, hotWindowTokens, eventCount, true, nil
+	}
+
+	legacyRecords, ok, err := m.loadLegacyMessageRecordsLocked(agentName)
+	if err != nil {
+		return nil, 0, 0, false, err
+	}
+	if !ok {
+		return nil, 0, 0, false, nil
+	}
+	if len(legacyRecords) == 0 {
+		m.removeLegacySnapshotAfterMigration(agentName)
+		return nil, 0, 0, true, nil
+	}
+	if err := m.appendSessionEvents(agentName, legacyRecords); err != nil {
+		return nil, 0, 0, false, fmt.Errorf("migrate legacy persisted memory for %q: %w", agentName, err)
+	}
+	m.removeLegacySnapshotAfterMigration(agentName)
+	return m.loadSessionMessageRecordsLocked(agentName)
+}
+
+func (m *MemoryManager) loadSessionMessageRecordsLocked(agentName string) ([]MessageRecord, int, int, bool, error) {
 	session := NewSessionMemoryStore(filepath.Join(m.storageDir, "session"), m.extraction.SummaryMaxChunks)
 	result, err := session.readActiveEventsRepairingTruncatedTail()
 	if err != nil {
@@ -936,6 +947,28 @@ func (m *MemoryManager) loadSessionMessageRecords(agentName string) ([]MessageRe
 		}
 	}
 	return records, hotWindowTokens, len(result.events), true, nil
+}
+
+func (m *MemoryManager) loadLegacyMessageRecordsLocked(agentName string) ([]MessageRecord, bool, error) {
+	data, err := os.ReadFile(legacyMemorySnapshotPath(m.storageDir, agentName))
+	if err != nil {
+		if isPathNotExistError(err) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("read legacy persisted memory for %q: %w", agentName, err)
+	}
+
+	var records []MessageRecord
+	if err := json.Unmarshal(data, &records); err != nil {
+		return nil, false, fmt.Errorf("decode legacy persisted memory for %q: %w", agentName, err)
+	}
+	return records, true, nil
+}
+
+func (m *MemoryManager) removeLegacySnapshotAfterMigration(agentName string) {
+	if err := os.Remove(legacyMemorySnapshotPath(m.storageDir, agentName)); err != nil && !os.IsNotExist(err) && m.logger != nil {
+		m.logger.Warn("[memory] remove migrated legacy snapshot for %q: %v", agentName, err)
+	}
 }
 
 func (m *MemoryManager) LoadActiveSessionEvents(ctx context.Context, limit int) ([]SessionEvent, error) {
@@ -980,7 +1013,7 @@ func (m *MemoryManager) logSessionEventsRepair(agentName string, result sessionE
 	m.logger.Warn("[memory] repaired truncated session events for %q", agentName)
 }
 
-func (m *MemoryManager) persistSnapshot(agentName string, records []MessageRecord) error {
+func (m *MemoryManager) syncSessionRecords(agentName string, records []MessageRecord) error {
 	if m.storageDir == "" {
 		return nil
 	}
@@ -1001,20 +1034,6 @@ func (m *MemoryManager) persistSnapshot(agentName string, records []MessageRecor
 	if err := m.appendSessionEvents(agentName, records); err != nil {
 		return err
 	}
-
-	data, err := json.MarshalIndent(records, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal memory snapshot for %q: %w", agentName, err)
-	}
-
-	path := m.memoryPath(agentName)
-	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
-		return fmt.Errorf("write memory snapshot for %q: %w", agentName, err)
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		return fmt.Errorf("replace memory snapshot for %q: %w", agentName, err)
-	}
 	return nil
 }
 
@@ -1025,6 +1044,31 @@ func sanitizeMessageRecords(records []MessageRecord) []MessageRecord {
 		out[i] = record
 	}
 	return out
+}
+
+func legacyMemorySnapshotPath(storageDir, agentName string) string {
+	agentName = strings.TrimSpace(agentName)
+	if agentName == "" {
+		agentName = "default"
+	}
+	safe := strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' {
+			return r
+		}
+		if r >= 'A' && r <= 'Z' {
+			return r
+		}
+		if r >= '0' && r <= '9' {
+			return r
+		}
+		switch r {
+		case '-', '_', '.':
+			return r
+		default:
+			return '_'
+		}
+	}, agentName)
+	return filepath.Join(storageDir, safe+".json")
 }
 
 func (m *MemoryManager) removeSessionPersisted(agentName string) error {
@@ -1040,8 +1084,8 @@ func (m *MemoryManager) removeSessionPersisted(agentName string) error {
 	}
 	defer fl.Unlock()
 
-	if err := os.Remove(m.memoryPath(agentName)); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove persisted memory for %q: %w", agentName, err)
+	if err := os.Remove(legacyMemorySnapshotPath(m.storageDir, agentName)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove legacy session memory for %q: %w", agentName, err)
 	}
 	if err := os.RemoveAll(filepath.Join(m.storageDir, "session")); err != nil {
 		return fmt.Errorf("remove session memory for %q: %w", agentName, err)
@@ -1066,8 +1110,8 @@ func (m *MemoryManager) removeAllPersisted(agentName string) error {
 	}
 	defer fl.Unlock()
 
-	if err := os.Remove(m.memoryPath(agentName)); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove persisted memory for %q: %w", agentName, err)
+	if err := os.Remove(legacyMemorySnapshotPath(m.storageDir, agentName)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove legacy memory for %q: %w", agentName, err)
 	}
 	for _, path := range []string{
 		filepath.Join(m.storageDir, "session"),
@@ -1127,13 +1171,14 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 	}
 
 	promptTokens := m.LastPromptTokens()
-	contextWindow := m.effectiveContextWindow()
+	contextWindow, maxOutput := m.effectiveModelSpec()
+	inputBudget := m.inputBudget()
 	if m.logger != nil {
-		m.logger.Info("[memory] compression triggered: events=%d, prompt_tokens=%d, context_window=%d, threshold=%d%%",
-			len(events), promptTokens, contextWindow, m.extraction.CompressAtPercent)
+		m.logger.Info("[memory] compression triggered: events=%d, prompt_tokens=%d, context_window=%d, max_output=%d, input_budget=%d, threshold=%d%%",
+			len(events), promptTokens, contextWindow, maxOutput, inputBudget, m.extraction.CompressAtPercent)
 	}
 
-	plan := m.planCompaction(events, contextWindow)
+	plan := m.planCompaction(events, inputBudget)
 	if !plan.ok {
 		return nil
 	}
@@ -1414,6 +1459,45 @@ func (m *MemoryManager) countCompressAfterEvents() int {
 	return threshold
 }
 
+// compressRemainingForArchive generates a final chunk for any events still in
+// events.jsonl before the session is archived. Without this, short sessions
+// that never crossed the compression threshold would have no chunks and become
+// invisible to recall_session_chunks after archiving.
+//
+// The session lock and file lock from the rotation caller cover us; this only
+// adds the SessionMemoryStore-internal lock.
+func (m *MemoryManager) compressRemainingForArchive(sessionDir string) error {
+	session := NewSessionMemoryStore(sessionDir, m.extraction.SummaryMaxChunks)
+	events, err := session.LoadEvents()
+	if err != nil {
+		return fmt.Errorf("read remaining session events: %w", err)
+	}
+	if len(events) == 0 {
+		return nil
+	}
+
+	// Use a bounded context with timeout to prevent slow LLM calls from
+	// blocking rotation indefinitely. If the LLM times out, buildEventSummary
+	// falls back to local summarization.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	summary, structured := m.buildEventSummary(ctx, events)
+	_, err = session.Compress(ctx, CompressOption{
+		Summary:    summary,
+		Structured: structured,
+		Tags:       m.extraction.extractMemoryTags(events),
+		Entities:   m.extraction.extractMemoryEntities(events),
+	})
+	if err != nil {
+		return fmt.Errorf("compress remaining events: %w", err)
+	}
+	if m.logger != nil {
+		m.logger.Info("[memory] pre-archive compression: %d events into final chunk", len(events))
+	}
+	return nil
+}
+
 // buildEventSummary runs the structured → plain → local fallback cascade over a
 // set of events and returns the resulting plain summary plus any structured
 // summary. Empty input yields an empty summary so split-turn callers can detect
@@ -1509,15 +1593,17 @@ func (m *MemoryManager) shouldCompress(eventCount int) bool {
 	lastPromptTokens := m.LastPromptTokens()
 	contextWindow := m.effectiveContextWindow()
 	if lastPromptTokens > 0 && contextWindow > 0 {
+		// Compute the actual input budget: total window minus output reservation.
+		inputBudget := m.inputBudget()
 		// Reuse clampTokenBudgets so the reserve ceiling (never more than half
 		// the window) stays defined in one place. Only the reserve half matters
 		// for the trigger decision; keep-recent governs the cut location and is
 		// consumed by planCompaction instead.
-		reserve, _ := clampTokenBudgets(m.reserveTokens(), m.keepRecentTokens(), contextWindow)
-		if lastPromptTokens >= contextWindow-reserve {
+		reserve, _ := clampTokenBudgets(m.reserveTokens(), m.keepRecentTokens(), inputBudget)
+		if lastPromptTokens >= inputBudget-reserve {
 			return true
 		}
-		ratio := float64(lastPromptTokens) / float64(contextWindow)
+		ratio := float64(lastPromptTokens) / float64(inputBudget)
 		threshold := float64(m.extraction.CompressAtPercent) / 100.0
 		if ratio >= threshold {
 			return true
@@ -1540,17 +1626,58 @@ func (m *MemoryManager) shouldCompress(eventCount int) bool {
 	return eventCount > m.countCompressAfterEvents()
 }
 
+// effectiveModelSpec returns the model spec for compression decisions. It
+// prefers the resolver-supplied callback (so model swaps take effect at
+// runtime); when the callback returns a zero ContextWindow, falls back to the
+// yaml-configured default. Returns both ContextWindow and MaxOutput from the
+// same spec snapshot to avoid mismatches.
+func (m *MemoryManager) effectiveModelSpec() (contextWindow int, maxOutput int) {
+	contextWindow = m.extraction.ContextWindow // yaml fallback
+	maxOutput = 0                              // unknown unless spec provides it
+
+	if m.contextWindowFn != nil {
+		if spec := m.contextWindowFn(); spec.ContextWindow > 0 {
+			contextWindow = spec.ContextWindow
+			if spec.MaxOutput > 0 {
+				maxOutput = spec.MaxOutput
+			}
+		}
+	}
+	return contextWindow, maxOutput
+}
+
 // effectiveContextWindow returns the context window in tokens that should be
 // used for compression decisions. It prefers the resolver-supplied callback
 // (so model swaps take effect at runtime); a zero from the callback means
 // "unknown" and falls back to the yaml-configured default.
 func (m *MemoryManager) effectiveContextWindow() int {
-	if m.contextWindowFn != nil {
-		if w := m.contextWindowFn(); w > 0 {
-			return w
-		}
+	cw, _ := m.effectiveModelSpec()
+	return cw
+}
+
+// effectiveMaxOutput returns the model's max output tokens. Used in compression
+// decisions to reserve space for the response. Returns 0 when unknown (caller
+// should use a conservative fallback or skip the output reservation).
+func (m *MemoryManager) effectiveMaxOutput() int {
+	_, mo := m.effectiveModelSpec()
+	return mo
+}
+
+// inputBudget computes the effective input budget for compression decisions by
+// reserving space for the model's output. When MaxOutput is unknown (0), returns
+// the full context window. When MaxOutput >= ContextWindow, returns half the
+// window as a defensive fallback (that configuration should not happen in
+// practice, but we don't want to return zero or negative values).
+func (m *MemoryManager) inputBudget() int {
+	contextWindow, maxOutput := m.effectiveModelSpec()
+	if maxOutput == 0 {
+		return contextWindow
 	}
-	return m.extraction.ContextWindow
+	inputBudget := contextWindow - maxOutput
+	if inputBudget <= 0 {
+		inputBudget = contextWindow / 2 // defensive: output >= window shouldn't happen
+	}
+	return inputBudget
 }
 
 func summarizeSessionEvents(events []SessionEvent) string {
@@ -1680,10 +1807,6 @@ func cleanEntityName(entity string) string {
 	return strings.Trim(entity, " ，。,.、；;：:\"'（）()[]【】")
 }
 
-func (m *MemoryManager) memoryPath(agentName string) string {
-	return filepath.Join(m.storageDir, memoryFileName(agentName))
-}
-
 func (m *MemoryManager) sessionEventsPath() string {
 	return filepath.Join(m.storageDir, "session", "events.jsonl")
 }
@@ -1808,31 +1931,6 @@ func messageRecordsEqualSlice(a, b []MessageRecord) bool {
 
 func messageRecordsEqual(a, b MessageRecord) bool {
 	return a.Role == b.Role && a.Content == b.Content
-}
-
-func memoryFileName(agentName string) string {
-	agentName = strings.TrimSpace(agentName)
-	if agentName == "" {
-		agentName = "default"
-	}
-	safe := strings.Map(func(r rune) rune {
-		if r >= 'a' && r <= 'z' {
-			return r
-		}
-		if r >= 'A' && r <= 'Z' {
-			return r
-		}
-		if r >= '0' && r <= '9' {
-			return r
-		}
-		switch r {
-		case '-', '_', '.':
-			return r
-		default:
-			return '_'
-		}
-	}, agentName)
-	return safe + ".json"
 }
 
 func isTruncatedJSONLineError(err error) bool {

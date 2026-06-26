@@ -179,7 +179,6 @@ type LiveActivityConfig struct {
 	RelayURL       string `toml:"relay_url,omitempty"`
 	RelayAPIKey    string `toml:"relay_api_key,omitempty"`
 	BoardID        string `toml:"board_id,omitempty"`
-	PhoneID        string `toml:"phone_id,omitempty"`
 	BundleID       string `toml:"bundle_id,omitempty"`
 	Topic          string `toml:"topic,omitempty"`
 	Environment    string `toml:"environment,omitempty"`
@@ -235,6 +234,7 @@ type STTConfig struct {
 	Model           string `toml:"model,omitempty"`
 	BaseURL         string `toml:"base_url,omitempty"`
 	Language        string `toml:"language,omitempty"` // "zh" (Chinese) or "en" (English)
+	AppID           string `toml:"app_id,omitempty"`
 	SecretID        string `toml:"secret_id,omitempty"`
 	SecretKey       string `toml:"secret_key,omitempty"`
 	Region          string `toml:"region,omitempty"`
