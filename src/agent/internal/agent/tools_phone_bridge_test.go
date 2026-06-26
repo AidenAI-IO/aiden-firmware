@@ -394,6 +394,31 @@ func TestClipboardReadSuccessPreservesOKField(t *testing.T) {
 	}
 }
 
+func TestClipboardWriteRecordsPreparedText(t *testing.T) {
+	message := "你好，请问这个手机号你还用吗？13204503813"
+	bridge := newTestPhoneBridgeWithApp(t, func(cmd BridgeCommand) BridgeCommandResponse {
+		if cmd.Type != "clipboard_write" {
+			t.Fatalf("command type = %s", cmd.Type)
+		}
+		return BridgeCommandResponse{ID: cmd.ID}
+	})
+	tool := NewClipboardTool(bridge, nil)
+
+	out, err := tool.Call(context.Background(), `{"action":"write","text":"`+message+`"}`)
+	if err != nil {
+		t.Fatalf("Call returned err: %v", err)
+	}
+	if !strings.Contains(out, `"ok": true`) {
+		t.Fatalf("unexpected output: %s", out)
+	}
+	if !bridge.ClipboardRecentlyContains(message, time.Minute) {
+		t.Fatal("expected bridge to remember prepared clipboard text")
+	}
+	if bridge.ClipboardRecentlyContains("different text", time.Minute) {
+		t.Fatal("clipboard prepared text should require an exact match")
+	}
+}
+
 func newTestPhoneBridgeWithApp(t *testing.T, handle func(BridgeCommand) BridgeCommandResponse) *PhoneBridge {
 	t.Helper()
 	bridge := NewPhoneBridge(nil)

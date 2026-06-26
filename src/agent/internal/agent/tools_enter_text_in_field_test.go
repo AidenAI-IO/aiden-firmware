@@ -184,14 +184,16 @@ func TestEnterTextInFieldCompositionSuccess(t *testing.T) {
 	}
 }
 
-func TestEnterTextInFieldPrefersBridgeClipboardForCompositionWhenRestorable(t *testing.T) {
-	message := "这两个号码13204503813和18846189806还在用吗"
+func TestEnterTextInFieldUsesPreparedClipboardInCurrentIOSApp(t *testing.T) {
+	message := "你好，请问这个手机号你还用吗？13204503813"
 	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
 		ObservedMode: textInputModeComposition,
 		FieldText:    message,
 	}}}
 	pb := NewPhoneBridge(nil)
-	pb.connected = true
+	defer pb.queue.Stop()
+	pb.NoteClipboardWrite(message)
+	pb.connected = false
 	pb.platform = "ios"
 	pb.appState = "background"
 	pb.appStateAt = time.Now()
@@ -205,7 +207,7 @@ func TestEnterTextInFieldPrefersBridgeClipboardForCompositionWhenRestorable(t *t
 	mouse := &recordingTextInputTool{name: "mouse_click", out: "ok"}
 	restorer := NewPhoneBridgeRestorer(pb, nil)
 	restorer.tapReturnEntry = func(context.Context, PhoneBridgeStatus) error {
-		pb.appState = "active"
+		t.Fatal("prepared clipboard path must not restore Aiden")
 		return nil
 	}
 	bridgeTool := &EnterTextViaBridgeTool{
@@ -221,12 +223,11 @@ func TestEnterTextInFieldPrefersBridgeClipboardForCompositionWhenRestorable(t *t
 		bridgeFn: func() *PhoneBridge { return pb },
 		restorer: restorer,
 		findPrevAppFn: func(context.Context, screenshotResult) (previousAppCardResult, error) {
-			return previousAppCardResult{Found: true, TapPoint: focusPointArgs{X: 180, Y: 290, CoordSpace: "normalized"}, Label: "WeChat"}, nil
+			t.Fatal("prepared clipboard path must not inspect the app switcher")
+			return previousAppCardResult{}, nil
 		},
 		clipboardWriteFn: func(_ context.Context, _ *PhoneBridge, text string) error {
-			if text != message {
-				t.Fatalf("clipboard text = %q", text)
-			}
+			t.Fatal("prepared clipboard path must not rewrite clipboard")
 			return nil
 		},
 	}
@@ -239,15 +240,14 @@ func TestEnterTextInFieldPrefersBridgeClipboardForCompositionWhenRestorable(t *t
 		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
 	}, &stubTextInputVision{})
 	tool := &EnterTextInFieldTool{engine: fallbackEngine, bridgeTool: bridgeTool}
-	out, err := tool.Call(context.Background(), `{"text":"`+message+`","platform":"ios","focus":{"x":400,"y":950,"coord_space":"normalized"}}`)
+	out, err := tool.Call(context.Background(), `{"text":"`+message+`","platform":"ios","focus":{"x":30,"y":93,"coord_space":"normalized"}}`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
 		`"committed": true`,
-		"clipboard-first: restored Aiden via Dynamic Island",
-		"clipboard-first: wrote clipboard in bridge app",
-		"clipboard-first: returned to prior app",
+		"clipboard-first: using prepared clipboard in current app",
+		"clipboard-first: pasted clipboard",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("unexpected output, missing %q: %s", want, out)
@@ -257,18 +257,70 @@ func TestEnterTextInFieldPrefersBridgeClipboardForCompositionWhenRestorable(t *t
 		t.Fatalf("fallback HID/IME path should not type when bridge clipboard succeeds: %v", fallbackKeyboardText.calls)
 	}
 	if len(keyboardText.calls) != 0 {
-		t.Fatalf("bridge path should not use system search text when Dynamic Island restore is available: %v", keyboardText.calls)
+		t.Fatalf("prepared clipboard path should not use system search text: %v", keyboardText.calls)
 	}
-	if len(quick.calls) != 2 ||
-		!strings.Contains(quick.calls[0], `"action": "app_switch"`) ||
-		!strings.Contains(quick.calls[1], `"action": "paste"`) {
+	if len(quick.calls) != 1 || !strings.Contains(quick.calls[0], `"action": "paste"`) {
 		t.Fatalf("quick_action calls=%v", quick.calls)
 	}
-	if len(touch.calls) != 1 {
+	if len(touch.calls) != 0 {
 		t.Fatalf("touch_gesture calls=%v", touch.calls)
 	}
 	if len(mouse.calls) != 1 {
 		t.Fatalf("mouse_click calls=%v", mouse.calls)
+	}
+	if !strings.Contains(mouse.calls[0], `"x": 300`) || !strings.Contains(mouse.calls[0], `"y": 930`) {
+		t.Fatalf("expected percent-like focus to scale to normalized coordinates, mouse_click calls=%v", mouse.calls)
+	}
+}
+
+func TestEnterTextInFieldDoesNotRestoreAidenWithoutPreparedIOSClipboard(t *testing.T) {
+	message := "你好，请问这个手机号你还用吗？13204503813"
+	pb := NewPhoneBridge(nil)
+	defer pb.queue.Stop()
+	pb.connected = false
+	pb.platform = "ios"
+	pb.appState = "background"
+	pb.appStateAt = time.Now()
+	pb.returnEntry = "dynamic_island"
+	pb.returnEntrySeen = true
+	pb.returnEntryOK = true
+
+	bridgeQuick := &recordingTextInputTool{name: "quick_action", out: `{"ok":true}`}
+	restorer := NewPhoneBridgeRestorer(pb, nil)
+	restorer.tapReturnEntry = func(context.Context, PhoneBridgeStatus) error {
+		t.Fatal("enter_text_in_field must not restore Aiden when clipboard was not prepared")
+		return nil
+	}
+	bridgeTool := &EnterTextViaBridgeTool{
+		hw: &textInputHardwareDeps{
+			mouseClick:   &recordingTextInputTool{name: "mouse_click", out: "ok"},
+			touchGesture: &recordingTextInputTool{name: "touch_gesture", out: "ok"},
+			keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
+			keyboardText: &recordingTextInputTool{name: "keyboard_text", out: "ok"},
+			quickAction:  bridgeQuick,
+			screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+		},
+		vision:   &stubTextInputVision{},
+		bridgeFn: func() *PhoneBridge { return pb },
+		restorer: restorer,
+	}
+	fallbackEngine := newTextInputEngine(textInputHardwareDeps{
+		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
+		keyboardTap:  textInputStubTool{name: "keyboard_tap", out: "ok"},
+		keyboardText: textInputStubTool{name: "keyboard_text", out: "ok"},
+		quickAction:  textInputStubTool{name: "quick_action", out: "ok"},
+		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}, &stubTextInputVision{})
+	tool := &EnterTextInFieldTool{engine: fallbackEngine, bridgeTool: bridgeTool}
+	out, err := tool.Call(context.Background(), `{"text":"`+message+`","platform":"ios","focus":{"x":30,"y":93,"coord_space":"normalized"},"max_attempts":1}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"committed": false`) || !strings.Contains(out, "requires segments") {
+		t.Fatalf("unexpected output: %s", out)
+	}
+	if len(bridgeQuick.calls) != 0 {
+		t.Fatalf("unprepared iOS field entry should not use bridge quick actions: %v", bridgeQuick.calls)
 	}
 }
 

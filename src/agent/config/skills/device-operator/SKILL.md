@@ -59,9 +59,9 @@ When reporting a blocker, include the screenshot error, which recovery commands 
 - Use `quick_action` `send` only after the intended field text is verified. After sending, inspect the screen and confirm an outgoing bubble, sent item, or cleared input before reporting success.
 - If `quick_action` is reserved, returns `ok=false`, or the screen does not change as expected: do not retry the same binding. Try `alternative=true` once when listed, then fall back to direct input tools and continue.
 - Use `touch_gesture` for taps, swipes, drag, and mobile-style navigation.
-- For **iOS/Android external app text entry** (chat/message bodies, long text, CJK, emoji, or text that failed through normal typing), use **`enter_text_in_field` once** with field coordinates. On iOS, when Aiden is reachable via Dynamic Island, it restores Aiden, writes clipboard in the app, returns to the target app, pastes, and verifies. It then falls back to HID/IME typing only if clipboard input fails.
+- For **iOS/Android external app text entry** (chat/message bodies, long text, CJK, emoji, or text that failed through normal typing), use **`enter_text_in_field` once** with field coordinates. On iOS, if the text was already prepared with `clipboard` `action=write`, it focuses the current target field, pastes, and verifies without reopening Aiden. If text is known before opening the target app, prepare the clipboard first while Aiden is foreground, then open/navigate the target app.
 - For short in-app search/filter fields and Mac targets, also use **`enter_text_in_field` once**. It handles IME switch, typing, candidate clicks, and field verification internally.
-- Do not manually scatter `clipboard` write, app switching, paste, and screenshot verification for one field entry. Let `enter_text_in_field` run the clipboard-return-paste-verify sequence as one verified operation.
+- Do not restore Aiden from an already open target app just to write clipboard unless the user explicitly asks for that heavier bridge path. Do not manually scatter app switching, paste, and screenshot verification for one field entry; let `enter_text_in_field` run focus/paste/verify as one verified operation.
 - Use `keyboard_text` only for simple standalone ASCII typing when not using `enter_text_in_field`.
 - Never pass Chinese, emoji, or romanization blobs to `keyboard_text`.
 - Use `keyboard_tap` for keys such as enter, escape, tab, arrows, or shortcuts not covered by quick_action.
@@ -187,6 +187,7 @@ Use **`enter_text_in_field`** for putting text into an input box:
 - Success requires `committed:true` and `field_text` exactly matching `text`. **Do not** tell the user text was entered unless `committed:true`.
 - `committed:false` means failure (e.g. text still in IME candidates/preedit, or field still shows pinyin). Retry with a fresh screenshot and corrected focus/segments, or report failure.
 - **Required** `segments` for composition/CJK: IME romanization syllables in typing order. Example: `"text":"你好","segments":["ni","hao"]`. Do not omit segments.
+- For normalized coordinates, use the 0-1000 range. If you estimate a bottom chat input at about `(300,930)`, pass `{"x":300,"y":930,"coord_space":"normalized"}`, not `(30,93)`.
 
 `keyboard_text` remains ASCII-only for non-field or legacy paths. Do not use it for Chinese/CJK field entry.
 

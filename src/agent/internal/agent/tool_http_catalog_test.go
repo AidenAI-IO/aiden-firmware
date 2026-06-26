@@ -242,8 +242,9 @@ func TestGeneratedToolSkillPrefersBridgeTextEntryForPhoneApps(t *testing.T) {
 	skill := buildHTTPToolSkillMarkdown("test", "test skill", "http://example.local:8080", nil)
 	for _, want := range []string{
 		"use `enter_text_in_field`",
-		"Dynamic Island return to Aiden is available",
-		"do not rely on background WebSocket/HTTP clipboard delivery as the primary path",
+		"first call `clipboard` with action=write",
+		"without reopening Aiden",
+		"Do not rely on background WebSocket/HTTP clipboard delivery as the primary path",
 	} {
 		if !strings.Contains(skill, want) {
 			t.Fatalf("generated HTTP tool skill missing %q:\n%s", want, skill)

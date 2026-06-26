@@ -142,6 +142,9 @@ func (t *ClipboardTool) write(ctx context.Context, text string) (string, error) 
 		SetToolError(ctx, resp.Error)
 		return toolErrorString(resp.Error), nil
 	}
+	if t.bridge != nil {
+		t.bridge.NoteClipboardWrite(text)
+	}
 	result := map[string]interface{}{"ok": true}
 	if restored {
 		result["restored_from_return_entry"] = true

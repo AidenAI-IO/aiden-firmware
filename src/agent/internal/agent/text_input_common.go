@@ -194,6 +194,26 @@ type focusPointArgs struct {
 	CoordSpace string  `json:"coord_space,omitempty"`
 }
 
+func normalizeTextInputFocusPoint(focus focusPointArgs) (focusPointArgs, bool) {
+	coordSpace := strings.ToLower(strings.TrimSpace(focus.CoordSpace))
+	if coordSpace == "" {
+		coordSpace = "normalized"
+	}
+	if coordSpace != "normalized" {
+		return focus, false
+	}
+	if focus.X < 0 || focus.Y < 0 || focus.X > 100 || focus.Y > 100 {
+		return focus, false
+	}
+	if focus.X == 0 && focus.Y == 0 {
+		return focus, false
+	}
+	focus.X *= 10
+	focus.Y *= 10
+	focus.CoordSpace = "normalized"
+	return focus, true
+}
+
 func textInputKeyboardKeysForIMESwitch(platform string) ([]string, error) {
 	switch strings.ToLower(strings.TrimSpace(platform)) {
 	case "android":

@@ -16,6 +16,7 @@ const (
 	textViaBridgeOpenAttempts   = 2
 	textViaBridgePasteAttempts  = 2
 	textViaBridgeRecentsSwipes  = 3
+	preparedClipboardMaxAge     = 5 * time.Minute
 )
 
 type bridgeSearchResult struct {
@@ -57,7 +58,8 @@ func (t *EnterTextViaBridgeTool) Name() string { return "enter_text_via_bridge" 
 
 func (t *EnterTextViaBridgeTool) Description() string {
 	return strings.TrimSpace(`Use the Phone Bridge clipboard path to place known text into an input field. ` +
-		`On iOS, when Dynamic Island return is available, one call restores Aiden, writes clipboard in the app, returns to the target app, focuses the field, pastes, and verifies the field text. ` +
+		`On iOS, if the target text was already prepared with clipboard write, it focuses the current target field, pastes, and verifies without reopening Aiden. ` +
+		`When explicitly needed and Dynamic Island return is available, this tool can restore Aiden, write clipboard in the app, return to the target app, focus the field, paste, and verify the field text. ` +
 		`On Android, one call writes clipboard through the connected bridge, focuses the field, pastes, and verifies. ` +
 		`Use enter_text_in_field for normal field entry; it automatically prefers this clipboard strategy when appropriate and falls back to HID/IME input if needed. ` +
 		`If the reliable clipboard path is unavailable, it returns committed:false. ` +
@@ -90,6 +92,7 @@ func (t *EnterTextViaBridgeTool) Call(ctx context.Context, input string) (string
 		platform = "android"
 	}
 	args.Text = strings.TrimSpace(args.Text)
+	args.Focus, _ = normalizeTextInputFocusPoint(args.Focus)
 	result := enterTextInFieldResult{
 		TargetText:   args.Text,
 		RequiredMode: string(requiredTextInputMode(args.Text)),
@@ -130,6 +133,7 @@ func (t *EnterTextViaBridgeTool) runClipboardFirstResult(ctx context.Context, ar
 	if platform == "" {
 		platform = "android"
 	}
+	args.Focus, _ = normalizeTextInputFocusPoint(args.Focus)
 	result := enterTextInFieldResult{
 		TargetText:   strings.TrimSpace(args.Text),
 		RequiredMode: string(requiredTextInputMode(args.Text)),
@@ -169,6 +173,10 @@ func (t *EnterTextViaBridgeTool) runClipboardFirstFlow(ctx context.Context, plat
 	status := bridge.Status()
 	switch strings.ToLower(strings.TrimSpace(platform)) {
 	case "ios":
+		if bridge.ClipboardRecentlyContains(args.Text, preparedClipboardMaxAge) {
+			committed, fieldText, vlmCalls, steps, err = t.runPreparedClipboardPasteFlow(ctx, platform, args)
+			return true, committed, fieldText, vlmCalls, steps, err
+		}
 		if phoneBridgeCanRestoreFromReturnEntry(status) || phoneBridgeReadyForCommand(status) {
 			committed, fieldText, vlmCalls, steps, err = t.runLegacyBridgeFlow(ctx, platform, args)
 			return true, committed, fieldText, vlmCalls, steps, err
@@ -205,6 +213,21 @@ func (t *EnterTextViaBridgeTool) runTargetPreservingClipboardFlow(ctx context.Co
 		return true, true, fieldText, vlmCalls, steps, nil
 	}
 	return true, false, fieldText, vlmCalls, steps, nil
+}
+
+func (t *EnterTextViaBridgeTool) runPreparedClipboardPasteFlow(ctx context.Context, platform string, args enterTextInFieldArgs) (committed bool, fieldText string, vlmCalls int, steps []string, err error) {
+	engine := newTextInputEngine(*t.hw, t.vision)
+	steps = append(steps, "clipboard-first: using prepared clipboard in current app")
+	committed, fieldText, calls, pasteSteps, err := t.focusPasteVerify(ctx, engine, platform, args)
+	vlmCalls += calls
+	steps = append(steps, pasteSteps...)
+	if err != nil {
+		return false, fieldText, vlmCalls, steps, err
+	}
+	if committed {
+		return true, fieldText, vlmCalls, steps, nil
+	}
+	return false, fieldText, vlmCalls, steps, nil
 }
 
 func (t *EnterTextViaBridgeTool) runLegacyBridgeFlow(ctx context.Context, platform string, args enterTextInFieldArgs) (committed bool, fieldText string, vlmCalls int, steps []string, err error) {
@@ -260,7 +283,7 @@ func (t *EnterTextViaBridgeTool) canWriteClipboardPreservingTarget(platform stri
 	return bridgeClipboardPreservesTarget(platform, status)
 }
 
-func (t *EnterTextViaBridgeTool) canUseClipboardFirst(platform string) bool {
+func (t *EnterTextViaBridgeTool) canUseClipboardFirst(platform, text string) bool {
 	bridge := t.currentBridge()
 	if bridge == nil {
 		return false
@@ -268,7 +291,7 @@ func (t *EnterTextViaBridgeTool) canUseClipboardFirst(platform string) bool {
 	status := bridge.Status()
 	switch strings.ToLower(strings.TrimSpace(platform)) {
 	case "ios":
-		return phoneBridgeCanRestoreFromReturnEntry(status) || phoneBridgeReadyForCommand(status)
+		return bridge.ClipboardRecentlyContains(text, preparedClipboardMaxAge) || phoneBridgeReadyForCommand(status)
 	case "android":
 		return bridgeClipboardPreservesTarget(platform, status)
 	default:
