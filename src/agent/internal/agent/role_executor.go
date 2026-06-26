@@ -472,6 +472,9 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 					if e.Recorder != nil {
 						e.Recorder.RecordExecution(execution)
 					}
+					if detectRepeatedFailedToolCall(state.ExecutionResults) {
+						return nil, e.abortLoopOnRepeatedToolFailure(ctx, &state, execution)
+					}
 					consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
 					if err != nil {
 						return nil, err
@@ -2627,4 +2630,76 @@ func executorInputsToString(inputValues map[string]any) (map[string]string, erro
 		inputs[key] = valueStr
 	}
 	return inputs, nil
+}
+
+// maxRepeatedFailedCalls is the maximum number of consecutive identical tool
+// calls (same tool, same input, same error) the runtime tolerates before
+// stopping the loop. The skill prompt asks the model not to repeat blindly,
+// but in practice the LLM sometimes ignores that and keeps firing the same
+// call. This is a hard ceiling so an unresponsive Agent cannot pin the bridge
+// or burn the wall-clock budget on a single broken call.
+const maxRepeatedFailedCalls = 3
+
+// detectRepeatedFailedToolCall returns true when the most recent executions
+// show maxRepeatedFailedCalls consecutive failures with identical tool name,
+// tool input, and error code.
+//
+// Only failures count: a success in the trailing window resets detection. The
+// most recent execution must itself be a failure (we are reacting to it).
+func detectRepeatedFailedToolCall(executions []roleExecutionResult) bool {
+	n := maxRepeatedFailedCalls
+	if len(executions) < n {
+		return false
+	}
+	window := executions[len(executions)-n:]
+	last := window[n-1]
+	if last.ToolError == nil || last.Action == nil {
+		return false
+	}
+	lastCode := last.ToolError.Code
+	lastTool := last.Action.Tool
+	lastInput := last.Action.ToolInput
+	for i := 0; i < n-1; i++ {
+		prev := window[i]
+		if prev.Action == nil || prev.ToolError == nil {
+			return false
+		}
+		if prev.Action.Tool != lastTool {
+			return false
+		}
+		if prev.Action.ToolInput != lastInput {
+			return false
+		}
+		if prev.ToolError.Code != lastCode {
+			return false
+		}
+	}
+	return true
+}
+
+// abortLoopOnRepeatedToolFailure produces a sentinel error that ends the
+// agent loop when detectRepeatedFailedToolCall fired. The message names the
+// stuck tool and last error so the caller surfaces a clear diagnosis instead
+// of "context cancelled" or "max iterations exceeded".
+func (e *roleCollaborativeExecutor) abortLoopOnRepeatedToolFailure(ctx context.Context, state *roleLoopState, last roleExecutionResult) error {
+	toolName := ""
+	if last.Action != nil {
+		toolName = last.Action.Tool
+	}
+	errCode := ""
+	errMsg := ""
+	if last.ToolError != nil {
+		errCode = last.ToolError.Code
+		errMsg = last.ToolError.Message
+	}
+	if e.Recorder != nil {
+		e.Recorder.RecordLoopPhase(state.Phase, fmt.Sprintf(
+			"aborted: tool %q failed %d times in a row with code %q",
+			toolName, maxRepeatedFailedCalls, errCode,
+		))
+	}
+	return fmt.Errorf(
+		"agent loop aborted: tool %q produced the same failure %d times in a row (code=%q, message=%q); the model is not adapting to this error",
+		toolName, maxRepeatedFailedCalls, errCode, errMsg,
+	)
 }

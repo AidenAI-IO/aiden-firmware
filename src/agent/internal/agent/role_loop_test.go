@@ -1479,3 +1479,88 @@ func TestExecutorPromptIncludesPlannerEvidence(t *testing.T) {
 		}
 	}
 }
+
+// TestDetectRepeatedFailedToolCall verifies that the agent runtime aborts
+// when the same tool fails the same way several times in a row, so a
+// confused planner cannot pin a bridge slot or burn wall-clock budget on a
+// hopeless retry.
+func TestDetectRepeatedFailedToolCall(t *testing.T) {
+	makeFailure := func(tool, input, code string) roleExecutionResult {
+		return roleExecutionResult{
+			Action:    &schema.AgentAction{Tool: tool, ToolInput: input},
+			Step:      &schema.AgentStep{Action: schema.AgentAction{Tool: tool, ToolInput: input}},
+			ToolError: &ToolError{Code: code, Message: "boom"},
+		}
+	}
+	makeSuccess := func(tool, input string) roleExecutionResult {
+		return roleExecutionResult{
+			Action: &schema.AgentAction{Tool: tool, ToolInput: input},
+			Step:   &schema.AgentStep{Action: schema.AgentAction{Tool: tool, ToolInput: input}},
+		}
+	}
+
+	t.Run("not enough history", func(t *testing.T) {
+		executions := []roleExecutionResult{
+			makeFailure("open_app", `{"app":"eBay"}`, CodeBridgeNotConnected),
+			makeFailure("open_app", `{"app":"eBay"}`, CodeBridgeNotConnected),
+		}
+		if detectRepeatedFailedToolCall(executions) {
+			t.Fatalf("should not trigger with only 2 failures (threshold is 3)")
+		}
+	})
+
+	t.Run("three identical failures triggers", func(t *testing.T) {
+		executions := []roleExecutionResult{
+			makeFailure("open_app", `{"app":"eBay"}`, CodeBridgeNotConnected),
+			makeFailure("open_app", `{"app":"eBay"}`, CodeBridgeNotConnected),
+			makeFailure("open_app", `{"app":"eBay"}`, CodeBridgeNotConnected),
+		}
+		if !detectRepeatedFailedToolCall(executions) {
+			t.Fatalf("should trigger when 3 identical failures in a row")
+		}
+	})
+
+	t.Run("success in trailing window resets", func(t *testing.T) {
+		executions := []roleExecutionResult{
+			makeFailure("open_app", `{"app":"eBay"}`, CodeBridgeNotConnected),
+			makeSuccess("screenshot", `{}`),
+			makeFailure("open_app", `{"app":"eBay"}`, CodeBridgeNotConnected),
+		}
+		if detectRepeatedFailedToolCall(executions) {
+			t.Fatalf("a success in the trailing window must reset detection")
+		}
+	})
+
+	t.Run("different tool input does not trigger", func(t *testing.T) {
+		executions := []roleExecutionResult{
+			makeFailure("open_app", `{"app":"eBay"}`, CodeBridgeNotConnected),
+			makeFailure("open_app", `{"app":"browser"}`, CodeBridgeNotConnected),
+			makeFailure("open_app", `{"app":"eBay"}`, CodeBridgeNotConnected),
+		}
+		if detectRepeatedFailedToolCall(executions) {
+			t.Fatalf("different tool input means agent is adapting, do not trigger")
+		}
+	})
+
+	t.Run("different error code does not trigger", func(t *testing.T) {
+		executions := []roleExecutionResult{
+			makeFailure("open_app", `{"app":"eBay"}`, CodeBridgeNotConnected),
+			makeFailure("open_app", `{"app":"eBay"}`, CodeAppNotInstalled),
+			makeFailure("open_app", `{"app":"eBay"}`, CodeBridgeNotConnected),
+		}
+		if detectRepeatedFailedToolCall(executions) {
+			t.Fatalf("different error code means failure mode changed, do not trigger")
+		}
+	})
+
+	t.Run("last call must be a failure", func(t *testing.T) {
+		executions := []roleExecutionResult{
+			makeFailure("open_app", `{"app":"eBay"}`, CodeBridgeNotConnected),
+			makeFailure("open_app", `{"app":"eBay"}`, CodeBridgeNotConnected),
+			makeSuccess("open_app", `{"app":"eBay"}`),
+		}
+		if detectRepeatedFailedToolCall(executions) {
+			t.Fatalf("if the latest call succeeded the loop is recovering, do not abort")
+		}
+	})
+}
