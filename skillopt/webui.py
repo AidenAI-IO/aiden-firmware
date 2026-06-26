@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from runner.environment import EnvironmentManager
-from runner.config import AgentConfigManager
+from runner.config import AgentConfigManager, render_agent_template
 from runner.judge import JudgeConfig
 
 
@@ -203,6 +203,7 @@ class SkillOptWebApp:
                 raise ValueError("Benchmark agent.toml is unavailable. Open the Benchmark WebUI and save an agent config first.")
             if not agent_config_info.get("api_key_nonempty"):
                 raise ValueError("Benchmark agent.toml does not contain a model api_key. Open the Benchmark WebUI and save an agent config with an API key first.")
+            agent_config = apply_backend_default_instruction(agent_config, str(payload.get("backend") or "mobilegym"))
             agent_config_path = run_dir / "agent.toml"
             agent_config_path.write_text(agent_config, encoding="utf-8")
             payload["agent_config"] = str(agent_config_path)
@@ -627,6 +628,45 @@ def _suite_task_count(path: Path) -> int:
 
 def mobilegym_environment_url(env: dict[str, Any]) -> str:
     return str(env.get("public_endpoint") or env.get("endpoint") or "").strip()
+
+
+def default_base_config_dir_for_backend(backend: str) -> Path:
+    if str(backend or "").strip() == "mobilegym":
+        return REPO_ROOT / "benchmark" / "mobilegym" / "config"
+    return REPO_ROOT / "benchmark" / "config"
+
+
+def initial_agent_config(base_config_dir: Path) -> str:
+    config = base_config_dir / "agent.toml"
+    if config.exists():
+        return config.read_text(encoding="utf-8")
+    template = base_config_dir / "agent.toml.template"
+    if template.exists():
+        return render_agent_template(template.read_text(encoding="utf-8"))
+    return ""
+
+
+def apply_backend_default_instruction(content: str, backend: str) -> str:
+    if str(backend or "").strip() != "mobilegym":
+        return content
+    default_content = initial_agent_config(default_base_config_dir_for_backend("mobilegym"))
+    default_instruction = extract_agent_instruction(default_content).strip()
+    if not default_instruction or extract_agent_instruction(content).strip():
+        return content
+    line = f"instruction = {json.dumps(default_instruction, ensure_ascii=False)}"
+    if re.search(r"(?m)^\s*instruction\s*=.*$", content):
+        return re.sub(r"(?m)^\s*instruction\s*=.*$", lambda _: line, content, count=1)
+    return line + "\n" + content
+
+
+def extract_agent_instruction(content: str) -> str:
+    try:
+        data = tomllib.loads(content)
+    except tomllib.TOMLDecodeError:
+        match = re.search(r"(?m)^\s*instruction\s*=\s*(['\"])(.*?)\1", content)
+        return match.group(2) if match else ""
+    value = data.get("instruction")
+    return str(value or "") if isinstance(value, str) else ""
 
 
 def agent_config_has_api_key(content: str) -> bool:
@@ -1084,6 +1124,7 @@ INDEX_HTML = r"""<!doctype html>
     .status.preparing, .status.building { background: #edf5ff; color: var(--blue); }
     .status.canceled, .status.stopping { background: #fff8e1; color: var(--orange); }
     .status.stopped, .status.device { background: #e0e0e0; color: #525252; }
+    .status.unhealthy { background: #fff1f1; color: var(--orange); }
     .status.mobilegym { background: #e8daff; color: var(--purple); }
     .status.ready { background: #defbe6; color: var(--green); }
     .status.missing { background: #fff1f1; color: var(--red); }
@@ -1868,7 +1909,5 @@ INDEX_HTML = r"""<!doctype html>
 </body>
 </html>
 """
-
-
 
 

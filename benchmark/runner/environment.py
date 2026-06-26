@@ -166,7 +166,12 @@ class EnvironmentManager:
         return containers
 
     def _build_recovered_env(self, container: dict[str, str]) -> MobileGymEnvironment | None:
-        """Build a recovered MobileGymEnvironment from a docker container record."""
+        """Build a recovered MobileGymEnvironment from a docker container record.
+
+        Performs a quick health check to determine if the container is actually
+        usable. A recovered container that fails health check is marked as
+        "unhealthy" so users won't accidentally select it for new runs.
+        """
         container_name = container["name"]
         prefix = "aiden-mobilegym-env-"
         if not container_name.startswith(prefix):
@@ -178,15 +183,30 @@ class EnvironmentManager:
         if bridge_port == 0:
             return None
 
+        public_endpoint = f"http://127.0.0.1:{bridge_port}"
+
+        # Health check: verify the container is actually responsive
+        is_healthy = _check_endpoint_health(f"{public_endpoint}/health", timeout=2.0)
+        age_label = _format_container_age(container.get("created_at", ""))
+
+        if is_healthy:
+            status = "running"
+            name = f"MobileGym (recovered, {age_label})"
+            message = "recovered from existing docker container"
+        else:
+            status = "unhealthy"
+            name = f"MobileGym (recovered, {age_label}, unhealthy)"
+            message = "container is unresponsive at /health - recommended to remove and start fresh"
+
         env_dir = self.runs_dir / "environments" / env_id
         return MobileGymEnvironment(
             id=env_id,
-            name="MobileGym (recovered)",
+            name=name,
             endpoint=f"http://host.docker.internal:{bridge_port}",
-            public_endpoint=f"http://127.0.0.1:{bridge_port}",
+            public_endpoint=public_endpoint,
             web_url=f"http://127.0.0.1:{web_port}" if web_port else "",
-            status="running",
-            message="recovered from existing docker container",
+            status=status,
+            message=message,
             created_at=container["created_at"],
             started_at=container["created_at"],
             container_name=container_name,
@@ -424,6 +444,53 @@ def _docker_published_port_safe(container_name: str, container_port: int) -> int
         return docker_published_port(container_name, container_port)
     except Exception:
         return 0
+
+
+def _check_endpoint_health(url: str, timeout: float = 2.0) -> bool:
+    """Quick health check: returns True only if endpoint returns 2xx."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            return 200 <= response.status < 300
+    except Exception:
+        return False
+
+
+def _format_container_age(created_at: str) -> str:
+    """Format docker created_at timestamp as a human-friendly age.
+
+    Docker emits timestamps like '2026-06-25 09:07:53 +0800 CST'.
+    Returns labels like '15m', '2h', '3d'.
+    """
+    if not created_at:
+        return "age unknown"
+    # Strip timezone suffix like "+0800 CST" - keep just the date+time and offset
+    parts = created_at.strip().rsplit(" ", 1)  # remove timezone abbrev "CST"
+    if len(parts) == 2 and not parts[1].startswith(("+", "-")):
+        created_at_clean = parts[0]
+    else:
+        created_at_clean = created_at.strip()
+    # Try a few common docker timestamp formats
+    for fmt in ("%Y-%m-%d %H:%M:%S %z", "%Y-%m-%d %H:%M:%S"):
+        try:
+            dt = datetime.strptime(created_at_clean, fmt)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            delta = now - dt
+            total_seconds = int(delta.total_seconds())
+            if total_seconds < 60:
+                return f"{total_seconds}s old"
+            minutes = total_seconds // 60
+            if minutes < 60:
+                return f"{minutes}m old"
+            hours = minutes // 60
+            if hours < 24:
+                return f"{hours}h old"
+            days = hours // 24
+            return f"{days}d old"
+        except ValueError:
+            continue
+    return "age unknown"
 
 
 def build_mobilegym_environment_command(

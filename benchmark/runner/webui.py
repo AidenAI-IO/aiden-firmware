@@ -3008,6 +3008,7 @@ INDEX_HTML = r"""<!doctype html>
     .status.running, .status.queued, .status.starting, .status.starting_agent, .status.preparing, .status.building { background: #edf5ff; color: var(--blue); }
     .status.canceled, .status.stopping { background: #fff8e1; color: var(--orange); }
     .status.stopped, .status.device { background: #e0e0e0; color: #525252; }
+    .status.unhealthy { background: #fff1f1; color: var(--orange); }
     .status.mobilegym { background: #e8daff; color: var(--purple); }
     .status-actions {
       display: flex;
