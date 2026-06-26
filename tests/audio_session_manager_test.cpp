@@ -42,3 +42,17 @@ TEST_CASE("AudioSessionManager keeps a stopped record session readable until EOF
     CHECK(manager.read_record_chunk(session_id, 1, &missing) ==
           aiden::AidenServiceStatus::SESSION_NOT_FOUND);
 }
+
+TEST_CASE("AudioSessionManager rejects new playback while another session is draining") {
+    aiden::AudioSessionManager manager;
+
+    aiden::AudioFormat fmt;
+    fmt.sample_rate = 16000;
+    fmt.channels = 1;
+    fmt.bit_width = 16;
+
+    manager.draining_playback_count_->store(1, std::memory_order_relaxed);
+
+    aiden::PlaybackStartResult out;
+    CHECK(manager.start_playback(fmt, &out) == aiden::AidenServiceStatus::SERVICE_RECOVERING);
+}

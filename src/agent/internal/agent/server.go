@@ -1260,7 +1260,7 @@ func (s *Server) handleChatSync(
 			if s.logger != nil {
 				s.logger.Info("TTS playback: %q", text)
 			}
-			if err := s.speakTextForRequest(context.Background(), "", text, 0); err != nil && s.logger != nil {
+			if err := s.speakTextForRequest(context.Background(), req.RequestID, text, 0); err != nil && s.logger != nil {
 				s.logger.Error("TTS playback failed: %v", err)
 			}
 		}(speechText)

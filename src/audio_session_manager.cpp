@@ -214,20 +214,21 @@ AidenServiceStatus AudioSessionManager::write_play_chunk(uint64_t session_id,
         // RPC handler. The session object is kept alive by a shared_ptr on the
         // detached thread itself via a lambda capture.
         std::shared_ptr<AudioPlaybackSession> owned;
+        std::shared_ptr<std::atomic<uint32_t>> draining;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             auto it = playback_sessions_.find(session_id);
             if (it != playback_sessions_.end()) {
                 owned = it->second;
                 playback_sessions_.erase(it);
+                draining = draining_playback_count_;
+                draining->fetch_add(1, std::memory_order_relaxed);
             }
             playback_last_active_.erase(session_id);
         }
-        if (owned) {
+        if (owned && draining) {
             // Keep session alive on detached thread so playback can drain
             // without blocking the RPC handler thread.
-            std::shared_ptr<std::atomic<uint32_t>> draining = draining_playback_count_;
-            draining->fetch_add(1, std::memory_order_relaxed);
             std::thread([owned, draining]() {
                 owned->wait_until_done();
                 owned->stop();
