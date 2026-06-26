@@ -10,6 +10,7 @@ import (
 )
 
 const appSearchOpenLaunchDelay = 1200 * time.Millisecond
+const appSearchResultSettleDelay = 350 * time.Millisecond
 
 type appSearchOpenTool struct {
 	hw               *textInputHardwareDeps
@@ -169,6 +170,8 @@ func runAppSearchOpenFlow(ctx context.Context, cfg appSearchOpenFlowConfig) (app
 		result.VLMCalls += entryResult.VLMCalls
 		steps = append(steps, entryResult.Steps...)
 		steps = append(steps, fmt.Sprintf("searched %q", term))
+		time.Sleep(appSearchResultSettleDelay)
+		steps = append(steps, "waited for search results to settle")
 		foundForTerm := false
 		for attempt := 1; attempt <= 2; attempt++ {
 			findResult, calls, err := findSearchOpenAppResult(ctx, cfg, engine, term)
@@ -178,6 +181,11 @@ func runAppSearchOpenFlow(ctx context.Context, cfg appSearchOpenFlowConfig) (app
 				return result, err
 			}
 			if !findResult.Found {
+				if attempt < 2 {
+					steps = append(steps, fmt.Sprintf("app result not found for %q; rechecking", term))
+					time.Sleep(350 * time.Millisecond)
+					continue
+				}
 				steps = append(steps, fmt.Sprintf("app result not found for %q", term))
 				break
 			}

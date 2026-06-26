@@ -350,10 +350,59 @@ func TestAppSearchOpenFlowFallsBackToShorterTerm(t *testing.T) {
 	if !result.Opened {
 		t.Fatalf("expected opened result, got %#v", result)
 	}
-	if len(terms) < 2 || terms[0] != "Aiden Bridge" || terms[1] != "Aiden" {
+	if len(terms) < 3 || terms[0] != "Aiden Bridge" || terms[1] != "Aiden Bridge" || terms[2] != "Aiden" {
 		t.Fatalf("unexpected search terms: %#v", terms)
 	}
 	if len(keyboardText.calls) < 2 {
 		t.Fatalf("expected two search entry attempts, got keyboard_text calls=%v", keyboardText.calls)
+	}
+}
+
+func TestAppSearchOpenFlowRechecksSameTermBeforeFallback(t *testing.T) {
+	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{ObservedMode: textInputModeASCII}}}
+	quick := &recordingTextInputTool{name: "quick_action", out: `{"ok":true}`}
+	touch := &recordingTextInputTool{name: "touch_gesture", out: "ok"}
+	keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
+	kbTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
+	hw := &textInputHardwareDeps{mouseClick: textInputStubTool{name: "mouse_click", out: "ok"}, quickAction: quick, touchGesture: touch, keyboardText: keyboardText, keyboardTap: kbTap}
+	hw.screenshot = textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`}
+	entryTool := &EnterTextInFieldTool{engine: newTextInputEngine(*hw, vision)}
+	terms := []string{}
+	findCalls := 0
+	result, err := runAppSearchOpenFlow(context.Background(), appSearchOpenFlowConfig{
+		hw:        hw,
+		vision:    vision,
+		platform:  "android",
+		searchTerm: "Aiden Bridge",
+		entryTool: entryTool,
+		findAppTapFn: func(_ context.Context, _ screenshotResult, term string) (bridgeSearchResult, error) {
+			terms = append(terms, term)
+			if term == "Aiden Bridge" {
+				findCalls++
+				if findCalls == 1 {
+					return bridgeSearchResult{Found: false, TapPoint: focusPointArgs{CoordSpace: "normalized"}}, nil
+				}
+				return bridgeSearchResult{Found: true, TapPoint: focusPointArgs{X: 500, Y: 220, CoordSpace: "normalized"}, Label: "Aiden Bridge"}, nil
+			}
+			return bridgeSearchResult{Found: false, TapPoint: focusPointArgs{CoordSpace: "normalized"}}, nil
+		},
+		confirmAppOpenFn: func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error) {
+			return bridgeAppOpenResult{Opened: true, Reason: "Aiden app visible"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Opened {
+		t.Fatalf("expected opened result, got %#v", result)
+	}
+	if len(terms) != 2 || terms[0] != "Aiden Bridge" || terms[1] != "Aiden Bridge" {
+		t.Fatalf("expected same-term recheck before fallback, got terms=%#v", terms)
+	}
+	if len(keyboardText.calls) != 2 {
+		t.Fatalf("expected single spaced query entry, got keyboard_text calls=%v", keyboardText.calls)
+	}
+	if len(touch.calls) != 1 {
+		t.Fatalf("touch_gesture calls=%v", touch.calls)
 	}
 }
