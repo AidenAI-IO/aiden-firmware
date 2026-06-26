@@ -127,6 +127,13 @@ func TestAudioClientStartPlaybackWaitsForPlaybackDrainOnServiceRecovering(t *tes
 	}
 }
 
+func TestIsTransientTTSErrorTreatsServiceRecoveringAsRetryable(t *testing.T) {
+	err := &audioStatusError{op: "start_playback", status: "SERVICE_RECOVERING"}
+	if !isTransientTTSError(err) {
+		t.Fatal("isTransientTTSError() = false, want true for SERVICE_RECOVERING")
+	}
+}
+
 func TestPlayPromptSoundDoesNotRetryNonRetryableStartPlaybackFailure(t *testing.T) {
 	audioServer := newTestAudioService(t)
 	audioServer.startPlaybackStatuses = []string{"INTERNAL_ERROR", "OK"}

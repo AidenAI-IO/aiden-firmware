@@ -52,6 +52,8 @@ type Server struct {
 	pendingResultsMu     sync.Mutex
 	activeRuns           map[string]context.CancelFunc
 	activeRunsMu         sync.Mutex
+	activeOutputs        map[string]map[*activeTTSOutput]struct{}
+	activeOutputsMu      sync.Mutex
 	pendingSteers        map[string]pendingSteerMessage
 	pendingSteersMu      sync.Mutex
 	eventBroadcaster     *EventBroadcaster
@@ -542,9 +544,11 @@ func (s *Server) handleChatCancel(w http.ResponseWriter, r *http.Request) {
 	}
 	source := chatCancelRequestSource(r)
 
-	if s.cancelActiveRun(requestID) {
+	runCanceled := s.cancelActiveRun(requestID)
+	outputCanceled := s.interruptRequestOutputs(requestID)
+	if runCanceled || outputCanceled {
 		if s.logger != nil {
-			s.logger.Info("Chat request canceled: request_id=%s source=%s", requestID, source)
+			s.logger.Info("Chat request canceled: request_id=%s source=%s run_canceled=%t output_canceled=%t", requestID, source, runCanceled, outputCanceled)
 		}
 		if s.liveActivity != nil {
 			s.liveActivity.CancelTask(requestID)
@@ -704,6 +708,64 @@ func (s *Server) cancelActiveRun(requestID string) bool {
 		return false
 	}
 	cancel()
+	return true
+}
+
+func (s *Server) registerActiveOutput(requestID string, output *activeTTSOutput) func() {
+	if s == nil || requestID == "" || output == nil {
+		return func() {}
+	}
+	s.activeOutputsMu.Lock()
+	if s.activeOutputs == nil {
+		s.activeOutputs = make(map[string]map[*activeTTSOutput]struct{})
+	}
+	outputs := s.activeOutputs[requestID]
+	if outputs == nil {
+		outputs = make(map[*activeTTSOutput]struct{})
+		s.activeOutputs[requestID] = outputs
+	}
+	outputs[output] = struct{}{}
+	s.activeOutputsMu.Unlock()
+	return func() {
+		s.activeOutputsMu.Lock()
+		outputs := s.activeOutputs[requestID]
+		if outputs != nil {
+			delete(outputs, output)
+			if len(outputs) == 0 {
+				delete(s.activeOutputs, requestID)
+			}
+		}
+		s.activeOutputsMu.Unlock()
+		output.finish()
+	}
+}
+
+func (s *Server) snapshotActiveOutputs(requestID string) []*activeTTSOutput {
+	if s == nil || requestID == "" {
+		return nil
+	}
+	s.activeOutputsMu.Lock()
+	defer s.activeOutputsMu.Unlock()
+	outputs := s.activeOutputs[requestID]
+	if len(outputs) == 0 {
+		return nil
+	}
+	snapshot := make([]*activeTTSOutput, 0, len(outputs))
+	for output := range outputs {
+		snapshot = append(snapshot, output)
+	}
+	return snapshot
+}
+
+func (s *Server) interruptRequestOutputs(requestID string) bool {
+	outputs := s.snapshotActiveOutputs(requestID)
+	if len(outputs) == 0 {
+		return false
+	}
+	for _, output := range outputs {
+		output.interrupt()
+	}
+	waitForActiveOutputs(outputs, outputInterruptWaitTimeout)
 	return true
 }
 
@@ -886,6 +948,7 @@ func (s *Server) handleChatAsync(
 		}
 
 		var newStream *streamSessionWriter
+		unregisterStreamOutput := func() {}
 		ttsManager := s.currentTTSManager()
 
 		if s.runtime.config.VoiceStreamingTTSEnabledOrDefault() && s.audioClient != nil {
@@ -897,10 +960,14 @@ func (s *Server) handleChatAsync(
 					}
 				} else {
 					newStream = stream
+					output := newActiveTTSOutput(nil)
+					output.setStream(newStream)
+					unregisterStreamOutput = s.registerActiveOutput(requestID, output)
 					runReq.StreamWriter = newCancelOnFirstWriteWriter(speechStreamWriterForConfig(newStream, s.runtime.config), progress.Cancel)
 				}
 			}
 		}
+		defer unregisterStreamOutput()
 
 		result, err := s.runtime.Run(runCtx, runReq)
 		progress.Cancel()
@@ -967,17 +1034,16 @@ func (s *Server) handleChatAsync(
 			s.logger.Info("Chat request completed: request_id=%s output_len=%d", requestID, len(result.Output))
 		}
 
-		// Play TTS in background
+		// Keep request-scoped final TTS inside the async run goroutine so Stop can
+		// still see the active run/output and interrupt it reliably.
 		speechText := result.SpokenTextForConfig(s.runtime.config)
 		if s.audioClient != nil && speechText != "" && !result.SpeechStreamed {
-			go func(text string) {
-				if s.logger != nil {
-					s.logger.Info("TTS playback: %q", text)
-				}
-				if err := s.speakText(runCtx, text, 0); err != nil && s.logger != nil {
-					s.logger.Error("TTS playback failed: %v", err)
-				}
-			}(speechText)
+			if s.logger != nil {
+				s.logger.Info("TTS playback: %q", speechText)
+			}
+			if err := s.speakTextForRequest(runCtx, requestID, speechText, 0); err != nil && s.logger != nil {
+				s.logger.Error("TTS playback failed: %v", err)
+			}
 		}
 	}()
 }
@@ -1194,7 +1260,7 @@ func (s *Server) handleChatSync(
 			if s.logger != nil {
 				s.logger.Info("TTS playback: %q", text)
 			}
-			if err := s.speakText(context.Background(), text, 0); err != nil && s.logger != nil {
+			if err := s.speakTextForRequest(context.Background(), "", text, 0); err != nil && s.logger != nil {
 				s.logger.Error("TTS playback failed: %v", err)
 			}
 		}(speechText)
@@ -1328,6 +1394,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var newStream *streamSessionWriter
+	unregisterStreamOutput := func() {}
 	ttsManager := s.currentTTSManager()
 	finalStreamWriters := []io.Writer{
 		newChatAssistantFinalStreamWriter(stream, episodeID, req.RequestID),
@@ -1341,10 +1408,14 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 				}
 			} else {
 				newStream = streamSession
+				output := newActiveTTSOutput(nil)
+				output.setStream(newStream)
+				unregisterStreamOutput = s.registerActiveOutput(req.RequestID, output)
 				finalStreamWriters = append(finalStreamWriters, newCancelOnFirstWriteWriter(speechStreamWriterForConfig(newStream, s.runtime.config), progress.Cancel))
 			}
 		}
 	}
+	defer unregisterStreamOutput()
 	runReq.StreamWriter = newFinalStreamFanoutWriter(finalStreamWriters...)
 
 	result, err := s.runtime.Run(ctx, runReq)
@@ -1403,7 +1474,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			if s.logger != nil {
 				s.logger.Info("TTS playback: %q", text)
 			}
-			if err := s.speakText(context.Background(), text, 0); err != nil {
+			if err := s.speakTextForRequest(ctx, req.RequestID, text, 0); err != nil {
 				if s.logger != nil {
 					s.logger.Error("TTS playback failed: %v", err)
 				}
@@ -1721,6 +1792,50 @@ func (s *Server) speakText(ctx context.Context, text string, timeoutAfterLock ti
 		return err
 	}
 	return nil
+}
+
+func (s *Server) speakTextForRequest(ctx context.Context, requestID string, text string, timeoutAfterLock time.Duration) error {
+	if requestID == "" {
+		return s.speakText(ctx, text, timeoutAfterLock)
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	manager := s.currentTTSManager()
+	if manager == nil {
+		return nil
+	}
+	cfg := Config{}
+	if s.runtime != nil {
+		cfg = s.runtime.config
+	}
+	outputCtx, cancelOutput := context.WithCancel(ctx)
+	output := newActiveTTSOutput(cancelOutput)
+	unregisterOutput := s.registerActiveOutput(requestID, output)
+	defer func() {
+		unregisterOutput()
+		cancelOutput()
+	}()
+	if err := outputCtx.Err(); err != nil {
+		return err
+	}
+	speakCtx := outputCtx
+	cancelTimeout := func() {}
+	if timeoutAfterLock > 0 {
+		speakCtx, cancelTimeout = context.WithTimeout(outputCtx, timeoutAfterLock)
+		defer cancelTimeout()
+	}
+	if err := speakCtx.Err(); err != nil {
+		return err
+	}
+	_, err := speakWithTTSManagerObserved(speakCtx, manager, s.audioClient, cfg, text, func(stream *streamSessionWriter) func() {
+		stream.setCancel(cancelOutput)
+		output.setStream(stream)
+		return func() {
+			output.clearStream(stream)
+		}
+	})
+	return err
 }
 
 func (s *Server) playPromptSoundAsync(kind promptSoundKind, label string) {

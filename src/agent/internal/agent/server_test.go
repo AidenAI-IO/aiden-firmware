@@ -1373,6 +1373,193 @@ func TestServerHandleChatCancelEndsDanglingLiveActivity(t *testing.T) {
 	}
 }
 
+func TestServerHandleChatCancelStopsRequestScopedTTSPlayback(t *testing.T) {
+	requestID := "req-stop-1"
+	audioOps := &recordedAudioOps{}
+	provider := newInterruptibleAudioTTSProvider("server-provider", 48000, true)
+	server := &Server{
+		activeRuns:  make(map[string]context.CancelFunc),
+		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
+		audioClient: NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, audioOps)),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	server.registerActiveRun(requestID, cancel)
+	done := make(chan error, 1)
+	go func() {
+		done <- server.speakTextForRequest(ctx, requestID, "final answer", 0)
+	}()
+	waitForTestSignal(t, provider.firstWriteDone(), "final TTS playback to start")
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for audioOps.countOp("start_playback") == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("final TTS playback never opened a playback session")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancelReq := httptest.NewRequest(http.MethodPost, "/api/chat/cancel", bytes.NewBufferString(`{"request_id":"`+requestID+`"}`))
+	cancelReq.Header.Set("Content-Type", "application/json")
+	cancelRec := httptest.NewRecorder()
+	server.handleChatCancel(cancelRec, cancelReq)
+
+	if cancelRec.Code != http.StatusOK {
+		t.Fatalf("unexpected cancel status: %d body=%s", cancelRec.Code, cancelRec.Body.String())
+	}
+	var resp ChatCancelResponse
+	if err := json.NewDecoder(cancelRec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode cancel response: %v", err)
+	}
+	if resp.Status != "canceled" || resp.RequestID != requestID {
+		t.Fatalf("unexpected cancel response: %#v", resp)
+	}
+	if got := audioOps.countOp("stop_playback"); got != 1 {
+		t.Fatalf("stop_playback count = %d, want 1", got)
+	}
+	if got := audioOps.finalChunkCountAfterFirstStop(); got != 0 {
+		t.Fatalf("final write_play_chunk count after stop = %d, want 0", got)
+	}
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("speakTextForRequest() error = %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("request-scoped TTS did not stop after cancel")
+	}
+}
+
+func TestServerHandleChatCancelStopsCompletedAsyncRequestTTSPlayback(t *testing.T) {
+	requestID := "req-stop-async-complete"
+	audioOps := &recordedAudioOps{}
+	provider := newInterruptibleAudioTTSProvider("server-provider", 48000, true)
+	server := &Server{
+		activeRuns:  make(map[string]context.CancelFunc),
+		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
+		audioClient: NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, audioOps)),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	server.registerActiveRun(requestID, cancel)
+
+	playbackDone := make(chan error, 1)
+	go func() {
+		playbackDone <- server.speakTextForRequest(ctx, requestID, "completed async final answer", 0)
+	}()
+
+	waitForTestSignal(t, provider.firstWriteDone(), "completed async final TTS playback to start")
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for audioOps.countOp("start_playback") == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("completed async final TTS playback never opened a playback session")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	server.unregisterActiveRun(requestID)
+
+	cancelReq := httptest.NewRequest(http.MethodPost, "/api/chat/cancel", bytes.NewBufferString(`{"request_id":"`+requestID+`"}`))
+	cancelReq.Header.Set("Content-Type", "application/json")
+	cancelRec := httptest.NewRecorder()
+	server.handleChatCancel(cancelRec, cancelReq)
+
+	if cancelRec.Code != http.StatusOK {
+		t.Fatalf("unexpected cancel status: %d body=%s", cancelRec.Code, cancelRec.Body.String())
+	}
+	var resp ChatCancelResponse
+	if err := json.NewDecoder(cancelRec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode cancel response: %v", err)
+	}
+	if resp.Status != "canceled" || resp.RequestID != requestID {
+		t.Fatalf("unexpected cancel response: %#v", resp)
+	}
+	if got := audioOps.countOp("stop_playback"); got != 1 {
+		t.Fatalf("stop_playback count = %d, want 1", got)
+	}
+	if got := audioOps.finalChunkCountAfterFirstStop(); got != 0 {
+		t.Fatalf("final write_play_chunk count after stop = %d, want 0", got)
+	}
+	select {
+	case err := <-playbackDone:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("speakTextForRequest() error = %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("completed async final request-scoped TTS did not stop after cancel")
+	}
+}
+
+func TestServerHandleChatCancelStopsRequestScopedStreamingTTSPlayback(t *testing.T) {
+	requestID := "req-stop-streaming"
+	audioOps := &recordedAudioOps{}
+	provider := newInterruptibleAudioTTSProvider("server-provider", 48000, true)
+	server := &Server{
+		activeRuns:  make(map[string]context.CancelFunc),
+		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
+		audioClient: NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, audioOps)),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	server.registerActiveRun(requestID, cancel)
+
+	stream, err := beginManagedTTSStream(ctx, server.ttsManager, server.audioClient, Config{})
+	if err != nil {
+		t.Fatalf("beginManagedTTSStream() error = %v", err)
+	}
+	output := newActiveTTSOutput(nil)
+	output.setStream(stream)
+	unregisterOutput := server.registerActiveOutput(requestID, output)
+	defer unregisterOutput()
+
+	writeDone := make(chan error, 1)
+	go func() {
+		_, writeErr := speechStreamWriterForConfig(stream, Config{}).Write([]byte("streaming final answer"))
+		writeDone <- writeErr
+	}()
+
+	waitForTestSignal(t, provider.firstWriteDone(), "request-scoped streaming TTS playback to start")
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for audioOps.countOp("start_playback") == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("streaming TTS playback never opened a playback session")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancelReq := httptest.NewRequest(http.MethodPost, "/api/chat/cancel", bytes.NewBufferString(`{"request_id":"`+requestID+`"}`))
+	cancelReq.Header.Set("Content-Type", "application/json")
+	cancelRec := httptest.NewRecorder()
+	server.handleChatCancel(cancelRec, cancelReq)
+
+	if cancelRec.Code != http.StatusOK {
+		t.Fatalf("unexpected cancel status: %d body=%s", cancelRec.Code, cancelRec.Body.String())
+	}
+	var resp ChatCancelResponse
+	if err := json.NewDecoder(cancelRec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode cancel response: %v", err)
+	}
+	if resp.Status != "canceled" || resp.RequestID != requestID {
+		t.Fatalf("unexpected cancel response: %#v", resp)
+	}
+	if got := audioOps.countOp("stop_playback"); got != 1 {
+		t.Fatalf("stop_playback count = %d, want 1", got)
+	}
+	if got := audioOps.finalChunkCountAfterFirstStop(); got != 0 {
+		t.Fatalf("final write_play_chunk count after stop = %d, want 0", got)
+	}
+	select {
+	case err := <-writeDone:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("stream Write() error = %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("request-scoped streaming TTS did not stop after cancel")
+	}
+	if err := stream.closeAndWait(); err != nil {
+		t.Fatalf("closeAndWait() error = %v", err)
+	}
+}
+
 func TestServerHandleChatSteerQueuesAndCancelsPendingMessage(t *testing.T) {
 	server := &Server{
 		activeRuns:    make(map[string]context.CancelFunc),

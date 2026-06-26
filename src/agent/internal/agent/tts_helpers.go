@@ -207,6 +207,9 @@ func isTransientTTSError(err error) bool {
 	if err == nil {
 		return false
 	}
+	if isRetryableAudioStartPlaybackError(err) {
+		return true
+	}
 	msg := strings.ToLower(err.Error())
 	for _, fragment := range []string{
 		"connection refused",
