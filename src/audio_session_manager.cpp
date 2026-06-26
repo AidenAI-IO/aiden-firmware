@@ -47,6 +47,7 @@ AudioSessionManager::~AudioSessionManager() {
     std::lock_guard<std::mutex> lock(mutex_);
     record_sessions_.clear();
     playback_sessions_.clear();
+    draining_playback_sessions_.clear();
     record_last_active_.clear();
     playback_last_active_.clear();
 }
@@ -209,10 +210,8 @@ AidenServiceStatus AudioSessionManager::write_play_chunk(uint64_t session_id,
     AidenServiceStatus status = session->push_chunk(data, len, is_final);
 
     if (is_final && status == AidenServiceStatus::OK) {
-        // Remove from map so no further writes are accepted, then detach the
-        // playback thread so it drains remaining audio without blocking the
-        // RPC handler. The session object is kept alive by a shared_ptr on the
-        // detached thread itself via a lambda capture.
+        // Move the session into a draining set so no further writes are
+        // accepted, but stop_playback() can still interrupt the tail drain.
         std::shared_ptr<AudioPlaybackSession> owned;
         std::shared_ptr<std::atomic<uint32_t>> draining;
         {
@@ -220,6 +219,7 @@ AidenServiceStatus AudioSessionManager::write_play_chunk(uint64_t session_id,
             auto it = playback_sessions_.find(session_id);
             if (it != playback_sessions_.end()) {
                 owned = it->second;
+                draining_playback_sessions_[session_id] = owned;
                 playback_sessions_.erase(it);
                 draining = draining_playback_count_;
                 draining->fetch_add(1, std::memory_order_relaxed);
@@ -227,11 +227,15 @@ AidenServiceStatus AudioSessionManager::write_play_chunk(uint64_t session_id,
             playback_last_active_.erase(session_id);
         }
         if (owned && draining) {
-            // Keep session alive on detached thread so playback can drain
-            // without blocking the RPC handler thread.
-            std::thread([owned, draining]() {
+            // Keep the draining session alive on a detached thread until the
+            // playback thread exits or stop_playback() interrupts it.
+            std::thread([this, session_id, owned, draining]() {
                 owned->wait_until_done();
                 owned->stop();
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    draining_playback_sessions_.erase(session_id);
+                }
                 draining->fetch_sub(1, std::memory_order_relaxed);
             }).detach();
         }
@@ -244,12 +248,18 @@ AidenServiceStatus AudioSessionManager::stop_playback(uint64_t session_id) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = playback_sessions_.find(session_id);
-        if (it == playback_sessions_.end()) {
-            return AidenServiceStatus::SESSION_NOT_FOUND;
+        if (it != playback_sessions_.end()) {
+            session = it->second;
+            playback_sessions_.erase(it);
+            playback_last_active_.erase(session_id);
+        } else {
+            auto draining_it = draining_playback_sessions_.find(session_id);
+            if (draining_it == draining_playback_sessions_.end()) {
+                return AidenServiceStatus::SESSION_NOT_FOUND;
+            }
+            session = draining_it->second;
+            draining_playback_sessions_.erase(draining_it);
         }
-        session = it->second;
-        playback_sessions_.erase(it);
-        playback_last_active_.erase(session_id);
     }
     session->stop();
     fprintf(stderr, "[audio_service] playback session %llu stopped\n",
@@ -268,6 +278,9 @@ AidenServiceStatus AudioSessionManager::set_playback_volume(int volume) {
         std::lock_guard<std::mutex> lock(mutex_);
         playback_volume_ = volume;
         for (auto it = playback_sessions_.begin(); it != playback_sessions_.end(); ++it) {
+            sessions.push_back(it->second);
+        }
+        for (auto it = draining_playback_sessions_.begin(); it != draining_playback_sessions_.end(); ++it) {
             sessions.push_back(it->second);
         }
     }

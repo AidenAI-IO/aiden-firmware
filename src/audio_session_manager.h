@@ -81,6 +81,7 @@ private:
     uint64_t next_id_;
     std::unordered_map<uint64_t, std::shared_ptr<AudioRecordSession>>   record_sessions_;
     std::unordered_map<uint64_t, std::shared_ptr<AudioPlaybackSession>> playback_sessions_;
+    std::unordered_map<uint64_t, std::shared_ptr<AudioPlaybackSession>> draining_playback_sessions_;
     std::unordered_map<uint64_t, Clock::time_point> record_last_active_;
     std::unordered_map<uint64_t, Clock::time_point> playback_last_active_;
 };
