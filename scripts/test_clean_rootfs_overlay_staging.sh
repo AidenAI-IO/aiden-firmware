@@ -19,7 +19,6 @@ mkdir -p "$dest_overlay/usr/share/aiden/skills/device-operator"
 mkdir -p "$dest_overlay/usr/share/aiden"
 
 printf 'service\n' > "$dest_overlay/etc/init.d/S53agent"
-printf 'mapping\n' > "$dest_overlay/usr/share/aiden/app_mapping.json"
 printf 'actions\n' > "$dest_overlay/usr/share/aiden/quick_actions.json"
 printf 'planner\n' > "$dest_overlay/usr/share/aiden/skills/planner/SKILL.md"
 printf 'operator\n' > "$dest_overlay/usr/share/aiden/skills/device-operator/SKILL.md"

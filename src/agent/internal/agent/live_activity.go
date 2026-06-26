@@ -865,11 +865,8 @@ func liveActivityTargetFromToolCall(event RunEvent) string {
 	case "open_app":
 		return firstNonEmptyString([]string{
 			liveActivityString(payload, "app"),
-			liveActivityString(payload, "name"),
 			liveActivityString(payload, "url"),
 			liveActivityString(payload, "phone_number"),
-			liveActivityFirstString(payload, "ios_urls"),
-			liveActivityFirstString(payload, "android_packages"),
 		})
 	case "calendar":
 		return firstNonEmptyString([]string{
@@ -1095,11 +1092,9 @@ func liveActivityAppFromToolCall(event RunEvent) string {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(event.ToolInput)), &payload); err != nil {
 		return ""
 	}
-	for _, key := range []string{"app", "name"} {
-		if value, ok := payload[key].(string); ok {
-			if value = strings.TrimSpace(value); value != "" {
-				return value
-			}
+	if value, ok := payload["app"].(string); ok {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
 		}
 	}
 	if value, ok := payload["url"].(string); ok && strings.TrimSpace(value) != "" {
