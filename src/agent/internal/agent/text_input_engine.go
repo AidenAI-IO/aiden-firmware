@@ -336,14 +336,11 @@ func (e *textInputEngine) applyFocus(ctx context.Context, focus focusPointArgs) 
 	if coordSpace == "" {
 		coordSpace = "normalized"
 	}
-	out, err := e.hw.mouseClick.Call(ctx, jsonString(map[string]any{
+	_, err := callTextInputTool(ctx, e.hw.mouseClick, jsonString(map[string]any{
 		"x": focus.X, "y": focus.Y, "coord_space": coordSpace,
 	}))
 	if err != nil {
 		return err
-	}
-	if strings.HasPrefix(out, "error:") {
-		return fmt.Errorf("%s", out)
 	}
 	time.Sleep(textInputFocusRestoreDelay)
 	return nil
@@ -353,11 +350,23 @@ func (e *textInputEngine) tapKeys(ctx context.Context, keys []string) error {
 	if e == nil || e.hw.keyboardTap == nil {
 		return fmt.Errorf("keyboard_tap is not configured")
 	}
-	out, err := e.hw.keyboardTap.Call(ctx, jsonString(map[string]any{"keys": keys}))
+	out, err := callTextInputTool(ctx, e.hw.keyboardTap, jsonString(map[string]any{"keys": keys}))
 	if err != nil {
 		return err
 	}
 	return interpretTextInputToolOutput(out)
+}
+
+func callTextInputTool(ctx context.Context, tool langtools.Tool, input string) (string, error) {
+	toolCtx, _ := WithToolError(ctx)
+	out, err := tool.Call(toolCtx, input)
+	if err != nil {
+		return out, err
+	}
+	if te := ToolErrorFromContext(toolCtx); te != nil {
+		return out, te
+	}
+	return out, nil
 }
 
 func (e *textInputEngine) cycleIME(ctx context.Context, platform string) (string, error) {
@@ -394,7 +403,7 @@ func (e *textInputEngine) typeASCII(ctx context.Context, text string) error {
 }
 
 func (e *textInputEngine) typeASCIIChunk(ctx context.Context, text string) error {
-	out, err := e.hw.keyboardText.Call(ctx, jsonString(map[string]string{"text": text}))
+	out, err := callTextInputTool(ctx, e.hw.keyboardText, jsonString(map[string]string{"text": text}))
 	if err != nil {
 		return err
 	}
@@ -404,12 +413,9 @@ func (e *textInputEngine) typeASCIIChunk(ctx context.Context, text string) error
 func (e *textInputEngine) typeCompositionWithCandidateSelection(ctx context.Context, platform string, args enterTextInFieldArgs, segments []string) (committed bool, fieldText string, wrongIME bool, vlmCalls int, steps []string, err error) {
 	for i, segment := range segments {
 		steps = append(steps, fmt.Sprintf("type segment %d: %q", i+1, segment))
-		out, err := e.hw.keyboardText.Call(ctx, jsonString(map[string]string{"text": segment}))
+		_, err := callTextInputTool(ctx, e.hw.keyboardText, jsonString(map[string]string{"text": segment}))
 		if err != nil {
 			return false, fieldText, false, vlmCalls, steps, err
-		}
-		if strings.HasPrefix(out, "error:") {
-			return false, fieldText, false, vlmCalls, steps, fmt.Errorf("%s", out)
 		}
 		time.Sleep(textInputKeystrokeGap)
 	}

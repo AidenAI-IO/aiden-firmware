@@ -3,7 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"strings"
 )
 
@@ -47,11 +47,11 @@ func (t *EnterTextInFieldTool) ArgsSchema() map[string]any {
 
 func (t *EnterTextInFieldTool) Call(ctx context.Context, input string) (string, error) {
 	if t == nil || t.engine == nil {
-		return "error: enter_text_in_field is not fully configured", nil
+		return toolErrorResultString(ctx, CodeModuleUnavailable, "enter_text_in_field is not fully configured"), nil
 	}
 	var args enterTextInFieldArgs
 	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err != nil {
-		return fmt.Sprintf("error: invalid input: %v", err), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v", err), nil
 	}
 	if t.platformFn != nil {
 		if override := strings.TrimSpace(t.platformFn()); override != "" {
@@ -60,7 +60,12 @@ func (t *EnterTextInFieldTool) Call(ctx context.Context, input string) (string, 
 	}
 	result, err := t.engine.Run(ctx, args)
 	if err != nil {
-		return fmt.Sprintf("error: %v", err), nil
+		var toolErr *ToolError
+		if errors.As(err, &toolErr) {
+			SetToolError(ctx, toolErr)
+			return toolErrorString(toolErr), nil
+		}
+		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
 	if !result.Committed {
 		result.OK = false

@@ -215,22 +215,18 @@ func TestHTTPSubmitResult(t *testing.T) {
 			name: "valid result",
 			result: BridgeCommandResponse{
 				ID: "test_cmd",
-				OK: true,
 			},
 			expectedStatus: http.StatusOK,
 		},
 		{
-			name: "missing ID",
-			result: BridgeCommandResponse{
-				OK: true,
-			},
+			name:           "missing ID",
+			result:         BridgeCommandResponse{},
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
 			name: "command not found",
 			result: BridgeCommandResponse{
 				ID: "nonexistent",
-				OK: true,
 			},
 			expectedStatus: http.StatusNotFound,
 		},
@@ -272,7 +268,6 @@ func TestHTTPQueryResult(t *testing.T) {
 	bridge.queue.Poll("ios", 1)
 	bridge.queue.SubmitResult(BridgeCommandResponse{
 		ID:     "completed_cmd",
-		OK:     true,
 		Method: "open_app",
 	})
 
@@ -387,7 +382,6 @@ func TestHTTPEndToEnd(t *testing.T) {
 	// Step 3: App submits result
 	result := BridgeCommandResponse{
 		ID:     "e2e_test",
-		OK:     true,
 		Method: "open_app",
 	}
 	resultBody, _ := json.Marshal(result)
@@ -417,8 +411,8 @@ func TestHTTPEndToEnd(t *testing.T) {
 	if queryResp.Result == nil {
 		t.Fatal("expected result, got nil")
 	}
-	if !queryResp.Result.OK {
-		t.Error("expected result.ok=true")
+	if queryResp.Result.Error != nil {
+		t.Errorf("expected result.error=nil, got %v", queryResp.Result.Error)
 	}
 }
 

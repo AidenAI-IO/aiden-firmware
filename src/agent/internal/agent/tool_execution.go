@@ -24,11 +24,12 @@ type ToolCall struct {
 type ToolResult struct {
 	Output    string
 	Summary   string
-	IsError   bool
-	Error     error
+	Error     *ToolError
 	Terminate bool
 	Duration  time.Duration
 }
+
+func (r ToolResult) IsError() bool { return r.Error != nil }
 
 type ToolCallExecution struct {
 	Specs                  *ToolSpecs
@@ -124,47 +125,10 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 	}
 
 	if err := spec.ValidateInput(input); err != nil {
+		msg := err.Error()
 		result := ToolResult{
-			Output:  fmt.Sprintf("error: %s failed: %v", spec.Name, err),
-			IsError: true,
-			Error:   err,
-		}
-		result.Duration = time.Since(call.StartedAt)
-		result = runAfterToolCallHook(ctx, execution, call, result)
-		emitToolResult(ctx, execution.Callback, call, result)
-		return resultForToolCall(call, result, nil)
-	}
-
-	// If environment bridge is enabled, forward the call to the bridge. When the
-	// HTTP call succeeds the remote output/is_error are passed through verbatim,
-	// because the remote ran the same executeToolCall path and already produced
-	// the exact response (including any "error: X failed" formatting) the LLM
-	// would see locally. Only transport failures are formatted here, mirroring
-	// how a local tool error is surfaced.
-	//
-	// Only forward tools whose name matches one of the configured EnvironmentBridgeTools
-	// patterns (see shouldForwardToEnvironmentBridge). Everything else runs locally.
-	if execution.EnvironmentBridge != nil && shouldForwardToEnvironmentBridge(spec.Name, execution.EnvironmentBridgeTools) {
-		output, remoteIsError, err := execution.EnvironmentBridge.CallTool(ctx, spec.Name, input)
-		if err != nil {
-			result := ToolResult{
-				Error:    err,
-				IsError:  true,
-				Duration: time.Since(call.StartedAt),
-			}
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				result = runAfterToolCallHook(ctx, execution, call, result)
-				emitToolResult(ctx, execution.Callback, call, result)
-				return ToolCallExecutionResult{Call: call, Result: result, Error: err}
-			}
-			result.Output = fmt.Sprintf("error: %s failed: %v", spec.Name, err)
-			result = runAfterToolCallHook(ctx, execution, call, result)
-			emitToolResult(ctx, execution.Callback, call, result)
-			return resultForToolCall(call, result, nil)
-		}
-		result := ToolResult{
-			Output:   output,
-			IsError:  remoteIsError,
+			Output:   msg,
+			Error:    NewToolError(CodeInvalidArguments, msg),
 			Duration: time.Since(call.StartedAt),
 		}
 		result = runAfterToolCallHook(ctx, execution, call, result)
@@ -172,20 +136,72 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 		return resultForToolCall(call, result, nil)
 	}
 
-	output, err := spec.Tool.Call(ctx, input)
+	// If environment bridge is enabled, forward the call to the bridge. When the
+	// HTTP call succeeds the remote ToolResult is passed through verbatim because
+	// the remote ran the same executeToolCall path and already produced the same
+	// structured response the LLM would see locally. Only transport failures are
+	// formatted here, mirroring how a local tool error is surfaced.
+	//
+	// Only forward tools whose name matches one of the configured EnvironmentBridgeTools
+	// patterns (see shouldForwardToEnvironmentBridge). Everything else runs locally.
+	if execution.EnvironmentBridge != nil && shouldForwardToEnvironmentBridge(spec.Name, execution.EnvironmentBridgeTools) {
+		remote, err := execution.EnvironmentBridge.CallTool(ctx, spec.Name, input)
+		if err != nil {
+			code := CodeToolExecutionFailed
+			if errors.Is(err, context.Canceled) {
+				code = CodeCanceled
+			} else if errors.Is(err, context.DeadlineExceeded) {
+				code = CodeDeadlineExceeded
+			}
+			toolErr := NewToolError(code, err.Error())
+			result := ToolResult{
+				Output:   toolErr.Message,
+				Error:    toolErr,
+				Duration: time.Since(call.StartedAt),
+			}
+			result = runAfterToolCallHook(ctx, execution, call, result)
+			emitToolResult(ctx, execution.Callback, call, result)
+			return ToolCallExecutionResult{Call: call, Result: result, Error: err}
+		}
+		result := *remote
+		result.Duration = time.Since(call.StartedAt)
+		result = runAfterToolCallHook(ctx, execution, call, result)
+		emitToolResult(ctx, execution.Callback, call, result)
+		return resultForToolCall(call, result, nil)
+	}
+
+	ctx2, _ := WithToolError(ctx)
+	output, err := spec.Tool.Call(ctx2, input)
+	var toolErr *ToolError
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			toolErr = NewToolError(CodeCanceled, err.Error())
+		} else if errors.Is(err, context.DeadlineExceeded) {
+			toolErr = NewToolError(CodeDeadlineExceeded, err.Error())
+		} else {
+			toolErr = NewToolError(CodeToolExecutionFailed, err.Error())
+		}
+	} else if attached := ToolErrorFromContext(ctx2); attached != nil {
+		// Tool surfaced a structured error via SetToolError. Adopt it directly
+		// so the LLM-facing Output (already equal to attached.Message) and the
+		// downstream Error stay aligned.
+		toolErr = attached
+	}
 	result := ToolResult{
 		Output:   output,
-		IsError:  err != nil || toolOutputLooksLikeError(output),
-		Error:    err,
+		Error:    toolErr,
 		Duration: time.Since(call.StartedAt),
 	}
+	if err == nil && toolErr != nil {
+		result.Output = toolErr.Message
+	}
 	if err != nil {
+		result.Output = toolErr.Message
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			result = runAfterToolCallHook(ctx, execution, call, result)
 			emitToolResult(ctx, execution.Callback, call, result)
 			return ToolCallExecutionResult{Call: call, Result: result, Error: err}
 		}
-		result.Output = fmt.Sprintf("error: %s failed: %v", spec.Name, err)
 	}
 
 	result = runAfterToolCallHook(ctx, execution, call, result)
@@ -210,11 +226,17 @@ func invalidToolResult(call ToolCall) ToolResult {
 	if toolName == "" {
 		toolName = strings.TrimSpace(call.Spec.Name)
 	}
-	output := fmt.Sprintf("%s is not a valid tool, try another one", toolName)
+	var msg string
 	if toolName == "" {
-		output = "requested tool is not a valid tool, try another one"
+		msg = "requested tool is not a valid tool, try another one"
+	} else {
+		msg = fmt.Sprintf("%s is not a valid tool, try another one", toolName)
 	}
-	return ToolResult{Output: output, IsError: true, Duration: time.Since(call.StartedAt)}
+	return ToolResult{
+		Output:   msg,
+		Error:    NewToolError(CodeToolNotFound, msg),
+		Duration: time.Since(call.StartedAt),
+	}
 }
 
 func runBeforeToolCallHook(ctx context.Context, execution ToolCallExecution, call ToolCall) (bool, ToolResult) {
@@ -249,21 +271,28 @@ func normalizeRejectedToolResult(toolName string, result ToolResult) ToolResult 
 	result = normalizeToolResult(result)
 	if strings.TrimSpace(result.Output) == "" {
 		if result.Error != nil {
-			result.Output = "error: " + result.Error.Error()
+			result.Output = result.Error.Message
 		} else {
-			result.Output = fmt.Sprintf("error: %s call rejected", toolName)
+			result.Output = fmt.Sprintf("%s call rejected", toolName)
 		}
 	}
-	result.IsError = true
+	if result.Error == nil {
+		result.Error = NewToolError(CodeToolExecutionFailed, result.Output)
+	}
+	// Ensure Output == Error.Message invariant.
+	if result.Error != nil && result.Output != result.Error.Message {
+		result.Error.Message = result.Output
+	}
 	return result
 }
 
 func normalizeToolResult(result ToolResult) ToolResult {
-	if result.Output == "" && result.Error != nil {
-		result.Output = "error: " + result.Error.Error()
-	}
-	if toolOutputLooksLikeError(result.Output) {
-		result.IsError = true
+	if result.Error != nil {
+		if result.Output == "" {
+			result.Output = result.Error.Message
+		} else if result.Output != result.Error.Message {
+			result.Error.Message = result.Output
+		}
 	}
 	return result
 }
@@ -306,14 +335,14 @@ func emitToolResult(ctx context.Context, handler callbacks.Handler, call ToolCal
 	}
 	output := result.EventOutput()
 	if named, ok := handler.(namedToolCallbackHandler); ok {
-		if result.IsError && result.Error != nil {
+		if result.Error != nil {
 			named.HandleNamedToolError(ctx, call.Spec.Name, call.Input, result.Error)
 			return
 		}
 		named.HandleNamedToolEnd(ctx, call.Spec.Name, call.Input, output)
 		return
 	}
-	if result.IsError && result.Error != nil {
+	if result.Error != nil {
 		handler.HandleToolError(ctx, result.Error)
 		return
 	}

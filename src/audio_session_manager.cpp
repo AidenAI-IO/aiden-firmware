@@ -150,8 +150,7 @@ AidenServiceStatus AudioSessionManager::stop_recording(uint64_t session_id) {
             return AidenServiceStatus::SESSION_NOT_FOUND;
         }
         session = it->second;
-        record_sessions_.erase(it);
-        record_last_active_.erase(session_id);
+        record_last_active_[session_id] = Clock::now();
     }
     session->stop();
     fprintf(stderr, "[audio_service] record session %llu stopped\n",

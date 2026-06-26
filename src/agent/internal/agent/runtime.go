@@ -174,13 +174,14 @@ type RunEvent struct {
 	SpeechEligible bool       `json:"speech_eligible,omitempty"`
 	Timestamp      time.Time  `json:"timestamp"`
 	IsError        bool       `json:"is_error,omitempty"`
+	ToolError      *ToolError `json:"tool_error,omitempty"`
 }
 
 type usageTrackingModel struct {
 	inner           llms.Model
 	metrics         *RunMetrics
 	promptCapture   *telemetryPromptCapture
-	contextWindowFn func() int
+	contextWindowFn ContextWindowFn
 }
 
 func (m *usageTrackingModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
@@ -213,8 +214,8 @@ func (m *usageTrackingModel) contextWindow() int {
 		return 0
 	}
 	if m.contextWindowFn != nil {
-		if v := m.contextWindowFn(); v > 0 {
-			return v
+		if spec := m.contextWindowFn(); spec.ContextWindow > 0 {
+			return spec.ContextWindow
 		}
 	}
 	if m.metrics != nil {
@@ -299,7 +300,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	summarizeFn := buildLLMSummarizeFn(modelManager)
 	structuredSummarizeFn := buildLLMStructuredSummarizeFn(modelManager, logger)
 	profileFn := buildLLMProfileFn(modelManager)
-	contextWindowFn := func() int { return modelManager.Spec().ContextWindow }
+	contextWindowFn := func() ModelSpec { return modelManager.Spec() }
 
 	longTermDir := ""
 	if memoryDir != "" {
@@ -602,7 +603,12 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 			r.logger.Info("Resolved model context window: context_window=%d", contextWindow)
 		}
 	}
-	model = &usageTrackingModel{inner: model, metrics: metrics, promptCapture: promptCapture, contextWindowFn: r.effectiveContextWindow}
+	model = &usageTrackingModel{inner: model, metrics: metrics, promptCapture: promptCapture, contextWindowFn: func() ModelSpec {
+		if r.models != nil {
+			return r.models.Spec()
+		}
+		return ModelSpec{}
+	}}
 
 	memoryCfg := MemoryConfig{Type: "buffer"}
 	var memoryHandle *MemoryHandle
@@ -1405,15 +1411,21 @@ func (h *runtimeCallbackHandler) HandleToolError(ctx context.Context, err error)
 	}
 	action, ok := h.popPendingAction()
 	if ok {
+		var toolErr *ToolError
+		if !errors.As(err, &toolErr) {
+			toolErr = NewToolError(CodeToolExecutionFailed, err.Error())
+		}
+		content := toolErr.Message
 		h.emitRunEvent(ctx, RunEvent{
 			Type:       "tool_result",
 			EpisodeID:  h.episodeID,
 			ToolCallID: action.ToolID,
 			ToolName:   action.Tool,
 			ToolInput:  normalizeToolInput(action.ToolInput),
-			Content:    "error: " + err.Error(),
+			Content:    content,
 			Timestamp:  time.Now(),
 			IsError:    true,
+			ToolError:  cloneToolError(toolErr),
 		})
 	}
 }
@@ -1433,7 +1445,6 @@ func (h *runtimeCallbackHandler) HandleNamedToolEnd(ctx context.Context, name, i
 		ToolInput: input,
 		Content:   output,
 		Timestamp: time.Now(),
-		IsError:   toolOutputLooksLikeError(output),
 	})
 }
 
@@ -1442,15 +1453,21 @@ func (h *runtimeCallbackHandler) HandleNamedToolError(ctx context.Context, name,
 	if h.logger != nil {
 		h.logger.Error("Tool error: name=%s err=%v", name, err)
 	}
+	var toolErr *ToolError
+	if !errors.As(err, &toolErr) {
+		toolErr = NewToolError(CodeToolExecutionFailed, err.Error())
+	}
+	content := toolErr.Message
 	h.removePendingAction(name, input)
 	h.emitRunEvent(ctx, RunEvent{
 		Type:      "tool_result",
 		EpisodeID: h.episodeID,
 		ToolName:  name,
 		ToolInput: input,
-		Content:   "error: " + err.Error(),
+		Content:   content,
 		Timestamp: time.Now(),
 		IsError:   true,
+		ToolError: cloneToolError(toolErr),
 	})
 }
 
@@ -1487,7 +1504,7 @@ func (h *runtimeCallbackHandler) AfterToolCall(ctx context.Context, call ToolCal
 func (h *runtimeCallbackHandler) HandleToolCallResult(ctx context.Context, call ToolCall, result ToolResult) {
 	output := result.EventOutput()
 	if h.logger != nil {
-		if result.IsError {
+		if result.IsError() {
 			h.logger.Error("Tool result: name=%s output=%s", call.Spec.Name, truncateForLog(output, 240))
 		} else {
 			h.logger.Info("Tool result: name=%s output=%s", call.Spec.Name, truncateForLog(output, 240))
@@ -1501,7 +1518,8 @@ func (h *runtimeCallbackHandler) HandleToolCallResult(ctx context.Context, call 
 		ToolInput:  call.Input,
 		Content:    output,
 		Timestamp:  time.Now(),
-		IsError:    result.IsError,
+		IsError:    result.IsError(),
+		ToolError:  cloneToolError(result.Error),
 	})
 }
 
@@ -1622,6 +1640,7 @@ func sessionEventFromRunEvent(event RunEvent, h *runtimeCallbackHandler) Session
 		ToolName:   event.ToolName,
 		ToolInput:  event.ToolInput,
 		IsError:    event.IsError,
+		ToolError:  cloneToolError(event.ToolError),
 	}
 	return sessionEvent
 }

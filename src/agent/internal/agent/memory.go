@@ -54,11 +54,11 @@ type SummarizeFn func(ctx context.Context, events []SessionEvent) string
 // data and prompt rendering remain compatible.
 type StructuredSummarizeFn func(ctx context.Context, events []SessionEvent) ChunkStructuredSummary
 
-// ContextWindowFn returns the current model's context window in tokens. The
-// memory manager calls it on every compression decision so model swaps take
-// effect at runtime without restart. Implementations should return 0 when the
-// window is unknown; callers fall back to the yaml-configured default.
-type ContextWindowFn func() int
+// ContextWindowFn returns the current model's spec. The memory manager calls
+// it on every compression decision so model swaps take effect at runtime without
+// restart. Implementations should return a zero ContextWindow when the window is
+// unknown; callers fall back to the yaml-configured default.
+type ContextWindowFn func() ModelSpec
 
 // MemoryManager maintains session memory, handling compression, chunk management,
 // and long-term profile generation. It coordinates between in-memory chat history
@@ -131,6 +131,7 @@ type SessionEvent struct {
 	ToolCallID         string          `json:"tool_call_id,omitempty"`
 	ToolName           string          `json:"tool_name,omitempty"`
 	ToolInput          string          `json:"tool_input,omitempty"`
+	ToolError          *ToolError      `json:"tool_error,omitempty"`
 	Objective          string          `json:"objective,omitempty"`
 	CompletionCriteria []string        `json:"completion_criteria,omitempty"`
 	Plan               []string        `json:"plan,omitempty"`
@@ -1158,13 +1159,14 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 	}
 
 	promptTokens := m.LastPromptTokens()
-	contextWindow := m.effectiveContextWindow()
+	contextWindow, maxOutput := m.effectiveModelSpec()
+	inputBudget := m.inputBudget()
 	if m.logger != nil {
-		m.logger.Info("[memory] compression triggered: events=%d, prompt_tokens=%d, context_window=%d, threshold=%d%%",
-			len(events), promptTokens, contextWindow, m.extraction.CompressAtPercent)
+		m.logger.Info("[memory] compression triggered: events=%d, prompt_tokens=%d, context_window=%d, max_output=%d, input_budget=%d, threshold=%d%%",
+			len(events), promptTokens, contextWindow, maxOutput, inputBudget, m.extraction.CompressAtPercent)
 	}
 
-	plan := m.planCompaction(events, contextWindow)
+	plan := m.planCompaction(events, inputBudget)
 	if !plan.ok {
 		return nil
 	}
@@ -1540,15 +1542,17 @@ func (m *MemoryManager) shouldCompress(eventCount int) bool {
 	lastPromptTokens := m.LastPromptTokens()
 	contextWindow := m.effectiveContextWindow()
 	if lastPromptTokens > 0 && contextWindow > 0 {
+		// Compute the actual input budget: total window minus output reservation.
+		inputBudget := m.inputBudget()
 		// Reuse clampTokenBudgets so the reserve ceiling (never more than half
 		// the window) stays defined in one place. Only the reserve half matters
 		// for the trigger decision; keep-recent governs the cut location and is
 		// consumed by planCompaction instead.
-		reserve, _ := clampTokenBudgets(m.reserveTokens(), m.keepRecentTokens(), contextWindow)
-		if lastPromptTokens >= contextWindow-reserve {
+		reserve, _ := clampTokenBudgets(m.reserveTokens(), m.keepRecentTokens(), inputBudget)
+		if lastPromptTokens >= inputBudget-reserve {
 			return true
 		}
-		ratio := float64(lastPromptTokens) / float64(contextWindow)
+		ratio := float64(lastPromptTokens) / float64(inputBudget)
 		threshold := float64(m.extraction.CompressAtPercent) / 100.0
 		if ratio >= threshold {
 			return true
@@ -1571,17 +1575,58 @@ func (m *MemoryManager) shouldCompress(eventCount int) bool {
 	return eventCount > m.countCompressAfterEvents()
 }
 
+// effectiveModelSpec returns the model spec for compression decisions. It
+// prefers the resolver-supplied callback (so model swaps take effect at
+// runtime); when the callback returns a zero ContextWindow, falls back to the
+// yaml-configured default. Returns both ContextWindow and MaxOutput from the
+// same spec snapshot to avoid mismatches.
+func (m *MemoryManager) effectiveModelSpec() (contextWindow int, maxOutput int) {
+	contextWindow = m.extraction.ContextWindow // yaml fallback
+	maxOutput = 0                              // unknown unless spec provides it
+
+	if m.contextWindowFn != nil {
+		if spec := m.contextWindowFn(); spec.ContextWindow > 0 {
+			contextWindow = spec.ContextWindow
+			if spec.MaxOutput > 0 {
+				maxOutput = spec.MaxOutput
+			}
+		}
+	}
+	return contextWindow, maxOutput
+}
+
 // effectiveContextWindow returns the context window in tokens that should be
 // used for compression decisions. It prefers the resolver-supplied callback
 // (so model swaps take effect at runtime); a zero from the callback means
 // "unknown" and falls back to the yaml-configured default.
 func (m *MemoryManager) effectiveContextWindow() int {
-	if m.contextWindowFn != nil {
-		if w := m.contextWindowFn(); w > 0 {
-			return w
-		}
+	cw, _ := m.effectiveModelSpec()
+	return cw
+}
+
+// effectiveMaxOutput returns the model's max output tokens. Used in compression
+// decisions to reserve space for the response. Returns 0 when unknown (caller
+// should use a conservative fallback or skip the output reservation).
+func (m *MemoryManager) effectiveMaxOutput() int {
+	_, mo := m.effectiveModelSpec()
+	return mo
+}
+
+// inputBudget computes the effective input budget for compression decisions by
+// reserving space for the model's output. When MaxOutput is unknown (0), returns
+// the full context window. When MaxOutput >= ContextWindow, returns half the
+// window as a defensive fallback (that configuration should not happen in
+// practice, but we don't want to return zero or negative values).
+func (m *MemoryManager) inputBudget() int {
+	contextWindow, maxOutput := m.effectiveModelSpec()
+	if maxOutput == 0 {
+		return contextWindow
 	}
-	return m.extraction.ContextWindow
+	inputBudget := contextWindow - maxOutput
+	if inputBudget <= 0 {
+		inputBudget = contextWindow / 2 // defensive: output >= window shouldn't happen
+	}
+	return inputBudget
 }
 
 func summarizeSessionEvents(events []SessionEvent) string {

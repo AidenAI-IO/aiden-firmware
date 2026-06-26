@@ -22,7 +22,7 @@ func TestShouldCompressUsesResolverContextWindow8k(t *testing.T) {
 
 	mgr := NewMemoryManager("",
 		WithExtractionConfig(cfg),
-		WithContextWindowFn(func() int { return 8_000 }),
+		WithContextWindowFn(func() ModelSpec { return ModelSpec{ContextWindow: 8_000} }),
 	)
 
 	// 50% of 8k = 4000 tokens. 3999 must NOT trigger; 4000 must.
@@ -51,7 +51,7 @@ func TestShouldCompressUsesResolverContextWindow32k(t *testing.T) {
 
 	mgr := NewMemoryManager("",
 		WithExtractionConfig(cfg),
-		WithContextWindowFn(func() int { return 32_000 }),
+		WithContextWindowFn(func() ModelSpec { return ModelSpec{ContextWindow: 32_000} }),
 	)
 
 	// 50% of 32k = 16000 tokens.
@@ -73,7 +73,7 @@ func TestShouldCompressUsesResolverContextWindow128k(t *testing.T) {
 
 	mgr := NewMemoryManager("",
 		WithExtractionConfig(cfg),
-		WithContextWindowFn(func() int { return 128_000 }),
+		WithContextWindowFn(func() ModelSpec { return ModelSpec{ContextWindow: 128_000} }),
 	)
 
 	// 50% of 128k = 64000 tokens. With the old hardcoded 32k, 20000 tokens
@@ -102,7 +102,7 @@ func TestShouldCompressFallsBackToYAMLWhenResolverUnknown(t *testing.T) {
 	mgr := NewMemoryManager("",
 		WithExtractionConfig(cfg),
 		// Resolver returns 0 → unknown model → fall back to yaml's 32k.
-		WithContextWindowFn(func() int { return 0 }),
+		WithContextWindowFn(func() ModelSpec { return ModelSpec{ContextWindow: 0} }),
 	)
 
 	mgr.SetLastPromptTokens(15_999)
@@ -144,7 +144,7 @@ func TestMaintainFilesystemMemoryUsesResolverContextWindow(t *testing.T) {
 
 	mgr := NewMemoryManager(storageDir,
 		WithExtractionConfig(cfg),
-		WithContextWindowFn(func() int { return 100_000 }),
+		WithContextWindowFn(func() ModelSpec { return ModelSpec{ContextWindow: 100_000} }),
 	)
 
 	sessionDir := filepath.Join(storageDir, "session")
@@ -197,7 +197,7 @@ func TestMaintainFilesystemMemoryUpdatesLastPromptTokens(t *testing.T) {
 
 	mgr := NewMemoryManager(storageDir,
 		WithExtractionConfig(cfg),
-		WithContextWindowFn(func() int { return 10_000 }),
+		WithContextWindowFn(func() ModelSpec { return ModelSpec{ContextWindow: 10_000} }),
 	)
 
 	sessionDir := filepath.Join(storageDir, "session")
@@ -315,7 +315,7 @@ func TestColdStartSeedsLastPromptTokensFromHotWindow(t *testing.T) {
 	// Phase 2: cold start — a brand new manager loads the persisted session.
 	mgr := NewMemoryManager(storageDir,
 		WithExtractionConfig(cfg),
-		WithContextWindowFn(func() int { return 10_000 }),
+		WithContextWindowFn(func() ModelSpec { return ModelSpec{ContextWindow: 10_000} }),
 	)
 	if got := mgr.LastPromptTokens(); got != 0 {
 		t.Fatalf("precondition: fresh manager should start at 0 tokens, got %d", got)
@@ -329,3 +329,106 @@ func TestColdStartSeedsLastPromptTokensFromHotWindow(t *testing.T) {
 		t.Fatalf("cold start should seed lastPromptTokens from hot window estimate; got %d, want %d", got, wantTokens)
 	}
 }
+
+// TestShouldCompressReservesOutputTokens verifies that when a ModelSpec includes
+// a non-zero MaxOutput, shouldCompress uses inputBudget = ContextWindow - MaxOutput
+// instead of the full ContextWindow. This ensures the compression trigger accounts
+// for the space the model's response will consume.
+func TestShouldCompressReservesOutputTokens(t *testing.T) {
+	cfg := DefaultMemoryExtractionConfig()
+	cfg.CompressAtPercent = 50
+	cfg.HotWindowEvents = 100
+
+	// Model with 10k context window and 2k max output → input budget = 8k
+	mgr := NewMemoryManager("",
+		WithExtractionConfig(cfg),
+		WithContextWindowFn(func() ModelSpec {
+			return ModelSpec{ContextWindow: 10_000, MaxOutput: 2_000}
+		}),
+	)
+
+	// 50% of the 8k input budget = 4000 tokens. 3999 must NOT trigger; 4000 must.
+	mgr.SetLastPromptTokens(3_999)
+	if mgr.shouldCompress(5) {
+		t.Fatalf("with output reservation (10k - 2k = 8k input budget): 3999 tokens (49.99%%) should not trigger")
+	}
+	mgr.SetLastPromptTokens(4_000)
+	if !mgr.shouldCompress(5) {
+		t.Fatalf("with output reservation (10k - 2k = 8k input budget): 4000 tokens (50%%) should trigger")
+	}
+
+	// Sanity: if the old code had ignored MaxOutput and used the full 10k window,
+	// 4500 tokens would be 45% (no trigger). With the 8k input budget, it's
+	// 56.25%, which must trigger.
+	mgr.SetLastPromptTokens(4_500)
+	if !mgr.shouldCompress(5) {
+		t.Fatalf("with output reservation: 4500 tokens (56.25%% of 8k) should trigger; MaxOutput being ignored?")
+	}
+}
+
+// TestMaintainFilesystemMemoryReservesOutputTokens verifies that
+// maintainFilesystemMemory applies the same output-reservation logic when
+// deciding whether to compress and planning the cut point.
+func TestMaintainFilesystemMemoryReservesOutputTokens(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+
+	cfg := DefaultMemoryExtractionConfig()
+	cfg.CompressAtPercent = 50
+	cfg.HotWindowEvents = 100
+
+	// Model with 10k context and 2k max output → 8k input budget.
+	// 50% of 8k = 4000 tokens.
+	mgr := NewMemoryManager(storageDir,
+		WithExtractionConfig(cfg),
+		WithContextWindowFn(func() ModelSpec {
+			return ModelSpec{ContextWindow: 10_000, MaxOutput: 2_000}
+		}),
+	)
+
+	sessionDir := filepath.Join(storageDir, "session")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatalf("mkdir session: %v", err)
+	}
+	session := NewSessionMemoryStore(sessionDir)
+	now := time.Now().UTC()
+	for i := 0; i < 5; i++ {
+		if _, err := session.AppendEvent(ctx, SessionEvent{
+			EventID: fmt.Sprintf("evt_%d", i),
+			Ts:      now.Format(time.RFC3339Nano),
+			Type:    "user_input",
+			Role:    "user",
+			Content: "message",
+		}); err != nil {
+			t.Fatalf("AppendEvent: %v", err)
+		}
+	}
+
+	// 3500 tokens / 8k input budget = 43.75% — below the 50% threshold.
+	// Compression must NOT happen.
+	mgr.SetLastPromptTokens(3_500)
+	if err := mgr.maintainFilesystemMemory(ctx); err != nil {
+		t.Fatalf("maintainFilesystemMemory: %v", err)
+	}
+	chunks, err := session.RecallChunks(ctx, ChunkRecallQuery{Limit: 10})
+	if err != nil {
+		t.Fatalf("RecallChunks: %v", err)
+	}
+	if len(chunks) != 0 {
+		t.Fatalf("expected no compression at 3500 tokens (43.75%% of 8k input budget); got %d chunks", len(chunks))
+	}
+
+	// Now push to 4100 tokens (51.25% of 8k) — compression should happen.
+	mgr.SetLastPromptTokens(4_100)
+	if err := mgr.maintainFilesystemMemory(ctx); err != nil {
+		t.Fatalf("maintainFilesystemMemory at 4100 tokens: %v", err)
+	}
+	chunks, err = session.RecallChunks(ctx, ChunkRecallQuery{Limit: 10})
+	if err != nil {
+		t.Fatalf("RecallChunks after 4100 tokens: %v", err)
+	}
+	if len(chunks) == 0 {
+		t.Fatalf("expected compression at 4100 tokens (51.25%% of 8k input budget); got no chunks (MaxOutput being ignored?)")
+	}
+}
+
