@@ -175,20 +175,8 @@ func (q *CommandQueue) PollForPhone(platform, phoneID string, limit int) []Bridg
 }
 
 // matchesPlatform checks if a command is relevant for the given platform
-func (q *CommandQueue) matchesPlatform(cmd *BridgeCommand, platform string) bool {
-	// If no platform-specific fields, command applies to all platforms
-	if len(cmd.IOSURLs) == 0 && len(cmd.AndroidPackages) == 0 {
-		return true
-	}
-
-	switch platform {
-	case "ios":
-		return len(cmd.IOSURLs) > 0
-	case "android":
-		return len(cmd.AndroidPackages) > 0
-	default:
-		return true
-	}
+func (q *CommandQueue) matchesPlatform(_ *BridgeCommand, _ string) bool {
+	return true
 }
 
 func (q *CommandQueue) matchesPhoneID(cmd *BridgeCommand, phoneID string) bool {
