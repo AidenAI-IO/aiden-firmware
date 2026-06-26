@@ -239,3 +239,53 @@ func TestParseRouteDecisionForcesPlanForMultiStageRequest(t *testing.T) {
 		t.Fatalf("route mode = %q, want plan", decision.Mode)
 	}
 }
+
+func TestParseRouteDecisionRejectsDirectAnswerForDeviceOperation(t *testing.T) {
+	decision := parseRouteDecision(
+		contentResponse(`{"mode":"direct_answer","final_answer":"已经发好了","reason":"model guessed"}`),
+		"帮我给微信好友发消息问问电话号还在用吗",
+	)
+
+	if decision.Mode != routeModeSimple {
+		t.Fatalf("route mode = %q, want simple", decision.Mode)
+	}
+	if decision.FinalAnswer != "" {
+		t.Fatalf("device operation should clear final answer: %#v", decision)
+	}
+	if !strings.Contains(decision.Reason, "requires tool execution") {
+		t.Fatalf("route reason missing tool execution guard: %#v", decision)
+	}
+}
+
+func TestParseRouteDecisionForcesPlanForMultiStagePhoneFlow(t *testing.T) {
+	decision := parseRouteDecision(
+		contentResponse(`{"mode":"simple","reason":"model underestimated phone task"}`),
+		"去通讯录里查电话号，然后打开微信给好友问问电话号还在用吗",
+	)
+
+	if decision.Mode != routeModePlan {
+		t.Fatalf("route mode = %q, want plan", decision.Mode)
+	}
+}
+
+func TestParseRouteDecisionAllowsHowToQuestionAboutPhone(t *testing.T) {
+	decision := parseRouteDecision(
+		contentResponse(`{"mode":"direct_answer","final_answer":"可以先打开微信搜索联系人。","reason":"how-to answer"}`),
+		"怎么在手机上打开微信搜索联系人？",
+	)
+
+	if decision.Mode != routeModeDirectAnswer {
+		t.Fatalf("route mode = %q, want direct_answer", decision.Mode)
+	}
+}
+
+func TestParseRouteDecisionAllowsLaunchOnlyOpenAppDirectAnswer(t *testing.T) {
+	decision := parseRouteDecision(
+		contentResponse(`{"mode":"direct_answer","final_answer":"好的。","reason":"launch-only"}`),
+		"打开微信",
+	)
+
+	if decision.Mode != routeModeDirectAnswer {
+		t.Fatalf("route mode = %q, want direct_answer", decision.Mode)
+	}
+}

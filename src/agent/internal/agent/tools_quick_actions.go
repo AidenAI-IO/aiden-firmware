@@ -334,6 +334,8 @@ func (t *QuickActionTool) Description() string {
 	return strings.TrimSpace(`Execute a predefined platform shortcut or system gesture from quick_actions.json. ` +
 		`Prefer this tool first when the requested operation matches a catalog entry. ` +
 		`Input JSON examples: {"action":"back","platform":"ios"}, {"action":"copy","platform":"android"}, {"action":"spotlight_search","platform":"android"}. ` +
+		`Use spotlight_search only for home/global system search or app launching; inside a target app, tap and use the app's own search field instead. ` +
+		`Use send only after the intended field text is verified, then inspect the post-send screen before reporting success. ` +
 		`Supported platforms: ios, android, mac. ` +
 		`To inspect available actions, pass exactly {"list":true,"platform":"android"}; do not pass {"action":"list"}. ` +
 		`If quick_action returns ok=false, status=reserved, the screen did not change, or the outcome is wrong: do not retry the same binding more than once. ` +
@@ -742,7 +744,9 @@ func quickActionBehaviorSummary() string {
 		"Common actions: back, home, hide_app, quit_app, app_switch, spotlight_search, copy, paste, cut, undo, redo, select_all, delete_backward, delete_forward, find, send, browser_new_tab, browser_close_tab, browser_refresh, browser_address_bar, screenshot_full, screenshot_region.",
 		"- Infer platform from screenshot/context and pass platform=ios/android/mac.",
 		"- Prefer quick_action before ad-hoc keyboard_tap or touch_gesture when an active catalog entry exists.",
-		"- If status=reserved in a list result or quick_action returns an error message: skip quick_action and use direct input tools instead.",
+		"- Use spotlight_search only for home/global system search or app launching; inside apps, use visible in-app search controls.",
+		"- Use send only after target text is verified, and verify the post-send screen before final success.",
+		"- If status=reserved in a list result, ok=false, or quick_action returns an error message: skip quick_action and use direct input tools instead.",
 		"- If ok=true but the screenshot shows no expected change: treat as ineffective, try alternative=true once or switch tools.",
 		"- Never loop on the same quick_action binding; change tool or strategy after one failed attempt.",
 	}, "\n")

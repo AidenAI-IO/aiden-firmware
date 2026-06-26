@@ -1,6 +1,9 @@
 package agent
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func newRuntimeWithTextEntryTools() *Runtime {
 	tools := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
@@ -112,6 +115,55 @@ func TestResolveToolsIncludesPhoneBridgeToolsWhenDisconnected(t *testing.T) {
 	}
 }
 
+func TestResolveToolsIncludesRestorablePhoneBridgeToolsWhenDisconnected(t *testing.T) {
+	runtime := newRuntimeWithTextEntryTools()
+	bridge := NewPhoneBridge(nil)
+	bridge.platform = "ios"
+	bridge.appState = "background"
+	bridge.returnEntry = "dynamic_island"
+	bridge.returnEntrySeen = true
+	bridge.returnEntryOK = true
+	runtime.tools.RegisterPhoneBridge(bridge)
+
+	tools := runtime.resolveTools(ResolvedSkills{})
+	names := toolNamesFromTools(tools)
+	for _, want := range []string{"open_app", "clipboard", "calendar", "contacts", "notification", "enter_text_via_bridge"} {
+		found := false
+		for _, name := range names {
+			if name == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("resolveTools missing restorable phone bridge tool %s: %v", want, names)
+		}
+	}
+}
+
+func TestResolveToolsIncludesAllowedRestorablePhoneBridgeToolWhenDisconnected(t *testing.T) {
+	runtime := newRuntimeWithTextEntryTools()
+	bridge := NewPhoneBridge(nil)
+	bridge.platform = "ios"
+	bridge.appState = "background"
+	bridge.returnEntry = "dynamic_island"
+	bridge.returnEntrySeen = true
+	bridge.returnEntryOK = true
+	runtime.tools.RegisterPhoneBridge(bridge)
+
+	tools := runtime.resolveTools(ResolvedSkills{
+		HasToolRestriction: true,
+		AllowedTools:       map[string]struct{}{"contacts": {}},
+	})
+	names := toolNamesFromTools(tools)
+	for _, name := range names {
+		if name == "contacts" {
+			return
+		}
+	}
+	t.Fatalf("resolveTools with allowed_tools missing restorable contacts: %v", names)
+}
+
 func TestResolveToolsIncludesPhoneBridgeToolsWhenConnected(t *testing.T) {
 	runtime := newRuntimeWithTextEntryTools()
 	bridge := NewPhoneBridge(nil)
@@ -184,4 +236,17 @@ func TestResolveToolsIncludesAllowedPhoneBridgeToolWhenConnected(t *testing.T) {
 		}
 	}
 	t.Fatalf("resolveTools with allowed_tools missing connected open_app: %v", names)
+}
+
+func TestGeneratedToolSkillPrefersBridgeTextEntryForPhoneApps(t *testing.T) {
+	skill := buildHTTPToolSkillMarkdown("test", "test skill", "http://example.local:8080", nil)
+	for _, want := range []string{
+		"use `enter_text_in_field`",
+		"Dynamic Island return to Aiden is available",
+		"do not rely on background WebSocket/HTTP clipboard delivery as the primary path",
+	} {
+		if !strings.Contains(skill, want) {
+			t.Fatalf("generated HTTP tool skill missing %q:\n%s", want, skill)
+		}
+	}
 }

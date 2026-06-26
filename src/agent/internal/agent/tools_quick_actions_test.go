@@ -127,6 +127,12 @@ func TestQuickActionDescriptionWarnsAgainstActionList(t *testing.T) {
 	if !strings.Contains(desc, `do not pass {"action":"list"}`) {
 		t.Fatalf("description missing action=list warning: %s", desc)
 	}
+	if !strings.Contains(desc, "Use spotlight_search only for home/global system search") {
+		t.Fatalf("description missing spotlight scene guard: %s", desc)
+	}
+	if !strings.Contains(desc, "Use send only after the intended field text is verified") {
+		t.Fatalf("description missing send verification guard: %s", desc)
+	}
 }
 
 func TestQuickActionReservedBinding(t *testing.T) {

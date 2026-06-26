@@ -2,8 +2,10 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 type textInputStubTool struct {
@@ -179,6 +181,149 @@ func TestEnterTextInFieldCompositionSuccess(t *testing.T) {
 	}
 	if !strings.Contains(out, `"committed": true`) {
 		t.Fatalf("unexpected output: %s", out)
+	}
+}
+
+func TestEnterTextInFieldPrefersBridgeClipboardForCompositionWhenRestorable(t *testing.T) {
+	message := "这两个号码13204503813和18846189806还在用吗"
+	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
+		ObservedMode: textInputModeComposition,
+		FieldText:    message,
+	}}}
+	pb := NewPhoneBridge(nil)
+	pb.connected = true
+	pb.platform = "ios"
+	pb.appState = "background"
+	pb.appStateAt = time.Now()
+	pb.returnEntry = "dynamic_island"
+	pb.returnEntrySeen = true
+	pb.returnEntryOK = true
+
+	keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
+	quick := &recordingTextInputTool{name: "quick_action", out: `{"ok":true}`}
+	touch := &recordingTextInputTool{name: "touch_gesture", out: "ok"}
+	mouse := &recordingTextInputTool{name: "mouse_click", out: "ok"}
+	restorer := NewPhoneBridgeRestorer(pb, nil)
+	restorer.tapReturnEntry = func(context.Context, PhoneBridgeStatus) error {
+		pb.appState = "active"
+		return nil
+	}
+	bridgeTool := &EnterTextViaBridgeTool{
+		hw: &textInputHardwareDeps{
+			mouseClick:   mouse,
+			touchGesture: touch,
+			keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
+			keyboardText: keyboardText,
+			quickAction:  quick,
+			screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+		},
+		vision:   vision,
+		bridgeFn: func() *PhoneBridge { return pb },
+		restorer: restorer,
+		findPrevAppFn: func(context.Context, screenshotResult) (previousAppCardResult, error) {
+			return previousAppCardResult{Found: true, TapPoint: focusPointArgs{X: 180, Y: 290, CoordSpace: "normalized"}, Label: "WeChat"}, nil
+		},
+		clipboardWriteFn: func(_ context.Context, _ *PhoneBridge, text string) error {
+			if text != message {
+				t.Fatalf("clipboard text = %q", text)
+			}
+			return nil
+		},
+	}
+	fallbackKeyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
+	fallbackEngine := newTextInputEngine(textInputHardwareDeps{
+		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
+		keyboardTap:  textInputStubTool{name: "keyboard_tap", out: "ok"},
+		keyboardText: fallbackKeyboardText,
+		quickAction:  textInputStubTool{name: "quick_action", out: "ok"},
+		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}, &stubTextInputVision{})
+	tool := &EnterTextInFieldTool{engine: fallbackEngine, bridgeTool: bridgeTool}
+	out, err := tool.Call(context.Background(), `{"text":"`+message+`","platform":"ios","focus":{"x":400,"y":950,"coord_space":"normalized"}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"committed": true`,
+		"clipboard-first: restored Aiden via Dynamic Island",
+		"clipboard-first: wrote clipboard in bridge app",
+		"clipboard-first: returned to prior app",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("unexpected output, missing %q: %s", want, out)
+		}
+	}
+	if len(fallbackKeyboardText.calls) != 0 {
+		t.Fatalf("fallback HID/IME path should not type when bridge clipboard succeeds: %v", fallbackKeyboardText.calls)
+	}
+	if len(keyboardText.calls) != 0 {
+		t.Fatalf("bridge path should not use system search text when Dynamic Island restore is available: %v", keyboardText.calls)
+	}
+	if len(quick.calls) != 2 ||
+		!strings.Contains(quick.calls[0], `"action": "app_switch"`) ||
+		!strings.Contains(quick.calls[1], `"action": "paste"`) {
+		t.Fatalf("quick_action calls=%v", quick.calls)
+	}
+	if len(touch.calls) != 1 {
+		t.Fatalf("touch_gesture calls=%v", touch.calls)
+	}
+	if len(mouse.calls) != 1 {
+		t.Fatalf("mouse_click calls=%v", mouse.calls)
+	}
+}
+
+func TestEnterTextInFieldFallsBackWhenSafeClipboardWriteFails(t *testing.T) {
+	message := "this is a long ascii message"
+	pb := NewPhoneBridge(nil)
+	defer pb.queue.Stop()
+	pb.connected = true
+	pb.platform = "android"
+	bridgeQuick := &recordingTextInputTool{name: "quick_action", out: `{"ok":true}`}
+	bridgeTool := &EnterTextViaBridgeTool{
+		hw: &textInputHardwareDeps{
+			mouseClick:   &recordingTextInputTool{name: "mouse_click", out: "ok"},
+			touchGesture: &recordingTextInputTool{name: "touch_gesture", out: "ok"},
+			keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
+			keyboardText: &recordingTextInputTool{name: "keyboard_text", out: "ok"},
+			quickAction:  bridgeQuick,
+			screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+		},
+		vision:   &stubTextInputVision{},
+		bridgeFn: func() *PhoneBridge { return pb },
+		clipboardWriteFn: func(context.Context, *PhoneBridge, string) error {
+			return errors.New("clipboard unavailable")
+		},
+	}
+	fallbackKeyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
+	fallbackEngine := newTextInputEngine(textInputHardwareDeps{
+		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
+		keyboardTap:  textInputStubTool{name: "keyboard_tap", out: "ok"},
+		keyboardText: fallbackKeyboardText,
+		quickAction:  textInputStubTool{name: "quick_action", out: "ok"},
+		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}, &stubTextInputVision{analyses: []textInputScreenAnalysis{{
+		ObservedMode: textInputModeASCII,
+		FieldText:    message,
+	}}})
+	tool := &EnterTextInFieldTool{engine: fallbackEngine, bridgeTool: bridgeTool}
+	out, err := tool.Call(context.Background(), `{"text":"`+message+`","platform":"android","focus":{"x":400,"y":950,"coord_space":"normalized"}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"committed": true`,
+		"clipboard-first: direct clipboard write failed",
+		"clipboard-first: falling back to HID/IME: clipboard unavailable",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("unexpected output, missing %q: %s", want, out)
+		}
+	}
+	if len(fallbackKeyboardText.calls) == 0 {
+		t.Fatalf("fallback keyboard_text calls=%v", fallbackKeyboardText.calls)
+	}
+	if len(bridgeQuick.calls) != 0 {
+		t.Fatalf("clipboard write failed before paste; bridge quick actions=%v", bridgeQuick.calls)
 	}
 }
 

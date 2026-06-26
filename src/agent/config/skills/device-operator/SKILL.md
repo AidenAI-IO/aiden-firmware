@@ -54,11 +54,14 @@ When reporting a blocker, include the screenshot error, which recovery commands 
 
 ## Action Choice
 
-- Use `quick_action` first when the goal matches a catalog shortcut (back, home, app switch, search, copy/paste, browser ops, etc.). Pass the correct `platform` (ios/android/mac).
+- Use `quick_action` first when the goal matches a catalog shortcut (back, home, app switch, copy/paste, send, browser ops, etc.). Pass the correct `platform` (ios/android/mac).
+- Treat system-panel quick actions as context-specific: `spotlight_search` is only for home/global app search or app launching. Inside a target app such as WeChat, tap the app's own visible search field instead.
+- Use `quick_action` `send` only after the intended field text is verified. After sending, inspect the screen and confirm an outgoing bubble, sent item, or cleared input before reporting success.
 - If `quick_action` is reserved, returns `ok=false`, or the screen does not change as expected: do not retry the same binding. Try `alternative=true` once when listed, then fall back to direct input tools and continue.
 - Use `touch_gesture` for taps, swipes, drag, and mobile-style navigation.
-- For **input field text entry** (search boxes, forms, chat inputs), use **`enter_text_in_field` once** with field coordinates for normal typing. It handles IME switch, typing, candidate clicks, and field verification internally.
-- If the user explicitly says to use the companion app, bridge, or clipboard instead of direct typing, use **`enter_text_via_bridge`**. Do not switch to it unless the user asks for that path.
+- For **iOS/Android external app text entry** (chat/message bodies, long text, CJK, emoji, or text that failed through normal typing), use **`enter_text_in_field` once** with field coordinates. On iOS, when Aiden is reachable via Dynamic Island, it restores Aiden, writes clipboard in the app, returns to the target app, pastes, and verifies. It then falls back to HID/IME typing only if clipboard input fails.
+- For short in-app search/filter fields and Mac targets, also use **`enter_text_in_field` once**. It handles IME switch, typing, candidate clicks, and field verification internally.
+- Do not manually scatter `clipboard` write, app switching, paste, and screenshot verification for one field entry. Let `enter_text_in_field` run the clipboard-return-paste-verify sequence as one verified operation.
 - Use `keyboard_text` only for simple standalone ASCII typing when not using `enter_text_in_field`.
 - Never pass Chinese, emoji, or romanization blobs to `keyboard_text`.
 - Use `keyboard_tap` for keys such as enter, escape, tab, arrows, or shortcuts not covered by quick_action.
@@ -247,6 +250,7 @@ Before saying the task is complete:
 
 - Observe the screen one last time.
 - Check that the requested target, selection, text, or destination is correct.
+- For sending messages, emails, posts, or comments, verify the outgoing bubble, sent item, or cleared input after the send action.
 - Check for wrong selections, missing selections, duplicate selections, and unfinished dialogs.
 - If a failed action was skipped, mention it in the final answer.
 

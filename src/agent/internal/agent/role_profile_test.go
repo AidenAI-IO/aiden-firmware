@@ -145,6 +145,16 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 		!strings.Contains(profiles.Executor.SystemPrompt, "switch to keyboard_tap") {
 		t.Fatalf("role prompts should prefer quick_action before low-level fallback: planner=%q executor=%q", profiles.Planner.SystemPrompt, profiles.Executor.SystemPrompt)
 	}
+	if !strings.Contains(profiles.Planner.SystemPrompt, "do not return final success from intent alone") ||
+		!strings.Contains(profiles.Executor.SystemPrompt, "outgoing bubble or cleared input after the send action") ||
+		!strings.Contains(profiles.Verifier.SystemPrompt, "send-message/email/post steps") {
+		t.Fatalf("role prompts should guard device operations and message sends: planner=%q executor=%q verifier=%q", profiles.Planner.SystemPrompt, profiles.Executor.SystemPrompt, profiles.Verifier.SystemPrompt)
+	}
+	if !strings.Contains(profiles.Planner.SystemPrompt, "separate app/chat and address-book names") ||
+		!strings.Contains(profiles.Planner.SystemPrompt, "query the address book using the address-book name") ||
+		!strings.Contains(profiles.Planner.SystemPrompt, "never rewrite the app/chat target to the Contacts/address-book name") {
+		t.Fatalf("planner prompt should preserve distinct app/chat and contacts names: planner=%q", profiles.Planner.SystemPrompt)
+	}
 	if !strings.Contains(profiles.Planner.SystemPrompt, "platform (ios/android/mac)") ||
 		!strings.Contains(profiles.Executor.SystemPrompt, "platform shown in World State") ||
 		!strings.Contains(profiles.Verifier.SystemPrompt, `"platform":""`) {

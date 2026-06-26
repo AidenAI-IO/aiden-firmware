@@ -208,6 +208,7 @@
       "label": "Global Search",
       "aliases": ["搜索", "spotlight", "global_search"],
       "category": "system_panel",
+      "note": "Home/global system search for app launching. Do not use inside a target app's own search flow; tap the in-app search field instead.",
       "platforms": {
         "ios": {
           "status": "active",
@@ -470,6 +471,7 @@
       "label": "Send",
       "aliases": ["发送", "enter", "submit", "press_enter", "send_message"],
       "category": "text_editing",
+      "note": "Use only after the intended text is verified in the active field. After sending, inspect the screen for an outgoing bubble, sent item, or cleared input before reporting success.",
       "platforms": {
         "ios": {
           "status": "active",

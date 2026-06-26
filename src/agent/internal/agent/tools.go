@@ -113,9 +113,9 @@ func (s *ToolSet) RegisterEnterTextInFieldTool(models ModelResolver, platformFn 
 		return
 	}
 	engine := newTextInputEngine(*s.textInputHW, newLLMTextInputVision(models))
-	tool := &EnterTextInFieldTool{engine: engine, platformFn: platformFn}
+	bridgeTool := &EnterTextViaBridgeTool{hw: s.textInputHW, vision: newLLMTextInputVision(models), bridgeFn: func() *PhoneBridge { return s.phoneBridge }, restorer: s.phoneBridgeRestorer, platformFn: platformFn}
+	tool := &EnterTextInFieldTool{engine: engine, bridgeTool: bridgeTool, platformFn: platformFn}
 	s.tools["enter_text_in_field"] = newPostActionScreenshotTool(tool, s.textInputHW.screenshot, 300*time.Millisecond)
-	bridgeTool := &EnterTextViaBridgeTool{hw: s.textInputHW, vision: newLLMTextInputVision(models), bridgeFn: func() *PhoneBridge { return s.phoneBridge }, platformFn: platformFn}
 	s.tools["enter_text_via_bridge"] = newPostActionScreenshotTool(bridgeTool, s.textInputHW.screenshot, 300*time.Millisecond)
 }
 
@@ -164,8 +164,16 @@ func (s *ToolSet) toolAvailable(name string) bool {
 		if !isPhoneBridgeToolName(name) {
 			return true
 		}
-		return s.phoneBridge != nil && s.phoneBridge.Connected()
+		return s.phoneBridgeCommandAvailable()
 	}
+}
+
+func (s *ToolSet) phoneBridgeCommandAvailable() bool {
+	if s == nil || s.phoneBridge == nil {
+		return false
+	}
+	status := s.phoneBridge.Status()
+	return phoneBridgeReadyForCommand(status) || phoneBridgeCanRestoreFromReturnEntry(status)
 }
 
 func (s *ToolSet) CurrentEnvironmentHints(maxAge time.Duration) CurrentEnvironmentHints {

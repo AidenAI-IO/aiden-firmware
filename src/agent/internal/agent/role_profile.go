@@ -69,6 +69,7 @@ func buildRoleProfiles(cfg AgentConfig, skills ResolvedSkills, availableTools []
 				"Obey tool restrictions and output-format requirements from the original user request.",
 				"Prefer a direct tool that covers the requested operation before using UI automation tools.",
 				"For semantic platform actions, prefer quick_action when a matching action exists; pass the platform shown in World State and switch to keyboard_tap, touch_gesture, mouse_click, or another low-level fallback after at most one failed binding or listed alternative.",
+				"For device, app, or phone operation steps, do not finish_step from intent alone; continue until current tool or screenshot evidence proves the step. For message/email/post send steps, capture evidence such as an outgoing bubble or cleared input after the send action before finish_step.",
 			},
 		),
 		Verifier: buildVerifierRoleProfile(
@@ -102,6 +103,7 @@ func verifierRoleRules(cfg AgentConfig, openAppAvailable bool) []string {
 		"Verify only the current executor step provided in the user message. Do not judge overall task completion unless the user message marks this as the final committed plan step.",
 		"Use executor_outcome, executor_summary, tool observations, screenshots, and step progress to decide whether that step succeeded.",
 		"An authoritative direct tool result is sufficient evidence when it exactly covers the current step. Require screenshot evidence for additional visible UI work or when a screenshot contradicts the tool result.",
+		"Device, app, or phone operation steps cannot be approved from intent alone. For send-message/email/post steps, require current evidence that the send happened, such as an outgoing bubble, sent item, or cleared input after the send action.",
 		"If the current step succeeded and more committed plan steps remain: return can_finish=false and needs_replan=false.",
 		"If the current step succeeded and this is the final committed plan step: return can_finish=true with final_answer for the user.",
 		finalAnswerRule,
@@ -162,6 +164,7 @@ func plannerRoleRules(cfg AgentConfig, openAppAvailable bool) []string {
 			"Create or revise a structured delegated plan, then call commit_plan to hand it to the executor or cancel_plan to return to default mode.",
 			"During replanning after executor/verifier feedback, return a final answer only when existing execution evidence already proves the full request complete; otherwise commit a revised plan.",
 			"Committed plan steps should be coarse delegated milestones, not one step for each small calculation or individual tool call. The executor can use multiple tool calls inside one step.",
+			"For phone messaging plans with separate app/chat and address-book names, preserve both names in objective, completion criteria, and every replanning pass: query the address book using the address-book name, then open/search the app chat using the app/chat name.",
 			"commit_plan is only available in plan mode. cancel_plan clears draft planning state and returns to default mode.",
 		)
 	}
@@ -170,6 +173,7 @@ func plannerRoleRules(cfg AgentConfig, openAppAvailable bool) []string {
 			"Prefer direct tools that cover the requested operation before UI workarounds.",
 			"For launch-only requests to open an app, URL, or dialer screen, direct tool success is enough unless the user asked to inspect or act inside the opened target.",
 			"For semantic platform actions, use quick_action when a matching action may exist; pass observed_state.platform and the concrete action id when possible, and switch to a low-level fallback after failure/no effect.",
+			"For device, app, or phone operation requests, do not return final success from intent alone; call tools and require current tool or screenshot evidence. For message/email/post send workflows, success requires evidence that the send happened, such as an outgoing bubble or cleared input after the send action.",
 			"Keep your tool choices tied to the original user request, not just a self-invented subtask.",
 			"If the current screenshot clearly identifies the app/page or device platform, use that observed app, page, platform (ios/android/mac), visible text, and dialogs when choosing tools.",
 			"Call request_human_handoff when the task requires credentials, login-method selection, verification, system/app redirect confirmation, permission dialog confirmation, or human judgment your tools cannot fulfill, or when the user refers to a target you cannot unambiguously identify from the screen. Ask the user to complete it on the device; do not ask them to send credentials or private verification details in chat.",
@@ -183,7 +187,9 @@ func plannerRoleRules(cfg AgentConfig, openAppAvailable bool) []string {
 		"Prefer direct tools that cover the requested operation before UI workarounds. If a direct executor tool covers the request, plan or call that tool instead of a UI workaround.",
 		"For launch-only requests to open an app, URL, or dialer screen, make direct tool success the completion criterion; do not add a screenshot requirement unless the user asked to inspect or act inside the opened target.",
 		"For semantic platform actions, plan quick_action when a matching action may exist; include observed_state.platform, the concrete action id when possible, and a low-level fallback only after quick_action failure/no effect.",
+		"For device, app, or phone operation requests, do not return final success from intent alone; plan or call tools and require current tool or screenshot evidence. For message/email/post send workflows, success requires evidence that the send happened, such as an outgoing bubble or cleared input after the send action.",
 		"Keep objective and completion_criteria tied to the original user request, not just the current step.",
+		"When the original user request names one person for a messaging app/chat and another name for Contacts/address book lookup, never rewrite the app/chat target to the Contacts/address-book name during planning or replanning unless the user explicitly says they are identical.",
 		"If the current screenshot clearly identifies the app/page or device platform, include observed_state with app_name, page_name, platform (ios/android/mac), visible_text, dialogs, and confidence when relevant.",
 		"Call request_human_handoff when the task requires credentials, login-method selection, verification, system/app redirect confirmation, permission dialog confirmation, or human judgment your tools cannot fulfill, or when the user refers to a target you cannot unambiguously identify from the screen. In plan mode, request_human_handoff is allowed before commit_plan when the blocker is already known. Ask the user to complete it on the device; do not ask them to send credentials or private verification details in chat.",
 	)

@@ -375,6 +375,9 @@ var (
 	bulletRecordRE      = regexp.MustCompile(`(?m)^\s*[-*]\s*[^:\n]+:\s*[-+]?\d+(?:\.\d+)?\s*$`)
 	routePlanIntentRE   = regexp.MustCompile(`(?i)(?:\b(?:enter|switch|use|choose|select)\s+(?:to\s+)?plan\s+mode\b|\benter_plan_mode\b|["']?mode["']?\s*:\s*["']?plan["']?)`)
 	routeSimpleIntentRE = regexp.MustCompile(`(?i)(?:\b(?:enter|switch|use|choose|select)\s+(?:to\s+)?simple\s+mode\b|\buse_simple_mode\b|["']?mode["']?\s*:\s*["']?simple["']?)`)
+	routeDeviceActionRE = regexp.MustCompile(`(?i)(\b(open|launch|tap|click|type|enter|paste|copy|send|message|text|call)\b|打开|启动|点击|输入|粘贴|复制|发送|发消息|发微信|拨打|查找|查询|查一下|帮我查|问问)`)
+	routeDeviceTargetRE = regexp.MustCompile(`(?i)(\b(phone|iphone|android|app|wechat|clipboard|contacts?|calendar|message|chat)\b|手机|微信|剪切板|剪贴板|通讯录|联系人|电话号|手机号|日历|输入框|聊天|好友)`)
+	routeHowToRE        = regexp.MustCompile(`(?i)^\s*(?:(?:how do i|how to|what is|why|when|where|can you explain)\b|怎么|如何|为什么|什么是)`)
 )
 
 func routeTextHasPlanIntent(text string) bool {
@@ -475,6 +478,15 @@ func normalizeRouteDecision(decision routeDecision, request string) routeDecisio
 	if decision.Mode == routeModeDirectAnswer && decision.FinalAnswer == "" {
 		decision.Mode = routeModeSimple
 	}
+	if decision.Mode == routeModeDirectAnswer && routeRequiresToolExecution(request) {
+		decision.Mode = routeModeSimple
+		decision.FinalAnswer = ""
+		if decision.Reason == "" {
+			decision.Reason = "route policy requires tool execution for device/app operation"
+		} else {
+			decision.Reason += "; route policy requires tool execution for device/app operation"
+		}
+	}
 	if routeShouldUsePlan(request) && decision.Mode != routeModePlan {
 		decision.Mode = routeModePlan
 		decision.FinalAnswer = ""
@@ -508,6 +520,9 @@ func routeShouldUsePlan(request string) bool {
 	if text == "" {
 		return false
 	}
+	if routeRequiresToolExecution(request) && routeLooksLikeMultiStageDeviceFlow(text) {
+		return true
+	}
 	if len(stageMarkerRE.FindAllString(text, -1)) >= 2 {
 		return true
 	}
@@ -531,6 +546,53 @@ func routeShouldUsePlan(request string) bool {
 		}
 	}
 	return requiredSignals >= 2
+}
+
+func routeRequiresToolExecution(request string) bool {
+	text := strings.ToLower(strings.TrimSpace(request))
+	if text == "" {
+		return false
+	}
+	if routeHowToRE.MatchString(text) && !strings.Contains(text, "帮我") && !strings.Contains(text, "替我") {
+		return false
+	}
+	if routeLooksLikeLaunchOnlyDeviceRequest(text) {
+		return false
+	}
+	return routeDeviceActionRE.MatchString(text) && routeDeviceTargetRE.MatchString(text)
+}
+
+func routeLooksLikeLaunchOnlyDeviceRequest(text string) bool {
+	hasLaunchVerb := strings.Contains(text, "打开") ||
+		strings.Contains(text, "启动") ||
+		strings.Contains(text, "open ") ||
+		strings.Contains(text, "launch ")
+	if !hasLaunchVerb {
+		return false
+	}
+	for _, signal := range []string{
+		"发送", "发消息", "发微信", "消息", "问问", "输入", "粘贴", "复制", "剪切板", "剪贴板",
+		"通讯录", "联系人", "电话号", "手机号", "搜索", "查找", "查询", "send ", "message",
+		"text ", "type ", "enter ", "paste", "copy", "contacts", "calendar", "search", "find",
+	} {
+		if strings.Contains(text, signal) {
+			return false
+		}
+	}
+	return true
+}
+
+func routeLooksLikeMultiStageDeviceFlow(text string) bool {
+	for _, marker := range []string{"->", "→", "然后", "接着", "再", "and then", " then ", "after that"} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	if (strings.Contains(text, "通讯录") || strings.Contains(text, "联系人") || strings.Contains(text, "contacts")) &&
+		(strings.Contains(text, "微信") || strings.Contains(text, "wechat") || strings.Contains(text, "message")) {
+		return true
+	}
+	return false
 }
 
 func plannerTaskForPhase(phase loopPhase, state roleLoopState, forceSimpleLoop bool) string {
