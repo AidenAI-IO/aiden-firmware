@@ -51,7 +51,7 @@ TEST_CASE("AudioSessionManager rejects new playback while another session is dra
     fmt.channels = 1;
     fmt.bit_width = 16;
 
-    manager.draining_playback_count_->store(1, std::memory_order_relaxed);
+    manager.draining_playback_state_->count.store(1, std::memory_order_relaxed);
 
     aiden::PlaybackStartResult out;
     CHECK(manager.start_playback(fmt, &out) == aiden::AidenServiceStatus::SERVICE_RECOVERING);
@@ -69,8 +69,8 @@ TEST_CASE("AudioSessionManager stops draining playback sessions") {
     auto session = std::make_shared<aiden::AudioPlaybackSession>(session_id, fmt);
 
     {
-        std::lock_guard<std::mutex> lock(manager.mutex_);
-        manager.draining_playback_sessions_[session_id] = session;
+        std::lock_guard<std::mutex> lock(manager.draining_playback_state_->mutex);
+        manager.draining_playback_state_->sessions[session_id] = session;
     }
 
     CHECK(manager.stop_playback(session_id) == aiden::AidenServiceStatus::OK);

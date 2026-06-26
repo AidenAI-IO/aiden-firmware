@@ -11,7 +11,7 @@ AudioSessionManager::AudioSessionManager()
 
 AudioSessionManager::AudioSessionManager(const char* volume_state_path)
     : stop_reaper_(false),
-      draining_playback_count_(std::make_shared<std::atomic<uint32_t>>(0)),
+      draining_playback_state_(std::make_shared<DrainingPlaybackState>()),
       volume_state_path_(volume_state_path ? volume_state_path : ""),
       playback_volume_(100),
       last_persisted_playback_volume_(-1),
@@ -47,7 +47,6 @@ AudioSessionManager::~AudioSessionManager() {
     std::lock_guard<std::mutex> lock(mutex_);
     record_sessions_.clear();
     playback_sessions_.clear();
-    draining_playback_sessions_.clear();
     record_last_active_.clear();
     playback_last_active_.clear();
 }
@@ -168,7 +167,7 @@ AidenServiceStatus AudioSessionManager::start_playback(const AudioFormat& fmt,
     const Clock::time_point now = Clock::now();
     std::lock_guard<std::mutex> lock(mutex_);
     if (!playback_sessions_.empty() ||
-        draining_playback_count_->load(std::memory_order_relaxed) > 0) {
+        draining_playback_state_->count.load(std::memory_order_relaxed) > 0) {
         fprintf(stderr,
                 "[audio_service] rejecting playback start while another playback is active or draining\n");
         return AidenServiceStatus::SERVICE_RECOVERING;
@@ -213,30 +212,34 @@ AidenServiceStatus AudioSessionManager::write_play_chunk(uint64_t session_id,
         // Move the session into a draining set so no further writes are
         // accepted, but stop_playback() can still interrupt the tail drain.
         std::shared_ptr<AudioPlaybackSession> owned;
-        std::shared_ptr<std::atomic<uint32_t>> draining;
+        std::shared_ptr<DrainingPlaybackState> draining_state;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             auto it = playback_sessions_.find(session_id);
             if (it != playback_sessions_.end()) {
                 owned = it->second;
-                draining_playback_sessions_[session_id] = owned;
                 playback_sessions_.erase(it);
-                draining = draining_playback_count_;
-                draining->fetch_add(1, std::memory_order_relaxed);
+                draining_state = draining_playback_state_;
             }
             playback_last_active_.erase(session_id);
         }
-        if (owned && draining) {
+        if (owned && draining_state) {
+            {
+                std::lock_guard<std::mutex> draining_lock(draining_state->mutex);
+                draining_state->sessions[session_id] = owned;
+            }
+            draining_state->count.fetch_add(1, std::memory_order_relaxed);
+
             // Keep the draining session alive on a detached thread until the
             // playback thread exits or stop_playback() interrupts it.
-            std::thread([this, session_id, owned, draining]() {
+            std::thread([session_id, owned, draining_state]() {
                 owned->wait_until_done();
                 owned->stop();
                 {
-                    std::lock_guard<std::mutex> lock(mutex_);
-                    draining_playback_sessions_.erase(session_id);
+                    std::lock_guard<std::mutex> lock(draining_state->mutex);
+                    draining_state->sessions.erase(session_id);
                 }
-                draining->fetch_sub(1, std::memory_order_relaxed);
+                draining_state->count.fetch_sub(1, std::memory_order_relaxed);
             }).detach();
         }
     }
@@ -253,12 +256,13 @@ AidenServiceStatus AudioSessionManager::stop_playback(uint64_t session_id) {
             playback_sessions_.erase(it);
             playback_last_active_.erase(session_id);
         } else {
-            auto draining_it = draining_playback_sessions_.find(session_id);
-            if (draining_it == draining_playback_sessions_.end()) {
+            std::lock_guard<std::mutex> draining_lock(draining_playback_state_->mutex);
+            auto draining_it = draining_playback_state_->sessions.find(session_id);
+            if (draining_it == draining_playback_state_->sessions.end()) {
                 return AidenServiceStatus::SESSION_NOT_FOUND;
             }
             session = draining_it->second;
-            draining_playback_sessions_.erase(draining_it);
+            draining_playback_state_->sessions.erase(draining_it);
         }
     }
     session->stop();
@@ -280,8 +284,11 @@ AidenServiceStatus AudioSessionManager::set_playback_volume(int volume) {
         for (auto it = playback_sessions_.begin(); it != playback_sessions_.end(); ++it) {
             sessions.push_back(it->second);
         }
-        for (auto it = draining_playback_sessions_.begin(); it != draining_playback_sessions_.end(); ++it) {
-            sessions.push_back(it->second);
+        {
+            std::lock_guard<std::mutex> draining_lock(draining_playback_state_->mutex);
+            for (auto it = draining_playback_state_->sessions.begin(); it != draining_playback_state_->sessions.end(); ++it) {
+                sessions.push_back(it->second);
+            }
         }
     }
 
@@ -310,7 +317,7 @@ AidenServiceStatus AudioSessionManager::get_playback_volume(uint32_t* out) const
 
 void AudioSessionManager::fill_health(AudioHealthResult* out) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    const uint32_t draining = draining_playback_count_->load(std::memory_order_relaxed);
+    const uint32_t draining = draining_playback_state_->count.load(std::memory_order_relaxed);
     out->record_sessions   = static_cast<uint32_t>(record_sessions_.size());
     out->playback_sessions = static_cast<uint32_t>(playback_sessions_.size()) + draining;
     out->recording_active  = !record_sessions_.empty();
