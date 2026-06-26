@@ -1338,6 +1338,8 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	s.playPromptSoundAsync(promptSoundAgentSend, "agent send")
 
 	ctx := r.Context()
+	cleanupRun := func() {}
+	cleanupRunAtReturn := true
 	if req.RequestID != "" {
 		// A request_id marks a resumable run. Keep it alive if the streaming
 		// HTTP client disconnects; only /api/chat/cancel should stop it.
@@ -1347,13 +1349,21 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "request_id already in use", http.StatusConflict)
 			return
 		}
-		defer func() {
-			s.unregisterActiveRun(req.RequestID)
-			s.clearPendingSteer(req.RequestID)
-			cancel()
-		}()
+		var cleanupOnce sync.Once
+		cleanupRun = func() {
+			cleanupOnce.Do(func() {
+				s.unregisterActiveRun(req.RequestID)
+				s.clearPendingSteer(req.RequestID)
+				cancel()
+			})
+		}
 		ctx = runCtx
 	}
+	defer func() {
+		if cleanupRunAtReturn {
+			cleanupRun()
+		}
+	}()
 	s.appendHistory(userMessage)
 	progress := s.newRunProgressSpeaker()
 	defer progress.Cancel()
@@ -1470,16 +1480,26 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 
 	speechText := result.SpokenTextForConfig(s.runtime.config)
 	if s.audioClient != nil && speechText != "" && !result.SpeechStreamed {
-		go func(text string) {
+		finalTTSCtx := ctx
+		finishRun := func() {}
+		if req.RequestID != "" {
+			// Let request-scoped final TTS outlive the streaming handler while
+			// /api/chat/cancel can still interrupt it via the active run/output.
+			finalTTSCtx = context.Background()
+			finishRun = cleanupRun
+			cleanupRunAtReturn = false
+		}
+		go func(text string, ttsCtx context.Context, finish func()) {
+			defer finish()
 			if s.logger != nil {
 				s.logger.Info("TTS playback: %q", text)
 			}
-			if err := s.speakTextForRequest(ctx, req.RequestID, text, 0); err != nil {
+			if err := s.speakTextForRequest(ttsCtx, req.RequestID, text, 0); err != nil {
 				if s.logger != nil {
 					s.logger.Error("TTS playback failed: %v", err)
 				}
 			}
-		}(speechText)
+		}(speechText, finalTTSCtx, finishRun)
 	}
 
 	stream.Write(ChatStreamEvent{
