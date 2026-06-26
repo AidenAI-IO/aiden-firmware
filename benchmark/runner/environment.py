@@ -71,6 +71,84 @@ class EnvironmentManager:
         self._environments: dict[str, MobileGymEnvironment] = {}
         self._log_procs: dict[str, subprocess.Popen] = {}
 
+        # Discover existing MobileGym containers from previous WebUI sessions
+        self._discover_existing_containers()
+
+    def _discover_existing_containers(self) -> None:
+        """Scan Docker for existing MobileGym containers and register them.
+
+        This handles the case where WebUI was restarted but Docker containers
+        from previous sessions are still running. Without this, those containers
+        become orphans that can't be stopped or removed via the WebUI.
+        """
+        try:
+            result = subprocess.run(
+                [
+                    "docker",
+                    "ps",
+                    "--filter",
+                    "name=aiden-mobilegym-env-mg-",
+                    "--format",
+                    "{{.Names}}\t{{.ID}}\t{{.CreatedAt}}\t{{.Image}}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (subprocess.SubprocessError, OSError):
+            return
+
+        if result.returncode != 0:
+            return
+
+        for line in result.stdout.strip().splitlines():
+            parts = line.split("\t")
+            if len(parts) < 4:
+                continue
+            container_name = parts[0]
+            container_id = parts[1]
+            created_at_raw = parts[2]
+            image = parts[3]
+
+            # Extract environment ID: aiden-mobilegym-env-{id} -> {id}
+            prefix = "aiden-mobilegym-env-"
+            if not container_name.startswith(prefix):
+                continue
+            env_id = container_name[len(prefix):]
+
+            # Get port mappings
+            try:
+                bridge_port = _docker_published_port_safe(container_name, 9090)
+                web_port = _docker_published_port_safe(container_name, 4173)
+            except Exception:
+                bridge_port = 0
+                web_port = 0
+
+            if bridge_port == 0:
+                continue  # Skip containers without proper port mapping
+
+            env_dir = self.runs_dir / "environments" / env_id
+            env = MobileGymEnvironment(
+                id=env_id,
+                name="MobileGym (recovered)",
+                endpoint=f"http://host.docker.internal:{bridge_port}",
+                public_endpoint=f"http://127.0.0.1:{bridge_port}",
+                web_url=f"http://127.0.0.1:{web_port}" if web_port else "",
+                status="running",
+                message="recovered from existing docker container",
+                created_at=created_at_raw,
+                started_at=created_at_raw,
+                container_name=container_name,
+                container_id=container_id,
+                bridge_port=bridge_port,
+                web_port=web_port,
+                image=image,
+                log_path=str(env_dir / "mobilegym.log") if env_dir.exists() else "",
+                parallel_envs=DEFAULT_MOBILEGYM_PARALLEL_ENVS,
+            )
+            self._environments[env_id] = env
+
     def list_all(self) -> list[MobileGymEnvironment]:
         """List all MobileGym environments."""
         with self._lock:
@@ -294,6 +372,14 @@ def docker_published_port(container_name: str, container_port: int) -> int:
     raise RuntimeError(
         f"could not determine published port for {container_name}:{container_port}"
     )
+
+
+def _docker_published_port_safe(container_name: str, container_port: int) -> int:
+    """Safe version of docker_published_port: returns 0 on any error."""
+    try:
+        return docker_published_port(container_name, container_port)
+    except Exception:
+        return 0
 
 
 def build_mobilegym_environment_command(
