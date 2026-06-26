@@ -244,8 +244,6 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "enabled", Widget: WidgetBoolean, Default: true},
 					{Key: "board_id", Widget: WidgetText, Default: "default",
 						VisibleWhen: all(truthy("live_activity.enabled"))},
-					{Key: "phone_id", Widget: WidgetText,
-						VisibleWhen: all(truthy("live_activity.enabled"))},
 				},
 			},
 			{

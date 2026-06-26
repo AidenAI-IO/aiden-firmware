@@ -222,6 +222,7 @@ type ChatRequest struct {
 	Skills      []string            `json:"skills,omitempty"`
 	Attachments []MessageAttachment `json:"attachments,omitempty"`
 	RequestID   string              `json:"request_id,omitempty"`
+	PhoneID     string              `json:"phone_id,omitempty"`
 }
 
 type ChatCancelRequest struct {
@@ -818,7 +819,7 @@ func (s *Server) handleChatAsync(
 	}
 	s.appendHistory(userMsg)
 	if s.liveActivity != nil {
-		s.liveActivity.StartTask(requestID, inputText)
+		s.liveActivity.StartTask(requestID, inputText, s.liveActivityPhoneID(req))
 	}
 
 	// Return {request_id} immediately
@@ -1090,6 +1091,18 @@ func (s *Server) liveActivitySnapshot(requestID string) *LiveActivityState {
 	return s.liveActivity.Snapshot(requestID)
 }
 
+func (s *Server) liveActivityPhoneID(req ChatRequest) string {
+	if phoneID := strings.TrimSpace(req.PhoneID); phoneID != "" {
+		return phoneID
+	}
+	if s != nil && s.bridge != nil {
+		if phoneID := strings.TrimSpace(s.bridge.Status().PhoneID); phoneID != "" {
+			return phoneID
+		}
+	}
+	return ""
+}
+
 // handleChatSync is the original synchronous chat handler, kept for the web UI
 // and any clients that don't provide a request_id.
 func (s *Server) handleChatSync(
@@ -1291,7 +1304,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	progress := s.newRunProgressSpeaker()
 	defer progress.Cancel()
 	if req.RequestID != "" && s.liveActivity != nil {
-		s.liveActivity.StartTask(req.RequestID, inputText)
+		s.liveActivity.StartTask(req.RequestID, inputText, s.liveActivityPhoneID(req))
 	}
 
 	runReq := RunRequest{
@@ -2798,7 +2811,11 @@ func (s *Server) handleLiveActivityCurrent(w http.ResponseWriter, r *http.Reques
 		http.Error(w, `{"error":"live activity disabled"}`, http.StatusServiceUnavailable)
 		return
 	}
+	phoneID := strings.TrimSpace(r.URL.Query().Get("phone_id"))
 	state := s.liveActivity.SnapshotActive()
+	if phoneID != "" {
+		state = s.liveActivity.SnapshotActiveForPhone(phoneID)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	if state == nil {
 		json.NewEncoder(w).Encode(map[string]string{"status": "not_found"})

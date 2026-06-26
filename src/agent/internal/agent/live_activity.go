@@ -44,8 +44,11 @@ const (
 	liveActivityRelayQueueSize      = 32
 )
 
+var errLiveActivityRelayPhoneIDRequired = errors.New("live activity relay phone_id is required")
+
 type LiveActivityState struct {
 	RequestID     string     `json:"request_id"`
+	PhoneID       string     `json:"phone_id,omitempty"`
 	Status        string     `json:"status"`
 	Phase         string     `json:"phase,omitempty"`
 	TaskTitle     string     `json:"task_title"`
@@ -180,13 +183,19 @@ func (m *LiveActivityManager) RelayStatus() string {
 	return "configured"
 }
 
-func (m *LiveActivityManager) StartTask(requestID, title string) *LiveActivityState {
+func (m *LiveActivityManager) StartTask(requestID, title string, phoneIDs ...string) *LiveActivityState {
 	if m == nil || strings.TrimSpace(requestID) == "" {
 		return nil
 	}
+	phoneID := ""
+	if len(phoneIDs) > 0 {
+		phoneID = firstNonEmptyString(phoneIDs)
+	}
+	phoneID = strings.TrimSpace(phoneID)
 	now := time.Now()
 	state := LiveActivityState{
 		RequestID:     strings.TrimSpace(requestID),
+		PhoneID:       phoneID,
 		Status:        LiveActivityStatusRunning,
 		Phase:         LiveActivityPhasePlanning,
 		TaskTitle:     truncateLiveActivityText(firstNonEmptyString([]string{title, "Aiden task"}), 80),
@@ -424,6 +433,34 @@ func (m *LiveActivityManager) SnapshotActive() *LiveActivityState {
 	return latest
 }
 
+func (m *LiveActivityManager) SnapshotActiveForPhone(phoneID string) *LiveActivityState {
+	if m == nil {
+		return nil
+	}
+	phoneID = strings.TrimSpace(phoneID)
+	if phoneID == "" {
+		return m.SnapshotActive()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.activeRequestID != "" {
+		if state, ok := m.states[m.activeRequestID]; ok && liveActivityStateMatchesPhoneID(state, phoneID) {
+			return &state
+		}
+	}
+	var latest *LiveActivityState
+	for _, state := range m.states {
+		if !liveActivityStateMatchesPhoneID(state, phoneID) {
+			continue
+		}
+		candidate := state
+		if latest == nil || candidate.UpdatedAt.After(latest.UpdatedAt) {
+			latest = &candidate
+		}
+	}
+	return latest
+}
+
 func (m *LiveActivityManager) publish(requestID string, final bool) {
 	if m == nil {
 		return
@@ -535,6 +572,10 @@ func (m *LiveActivityManager) runRelayPublisher(relay *LiveActivityRelayClient, 
 			continue
 		}
 		if err != nil {
+			if errors.Is(err, errLiveActivityRelayPhoneIDRequired) {
+				m.logger.Warn("live activity: relay push skipped request_id=%s status=%s sent_status=%s final=%t sent_final=%t: phone_id missing", req.requestID, req.state.Status, state.Status, req.final, final)
+				continue
+			}
 			m.logger.Error("live activity: relay push failed request_id=%s status=%s sent_status=%s final=%t sent_final=%t endpoint=%s: %v", req.requestID, req.state.Status, state.Status, req.final, final, relay.endpoint, err)
 			continue
 		}
@@ -593,6 +634,7 @@ func liveActivityRemotePushState(state LiveActivityState, final bool) (LiveActiv
 func liveActivityStandbyStateForRemotePush(state LiveActivityState) LiveActivityState {
 	return LiveActivityState{
 		RequestID:     state.RequestID,
+		PhoneID:       state.PhoneID,
 		Status:        LiveActivityStatusReady,
 		TaskTitle:     "Aiden",
 		CurrentStep:   "Ready",
@@ -603,6 +645,14 @@ func liveActivityStandbyStateForRemotePush(state LiveActivityState) LiveActivity
 		StartedAt:     state.StartedAt,
 		UpdatedAt:     state.UpdatedAt,
 	}
+}
+
+func liveActivityStateMatchesPhoneID(state LiveActivityState, phoneID string) bool {
+	phoneID = strings.TrimSpace(phoneID)
+	if phoneID == "" {
+		return true
+	}
+	return strings.TrimSpace(state.PhoneID) == phoneID
 }
 
 func bumpLiveActivityProgress(current float64) float64 {
@@ -1152,7 +1202,6 @@ type LiveActivityRelayClient struct {
 	endpoint   string
 	apiKey     string
 	boardID    string
-	phoneID    string
 	timeout    time.Duration
 }
 
@@ -1166,7 +1215,6 @@ func NewLiveActivityRelayClient(cfg LiveActivityConfig) (*LiveActivityRelayClien
 		endpoint:   endpoint,
 		apiKey:     strings.TrimSpace(cfg.RelayAPIKey),
 		boardID:    cfg.BoardIDOrDefault(),
-		phoneID:    strings.TrimSpace(cfg.PhoneID),
 		timeout:    cfg.TimeoutOrDefault(),
 	}, nil
 }
@@ -1193,9 +1241,11 @@ func (c *LiveActivityRelayClient) Push(ctx context.Context, state LiveActivitySt
 		"requires_app":   state.RequiresApp,
 		"updated_at":     state.UpdatedAt.UTC().Format(time.RFC3339),
 	}
-	if c.phoneID != "" {
-		body["phone_id"] = c.phoneID
+	phoneID := strings.TrimSpace(state.PhoneID)
+	if phoneID == "" {
+		return errLiveActivityRelayPhoneIDRequired
 	}
+	body["phone_id"] = phoneID
 	if final {
 		body["event"] = "end"
 	}
