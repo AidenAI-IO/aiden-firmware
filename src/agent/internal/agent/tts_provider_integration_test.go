@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -130,6 +131,33 @@ func TestServerSpeakTextUsesProviderManager(t *testing.T) {
 	}
 	if got := provider.texts(); len(got) != 1 || got[0] != "hello" {
 		t.Fatalf("provider texts = %#v, want hello", got)
+	}
+}
+
+func TestSpeakTextDoesNotRetryAfterPlaybackStarts(t *testing.T) {
+	provider := &playbackStartedTransientErrorProvider{name: "transient-after-playback"}
+	audioOps := &recordedAudioOps{}
+	server := &Server{
+		runtime: NewRuntimeWithDeps(
+			Config{Model: ModelConfig{Provider: "fake"}, Audio: AudioConfig{SampleRate: 16000}},
+			&testModelResolver{model: &scriptedModel{}},
+			NewMemoryManager(""),
+			NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+			NewSkillIndex(),
+		),
+		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
+		audioClient: NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, audioOps)),
+	}
+
+	err := server.speakText(context.Background(), "hello", 0)
+	if err == nil || !isTransientTTSError(err) {
+		t.Fatalf("speakText() error = %v, want transient TTS error after playback started", err)
+	}
+	if got := audioOps.countOp("start_playback"); got != 1 {
+		t.Fatalf("start_playback count = %d, want no retry after playback started", got)
+	}
+	if got := provider.beginCalls(); got != 1 {
+		t.Fatalf("BeginStream calls = %d, want 1", got)
 	}
 }
 
@@ -782,9 +810,20 @@ type recordingTTSProvider struct {
 	seen []string
 }
 
+type playbackStartedTransientErrorProvider struct {
+	name  string
+	calls atomic.Int32
+}
+
 func (p *recordingTTSProvider) Name() string { return p.name }
 
+func (p *playbackStartedTransientErrorProvider) Name() string { return p.name }
+
 func (p *recordingTTSProvider) Capabilities() ttsmodule.Capabilities {
+	return ttsmodule.Capabilities{SupportedSampleRates: []int{16000}}
+}
+
+func (p *playbackStartedTransientErrorProvider) Capabilities() ttsmodule.Capabilities {
 	return ttsmodule.Capabilities{SupportedSampleRates: []int{16000}}
 }
 
@@ -792,12 +831,23 @@ func (p *recordingTTSProvider) BeginStream(ctx context.Context, sink ttsmodule.A
 	return &recordingTTSSession{provider: p, sink: sink}, nil
 }
 
+func (p *playbackStartedTransientErrorProvider) BeginStream(ctx context.Context, sink ttsmodule.AudioSink) (ttsmodule.StreamSession, error) {
+	p.calls.Add(1)
+	return &playbackStartedTransientErrorSession{sink: sink}, nil
+}
+
 func (p *recordingTTSProvider) Close() error { return nil }
+
+func (p *playbackStartedTransientErrorProvider) Close() error { return nil }
 
 func (p *recordingTTSProvider) texts() []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return append([]string(nil), p.seen...)
+}
+
+func (p *playbackStartedTransientErrorProvider) beginCalls() int {
+	return int(p.calls.Load())
 }
 
 type recordingTTSSession struct {
@@ -807,12 +857,21 @@ type recordingTTSSession struct {
 	err      error
 }
 
+type playbackStartedTransientErrorSession struct {
+	sink ttsmodule.AudioSink
+	err  error
+}
+
 func (s *recordingTTSSession) WriteText(text string) error {
 	_, _ = s.buf.WriteString(text)
 	return nil
 }
 
+func (s *playbackStartedTransientErrorSession) WriteText(text string) error { return nil }
+
 func (s *recordingTTSSession) Flush() error { return nil }
+
+func (s *playbackStartedTransientErrorSession) Flush() error { return nil }
 
 func (s *recordingTTSSession) Close() error {
 	text := s.buf.String()
@@ -832,7 +891,19 @@ func (s *recordingTTSSession) Close() error {
 	return nil
 }
 
+func (s *playbackStartedTransientErrorSession) Close() error {
+	if err := s.sink.WritePCM(make([]byte, 16000)); err != nil {
+		s.err = err
+		return err
+	}
+	err := errors.New("dial tcp: i/o timeout")
+	s.err = err
+	return err
+}
+
 func (s *recordingTTSSession) Err() error { return s.err }
+
+func (s *playbackStartedTransientErrorSession) Err() error { return s.err }
 
 func startTTSPlaybackAudioSocket(t *testing.T) string {
 	t.Helper()
