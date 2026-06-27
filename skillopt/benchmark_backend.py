@@ -19,6 +19,13 @@ from skillopt.types import RolloutResult
 
 
 DEFAULT_DAEMON_IMAGE = "aiden-agent-daemon:local"
+PROFILES_ROOT = Path(__file__).resolve().parent / "profiles"
+
+
+class BenchmarkRolloutError(RuntimeError):
+    def __init__(self, message: str, *, rollouts: list[RolloutResult] | None = None):
+        super().__init__(message)
+        self.rollouts = rollouts or []
 
 
 class BenchmarkRunnerBackend:
@@ -35,6 +42,7 @@ class BenchmarkRunnerBackend:
         daemon_image: str = DEFAULT_DAEMON_IMAGE,
         build_daemon_image: bool = True,
         agent_config_path: Path | None = None,
+        environment_profile: str = "",
         python_executable: str | None = None,
     ):
         environment_url = str(environment_url or "").strip().rstrip("/")
@@ -48,6 +56,7 @@ class BenchmarkRunnerBackend:
         self.daemon_image = daemon_image
         self.build_daemon_image = build_daemon_image
         self.agent_config_path = Path(agent_config_path) if agent_config_path else None
+        self.environment_profile = str(environment_profile or "").strip()
         self.python_executable = python_executable or sys.executable
 
     def close(self) -> None:
@@ -99,11 +108,26 @@ class BenchmarkRunnerBackend:
                 f"benchmark runner produced no task results for {phase} "
                 f"(exit={proc.returncode}, run={child_run_dir})"
             )
+        rollouts = self._rollouts_from_results(results, child_run_id, child_run_dir)
+        invalid_count = count_environment_setup_failures(results)
+        if invalid_count > len(results) / 2:
+            raise BenchmarkRolloutError(
+                f"environment setup failed for {invalid_count}/{len(results)} task results in {phase} "
+                f"(run={child_run_dir})",
+                rollouts=rollouts,
+            )
+        return rollouts
+
+    def _rollouts_from_results(self, results: list[TaskResult], child_run_id: str, child_run_dir: Path) -> list[RolloutResult]:
         rollouts = [task_result_to_rollout(result) for result in results]
         report = child_run_dir / "report.html"
+        results_by_id = {result.task_id: result for result in results}
         for rollout in rollouts:
+            result = results_by_id.get(rollout.id)
             rollout.extras["benchmark_run_id"] = child_run_id
             rollout.extras["benchmark_run_dir"] = str(child_run_dir)
+            if result is not None:
+                rollout.extras["benchmark_status"] = result.status
             if report.exists():
                 rollout.extras["benchmark_report"] = str(report)
         return rollouts
@@ -122,7 +146,10 @@ class BenchmarkRunnerBackend:
         if skill_dir == skills_root or not skill_dir.is_relative_to(skills_root):
             raise ValueError(f"invalid skill_name: {skill_name!r}")
         skill_dir.mkdir(parents=True, exist_ok=True)
-        (skill_dir / "SKILL.md").write_text(skill_text, encoding="utf-8")
+        (skill_dir / "SKILL.md").write_text(
+            apply_environment_profile(skill_text, skill_name, self.environment_profile),
+            encoding="utf-8",
+        )
         return dest_dir
 
     def _runner_command(
@@ -170,6 +197,43 @@ class BenchmarkRunnerBackend:
 def sanitize_run_id(value: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value or "")).strip("-.")
     return cleaned or "skillopt"
+
+
+def apply_environment_profile(skill_text: str, skill_name: str, environment_profile: str) -> str:
+    profile = str(environment_profile or "").strip()
+    if not profile:
+        return skill_text
+    profile_path = PROFILES_ROOT / profile / skill_name / "SKILL.md"
+    if not profile_path.exists():
+        return skill_text
+    overlay = profile_path.read_text(encoding="utf-8").strip()
+    if not overlay:
+        return skill_text
+    return skill_text.rstrip() + "\n\n---\n\n" + overlay + "\n"
+
+
+def count_environment_setup_failures(results: list[TaskResult]) -> int:
+    return sum(1 for result in results if is_environment_setup_failure(result))
+
+
+def is_environment_setup_failure(result: TaskResult) -> bool:
+    metrics = result.metrics or {}
+    text = " ".join(
+        str(value)
+        for value in [metrics.get("error"), metrics.get("judge_error"), metrics.get("mobilegym_status")]
+        if value
+    ).lower()
+    if result.status != "skipped" and "setup:" not in text:
+        return False
+    markers = (
+        "setup endpoint timed out",
+        "setup endpoint failed",
+        "no_bridge_env_available",
+        "reset failed",
+        "page crashed",
+        "target crashed",
+    )
+    return any(marker in text for marker in markers)
 
 
 def load_benchmark_task_results(run_dir: Path) -> list[TaskResult]:

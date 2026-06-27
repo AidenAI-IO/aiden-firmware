@@ -1,10 +1,12 @@
 """Unit tests for SkillOpt orchestrator."""
+import json
 from pathlib import Path
 
 import pytest
 
 from runner.suite import HardAssertions, RubricItem, Suite, TaskSpec
 from skillopt import orchestrator
+from skillopt.optimizer_client import OptimizerError
 from skillopt.types import Edit, Patch, RawPatch, RolloutResult
 
 
@@ -271,3 +273,211 @@ def test_optimize_skill_records_phase_scores_and_stop_reason(monkeypatch, tmp_pa
     assert result.phase_summaries[1].score.hard == 0.5
     assert result.phase_summaries[1].score.soft == 0.5
     assert result.steps == []
+
+
+def test_optimize_skill_writes_skillopt_phase_records(monkeypatch, tmp_path):
+    skill_path = tmp_path / "SKILL.md"
+    skill_path.write_text("base", encoding="utf-8")
+
+    class PhaseBackend:
+        def close(self):
+            pass
+
+        def run_rollout(self, *, phase, run_root, **kwargs):
+            del kwargs
+            if phase == "baseline_selection":
+                return [
+                    RolloutResult(
+                        id="validation_task",
+                        hard=0,
+                        soft=0.25,
+                        n_turns=3,
+                        fail_reason="No tool calls.",
+                        artifact_dir=str(run_root / "benchmark" / "run-001-baseline_selection" / "tasks" / "validation_task"),
+                        extras={
+                            "benchmark_run_id": "run-001-baseline_selection",
+                            "benchmark_report": str(run_root / "benchmark" / "run-001-baseline_selection" / "report.html"),
+                            "benchmark_status": "failed",
+                        },
+                    )
+                ]
+            return [
+                RolloutResult(
+                    id="train_task",
+                    hard=1,
+                    soft=1.0,
+                    n_turns=2,
+                    artifact_dir=str(run_root / "benchmark" / "run-001-step_01_train" / "tasks" / "train_task"),
+                    extras={
+                        "benchmark_run_id": "run-001-step_01_train",
+                        "benchmark_report": str(run_root / "benchmark" / "run-001-step_01_train" / "report.html"),
+                        "benchmark_status": "passed",
+                    },
+                )
+            ]
+
+    monkeypatch.setattr(orchestrator, "run_reflect", lambda *args, **kwargs: [])
+    cfg = orchestrator.OptimizationConfig(
+        skill_name="device-operator",
+        skill_path=skill_path,
+        suite=_suite(tmp_path, "train_suite"),
+        train_suite=_suite(tmp_path, "train_suite"),
+        selection_suite=_suite(tmp_path, "validation_suite"),
+        train_tasks=[_task("train_task")],
+        selection_tasks=[_task("validation_task")],
+        budget=1,
+        run_id="run-001",
+        artifact_root=tmp_path / "runs" / "skillopt",
+        rollout_backend=PhaseBackend(),
+    )
+
+    orchestrator.optimize_skill(cfg)
+
+    run_root = tmp_path / "runs" / "skillopt" / "run-001"
+    baseline = json.loads((run_root / "phases" / "baseline_selection.json").read_text(encoding="utf-8"))
+    train = json.loads((run_root / "phases" / "step_01_train.json").read_text(encoding="utf-8"))
+    assert baseline["schema"] == "skillopt.phase.v1"
+    assert baseline["phase"] == "baseline_selection"
+    assert baseline["kind"] == "verification"
+    assert baseline["suite_name"] == "validation_suite"
+    assert baseline["status"] == "completed"
+    assert baseline["counts"]["total"] == 1
+    assert baseline["counts"]["failed"] == 1
+    assert baseline["tasks"] == [{
+        "id": "validation_task",
+        "category": "single_step",
+        "status": "failed",
+        "hard": 0,
+        "soft": 0.25,
+        "turns": 3,
+        "reason": "No tool calls.",
+        "artifact_dir": "benchmark/run-001-baseline_selection/tasks/validation_task",
+        "raw_report": "benchmark/run-001-baseline_selection/report.html",
+    }]
+    assert train["counts"]["passed"] == 1
+
+
+def test_optimize_skill_marks_phase_record_failed_when_rollout_raises(tmp_path):
+    backend = CapturingBackend(fail=True)
+    cfg = _backend_config(tmp_path, backend)
+
+    with pytest.raises(RuntimeError, match="rollout failed"):
+        orchestrator.optimize_skill(cfg)
+
+    phase = json.loads((tmp_path / "runs" / "skillopt" / "run-001" / "phases" / "baseline_selection.json").read_text(encoding="utf-8"))
+    assert phase["status"] == "failed"
+    assert phase["error"] == "rollout failed"
+
+
+def test_optimize_skill_failed_phase_records_partial_rollout_results(tmp_path):
+    class RolloutError(RuntimeError):
+        pass
+
+    class PartialBackend:
+        def close(self):
+            pass
+
+        def run_rollout(self, *, run_root, phase, **kwargs):
+            del kwargs
+            exc = RolloutError("environment setup failed")
+            exc.rollouts = [
+                RolloutResult(
+                    id="train_pass",
+                    hard=1,
+                    soft=1.0,
+                    n_turns=2,
+                    artifact_dir=str(run_root / "benchmark" / "run-001-step_01_train" / "tasks" / "train_pass"),
+                    extras={
+                        "benchmark_status": "passed",
+                        "benchmark_report": str(run_root / "benchmark" / "run-001-step_01_train" / "report.html"),
+                    },
+                ),
+                RolloutResult(
+                    id="train_skipped",
+                    hard=0,
+                    soft=0.0,
+                    n_turns=0,
+                    fail_reason="setup endpoint failed HTTP 504",
+                    artifact_dir=str(run_root / "benchmark" / "run-001-step_01_train" / "tasks" / "train_skipped"),
+                    extras={
+                        "benchmark_status": "skipped",
+                        "benchmark_report": str(run_root / "benchmark" / "run-001-step_01_train" / "report.html"),
+                    },
+                ),
+            ]
+            raise exc
+
+    skill_path = tmp_path / "SKILL.md"
+    skill_path.write_text("base", encoding="utf-8")
+    cfg = orchestrator.OptimizationConfig(
+        skill_name="device-operator",
+        skill_path=skill_path,
+        suite=_suite(tmp_path, "train_suite"),
+        train_suite=_suite(tmp_path, "train_suite"),
+        selection_suite=_suite(tmp_path, "validation_suite"),
+        train_tasks=[_task("train_pass"), _task("train_skipped")],
+        selection_tasks=[_task("selection")],
+        budget=1,
+        run_id="run-001",
+        artifact_root=tmp_path / "runs" / "skillopt",
+        rollout_backend=PartialBackend(),
+    )
+
+    with pytest.raises(RolloutError, match="environment setup failed"):
+        orchestrator._run_rollout_phase(
+            cfg.rollout_backend,
+            cfg,
+            suite=cfg.train_suite,
+            tasks=cfg.train_tasks,
+            skill_text="base",
+            phase="step_01_train",
+            kind="train",
+            run_root=cfg.artifact_root / cfg.run_id,
+        )
+
+    phase = json.loads((tmp_path / "runs" / "skillopt" / "run-001" / "phases" / "step_01_train.json").read_text(encoding="utf-8"))
+    assert phase["status"] == "failed"
+    assert phase["counts"]["passed"] == 1
+    assert phase["counts"]["skipped"] == 1
+    assert phase["tasks"][0]["status"] == "passed"
+    assert phase["tasks"][1]["status"] == "skipped"
+    assert phase["tasks"][1]["reason"] == "setup endpoint failed HTTP 504"
+
+
+def test_optimize_skill_writes_reflect_error_artifact(monkeypatch, tmp_path):
+    skill_path = tmp_path / "SKILL.md"
+    skill_path.write_text("base", encoding="utf-8")
+
+    class SummaryBackend:
+        def close(self):
+            pass
+
+        def run_rollout(self, *, phase, **kwargs):
+            del kwargs
+            return [RolloutResult(id=phase, hard=0, soft=0.0, artifact_dir=str(tmp_path / phase))]
+
+    def fail_reflect(*args, **kwargs):
+        raise OptimizerError("missing env var OPENROUTER_API_KEY")
+
+    monkeypatch.setattr(orchestrator, "run_reflect", fail_reflect)
+
+    cfg = orchestrator.OptimizationConfig(
+        skill_name="device-operator",
+        skill_path=skill_path,
+        suite=_suite(tmp_path, "train_suite"),
+        train_suite=_suite(tmp_path, "train_suite"),
+        selection_suite=_suite(tmp_path, "validation_suite"),
+        train_tasks=[_task("train_task")],
+        selection_tasks=[_task("validation_task")],
+        budget=1,
+        run_id="run-001",
+        artifact_root=tmp_path / "runs" / "skillopt",
+        rollout_backend=SummaryBackend(),
+    )
+
+    result = orchestrator.optimize_skill(cfg)
+
+    assert result.stop_reason == "step 1: reflect failed: missing env var OPENROUTER_API_KEY"
+    artifact = tmp_path / "runs" / "skillopt" / "run-001" / "step_01" / "reflect_error.json"
+    assert artifact.exists()
+    assert "missing env var OPENROUTER_API_KEY" in artifact.read_text(encoding="utf-8")
