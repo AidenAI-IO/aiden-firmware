@@ -278,6 +278,28 @@ def test_cli_writes_failure_report_when_optimization_raises(monkeypatch, tmp_pat
         run_dir = cfg.artifact_root / cfg.run_id
         run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / "best_skill.md").write_text("best accepted skill\n", encoding="utf-8")
+        step_dir = run_dir / "step_01"
+        step_dir.mkdir(parents=True)
+        (step_dir / "decision.json").write_text(json.dumps({
+            "accepted": False,
+            "reason": "candidate hard 0.250 not better than current 0.500",
+            "candidate_score": 0.25,
+            "current_score": 0.50,
+        }), encoding="utf-8")
+        (step_dir / "patch.json").write_text(json.dumps({
+            "reasoning": "optimizer found a retry loop",
+            "edits": [
+                {
+                    "op": "append",
+                    "content": "Retry failed actions with changed parameters.",
+                    "support_count": 2,
+                    "source_type": "failure",
+                }
+            ],
+        }), encoding="utf-8")
+        (step_dir / "patch_reports.json").write_text(json.dumps([
+            {"op": "append", "status": "applied_append", "index": 1}
+        ]), encoding="utf-8")
         phase_dir = cfg.artifact_root / cfg.run_id / "phases"
         phase_dir.mkdir(parents=True)
         (phase_dir / "step_01_train.json").write_text(json.dumps({
@@ -330,11 +352,105 @@ def test_cli_writes_failure_report_when_optimization_raises(monkeypatch, tmp_pat
     assert "best_skill.md" in report
     assert "diff.patch" in report
     assert "Diff" in report
+    assert len(result["steps"]) == 1
+    assert result["steps"][0]["step"] == 1
+    assert result["steps"][0]["reason"] == "candidate hard 0.250 not better than current 0.500"
+    assert "candidate hard 0.250 not better than current 0.500" in report
+    assert "View edits" in report
+    assert 'data-edit-step="1"' in report
+    assert "optimizer found a retry loop" in report
+    assert "Retry failed actions with changed parameters." in report
+    assert "Run failed before final edit summary" not in report
     assert "drawer-backdrop" in report
     assert "function openArtifactDrawer" in report
     assert "environment setup failed" in report
     assert "Task Records" not in report
     assert "train_one" not in report
+
+
+def test_failure_report_uses_same_report_shell_as_success_report():
+    manifest = {
+        "run_id": "skillopt-failed-run",
+        "skill": "device-operator",
+        "train_suite": TRAIN_LABEL,
+        "validation_suite": VERIFICATION_LABEL,
+        "error": "environment setup failed",
+        "phase_records": [],
+        "artifacts": {"result": "result.json"},
+    }
+
+    report = main._render_failure_report_html(
+        manifest,
+        original_skill="original skill\n",
+        diff_text="-old\n+new\n",
+    )
+
+    assert "This is the SkillOpt-owned optimization timeline" in report
+    assert report.count("<h2>SkillOpt Phases</h2>") == 1
+    assert "<h2>Scores</h2>" not in report
+    assert "<h2>Steps</h2>" in report
+    assert "<h2>Edits</h2>" in report
+    assert "<strong>Status:</strong> failed" in report
+    assert "<strong>Initial score:</strong> 0.000 <strong>Best score:</strong> 0.000" in report
+    assert "<strong>Stop reason:</strong> environment setup failed" in report
+    assert ".detail-btn{" in report
+    assert ".edit-summary{" in report
+    assert "@media (max-width:768px)" in report
+    assert "h1{font-size:24px" in report
+
+
+def test_failure_partial_result_reconstructs_scores_from_phase_records(tmp_path: Path):
+    cfg = main.OptimizationConfig(
+        skill_name="device-operator",
+        skill_path=tmp_path / "SKILL.md",
+        suite=object(),
+        train_tasks=[],
+        selection_tasks=[],
+        artifact_root=tmp_path / "runs",
+        run_id="skillopt-failed-with-scores",
+        optimizer_cfg=main.OptimizerConfig(),
+    )
+    run_dir = cfg.artifact_root / cfg.run_id
+    phases_dir = run_dir / "phases"
+    phases_dir.mkdir(parents=True)
+    (phases_dir / "baseline_selection.json").write_text(json.dumps({
+        "schema": "skillopt.phase.v1",
+        "phase": "baseline_selection",
+        "kind": "verification",
+        "suite_name": "device_operator_verification",
+        "status": "completed",
+        "counts": {"total": 6, "passed": 2, "failed": 1, "error": 3},
+        "tasks": [],
+        "score": {"hard": 1 / 3, "soft": 0.389, "n": 6, "n_passed": 2},
+    }), encoding="utf-8")
+    (phases_dir / "step_01_selection.json").write_text(json.dumps({
+        "schema": "skillopt.phase.v1",
+        "phase": "step_01_selection",
+        "kind": "verification",
+        "suite_name": "device_operator_verification",
+        "status": "completed",
+        "counts": {"total": 6, "passed": 3, "failed": 0, "error": 3},
+        "tasks": [],
+        "score": {"hard": 0.5, "soft": 0.5, "n": 6, "n_passed": 3},
+    }), encoding="utf-8")
+
+    result = main._failure_partial_result(cfg, run_dir, "original skill\n", "environment setup failed")
+    report = main._render_failure_report_html(
+        {
+            "skill": "device-operator",
+            "train_suite": TRAIN_LABEL,
+            "validation_suite": VERIFICATION_LABEL,
+            "error": "environment setup failed",
+            "phase_records": main.load_phase_records(run_dir),
+            "artifacts": {"result": "result.json"},
+        },
+        original_skill="original skill\n",
+        result=result,
+    )
+
+    assert result.initial_score == pytest.approx(1 / 3)
+    assert result.best_score == pytest.approx(0.5)
+    assert "<strong>Initial score:</strong> 0.333 <strong>Best score:</strong> 0.500" in report
 
 
 def test_cli_writes_aggregated_skillopt_summary_report(monkeypatch, tmp_path: Path):
@@ -420,7 +536,8 @@ def test_cli_writes_aggregated_skillopt_summary_report(monkeypatch, tmp_path: Pa
     assert manifest["linked_reports"]["step_01_train"] == "benchmark/skillopt-summary-run-step_01_train/report.html"
 
     report = (run_dir / "report.html").read_text(encoding="utf-8")
-    assert "Scores" in report
+    assert report.count("<h2>SkillOpt Phases</h2>") == 1
+    assert "<h2>Scores</h2>" not in report
     assert "baseline_selection" in report
     assert "step_01_train" in report
     assert "0.25" in report
@@ -511,12 +628,12 @@ def test_web_report_shows_raw_mobilegym_and_skillopt_scores_for_no_edit_run(tmp_
         "pass_rate": 11 / 12,
     }
     report = (run_dir / "report.html").read_text(encoding="utf-8")
-    assert "MobileGym result" in report
-    assert "Optimization score" in report
+    assert "MobileGym result" not in report
+    assert "Optimization score" not in report
     assert "11/12" in report
     assert "10/12" in report
-    assert "Task pass rate" in report
-    assert "Rubric pass rate" in report
+    assert "Task pass rate" not in report
+    assert "Rubric pass rate" not in report
     assert "Hard" not in report
     assert "Soft" not in report
     assert "Step 1" in report
