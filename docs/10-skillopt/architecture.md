@@ -36,6 +36,7 @@ Relevant files:
 | `skillopt/orchestrator.py` | Main optimization loop and gate decisions. |
 | `skillopt/benchmark_backend.py` | Bridge-backed rollout through `benchmark/runner`. |
 | `skillopt/backends.py` | Direct existing-daemon rollout backend. |
+| `skillopt/phase_artifacts.py` | SkillOpt-owned phase records for progress, reports, and failure reconstruction. |
 | `skillopt/score.py` | Converts benchmark task results into hard and soft SkillOpt scores. |
 | `skillopt/reflect.py` | Builds optimizer prompts from rollout failures. |
 | `skillopt/aggregate.py` | Deduplicates and ranks proposed edits. |
@@ -56,6 +57,9 @@ For a run with explicit train and validation suites, SkillOpt executes:
 
 If no candidate beats the validation gate, the current best skill remains the
 last accepted version.
+
+`--budget` is the maximum number of optimization iterations. `--edit-budget` is
+the maximum number of skill edits proposed in each iteration.
 
 ## Backends
 
@@ -88,6 +92,10 @@ The child run uses:
 - benchmark pre/post screenshots, trace extraction, judge, and HTML report
 
 This is the preferred path for MobileGym and reproducible validation.
+
+Child benchmark reports are raw execution evidence. SkillOpt stores their links
+on phase records and renders them as `report` drilldowns in the top-level
+SkillOpt report.
 
 ## Suites And Targets
 
@@ -171,6 +179,10 @@ CLI output defaults to `skillopt/runs/<run_id>/`. WebUI output defaults to
 |-- best_skill.md              # best accepted skill text
 |-- diff.patch                 # original skill -> best skill
 |-- skillopt.log               # WebUI job log when run from WebUI
+|-- phases/                    # SkillOpt phase/task status records
+|   |-- baseline_selection.json
+|   |-- step_01_train.json
+|   `-- step_01_selection.json
 |-- step_01/
 |   |-- candidate.md           # candidate skill text for this step
 |   |-- patch.json             # aggregated edits
@@ -183,6 +195,17 @@ CLI output defaults to `skillopt/runs/<run_id>/`. WebUI output defaults to
 
 Use the top-level SkillOpt report to decide which skill won. Use linked child
 benchmark reports to debug task-level failures.
+
+Each `phases/*.json` file uses the `skillopt.phase.v1` schema and records the
+phase name, kind, suite, status, task list, counts, score when available, error
+when failed, and a benchmark report link when the backend produced one. The
+WebUI reads these files to show current phase progress and best score without
+depending on benchmark WebUI state.
+
+If the optimizer exits with an exception after artifact setup, SkillOpt still
+writes `manifest.json`, `result.json`, and `report.html`. Failed reports show
+the error, phase table, artifacts that were produced, and the diff or best skill
+when those files already exist.
 
 ## Environment Variables
 

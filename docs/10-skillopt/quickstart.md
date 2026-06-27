@@ -42,10 +42,14 @@ Recommended WebUI flow:
 1. Select a target from the `Targets` table.
 2. Save an agent config with a non-empty model API key.
 3. Start or select a MobileGym environment.
-4. Set judge model, optimizer budget, edit budget, and `min_delta`.
-5. Run the job and open `report.html` when complete.
+4. Set judge model, max iterations, max edits per iteration, and `min_delta`.
+5. Run the job and open the `Report` link when it appears.
 
-The WebUI stores jobs under `skillopt/runs/webui/<job_id>/`.
+The WebUI stores jobs under `skillopt/runs/webui/<job_id>/`. While a job runs,
+the progress area follows SkillOpt's own phase records, including the active
+phase, task counts, failed task IDs, best score, and whether the top-level
+report is available. Historical and failed jobs only show a report link when
+`report.html` exists.
 
 ## MobileGym CLI Run
 
@@ -74,7 +78,9 @@ uv run --project skillopt python -m skillopt \
 ```
 
 MobileGym runs use isolated benchmark daemon workers and route each task through
-the environment bridge with a stable `benchmark-task-id`.
+the environment bridge with a stable `benchmark-task-id`. The CLI logs
+`Max iterations`, `Max edits / iteration`, and `min_delta` before launching the
+optimization loop.
 
 ## Existing Device Daemon Run
 
@@ -141,6 +147,11 @@ To inspect artifacts:
 open skillopt/runs/<run_id>/report.html
 ```
 
+The top-level SkillOpt report is separate from child benchmark reports. Use the
+SkillOpt report to see the optimization timeline, accepted/rejected candidates,
+best score, failure reason, artifacts, and diff. Use each phase's `report`
+drilldown for task-level benchmark evidence.
+
 ## Common Options
 
 | Option | Meaning |
@@ -149,8 +160,8 @@ open skillopt/runs/<run_id>/report.html
 | `--suite` | One suite to split 70/30 into train and selection tasks. |
 | `--train-suite` | Explicit train suite label. |
 | `--validation-suite` | Explicit held-out validation suite label. |
-| `--budget` | Maximum optimization steps. |
-| `--edit-budget` | Maximum edits proposed per step. |
+| `--budget` | Maximum optimization iterations. |
+| `--edit-budget` | Maximum skill edits proposed per optimization iteration. |
 | `--min-delta` | Required hard-score improvement to accept a candidate. |
 | `--optimizer-model` | OpenRouter model for reflection and patch generation. |
 | `--judge-model` | OpenRouter model for benchmark rubric judge. |

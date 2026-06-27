@@ -33,8 +33,8 @@ uv run --project skillopt python -m skillopt webui --host 127.0.0.1 --port 8766
 Open `http://127.0.0.1:8766`.
 
 The SkillOpt WebUI can discover targets from `skillopt/suites`, manage
-MobileGym environments, run optimization jobs, show phase logs, and open the
-generated SkillOpt report.
+MobileGym environments, run optimization jobs, show the current phase and task
+progress, surface the best score, and open the generated SkillOpt report.
 
 ### CLI
 
@@ -71,6 +71,10 @@ skillopt/runs/<run_id>/
 |-- report.html
 |-- best_skill.md
 |-- diff.patch
+|-- phases/
+|   |-- baseline_selection.json
+|   |-- step_01_train.json
+|   `-- step_01_selection.json
 |-- step_01/
 |   |-- candidate.md
 |   |-- patch.json
@@ -80,9 +84,16 @@ skillopt/runs/<run_id>/
 `-- benchmark/<run_id>-<phase>/
 ```
 
-`best_skill.md` is the accepted best skill text. `diff.patch` shows how it
-differs from the original skill. Child benchmark reports explain each rollout
-phase in task-level detail.
+`report.html` is the top-level SkillOpt report and is written for both
+successful and failed CLI/WebUI runs when artifacts are enabled. It answers
+which optimizer phase ran, why the run stopped, whether the skill improved, and
+which candidate was accepted. `best_skill.md` is the accepted best skill text
+when available, and `diff.patch` shows how it differs from the original skill.
+
+`phases/*.json` are SkillOpt-owned phase records used by the WebUI and report
+to show queued, running, passed, failed, skipped, judge-error, and timeout task
+counts. Child benchmark reports remain available through `report` drilldown
+links for task-level evidence.
 
 ## Boundary With Benchmark
 
@@ -90,7 +101,8 @@ phase in task-level detail.
 - SkillOpt WebUI is a separate process and defaults to port `8766`.
 - SkillOpt-owned suites live under `skillopt/suites`.
 - Bridge-backed SkillOpt runs use benchmark runner child runs.
-- Benchmark reports are evidence; SkillOpt reports decide which skill text won.
+- Benchmark reports are evidence drilldowns; SkillOpt reports decide which skill
+  text won and where the optimizer stopped.
 - `no_judge` runs can be useful for traces, but they are not reliable validation.
 
 ## Current Targets
