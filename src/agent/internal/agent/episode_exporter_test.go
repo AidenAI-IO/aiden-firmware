@@ -595,6 +595,9 @@ func TestBuildLangfuseBatchUploadsCapturedPromptMedia(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildLangfuseBatch() error = %v", err)
 	}
+	if len(promptCalls[0].Media) != 0 {
+		t.Fatalf("prompt media retained after upload: %d item(s)", len(promptCalls[0].Media))
+	}
 	if mediaRequest.ObservationID != callID {
 		t.Fatalf("media observationId = %q, want %q", mediaRequest.ObservationID, callID)
 	}
@@ -633,6 +636,8 @@ func TestBuildLangfuseBatchOmitsPromptImagesWhenScreenshotUploadDisabled(t *test
 	start := time.Date(2026, 6, 25, 10, 0, 0, 0, time.UTC)
 	image := []byte("prompt-jpeg-bytes")
 	promptMedia := newTelemetryPromptMedia("image/jpeg", image)
+	pdf := []byte("%PDF-1.7 prompt bytes")
+	pdfMedia := newTelemetryPromptMedia("application/pdf", pdf)
 	promptCalls := []telemetryPromptCall{{
 		ID:        "11111111-1111-1111-1111-111111111111",
 		Role:      string(RolePlanner),
@@ -645,9 +650,14 @@ func TestBuildLangfuseBatchOmitsPromptImagesWhenScreenshotUploadDisabled(t *test
 				"mime_type": "image/jpeg",
 				"size":      len(image),
 				"data":      promptMedia.Placeholder,
+			}, {
+				"type":      "binary",
+				"mime_type": "application/pdf",
+				"size":      len(pdf),
+				"data":      pdfMedia.Placeholder,
 			}},
 		}},
-		Media: []telemetryPromptMedia{promptMedia},
+		Media: []telemetryPromptMedia{promptMedia, pdfMedia},
 	}}
 	uploadScreenshots := false
 	exporter := NewEpisodeExporter(TelemetryConfig{
@@ -669,6 +679,9 @@ func TestBuildLangfuseBatchOmitsPromptImagesWhenScreenshotUploadDisabled(t *test
 	if err != nil {
 		t.Fatalf("buildLangfuseBatch() error = %v", err)
 	}
+	if len(promptCalls[0].Media) != 0 {
+		t.Fatalf("prompt media retained when upload is disabled: %d item(s)", len(promptCalls[0].Media))
+	}
 	if mediaRequests != 0 {
 		t.Fatalf("media API requests = %d, want 0", mediaRequests)
 	}
@@ -680,8 +693,14 @@ func TestBuildLangfuseBatchOmitsPromptImagesWhenScreenshotUploadDisabled(t *test
 		if strings.Contains(encoded, promptMedia.Placeholder) {
 			t.Fatalf("generation body retained media placeholder: %s", encoded)
 		}
+		if strings.Contains(encoded, pdfMedia.Placeholder) {
+			t.Fatalf("generation body retained non-image media placeholder: %s", encoded)
+		}
 		if strings.Contains(encoded, base64.StdEncoding.EncodeToString(image)) {
 			t.Fatalf("generation body contains inline base64: %s", encoded)
+		}
+		if strings.Contains(encoded, base64.StdEncoding.EncodeToString(pdf)) {
+			t.Fatalf("generation body contains inline non-image base64: %s", encoded)
 		}
 		if !strings.Contains(encoded, "[media omitted: upload disabled]") {
 			t.Fatalf("generation body missing disabled placeholder: %s", encoded)

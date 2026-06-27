@@ -607,11 +607,12 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 		prompts = promptCalls[0]
 	}
 	if len(prompts) > 0 {
-		for index, call := range prompts {
-			if call.ID == "" {
-				call.ID = uuid.NewString()
+		for index := range prompts {
+			if prompts[index].ID == "" {
+				prompts[index].ID = uuid.NewString()
 			}
-			call = e.uploadPromptMedia(ctx, traceID, call)
+			prompts[index] = e.uploadPromptMedia(ctx, traceID, prompts[index])
+			call := prompts[index]
 			parentID := promptParentObservationID(call, iterations, phaseWindows)
 			usageEvent, err := newLangfuseEvent("generation-create", call.StartedAt, e.promptGenerationBody(episode, traceID, call, index, parentID))
 			if err != nil {
@@ -654,8 +655,7 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 
 func (e *EpisodeExporter) uploadPromptMedia(ctx context.Context, traceID string, call telemetryPromptCall) telemetryPromptCall {
 	for _, media := range call.Media {
-		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(media.ContentType)), "image/") &&
-			!e.cfg.UploadScreenshotsOrDefault() {
+		if !e.cfg.UploadScreenshotsOrDefault() {
 			replaceTelemetryMediaPlaceholder(call.Input, media.Placeholder, "[media omitted: upload disabled]")
 			continue
 		}

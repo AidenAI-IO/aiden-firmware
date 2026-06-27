@@ -243,7 +243,12 @@ func runAfterToolCallHook(ctx context.Context, execution ToolCallExecution, call
 	if execution.VisualArtifacts != nil && call.Spec.Tool != nil {
 		if visual, ok := call.Spec.Tool.(visualObservationTool); ok && visual.ReturnsVisualObservation() {
 			output, externalized, err := execution.VisualArtifacts.ExternalizeObservation(result.Output)
-			if err == nil && externalized {
+			if err != nil {
+				result.IsError = true
+				result.Error = err
+				result.Output = "failed to store visual artifact: " + err.Error()
+				result.Summary = result.Output
+			} else if externalized {
 				result.Output = output
 			}
 		}

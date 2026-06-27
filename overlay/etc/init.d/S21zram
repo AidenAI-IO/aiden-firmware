@@ -134,8 +134,7 @@ case "${1:-}" in
         stop
         ;;
     restart|reload)
-        stop
-        start
+        stop && start
         ;;
     status)
         status

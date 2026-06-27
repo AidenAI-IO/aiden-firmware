@@ -52,6 +52,48 @@ func TestExecuteToolCallExternalizesVisualObservation(t *testing.T) {
 	}
 }
 
+func TestExecuteToolCallFailsWhenVisualObservationCannotBeExternalized(t *testing.T) {
+	imageBytes := []byte("visual-artifact-bytes")
+	encoded := base64.StdEncoding.EncodeToString(imageBytes)
+	output := `{"width":320,"height":240,"format":"jpeg","size":21,"data":"` + encoded + `"}`
+	tool := &stubTool{name: "screenshot", output: output, visual: true}
+	rootFile := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(rootFile, []byte("file"), 0o644); err != nil {
+		t.Fatalf("write root file: %v", err)
+	}
+	store := &visualArtifactStore{rootDir: rootFile}
+	callback := &toolExecutionCallbackRecorder{}
+
+	result := executeToolCall(context.Background(), ToolCallExecution{
+		Specs:           NewToolSpecs([]langtools.Tool{tool}),
+		Action:          schema.AgentAction{Tool: "screenshot", ToolInput: "{}"},
+		Callback:        callback,
+		VisualArtifacts: store,
+	})
+
+	if !result.Result.IsError {
+		t.Fatal("result.IsError = false, want true")
+	}
+	if result.Result.Error == nil {
+		t.Fatal("result.Error = nil, want visual artifact error")
+	}
+	if !strings.Contains(result.Result.Output, "failed to store visual artifact:") {
+		t.Fatalf("result output = %q, want visual artifact failure", result.Result.Output)
+	}
+	if strings.Contains(result.Step.Observation, encoded) || strings.Contains(result.Result.Output, encoded) {
+		t.Fatalf("inline image data retained after externalization failure: step=%q output=%q", result.Step.Observation, result.Result.Output)
+	}
+	if result.Result.Summary != result.Result.Output {
+		t.Fatalf("summary = %q, want output %q", result.Result.Summary, result.Result.Output)
+	}
+	if len(callback.results) != 1 {
+		t.Fatalf("callback results = %d, want 1", len(callback.results))
+	}
+	if strings.Contains(callback.results[0].Output, encoded) || !callback.results[0].IsError {
+		t.Fatalf("callback result did not surface sanitized failure: %#v", callback.results[0])
+	}
+}
+
 func TestFunctionAgentRehydratesScreenshotReference(t *testing.T) {
 	imageBytes := []byte("referenced-image")
 	store := &visualArtifactStore{rootDir: t.TempDir()}
