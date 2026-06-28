@@ -217,12 +217,9 @@ def test_start_agent_daemon_uses_docker_assigned_port_when_auto(tmp_path: Path, 
     assert captured["job"].agent_url == "http://127.0.0.1:18081"
 
 
-def test_agent_daemon_compose_passes_model_key_env_vars():
+def test_agent_daemon_compose_passes_benchmark_token_file_env_var():
     compose = (webui.BENCHMARK_DOCKER_DIR / "docker-compose.agent-daemon.yml").read_text(encoding="utf-8")
 
-    assert "OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}" in compose
-    assert "MODEL_API_KEY: ${MODEL_API_KEY:-}" in compose
-    assert "AIDEN_MODEL_API_KEY: ${AIDEN_MODEL_API_KEY:-}" in compose
     assert "AIDEN_BENCHMARK_TOKEN_FILE: ${AIDEN_BENCHMARK_TOKEN_FILE:-}" in compose
 
 
