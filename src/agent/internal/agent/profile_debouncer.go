@@ -18,6 +18,7 @@ type ProfileDebouncer struct {
 	pending     bool
 	lastRebuild time.Time
 	timer       *time.Timer
+	active      int
 
 	rebuildCount atomic.Int64
 	skipCount    atomic.Int64
@@ -33,7 +34,6 @@ func NewProfileDebouncer(rebuild ProfileRebuilder, interval time.Duration, logge
 
 func (d *ProfileDebouncer) RequestRebuild() {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 
 	since := time.Since(d.lastRebuild)
 	if since < d.interval && !d.lastRebuild.IsZero() {
@@ -43,15 +43,18 @@ func (d *ProfileDebouncer) RequestRebuild() {
 			d.logger.Info("[profile-debouncer] skipped rebuild, last was %v ago (pending=true)", since.Round(time.Millisecond))
 		}
 		d.ensureTimerLocked()
+		d.mu.Unlock()
 		return
 	}
 
 	d.pending = false
 	d.lastRebuild = time.Now()
+	d.active++
 	if d.logger != nil {
 		d.logger.Info("[profile-debouncer] triggering async rebuild")
 	}
-	go d.doRebuild()
+	d.mu.Unlock()
+	go d.doTrackedRebuild()
 }
 
 func (d *ProfileDebouncer) ensureTimerLocked() {
@@ -69,6 +72,7 @@ func (d *ProfileDebouncer) ensureTimerLocked() {
 		d.pending = false
 		if shouldRebuild {
 			d.lastRebuild = time.Now()
+			d.active++
 		}
 		d.mu.Unlock()
 
@@ -76,9 +80,22 @@ func (d *ProfileDebouncer) ensureTimerLocked() {
 			if d.logger != nil {
 				d.logger.Info("[profile-debouncer] deferred rebuild firing")
 			}
-			d.doRebuild()
+			d.doTrackedRebuild()
 		}
 	})
+}
+
+func (d *ProfileDebouncer) doTrackedRebuild() {
+	defer d.finishTrackedRebuild()
+	d.doRebuild()
+}
+
+func (d *ProfileDebouncer) finishTrackedRebuild() {
+	d.mu.Lock()
+	if d.active > 0 {
+		d.active--
+	}
+	d.mu.Unlock()
 }
 
 func (d *ProfileDebouncer) doRebuild() {
@@ -110,7 +127,7 @@ func (d *ProfileDebouncer) Flush(ctx context.Context) error {
 	d.mu.Unlock()
 
 	if !shouldRebuild {
-		return nil
+		return d.WaitIdle(ctx)
 	}
 	if d.logger != nil {
 		d.logger.Info("[profile-debouncer] flush: running pending rebuild")
@@ -119,7 +136,27 @@ func (d *ProfileDebouncer) Flush(ctx context.Context) error {
 		return err
 	}
 	d.rebuildCount.Add(1)
-	return nil
+	return d.WaitIdle(ctx)
+}
+
+func (d *ProfileDebouncer) WaitIdle(ctx context.Context) error {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		d.mu.Lock()
+		active := d.active
+		d.mu.Unlock()
+		if active == 0 {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func (d *ProfileDebouncer) RebuildCount() int64 {

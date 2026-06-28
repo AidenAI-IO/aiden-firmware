@@ -482,8 +482,6 @@ def _check_endpoint_health(url: str, timeout: float = 2.0) -> bool:
             return 200 <= response.status < 300
     except Exception:
         return False
-
-
 def _docker_inspect_created(container_name: str) -> str:
     """Return the container's RFC3339Nano creation timestamp, or '' on error."""
     try:

@@ -1,5 +1,6 @@
 import time
 import json
+import pytest
 
 from runner.agent_client import ToolInvokeResult
 from runner.analysis import AnalysisResult
@@ -110,8 +111,9 @@ def test_run_manifest_records_agent_model(monkeypatch, tmp_path):
     )
 
     class FakeClient:
-        def __init__(self, base_url):
+        def __init__(self, base_url, benchmark_token=""):
             self.base_url = base_url
+            self.benchmark_token = benchmark_token
 
         def health(self):
             return True
@@ -150,8 +152,9 @@ def test_run_triggers_llm_analysis_when_enabled(monkeypatch, tmp_path):
     calls = []
 
     class FakeClient:
-        def __init__(self, base_url):
+        def __init__(self, base_url, benchmark_token=""):
             self.base_url = base_url
+            self.benchmark_token = benchmark_token
 
         def health(self):
             return True
@@ -255,6 +258,19 @@ def test_run_keeps_exit_code_when_analysis_fails(monkeypatch, tmp_path):
     assert rc == 0
 
 
+def test_read_optional_token_fails_fast_for_missing_file(tmp_path):
+    with pytest.raises(ValueError, match="unable to read benchmark token file"):
+        main._read_optional_token(tmp_path / "missing-token")
+
+
+def test_read_optional_token_fails_fast_for_empty_file(tmp_path):
+    token_file = tmp_path / "control_token"
+    token_file.write_text("  \n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"benchmark token file .* is empty"):
+        main._read_optional_token(token_file)
+
+
 def test_auto_agent_setup_injects_environment_url_as_bridge_endpoint(monkeypatch, tmp_path):
     suite_path = tmp_path / "suite.json"
     suite_path.write_text(
@@ -276,8 +292,9 @@ def test_auto_agent_setup_injects_environment_url_as_bridge_endpoint(monkeypatch
     )
 
     class FakeClient:
-        def __init__(self, base_url):
+        def __init__(self, base_url, benchmark_token=""):
             self.base_url = base_url
+            self.benchmark_token = benchmark_token
 
         def close(self):
             pass
@@ -290,7 +307,11 @@ def test_auto_agent_setup_injects_environment_url_as_bridge_endpoint(monkeypatch
     monkeypatch.setattr(main, "call_environment_release", lambda *args, **kwargs: None)
     monkeypatch.setattr(webui, "ensure_daemon_image", lambda *args, **kwargs: None)
     monkeypatch.setattr(webui, "read_environment_bridge_concurrency", lambda *args, **kwargs: 1)
-    monkeypatch.setattr(webui, "prepare_run_config", lambda *args, **kwargs: None)
+    def fake_prepare_run_config(base_config_dir, config_dir, **kwargs):
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "control_token").write_text("test-token", encoding="utf-8")
+
+    monkeypatch.setattr(webui, "prepare_run_config", fake_prepare_run_config)
     monkeypatch.setattr(webui, "reserve_free_port", lambda: 18081)
     monkeypatch.setattr(webui, "start_daemon_logs", lambda *args, **kwargs: None)
     monkeypatch.setattr(webui, "stop_daemon_compose", lambda *args, **kwargs: None)

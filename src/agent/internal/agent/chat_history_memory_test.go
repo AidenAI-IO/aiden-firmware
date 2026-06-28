@@ -307,6 +307,7 @@ func TestRuntimeRunKeepsCurrentRequestOutOfCompressedHistoryBlock(t *testing.T) 
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
 	)
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	currentRequest := "这是新的用户请求"
 	if _, err := runtime.Run(ctx, RunRequest{Input: currentRequest}); err != nil {

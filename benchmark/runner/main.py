@@ -61,6 +61,7 @@ def cli(argv: list[str] | None = None) -> int:
     p_run.add_argument("--no-build-daemon-image", action="store_true")
     p_run.add_argument("--base-config-dir", default=str(REPO_ROOT / "benchmark" / "config"))
     p_run.add_argument("--agent-config", default="")
+    p_run.add_argument("--benchmark-token-file", default="")
     p_run.add_argument("--judge-model", default="claude-sonnet-4-6")
     p_run.add_argument("--agent-model", default=os.environ.get("AIDEN_MODEL") or os.environ.get("MODEL_NAME") or os.environ.get("OPENAI_MODEL") or "")
     p_run.add_argument("--no-judge", action="store_true")
@@ -347,7 +348,7 @@ def _cmd_run_auto_agent_setup(
             daemon_log=str(daemon_log),
         )
         log_proc = None
-        client = AgentClient(base_url=agent_url)
+        client = _new_agent_client(agent_url, _read_optional_token(config_dir / "control_token"))
         art_dir = run_dir / "tasks" / task.id / (f"attempt_{attempt}" if repeats > 1 else "")
         try:
             print(f"[{progress}] STARTING   {task.id} attempt={attempt}", flush=True)
@@ -484,7 +485,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if args.repeats is not None and args.repeats <= 0:
         print(f"Error: --repeats must be positive, got {args.repeats}", file=sys.stderr)
         return 2
-    client = AgentClient(base_url=args.agent_url)
+    client = _new_agent_client(args.agent_url, _read_optional_token(args.benchmark_token_file))
     if not client.health():
         print(f"agent at {args.agent_url} is not reachable", file=sys.stderr)
         client.close()
@@ -660,6 +661,25 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print("Warning: failed to upload report to board")
     upload_client.close()
     return 0 if manifest["totals"]["passed"] == manifest["totals"]["tasks"] else 1
+
+
+def _read_optional_token(path: str | Path | None) -> str:
+    raw = str(path or "").strip()
+    if not raw:
+        return ""
+    try:
+        token = Path(raw).read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise ValueError(f"unable to read benchmark token file {raw!r}: {exc}") from exc
+    if not token:
+        raise ValueError(f"benchmark token file {raw!r} is empty")
+    return token
+
+
+def _new_agent_client(base_url: str, benchmark_token: str = "") -> AgentClient:
+    if benchmark_token:
+        return AgentClient(base_url=base_url, benchmark_token=benchmark_token)
+    return AgentClient(base_url=base_url)
 
 
 if __name__ == "__main__":

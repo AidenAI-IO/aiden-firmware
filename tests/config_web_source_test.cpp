@@ -1045,12 +1045,12 @@ TEST_CASE("config web shows saved wifi modal and connects automatically") {
           std::string::npos);
     CHECK(html.find("if(focusPassword!==false){byId('wifiPasswordInput').focus();}") !=
           std::string::npos);
-    CHECK(html.find("btn.disabled=true;btn.textContent='连接中';") != std::string::npos);
-    CHECK(html.find("btn.disabled=false;btn.textContent='连接';") != std::string::npos);
+    CHECK(html.find("btn.disabled=true;btn.textContent='Connecting';") != std::string::npos);
+    CHECK(html.find("btn.disabled=false;btn.textContent='Connect';") != std::string::npos);
     CHECK(html.find("const connected=!!payload.ok&&connectedWifiSsid()===ssid;") !=
           std::string::npos);
     CHECK(html.find("if(connected){closeWifiModal();") != std::string::npos);
-    CHECK(html.find("连接 “'+ssid+'” 失败，请检查密码后重试。") != std::string::npos);
+    CHECK(html.find("Failed to connect to \\\"'+ssid+'\\\", please check password and try again.") != std::string::npos);
     CHECK(html.find("renderWifiList();closeWifiModal();") == std::string::npos);
 }
 
@@ -1065,7 +1065,7 @@ TEST_CASE("config web does not show a star for disconnected saved wifi") {
 
     CHECK(html.find("state='✓';") != std::string::npos);
     CHECK(html.find("state='★';") == std::string::npos);
-    CHECK(html.find("forget.textContent='忘记';") != std::string::npos);
+    CHECK(html.find("forget.textContent='Forget';") != std::string::npos);
 }
 
 TEST_CASE("config web hides successful forget details but reports runtime apply failure") {
@@ -1086,13 +1086,13 @@ TEST_CASE("config web hides successful forget details but reports runtime apply 
     const std::string forget_source =
         html.substr(forget_start, forget_end - forget_start);
     CHECK(forget_source.find("if(payload.ok!==false)") != std::string::npos);
-    CHECK(forget_source.find("setBanner('已忘记 “'+ssid+'”。',false);setDetails('');") !=
+    CHECK(forget_source.find("setBanner('Forgot \\\"'+ssid+'\\\".',false);setDetails('');") !=
           std::string::npos);
-    CHECK(forget_source.find("已忘记 “'+ssid+'”，但运行时应用失败。") !=
+    CHECK(forget_source.find("Forgot \\\"'+ssid+'\\\", but runtime apply failed.") !=
           std::string::npos);
     CHECK(forget_source.find("payload.wifi_apply&&payload.wifi_apply.output") !=
           std::string::npos);
-    CHECK(forget_source.find("网络已从保存列表删除，但运行时配置更新失败。") !=
+    CHECK(forget_source.find("Network removed from saved list, but runtime config update failed.") !=
           std::string::npos);
 }
 

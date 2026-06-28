@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from runner import services
+from runner import services, webui
 
 
 def test_start_mobilegym_env_prints_environment_urls(tmp_path: Path, monkeypatch, capsys):
@@ -215,6 +215,22 @@ def test_start_agent_daemon_uses_docker_assigned_port_when_auto(tmp_path: Path, 
     assert payload["agent_url"] == "http://127.0.0.1:18081"
     assert captured["kwargs"]["host_port"] == 0
     assert captured["job"].agent_url == "http://127.0.0.1:18081"
+
+
+def test_agent_daemon_compose_passes_benchmark_token_file_env_var():
+    compose = (webui.BENCHMARK_DOCKER_DIR / "docker-compose.agent-daemon.yml").read_text(encoding="utf-8")
+
+    assert "AIDEN_BENCHMARK_TOKEN_FILE: ${AIDEN_BENCHMARK_TOKEN_FILE:-}" in compose
+
+
+def test_daemon_compose_env_enables_benchmark_token_for_config_dir(tmp_path: Path):
+    env = webui.daemon_compose_env(
+        image="aiden-agent-daemon:test",
+        host_port=18081,
+        config_dir=tmp_path / "config",
+    )
+
+    assert env["AIDEN_BENCHMARK_TOKEN_FILE"] == "/config/control_token"
 
 
 def _ns(**kwargs):
