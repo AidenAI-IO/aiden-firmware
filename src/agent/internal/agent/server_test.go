@@ -1490,10 +1490,10 @@ func TestServerHandleChatCancelStopsCompletedAsyncRequestTTSPlayback(t *testing.
 	audioOps := &recordedAudioOps{}
 	provider := newInterruptibleAudioTTSProvider("server-provider", 48000, true)
 	server := &Server{
-		activeRuns:          make(map[string]context.CancelFunc),
+		activeRuns:         make(map[string]context.CancelFunc),
 		terminatedRequests: make(map[string]struct{}),
-		ttsManager:          ttsmodule.NewProviderManager(provider, nil),
-		audioClient:         NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, audioOps)),
+		ttsManager:         ttsmodule.NewProviderManager(provider, nil),
+		audioClient:        NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, audioOps)),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1551,10 +1551,10 @@ func TestSpeakTextForRequestRefusesTerminatedRequest(t *testing.T) {
 	audioOps := &recordedAudioOps{}
 	provider := newInterruptibleAudioTTSProvider("server-provider", 48000, true)
 	server := &Server{
-		activeRuns:          make(map[string]context.CancelFunc),
+		activeRuns:         make(map[string]context.CancelFunc),
 		terminatedRequests: make(map[string]struct{}),
-		ttsManager:          ttsmodule.NewProviderManager(provider, nil),
-		audioClient:         NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, audioOps)),
+		ttsManager:         ttsmodule.NewProviderManager(provider, nil),
+		audioClient:        NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, audioOps)),
 	}
 	server.markRequestTerminated(requestID)
 
@@ -3086,6 +3086,7 @@ func newBenchmarkSeedMemoryServer(t *testing.T) (*Server, string) {
 		Config{
 			ConfigDir:                configDir,
 			Model:                    ModelConfig{Provider: "fake"},
+			Benchmark:                BenchmarkConfig{Token: "test-benchmark-token"},
 			Instruction:              "Answer directly.",
 			VoiceStreamingTTSEnabled: &streamingDisabled,
 			VoiceToolCallSpeech:      &streamingDisabled,
@@ -3103,6 +3104,7 @@ func TestHandleBenchmarkSeedMemorySucceeds(t *testing.T) {
 	body := `{"id":"personamem_test_seed_1","type":"preference","title":"Test seed","content":"Seeded fixture content.","tags":["t1"],"priority":80}`
 	req := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_memory", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-benchmark-token")
 	rec := httptest.NewRecorder()
 
 	server.handleBenchmarkSeedMemory(rec, req)
@@ -3131,12 +3133,26 @@ func TestHandleBenchmarkSeedMemorySucceeds(t *testing.T) {
 	}
 }
 
+func TestHandleBenchmarkSeedMemoryRequiresBenchmarkToken(t *testing.T) {
+	server, _ := newBenchmarkSeedMemoryServer(t)
+	body := `{"id":"personamem_test_seed_1","content":"Seeded fixture content."}`
+	req := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_memory", bytes.NewBufferString(body))
+	rec := httptest.NewRecorder()
+
+	server.handleBenchmarkSeedMemory(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHandleBenchmarkSeedMemoryOverwritesSameID(t *testing.T) {
 	server, configDir := newBenchmarkSeedMemoryServer(t)
 	mkReq := func(content string) *http.Request {
 		body := fmt.Sprintf(`{"id":"personamem_overwrite_1","type":"fact","content":%q}`, content)
 		req := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_memory", bytes.NewBufferString(body))
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer test-benchmark-token")
 		return req
 	}
 
@@ -3180,6 +3196,7 @@ func TestHandleBenchmarkSeedMemoryRejectsMissingFields(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_memory", bytes.NewBufferString(tc.body))
+			req.Header.Set("Authorization", "Bearer test-benchmark-token")
 			rec := httptest.NewRecorder()
 			server.handleBenchmarkSeedMemory(rec, req)
 			if rec.Code != http.StatusBadRequest {
@@ -3192,6 +3209,7 @@ func TestHandleBenchmarkSeedMemoryRejectsMissingFields(t *testing.T) {
 func TestHandleBenchmarkSeedMemoryRejectsNonPost(t *testing.T) {
 	server, _ := newBenchmarkSeedMemoryServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/benchmark/seed_memory", nil)
+	req.Header.Set("Authorization", "Bearer test-benchmark-token")
 	rec := httptest.NewRecorder()
 	server.handleBenchmarkSeedMemory(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
@@ -3204,6 +3222,7 @@ func TestHandleBenchmarkSeedMemoryReturns503WhenMemoryUnconfigured(t *testing.T)
 	runtime := NewRuntimeWithDeps(
 		Config{
 			Model:                    ModelConfig{Provider: "fake"},
+			Benchmark:                BenchmarkConfig{Token: "test-benchmark-token"},
 			Instruction:              "Answer directly.",
 			VoiceStreamingTTSEnabled: &streamingDisabled,
 			VoiceToolCallSpeech:      &streamingDisabled,
@@ -3216,6 +3235,7 @@ func TestHandleBenchmarkSeedMemoryReturns503WhenMemoryUnconfigured(t *testing.T)
 	server := NewServer(runtime, ":0")
 	body := `{"id":"x","content":"y"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_memory", bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer test-benchmark-token")
 	rec := httptest.NewRecorder()
 	server.handleBenchmarkSeedMemory(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {

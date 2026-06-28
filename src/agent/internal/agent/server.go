@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -401,7 +402,9 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/history", s.handleHistory)
 	mux.HandleFunc("/api/episodes/", s.handleEpisodes)
 	mux.HandleFunc("/api/setup", s.handleSetup)
-	mux.HandleFunc("/api/benchmark/seed_memory", s.handleBenchmarkSeedMemory)
+	if s.benchmarkToken() != "" {
+		mux.HandleFunc("/api/benchmark/seed_memory", s.handleBenchmarkSeedMemory)
+	}
 	mux.HandleFunc("/api/clear", s.handleClear)
 	mux.HandleFunc("/api/clear-all", s.handleClearAll)
 	mux.HandleFunc("/api/skills/reload", s.handleSkillsReload)
@@ -2059,6 +2062,10 @@ type benchmarkSeedMemoryRequest struct {
 }
 
 func (s *Server) handleBenchmarkSeedMemory(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeBenchmarkRequest(r) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -2118,6 +2125,31 @@ func (s *Server) handleBenchmarkSeedMemory(w http.ResponseWriter, r *http.Reques
 		"status": "seeded",
 		"id":     id,
 	})
+}
+
+func (s *Server) benchmarkToken() string {
+	if s == nil || s.runtime == nil {
+		return ""
+	}
+	return strings.TrimSpace(s.runtime.config.Benchmark.Token)
+}
+
+func (s *Server) authorizeBenchmarkRequest(r *http.Request) bool {
+	expected := s.benchmarkToken()
+	if expected == "" {
+		return false
+	}
+	supplied := strings.TrimSpace(r.Header.Get("X-Aiden-Benchmark-Token"))
+	if supplied == "" {
+		auth := strings.TrimSpace(r.Header.Get("Authorization"))
+		if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
+			supplied = strings.TrimSpace(auth[len("Bearer "):])
+		}
+	}
+	if supplied == "" || len(supplied) != len(expected) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(supplied), []byte(expected)) == 1
 }
 
 func (s *Server) handleScreen(w http.ResponseWriter, r *http.Request) {

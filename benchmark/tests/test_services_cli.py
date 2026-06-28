@@ -223,6 +223,17 @@ def test_agent_daemon_compose_passes_model_key_env_vars():
     assert "OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}" in compose
     assert "MODEL_API_KEY: ${MODEL_API_KEY:-}" in compose
     assert "AIDEN_MODEL_API_KEY: ${AIDEN_MODEL_API_KEY:-}" in compose
+    assert "AIDEN_BENCHMARK_TOKEN_FILE: ${AIDEN_BENCHMARK_TOKEN_FILE:-}" in compose
+
+
+def test_daemon_compose_env_enables_benchmark_token_for_config_dir(tmp_path: Path):
+    env = webui.daemon_compose_env(
+        image="aiden-agent-daemon:test",
+        host_port=18081,
+        config_dir=tmp_path / "config",
+    )
+
+    assert env["AIDEN_BENCHMARK_TOKEN_FILE"] == "/config/control_token"
 
 
 def _ns(**kwargs):
