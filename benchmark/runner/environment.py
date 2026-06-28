@@ -22,6 +22,9 @@ DEFAULT_MOBILEGYM_IMAGE = "aiden-mobilegym-simulator:py311"
 DEFAULT_MOBILEGYM_READY_TIMEOUT_SEC = 120
 DEFAULT_MOBILEGYM_PARALLEL_ENVS = 5
 LOG_TAIL_BYTES = 96 * 1024
+# WebUI polls list_all every 5s; cache the docker-sync result briefly so multiple
+# concurrent requests within a single poll window don't each fork docker.
+DOCKER_SYNC_CACHE_TTL_SEC = 2.0
 
 
 @dc.dataclass
@@ -70,6 +73,9 @@ class EnvironmentManager:
         self._lock = threading.RLock()
         self._environments: dict[str, MobileGymEnvironment] = {}
         self._log_procs: dict[str, subprocess.Popen] = {}
+        self._last_sync_monotonic: float = 0.0
+        self._sync_in_progress = False
+        self._sync_condition = threading.Condition(self._lock)
 
         # Discover existing MobileGym containers from previous WebUI sessions
         self._discover_existing_containers()
@@ -96,40 +102,59 @@ class EnvironmentManager:
         Syncs with Docker state on each call to handle:
         - Containers removed by other WebUI processes (will be dropped from list)
         - New containers started elsewhere (will be discovered)
+
+        Sync results are cached for DOCKER_SYNC_CACHE_TTL_SEC so that concurrent
+        WebUI polls (every 5s) don't each fork docker.
         """
         self._sync_with_docker()
         with self._lock:
             return list(self._environments.values())
 
-    def _sync_with_docker(self) -> None:
+    def _sync_with_docker(self, *, force: bool = False) -> None:
         """Reconcile in-memory state with actual Docker container state."""
-        # Get current docker container state
-        current_containers = self._list_docker_containers()
-        current_names = {c["name"] for c in current_containers}
-
         with self._lock:
-            # Remove environments whose containers no longer exist
-            # Skip envs in transient states (building/starting/stopping) to avoid
-            # racing with our own start/stop operations.
-            stale_ids = []
-            for env_id, env in self._environments.items():
-                if env.container_name and env.container_name not in current_names:
-                    if env.status in ("building", "starting", "stopping"):
-                        continue  # In-flight, leave alone
-                    stale_ids.append(env_id)
-            for env_id in stale_ids:
-                self._environments.pop(env_id, None)
-                self._log_procs.pop(env_id, None)
+            if not force and (time.monotonic() - self._last_sync_monotonic) < DOCKER_SYNC_CACHE_TTL_SEC:
+                return
+            while self._sync_in_progress:
+                self._sync_condition.wait()
+                if not force and (time.monotonic() - self._last_sync_monotonic) < DOCKER_SYNC_CACHE_TTL_SEC:
+                    return
+            self._sync_in_progress = True
+        # Run the docker call outside the lock; it can block for seconds if
+        # the daemon is slow, and we don't need to serialize concurrent callers.
+        try:
+            current_containers = self._list_docker_containers()
+            current_names = {c["name"] for c in current_containers}
 
-            # Add containers that exist in Docker but not in our memory
-            known_names = {env.container_name for env in self._environments.values()}
-            for container in current_containers:
-                name = container["name"]
-                if name in known_names:
-                    continue
-                env = self._build_recovered_env(container)
-                if env is not None:
-                    self._environments[env.id] = env
+            with self._lock:
+                # Remove environments whose containers no longer exist
+                # Skip envs in transient states (building/starting/stopping) to avoid
+                # racing with our own start/stop operations.
+                stale_ids = []
+                for env_id, env in self._environments.items():
+                    if env.container_name and env.container_name not in current_names:
+                        if env.status in ("building", "starting", "stopping"):
+                            continue  # In-flight, leave alone
+                        stale_ids.append(env_id)
+                for env_id in stale_ids:
+                    self._environments.pop(env_id, None)
+                    self._log_procs.pop(env_id, None)
+
+                # Add containers that exist in Docker but not in our memory
+                known_names = {env.container_name for env in self._environments.values()}
+                for container in current_containers:
+                    name = container["name"]
+                    if name in known_names:
+                        continue
+                    env = self._build_recovered_env(container)
+                    if env is not None:
+                        self._environments[env.id] = env
+
+                self._last_sync_monotonic = time.monotonic()
+        finally:
+            with self._lock:
+                self._sync_in_progress = False
+                self._sync_condition.notify_all()
 
     def _list_docker_containers(self) -> list[dict[str, str]]:
         """List existing MobileGym Docker containers."""
@@ -187,7 +212,11 @@ class EnvironmentManager:
 
         # Health check: verify the container is actually responsive
         is_healthy = _check_endpoint_health(f"{public_endpoint}/health", timeout=2.0)
-        age_label = _format_container_age(container.get("created_at", ""))
+        # `docker ps` --format CreatedAt is locale-dependent (trailing "CST"/"PDT"
+        # etc.). Pull the RFC3339Nano created timestamp from `docker inspect`
+        # instead, which is stable across hosts and docker versions.
+        created_iso = _docker_inspect_created(container_name)
+        age_label = _format_container_age(created_iso) if created_iso else "age unknown"
 
         if is_healthy:
             status = "running"
@@ -453,44 +482,92 @@ def _check_endpoint_health(url: str, timeout: float = 2.0) -> bool:
             return 200 <= response.status < 300
     except Exception:
         return False
+def _docker_inspect_created(container_name: str) -> str:
+    """Return the container's RFC3339Nano creation timestamp, or '' on error."""
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "--format", "{{.Created}}", container_name],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
 
 
 def _format_container_age(created_at: str) -> str:
-    """Format docker created_at timestamp as a human-friendly age.
+    """Format a container creation timestamp as a human-friendly age.
 
-    Docker emits timestamps like '2026-06-25 09:07:53 +0800 CST'.
-    Returns labels like '15m', '2h', '3d'.
+    Accepts RFC3339Nano from `docker inspect` (e.g. '2026-06-25T01:07:53.123456789Z')
+    and the legacy locale-dependent `docker ps --format {{.CreatedAt}}` form
+    (e.g. '2026-06-25 09:07:53 +0800 CST') as a fallback.
+
+    Returns labels like '15m old', '2h old', '3d old', or 'age unknown'.
     """
     if not created_at:
         return "age unknown"
-    # Strip timezone suffix like "+0800 CST" - keep just the date+time and offset
-    parts = created_at.strip().rsplit(" ", 1)  # remove timezone abbrev "CST"
+    dt = _parse_docker_timestamp(created_at)
+    if dt is None:
+        return "age unknown"
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    delta = datetime.now(timezone.utc) - dt
+    total_seconds = int(delta.total_seconds())
+    if total_seconds < 0:
+        return "age unknown"
+    if total_seconds < 60:
+        return f"{total_seconds}s old"
+    minutes = total_seconds // 60
+    if minutes < 60:
+        return f"{minutes}m old"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours}h old"
+    days = hours // 24
+    return f"{days}d old"
+
+
+def _parse_docker_timestamp(value: str) -> datetime | None:
+    """Parse RFC3339Nano (from `docker inspect`) or `docker ps` CreatedAt."""
+    raw = value.strip()
+    if not raw:
+        return None
+    # RFC3339Nano: '2026-06-25T01:07:53.123456789Z' or with +hh:mm offset.
+    iso = raw
+    if iso.endswith("Z"):
+        iso = iso[:-1] + "+00:00"
+    # fromisoformat() in 3.11+ tolerates fractional seconds; strip nanos to be safe.
+    if "." in iso:
+        head, _, tail = iso.partition(".")
+        # tail may end with timezone like '123456789+00:00'
+        for i, ch in enumerate(tail):
+            if ch in "+-":
+                frac = tail[:i][:6]
+                tz = tail[i:]
+                iso = f"{head}.{frac}{tz}"
+                break
+        else:
+            iso = f"{head}.{tail[:6]}"
+    try:
+        return datetime.fromisoformat(iso)
+    except ValueError:
+        pass
+    # Legacy `docker ps` form: '2026-06-25 09:07:53 +0800 CST': strip trailing
+    # locale abbreviation if present, then parse with %z.
+    cleaned = raw
+    parts = cleaned.rsplit(" ", 1)
     if len(parts) == 2 and not parts[1].startswith(("+", "-")):
-        created_at_clean = parts[0]
-    else:
-        created_at_clean = created_at.strip()
-    # Try a few common docker timestamp formats
+        cleaned = parts[0]
     for fmt in ("%Y-%m-%d %H:%M:%S %z", "%Y-%m-%d %H:%M:%S"):
         try:
-            dt = datetime.strptime(created_at_clean, fmt)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            now = datetime.now(timezone.utc)
-            delta = now - dt
-            total_seconds = int(delta.total_seconds())
-            if total_seconds < 60:
-                return f"{total_seconds}s old"
-            minutes = total_seconds // 60
-            if minutes < 60:
-                return f"{minutes}m old"
-            hours = minutes // 60
-            if hours < 24:
-                return f"{hours}h old"
-            days = hours // 24
-            return f"{days}d old"
+            return datetime.strptime(cleaned, fmt)
         except ValueError:
             continue
-    return "age unknown"
+    return None
 
 
 def build_mobilegym_environment_command(

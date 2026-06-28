@@ -79,7 +79,12 @@ void AudioPlaybackSession::playback_loop() {
                 return !queue_.empty() || final_received_ || stopped_.load();
             });
 
-            if (stopped_.load()) return;
+            if (stopped_.load()) {
+                fprintf(stderr,
+                        "[audio_service] playback session %llu interrupted before drain completed\n",
+                        static_cast<unsigned long long>(session_id_));
+                return;
+            }
 
             if (!queue_.empty()) {
                 chunk = std::move(queue_.front());
@@ -93,8 +98,19 @@ void AudioPlaybackSession::playback_loop() {
         }
 
         if (final_and_drained) {
-            std::this_thread::sleep_for(
-                playback_tail_drain_grace(fmt_, last_played_chunk_bytes));
+            std::unique_lock<std::mutex> lock(mutex_);
+            cv_.wait_for(lock,
+                         playback_tail_drain_grace(fmt_, last_played_chunk_bytes),
+                         [this] { return stopped_.load(); });
+            if (stopped_.load()) {
+                fprintf(stderr,
+                        "[audio_service] playback session %llu interrupted during final drain\n",
+                        static_cast<unsigned long long>(session_id_));
+                return;
+            }
+            fprintf(stderr,
+                    "[audio_service] playback session %llu drained and completed\n",
+                    static_cast<unsigned long long>(session_id_));
             break;
         }
 
@@ -108,6 +124,12 @@ void AudioPlaybackSession::playback_loop() {
                 last_played_chunk_bytes = chunk.size();
             }
         }
+    }
+
+    if (stopped_.load()) {
+        fprintf(stderr,
+                "[audio_service] playback session %llu interrupted\n",
+                static_cast<unsigned long long>(session_id_));
     }
 }
 

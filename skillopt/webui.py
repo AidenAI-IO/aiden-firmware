@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
 import signal
@@ -16,15 +17,23 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
+from runner.agent_config import resolve_agent_model_api_key
 from runner.environment import EnvironmentManager
 from runner.config import AgentConfigManager, render_agent_template
 from runner.judge import JudgeConfig
+from skillopt.benchmark_backend import load_benchmark_task_results
+from skillopt.phase_artifacts import latest_phase_record, load_phase_records, progress_from_phase_record
+from skillopt.score import task_result_to_rollout
+
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8766
+DEFAULT_BUDGET = 5
 SKILLOPT_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = SKILLOPT_ROOT.parent
 BENCHMARK_ROOT = REPO_ROOT / "benchmark"
@@ -87,6 +96,7 @@ class SkillOptWebApp:
         runs_dir = self.config.runs_dir
         if not runs_dir.exists():
             return
+        skipped = 0
         for job_dir in sorted(runs_dir.iterdir()):
             if not job_dir.is_dir():
                 continue
@@ -97,11 +107,15 @@ class SkillOptWebApp:
                 continue
             try:
                 job = self._reconstruct_job_from_disk(job_dir)
-                if job is not None:
-                    self._jobs[job.id] = job
-            except Exception:
-                # Skip malformed job directories silently
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                logger.warning("skipping malformed job dir %s: %s", job_dir.name, exc)
+                skipped += 1
                 continue
+            if job is not None:
+                self._jobs[job.id] = job
+        if skipped:
+            logger.info("skipped %d malformed job director%s during historical load",
+                        skipped, "y" if skipped == 1 else "ies")
 
     def _reconstruct_job_from_disk(self, job_dir: Path) -> SkillOptJob | None:
         """Build a SkillOptJob from the artifacts left on disk."""
@@ -385,8 +399,7 @@ class SkillOptWebApp:
         if "enabled" in incoming_judge:
             current_judge["enabled"] = bool(incoming_judge.get("enabled"))
         if "model" in incoming_judge:
-            model = str(incoming_judge.get("model") or "").strip() or DEFAULT_JUDGE_MODEL
-            current_judge["model"] = model
+            current_judge["model"] = str(incoming_judge.get("model") or "").strip()
         if "api_key" in incoming_judge:
             api_key = str(incoming_judge.get("api_key") or "").strip()
             if api_key:
@@ -398,7 +411,7 @@ class SkillOptWebApp:
         if "skillopt" in payload:
             skillopt_settings = payload.get("skillopt") if isinstance(payload.get("skillopt"), dict) else {}
             current_skillopt = current.setdefault("skillopt", {})
-            for key in ("budget", "edit_budget", "min_delta", "selected_target_id"):
+            for key in ("budget", "edit_budget", "min_delta", "selected_target_id", "optimizer_model"):
                 if key in skillopt_settings:
                     current_skillopt[key] = skillopt_settings[key]
         normalized = _normalize_webui_settings(current, include_secrets=True)
@@ -406,6 +419,8 @@ class SkillOptWebApp:
             normalized["judge"]["api_key"] = self._webui_judge_api_key
         sanitized = _sanitize_webui_settings(normalized)
         if self._webui_judge_api_key:
+            sanitized["judge"]["has_api_key"] = True
+        elif self.benchmark_agent_config_info().get("api_key_nonempty"):
             sanitized["judge"]["has_api_key"] = True
         _write_json_atomic(self._webui_settings_path(), sanitized)
         return sanitized
@@ -423,6 +438,8 @@ class SkillOptWebApp:
             settings["judge"]["api_key"] = api_key
         elif api_key:
             settings["judge"]["has_api_key"] = True
+        elif self.benchmark_agent_config_info().get("api_key_nonempty"):
+            settings["judge"]["has_api_key"] = True
         return settings
 
     def _run_job(self, job: SkillOptJob) -> None:
@@ -437,10 +454,14 @@ class SkillOptWebApp:
         # Inject judge API key if available
         with self._lock:
             judge_api_key = self._job_judge_api_keys.get(job.id, "")
+        if not judge_api_key:
+            judge_api_key = agent_config_api_key_for_job(job, env=env)
         if judge_api_key:
             env["OPENROUTER_API_KEY"] = judge_api_key
+        env["PYTHONUNBUFFERED"] = "1"
         with Path(job.log_path).open("wb") as log:
             log.write(("$ " + " ".join(job.command) + "\n").encode("utf-8"))
+            log.flush()
             proc = subprocess.Popen(
                 job.command,
                 cwd=Path(__file__).resolve().parents[1],
@@ -468,6 +489,19 @@ class SkillOptWebApp:
             job.message = "" if exit_code == 0 else f"skillopt exited {exit_code}"
 
     def _job_payload(self, job: SkillOptJob) -> dict[str, Any]:
+        stage = job.stage
+        current_suite = job.current_suite
+        progress = dict(job.progress)
+        inferred_progress = infer_skillopt_phase_progress(Path(job.run_dir))
+        if inferred_progress is None and job.status in {"running", "stopping"}:
+            inferred_progress = infer_running_job_progress(Path(job.run_dir), job.id)
+        if inferred_progress:
+            progress = inferred_progress
+            current_suite = str(inferred_progress.get("phase") or current_suite)
+            stage = stage_from_phase(current_suite) or stage
+        report_path = Path(job.run_dir) / "report.html"
+        report_url = f"/runs/{job.id}/report.html" if report_path.exists() else ""
+        best_score = best_score_from_phase_records(Path(job.run_dir))
         payload = {
             "id": job.id,
             "command": job.command,
@@ -479,14 +513,19 @@ class SkillOptWebApp:
             "finished_at": job.finished_at,
             "exit_code": job.exit_code,
             "message": job.message,
-            "report_url": job.report_url,
+            "report_url": report_url,
+            "best_score": best_score,
             "suites": job.suites,
-            "stage": job.stage,
-            "current_suite": job.current_suite,
-            "progress": job.progress,
+            "stage": stage,
+            "current_suite": current_suite,
+            "progress": progress,
         }
         if Path(job.log_path).exists():
-            payload["log_tail"] = tail_text(Path(job.log_path))
+            log_tail = tail_text(Path(job.log_path)).rstrip()
+            progress_summary = str(progress.get("summary") or "").strip()
+            if progress_summary and progress_summary not in log_tail:
+                log_tail = (log_tail + "\n\n" + progress_summary).strip()
+            payload["log_tail"] = log_tail
         return payload
 
 
@@ -509,7 +548,7 @@ def build_skillopt_command(payload: dict[str, Any], *, run_id: str, artifact_roo
         "--validation-suite",
         validation_suite,
         "--budget",
-        str(int(payload.get("budget") or 10)),
+        str(int(payload.get("budget") or DEFAULT_BUDGET)),
         "--edit-budget",
         str(int(payload.get("edit_budget") or 4)),
         "--min-delta",
@@ -907,6 +946,220 @@ def tail_text(path: Path, limit: int = 12000) -> str:
     return data.decode("utf-8", errors="replace")
 
 
+def agent_config_api_key_for_job(job: SkillOptJob, *, env: Mapping[str, str]) -> str:
+    path = agent_config_path_for_job(job)
+    if path is None:
+        return ""
+    return resolve_agent_model_api_key(path, env=env) or ""
+
+
+def agent_config_path_for_job(job: SkillOptJob) -> Path | None:
+    command = list(job.command or [])
+    for index, arg in enumerate(command):
+        if arg == "--agent-config" and index + 1 < len(command):
+            path = Path(command[index + 1])
+            if path.is_file():
+                return path
+            return None
+    path = Path(job.run_dir) / "agent.toml"
+    return path if path.is_file() else None
+
+
+def infer_running_job_progress(run_dir: Path, job_id: str) -> dict[str, Any] | None:
+    benchmark_dir = Path(run_dir) / "benchmark"
+    if not benchmark_dir.exists():
+        return None
+    phase_dirs = [path for path in benchmark_dir.iterdir() if path.is_dir()]
+    if not phase_dirs:
+        return None
+    phase_dir = max(phase_dirs, key=lambda path: path.stat().st_mtime)
+    phase = phase_dir.name
+    prefix = f"{job_id}-"
+    if phase.startswith(prefix):
+        phase = phase[len(prefix):]
+    tasks_dir = phase_dir / "tasks"
+    task_dirs = sorted([path for path in tasks_dir.iterdir() if path.is_dir()], key=lambda path: path.name) if tasks_dir.exists() else []
+    if not task_dirs:
+        return None
+
+    completed = completed_task_ids_from_results(phase_dir / "results.jsonl")
+    if not completed:
+        completed = {path.name for path in task_dirs if task_artifacts_complete(path)}
+    started = {path.name for path in task_dirs if any(path.iterdir())}
+    running = sorted(started - completed)
+    total = len(task_dirs)
+    summary = f"{phase}: {len(completed)}/{total} completed"
+    if running:
+        shown = ", ".join(running[:3])
+        if len(running) > 3:
+            shown += f", +{len(running) - 3} more"
+        summary += f", {len(running)} running ({shown})"
+    return {
+        "phase": phase,
+        "started_tasks": len(started),
+        "completed_tasks": len(completed),
+        "total_tasks": total,
+        "running_tasks": running,
+        "summary": summary,
+    }
+
+
+def infer_skillopt_phase_progress(run_dir: Path) -> dict[str, Any] | None:
+    record = latest_phase_record(run_dir)
+    if not record:
+        return None
+    if str(record.get("status") or "") == "running":
+        record = enrich_running_phase_record_from_benchmark(record, run_dir)
+    return progress_from_phase_record(record)
+
+
+def enrich_running_phase_record_from_benchmark(record: dict[str, Any], run_dir: Path) -> dict[str, Any]:
+    phase_dir = benchmark_phase_dir_for_record(record, run_dir)
+    if phase_dir is None:
+        return record
+    tasks_dir = phase_dir / "tasks"
+    result_tasks_by_id = task_records_from_results(phase_dir / "results.jsonl", run_dir=run_dir, raw_report=phase_dir / "report.html")
+    tasks = []
+    for task in record.get("tasks") or []:
+        if not isinstance(task, dict):
+            continue
+        updated = dict(task)
+        task_id = str(updated.get("id") or "")
+        task_dir = tasks_dir / task_id if task_id else None
+        if task_id in result_tasks_by_id:
+            updated.update(result_tasks_by_id[task_id])
+        elif task_dir is not None and task_dir.exists() and task_dir.is_dir():
+            if task_artifacts_complete(task_dir):
+                updated["status"] = "completed"
+            elif any(task_dir.iterdir()):
+                updated["status"] = "running"
+        tasks.append(updated)
+    enriched = dict(record)
+    enriched["tasks"] = tasks
+    return enriched
+
+
+def task_records_from_results(path: Path, *, run_dir: Path, raw_report: Path) -> dict[str, dict[str, Any]]:
+    records: dict[str, dict[str, Any]] = {}
+    for result in load_benchmark_task_results(path.parent):
+        rollout = task_result_to_rollout(result)
+        record: dict[str, Any] = {
+            "id": rollout.id,
+            "status": result.status,
+            "hard": rollout.hard,
+            "soft": rollout.soft,
+            "turns": rollout.n_turns,
+            "reason": rollout.fail_reason,
+        }
+        artifact_dir = relative_to_run_dir(run_dir, rollout.artifact_dir)
+        if artifact_dir:
+            record["artifact_dir"] = artifact_dir
+        if raw_report.exists():
+            record["raw_report"] = relative_to_run_dir(run_dir, str(raw_report))
+        records[rollout.id] = record
+    return records
+
+
+def best_score_from_phase_records(run_dir: Path) -> float | None:
+    scores: list[float] = []
+    for record in load_phase_records(run_dir):
+        if str(record.get("kind") or "") != "verification":
+            continue
+        score = record.get("score") if isinstance(record.get("score"), dict) else {}
+        try:
+            scores.append(float(score.get("hard")))
+        except (TypeError, ValueError):
+            continue
+    return max(scores) if scores else None
+
+
+def benchmark_phase_dir_for_record(record: dict[str, Any], run_dir: Path) -> Path | None:
+    phase = str(record.get("phase") or "").strip()
+    if not phase:
+        return None
+    benchmark_dir = Path(run_dir) / "benchmark"
+    if not benchmark_dir.exists():
+        return None
+    candidates = [
+        path
+        for path in benchmark_dir.iterdir()
+        if path.is_dir() and (path.name == phase or path.name.endswith(f"-{phase}"))
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: path.stat().st_mtime)
+
+
+def task_statuses_from_results(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    statuses: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        task_id = str(payload.get("task_id") or payload.get("id") or "").strip()
+        status = str(payload.get("status") or "").strip()
+        if task_id and status:
+            statuses[task_id] = status
+    return statuses
+
+
+def relative_to_run_dir(run_dir: Path, value: str) -> str:
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    if "://" in value:
+        return value
+    path = Path(value)
+    if not path.is_absolute():
+        return path.as_posix()
+    try:
+        return path.resolve().relative_to(Path(run_dir).resolve()).as_posix()
+    except (OSError, ValueError):
+        return value
+
+
+def completed_task_ids_from_results(path: Path) -> set[str]:
+    if not path.exists():
+        return set()
+    completed: set[str] = set()
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        task_id = str(payload.get("task_id") or payload.get("id") or "").strip() if isinstance(payload, dict) else ""
+        if task_id:
+            completed.add(task_id)
+    return completed
+
+
+def task_artifacts_complete(task_dir: Path) -> bool:
+    # trace.json is written at the end of evaluate_task_history; its presence is
+    # the closest filesystem signal that a task ran to completion. post.jpg and
+    # judge.json can be present for tasks that crashed mid-evaluation.
+    return (task_dir / "trace.json").exists()
+
+
+def stage_from_phase(phase: str) -> str:
+    phase = str(phase or "")
+    if phase.startswith("baseline"):
+        return "baseline"
+    if phase.endswith("_train"):
+        return "train"
+    if phase.endswith("_selection"):
+        return "selection"
+    return ""
+
+
 def terminate_process(proc: subprocess.Popen) -> None:
     if proc.poll() is not None:
         return
@@ -922,7 +1175,7 @@ def terminate_process(proc: subprocess.Popen) -> None:
 
 
 def _default_webui_settings(include_secrets: bool = False) -> dict[str, Any]:
-    judge: dict[str, Any] = {"enabled": True, "model": DEFAULT_JUDGE_MODEL}
+    judge: dict[str, Any] = {"enabled": True, "model": ""}
     if include_secrets:
         judge["api_key"] = ""
     else:
@@ -931,10 +1184,11 @@ def _default_webui_settings(include_secrets: bool = False) -> dict[str, Any]:
         "judge": judge,
         "selected_environment_id": "",
         "skillopt": {
-            "budget": 10,
+            "budget": DEFAULT_BUDGET,
             "edit_budget": 4,
             "min_delta": 0.03,
             "selected_target_id": "",
+            "optimizer_model": "",
         },
     }
 
@@ -947,7 +1201,7 @@ def _normalize_webui_settings(data: Any, include_secrets: bool = False) -> dict[
     has_api_key = bool(api_key) or bool(raw_judge.get("has_api_key", False))
     judge: dict[str, Any] = {
         "enabled": bool(raw_judge.get("enabled", True)),
-        "model": str(raw_judge.get("model") or DEFAULT_JUDGE_MODEL).strip() or DEFAULT_JUDGE_MODEL,
+        "model": str(raw_judge.get("model") or "").strip(),
     }
     if include_secrets:
         judge["api_key"] = api_key
@@ -955,9 +1209,9 @@ def _normalize_webui_settings(data: Any, include_secrets: bool = False) -> dict[
         judge["has_api_key"] = has_api_key
     raw_skillopt = data.get("skillopt") if isinstance(data.get("skillopt"), dict) else {}
     try:
-        budget = int(raw_skillopt.get("budget", 10) or 10)
+        budget = int(raw_skillopt.get("budget", DEFAULT_BUDGET) or DEFAULT_BUDGET)
     except (TypeError, ValueError):
-        budget = 10
+        budget = DEFAULT_BUDGET
     try:
         edit_budget = int(raw_skillopt.get("edit_budget", 4) or 4)
     except (TypeError, ValueError):
@@ -971,6 +1225,7 @@ def _normalize_webui_settings(data: Any, include_secrets: bool = False) -> dict[
         "edit_budget": max(1, edit_budget),
         "min_delta": max(0.0, min_delta),
         "selected_target_id": str(raw_skillopt.get("selected_target_id") or ""),
+        "optimizer_model": str(raw_skillopt.get("optimizer_model") or "").strip(),
     }
     return {
         "judge": judge,
@@ -1292,7 +1547,7 @@ INDEX_HTML = r"""<!doctype html>
           </div>
           <div class="judge-inline">
             <label class="check-label"><input id="judgeEnabled" type="checkbox" checked> Enable judge</label>
-            <div class="field"><label for="judgeModel">Judge model</label><input id="judgeModel" autocomplete="off" placeholder="anthropic/claude-sonnet-4-6"></div>
+            <div class="field"><label for="judgeModel">Judge model</label><input id="judgeModel" autocomplete="off" placeholder="agent.toml [model].model"></div>
             <div class="field"><label for="judgeApiKey">API key</label><input id="judgeApiKey" type="password" autocomplete="off" placeholder="OPENROUTER_API_KEY"></div>
           </div>
           <div class="run-actions">
@@ -1300,9 +1555,10 @@ INDEX_HTML = r"""<!doctype html>
           </div>
         </div>
         <div class="skillopt-inline" style="margin-top:16px">
-          <div class="field"><label for="budget">Budget</label><input id="budget" type="number" min="1" step="1" value="10"></div>
-          <div class="field"><label for="editBudget">Edit budget</label><input id="editBudget" type="number" min="1" step="1" value="4"></div>
+          <div class="field"><label for="budget">Max iterations</label><input id="budget" type="number" min="1" step="1" value="5"></div>
+          <div class="field"><label for="editBudget">Max edits / iteration</label><input id="editBudget" type="number" min="1" step="1" value="4"></div>
           <div class="field"><label for="minDelta">Min delta</label><input id="minDelta" type="number" min="0" step="0.01" value="0.03"></div>
+          <div class="field"><label for="optimizerModel">Optimizer model(s)</label><input id="optimizerModel" autocomplete="off" placeholder="agent.toml [model].model"></div>
         </div>
       </section>
 
@@ -1319,12 +1575,26 @@ INDEX_HTML = r"""<!doctype html>
         </div>
         <div class="progress"><div id="progressBar"></div></div>
         <div class="metric-grid">
-          <div class="metric"><span class="muted">Budget</span><strong id="mBudget">10</strong></div>
-          <div class="metric"><span class="muted">Edit budget</span><strong id="mEditBudget">4</strong></div>
+          <div class="metric"><span class="muted">Max iterations</span><strong id="mBudget">10</strong></div>
+          <div class="metric"><span class="muted">Max edits / iteration</span><strong id="mEditBudget">4</strong></div>
           <div class="metric"><span class="muted">Iterations</span><strong id="mIterations">0</strong></div>
           <div class="metric"><span class="muted">Best score</span><strong id="mScore">-</strong></div>
-          <div class="metric"><span class="muted">Exit</span><strong id="mExit">-</strong></div>
-          <div class="metric"><span class="muted">Reports</span><strong id="mReport">0</strong></div>
+          <div class="metric"><span class="muted">Report</span><strong id="mReportLink">none</strong></div>
+        </div>
+      </section>
+
+      <section class="tile">
+        <div class="tile-header">
+          <div>
+            <h2 class="tile-title">Phase Tasks</h2>
+            <div id="phaseTaskLabel" class="tile-kicker">No phase task records</div>
+          </div>
+        </div>
+        <div class="table-wrap task-table-wrap">
+          <table>
+            <thead><tr><th>Task</th><th style="width:96px">Status</th><th style="width:96px">Tool calls</th><th>Reason</th></tr></thead>
+            <tbody id="phaseTaskRows"></tbody>
+          </table>
         </div>
       </section>
 
@@ -1414,7 +1684,7 @@ INDEX_HTML = r"""<!doctype html>
     </section>
   </div>
   <script>
-    const DEFAULT_JUDGE_MODEL = 'anthropic/claude-sonnet-4-6';
+    const DEFAULT_JUDGE_MODEL = '';
     let targets = [];
     let selectedTargetId = '';
     let mobilegymEnvironments = [];
@@ -1456,7 +1726,7 @@ INDEX_HTML = r"""<!doctype html>
 
     function currentJudgeSettings(){
       const enabled = document.getElementById('judgeEnabled').checked;
-      const model = document.getElementById('judgeModel').value.trim() || DEFAULT_JUDGE_MODEL;
+      const model = document.getElementById('judgeModel').value.trim();
       const apiKey = document.getElementById('judgeApiKey').value.trim();
       return {enabled, model, apiKey};
     }
@@ -1494,6 +1764,7 @@ INDEX_HTML = r"""<!doctype html>
       if(so.budget) document.getElementById('budget').value = String(so.budget);
       if(so.edit_budget) document.getElementById('editBudget').value = String(so.edit_budget);
       if(so.min_delta != null) document.getElementById('minDelta').value = String(so.min_delta);
+      document.getElementById('optimizerModel').value = String(so.optimizer_model || '');
       if(so.selected_target_id) selectedTargetId = String(so.selected_target_id);
       syncJudgePanel();
       renderEnvs();
@@ -1508,10 +1779,11 @@ INDEX_HTML = r"""<!doctype html>
         judge: judgePayload,
         selected_environment_id: selectedEnvironmentId,
         skillopt: {
-          budget: parseInt(document.getElementById('budget').value || '10', 10) || 10,
+          budget: parseInt(document.getElementById('budget').value || '5', 10) || 5,
           edit_budget: parseInt(document.getElementById('editBudget').value || '4', 10) || 4,
           min_delta: parseFloat(document.getElementById('minDelta').value || '0.03') || 0.03,
-          selected_target_id: selectedTargetId
+          selected_target_id: selectedTargetId,
+          optimizer_model: document.getElementById('optimizerModel').value.trim()
         }
       };
       try {
@@ -1742,7 +2014,7 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById('selectedTargetLabel').textContent = target ? (target.name || target.skill) : 'No target';
       document.getElementById('selectedSuitesLabel').textContent = target ? `${target.train_task_count || 0} train / ${target.validation_task_count || 0} verify` : '0 / 0';
       document.getElementById('selectedEnvLabel').textContent = env ? (env.name || env.id || 'MobileGym') : 'No environment';
-      document.getElementById('selectedJudgeLabel').textContent = judge.enabled ? `judge: ${judge.model}` : 'judge: off';
+      document.getElementById('selectedJudgeLabel').textContent = judge.enabled ? `judge: ${judge.model || 'agent config model'}` : 'judge: off';
       document.getElementById('mBudget').textContent = document.getElementById('budget').value || '0';
       document.getElementById('mEditBudget').textContent = document.getElementById('editBudget').value || '0';
       const ready = !!(agentConfig && agentConfig.api_key_nonempty);
@@ -1786,10 +2058,10 @@ INDEX_HTML = r"""<!doctype html>
         target_id: target.id,
         environment_id: env.id,
         backend: 'mobilegym',
-        budget: parseInt(document.getElementById('budget').value || '10', 10) || 10,
+        budget: parseInt(document.getElementById('budget').value || '5', 10) || 5,
         edit_budget: parseInt(document.getElementById('editBudget').value || '4', 10) || 4,
         min_delta: parseFloat(document.getElementById('minDelta').value || '0.03') || 0.03,
-        no_build_daemon_image: true,
+        optimizer_model: document.getElementById('optimizerModel').value.trim(),
         no_judge: !judge.enabled,
         judge_model: judge.model,
         judge_api_key: judge.apiKey
@@ -1840,8 +2112,7 @@ INDEX_HTML = r"""<!doctype html>
         const tr = document.createElement('tr');
         tr.className = activeJobId === job.id ? 'selected-row' : '';
         const suitesLabel = (job.suites && job.suites.length > 0) ? job.suites.join(', ') : '';
-        const stageLabel = job.stage ? `[${job.stage}]` : '';
-        const targetInfo = stageLabel || suitesLabel ? `${stageLabel} ${suitesLabel}`.trim() : targetLabel;
+        const targetInfo = suitesLabel || targetLabel;
         tr.innerHTML = `<td><div class="cell-main"><a href="#" data-job="${escapeHtml(job.id)}">${escapeHtml(job.id)}</a><small>${escapeHtml(job.created_at || '')}</small></div></td>
           <td title="${escapeHtml(targetLabel)}"><div class="cell-main"><span>${escapeHtml(targetInfo)}</span><small>${escapeHtml(job.run_dir || '')}</small></div></td>
           <td title="${escapeHtml(envLabel)}"><div class="cell-main"><span>${escapeHtml(envLabel)}</span><small>mobilegym</small></div></td>
@@ -1871,12 +2142,35 @@ INDEX_HTML = r"""<!doctype html>
       stop.hidden = !jobCanStop(job);
       stop.disabled = job.status === 'stopping';
       document.getElementById('headerStatus').textContent = job.status || 'Idle';
-      document.getElementById('mExit').textContent = job.exit_code === null || job.exit_code === undefined ? '-' : String(job.exit_code);
-      document.getElementById('mReport').textContent = job.report_url ? '1' : '0';
-      document.getElementById('progressBar').style.width = progressWidth(job.status);
+      document.getElementById('mScore').textContent = formatBestScore(job.best_score);
+      document.getElementById('mReportLink').innerHTML = job.report_url ? `<a href="${escapeHtml(job.report_url)}" target="_blank" rel="noreferrer">open</a>` : 'none';
+      document.getElementById('mIterations').textContent = job.progress && job.progress.iteration ? String(job.progress.iteration) : '0';
+      document.getElementById('progressBar').style.width = progressWidth(job);
       document.getElementById('logBox').textContent = job.log_tail || 'Waiting for output.';
       document.getElementById('logScopeLabel').textContent = 'SkillOpt runner output';
-      renderJobsTable();
+      renderPhaseTasks(job);
+    }
+
+    function renderPhaseTasks(job){
+      const tbody = document.getElementById('phaseTaskRows');
+      const label = document.getElementById('phaseTaskLabel');
+      if(!tbody || !label) return;
+      const progress = job && job.progress ? job.progress : {};
+      const tasks = Array.isArray(progress.tasks) ? progress.tasks : [];
+      label.textContent = progress.summary || 'No phase task records';
+      tbody.innerHTML = '';
+      if(!tasks.length){
+        tbody.innerHTML = '<tr><td class="empty-row" colspan="4">No SkillOpt phase task records yet</td></tr>';
+        return;
+      }
+      tasks.forEach(task => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td title="${escapeHtml(task.id || '')}"><div class="cell-main"><span>${escapeHtml(task.id || '')}</span><small>${escapeHtml(task.category || '')}</small></div></td>
+          <td><span class="status ${cssToken(task.status)}">${escapeHtml(task.status || '')}</span></td>
+          <td>${escapeHtml(task.turns ?? '')}</td>
+          <td title="${escapeHtml(task.reason || '')}">${escapeHtml(task.reason || '')}</td>`;
+        tbody.appendChild(tr);
+      });
     }
 
     function resetActiveJob(){
@@ -1887,18 +2181,28 @@ INDEX_HTML = r"""<!doctype html>
       st.textContent = 'idle';
       document.getElementById('activeStopJob').hidden = true;
       document.getElementById('progressBar').style.width = '0%';
-      ['mExit','mReport'].forEach(id => document.getElementById(id).textContent = id === 'mExit' ? '-' : '0');
+      document.getElementById('mReportLink').textContent = 'none';
       document.getElementById('mIterations').textContent = '0';
       document.getElementById('mScore').textContent = '-';
       document.getElementById('headerStatus').textContent = 'Idle';
       document.getElementById('logScopeLabel').textContent = 'SkillOpt runner output';
+      renderPhaseTasks(null);
     }
 
-    function progressWidth(status){
+    function progressWidth(job){
+      const status = job && job.status;
       if(['passed','failed','stopped'].includes(status)) return '100%';
-      if(['running','stopping'].includes(status)) return '62%';
-      if(status === 'queued') return '18%';
+      const total = Number(job && job.progress && job.progress.total_tasks) || 0;
+      const completed = Number(job && job.progress && job.progress.completed_tasks) || 0;
+      if(total > 0) return `${Math.max(0, Math.min(100, Math.round((completed / total) * 100)))}%`;
+      if(['running','stopping'].includes(status)) return '12%';
+      if(status === 'queued') return '4%';
       return '0%';
+    }
+
+    function formatBestScore(value){
+      const score = Number(value);
+      return Number.isFinite(score) ? score.toFixed(3) : '-';
     }
 
     async function stopJob(id){
@@ -1930,7 +2234,7 @@ INDEX_HTML = r"""<!doctype html>
       node.textContent = 'Modified';
       node.style.color = '';
     };
-    ['budget','editBudget','minDelta'].forEach(id => {
+    ['budget','editBudget','minDelta','optimizerModel'].forEach(id => {
       document.getElementById(id).oninput = () => { syncRunState(); saveWebuiSettings({keepInputs: true}); };
     });
 
@@ -1947,4 +2251,3 @@ INDEX_HTML = r"""<!doctype html>
 </body>
 </html>
 """
-

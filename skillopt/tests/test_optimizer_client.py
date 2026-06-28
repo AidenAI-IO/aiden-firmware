@@ -1,6 +1,8 @@
 """Unit tests for optimizer_client.py JSON extraction."""
+import io
 import json
 from pathlib import Path
+import urllib.error
 
 import pytest
 from skillopt.optimizer_client import OptimizerConfig, OptimizerError, chat_optimizer, extract_json
@@ -108,3 +110,40 @@ def test_chat_optimizer_non_string_content_raises_optimizer_error(monkeypatch):
 
     with pytest.raises(OptimizerError, match="unexpected optimizer content type"):
         chat_optimizer(OptimizerConfig(), "system", "user")
+
+
+def test_chat_optimizer_tries_comma_separated_model_fallbacks(monkeypatch):
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": "{}"}}]}).encode("utf-8")
+
+    seen_models: list[str] = []
+
+    def fake_urlopen(req, timeout):
+        payload = json.loads(req.data.decode("utf-8"))
+        seen_models.append(payload["model"])
+        if payload["model"] == "region-blocked-model":
+            raise urllib.error.HTTPError(
+                req.full_url,
+                403,
+                "Forbidden",
+                hdrs=None,
+                fp=io.BytesIO(b'{"error":{"message":"region blocked"}}'),
+            )
+        return FakeResponse()
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-env")
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    raw = chat_optimizer(OptimizerConfig(model="region-blocked-model, usable-model"), "system", "user")
+
+    assert raw == "{}"
+    assert seen_models == ["region-blocked-model", "usable-model"]

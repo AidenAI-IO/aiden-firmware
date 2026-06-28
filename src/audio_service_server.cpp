@@ -147,6 +147,8 @@ void AudioServiceServer::handle_write_play_chunk(const UdsMessage& req, int fd) 
 
 void AudioServiceServer::handle_stop_playback(const UdsMessage& req, int fd) {
     uint64_t session_id = audio_json_u64(req.header_json.c_str(), "session_id");
+    fprintf(stderr, "[audio_service] stop_playback requested for session %llu\n",
+            static_cast<unsigned long long>(session_id));
     AidenServiceStatus status = manager_.stop_playback(session_id);
     send_response(fd, status);
 }

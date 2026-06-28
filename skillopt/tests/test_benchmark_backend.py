@@ -141,6 +141,31 @@ def test_benchmark_runner_backend_rejects_skill_name_escape(tmp_path: Path):
         backend.prepare_phase_config(tmp_path / "phase-config", "../evil", "candidate skill")
 
     assert not (tmp_path / "evil" / "SKILL.md").exists()
+def test_benchmark_runner_backend_applies_mobilegym_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from skillopt import benchmark_backend
+    from skillopt.benchmark_backend import BenchmarkRunnerBackend
+
+    benchmark_root = tmp_path / "benchmark"
+    base_config = _write_base_config(benchmark_root)
+    shared_skills = _write_shared_skills(tmp_path)
+    profiles_root = tmp_path / "profiles"
+    profile_dir = profiles_root / "mobilegym" / "device-operator"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "SKILL.md").write_text("MobileGym simulator profile", encoding="utf-8")
+    monkeypatch.setattr(benchmark_backend, "PROFILES_ROOT", profiles_root)
+    backend = BenchmarkRunnerBackend(
+        benchmark_root=benchmark_root,
+        base_config_dir=base_config,
+        shared_skills_dir=shared_skills,
+        environment_url="http://127.0.0.1:50196",
+        environment_profile="mobilegym",
+    )
+
+    dest = backend.prepare_phase_config(tmp_path / "phase-config", "device-operator", "candidate skill")
+
+    skill = (dest / "skills" / "device-operator" / "SKILL.md").read_text(encoding="utf-8")
+    assert "candidate skill" in skill
+    assert "MobileGym simulator profile" in skill
 
 
 def test_load_benchmark_task_results_handles_failed_runner_exit_with_results(tmp_path: Path):
@@ -168,3 +193,61 @@ def test_load_benchmark_task_results_handles_failed_runner_exit_with_results(tmp
     assert results[0].task_id == "case_one"
     assert results[0].status == "failed"
     assert results[0].metrics["tool_calls"] == 1
+
+
+def test_benchmark_runner_backend_rejects_environment_setup_failure_phase(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from skillopt.benchmark_backend import BenchmarkRolloutError, BenchmarkRunnerBackend
+
+    benchmark_root = tmp_path / "benchmark"
+    base_config = _write_base_config(benchmark_root)
+    shared_skills = _write_shared_skills(tmp_path)
+
+    def fake_run(cmd, cwd=None, env=None, text=None, stdout=None, stderr=None, check=None):
+        out_dir = Path(cmd[cmd.index("--out") + 1])
+        run_id = cmd[cmd.index("--run-id") + 1]
+        child_run = out_dir / run_id
+        child_run.mkdir(parents=True)
+        rows = []
+        for task_id in ("case_one", "case_two"):
+            rows.append(TaskResult(
+                suite="device_operator_train",
+                run_id=run_id,
+                task_id=task_id,
+                category="single_step",
+                attempt=1,
+                status="skipped",
+                rubric=[],
+                rubric_pass_count=0,
+                rubric_total=0,
+                metrics={"error": "setup: setup endpoint timed out: timed out"},
+                artifact_dir=str(child_run / "tasks" / task_id),
+                description_for_judge="desc",
+            ))
+        (child_run / "results.jsonl").write_text("".join(json.dumps(dc.asdict(row)) + "\n" for row in rows), encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 1, stdout="setup failed")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    backend = BenchmarkRunnerBackend(
+        benchmark_root=benchmark_root,
+        base_config_dir=base_config,
+        shared_skills_dir=shared_skills,
+        environment_url="http://127.0.0.1:50196",
+        build_daemon_image=False,
+    )
+
+    with pytest.raises(BenchmarkRolloutError, match="environment setup failed") as exc_info:
+        backend.run_rollout(
+            suite=_suite(tmp_path),
+            tasks=[_task("case_one"), _task("case_two")],
+            skill_name="device-operator",
+            skill_path=shared_skills / "device-operator" / "SKILL.md",
+            skill_text="candidate skill",
+            phase="step_01_train",
+            run_id="skillopt-run",
+            run_root=tmp_path / "runs" / "skillopt-run",
+            judge_cfg=None,
+        )
+
+    assert [rollout.id for rollout in exc_info.value.rollouts] == ["case_one", "case_two"]
+    assert exc_info.value.rollouts[0].extras["benchmark_run_id"] == "skillopt-run-step_01_train"
+    assert "setup endpoint timed out" in exc_info.value.rollouts[0].fail_reason
