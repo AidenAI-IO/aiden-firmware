@@ -1137,6 +1137,7 @@ func TestRuntimeRunResumeCorrectionUsesRootRequestAndCommittedPlan(t *testing.T)
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
 	)
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	_, err := runtime.Run(ctx, RunRequest{
 		Input:     rootRequest,
@@ -2215,6 +2216,7 @@ func TestRuntimeRunRestoresPlannerToolCallsIntoNextRunPrompt(t *testing.T) {
 		}},
 		NewSkillIndex(),
 	)
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	if _, err := runtime.Run(context.Background(), RunRequest{Input: "call echo"}); err != nil {
 		t.Fatalf("first Run() error = %v", err)
@@ -4879,6 +4881,7 @@ func TestRuntimeRunDoesNotDuplicateRuntimeContextAcrossTurns(t *testing.T) {
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
 	)
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	firstRuntimeContext := "RUNTIME_CTX_FIRST_MARKER"
 	if _, err := runtime.Run(context.Background(), RunRequest{

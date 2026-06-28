@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from runner import services
+from runner import services, webui
 
 
 def test_start_mobilegym_env_prints_environment_urls(tmp_path: Path, monkeypatch, capsys):
@@ -215,6 +215,14 @@ def test_start_agent_daemon_uses_docker_assigned_port_when_auto(tmp_path: Path, 
     assert payload["agent_url"] == "http://127.0.0.1:18081"
     assert captured["kwargs"]["host_port"] == 0
     assert captured["job"].agent_url == "http://127.0.0.1:18081"
+
+
+def test_agent_daemon_compose_passes_model_key_env_vars():
+    compose = (webui.BENCHMARK_DOCKER_DIR / "docker-compose.agent-daemon.yml").read_text(encoding="utf-8")
+
+    assert "OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}" in compose
+    assert "MODEL_API_KEY: ${MODEL_API_KEY:-}" in compose
+    assert "AIDEN_MODEL_API_KEY: ${AIDEN_MODEL_API_KEY:-}" in compose
 
 
 def _ns(**kwargs):

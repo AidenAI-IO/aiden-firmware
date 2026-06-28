@@ -100,6 +100,15 @@ class AgentClient:
     def clear_history(self, timeout: int = 30) -> None:
         self._post("/api/clear", timeout=timeout)
 
+    def seed_memory(self, memory: dict[str, Any], timeout: int = 30) -> dict[str, Any]:
+        status, body_bytes = self._post(
+            "/api/benchmark/seed_memory", memory, timeout=timeout
+        )
+        if status != 200:
+            raise AgentRequestError(f"seed_memory returned {status}")
+        body = json.loads(body_bytes)
+        return body if isinstance(body, dict) else {}
+
     def get_history(self) -> list[dict[str, Any]]:
         status, body_bytes = self._get("/api/history", timeout=5)
         if status != 200:

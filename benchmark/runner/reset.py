@@ -97,8 +97,17 @@ def call_environment_release(environment_url: str, timeout: int = 30, task_id: s
 def per_task_setup(client: AgentClient, setup: dict[str, Any] | None) -> None:
     if setup is None:
         return
-    if setup.get("type") != "agent_prompt":
-        raise ResetError(f"unsupported setup form: {setup!r}")
+    setup_type = setup.get("type")
+    if setup_type == "agent_prompt":
+        _per_task_setup_agent_prompt(client, setup)
+        return
+    if setup_type == "seed_memory":
+        _per_task_setup_seed_memory(client, setup)
+        return
+    raise ResetError(f"unsupported setup form: {setup!r}")
+
+
+def _per_task_setup_agent_prompt(client: AgentClient, setup: dict[str, Any]) -> None:
     prompt = setup.get("prompt")
     if not prompt:
         raise ResetError(f"agent_prompt setup missing prompt: {setup!r}")
@@ -120,3 +129,32 @@ def per_task_setup(client: AgentClient, setup: dict[str, Any] | None) -> None:
             client.clear_history()
         except AgentRequestError as e:
             raise ResetError(f"setup agent_prompt clear_history failed: {e}") from e
+
+
+def _per_task_setup_seed_memory(client: AgentClient, setup: dict[str, Any]) -> None:
+    memories = setup.get("memories")
+    if not isinstance(memories, list) or not memories:
+        raise ResetError(f"seed_memory setup requires non-empty 'memories' list: {setup!r}")
+    try:
+        timeout = int(setup.get("timeout_sec", 30))
+    except (ValueError, TypeError) as e:
+        raise ResetError(f"invalid timeout_sec: {setup.get('timeout_sec')!r}") from e
+    for index, memory in enumerate(memories):
+        if not isinstance(memory, dict):
+            raise ResetError(f"seed_memory memories[{index}] must be a dict, got {type(memory).__name__}")
+        memory_id = memory.get("id")
+        if not isinstance(memory_id, str) or not memory_id.strip():
+            raise ResetError(f"seed_memory memories[{index}] missing required 'id'")
+        if not isinstance(memory.get("content"), str) or not memory["content"].strip():
+            raise ResetError(f"seed_memory memories[{index}] (id={memory_id!r}) missing required 'content'")
+        try:
+            client.seed_memory(memory, timeout=timeout)
+        except AgentTimeoutError as e:
+            raise ResetError(f"seed_memory timed out at index {index} (id={memory_id!r}): {e}") from e
+        except AgentRequestError as e:
+            raise ResetError(f"seed_memory failed at index {index} (id={memory_id!r}): {e}") from e
+    if setup.get("clear_history_after"):
+        try:
+            client.clear_history()
+        except AgentRequestError as e:
+            raise ResetError(f"seed_memory clear_history failed: {e}") from e
