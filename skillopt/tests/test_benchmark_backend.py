@@ -141,6 +141,8 @@ def test_benchmark_runner_backend_rejects_skill_name_escape(tmp_path: Path):
         backend.prepare_phase_config(tmp_path / "phase-config", "../evil", "candidate skill")
 
     assert not (tmp_path / "evil" / "SKILL.md").exists()
+
+
 def test_benchmark_runner_backend_applies_mobilegym_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from skillopt import benchmark_backend
     from skillopt.benchmark_backend import BenchmarkRunnerBackend

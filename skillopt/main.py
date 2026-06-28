@@ -1143,15 +1143,6 @@ def _json_for_script(value) -> str:
     )
 
 
-def _json_for_script(value) -> str:
-    return (
-        json.dumps(value, ensure_ascii=False)
-        .replace("</", "<\\/")
-        .replace("\u2028", "\\u2028")
-        .replace("\u2029", "\\u2029")
-    )
-
-
 def _render_edit_rows(result: OptimizationResult) -> str:
     rows = []
     for step in result.steps:
