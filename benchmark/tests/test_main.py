@@ -267,7 +267,7 @@ def test_read_optional_token_fails_fast_for_empty_file(tmp_path):
     token_file = tmp_path / "control_token"
     token_file.write_text("  \n", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="benchmark token file .* is empty"):
+    with pytest.raises(ValueError, match=r"benchmark token file .* is empty"):
         main._read_optional_token(token_file)
 
 
