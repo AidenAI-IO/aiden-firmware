@@ -947,6 +947,8 @@ class BenchmarkWebApp:
                 job.raw_runs_dir,
                 "--state-file",
                 worker_job.state_file,
+                "--benchmark-token-file",
+                str(Path(job.config_dir) / "control_token"),
                 "--environment-url",
                 job.environment_endpoint,
             ]

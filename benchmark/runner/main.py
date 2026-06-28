@@ -668,9 +668,12 @@ def _read_optional_token(path: str | Path | None) -> str:
     if not raw:
         return ""
     try:
-        return Path(raw).read_text(encoding="utf-8").strip()
-    except OSError:
-        return ""
+        token = Path(raw).read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise ValueError(f"unable to read benchmark token file {raw!r}: {exc}") from exc
+    if not token:
+        raise ValueError(f"benchmark token file {raw!r} is empty")
+    return token
 
 
 def _new_agent_client(base_url: str, benchmark_token: str = "") -> AgentClient:
