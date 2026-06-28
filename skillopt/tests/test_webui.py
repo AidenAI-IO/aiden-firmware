@@ -1,6 +1,7 @@
 from pathlib import Path
 import io
 import json
+import logging
 import subprocess
 import threading
 import tomllib
@@ -95,6 +96,24 @@ def test_save_webui_settings_persists_optimizer_model(tmp_path: Path):
     settings = app.save_webui_settings({"skillopt": {"optimizer_model": "model-a, model-b"}})
 
     assert settings["skillopt"]["optimizer_model"] == "model-a, model-b"
+
+
+def test_load_historical_jobs_logs_malformed_job_dirs(tmp_path: Path, monkeypatch, caplog):
+    runs_dir = tmp_path / "runs"
+    job_dir = runs_dir / "skillopt-bad"
+    job_dir.mkdir(parents=True)
+    (job_dir / "skillopt.log").write_text("$ python -m skillopt\n", encoding="utf-8")
+
+    def fail_reconstruct(self, job_dir):
+        raise json.JSONDecodeError("bad json", "{", 0)
+
+    monkeypatch.setattr(SkillOptWebApp, "_reconstruct_job_from_disk", fail_reconstruct)
+
+    with caplog.at_level(logging.WARNING, logger="skillopt.webui"):
+        app = SkillOptWebApp(SkillOptWebUIConfig(runs_dir=runs_dir))
+
+    assert app.list_jobs() == []
+    assert "skipping malformed job dir skillopt-bad" in caplog.text
 
 
 def test_stop_job_terminates_process_group(tmp_path: Path, monkeypatch):
@@ -355,6 +374,19 @@ def test_running_job_payload_reports_benchmark_artifact_progress(tmp_path: Path)
         "summary": "baseline_selection: 1/3 completed, 2 running (task_running_one, task_running_two)",
     }
     assert payload["log_tail"] == "baseline_selection: 1/3 completed, 2 running (task_running_one, task_running_two)"
+
+
+def test_task_artifacts_complete_requires_trace_json(tmp_path: Path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    (task_dir / "post.jpg").write_text("", encoding="utf-8")
+    (task_dir / "judge.json").write_text("{}", encoding="utf-8")
+
+    assert webui.task_artifacts_complete(task_dir) is False
+
+    (task_dir / "trace.json").write_text("{}", encoding="utf-8")
+
+    assert webui.task_artifacts_complete(task_dir) is True
 
 
 def test_running_job_payload_prefers_skillopt_phase_records(tmp_path: Path):

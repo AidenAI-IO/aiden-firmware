@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
 import signal
@@ -25,6 +26,9 @@ from runner.judge import JudgeConfig
 from skillopt.benchmark_backend import load_benchmark_task_results
 from skillopt.phase_artifacts import latest_phase_record, load_phase_records, progress_from_phase_record
 from skillopt.score import task_result_to_rollout
+
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -92,6 +96,7 @@ class SkillOptWebApp:
         runs_dir = self.config.runs_dir
         if not runs_dir.exists():
             return
+        skipped = 0
         for job_dir in sorted(runs_dir.iterdir()):
             if not job_dir.is_dir():
                 continue
@@ -102,11 +107,15 @@ class SkillOptWebApp:
                 continue
             try:
                 job = self._reconstruct_job_from_disk(job_dir)
-                if job is not None:
-                    self._jobs[job.id] = job
-            except Exception:
-                # Skip malformed job directories silently
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                logger.warning("skipping malformed job dir %s: %s", job_dir.name, exc)
+                skipped += 1
                 continue
+            if job is not None:
+                self._jobs[job.id] = job
+        if skipped:
+            logger.info("skipped %d malformed job director%s during historical load",
+                        skipped, "y" if skipped == 1 else "ies")
 
     def _reconstruct_job_from_disk(self, job_dir: Path) -> SkillOptJob | None:
         """Build a SkillOptJob from the artifacts left on disk."""
@@ -1134,7 +1143,10 @@ def completed_task_ids_from_results(path: Path) -> set[str]:
 
 
 def task_artifacts_complete(task_dir: Path) -> bool:
-    return any((task_dir / name).exists() for name in ("trace.json", "post.jpg", "judge.json"))
+    # trace.json is written at the end of evaluate_task_history; its presence is
+    # the closest filesystem signal that a task ran to completion. post.jpg and
+    # judge.json can be present for tasks that crashed mid-evaluation.
+    return (task_dir / "trace.json").exists()
 
 
 def stage_from_phase(phase: str) -> str:
