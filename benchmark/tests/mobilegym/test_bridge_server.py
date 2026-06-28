@@ -13,7 +13,7 @@ import pytest
 
 from mobilegym.bridge.episode import BridgeEpisodeState, BridgeTaskRouter
 from mobilegym.bridge.actions import action_to_dict
-from mobilegym.bridge.server import BridgeServer
+from mobilegym.bridge.server import BridgeServer, DEFAULT_BRIDGE_REQUEST_TIMEOUT_SEC
 
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\nmobilegym-png"
@@ -213,6 +213,16 @@ def test_bridge_base_url_uses_public_host_override():
             assert base_url.startswith("http://bridge-container:")
         finally:
             server.stop()
+
+
+def test_bridge_server_default_request_timeout_covers_slow_mobilegym_actions():
+    assert DEFAULT_BRIDGE_REQUEST_TIMEOUT_SEC >= 180
+    with OwnerLoop() as owner:
+        env = FakeEnv(owner.loop)
+        state = BridgeEpisodeState(env, owner_loop=owner.loop)
+        server = BridgeServer(state, host="127.0.0.1", port=0)
+
+    assert server.request_timeout_sec == DEFAULT_BRIDGE_REQUEST_TIMEOUT_SEC
 
 
 def test_bridge_base_url_resolves_container_ip_when_bound_to_wildcard(monkeypatch):

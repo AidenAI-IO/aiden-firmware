@@ -24,11 +24,19 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from runner.agent_client import AgentClient
+from runner.analysis import AnalysisResult, analyze_run, config_from_env
 from runner.html_report import generate_report_html
 from runner.judge import JudgeConfig
 from runner.reset import ResetError, call_environment_release
 from runner.suite import load_suite
 from runner.unit import is_unit_suite
+
+try:
+    from benchmark.runner.environment import EnvironmentManager, MobileGymEnvironment
+    from benchmark.runner.config import AgentConfigManager
+except ImportError:
+    from runner.environment import EnvironmentManager, MobileGymEnvironment
+    from runner.config import AgentConfigManager
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -132,28 +140,6 @@ class Job:
     parallel_tasks: int = 1
 
 
-@dc.dataclass
-class MobileGymEnvironment:
-    id: str
-    name: str
-    endpoint: str
-    public_endpoint: str
-    web_url: str
-    status: str = "starting"
-    message: str = ""
-    created_at: str = ""
-    started_at: str = ""
-    stopped_at: str = ""
-    container_name: str = ""
-    container_id: str = ""
-    bridge_port: int = 0
-    web_port: int = 0
-    image: str = ""
-    log_path: str = ""
-    type: str = "mobilegym"
-    parallel_envs: int = DEFAULT_MOBILEGYM_PARALLEL_ENVS
-
-
 class BenchmarkWebApp:
     def __init__(self, config: WebUIConfig):
         self.config = config
@@ -165,8 +151,17 @@ class BenchmarkWebApp:
         self._job_runner_procs: dict[str, Any] = {}
         self._job_daemon_jobs: dict[str, list[Job]] = {}
         self._task_daemon_jobs: dict[str, list[Job]] = {}
-        self._mobilegym_environments: dict[str, MobileGymEnvironment] = {}
-        self._mobilegym_log_procs: dict[str, subprocess.Popen] = {}
+        self.env_manager = EnvironmentManager(
+            runs_dir=config.runs_dir,
+            mobilegym_image=config.mobilegym_image,
+            build_mobilegym_image=config.build_mobilegym_image,
+            ready_timeout_sec=config.mobilegym_ready_timeout_sec,
+            repo_root=REPO_ROOT,
+        )
+        self.config_manager = AgentConfigManager(
+            base_config_dir=config.base_config_dir,
+            config_path=config.agent_config_path or (config.runs_dir / "agent.toml"),
+        )
         self._migrate_persisted_webui_secret()
         self._load_persisted_jobs()
 
@@ -180,33 +175,27 @@ class BenchmarkWebApp:
         return jobs
 
     def get_agent_config(self) -> dict[str, Any]:
-        path = self._agent_config_path()
-        content, source = ensure_webui_agent_config(self.config.base_config_dir, path)
+        content, source = self.config_manager.get_config()
         return {
             "content": content,
-            "path": str(path),
+            "path": str(self.config_manager.config_path),
             "source": source,
         }
 
     def save_agent_config(self, payload: dict[str, Any]) -> dict[str, Any]:
         content = str(payload.get("content") or "")
-        validate_agent_toml(content)
-        path = self._agent_config_path()
-        write_text_atomic(path, content)
+        content, source = self.config_manager.save_config(content)
         return {
             "content": content,
-            "path": str(path),
-            "source": "saved",
+            "path": str(self.config_manager.config_path),
+            "source": source,
         }
 
     def reset_agent_config(self) -> dict[str, Any]:
-        path = self._agent_config_path()
-        if path.exists():
-            path.unlink()
-        content, source = ensure_webui_agent_config(self.config.base_config_dir, path)
+        content, source = self.config_manager.reset_config()
         return {
             "content": content,
-            "path": str(path),
+            "path": str(self.config_manager.config_path),
             "source": source,
         }
 
@@ -293,8 +282,10 @@ class BenchmarkWebApp:
             return {"ok": False, "error": {"code": "screen_request_failed", "message": str(exc)}}
 
     def list_mobilegym_environments(self) -> list[dict[str, Any]]:
-        with self._lock:
-            environments = [self._mobilegym_environment_payload(env) for env in self._mobilegym_environments.values()]
+        environments = [
+            self._mobilegym_environment_payload(env)
+            for env in self.env_manager.list_all()
+        ]
         environments.sort(key=lambda item: item.get("created_at", ""), reverse=True)
         return environments
 
@@ -305,96 +296,25 @@ class BenchmarkWebApp:
             default=DEFAULT_MOBILEGYM_PARALLEL_ENVS,
             field="parallel_envs",
         )
-        env_id = new_environment_id()
-        env_dir = self.config.runs_dir / "environments" / env_id
-        env_dir.mkdir(parents=True, exist_ok=True)
-        web_port = 0
-        bridge_port = 0
-        env = MobileGymEnvironment(
-            id=env_id,
-            name=name,
-            endpoint="",
-            public_endpoint="",
-            web_url="",
-            status="building",
-            message="ensuring Docker image",
-            created_at=now_iso(),
-            container_name=f"aiden-mobilegym-env-{env_id}",
-            bridge_port=bridge_port,
-            web_port=web_port,
-            image=self.config.mobilegym_image,
-            log_path=str(env_dir / "mobilegym.log"),
-            parallel_envs=parallel_envs,
-        )
-        with self._lock:
-            self._mobilegym_environments[env.id] = env
-
-        try:
-            ensure_mobilegym_image(self.config.mobilegym_image, self.config.build_mobilegym_image, Path(env.log_path))
-            self._set_mobilegym_environment(env, status="starting", message="starting container")
-            command = build_mobilegym_environment_command(
-                image=self.config.mobilegym_image,
-                container_name=env.container_name,
-                host_web_port=web_port,
-                host_bridge_port=bridge_port,
-                benchmark_dir=BENCHMARK_ROOT,
-                parallel_envs=parallel_envs,
-            )
-            append_log(Path(env.log_path), "$ " + " ".join(command))
-            container_id = subprocess.check_output(command, cwd=REPO_ROOT, text=True).strip()
-            web_port = docker_published_port(env.container_name, 4173)
-            bridge_port = docker_published_port(env.container_name, 9090)
-            self._set_mobilegym_environment(
-                env,
-                container_id=container_id,
-                bridge_port=bridge_port,
-                web_port=web_port,
-                endpoint=f"http://host.docker.internal:{bridge_port}",
-                public_endpoint=f"http://127.0.0.1:{bridge_port}",
-                web_url=f"http://127.0.0.1:{web_port}",
-                started_at=now_iso(),
-                message="waiting for bridge",
-            )
-            log_proc = start_docker_logs(env.container_name, Path(env.log_path))
-            if log_proc is not None:
-                with self._lock:
-                    self._mobilegym_log_procs[env.id] = log_proc
-            wait_for_http_health(f"{env.public_endpoint}/health", self.config.mobilegym_ready_timeout_sec)
-            self._set_mobilegym_environment(env, status="running", message="")
-            return self._mobilegym_environment_payload(env)
-        except Exception as exc:
-            append_log(Path(env.log_path), f"ERROR: {exc}")
-            subprocess.run(["docker", "rm", "-f", env.container_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-            self._stop_mobilegym_log_proc(env.id)
-            self._set_mobilegym_environment(env, status="failed", stopped_at=now_iso(), message=str(exc))
-            raise RuntimeError(f"failed to start MobileGym environment: {exc}") from exc
+        env = self.env_manager.start_mobilegym(name=name, parallel_envs=parallel_envs)
+        return self._mobilegym_environment_payload(env)
 
     def stop_mobilegym_environment(self, environment_id: str) -> dict[str, Any] | None:
-        with self._lock:
-            env = self._mobilegym_environments.get(environment_id)
-            if env is None:
-                return None
-            if env.status == "stopped":
-                return self._mobilegym_environment_payload(env)
-            env.status = "stopping"
-            env.message = "stopping container"
-        subprocess.run(["docker", "rm", "-f", env.container_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-        self._stop_mobilegym_log_proc(environment_id)
-        self._set_mobilegym_environment(env, status="stopped", stopped_at=now_iso(), message="")
+        env = self.env_manager.stop(environment_id)
+        if env is None:
+            return None
         return self._mobilegym_environment_payload(env)
 
     def delete_mobilegym_environment(self, environment_id: str) -> dict[str, Any] | None:
-        env = self.stop_mobilegym_environment(environment_id)
+        env = self.env_manager.delete(environment_id)
         if env is None:
             return None
-        with self._lock:
-            removed = self._mobilegym_environments.pop(environment_id, None)
-        return self._mobilegym_environment_payload(removed) if removed is not None else env
+        return self._mobilegym_environment_payload(env)
 
     def shutdown(self) -> None:
         with self._lock:
             job_ids = list(self._jobs)
-            environment_ids = list(self._mobilegym_environments)
+        environment_ids = [env.id for env in self.env_manager.list_all()]
         for job_id in job_ids:
             self.stop_job(job_id)
         for environment_id in environment_ids:
@@ -455,8 +375,7 @@ class BenchmarkWebApp:
         if environment_type == "device" and not environment_endpoint:
             environment_endpoint = endpoint.rstrip("/")
         if environment_type == "mobilegym":
-            with self._lock:
-                mobilegym_env = self._mobilegym_environments.get(environment_id)
+            mobilegym_env = self.env_manager.get(environment_id)
             if mobilegym_env is not None:
                 environment_endpoint = mobilegym_env.public_endpoint.rstrip("/")
                 environment_web_url = mobilegym_env.web_url
@@ -573,11 +492,6 @@ class BenchmarkWebApp:
             for key, value in updates.items():
                 setattr(job, key, value)
         self._persist_job(job)
-
-    def _set_mobilegym_environment(self, env: MobileGymEnvironment, **updates: Any) -> None:
-        with self._lock:
-            for key, value in updates.items():
-                setattr(env, key, value)
 
     def _job_stop_requested(self, job: Job) -> bool:
         with self._lock:
@@ -727,12 +641,6 @@ class BenchmarkWebApp:
                     setattr(record, key, value)
         self._persist_job(job)
 
-    def _stop_mobilegym_log_proc(self, environment_id: str) -> None:
-        with self._lock:
-            proc = self._mobilegym_log_procs.pop(environment_id, None)
-        if proc is not None and proc.poll() is None:
-            proc.terminate()
-
     def _run_job(self, job: Job) -> None:
         host_port = int(urllib.parse.urlparse(job.agent_url).port or 0)
         try:
@@ -810,7 +718,9 @@ class BenchmarkWebApp:
 
     def _refresh_job_report(self, job: Job) -> None:
         try:
-            report_url = write_job_report(job)
+            with self._lock:
+                analysis_api_key = self._job_judge_api_keys.get(job.id, "") or self._webui_judge_api_key
+            report_url = write_job_report(job, analysis_api_key=analysis_api_key)
         except Exception as exc:
             append_log(Path(job.runner_log), f"warning: failed to write job report: {exc}")
             return
@@ -2100,7 +2010,7 @@ def single_suite_report_url(results: list[dict[str, Any]]) -> str:
     return urls[0] if len(urls) == 1 else ""
 
 
-def write_job_report(job: Job) -> str:
+def write_job_report(job: Job, *, analysis_api_key: str = "") -> str:
     raw_runs_dir = Path(job.raw_runs_dir)
     if not raw_runs_dir.exists():
         return ""
@@ -2134,8 +2044,34 @@ def write_job_report(job: Job) -> str:
     with (report_dir / "results.jsonl").open("w", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+    _run_job_analysis_if_enabled(report_dir, job, analysis_api_key=analysis_api_key)
     (report_dir / "report.html").write_text(generate_report_html(report_dir), encoding="utf-8")
     return f"/reports/{job.id}/{JOB_REPORT_RUN_ID}/report.html"
+
+
+def _run_job_analysis_if_enabled(
+    report_dir: Path,
+    job: Job,
+    *,
+    analysis_api_key: str = "",
+) -> AnalysisResult | None:
+    cfg = config_from_env()
+    if not _analysis_env_is_set() and not job.no_judge and analysis_api_key:
+        cfg.enabled = True
+    if not cfg.enabled:
+        return None
+    if not os.environ.get("AIDEN_BENCHMARK_ANALYSIS_MODEL") and job.judge_model:
+        cfg.model = job.judge_model or DEFAULT_JUDGE_MODEL
+    if analysis_api_key:
+        cfg.api_key_value = analysis_api_key
+    result = analyze_run(report_dir, REPO_ROOT, cfg)
+    if not result.ok:
+        append_log(Path(job.runner_log), f"warning: WebUI LLM analysis failed: {result.warning}")
+    return result
+
+
+def _analysis_env_is_set() -> bool:
+    return bool(os.environ.get("AIDEN_BENCHMARK_LLM_ANALYSIS", "").strip())
 
 
 def merged_job_report_rows(job: Job) -> list[dict[str, Any]]:
@@ -3101,6 +3037,7 @@ INDEX_HTML = r"""<!doctype html>
     .status.running, .status.queued, .status.starting, .status.starting_agent, .status.preparing, .status.building { background: #edf5ff; color: var(--blue); }
     .status.canceled, .status.stopping { background: #fff8e1; color: var(--orange); }
     .status.stopped, .status.device { background: #e0e0e0; color: #525252; }
+    .status.unhealthy { background: #fff1f1; color: var(--orange); }
     .status.mobilegym { background: #e8daff; color: var(--purple); }
     .status-actions {
       display: flex;

@@ -138,11 +138,8 @@ def run_error_analyst_minibatch(
         return None
     system = _load_prompt("analyst_error")
     user = _build_user_prompt(skill_content, items, edit_budget, rejected_context, "Failed")
-    try:
-        raw = chat_optimizer(cfg, system=system, user=user)
-        result = extract_json(raw)
-    except OptimizerError:
-        return None
+    raw = chat_optimizer(cfg, system=system, user=user)
+    result = extract_json(raw)
     result["source_type"] = "failure"
     result.setdefault("batch_size", len(items))
     return RawPatch.from_dict(result)
@@ -160,11 +157,8 @@ def run_success_analyst_minibatch(
         return None
     system = _load_prompt("analyst_success")
     user = _build_user_prompt(skill_content, items, edit_budget, rejected_context, "Successful")
-    try:
-        raw = chat_optimizer(cfg, system=system, user=user)
-        result = extract_json(raw)
-    except OptimizerError:
-        return None
+    raw = chat_optimizer(cfg, system=system, user=user)
+    result = extract_json(raw)
     result["source_type"] = "success"
     result.setdefault("batch_size", len(items))
     return RawPatch.from_dict(result)

@@ -203,10 +203,11 @@ def test_generate_report_embeds_failed_task_error_log(tmp_path: Path):
     assert "Max Tool Calls" in task["error_log_detail"]
     assert "Requirement: Use at most 1 tool call(s)." in task["error_log_detail"]
     assert "Actual: Used 2 tool call(s)." in task["error_log_detail"]
-    assert "JudgeBoom" in task["error_log_detail"]
+    assert "JudgeBoom" not in task["error_log_detail"]
     assert "evidence_detail" not in task
     assert "tasks/task-1/trace.json" in task["artifacts_detail"]
     assert "tasks/task-1/history.json" in task["artifacts_detail"]
+    assert "tasks/task-1/judge.json" in task["artifacts_detail"]
     assert "<strong>Error Log</strong>" in html
 
 
@@ -248,7 +249,8 @@ def test_generate_report_accepts_relative_run_dir_with_task_artifacts(tmp_path: 
     task = _report_tasks(html)[0]
 
     assert "tasks/task-1/trace.json" in task["artifacts_detail"]
-    assert "JudgeBoom" in task["error_log_detail"]
+    assert "tasks/task-1/judge.json" in task["artifacts_detail"]
+    assert "JudgeBoom" not in task["error_log_detail"]
 
 
 def test_generate_report_includes_full_trace_with_screenshots(tmp_path: Path):
@@ -393,12 +395,12 @@ def test_generate_report_includes_llm_analysis_section(tmp_path: Path):
     )
     (run_dir / "results.jsonl").write_text("", encoding="utf-8")
     (run_dir / "llm_analysis.md").write_text(
-        "# LLM Benchmark Analysis\n\nRoot cause summary", encoding="utf-8"
+        "# LLM 基准分析\n\nRoot cause summary", encoding="utf-8"
     )
 
     html = generate_report_html(run_dir)
 
-    assert "LLM Analysis" in html
+    assert "LLM 分析" in html
     assert "Root cause summary" in html
 
 

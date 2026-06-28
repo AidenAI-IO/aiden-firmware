@@ -1,0 +1,91 @@
+{
+  "suite_name": "shopping_scenario_verification",
+  "description": "End-to-end verification scenarios for shopping workflows. Each scenario combines 2-3 capabilities tested in training, with relaxed hard assertions to ensure rubric evaluation runs.",
+  "tasks": [
+    {
+      "id": "v1_search_and_view",
+      "category": "multi_step",
+      "description_for_judge": "[E2E Level 1] Open eBay, search, view a product detail. Tests app launch + text input + tap navigation as a flow.",
+      "prompt": "Open the eBay app, search for 'bluetooth headphones', then tap the first product in the results to see its detail page.",
+      "rubric": [
+        { "id": "ebay_opened", "check": "Agent opened the eBay app." },
+        {
+          "id": "search_completed",
+          "check": "Search for headphones was executed and results shown."
+        },
+        {
+          "id": "product_detail_shown",
+          "check": "Final screenshot shows a product detail page (price, image, buy/watchlist buttons visible)."
+        },
+        {
+          "id": "logical_flow",
+          "check": "Agent followed the steps in order: open app -> search -> tap product (not random skipping)."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 4,
+        "max_tool_calls": 150,
+        "must_complete_within_sec": 600
+      }
+    },
+    {
+      "id": "v2_search_scroll_view",
+      "category": "multi_step",
+      "description_for_judge": "[E2E Level 2] Search, scroll through results, then view a product further down the list. Tests scroll calibration in a real workflow.",
+      "prompt": "In the eBay app, search for 'phone case'. Scroll down at least once to see more options, then tap any product to view its detail page.",
+      "rubric": [
+        { "id": "search_done", "check": "Search for phone case was executed." },
+        {
+          "id": "scroll_performed",
+          "check": "Agent scrolled the results page at least once."
+        },
+        {
+          "id": "scroll_verified",
+          "check": "Agent took a screenshot after scrolling to confirm content changed."
+        },
+        {
+          "id": "product_opened",
+          "check": "Final screenshot shows a product detail page (not the list view)."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 5,
+        "max_tool_calls": 150,
+        "must_complete_within_sec": 600
+      }
+    },
+    {
+      "id": "v3_browse_and_return",
+      "category": "multi_step",
+      "description_for_judge": "[E2E Level 3] Full browse-back-browse loop. Tests navigation discipline with state verification.",
+      "prompt": "In the eBay app, search for 'usb cable', tap any product to view it, then navigate back to the search results, and tap a different product. Each screen transition should be verified by screenshot.",
+      "rubric": [
+        {
+          "id": "first_product_viewed",
+          "check": "Agent opened a product detail page from search results."
+        },
+        {
+          "id": "back_navigation_used",
+          "check": "Agent used back gesture or button to return to results."
+        },
+        {
+          "id": "returned_to_results",
+          "check": "Screenshot after back action shows search results list (not home, not detail)."
+        },
+        {
+          "id": "second_product_viewed",
+          "check": "Agent opened a different product after returning to results."
+        },
+        {
+          "id": "verified_transitions",
+          "check": "Agent took screenshots between each navigation step."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 6,
+        "max_tool_calls": 150,
+        "must_complete_within_sec": 600
+      }
+    }
+  ]
+}

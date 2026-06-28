@@ -244,8 +244,15 @@ def _valid_run_id(run_id: str) -> bool:
 
 
 def _task_route_id(args: argparse.Namespace, suite: Suite, task_id: str, attempt: int, repeats: int) -> str:
-    prefix = str(args.benchmark_task_id or "").strip() or Path(str(suite.source_path)).name
-    route_id = f"{prefix}:{task_id}"
+    explicit = str(args.benchmark_task_id or "").strip()
+    if explicit:
+        # Caller (e.g., WebUI) provided the full route id already.
+        # Trust it as-is to avoid double-concatenation like "suite:task:task".
+        route_id = explicit
+    else:
+        # No explicit id: build "<suite_filename>:<task_id>" as the route id.
+        prefix = Path(str(suite.source_path)).name
+        route_id = f"{prefix}:{task_id}"
     if repeats > 1:
         route_id = f"{route_id}:attempt-{attempt}"
     return route_id
