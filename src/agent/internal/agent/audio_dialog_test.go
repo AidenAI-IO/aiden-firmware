@@ -334,20 +334,21 @@ func TestAudioDialogStopRecordingFallsBackToOneShotWhenStreamingFinalizeTimesOut
 	}
 }
 
-func TestNewAudioDialogAudioWakeupUsesDirectAudioPath(t *testing.T) {
+func TestNewAudioDialogSTTWakeupCreatesSTTClient(t *testing.T) {
 	dialog, err := NewAudioDialog(Config{
 		Model:       ModelConfig{Provider: "fake"},
 		TTS:         TTSConfig{Provider: "minimax-cn", APIKey: "test-key"},
+		STT:         STTConfig{Provider: "openai-whisper"},
 		Audio:       AudioConfig{Socket: "/tmp/audio.sock", SampleRate: 16000},
-		InputMode:   "audio",
+		InputMode:   "stt",
 		TriggerMode: "wakeup",
 	})
 	if err != nil {
 		t.Fatalf("NewAudioDialog() error = %v", err)
 	}
 
-	if dialog.sttClient != nil {
-		t.Fatal("audio input mode should not create an STT client")
+	if dialog.sttClient == nil {
+		t.Fatal("stt input mode should create an STT client")
 	}
 	if dialog.audioClient.socketPath != "/tmp/audio.sock" {
 		t.Fatalf("audio socket = %q, want /tmp/audio.sock", dialog.audioClient.socketPath)
@@ -364,83 +365,15 @@ func TestNewAudioDialogIgnoresInvalidOptionalTTS(t *testing.T) {
 	dialog, err := NewAudioDialog(Config{
 		Model:     ModelConfig{Provider: "fake"},
 		TTS:       TTSConfig{Provider: "missing-provider", APIKey: "test-key"},
+		STT:       STTConfig{Provider: "openai-whisper"},
 		Audio:     AudioConfig{Socket: "/tmp/audio.sock", SampleRate: 16000},
-		InputMode: "audio",
+		InputMode: "stt",
 	})
 	if err != nil {
 		t.Fatalf("NewAudioDialog() error = %v", err)
 	}
 	if dialog.ttsManager != nil {
 		t.Fatalf("ttsManager = %#v, want nil after optional TTS init failure", dialog.ttsManager)
-	}
-}
-
-func TestProcessUtteranceAudioModeSendsWAVAttachmentToRuntime(t *testing.T) {
-	model := &scriptedModel{
-		responses: roleDirectResponses("heard it"),
-	}
-	runtime := NewRuntimeWithDeps(
-		Config{
-			Model:       ModelConfig{Provider: "fake"},
-			Instruction: "Use attached audio.",
-		},
-		&testModelResolver{model: model},
-		NewMemoryManager(""),
-		&ToolSet{tools: map[string]langtools.Tool{}},
-		NewSkillIndex(),
-	)
-
-	provider := &recordingTTSProvider{name: "dialog-provider"}
-	audioClient := NewAudioServiceClient(startTTSPlaybackAudioSocket(t))
-	dialog := &AudioDialog{
-		config: Config{
-			Model:                    ModelConfig{Provider: "fake"},
-			Audio:                    AudioConfig{SampleRate: 16000},
-			InputMode:                "audio",
-			VoiceStreamingTTSEnabled: boolPtr(false),
-		},
-		audioClient:  audioClient,
-		ttsManager:   ttsmodule.NewProviderManager(provider, nil),
-		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
-	}
-
-	if err := dialog.ProcessUtterance(context.Background(), []int16{100, -100, 200, -200}, runtime); err != nil {
-		t.Fatalf("ProcessUtterance() error = %v", err)
-	}
-	if len(model.messages) != 1 {
-		t.Fatalf("expected one default-mode planner model call, got %d", len(model.messages))
-	}
-
-	plannerMessages := model.messages[0]
-	if len(plannerMessages) < 3 {
-		t.Fatalf("expected system, raw audio input, and runtime state messages, got %#v", plannerMessages)
-	}
-	userMessage := plannerMessages[len(plannerMessages)-2]
-	stateMessage := plannerMessages[len(plannerMessages)-1]
-	if stateMessage.Role != llms.ChatMessageTypeHuman || !strings.Contains(messageText(plannerMessages[len(plannerMessages)-1:]), "Planner runtime context (synthetic; not a new user request):") {
-		t.Fatalf("expected final planner message to be runtime state context, got %#v", stateMessage)
-	}
-	var text string
-	var audio []byte
-	for _, part := range userMessage.Parts {
-		switch p := part.(type) {
-		case llms.TextContent:
-			text = p.Text
-		case llms.BinaryContent:
-			if p.MIMEType == "audio/wav" {
-				audio = p.Data
-			}
-		}
-	}
-
-	if text != "Voice audio input" || strings.Contains(text, "recording.wav") || strings.Contains(text, "Attached content") {
-		t.Fatalf("expected raw audio input text without attachment description, got %q", text)
-	}
-	if len(audio) < 48 || string(audio[:4]) != "RIFF" || string(audio[8:12]) != "WAVE" {
-		t.Fatalf("expected WAV binary attachment, got %d bytes", len(audio))
-	}
-	if got := provider.texts(); len(got) != 1 || got[0] != "heard it" {
-		t.Fatalf("unexpected TTS texts: %#v", got)
 	}
 }
 
@@ -467,9 +400,10 @@ func TestProcessUtteranceSpeaksFullOutputWhenSpeechMissing(t *testing.T) {
 		config: Config{
 			Model:                    ModelConfig{Provider: "fake"},
 			Audio:                    AudioConfig{SampleRate: 16000},
-			InputMode:                "audio",
+			InputMode:                "stt",
 			VoiceStreamingTTSEnabled: boolPtr(false),
 		},
+		sttClient:    &stubSTTClient{transcript: "check volume"},
 		audioClient:  NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
 		ttsManager:   ttsmodule.NewProviderManager(provider, nil),
 		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
@@ -531,10 +465,11 @@ func TestAudioDialogSpeaksToolContentAsynchronously(t *testing.T) {
 		config: Config{
 			Model:                    ModelConfig{Provider: "fake"},
 			Audio:                    AudioConfig{SampleRate: 16000},
-			InputMode:                "audio",
+			InputMode:                "stt",
 			VoiceStreamingTTSEnabled: boolPtr(false),
 			VoiceToolCallSpeech:      &toolSpeech,
 		},
+		sttClient:    &stubSTTClient{transcript: "check volume"},
 		audioClient:  NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
 		ttsManager:   ttsmodule.NewProviderManager(provider, nil),
 		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
@@ -906,9 +841,10 @@ func TestAudioDialogProcessUtteranceAppendsToHistoryStore(t *testing.T) {
 		config: Config{
 			Model:                    ModelConfig{Provider: "fake"},
 			Audio:                    AudioConfig{SampleRate: 16000},
-			InputMode:                "audio",
+			InputMode:                "stt",
 			VoiceStreamingTTSEnabled: boolPtr(false),
 		},
+		sttClient:    &stubSTTClient{transcript: "voice question"},
 		audioClient:  audioClient,
 		ttsManager:   ttsmodule.NewProviderManager(provider, nil),
 		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
@@ -924,11 +860,11 @@ func TestAudioDialogProcessUtteranceAppendsToHistoryStore(t *testing.T) {
 		t.Fatalf("Load() error = %v", err)
 	}
 	userMessage, ok := firstAudioDialogTestMessageOfType(messages, "user")
-	if !ok || userMessage.Source != "voice" || userMessage.Modality != "audio" || userMessage.Content != voiceAudioInputPlaceholder {
-		t.Fatalf("user audio message = %#v in %#v", userMessage, messages)
+	if !ok || userMessage.Source != "voice" || userMessage.Modality != TurnModalitySTT || userMessage.Content != "voice question" {
+		t.Fatalf("user voice message = %#v in %#v", userMessage, messages)
 	}
-	if len(userMessage.Attachments) != 1 || userMessage.Attachments[0].Kind != AttachmentKindAudio || userMessage.Attachments[0].Data != "" {
-		t.Fatalf("user audio attachment should be metadata-only: %#v", userMessage.Attachments)
+	if len(userMessage.Attachments) != 0 {
+		t.Fatalf("user voice message should not include audio attachments: %#v", userMessage.Attachments)
 	}
 	roleOutput, ok := firstAudioDialogTestMessageOfType(messages, "role_output")
 	if !ok || roleOutput.Source != "voice" || roleOutput.Content != "voice reply" {
@@ -1310,7 +1246,8 @@ func TestAudioDialogProcessUtteranceSavesAudioFile(t *testing.T) {
 
 	cfg := Config{
 		ConfigDir: tmpDir,
-		InputMode: "audio",
+		InputMode: "stt",
+		STT:       STTConfig{Provider: "openai-whisper"},
 		Audio:     AudioConfig{SampleRate: 16000},
 		AudioArchive: AudioArchiveConfig{
 			Enabled:     true,

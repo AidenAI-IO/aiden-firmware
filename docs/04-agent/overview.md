@@ -43,7 +43,6 @@ Determined by `input_mode` in `agent.toml`:
 | --- | --- |
 | `text` | Start HTTP server and Web UI |
 | `stt` | Device recording → VAD → STT → LLM → TTS |
-| `audio` | Device recording → audio attachment to LLM → TTS |
 
 Currently, one daemon instance can only run in one mode: Web UI mode and device voice mode cannot run simultaneously in the same process.
 
