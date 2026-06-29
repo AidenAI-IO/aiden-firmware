@@ -92,7 +92,7 @@ func TestRolePromptsIncludeGlobalEnvironmentAndDeviceGuidance(t *testing.T) {
 			"do not answer from general knowledge alone",
 			"For text-only arithmetic, comparison, summarization, translation, or simple Q&A tasks",
 			"do not observe, wait on, or operate the connected display",
-			"适合 TTS",
+			"suitable for TTS",
 			"device-operator",
 			"visible target UI",
 			"wait_for_stable_screen screenshot",

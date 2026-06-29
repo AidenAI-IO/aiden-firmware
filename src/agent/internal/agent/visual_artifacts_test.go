@@ -71,11 +71,14 @@ func TestExecuteToolCallFailsWhenVisualObservationCannotBeExternalized(t *testin
 		VisualArtifacts: store,
 	})
 
-	if !result.Result.IsError {
+	if !result.Result.IsError() {
 		t.Fatal("result.IsError = false, want true")
 	}
 	if result.Result.Error == nil {
 		t.Fatal("result.Error = nil, want visual artifact error")
+	}
+	if result.Result.Error.Code != CodeToolExecutionFailed {
+		t.Fatalf("result.Error.Code = %q, want %q", result.Result.Error.Code, CodeToolExecutionFailed)
 	}
 	if !strings.Contains(result.Result.Output, "failed to store visual artifact:") {
 		t.Fatalf("result output = %q, want visual artifact failure", result.Result.Output)
@@ -89,7 +92,7 @@ func TestExecuteToolCallFailsWhenVisualObservationCannotBeExternalized(t *testin
 	if len(callback.results) != 1 {
 		t.Fatalf("callback results = %d, want 1", len(callback.results))
 	}
-	if strings.Contains(callback.results[0].Output, encoded) || !callback.results[0].IsError {
+	if strings.Contains(callback.results[0].Output, encoded) || !callback.results[0].IsError() {
 		t.Fatalf("callback result did not surface sanitized failure: %#v", callback.results[0])
 	}
 }
