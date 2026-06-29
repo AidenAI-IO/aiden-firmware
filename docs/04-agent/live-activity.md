@@ -137,7 +137,7 @@ In ordinary deployments, the app registers tokens directly with relay, and the a
 
 ## Configuration
 
-Agent-side state snapshot is enabled by default. Background/lock-screen/Dynamic Island remote updates go through Aiden Live Activity relay. App foreground local updates do not read relay config. Official firmware preconfigures `relay_url` and `relay_api_key` in `overlay/userdata/agent/agent.toml`, so users do not need to know or enter the key after flashing the board.
+Agent-side state snapshot is enabled by default. Background/lock-screen/Dynamic Island remote updates go through Aiden Live Activity relay. App foreground local updates do not read relay config. Official firmware preconfigures `relay_url` and `relay_api_key` in `overlay/userdata/agent/agent.toml`, so users do not need to know or enter the key after flashing the board. Each board generates a persistent `board_id` in `/userdata/agent/board_id`; empty or `default` board IDs are not valid relay identities.
 
 Advanced deployments can override relay config. Do not put Apple APNs `.p8` files on the board:
 
@@ -146,10 +146,12 @@ Advanced deployments can override relay config. Do not put Apple APNs `.p8` file
 enabled = true
 relay_url = "https://apns-test.aidenai.io"
 relay_api_key = "shared-relay-token"
-board_id = "board-001" # must match the app LIVE_ACTIVITY_BOARD_ID
+# board_id is normally generated automatically at /userdata/agent/board_id.
+# Advanced deployments may set a non-default value explicitly.
+board_id = "board-001"
 ```
 
-`relay_api_key` is a relay-deployment shared Bearer token. It should match the iOS app build config `LIVE_ACTIVITY_RELAY_API_KEY` and relay server environment variable `AIDEN_RELAY_API_KEY`. It only gates app token registration and agent state reporting; do not treat it as a per-board identity. Phone identity comes from the companion app at runtime; the board does not expose a manual `phone_id` relay fallback. APNs Auth Key, Team ID, Key ID, and token registry stay on relay/backend.
+`relay_api_key` is a relay-deployment shared Bearer token. It should match the iOS app build config `LIVE_ACTIVITY_RELAY_API_KEY` and relay server environment variable `AIDEN_RELAY_API_KEY`. It only gates app token registration and agent state reporting; do not treat it as a per-board identity. Board identity comes from the board at runtime; the app should read it from the board instead of hard-coding a shared value. Phone identity comes from the companion app at runtime; the board does not expose a manual `phone_id` relay fallback. APNs Auth Key, Team ID, Key ID, and token registry stay on relay/backend.
 
 Do not put APNs `.p8` files in open-source repos or user boards. Recommended form is:
 

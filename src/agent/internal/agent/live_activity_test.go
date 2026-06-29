@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -193,6 +194,18 @@ func TestLiveActivityManagerPublishesToRelay(t *testing.T) {
 	}
 }
 
+func TestLiveActivityRelayRequiresNonDefaultBoardID(t *testing.T) {
+	for _, boardID := range []string{"", "default", " DEFAULT "} {
+		_, err := NewLiveActivityRelayClient(LiveActivityConfig{
+			RelayURL: "https://relay.example.com",
+			BoardID:  boardID,
+		})
+		if !errors.Is(err, errLiveActivityRelayBoardIDRequired) {
+			t.Fatalf("NewLiveActivityRelayClient(board_id=%q) error = %v, want board id required", boardID, err)
+		}
+	}
+}
+
 func TestLiveActivityManagerPublishesTerminalStateToRelayAsStandby(t *testing.T) {
 	requests := make(chan map[string]interface{}, 3)
 	relay := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -340,6 +353,34 @@ func TestServerLiveActivityCurrent(t *testing.T) {
 	}
 	if resp.Status != "ok" || resp.LiveActivity.RequestID != "req-1" || resp.LiveActivity.Phase != LiveActivityPhasePlanning {
 		t.Fatalf("unexpected current response: %#v", resp)
+	}
+}
+
+func TestServerBridgeStatusIncludesBoardIDWithoutBridge(t *testing.T) {
+	server := &Server{
+		runtime: &Runtime{
+			config: Config{
+				LiveActivity: LiveActivityConfig{BoardID: "board-1"},
+			},
+		},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/phone-bridge/status", nil)
+	rec := httptest.NewRecorder()
+
+	server.handleBridgeStatus(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want 200", rec.Code)
+	}
+	var status PhoneBridgeStatus
+	if err := json.NewDecoder(rec.Body).Decode(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status.BoardID != "board-1" {
+		t.Fatalf("board_id = %q, want board-1", status.BoardID)
+	}
+	if status.Connected {
+		t.Fatalf("connected = true, want false")
 	}
 }
 

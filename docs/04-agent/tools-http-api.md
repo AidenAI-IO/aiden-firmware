@@ -74,9 +74,12 @@ Tool execution failures are also returned in JSON format. Check:
 | `wait_for_wakeup` | system | `{"reason":"user asked me to wait for wakeup"}` |
 | `keyboard_tap` | input | `{"keys":["ctrl","c"]}` |
 | `keyboard_text` | input | `{"text":"hello world"}` |
+| `list_scripts` | demo | `{}` |
 | `mouse_click` | input | `{"x":500,"y":500,"button":"left","coord_space":"normalized"}` |
 | `mouse_move` | input | `{"x":500,"y":500,"coord_space":"normalized"}` |
 | `mouse_scroll` | input | `{"delta":-3}` |
+| `read_script` | demo | `{"file":"demo.jsonl"}` |
+| `run_script` | demo | `{"file":"demo.jsonl"}` |
 | `screenshot` | observation | `{}` |
 | `shell` | system | `{"command":"pwd"}` |
 | `skill_list` | skills | `{"query":"planner","include_archived":false}` |
@@ -84,6 +87,7 @@ Tool execution failures are also returned in JSON format. Check:
 | `skill_read` | skills | `{"name":"planner"}` |
 | `touch_gesture` | input | `{"type":"tap","point":{"x":500,"y":500}}` / `{"type":"back"}` / `{"type":"home"}` |
 | `weather` | system | `{"location":"Shanghai"}` |
+| `write_script` | demo | `{"file":"demo.jsonl","content":"# 演示\n{\"type\":\"wait\",\"ms\":500}"}` |
 
 `skill_manage` is an internal skill maintenance tool available to the runtime Agent but not exposed via the HTTP Tool API.
 
@@ -120,6 +124,7 @@ For `touch_gesture`, `back` swipes from near the left physical edge, and `home` 
 `current_time` supports IANA timezone names (e.g., `Asia/Shanghai`, `America/New_York`), `UTC`, `local`, and UTC offsets (e.g., `+08:00`).
 `weather` supports location names or latitude/longitude coordinates, fetching geocoding, current weather, and short-term forecasts from Open-Meteo at runtime.
 `wait_for_wakeup` is a terminating runtime tool. After a successful tool call, it immediately ends the current Agent run and returns the voice interaction to waiting for the next wakeup; it does not ask the model to provide an additional final answer. The run result will set `wait_for_wakeup_requested` / `wait_for_wakeup_reason`; the old fields `sleep_requested` / `sleep_reason` are retained as compatibility aliases only.
+`run_script` executes local JSONL demo scripts from the config directory's `scripts/` folder, without calling the LLM between script steps. Input accepts only a filename, such as `{"file":"demo.jsonl"}`; full paths or subdirectories are not allowed. Each non-empty line is a JSON instruction, for example `{"type":"wait","ms":500}`, `{"type":"tts","text":"Opening settings"}`, `{"type":"call","tool":"touch_gesture","input":{"type":"tap","point":{"x":500,"y":500}}}`; shorthand is also supported: `{"wait":500}`, `{"tts":"Opening settings"}`, `{"call":{"tool":"screenshot","input":{}}}`. `tts` starts voice playback asynchronously and immediately continues to the next line without waiting for synthesis or playback to complete; the corresponding step in the returned result will include the original `text` and `output:"queued"`; the script stops at the first synchronous error.
 
 ## Recommendations for External Agents
 

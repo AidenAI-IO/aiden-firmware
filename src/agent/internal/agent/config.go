@@ -1,12 +1,15 @@
 package agent
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -36,7 +39,10 @@ const (
 	braveSearchAPIKeyEnv = "BRAVE_SEARCH_API_KEY"
 
 	defaultLiveActivityTimeout = 10 * time.Second
+	liveActivityBoardIDFile    = "board_id"
 )
+
+var liveActivityBoardIDMu sync.Mutex
 
 func (s SearchConfig) ProviderOrDefault() string {
 	return normalizeSearchProvider(s.Provider)
@@ -438,7 +444,14 @@ func LoadConfigFromDir(configDir string) (Config, error) {
 // directory. It preserves the historic agent.toml -> agent.json lookup while
 // returning a config with runtime defaults resolved.
 func LoadRuntimeConfigFromDir(configDir string) (Config, error) {
-	return loadConfigFromDir(configDir, LoadRuntimeConfig)
+	cfg, err := loadConfigFromDir(configDir, LoadRuntimeConfig)
+	if err != nil {
+		return Config{}, err
+	}
+	if err := ensureRuntimeLiveActivityBoardID(&cfg); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
 }
 
 type configFileLoader func(string) (Config, error)
@@ -974,10 +987,100 @@ func (l LiveActivityConfig) RelayConfigured() bool {
 }
 
 func (l LiveActivityConfig) BoardIDOrDefault() string {
-	if boardID := strings.TrimSpace(l.BoardID); boardID != "" {
-		return boardID
+	return normalizeLiveActivityBoardID(l.BoardID)
+}
+
+func normalizeLiveActivityBoardID(boardID string) string {
+	boardID = strings.TrimSpace(boardID)
+	if boardID == "" || strings.EqualFold(boardID, "default") {
+		return ""
 	}
-	return "default"
+	return boardID
+}
+
+func ensureRuntimeLiveActivityBoardID(cfg *Config) error {
+	if cfg == nil || !cfg.LiveActivity.EnabledOrDefault() {
+		return nil
+	}
+	if boardID := cfg.LiveActivity.BoardIDOrDefault(); boardID != "" {
+		cfg.LiveActivity.BoardID = boardID
+		return nil
+	}
+	if strings.TrimSpace(cfg.ConfigDir) == "" {
+		return nil
+	}
+	boardID, err := loadOrCreateLiveActivityBoardID(cfg.ConfigDir)
+	if err != nil {
+		return fmt.Errorf("live_activity.board_id: %w", err)
+	}
+	cfg.LiveActivity.BoardID = boardID
+	return nil
+}
+
+func loadOrCreateLiveActivityBoardID(configDir string) (string, error) {
+	liveActivityBoardIDMu.Lock()
+	defer liveActivityBoardIDMu.Unlock()
+
+	path := filepath.Join(configDir, liveActivityBoardIDFile)
+	if data, err := os.ReadFile(path); err == nil {
+		if boardID := normalizeLiveActivityBoardID(string(data)); boardID != "" {
+			return boardID, nil
+		}
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("read %s: %w", path, err)
+	}
+
+	boardID, err := generateLiveActivityBoardID()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		return "", fmt.Errorf("create config dir %s: %w", configDir, err)
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		if !os.IsExist(err) {
+			return "", fmt.Errorf("create %s: %w", path, err)
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return "", fmt.Errorf("read existing %s: %w", path, readErr)
+		}
+		existing := normalizeLiveActivityBoardID(string(data))
+		if existing != "" {
+			return existing, nil
+		}
+		if err := os.WriteFile(path, []byte(boardID+"\n"), 0o600); err != nil {
+			return "", fmt.Errorf("replace invalid %s: %w", path, err)
+		}
+		return boardID, nil
+	}
+	if _, err := file.WriteString(boardID + "\n"); err != nil {
+		_ = file.Close()
+		return "", fmt.Errorf("write %s: %w", path, err)
+	}
+	if err := file.Close(); err != nil {
+		return "", fmt.Errorf("close %s: %w", path, err)
+	}
+	return boardID, nil
+}
+
+func generateLiveActivityBoardID() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("generate random board id: %w", err)
+	}
+	raw[6] = (raw[6] & 0x0f) | 0x40
+	raw[8] = (raw[8] & 0x3f) | 0x80
+	encoded := make([]byte, 32)
+	hex.Encode(encoded, raw[:])
+	return fmt.Sprintf("board-%s-%s-%s-%s-%s",
+		encoded[0:8],
+		encoded[8:12],
+		encoded[12:16],
+		encoded[16:20],
+		encoded[20:32],
+	), nil
 }
 
 func (l LiveActivityConfig) APNsTopic() string {
