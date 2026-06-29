@@ -20,6 +20,7 @@ from skillopt.optimizer_client import (
     chat_optimizer,
     extract_json,
 )
+from skillopt.score import rollout_sample_quality
 from skillopt.types import RawPatch, RolloutResult
 
 
@@ -172,8 +173,8 @@ def run_reflect(
     rejected_context: str = "",
 ) -> list[RawPatch]:
     """Split rollouts by hard score and run both analysts. Returns non-None patches."""
-    failures = [r for r in rollouts if r.hard == 0]
-    successes = [r for r in rollouts if r.hard == 1]
+    failures = [r for r in rollouts if r.hard == 0 and rollout_sample_quality(r).include_in_reflect]
+    successes = [r for r in rollouts if r.hard == 1 and rollout_sample_quality(r).include_in_reflect]
     out: list[RawPatch] = []
     fail_patch = run_error_analyst_minibatch(cfg, skill_content, failures, edit_budget, rejected_context)
     if fail_patch is not None:

@@ -103,10 +103,10 @@ After a failed attempt:
 
 1. Observe with `screenshot`.
 2. Compare expected vs observed result.
-3. Do not repeat the exact same action more than once.
+3. Avoid repeating the exact same failed action; if one repeat is justified, change one variable and verify the result before trying again.
 4. Change one variable at a time: target location, gesture type, coordinate space, navigation path, or input method.
-5. After 2 failed attempts on the same goal, choose a different strategy.
-6. After 3 failed attempts total, summarize what was tried and ask the user or switch to diagnosis.
+5. After 2 failed attempts on the same goal, change strategy instead of retrying the same path.
+6. After 3 failed attempts total on the same goal, pause repeated UI actions, summarize what changed, then switch to diagnosis, a different path, or a user-facing blocker if no new evidence suggests progress.
 
 Keep an internal attempt log:
 
@@ -119,6 +119,8 @@ Next adjustment:
 ```
 
 Only report the log when the task is blocked or the user asks.
+
+If the device is detected to be locked and standard unlock gestures (swipe up from bottom, home quick_action) fail twice consecutively, stop repeating unlock gestures; switch to diagnosis or report the locked device as a blocker with the attempts tried. Do not keep repeating unlock gestures unless fresh evidence shows a different unlock path.
 
 ## Recovery Strategies
 

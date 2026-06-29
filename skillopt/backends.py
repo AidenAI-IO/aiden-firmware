@@ -52,17 +52,17 @@ class AidenDeviceBackend:
         run_root: Path,
         judge_cfg: JudgeConfig | None,
     ) -> list[RolloutResult]:
-        del skill_name
         current_disk = skill_path.read_text(encoding="utf-8") if skill_path.exists() else ""
         if skill_text != current_disk:
             with with_skill_override(self.client, skill_path, skill_text):
-                return self._run_tasks(suite, tasks, phase, run_id, run_root, judge_cfg)
-        return self._run_tasks(suite, tasks, phase, run_id, run_root, judge_cfg)
+                return self._run_tasks(suite, tasks, skill_name, phase, run_id, run_root, judge_cfg)
+        return self._run_tasks(suite, tasks, skill_name, phase, run_id, run_root, judge_cfg)
 
     def _run_tasks(
         self,
         suite: Suite,
         tasks: list[TaskSpec],
+        skill_name: str,
         phase: str,
         run_id: str,
         run_root: Path,
@@ -80,6 +80,7 @@ class AidenDeviceBackend:
                 judge_cfg=judge_cfg,
                 judge_cache_dir=judge_cache,
                 run_id=run_id,
+                active_skills=[skill_name] if skill_name else [],
             )
             rollouts.append(task_result_to_rollout(result))
         return rollouts

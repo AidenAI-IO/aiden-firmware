@@ -858,7 +858,7 @@ class BenchmarkWebApp:
         token = record.id
         benchmark_task_id = record.benchmark_task_id
         self._raise_if_task_worker_stop_requested(job, token)
-        host_port = reserve_free_port()
+        host_port = 0
         worker_job = Job(
             id=f"{job.id}-{token}",
             endpoint=job.endpoint,
@@ -912,6 +912,9 @@ class BenchmarkWebApp:
                         or self._task_stop_requested(job, token)
                     ),
                 )
+                published_port = docker_published_port(container_id, 8080)
+                worker_job.agent_url = f"http://127.0.0.1:{published_port}"
+                self._set_task_record(job, token, agent_url=worker_job.agent_url)
             except JobStopped:
                 if self._task_stop_requested(job, token) and not self._job_stop_requested(job):
                     raise TaskStopped("task stop requested")
@@ -1464,6 +1467,9 @@ def default_agent_toml() -> str:
             'trigger_mode = "manual"',
             "max_iterations = -1",
             "force_simple_loop = false",
+            "voice_streaming_tts_enabled = false",
+            "voice_tool_call_speech = false",
+            "voice_progress_speech_enabled = false",
             "screenshot_keep_n = 3",
             "screenshot_prune_interval = 25",
             "screen_stable_timeout_ms = 3500",

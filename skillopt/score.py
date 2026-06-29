@@ -6,6 +6,9 @@ current by min_delta to be accepted).
 """
 from __future__ import annotations
 import dataclasses as dc
+import json
+import re
+from typing import Any
 
 from runner.models import TaskResult
 from skillopt.types import RolloutResult
@@ -13,6 +16,81 @@ from skillopt.types import RolloutResult
 
 # Default acceptance threshold (validation_score gain).
 DEFAULT_MIN_DELTA = 0.03
+TIMEOUT_SCORE_WEIGHT = 0.35
+EXTERNAL_BLOCKER_SCORE_WEIGHT = 0.5
+
+
+@dc.dataclass(frozen=True)
+class SampleQuality:
+    kind: str = "clean"
+    reason: str = ""
+    include_in_score: bool = True
+    score_weight: float = 1.0
+    include_in_reflect: bool = True
+
+    @property
+    def is_clean(self) -> bool:
+        return (
+            self.kind == "clean"
+            and self.include_in_score
+            and self.include_in_reflect
+            and self.score_weight == 1.0
+        )
+
+    def to_extras(self) -> dict[str, Any]:
+        return {
+            "sample_quality": self.kind,
+            "sample_quality_reason": self.reason,
+            "score_weight": self.score_weight,
+            "score_excluded": not self.include_in_score,
+            "reflect_excluded": not self.include_in_reflect,
+        }
+
+
+_SYSTEM_ERROR_MARKERS = (
+    "agent error",
+    "http 500",
+    "http 502",
+    "http 503",
+    "http 504",
+    "planner/executor role model call timed out",
+    "role model call timed out",
+    "model call timed out",
+    "docker",
+    "docker compose",
+    "container exited",
+    "setup:",
+    "setup endpoint timed out",
+    "setup endpoint failed",
+    "no_bridge_env_available",
+    "worker failed",
+    "page crashed",
+    "target crashed",
+)
+
+_ZERO_TOOL_MARKERS = (
+    "no tool call",
+    "0 tool call",
+    "zero tool",
+    "final response empty",
+    "empty final response",
+    "missing aiden_last_chat_history",
+)
+
+_EXTERNAL_BLOCKER_MARKERS = (
+    "locked device",
+    "device is locked",
+    "lock screen",
+    "requires login",
+    "authentication required",
+    "no result",
+    "no results",
+    "0 results",
+    "no visible result",
+    "unavailable",
+    "not available",
+    "out of stock",
+)
 
 
 def task_result_to_rollout(tr: TaskResult) -> RolloutResult:
@@ -45,6 +123,7 @@ def task_result_to_rollout(tr: TaskResult) -> RolloutResult:
             if not fail_reason:
                 fail_reason = "failed"
 
+    quality = task_result_sample_quality(tr, fail_reason=fail_reason)
     return RolloutResult(
         id=tr.task_id,
         hard=hard,
@@ -53,7 +132,171 @@ def task_result_to_rollout(tr: TaskResult) -> RolloutResult:
         fail_reason=fail_reason,
         task_description=tr.description_for_judge,
         artifact_dir=tr.artifact_dir,
+        extras=quality.to_extras(),
     )
+
+
+def task_result_sample_quality(tr: TaskResult, *, fail_reason: str = "") -> SampleQuality:
+    metrics = tr.metrics or {}
+    status = str(tr.status or "")
+    text = _quality_text(
+        status,
+        fail_reason,
+        metrics,
+        getattr(tr, "hard_assertions", None),
+        getattr(tr, "hard_assertion_failures", []),
+        getattr(tr, "rubric", []),
+    )
+    if _contains_any(text, _SYSTEM_ERROR_MARKERS):
+        return SampleQuality(
+            kind="system_error",
+            reason=_matched_marker(text, _SYSTEM_ERROR_MARKERS),
+            include_in_score=False,
+            score_weight=0.0,
+            include_in_reflect=False,
+        )
+    tool_calls = _safe_int(metrics.get("tool_calls"), default=-1)
+    final_response = str(metrics.get("final_response") or metrics.get("aiden_last_response") or "")
+    if _looks_like_zero_tool_or_planner_format(text, tool_calls=tool_calls, final_response=final_response):
+        return SampleQuality(
+            kind="agent_format_error",
+            reason="zero tool calls, empty final response, or internal JSON plan output",
+            include_in_score=False,
+            score_weight=0.0,
+            include_in_reflect=False,
+        )
+    if status == "timeout" or _timeout_without_system_marker(text):
+        return SampleQuality(
+            kind="timeout",
+            reason="task timed out",
+            include_in_score=True,
+            score_weight=TIMEOUT_SCORE_WEIGHT,
+            include_in_reflect=False,
+        )
+    if status != "passed" and _contains_any(text, _EXTERNAL_BLOCKER_MARKERS):
+        return SampleQuality(
+            kind="external_blocker",
+            reason=_matched_marker(text, _EXTERNAL_BLOCKER_MARKERS),
+            include_in_score=True,
+            score_weight=EXTERNAL_BLOCKER_SCORE_WEIGHT,
+            include_in_reflect=False,
+        )
+    return SampleQuality()
+
+
+def rollout_sample_quality(rollout: RolloutResult) -> SampleQuality:
+    extras = rollout.extras or {}
+    if extras.get("sample_quality"):
+        return SampleQuality(
+            kind=str(extras.get("sample_quality") or "clean"),
+            reason=str(extras.get("sample_quality_reason") or ""),
+            include_in_score=not bool(extras.get("score_excluded")),
+            score_weight=_safe_float(extras.get("score_weight"), 1.0),
+            include_in_reflect=not bool(extras.get("reflect_excluded")),
+        )
+    text = _quality_text(
+        str(extras.get("benchmark_status") or ""),
+        rollout.fail_reason,
+        extras,
+        None,
+        [],
+        [],
+    )
+    if _contains_any(text, _SYSTEM_ERROR_MARKERS):
+        return SampleQuality("system_error", _matched_marker(text, _SYSTEM_ERROR_MARKERS), False, 0.0, False)
+    if _looks_like_zero_tool_or_planner_format(text, tool_calls=rollout.n_turns, final_response=str(extras.get("final_response") or "")):
+        return SampleQuality("agent_format_error", "zero tool calls, empty final response, or internal JSON plan output", False, 0.0, False)
+    if str(extras.get("benchmark_status") or "") == "timeout" or rollout.fail_reason == "timeout" or _timeout_without_system_marker(text):
+        return SampleQuality("timeout", "task timed out", True, TIMEOUT_SCORE_WEIGHT, False)
+    if rollout.hard == 0 and _contains_any(text, _EXTERNAL_BLOCKER_MARKERS):
+        return SampleQuality("external_blocker", _matched_marker(text, _EXTERNAL_BLOCKER_MARKERS), True, EXTERNAL_BLOCKER_SCORE_WEIGHT, False)
+    return SampleQuality()
+
+
+def _quality_text(*values: Any) -> str:
+    parts: list[str] = []
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, dict):
+            parts.extend(str(v) for v in value.values() if v is not None)
+        elif isinstance(value, list):
+            for item in value:
+                if hasattr(item, "reason"):
+                    parts.append(str(getattr(item, "reason")))
+                elif hasattr(item, "actual"):
+                    parts.append(str(getattr(item, "actual")))
+                else:
+                    parts.append(str(item))
+        else:
+            added_attrs = False
+            for attr in ("min_tool_calls", "response_exists"):
+                if hasattr(value, attr):
+                    parts.append(f"{attr}={getattr(value, attr)}")
+                    added_attrs = True
+            if not added_attrs:
+                parts.append(str(value))
+    return " ".join(parts).lower()
+
+
+def _contains_any(text: str, markers: tuple[str, ...]) -> bool:
+    return any(marker in text for marker in markers)
+
+
+def _matched_marker(text: str, markers: tuple[str, ...]) -> str:
+    for marker in markers:
+        if marker in text:
+            return marker
+    return ""
+
+
+def _timeout_without_system_marker(text: str) -> bool:
+    return bool(re.search(r"\b(timed out|timeout|overdue_termination)\b", text)) and not _contains_any(text, _SYSTEM_ERROR_MARKERS)
+
+
+def _looks_like_zero_tool_or_planner_format(text: str, *, tool_calls: int, final_response: str) -> bool:
+    has_zero_tools = tool_calls == 0 or _contains_any(text, _ZERO_TOOL_MARKERS)
+    if not has_zero_tools:
+        return False
+    return (
+        "min_tool_calls=false" in text
+        or "response_exists=false" in text
+        or _contains_any(text, _ZERO_TOOL_MARKERS)
+        or _looks_like_internal_json_plan(final_response)
+    )
+
+
+def _looks_like_internal_json_plan(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text.startswith("{"):
+        return False
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    keys = {str(k).lower() for k in payload}
+    if "plan" in keys and keys.intersection({"objective", "completion_criteria", "next_step", "reason"}):
+        return True
+    mode = str(payload.get("mode") or "").strip().lower()
+    if mode in {"plan", "simple"} and not str(payload.get("final_answer") or "").strip():
+        return True
+    return False
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 @dc.dataclass
@@ -62,6 +305,10 @@ class AggregateScore:
     soft: float        # mean(soft)  — rubric pass-rate
     n: int             # number of tasks
     n_passed: int
+    n_raw: int = 0
+    n_excluded: int = 0
+    n_downweighted: int = 0
+    weight_total: float = 0.0
 
     @property
     def primary(self) -> float:
@@ -72,22 +319,42 @@ class AggregateScore:
 def aggregate_score(results: list[TaskResult] | list[RolloutResult]) -> AggregateScore:
     """Compute (hard, soft) means over a list of results."""
     if not results:
-        return AggregateScore(hard=0.0, soft=0.0, n=0, n_passed=0)
-    hards: list[int] = []
-    softs: list[float] = []
+        return AggregateScore(hard=0.0, soft=0.0, n=0, n_passed=0, n_raw=0, weight_total=0.0)
+    hard_weighted = 0.0
+    soft_weighted = 0.0
+    weight_total = 0.0
+    n = 0
+    n_passed = 0
+    n_excluded = 0
+    n_downweighted = 0
     for r in results:
         if isinstance(r, TaskResult):
             ro = task_result_to_rollout(r)
         else:
             ro = r
-        hards.append(ro.hard)
-        softs.append(ro.soft)
-    n = len(hards)
+        quality = rollout_sample_quality(ro)
+        if not quality.include_in_score or quality.score_weight <= 0:
+            n_excluded += 1
+            continue
+        weight = quality.score_weight
+        n += 1
+        if weight < 1.0:
+            n_downweighted += 1
+        n_passed += ro.hard
+        hard_weighted += ro.hard * weight
+        soft_weighted += ro.soft * weight
+        weight_total += weight
+    if weight_total <= 0:
+        return AggregateScore(hard=0.0, soft=0.0, n=0, n_passed=0, n_raw=len(results), n_excluded=n_excluded, n_downweighted=n_downweighted, weight_total=0.0)
     return AggregateScore(
-        hard=sum(hards) / n,
-        soft=sum(softs) / n,
+        hard=hard_weighted / weight_total,
+        soft=soft_weighted / weight_total,
         n=n,
-        n_passed=sum(hards),
+        n_passed=n_passed,
+        n_raw=len(results),
+        n_excluded=n_excluded,
+        n_downweighted=n_downweighted,
+        weight_total=weight_total,
     )
 
 

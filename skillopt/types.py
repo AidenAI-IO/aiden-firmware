@@ -195,6 +195,10 @@ class ScoreSummary:
     soft: float = 0.0
     n: int = 0
     n_passed: int = 0
+    n_raw: int = 0
+    n_excluded: int = 0
+    n_downweighted: int = 0
+    weight_total: float = 0.0
 
 
 @dc.dataclass
