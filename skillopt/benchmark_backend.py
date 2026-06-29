@@ -20,6 +20,7 @@ from skillopt.types import RolloutResult
 
 DEFAULT_DAEMON_IMAGE = "aiden-agent-daemon:local"
 PROFILES_ROOT = Path(__file__).resolve().parent / "profiles"
+MOBILEGYM_MAX_CONCURRENCY = 2
 
 
 class BenchmarkRolloutError(RuntimeError):
@@ -85,6 +86,7 @@ class BenchmarkRunnerBackend:
         cmd = self._runner_command(
             suite=suite,
             tasks=tasks,
+            skill_name=skill_name,
             child_runs_root=child_runs_root,
             child_run_id=child_run_id,
             phase_config=phase_config,
@@ -157,6 +159,7 @@ class BenchmarkRunnerBackend:
         *,
         suite: Suite,
         tasks: list[TaskSpec],
+        skill_name: str,
         child_runs_root: Path,
         child_run_id: str,
         phase_config: Path,
@@ -172,6 +175,8 @@ class BenchmarkRunnerBackend:
             "--auto-agent-setup",
             "--environment-url",
             self.environment_url,
+            "--max-concurrency",
+            str(MOBILEGYM_MAX_CONCURRENCY) if self.environment_profile == "mobilegym" else "0",
             "--daemon-image",
             self.daemon_image,
             "--base-config-dir",
@@ -180,6 +185,8 @@ class BenchmarkRunnerBackend:
             str(child_runs_root),
             "--run-id",
             child_run_id,
+            "--skill",
+            skill_name,
         ]
         if not self.build_daemon_image:
             cmd.append("--no-build-daemon-image")
@@ -209,7 +216,11 @@ def apply_environment_profile(skill_text: str, skill_name: str, environment_prof
     overlay = profile_path.read_text(encoding="utf-8").strip()
     if not overlay:
         return skill_text
-    return skill_text.rstrip() + "\n\n---\n\n" + overlay + "\n"
+    match = re.match(r"\A(---\n.*?\n---\n)(.*)\Z", skill_text, flags=re.DOTALL)
+    if match:
+        frontmatter, body = match.groups()
+        return frontmatter.rstrip() + "\n\n" + overlay + "\n\n" + body.lstrip().rstrip() + "\n"
+    return overlay + "\n\n" + skill_text.rstrip() + "\n"
 
 
 def count_environment_setup_failures(results: list[TaskResult]) -> int:

@@ -7,6 +7,9 @@ If a tool result says unsupported, unavailable, unknown, or not connected, do no
 """
 input_mode = "text"
 max_iterations = 20
+voice_streaming_tts_enabled = false
+voice_tool_call_speech = false
+voice_progress_speech_enabled = false
 screenshot_keep_n = 1
 screenshot_prune_interval = 2
 

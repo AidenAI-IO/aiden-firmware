@@ -35,16 +35,20 @@ class TraceObservationResult:
 
 
 def evaluate_trace_observations(
-    trace: Trace, specs: list[TraceObservationSpec]
+    trace: Trace,
+    specs: list[TraceObservationSpec],
+    active_skills: list[str] | None = None,
 ) -> list[TraceObservationResult]:
     results: list[TraceObservationResult] = []
+    active = {name.strip() for name in active_skills or [] if name.strip()}
     for spec in specs:
-        passed = trace_has_skill_read(trace, spec.skill_name)
-        reason = (
-            f"Trace contains skill_read for {spec.skill_name!r}."
-            if passed
-            else f"No skill_read call for {spec.skill_name!r} in trace."
-        )
+        passed = spec.skill_name in active or trace_has_skill_read(trace, spec.skill_name)
+        if spec.skill_name in active:
+            reason = f"Task requested active skill {spec.skill_name!r} via chat skills payload."
+        elif passed:
+            reason = f"Trace contains skill_read for {spec.skill_name!r}."
+        else:
+            reason = f"No skill_read call for {spec.skill_name!r} in trace."
         results.append(
             TraceObservationResult(
                 id=spec.id,

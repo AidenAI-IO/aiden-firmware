@@ -42,6 +42,17 @@ US_KEYBOARD_TEXT_CHARS = set(
     "-=[]\\;'`,./"
     "!@#$%^&*()_+{}|:\"~<>?"
 )
+MOBILEGYM_RESERVED_QUICK_ACTIONS = {
+    "browser_refresh",
+    "browser_new_tab",
+    "copy",
+    "cut",
+    "delete_backward",
+    "find",
+    "paste",
+    "select_all",
+    "undo",
+}
 
 
 class ToolsAPIHandler:
@@ -70,6 +81,17 @@ class ToolsAPIHandler:
 
     def _handle_catalog(self, handler: BaseHTTPRequestHandler) -> None:
         """GET /api/tools - return tool catalog."""
+        enter_text_focus_schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "x": {"type": "number"},
+                "y": {"type": "number"},
+                "coord_space": {"type": "string", "enum": ["auto", "pixel", "normalized", "absolute"]},
+            },
+            "required": ["x", "y"],
+            "description": "Input field coordinates. Prefer normalized 0-1000 coordinates.",
+        }
         tools = [
             {
                 "name": "screenshot",
@@ -164,6 +186,37 @@ class ToolsAPIHandler:
                 },
             },
             {
+                "name": "enter_text_in_field",
+                "description": "Enter target text into an input field in MobileGym using the simulator TYPE action. This MobileGym bridge implementation accepts the Go agent text-entry contract without host HID devices.",
+                "args_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "text": {"type": "string", "description": "Exact text that must appear in the field."},
+                        "platform": {"type": "string", "enum": ["ios", "android", "mac"]},
+                        "mode": {"type": "string", "enum": ["form", "search"]},
+                        "focus": enter_text_focus_schema,
+                        "segments": {"type": "array", "items": {"type": "string"}},
+                        "max_attempts": {"type": "integer", "minimum": 1},
+                    },
+                    "required": ["text", "focus"],
+                },
+            },
+            {
+                "name": "enter_text_via_bridge",
+                "description": "MobileGym-compatible alias for text entry. Uses the simulator TYPE action instead of the physical phone bridge or HID clipboard path.",
+                "args_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "text": {"type": "string", "description": "Exact text that must appear in the field."},
+                        "platform": {"type": "string", "enum": ["ios", "android", "mac"]},
+                        "focus": enter_text_focus_schema,
+                    },
+                    "required": ["text", "focus"],
+                },
+            },
+            {
                 "name": "mouse_click",
                 "description": "Click/tap a coordinate in the MobileGym simulator. Coordinates use normalized 0-1000 space.",
                 "args_schema": {
@@ -252,7 +305,7 @@ class ToolsAPIHandler:
                 tool_input = {}
             else:
                 parsed_input = json.loads(raw_input)
-                if tool_name == "keyboard_text" and isinstance(parsed_input, str):
+                if tool_name in ("keyboard_text", "enter_text_in_field", "enter_text_via_bridge") and isinstance(parsed_input, str):
                     tool_input = {"text": parsed_input}
                 elif isinstance(parsed_input, dict):
                     tool_input = parsed_input
@@ -264,7 +317,7 @@ class ToolsAPIHandler:
                     )
                     return
         except json.JSONDecodeError:
-            if tool_name == "keyboard_text":
+            if tool_name in ("keyboard_text", "enter_text_in_field", "enter_text_via_bridge"):
                 tool_input = {"text": raw_input.strip()}
             else:
                 self._send_json(
@@ -407,6 +460,10 @@ class ToolsAPIHandler:
             return self._call_keyboard_text(state, tool_input, episode_id)
         elif tool_name == "keyboard_tap":
             return self._call_keyboard_tap(state, tool_input, episode_id)
+        elif tool_name == "enter_text_in_field":
+            return self._call_enter_text(state, tool_input, episode_id, tool_name="enter_text_in_field")
+        elif tool_name == "enter_text_via_bridge":
+            return self._call_enter_text(state, tool_input, episode_id, tool_name="enter_text_via_bridge")
         elif tool_name == "mouse_click":
             return self._call_mouse_click(state, tool_input, episode_id)
         elif tool_name == "mouse_move":
@@ -559,20 +616,11 @@ class ToolsAPIHandler:
 
         action = _quick_action_id(tool_input)
         if bool(tool_input.get("list")) or action == "list":
-            output = {
-                "ok": True,
-                "platform": platform,
-                "actions": [
-                    {"id": "back", "status": "active", "tool": "touch_gesture"},
-                    {"id": "home", "status": "active", "tool": "touch_gesture"},
-                    {"id": "notification_center", "status": "active", "tool": "touch_gesture"},
-                    {"id": "quick_settings", "status": "active", "tool": "touch_gesture"},
-                ],
-            }
+            output = {"ok": True, "platform": platform, "actions": _mobilegym_quick_action_catalog()}
             return {"output": json.dumps(output), "is_error": False}
 
         if bool(tool_input.get("alternative")):
-            return {"output": "error: mobilegym quick_action does not define alternative bindings", "is_error": True}
+            return _mobilegym_reserved_quick_action(action, platform, "mobilegym quick_action does not define alternative bindings")
 
         if action == "back":
             return self._call_touch_gesture(
@@ -590,6 +638,20 @@ class ToolsAPIHandler:
                 log_tool_name="quick_action",
                 log_tool_input=tool_input,
             )
+        if action == "app_switch":
+            action = build_action(
+                "swipe",
+                {"start_x": 500, "start_y": 1000, "end_x": 500, "end_y": 500, "duration_ms": 900},
+            )
+            return self._execute_action(state, action, episode_id, tool_name="quick_action", tool_input=tool_input)
+        if action == "spotlight_search":
+            return self._call_touch_gesture(
+                state,
+                {"type": "swipe_down", "strength": "medium", "anchor": 500},
+                episode_id,
+                log_tool_name="quick_action",
+                log_tool_input=tool_input,
+            )
         if action == "notification_center":
             return self._call_touch_gesture(
                 state,
@@ -598,14 +660,98 @@ class ToolsAPIHandler:
                 log_tool_name="quick_action",
                 log_tool_input=tool_input,
             )
-        if action == "quick_settings":
+        if action == "control_center":
             action = build_action(
                 "swipe",
                 {"start_x": 850, "start_y": 0, "end_x": 850, "end_y": 700, "duration_ms": 500},
             )
             return self._execute_action(state, action, episode_id, tool_name="quick_action", tool_input=tool_input)
+        if action == "dismiss_panel":
+            return self._call_touch_gesture(
+                state,
+                {"type": "swipe_up", "strength": "medium", "anchor": 500},
+                episode_id,
+                log_tool_name="quick_action",
+                log_tool_input=tool_input,
+            )
+        if action == "send":
+            action = build_action("key", {"key": "enter"})
+            return self._execute_action(state, action, episode_id, tool_name="quick_action", tool_input=tool_input)
+        if action == "quit_app":
+            action = build_action("home", {})
+            return self._execute_action(state, action, episode_id, tool_name="quick_action", tool_input=tool_input)
+        if action in MOBILEGYM_RESERVED_QUICK_ACTIONS:
+            return _mobilegym_reserved_quick_action(
+                action,
+                platform,
+                "mobilegym cannot faithfully execute this keyboard shortcut; use direct touch or text-entry tools",
+            )
 
         return {"output": f"error: unsupported quick_action: {tool_input.get('action')!r}", "is_error": True}
+
+    def _call_enter_text(
+        self,
+        state: BridgeEpisodeState,
+        tool_input: dict[str, Any],
+        episode_id: str,
+        *,
+        tool_name: str,
+    ) -> dict[str, Any]:
+        """Execute Go-agent text-entry tools through MobileGym's TYPE action."""
+        text = tool_input.get("text", "")
+        if not isinstance(text, str):
+            return {"output": "error: text must be a string", "is_error": True}
+        text = text.strip()
+        if text == "":
+            output = {
+                "ok": False,
+                "committed": False,
+                "target_text": "",
+                "required_mode": "ascii",
+                "attempts": 1,
+                "ime_switches": 0,
+                "vlm_calls": 0,
+                "reason": "text is required",
+            }
+            return {"output": json.dumps(output), "is_error": False}
+
+        action_input: dict[str, Any] = {"text": text}
+        focus = tool_input.get("focus")
+        if focus is not None:
+            if not isinstance(focus, dict):
+                return {"output": "error: focus must be an object", "is_error": True}
+            point_input: dict[str, Any] = {"focus": focus}
+            if "coord_space" in focus and "coord_space" not in tool_input:
+                point_input["coord_space"] = focus["coord_space"]
+            try:
+                action_input["point"] = _normalized_point_arg(point_input, field="focus", default_space="normalized")
+            except (TypeError, ValueError) as exc:
+                return {"output": f"error: {exc}", "is_error": True}
+
+        try:
+            action = build_action("type_text", action_input)
+        except (TypeError, ValueError) as exc:
+            return {"output": f"error: {exc}", "is_error": True}
+
+        result = self._execute_action(state, action, episode_id, tool_name=tool_name, tool_input=tool_input)
+        if result.get("is_error"):
+            return result
+
+        mode = _text_input_mode(tool_input.get("mode"))
+        output = {
+            "ok": True,
+            "committed": True,
+            "target_text": text,
+            "field_text": text,
+            "required_mode": _required_text_input_mode(text),
+            "mode": mode,
+            "attempts": 1,
+            "ime_switches": 0,
+            "vlm_calls": 0,
+            "reason": "field accepted by MobileGym TYPE action",
+            "steps": ["mobilegym TYPE action"],
+        }
+        return {"output": json.dumps(output, ensure_ascii=False), "is_error": False}
 
     def _call_keyboard_text(self, state: BridgeEpisodeState, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
         """Execute keyboard_text tool."""
@@ -816,6 +962,10 @@ def _point_arg(
         if "x" not in point or "y" not in point:
             raise ValueError(f"{field}.x and {field}.y are required")
         return {"x": _finite_float(point["x"], f"{field}.x"), "y": _finite_float(point["y"], f"{field}.y")}
+    if isinstance(point, (list, tuple)):
+        if len(point) != 2:
+            raise ValueError(f"{field} must contain [x, y]")
+        return {"x": _finite_float(point[0], f"{field}[0]"), "y": _finite_float(point[1], f"{field}[1]")}
 
     if x_key in tool_input and y_key in tool_input:
         return {"x": _finite_float(tool_input[x_key], x_key), "y": _finite_float(tool_input[y_key], y_key)}
@@ -867,23 +1017,83 @@ def _unsupported_keyboard_text_chars(text: str) -> str:
     return "".join(ch for ch in text if ch not in US_KEYBOARD_TEXT_CHARS)
 
 
+def _required_text_input_mode(text: str) -> str:
+    if any(ord(ch) > 127 for ch in text):
+        return "composition"
+    return "ascii"
+
+
+def _text_input_mode(value: Any) -> str:
+    mode = str(value or "").strip().lower()
+    if mode == "search":
+        return "search"
+    return "form"
+
+
 def _quick_action_id(tool_input: dict[str, Any]) -> str:
     action = str(tool_input.get("action", "") or "").strip().lower().replace("-", "_")
     aliases = {
         "返回": "back",
         "go_back": "back",
         "navigate_back": "back",
+        "recents": "app_switch",
+        "switch_app": "app_switch",
+        "task_switcher": "app_switch",
         "主屏": "home",
         "go_home": "home",
         "home_screen": "home",
+        "spotlight": "spotlight_search",
+        "global_search": "spotlight_search",
+        "search": "spotlight_search",
+        "search_launch_app": "spotlight_search",
+        "搜索": "spotlight_search",
         "notifications": "notification_center",
         "notification_shade": "notification_center",
         "通知": "notification_center",
-        "control_center": "quick_settings",
-        "quick_setting": "quick_settings",
-        "快捷设置": "quick_settings",
+        "quick_settings": "control_center",
+        "quick_setting": "control_center",
+        "快捷设置": "control_center",
+        "close_panel": "dismiss_panel",
+        "enter": "send",
+        "press_enter": "send",
+        "send_message": "send",
+        "submit": "send",
+        "refresh": "browser_refresh",
+        "reload": "browser_refresh",
+        "backspace": "delete_backward",
+        "backward_delete": "delete_backward",
+        "退格": "delete_backward",
     }
     return aliases.get(action, action)
+
+
+def _mobilegym_quick_action_catalog() -> list[dict[str, str]]:
+    return [
+        {"id": "back", "status": "active", "tool": "touch_gesture"},
+        {"id": "home", "status": "active", "tool": "touch_gesture"},
+        {"id": "app_switch", "status": "active", "tool": "touch_gesture"},
+        {"id": "spotlight_search", "status": "active", "tool": "touch_gesture"},
+        {"id": "search_launch_app", "status": "active", "tool": "touch_gesture"},
+        {"id": "notification_center", "status": "active", "tool": "touch_gesture"},
+        {"id": "control_center", "status": "active", "tool": "touch_gesture"},
+        {"id": "dismiss_panel", "status": "active", "tool": "touch_gesture"},
+        {"id": "send", "status": "active", "tool": "keyboard_tap"},
+        {"id": "quit_app", "status": "active", "tool": "touch_gesture"},
+        {"id": "browser_refresh", "status": "reserved", "tool": "keyboard_tap"},
+        {"id": "browser_new_tab", "status": "reserved", "tool": "keyboard_tap"},
+        {"id": "copy", "status": "reserved", "tool": "keyboard_tap"},
+        {"id": "cut", "status": "reserved", "tool": "keyboard_tap"},
+        {"id": "delete_backward", "status": "reserved", "tool": "keyboard_tap"},
+        {"id": "find", "status": "reserved", "tool": "keyboard_tap"},
+        {"id": "paste", "status": "reserved", "tool": "keyboard_tap"},
+        {"id": "select_all", "status": "reserved", "tool": "keyboard_tap"},
+        {"id": "undo", "status": "reserved", "tool": "keyboard_tap"},
+    ]
+
+
+def _mobilegym_reserved_quick_action(action: str, platform: str, reason: str) -> dict[str, Any]:
+    output = {"ok": False, "action": action, "platform": platform, "status": "reserved", "reason": reason}
+    return {"output": json.dumps(output), "is_error": False}
 
 
 def _infer_screenshot_mime_type(payload: bytes) -> str:

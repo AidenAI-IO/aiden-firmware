@@ -31,6 +31,7 @@ from skillopt.score import (
     validation_gate,
     DEFAULT_MIN_DELTA,
 )
+from skillopt.skill_lint import lint_skill_text
 from skillopt.types import Edit, OptimizationResult, PhaseSummary, ScoreSummary, StepDecision
 
 
@@ -161,6 +162,33 @@ def optimize_skill(cfg: OptimizationConfig) -> OptimizationResult:
             (step_artifact / "patch_reports.json").write_text(
                 json.dumps(reports, ensure_ascii=False, indent=2), encoding="utf-8"
             )
+            lint_issues = lint_skill_text(candidate)
+            if lint_issues:
+                (step_artifact / "candidate_lint.json").write_text(
+                    json.dumps([issue.to_dict() for issue in lint_issues], ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                reason = "skill lint failed: " + ", ".join(issue.code for issue in lint_issues)
+                print(f"[step {step_idx}] {reason}")
+                rejected.extend(patch.edits)
+                no_improvement_count += 1
+                steps.append(StepDecision(
+                    step=step_idx,
+                    candidate_score=current_score.primary,
+                    current_score=current_score.primary,
+                    accepted=False,
+                    reason=reason,
+                    edits_rejected=patch.edits,
+                    train_score=train_summary.score,
+                    patch_reasoning=patch.reasoning,
+                    patch_reports=reports,
+                    raw_patches=raw_patches,
+                ))
+                if no_improvement_count >= cfg.early_stop_patience:
+                    stop_reason = f"step {step_idx}: no improvement for {cfg.early_stop_patience} steps"
+                    print(f"[step {step_idx}] no improvement for {cfg.early_stop_patience} steps; stopping.")
+                    break
+                continue
 
             # Selection eval with candidate
             print(f"[step {step_idx}] Selection eval with candidate...")

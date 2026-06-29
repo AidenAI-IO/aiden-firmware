@@ -642,7 +642,12 @@ def test_start_job_writes_benchmark_agent_config(tmp_path: Path, monkeypatch):
     command = job["command"]
     agent_config = Path(command[command.index("--agent-config") + 1])
     assert agent_config == tmp_path / "runs" / job["id"] / "agent.toml"
-    assert agent_config.read_text(encoding="utf-8") == '[model]\nprovider = "openrouter"\napi_key = "sk-test"\n'
+    content = agent_config.read_text(encoding="utf-8")
+    assert "voice_streaming_tts_enabled = false" in content
+    assert "voice_tool_call_speech = false" in content
+    assert "voice_progress_speech_enabled = false" in content
+    assert 'provider = "openrouter"' in content
+    assert 'api_key = "sk-test"' in content
 
 
 def test_start_mobilegym_job_applies_mobilegym_default_instruction(tmp_path: Path, monkeypatch):

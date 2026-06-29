@@ -68,6 +68,22 @@ def test_evaluate_trace_observations_reports_skill_read():
     assert results[0].passed is True
 
 
+def test_evaluate_trace_observations_accepts_chat_active_skill():
+    trace = Trace(tool_calls=[], final_response="", total_tool_calls=0, total_duration_ms=0)
+    specs = [
+        TraceObservationSpec(
+            id="skill_read_device_operator",
+            description="Loaded skill.",
+            skill_name="device-operator",
+        )
+    ]
+
+    results = evaluate_trace_observations(trace, specs, active_skills=["device-operator"])
+
+    assert results[0].passed is True
+    assert "requested active skill" in results[0].reason
+
+
 class ObservingClient:
     def health(self):
         return True

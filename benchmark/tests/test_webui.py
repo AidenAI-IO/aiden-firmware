@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+from runner import config as runner_config
 from runner import webui
 
 
@@ -206,6 +207,35 @@ def test_default_agent_toml_uses_benchmark_defaults():
     assert 'model = "qwen3.6-35b"' in rendered
     assert "temperature = 0.2" in rendered
     assert "max_response_tokens = 1000" in rendered
+    assert "voice_streaming_tts_enabled = false" in rendered
+    assert "voice_tool_call_speech = false" in rendered
+    assert "voice_progress_speech_enabled = false" in rendered
+
+
+def test_runner_default_agent_toml_disables_voice_side_effects():
+    rendered = runner_config.default_agent_toml()
+
+    assert "voice_streaming_tts_enabled = false" in rendered
+    assert "voice_tool_call_speech = false" in rendered
+    assert "voice_progress_speech_enabled = false" in rendered
+
+
+def test_agent_config_manager_migrates_saved_config_missing_voice_defaults(tmp_path: Path):
+    base = tmp_path / "base"
+    base.mkdir()
+    config_path = tmp_path / "runs" / "agent.toml"
+    config_path.parent.mkdir()
+    config_path.write_text('instruction = "saved"\n[model]\nprovider = "fake"\n', encoding="utf-8")
+    manager = runner_config.AgentConfigManager(base_config_dir=base, config_path=config_path)
+
+    content, source = manager.get_config()
+
+    assert source == "saved"
+    assert "voice_streaming_tts_enabled = false" in content
+    assert "voice_tool_call_speech = false" in content
+    assert "voice_progress_speech_enabled = false" in content
+    assert content.index("voice_progress_speech_enabled") < content.index("[model]")
+    assert config_path.read_text(encoding="utf-8") == content
 
 
 def test_webui_agent_config_persists_under_runs_dir(tmp_path: Path, monkeypatch):
@@ -227,8 +257,13 @@ def test_webui_agent_config_persists_under_runs_dir(tmp_path: Path, monkeypatch)
     saved = 'instruction = "saved"\n[model]\nprovider = "fake"\n'
     updated = app.save_agent_config({"content": saved})
     assert updated["source"] == "saved"
-    assert (tmp_path / "runs" / "agent.toml").read_text(encoding="utf-8") == saved
-    assert app.get_agent_config()["content"] == saved
+    saved_content = (tmp_path / "runs" / "agent.toml").read_text(encoding="utf-8")
+    assert 'instruction = "saved"' in saved_content
+    assert "voice_streaming_tts_enabled = false" in saved_content
+    assert "voice_tool_call_speech = false" in saved_content
+    assert "voice_progress_speech_enabled = false" in saved_content
+    assert 'provider = "fake"' in saved_content
+    assert app.get_agent_config()["content"] == saved_content
 
 
 def test_webui_settings_persist_judge_and_device_environments(tmp_path: Path):
@@ -764,7 +799,7 @@ def test_mobilegym_task_worker_uses_task_id_for_daemon_and_runner(tmp_path: Path
     captured = {}
     releases = []
 
-    monkeypatch.setattr(webui, "reserve_free_port", lambda: 18081)
+    monkeypatch.setattr(webui, "docker_published_port", lambda container_id, container_port: 18081)
     monkeypatch.setattr(app, "_wait_for_daemon", lambda *args, **kwargs: None)
     monkeypatch.setattr(webui, "start_daemon_logs", lambda *args, **kwargs: None)
     monkeypatch.setattr(webui, "stop_daemon_compose", lambda *args, **kwargs: None)
@@ -800,7 +835,7 @@ def test_mobilegym_task_worker_uses_task_id_for_daemon_and_runner(tmp_path: Path
 
     result = app._run_mobilegym_task_worker(job, "suite.json", suite_path, "t1")
 
-    assert captured["host_port"] == 18081
+    assert captured["host_port"] == 0
     assert captured["benchmark_task_id"] == "suite.json:t1"
     assert captured["worker_job"].runner_log != job.runner_log
     assert captured["worker_job"].daemon_log != job.daemon_log
@@ -1389,7 +1424,12 @@ def test_run_job_uses_saved_webui_agent_config(tmp_path: Path, monkeypatch):
 
     app._run_job(job)
 
-    assert (Path(job.config_dir) / "agent.toml").read_text(encoding="utf-8") == saved
+    saved_content = (Path(job.config_dir) / "agent.toml").read_text(encoding="utf-8")
+    assert 'instruction = "from web ui"' in saved_content
+    assert "voice_streaming_tts_enabled = false" in saved_content
+    assert "voice_tool_call_speech = false" in saved_content
+    assert "voice_progress_speech_enabled = false" in saved_content
+    assert 'provider = "fake"' in saved_content
     assert job.status == "passed"
 
 
@@ -1429,6 +1469,7 @@ def test_daemon_compose_command_and_env_forward_tools_to_environment(tmp_path: P
     )
     expected_forward_tools = (
         "screenshot,touch_gesture,keyboard_text,keyboard_tap,"
+        "enter_text_in_field,enter_text_via_bridge,"
         "mouse_click,mouse_move,mouse_scroll,quick_action"
     )
     assert "AIDEN_ENVIRONMENT_BRIDGE_MODE: ${AIDEN_ENVIRONMENT_BRIDGE_MODE:-0}" in compose_text

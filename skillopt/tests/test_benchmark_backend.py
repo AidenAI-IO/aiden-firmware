@@ -115,6 +115,7 @@ def test_benchmark_runner_backend_invokes_current_runner_and_reads_rollouts(tmp_
     assert cmd[cmd.index("--agent-config") + 1] == str(tmp_path / "agent.toml")
     assert "--no-build-daemon-image" in cmd
     assert "--no-judge" in cmd
+    assert cmd[cmd.index("--skill") + 1] == "device-operator"
     assert cmd[cmd.index("--task-id") + 1] == "case_one"
     phase_config = Path(cmd[cmd.index("--base-config-dir") + 1])
     assert (phase_config / "skills" / "device-operator" / "SKILL.md").read_text(encoding="utf-8") == "candidate skill"
@@ -143,6 +144,33 @@ def test_benchmark_runner_backend_rejects_skill_name_escape(tmp_path: Path):
     assert not (tmp_path / "evil" / "SKILL.md").exists()
 
 
+def test_mobilegym_runner_command_caps_concurrency(tmp_path: Path):
+    from skillopt.benchmark_backend import BenchmarkRunnerBackend
+
+    benchmark_root = tmp_path / "benchmark"
+    base_config = _write_base_config(benchmark_root)
+    shared_skills = _write_shared_skills(tmp_path)
+    backend = BenchmarkRunnerBackend(
+        benchmark_root=benchmark_root,
+        base_config_dir=base_config,
+        shared_skills_dir=shared_skills,
+        environment_url="http://127.0.0.1:50196",
+        environment_profile="mobilegym",
+    )
+
+    cmd = backend._runner_command(
+        suite=_suite(tmp_path),
+        tasks=[_task()],
+        skill_name="device-operator",
+        child_runs_root=tmp_path / "children",
+        child_run_id="child-run",
+        phase_config=tmp_path / "phase-config",
+        judge_cfg=None,
+    )
+
+    assert cmd[cmd.index("--max-concurrency") + 1] == "2"
+
+
 def test_benchmark_runner_backend_applies_mobilegym_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from skillopt import benchmark_backend
     from skillopt.benchmark_backend import BenchmarkRunnerBackend
@@ -168,6 +196,56 @@ def test_benchmark_runner_backend_applies_mobilegym_profile(tmp_path: Path, monk
     skill = (dest / "skills" / "device-operator" / "SKILL.md").read_text(encoding="utf-8")
     assert "candidate skill" in skill
     assert "MobileGym simulator profile" in skill
+    agent_config = (dest / "agent.toml").read_text(encoding="utf-8")
+    assert "force_simple_loop" not in agent_config
+
+
+def test_mobilegym_phase_config_preserves_saved_force_simple_loop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from skillopt import benchmark_backend
+    from skillopt.benchmark_backend import BenchmarkRunnerBackend
+
+    benchmark_root = tmp_path / "benchmark"
+    base_config = _write_base_config(benchmark_root)
+    (base_config / "agent.toml").write_text(
+        "input_mode = \"text\"\nforce_simple_loop = false\n\n[model]\nname = 'test'\n",
+        encoding="utf-8",
+    )
+    shared_skills = _write_shared_skills(tmp_path)
+    profiles_root = tmp_path / "profiles"
+    profile_dir = profiles_root / "mobilegym" / "device-operator"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "SKILL.md").write_text("MobileGym simulator profile", encoding="utf-8")
+    monkeypatch.setattr(benchmark_backend, "PROFILES_ROOT", profiles_root)
+    backend = BenchmarkRunnerBackend(
+        benchmark_root=benchmark_root,
+        base_config_dir=base_config,
+        shared_skills_dir=shared_skills,
+        environment_url="http://127.0.0.1:50196",
+        environment_profile="mobilegym",
+    )
+
+    dest = backend.prepare_phase_config(tmp_path / "phase-config", "device-operator", "candidate skill")
+
+    agent_config = (dest / "agent.toml").read_text(encoding="utf-8")
+    assert "force_simple_loop = false" in agent_config
+
+
+def test_mobilegym_profile_is_inserted_before_long_base_skill_body(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from skillopt import benchmark_backend
+    from skillopt.benchmark_backend import apply_environment_profile
+
+    profiles_root = tmp_path / "profiles"
+    profile_dir = profiles_root / "mobilegym" / "device-operator"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "SKILL.md").write_text("## MobileGym Environment Profile\n\nDo not use frame service recovery.", encoding="utf-8")
+    monkeypatch.setattr(benchmark_backend, "PROFILES_ROOT", profiles_root)
+    base_skill = "---\nname: device-operator\n---\n\n## Core Loop\n\n" + ("filler\n" * 800) + "## Screenshot Failure Recovery\n"
+
+    skill = apply_environment_profile(base_skill, "device-operator", "mobilegym")
+
+    assert skill.startswith("---\nname: device-operator\n---\n")
+    assert skill.index("## MobileGym Environment Profile") < skill.index("## Core Loop")
+    assert skill.index("## MobileGym Environment Profile") < skill.index("## Screenshot Failure Recovery")
 
 
 def test_load_benchmark_task_results_handles_failed_runner_exit_with_results(tmp_path: Path):

@@ -20,6 +20,8 @@ Always operate through a visual feedback loop:
 
 Do not perform multiple blind UI actions in a row.
 
+Reserve plan mode for non-linear, branching, or high-uncertainty device tasks that need explicit checkpoints or conditional decisions. For short linear sequences (e.g. open app A, extract visible data, open app B, save or draft it), prefer the core visual feedback loop without entering plan mode.
+
 ## Screenshot Failure Recovery
 
 If `screenshot` fails, a post-action screenshot fails, or the tool output mentions `SERVICE_RECOVERING`, socket errors, empty image data, or invalid screenshot JSON, stop UI actions. Do not tap, type, swipe, or guess from stale visual state.
@@ -101,10 +103,10 @@ After a failed attempt:
 
 1. Observe with `screenshot`.
 2. Compare expected vs observed result.
-3. Do not repeat the exact same action more than once.
+3. Do not repeat the exact same failed action more than once.
 4. Change one variable at a time: target location, gesture type, coordinate space, navigation path, or input method.
-5. After 2 failed attempts on the same goal, choose a different strategy.
-6. After 3 failed attempts total, summarize what was tried and ask the user or switch to diagnosis.
+5. After 2 failed attempts on the same goal, change strategy instead of retrying the same path.
+6. After 3 failed attempts total on the same goal, stop and report the blocker or ask the user for help.
 
 Keep an internal attempt log:
 
@@ -117,6 +119,8 @@ Next adjustment:
 ```
 
 Only report the log when the task is blocked or the user asks.
+
+If the device is detected to be locked and standard unlock gestures (swipe up from bottom, home quick_action) fail twice consecutively, immediately report the locked device as a blocker to the user. Do not make any additional unlock attempts beyond these two retries.
 
 ## Recovery Strategies
 

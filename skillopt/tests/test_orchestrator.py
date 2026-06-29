@@ -121,6 +121,47 @@ def test_optimize_skill_uses_accepted_candidate_for_next_train(monkeypatch, tmp_
     assert ("step_02_train", "base\ncandidate", "train_suite", ["train"]) in backend.calls
 
 
+def test_optimize_skill_rejects_lint_invalid_candidate_before_selection(monkeypatch, tmp_path):
+    backend = CapturingBackend()
+    invalid_candidate = """
+## Failed Attempt Handling
+
+After a failed attempt:
+
+1. Observe with `screenshot`.
+2. Compare expected vs observed result.
+3. Never repeat the exact same failed action more than once. After 2 total failed attempts on the same goal, stop and report the blocker to the user immediately instead of continuing to attempt untested actions that waste turns.
+4. Change one variable at a time: target location, gesture type, coordinate space, navigation path, or input method.
+5. After 2 failed attempts on the same goal, choose a different strategy.
+6. After 3 failed attempts total, summarize what was tried and ask the user or switch to diagnosis.
+"""
+    monkeypatch.setattr(
+        orchestrator,
+        "run_reflect",
+        lambda *args, **kwargs: [RawPatch(patch=Patch(edits=[Edit(op="append", content="conflict")]))],
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "aggregate",
+        lambda raw_patches, edit_budget: Patch(edits=[Edit(op="append", content="conflict")]),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "apply_patch_with_report",
+        lambda current, patch: (invalid_candidate, []),
+    )
+
+    result = orchestrator.optimize_skill(_backend_config(tmp_path, backend))
+
+    assert result.accepted_count == 0
+    assert result.rejected_count == 1
+    assert result.steps[0].accepted is False
+    assert "skill lint failed" in result.steps[0].reason
+    assert [call[0] for call in backend.calls] == ["baseline_selection", "step_01_train"]
+    lint_artifact = tmp_path / "runs" / "skillopt" / "run-001" / "step_01" / "candidate_lint.json"
+    assert "conflicting_failed_attempt_thresholds" in lint_artifact.read_text(encoding="utf-8")
+
+
 def test_optimize_skill_closes_injected_backend_on_success(monkeypatch, tmp_path):
     backend = CapturingBackend()
     _patch_optimizer(monkeypatch)

@@ -7,7 +7,15 @@ used by both benchmark/runner/webui.py and skillopt/webui.py.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
+
+
+VOICE_SIDE_EFFECT_DEFAULTS = (
+    "voice_streaming_tts_enabled",
+    "voice_tool_call_speech",
+    "voice_progress_speech_enabled",
+)
 
 
 class AgentConfigManager:
@@ -32,8 +40,13 @@ class AgentConfigManager:
             Tuple of (content, source) where source is 'saved' or 'generated'.
         """
         if self.config_path.exists():
-            return self.config_path.read_text(encoding="utf-8"), "saved"
-        content = self._generate_initial_config()
+            saved_content = self.config_path.read_text(encoding="utf-8")
+            content = apply_agent_toml_runtime_defaults(saved_content)
+            if content != saved_content:
+                validate_agent_toml(content)
+                write_text_atomic(self.config_path, content)
+            return content, "saved"
+        content = apply_agent_toml_runtime_defaults(self._generate_initial_config())
         write_text_atomic(self.config_path, content)
         return content, "generated"
 
@@ -49,6 +62,7 @@ class AgentConfigManager:
         Raises:
             ValueError: If content is invalid TOML
         """
+        content = apply_agent_toml_runtime_defaults(content)
         validate_agent_toml(content)
         write_text_atomic(self.config_path, content)
         return content, "saved"
@@ -105,6 +119,32 @@ def validate_agent_toml(content: str) -> None:
         raise ValueError(f"invalid agent.toml: {exc}") from exc
 
 
+def apply_agent_toml_runtime_defaults(content: str) -> str:
+    """Add safe benchmark runtime defaults missing from older saved configs."""
+    if not content.strip():
+        return content
+    present = {
+        match.group(1)
+        for match in re.finditer(r"(?m)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=", content)
+    }
+    missing = [key for key in VOICE_SIDE_EFFECT_DEFAULTS if key not in present]
+    if not missing:
+        return content
+
+    lines = content.splitlines()
+    insert_at = len(lines)
+    for index, line in enumerate(lines):
+        if line.lstrip().startswith("["):
+            insert_at = index
+            break
+
+    insert_lines = [f"{key} = false" for key in missing]
+    if insert_at < len(lines):
+        insert_lines.append("")
+    lines[insert_at:insert_at] = insert_lines
+    return "\n".join(lines) + "\n"
+
+
 def render_agent_template(text: str) -> str:
     """Render agent.toml template with environment variables.
 
@@ -152,6 +192,9 @@ def default_agent_toml() -> str:
             'trigger_mode = "manual"',
             "max_iterations = -1",
             "force_simple_loop = false",
+            "voice_streaming_tts_enabled = false",
+            "voice_tool_call_speech = false",
+            "voice_progress_speech_enabled = false",
             "screenshot_keep_n = 3",
             "screenshot_prune_interval = 25",
             "screen_stable_timeout_ms = 3500",
