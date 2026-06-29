@@ -311,7 +311,16 @@ func TestServerRestoresSessionEventsUsingEventType(t *testing.T) {
 			RequestID: "req_restore",
 			ToolName:  "screenshot",
 			ToolInput: "{}",
-			Content:   "tool_call: screenshot input={}",
+			ToolError: NewToolErrorWithDetails(CodeToolExecutionFailed, "camera unavailable", map[string]any{"device": "video0"}),
+			Artifacts: []InputArtifact{{
+				Kind:     AttachmentKindImage,
+				Name:     "screen.jpg",
+				MIMEType: "image/jpeg",
+				Path:     "/userdata/agent/artifacts/screen.jpg",
+				Size:     1234,
+				Data:     []byte("binary-image-data"),
+			}},
+			Content: "tool_call: screenshot input={}",
 		},
 		{
 			EventID:   "evt_unknown_planner",
@@ -353,6 +362,12 @@ func TestServerRestoresSessionEventsUsingEventType(t *testing.T) {
 	}
 	if history[2].Type != runEventToolCall || history[2].ToolName != "screenshot" || history[2].ToolInput != "{}" {
 		t.Fatalf("tool_call metadata not restored: %#v", history[2])
+	}
+	if history[2].ToolError == nil || history[2].ToolError.Code != CodeToolExecutionFailed || history[2].ToolError.Details["device"] != "video0" {
+		t.Fatalf("tool_call structured error not restored: %#v", history[2].ToolError)
+	}
+	if len(history[2].Artifacts) != 1 || history[2].Artifacts[0].Path != "/userdata/agent/artifacts/screen.jpg" || history[2].Artifacts[0].Data != nil {
+		t.Fatalf("tool_call artifacts not restored safely: %#v", history[2].Artifacts)
 	}
 	if history[3].Type != "planner_decision" {
 		t.Fatalf("unknown planner event should preserve its event type: %#v", history[3])

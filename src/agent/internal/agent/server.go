@@ -2909,6 +2909,8 @@ func chatMessageFromSessionEvent(evt SessionEvent) Message {
 		Content:      evt.Content,
 		ToolName:     firstNonEmptyString([]string{evt.ToolName, evt.Source}),
 		ToolInput:    evt.ToolInput,
+		ToolError:    cloneToolError(evt.ToolError),
+		Artifacts:    sanitizeInputArtifacts(evt.Artifacts),
 		Timestamp:    ts,
 		IsError:      evt.IsError,
 	}
