@@ -102,6 +102,7 @@ type PhoneBridgeStatus struct {
 	Connected            bool              `json:"connected"`
 	Platform             string            `json:"platform,omitempty"`
 	PhoneID              string            `json:"phone_id,omitempty"`
+	BoardID              string            `json:"board_id,omitempty"`
 	LastHeartbeatAt      *time.Time        `json:"last_heartbeat_at,omitempty"`
 	AppState             string            `json:"app_state,omitempty"`
 	AppStateUpdatedAt    *time.Time        `json:"app_state_updated_at,omitempty"`

@@ -119,12 +119,12 @@ api_key = ""
 
 # Live Activity / Dynamic Island.
 # relay_url and relay_api_key are preconfigured for the shared Aiden relay so
-# newly flashed boards can work with the official app without extra setup.
+# newly flashed boards can work with the official app without extra setup. The
+# board_id is generated on first run and persisted at /userdata/agent/board_id.
 [live_activity]
 enabled = true
 relay_url = "https://apns-test.aidenai.io"
 relay_api_key = "b3c79446904b60f99cf8bdf90d43ea1342d2e94f4b04c96d47f396680b1e3c8a"
-board_id = "default"
 
 # Episode telemetry (Langfuse). Disabled by default.
 # Set enabled = true and configure base_url + public_key + secret_key.

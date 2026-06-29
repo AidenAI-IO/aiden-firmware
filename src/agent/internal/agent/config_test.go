@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1145,6 +1146,89 @@ timeout_sec = 3
 	}
 	if cfg.LiveActivity.TimeoutOrDefault() != 3*time.Second {
 		t.Fatalf("TimeoutOrDefault() = %s, want 3s", cfg.LiveActivity.TimeoutOrDefault())
+	}
+}
+
+func TestLoadRuntimeConfigFromDirGeneratesLiveActivityBoardID(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	body := `
+[model]
+provider = "fake"
+
+[live_activity]
+relay_url = "https://relay.example.com"
+board_id = "default"
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadRuntimeConfigFromDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	boardID := cfg.LiveActivity.BoardIDOrDefault()
+	if boardID == "" || boardID == "default" || !strings.HasPrefix(boardID, "board-") {
+		t.Fatalf("generated board_id = %q, want non-default board-*", boardID)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, liveActivityBoardIDFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(data)) != boardID {
+		t.Fatalf("persisted board_id = %q, want %q", strings.TrimSpace(string(data)), boardID)
+	}
+
+	cfg, err = LoadRuntimeConfigFromDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.LiveActivity.BoardIDOrDefault(); got != boardID {
+		t.Fatalf("reloaded board_id = %q, want persisted %q", got, boardID)
+	}
+}
+
+func TestLoadOrCreateLiveActivityBoardIDConcurrent(t *testing.T) {
+	dir := t.TempDir()
+	const workers = 16
+	var wg sync.WaitGroup
+	ids := make(chan string, workers)
+	errs := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			boardID, err := loadOrCreateLiveActivityBoardID(dir)
+			if err != nil {
+				errs <- err
+				return
+			}
+			ids <- boardID
+		}()
+	}
+	wg.Wait()
+	close(ids)
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	var first string
+	for id := range ids {
+		if first == "" {
+			first = id
+			continue
+		}
+		if id != first {
+			t.Fatalf("concurrent board_id = %q, want %q", id, first)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(dir, liveActivityBoardIDFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(data)); got != first {
+		t.Fatalf("persisted board_id = %q, want %q", got, first)
 	}
 }
 
