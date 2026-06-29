@@ -108,6 +108,37 @@ func TestWriteScriptCreatesPrivateDirectoryAndFile(t *testing.T) {
 	}
 }
 
+func TestWriteScriptTightensExistingDirectoryAndFilePermissions(t *testing.T) {
+	scriptsDir := filepath.Join(t.TempDir(), "scripts")
+	if err := os.Mkdir(scriptsDir, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	path := filepath.Join(scriptsDir, "demo.jsonl")
+	if err := os.WriteFile(path, []byte("# old"), 0o644); err != nil {
+		t.Fatalf("WriteFile old script: %v", err)
+	}
+	tool := NewWriteScriptTool(scriptsDir)
+	in, _ := json.Marshal(map[string]string{"file": "demo.jsonl", "content": "# private"})
+
+	if _, err := tool.Call(context.Background(), string(in)); err != nil {
+		t.Fatalf("Call error: %v", err)
+	}
+	dirInfo, err := os.Stat(scriptsDir)
+	if err != nil {
+		t.Fatalf("Stat scripts dir: %v", err)
+	}
+	if got := dirInfo.Mode().Perm(); got != 0o700 {
+		t.Fatalf("scripts dir mode = %#o, want 0700", got)
+	}
+	fileInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat script file: %v", err)
+	}
+	if got := fileInfo.Mode().Perm(); got != 0o600 {
+		t.Fatalf("script file mode = %#o, want 0600", got)
+	}
+}
+
 func TestWriteScriptOverwritesExistingFile(t *testing.T) {
 	scriptsDir := t.TempDir()
 	writeRunScriptTestFile(t, scriptsDir, "demo.jsonl", "# old\n{\"type\":\"wait\",\"ms\":1}")

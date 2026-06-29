@@ -272,6 +272,11 @@ func runAfterToolCallHook(ctx context.Context, execution ToolCallExecution, call
 				result.Summary = result.Output
 			} else if externalized {
 				result.Output = output
+				if summary, ok := compactScreenshotObservation(call.Spec.Name, output); ok {
+					result.Summary = summary
+				} else {
+					result.Summary = compactToolObservation(output)
+				}
 			}
 		}
 	}
