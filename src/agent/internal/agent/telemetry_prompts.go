@@ -2,9 +2,11 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,12 +38,19 @@ type telemetryPromptCall struct {
 	StartedAt       time.Time
 	EndedAt         time.Time
 	Input           []map[string]interface{}
+	Media           []telemetryPromptMedia
 	Output          map[string]interface{}
 	UsageDetails    map[string]int
 	CostDetails     map[string]float64
 	ModelParameters map[string]interface{}
 	Metadata        map[string]interface{}
 	Error           string
+}
+
+type telemetryPromptMedia struct {
+	Placeholder string
+	ContentType string
+	Data        []byte
 }
 
 func newTelemetryPromptCapture(enabled bool) *telemetryPromptCapture {
@@ -55,12 +64,14 @@ func (c *telemetryPromptCapture) Record(ctx context.Context, startedAt, endedAt 
 	if c == nil {
 		return
 	}
+	input, media := telemetryMessageInput(messages)
 	call := telemetryPromptCall{
 		ID:              uuid.NewString(),
 		Role:            telemetryRoleFromContext(ctx),
 		StartedAt:       startedAt.UTC(),
 		EndedAt:         endedAt.UTC(),
-		Input:           telemetryMessageInput(messages),
+		Input:           input,
+		Media:           media,
 		Output:          telemetryContentResponse(res),
 		UsageDetails:    telemetryUsageDetails(res),
 		CostDetails:     telemetryCostDetails(res),
@@ -91,20 +102,24 @@ func (c *telemetryPromptCapture) Snapshot() []telemetryPromptCall {
 	return append([]telemetryPromptCall(nil), c.calls...)
 }
 
-func telemetryMessageInput(messages []llms.MessageContent) []map[string]interface{} {
+func telemetryMessageInput(messages []llms.MessageContent) ([]map[string]interface{}, []telemetryPromptMedia) {
 	out := make([]map[string]interface{}, 0, len(messages))
+	var media []telemetryPromptMedia
 	for _, message := range messages {
+		parts, partMedia := telemetryContentParts(message.Parts)
 		item := map[string]interface{}{
 			"role":  string(message.Role),
-			"parts": telemetryContentParts(message.Parts),
+			"parts": parts,
 		}
 		out = append(out, item)
+		media = append(media, partMedia...)
 	}
-	return out
+	return out, media
 }
 
-func telemetryContentParts(parts []llms.ContentPart) []map[string]interface{} {
+func telemetryContentParts(parts []llms.ContentPart) ([]map[string]interface{}, []telemetryPromptMedia) {
 	out := make([]map[string]interface{}, 0, len(parts))
+	var media []telemetryPromptMedia
 	for _, part := range parts {
 		switch typed := part.(type) {
 		case llms.TextContent:
@@ -117,16 +132,30 @@ func telemetryContentParts(parts []llms.ContentPart) []map[string]interface{} {
 				"type": "image_url",
 				"url":  typed.URL,
 			}
+			if contentType, data, ok := telemetryDataURL(typed.URL); ok {
+				promptMedia := newTelemetryPromptMedia(contentType, data)
+				item["url"] = promptMedia.Placeholder
+				item["mime_type"] = promptMedia.ContentType
+				item["size"] = len(promptMedia.Data)
+				item["sha256"] = telemetryMediaSHA256(promptMedia.Data)
+				media = append(media, promptMedia)
+			} else if strings.HasPrefix(strings.ToLower(strings.TrimSpace(typed.URL)), "data:") {
+				item["url"] = "[data URL omitted: invalid or unsupported]"
+			}
 			if typed.Detail != "" {
 				item["detail"] = typed.Detail
 			}
 			out = append(out, item)
 		case llms.BinaryContent:
+			promptMedia := newTelemetryPromptMedia(typed.MIMEType, typed.Data)
 			out = append(out, map[string]interface{}{
 				"type":      "binary",
-				"mime_type": typed.MIMEType,
-				"data":      base64.StdEncoding.EncodeToString(typed.Data),
+				"mime_type": promptMedia.ContentType,
+				"size":      len(promptMedia.Data),
+				"sha256":    telemetryMediaSHA256(promptMedia.Data),
+				"data":      promptMedia.Placeholder,
 			})
+			media = append(media, promptMedia)
 		case llms.ToolCall:
 			item := map[string]interface{}{
 				"type":      runEventToolCall,
@@ -154,7 +183,52 @@ func telemetryContentParts(parts []llms.ContentPart) []map[string]interface{} {
 			})
 		}
 	}
-	return out
+	return out, media
+}
+
+func newTelemetryPromptMedia(contentType string, data []byte) telemetryPromptMedia {
+	contentType = strings.TrimSpace(contentType)
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	return telemetryPromptMedia{
+		Placeholder: "@@@aidenTelemetryMedia:" + uuid.NewString() + "@@@",
+		ContentType: contentType,
+		Data:        data,
+	}
+}
+
+func telemetryDataURL(raw string) (string, []byte, bool) {
+	raw = strings.TrimSpace(raw)
+	if !strings.HasPrefix(strings.ToLower(raw), "data:") {
+		return "", nil, false
+	}
+	comma := strings.IndexByte(raw, ',')
+	if comma < 0 {
+		return "", nil, false
+	}
+	header := raw[len("data:"):comma]
+	segments := strings.Split(header, ";")
+	if len(segments) < 2 || !strings.EqualFold(strings.TrimSpace(segments[len(segments)-1]), "base64") {
+		return "", nil, false
+	}
+	contentType := strings.TrimSpace(segments[0])
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	data, err := base64.StdEncoding.DecodeString(raw[comma+1:])
+	if err != nil {
+		data, err = base64.RawStdEncoding.DecodeString(raw[comma+1:])
+		if err != nil {
+			return "", nil, false
+		}
+	}
+	return contentType, data, true
+}
+
+func telemetryMediaSHA256(data []byte) string {
+	hash := sha256.Sum256(data)
+	return fmt.Sprintf("%x", hash[:])
 }
 
 func telemetryContentResponse(res *llms.ContentResponse) map[string]interface{} {
