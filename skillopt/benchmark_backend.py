@@ -20,7 +20,6 @@ from skillopt.types import RolloutResult
 
 DEFAULT_DAEMON_IMAGE = "aiden-agent-daemon:local"
 PROFILES_ROOT = Path(__file__).resolve().parent / "profiles"
-MOBILEGYM_MAX_CONCURRENCY = 2
 
 
 class BenchmarkRolloutError(RuntimeError):
@@ -175,8 +174,6 @@ class BenchmarkRunnerBackend:
             "--auto-agent-setup",
             "--environment-url",
             self.environment_url,
-            "--max-concurrency",
-            str(MOBILEGYM_MAX_CONCURRENCY) if self.environment_profile == "mobilegym" else "0",
             "--daemon-image",
             self.daemon_image,
             "--base-config-dir",

@@ -144,7 +144,7 @@ def test_benchmark_runner_backend_rejects_skill_name_escape(tmp_path: Path):
     assert not (tmp_path / "evil" / "SKILL.md").exists()
 
 
-def test_mobilegym_runner_command_caps_concurrency(tmp_path: Path):
+def test_mobilegym_runner_command_does_not_cap_environment_concurrency(tmp_path: Path):
     from skillopt.benchmark_backend import BenchmarkRunnerBackend
 
     benchmark_root = tmp_path / "benchmark"
@@ -168,7 +168,7 @@ def test_mobilegym_runner_command_caps_concurrency(tmp_path: Path):
         judge_cfg=None,
     )
 
-    assert cmd[cmd.index("--max-concurrency") + 1] == "2"
+    assert "--max-concurrency" not in cmd
 
 
 def test_benchmark_runner_backend_applies_mobilegym_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
