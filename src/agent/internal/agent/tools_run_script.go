@@ -234,7 +234,7 @@ func (t *RunScriptTool) executeStep(ctx context.Context, step runScriptStep) (re
 			return result
 		}
 		result.Output = runScriptOutputPreview(output)
-		if toolOutputLooksLikeError(output) {
+		if legacyToolOutputLooksLikeError(output) {
 			result.OK = false
 			result.Error = output
 			return result
