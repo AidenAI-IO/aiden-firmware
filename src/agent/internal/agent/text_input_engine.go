@@ -35,22 +35,22 @@ type enterTextInFieldArgs struct {
 }
 
 type enterTextInFieldResult struct {
-	OK           bool     `json:"ok"`
-	Committed    bool     `json:"committed"`
-	Interrupted  bool     `json:"interrupted,omitempty"`
-	TargetText   string   `json:"target_text"`
-	FieldText    string   `json:"field_text,omitempty"`
-	RequiredMode string   `json:"required_mode"`
-	Mode         string   `json:"mode,omitempty"`
-	Attempts     int      `json:"attempts"`
-	IMESwitches  int      `json:"ime_switches"`
-	VLMCalls     int      `json:"vlm_calls"`
-	ObservedMode string   `json:"observed_mode,omitempty"`
-	CompositionPending bool `json:"composition_pending,omitempty"`
-	CandidatesVisible  int  `json:"candidates_visible,omitempty"`
-	WrongIMESuspected  bool `json:"wrong_ime_suspected,omitempty"`
-	Reason       string   `json:"reason,omitempty"`
-	Steps        []string `json:"steps,omitempty"`
+	OK                 bool     `json:"ok"`
+	Committed          bool     `json:"committed"`
+	Interrupted        bool     `json:"interrupted,omitempty"`
+	TargetText         string   `json:"target_text"`
+	FieldText          string   `json:"field_text,omitempty"`
+	RequiredMode       string   `json:"required_mode"`
+	Mode               string   `json:"mode,omitempty"`
+	Attempts           int      `json:"attempts"`
+	IMESwitches        int      `json:"ime_switches"`
+	VLMCalls           int      `json:"vlm_calls"`
+	ObservedMode       string   `json:"observed_mode,omitempty"`
+	CompositionPending bool     `json:"composition_pending,omitempty"`
+	CandidatesVisible  int      `json:"candidates_visible,omitempty"`
+	WrongIMESuspected  bool     `json:"wrong_ime_suspected,omitempty"`
+	Reason             string   `json:"reason,omitempty"`
+	Steps              []string `json:"steps,omitempty"`
 }
 
 func newTextInputEngine(hw textInputHardwareDeps, vision textInputVision) *textInputEngine {
@@ -126,10 +126,14 @@ func (e *textInputEngine) Run(ctx context.Context, args enterTextInFieldArgs) (e
 				if err != nil {
 					return enterTextInFieldResult{TargetText: args.Text, RequiredMode: string(requiredMode), Mode: string(interactionMode), Attempts: attempt, Reason: err.Error(), Steps: steps, VLMCalls: vlmCalls}, nil
 				}
+				if attempt == 1 {
+					steps = append(steps, fmt.Sprintf("wait %s for IME to settle before first composition input", textInputCompositionReadyDelay))
+					time.Sleep(textInputCompositionReadyDelay)
+				}
 				if interactionMode == textInputModeSearch {
 					committed, fieldText, wrongIME, calls, stepNotes, err = e.typeCompositionSearch(ctx, platform, args, segments)
 				} else {
-				committed, fieldText, wrongIME, calls, stepNotes, err = e.typeCompositionWithCandidateSelection(ctx, platform, args, segments)
+					committed, fieldText, wrongIME, calls, stepNotes, err = e.typeCompositionWithCandidateSelection(ctx, platform, args, segments)
 				}
 			}
 		} else {

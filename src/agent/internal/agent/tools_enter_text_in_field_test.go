@@ -316,6 +316,34 @@ func TestEnterTextInFieldRetryWithoutRetype(t *testing.T) {
 	}
 }
 
+func TestEnterTextInFieldFirstCompositionAttemptWaitsForIME(t *testing.T) {
+	originalDelay := textInputCompositionReadyDelay
+	textInputCompositionReadyDelay = 0
+	defer func() { textInputCompositionReadyDelay = originalDelay }()
+
+	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
+		FieldText: "你好",
+	}}}
+	engine := newTextInputEngine(textInputHardwareDeps{
+		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
+		keyboardTap:  textInputStubTool{name: "keyboard_tap", out: "ok"},
+		keyboardText: textInputStubTool{name: "keyboard_text", out: "ok"},
+		quickAction:  textInputStubTool{name: "quick_action", out: "ok"},
+		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}, vision)
+	tool := &EnterTextInFieldTool{engine: engine}
+	out, err := tool.Call(context.Background(), `{"text":"你好","focus":{"x":500,"y":100},"segments":["ni","hao"]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"committed": true`) {
+		t.Fatalf("unexpected output: %s", out)
+	}
+	if !strings.Contains(out, "wait 0s for IME to settle before first composition input") {
+		t.Fatalf("expected IME settle step in output, got: %s", out)
+	}
+}
+
 func TestEnterTextInFieldCandidatePaging(t *testing.T) {
 	// Simulate: after typing, composition pending but no candidates visible,
 	// then after paging down once, candidate appears and gets clicked, then field committed.
