@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -107,6 +108,41 @@ func TestPhoneBridgeRestorerDoesNotTapLockScreenLiveActivity(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no supported Dynamic Island return entry") {
 		t.Fatalf("EnsureForeground() error = %v, want unsupported Dynamic Island message", err)
+	}
+}
+
+func TestPhoneBridgeReturnEntryTapFailureIsAppBackgrounded(t *testing.T) {
+	bridge := NewPhoneBridge(nil)
+	defer bridge.queue.Stop()
+	bridge.mu.Lock()
+	bridge.platform = "ios"
+	bridge.appState = "background"
+	bridge.returnEntry = "dynamic_island"
+	bridge.returnEntrySeen = true
+	bridge.returnEntryOK = true
+	bridge.mu.Unlock()
+
+	restorer := NewPhoneBridgeRestorer(bridge, nil)
+	restorer.tapReturnEntry = func(context.Context, PhoneBridgeStatus) error {
+		return errors.New("open /dev/hidg1: no such device or address")
+	}
+
+	restored, err := restorer.EnsureForeground(context.Background())
+	if err == nil {
+		t.Fatal("EnsureForeground() error = nil, want tap failure")
+	}
+	if restored {
+		t.Fatal("EnsureForeground() restored = true, want false")
+	}
+	te := phoneBridgeCommandPreconditionToolError(bridge.Status(), err)
+	if te == nil || te.Code != CodeAppBackgrounded || te.Category != CategoryUserActionRequired {
+		t.Fatalf("tool error = %#v, want app_backgrounded user_action_required", te)
+	}
+	if !strings.Contains(te.Message, "not a Phone Bridge WebSocket disconnect") {
+		t.Fatalf("tool error message does not distinguish bridge connection from restore failure: %q", te.Message)
+	}
+	if restoreError, _ := te.Details["restore_error"].(string); restoreError == "" {
+		t.Fatalf("tool error missing restore_error details: %#v", te.Details)
 	}
 }
 

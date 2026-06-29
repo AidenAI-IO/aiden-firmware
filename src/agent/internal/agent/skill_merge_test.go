@@ -315,6 +315,56 @@ func TestBundledSkillsReferenceKnownAllowedTools(t *testing.T) {
 	}
 }
 
+func TestBundledDeviceOperatorDoesNotExposeAppSidePhoneTools(t *testing.T) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	skillsDir := filepath.Join(filepath.Dir(file), "..", "..", "config", "skills")
+	index, err := LoadSkillsFromDirs([]string{skillsDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	skill, ok := index.Get("device-operator")
+	if !ok {
+		t.Fatal("device-operator skill missing")
+	}
+	allowed := map[string]struct{}{}
+	for _, tool := range skill.AllowedTools {
+		allowed[tool] = struct{}{}
+	}
+	for _, tool := range []string{"open_app", "clipboard", "contacts", "calendar", "notification"} {
+		if _, ok := allowed[tool]; ok {
+			t.Fatalf("device-operator should not expose app-side phone tool %q by default: %v", tool, skill.AllowedTools)
+		}
+	}
+}
+
+func TestBundledWechatKeepsCrossAppPhoneTools(t *testing.T) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	skillsDir := filepath.Join(filepath.Dir(file), "..", "..", "config", "skills")
+	index, err := LoadSkillsFromDirs([]string{skillsDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	skill, ok := index.Get("wechat")
+	if !ok {
+		t.Fatal("wechat skill missing")
+	}
+	allowed := map[string]struct{}{}
+	for _, tool := range skill.AllowedTools {
+		allowed[tool] = struct{}{}
+	}
+	for _, tool := range []string{"open_app", "clipboard", "contacts"} {
+		if _, ok := allowed[tool]; !ok {
+			t.Fatalf("wechat should keep cross-app phone tool %q: %v", tool, skill.AllowedTools)
+		}
+	}
+}
+
 func TestMergeWorker_SkipsWhenLocalChanged(t *testing.T) {
 	configDir := t.TempDir()
 	stateDir := filepath.Join(configDir, "skill-state")

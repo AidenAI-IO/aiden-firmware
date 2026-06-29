@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -66,12 +67,35 @@ func (r *PhoneBridgeRestorer) EnsureForeground(ctx context.Context) (bool, error
 		bridge.logger.Info("phone-bridge: restoring foreground via %s before app command", firstNonEmptyPhoneField(status.ReturnEntry, "return_entry"))
 	}
 	if err := r.tap(ctx, status); err != nil {
-		return false, fmt.Errorf("tap Dynamic Island return entry: %w", err)
+		return false, &phoneBridgeReturnEntryTapError{entry: firstNonEmptyPhoneField(status.ReturnEntry, "return_entry"), err: err}
 	}
 	if _, err := r.waitForeground(ctx); err != nil {
 		return true, err
 	}
 	return true, nil
+}
+
+type phoneBridgeReturnEntryTapError struct {
+	entry string
+	err   error
+}
+
+func (e *phoneBridgeReturnEntryTapError) Error() string {
+	if e == nil {
+		return ""
+	}
+	entry := firstNonEmptyPhoneField(e.entry, "return entry")
+	if e.err == nil {
+		return fmt.Sprintf("tap %s return entry failed", entry)
+	}
+	return fmt.Sprintf("tap %s return entry failed: %v", entry, e.err)
+}
+
+func (e *phoneBridgeReturnEntryTapError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
 }
 
 func (r *PhoneBridgeRestorer) tap(ctx context.Context, status PhoneBridgeStatus) error {
@@ -138,6 +162,39 @@ func sendForegroundBridgeCommand(ctx context.Context, bridge *PhoneBridge, resto
 	}
 	resp, err := bridge.SendCommand(ctx, cmd)
 	return resp, restored, err
+}
+
+func phoneBridgeCommandPreconditionToolError(status PhoneBridgeStatus, err error) *ToolError {
+	if err == nil {
+		return nil
+	}
+	var tapErr *phoneBridgeReturnEntryTapError
+	if errors.As(err, &tapErr) {
+		return NewToolErrorWithDetails(CodeAppBackgrounded,
+			"Aiden companion app is backgrounded and automatic return-entry restore failed because HID input is unavailable. This is not a Phone Bridge WebSocket disconnect; do not retry companion-app tools until Aiden is foreground or HID input is restored.",
+			map[string]any{
+				"return_entry":  firstNonEmptyPhoneField(status.ReturnEntry, tapErr.entry),
+				"connected":     status.Connected,
+				"app_state":     status.AppState,
+				"restore_error": tapErr.Error(),
+			})
+	}
+	if phoneBridgeAppNeedsForeground(status) {
+		return NewToolErrorWithDetails(CodeAppBackgrounded, err.Error(), map[string]any{
+			"connected":    status.Connected,
+			"app_state":    status.AppState,
+			"return_entry": status.ReturnEntry,
+		})
+	}
+	return NewToolError(CodeBridgeNotConnected, err.Error())
+}
+
+func phoneBridgeCommandPreconditionToolErrorFromBridge(bridge *PhoneBridge, err error) *ToolError {
+	status := PhoneBridgeStatus{}
+	if bridge != nil {
+		status = bridge.Status()
+	}
+	return phoneBridgeCommandPreconditionToolError(status, err)
 }
 
 func phoneBridgeReadyForCommand(status PhoneBridgeStatus) bool {
