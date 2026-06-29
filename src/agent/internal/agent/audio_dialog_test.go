@@ -1460,6 +1460,56 @@ func TestAudioDialogRunScriptUsesConfiguredTTS(t *testing.T) {
 	}
 }
 
+func TestAudioDialogConfigureRuntimeToolsDoesNotOverwriteSharedSpeaker(t *testing.T) {
+	configDir := t.TempDir()
+	scriptsDir := filepath.Join(configDir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	writeRunScriptTestFile(t, scriptsDir, "demo.jsonl", `{"tts":"server voice"}`)
+
+	tools := NewBuiltinToolSetFromConfig(Config{ConfigDir: configDir}, ProxyConfig{}, nil)
+	spoken := make(chan string, 1)
+	tools.SetRunScriptSpeaker(func(_ context.Context, text string) error {
+		spoken <- text
+		return nil
+	})
+	runtime := NewRuntimeWithDeps(
+		Config{ConfigDir: configDir, Model: ModelConfig{Provider: "fake"}},
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		tools,
+		NewSkillIndex(),
+	)
+
+	dialog := &AudioDialog{}
+	_ = dialog.ConfigureRuntimeTools(context.Background(), runtime)
+
+	runScript, ok := tools.Get("run_script")
+	if !ok {
+		t.Fatal("run_script tool missing")
+	}
+	out, err := runScript.Call(context.Background(), `{"file":"demo.jsonl"}`)
+	if err != nil {
+		t.Fatalf("Call error: %v", err)
+	}
+	var result runScriptResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("invalid result JSON: %v\n%s", err, out)
+	}
+	if !result.OK {
+		t.Fatalf("result = %#v, output=%s", result, out)
+	}
+	select {
+	case got := <-spoken:
+		if got != "server voice" {
+			t.Fatalf("spoken text = %q, want server voice", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server-installed speaker was not called")
+	}
+}
+
 func boolPtr(value bool) *bool {
 	return &value
 }

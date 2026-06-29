@@ -254,14 +254,14 @@ func (t *WriteScriptTool) Call(_ context.Context, input string) (string, error) 
 	if mkdirAll == nil {
 		mkdirAll = os.MkdirAll
 	}
-	if err := mkdirAll(t.scriptsDir, 0o755); err != nil {
+	if err := mkdirAll(t.scriptsDir, 0o700); err != nil {
 		return fmt.Sprintf("error: create scripts directory: %v", err), nil
 	}
 	writeFile := t.writeFile
 	if writeFile == nil {
 		writeFile = os.WriteFile
 	}
-	if err := writeFile(path, []byte(args.Content), 0o644); err != nil {
+	if err := writeFile(path, []byte(args.Content), 0o600); err != nil {
 		return fmt.Sprintf("error: write script %q: %v", file, err), nil
 	}
 

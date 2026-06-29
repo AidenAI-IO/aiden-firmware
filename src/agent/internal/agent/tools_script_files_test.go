@@ -84,6 +84,30 @@ func TestWriteScriptCreatesFileAndReportsDescription(t *testing.T) {
 	}
 }
 
+func TestWriteScriptCreatesPrivateDirectoryAndFile(t *testing.T) {
+	scriptsDir := filepath.Join(t.TempDir(), "scripts")
+	tool := NewWriteScriptTool(scriptsDir)
+	in, _ := json.Marshal(map[string]string{"file": "demo.jsonl", "content": "# private"})
+
+	if _, err := tool.Call(context.Background(), string(in)); err != nil {
+		t.Fatalf("Call error: %v", err)
+	}
+	dirInfo, err := os.Stat(scriptsDir)
+	if err != nil {
+		t.Fatalf("Stat scripts dir: %v", err)
+	}
+	if got := dirInfo.Mode().Perm(); got != 0o700 {
+		t.Fatalf("scripts dir mode = %#o, want 0700", got)
+	}
+	fileInfo, err := os.Stat(filepath.Join(scriptsDir, "demo.jsonl"))
+	if err != nil {
+		t.Fatalf("Stat script file: %v", err)
+	}
+	if got := fileInfo.Mode().Perm(); got != 0o600 {
+		t.Fatalf("script file mode = %#o, want 0600", got)
+	}
+}
+
 func TestWriteScriptOverwritesExistingFile(t *testing.T) {
 	scriptsDir := t.TempDir()
 	writeRunScriptTestFile(t, scriptsDir, "demo.jsonl", "# old\n{\"type\":\"wait\",\"ms\":1}")
@@ -104,13 +128,15 @@ func TestWriteScriptOverwritesExistingFile(t *testing.T) {
 
 func TestWriteScriptRejectsPathLikeFileName(t *testing.T) {
 	tool := NewWriteScriptTool(t.TempDir())
-	for _, file := range []string{"../demo.jsonl", "nested/demo.jsonl", "/tmp/demo.jsonl", `nested\demo.jsonl`} {
+	for _, file := range []string{"", ".", "..", "../demo.jsonl", "nested/demo.jsonl", "/tmp/demo.jsonl", `nested\demo.jsonl`} {
 		in, _ := json.Marshal(map[string]string{"file": file, "content": "# x"})
 		out, err := tool.Call(context.Background(), string(in))
 		if err != nil {
 			t.Fatalf("Call error for %q: %v", file, err)
 		}
-		if !strings.Contains(out, "script file must be a file name under scripts/") {
+		if !strings.Contains(out, "file is required") &&
+			!strings.Contains(out, "invalid script file name") &&
+			!strings.Contains(out, "script file must be a file name under scripts/") {
 			t.Fatalf("output for %q = %s, want file-name rejection", file, out)
 		}
 	}
@@ -151,13 +177,15 @@ func TestReadScriptRequiresFile(t *testing.T) {
 
 func TestReadScriptRejectsPathLikeFileName(t *testing.T) {
 	tool := NewReadScriptTool(t.TempDir())
-	for _, file := range []string{"../demo.jsonl", "nested/demo.jsonl", "/tmp/demo.jsonl", `nested\demo.jsonl`} {
+	for _, file := range []string{"", ".", "..", "../demo.jsonl", "nested/demo.jsonl", "/tmp/demo.jsonl", `nested\demo.jsonl`} {
 		in, _ := json.Marshal(map[string]string{"file": file})
 		out, err := tool.Call(context.Background(), string(in))
 		if err != nil {
 			t.Fatalf("Call error for %q: %v", file, err)
 		}
-		if !strings.Contains(out, "script file must be a file name under scripts/") {
+		if !strings.Contains(out, "file is required") &&
+			!strings.Contains(out, "invalid script file name") &&
+			!strings.Contains(out, "script file must be a file name under scripts/") {
 			t.Fatalf("output for %q = %s, want file-name rejection", file, out)
 		}
 	}
@@ -269,5 +297,30 @@ func TestScriptToolsUseConfigScriptsDir(t *testing.T) {
 	}
 	if !strings.Contains(content, "# 演示") || !strings.Contains(content, `"type":"wait"`) {
 		t.Fatalf("read output = %s, want full script content", content)
+	}
+}
+
+func TestRunScriptScriptsDirOptionOverridesConfigDefault(t *testing.T) {
+	configDir := t.TempDir()
+	overrideDir := filepath.Join(t.TempDir(), "override-scripts")
+	tools := NewBuiltinToolSetFromConfig(
+		Config{Model: ModelConfig{Provider: "fake"}, ConfigDir: configDir},
+		ProxyConfig{},
+		WithRunScriptScriptsDir(overrideDir),
+	)
+
+	writer, ok := tools.Get("write_script")
+	if !ok {
+		t.Fatal("write_script tool missing")
+	}
+	in, _ := json.Marshal(map[string]string{"file": "demo.jsonl", "content": "# override\n{\"type\":\"wait\",\"ms\":1}"})
+	if _, err := writer.Call(context.Background(), string(in)); err != nil {
+		t.Fatalf("write Call error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(overrideDir, "demo.jsonl")); err != nil {
+		t.Fatalf("script not written under override dir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(configDir, "scripts", "demo.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("script unexpectedly written under config default, stat err=%v", err)
 	}
 }

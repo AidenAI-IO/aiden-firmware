@@ -50,10 +50,37 @@ func NewBuiltinToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg SearchC
 }
 
 func NewBuiltinToolSetFromConfig(cfg Config, proxyCfg ProxyConfig, options ...BuiltinToolSetOption) *ToolSet {
+	defaultOptions := make([]BuiltinToolSetOption, 0, len(options)+1)
 	if cfg.ConfigDir != "" {
-		options = append(options, WithRunScriptScriptsDir(filepath.Join(cfg.ConfigDir, "scripts")))
+		defaultOptions = append(defaultOptions, WithRunScriptScriptsDir(filepath.Join(cfg.ConfigDir, "scripts")))
 	}
+	options = append(defaultOptions, options...)
 	return newHardwareToolSet(cfg.HID, cfg.Audio, cfg.Search, proxyCfg, options...)
+}
+
+var scriptCallableToolNames = map[string]struct{}{
+	"audio_volume":           {},
+	"calculator":             {},
+	"current_time":           {},
+	"enter_text_in_field":    {},
+	"enter_text_via_bridge":  {},
+	"image_diff":             {},
+	"keyboard_tap":           {},
+	"keyboard_text":          {},
+	"mouse_click":            {},
+	"mouse_move":             {},
+	"mouse_scroll":           {},
+	"open_app":               {},
+	"quick_action":           {},
+	"screenshot":             {},
+	"search_launch_app":      {},
+	"touch_gesture":          {},
+	"wait_for_stable_screen": {},
+}
+
+func isScriptCallableTool(name string) bool {
+	_, ok := scriptCallableToolNames[name]
+	return ok
 }
 
 func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg SearchConfig, proxyCfg ProxyConfig, options ...BuiltinToolSetOption) *ToolSet {
@@ -108,6 +135,9 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 		tools[toolWaitForWakeup] = NewWaitForWakeupTool(toolOptions.waitForWakeupController)
 	}
 	runScript := NewRunScriptTool(toolOptions.scriptsDir, func(name string) (langtools.Tool, bool) {
+		if !isScriptCallableTool(name) {
+			return nil, false
+		}
 		tool, ok := tools[name]
 		return tool, ok
 	})

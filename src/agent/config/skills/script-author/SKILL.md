@@ -36,7 +36,7 @@ After the header, each non-empty, non-comment line is exactly one JSON object �
 - Speak: `{"type":"tts","text":"正在打开设置"}` starts TTS playback asynchronously and immediately continues to the next line; it does not wait for speech to finish. Short form: `{"tts":"正在打开设置"}`.
 - Call a tool: `{"type":"call","tool":"touch_gesture","input":{"type":"tap","point":{"x":500,"y":500}}}` invokes an existing tool with the given input. Short form: `{"call":{"tool":"screenshot","input":{}}}`.
 
-The `tool` of a call step must be another available tool; `run_script` cannot call itself. Use the same input shape each tool expects on its own.
+The `tool` of a call step must be one of the script-callable device or utility tools, such as screenshot, touch/mouse/keyboard controls, quick_action, wait_for_stable_screen, image_diff, audio_volume, current_time, or calculator. `run_script` cannot call itself or administrative tools such as shell, memory, skill management, web, or script-file tools. Use the same input shape each allowed tool expects on its own.
 
 ## Example
 
@@ -60,6 +60,6 @@ The `tool` of a call step must be another available tool; `run_script` cannot ca
 ## Cautions
 
 - `tts` lines do not block, so insert a following `wait` step if later actions should happen after speech.
-- A `wait` duration must be greater than zero.
+- A `wait` duration must be greater than zero and no more than 30 seconds.
 - Coordinate-based call steps follow the same coordinate discipline as direct device operation: prefer `coord_space: "normalized"` (0-1000) and target the visible control center.
 - Treat scripts as internal automation. When running them for ordinary user tasks, describe progress in terms of the user goal; do not expose script files, JSONL, or step details unless the user is explicitly debugging or authoring scripts.

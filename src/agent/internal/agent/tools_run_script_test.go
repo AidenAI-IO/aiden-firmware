@@ -108,6 +108,45 @@ func TestRunScriptStopsOnToolError(t *testing.T) {
 	}
 }
 
+func TestRunScriptStopsOnStructuredToolError(t *testing.T) {
+	toolErr := NewToolError(CodeInvalidArguments, "structured failure")
+	first := &contextToolErrorStub{name: "first", toolErr: toolErr}
+	second := &stubTool{name: "second", output: "ok"}
+	scriptsDir := t.TempDir()
+	tool := NewRunScriptTool(scriptsDir, func(name string) (langtools.Tool, bool) {
+		switch name {
+		case "first":
+			return first, true
+		case "second":
+			return second, true
+		default:
+			return nil, false
+		}
+	})
+	tool.sleeper = func(context.Context, time.Duration) error { return nil }
+
+	file := "demo.jsonl"
+	writeRunScriptTestFile(t, scriptsDir, file, strings.Join([]string{
+		`{"type":"call","tool":"first","input":{}}`,
+		`{"type":"call","tool":"second","input":{}}`,
+	}, "\n"))
+
+	out, err := tool.Call(context.Background(), `{"file":`+quoteJSON(file)+`}`)
+	if err != nil {
+		t.Fatalf("Call error: %v", err)
+	}
+	var result runScriptResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("invalid result JSON: %v\n%s", err, out)
+	}
+	if result.OK || result.StepsRun != 1 || result.Error != toolErr.Message {
+		t.Fatalf("result = %#v, output=%s", result, out)
+	}
+	if len(second.inputs) != 0 {
+		t.Fatalf("second tool should not run after structured failure, inputs=%#v", second.inputs)
+	}
+}
+
 func TestRunScriptAcceptsShortJSONLForms(t *testing.T) {
 	calledTool := &stubTool{name: "screenshot", output: `{"ok":true}`}
 	scriptsDir := t.TempDir()
@@ -161,6 +200,34 @@ func TestRunScriptAcceptsShortJSONLForms(t *testing.T) {
 	}
 	if result.Steps[1].Text != "短句" || result.Steps[1].Output != "queued" {
 		t.Fatalf("tts result = %#v, want text and queued output", result.Steps[1])
+	}
+}
+
+func TestRunScriptPassesStringEncodedCallInputUnchanged(t *testing.T) {
+	calledTool := &stubTool{name: "keyboard_text", output: "ok"}
+	scriptsDir := t.TempDir()
+	tool := NewRunScriptTool(scriptsDir, func(name string) (langtools.Tool, bool) {
+		if name == calledTool.name {
+			return calledTool, true
+		}
+		return nil, false
+	})
+	file := "demo.jsonl"
+	writeRunScriptTestFile(t, scriptsDir, file, `{"call":{"tool":"keyboard_text","input":"{\"text\":\"demo\"}"}}`)
+
+	out, err := tool.Call(context.Background(), `{"file":`+quoteJSON(file)+`}`)
+	if err != nil {
+		t.Fatalf("Call error: %v", err)
+	}
+	var result runScriptResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("invalid result JSON: %v\n%s", err, out)
+	}
+	if !result.OK || result.StepsRun != 1 {
+		t.Fatalf("result = %#v, output=%s", result, out)
+	}
+	if len(calledTool.inputs) != 1 || calledTool.inputs[0] != `{"text":"demo"}` {
+		t.Fatalf("tool inputs = %#v, want preformatted JSON string unchanged", calledTool.inputs)
 	}
 }
 
@@ -281,6 +348,28 @@ func TestRunScriptRejectsSelfCall(t *testing.T) {
 	}
 }
 
+func TestRunScriptRejectsLongWaitWithoutSleeping(t *testing.T) {
+	tool := NewRunScriptTool(t.TempDir(), func(string) (langtools.Tool, bool) { return nil, false })
+	var slept bool
+	tool.sleeper = func(context.Context, time.Duration) error {
+		slept = true
+		return nil
+	}
+
+	result := tool.executeStep(context.Background(), runScriptStep{
+		Line: 1,
+		Type: "wait",
+		Wait: 31 * time.Second,
+	})
+
+	if result.OK || !strings.Contains(result.Error, "wait duration must be <=") {
+		t.Fatalf("result = %#v, want max wait rejection", result)
+	}
+	if slept {
+		t.Fatal("sleeper was called for over-limit wait")
+	}
+}
+
 func TestRunScriptRejectsPathLikeFileName(t *testing.T) {
 	tool := NewRunScriptTool(t.TempDir(), func(string) (langtools.Tool, bool) { return nil, false })
 	for _, file := range []string{"../demo.jsonl", "nested/demo.jsonl", "/tmp/demo.jsonl", `nested\demo.jsonl`} {
@@ -313,6 +402,33 @@ func TestRunScriptToolSetUsesConfigScriptsDir(t *testing.T) {
 	}
 	if !strings.Contains(out, `"ok":true`) || !strings.Contains(out, `"output":"5"`) {
 		t.Fatalf("output = %s, want calculator result from config scripts dir", out)
+	}
+}
+
+func TestRunScriptToolSetRejectsNonScriptCallableTools(t *testing.T) {
+	scriptsDir := t.TempDir()
+	writeRunScriptTestFile(t, scriptsDir, "demo.jsonl", `{"type":"call","tool":"shell","input":{"command":"echo denied"}}`)
+	tools := NewBuiltinToolSet(
+		HIDConfig{},
+		AudioConfig{},
+		SearchConfig{},
+		ProxyConfig{},
+		WithRunScriptScriptsDir(scriptsDir),
+	)
+	tool, ok := tools.Get("run_script")
+	if !ok {
+		t.Fatal("run_script tool missing")
+	}
+	out, err := tool.Call(context.Background(), `{"file":"demo.jsonl"}`)
+	if err != nil {
+		t.Fatalf("Call error: %v", err)
+	}
+	var result runScriptResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("invalid result JSON: %v\n%s", err, out)
+	}
+	if result.OK || !strings.Contains(result.Error, `tool "shell" is not available`) {
+		t.Fatalf("result = %#v, output=%s", result, out)
 	}
 }
 

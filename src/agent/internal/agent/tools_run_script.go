@@ -19,11 +19,31 @@ const (
 	maxRunScriptLineBytes = 1 << 20
 	maxRunScriptSteps     = 1000
 	runScriptOutputLimit  = 2000
+	maxRunScriptWait      = 30 * time.Second
 )
 
 type runScriptSpeaker func(context.Context, string) error
 type runScriptToolLookup func(string) (langtools.Tool, bool)
 type runScriptSleeper func(context.Context, time.Duration) error
+type runScriptSpeakerContextKey struct{}
+
+func contextWithRunScriptSpeaker(ctx context.Context, speaker runScriptSpeaker) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if speaker == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, runScriptSpeakerContextKey{}, speaker)
+}
+
+func runScriptSpeakerFromContext(ctx context.Context) runScriptSpeaker {
+	if ctx == nil {
+		return nil
+	}
+	speaker, _ := ctx.Value(runScriptSpeakerContextKey{}).(runScriptSpeaker)
+	return speaker
+}
 
 // RunScriptTool executes local JSONL demo scripts without involving the LLM
 // between scripted steps.
@@ -66,7 +86,10 @@ func (t *RunScriptTool) SetSpeaker(speaker runScriptSpeaker) {
 	t.speaker = speaker
 }
 
-func (t *RunScriptTool) speakerFn() runScriptSpeaker {
+func (t *RunScriptTool) speakerFn(ctx context.Context) runScriptSpeaker {
+	if speaker := runScriptSpeakerFromContext(ctx); speaker != nil {
+		return speaker
+	}
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return t.speaker
@@ -179,6 +202,11 @@ func (t *RunScriptTool) executeStep(ctx context.Context, step runScriptStep) (re
 			result.Error = "wait duration must be greater than zero"
 			return result
 		}
+		if step.Wait > maxRunScriptWait {
+			result.OK = false
+			result.Error = fmt.Sprintf("wait duration must be <= %s", maxRunScriptWait)
+			return result
+		}
 		sleeper := t.sleeper
 		if sleeper == nil {
 			sleeper = runScriptSleepContext
@@ -189,7 +217,7 @@ func (t *RunScriptTool) executeStep(ctx context.Context, step runScriptStep) (re
 			return result
 		}
 	case "tts":
-		speaker := t.speakerFn()
+		speaker := t.speakerFn(ctx)
 		if speaker == nil {
 			result.OK = false
 			result.Error = "tts is not configured"
@@ -227,13 +255,22 @@ func (t *RunScriptTool) executeStep(ctx context.Context, step runScriptStep) (re
 			result.Error = fmt.Sprintf("tool %q is not available", step.Tool)
 			return result
 		}
-		output, err := tool.Call(ctx, step.Input)
+		toolCtx, _ := WithToolError(ctx)
+		output, err := tool.Call(toolCtx, step.Input)
 		if err != nil {
 			result.OK = false
 			result.Error = err.Error()
 			return result
 		}
 		result.Output = runScriptOutputPreview(output)
+		if toolErr := ToolErrorFromContext(toolCtx); toolErr != nil {
+			result.OK = false
+			result.Error = toolErr.Message
+			if result.Output == "" {
+				result.Output = toolErr.Message
+			}
+			return result
+		}
 		if legacyToolOutputLooksLikeError(output) {
 			result.OK = false
 			result.Error = output

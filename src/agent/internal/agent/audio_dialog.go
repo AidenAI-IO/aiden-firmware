@@ -739,7 +739,7 @@ func (d *AudioDialog) RunVoiceTurnWithContext(ctx context.Context, input TurnInp
 func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input TurnInput, runtime *Runtime, episodeID, requestID string, turnContext VoiceTurnContext) (RunResult, error) {
 	turnContext = normalizeVoiceTurnContext(turnContext)
 
-	d.ConfigureRuntimeTools(runtime)
+	ctx = d.ConfigureRuntimeTools(ctx, runtime)
 	d.playPromptSound(promptSoundAgentSend, "agent send", true)
 
 	// Send to LLM
@@ -962,11 +962,14 @@ func (d *AudioDialog) Speak(ctx context.Context, text string, interrupt <-chan s
 	return d.speak(ctx, text, interrupt, 0)
 }
 
-func (d *AudioDialog) ConfigureRuntimeTools(runtime *Runtime) {
-	if d == nil || runtime == nil || runtime.tools == nil {
-		return
+func (d *AudioDialog) ConfigureRuntimeTools(ctx context.Context, runtime *Runtime) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	runtime.tools.SetRunScriptSpeaker(func(ctx context.Context, text string) error {
+	if d == nil || runtime == nil || runtime.tools == nil {
+		return ctx
+	}
+	return contextWithRunScriptSpeaker(ctx, func(ctx context.Context, text string) error {
 		if d.ttsManager == nil {
 			return fmt.Errorf("tts is not configured")
 		}
@@ -1082,7 +1085,7 @@ func (d *AudioDialog) playPromptSoundUninterruptible(kind promptSoundKind, label
 
 // ProcessTextInput processes text input and speaks the response
 func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime *Runtime) error {
-	d.ConfigureRuntimeTools(runtime)
+	ctx = d.ConfigureRuntimeTools(ctx, runtime)
 	log.Printf("[text] %s\n", text)
 	d.playPromptSound(promptSoundAgentSend, "agent send", true)
 
