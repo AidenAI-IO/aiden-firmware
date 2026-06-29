@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -122,6 +124,9 @@ func validatePlanArtifacts(artifacts []planArtifact, planLen int) error {
 			}
 			if strings.TrimSpace(artifact.TextTemplate) == "" {
 				return fmt.Errorf("target_text artifact %q requires text_template", artifact.ID)
+			}
+			if strings.TrimSpace(artifact.TargetApp) == "" {
+				return fmt.Errorf("target_text artifact %q requires target_app", artifact.ID)
 			}
 		} else if artifact.Kind == planArtifactKindClipboardPayload {
 			if artifact.Delivery != planArtifactDeliveryClipboard {
@@ -311,12 +316,139 @@ func (s *roleLoopState) beforeArtifactToolCall(ctx context.Context, call ToolCal
 	case "enter_text_in_field", "enter_text_via_bridge":
 		return s.beforeTextEntryToolCall(ctx, call)
 	case "open_app", "search_launch_app":
-		if pending := s.pendingPrepareArtifactsForCurrentStep(); len(pending) > 0 {
-			return rejectArtifactToolCall("target-app navigation is blocked until current step prepares artifact contract(s): " + strings.Join(planArtifactStateIDs(pending), ", "))
+		if pending := s.pendingTargetAppPrepareArtifactsForCall(call); len(pending) > 0 {
+			target := toolCallTargetAppName(call)
+			if target == "" {
+				target = "target app"
+			}
+			return rejectArtifactToolCall("target-app navigation to " + strconv.Quote(target) + " is blocked until current step prepares artifact contract(s): " + strings.Join(planArtifactStateIDs(pending), ", "))
 		}
 		return ToolResult{}, true
 	default:
 		return ToolResult{}, true
+	}
+}
+
+func (s roleLoopState) pendingTargetAppPrepareArtifactsForCall(call ToolCall) []planArtifactState {
+	target := toolCallTargetAppName(call)
+	if strings.TrimSpace(target) == "" {
+		return nil
+	}
+	step := s.currentStepNumber()
+	if step <= 0 {
+		return nil
+	}
+	var out []planArtifactState
+	for _, artifact := range s.PlanArtifacts {
+		if artifact.Kind != planArtifactKindTargetText ||
+			artifact.Delivery != planArtifactDeliveryClipboard ||
+			artifact.PrepareStep != step ||
+			artifact.PreparedText != "" {
+			continue
+		}
+		if appLabelsMatch(target, artifact.TargetApp) {
+			out = append(out, artifact)
+		}
+	}
+	return out
+}
+
+func toolCallTargetAppName(call ToolCall) string {
+	input := strings.TrimSpace(call.Input)
+	if input == "" {
+		return ""
+	}
+	var args struct {
+		App  string `json:"app"`
+		Name string `json:"name"`
+	}
+	if strings.HasPrefix(input, "{") {
+		if err := json.Unmarshal([]byte(input), &args); err != nil {
+			return ""
+		}
+		if app := strings.TrimSpace(args.App); app != "" {
+			return app
+		}
+		return strings.TrimSpace(args.Name)
+	}
+	return input
+}
+
+func appLabelsMatch(a, b string) bool {
+	left := appLabelMatchKeys(a)
+	right := appLabelMatchKeys(b)
+	for key := range left {
+		if _, ok := right[key]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func appLabelMatchKeys(label string) map[string]struct{} {
+	out := map[string]struct{}{}
+	if normalized := normalizeArtifactAppLabel(label); normalized != "" {
+		out[normalized] = struct{}{}
+	}
+	for _, token := range splitArtifactAppLabelTokens(label) {
+		token = normalizeArtifactAppLabelText(token)
+		if canonical, ok := artifactAppAliasCanonical(token); ok {
+			out[canonical] = struct{}{}
+		}
+	}
+	return out
+}
+
+func normalizeArtifactAppLabel(label string) string {
+	label = normalizeArtifactAppLabelText(label)
+	if canonical, ok := artifactAppAliasCanonical(label); ok {
+		return canonical
+	}
+	return label
+}
+
+func normalizeArtifactAppLabelText(label string) string {
+	label = strings.ToLower(strings.TrimSpace(label))
+	if label == "" {
+		return ""
+	}
+	label = strings.TrimSuffix(label, "应用")
+	label = trimStandaloneAppSuffix(strings.TrimSpace(label))
+	replacer := strings.NewReplacer(" ", "", "\t", "", "\n", "", "\r", "", "-", "", "_", "")
+	return replacer.Replace(strings.TrimSpace(label))
+}
+
+func trimStandaloneAppSuffix(label string) string {
+	if len(label) <= len("app") || !strings.HasSuffix(label, "app") {
+		return label
+	}
+	rawPrefix := label[:len(label)-len("app")]
+	prefix := strings.TrimSpace(rawPrefix)
+	if prefix == "" {
+		return label
+	}
+	last, _ := utf8.DecodeLastRuneInString(rawPrefix)
+	if last == ' ' || last == '-' || last == '_' || unicode.Is(unicode.Han, last) {
+		return prefix
+	}
+	return label
+}
+
+func splitArtifactAppLabelTokens(label string) []string {
+	return strings.FieldsFunc(label, func(r rune) bool {
+		return unicode.IsSpace(r) ||
+			strings.ContainsRune("-_/／|,，;；:：()（）[]【】", r)
+	})
+}
+
+func artifactAppAliasCanonical(label string) (string, bool) {
+	switch label {
+	case "wechat", "weixin", "微信":
+		return "wechat", true
+	case "contacts", "contact", "addressbook", "phonebook", "通讯录", "联系人":
+		return "contacts", true
+	default:
+		return "", false
 	}
 }
 

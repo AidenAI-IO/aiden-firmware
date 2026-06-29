@@ -88,13 +88,13 @@ func TestResolveToolsIncludesQuickAction(t *testing.T) {
 	}
 }
 
-func TestResolveToolsIncludesPhoneBridgeToolsWhenDisconnected(t *testing.T) {
+func TestResolveToolsKeepsPhoneBridgeToolsVisibleWhenDisconnected(t *testing.T) {
 	runtime := newRuntimeWithTextEntryTools()
 	runtime.tools.RegisterPhoneBridge(NewPhoneBridge(nil))
 
 	tools := runtime.resolveTools(ResolvedSkills{})
 	names := toolNamesFromTools(tools)
-	for _, want := range []string{"open_app", "search_launch_app", "enter_text_via_bridge"} {
+	for _, want := range []string{"open_app", "search_launch_app", "clipboard", "calendar", "contacts", "notification", "enter_text_via_bridge"} {
 		found := false
 		for _, name := range names {
 			if name == want {
@@ -104,13 +104,6 @@ func TestResolveToolsIncludesPhoneBridgeToolsWhenDisconnected(t *testing.T) {
 		}
 		if !found {
 			t.Fatalf("resolveTools missing disconnected bridge recovery tool %s: %v", want, names)
-		}
-	}
-	for _, notWant := range []string{"clipboard", "calendar", "contacts", "notification"} {
-		for _, name := range names {
-			if name == notWant {
-				t.Fatalf("resolveTools exposed disconnected phone bridge tool %s: %v", notWant, names)
-			}
 		}
 	}
 }
@@ -186,7 +179,7 @@ func TestResolveToolsIncludesPhoneBridgeToolsWhenConnected(t *testing.T) {
 	}
 }
 
-func TestResolveToolsHidesAllowedPhoneBridgeToolWhenDisconnected(t *testing.T) {
+func TestResolveToolsIncludesAllowedPhoneBridgeToolWhenDisconnected(t *testing.T) {
 	runtime := newRuntimeWithTextEntryTools()
 	runtime.tools.RegisterPhoneBridge(NewPhoneBridge(nil))
 
@@ -197,9 +190,10 @@ func TestResolveToolsHidesAllowedPhoneBridgeToolWhenDisconnected(t *testing.T) {
 	names := toolNamesFromTools(tools)
 	for _, name := range names {
 		if name == "clipboard" {
-			t.Fatalf("resolveTools with allowed_tools exposed disconnected clipboard: %v", names)
+			return
 		}
 	}
+	t.Fatalf("resolveTools with allowed_tools missing disconnected clipboard: %v", names)
 }
 
 func TestResolveToolsIncludesAllowedOpenAppWhenDisconnected(t *testing.T) {

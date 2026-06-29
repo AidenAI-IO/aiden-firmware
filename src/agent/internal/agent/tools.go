@@ -166,22 +166,14 @@ func (s *ToolSet) Names() []string {
 
 func (s *ToolSet) toolAvailable(name string) bool {
 	switch name {
-	case "open_app", "enter_text_via_bridge":
+	case "enter_text_via_bridge":
 		return s.phoneBridge != nil
 	default:
 		if !isPhoneBridgeToolName(name) {
 			return true
 		}
-		return s.phoneBridgeCommandAvailable()
+		return s.phoneBridge != nil
 	}
-}
-
-func (s *ToolSet) phoneBridgeCommandAvailable() bool {
-	if s == nil || s.phoneBridge == nil {
-		return false
-	}
-	status := s.phoneBridge.Status()
-	return phoneBridgeReadyForCommand(status) || phoneBridgeCanRestoreFromReturnEntry(status)
 }
 
 func (s *ToolSet) CurrentEnvironmentHints(maxAge time.Duration) CurrentEnvironmentHints {

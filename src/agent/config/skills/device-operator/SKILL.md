@@ -3,7 +3,7 @@ name: device-operator
 description: Use when controlling a visible target device UI through screenshots, touch, mouse, or keyboard.
 metadata:
   preferred_model: primary
-  allowed_tools: [screenshot, quick_action, touch_gesture, mouse_click, mouse_move, mouse_scroll, keyboard_tap, keyboard_text, enter_text_in_field, enter_text_via_bridge, shell]
+  allowed_tools: [open_app, clipboard, contacts, calendar, notification, screenshot, quick_action, touch_gesture, mouse_click, mouse_move, mouse_scroll, keyboard_tap, keyboard_text, enter_text_in_field, enter_text_via_bridge, shell]
 ---
 
 Use this skill when interacting with the connected device screen, app UI, keyboard, touch input, or mouse pointer.

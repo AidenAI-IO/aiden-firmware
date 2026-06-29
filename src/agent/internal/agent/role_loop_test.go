@@ -827,6 +827,93 @@ func TestClipboardPayloadCannotPrepareBeforeLaterPlanSteps(t *testing.T) {
 	}
 }
 
+func TestPlanArtifactNavigationGuardAllowsSourceAppAndBlocksTargetApp(t *testing.T) {
+	state := &roleLoopState{
+		PlanCommitted: true,
+		PlanStepIndex: 0,
+		Plan:          []string{"prepare data", "open target app"},
+		PlanArtifacts: initialPlanArtifactStates([]planArtifact{{
+			ID:           "message_text",
+			Kind:         planArtifactKindTargetText,
+			Delivery:     planArtifactDeliveryClipboard,
+			PrepareStep:  1,
+			ConsumeStep:  2,
+			TextTemplate: "Message {{value}}",
+			TargetApp:    "微信",
+		}}),
+	}
+
+	sourceCall := ToolCall{
+		Spec:  ToolSpec{Name: "open_app"},
+		Input: `{"app":"通讯录"}`,
+	}
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), sourceCall); !allowed || result.Error != nil {
+		t.Fatalf("source app navigation allowed=%v result=%#v, want allowed", allowed, result)
+	}
+
+	targetCall := ToolCall{
+		Spec:  ToolSpec{Name: "search_launch_app"},
+		Input: `{"app":"WeChat"}`,
+	}
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), targetCall); allowed || result.Error == nil ||
+		!strings.Contains(result.Output, "target-app navigation") {
+		t.Fatalf("target app navigation allowed=%v result=%#v, want blocked", allowed, result)
+	}
+
+	rawSourceCall := ToolCall{
+		Spec:  ToolSpec{Name: "open_app"},
+		Input: "通讯录",
+	}
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), rawSourceCall); !allowed || result.Error != nil {
+		t.Fatalf("raw source app navigation allowed=%v result=%#v, want allowed", allowed, result)
+	}
+
+	rawTargetCall := ToolCall{
+		Spec:  ToolSpec{Name: "open_app"},
+		Input: "WeChat",
+	}
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), rawTargetCall); allowed || result.Error == nil ||
+		!strings.Contains(result.Output, "target-app navigation") {
+		t.Fatalf("raw target app navigation allowed=%v result=%#v, want blocked", allowed, result)
+	}
+}
+
+func TestPlanArtifactAppLabelMatchingPreservesAppNames(t *testing.T) {
+	if got := normalizeArtifactAppLabel("WhatsApp"); got != "whatsapp" {
+		t.Fatalf("normalizeArtifactAppLabel(WhatsApp) = %q, want whatsapp", got)
+	}
+	if got := normalizeArtifactAppLabel("WeChat App"); got != "wechat" {
+		t.Fatalf("normalizeArtifactAppLabel(WeChat App) = %q, want wechat", got)
+	}
+	if got := normalizeArtifactAppLabel("微信app"); got != "wechat" {
+		t.Fatalf("normalizeArtifactAppLabel(微信app) = %q, want wechat", got)
+	}
+	if !appLabelsMatch("微信/WeChat", "weixin") {
+		t.Fatal("expected bilingual app label to match known alias")
+	}
+	if appLabelsMatch("WhatsApp", "Whats") {
+		t.Fatal("unexpected match after app suffix normalization")
+	}
+}
+
+func TestCommitPlanRejectsTargetTextArtifactWithoutTargetApp(t *testing.T) {
+	_, err := parseCommitPlanInput(`{
+		"objective":"prepare cross app text",
+		"plan":["prepare text","open target"],
+		"artifacts":[{
+			"id":"message_text",
+			"kind":"target_text",
+			"delivery":"clipboard",
+			"prepare_step":1,
+			"consume_step":2,
+			"text_template":"Message {{value}}"
+		}]
+	}`)
+	if err == nil || !strings.Contains(err.Error(), "requires target_app") {
+		t.Fatalf("parseCommitPlanInput error = %v, want target_app validation", err)
+	}
+}
+
 func TestCommitPlanAllowsAndroidTargetPreservingClipboardPlan(t *testing.T) {
 	executor := newRoleCollaborativeExecutor(
 		&scriptedModel{},
