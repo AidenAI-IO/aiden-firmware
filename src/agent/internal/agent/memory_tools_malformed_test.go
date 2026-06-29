@@ -43,7 +43,7 @@ func TestRecallSessionChunksToolToleratesMalformedLLMInput(t *testing.T) {
 		t.Fatalf("Compress() error = %v", err)
 	}
 
-	tool := NewRecallSessionChunksTool(session)
+	tool := NewRecallSessionChunksTool(session, nil)
 
 	// The exact malformed payload from the production logs: stringified array and int.
 	malformedInput := `{"tags": "[]", "limit": "3"}`

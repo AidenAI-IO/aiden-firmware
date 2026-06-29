@@ -55,6 +55,32 @@ func TestEnterTextInFieldASCII(t *testing.T) {
 	}
 }
 
+func TestEnterTextInFieldSearchModeHandsOffAfterASCIIInput(t *testing.T) {
+	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
+		ObservedMode: textInputModeASCII,
+		FieldText:    "Aid",
+	}}}
+	kbText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
+	engine := newTextInputEngine(textInputHardwareDeps{
+		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
+		keyboardTap:  textInputStubTool{name: "keyboard_tap", out: "ok"},
+		keyboardText: kbText,
+		quickAction:  textInputStubTool{name: "quick_action", out: "ok"},
+		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}, vision)
+	tool := &EnterTextInFieldTool{engine: engine}
+	out, err := tool.Call(context.Background(), `{"text":"Aiden","mode":"search","focus":{"x":500,"y":100}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"interrupted": true`) || !strings.Contains(out, `search handoff after ascii input`) {
+		t.Fatalf("unexpected output: %s", out)
+	}
+	if len(kbText.calls) != 1 {
+		t.Fatalf("keyboard_text calls=%v", kbText.calls)
+	}
+}
+
 func TestEnterTextInFieldASCIIWithSpaces(t *testing.T) {
 	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
 		FieldText: "hello test",

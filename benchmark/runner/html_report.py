@@ -145,11 +145,6 @@ def _task_error_log(
     if errors:
         lines = [f"- {item[0]}: {item[1]}" for item in errors]
         parts.append("### Runtime errors\n" + "\n".join(lines))
-    artifact_dirs = [artifact_dir] if artifact_dir is not None else _task_artifact_dirs(run_dir, task_id)
-    for artifact_dir in artifact_dirs:
-        judge_path = artifact_dir / "judge.json"
-        if judge_path.exists():
-            parts.append(f"### {judge_path.relative_to(run_dir)}\n" + _read_excerpt(judge_path, 4000))
     return "\n\n".join(part for part in parts if part.strip())
 
 
@@ -158,10 +153,10 @@ def _analysis_html(run_dir: Path) -> str:
     err = run_dir / "llm_analysis_error.txt"
     if md.exists():
         text = md.read_text("utf-8")[:20000]
-        return f'<section class="analysis"><h2>LLM Analysis</h2><pre>{_esc(text)}</pre></section>'
+        return f'<section class="analysis"><h2>LLM 分析</h2><pre>{_esc(text)}</pre></section>'
     if err.exists():
         text = err.read_text("utf-8")[:4000]
-        return f'<section class="analysis warning"><h2>LLM Analysis</h2><pre>{_esc(text)}</pre></section>'
+        return f'<section class="analysis warning"><h2>LLM 分析</h2><pre>{_esc(text)}</pre></section>'
     return ""
 
 

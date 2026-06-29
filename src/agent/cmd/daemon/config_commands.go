@@ -172,7 +172,6 @@ type liveActivityDTO struct {
 	RelayAPIKey      string `json:"relay_api_key,omitempty"`
 	HasRelayAPIKey   bool   `json:"has_relay_api_key"`
 	BoardID          string `json:"board_id"`
-	PhoneID          string `json:"phone_id"`
 	BundleID         string `json:"bundle_id"`
 	Topic            string `json:"topic"`
 	Environment      string `json:"environment"`
@@ -323,7 +322,6 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			RelayURL:       d.LiveActivity.RelayURL,
 			RelayAPIKey:    liveActivityRelayAPIKey,
 			BoardID:        d.LiveActivity.BoardID,
-			PhoneID:        d.LiveActivity.PhoneID,
 			BundleID:       d.LiveActivity.BundleID,
 			Topic:          d.LiveActivity.Topic,
 			Environment:    d.LiveActivity.Environment,
@@ -454,7 +452,6 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			RelayURL:         cfg.LiveActivity.RelayURL,
 			HasRelayAPIKey:   strings.TrimSpace(cfg.LiveActivity.RelayAPIKey) != "",
 			BoardID:          cfg.LiveActivity.BoardIDOrDefault(),
-			PhoneID:          cfg.LiveActivity.PhoneID,
 			BundleID:         cfg.LiveActivity.BundleID,
 			Topic:            cfg.LiveActivity.Topic,
 			Environment:      cfg.LiveActivity.EnvironmentOrDefault(),

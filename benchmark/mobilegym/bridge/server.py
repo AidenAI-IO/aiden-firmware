@@ -25,6 +25,17 @@ from .tools_api import ToolsAPIHandler
 
 ACTION_ENDPOINTS = {"tap", "swipe", "drag", "type_text", "key", "back", "home", "wait"}
 
+# 180s upper bound on a single bridge request. This is deliberately generous:
+# - Chromium-backed MobileGym actions occasionally stall on heavy pages (image
+#   decodes, page-load chains, animations) for tens of seconds before settling.
+# - Episode reset has its own 45s ceiling (EPISODE_RESET_TIMEOUT_SEC); after a
+#   reset failure the resilient-reset path may close+recreate the env+page,
+#   which can take another minute on a cold image.
+# - 180s lets a single slow action complete instead of cascading retries, while
+#   still bounding a stuck slot tightly enough that parallel callers can move on.
+# Bump this only after profiling; going higher will hide real slot-handling bugs.
+DEFAULT_BRIDGE_REQUEST_TIMEOUT_SEC = 180
+
 
 class BridgeServer:
     def __init__(
@@ -33,7 +44,7 @@ class BridgeServer:
         host: str = "127.0.0.1",
         port: int = 0,
         public_host: str | None = None,
-        request_timeout_sec: float = 30,
+        request_timeout_sec: float = DEFAULT_BRIDGE_REQUEST_TIMEOUT_SEC,
     ):
         self.router = BridgeTaskRouter.from_state(state)
         self.state = self.router.default_state

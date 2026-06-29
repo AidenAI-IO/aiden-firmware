@@ -446,6 +446,13 @@ func (r *Runtime) NewEpisodeID() string {
 	return newTaskEpisodeID(time.Now().UTC())
 }
 
+func (r *Runtime) MemoryPlane() MemoryPlane {
+	if r == nil {
+		return nil
+	}
+	return r.memoryPlane
+}
+
 func (r *Runtime) markInterruptedEpisodesBestEffort() {
 	plane, ok := r.memoryPlane.(*FilesystemMemoryPlane)
 	if !ok || plane == nil || plane.episodes == nil {

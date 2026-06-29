@@ -95,8 +95,43 @@ def test_create_mobilegym_env_pool_uses_envpool(monkeypatch):
     assert len(envs) == 2
     assert all(env.reset_called for env in envs)
     assert captured["entered"] is True
-    assert captured["reset_app_ids"] == [[], []]
+    assert captured["reset_app_ids"] == [None, None]
     assert captured["pool_kwargs"]["n"] == 2
     assert captured["pool_kwargs"]["isolation"] == "contexts"
     assert captured["pool_kwargs"]["num_browsers"] == 1
     assert config["parallel_envs"] == 2
+
+
+def test_resilient_mobilegym_reset_restarts_after_crashed_page():
+    class FakeMobileGymEnv:
+        def __init__(self):
+            self.original_reset_calls = []
+            self.close_calls = 0
+            self.start_calls = 0
+
+        async def reset(self, app_ids=None):
+            self.original_reset_calls.append(app_ids)
+            if len(self.original_reset_calls) == 1:
+                raise RuntimeError("Page.goto: Page crashed")
+
+        async def close(self):
+            self.close_calls += 1
+
+        async def start(self):
+            self.start_calls += 1
+            return self
+
+    start_simulator.install_resilient_mobilegym_reset(FakeMobileGymEnv)
+
+    env = FakeMobileGymEnv()
+    asyncio.run(env.reset(app_ids=[]))
+
+    assert env.original_reset_calls == [[], []]
+    assert env.close_calls == 1
+    assert env.start_calls == 1
+
+
+def test_bridge_request_timeout_default_covers_mobilegym_reset_retries():
+    args = start_simulator.build_parser().parse_args([])
+
+    assert args.bridge_request_timeout_sec >= 180

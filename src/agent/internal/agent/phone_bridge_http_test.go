@@ -84,50 +84,57 @@ func TestHTTPEnqueueCommand(t *testing.T) {
 // TestHTTPPollCommands tests GET /api/phone-bridge/commands
 func TestHTTPPollCommands(t *testing.T) {
 	tests := []struct {
-		name           string
-		platform       string
-		limit          string
-		setupCommands  func(*CommandQueue)
-		expectedCount  int
-		expectedStatus int
+		name             string
+		platform         string
+		limit            string
+		setupCommands    func(*CommandQueue)
+		expectedCount    int
+		expectedStatus   int
+		expectedCommands []BridgeCommand
 	}{
 		{
-			name:     "ios platform filter",
+			name:     "ios poll returns semantic commands",
 			platform: "ios",
 			limit:    "",
 			setupCommands: func(q *CommandQueue) {
 				q.Enqueue(BridgeCommand{
-					ID:              "ios_cmd_1",
-					Type:            "open_app",
-					IOSURLs:         []string{"https://example.com"},
-					AndroidPackages: []string{},
+					ID:   "ios_cmd_1",
+					Type: "open_app",
+					App:  "微信",
 				})
 				q.Enqueue(BridgeCommand{
 					ID:   "universal_cmd_1",
 					Type: "clipboard_read",
 				})
 			},
-			expectedCount:  2, // ios_cmd_1 + universal_cmd_1
+			expectedCount:  2,
 			expectedStatus: http.StatusOK,
+			expectedCommands: []BridgeCommand{
+				{ID: "ios_cmd_1", Type: "open_app", App: "微信"},
+				{ID: "universal_cmd_1", Type: "clipboard_read"},
+			},
 		},
 		{
-			name:     "android platform filter",
+			name:     "android poll returns semantic commands",
 			platform: "android",
 			limit:    "",
 			setupCommands: func(q *CommandQueue) {
 				q.Enqueue(BridgeCommand{
-					ID:              "android_cmd_1",
-					Type:            "open_app",
-					IOSURLs:         []string{},
-					AndroidPackages: []string{"com.example.app"},
+					ID:   "android_cmd_1",
+					Type: "open_app",
+					App:  "微信",
 				})
 				q.Enqueue(BridgeCommand{
 					ID:   "universal_cmd_2",
 					Type: "clipboard_read",
 				})
 			},
-			expectedCount:  2, // android_cmd_1 + universal_cmd_2
+			expectedCount:  2,
 			expectedStatus: http.StatusOK,
+			expectedCommands: []BridgeCommand{
+				{ID: "android_cmd_1", Type: "open_app", App: "微信"},
+				{ID: "universal_cmd_2", Type: "clipboard_read"},
+			},
 		},
 		{
 			name:     "limit parameter",
@@ -191,6 +198,16 @@ func TestHTTPPollCommands(t *testing.T) {
 				}
 				if len(resp.Commands) != tt.expectedCount {
 					t.Errorf("expected %d commands, got %d", tt.expectedCount, len(resp.Commands))
+				}
+				for i, want := range tt.expectedCommands {
+					if i >= len(resp.Commands) {
+						t.Fatalf("missing command %d: want %#v", i, want)
+					}
+					got := resp.Commands[i]
+					if got.ID != want.ID || got.Type != want.Type || got.App != want.App || got.URL != want.URL {
+						t.Errorf("command %d = {ID:%q Type:%q App:%q URL:%q}, want {ID:%q Type:%q App:%q URL:%q}",
+							i, got.ID, got.Type, got.App, got.URL, want.ID, want.Type, want.App, want.URL)
+					}
 				}
 			}
 		})
@@ -350,9 +367,9 @@ func TestHTTPEndToEnd(t *testing.T) {
 
 	// Step 1: Agent enqueues a command
 	cmd := BridgeCommand{
-		ID:      "e2e_test",
-		Type:    "open_app",
-		IOSURLs: []string{"https://example.com"},
+		ID:   "e2e_test",
+		Type: "open_app",
+		URL:  "https://example.com",
 	}
 	enqueueBody, _ := json.Marshal(EnqueueCommandRequest{Command: cmd})
 	enqueueReq := httptest.NewRequest(http.MethodPost, "/api/phone-bridge/commands", bytes.NewReader(enqueueBody))
@@ -377,6 +394,9 @@ func TestHTTPEndToEnd(t *testing.T) {
 	json.Unmarshal(pollW.Body.Bytes(), &pollResp)
 	if len(pollResp.Commands) != 1 {
 		t.Fatalf("expected 1 command, got %d", len(pollResp.Commands))
+	}
+	if got := pollResp.Commands[0]; got.ID != "e2e_test" || got.Type != "open_app" || got.URL != "https://example.com" {
+		t.Fatalf("polled command = {ID:%q Type:%q URL:%q}, want semantic open_app URL command", got.ID, got.Type, got.URL)
 	}
 
 	// Step 3: App submits result

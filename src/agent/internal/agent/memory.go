@@ -663,6 +663,18 @@ func (m *MemoryManager) RotateSessionEventsDetailed() (SessionRotationResult, er
 		if err != nil {
 			return SessionRotationResult{}, err
 		}
+
+		// Compress any remaining hot-window events into a final chunk before
+		// archiving so the session is recallable even if it never crossed the
+		// regular compression threshold. Failures are logged but do not block
+		// rotation: an archive with no chunks is worse than one with a chunk
+		// missing structured summary, but neither should fail a rotation.
+		if err := m.compressRemainingForArchive(sessionDir); err != nil {
+			if m.logger != nil {
+				m.logger.Warn("[memory] final pre-archive compression failed: %v", err)
+			}
+		}
+
 		if err := replaceActiveSessionDir(sessionDir, archiveDir, activeTempDir); err != nil {
 			return SessionRotationResult{}, err
 		}
@@ -1445,6 +1457,45 @@ func (m *MemoryManager) countCompressAfterEvents() int {
 		threshold = hotWindow * 2
 	}
 	return threshold
+}
+
+// compressRemainingForArchive generates a final chunk for any events still in
+// events.jsonl before the session is archived. Without this, short sessions
+// that never crossed the compression threshold would have no chunks and become
+// invisible to recall_session_chunks after archiving.
+//
+// The session lock and file lock from the rotation caller cover us; this only
+// adds the SessionMemoryStore-internal lock.
+func (m *MemoryManager) compressRemainingForArchive(sessionDir string) error {
+	session := NewSessionMemoryStore(sessionDir, m.extraction.SummaryMaxChunks)
+	events, err := session.LoadEvents()
+	if err != nil {
+		return fmt.Errorf("read remaining session events: %w", err)
+	}
+	if len(events) == 0 {
+		return nil
+	}
+
+	// Use a bounded context with timeout to prevent slow LLM calls from
+	// blocking rotation indefinitely. If the LLM times out, buildEventSummary
+	// falls back to local summarization.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	summary, structured := m.buildEventSummary(ctx, events)
+	_, err = session.Compress(ctx, CompressOption{
+		Summary:    summary,
+		Structured: structured,
+		Tags:       m.extraction.extractMemoryTags(events),
+		Entities:   m.extraction.extractMemoryEntities(events),
+	})
+	if err != nil {
+		return fmt.Errorf("compress remaining events: %w", err)
+	}
+	if m.logger != nil {
+		m.logger.Info("[memory] pre-archive compression: %d events into final chunk", len(events))
+	}
+	return nil
 }
 
 // buildEventSummary runs the structured → plain → local fallback cascade over a

@@ -178,19 +178,25 @@ func speakWithTTSManagerObserved(ctx context.Context, manager *tts.ProviderManag
 		}
 
 		if _, err := stream.Write([]byte(text)); err != nil {
+			if ctx.Err() != nil {
+				stream.interrupt()
+			}
 			_ = stream.closeAndWait()
 			unobserve()
 			lastErr = err
-			if isTransientTTSError(err) && attempt < maxRetries {
+			if isTransientTTSError(err) && attempt < maxRetries && !stream.startedPlayback() {
 				continue
 			}
 			return false, err
 		}
 
 		if err := stream.closeAndWait(); err != nil {
+			if ctx.Err() != nil {
+				stream.interrupt()
+			}
 			unobserve()
 			lastErr = err
-			if isTransientTTSError(err) && attempt < maxRetries {
+			if isTransientTTSError(err) && attempt < maxRetries && !stream.startedPlayback() {
 				continue
 			}
 			return false, err
@@ -206,6 +212,9 @@ func speakWithTTSManagerObserved(ctx context.Context, manager *tts.ProviderManag
 func isTransientTTSError(err error) bool {
 	if err == nil {
 		return false
+	}
+	if isRetryableAudioStartPlaybackError(err) {
+		return true
 	}
 	msg := strings.ToLower(err.Error())
 	for _, fragment := range []string{
@@ -341,6 +350,12 @@ func (w *streamSessionWriter) spokeSuccessfully() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.spoke && !w.interrupted
+}
+
+func (w *streamSessionWriter) startedPlayback() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.sink != nil && w.sink.PCMBytes() > 0
 }
 
 // closeAndWait flushes the session and waits for playback to drain.

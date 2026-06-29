@@ -125,7 +125,6 @@ enabled = true
 relay_url = "https://apns-test.aidenai.io"
 relay_api_key = "b3c79446904b60f99cf8bdf90d43ea1342d2e94f4b04c96d47f396680b1e3c8a"
 board_id = "default"
-phone_id = ""
 
 # Episode telemetry (Langfuse). Disabled by default.
 # Set enabled = true and configure base_url + public_key + secret_key.

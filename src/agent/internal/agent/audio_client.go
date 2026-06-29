@@ -1,13 +1,21 @@
 package agent
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"strings"
 	"time"
+)
+
+const (
+	audioStartPlaybackRetryDelay    = 200 * time.Millisecond
+	audioStartPlaybackRetryAttempts = 12
+	audioStartPlaybackBusyTimeout   = 5 * time.Second
 )
 
 // AudioFormat specifies audio stream parameters
@@ -40,6 +48,34 @@ type audioStatusError struct {
 
 func (e *audioStatusError) Error() string {
 	return fmt.Sprintf("%s failed: %s", e.op, e.status)
+}
+
+func isRetryableAudioStartPlaybackError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var statusErr *audioStatusError
+	return errors.As(err, &statusErr) && statusErr.op == "start_playback" && statusErr.status == "SERVICE_RECOVERING"
+}
+
+func (c *AudioServiceClient) startPlaybackOnce(format AudioFormat) (*PlaybackStartResult, error) {
+	req := audioRequest{
+		Op:         "start_playback",
+		SampleRate: format.SampleRate,
+		Channels:   format.Channels,
+		BitWidth:   format.BitWidth,
+	}
+
+	resp, _, err := c.sendRequest(req, 5*time.Second)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.Status != "OK" {
+		return nil, &audioStatusError{op: "start_playback", status: resp.Status}
+	}
+
+	return &PlaybackStartResult{SessionID: uint64(resp.SessionID)}, nil
 }
 
 // AudioHealthResult contains audio service health status
@@ -366,23 +402,22 @@ func (c *AudioServiceClient) StopRecording(sessionID uint64) error {
 
 // StartPlayback starts a new playback session
 func (c *AudioServiceClient) StartPlayback(format AudioFormat) (*PlaybackStartResult, error) {
-	req := audioRequest{
-		Op:         "start_playback",
-		SampleRate: format.SampleRate,
-		Channels:   format.Channels,
-		BitWidth:   format.BitWidth,
+	var lastErr error
+	for attempt := 0; attempt < audioStartPlaybackRetryAttempts; attempt++ {
+		playback, err := c.startPlaybackOnce(format)
+		if err == nil {
+			return playback, nil
+		}
+		lastErr = err
+		if !isRetryableAudioStartPlaybackError(lastErr) || attempt == audioStartPlaybackRetryAttempts-1 {
+			break
+		}
+		if err := waitForPlaybackDrain(context.Background(), c, audioStartPlaybackBusyTimeout); err != nil {
+			time.Sleep(audioStartPlaybackRetryDelay)
+		}
 	}
 
-	resp, _, err := c.sendRequest(req, 5*time.Second)
-	if err != nil {
-		return nil, err
-	}
-
-	if resp.Status != "OK" {
-		return nil, &audioStatusError{op: "start_playback", status: resp.Status}
-	}
-
-	return &PlaybackStartResult{SessionID: uint64(resp.SessionID)}, nil
+	return nil, lastErr
 }
 
 // WritePlayChunk writes a PCM chunk to a playback session

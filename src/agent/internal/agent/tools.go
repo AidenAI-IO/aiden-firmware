@@ -116,6 +116,14 @@ func (s *ToolSet) RegisterEnterTextInFieldTool(models ModelResolver, platformFn 
 	bridgeTool := &EnterTextViaBridgeTool{hw: s.textInputHW, vision: newLLMTextInputVision(models), bridgeFn: func() *PhoneBridge { return s.phoneBridge }, restorer: s.phoneBridgeRestorer, platformFn: platformFn}
 	tool := &EnterTextInFieldTool{engine: engine, bridgeTool: bridgeTool, platformFn: platformFn}
 	s.tools["enter_text_in_field"] = newPostActionScreenshotTool(tool, s.textInputHW.screenshot, 300*time.Millisecond)
+	searchOpenTool := &appSearchOpenTool{
+		hw:          s.textInputHW,
+		vision:      newLLMTextInputVision(models),
+		platformFn:  platformFn,
+		entryTool:   tool,
+		launchDelay: appSearchOpenLaunchDelay,
+	}
+	s.tools["search_launch_app"] = searchOpenTool
 	s.tools["enter_text_via_bridge"] = newPostActionScreenshotTool(bridgeTool, s.textInputHW.screenshot, 300*time.Millisecond)
 }
 
@@ -209,10 +217,11 @@ func (s *ToolSet) RegisterMemoryTools(memoryDir string, profileFn ProfileFn, sum
 		return
 	}
 	sessionStore := NewSessionMemoryStore(filepath.Join(memoryDir, "session"), summaryMaxChunks)
+	archivedStore := NewArchivedSessionStore(filepath.Join(memoryDir, "session_archive"))
 	longTermStore := NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"), WithLifecycleDir(filepath.Join(memoryDir, "lifecycle")), WithStoreProfileFn(profileFn), WithProfileDebouncer(debouncer))
 	deviceStore := NewDeviceMemoryStore(filepath.Join(memoryDir, "device"))
 	episodeStore := NewTaskEpisodeStore(filepath.Join(memoryDir, "episodes"))
-	s.tools["recall_session_chunks"] = NewRecallSessionChunksTool(sessionStore)
+	s.tools["recall_session_chunks"] = NewRecallSessionChunksTool(sessionStore, archivedStore)
 	s.tools["recall_memory"] = NewRecallMemoryTool(longTermStore)
 	s.tools["save_memory"] = NewSaveMemoryTool(longTermStore)
 	s.tools["forget_memory"] = NewForgetMemoryTool(longTermStore)

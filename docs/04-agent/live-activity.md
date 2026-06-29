@@ -147,10 +147,9 @@ enabled = true
 relay_url = "https://apns-test.aidenai.io"
 relay_api_key = "shared-relay-token"
 board_id = "board-001" # must match the app LIVE_ACTIVITY_BOARD_ID
-phone_id = "phone-001" # optional; empty lets relay use this board's default/latest registered phone
 ```
 
-`relay_api_key` is a relay-deployment shared Bearer token. It should match the iOS app build config `LIVE_ACTIVITY_RELAY_API_KEY` and relay server environment variable `AIDEN_RELAY_API_KEY`. It only gates app token registration and agent state reporting; do not treat it as a per-board identity. APNs Auth Key, Team ID, Key ID, and token registry stay on relay/backend.
+`relay_api_key` is a relay-deployment shared Bearer token. It should match the iOS app build config `LIVE_ACTIVITY_RELAY_API_KEY` and relay server environment variable `AIDEN_RELAY_API_KEY`. It only gates app token registration and agent state reporting; do not treat it as a per-board identity. Phone identity comes from the companion app at runtime; the board does not expose a manual `phone_id` relay fallback. APNs Auth Key, Team ID, Key ID, and token registry stay on relay/backend.
 
 Do not put APNs `.p8` files in open-source repos or user boards. Recommended form is:
 

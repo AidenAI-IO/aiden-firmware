@@ -34,9 +34,11 @@ class AgentClient:
         self,
         base_url: str = "http://localhost:8080",
         default_timeout_sec: int = 180,
+        benchmark_token: str = "",
     ):
         self.base_url = base_url.rstrip("/")
         self._default_timeout = default_timeout_sec
+        self._benchmark_token = str(benchmark_token or "").strip()
 
     def _post(
         self,
@@ -99,6 +101,18 @@ class AgentClient:
 
     def clear_history(self, timeout: int = 30) -> None:
         self._post("/api/clear", timeout=timeout)
+
+    def seed_memory(self, memory: dict[str, Any], timeout: int = 30) -> dict[str, Any]:
+        headers = {}
+        if self._benchmark_token:
+            headers["Authorization"] = f"Bearer {self._benchmark_token}"
+        status, body_bytes = self._post(
+            "/api/benchmark/seed_memory", memory, timeout=timeout, headers=headers
+        )
+        if status != 200:
+            raise AgentRequestError(f"seed_memory returned {status}")
+        body = json.loads(body_bytes)
+        return body if isinstance(body, dict) else {}
 
     def get_history(self) -> list[dict[str, Any]]:
         status, body_bytes = self._get("/api/history", timeout=5)

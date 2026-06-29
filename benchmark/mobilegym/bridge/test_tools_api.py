@@ -501,6 +501,75 @@ def test_multi_env_tools_require_benchmark_task_id_header():
         loop.close()
 
 
+def test_reset_episode_restarts_env_before_reset_when_supported():
+    import asyncio
+
+    class RestartableEnv:
+        def __init__(self):
+            self.calls = []
+            self.restarted = False
+
+        async def close(self):
+            self.calls.append("close")
+
+        async def start(self):
+            self.calls.append("start")
+            self.restarted = True
+            return self
+
+        async def reset(self):
+            self.calls.append("reset")
+            if not self.restarted:
+                raise RuntimeError("second reset would hang without page restart")
+
+    async def run():
+        env = RestartableEnv()
+        state = BridgeEpisodeState(env, asyncio.get_running_loop())
+
+        result = await state.reset_episode("episode-1")
+
+        assert result == {"episode_id": "episode-1", "reset": True}
+        assert env.calls == ["close", "start", "reset"]
+
+    asyncio.run(run())
+
+
+def test_reset_episode_retries_after_reset_timeout(monkeypatch):
+    import asyncio
+    from . import episode as episode_mod
+
+    monkeypatch.setattr(episode_mod, "EPISODE_RESET_TIMEOUT_SEC", 0.01)
+
+    class TimeoutThenSuccessEnv:
+        def __init__(self):
+            self.calls = []
+            self.reset_calls = 0
+
+        async def close(self):
+            self.calls.append("close")
+
+        async def start(self):
+            self.calls.append("start")
+            return self
+
+        async def reset(self):
+            self.calls.append("reset")
+            self.reset_calls += 1
+            if self.reset_calls == 1:
+                await asyncio.sleep(10)
+
+    async def run():
+        env = TimeoutThenSuccessEnv()
+        state = BridgeEpisodeState(env, asyncio.get_running_loop())
+
+        result = await state.reset_episode("episode-1")
+
+        assert result == {"episode_id": "episode-1", "reset": True}
+        assert env.calls == ["close", "start", "reset", "close", "start", "reset"]
+
+    asyncio.run(run())
+
+
 def test_multi_env_tools_route_by_benchmark_task_id_header():
     import asyncio
 

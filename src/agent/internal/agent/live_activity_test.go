@@ -132,6 +132,26 @@ func TestLiveActivityManagerSnapshotActive(t *testing.T) {
 	}
 }
 
+func TestLiveActivityManagerSnapshotActiveForPhone(t *testing.T) {
+	manager := NewLiveActivityManager(LiveActivityConfig{}, nil)
+	manager.StartTask("req-phone-a", "First phone", "phone-a")
+	manager.StartTask("req-phone-b", "Second phone", "phone-b")
+
+	active := manager.SnapshotActiveForPhone("phone-a")
+	if active == nil || active.RequestID != "req-phone-a" || active.PhoneID != "phone-a" {
+		t.Fatalf("active state for phone-a = %#v, want req-phone-a", active)
+	}
+
+	active = manager.SnapshotActiveForPhone("phone-b")
+	if active == nil || active.RequestID != "req-phone-b" || active.PhoneID != "phone-b" {
+		t.Fatalf("active state for phone-b = %#v, want req-phone-b", active)
+	}
+
+	if active := manager.SnapshotActiveForPhone("phone-missing"); active != nil {
+		t.Fatalf("active state for missing phone = %#v, want nil", active)
+	}
+}
+
 func TestLiveActivityManagerPublishesToRelay(t *testing.T) {
 	requests := make(chan map[string]interface{}, 1)
 	relay := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -156,10 +176,9 @@ func TestLiveActivityManagerPublishesToRelay(t *testing.T) {
 		RelayURL:    relay.URL,
 		RelayAPIKey: "relay-secret",
 		BoardID:     "board-1",
-		PhoneID:     "phone-1",
 	}, nil)
 	manager.relay.httpClient = relay.Client()
-	manager.StartTask("req-1", "Open Settings")
+	manager.StartTask("req-1", "Open Settings", "phone-1")
 
 	select {
 	case payload := <-requests:
@@ -193,7 +212,7 @@ func TestLiveActivityManagerPublishesTerminalStateToRelayAsStandby(t *testing.T)
 		BoardID:  "board-1",
 	}, nil)
 	manager.relay.httpClient = relay.Client()
-	manager.StartTask("req-1", "Open Settings")
+	manager.StartTask("req-1", "Open Settings", "phone-1")
 	manager.CompleteTask("req-1", "Done")
 
 	var terminalPayload map[string]interface{}
@@ -223,6 +242,37 @@ func TestLiveActivityManagerPublishesTerminalStateToRelayAsStandby(t *testing.T)
 	}
 	if terminalPayload["can_stop"] != false || terminalPayload["shows_progress"] != false {
 		t.Fatalf("terminal relay payload = %#v, want non-stoppable standby", terminalPayload)
+	}
+	if terminalPayload["phone_id"] != "phone-1" {
+		t.Fatalf("terminal relay payload phone_id = %v, want phone-1", terminalPayload["phone_id"])
+	}
+}
+
+func TestLiveActivityManagerSkipsRelayWithoutPhoneID(t *testing.T) {
+	requests := make(chan map[string]interface{}, 1)
+	relay := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode relay payload: %v", err)
+		}
+		requests <- payload
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer relay.Close()
+
+	manager := NewLiveActivityManager(LiveActivityConfig{
+		RelayURL: relay.URL,
+		BoardID:  "board-1",
+	}, nil)
+	manager.relay.httpClient = relay.Client()
+	manager.StartTask("req-1", "Open Settings")
+
+	select {
+	case payload := <-requests:
+		t.Fatalf("unexpected relay payload without phone_id: %#v", payload)
+	case <-time.After(150 * time.Millisecond):
 	}
 }
 
@@ -290,6 +340,55 @@ func TestServerLiveActivityCurrent(t *testing.T) {
 	}
 	if resp.Status != "ok" || resp.LiveActivity.RequestID != "req-1" || resp.LiveActivity.Phase != LiveActivityPhasePlanning {
 		t.Fatalf("unexpected current response: %#v", resp)
+	}
+}
+
+func TestServerLiveActivityCurrentFiltersPhoneID(t *testing.T) {
+	server := &Server{liveActivity: NewLiveActivityManager(LiveActivityConfig{}, nil)}
+	server.liveActivity.StartTask("req-phone-a", "Do a task", "phone-a")
+	server.liveActivity.StartTask("req-phone-b", "Do another task", "phone-b")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/live-activity/current?phone_id=phone-a", nil)
+	rec := httptest.NewRecorder()
+	server.handleLiveActivityCurrent(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status code = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Status       string            `json:"status"`
+		LiveActivity LiveActivityState `json:"live_activity"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode current response: %v", err)
+	}
+	if resp.Status != "ok" || resp.LiveActivity.RequestID != "req-phone-a" || resp.LiveActivity.PhoneID != "phone-a" {
+		t.Fatalf("unexpected filtered current response: %#v", resp)
+	}
+
+	missingReq := httptest.NewRequest(http.MethodGet, "/api/live-activity/current?phone_id=phone-missing", nil)
+	missingRec := httptest.NewRecorder()
+	server.handleLiveActivityCurrent(missingRec, missingReq)
+	if missingRec.Code != http.StatusOK {
+		t.Fatalf("missing status code = %d body=%s", missingRec.Code, missingRec.Body.String())
+	}
+	var missingResp struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(missingRec.Body).Decode(&missingResp); err != nil {
+		t.Fatalf("decode missing current response: %v", err)
+	}
+	if missingResp.Status != "not_found" {
+		t.Fatalf("unexpected missing current response: %#v", missingResp)
+	}
+}
+
+func TestServerLiveActivityPhoneIDPreference(t *testing.T) {
+	server := &Server{bridge: &PhoneBridge{phoneID: "bridge-phone"}}
+	if got := server.liveActivityPhoneID(ChatRequest{PhoneID: "request-phone"}); got != "request-phone" {
+		t.Fatalf("liveActivityPhoneID request = %q, want request-phone", got)
+	}
+	if got := server.liveActivityPhoneID(ChatRequest{}); got != "bridge-phone" {
+		t.Fatalf("liveActivityPhoneID bridge = %q, want bridge-phone", got)
 	}
 }
 

@@ -290,7 +290,6 @@ def list_mobilegym_runs(benchmark_root: Path) -> list[dict[str, Any]]:
         items.extend(state_run_items(run_id, state_for_run, progress))
     return items
 
-
 def summary_run_items(
     run_id: str,
     summary: dict[str, Any],

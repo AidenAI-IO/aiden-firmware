@@ -596,6 +596,26 @@ func TestAudioDialogSpeaksToolCallContent(t *testing.T) {
 	}
 }
 
+func TestAudioDialogDoesNotSpeakFilteredToolCallContent(t *testing.T) {
+	toolSpeech := true
+	provider := &recordingTTSProvider{name: "dialog-provider"}
+	dialog := &AudioDialog{
+		config: Config{
+			VoiceToolCallSpeech: &toolSpeech,
+		},
+		audioClient: NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
+		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
+	}
+
+	dialog.HandleRunEvent(context.Background(), RunEvent{
+		Type:     runEventToolCall,
+		ToolName: "recall_memory",
+		Content:  "I will check your preferences first.",
+	})
+
+	assertNoProviderTextWithin(t, provider, 200*time.Millisecond)
+}
+
 func TestAudioDialogDoesNotSpeakToolCallWithoutContent(t *testing.T) {
 	toolSpeech := true
 	provider := &recordingTTSProvider{name: "dialog-provider"}
