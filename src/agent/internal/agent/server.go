@@ -3037,7 +3037,11 @@ func (s *Server) handleBridgeStatus(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(PhoneBridgeStatus{})
 		return
 	}
-	json.NewEncoder(w).Encode(s.bridge.Status())
+	status := s.bridge.Status()
+	if s.runtime != nil {
+		status.BoardID = s.runtime.config.LiveActivity.BoardIDOrDefault()
+	}
+	json.NewEncoder(w).Encode(status)
 }
 
 func (s *Server) handleLiveActivityRegistrations(w http.ResponseWriter, r *http.Request) {

@@ -1148,6 +1148,46 @@ timeout_sec = 3
 	}
 }
 
+func TestLoadRuntimeConfigFromDirGeneratesLiveActivityBoardID(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	body := `
+[model]
+provider = "fake"
+
+[live_activity]
+relay_url = "https://relay.example.com"
+board_id = "default"
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadRuntimeConfigFromDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	boardID := cfg.LiveActivity.BoardIDOrDefault()
+	if boardID == "" || boardID == "default" || !strings.HasPrefix(boardID, "board-") {
+		t.Fatalf("generated board_id = %q, want non-default board-*", boardID)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, liveActivityBoardIDFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(data)) != boardID {
+		t.Fatalf("persisted board_id = %q, want %q", strings.TrimSpace(string(data)), boardID)
+	}
+
+	cfg, err = LoadRuntimeConfigFromDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.LiveActivity.BoardIDOrDefault(); got != boardID {
+		t.Fatalf("reloaded board_id = %q, want persisted %q", got, boardID)
+	}
+}
+
 func TestLiveActivityTimeoutDefaultsAndValidation(t *testing.T) {
 	cfg := Config{Model: ModelConfig{Provider: "fake"}}
 	if err := cfg.Validate(); err != nil {

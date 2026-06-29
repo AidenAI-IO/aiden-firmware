@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -190,6 +191,18 @@ func TestLiveActivityManagerPublishesToRelay(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for relay publish")
+	}
+}
+
+func TestLiveActivityRelayRequiresNonDefaultBoardID(t *testing.T) {
+	for _, boardID := range []string{"", "default", " DEFAULT "} {
+		_, err := NewLiveActivityRelayClient(LiveActivityConfig{
+			RelayURL: "https://relay.example.com",
+			BoardID:  boardID,
+		})
+		if !errors.Is(err, errLiveActivityRelayBoardIDRequired) {
+			t.Fatalf("NewLiveActivityRelayClient(board_id=%q) error = %v, want board id required", boardID, err)
+		}
 	}
 }
 

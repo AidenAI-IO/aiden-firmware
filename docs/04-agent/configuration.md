@@ -230,7 +230,7 @@ Used for the iOS companion app Live Activity / Dynamic Island task status. The a
 | `enabled` | `true` | Enables agent-side state snapshots and APIs |
 | `relay_url` | preconfigured in official firmware | Aiden Live Activity relay URL; only advanced deployments need to override it |
 | `relay_api_key` | preconfigured in official firmware | Shared relay Bearer token; must match the app build config and relay server `AIDEN_RELAY_API_KEY` |
-| `board_id` | `default` | Board ID in relay; should match the app `LIVE_ACTIVITY_BOARD_ID` |
+| `board_id` | generated in `/userdata/agent/board_id` | Board ID in relay; generated on first run. Empty or `default` is not a valid relay identity |
 
 ## `[stt]` and `[tts]`
 
