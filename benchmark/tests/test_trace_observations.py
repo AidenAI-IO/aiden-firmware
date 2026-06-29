@@ -108,7 +108,7 @@ def test_evaluate_hard_assertions_fails_prohibited_quick_action_send():
 
 def test_evaluate_hard_assertions_fails_prohibited_checkout_trace_input():
     trace = Trace(
-        tool_calls=[ToolCall(step=1, tool="browser_action", input={"label": "Checkout now"})],
+        tool_calls=[ToolCall(step=1, tool="browser_action", input={"label": "Check-out now"})],
         final_response="done",
         total_tool_calls=1,
         total_duration_ms=0,
@@ -122,7 +122,7 @@ def test_evaluate_hard_assertions_fails_prohibited_checkout_trace_input():
 
     assert outcome.all_passed is False
     assert outcome.results.prohibited_actions is False
-    assert "browser_action input.label=Checkout now at step 1" in outcome.failures[-1].actual
+    assert "browser_action input.label=Check-out now at step 1" in outcome.failures[-1].actual
 
 
 class ObservingClient:

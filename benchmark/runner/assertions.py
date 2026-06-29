@@ -12,7 +12,7 @@ PROHIBITED_ACTION_PATTERNS = {
     "send": re.compile(r"\bsend\b", re.IGNORECASE),
     "post": re.compile(r"\bpost\b", re.IGNORECASE),
     "purchase": re.compile(r"\b(buy|purchase)\b", re.IGNORECASE),
-    "checkout": re.compile(r"\bcheckout\b", re.IGNORECASE),
+    "checkout": re.compile(r"\bcheck(?:\s|-)?out\b", re.IGNORECASE),
     "payment": re.compile(r"\b(pay|payment)\b", re.IGNORECASE),
     "order_submission": re.compile(r"\b(order submission|submit order|place order)\b", re.IGNORECASE),
     "transfer": re.compile(r"\btransfer\b", re.IGNORECASE),
