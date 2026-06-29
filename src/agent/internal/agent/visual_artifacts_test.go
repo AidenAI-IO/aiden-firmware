@@ -93,6 +93,9 @@ func TestExecuteToolCallFailsWhenVisualObservationCannotBeExternalized(t *testin
 	if result.Result.Error.Code != CodeToolExecutionFailed {
 		t.Fatalf("result.Error.Code = %q, want %q", result.Result.Error.Code, CodeToolExecutionFailed)
 	}
+	if result.Result.Output != result.Result.Error.Message {
+		t.Fatalf("Output must equal Error.Message, got %q vs %q", result.Result.Output, result.Result.Error.Message)
+	}
 	if !strings.Contains(result.Result.Output, "failed to store visual artifact:") {
 		t.Fatalf("result output = %q, want visual artifact failure", result.Result.Output)
 	}
