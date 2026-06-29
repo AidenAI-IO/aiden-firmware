@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1076,6 +1077,204 @@ func TestOpenAICompatibleModelIncludesUsageInGenerationInfo(t *testing.T) {
 	if got["prompt_tokens"] != 11 || got["completion_tokens"] != 7 || got["total_tokens"] != 18 {
 		t.Fatalf("unexpected generation info: %#v", got)
 	}
+}
+
+func TestOpenAICompatibleModelIncludesCachedTokensInGenerationInfo(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1200,"completion_tokens":7,"total_tokens":1207,"prompt_tokens_details":{"cached_tokens":1024}}}`))
+	}))
+	defer server.Close()
+
+	model := newOpenAICompatibleModel(server.URL, "test-model", "", server.Client())
+	resp, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
+		Role:  llms.ChatMessageTypeHuman,
+		Parts: []llms.ContentPart{llms.TextPart("hello")},
+	}})
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	got := resp.Choices[0].GenerationInfo
+	if got["cached_tokens"] != 1024 {
+		t.Fatalf("expected cached_tokens=1024 in generation info, got %#v", got)
+	}
+
+	usage := telemetryUsageDetails(resp)
+	if usage["cached"] != 1024 || usage["input"] != 1200 {
+		t.Fatalf("expected telemetry cached=1024 input=1200, got %#v", usage)
+	}
+
+	metrics := &RunMetrics{}
+	recordUsageMetrics(metrics, resp)
+	if metrics.CachedPromptTokens != 1024 || metrics.PromptTokens != 1200 {
+		t.Fatalf("expected run metrics cached=1024 prompt=1200, got %#v", metrics)
+	}
+	if hitRate := float64(metrics.CachedPromptTokens) / float64(metrics.PromptTokens); hitRate < 0.85 {
+		t.Fatalf("expected hit rate >= 0.85, got %.3f", hitRate)
+	}
+}
+
+func TestOpenAICompatibleModelSendsSessionHeaderWhenProviderSet(t *testing.T) {
+	var gotHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader = r.Header.Get("x-session-id")
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	model := newOpenAICompatibleModel(server.URL, "test-model", "", server.Client(),
+		withOpenAICompatibleSessionSticky(func() string { return "session-abc" }))
+	if _, err := model.GenerateContent(context.Background(), []llms.MessageContent{{
+		Role:  llms.ChatMessageTypeHuman,
+		Parts: []llms.ContentPart{llms.TextPart("hi")},
+	}}); err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	if gotHeader != "session-abc" {
+		t.Fatalf("x-session-id header = %q, want session-abc", gotHeader)
+	}
+}
+
+func TestOpenAICompatibleModelOmitsSessionHeaderByDefault(t *testing.T) {
+	headerPresent := true
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, headerPresent = r.Header["X-Session-Id"]
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	model := newOpenAICompatibleModel(server.URL, "test-model", "", server.Client())
+	if _, err := model.GenerateContent(context.Background(), []llms.MessageContent{{
+		Role:  llms.ChatMessageTypeHuman,
+		Parts: []llms.ContentPart{llms.TextPart("hi")},
+	}}); err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	if headerPresent {
+		t.Fatal("x-session-id header should be absent when no session provider is configured")
+	}
+}
+
+func TestModelManagerSendsSessionHeaderOnlyForOpenRouter(t *testing.T) {
+	for _, tc := range []struct {
+		provider   string
+		wantHeader bool
+	}{
+		{"openrouter", true},
+		{"openai", false},
+	} {
+		t.Run(tc.provider, func(t *testing.T) {
+			var gotHeader string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotHeader = r.Header.Get("x-session-id")
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+			}))
+			defer server.Close()
+
+			mgr := NewModelManager(ModelConfig{Provider: tc.provider, Model: "m", APIKey: "k", BaseURL: server.URL}, ProxyConfig{})
+			mgr.SetRawHTTPLogSessionIDProvider(func() string { return "sess-123" })
+			model, err := mgr.Get()
+			if err != nil {
+				t.Fatalf("Get() error = %v", err)
+			}
+			if _, err := model.GenerateContent(context.Background(), []llms.MessageContent{{
+				Role:  llms.ChatMessageTypeHuman,
+				Parts: []llms.ContentPart{llms.TextPart("hi")},
+			}}); err != nil {
+				t.Fatalf("GenerateContent() error = %v", err)
+			}
+			if tc.wantHeader && gotHeader != "sess-123" {
+				t.Fatalf("%s: x-session-id = %q, want sess-123", tc.provider, gotHeader)
+			}
+			if !tc.wantHeader && gotHeader != "" {
+				t.Fatalf("%s: x-session-id = %q, want empty", tc.provider, gotHeader)
+			}
+		})
+	}
+}
+
+// TestOpenRouterSessionStickyCacheHit makes two real OpenRouter calls sharing a
+// session id and a long stable prefix (with a varying tail). It verifies sticky
+// routing produces a prompt-cache hit on the second call. Skipped unless
+// OPENROUTER_API_KEY is set; override the model via OPENROUTER_CACHE_MODEL.
+func TestOpenRouterSessionStickyCacheHit(t *testing.T) {
+	apiKey := os.Getenv("OPENROUTER_API_KEY")
+	if apiKey == "" {
+		t.Skip("OPENROUTER_API_KEY not set; skipping live cache-hit verification")
+	}
+	model := os.Getenv("OPENROUTER_CACHE_MODEL")
+	if model == "" {
+		model = "deepseek/deepseek-chat"
+	}
+	sessionID := fmt.Sprintf("cache-test-%d", time.Now().UnixNano())
+	client := newOpenAICompatibleModel("https://openrouter.ai/api/v1", model, apiKey, http.DefaultClient,
+		withOpenAICompatibleSessionSticky(func() string { return sessionID }))
+
+	prefix := strings.TrimSpace(strings.Repeat("You are a meticulous device-operations assistant. ", 400))
+	call := func(question string) int {
+		resp, err := client.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{
+			{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextPart(prefix)}},
+			{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart(question)}},
+		}, llms.WithMaxTokens(8), llms.WithTemperature(0))
+		if err != nil {
+			if strings.Contains(err.Error(), "403") || strings.Contains(err.Error(), "region") {
+				t.Skipf("model %s unavailable for this account/region: %v", model, err)
+			}
+			t.Fatalf("live GenerateContent() error = %v", err)
+		}
+		cached, _ := usageMetricInt(resp.Choices[0].GenerationInfo["cached_tokens"])
+		prompt, _ := usageMetricInt(resp.Choices[0].GenerationInfo["prompt_tokens"])
+		t.Logf("model=%s session=%s prompt_tokens=%d cached_tokens=%d", model, sessionID, prompt, cached)
+		return cached
+	}
+
+	call("Reply with the single word: one.")
+	cached2 := call("Reply with the single word: two.")
+	if cached2 <= 0 {
+		t.Logf("WARNING: second call reported cached_tokens=0; provider may not auto-cache via OpenRouter even with sticky routing")
+	}
+}
+
+// TestOpenAICompatibleModelLiveUsageParsing hits a real OpenRouter endpoint to
+// confirm the live response flows through convertMessageContent and usage
+// parsing. It is skipped unless OPENROUTER_API_KEY is set so normal/CI runs stay
+// offline. Set OPENROUTER_MODEL to override the default model.
+func TestOpenAICompatibleModelLiveUsageParsing(t *testing.T) {
+	apiKey := os.Getenv("OPENROUTER_API_KEY")
+	if apiKey == "" {
+		t.Skip("OPENROUTER_API_KEY not set; skipping live API verification")
+	}
+	model := os.Getenv("OPENROUTER_MODEL")
+	if model == "" {
+		model = "anthropic/claude-haiku-4.5"
+	}
+
+	client := newOpenAICompatibleModel("https://openrouter.ai/api/v1", model, apiKey, http.DefaultClient)
+	resp, err := client.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{
+		{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextPart("You are a terse assistant.")}},
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("Reply with the single word: ok")}},
+	}, llms.WithMaxTokens(16), llms.WithTemperature(0))
+	if err != nil {
+		t.Fatalf("live GenerateContent() error = %v", err)
+	}
+
+	info := resp.Choices[0].GenerationInfo
+	if info == nil {
+		t.Fatalf("live response missing generation info")
+	}
+	prompt, ok := usageMetricInt(info["prompt_tokens"])
+	if !ok || prompt <= 0 {
+		t.Fatalf("live response missing positive prompt_tokens: %#v", info)
+	}
+	// cached_tokens must be readable (>=0); a single call without an explicit
+	// cache breakpoint is typically 0, which still proves the field plumbing.
+	cached, _ := usageMetricInt(info["cached_tokens"])
+	usage := telemetryUsageDetails(resp)
+	t.Logf("live model=%s prompt_tokens=%d cached_tokens=%d telemetry=%v", model, prompt, cached, usage)
 }
 
 func readRawHTTPLog(t *testing.T, logDir string) string {

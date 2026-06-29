@@ -246,16 +246,18 @@ func buildRoleProfile(
 			text,
 		)
 	}
+	parts = append(parts, "", "## Role rules")
+	for _, rule := range roleRules {
+		parts = append(parts, "- "+rule)
+	}
+	// Runtime context and memory change per turn; keep them after the static
+	// role rules so the stable prefix stays prompt-cache friendly across turns.
 	if text := strings.TrimSpace(cfg.RuntimeContext); text != "" {
 		parts = append(parts,
 			"",
 			"## Runtime context",
 			text,
 		)
-	}
-	parts = append(parts, "", "## Role rules")
-	for _, rule := range roleRules {
-		parts = append(parts, "- "+rule)
 	}
 	if text := strings.TrimSpace(memoryContext); text != "" {
 		parts = append(parts, "", text)
