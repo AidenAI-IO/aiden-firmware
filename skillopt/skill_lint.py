@@ -126,7 +126,7 @@ def _lint_overbroad_screenshot_bans(skill_text: str) -> list[SkillLintIssue]:
 
 
 def _lint_overbroad_locked_device_blockers(skill_text: str) -> list[SkillLintIssue]:
-    normalized = " ".join(skill_text.lower().split())
+    normalized = " ".join(_section(skill_text, "Failed Attempt Handling").lower().split())
     if "locked device" not in normalized:
         return []
     if "immediately report" in normalized and "do not make any additional unlock attempts" in normalized:

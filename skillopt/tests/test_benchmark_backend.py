@@ -306,6 +306,26 @@ def test_load_benchmark_task_results_ignores_unknown_hard_assertion_fields(tmp_p
     assert results[0].hard_assertions.timeout is True
 
 
+def test_bare_docker_mention_is_not_environment_setup_failure():
+    from skillopt.benchmark_backend import is_environment_setup_failure
+
+    result = TaskResult(
+        suite="device_operator_train",
+        run_id="child",
+        task_id="case_one",
+        category="single_step",
+        attempt=1,
+        status="skipped",
+        rubric=[],
+        rubric_pass_count=0,
+        rubric_total=0,
+        metrics={"error": "setup: task instructions mention Docker Desktop, but setup completed"},
+        description_for_judge="desc",
+    )
+
+    assert is_environment_setup_failure(result) is False
+
+
 def test_benchmark_runner_backend_rejects_environment_setup_failure_phase(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from skillopt.benchmark_backend import BenchmarkRolloutError, BenchmarkRunnerBackend
 

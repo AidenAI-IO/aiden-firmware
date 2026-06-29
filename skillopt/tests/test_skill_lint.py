@@ -112,3 +112,13 @@ If the device is locked and two unlock gestures fail, immediately report the loc
     issues = lint_skill_text(skill)
 
     assert [issue.code for issue in issues] == ["overbroad_locked_device_blocker"]
+
+
+def test_lint_ignores_locked_device_language_outside_failed_attempt_handling():
+    skill = """
+## Locked Device Reference
+
+Historical bad example: immediately report the locked device as a blocker. Do not make any additional unlock attempts beyond these two retries.
+"""
+
+    assert lint_skill_text(skill) == []

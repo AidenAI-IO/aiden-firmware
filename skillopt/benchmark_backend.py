@@ -240,7 +240,6 @@ def is_environment_setup_failure(result: TaskResult) -> bool:
         "reset failed",
         "page crashed",
         "target crashed",
-        "docker",
         "docker compose",
         "container exited",
         "daemon image",
