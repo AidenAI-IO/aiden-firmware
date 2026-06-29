@@ -13,16 +13,14 @@
 # Input mode:
 # - text: run HTTP server with Web UI
 # - stt: device audio -> STT -> LLM -> TTS
-# - audio: device audio -> LLM audio attachment -> TTS
-#   Use audio mode only with a provider/model path that supports audio input.
 input_mode = "stt"
 
 # Trigger mode: "manual" (push-to-talk) or "wakeup" (GPIO trigger)
-# Only used when input_mode is "stt" or "audio"
+# Only used when input_mode is "stt"
 trigger_mode = "wakeup"
 
 # RKNN Silero VAD parameters
-# Only used when input_mode is "stt" or "audio"
+# Only used when input_mode is "stt"
 # vad_backend = "rknn" # "rknn" (NPU encoder + CPU LSTM/decoder) or "cpu"
 # vad_model_path = "/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn"
 # vad_helper_path = "/oem/usr/bin/rknn_vad"
@@ -95,7 +93,7 @@ model = "whisper-1"
 # engine_model_type = "16k_zh"
 
 # Text-to-Speech (TTS) configuration
-# Required when input_mode = "stt" or "audio"
+# Required when input_mode = "stt"
 [tts]
 provider = "minimax-cn"
 api_key = "MINIMAX_API_KEY"

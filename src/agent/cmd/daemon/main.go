@@ -147,7 +147,7 @@ func main() {
 		serverErr <- server.Start()
 	}()
 
-	if inputMode == "audio" || inputMode == "stt" {
+	if inputMode == "stt" {
 		if shouldRunConsoleAudioLoop(cfg, stdinIsInteractive()) {
 			go func() {
 				if err := <-serverErr; err != nil {
@@ -181,7 +181,7 @@ func stdinIsInteractive() bool {
 
 func shouldRunConsoleAudioLoop(cfg agent.Config, stdinInteractive bool) bool {
 	inputMode := cfg.InputModeOrDefault()
-	if inputMode != "audio" && inputMode != "stt" {
+	if inputMode != "stt" {
 		return false
 	}
 	return cfg.TriggerModeOrDefault() != "manual" || stdinInteractive

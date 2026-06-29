@@ -5193,7 +5193,7 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
             const char* allowed[4];
         };
         Check enums[] = {
-            {"input_mode", {"text", "stt", "audio", NULL}},
+            {"input_mode", {"text", "stt", NULL}},
             {"trigger_mode", {"manual", "wakeup", NULL, NULL}},
         };
         for (size_t i = 0; i < sizeof(enums) / sizeof(enums[0]); ++i) {

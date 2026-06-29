@@ -12,22 +12,39 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-func TestConfigValidateAcceptsAudioWakeup(t *testing.T) {
+func TestConfigValidateAcceptsSTTWakeup(t *testing.T) {
 	cfg := Config{
 		Model:       ModelConfig{Provider: "fake"},
 		TTS:         TTSConfig{Provider: "minimax-cn"},
-		InputMode:   " audio ",
+		STT:         STTConfig{Provider: "openai-whisper"},
+		InputMode:   " stt ",
 		TriggerMode: " wakeup ",
 	}
 
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}
-	if got := cfg.InputModeOrDefault(); got != "audio" {
-		t.Fatalf("InputModeOrDefault() = %q, want audio", got)
+	if got := cfg.InputModeOrDefault(); got != "stt" {
+		t.Fatalf("InputModeOrDefault() = %q, want stt", got)
 	}
 	if got := cfg.TriggerModeOrDefault(); got != "wakeup" {
 		t.Fatalf("TriggerModeOrDefault() = %q, want wakeup", got)
+	}
+}
+
+func TestConfigValidateRejectsRemovedAudioMode(t *testing.T) {
+	cfg := Config{
+		Model:     ModelConfig{Provider: "fake"},
+		TTS:       TTSConfig{Provider: "minimax-cn"},
+		InputMode: "audio",
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected invalid input_mode error for removed audio mode")
+	}
+	if !strings.Contains(err.Error(), "audio mode has been removed") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -456,8 +473,8 @@ provider = "fake"
 		t.Fatalf("write audio config: %v", err)
 	}
 	_, err = LoadRuntimeConfig(audioPath)
-	if err == nil || !strings.Contains(err.Error(), "tts.provider") {
-		t.Fatalf("LoadRuntimeConfig(audio) error = %v, want tts.provider validation error", err)
+	if err == nil || !strings.Contains(err.Error(), "audio mode has been removed") {
+		t.Fatalf("LoadRuntimeConfig(audio) error = %v, want removed audio mode error", err)
 	}
 }
 
@@ -688,7 +705,8 @@ func TestConfigValidateRejectsInvalidTriggerMode(t *testing.T) {
 	cfg := Config{
 		Model:       ModelConfig{Provider: "fake"},
 		TTS:         TTSConfig{Provider: "minimax-cn"},
-		InputMode:   "audio",
+		STT:         STTConfig{Provider: "openai-whisper"},
+		InputMode:   "stt",
 		TriggerMode: "gpio",
 	}
 
@@ -810,11 +828,12 @@ func TestConfigValidateRejectsWakeupForTextInput(t *testing.T) {
 	}
 }
 
-func TestConfigValidateRequiresTTSForAudioWakeup(t *testing.T) {
+func TestConfigValidateRequiresTTSForSTTWakeup(t *testing.T) {
 	cfg := Config{
 		Model:       ModelConfig{Provider: "fake"},
+		STT:         STTConfig{Provider: "openai-whisper"},
 		TTS:         TTSConfig{Provider: "   "},
-		InputMode:   "audio",
+		InputMode:   "stt",
 		TriggerMode: "wakeup",
 	}
 
@@ -855,8 +874,9 @@ func TestConfigValidateRejectsUnsupportedAudioFormatForVoiceInput(t *testing.T) 
 			cfg := Config{
 				Model:       ModelConfig{Provider: "fake"},
 				TTS:         TTSConfig{Provider: "minimax-cn"},
+				STT:         STTConfig{Provider: "openai-whisper"},
 				Audio:       tt.audio,
-				InputMode:   "audio",
+				InputMode:   "stt",
 				TriggerMode: "wakeup",
 			}
 
