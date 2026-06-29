@@ -885,6 +885,9 @@ def test_mobilegym_task_worker_uses_task_id_for_daemon_and_runner(tmp_path: Path
     assert captured["extra_owner_ids"] == [webui.task_worker_key(job.id, job.task_records[0].id)]
     assert captured["cmd"][captured["cmd"].index("--task-id") + 1] == "t1"
     assert captured["cmd"][captured["cmd"].index("--benchmark-task-id") + 1] == "suite.json:t1"
+    assert captured["cmd"][captured["cmd"].index("--benchmark-token-file") + 1] == str(
+        Path(job.config_dir) / "control_token"
+    )
     assert captured["cmd"][captured["cmd"].index("--environment-url") + 1] == "http://127.0.0.1:19090"
     assert releases == [("http://127.0.0.1:19090", 2, "suite.json:t1")]
     assert result["exit_code"] == 0

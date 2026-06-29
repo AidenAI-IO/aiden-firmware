@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -401,6 +402,9 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/history", s.handleHistory)
 	mux.HandleFunc("/api/episodes/", s.handleEpisodes)
 	mux.HandleFunc("/api/setup", s.handleSetup)
+	if s.benchmarkToken() != "" {
+		mux.HandleFunc("/api/benchmark/seed_memory", s.handleBenchmarkSeedMemory)
+	}
 	mux.HandleFunc("/api/clear", s.handleClear)
 	mux.HandleFunc("/api/clear-all", s.handleClearAll)
 	mux.HandleFunc("/api/skills/reload", s.handleSkillsReload)
@@ -2044,6 +2048,108 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 			"setup": false,
 		},
 	})
+}
+
+type benchmarkSeedMemoryRequest struct {
+	ID       string   `json:"id"`
+	Type     string   `json:"type"`
+	Title    string   `json:"title"`
+	Content  string   `json:"content"`
+	Tags     []string `json:"tags"`
+	Entities []string `json:"entities"`
+	Evidence []string `json:"evidence"`
+	Priority int      `json:"priority"`
+}
+
+func (s *Server) handleBenchmarkSeedMemory(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeBenchmarkRequest(r) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	var req benchmarkSeedMemoryRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.ID) == "" {
+		http.Error(w, "id is required", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Content) == "" {
+		http.Error(w, "content is required", http.StatusBadRequest)
+		return
+	}
+	plane, ok := s.runtime.MemoryPlane().(*FilesystemMemoryPlane)
+	if !ok || plane == nil || plane.LongTerm() == nil {
+		http.Error(w, "long-term memory not configured", http.StatusServiceUnavailable)
+		return
+	}
+	priority := req.Priority
+	if priority <= 0 {
+		priority = 80
+	}
+	evidence := req.Evidence
+	if len(evidence) == 0 {
+		evidence = []string{req.Content}
+	}
+	item := MemoryItem{
+		ID:               req.ID,
+		Type:             req.Type,
+		Priority:         priority,
+		Confidence:       0.9,
+		Title:            req.Title,
+		Content:          req.Content,
+		Tags:             req.Tags,
+		Entities:         req.Entities,
+		EvidenceExcerpts: evidence,
+	}
+	id, err := plane.LongTerm().AddMemory(r.Context(), item)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Error("seed_memory AddMemory failed: %v", err)
+		}
+		http.Error(w, "seed memory: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "seeded",
+		"id":     id,
+	})
+}
+
+func (s *Server) benchmarkToken() string {
+	if s == nil || s.runtime == nil {
+		return ""
+	}
+	return strings.TrimSpace(s.runtime.config.Benchmark.Token)
+}
+
+func (s *Server) authorizeBenchmarkRequest(r *http.Request) bool {
+	expected := s.benchmarkToken()
+	if expected == "" {
+		return false
+	}
+	supplied := strings.TrimSpace(r.Header.Get("X-Aiden-Benchmark-Token"))
+	if supplied == "" {
+		auth := strings.TrimSpace(r.Header.Get("Authorization"))
+		if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
+			supplied = strings.TrimSpace(auth[len("Bearer "):])
+		}
+	}
+	if supplied == "" || len(supplied) != len(expected) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(supplied), []byte(expected)) == 1
 }
 
 func (s *Server) handleScreen(w http.ResponseWriter, r *http.Request) {

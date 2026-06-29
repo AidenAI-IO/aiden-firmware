@@ -58,6 +58,7 @@ func main() {
 		environmentBridgeEndpoint = flag.String("environment-bridge-endpoint", "", "Environment bridge endpoint (e.g., http://192.168.50.123:8080)")
 		environmentBridgeTools    = flag.String("environment-bridge-tools", "", "Comma-separated tool names or glob patterns to forward when environment-bridge-mode is on, e.g. \"keyboard_*,mouse_*,screenshot\" or \"*\". Required with --environment-bridge-mode.")
 		benchmarkTaskID           = flag.String("benchmark-task-id", "", "Benchmark task id to include on environment bridge requests for task routing")
+		benchmarkTokenFile        = flag.String("benchmark-token-file", "", "Path to benchmark API bearer token file. Enables benchmark-only mutation endpoints.")
 	)
 	flag.Parse()
 
@@ -88,6 +89,18 @@ func main() {
 			os.Exit(1)
 		}
 		cfg.EnvironmentBridge.BenchmarkTaskID = strings.TrimSpace(*benchmarkTaskID)
+	}
+	if strings.TrimSpace(*benchmarkTokenFile) != "" {
+		data, err := os.ReadFile(strings.TrimSpace(*benchmarkTokenFile))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "read benchmark token: %v\n", err)
+			os.Exit(1)
+		}
+		cfg.Benchmark.Token = strings.TrimSpace(string(data))
+		if cfg.Benchmark.Token == "" {
+			fmt.Fprintln(os.Stderr, "benchmark token file is empty")
+			os.Exit(1)
+		}
 	}
 
 	proxyConfig := agent.ProxyConfigFromEnvironment()

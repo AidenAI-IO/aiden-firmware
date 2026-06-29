@@ -1490,10 +1490,10 @@ func TestServerHandleChatCancelStopsCompletedAsyncRequestTTSPlayback(t *testing.
 	audioOps := &recordedAudioOps{}
 	provider := newInterruptibleAudioTTSProvider("server-provider", 48000, true)
 	server := &Server{
-		activeRuns:          make(map[string]context.CancelFunc),
+		activeRuns:         make(map[string]context.CancelFunc),
 		terminatedRequests: make(map[string]struct{}),
-		ttsManager:          ttsmodule.NewProviderManager(provider, nil),
-		audioClient:         NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, audioOps)),
+		ttsManager:         ttsmodule.NewProviderManager(provider, nil),
+		audioClient:        NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, audioOps)),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1551,10 +1551,10 @@ func TestSpeakTextForRequestRefusesTerminatedRequest(t *testing.T) {
 	audioOps := &recordedAudioOps{}
 	provider := newInterruptibleAudioTTSProvider("server-provider", 48000, true)
 	server := &Server{
-		activeRuns:          make(map[string]context.CancelFunc),
+		activeRuns:         make(map[string]context.CancelFunc),
 		terminatedRequests: make(map[string]struct{}),
-		ttsManager:          ttsmodule.NewProviderManager(provider, nil),
-		audioClient:         NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, audioOps)),
+		ttsManager:         ttsmodule.NewProviderManager(provider, nil),
+		audioClient:        NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, audioOps)),
 	}
 	server.markRequestTerminated(requestID)
 
@@ -3076,4 +3076,169 @@ func startFakeFrameServiceSocket(t *testing.T, handler func(map[string]any) (str
 	}()
 
 	return socketPath
+}
+
+func newBenchmarkSeedMemoryServer(t *testing.T) (*Server, string) {
+	t.Helper()
+	configDir := t.TempDir()
+	streamingDisabled := false
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:                configDir,
+			Model:                    ModelConfig{Provider: "fake"},
+			Benchmark:                BenchmarkConfig{Token: "test-benchmark-token"},
+			Instruction:              "Answer directly.",
+			VoiceStreamingTTSEnabled: &streamingDisabled,
+			VoiceToolCallSpeech:      &streamingDisabled,
+		},
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(filepath.Join(configDir, "memory")),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	return NewServer(runtime, ":0"), configDir
+}
+
+func TestHandleBenchmarkSeedMemorySucceeds(t *testing.T) {
+	server, configDir := newBenchmarkSeedMemoryServer(t)
+	body := `{"id":"personamem_test_seed_1","type":"preference","title":"Test seed","content":"Seeded fixture content.","tags":["t1"],"priority":80}`
+	req := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_memory", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-benchmark-token")
+	rec := httptest.NewRecorder()
+
+	server.handleBenchmarkSeedMemory(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["status"] != "seeded" || resp["id"] != "personamem_test_seed_1" {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+
+	memPath := filepath.Join(configDir, "memory", "long_term", "memories", "personamem_test_seed_1.md")
+	data, err := os.ReadFile(memPath)
+	if err != nil {
+		t.Fatalf("read seeded memory file: %v", err)
+	}
+	if !strings.Contains(string(data), "Seeded fixture content.") {
+		t.Fatalf("memory file missing content, got: %s", string(data))
+	}
+	if !strings.Contains(string(data), "id: personamem_test_seed_1") {
+		t.Fatalf("memory file missing fixed id, got: %s", string(data))
+	}
+}
+
+func TestHandleBenchmarkSeedMemoryRequiresBenchmarkToken(t *testing.T) {
+	server, _ := newBenchmarkSeedMemoryServer(t)
+	body := `{"id":"personamem_test_seed_1","content":"Seeded fixture content."}`
+	req := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_memory", bytes.NewBufferString(body))
+	rec := httptest.NewRecorder()
+
+	server.handleBenchmarkSeedMemory(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleBenchmarkSeedMemoryOverwritesSameID(t *testing.T) {
+	server, configDir := newBenchmarkSeedMemoryServer(t)
+	mkReq := func(content string) *http.Request {
+		body := fmt.Sprintf(`{"id":"personamem_overwrite_1","type":"fact","content":%q}`, content)
+		req := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_memory", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer test-benchmark-token")
+		return req
+	}
+
+	rec := httptest.NewRecorder()
+	server.handleBenchmarkSeedMemory(rec, mkReq("first content"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first seed status: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec2 := httptest.NewRecorder()
+	server.handleBenchmarkSeedMemory(rec2, mkReq("second content"))
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("second seed status: %d body=%s", rec2.Code, rec2.Body.String())
+	}
+
+	memPath := filepath.Join(configDir, "memory", "long_term", "memories", "personamem_overwrite_1.md")
+	data, err := os.ReadFile(memPath)
+	if err != nil {
+		t.Fatalf("read seeded memory file: %v", err)
+	}
+	if !strings.Contains(string(data), "second content") {
+		t.Fatalf("expected overwrite to second content, got: %s", string(data))
+	}
+	if strings.Contains(string(data), "first content") {
+		t.Fatalf("first content should be overwritten, still present: %s", string(data))
+	}
+}
+
+func TestHandleBenchmarkSeedMemoryRejectsMissingFields(t *testing.T) {
+	server, _ := newBenchmarkSeedMemoryServer(t)
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"missing id", `{"content":"x"}`},
+		{"missing content", `{"id":"x"}`},
+		{"blank id", `{"id":" ","content":"x"}`},
+		{"blank content", `{"id":"x","content":"  "}`},
+		{"malformed json", `{`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_memory", bytes.NewBufferString(tc.body))
+			req.Header.Set("Authorization", "Bearer test-benchmark-token")
+			rec := httptest.NewRecorder()
+			server.handleBenchmarkSeedMemory(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandleBenchmarkSeedMemoryRejectsNonPost(t *testing.T) {
+	server, _ := newBenchmarkSeedMemoryServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/benchmark/seed_memory", nil)
+	req.Header.Set("Authorization", "Bearer test-benchmark-token")
+	rec := httptest.NewRecorder()
+	server.handleBenchmarkSeedMemory(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleBenchmarkSeedMemoryReturns503WhenMemoryUnconfigured(t *testing.T) {
+	streamingDisabled := false
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:                    ModelConfig{Provider: "fake"},
+			Benchmark:                BenchmarkConfig{Token: "test-benchmark-token"},
+			Instruction:              "Answer directly.",
+			VoiceStreamingTTSEnabled: &streamingDisabled,
+			VoiceToolCallSpeech:      &streamingDisabled,
+		},
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+	body := `{"id":"x","content":"y"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_memory", bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer test-benchmark-token")
+	rec := httptest.NewRecorder()
+	server.handleBenchmarkSeedMemory(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d body=%s", rec.Code, rec.Body.String())
+	}
 }

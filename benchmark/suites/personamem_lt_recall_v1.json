@@ -29,6 +29,23 @@
         "max_tool_calls": 8,
         "must_complete_within_sec": 120,
         "response_required": true
+      },
+      "setup": {
+        "type": "seed_memory",
+        "memories": [
+          {
+            "id": "personamem_music_software",
+            "type": "preference",
+            "title": "Kanoa likes producing music with software",
+            "content": "The user enjoys creating digital music and producing music with software, especially blending modern beats with Pacific sounds.",
+            "tags": [
+              "music",
+              "software",
+              "PersonaMem"
+            ],
+            "priority": 80
+          }
+        ]
       }
     },
     {
@@ -56,6 +73,24 @@
         "max_tool_calls": 8,
         "must_complete_within_sec": 120,
         "response_required": true
+      },
+      "setup": {
+        "type": "seed_memory",
+        "memories": [
+          {
+            "id": "personamem_music_podcasting_reason",
+            "type": "fact",
+            "title": "Podcasting motivation",
+            "content": "The user previously felt motivated to podcast about music trends because peers gave positive feedback.",
+            "tags": [
+              "music",
+              "podcasting",
+              "preference_reason",
+              "PersonaMem"
+            ],
+            "priority": 80
+          }
+        ]
       }
     },
     {
@@ -83,6 +118,24 @@
         "max_tool_calls": 8,
         "must_complete_within_sec": 120,
         "response_required": true
+      },
+      "setup": {
+        "type": "seed_memory",
+        "memories": [
+          {
+            "id": "personamem_music_collaboration_evolution",
+            "type": "fact",
+            "title": "Collaboration preference evolved",
+            "content": "The user initially enjoyed collaborating with other musicians, but later felt stifled by disagreements over artistic direction and shifted toward independent creative work.",
+            "tags": [
+              "music",
+              "collaboration",
+              "preference_update",
+              "PersonaMem"
+            ],
+            "priority": 85
+          }
+        ]
       }
     },
     {
@@ -110,6 +163,24 @@
         "max_tool_calls": 8,
         "must_complete_within_sec": 120,
         "response_required": true
+      },
+      "setup": {
+        "type": "seed_memory",
+        "memories": [
+          {
+            "id": "personamem_spontaneous_creativity",
+            "type": "preference",
+            "title": "Spontaneous creative expression",
+            "content": "The user prefers free-flowing, authentic creative expression over tightly scripted or constrained work.",
+            "tags": [
+              "creativity",
+              "video",
+              "cooking",
+              "PersonaMem"
+            ],
+            "priority": 80
+          }
+        ]
       }
     },
     {
@@ -137,6 +208,24 @@
         "max_tool_calls": 8,
         "must_complete_within_sec": 120,
         "response_required": true
+      },
+      "setup": {
+        "type": "seed_memory",
+        "memories": [
+          {
+            "id": "personamem_music_soundscape",
+            "type": "preference",
+            "title": "Soundscape creativity",
+            "content": "The user enjoys sound engineering, capturing environmental sounds, and turning natural audio textures into creative music projects.",
+            "tags": [
+              "music",
+              "soundscape",
+              "travel",
+              "PersonaMem"
+            ],
+            "priority": 80
+          }
+        ]
       }
     },
     {
@@ -164,6 +253,23 @@
         "max_tool_calls": 8,
         "must_complete_within_sec": 120,
         "response_required": true
+      },
+      "setup": {
+        "type": "seed_memory",
+        "memories": [
+          {
+            "id": "personamem_music_expression",
+            "type": "preference",
+            "title": "Healthier music expression",
+            "content": "The user wants to express a love of music in ways that feel personally fulfilling, such as writing about the musical journey, performing in inspiring settings, and enjoying music without external pressure.",
+            "tags": [
+              "music",
+              "self_expression",
+              "PersonaMem"
+            ],
+            "priority": 80
+          }
+        ]
       }
     },
     {
@@ -191,6 +297,24 @@
         "max_tool_calls": 8,
         "must_complete_within_sec": 120,
         "response_required": true
+      },
+      "setup": {
+        "type": "seed_memory",
+        "memories": [
+          {
+            "id": "personamem_food_cultural_techniques",
+            "type": "preference",
+            "title": "Cooking culture and techniques",
+            "content": "The user enjoyed a cooking class that combined hands-on techniques with cultural histories behind recipes.",
+            "tags": [
+              "cooking",
+              "culture",
+              "recipes",
+              "PersonaMem"
+            ],
+            "priority": 80
+          }
+        ]
       }
     },
     {
@@ -218,6 +342,24 @@
         "max_tool_calls": 8,
         "must_complete_within_sec": 120,
         "response_required": true
+      },
+      "setup": {
+        "type": "seed_memory",
+        "memories": [
+          {
+            "id": "personamem_therapy_yoga",
+            "type": "preference",
+            "title": "Yoga and mind-body relaxation",
+            "content": "The user likes yoga and has attended yoga classes to explore the mind-body connection and relaxation.",
+            "tags": [
+              "therapy",
+              "yoga",
+              "relaxation",
+              "PersonaMem"
+            ],
+            "priority": 80
+          }
+        ]
       }
     },
     {
@@ -245,6 +387,24 @@
         "max_tool_calls": 8,
         "must_complete_within_sec": 120,
         "response_required": true
+      },
+      "setup": {
+        "type": "seed_memory",
+        "memories": [
+          {
+            "id": "personamem_therapy_rpg_dislike",
+            "type": "preference",
+            "title": "Dislikes role-playing games for relaxation",
+            "content": "The user tried role-playing games for relaxation but felt they were not a good fit and did not enjoy complex characters, stories, and rules.",
+            "tags": [
+              "games",
+              "relaxation",
+              "dislike",
+              "PersonaMem"
+            ],
+            "priority": 80
+          }
+        ]
       }
     },
     {
@@ -272,6 +432,24 @@
         "max_tool_calls": 8,
         "must_complete_within_sec": 120,
         "response_required": true
+      },
+      "setup": {
+        "type": "seed_memory",
+        "memories": [
+          {
+            "id": "personamem_writing_style",
+            "type": "preference",
+            "title": "Writing style preference",
+            "content": "The user prefers writing feedback that is concise, concrete, practical, and focused on specific revisions instead of flowery praise.",
+            "tags": [
+              "writing",
+              "style",
+              "concise",
+              "PersonaMem"
+            ],
+            "priority": 80
+          }
+        ]
       }
     },
     {
@@ -299,6 +477,24 @@
         "max_tool_calls": 8,
         "must_complete_within_sec": 120,
         "response_required": true
+      },
+      "setup": {
+        "type": "seed_memory",
+        "memories": [
+          {
+            "id": "personamem_reading_challenge_pressure",
+            "type": "preference",
+            "title": "Reading challenge pressure",
+            "content": "The user previously felt pressured by deadlines in reading challenges and prefers a more relaxed reading experience.",
+            "tags": [
+              "books",
+              "reading_challenge",
+              "pressure",
+              "PersonaMem"
+            ],
+            "priority": 80
+          }
+        ]
       }
     },
     {
@@ -326,6 +522,24 @@
         "max_tool_calls": 8,
         "must_complete_within_sec": 120,
         "response_required": true
+      },
+      "setup": {
+        "type": "seed_memory",
+        "memories": [
+          {
+            "id": "personamem_solo_travel",
+            "type": "preference",
+            "title": "Solo travel blog inspiration",
+            "content": "The user enjoys travel blog content about solo travel experiences, serene landscapes, urban discovery, and personal reflection during trips.",
+            "tags": [
+              "travel",
+              "solo",
+              "blogs",
+              "PersonaMem"
+            ],
+            "priority": 80
+          }
+        ]
       }
     },
     {
@@ -353,6 +567,24 @@
         "max_tool_calls": 8,
         "must_complete_within_sec": 120,
         "response_required": true
+      },
+      "setup": {
+        "type": "seed_memory",
+        "memories": [
+          {
+            "id": "personamem_playlist_sharing",
+            "type": "preference",
+            "title": "Personalized playlist sharing",
+            "content": "The user enjoyed curating personalized playlists for gatherings with friends and family because each song fit a mood or occasion and sparked bonding conversations.",
+            "tags": [
+              "music",
+              "playlists",
+              "friends",
+              "PersonaMem"
+            ],
+            "priority": 80
+          }
+        ]
       }
     },
     {
@@ -380,6 +612,24 @@
         "max_tool_calls": 8,
         "must_complete_within_sec": 120,
         "response_required": true
+      },
+      "setup": {
+        "type": "seed_memory",
+        "memories": [
+          {
+            "id": "personamem_soccer_community",
+            "type": "preference",
+            "title": "Soccer and community fitness",
+            "content": "The user has positive experience with soccer and values team sports for fitness, camaraderie, teamwork, motivation, and lasting friendships.",
+            "tags": [
+              "sports",
+              "soccer",
+              "community",
+              "PersonaMem"
+            ],
+            "priority": 80
+          }
+        ]
       }
     },
     {
@@ -407,6 +657,24 @@
         "max_tool_calls": 8,
         "must_complete_within_sec": 120,
         "response_required": true
+      },
+      "setup": {
+        "type": "seed_memory",
+        "memories": [
+          {
+            "id": "personamem_flashcards",
+            "type": "preference",
+            "title": "Flashcard study preference",
+            "content": "The user likes flashcard sessions and benefits from structured recall practice during exam preparation.",
+            "tags": [
+              "study",
+              "flashcards",
+              "exams",
+              "PersonaMem"
+            ],
+            "priority": 80
+          }
+        ]
       }
     },
     {
@@ -434,6 +702,24 @@
         "max_tool_calls": 8,
         "must_complete_within_sec": 120,
         "response_required": true
+      },
+      "setup": {
+        "type": "seed_memory",
+        "memories": [
+          {
+            "id": "personamem_campfire_storytelling",
+            "type": "fact",
+            "title": "Campfire storytelling discomfort",
+            "content": "The user previously said storytelling around the campfire can feel awkward.",
+            "tags": [
+              "family",
+              "campfire",
+              "storytelling",
+              "PersonaMem"
+            ],
+            "priority": 80
+          }
+        ]
       }
     }
   ]

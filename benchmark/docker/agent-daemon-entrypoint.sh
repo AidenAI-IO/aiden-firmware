@@ -26,6 +26,10 @@ fi
 default_forward_tools="screenshot,touch_gesture,keyboard_text,keyboard_tap,enter_text_in_field,enter_text_via_bridge,mouse_click,mouse_move,mouse_scroll,quick_action"
 set -- daemon -config "$runtime_config_dir" -addr "${AIDEN_DAEMON_ADDR:-0.0.0.0:8080}"
 
+if [ -n "${AIDEN_BENCHMARK_TOKEN_FILE:-}" ]; then
+    set -- "$@" --benchmark-token-file "$AIDEN_BENCHMARK_TOKEN_FILE"
+fi
+
 if [ "${AIDEN_ENVIRONMENT_BRIDGE_MODE:-}" = "1" ] || [ "${AIDEN_ENVIRONMENT_BRIDGE_MODE:-}" = "true" ]; then
     if [ -z "${ENVIRONMENT_BRIDGE_ENDPOINT:-}" ]; then
         echo "ENVIRONMENT_BRIDGE_ENDPOINT is required when AIDEN_ENVIRONMENT_BRIDGE_MODE is enabled" >&2

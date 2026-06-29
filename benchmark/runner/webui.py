@@ -950,6 +950,8 @@ class BenchmarkWebApp:
                 job.raw_runs_dir,
                 "--state-file",
                 worker_job.state_file,
+                "--benchmark-token-file",
+                str(Path(job.config_dir) / "control_token"),
                 "--environment-url",
                 job.environment_endpoint,
             ]
@@ -1153,6 +1155,7 @@ class BenchmarkWebApp:
         ]
         if not suite_is_unit:
             cmd.extend(["--state-file", job.state_file])
+            cmd.extend(["--benchmark-token-file", str(Path(job.config_dir) / "control_token")])
             if job.environment_endpoint:
                 cmd.extend(["--environment-url", job.environment_endpoint])
             if job.no_judge:
@@ -1810,6 +1813,7 @@ def daemon_compose_env(
         env["AIDEN_DAEMON_HOST_PORT"] = str(host_port)
     if config_dir is not None:
         env["AIDEN_CONFIG_DIR"] = str(config_dir.resolve())
+        env["AIDEN_BENCHMARK_TOKEN_FILE"] = "/config/control_token"
     if environment_bridge_endpoint:
         env["ENVIRONMENT_BRIDGE_ENDPOINT"] = environment_bridge_endpoint
         no_proxy = docker_no_proxy(environment_bridge_endpoint)

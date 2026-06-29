@@ -15,14 +15,15 @@ import (
 const screenshotJPEGQuality = 80
 
 type screenshotResult struct {
-	Width        int               `json:"width"`
-	Height       int               `json:"height"`
-	ActiveArea   *screenActiveArea `json:"active_area,omitempty"`
-	ActiveWidth  int               `json:"active_width,omitempty"`
-	ActiveHeight int               `json:"active_height,omitempty"`
-	Format       string            `json:"format"`
-	Size         int               `json:"size"`
-	Data         string            `json:"data"`
+	Width         int               `json:"width"`
+	Height        int               `json:"height"`
+	ActiveArea    *screenActiveArea `json:"active_area,omitempty"`
+	ActiveWidth   int               `json:"active_width,omitempty"`
+	ActiveHeight  int               `json:"active_height,omitempty"`
+	Format        string            `json:"format"`
+	Size          int               `json:"size"`
+	Data          string            `json:"data,omitempty"`
+	ScreenshotRef string            `json:"screenshot_ref,omitempty"`
 }
 
 type screenshotFrameClient interface {

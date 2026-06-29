@@ -61,6 +61,8 @@ def prepare_task_isolation(
                     task_id=benchmark_task_id or task.id,
                     timeout=DEFAULT_ENVIRONMENT_SETUP_TIMEOUT_SEC,
                 )
+                if (task.setup or {}).get("type") == "seed_memory":
+                    per_task_setup(client, task.setup)
             elif not task.input_screenshot:
                 per_task_setup(client, task.setup)
             return
