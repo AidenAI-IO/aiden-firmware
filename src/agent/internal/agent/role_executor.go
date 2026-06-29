@@ -669,6 +669,15 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 				answer = value
 			}
 		}
+		if state.Phase == phaseDefault && looksLikeInternalJSONPlanFinal(answer) {
+			return plannerTurnResult{
+				Kind: plannerTurnInvalidMeta,
+				Step: &schema.AgentStep{
+					Action:      schema.AgentAction{Tool: "final_answer", Log: strings.TrimSpace(answer)},
+					Observation: "final answer looked like an internal JSON plan; use available tools, set_todo, or enter plan mode instead of returning the plan as the user-facing answer",
+				},
+			}, nil
+		}
 		if state.Phase == phasePlan && state.PlanCommitRequired {
 			return plannerCommitRequiredTurn(schema.AgentAction{
 				Tool: toolCommitPlan,
@@ -720,6 +729,31 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 	}
 
 	return e.executePlannerToolAction(ctx, state, toolSpecs, action)
+}
+
+func looksLikeInternalJSONPlanFinal(answer string) bool {
+	text := strings.TrimSpace(answer)
+	if !strings.HasPrefix(text, "{") {
+		return false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(text), &payload); err != nil {
+		return false
+	}
+	keys := map[string]bool{}
+	for key := range payload {
+		keys[strings.ToLower(strings.TrimSpace(key))] = true
+	}
+	if keys["plan"] && (keys["objective"] || keys["completion_criteria"] || keys["next_step"] || keys["reason"]) {
+		return true
+	}
+	mode, _ := payload["mode"].(string)
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "plan" || mode == "simple" {
+		finalAnswer, _ := payload["final_answer"].(string)
+		return strings.TrimSpace(finalAnswer) == ""
+	}
+	return false
 }
 
 func (e *roleCollaborativeExecutor) callRouteTurn(

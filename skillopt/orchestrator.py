@@ -283,6 +283,10 @@ def _score_summary(score) -> ScoreSummary:
         soft=score.soft,
         n=score.n,
         n_passed=score.n_passed,
+        n_raw=getattr(score, "n_raw", score.n),
+        n_excluded=getattr(score, "n_excluded", 0),
+        n_downweighted=getattr(score, "n_downweighted", 0),
+        weight_total=getattr(score, "weight_total", float(score.n)),
     )
 
 

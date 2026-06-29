@@ -25,6 +25,7 @@ class OptimizerConfig:
     agent_config_path: str | None = None
     max_tokens: int = 4096
     timeout_sec: int = 180
+    request_attempts: int = 2
 
 
 class OptimizerError(RuntimeError):
@@ -91,18 +92,36 @@ def _chat_optimizer_once(
         },
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=cfg.timeout_sec) as resp:
-            if resp.status != 200:
-                raise OptimizerError(f"optimizer HTTP {resp.status}")
-            try:
-                body = json.loads(resp.read())
-            except json.JSONDecodeError as e:
-                raise OptimizerError(f"optimizer returned non-JSON body: {e}") from e
-    except urllib.error.HTTPError as e:
-        raise OptimizerError(f"optimizer HTTP {e.code}: {e.read()[:200]!r}") from e
-    except (socket.timeout, urllib.error.URLError) as e:
-        raise OptimizerError(f"optimizer network error: {e}") from e
+    attempts = max(1, int(cfg.request_attempts or 1))
+    last_error: OptimizerError | None = None
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(req, timeout=cfg.timeout_sec) as resp:
+                if resp.status != 200:
+                    err = OptimizerError(f"optimizer HTTP {resp.status}")
+                    if resp.status >= 500 and attempt + 1 < attempts:
+                        last_error = err
+                        continue
+                    raise err
+                try:
+                    body = json.loads(resp.read())
+                except json.JSONDecodeError as e:
+                    raise OptimizerError(f"optimizer returned non-JSON body: {e}") from e
+                break
+        except urllib.error.HTTPError as e:
+            err = OptimizerError(f"optimizer HTTP {e.code}: {e.read()[:200]!r}")
+            if e.code >= 500 and attempt + 1 < attempts:
+                last_error = err
+                continue
+            raise err from e
+        except (socket.timeout, urllib.error.URLError) as e:
+            err = OptimizerError(f"optimizer network error: {e}")
+            if attempt + 1 < attempts:
+                last_error = err
+                continue
+            raise err from e
+    else:
+        raise last_error or OptimizerError("optimizer request failed")
 
     try:
         content = body["choices"][0]["message"]["content"]

@@ -48,3 +48,67 @@ def test_lint_detects_conflicting_failed_attempt_thresholds_with_worded_numbers(
     issues = lint_skill_text(skill)
 
     assert [issue.code for issue in issues] == ["conflicting_failed_attempt_thresholds"]
+
+
+def test_lint_detects_overbroad_plan_mode_bans():
+    skill = """
+## Core Loop
+
+Never use plan mode for any cross-app data transfer task; plan mode is prohibited for linear tasks.
+"""
+
+    issues = lint_skill_text(skill)
+
+    assert [issue.code for issue in issues] == ["overbroad_plan_mode_ban"]
+
+
+def test_lint_detects_plan_mode_scope_leak_in_device_operator():
+    skill = """
+---
+name: device-operator
+---
+
+## Core Loop
+
+Reserve plan mode for complex UI tasks.
+"""
+
+    issues = lint_skill_text(skill)
+
+    assert [issue.code for issue in issues] == ["device_operator_plan_mode_scope_leak"]
+
+
+def test_lint_allows_plan_mode_in_other_skills_when_not_overbroad():
+    skill = """
+---
+name: planner
+---
+
+Use plan mode for structured decomposition when needed.
+"""
+
+    assert lint_skill_text(skill) == []
+
+
+def test_lint_detects_consecutive_screenshot_bans():
+    skill = """
+## Screenshot Failure Recovery
+
+You may never call `screenshot` consecutively more than once, even when recovery is unclear.
+"""
+
+    issues = lint_skill_text(skill)
+
+    assert [issue.code for issue in issues] == ["overbroad_screenshot_ban"]
+
+
+def test_lint_detects_overbroad_locked_device_blockers():
+    skill = """
+## Failed Attempt Handling
+
+If the device is locked and two unlock gestures fail, immediately report the locked device as a blocker. Do not make any additional unlock attempts beyond these two retries.
+"""
+
+    issues = lint_skill_text(skill)
+
+    assert [issue.code for issue in issues] == ["overbroad_locked_device_blocker"]

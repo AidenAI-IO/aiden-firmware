@@ -25,11 +25,12 @@ def test_device_operator_keeps_mobilegym_rules_out_of_base_skill():
     assert "MobileGym" not in skill
 
 
-def test_device_operator_limits_plan_mode_for_linear_ui_tasks():
+def test_device_operator_keeps_loop_routing_policy_out_of_skill():
     skill = _device_operator_skill()
 
-    assert "Reserve plan mode for non-linear, branching" in skill
-    assert "For short linear sequences" in skill
+    assert "plan mode" not in skill.lower()
+    assert "routing" not in skill.lower()
+    assert "route phase" not in skill.lower()
     assert "task timeouts" not in skill
 
 
@@ -44,7 +45,8 @@ def test_device_operator_stops_after_repeated_unlock_failures():
 
     assert "device is detected to be locked" in skill
     assert "standard unlock gestures" in skill
-    assert "report the locked device as a blocker" in skill
+    assert "switch to diagnosis or report the locked device as a blocker" in skill
+    assert "Do not keep repeating unlock gestures" in skill
 
 
 def test_mobilegym_profile_documents_text_entry_fallback():

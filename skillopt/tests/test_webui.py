@@ -11,7 +11,8 @@ from skillopt.webui import INDEX_HTML, SkillOptJob, SkillOptWebApp, SkillOptWebU
 
 
 def test_mobilegym_template_instruction_adds_minimal_simulator_context():
-    template = Path("benchmark/mobilegym/config/agent.toml.template")
+    repo_root = Path(__file__).resolve().parents[2]
+    template = repo_root / "benchmark" / "mobilegym" / "config" / "agent.toml.template"
     data = tomllib.loads(template.read_text(encoding="utf-8"))
     instruction = data["instruction"]
 
