@@ -50,7 +50,7 @@ func TestCurrentTimeToolDescriptionAvoidsOrdinaryDateQuestions(t *testing.T) {
 
 func TestBuiltinToolSetRegistersSystemTools(t *testing.T) {
 	tools := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
-	for _, name := range []string{"current_time", "weather"} {
+	for _, name := range []string{"current_time", "weather", "run_script"} {
 		if _, ok := tools.Get(name); !ok {
 			t.Fatalf("builtin tool %q was not registered", name)
 		}

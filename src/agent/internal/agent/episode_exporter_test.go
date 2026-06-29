@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -539,6 +540,174 @@ func TestBuildLangfuseBatchUsesCapturedPromptsForGenerations(t *testing.T) {
 	if !ok || parameters["type"] != "object" {
 		t.Fatalf("tool parameters = %#v, want object schema", function["parameters"])
 	}
+}
+
+func TestBuildLangfuseBatchUploadsCapturedPromptMedia(t *testing.T) {
+	var mediaRequest langfuseMediaCreateRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/public/media" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		body, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(body, &mediaRequest); err != nil {
+			t.Fatalf("decode media request: %v", err)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"mediaId":"prompt-media-1","uploadUrl":null}`))
+	}))
+	defer server.Close()
+
+	start := time.Date(2026, 6, 25, 10, 0, 0, 0, time.UTC)
+	image := []byte("prompt-jpeg-bytes")
+	promptMedia := newTelemetryPromptMedia("image/jpeg", image)
+	callID := "11111111-1111-1111-1111-111111111111"
+	promptCalls := []telemetryPromptCall{{
+		ID:        callID,
+		Role:      string(RolePlanner),
+		StartedAt: start,
+		EndedAt:   start.Add(time.Millisecond),
+		Input: []map[string]interface{}{{
+			"role": "human",
+			"parts": []map[string]interface{}{{
+				"type":      "binary",
+				"mime_type": "image/jpeg",
+				"size":      len(image),
+				"data":      promptMedia.Placeholder,
+			}},
+		}},
+		Media: []telemetryPromptMedia{promptMedia},
+	}}
+	episode := TaskEpisode{
+		ID:        "ep_prompt_media",
+		StartedAt: start.Format(time.RFC3339Nano),
+		EndedAt:   start.Add(time.Second).Format(time.RFC3339Nano),
+		UserGoal:  "inspect screenshot",
+		Outcome:   TaskEpisodeOutcome{Success: true, FinalAnswer: "done"},
+	}
+	exporter := NewEpisodeExporter(TelemetryConfig{
+		Enabled:   boolPtr(true),
+		BaseURL:   server.URL,
+		PublicKey: "pk-test",
+		SecretKey: "sk-test",
+	}, nil)
+
+	batch, err := exporter.buildLangfuseBatch(context.Background(), episode, t.TempDir(), promptCalls)
+	if err != nil {
+		t.Fatalf("buildLangfuseBatch() error = %v", err)
+	}
+	if len(promptCalls[0].Media) != 0 {
+		t.Fatalf("prompt media retained after upload: %d item(s)", len(promptCalls[0].Media))
+	}
+	if mediaRequest.ObservationID != callID {
+		t.Fatalf("media observationId = %q, want %q", mediaRequest.ObservationID, callID)
+	}
+	if mediaRequest.Field != "input" {
+		t.Fatalf("media field = %q, want input", mediaRequest.Field)
+	}
+
+	for _, event := range batch {
+		if event.Type != "generation-create" {
+			continue
+		}
+		var body map[string]interface{}
+		if err := json.Unmarshal(event.Body, &body); err != nil {
+			t.Fatalf("decode generation body: %v", err)
+		}
+		encoded := string(event.Body)
+		if strings.Contains(encoded, base64.StdEncoding.EncodeToString(image)) {
+			t.Fatalf("generation body contains inline base64: %s", encoded)
+		}
+		if !strings.Contains(encoded, "id=prompt-media-1") {
+			t.Fatalf("generation body missing media token: %s", encoded)
+		}
+		return
+	}
+	t.Fatal("missing generation-create event")
+}
+
+func TestBuildLangfuseBatchOmitsPromptImagesWhenScreenshotUploadDisabled(t *testing.T) {
+	var mediaRequests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mediaRequests++
+		http.Error(w, "media upload must be disabled", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	start := time.Date(2026, 6, 25, 10, 0, 0, 0, time.UTC)
+	image := []byte("prompt-jpeg-bytes")
+	promptMedia := newTelemetryPromptMedia("image/jpeg", image)
+	pdf := []byte("%PDF-1.7 prompt bytes")
+	pdfMedia := newTelemetryPromptMedia("application/pdf", pdf)
+	promptCalls := []telemetryPromptCall{{
+		ID:        "11111111-1111-1111-1111-111111111111",
+		Role:      string(RolePlanner),
+		StartedAt: start,
+		EndedAt:   start.Add(time.Millisecond),
+		Input: []map[string]interface{}{{
+			"role": "human",
+			"parts": []map[string]interface{}{{
+				"type":      "binary",
+				"mime_type": "image/jpeg",
+				"size":      len(image),
+				"data":      promptMedia.Placeholder,
+			}, {
+				"type":      "binary",
+				"mime_type": "application/pdf",
+				"size":      len(pdf),
+				"data":      pdfMedia.Placeholder,
+			}},
+		}},
+		Media: []telemetryPromptMedia{promptMedia, pdfMedia},
+	}}
+	uploadScreenshots := false
+	exporter := NewEpisodeExporter(TelemetryConfig{
+		Enabled:           boolPtr(true),
+		BaseURL:           server.URL,
+		PublicKey:         "pk-test",
+		SecretKey:         "sk-test",
+		UploadScreenshots: &uploadScreenshots,
+	}, nil)
+	episode := TaskEpisode{
+		ID:        "ep_prompt_media_disabled",
+		StartedAt: start.Format(time.RFC3339Nano),
+		EndedAt:   start.Add(time.Second).Format(time.RFC3339Nano),
+		UserGoal:  "inspect screenshot",
+		Outcome:   TaskEpisodeOutcome{Success: true, FinalAnswer: "done"},
+	}
+
+	batch, err := exporter.buildLangfuseBatch(context.Background(), episode, t.TempDir(), promptCalls)
+	if err != nil {
+		t.Fatalf("buildLangfuseBatch() error = %v", err)
+	}
+	if len(promptCalls[0].Media) != 0 {
+		t.Fatalf("prompt media retained when upload is disabled: %d item(s)", len(promptCalls[0].Media))
+	}
+	if mediaRequests != 0 {
+		t.Fatalf("media API requests = %d, want 0", mediaRequests)
+	}
+	for _, event := range batch {
+		if event.Type != "generation-create" {
+			continue
+		}
+		encoded := string(event.Body)
+		if strings.Contains(encoded, promptMedia.Placeholder) {
+			t.Fatalf("generation body retained media placeholder: %s", encoded)
+		}
+		if strings.Contains(encoded, pdfMedia.Placeholder) {
+			t.Fatalf("generation body retained non-image media placeholder: %s", encoded)
+		}
+		if strings.Contains(encoded, base64.StdEncoding.EncodeToString(image)) {
+			t.Fatalf("generation body contains inline base64: %s", encoded)
+		}
+		if strings.Contains(encoded, base64.StdEncoding.EncodeToString(pdf)) {
+			t.Fatalf("generation body contains inline non-image base64: %s", encoded)
+		}
+		if !strings.Contains(encoded, "[media omitted: upload disabled]") {
+			t.Fatalf("generation body missing disabled placeholder: %s", encoded)
+		}
+		return
+	}
+	t.Fatal("missing generation-create event")
 }
 
 func TestExportEpisodeDirUploadsToLangfuse(t *testing.T) {

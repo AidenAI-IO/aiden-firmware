@@ -381,6 +381,14 @@ func NewServer(runtime *Runtime, addr string) *Server {
 			s.logger.Info("TTS enabled: provider=%s", manager.Current())
 		}
 	}
+	runtime.tools.SetRunScriptSpeaker(func(ctx context.Context, text string) error {
+		manager := s.currentTTSManager()
+		if manager == nil {
+			return fmt.Errorf("tts is not configured")
+		}
+		_, err := speakWithTTSManager(ctx, manager, s.audioClient, s.runtime.config, text)
+		return err
+	})
 
 	return s
 }
@@ -3033,11 +3041,14 @@ func (s *Server) handleBridgeStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	if s.bridge == nil {
-		json.NewEncoder(w).Encode(PhoneBridgeStatus{})
-		return
+	status := PhoneBridgeStatus{}
+	if s.bridge != nil {
+		status = s.bridge.Status()
 	}
-	json.NewEncoder(w).Encode(s.bridge.Status())
+	if s.runtime != nil {
+		status.BoardID = s.runtime.config.LiveActivity.BoardIDOrDefault()
+	}
+	json.NewEncoder(w).Encode(status)
 }
 
 func (s *Server) handleLiveActivityRegistrations(w http.ResponseWriter, r *http.Request) {

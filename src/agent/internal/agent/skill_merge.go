@@ -276,6 +276,7 @@ var knownToolNames = map[string]struct{}{
 	"keyboard_text":         {},
 	"enter_text_in_field":   {},
 	"enter_text_via_bridge": {},
+	"list_scripts":          {},
 	"mouse_click":           {},
 	"mouse_move":            {},
 	"mouse_scroll":          {},
@@ -284,6 +285,8 @@ var knownToolNames = map[string]struct{}{
 	"notification":          {},
 	"recall_memory":         {},
 	"recall_session_chunks": {},
+	"read_script":           {},
+	"run_script":            {},
 	"save_memory":           {},
 	"screenshot":            {},
 	"shell":                 {},
@@ -296,6 +299,7 @@ var knownToolNames = map[string]struct{}{
 	"web_scraper":           {},
 	"web_search":            {},
 	"wikipedia":             {},
+	"write_script":          {},
 }
 
 func computeMergeKey(mode SkillMergeMode, skillName, baseHash, upstreamHash, localHash string) string {

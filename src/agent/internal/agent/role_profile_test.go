@@ -174,6 +174,13 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 		!strings.Contains(profiles.Verifier.SystemPrompt, "final committed plan step") {
 		t.Fatalf("verifier prompt should focus on per-step verification:\n%s", profiles.Verifier.SystemPrompt)
 	}
+	for _, profile := range []RoleProfile{profiles.Planner, profiles.Executor, profiles.Verifier} {
+		for _, want := range []string{"Simplified Chinese", "do not mention or hint at internal automation implementation details", "run_script", "JSONL"} {
+			if !strings.Contains(profile.SystemPrompt, want) {
+				t.Fatalf("%s profile missing user-facing language/privacy rule %q:\n%s", profile.Name, want, profile.SystemPrompt)
+			}
+		}
+	}
 }
 
 func TestBuildRoleProfilesOmitsActiveSkillsSectionWhenEmpty(t *testing.T) {

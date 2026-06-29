@@ -30,6 +30,7 @@ agent.conf
 # Debug artifacts
 screen-memory-debug-*/
 capture.md
+**/docs/superpowers/
 /update.img
 
 # Python (uv)

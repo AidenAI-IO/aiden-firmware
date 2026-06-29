@@ -33,6 +33,7 @@ type roleCollaborativeExecutor struct {
 	OutputKey              string
 	Recorder               *EpisodeRecorder
 	ScreenshotPruning      ScreenshotPruningConfig
+	VisualArtifacts        *visualArtifactStore
 	InitialWorldState      worldState
 	ForceSimpleLoop        bool
 	SteerProvider          func(context.Context) (RunSteerMessage, bool)
@@ -142,15 +143,16 @@ type worldDeviceEnvironment struct {
 }
 
 type worldScreenshot struct {
-	SourceTool   string
-	ToolInput    string
-	ActionOutput string
-	Width        int
-	Height       int
-	Format       string
-	Size         int
-	Data         []byte
-	StepNumber   int
+	SourceTool    string
+	ToolInput     string
+	ActionOutput  string
+	Width         int
+	Height        int
+	Format        string
+	Size          int
+	ScreenshotRef string
+	Data          []byte
+	StepNumber    int
 }
 
 type observedWorldState struct {
@@ -221,6 +223,7 @@ func newRoleCollaborativeExecutor(
 		OutputKey:         "output",
 		Recorder:          recorder,
 		ScreenshotPruning: screenshotPruning.WithDefaults(),
+		VisualArtifacts:   newVisualArtifactStore(recorder),
 		InitialWorldState: world,
 		ForceSimpleLoop:   profiles.Planner.SystemPrompt != "" && !profiles.Planner.Capabilities.CanModifyPlan,
 		SteerProvider:     steerProvider,
@@ -228,6 +231,9 @@ func newRoleCollaborativeExecutor(
 }
 
 func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[string]any, options ...chains.ChainCallOption) (map[string]any, error) {
+	if e.VisualArtifacts != nil {
+		defer e.VisualArtifacts.Close()
+	}
 	inputs, err := executorInputsToString(inputValues)
 	if err != nil {
 		return nil, err
@@ -300,7 +306,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 							}
 							if handoffTurn.Step != nil {
 								state.ToolSteps = append(state.ToolSteps, *handoffTurn.Step)
-								state.World.UpdateFromStep(*handoffTurn.Step, len(state.ToolSteps), e.Tools)
+								state.World.UpdateFromStep(*handoffTurn.Step, len(state.ToolSteps), e.Tools, e.VisualArtifacts)
 							}
 							if handoffTurn.Kind == plannerTurnTool {
 								consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
@@ -409,7 +415,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 			case plannerTurnTool, plannerTurnInvalidMeta, plannerTurnSleep:
 				if turn.Step != nil {
 					state.ToolSteps = append(state.ToolSteps, *turn.Step)
-					state.World.UpdateFromStep(*turn.Step, len(state.ToolSteps), e.Tools)
+					state.World.UpdateFromStep(*turn.Step, len(state.ToolSteps), e.Tools, e.VisualArtifacts)
 				}
 				if turn.Kind == plannerTurnTool {
 					consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
@@ -465,7 +471,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 				if turn.Step != nil {
 					state.ToolSteps = append(state.ToolSteps, *turn.Step)
 					state.StepToolSteps = append(state.StepToolSteps, *turn.Step)
-					state.World.UpdateFromStep(*turn.Step, len(state.ToolSteps), e.Tools)
+					state.World.UpdateFromStep(*turn.Step, len(state.ToolSteps), e.Tools, e.VisualArtifacts)
 				}
 				if turn.Kind == executorTurnTool {
 					execution := roleExecutionResult{Action: turn.Action, Step: turn.Step, ToolError: turn.ToolError}
@@ -802,6 +808,7 @@ func (e *roleCollaborativeExecutor) executePlannerToolAction(
 		Callback:               e.CallbacksHandler,
 		EnvironmentBridge:      e.EnvironmentBridge,
 		EnvironmentBridgeTools: e.EnvironmentBridgeTools,
+		VisualArtifacts:        e.VisualArtifacts,
 	})
 	if toolExecution.Error != nil && !(errors.Is(toolExecution.Error, context.Canceled) && e.steerInterruptSignaled(ctx)) {
 		return plannerTurnResult{}, toolExecution.Error
@@ -1116,6 +1123,7 @@ func (e *roleCollaborativeExecutor) callExecutorTurn(
 		Callback:               e.CallbacksHandler,
 		EnvironmentBridge:      e.EnvironmentBridge,
 		EnvironmentBridgeTools: e.EnvironmentBridgeTools,
+		VisualArtifacts:        e.VisualArtifacts,
 	})
 	if toolExecution.Error != nil && !(errors.Is(toolExecution.Error, context.Canceled) && e.steerInterruptSignaled(ctx)) {
 		return executorTurnResult{}, toolExecution.Error
@@ -1221,7 +1229,7 @@ func (e *roleCollaborativeExecutor) callDefaultFinalReview(
 		},
 		{
 			Role:  llms.ChatMessageTypeHuman,
-			Parts: buildRoleUserMessageParts(buildDefaultFinalReviewPrompt(inputs, state, candidateAnswer), e.InputAttachments, state.World, true),
+			Parts: buildRoleUserMessageParts(buildDefaultFinalReviewPrompt(inputs, state, candidateAnswer), e.InputAttachments, state.World, true, e.VisualArtifacts),
 		},
 	}
 	res, err := e.generateRoleContent(ctx, RoleVerifier, messages, chains.GetLLMCallOptions(options...)...)
@@ -1358,10 +1366,10 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 	}
 
 	if profile.Name == RoleExecutor && len(state.StepToolSteps) > 0 {
-		scratchpad := (&FunctionAgent{Tools: appendExecutorMetaTools(toolsForRole(RoleExecutor, e.Tools)), ScreenshotPruning: e.ScreenshotPruning}).constructFunctionScratchPad(state.StepToolSteps)
+		scratchpad := (&FunctionAgent{Tools: appendExecutorMetaTools(toolsForRole(RoleExecutor, e.Tools)), ScreenshotPruning: e.ScreenshotPruning, VisualArtifacts: e.VisualArtifacts}).constructFunctionScratchPad(state.StepToolSteps)
 		messages = append(messages, scratchpad...)
 	} else if roleSeesToolScratchpad(profile.Name) && len(state.ToolSteps) > 0 {
-		scratchpad := (&FunctionAgent{Tools: toolsForRole(profile.Name, e.Tools), ScreenshotPruning: e.ScreenshotPruning}).constructFunctionScratchPad(state.ToolSteps)
+		scratchpad := (&FunctionAgent{Tools: toolsForRole(profile.Name, e.Tools), ScreenshotPruning: e.ScreenshotPruning, VisualArtifacts: e.VisualArtifacts}).constructFunctionScratchPad(state.ToolSteps)
 		messages = append(messages, scratchpad...)
 	}
 
@@ -1388,7 +1396,7 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 	})
 	messages = append(messages, llms.MessageContent{
 		Role:  llms.ChatMessageTypeHuman,
-		Parts: buildRoleUserMessageParts(statePrompt, e.InputAttachments, state.World, includeWorldStateLatestScreenshot),
+		Parts: buildRoleUserMessageParts(statePrompt, e.InputAttachments, state.World, includeWorldStateLatestScreenshot, e.VisualArtifacts),
 	})
 	for _, steer := range state.SteerMessages {
 		messages = append(messages, llms.MessageContent{
@@ -1757,12 +1765,19 @@ func compactPromptLine(value string, max int) string {
 	return truncateForLog(singleLineHistoryText(value), max)
 }
 
-func buildRoleUserMessageParts(input string, attachments []InputAttachment, world worldState, includeWorldStateLatestScreenshot bool) []llms.ContentPart {
+func buildRoleUserMessageParts(input string, attachments []InputAttachment, world worldState, includeWorldStateLatestScreenshot bool, artifacts visualArtifactReader) []llms.ContentPart {
 	parts := buildUserMessageParts(input, attachments)
-	if !includeWorldStateLatestScreenshot || world.LatestScreenshot == nil || len(world.LatestScreenshot.Data) == 0 {
+	if !includeWorldStateLatestScreenshot || world.LatestScreenshot == nil {
 		return parts
 	}
-	return append(parts, buildImagePart(world.LatestScreenshot.MIMEType(), world.LatestScreenshot.Data))
+	imageBytes := world.LatestScreenshot.Data
+	if len(imageBytes) == 0 && strings.TrimSpace(world.LatestScreenshot.ScreenshotRef) != "" && artifacts != nil {
+		imageBytes, _ = artifacts.ReadVisualArtifact(world.LatestScreenshot.ScreenshotRef)
+	}
+	if len(imageBytes) == 0 {
+		return parts
+	}
+	return append(parts, buildImagePart(world.LatestScreenshot.MIMEType(), imageBytes))
 }
 
 type worldStatePromptOptions struct {
@@ -2062,7 +2077,7 @@ func compactScreenshotObservation(toolName, observation string) (string, bool) {
 	if err := json.Unmarshal([]byte(observation), &result); err != nil {
 		return "", false
 	}
-	if result.Data == "" || result.Width <= 0 || result.Height <= 0 {
+	if (result.Data == "" && strings.TrimSpace(result.ScreenshotRef) == "") || result.Width <= 0 || result.Height <= 0 {
 		return "", false
 	}
 	if strings.TrimSpace(toolName) == "" {
@@ -2145,8 +2160,12 @@ func (s roleLoopState) latestExecutionResult() (roleExecutionResult, bool) {
 	return s.ExecutionResults[len(s.ExecutionResults)-1], true
 }
 
-func (s *worldState) UpdateFromStep(step schema.AgentStep, stepNumber int, tools []langtools.Tool) {
-	screenshot, ok := screenshotFromVisualStep(step, stepNumber, tools)
+func (s *worldState) UpdateFromStep(step schema.AgentStep, stepNumber int, tools []langtools.Tool, artifacts ...visualArtifactReader) {
+	var reader visualArtifactReader
+	if len(artifacts) > 0 {
+		reader = artifacts[0]
+	}
+	screenshot, ok := screenshotFromVisualStep(step, stepNumber, tools, reader)
 	if !ok {
 		return
 	}
@@ -2232,8 +2251,8 @@ func screenshotFromStep(step schema.AgentStep, stepNumber int) (worldScreenshot,
 	return worldScreenshotFromVisualObservation(step, stepNumber, visual), true
 }
 
-func screenshotFromVisualStep(step schema.AgentStep, stepNumber int, tools []langtools.Tool) (worldScreenshot, bool) {
-	visual, ok := (&FunctionAgent{Tools: tools}).visualScreenshotObservation(step)
+func screenshotFromVisualStep(step schema.AgentStep, stepNumber int, tools []langtools.Tool, artifacts visualArtifactReader) (worldScreenshot, bool) {
+	visual, ok := (&FunctionAgent{Tools: tools, VisualArtifacts: artifacts}).visualScreenshotObservation(step)
 	if !ok {
 		return worldScreenshot{}, false
 	}
@@ -2242,17 +2261,21 @@ func screenshotFromVisualStep(step schema.AgentStep, stepNumber int, tools []lan
 
 func worldScreenshotFromVisualObservation(step schema.AgentStep, stepNumber int, visual visualScreenshotObservation) worldScreenshot {
 	result := visual.Result
-	return worldScreenshot{
-		SourceTool:   step.Action.Tool,
-		ToolInput:    normalizeToolInput(step.Action.ToolInput),
-		ActionOutput: strings.TrimSpace(result.ActionOutput),
-		Width:        result.Width,
-		Height:       result.Height,
-		Format:       result.Format,
-		Size:         result.Size,
-		Data:         visual.ImageBytes,
-		StepNumber:   stepNumber,
+	screenshot := worldScreenshot{
+		SourceTool:    step.Action.Tool,
+		ToolInput:     normalizeToolInput(step.Action.ToolInput),
+		ActionOutput:  strings.TrimSpace(result.ActionOutput),
+		Width:         result.Width,
+		Height:        result.Height,
+		Format:        result.Format,
+		Size:          result.Size,
+		ScreenshotRef: result.ScreenshotRef,
+		StepNumber:    stepNumber,
 	}
+	if strings.TrimSpace(result.ScreenshotRef) == "" {
+		screenshot.Data = visual.ImageBytes
+	}
+	return screenshot
 }
 
 func (s worldScreenshot) MIMEType() string {

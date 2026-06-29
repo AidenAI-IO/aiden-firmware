@@ -48,6 +48,24 @@ func TestWaitForWakeupExposedToAgentAndToolLab(t *testing.T) {
 	}
 }
 
+func TestRunScriptExposedToAgentAndToolLab(t *testing.T) {
+	runtime := NewRuntimeWithDeps(
+		Config{},
+		nil,
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	for _, name := range []string{"run_script", "list_scripts", "read_script", "write_script"} {
+		if _, ok := runtime.ToolDescriptorByName(name); !ok {
+			t.Fatalf("expected %s in Tool Lab HTTP catalog", name)
+		}
+		if !isAgentToolExposed(name) {
+			t.Fatalf("expected %s available to conversational agent", name)
+		}
+	}
+}
+
 func TestPhoneBridgeToolsExposedToAgent(t *testing.T) {
 	for _, name := range []string{"open_app", "clipboard", "calendar", "contacts", "notification"} {
 		if !isAgentToolExposed(name) {

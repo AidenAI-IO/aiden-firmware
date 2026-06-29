@@ -242,7 +242,7 @@ func ConfigMeta() ConfigMetadata {
 				Name: "live_activity",
 				Fields: []FieldMeta{
 					{Key: "enabled", Widget: WidgetBoolean, Default: true},
-					{Key: "board_id", Widget: WidgetText, Default: "default",
+					{Key: "board_id", Widget: WidgetText,
 						VisibleWhen: all(truthy("live_activity.enabled"))},
 				},
 			},
