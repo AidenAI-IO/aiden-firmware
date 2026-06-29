@@ -3033,11 +3033,10 @@ func (s *Server) handleBridgeStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	if s.bridge == nil {
-		json.NewEncoder(w).Encode(PhoneBridgeStatus{})
-		return
+	status := PhoneBridgeStatus{}
+	if s.bridge != nil {
+		status = s.bridge.Status()
 	}
-	status := s.bridge.Status()
 	if s.runtime != nil {
 		status.BoardID = s.runtime.config.LiveActivity.BoardIDOrDefault()
 	}

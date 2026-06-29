@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1185,6 +1186,49 @@ board_id = "default"
 	}
 	if got := cfg.LiveActivity.BoardIDOrDefault(); got != boardID {
 		t.Fatalf("reloaded board_id = %q, want persisted %q", got, boardID)
+	}
+}
+
+func TestLoadOrCreateLiveActivityBoardIDConcurrent(t *testing.T) {
+	dir := t.TempDir()
+	const workers = 16
+	var wg sync.WaitGroup
+	ids := make(chan string, workers)
+	errs := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			boardID, err := loadOrCreateLiveActivityBoardID(dir)
+			if err != nil {
+				errs <- err
+				return
+			}
+			ids <- boardID
+		}()
+	}
+	wg.Wait()
+	close(ids)
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	var first string
+	for id := range ids {
+		if first == "" {
+			first = id
+			continue
+		}
+		if id != first {
+			t.Fatalf("concurrent board_id = %q, want %q", id, first)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(dir, liveActivityBoardIDFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(data)); got != first {
+		t.Fatalf("persisted board_id = %q, want %q", got, first)
 	}
 }
 

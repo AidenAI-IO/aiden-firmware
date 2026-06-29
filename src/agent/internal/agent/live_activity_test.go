@@ -356,6 +356,34 @@ func TestServerLiveActivityCurrent(t *testing.T) {
 	}
 }
 
+func TestServerBridgeStatusIncludesBoardIDWithoutBridge(t *testing.T) {
+	server := &Server{
+		runtime: &Runtime{
+			config: Config{
+				LiveActivity: LiveActivityConfig{BoardID: "board-1"},
+			},
+		},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/phone-bridge/status", nil)
+	rec := httptest.NewRecorder()
+
+	server.handleBridgeStatus(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want 200", rec.Code)
+	}
+	var status PhoneBridgeStatus
+	if err := json.NewDecoder(rec.Body).Decode(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status.BoardID != "board-1" {
+		t.Fatalf("board_id = %q, want board-1", status.BoardID)
+	}
+	if status.Connected {
+		t.Fatalf("connected = true, want false")
+	}
+}
+
 func TestServerLiveActivityCurrentFiltersPhoneID(t *testing.T) {
 	server := &Server{liveActivity: NewLiveActivityManager(LiveActivityConfig{}, nil)}
 	server.liveActivity.StartTask("req-phone-a", "Do a task", "phone-a")

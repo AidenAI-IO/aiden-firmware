@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -40,6 +41,8 @@ const (
 	defaultLiveActivityTimeout = 10 * time.Second
 	liveActivityBoardIDFile    = "board_id"
 )
+
+var liveActivityBoardIDMu sync.Mutex
 
 func (s SearchConfig) ProviderOrDefault() string {
 	return normalizeSearchProvider(s.Provider)
@@ -1015,6 +1018,9 @@ func ensureRuntimeLiveActivityBoardID(cfg *Config) error {
 }
 
 func loadOrCreateLiveActivityBoardID(configDir string) (string, error) {
+	liveActivityBoardIDMu.Lock()
+	defer liveActivityBoardIDMu.Unlock()
+
 	path := filepath.Join(configDir, liveActivityBoardIDFile)
 	if data, err := os.ReadFile(path); err == nil {
 		if boardID := normalizeLiveActivityBoardID(string(data)); boardID != "" {
@@ -1031,8 +1037,30 @@ func loadOrCreateLiveActivityBoardID(configDir string) (string, error) {
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		return "", fmt.Errorf("create config dir %s: %w", configDir, err)
 	}
-	if err := os.WriteFile(path, []byte(boardID+"\n"), 0o600); err != nil {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		if !os.IsExist(err) {
+			return "", fmt.Errorf("create %s: %w", path, err)
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return "", fmt.Errorf("read existing %s: %w", path, readErr)
+		}
+		existing := normalizeLiveActivityBoardID(string(data))
+		if existing != "" {
+			return existing, nil
+		}
+		if err := os.WriteFile(path, []byte(boardID+"\n"), 0o600); err != nil {
+			return "", fmt.Errorf("replace invalid %s: %w", path, err)
+		}
+		return boardID, nil
+	}
+	if _, err := file.WriteString(boardID + "\n"); err != nil {
+		_ = file.Close()
 		return "", fmt.Errorf("write %s: %w", path, err)
+	}
+	if err := file.Close(); err != nil {
+		return "", fmt.Errorf("close %s: %w", path, err)
 	}
 	return boardID, nil
 }
