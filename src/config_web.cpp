@@ -5212,6 +5212,18 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
                 cJSON_AddBoolToObject(r, "passed", 0);
                 cJSON_AddStringToObject(r, "detail", "empty");
                 all_passed = false;
+            } else if (ok && std::string(enums[i].key) == "trigger_mode" && val == "wakeup") {
+                cJSON* input_item = cJSON_GetObjectItem(values, "input_mode");
+                std::string input_mode = json_is_string(input_item) ? trim_copy(input_item->valuestring) : "";
+                if (input_mode == "stt") {
+                    cJSON_AddBoolToObject(r, "passed", 1);
+                    cJSON_AddStringToObject(r, "detail", val.c_str());
+                } else {
+                    cJSON_AddBoolToObject(r, "passed", 0);
+                    std::string msg = "wakeup requires input_mode stt, got '" + input_mode + "'";
+                    cJSON_AddStringToObject(r, "detail", msg.c_str());
+                    all_passed = false;
+                }
             } else if (ok) {
                 cJSON_AddBoolToObject(r, "passed", 1);
                 cJSON_AddStringToObject(r, "detail", val.c_str());

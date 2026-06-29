@@ -2955,7 +2955,7 @@ func (s *Server) webAudioInputMode() string {
 		if s.sttClient != nil {
 			return "stt"
 		}
-		return "audio"
+		return "text"
 	}
 }
 

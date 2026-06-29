@@ -48,6 +48,32 @@ func TestConfigValidateRejectsRemovedAudioMode(t *testing.T) {
 	}
 }
 
+func TestConfigInputModeDefaultContract(t *testing.T) {
+	const want = "text"
+
+	if got := DefaultConfig().InputMode; got != want {
+		t.Fatalf("DefaultConfig().InputMode = %q, want %q", got, want)
+	}
+	if got := (Config{}).InputModeOrDefault(); got != want {
+		t.Fatalf("Config{}.InputModeOrDefault() = %q, want %q", got, want)
+	}
+
+	var metaDefault any
+	for _, section := range ConfigMeta().Sections {
+		if section.Name != "agent" {
+			continue
+		}
+		for _, field := range section.Fields {
+			if field.Key == "input_mode" {
+				metaDefault = field.Default
+			}
+		}
+	}
+	if metaDefault != want {
+		t.Fatalf("ConfigMeta agent.input_mode default = %#v, want %q", metaDefault, want)
+	}
+}
+
 func TestBundledSkillsDirCandidatesUseOEMOnly(t *testing.T) {
 	want := []string{"/oem/usr/share/aiden/skills"}
 	if got := bundledSkillsDirCandidates(); !reflect.DeepEqual(got, want) {
