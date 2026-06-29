@@ -89,7 +89,7 @@ func NewWaitStableScreenTool(socketPath string, defaults ScreenStableDefaults, s
 		screen = screens[0]
 	}
 	return &WaitStableScreenTool{
-		client:   NewFrameServiceClient(socketPath),
+		client:   NewScreenCaptureClient(socketPath),
 		defaults: defaults,
 		screen:   screen,
 	}

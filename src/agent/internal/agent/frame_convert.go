@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
+	_ "image/png"
 )
 
 func convertFrameToRGB(meta *frameMetadata, frame []byte) ([]byte, error) {
@@ -19,6 +20,8 @@ func convertFrameToRGB(meta *frameMetadata, frame []byte) ([]byte, error) {
 	rgb := make([]byte, pixels*3)
 
 	switch meta.PixelFormat {
+	case "jpeg", "jpg", "png":
+		return decodeEncodedImageToRGB(meta.PixelFormat, frame, w, h)
 	case "nv12", "nv16":
 		isNV12 := meta.PixelFormat == "nv12"
 		yPlaneSize := pixels
@@ -69,6 +72,29 @@ func convertFrameToRGB(meta *frameMetadata, frame []byte) ([]byte, error) {
 	return rgb, nil
 }
 
+func decodeEncodedImageToRGB(format string, frame []byte, width, height int) ([]byte, error) {
+	img, _, err := image.Decode(bytes.NewReader(frame))
+	if err != nil {
+		return nil, fmt.Errorf("decode %s: %w", format, err)
+	}
+	bounds := img.Bounds()
+	if bounds.Dx() != width || bounds.Dy() != height {
+		return nil, fmt.Errorf("%s dimensions mismatch: decoded %dx%d, metadata %dx%d", format, bounds.Dx(), bounds.Dy(), width, height)
+	}
+
+	rgb := make([]byte, width*height*3)
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			r, g, b, _ := img.At(bounds.Min.X+x, bounds.Min.Y+y).RGBA()
+			offset := (y*width + x) * 3
+			rgb[offset] = byte(r >> 8)
+			rgb[offset+1] = byte(g >> 8)
+			rgb[offset+2] = byte(b >> 8)
+		}
+	}
+	return rgb, nil
+}
+
 func yuvToRGB(y, u, v byte, dst []byte) {
 	c := int(y) - 16
 	if c < 0 {
@@ -116,8 +142,11 @@ func encodeFrameAsJPEG(meta *frameMetadata, frame []byte, quality int) ([]byte, 
 	if quality <= 0 {
 		quality = screenshotJPEGQuality
 	}
-	if meta.PixelFormat == "jpeg" {
+	if meta.PixelFormat == "jpeg" || meta.PixelFormat == "jpg" {
 		return append([]byte(nil), frame...), nil
+	}
+	if meta.PixelFormat == "png" {
+		return encodeEncodedImageToJPEG(frame, quality)
 	}
 
 	rgb, err := convertFrameToRGB(meta, frame)
@@ -125,4 +154,16 @@ func encodeFrameAsJPEG(meta *frameMetadata, frame []byte, quality int) ([]byte, 
 		return nil, err
 	}
 	return encodeJPEG(rgb, int(meta.Width), int(meta.Height), quality)
+}
+
+func encodeEncodedImageToJPEG(frame []byte, quality int) ([]byte, error) {
+	img, _, err := image.Decode(bytes.NewReader(frame))
+	if err != nil {
+		return nil, fmt.Errorf("decode encoded image: %w", err)
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality}); err != nil {
+		return nil, fmt.Errorf("jpeg encode: %w", err)
+	}
+	return buf.Bytes(), nil
 }

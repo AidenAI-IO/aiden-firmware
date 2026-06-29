@@ -144,13 +144,10 @@ func (s *Server) captureCoordinateDebugScreenshot(options coordinateDebugScreens
 	}
 	_ = s.bridgeEnvironment()
 
-	client := NewFrameServiceClient(s.runtime.config.HID.FrameSocketOrDefault())
+	client := NewScreenCaptureClient(s.runtime.config.HID.FrameSocketOrDefault())
 	if options.CropBlackBars {
 		meta, jpegData, err := client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality)
 		if err == nil && meta != nil {
-			if meta.Stale {
-				return nil, nil, fmt.Errorf("frame service: STALE_FRAME")
-			}
 			if meta.PixelFormat == "jpeg" {
 				if sourceWidth, sourceHeight, sourceActive, ok := frameMetadataSourceActiveArea(meta); ok {
 					screen := s.coordinateDebugScreen()
@@ -173,9 +170,6 @@ func (s *Server) captureCoordinateDebugScreenshot(options coordinateDebugScreens
 	meta, frameData, err := client.LatestFrame()
 	if err != nil {
 		return nil, nil, err
-	}
-	if meta.Stale {
-		return nil, nil, fmt.Errorf("frame service: STALE_FRAME")
 	}
 	rawJPEGData, err := encodeFrameAsJPEG(meta, frameData, screenshotJPEGQuality)
 	if err != nil {
