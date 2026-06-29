@@ -275,6 +275,37 @@ def test_load_benchmark_task_results_handles_failed_runner_exit_with_results(tmp
     assert results[0].metrics["tool_calls"] == 1
 
 
+def test_load_benchmark_task_results_ignores_unknown_hard_assertion_fields(tmp_path: Path):
+    from skillopt.benchmark_backend import load_benchmark_task_results
+
+    run_dir = tmp_path / "child"
+    run_dir.mkdir()
+    row = {
+        "suite": "crossapp_train",
+        "run_id": "child",
+        "task_id": "case_one",
+        "category": "multi_step",
+        "attempt": 1,
+        "status": "failed",
+        "rubric": [],
+        "rubric_pass_count": 0,
+        "rubric_total": 0,
+        "hard_assertions": {
+            "timeout": True,
+            "response_exists": True,
+            "future_runner_field": False,
+        },
+        "hard_assertion_failures": [],
+    }
+    (run_dir / "results.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+    results = load_benchmark_task_results(run_dir)
+
+    assert results[0].task_id == "case_one"
+    assert results[0].hard_assertions is not None
+    assert results[0].hard_assertions.timeout is True
+
+
 def test_benchmark_runner_backend_rejects_environment_setup_failure_phase(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from skillopt.benchmark_backend import BenchmarkRolloutError, BenchmarkRunnerBackend
 

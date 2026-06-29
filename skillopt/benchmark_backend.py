@@ -264,9 +264,9 @@ def load_benchmark_task_results(run_dir: Path) -> list[TaskResult]:
 def task_result_from_dict(payload: dict[str, Any]) -> TaskResult:
     rubric = [RubricVerdict(**item) for item in payload.get("rubric", []) if isinstance(item, dict)]
     hard_payload = payload.get("hard_assertions")
-    hard_assertions = HardAssertionResults(**hard_payload) if isinstance(hard_payload, dict) else None
+    hard_assertions = _dataclass_from_dict(HardAssertionResults, hard_payload) if isinstance(hard_payload, dict) else None
     failures = [
-        HardAssertionFailure(**item)
+        _dataclass_from_dict(HardAssertionFailure, item)
         for item in payload.get("hard_assertion_failures", [])
         if isinstance(item, dict)
     ]
@@ -276,3 +276,8 @@ def task_result_from_dict(payload: dict[str, Any]) -> TaskResult:
     data["hard_assertions"] = hard_assertions
     data["hard_assertion_failures"] = failures
     return TaskResult(**data)
+
+
+def _dataclass_from_dict(cls, payload: dict[str, Any]):
+    fields = {field.name for field in dc.fields(cls)}
+    return cls(**{key: value for key, value in payload.items() if key in fields})
