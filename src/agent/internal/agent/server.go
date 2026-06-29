@@ -381,6 +381,14 @@ func NewServer(runtime *Runtime, addr string) *Server {
 			s.logger.Info("TTS enabled: provider=%s", manager.Current())
 		}
 	}
+	runtime.tools.SetRunScriptSpeaker(func(ctx context.Context, text string) error {
+		manager := s.currentTTSManager()
+		if manager == nil {
+			return fmt.Errorf("tts is not configured")
+		}
+		_, err := speakWithTTSManager(ctx, manager, s.audioClient, s.runtime.config, text)
+		return err
+	})
 
 	return s
 }

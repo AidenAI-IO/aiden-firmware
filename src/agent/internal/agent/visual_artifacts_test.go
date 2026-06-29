@@ -16,22 +16,32 @@ import (
 
 func TestExecuteToolCallExternalizesVisualObservation(t *testing.T) {
 	imageBytes := []byte("visual-artifact-bytes")
+	encoded := base64.StdEncoding.EncodeToString(imageBytes)
 	output := `{"width":320,"height":240,"format":"jpeg","size":21,"data":"` +
-		base64.StdEncoding.EncodeToString(imageBytes) + `"}`
+		encoded + `"}`
 	tool := &stubTool{name: "screenshot", output: output, visual: true}
 	store := &visualArtifactStore{rootDir: t.TempDir()}
 	callback := &toolExecutionCallbackRecorder{}
 
 	result := executeToolCall(context.Background(), ToolCallExecution{
-		Specs:           NewToolSpecs([]langtools.Tool{tool}),
-		Action:          schema.AgentAction{Tool: "screenshot", ToolInput: "{}"},
+		Specs:  NewToolSpecs([]langtools.Tool{tool}),
+		Action: schema.AgentAction{Tool: "screenshot", ToolInput: "{}"},
+		After: func(ctx context.Context, call ToolCall, result ToolResult) ToolResult {
+			result.Summary = result.Output
+			return DefaultAfterToolCall(ctx, call, result)
+		},
 		Callback:        callback,
 		VisualArtifacts: store,
 	})
 
 	if strings.Contains(result.Step.Observation, `"data"`) ||
-		strings.Contains(result.Step.Observation, base64.StdEncoding.EncodeToString(imageBytes)) {
+		strings.Contains(result.Step.Observation, encoded) {
 		t.Fatalf("step retained inline image data: %s", result.Step.Observation)
+	}
+	if strings.Contains(result.Result.Summary, `"data"`) ||
+		strings.Contains(result.Result.Summary, encoded) ||
+		strings.Contains(result.Result.EventOutput(), encoded) {
+		t.Fatalf("summary retained inline image data: summary=%q event=%q", result.Result.Summary, result.Result.EventOutput())
 	}
 	var observation postActionScreenshotResult
 	if err := json.Unmarshal([]byte(result.Step.Observation), &observation); err != nil {
@@ -47,7 +57,10 @@ func TestExecuteToolCallExternalizesVisualObservation(t *testing.T) {
 	if string(stored) != string(imageBytes) {
 		t.Fatalf("stored image = %q, want %q", stored, imageBytes)
 	}
-	if len(callback.results) != 1 || strings.Contains(callback.results[0].Output, `"data"`) {
+	if len(callback.results) != 1 ||
+		strings.Contains(callback.results[0].Output, `"data"`) ||
+		strings.Contains(callback.results[0].Summary, encoded) ||
+		strings.Contains(callback.results[0].EventOutput(), encoded) {
 		t.Fatalf("callback retained inline image data: %#v", callback.results)
 	}
 }
@@ -78,7 +91,7 @@ func TestExecuteToolCallFailsWhenVisualObservationCannotBeExternalized(t *testin
 		t.Fatal("result.Error = nil, want visual artifact error")
 	}
 	if result.Result.Error.Code != CodeToolExecutionFailed {
-		t.Fatalf("result error code = %q, want %q", result.Result.Error.Code, CodeToolExecutionFailed)
+		t.Fatalf("result.Error.Code = %q, want %q", result.Result.Error.Code, CodeToolExecutionFailed)
 	}
 	if result.Result.Output != result.Result.Error.Message {
 		t.Fatalf("Output must equal Error.Message, got %q vs %q", result.Result.Output, result.Result.Error.Message)

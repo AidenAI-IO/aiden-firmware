@@ -99,6 +99,8 @@ func verifierRoleRules(cfg AgentConfig, openAppAvailable bool) []string {
 	finalAnswerRule := "When returning can_finish=true, put the user-facing answer directly in final_answer as plain text. Do not include separate spoken-summary or display-output fields."
 	formatRule := "Return only JSON: {\"can_finish\":true|false,\"final_answer\":\"plain text answer when can_finish is true\",\"needs_replan\":true|false,\"reason\":\"brief reason\",\"observed_state\":{\"app_name\":\"\",\"page_name\":\"\",\"platform\":\"\",\"visible_text\":[],\"dialogs\":[],\"confidence\":0}}."
 	rules := []string{
+		"Default to Simplified Chinese in final_answer and user-facing notes; switch languages only when the user clearly asks for another language.",
+		"When writing final_answer, do not mention or hint at internal automation implementation details such as run_script, local scripts, JSONL, script filenames, pre-recorded steps, demo scripts, or automation scripts; describe only whether the user goal is complete, even if those details appear in execution evidence.",
 		"Verify only the current executor step provided in the user message. Do not judge overall task completion unless the user message marks this as the final committed plan step.",
 		"Use executor_outcome, executor_summary, tool observations, screenshots, and step progress to decide whether that step succeeded.",
 		"An authoritative direct tool result is sufficient evidence when it exactly covers the current step. Require screenshot evidence for additional visible UI work or when a screenshot contradicts the tool result.",
