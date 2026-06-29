@@ -41,7 +41,7 @@ func playPromptSound(ctx context.Context, audio *AudioServiceClient, kind prompt
 		Channels:   promptSoundChannels,
 		BitWidth:   promptSoundBitWidth,
 	}
-	playback, err := audio.StartPlayback(format)
+	playback, err := audio.startPlaybackOnce(format)
 	if err != nil && ctx.Err() == nil && retryablePromptStartPlaybackError(err) {
 		timer := time.NewTimer(promptSoundRetryDelay)
 		select {
@@ -81,12 +81,6 @@ func playPromptSound(ctx context.Context, audio *AudioServiceClient, kind prompt
 	stopPlayback = false
 	return nil
 }
-
-func retryablePromptStartPlaybackError(err error) bool {
-	var statusErr *audioStatusError
-	return errors.As(err, &statusErr) && statusErr.op == "start_playback" && statusErr.status == "SERVICE_RECOVERING"
-}
-
 func waitPromptPlayback(ctx context.Context, audio *AudioServiceClient) error {
 	waitCtx, cancel := context.WithTimeout(ctx, promptSoundDrainTimeout)
 	defer cancel()
@@ -103,6 +97,11 @@ func waitPromptPlayback(ctx context.Context, audio *AudioServiceClient) error {
 	case <-timer.C:
 		return nil
 	}
+}
+
+func retryablePromptStartPlaybackError(err error) bool {
+	var statusErr *audioStatusError
+	return errors.As(err, &statusErr) && statusErr.op == "start_playback" && statusErr.status == "SERVICE_RECOVERING"
 }
 
 func promptSoundPCM(kind promptSoundKind) []byte {

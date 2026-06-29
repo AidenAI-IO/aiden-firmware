@@ -24,6 +24,10 @@ type EnvironmentBridgeConfig struct {
 	BenchmarkTaskID string   `toml:"-"` // Only set via CLI, not config file
 }
 
+type BenchmarkConfig struct {
+	Token string `toml:"-"` // Only set via benchmark runner CLI flags, never from config file
+}
+
 const (
 	searchProviderDuckDuckGo = "duckduckgo"
 	searchProviderTavily     = "tavily"
@@ -125,6 +129,7 @@ type Config struct {
 	Log                        LogConfig               `toml:"log,omitempty"`
 	Search                     SearchConfig            `toml:"search,omitempty"`
 	EnvironmentBridge          EnvironmentBridgeConfig `toml:"-"` // Only set via CLI flags, never from config file
+	Benchmark                  BenchmarkConfig         `toml:"-"` // Only set via CLI flags, never from config file
 	LiveActivity               LiveActivityConfig      `toml:"live_activity,omitempty"`
 	Instruction                string                  `toml:"custom_instruction,omitempty"`
 	AdditionalPrompt           string                  `toml:"additional_prompt,omitempty"`
@@ -179,7 +184,6 @@ type LiveActivityConfig struct {
 	RelayURL       string `toml:"relay_url,omitempty"`
 	RelayAPIKey    string `toml:"relay_api_key,omitempty"`
 	BoardID        string `toml:"board_id,omitempty"`
-	PhoneID        string `toml:"phone_id,omitempty"`
 	BundleID       string `toml:"bundle_id,omitempty"`
 	Topic          string `toml:"topic,omitempty"`
 	Environment    string `toml:"environment,omitempty"`
@@ -235,6 +239,7 @@ type STTConfig struct {
 	Model           string `toml:"model,omitempty"`
 	BaseURL         string `toml:"base_url,omitempty"`
 	Language        string `toml:"language,omitempty"` // "zh" (Chinese) or "en" (English)
+	AppID           string `toml:"app_id,omitempty"`
 	SecretID        string `toml:"secret_id,omitempty"`
 	SecretKey       string `toml:"secret_key,omitempty"`
 	Region          string `toml:"region,omitempty"`

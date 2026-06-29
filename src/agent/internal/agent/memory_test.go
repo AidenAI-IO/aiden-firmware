@@ -2492,7 +2492,7 @@ func TestRecallSessionChunksToolReturnsStructuredFieldInJSONOutput(t *testing.T)
 	}
 
 	// Call the tool
-	tool := NewRecallSessionChunksTool(session)
+	tool := NewRecallSessionChunksTool(session, nil)
 	output, err := tool.Call(ctx, `{"chunk_ids":["chunk_tool_test","chunk_old_format"]}`)
 	if err != nil {
 		t.Fatalf("tool.Call() error = %v", err)

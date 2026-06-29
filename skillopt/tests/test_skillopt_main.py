@@ -20,11 +20,9 @@ class FakeDeviceBackend:
         pass
 
 
-class FakeMobileGymBackend:
-    def __init__(self, *, benchmark_root: Path, shared_skills_dir: Path, parallel: int):
-        self.benchmark_root = benchmark_root
-        self.shared_skills_dir = shared_skills_dir
-        self.parallel = parallel
+class FakeBenchmarkRunnerBackend:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
 
     def close(self):
         pass
@@ -57,6 +55,16 @@ def test_resolve_skill_path_prefers_env_skills_dir(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("AIDEN_SKILLS_DIR", str(env_root))
 
     assert main._resolve_skill_path("device-operator") == env_skill
+
+
+def test_json_for_script_escapes_unicode_line_separators():
+    rendered = main._json_for_script({"text": "a\u2028b\u2029c</script>"})
+
+    assert "\u2028" not in rendered
+    assert "\u2029" not in rendered
+    assert "\\u2028" in rendered
+    assert "\\u2029" in rendered
+    assert "<\\/script>" in rendered
 
 
 def _write_suite(path: Path, name: str, task_ids: list[str]) -> None:
@@ -190,6 +198,261 @@ def test_cli_writes_run_artifacts_for_web_report(monkeypatch, tmp_path: Path):
     assert "SkillOpt Report" in (run_dir / "report.html").read_text(encoding="utf-8")
 
 
+def test_cli_returns_zero_when_optimization_completes_without_improvement(monkeypatch, tmp_path: Path):
+    skill_path = tmp_path / "src" / "agent" / "config" / "skills" / "device-operator" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("original skill\n", encoding="utf-8")
+    _write_device_operator_suites(tmp_path)
+    artifact_root = tmp_path / "skillopt" / "runs"
+
+    def fake_optimize_skill(cfg):
+        return OptimizationResult(
+            skill_name=cfg.skill_name,
+            initial_score=1.0,
+            best_score=1.0,
+            best_skill="original skill\n",
+        )
+
+    _set_roots(monkeypatch, tmp_path)
+    monkeypatch.setattr(main, "optimize_skill", fake_optimize_skill)
+    monkeypatch.setattr(main, "AidenDeviceBackend", FakeDeviceBackend, raising=False)
+
+    rc = main.cli([
+        "--backend", "device",
+        "--skill", "device-operator",
+        "--train-suite", TRAIN_LABEL,
+        "--validation-suite", VERIFICATION_LABEL,
+        "--artifact-root", str(artifact_root),
+        "--run-id", "skillopt-no-improvement",
+        "--output", str(artifact_root / "skillopt-no-improvement" / "best_skill.md"),
+    ])
+
+    assert rc == 0
+    assert (artifact_root / "skillopt-no-improvement" / "best_skill.md").read_text(encoding="utf-8") == "original skill\n"
+
+
+def test_cli_prints_clear_iteration_and_edit_limits(monkeypatch, tmp_path: Path, capsys):
+    skill_path = tmp_path / "src" / "agent" / "config" / "skills" / "device-operator" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("original skill\n", encoding="utf-8")
+    _write_device_operator_suites(tmp_path)
+
+    def fake_optimize_skill(cfg):
+        return OptimizationResult(
+            skill_name=cfg.skill_name,
+            initial_score=1.0,
+            best_score=1.0,
+            best_skill="original skill\n",
+        )
+
+    _set_roots(monkeypatch, tmp_path)
+    monkeypatch.setattr(main, "optimize_skill", fake_optimize_skill)
+    monkeypatch.setattr(main, "AidenDeviceBackend", FakeDeviceBackend, raising=False)
+
+    rc = main.cli([
+        "--backend", "device",
+        "--skill", "device-operator",
+        "--train-suite", TRAIN_LABEL,
+        "--validation-suite", VERIFICATION_LABEL,
+        "--budget", "5",
+        "--edit-budget", "3",
+        "--output", str(tmp_path / "best_skill.md"),
+    ])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Max iterations: 5" in out
+    assert "Max edits / iteration: 3" in out
+    assert "Budget:" not in out
+    assert "edits/step" not in out
+
+
+def test_cli_writes_failure_report_when_optimization_raises(monkeypatch, tmp_path: Path):
+    skill_path = tmp_path / "src" / "agent" / "config" / "skills" / "device-operator" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("original skill\n", encoding="utf-8")
+    _write_device_operator_suites(tmp_path)
+    artifact_root = tmp_path / "skillopt" / "runs"
+
+    def fake_optimize_skill(cfg):
+        run_dir = cfg.artifact_root / cfg.run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "best_skill.md").write_text("best accepted skill\n", encoding="utf-8")
+        step_dir = run_dir / "step_01"
+        step_dir.mkdir(parents=True)
+        (step_dir / "decision.json").write_text(json.dumps({
+            "accepted": False,
+            "reason": "candidate hard 0.250 not better than current 0.500",
+            "candidate_score": 0.25,
+            "current_score": 0.50,
+        }), encoding="utf-8")
+        (step_dir / "patch.json").write_text(json.dumps({
+            "reasoning": "optimizer found a retry loop",
+            "edits": [
+                {
+                    "op": "append",
+                    "content": "Retry failed actions with changed parameters.",
+                    "support_count": 2,
+                    "source_type": "failure",
+                }
+            ],
+        }), encoding="utf-8")
+        (step_dir / "patch_reports.json").write_text(json.dumps([
+            {"op": "append", "status": "applied_append", "index": 1}
+        ]), encoding="utf-8")
+        phase_dir = cfg.artifact_root / cfg.run_id / "phases"
+        phase_dir.mkdir(parents=True)
+        (phase_dir / "step_01_train.json").write_text(json.dumps({
+            "schema": "skillopt.phase.v1",
+            "phase": "step_01_train",
+            "kind": "train",
+            "suite_name": "device_operator_train",
+            "status": "failed",
+            "counts": {"total": 1, "queued": 0, "passed": 0, "failed": 0, "skipped": 1, "error": 1},
+            "tasks": [
+                {
+                    "id": "train_one",
+                    "category": "single_step",
+                    "status": "skipped",
+                    "turns": 0,
+                    "reason": "setup endpoint failed",
+                    "raw_report": "benchmark/raw/report.html",
+                }
+            ],
+            "error": "environment setup failed",
+            "raw_report": "benchmark/raw/report.html",
+        }), encoding="utf-8")
+        raise RuntimeError("environment setup failed for 1/1 task results")
+
+    _set_roots(monkeypatch, tmp_path)
+    monkeypatch.setattr(main, "optimize_skill", fake_optimize_skill)
+    monkeypatch.setattr(main, "AidenDeviceBackend", FakeDeviceBackend, raising=False)
+
+    rc = main.cli([
+        "--backend", "device",
+        "--skill", "device-operator",
+        "--train-suite", TRAIN_LABEL,
+        "--validation-suite", VERIFICATION_LABEL,
+        "--artifact-root", str(artifact_root),
+        "--run-id", "skillopt-failed-run",
+        "--output", str(artifact_root / "skillopt-failed-run" / "best_skill.md"),
+    ])
+
+    run_dir = artifact_root / "skillopt-failed-run"
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    result = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
+    report = (run_dir / "report.html").read_text(encoding="utf-8")
+    assert rc == 1
+    assert manifest["status"] == "failed"
+    assert manifest["artifacts"]["best_skill"] == "best_skill.md"
+    assert manifest["artifacts"]["diff"] == "diff.patch"
+    assert "environment setup failed for 1/1" in manifest["error"]
+    assert result["error"] == manifest["error"]
+    assert "SkillOpt Report" in report
+    assert "best_skill.md" in report
+    assert "diff.patch" in report
+    assert "Diff" in report
+    assert len(result["steps"]) == 1
+    assert result["steps"][0]["step"] == 1
+    assert result["steps"][0]["reason"] == "candidate hard 0.250 not better than current 0.500"
+    assert "candidate hard 0.250 not better than current 0.500" in report
+    assert "View edits" in report
+    assert 'data-edit-step="1"' in report
+    assert "optimizer found a retry loop" in report
+    assert "Retry failed actions with changed parameters." in report
+    assert "Run failed before final edit summary" not in report
+    assert "drawer-backdrop" in report
+    assert "function openArtifactDrawer" in report
+    assert "environment setup failed" in report
+    assert "Task Records" not in report
+    assert "train_one" not in report
+
+
+def test_failure_report_uses_same_report_shell_as_success_report():
+    manifest = {
+        "run_id": "skillopt-failed-run",
+        "skill": "device-operator",
+        "train_suite": TRAIN_LABEL,
+        "validation_suite": VERIFICATION_LABEL,
+        "error": "environment setup failed",
+        "phase_records": [],
+        "artifacts": {"result": "result.json"},
+    }
+
+    report = main._render_failure_report_html(
+        manifest,
+        original_skill="original skill\n",
+        diff_text="-old\n+new\n",
+    )
+
+    assert "This is the SkillOpt-owned optimization timeline" in report
+    assert report.count("<h2>SkillOpt Phases</h2>") == 1
+    assert "<h2>Scores</h2>" not in report
+    assert "<h2>Steps</h2>" in report
+    assert "<h2>Edits</h2>" in report
+    assert "<strong>Status:</strong> failed" in report
+    assert "<strong>Initial score:</strong> 0.000 <strong>Best score:</strong> 0.000" in report
+    assert "<strong>Stop reason:</strong> environment setup failed" in report
+    assert ".detail-btn{" in report
+    assert ".edit-summary{" in report
+    assert "@media (max-width:768px)" in report
+    assert "h1{font-size:24px" in report
+
+
+def test_failure_partial_result_reconstructs_scores_from_phase_records(tmp_path: Path):
+    cfg = main.OptimizationConfig(
+        skill_name="device-operator",
+        skill_path=tmp_path / "SKILL.md",
+        suite=object(),
+        train_tasks=[],
+        selection_tasks=[],
+        artifact_root=tmp_path / "runs",
+        run_id="skillopt-failed-with-scores",
+        optimizer_cfg=main.OptimizerConfig(),
+    )
+    run_dir = cfg.artifact_root / cfg.run_id
+    phases_dir = run_dir / "phases"
+    phases_dir.mkdir(parents=True)
+    (phases_dir / "baseline_selection.json").write_text(json.dumps({
+        "schema": "skillopt.phase.v1",
+        "phase": "baseline_selection",
+        "kind": "verification",
+        "suite_name": "device_operator_verification",
+        "status": "completed",
+        "counts": {"total": 6, "passed": 2, "failed": 1, "error": 3},
+        "tasks": [],
+        "score": {"hard": 1 / 3, "soft": 0.389, "n": 6, "n_passed": 2},
+    }), encoding="utf-8")
+    (phases_dir / "step_01_selection.json").write_text(json.dumps({
+        "schema": "skillopt.phase.v1",
+        "phase": "step_01_selection",
+        "kind": "verification",
+        "suite_name": "device_operator_verification",
+        "status": "completed",
+        "counts": {"total": 6, "passed": 3, "failed": 0, "error": 3},
+        "tasks": [],
+        "score": {"hard": 0.5, "soft": 0.5, "n": 6, "n_passed": 3},
+    }), encoding="utf-8")
+
+    result = main._failure_partial_result(cfg, run_dir, "original skill\n", "environment setup failed")
+    report = main._render_failure_report_html(
+        {
+            "skill": "device-operator",
+            "train_suite": TRAIN_LABEL,
+            "validation_suite": VERIFICATION_LABEL,
+            "error": "environment setup failed",
+            "phase_records": main.load_phase_records(run_dir),
+            "artifacts": {"result": "result.json"},
+        },
+        original_skill="original skill\n",
+        result=result,
+    )
+
+    assert result.initial_score == pytest.approx(1 / 3)
+    assert result.best_score == pytest.approx(0.5)
+    assert "<strong>Initial score:</strong> 0.333 <strong>Best score:</strong> 0.500" in report
+
+
 def test_cli_writes_aggregated_skillopt_summary_report(monkeypatch, tmp_path: Path):
     skill_path = tmp_path / "src" / "agent" / "config" / "skills" / "device-operator" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
@@ -249,6 +512,9 @@ def test_cli_writes_aggregated_skillopt_summary_report(monkeypatch, tmp_path: Pa
         run_id="skillopt-summary-run",
         optimizer_cfg=main.OptimizerConfig(),
     )
+    child_report = artifact_root / "skillopt-summary-run" / "benchmark" / "skillopt-summary-run-step_01_train" / "report.html"
+    child_report.parent.mkdir(parents=True)
+    child_report.write_text("<html>child benchmark report</html>", encoding="utf-8")
 
     main._write_web_artifacts(
         cfg=cfg,
@@ -267,19 +533,24 @@ def test_cli_writes_aggregated_skillopt_summary_report(monkeypatch, tmp_path: Pa
     assert manifest["score_summary"]["baseline_verification"]["hard"] == 0.50
     assert manifest["score_summary"]["latest_train"]["hard"] == 0.25
     assert manifest["score_summary"]["best_verification"]["hard"] == 0.75
-    assert manifest["linked_reports"]["step_01_train"] == "/benchmark/report/skillopt-summary-run-step_01_train"
+    assert manifest["linked_reports"]["step_01_train"] == "benchmark/skillopt-summary-run-step_01_train/report.html"
 
     report = (run_dir / "report.html").read_text(encoding="utf-8")
-    assert "Scores" in report
+    assert report.count("<h2>SkillOpt Phases</h2>") == 1
+    assert "<h2>Scores</h2>" not in report
     assert "baseline_selection" in report
     assert "step_01_train" in report
     assert "0.25" in report
     assert "0.75" in report
     assert "failure analyst found missing launch guidance" in report
     assert "Second line should wrap cleanly" in report
-    assert "pre.skillopt-reasoning" in report
-    assert "white-space:pre-wrap" in report
-    assert '<pre class="skillopt-reasoning">' in report
+    assert "View edits" in report
+    assert 'data-edit-step="1"' in report
+    assert "editDetailData" in report
+    assert "function openEditDrawer" in report
+    assert "pre.skillopt-reasoning" not in report
+    assert '<pre class="skillopt-reasoning">' not in report
+    assert '<pre class="skillopt-edits">' not in report
     assert "new rule" in report
     assert "best_skill.md" in report
     assert "diff.patch" in report
@@ -291,20 +562,23 @@ def test_cli_writes_aggregated_skillopt_summary_report(monkeypatch, tmp_path: Pa
     assert 'drawer-backdrop' in report
     assert 'class="drawer"' in report
     assert "function openArtifactDrawer" in report
-    assert "/benchmark/report/skillopt-summary-run-step_01_train" in report
+    assert "benchmark/skillopt-summary-run-step_01_train/report.html" in report
 
 
 def test_web_report_shows_raw_mobilegym_and_skillopt_scores_for_no_edit_run(tmp_path: Path):
     artifact_root = tmp_path / "skillopt" / "runs"
     run_id = "skillopt-no-edit-run"
-    raw_dir = tmp_path / "skillopt" / "mobilegym" / f"{run_id}-step_01_train"
+    raw_dir = artifact_root / run_id / "benchmark" / f"{run_id}-step_01_train"
     raw_dir.mkdir(parents=True)
-    (raw_dir / "summary.json").write_text(json.dumps({
-        "tasks": 12,
-        "passed": 11,
-        "failed": 0,
-        "error": 1,
-        "pass_rate": 11 / 12,
+    (raw_dir / "manifest.json").write_text(json.dumps({
+        "totals": {
+            "tasks": 12,
+            "passed": 11,
+            "failed": 0,
+            "skipped": 0,
+            "judge_error": 1,
+            "timeout": 0,
+        }
     }), encoding="utf-8")
     cfg = main.OptimizationConfig(
         skill_name="device-operator",
@@ -354,17 +628,184 @@ def test_web_report_shows_raw_mobilegym_and_skillopt_scores_for_no_edit_run(tmp_
         "pass_rate": 11 / 12,
     }
     report = (run_dir / "report.html").read_text(encoding="utf-8")
-    assert "MobileGym result" in report
-    assert "Optimization score" in report
+    assert "MobileGym result" not in report
+    assert "Optimization score" not in report
     assert "11/12" in report
     assert "10/12" in report
-    assert "Task pass rate" in report
-    assert "Rubric pass rate" in report
+    assert "Task pass rate" not in report
+    assert "Rubric pass rate" not in report
     assert "Hard" not in report
     assert "Soft" not in report
     assert "Step 1" in report
     assert "stopped before candidate verification" in report
     assert "aggregate produced 0 edits after dedup" in report
+
+
+def test_web_report_keeps_task_records_out_of_summary_html(tmp_path: Path):
+    artifact_root = tmp_path / "skillopt" / "runs"
+    run_id = "skillopt-phase-report"
+    run_dir = artifact_root / run_id
+    (run_dir / "phases").mkdir(parents=True)
+    (run_dir / "phases" / "baseline_selection.json").write_text(json.dumps({
+        "schema": "skillopt.phase.v1",
+        "phase": "baseline_selection",
+        "kind": "verification",
+        "suite_name": "device_operator_verification",
+        "status": "completed",
+        "counts": {"total": 2, "passed": 1, "failed": 1, "error": 0},
+        "tasks": [
+            {"id": "open_settings", "category": "single_step", "status": "passed", "hard": 1, "soft": 1.0, "turns": 2, "reason": ""},
+            {"id": "tap_wifi", "category": "single_step", "status": "failed", "hard": 0, "soft": 0.0, "turns": 0, "reason": "No tool calls.", "raw_report": "benchmark/raw/report.html"},
+        ],
+    }), encoding="utf-8")
+    cfg = main.OptimizationConfig(
+        skill_name="device-operator",
+        skill_path=tmp_path / "SKILL.md",
+        suite=object(),
+        train_tasks=[object()] * 2,
+        selection_tasks=[object()] * 2,
+        artifact_root=artifact_root,
+        run_id=run_id,
+        optimizer_cfg=main.OptimizerConfig(),
+    )
+    result = OptimizationResult(
+        skill_name="device-operator",
+        initial_score=0.5,
+        best_score=0.5,
+        best_skill="best skill\n",
+        phase_summaries=[
+            PhaseSummary(
+                phase="baseline_selection",
+                kind="verification",
+                suite_name="device_operator_verification",
+                score=ScoreSummary(hard=0.5, soft=0.5, n=2, n_passed=1),
+            )
+        ],
+        stop_reason="step 1: no patches produced by reflect",
+    )
+
+    main._write_web_artifacts(
+        cfg=cfg,
+        result=result,
+        original_skill="best skill\n",
+        diff_text="",
+        optimizer_model="optimizer",
+        judge_model="judge",
+        train_suite_label=TRAIN_LABEL,
+        selection_suite_label=VERIFICATION_LABEL,
+        backend="mobilegym",
+    )
+
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["phase_records"][0]["tasks"][1]["id"] == "tap_wifi"
+    report = (run_dir / "report.html").read_text(encoding="utf-8")
+    assert "SkillOpt Phases" in report
+    assert "Task Records" not in report
+    assert "Tool calls" not in report
+    assert ">Turns<" not in report
+    assert "tap_wifi" not in report
+    assert "No tool calls." not in report
+    assert "benchmark/raw/report.html" in report
+    assert ">report</a>" in report
+    assert "raw evidence" not in report
+
+
+def test_web_report_uses_child_benchmark_totals_for_bridge_device_backend(tmp_path: Path):
+    artifact_root = tmp_path / "skillopt" / "runs"
+    run_id = "skillopt-device-bridge-run"
+    raw_dir = artifact_root / run_id / "benchmark" / f"{run_id}-baseline_selection"
+    raw_dir.mkdir(parents=True)
+    (raw_dir / "manifest.json").write_text(json.dumps({
+        "totals": {
+            "tasks": 4,
+            "passed": 3,
+            "failed": 1,
+            "skipped": 0,
+            "judge_error": 0,
+            "timeout": 0,
+        }
+    }), encoding="utf-8")
+    cfg = main.OptimizationConfig(
+        skill_name="device-operator",
+        skill_path=tmp_path / "SKILL.md",
+        suite=object(),
+        train_tasks=[object()] * 4,
+        selection_tasks=[object()] * 4,
+        artifact_root=artifact_root,
+        run_id=run_id,
+        optimizer_cfg=main.OptimizerConfig(),
+    )
+    result = OptimizationResult(
+        skill_name="device-operator",
+        initial_score=0.75,
+        best_score=0.75,
+        best_skill="best skill\n",
+        phase_summaries=[
+            PhaseSummary(
+                phase="baseline_selection",
+                kind="verification",
+                suite_name="device_operator_verification",
+                score=ScoreSummary(hard=0.75, soft=0.75, n=4, n_passed=3),
+            )
+        ],
+    )
+
+    main._write_web_artifacts(
+        cfg=cfg,
+        result=result,
+        original_skill="best skill\n",
+        diff_text="",
+        optimizer_model="optimizer",
+        judge_model="judge",
+        train_suite_label=TRAIN_LABEL,
+        selection_suite_label=VERIFICATION_LABEL,
+        backend="device",
+    )
+
+    manifest = json.loads((artifact_root / run_id / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["raw_score_summary"]["baseline_selection"] == {
+        "passed": 3,
+        "tasks": 4,
+        "failed": 1,
+        "error": 0,
+        "pass_rate": 0.75,
+    }
+
+
+def test_web_report_renders_diff_with_structured_line_classes():
+    result = OptimizationResult(
+        skill_name="device-operator",
+        initial_score=0.0,
+        best_score=1.0,
+        best_skill="new <rule>\ncontext\n",
+    )
+    diff_text = "\n".join([
+        "--- original",
+        "+++ best_skill",
+        "@@ -1,2 +1,2 @@",
+        "-old <rule>",
+        "+new <rule>",
+        " context",
+        "",
+    ])
+
+    report = main._render_report_html(
+        manifest={"skill": "device-operator", "train_suite": "train", "validation_suite": "verify"},
+        result=result,
+        original_skill="old <rule>\ncontext\n",
+        diff_text=diff_text,
+    )
+
+    assert 'class="diff-viewer"' in report
+    assert 'class="diff-line diff-file"' in report
+    assert 'class="diff-line diff-hunk"' in report
+    assert 'class="diff-line diff-del"' in report
+    assert 'class="diff-line diff-add"' in report
+    assert 'class="diff-line diff-context"' in report
+    assert '<span class="diff-old">1</span>' in report
+    assert '<span class="diff-new">1</span>' in report
+    assert '+new &lt;rule&gt;' in report
+    assert '-old &lt;rule&gt;' in report
 
 
 def test_cli_dry_run_does_not_write_output_or_web_artifacts(monkeypatch, tmp_path: Path):
@@ -517,23 +958,218 @@ def test_cli_rejects_invalid_backend():
         ])
 
 
-def test_cli_rejects_mobilegym_backend(monkeypatch, tmp_path: Path, capsys):
+def test_cli_uses_benchmark_runner_backend_for_mobilegym(monkeypatch, tmp_path: Path):
     skill_path = tmp_path / "src" / "agent" / "config" / "skills" / "device-operator" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text("skill", encoding="utf-8")
     _write_device_operator_suites(tmp_path)
+    captured = {}
+
+    def fake_optimize_skill(cfg):
+        captured["backend"] = cfg.rollout_backend
+        return OptimizationResult(
+            skill_name=cfg.skill_name,
+            initial_score=0.0,
+            best_score=1.0,
+            best_skill="optimized skill",
+        )
 
     _set_roots(monkeypatch, tmp_path)
+    monkeypatch.setattr(main, "optimize_skill", fake_optimize_skill)
+    monkeypatch.setattr(main, "BenchmarkRunnerBackend", FakeBenchmarkRunnerBackend, raising=False)
 
-    with pytest.raises(SystemExit):
-        main.cli([
-            "--backend", "mobilegym",
-            "--mobilegym-parallel", "3",
-            "--skill", "device-operator",
-            "--train-suite", TRAIN_LABEL,
-            "--validation-suite", VERIFICATION_LABEL,
-        ])
-    assert "mobilegym backend is not available" in capsys.readouterr().err
+    rc = main.cli([
+        "--backend", "mobilegym",
+        "--environment-url", "http://127.0.0.1:50196",
+        "--mobilegym-parallel", "3",
+        "--skill", "device-operator",
+        "--train-suite", TRAIN_LABEL,
+        "--validation-suite", VERIFICATION_LABEL,
+    ])
+
+    assert rc == 0
+    backend = captured["backend"]
+    assert isinstance(backend, FakeBenchmarkRunnerBackend)
+    assert backend.kwargs["environment_url"] == "http://127.0.0.1:50196"
+    assert backend.kwargs["backend"] == "mobilegym"
+    assert backend.kwargs["base_config_dir"] == tmp_path / "benchmark" / "mobilegym" / "config"
+
+
+def test_cli_passes_agent_config_to_optimizer(monkeypatch, tmp_path: Path):
+    skill_path = tmp_path / "src" / "agent" / "config" / "skills" / "device-operator" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("skill", encoding="utf-8")
+    _write_device_operator_suites(tmp_path)
+    agent_config = tmp_path / "agent.toml"
+    agent_config.write_text('[model]\napi_key = "sk-test"\n', encoding="utf-8")
+    captured = {}
+
+    def fake_optimize_skill(cfg):
+        captured["agent_config_path"] = cfg.optimizer_cfg.agent_config_path
+        return OptimizationResult(
+            skill_name=cfg.skill_name,
+            initial_score=0.0,
+            best_score=1.0,
+            best_skill="optimized skill",
+        )
+
+    _set_roots(monkeypatch, tmp_path)
+    monkeypatch.setattr(main, "optimize_skill", fake_optimize_skill)
+    monkeypatch.setattr(main, "BenchmarkRunnerBackend", FakeBenchmarkRunnerBackend, raising=False)
+
+    rc = main.cli([
+        "--backend", "mobilegym",
+        "--environment-url", "http://127.0.0.1:50196",
+        "--agent-config", str(agent_config),
+        "--skill", "device-operator",
+        "--train-suite", TRAIN_LABEL,
+        "--validation-suite", VERIFICATION_LABEL,
+    ])
+
+    assert rc == 0
+    assert captured["agent_config_path"] == str(agent_config)
+
+
+def test_cli_uses_agent_config_model_when_optimizer_and_judge_unspecified(monkeypatch, tmp_path: Path):
+    skill_path = tmp_path / "src" / "agent" / "config" / "skills" / "device-operator" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("skill", encoding="utf-8")
+    _write_device_operator_suites(tmp_path)
+    agent_config = tmp_path / "agent.toml"
+    agent_config.write_text('[model]\nmodel = "openrouter/agent-model"\napi_key = "sk-test"\n', encoding="utf-8")
+    captured = {}
+
+    def fake_optimize_skill(cfg):
+        captured["optimizer_model"] = cfg.optimizer_cfg.model
+        captured["judge_model"] = cfg.judge_cfg.model
+        return OptimizationResult(
+            skill_name=cfg.skill_name,
+            initial_score=0.0,
+            best_score=1.0,
+            best_skill="optimized skill",
+        )
+
+    _set_roots(monkeypatch, tmp_path)
+    monkeypatch.setattr(main, "optimize_skill", fake_optimize_skill)
+    monkeypatch.setattr(main, "BenchmarkRunnerBackend", FakeBenchmarkRunnerBackend, raising=False)
+
+    rc = main.cli([
+        "--backend", "mobilegym",
+        "--environment-url", "http://127.0.0.1:50196",
+        "--agent-config", str(agent_config),
+        "--skill", "device-operator",
+        "--train-suite", TRAIN_LABEL,
+        "--validation-suite", VERIFICATION_LABEL,
+    ])
+
+    assert rc == 0
+    assert captured == {
+        "optimizer_model": "openrouter/agent-model",
+        "judge_model": "openrouter/agent-model",
+    }
+
+
+def test_cli_uses_device_base_config_by_default_with_bridge(monkeypatch, tmp_path: Path):
+    skill_path = tmp_path / "src" / "agent" / "config" / "skills" / "device-operator" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("skill", encoding="utf-8")
+    _write_device_operator_suites(tmp_path)
+    captured = {}
+
+    def fake_optimize_skill(cfg):
+        captured["backend"] = cfg.rollout_backend
+        return OptimizationResult(
+            skill_name=cfg.skill_name,
+            initial_score=0.0,
+            best_score=1.0,
+            best_skill="optimized skill",
+        )
+
+    _set_roots(monkeypatch, tmp_path)
+    monkeypatch.setattr(main, "optimize_skill", fake_optimize_skill)
+    monkeypatch.setattr(main, "BenchmarkRunnerBackend", FakeBenchmarkRunnerBackend, raising=False)
+
+    rc = main.cli([
+        "--backend", "device",
+        "--environment-url", "http://127.0.0.1:50196",
+        "--skill", "device-operator",
+        "--train-suite", TRAIN_LABEL,
+        "--validation-suite", VERIFICATION_LABEL,
+    ])
+
+    assert rc == 0
+    backend = captured["backend"]
+    assert isinstance(backend, FakeBenchmarkRunnerBackend)
+    assert backend.kwargs["backend"] == "device"
+    assert backend.kwargs["base_config_dir"] == tmp_path / "benchmark" / "config"
+
+
+def test_cli_honors_explicit_base_config_for_mobilegym(monkeypatch, tmp_path: Path):
+    skill_path = tmp_path / "src" / "agent" / "config" / "skills" / "device-operator" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("skill", encoding="utf-8")
+    _write_device_operator_suites(tmp_path)
+    custom_config = tmp_path / "custom-config"
+    captured = {}
+
+    def fake_optimize_skill(cfg):
+        captured["backend"] = cfg.rollout_backend
+        return OptimizationResult(
+            skill_name=cfg.skill_name,
+            initial_score=0.0,
+            best_score=1.0,
+            best_skill="optimized skill",
+        )
+
+    _set_roots(monkeypatch, tmp_path)
+    monkeypatch.setattr(main, "optimize_skill", fake_optimize_skill)
+    monkeypatch.setattr(main, "BenchmarkRunnerBackend", FakeBenchmarkRunnerBackend, raising=False)
+
+    rc = main.cli([
+        "--backend", "mobilegym",
+        "--environment-url", "http://127.0.0.1:50196",
+        "--base-config-dir", str(custom_config),
+        "--skill", "device-operator",
+        "--train-suite", TRAIN_LABEL,
+        "--validation-suite", VERIFICATION_LABEL,
+    ])
+
+    assert rc == 0
+    backend = captured["backend"]
+    assert backend.kwargs["base_config_dir"] == custom_config
+
+
+def test_cli_requires_environment_url_for_mobilegym(monkeypatch, tmp_path: Path, capsys):
+    skill_path = tmp_path / "src" / "agent" / "config" / "skills" / "device-operator" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("skill", encoding="utf-8")
+    _write_device_operator_suites(tmp_path)
+    _set_roots(monkeypatch, tmp_path)
+
+    rc = main.cli([
+        "--backend", "mobilegym",
+        "--skill", "device-operator",
+        "--train-suite", TRAIN_LABEL,
+        "--validation-suite", VERIFICATION_LABEL,
+    ])
+
+    assert rc == 2
+    assert "--backend mobilegym requires --environment-url" in capsys.readouterr().err
+
+
+def test_cli_dispatches_webui_subcommand(monkeypatch):
+    called = {}
+
+    def fake_webui_cli(argv):
+        called["argv"] = argv
+        return 0
+
+    monkeypatch.setattr(main, "webui_cli", fake_webui_cli, raising=False)
+
+    rc = main.cli(["webui", "--port", "8766"])
+
+    assert rc == 0
+    assert called["argv"] == ["--port", "8766"]
 
 
 def test_resolve_skill_path_prefers_shared_skill_over_mobilegym_template(monkeypatch, tmp_path: Path):

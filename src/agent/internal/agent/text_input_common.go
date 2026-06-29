@@ -10,20 +10,36 @@ import (
 
 type textInputMode string
 
+type textInputInteractionMode string
+
 const (
 	textInputModeASCII       textInputMode = "ascii"
 	textInputModeComposition textInputMode = "composition"
 	textInputModeUnknown     textInputMode = "unknown"
 
-	textInputKeystrokeGap         = 60 * time.Millisecond
-	textInputFocusRestoreDelay    = 250 * time.Millisecond
-	textInputIMESwitchSettleDelay = time.Second
+	textInputModeForm   textInputInteractionMode = "form"
+	textInputModeSearch textInputInteractionMode = "search"
+
+	textInputKeystrokeGap           = 60 * time.Millisecond
+	textInputFocusRestoreDelay      = 250 * time.Millisecond
+	textInputIMESwitchSettleDelay   = time.Second
 	textInputClearBackspaceRepeats  = 32
 	textInputClearBackspaceFallback = 16
 	textInputMaxAttempts            = 3
-	textInputCandidatePageMax      = 5
-	textInputCandidatePageDelay    = 300 * time.Millisecond
+	textInputCandidatePageMax       = 5
+	textInputCandidatePageDelay     = 300 * time.Millisecond
 )
+
+func normalizeTextInputInteractionMode(raw string) textInputInteractionMode {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", string(textInputModeForm):
+		return textInputModeForm
+	case string(textInputModeSearch):
+		return textInputModeSearch
+	default:
+		return textInputModeForm
+	}
+}
 
 func requiredTextInputMode(text string) textInputMode {
 	if needsCompositionInput(text) {
@@ -222,9 +238,6 @@ func interpretTextInputToolOutput(out string) error {
 	out = strings.TrimSpace(out)
 	if out == "" {
 		return fmt.Errorf("empty tool output")
-	}
-	if strings.HasPrefix(out, "error:") {
-		return fmt.Errorf("%s", out)
 	}
 	if strings.HasPrefix(out, "{") {
 		var payload struct {

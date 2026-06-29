@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -60,12 +61,16 @@ func TestBuiltinToolSetRegistersSystemTools(t *testing.T) {
 }
 
 func TestCurrentTimeToolRejectsUnknownTimezone(t *testing.T) {
-	out, err := NewCurrentTimeTool().Call(context.Background(), `{"timezone":"Mars/Base"}`)
+	ctx, _ := WithToolError(context.Background())
+	out, err := NewCurrentTimeTool().Call(ctx, `{"timezone":"Mars/Base"}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
-	if !strings.HasPrefix(out, "error:") {
-		t.Fatalf("output = %q, want error response", out)
+	if !strings.Contains(out, `unknown timezone "Mars/Base"`) {
+		t.Fatalf("output = %q, want timezone error message", out)
+	}
+	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeInvalidArguments || got.Message != out {
+		t.Fatalf("ToolError = %+v, want invalid_arguments with output message", got)
 	}
 }
 
@@ -174,6 +179,20 @@ func TestWeatherToolAcceptsCoordinatesWithoutGeocoding(t *testing.T) {
 	}
 	if !strings.Contains(out, `"timezone": "UTC"`) {
 		t.Fatalf("unexpected output: %s", out)
+	}
+}
+
+func TestWeatherToolPropagatesContextCancellation(t *testing.T) {
+	tool := &WeatherTool{
+		client:      http.DefaultClient,
+		forecastURL: "https://example.invalid/v1/forecast",
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := tool.Call(ctx, `{"latitude":1,"longitude":2,"location":"point"}`)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Call error = %v, want context.Canceled", err)
 	}
 }
 

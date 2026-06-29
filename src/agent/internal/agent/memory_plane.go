@@ -123,6 +123,13 @@ func NewFilesystemMemoryPlane(memoryDir string, extraction MemoryExtractionConfi
 	}
 }
 
+func (p *FilesystemMemoryPlane) LongTerm() *LongTermMemoryStore {
+	if p == nil {
+		return nil
+	}
+	return p.longTerm
+}
+
 func (p *FilesystemMemoryPlane) Retrieve(ctx context.Context, req MemoryRetrieveRequest) (MemoryContext, error) {
 	var out MemoryContext
 	if p == nil || p.memoryDir == "" {

@@ -335,6 +335,7 @@ void apply_kv(AgentToml& cfg,
         else if (key == "api_key") assign_string(&cfg.stt.api_key, raw, &sub_err);
         else if (key == "model") assign_string(&cfg.stt.model, raw, &sub_err);
         else if (key == "base_url") assign_string(&cfg.stt.base_url, raw, &sub_err);
+        else if (key == "app_id") assign_string(&cfg.stt.app_id, raw, &sub_err);
         else if (key == "secret_id") assign_string(&cfg.stt.secret_id, raw, &sub_err);
         else if (key == "secret_key") assign_string(&cfg.stt.secret_key, raw, &sub_err);
         else if (key == "region") assign_string(&cfg.stt.region, raw, &sub_err);
@@ -667,6 +668,7 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
     if (!cfg.stt.api_key.empty()) emit_string(out, "api_key", cfg.stt.api_key);
     if (!cfg.stt.model.empty()) emit_string(out, "model", cfg.stt.model);
     if (!cfg.stt.base_url.empty()) emit_string(out, "base_url", cfg.stt.base_url);
+    if (!cfg.stt.app_id.empty()) emit_string(out, "app_id", cfg.stt.app_id);
     if (!cfg.stt.secret_id.empty()) emit_string(out, "secret_id", cfg.stt.secret_id);
     if (!cfg.stt.secret_key.empty()) emit_string(out, "secret_key", cfg.stt.secret_key);
     if (!cfg.stt.region.empty()) emit_string(out, "region", cfg.stt.region);

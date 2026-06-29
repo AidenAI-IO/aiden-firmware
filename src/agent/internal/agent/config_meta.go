@@ -153,6 +153,8 @@ func ConfigMeta() ConfigMetadata {
 						VisibleWhen: all(in("stt.provider", "openai-whisper"))},
 					{Key: "base_url", Widget: WidgetText,
 						VisibleWhen: all(in("stt.provider", "openai-whisper"))},
+					{Key: "app_id", Widget: WidgetText, Default: "",
+						VisibleWhen: all(in("stt.provider", tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider))},
 					{Key: "secret_id", Widget: WidgetText, Secret: true,
 						VisibleWhen: all(in("stt.provider", tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider))},
 					{Key: "secret_key", Widget: WidgetText, Secret: true,
@@ -241,8 +243,6 @@ func ConfigMeta() ConfigMetadata {
 				Fields: []FieldMeta{
 					{Key: "enabled", Widget: WidgetBoolean, Default: true},
 					{Key: "board_id", Widget: WidgetText, Default: "default",
-						VisibleWhen: all(truthy("live_activity.enabled"))},
-					{Key: "phone_id", Widget: WidgetText,
 						VisibleWhen: all(truthy("live_activity.enabled"))},
 				},
 			},

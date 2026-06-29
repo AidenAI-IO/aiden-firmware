@@ -78,4 +78,6 @@ This documentation hub is the structured entry point for the project. The root `
 
 ### 10. SkillOpt
 
-- [SkillOpt Workflow](10-skillopt/README.md)
+- [SkillOpt Overview](10-skillopt/README.md)
+- [SkillOpt Quickstart](10-skillopt/quickstart.md)
+- [SkillOpt Architecture](10-skillopt/architecture.md)

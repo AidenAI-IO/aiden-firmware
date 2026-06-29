@@ -109,7 +109,7 @@ func TestResolveToolsIncludesPhoneBridgeToolsWhenDisconnected(t *testing.T) {
 
 	tools := runtime.resolveTools(ResolvedSkills{})
 	names := toolNamesFromTools(tools)
-	for _, want := range []string{"open_app", "enter_text_via_bridge"} {
+	for _, want := range []string{"open_app", "search_launch_app", "enter_text_via_bridge"} {
 		found := false
 		for _, name := range names {
 			if name == want {

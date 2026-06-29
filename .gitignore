@@ -61,3 +61,5 @@ benchmark/mobilegym/config/bridge_token
 
 # Docker
 benchmark/mobilegym/docker/.env
+benchmark/state.json
+skillopt/runs/

@@ -136,6 +136,17 @@ def test_invoke_tool_can_send_benchmark_task_id_header():
     assert seen["headers"]["benchmark-task-id"] == "suite.json:t1"
 
 
+def test_seed_memory_sends_benchmark_token_header():
+    seen = {}
+    client = AgentClient(base_url="http://test", benchmark_token="seed-token")
+    with patch("urllib.request.urlopen", _captured(seen, body={"status": "seeded", "id": "mem-1"})):
+        result = client.seed_memory({"id": "mem-1", "content": "remember this"})
+
+    assert seen["url"].endswith("/api/benchmark/seed_memory")
+    assert seen["headers"]["authorization"] == "Bearer seed-token"
+    assert result == {"status": "seeded", "id": "mem-1"}
+
+
 def test_health_returns_true_when_tools_endpoint_ok():
     seen = {}
     client = AgentClient(base_url="http://test")

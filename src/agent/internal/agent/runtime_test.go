@@ -1137,6 +1137,7 @@ func TestRuntimeRunResumeCorrectionUsesRootRequestAndCommittedPlan(t *testing.T)
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
 	)
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	_, err := runtime.Run(ctx, RunRequest{
 		Input:     rootRequest,
@@ -1942,6 +1943,59 @@ func firstRunEventOfType(events []RunEvent, eventType string) (RunEvent, bool) {
 	return RunEvent{}, false
 }
 
+func TestRuntimeCallbackPropagatesToolErrorToEventsAndMessages(t *testing.T) {
+	toolErr := NewToolErrorWithDetails(CodePermissionDenied, "contacts permission denied", map[string]any{"scope": "contacts"})
+	var gotRunEvent RunEvent
+	var gotSessionEvent SessionEvent
+	handler := &runtimeCallbackHandler{
+		episodeID: "ep-1",
+		runtimeID: "runtime-1",
+		requestID: "req-1",
+		runID:     "run-1",
+		eventHandler: func(event RunEvent) {
+			gotRunEvent = event
+		},
+		sessionEventAppender: func(ctx context.Context, event SessionEvent) error {
+			gotSessionEvent = event
+			return nil
+		},
+	}
+	call := ToolCall{
+		Spec: ToolSpec{Name: "contacts"},
+		Action: schema.AgentAction{
+			Tool:      "contacts",
+			ToolID:    "call-1",
+			ToolInput: `{"action":"query"}`,
+		},
+		Input: `{"action":"query"}`,
+	}
+
+	handler.HandleToolCallResult(context.Background(), call, ToolResult{Output: toolErr.Message, Error: toolErr})
+
+	if gotRunEvent.ToolError == nil || gotRunEvent.ToolError.Code != CodePermissionDenied {
+		t.Fatalf("RunEvent.ToolError = %+v, want permission_denied", gotRunEvent.ToolError)
+	}
+	if gotRunEvent.ToolError.Details["scope"] != "contacts" {
+		t.Fatalf("RunEvent.ToolError.Details = %+v, want scope=contacts", gotRunEvent.ToolError.Details)
+	}
+	if gotSessionEvent.ToolError == nil || gotSessionEvent.ToolError.Code != CodePermissionDenied {
+		t.Fatalf("SessionEvent.ToolError = %+v, want permission_denied", gotSessionEvent.ToolError)
+	}
+	if gotSessionEvent.ToolError.Details["scope"] != "contacts" {
+		t.Fatalf("SessionEvent.ToolError.Details = %+v, want scope=contacts", gotSessionEvent.ToolError.Details)
+	}
+	message := messageFromRunEvent(gotRunEvent, "", "req-1")
+	if message.ToolError == nil || message.ToolError.Code != CodePermissionDenied {
+		t.Fatalf("Message.ToolError = %+v, want permission_denied", message.ToolError)
+	}
+	if message.ToolError.Details["scope"] != "contacts" {
+		t.Fatalf("Message.ToolError.Details = %+v, want scope=contacts", message.ToolError.Details)
+	}
+	if gotRunEvent.Content != toolErr.Message || message.Content != toolErr.Message {
+		t.Fatalf("error message content mismatch: run=%q message=%q want=%q", gotRunEvent.Content, message.Content, toolErr.Message)
+	}
+}
+
 func runEventsOfType(events []RunEvent, eventType string) []RunEvent {
 	var matching []RunEvent
 	for _, event := range events {
@@ -2162,6 +2216,7 @@ func TestRuntimeRunRestoresPlannerToolCallsIntoNextRunPrompt(t *testing.T) {
 		}},
 		NewSkillIndex(),
 	)
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	if _, err := runtime.Run(context.Background(), RunRequest{Input: "call echo"}); err != nil {
 		t.Fatalf("first Run() error = %v", err)
@@ -2320,12 +2375,15 @@ func TestRuntimeRunFeedsToolErrorsBackToModel(t *testing.T) {
 			}
 		}
 	}
-	if !strings.Contains(toolObservation, "error: screenshot failed: frame service: SERVICE_RECOVERING") {
+	if !strings.Contains(toolObservation, "frame service: SERVICE_RECOVERING") || strings.Contains(toolObservation, "error:") {
 		t.Fatalf("unexpected tool observation: %q", toolObservation)
 	}
 	toolResult, ok := firstRunEventOfType(events, "tool_result")
 	if !ok || !toolResult.IsError {
 		t.Fatalf("expected error tool_result event, got %#v", events)
+	}
+	if toolResult.ToolError == nil || toolResult.ToolError.Code != CodeToolExecutionFailed || toolResult.ToolError.Message != toolObservation {
+		t.Fatalf("tool_result ToolError = %+v, want execution failure matching observation %q", toolResult.ToolError, toolObservation)
 	}
 }
 
@@ -4575,7 +4633,7 @@ func TestSessionRecallTelemetryIgnoresCompressedChunkWithPendingPrefix(t *testin
 
 	counter := &atomic.Int64{}
 	tool := &sessionRecallTelemetryTool{
-		inner:   NewRecallSessionChunksTool(session),
+		inner:   NewRecallSessionChunksTool(session, nil),
 		counter: counter,
 	}
 	output, err := tool.Call(ctx, `{"chunk_ids":["pending-consumed"]}`)
@@ -4823,6 +4881,7 @@ func TestRuntimeRunDoesNotDuplicateRuntimeContextAcrossTurns(t *testing.T) {
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
 	)
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	firstRuntimeContext := "RUNTIME_CTX_FIRST_MARKER"
 	if _, err := runtime.Run(context.Background(), RunRequest{

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -18,7 +19,6 @@ func TestPhoneBridgeHandlesEnvironmentEvent(t *testing.T) {
 
 	handled := bridge.handleAppEvent(BridgeCommandResponse{
 		ID:     "phone_environment",
-		OK:     true,
 		Method: "phone_environment",
 		Data: json.RawMessage(`{
 			"captured_at":"2026-06-01T02:03:05Z",
@@ -76,7 +76,6 @@ func TestPhoneBridgeHandlesAppStateEvent(t *testing.T) {
 
 	handled := bridge.handleAppEvent(BridgeCommandResponse{
 		ID:     "phone_app_state",
-		OK:     true,
 		Method: "phone_app_state",
 		Data:   json.RawMessage(`{"app_state":"background","reported_at":"2026-06-01T02:03:06Z","return_entry":"dynamic_island","return_entry_available":true}`),
 	})
@@ -99,5 +98,37 @@ func TestPhoneBridgeHandlesAppStateEvent(t *testing.T) {
 	}
 	if status.ReturnEntryAvailable == nil || !*status.ReturnEntryAvailable {
 		t.Fatalf("return_entry_available = %#v, want true", status.ReturnEntryAvailable)
+	}
+}
+
+func TestBridgeCommandResponseJSONRoundTripStructuredError(t *testing.T) {
+	orig := BridgeCommandResponse{
+		ID:    "cmd-1",
+		Error: NewToolError(CodeBridgeTimeout, "command timeout"),
+	}
+	data, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got BridgeCommandResponse
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Error == nil || got.Error.Code != CodeBridgeTimeout {
+		t.Errorf("Error not preserved: %+v", got.Error)
+	}
+	if got.Error.Category != CategoryTransient {
+		t.Errorf("Category not preserved: %+v", got.Error)
+	}
+}
+
+func TestBridgeCommandResponseSuccessOmitsError(t *testing.T) {
+	resp := BridgeCommandResponse{ID: "cmd-2", Data: json.RawMessage(`{}`)}
+	data, _ := json.Marshal(resp)
+	if got := string(data); strings.Contains(got, `"error"`) {
+		t.Errorf("success response must omit error field; got %s", got)
+	}
+	if resp.Error != nil {
+		t.Errorf("success response must have nil Error")
 	}
 }

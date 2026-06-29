@@ -19,8 +19,9 @@ const (
 )
 
 var (
-	recordingStartRetryTimeout  = 5 * time.Second
-	recordingStartRetryInterval = 250 * time.Millisecond
+	recordingStartRetryTimeout             = 5 * time.Second
+	recordingStartRetryInterval            = 250 * time.Millisecond
+	audioDialogStreamingSTTFinalizeTimeout = 2 * time.Second
 )
 
 // AudioDialog manages the audio conversation loop
@@ -33,6 +34,9 @@ type AudioDialog struct {
 	recordActive  bool
 	sessionID     uint64
 	recordReader  *AudioRecordChunkReader
+	recordSTTMu   sync.Mutex
+	recordSTT     *streamingSTTSession
+	recordText    string
 	speechMu      sync.Mutex
 	outputMu      sync.Mutex
 	activeOutputs map[*activeTTSOutput]struct{}
@@ -166,6 +170,15 @@ func (d *AudioDialog) StartRecording() error {
 		return nil
 	}
 
+	// Reset VAD up front so a failed helper aborts before any audio/STT
+	// resources are allocated. Otherwise a successful start_recording plus
+	// streaming STT session would leak when the VAD helper has crashed.
+	if d.vad != nil {
+		if err := d.vad.Reset(); err != nil {
+			return fmt.Errorf("reset vad: %w", err)
+		}
+	}
+
 	log.Println("[audio] Opening record session...")
 	format := AudioFormat{
 		SampleRate: uint32(d.config.Audio.SampleRateOrDefault()),
@@ -183,12 +196,19 @@ func (d *AudioDialog) StartRecording() error {
 	} else {
 		log.Printf("[audio] Persistent record reader unavailable, using per-request reads: %v\n", err)
 	}
-	d.recordActive = true
-	if d.vad != nil {
-		if err := d.vad.Reset(); err != nil {
-			log.Printf("[vad] reset failed: %v\n", err)
-		}
+	d.recordText = ""
+	recordSTT, err := beginStreamingSTTSession(context.Background(), d.sttClient, STTStreamConfig{
+		SampleRate: d.config.Audio.SampleRateOrDefault(),
+		Channels:   d.config.Audio.ChannelsOrDefault(),
+		BitWidth:   d.config.Audio.BitWidthOrDefault(),
+	})
+	if err != nil {
+		log.Printf("[stt] streaming upload unavailable, falling back to one-shot STT: %v\n", err)
+	} else if recordSTT != nil {
+		log.Println("[stt] streaming upload enabled for realtime transcription")
+		d.setRecordSTT(recordSTT)
 	}
+	d.recordActive = true
 	// Open the mic before the cue tone so speech right after Enter is captured.
 	d.playPromptSoundAsync(promptSoundRecordingStart, "recording")
 	return nil
@@ -240,6 +260,12 @@ func (d *AudioDialog) StopRecording() error {
 
 	sessionID := d.sessionID
 	reader := d.recordReader
+	recordSTT := d.takeRecordSTT()
+	if recordSTT != nil {
+		defer func() {
+			_ = recordSTT.Close()
+		}()
+	}
 	d.recordActive = false
 	d.sessionID = 0
 	d.recordReader = nil
@@ -250,6 +276,14 @@ func (d *AudioDialog) StopRecording() error {
 
 	if err := d.audioClient.StopRecording(sessionID); err != nil {
 		return fmt.Errorf("stop recording: %w", err)
+	}
+	if recordSTT != nil {
+		transcript, err := recordSTT.FinalizeWithTimeout(audioDialogStreamingSTTFinalizeTimeout)
+		if err != nil {
+			log.Printf("[stt] finalize streaming transcript failed, falling back to one-shot STT: %v\n", err)
+		} else {
+			d.recordText = transcript
+		}
 	}
 
 	log.Println("[audio] Record session closed")
@@ -268,13 +302,73 @@ func (d *AudioDialog) ReadRecordChunk(timeoutMs uint32) (*AudioChunkResult, erro
 	if d.recordReader != nil {
 		chunk, err := d.recordReader.Read(timeoutMs)
 		if err == nil {
+			d.uploadRecordChunkToStreamingSTT(chunk)
 			return chunk, nil
 		}
 		log.Printf("[audio] Persistent record reader failed, falling back to per-request reads: %v\n", err)
 		_ = d.recordReader.Close()
 		d.recordReader = nil
 	}
-	return d.audioClient.ReadRecordChunk(d.sessionID, timeoutMs)
+	chunk, err := d.audioClient.ReadRecordChunk(d.sessionID, timeoutMs)
+	if err == nil {
+		d.uploadRecordChunkToStreamingSTT(chunk)
+	}
+	return chunk, err
+}
+
+func (d *AudioDialog) uploadRecordChunkToStreamingSTT(chunk *AudioChunkResult) {
+	if d == nil || chunk == nil || len(chunk.PCM) == 0 {
+		return
+	}
+	recordSTT := d.currentRecordSTT()
+	if recordSTT == nil {
+		return
+	}
+	if err := recordSTT.UploadPCM(chunk.PCM); err != nil {
+		log.Printf("[stt] streaming upload failed, falling back to one-shot STT: %v\n", err)
+		// Only clear if this is still the active session; StopRecording may have
+		// already swapped it out from another goroutine.
+		if d.clearRecordSTT(recordSTT) {
+			_ = recordSTT.Close()
+		}
+	}
+}
+
+// setRecordSTT installs the active streaming STT session.
+func (d *AudioDialog) setRecordSTT(session *streamingSTTSession) {
+	d.recordSTTMu.Lock()
+	d.recordSTT = session
+	d.recordSTTMu.Unlock()
+}
+
+// currentRecordSTT returns the active streaming STT session, if any.
+func (d *AudioDialog) currentRecordSTT() *streamingSTTSession {
+	d.recordSTTMu.Lock()
+	defer d.recordSTTMu.Unlock()
+	return d.recordSTT
+}
+
+// takeRecordSTT clears and returns the active streaming STT session, giving the
+// caller sole ownership so it can be closed without racing other goroutines.
+func (d *AudioDialog) takeRecordSTT() *streamingSTTSession {
+	d.recordSTTMu.Lock()
+	defer d.recordSTTMu.Unlock()
+	session := d.recordSTT
+	d.recordSTT = nil
+	return session
+}
+
+// clearRecordSTT clears the active session only if it still matches the given
+// one, returning whether the caller now owns it. This prevents clobbering a
+// session started concurrently by a new recording.
+func (d *AudioDialog) clearRecordSTT(session *streamingSTTSession) bool {
+	d.recordSTTMu.Lock()
+	defer d.recordSTTMu.Unlock()
+	if d.recordSTT != session {
+		return false
+	}
+	d.recordSTT = nil
+	return true
 }
 
 // ProcessVADFrame processes an audio frame through VAD.
@@ -541,7 +635,7 @@ func (d *AudioDialog) PrepareTurnInput(utterance []int16) (TurnInput, error) {
 	wavData := pcm16MonoToWAV(utterance, d.config.Audio.SampleRateOrDefault())
 	log.Printf("[debug] WAV size: %d bytes\n", len(wavData))
 
-	audioInput, err := PrepareAudioInput(d.config.InputModeOrDefault(), d.sttClient, wavData, "", nil)
+	audioInput, err := PrepareAudioInput(d.config.InputModeOrDefault(), d.sttClient, wavData, d.consumeRecordingTranscript(), "", nil)
 	if err != nil {
 		return TurnInput{}, err
 	}
@@ -550,6 +644,15 @@ func (d *AudioDialog) PrepareTurnInput(utterance []int16) (TurnInput, error) {
 		log.Printf("[stt] Transcript: %s\n", audioInput.Transcript)
 	}
 	return audioInput, nil
+}
+
+func (d *AudioDialog) consumeRecordingTranscript() string {
+	if d == nil {
+		return ""
+	}
+	transcript := strings.TrimSpace(d.recordText)
+	d.recordText = ""
+	return transcript
 }
 
 func (d *AudioDialog) ensureVoiceInputAudioArtifact(input TurnInput, utterance []int16, wavData []byte) TurnInput {
@@ -813,6 +916,9 @@ func (d *AudioDialog) HandleRunEvent(ctx context.Context, event RunEvent) {
 		return
 	}
 	if event.Type != runEventToolCall || !d.config.VoiceToolCallSpeechOrDefault() || event.ToolName == toolWaitForWakeup {
+		return
+	}
+	if !shouldSpeakToolCallContent(event.ToolName, event.Content) {
 		return
 	}
 	// Tool-call speech is only explicit LLM-generated event content.
