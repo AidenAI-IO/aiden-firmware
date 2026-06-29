@@ -118,6 +118,7 @@ def test_get_tools_catalog(bridge_server):
     assert enter_text_props["platform"]["enum"] == ["ios", "android", "mac"]
     assert enter_text_props["mode"]["enum"] == ["form", "search"]
     assert enter_text_props["focus"]["additionalProperties"] is False
+    assert enter_text_props["focus"]["properties"]["coord_space"]["enum"] == ["auto", "normalized", "absolute"]
 
     mouse_click_props = tools["mouse_click"]["args_schema"]["properties"]
     assert tools["mouse_click"]["args_schema"]["additionalProperties"] is False
@@ -368,6 +369,30 @@ def test_invoke_enter_text_via_bridge_aliases_mobilegym_text_entry(bridge_server
     assert action_to_dict(state.env.last_action) == {
         "action_type": "TYPE",
         "data": {"value": "Trip report", "point": [250.0, 800.0]},
+    }
+
+
+def test_invoke_enter_text_preserves_exact_whitespace(bridge_server):
+    server, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-enter-text-whitespace"
+
+    req = Request(
+        f"{base_url}/api/tools/enter_text_in_field",
+        data=json.dumps({"input": {"text": "  padded  ", "focus": {"x": 500, "y": 120}}}).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+
+    assert data["is_error"] is False
+    output = json.loads(data["output"])
+    assert output["target_text"] == "  padded  "
+    assert action_to_dict(state.env.last_action) == {
+        "action_type": "TYPE",
+        "data": {"value": "  padded  ", "point": [500.0, 120.0]},
     }
 
 

@@ -33,15 +33,18 @@ def _lint_failed_attempt_thresholds(skill_text: str) -> list[SkillLintIssue]:
     if not section:
         return []
     normalized = " ".join(section.lower().split())
+    two = r"(?:2|two)"
+    three = r"(?:3|three)"
+    total = r"(?:\s+total)?"
     stops_at_two = re.search(
-        r"after\s+2\s+total\s+failed\s+attempts\s+on\s+the\s+same\s+goal,?\s+stop\s+and\s+report",
+        rf"after\s+{two}{total}\s+failed\s+attempts{total}\s+on\s+the\s+same\s+goal,?\s+stop\s+and\s+report",
         normalized,
     )
     continues_after_two = re.search(
-        r"after\s+2\s+failed\s+attempts\s+on\s+the\s+same\s+goal,?\s+(choose|change)",
+        rf"after\s+{two}{total}\s+failed\s+attempts{total}\s+on\s+the\s+same\s+goal,?\s+(choose|change)",
         normalized,
     )
-    escalates_after_three = re.search(r"after\s+3\s+failed\s+attempts\s+total", normalized)
+    escalates_after_three = re.search(rf"after\s+{three}{total}\s+failed\s+attempts{total}", normalized)
     if stops_at_two and (continues_after_two or escalates_after_three):
         return [
             SkillLintIssue(

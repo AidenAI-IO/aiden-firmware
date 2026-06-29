@@ -30,6 +30,7 @@ class HardAssertions:
     response_required: bool = True
     required_tools: list[str] = dc.field(default_factory=list)
     forbidden_tools: list[str] = dc.field(default_factory=list)
+    prohibited_actions: list[str] = dc.field(default_factory=list)
 
 @dc.dataclass
 class TaskSpec:
@@ -103,6 +104,7 @@ def load_suite(path: Path) -> Suite:
             raise SuiteValidationError(f"task {tid}: hard_assertions values must be non-negative")
         required_tools = _string_list_assertion(ha.get("required_tools", []), tid, "required_tools")
         forbidden_tools = _string_list_assertion(ha.get("forbidden_tools", []), tid, "forbidden_tools")
+        prohibited_actions = _string_list_assertion(ha.get("prohibited_actions", []), tid, "prohibited_actions")
         overlap = sorted(set(required_tools) & set(forbidden_tools))
         if overlap:
             raise SuiteValidationError(
@@ -115,6 +117,7 @@ def load_suite(path: Path) -> Suite:
             response_required=rr,
             required_tools=required_tools,
             forbidden_tools=forbidden_tools,
+            prohibited_actions=prohibited_actions,
         )
         # Validate and bound repeats
         try:

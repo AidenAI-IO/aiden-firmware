@@ -285,6 +285,9 @@ def _cmd_run_auto_agent_setup(
     if args.repeats is not None and args.repeats <= 0:
         print(f"Error: --repeats must be positive, got {args.repeats}", file=sys.stderr)
         return 2
+    if args.max_concurrency < 0:
+        print("Error: max-concurrency must be non-negative", file=sys.stderr)
+        return 2
 
     from runner.webui import (
         Job,
@@ -307,9 +310,6 @@ def _cmd_run_auto_agent_setup(
     ensure_daemon_image(args.daemon_image, not args.no_build_daemon_image, setup_log)
 
     concurrency = read_environment_bridge_concurrency(args.environment_url) or 1
-    if args.max_concurrency < 0:
-        print("Error: max-concurrency must be non-negative", file=sys.stderr)
-        return 2
     if args.max_concurrency > 0:
         concurrency = min(concurrency, args.max_concurrency)
     docker_environment_url = endpoint_for_docker(args.environment_url.rstrip("/"))

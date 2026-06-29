@@ -87,7 +87,7 @@ class ToolsAPIHandler:
             "properties": {
                 "x": {"type": "number"},
                 "y": {"type": "number"},
-                "coord_space": {"type": "string", "enum": ["auto", "pixel", "normalized", "absolute"]},
+                "coord_space": {"type": "string", "enum": ["auto", "normalized", "absolute"]},
             },
             "required": ["x", "y"],
             "description": "Input field coordinates. Prefer normalized 0-1000 coordinates.",
@@ -701,7 +701,6 @@ class ToolsAPIHandler:
         text = tool_input.get("text", "")
         if not isinstance(text, str):
             return {"output": "error: text must be a string", "is_error": True}
-        text = text.strip()
         if text == "":
             output = {
                 "ok": False,

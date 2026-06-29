@@ -34,3 +34,17 @@ After a failed attempt:
 """
 
     assert lint_skill_text(skill) == []
+
+
+def test_lint_detects_conflicting_failed_attempt_thresholds_with_worded_numbers():
+    skill = """
+## Failed Attempt Handling
+
+1. After two failed attempts on the same goal, stop and report the blocker.
+2. After two failed attempts on the same goal, change strategy.
+3. After three total failed attempts on the same goal, ask the user for help.
+"""
+
+    issues = lint_skill_text(skill)
+
+    assert [issue.code for issue in issues] == ["conflicting_failed_attempt_thresholds"]

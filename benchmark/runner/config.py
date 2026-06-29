@@ -123,13 +123,6 @@ def apply_agent_toml_runtime_defaults(content: str) -> str:
     """Add safe benchmark runtime defaults missing from older saved configs."""
     if not content.strip():
         return content
-    present = {
-        match.group(1)
-        for match in re.finditer(r"(?m)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=", content)
-    }
-    missing = [key for key in VOICE_SIDE_EFFECT_DEFAULTS if key not in present]
-    if not missing:
-        return content
 
     lines = content.splitlines()
     insert_at = len(lines)
@@ -137,6 +130,18 @@ def apply_agent_toml_runtime_defaults(content: str) -> str:
         if line.lstrip().startswith("["):
             insert_at = index
             break
+
+    preamble = "\n".join(lines[:insert_at])
+    present = {
+        match.group("quoted") or match.group("bare")
+        for match in re.finditer(
+            r'(?m)^\s*(?:"(?P<quoted>[^"]+)"|(?P<bare>[A-Za-z_][A-Za-z0-9_]*))\s*=',
+            preamble,
+        )
+    }
+    missing = [key for key in VOICE_SIDE_EFFECT_DEFAULTS if key not in present]
+    if not missing:
+        return content
 
     insert_lines = [f"{key} = false" for key in missing]
     if insert_at < len(lines):

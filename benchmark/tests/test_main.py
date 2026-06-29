@@ -430,6 +430,54 @@ def test_auto_agent_setup_caps_environment_concurrency(monkeypatch, tmp_path):
     assert manifest["concurrency"] == 2
 
 
+def test_auto_agent_setup_rejects_negative_max_concurrency_before_setup(monkeypatch, tmp_path, capsys):
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "name": "mobile_suite",
+                "tasks": [
+                    {
+                        "id": "task_1",
+                        "category": "diagnostic",
+                        "prompt": "open",
+                        "description_for_judge": "open",
+                        "rubric": [{"id": "done", "check": "done"}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fail_if_setup_runs(*args, **kwargs):
+        raise AssertionError("daemon setup should not run for invalid max-concurrency")
+
+    monkeypatch.setattr(webui, "ensure_daemon_image", fail_if_setup_runs)
+    monkeypatch.setattr(webui, "read_environment_bridge_concurrency", fail_if_setup_runs)
+
+    rc = main.cli(
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--out",
+            str(tmp_path / "runs"),
+            "--run-id",
+            "bad-concurrency-run",
+            "--environment-url",
+            "http://127.0.0.1:19090",
+            "--auto-agent-setup",
+            "--max-concurrency",
+            "-1",
+            "--no-judge",
+        ]
+    )
+
+    assert rc == 2
+    assert "max-concurrency must be non-negative" in capsys.readouterr().err
+
+
 def test_run_releases_environment_route_per_non_auto_attempt(monkeypatch, tmp_path):
     suite_path = tmp_path / "suite.json"
     suite_path.write_text(

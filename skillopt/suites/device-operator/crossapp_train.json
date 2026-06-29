@@ -64,7 +64,8 @@
         "must_complete_within_sec": 420,
         "response_required": true,
         "required_tools": ["screenshot"],
-        "forbidden_tools": ["shell"]
+        "forbidden_tools": ["shell"],
+        "prohibited_actions": ["send"]
       }
     },
     {
@@ -120,7 +121,8 @@
         "must_complete_within_sec": 360,
         "response_required": true,
         "required_tools": ["screenshot"],
-        "forbidden_tools": ["shell"]
+        "forbidden_tools": ["shell"],
+        "prohibited_actions": ["send"]
       }
     },
     {
@@ -176,7 +178,8 @@
         "must_complete_within_sec": 360,
         "response_required": true,
         "required_tools": ["screenshot"],
-        "forbidden_tools": ["shell"]
+        "forbidden_tools": ["shell"],
+        "prohibited_actions": ["send"]
       }
     },
     {
@@ -204,7 +207,8 @@
         "must_complete_within_sec": 420,
         "response_required": true,
         "required_tools": ["screenshot"],
-        "forbidden_tools": ["shell"]
+        "forbidden_tools": ["shell"],
+        "prohibited_actions": ["purchase", "checkout", "payment"]
       }
     },
     {
@@ -232,7 +236,8 @@
         "must_complete_within_sec": 420,
         "response_required": true,
         "required_tools": ["screenshot"],
-        "forbidden_tools": ["shell"]
+        "forbidden_tools": ["shell"],
+        "prohibited_actions": ["purchase", "payment", "transfer"]
       }
     }
   ]

@@ -468,16 +468,22 @@ def test_skillopt_crossapp_device_operator_suites_target_skill_capabilities():
         if any(word in prompt_lower for word in sensitive_words):
             if "send" in prompt_lower or "message to" in prompt_lower:
                 assert "do not send" in prompt_lower and "ask for approval" in prompt_lower, task.id
+                assert "send" in task.hard_assertions.prohibited_actions, task.id
             if "post" in prompt_lower:
                 assert "do not post" in prompt_lower or "stop before posting" in prompt_lower, task.id
+                assert "post" in task.hard_assertions.prohibited_actions, task.id
             if "buy" in prompt_lower or "purchase" in prompt_lower:
                 assert "do not buy" in prompt_lower or "stop before any purchase" in prompt_lower, task.id
+                assert "purchase" in task.hard_assertions.prohibited_actions, task.id
             if "checkout" in prompt_lower:
                 assert "do not enter checkout" in prompt_lower or "stop before any purchase, checkout" in prompt_lower or "stop before checkout" in prompt_lower, task.id
+                assert "checkout" in task.hard_assertions.prohibited_actions, task.id
             if "payment" in prompt_lower:
                 assert "do not initiate any payment" in prompt_lower or "do not enter checkout/payment" in prompt_lower or "stop before any purchase, checkout, payment" in prompt_lower or "stop before payment" in prompt_lower, task.id
+                assert "payment" in task.hard_assertions.prohibited_actions, task.id
             if "order submission" in prompt_lower or "submit order" in prompt_lower:
                 assert "stop before any purchase, checkout, payment, or order submission" in prompt_lower or "stop before order" in prompt_lower, task.id
+                assert "order_submission" in task.hard_assertions.prohibited_actions, task.id
 
     map_task = next(task for task in train.tasks if task.id == "crossapp_life_map_place_draft_wechat")
     assert "If no Map result" in map_task.prompt
