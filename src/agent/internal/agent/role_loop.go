@@ -250,6 +250,7 @@ func (s *roleLoopState) applyCommittedPlan(decision plannerDecision) {
 		s.CompletionCriteria = uniqueNonEmpty(decision.CompletionCriteria)
 	}
 	s.Plan = append([]string{}, decision.Plan...)
+	s.PlanArtifacts = initialPlanArtifactStates(decision.Artifacts)
 	s.PlanStepIndex = 0
 	s.PlanCommitted = true
 	s.PlanExhausted = false
@@ -264,6 +265,7 @@ func (s *roleLoopState) clearCommittedPlan() {
 	s.Objective = ""
 	s.CompletionCriteria = nil
 	s.Plan = nil
+	s.PlanArtifacts = nil
 	s.NextStep = ""
 	s.PlanStepIndex = 0
 	s.PlanCommitted = false
@@ -285,6 +287,9 @@ func (s *roleLoopState) applyDraftPlan(decision plannerDecision) {
 	if len(decision.Plan) > 0 {
 		s.Plan = append([]string{}, decision.Plan...)
 	}
+	if len(decision.Artifacts) > 0 {
+		s.PlanArtifacts = initialPlanArtifactStates(decision.Artifacts)
+	}
 	if next := strings.TrimSpace(decision.NextStep); next != "" {
 		s.NextStep = next
 	}
@@ -302,19 +307,28 @@ func parseCommitPlanInput(raw string) (plannerDecision, error) {
 		Objective          string          `json:"objective"`
 		CompletionCriteria json.RawMessage `json:"completion_criteria"`
 		Plan               json.RawMessage `json:"plan"`
+		Artifacts          json.RawMessage `json:"artifacts"`
 		Reason             string          `json:"reason"`
 	}
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 		return plannerDecision{}, fmt.Errorf("commit_plan payload must be valid JSON: %w", err)
 	}
+	artifacts, err := parsePlanArtifacts(payload.Artifacts)
+	if err != nil {
+		return plannerDecision{}, err
+	}
 	decision := plannerDecision{
 		Objective:          strings.TrimSpace(payload.Objective),
 		CompletionCriteria: parseStructuredStringList(payload.CompletionCriteria),
 		Plan:               parseStructuredStringList(payload.Plan),
+		Artifacts:          artifacts,
 		Reason:             strings.TrimSpace(payload.Reason),
 	}
 	if len(decision.Plan) == 0 {
 		return plannerDecision{}, fmt.Errorf("commit_plan requires a non-empty plan")
+	}
+	if err := validatePlanArtifacts(decision.Artifacts, len(decision.Plan)); err != nil {
+		return plannerDecision{}, err
 	}
 	if decision.Objective == "" {
 		decision.Objective = decision.Plan[0]
@@ -325,158 +339,11 @@ func parseCommitPlanInput(raw string) (plannerDecision, error) {
 	return decision, nil
 }
 
-func validateCommittedPlanPolicy(decision plannerDecision, world worldState) error {
-	if !planRequiresAidenForegroundBatching(world) {
-		return nil
-	}
-	if reason := phoneBridgeBatchingPlanIssue(decision); reason != "" {
-		return fmt.Errorf("phone app phase ordering violation: %s", reason)
+func validateCommittedPlanPolicy(decision plannerDecision, _ worldState) error {
+	if err := validateCommittedPlanArtifactContracts(decision); err != nil {
+		return fmt.Errorf("phone app planning policy violation: %w", err)
 	}
 	return nil
-}
-
-func planRequiresAidenForegroundBatching(world worldState) bool {
-	platform := worldStatePlatform(world)
-	return platform == "" || platform == "ios"
-}
-
-func worldStatePlatform(world worldState) string {
-	if world.DeviceEnvironment != nil {
-		if platform, err := normalizeQuickActionPlatform(world.DeviceEnvironment.Platform); err == nil {
-			return platform
-		}
-	}
-	if world.Observation != nil {
-		if platform, err := normalizeQuickActionPlatform(world.Observation.Platform); err == nil {
-			return platform
-		}
-	}
-	return ""
-}
-
-func phoneBridgeBatchingPlanIssue(decision plannerDecision) string {
-	allText := strings.Join(append(append([]string{decision.Objective}, decision.CompletionCriteria...), decision.Plan...), "\n")
-	if !planMentionsContactsLookup(allText) || !planMentionsMessagingTarget(allText) || !planMentionsPhoneMessage(allText) {
-		return ""
-	}
-	targetStep, targetPos := firstPlanStepPosition(decision.Plan, planTargetAppNavigationPosition)
-	if targetStep < 0 {
-		return ""
-	}
-	clipboardStep, clipboardPos := firstPlanStepPosition(decision.Plan, planClipboardPreparationPosition)
-	if clipboardStep < 0 || planPositionAfter(clipboardStep, clipboardPos, targetStep, targetPos) {
-		return "iOS/unknown-platform phone messaging plans that combine Contacts lookup with WeChat must batch Aiden app-side work before target-app navigation: first query Contacts, compose the final message, and write clipboard while Aiden is foreground; only then open/search WeChat and use current-app paste/send/verify. Move clipboard preparation before the target-app step."
-	}
-	return ""
-}
-
-func firstPlanStepPosition(steps []string, positionFn func(string) int) (int, int) {
-	for i, step := range steps {
-		if pos := positionFn(step); pos >= 0 {
-			return i, pos
-		}
-	}
-	return -1, -1
-}
-
-func planPositionAfter(step, pos, otherStep, otherPos int) bool {
-	if step != otherStep {
-		return step > otherStep
-	}
-	return pos > otherPos
-}
-
-func planMentionsContactsLookup(text string) bool {
-	text = strings.ToLower(strings.TrimSpace(text))
-	if text == "" || !containsAny(text, "通讯录", "联系人", "contacts", "address book", "phonebook") {
-		return false
-	}
-	return containsAny(text,
-		"查", "查询", "查找", "找", "获取", "电话", "手机号", "号码",
-		"query", "lookup", "look up", "search", "find", "get", "phone", "number",
-	)
-}
-
-func planMentionsMessagingTarget(text string) bool {
-	text = strings.ToLower(strings.TrimSpace(text))
-	return containsAny(text, "微信", "wechat")
-}
-
-func planMentionsPhoneMessage(text string) bool {
-	text = strings.ToLower(strings.TrimSpace(text))
-	return containsAny(text,
-		"消息", "发微信", "发消息", "发送", "问问", "聊天", "电话号", "电话号码", "手机号", "号码",
-		"message", "send", "ask", "chat", "phone number", "phone", "number",
-	)
-}
-
-func planTargetAppNavigationPosition(step string) int {
-	step = strings.ToLower(strings.TrimSpace(step))
-	if step == "" || !containsAny(step, "微信", "wechat") {
-		return -1
-	}
-	actionPos := firstIndexAny(step,
-		"打开", "启动", "进入", "切到", "切换", "搜索", "查找", "找到", "定位", "聊天",
-		"open", "launch", "switch", "navigate", "search", "find", "locate", "chat",
-	)
-	if actionPos < 0 {
-		return -1
-	}
-	appPos := firstIndexAny(step, "微信", "wechat")
-	if appPos < 0 {
-		return -1
-	}
-	if actionPos < appPos {
-		return actionPos
-	}
-	return appPos
-}
-
-func planClipboardPreparationPosition(step string) int {
-	step = strings.ToLower(strings.TrimSpace(step))
-	if step == "" {
-		return -1
-	}
-	clipPos := firstIndexAny(step, "剪切板", "剪贴板", "clipboard")
-	if clipPos < 0 {
-		return -1
-	}
-	if containsAny(step, "粘贴", "paste") && !containsAny(step,
-		"写", "写入", "准备", "预置", "设置", "放入", "存入", "复制到",
-		"write", "prepare", "prepared", "stage", "set", "copy to",
-	) {
-		return -1
-	}
-	prepPos := firstIndexAny(step,
-		"写入", "写", "准备", "预置", "设置", "放入", "存入", "复制到",
-		"write", "prepare", "prepared", "stage", "set", "copy to",
-	)
-	if prepPos < 0 {
-		return -1
-	}
-	if prepPos < clipPos {
-		return prepPos
-	}
-	return clipPos
-}
-
-func containsAny(text string, needles ...string) bool {
-	for _, needle := range needles {
-		if strings.Contains(text, needle) {
-			return true
-		}
-	}
-	return false
-}
-
-func firstIndexAny(text string, needles ...string) int {
-	first := -1
-	for _, needle := range needles {
-		if idx := strings.Index(text, needle); idx >= 0 && (first < 0 || idx < first) {
-			first = idx
-		}
-	}
-	return first
 }
 
 func parseStructuredStringList(raw json.RawMessage) []string {

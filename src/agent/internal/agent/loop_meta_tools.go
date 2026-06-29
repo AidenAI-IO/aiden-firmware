@@ -55,11 +55,12 @@ func loopMetaTools() []langtools.Tool {
 		},
 		&loopMetaTool{
 			name:        toolCommitPlan,
-			description: "Commit the draft plan and switch to delegated execution. Use coarse steps because each step may use multiple tool calls; do not create one plan step per small calculation. Input JSON: {\"objective\":\"task\",\"completion_criteria\":[\"criterion\"],\"plan\":[\"step\"],\"reason\":\"brief rationale\"}.",
+			description: "Commit the draft plan and switch to delegated execution. Use coarse steps because each step may use multiple tool calls; do not create one plan step per small calculation. Declare artifacts for clipboard writes or other data products that later steps must consume.",
 			schema: objectArgsSchema(map[string]any{
 				"objective":           stringArgSchema("Task objective."),
 				"completion_criteria": stringArrayArgSchema("Concrete criteria required before the task is complete."),
 				"plan":                stringArrayArgSchema("Ordered execution steps."),
+				"artifacts":           planArtifactsArgSchema(),
 				"reason":              stringArgSchema("Brief rationale for the committed plan."),
 			}, "plan"),
 		},
@@ -69,6 +70,29 @@ func loopMetaTools() []langtools.Tool {
 			schema: objectArgsSchema(map[string]any{
 				"reason": stringArgSchema("Why planning is cancelled."),
 			}),
+		},
+	}
+}
+
+func planArtifactsArgSchema() map[string]any {
+	return map[string]any{
+		"type":        "array",
+		"description": "Structured data products that executor steps must prepare and consume. Use target_text/clipboard when a later target-app text entry must use text composed from earlier gathered data.",
+		"items": map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"id":            stringArgSchema("Stable artifact id used by later tool calls as artifact_id."),
+				"kind":          stringEnumArgSchema("Artifact kind.", planArtifactKindTargetText, planArtifactKindClipboardPayload),
+				"delivery":      stringEnumArgSchema("How the artifact is delivered to the target app.", planArtifactDeliveryClipboard),
+				"prepare_step":  minIntegerArgSchema("1-based plan step that prepares this artifact.", 1),
+				"consume_step":  minIntegerArgSchema("1-based plan step that consumes this artifact.", 1),
+				"text_template": stringArgSchema("Template for the target text; use {{source}} placeholders for data gathered during preparation."),
+				"source_refs":   stringArrayArgSchema("Structured source references needed to fill the template."),
+				"target_app":    stringArgSchema("Target app that will consume this artifact."),
+				"target_label":  stringArgSchema("Target chat/contact/field label that will consume this artifact."),
+			},
+			"required": []string{"id", "kind", "delivery", "prepare_step", "consume_step", "text_template"},
 		},
 	}
 }

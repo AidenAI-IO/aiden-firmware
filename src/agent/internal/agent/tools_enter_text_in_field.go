@@ -40,6 +40,7 @@ func (t *EnterTextInFieldTool) Description() string {
 func (t *EnterTextInFieldTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
 		"text":         stringArgSchema("Exact text that must appear in the field when done."),
+		"artifact_id":  stringArgSchema("Optional plan artifact id when this input consumes a prepared target_text artifact."),
 		"platform":     stringEnumArgSchema("Target platform.", "ios", "android", "mac"),
 		"mode":         stringEnumArgSchema("Interaction mode. Use \"search\" for quick handoff in search boxes; omit for normal form entry.", "form", "search"),
 		"focus":        focusPointArgSchema("Input field coordinates."),

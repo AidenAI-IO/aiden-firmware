@@ -50,6 +50,7 @@ type plannerDecision struct {
 	Objective          string             `json:"objective,omitempty"`
 	CompletionCriteria []string           `json:"completion_criteria,omitempty"`
 	Plan               []string           `json:"plan"`
+	Artifacts          []planArtifact     `json:"artifacts,omitempty"`
 	NextStep           string             `json:"next_step"`
 	Reason             string             `json:"reason,omitempty"`
 	ObservedState      observedWorldState `json:"observed_state,omitempty"`
@@ -104,6 +105,7 @@ type roleLoopState struct {
 	Objective                      string
 	CompletionCriteria             []string
 	Plan                           []string
+	PlanArtifacts                  []planArtifactState
 	NextStep                       string
 	PlannerReason                  string
 	PlanCommitRequired             bool
@@ -1109,6 +1111,8 @@ func (e *roleCollaborativeExecutor) callExecutorTurn(
 	toolExecution := e.executeToolCall(ctx, ToolCallExecution{
 		Specs:                  toolSpecs,
 		Action:                 action,
+		Before:                 state.beforeArtifactToolCall,
+		After:                  state.afterArtifactToolCall,
 		Callback:               e.CallbacksHandler,
 		EnvironmentBridge:      e.EnvironmentBridge,
 		EnvironmentBridgeTools: e.EnvironmentBridgeTools,
@@ -1536,6 +1540,7 @@ func buildPlannerStatePrompt(inputs map[string]string, state roleLoopState, task
 	writeTodoState(&builder, state)
 	writeTodoReminder(&builder, state)
 	writeCurrentPlan(&builder, state)
+	writePlanArtifacts(&builder, state)
 	writePriorPlanStepResults(&builder, state)
 	writeVerifierFeedback(&builder, state)
 	return strings.TrimSpace(builder.String())
@@ -1565,6 +1570,7 @@ func buildExecutorStatePrompt(inputs map[string]string, state roleLoopState, tas
 		builder.WriteString(history)
 	}
 	writeCommittedPlanForExecutor(&builder, state)
+	writePlanArtifacts(&builder, state)
 	writePlannerEvidenceForExecutor(&builder, state)
 	writePriorPlanStepResults(&builder, state)
 	builder.WriteString("\n\nPlanner-approved next_step:\n")
@@ -1601,6 +1607,7 @@ func buildVerifierStatePromptWithOptions(inputs map[string]string, state roleLoo
 	writeRequestContextAndCriteria(&builder, inputs, state)
 	writeSessionContext(&builder, inputs)
 	writeCurrentPlan(&builder, state)
+	writePlanArtifacts(&builder, state)
 	writePriorPlanStepResults(&builder, state)
 	writeCurrentStepForVerifier(&builder, state)
 	writeStepExecutorEvidence(&builder, state)
@@ -1676,6 +1683,16 @@ func writeCommittedPlanForExecutor(builder *strings.Builder, state roleLoopState
 		builder.WriteString(fmt.Sprintf("%s %d. %s\n", label, i+1, step))
 	}
 	builder.WriteString("Only the starred/current step is assigned now. Use the rest of the plan for context only.\n")
+}
+
+func writePlanArtifacts(builder *strings.Builder, state roleLoopState) {
+	text := strings.TrimSpace(formatPlanArtifactStates(state.PlanArtifacts))
+	if text == "" {
+		return
+	}
+	builder.WriteString("\n\nPlan artifacts (runtime-enforced contracts):\n")
+	builder.WriteString(text)
+	builder.WriteByte('\n')
 }
 
 func writePlannerEvidenceForExecutor(builder *strings.Builder, state roleLoopState) {
@@ -2099,6 +2116,7 @@ func (s *roleLoopState) applyPlannerDecision(decision plannerDecision) {
 		s.CompletionCriteria = uniqueNonEmpty(decision.CompletionCriteria)
 	}
 	s.Plan = append([]string{}, decision.Plan...)
+	s.PlanArtifacts = initialPlanArtifactStates(decision.Artifacts)
 	s.NextStep = strings.TrimSpace(decision.NextStep)
 	s.PlannerReason = strings.TrimSpace(decision.Reason)
 }
@@ -2303,6 +2321,7 @@ func parsePlannerDecision(res *llms.ContentResponse, fallbackStep string) planne
 		decision.Objective = strings.TrimSpace(decision.Objective)
 		decision.CompletionCriteria = uniqueNonEmpty(decision.CompletionCriteria)
 		decision.Plan = uniqueNonEmpty(decision.Plan)
+		decision.Artifacts = normalizePlanArtifacts(decision.Artifacts)
 		decision.NextStep = strings.TrimSpace(decision.NextStep)
 		decision.Reason = strings.TrimSpace(decision.Reason)
 		decision.ObservedState = normalizeObservedWorldState(decision.ObservedState)

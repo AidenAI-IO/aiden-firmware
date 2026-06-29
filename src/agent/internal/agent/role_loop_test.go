@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tmc/langchaingo/llms"
 	"github.com/tmc/langchaingo/schema"
@@ -697,7 +698,7 @@ func TestCommitPlanEntersExecutionMode(t *testing.T) {
 	}
 }
 
-func TestCommitPlanRejectsIOSPhoneBridgePlanOpeningWeChatBeforeClipboard(t *testing.T) {
+func TestCommitPlanDoesNotRejectByPhoneWorkflowText(t *testing.T) {
 	executor := newRoleCollaborativeExecutor(
 		&scriptedModel{},
 		RoleProfiles{},
@@ -728,16 +729,11 @@ func TestCommitPlanRejectsIOSPhoneBridgePlanOpeningWeChatBeforeClipboard(t *test
 		ToolInput: string(payload),
 	})
 
-	if turn.Kind != plannerTurnInvalidMeta {
-		t.Fatalf("turn kind = %v, want invalid meta", turn.Kind)
+	if turn.Kind != plannerTurnCommitPlan {
+		t.Fatalf("turn kind = %v, want commit without text-keyword policy", turn.Kind)
 	}
-	if state.Phase != phasePlan || !state.PlanCommitRequired {
-		t.Fatalf("state = %#v, want still waiting for a corrected plan", state)
-	}
-	if turn.InvalidMetaStep == nil ||
-		!strings.Contains(turn.InvalidMetaStep.Observation, "phase ordering violation") ||
-		!strings.Contains(turn.InvalidMetaStep.Observation, "write clipboard while Aiden is foreground") {
-		t.Fatalf("observation = %#v, want phone bridge ordering guidance", turn.InvalidMetaStep)
+	if state.Phase != phaseExecution || state.PlanCommitRequired {
+		t.Fatalf("state = %#v, want committed plan", state)
 	}
 }
 
@@ -764,6 +760,17 @@ func TestCommitPlanAcceptsBatchedIOSPhoneBridgePlan(t *testing.T) {
 			"打开微信并搜索李四聊天",
 			"聚焦微信输入框，粘贴已准备剪切板，验证后发送并截图确认",
 		},
+		"artifacts": []map[string]any{{
+			"id":            "wechat_message",
+			"kind":          "target_text",
+			"delivery":      "clipboard",
+			"prepare_step":  1,
+			"consume_step":  3,
+			"text_template": "请确认这个号码 {{contact.phone_numbers}} 是否还在使用",
+			"source_refs":   []string{"contacts.phone_numbers"},
+			"target_app":    "WeChat",
+			"target_label":  "chat recipient",
+		}},
 		"reason": "batch Aiden app work first",
 	})
 
@@ -777,6 +784,46 @@ func TestCommitPlanAcceptsBatchedIOSPhoneBridgePlan(t *testing.T) {
 	}
 	if state.Phase != phaseExecution || state.NextStep != "查询通讯录里张三的电话号，组织最终消息并写入剪切板" {
 		t.Fatalf("state = %#v, want execution with batched first step", state)
+	}
+}
+
+func TestCommittedPlanClipboardWriteRequiresDeclaredArtifact(t *testing.T) {
+	state := &roleLoopState{
+		PlanCommitted: true,
+		PlanStepIndex: 0,
+		Plan:          []string{"prepare data", "use target app"},
+	}
+	call := ToolCall{
+		Spec:  ToolSpec{Name: "clipboard"},
+		Input: `{"action":"write","text":"final text"}`,
+	}
+
+	result, allowed := state.beforeArtifactToolCall(context.Background(), call)
+	if allowed || result.Error == nil || !strings.Contains(result.Output, "declared by commit_plan artifacts") {
+		t.Fatalf("clipboard without artifact allowed=%v result=%#v, want artifact rejection", allowed, result)
+	}
+}
+
+func TestClipboardPayloadCannotPrepareBeforeLaterPlanSteps(t *testing.T) {
+	state := &roleLoopState{
+		PlanCommitted: true,
+		PlanStepIndex: 0,
+		Plan:          []string{"prepare data", "use target app"},
+		PlanArtifacts: initialPlanArtifactStates([]planArtifact{{
+			ID:          "clipboard_text",
+			Kind:        planArtifactKindClipboardPayload,
+			Delivery:    planArtifactDeliveryClipboard,
+			PrepareStep: 1,
+		}}),
+	}
+	call := ToolCall{
+		Spec:  ToolSpec{Name: "clipboard"},
+		Input: `{"action":"write","artifact_id":"clipboard_text","text":"final text"}`,
+	}
+
+	result, allowed := state.beforeArtifactToolCall(context.Background(), call)
+	if allowed || result.Error == nil || !strings.Contains(result.Output, "use target_text with a future consume_step") {
+		t.Fatalf("clipboard_payload allowed=%v result=%#v, want cross-step target_text rejection", allowed, result)
 	}
 }
 
@@ -813,6 +860,82 @@ func TestCommitPlanAllowsAndroidTargetPreservingClipboardPlan(t *testing.T) {
 
 	if turn.Kind != plannerTurnCommitPlan {
 		t.Fatalf("turn kind = %v, want commit", turn.Kind)
+	}
+}
+
+func TestPlanArtifactClipboardWriteRequiresBindingAndTemplateMatch(t *testing.T) {
+	state := &roleLoopState{
+		PlanStepIndex: 0,
+		PlanArtifacts: initialPlanArtifactStates([]planArtifact{{
+			ID:           "message_text",
+			Kind:         planArtifactKindTargetText,
+			Delivery:     planArtifactDeliveryClipboard,
+			PrepareStep:  1,
+			ConsumeStep:  2,
+			TextTemplate: "Please check {{lookup.value}} now",
+		}}),
+	}
+
+	call := ToolCall{
+		Spec:  ToolSpec{Name: "clipboard"},
+		Input: `{"action":"write","text":"Please check 123 now"}`,
+	}
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), call); allowed || result.Error == nil {
+		t.Fatalf("clipboard without artifact_id allowed=%v result=%#v, want rejection", allowed, result)
+	}
+
+	call.Input = `{"action":"write","artifact_id":"message_text","text":"lookup value: 123"}`
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), call); allowed || result.Error == nil ||
+		!strings.Contains(result.Output, "does not satisfy text_template") {
+		t.Fatalf("clipboard with mismatched template allowed=%v result=%#v, want template rejection", allowed, result)
+	}
+
+	call.Input = `{"action":"write","artifact_id":"message_text","text":"Please check 123 now"}`
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), call); !allowed || result.Error != nil {
+		t.Fatalf("clipboard with matching template allowed=%v result=%#v, want allowed", allowed, result)
+	}
+	state.afterArtifactToolCall(context.Background(), call, ToolResult{Output: `{"ok":true}`})
+	if got := state.PlanArtifacts[0].PreparedText; got != "Please check 123 now" {
+		t.Fatalf("prepared text = %q", got)
+	}
+}
+
+func TestPlanArtifactTextEntryConsumesPreparedArtifact(t *testing.T) {
+	state := &roleLoopState{
+		PlanStepIndex: 1,
+		PlanArtifacts: initialPlanArtifactStates([]planArtifact{{
+			ID:           "message_text",
+			Kind:         planArtifactKindTargetText,
+			Delivery:     planArtifactDeliveryClipboard,
+			PrepareStep:  1,
+			ConsumeStep:  2,
+			TextTemplate: "Please check {{lookup.value}} now",
+		}}),
+	}
+	state.PlanArtifacts[0].PreparedText = "Please check 123 now"
+	state.PlanArtifacts[0].PreparedAt = time.Now()
+
+	call := ToolCall{
+		Spec:  ToolSpec{Name: "enter_text_in_field"},
+		Input: `{"text":"Please check 123 now"}`,
+	}
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), call); allowed || result.Error == nil {
+		t.Fatalf("text entry without artifact_id allowed=%v result=%#v, want rejection", allowed, result)
+	}
+
+	call.Input = `{"artifact_id":"message_text","text":"Different text"}`
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), call); allowed || result.Error == nil ||
+		!strings.Contains(result.Output, "must exactly match prepared text") {
+		t.Fatalf("text entry mismatch allowed=%v result=%#v, want rejection", allowed, result)
+	}
+
+	call.Input = `{"artifact_id":"message_text","text":"Please check 123 now"}`
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), call); !allowed || result.Error != nil {
+		t.Fatalf("text entry allowed=%v result=%#v, want allowed", allowed, result)
+	}
+	state.afterArtifactToolCall(context.Background(), call, ToolResult{Output: `{"ok":true,"committed":true}`})
+	if state.PlanArtifacts[0].ConsumedAt.IsZero() {
+		t.Fatal("expected artifact to be marked consumed")
 	}
 }
 

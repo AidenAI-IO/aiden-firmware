@@ -67,9 +67,10 @@ func (t *EnterTextViaBridgeTool) Description() string {
 
 func (t *EnterTextViaBridgeTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"text":     stringArgSchema("Exact text that must appear in the field when done."),
-		"platform": stringEnumArgSchema("Target platform.", "ios", "android", "mac"),
-		"focus":    focusPointArgSchema("Input field coordinates."),
+		"text":        stringArgSchema("Exact text that must appear in the field when done."),
+		"artifact_id": stringArgSchema("Optional plan artifact id when this input consumes a prepared target_text artifact."),
+		"platform":    stringEnumArgSchema("Target platform.", "ios", "android", "mac"),
+		"focus":       focusPointArgSchema("Input field coordinates."),
 	}, "text", "focus")
 }
 

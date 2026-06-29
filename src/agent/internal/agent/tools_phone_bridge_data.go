@@ -62,14 +62,16 @@ func (t *ClipboardTool) Description() string {
 
 func (t *ClipboardTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"action": stringEnumArgSchema("Clipboard action.", "read", "write"),
-		"text":   stringArgSchema("Text to write when action is write."),
+		"action":      stringEnumArgSchema("Clipboard action.", "read", "write"),
+		"text":        stringArgSchema("Text to write when action is write."),
+		"artifact_id": stringArgSchema("Optional plan artifact id when this clipboard write prepares a committed target_text artifact."),
 	}, "action")
 }
 
 type clipboardArgs struct {
-	Action string `json:"action"`
-	Text   string `json:"text"`
+	Action     string `json:"action"`
+	Text       string `json:"text"`
+	ArtifactID string `json:"artifact_id,omitempty"`
 }
 
 func (t *ClipboardTool) Call(ctx context.Context, input string) (string, error) {
