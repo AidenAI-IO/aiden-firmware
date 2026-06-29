@@ -143,7 +143,7 @@ func (t *EnterTextViaBridgeTool) runClipboardFirstResult(ctx context.Context, ar
 		result.Reason = "text is required"
 		return result, false
 	}
-	attempted, committed, fieldText, vlmCalls, steps, err := t.runClipboardFirstFlow(ctx, platform, args)
+	attempted, committed, fieldText, vlmCalls, steps, err := t.runAutomaticClipboardFirstFlow(ctx, platform, args)
 	if !attempted {
 		result.Reason = "reliable bridge clipboard path unavailable"
 		return result, false
@@ -182,6 +182,25 @@ func (t *EnterTextViaBridgeTool) runClipboardFirstFlow(ctx context.Context, plat
 			return true, committed, fieldText, vlmCalls, steps, err
 		}
 		return false, false, "", 0, nil, nil
+	case "android":
+		return t.runTargetPreservingClipboardFlow(ctx, platform, args)
+	default:
+		return false, false, "", 0, nil, nil
+	}
+}
+
+func (t *EnterTextViaBridgeTool) runAutomaticClipboardFirstFlow(ctx context.Context, platform string, args enterTextInFieldArgs) (attempted bool, committed bool, fieldText string, vlmCalls int, steps []string, err error) {
+	bridge := t.currentBridge()
+	if bridge == nil {
+		return false, false, "", 0, nil, fmt.Errorf("phone bridge is not configured")
+	}
+	switch strings.ToLower(strings.TrimSpace(platform)) {
+	case "ios":
+		if !bridge.ClipboardRecentlyContains(args.Text, preparedClipboardMaxAge) {
+			return false, false, "", 0, nil, nil
+		}
+		committed, fieldText, vlmCalls, steps, err = t.runPreparedClipboardPasteFlow(ctx, platform, args)
+		return true, committed, fieldText, vlmCalls, steps, err
 	case "android":
 		return t.runTargetPreservingClipboardFlow(ctx, platform, args)
 	default:
@@ -288,11 +307,11 @@ func (t *EnterTextViaBridgeTool) canUseClipboardFirst(platform, text string) boo
 	if bridge == nil {
 		return false
 	}
-	status := bridge.Status()
 	switch strings.ToLower(strings.TrimSpace(platform)) {
 	case "ios":
-		return bridge.ClipboardRecentlyContains(text, preparedClipboardMaxAge) || phoneBridgeReadyForCommand(status)
+		return bridge.ClipboardRecentlyContains(text, preparedClipboardMaxAge)
 	case "android":
+		status := bridge.Status()
 		return bridgeClipboardPreservesTarget(platform, status)
 	default:
 		return false

@@ -325,6 +325,160 @@ func parseCommitPlanInput(raw string) (plannerDecision, error) {
 	return decision, nil
 }
 
+func validateCommittedPlanPolicy(decision plannerDecision, world worldState) error {
+	if !planRequiresAidenForegroundBatching(world) {
+		return nil
+	}
+	if reason := phoneBridgeBatchingPlanIssue(decision); reason != "" {
+		return fmt.Errorf("phone app phase ordering violation: %s", reason)
+	}
+	return nil
+}
+
+func planRequiresAidenForegroundBatching(world worldState) bool {
+	platform := worldStatePlatform(world)
+	return platform == "" || platform == "ios"
+}
+
+func worldStatePlatform(world worldState) string {
+	if world.DeviceEnvironment != nil {
+		if platform, err := normalizeQuickActionPlatform(world.DeviceEnvironment.Platform); err == nil {
+			return platform
+		}
+	}
+	if world.Observation != nil {
+		if platform, err := normalizeQuickActionPlatform(world.Observation.Platform); err == nil {
+			return platform
+		}
+	}
+	return ""
+}
+
+func phoneBridgeBatchingPlanIssue(decision plannerDecision) string {
+	allText := strings.Join(append(append([]string{decision.Objective}, decision.CompletionCriteria...), decision.Plan...), "\n")
+	if !planMentionsContactsLookup(allText) || !planMentionsMessagingTarget(allText) || !planMentionsPhoneMessage(allText) {
+		return ""
+	}
+	targetStep, targetPos := firstPlanStepPosition(decision.Plan, planTargetAppNavigationPosition)
+	if targetStep < 0 {
+		return ""
+	}
+	clipboardStep, clipboardPos := firstPlanStepPosition(decision.Plan, planClipboardPreparationPosition)
+	if clipboardStep < 0 || planPositionAfter(clipboardStep, clipboardPos, targetStep, targetPos) {
+		return "iOS/unknown-platform phone messaging plans that combine Contacts lookup with WeChat must batch Aiden app-side work before target-app navigation: first query Contacts, compose the final message, and write clipboard while Aiden is foreground; only then open/search WeChat and use current-app paste/send/verify. Move clipboard preparation before the target-app step."
+	}
+	return ""
+}
+
+func firstPlanStepPosition(steps []string, positionFn func(string) int) (int, int) {
+	for i, step := range steps {
+		if pos := positionFn(step); pos >= 0 {
+			return i, pos
+		}
+	}
+	return -1, -1
+}
+
+func planPositionAfter(step, pos, otherStep, otherPos int) bool {
+	if step != otherStep {
+		return step > otherStep
+	}
+	return pos > otherPos
+}
+
+func planMentionsContactsLookup(text string) bool {
+	text = strings.ToLower(strings.TrimSpace(text))
+	if text == "" || !containsAny(text, "通讯录", "联系人", "contacts", "address book", "phonebook") {
+		return false
+	}
+	return containsAny(text,
+		"查", "查询", "查找", "找", "获取", "电话", "手机号", "号码",
+		"query", "lookup", "look up", "search", "find", "get", "phone", "number",
+	)
+}
+
+func planMentionsMessagingTarget(text string) bool {
+	text = strings.ToLower(strings.TrimSpace(text))
+	return containsAny(text, "微信", "wechat")
+}
+
+func planMentionsPhoneMessage(text string) bool {
+	text = strings.ToLower(strings.TrimSpace(text))
+	return containsAny(text,
+		"消息", "发微信", "发消息", "发送", "问问", "聊天", "电话号", "电话号码", "手机号", "号码",
+		"message", "send", "ask", "chat", "phone number", "phone", "number",
+	)
+}
+
+func planTargetAppNavigationPosition(step string) int {
+	step = strings.ToLower(strings.TrimSpace(step))
+	if step == "" || !containsAny(step, "微信", "wechat") {
+		return -1
+	}
+	actionPos := firstIndexAny(step,
+		"打开", "启动", "进入", "切到", "切换", "搜索", "查找", "找到", "定位", "聊天",
+		"open", "launch", "switch", "navigate", "search", "find", "locate", "chat",
+	)
+	if actionPos < 0 {
+		return -1
+	}
+	appPos := firstIndexAny(step, "微信", "wechat")
+	if appPos < 0 {
+		return -1
+	}
+	if actionPos < appPos {
+		return actionPos
+	}
+	return appPos
+}
+
+func planClipboardPreparationPosition(step string) int {
+	step = strings.ToLower(strings.TrimSpace(step))
+	if step == "" {
+		return -1
+	}
+	clipPos := firstIndexAny(step, "剪切板", "剪贴板", "clipboard")
+	if clipPos < 0 {
+		return -1
+	}
+	if containsAny(step, "粘贴", "paste") && !containsAny(step,
+		"写", "写入", "准备", "预置", "设置", "放入", "存入", "复制到",
+		"write", "prepare", "prepared", "stage", "set", "copy to",
+	) {
+		return -1
+	}
+	prepPos := firstIndexAny(step,
+		"写入", "写", "准备", "预置", "设置", "放入", "存入", "复制到",
+		"write", "prepare", "prepared", "stage", "set", "copy to",
+	)
+	if prepPos < 0 {
+		return -1
+	}
+	if prepPos < clipPos {
+		return prepPos
+	}
+	return clipPos
+}
+
+func containsAny(text string, needles ...string) bool {
+	for _, needle := range needles {
+		if strings.Contains(text, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func firstIndexAny(text string, needles ...string) int {
+	first := -1
+	for _, needle := range needles {
+		if idx := strings.Index(text, needle); idx >= 0 && (first < 0 || idx < first) {
+			first = idx
+		}
+	}
+	return first
+}
+
 func parseStructuredStringList(raw json.RawMessage) []string {
 	values := parseStringList(raw)
 	if len(values) == 1 {

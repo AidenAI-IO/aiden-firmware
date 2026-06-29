@@ -697,6 +697,125 @@ func TestCommitPlanEntersExecutionMode(t *testing.T) {
 	}
 }
 
+func TestCommitPlanRejectsIOSPhoneBridgePlanOpeningWeChatBeforeClipboard(t *testing.T) {
+	executor := newRoleCollaborativeExecutor(
+		&scriptedModel{},
+		RoleProfiles{},
+		nil,
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{Phase: phasePlan, PlanCommitRequired: true}
+	state.World.UpdateDeviceEnvironment(&PhoneEnvironment{Platform: "ios"})
+	payload, _ := json.Marshal(map[string]any{
+		"objective":           "查通讯录电话号后给微信好友发消息问问电话号是否还在用",
+		"completion_criteria": []string{"微信消息已发送并有截图证据"},
+		"plan": []string{
+			"查询通讯录里张三的电话号",
+			"打开微信并搜索李四聊天",
+			"把电话号写入剪切板并粘贴到微信输入框后发送",
+		},
+		"reason": "needs phone workflow",
+	})
+
+	turn := executor.handlePlannerMetaTool(phasePlan, state, schema.AgentAction{
+		Tool:      toolCommitPlan,
+		ToolInput: string(payload),
+	})
+
+	if turn.Kind != plannerTurnInvalidMeta {
+		t.Fatalf("turn kind = %v, want invalid meta", turn.Kind)
+	}
+	if state.Phase != phasePlan || !state.PlanCommitRequired {
+		t.Fatalf("state = %#v, want still waiting for a corrected plan", state)
+	}
+	if turn.InvalidMetaStep == nil ||
+		!strings.Contains(turn.InvalidMetaStep.Observation, "phase ordering violation") ||
+		!strings.Contains(turn.InvalidMetaStep.Observation, "write clipboard while Aiden is foreground") {
+		t.Fatalf("observation = %#v, want phone bridge ordering guidance", turn.InvalidMetaStep)
+	}
+}
+
+func TestCommitPlanAcceptsBatchedIOSPhoneBridgePlan(t *testing.T) {
+	executor := newRoleCollaborativeExecutor(
+		&scriptedModel{},
+		RoleProfiles{},
+		nil,
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{Phase: phasePlan, PlanCommitRequired: true}
+	state.World.UpdateDeviceEnvironment(&PhoneEnvironment{Platform: "ios"})
+	payload, _ := json.Marshal(map[string]any{
+		"objective":           "查通讯录电话号后给微信好友发消息问问电话号是否还在用",
+		"completion_criteria": []string{"微信消息已发送并有截图证据"},
+		"plan": []string{
+			"查询通讯录里张三的电话号，组织最终消息并写入剪切板",
+			"打开微信并搜索李四聊天",
+			"聚焦微信输入框，粘贴已准备剪切板，验证后发送并截图确认",
+		},
+		"reason": "batch Aiden app work first",
+	})
+
+	turn := executor.handlePlannerMetaTool(phasePlan, state, schema.AgentAction{
+		Tool:      toolCommitPlan,
+		ToolInput: string(payload),
+	})
+
+	if turn.Kind != plannerTurnCommitPlan {
+		t.Fatalf("turn kind = %v, want commit", turn.Kind)
+	}
+	if state.Phase != phaseExecution || state.NextStep != "查询通讯录里张三的电话号，组织最终消息并写入剪切板" {
+		t.Fatalf("state = %#v, want execution with batched first step", state)
+	}
+}
+
+func TestCommitPlanAllowsAndroidTargetPreservingClipboardPlan(t *testing.T) {
+	executor := newRoleCollaborativeExecutor(
+		&scriptedModel{},
+		RoleProfiles{},
+		nil,
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{Phase: phasePlan, PlanCommitRequired: true}
+	state.World.UpdateDeviceEnvironment(&PhoneEnvironment{Platform: "android"})
+	payload, _ := json.Marshal(map[string]any{
+		"objective":           "查通讯录电话号后给微信好友发消息问问电话号是否还在用",
+		"completion_criteria": []string{"微信消息已发送并有截图证据"},
+		"plan": []string{
+			"查询通讯录里张三的电话号",
+			"打开微信并搜索李四聊天",
+			"通过目标保持的剪切板写入和粘贴完成输入，验证后发送",
+		},
+		"reason": "android can preserve target app",
+	})
+
+	turn := executor.handlePlannerMetaTool(phasePlan, state, schema.AgentAction{
+		Tool:      toolCommitPlan,
+		ToolInput: string(payload),
+	})
+
+	if turn.Kind != plannerTurnCommitPlan {
+		t.Fatalf("turn kind = %v, want commit", turn.Kind)
+	}
+}
+
 func TestCommitPlanParsesStringPlanAndCriteria(t *testing.T) {
 	decision, err := parseCommitPlanInput(`{
 		"objective":"reconcile",

@@ -324,6 +324,53 @@ func TestEnterTextInFieldDoesNotRestoreAidenWithoutPreparedIOSClipboard(t *testi
 	}
 }
 
+func TestEnterTextInFieldDoesNotWriteIOSClipboardJustBecauseBridgeIsReady(t *testing.T) {
+	message := "你好，请问这个手机号你还用吗？13204503813"
+	pb := NewPhoneBridge(nil)
+	defer pb.queue.Stop()
+	pb.connected = true
+	pb.platform = "ios"
+	pb.appState = "active"
+	pb.appStateAt = time.Now()
+
+	bridgeQuick := &recordingTextInputTool{name: "quick_action", out: `{"ok":true}`}
+	bridgeTool := &EnterTextViaBridgeTool{
+		hw: &textInputHardwareDeps{
+			mouseClick:   &recordingTextInputTool{name: "mouse_click", out: "ok"},
+			touchGesture: &recordingTextInputTool{name: "touch_gesture", out: "ok"},
+			keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
+			keyboardText: &recordingTextInputTool{name: "keyboard_text", out: "ok"},
+			quickAction:  bridgeQuick,
+			screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+		},
+		vision:   &stubTextInputVision{},
+		bridgeFn: func() *PhoneBridge { return pb },
+		clipboardWriteFn: func(context.Context, *PhoneBridge, string) error {
+			t.Fatal("enter_text_in_field must not prepare iOS clipboard after target-app navigation")
+			return nil
+		},
+	}
+	fallbackEngine := newTextInputEngine(textInputHardwareDeps{
+		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
+		keyboardTap:  textInputStubTool{name: "keyboard_tap", out: "ok"},
+		keyboardText: textInputStubTool{name: "keyboard_text", out: "ok"},
+		quickAction:  textInputStubTool{name: "quick_action", out: "ok"},
+		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}, &stubTextInputVision{})
+	tool := &EnterTextInFieldTool{engine: fallbackEngine, bridgeTool: bridgeTool}
+
+	out, err := tool.Call(context.Background(), `{"text":"`+message+`","platform":"ios","focus":{"x":300,"y":930,"coord_space":"normalized"},"max_attempts":1}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"committed": false`) || !strings.Contains(out, "requires segments") {
+		t.Fatalf("unexpected output: %s", out)
+	}
+	if len(bridgeQuick.calls) != 0 {
+		t.Fatalf("unprepared iOS field entry should not use bridge quick actions: %v", bridgeQuick.calls)
+	}
+}
+
 func TestEnterTextInFieldFallsBackWhenSafeClipboardWriteFails(t *testing.T) {
 	message := "this is a long ascii message"
 	pb := NewPhoneBridge(nil)

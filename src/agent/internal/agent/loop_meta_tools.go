@@ -196,6 +196,15 @@ func (e *roleCollaborativeExecutor) handlePlannerMetaTool(
 				},
 			}
 		}
+		if err := validateCommittedPlanPolicy(decision, state.World); err != nil {
+			return plannerTurnResult{
+				Kind: plannerTurnInvalidMeta,
+				InvalidMetaStep: &schema.AgentStep{
+					Action:      action,
+					Observation: fmt.Sprintf("commit_plan failed: %v", err),
+				},
+			}
+		}
 		state.applyCommittedPlan(decision)
 		state.applyCommittedPlanTodo(decision)
 		state.Phase = phaseExecution
