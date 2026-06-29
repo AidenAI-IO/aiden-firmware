@@ -128,7 +128,15 @@ func (e *textInputEngine) Run(ctx context.Context, args enterTextInFieldArgs) (e
 				}
 				if attempt == 1 {
 					steps = append(steps, fmt.Sprintf("wait %s for IME to settle before first composition input", textInputCompositionReadyDelay))
-					time.Sleep(textInputCompositionReadyDelay)
+					timer := time.NewTimer(textInputCompositionReadyDelay)
+					select {
+					case <-timer.C:
+					case <-ctx.Done():
+						if !timer.Stop() {
+							<-timer.C
+						}
+						return enterTextInFieldResult{TargetText: args.Text, RequiredMode: string(requiredMode), Mode: string(interactionMode), Attempts: attempt, IMESwitches: imeSwitches, VLMCalls: vlmCalls, Reason: ctx.Err().Error(), Steps: steps}, nil
+					}
 				}
 				if interactionMode == textInputModeSearch {
 					committed, fieldText, wrongIME, calls, stepNotes, err = e.typeCompositionSearch(ctx, platform, args, segments)
