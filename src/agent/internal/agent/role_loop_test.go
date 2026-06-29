@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tmc/langchaingo/agents"
 	"github.com/tmc/langchaingo/llms"
 	"github.com/tmc/langchaingo/schema"
 	langtools "github.com/tmc/langchaingo/tools"
@@ -656,6 +657,41 @@ func TestPlanModeAllowsEvidenceBackedFinalAnswer(t *testing.T) {
 	}
 	if turn.Kind != plannerTurnFinish || !strings.Contains(turn.Answer, "<final_answer>(b)</final_answer>") {
 		t.Fatalf("turn = %#v, want final answer", turn)
+	}
+}
+
+func TestPlanModeRejectsEmptyFinalAnswerAsNoReturn(t *testing.T) {
+	model := &scriptedModel{responses: []*llms.ContentResponse{
+		contentResponse("   "),
+	}}
+	executor := newRoleCollaborativeExecutor(
+		model,
+		RoleProfiles{},
+		nil,
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{
+		Phase:         phasePlan,
+		PlanCommitted: true,
+		VerifierResults: []verifierDecision{{
+			NeedsReplan: true,
+			Reason:      "final answer can be derived from evidence",
+		}},
+	}
+	inputs := map[string]string{"input": "multi-step task", "history": ""}
+
+	_, err := executor.callPlannerTurn(context.Background(), inputs, state, NewToolSpecs(nil))
+	if err == nil {
+		t.Fatal("planner turn error = nil, want ErrAgentNoReturn")
+	}
+	if err != agents.ErrAgentNoReturn {
+		t.Fatalf("planner turn error = %v, want %v", err, agents.ErrAgentNoReturn)
 	}
 }
 

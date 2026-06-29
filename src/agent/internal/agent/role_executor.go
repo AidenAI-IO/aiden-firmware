@@ -669,6 +669,9 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 				answer = value
 			}
 		}
+		if strings.TrimSpace(answer) == "" {
+			return plannerTurnResult{}, agents.ErrAgentNoReturn
+		}
 		if state.Phase == phasePlan && state.PlanCommitRequired {
 			return plannerCommitRequiredTurn(schema.AgentAction{
 				Tool: toolCommitPlan,

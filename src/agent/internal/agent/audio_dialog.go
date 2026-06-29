@@ -825,6 +825,13 @@ func (d *AudioDialog) endVoiceRunControl(requestID string) {
 	d.runControl.end(requestID)
 }
 
+func (d *AudioDialog) WaitForVoiceRunIdle(ctx context.Context) bool {
+	if d == nil {
+		return true
+	}
+	return d.runControl.waitUntilInactive(ctx)
+}
+
 func (d *AudioDialog) QueueSteer(input TurnInput) bool {
 	content := steerContentFromTurnInput(input)
 	if content == "" {
