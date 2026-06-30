@@ -30,14 +30,12 @@ func extractTTSText(output string) string {
 	var parts []string
 	remaining := output
 	for {
-		lower := strings.ToLower(remaining)
-		start := strings.Index(lower, ttsStartTag)
+		start := asciiIndexFold(remaining, ttsStartTag)
 		if start < 0 {
 			break
 		}
 		remaining = remaining[start+len(ttsStartTag):]
-		lower = strings.ToLower(remaining)
-		end := strings.Index(lower, ttsEndTag)
+		end := asciiIndexFold(remaining, ttsEndTag)
 		if end < 0 {
 			break
 		}
@@ -298,13 +296,37 @@ func keepTagSearchSuffix(buf []byte, max int) []byte {
 	return append(buf[:0], buf[len(buf)-max:]...)
 }
 
+func asciiIndexFold(s, substr string) int {
+	if substr == "" {
+		return 0
+	}
+	last := len(s) - len(substr)
+	for i := 0; i <= last; i++ {
+		matched := true
+		for j := 0; j < len(substr); j++ {
+			if asciiLowerByte(s[i+j]) != asciiLowerByte(substr[j]) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return i
+		}
+	}
+	return -1
+}
+
 func asciiLowerBytes(buf []byte) []byte {
 	lower := make([]byte, len(buf))
 	for i, b := range buf {
-		if b >= 'A' && b <= 'Z' {
-			b += 'a' - 'A'
-		}
-		lower[i] = b
+		lower[i] = asciiLowerByte(b)
 	}
 	return lower
+}
+
+func asciiLowerByte(b byte) byte {
+	if b >= 'A' && b <= 'Z' {
+		return b + ('a' - 'A')
+	}
+	return b
 }

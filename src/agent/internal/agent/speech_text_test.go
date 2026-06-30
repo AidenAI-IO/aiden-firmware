@@ -76,6 +76,16 @@ func TestBuildSpeechTextJoinsMultipleTTSTags(t *testing.T) {
 	}
 }
 
+func TestBuildSpeechTextMatchesTTSTagsWithByteStableOffsets(t *testing.T) {
+	output := "可见正文 İ K <TTS>K value</TTS> 尾部正文"
+
+	speech := BuildSpeechText(output, Config{})
+
+	if speech != "K value" {
+		t.Fatalf("speech = %q, want byte-stable TTS extraction", speech)
+	}
+}
+
 func TestRunResultSpokenTextReturnsTTSTag(t *testing.T) {
 	result := RunResult{Output: "完整回答。\n<tts>播报摘要。</tts>"}
 	if got := result.SpokenText(); got != "播报摘要。" {

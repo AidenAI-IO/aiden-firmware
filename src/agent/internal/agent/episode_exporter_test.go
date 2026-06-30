@@ -892,6 +892,9 @@ func TestBuildLangfuseBatchMapsDefaultModePlannerTools(t *testing.T) {
 	if names["agent/tool/echo"] != 1 {
 		t.Fatalf("agent/tool/echo count = %d, want 1; names=%#v", names["agent/tool/echo"], names)
 	}
+	if names["agent/tool_result/echo"] != 1 {
+		t.Fatalf("agent/tool_result/echo count = %d, want 1; names=%#v", names["agent/tool_result/echo"], names)
+	}
 	if names["agent/default_finish"] != 1 {
 		t.Fatalf("agent/default_finish count = %d, want 1; names=%#v", names["agent/default_finish"], names)
 	}
@@ -902,6 +905,72 @@ func TestBuildLangfuseBatchMapsDefaultModePlannerTools(t *testing.T) {
 		t.Fatalf("trace metadata loop_mode = %#v, want default", traceMeta["loop_mode"])
 	}
 }
+
+func TestBuildLangfuseBatchMapsLegacyPlannerToolEvents(t *testing.T) {
+	start := time.Date(2026, 6, 11, 10, 0, 0, 0, time.UTC)
+	episode := TaskEpisode{
+		ID:        "ep_legacy_planner_001",
+		StartedAt: start.Format(time.RFC3339Nano),
+		EndedAt:   start.Add(2 * time.Second).Format(time.RFC3339Nano),
+		UserGoal:  "echo test",
+		Outcome: TaskEpisodeOutcome{
+			Success:     true,
+			FinalAnswer: "done",
+		},
+		Events: []TaskEpisodeEvent{
+			{
+				EventID:   "evt_tool",
+				Ts:        start.Add(time.Second).Format(time.RFC3339Nano),
+				Type:      runEventToolCall,
+				Role:      "planner",
+				ToolName:  "echo",
+				ToolInput: `{"__arg1":"ok"}`,
+			},
+			{
+				EventID:     "evt_result",
+				Ts:          start.Add(2 * time.Second).Format(time.RFC3339Nano),
+				Type:        "tool_result",
+				Role:        "planner",
+				ToolName:    "echo",
+				Observation: "ok",
+			},
+		},
+	}
+
+	exporter := NewEpisodeExporter(TelemetryConfig{Enabled: boolPtr(true), BaseURL: "http://langfuse.test"}, nil)
+	batch, err := exporter.buildLangfuseBatch(context.Background(), episode, t.TempDir())
+	if err != nil {
+		t.Fatalf("buildLangfuseBatch() error = %v", err)
+	}
+
+	names := map[string]int{}
+	var traceMeta map[string]interface{}
+	for _, event := range batch {
+		var body map[string]interface{}
+		if err := json.Unmarshal(event.Body, &body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if event.Type == "trace-create" {
+			traceMeta, _ = body["metadata"].(map[string]interface{})
+		}
+		if name, _ := body["name"].(string); name != "" {
+			names[name]++
+		}
+	}
+	if names["agent/tool/echo"] != 1 {
+		t.Fatalf("agent/tool/echo count = %d, want 1 for legacy planner role; names=%#v", names["agent/tool/echo"], names)
+	}
+	if names["agent/tool_result/echo"] != 1 {
+		t.Fatalf("agent/tool_result/echo count = %d, want 1 for legacy planner role; names=%#v", names["agent/tool_result/echo"], names)
+	}
+	if names["tool/echo"] != 0 || names["tool_result/echo"] != 0 {
+		t.Fatalf("legacy planner role fell back to generic tool spans: names=%#v", names)
+	}
+	if traceMeta["planner_tool_call_count"] != float64(1) {
+		t.Fatalf("trace metadata planner_tool_call_count = %#v, want 1", traceMeta["planner_tool_call_count"])
+	}
+}
+
 func intMetricFromMeta(meta map[string]interface{}, key string) int {
 	if meta == nil {
 		return 0
