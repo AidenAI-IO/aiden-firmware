@@ -177,8 +177,6 @@ func openRouterExplicitPromptCacheSupported(model string) bool {
 	switch {
 	case strings.HasPrefix(model, "anthropic/"):
 		return true
-	case strings.HasPrefix(model, "google/gemini-2.5-"):
-		return true
 	}
 	switch model {
 	case "deepseek/deepseek-v3.2",
