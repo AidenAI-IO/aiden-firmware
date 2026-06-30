@@ -6,11 +6,6 @@ SSHD_BIN=${SSHD_BIN:-/usr/sbin/sshd}
 SSH_KEYGEN_BIN=${SSH_KEYGEN_BIN:-/usr/bin/ssh-keygen}
 PIDOF_BIN=${PIDOF_BIN:-pidof}
 KILLALL_BIN=${KILLALL_BIN:-killall}
-ETC_SSH_DIR=${ETC_SSH_DIR:-/etc/ssh}
-ROOT_HOME=${ROOT_HOME:-/root}
-PERSISTENT_SSH_DIR=${PERSISTENT_SSH_DIR:-/userdata/ssh}
-PERSISTENT_HOST_DIR=${PERSISTENT_HOST_DIR:-$PERSISTENT_SSH_DIR/host}
-PERSISTENT_ROOT_DIR=${PERSISTENT_ROOT_DIR:-$PERSISTENT_SSH_DIR/root}
 LOCK_FILE=${LOCK_FILE:-/var/lock/sshd}
 
 if [ -f "$BOOT_CONF" ]; then
@@ -22,129 +17,6 @@ umask 077
 
 is_running() {
 	"$PIDOF_BIN" sshd >/dev/null 2>&1
-}
-
-copy_if_missing() {
-	src="$1"
-	dst="$2"
-	if [ -f "$dst" ] || [ ! -f "$src" ]; then
-		return 0
-	fi
-	cp -p "$src" "$dst" 2>/dev/null || cp "$src" "$dst"
-}
-
-remove_empty_file() {
-	path="$1"
-	if [ -f "$path" ] && [ ! -s "$path" ]; then
-		rm -f "$path"
-	fi
-}
-
-remove_empty_host_key() {
-	key="$1"
-	if [ -f "$key" ] && [ ! -s "$key" ]; then
-		rm -f "$key" "${key}.pub" "${key}-cert.pub"
-		return 0
-	fi
-	remove_empty_file "${key}.pub"
-	remove_empty_file "${key}-cert.pub"
-}
-
-generate_host_key() {
-	type="$1"
-	path="$2"
-	if [ ! -x "$SSH_KEYGEN_BIN" ]; then
-		echo "ssh-keygen not found: $SSH_KEYGEN_BIN" >&2
-		return 1
-	fi
-	rm -f "$path" "${path}.pub" "${path}-cert.pub"
-	case "$type" in
-		rsa) "$SSH_KEYGEN_BIN" -t rsa -b 3072 -N '' -f "$path" >/dev/null 2>&1 ;;
-		ecdsa) "$SSH_KEYGEN_BIN" -t ecdsa -N '' -f "$path" >/dev/null 2>&1 ;;
-		ed25519) "$SSH_KEYGEN_BIN" -t ed25519 -N '' -f "$path" >/dev/null 2>&1 ;;
-		*) return 1 ;;
-	esac
-	if [ ! -s "$path" ]; then
-		rm -f "$path" "${path}.pub" "${path}-cert.pub"
-		return 1
-	fi
-}
-
-ensure_persistent_ssh_state() {
-	mkdir -p "$PERSISTENT_HOST_DIR" "$PERSISTENT_ROOT_DIR" "$ETC_SSH_DIR" "$ROOT_HOME/.ssh"
-	chmod 700 "$PERSISTENT_SSH_DIR" "$PERSISTENT_HOST_DIR" "$PERSISTENT_ROOT_DIR" "$ROOT_HOME/.ssh" 2>/dev/null || true
-
-	for type in rsa ecdsa ed25519; do
-		name="ssh_host_${type}_key"
-		persistent_key="$PERSISTENT_HOST_DIR/$name"
-		etc_key="$ETC_SSH_DIR/$name"
-
-		remove_empty_host_key "$persistent_key"
-
-		if [ ! -s "$persistent_key" ] && [ -s "$etc_key" ]; then
-			if ! copy_if_missing "$etc_key" "$persistent_key" || [ ! -s "$persistent_key" ]; then
-				echo "failed to persist SSH host key: $persistent_key" >&2
-				return 1
-			fi
-			[ -s "${etc_key}.pub" ] && copy_if_missing "${etc_key}.pub" "${persistent_key}.pub"
-			[ -s "${etc_key}-cert.pub" ] && copy_if_missing "${etc_key}-cert.pub" "${persistent_key}-cert.pub"
-			remove_empty_host_key "$persistent_key"
-		fi
-
-		if [ ! -s "$persistent_key" ]; then
-			if ! generate_host_key "$type" "$persistent_key"; then
-				echo "failed to generate SSH host key: $persistent_key" >&2
-				return 1
-			fi
-		fi
-
-		if [ -s "$persistent_key" ]; then
-			ln -sf "$persistent_key" "$etc_key"
-			[ -s "${persistent_key}.pub" ] && ln -sf "${persistent_key}.pub" "${etc_key}.pub"
-			[ -s "${persistent_key}-cert.pub" ] && ln -sf "${persistent_key}-cert.pub" "${etc_key}-cert.pub"
-		fi
-	done
-
-	host_key_count=0
-	for key in "$PERSISTENT_HOST_DIR"/ssh_host_*_key; do
-		[ -s "$key" ] || continue
-		host_key_count=$((host_key_count + 1))
-	done
-	if [ "$host_key_count" -eq 0 ]; then
-		echo "no SSH host keys available in $PERSISTENT_HOST_DIR"
-		return 1
-	fi
-
-	if [ -f "$ROOT_HOME/.ssh/authorized_keys" ] && [ ! -f "$PERSISTENT_ROOT_DIR/authorized_keys" ]; then
-		if ! copy_if_missing "$ROOT_HOME/.ssh/authorized_keys" "$PERSISTENT_ROOT_DIR/authorized_keys" ||
-			[ ! -f "$PERSISTENT_ROOT_DIR/authorized_keys" ]; then
-			echo "failed to persist authorized_keys" >&2
-			return 1
-		fi
-	fi
-	if [ ! -f "$PERSISTENT_ROOT_DIR/authorized_keys" ]; then
-		if ! touch "$PERSISTENT_ROOT_DIR/authorized_keys"; then
-			echo "failed to create persistent authorized_keys: $PERSISTENT_ROOT_DIR/authorized_keys" >&2
-			return 1
-		fi
-	fi
-	if ! ln -sf "$PERSISTENT_ROOT_DIR/authorized_keys" "$ROOT_HOME/.ssh/authorized_keys"; then
-		echo "failed to link persistent authorized_keys" >&2
-		return 1
-	fi
-
-	chmod 600 "$PERSISTENT_HOST_DIR"/ssh_host_*_key "$PERSISTENT_ROOT_DIR/authorized_keys" 2>/dev/null || true
-	chmod 644 "$PERSISTENT_HOST_DIR"/ssh_host_*_key.pub "$PERSISTENT_HOST_DIR"/ssh_host_*_key-cert.pub 2>/dev/null || true
-	chown -R root:root "$PERSISTENT_SSH_DIR" "$ROOT_HOME/.ssh" 2>/dev/null || true
-}
-
-host_certificate_options() {
-	opts=""
-	for cert in "$PERSISTENT_HOST_DIR"/ssh_host_*_key-cert.pub; do
-		[ -s "$cert" ] || continue
-		opts="$opts -o HostCertificate=$cert"
-	done
-	echo "$opts"
 }
 
 start() {
@@ -162,15 +34,15 @@ start() {
 		echo "sshd binary not found: $SSHD_BIN"
 		return 1
 	fi
-
-	chown root:root /var/empty/ 2>/dev/null || true
-	if ! ensure_persistent_ssh_state; then
-		echo "FAIL (persistent ssh state)"
+	if [ ! -x "$SSH_KEYGEN_BIN" ]; then
+		echo "ssh-keygen not found: $SSH_KEYGEN_BIN"
 		return 1
 	fi
-	host_cert_opts=$(host_certificate_options)
+
+	chown root:root /var/empty/ 2>/dev/null || true
+	"$SSH_KEYGEN_BIN" -A >/dev/null 2>&1 || true
 	printf "Starting sshd: "
-	"$SSHD_BIN" $host_cert_opts >/dev/null 2>&1
+	"$SSHD_BIN" >/dev/null 2>&1
 	rc="$?"
 	if [ "$rc" -ne 0 ]; then
 		echo "FAIL (exit=$rc)"
