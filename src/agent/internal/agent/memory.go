@@ -77,6 +77,7 @@ type MemoryManager struct {
 	contextWindowFn                ContextWindowFn
 	profileDebouncer               *ProfileDebouncer
 	lockTimeout                    time.Duration
+	archiveCompressTimeout         time.Duration
 	logger                         *Logger
 	sessionBoundaryEnabledOverride *bool
 
@@ -195,6 +196,13 @@ func WithMemoryLogger(logger *Logger) MemoryManagerOption {
 // means "unknown, use the yaml default". The yaml value remains the fallback.
 func WithContextWindowFn(fn ContextWindowFn) MemoryManagerOption {
 	return func(m *MemoryManager) { m.contextWindowFn = fn }
+}
+
+// WithArchiveCompressTimeout overrides the LLM summary timeout used when
+// compressing remaining events during session rotation. Tests may set a short
+// value to avoid waiting for the production default.
+func WithArchiveCompressTimeout(timeout time.Duration) MemoryManagerOption {
+	return func(m *MemoryManager) { m.archiveCompressTimeout = timeout }
 }
 
 // NewMemoryManager creates a new MemoryManager with the specified storage
@@ -1364,6 +1372,13 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 	return nil
 }
 
+func (m *MemoryManager) archiveCompressTimeoutOrDefault() time.Duration {
+	if m != nil && m.archiveCompressTimeout > 0 {
+		return m.archiveCompressTimeout
+	}
+	return 30 * time.Second
+}
+
 // compactionPlan describes the chosen split of the event stream.
 type compactionPlan struct {
 	ok             bool
@@ -1479,7 +1494,7 @@ func (m *MemoryManager) compressRemainingForArchive(sessionDir string) error {
 	// Use a bounded context with timeout to prevent slow LLM calls from
 	// blocking rotation indefinitely. If the LLM times out, buildEventSummary
 	// falls back to local summarization.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), m.archiveCompressTimeoutOrDefault())
 	defer cancel()
 
 	summary, structured := m.buildEventSummary(ctx, events)

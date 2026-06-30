@@ -639,10 +639,6 @@ func (s *interruptibleAudioTTSSession) Flush() error { return nil }
 
 func (s *interruptibleAudioTTSSession) Close() error {
 	s.provider.closeCount.Add(1)
-	if err := s.sink.Drain(s.ctx); err != nil {
-		s.err = err
-		return err
-	}
 	return nil
 }
 
@@ -792,11 +788,7 @@ func (s *formatCheckingTTSSession) WriteText(string) error { return nil }
 func (s *formatCheckingTTSSession) Flush() error { return nil }
 
 func (s *formatCheckingTTSSession) Close() error {
-	if err := s.sink.WritePCM([]byte{0, 0, 1, 0, 2, 0}); err != nil {
-		s.err = err
-		return err
-	}
-	if err := s.sink.Drain(context.Background()); err != nil {
+	if err := s.sink.WritePCM(make([]byte, testTTSPlaybackStartPCMBytes)); err != nil {
 		s.err = err
 		return err
 	}
@@ -810,6 +802,8 @@ type recordingTTSProvider struct {
 	mu   sync.Mutex
 	seen []string
 }
+
+const testTTSPlaybackStartPCMBytes = 48000
 
 type playbackStartedTransientErrorProvider struct {
 	name  string
@@ -880,14 +874,10 @@ func (s *recordingTTSSession) Close() error {
 		s.provider.mu.Lock()
 		s.provider.seen = append(s.provider.seen, text)
 		s.provider.mu.Unlock()
-		if err := s.sink.WritePCM([]byte{0, 0}); err != nil {
+		if err := s.sink.WritePCM(make([]byte, testTTSPlaybackStartPCMBytes)); err != nil {
 			s.err = err
 			return err
 		}
-	}
-	if err := s.sink.Drain(context.Background()); err != nil {
-		s.err = err
-		return err
 	}
 	return nil
 }

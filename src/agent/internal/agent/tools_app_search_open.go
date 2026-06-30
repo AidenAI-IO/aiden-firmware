@@ -12,6 +12,20 @@ import (
 const appSearchOpenLaunchDelay = 1200 * time.Millisecond
 const appSearchResultSettleDelay = 350 * time.Millisecond
 
+func sleepWithContext(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
 type appSearchOpenTool struct {
 	hw               *textInputHardwareDeps
 	vision           textInputVision
@@ -22,6 +36,7 @@ type appSearchOpenTool struct {
 	searchTermFn     func(string) string
 	entryTool        *EnterTextInFieldTool
 	launchDelay      time.Duration
+	sleep            func(context.Context, time.Duration) error
 }
 
 type appSearchOpenArgs struct {
@@ -77,6 +92,7 @@ func (t *appSearchOpenTool) Call(ctx context.Context, input string) (string, err
 		afterOpenFn:      t.afterOpenFn,
 		entryTool:        t.entryTool,
 		launchDelay:      t.launchDelay,
+		sleep:            t.sleep,
 	})
 	if err != nil {
 		return jsonString(map[string]any{"ok": false, "error": err.Error(), "target": args.App, "steps": result.Steps, "vlm_calls": result.VLMCalls}), nil
@@ -115,6 +131,7 @@ type appSearchOpenFlowConfig struct {
 	afterOpenFn      func() error
 	entryTool        *EnterTextInFieldTool
 	launchDelay      time.Duration
+	sleep            func(context.Context, time.Duration) error
 }
 
 type appSearchOpenFlowResult struct {
@@ -147,6 +164,13 @@ func runAppSearchOpenFlow(ctx context.Context, cfg appSearchOpenFlowConfig) (app
 	if launchDelay <= 0 {
 		launchDelay = appSearchOpenLaunchDelay
 	}
+	sleep := cfg.sleep
+	if sleep == nil {
+		sleep = sleepWithContext
+	}
+	if cfg.entryTool.engine != nil && cfg.sleep != nil && cfg.entryTool.engine.sleep == nil {
+		cfg.entryTool.engine.sleep = cfg.sleep
+	}
 	steps := make([]string, 0, 12)
 	callQuickAction := func(action string) error {
 		out, err := cfg.hw.quickAction.Call(ctx, jsonString(map[string]any{"action": action, "platform": platform}))
@@ -159,7 +183,7 @@ func runAppSearchOpenFlow(ctx context.Context, cfg appSearchOpenFlowConfig) (app
 		return result, err
 	}
 	steps = append(steps, "opened system search")
-	engine := newTextInputEngine(*cfg.hw, cfg.vision)
+	engine := newTextInputEngineWithSleep(*cfg.hw, cfg.vision, cfg.sleep)
 	searchTerms := appSearchFallbackTerms(searchTerm)
 	for idx, term := range searchTerms {
 		entryResult, err := enterSearchQuery(ctx, cfg, term, idx > 0)
@@ -170,7 +194,10 @@ func runAppSearchOpenFlow(ctx context.Context, cfg appSearchOpenFlowConfig) (app
 		result.VLMCalls += entryResult.VLMCalls
 		steps = append(steps, entryResult.Steps...)
 		steps = append(steps, fmt.Sprintf("searched %q", term))
-		time.Sleep(appSearchResultSettleDelay)
+		if err := sleep(ctx, appSearchResultSettleDelay); err != nil {
+			result.Steps = append(steps, "wait for search results canceled")
+			return result, err
+		}
 		steps = append(steps, "waited for search results to settle")
 		foundForTerm := false
 		for attempt := 1; attempt <= 2; attempt++ {
@@ -183,7 +210,10 @@ func runAppSearchOpenFlow(ctx context.Context, cfg appSearchOpenFlowConfig) (app
 			if !findResult.Found {
 				if attempt < 2 {
 					steps = append(steps, fmt.Sprintf("app result not found for %q; rechecking", term))
-					time.Sleep(350 * time.Millisecond)
+					if err := sleep(ctx, 350*time.Millisecond); err != nil {
+						result.Steps = append(steps, "app result recheck wait canceled")
+						return result, err
+					}
 					continue
 				}
 				steps = append(steps, fmt.Sprintf("app result not found for %q", term))
@@ -199,7 +229,10 @@ func runAppSearchOpenFlow(ctx context.Context, cfg appSearchOpenFlowConfig) (app
 			} else {
 				steps = append(steps, "tapped app result")
 			}
-			time.Sleep(launchDelay)
+			if err := sleep(ctx, launchDelay); err != nil {
+				result.Steps = append(steps, "app launch wait canceled")
+				return result, err
+			}
 			opened, calls, err := confirmSearchOpenApp(ctx, cfg, engine, term)
 			result.VLMCalls += calls
 			if err != nil {
@@ -240,7 +273,7 @@ func runAppSearchOpenFlow(ctx context.Context, cfg appSearchOpenFlowConfig) (app
 
 func enterSearchQuery(ctx context.Context, cfg appSearchOpenFlowConfig, term string, clearFirst bool) (enterTextInFieldResult, error) {
 	if clearFirst {
-		engine := newTextInputEngine(*cfg.hw, cfg.vision)
+		engine := newTextInputEngineWithSleep(*cfg.hw, cfg.vision, cfg.sleep)
 		if err := engine.clearField(ctx, cfg.platform); err != nil {
 			return enterTextInFieldResult{}, err
 		}
