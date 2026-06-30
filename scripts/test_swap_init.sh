@@ -11,6 +11,7 @@ if [ ! -x "$SCRIPT" ]; then
 fi
 
 for expected in \
+    'ENABLE_SWAP:=1' \
     'SWAP_FILE:=/userdata/swapfile' \
     'SWAP_MOUNT_POINT:=/userdata' \
     'SWAP_REQUIRE_MOUNT:=1' \
