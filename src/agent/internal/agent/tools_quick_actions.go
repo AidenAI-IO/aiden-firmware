@@ -645,7 +645,9 @@ func (t *QuickActionTool) delegate(ctx context.Context, toolName, payload string
 	return output, nil, nil
 }
 
-func sleepQuickActionDelay(ctx context.Context, delayMs int) error {
+var sleepQuickActionDelay = realSleepQuickActionDelay
+
+func realSleepQuickActionDelay(ctx context.Context, delayMs int) error {
 	if delayMs <= 0 {
 		return nil
 	}

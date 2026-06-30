@@ -3,10 +3,23 @@ package tts
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func withDrainWait(t *testing.T, fn func(context.Context, time.Duration) error) {
+	t.Helper()
+	original := waitForEstimatedDrain
+	waitForEstimatedDrain = fn
+	t.Cleanup(func() { waitForEstimatedDrain = original })
+}
+
+func skipDrainWait(t *testing.T) {
+	t.Helper()
+	withDrainWait(t, func(context.Context, time.Duration) error { return nil })
+}
 
 func TestAudioServiceSinkPrebuffersBeforeStartingPlayback(t *testing.T) {
 	format := AudioFormat{SampleRate: 16000, Channels: 1, BitWidth: 16}
@@ -32,6 +45,8 @@ func TestAudioServiceSinkPrebuffersBeforeStartingPlayback(t *testing.T) {
 }
 
 func TestAudioServiceSinkDrainFlushesShortBufferedPlayback(t *testing.T) {
+	skipDrainWait(t)
+
 	format := AudioFormat{SampleRate: 16000, Channels: 1, BitWidth: 16}
 	backend := &recordingAudioBackend{}
 	sink := NewAudioServiceSink(backend, format)
@@ -58,6 +73,8 @@ func TestAudioServiceSinkDrainFlushesShortBufferedPlayback(t *testing.T) {
 }
 
 func TestAudioServiceSinkWritesTailSilenceBeforeFinal(t *testing.T) {
+	skipDrainWait(t)
+
 	format := AudioFormat{SampleRate: 16000, Channels: 1, BitWidth: 16}
 	backend := &recordingAudioBackend{}
 	sink := NewAudioServiceSink(backend, format)
@@ -168,22 +185,33 @@ func TestAudioServiceSinkDrainWaitsForOwnPCMSOnly(t *testing.T) {
 	backend := &countingBackend{activeOthers: 1}
 	format := AudioFormat{SampleRate: 16000, Channels: 1, BitWidth: 16}
 	sink := NewAudioServiceSink(backend, format)
+	var (
+		mu       sync.Mutex
+		waitSeen time.Duration
+	)
+	withDrainWait(t, func(_ context.Context, wait time.Duration) error {
+		mu.Lock()
+		waitSeen = wait
+		mu.Unlock()
+		return nil
+	})
 
 	pcm := make([]byte, pcmBytesForDuration(format, time.Second))
 	if err := sink.WritePCM(pcm); err != nil {
 		t.Fatalf("WritePCM() error = %v", err)
 	}
 
-	started := time.Now()
 	if err := sink.Drain(context.Background()); err != nil {
 		t.Fatalf("Drain() error = %v", err)
 	}
-	elapsed := time.Since(started)
-	if elapsed < 1900*time.Millisecond {
-		t.Fatalf("Drain() returned too early: %s", elapsed)
+	mu.Lock()
+	gotWait := waitSeen
+	mu.Unlock()
+	if gotWait < 1900*time.Millisecond {
+		t.Fatalf("Drain() wait = %s, want at least 1900ms", gotWait)
 	}
-	if elapsed > 3*time.Second {
-		t.Fatalf("Drain() took too long: %s", elapsed)
+	if gotWait > 3*time.Second {
+		t.Fatalf("Drain() wait = %s, want no more than 3s", gotWait)
 	}
 	if got := atomic.LoadInt32(&backend.finalCalls); got != 1 {
 		t.Fatalf("finalCalls = %d, want 1", got)
@@ -197,8 +225,10 @@ func TestAudioServiceSinkDrainRespectsContextCancel(t *testing.T) {
 		t.Fatalf("WritePCM() error = %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
+	withDrainWait(t, func(context.Context, time.Duration) error {
+		return context.DeadlineExceeded
+	})
+	ctx := context.Background()
 	if err := sink.Drain(ctx); err == nil {
 		t.Fatal("Drain() error = nil, want context deadline exceeded")
 	}

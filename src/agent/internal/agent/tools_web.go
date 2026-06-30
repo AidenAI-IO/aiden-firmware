@@ -28,6 +28,7 @@ const maxWebToolOutputBytes = 12_000
 const braveSearchEndpoint = "https://api.search.brave.com/res/v1/web/search"
 
 var lookupScrapeHostIPs = net.LookupIP
+var webScraperRequestDelay = 3 * time.Second
 
 // searchBackend abstracts the actual search call.
 type searchBackend interface {
@@ -451,7 +452,7 @@ func (t *WebScraperTool) scrape(ctx context.Context, targetURL string) (string, 
 	if err := c.Limit(&colly.LimitRule{
 		DomainGlob:  "*",
 		Parallelism: 2,
-		Delay:       3 * time.Second,
+		Delay:       webScraperRequestDelay,
 	}); err != nil {
 		return "", err
 	}

@@ -199,6 +199,10 @@ func TestWebScraperRejectsHostnamesRebindingToPrivateIPsAtDialTime(t *testing.T)
 		t.Setenv(env, "")
 	}
 
+	originalDelay := webScraperRequestDelay
+	webScraperRequestDelay = 0
+	defer func() { webScraperRequestDelay = originalDelay }()
+
 	original := lookupScrapeHostIPs
 	lookupCalls := 0
 	lookupScrapeHostIPs = func(host string) ([]net.IP, error) {
