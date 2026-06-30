@@ -270,7 +270,7 @@ func TestConfigMeta_TTSModelHiddenForMinimaxProviders(t *testing.T) {
 	if model.VisibleWhen == nil {
 		t.Fatal("tts.model has no visibleWhen rule")
 	}
-	want := VisibleRule{All: []Condition{{Field: "tts.provider", Op: "notIn", Values: []string{"minimax", "minimax-cn"}}}}
+	want := VisibleRule{All: []Condition{{Field: "tts.provider", Op: "in", Values: []string{"openrouter"}}}}
 	if !reflect.DeepEqual(*model.VisibleWhen, want) {
 		t.Fatalf("tts.model visibleWhen = %#v, want %#v", *model.VisibleWhen, want)
 	}
