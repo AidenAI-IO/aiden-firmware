@@ -181,11 +181,12 @@ func (t *WaitStableScreenTool) captureScreenshot() (screenshotResult, error) {
 	displayData := jpegData
 	if !alreadyCropped && active.Valid && (active.X != 0 || active.Y != 0 || active.Width != displayWidth || active.Height != displayHeight) {
 		croppedData, croppedWidth, croppedHeight, err := cropJPEGToActiveArea(jpegData, active, screenshotJPEGQuality)
-		if err == nil {
-			displayWidth = croppedWidth
-			displayHeight = croppedHeight
-			displayData = croppedData
+		if err != nil {
+			return screenshotResult{}, fmt.Errorf("crop screenshot to active area: %w", err)
 		}
+		displayWidth = croppedWidth
+		displayHeight = croppedHeight
+		displayData = croppedData
 	}
 	result := screenshotResult{
 		Width:  displayWidth,
