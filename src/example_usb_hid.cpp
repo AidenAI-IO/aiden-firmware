@@ -489,8 +489,8 @@ void ensure_symlink(const std::string& target, const std::string& path) {
 void setup_keyboard_function(const std::string& gadget) {
     std::string function_path = gadget + "/functions/hid.usb0";
     ensure_dir(function_path);
-    write_text_file(function_path + "/protocol", "0");
-    write_text_file(function_path + "/subclass", "0");
+    write_text_file(function_path + "/protocol", "1");
+    write_text_file(function_path + "/subclass", "1");
     write_text_file(function_path + "/report_length", "8");
     write_binary_file(function_path + "/report_desc", kKeyboardDescriptor, sizeof(kKeyboardDescriptor));
     ensure_symlink(function_path, gadget + "/configs/c.1/hid.usb0");

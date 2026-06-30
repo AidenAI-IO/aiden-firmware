@@ -12,11 +12,11 @@ fail() {
 
 sh -n "$INIT_SCRIPT" || fail "S49usbhid has invalid shell syntax"
 
-grep -Fq 'echo 0 > "$GADGET_DIR/functions/hid.usb0/protocol"' "$INIT_SCRIPT" ||
-    fail "S49usbhid must advertise keyboard HID report protocol=0 for reliable iOS modifiers"
+grep -Fq 'echo 1 > "$GADGET_DIR/functions/hid.usb0/protocol"' "$INIT_SCRIPT" ||
+    fail "S49usbhid must keep keyboard HID boot protocol=1 for host compatibility"
 
-grep -Fq 'echo 0 > "$GADGET_DIR/functions/hid.usb0/subclass"' "$INIT_SCRIPT" ||
-    fail "S49usbhid must advertise keyboard HID non-boot subclass=0 for reliable iOS modifiers"
+grep -Fq 'echo 1 > "$GADGET_DIR/functions/hid.usb0/subclass"' "$INIT_SCRIPT" ||
+    fail "S49usbhid must keep keyboard HID boot subclass=1 for host compatibility"
 
 grep -Fq 'reenumerate_composite()' "$INIT_SCRIPT" ||
     fail "S49usbhid must define startup composite re-enumeration for iOS HID session refresh"
@@ -51,10 +51,10 @@ awk -v bind="echo \"\$UDC\" > \"\$GADGET_DIR/UDC\"" '
 ' "$INIT_SCRIPT" ||
     fail "S49usbhid must re-enumerate the composite gadget immediately after initial bind"
 
-grep -Fq 'write_text_file(function_path + "/protocol", "0");' "$EXAMPLE_SRC" ||
-    fail "example_usb_hid setup must use keyboard HID report protocol=0"
+grep -Fq 'write_text_file(function_path + "/protocol", "1");' "$EXAMPLE_SRC" ||
+    fail "example_usb_hid setup must keep keyboard HID boot protocol=1"
 
-grep -Fq 'write_text_file(function_path + "/subclass", "0");' "$EXAMPLE_SRC" ||
-    fail "example_usb_hid setup must use keyboard HID non-boot subclass=0"
+grep -Fq 'write_text_file(function_path + "/subclass", "1");' "$EXAMPLE_SRC" ||
+    fail "example_usb_hid setup must keep keyboard HID boot subclass=1"
 
 echo "usb HID keyboard protocol checks passed"
