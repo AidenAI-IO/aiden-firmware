@@ -80,6 +80,72 @@ func fieldTextExactlyMatches(fieldText, targetText string) bool {
 	return strings.TrimSpace(fieldText) == strings.TrimSpace(targetText)
 }
 
+func fieldTextEquivalentMatches(fieldText, targetText string) bool {
+	fieldText = normalizeTextInputComparableText(fieldText)
+	targetText = normalizeTextInputComparableText(targetText)
+	return fieldText != "" && fieldText == targetText
+}
+
+func normalizeTextInputComparableText(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	var builder strings.Builder
+	pendingSpace := false
+	for _, r := range text {
+		r = normalizeTextInputComparableRune(r)
+		if unicode.IsSpace(r) {
+			pendingSpace = true
+			continue
+		}
+		if pendingSpace && builder.Len() > 0 {
+			builder.WriteRune(' ')
+		}
+		pendingSpace = false
+		builder.WriteRune(r)
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func normalizeTextInputComparableRune(r rune) rune {
+	switch {
+	case r >= '０' && r <= '９':
+		return '0' + (r - '０')
+	case r >= 'Ａ' && r <= 'Ｚ':
+		return 'A' + (r - 'Ａ')
+	case r >= 'ａ' && r <= 'ｚ':
+		return 'a' + (r - 'ａ')
+	}
+	switch r {
+	case '？':
+		return '?'
+	case '！':
+		return '!'
+	case '，', '、':
+		return ','
+	case '。', '．':
+		return '.'
+	case '：':
+		return ':'
+	case '；':
+		return ';'
+	case '（':
+		return '('
+	case '）':
+		return ')'
+	case '【', '［':
+		return '['
+	case '】', '］':
+		return ']'
+	case '“', '”':
+		return '"'
+	case '‘', '’':
+		return '\''
+	}
+	return r
+}
+
 func evaluateFieldCommit(analysis textInputScreenAnalysis, targetText string) (committed bool, fieldText string) {
 	fieldText = strings.TrimSpace(analysis.FieldText)
 	targetText = strings.TrimSpace(targetText)
@@ -87,10 +153,11 @@ func evaluateFieldCommit(analysis textInputScreenAnalysis, targetText string) (c
 		if analysis.CompositionPending {
 			return false, fieldText
 		}
-		return fieldTextExactlyMatches(fieldText, targetText), fieldText
+		return fieldTextExactlyMatches(fieldText, targetText) || fieldTextEquivalentMatches(fieldText, targetText), fieldText
 	}
 	// ASCII: committed text in the field wins even if VLM wrongly sets composition_pending.
-	if fieldTextExactlyMatches(fieldText, targetText) || strings.EqualFold(fieldText, targetText) {
+	if fieldTextExactlyMatches(fieldText, targetText) || strings.EqualFold(fieldText, targetText) ||
+		strings.EqualFold(normalizeTextInputComparableText(fieldText), normalizeTextInputComparableText(targetText)) {
 		return true, fieldText
 	}
 	return false, fieldText
@@ -210,6 +277,26 @@ type focusPointArgs struct {
 	X          float64 `json:"x"`
 	Y          float64 `json:"y"`
 	CoordSpace string  `json:"coord_space,omitempty"`
+}
+
+func normalizeTextInputFocusPoint(focus focusPointArgs) (focusPointArgs, bool) {
+	coordSpace := strings.ToLower(strings.TrimSpace(focus.CoordSpace))
+	if coordSpace == "" {
+		coordSpace = "normalized"
+	}
+	if coordSpace != "normalized" {
+		return focus, false
+	}
+	if focus.X < 0 || focus.Y < 0 || focus.X > 100 || focus.Y > 100 {
+		return focus, false
+	}
+	if focus.X == 0 && focus.Y == 0 {
+		return focus, false
+	}
+	focus.X *= 10
+	focus.Y *= 10
+	focus.CoordSpace = "normalized"
+	return focus, true
 }
 
 func textInputKeyboardKeysForIMESwitch(platform string) ([]string, error) {

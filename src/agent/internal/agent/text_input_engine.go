@@ -26,21 +26,25 @@ type textInputEngine struct {
 }
 
 type enterTextInFieldArgs struct {
-	Text        string         `json:"text"`
-	Platform    string         `json:"platform,omitempty"`
-	Mode        string         `json:"mode,omitempty"`
-	SkipFocus   bool           `json:"skip_focus,omitempty"`
-	Focus       focusPointArgs `json:"focus"`
-	MaxAttempts int            `json:"max_attempts,omitempty"`
-	Segments    []string       `json:"segments,omitempty"`
+	Text            string         `json:"text"`
+	Platform        string         `json:"platform,omitempty"`
+	Mode            string         `json:"mode,omitempty"`
+	SkipFocus       bool           `json:"skip_focus,omitempty"`
+	Focus           focusPointArgs `json:"focus"`
+	MaxAttempts     int            `json:"max_attempts,omitempty"`
+	Segments        []string       `json:"segments,omitempty"`
+	SendAfterCommit bool           `json:"send_after_commit,omitempty"`
 }
 
 type enterTextInFieldResult struct {
 	OK                 bool     `json:"ok"`
 	Committed          bool     `json:"committed"`
+	Sent               bool     `json:"sent,omitempty"`
+	SendVerified       bool     `json:"send_verified,omitempty"`
 	Interrupted        bool     `json:"interrupted,omitempty"`
 	TargetText         string   `json:"target_text"`
 	FieldText          string   `json:"field_text,omitempty"`
+	PostSendFieldText  string   `json:"post_send_field_text,omitempty"`
 	RequiredMode       string   `json:"required_mode"`
 	Mode               string   `json:"mode,omitempty"`
 	Attempts           int      `json:"attempts"`

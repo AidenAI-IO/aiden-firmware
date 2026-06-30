@@ -172,6 +172,7 @@ func (s *ToolSet) RegisterEnterTextInFieldTool(models ModelResolver, platformFn 
 	}
 	s.tools["search_launch_app"] = searchOpenTool
 	bridgeTool := &EnterTextViaBridgeTool{hw: s.textInputHW, vision: newLLMTextInputVision(models), bridgeFn: func() *PhoneBridge { return s.phoneBridge }, platformFn: platformFn}
+	tool.bridgeTool = bridgeTool
 	s.tools["enter_text_via_bridge"] = newPostActionScreenshotTool(bridgeTool, s.textInputHW.screenshot, 300*time.Millisecond)
 }
 

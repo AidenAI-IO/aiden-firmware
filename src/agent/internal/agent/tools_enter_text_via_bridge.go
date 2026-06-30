@@ -12,9 +12,12 @@ const (
 	textViaBridgeConnectTimeout = 8 * time.Second
 	textViaBridgePollInterval   = 200 * time.Millisecond
 	textViaBridgePostWriteDelay = 2 * time.Second
+	textViaBridgePostPasteDelay = 350 * time.Millisecond
+	textViaBridgePostSendDelay  = 800 * time.Millisecond
 	textViaBridgeOpenAttempts   = 2
 	textViaBridgePasteAttempts  = 2
 	textViaBridgeRecentsSwipes  = 3
+	preparedClipboardMaxAge     = 5 * time.Minute
 )
 
 type bridgeSearchResult struct {
@@ -32,6 +35,18 @@ type previousAppCardResult struct {
 	Found    bool           `json:"found"`
 	TapPoint focusPointArgs `json:"tap_point"`
 	Label    string         `json:"label,omitempty"`
+}
+
+type textViaBridgeResult struct {
+	Attempted         bool
+	Committed         bool
+	Sent              bool
+	SendVerified      bool
+	FieldText         string
+	PostSendFieldText string
+	VLMCalls          int
+	Steps             []string
+	Err               error
 }
 
 type EnterTextViaBridgeTool struct {
@@ -55,10 +70,14 @@ func (t *EnterTextViaBridgeTool) SetPlatformFn(fn func() string) {
 func (t *EnterTextViaBridgeTool) Name() string { return "enter_text_via_bridge" }
 
 func (t *EnterTextViaBridgeTool) Description() string {
-	return strings.TrimSpace(`Use the Aiden companion app and phone bridge clipboard path to place known text into an input field. ` +
-		`One call runs: restore/open the Aiden app if needed, wait for bridge connection, write the clipboard, return to the prior app, refocus the field, paste, and verify the field text. ` +
-		`Use this only when the user explicitly asks to use bridge/clipboard/companion-app input instead of normal typing. ` +
-		`Returns committed:true only when the exact target text is verified in the input field.`)
+	return strings.TrimSpace(`Use the Phone Bridge clipboard path to place known text into an input field. ` +
+		`On iOS, if the target text was already prepared with clipboard write, it focuses the current target field, pastes, and verifies without reopening Aiden. ` +
+		`When explicitly needed and Dynamic Island return is available, this tool can restore Aiden, write clipboard in the app, return to the target app, focus the field, paste, and verify the field text. ` +
+		`On Android, one call writes clipboard through the connected bridge, focuses the field, pastes, and verifies. ` +
+		`For message composition fields, set send_after_commit=true only after the target chat is open; the tool then runs focus → paste → verify field text → keyboard send → verify the input cleared/changed after send. ` +
+		`Use enter_text_in_field for normal field entry; it automatically prefers this clipboard strategy when appropriate and falls back to HID/IME input if needed. ` +
+		`If the reliable clipboard path is unavailable, it returns committed:false. ` +
+		`Returns committed:true only when the exact target text is verified in the input field; when send_after_commit=true, ok=true also requires send_verified:true.`)
 }
 
 func (t *EnterTextViaBridgeTool) ArgsSchema() map[string]any {
@@ -66,6 +85,10 @@ func (t *EnterTextViaBridgeTool) ArgsSchema() map[string]any {
 		"text":     stringArgSchema("Exact text that must appear in the field when done."),
 		"platform": stringEnumArgSchema("Target platform.", "ios", "android", "mac"),
 		"focus":    focusPointArgSchema("Input field coordinates."),
+		"send_after_commit": map[string]any{
+			"type":        "boolean",
+			"description": "After field text is verified, press the platform send/submit key and verify the target text is no longer still present in the input field.",
+		},
 	}, "text", "focus")
 }
 
@@ -96,98 +119,393 @@ func (t *EnterTextViaBridgeTool) Call(ctx context.Context, input string) (string
 		result.Reason = "text is required"
 		return jsonString(result), nil
 	}
-	committed, fieldText, vlmCalls, steps, err := t.runBridgeFlow(ctx, platform, args)
-	result.OK = committed
-	result.Committed = committed
-	result.FieldText = fieldText
-	result.VLMCalls = vlmCalls
-	result.Steps = steps
-	if err != nil {
-		result.Reason = err.Error()
+	bridgeResult := t.runBridgeFlow(ctx, platform, args)
+	result.Committed = bridgeResult.Committed
+	result.Sent = bridgeResult.Sent
+	result.SendVerified = bridgeResult.SendVerified
+	result.FieldText = bridgeResult.FieldText
+	result.PostSendFieldText = bridgeResult.PostSendFieldText
+	result.VLMCalls = bridgeResult.VLMCalls
+	result.Steps = bridgeResult.Steps
+	result.OK = bridgeResult.Committed
+	if args.SendAfterCommit {
+		result.OK = bridgeResult.Committed && bridgeResult.SendVerified
+	}
+	if bridgeResult.Err != nil {
+		result.Reason = bridgeResult.Err.Error()
 		return jsonString(result), nil
 	}
-	if !committed {
+	if !bridgeResult.Committed {
 		result.Reason = "bridge clipboard input not verified in field"
+		return jsonString(result), nil
+	}
+	if args.SendAfterCommit && !bridgeResult.SendVerified {
+		result.Reason = "field verified but send was not verified"
+		return jsonString(result), nil
+	}
+	if args.SendAfterCommit {
+		result.Reason = "send verified"
 		return jsonString(result), nil
 	}
 	result.Reason = "field verified"
 	return jsonString(result), nil
 }
 
-func (t *EnterTextViaBridgeTool) runBridgeFlow(ctx context.Context, platform string, args enterTextInFieldArgs) (committed bool, fieldText string, vlmCalls int, steps []string, err error) {
+func (t *EnterTextViaBridgeTool) runBridgeFlow(ctx context.Context, platform string, args enterTextInFieldArgs) textViaBridgeResult {
+	result := t.runClipboardFirstFlow(ctx, platform, args)
+	if result.Attempted {
+		return result
+	}
+	result.Err = fmt.Errorf("reliable bridge clipboard path unavailable; use enter_text_in_field fallback instead")
+	return result
+}
+
+func (t *EnterTextViaBridgeTool) runClipboardFirstResult(ctx context.Context, args enterTextInFieldArgs) (enterTextInFieldResult, bool) {
+	platform := strings.ToLower(strings.TrimSpace(args.Platform))
+	if platform == "" {
+		platform = "android"
+	}
+	args.Focus, _ = normalizeTextInputFocusPoint(args.Focus)
+	result := enterTextInFieldResult{
+		TargetText:   strings.TrimSpace(args.Text),
+		RequiredMode: string(requiredTextInputMode(args.Text)),
+		Attempts:     1,
+	}
+	if result.TargetText == "" {
+		result.Reason = "text is required"
+		return result, false
+	}
+	bridgeResult := t.runAutomaticClipboardFirstFlow(ctx, platform, args)
+	if !bridgeResult.Attempted {
+		result.Reason = "reliable bridge clipboard path unavailable"
+		return result, false
+	}
+	result.Committed = bridgeResult.Committed
+	result.Sent = bridgeResult.Sent
+	result.SendVerified = bridgeResult.SendVerified
+	result.FieldText = bridgeResult.FieldText
+	result.PostSendFieldText = bridgeResult.PostSendFieldText
+	result.VLMCalls = bridgeResult.VLMCalls
+	result.Steps = bridgeResult.Steps
+	result.OK = bridgeResult.Committed
+	if args.SendAfterCommit {
+		result.OK = bridgeResult.Committed && bridgeResult.SendVerified
+	}
+	if bridgeResult.Err != nil {
+		result.Reason = bridgeResult.Err.Error()
+		return result, true
+	}
+	if !bridgeResult.Committed {
+		result.Reason = "bridge clipboard input not verified in field"
+		return result, true
+	}
+	if args.SendAfterCommit && !bridgeResult.SendVerified {
+		result.Reason = "field verified but send was not verified"
+		return result, true
+	}
+	if args.SendAfterCommit {
+		result.Reason = "send verified"
+		return result, true
+	}
+	result.Reason = "field verified"
+	return result, true
+}
+
+func (t *EnterTextViaBridgeTool) runClipboardFirstFlow(ctx context.Context, platform string, args enterTextInFieldArgs) textViaBridgeResult {
 	bridge := t.currentBridge()
 	if bridge == nil {
-		return false, "", 0, nil, fmt.Errorf("phone bridge is not configured")
+		return textViaBridgeResult{Err: fmt.Errorf("phone bridge is not configured")}
+	}
+	status := bridge.Status()
+	switch strings.ToLower(strings.TrimSpace(platform)) {
+	case "ios":
+		if bridge.ClipboardRecentlyContains(args.Text, preparedClipboardMaxAge) {
+			return t.runPreparedClipboardPasteFlow(ctx, platform, args)
+		}
+		if phoneBridgeCanRestoreFromReturnEntry(status) || phoneBridgeReadyForCommand(status) {
+			return t.runLegacyBridgeFlow(ctx, platform, args)
+		}
+		return textViaBridgeResult{}
+	case "android":
+		return t.runTargetPreservingClipboardFlow(ctx, platform, args)
+	default:
+		return textViaBridgeResult{}
+	}
+}
+
+func (t *EnterTextViaBridgeTool) runAutomaticClipboardFirstFlow(ctx context.Context, platform string, args enterTextInFieldArgs) textViaBridgeResult {
+	bridge := t.currentBridge()
+	if bridge == nil {
+		return textViaBridgeResult{Err: fmt.Errorf("phone bridge is not configured")}
+	}
+	switch strings.ToLower(strings.TrimSpace(platform)) {
+	case "ios":
+		if !bridge.ClipboardRecentlyContains(args.Text, preparedClipboardMaxAge) {
+			return textViaBridgeResult{}
+		}
+		return t.runPreparedClipboardPasteFlow(ctx, platform, args)
+	case "android":
+		return t.runTargetPreservingClipboardFlow(ctx, platform, args)
+	default:
+		return textViaBridgeResult{}
+	}
+}
+
+func (t *EnterTextViaBridgeTool) runTargetPreservingClipboardFlow(ctx context.Context, platform string, args enterTextInFieldArgs) textViaBridgeResult {
+	bridge := t.currentBridge()
+	if bridge == nil {
+		return textViaBridgeResult{Err: fmt.Errorf("phone bridge is not configured")}
+	}
+	engine := newTextInputEngineWithSleep(*t.hw, t.vision, t.sleep)
+	preserved, preserveSteps, preserveErr := t.writeClipboardPreservingTarget(ctx, bridge, platform, args.Text)
+	if preserveErr != nil {
+		return textViaBridgeResult{Attempted: true, Steps: preserveSteps, Err: preserveErr}
+	}
+	if !preserved {
+		return textViaBridgeResult{}
+	}
+	result := t.focusPasteVerify(ctx, engine, platform, args)
+	result.Attempted = true
+	result.Steps = append(preserveSteps, result.Steps...)
+	return result
+}
+
+func (t *EnterTextViaBridgeTool) runPreparedClipboardPasteFlow(ctx context.Context, platform string, args enterTextInFieldArgs) textViaBridgeResult {
+	engine := newTextInputEngineWithSleep(*t.hw, t.vision, t.sleep)
+	result := t.focusPasteVerify(ctx, engine, platform, args)
+	result.Attempted = true
+	result.Steps = append([]string{"clipboard-first: using prepared clipboard in current app"}, result.Steps...)
+	return result
+}
+
+func (t *EnterTextViaBridgeTool) runLegacyBridgeFlow(ctx context.Context, platform string, args enterTextInFieldArgs) textViaBridgeResult {
+	bridge := t.currentBridge()
+	if bridge == nil {
+		return textViaBridgeResult{Attempted: true, Err: fmt.Errorf("phone bridge is not configured")}
 	}
 	engine := newTextInputEngineWithSleep(*t.hw, t.vision, t.sleep)
 	restoreSteps, restoreCalls, restoreErr := t.restoreBridgeAppIfNeeded(ctx, engine, bridge, platform)
-	steps = append(steps, restoreSteps...)
-	vlmCalls += restoreCalls
+	steps := append([]string{}, restoreSteps...)
+	vlmCalls := restoreCalls
 	if restoreErr != nil {
-		return false, "", vlmCalls, steps, restoreErr
+		return textViaBridgeResult{Attempted: true, VLMCalls: vlmCalls, Steps: steps, Err: restoreErr}
 	}
 	bridge = t.currentBridge()
 	if bridge == nil || !bridge.Connected() {
-		return false, "", vlmCalls, steps, fmt.Errorf("phone bridge did not connect")
+		return textViaBridgeResult{Attempted: true, VLMCalls: vlmCalls, Steps: steps, Err: fmt.Errorf("phone bridge did not connect")}
 	}
 	if err := t.writeClipboard(ctx, bridge, args.Text); err != nil {
-		return false, "", vlmCalls, append(steps, "clipboard write failed"), err
+		return textViaBridgeResult{Attempted: true, VLMCalls: vlmCalls, Steps: append(steps, "clipboard write failed"), Err: err}
 	}
 	steps = append(steps, "clipboard-first: wrote clipboard in bridge app")
 	if err := t.sleepAfterClipboardWrite(ctx); err != nil {
-		return false, "", vlmCalls, append(steps, "clipboard-first: wait before app switch canceled"), err
+		return textViaBridgeResult{Attempted: true, VLMCalls: vlmCalls, Steps: append(steps, "clipboard-first: wait before app switch canceled"), Err: err}
 	}
 	steps = append(steps, "clipboard-first: waited before app switch")
 	if _, err := t.callQuickAction(ctx, "app_switch", platform); err != nil {
-		return false, "", 0, append(steps, "clipboard-first: return to prior app failed"), err
+		return textViaBridgeResult{Attempted: true, VLMCalls: vlmCalls, Steps: append(steps, "clipboard-first: return to prior app failed"), Err: err}
 	}
 	steps = append(steps, "clipboard-first: opened app switcher")
 	returnCalls, err := t.returnToPreviousApp(ctx, engine)
 	vlmCalls += returnCalls
 	if err != nil {
-		return false, "", 0, append(steps, "clipboard-first: select previous app failed"), err
+		return textViaBridgeResult{Attempted: true, VLMCalls: vlmCalls, Steps: append(steps, "clipboard-first: select previous app failed"), Err: err}
 	}
 	steps = append(steps, "clipboard-first: returned to prior app")
-	committed, fieldText, calls, pasteSteps, err := t.focusPasteVerify(ctx, engine, platform, args)
-	vlmCalls += calls
-	steps = append(steps, pasteSteps...)
-	if err != nil {
-		return false, fieldText, vlmCalls, steps, err
-	}
-	if committed {
-		return true, fieldText, vlmCalls, steps, nil
-	}
-	return false, fieldText, vlmCalls, steps, nil
+	result := t.focusPasteVerify(ctx, engine, platform, args)
+	result.Attempted = true
+	result.VLMCalls += vlmCalls
+	result.Steps = append(steps, result.Steps...)
+	return result
 }
 
-func (t *EnterTextViaBridgeTool) focusPasteVerify(ctx context.Context, engine *textInputEngine, platform string, args enterTextInFieldArgs) (committed bool, fieldText string, vlmCalls int, steps []string, err error) {
+func (t *EnterTextViaBridgeTool) canUseClipboardFirst(platform string, text string) bool {
+	bridge := t.currentBridge()
+	if bridge == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(platform)) {
+	case "ios":
+		return bridge.ClipboardRecentlyContains(text, preparedClipboardMaxAge)
+	case "android":
+		return t.canWriteClipboardPreservingTarget(platform)
+	default:
+		return false
+	}
+}
+
+func (t *EnterTextViaBridgeTool) writeClipboardPreservingTarget(ctx context.Context, bridge *PhoneBridge, platform, text string) (bool, []string, error) {
+	if !t.canWriteClipboardPreservingTarget(platform) {
+		return false, nil, nil
+	}
+	if err := t.writeClipboard(ctx, bridge, text); err != nil {
+		return true, []string{"clipboard-first: target-preserving clipboard write failed"}, err
+	}
+	return true, []string{"clipboard-first: wrote clipboard without leaving target app"}, nil
+}
+
+func (t *EnterTextViaBridgeTool) canWriteClipboardPreservingTarget(platform string) bool {
+	return strings.EqualFold(strings.TrimSpace(platform), "android")
+}
+
+func (t *EnterTextViaBridgeTool) focusPasteVerify(ctx context.Context, engine *textInputEngine, platform string, args enterTextInFieldArgs) textViaBridgeResult {
+	var result textViaBridgeResult
 	for attempt := 1; attempt <= textViaBridgePasteAttempts; attempt++ {
 		if err := engine.applyFocus(ctx, args.Focus); err != nil {
-			return false, "", vlmCalls, append(steps, "clipboard-first focus failed: "+err.Error()), err
+			result.Steps = append(result.Steps, "clipboard-first focus failed: "+err.Error())
+			result.Err = err
+			return result
 		}
-		steps = append(steps, fmt.Sprintf("clipboard-first: focused field (attempt %d)", attempt))
-		qaOut, qaErr := t.hw.quickAction.Call(ctx, jsonString(map[string]any{"action": "paste", "platform": platform}))
-		if qaErr != nil {
-			return false, "", vlmCalls, steps, qaErr
-		}
-		if err := interpretTextInputToolOutput(qaOut); err != nil {
-			return false, "", vlmCalls, append(steps, "clipboard-first paste failed"), err
-		}
-		steps = append(steps, fmt.Sprintf("clipboard-first: pasted clipboard (attempt %d)", attempt))
-		analysis, calls, analyzeSteps, err := engine.analyzeScreen(ctx, platform, args, nil)
-		vlmCalls += calls
-		steps = append(steps, analyzeSteps...)
+		result.Steps = append(result.Steps, fmt.Sprintf("clipboard-first: focused field (attempt %d)", attempt))
+		pasteMethod, fallbackReason, err := t.pasteClipboard(ctx, platform)
 		if err != nil {
-			return false, "", vlmCalls, steps, err
+			result.Steps = append(result.Steps, "clipboard-first paste failed")
+			result.Err = err
+			return result
+		}
+		if fallbackReason != "" {
+			result.Steps = append(result.Steps, "clipboard-first: quick_action paste failed, used keyboard fallback: "+fallbackReason)
+		}
+		result.Steps = append(result.Steps, fmt.Sprintf("clipboard-first: %s-pasted clipboard (attempt %d)", pasteMethod, attempt))
+		if err := t.sleepAfterPaste(ctx); err != nil {
+			result.Steps = append(result.Steps, "clipboard-first: wait after paste canceled")
+			result.Err = err
+			return result
+		}
+		analysis, calls, analyzeSteps, err := engine.analyzeScreen(ctx, platform, args, nil)
+		result.VLMCalls += calls
+		result.Steps = append(result.Steps, analyzeSteps...)
+		if err != nil {
+			result.Err = err
+			return result
 		}
 		if committed, committedFieldText := evaluateFieldCommit(analysis, args.Text); committed {
-			return true, committedFieldText, vlmCalls, steps, nil
+			result.Committed = true
+			result.FieldText = committedFieldText
+			if args.SendAfterCommit {
+				sent, verified, postFieldText, calls, sendSteps, err := t.keyboardSendAndVerify(ctx, engine, platform, args)
+				result.Sent = sent
+				result.SendVerified = verified
+				result.PostSendFieldText = postFieldText
+				result.VLMCalls += calls
+				result.Steps = append(result.Steps, sendSteps...)
+				result.Err = err
+			}
+			return result
 		} else {
-			steps = append(steps, fmt.Sprintf("clipboard-first: field verify failed after paste attempt %d", attempt))
-			fieldText = analysis.FieldText
+			result.Steps = append(result.Steps, fmt.Sprintf("clipboard-first: field verify failed after paste attempt %d", attempt))
+			result.FieldText = analysis.FieldText
+			if strings.TrimSpace(analysis.FieldText) != "" {
+				result.Steps = append(result.Steps, "clipboard-first: not retrying paste because field already contains unverified text")
+				return result
+			}
 		}
 	}
-	return false, fieldText, vlmCalls, steps, nil
+	return result
+}
+
+func (t *EnterTextViaBridgeTool) keyboardPaste(ctx context.Context, platform string) error {
+	return t.keyboardTap(ctx, keyboardPasteKeys(platform))
+}
+
+func (t *EnterTextViaBridgeTool) pasteClipboard(ctx context.Context, platform string) (method string, fallbackReason string, err error) {
+	if t != nil && t.hw != nil && t.hw.quickAction != nil {
+		if _, err := t.callQuickAction(ctx, "paste", platform); err == nil {
+			return "quick_action", "", nil
+		} else {
+			fallbackReason = err.Error()
+		}
+	}
+	if err := t.keyboardPaste(ctx, platform); err != nil {
+		if fallbackReason != "" {
+			return "", fallbackReason, fmt.Errorf("quick_action paste failed: %s; keyboard paste failed: %w", fallbackReason, err)
+		}
+		return "", "", err
+	}
+	return "keyboard", fallbackReason, nil
+}
+
+func (t *EnterTextViaBridgeTool) keyboardSendAndVerify(ctx context.Context, engine *textInputEngine, platform string, args enterTextInFieldArgs) (sent bool, verified bool, postFieldText string, vlmCalls int, steps []string, err error) {
+	if err := t.keyboardTap(ctx, keyboardSendKeys(platform)); err != nil {
+		return false, false, "", 0, append(steps, "clipboard-first keyboard send failed"), err
+	}
+	sent = true
+	steps = append(steps, "clipboard-first: keyboard send submitted")
+	if err := t.sleepAfterSend(ctx); err != nil {
+		return sent, false, "", 0, append(steps, "clipboard-first: wait after send canceled"), err
+	}
+	analysis, calls, analyzeSteps, err := engine.analyzeScreen(ctx, platform, args, nil)
+	vlmCalls += calls
+	steps = append(steps, analyzeSteps...)
+	if err != nil {
+		return sent, false, "", vlmCalls, steps, err
+	}
+	postFieldText = analysis.FieldText
+	if sendVerifiedByFieldClearedOrChanged(analysis, args.Text) {
+		steps = append(steps, "clipboard-first: send verified by cleared/changed input field")
+		return sent, true, postFieldText, vlmCalls, steps, nil
+	}
+	steps = append(steps, fmt.Sprintf("clipboard-first: send not verified; input still contains target text %q", postFieldText))
+	return sent, false, postFieldText, vlmCalls, steps, nil
+}
+
+func (t *EnterTextViaBridgeTool) keyboardTap(ctx context.Context, keys []string) error {
+	if t == nil || t.hw == nil || t.hw.keyboardTap == nil {
+		return fmt.Errorf("keyboard_tap is not configured")
+	}
+	_, err := callTextInputTool(ctx, t.hw.keyboardTap, jsonString(map[string]any{"keys": keys}))
+	return err
+}
+
+func keyboardPasteKeys(platform string) []string {
+	switch strings.ToLower(strings.TrimSpace(platform)) {
+	case "android":
+		return []string{"ctrl", "v"}
+	default:
+		return []string{"meta", "v"}
+	}
+}
+
+func keyboardSendKeys(_ string) []string {
+	return []string{"enter"}
+}
+
+func sendVerifiedByFieldClearedOrChanged(analysis textInputScreenAnalysis, targetText string) bool {
+	fieldText := strings.TrimSpace(analysis.FieldText)
+	targetText = strings.TrimSpace(targetText)
+	if fieldText == "" || targetText == "" {
+		return fieldText == ""
+	}
+	if committed, _ := evaluateFieldCommit(analysis, targetText); committed {
+		return false
+	}
+	fieldCompact := compactTextForSendVerify(fieldText)
+	targetCompact := compactTextForSendVerify(targetText)
+	if fieldCompact == "" || targetCompact == "" {
+		return fieldCompact == ""
+	}
+	if fieldCompact == targetCompact || strings.Contains(fieldCompact, targetCompact) {
+		return false
+	}
+	if len([]rune(fieldCompact)) >= 8 && strings.Contains(targetCompact, fieldCompact) {
+		return false
+	}
+	return true
+}
+
+func compactTextForSendVerify(text string) string {
+	text = strings.ToLower(strings.TrimSpace(text))
+	if text == "" {
+		return ""
+	}
+	var builder strings.Builder
+	for _, r := range text {
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+			continue
+		}
+		builder.WriteRune(r)
+	}
+	return builder.String()
 }
 
 func (t *EnterTextViaBridgeTool) restoreBridgeAppIfNeeded(ctx context.Context, engine *textInputEngine, bridge *PhoneBridge, platform string) (steps []string, vlmCalls int, err error) {
@@ -339,6 +657,22 @@ func (t *EnterTextViaBridgeTool) sleepAfterClipboardWrite(ctx context.Context) e
 		sleep = t.sleep
 	}
 	return sleep(ctx, textViaBridgePostWriteDelay)
+}
+
+func (t *EnterTextViaBridgeTool) sleepAfterPaste(ctx context.Context) error {
+	sleep := sleepWithContext
+	if t != nil && t.sleep != nil {
+		sleep = t.sleep
+	}
+	return sleep(ctx, textViaBridgePostPasteDelay)
+}
+
+func (t *EnterTextViaBridgeTool) sleepAfterSend(ctx context.Context) error {
+	sleep := sleepWithContext
+	if t != nil && t.sleep != nil {
+		sleep = t.sleep
+	}
+	return sleep(ctx, textViaBridgePostSendDelay)
 }
 
 func (t *EnterTextViaBridgeTool) currentBridge() *PhoneBridge {

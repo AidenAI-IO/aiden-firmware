@@ -146,6 +146,9 @@ func (t *ClipboardTool) write(ctx context.Context, text string) (string, error) 
 	if restored {
 		result["restored_from_return_entry"] = true
 	}
+	if t.bridge != nil {
+		t.bridge.NoteClipboardWrite(text)
+	}
 	return jsonString(result), nil
 }
 
