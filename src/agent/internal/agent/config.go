@@ -139,7 +139,7 @@ type Config struct {
 	LiveActivity               LiveActivityConfig      `toml:"live_activity,omitempty"`
 	Instruction                string                  `toml:"custom_instruction,omitempty"`
 	AdditionalPrompt           string                  `toml:"additional_prompt,omitempty"`
-	InputMode                  string                  `toml:"input_mode,omitempty"`   // "text", "audio", "stt"
+	InputMode                  string                  `toml:"input_mode,omitempty"`   // "text" or "stt"
 	TriggerMode                string                  `toml:"trigger_mode,omitempty"` // "manual", "wakeup"
 	VADBackend                 string                  `toml:"vad_backend,omitempty"`  // "rknn", "cpu"
 	VADModelPath               string                  `toml:"vad_model_path,omitempty"`
@@ -779,31 +779,32 @@ func (c Config) Validate() error {
 	// Validate input_mode
 	if strings.TrimSpace(c.InputMode) != "" {
 		mode := strings.ToLower(strings.TrimSpace(c.InputMode))
-		if mode != "text" && mode != "audio" && mode != "stt" {
-			return fmt.Errorf("invalid input_mode: %s (expected text, audio, or stt)", c.InputMode)
-		}
-
-		// Validate STT config if in stt mode
-		if mode == "stt" {
+		switch mode {
+		case "text":
+		case "stt":
 			if strings.TrimSpace(c.STT.Provider) == "" {
 				return errors.New("stt.provider is required when input_mode=stt")
 			}
+		case "audio":
+			return fmt.Errorf("invalid input_mode: %s (audio mode has been removed; use stt instead)", c.InputMode)
+		default:
+			return fmt.Errorf("invalid input_mode: %s (expected text or stt)", c.InputMode)
 		}
 
 		// Validate TTS config if not in text mode
-		if mode != "text" && strings.TrimSpace(c.TTS.Provider) == "" {
-			return errors.New("tts.provider is required when input_mode is audio or stt")
+		if mode == "stt" && strings.TrimSpace(c.TTS.Provider) == "" {
+			return errors.New("tts.provider is required when input_mode=stt")
 		}
 
-		if mode != "text" {
+		if mode == "stt" {
 			if c.Audio.SampleRate != 0 && c.Audio.SampleRate < 8000 {
 				return fmt.Errorf("audio.sample_rate must be at least 8000 when set, got %d", c.Audio.SampleRate)
 			}
 			if c.Audio.Channels != 0 && c.Audio.Channels != 1 {
-				return fmt.Errorf("audio.channels must be 1 when input_mode is audio or stt, got %d", c.Audio.Channels)
+				return fmt.Errorf("audio.channels must be 1 when input_mode=stt, got %d", c.Audio.Channels)
 			}
 			if c.Audio.BitWidth != 0 && c.Audio.BitWidth != 16 {
-				return fmt.Errorf("audio.bit_width must be 16 when input_mode is audio or stt, got %d", c.Audio.BitWidth)
+				return fmt.Errorf("audio.bit_width must be 16 when input_mode=stt, got %d", c.Audio.BitWidth)
 			}
 		}
 	}
@@ -813,9 +814,8 @@ func (c Config) Validate() error {
 		if triggerMode != "manual" && triggerMode != "wakeup" {
 			return fmt.Errorf("invalid trigger_mode: %s (expected manual or wakeup)", c.TriggerMode)
 		}
-		effectiveInputMode := strings.ToLower(strings.TrimSpace(c.InputModeOrDefault()))
-		if triggerMode == "wakeup" && effectiveInputMode != "audio" && effectiveInputMode != "stt" {
-			return fmt.Errorf("incompatible trigger_mode %q with input_mode %q: wakeup requires input_mode audio or stt", c.TriggerMode, c.InputMode)
+		if triggerMode == "wakeup" && c.InputModeOrDefault() != "stt" {
+			return fmt.Errorf("incompatible trigger_mode %q with input_mode %q: wakeup requires input_mode stt", c.TriggerMode, c.InputMode)
 		}
 	}
 

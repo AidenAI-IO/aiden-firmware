@@ -37,7 +37,7 @@ func TestEnterTextInFieldASCII(t *testing.T) {
 	}}}
 	kbText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
 	kbTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
-	engine := newTextInputEngine(textInputHardwareDeps{
+	engine := newFastTextInputEngine(textInputHardwareDeps{
 		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
 		keyboardTap:  kbTap,
 		keyboardText: kbText,
@@ -60,7 +60,7 @@ func TestEnterTextInFieldSearchModeHandsOffAfterASCIIInput(t *testing.T) {
 		FieldText:    "Aid",
 	}}}
 	kbText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
-	engine := newTextInputEngine(textInputHardwareDeps{
+	engine := newFastTextInputEngine(textInputHardwareDeps{
 		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
 		keyboardTap:  textInputStubTool{name: "keyboard_tap", out: "ok"},
 		keyboardText: kbText,
@@ -86,7 +86,7 @@ func TestEnterTextInFieldASCIIWithSpaces(t *testing.T) {
 	}}}
 	kbText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
 	kbTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
-	engine := newTextInputEngine(textInputHardwareDeps{
+	engine := newFastTextInputEngine(textInputHardwareDeps{
 		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
 		keyboardTap:  kbTap,
 		keyboardText: kbText,
@@ -115,7 +115,7 @@ func TestEnterTextInFieldRejectsRomanizationField(t *testing.T) {
 		WrongIMESuspected: true,
 		SuggestSwitchIME:  true,
 	}}}
-	engine := newTextInputEngine(textInputHardwareDeps{
+	engine := newFastTextInputEngine(textInputHardwareDeps{
 		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
 		keyboardTap:  textInputStubTool{name: "keyboard_tap", out: "ok"},
 		keyboardText: textInputStubTool{name: "keyboard_text", out: "ok"},
@@ -133,7 +133,7 @@ func TestEnterTextInFieldRejectsRomanizationField(t *testing.T) {
 }
 
 func TestEnterTextInFieldCompositionRequiresSegments(t *testing.T) {
-	engine := newTextInputEngine(textInputHardwareDeps{
+	engine := newFastTextInputEngine(textInputHardwareDeps{
 		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
 		keyboardTap:  textInputStubTool{name: "keyboard_tap", out: "ok"},
 		keyboardText: textInputStubTool{name: "keyboard_text", out: "ok"},
@@ -152,7 +152,7 @@ func TestEnterTextInFieldCompositionRequiresSegments(t *testing.T) {
 
 func TestEnterTextInFieldStructuredKeyboardErrorDoesNotPoisonRetriableResult(t *testing.T) {
 	keyboardErr := NewToolError(CodeInvalidArguments, "keyboard_text failed")
-	engine := newTextInputEngine(textInputHardwareDeps{
+	engine := newFastTextInputEngine(textInputHardwareDeps{
 		mouseClick:  textInputStubTool{name: "mouse_click", out: "ok"},
 		keyboardTap: textInputStubTool{name: "keyboard_tap", out: "ok"},
 		keyboardText: &stubTextInputCallTool{
@@ -192,7 +192,7 @@ func TestEnterTextInFieldCompositionSuccess(t *testing.T) {
 		// after clicking candidate: committed
 		{FieldText: "你好"},
 	}}
-	engine := newTextInputEngine(textInputHardwareDeps{
+	engine := newFastTextInputEngine(textInputHardwareDeps{
 		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
 		keyboardTap:  textInputStubTool{name: "keyboard_tap", out: "ok"},
 		keyboardText: textInputStubTool{name: "keyboard_text", out: "ok"},
@@ -264,7 +264,7 @@ func TestEnterTextInFieldASCIIRetryWithoutRefocus(t *testing.T) {
 	}}}
 	mouse := &recordingTextInputTool{name: "mouse_click", out: "ok"}
 	kbText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
-	engine := newTextInputEngine(textInputHardwareDeps{
+	engine := newFastTextInputEngine(textInputHardwareDeps{
 		mouseClick:   mouse,
 		keyboardTap:  textInputStubTool{name: "keyboard_tap", out: "ok"},
 		keyboardText: kbText,
@@ -297,7 +297,7 @@ func TestEnterTextInFieldRetryWithoutRetype(t *testing.T) {
 		{FieldText: "你好"},
 	}}
 	kbText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
-	engine := newTextInputEngine(textInputHardwareDeps{
+	engine := newFastTextInputEngine(textInputHardwareDeps{
 		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
 		keyboardTap:  textInputStubTool{name: "keyboard_tap", out: "ok"},
 		keyboardText: kbText,
@@ -325,7 +325,7 @@ func TestEnterTextInFieldFirstCompositionAttemptWaitsForIME(t *testing.T) {
 	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
 		FieldText: "你好",
 	}}}
-	engine := newTextInputEngine(textInputHardwareDeps{
+	engine := newFastTextInputEngine(textInputHardwareDeps{
 		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
 		keyboardTap:  textInputStubTool{name: "keyboard_tap", out: "ok"},
 		keyboardText: textInputStubTool{name: "keyboard_text", out: "ok"},
@@ -403,7 +403,7 @@ func TestEnterTextInFieldCandidatePaging(t *testing.T) {
 		{FieldText: "你好"},
 	}}
 	kbTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
-	engine := newTextInputEngine(textInputHardwareDeps{
+	engine := newFastTextInputEngine(textInputHardwareDeps{
 		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
 		keyboardTap:  kbTap,
 		keyboardText: textInputStubTool{name: "keyboard_text", out: "ok"},
@@ -447,7 +447,7 @@ func TestCycleIMEUsesKeyboardTapNotQuickAction(t *testing.T) {
 	}
 	qa := textInputStubTool{name: "quick_action"}
 	qaOut := "ok"
-	engine := newTextInputEngine(textInputHardwareDeps{
+	engine := newFastTextInputEngine(textInputHardwareDeps{
 		keyboardTap: &stubTextInputCallTool{tool: kb, fn: kbCall},
 		quickAction: &stubTextInputCallTool{tool: qa, fn: func(context.Context, string) (string, error) {
 			qaOut = `{"ok":false,"status":"reserved"}`

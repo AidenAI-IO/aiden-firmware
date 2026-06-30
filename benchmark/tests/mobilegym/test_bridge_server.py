@@ -598,6 +598,59 @@ def test_tools_api_keyboard_inputs_match_agent_proxy_contract():
         assert "does not support key" in body["output"]
 
 
+def test_tools_api_mobilegym_text_entry_tools_do_not_depend_on_hid_devices():
+    with RunningBridge() as bridge:
+        status, body = request_json(bridge.base_url, "POST", "/api/setup", {"episode_id": "reset-ep1"})
+        assert status == 200
+        assert body["data"] == {"episode_id": "reset-ep1", "reset": True}
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/tools/enter_text_in_field",
+            {
+                "input": {
+                    "text": "微信读书",
+                    "platform": "android",
+                    "mode": "search",
+                    "focus": {"x": 500, "y": 120, "coord_space": "normalized"},
+                    "segments": ["wei", "xin", "du", "shu"],
+                }
+            },
+        )
+        assert status == 200
+        assert body["is_error"] is False
+        output = json.loads(body["output"])
+        assert output["committed"] is True
+        assert "hidg" not in body["output"]
+        assert action_to_dict(bridge.env.actions[-1]) == {
+            "action_type": "TYPE",
+            "data": {"value": "微信读书", "point": [500.0, 120.0]},
+        }
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/tools/enter_text_via_bridge",
+            {
+                "input": {
+                    "text": "Camera note",
+                    "platform": "android",
+                    "focus": {"x": 400, "y": 700, "coord_space": "normalized"},
+                }
+            },
+        )
+        assert status == 200
+        assert body["is_error"] is False
+        output = json.loads(body["output"])
+        assert output["committed"] is True
+        assert "hidg" not in body["output"]
+        assert action_to_dict(bridge.env.actions[-1]) == {
+            "action_type": "TYPE",
+            "data": {"value": "Camera note", "point": [400.0, 700.0]},
+        }
+
+
 def test_device_endpoints_require_active_episode_without_authentication():
     with RunningBridge() as bridge:
         assert start_episode(bridge)[0] == 200

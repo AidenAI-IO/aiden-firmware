@@ -76,15 +76,14 @@ Fill in the keys for each service on the same config page. Among them:
 
 ### Choosing the Agent mode
 
-Determined by `input_mode` in `agent.toml`. Three modes:
+Determined by `input_mode` in `agent.toml`. Two modes:
 
 | Mode | Behavior | Use case |
 | --- | --- | --- |
-| `audio` | Device records → sends the audio attachment directly to the LLM → TTS playback | Voice interaction (audio sent straight to a multimodal model) |
-| `stt` | Device records → VAD → STT to text → LLM → TTS playback | Voice interaction (transcribe to text first, then send to the LLM) |
+| `stt` | Device records → VAD → STT to text → LLM → TTS playback | Voice interaction |
 | `text` | Starts the HTTP server + Web UI | Mainly for testing; use the web page on port 8080 for text interaction |
 
-`audio` and `stt` are the two ways to do voice interaction: the former sends audio directly to the LLM, the latter transcribes to text first. `text` mode is mainly for testing — open the web page on the device's port `8080` for text interaction.
+`stt` mode transcribes voice to text before sending it to the LLM. `text` mode is mainly for testing — open the web page on the device's port `8080` for text interaction. The removed `audio` mode (raw audio sent directly to the LLM) is no longer supported.
 
 > Note the two distinct web pages: `http://192.168.42.1` (port 80) is the device config page; `http://<device-ip>:8080` is the Agent Web UI in `text` mode.
 

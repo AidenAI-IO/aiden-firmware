@@ -2891,24 +2891,62 @@ func (s *Server) loadHistoryFromDisk() {
 		return
 	}
 	for _, evt := range events {
-		msgType := "user"
-		switch evt.Role {
-		case "assistant":
-			msgType = "assistant"
-		case "tool":
-			msgType = "tool_result"
-		case "system":
-			msgType = "system"
-		}
-		ts, _ := time.Parse(time.RFC3339Nano, evt.Ts)
-		s.history = append(s.history, Message{
-			Type:      msgType,
-			ToolName:  evt.Source,
-			ToolInput: evt.ToolCallID,
-			Content:   evt.Content,
-			Timestamp: ts,
-		})
+		s.history = append(s.history, chatMessageFromSessionEvent(evt))
 	}
+}
+
+func chatMessageFromSessionEvent(evt SessionEvent) Message {
+	ts, _ := time.Parse(time.RFC3339Nano, evt.Ts)
+	return Message{
+		Type:         chatMessageTypeFromSessionEvent(evt),
+		Role:         evt.Role,
+		EpisodeID:    evt.EpisodeID,
+		RequestID:    evt.RequestID,
+		Status:       evt.Status,
+		Modality:     evt.Modality,
+		OriginalText: evt.OriginalText,
+		Transcript:   evt.Transcript,
+		Content:      evt.Content,
+		ToolName:     firstNonEmptyString([]string{evt.ToolName, evt.Source}),
+		ToolInput:    evt.ToolInput,
+		ToolError:    cloneToolError(evt.ToolError),
+		Artifacts:    sanitizeInputArtifacts(evt.Artifacts),
+		Timestamp:    ts,
+		IsError:      evt.IsError,
+	}
+}
+
+func chatMessageTypeFromSessionEvent(evt SessionEvent) string {
+	switch strings.TrimSpace(evt.Type) {
+	case "user_input", "steer":
+		return "user"
+	case "assistant_output":
+		return "assistant"
+	case runEventToolCall:
+		return runEventToolCall
+	case "tool_result":
+		return "tool_result"
+	case "role_output":
+		return "role_output"
+	case "episode_status":
+		return "episode_status"
+	}
+
+	switch strings.TrimSpace(evt.Role) {
+	case "user", "human":
+		return "user"
+	case "assistant", "ai":
+		return "assistant"
+	case "tool":
+		return "tool_result"
+	case "system":
+		return "system"
+	}
+
+	if typ := strings.TrimSpace(evt.Type); typ != "" {
+		return typ
+	}
+	return "system"
 }
 
 func (s *Server) resolveRequestInput(req ChatRequest) (TurnInput, []MessageAttachment, error) {
@@ -2949,13 +2987,13 @@ func (s *Server) resolveRequestInput(req ChatRequest) (TurnInput, []MessageAttac
 
 func (s *Server) webAudioInputMode() string {
 	switch s.runtime.config.InputModeOrDefault() {
-	case "stt", "audio":
-		return s.runtime.config.InputModeOrDefault()
+	case "stt":
+		return "stt"
 	default:
 		if s.sttClient != nil {
 			return "stt"
 		}
-		return "audio"
+		return "text"
 	}
 }
 

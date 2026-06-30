@@ -570,7 +570,7 @@ func (t *KeyboardTapTool) tapKeyboardChord(modifier uint8, keys []uint8, holdMs 
 		return err
 	}
 	if holdMs > 0 {
-		time.Sleep(time.Duration(holdMs) * time.Millisecond)
+		sleepMs(holdMs)
 	}
 	return t.dev.Write(make([]byte, 8))
 }
@@ -1582,7 +1582,9 @@ func interpolateInt(start, end int, progress float64) int {
 	return int(math.Round(float64(start) + (float64(end-start) * progress)))
 }
 
-func sleepMs(ms int) {
+var sleepMs = realSleepMs
+
+func realSleepMs(ms int) {
 	if ms <= 0 {
 		return
 	}

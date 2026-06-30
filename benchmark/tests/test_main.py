@@ -197,8 +197,9 @@ def test_run_llm_analysis_env_limits_fall_back_on_invalid_values(monkeypatch, tm
     calls = []
 
     class FakeClient:
-        def __init__(self, base_url):
+        def __init__(self, base_url, benchmark_token=""):
             self.base_url = base_url
+            self.benchmark_token = benchmark_token
 
         def health(self):
             return True
@@ -291,15 +292,18 @@ def test_auto_agent_setup_injects_environment_url_as_bridge_endpoint(monkeypatch
         encoding="utf-8",
     )
 
+    captured = {}
+
     class FakeClient:
         def __init__(self, base_url, benchmark_token=""):
             self.base_url = base_url
+            captured["client_base_url"] = base_url
             self.benchmark_token = benchmark_token
+            captured["client_benchmark_token"] = benchmark_token
 
         def close(self):
             pass
 
-    captured = {}
     monkeypatch.setattr(main, "AgentClient", FakeClient)
     monkeypatch.setattr(main, "wait_for_agent_ready", lambda *args, **kwargs: True)
     monkeypatch.setattr(main, "wait_for_agent_clock", lambda *args, **kwargs: True)
@@ -312,7 +316,7 @@ def test_auto_agent_setup_injects_environment_url_as_bridge_endpoint(monkeypatch
         (config_dir / "control_token").write_text("test-token", encoding="utf-8")
 
     monkeypatch.setattr(webui, "prepare_run_config", fake_prepare_run_config)
-    monkeypatch.setattr(webui, "reserve_free_port", lambda: 18081)
+    monkeypatch.setattr(webui, "docker_published_port", lambda container_id, container_port: 18081)
     monkeypatch.setattr(webui, "start_daemon_logs", lambda *args, **kwargs: None)
     monkeypatch.setattr(webui, "stop_daemon_compose", lambda *args, **kwargs: None)
 
@@ -324,6 +328,7 @@ def test_auto_agent_setup_injects_environment_url_as_bridge_endpoint(monkeypatch
     monkeypatch.setattr(webui, "start_daemon_compose", fake_start_daemon_compose)
 
     def fake_run_one_task(client, suite, task, attempt, artifact_dir, *args, **kwargs):
+        captured["task_kwargs"] = kwargs
         return TaskResult(
             suite=suite.name,
             run_id="auto-run",
@@ -351,6 +356,8 @@ def test_auto_agent_setup_injects_environment_url_as_bridge_endpoint(monkeypatch
             "--environment-url",
             "http://127.0.0.1:19090",
             "--auto-agent-setup",
+            "--skill",
+            "device-operator",
             "--no-judge",
         ]
     )
@@ -358,8 +365,146 @@ def test_auto_agent_setup_injects_environment_url_as_bridge_endpoint(monkeypatch
     assert rc == 0
     assert captured["job"].endpoint == "http://127.0.0.1:19090"
     assert captured["job"].docker_endpoint == "http://host.docker.internal:19090"
+    assert captured["job"].agent_url == "http://127.0.0.1:18081"
+    assert captured["client_base_url"] == "http://127.0.0.1:18081"
+    assert captured["client_benchmark_token"] == "test-token"
+    assert captured["kwargs"]["host_port"] == 0
     assert captured["kwargs"]["environment_bridge_endpoint"] == "http://host.docker.internal:19090"
     assert captured["kwargs"]["environment_bridge_mode"] is True
+    assert captured["task_kwargs"]["active_skills"] == ["device-operator"]
+
+
+def test_auto_agent_setup_caps_environment_concurrency(monkeypatch, tmp_path):
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "name": "mobile_suite",
+                "tasks": [
+                    {
+                        "id": f"task_{i}",
+                        "category": "diagnostic",
+                        "prompt": "open",
+                        "description_for_judge": "open",
+                        "rubric": [{"id": "done", "check": "done"}],
+                    }
+                    for i in range(3)
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeClient:
+        def __init__(self, base_url, benchmark_token=""):
+            self.base_url = base_url
+            self.benchmark_token = benchmark_token
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(main, "AgentClient", FakeClient)
+    monkeypatch.setattr(main, "wait_for_agent_ready", lambda *args, **kwargs: True)
+    monkeypatch.setattr(main, "wait_for_agent_clock", lambda *args, **kwargs: True)
+    monkeypatch.setattr(main, "generate_report_html", lambda run_dir: "<html></html>")
+    monkeypatch.setattr(main, "call_environment_release", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui, "ensure_daemon_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui, "read_environment_bridge_concurrency", lambda *args, **kwargs: 5)
+    def fake_prepare_run_config(base_config_dir, config_dir, **kwargs):
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "control_token").write_text("test-token", encoding="utf-8")
+
+    monkeypatch.setattr(webui, "prepare_run_config", fake_prepare_run_config)
+    monkeypatch.setattr(webui, "docker_published_port", lambda container_id, container_port: 18081)
+    monkeypatch.setattr(webui, "start_daemon_compose", lambda *args, **kwargs: "container-id")
+    monkeypatch.setattr(webui, "start_daemon_logs", lambda *args, **kwargs: None)
+    monkeypatch.setattr(webui, "stop_daemon_compose", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        main,
+        "run_one_task",
+        lambda client, suite, task, attempt, artifact_dir, *args, **kwargs: TaskResult(
+            suite=suite.name,
+            run_id="capped-run",
+            task_id=task.id,
+            category=task.category,
+            attempt=attempt,
+            status="passed",
+            rubric=[],
+            rubric_pass_count=0,
+            rubric_total=0,
+            artifact_dir=str(artifact_dir),
+        ),
+    )
+
+    rc = main.cli(
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--out",
+            str(tmp_path / "runs"),
+            "--run-id",
+            "capped-run",
+            "--environment-url",
+            "http://127.0.0.1:19090",
+            "--auto-agent-setup",
+            "--max-concurrency",
+            "2",
+            "--no-judge",
+        ]
+    )
+
+    assert rc == 0
+    manifest = json.loads((tmp_path / "runs" / "capped-run" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["concurrency"] == 2
+
+
+def test_auto_agent_setup_rejects_negative_max_concurrency_before_setup(monkeypatch, tmp_path, capsys):
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "name": "mobile_suite",
+                "tasks": [
+                    {
+                        "id": "task_1",
+                        "category": "diagnostic",
+                        "prompt": "open",
+                        "description_for_judge": "open",
+                        "rubric": [{"id": "done", "check": "done"}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fail_if_setup_runs(*args, **kwargs):
+        raise AssertionError("daemon setup should not run for invalid max-concurrency")
+
+    monkeypatch.setattr(webui, "ensure_daemon_image", fail_if_setup_runs)
+    monkeypatch.setattr(webui, "read_environment_bridge_concurrency", fail_if_setup_runs)
+
+    rc = main.cli(
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--out",
+            str(tmp_path / "runs"),
+            "--run-id",
+            "bad-concurrency-run",
+            "--environment-url",
+            "http://127.0.0.1:19090",
+            "--auto-agent-setup",
+            "--max-concurrency",
+            "-1",
+            "--no-judge",
+        ]
+    )
+
+    assert rc == 2
+    assert "max-concurrency must be non-negative" in capsys.readouterr().err
 
 
 def test_run_releases_environment_route_per_non_auto_attempt(monkeypatch, tmp_path):

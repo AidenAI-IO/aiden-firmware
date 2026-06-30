@@ -373,6 +373,125 @@ def test_loop_planning_suite_uses_tool_hard_assertions():
         assert "keyboard_text" in forbidden
 
 
+def test_skillopt_crossapp_device_operator_suites_target_skill_capabilities():
+    suite_root = Path(__file__).resolve().parents[2] / "skillopt" / "suites" / "device-operator"
+    train = load_suite(suite_root / "crossapp_train.json")
+    verification = load_suite(suite_root / "crossapp_verification.json")
+
+    assert train.name == "crossapp_train"
+    assert verification.name == "crossapp_verification"
+    assert [obs.skill_name for obs in train.trace_observations] == ["device-operator"]
+    assert [obs.skill_name for obs in verification.trace_observations] == ["device-operator"]
+
+    for suite in (train, verification):
+        assert "MobileGym" in suite.prompt_prefix
+        assert "iPhone" not in suite.prompt_prefix
+        assert "每次动作前先观察截图" not in suite.prompt_prefix
+        assert "不要连续执行多个盲目动作" not in suite.prompt_prefix
+        assert "如果点击、滑动或输入没有效果" not in suite.prompt_prefix
+        assert "Do not fabricate" in suite.prompt_prefix
+
+    expected_train_ids = {
+        "crossapp_work_calendar_earliest_alarm",
+        "crossapp_work_meeting_route_eta_draft_wechat",
+        "crossapp_life_weather_filter_non_rainy_notes",
+        "crossapp_life_map_place_draft_wechat",
+        "crossapp_content_spotify_current_song_notes",
+        "crossapp_content_redbook_search_title_draft_wechat",
+        "crossapp_commerce_ebay_lowest_price_notes",
+        "crossapp_commerce_alipay_recent_transactions_notes",
+    }
+    expected_verification_ids = {
+        "crossapp_work_weather_conditional_meeting_decision",
+        "crossapp_life_railway_weather_draft_wechat",
+        "crossapp_content_wechat_reading_bookshelf_draft",
+        "crossapp_content_bilibili_ranking_draft_wechat",
+        "crossapp_commerce_ebay_balance_diff_notes",
+        "crossapp_commerce_price_budget_stop",
+    }
+
+    train_ids = {task.id for task in train.tasks}
+    verification_ids = {task.id for task in verification.tasks}
+    assert train_ids == expected_train_ids
+    assert verification_ids == expected_verification_ids
+    assert train_ids.isdisjoint(verification_ids)
+
+    all_tasks = [*train.tasks, *verification.tasks]
+    for family in ("work", "life", "content", "commerce"):
+        assert any(task.id.startswith(f"crossapp_{family}_") for task in all_tasks)
+
+    precondition_phrases = [
+        "当前输入框",
+        "当前搜索框",
+        "Starting from",
+        "In the eBay app",
+        "In the eBay search results",
+    ]
+    app_names = {
+        "Alipay",
+        "Bilibili",
+        "Calendar",
+        "Clock",
+        "eBay",
+        "Map",
+        "Notes",
+        "Railway 12306",
+        "RedNote",
+        "Spotify",
+        "Tencent Meeting",
+        "Weather",
+        "WeChat",
+        "WeChat Reading",
+    }
+    sensitive_words = ("send", "post", "buy", "purchase", "checkout", "payment", "order submission", "submit order", "message to")
+
+    def mentioned_apps(prompt: str) -> set[str]:
+        names = set()
+        prompt_without_compound_names = prompt
+        for compound_name in ["WeChat Reading"]:
+            if compound_name in prompt:
+                names.add(compound_name)
+                prompt_without_compound_names = prompt_without_compound_names.replace(compound_name, "")
+        for app in app_names - names:
+            if app in prompt_without_compound_names:
+                names.add(app)
+        return names
+
+    for task in all_tasks:
+        assert task.category == "multi_step"
+        assert not any(phrase in task.prompt for phrase in precondition_phrases), task.id
+        assert task.hard_assertions.response_required is True
+        assert "screenshot" in task.hard_assertions.required_tools
+        assert "shell" in task.hard_assertions.forbidden_tools
+        assert len(mentioned_apps(task.prompt)) >= 2, task.id
+        prompt_lower = task.prompt.lower()
+        if any(word in prompt_lower for word in sensitive_words):
+            if "send" in prompt_lower or "message to" in prompt_lower:
+                assert "do not send" in prompt_lower and "ask for approval" in prompt_lower, task.id
+                assert "send" in task.hard_assertions.prohibited_actions, task.id
+            if "post" in prompt_lower:
+                assert "do not post" in prompt_lower or "stop before posting" in prompt_lower, task.id
+                assert "post" in task.hard_assertions.prohibited_actions, task.id
+            if "buy" in prompt_lower or "purchase" in prompt_lower:
+                assert "do not buy" in prompt_lower or "stop before any purchase" in prompt_lower, task.id
+                assert "purchase" in task.hard_assertions.prohibited_actions, task.id
+            if "checkout" in prompt_lower:
+                assert "do not enter checkout" in prompt_lower or "stop before any purchase, checkout" in prompt_lower or "stop before checkout" in prompt_lower, task.id
+                assert "checkout" in task.hard_assertions.prohibited_actions, task.id
+            if "payment" in prompt_lower:
+                assert "do not initiate any payment" in prompt_lower or "do not enter checkout/payment" in prompt_lower or "stop before any purchase, checkout, payment" in prompt_lower or "stop before payment" in prompt_lower, task.id
+                assert "payment" in task.hard_assertions.prohibited_actions, task.id
+            if "order submission" in prompt_lower or "submit order" in prompt_lower:
+                assert "stop before any purchase, checkout, payment, or order submission" in prompt_lower or "stop before order" in prompt_lower, task.id
+                assert "order_submission" in task.hard_assertions.prohibited_actions, task.id
+
+    map_task = next(task for task in train.tasks if task.id == "crossapp_life_map_place_draft_wechat")
+    assert "If no Map result" in map_task.prompt
+    assert "instead of inventing" in map_task.prompt
+    assert not any("plausible address" in item.check for item in map_task.rubric)
+    assert any("visible Map result" in item.check for item in map_task.rubric)
+
+
 def test_memory_suite_covers_representative_memory_behaviors():
     suite_path = Path(__file__).resolve().parents[1] / "suites" / "memory_v1.json"
     suite = load_suite(suite_path)

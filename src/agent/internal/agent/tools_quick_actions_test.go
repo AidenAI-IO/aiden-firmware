@@ -149,6 +149,9 @@ func TestQuickActionReservedBinding(t *testing.T) {
 }
 
 func TestQuickActionExecutesDelegatedTouchGesture(t *testing.T) {
+	skipHIDSleeps(t)
+	skipQuickActionDelays(t)
+
 	dev, path := newTestHIDDevice(t)
 	tool := &QuickActionTool{
 		touch: &TouchGestureTool{
@@ -169,6 +172,9 @@ func TestQuickActionExecutesDelegatedTouchGesture(t *testing.T) {
 }
 
 func TestQuickActionExecutesDelegatedKeyboardTap(t *testing.T) {
+	skipHIDSleeps(t)
+	skipQuickActionDelays(t)
+
 	dev, path := newTestHIDDevice(t)
 	tool := &QuickActionTool{
 		keyboard: &KeyboardTapTool{dev: dev},
@@ -190,6 +196,9 @@ func TestQuickActionExecutesDelegatedKeyboardTap(t *testing.T) {
 }
 
 func TestQuickActionSpotlightSearchClearsSearchField(t *testing.T) {
+	skipHIDSleeps(t)
+	skipQuickActionDelays(t)
+
 	dev, path := newTestHIDDevice(t)
 	tool := &QuickActionTool{
 		keyboard: &KeyboardTapTool{dev: dev},
@@ -253,6 +262,9 @@ func assertReleaseReport(t *testing.T, report []byte, label string) {
 }
 
 func TestQuickActionDeleteBackwardUsesBackspace(t *testing.T) {
+	skipHIDSleeps(t)
+	skipQuickActionDelays(t)
+
 	dev, path := newTestHIDDevice(t)
 	tool := &QuickActionTool{
 		keyboard: &KeyboardTapTool{dev: dev},
@@ -277,6 +289,9 @@ func TestQuickActionDeleteBackwardUsesBackspace(t *testing.T) {
 }
 
 func TestQuickActionAlternativeBinding(t *testing.T) {
+	skipHIDSleeps(t)
+	skipQuickActionDelays(t)
+
 	dev, _ := newTestHIDDevice(t)
 	tool := &QuickActionTool{
 		keyboard: &KeyboardTapTool{dev: dev},

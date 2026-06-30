@@ -25,6 +25,7 @@ type voiceRunControl struct {
 	pendingSteer    RunSteerMessage
 	hasPendingSteer bool
 	interrupt       voiceSteerInterruptState
+	inactive        chan struct{}
 }
 
 type voiceSteerInterruptState struct {
@@ -52,6 +53,7 @@ func (c *voiceRunControl) begin(requestID string) bool {
 	if c.activeRequestID != "" {
 		return false
 	}
+	c.inactive = make(chan struct{})
 	c.activeRequestID = requestID
 	c.acceptingSteer = true
 	c.clearPendingLocked()
@@ -70,6 +72,31 @@ func (c *voiceRunControl) end(requestID string) {
 	c.acceptingSteer = false
 	c.clearPendingLocked()
 	c.interrupt = voiceSteerInterruptState{}
+	if c.inactive != nil {
+		close(c.inactive)
+		c.inactive = nil
+	}
+}
+
+func (c *voiceRunControl) waitUntilInactive(ctx context.Context) bool {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	c.mu.Lock()
+	inactive := c.inactive
+	active := c.activeRequestID != ""
+	c.mu.Unlock()
+	if !active || inactive == nil {
+		return true
+	}
+
+	select {
+	case <-ctx.Done():
+		return false
+	case <-inactive:
+		return true
+	}
 }
 
 func (c *voiceRunControl) queueSteer(content string) (queuedVoiceSteer, bool) {

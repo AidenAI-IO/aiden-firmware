@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from runner.suite import Suite, TaskSpec
+from skillopt.score import rollout_sample_quality
 from skillopt.types import RolloutResult
 
 
@@ -195,6 +196,14 @@ def _task_records_from_rollouts(run_root: Path, tasks: list[TaskSpec], rollouts:
             "turns": rollout.n_turns,
             "reason": rollout.fail_reason,
         }
+        quality = rollout_sample_quality(rollout)
+        if not quality.is_clean:
+            record["sample_quality"] = quality.kind
+            if quality.reason:
+                record["sample_quality_reason"] = quality.reason
+            record["score_weight"] = quality.score_weight
+            record["score_excluded"] = not quality.include_in_score
+            record["reflect_excluded"] = not quality.include_in_reflect
         artifact_dir = _relative_to_run_root(run_root, rollout.artifact_dir)
         if artifact_dir:
             record["artifact_dir"] = artifact_dir
@@ -217,6 +226,9 @@ def _count_tasks(tasks: list[dict[str, Any]]) -> dict[str, int]:
         "judge_error": 0,
         "timeout": 0,
         "error": 0,
+        "score_excluded": 0,
+        "reflect_excluded": 0,
+        "downweighted": 0,
     }
     for task in tasks:
         status = str(task.get("status") or "").strip()
@@ -224,6 +236,15 @@ def _count_tasks(tasks: list[dict[str, Any]]) -> dict[str, int]:
             counts[status] += 1
         elif status:
             counts["failed"] += 1
+        if task.get("score_excluded") is True:
+            counts["score_excluded"] += 1
+        if task.get("reflect_excluded") is True:
+            counts["reflect_excluded"] += 1
+        try:
+            if float(task.get("score_weight")) < 1.0 and task.get("score_excluded") is not True:
+                counts["downweighted"] += 1
+        except (TypeError, ValueError):
+            pass
     counts["error"] = counts["skipped"] + counts["judge_error"] + counts["timeout"]
     return counts
 
@@ -238,6 +259,10 @@ def _score_payload(score: Any) -> dict[str, Any]:
         "soft": float(getattr(score, "soft", 0.0)),
         "n": int(getattr(score, "n", 0)),
         "n_passed": int(getattr(score, "n_passed", 0)),
+        "n_raw": int(getattr(score, "n_raw", getattr(score, "n", 0))),
+        "n_excluded": int(getattr(score, "n_excluded", 0)),
+        "n_downweighted": int(getattr(score, "n_downweighted", 0)),
+        "weight_total": float(getattr(score, "weight_total", getattr(score, "n", 0))),
     }
 
 

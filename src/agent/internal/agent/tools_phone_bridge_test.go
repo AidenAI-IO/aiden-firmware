@@ -142,14 +142,15 @@ func TestAppSearchOpenFlowCanBeReused(t *testing.T) {
 	keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
 	hw := &textInputHardwareDeps{mouseClick: textInputStubTool{name: "mouse_click", out: "ok"}, quickAction: quick, touchGesture: touch, keyboardText: keyboardText, keyboardTap: textInputStubTool{name: "keyboard_tap", out: "ok"}}
 	hw.screenshot = textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`}
-	entryTool := &EnterTextInFieldTool{engine: newTextInputEngine(*hw, vision)}
+	entryTool := &EnterTextInFieldTool{engine: newFastTextInputEngine(*hw, vision)}
 	called := 0
 	result, err := runAppSearchOpenFlow(context.Background(), appSearchOpenFlowConfig{
-		hw:        hw,
-		vision:    vision,
-		platform:  "android",
+		hw:         hw,
+		vision:     vision,
+		platform:   "android",
 		searchTerm: "Aiden",
-		entryTool: entryTool,
+		entryTool:  entryTool,
+		sleep:      testNoWaitSleep,
 		findAppTapFn: func(context.Context, screenshotResult, string) (bridgeSearchResult, error) {
 			called++
 			return bridgeSearchResult{Found: true, TapPoint: focusPointArgs{X: 500, Y: 200, CoordSpace: "normalized"}, Label: "Aiden"}, nil
@@ -180,14 +181,15 @@ func TestAppSearchOpenFlowFallsBackToShorterTerm(t *testing.T) {
 	kbTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
 	hw := &textInputHardwareDeps{mouseClick: textInputStubTool{name: "mouse_click", out: "ok"}, quickAction: quick, touchGesture: touch, keyboardText: keyboardText, keyboardTap: kbTap}
 	hw.screenshot = textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`}
-	entryTool := &EnterTextInFieldTool{engine: newTextInputEngine(*hw, vision)}
+	entryTool := &EnterTextInFieldTool{engine: newFastTextInputEngine(*hw, vision)}
 	terms := []string{}
 	result, err := runAppSearchOpenFlow(context.Background(), appSearchOpenFlowConfig{
-		hw:        hw,
-		vision:    vision,
-		platform:  "android",
+		hw:         hw,
+		vision:     vision,
+		platform:   "android",
 		searchTerm: "Aiden Bridge",
-		entryTool: entryTool,
+		entryTool:  entryTool,
+		sleep:      testNoWaitSleep,
 		findAppTapFn: func(_ context.Context, _ screenshotResult, term string) (bridgeSearchResult, error) {
 			terms = append(terms, term)
 			if term == "Aiden" {
@@ -221,15 +223,16 @@ func TestAppSearchOpenFlowRechecksSameTermBeforeFallback(t *testing.T) {
 	kbTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
 	hw := &textInputHardwareDeps{mouseClick: textInputStubTool{name: "mouse_click", out: "ok"}, quickAction: quick, touchGesture: touch, keyboardText: keyboardText, keyboardTap: kbTap}
 	hw.screenshot = textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`}
-	entryTool := &EnterTextInFieldTool{engine: newTextInputEngine(*hw, vision)}
+	entryTool := &EnterTextInFieldTool{engine: newFastTextInputEngine(*hw, vision)}
 	terms := []string{}
 	findCalls := 0
 	result, err := runAppSearchOpenFlow(context.Background(), appSearchOpenFlowConfig{
-		hw:        hw,
-		vision:    vision,
-		platform:  "android",
+		hw:         hw,
+		vision:     vision,
+		platform:   "android",
 		searchTerm: "Aiden Bridge",
-		entryTool: entryTool,
+		entryTool:  entryTool,
+		sleep:      testNoWaitSleep,
 		findAppTapFn: func(_ context.Context, _ screenshotResult, term string) (bridgeSearchResult, error) {
 			terms = append(terms, term)
 			if term == "Aiden Bridge" {
@@ -260,7 +263,7 @@ func TestAppSearchOpenFlowRechecksSameTermBeforeFallback(t *testing.T) {
 	if len(touch.calls) != 1 {
 		t.Fatalf("touch_gesture calls=%v", touch.calls)
 	}
-	}
+}
 
 func TestOpenAppMissingArgsReturnsInvalidArguments(t *testing.T) {
 	tool := &OpenAppTool{}

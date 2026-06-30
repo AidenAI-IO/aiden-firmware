@@ -43,6 +43,7 @@ type EnterTextViaBridgeTool struct {
 	confirmAppOpenFn func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error)
 	findPrevAppFn    func(context.Context, screenshotResult) (previousAppCardResult, error)
 	platformFn       func() string
+	sleep            func(context.Context, time.Duration) error
 }
 
 func (t *EnterTextViaBridgeTool) SetPlatformFn(fn func() string) {
@@ -118,7 +119,7 @@ func (t *EnterTextViaBridgeTool) runBridgeFlow(ctx context.Context, platform str
 	if bridge == nil {
 		return false, "", 0, nil, fmt.Errorf("phone bridge is not configured")
 	}
-	engine := newTextInputEngine(*t.hw, t.vision)
+	engine := newTextInputEngineWithSleep(*t.hw, t.vision, t.sleep)
 	restoreSteps, restoreCalls, restoreErr := t.restoreBridgeAppIfNeeded(ctx, engine, bridge, platform)
 	steps = append(steps, restoreSteps...)
 	vlmCalls += restoreCalls
@@ -133,7 +134,9 @@ func (t *EnterTextViaBridgeTool) runBridgeFlow(ctx context.Context, platform str
 		return false, "", vlmCalls, append(steps, "clipboard write failed"), err
 	}
 	steps = append(steps, "clipboard-first: wrote clipboard in bridge app")
-	time.Sleep(textViaBridgePostWriteDelay)
+	if err := t.sleepAfterClipboardWrite(ctx); err != nil {
+		return false, "", vlmCalls, append(steps, "clipboard-first: wait before app switch canceled"), err
+	}
 	steps = append(steps, "clipboard-first: waited before app switch")
 	if _, err := t.callQuickAction(ctx, "app_switch", platform); err != nil {
 		return false, "", 0, append(steps, "clipboard-first: return to prior app failed"), err
@@ -199,8 +202,9 @@ func (t *EnterTextViaBridgeTool) restoreBridgeAppIfNeeded(ctx context.Context, e
 		searchTerm:       searchTerm,
 		findAppTapFn:     t.findAppTapFn,
 		confirmAppOpenFn: t.confirmAppOpenFn,
-		entryTool:        &EnterTextInFieldTool{engine: newTextInputEngine(*t.hw, t.vision), platformFn: t.platformFn},
+		entryTool:        &EnterTextInFieldTool{engine: newTextInputEngineWithSleep(*t.hw, t.vision, t.sleep), platformFn: t.platformFn},
 		launchDelay:      appSearchOpenLaunchDelay,
+		sleep:            t.sleep,
 	})
 	vlmCalls += openResult.VLMCalls
 	for _, step := range openResult.Steps {
@@ -327,6 +331,14 @@ func (t *EnterTextViaBridgeTool) waitForBridgeConnection(ctx context.Context) er
 		case <-ticker.C:
 		}
 	}
+}
+
+func (t *EnterTextViaBridgeTool) sleepAfterClipboardWrite(ctx context.Context) error {
+	sleep := sleepWithContext
+	if t != nil && t.sleep != nil {
+		sleep = t.sleep
+	}
+	return sleep(ctx, textViaBridgePostWriteDelay)
 }
 
 func (t *EnterTextViaBridgeTool) currentBridge() *PhoneBridge {
