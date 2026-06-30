@@ -155,35 +155,44 @@ func (t *WaitStableScreenTool) captureScreenshot() (screenshotResult, error) {
 	if err != nil {
 		return screenshotResult{}, err
 	}
+	if meta.Stale {
+		return screenshotResult{}, fmt.Errorf("frame service: STALE_FRAME")
+	}
 	if meta.PixelFormat != "jpeg" {
 		return screenshotResult{}, fmt.Errorf("expected jpeg format, got %s", meta.PixelFormat)
 	}
 	active := screenActiveArea{}
 	sourceWidth := int(meta.Width)
 	sourceHeight := int(meta.Height)
-	fromSourceMeta := false
+	alreadyCropped := false
 	if fullWidth, fullHeight, sourceActive, ok := frameMetadataSourceActiveArea(meta); ok {
 		sourceWidth = fullWidth
 		sourceHeight = fullHeight
 		active = sourceActive
-		fromSourceMeta = true
+		alreadyCropped = true
 	} else {
 		active = detectScreenshotActiveAreaForScreen(t.screen, jpegData, int(meta.Width), int(meta.Height))
 	}
 	if t.screen != nil {
 		t.screen.UpdateActiveArea(sourceWidth, sourceHeight, active)
 	}
-	result := screenshotResult{
-		Width:  int(meta.Width),
-		Height: int(meta.Height),
-		Format: "jpeg",
-		Size:   len(jpegData),
-		Data:   base64.StdEncoding.EncodeToString(jpegData),
+	displayWidth := int(meta.Width)
+	displayHeight := int(meta.Height)
+	displayData := jpegData
+	if !alreadyCropped && active.Valid && (active.X != 0 || active.Y != 0 || active.Width != displayWidth || active.Height != displayHeight) {
+		croppedData, croppedWidth, croppedHeight, err := cropJPEGToActiveArea(jpegData, active, screenshotJPEGQuality)
+		if err == nil {
+			displayWidth = croppedWidth
+			displayHeight = croppedHeight
+			displayData = croppedData
+		}
 	}
-	if !fromSourceMeta && active.Valid && (active.X != 0 || active.Y != 0 || active.Width != result.Width || active.Height != result.Height) {
-		result.ActiveArea = &active
-		result.ActiveWidth = active.Width
-		result.ActiveHeight = active.Height
+	result := screenshotResult{
+		Width:  displayWidth,
+		Height: displayHeight,
+		Format: "jpeg",
+		Size:   len(displayData),
+		Data:   base64.StdEncoding.EncodeToString(displayData),
 	}
 	return result, nil
 }
