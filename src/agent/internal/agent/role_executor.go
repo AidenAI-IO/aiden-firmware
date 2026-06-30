@@ -669,6 +669,9 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 				answer = value
 			}
 		}
+		if strings.TrimSpace(answer) == "" {
+			return plannerTurnResult{}, agents.ErrAgentNoReturn
+		}
 		if state.Phase == phaseDefault && looksLikeInternalJSONPlanFinal(answer) {
 			return plannerTurnResult{
 				Kind: plannerTurnInvalidMeta,
