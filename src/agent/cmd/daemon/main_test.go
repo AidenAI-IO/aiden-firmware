@@ -2044,7 +2044,7 @@ func TestRunVoiceTurnWakeupReturnsCapturedSteerAsNextTurnWhenQueueSteerFails(t *
 
 func TestRunVoiceTurnWakeupWaitsForVoiceRunToGoIdleBeforeNextTurn(t *testing.T) {
 	oldTimeout := voiceTurnCancelWaitTimeout
-	voiceTurnCancelWaitTimeout = 20 * time.Millisecond
+	voiceTurnCancelWaitTimeout = 200 * time.Millisecond
 	t.Cleanup(func() {
 		voiceTurnCancelWaitTimeout = oldTimeout
 	})
@@ -2055,6 +2055,7 @@ func TestRunVoiceTurnWakeupWaitsForVoiceRunToGoIdleBeforeNextTurn(t *testing.T) 
 	releaseRun := make(chan struct{})
 	runReturned := make(chan struct{})
 	idleWaitStarted := make(chan struct{})
+	idleWaitTimedOut := make(chan struct{}, 1)
 	allowIdle := make(chan struct{})
 	var idleWaitCalls int
 
@@ -2095,9 +2096,11 @@ func TestRunVoiceTurnWakeupWaitsForVoiceRunToGoIdleBeforeNextTurn(t *testing.T) 
 				case <-runReturned:
 					return true
 				case <-ctx.Done():
+					idleWaitTimedOut <- struct{}{}
 					return false
 				}
 			case <-ctx.Done():
+				idleWaitTimedOut <- struct{}{}
 				return false
 			}
 		},
@@ -2130,9 +2133,15 @@ func TestRunVoiceTurnWakeupWaitsForVoiceRunToGoIdleBeforeNextTurn(t *testing.T) 
 	}
 
 	select {
+	case <-idleWaitTimedOut:
+		t.Fatal("WaitForVoiceRunIdle timed out before test released the run")
+	default:
+	}
+
+	select {
 	case result := <-resultCh:
 		t.Fatalf("runVoiceTurnWithInputContext returned early: %#v", result)
-	case <-time.After(5 * time.Millisecond):
+	case <-time.After(20 * time.Millisecond):
 	}
 
 	close(releaseRun)
@@ -2143,6 +2152,12 @@ func TestRunVoiceTurnWakeupWaitsForVoiceRunToGoIdleBeforeNextTurn(t *testing.T) 
 	case result = <-resultCh:
 	case <-time.After(time.Second):
 		t.Fatal("runVoiceTurnWithInputContext did not return")
+	}
+
+	select {
+	case <-idleWaitTimedOut:
+		t.Fatal("WaitForVoiceRunIdle timed out before the voice run became idle")
+	default:
 	}
 
 	if !result.interrupted || result.exit || result.waitForWakeupRequested || result.nextTurn == nil {
