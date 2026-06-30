@@ -17,6 +17,8 @@ const (
 	toolCommitPlan    = "commit_plan"
 	toolCancelPlan    = "cancel_plan"
 	toolSetTodo       = "set_todo"
+
+	maxConsecutiveCommitPlanFailures = 3
 )
 
 type loopMetaTool struct {
@@ -165,6 +167,7 @@ func (e *roleCollaborativeExecutor) handlePlannerMetaTool(
 		state.Phase = phasePlan
 		state.PlanExhausted = false
 		state.PlanCommitRequired = true
+		state.ConsecutiveCommitPlanFailures = 0
 		reason := parseOptionalReasonInput(input)
 		observation := `{"status":"entered","phase":"plan"}`
 		if reason != "" {
@@ -188,14 +191,9 @@ func (e *roleCollaborativeExecutor) handlePlannerMetaTool(
 		}
 		decision, err := parseCommitPlanInput(input)
 		if err != nil {
-			return plannerTurnResult{
-				Kind: plannerTurnInvalidMeta,
-				InvalidMetaStep: &schema.AgentStep{
-					Action:      action,
-					Observation: fmt.Sprintf("commit_plan failed: %v", err),
-				},
-			}
+			return commitPlanFailureTurn(state, action, commitPlanFailureObservation(err))
 		}
+		state.ConsecutiveCommitPlanFailures = 0
 		state.applyCommittedPlan(decision)
 		state.applyCommittedPlanTodo(decision)
 		state.Phase = phaseExecution
@@ -275,4 +273,59 @@ func (e *roleCollaborativeExecutor) handlePlannerMetaTool(
 			},
 		}
 	}
+}
+
+func commitPlanFailureTurn(state *roleLoopState, action schema.AgentAction, observation string) plannerTurnResult {
+	observation = strings.TrimSpace(observation)
+	if observation == "" {
+		observation = "commit_plan failed"
+	}
+	step := &schema.AgentStep{
+		Action:      action,
+		Observation: observation,
+	}
+	if state != nil {
+		state.ConsecutiveCommitPlanFailures++
+		if state.ConsecutiveCommitPlanFailures >= maxConsecutiveCommitPlanFailures {
+			state.Phase = phaseDefault
+			state.PlanCommitRequired = false
+			return plannerTurnResult{
+				Kind:   plannerTurnFinish,
+				Answer: commitPlanFailureFinalAnswer(observation),
+				Step:   step,
+			}
+		}
+	}
+	return plannerTurnResult{
+		Kind:            plannerTurnInvalidMeta,
+		InvalidMetaStep: step,
+	}
+}
+
+func commitPlanFailureFinalAnswer(observation string) string {
+	reason := strings.TrimSpace(strings.TrimPrefix(observation, "commit_plan failed:"))
+	var payload struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(reason), &payload); err == nil && strings.TrimSpace(payload.Error) != "" {
+		reason = strings.TrimSpace(payload.Error)
+	}
+	if reason == "" {
+		reason = observation
+	}
+	return "规划提交连续失败，已停止重试。最后一次错误：" + reason
+}
+
+func commitPlanFailureObservation(err error) string {
+	if err == nil {
+		return "commit_plan failed"
+	}
+	payload := map[string]any{
+		"error": strings.TrimSpace(err.Error()),
+	}
+	encoded, marshalErr := json.Marshal(payload)
+	if marshalErr != nil {
+		return fmt.Sprintf("commit_plan failed: %v", err)
+	}
+	return "commit_plan failed: " + string(encoded)
 }

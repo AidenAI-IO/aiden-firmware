@@ -108,6 +108,7 @@ type roleLoopState struct {
 	NextStep                       string
 	PlannerReason                  string
 	PlanCommitRequired             bool
+	ConsecutiveCommitPlanFailures  int
 	World                          worldState
 	ToolSteps                      []schema.AgentStep
 	StepToolSteps                  []schema.AgentStep
