@@ -5,7 +5,7 @@ from runner.agent_client import AgentTimeoutError, ChatResponse
 from runner.judge import JudgeConfig, JudgeOutput
 from runner.models import RubricVerdict
 from runner.runtask import run_one_task
-from runner.suite import HardAssertions, RubricItem, Suite, TaskSpec
+from runner.suite import HardAssertions, RubricItem, Suite, TaskSpec, TraceObservationSpec
 import runner.runtask as runtask_mod
 
 
@@ -13,6 +13,7 @@ class FakeClient:
     def __init__(self, response="ok"):
         self.response = response
         self.messages = []
+        self.skill_requests = []
 
     def health(self):
         return True
@@ -28,6 +29,7 @@ class FakeClient:
 
     def chat(self, message, timeout_sec=None, attachments=None, skills=None):
         self.messages.append(message)
+        self.skill_requests.append(list(skills or []))
         return ChatResponse(
             response=self.response,
             history=[{"type": "assistant", "content": self.response}],
@@ -225,6 +227,51 @@ def test_run_one_task_applies_suite_prompt_prefix(tmp_path: Path):
     assert client.messages == [
         "You must call recall_memory before answering.\n\nChoose one option."
     ]
+
+
+def test_run_one_task_requests_active_skill_and_marks_trace_observation(tmp_path: Path):
+    suite = Suite(
+        name="phone",
+        global_reset={},
+        tasks=[],
+        sha256="sha",
+        source_path=tmp_path / "suite.json",
+        trace_observations=[
+            TraceObservationSpec(
+                id="skill_read_device_operator",
+                description="Loaded device-operator skill.",
+                skill_name="device-operator",
+            )
+        ],
+    )
+    task = TaskSpec(
+        id="open_settings",
+        category="single_step",
+        description_for_judge="Open Settings.",
+        prompt="open settings",
+        rubric=[RubricItem(id="done", check="Done.")],
+        hard_assertions=HardAssertions(min_tool_calls=0, max_tool_calls=0),
+    )
+    client = FakeClient("ok")
+
+    result = run_one_task(
+        client,
+        suite,
+        task,
+        1,
+        tmp_path / "artifacts",
+        None,
+        None,
+        "run-1",
+        active_skills=["device-operator"],
+    )
+
+    assert client.skill_requests == [["device-operator"]]
+    assert result.metrics["active_skills"] == ["device-operator"]
+    obs = result.metrics["trace_observations"][0]
+    assert obs["id"] == "skill_read_device_operator"
+    assert obs["passed"] is True
+    assert "requested active skill" in obs["reason"]
 
 
 class TimeoutClient(FakeClient):

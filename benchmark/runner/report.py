@@ -70,9 +70,9 @@ def write_summary(path: Path, suite_name: str, manifest: dict[str, Any],
         hits = skill_obs.get("tasks_with_skill_read", 0)
         total = skill_obs.get("tasks_observed", 0)
         lines += [
-            "## Skill discovery (informational)",
+            "## Skill activation (informational)",
             "",
-            f"device-operator skill_read: {hits}/{total} tasks",
+            f"device-operator skill activation/read: {hits}/{total} tasks",
             "",
         ]
     lines += [

@@ -2987,13 +2987,13 @@ func (s *Server) resolveRequestInput(req ChatRequest) (TurnInput, []MessageAttac
 
 func (s *Server) webAudioInputMode() string {
 	switch s.runtime.config.InputModeOrDefault() {
-	case "stt", "audio":
-		return s.runtime.config.InputModeOrDefault()
+	case "stt":
+		return "stt"
 	default:
 		if s.sttClient != nil {
 			return "stt"
 		}
-		return "audio"
+		return "text"
 	}
 }
 

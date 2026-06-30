@@ -121,6 +121,47 @@ def test_optimize_skill_uses_accepted_candidate_for_next_train(monkeypatch, tmp_
     assert ("step_02_train", "base\ncandidate", "train_suite", ["train"]) in backend.calls
 
 
+def test_optimize_skill_rejects_lint_invalid_candidate_before_selection(monkeypatch, tmp_path):
+    backend = CapturingBackend()
+    invalid_candidate = """
+## Failed Attempt Handling
+
+After a failed attempt:
+
+1. Observe with `screenshot`.
+2. Compare expected vs observed result.
+3. Never repeat the exact same failed action more than once. After 2 total failed attempts on the same goal, stop and report the blocker to the user immediately instead of continuing to attempt untested actions that waste turns.
+4. Change one variable at a time: target location, gesture type, coordinate space, navigation path, or input method.
+5. After 2 failed attempts on the same goal, choose a different strategy.
+6. After 3 failed attempts total, summarize what was tried and ask the user or switch to diagnosis.
+"""
+    monkeypatch.setattr(
+        orchestrator,
+        "run_reflect",
+        lambda *args, **kwargs: [RawPatch(patch=Patch(edits=[Edit(op="append", content="conflict")]))],
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "aggregate",
+        lambda raw_patches, edit_budget: Patch(edits=[Edit(op="append", content="conflict")]),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "apply_patch_with_report",
+        lambda current, patch: (invalid_candidate, []),
+    )
+
+    result = orchestrator.optimize_skill(_backend_config(tmp_path, backend))
+
+    assert result.accepted_count == 0
+    assert result.rejected_count == 1
+    assert result.steps[0].accepted is False
+    assert "skill lint failed" in result.steps[0].reason
+    assert [call[0] for call in backend.calls] == ["baseline_selection", "step_01_train"]
+    lint_artifact = tmp_path / "runs" / "skillopt" / "run-001" / "step_01" / "candidate_lint.json"
+    assert "conflicting_failed_attempt_thresholds" in lint_artifact.read_text(encoding="utf-8")
+
+
 def test_optimize_skill_closes_injected_backend_on_success(monkeypatch, tmp_path):
     backend = CapturingBackend()
     _patch_optimizer(monkeypatch)
@@ -343,6 +384,9 @@ def test_optimize_skill_writes_skillopt_phase_records(monkeypatch, tmp_path):
     assert baseline["status"] == "completed"
     assert baseline["counts"]["total"] == 1
     assert baseline["counts"]["failed"] == 1
+    assert baseline["counts"]["score_excluded"] == 1
+    assert baseline["score"]["n"] == 0
+    assert baseline["score"]["n_excluded"] == 1
     assert baseline["tasks"] == [{
         "id": "validation_task",
         "category": "single_step",
@@ -351,10 +395,63 @@ def test_optimize_skill_writes_skillopt_phase_records(monkeypatch, tmp_path):
         "soft": 0.25,
         "turns": 3,
         "reason": "No tool calls.",
+        "sample_quality": "agent_format_error",
+        "sample_quality_reason": "zero tool calls, empty final response, or internal JSON plan output",
+        "score_weight": 0.0,
+        "score_excluded": True,
+        "reflect_excluded": True,
         "artifact_dir": "benchmark/run-001-baseline_selection/tasks/validation_task",
         "raw_report": "benchmark/run-001-baseline_selection/report.html",
     }]
     assert train["counts"]["passed"] == 1
+
+
+def test_phase_records_include_sample_quality_for_polluted_rollouts(monkeypatch, tmp_path):
+    skill_path = tmp_path / "SKILL.md"
+    skill_path.write_text("base", encoding="utf-8")
+
+    class PhaseBackend:
+        def close(self):
+            pass
+
+        def run_rollout(self, *, run_root, phase, **kwargs):
+            del kwargs
+            return [
+                RolloutResult(
+                    id="agent_error_task",
+                    hard=0,
+                    soft=0.0,
+                    n_turns=0,
+                    fail_reason="Agent Error: planner/executor role model call timed out after 2m0s HTTP 500",
+                    artifact_dir=str(run_root / "benchmark" / f"run-001-{phase}" / "tasks" / "agent_error_task"),
+                    extras={"benchmark_status": "failed"},
+                )
+            ]
+
+    monkeypatch.setattr(orchestrator, "run_reflect", lambda *args, **kwargs: [])
+    cfg = orchestrator.OptimizationConfig(
+        skill_name="device-operator",
+        skill_path=skill_path,
+        suite=_suite(tmp_path, "train_suite"),
+        train_suite=_suite(tmp_path, "train_suite"),
+        selection_suite=_suite(tmp_path, "validation_suite"),
+        train_tasks=[_task("agent_error_task")],
+        selection_tasks=[_task("agent_error_task")],
+        budget=1,
+        run_id="run-001",
+        artifact_root=tmp_path / "runs" / "skillopt",
+        rollout_backend=PhaseBackend(),
+    )
+
+    orchestrator.optimize_skill(cfg)
+
+    phase = json.loads((tmp_path / "runs" / "skillopt" / "run-001" / "phases" / "baseline_selection.json").read_text(encoding="utf-8"))
+    assert phase["score"]["n"] == 0
+    assert phase["score"]["n_excluded"] == 1
+    assert phase["counts"]["score_excluded"] == 1
+    assert phase["tasks"][0]["sample_quality"] == "system_error"
+    assert phase["tasks"][0]["score_excluded"] is True
+    assert phase["tasks"][0]["reflect_excluded"] is True
 
 
 def test_optimize_skill_marks_phase_record_failed_when_rollout_raises(tmp_path):

@@ -668,18 +668,12 @@ func (d *AudioDialog) ensureVoiceInputAudioArtifact(input TurnInput, utterance [
 		}
 	}
 	if d.audioArchive == nil {
-		if input.Modality == TurnModalityAudio && len(wavData) > 0 {
-			return withAudioArtifactPath(input, "", wavDurationMS(wavData), int64(len(wavData)))
-		}
 		return input
 	}
 
 	audioPath, audioDuration, err := d.audioArchive.SaveAudio(utterance, d.config.Audio.SampleRateOrDefault())
 	if err != nil {
 		log.Printf("[audio_archive] save failed: %v", err)
-		if input.Modality == TurnModalityAudio && len(wavData) > 0 {
-			return withAudioArtifactPath(input, "", wavDurationMS(wavData), int64(len(wavData)))
-		}
 		return input
 	}
 	size := int64(0)
@@ -694,7 +688,7 @@ func (d *AudioDialog) ensureVoiceInputAudioArtifact(input TurnInput, utterance [
 	if audioDuration == 0 && len(wavData) > 0 {
 		audioDuration = int(wavDurationMS(wavData))
 	}
-	if audioPath == "" && input.Modality != TurnModalityAudio {
+	if audioPath == "" {
 		return input
 	}
 	return withAudioArtifactPath(input, audioPath, int64(audioDuration), size)
@@ -823,6 +817,13 @@ func (d *AudioDialog) endVoiceRunControl(requestID string) {
 		return
 	}
 	d.runControl.end(requestID)
+}
+
+func (d *AudioDialog) WaitForVoiceRunIdle(ctx context.Context) bool {
+	if d == nil {
+		return true
+	}
+	return d.runControl.waitUntilInactive(ctx)
 }
 
 func (d *AudioDialog) QueueSteer(input TurnInput) bool {

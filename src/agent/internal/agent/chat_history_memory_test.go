@@ -329,7 +329,7 @@ func TestRuntimeRunKeepsCurrentRequestOutOfCompressedHistoryBlock(t *testing.T) 
 		t.Fatalf("current request must not be inside restored conversation history messages:\n%s", messageText(historyMessages))
 	}
 	plannerTaskPrompt := messageText(messages[3:])
-	for _, marker := range []string{"hot window", "Current session recent history", "Prior messages retained from this session", "compressed into the session summary"} {
+	for _, marker := range []string{"=== Recent session context (hot window) ===", "=== End of recent context ===", "Current session recent history", "Prior messages retained from this session", "compressed into the session summary"} {
 		if strings.Contains(plannerTaskPrompt, marker) {
 			t.Fatalf("planner task prompt should not include hot-window label %q:\n%s", marker, plannerTaskPrompt)
 		}

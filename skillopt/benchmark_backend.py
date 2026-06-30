@@ -85,6 +85,7 @@ class BenchmarkRunnerBackend:
         cmd = self._runner_command(
             suite=suite,
             tasks=tasks,
+            skill_name=skill_name,
             child_runs_root=child_runs_root,
             child_run_id=child_run_id,
             phase_config=phase_config,
@@ -157,6 +158,7 @@ class BenchmarkRunnerBackend:
         *,
         suite: Suite,
         tasks: list[TaskSpec],
+        skill_name: str,
         child_runs_root: Path,
         child_run_id: str,
         phase_config: Path,
@@ -180,6 +182,8 @@ class BenchmarkRunnerBackend:
             str(child_runs_root),
             "--run-id",
             child_run_id,
+            "--skill",
+            skill_name,
         ]
         if not self.build_daemon_image:
             cmd.append("--no-build-daemon-image")
@@ -209,7 +213,11 @@ def apply_environment_profile(skill_text: str, skill_name: str, environment_prof
     overlay = profile_path.read_text(encoding="utf-8").strip()
     if not overlay:
         return skill_text
-    return skill_text.rstrip() + "\n\n---\n\n" + overlay + "\n"
+    match = re.match(r"\A(---\n.*?\n---\n)(.*)\Z", skill_text, flags=re.DOTALL)
+    if match:
+        frontmatter, body = match.groups()
+        return frontmatter.rstrip() + "\n\n" + overlay + "\n\n" + body.lstrip().rstrip() + "\n"
+    return overlay + "\n\n" + skill_text.rstrip() + "\n"
 
 
 def count_environment_setup_failures(results: list[TaskResult]) -> int:
@@ -232,6 +240,9 @@ def is_environment_setup_failure(result: TaskResult) -> bool:
         "reset failed",
         "page crashed",
         "target crashed",
+        "docker compose",
+        "container exited",
+        "daemon image",
     )
     return any(marker in text for marker in markers)
 
@@ -253,9 +264,9 @@ def load_benchmark_task_results(run_dir: Path) -> list[TaskResult]:
 def task_result_from_dict(payload: dict[str, Any]) -> TaskResult:
     rubric = [RubricVerdict(**item) for item in payload.get("rubric", []) if isinstance(item, dict)]
     hard_payload = payload.get("hard_assertions")
-    hard_assertions = HardAssertionResults(**hard_payload) if isinstance(hard_payload, dict) else None
+    hard_assertions = _dataclass_from_dict(HardAssertionResults, hard_payload) if isinstance(hard_payload, dict) else None
     failures = [
-        HardAssertionFailure(**item)
+        _dataclass_from_dict(HardAssertionFailure, item)
         for item in payload.get("hard_assertion_failures", [])
         if isinstance(item, dict)
     ]
@@ -265,3 +276,8 @@ def task_result_from_dict(payload: dict[str, Any]) -> TaskResult:
     data["hard_assertions"] = hard_assertions
     data["hard_assertion_failures"] = failures
     return TaskResult(**data)
+
+
+def _dataclass_from_dict(cls, payload: dict[str, Any]):
+    fields = {field.name for field in dc.fields(cls)}
+    return cls(**{key: value for key, value in payload.items() if key in fields})

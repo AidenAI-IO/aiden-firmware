@@ -33,6 +33,7 @@ type fakeAudioDialog struct {
 	runVoiceTurn         func(context.Context, agent.TurnInput, []int16) (agent.RunResult, error)
 	beginSteerInterrupt  func() bool
 	resumeSteerInterrupt func() bool
+	waitForVoiceRunIdle  func(context.Context) bool
 	queueSteer           func(agent.TurnInput) bool
 	interruptOutput      func()
 	speak                func(context.Context) error
@@ -218,6 +219,13 @@ func (d *fakeAudioDialog) ResumeSteerInterrupt() bool {
 	d.steerResumes++
 	if d.resumeSteerInterrupt != nil {
 		return d.resumeSteerInterrupt()
+	}
+	return true
+}
+
+func (d *fakeAudioDialog) WaitForVoiceRunIdle(ctx context.Context) bool {
+	if d.waitForVoiceRunIdle != nil {
+		return d.waitForVoiceRunIdle(ctx)
 	}
 	return true
 }
@@ -526,8 +534,8 @@ func TestShouldRunConsoleAudioLoopSkipsManualModeWithoutInteractiveStdin(t *test
 			want:        false,
 		},
 		{
-			name:        "audio default manual without terminal",
-			cfg:         agent.Config{InputMode: "audio"},
+			name:        "stt default manual without terminal",
+			cfg:         agent.Config{InputMode: "stt"},
 			interactive: false,
 			want:        false,
 		},
@@ -705,6 +713,7 @@ func TestSignalVoiceWakeupEventCoalescesPendingEvents(t *testing.T) {
 		t.Fatalf("voice event = %v, want wakeup", got)
 	}
 }
+
 
 func TestProcessAudioLoopStopsRecordingBeforeProcessingUtterance(t *testing.T) {
 	dialog := &fakeAudioDialog{
@@ -1123,7 +1132,7 @@ func TestRunWakeupModeSTTWakeupQueuesCorrectionWhileRunActive(t *testing.T) {
 	}
 }
 
-func TestRunWakeupModeAudioWakeupKeepsLegacySingleTurnBehavior(t *testing.T) {
+func TestRunWakeupModeSTTWakeupKeepsLegacySingleTurnBehavior(t *testing.T) {
 	sigChan := make(chan os.Signal, 1)
 	watcher := &fakeWakeupWatcher{fireOnStart: true}
 	dialog := &fakeAudioDialog{
@@ -1142,7 +1151,7 @@ func TestRunWakeupModeAudioWakeupKeepsLegacySingleTurnBehavior(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		runWakeupMode(agent.Config{InputMode: "audio"}, dialog, nil, sigChan, func(pin int, callback func()) (wakeupWatcher, error) {
+		runWakeupMode(agent.Config{InputMode: "stt", STT: agent.STTConfig{Provider: "openai-whisper"}}, dialog, nil, sigChan, func(pin int, callback func()) (wakeupWatcher, error) {
 			watcher.callback = callback
 			return watcher, nil
 		})
@@ -2030,6 +2039,135 @@ func TestRunVoiceTurnWakeupReturnsCapturedSteerAsNextTurnWhenQueueSteerFails(t *
 	}
 	if len(dialog.spoken) != 0 {
 		t.Fatalf("spoken texts = %#v, want no stale reply from interrupted turn", dialog.spoken)
+	}
+}
+
+func TestRunVoiceTurnWakeupWaitsForVoiceRunToGoIdleBeforeNextTurn(t *testing.T) {
+	oldTimeout := voiceTurnCancelWaitTimeout
+	voiceTurnCancelWaitTimeout = 200 * time.Millisecond
+	t.Cleanup(func() {
+		voiceTurnCancelWaitTimeout = oldTimeout
+	})
+
+	sigChan := make(chan os.Signal, 1)
+	events := make(chan voiceEvent, 1)
+	runStarted := make(chan struct{})
+	releaseRun := make(chan struct{})
+	runReturned := make(chan struct{})
+	idleWaitStarted := make(chan struct{})
+	idleWaitTimedOut := make(chan struct{}, 1)
+	allowIdle := make(chan struct{})
+	var idleWaitCalls int
+
+	dialog := &fakeAudioDialog{
+		frameSamples:       2,
+		chunkBatches:       [][]*agent.AudioChunkResult{{{PCM: pcm16BytesFromSamples(700, 800)}}},
+		utterancesToReturn: [][]int16{{700, 800}},
+		repeatEmpty:        true,
+		readDelay:          time.Millisecond,
+		prepareTurnInput: func(utterance []int16) (agent.TurnInput, error) {
+			if len(utterance) > 0 && utterance[0] == 700 {
+				return agent.TurnInput{InputText: "next turn", Transcript: "next turn"}, nil
+			}
+			return agent.TurnInput{InputText: "original request", Transcript: "original request"}, nil
+		},
+		runVoiceTurn: func(ctx context.Context, input agent.TurnInput, utterance []int16) (agent.RunResult, error) {
+			if input.InputText != "original request" {
+				t.Fatalf("run input = %q, want only original request", input.InputText)
+			}
+			close(runStarted)
+			<-ctx.Done()
+			<-releaseRun
+			close(runReturned)
+			return agent.RunResult{}, ctx.Err()
+		},
+		queueSteer: func(input agent.TurnInput) bool {
+			if input.InputText != "next turn" {
+				t.Fatalf("queued steer input = %#v, want captured next turn", input)
+			}
+			return false
+		},
+		waitForVoiceRunIdle: func(ctx context.Context) bool {
+			idleWaitCalls++
+			close(idleWaitStarted)
+			select {
+			case <-allowIdle:
+				select {
+				case <-runReturned:
+					return true
+				case <-ctx.Done():
+					idleWaitTimedOut <- struct{}{}
+					return false
+				}
+			case <-ctx.Done():
+				idleWaitTimedOut <- struct{}{}
+				return false
+			}
+		},
+	}
+
+	go func() {
+		<-runStarted
+		events <- voiceEventWakeup
+	}()
+
+	resultCh := make(chan voiceTurnResult, 1)
+	go func() {
+		resultCh <- runVoiceTurnWithInputContext(
+			agent.Config{VoiceFollowupTimeoutMs: 5},
+			dialog,
+			nil,
+			agent.TurnInput{InputText: "original request", Transcript: "original request"},
+			[]int16{100, 200},
+			sigChan,
+			events,
+			agent.VoiceTurnContext{},
+			true,
+		)
+	}()
+
+	select {
+	case <-idleWaitStarted:
+	case <-time.After(time.Second):
+		t.Fatal("did not wait for voice run to go idle")
+	}
+
+	select {
+	case <-idleWaitTimedOut:
+		t.Fatal("WaitForVoiceRunIdle timed out before test released the run")
+	default:
+	}
+
+	select {
+	case result := <-resultCh:
+		t.Fatalf("runVoiceTurnWithInputContext returned early: %#v", result)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(releaseRun)
+	close(allowIdle)
+
+	var result voiceTurnResult
+	select {
+	case result = <-resultCh:
+	case <-time.After(time.Second):
+		t.Fatal("runVoiceTurnWithInputContext did not return")
+	}
+
+	select {
+	case <-idleWaitTimedOut:
+		t.Fatal("WaitForVoiceRunIdle timed out before the voice run became idle")
+	default:
+	}
+
+	if !result.interrupted || result.exit || result.waitForWakeupRequested || result.nextTurn == nil {
+		t.Fatalf("runVoiceTurnWithInputContext result = %#v, want interrupted next turn", result)
+	}
+	if result.nextTurn.input.InputText != "next turn" {
+		t.Fatalf("next turn input = %#v, want captured next turn", result.nextTurn.input)
+	}
+	if idleWaitCalls != 1 {
+		t.Fatalf("WaitForVoiceRunIdle calls = %d, want 1", idleWaitCalls)
 	}
 }
 

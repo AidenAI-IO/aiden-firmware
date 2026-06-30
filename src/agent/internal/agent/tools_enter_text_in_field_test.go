@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 type textInputStubTool struct {
@@ -313,6 +314,74 @@ func TestEnterTextInFieldRetryWithoutRetype(t *testing.T) {
 	}
 	if len(kbText.calls) != 2 {
 		t.Fatalf("expected single type pass (ni+hao), got keyboard_text calls=%v", kbText.calls)
+	}
+}
+
+func TestEnterTextInFieldFirstCompositionAttemptWaitsForIME(t *testing.T) {
+	originalDelay := textInputCompositionReadyDelay
+	textInputCompositionReadyDelay = 0
+	defer func() { textInputCompositionReadyDelay = originalDelay }()
+
+	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
+		FieldText: "你好",
+	}}}
+	engine := newTextInputEngine(textInputHardwareDeps{
+		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
+		keyboardTap:  textInputStubTool{name: "keyboard_tap", out: "ok"},
+		keyboardText: textInputStubTool{name: "keyboard_text", out: "ok"},
+		quickAction:  textInputStubTool{name: "quick_action", out: "ok"},
+		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}, vision)
+	tool := &EnterTextInFieldTool{engine: engine}
+	out, err := tool.Call(context.Background(), `{"text":"你好","focus":{"x":500,"y":100},"segments":["ni","hao"]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"committed": true`) {
+		t.Fatalf("unexpected output: %s", out)
+	}
+	if !strings.Contains(out, "wait 0s for IME to settle before first composition input") {
+		t.Fatalf("expected IME settle step in output, got: %s", out)
+	}
+}
+
+func TestTextInputEngineFirstCompositionAttemptRespectsContextCancelDuringIMEWait(t *testing.T) {
+	originalDelay := textInputCompositionReadyDelay
+	textInputCompositionReadyDelay = time.Second
+	defer func() { textInputCompositionReadyDelay = originalDelay }()
+
+	engine := newTextInputEngine(textInputHardwareDeps{
+		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
+		keyboardTap:  textInputStubTool{name: "keyboard_tap", out: "ok"},
+		keyboardText: textInputStubTool{name: "keyboard_text", out: "ok"},
+		quickAction:  textInputStubTool{name: "quick_action", out: "ok"},
+		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}, &stubTextInputVision{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	start := time.Now()
+	result, err := engine.Run(ctx, enterTextInFieldArgs{
+		Text:        "你好",
+		SkipFocus:   true,
+		MaxAttempts: 1,
+		Segments:    []string{"ni", "hao"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(start) >= textInputCompositionReadyDelay/2 {
+		t.Fatalf("Run blocked too long after context cancellation")
+	}
+	if result.Reason != context.Canceled.Error() {
+		t.Fatalf("Reason=%q, want %q", result.Reason, context.Canceled.Error())
+	}
+	if len(result.Steps) == 0 || !strings.Contains(result.Steps[len(result.Steps)-1], "IME to settle") {
+		t.Fatalf("expected IME settle step in result, got: %v", result.Steps)
+	}
+	if result.Committed {
+		t.Fatalf("Committed=%v, want false", result.Committed)
 	}
 }
 

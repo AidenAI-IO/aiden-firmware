@@ -30,6 +30,8 @@ const (
 	textInputCandidatePageDelay     = 300 * time.Millisecond
 )
 
+var textInputCompositionReadyDelay = 450 * time.Millisecond
+
 func normalizeTextInputInteractionMode(raw string) textInputInteractionMode {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "", string(textInputModeForm):
