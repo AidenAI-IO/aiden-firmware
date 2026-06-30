@@ -1019,13 +1019,7 @@ func (s *Server) handleChatAsync(
 
 		result, err := s.runtime.Run(runCtx, runReq)
 		progress.Cancel()
-		if newStream != nil {
-			closeErr := newStream.closeAndWait()
-			if closeErr != nil && s.logger != nil {
-				s.logger.Error("new TTS stream failed: %v", closeErr)
-			}
-			result.SpeechStreamed = closeErr == nil && newStream.spokeSuccessfully()
-		}
+		result.SpeechStreamed = newStream != nil && streamWriterEmitted(runReq.StreamWriter)
 
 		pending.mu.Lock()
 		if err != nil {
@@ -1092,6 +1086,9 @@ func (s *Server) handleChatAsync(
 		speechText := result.SpokenTextForConfig(s.runtime.config)
 		if s.audioClient != nil && speechText != "" && !result.SpeechStreamed {
 			s.speakFinalText(runCtx, requestID, speechText)
+		}
+		if newStream != nil {
+			s.closeTTSStreamAndLog(newStream)
 		}
 	}()
 }
@@ -1469,6 +1466,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 
 	var newStream *streamSessionWriter
 	unregisterStreamOutput := func() {}
+	streamOutputCleanupDeferred := false
 	ttsManager := s.currentTTSManager()
 	finalStreamWriters := []io.Writer{
 		newChatAssistantFinalStreamWriter(stream, episodeID, req.RequestID),
@@ -1489,19 +1487,20 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	defer unregisterStreamOutput()
+	defer func() {
+		if !streamOutputCleanupDeferred {
+			unregisterStreamOutput()
+		}
+	}()
 	runReq.StreamWriter = newFinalStreamFanoutWriter(finalStreamWriters...)
 
 	result, err := s.runtime.Run(ctx, runReq)
 	progress.Cancel()
-	if newStream != nil {
-		closeErr := newStream.closeAndWait()
-		if closeErr != nil && s.logger != nil {
-			s.logger.Error("new TTS stream failed: %v", closeErr)
-		}
-		result.SpeechStreamed = closeErr == nil && newStream.spokeSuccessfully()
-	}
+	result.SpeechStreamed = newStream != nil && streamWriterEmitted(runReq.StreamWriter)
 	if err != nil {
+		if newStream != nil {
+			go s.closeTTSStreamAndLog(newStream)
+		}
 		canceled := errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled)
 		if req.RequestID != "" && s.liveActivity != nil {
 			if canceled {
@@ -1551,6 +1550,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	speechText := result.SpokenTextForConfig(s.runtime.config)
+	finalTTSOwnsCleanup := false
 	if s.audioClient != nil && speechText != "" && !result.SpeechStreamed {
 		finalTTSCtx := ctx
 		finishRun := func() {}
@@ -1560,6 +1560,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			finalTTSCtx = context.Background()
 			finishRun = cleanupRun
 			cleanupRunAtReturn = false
+			finalTTSOwnsCleanup = true
 		}
 		go func(text string, ttsCtx context.Context, finish func()) {
 			defer finish()
@@ -1572,6 +1573,31 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		Response: result.Output,
 		History:  historySnapshot,
 	})
+
+	if newStream != nil {
+		if req.RequestID != "" {
+			cleanupRunAtReturn = false
+			streamOutputCleanupDeferred = true
+			go func() {
+				if !finalTTSOwnsCleanup {
+					defer cleanupRun()
+				}
+				defer unregisterStreamOutput()
+				s.closeTTSStreamAndLog(newStream)
+			}()
+			return
+		}
+		s.closeTTSStreamAndLog(newStream)
+	}
+}
+
+func (s *Server) closeTTSStreamAndLog(stream *streamSessionWriter) {
+	if stream == nil {
+		return
+	}
+	if err := stream.closeAndWait(); err != nil && s.logger != nil {
+		s.logger.Error("new TTS stream failed: %v", err)
+	}
 }
 
 type chatStreamWriter struct {
