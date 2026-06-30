@@ -166,7 +166,14 @@ func (m *RunMetrics) CacheHitRate() float64 {
 	if m == nil || m.PromptTokens <= 0 {
 		return 0
 	}
-	return float64(m.CachedPromptTokens) / float64(m.PromptTokens)
+	rate := float64(m.CachedPromptTokens) / float64(m.PromptTokens)
+	if rate < 0 {
+		return 0
+	}
+	if rate > 1 {
+		return 1
+	}
+	return rate
 }
 
 const (

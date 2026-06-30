@@ -44,6 +44,21 @@ func TestRecordUsageMetricsAccumulatesAcrossCalls(t *testing.T) {
 	}
 }
 
+func TestRunMetricsCacheHitRateClampsProviderReportedValues(t *testing.T) {
+	if got := (*RunMetrics)(nil).CacheHitRate(); got != 0 {
+		t.Fatalf("nil CacheHitRate() = %v, want 0", got)
+	}
+	if got := (&RunMetrics{}).CacheHitRate(); got != 0 {
+		t.Fatalf("zero prompt CacheHitRate() = %v, want 0", got)
+	}
+	if got := (&RunMetrics{PromptTokens: 200, CachedPromptTokens: 50}).CacheHitRate(); got != 0.25 {
+		t.Fatalf("normal CacheHitRate() = %v, want 0.25", got)
+	}
+	if got := (&RunMetrics{PromptTokens: 100, CachedPromptTokens: 150}).CacheHitRate(); got != 1 {
+		t.Fatalf("oversized cached tokens CacheHitRate() = %v, want 1", got)
+	}
+}
+
 func TestUsageTrackingModelCapturesFullPromptForTelemetry(t *testing.T) {
 	capture := newTelemetryPromptCapture(true)
 	model := &usageTrackingModel{
