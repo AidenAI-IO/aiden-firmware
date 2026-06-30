@@ -1149,6 +1149,12 @@ func (e *roleCollaborativeExecutor) callExecutorTurn(
 		}
 		return turn, nil
 	}
+	if abortAction, ok := state.autoAbortRepeatedPhoneBridgeForegroundFailure(action); ok {
+		if e.CallbacksHandler != nil {
+			e.CallbacksHandler.HandleAgentAction(ctx, abortAction)
+		}
+		return e.handleExecutorMetaTool(state, abortAction), nil
+	}
 
 	toolExecution := e.executeToolCall(ctx, ToolCallExecution{
 		Specs:                  toolSpecs,
@@ -1224,6 +1230,45 @@ func (s roleLoopState) lastExecutionTool() string {
 		}
 	}
 	return ""
+}
+
+func (s *roleLoopState) autoAbortRepeatedPhoneBridgeForegroundFailure(action schema.AgentAction) (schema.AgentAction, bool) {
+	if s == nil || !phoneBridgeForegroundRestoreTool(action.Tool) {
+		return schema.AgentAction{}, false
+	}
+	input := normalizeToolInput(action.ToolInput)
+	for i := len(s.StepExecutionResults) - 1; i >= 0; i-- {
+		result := s.StepExecutionResults[i]
+		if result.Action == nil || result.ToolError == nil {
+			continue
+		}
+		if result.ToolError.Code != CodeAppBackgrounded {
+			continue
+		}
+		if !phoneBridgeForegroundRestoreTool(result.Action.Tool) || !toolNameEqual(result.Action.Tool, action.Tool) {
+			continue
+		}
+		if normalizeToolInput(result.Action.ToolInput) != input {
+			continue
+		}
+		reason := fmt.Sprintf("Phone Bridge app-side tool %q already failed in this step because Aiden stayed backgrounded. Repeating the same tool/input will keep hitting the foreground-restore precondition; abort this step so the planner can replan or ask the user to bring Aiden foreground.", strings.TrimSpace(action.Tool))
+		payload, _ := json.Marshal(map[string]string{"reason": reason})
+		return schema.AgentAction{
+			Tool:      toolAbortStep,
+			ToolInput: string(payload),
+			Log:       reason,
+		}, true
+	}
+	return schema.AgentAction{}, false
+}
+
+func phoneBridgeForegroundRestoreTool(toolName string) bool {
+	switch strings.ToLower(strings.TrimSpace(toolName)) {
+	case "open_app", "search_launch_app", "clipboard", "calendar", "contacts", "notification":
+		return true
+	default:
+		return false
+	}
 }
 
 func shouldReviewDefaultFinalTool(toolName string, toolSpecs *ToolSpecs) bool {

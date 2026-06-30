@@ -100,7 +100,7 @@ func (t *ClipboardTool) read(ctx context.Context) (string, error) {
 		TimeoutMs: 5000,
 	})
 	if err != nil {
-		te := NewToolError(CodeBridgeNotConnected, err.Error())
+		te := phoneBridgeCommandPreconditionToolErrorFromBridge(t.bridge, err)
 		SetToolError(ctx, te)
 		return toolErrorString(te), nil
 	}
@@ -134,7 +134,7 @@ func (t *ClipboardTool) write(ctx context.Context, text string) (string, error) 
 		TimeoutMs: 5000,
 	})
 	if err != nil {
-		te := NewToolError(CodeBridgeNotConnected, err.Error())
+		te := phoneBridgeCommandPreconditionToolErrorFromBridge(t.bridge, err)
 		SetToolError(ctx, te)
 		return toolErrorString(te), nil
 	}
@@ -250,7 +250,7 @@ func (t *CalendarTool) create(ctx context.Context, args calendarArgs) (string, e
 		TimeoutMs: 8000,
 	})
 	if err != nil {
-		te := NewToolError(CodeBridgeNotConnected, err.Error())
+		te := phoneBridgeCommandPreconditionToolErrorFromBridge(t.bridge, err)
 		SetToolError(ctx, te)
 		return toolErrorString(te), nil
 	}
@@ -289,7 +289,7 @@ func (t *CalendarTool) query(ctx context.Context, args calendarArgs) (string, er
 		TimeoutMs: 8000,
 	})
 	if err != nil {
-		te := NewToolError(CodeBridgeNotConnected, err.Error())
+		te := phoneBridgeCommandPreconditionToolErrorFromBridge(t.bridge, err)
 		SetToolError(ctx, te)
 		return toolErrorString(te), nil
 	}
@@ -331,7 +331,7 @@ func (t *CalendarTool) delete(ctx context.Context, args calendarArgs) (string, e
 		TimeoutMs: 8000,
 	})
 	if err != nil {
-		te := NewToolError(CodeBridgeNotConnected, err.Error())
+		te := phoneBridgeCommandPreconditionToolErrorFromBridge(t.bridge, err)
 		SetToolError(ctx, te)
 		return toolErrorString(te), nil
 	}
@@ -430,7 +430,7 @@ func (t *ContactsTool) query(ctx context.Context, args contactsArgs) (string, er
 		TimeoutMs: 8000,
 	})
 	if err != nil {
-		te := NewToolError(CodeBridgeNotConnected, err.Error())
+		te := phoneBridgeCommandPreconditionToolErrorFromBridge(t.bridge, err)
 		SetToolError(ctx, te)
 		return toolErrorString(te), nil
 	}
@@ -479,7 +479,7 @@ func (t *ContactsTool) create(ctx context.Context, args contactsArgs) (string, e
 		TimeoutMs: 8000,
 	})
 	if err != nil {
-		te := NewToolError(CodeBridgeNotConnected, err.Error())
+		te := phoneBridgeCommandPreconditionToolErrorFromBridge(t.bridge, err)
 		SetToolError(ctx, te)
 		return toolErrorString(te), nil
 	}
@@ -526,7 +526,7 @@ func (t *ContactsTool) update(ctx context.Context, args contactsArgs) (string, e
 		TimeoutMs: 8000,
 	})
 	if err != nil {
-		te := NewToolError(CodeBridgeNotConnected, err.Error())
+		te := phoneBridgeCommandPreconditionToolErrorFromBridge(t.bridge, err)
 		SetToolError(ctx, te)
 		return toolErrorString(te), nil
 	}
@@ -608,7 +608,7 @@ func (t *NotificationTool) Call(ctx context.Context, input string) (string, erro
 		TimeoutMs: 5000,
 	})
 	if err != nil {
-		te := NewToolError(CodeBridgeNotConnected, err.Error())
+		te := phoneBridgeCommandPreconditionToolErrorFromBridge(t.bridge, err)
 		SetToolError(ctx, te)
 		return toolErrorString(te), nil
 	}

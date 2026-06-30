@@ -151,7 +151,7 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	return &ToolSet{
 		tools:               tools,
 		screen:              screen,
-		phoneBridgeRestorer: NewPhoneBridgeRestorer(nil, pointer),
+		phoneBridgeRestorer: NewPhoneBridgeRestorer(nil, pointer, screen),
 		textInputHW:         textInputHW,
 	}
 }

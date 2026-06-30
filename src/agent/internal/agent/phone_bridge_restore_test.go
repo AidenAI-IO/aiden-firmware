@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -119,5 +120,87 @@ func TestPhoneBridgeReadyForCommandRejectsBackgroundIOS(t *testing.T) {
 	}
 	if !phoneBridgeReadyForCommand(PhoneBridgeStatus{Connected: true, Platform: "android", AppState: "background"}) {
 		t.Fatal("connected non-iOS bridge should remain ready")
+	}
+}
+
+func TestPhoneBridgeRestorerSuppressesRepeatedTapAfterFailure(t *testing.T) {
+	bridge := NewPhoneBridge(nil)
+	defer bridge.queue.Stop()
+	bridge.mu.Lock()
+	bridge.platform = "ios"
+	bridge.appState = "background"
+	bridge.returnEntry = "dynamic_island"
+	bridge.returnEntrySeen = true
+	bridge.returnEntryOK = true
+	bridge.mu.Unlock()
+
+	now := time.Date(2026, 6, 29, 8, 0, 0, 0, time.UTC)
+	restorer := NewPhoneBridgeRestorer(bridge, nil)
+	restorer.failureCache = time.Minute
+	restorer.now = func() time.Time { return now }
+	taps := 0
+	restorer.tapReturnEntry = func(context.Context, PhoneBridgeStatus) error {
+		taps++
+		return errors.New("open /dev/hidg1: no such device or address")
+	}
+
+	if restored, err := restorer.EnsureForeground(context.Background()); err == nil || restored {
+		t.Fatalf("first EnsureForeground() restored=%v err=%v, want tap failure", restored, err)
+	}
+	now = now.Add(10 * time.Second)
+	restored, err := restorer.EnsureForeground(context.Background())
+	if err == nil || restored {
+		t.Fatalf("second EnsureForeground() restored=%v err=%v, want cached failure", restored, err)
+	}
+	if taps != 1 {
+		t.Fatalf("tap attempts = %d, want one attempt during failure cache", taps)
+	}
+	var suppressed *phoneBridgeRestoreSuppressedError
+	if !errors.As(err, &suppressed) {
+		t.Fatalf("second error = %T %v, want suppressed restore error", err, err)
+	}
+	var tapErr *phoneBridgeReturnEntryTapError
+	if !errors.As(err, &tapErr) {
+		t.Fatalf("second error = %T %v, want wrapped tap error", err, err)
+	}
+	te := phoneBridgeCommandPreconditionToolError(bridge.Status(), err)
+	if te == nil || te.Code != CodeAppBackgrounded {
+		t.Fatalf("cached restore error tool error = %#v, want app_backgrounded", te)
+	}
+
+	now = now.Add(time.Minute)
+	if restored, err := restorer.EnsureForeground(context.Background()); err == nil || restored {
+		t.Fatalf("expired-cache EnsureForeground() restored=%v err=%v, want another tap failure", restored, err)
+	}
+	if taps != 2 {
+		t.Fatalf("tap attempts after cache expiry = %d, want 2", taps)
+	}
+}
+
+func TestPhoneBridgeRestorerTapUsesSurfaceMapping(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	screen := &screenState{}
+	screen.UpdateActiveArea(1280, 720, screenActiveArea{X: 0, Y: 72, Width: 1280, Height: 576, Valid: true})
+	bridge := NewPhoneBridge(nil)
+	defer bridge.queue.Stop()
+	restorer := NewPhoneBridgeRestorer(bridge, testTouchscreenPointerController(dev, &pointerState{}), screen)
+
+	err := restorer.tap(context.Background(), PhoneBridgeStatus{ReturnEntry: "dynamic_island"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reports := readTouchscreenReports(t, dev, path)
+	if len(reports) == 0 {
+		t.Fatal("expected touchscreen reports")
+	}
+	expectedX := scalePixelToAbsolute(float64(1280-1)*0.5, 1280)
+	expectedY := scalePixelToAbsolute(72+(float64(576-1)*0.03), 720)
+	if reports[0].x != uint16(expectedX) || reports[0].y != uint16(expectedY) {
+		t.Fatalf("tap = (%d,%d), want active-area mapped (%d,%d)", reports[0].x, reports[0].y, expectedX, expectedY)
+	}
+	rawX, rawY := normalizedToAbsolutePoint(returnEntryDynamicIslandX, returnEntryDynamicIslandY)
+	if reports[0].x == uint16(rawX) && reports[0].y == uint16(rawY) {
+		t.Fatalf("tap used raw normalized mapping (%d,%d), want surface-aware mapping", rawX, rawY)
 	}
 }
