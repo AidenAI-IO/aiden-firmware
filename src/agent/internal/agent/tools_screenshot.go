@@ -14,19 +14,57 @@ import (
 
 const screenshotJPEGQuality = 80
 
+type adbDeviceInfo struct {
+	Serial string `json:"serial,omitempty"`
+	Name   string `json:"name,omitempty"`
+	State  string `json:"state,omitempty"`
+}
+
+type screenCaptureInfo struct {
+	Backend   string         `json:"capture_backend,omitempty"`
+	ADBDevice *adbDeviceInfo `json:"adb_device,omitempty"`
+}
+
 type screenshotResult struct {
-	Width        int               `json:"width"`
-	Height       int               `json:"height"`
-	ActiveArea   *screenActiveArea `json:"active_area,omitempty"`
-	ActiveWidth  int               `json:"active_width,omitempty"`
-	ActiveHeight int               `json:"active_height,omitempty"`
-	Format       string            `json:"format"`
-	Size         int               `json:"size"`
-	Data         string            `json:"data"`
+	Width          int               `json:"width"`
+	Height         int               `json:"height"`
+	ActiveArea     *screenActiveArea `json:"active_area,omitempty"`
+	ActiveWidth    int               `json:"active_width,omitempty"`
+	ActiveHeight   int               `json:"active_height,omitempty"`
+	Format         string            `json:"format"`
+	Size           int               `json:"size"`
+	Data           string            `json:"data"`
+	CaptureBackend string            `json:"capture_backend,omitempty"`
+	ADBDevice      *adbDeviceInfo    `json:"adb_device,omitempty"`
 }
 
 type screenshotFrameClient interface {
 	LatestFrameWithFormat(format string, quality int) (*frameMetadata, []byte, error)
+}
+
+type screenshotCaptureInfoProvider interface {
+	LastCaptureInfo() screenCaptureInfo
+}
+
+func cloneADBDeviceInfo(info *adbDeviceInfo) *adbDeviceInfo {
+	if info == nil {
+		return nil
+	}
+	copy := *info
+	return &copy
+}
+
+func cloneScreenCaptureInfo(info screenCaptureInfo) screenCaptureInfo {
+	info.ADBDevice = cloneADBDeviceInfo(info.ADBDevice)
+	return info
+}
+
+func applyScreenCaptureInfo(result *screenshotResult, info screenCaptureInfo) {
+	if result == nil {
+		return
+	}
+	result.CaptureBackend = info.Backend
+	result.ADBDevice = cloneADBDeviceInfo(info.ADBDevice)
 }
 
 // ScreenshotTool captures a screenshot from the frame service.
@@ -128,6 +166,9 @@ func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
 		Format: "jpeg",
 		Size:   len(displayData),
 		Data:   base64.StdEncoding.EncodeToString(displayData),
+	}
+	if provider, ok := t.client.(screenshotCaptureInfoProvider); ok {
+		applyScreenCaptureInfo(&result, provider.LastCaptureInfo())
 	}
 
 	out, _ := json.Marshal(result)

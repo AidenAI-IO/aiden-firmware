@@ -31,11 +31,28 @@ type ADBScreenClient struct {
 	mu                     sync.Mutex
 	cachedAutoSerial       string
 	cachedAutoSerialExpiry time.Time
+	cachedDevices          []adbListedDevice
+	cachedDevicesExpiry    time.Time
+	lastCaptureInfo        screenCaptureInfo
 	seq                    atomic.Uint64
+}
+
+type adbListedDevice struct {
+	Serial     string
+	State      string
+	Model      string
+	DeviceName string
+	Product    string
 }
 
 func NewADBScreenClient() *ADBScreenClient {
 	return &ADBScreenClient{}
+}
+
+func (c *ADBScreenClient) LastCaptureInfo() screenCaptureInfo {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return cloneScreenCaptureInfo(c.lastCaptureInfo)
 }
 
 func (c *ADBScreenClient) LatestFrame() (*frameMetadata, []byte, error) {
@@ -65,6 +82,10 @@ func (c *ADBScreenClient) capture(format string, quality int) (*frameMetadata, [
 		c.invalidateAutoSerial(serial)
 		return nil, nil, err
 	}
+	c.recordLastCaptureInfo(screenCaptureInfo{
+		Backend:   "adb",
+		ADBDevice: c.captureDeviceInfo(ctx, adbPath, serial),
+	})
 
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(pngData))
 	if err != nil {
@@ -140,22 +161,17 @@ func (c *ADBScreenClient) resolveSerial(ctx context.Context, adbPath string) (st
 		return cachedSerial, nil
 	}
 
-	stdout, _, err := runADBCommand(ctx, adbPath, "devices")
+	devices, err := c.listDevices(ctx, adbPath)
 	if err != nil {
 		return "", err
 	}
 
 	var connected []string
-	for _, line := range strings.Split(string(stdout), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "List of devices attached") {
+	for _, device := range devices {
+		if device.State != "device" {
 			continue
 		}
-		fields := strings.Fields(line)
-		if len(fields) < 2 || fields[1] != "device" {
-			continue
-		}
-		connected = append(connected, fields[0])
+		connected = append(connected, device.Serial)
 	}
 	if len(connected) == 0 {
 		return "", fmt.Errorf("no connected adb device")
@@ -181,6 +197,110 @@ func (c *ADBScreenClient) invalidateAutoSerial(serial string) {
 		c.cachedAutoSerial = ""
 		c.cachedAutoSerialExpiry = time.Time{}
 	}
+	c.mu.Unlock()
+}
+
+func (c *ADBScreenClient) listDevices(ctx context.Context, adbPath string) ([]adbListedDevice, error) {
+	now := time.Now()
+	c.mu.Lock()
+	cachedDevices := append([]adbListedDevice(nil), c.cachedDevices...)
+	cachedExpiry := c.cachedDevicesExpiry
+	c.mu.Unlock()
+	if len(cachedDevices) > 0 && now.Before(cachedExpiry) {
+		return cachedDevices, nil
+	}
+
+	stdout, _, err := runADBCommand(ctx, adbPath, "devices", "-l")
+	if err != nil {
+		return nil, err
+	}
+	devices := parseADBDeviceList(stdout)
+	c.mu.Lock()
+	c.cachedDevices = append([]adbListedDevice(nil), devices...)
+	c.cachedDevicesExpiry = now.Add(adbDeviceListCacheTTL)
+	c.mu.Unlock()
+	return devices, nil
+}
+
+func parseADBDeviceList(stdout []byte) []adbListedDevice {
+	var devices []adbListedDevice
+	for _, line := range strings.Split(string(stdout), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "List of devices attached") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		device := adbListedDevice{
+			Serial: fields[0],
+			State:  fields[1],
+		}
+		for _, field := range fields[2:] {
+			key, value, ok := strings.Cut(field, ":")
+			if !ok {
+				continue
+			}
+			switch key {
+			case "model":
+				device.Model = strings.ReplaceAll(value, "_", " ")
+			case "device":
+				device.DeviceName = value
+			case "product":
+				device.Product = value
+			}
+		}
+		devices = append(devices, device)
+	}
+	return devices
+}
+
+func (d adbListedDevice) info() *adbDeviceInfo {
+	name := strings.TrimSpace(d.Model)
+	if name == "" {
+		name = strings.TrimSpace(d.DeviceName)
+	}
+	if name == "" {
+		name = strings.TrimSpace(d.Product)
+	}
+	if name == "" {
+		name = strings.TrimSpace(d.Serial)
+	}
+	state := strings.TrimSpace(d.State)
+	if state == "" {
+		state = "unknown"
+	}
+	return &adbDeviceInfo{
+		Serial: strings.TrimSpace(d.Serial),
+		Name:   name,
+		State:  state,
+	}
+}
+
+func (c *ADBScreenClient) captureDeviceInfo(ctx context.Context, adbPath, serial string) *adbDeviceInfo {
+	serial = strings.TrimSpace(serial)
+	if serial == "" {
+		return nil
+	}
+	devices, err := c.listDevices(ctx, adbPath)
+	if err == nil {
+		for _, device := range devices {
+			if device.Serial == serial {
+				return device.info()
+			}
+		}
+	}
+	return &adbDeviceInfo{
+		Serial: serial,
+		Name:   serial,
+		State:  "device",
+	}
+}
+
+func (c *ADBScreenClient) recordLastCaptureInfo(info screenCaptureInfo) {
+	c.mu.Lock()
+	c.lastCaptureInfo = cloneScreenCaptureInfo(info)
 	c.mu.Unlock()
 }
 

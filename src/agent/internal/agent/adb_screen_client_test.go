@@ -33,8 +33,8 @@ func TestADBScreenClientCapturesPNGAndJPEG(t *testing.T) {
 
 	adbPath := filepath.Join(tmpDir, "adb")
 	script := "#!/bin/sh\n" +
-		"if [ \"$1\" = \"devices\" ]; then\n" +
-		"  printf 'List of devices attached\\nserial123\\tdevice\\n'\n" +
+		"if [ \"$1\" = \"devices\" ] && [ \"$2\" = \"-l\" ]; then\n" +
+		"  printf 'List of devices attached\\nserial123\\tdevice product:panther model:Pixel_7_Pro device:panther transport_id:1\\n'\n" +
 		"  exit 0\n" +
 		"fi\n" +
 		"if [ \"$1\" = \"-s\" ] && [ \"$2\" = \"serial123\" ] && [ \"$3\" = \"exec-out\" ] && [ \"$4\" = \"screencap\" ] && [ \"$5\" = \"-p\" ]; then\n" +
@@ -78,5 +78,22 @@ func TestADBScreenClientCapturesPNGAndJPEG(t *testing.T) {
 	}
 	if bounds := decoded.Bounds(); bounds.Dx() != 2 || bounds.Dy() != 1 {
 		t.Fatalf("decoded jpeg bounds = %v, want 2x1", bounds)
+	}
+
+	info := client.LastCaptureInfo()
+	if info.Backend != "adb" {
+		t.Fatalf("capture backend = %q, want adb", info.Backend)
+	}
+	if info.ADBDevice == nil {
+		t.Fatal("expected adb device info")
+	}
+	if info.ADBDevice.Serial != "serial123" {
+		t.Fatalf("adb serial = %q, want serial123", info.ADBDevice.Serial)
+	}
+	if info.ADBDevice.Name != "Pixel 7 Pro" {
+		t.Fatalf("adb device name = %q, want Pixel 7 Pro", info.ADBDevice.Name)
+	}
+	if info.ADBDevice.State != "device" {
+		t.Fatalf("adb device state = %q, want device", info.ADBDevice.State)
 	}
 }

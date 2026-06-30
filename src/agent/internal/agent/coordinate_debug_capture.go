@@ -155,6 +155,7 @@ func (s *Server) captureCoordinateDebugScreenshot(options coordinateDebugScreens
 						screen.UpdateActiveArea(sourceWidth, sourceHeight, sourceActive)
 					}
 					display := coordinateDebugDisplayScreenshot(jpegData, int(meta.Width), int(meta.Height))
+					applyScreenCaptureInfo(&display, client.LastCaptureInfo())
 					result := s.newCoordinateDebugScreenshotResult(
 						display,
 						sourceWidth,
@@ -202,7 +203,11 @@ func (s *Server) captureCoordinateDebugScreenshot(options coordinateDebugScreens
 	}
 
 	result := s.newCoordinateDebugScreenshotResult(
-		coordinateDebugDisplayScreenshot(displayJPEGData, displayWidth, displayHeight),
+		func() screenshotResult {
+			display := coordinateDebugDisplayScreenshot(displayJPEGData, displayWidth, displayHeight)
+			applyScreenCaptureInfo(&display, client.LastCaptureInfo())
+			return display
+		}(),
 		sourceWidth,
 		sourceHeight,
 		displayActiveArea,

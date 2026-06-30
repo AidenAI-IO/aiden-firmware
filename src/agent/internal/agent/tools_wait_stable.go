@@ -176,6 +176,9 @@ func (t *WaitStableScreenTool) captureScreenshot() (screenshotResult, error) {
 		Size:   len(jpegData),
 		Data:   base64.StdEncoding.EncodeToString(jpegData),
 	}
+	if provider, ok := t.client.(screenshotCaptureInfoProvider); ok {
+		applyScreenCaptureInfo(&result, provider.LastCaptureInfo())
+	}
 	if !fromSourceMeta && active.Valid && (active.X != 0 || active.Y != 0 || active.Width != result.Width || active.Height != result.Height) {
 		result.ActiveArea = &active
 		result.ActiveWidth = active.Width

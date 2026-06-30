@@ -10,6 +10,7 @@ type fakeScreenCaptureSource struct {
 	latestFrameWithFormatCalls int
 	latestFrameFn              func() (*frameMetadata, []byte, error)
 	latestFrameWithFormatFn    func(format string, quality int) (*frameMetadata, []byte, error)
+	lastCaptureInfo            screenCaptureInfo
 }
 
 func (f *fakeScreenCaptureSource) LatestFrame() (*frameMetadata, []byte, error) {
@@ -26,6 +27,10 @@ func (f *fakeScreenCaptureSource) LatestFrameWithFormat(format string, quality i
 		return nil, nil, errors.New("LatestFrameWithFormat not configured")
 	}
 	return f.latestFrameWithFormatFn(format, quality)
+}
+
+func (f *fakeScreenCaptureSource) LastCaptureInfo() screenCaptureInfo {
+	return cloneScreenCaptureInfo(f.lastCaptureInfo)
 }
 
 func TestScreenCaptureClientFallsBackWhenPrimaryFails(t *testing.T) {
@@ -130,5 +135,42 @@ func TestScreenCaptureClientReturnsPrimaryErrorWhenFallbackUnavailable(t *testin
 	}
 	if got := err.Error(); got != "frame service: SERVICE_RECOVERING" {
 		t.Fatalf("error = %q, want primary error", got)
+	}
+}
+
+func TestScreenCaptureClientReportsFallbackCaptureInfo(t *testing.T) {
+	primary := &fakeScreenCaptureSource{
+		latestFrameWithFormatFn: func(format string, quality int) (*frameMetadata, []byte, error) {
+			return nil, nil, errors.New("frame service: SERVICE_RECOVERING")
+		},
+	}
+	fallback := &fakeScreenCaptureSource{
+		latestFrameWithFormatFn: func(format string, quality int) (*frameMetadata, []byte, error) {
+			return &frameMetadata{Seq: 1, Width: 2, Height: 1, PixelFormat: "jpeg"}, []byte("jpeg"), nil
+		},
+		lastCaptureInfo: screenCaptureInfo{
+			Backend: "adb",
+			ADBDevice: &adbDeviceInfo{
+				Serial: "serial123",
+				Name:   "Pixel 9",
+				State:  "device",
+			},
+		},
+	}
+
+	client := newScreenCaptureClient(primary, fallback)
+	if _, _, err := client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality); err != nil {
+		t.Fatalf("LatestFrameWithFormat() error = %v", err)
+	}
+
+	info := client.LastCaptureInfo()
+	if info.Backend != "adb" {
+		t.Fatalf("capture backend = %q, want adb", info.Backend)
+	}
+	if info.ADBDevice == nil {
+		t.Fatal("expected adb device info")
+	}
+	if info.ADBDevice.Serial != "serial123" || info.ADBDevice.Name != "Pixel 9" || info.ADBDevice.State != "device" {
+		t.Fatalf("unexpected adb device info: %#v", info.ADBDevice)
 	}
 }

@@ -23,6 +23,7 @@ type ScreenCaptureClient struct {
 
 	mu                  sync.Mutex
 	preferFallbackUntil time.Time
+	lastCaptureInfo     screenCaptureInfo
 }
 
 func NewScreenCaptureClient(socketPath string) *ScreenCaptureClient {
@@ -61,6 +62,7 @@ func (c *ScreenCaptureClient) captureWithFallback(call func(screenCaptureSource)
 		fallbackMeta, fallbackFrame, fallbackErr = c.captureFromSource(c.fallback, call)
 		fallbackTried = true
 		if fallbackErr == nil {
+			c.recordLastCaptureInfo(c.captureInfoForSource(c.fallback))
 			c.markFallbackPreferred()
 			return fallbackMeta, fallbackFrame, nil
 		}
@@ -68,6 +70,7 @@ func (c *ScreenCaptureClient) captureWithFallback(call func(screenCaptureSource)
 
 	primaryMeta, primaryFrame, primaryErr := c.captureFromSource(c.primary, call)
 	if primaryErr == nil {
+		c.recordLastCaptureInfo(c.captureInfoForSource(c.primary))
 		c.clearFallbackPreference()
 		return primaryMeta, primaryFrame, nil
 	}
@@ -77,6 +80,7 @@ func (c *ScreenCaptureClient) captureWithFallback(call func(screenCaptureSource)
 		fallbackTried = true
 	}
 	if fallbackTried && fallbackErr == nil {
+		c.recordLastCaptureInfo(c.captureInfoForSource(c.fallback))
 		c.markFallbackPreferred()
 		return fallbackMeta, fallbackFrame, nil
 	}
@@ -117,4 +121,32 @@ func (c *ScreenCaptureClient) clearFallbackPreference() {
 	c.mu.Lock()
 	c.preferFallbackUntil = time.Time{}
 	c.mu.Unlock()
+}
+
+func (c *ScreenCaptureClient) LastCaptureInfo() screenCaptureInfo {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return cloneScreenCaptureInfo(c.lastCaptureInfo)
+}
+
+func (c *ScreenCaptureClient) recordLastCaptureInfo(info screenCaptureInfo) {
+	c.mu.Lock()
+	c.lastCaptureInfo = cloneScreenCaptureInfo(info)
+	c.mu.Unlock()
+}
+
+func (c *ScreenCaptureClient) captureInfoForSource(source screenCaptureSource) screenCaptureInfo {
+	if provider, ok := source.(screenshotCaptureInfoProvider); ok {
+		if info := provider.LastCaptureInfo(); info.Backend != "" || info.ADBDevice != nil {
+			return info
+		}
+	}
+	switch source.(type) {
+	case *FrameServiceClient:
+		return screenCaptureInfo{Backend: "frame_service"}
+	case *ADBScreenClient:
+		return screenCaptureInfo{Backend: "adb"}
+	default:
+		return screenCaptureInfo{}
+	}
 }
