@@ -46,6 +46,7 @@ type Server struct {
 	recordMu            sync.Mutex
 	webRecording        *webAudioRecording
 	bridge              *PhoneBridge
+	androidADB          androidADBController
 	liveActivity        *LiveActivityManager
 	pendingResults      map[string]*chatPendingResult
 	pendingResultsMu    sync.Mutex
@@ -323,6 +324,7 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		userFilesToolsDir:   "/userdata/agent_tools",
 		history:             make([]Message, 0),
 		bridge:              bridge,
+		androidADB:          NewAndroidADBManager(runtime.config.HID.FrameSocketOrDefault(), runtime.logger),
 		liveActivity:        NewLiveActivityManager(runtime.config.LiveActivity, runtime.logger),
 		pendingResults:      make(map[string]*chatPendingResult),
 		activeRuns:          make(map[string]context.CancelFunc),
@@ -409,6 +411,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/phone-bridge/commands", s.handlePhoneBridgeCommands)
 	mux.HandleFunc("/api/phone-bridge/results", s.handlePhoneBridgeResults)
 	mux.HandleFunc("/api/phone-bridge/results/", s.handlePhoneBridgeResults)
+	mux.HandleFunc("/api/android-adb/status", s.handleAndroidADBStatus)
+	mux.HandleFunc("/api/android-adb/pair", s.handleAndroidADBPair)
 
 	// Coordinate debug tool and its screenshot feed. Exposes live screen data,
 	// so it is intentionally available on all listen addresses (including the
