@@ -163,6 +163,34 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 	}
 }
 
+func TestRoleProfileSeparatesCacheableSystemPromptFromRuntimeContext(t *testing.T) {
+	runtimeContext := "Phone bridge status:\n- connected: true"
+	profiles := buildRoleProfiles(
+		AgentConfig{RuntimeContext: runtimeContext},
+		ResolvedSkills{},
+		nil,
+		MemoryContext{Planner: RoleMemoryContext{SessionSummary: "session memory tail"}},
+	)
+
+	profile := profiles.Planner
+	if !strings.Contains(profile.SystemPromptCachePrefix, "## Role rules") {
+		t.Fatalf("cacheable prefix should include static role rules:\n%s", profile.SystemPromptCachePrefix)
+	}
+	for _, unwanted := range []string{"## Runtime context", runtimeContext, "session memory tail"} {
+		if strings.Contains(profile.SystemPromptCachePrefix, unwanted) {
+			t.Fatalf("cacheable prefix should not include dynamic prompt content %q:\n%s", unwanted, profile.SystemPromptCachePrefix)
+		}
+	}
+	for _, want := range []string{"## Runtime context\n" + runtimeContext, "session memory tail"} {
+		if !strings.Contains(profile.SystemPromptDynamicSuffix, want) {
+			t.Fatalf("dynamic suffix missing %q:\n%s", want, profile.SystemPromptDynamicSuffix)
+		}
+	}
+	if got := joinSystemPromptParts(profile.SystemPromptCachePrefix, profile.SystemPromptDynamicSuffix); got != profile.SystemPrompt {
+		t.Fatalf("joined prompt parts should reproduce system prompt:\njoined=%q\nsystem=%q", got, profile.SystemPrompt)
+	}
+}
+
 func TestBuildRoleProfilesOmitsActiveSkillsSectionWhenEmpty(t *testing.T) {
 	profiles := buildRoleProfiles(
 		AgentConfig{},

@@ -20,11 +20,18 @@ import (
 )
 
 type openAICompatibleModel struct {
-	baseURL    string
-	model      string
-	token      string
-	httpClient *http.Client
-	rawLogger  *llmRawHTTPLogger
+	baseURL             string
+	model               string
+	token               string
+	httpClient          *http.Client
+	rawLogger           *llmRawHTTPLogger
+	explicitPromptCache bool
+	// sessionIDProvider, when set, supplies the value for the x-session-id
+	// request header. It is only wired up for the OpenRouter provider, whose
+	// sticky routing uses the session id to keep multi-turn requests on the same
+	// upstream endpoint so the prompt cache stays warm. Direct providers ignore
+	// the header, so it stays opt-in to avoid sending it where it has no effect.
+	sessionIDProvider func() string
 }
 
 type openAICompatibleModelOption func(*openAICompatibleModel)
@@ -73,6 +80,25 @@ func withOpenAICompatibleRawHTTPLogger(logger *llmRawHTTPLogger) openAICompatibl
 		m.rawLogger = logger
 	}
 }
+
+// withOpenAICompatibleSessionSticky enables the x-session-id header sourced from
+// provider. Only OpenRouter benefits from it (sticky routing for warm caches);
+// leave it unset for other providers.
+func withOpenAICompatibleSessionSticky(provider func() string) openAICompatibleModelOption {
+	return func(m *openAICompatibleModel) {
+		m.sessionIDProvider = provider
+	}
+}
+
+func withOpenAICompatibleExplicitPromptCache() openAICompatibleModelOption {
+	return func(m *openAICompatibleModel) {
+		m.explicitPromptCache = true
+	}
+}
+
+// openRouterSessionIDMaxLen mirrors OpenRouter's documented 256-char limit for
+// the sticky-routing session id.
+const openRouterSessionIDMaxLen = 256
 
 type llmRawHTTPLogger struct {
 	dir               string
@@ -241,10 +267,15 @@ type compatibleFunctionCall struct {
 }
 
 type compatibleContentPart struct {
-	Type       string                `json:"type"`
-	Text       string                `json:"text,omitempty"`
-	ImageURL   *compatibleImageURL   `json:"image_url,omitempty"`
-	InputAudio *compatibleInputAudio `json:"input_audio,omitempty"`
+	Type         string                  `json:"type"`
+	Text         string                  `json:"text,omitempty"`
+	ImageURL     *compatibleImageURL     `json:"image_url,omitempty"`
+	InputAudio   *compatibleInputAudio   `json:"input_audio,omitempty"`
+	CacheControl *compatibleCacheControl `json:"cache_control,omitempty"`
+}
+
+type compatibleCacheControl struct {
+	Type string `json:"type"`
 }
 
 type compatibleImageURL struct {
@@ -256,6 +287,33 @@ type compatibleInputAudio struct {
 	Format string `json:"format"`
 }
 
+// compatibleUsage mirrors the OpenAI-compatible usage block. cached_tokens
+// comes from prompt_tokens_details and powers prompt-cache hit-rate metrics
+// (cache hit rate = cached_tokens / prompt_tokens).
+type compatibleUsage struct {
+	PromptTokens        int `json:"prompt_tokens"`
+	CompletionTokens    int `json:"completion_tokens"`
+	TotalTokens         int `json:"total_tokens"`
+	PromptTokensDetails *struct {
+		CachedTokens int `json:"cached_tokens"`
+	} `json:"prompt_tokens_details,omitempty"`
+}
+
+func (u *compatibleUsage) generationInfo() map[string]any {
+	if u == nil {
+		return nil
+	}
+	info := map[string]any{
+		"prompt_tokens":     u.PromptTokens,
+		"completion_tokens": u.CompletionTokens,
+		"total_tokens":      u.TotalTokens,
+	}
+	if u.PromptTokensDetails != nil {
+		info["cached_tokens"] = u.PromptTokensDetails.CachedTokens
+	}
+	return info
+}
+
 type compatibleChatResponse struct {
 	Choices []struct {
 		Message struct {
@@ -264,11 +322,7 @@ type compatibleChatResponse struct {
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
-	Usage *struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
-	} `json:"usage,omitempty"`
+	Usage *compatibleUsage `json:"usage,omitempty"`
 }
 
 type compatibleChatStreamResponse struct {
@@ -279,11 +333,7 @@ type compatibleChatStreamResponse struct {
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
-	Usage *struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
-	} `json:"usage,omitempty"`
+	Usage *compatibleUsage `json:"usage,omitempty"`
 }
 
 type compatibleToolCallDelta struct {
@@ -342,7 +392,7 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 
 	requestMessages := make([]compatibleMessage, 0, len(messages))
 	for _, message := range messages {
-		converted, err := convertMessageContent(message)
+		converted, err := convertMessageContent(message, m.explicitPromptCache)
 		if err != nil {
 			return nil, err
 		}
@@ -391,6 +441,14 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 	req.Header.Set("Content-Type", "application/json")
 	if m.token != "" {
 		req.Header.Set("Authorization", "Bearer "+m.token)
+	}
+	if m.sessionIDProvider != nil {
+		if sid := strings.TrimSpace(m.sessionIDProvider()); sid != "" {
+			if len(sid) > openRouterSessionIDMaxLen {
+				sid = sid[:openRouterSessionIDMaxLen]
+			}
+			req.Header.Set("x-session-id", sid)
+		}
 	}
 
 	resp, err := m.httpClient.Do(req)
@@ -445,12 +503,8 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 			ToolCalls:  convertResponseToolCalls(choice.Message.ToolCalls),
 		}},
 	}
-	if decoded.Usage != nil {
-		result.Choices[0].GenerationInfo = map[string]any{
-			"prompt_tokens":     decoded.Usage.PromptTokens,
-			"completion_tokens": decoded.Usage.CompletionTokens,
-			"total_tokens":      decoded.Usage.TotalTokens,
-		}
+	if info := decoded.Usage.generationInfo(); info != nil {
+		result.Choices[0].GenerationInfo = info
 	}
 	if len(result.Choices[0].ToolCalls) > 0 {
 		result.Choices[0].FuncCall = result.Choices[0].ToolCalls[0].FunctionCall
@@ -521,12 +575,8 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 			scanErr = fmt.Errorf("decode stream event: %w", err)
 			return nil, scanErr
 		}
-		if event.Usage != nil {
-			generationInfo = map[string]any{
-				"prompt_tokens":     event.Usage.PromptTokens,
-				"completion_tokens": event.Usage.CompletionTokens,
-				"total_tokens":      event.Usage.TotalTokens,
-			}
+		if info := event.Usage.generationInfo(); info != nil {
+			generationInfo = info
 		}
 		if len(event.Choices) == 0 {
 			continue
@@ -662,7 +712,7 @@ func (m *openAICompatibleModel) withRawHTTPLogFileTime(ctx context.Context) cont
 	return contextWithRawHTTPLogFileSessionID(ctx, m.rawLogger.currentSessionID())
 }
 
-func convertMessageContent(message llms.MessageContent) (compatibleMessage, error) {
+func convertMessageContent(message llms.MessageContent, explicitPromptCache bool) (compatibleMessage, error) {
 	msg := compatibleMessage{Role: compatibleRole(message.Role)}
 
 	switch message.Role {
@@ -689,13 +739,17 @@ func convertMessageContent(message llms.MessageContent) (compatibleMessage, erro
 
 	textParts := make([]compatibleContentPart, 0, len(message.Parts))
 	toolCalls := make([]compatibleToolCall, 0)
-	for _, part := range message.Parts {
+	for i, part := range message.Parts {
 		switch typed := part.(type) {
 		case llms.TextContent:
-			textParts = append(textParts, compatibleContentPart{
+			converted := compatibleContentPart{
 				Type: "text",
 				Text: typed.Text,
-			})
+			}
+			if explicitPromptCache && message.Role == llms.ChatMessageTypeSystem && i == 0 && len(message.Parts) > 1 {
+				converted.CacheControl = &compatibleCacheControl{Type: "ephemeral"}
+			}
+			textParts = append(textParts, converted)
 		case llms.ImageURLContent:
 			textParts = append(textParts, compatibleContentPart{
 				Type: "image_url",
@@ -847,6 +901,8 @@ func normalizeCompatibleMessages(messages []compatibleMessage) []compatibleMessa
 	}
 
 	systemSegments := make([]string, 0, 2)
+	systemParts := make([]compatibleContentPart, 0, 2)
+	preserveSystemParts := false
 	normalized := make([]compatibleMessage, 0, len(messages))
 
 	for _, message := range messages {
@@ -859,18 +915,26 @@ func normalizeCompatibleMessages(messages []compatibleMessage) []compatibleMessa
 		case string:
 			if strings.TrimSpace(content) != "" {
 				systemSegments = append(systemSegments, content)
+				systemParts = append(systemParts, compatibleContentPart{Type: "text", Text: content})
 			}
 		case []compatibleContentPart:
 			for _, part := range content {
+				if part.CacheControl != nil {
+					preserveSystemParts = true
+				}
 				if part.Type == "text" && strings.TrimSpace(part.Text) != "" {
 					systemSegments = append(systemSegments, part.Text)
 				}
+				systemParts = append(systemParts, part)
 			}
 		}
 	}
 
-	if len(systemSegments) == 0 {
+	if len(systemSegments) == 0 && !preserveSystemParts {
 		return normalized
+	}
+	if preserveSystemParts {
+		return append([]compatibleMessage{{Role: "system", Content: systemParts}}, normalized...)
 	}
 
 	mergedSystem := compatibleMessage{
