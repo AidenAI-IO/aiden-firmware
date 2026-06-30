@@ -151,6 +151,9 @@ func (m *ModelManager) build(cfg ModelConfig) (llms.Model, error) {
 			baseURL = "https://openrouter.ai/api/v1"
 		}
 		opts := append(m.openAICompatibleOptions(cfg), withOpenAICompatibleSessionSticky(m.activeSessionID))
+		if openRouterExplicitPromptCacheSupported(cfg.Model) {
+			opts = append(opts, withOpenAICompatibleExplicitPromptCache())
+		}
 		return newOpenAICompatibleModel(baseURL, cfg.Model, token, newRetryHTTPClient(m.proxy), opts...), nil
 	case "ollama":
 		options := []ollama.Option{ollama.WithModel(cfg.Model), ollama.WithHTTPClient(newProxyHTTPClient(m.proxy))}
@@ -162,6 +165,31 @@ func (m *ModelManager) build(cfg ModelConfig) (llms.Model, error) {
 		return fakellm.NewFakeLLM(cfg.Responses), nil
 	default:
 		return nil, fmt.Errorf("unsupported provider %q", cfg.Provider)
+	}
+}
+
+func openRouterExplicitPromptCacheSupported(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	model = strings.TrimPrefix(model, "~")
+	if idx := strings.Index(model, ":"); idx >= 0 {
+		model = model[:idx]
+	}
+	switch {
+	case strings.HasPrefix(model, "anthropic/"):
+		return true
+	case strings.HasPrefix(model, "google/gemini-2.5-"):
+		return true
+	}
+	switch model {
+	case "deepseek/deepseek-v3.2",
+		"qwen/qwen3-max",
+		"qwen/qwen-plus",
+		"qwen/qwen3.6-plus",
+		"qwen/qwen3-coder-plus",
+		"qwen/qwen3-coder-flash":
+		return true
+	default:
+		return false
 	}
 }
 

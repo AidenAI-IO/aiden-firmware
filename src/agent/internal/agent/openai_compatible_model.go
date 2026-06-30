@@ -20,11 +20,12 @@ import (
 )
 
 type openAICompatibleModel struct {
-	baseURL    string
-	model      string
-	token      string
-	httpClient *http.Client
-	rawLogger  *llmRawHTTPLogger
+	baseURL             string
+	model               string
+	token               string
+	httpClient          *http.Client
+	rawLogger           *llmRawHTTPLogger
+	explicitPromptCache bool
 	// sessionIDProvider, when set, supplies the value for the x-session-id
 	// request header. It is only wired up for the OpenRouter provider, whose
 	// sticky routing uses the session id to keep multi-turn requests on the same
@@ -86,6 +87,12 @@ func withOpenAICompatibleRawHTTPLogger(logger *llmRawHTTPLogger) openAICompatibl
 func withOpenAICompatibleSessionSticky(provider func() string) openAICompatibleModelOption {
 	return func(m *openAICompatibleModel) {
 		m.sessionIDProvider = provider
+	}
+}
+
+func withOpenAICompatibleExplicitPromptCache() openAICompatibleModelOption {
+	return func(m *openAICompatibleModel) {
+		m.explicitPromptCache = true
 	}
 }
 
@@ -260,10 +267,15 @@ type compatibleFunctionCall struct {
 }
 
 type compatibleContentPart struct {
-	Type       string                `json:"type"`
-	Text       string                `json:"text,omitempty"`
-	ImageURL   *compatibleImageURL   `json:"image_url,omitempty"`
-	InputAudio *compatibleInputAudio `json:"input_audio,omitempty"`
+	Type         string                  `json:"type"`
+	Text         string                  `json:"text,omitempty"`
+	ImageURL     *compatibleImageURL     `json:"image_url,omitempty"`
+	InputAudio   *compatibleInputAudio   `json:"input_audio,omitempty"`
+	CacheControl *compatibleCacheControl `json:"cache_control,omitempty"`
+}
+
+type compatibleCacheControl struct {
+	Type string `json:"type"`
 }
 
 type compatibleImageURL struct {
@@ -380,7 +392,7 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 
 	requestMessages := make([]compatibleMessage, 0, len(messages))
 	for _, message := range messages {
-		converted, err := convertMessageContent(message)
+		converted, err := convertMessageContent(message, m.explicitPromptCache)
 		if err != nil {
 			return nil, err
 		}
@@ -700,7 +712,7 @@ func (m *openAICompatibleModel) withRawHTTPLogFileTime(ctx context.Context) cont
 	return contextWithRawHTTPLogFileSessionID(ctx, m.rawLogger.currentSessionID())
 }
 
-func convertMessageContent(message llms.MessageContent) (compatibleMessage, error) {
+func convertMessageContent(message llms.MessageContent, explicitPromptCache bool) (compatibleMessage, error) {
 	msg := compatibleMessage{Role: compatibleRole(message.Role)}
 
 	switch message.Role {
@@ -727,13 +739,17 @@ func convertMessageContent(message llms.MessageContent) (compatibleMessage, erro
 
 	textParts := make([]compatibleContentPart, 0, len(message.Parts))
 	toolCalls := make([]compatibleToolCall, 0)
-	for _, part := range message.Parts {
+	for i, part := range message.Parts {
 		switch typed := part.(type) {
 		case llms.TextContent:
-			textParts = append(textParts, compatibleContentPart{
+			converted := compatibleContentPart{
 				Type: "text",
 				Text: typed.Text,
-			})
+			}
+			if explicitPromptCache && message.Role == llms.ChatMessageTypeSystem && i == 0 && len(message.Parts) > 1 {
+				converted.CacheControl = &compatibleCacheControl{Type: "ephemeral"}
+			}
+			textParts = append(textParts, converted)
 		case llms.ImageURLContent:
 			textParts = append(textParts, compatibleContentPart{
 				Type: "image_url",
@@ -885,6 +901,8 @@ func normalizeCompatibleMessages(messages []compatibleMessage) []compatibleMessa
 	}
 
 	systemSegments := make([]string, 0, 2)
+	systemParts := make([]compatibleContentPart, 0, 2)
+	preserveSystemParts := false
 	normalized := make([]compatibleMessage, 0, len(messages))
 
 	for _, message := range messages {
@@ -897,18 +915,26 @@ func normalizeCompatibleMessages(messages []compatibleMessage) []compatibleMessa
 		case string:
 			if strings.TrimSpace(content) != "" {
 				systemSegments = append(systemSegments, content)
+				systemParts = append(systemParts, compatibleContentPart{Type: "text", Text: content})
 			}
 		case []compatibleContentPart:
 			for _, part := range content {
+				if part.CacheControl != nil {
+					preserveSystemParts = true
+				}
 				if part.Type == "text" && strings.TrimSpace(part.Text) != "" {
 					systemSegments = append(systemSegments, part.Text)
 				}
+				systemParts = append(systemParts, part)
 			}
 		}
 	}
 
-	if len(systemSegments) == 0 {
+	if len(systemSegments) == 0 && !preserveSystemParts {
 		return normalized
+	}
+	if preserveSystemParts {
+		return append([]compatibleMessage{{Role: "system", Content: systemParts}}, normalized...)
 	}
 
 	mergedSystem := compatibleMessage{

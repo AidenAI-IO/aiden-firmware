@@ -1197,6 +1197,106 @@ func TestModelManagerSendsSessionHeaderOnlyForOpenRouter(t *testing.T) {
 	}
 }
 
+func TestOpenRouterSupportedModelAddsPromptCacheControlToSystemPrefix(t *testing.T) {
+	var captured struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	manager := NewModelManager(ModelConfig{Provider: "openrouter", Model: "anthropic/claude-sonnet-4", APIKey: "k", BaseURL: server.URL}, ProxyConfig{})
+	model, err := manager.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if _, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextPart("stable role prompt"), llms.TextPart("dynamic runtime context")}},
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("hello")}},
+	}); err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	if len(captured.Messages) == 0 {
+		t.Fatalf("expected split system content, got %#v", captured.Messages)
+	}
+	systemContent := decodePromptCacheSystemContent(t, captured.Messages[0].Content)
+	if len(systemContent) != 2 {
+		t.Fatalf("expected split system content, got %#v", systemContent)
+	}
+	if got := systemContent[0].CacheControl; got == nil || got.Type != "ephemeral" {
+		t.Fatalf("first system text block should carry cache_control ephemeral, got %#v", systemContent[0])
+	}
+	if got := systemContent[1].CacheControl; got != nil {
+		t.Fatalf("dynamic system text block should not carry cache_control, got %#v", systemContent[1])
+	}
+}
+
+func TestOpenRouterUnsupportedModelDoesNotSendPromptCacheControl(t *testing.T) {
+	var captured struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	manager := NewModelManager(ModelConfig{Provider: "openrouter", Model: "openai/gpt-4o", APIKey: "k", BaseURL: server.URL}, ProxyConfig{})
+	model, err := manager.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if _, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextPart("stable role prompt"), llms.TextPart("dynamic runtime context")}},
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("hello")}},
+	}); err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	if len(captured.Messages) == 0 {
+		t.Fatalf("expected split system content, got %#v", captured.Messages)
+	}
+	if strings.Contains(string(captured.Messages[0].Content), "cache_control") {
+		t.Fatalf("unsupported OpenRouter model should not receive cache_control: %s", string(captured.Messages[0].Content))
+	}
+}
+
+func decodePromptCacheSystemContent(t *testing.T, raw json.RawMessage) []struct {
+	Type         string `json:"type"`
+	Text         string `json:"text,omitempty"`
+	CacheControl *struct {
+		Type string `json:"type"`
+	} `json:"cache_control,omitempty"`
+} {
+	t.Helper()
+	var content []struct {
+		Type         string `json:"type"`
+		Text         string `json:"text,omitempty"`
+		CacheControl *struct {
+			Type string `json:"type"`
+		} `json:"cache_control,omitempty"`
+	}
+	if err := json.Unmarshal(raw, &content); err != nil {
+		t.Fatalf("decode system content: %v raw=%s", err, string(raw))
+	}
+	return content
+}
+
 // TestOpenRouterSessionStickyCacheHit makes two real OpenRouter calls sharing a
 // session id and a long stable prefix (with a varying tail). It verifies sticky
 // routing produces a prompt-cache hit on the second call. Skipped unless

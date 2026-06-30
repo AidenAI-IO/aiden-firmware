@@ -23,11 +23,13 @@ type RoleCapabilities struct {
 }
 
 type RoleProfile struct {
-	Name         RoleName
-	SystemPrompt string
-	Skills       ResolvedSkills
-	Tools        []langtools.Tool
-	Capabilities RoleCapabilities
+	Name                      RoleName
+	SystemPrompt              string
+	SystemPromptCachePrefix   string
+	SystemPromptDynamicSuffix string
+	Skills                    ResolvedSkills
+	Tools                     []langtools.Tool
+	Capabilities              RoleCapabilities
 }
 
 type RoleProfiles struct {
@@ -196,21 +198,24 @@ func plannerRoleRules(cfg AgentConfig, openAppAvailable bool) []string {
 }
 
 func buildVerifierRoleProfile(roleRules []string, cautionBlock string) RoleProfile {
-	parts := []string{
+	staticParts := []string{
 		currentDateContext(),
 		"",
 		"## Role rules",
 	}
 	for _, rule := range roleRules {
-		parts = append(parts, "- "+rule)
+		staticParts = append(staticParts, "- "+rule)
 	}
-	if text := strings.TrimSpace(cautionBlock); text != "" {
-		parts = append(parts, "", text)
-	}
+	staticPrompt := strings.Join(staticParts, "\n")
+	dynamicPrompt := strings.TrimSpace(cautionBlock)
+	systemPrompt := joinSystemPromptParts(staticPrompt, dynamicPrompt)
+
 	return RoleProfile{
-		Name:         RoleVerifier,
-		SystemPrompt: strings.Join(parts, "\n"),
-		Capabilities: RoleCapabilities{CanDecideFinish: true},
+		Name:                      RoleVerifier,
+		SystemPrompt:              systemPrompt,
+		SystemPromptCachePrefix:   staticPrompt,
+		SystemPromptDynamicSuffix: dynamicPrompt,
+		Capabilities:              RoleCapabilities{CanDecideFinish: true},
 	}
 }
 
@@ -223,7 +228,7 @@ func buildRoleProfile(
 	capabilities RoleCapabilities,
 	roleRules []string,
 ) RoleProfile {
-	parts := []string{
+	staticParts := []string{
 		fmt.Sprintf("You are the %s role in a multi-role Aiden agent loop.", name),
 		currentDateContext(),
 		"",
@@ -240,33 +245,54 @@ func buildRoleProfile(
 		skills.CatalogSummary(),
 	}
 	if text := strings.TrimSpace(skills.CombinedInstructions()); text != "" {
-		parts = append(parts,
+		staticParts = append(staticParts,
 			"",
 			"## Active skills",
 			text,
 		)
 	}
-	parts = append(parts, "", "## Role rules")
+	staticParts = append(staticParts, "", "## Role rules")
 	for _, rule := range roleRules {
-		parts = append(parts, "- "+rule)
+		staticParts = append(staticParts, "- "+rule)
 	}
 	// Runtime context and memory change per turn; keep them after the static
 	// role rules so the stable prefix stays prompt-cache friendly across turns.
+	var dynamicParts []string
 	if text := strings.TrimSpace(cfg.RuntimeContext); text != "" {
-		parts = append(parts,
-			"",
+		dynamicParts = append(dynamicParts,
 			"## Runtime context",
 			text,
 		)
 	}
 	if text := strings.TrimSpace(memoryContext); text != "" {
-		parts = append(parts, "", text)
+		if len(dynamicParts) > 0 {
+			dynamicParts = append(dynamicParts, "")
+		}
+		dynamicParts = append(dynamicParts, text)
 	}
+	staticPrompt := strings.Join(staticParts, "\n")
+	dynamicPrompt := strings.TrimSpace(strings.Join(dynamicParts, "\n"))
+	systemPrompt := joinSystemPromptParts(staticPrompt, dynamicPrompt)
 	return RoleProfile{
-		Name:         name,
-		SystemPrompt: strings.Join(parts, "\n"),
-		Skills:       skills,
-		Tools:        append([]langtools.Tool{}, tools...),
-		Capabilities: capabilities,
+		Name:                      name,
+		SystemPrompt:              systemPrompt,
+		SystemPromptCachePrefix:   staticPrompt,
+		SystemPromptDynamicSuffix: dynamicPrompt,
+		Skills:                    skills,
+		Tools:                     append([]langtools.Tool{}, tools...),
+		Capabilities:              capabilities,
+	}
+}
+
+func joinSystemPromptParts(cachePrefix, dynamicSuffix string) string {
+	cachePrefix = strings.TrimSpace(cachePrefix)
+	dynamicSuffix = strings.TrimSpace(dynamicSuffix)
+	switch {
+	case cachePrefix == "":
+		return dynamicSuffix
+	case dynamicSuffix == "":
+		return cachePrefix
+	default:
+		return cachePrefix + "\n\n" + dynamicSuffix
 	}
 }
