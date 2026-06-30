@@ -1465,6 +1465,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var newStream *streamSessionWriter
+	var ttsStreamWriter io.Writer
 	unregisterStreamOutput := func() {}
 	streamOutputCleanupDeferred := false
 	ttsManager := s.currentTTSManager()
@@ -1483,7 +1484,8 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 				output := newActiveTTSOutput(nil)
 				output.setStream(newStream)
 				unregisterStreamOutput = s.registerActiveOutput(req.RequestID, output)
-				finalStreamWriters = append(finalStreamWriters, newCancelOnFirstWriteWriter(speechStreamWriterForConfig(newStream, s.runtime.config), progress.Cancel))
+				ttsStreamWriter = newCancelOnFirstWriteWriter(speechStreamWriterForConfig(newStream, s.runtime.config), progress.Cancel)
+				finalStreamWriters = append(finalStreamWriters, ttsStreamWriter)
 			}
 		}
 	}
@@ -1496,10 +1498,19 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.runtime.Run(ctx, runReq)
 	progress.Cancel()
-	result.SpeechStreamed = newStream != nil && streamWriterEmitted(runReq.StreamWriter)
+	result.SpeechStreamed = newStream != nil && streamWriterEmitted(ttsStreamWriter)
 	if err != nil {
-		if newStream != nil {
-			go s.closeTTSStreamAndLog(newStream)
+		closeErroredStream := func() {
+			if newStream == nil {
+				return
+			}
+			if req.RequestID != "" {
+				cleanupRunAtReturn = false
+				streamOutputCleanupDeferred = true
+				s.closeTTSStreamInBackground(newStream, unregisterStreamOutput, cleanupRun)
+			} else {
+				go s.closeTTSStreamAndLog(newStream)
+			}
 		}
 		canceled := errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled)
 		if req.RequestID != "" && s.liveActivity != nil {
@@ -1514,6 +1525,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 				s.logger.Info("Agent run canceled: request_id=%s", req.RequestID)
 			}
 			stream.Write(ChatStreamEvent{Type: "error", Error: "request canceled", History: s.historySnapshot()})
+			closeErroredStream()
 			return
 		}
 		errorMessage := Message{
@@ -1531,6 +1543,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			s.logger.Error("Agent run failed: %v", err)
 		}
 		stream.Write(ChatStreamEvent{Type: "error", Error: err.Error(), History: s.historySnapshot()})
+		closeErroredStream()
 		return
 	}
 
@@ -1578,17 +1591,27 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		if req.RequestID != "" {
 			cleanupRunAtReturn = false
 			streamOutputCleanupDeferred = true
-			go func() {
-				if !finalTTSOwnsCleanup {
-					defer cleanupRun()
-				}
-				defer unregisterStreamOutput()
-				s.closeTTSStreamAndLog(newStream)
-			}()
+			finishRun := cleanupRun
+			if finalTTSOwnsCleanup {
+				finishRun = nil
+			}
+			s.closeTTSStreamInBackground(newStream, unregisterStreamOutput, finishRun)
 			return
 		}
 		s.closeTTSStreamAndLog(newStream)
 	}
+}
+
+func (s *Server) closeTTSStreamInBackground(stream *streamSessionWriter, unregisterOutput func(), finishRun func()) {
+	go func() {
+		if finishRun != nil {
+			defer finishRun()
+		}
+		if unregisterOutput != nil {
+			defer unregisterOutput()
+		}
+		s.closeTTSStreamAndLog(stream)
+	}()
 }
 
 func (s *Server) closeTTSStreamAndLog(stream *streamSessionWriter) {
