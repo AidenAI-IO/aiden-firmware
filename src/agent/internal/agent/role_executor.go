@@ -223,7 +223,7 @@ func newRoleCollaborativeExecutor(
 		ScreenshotPruning: screenshotPruning.WithDefaults(),
 		VisualArtifacts:   newVisualArtifactStore(recorder),
 		InitialWorldState: world,
-		ForceSimpleLoop:   profiles.Planner.SystemPrompt != "" && !profiles.Planner.Capabilities.CanModifyPlan,
+		ForceSimpleLoop:   true,
 		SteerProvider:     steerProvider,
 	}
 }
@@ -636,7 +636,7 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 	// not a tool call; finishRun streams confirmed final answers after parsing.
 	if diagnostics, ok := e.CallbacksHandler.(finalStreamingDecisionLogger); ok {
 		diagnostics.LogFinalStreamingDecision(ctx, RolePlanner, false,
-			fmt.Sprintf("tool_capable_planner_turn phase=%s force_simple=%t tools=%d", state.Phase, e.ForceSimpleLoop, len(plannerTools)))
+			fmt.Sprintf("tool_capable_agent_turn phase=%s single_agent=%t tools=%d", state.Phase, e.ForceSimpleLoop, len(plannerTools)))
 	}
 	res, err := generate()
 	if err != nil {
@@ -720,7 +720,7 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 				Kind: plannerTurnInvalidMeta,
 				Step: &schema.AgentStep{
 					Action:      action,
-					Observation: "plan mode tools are disabled by force_simple_loop; use available tools directly or return a final answer",
+					Observation: "plan mode tools are disabled in single-agent mode; use available tools directly or return a final answer",
 				},
 			}, nil
 		}
@@ -1108,11 +1108,11 @@ func (e *roleCollaborativeExecutor) callExecutorTurn(
 				answer = value
 			}
 		}
-		if extractMarkedFinalAnswer(answer) != "" {
+		if hasTaggedTTSOutput(answer) {
 			payload, _ := json.Marshal(map[string]any{
 				"summary":  strings.TrimSpace(answer),
 				"key_info": []string{strings.TrimSpace(answer)},
-				"reason":   "executor returned an explicit final answer",
+				"reason":   "executor returned tagged final output",
 			})
 			action := schema.AgentAction{
 				Tool:      toolFinishStep,
@@ -1200,6 +1200,9 @@ func (e *roleCollaborativeExecutor) callVerifier(ctx context.Context, inputs map
 }
 
 func (s roleLoopState) shouldReviewDefaultFinal(toolSpecs *ToolSpecs) bool {
+	// Single-agent mode finishes directly. The separate verifier/final-review
+	// pass is intentionally disabled with the planner/executor/verifier split.
+	return false
 	if s.Phase != phaseDefault || len(s.ExecutionResults) == 0 {
 		return false
 	}
@@ -1606,7 +1609,7 @@ func buildSimpleLoopPlannerStatePrompt(inputs map[string]string, state roleLoopS
 	if content == "" {
 		return ""
 	}
-	return "Planner runtime context (synthetic; not a new user request):\n" + content
+	return "Agent runtime context (synthetic; not a new user request):\n" + content
 }
 
 func buildExecutorStatePrompt(inputs map[string]string, state roleLoopState, task string) string {
@@ -1826,7 +1829,7 @@ func writeWorldStateIfPresent(builder *strings.Builder, world worldState) {
 }
 
 func writeWorldStateWithOptions(builder *strings.Builder, world worldState, options worldStatePromptOptions) {
-	builder.WriteString("\n\nWorld State (shared across planner, executor, and verifier):\n")
+	builder.WriteString("\n\nWorld State (single-agent runtime):\n")
 	if world.DeviceEnvironment != nil {
 		env := world.DeviceEnvironment
 		builder.WriteString("- Device environment: available")
@@ -2331,11 +2334,11 @@ func parseRouteDecision(res *llms.ContentResponse, request string) routeDecision
 	}
 
 	text := strings.TrimSpace(raw)
-	if answer := strings.TrimSpace(extractMarkedFinalAnswer(text)); answer != "" {
+	if hasTaggedTTSOutput(text) {
 		return normalizeRouteDecision(routeDecision{
 			Mode:        routeModeDirectAnswer,
-			FinalAnswer: answer,
-			Reason:      "route returned an explicit final answer",
+			FinalAnswer: finalizeAssistantOutput(text),
+			Reason:      "route returned tagged final output",
 		}, request)
 	}
 	lower := strings.ToLower(text)
@@ -2353,9 +2356,8 @@ func parseRouteDecision(res *llms.ContentResponse, request string) routeDecision
 	}
 	if text != "" {
 		return normalizeRouteDecision(routeDecision{
-			Mode:        routeModeDirectAnswer,
-			FinalAnswer: text,
-			Reason:      "route returned non-JSON text answer",
+			Mode:   routeModeSimple,
+			Reason: "route returned non-JSON text without tagged TTS output",
 		}, request)
 	}
 	return normalizeRouteDecision(routeDecision{
@@ -2419,7 +2421,7 @@ func parsePlannerDecision(res *llms.ContentResponse, fallbackStep string) planne
 	}
 
 	// Final fallback: use text content or user input
-	text := strings.TrimSpace(extractFinalAnswer(raw))
+	text := strings.TrimSpace(finalizeAssistantOutput(raw))
 	if text == "" {
 		text = strings.TrimSpace(fallbackStep)
 	}
@@ -2460,33 +2462,22 @@ func parseVerifierDecision(raw, fallbackAnswer string) verifierDecision {
 		return decision
 	}
 
-	text := strings.TrimSpace(extractMarkedFinalAnswer(raw))
-	if text == "" {
+	if !hasTaggedTTSOutput(raw) {
 		return verifierDecision{
 			CanFinish:   false,
 			NeedsReplan: true,
-			Reason:      "verifier returned non-JSON content without explicit final answer",
+			Reason:      "verifier returned non-JSON content without tagged final output",
 		}
 	}
 	return verifierDecision{
 		CanFinish:   true,
-		FinalAnswer: text,
-		Reason:      "verifier returned explicit non-JSON final answer",
+		FinalAnswer: finalizeAssistantOutput(raw),
+		Reason:      "verifier returned tagged final output",
 	}
 }
 
-func extractMarkedFinalAnswer(content string) string {
-	if idx := strings.LastIndex(content, "Final Answer:"); idx >= 0 {
-		return strings.TrimSpace(content[idx+len("Final Answer:"):])
-	}
-	lower := strings.ToLower(content)
-	start := strings.LastIndex(lower, "<final_answer>")
-	end := strings.LastIndex(lower, "</final_answer>")
-	if start >= 0 && end > start {
-		start += len("<final_answer>")
-		return strings.TrimSpace(content[start:end])
-	}
-	return ""
+func hasTaggedTTSOutput(content string) bool {
+	return extractTTSText(content) != ""
 }
 
 func decodeRoleJSON(raw string, out any) error {

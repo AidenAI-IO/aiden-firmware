@@ -165,17 +165,17 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 	"skill_list": {
 		Category:     "skills",
 		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"query":"planner","include_archived":false}`,
+		ExampleInput: `{"query":"device","include_archived":false}`,
 	},
 	"skill_mark_used": {
 		Category:     "skills",
 		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"name":"planner"}`,
+		ExampleInput: `{"name":"device-operator"}`,
 	},
 	"skill_read": {
 		Category:     "skills",
 		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"name":"planner"}`,
+		ExampleInput: `{"name":"device-operator"}`,
 	},
 	"touch_gesture": {
 		Category:     "input",

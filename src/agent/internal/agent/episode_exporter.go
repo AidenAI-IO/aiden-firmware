@@ -274,7 +274,7 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 			body := map[string]interface{}{
 				"id":          uuid.NewString(),
 				"traceId":     traceID,
-				"name":        "planner/default_finish",
+				"name":        "agent/default_finish",
 				"startTime":   langfuseRFC3339(eventTime),
 				"endTime":     langfuseRFC3339(eventTime),
 				"output":      event.Content,
@@ -849,15 +849,15 @@ func langfuseToolParentSpan(iterationSpanID, phaseSpanID, role string) string {
 }
 
 func langfuseToolSpanName(role, toolName string) string {
-	if strings.EqualFold(strings.TrimSpace(role), string(RolePlanner)) {
-		return "planner/tool/" + toolName
+	if strings.EqualFold(strings.TrimSpace(role), string(RoleAgent)) {
+		return "agent/tool/" + toolName
 	}
 	return "tool/" + toolName
 }
 
 func langfuseToolResultSpanName(role, toolName string) string {
-	if strings.EqualFold(strings.TrimSpace(role), string(RolePlanner)) {
-		return "planner/tool_result/" + toolName
+	if strings.EqualFold(strings.TrimSpace(role), string(RoleAgent)) {
+		return "agent/tool_result/" + toolName
 	}
 	return "tool_result/" + toolName
 }

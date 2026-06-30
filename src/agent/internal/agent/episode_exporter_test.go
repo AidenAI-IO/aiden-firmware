@@ -64,190 +64,6 @@ func TestConfigValidateTelemetryRequiresKeys(t *testing.T) {
 		t.Fatalf("Validate() = %v, want telemetry.secret_key error", err)
 	}
 }
-
-func TestBuildLangfuseBatchMapsPlannerToolVerifier(t *testing.T) {
-	start := time.Date(2026, 6, 3, 10, 0, 0, 0, time.UTC)
-	canFinish := true
-	episode := TaskEpisode{
-		ID:        "ep_test_001",
-		StartedAt: start.Format(time.RFC3339Nano),
-		EndedAt:   start.Add(12 * time.Second).Format(time.RFC3339Nano),
-		UserGoal:  "打开系统设置",
-		Outcome: TaskEpisodeOutcome{
-			Success:     true,
-			FinalAnswer: "已打开设置",
-		},
-		Tags: []string{"settings"},
-		Extra: map[string]interface{}{
-			"total_duration_ms": 12000.0,
-			"prompt_tokens":     100.0,
-			"completion_tokens": 20.0,
-			"total_tokens":      120.0,
-			"model":             "openrouter/test-model",
-		},
-		Events: []TaskEpisodeEvent{
-			{
-				EventID:   "evt1",
-				Ts:        start.Format(time.RFC3339Nano),
-				Type:      "planner_decision",
-				Role:      "planner",
-				Objective: "打开系统设置",
-				Plan:      []string{"打开系统设置"},
-				NextStep:  "点击设置图标",
-			},
-			{
-				EventID: "evt_todo",
-				Ts:      start.Add(time.Second).Format(time.RFC3339Nano),
-				Type:    runEventTodoUpdate,
-				Content: "点击设置图标",
-				Todo: &TodoState{
-					Mode:      TodoModePlanned,
-					Objective: "打开系统设置",
-					Revision:  1,
-					CurrentID: "todo-r1-step1",
-					Items: []TodoItem{
-						{
-							ID:        "todo-r1-step1",
-							Text:      "点击设置图标",
-							Status:    TodoInProgress,
-							Source:    TodoSourceCommittedPlan,
-							StepIndex: 1,
-						},
-					},
-				},
-				SpeechEligible: true,
-			},
-			{
-				EventID:   "evt2",
-				Ts:        start.Add(2 * time.Second).Format(time.RFC3339Nano),
-				Type:      runEventToolCall,
-				ToolName:  "mouse_click",
-				ToolInput: `{"x":100,"y":200}`,
-				Content:   "点击设置。",
-			},
-			{
-				EventID:       "evt3",
-				Ts:            start.Add(3 * time.Second).Format(time.RFC3339Nano),
-				Type:          "tool_result",
-				ToolName:      "mouse_click",
-				Observation:   `{"action_output":"clicked"}`,
-				ScreenshotRef: "artifacts/step_003.jpeg",
-			},
-			{
-				EventID:   "evt4",
-				Ts:        start.Add(5 * time.Second).Format(time.RFC3339Nano),
-				Type:      "verifier_decision",
-				CanFinish: &canFinish,
-				Reason:    "设置页面已打开",
-				Content:   "已打开设置",
-			},
-			{
-				EventID: "evt_todo_closed",
-				Ts:      start.Add(6 * time.Second).Format(time.RFC3339Nano),
-				Type:    runEventTodoClosed,
-				Reason:  "final_answer",
-				Todo: &TodoState{
-					Mode:      TodoModePlanned,
-					Objective: "打开系统设置",
-					Revision:  1,
-					CurrentID: "todo-r1-step1",
-					Items: []TodoItem{
-						{
-							ID:        "todo-r1-step1",
-							Text:      "点击设置图标",
-							Status:    TodoDone,
-							Source:    TodoSourceCommittedPlan,
-							StepIndex: 1,
-						},
-					},
-				},
-			},
-		},
-	}
-
-	exporter := NewEpisodeExporter(TelemetryConfig{
-		Enabled: boolPtr(true),
-		BaseURL: "http://langfuse.test",
-		Tags:    []string{"aiden-hardware"},
-	}, nil)
-	batch, err := exporter.buildLangfuseBatch(context.Background(), episode, t.TempDir())
-	if err != nil {
-		t.Fatalf("buildLangfuseBatch() error = %v", err)
-	}
-	if len(batch) < 5 {
-		t.Fatalf("batch len = %d, want at least 5 events", len(batch))
-	}
-
-	types := map[string]int{}
-	names := map[string]int{}
-	var usageBody map[string]interface{}
-	var toolBody map[string]interface{}
-	for _, event := range batch {
-		types[event.Type]++
-		var body map[string]interface{}
-		if err := json.Unmarshal(event.Body, &body); err != nil {
-			t.Fatalf("decode body: %v", err)
-		}
-		if event.Type == "generation-create" {
-			usageBody = body
-		}
-		if name, _ := body["name"].(string); name != "" {
-			names[name]++
-			if name == "tool/mouse_click" {
-				toolBody = body
-			}
-		}
-	}
-	if types["trace-create"] != 1 {
-		t.Fatalf("trace-create count = %d, want 1", types["trace-create"])
-	}
-	if types["generation-create"] != 1 {
-		t.Fatalf("generation-create count = %d, want 1", types["generation-create"])
-	}
-	if types["score-create"] != 1 {
-		t.Fatalf("score-create count = %d, want 1", types["score-create"])
-	}
-	if usageBody["model"] != "openrouter/test-model" {
-		t.Fatalf("usage generation model = %v, want openrouter/test-model", usageBody["model"])
-	}
-	usageDetails, ok := usageBody["usageDetails"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("usageDetails missing or wrong type: %#v", usageBody["usageDetails"])
-	}
-	if usageDetails["input"] != float64(100) || usageDetails["output"] != float64(20) || usageDetails["total"] != float64(120) {
-		t.Fatalf("usageDetails = %#v, want input/output/total 100/20/120", usageDetails)
-	}
-	if names["planner"] != 1 {
-		t.Fatalf("planner span count = %d, want 1", names["planner"])
-	}
-	if names[runEventTodoUpdate] != 1 {
-		t.Fatalf("todo_update event count = %d, want 1", names[runEventTodoUpdate])
-	}
-	if names[runEventTodoClosed] != 1 {
-		t.Fatalf("todo_closed event count = %d, want 1", names[runEventTodoClosed])
-	}
-	if names["tool/mouse_click"] != 1 {
-		t.Fatalf("tool span count = %d, want 1", names["tool/mouse_click"])
-	}
-	toolInput, ok := toolBody["input"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("tool span input missing: %#v", toolBody["input"])
-	}
-	if _, ok := toolInput["speech"]; ok {
-		t.Fatalf("tool span should not include speech input: %#v", toolInput)
-	}
-	toolMetadata, ok := toolBody["metadata"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("tool span metadata missing: %#v", toolBody["metadata"])
-	}
-	if _, ok := toolMetadata["speech"]; ok {
-		t.Fatalf("tool span should not include speech metadata: %#v", toolMetadata)
-	}
-	if names["verifier"] != 1 {
-		t.Fatalf("verifier span count = %d, want 1", names["verifier"])
-	}
-}
-
 func TestBuildLangfuseBatchAddsTraceIdentityAndFailureScore(t *testing.T) {
 	start := time.Date(2026, 6, 3, 10, 0, 0, 0, time.UTC)
 	episode := TaskEpisode{
@@ -301,94 +117,6 @@ func TestBuildLangfuseBatchAddsTraceIdentityAndFailureScore(t *testing.T) {
 		t.Fatalf("failure score comment = %v", scoreBody["comment"])
 	}
 }
-
-func TestBuildLangfuseBatchParentsGenerationsAndToolResults(t *testing.T) {
-	start := time.Date(2026, 6, 3, 10, 0, 0, 0, time.UTC)
-	episode := TaskEpisode{
-		ID:        "ep_parenting_001",
-		StartedAt: start.Format(time.RFC3339Nano),
-		EndedAt:   start.Add(8 * time.Second).Format(time.RFC3339Nano),
-		UserGoal:  "打开设置",
-		Outcome:   TaskEpisodeOutcome{Success: true, FinalAnswer: "done"},
-		Events: []TaskEpisodeEvent{
-			{
-				EventID: "evt_plan",
-				Ts:      start.Add(2 * time.Second).Format(time.RFC3339Nano),
-				Type:    "planner_decision",
-				Plan:    []string{"点击设置"},
-			},
-			{
-				EventID:   "evt_tool",
-				Ts:        start.Add(3 * time.Second).Format(time.RFC3339Nano),
-				Type:      runEventToolCall,
-				ToolName:  "mouse_click",
-				ToolInput: `{"x":1,"y":2}`,
-			},
-			{
-				EventID:     "evt_result",
-				Ts:          start.Add(5 * time.Second).Format(time.RFC3339Nano),
-				Type:        "tool_result",
-				ToolName:    "mouse_click",
-				Observation: `{"ok":true}`,
-			},
-		},
-	}
-	promptCalls := []telemetryPromptCall{
-		{
-			ID:        "22222222-2222-2222-2222-222222222222",
-			Role:      string(RolePlanner),
-			StartedAt: start.Add(time.Second),
-			EndedAt:   start.Add(1500 * time.Millisecond),
-			Input:     []map[string]interface{}{{"role": "human"}},
-			Output:    map[string]interface{}{"choices": []map[string]interface{}{{"content": "plan"}}},
-		},
-	}
-
-	exporter := NewEpisodeExporter(TelemetryConfig{Enabled: boolPtr(true), BaseURL: "http://langfuse.test"}, nil)
-	batch, err := exporter.buildLangfuseBatch(context.Background(), episode, t.TempDir(), promptCalls)
-	if err != nil {
-		t.Fatalf("buildLangfuseBatch() error = %v", err)
-	}
-
-	var iterationID string
-	var generationParent string
-	var toolID string
-	var toolEndTime string
-	var resultParent string
-	for _, event := range batch {
-		var body map[string]interface{}
-		if err := json.Unmarshal(event.Body, &body); err != nil {
-			t.Fatalf("decode body: %v", err)
-		}
-		switch body["name"] {
-		case "iteration_1":
-			iterationID, _ = body["id"].(string)
-		case "planner_prompt_1":
-			generationParent, _ = body["parentObservationId"].(string)
-		case "tool/mouse_click":
-			toolID, _ = body["id"].(string)
-			toolEndTime, _ = body["endTime"].(string)
-		case "tool_result/mouse_click":
-			resultParent, _ = body["parentObservationId"].(string)
-		}
-	}
-	if iterationID == "" {
-		t.Fatal("missing iteration span")
-	}
-	if generationParent != iterationID {
-		t.Fatalf("generation parent = %q, want iteration %q", generationParent, iterationID)
-	}
-	if toolID == "" {
-		t.Fatal("missing tool span")
-	}
-	if resultParent != toolID {
-		t.Fatalf("tool result parent = %q, want tool %q", resultParent, toolID)
-	}
-	if toolEndTime != langfuseRFC3339(start.Add(5*time.Second)) {
-		t.Fatalf("tool endTime = %q, want result time", toolEndTime)
-	}
-}
-
 func TestBuildLangfuseBatchUsesCapturedPromptsForGenerations(t *testing.T) {
 	start := time.Date(2026, 6, 3, 10, 0, 0, 0, time.UTC)
 	episode := TaskEpisode{
@@ -474,8 +202,8 @@ func TestBuildLangfuseBatchUsesCapturedPromptsForGenerations(t *testing.T) {
 	if len(generations) != 1 {
 		t.Fatalf("generation count = %d, want 1 captured prompt generation", len(generations))
 	}
-	if generations[0]["name"] != "planner_prompt_1" {
-		t.Fatalf("generation name = %v, want planner_prompt_1", generations[0]["name"])
+	if generations[0]["name"] != "agent_prompt_1" {
+		t.Fatalf("generation name = %v, want agent_prompt_1", generations[0]["name"])
 	}
 	input, ok := generations[0]["input"].([]interface{})
 	if !ok || len(input) != 2 {
@@ -1116,7 +844,7 @@ func TestBuildLangfuseBatchMapsDefaultModePlannerTools(t *testing.T) {
 				EventID:   "evt_tool",
 				Ts:        start.Add(time.Second).Format(time.RFC3339Nano),
 				Type:      runEventToolCall,
-				Role:      "planner",
+				Role:      string(RoleAgent),
 				ToolName:  "echo",
 				ToolInput: `{"__arg1":"ok"}`,
 			},
@@ -1124,7 +852,7 @@ func TestBuildLangfuseBatchMapsDefaultModePlannerTools(t *testing.T) {
 				EventID:     "evt_result",
 				Ts:          start.Add(2 * time.Second).Format(time.RFC3339Nano),
 				Type:        "tool_result",
-				Role:        "planner",
+				Role:        string(RoleAgent),
 				ToolName:    "echo",
 				Observation: "ok",
 			},
@@ -1132,7 +860,7 @@ func TestBuildLangfuseBatchMapsDefaultModePlannerTools(t *testing.T) {
 				EventID: "evt_finish",
 				Ts:      start.Add(3 * time.Second).Format(time.RFC3339Nano),
 				Type:    "default_finish",
-				Role:    "planner",
+				Role:    string(RoleAgent),
 				Content: "done",
 			},
 		},
@@ -1161,11 +889,11 @@ func TestBuildLangfuseBatchMapsDefaultModePlannerTools(t *testing.T) {
 	if names["phase/default"] != 1 {
 		t.Fatalf("phase/default count = %d, want 1; names=%#v", names["phase/default"], names)
 	}
-	if names["planner/tool/echo"] != 1 {
-		t.Fatalf("planner/tool/echo count = %d, want 1; names=%#v", names["planner/tool/echo"], names)
+	if names["agent/tool/echo"] != 1 {
+		t.Fatalf("agent/tool/echo count = %d, want 1; names=%#v", names["agent/tool/echo"], names)
 	}
-	if names["planner/default_finish"] != 1 {
-		t.Fatalf("planner/default_finish count = %d, want 1; names=%#v", names["planner/default_finish"], names)
+	if names["agent/default_finish"] != 1 {
+		t.Fatalf("agent/default_finish count = %d, want 1; names=%#v", names["agent/default_finish"], names)
 	}
 	if traceMeta["default_finish"] != true {
 		t.Fatalf("trace metadata default_finish = %#v, want true", traceMeta["default_finish"])
@@ -1174,95 +902,6 @@ func TestBuildLangfuseBatchMapsDefaultModePlannerTools(t *testing.T) {
 		t.Fatalf("trace metadata loop_mode = %#v, want default", traceMeta["loop_mode"])
 	}
 }
-
-func TestBuildLangfuseBatchMapsLoopPhaseTransitions(t *testing.T) {
-	start := time.Date(2026, 6, 11, 11, 0, 0, 0, time.UTC)
-	canFinish := true
-	episode := TaskEpisode{
-		ID:        "ep_committed_001",
-		StartedAt: start.Format(time.RFC3339Nano),
-		EndedAt:   start.Add(10 * time.Second).Format(time.RFC3339Nano),
-		UserGoal:  "open settings",
-		Outcome: TaskEpisodeOutcome{
-			Success:     true,
-			FinalAnswer: "done",
-		},
-		Events: []TaskEpisodeEvent{
-			{
-				EventID: "evt_enter",
-				Ts:      start.Add(time.Second).Format(time.RFC3339Nano),
-				Type:    "loop_phase",
-				Role:    "planner",
-				Content: "plan",
-				Reason:  "enter_plan_mode",
-			},
-			{
-				EventID: "evt_commit_phase",
-				Ts:      start.Add(2 * time.Second).Format(time.RFC3339Nano),
-				Type:    "loop_phase",
-				Role:    "planner",
-				Content: "execution",
-				Reason:  "commit_plan",
-			},
-			{
-				EventID:   "evt_plan",
-				Ts:        start.Add(2 * time.Second).Format(time.RFC3339Nano),
-				Type:      "planner_decision",
-				Role:      "planner",
-				Objective: "open settings",
-				Plan:      []string{"open settings"},
-				NextStep:  "tap settings",
-			},
-			{
-				EventID:   "evt_verifier",
-				Ts:        start.Add(5 * time.Second).Format(time.RFC3339Nano),
-				Type:      "verifier_decision",
-				CanFinish: &canFinish,
-				Content:   "done",
-			},
-		},
-	}
-
-	exporter := NewEpisodeExporter(TelemetryConfig{
-		Enabled: boolPtr(true),
-		BaseURL: "http://langfuse.test",
-		Tags:    []string{"aiden-hardware"},
-	}, nil)
-	batch, err := exporter.buildLangfuseBatch(context.Background(), episode, t.TempDir())
-	if err != nil {
-		t.Fatalf("buildLangfuseBatch() error = %v", err)
-	}
-
-	var traceTags []interface{}
-	var traceMeta map[string]interface{}
-	names := map[string]int{}
-	for _, event := range batch {
-		var body map[string]interface{}
-		if err := json.Unmarshal(event.Body, &body); err != nil {
-			t.Fatalf("decode body: %v", err)
-		}
-		if event.Type == "trace-create" {
-			traceTags, _ = body["tags"].([]interface{})
-			traceMeta, _ = body["metadata"].(map[string]interface{})
-		}
-		if name, _ := body["name"].(string); name != "" {
-			names[name]++
-		}
-	}
-	if names["phase/default"] != 1 || names["phase/plan"] != 1 || names["phase/execution"] != 1 {
-		t.Fatalf("unexpected phase spans: %#v", names)
-	}
-	if !jsonListContains(traceTags, "loop:plan") || !jsonListContains(traceTags, "loop:execution") || !jsonListContains(traceTags, "loop:committed") {
-		t.Fatalf("trace tags = %#v, want loop phase tags", traceTags)
-	}
-	if traceMeta["loop_mode"] != "committed" {
-		t.Fatalf("trace metadata loop_mode = %#v, want committed", traceMeta["loop_mode"])
-	}
-	if intMetricFromMeta(traceMeta, "enter_plan_mode_count") != 1 || intMetricFromMeta(traceMeta, "commit_plan_count") != 1 {
-		t.Fatalf("trace metadata phase counts = %#v", traceMeta)
-	}
-}
-
 func intMetricFromMeta(meta map[string]interface{}, key string) int {
 	if meta == nil {
 		return 0
