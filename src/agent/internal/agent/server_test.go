@@ -553,6 +553,145 @@ func TestServerHandleChatStreamEmitsAssistantDeltasBeforeDone(t *testing.T) {
 	}
 }
 
+func TestServerHandleChatStreamDoneDoesNotWaitForStreamingTTSClose(t *testing.T) {
+	streamingEnabled := true
+	provider := newCloseBlockingTTSProvider()
+	t.Cleanup(provider.release)
+
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			contentResponse(`{"mode":"direct_answer","speech":"stream close should not block done","text":"stream close should not block done","final_answer":"stream close should not block done","reason":"direct"}`),
+		},
+		streamChunks: [][]string{{
+			`{"mode":"direct_answer","speech":"stream close should not block done","text":"stream close should not block done","final_answer":"stream close should not block done","reason":"direct"}`,
+		}},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:                    ModelConfig{Provider: "fake"},
+			Instruction:              "Answer directly.",
+			VoiceStreamingTTSEnabled: &streamingEnabled,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
+	server.audioClient = NewAudioServiceClient("/tmp/aiden-test-unused-audio.sock")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"hello","request_id":"web-slow-close"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/x-ndjson")
+	req.Header.Set("X-Aiden-Stream", "ndjson")
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		server.handleChat(rec, req)
+		close(done)
+	}()
+
+	waitForTestSignal(t, provider.firstWriteDone(), "streaming TTS write")
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("streaming chat handler waited for TTS Close before returning done")
+	}
+	waitForTestSignal(t, provider.closeStartedSignal(), "streaming TTS Close to start")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	var sawDone bool
+	scanner := bufio.NewScanner(strings.NewReader(rec.Body.String()))
+	for scanner.Scan() {
+		var event ChatStreamEvent
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			t.Fatalf("decode stream event %q: %v", scanner.Text(), err)
+		}
+		if event.Type == "done" {
+			sawDone = true
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan stream: %v", err)
+	}
+	if !sawDone {
+		t.Fatalf("stream response ended without done: %s", rec.Body.String())
+	}
+	if provider.closeDone() {
+		t.Fatal("TTS Close completed before release; test did not exercise slow close")
+	}
+}
+
+func TestServerHandleChatAsyncResultDoesNotWaitForStreamingTTSClose(t *testing.T) {
+	streamingEnabled := true
+	provider := newCloseBlockingTTSProvider()
+	t.Cleanup(provider.release)
+
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			contentResponse(`{"mode":"direct_answer","speech":"async close should not block complete","text":"async close should not block complete","final_answer":"async close should not block complete","reason":"direct"}`),
+		},
+		streamChunks: [][]string{{
+			`{"mode":"direct_answer","speech":"async close should not block complete","text":"async close should not block complete","final_answer":"async close should not block complete","reason":"direct"}`,
+		}},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:                    ModelConfig{Provider: "fake"},
+			Instruction:              "Answer directly.",
+			VoiceStreamingTTSEnabled: &streamingEnabled,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
+	server.audioClient = NewAudioServiceClient("/tmp/aiden-test-unused-audio.sock")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"hello","request_id":"async-slow-close"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.handleChat(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	waitForTestSignal(t, provider.firstWriteDone(), "async streaming TTS write")
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for {
+		resultReq := httptest.NewRequest(http.MethodGet, "/api/chat/result?request_id=async-slow-close", nil)
+		resultRec := httptest.NewRecorder()
+		server.handleChatResult(resultRec, resultReq)
+		if resultRec.Code != http.StatusOK {
+			t.Fatalf("unexpected result status: %d body=%s", resultRec.Code, resultRec.Body.String())
+		}
+		var result ChatResultResponse
+		if err := json.NewDecoder(resultRec.Body).Decode(&result); err != nil {
+			t.Fatalf("decode result: %v", err)
+		}
+		if result.Status == "complete" {
+			if result.Response != "async close should not block complete" {
+				t.Fatalf("response = %q", result.Response)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("chat result did not complete before TTS Close release; last status=%q", result.Status)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	waitForTestSignal(t, provider.closeStartedSignal(), "async TTS Close to start")
+	if provider.closeDone() {
+		t.Fatal("TTS Close completed before release; test did not exercise slow close")
+	}
+}
+
 type failingStreamWriter struct {
 	err error
 }
@@ -1967,6 +2106,68 @@ func (s *blockingTTSSession) Close() error {
 func (s *blockingTTSSession) Err() error {
 	return s.ctx.Err()
 }
+
+type closeBlockingTTSProvider struct {
+	firstWrite   chan struct{}
+	closeStarted chan struct{}
+	releaseCh    chan struct{}
+	firstOnce    sync.Once
+	closeOnce    sync.Once
+	releaseOnce  sync.Once
+	done         atomic.Bool
+}
+
+func newCloseBlockingTTSProvider() *closeBlockingTTSProvider {
+	return &closeBlockingTTSProvider{
+		firstWrite:   make(chan struct{}),
+		closeStarted: make(chan struct{}),
+		releaseCh:    make(chan struct{}),
+	}
+}
+
+func (p *closeBlockingTTSProvider) Name() string { return "close-blocking" }
+
+func (p *closeBlockingTTSProvider) Capabilities() ttsmodule.Capabilities {
+	return ttsmodule.Capabilities{SupportedSampleRates: []int{16000}}
+}
+
+func (p *closeBlockingTTSProvider) BeginStream(context.Context, ttsmodule.AudioSink) (ttsmodule.StreamSession, error) {
+	return &closeBlockingTTSSession{provider: p}, nil
+}
+
+func (p *closeBlockingTTSProvider) Close() error { return nil }
+
+func (p *closeBlockingTTSProvider) firstWriteDone() <-chan struct{} { return p.firstWrite }
+
+func (p *closeBlockingTTSProvider) closeStartedSignal() <-chan struct{} { return p.closeStarted }
+
+func (p *closeBlockingTTSProvider) release() {
+	p.releaseOnce.Do(func() { close(p.releaseCh) })
+}
+
+func (p *closeBlockingTTSProvider) closeDone() bool { return p.done.Load() }
+
+type closeBlockingTTSSession struct {
+	provider *closeBlockingTTSProvider
+}
+
+func (s *closeBlockingTTSSession) WriteText(text string) error {
+	if strings.TrimSpace(text) != "" {
+		s.provider.firstOnce.Do(func() { close(s.provider.firstWrite) })
+	}
+	return nil
+}
+
+func (s *closeBlockingTTSSession) Flush() error { return nil }
+
+func (s *closeBlockingTTSSession) Close() error {
+	s.provider.closeOnce.Do(func() { close(s.provider.closeStarted) })
+	<-s.provider.releaseCh
+	s.provider.done.Store(true)
+	return nil
+}
+
+func (s *closeBlockingTTSSession) Err() error { return nil }
 
 func TestServerHistoryEndpointIncludesToolMessages(t *testing.T) {
 	server := &Server{
