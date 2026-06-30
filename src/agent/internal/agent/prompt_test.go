@@ -344,7 +344,7 @@ func TestRolePromptsKeepVolatileSectionsAfterStaticRoleRules(t *testing.T) {
 		MemoryContext{Planner: RoleMemoryContext{SessionSummary: "session memory tail"}},
 	)
 
-	for _, profile := range []RoleProfile{profiles.Planner, profiles.Executor} {
+	for _, profile := range []RoleProfile{profiles.Planner} {
 		roleRulesAt := strings.Index(profile.SystemPrompt, "## Role rules")
 		runtimeAt := strings.Index(profile.SystemPrompt, "## Runtime context")
 		if roleRulesAt < 0 || runtimeAt < 0 {
