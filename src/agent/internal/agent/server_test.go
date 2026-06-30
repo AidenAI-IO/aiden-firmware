@@ -279,6 +279,114 @@ func TestServerPersistsChatHistoryWithEpisodeReference(t *testing.T) {
 	}
 }
 
+func TestServerRestoresSessionEventsUsingEventType(t *testing.T) {
+	configDir := t.TempDir()
+	session := NewSessionMemoryStore(filepath.Join(configDir, "memory", "session"))
+	now := time.Now().UTC()
+	events := []SessionEvent{
+		{
+			EventID:   "evt_user",
+			Ts:        now.Format(time.RFC3339Nano),
+			Type:      "user_input",
+			Role:      "user",
+			EpisodeID: "ep_restore",
+			RequestID: "req_restore",
+			Content:   "换头",
+		},
+		{
+			EventID:   "evt_role",
+			Ts:        now.Add(time.Second).Format(time.RFC3339Nano),
+			Type:      "role_output",
+			Role:      "planner",
+			EpisodeID: "ep_restore",
+			RequestID: "req_restore",
+			Content:   `{"can_finish":false,"needs_human_handoff":true}`,
+		},
+		{
+			EventID:   "evt_tool",
+			Ts:        now.Add(2 * time.Second).Format(time.RFC3339Nano),
+			Type:      runEventToolCall,
+			Role:      "assistant",
+			EpisodeID: "ep_restore",
+			RequestID: "req_restore",
+			ToolName:  "screenshot",
+			ToolInput: "{}",
+			ToolError: NewToolErrorWithDetails(CodeToolExecutionFailed, "camera unavailable", map[string]any{"device": "video0"}),
+			Artifacts: []InputArtifact{{
+				Kind:     AttachmentKindImage,
+				Name:     "screen.jpg",
+				MIMEType: "image/jpeg",
+				Path:     "/userdata/agent/artifacts/screen.jpg",
+				Size:     1234,
+				Data:     []byte("binary-image-data"),
+			}},
+			Content: "tool_call: screenshot input={}",
+		},
+		{
+			EventID:   "evt_unknown_planner",
+			Ts:        now.Add(3 * time.Second).Format(time.RFC3339Nano),
+			Type:      "planner_decision",
+			Role:      "planner",
+			EpisodeID: "ep_restore",
+			RequestID: "req_restore",
+			Content:   `{"mode":"simple"}`,
+		},
+		{
+			EventID:   "evt_assistant",
+			Ts:        now.Add(4 * time.Second).Format(time.RFC3339Nano),
+			Type:      "assistant_output",
+			Role:      "assistant",
+			EpisodeID: "ep_restore",
+			RequestID: "req_restore",
+			Content:   "请明确说明您想更换的是聊天对象的头像，还是其他内容。",
+		},
+	}
+	for _, event := range events {
+		if _, err := session.AppendEvent(context.Background(), event); err != nil {
+			t.Fatalf("AppendEvent(%s) error: %v", event.EventID, err)
+		}
+	}
+
+	server := &Server{runtime: &Runtime{config: Config{ConfigDir: configDir}}}
+	server.loadHistoryFromDisk()
+	history := server.historySnapshot()
+	if len(history) != len(events) {
+		t.Fatalf("restored history entries = %d, want %d: %#v", len(history), len(events), history)
+	}
+
+	if history[0].Type != "user" || history[0].Content != "换头" {
+		t.Fatalf("user_input was not restored as user message: %#v", history[0])
+	}
+	if history[1].Type != "role_output" || history[1].Role != "planner" {
+		t.Fatalf("role_output should not be restored as user message: %#v", history[1])
+	}
+	if history[2].Type != runEventToolCall || history[2].ToolName != "screenshot" || history[2].ToolInput != "{}" {
+		t.Fatalf("tool_call metadata not restored: %#v", history[2])
+	}
+	if history[2].ToolError == nil || history[2].ToolError.Code != CodeToolExecutionFailed || history[2].ToolError.Details["device"] != "video0" {
+		t.Fatalf("tool_call structured error not restored: %#v", history[2].ToolError)
+	}
+	if len(history[2].Artifacts) != 1 || history[2].Artifacts[0].Path != "/userdata/agent/artifacts/screen.jpg" || history[2].Artifacts[0].Data != nil {
+		t.Fatalf("tool_call artifacts not restored safely: %#v", history[2].Artifacts)
+	}
+	if history[3].Type != "planner_decision" {
+		t.Fatalf("unknown planner event should preserve its event type: %#v", history[3])
+	}
+	if history[4].Type != "assistant" || history[4].Content == "" {
+		t.Fatalf("assistant_output was not restored as assistant message: %#v", history[4])
+	}
+
+	userCount := 0
+	for _, msg := range history {
+		if msg.Type == "user" {
+			userCount++
+		}
+	}
+	if userCount != 1 {
+		t.Fatalf("restored user message count = %d, want only the original user input: %#v", userCount, history)
+	}
+}
+
 func TestServerHandleChatStreamsRoleToolAndAssistantMessages(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"Let me read the current volume."}`, "The current audio volume is 42."),
