@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -724,6 +725,25 @@ func waitForTestSignal(t *testing.T, ch <-chan struct{}, name string) {
 	case <-ch:
 	case <-time.After(2 * time.Second):
 		t.Fatalf("timed out waiting for %s", name)
+	}
+}
+
+type testTTSRecorder interface {
+	texts() []string
+}
+
+func waitForProviderTexts(t *testing.T, provider testTTSRecorder, want []string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		got := provider.texts()
+		if reflect.DeepEqual(got, want) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("provider texts = %#v, want %#v", got, want)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

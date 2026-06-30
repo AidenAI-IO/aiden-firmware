@@ -626,6 +626,112 @@ func TestServerHandleChatStreamDoneDoesNotWaitForStreamingTTSClose(t *testing.T)
 	}
 }
 
+func TestServerHandleChatStreamFallsBackWhenTTSWriterDoesNotEmit(t *testing.T) {
+	streamingEnabled := true
+	provider := newSilentFirstStreamTTSProvider()
+
+	model := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			contentResponse(`{"mode":"direct_answer","speech":"fallback speech","text":"fallback text","final_answer":"fallback text","reason":"direct"}`),
+		},
+		streamChunks: [][]string{{
+			`{"mode":"direct_answer","text":"fallback text","reason":"direct"}`,
+		}},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:                    ModelConfig{Provider: "fake"},
+			Instruction:              "Answer directly.",
+			VoiceStreamingTTSEnabled: &streamingEnabled,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
+	server.audioClient = NewAudioServiceClient(startTTSPlaybackAudioSocket(t))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"hello","request_id":"web-silent-stream"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/x-ndjson")
+	req.Header.Set("X-Aiden-Stream", "ndjson")
+	rec := httptest.NewRecorder()
+
+	server.handleChat(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	waitForProviderTexts(t, provider, []string{"fallback text"}, 500*time.Millisecond)
+	if got := provider.beginCalls(); got != 2 {
+		t.Fatalf("BeginStream calls = %d, want 2", got)
+	}
+}
+
+func TestServerHandleChatStreamErrorKeepsTTSOutputCancelableUntilClose(t *testing.T) {
+	streamingEnabled := true
+	requestID := "web-error-close"
+	provider := newContextCloseBlockingTTSProvider()
+
+	model := streamingThenErrorModel{
+		chunk: `{"mode":"direct_answer","text":"partial text","final_answer":"partial speech","reason":"direct"}`,
+		err:   errors.New("model failed after streaming"),
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:                    ModelConfig{Provider: "fake"},
+			Instruction:              "Answer directly.",
+			VoiceStreamingTTSEnabled: &streamingEnabled,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
+	server.audioClient = NewAudioServiceClient("/tmp/aiden-test-unused-audio.sock")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"hello","request_id":"`+requestID+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/x-ndjson")
+	req.Header.Set("X-Aiden-Stream", "ndjson")
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		server.handleChat(rec, req)
+		close(done)
+	}()
+
+	waitForTestSignal(t, provider.firstWriteDone(), "streaming TTS write before model error")
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("streaming chat error response waited for TTS Close")
+	}
+	waitForTestSignal(t, provider.closeStartedSignal(), "streaming TTS Close after model error")
+
+	cancelReq := httptest.NewRequest(http.MethodPost, "/api/chat/cancel", bytes.NewBufferString(`{"request_id":"`+requestID+`"}`))
+	cancelReq.Header.Set("Content-Type", "application/json")
+	cancelRec := httptest.NewRecorder()
+	server.handleChatCancel(cancelRec, cancelReq)
+
+	if cancelRec.Code != http.StatusOK {
+		t.Fatalf("unexpected cancel status: %d body=%s", cancelRec.Code, cancelRec.Body.String())
+	}
+	var resp ChatCancelResponse
+	if err := json.NewDecoder(cancelRec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode cancel response: %v", err)
+	}
+	if resp.Status != "canceled" || resp.RequestID != requestID {
+		t.Fatalf("unexpected cancel response: %#v", resp)
+	}
+	waitForTestSignal(t, provider.closeDoneSignal(), "streaming TTS Close to finish after cancel")
+}
+
 func TestServerHandleChatAsyncResultDoesNotWaitForStreamingTTSClose(t *testing.T) {
 	streamingEnabled := true
 	provider := newCloseBlockingTTSProvider()
@@ -2168,6 +2274,159 @@ func (s *closeBlockingTTSSession) Close() error {
 }
 
 func (s *closeBlockingTTSSession) Err() error { return nil }
+
+type silentFirstStreamTTSProvider struct {
+	mu    sync.Mutex
+	calls int
+	seen  []string
+}
+
+func newSilentFirstStreamTTSProvider() *silentFirstStreamTTSProvider {
+	return &silentFirstStreamTTSProvider{}
+}
+
+func (p *silentFirstStreamTTSProvider) Name() string { return "silent-first-stream" }
+
+func (p *silentFirstStreamTTSProvider) Capabilities() ttsmodule.Capabilities {
+	return ttsmodule.Capabilities{SupportedSampleRates: []int{16000}}
+}
+
+func (p *silentFirstStreamTTSProvider) BeginStream(context.Context, ttsmodule.AudioSink) (ttsmodule.StreamSession, error) {
+	p.mu.Lock()
+	p.calls++
+	call := p.calls
+	p.mu.Unlock()
+	return &silentFirstStreamTTSSession{provider: p, call: call}, nil
+}
+
+func (p *silentFirstStreamTTSProvider) Close() error { return nil }
+
+func (p *silentFirstStreamTTSProvider) beginCalls() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls
+}
+
+func (p *silentFirstStreamTTSProvider) texts() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.seen...)
+}
+
+type silentFirstStreamTTSSession struct {
+	provider *silentFirstStreamTTSProvider
+	call     int
+	buf      strings.Builder
+}
+
+func (s *silentFirstStreamTTSSession) WriteText(text string) error {
+	if s.call > 1 {
+		s.buf.WriteString(text)
+	}
+	return nil
+}
+
+func (s *silentFirstStreamTTSSession) Flush() error { return nil }
+
+func (s *silentFirstStreamTTSSession) Close() error {
+	text := s.buf.String()
+	if text != "" {
+		s.provider.mu.Lock()
+		s.provider.seen = append(s.provider.seen, text)
+		s.provider.mu.Unlock()
+	}
+	return nil
+}
+
+func (s *silentFirstStreamTTSSession) Err() error { return nil }
+
+type contextCloseBlockingTTSProvider struct {
+	firstWrite   chan struct{}
+	closeStarted chan struct{}
+	closeDone    chan struct{}
+	firstOnce    sync.Once
+	closeOnce    sync.Once
+	doneOnce     sync.Once
+}
+
+func newContextCloseBlockingTTSProvider() *contextCloseBlockingTTSProvider {
+	return &contextCloseBlockingTTSProvider{
+		firstWrite:   make(chan struct{}),
+		closeStarted: make(chan struct{}),
+		closeDone:    make(chan struct{}),
+	}
+}
+
+func (p *contextCloseBlockingTTSProvider) Name() string { return "context-close-blocking" }
+
+func (p *contextCloseBlockingTTSProvider) Capabilities() ttsmodule.Capabilities {
+	return ttsmodule.Capabilities{SupportedSampleRates: []int{16000}}
+}
+
+func (p *contextCloseBlockingTTSProvider) BeginStream(ctx context.Context, _ ttsmodule.AudioSink) (ttsmodule.StreamSession, error) {
+	return &contextCloseBlockingTTSSession{ctx: ctx, provider: p}, nil
+}
+
+func (p *contextCloseBlockingTTSProvider) Close() error { return nil }
+
+func (p *contextCloseBlockingTTSProvider) firstWriteDone() <-chan struct{} { return p.firstWrite }
+
+func (p *contextCloseBlockingTTSProvider) closeStartedSignal() <-chan struct{} {
+	return p.closeStarted
+}
+
+func (p *contextCloseBlockingTTSProvider) closeDoneSignal() <-chan struct{} { return p.closeDone }
+
+type contextCloseBlockingTTSSession struct {
+	ctx      context.Context
+	provider *contextCloseBlockingTTSProvider
+}
+
+func (s *contextCloseBlockingTTSSession) WriteText(text string) error {
+	if strings.TrimSpace(text) != "" {
+		s.provider.firstOnce.Do(func() { close(s.provider.firstWrite) })
+	}
+	return nil
+}
+
+func (s *contextCloseBlockingTTSSession) Flush() error { return nil }
+
+func (s *contextCloseBlockingTTSSession) Close() error {
+	s.provider.closeOnce.Do(func() { close(s.provider.closeStarted) })
+	<-s.ctx.Done()
+	s.provider.doneOnce.Do(func() { close(s.provider.closeDone) })
+	return s.ctx.Err()
+}
+
+func (s *contextCloseBlockingTTSSession) Err() error { return s.ctx.Err() }
+
+type streamingThenErrorModel struct {
+	chunk string
+	err   error
+}
+
+func (m streamingThenErrorModel) GenerateContent(ctx context.Context, _ []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	var callOptions llms.CallOptions
+	for _, option := range options {
+		option(&callOptions)
+	}
+	if callOptions.StreamingFunc != nil && m.chunk != "" {
+		if err := callOptions.StreamingFunc(ctx, []byte(m.chunk)); err != nil {
+			return nil, err
+		}
+	}
+	if m.err != nil {
+		return nil, m.err
+	}
+	return contentResponse(""), nil
+}
+
+func (m streamingThenErrorModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
+	if m.err != nil {
+		return "", m.err
+	}
+	return "", nil
+}
 
 func TestServerHistoryEndpointIncludesToolMessages(t *testing.T) {
 	server := &Server{
