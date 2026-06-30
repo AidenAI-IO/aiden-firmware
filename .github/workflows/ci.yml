@@ -21,6 +21,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Verify release scripts
         run: |
           sh scripts/test_release_ci_scripts.sh
