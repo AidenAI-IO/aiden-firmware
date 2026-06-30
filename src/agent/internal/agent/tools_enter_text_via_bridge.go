@@ -63,9 +63,12 @@ func (t *EnterTextViaBridgeTool) Description() string {
 
 func (t *EnterTextViaBridgeTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"text":     stringArgSchema("Exact text that must appear in the field when done."),
-		"platform": stringEnumArgSchema("Target platform.", "ios", "android", "mac"),
-		"focus":    focusPointArgSchema("Input field coordinates."),
+		"text":              stringArgSchema("Exact text that must appear in the field when done."),
+		"platform":          stringEnumArgSchema("Target platform.", "ios", "android", "mac"),
+		"mode":              stringEnumArgSchema("Interaction mode. Use \"search\" only for target-app navigation/search input; omit for final message/form entry.", "form", "search"),
+		"artifact_id":       stringArgSchema("Required when consuming a committed-plan target_text artifact prepared before target-app navigation."),
+		"send_after_commit": boolArgSchema("Set true only when the focused field is the final message/form field and the text should be sent after verification."),
+		"focus":             focusPointArgSchema("Input field coordinates."),
 	}, "text", "focus")
 }
 

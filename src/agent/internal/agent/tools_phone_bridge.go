@@ -243,11 +243,13 @@ func (s *ToolSet) RegisterPhoneBridge(bridge *PhoneBridge) {
 	s.tools["calendar"] = NewCalendarTool(bridge, s.phoneBridgeRestorer)
 	s.tools["contacts"] = NewContactsTool(bridge, s.phoneBridgeRestorer)
 	s.tools["notification"] = NewNotificationTool(bridge, s.phoneBridgeRestorer)
+	s.tools["prepare_phone_app_workflow"] = NewPreparePhoneAppWorkflowTool(bridge, s.phoneBridgeRestorer)
+	s.tools["prepare_phone_message"] = NewPreparePhoneMessageTool(bridge, s.phoneBridgeRestorer)
 }
 
 func isPhoneBridgeToolName(name string) bool {
 	switch name {
-	case "open_app", "clipboard", "calendar", "contacts", "notification":
+	case "open_app", "clipboard", "calendar", "contacts", "notification", "prepare_phone_app_workflow", "prepare_phone_message":
 		return true
 	default:
 		return false

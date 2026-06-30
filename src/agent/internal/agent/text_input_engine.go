@@ -26,13 +26,15 @@ type textInputEngine struct {
 }
 
 type enterTextInFieldArgs struct {
-	Text        string         `json:"text"`
-	Platform    string         `json:"platform,omitempty"`
-	Mode        string         `json:"mode,omitempty"`
-	SkipFocus   bool           `json:"skip_focus,omitempty"`
-	Focus       focusPointArgs `json:"focus"`
-	MaxAttempts int            `json:"max_attempts,omitempty"`
-	Segments    []string       `json:"segments,omitempty"`
+	Text            string         `json:"text"`
+	Platform        string         `json:"platform,omitempty"`
+	Mode            string         `json:"mode,omitempty"`
+	ArtifactID      string         `json:"artifact_id,omitempty"`
+	SendAfterCommit bool           `json:"send_after_commit,omitempty"`
+	SkipFocus       bool           `json:"skip_focus,omitempty"`
+	Focus           focusPointArgs `json:"focus"`
+	MaxAttempts     int            `json:"max_attempts,omitempty"`
+	Segments        []string       `json:"segments,omitempty"`
 }
 
 type enterTextInFieldResult struct {

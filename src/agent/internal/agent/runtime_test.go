@@ -1839,6 +1839,17 @@ func verifierStepContinueResponse(reason string) *llms.ContentResponse {
 	return contentResponse(string(payload))
 }
 
+func verifierStepStatusResponse(status string, canFinish, needsReplan bool, finalAnswer, reason string) *llms.ContentResponse {
+	payload, _ := json.Marshal(map[string]any{
+		"can_finish":   canFinish,
+		"final_answer": finalAnswer,
+		"needs_replan": needsReplan,
+		"step_status":  status,
+		"reason":       reason,
+	})
+	return contentResponse(string(payload))
+}
+
 func toolCallResponse(id, name, arguments string) *llms.ContentResponse {
 	return toolCallResponseWithContent(id, name, arguments, "")
 }
@@ -3997,10 +4008,14 @@ func TestRuntimeRunRotatesSessionOnNewBoundary(t *testing.T) {
 	}
 
 	releaseMaintenance := make(chan struct{})
-	manager := NewMemoryManager(storageDir,
-		WithArchiveCompressTimeout(time.Millisecond),
-		WithSummarizeFn(testSummarizeForRotationAndMaintenance(releaseMaintenance, "old task summary")),
-	)
+	manager := NewMemoryManager(storageDir, WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-releaseMaintenance:
+			return "old task summary"
+		}
+	}))
 	defer func() {
 		close(releaseMaintenance)
 		waitCtx, cancel := context.WithTimeout(context.Background(), time.Second)

@@ -1,6 +1,9 @@
 package agent
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func newRuntimeWithTextEntryTools() *Runtime {
 	tools := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
@@ -64,7 +67,7 @@ func TestRunScriptExposedToAgentAndToolLab(t *testing.T) {
 }
 
 func TestPhoneBridgeToolsExposedToAgent(t *testing.T) {
-	for _, name := range []string{"open_app", "clipboard", "calendar", "contacts", "notification"} {
+	for _, name := range []string{"open_app", "clipboard", "calendar", "contacts", "notification", "prepare_phone_app_workflow", "prepare_phone_message"} {
 		if !isAgentToolExposed(name) {
 			t.Fatalf("expected %s available to conversational agent", name)
 		}
@@ -121,7 +124,7 @@ func TestResolveToolsIncludesPhoneBridgeToolsWhenDisconnected(t *testing.T) {
 			t.Fatalf("resolveTools missing disconnected bridge recovery tool %s: %v", want, names)
 		}
 	}
-	for _, notWant := range []string{"clipboard", "calendar", "contacts", "notification"} {
+	for _, notWant := range []string{"clipboard", "calendar", "contacts", "notification", "prepare_phone_app_workflow", "prepare_phone_message"} {
 		for _, name := range names {
 			if name == notWant {
 				t.Fatalf("resolveTools exposed disconnected phone bridge tool %s: %v", notWant, names)
@@ -138,7 +141,7 @@ func TestResolveToolsIncludesPhoneBridgeToolsWhenConnected(t *testing.T) {
 
 	tools := runtime.resolveTools(ResolvedSkills{})
 	names := toolNamesFromTools(tools)
-	for _, want := range []string{"open_app", "clipboard", "calendar", "contacts", "notification"} {
+	for _, want := range []string{"open_app", "clipboard", "calendar", "contacts", "notification", "prepare_phone_app_workflow", "prepare_phone_message"} {
 		found := false
 		for _, name := range names {
 			if name == want {
@@ -202,4 +205,26 @@ func TestResolveToolsIncludesAllowedPhoneBridgeToolWhenConnected(t *testing.T) {
 		}
 	}
 	t.Fatalf("resolveTools with allowed_tools missing connected open_app: %v", names)
+}
+
+func TestGeneratedToolSkillPrefersBridgeTextEntryForPhoneApps(t *testing.T) {
+	skill := buildHTTPToolSkillMarkdown("test", "test skill", "http://example.local:8080", nil)
+	for _, want := range []string{
+		"use `enter_text_in_field`",
+		"batch reorderable Aiden app-side work before target-app navigation",
+		"`clipboard`, `calendar`, `contacts`, and `notification`",
+		"Treat `open_app(target)` as the expensive phase boundary",
+		"prefer `prepare_phone_app_workflow` instead of separate app-side tool + `clipboard` + `open_app` calls",
+		"runs structured direct app-side actions first",
+		"prepares final `target_text` clipboard while Aiden is foreground",
+		"Do not treat UI-only app reading as reorderable direct data work",
+		"without reopening Aiden",
+		"set `send_after_commit:true`",
+		"keyboard send key",
+		"Do not rely on background WebSocket/HTTP clipboard delivery as the primary path",
+	} {
+		if !strings.Contains(skill, want) {
+			t.Fatalf("generated HTTP tool skill missing %q:\n%s", want, skill)
+		}
+	}
 }

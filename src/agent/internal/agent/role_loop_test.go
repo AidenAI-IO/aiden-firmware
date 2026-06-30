@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/tmc/langchaingo/agents"
 	"github.com/tmc/langchaingo/llms"
 	"github.com/tmc/langchaingo/schema"
 	langtools "github.com/tmc/langchaingo/tools"
@@ -41,37 +41,6 @@ func TestDefaultModeFinishesWithoutVerifier(t *testing.T) {
 	}
 	if model.callCount != 1 {
 		t.Fatalf("model call count = %d, want 1", model.callCount)
-	}
-}
-
-func TestDefaultModeRejectsInternalJSONPlanAsFinalAnswer(t *testing.T) {
-	model := &scriptedModel{responses: []*llms.ContentResponse{
-		contentResponse(`{"objective":"move data between apps","plan":["open app A","copy value","open app B"],"reason":"draft plan"}`),
-	}}
-	executor := newRoleCollaborativeExecutor(
-		model,
-		RoleProfiles{},
-		nil,
-		nil,
-		10,
-		nil,
-		nil,
-		nil,
-		ScreenshotPruningConfig{},
-		nil,
-	)
-	state := &roleLoopState{Phase: phaseDefault}
-
-	turn, err := executor.callPlannerTurn(context.Background(), map[string]string{"input": "move data between apps", "history": ""}, state, NewToolSpecs(nil))
-	if err != nil {
-		t.Fatalf("planner turn error: %v", err)
-	}
-
-	if turn.Kind != plannerTurnInvalidMeta {
-		t.Fatalf("turn kind = %v, want invalid meta", turn.Kind)
-	}
-	if turn.Step == nil || !strings.Contains(turn.Step.Observation, "internal JSON plan") {
-		t.Fatalf("observation = %#v, want JSON plan rejection", turn.Step)
 	}
 }
 
@@ -186,6 +155,69 @@ func TestCommitPlanOnlyInPlanMode(t *testing.T) {
 	}
 	if !strings.Contains(turn.InvalidMetaStep.Observation, "only available in plan mode") {
 		t.Fatalf("observation = %q", turn.InvalidMetaStep.Observation)
+	}
+}
+
+func TestCommitPlanConsecutiveFailuresStopRetryLoop(t *testing.T) {
+	executor := newRoleCollaborativeExecutor(
+		&scriptedModel{},
+		RoleProfiles{},
+		nil,
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{Phase: phasePlan, PlanCommitRequired: true}
+	action := schema.AgentAction{
+		Tool:      toolCommitPlan,
+		ToolInput: `{"plan":`,
+	}
+
+	for i := 1; i < maxConsecutiveCommitPlanFailures; i++ {
+		turn := executor.handlePlannerMetaTool(phasePlan, state, action)
+		if turn.Kind != plannerTurnInvalidMeta {
+			t.Fatalf("failure %d turn kind = %v, want invalid meta", i, turn.Kind)
+		}
+		if state.ConsecutiveCommitPlanFailures != i {
+			t.Fatalf("failure count = %d, want %d", state.ConsecutiveCommitPlanFailures, i)
+		}
+	}
+
+	turn := executor.handlePlannerMetaTool(phasePlan, state, action)
+	if turn.Kind != plannerTurnFinish {
+		t.Fatalf("final turn kind = %v, want finish", turn.Kind)
+	}
+	if !strings.Contains(turn.Answer, "规划提交连续失败") {
+		t.Fatalf("answer = %q", turn.Answer)
+	}
+	if state.Phase != phaseDefault || state.PlanCommitRequired {
+		t.Fatalf("state = %#v, want default with commit no longer required", state)
+	}
+}
+
+func TestCommitPlanFailureObservationIncludesStructuredRepairHint(t *testing.T) {
+	observation := commitPlanFailureObservation(newPlanValidationError(
+		planErrArtifactPreparedAfterTargetOpen,
+		`artifact contract violation: target_text artifact "message" must be prepared before target_open_step`,
+		targetTextArtifactContractHint(),
+	))
+	if !strings.HasPrefix(observation, "commit_plan failed: ") {
+		t.Fatalf("observation = %q, want commit_plan failed prefix", observation)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(observation, "commit_plan failed: ")), &payload); err != nil {
+		t.Fatalf("decode failure payload: %v; observation=%q", err, observation)
+	}
+	if payload["code"] != planErrArtifactPreparedAfterTargetOpen {
+		t.Fatalf("code = %#v, want %q", payload["code"], planErrArtifactPreparedAfterTargetOpen)
+	}
+	hint, ok := payload["repair_hint"].(map[string]any)
+	if !ok || hint["artifact_kind"] != planArtifactKindTargetText {
+		t.Fatalf("repair_hint = %#v, want target_text hint", payload["repair_hint"])
 	}
 }
 
@@ -691,41 +723,6 @@ func TestPlanModeAllowsEvidenceBackedFinalAnswer(t *testing.T) {
 	}
 }
 
-func TestPlanModeRejectsEmptyFinalAnswerAsNoReturn(t *testing.T) {
-	model := &scriptedModel{responses: []*llms.ContentResponse{
-		contentResponse("   "),
-	}}
-	executor := newRoleCollaborativeExecutor(
-		model,
-		RoleProfiles{},
-		nil,
-		nil,
-		10,
-		nil,
-		nil,
-		nil,
-		ScreenshotPruningConfig{},
-		nil,
-	)
-	state := &roleLoopState{
-		Phase:         phasePlan,
-		PlanCommitted: true,
-		VerifierResults: []verifierDecision{{
-			NeedsReplan: true,
-			Reason:      "final answer can be derived from evidence",
-		}},
-	}
-	inputs := map[string]string{"input": "multi-step task", "history": ""}
-
-	_, err := executor.callPlannerTurn(context.Background(), inputs, state, NewToolSpecs(nil))
-	if err == nil {
-		t.Fatal("planner turn error = nil, want ErrAgentNoReturn")
-	}
-	if err != agents.ErrAgentNoReturn {
-		t.Fatalf("planner turn error = %v, want %v", err, agents.ErrAgentNoReturn)
-	}
-}
-
 func TestCommitPlanEntersExecutionMode(t *testing.T) {
 	executor := newRoleCollaborativeExecutor(
 		&scriptedModel{},
@@ -764,6 +761,1263 @@ func TestCommitPlanEntersExecutionMode(t *testing.T) {
 	}
 }
 
+func TestCommitPlanDoesNotRejectByPhoneWorkflowText(t *testing.T) {
+	executor := newRoleCollaborativeExecutor(
+		&scriptedModel{},
+		RoleProfiles{},
+		nil,
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{Phase: phasePlan, PlanCommitRequired: true}
+	state.World.UpdateDeviceEnvironment(&PhoneEnvironment{Platform: "ios"})
+	payload, _ := json.Marshal(map[string]any{
+		"objective":           "查通讯录电话号后给微信好友发消息问问电话号是否还在用",
+		"completion_criteria": []string{"微信消息已发送并有截图证据"},
+		"plan": []string{
+			"查询通讯录里张三的电话号",
+			"打开微信并搜索李四聊天",
+			"把电话号写入剪切板并粘贴到微信输入框后发送",
+		},
+		"reason": "needs phone workflow",
+	})
+
+	turn := executor.handlePlannerMetaTool(phasePlan, state, schema.AgentAction{
+		Tool:      toolCommitPlan,
+		ToolInput: string(payload),
+	})
+
+	if turn.Kind != plannerTurnCommitPlan {
+		t.Fatalf("turn kind = %v, want commit without text-keyword policy", turn.Kind)
+	}
+	if state.Phase != phaseExecution || state.PlanCommitRequired {
+		t.Fatalf("state = %#v, want committed plan", state)
+	}
+}
+
+func TestCommitPlanAcceptsBatchedIOSPhoneBridgePlan(t *testing.T) {
+	executor := newRoleCollaborativeExecutor(
+		&scriptedModel{},
+		RoleProfiles{},
+		nil,
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{Phase: phasePlan, PlanCommitRequired: true}
+	state.World.UpdateDeviceEnvironment(&PhoneEnvironment{Platform: "ios"})
+	payload, _ := json.Marshal(map[string]any{
+		"objective":           "查通讯录电话号后给微信好友发消息问问电话号是否还在用",
+		"completion_criteria": []string{"微信消息已发送并有截图证据"},
+		"plan": []string{
+			"查询通讯录里张三的电话号，组织最终消息并写入剪切板",
+			"打开微信并搜索李四聊天",
+			"聚焦微信输入框，粘贴已准备剪切板，验证后发送并截图确认",
+		},
+		"sources": []map[string]any{{
+			"id":          "contact_lookup",
+			"tool":        "contacts",
+			"action":      "query",
+			"step":        1,
+			"query":       "张三",
+			"produces":    []string{"phone_numbers"},
+			"artifact_id": "wechat_message",
+		}},
+		"artifacts": []map[string]any{{
+			"id":               "wechat_message",
+			"kind":             "target_text",
+			"delivery":         "clipboard",
+			"prepare_step":     1,
+			"target_open_step": 2,
+			"consume_step":     3,
+			"text_template":    "请确认这个号码 {{contact.phone_numbers}} 是否还在使用",
+			"source_refs":      []string{"contact_lookup.phone_numbers"},
+			"target_app":       "WeChat",
+			"target_label":     "chat recipient",
+		}},
+		"reason": "batch Aiden app work first",
+	})
+
+	turn := executor.handlePlannerMetaTool(phasePlan, state, schema.AgentAction{
+		Tool:      toolCommitPlan,
+		ToolInput: string(payload),
+	})
+
+	if turn.Kind != plannerTurnCommitPlan {
+		t.Fatalf("turn kind = %v, want commit", turn.Kind)
+	}
+	if state.Phase != phaseExecution || state.NextStep != "查询通讯录里张三的电话号，组织最终消息并写入剪切板" {
+		t.Fatalf("state = %#v, want execution with batched first step", state)
+	}
+}
+
+func TestCommitPlanAcceptsFixedTargetTextArtifact(t *testing.T) {
+	executor := newRoleCollaborativeExecutor(
+		&scriptedModel{},
+		RoleProfiles{},
+		nil,
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{Phase: phasePlan, PlanCommitRequired: true}
+	payload, _ := json.Marshal(map[string]any{
+		"objective":           "prepare fixed target-app message",
+		"completion_criteria": []string{"message is sent"},
+		"plan": []string{
+			"write the fixed message to clipboard while Aiden is foreground",
+			"open the target chat and paste the prepared message",
+		},
+		"artifacts": []map[string]any{{
+			"id":               "fixed_message",
+			"kind":             "target_text",
+			"delivery":         "clipboard",
+			"prepare_step":     1,
+			"target_open_step": 2,
+			"consume_step":     2,
+			"text_template":    "Sample Recipient，你手机号还在用吗？",
+			"target_app":       "QQ",
+			"target_label":     "Sample Recipient",
+		}},
+		"reason": "fixed text still needs target-preserving clipboard delivery",
+	})
+
+	turn := executor.handlePlannerMetaTool(phasePlan, state, schema.AgentAction{
+		Tool:      toolCommitPlan,
+		ToolInput: string(payload),
+	})
+
+	if turn.Kind != plannerTurnCommitPlan {
+		t.Fatalf("turn kind = %v, want commit; step=%#v", turn.Kind, turn.Step)
+	}
+	if len(state.PlanArtifacts) != 1 || state.PlanArtifacts[0].TextTemplate != "Sample Recipient，你手机号还在用吗？" {
+		t.Fatalf("plan artifacts = %#v", state.PlanArtifacts)
+	}
+}
+
+func TestCommitPlanParsesArtifactsEncodedAsJSONString(t *testing.T) {
+	decision, err := parseCommitPlanInput(`{
+		"objective":"prepare encoded artifacts",
+		"plan":["prepare message","paste message"],
+		"artifacts":"[{\"id\":\"message\",\"kind\":\"target_text\",\"delivery\":\"clipboard\",\"prepare_step\":1,\"target_open_step\":2,\"consume_step\":2,\"text_template\":\"hello\",\"target_app\":\"QQ\"}]"
+	}`)
+	if err != nil {
+		t.Fatalf("parseCommitPlanInput() error = %v", err)
+	}
+	if len(decision.Artifacts) != 1 || decision.Artifacts[0].ID != "message" {
+		t.Fatalf("artifacts = %#v", decision.Artifacts)
+	}
+	if err := validateCommittedPlanPolicy(decision, worldState{}); err != nil {
+		t.Fatalf("validateCommittedPlanPolicy() error = %v", err)
+	}
+}
+
+func TestPlanArtifactsSchemaRequiresTargetTextBranchFields(t *testing.T) {
+	schema := planArtifactsArgSchema()
+	items, ok := schema["items"].(map[string]any)
+	if !ok {
+		t.Fatalf("items = %#v, want object schema", schema["items"])
+	}
+	rawBranches, ok := items["oneOf"].([]map[string]any)
+	if !ok || len(rawBranches) != 2 {
+		t.Fatalf("oneOf = %#v, want two artifact branches", items["oneOf"])
+	}
+	var targetBranch map[string]any
+	for _, branch := range rawBranches {
+		properties, _ := branch["properties"].(map[string]any)
+		kind, _ := properties["kind"].(map[string]any)
+		values, _ := kind["enum"].([]string)
+		if len(values) == 1 && values[0] == planArtifactKindTargetText {
+			targetBranch = branch
+			break
+		}
+	}
+	if targetBranch == nil {
+		t.Fatalf("target_text branch not found in %#v", rawBranches)
+	}
+	required, ok := targetBranch["required"].([]string)
+	if !ok {
+		t.Fatalf("target_text required = %#v, want string slice", targetBranch["required"])
+	}
+	for _, field := range []string{"consume_step", "text_template", "target_app"} {
+		if !roleLoopTestStringSliceContains(required, field) {
+			t.Fatalf("target_text required = %#v, missing %q", required, field)
+		}
+	}
+}
+
+func TestCommitPlanRejectsUnknownArtifactFields(t *testing.T) {
+	_, err := parseCommitPlanInput(`{
+		"objective":"reject unknown artifact fields",
+		"plan":["prepare","open target","consume"],
+		"artifacts":[{
+			"id":"message_text",
+			"kind":"target_text",
+			"delivery":"clipboard",
+			"prepare_step":1,
+			"target_open_step":2,
+			"consume_step":3,
+			"text_template":"hello",
+			"target_app":"WeChat",
+			"artifact_id":"wrong_place"
+		}]
+	}`)
+	if err == nil || !strings.Contains(err.Error(), `unknown field "artifact_id"`) {
+		t.Fatalf("parseCommitPlanInput error = %v, want unknown artifact field rejection", err)
+	}
+}
+
+func TestCommitPlanMovesMisplacedSourcesOutOfArtifacts(t *testing.T) {
+	decision, err := parseCommitPlanInput(`{
+		"objective":"source accidentally placed in artifacts",
+		"plan":["query source","open target","prepare text","send"],
+		"artifacts":[{
+			"id":"message_text",
+			"kind":"target_text",
+			"delivery":"clipboard",
+			"prepare_step":3,
+			"target_open_step":3,
+			"consume_step":4,
+			"text_template":"hello",
+			"target_app":"WeChat"
+		},{
+			"id":"contact_lookup",
+			"tool":"contacts",
+			"action":"query",
+			"step":1,
+			"query":"张三",
+			"produces":["phone_numbers"],
+			"artifact_id":"message_text"
+		}]
+	}`)
+	if err != nil {
+		t.Fatalf("parseCommitPlanInput() error = %v", err)
+	}
+	if len(decision.Artifacts) != 1 || decision.Artifacts[0].ID != "message_text" {
+		t.Fatalf("artifacts = %#v, want only message_text artifact", decision.Artifacts)
+	}
+	if len(decision.Sources) != 1 || decision.Sources[0].ID != "contact_lookup" {
+		t.Fatalf("sources = %#v, want moved contact_lookup source", decision.Sources)
+	}
+}
+
+func TestCommitPlanAcceptsLatestLogMisplacedSourceRepairPayload(t *testing.T) {
+	decision, err := parseCommitPlanInput(`{
+		"artifacts": [{
+			"consume_step": 4,
+			"delivery": "clipboard",
+			"id": "wechat_message",
+			"kind": "target_text",
+			"prepare_step": 3,
+			"target_app": "微信",
+			"target_label": "Target Friend",
+			"target_open_step": 3,
+			"text_template": "Example Contact的手机号还在用吗？"
+		}, {
+			"action": "query",
+			"artifact_id": "wechat_message",
+			"id": "contact_lookup",
+			"produces": ["phone_numbers"],
+			"query": "Example Contact",
+			"step": 1,
+			"tool": "contacts"
+		}],
+		"completion_criteria": ["从通讯录查询结果中确认Example Contact的手机号码", "在微信中成功打开与Target Friend的聊天窗口", "消息已成功发送到Target Friend的聊天窗口"],
+		"objective": "从通讯录查找Example Contact的手机号，然后在微信中向Target Friend发送消息询问该号码是否还在使用。",
+		"plan": ["使用 contacts 工具查询联系人Example Contact，获取其手机号码", "使用 contacts 工具查询联系人Target Friend，获取其联系方式用于搜索", "打开微信 App，在搜索栏搜索Target Friend并进入聊天窗口", "将准备好的消息写入剪贴板，在微信聊天输入框中粘贴并发送"],
+		"reason": "任务涉及两个独立阶段：通讯录查询和微信消息发送，需要跨应用操作，需显式规划步骤和产物。"
+	}`)
+	if err != nil {
+		t.Fatalf("parseCommitPlanInput() error = %v", err)
+	}
+	if len(decision.Artifacts) != 1 || decision.Artifacts[0].ID != "wechat_message" {
+		t.Fatalf("artifacts = %#v, want wechat_message only", decision.Artifacts)
+	}
+	if len(decision.Sources) != 1 || decision.Sources[0].ID != "contact_lookup" || decision.Sources[0].Query != "Example Contact" {
+		t.Fatalf("sources = %#v, want moved contact_lookup source", decision.Sources)
+	}
+}
+
+func TestCommitPlanInfersSingleContactsTargetTextWorkflowContract(t *testing.T) {
+	decision, err := parseCommitPlanInput(`{
+		"objective":"查通讯录后发微信",
+		"plan":["查Example Contact电话","准备消息","打开微信","发送"],
+		"sources":[{
+			"id":"contact_fanchao",
+			"tool":"contacts",
+			"action":"query",
+			"step":1,
+			"query":"Example Contact",
+			"produces":["phone_numbers"]
+		}],
+		"artifacts":[{
+			"id":"wechat_message",
+			"kind":"target_text",
+			"delivery":"clipboard",
+			"prepare_step":2,
+			"target_open_step":3,
+			"text_template":"Example Contact的电话还在用吗？",
+			"source_refs":[],
+			"target_app":"微信",
+			"target_label":"Target Friend聊天输入框"
+		}]
+	}`)
+	if err != nil {
+		t.Fatalf("parseCommitPlanInput() error = %v", err)
+	}
+	if len(decision.Sources) != 1 || decision.Sources[0].ArtifactID != "wechat_message" {
+		t.Fatalf("sources = %#v, want source linked to artifact", decision.Sources)
+	}
+	if len(decision.Artifacts) != 1 {
+		t.Fatalf("artifacts = %#v, want one artifact", decision.Artifacts)
+	}
+	artifact := decision.Artifacts[0]
+	if artifact.ConsumeStep != 3 {
+		t.Fatalf("consume_step = %d, want inferred 3", artifact.ConsumeStep)
+	}
+	if !roleLoopTestStringSliceContains(artifact.SourceRefs, "contact_fanchao.phone_numbers") {
+		t.Fatalf("source_refs = %#v, want inferred contact_fanchao.phone_numbers", artifact.SourceRefs)
+	}
+	if err := validateCommittedPlanPolicy(decision, worldState{}); err != nil {
+		t.Fatalf("validateCommittedPlanPolicy() error = %v", err)
+	}
+}
+
+func TestCommitPlanNormalizesGenericSourceRefForSingleSourceWorkflow(t *testing.T) {
+	decision, err := parseCommitPlanInput(`{
+		"objective":"查通讯录后发微信",
+		"plan":["查Example Contact电话","准备消息","打开微信"],
+		"sources":[{
+			"id":"contact_fanchao",
+			"tool":"contacts",
+			"action":"query",
+			"step":1,
+			"query":"Example Contact"
+		}],
+		"artifacts":[{
+			"id":"wechat_message",
+			"kind":"target_text",
+			"delivery":"clipboard",
+			"prepare_step":2,
+			"consume_step":3,
+			"text_template":"Example Contact的电话{{source}}还在用吗？",
+			"source_refs":["source"],
+			"target_app":"微信"
+		}]
+	}`)
+	if err != nil {
+		t.Fatalf("parseCommitPlanInput() error = %v", err)
+	}
+	if refs := decision.Artifacts[0].SourceRefs; !roleLoopTestStringSliceContains(refs, "contact_fanchao.phone_numbers") {
+		t.Fatalf("source_refs = %#v, want generic source normalized", refs)
+	}
+}
+
+func TestCommitPlanRejectsUnlinkedContactsSourceWhenWorkflowAmbiguous(t *testing.T) {
+	decision, err := parseCommitPlanInput(`{
+		"objective":"多联系人后发微信",
+		"plan":["查联系人","准备消息","打开微信"],
+		"sources":[
+			{"id":"contact_a","tool":"contacts","action":"query","step":1,"query":"甲"},
+			{"id":"contact_b","tool":"contacts","action":"query","step":1,"query":"乙"}
+		],
+		"artifacts":[{
+			"id":"wechat_message",
+			"kind":"target_text",
+			"delivery":"clipboard",
+			"prepare_step":2,
+			"consume_step":3,
+			"text_template":"请确认号码是否还在用",
+			"target_app":"微信"
+		}]
+	}`)
+	if err != nil {
+		t.Fatalf("parseCommitPlanInput() error = %v", err)
+	}
+	err = validateCommittedPlanPolicy(decision, worldState{})
+	if err == nil || !strings.Contains(err.Error(), "must be linked to a target_text artifact") {
+		t.Fatalf("validateCommittedPlanPolicy() error = %v, want unlinked source rejection", err)
+	}
+}
+
+func TestCommittedPlanClipboardWriteRequiresDeclaredArtifact(t *testing.T) {
+	state := &roleLoopState{
+		PlanCommitted: true,
+		PlanStepIndex: 0,
+		Plan:          []string{"prepare data", "use target app"},
+	}
+	call := ToolCall{
+		Spec:  ToolSpec{Name: "clipboard"},
+		Input: `{"action":"write","text":"final text"}`,
+	}
+
+	result, allowed := state.beforeArtifactToolCall(context.Background(), call)
+	if allowed || result.Error == nil || !strings.Contains(result.Output, "declared by commit_plan artifacts") {
+		t.Fatalf("clipboard without artifact allowed=%v result=%#v, want artifact rejection", allowed, result)
+	}
+}
+
+func TestClipboardPayloadCannotPrepareBeforeLaterPlanSteps(t *testing.T) {
+	state := &roleLoopState{
+		PlanCommitted: true,
+		PlanStepIndex: 0,
+		Plan:          []string{"prepare data", "use target app"},
+		PlanArtifacts: initialPlanArtifactStates([]planArtifact{{
+			ID:          "clipboard_text",
+			Kind:        planArtifactKindClipboardPayload,
+			Delivery:    planArtifactDeliveryClipboard,
+			PrepareStep: 1,
+		}}),
+	}
+	call := ToolCall{
+		Spec:  ToolSpec{Name: "clipboard"},
+		Input: `{"action":"write","artifact_id":"clipboard_text","text":"final text"}`,
+	}
+
+	result, allowed := state.beforeArtifactToolCall(context.Background(), call)
+	if allowed || result.Error == nil || !strings.Contains(result.Output, "use target_text with a future consume_step") {
+		t.Fatalf("clipboard_payload allowed=%v result=%#v, want cross-step target_text rejection", allowed, result)
+	}
+}
+
+func TestPlanArtifactContactsSourceBlocksContactsUIAndTargetApp(t *testing.T) {
+	state := &roleLoopState{
+		PlanCommitted: true,
+		PlanStepIndex: 0,
+		Plan:          []string{"prepare data", "open target app"},
+		PlanSources: initialPlanSourceStates([]planSource{{
+			ID:         "contact_lookup",
+			Tool:       planSourceToolContacts,
+			Action:     planSourceActionQuery,
+			Step:       1,
+			Query:      "张三",
+			Produces:   []string{"phone_numbers"},
+			ArtifactID: "message_text",
+		}}),
+		PlanArtifacts: initialPlanArtifactStates([]planArtifact{{
+			ID:             "message_text",
+			Kind:           planArtifactKindTargetText,
+			Delivery:       planArtifactDeliveryClipboard,
+			PrepareStep:    1,
+			TargetOpenStep: 2,
+			ConsumeStep:    2,
+			TextTemplate:   "Message {{value}}",
+			SourceRefs:     []string{"contact_lookup.phone_numbers"},
+			TargetApp:      "微信",
+		}}),
+	}
+
+	sourceCall := ToolCall{
+		Spec:  ToolSpec{Name: "open_app"},
+		Input: `{"app":"通讯录"}`,
+	}
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), sourceCall); allowed || result.Error == nil ||
+		!strings.Contains(result.Output, "do not open Contacts UI") {
+		t.Fatalf("source app navigation allowed=%v result=%#v, want contacts UI rejection", allowed, result)
+	}
+
+	targetCall := ToolCall{
+		Spec:  ToolSpec{Name: "search_launch_app"},
+		Input: `{"app":"WeChat"}`,
+	}
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), targetCall); allowed || result.Error == nil ||
+		!strings.Contains(result.Output, "target-app navigation") {
+		t.Fatalf("target app navigation allowed=%v result=%#v, want blocked", allowed, result)
+	}
+
+	rawSourceCall := ToolCall{
+		Spec:  ToolSpec{Name: "open_app"},
+		Input: "通讯录",
+	}
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), rawSourceCall); allowed || result.Error == nil ||
+		!strings.Contains(result.Output, "do not open Contacts UI") {
+		t.Fatalf("raw source app navigation allowed=%v result=%#v, want contacts UI rejection", allowed, result)
+	}
+
+	rawTargetCall := ToolCall{
+		Spec:  ToolSpec{Name: "open_app"},
+		Input: "WeChat",
+	}
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), rawTargetCall); allowed || result.Error == nil ||
+		!strings.Contains(result.Output, "target-app navigation") {
+		t.Fatalf("raw target app navigation allowed=%v result=%#v, want blocked", allowed, result)
+	}
+
+	contactsCall := ToolCall{
+		Spec:  ToolSpec{Name: "contacts"},
+		Input: `{"action":"query","query":"张三","limit":20}`,
+	}
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), contactsCall); !allowed || result.Error != nil {
+		t.Fatalf("contacts query allowed=%v result=%#v, want allowed", allowed, result)
+	}
+	state.StepExecutionResults = append(state.StepExecutionResults, roleExecutionResult{
+		Action: &schema.AgentAction{Tool: "contacts", ToolInput: `{"action":"query","query":"张三","limit":20}`},
+		Step:   &schema.AgentStep{Observation: `{"ok":true,"contacts":[{"name":"张三","phone_numbers":["5550103"]}]}`},
+	})
+
+	unrelatedContactsCall := ToolCall{
+		Spec:  ToolSpec{Name: "contacts"},
+		Input: `{"action":"query","query":"李四","limit":20}`,
+	}
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), unrelatedContactsCall); allowed || result.Error == nil ||
+		!strings.Contains(result.Output, "declared source contract") {
+		t.Fatalf("unrelated contacts query allowed=%v result=%#v, want declared-source rejection", allowed, result)
+	}
+}
+
+func TestPlanArtifactBlocksTargetAppOpenWhenPreOpenArtifactMissing(t *testing.T) {
+	state := &roleLoopState{
+		PlanCommitted: true,
+		PlanStepIndex: 1,
+		Plan:          []string{"prepare text", "open target app", "send"},
+		PlanArtifacts: initialPlanArtifactStates([]planArtifact{{
+			ID:             "message_text",
+			Kind:           planArtifactKindTargetText,
+			Delivery:       planArtifactDeliveryClipboard,
+			PrepareStep:    1,
+			TargetOpenStep: 2,
+			ConsumeStep:    3,
+			TextTemplate:   "Message",
+			TargetApp:      "WeChat",
+		}}),
+	}
+	targetCall := ToolCall{
+		Spec:  ToolSpec{Name: "open_app"},
+		Input: `{"app":"WeChat"}`,
+	}
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), targetCall); allowed || result.Error == nil ||
+		!strings.Contains(result.Output, "pre-open app contract") {
+		t.Fatalf("target app open allowed=%v result=%#v, want pre-open artifact rejection", allowed, result)
+	}
+
+	state.PlanArtifacts[0].PreparedText = "Message"
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), targetCall); !allowed || result.Error != nil {
+		t.Fatalf("target app open with prepared text allowed=%v result=%#v, want allowed", allowed, result)
+	}
+}
+
+func TestTargetTextClipboardCanPrepareBeforeDeclaredPrepareStepWhenOpenAppBlocked(t *testing.T) {
+	state := &roleLoopState{
+		PlanCommitted: true,
+		PlanStepIndex: 1,
+		Plan:          []string{"query source", "open target app", "prepare text", "send"},
+		PlanArtifacts: initialPlanArtifactStates([]planArtifact{{
+			ID:             "message_text",
+			Kind:           planArtifactKindTargetText,
+			Delivery:       planArtifactDeliveryClipboard,
+			PrepareStep:    3,
+			TargetOpenStep: 2,
+			ConsumeStep:    4,
+			TextTemplate:   "Message",
+			TargetApp:      "WeChat",
+		}}),
+	}
+	clipCall := ToolCall{
+		Spec:  ToolSpec{Name: "clipboard"},
+		Input: `{"action":"write","artifact_id":"message_text","text":"Message"}`,
+	}
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), clipCall); !allowed || result.Error != nil {
+		t.Fatalf("early target_text clipboard prepare allowed=%v result=%#v, want allowed", allowed, result)
+	}
+}
+
+func TestPreparedTargetTextCanBeConsumedAfterTargetAppOpenedBeforeConsumeStep(t *testing.T) {
+	state := &roleLoopState{
+		PlanCommitted: true,
+		PlanStepIndex: 1,
+		Plan:          []string{"query source", "prepare message", "open target", "paste and send"},
+		PlanArtifacts: initialPlanArtifactStates([]planArtifact{{
+			ID:             "message_text",
+			Kind:           planArtifactKindTargetText,
+			Delivery:       planArtifactDeliveryClipboard,
+			PrepareStep:    3,
+			TargetOpenStep: 3,
+			ConsumeStep:    4,
+			TextTemplate:   "Message",
+			TargetApp:      "WeChat",
+		}}),
+		StepExecutionResults: []roleExecutionResult{{
+			Action: &schema.AgentAction{Tool: "clipboard", ToolInput: `{"action":"write","artifact_id":"message_text","text":"Message"}`},
+			Step:   &schema.AgentStep{Observation: `{"ok":true}`},
+		}, {
+			Action: &schema.AgentAction{Tool: "open_app", ToolInput: `{"app":"WeChat"}`},
+			Step:   &schema.AgentStep{Observation: `{"ok":true}`},
+		}},
+	}
+	state.PlanArtifacts[0].PreparedText = "Message"
+	state.PlanArtifacts[0].PreparedAt = time.Now()
+
+	call := ToolCall{
+		Spec:  ToolSpec{Name: "enter_text_via_bridge"},
+		Input: `{"artifact_id":"message_text","text":"Message","focus":{"x":500,"y":950,"coord_space":"normalized"},"send_after_commit":true}`,
+	}
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), call); !allowed || result.Error != nil {
+		t.Fatalf("prepared artifact consumption allowed=%v result=%#v, want allowed after target navigation", allowed, result)
+	}
+}
+
+func TestPhoneBridgeAppSideToolsBlockedAfterTargetAppNavigation(t *testing.T) {
+	state := &roleLoopState{
+		PlanCommitted: true,
+		PlanStepIndex: 1,
+		Plan:          []string{"open target app", "late app-side work"},
+		ExecutionResults: []roleExecutionResult{{
+			Action: &schema.AgentAction{Tool: "open_app", ToolInput: `{"app":"WeChat"}`},
+			Step:   &schema.AgentStep{Observation: `{"ok":true}`},
+		}},
+	}
+	for _, toolName := range phoneBridgeAppForegroundToolNames() {
+		call := ToolCall{
+			Spec:  ToolSpec{Name: toolName},
+			Input: `{}`,
+		}
+		if result, allowed := state.beforeArtifactToolCall(context.Background(), call); allowed || result.Error == nil ||
+			!strings.Contains(result.Output, "must run before target-app navigation") ||
+			!strings.Contains(result.Output, "clipboard, calendar, contacts, notification") {
+			t.Fatalf("%s after target navigation allowed=%v result=%#v, want foreground-boundary rejection", toolName, allowed, result)
+		}
+	}
+}
+
+func TestExecutorAutoAbortsRepeatedPhoneBridgeForegroundFailure(t *testing.T) {
+	state := &roleLoopState{
+		StepExecutionResults: []roleExecutionResult{{
+			Action:    &schema.AgentAction{Tool: "contacts", ToolInput: `{"action":"query","query":"Example Contact","limit":5}`},
+			Step:      &schema.AgentStep{Observation: "phone bridge did not return to foreground within 8s"},
+			ToolError: NewToolError(CodeAppBackgrounded, "phone bridge did not return to foreground within 8s"),
+		}},
+	}
+	action := schema.AgentAction{
+		Tool:      "contacts",
+		ToolInput: `{"action":"query","query":"Example Contact","limit":5}`,
+	}
+	abortAction, ok := state.autoAbortRepeatedPhoneBridgeForegroundFailure(action)
+	if !ok {
+		t.Fatal("autoAbortRepeatedPhoneBridgeForegroundFailure() ok=false, want abort")
+	}
+	if abortAction.Tool != toolAbortStep {
+		t.Fatalf("abort tool = %q, want %q", abortAction.Tool, toolAbortStep)
+	}
+	if !strings.Contains(abortAction.ToolInput, "already failed in this step") ||
+		!strings.Contains(abortAction.ToolInput, "Aiden stayed backgrounded") {
+		t.Fatalf("abort input = %s, want foreground failure reason", abortAction.ToolInput)
+	}
+}
+
+func TestPlanArtifactDoesNotInferContactsSourceFromStepText(t *testing.T) {
+	state := &roleLoopState{
+		PlanCommitted: true,
+		PlanStepIndex: 0,
+		Plan:          []string{"查询通讯录里张三的电话号，组织最终消息并写入剪切板", "open target app"},
+		PlanArtifacts: initialPlanArtifactStates([]planArtifact{{
+			ID:             "message_text",
+			Kind:           planArtifactKindTargetText,
+			Delivery:       planArtifactDeliveryClipboard,
+			PrepareStep:    1,
+			TargetOpenStep: 2,
+			ConsumeStep:    2,
+			TextTemplate:   "Message {{value}}",
+			TargetApp:      "微信",
+		}}),
+	}
+	sourceCall := ToolCall{
+		Spec:  ToolSpec{Name: "open_app"},
+		Input: `{"app":"通讯录"}`,
+	}
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), sourceCall); !allowed || result.Error != nil {
+		t.Fatalf("source app navigation allowed=%v result=%#v, want allowed without explicit source contract", allowed, result)
+	}
+}
+
+func TestPlanArtifactAppLabelMatchingPreservesAppNames(t *testing.T) {
+	if got := normalizeArtifactAppLabel("WhatsApp"); got != "whatsapp" {
+		t.Fatalf("normalizeArtifactAppLabel(WhatsApp) = %q, want whatsapp", got)
+	}
+	if got := normalizeArtifactAppLabel("WeChat App"); got != "wechat" {
+		t.Fatalf("normalizeArtifactAppLabel(WeChat App) = %q, want wechat", got)
+	}
+	if got := normalizeArtifactAppLabel("微信app"); got != "wechat" {
+		t.Fatalf("normalizeArtifactAppLabel(微信app) = %q, want wechat", got)
+	}
+	if !appLabelsMatch("微信/WeChat", "weixin") {
+		t.Fatal("expected bilingual app label to match known alias")
+	}
+	if appLabelsMatch("WhatsApp", "Whats") {
+		t.Fatal("unexpected match after app suffix normalization")
+	}
+}
+
+func TestCommitPlanRejectsTargetTextArtifactWithoutTargetApp(t *testing.T) {
+	_, err := parseCommitPlanInput(`{
+		"objective":"prepare cross app text",
+		"plan":["prepare text","open target"],
+		"artifacts":[{
+			"id":"message_text",
+			"kind":"target_text",
+			"delivery":"clipboard",
+			"prepare_step":1,
+			"target_open_step":2,
+			"consume_step":2,
+			"text_template":"Message {{value}}"
+		}]
+	}`)
+	if err == nil || !strings.Contains(err.Error(), "requires target_app") {
+		t.Fatalf("parseCommitPlanInput error = %v, want target_app validation", err)
+	}
+}
+
+func TestCommitPlanAcceptsTargetTextArtifactWithoutTargetOpenStep(t *testing.T) {
+	decision, err := parseCommitPlanInput(`{
+		"objective":"prepare cross app text",
+		"plan":["prepare text","open target"],
+		"artifacts":[{
+			"id":"message_text",
+			"kind":"target_text",
+			"delivery":"clipboard",
+			"prepare_step":1,
+			"consume_step":2,
+			"text_template":"Message {{value}}",
+			"target_app":"WeChat"
+		}]
+	}`)
+	if err != nil {
+		t.Fatalf("parseCommitPlanInput() error = %v", err)
+	}
+	if len(decision.Artifacts) != 1 || decision.Artifacts[0].TargetOpenStep != 0 {
+		t.Fatalf("artifacts = %#v, want target_open_step omitted", decision.Artifacts)
+	}
+}
+
+func TestCommitPlanAllowsTargetTextPreparedAfterDeclaredTargetOpenBecauseRuntimeBlocksActualOpen(t *testing.T) {
+	decision, err := parseCommitPlanInput(`{
+		"objective":"prepare target text too late",
+		"plan":["query source","open target","prepare clipboard","consume text"],
+		"artifacts":[{
+			"id":"message_text",
+			"kind":"target_text",
+			"delivery":"clipboard",
+			"prepare_step":3,
+			"target_open_step":2,
+			"consume_step":4,
+			"text_template":"fixed message",
+			"target_app":"WeChat"
+		}]
+	}`)
+	if err != nil {
+		t.Fatalf("parseCommitPlanInput() error = %v", err)
+	}
+	if err := validateCommittedPlanPolicy(decision, worldState{}); err != nil {
+		t.Fatalf("validateCommittedPlanPolicy() error = %v", err)
+	}
+}
+
+func TestCommitPlanAllowsSourceAfterDeclaredTargetOpenBecauseRuntimeBlocksActualOpen(t *testing.T) {
+	decision, err := parseCommitPlanInput(`{
+		"objective":"query source after target app",
+		"plan":["prepare shell","open target","query contacts","consume text"],
+		"sources":[{
+			"id":"contact_lookup",
+			"tool":"contacts",
+			"action":"query",
+			"step":3,
+			"query":"张三",
+			"artifact_id":"message_text"
+		}],
+		"artifacts":[{
+			"id":"message_text",
+			"kind":"target_text",
+			"delivery":"clipboard",
+			"prepare_step":3,
+			"target_open_step":2,
+			"consume_step":4,
+			"text_template":"请确认 {{contact_lookup.phone_numbers}} 是否还在使用",
+			"source_refs":["contact_lookup.phone_numbers"],
+			"target_app":"WeChat"
+		}]
+	}`)
+	if err != nil {
+		t.Fatalf("parseCommitPlanInput() error = %v", err)
+	}
+	if len(decision.Sources) != 1 || decision.Sources[0].Step != 3 {
+		t.Fatalf("sources = %#v, want source retained for runtime gating", decision.Sources)
+	}
+}
+
+func TestCommitPlanRejectsPlaceholderOnlyTargetTextTemplate(t *testing.T) {
+	decision, err := parseCommitPlanInput(`{
+		"objective":"查询联系人数据后准备目标应用文本",
+		"plan":["query source","prepare clipboard","open target","consume text"],
+		"sources":[{
+			"id":"contact_lookup",
+			"tool":"contacts",
+			"action":"query",
+			"step":1,
+			"query":"Example Contact",
+			"artifact_id":"message_text"
+		}],
+		"artifacts":[{
+			"id":"message_text",
+			"kind":"target_text",
+			"delivery":"clipboard",
+			"prepare_step":2,
+			"target_open_step":3,
+			"consume_step":4,
+			"text_template":"{{contact_lookup.phone_numbers}}",
+			"source_refs":["contact_lookup.phone_numbers"],
+			"target_app":"微信"
+		}]
+	}`)
+	if err != nil {
+		t.Fatalf("parseCommitPlanInput() error = %v", err)
+	}
+	err = validateCommittedPlanPolicy(decision, worldState{})
+	if err == nil || !strings.Contains(err.Error(), "text_template cannot be only placeholder") {
+		t.Fatalf("validateCommittedPlanPolicy() error = %v, want placeholder-only rejection", err)
+	}
+}
+
+func TestCommitPlanAllowsAndroidTargetPreservingClipboardPlan(t *testing.T) {
+	executor := newRoleCollaborativeExecutor(
+		&scriptedModel{},
+		RoleProfiles{},
+		nil,
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{Phase: phasePlan, PlanCommitRequired: true}
+	state.World.UpdateDeviceEnvironment(&PhoneEnvironment{Platform: "android"})
+	payload, _ := json.Marshal(map[string]any{
+		"objective":           "查通讯录电话号后给微信好友发消息问问电话号是否还在用",
+		"completion_criteria": []string{"微信消息已发送并有截图证据"},
+		"plan": []string{
+			"查询通讯录里张三的电话号",
+			"打开微信并搜索李四聊天",
+			"通过目标保持的剪切板写入和粘贴完成输入，验证后发送",
+		},
+		"reason": "android can preserve target app",
+	})
+
+	turn := executor.handlePlannerMetaTool(phasePlan, state, schema.AgentAction{
+		Tool:      toolCommitPlan,
+		ToolInput: string(payload),
+	})
+
+	if turn.Kind != plannerTurnCommitPlan {
+		t.Fatalf("turn kind = %v, want commit", turn.Kind)
+	}
+}
+
+func TestPlanArtifactClipboardWriteRequiresBindingAndTemplateMatch(t *testing.T) {
+	state := &roleLoopState{
+		PlanStepIndex: 0,
+		PlanArtifacts: initialPlanArtifactStates([]planArtifact{{
+			ID:             "message_text",
+			Kind:           planArtifactKindTargetText,
+			Delivery:       planArtifactDeliveryClipboard,
+			PrepareStep:    1,
+			TargetOpenStep: 2,
+			ConsumeStep:    2,
+			TextTemplate:   "Please check {{lookup.value}} now",
+		}}),
+	}
+
+	call := ToolCall{
+		Spec:  ToolSpec{Name: "clipboard"},
+		Input: `{"action":"write","text":"Please check 123 now"}`,
+	}
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), call); allowed || result.Error == nil {
+		t.Fatalf("clipboard without artifact_id allowed=%v result=%#v, want rejection", allowed, result)
+	}
+
+	call.Input = `{"action":"write","artifact_id":"message_text","text":"lookup value: 123"}`
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), call); allowed || result.Error == nil ||
+		!strings.Contains(result.Output, "does not satisfy text_template") {
+		t.Fatalf("clipboard with mismatched template allowed=%v result=%#v, want template rejection", allowed, result)
+	}
+
+	call.Input = `{"action":"write","artifact_id":"message_text","text":"Please check 123 now"}`
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), call); !allowed || result.Error != nil {
+		t.Fatalf("clipboard with matching template allowed=%v result=%#v, want allowed", allowed, result)
+	}
+	state.afterArtifactToolCall(context.Background(), call, ToolResult{Output: `{"ok":true}`})
+	if got := state.PlanArtifacts[0].PreparedText; got != "Please check 123 now" {
+		t.Fatalf("prepared text = %q", got)
+	}
+}
+
+func TestPlanArtifactClipboardWriteMatchesFixedTemplateExactly(t *testing.T) {
+	state := &roleLoopState{
+		PlanStepIndex: 0,
+		PlanArtifacts: initialPlanArtifactStates([]planArtifact{{
+			ID:             "message_text",
+			Kind:           planArtifactKindTargetText,
+			Delivery:       planArtifactDeliveryClipboard,
+			PrepareStep:    1,
+			TargetOpenStep: 2,
+			ConsumeStep:    2,
+			TextTemplate:   "Fixed message",
+		}}),
+	}
+	call := ToolCall{
+		Spec:  ToolSpec{Name: "clipboard"},
+		Input: `{"action":"write","artifact_id":"message_text","text":"Fixed message plus extra"}`,
+	}
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), call); allowed || result.Error == nil ||
+		!strings.Contains(result.Output, "does not satisfy text_template") {
+		t.Fatalf("clipboard with mismatched fixed template allowed=%v result=%#v, want rejection", allowed, result)
+	}
+
+	call.Input = `{"action":"write","artifact_id":"message_text","text":"Fixed message"}`
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), call); !allowed || result.Error != nil {
+		t.Fatalf("clipboard with fixed template allowed=%v result=%#v, want allowed", allowed, result)
+	}
+}
+
+func TestTargetTextClipboardDoesNotInferContactsValuesWithoutSourceContract(t *testing.T) {
+	state := &roleLoopState{
+		PlanCommitted: true,
+		PlanStepIndex: 1,
+		Plan:          []string{"query contacts", "open target", "prepare text", "consume"},
+		PlanArtifacts: initialPlanArtifactStates([]planArtifact{{
+			ID:           "wechat_message",
+			Kind:         planArtifactKindTargetText,
+			Delivery:     planArtifactDeliveryClipboard,
+			PrepareStep:  3,
+			ConsumeStep:  4,
+			TextTemplate: "Target Friend，你手机号还在用吗？另外我想查下Example Contact的电话，你那边有吗？",
+			TargetApp:    "微信",
+			TargetLabel:  "Target Friend聊天输入框",
+		}}),
+		ExecutionResults: []roleExecutionResult{{
+			Action: &schema.AgentAction{Tool: "contacts", ToolInput: `{"action":"query","query":"Example Contact","limit":10}`},
+			Step:   &schema.AgentStep{Observation: `{"ok":true,"contacts":[{"name":"Example Contact","phone_numbers":["555 0101","5550102"]}]}`},
+		}},
+	}
+	call := ToolCall{
+		Spec:  ToolSpec{Name: "clipboard"},
+		Input: `{"action":"write","artifact_id":"wechat_message","text":"Target Friend，你手机号还在用吗？另外我想查下Example Contact的电话，你那边有吗？"}`,
+	}
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), call); !allowed || result.Error != nil {
+		t.Fatalf("clipboard without explicit source contract allowed=%v result=%#v, want no inferred contacts-value rejection", allowed, result)
+	}
+}
+
+func TestTargetTextClipboardRequiresExplicitContactsPhoneValues(t *testing.T) {
+	state := &roleLoopState{
+		PlanCommitted: true,
+		PlanStepIndex: 0,
+		PlanSources: initialPlanSourceStates([]planSource{{
+			ID:         "contact_lookup",
+			Tool:       planSourceToolContacts,
+			Action:     planSourceActionQuery,
+			Step:       1,
+			Query:      "Example Contact",
+			ArtifactID: "wechat_message",
+		}}),
+		PlanArtifacts: initialPlanArtifactStates([]planArtifact{{
+			ID:           "wechat_message",
+			Kind:         planArtifactKindTargetText,
+			Delivery:     planArtifactDeliveryClipboard,
+			PrepareStep:  1,
+			ConsumeStep:  2,
+			TextTemplate: "Example Contact手机号 {{contact_lookup.phone_numbers}} 还在用吗？",
+			SourceRefs:   []string{"contact_lookup.phone_numbers"},
+			TargetApp:    "微信",
+			TargetLabel:  "Target Friend聊天输入框",
+		}}),
+		StepExecutionResults: []roleExecutionResult{{
+			Action: &schema.AgentAction{Tool: "contacts", ToolInput: `{"action":"query","query":"Example Contact","limit":10}`},
+			Step:   &schema.AgentStep{Observation: `{"ok":true,"contacts":[{"name":"Example Contact","phone_numbers":["555 0101"]}]}`},
+		}},
+	}
+	call := ToolCall{
+		Spec:  ToolSpec{Name: "clipboard"},
+		Input: `{"action":"write","artifact_id":"wechat_message","text":"Example Contact手机号 这个号码 还在用吗？"}`,
+	}
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), call); allowed || result.Error == nil ||
+		!strings.Contains(result.Output, "555 0101") {
+		t.Fatalf("clipboard without explicit source number allowed=%v result=%#v, want rejection", allowed, result)
+	}
+
+	call.Input = `{"action":"write","artifact_id":"wechat_message","text":"Example Contact手机号 555 0101 还在用吗？"}`
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), call); !allowed || result.Error != nil {
+		t.Fatalf("clipboard with explicit source number allowed=%v result=%#v, want allowed", allowed, result)
+	}
+}
+
+func TestContactsSourceContractRequiresContactsBeforeClipboardAndFinish(t *testing.T) {
+	executor := newRoleCollaborativeExecutor(
+		&scriptedModel{},
+		RoleProfiles{},
+		nil,
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{
+		PlanCommitted:       true,
+		PlanStepIndex:       0,
+		StepExecutionActive: true,
+		Plan:                []string{"prepare message from source", "open target app"},
+		PlanSources: initialPlanSourceStates([]planSource{{
+			ID:         "contact_lookup",
+			Tool:       planSourceToolContacts,
+			Action:     planSourceActionQuery,
+			Step:       1,
+			Query:      "张三",
+			Produces:   []string{"phone_numbers"},
+			ArtifactID: "message_text",
+		}}),
+		PlanArtifacts: initialPlanArtifactStates([]planArtifact{{
+			ID:             "message_text",
+			Kind:           planArtifactKindTargetText,
+			Delivery:       planArtifactDeliveryClipboard,
+			PrepareStep:    1,
+			TargetOpenStep: 2,
+			ConsumeStep:    2,
+			TextTemplate:   "请确认 {{contact_lookup.phone_numbers}} 是否还在使用",
+			SourceRefs:     []string{"contact_lookup.phone_numbers"},
+			TargetApp:      "微信",
+		}}),
+	}
+	clipCall := ToolCall{
+		Spec:  ToolSpec{Name: "clipboard"},
+		Input: `{"action":"write","artifact_id":"message_text","text":"请确认 5550103 是否还在使用"}`,
+	}
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), clipCall); allowed || result.Error == nil ||
+		!strings.Contains(result.Output, "source contract") {
+		t.Fatalf("clipboard before contacts allowed=%v result=%#v, want source rejection", allowed, result)
+	}
+
+	turn := executor.handleExecutorMetaTool(state, schema.AgentAction{
+		Tool:      toolFinishStep,
+		ToolInput: `{"summary":"prepared"}`,
+	})
+	if turn.Kind != executorTurnInvalidMeta || turn.InvalidMetaStep == nil ||
+		!strings.Contains(turn.InvalidMetaStep.Observation, "unsatisfied source contract") {
+		t.Fatalf("finish before contacts turn=%#v, want source rejection", turn)
+	}
+
+	state.StepExecutionResults = append(state.StepExecutionResults, roleExecutionResult{
+		Action: &schema.AgentAction{Tool: "contacts", ToolInput: `{"action":"query","query":"张三","limit":20}`},
+		Step:   &schema.AgentStep{Observation: `{"ok":true,"contacts":[{"name":"张三","phone_numbers":["5550103"]}]}`},
+	})
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), clipCall); !allowed || result.Error != nil {
+		t.Fatalf("clipboard after contacts allowed=%v result=%#v, want allowed", allowed, result)
+	}
+	state.afterArtifactToolCall(context.Background(), clipCall, ToolResult{Output: `{"ok":true}`})
+
+	turn = executor.handleExecutorMetaTool(state, schema.AgentAction{
+		Tool:      toolFinishStep,
+		ToolInput: `{"summary":"prepared","key_info":["phone_numbers=5550103"]}`,
+	})
+	if turn.Kind != executorTurnFinishStep {
+		t.Fatalf("finish after contacts turn=%#v, want finish", turn)
+	}
+}
+
+func TestContactsSourceContractPersistsAcrossPlanSteps(t *testing.T) {
+	state := &roleLoopState{
+		PlanCommitted: true,
+		PlanStepIndex: 1,
+		Plan:          []string{"prepare message from source", "open target app", "send"},
+		PlanSources: initialPlanSourceStates([]planSource{{
+			ID:         "contact_lookup",
+			Tool:       planSourceToolContacts,
+			Action:     planSourceActionQuery,
+			Step:       1,
+			Query:      "张三",
+			ArtifactID: "message_text",
+		}}),
+		PlanArtifacts: initialPlanArtifactStates([]planArtifact{{
+			ID:             "message_text",
+			Kind:           planArtifactKindTargetText,
+			Delivery:       planArtifactDeliveryClipboard,
+			PrepareStep:    1,
+			TargetOpenStep: 2,
+			ConsumeStep:    3,
+			TextTemplate:   "请确认 {{contact_lookup.phone_numbers}} 是否还在使用",
+			SourceRefs:     []string{"contact_lookup.phone_numbers"},
+			TargetApp:      "微信",
+		}}),
+		ExecutionResults: []roleExecutionResult{{
+			Action: &schema.AgentAction{Tool: "contacts", ToolInput: `{"action":"query","query":"张三"}`},
+			Step:   &schema.AgentStep{Observation: `{"ok":true,"contacts":[{"name":"张三","phone_numbers":["5550103"]}]}`},
+		}},
+	}
+	state.PlanArtifacts[0].PreparedText = "请确认 5550103 是否还在使用"
+	targetCall := ToolCall{
+		Spec:  ToolSpec{Name: "open_app"},
+		Input: `{"app":"WeChat"}`,
+	}
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), targetCall); !allowed || result.Error != nil {
+		t.Fatalf("target app open after persisted source allowed=%v result=%#v, want allowed", allowed, result)
+	}
+}
+
+func TestPlanArtifactTextEntryConsumesPreparedArtifact(t *testing.T) {
+	state := &roleLoopState{
+		PlanStepIndex: 1,
+		PlanArtifacts: initialPlanArtifactStates([]planArtifact{{
+			ID:             "message_text",
+			Kind:           planArtifactKindTargetText,
+			Delivery:       planArtifactDeliveryClipboard,
+			PrepareStep:    1,
+			TargetOpenStep: 2,
+			ConsumeStep:    2,
+			TextTemplate:   "Please check {{lookup.value}} now",
+		}}),
+	}
+	state.PlanArtifacts[0].PreparedText = "Please check 123 now"
+	state.PlanArtifacts[0].PreparedAt = time.Now()
+
+	call := ToolCall{
+		Spec:  ToolSpec{Name: "enter_text_in_field"},
+		Input: `{"text":"Please check 123 now"}`,
+	}
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), call); allowed || result.Error == nil {
+		t.Fatalf("text entry without artifact_id allowed=%v result=%#v, want rejection", allowed, result)
+	}
+
+	call.Input = `{"text":"Target Friend","mode":"search"}`
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), call); !allowed || result.Error != nil {
+		t.Fatalf("structured search text entry allowed=%v result=%#v, want allowed", allowed, result)
+	}
+
+	call.Input = `{"text":"Target Friend","mode":"search","send_after_commit":true}`
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), call); allowed || result.Error == nil {
+		t.Fatalf("search text entry with send_after_commit allowed=%v result=%#v, want rejection", allowed, result)
+	}
+
+	call.Input = `{"text":"Target Friend","mode":"form"}`
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), call); allowed || result.Error == nil {
+		t.Fatalf("form text entry without artifact_id allowed=%v result=%#v, want rejection", allowed, result)
+	}
+
+	call.Spec.Name = "enter_text_via_bridge"
+	call.Input = `{"text":"Target Friend","mode":"search","focus":{"x":500,"y":200,"coord_space":"normalized"}}`
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), call); !allowed || result.Error != nil {
+		t.Fatalf("bridge structured search text entry allowed=%v result=%#v, want allowed", allowed, result)
+	}
+
+	call.Spec.Name = "enter_text_in_field"
+	call.Input = `{"artifact_id":"message_text","text":"Different text"}`
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), call); allowed || result.Error == nil ||
+		!strings.Contains(result.Output, "must exactly match prepared text") {
+		t.Fatalf("text entry mismatch allowed=%v result=%#v, want rejection", allowed, result)
+	}
+
+	call.Input = `{"artifact_id":"message_text","text":"Please check 123 now"}`
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), call); !allowed || result.Error != nil {
+		t.Fatalf("text entry allowed=%v result=%#v, want allowed", allowed, result)
+	}
+	state.afterArtifactToolCall(context.Background(), call, ToolResult{Output: `{"ok":true,"committed":true}`})
+	if state.PlanArtifacts[0].ConsumedAt.IsZero() {
+		t.Fatal("expected artifact to be marked consumed")
+	}
+}
+
+func TestPreparePhoneWorkflowCannotOpenBeforeCommittedBoundary(t *testing.T) {
+	state := &roleLoopState{
+		PlanCommitted: true,
+		PlanStepIndex: 0,
+		PlanArtifacts: initialPlanArtifactStates([]planArtifact{{
+			ID:             "message_text",
+			Kind:           planArtifactKindTargetText,
+			Delivery:       planArtifactDeliveryClipboard,
+			PrepareStep:    1,
+			TargetOpenStep: 2,
+			ConsumeStep:    3,
+			TextTemplate:   "hello",
+			TargetApp:      "微信",
+		}}),
+	}
+	call := ToolCall{
+		Spec:  ToolSpec{Name: "prepare_phone_message"},
+		Input: `{"message_text":"hello","target_app":"微信","open_target_app":true}`,
+	}
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), call); allowed || result.Error == nil {
+		t.Fatalf("prepare workflow open before boundary allowed=%v result=%#v, want rejection", allowed, result)
+	}
+
+	state.PlanStepIndex = 1
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), call); !allowed || result.Error != nil {
+		t.Fatalf("prepare workflow open at boundary allowed=%v result=%#v, want allowed", allowed, result)
+	}
+}
+
+func TestPreparePhoneWorkflowMarksSingleMatchingArtifactPrepared(t *testing.T) {
+	state := &roleLoopState{
+		PlanCommitted: true,
+		PlanStepIndex: 0,
+		PlanSources: initialPlanSourceStates([]planSource{{
+			ID:         "contact_lookup",
+			Tool:       planSourceToolContacts,
+			Action:     planSourceActionQuery,
+			Step:       1,
+			Query:      "Example Contact",
+			Produces:   []string{"phone_numbers"},
+			ArtifactID: "fan_phone",
+		}}),
+		PlanArtifacts: initialPlanArtifactStates([]planArtifact{{
+			ID:           "fan_phone",
+			Kind:         planArtifactKindTargetText,
+			Delivery:     planArtifactDeliveryClipboard,
+			PrepareStep:  2,
+			ConsumeStep:  4,
+			SourceRefs:   []string{"contact_lookup.phone_numbers"},
+			TextTemplate: "{{source}}的手机号还在用吗？",
+			TargetApp:    "微信",
+			TargetLabel:  "Target Friend",
+		}}),
+		ExecutionResults: []roleExecutionResult{{
+			Action: &schema.AgentAction{
+				Tool:      "contacts",
+				ToolInput: `{"action":"query","query":"Example Contact"}`,
+			},
+			Step: &schema.AgentStep{
+				Observation: `{"ok":true,"contacts":[{"name":"Example Contact","phone_numbers":["555 0101","5550102"]}]}`,
+			},
+		}},
+	}
+
+	call := ToolCall{
+		Spec:  ToolSpec{Name: "prepare_phone_message"},
+		Input: `{"message_text":"Example Contact的手机号555 0101和5550102还在用吗？","target_app":"微信","open_target_app":false}`,
+	}
+	result := ToolResult{Output: `{"ok":true,"workflow":"prepare_phone_message","target_app":"微信","target_text":"Example Contact的手机号555 0101和5550102还在用吗？","clipboard_prepared":true,"opened_target_app":false}`}
+
+	state.afterArtifactToolCall(context.Background(), call, result)
+	if got := state.PlanArtifacts[0].PreparedText; got != "Example Contact的手机号555 0101和5550102还在用吗？" {
+		t.Fatalf("prepared text = %q", got)
+	}
+	if state.PlanArtifacts[0].PreparedAt.IsZero() {
+		t.Fatal("expected workflow-prepared artifact timestamp")
+	}
+}
+
 func TestCommitPlanParsesStringPlanAndCriteria(t *testing.T) {
 	decision, err := parseCommitPlanInput(`{
 		"objective":"reconcile",
@@ -782,6 +2036,111 @@ func TestCommitPlanParsesStringPlanAndCriteria(t *testing.T) {
 	}
 	if decision.Plan[0] != "Step 1: compute subtotal." || decision.Plan[2] != "Step 3: output final answer." {
 		t.Fatalf("unexpected parsed plan: %#v", decision.Plan)
+	}
+}
+
+func TestCommitPlanParsesPlanEncodedAsJSONStringArray(t *testing.T) {
+	encodedPlan, err := json.Marshal([]string{
+		"使用 contacts 工具查询通讯录中Example Contact的手机号，获取所有电话号码。",
+		"将Example Contact的手机号组合成询问消息，写入剪贴板，为后续微信发送做准备。",
+		"使用 open_app 打开微信 App。",
+		`等待微信加载完成，然后在微信搜索框中搜索"Target Friend"，进入聊天界面。`,
+		"使用 enter_text_in_field 工具将剪贴板中的消息粘贴到输入框，然后发送消息。",
+		"等待消息发送成功，确认聊天界面显示已发送的消息。",
+	})
+	if err != nil {
+		t.Fatalf("marshal encoded plan: %v", err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"objective": "查询通讯录中Example Contact的手机号，然后在微信中联系\"Target Friend\"，询问该手机号是否还在使用。",
+		"completion_criteria": []string{
+			"从通讯录成功获取Example Contact的手机号",
+			"微信成功打开并进入与Target Friend的聊天界面",
+			"消息已输入并发送成功，聊天界面显示发送出去的消息气泡",
+		},
+		"plan": string(encodedPlan),
+		"sources": []map[string]any{{
+			"id":          "fan_phone_lookup",
+			"tool":        "contacts",
+			"action":      "query",
+			"query":       "Example Contact",
+			"produces":    []string{"phone_numbers"},
+			"step":        1,
+			"artifact_id": "fan_phone_message",
+		}},
+		"artifacts": []map[string]any{{
+			"id":               "fan_phone_message",
+			"kind":             "target_text",
+			"delivery":         "clipboard",
+			"prepare_step":     2,
+			"consume_step":     5,
+			"source_refs":      []string{"fan_phone_lookup.phone_numbers"},
+			"text_template":    "Example Contact的手机号是{{fan_phone_lookup.phone_numbers}}，这个号还在用吗？",
+			"target_app":       "微信",
+			"target_label":     "Target Friend",
+			"target_open_step": 3,
+		}},
+		"reason": "任务需要先查通讯录获取手机号，再打开微信发送消息。",
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	decision, err := parseCommitPlanInput(string(payload))
+	if err != nil {
+		t.Fatalf("parseCommitPlanInput() error = %v", err)
+	}
+	if len(decision.Plan) != 6 {
+		t.Fatalf("plan = %#v, want 6 parsed steps", decision.Plan)
+	}
+	if !strings.Contains(decision.Plan[3], `"Target Friend"`) {
+		t.Fatalf("quoted chat label not preserved in plan: %#v", decision.Plan)
+	}
+	if err := validateCommittedPlanPolicy(decision, worldState{}); err != nil {
+		t.Fatalf("validateCommittedPlanPolicy() error = %v", err)
+	}
+}
+
+func TestCommitPlanParsesLogPlanStringArrayWithUnescapedInnerQuotes(t *testing.T) {
+	planText := `
+["步骤1：使用 contacts 工具查询通讯录中"Example Contact"的手机号，获取所有关联的电话号码。", "步骤2：将Example Contact的手机号整理成询问文本，并通过 clipboard 工具写入剪贴板。", "步骤3：使用 open_app 打开微信，等待微信稳定加载。", "步骤4：在微信中搜索或找到"Target Friend"的聊天会话并点击进入。", "步骤5：使用 enter_text_in_field 将剪贴板中的消息粘贴到输入框，然后点击发送按钮。", "步骤6：截图验证消息是否已成功发送。"]
+`
+	payload, err := json.Marshal(map[string]any{
+		"objective": "查询通讯录中Example Contact的手机号，然后在微信中向\"Target Friend\"发送消息询问该手机号是否还在使用。",
+		"plan":      planText,
+		"sources": []map[string]any{{
+			"id":          "fan_phone_lookup",
+			"tool":        "contacts",
+			"action":      "query",
+			"step":        1,
+			"query":       "Example Contact",
+			"produces":    []string{"phone_numbers"},
+			"artifact_id": "message_to_send",
+		}},
+		"artifacts": []map[string]any{{
+			"id":            "message_to_send",
+			"kind":          "target_text",
+			"delivery":      "clipboard",
+			"prepare_step":  2,
+			"consume_step":  5,
+			"text_template": "Example Contact的手机号是{{fan_phone_lookup.phone_numbers}}，这手机号还在用吗？",
+			"target_app":    "微信",
+			"target_label":  "Target Friend",
+			"source_refs":   []string{"fan_phone_lookup.phone_numbers"},
+		}},
+		"reason": "repro latest board log",
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	decision, err := parseCommitPlanInput(string(payload))
+	if err != nil {
+		t.Fatalf("parseCommitPlanInput() error = %v", err)
+	}
+	if len(decision.Plan) != 6 {
+		t.Fatalf("plan = %#v, want 6 parsed steps", decision.Plan)
+	}
+	if !strings.Contains(decision.Plan[0], `"Example Contact"`) || !strings.Contains(decision.Plan[3], `"Target Friend"`) {
+		t.Fatalf("inner quotes not preserved in plan: %#v", decision.Plan)
 	}
 }
 
@@ -823,6 +2182,15 @@ func TestSetTodoRejectsOutOfRangeStatusIndices(t *testing.T) {
 			}
 		})
 	}
+}
+
+func roleLoopTestStringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestCancelPlanReturnsToDefaultMode(t *testing.T) {

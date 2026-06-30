@@ -167,6 +167,43 @@ func (e *roleCollaborativeExecutor) handleExecutorMetaTool(
 				},
 			}
 		}
+		if pending := state.pendingSourceContractsForCurrentStep(); len(pending) > 0 {
+			return executorTurnResult{
+				Kind: executorTurnInvalidMeta,
+				InvalidMetaStep: &schema.AgentStep{
+					Action:      action,
+					Observation: "finish_step failed: current step has unsatisfied source contract(s): " + strings.Join(planSourceContractIDs(pending), ", ") + ". Use the declared direct app-side source tool before finishing; opening the source app UI is not sufficient evidence.",
+				},
+			}
+		}
+		if pending := state.pendingPrepareArtifactsForCurrentStep(); len(pending) > 0 {
+			return executorTurnResult{
+				Kind: executorTurnInvalidMeta,
+				InvalidMetaStep: &schema.AgentStep{
+					Action:      action,
+					Observation: "finish_step failed: current step has unprepared artifact contract(s): " + strings.Join(planArtifactStateIDs(pending), ", "),
+				},
+			}
+		}
+		if pending := state.pendingConsumeArtifactsForCurrentStep(); len(pending) > 0 {
+			unprepared := state.unpreparedPlanArtifactIDs(pending)
+			if len(unprepared) > 0 {
+				return executorTurnResult{
+					Kind: executorTurnInvalidMeta,
+					InvalidMetaStep: &schema.AgentStep{
+						Action:      action,
+						Observation: "finish_step failed: current step must consume prepared artifact(s), but these are not prepared: " + strings.Join(unprepared, ", "),
+					},
+				}
+			}
+			return executorTurnResult{
+				Kind: executorTurnInvalidMeta,
+				InvalidMetaStep: &schema.AgentStep{
+					Action:      action,
+					Observation: "finish_step failed: current step has unconsumed artifact contract(s): " + strings.Join(planArtifactStateIDs(pending), ", "),
+				},
+			}
+		}
 		state.ExecutorStepOutcome = "finished"
 		state.ExecutorStepSummary = finish.Summary
 		state.ExecutorStepKeyInfo = finish.KeyInfo

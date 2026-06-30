@@ -73,12 +73,37 @@ const (
 	executorTurnSteer
 )
 
+const (
+	verifierStepStatusSucceeded = "succeeded"
+	verifierStepStatusFailed    = "failed"
+	verifierStepStatusBlocked   = "blocked"
+	verifierStepStatusUncertain = "uncertain"
+)
+
 type executorTurnResult struct {
 	Kind            executorTurnKind
 	Action          *schema.AgentAction
 	Step            *schema.AgentStep
 	InvalidMetaStep *schema.AgentStep
 	ToolError       *ToolError
+}
+
+func normalizeVerifierStepStatus(status string) string {
+	status = strings.ToLower(strings.TrimSpace(status))
+	status = strings.ReplaceAll(status, "-", "_")
+	status = strings.ReplaceAll(status, " ", "_")
+	switch status {
+	case verifierStepStatusSucceeded:
+		return verifierStepStatusSucceeded
+	case verifierStepStatusFailed:
+		return verifierStepStatusFailed
+	case verifierStepStatusBlocked:
+		return verifierStepStatusBlocked
+	case verifierStepStatusUncertain:
+		return verifierStepStatusUncertain
+	default:
+		return ""
+	}
 }
 
 func plannerCommitRequiredTurn(action schema.AgentAction) plannerTurnResult {
@@ -202,6 +227,40 @@ func (s roleLoopState) isFinalCommittedPlanStep() bool {
 	return s.PlanCommitted && len(s.Plan) > 0 && s.PlanStepIndex >= len(s.Plan)-1
 }
 
+func (s roleLoopState) hasRemainingCommittedPlanSteps() bool {
+	return s.PlanCommitted && len(s.Plan) > 0 && s.PlanStepIndex >= 0 && s.PlanStepIndex < len(s.Plan)-1
+}
+
+func (s roleLoopState) normalizeVerifierDecisionForPlanTransition(decision verifierDecision, turnKind executorTurnKind) verifierDecision {
+	if unresolved := s.unresolvedTargetTextArtifactIDs(); len(unresolved) > 0 && decision.CanFinish {
+		decision.CanFinish = false
+		decision.FinalAnswer = ""
+		decision.NeedsReplan = false
+		decision.Reason = appendVerifierRuntimeReason(decision.Reason, "runtime blocked finish because committed target_text artifact contracts are not consumed: "+strings.Join(unresolved, ", "))
+	}
+	if decision.NeedsReplan &&
+		!decision.CanFinish &&
+		turnKind == executorTurnFinishStep &&
+		s.hasRemainingCommittedPlanSteps() &&
+		normalizeVerifierStepStatus(decision.StepStatus) == verifierStepStatusSucceeded {
+		decision.NeedsReplan = false
+		decision.Reason = appendVerifierRuntimeReason(decision.Reason, "runtime continued the committed plan because verifier marked the current step succeeded and later steps remain")
+	}
+	return decision
+}
+
+func appendVerifierRuntimeReason(reason, addition string) string {
+	reason = strings.TrimSpace(reason)
+	addition = strings.TrimSpace(addition)
+	if addition == "" {
+		return reason
+	}
+	if reason == "" {
+		return addition
+	}
+	return reason + " " + addition
+}
+
 func (s *roleLoopState) beginStepExecution() {
 	s.StepToolSteps = nil
 	s.StepExecutionResults = nil
@@ -250,10 +309,13 @@ func (s *roleLoopState) applyCommittedPlan(decision plannerDecision) {
 		s.CompletionCriteria = uniqueNonEmpty(decision.CompletionCriteria)
 	}
 	s.Plan = append([]string{}, decision.Plan...)
+	s.PlanSources = initialPlanSourceStates(decision.Sources)
+	s.PlanArtifacts = initialPlanArtifactStates(decision.Artifacts)
 	s.PlanStepIndex = 0
 	s.PlanCommitted = true
 	s.PlanExhausted = false
 	s.PlanCommitRequired = false
+	s.ConsecutiveCommitPlanFailures = 0
 	s.NextStep = ""
 	s.syncNextStepFromPlanIndex()
 	s.PlannerReason = strings.TrimSpace(decision.Reason)
@@ -264,11 +326,14 @@ func (s *roleLoopState) clearCommittedPlan() {
 	s.Objective = ""
 	s.CompletionCriteria = nil
 	s.Plan = nil
+	s.PlanSources = nil
+	s.PlanArtifacts = nil
 	s.NextStep = ""
 	s.PlanStepIndex = 0
 	s.PlanCommitted = false
 	s.PlanExhausted = false
 	s.PlanCommitRequired = false
+	s.ConsecutiveCommitPlanFailures = 0
 	s.PlannerReason = ""
 	s.PlanStepResults = nil
 	s.DraftPlan = plannerDecision{}
@@ -284,6 +349,12 @@ func (s *roleLoopState) applyDraftPlan(decision plannerDecision) {
 	}
 	if len(decision.Plan) > 0 {
 		s.Plan = append([]string{}, decision.Plan...)
+	}
+	if len(decision.Sources) > 0 {
+		s.PlanSources = initialPlanSourceStates(decision.Sources)
+	}
+	if len(decision.Artifacts) > 0 {
+		s.PlanArtifacts = initialPlanArtifactStates(decision.Artifacts)
 	}
 	if next := strings.TrimSpace(decision.NextStep); next != "" {
 		s.NextStep = next
@@ -302,19 +373,39 @@ func parseCommitPlanInput(raw string) (plannerDecision, error) {
 		Objective          string          `json:"objective"`
 		CompletionCriteria json.RawMessage `json:"completion_criteria"`
 		Plan               json.RawMessage `json:"plan"`
+		Sources            json.RawMessage `json:"sources"`
+		Artifacts          json.RawMessage `json:"artifacts"`
 		Reason             string          `json:"reason"`
 	}
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 		return plannerDecision{}, fmt.Errorf("commit_plan payload must be valid JSON: %w", err)
 	}
+	artifacts, misplacedSources, err := parsePlanArtifactsAndMisplacedSources(payload.Artifacts)
+	if err != nil {
+		return plannerDecision{}, err
+	}
+	sources, err := parsePlanSources(payload.Sources)
+	if err != nil {
+		return plannerDecision{}, err
+	}
+	sources = append(sources, misplacedSources...)
 	decision := plannerDecision{
 		Objective:          strings.TrimSpace(payload.Objective),
 		CompletionCriteria: parseStructuredStringList(payload.CompletionCriteria),
 		Plan:               parseStructuredStringList(payload.Plan),
+		Sources:            sources,
+		Artifacts:          artifacts,
 		Reason:             strings.TrimSpace(payload.Reason),
 	}
+	decision = normalizePhoneWorkflowContracts(decision)
 	if len(decision.Plan) == 0 {
 		return plannerDecision{}, fmt.Errorf("commit_plan requires a non-empty plan")
+	}
+	if err := validatePlanArtifacts(decision.Artifacts, len(decision.Plan)); err != nil {
+		return plannerDecision{}, err
+	}
+	if err := validatePlanSources(decision.Sources, decision.Artifacts, len(decision.Plan)); err != nil {
+		return plannerDecision{}, err
 	}
 	if decision.Objective == "" {
 		decision.Objective = decision.Plan[0]
@@ -325,14 +416,70 @@ func parseCommitPlanInput(raw string) (plannerDecision, error) {
 	return decision, nil
 }
 
+func validateCommittedPlanPolicy(decision plannerDecision, _ worldState) error {
+	if err := validateCommittedPlanArtifactContracts(decision); err != nil {
+		return fmt.Errorf("phone app planning policy violation: %w", err)
+	}
+	if err := validatePhoneWorkflowContracts(decision); err != nil {
+		return fmt.Errorf("phone app planning policy violation: %w", err)
+	}
+	return nil
+}
+
 func parseStructuredStringList(raw json.RawMessage) []string {
 	values := parseStringList(raw)
 	if len(values) == 1 {
+		if decoded, ok := parseJSONStringArrayString(values[0]); ok {
+			return decoded
+		}
+		if decoded, ok := parseJSONishStringArrayString(values[0]); ok {
+			return decoded
+		}
 		if split := splitStructuredText(values[0]); len(split) > 0 {
 			return split
 		}
 	}
 	return uniqueNonEmpty(values)
+}
+
+func parseJSONStringArrayString(text string) ([]string, bool) {
+	text = strings.TrimSpace(text)
+	if !strings.HasPrefix(text, "[") {
+		return nil, false
+	}
+	var values []string
+	if err := json.Unmarshal([]byte(text), &values); err != nil {
+		return nil, false
+	}
+	return uniqueNonEmpty(values), true
+}
+
+func parseJSONishStringArrayString(text string) ([]string, bool) {
+	text = strings.TrimSpace(text)
+	if !strings.HasPrefix(text, "[") || !strings.HasSuffix(text, "]") {
+		return nil, false
+	}
+	inner := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(text, "["), "]"))
+	if inner == "" {
+		return nil, false
+	}
+	parts := jsonishStringArraySeparatorRE.Split(inner, -1)
+	if len(parts) <= 1 {
+		return nil, false
+	}
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		part = strings.TrimPrefix(part, `"`)
+		part = strings.TrimSuffix(part, `"`)
+		part = strings.ReplaceAll(part, `\"`, `"`)
+		part = strings.ReplaceAll(part, `\\`, `\`)
+		part = compactPlanWhitespace(part)
+		if part != "" {
+			values = append(values, part)
+		}
+	}
+	return uniqueNonEmpty(values), len(values) > 0
 }
 
 func splitStructuredText(text string) []string {
@@ -366,15 +513,19 @@ func splitStructuredLines(text string) []string {
 }
 
 var (
-	stepMarkerRE        = regexp.MustCompile(`(?i)(^|\s+)(step\s*\d+\s*[:：])`)
-	numberedMarkerRE    = regexp.MustCompile(`(^|\s*)(\(\d+\))`)
-	planListPrefixRE    = regexp.MustCompile(`(?i)^\s*(?:[-*•]+|\d+[\.)]|step\s*\d+\s*[:：])\s*`)
-	criteriaPrefixRE    = regexp.MustCompile(`(?i)^\s*(?:[-*•]+|\d+[\.)])\s*`)
-	blankWhitespaceRE   = regexp.MustCompile(`\s+`)
-	stageMarkerRE       = regexp.MustCompile(`(?i)\bstage\s*\d+\b`)
-	bulletRecordRE      = regexp.MustCompile(`(?m)^\s*[-*]\s*[^:\n]+:\s*[-+]?\d+(?:\.\d+)?\s*$`)
-	routePlanIntentRE   = regexp.MustCompile(`(?i)(?:\b(?:enter|switch|use|choose|select)\s+(?:to\s+)?plan\s+mode\b|\benter_plan_mode\b|["']?mode["']?\s*:\s*["']?plan["']?)`)
-	routeSimpleIntentRE = regexp.MustCompile(`(?i)(?:\b(?:enter|switch|use|choose|select)\s+(?:to\s+)?simple\s+mode\b|\buse_simple_mode\b|["']?mode["']?\s*:\s*["']?simple["']?)`)
+	stepMarkerRE                  = regexp.MustCompile(`(?i)(^|\s+)(step\s*\d+\s*[:：])`)
+	numberedMarkerRE              = regexp.MustCompile(`(^|\s*)(\(\d+\))`)
+	jsonishStringArraySeparatorRE = regexp.MustCompile(`"\s*,\s*"`)
+	planListPrefixRE              = regexp.MustCompile(`(?i)^\s*(?:[-*•]+|\d+[\.)]|step\s*\d+\s*[:：])\s*`)
+	criteriaPrefixRE              = regexp.MustCompile(`(?i)^\s*(?:[-*•]+|\d+[\.)])\s*`)
+	blankWhitespaceRE             = regexp.MustCompile(`\s+`)
+	stageMarkerRE                 = regexp.MustCompile(`(?i)\bstage\s*\d+\b`)
+	bulletRecordRE                = regexp.MustCompile(`(?m)^\s*[-*]\s*[^:\n]+:\s*[-+]?\d+(?:\.\d+)?\s*$`)
+	routePlanIntentRE             = regexp.MustCompile(`(?i)(?:\b(?:enter|switch|use|choose|select)\s+(?:to\s+)?plan\s+mode\b|\benter_plan_mode\b|["']?mode["']?\s*:\s*["']?plan["']?)`)
+	routeSimpleIntentRE           = regexp.MustCompile(`(?i)(?:\b(?:enter|switch|use|choose|select)\s+(?:to\s+)?simple\s+mode\b|\buse_simple_mode\b|["']?mode["']?\s*:\s*["']?simple["']?)`)
+	routeDeviceActionRE           = regexp.MustCompile(`(?i)(\b(open|launch|tap|click|type|enter|paste|copy|send|message|text|call)\b|打开|启动|点击|输入|粘贴|复制|发送|发消息|发微信|拨打|查找|查询|查一下|帮我查|问问)`)
+	routeDeviceTargetRE           = regexp.MustCompile(`(?i)(\b(phone|iphone|android|app|wechat|clipboard|contacts?|calendar|message|chat)\b|手机|微信|剪切板|剪贴板|通讯录|联系人|电话号|手机号|日历|输入框|聊天|好友)`)
+	routeHowToRE                  = regexp.MustCompile(`(?i)^\s*(?:(?:how do i|how to|what is|why|when|where|can you explain)\b|怎么|如何|为什么|什么是)`)
 )
 
 func routeTextHasPlanIntent(text string) bool {
@@ -475,6 +626,15 @@ func normalizeRouteDecision(decision routeDecision, request string) routeDecisio
 	if decision.Mode == routeModeDirectAnswer && decision.FinalAnswer == "" {
 		decision.Mode = routeModeSimple
 	}
+	if decision.Mode == routeModeDirectAnswer && routeRequiresToolExecution(request) {
+		decision.Mode = routeModeSimple
+		decision.FinalAnswer = ""
+		if decision.Reason == "" {
+			decision.Reason = "route policy requires tool execution for device/app operation"
+		} else {
+			decision.Reason += "; route policy requires tool execution for device/app operation"
+		}
+	}
 	if routeShouldUsePlan(request) && decision.Mode != routeModePlan {
 		decision.Mode = routeModePlan
 		decision.FinalAnswer = ""
@@ -531,6 +691,40 @@ func routeShouldUsePlan(request string) bool {
 		}
 	}
 	return requiredSignals >= 2
+}
+
+func routeRequiresToolExecution(request string) bool {
+	text := strings.ToLower(strings.TrimSpace(request))
+	if text == "" {
+		return false
+	}
+	if routeHowToRE.MatchString(text) && !strings.Contains(text, "帮我") && !strings.Contains(text, "替我") {
+		return false
+	}
+	if routeLooksLikeLaunchOnlyDeviceRequest(text) {
+		return false
+	}
+	return routeDeviceActionRE.MatchString(text) && routeDeviceTargetRE.MatchString(text)
+}
+
+func routeLooksLikeLaunchOnlyDeviceRequest(text string) bool {
+	hasLaunchVerb := strings.Contains(text, "打开") ||
+		strings.Contains(text, "启动") ||
+		strings.Contains(text, "open ") ||
+		strings.Contains(text, "launch ")
+	if !hasLaunchVerb {
+		return false
+	}
+	for _, signal := range []string{
+		"发送", "发消息", "发微信", "消息", "问问", "输入", "粘贴", "复制", "剪切板", "剪贴板",
+		"通讯录", "联系人", "电话号", "手机号", "搜索", "查找", "查询", "send ", "message",
+		"text ", "type ", "enter ", "paste", "copy", "contacts", "calendar", "search", "find",
+	} {
+		if strings.Contains(text, signal) {
+			return false
+		}
+	}
+	return true
 }
 
 func plannerTaskForPhase(phase loopPhase, state roleLoopState, forceSimpleLoop bool) string {

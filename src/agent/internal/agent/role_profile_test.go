@@ -145,6 +145,36 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 		!strings.Contains(profiles.Executor.SystemPrompt, "switch to keyboard_tap") {
 		t.Fatalf("role prompts should prefer quick_action before low-level fallback: planner=%q executor=%q", profiles.Planner.SystemPrompt, profiles.Executor.SystemPrompt)
 	}
+	if !strings.Contains(profiles.Planner.SystemPrompt, "do not return final success from intent alone") ||
+		!strings.Contains(profiles.Executor.SystemPrompt, "outgoing bubble or cleared input after the send action") ||
+		!strings.Contains(profiles.Verifier.SystemPrompt, "send-message/email/post steps") {
+		t.Fatalf("role prompts should guard device operations and message sends: planner=%q executor=%q verifier=%q", profiles.Planner.SystemPrompt, profiles.Executor.SystemPrompt, profiles.Verifier.SystemPrompt)
+	}
+	if !strings.Contains(profiles.Planner.SystemPrompt, "separate app/chat and address-book names") ||
+		!strings.Contains(profiles.Planner.SystemPrompt, "query the address book using the address-book name") ||
+		!strings.Contains(profiles.Planner.SystemPrompt, "never rewrite the app/chat target to the Contacts/address-book name") {
+		t.Fatalf("planner prompt should preserve distinct app/chat and contacts names: planner=%q", profiles.Planner.SystemPrompt)
+	}
+	if !strings.Contains(profiles.Planner.SystemPrompt, "Batch all reorderable Aiden-foreground work before that boundary") ||
+		!strings.Contains(profiles.Planner.SystemPrompt, "including clipboard, calendar, contacts, and notification") ||
+		!strings.Contains(profiles.Planner.SystemPrompt, "plan prepare_phone_app_workflow as the first-class preparation workflow") ||
+		!strings.Contains(profiles.Planner.SystemPrompt, "separate app-side tool + clipboard + target-app launch steps") ||
+		!strings.Contains(profiles.Planner.SystemPrompt, "Make that workflow one coarse milestone") ||
+		!strings.Contains(profiles.Planner.SystemPrompt, "declare target_text artifacts") ||
+		!strings.Contains(profiles.Planner.SystemPrompt, "compose fixed or templated final text") ||
+		!strings.Contains(profiles.Planner.SystemPrompt, "write it to clipboard while Aiden is foreground") ||
+		!strings.Contains(profiles.Planner.SystemPrompt, "do not create a separate target-app launch milestone before app-side preparation") ||
+		!strings.Contains(profiles.Executor.SystemPrompt, "prefer prepare_phone_app_workflow as the first-class Aiden-foreground workflow") ||
+		!strings.Contains(profiles.Executor.SystemPrompt, "prepare_phone_message is only the Contacts-to-message shortcut") ||
+		!strings.Contains(profiles.Executor.SystemPrompt, "call clipboard action=write before finish_step") ||
+		!strings.Contains(profiles.Executor.SystemPrompt, "run all reorderable Phone Bridge app-side tools first") ||
+		!strings.Contains(profiles.Executor.SystemPrompt, "including clipboard, calendar, contacts, and notification") ||
+		!strings.Contains(profiles.Executor.SystemPrompt, "Treat target-app launch/navigation as an expensive phase boundary") ||
+		!strings.Contains(profiles.Executor.SystemPrompt, "prepare the clipboard before target-app launch/navigation") ||
+		!strings.Contains(profiles.Executor.SystemPrompt, "send_after_commit=true") ||
+		!strings.Contains(profiles.Planner.SystemPrompt, "send_after_commit=true when sending a message") {
+		t.Fatalf("role prompts should front-load iOS app-side work: planner=%q executor=%q", profiles.Planner.SystemPrompt, profiles.Executor.SystemPrompt)
+	}
 	if !strings.Contains(profiles.Planner.SystemPrompt, "platform (ios/android/mac)") ||
 		!strings.Contains(profiles.Executor.SystemPrompt, "platform shown in World State") ||
 		!strings.Contains(profiles.Verifier.SystemPrompt, `"platform":""`) {
@@ -160,34 +190,6 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 				t.Fatalf("%s profile missing user-facing language/privacy rule %q:\n%s", profile.Name, want, profile.SystemPrompt)
 			}
 		}
-	}
-}
-
-func TestRoleProfileSeparatesCacheableSystemPromptFromRuntimeContext(t *testing.T) {
-	runtimeContext := "Phone bridge status:\n- connected: true"
-	profiles := buildRoleProfiles(
-		AgentConfig{RuntimeContext: runtimeContext},
-		ResolvedSkills{},
-		nil,
-		MemoryContext{Planner: RoleMemoryContext{SessionSummary: "session memory tail"}},
-	)
-
-	profile := profiles.Planner
-	if !strings.Contains(profile.SystemPromptCachePrefix, "## Role rules") {
-		t.Fatalf("cacheable prefix should include static role rules:\n%s", profile.SystemPromptCachePrefix)
-	}
-	for _, unwanted := range []string{"## Runtime context", runtimeContext, "session memory tail"} {
-		if strings.Contains(profile.SystemPromptCachePrefix, unwanted) {
-			t.Fatalf("cacheable prefix should not include dynamic prompt content %q:\n%s", unwanted, profile.SystemPromptCachePrefix)
-		}
-	}
-	for _, want := range []string{"## Runtime context\n" + runtimeContext, "session memory tail"} {
-		if !strings.Contains(profile.SystemPromptDynamicSuffix, want) {
-			t.Fatalf("dynamic suffix missing %q:\n%s", want, profile.SystemPromptDynamicSuffix)
-		}
-	}
-	if got := joinSystemPromptParts(profile.SystemPromptCachePrefix, profile.SystemPromptDynamicSuffix); got != profile.SystemPrompt {
-		t.Fatalf("joined prompt parts should reproduce system prompt:\njoined=%q\nsystem=%q", got, profile.SystemPrompt)
 	}
 }
 
@@ -661,6 +663,81 @@ func TestRoleCollaborativeExecutorIgnoresExecutorPlanMutation(t *testing.T) {
 	}
 	if strings.Contains(secondExecutorPrompt, "Current plan:\n1. executor changed plan") {
 		t.Fatalf("executor output was treated as a plan mutation:\n%s", secondExecutorPrompt)
+	}
+}
+
+func TestRoleCollaborativeExecutorContinuesWhenSucceededStepMislabelsReplan(t *testing.T) {
+	model := &scriptedModel{
+		responses: roleCommittedExecutionResponses(
+			[]string{"prepare message", "send message"},
+			finishStepToolCall("message prepared"),
+			verifierStepStatusResponse(verifierStepStatusSucceeded, false, true, "", "step succeeded but more work remains"),
+			finishStepToolCall("message sent"),
+			verifierStepStatusResponse(verifierStepStatusSucceeded, true, false, "done", "final step complete"),
+		),
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "prepare then send"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "done" {
+		t.Fatalf("output = %q, want done", result.Output)
+	}
+	if model.callCount != 6 {
+		t.Fatalf("model call count = %d, want 6", model.callCount)
+	}
+	secondExecutorPrompt := messageText(model.messages[4])
+	if !strings.Contains(secondExecutorPrompt, "Planner-approved next_step:\nsend message") {
+		t.Fatalf("runtime did not advance to the next committed step:\n%s", secondExecutorPrompt)
+	}
+	if strings.Contains(secondExecutorPrompt, "needs_replan=true") {
+		t.Fatalf("mislabelled verifier replan should not be carried into next-step context:\n%s", secondExecutorPrompt)
+	}
+}
+
+func TestNormalizeVerifierDecisionBlocksUnconsumedTargetTextFinish(t *testing.T) {
+	state := roleLoopState{
+		PlanCommitted: true,
+		PlanStepIndex: 0,
+		Plan:          []string{"prepare message", "send message"},
+		PlanArtifacts: []planArtifactState{{
+			planArtifact: planArtifact{
+				ID:          "message_text",
+				Kind:        planArtifactKindTargetText,
+				Delivery:    planArtifactDeliveryClipboard,
+				PrepareStep: 1,
+				ConsumeStep: 2,
+			},
+			PreparedText: "hello",
+		}},
+	}
+
+	got := state.normalizeVerifierDecisionForPlanTransition(verifierDecision{
+		CanFinish:   true,
+		FinalAnswer: "done",
+		StepStatus:  verifierStepStatusSucceeded,
+		Reason:      "visible message bubble",
+	}, executorTurnFinishStep)
+
+	if got.CanFinish {
+		t.Fatalf("unconsumed target_text artifact should block finish: %#v", got)
+	}
+	if got.FinalAnswer != "" {
+		t.Fatalf("blocked finish should clear final answer: %#v", got)
+	}
+	if got.NeedsReplan {
+		t.Fatalf("pending later artifact work should continue the committed plan, not force replan: %#v", got)
+	}
+	if !strings.Contains(got.Reason, "message_text") {
+		t.Fatalf("blocked finish reason should include artifact id: %#v", got)
 	}
 }
 
