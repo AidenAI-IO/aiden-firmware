@@ -1,9 +1,10 @@
 """Unit tests for score.py."""
 import pytest
 
-from runner.models import HardAssertionResults, RubricVerdict, TaskResult
+from runner.models import HardAssertionFailure, HardAssertionResults, RubricVerdict, TaskResult
 from skillopt.score import (
     aggregate_score,
+    rollout_sample_quality,
     task_result_to_rollout,
     validation_gate,
 )
@@ -65,6 +66,50 @@ def test_aggregate_score_empty():
     assert agg.n == 0
     assert agg.hard == 0.0
     assert agg.soft == 0.0
+
+
+def test_aggregate_score_excludes_polluted_samples_and_downweights_timeouts():
+    passed = _mk_task_result("pass", "passed", 2, 2)
+    timeout = _mk_task_result("timeout", "timeout", 0, 2)
+    agent_error = _mk_task_result("agent_error", "failed", 0, 2)
+    agent_error.metrics = {
+        "tool_calls": 4,
+        "error": "Agent Error: planner/executor role model call timed out after 2m0s HTTP 500",
+    }
+    zero_tool_plan = _mk_task_result("zero_tool", "failed", 0, 2)
+    zero_tool_plan.metrics = {"tool_calls": 0, "final_response": '{"plan":["open app"]}'}
+    zero_tool_plan.hard_assertions = HardAssertionResults(min_tool_calls=False, response_exists=True)
+    zero_tool_plan.hard_assertion_failures = [
+        HardAssertionFailure(
+            id="min_tool_calls",
+            label="Minimum tool calls",
+            requirement="at least 1 tool call",
+            actual="0 tool calls",
+        )
+    ]
+
+    agg = aggregate_score([passed, timeout, agent_error, zero_tool_plan])
+
+    assert agg.n_raw == 4
+    assert agg.n == 2
+    assert agg.n_excluded == 2
+    assert agg.n_downweighted == 1
+    assert agg.weight_total == pytest.approx(1.35)
+    assert agg.hard == pytest.approx(1 / 1.35)
+    assert agg.soft == pytest.approx(1 / 1.35)
+
+
+def test_task_result_to_rollout_preserves_sample_quality_metadata():
+    tr = _mk_task_result("docker", "skipped")
+    tr.metrics = {"error": "Docker compose startup failed: container exited"}
+
+    rollout = task_result_to_rollout(tr)
+    quality = rollout_sample_quality(rollout)
+
+    assert quality.kind == "system_error"
+    assert quality.include_in_score is False
+    assert quality.include_in_reflect is False
+    assert rollout.extras["sample_quality"] == "system_error"
 
 
 def test_validation_gate_accept():

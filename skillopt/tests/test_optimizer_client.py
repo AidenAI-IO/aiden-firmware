@@ -147,3 +147,40 @@ def test_chat_optimizer_tries_comma_separated_model_fallbacks(monkeypatch):
 
     assert raw == "{}"
     assert seen_models == ["region-blocked-model", "usable-model"]
+
+
+def test_chat_optimizer_retries_transient_http_500_once(monkeypatch):
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": "{}"}}]}).encode("utf-8")
+
+    attempts = 0
+
+    def fake_urlopen(req, timeout):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise urllib.error.HTTPError(
+                req.full_url,
+                500,
+                "Internal Server Error",
+                hdrs=None,
+                fp=io.BytesIO(b"planner/executor role model call timed out after 2m0s"),
+            )
+        return FakeResponse()
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-env")
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    raw = chat_optimizer(OptimizerConfig(), "system", "user")
+
+    assert raw == "{}"
+    assert attempts == 2

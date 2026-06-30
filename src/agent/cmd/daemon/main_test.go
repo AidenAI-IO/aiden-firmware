@@ -534,8 +534,8 @@ func TestShouldRunConsoleAudioLoopSkipsManualModeWithoutInteractiveStdin(t *test
 			want:        false,
 		},
 		{
-			name:        "audio default manual without terminal",
-			cfg:         agent.Config{InputMode: "audio"},
+			name:        "stt default manual without terminal",
+			cfg:         agent.Config{InputMode: "stt"},
 			interactive: false,
 			want:        false,
 		},
@@ -1132,7 +1132,7 @@ func TestRunWakeupModeSTTWakeupQueuesCorrectionWhileRunActive(t *testing.T) {
 	}
 }
 
-func TestRunWakeupModeAudioWakeupKeepsLegacySingleTurnBehavior(t *testing.T) {
+func TestRunWakeupModeSTTWakeupKeepsLegacySingleTurnBehavior(t *testing.T) {
 	sigChan := make(chan os.Signal, 1)
 	watcher := &fakeWakeupWatcher{fireOnStart: true}
 	dialog := &fakeAudioDialog{
@@ -1151,7 +1151,7 @@ func TestRunWakeupModeAudioWakeupKeepsLegacySingleTurnBehavior(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		runWakeupMode(agent.Config{InputMode: "audio"}, dialog, nil, sigChan, func(pin int, callback func()) (wakeupWatcher, error) {
+		runWakeupMode(agent.Config{InputMode: "stt", STT: agent.STTConfig{Provider: "openai-whisper"}}, dialog, nil, sigChan, func(pin int, callback func()) (wakeupWatcher, error) {
 			watcher.callback = callback
 			return watcher, nil
 		})

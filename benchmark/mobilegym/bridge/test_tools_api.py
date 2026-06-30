@@ -82,6 +82,8 @@ def test_get_tools_catalog(bridge_server):
     assert "touch_gesture" in tools
     assert "keyboard_text" in tools
     assert "keyboard_tap" in tools
+    assert "enter_text_in_field" in tools
+    assert "enter_text_via_bridge" in tools
     assert "mouse_click" in tools
     assert "mouse_move" in tools
     assert "mouse_scroll" in tools
@@ -109,6 +111,14 @@ def test_get_tools_catalog(bridge_server):
     assert tools["keyboard_text"]["args_schema"]["additionalProperties"] is False
     assert tools["keyboard_tap"]["args_schema"]["additionalProperties"] is False
     assert "hold_ms" in keyboard_tap_props
+
+    enter_text_props = tools["enter_text_in_field"]["args_schema"]["properties"]
+    assert tools["enter_text_in_field"]["args_schema"]["additionalProperties"] is False
+    assert tools["enter_text_via_bridge"]["args_schema"]["additionalProperties"] is False
+    assert enter_text_props["platform"]["enum"] == ["ios", "android", "mac"]
+    assert enter_text_props["mode"]["enum"] == ["form", "search"]
+    assert enter_text_props["focus"]["additionalProperties"] is False
+    assert enter_text_props["focus"]["properties"]["coord_space"]["enum"] == ["auto", "normalized", "absolute"]
 
     mouse_click_props = tools["mouse_click"]["args_schema"]["properties"]
     assert tools["mouse_click"]["args_schema"]["additionalProperties"] is False
@@ -216,6 +226,30 @@ def test_invoke_touch_gesture_tap_accepts_top_level_string_coordinates(bridge_se
     }
 
 
+def test_invoke_touch_gesture_tap_accepts_list_point(bridge_server):
+    """Regression test for agent traces that emit point as [x, y]."""
+    server, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-002c"
+
+    request_body = json.dumps({"input": {"type": "tap", "point": [498, 828]}}).encode()
+    req = Request(
+        f"{base_url}/api/tools/touch_gesture",
+        data=request_body,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+
+    assert data["is_error"] is False
+    assert action_to_dict(state.env.last_action) == {
+        "action_type": "CLICK",
+        "data": {"point": [498.0, 828.0]},
+    }
+
+
 def test_invoke_mouse_click_maps_to_tap(bridge_server):
     server, base_url, state = bridge_server
     state.active_episode_id = "test-episode-mouse"
@@ -261,6 +295,152 @@ def test_invoke_keyboard_text(bridge_server):
         "action_type": "TYPE",
         "data": {"value": "hello world"},
     }
+
+
+def test_invoke_enter_text_in_field_maps_to_mobilegym_type_action(bridge_server):
+    server, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-enter-text"
+
+    request_body = json.dumps(
+        {
+            "input": {
+                "text": "微信读书",
+                "platform": "android",
+                "mode": "search",
+                "focus": {"x": 500, "y": 120, "coord_space": "normalized"},
+                "segments": ["wei", "xin", "du", "shu"],
+            }
+        }
+    ).encode()
+    req = Request(
+        f"{base_url}/api/tools/enter_text_in_field",
+        data=request_body,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+
+    assert data["is_error"] is False
+    output = json.loads(data["output"])
+    assert output["ok"] is True
+    assert output["committed"] is True
+    assert output["target_text"] == "微信读书"
+    assert output["required_mode"] == "composition"
+    assert output["mode"] == "search"
+    assert action_to_dict(state.env.last_action) == {
+        "action_type": "TYPE",
+        "data": {"value": "微信读书", "point": [500.0, 120.0]},
+    }
+
+
+def test_invoke_enter_text_via_bridge_aliases_mobilegym_text_entry(bridge_server):
+    server, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-enter-text-bridge"
+
+    request_body = json.dumps(
+        {
+            "input": {
+                "text": "Trip report",
+                "platform": "android",
+                "focus": {"x": 250, "y": 800, "coord_space": "normalized"},
+            }
+        }
+    ).encode()
+    req = Request(
+        f"{base_url}/api/tools/enter_text_via_bridge",
+        data=request_body,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+
+    assert data["is_error"] is False
+    output = json.loads(data["output"])
+    assert output["ok"] is True
+    assert output["committed"] is True
+    assert output["target_text"] == "Trip report"
+    assert output["required_mode"] == "ascii"
+    assert action_to_dict(state.env.last_action) == {
+        "action_type": "TYPE",
+        "data": {"value": "Trip report", "point": [250.0, 800.0]},
+    }
+
+
+def test_invoke_enter_text_preserves_exact_whitespace(bridge_server):
+    server, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-enter-text-whitespace"
+
+    req = Request(
+        f"{base_url}/api/tools/enter_text_in_field",
+        data=json.dumps({"input": {"text": "  padded  ", "focus": {"x": 500, "y": 120}}}).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+
+    assert data["is_error"] is False
+    output = json.loads(data["output"])
+    assert output["target_text"] == "  padded  "
+    assert action_to_dict(state.env.last_action) == {
+        "action_type": "TYPE",
+        "data": {"value": "  padded  ", "point": [500.0, 120.0]},
+    }
+
+
+def test_invoke_quick_action_handles_mobilegym_common_actions(bridge_server):
+    server, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-quick-actions"
+
+    for action, expected_type in [
+        ("spotlight_search", "SWIPE"),
+        ("search", "SWIPE"),
+        ("search_launch_app", "SWIPE"),
+        ("app_switch", "SWIPE"),
+        ("send", "ENTER"),
+    ]:
+        req = Request(
+            f"{base_url}/api/tools/quick_action",
+            data=json.dumps({"input": {"action": action, "platform": "android"}}).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+
+        with urlopen(req, timeout=5) as resp:
+            assert resp.status == 200
+            data = json.loads(resp.read().decode())
+
+        assert data["is_error"] is False
+        assert "unsupported quick_action" not in data["output"]
+        assert action_to_dict(state.env.last_action)["action_type"] == expected_type
+
+    no_action_count = state.env.step_count
+    for action in ["select_all", "delete_backward", "copy", "paste", "undo", "find", "cut", "browser_refresh", "browser_new_tab"]:
+        req = Request(
+            f"{base_url}/api/tools/quick_action",
+            data=json.dumps({"input": {"action": action, "platform": "android"}}).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+
+        with urlopen(req, timeout=5) as resp:
+            assert resp.status == 200
+            data = json.loads(resp.read().decode())
+
+        assert data["is_error"] is False
+        output = json.loads(data["output"])
+        assert output["ok"] is False
+        assert output["status"] == "reserved"
+        assert "unsupported quick_action" not in data["output"]
+        assert state.env.step_count == no_action_count
 
 
 def test_invoke_keyboard_text_accepts_plain_text_fallback(bridge_server):

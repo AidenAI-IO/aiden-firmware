@@ -44,6 +44,37 @@ func TestDefaultModeFinishesWithoutVerifier(t *testing.T) {
 	}
 }
 
+func TestDefaultModeRejectsInternalJSONPlanAsFinalAnswer(t *testing.T) {
+	model := &scriptedModel{responses: []*llms.ContentResponse{
+		contentResponse(`{"objective":"move data between apps","plan":["open app A","copy value","open app B"],"reason":"draft plan"}`),
+	}}
+	executor := newRoleCollaborativeExecutor(
+		model,
+		RoleProfiles{},
+		nil,
+		nil,
+		10,
+		nil,
+		nil,
+		nil,
+		ScreenshotPruningConfig{},
+		nil,
+	)
+	state := &roleLoopState{Phase: phaseDefault}
+
+	turn, err := executor.callPlannerTurn(context.Background(), map[string]string{"input": "move data between apps", "history": ""}, state, NewToolSpecs(nil))
+	if err != nil {
+		t.Fatalf("planner turn error: %v", err)
+	}
+
+	if turn.Kind != plannerTurnInvalidMeta {
+		t.Fatalf("turn kind = %v, want invalid meta", turn.Kind)
+	}
+	if turn.Step == nil || !strings.Contains(turn.Step.Observation, "internal JSON plan") {
+		t.Fatalf("observation = %#v, want JSON plan rejection", turn.Step)
+	}
+}
+
 func TestEnterPlanModePreservesToolSteps(t *testing.T) {
 	executor := newRoleCollaborativeExecutor(
 		&scriptedModel{},

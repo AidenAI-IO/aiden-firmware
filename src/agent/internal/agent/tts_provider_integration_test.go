@@ -386,11 +386,12 @@ func TestAudioDialogProcessUtteranceSpeaksFinalAnswerWhenStreamingTTSInterrupted
 	provider := newInterruptibleAudioTTSProvider("dialog-provider", 48000, false)
 	dialog := &AudioDialog{
 		config: Config{
-			InputMode:                "audio",
+			InputMode:                "stt",
 			Model:                    ModelConfig{Provider: "fake"},
 			Audio:                    AudioConfig{SampleRate: 48000},
 			VoiceStreamingTTSEnabled: &streamingEnabled,
 		},
+		sttClient:   &stubSTTClient{transcript: "voice input"},
 		audioClient: NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, &recordedAudioOps{})),
 		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
 	}

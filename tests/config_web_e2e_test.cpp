@@ -1035,6 +1035,64 @@ TEST_CASE("config_web: config test rejects blank search api key without stored m
     CHECK(test_resp.body.find("required for brave") != std::string::npos);
 }
 
+TEST_CASE("config_web: config test rejects wakeup trigger for text input") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    HttpResponse get_resp = http_request(handle->port, "GET", "/api/config");
+    REQUIRE(get_resp.status == 200);
+    cJSON* parsed = cJSON_Parse(get_resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    cJSON* config = cJSON_GetObjectItem(parsed, "config");
+    REQUIRE(config != nullptr);
+    cJSON* agent = cJSON_GetObjectItem(config, "agent");
+    REQUIRE(agent != nullptr);
+    cJSON_DeleteItemFromObject(agent, "input_mode");
+    cJSON_AddStringToObject(agent, "input_mode", "text");
+    cJSON_DeleteItemFromObject(agent, "trigger_mode");
+    cJSON_AddStringToObject(agent, "trigger_mode", "wakeup");
+
+    char* agent_text = cJSON_PrintUnformatted(agent);
+    REQUIRE(agent_text != nullptr);
+    std::string test_body = std::string("{\"section\":\"agent\",\"values\":") + agent_text + "}";
+    free(agent_text);
+    cJSON_Delete(parsed);
+
+    HttpResponse test_resp = http_request(handle->port, "POST", "/api/config/test", test_body);
+    CHECK(test_resp.status == 200);
+    CHECK(test_resp.body.find("\"ok\":false") != std::string::npos);
+    CHECK(test_resp.body.find("\"check\":\"trigger_mode\"") != std::string::npos);
+    CHECK(test_resp.body.find("wakeup requires input_mode stt") != std::string::npos);
+}
+
+TEST_CASE("config_web: config test reports removed audio input mode hint") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    HttpResponse get_resp = http_request(handle->port, "GET", "/api/config");
+    REQUIRE(get_resp.status == 200);
+    cJSON* parsed = cJSON_Parse(get_resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    cJSON* config = cJSON_GetObjectItem(parsed, "config");
+    REQUIRE(config != nullptr);
+    cJSON* agent = cJSON_GetObjectItem(config, "agent");
+    REQUIRE(agent != nullptr);
+    cJSON_DeleteItemFromObject(agent, "input_mode");
+    cJSON_AddStringToObject(agent, "input_mode", "audio");
+
+    char* agent_text = cJSON_PrintUnformatted(agent);
+    REQUIRE(agent_text != nullptr);
+    std::string test_body = std::string("{\"section\":\"agent\",\"values\":") + agent_text + "}";
+    free(agent_text);
+    cJSON_Delete(parsed);
+
+    HttpResponse test_resp = http_request(handle->port, "POST", "/api/config/test", test_body);
+    CHECK(test_resp.status == 200);
+    CHECK(test_resp.body.find("\"ok\":false") != std::string::npos);
+    CHECK(test_resp.body.find("\"check\":\"input_mode\"") != std::string::npos);
+    CHECK(test_resp.body.find("audio mode has been removed; use stt instead") != std::string::npos);
+}
+
 TEST_CASE("config_web: tts config test invokes playback of test passed") {
     auto tmp = make_temp_dir();
     auto cleanup = std::unique_ptr<void, void(*)(void*)>(

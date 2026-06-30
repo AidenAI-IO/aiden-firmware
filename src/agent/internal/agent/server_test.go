@@ -2362,6 +2362,53 @@ func TestServerEndWebRecordingReturnsFinalizeTimeout(t *testing.T) {
 	}
 }
 
+func TestServerWebAudioInputModeNeverFallsBackToRemovedAudio(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  Config
+		stt  STTClient
+		want string
+	}{
+		{
+			name: "explicit stt",
+			cfg:  Config{InputMode: " stt "},
+			want: TurnModalitySTT,
+		},
+		{
+			name: "text with stt client",
+			cfg:  Config{InputMode: "text"},
+			stt:  &stubSTTClient{},
+			want: TurnModalitySTT,
+		},
+		{
+			name: "default text without stt client",
+			cfg:  Config{},
+			want: TurnModalityText,
+		},
+		{
+			name: "explicit text without stt client",
+			cfg:  Config{InputMode: " text "},
+			want: TurnModalityText,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := &Server{
+				runtime:   &Runtime{config: tt.cfg},
+				sttClient: tt.stt,
+			}
+			got := server.webAudioInputMode()
+			if got != tt.want {
+				t.Fatalf("webAudioInputMode() = %q, want %q", got, tt.want)
+			}
+			if got == TurnModalityAudio {
+				t.Fatalf("webAudioInputMode() returned removed audio mode")
+			}
+		})
+	}
+}
+
 func TestServerHandleChatUsesAttachmentTranscriptWithoutRetranscribing(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleDirectResponses("Completed"),
