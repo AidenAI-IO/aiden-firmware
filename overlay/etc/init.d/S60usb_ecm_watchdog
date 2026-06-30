@@ -9,10 +9,13 @@
 # gadget after host configuration changes and when ECM connectivity stalls.
 
 GADGET_UDC=/sys/kernel/config/usb_gadget/aiden_hid/UDC
+GADGET_DIR=/sys/kernel/config/usb_gadget/aiden_hid
+HID_KEYBOARD_FUNC=${GADGET_DIR}/functions/hid.usb0
 UDC_NAME=ffb00000.usb
 UDC_STATE=/sys/class/udc/${UDC_NAME}/state
 LOG_FILE=/var/log/aiden_usb_ecm_watchdog.log
 PID_FILE=/run/aiden_usb_ecm_watchdog.pid
+STATE_FILE=/run/aiden_usb_ecm_watchdog.state
 LEASE_FILE=/tmp/dnsmasq.leases
 USB0_ADDR=192.168.42.1
 USB0_NETMASK=255.255.255.0
@@ -37,11 +40,66 @@ read_udc_state() {
     cat "$UDC_STATE" 2>/dev/null
 }
 
+read_gadget_udc() {
+    cat "$GADGET_UDC" 2>/dev/null
+}
+
+read_hid_keyboard_field() {
+    cat "$HID_KEYBOARD_FUNC/$1" 2>/dev/null || printf '?'
+}
+
+describe_hid_keyboard() {
+    printf 'protocol=%s subclass=%s report_length=%s' \
+        "$(read_hid_keyboard_field protocol)" \
+        "$(read_hid_keyboard_field subclass)" \
+        "$(read_hid_keyboard_field report_length)"
+}
+
 get_ecm_hosts() {
     {
         awk '$3 ~ /^192\.168\.42\./ && $3 != "192.168.42.1" {print $3}' "$LEASE_FILE" 2>/dev/null
         awk '$1 ~ /^192\.168\.42\./ && $1 != "192.168.42.1" && $6 == "usb0" {print $1}' /proc/net/arp 2>/dev/null
     } | sort -u
+}
+
+describe_ecm_hosts() {
+    hosts=$(get_ecm_hosts | tr '\n' ' ')
+    [ -n "$hosts" ] && printf '%s' "$hosts" || printf 'none'
+}
+
+describe_usb0() {
+    if [ ! -d /sys/class/net/usb0 ]; then
+        printf 'absent'
+        return
+    fi
+    flags=$(cat /sys/class/net/usb0/flags 2>/dev/null || printf '?')
+    addr=$(ifconfig usb0 2>/dev/null | awk '/inet addr:/ {sub(/^addr:/, "", $2); print $2; exit}')
+    [ -n "$addr" ] || addr=none
+    printf 'present flags=%s addr=%s' "$flags" "$addr"
+}
+
+write_refresh_state() {
+    reason="$1"
+    result="$2"
+    started_at="$3"
+    detail="$4"
+    {
+        printf 'last_refresh_epoch=%s\n' "$(date +%s)"
+        printf 'last_refresh_reason=%s\n' "$reason"
+        printf 'last_refresh_result=%s\n' "$result"
+        printf 'last_refresh_started_epoch=%s\n' "$started_at"
+        printf 'last_refresh_detail=%s\n' "$detail"
+        printf 'udc_state=%s\n' "$(read_udc_state)"
+        printf 'gadget_udc=%s\n' "$(read_gadget_udc)"
+        printf 'hid_keyboard_%s\n' "$(describe_hid_keyboard)"
+        printf 'usb0=%s\n' "$(describe_usb0)"
+        printf 'ecm_hosts=%s\n' "$(describe_ecm_hosts)"
+    } > "$STATE_FILE"
+}
+
+log_snapshot() {
+    label="$1"
+    log "$label: udc_state=$(read_udc_state) gadget_udc=$(read_gadget_udc) hid_keyboard=($(describe_hid_keyboard)) usb0=($(describe_usb0)) ecm_hosts=($(describe_ecm_hosts))"
 }
 
 probe_ecm_connectivity() {
@@ -58,10 +116,14 @@ probe_ecm_connectivity() {
 
 reset_composite() {
     reason="$1"
+    started_at=$(date +%s)
     log "resetting USB composite gadget: $reason"
+    log_snapshot "before reset ($reason)"
+    write_refresh_state "$reason" "started" "$started_at" "reset started"
 
     if [ ! -f "$GADGET_UDC" ]; then
         log "UDC control file missing: $GADGET_UDC"
+        write_refresh_state "$reason" "failed" "$started_at" "UDC control file missing"
         return 1
     fi
 
@@ -69,6 +131,7 @@ reset_composite() {
     if [ -n "$cur_udc" ]; then
         if ! echo "" > "$GADGET_UDC" 2>>"$LOG_FILE"; then
             log "UDC unbind failed"
+            write_refresh_state "$reason" "failed" "$started_at" "UDC unbind failed"
             return 1
         fi
     fi
@@ -77,6 +140,7 @@ reset_composite() {
 
     if ! echo "$UDC_NAME" > "$GADGET_UDC" 2>>"$LOG_FILE"; then
         log "UDC rebind failed"
+        write_refresh_state "$reason" "failed" "$started_at" "UDC rebind failed"
         return 1
     fi
 
@@ -91,6 +155,7 @@ reset_composite() {
 
     if [ "$configured" -ne 1 ]; then
         log "UDC did not reach configured state after composite reset (udc state=$(cat "$UDC_STATE" 2>/dev/null))"
+        write_refresh_state "$reason" "failed" "$started_at" "UDC did not reach configured"
         return 1
     fi
 
@@ -98,7 +163,11 @@ reset_composite() {
         ifconfig usb0 "$USB0_ADDR" netmask "$USB0_NETMASK" up 2>>"$LOG_FILE" || log "usb0 ifconfig failed after composite reset"
     fi
 
-    log "USB composite reset complete (udc state=$(cat "$UDC_STATE" 2>/dev/null))"
+    finished_at=$(date +%s)
+    duration=$((finished_at - started_at))
+    log "USB composite reset complete (reason=$reason duration=${duration}s udc state=$(cat "$UDC_STATE" 2>/dev/null))"
+    log_snapshot "after reset ($reason)"
+    write_refresh_state "$reason" "ok" "$started_at" "duration=${duration}s"
 }
 
 watchdog_main() {
@@ -107,6 +176,14 @@ watchdog_main() {
     last_udc_state=$(read_udc_state)
     configured_refresh_pending=0
     configured_refresh_at=0
+    now=$(date +%s)
+
+    log_snapshot "watchdog loop start"
+    if [ "$last_udc_state" = "configured" ]; then
+        configured_refresh_pending=1
+        configured_refresh_at=$((now + HOST_CONFIG_REFRESH_DELAY))
+        log "watchdog started while UDC already configured; scheduling startup HID session refresh at epoch=$configured_refresh_at"
+    fi
 
     while :; do
         sleep "$PROBE_INTERVAL"
@@ -118,11 +195,15 @@ watchdog_main() {
             if [ "$state" = "configured" ]; then
                 configured_refresh_pending=1
                 configured_refresh_at=$((now + HOST_CONFIG_REFRESH_DELAY))
+                log "UDC configured transition; scheduling HID session refresh at epoch=$configured_refresh_at"
             fi
             last_udc_state="$state"
         fi
 
         if [ "$state" != "configured" ]; then
+            if [ "$ecm_fail_count" -ne 0 ]; then
+                log "UDC not configured; clearing ECM failure count"
+            fi
             ecm_fail_count=0
             continue
         fi
@@ -137,16 +218,21 @@ watchdog_main() {
                     last_udc_state=$(read_udc_state)
                 fi
                 continue
+            else
+                log "host configured refresh pending but cooldown active (remaining=$((COOLDOWN - (now - last_reset)))s)"
             fi
         fi
 
         if probe_ecm_connectivity; then
+            if [ "$ecm_fail_count" -ne 0 ]; then
+                log "ECM probe recovered after $ecm_fail_count failure(s)"
+            fi
             ecm_fail_count=0
             continue
         fi
 
         ecm_fail_count=$((ecm_fail_count + 1))
-        log "ECM probe failed ($ecm_fail_count/$PROBE_FAIL_THRESHOLD)"
+        log "ECM probe failed ($ecm_fail_count/$PROBE_FAIL_THRESHOLD hosts=$(describe_ecm_hosts))"
 
         if [ $ecm_fail_count -ge $PROBE_FAIL_THRESHOLD ]; then
             if [ $((now - last_reset)) -lt $COOLDOWN ]; then
@@ -176,6 +262,7 @@ start() {
 
     mkdir -p "$(dirname "$LOG_FILE")"
     log "starting (interval=${PROBE_INTERVAL}s threshold=${PROBE_FAIL_THRESHOLD} cooldown=${COOLDOWN}s)"
+    log_snapshot "start command"
     "$0" _watchdog </dev/null >/dev/null 2>&1 &
     pid=$!
     echo "$pid" > "$PID_FILE"
@@ -199,16 +286,19 @@ case "$1" in
     stop) stop ;;
     restart) stop; sleep 1; start ;;
     refresh) reset_composite "manual refresh" ;;
+    snapshot) log_snapshot "manual snapshot"; cat "$STATE_FILE" 2>/dev/null || true ;;
     status)
         if [ -f "$PID_FILE" ]; then
             pid=$(cat "$PID_FILE" 2>/dev/null)
             if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
                 echo "running (pid $pid)"
+                log_snapshot "status command"
+                cat "$STATE_FILE" 2>/dev/null || true
                 exit 0
             fi
         fi
         echo "stopped"
         exit 1
         ;;
-    *) echo "Usage: $0 {start|stop|restart|status}" >&2; exit 1 ;;
+    *) echo "Usage: $0 {start|stop|restart|status|refresh|snapshot}" >&2; exit 1 ;;
 esac
