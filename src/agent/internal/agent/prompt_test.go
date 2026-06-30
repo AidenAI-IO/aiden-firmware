@@ -274,66 +274,63 @@ func commonPrefixLen(a, b string) int {
 	return n
 }
 
-// TestRuntimeContextPromptStableAcrossTurns documents the prompt-cache effect of
-// dropping volatile heartbeat timestamps from runtime context. Two consecutive
-// turns with the same qualitative phone state must now produce a byte-identical
-// system prompt (full cacheable prefix). It contrasts that with the legacy
-// rendering, where an advancing last_heartbeat_at broke the prefix early.
-func TestRuntimeContextPromptStableAcrossTurns(t *testing.T) {
+// TestRuntimeContextStaysAfterCacheableRoleRules documents the prompt-cache
+// effect of keeping volatile runtime context after the static role rules. Even
+// when heartbeat timestamps change across turns, the cacheable static prefix is
+// byte-identical.
+func TestRuntimeContextStaysAfterCacheableRoleRules(t *testing.T) {
 	hb1 := time.Date(2026, 6, 1, 2, 3, 4, 0, time.UTC)
 	hb2 := hb1.Add(12 * time.Second) // next turn, fresh heartbeat
 	status := func(hb time.Time) PhoneBridgeStatus {
 		return PhoneBridgeStatus{Connected: true, Platform: "ios", LastHeartbeatAt: &hb}
 	}
 
-	// New behavior: timestamps removed -> runtime context identical across turns.
 	ctx1 := phoneBridgeRuntimeContext(status(hb1))
 	ctx2 := phoneBridgeRuntimeContext(status(hb2))
-	if ctx1 != ctx2 {
-		t.Fatalf("runtime context should be stable across turns, got\nturn1:\n%s\nturn2:\n%s", ctx1, ctx2)
+	if ctx1 == ctx2 {
+		t.Fatalf("runtime context should still reflect heartbeat timestamp changes; test is not exercising volatile context")
 	}
 
-	build := func(rc string) string {
+	build := func(rc string) RoleProfile {
 		return buildRoleProfiles(
 			AgentConfig{RuntimeContext: rc},
 			ResolvedSkills{},
 			nil,
 			MemoryContext{},
-		).Planner.SystemPrompt
+		).Planner
 	}
-	newTurn1, newTurn2 := build(ctx1), build(ctx2)
-	if newTurn1 != newTurn2 {
-		t.Fatalf("system prompt should be byte-identical across turns after the fix:\nturn1:\n%s\nturn2:\n%s", newTurn1, newTurn2)
+	profile1, profile2 := build(ctx1), build(ctx2)
+	if profile1.SystemPromptCachePrefix != profile2.SystemPromptCachePrefix {
+		t.Fatalf("cacheable static prefix should stay byte-identical across volatile runtime context:\nturn1:\n%s\nturn2:\n%s", profile1.SystemPromptCachePrefix, profile2.SystemPromptCachePrefix)
+	}
+	if profile1.SystemPromptDynamicSuffix == profile2.SystemPromptDynamicSuffix {
+		t.Fatalf("dynamic suffix should reflect runtime context changes")
+	}
+	for _, unwanted := range []string{"## Runtime context", "last_heartbeat_at"} {
+		if strings.Contains(profile1.SystemPromptCachePrefix, unwanted) {
+			t.Fatalf("cacheable static prefix should not include volatile runtime marker %q:\n%s", unwanted, profile1.SystemPromptCachePrefix)
+		}
 	}
 
-	// Legacy behavior had two compounding problems: a volatile last_heartbeat_at
-	// line, and runtime context placed *before* the static role rules. Reconstruct
-	// that layout faithfully by injecting the timestamped runtime context ahead of
-	// the role rules, so we measure how little prefix was cacheable back then.
-	base := build("")
+	base := build("").SystemPrompt
 	insertAt := strings.Index(base, "## Role rules")
 	if insertAt < 0 {
 		t.Fatalf("base prompt missing role rules section:\n%s", base)
 	}
-	legacy := func(hb time.Time) string {
-		rc := "## Runtime context\n" + ctx1 + "\n- last_heartbeat_at: " + hb.UTC().Format(time.RFC3339) + "\n\n"
-		return base[:insertAt] + rc + base[insertAt:]
+	legacy := func(rc string) string {
+		return base[:insertAt] + "## Runtime context\n" + rc + "\n\n" + base[insertAt:]
 	}
-	legacyTurn1, legacyTurn2 := legacy(hb1), legacy(hb2)
+	legacyTurn1, legacyTurn2 := legacy(ctx1), legacy(ctx2)
 	if legacyTurn1 == legacyTurn2 {
 		t.Fatalf("legacy reconstruction should differ across turns; test is not exercising the regression")
 	}
 
-	newPrefix := commonPrefixLen(newTurn1, newTurn2)
 	legacyPrefix := commonPrefixLen(legacyTurn1, legacyTurn2)
-	if newPrefix != len(newTurn1) {
-		t.Fatalf("new prompt common prefix = %d, want full length %d", newPrefix, len(newTurn1))
+	if legacyPrefix >= len(profile1.SystemPromptCachePrefix) {
+		t.Fatalf("legacy prompt prefix (%d) should be shorter than new cacheable static prefix (%d)", legacyPrefix, len(profile1.SystemPromptCachePrefix))
 	}
-	if legacyPrefix >= newPrefix {
-		t.Fatalf("legacy prompt prefix (%d) should be shorter than new full prefix (%d)", legacyPrefix, newPrefix)
-	}
-	t.Logf("cacheable prefix bytes: new=%d/%d (100%%), legacy=%d/%d (%.1f%%)",
-		newPrefix, len(newTurn1),
+	t.Logf("cacheable prefix bytes: new=%d/%d, legacy=%d/%d (%.1f%%)",
+		len(profile1.SystemPromptCachePrefix), len(profile1.SystemPrompt),
 		legacyPrefix, len(legacyTurn1),
 		100*float64(legacyPrefix)/float64(len(legacyTurn1)))
 }
@@ -392,6 +389,7 @@ func TestPhoneBridgeRuntimeContextConnected(t *testing.T) {
 		"Phone bridge status:",
 		"- connected: true",
 		"- platform: ios",
+		"- last_heartbeat_at: 2026-06-01T02:03:04Z",
 		"The phone companion app is connected",
 		"Use open_app as the primary path",
 		"clipboard, calendar, contacts, and notification tools are available",
@@ -399,9 +397,6 @@ func TestPhoneBridgeRuntimeContextConnected(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("runtime context missing %q:\n%s", want, got)
 		}
-	}
-	if strings.Contains(got, "last_heartbeat_at") {
-		t.Fatalf("runtime context should omit volatile last_heartbeat_at for prompt-cache stability:\n%s", got)
 	}
 }
 
@@ -466,13 +461,13 @@ func TestPhoneBridgeRuntimeContextIncludesPhoneEnvironment(t *testing.T) {
 
 	for _, want := range []string{
 		"device environment is available in World State for structured use",
+		"- environment_updated_at: 2026-06-01T02:03:05Z",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("runtime context missing %q:\n%s", want, got)
 		}
 	}
 	for _, notWant := range []string{
-		"- environment_updated_at: 2026-06-01T02:03:05Z",
 		"Phone environment summary:",
 		"- system:",
 		"- locale:",

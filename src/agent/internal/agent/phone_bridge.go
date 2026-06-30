@@ -546,10 +546,20 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 		builder.WriteString(phoneID)
 		builder.WriteByte('\n')
 	}
+	if status.Connected && status.LastHeartbeatAt != nil {
+		builder.WriteString("- last_heartbeat_at: ")
+		builder.WriteString(status.LastHeartbeatAt.UTC().Format(time.RFC3339))
+		builder.WriteByte('\n')
+	}
 	if appState := strings.TrimSpace(status.AppState); appState != "" {
 		builder.WriteString("- app_state: ")
 		builder.WriteString(appState)
 		builder.WriteByte('\n')
+		if status.AppStateUpdatedAt != nil {
+			builder.WriteString("- app_state_updated_at: ")
+			builder.WriteString(status.AppStateUpdatedAt.UTC().Format(time.RFC3339))
+			builder.WriteByte('\n')
+		}
 	}
 	if returnEntry := strings.TrimSpace(status.ReturnEntry); returnEntry != "" || status.ReturnEntryAvailable != nil {
 		builder.WriteString("- return_entry: ")
@@ -569,6 +579,11 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 	}
 	if status.Environment != nil {
 		builder.WriteString("- device environment is available in World State for structured use\n")
+		if status.EnvironmentUpdatedAt != nil {
+			builder.WriteString("- environment_updated_at: ")
+			builder.WriteString(status.EnvironmentUpdatedAt.UTC().Format(time.RFC3339))
+			builder.WriteByte('\n')
+		}
 	}
 	if phoneBridgeAppNeedsForeground(status) {
 		builder.WriteString("- The Aiden companion app is backgrounded or inactive. On iOS, Phone Bridge commands may time out until Aiden returns to foreground.\n")
