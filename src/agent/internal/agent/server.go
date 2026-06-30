@@ -1016,6 +1016,11 @@ func (s *Server) handleChatAsync(
 			}
 		}
 		defer unregisterStreamOutput()
+		defer func() {
+			if newStream != nil {
+				s.closeTTSStreamAndLog(newStream)
+			}
+		}()
 
 		result, err := s.runtime.Run(runCtx, runReq)
 		progress.Cancel()
@@ -1086,9 +1091,6 @@ func (s *Server) handleChatAsync(
 		speechText := result.SpokenTextForConfig(s.runtime.config)
 		if s.audioClient != nil && speechText != "" && !result.SpeechStreamed {
 			s.speakFinalText(runCtx, requestID, speechText)
-		}
-		if newStream != nil {
-			s.closeTTSStreamAndLog(newStream)
 		}
 	}()
 }
@@ -1466,6 +1468,8 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 
 	var newStream *streamSessionWriter
 	var ttsStreamWriter io.Writer
+	var cancelTTSStreamContext func()
+	stopFollowingTTSRequestContext := func() {}
 	unregisterStreamOutput := func() {}
 	streamOutputCleanupDeferred := false
 	ttsManager := s.currentTTSManager()
@@ -1474,8 +1478,32 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.runtime.config.VoiceStreamingTTSEnabledOrDefault() && s.audioClient != nil {
 		if ttsManager != nil {
-			streamSession, err := beginManagedTTSStream(ctx, ttsManager, s.audioClient, s.runtime.config)
+			streamCtx := ctx
+			if req.RequestID == "" {
+				detachedCtx, cancelDetached := context.WithCancel(context.Background())
+				cancelTTSStreamContext = cancelDetached
+				stopFollow := make(chan struct{})
+				var stopFollowOnce sync.Once
+				stopFollowingTTSRequestContext = func() {
+					stopFollowOnce.Do(func() {
+						close(stopFollow)
+					})
+				}
+				go func(requestCtx context.Context) {
+					select {
+					case <-requestCtx.Done():
+						cancelDetached()
+					case <-stopFollow:
+					}
+				}(ctx)
+				streamCtx = detachedCtx
+			}
+			streamSession, err := beginManagedTTSStream(streamCtx, ttsManager, s.audioClient, s.runtime.config)
 			if err != nil {
+				stopFollowingTTSRequestContext()
+				if cancelTTSStreamContext != nil {
+					cancelTTSStreamContext()
+				}
 				if s.logger != nil {
 					s.logger.Warn("TTS BeginStream failed: %v", err)
 				}
@@ -1504,13 +1532,16 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			if newStream == nil {
 				return
 			}
+			stopFollowingTTSRequestContext()
+			finishStreamContext := cancelTTSStreamContext
 			if req.RequestID != "" {
 				cleanupRunAtReturn = false
 				streamOutputCleanupDeferred = true
-				s.closeTTSStreamInBackground(newStream, unregisterStreamOutput, cleanupRun)
+				finishStreamContext = cleanupRun
 			} else {
-				go s.closeTTSStreamAndLog(newStream)
+				streamOutputCleanupDeferred = true
 			}
+			s.closeTTSStreamInBackground(newStream, unregisterStreamOutput, finishStreamContext)
 		}
 		canceled := errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled)
 		if req.RequestID != "" && s.liveActivity != nil {
@@ -1574,6 +1605,8 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			finishRun = cleanupRun
 			cleanupRunAtReturn = false
 			finalTTSOwnsCleanup = true
+		} else {
+			finalTTSCtx = context.Background()
 		}
 		go func(text string, ttsCtx context.Context, finish func()) {
 			defer finish()
@@ -1588,17 +1621,18 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	})
 
 	if newStream != nil {
+		stopFollowingTTSRequestContext()
+		streamOutputCleanupDeferred = true
+		finishRun := cancelTTSStreamContext
 		if req.RequestID != "" {
 			cleanupRunAtReturn = false
-			streamOutputCleanupDeferred = true
-			finishRun := cleanupRun
+			finishRun = cleanupRun
 			if finalTTSOwnsCleanup {
 				finishRun = nil
 			}
-			s.closeTTSStreamInBackground(newStream, unregisterStreamOutput, finishRun)
-			return
 		}
-		s.closeTTSStreamAndLog(newStream)
+		s.closeTTSStreamInBackground(newStream, unregisterStreamOutput, finishRun)
+		return
 	}
 }
 
