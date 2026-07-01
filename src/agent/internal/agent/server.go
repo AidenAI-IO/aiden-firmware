@@ -25,7 +25,9 @@ import (
 	"aiden-agent/internal/agent/tts"
 	_ "aiden-agent/internal/agent/tts/adapters/alicloud"
 	_ "aiden-agent/internal/agent/tts/adapters/fishaudio"
+	_ "aiden-agent/internal/agent/tts/adapters/google_cloud"
 	_ "aiden-agent/internal/agent/tts/adapters/minimax"
+	_ "aiden-agent/internal/agent/tts/adapters/openrouter"
 	_ "aiden-agent/internal/agent/tts/adapters/volcengine"
 )
 

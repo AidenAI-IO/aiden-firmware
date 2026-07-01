@@ -4802,12 +4802,16 @@ static bool is_tencent_asr_provider(const std::string& provider) {
     return provider == "tencent-asr" || provider == "tencent" || provider == "tencent_asr";
 }
 
-std::string provider_default_url(const std::string& provider) {
+std::string provider_default_url(const std::string& provider, const std::string& section = "") {
     if (provider == "openrouter") return "https://openrouter.ai/api/v1";
     if (provider == "openai" || provider == "openai-whisper") return "https://api.openai.com/v1";
     if (provider == "minimax") return "https://api.minimax.io";
     if (provider == "minimax-cn" || provider == "minimax-ws") return "https://api.minimaxi.com";
     if (is_tencent_asr_provider(provider)) return "https://asr.tencentcloudapi.com";
+    if (provider == "google-cloud") {
+        if (section == "tts") return "https://texttospeech.googleapis.com";
+        return "https://speech.googleapis.com";  // STT default
+    }
     return "";
 }
 
@@ -4892,7 +4896,7 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         cJSON* base_url_item = cJSON_GetObjectItem(values, "base_url");
         std::string provider = json_is_string(provider_item) ? trim_copy(provider_item->valuestring) : "";
         std::string base_url = json_is_string(base_url_item) ? trim_copy(base_url_item->valuestring) : "";
-        std::string url = base_url.empty() ? provider_default_url(provider) : base_url;
+        std::string url = base_url.empty() ? provider_default_url(provider, section) : base_url;
         const bool tencent_stt = section == "stt" && is_tencent_asr_provider(provider);
         if (tencent_stt && url.empty()) {
             url = "https://asr.tencentcloudapi.com";
