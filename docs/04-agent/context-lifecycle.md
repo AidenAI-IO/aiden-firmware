@@ -306,7 +306,6 @@ The chat_history store remains available for:
 
 ```text
 /userdata/agent/memory/
-|-- default.json                 # conversation-window snapshot
 |-- chat_history/                # optional persisted UI chat history
 |-- session/
 |   |-- events.jsonl             # hot window

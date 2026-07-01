@@ -54,14 +54,14 @@ func (t *CurrentTimeTool) Call(ctx context.Context, input string) (string, error
 			Timezone string `json:"timezone"`
 		}
 		if err := json.Unmarshal([]byte(timezone), &args); err != nil {
-			return fmt.Sprintf("error: invalid input: %v. Expected JSON format: {\"timezone\": \"Asia/Shanghai\"} or a bare timezone string like \"UTC\" or \"+08:00\"", err), nil
+			return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v. Expected JSON format: {\"timezone\": \"Asia/Shanghai\"} or a bare timezone string like \"UTC\" or \"+08:00\"", err), nil
 		}
 		timezone = strings.TrimSpace(args.Timezone)
 	}
 
 	loc, normalized, err := parseTimezone(timezone)
 	if err != nil {
-		return fmt.Sprintf("error: %v", err), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 	}
 
 	nowFn := t.now
@@ -170,7 +170,7 @@ func (t *WeatherTool) ArgsSchema() map[string]any {
 func (t *WeatherTool) Call(ctx context.Context, input string) (string, error) {
 	args, err := parseWeatherArgs(input)
 	if err != nil {
-		return "error: " + err.Error(), nil
+		return toolErrorResultString(ctx, CodeInvalidArguments, err.Error()), nil
 	}
 
 	callCtx, cancel := contextWithDefaultTimeout(ctx)
@@ -186,7 +186,10 @@ func (t *WeatherTool) Call(ctx context.Context, input string) (string, error) {
 	} else {
 		geo, err := t.geocode(callCtx, args.Location)
 		if err != nil {
-			return fmt.Sprintf("error: %v", err), nil
+			if contextErr := contextError(callCtx, err); contextErr != nil {
+				return "", contextErr
+			}
+			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
 		locationName = geo.DisplayName()
 		lat = geo.Latitude
@@ -195,7 +198,10 @@ func (t *WeatherTool) Call(ctx context.Context, input string) (string, error) {
 
 	forecast, err := t.fetchForecast(callCtx, lat, lon)
 	if err != nil {
-		return fmt.Sprintf("error: %v", err), nil
+		if contextErr := contextError(callCtx, err); contextErr != nil {
+			return "", contextErr
+		}
+		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
 
 	result := map[string]interface{}{
@@ -579,7 +585,7 @@ func (t *WaitForWakeupTool) Call(ctx context.Context, input string) (string, err
 			Reason string `json:"reason"`
 		}
 		if err := json.Unmarshal([]byte(reason), &args); err != nil {
-			return fmt.Sprintf("error: invalid input: %v. Expected JSON format: {\"reason\": \"task completed\"} or a bare string describing why Aiden should wait for wakeup", err), nil
+			return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v. Expected JSON format: {\"reason\": \"task completed\"} or a bare string describing why Aiden should wait for wakeup", err), nil
 		}
 		reason = strings.TrimSpace(args.Reason)
 	}
@@ -597,7 +603,7 @@ func (t *WaitForWakeupTool) Call(ctx context.Context, input string) (string, err
 func jsonString(value interface{}) string {
 	payload, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
-		return fmt.Sprintf("error: encode response: %v", err)
+		return fmt.Sprintf("encode response: %v", err)
 	}
 	return string(payload)
 }

@@ -167,8 +167,8 @@ func compactToolResultForChatHistory(content string) string {
 // stripScreenshotData removes the base64 image payload from a screenshot tool
 // result while preserving its metadata (width/height/format/size and any
 // action_output). It is the single source of truth for screenshot-data
-// scrubbing, used by chat_history persistence, the legacy session snapshot, and
-// the session events.jsonl path (sessionEventFromRecord +
+// scrubbing, used by chat_history persistence and the session events.jsonl path
+// (sessionEventFromRecord +
 // SessionMemoryStore.AppendEvent) so a base64 JPEG never lands in persistent
 // memory stores and can never inflate the hot-window token estimate. Returns
 // content unchanged when it is not a screenshot result (or has no Data field),

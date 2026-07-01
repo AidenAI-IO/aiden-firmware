@@ -1,9 +1,12 @@
 package agent
 
 import (
+	"context"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestProxyFuncUsesConfiguredHTTPSProxy(t *testing.T) {
@@ -159,6 +162,46 @@ func TestProxyFuncRejectsDuplicateScheme(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "duplicate scheme") {
 		t.Fatalf("proxyFunc() error = %v, want duplicate scheme", err)
+	}
+}
+
+func TestNewProxyWebSocketDialerSocks5HonorsNoProxy(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	defer listener.Close()
+
+	accepted := make(chan struct{})
+	go func() {
+		conn, err := listener.Accept()
+		if err == nil {
+			_ = conn.Close()
+			close(accepted)
+		}
+	}()
+
+	dialer, err := newProxyWebSocketDialer(ProxyConfig{
+		AllProxy: "socks5://127.0.0.1:1",
+		NoProxy:  "127.0.0.1",
+	}, time.Second)
+	if err != nil {
+		t.Fatalf("newProxyWebSocketDialer() error = %v", err)
+	}
+	if dialer.NetDialContext == nil {
+		t.Fatal("expected websocket dialer to install NetDialContext")
+	}
+
+	conn, err := dialer.NetDialContext(context.Background(), "tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatalf("NetDialContext() error = %v, want direct no_proxy dial", err)
+	}
+	_ = conn.Close()
+
+	select {
+	case <-accepted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for direct connection to bypass the proxy")
 	}
 }
 

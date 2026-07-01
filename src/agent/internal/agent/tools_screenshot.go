@@ -26,14 +26,15 @@ type screenCaptureInfo struct {
 }
 
 type screenshotResult struct {
-	Width          int               `json:"width"`
-	Height         int               `json:"height"`
-	ActiveArea     *screenActiveArea `json:"active_area,omitempty"`
-	ActiveWidth    int               `json:"active_width,omitempty"`
-	ActiveHeight   int               `json:"active_height,omitempty"`
-	Format         string            `json:"format"`
-	Size           int               `json:"size"`
-	Data           string            `json:"data"`
+	Width         int               `json:"width"`
+	Height        int               `json:"height"`
+	ActiveArea    *screenActiveArea `json:"active_area,omitempty"`
+	ActiveWidth   int               `json:"active_width,omitempty"`
+	ActiveHeight  int               `json:"active_height,omitempty"`
+	Format        string            `json:"format"`
+	Size          int               `json:"size"`
+	Data          string            `json:"data,omitempty"`
+	ScreenshotRef string            `json:"screenshot_ref,omitempty"`
 	CaptureBackend string            `json:"capture_backend,omitempty"`
 	ADBDevice      *adbDeviceInfo    `json:"adb_device,omitempty"`
 }
@@ -128,6 +129,9 @@ func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if meta.Stale {
+		return "", fmt.Errorf("frame service: STALE_FRAME")
+	}
 	if meta.PixelFormat != "jpeg" {
 		return "", fmt.Errorf("expected jpeg format, got %s", meta.PixelFormat)
 	}
@@ -153,11 +157,12 @@ func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
 	displayData := jpegData
 	if !alreadyCropped && active.Valid && (active.X != 0 || active.Y != 0 || active.Width != displayWidth || active.Height != displayHeight) {
 		croppedData, croppedWidth, croppedHeight, err := cropJPEGToActiveArea(jpegData, active, screenshotJPEGQuality)
-		if err == nil {
-			displayWidth = croppedWidth
-			displayHeight = croppedHeight
-			displayData = croppedData
+		if err != nil {
+			return "", fmt.Errorf("crop screenshot to active area: %w", err)
 		}
+		displayWidth = croppedWidth
+		displayHeight = croppedHeight
+		displayData = croppedData
 	}
 
 	result := screenshotResult{

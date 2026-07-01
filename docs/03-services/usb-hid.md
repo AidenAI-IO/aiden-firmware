@@ -107,6 +107,8 @@ For dense targets such as small buttons, list items, and input boxes, prioritize
 
 On iOS, HID text input and HID keyboard shortcuts are separate failure domains. `keyboard_text` can successfully type ASCII while shortcuts such as paste (`keyboard_tap` with `["meta","v"]` / `Cmd+V`) still have no UI effect.
 
+The keyboard HID function is advertised as a boot keyboard (`protocol=1`, `subclass=1`) for broad host compatibility. If iOS retains a stale external-keyboard session, it may accept plain keycodes while ignoring modifier chords; symptoms include `Shift+1` producing `1` instead of `!`, and `Cmd+A` / `Cmd+V` doing nothing. Force a clean composite gadget re-enumeration before chasing HID timing or key mappings.
+
 Before validating shortcut-based paste on iPhone or iPad, turn on:
 
 ```text

@@ -11,11 +11,11 @@ The Go Agent supports device-side voice interaction, primarily consisting of `in
        │
        ├─ input_mode=text ──────► HTTP Server / Web UI
        │
-       └─ input_mode=stt/audio ─► Audio Dialog Loop
+       └─ input_mode=stt ─────────► Audio Dialog Loop
                                    │
                                    ├─ AudioServiceClient
                                    ├─ VAD
-                                   ├─ STT (stt mode)
+                                   ├─ STT
                                    ├─ LLM
                                    └─ TTS
 ```
@@ -48,10 +48,6 @@ Device-side audio loop:
 3. Sends WAV to STT;
 4. STT text goes to Agent runtime;
 5. TTS synthesizes reply and plays via `audio_service`.
-
-### `input_mode = "audio"`
-
-Device-side recording is sent directly as audio attachment to the model, then TTS replies. Only use when the selected provider/model path supports audio input.
 
 ## Trigger Modes
 
@@ -176,4 +172,3 @@ On success, it will output a line `P <probability>`; if there are still RKNN inp
 ## Known Limitations
 
 - Web UI and device voice loop currently cannot run simultaneously in the same daemon instance;
-- Direct audio mode depends on model/provider support for audio input.

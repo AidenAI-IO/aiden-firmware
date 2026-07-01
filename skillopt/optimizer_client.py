@@ -14,14 +14,18 @@ import urllib.request
 from runner.agent_config import resolve_api_key
 
 
+DEFAULT_OPTIMIZER_MODEL = "anthropic/claude-opus-4-7"
+
+
 @dc.dataclass
 class OptimizerConfig:
     provider: str = "openrouter"
-    model: str = "anthropic/claude-opus-4-7"
+    model: str = DEFAULT_OPTIMIZER_MODEL
     api_key_env: str = "OPENROUTER_API_KEY"
     agent_config_path: str | None = None
     max_tokens: int = 4096
     timeout_sec: int = 180
+    request_attempts: int = 2
 
 
 class OptimizerError(RuntimeError):
@@ -43,8 +47,35 @@ def chat_optimizer(
     if not api_key:
         raise OptimizerError(f"missing env var {cfg.api_key_env}")
 
+    models = optimizer_model_candidates(cfg.model)
+    failures: list[str] = []
+    last_error: OptimizerError | None = None
+    for model in models:
+        try:
+            return _chat_optimizer_once(cfg, model, api_key, system, user)
+        except OptimizerError as e:
+            last_error = e
+            failures.append(f"{model}: {e}")
+
+    if len(models) == 1 and last_error is not None:
+        raise last_error
+    raise OptimizerError("optimizer failed for all configured models: " + "; ".join(failures))
+
+
+def optimizer_model_candidates(model: str) -> list[str]:
+    models = [part.strip() for part in str(model or "").split(",") if part.strip()]
+    return models or [DEFAULT_OPTIMIZER_MODEL]
+
+
+def _chat_optimizer_once(
+    cfg: OptimizerConfig,
+    model: str,
+    api_key: str,
+    system: str,
+    user: str,
+) -> str:
     payload = json.dumps({
-        "model": cfg.model,
+        "model": model,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -61,18 +92,36 @@ def chat_optimizer(
         },
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=cfg.timeout_sec) as resp:
-            if resp.status != 200:
-                raise OptimizerError(f"optimizer HTTP {resp.status}")
-            try:
-                body = json.loads(resp.read())
-            except json.JSONDecodeError as e:
-                raise OptimizerError(f"optimizer returned non-JSON body: {e}") from e
-    except urllib.error.HTTPError as e:
-        raise OptimizerError(f"optimizer HTTP {e.code}: {e.read()[:200]!r}") from e
-    except (socket.timeout, urllib.error.URLError) as e:
-        raise OptimizerError(f"optimizer network error: {e}") from e
+    attempts = max(1, int(cfg.request_attempts or 1))
+    last_error: OptimizerError | None = None
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(req, timeout=cfg.timeout_sec) as resp:
+                if resp.status != 200:
+                    err = OptimizerError(f"optimizer HTTP {resp.status}")
+                    if resp.status >= 500 and attempt + 1 < attempts:
+                        last_error = err
+                        continue
+                    raise err
+                try:
+                    body = json.loads(resp.read())
+                except json.JSONDecodeError as e:
+                    raise OptimizerError(f"optimizer returned non-JSON body: {e}") from e
+                break
+        except urllib.error.HTTPError as e:
+            err = OptimizerError(f"optimizer HTTP {e.code}: {e.read()[:200]!r}")
+            if e.code >= 500 and attempt + 1 < attempts:
+                last_error = err
+                continue
+            raise err from e
+        except (socket.timeout, urllib.error.URLError) as e:
+            err = OptimizerError(f"optimizer network error: {e}")
+            if attempt + 1 < attempts:
+                last_error = err
+                continue
+            raise err from e
+    else:
+        raise last_error or OptimizerError("optimizer request failed")
 
     try:
         content = body["choices"][0]["message"]["content"]

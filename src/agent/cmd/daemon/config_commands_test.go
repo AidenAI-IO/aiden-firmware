@@ -165,7 +165,6 @@ func TestResolvedWebConfigDTO_OverlaysCurrentConfig(t *testing.T) {
 	path := filepath.Join(dir, "agent.toml")
 	if err := os.WriteFile(path, []byte(`
 voice_followup_enabled = true
-force_simple_loop = true
 
 [model]
 provider = "openai"
@@ -192,9 +191,6 @@ llm_http_retention_days = 14
 	}
 	if !dto.Agent.VoiceFollowupEnabled {
 		t.Fatal("agent.voice_followup_enabled = false, want true from current config")
-	}
-	if !dto.Agent.ForceSimpleLoop {
-		t.Fatal("agent.force_simple_loop = false, want true from current config")
 	}
 	if dto.HID.KeyboardDevice != agent.DefaultConfig().HID.KeyboardDevice {
 		t.Fatalf("hid.keyboard_device = %q, want default %q",
@@ -303,6 +299,38 @@ func TestWebConfigDTOMapsLog(t *testing.T) {
 	roundTrip := webConfigDTOFromAgentConfig(agent.Config{Log: agent.LogConfig{LLMHTTPRetentionDays: 21}})
 	if roundTrip.Log.LLMHTTPRetentionDays != 21 {
 		t.Fatalf("round-trip log.llm_http_retention_days = %d, want 21", roundTrip.Log.LLMHTTPRetentionDays)
+	}
+}
+
+func TestWebConfigDTOMapsSTTLanguage(t *testing.T) {
+	dto := webConfigDTO{
+		STT: sttDTO{
+			Provider: "openai-whisper",
+			Language: "en",
+			AppID:    "12345",
+		},
+	}
+
+	cfg := dto.toAgentConfig()
+	if cfg.STT.Language != "en" {
+		t.Fatalf("STT.Language = %q, want en", cfg.STT.Language)
+	}
+	if cfg.STT.AppID != "12345" {
+		t.Fatalf("STT.AppID = %q, want 12345", cfg.STT.AppID)
+	}
+
+	roundTrip := webConfigDTOFromAgentConfig(agent.Config{
+		STT: agent.STTConfig{
+			Provider: "openai-whisper",
+			Language: "zh",
+			AppID:    "67890",
+		},
+	})
+	if roundTrip.STT.Language != "zh" {
+		t.Fatalf("round-trip stt.language = %q, want zh", roundTrip.STT.Language)
+	}
+	if roundTrip.STT.AppID != "67890" {
+		t.Fatalf("round-trip stt.app_id = %q, want 67890", roundTrip.STT.AppID)
 	}
 }
 

@@ -3,10 +3,12 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -69,10 +71,12 @@ func TestAudioDialogReadRecordChunkRequiresActiveRecording(t *testing.T) {
 
 func TestAudioDialogStopRecordingClearsLocalStateOnStopError(t *testing.T) {
 	missingSocket := filepath.Join(t.TempDir(), "missing-audio.sock")
+	uploader := newBlockingFinalizeUploader("")
 	dialog := &AudioDialog{
 		audioClient:  NewAudioServiceClient(missingSocket),
 		recordActive: true,
 		sessionID:    123,
+		recordSTT:    &streamingSTTSession{uploader: uploader},
 	}
 
 	if err := dialog.StopRecording(); err == nil {
@@ -83,6 +87,11 @@ func TestAudioDialogStopRecordingClearsLocalStateOnStopError(t *testing.T) {
 	}
 	if dialog.sessionID != 0 {
 		t.Fatalf("sessionID = %d, want 0", dialog.sessionID)
+	}
+	select {
+	case <-uploader.closed:
+	case <-time.After(time.Second):
+		t.Fatal("expected streaming session to be closed on stop error")
 	}
 }
 
@@ -127,20 +136,219 @@ func TestAudioDialogStartRecordingRetriesUntilAudioServiceAvailable(t *testing.T
 	}
 }
 
-func TestNewAudioDialogAudioWakeupUsesDirectAudioPath(t *testing.T) {
+func TestAudioDialogStartRecordingRollsBackOnVADResetFailure(t *testing.T) {
+	var (
+		opMu sync.Mutex
+		ops  []string
+	)
+	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
+		opMu.Lock()
+		ops = append(ops, req.Op)
+		opMu.Unlock()
+		switch req.Op {
+		case "start_recording":
+			return audioResponse{Status: "OK", SessionID: stringUint64(42)}, nil
+		default:
+			return audioResponse{Status: "OK"}, nil
+		}
+	})
+
+	scorer := &sequenceScorer{resetErr: errors.New("vad helper crashed")}
+	vad, err := NewAudioVADWithScorer(AudioVADConfig{
+		SampleRate:      16000,
+		SilenceMs:       650,
+		MinSpeechMs:     300,
+		AlwaysBuffer:    true,
+		SpeechThreshold: 0.5,
+	}, scorer)
+	if err != nil {
+		t.Fatalf("NewAudioVADWithScorer() error = %v", err)
+	}
+
+	sttClient := &stubSTTClient{
+		supportsStreaming: true,
+		streamUploader:    &stubSTTStreamUploader{},
+	}
+	dialog := &AudioDialog{
+		config: Config{
+			InputMode: "stt",
+			Audio:     AudioConfig{Socket: socketPath, SampleRate: 16000, Channels: 1, BitWidth: 16},
+		},
+		audioClient: NewAudioServiceClient(socketPath),
+		sttClient:   sttClient,
+		vad:         vad,
+	}
+
+	if err := dialog.StartRecording(); err == nil {
+		t.Fatal("expected StartRecording error when VAD reset fails")
+	}
+
+	if dialog.recordActive {
+		t.Fatal("recordActive should be false after VAD failure")
+	}
+	if dialog.sessionID != 0 {
+		t.Fatalf("sessionID = %d, want 0 after VAD failure", dialog.sessionID)
+	}
+	if dialog.recordReader != nil {
+		t.Fatal("recordReader should be nil after VAD failure")
+	}
+	if got := dialog.currentRecordSTT(); got != nil {
+		t.Fatal("recordSTT should be nil after VAD failure")
+	}
+	if sttClient.streamUploaderUsed != 0 {
+		t.Fatalf("streamUploaderUsed = %d, want 0; streaming session should not be opened when VAD reset fails", sttClient.streamUploaderUsed)
+	}
+	opMu.Lock()
+	defer opMu.Unlock()
+	for _, op := range ops {
+		if op == "start_recording" {
+			t.Fatalf("audio service received %q before VAD validated; ops = %v", op, ops)
+		}
+	}
+}
+
+func TestAudioDialogPrepareTurnInputUsesStreamingTranscriptFromRecording(t *testing.T) {
+	stopCh := make(chan struct{})
+	var stopOnce sync.Once
+	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
+		switch req.Op {
+		case "start_recording":
+			return audioResponse{Status: "OK", SessionID: stringUint64(42)}, nil
+		case "read_record_chunk":
+			select {
+			case <-stopCh:
+				return audioResponse{Status: "OK", EndOfStream: true}, nil
+			default:
+				return audioResponse{Status: "OK"}, []byte{1, 0, 2, 0}
+			}
+		case "stop_recording":
+			stopOnce.Do(func() { close(stopCh) })
+			return audioResponse{Status: "OK"}, nil
+		default:
+			return audioResponse{Status: "OK"}, nil
+		}
+	})
+
+	sttClient := &stubSTTClient{
+		supportsStreaming: true,
+		streamUploader:    &stubSTTStreamUploader{transcript: "streaming result"},
+	}
+	dialog := &AudioDialog{
+		config: Config{
+			InputMode: "stt",
+			Audio: AudioConfig{
+				Socket:     socketPath,
+				SampleRate: 16000,
+				Channels:   1,
+				BitWidth:   16,
+			},
+		},
+		audioClient:  NewAudioServiceClient(socketPath),
+		sttClient:    sttClient,
+		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
+	}
+
+	if err := dialog.StartRecording(); err != nil {
+		t.Fatalf("StartRecording() error = %v", err)
+	}
+	chunk, err := dialog.ReadRecordChunk(200)
+	if err != nil {
+		t.Fatalf("ReadRecordChunk() error = %v", err)
+	}
+	if chunk == nil || len(chunk.PCM) == 0 {
+		t.Fatalf("expected PCM chunk, got %#v", chunk)
+	}
+	if err := dialog.StopRecording(); err != nil {
+		t.Fatalf("StopRecording() error = %v", err)
+	}
+
+	input, err := dialog.PrepareTurnInput([]int16{1, 2})
+	if err != nil {
+		t.Fatalf("PrepareTurnInput() error = %v", err)
+	}
+	if input.Transcript != "streaming result" {
+		t.Fatalf("Transcript = %q, want streaming result", input.Transcript)
+	}
+	if len(sttClient.inputs) != 0 {
+		t.Fatalf("expected streaming transcript to skip TranscribeWAV, got %d calls", len(sttClient.inputs))
+	}
+	if sttClient.streamUploaderUsed != 1 {
+		t.Fatalf("stream uploader begin count = %d, want 1", sttClient.streamUploaderUsed)
+	}
+	if sttClient.streamUploader == nil || len(sttClient.streamUploader.writes) != 1 {
+		t.Fatalf("stream uploader writes = %#v, want one PCM write", sttClient.streamUploader)
+	}
+}
+
+func TestAudioDialogStopRecordingFallsBackToOneShotWhenStreamingFinalizeTimesOut(t *testing.T) {
+	oldTimeout := audioDialogStreamingSTTFinalizeTimeout
+	audioDialogStreamingSTTFinalizeTimeout = 20 * time.Millisecond
+	t.Cleanup(func() {
+		audioDialogStreamingSTTFinalizeTimeout = oldTimeout
+	})
+
+	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
+		switch req.Op {
+		case "stop_recording":
+			return audioResponse{Status: "OK"}, nil
+		default:
+			return audioResponse{Status: "OK"}, nil
+		}
+	})
+
+	uploader := newBlockingFinalizeUploader("")
+	sttClient := &stubSTTClient{transcript: "one-shot result"}
+	dialog := &AudioDialog{
+		config: Config{
+			InputMode: "stt",
+			Audio: AudioConfig{
+				Socket:     socketPath,
+				SampleRate: 16000,
+			},
+		},
+		audioClient:  NewAudioServiceClient(socketPath),
+		sttClient:    sttClient,
+		recordActive: true,
+		sessionID:    42,
+		recordSTT:    &streamingSTTSession{uploader: uploader},
+	}
+
+	if err := dialog.StopRecording(); err != nil {
+		t.Fatalf("StopRecording() error = %v", err)
+	}
+
+	input, err := dialog.PrepareTurnInput([]int16{1, 2, 3, 4})
+	if err != nil {
+		t.Fatalf("PrepareTurnInput() error = %v", err)
+	}
+	if input.Transcript != "one-shot result" {
+		t.Fatalf("Transcript = %q, want one-shot result", input.Transcript)
+	}
+	if len(sttClient.inputs) != 1 {
+		t.Fatalf("expected fallback one-shot STT call, got %d", len(sttClient.inputs))
+	}
+	select {
+	case <-uploader.closed:
+	case <-time.After(time.Second):
+		t.Fatal("expected uploader to be closed after finalize timeout")
+	}
+}
+
+func TestNewAudioDialogSTTWakeupCreatesSTTClient(t *testing.T) {
 	dialog, err := NewAudioDialog(Config{
 		Model:       ModelConfig{Provider: "fake"},
 		TTS:         TTSConfig{Provider: "minimax-cn", APIKey: "test-key"},
+		STT:         STTConfig{Provider: "openai-whisper"},
 		Audio:       AudioConfig{Socket: "/tmp/audio.sock", SampleRate: 16000},
-		InputMode:   "audio",
+		InputMode:   "stt",
 		TriggerMode: "wakeup",
 	})
 	if err != nil {
 		t.Fatalf("NewAudioDialog() error = %v", err)
 	}
 
-	if dialog.sttClient != nil {
-		t.Fatal("audio input mode should not create an STT client")
+	if dialog.sttClient == nil {
+		t.Fatal("stt input mode should create an STT client")
 	}
 	if dialog.audioClient.socketPath != "/tmp/audio.sock" {
 		t.Fatalf("audio socket = %q, want /tmp/audio.sock", dialog.audioClient.socketPath)
@@ -157,8 +365,9 @@ func TestNewAudioDialogIgnoresInvalidOptionalTTS(t *testing.T) {
 	dialog, err := NewAudioDialog(Config{
 		Model:     ModelConfig{Provider: "fake"},
 		TTS:       TTSConfig{Provider: "missing-provider", APIKey: "test-key"},
+		STT:       STTConfig{Provider: "openai-whisper"},
 		Audio:     AudioConfig{Socket: "/tmp/audio.sock", SampleRate: 16000},
-		InputMode: "audio",
+		InputMode: "stt",
 	})
 	if err != nil {
 		t.Fatalf("NewAudioDialog() error = %v", err)
@@ -168,78 +377,9 @@ func TestNewAudioDialogIgnoresInvalidOptionalTTS(t *testing.T) {
 	}
 }
 
-func TestProcessUtteranceAudioModeSendsWAVAttachmentToRuntime(t *testing.T) {
-	model := &scriptedModel{
-		responses: roleDirectResponses("heard it"),
-	}
-	runtime := NewRuntimeWithDeps(
-		Config{
-			Model:       ModelConfig{Provider: "fake"},
-			Instruction: "Use attached audio.",
-		},
-		&testModelResolver{model: model},
-		NewMemoryManager(""),
-		&ToolSet{tools: map[string]langtools.Tool{}},
-		NewSkillIndex(),
-	)
-
-	provider := &recordingTTSProvider{name: "dialog-provider"}
-	audioClient := NewAudioServiceClient(startTTSPlaybackAudioSocket(t))
-	dialog := &AudioDialog{
-		config: Config{
-			Model:                    ModelConfig{Provider: "fake"},
-			Audio:                    AudioConfig{SampleRate: 16000},
-			InputMode:                "audio",
-			VoiceStreamingTTSEnabled: boolPtr(false),
-		},
-		audioClient:  audioClient,
-		ttsManager:   ttsmodule.NewProviderManager(provider, nil),
-		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
-	}
-
-	if err := dialog.ProcessUtterance(context.Background(), []int16{100, -100, 200, -200}, runtime); err != nil {
-		t.Fatalf("ProcessUtterance() error = %v", err)
-	}
-	if len(model.messages) != 1 {
-		t.Fatalf("expected one default-mode planner model call, got %d", len(model.messages))
-	}
-
-	plannerMessages := model.messages[0]
-	if len(plannerMessages) < 3 {
-		t.Fatalf("expected system, raw audio input, and runtime state messages, got %#v", plannerMessages)
-	}
-	userMessage := plannerMessages[len(plannerMessages)-2]
-	stateMessage := plannerMessages[len(plannerMessages)-1]
-	if stateMessage.Role != llms.ChatMessageTypeHuman || !strings.Contains(messageText(plannerMessages[len(plannerMessages)-1:]), "Planner runtime context (synthetic; not a new user request):") {
-		t.Fatalf("expected final planner message to be runtime state context, got %#v", stateMessage)
-	}
-	var text string
-	var audio []byte
-	for _, part := range userMessage.Parts {
-		switch p := part.(type) {
-		case llms.TextContent:
-			text = p.Text
-		case llms.BinaryContent:
-			if p.MIMEType == "audio/wav" {
-				audio = p.Data
-			}
-		}
-	}
-
-	if text != "Voice audio input" || strings.Contains(text, "recording.wav") || strings.Contains(text, "Attached content") {
-		t.Fatalf("expected raw audio input text without attachment description, got %q", text)
-	}
-	if len(audio) < 48 || string(audio[:4]) != "RIFF" || string(audio[8:12]) != "WAVE" {
-		t.Fatalf("expected WAV binary attachment, got %d bytes", len(audio))
-	}
-	if got := provider.texts(); len(got) != 1 || got[0] != "heard it" {
-		t.Fatalf("unexpected TTS texts: %#v", got)
-	}
-}
-
-func TestProcessUtteranceSpeaksFullOutputWhenSpeechMissing(t *testing.T) {
-	output := "已完成设置，当前音量是 42。\n\n- 读取音量\n- 确认状态\n\n这段详细说明保留给屏幕。"
-	expectedSpeech := output
+func TestProcessUtteranceSpeaksTaggedTTSOutput(t *testing.T) {
+	output := "Setup completed, current volume is 42.\n\n- Read volume\n- Confirm status\n\nThis detailed description is reserved for the screen.\n<tts>Setup completed, current volume is 42.</tts>"
+	expectedSpeech := "Setup completed, current volume is 42."
 	model := &scriptedModel{
 		responses: roleDirectResponses(output),
 	}
@@ -260,9 +400,10 @@ func TestProcessUtteranceSpeaksFullOutputWhenSpeechMissing(t *testing.T) {
 		config: Config{
 			Model:                    ModelConfig{Provider: "fake"},
 			Audio:                    AudioConfig{SampleRate: 16000},
-			InputMode:                "audio",
+			InputMode:                "stt",
 			VoiceStreamingTTSEnabled: boolPtr(false),
 		},
+		sttClient:    &stubSTTClient{transcript: "check volume"},
 		audioClient:  NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
 		ttsManager:   ttsmodule.NewProviderManager(provider, nil),
 		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
@@ -289,7 +430,7 @@ func TestProcessUtteranceSpeaksFullOutputWhenSpeechMissing(t *testing.T) {
 	if !ok {
 		t.Fatalf("assistant history missing: %#v", messages)
 	}
-	if !strings.Contains(assistant.Content, "这段详细说明保留给屏幕") {
+	if !strings.Contains(assistant.Content, "This detailed description is reserved for the screen") {
 		t.Fatalf("history should keep full output, got %q", assistant.Content)
 	}
 }
@@ -298,8 +439,8 @@ func TestAudioDialogSpeaksToolContentAsynchronously(t *testing.T) {
 	toolSpeech := true
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, "检查音量。"),
-			contentResponse("当前音量是 42。"),
+			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, "Checking volume.\n<tts>Check volume.</tts>"),
+			contentResponse("Current volume is 42.\n<tts>Current volume is 42.</tts>"),
 		},
 	}
 	runtime := NewRuntimeWithDeps(
@@ -324,10 +465,11 @@ func TestAudioDialogSpeaksToolContentAsynchronously(t *testing.T) {
 		config: Config{
 			Model:                    ModelConfig{Provider: "fake"},
 			Audio:                    AudioConfig{SampleRate: 16000},
-			InputMode:                "audio",
+			InputMode:                "stt",
 			VoiceStreamingTTSEnabled: boolPtr(false),
 			VoiceToolCallSpeech:      &toolSpeech,
 		},
+		sttClient:    &stubSTTClient{transcript: "check volume"},
 		audioClient:  NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
 		ttsManager:   ttsmodule.NewProviderManager(provider, nil),
 		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
@@ -341,7 +483,7 @@ func TestAudioDialogSpeaksToolContentAsynchronously(t *testing.T) {
 	if len(texts) != 2 {
 		t.Fatalf("expected tool content and final answer TTS, got %#v", texts)
 	}
-	if !containsString(texts, "检查音量。") || !containsString(texts, "当前音量是 42。") {
+	if !containsString(texts, "Check volume.") || !containsString(texts, "Current volume is 42.") {
 		t.Fatalf("unexpected TTS texts: %#v", texts)
 	}
 }
@@ -360,7 +502,7 @@ func TestAudioDialogDoesNotSpeakWaitForWakeupToolContent(t *testing.T) {
 	dialog.HandleRunEvent(context.Background(), RunEvent{
 		Type:     runEventToolCall,
 		ToolName: toolWaitForWakeup,
-		Content:  "我准备回到等待唤醒状态。",
+		Content:  "Preparing to return to waiting for wakeup state.",
 	})
 
 	assertNoProviderTextWithin(t, provider, 200*time.Millisecond)
@@ -380,13 +522,33 @@ func TestAudioDialogSpeaksToolCallContent(t *testing.T) {
 	dialog.HandleRunEvent(context.Background(), RunEvent{
 		Type:     runEventToolCall,
 		ToolName: "audio_volume",
-		Content:  "读取当前音量。",
+		Content:  "Reading volume.\n<tts>Read current volume.</tts>",
 	})
 
 	waitForProviderTextCount(t, provider, 1)
-	if got := provider.texts(); len(got) != 1 || got[0] != "读取当前音量。" {
+	if got := provider.texts(); len(got) != 1 || got[0] != "Read current volume." {
 		t.Fatalf("unexpected TTS texts: %#v", got)
 	}
+}
+
+func TestAudioDialogDoesNotSpeakToolCallWithoutTTSTag(t *testing.T) {
+	toolSpeech := true
+	provider := &recordingTTSProvider{name: "dialog-provider"}
+	dialog := &AudioDialog{
+		config: Config{
+			VoiceToolCallSpeech: &toolSpeech,
+		},
+		audioClient: NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
+		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
+	}
+
+	dialog.HandleRunEvent(context.Background(), RunEvent{
+		Type:     runEventToolCall,
+		ToolName: "recall_memory",
+		Content:  "I will check your preferences first.",
+	})
+
+	assertNoProviderTextWithin(t, provider, 200*time.Millisecond)
 }
 
 func TestAudioDialogDoesNotSpeakToolCallWithoutContent(t *testing.T) {
@@ -679,9 +841,10 @@ func TestAudioDialogProcessUtteranceAppendsToHistoryStore(t *testing.T) {
 		config: Config{
 			Model:                    ModelConfig{Provider: "fake"},
 			Audio:                    AudioConfig{SampleRate: 16000},
-			InputMode:                "audio",
+			InputMode:                "stt",
 			VoiceStreamingTTSEnabled: boolPtr(false),
 		},
+		sttClient:    &stubSTTClient{transcript: "voice question"},
 		audioClient:  audioClient,
 		ttsManager:   ttsmodule.NewProviderManager(provider, nil),
 		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
@@ -697,11 +860,11 @@ func TestAudioDialogProcessUtteranceAppendsToHistoryStore(t *testing.T) {
 		t.Fatalf("Load() error = %v", err)
 	}
 	userMessage, ok := firstAudioDialogTestMessageOfType(messages, "user")
-	if !ok || userMessage.Source != "voice" || userMessage.Modality != "audio" || userMessage.Content != voiceAudioInputPlaceholder {
-		t.Fatalf("user audio message = %#v in %#v", userMessage, messages)
+	if !ok || userMessage.Source != "voice" || userMessage.Modality != TurnModalitySTT || userMessage.Content != "voice question" {
+		t.Fatalf("user voice message = %#v in %#v", userMessage, messages)
 	}
-	if len(userMessage.Attachments) != 1 || userMessage.Attachments[0].Kind != AttachmentKindAudio || userMessage.Attachments[0].Data != "" {
-		t.Fatalf("user audio attachment should be metadata-only: %#v", userMessage.Attachments)
+	if len(userMessage.Attachments) != 0 {
+		t.Fatalf("user voice message should not include audio attachments: %#v", userMessage.Attachments)
 	}
 	roleOutput, ok := firstAudioDialogTestMessageOfType(messages, "role_output")
 	if !ok || roleOutput.Source != "voice" || roleOutput.Content != "voice reply" {
@@ -839,7 +1002,7 @@ func TestAudioDialogRunAgentTurnConsumesQueuedSteer(t *testing.T) {
 }
 
 func TestAudioDialogRejectsSteerAfterRuntimeFinishesBeforeVoiceHistoryPersist(t *testing.T) {
-	model := &scriptedModel{responses: roleDirectResponses("final answer")}
+	model := &scriptedModel{responses: roleDirectResponses("final answer\n<tts>final answer</tts>")}
 	runtime := NewRuntimeWithDeps(
 		Config{
 			Model:           ModelConfig{Provider: "fake"},
@@ -894,7 +1057,7 @@ func TestAudioDialogRejectsSteerAfterRuntimeFinishesBeforeVoiceHistoryPersist(t 
 		if runResult.err != nil {
 			t.Fatalf("RunVoiceTurnWithContext() error = %v", runResult.err)
 		}
-		if runResult.result.Output != "final answer" {
+		if runResult.result.Output != "final answer\n<tts>final answer</tts>" {
 			t.Fatalf("Output = %q, want final answer", runResult.result.Output)
 		}
 	case <-time.After(time.Second):
@@ -1083,7 +1246,8 @@ func TestAudioDialogProcessUtteranceSavesAudioFile(t *testing.T) {
 
 	cfg := Config{
 		ConfigDir: tmpDir,
-		InputMode: "audio",
+		InputMode: "stt",
+		STT:       STTConfig{Provider: "openai-whisper"},
 		Audio:     AudioConfig{SampleRate: 16000},
 		AudioArchive: AudioArchiveConfig{
 			Enabled:     true,
@@ -1185,6 +1349,102 @@ func (m *blockingFirstCallModel) Call(ctx context.Context, prompt string, option
 		return "", nil
 	}
 	return resp.Choices[0].Content, nil
+}
+
+func TestAudioDialogRunScriptUsesConfiguredTTS(t *testing.T) {
+	configDir := t.TempDir()
+	scriptsDir := filepath.Join(configDir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	writeRunScriptTestFile(t, scriptsDir, "demo.jsonl", `{"tts":"脚本语音"}`)
+
+	model := &scriptedModel{
+		responses: roleToolResponses("run_script", `{"file":"demo.jsonl"}`, "脚本完成。"),
+	}
+	cfg := Config{
+		ConfigDir:                configDir,
+		Model:                    ModelConfig{Provider: "fake"},
+		Audio:                    AudioConfig{SampleRate: 16000},
+		InputMode:                "stt",
+		VoiceStreamingTTSEnabled: boolPtr(false),
+		VoiceMaxResponseTokens:   64,
+	}
+	runtime := NewRuntimeWithDeps(
+		cfg,
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSetFromConfig(cfg, ProxyConfig{}, nil),
+		NewSkillIndex(),
+	)
+	provider := &recordingTTSProvider{name: "dialog-provider"}
+	dialog := &AudioDialog{
+		config:      cfg,
+		audioClient: NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
+		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
+	}
+
+	result, err := dialog.RunAgentTurn(context.Background(), TurnInput{InputText: "run demo"}, runtime)
+	if err != nil {
+		t.Fatalf("RunAgentTurn() error = %v", err)
+	}
+	if result.Output != "脚本完成。" {
+		t.Fatalf("output = %q, want 脚本完成。", result.Output)
+	}
+	waitForProviderTextCount(t, provider, 1)
+	if got := provider.texts(); !containsString(got, "脚本语音") {
+		t.Fatalf("provider texts = %#v, want script tts text", got)
+	}
+}
+
+func TestAudioDialogConfigureRuntimeToolsDoesNotOverwriteSharedSpeaker(t *testing.T) {
+	configDir := t.TempDir()
+	scriptsDir := filepath.Join(configDir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	writeRunScriptTestFile(t, scriptsDir, "demo.jsonl", `{"tts":"server voice"}`)
+
+	tools := NewBuiltinToolSetFromConfig(Config{ConfigDir: configDir}, ProxyConfig{}, nil)
+	spoken := make(chan string, 1)
+	tools.SetRunScriptSpeaker(func(_ context.Context, text string) error {
+		spoken <- text
+		return nil
+	})
+	runtime := NewRuntimeWithDeps(
+		Config{ConfigDir: configDir, Model: ModelConfig{Provider: "fake"}},
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		tools,
+		NewSkillIndex(),
+	)
+
+	dialog := &AudioDialog{}
+	_ = dialog.ConfigureRuntimeTools(context.Background(), runtime)
+
+	runScript, ok := tools.Get("run_script")
+	if !ok {
+		t.Fatal("run_script tool missing")
+	}
+	out, err := runScript.Call(context.Background(), `{"file":"demo.jsonl"}`)
+	if err != nil {
+		t.Fatalf("Call error: %v", err)
+	}
+	var result runScriptResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("invalid result JSON: %v\n%s", err, out)
+	}
+	if !result.OK {
+		t.Fatalf("result = %#v, output=%s", result, out)
+	}
+	select {
+	case got := <-spoken:
+		if got != "server voice" {
+			t.Fatalf("spoken text = %q, want server voice", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server-installed speaker was not called")
+	}
 }
 
 func boolPtr(value bool) *bool {

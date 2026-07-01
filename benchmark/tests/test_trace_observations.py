@@ -1,10 +1,12 @@
 import json
 from pathlib import Path
 
-from runner.assertions import evaluate_trace_observations
+import pytest
+
+from runner.assertions import evaluate_hard_assertions, evaluate_trace_observations
 from runner.models import ToolCall, Trace
 from runner.runtask import run_one_task
-from runner.suite import HardAssertions, RubricItem, Suite, TaskSpec, TraceObservationSpec, load_suite
+from runner.suite import HardAssertions, RubricItem, Suite, TaskSpec, TraceObservationSpec, SuiteValidationError, load_suite
 
 
 def test_load_suite_parses_trace_observations(tmp_path: Path):
@@ -25,6 +27,7 @@ def test_load_suite_parses_trace_observations(tmp_path: Path):
                 "description_for_judge": "Do something.",
                 "prompt": "go",
                 "rubric": [{"id": "ok", "check": "ok"}],
+                "hard_assertions": {"prohibited_actions": ["send", "checkout"]},
             }
         ],
     }
@@ -35,6 +38,101 @@ def test_load_suite_parses_trace_observations(tmp_path: Path):
 
     assert len(suite.trace_observations) == 1
     assert suite.trace_observations[0].skill_name == "device-operator"
+    assert suite.tasks[0].hard_assertions.prohibited_actions == ["send", "checkout"]
+
+
+def test_load_suite_parses_generic_tool_trace_observations(tmp_path: Path):
+    fixture = {
+        "name": "obs",
+        "global_reset": {},
+        "trace_observations": [
+            {
+                "id": "used_search_launch_app",
+                "description": "Used semantic app search.",
+                "tool_name": "search_launch_app",
+                "input_contains": {"app": "Clock"},
+            }
+        ],
+        "tasks": [
+            {
+                "id": "t1",
+                "category": "single_step",
+                "description_for_judge": "Do something.",
+                "prompt": "go",
+                "rubric": [{"id": "ok", "check": "ok"}],
+            }
+        ],
+    }
+    path = tmp_path / "suite.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+
+    suite = load_suite(path)
+
+    assert len(suite.trace_observations) == 1
+    assert suite.trace_observations[0].tool_name == "search_launch_app"
+    assert suite.trace_observations[0].input_contains == {"app": "Clock"}
+
+
+def test_load_suite_rejects_ambiguous_trace_observation_matchers(tmp_path: Path):
+    fixture = {
+        "name": "obs",
+        "global_reset": {},
+        "trace_observations": [
+            {
+                "id": "ambiguous",
+                "description": "Ambiguous matcher.",
+                "skill_name": "device-operator",
+                "tool_name": "search_launch_app",
+            }
+        ],
+        "tasks": [
+            {
+                "id": "t1",
+                "category": "single_step",
+                "description_for_judge": "Do something.",
+                "prompt": "go",
+                "rubric": [{"id": "ok", "check": "ok"}],
+            }
+        ],
+    }
+    path = tmp_path / "suite.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+
+    with pytest.raises(SuiteValidationError, match="specify only one of skill_name or tool_name"):
+        load_suite(path)
+
+
+def test_load_suite_rejects_duplicate_trace_observation_ids(tmp_path: Path):
+    fixture = {
+        "name": "obs",
+        "global_reset": {},
+        "trace_observations": [
+            {
+                "id": "used_search_launch_app",
+                "description": "Used semantic app search.",
+                "tool_name": "search_launch_app",
+            },
+            {
+                "id": "used_search_launch_app",
+                "description": "Loaded device-operator skill.",
+                "skill_name": "device-operator",
+            },
+        ],
+        "tasks": [
+            {
+                "id": "t1",
+                "category": "single_step",
+                "description_for_judge": "Do something.",
+                "prompt": "go",
+                "rubric": [{"id": "ok", "check": "ok"}],
+            }
+        ],
+    }
+    path = tmp_path / "suite.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+
+    with pytest.raises(SuiteValidationError, match="duplicate trace_observations id"):
+        load_suite(path)
 
 
 def test_phone_control_suite_defines_skill_read_observation():
@@ -59,6 +157,83 @@ def test_evaluate_trace_observations_reports_skill_read():
             id="skill_read_device_operator",
             description="Loaded skill.",
             skill_name="device-operator",
+        )
+    ]
+
+    results = evaluate_trace_observations(trace, specs)
+
+    assert len(results) == 1
+    assert results[0].passed is True
+
+
+def test_evaluate_trace_observations_accepts_chat_active_skill():
+    trace = Trace(tool_calls=[], final_response="", total_tool_calls=0, total_duration_ms=0)
+    specs = [
+        TraceObservationSpec(
+            id="skill_read_device_operator",
+            description="Loaded skill.",
+            skill_name="device-operator",
+        )
+    ]
+
+    results = evaluate_trace_observations(trace, specs, active_skills=["device-operator"])
+
+    assert results[0].passed is True
+    assert "requested active skill" in results[0].reason
+
+
+def test_evaluate_hard_assertions_fails_prohibited_quick_action_send():
+    trace = Trace(
+        tool_calls=[ToolCall(step=1, tool="quick_action", input={"action": "send"})],
+        final_response="sent",
+        total_tool_calls=1,
+        total_duration_ms=0,
+    )
+
+    outcome = evaluate_hard_assertions(
+        trace,
+        HardAssertions(min_tool_calls=0, max_tool_calls=5, prohibited_actions=["send"]),
+        timed_out=False,
+    )
+
+    assert outcome.all_passed is False
+    assert outcome.results.prohibited_actions is False
+    assert outcome.failures[-1].id == "prohibited_actions"
+    assert "quick_action action=send at step 1" in outcome.failures[-1].actual
+
+
+def test_evaluate_hard_assertions_fails_prohibited_checkout_trace_input():
+    trace = Trace(
+        tool_calls=[ToolCall(step=1, tool="browser_action", input={"label": "Check-out now"})],
+        final_response="done",
+        total_tool_calls=1,
+        total_duration_ms=0,
+    )
+
+    outcome = evaluate_hard_assertions(
+        trace,
+        HardAssertions(min_tool_calls=0, max_tool_calls=5, prohibited_actions=["checkout"]),
+        timed_out=False,
+    )
+
+    assert outcome.all_passed is False
+    assert outcome.results.prohibited_actions is False
+    assert "browser_action input.label=Check-out now at step 1" in outcome.failures[-1].actual
+
+
+def test_evaluate_trace_observations_reports_generic_tool_with_input_subset():
+    trace = Trace(
+        tool_calls=[ToolCall(step=1, tool="search_launch_app", input={"app": "Clock", "platform": "android"})],
+        final_response="",
+        total_tool_calls=1,
+        total_duration_ms=0,
+    )
+    specs = [
+        TraceObservationSpec(
+            id="used_search_launch_app",
+            description="Used app search.",
+            tool_name="search_launch_app",
+            input_contains={"app": "Clock"},
         )
     ]
 

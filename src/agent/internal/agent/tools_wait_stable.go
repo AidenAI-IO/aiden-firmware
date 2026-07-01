@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -11,8 +12,8 @@ import (
 
 const (
 	defaultStableWaitTimeoutMs = 3500
-	defaultStableDurationMs    = 500
-	defaultDiffThreshold       = 2.0
+	defaultStableDurationMs    = 400
+	defaultDiffThreshold       = 5.0
 	stableWaitPollInterval     = 200 * time.Millisecond
 )
 
@@ -126,11 +127,14 @@ func (t *WaitStableScreenTool) ArgsSchema() map[string]any {
 func (t *WaitStableScreenTool) Call(ctx context.Context, input string) (string, error) {
 	result, err := t.wait(ctx, input)
 	if err != nil {
-		return fmt.Sprintf("error: %v", err), nil
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "", err
+		}
+		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
 	screenshot, err := t.captureScreenshot()
 	if err != nil {
-		return fmt.Sprintf("error: stable-screen wait completed with stable=%v elapsed_ms=%d, but screenshot failed: %v", result.Stable, result.ElapsedMs, err), nil
+		return toolErrorResultf(ctx, CodeToolExecutionFailed, "stable-screen wait completed with stable=%v elapsed_ms=%d, but screenshot failed: %v", result.Stable, result.ElapsedMs, err), nil
 	}
 	stable := result.Stable
 	elapsed := result.ElapsedMs
@@ -151,38 +155,48 @@ func (t *WaitStableScreenTool) captureScreenshot() (screenshotResult, error) {
 	if err != nil {
 		return screenshotResult{}, err
 	}
+	if meta.Stale {
+		return screenshotResult{}, fmt.Errorf("frame service: STALE_FRAME")
+	}
 	if meta.PixelFormat != "jpeg" {
 		return screenshotResult{}, fmt.Errorf("expected jpeg format, got %s", meta.PixelFormat)
 	}
 	active := screenActiveArea{}
 	sourceWidth := int(meta.Width)
 	sourceHeight := int(meta.Height)
-	fromSourceMeta := false
+	alreadyCropped := false
 	if fullWidth, fullHeight, sourceActive, ok := frameMetadataSourceActiveArea(meta); ok {
 		sourceWidth = fullWidth
 		sourceHeight = fullHeight
 		active = sourceActive
-		fromSourceMeta = true
+		alreadyCropped = true
 	} else {
 		active = detectScreenshotActiveAreaForScreen(t.screen, jpegData, int(meta.Width), int(meta.Height))
 	}
 	if t.screen != nil {
 		t.screen.UpdateActiveArea(sourceWidth, sourceHeight, active)
 	}
+	displayWidth := int(meta.Width)
+	displayHeight := int(meta.Height)
+	displayData := jpegData
+	if !alreadyCropped && active.Valid && (active.X != 0 || active.Y != 0 || active.Width != displayWidth || active.Height != displayHeight) {
+		croppedData, croppedWidth, croppedHeight, err := cropJPEGToActiveArea(jpegData, active, screenshotJPEGQuality)
+		if err != nil {
+			return screenshotResult{}, fmt.Errorf("crop screenshot to active area: %w", err)
+		}
+		displayWidth = croppedWidth
+		displayHeight = croppedHeight
+		displayData = croppedData
+	}
 	result := screenshotResult{
-		Width:  int(meta.Width),
-		Height: int(meta.Height),
+		Width:  displayWidth,
+		Height: displayHeight,
 		Format: "jpeg",
-		Size:   len(jpegData),
-		Data:   base64.StdEncoding.EncodeToString(jpegData),
+		Size:   len(displayData),
+		Data:   base64.StdEncoding.EncodeToString(displayData),
 	}
 	if provider, ok := t.client.(screenshotCaptureInfoProvider); ok {
 		applyScreenCaptureInfo(&result, provider.LastCaptureInfo())
-	}
-	if !fromSourceMeta && active.Valid && (active.X != 0 || active.Y != 0 || active.Width != result.Width || active.Height != result.Height) {
-		result.ActiveArea = &active
-		result.ActiveWidth = active.Width
-		result.ActiveHeight = active.Height
 	}
 	return result, nil
 }

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -10,11 +11,11 @@ import (
 
 // TestMaintenanceDoesNotClobberConcurrentAppends verifies that when maintenance
 // (triggered by RequestMaintenance) runs compression asynchronously, any events
-// appended via AppendExchange or persistSnapshot during the compression window
+// appended via AppendExchange or syncSessionRecords during the compression window
 // are not lost. This is a regression test for the race condition where:
 // 1. maintenance reads events snapshot
 // 2. maintenance runs LLM summary (slow, releases lock)
-// 3. turn N+1 appends new events via persistSnapshot
+// 3. turn N+1 appends new events via syncSessionRecords
 // 4. maintenance replaceEvents with old snapshot → new events clobbered
 func TestMaintenanceDoesNotClobberConcurrentAppends(t *testing.T) {
 	ctx := context.Background()
@@ -33,9 +34,9 @@ func TestMaintenanceDoesNotClobberConcurrentAppends(t *testing.T) {
 	}
 
 	cfg := MemoryExtractionConfig{
-		HotWindowEvents:         5,
+		HotWindowEvents:          5,
 		CountCompressAfterEvents: 10,
-		CompressAtPercent:       50,
+		CompressAtPercent:        50,
 	}
 
 	mgr := NewMemoryManager(
@@ -68,20 +69,19 @@ func TestMaintenanceDoesNotClobberConcurrentAppends(t *testing.T) {
 		mgr.RequestMaintenance()
 	}()
 
-	// Goroutine 2: Wait for summary to start, then append via persistSnapshot
-	// (the path used by SaveSnapshot in runtime.go:518)
+	// Goroutine 2: Wait for summary to start, then append via syncSessionRecords.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		<-summaryStarted
 
-		// This simulates a turn calling SaveSnapshot while maintenance is running
+		// This simulates a turn synchronizing history while maintenance is running.
 		records := []MessageRecord{
 			{Role: "user", Content: "injected during compression window"},
 			{Role: "assistant", Content: "response during compression window"},
 		}
-		if err := mgr.persistSnapshot("default", records); err != nil {
-			t.Errorf("persistSnapshot during maintenance: %v", err)
+		if err := mgr.syncSessionRecords("default", records); err != nil {
+			t.Errorf("syncSessionRecords during maintenance: %v", err)
 		}
 	}()
 
@@ -115,7 +115,7 @@ func TestMaintenanceDoesNotClobberConcurrentAppends(t *testing.T) {
 	}
 }
 
-// TestAppendAndMaintenanceFileLockSerialization verifies that persistSnapshot
+// TestAppendAndMaintenanceFileLockSerialization verifies that syncSessionRecords
 // and maintainFilesystemMemory properly serialize access to events.jsonl via
 // FileLock, preventing torn reads/writes.
 func TestAppendAndMaintenanceFileLockSerialization(t *testing.T) {
@@ -151,10 +151,10 @@ func TestAppendAndMaintenanceFileLockSerialization(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			records := []MessageRecord{
-				{Role: "user", Content: "concurrent append"},
+				{Role: "user", Content: fmt.Sprintf("concurrent append %d", id)},
 			}
-			if err := mgr.persistSnapshot("default", records); err != nil {
-				t.Errorf("goroutine %d persistSnapshot: %v", id, err)
+			if err := mgr.syncSessionRecords("default", records); err != nil {
+				t.Errorf("goroutine %d syncSessionRecords: %v", id, err)
 			}
 		}(i)
 	}

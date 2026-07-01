@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 type textInputStubTool struct {
@@ -36,7 +37,7 @@ func TestEnterTextInFieldASCII(t *testing.T) {
 	}}}
 	kbText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
 	kbTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
-	engine := newTextInputEngine(textInputHardwareDeps{
+	engine := newFastTextInputEngine(textInputHardwareDeps{
 		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
 		keyboardTap:  kbTap,
 		keyboardText: kbText,
@@ -53,13 +54,39 @@ func TestEnterTextInFieldASCII(t *testing.T) {
 	}
 }
 
+func TestEnterTextInFieldSearchModeHandsOffAfterASCIIInput(t *testing.T) {
+	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
+		ObservedMode: textInputModeASCII,
+		FieldText:    "Aid",
+	}}}
+	kbText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
+	engine := newFastTextInputEngine(textInputHardwareDeps{
+		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
+		keyboardTap:  textInputStubTool{name: "keyboard_tap", out: "ok"},
+		keyboardText: kbText,
+		quickAction:  textInputStubTool{name: "quick_action", out: "ok"},
+		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}, vision)
+	tool := &EnterTextInFieldTool{engine: engine}
+	out, err := tool.Call(context.Background(), `{"text":"Aiden","mode":"search","focus":{"x":500,"y":100}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"interrupted": true`) || !strings.Contains(out, `search handoff after ascii input`) {
+		t.Fatalf("unexpected output: %s", out)
+	}
+	if len(kbText.calls) != 1 {
+		t.Fatalf("keyboard_text calls=%v", kbText.calls)
+	}
+}
+
 func TestEnterTextInFieldASCIIWithSpaces(t *testing.T) {
 	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
 		FieldText: "hello test",
 	}}}
 	kbText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
 	kbTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
-	engine := newTextInputEngine(textInputHardwareDeps{
+	engine := newFastTextInputEngine(textInputHardwareDeps{
 		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
 		keyboardTap:  kbTap,
 		keyboardText: kbText,
@@ -88,7 +115,7 @@ func TestEnterTextInFieldRejectsRomanizationField(t *testing.T) {
 		WrongIMESuspected: true,
 		SuggestSwitchIME:  true,
 	}}}
-	engine := newTextInputEngine(textInputHardwareDeps{
+	engine := newFastTextInputEngine(textInputHardwareDeps{
 		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
 		keyboardTap:  textInputStubTool{name: "keyboard_tap", out: "ok"},
 		keyboardText: textInputStubTool{name: "keyboard_text", out: "ok"},
@@ -106,7 +133,7 @@ func TestEnterTextInFieldRejectsRomanizationField(t *testing.T) {
 }
 
 func TestEnterTextInFieldCompositionRequiresSegments(t *testing.T) {
-	engine := newTextInputEngine(textInputHardwareDeps{
+	engine := newFastTextInputEngine(textInputHardwareDeps{
 		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
 		keyboardTap:  textInputStubTool{name: "keyboard_tap", out: "ok"},
 		keyboardText: textInputStubTool{name: "keyboard_text", out: "ok"},
@@ -123,6 +150,36 @@ func TestEnterTextInFieldCompositionRequiresSegments(t *testing.T) {
 	}
 }
 
+func TestEnterTextInFieldStructuredKeyboardErrorDoesNotPoisonRetriableResult(t *testing.T) {
+	keyboardErr := NewToolError(CodeInvalidArguments, "keyboard_text failed")
+	engine := newFastTextInputEngine(textInputHardwareDeps{
+		mouseClick:  textInputStubTool{name: "mouse_click", out: "ok"},
+		keyboardTap: textInputStubTool{name: "keyboard_tap", out: "ok"},
+		keyboardText: &stubTextInputCallTool{
+			tool: textInputStubTool{name: "keyboard_text"},
+			fn: func(ctx context.Context, _ string) (string, error) {
+				SetToolError(ctx, keyboardErr)
+				return keyboardErr.Message, nil
+			},
+		},
+		quickAction: textInputStubTool{name: "quick_action", out: "ok"},
+		screenshot:  textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}, &stubTextInputVision{})
+	tool := &EnterTextInFieldTool{engine: engine}
+	ctx, _ := WithToolError(context.Background())
+
+	out, err := tool.Call(ctx, `{"text":"hello","focus":{"x":500,"y":100},"max_attempts":1}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ToolErrorFromContext(ctx); got != nil {
+		t.Fatalf("ToolError = %+v, want nil for retriable keyboard_text failure", got)
+	}
+	if !strings.Contains(out, `"committed": false`) || !strings.Contains(out, "exhausted retries") {
+		t.Fatalf("unexpected output: %s", out)
+	}
+}
+
 func TestEnterTextInFieldCompositionSuccess(t *testing.T) {
 	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{
 		// after all segments typed + space: pending with candidate
@@ -135,7 +192,7 @@ func TestEnterTextInFieldCompositionSuccess(t *testing.T) {
 		// after clicking candidate: committed
 		{FieldText: "你好"},
 	}}
-	engine := newTextInputEngine(textInputHardwareDeps{
+	engine := newFastTextInputEngine(textInputHardwareDeps{
 		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
 		keyboardTap:  textInputStubTool{name: "keyboard_tap", out: "ok"},
 		keyboardText: textInputStubTool{name: "keyboard_text", out: "ok"},
@@ -207,7 +264,7 @@ func TestEnterTextInFieldASCIIRetryWithoutRefocus(t *testing.T) {
 	}}}
 	mouse := &recordingTextInputTool{name: "mouse_click", out: "ok"}
 	kbText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
-	engine := newTextInputEngine(textInputHardwareDeps{
+	engine := newFastTextInputEngine(textInputHardwareDeps{
 		mouseClick:   mouse,
 		keyboardTap:  textInputStubTool{name: "keyboard_tap", out: "ok"},
 		keyboardText: kbText,
@@ -240,7 +297,7 @@ func TestEnterTextInFieldRetryWithoutRetype(t *testing.T) {
 		{FieldText: "你好"},
 	}}
 	kbText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
-	engine := newTextInputEngine(textInputHardwareDeps{
+	engine := newFastTextInputEngine(textInputHardwareDeps{
 		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
 		keyboardTap:  textInputStubTool{name: "keyboard_tap", out: "ok"},
 		keyboardText: kbText,
@@ -257,6 +314,74 @@ func TestEnterTextInFieldRetryWithoutRetype(t *testing.T) {
 	}
 	if len(kbText.calls) != 2 {
 		t.Fatalf("expected single type pass (ni+hao), got keyboard_text calls=%v", kbText.calls)
+	}
+}
+
+func TestEnterTextInFieldFirstCompositionAttemptWaitsForIME(t *testing.T) {
+	originalDelay := textInputCompositionReadyDelay
+	textInputCompositionReadyDelay = 0
+	defer func() { textInputCompositionReadyDelay = originalDelay }()
+
+	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
+		FieldText: "你好",
+	}}}
+	engine := newFastTextInputEngine(textInputHardwareDeps{
+		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
+		keyboardTap:  textInputStubTool{name: "keyboard_tap", out: "ok"},
+		keyboardText: textInputStubTool{name: "keyboard_text", out: "ok"},
+		quickAction:  textInputStubTool{name: "quick_action", out: "ok"},
+		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}, vision)
+	tool := &EnterTextInFieldTool{engine: engine}
+	out, err := tool.Call(context.Background(), `{"text":"你好","focus":{"x":500,"y":100},"segments":["ni","hao"]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"committed": true`) {
+		t.Fatalf("unexpected output: %s", out)
+	}
+	if !strings.Contains(out, "wait 0s for IME to settle before first composition input") {
+		t.Fatalf("expected IME settle step in output, got: %s", out)
+	}
+}
+
+func TestTextInputEngineFirstCompositionAttemptRespectsContextCancelDuringIMEWait(t *testing.T) {
+	originalDelay := textInputCompositionReadyDelay
+	textInputCompositionReadyDelay = time.Second
+	defer func() { textInputCompositionReadyDelay = originalDelay }()
+
+	engine := newTextInputEngine(textInputHardwareDeps{
+		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
+		keyboardTap:  textInputStubTool{name: "keyboard_tap", out: "ok"},
+		keyboardText: textInputStubTool{name: "keyboard_text", out: "ok"},
+		quickAction:  textInputStubTool{name: "quick_action", out: "ok"},
+		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}, &stubTextInputVision{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	start := time.Now()
+	result, err := engine.Run(ctx, enterTextInFieldArgs{
+		Text:        "你好",
+		SkipFocus:   true,
+		MaxAttempts: 1,
+		Segments:    []string{"ni", "hao"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(start) >= textInputCompositionReadyDelay/2 {
+		t.Fatalf("Run blocked too long after context cancellation")
+	}
+	if result.Reason != context.Canceled.Error() {
+		t.Fatalf("Reason=%q, want %q", result.Reason, context.Canceled.Error())
+	}
+	if len(result.Steps) == 0 || !strings.Contains(result.Steps[len(result.Steps)-1], "IME to settle") {
+		t.Fatalf("expected IME settle step in result, got: %v", result.Steps)
+	}
+	if result.Committed {
+		t.Fatalf("Committed=%v, want false", result.Committed)
 	}
 }
 
@@ -278,7 +403,7 @@ func TestEnterTextInFieldCandidatePaging(t *testing.T) {
 		{FieldText: "你好"},
 	}}
 	kbTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
-	engine := newTextInputEngine(textInputHardwareDeps{
+	engine := newFastTextInputEngine(textInputHardwareDeps{
 		mouseClick:   textInputStubTool{name: "mouse_click", out: "ok"},
 		keyboardTap:  kbTap,
 		keyboardText: textInputStubTool{name: "keyboard_text", out: "ok"},
@@ -322,9 +447,12 @@ func TestCycleIMEUsesKeyboardTapNotQuickAction(t *testing.T) {
 	}
 	qa := textInputStubTool{name: "quick_action"}
 	qaOut := "ok"
-	engine := newTextInputEngine(textInputHardwareDeps{
-		keyboardTap:  &stubTextInputCallTool{tool: kb, fn: kbCall},
-		quickAction:  &stubTextInputCallTool{tool: qa, fn: func(context.Context, string) (string, error) { qaOut = `{"ok":false,"status":"reserved"}`; return qaOut, nil }},
+	engine := newFastTextInputEngine(textInputHardwareDeps{
+		keyboardTap: &stubTextInputCallTool{tool: kb, fn: kbCall},
+		quickAction: &stubTextInputCallTool{tool: qa, fn: func(context.Context, string) (string, error) {
+			qaOut = `{"ok":false,"status":"reserved"}`
+			return qaOut, nil
+		}},
 	}, &stubTextInputVision{})
 	label, err := engine.cycleIME(context.Background(), "android")
 	if err != nil {

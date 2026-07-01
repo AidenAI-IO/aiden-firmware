@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -133,6 +134,33 @@ func TestServerSpeakTextUsesProviderManager(t *testing.T) {
 	}
 }
 
+func TestSpeakTextDoesNotRetryAfterPlaybackStarts(t *testing.T) {
+	provider := &playbackStartedTransientErrorProvider{name: "transient-after-playback"}
+	audioOps := &recordedAudioOps{}
+	server := &Server{
+		runtime: NewRuntimeWithDeps(
+			Config{Model: ModelConfig{Provider: "fake"}, Audio: AudioConfig{SampleRate: 16000}},
+			&testModelResolver{model: &scriptedModel{}},
+			NewMemoryManager(""),
+			NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+			NewSkillIndex(),
+		),
+		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
+		audioClient: NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, audioOps)),
+	}
+
+	err := server.speakText(context.Background(), "hello", 0)
+	if err == nil || !isTransientTTSError(err) {
+		t.Fatalf("speakText() error = %v, want transient TTS error after playback started", err)
+	}
+	if got := audioOps.countOp("start_playback"); got != 1 {
+		t.Fatalf("start_playback count = %d, want no retry after playback started", got)
+	}
+	if got := provider.beginCalls(); got != 1 {
+		t.Fatalf("BeginStream calls = %d, want 1", got)
+	}
+}
+
 func TestNewAudioDialogInitializesProviderManager(t *testing.T) {
 	dialog, err := NewAudioDialog(Config{
 		Model: ModelConfig{Provider: "fake"},
@@ -218,7 +246,10 @@ func containsProviderName(values []string, target string) bool {
 }
 
 func TestAudioDialogRunAgentTurnStreamsThroughProviderManager(t *testing.T) {
-	model := &rawStreamingModel{content: "streamed answer", chunks: []string{"streamed ", "answer"}}
+	model := &rawStreamingModel{
+		content: "streamed answer\n<tts>streamed answer</tts>",
+		chunks:  []string{"streamed answer\n<t", "ts>streamed ", "answer</tts>"},
+	}
 	runtime := NewRuntimeWithDeps(
 		Config{Model: ModelConfig{Provider: "fake"}},
 		&testModelResolver{model: model},
@@ -252,10 +283,10 @@ func TestAudioDialogRunAgentTurnStreamsThroughProviderManager(t *testing.T) {
 
 func TestAudioDialogRunAgentTurnStreamsFinalAnswer(t *testing.T) {
 	model := &rawStreamingModel{
-		content: `{"final_answer":"已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。"}`,
+		content: "已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。\n<tts>已完成设置，当前音量是 42。</tts>",
 		chunks: []string{
-			`{"final_answer":"已完成设置`,
-			`，当前音量是 42。\n\n完整回答保留给屏幕。"}`,
+			"已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。\n<t",
+			"ts>已完成设置，当前音量是 42。</tts>",
 		},
 	}
 	runtime := NewRuntimeWithDeps(
@@ -284,105 +315,14 @@ func TestAudioDialogRunAgentTurnStreamsFinalAnswer(t *testing.T) {
 	if !result.SpeechStreamed {
 		t.Fatal("SpeechStreamed = false, want true when speech streamed")
 	}
-	if result.Output != "已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。" {
+	wantOutput := "已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。\n<tts>已完成设置，当前音量是 42。</tts>"
+	if result.Output != wantOutput {
 		t.Fatalf("Output = %q", result.Output)
 	}
-	if got := provider.texts(); len(got) != 1 || got[0] != "已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。" {
+	if got := provider.texts(); len(got) != 1 || got[0] != "已完成设置，当前音量是 42。" {
 		t.Fatalf("provider texts = %#v", got)
 	}
 }
-
-func TestAudioDialogInterruptOutputStopsActiveStreamingTTS(t *testing.T) {
-	model := newBlockingStreamingModel("old answer", "ignored stale suffix", "final answer")
-	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}},
-		&testModelResolver{model: model},
-		NewMemoryManager(""),
-		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
-		NewSkillIndex(),
-	)
-	streamingEnabled := true
-	provider := newInterruptibleAudioTTSProvider("dialog-provider", 48000, false)
-	audioOps := &recordedAudioOps{}
-	dialog := &AudioDialog{
-		config: Config{
-			Model:                    ModelConfig{Provider: "fake"},
-			Audio:                    AudioConfig{SampleRate: 48000},
-			VoiceStreamingTTSEnabled: &streamingEnabled,
-		},
-		audioClient: NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, audioOps)),
-		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
-	}
-
-	resultCh := make(chan audioDialogRunResult, 1)
-	go func() {
-		result, err := dialog.RunAgentTurn(context.Background(), TurnInput{InputText: "hello"}, runtime)
-		resultCh <- audioDialogRunResult{result: result, err: err}
-	}()
-
-	waitForTestSignal(t, provider.firstWriteDone(), "streaming TTS playback to start")
-	dialog.InterruptOutput()
-	model.release()
-
-	turnResult := waitForAudioDialogRunResult(t, resultCh)
-	if turnResult.err != nil {
-		t.Fatalf("RunAgentTurn() error = %v", turnResult.err)
-	}
-	if turnResult.result.SpeechStreamed {
-		t.Fatal("SpeechStreamed = true, want false after streaming TTS interrupt")
-	}
-	if got := provider.texts(); len(got) != 1 || got[0] != "old answer" {
-		t.Fatalf("provider texts = %#v, want only the pre-interrupt stream chunk", got)
-	}
-	if got := provider.closeCalls(); got != 0 {
-		t.Fatalf("stream Close calls = %d, want 0 after interrupt", got)
-	}
-	if got := audioOps.countOp("stop_playback"); got != 1 {
-		t.Fatalf("stop_playback count = %d, want 1", got)
-	}
-	if got := audioOps.finalChunkCountAfterFirstStop(); got != 0 {
-		t.Fatalf("final write_play_chunk count after stop = %d, want 0 after interrupt", got)
-	}
-}
-
-func TestAudioDialogProcessUtteranceSpeaksFinalAnswerWhenStreamingTTSInterrupted(t *testing.T) {
-	model := newBlockingStreamingModel("old answer", "ignored stale suffix", "final answer")
-	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}},
-		&testModelResolver{model: model},
-		NewMemoryManager(""),
-		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
-		NewSkillIndex(),
-	)
-	streamingEnabled := true
-	provider := newInterruptibleAudioTTSProvider("dialog-provider", 48000, false)
-	dialog := &AudioDialog{
-		config: Config{
-			InputMode:                "audio",
-			Model:                    ModelConfig{Provider: "fake"},
-			Audio:                    AudioConfig{SampleRate: 48000},
-			VoiceStreamingTTSEnabled: &streamingEnabled,
-		},
-		audioClient: NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, &recordedAudioOps{})),
-		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
-	}
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- dialog.ProcessUtterance(context.Background(), []int16{1, 2}, runtime)
-	}()
-
-	waitForTestSignal(t, provider.firstWriteDone(), "streaming TTS playback to start")
-	dialog.InterruptOutput()
-	model.release()
-
-	if err := waitForError(t, errCh); err != nil {
-		t.Fatalf("ProcessUtterance() error = %v", err)
-	}
-	if got := provider.texts(); len(got) != 2 || got[0] != "old answer" || got[1] != "final answer" {
-		t.Fatalf("provider texts = %#v, want interrupted stream then normal final Speak", got)
-	}
-}
-
 func TestAudioDialogInterruptOutputStopsBackgroundToolSpeech(t *testing.T) {
 	provider := newInterruptibleAudioTTSProvider("dialog-provider", 48000, true)
 	audioOps := &recordedAudioOps{}
@@ -415,10 +355,10 @@ func TestAudioDialogInterruptOutputStopsBackgroundToolSpeech(t *testing.T) {
 
 func TestRuntimeRunStreamsFinalAnswerToWriter(t *testing.T) {
 	model := &rawStreamingModel{
-		content: `{"final_answer":"完整回答保留给屏幕。"}`,
+		content: "完整回答保留给屏幕。\n<tts>播报摘要。</tts>",
 		chunks: []string{
-			`{"final_answer":"完整`,
-			`回答保留给屏幕。"}`,
+			"完整回答保留给屏幕。\n<t",
+			"ts>播报摘要。</tts>",
 		},
 	}
 	runtime := NewRuntimeWithDeps(
@@ -432,16 +372,16 @@ func TestRuntimeRunStreamsFinalAnswerToWriter(t *testing.T) {
 
 	result, err := runtime.Run(context.Background(), RunRequest{
 		Input:             "hello",
-		StreamWriter:      NewJSONFieldOrPlainStreamWriter(&stream, "final_answer"),
+		StreamWriter:      NewTTSTagStreamWriter(&stream),
 		StreamFinalChunks: true,
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if stream.String() != "完整回答保留给屏幕。" {
+	if stream.String() != "播报摘要。" {
 		t.Fatalf("stream = %q", stream.String())
 	}
-	if result.Output != "完整回答保留给屏幕。" {
+	if result.Output != "完整回答保留给屏幕。\n<tts>播报摘要。</tts>" {
 		t.Fatalf("Output = %q", result.Output)
 	}
 }
@@ -610,10 +550,6 @@ func (s *interruptibleAudioTTSSession) Flush() error { return nil }
 
 func (s *interruptibleAudioTTSSession) Close() error {
 	s.provider.closeCount.Add(1)
-	if err := s.sink.Drain(s.ctx); err != nil {
-		s.err = err
-		return err
-	}
 	return nil
 }
 
@@ -763,11 +699,7 @@ func (s *formatCheckingTTSSession) WriteText(string) error { return nil }
 func (s *formatCheckingTTSSession) Flush() error { return nil }
 
 func (s *formatCheckingTTSSession) Close() error {
-	if err := s.sink.WritePCM([]byte{0, 0, 1, 0, 2, 0}); err != nil {
-		s.err = err
-		return err
-	}
-	if err := s.sink.Drain(context.Background()); err != nil {
+	if err := s.sink.WritePCM(make([]byte, testTTSPlaybackStartPCMBytes)); err != nil {
 		s.err = err
 		return err
 	}
@@ -782,9 +714,22 @@ type recordingTTSProvider struct {
 	seen []string
 }
 
+const testTTSPlaybackStartPCMBytes = 48000
+
+type playbackStartedTransientErrorProvider struct {
+	name  string
+	calls atomic.Int32
+}
+
 func (p *recordingTTSProvider) Name() string { return p.name }
 
+func (p *playbackStartedTransientErrorProvider) Name() string { return p.name }
+
 func (p *recordingTTSProvider) Capabilities() ttsmodule.Capabilities {
+	return ttsmodule.Capabilities{SupportedSampleRates: []int{16000}}
+}
+
+func (p *playbackStartedTransientErrorProvider) Capabilities() ttsmodule.Capabilities {
 	return ttsmodule.Capabilities{SupportedSampleRates: []int{16000}}
 }
 
@@ -792,12 +737,23 @@ func (p *recordingTTSProvider) BeginStream(ctx context.Context, sink ttsmodule.A
 	return &recordingTTSSession{provider: p, sink: sink}, nil
 }
 
+func (p *playbackStartedTransientErrorProvider) BeginStream(ctx context.Context, sink ttsmodule.AudioSink) (ttsmodule.StreamSession, error) {
+	p.calls.Add(1)
+	return &playbackStartedTransientErrorSession{sink: sink}, nil
+}
+
 func (p *recordingTTSProvider) Close() error { return nil }
+
+func (p *playbackStartedTransientErrorProvider) Close() error { return nil }
 
 func (p *recordingTTSProvider) texts() []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return append([]string(nil), p.seen...)
+}
+
+func (p *playbackStartedTransientErrorProvider) beginCalls() int {
+	return int(p.calls.Load())
 }
 
 type recordingTTSSession struct {
@@ -807,32 +763,49 @@ type recordingTTSSession struct {
 	err      error
 }
 
+type playbackStartedTransientErrorSession struct {
+	sink ttsmodule.AudioSink
+	err  error
+}
+
 func (s *recordingTTSSession) WriteText(text string) error {
 	_, _ = s.buf.WriteString(text)
 	return nil
 }
 
+func (s *playbackStartedTransientErrorSession) WriteText(text string) error { return nil }
+
 func (s *recordingTTSSession) Flush() error { return nil }
+
+func (s *playbackStartedTransientErrorSession) Flush() error { return nil }
 
 func (s *recordingTTSSession) Close() error {
 	text := s.buf.String()
 	if text != "" {
-		s.provider.mu.Lock()
-		s.provider.seen = append(s.provider.seen, text)
-		s.provider.mu.Unlock()
-		if err := s.sink.WritePCM([]byte{0, 0}); err != nil {
+		if err := s.sink.WritePCM(make([]byte, testTTSPlaybackStartPCMBytes)); err != nil {
 			s.err = err
 			return err
 		}
-	}
-	if err := s.sink.Drain(context.Background()); err != nil {
-		s.err = err
-		return err
+		s.provider.mu.Lock()
+		s.provider.seen = append(s.provider.seen, text)
+		s.provider.mu.Unlock()
 	}
 	return nil
 }
 
+func (s *playbackStartedTransientErrorSession) Close() error {
+	if err := s.sink.WritePCM(make([]byte, 16000)); err != nil {
+		s.err = err
+		return err
+	}
+	err := errors.New("dial tcp: i/o timeout")
+	s.err = err
+	return err
+}
+
 func (s *recordingTTSSession) Err() error { return s.err }
+
+func (s *playbackStartedTransientErrorSession) Err() error { return s.err }
 
 func startTTSPlaybackAudioSocket(t *testing.T) string {
 	t.Helper()

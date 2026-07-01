@@ -23,8 +23,12 @@ if grep -q '^[[:space:]]*control_token_file[[:space:]]*=' "$config_file"; then
     sed -i 's#^[[:space:]]*control_token_file[[:space:]]*=.*#control_token_file = "/config/control_token"#' "$config_file"
 fi
 
-default_forward_tools="screenshot,touch_gesture,keyboard_text,keyboard_tap,mouse_click,mouse_move,mouse_scroll,quick_action"
+default_forward_tools="screenshot,touch_gesture,keyboard_text,keyboard_tap,enter_text_in_field,enter_text_via_bridge,mouse_click,mouse_move,mouse_scroll,quick_action"
 set -- daemon -config "$runtime_config_dir" -addr "${AIDEN_DAEMON_ADDR:-0.0.0.0:8080}"
+
+if [ -n "${AIDEN_BENCHMARK_TOKEN_FILE:-}" ]; then
+    set -- "$@" --benchmark-token-file "$AIDEN_BENCHMARK_TOKEN_FILE"
+fi
 
 if [ "${AIDEN_ENVIRONMENT_BRIDGE_MODE:-}" = "1" ] || [ "${AIDEN_ENVIRONMENT_BRIDGE_MODE:-}" = "true" ]; then
     if [ -z "${ENVIRONMENT_BRIDGE_ENDPOINT:-}" ]; then

@@ -2,6 +2,18 @@ package agent
 
 import "testing"
 
+func newRuntimeWithTextEntryTools() *Runtime {
+	tools := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
+	tools.RegisterEnterTextInFieldTool(&testModelResolver{model: &scriptedModel{}}, nil)
+	return NewRuntimeWithDeps(
+		Config{},
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		tools,
+		NewSkillIndex(),
+	)
+}
+
 func TestQuickActionExposedToAgentAndToolLab(t *testing.T) {
 	if !isAgentToolExposed("quick_action") {
 		t.Fatal("expected quick_action available to conversational agent")
@@ -30,6 +42,24 @@ func TestWaitForWakeupExposedToAgentAndToolLab(t *testing.T) {
 	}
 	if !isAgentToolExposed("wait_for_wakeup") {
 		t.Fatal("expected wait_for_wakeup available to conversational agent")
+	}
+}
+
+func TestRunScriptExposedToAgentAndToolLab(t *testing.T) {
+	runtime := NewRuntimeWithDeps(
+		Config{},
+		nil,
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	for _, name := range []string{"run_script", "list_scripts", "read_script", "write_script"} {
+		if _, ok := runtime.ToolDescriptorByName(name); !ok {
+			t.Fatalf("expected %s in Tool Lab HTTP catalog", name)
+		}
+		if !isAgentToolExposed(name) {
+			t.Fatalf("expected %s available to conversational agent", name)
+		}
 	}
 }
 
@@ -74,18 +104,12 @@ func TestResolveToolsIncludesQuickAction(t *testing.T) {
 }
 
 func TestResolveToolsIncludesPhoneBridgeToolsWhenDisconnected(t *testing.T) {
-	runtime := NewRuntimeWithDeps(
-		Config{},
-		nil,
-		NewMemoryManager(""),
-		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
-		NewSkillIndex(),
-	)
+	runtime := newRuntimeWithTextEntryTools()
 	runtime.tools.RegisterPhoneBridge(NewPhoneBridge(nil))
 
 	tools := runtime.resolveTools(ResolvedSkills{})
 	names := toolNamesFromTools(tools)
-	for _, want := range []string{"open_app", "clipboard", "calendar", "contacts", "notification"} {
+	for _, want := range []string{"open_app", "search_launch_app", "enter_text_via_bridge"} {
 		found := false
 		for _, name := range names {
 			if name == want {
@@ -94,19 +118,20 @@ func TestResolveToolsIncludesPhoneBridgeToolsWhenDisconnected(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Fatalf("resolveTools missing disconnected phone bridge tool %s: %v", want, names)
+			t.Fatalf("resolveTools missing disconnected bridge recovery tool %s: %v", want, names)
+		}
+	}
+	for _, notWant := range []string{"clipboard", "calendar", "contacts", "notification"} {
+		for _, name := range names {
+			if name == notWant {
+				t.Fatalf("resolveTools exposed disconnected phone bridge tool %s: %v", notWant, names)
+			}
 		}
 	}
 }
 
 func TestResolveToolsIncludesPhoneBridgeToolsWhenConnected(t *testing.T) {
-	runtime := NewRuntimeWithDeps(
-		Config{},
-		nil,
-		NewMemoryManager(""),
-		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
-		NewSkillIndex(),
-	)
+	runtime := newRuntimeWithTextEntryTools()
 	bridge := NewPhoneBridge(nil)
 	bridge.connected = true
 	runtime.tools.RegisterPhoneBridge(bridge)
@@ -127,14 +152,24 @@ func TestResolveToolsIncludesPhoneBridgeToolsWhenConnected(t *testing.T) {
 	}
 }
 
-func TestResolveToolsIncludesAllowedPhoneBridgeToolWhenDisconnected(t *testing.T) {
-	runtime := NewRuntimeWithDeps(
-		Config{},
-		nil,
-		NewMemoryManager(""),
-		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
-		NewSkillIndex(),
-	)
+func TestResolveToolsHidesAllowedPhoneBridgeToolWhenDisconnected(t *testing.T) {
+	runtime := newRuntimeWithTextEntryTools()
+	runtime.tools.RegisterPhoneBridge(NewPhoneBridge(nil))
+
+	tools := runtime.resolveTools(ResolvedSkills{
+		HasToolRestriction: true,
+		AllowedTools:       map[string]struct{}{"clipboard": {}},
+	})
+	names := toolNamesFromTools(tools)
+	for _, name := range names {
+		if name == "clipboard" {
+			t.Fatalf("resolveTools with allowed_tools exposed disconnected clipboard: %v", names)
+		}
+	}
+}
+
+func TestResolveToolsIncludesAllowedOpenAppWhenDisconnected(t *testing.T) {
+	runtime := newRuntimeWithTextEntryTools()
 	runtime.tools.RegisterPhoneBridge(NewPhoneBridge(nil))
 
 	tools := runtime.resolveTools(ResolvedSkills{
@@ -151,13 +186,7 @@ func TestResolveToolsIncludesAllowedPhoneBridgeToolWhenDisconnected(t *testing.T
 }
 
 func TestResolveToolsIncludesAllowedPhoneBridgeToolWhenConnected(t *testing.T) {
-	runtime := NewRuntimeWithDeps(
-		Config{},
-		nil,
-		NewMemoryManager(""),
-		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
-		NewSkillIndex(),
-	)
+	runtime := newRuntimeWithTextEntryTools()
 	bridge := NewPhoneBridge(nil)
 	bridge.connected = true
 	runtime.tools.RegisterPhoneBridge(bridge)

@@ -23,7 +23,6 @@ const (
 	wakeupListenTimeout                     = 10 * time.Second
 	wakeupDebounceInterval                  = 500 * time.Millisecond
 	defaultVoiceSteerListenTimeout          = 45 * time.Second
-	voiceTurnCancelWaitTimeout              = 2 * time.Second
 	voiceWakeupInterruptedCorrectionContext = "Voice interruption: the user pressed the physical wakeup button " +
 		"while the previous voice turn was still running. The latest voice input was spoken after that interruption. " +
 		"Treat it as a correction or steering update to the interrupted turn, not as an independent new task unless " +
@@ -31,6 +30,7 @@ const (
 )
 
 var voiceSteerListenTimeout = defaultVoiceSteerListenTimeout
+var voiceTurnCancelWaitTimeout = 2 * time.Second
 var wakeupDebounceNow = time.Now
 
 var wakeupGPIOPins = []int{33, 32}
@@ -58,6 +58,7 @@ func main() {
 		environmentBridgeEndpoint = flag.String("environment-bridge-endpoint", "", "Environment bridge endpoint (e.g., http://192.168.50.123:8080)")
 		environmentBridgeTools    = flag.String("environment-bridge-tools", "", "Comma-separated tool names or glob patterns to forward when environment-bridge-mode is on, e.g. \"keyboard_*,mouse_*,screenshot\" or \"*\". Required with --environment-bridge-mode.")
 		benchmarkTaskID           = flag.String("benchmark-task-id", "", "Benchmark task id to include on environment bridge requests for task routing")
+		benchmarkTokenFile        = flag.String("benchmark-token-file", "", "Path to benchmark API bearer token file. Enables benchmark-only mutation endpoints.")
 	)
 	flag.Parse()
 
@@ -88,6 +89,18 @@ func main() {
 			os.Exit(1)
 		}
 		cfg.EnvironmentBridge.BenchmarkTaskID = strings.TrimSpace(*benchmarkTaskID)
+	}
+	if strings.TrimSpace(*benchmarkTokenFile) != "" {
+		data, err := os.ReadFile(strings.TrimSpace(*benchmarkTokenFile))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "read benchmark token: %v\n", err)
+			os.Exit(1)
+		}
+		cfg.Benchmark.Token = strings.TrimSpace(string(data))
+		if cfg.Benchmark.Token == "" {
+			fmt.Fprintln(os.Stderr, "benchmark token file is empty")
+			os.Exit(1)
+		}
 	}
 
 	proxyConfig := agent.ProxyConfigFromEnvironment()
@@ -134,7 +147,7 @@ func main() {
 		serverErr <- server.Start()
 	}()
 
-	if inputMode == "audio" || inputMode == "stt" {
+	if inputMode == "stt" {
 		if shouldRunConsoleAudioLoop(cfg, stdinIsInteractive()) {
 			go func() {
 				if err := <-serverErr; err != nil {
@@ -168,7 +181,7 @@ func stdinIsInteractive() bool {
 
 func shouldRunConsoleAudioLoop(cfg agent.Config, stdinInteractive bool) bool {
 	inputMode := cfg.InputModeOrDefault()
-	if inputMode != "audio" && inputMode != "stt" {
+	if inputMode != "stt" {
 		return false
 	}
 	return cfg.TriggerModeOrDefault() != "manual" || stdinInteractive
@@ -223,6 +236,7 @@ type audioDialogRunner interface {
 	QueueSteer(input agent.TurnInput) bool
 	BeginSteerInterrupt() bool
 	ResumeSteerInterrupt() bool
+	WaitForVoiceRunIdle(ctx context.Context) bool
 	InterruptOutput()
 	Speak(ctx context.Context, text string, interrupt <-chan struct{}) error
 	FlushVAD() []int16
@@ -353,6 +367,20 @@ func stopWakeupWatchers(watchers []wakeupWatcher) {
 
 type vadDebugReporter interface {
 	VADDebugState() agent.VADDebugState
+}
+
+func formatVADDebugLog(state agent.VADDebugState) string {
+	msg := fmt.Sprintf("[vad] probability=%.3f threshold=%.3f speaking=%v speech_frames=%d silence_frames=%d",
+		state.Probability,
+		state.Threshold,
+		state.Speaking,
+		state.SpeechFrames,
+		state.SilenceFrames,
+	)
+	if state.LastError != "" {
+		msg += fmt.Sprintf(" last_error=%q", state.LastError)
+	}
+	return msg
 }
 
 type voiceEvent int
@@ -787,7 +815,7 @@ thinking:
 		select {
 		case <-sigChan:
 			cancel()
-			waitForTurnCancel(resultCh)
+			waitForTurnCancellation(dialog, resultCh)
 			return voiceTurnResult{exit: true}
 		case <-events:
 			if interruptOnWakeup {
@@ -795,7 +823,7 @@ thinking:
 				nextTurn, exit := captureVoiceSteer(cfg, dialog, sigChan, events)
 				if exit {
 					cancel()
-					waitForTurnCancel(resultCh)
+					waitForTurnCancellation(dialog, resultCh)
 					return voiceTurnResult{exit: true}
 				}
 				if nextTurn == nil {
@@ -810,7 +838,7 @@ thinking:
 				}
 				log.Println("[steer] active voice run no longer accepts steer; running captured correction as next turn")
 				cancel()
-				waitForTurnCancel(resultCh)
+				waitForTurnCancellation(dialog, resultCh)
 				return voiceTurnResult{interrupted: true, nextTurn: nextTurn}
 			}
 			log.Println("[steer] wakeup received during thinking, ignoring because wakeup steering is disabled")
@@ -919,14 +947,20 @@ func interruptedVoiceCorrectionContext() agent.VoiceTurnContext {
 	}
 }
 
-func waitForTurnCancel(resultCh <-chan struct {
+func waitForTurnCancellation(dialog audioDialogRunner, resultCh <-chan struct {
 	result agent.RunResult
 	err    error
 }) {
 	select {
 	case <-resultCh:
 	case <-time.After(voiceTurnCancelWaitTimeout):
-		log.Println("[interrupt] current turn did not finish after signal cancellation; exiting")
+		log.Println("[interrupt] current turn did not finish after signal cancellation; waiting for voice run to go idle")
+		idleCtx, cancel := context.WithTimeout(context.Background(), voiceTurnCancelWaitTimeout)
+		defer cancel()
+		if dialog.WaitForVoiceRunIdle(idleCtx) {
+			return
+		}
+		log.Println("[interrupt] voice run still active after cancellation wait; exiting")
 	}
 }
 
@@ -1061,14 +1095,7 @@ func captureUtteranceWithTimeout(dialog audioDialogRunner, sigChan chan os.Signa
 					speechDetected = true
 				}
 				if time.Now().After(nextVADLogAt) {
-					log.Printf("[vad] probability=%.3f threshold=%.3f speaking=%v speech_frames=%d silence_frames=%d last_error=%q\n",
-						state.Probability,
-						state.Threshold,
-						state.Speaking,
-						state.SpeechFrames,
-						state.SilenceFrames,
-						state.LastError,
-					)
+					log.Print(formatVADDebugLog(state))
 					nextVADLogAt = time.Now().Add(time.Second)
 				}
 			}
@@ -1184,14 +1211,7 @@ func processAudioUntilUtteranceWithWakeupInterrupt(
 			}
 			if reporter, ok := dialog.(vadDebugReporter); ok && time.Now().After(nextVADLogAt) {
 				state := reporter.VADDebugState()
-				log.Printf("[vad] probability=%.3f threshold=%.3f speaking=%v speech_frames=%d silence_frames=%d last_error=%q\n",
-					state.Probability,
-					state.Threshold,
-					state.Speaking,
-					state.SpeechFrames,
-					state.SilenceFrames,
-					state.LastError,
-				)
+				log.Print(formatVADDebugLog(state))
 				nextVADLogAt = time.Now().Add(time.Second)
 			}
 			if utterance != nil {

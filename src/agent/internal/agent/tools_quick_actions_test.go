@@ -129,22 +129,39 @@ func TestQuickActionDescriptionWarnsAgainstActionList(t *testing.T) {
 	}
 }
 
+func TestQuickActionDoesNotExposeScreenshotFull(t *testing.T) {
+	table := newQuickActionsTable()
+	if id, ok := table.resolveActionID("screenshot_full"); ok {
+		t.Fatalf("screenshot_full resolved to %q", id)
+	}
+	if strings.Contains((&QuickActionTool{}).Description(), "screenshot_full") {
+		t.Fatal("description should not mention screenshot_full")
+	}
+}
+
 func TestQuickActionReservedBinding(t *testing.T) {
 	tool := &QuickActionTool{}
-	out, err := tool.Call(context.Background(), `{"action":"app_drawer","platform":"ios"}`)
+	ctx, _ := WithToolError(context.Background())
+	out, err := tool.Call(ctx, `{"action":"app_drawer","platform":"ios"}`)
 	if err != nil {
 		t.Fatalf("Call failed: %v", err)
 	}
-	var payload map[string]interface{}
-	if err := json.Unmarshal([]byte(out), &payload); err != nil {
-		t.Fatalf("invalid json: %v", err)
+	te := ToolErrorFromContext(ctx)
+	if te == nil || te.Code != CodeQuickActionReserved {
+		t.Fatalf("expected quick_action_reserved; got %+v", te)
 	}
-	if payload["ok"] != false || payload["status"] != quickActionStatusReserved {
-		t.Fatalf("expected reserved response, got %v", payload)
+	if te.Category != CategoryUnsupported {
+		t.Errorf("Category = %q, want %q", te.Category, CategoryUnsupported)
+	}
+	if out != te.Message {
+		t.Errorf("Output (%q) must equal Error.Message (%q)", out, te.Message)
 	}
 }
 
 func TestQuickActionExecutesDelegatedTouchGesture(t *testing.T) {
+	skipHIDSleeps(t)
+	skipQuickActionDelays(t)
+
 	dev, path := newTestHIDDevice(t)
 	tool := &QuickActionTool{
 		touch: &TouchGestureTool{
@@ -165,6 +182,9 @@ func TestQuickActionExecutesDelegatedTouchGesture(t *testing.T) {
 }
 
 func TestQuickActionExecutesDelegatedKeyboardTap(t *testing.T) {
+	skipHIDSleeps(t)
+	skipQuickActionDelays(t)
+
 	dev, path := newTestHIDDevice(t)
 	tool := &QuickActionTool{
 		keyboard: &KeyboardTapTool{dev: dev},
@@ -186,6 +206,9 @@ func TestQuickActionExecutesDelegatedKeyboardTap(t *testing.T) {
 }
 
 func TestQuickActionSpotlightSearchClearsSearchField(t *testing.T) {
+	skipHIDSleeps(t)
+	skipQuickActionDelays(t)
+
 	dev, path := newTestHIDDevice(t)
 	tool := &QuickActionTool{
 		keyboard: &KeyboardTapTool{dev: dev},
@@ -249,6 +272,9 @@ func assertReleaseReport(t *testing.T, report []byte, label string) {
 }
 
 func TestQuickActionDeleteBackwardUsesBackspace(t *testing.T) {
+	skipHIDSleeps(t)
+	skipQuickActionDelays(t)
+
 	dev, path := newTestHIDDevice(t)
 	tool := &QuickActionTool{
 		keyboard: &KeyboardTapTool{dev: dev},
@@ -273,6 +299,9 @@ func TestQuickActionDeleteBackwardUsesBackspace(t *testing.T) {
 }
 
 func TestQuickActionAlternativeBinding(t *testing.T) {
+	skipHIDSleeps(t)
+	skipQuickActionDelays(t)
+
 	dev, _ := newTestHIDDevice(t)
 	tool := &QuickActionTool{
 		keyboard: &KeyboardTapTool{dev: dev},
@@ -296,23 +325,23 @@ func TestQuickActionAlternativeBinding(t *testing.T) {
 
 func TestQuickActionUnknownAction(t *testing.T) {
 	tool := &QuickActionTool{}
-	out, err := tool.Call(context.Background(), `{"action":"browser backward","platform":"ios"}`)
+	ctx, _ := WithToolError(context.Background())
+	out, err := tool.Call(ctx, `{"action":"browser backward","platform":"ios"}`)
 	if err != nil {
 		t.Fatalf("Call failed: %v", err)
 	}
-	var payload map[string]interface{}
-	if err := json.Unmarshal([]byte(out), &payload); err != nil {
-		t.Fatalf("invalid json: %v", err)
+	te := ToolErrorFromContext(ctx)
+	if te == nil || te.Code != CodeQuickActionUnknown {
+		t.Fatalf("expected quick_action_unknown; got %+v", te)
 	}
-	if payload["ok"] != false {
-		t.Fatalf("expected ok=false, got %s", out)
+	if !strings.Contains(te.Message, "unknown action") {
+		t.Fatalf("unexpected message: %s", te.Message)
 	}
-	errText, _ := payload["error"].(string)
-	if !strings.Contains(errText, "unknown action") {
-		t.Fatalf("unexpected output: %s", out)
+	if !strings.Contains(te.Message, "suggested actions") {
+		t.Fatalf("expected suggested actions in message, got %s", te.Message)
 	}
-	if !strings.Contains(errText, "suggested actions") {
-		t.Fatalf("expected suggested actions, got %s", out)
+	if out != te.Message {
+		t.Errorf("Output (%q) must equal Error.Message (%q)", out, te.Message)
 	}
 }
 

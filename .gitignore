@@ -31,6 +31,7 @@ agent.conf
 # Debug artifacts
 screen-memory-debug-*/
 capture.md
+**/docs/superpowers/
 /update.img
 
 # Python (uv)
@@ -61,3 +62,5 @@ benchmark/mobilegym/config/bridge_token
 
 # Docker
 benchmark/mobilegym/docker/.env
+benchmark/state.json
+skillopt/runs/

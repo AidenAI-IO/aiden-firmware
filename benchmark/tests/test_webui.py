@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+from runner import config as runner_config
 from runner import webui
 
 
@@ -195,6 +196,31 @@ def test_prepare_run_config_uses_agent_config_text(tmp_path: Path):
     assert (dest / "memory").is_dir()
 
 
+def test_prepare_run_config_includes_bundled_skills(tmp_path: Path):
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "agent.toml.template").write_text('[model]\nprovider = "template"\n', encoding="utf-8")
+
+    dest = tmp_path / "dest"
+    webui.prepare_run_config(base, dest)
+
+    assert (dest / "skills" / "device-operator" / "SKILL.md").exists()
+
+
+def test_prepare_run_config_merges_missing_bundled_skills_with_custom_skills(tmp_path: Path):
+    base = tmp_path / "base"
+    custom_skill = base / "skills" / "custom-skill"
+    custom_skill.mkdir(parents=True)
+    (base / "agent.toml.template").write_text('[model]\nprovider = "template"\n', encoding="utf-8")
+    (custom_skill / "SKILL.md").write_text("---\nname: custom-skill\n---\n", encoding="utf-8")
+
+    dest = tmp_path / "dest"
+    webui.prepare_run_config(base, dest)
+
+    assert (dest / "skills" / "custom-skill" / "SKILL.md").exists()
+    assert (dest / "skills" / "device-operator" / "SKILL.md").exists()
+
+
 def test_default_agent_toml_uses_benchmark_defaults():
     rendered = webui.default_agent_toml()
 
@@ -206,6 +232,75 @@ def test_default_agent_toml_uses_benchmark_defaults():
     assert 'model = "qwen3.6-35b"' in rendered
     assert "temperature = 0.2" in rendered
     assert "max_response_tokens = 1000" in rendered
+    assert "voice_streaming_tts_enabled = false" in rendered
+    assert "voice_tool_call_speech = false" in rendered
+    assert "voice_progress_speech_enabled = false" in rendered
+
+
+def test_runner_default_agent_toml_disables_voice_side_effects():
+    rendered = runner_config.default_agent_toml()
+
+    assert "voice_streaming_tts_enabled = false" in rendered
+    assert "voice_tool_call_speech = false" in rendered
+    assert "voice_progress_speech_enabled = false" in rendered
+
+
+def test_agent_config_manager_migrates_saved_config_missing_voice_defaults(tmp_path: Path):
+    base = tmp_path / "base"
+    base.mkdir()
+    config_path = tmp_path / "runs" / "agent.toml"
+    config_path.parent.mkdir()
+    config_path.write_text('instruction = "saved"\n[model]\nprovider = "fake"\n', encoding="utf-8")
+    manager = runner_config.AgentConfigManager(base_config_dir=base, config_path=config_path)
+
+    content, source = manager.get_config()
+
+    assert source == "saved"
+    assert "voice_streaming_tts_enabled = false" in content
+    assert "voice_tool_call_speech = false" in content
+    assert "voice_progress_speech_enabled = false" in content
+    assert content.index("voice_progress_speech_enabled") < content.index("[model]")
+    assert config_path.read_text(encoding="utf-8") == content
+
+
+def test_agent_config_manager_ignores_table_keys_when_migrating_voice_defaults(tmp_path: Path):
+    base = tmp_path / "base"
+    base.mkdir()
+    config_path = tmp_path / "runs" / "agent.toml"
+    config_path.parent.mkdir()
+    config_path.write_text(
+        'instruction = "saved"\n[model]\nvoice_streaming_tts_enabled = true\nprovider = "fake"\n',
+        encoding="utf-8",
+    )
+    manager = runner_config.AgentConfigManager(base_config_dir=base, config_path=config_path)
+
+    content, source = manager.get_config()
+
+    assert source == "saved"
+    assert "voice_streaming_tts_enabled = false" in content
+    assert "voice_tool_call_speech = false" in content
+    assert "voice_progress_speech_enabled = false" in content
+    assert "[model]\nvoice_streaming_tts_enabled = true" in content
+    assert content.index("voice_progress_speech_enabled = false") < content.index("[model]")
+
+
+def test_agent_config_manager_preserves_quoted_root_voice_default(tmp_path: Path):
+    base = tmp_path / "base"
+    base.mkdir()
+    config_path = tmp_path / "runs" / "agent.toml"
+    config_path.parent.mkdir()
+    config_path.write_text(
+        '"voice_streaming_tts_enabled" = true\n[model]\nprovider = "fake"\n',
+        encoding="utf-8",
+    )
+    manager = runner_config.AgentConfigManager(base_config_dir=base, config_path=config_path)
+
+    content, _ = manager.get_config()
+
+    assert content.count("voice_streaming_tts_enabled") == 1
+    assert '"voice_streaming_tts_enabled" = true' in content
+    assert "voice_tool_call_speech = false" in content
+    assert "voice_progress_speech_enabled = false" in content
 
 
 def test_webui_agent_config_persists_under_runs_dir(tmp_path: Path, monkeypatch):
@@ -227,8 +322,13 @@ def test_webui_agent_config_persists_under_runs_dir(tmp_path: Path, monkeypatch)
     saved = 'instruction = "saved"\n[model]\nprovider = "fake"\n'
     updated = app.save_agent_config({"content": saved})
     assert updated["source"] == "saved"
-    assert (tmp_path / "runs" / "agent.toml").read_text(encoding="utf-8") == saved
-    assert app.get_agent_config()["content"] == saved
+    saved_content = (tmp_path / "runs" / "agent.toml").read_text(encoding="utf-8")
+    assert 'instruction = "saved"' in saved_content
+    assert "voice_streaming_tts_enabled = false" in saved_content
+    assert "voice_tool_call_speech = false" in saved_content
+    assert "voice_progress_speech_enabled = false" in saved_content
+    assert 'provider = "fake"' in saved_content
+    assert app.get_agent_config()["content"] == saved_content
 
 
 def test_webui_settings_persist_judge_and_device_environments(tmp_path: Path):
@@ -533,7 +633,7 @@ def test_start_job_derives_mobilegym_environment_endpoint(tmp_path: Path, monkey
             base_config_dir=tmp_path / "config",
         )
     )
-    app._mobilegym_environments["env-1"] = webui.MobileGymEnvironment(
+    env = webui.MobileGymEnvironment(
         id="env-1",
         name="MobileGym",
         endpoint="http://host.docker.internal:19090",
@@ -542,6 +642,7 @@ def test_start_job_derives_mobilegym_environment_endpoint(tmp_path: Path, monkey
         status="running",
         parallel_envs=3,
     )
+    app.env_manager._environments["env-1"] = env
 
     class FakeThread:
         def __init__(self, *args, **kwargs):
@@ -763,7 +864,7 @@ def test_mobilegym_task_worker_uses_task_id_for_daemon_and_runner(tmp_path: Path
     captured = {}
     releases = []
 
-    monkeypatch.setattr(webui, "reserve_free_port", lambda: 18081)
+    monkeypatch.setattr(webui, "docker_published_port", lambda container_id, container_port: 18081)
     monkeypatch.setattr(app, "_wait_for_daemon", lambda *args, **kwargs: None)
     monkeypatch.setattr(webui, "start_daemon_logs", lambda *args, **kwargs: None)
     monkeypatch.setattr(webui, "stop_daemon_compose", lambda *args, **kwargs: None)
@@ -799,7 +900,7 @@ def test_mobilegym_task_worker_uses_task_id_for_daemon_and_runner(tmp_path: Path
 
     result = app._run_mobilegym_task_worker(job, "suite.json", suite_path, "t1")
 
-    assert captured["host_port"] == 18081
+    assert captured["host_port"] == 0
     assert captured["benchmark_task_id"] == "suite.json:t1"
     assert captured["worker_job"].runner_log != job.runner_log
     assert captured["worker_job"].daemon_log != job.daemon_log
@@ -809,6 +910,9 @@ def test_mobilegym_task_worker_uses_task_id_for_daemon_and_runner(tmp_path: Path
     assert captured["extra_owner_ids"] == [webui.task_worker_key(job.id, job.task_records[0].id)]
     assert captured["cmd"][captured["cmd"].index("--task-id") + 1] == "t1"
     assert captured["cmd"][captured["cmd"].index("--benchmark-task-id") + 1] == "suite.json:t1"
+    assert captured["cmd"][captured["cmd"].index("--benchmark-token-file") + 1] == str(
+        Path(job.config_dir) / "control_token"
+    )
     assert captured["cmd"][captured["cmd"].index("--environment-url") + 1] == "http://127.0.0.1:19090"
     assert releases == [("http://127.0.0.1:19090", 2, "suite.json:t1")]
     assert result["exit_code"] == 0
@@ -943,6 +1047,72 @@ def test_refresh_job_report_merges_task_runs_into_single_report(tmp_path: Path):
     assert "Benchmark:" in html
     assert rows[0]["task_id"] in html
     assert rows[1]["task_id"] in html
+
+
+def test_refresh_job_report_runs_llm_analysis_by_default_with_webui_judge_key(monkeypatch, tmp_path: Path):
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+        )
+    )
+    raw_runs_dir = tmp_path / "runs" / "job-test" / "raw"
+    run_dir = raw_runs_dir / "run-a"
+    artifact_dir = run_dir / "tasks" / "t1"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "trace.json").write_text(json.dumps({"tool_calls": [], "final_response": ""}), encoding="utf-8")
+    (run_dir / "results.jsonl").write_text(
+        json.dumps(
+            {
+                "suite": "suite.json",
+                "run_id": "run-a",
+                "task_id": "t1",
+                "category": "diagnostic",
+                "attempt": 1,
+                "status": "failed",
+                "rubric": [],
+                "rubric_pass_count": 0,
+                "rubric_total": 1,
+                "metrics": {"wall_ms": 7, "tool_calls": 0},
+                "artifact_dir": str(artifact_dir),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_analyze(run_dir_arg, repo_root, cfg):
+        calls.append((run_dir_arg, repo_root, cfg))
+        (run_dir_arg / "llm_analysis.md").write_text("中文分析", encoding="utf-8")
+        return webui.AnalysisResult(ok=True, markdown_path=run_dir_arg / "llm_analysis.md")
+
+    monkeypatch.delenv("AIDEN_BENCHMARK_LLM_ANALYSIS", raising=False)
+    monkeypatch.setattr(webui, "analyze_run", fake_analyze)
+    with app._lock:
+        app._webui_judge_api_key = "ui-judge-key"
+    job = webui.Job(
+        id="job-test",
+        endpoint="http://127.0.0.1:19090",
+        docker_endpoint="http://host.docker.internal:19090",
+        suites=["suite.json"],
+        raw_runs_dir=str(raw_runs_dir),
+        runner_log=str(tmp_path / "runs" / "job-test" / "runner.log"),
+        started_at="2026-06-22T00:00:00+00:00",
+        judge_model="bytedance-seed/seed-2.0-lite",
+        suite_results=[{"suite": "suite.json", "task_id": "t1", "exit_code": 1, "run_id": "run-a"}],
+    )
+
+    app._refresh_job_report(job)
+
+    report_dir = raw_runs_dir / "_job-report"
+    assert calls and calls[0][0] == report_dir
+    assert calls[0][2].enabled is True
+    assert calls[0][2].model == "bytedance-seed/seed-2.0-lite"
+    assert calls[0][2].api_key_value == "ui-judge-key"
+    html = (report_dir / "report.html").read_text(encoding="utf-8")
+    assert "LLM 分析" in html
+    assert "中文分析" in html
 
 
 def test_refresh_job_report_falls_back_to_single_existing_report(tmp_path: Path):
@@ -1322,7 +1492,12 @@ def test_run_job_uses_saved_webui_agent_config(tmp_path: Path, monkeypatch):
 
     app._run_job(job)
 
-    assert (Path(job.config_dir) / "agent.toml").read_text(encoding="utf-8") == saved
+    saved_content = (Path(job.config_dir) / "agent.toml").read_text(encoding="utf-8")
+    assert 'instruction = "from web ui"' in saved_content
+    assert "voice_streaming_tts_enabled = false" in saved_content
+    assert "voice_tool_call_speech = false" in saved_content
+    assert "voice_progress_speech_enabled = false" in saved_content
+    assert 'provider = "fake"' in saved_content
     assert job.status == "passed"
 
 
@@ -1362,6 +1537,7 @@ def test_daemon_compose_command_and_env_forward_tools_to_environment(tmp_path: P
     )
     expected_forward_tools = (
         "screenshot,touch_gesture,keyboard_text,keyboard_tap,"
+        "enter_text_in_field,enter_text_via_bridge,"
         "mouse_click,mouse_move,mouse_scroll,quick_action"
     )
     assert "AIDEN_ENVIRONMENT_BRIDGE_MODE: ${AIDEN_ENVIRONMENT_BRIDGE_MODE:-0}" in compose_text
@@ -1420,11 +1596,13 @@ def test_start_mobilegym_environment_returns_docker_reachable_endpoint(tmp_path:
     health_urls = []
     commands = []
 
-    monkeypatch.setattr(webui, "ensure_mobilegym_image", lambda *args, **kwargs: None)
-    monkeypatch.setattr(webui, "wait_for_http_health", lambda url, timeout: health_urls.append((url, timeout)))
-    monkeypatch.setattr(webui, "start_docker_logs", lambda *args, **kwargs: None)
+    from runner import environment as env_module
+
+    monkeypatch.setattr(env_module, "ensure_mobilegym_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(env_module, "wait_for_http_health", lambda url, timeout: health_urls.append((url, timeout)))
+    monkeypatch.setattr(env_module, "start_docker_logs", lambda *args, **kwargs: None)
     monkeypatch.setattr(
-        webui,
+        env_module,
         "docker_published_port",
         lambda container_name, container_port: 18173 if container_port == 4173 else 19090,
     )
@@ -1433,7 +1611,7 @@ def test_start_mobilegym_environment_returns_docker_reachable_endpoint(tmp_path:
         commands.append(command)
         return "container-id\n"
 
-    monkeypatch.setattr(webui.subprocess, "check_output", fake_check_output)
+    monkeypatch.setattr(env_module.subprocess, "check_output", fake_check_output)
 
     env = app.start_mobilegym_environment({"name": "MobileGym smoke", "parallel_envs": 2})
 
@@ -1462,16 +1640,18 @@ def test_start_mobilegym_environment_defaults_to_five_envs(tmp_path: Path, monke
     )
     commands = []
 
-    monkeypatch.setattr(webui, "ensure_mobilegym_image", lambda *args, **kwargs: None)
-    monkeypatch.setattr(webui, "wait_for_http_health", lambda *args, **kwargs: None)
-    monkeypatch.setattr(webui, "start_docker_logs", lambda *args, **kwargs: None)
+    from runner import environment as env_module
+
+    monkeypatch.setattr(env_module, "ensure_mobilegym_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(env_module, "wait_for_http_health", lambda *args, **kwargs: None)
+    monkeypatch.setattr(env_module, "start_docker_logs", lambda *args, **kwargs: None)
     monkeypatch.setattr(
-        webui,
+        env_module,
         "docker_published_port",
         lambda container_name, container_port: 18173 if container_port == 4173 else 19090,
     )
     monkeypatch.setattr(
-        webui.subprocess,
+        env_module.subprocess,
         "check_output",
         lambda command, cwd=None, text=False: commands.append(command) or "container-id\n",
     )
@@ -1494,7 +1674,7 @@ def test_stop_mobilegym_environment_removes_container(tmp_path: Path, monkeypatc
         container_name="aiden-mobilegym-env-mg-test",
         log_path=str(tmp_path / "env.log"),
     )
-    app._mobilegym_environments[env.id] = env
+    app.env_manager._environments[env.id] = env
     removed = []
 
     def fake_run(command, **kwargs):

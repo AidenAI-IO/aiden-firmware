@@ -49,6 +49,7 @@ class SetupClient:
     def __init__(self, fail_clears: int = 0):
         self.fail_clears = fail_clears
         self.clears = 0
+        self.seeded_memories = []
 
     def health(self) -> bool:
         return True
@@ -66,6 +67,10 @@ class SetupClient:
 
     def chat(self, message, timeout_sec=None):
         raise AssertionError("unexpected agent-side setup chat")
+
+    def seed_memory(self, memory, timeout=30):
+        self.seeded_memories.append((memory, timeout))
+        return {"status": "seeded", "id": memory["id"]}
 
 
 def test_prepare_task_isolation_retries_clear(monkeypatch):
@@ -95,9 +100,13 @@ def test_prepare_task_isolation_retries_clear(monkeypatch):
 
 def test_prepare_task_isolation_uses_environment_setup_without_agent_side_setup(monkeypatch):
     setup_calls = []
+
+    def fake_environment_setup(environment_url, task_id=None, timeout=30):
+        setup_calls.append((environment_url, task_id, timeout))
+
     monkeypatch.setattr(
         "runner.recovery.call_environment_setup",
-        lambda environment_url, task_id=None: setup_calls.append((environment_url, task_id)),
+        fake_environment_setup,
     )
     client = SetupClient()
     suite = Suite(
@@ -127,8 +136,62 @@ def test_prepare_task_isolation_uses_environment_setup_without_agent_side_setup(
         setup_attempts=1,
     )
 
-    assert setup_calls == [("http://127.0.0.1:9090", "suite.json:open_settings")]
+    assert setup_calls == [("http://127.0.0.1:9090", "suite.json:open_settings", 180)]
     assert client.clears == 1
+
+
+def test_prepare_task_isolation_runs_seed_memory_with_environment_setup(monkeypatch):
+    setup_calls = []
+
+    def fake_environment_setup(environment_url, task_id=None, timeout=30):
+        setup_calls.append((environment_url, task_id, timeout))
+
+    monkeypatch.setattr(
+        "runner.recovery.call_environment_setup",
+        fake_environment_setup,
+    )
+    client = SetupClient()
+    suite = Suite(
+        name="memory",
+        global_reset={},
+        tasks=[],
+        sha256="sha",
+        source_path=__import__("pathlib").Path("personamem.json"),
+    )
+    task = TaskSpec(
+        id="recall_fact",
+        category="memory",
+        description_for_judge="Recall a seeded memory.",
+        prompt="what do I like?",
+        rubric=[RubricItem(id="ok", check="ok")],
+        hard_assertions=HardAssertions(min_tool_calls=1, max_tool_calls=3),
+        setup={
+            "type": "seed_memory",
+            "memories": [
+                {
+                    "id": "mem-1",
+                    "content": "The user likes flashcards.",
+                    "tags": ["study"],
+                }
+            ],
+            "timeout_sec": 7,
+        },
+    )
+
+    prepare_task_isolation(
+        client,
+        suite,
+        task,
+        environment_url="http://127.0.0.1:9090",
+        benchmark_task_id="personamem.json:recall_fact",
+        ready_timeout_sec=10,
+        setup_attempts=1,
+    )
+
+    assert setup_calls == [("http://127.0.0.1:9090", "personamem.json:recall_fact", 180)]
+    assert client.seeded_memories == [
+        ({"id": "mem-1", "content": "The user likes flashcards.", "tags": ["study"]}, 7)
+    ]
 
 
 def test_prepare_task_isolation_raises_after_exhausting_retries(monkeypatch):

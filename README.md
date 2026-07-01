@@ -186,6 +186,7 @@ The full documentation is organized under [docs/](docs/README.md):
 - [Tools HTTP API](docs/04-agent/tools-http-api.md)
 - [OTA](docs/08-ota/README.md)
 - [Benchmark](docs/09-benchmark/README.md)
+- [SkillOpt](docs/10-skillopt/README.md)
 - [Troubleshooting](docs/07-operations/troubleshooting.md)
 
 ## Contributing

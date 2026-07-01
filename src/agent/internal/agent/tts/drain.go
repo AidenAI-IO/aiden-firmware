@@ -73,7 +73,9 @@ func (f AudioFormat) BytesPerSecond() int {
 	return sampleRate * channels * (bitWidth / 8)
 }
 
-func waitForEstimatedDrain(ctx context.Context, wait time.Duration) error {
+var waitForEstimatedDrain = waitForEstimatedDrainTimer
+
+func waitForEstimatedDrainTimer(ctx context.Context, wait time.Duration) error {
 	if wait <= 0 {
 		return nil
 	}

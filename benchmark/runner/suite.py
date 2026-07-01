@@ -20,7 +20,9 @@ class RubricItem:
 class TraceObservationSpec:
     id: str
     description: str
-    skill_name: str
+    skill_name: str = ""
+    tool_name: str = ""
+    input_contains: dict[str, Any] = dc.field(default_factory=dict)
 
 @dc.dataclass
 class HardAssertions:
@@ -30,6 +32,7 @@ class HardAssertions:
     response_required: bool = True
     required_tools: list[str] = dc.field(default_factory=list)
     forbidden_tools: list[str] = dc.field(default_factory=list)
+    prohibited_actions: list[str] = dc.field(default_factory=list)
 
 @dc.dataclass
 class TaskSpec:
@@ -103,6 +106,7 @@ def load_suite(path: Path) -> Suite:
             raise SuiteValidationError(f"task {tid}: hard_assertions values must be non-negative")
         required_tools = _string_list_assertion(ha.get("required_tools", []), tid, "required_tools")
         forbidden_tools = _string_list_assertion(ha.get("forbidden_tools", []), tid, "forbidden_tools")
+        prohibited_actions = _string_list_assertion(ha.get("prohibited_actions", []), tid, "prohibited_actions")
         overlap = sorted(set(required_tools) & set(forbidden_tools))
         if overlap:
             raise SuiteValidationError(
@@ -115,6 +119,7 @@ def load_suite(path: Path) -> Suite:
             response_required=rr,
             required_tools=required_tools,
             forbidden_tools=forbidden_tools,
+            prohibited_actions=prohibited_actions,
         )
         # Validate and bound repeats
         try:
@@ -164,18 +169,36 @@ def load_suite(path: Path) -> Suite:
         raise SuiteValidationError("suite prompt_prefix must be a string")
 
     trace_observations: list[TraceObservationSpec] = []
+    seen_obs_ids: set[str] = set()
     for raw_obs in data.get("trace_observations") or []:
         if not isinstance(raw_obs, dict):
             raise SuiteValidationError("trace_observations entries must be objects")
         obs_id = raw_obs.get("id")
         description = raw_obs.get("description")
-        skill_name = raw_obs.get("skill_name")
-        if not obs_id or not description or not skill_name:
+        skill_name = str(raw_obs.get("skill_name") or "").strip()
+        tool_name = str(raw_obs.get("tool_name") or "").strip()
+        input_contains = raw_obs.get("input_contains") or {}
+        if not isinstance(input_contains, dict):
+            raise SuiteValidationError("trace_observations input_contains must be an object")
+        if not obs_id or not description or not (skill_name or tool_name):
             raise SuiteValidationError(
-                "trace_observations entries require id, description, and skill_name"
+                "trace_observations entries require id, description, and skill_name or tool_name"
             )
+        if skill_name and tool_name:
+            raise SuiteValidationError(
+                f"trace_observations {obs_id!r}: specify only one of skill_name or tool_name"
+            )
+        if obs_id in seen_obs_ids:
+            raise SuiteValidationError(f"duplicate trace_observations id: {obs_id!r}")
+        seen_obs_ids.add(obs_id)
         trace_observations.append(
-            TraceObservationSpec(id=obs_id, description=description, skill_name=skill_name)
+            TraceObservationSpec(
+                id=obs_id,
+                description=description,
+                skill_name=skill_name,
+                tool_name=tool_name,
+                input_contains=input_contains,
+            )
         )
 
     return Suite(

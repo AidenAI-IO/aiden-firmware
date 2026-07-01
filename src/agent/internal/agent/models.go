@@ -75,6 +75,16 @@ func (m *ModelManager) SetRawHTTPLogSessionIDProvider(provider func() string) {
 	}
 }
 
+// activeSessionID resolves the current session id via the configured provider.
+// It reads m.rawHTTPLogSessionID at call time so the value is picked up even
+// when the provider is set after the model is built.
+func (m *ModelManager) activeSessionID() string {
+	if m.rawHTTPLogSessionID == nil {
+		return ""
+	}
+	return m.rawHTTPLogSessionID()
+}
+
 func (m *ModelManager) Get() (llms.Model, error) {
 	if m.model != nil {
 		return m.model, nil
@@ -140,7 +150,11 @@ func (m *ModelManager) build(cfg ModelConfig) (llms.Model, error) {
 		if baseURL == "" {
 			baseURL = "https://openrouter.ai/api/v1"
 		}
-		return newOpenAICompatibleModel(baseURL, cfg.Model, token, newRetryHTTPClient(m.proxy), m.openAICompatibleOptions(cfg)...), nil
+		opts := append(m.openAICompatibleOptions(cfg), withOpenAICompatibleSessionSticky(m.activeSessionID))
+		if openRouterExplicitPromptCacheSupported(cfg.Model) {
+			opts = append(opts, withOpenAICompatibleExplicitPromptCache())
+		}
+		return newOpenAICompatibleModel(baseURL, cfg.Model, token, newRetryHTTPClient(m.proxy), opts...), nil
 	case "ollama":
 		options := []ollama.Option{ollama.WithModel(cfg.Model), ollama.WithHTTPClient(newProxyHTTPClient(m.proxy))}
 		if cfg.BaseURL != "" {
@@ -151,6 +165,29 @@ func (m *ModelManager) build(cfg ModelConfig) (llms.Model, error) {
 		return fakellm.NewFakeLLM(cfg.Responses), nil
 	default:
 		return nil, fmt.Errorf("unsupported provider %q", cfg.Provider)
+	}
+}
+
+func openRouterExplicitPromptCacheSupported(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	model = strings.TrimPrefix(model, "~")
+	if idx := strings.Index(model, ":"); idx >= 0 {
+		model = model[:idx]
+	}
+	switch {
+	case strings.HasPrefix(model, "anthropic/"):
+		return true
+	}
+	switch model {
+	case "deepseek/deepseek-v3.2",
+		"qwen/qwen3-max",
+		"qwen/qwen-plus",
+		"qwen/qwen3.6-plus",
+		"qwen/qwen3-coder-plus",
+		"qwen/qwen3-coder-flash":
+		return true
+	default:
+		return false
 	}
 }
 

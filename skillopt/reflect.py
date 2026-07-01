@@ -20,6 +20,7 @@ from skillopt.optimizer_client import (
     chat_optimizer,
     extract_json,
 )
+from skillopt.score import rollout_sample_quality
 from skillopt.types import RawPatch, RolloutResult
 
 
@@ -138,11 +139,8 @@ def run_error_analyst_minibatch(
         return None
     system = _load_prompt("analyst_error")
     user = _build_user_prompt(skill_content, items, edit_budget, rejected_context, "Failed")
-    try:
-        raw = chat_optimizer(cfg, system=system, user=user)
-        result = extract_json(raw)
-    except OptimizerError:
-        return None
+    raw = chat_optimizer(cfg, system=system, user=user)
+    result = extract_json(raw)
     result["source_type"] = "failure"
     result.setdefault("batch_size", len(items))
     return RawPatch.from_dict(result)
@@ -160,11 +158,8 @@ def run_success_analyst_minibatch(
         return None
     system = _load_prompt("analyst_success")
     user = _build_user_prompt(skill_content, items, edit_budget, rejected_context, "Successful")
-    try:
-        raw = chat_optimizer(cfg, system=system, user=user)
-        result = extract_json(raw)
-    except OptimizerError:
-        return None
+    raw = chat_optimizer(cfg, system=system, user=user)
+    result = extract_json(raw)
     result["source_type"] = "success"
     result.setdefault("batch_size", len(items))
     return RawPatch.from_dict(result)
@@ -178,8 +173,8 @@ def run_reflect(
     rejected_context: str = "",
 ) -> list[RawPatch]:
     """Split rollouts by hard score and run both analysts. Returns non-None patches."""
-    failures = [r for r in rollouts if r.hard == 0]
-    successes = [r for r in rollouts if r.hard == 1]
+    failures = [r for r in rollouts if r.hard == 0 and rollout_sample_quality(r).include_in_reflect]
+    successes = [r for r in rollouts if r.hard == 1 and rollout_sample_quality(r).include_in_reflect]
     out: list[RawPatch] = []
     fail_patch = run_error_analyst_minibatch(cfg, skill_content, failures, edit_budget, rejected_context)
     if fail_patch is not None:

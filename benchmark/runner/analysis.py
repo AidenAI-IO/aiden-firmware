@@ -16,6 +16,19 @@ DEFAULT_MAX_LOG_BYTES = 64 * 1024
 DEFAULT_MAX_CODE_BYTES = 128 * 1024
 DEFAULT_TOTAL_CONTEXT_BYTES = 320 * 1024
 DEFAULT_TIMEOUT_SEC = 180
+ROOT_CAUSE_CATEGORIES = {
+    "suite_issue",
+    "project_code_issue",
+    "agent_behavior_issue",
+    "benchmark_infra_issue",
+    "environment_issue",
+    "evaluation_issue",
+    "insufficient_evidence",
+}
+BRIDGE_INACTIVE_SETUP_RE = re.compile(
+    r"AidenAdapterError:\s*setup tool\s+\S+\s+failed:.*mobilegym bridge episode is not active",
+    re.IGNORECASE,
+)
 
 
 @dc.dataclass
@@ -27,6 +40,7 @@ class AnalysisConfig:
     total_context_bytes: int = DEFAULT_TOTAL_CONTEXT_BYTES
     timeout_sec: int = DEFAULT_TIMEOUT_SEC
     api_key_env: str | None = None
+    api_key_value: str | None = None
 
 
 @dc.dataclass
@@ -82,6 +96,8 @@ def config_from_env() -> AnalysisConfig:
 
 
 def resolve_analysis_api_key(cfg: AnalysisConfig) -> tuple[str, str]:
+    if cfg.api_key_value and cfg.api_key_value.strip():
+        return "provided", cfg.api_key_value.strip()
     names: list[str] = []
     if cfg.api_key_env:
         names.append(cfg.api_key_env)
@@ -112,6 +128,8 @@ def redact_text(text: str, cfg: AnalysisConfig) -> str:
     redacted = JWTISH_RE.sub("[REDACTED_JWT]", redacted)
     names = [cfg.api_key_env] if cfg.api_key_env else []
     names.extend(["OPENROUTER_API_KEY", "MODEL_API_KEY", "AIDEN_MODEL_API_KEY", "AIDEN_CONTROL_TOKEN"])
+    if cfg.api_key_value:
+        redacted = redacted.replace(cfg.api_key_value, "[REDACTED_VALUE]")
     for name in names:
         if not name:
             continue
@@ -122,40 +140,40 @@ def redact_text(text: str, cfg: AnalysisConfig) -> str:
 
 
 def render_markdown(payload: dict[str, Any]) -> str:
-    lines = ["# LLM Benchmark Analysis", "", str(payload.get("summary") or "No summary returned."), ""]
+    lines = ["# LLM 基准分析", "", str(payload.get("summary") or "未返回摘要。"), ""]
     counts = payload.get("classification_counts")
     if isinstance(counts, dict) and counts:
-        lines += ["## Classification Counts", ""]
+        lines += ["## 分类统计", ""]
         for key, value in sorted(counts.items()):
             lines.append(f"- `{key}`: {value}")
         lines.append("")
     clusters = payload.get("failure_clusters") if isinstance(payload.get("failure_clusters"), list) else []
-    lines += ["## Failure Clusters", ""]
+    lines += ["## 失败聚类", ""]
     if not clusters:
-        lines.append("- No failure clusters returned.")
+        lines.append("- 未返回失败聚类。")
     for cluster in clusters:
         if not isinstance(cluster, dict):
             continue
-        title = cluster.get("title") or cluster.get("suspected_cause") or "Cluster"
+        title = cluster.get("title") or cluster.get("suspected_cause") or "聚类"
         task_ids = ", ".join(str(t) for t in cluster.get("task_ids") or [])
         lines += [
             f"### {title}",
             "",
-            f"- Category: `{cluster.get('category', 'unknown')}`",
-            f"- Confidence: `{cluster.get('confidence', 'unknown')}`",
+            f"- 分类: `{cluster.get('category', 'unknown')}`",
+            f"- 置信度: `{cluster.get('confidence', 'unknown')}`",
         ]
         if task_ids:
-            lines.append(f"- Tasks: {task_ids}")
+            lines.append(f"- 任务: {task_ids}")
         if cluster.get("suspected_cause"):
-            lines.append(f"- Suspected cause: {cluster['suspected_cause']}")
+            lines.append(f"- 疑似原因: {cluster['suspected_cause']}")
         evidence = cluster.get("evidence") if isinstance(cluster.get("evidence"), list) else []
         for item in evidence:
-            lines.append(f"- Evidence: {item}")
+            lines.append(f"- 证据: {item}")
         lines.append("")
     recommendations = payload.get("recommendations") if isinstance(payload.get("recommendations"), list) else []
-    lines += ["## Recommendations", ""]
+    lines += ["## 建议", ""]
     if not recommendations:
-        lines.append("- No recommendations returned.")
+        lines.append("- 未返回建议。")
     for rec in recommendations:
         if isinstance(rec, dict):
             lines.append(
@@ -165,7 +183,7 @@ def render_markdown(payload: dict[str, Any]) -> str:
             lines.append(f"- {rec}")
     gaps = payload.get("evidence_gaps") if isinstance(payload.get("evidence_gaps"), list) else []
     if gaps:
-        lines += ["", "## Evidence Gaps", ""]
+        lines += ["", "## 证据缺口", ""]
         lines.extend(f"- {gap}" for gap in gaps)
     return "\n".join(lines).rstrip() + "\n"
 
@@ -393,6 +411,7 @@ def _collect_native_context(
         "suite": {"path": str(suite_path), "content_excerpt": suite_excerpt},
         "summary_excerpt": summary_excerpt,
         "failures": failures,
+        "known_issues": _known_issue_hints(failures),
         "logs": [],
         "code": _collect_code_context(repo_root, terms, cfg, warnings),
     }
@@ -587,6 +606,7 @@ def _collect_mobilegym_context(
                 "artifact_refs": row.get("artifact_refs") or [],
             }
         )
+    known_issues = _known_issue_hints(failures)
     return {
         "run": {
             "id": str(summary.get("batch_id") or run_dir.name),
@@ -600,9 +620,54 @@ def _collect_mobilegym_context(
         },
         "suite": {"path": "", "content_excerpt": ""},
         "failures": failures,
+        "known_issues": known_issues,
         "logs": logs,
         "code": _collect_code_context(repo_root, terms, cfg, warnings),
     }
+
+
+def _known_issue_hints(failures: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    bridge_inactive_tasks: list[str] = []
+    bridge_inactive_evidence: list[str] = []
+    for failure in failures:
+        task_id = str(failure.get("task_id") or "")
+        candidates = [str(item) for item in failure.get("errors") or []]
+        for key in ("trace_excerpt", "history_excerpt", "judge_excerpt"):
+            if failure.get(key):
+                candidates.append(str(failure.get(key)))
+        for text in candidates:
+            match = BRIDGE_INACTIVE_SETUP_RE.search(text)
+            if not match:
+                continue
+            if task_id and task_id not in bridge_inactive_tasks:
+                bridge_inactive_tasks.append(task_id)
+            evidence = _clean_error_evidence(match.group(0))
+            if evidence not in bridge_inactive_evidence:
+                bridge_inactive_evidence.append(evidence)
+            break
+    if not bridge_inactive_tasks:
+        return []
+    return [
+        {
+            "id": "mobilegym_setup_before_episode_start",
+            "category": "benchmark_infra_issue",
+            "task_ids": bridge_inactive_tasks,
+            "summary": "MobileGym setup tools ran before the bridge episode was active.",
+            "evidence": bridge_inactive_evidence,
+            "suspected_cause": (
+                "AidenGoAgent reset/setup lifecycle invoked setup tool_sequence before "
+                "bridge /episode/start and daemon /api/mobilegym/episode/start bound an active episode."
+            ),
+        }
+    ]
+
+
+def _clean_error_evidence(text: str) -> str:
+    text = str(text).strip()
+    for prefix in ("error: ", "agent_error: ", "execution.error: "):
+        if text.startswith(prefix):
+            return text[len(prefix) :].strip()
+    return text
 
 
 def _mobilegym_status(row: dict[str, Any]) -> tuple[str, str]:
@@ -621,16 +686,22 @@ def _mobilegym_status(row: dict[str, Any]) -> tuple[str, str]:
     return "unknown", "missing or unrecognized result"
 
 
-SYSTEM_PROMPT = """You are a benchmark root-cause analyst. You are not a judge.
-Analyze benchmark results, trace/history excerpts, runtime logs, and source snippets.
-Ground every claim in evidence. If evidence is missing, say so. Return JSON only."""
+SYSTEM_PROMPT = """你是 benchmark 根因分析专家，不是 judge。
+请分析 benchmark 结果、trace/history 摘要、运行日志和源码片段。
+所有结论必须基于证据；证据不足时要明确说明。只返回 JSON。"""
 
 
 def _analysis_user_prompt(context: dict[str, Any]) -> str:
-    return """Analyze this benchmark run and return JSON with keys:
-summary, failure_clusters, recommendations, classification_counts, evidence_gaps.
-Root-cause categories must be one of: suite_issue, project_code_issue, agent_behavior_issue,
-benchmark_infra_issue, environment_issue, evaluation_issue, insufficient_evidence.
+    return """分析这个 benchmark run，并返回 JSON，必须包含这些 key：
+summary, failure_clusters, recommendations, classification_counts, evidence_gaps。
+所有自然语言字段请使用简体中文。
+根因分类必须是以下之一：suite_issue, project_code_issue, agent_behavior_issue,
+benchmark_infra_issue, environment_issue, evaluation_issue, insufficient_evidence。
+如果 CONTEXT JSON 包含 known_issues，请把它们视为已有证据支持的根因提示，直接采用，
+或者说明为什么更强证据推翻了它们。不要在失败摘要/日志没有直接证据时推断环境原因，
+例如平台不匹配或目录缺失。对于 "setup tool ... mobilegym bridge episode is not active"，
+优先归类为 MobileGym adapter episode/setup 生命周期顺序相关的 benchmark_infra_issue，
+不要优先归因于 agent 行为。
 
 CONTEXT JSON:
 """ + json.dumps(context, ensure_ascii=False, indent=2)
@@ -690,6 +761,114 @@ def extract_analysis_json(raw: str) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {"summary": str(parsed)}
 
 
+def _normalize_analysis_payload(context: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {"summary": str(payload)}
+    payload = dict(payload)
+    _apply_known_issues_to_payload(context, payload)
+    _normalize_failure_cluster_categories(payload)
+    return payload
+
+
+def _apply_known_issues_to_payload(context: dict[str, Any], payload: dict[str, Any]) -> None:
+    known_issues = context.get("known_issues") if isinstance(context.get("known_issues"), list) else []
+    if not known_issues:
+        return
+    clusters = payload.get("failure_clusters")
+    if not isinstance(clusters, list):
+        clusters = []
+    clusters = [cluster if isinstance(cluster, dict) else {} for cluster in clusters]
+    payload["failure_clusters"] = clusters
+    counts = payload.get("classification_counts")
+    if not isinstance(counts, dict):
+        counts = {}
+        payload["classification_counts"] = counts
+
+    for issue in known_issues:
+        if not isinstance(issue, dict):
+            continue
+        issue_id = str(issue.get("id") or "")
+        if issue_id == "mobilegym_setup_before_episode_start":
+            _apply_bridge_inactive_issue(issue, payload)
+
+
+def _apply_bridge_inactive_issue(issue: dict[str, Any], payload: dict[str, Any]) -> None:
+    task_ids = [str(task_id) for task_id in issue.get("task_ids") or []]
+    cluster = {
+        "title": "MobileGym setup 早于 bridge episode 激活执行",
+        "category": "benchmark_infra_issue",
+        "confidence": "high",
+        "task_ids": task_ids,
+        "suspected_cause": issue.get("suspected_cause") or issue.get("summary") or "",
+        "evidence": issue.get("evidence") or [],
+    }
+    clusters = payload.setdefault("failure_clusters", [])
+    target_index = None
+    for index, existing in enumerate(clusters):
+        if not isinstance(existing, dict):
+            continue
+        text = json.dumps(existing, ensure_ascii=False).lower()
+        if "mobilegym bridge episode is not active" in text or "bridge episode" in text:
+            target_index = index
+            break
+    if target_index is None:
+        clusters.insert(0, cluster)
+    else:
+        existing = clusters[target_index] if isinstance(clusters[target_index], dict) else {}
+        merged = {**existing, **cluster}
+        clusters[target_index] = merged
+    counts = payload.setdefault("classification_counts", {})
+    if isinstance(counts, dict):
+        current = _safe_int(counts.get("benchmark_infra_issue"))
+        counts["benchmark_infra_issue"] = max(current, len(task_ids) or 1)
+    recommendations = payload.get("recommendations")
+    if not isinstance(recommendations, list):
+        recommendations = []
+        payload["recommendations"] = recommendations
+    lifecycle_rec = {
+        "priority": "high",
+        "target": "benchmark/mobilegym/adapter/aiden_go_agent.py",
+        "suggestion": "仅在 bridge /episode/start 和 daemon /api/mobilegym/episode/start 激活 MobileGym episode 后，再执行 Aiden suite global_reset/setup。",
+    }
+    if not any("/api/mobilegym/episode/start" in json.dumps(item, ensure_ascii=False) for item in recommendations):
+        recommendations.insert(0, lifecycle_rec)
+
+
+def _normalize_failure_cluster_categories(payload: dict[str, Any]) -> None:
+    clusters = payload.get("failure_clusters")
+    if not isinstance(clusters, list):
+        return
+    fallback = _dominant_classification(payload.get("classification_counts"))
+    for cluster in clusters:
+        if not isinstance(cluster, dict):
+            continue
+        category = str(cluster.get("category") or "").strip()
+        if category not in ROOT_CAUSE_CATEGORIES:
+            cluster["category"] = fallback or "insufficient_evidence"
+        if not str(cluster.get("confidence") or "").strip():
+            cluster["confidence"] = "medium"
+
+
+def _dominant_classification(counts: Any) -> str:
+    if not isinstance(counts, dict):
+        return ""
+    positive = [
+        (str(category), _safe_int(value))
+        for category, value in counts.items()
+        if str(category) in ROOT_CAUSE_CATEGORIES and _safe_int(value) > 0
+    ]
+    if len(positive) != 1:
+        return ""
+    return positive[0][0]
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _atomic_write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -706,6 +885,7 @@ def analyze_run(run_dir: Path, repo_root: Path, cfg: AnalysisConfig) -> Analysis
         context = json.loads(redact_text(json.dumps(context, ensure_ascii=False), cfg))
         raw = chat_analysis_model(cfg, context, api_key)
         payload = extract_analysis_json(redact_text(raw, cfg))
+        payload = _normalize_analysis_payload(context, payload)
         payload.setdefault("metadata", {})
         payload["metadata"].update({"model": cfg.model, "api_key_env": key_name, "run_dir": str(run_dir)})
         json_path = run_dir / "llm_analysis.json"

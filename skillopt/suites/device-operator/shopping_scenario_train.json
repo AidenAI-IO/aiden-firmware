@@ -1,0 +1,182 @@
+{
+  "suite_name": "shopping_scenario_train",
+  "description": "Progressive training tasks for device-operator skill optimization. Each task is small and focused on a specific capability, with relaxed hard assertions to let rubric evaluation always run.",
+  "tasks": [
+    {
+      "id": "p1_open_ebay",
+      "category": "single_step",
+      "description_for_judge": "[Phase 1: Baseline capability] Open the eBay app from any starting screen. Tests app launch capability.",
+      "prompt": "Open the eBay app.",
+      "rubric": [
+        {
+          "id": "ebay_visible",
+          "check": "Post-screenshot shows eBay app interface (search bar, categories, or product feed visible)."
+        },
+        {
+          "id": "verified_with_screenshot",
+          "check": "Agent took a screenshot to confirm the app was opened, instead of just claiming success."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 100,
+        "must_complete_within_sec": 300
+      }
+    },
+    {
+      "id": "p1_search_english",
+      "category": "single_step",
+      "description_for_judge": "[Phase 1: Baseline capability] Search for a product using English. Tests basic text input + search workflow.",
+      "prompt": "In the eBay app, search for 'wireless mouse' and view the search results.",
+      "rubric": [
+        {
+          "id": "search_field_used",
+          "check": "Agent tapped/focused the search field before typing."
+        },
+        {
+          "id": "text_entered",
+          "check": "Search field contains text related to 'wireless mouse'."
+        },
+        {
+          "id": "results_shown",
+          "check": "Post-screenshot shows search results with product listings."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 2,
+        "max_tool_calls": 100,
+        "must_complete_within_sec": 300
+      }
+    },
+    {
+      "id": "p1_scroll_results",
+      "category": "single_step",
+      "description_for_judge": "[Phase 1: Basic scrolling] Scroll down search results once and verify content changed.",
+      "prompt": "In the eBay search results page, scroll down once to reveal more products. Take a screenshot before and after to verify scrolling worked.",
+      "rubric": [
+        {
+          "id": "screenshot_before",
+          "check": "Agent took a screenshot before scrolling."
+        },
+        {
+          "id": "scroll_performed",
+          "check": "Agent performed a scroll/swipe gesture."
+        },
+        {
+          "id": "screenshot_after",
+          "check": "Agent took a screenshot after scrolling."
+        },
+        {
+          "id": "content_changed",
+          "check": "Different products are visible after scrolling (not the same as before)."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 3,
+        "max_tool_calls": 100,
+        "must_complete_within_sec": 300
+      }
+    },
+    {
+      "id": "p2_view_product",
+      "category": "single_step",
+      "description_for_judge": "[Phase 2: Navigation] Click a product card to view its detail page, then verify by inspecting the new screen.",
+      "prompt": "In the eBay search results, tap on the first visible product card to open its detail page.",
+      "rubric": [
+        {
+          "id": "product_identified",
+          "check": "Agent visually identified a product card (not random tap)."
+        },
+        { "id": "tap_performed", "check": "Agent performed a tap action." },
+        {
+          "id": "detail_page_shown",
+          "check": "Post-screenshot shows a product detail page (with price, description, or buy button), not the list view."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 2,
+        "max_tool_calls": 100,
+        "must_complete_within_sec": 300
+      }
+    },
+    {
+      "id": "p2_navigate_back",
+      "category": "single_step",
+      "description_for_judge": "[Phase 2: Navigation] Navigate back from product detail to search results, verifying destination.",
+      "prompt": "Starting from a product detail page in eBay, navigate back to the search results page. After going back, take a screenshot to verify you returned to the right page.",
+      "rubric": [
+        {
+          "id": "back_action_used",
+          "check": "Agent used back gesture, back button, or quick_action with back."
+        },
+        {
+          "id": "verification_screenshot",
+          "check": "Agent took a screenshot after the back navigation."
+        },
+        {
+          "id": "on_results_page",
+          "check": "Post-screenshot shows search results list (multiple products), not detail page or home."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 2,
+        "max_tool_calls": 100,
+        "must_complete_within_sec": 300
+      }
+    },
+    {
+      "id": "p3_find_specific_item",
+      "category": "single_step",
+      "description_for_judge": "[Phase 3: Calibrated scrolling] Find an item further down the list. Tests scroll strength calibration and visual search.",
+      "prompt": "In eBay, search for 'laptop' and find a product priced below $500. You may need to scroll through results to find one. Click it when found.",
+      "rubric": [
+        {
+          "id": "search_completed",
+          "check": "Search for 'laptop' was executed."
+        },
+        {
+          "id": "scroll_used",
+          "check": "Agent scrolled at least once through the results."
+        },
+        {
+          "id": "price_observation",
+          "check": "Agent visually checked product prices while scrolling."
+        },
+        {
+          "id": "valid_item_clicked",
+          "check": "Final clicked product has a price below $500 (or agent explicitly noted no such item was found in visible range)."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 3,
+        "max_tool_calls": 100,
+        "must_complete_within_sec": 360
+      }
+    },
+    {
+      "id": "p3_observe_failed_action",
+      "category": "single_step",
+      "description_for_judge": "[Phase 3: Failed attempt handling] Tests the agent's ability to observe and recover when an action does not produce the expected result.",
+      "prompt": "In the eBay app, find and tap the 'Sell' (出售) button. If your first tap does not open a sell-related page, take a screenshot, observe what happened, and try a different approach (different location or navigation path).",
+      "rubric": [
+        {
+          "id": "first_attempt",
+          "check": "Agent made an initial attempt to tap or navigate to a sell-related area."
+        },
+        {
+          "id": "observed_result",
+          "check": "Agent took a screenshot to check the result of the action."
+        },
+        {
+          "id": "did_not_blind_retry",
+          "check": "If the first attempt failed, agent did NOT retry the exact same coordinate. Either changed location, used different navigation, or reported failure clearly."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 2,
+        "max_tool_calls": 100,
+        "must_complete_within_sec": 360
+      }
+    }
+  ]
+}

@@ -67,17 +67,22 @@ func (t *ShellTool) Call(ctx context.Context, input string) (string, error) {
 	trimmed := strings.TrimSpace(input)
 	if trimmed != "" {
 		if err := json.Unmarshal([]byte(trimmed), &arguments); err != nil {
-			return shellErrorString(fmt.Sprintf("invalid input: %v", err)), nil
+			return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v", err), nil
 		}
 	}
 
-	if shellBoolArg(arguments, "background") || shellHasAction(arguments) {
-		return shellExecuteBackground(ctx, arguments, t.proxy)
+	_, hasAction := arguments["action"]
+	if shellBoolArg(arguments, "background") || hasAction {
+		out, err := shellExecuteBackground(ctx, arguments, t.proxy)
+		if err != nil {
+			return out, err
+		}
+		return out, nil
 	}
 
 	command, ok := arguments["command"].(string)
 	if !ok || strings.TrimSpace(command) == "" {
-		return shellErrorString("Missing required parameter: command"), nil
+		return toolErrorResultString(ctx, CodeInvalidArguments, "Missing required parameter: command"), nil
 	}
 
 	timeoutSecs := shellDefaultTimeoutSeconds
@@ -95,11 +100,14 @@ func (t *ShellTool) Call(ctx context.Context, input string) (string, error) {
 	defer cancel()
 
 	result, runErr := shellRunForeground(execCtx, command, workdir, usePTY, t.proxy)
+	if contextErr := contextError(execCtx, runErr); errors.Is(contextErr, context.Canceled) {
+		return "", contextErr
+	}
 	if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
-		return shellErrorString(fmt.Sprintf("Error: command timed out after %.0f seconds", timeoutSecs)), nil
+		return toolErrorResultf(ctx, CodeDeadlineExceeded, "Error: command timed out after %.0f seconds", timeoutSecs), nil
 	}
 	if runErr != nil {
-		return shellErrorString(result), nil
+		return toolErrorResultString(ctx, CodeToolExecutionFailed, result), nil
 	}
 	return result, nil
 }
@@ -110,26 +118,26 @@ func shellExecuteBackground(ctx context.Context, arguments map[string]interface{
 	case "start":
 		return shellStartBackground(ctx, arguments, proxy)
 	case "poll":
-		return shellPollBackground(arguments)
+		return shellPollBackground(ctx, arguments)
 	case "write":
-		return shellWriteBackground(arguments)
+		return shellWriteBackground(ctx, arguments)
 	case "submit":
-		return shellSubmitBackground(arguments)
+		return shellSubmitBackground(ctx, arguments)
 	case "send_keys":
-		return shellSendKeysBackground(arguments)
+		return shellSendKeysBackground(ctx, arguments)
 	case "resize":
-		return shellResizeBackground(arguments)
+		return shellResizeBackground(ctx, arguments)
 	case "stop":
-		return shellStopBackground(arguments)
+		return shellStopBackground(ctx, arguments)
 	default:
-		return shellErrorString(fmt.Sprintf("invalid action: %s", action)), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "invalid action: %s", action), nil
 	}
 }
 
 func shellStartBackground(ctx context.Context, arguments map[string]interface{}, proxy ProxyConfig) (string, error) {
 	command := shellStringArg(arguments, "command", "")
 	if command == "" {
-		return shellErrorString("Missing required parameter: command"), nil
+		return toolErrorResultString(ctx, CodeInvalidArguments, "Missing required parameter: command"), nil
 	}
 
 	workdir := shellStringArg(arguments, "workdir", "")
@@ -150,7 +158,7 @@ func shellStartBackground(ctx context.Context, arguments map[string]interface{},
 	cmd, err := shellBuildCommand(sessionCtx, command, proxy)
 	if err != nil {
 		cancel()
-		return shellErrorString(err.Error()), nil
+		return toolErrorResultString(ctx, CodeToolExecutionFailed, err.Error()), nil
 	}
 
 	session := &shellSession{
@@ -168,7 +176,7 @@ func shellStartBackground(ctx context.Context, arguments map[string]interface{},
 	if usePTY {
 		if err = shellStartPTYBackground(sessionCtx, session, arguments, proxy); err != nil {
 			cancel()
-			return shellErrorString(err.Error()), nil
+			return toolErrorResultString(ctx, CodeToolExecutionFailed, err.Error()), nil
 		}
 	} else {
 		if workdir != "" {
@@ -177,20 +185,20 @@ func shellStartBackground(ctx context.Context, arguments map[string]interface{},
 		stdin, pipeErr := cmd.StdinPipe()
 		if pipeErr != nil {
 			cancel()
-			return shellErrorString(pipeErr.Error()), nil
+			return toolErrorResultString(ctx, CodeToolExecutionFailed, pipeErr.Error()), nil
 		}
 		stdoutPipe, pipeErr := cmd.StdoutPipe()
 		if pipeErr != nil {
 			cancel()
 			_ = stdin.Close()
-			return shellErrorString(pipeErr.Error()), nil
+			return toolErrorResultString(ctx, CodeToolExecutionFailed, pipeErr.Error()), nil
 		}
 		stderrPipe, pipeErr := cmd.StderrPipe()
 		if pipeErr != nil {
 			cancel()
 			_ = stdin.Close()
 			_ = stdoutPipe.Close()
-			return shellErrorString(pipeErr.Error()), nil
+			return toolErrorResultString(ctx, CodeToolExecutionFailed, pipeErr.Error()), nil
 		}
 
 		if pipeErr = cmd.Start(); pipeErr != nil {
@@ -198,7 +206,7 @@ func shellStartBackground(ctx context.Context, arguments map[string]interface{},
 			_ = stdin.Close()
 			_ = stdoutPipe.Close()
 			_ = stderrPipe.Close()
-			return shellErrorString(pipeErr.Error()), nil
+			return toolErrorResultString(ctx, CodeToolExecutionFailed, pipeErr.Error()), nil
 		}
 
 		session.stdin = stdin
@@ -221,14 +229,14 @@ func shellStartBackground(ctx context.Context, arguments map[string]interface{},
 	}), nil
 }
 
-func shellPollBackground(arguments map[string]interface{}) (string, error) {
+func shellPollBackground(ctx context.Context, arguments map[string]interface{}) (string, error) {
 	sessionID := shellStringArg(arguments, "session_id", "")
 	if sessionID == "" {
-		return shellErrorString("Missing required parameter: session_id"), nil
+		return toolErrorResultString(ctx, CodeInvalidArguments, "Missing required parameter: session_id"), nil
 	}
 	session := globalShellSessionManager.get(sessionID)
 	if session == nil {
-		return shellErrorString(fmt.Sprintf("shell session not found: %s", sessionID)), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "shell session not found: %s", sessionID), nil
 	}
 
 	maxBytes := shellIntArg(arguments, "bytes", shellDefaultPollBytes)
@@ -261,27 +269,27 @@ func shellPollBackground(arguments map[string]interface{}) (string, error) {
 	return shellJSONString(payload), nil
 }
 
-func shellWriteBackground(arguments map[string]interface{}) (string, error) {
+func shellWriteBackground(ctx context.Context, arguments map[string]interface{}) (string, error) {
 	sessionID := shellStringArg(arguments, "session_id", "")
 	if sessionID == "" {
-		return shellErrorString("Missing required parameter: session_id"), nil
+		return toolErrorResultString(ctx, CodeInvalidArguments, "Missing required parameter: session_id"), nil
 	}
 	session := globalShellSessionManager.get(sessionID)
 	if session == nil {
-		return shellErrorString(fmt.Sprintf("shell session not found: %s", sessionID)), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "shell session not found: %s", sessionID), nil
 	}
 	if !session.isRunning() {
-		return shellErrorString("shell session is no longer running"), nil
+		return toolErrorResultString(ctx, CodeToolExecutionFailed, "shell session is no longer running"), nil
 	}
 
 	input := shellStringArg(arguments, "input", "")
 	if input == "" {
-		return shellErrorString("Missing required parameter: input"), nil
+		return toolErrorResultString(ctx, CodeInvalidArguments, "Missing required parameter: input"), nil
 	}
 
 	n, err := session.writeString(input)
 	if err != nil {
-		return shellErrorString(err.Error()), nil
+		return toolErrorResultString(ctx, CodeToolExecutionFailed, err.Error()), nil
 	}
 	return shellJSONString(map[string]interface{}{
 		"session_id":    session.id,
@@ -290,50 +298,50 @@ func shellWriteBackground(arguments map[string]interface{}) (string, error) {
 	}), nil
 }
 
-func shellSubmitBackground(arguments map[string]interface{}) (string, error) {
+func shellSubmitBackground(ctx context.Context, arguments map[string]interface{}) (string, error) {
 	input := shellStringArg(arguments, "input", "")
 	if input == "" {
-		return shellWriteBackground(map[string]interface{}{
+		return shellWriteBackground(ctx, map[string]interface{}{
 			"session_id": arguments["session_id"],
 			"input":      "\n",
 		})
 	}
-	return shellWriteBackground(map[string]interface{}{
+	return shellWriteBackground(ctx, map[string]interface{}{
 		"session_id": arguments["session_id"],
 		"input":      input + "\n",
 	})
 }
 
-func shellSendKeysBackground(arguments map[string]interface{}) (string, error) {
+func shellSendKeysBackground(ctx context.Context, arguments map[string]interface{}) (string, error) {
 	sessionID := shellStringArg(arguments, "session_id", "")
 	if sessionID == "" {
-		return shellErrorString("Missing required parameter: session_id"), nil
+		return toolErrorResultString(ctx, CodeInvalidArguments, "Missing required parameter: session_id"), nil
 	}
 	session := globalShellSessionManager.get(sessionID)
 	if session == nil {
-		return shellErrorString(fmt.Sprintf("shell session not found: %s", sessionID)), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "shell session not found: %s", sessionID), nil
 	}
 	if !session.isRunning() {
-		return shellErrorString("shell session is no longer running"), nil
+		return toolErrorResultString(ctx, CodeToolExecutionFailed, "shell session is no longer running"), nil
 	}
 
 	keys := shellStringSliceArg(arguments, "keys")
 	if len(keys) == 0 {
-		return shellErrorString("Missing required parameter: keys"), nil
+		return toolErrorResultString(ctx, CodeInvalidArguments, "Missing required parameter: keys"), nil
 	}
 
 	var seq strings.Builder
 	for _, key := range keys {
 		part, err := shellKeySequence(key)
 		if err != nil {
-			return shellErrorString(err.Error()), nil
+			return toolErrorResultString(ctx, CodeInvalidArguments, err.Error()), nil
 		}
 		seq.WriteString(part)
 	}
 
 	n, err := session.writeString(seq.String())
 	if err != nil {
-		return shellErrorString(err.Error()), nil
+		return toolErrorResultString(ctx, CodeToolExecutionFailed, err.Error()), nil
 	}
 	return shellJSONString(map[string]interface{}{
 		"session_id":    session.id,
@@ -342,23 +350,23 @@ func shellSendKeysBackground(arguments map[string]interface{}) (string, error) {
 	}), nil
 }
 
-func shellResizeBackground(arguments map[string]interface{}) (string, error) {
+func shellResizeBackground(ctx context.Context, arguments map[string]interface{}) (string, error) {
 	sessionID := shellStringArg(arguments, "session_id", "")
 	if sessionID == "" {
-		return shellErrorString("Missing required parameter: session_id"), nil
+		return toolErrorResultString(ctx, CodeInvalidArguments, "Missing required parameter: session_id"), nil
 	}
 	session := globalShellSessionManager.get(sessionID)
 	if session == nil {
-		return shellErrorString(fmt.Sprintf("shell session not found: %s", sessionID)), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "shell session not found: %s", sessionID), nil
 	}
 	if !session.usePTY || session.pty == nil {
-		return shellErrorString("shell session is not running in pty mode"), nil
+		return toolErrorResultString(ctx, CodeInvalidArguments, "shell session is not running in pty mode"), nil
 	}
 
 	cols := shellPTYCols(arguments)
 	rows := shellPTYRows(arguments)
 	if err := shellResizePTY(session, cols, rows); err != nil {
-		return shellErrorString(err.Error()), nil
+		return toolErrorResultString(ctx, CodeToolExecutionFailed, err.Error()), nil
 	}
 	return shellJSONString(map[string]interface{}{
 		"session_id": session.id,
@@ -369,14 +377,14 @@ func shellResizeBackground(arguments map[string]interface{}) (string, error) {
 	}), nil
 }
 
-func shellStopBackground(arguments map[string]interface{}) (string, error) {
+func shellStopBackground(ctx context.Context, arguments map[string]interface{}) (string, error) {
 	sessionID := shellStringArg(arguments, "session_id", "")
 	if sessionID == "" {
-		return shellErrorString("Missing required parameter: session_id"), nil
+		return toolErrorResultString(ctx, CodeInvalidArguments, "Missing required parameter: session_id"), nil
 	}
 	session := globalShellSessionManager.get(sessionID)
 	if session == nil {
-		return shellErrorString(fmt.Sprintf("shell session not found: %s", sessionID)), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "shell session not found: %s", sessionID), nil
 	}
 
 	session.stop()
@@ -655,14 +663,10 @@ func shellPTYCols(arguments map[string]interface{}) uint16 {
 	return uint16(cols)
 }
 
-func shellErrorString(text string) string {
-	return "error: " + text
-}
-
 func shellJSONString(v interface{}) string {
 	bs, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
-		return shellErrorString(err.Error())
+		return fmt.Sprintf("json marshal failed: %v", err)
 	}
 	return string(bs)
 }

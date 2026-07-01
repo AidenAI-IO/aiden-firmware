@@ -32,6 +32,7 @@ struct STTToml {
     std::string api_key;
     std::string model;
     std::string base_url;
+    std::string app_id;
     std::string secret_id;
     std::string secret_key;
     std::string region;
@@ -133,7 +134,6 @@ struct AgentToml {
     bool voice_progress_speech_enabled = true;
     int voice_max_response_tokens = 300;
     int max_iterations = -1;
-    bool force_simple_loop = false;
     int screenshot_keep_n = 3;
     int screenshot_prune_interval = 2;
     int screen_stable_timeout_ms = 3500;

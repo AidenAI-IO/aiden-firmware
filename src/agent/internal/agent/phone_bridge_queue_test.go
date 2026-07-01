@@ -19,11 +19,9 @@ func TestEnqueueAndPoll(t *testing.T) {
 		TimeoutMs: 5000,
 	}
 	cmd2 := BridgeCommand{
-		ID:              "test_2",
-		Type:            "clipboard_read",
-		IOSURLs:         []string{"clipboard://"},
-		AndroidPackages: []string{"com.example.clipboard"},
-		TimeoutMs:       3000,
+		ID:        "test_2",
+		Type:      "clipboard_read",
+		TimeoutMs: 3000,
 	}
 
 	// Enqueue commands
@@ -76,14 +74,14 @@ func TestPollPlatformFilter(t *testing.T) {
 	cmdIOS := BridgeCommand{
 		ID:        "ios_cmd",
 		Type:      "open_app",
-		IOSURLs:   []string{"weixin://"},
+		App:       "微信",
 		TimeoutMs: 5000,
 	}
 	cmdAndroid := BridgeCommand{
-		ID:              "android_cmd",
-		Type:            "open_app",
-		AndroidPackages: []string{"com.tencent.mm"},
-		TimeoutMs:       5000,
+		ID:        "android_cmd",
+		Type:      "open_app",
+		App:       "微信",
+		TimeoutMs: 5000,
 	}
 	cmdGeneric := BridgeCommand{
 		ID:        "generic_cmd",
@@ -95,22 +93,40 @@ func TestPollPlatformFilter(t *testing.T) {
 	q.Enqueue(cmdAndroid)
 	q.Enqueue(cmdGeneric)
 
-	// Poll iOS: should get ios_cmd and generic_cmd
+	// Platform-specific open_app targeting is resolved app-side, so queue
+	// polling no longer filters semantic commands by platform.
 	polledIOS := q.Poll("ios", 10)
-	if len(polledIOS) != 2 {
-		t.Errorf("expected 2 commands for iOS, got %d", len(polledIOS))
+	if len(polledIOS) != 3 {
+		t.Errorf("expected 3 commands for iOS, got %d", len(polledIOS))
 	}
 
 	// Requeue them for next test
 	q.mu.Lock()
 	q.commands["ios_cmd"].Status = StatusQueued
+	q.commands["android_cmd"].Status = StatusQueued
 	q.commands["generic_cmd"].Status = StatusQueued
 	q.mu.Unlock()
 
-	// Poll Android: should get android_cmd and generic_cmd
 	polledAndroid := q.Poll("android", 10)
-	if len(polledAndroid) != 2 {
-		t.Errorf("expected 2 commands for Android, got %d", len(polledAndroid))
+	if len(polledAndroid) != 3 {
+		t.Errorf("expected 3 commands for Android, got %d", len(polledAndroid))
+	}
+}
+
+func TestPollForPhoneFiltersScopedCommands(t *testing.T) {
+	q := NewCommandQueue(nil)
+	defer q.Stop()
+
+	q.Enqueue(BridgeCommand{ID: "phone_a", Type: "clipboard_read", PhoneID: "phone-a"})
+	q.Enqueue(BridgeCommand{ID: "phone_b", Type: "clipboard_read", PhoneID: "phone-b"})
+	q.Enqueue(BridgeCommand{ID: "legacy", Type: "clipboard_read"})
+
+	polled := q.PollForPhone("ios", "phone-a", 10)
+	if len(polled) != 2 {
+		t.Fatalf("expected 2 commands for phone-a, got %d: %#v", len(polled), polled)
+	}
+	if polled[0].ID != "phone_a" || polled[1].ID != "legacy" {
+		t.Fatalf("polled commands = %#v, want phone_a and legacy", polled)
 	}
 }
 
@@ -141,7 +157,6 @@ func TestSubmitAndQueryResult(t *testing.T) {
 	// Submit result
 	resp := BridgeCommandResponse{
 		ID:     "cmd_1",
-		OK:     true,
 		Method: "clipboard",
 		Data:   json.RawMessage(`{"text":"hello"}`),
 	}
@@ -157,8 +172,8 @@ func TestSubmitAndQueryResult(t *testing.T) {
 	if result == nil {
 		t.Fatal("expected non-nil result")
 	}
-	if !result.Response.OK {
-		t.Errorf("expected OK=true")
+	if result.Response.Error != nil {
+		t.Errorf("expected Error=nil, got %v", result.Response.Error)
 	}
 	if result.Response.Method != "clipboard" {
 		t.Errorf("expected method=clipboard, got %v", result.Response.Method)
@@ -172,7 +187,10 @@ func TestSubmitAndQueryResult(t *testing.T) {
 	q.mu.RUnlock()
 
 	// Submit result for non-existent command
-	badResp := BridgeCommandResponse{ID: "nonexistent", OK: false}
+	badResp := BridgeCommandResponse{
+		ID:    "nonexistent",
+		Error: NewToolError(CodeBridgeNotConnected, "test error"),
+	}
 	if err := q.SubmitResult(badResp); err == nil {
 		t.Errorf("expected error for nonexistent command")
 	}
@@ -206,7 +224,7 @@ func TestCommandExpiration(t *testing.T) {
 	cmd2 := BridgeCommand{ID: "result_expire", Type: "test"}
 	q.Enqueue(cmd2)
 	q.Poll("", 10)
-	resp := BridgeCommandResponse{ID: "result_expire", OK: true}
+	resp := BridgeCommandResponse{ID: "result_expire"}
 	q.SubmitResult(resp)
 
 	// Manually expire result
@@ -324,7 +342,7 @@ func TestConcurrentAccess(t *testing.T) {
 	for id := range polledIDs {
 		go func(cmdID string) {
 			defer wg.Done()
-			resp := BridgeCommandResponse{ID: cmdID, OK: true}
+			resp := BridgeCommandResponse{ID: cmdID}
 			q.SubmitResult(resp)
 		}(id)
 	}
@@ -336,8 +354,8 @@ func TestConcurrentAccess(t *testing.T) {
 		if status != StatusCompleted {
 			t.Errorf("command %s expected completed, got %v", id, status)
 		}
-		if result == nil || !result.Response.OK {
-			t.Errorf("command %s missing valid result", id)
+		if result == nil || result.Response.Error != nil {
+			t.Errorf("command %s missing valid result or has error", id)
 		}
 	}
 }
@@ -394,9 +412,3 @@ func TestQueryExpiredCommand(t *testing.T) {
 		t.Errorf("expected nil result for expired command")
 	}
 }
-
-
-
-
-
-

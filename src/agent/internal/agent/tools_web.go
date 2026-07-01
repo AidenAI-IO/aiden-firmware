@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -25,6 +26,9 @@ const defaultUserAgent = "aiden-agent/1.0 (+https://github.com/AidenAI-IO)"
 const defaultWebToolTimeout = 15 * time.Second
 const maxWebToolOutputBytes = 12_000
 const braveSearchEndpoint = "https://api.search.brave.com/res/v1/web/search"
+
+var lookupScrapeHostIPs = net.LookupIP
+var webScraperRequestDelay = 3 * time.Second
 
 // searchBackend abstracts the actual search call.
 type searchBackend interface {
@@ -94,12 +98,12 @@ func (t *WebSearchTool) ArgsSchema() map[string]any {
 
 func (t *WebSearchTool) Call(ctx context.Context, input string) (string, error) {
 	if t.backend == nil {
-		return "error: web_search tool is not configured (provider=" + t.provider + ")", nil
+		return toolErrorResultString(ctx, CodeModuleUnavailable, "web_search tool is not configured (provider="+t.provider+")"), nil
 	}
 
 	query := strings.TrimSpace(input)
 	if query == "" {
-		return "error: query is required", nil
+		return toolErrorResultString(ctx, CodeInvalidArguments, "query is required"), nil
 	}
 
 	if strings.HasPrefix(query, "{") {
@@ -116,7 +120,10 @@ func (t *WebSearchTool) Call(ctx context.Context, input string) (string, error) 
 
 	result, err := t.backend.Search(callCtx, query)
 	if err != nil {
-		return fmt.Sprintf("error: %v", err), nil
+		if contextErr := contextError(callCtx, err); contextErr != nil {
+			return "", contextErr
+		}
+		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
 	return truncateToolOutput(result), nil
 }
@@ -307,7 +314,7 @@ func (t *WikipediaTool) ArgsSchema() map[string]any {
 func (t *WikipediaTool) Call(ctx context.Context, input string) (string, error) {
 	query := strings.TrimSpace(input)
 	if query == "" {
-		return "error: query is required", nil
+		return toolErrorResultString(ctx, CodeInvalidArguments, "query is required"), nil
 	}
 
 	if strings.HasPrefix(query, "{") {
@@ -324,7 +331,10 @@ func (t *WikipediaTool) Call(ctx context.Context, input string) (string, error) 
 
 	result, err := t.inner.Call(callCtx, query)
 	if err != nil {
-		return fmt.Sprintf("error: %v", err), nil
+		if contextErr := contextError(callCtx, err); contextErr != nil {
+			return "", contextErr
+		}
+		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
 	return truncateToolOutput(result), nil
 }
@@ -356,7 +366,7 @@ func (t *CalculatorTool) ArgsSchema() map[string]any {
 func (t *CalculatorTool) Call(ctx context.Context, input string) (string, error) {
 	expr := strings.TrimSpace(input)
 	if expr == "" {
-		return "error: expression is required", nil
+		return toolErrorResultString(ctx, CodeInvalidArguments, "expression is required"), nil
 	}
 
 	if strings.HasPrefix(expr, "{") {
@@ -370,7 +380,7 @@ func (t *CalculatorTool) Call(ctx context.Context, input string) (string, error)
 
 	result, err := t.inner.Call(ctx, expr)
 	if err != nil {
-		return fmt.Sprintf("error: %v", err), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 	}
 	return result, nil
 }
@@ -403,7 +413,7 @@ func (t *WebScraperTool) ArgsSchema() map[string]any {
 func (t *WebScraperTool) Call(ctx context.Context, input string) (string, error) {
 	rawURL := strings.TrimSpace(input)
 	if rawURL == "" {
-		return "error: url is required", nil
+		return toolErrorResultString(ctx, CodeInvalidArguments, "url is required"), nil
 	}
 
 	if strings.HasPrefix(rawURL, "{") {
@@ -416,7 +426,7 @@ func (t *WebScraperTool) Call(ctx context.Context, input string) (string, error)
 	}
 
 	if err := validateScrapeURL(rawURL); err != nil {
-		return fmt.Sprintf("error: %v", err), nil
+		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 	}
 
 	callCtx, cancel := contextWithDefaultTimeout(ctx)
@@ -424,7 +434,10 @@ func (t *WebScraperTool) Call(ctx context.Context, input string) (string, error)
 
 	result, err := t.scrape(callCtx, rawURL)
 	if err != nil {
-		return fmt.Sprintf("error: %v", err), nil
+		if contextErr := contextError(callCtx, err); contextErr != nil {
+			return "", contextErr
+		}
+		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
 	return truncateToolOutput(result), nil
 }
@@ -434,12 +447,12 @@ func (t *WebScraperTool) scrape(ctx context.Context, targetURL string) (string, 
 		colly.MaxDepth(1),
 		colly.Async(false),
 	)
-	c.WithTransport(newProxyTransport(t.proxy))
+	c.WithTransport(newScrapeTransport(t.proxy))
 
 	if err := c.Limit(&colly.LimitRule{
 		DomainGlob:  "*",
 		Parallelism: 2,
-		Delay:       3 * time.Second,
+		Delay:       webScraperRequestDelay,
 	}); err != nil {
 		return "", err
 	}
@@ -449,12 +462,18 @@ func (t *WebScraperTool) scrape(ctx context.Context, targetURL string) (string, 
 	scrapedLinksMutex := sync.RWMutex{}
 	pageCount := 0
 	pageCountMutex := sync.Mutex{}
+	var requestErr error
 	const maxPages = 1
 
 	blacklist := []string{"login", "signup", "signin", "register", "logout", "download", "redirect"}
 
 	c.OnRequest(func(r *colly.Request) {
 		if ctx.Err() != nil {
+			r.Abort()
+			return
+		}
+		if err := validateScrapeURL(r.URL.String()); err != nil {
+			requestErr = err
 			r.Abort()
 			return
 		}
@@ -531,6 +550,9 @@ func (t *WebScraperTool) scrape(ctx context.Context, targetURL string) (string, 
 	})
 
 	if err := c.Visit(targetURL); err != nil {
+		if requestErr != nil {
+			return "", requestErr
+		}
 		return "", err
 	}
 
@@ -545,6 +567,9 @@ func (t *WebScraperTool) scrape(ctx context.Context, targetURL string) (string, 
 		return "", ctx.Err()
 	case <-done:
 	}
+	if requestErr != nil {
+		return "", requestErr
+	}
 
 	return siteData.String(), nil
 }
@@ -557,19 +582,85 @@ func validateScrapeURL(rawURL string) error {
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fmt.Errorf("invalid url scheme: only http/https allowed")
 	}
-	host := strings.ToLower(u.Hostname())
+	_, err = lookupAllowedScrapeHostIPs(u.Hostname())
+	return err
+}
+
+func newScrapeTransport(proxy ProxyConfig) http.RoundTripper {
+	transport := newProxyTransport(proxy)
+	httpTransport, ok := transport.(*http.Transport)
+	if !ok {
+		return transport
+	}
+
+	baseDialContext := httpTransport.DialContext
+	if baseDialContext == nil {
+		baseDialContext = (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+	}
+	httpTransport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		return dialAllowedScrapeAddress(ctx, baseDialContext, network, address)
+	}
+	return httpTransport
+}
+
+func dialAllowedScrapeAddress(ctx context.Context, dialContext func(context.Context, string, string) (net.Conn, error), network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	addrs, err := lookupAllowedScrapeHostIPs(host)
+	if err != nil {
+		return nil, err
+	}
+
+	var lastErr error
+	for _, ip := range addrs {
+		conn, err := dialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+		if err == nil {
+			return conn, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+func lookupAllowedScrapeHostIPs(host string) ([]net.IP, error) {
+	host = strings.ToLower(strings.TrimSpace(strings.Trim(host, "[]")))
 	if host == "" {
-		return fmt.Errorf("invalid url: empty host")
+		return nil, fmt.Errorf("invalid url: empty host")
 	}
 	if host == "localhost" {
-		return fmt.Errorf("url host is not allowed")
+		return nil, fmt.Errorf("url host is not allowed")
 	}
 	if ip := net.ParseIP(host); ip != nil {
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
-			return fmt.Errorf("url host is not allowed")
+		if scrapeIPIsDisallowed(ip) {
+			return nil, fmt.Errorf("url host is not allowed")
+		}
+		return []net.IP{ip}, nil
+	}
+	addrs, err := lookupScrapeHostIPs(host)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("resolve url host: %w", err)
+	}
+	if len(addrs) == 0 {
+		return nil, fmt.Errorf("resolve url host: no addresses")
+	}
+	for _, ip := range addrs {
+		if scrapeIPIsDisallowed(ip) {
+			return nil, fmt.Errorf("url host resolves to a private or link-local address")
 		}
 	}
-	return nil
+	return addrs, nil
+}
+
+func scrapeIPIsDisallowed(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()
 }
 
 func contextWithDefaultTimeout(ctx context.Context) (context.Context, context.CancelFunc) {

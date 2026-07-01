@@ -21,6 +21,7 @@ def mock_env_factory():
     class MockEnv:
         def __init__(self):
             self.last_action = None
+            self.actions = []
             self.step_count = 0
 
         async def get_observation(self):
@@ -29,6 +30,7 @@ def mock_env_factory():
 
         async def step(self, action):
             self.last_action = action
+            self.actions.append(action)
             self.step_count += 1
             return MockStepResult()
 
@@ -82,6 +84,8 @@ def test_get_tools_catalog(bridge_server):
     assert "touch_gesture" in tools
     assert "keyboard_text" in tools
     assert "keyboard_tap" in tools
+    assert "enter_text_in_field" in tools
+    assert "enter_text_via_bridge" in tools
     assert "mouse_click" in tools
     assert "mouse_move" in tools
     assert "mouse_scroll" in tools
@@ -109,6 +113,16 @@ def test_get_tools_catalog(bridge_server):
     assert tools["keyboard_text"]["args_schema"]["additionalProperties"] is False
     assert tools["keyboard_tap"]["args_schema"]["additionalProperties"] is False
     assert "hold_ms" in keyboard_tap_props
+
+    enter_text_props = tools["enter_text_in_field"]["args_schema"]["properties"]
+    assert tools["enter_text_in_field"]["args_schema"]["additionalProperties"] is False
+    assert "focus" in enter_text_props
+    assert "segments" in enter_text_props
+    assert tools["enter_text_via_bridge"]["args_schema"]["additionalProperties"] is False
+    assert enter_text_props["platform"]["enum"] == ["ios", "android", "mac"]
+    assert enter_text_props["mode"]["enum"] == ["form", "search"]
+    assert enter_text_props["focus"]["additionalProperties"] is False
+    assert enter_text_props["focus"]["properties"]["coord_space"]["enum"] == ["auto", "normalized", "absolute"]
 
     mouse_click_props = tools["mouse_click"]["args_schema"]["properties"]
     assert tools["mouse_click"]["args_schema"]["additionalProperties"] is False
@@ -216,6 +230,30 @@ def test_invoke_touch_gesture_tap_accepts_top_level_string_coordinates(bridge_se
     }
 
 
+def test_invoke_touch_gesture_tap_accepts_list_point(bridge_server):
+    """Regression test for agent traces that emit point as [x, y]."""
+    server, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-002c"
+
+    request_body = json.dumps({"input": {"type": "tap", "point": [498, 828]}}).encode()
+    req = Request(
+        f"{base_url}/api/tools/touch_gesture",
+        data=request_body,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+
+    assert data["is_error"] is False
+    assert action_to_dict(state.env.last_action) == {
+        "action_type": "CLICK",
+        "data": {"point": [498.0, 828.0]},
+    }
+
+
 def test_invoke_mouse_click_maps_to_tap(bridge_server):
     server, base_url, state = bridge_server
     state.active_episode_id = "test-episode-mouse"
@@ -263,6 +301,152 @@ def test_invoke_keyboard_text(bridge_server):
     }
 
 
+def test_invoke_enter_text_in_field_maps_to_mobilegym_type_action(bridge_server):
+    server, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-enter-text"
+
+    request_body = json.dumps(
+        {
+            "input": {
+                "text": "微信读书",
+                "platform": "android",
+                "mode": "search",
+                "focus": {"x": 500, "y": 120, "coord_space": "normalized"},
+                "segments": ["wei", "xin", "du", "shu"],
+            }
+        }
+    ).encode()
+    req = Request(
+        f"{base_url}/api/tools/enter_text_in_field",
+        data=request_body,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+
+    assert data["is_error"] is False
+    output = json.loads(data["output"])
+    assert output["ok"] is True
+    assert output["committed"] is True
+    assert output["target_text"] == "微信读书"
+    assert output["required_mode"] == "composition"
+    assert output["mode"] == "search"
+    assert action_to_dict(state.env.last_action) == {
+        "action_type": "TYPE",
+        "data": {"value": "微信读书", "point": [500.0, 120.0]},
+    }
+
+
+def test_invoke_enter_text_via_bridge_aliases_mobilegym_text_entry(bridge_server):
+    server, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-enter-text-bridge"
+
+    request_body = json.dumps(
+        {
+            "input": {
+                "text": "Trip report",
+                "platform": "android",
+                "focus": {"x": 250, "y": 800, "coord_space": "normalized"},
+            }
+        }
+    ).encode()
+    req = Request(
+        f"{base_url}/api/tools/enter_text_via_bridge",
+        data=request_body,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+
+    assert data["is_error"] is False
+    output = json.loads(data["output"])
+    assert output["ok"] is True
+    assert output["committed"] is True
+    assert output["target_text"] == "Trip report"
+    assert output["required_mode"] == "ascii"
+    assert action_to_dict(state.env.last_action) == {
+        "action_type": "TYPE",
+        "data": {"value": "Trip report", "point": [250.0, 800.0]},
+    }
+
+
+def test_invoke_enter_text_preserves_exact_whitespace(bridge_server):
+    server, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-enter-text-whitespace"
+
+    req = Request(
+        f"{base_url}/api/tools/enter_text_in_field",
+        data=json.dumps({"input": {"text": "  padded  ", "focus": {"x": 500, "y": 120}}}).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+
+    assert data["is_error"] is False
+    output = json.loads(data["output"])
+    assert output["target_text"] == "  padded  "
+    assert action_to_dict(state.env.last_action) == {
+        "action_type": "TYPE",
+        "data": {"value": "  padded  ", "point": [500.0, 120.0]},
+    }
+
+
+def test_invoke_quick_action_handles_mobilegym_common_actions(bridge_server):
+    server, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-quick-actions"
+
+    for action, expected_type in [
+        ("spotlight_search", "SWIPE"),
+        ("search", "SWIPE"),
+        ("search_launch_app", "SWIPE"),
+        ("app_switch", "SWIPE"),
+        ("send", "ENTER"),
+    ]:
+        req = Request(
+            f"{base_url}/api/tools/quick_action",
+            data=json.dumps({"input": {"action": action, "platform": "android"}}).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+
+        with urlopen(req, timeout=5) as resp:
+            assert resp.status == 200
+            data = json.loads(resp.read().decode())
+
+        assert data["is_error"] is False
+        assert "unsupported quick_action" not in data["output"]
+        assert action_to_dict(state.env.last_action)["action_type"] == expected_type
+
+    no_action_count = state.env.step_count
+    for action in ["select_all", "delete_backward", "copy", "paste", "undo", "find", "cut", "browser_refresh", "browser_new_tab"]:
+        req = Request(
+            f"{base_url}/api/tools/quick_action",
+            data=json.dumps({"input": {"action": action, "platform": "android"}}).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+
+        with urlopen(req, timeout=5) as resp:
+            assert resp.status == 200
+            data = json.loads(resp.read().decode())
+
+        assert data["is_error"] is False
+        output = json.loads(data["output"])
+        assert output["ok"] is False
+        assert output["status"] == "reserved"
+        assert "unsupported quick_action" not in data["output"]
+        assert state.env.step_count == no_action_count
+
+
 def test_invoke_keyboard_text_accepts_plain_text_fallback(bridge_server):
     """Matches the Go keyboard_text fallback for bare plain text input."""
     server, base_url, state = bridge_server
@@ -284,6 +468,43 @@ def test_invoke_keyboard_text_accepts_plain_text_fallback(bridge_server):
     assert action_to_dict(state.env.last_action) == {
         "action_type": "TYPE",
         "data": {"value": "plain text"},
+    }
+
+
+def test_invoke_enter_text_in_field_focuses_and_types_unicode(bridge_server):
+    _server, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-enter-text"
+
+    request_body = json.dumps(
+        {
+            "input": {
+                "text": "隐私",
+                "platform": "android",
+                "focus": {"coord_space": "normalized", "x": 500, "y": 80},
+                "segments": ["yin", "si"],
+            }
+        }
+    ).encode()
+    req = Request(
+        f"{base_url}/api/tools/enter_text_in_field",
+        data=request_body,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+
+    assert data["is_error"] is False
+    output = json.loads(data["output"])
+    assert output["ok"] is True
+    assert output["committed"] is True
+    assert output["field_text"] == "隐私"
+    assert output["required_mode"] == "composition"
+    assert action_to_dict(state.env.last_action) == {
+        "action_type": "TYPE",
+        "data": {"value": "隐私", "point": [500.0, 80.0]},
     }
 
 
@@ -499,6 +720,75 @@ def test_multi_env_tools_require_benchmark_task_id_header():
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=2)
         loop.close()
+
+
+def test_reset_episode_restarts_env_before_reset_when_supported():
+    import asyncio
+
+    class RestartableEnv:
+        def __init__(self):
+            self.calls = []
+            self.restarted = False
+
+        async def close(self):
+            self.calls.append("close")
+
+        async def start(self):
+            self.calls.append("start")
+            self.restarted = True
+            return self
+
+        async def reset(self):
+            self.calls.append("reset")
+            if not self.restarted:
+                raise RuntimeError("second reset would hang without page restart")
+
+    async def run():
+        env = RestartableEnv()
+        state = BridgeEpisodeState(env, asyncio.get_running_loop())
+
+        result = await state.reset_episode("episode-1")
+
+        assert result == {"episode_id": "episode-1", "reset": True}
+        assert env.calls == ["close", "start", "reset"]
+
+    asyncio.run(run())
+
+
+def test_reset_episode_retries_after_reset_timeout(monkeypatch):
+    import asyncio
+    from . import episode as episode_mod
+
+    monkeypatch.setattr(episode_mod, "EPISODE_RESET_TIMEOUT_SEC", 0.01)
+
+    class TimeoutThenSuccessEnv:
+        def __init__(self):
+            self.calls = []
+            self.reset_calls = 0
+
+        async def close(self):
+            self.calls.append("close")
+
+        async def start(self):
+            self.calls.append("start")
+            return self
+
+        async def reset(self):
+            self.calls.append("reset")
+            self.reset_calls += 1
+            if self.reset_calls == 1:
+                await asyncio.sleep(10)
+
+    async def run():
+        env = TimeoutThenSuccessEnv()
+        state = BridgeEpisodeState(env, asyncio.get_running_loop())
+
+        result = await state.reset_episode("episode-1")
+
+        assert result == {"episode_id": "episode-1", "reset": True}
+        assert env.calls == ["close", "start", "reset", "close", "start", "reset"]
+
+    asyncio.run(run())
 
 
 def test_multi_env_tools_route_by_benchmark_task_id_header():

@@ -22,14 +22,16 @@ from runner.judge import JudgeConfig
 from runner.suite import Suite, TaskSpec
 from skillopt.aggregate import aggregate, format_rejected_context
 from skillopt.backends import AidenDeviceBackend, SkillOptRolloutBackend
-from skillopt.optimizer_client import OptimizerConfig
+from skillopt.optimizer_client import OptimizerConfig, OptimizerError
 from skillopt.patch import apply_patch_with_report
+from skillopt.phase_artifacts import write_phase_completed, write_phase_failed, write_phase_started
 from skillopt.reflect import run_reflect
 from skillopt.score import (
     aggregate_score,
     validation_gate,
     DEFAULT_MIN_DELTA,
 )
+from skillopt.skill_lint import lint_skill_text
 from skillopt.types import Edit, OptimizationResult, PhaseSummary, ScoreSummary, StepDecision
 
 
@@ -72,18 +74,16 @@ def optimize_skill(cfg: OptimizationConfig) -> OptimizationResult:
     try:
         # Baseline eval on selection split
         print(f"[baseline] Evaluating original skill on {len(cfg.selection_tasks)} selection tasks...")
-        sel_rollouts = backend.run_rollout(
+        sel_rollouts, current_score = _run_rollout_phase(
+            backend,
+            cfg,
             suite=selection_suite,
             tasks=cfg.selection_tasks,
-            skill_name=cfg.skill_name,
-            skill_path=skill_path,
             skill_text=current,
             phase="baseline_selection",
-            run_id=cfg.run_id,
+            kind="verification",
             run_root=run_root,
-            judge_cfg=cfg.judge_cfg,
         )
-        current_score = aggregate_score(sel_rollouts)
         phase_summaries.append(_phase_summary(
             phase="baseline_selection",
             kind="verification",
@@ -100,18 +100,16 @@ def optimize_skill(cfg: OptimizationConfig) -> OptimizationResult:
 
         for step_idx in range(1, cfg.budget + 1):
             print(f"\n[step {step_idx}] Train rollout on {len(cfg.train_tasks)} tasks...")
-            train_rollouts = backend.run_rollout(
+            train_rollouts, train_score = _run_rollout_phase(
+                backend,
+                cfg,
                 suite=train_suite,
                 tasks=cfg.train_tasks,
-                skill_name=cfg.skill_name,
-                skill_path=skill_path,
                 skill_text=current,
                 phase=f"step_{step_idx:02d}_train",
-                run_id=cfg.run_id,
+                kind="train",
                 run_root=run_root,
-                judge_cfg=cfg.judge_cfg,
             )
-            train_score = aggregate_score(train_rollouts)
             train_summary = _phase_summary(
                 phase=f"step_{step_idx:02d}_train",
                 kind="train",
@@ -124,13 +122,24 @@ def optimize_skill(cfg: OptimizationConfig) -> OptimizationResult:
             # Reflect
             print(f"[step {step_idx}] Reflect (calling optimizer LLM)...")
             rejected_ctx = format_rejected_context(rejected)
-            raw_patches = run_reflect(
-                cfg.optimizer_cfg,
-                current,
-                train_rollouts,
-                edit_budget=cfg.edit_budget,
-                rejected_context=rejected_ctx,
-            )
+            step_artifact = run_root / f"step_{step_idx:02d}"
+            step_artifact.mkdir(parents=True, exist_ok=True)
+            try:
+                raw_patches = run_reflect(
+                    cfg.optimizer_cfg,
+                    current,
+                    train_rollouts,
+                    edit_budget=cfg.edit_budget,
+                    rejected_context=rejected_ctx,
+                )
+            except OptimizerError as exc:
+                stop_reason = f"step {step_idx}: reflect failed: {exc}"
+                (step_artifact / "reflect_error.json").write_text(
+                    json.dumps({"error": str(exc), "type": type(exc).__name__}, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                print(f"[step {step_idx}] reflect failed: {exc}; stopping.")
+                break
             if not raw_patches:
                 stop_reason = f"step {step_idx}: no patches produced by reflect"
                 print(f"[step {step_idx}] no patches produced by reflect; stopping.")
@@ -146,8 +155,6 @@ def optimize_skill(cfg: OptimizationConfig) -> OptimizationResult:
 
             # Apply
             candidate, reports = apply_patch_with_report(current, patch)
-            step_artifact = run_root / f"step_{step_idx:02d}"
-            step_artifact.mkdir(parents=True, exist_ok=True)
             (step_artifact / "candidate.md").write_text(candidate, encoding="utf-8")
             (step_artifact / "patch.json").write_text(
                 json.dumps(patch.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
@@ -155,21 +162,46 @@ def optimize_skill(cfg: OptimizationConfig) -> OptimizationResult:
             (step_artifact / "patch_reports.json").write_text(
                 json.dumps(reports, ensure_ascii=False, indent=2), encoding="utf-8"
             )
+            lint_issues = lint_skill_text(candidate)
+            if lint_issues:
+                (step_artifact / "candidate_lint.json").write_text(
+                    json.dumps([issue.to_dict() for issue in lint_issues], ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                reason = "skill lint failed: " + ", ".join(issue.code for issue in lint_issues)
+                print(f"[step {step_idx}] {reason}")
+                rejected.extend(patch.edits)
+                no_improvement_count += 1
+                steps.append(StepDecision(
+                    step=step_idx,
+                    candidate_score=current_score.primary,
+                    current_score=current_score.primary,
+                    accepted=False,
+                    reason=reason,
+                    edits_rejected=patch.edits,
+                    train_score=train_summary.score,
+                    patch_reasoning=patch.reasoning,
+                    patch_reports=reports,
+                    raw_patches=raw_patches,
+                ))
+                if no_improvement_count >= cfg.early_stop_patience:
+                    stop_reason = f"step {step_idx}: no improvement for {cfg.early_stop_patience} steps"
+                    print(f"[step {step_idx}] no improvement for {cfg.early_stop_patience} steps; stopping.")
+                    break
+                continue
 
             # Selection eval with candidate
             print(f"[step {step_idx}] Selection eval with candidate...")
-            cand_rollouts = backend.run_rollout(
+            cand_rollouts, candidate_score_agg = _run_rollout_phase(
+                backend,
+                cfg,
                 suite=selection_suite,
                 tasks=cfg.selection_tasks,
-                skill_name=cfg.skill_name,
-                skill_path=skill_path,
                 skill_text=candidate,
                 phase=f"step_{step_idx:02d}_selection",
-                run_id=cfg.run_id,
+                kind="verification",
                 run_root=run_root,
-                judge_cfg=cfg.judge_cfg,
             )
-            candidate_score_agg = aggregate_score(cand_rollouts)
             candidate_summary = _phase_summary(
                 phase=f"step_{step_idx:02d}_selection",
                 kind="verification",
@@ -251,7 +283,54 @@ def _score_summary(score) -> ScoreSummary:
         soft=score.soft,
         n=score.n,
         n_passed=score.n_passed,
+        n_raw=getattr(score, "n_raw", score.n),
+        n_excluded=getattr(score, "n_excluded", 0),
+        n_downweighted=getattr(score, "n_downweighted", 0),
+        weight_total=getattr(score, "weight_total", float(score.n)),
     )
+
+
+def _run_rollout_phase(
+    backend: SkillOptRolloutBackend,
+    cfg: OptimizationConfig,
+    *,
+    suite: Suite,
+    tasks: list[TaskSpec],
+    skill_text: str,
+    phase: str,
+    kind: str,
+    run_root: Path,
+):
+    write_phase_started(run_root, phase=phase, kind=kind, suite=suite, tasks=tasks)
+    try:
+        rollouts = backend.run_rollout(
+            suite=suite,
+            tasks=tasks,
+            skill_name=cfg.skill_name,
+            skill_path=cfg.skill_path,
+            skill_text=skill_text,
+            phase=phase,
+            run_id=cfg.run_id,
+            run_root=run_root,
+            judge_cfg=cfg.judge_cfg,
+        )
+    except Exception as exc:
+        partial_rollouts = getattr(exc, "rollouts", None)
+        if not isinstance(partial_rollouts, list):
+            partial_rollouts = None
+        write_phase_failed(
+            run_root,
+            phase=phase,
+            kind=kind,
+            suite=suite,
+            tasks=tasks,
+            error=str(exc),
+            rollouts=partial_rollouts,
+        )
+        raise
+    score = aggregate_score(rollouts)
+    write_phase_completed(run_root, phase=phase, kind=kind, suite=suite, tasks=tasks, rollouts=rollouts, score=score)
+    return rollouts, score
 
 
 def _phase_summary(*, phase: str, kind: str, suite: Suite, score) -> PhaseSummary:

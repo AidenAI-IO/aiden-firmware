@@ -96,6 +96,11 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"text":"你好","platform":"android","focus":{"x":450,"y":105,"coord_space":"normalized"},"segments":["ni","hao"]}`,
 	},
+	"enter_text_via_bridge": {
+		Category:     "input",
+		InputMode:    toolInputModeJSON,
+		ExampleInput: `{"text":"hello world","platform":"android","focus":{"x":450,"y":105,"coord_space":"normalized"}}`,
+	},
 	"mouse_click": {
 		Category:     "input",
 		InputMode:    toolInputModeJSON,
@@ -160,17 +165,17 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 	"skill_list": {
 		Category:     "skills",
 		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"query":"planner","include_archived":false}`,
+		ExampleInput: `{"query":"device","include_archived":false}`,
 	},
 	"skill_mark_used": {
 		Category:     "skills",
 		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"name":"planner"}`,
+		ExampleInput: `{"name":"device-operator"}`,
 	},
 	"skill_read": {
 		Category:     "skills",
 		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"name":"planner"}`,
+		ExampleInput: `{"name":"device-operator"}`,
 	},
 	"touch_gesture": {
 		Category:     "input",
@@ -212,6 +217,26 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"reason":"Need user confirmation"}`,
 	},
+	"run_script": {
+		Category:     "demo",
+		InputMode:    toolInputModeJSON,
+		ExampleInput: `{"file":"demo.jsonl"}`,
+	},
+	"list_scripts": {
+		Category:     "demo",
+		InputMode:    toolInputModeJSON,
+		ExampleInput: `{}`,
+	},
+	"read_script": {
+		Category:     "demo",
+		InputMode:    toolInputModeJSON,
+		ExampleInput: `{"file":"demo.jsonl"}`,
+	},
+	"write_script": {
+		Category:     "demo",
+		InputMode:    toolInputModeJSON,
+		ExampleInput: `{"file":"demo.jsonl","content":"# 打开设置演示\n{\"type\":\"wait\",\"ms\":500}\n{\"type\":\"tts\",\"text\":\"正在打开设置\"}"}`,
+	},
 	"skill_manage": {
 		Category:     "skills",
 		InputMode:    toolInputModeJSON,
@@ -221,7 +246,12 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 	"open_app": {
 		Category:     "phone",
 		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"name":"App Store"}`,
+		ExampleInput: `{"app":"微信"}`,
+	},
+	"search_launch_app": {
+		Category:     "phone",
+		InputMode:    toolInputModeJSON,
+		ExampleInput: `{"app":"WeChat"}`,
 	},
 	"clipboard": {
 		Category:     "phone",

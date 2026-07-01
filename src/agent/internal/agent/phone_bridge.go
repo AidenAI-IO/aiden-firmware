@@ -22,26 +22,24 @@ const (
 )
 
 type BridgeCommand struct {
-	ID              string   `json:"id"`
-	Type            string   `json:"type"`
-	IOSURLs         []string `json:"ios_urls,omitempty"`
-	AndroidPackages []string `json:"android_packages,omitempty"`
-	TimeoutMs       int      `json:"timeout_ms,omitempty"`
+	ID          string `json:"id"`
+	Type        string `json:"type"`
+	PhoneID     string `json:"phone_id,omitempty"`
+	App         string `json:"app,omitempty"`
+	Name        string `json:"name,omitempty"`
+	URL         string `json:"url,omitempty"`
+	PhoneNumber string `json:"phone_number,omitempty"`
+	TimeoutMs   int    `json:"timeout_ms,omitempty"`
 	// Payload carries command-specific JSON (clipboard text, calendar event,
-	// query window, etc.). Older command types like open_app leave this empty
-	// because their parameters are top-level.
+	// query window, etc.). open_app uses semantic top-level fields.
 	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
 type BridgeCommandResponse struct {
-	ID     string `json:"id"`
-	OK     bool   `json:"ok"`
-	Method string `json:"method,omitempty"`
-	Error  string `json:"error,omitempty"`
-	// Data carries command-specific JSON returned by the companion app
-	// (clipboard contents, calendar event id, query results, etc.). Empty for
-	// commands that only need an ok/error status.
-	Data json.RawMessage `json:"data,omitempty"`
+	ID     string          `json:"id"`
+	Method string          `json:"method,omitempty"`
+	Error  *ToolError      `json:"error,omitempty"` // nil ⇔ success
+	Data   json.RawMessage `json:"data,omitempty"`
 }
 
 type PhoneEnvironment struct {
@@ -103,6 +101,8 @@ type AvailableAppInfo struct {
 type PhoneBridgeStatus struct {
 	Connected            bool              `json:"connected"`
 	Platform             string            `json:"platform,omitempty"`
+	PhoneID              string            `json:"phone_id,omitempty"`
+	BoardID              string            `json:"board_id,omitempty"`
 	LastHeartbeatAt      *time.Time        `json:"last_heartbeat_at,omitempty"`
 	AppState             string            `json:"app_state,omitempty"`
 	AppStateUpdatedAt    *time.Time        `json:"app_state_updated_at,omitempty"`
@@ -117,6 +117,7 @@ type PhoneBridge struct {
 	conn            *websocket.Conn
 	connected       bool
 	platform        string
+	phoneID         string
 	lastHeartbeatAt time.Time
 	appState        string
 	appStateAt      time.Time
@@ -154,6 +155,7 @@ func (pb *PhoneBridge) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	platform := r.URL.Query().Get("platform")
+	phoneID := strings.TrimSpace(r.URL.Query().Get("phone_id"))
 
 	pb.mu.Lock()
 	if pb.conn != nil {
@@ -165,6 +167,7 @@ func (pb *PhoneBridge) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	pb.conn = conn
 	pb.connected = true
 	pb.platform = platform
+	pb.phoneID = phoneID
 	pb.lastHeartbeatAt = time.Now()
 	pb.environment = nil
 	pb.environmentAt = time.Time{}
@@ -173,7 +176,7 @@ func (pb *PhoneBridge) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	pb.mu.Unlock()
 
 	if pb.logger != nil {
-		pb.logger.Info("phone-bridge: client connected (platform=%s)", platform)
+		pb.logger.Info("phone-bridge: client connected (platform=%s phone_id=%s)", platform, phoneID)
 	}
 
 	go pb.monitorHeartbeat(conn, done)
@@ -213,6 +216,7 @@ func (pb *PhoneBridge) readLoop(conn *websocket.Conn, done chan struct{}) {
 		if pb.conn == conn {
 			pb.conn = nil
 			pb.connected = false
+			pb.phoneID = ""
 			pb.environment = nil
 			pb.environmentAt = time.Time{}
 			for id, ch := range pb.pendingCmds {
@@ -286,9 +290,10 @@ func (pb *PhoneBridge) handleAppEvent(resp BridgeCommandResponse) bool {
 }
 
 func (pb *PhoneBridge) handleEnvironmentEvent(resp BridgeCommandResponse) bool {
-	if !resp.OK {
+	if resp.Error != nil {
 		if pb.logger != nil {
-			pb.logger.Warn("phone-bridge: environment report failed: %s", resp.Error)
+			pb.logger.Warn("phone-bridge: environment report failed: code=%s msg=%s",
+				resp.Error.Code, resp.Error.Message)
 		}
 		return true
 	}
@@ -323,9 +328,10 @@ func (pb *PhoneBridge) handleEnvironmentEvent(resp BridgeCommandResponse) bool {
 }
 
 func (pb *PhoneBridge) handleAppStateEvent(resp BridgeCommandResponse) bool {
-	if !resp.OK {
+	if resp.Error != nil {
 		if pb.logger != nil {
-			pb.logger.Warn("phone-bridge: app state report failed: %s", resp.Error)
+			pb.logger.Warn("phone-bridge: app state report failed: code=%s msg=%s",
+				resp.Error.Code, resp.Error.Message)
 		}
 		return true
 	}
@@ -381,15 +387,26 @@ func (pb *PhoneBridge) SendCommand(ctx context.Context, cmd BridgeCommand) (Brid
 	pb.mu.Lock()
 	if !pb.connected || pb.conn == nil {
 		pb.mu.Unlock()
-		return BridgeCommandResponse{}, fmt.Errorf("phone bridge not connected")
+		return BridgeCommandResponse{
+			ID:    cmd.ID,
+			Error: NewToolError(CodeBridgeNotConnected, "phone bridge not connected"),
+		}, nil
 	}
 	if _, exists := pb.pendingCmds[cmd.ID]; exists {
 		pb.mu.Unlock()
-		return BridgeCommandResponse{}, fmt.Errorf("duplicate command ID %q already in flight", cmd.ID)
+		return BridgeCommandResponse{
+			ID: cmd.ID,
+			Error: NewToolErrorWithDetails(CodeCommandIDCollision,
+				fmt.Sprintf("duplicate command ID %q already in flight", cmd.ID),
+				map[string]any{"command_id": cmd.ID}),
+		}, nil
 	}
 	ch := make(chan BridgeCommandResponse, 1)
 	pb.pendingCmds[cmd.ID] = ch
 	conn := pb.conn
+	if strings.TrimSpace(cmd.PhoneID) == "" {
+		cmd.PhoneID = pb.phoneID
+	}
 	pb.mu.Unlock()
 
 	data, err := json.Marshal(cmd)
@@ -397,14 +414,20 @@ func (pb *PhoneBridge) SendCommand(ctx context.Context, cmd BridgeCommand) (Brid
 		pb.mu.Lock()
 		delete(pb.pendingCmds, cmd.ID)
 		pb.mu.Unlock()
-		return BridgeCommandResponse{}, fmt.Errorf("marshal command: %w", err)
+		return BridgeCommandResponse{
+			ID:    cmd.ID,
+			Error: NewToolError(CodeCommandMarshalFailed, fmt.Sprintf("marshal command: %v", err)),
+		}, nil
 	}
 
 	if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
 		pb.mu.Lock()
 		delete(pb.pendingCmds, cmd.ID)
 		pb.mu.Unlock()
-		return BridgeCommandResponse{}, fmt.Errorf("write command: %w", err)
+		return BridgeCommandResponse{
+			ID:    cmd.ID,
+			Error: NewToolError(CodeBridgeWriteFailed, fmt.Sprintf("write command: %v", err)),
+		}, nil
 	}
 
 	timeout := 5 * time.Second
@@ -415,14 +438,20 @@ func (pb *PhoneBridge) SendCommand(ctx context.Context, cmd BridgeCommand) (Brid
 	select {
 	case resp, ok := <-ch:
 		if !ok {
-			return BridgeCommandResponse{}, fmt.Errorf("connection closed")
+			return BridgeCommandResponse{
+				ID:    cmd.ID,
+				Error: NewToolError(CodeBridgeConnectionClosed, "connection closed before response"),
+			}, nil
 		}
 		return resp, nil
 	case <-time.After(timeout):
 		pb.mu.Lock()
 		delete(pb.pendingCmds, cmd.ID)
 		pb.mu.Unlock()
-		return BridgeCommandResponse{}, fmt.Errorf("command timeout")
+		return BridgeCommandResponse{
+			ID:    cmd.ID,
+			Error: NewToolError(CodeBridgeTimeout, "command timeout"),
+		}, nil
 	case <-ctx.Done():
 		pb.mu.Lock()
 		delete(pb.pendingCmds, cmd.ID)
@@ -437,12 +466,22 @@ func (pb *PhoneBridge) Connected() bool {
 	return pb.connected
 }
 
+func (pb *PhoneBridge) currentPhoneID() string {
+	if pb == nil {
+		return ""
+	}
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
+	return strings.TrimSpace(pb.phoneID)
+}
+
 func (pb *PhoneBridge) Status() PhoneBridgeStatus {
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
 	status := PhoneBridgeStatus{
 		Connected: pb.connected,
 		Platform:  pb.platform,
+		PhoneID:   pb.phoneID,
 	}
 	if pb.connected && !pb.lastHeartbeatAt.IsZero() {
 		t := pb.lastHeartbeatAt
@@ -502,6 +541,11 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 		builder.WriteString(platform)
 		builder.WriteByte('\n')
 	}
+	if phoneID := strings.TrimSpace(status.PhoneID); phoneID != "" {
+		builder.WriteString("- phone_id: ")
+		builder.WriteString(phoneID)
+		builder.WriteByte('\n')
+	}
 	if status.Connected && status.LastHeartbeatAt != nil {
 		builder.WriteString("- last_heartbeat_at: ")
 		builder.WriteString(status.LastHeartbeatAt.UTC().Format(time.RFC3339))
@@ -545,7 +589,7 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 		builder.WriteString("- The Aiden companion app is backgrounded or inactive. On iOS, Phone Bridge commands may time out until Aiden returns to foreground.\n")
 		builder.WriteString("- If return_entry=dynamic_island and return_entry_available=true, open_app, clipboard, calendar, contacts, and notification will first tap the Aiden Dynamic Island entry, wait for app_state=active/Phone Bridge reconnect, then send the command. For lock-screen Live Activity entries, use screenshot/HID fallback or visual confirmation instead of blind tapping.\n")
 	} else if status.Connected {
-		builder.WriteString("- The phone companion app is connected. Use open_app as the primary path for opening apps, URLs, deeplinks, and phone dialer screens before falling back to screenshot/HID navigation.\n")
+		builder.WriteString("- The phone companion app is connected. Use open_app as the primary path for opening apps, webpages, and phone dialer screens before falling back to screenshot/HID navigation.\n")
 		builder.WriteString("- clipboard, calendar, contacts, and notification tools are available through the companion app: prefer them over manual UI navigation for reading/writing the system clipboard, creating/querying/deleting system calendar events, managing contacts, or sending notifications.\n")
 		builder.WriteString("- For long or non-ASCII text entry, prefer clipboard write through the companion app, switch to the target app, then paste with quick_action/keyboard shortcut instead of typing via HID.\n")
 		builder.WriteString("- If open_app returns {\"ok\":true}, treat the app launch as complete unless the user requested additional in-app actions.")

@@ -57,10 +57,13 @@ def cli(argv: list[str] | None = None) -> int:
                        help="Optional environment bridge endpoint; when set, each task calls /api/setup, /api/screen, and /api/release")
     p_run.add_argument("--auto-agent-setup", action="store_true",
                        help="Start isolated agent daemons automatically and ignore --agent-url; concurrency is read from environment bridge /api/concurrent")
+    p_run.add_argument("--max-concurrency", type=int, default=0,
+                       help="Cap auto-agent-setup worker concurrency; 0 means no explicit cap")
     p_run.add_argument("--daemon-image", default=os.environ.get("AIDEN_DAEMON_IMAGE", "aiden-agent-daemon:local"))
     p_run.add_argument("--no-build-daemon-image", action="store_true")
     p_run.add_argument("--base-config-dir", default=str(REPO_ROOT / "benchmark" / "config"))
     p_run.add_argument("--agent-config", default="")
+    p_run.add_argument("--benchmark-token-file", default="")
     p_run.add_argument("--judge-model", default="claude-sonnet-4-6")
     p_run.add_argument("--agent-model", default=os.environ.get("AIDEN_MODEL") or os.environ.get("MODEL_NAME") or os.environ.get("OPENAI_MODEL") or "")
     p_run.add_argument("--no-judge", action="store_true")
@@ -70,7 +73,9 @@ def cli(argv: list[str] | None = None) -> int:
     p_run.add_argument("--task-id", action="append", default=[],
                        help="Run only this task id; can be repeated")
     p_run.add_argument("--task-ids", default="",
-                       help="Comma-separated task ids to run")
+                        help="Comma-separated task ids to run")
+    p_run.add_argument("--skill", action="append", default=[],
+                       help="Activate this skill for every task chat; can be repeated or comma-separated")
     p_run.add_argument("--run-id", default="",
                        help="Optional run directory name under --out")
     p_run.add_argument("--benchmark-task-id", default="",
@@ -239,13 +244,30 @@ def _selected_task_ids(args: argparse.Namespace) -> list[str]:
     return ids
 
 
+def _selected_skills(args: argparse.Namespace) -> list[str]:
+    skills: list[str] = []
+    for value in args.skill or []:
+        for item in str(value).split(","):
+            name = item.strip()
+            if name and name not in skills:
+                skills.append(name)
+    return skills
+
+
 def _valid_run_id(run_id: str) -> bool:
     return bool(run_id and "/" not in run_id and "\\" not in run_id and run_id not in {".", ".."})
 
 
 def _task_route_id(args: argparse.Namespace, suite: Suite, task_id: str, attempt: int, repeats: int) -> str:
-    prefix = str(args.benchmark_task_id or "").strip() or Path(str(suite.source_path)).name
-    route_id = f"{prefix}:{task_id}"
+    explicit = str(args.benchmark_task_id or "").strip()
+    if explicit:
+        # Caller (e.g., WebUI) provided the full route id already.
+        # Trust it as-is to avoid double-concatenation like "suite:task:task".
+        route_id = explicit
+    else:
+        # No explicit id: build "<suite_filename>:<task_id>" as the route id.
+        prefix = Path(str(suite.source_path)).name
+        route_id = f"{prefix}:{task_id}"
     if repeats > 1:
         route_id = f"{route_id}:attempt-{attempt}"
     return route_id
@@ -264,15 +286,18 @@ def _cmd_run_auto_agent_setup(
     if args.repeats is not None and args.repeats <= 0:
         print(f"Error: --repeats must be positive, got {args.repeats}", file=sys.stderr)
         return 2
+    if args.max_concurrency < 0:
+        print("Error: max-concurrency must be non-negative", file=sys.stderr)
+        return 2
 
     from runner.webui import (
         Job,
         append_log,
+        docker_published_port,
         endpoint_for_docker,
         ensure_daemon_image,
         prepare_run_config,
         read_environment_bridge_concurrency,
-        reserve_free_port,
         start_daemon_compose,
         start_daemon_logs,
         stop_daemon_compose,
@@ -286,8 +311,11 @@ def _cmd_run_auto_agent_setup(
     ensure_daemon_image(args.daemon_image, not args.no_build_daemon_image, setup_log)
 
     concurrency = read_environment_bridge_concurrency(args.environment_url) or 1
+    if args.max_concurrency > 0:
+        concurrency = min(concurrency, args.max_concurrency)
     docker_environment_url = endpoint_for_docker(args.environment_url.rstrip("/"))
     judge_cfg = None if args.no_judge else JudgeConfig(model=args.judge_model)
+    active_skills = _selected_skills(args)
     judge_cache = run_dir / "_judge_cache"
     sha, dirty = git_sha(REPO_ROOT)
     started = now_iso()
@@ -324,7 +352,8 @@ def _cmd_run_auto_agent_setup(
         daemon_log = worker_dir / "daemon.log"
         worker_dir.mkdir(parents=True, exist_ok=True)
         prepare_run_config(Path(args.base_config_dir), config_dir, agent_config_text=agent_config_text)
-        host_port = reserve_free_port()
+        benchmark_token = _read_optional_token(config_dir / "control_token")
+        host_port = 0
         agent_url = f"http://127.0.0.1:{host_port}"
         route_id = _task_route_id(args, suite, task.id, attempt, repeats)
         job = Job(
@@ -340,7 +369,7 @@ def _cmd_run_auto_agent_setup(
             daemon_log=str(daemon_log),
         )
         log_proc = None
-        client = AgentClient(base_url=agent_url)
+        client = None
         art_dir = run_dir / "tasks" / task.id / (f"attempt_{attempt}" if repeats > 1 else "")
         try:
             print(f"[{progress}] STARTING   {task.id} attempt={attempt}", flush=True)
@@ -354,6 +383,9 @@ def _cmd_run_auto_agent_setup(
                 environment_bridge_mode=True,
                 log_path=runner_log,
             )
+            published_port = docker_published_port(container_id, 8080)
+            job.agent_url = f"http://127.0.0.1:{published_port}"
+            client = _new_agent_client(job.agent_url, benchmark_token)
             append_log(runner_log, f"container {container_id}")
             log_proc = start_daemon_logs(job, daemon_log)
             if not wait_for_agent_ready(client, timeout_sec=args.agent_ready_timeout_sec):
@@ -379,6 +411,7 @@ def _cmd_run_auto_agent_setup(
                 run_id,
                 environment_url=args.environment_url or None,
                 benchmark_task_id=route_id,
+                active_skills=active_skills,
             )
         except Exception as exc:
             append_log(runner_log, f"ERROR: {exc}")
@@ -389,7 +422,8 @@ def _cmd_run_auto_agent_setup(
                     call_environment_release(args.environment_url, task_id=route_id)
                 except ResetError as exc:
                     print(f"warning: failed to release environment task route for {route_id}: {exc}", file=sys.stderr, flush=True)
-            client.close()
+            if client is not None:
+                client.close()
             if log_proc is not None:
                 log_proc.terminate()
             stop_daemon_compose(job)
@@ -425,6 +459,7 @@ def _cmd_run_auto_agent_setup(
         "agent_url": None,
         "environment_url": args.environment_url or None,
         "agent_model": args.agent_model,
+        "active_skills": active_skills,
         "judge_config": {"provider": "openrouter", "model": args.judge_model} if judge_cfg else None,
         "judge_prompt_version": "v1",
         "auto_agent_setup": True,
@@ -477,7 +512,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if args.repeats is not None and args.repeats <= 0:
         print(f"Error: --repeats must be positive, got {args.repeats}", file=sys.stderr)
         return 2
-    client = AgentClient(base_url=args.agent_url)
+    client = _new_agent_client(args.agent_url, _read_optional_token(args.benchmark_token_file))
     if not client.health():
         print(f"agent at {args.agent_url} is not reachable", file=sys.stderr)
         client.close()
@@ -487,6 +522,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         client.close()
         return 2
     judge_cfg = None if args.no_judge else JudgeConfig(model=args.judge_model)
+    active_skills = _selected_skills(args)
     judge_cache = run_dir / "_judge_cache"
     sha, dirty = git_sha(REPO_ROOT)
     started = now_iso()
@@ -556,9 +592,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
                     art_dir = run_dir / "tasks" / task.id / (f"attempt_{attempt}" if n > 1 else "")
                     try:
                         r = run_one_task(client, suite, task, attempt, art_dir,
-                                         judge_cfg, judge_cache, run_id,
-                                         environment_url=args.environment_url or None,
-                                         benchmark_task_id=task_benchmark_id)
+                                          judge_cfg, judge_cache, run_id,
+                                          environment_url=args.environment_url or None,
+                                          benchmark_task_id=task_benchmark_id,
+                                          active_skills=active_skills)
                     except Exception as e:
                         print(f"[{progress}] ERROR      {task.id} attempt={attempt} — {e}", flush=True)
                         r = skipped_task_result(suite, task, attempt, art_dir, run_id, str(e))
@@ -598,6 +635,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         "agent_url": args.agent_url,
         "environment_url": args.environment_url or None,
         "agent_model": args.agent_model,
+        "active_skills": active_skills,
         "judge_config": {"provider": "openrouter", "model": args.judge_model} if judge_cfg else None,
         "judge_prompt_version": "v1",
         "started_at": started, "finished_at": now_iso(),
@@ -653,6 +691,25 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print("Warning: failed to upload report to board")
     upload_client.close()
     return 0 if manifest["totals"]["passed"] == manifest["totals"]["tasks"] else 1
+
+
+def _read_optional_token(path: str | Path | None) -> str:
+    raw = str(path or "").strip()
+    if not raw:
+        return ""
+    try:
+        token = Path(raw).read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise ValueError(f"unable to read benchmark token file {raw!r}: {exc}") from exc
+    if not token:
+        raise ValueError(f"benchmark token file {raw!r} is empty")
+    return token
+
+
+def _new_agent_client(base_url: str, benchmark_token: str = "") -> AgentClient:
+    if benchmark_token:
+        return AgentClient(base_url=base_url, benchmark_token=benchmark_token)
+    return AgentClient(base_url=base_url)
 
 
 if __name__ == "__main__":

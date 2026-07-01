@@ -13,7 +13,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const langfuseBatchSize = 40
+const (
+	langfuseBatchSize          = 40
+	langfuseTraceIngestReserve = 5 * time.Second
+)
 
 type langfuseIterationWindow struct {
 	Index int
@@ -271,7 +274,7 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 			body := map[string]interface{}{
 				"id":          uuid.NewString(),
 				"traceId":     traceID,
-				"name":        "planner/default_finish",
+				"name":        "agent/default_finish",
 				"startTime":   langfuseRFC3339(eventTime),
 				"endTime":     langfuseRFC3339(eventTime),
 				"output":      event.Content,
@@ -505,13 +508,17 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 			}
 			var output interface{} = event.Observation
 			if e.cfg.UploadScreenshotsOrDefault() && strings.TrimSpace(event.ScreenshotRef) != "" {
-				mediaRef, err := e.uploadScreenshot(ctx, traceID, resultSpanID, episodeDir, event.ScreenshotRef)
-				if err != nil && e.logger != nil {
-					e.logger.Warn("[telemetry] screenshot upload failed (%s): %v", event.ScreenshotRef, err)
-				} else if mediaRef != "" {
-					output = map[string]interface{}{
-						"observation": event.Observation,
-						"screenshot":  mediaRef,
+				screenshotCtx, cancel, ok := langfuseScreenshotUploadContext(ctx, e.cfg.UploadTimeoutOrDefault())
+				if ok {
+					mediaRef, err := e.uploadScreenshot(screenshotCtx, traceID, resultSpanID, episodeDir, event.ScreenshotRef)
+					cancel()
+					if err != nil && e.logger != nil {
+						e.logger.Warn("[telemetry] screenshot upload failed (%s): %v", event.ScreenshotRef, err)
+					} else if mediaRef != "" {
+						output = map[string]interface{}{
+							"observation": event.Observation,
+							"screenshot":  mediaRef,
+						}
 					}
 				}
 			}
@@ -600,7 +607,12 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 		prompts = promptCalls[0]
 	}
 	if len(prompts) > 0 {
-		for index, call := range prompts {
+		for index := range prompts {
+			if prompts[index].ID == "" {
+				prompts[index].ID = uuid.NewString()
+			}
+			prompts[index] = e.uploadPromptMedia(ctx, traceID, prompts[index])
+			call := prompts[index]
 			parentID := promptParentObservationID(call, iterations, phaseWindows)
 			usageEvent, err := newLangfuseEvent("generation-create", call.StartedAt, e.promptGenerationBody(episode, traceID, call, index, parentID))
 			if err != nil {
@@ -639,6 +651,52 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 	}
 	batch = append(batch, scoreEvent)
 	return batch, nil
+}
+
+func (e *EpisodeExporter) uploadPromptMedia(ctx context.Context, traceID string, call telemetryPromptCall) telemetryPromptCall {
+	for _, media := range call.Media {
+		if !e.cfg.UploadScreenshotsOrDefault() {
+			replaceTelemetryMediaPlaceholder(call.Input, media.Placeholder, "[media omitted: upload disabled]")
+			continue
+		}
+		replacement := "[media omitted: upload unavailable]"
+		uploadCtx, cancel, ok := langfuseScreenshotUploadContext(ctx, e.cfg.UploadTimeoutOrDefault())
+		if ok {
+			mediaID, err := e.client.uploadMedia(uploadCtx, traceID, call.ID, media.ContentType, media.Data, "input")
+			cancel()
+			if err != nil {
+				if e.logger != nil {
+					e.logger.Warn("[telemetry] prompt media upload failed (%s, %d bytes): %v", media.ContentType, len(media.Data), err)
+				}
+			} else if mediaID != "" {
+				replacement = langfuseMediaToken(media.ContentType, mediaID)
+			}
+		}
+		replaceTelemetryMediaPlaceholder(call.Input, media.Placeholder, replacement)
+	}
+	call.Media = nil
+	return call
+}
+
+func replaceTelemetryMediaPlaceholder(value interface{}, placeholder, replacement string) {
+	switch typed := value.(type) {
+	case []map[string]interface{}:
+		for _, item := range typed {
+			replaceTelemetryMediaPlaceholder(item, placeholder, replacement)
+		}
+	case []interface{}:
+		for _, item := range typed {
+			replaceTelemetryMediaPlaceholder(item, placeholder, replacement)
+		}
+	case map[string]interface{}:
+		for key, item := range typed {
+			if text, ok := item.(string); ok && text == placeholder {
+				typed[key] = replacement
+				continue
+			}
+			replaceTelemetryMediaPlaceholder(item, placeholder, replacement)
+		}
+	}
 }
 
 func (e *EpisodeExporter) promptGenerationBody(episode TaskEpisode, traceID string, call telemetryPromptCall, index int, parentObservationID string) map[string]interface{} {
@@ -698,6 +756,29 @@ func (e *EpisodeExporter) promptGenerationBody(episode TaskEpisode, traceID stri
 		body["version"] = version
 	}
 	return body
+}
+
+func langfuseScreenshotUploadContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc, bool) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if timeout <= 0 {
+		return nil, nil, false
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining <= langfuseTraceIngestReserve {
+			return nil, nil, false
+		}
+		if available := remaining - langfuseTraceIngestReserve; available < timeout {
+			timeout = available
+		}
+	}
+	if timeout <= 0 {
+		return nil, nil, false
+	}
+	screenshotCtx, cancel := context.WithTimeout(ctx, timeout)
+	return screenshotCtx, cancel, true
 }
 
 func (e *EpisodeExporter) traceUsageGenerationBody(episode TaskEpisode, traceID string, startTime, endTime time.Time) map[string]interface{} {
@@ -768,15 +849,15 @@ func langfuseToolParentSpan(iterationSpanID, phaseSpanID, role string) string {
 }
 
 func langfuseToolSpanName(role, toolName string) string {
-	if strings.EqualFold(strings.TrimSpace(role), string(RolePlanner)) {
-		return "planner/tool/" + toolName
+	if strings.EqualFold(strings.TrimSpace(role), string(RoleAgent)) {
+		return "agent/tool/" + toolName
 	}
 	return "tool/" + toolName
 }
 
 func langfuseToolResultSpanName(role, toolName string) string {
-	if strings.EqualFold(strings.TrimSpace(role), string(RolePlanner)) {
-		return "planner/tool_result/" + toolName
+	if strings.EqualFold(strings.TrimSpace(role), string(RoleAgent)) {
+		return "agent/tool_result/" + toolName
 	}
 	return "tool_result/" + toolName
 }
@@ -1191,7 +1272,7 @@ func episodeDerivedMetrics(events []TaskEpisodeEvent) map[string]interface{} {
 			metrics["todo_closed_count"] = intMetric(metrics, "todo_closed_count") + 1
 		case runEventToolCall:
 			metrics["tool_call_count"] = intMetric(metrics, "tool_call_count") + 1
-			if strings.EqualFold(strings.TrimSpace(event.Role), string(RolePlanner)) {
+			if strings.EqualFold(strings.TrimSpace(event.Role), string(RoleAgent)) {
 				metrics["planner_tool_call_count"] = intMetric(metrics, "planner_tool_call_count") + 1
 			} else if strings.EqualFold(strings.TrimSpace(event.Role), string(RoleExecutor)) {
 				metrics["executor_tool_call_count"] = intMetric(metrics, "executor_tool_call_count") + 1

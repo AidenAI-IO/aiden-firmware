@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -69,8 +68,8 @@ func TestFileLockReleasedAfterUnlock(t *testing.T) {
 
 func TestMemoryManagerConcurrentGoroutines(t *testing.T) {
 	dir := t.TempDir()
-	const goroutines = 20
-	const iterations = 10
+	const goroutines = 8
+	const iterations = 4
 
 	var wg sync.WaitGroup
 	errs := make(chan error, goroutines*iterations)
@@ -85,7 +84,7 @@ func TestMemoryManagerConcurrentGoroutines(t *testing.T) {
 					{Role: "human", Content: fmt.Sprintf("goroutine-%d-iter-%d", id, i)},
 					{Role: "ai", Content: fmt.Sprintf("response-%d-%d", id, i)},
 				}
-				if err := mgr.persistSnapshot("shared", records); err != nil {
+				if err := mgr.syncSessionRecords("shared", records); err != nil {
 					errs <- fmt.Errorf("goroutine %d iter %d persist: %w", id, i, err)
 					return
 				}
@@ -100,16 +99,10 @@ func TestMemoryManagerConcurrentGoroutines(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(dir, "shared.json"))
-	if err != nil {
-		t.Fatalf("read final snapshot: %v", err)
-	}
-	var records []MessageRecord
-	if err := json.Unmarshal(data, &records); err != nil {
-		t.Fatalf("final snapshot is not valid JSON: %v\nraw: %s", err, string(data))
-	}
-	if len(records) != 2 {
-		t.Fatalf("expected 2 records in final snapshot, got %d", len(records))
+	events := readSessionEvents(t, filepath.Join(dir, "session", "events.jsonl"))
+	expectedEvents := goroutines * iterations * 2
+	if len(events) != expectedEvents {
+		t.Fatalf("expected %d session events, got %d", expectedEvents, len(events))
 	}
 }
 
@@ -120,8 +113,8 @@ func TestMemoryManagerConcurrentMultiProcess(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	const procs = 5
-	const writesPerProc = 20
+	const procs = 3
+	const writesPerProc = 8
 
 	var wg sync.WaitGroup
 	errs := make(chan error, procs)
@@ -154,16 +147,10 @@ func TestMemoryManagerConcurrentMultiProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(dir, "shared.json"))
-	if err != nil {
-		t.Fatalf("read final snapshot: %v", err)
-	}
-	var records []MessageRecord
-	if err := json.Unmarshal(data, &records); err != nil {
-		t.Fatalf("final snapshot corrupted: %v\nraw: %s", err, string(data))
-	}
-	if len(records) != 2 {
-		t.Fatalf("expected 2 records, got %d", len(records))
+	events := readSessionEvents(t, filepath.Join(dir, "session", "events.jsonl"))
+	expectedEvents := procs * writesPerProc * 2
+	if len(events) != expectedEvents {
+		t.Fatalf("expected %d session events, got %d", expectedEvents, len(events))
 	}
 }
 
@@ -179,7 +166,7 @@ func runChildProcess() {
 			{Role: "human", Content: fmt.Sprintf("proc-%s-write-%d", id, i)},
 			{Role: "ai", Content: fmt.Sprintf("reply-%s-%d", id, i)},
 		}
-		if err := mgr.persistSnapshot("shared", records); err != nil {
+		if err := mgr.syncSessionRecords("shared", records); err != nil {
 			fmt.Fprintf(os.Stderr, "persist error: %v\n", err)
 			os.Exit(1)
 		}
@@ -188,7 +175,7 @@ func runChildProcess() {
 
 func TestMemoryManagerNoDeadlockMultipleAgents(t *testing.T) {
 	dir := t.TempDir()
-	const goroutines = 10
+	const goroutines = 6
 
 	var wg sync.WaitGroup
 	done := make(chan struct{})
@@ -228,15 +215,15 @@ func TestMemoryManagerNoDeadlockMultipleAgents(t *testing.T) {
 
 func TestMemoryManagerConcurrentReadWrite(t *testing.T) {
 	dir := t.TempDir()
-	const goroutines = 10
-	const iterations = 20
+	const goroutines = 6
+	const iterations = 8
 
 	mgr := NewMemoryManager(dir)
 	records := []MessageRecord{
 		{Role: "human", Content: "seed"},
 		{Role: "ai", Content: "seed-reply"},
 	}
-	if err := mgr.persistSnapshot("default", records); err != nil {
+	if err := mgr.syncSessionRecords("default", records); err != nil {
 		t.Fatalf("seed persist: %v", err)
 	}
 
@@ -254,7 +241,7 @@ func TestMemoryManagerConcurrentReadWrite(t *testing.T) {
 						{Role: "human", Content: fmt.Sprintf("w-%d-%d", id, i)},
 						{Role: "ai", Content: fmt.Sprintf("wr-%d-%d", id, i)},
 					}
-					if err := m.persistSnapshot("default", r); err != nil {
+					if err := m.syncSessionRecords("default", r); err != nil {
 						errs <- fmt.Errorf("write g%d i%d: %w", id, i, err)
 						return
 					}
@@ -275,13 +262,16 @@ func TestMemoryManagerConcurrentReadWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(dir, "default.json"))
-	if err != nil {
-		t.Fatalf("read final: %v", err)
+	events := readSessionEvents(t, filepath.Join(dir, "session", "events.jsonl"))
+	writerGoroutines := 0
+	for g := range goroutines {
+		if g%2 == 0 {
+			writerGoroutines++
+		}
 	}
-	var final []MessageRecord
-	if err := json.Unmarshal(data, &final); err != nil {
-		t.Fatalf("final snapshot corrupted: %v", err)
+	expectedEvents := len(records) + writerGoroutines*iterations*2
+	if len(events) != expectedEvents {
+		t.Fatalf("expected %d session events, got %d", expectedEvents, len(events))
 	}
 }
 

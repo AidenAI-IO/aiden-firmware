@@ -84,6 +84,23 @@ type MemoryHit struct {
 }
 
 const defaultMemoryDeviceID = "default"
+const sessionPlannerExperienceSnapshotVersion = 1
+
+type sessionPlannerExperienceSnapshot struct {
+	Version int               `json:"version"`
+	Planner RoleMemoryContext `json:"planner"`
+}
+
+func plannerSnapshotFromSessionState(state *sessionState) (RoleMemoryContext, bool) {
+	if state == nil || state.RetrievedDeviceExperience == nil {
+		return RoleMemoryContext{}, false
+	}
+	snapshot := state.RetrievedDeviceExperience
+	if snapshot.Version != sessionPlannerExperienceSnapshotVersion {
+		return RoleMemoryContext{}, false
+	}
+	return snapshot.Planner, true
+}
 
 type memorySearchQuery struct {
 	Terms    []string
@@ -106,6 +123,13 @@ func NewFilesystemMemoryPlane(memoryDir string, extraction MemoryExtractionConfi
 	}
 }
 
+func (p *FilesystemMemoryPlane) LongTerm() *LongTermMemoryStore {
+	if p == nil {
+		return nil
+	}
+	return p.longTerm
+}
+
 func (p *FilesystemMemoryPlane) Retrieve(ctx context.Context, req MemoryRetrieveRequest) (MemoryContext, error) {
 	var out MemoryContext
 	if p == nil || p.memoryDir == "" {
@@ -116,76 +140,77 @@ func (p *FilesystemMemoryPlane) Retrieve(ctx context.Context, req MemoryRetrieve
 	// prompts or retrieved through the active memory plane.
 	out.Common.SessionSummary = readTextFileIfExists(filepath.Join(p.memoryDir, "session", "summary.md"))
 	out.Common.Profile = readTextFileIfExists(filepath.Join(p.memoryDir, "long_term", "profile.md"))
-
-	query := p.queryFromRequest(req)
-	deviceHits, err := p.device.Search(ctx, DeviceMemoryQuery{
-		Terms:    query.Terms,
-		Tags:     query.Tags,
-		Entities: query.Entities,
-		DeviceID: req.DeviceID,
-		Limit:    12,
-	})
-	if err != nil && p.logger != nil {
-		p.logger.Warn("[memory] device memory retrieval failed: %v", err)
-	}
-	for _, hit := range deviceHits {
-		if !memoryHitApplicable(hit, req) {
-			continue
+	return p.retrieveWithFrozenPlannerSnapshot(func() (MemoryContext, error) {
+		query := p.queryFromRequest(req)
+		deviceHits, err := p.device.Search(ctx, DeviceMemoryQuery{
+			Terms:    query.Terms,
+			Tags:     query.Tags,
+			Entities: query.Entities,
+			DeviceID: req.DeviceID,
+			Limit:    12,
+		})
+		if err != nil && p.logger != nil {
+			p.logger.Warn("[memory] device memory retrieval failed: %v", err)
 		}
-		p.routeHit(&out, hit)
-	}
-
-	longTermHits, err := p.searchLongTerm(ctx, query)
-	if err != nil && p.logger != nil {
-		p.logger.Warn("[memory] long-term memory retrieval failed: %v", err)
-	}
-	for _, hit := range longTermHits {
-		if !memoryHitApplicable(hit, req) {
-			continue
+		for _, hit := range deviceHits {
+			if !memoryHitApplicable(hit, req) {
+				continue
+			}
+			p.routeHit(&out, hit)
 		}
-		p.routeHit(&out, hit)
-	}
-	conflictHits, err := p.searchLongTermConflicts(ctx, query)
-	if err != nil && p.logger != nil {
-		p.logger.Warn("[memory] conflict memory retrieval failed: %v", err)
-	}
-	for _, hit := range conflictHits {
-		if memoryHitApplicable(hit, req) {
-			out.Verifier.Conflicts = append(out.Verifier.Conflicts, hit)
+
+		longTermHits, err := p.searchLongTerm(ctx, query)
+		if err != nil && p.logger != nil {
+			p.logger.Warn("[memory] long-term memory retrieval failed: %v", err)
 		}
-	}
+		for _, hit := range longTermHits {
+			if !memoryHitApplicable(hit, req) {
+				continue
+			}
+			p.routeHit(&out, hit)
+		}
+		conflictHits, err := p.searchLongTermConflicts(ctx, query)
+		if err != nil && p.logger != nil {
+			p.logger.Warn("[memory] conflict memory retrieval failed: %v", err)
+		}
+		for _, hit := range conflictHits {
+			if memoryHitApplicable(hit, req) {
+				out.Verifier.Conflicts = append(out.Verifier.Conflicts, hit)
+			}
+		}
 
-	success := true
-	successEpisodes, err := p.episodes.Search(ctx, EpisodeQuery{
-		Terms:    query.Terms,
-		Tags:     query.Tags,
-		Entities: query.Entities,
-		Success:  &success,
-		Limit:    3,
+		success := true
+		successEpisodes, err := p.episodes.Search(ctx, EpisodeQuery{
+			Terms:    query.Terms,
+			Tags:     query.Tags,
+			Entities: query.Entities,
+			Success:  &success,
+			Limit:    3,
+		})
+		if err != nil && p.logger != nil {
+			p.logger.Warn("[memory] episode success retrieval failed: %v", err)
+		}
+		out.Planner.SimilarEpisodes = append(out.Planner.SimilarEpisodes, successEpisodes...)
+
+		failed := false
+		failureEpisodes, err := p.episodes.Search(ctx, EpisodeQuery{
+			Terms:    query.Terms,
+			Tags:     query.Tags,
+			Entities: query.Entities,
+			Success:  &failed,
+			Limit:    3,
+		})
+		if err != nil && p.logger != nil {
+			p.logger.Warn("[memory] episode failure retrieval failed: %v", err)
+		}
+		for _, hit := range failureEpisodes {
+			hit.Type = "task_episode_failure"
+			out.Verifier.FailureModes = append(out.Verifier.FailureModes, hit)
+		}
+
+		out.trim(4)
+		return out, nil
 	})
-	if err != nil && p.logger != nil {
-		p.logger.Warn("[memory] episode success retrieval failed: %v", err)
-	}
-	out.Planner.SimilarEpisodes = append(out.Planner.SimilarEpisodes, successEpisodes...)
-
-	failed := false
-	failureEpisodes, err := p.episodes.Search(ctx, EpisodeQuery{
-		Terms:    query.Terms,
-		Tags:     query.Tags,
-		Entities: query.Entities,
-		Success:  &failed,
-		Limit:    3,
-	})
-	if err != nil && p.logger != nil {
-		p.logger.Warn("[memory] episode failure retrieval failed: %v", err)
-	}
-	for _, hit := range failureEpisodes {
-		hit.Type = "task_episode_failure"
-		out.Verifier.FailureModes = append(out.Verifier.FailureModes, hit)
-	}
-
-	out.trim(4)
-	return out, nil
 }
 
 func (p *FilesystemMemoryPlane) NewEpisodeRecorder(req MemoryRetrieveRequest, retrieved MemoryContext) *EpisodeRecorder {
@@ -284,6 +309,59 @@ func (p *FilesystemMemoryPlane) searchLongTerm(ctx context.Context, query memory
 		hits = append(hits, memoryResultToHit(result))
 	}
 	return hits, nil
+}
+
+func (p *FilesystemMemoryPlane) retrieveWithFrozenPlannerSnapshot(retrieve func() (MemoryContext, error)) (MemoryContext, error) {
+	if p == nil || p.memoryDir == "" {
+		return retrieve()
+	}
+	fl := NewFileLock(p.memoryDir)
+	if err := fl.Lock(defaultLockTimeout); err != nil {
+		return MemoryContext{}, err
+	}
+
+	sessionDir := filepath.Join(p.memoryDir, "session")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		_ = fl.Unlock()
+		return MemoryContext{}, err
+	}
+	meta, err := ensureActiveSessionMetadata(sessionDir, time.Now().UTC())
+	if err != nil {
+		_ = fl.Unlock()
+		return MemoryContext{}, err
+	}
+	if plannerSnapshot, ok := plannerSnapshotFromSessionState(meta.State); ok {
+		_ = fl.Unlock()
+
+		out, err := retrieve()
+		if err != nil {
+			return out, err
+		}
+		out.Planner = plannerSnapshot
+		return out, nil
+	}
+
+	// Keep the lock across the first planner retrieval so the session freeze is
+	// owned by the first retriever that entered the active session.
+	out, err := retrieve()
+	if err != nil {
+		_ = fl.Unlock()
+		return out, err
+	}
+
+	if meta.State == nil {
+		meta.State = &sessionState{}
+	}
+	meta.State.RetrievedDeviceExperience = &sessionPlannerExperienceSnapshot{
+		Version: sessionPlannerExperienceSnapshotVersion,
+		Planner: out.Planner,
+	}
+	if err := writeSessionMetadata(filepath.Join(sessionDir, sessionMetadataFileName), meta); err != nil {
+		_ = fl.Unlock()
+		return out, err
+	}
+	_ = fl.Unlock()
+	return out, nil
 }
 
 func (p *FilesystemMemoryPlane) searchLongTermConflicts(ctx context.Context, query memorySearchQuery) ([]MemoryHit, error) {

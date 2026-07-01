@@ -386,11 +386,15 @@ func (t *QuickActionTool) Call(ctx context.Context, input string) (string, error
 	var args quickActionArgs
 	trimmed := strings.TrimSpace(input)
 	if trimmed == "" {
-		return t.errorJSON("action or list is required"), nil
+		te := NewToolError(CodeInvalidArguments, "action or list is required")
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
 	}
 	if strings.HasPrefix(trimmed, "{") {
 		if err := json.Unmarshal([]byte(trimmed), &args); err != nil {
-			return fmt.Sprintf("error: invalid input: %v", err), nil
+			te := NewToolError(CodeInvalidArguments, fmt.Sprintf("invalid input: %v", err))
+			SetToolError(ctx, te)
+			return toolErrorString(te), nil
 		}
 	} else {
 		args.Action = trimmed
@@ -398,7 +402,9 @@ func (t *QuickActionTool) Call(ctx context.Context, input string) (string, error
 
 	platform, err := normalizeQuickActionPlatform(args.Platform)
 	if err != nil {
-		return t.errorJSON(err.Error()), nil
+		te := NewToolError(CodeInvalidArguments, err.Error())
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
 	}
 
 	if strings.EqualFold(strings.TrimSpace(args.Action), "list") {
@@ -415,12 +421,19 @@ func (t *QuickActionTool) Call(ctx context.Context, input string) (string, error
 		if len(suggestions) > 0 {
 			message = fmt.Sprintf("%s; suggested actions: %s", message, strings.Join(suggestions, ", "))
 		}
-		return t.errorJSON(message), nil
+		te := NewToolErrorWithDetails(CodeQuickActionUnknown, message,
+			map[string]any{"action": args.Action, "platform": platform, "suggestions": suggestions})
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
 	}
 
 	action, binding, ok := globalQuickActions.lookup(actionID, platform)
 	if !ok {
-		return t.errorJSON(fmt.Sprintf("action %q is not defined for platform %q", actionID, platform)), nil
+		te := NewToolErrorWithDetails(CodeQuickActionUnsupportedPlatform,
+			fmt.Sprintf("action %q is not defined for platform %q", actionID, platform),
+			map[string]any{"action": actionID, "platform": platform})
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
 	}
 
 	selected := binding
@@ -431,7 +444,10 @@ func (t *QuickActionTool) Call(ctx context.Context, input string) (string, error
 			idx = 1
 		}
 		if len(binding.Alternatives) < idx {
-			return t.errorJSON(fmt.Sprintf("action %q has no alternative #%d on platform %q", actionID, idx, platform)), nil
+			te := NewToolError(CodeInvalidArguments,
+				fmt.Sprintf("action %q has no alternative #%d on platform %q", actionID, idx, platform))
+			SetToolError(ctx, te)
+			return toolErrorString(te), nil
 		}
 		selected = binding.Alternatives[idx-1]
 		selectedSource = fmt.Sprintf("alternative_%d", idx)
@@ -446,17 +462,21 @@ func (t *QuickActionTool) Call(ctx context.Context, input string) (string, error
 		if note == "" {
 			note = "reserved on this platform"
 		}
-		return jsonString(map[string]interface{}{
-			"ok":       false,
-			"status":   quickActionStatusReserved,
-			"action":   actionID,
-			"label":    action.Label,
-			"platform": platform,
-			"message":  note,
-		}), nil
+		te := NewToolErrorWithDetails(CodeQuickActionReserved, note,
+			map[string]any{
+				"action":   actionID,
+				"label":    action.Label,
+				"platform": platform,
+				"status":   quickActionStatusReserved,
+			})
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
 	}
 	if status != quickActionStatusActive {
-		return t.errorJSON(fmt.Sprintf("action %q has unsupported status %q on platform %q", actionID, status, platform)), nil
+		te := NewToolError(CodeQuickActionInvalidBinding,
+			fmt.Sprintf("action %q has unsupported status %q on platform %q", actionID, status, platform))
+		SetToolError(ctx, te)
+		return toolErrorString(te), nil
 	}
 
 	toolName := strings.TrimSpace(selected.Tool)
@@ -469,15 +489,21 @@ func (t *QuickActionTool) Call(ctx context.Context, input string) (string, error
 		for i, step := range selected.Steps {
 			stepTool := strings.TrimSpace(step.Tool)
 			if stepTool == "" {
-				return t.errorJSON(fmt.Sprintf("action %q step %d has no tool binding configured", actionID, i+1)), nil
+				te := NewToolError(CodeQuickActionInvalidBinding,
+					fmt.Sprintf("action %q step %d has no tool binding configured", actionID, i+1))
+				SetToolError(ctx, te)
+				return toolErrorString(te), nil
 			}
 			stepPayload, err := json.Marshal(step.Input)
 			if err != nil {
-				return t.errorJSON(fmt.Sprintf("invalid action step %d input: %v", i+1, err)), nil
+				te := NewToolError(CodeQuickActionInvalidBinding,
+					fmt.Sprintf("invalid action step %d input: %v", i+1, err))
+				SetToolError(ctx, te)
+				return toolErrorString(te), nil
 			}
-			stepOutput, err := t.delegate(ctx, stepTool, string(stepPayload))
+			stepOutput, subErr, err := t.delegate(ctx, stepTool, string(stepPayload))
 			if err != nil {
-				return fmt.Sprintf("error: %v", err), nil
+				return "", err
 			}
 			stepResult := map[string]interface{}{
 				"index":  i + 1,
@@ -489,18 +515,23 @@ func (t *QuickActionTool) Call(ctx context.Context, input string) (string, error
 				stepResult["delay_ms_after"] = step.DelayMsAfter
 			}
 			stepResults = append(stepResults, stepResult)
-			if strings.HasPrefix(stepOutput, "error:") {
-				return jsonString(map[string]interface{}{
-					"ok":          false,
-					"action":      actionID,
-					"label":       action.Label,
-					"platform":    platform,
-					"binding":     selectedSource,
-					"tool":        "sequence",
-					"failed_step": i + 1,
-					"output":      stepOutput,
-					"steps":       stepResults,
-				}), nil
+			if subErr != nil {
+				te := NewToolErrorWithDetails(CodeSubtoolFailed,
+					fmt.Sprintf("step %d (%s) failed: %s", i+1, stepTool, subErr.Message),
+					map[string]any{
+						"source":        "tool:quick_action",
+						"action":        actionID,
+						"label":         action.Label,
+						"platform":      platform,
+						"binding":       selectedSource,
+						"failed_step":   i + 1,
+						"subtool":       stepTool,
+						"subtool_error": subErr,
+						"steps":         stepResults,
+					})
+				te.Category = subErr.Category
+				SetToolError(ctx, te)
+				return toolErrorString(te), nil
 			}
 			if err := sleepQuickActionDelay(ctx, step.DelayMsAfter); err != nil {
 				return "", err
@@ -512,30 +543,40 @@ func (t *QuickActionTool) Call(ctx context.Context, input string) (string, error
 			if note == "" {
 				note = "no tool binding configured"
 			}
-			return t.errorJSON(note), nil
+			te := NewToolError(CodeQuickActionInvalidBinding, note)
+			SetToolError(ctx, te)
+			return toolErrorString(te), nil
 		}
 
 		var err error
 		payload, err = json.Marshal(selected.Input)
 		if err != nil {
-			return t.errorJSON(fmt.Sprintf("invalid action input: %v", err)), nil
+			te := NewToolError(CodeQuickActionInvalidBinding, fmt.Sprintf("invalid action input: %v", err))
+			SetToolError(ctx, te)
+			return toolErrorString(te), nil
 		}
 
-		output, err = t.delegate(ctx, toolName, string(payload))
+		var subErr *ToolError
+		output, subErr, err = t.delegate(ctx, toolName, string(payload))
 		if err != nil {
-			return fmt.Sprintf("error: %v", err), nil
+			return "", err
 		}
-		if strings.HasPrefix(output, "error:") {
-			return jsonString(map[string]interface{}{
-				"ok":       false,
-				"action":   actionID,
-				"label":    action.Label,
-				"platform": platform,
-				"binding":  selectedSource,
-				"tool":     toolName,
-				"input":    json.RawMessage(payload),
-				"output":   output,
-			}), nil
+		if subErr != nil {
+			te := NewToolErrorWithDetails(CodeSubtoolFailed,
+				fmt.Sprintf("step 1 (%s) failed: %s", toolName, subErr.Message),
+				map[string]any{
+					"source":        "tool:quick_action",
+					"action":        actionID,
+					"label":         action.Label,
+					"platform":      platform,
+					"binding":       selectedSource,
+					"failed_step":   1,
+					"subtool":       toolName,
+					"subtool_error": subErr,
+				})
+			te.Category = subErr.Category
+			SetToolError(ctx, te)
+			return toolErrorString(te), nil
 		}
 	}
 
@@ -572,24 +613,41 @@ func (t *QuickActionTool) Call(ctx context.Context, input string) (string, error
 	return jsonString(result), nil
 }
 
-func (t *QuickActionTool) delegate(ctx context.Context, toolName, payload string) (string, error) {
+func (t *QuickActionTool) delegate(ctx context.Context, toolName, payload string) (string, *ToolError, error) {
+	subCtx, _ := WithToolError(ctx)
+	var output string
+	var err error
 	switch toolName {
 	case "keyboard_tap":
 		if t.keyboard == nil {
-			return "", fmt.Errorf("keyboard_tap is not available")
+			return "", nil, fmt.Errorf("keyboard_tap is not available")
 		}
-		return t.keyboard.Call(ctx, payload)
+		output, err = t.keyboard.Call(subCtx, payload)
 	case "touch_gesture":
 		if t.touch == nil {
-			return "", fmt.Errorf("touch_gesture is not available")
+			return "", nil, fmt.Errorf("touch_gesture is not available")
 		}
-		return t.touch.Call(ctx, payload)
+		output, err = t.touch.Call(subCtx, payload)
 	default:
-		return "", fmt.Errorf("unsupported delegated tool %q", toolName)
+		return "", nil, fmt.Errorf("unsupported delegated tool %q", toolName)
 	}
+	if err != nil {
+		return output, nil, err
+	}
+	if te := ToolErrorFromContext(subCtx); te != nil {
+		return output, te, nil
+	}
+	if legacyToolOutputLooksLikeError(output) {
+		trimmed := strings.TrimSpace(output)
+		message := strings.TrimSpace(trimmed[len("error:"):])
+		return output, NewToolError(CodeToolExecutionFailed, message), nil
+	}
+	return output, nil, nil
 }
 
-func sleepQuickActionDelay(ctx context.Context, delayMs int) error {
+var sleepQuickActionDelay = realSleepQuickActionDelay
+
+func realSleepQuickActionDelay(ctx context.Context, delayMs int) error {
 	if delayMs <= 0 {
 		return nil
 	}
@@ -681,19 +739,12 @@ func platformNote(actionID, platform string, binding quickActionBinding) string 
 	return fmt.Sprintf("%s on %s has no primary tool binding", actionID, platform)
 }
 
-func (t *QuickActionTool) errorJSON(message string) string {
-	return jsonString(map[string]interface{}{
-		"ok":    false,
-		"error": message,
-	})
-}
-
 func quickActionBehaviorSummary() string {
 	return strings.Join([]string{
-		"Common actions: back, home, hide_app, quit_app, app_switch, spotlight_search, copy, paste, cut, undo, redo, select_all, delete_backward, delete_forward, find, send, browser_new_tab, browser_close_tab, browser_refresh, browser_address_bar, screenshot_full, screenshot_region.",
+		"Common actions: back, home, hide_app, quit_app, app_switch, spotlight_search, copy, paste, cut, undo, redo, select_all, delete_backward, delete_forward, find, send, browser_new_tab, browser_close_tab, browser_refresh, browser_address_bar, screenshot_region.",
 		"- Infer platform from screenshot/context and pass platform=ios/android/mac.",
 		"- Prefer quick_action before ad-hoc keyboard_tap or touch_gesture when an active catalog entry exists.",
-		"- If status=reserved or ok=false: skip quick_action and use direct input tools instead.",
+		"- If status=reserved in a list result or quick_action returns an error message: skip quick_action and use direct input tools instead.",
 		"- If ok=true but the screenshot shows no expected change: treat as ineffective, try alternative=true once or switch tools.",
 		"- Never loop on the same quick_action binding; change tool or strategy after one failed attempt.",
 	}, "\n")

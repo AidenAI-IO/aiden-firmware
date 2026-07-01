@@ -13,7 +13,7 @@ import pytest
 
 from mobilegym.bridge.episode import BridgeEpisodeState, BridgeTaskRouter
 from mobilegym.bridge.actions import action_to_dict
-from mobilegym.bridge.server import BridgeServer
+from mobilegym.bridge.server import BridgeServer, DEFAULT_BRIDGE_REQUEST_TIMEOUT_SEC
 
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\nmobilegym-png"
@@ -213,6 +213,16 @@ def test_bridge_base_url_uses_public_host_override():
             assert base_url.startswith("http://bridge-container:")
         finally:
             server.stop()
+
+
+def test_bridge_server_default_request_timeout_covers_slow_mobilegym_actions():
+    assert DEFAULT_BRIDGE_REQUEST_TIMEOUT_SEC >= 180
+    with OwnerLoop() as owner:
+        env = FakeEnv(owner.loop)
+        state = BridgeEpisodeState(env, owner_loop=owner.loop)
+        server = BridgeServer(state, host="127.0.0.1", port=0)
+
+    assert server.request_timeout_sec == DEFAULT_BRIDGE_REQUEST_TIMEOUT_SEC
 
 
 def test_bridge_base_url_resolves_container_ip_when_bound_to_wildcard(monkeypatch):
@@ -586,6 +596,59 @@ def test_tools_api_keyboard_inputs_match_agent_proxy_contract():
         assert status == 200
         assert body["is_error"] is True
         assert "does not support key" in body["output"]
+
+
+def test_tools_api_mobilegym_text_entry_tools_do_not_depend_on_hid_devices():
+    with RunningBridge() as bridge:
+        status, body = request_json(bridge.base_url, "POST", "/api/setup", {"episode_id": "reset-ep1"})
+        assert status == 200
+        assert body["data"] == {"episode_id": "reset-ep1", "reset": True}
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/tools/enter_text_in_field",
+            {
+                "input": {
+                    "text": "微信读书",
+                    "platform": "android",
+                    "mode": "search",
+                    "focus": {"x": 500, "y": 120, "coord_space": "normalized"},
+                    "segments": ["wei", "xin", "du", "shu"],
+                }
+            },
+        )
+        assert status == 200
+        assert body["is_error"] is False
+        output = json.loads(body["output"])
+        assert output["committed"] is True
+        assert "hidg" not in body["output"]
+        assert action_to_dict(bridge.env.actions[-1]) == {
+            "action_type": "TYPE",
+            "data": {"value": "微信读书", "point": [500.0, 120.0]},
+        }
+
+        status, body = request_json(
+            bridge.base_url,
+            "POST",
+            "/api/tools/enter_text_via_bridge",
+            {
+                "input": {
+                    "text": "Camera note",
+                    "platform": "android",
+                    "focus": {"x": 400, "y": 700, "coord_space": "normalized"},
+                }
+            },
+        )
+        assert status == 200
+        assert body["is_error"] is False
+        output = json.loads(body["output"])
+        assert output["committed"] is True
+        assert "hidg" not in body["output"]
+        assert action_to_dict(bridge.env.actions[-1]) == {
+            "action_type": "TYPE",
+            "data": {"value": "Camera note", "point": [400.0, 700.0]},
+        }
 
 
 def test_device_endpoints_require_active_episode_without_authentication():

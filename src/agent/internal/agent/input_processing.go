@@ -62,8 +62,18 @@ func NewSTTClientFromConfig(cfg Config) (STTClient, error) {
 	switch provider {
 	case "openai", "openai-whisper":
 		return NewOpenAIWhisperSTT(cfg.STT.APIKey, cfg.STT.Model, cfg.STT.BaseURL, language, httpClient), nil
+	case "openrouter":
+		return NewOpenRouterSTT(cfg.STT.APIKey, cfg.STT.Model, cfg.STT.BaseURL, language, httpClient), nil
+	case "qwen-asr":
+		client := NewDashScopeRealtimeSTT(cfg.STT.APIKey, cfg.STT.Model, cfg.STT.BaseURL, language)
+		client.proxy = proxyConfig
+		return client, nil
+	case "google-cloud":
+		return NewGoogleCloudSTT(cfg.STT.APIKey, cfg.STT.BaseURL, language, cfg.STT.Model, httpClient)
 	case tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider:
-		return NewTencentASRSTT(cfg.STT.SecretID, cfg.STT.SecretKey, cfg.STT.Region, cfg.STT.EngineModelType, language, httpClient), nil
+		client := NewTencentASRSTT(cfg.STT.SecretID, cfg.STT.SecretKey, cfg.STT.AppID, cfg.STT.Region, cfg.STT.EngineModelType, language, httpClient)
+		client.proxy = proxyConfig
+		return client, nil
 	default:
 		return nil, fmt.Errorf("unsupported STT provider: %s", cfg.STT.Provider)
 	}
@@ -80,7 +90,7 @@ func NewTextTurnInput(userText string, attachments []InputAttachment) TurnInput 
 	})
 }
 
-func PrepareAudioInput(mode string, sttClient STTClient, wavData []byte, userText string, attachments []InputAttachment) (AudioInputResult, error) {
+func PrepareAudioInput(mode string, sttClient STTClient, wavData []byte, transcriptHint, userText string, attachments []InputAttachment) (AudioInputResult, error) {
 	resolvedMode := strings.ToLower(strings.TrimSpace(mode))
 	if resolvedMode == "" {
 		resolvedMode = TurnModalitySTT
@@ -91,13 +101,16 @@ func PrepareAudioInput(mode string, sttClient STTClient, wavData []byte, userTex
 
 	switch resolvedMode {
 	case TurnModalitySTT:
-		if sttClient == nil {
-			return AudioInputResult{}, fmt.Errorf("STT mode enabled but STT client is unavailable")
-		}
-
-		transcript, err := sttClient.TranscribeWAV(wavData)
-		if err != nil {
-			return AudioInputResult{}, fmt.Errorf("STT transcription failed: %w", err)
+		transcript := strings.TrimSpace(transcriptHint)
+		if transcript == "" {
+			if sttClient == nil {
+				return AudioInputResult{}, fmt.Errorf("STT mode enabled but STT client is unavailable")
+			}
+			var err error
+			transcript, err = sttClient.TranscribeWAV(wavData)
+			if err != nil {
+				return AudioInputResult{}, fmt.Errorf("STT transcription failed: %w", err)
+			}
 		}
 		transcript = strings.TrimSpace(transcript)
 		if transcript == "" {

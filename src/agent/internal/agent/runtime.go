@@ -69,8 +69,8 @@ type RunRequest struct {
 	RuntimeContext string
 	StreamWriter   io.Writer
 	// StreamFinalChunks allows final-answer chunks to be written through
-	// StreamWriter for audio paths. Non-final LLM calls must remain
-	// non-streaming because they may be planner, tool-call, or verifier turns.
+	// StreamWriter for audio paths. Non-final LLM calls remain non-streaming
+	// because they may still turn into tool calls.
 	StreamFinalChunks bool
 	MaxTokens         int
 	EventHandler      func(RunEvent)
@@ -123,14 +123,14 @@ func canonicalTurnInputFromRunRequest(req RunRequest) TurnInput {
 }
 
 func (r RunResult) SpokenText() string {
-	return strings.TrimSpace(r.Output)
+	return BuildSpeechText(r.Output, Config{})
 }
 
 func (r RunResult) SpokenTextForConfig(cfg Config) string {
 	if r.WaitForWakeupRequested {
 		return ""
 	}
-	return strings.TrimSpace(r.Output)
+	return BuildSpeechText(r.Output, cfg)
 }
 
 type RunSteerMessage struct {
@@ -147,13 +147,31 @@ type RunMetrics struct {
 	TotalTokens      int     `json:"total_tokens,omitempty"`
 	ContextWindow    int     `json:"context_window,omitempty"`
 	FirstTokenTime   float64 `json:"first_token_time_ms,omitempty"`
+	// CachedPromptTokens accumulates provider-reported cached prompt tokens
+	// (usage.prompt_tokens_details.cached_tokens) across the run. The prompt-cache
+	// hit rate is CachedPromptTokens / PromptTokens.
+	CachedPromptTokens int `json:"cached_prompt_tokens,omitempty"`
 	// LastPromptTokens holds the largest single prompt-token count in the run.
-	// PromptTokens/CompletionTokens/TotalTokens accumulate across the multiple
-	// planner/executor/verifier calls in a single run, but the compression
-	// heuristic needs the size of one prompt relative to the context window, not
-	// the cumulative sum. Using the largest single prompt keeps a small verifier
-	// call from masking a much larger planner prompt.
+	// PromptTokens/CompletionTokens/TotalTokens accumulate across model calls in
+	// a single run, but the compression heuristic needs the size of one prompt
+	// relative to the context window, not the cumulative sum.
 	LastPromptTokens int `json:"-"`
+}
+
+// CacheHitRate returns the prompt-cache hit ratio in [0,1]: cached prompt tokens
+// over total prompt tokens. It returns 0 when no prompt tokens were recorded.
+func (m *RunMetrics) CacheHitRate() float64 {
+	if m == nil || m.PromptTokens <= 0 {
+		return 0
+	}
+	rate := float64(m.CachedPromptTokens) / float64(m.PromptTokens)
+	if rate < 0 {
+		return 0
+	}
+	if rate > 1 {
+		return 1
+	}
+	return rate
 }
 
 const (
@@ -174,13 +192,14 @@ type RunEvent struct {
 	SpeechEligible bool       `json:"speech_eligible,omitempty"`
 	Timestamp      time.Time  `json:"timestamp"`
 	IsError        bool       `json:"is_error,omitempty"`
+	ToolError      *ToolError `json:"tool_error,omitempty"`
 }
 
 type usageTrackingModel struct {
 	inner           llms.Model
 	metrics         *RunMetrics
 	promptCapture   *telemetryPromptCapture
-	contextWindowFn func() int
+	contextWindowFn ContextWindowFn
 }
 
 func (m *usageTrackingModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
@@ -213,8 +232,8 @@ func (m *usageTrackingModel) contextWindow() int {
 		return 0
 	}
 	if m.contextWindowFn != nil {
-		if v := m.contextWindowFn(); v > 0 {
-			return v
+		if spec := m.contextWindowFn(); spec.ContextWindow > 0 {
+			return spec.ContextWindow
 		}
 	}
 	if m.metrics != nil {
@@ -299,7 +318,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	summarizeFn := buildLLMSummarizeFn(modelManager)
 	structuredSummarizeFn := buildLLMStructuredSummarizeFn(modelManager, logger)
 	profileFn := buildLLMProfileFn(modelManager)
-	contextWindowFn := func() int { return modelManager.Spec().ContextWindow }
+	contextWindowFn := func() ModelSpec { return modelManager.Spec() }
 
 	longTermDir := ""
 	if memoryDir != "" {
@@ -445,6 +464,13 @@ func (r *Runtime) NewEpisodeID() string {
 	return newTaskEpisodeID(time.Now().UTC())
 }
 
+func (r *Runtime) MemoryPlane() MemoryPlane {
+	if r == nil {
+		return nil
+	}
+	return r.memoryPlane
+}
+
 func (r *Runtime) markInterruptedEpisodesBestEffort() {
 	plane, ok := r.memoryPlane.(*FilesystemMemoryPlane)
 	if !ok || plane == nil || plane.episodes == nil {
@@ -494,7 +520,7 @@ func (r *Runtime) exportInterruptedEpisodesBestEffort(episodes []TaskEpisode) {
 	}
 }
 
-func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
+func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, runErr error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -520,13 +546,59 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		return RunResult{}, errors.New("input is required")
 	}
 
+	runID := "run_" + uuid.NewString()
+	episodeID := strings.TrimSpace(req.EpisodeID)
+	if episodeID == "" && r.memoryPlane != nil {
+		episodeID = newTaskEpisodeID(startTime.UTC())
+	}
+	currentHints := r.currentEnvironmentHints()
+	skillNames := uniqueNonEmpty(req.Skills)
+	promptCapture := newTelemetryPromptCapture(r.config.Telemetry.EnabledOrDefault())
+	var episodeRecorder *EpisodeRecorder
+	var availableTools []langtools.Tool
+	var boundaryTelemetry sessionBoundaryTelemetry
+	var output string
+	episodeCommitted := false
+	defer func() {
+		if runErr == nil || episodeCommitted {
+			return
+		}
+		metrics.TotalDuration = float64(time.Since(startTime).Milliseconds())
+		if episodeRecorder == nil && r.memoryPlane != nil {
+			retrieveReq := MemoryRetrieveRequest{
+				Input:        normalizedInput,
+				Attachments:  turnInput.Attachments,
+				Skills:       skillNames,
+				ToolNames:    toolNamesFromTools(availableTools),
+				EpisodeID:    episodeID,
+				DeviceID:     defaultMemoryDeviceID,
+				CurrentHints: currentHints,
+			}
+			episodeRecorder = r.memoryPlane.NewEpisodeRecorder(retrieveReq, MemoryContext{})
+			if episodeRecorder != nil {
+				episodeID = episodeRecorder.ID()
+				startCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				if err := episodeRecorder.Start(startCtx); err != nil && r.logger != nil {
+					r.logger.Warn("[memory] start failed episode trace failed: %v", err)
+				}
+				cancel()
+			}
+		}
+		if episodeRecorder == nil {
+			return
+		}
+		episodeID = episodeRecorder.ID()
+		r.persistRunStatusBestEffort(episodeID, req.RequestID, runID, runErr)
+		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, runErr, promptCapture, boundaryTelemetry, req.AsyncEpisodeMaintenance)
+		episodeCommitted = true
+	}()
+
 	if err := r.reloadSkillsIfDirty(); err != nil {
 		return RunResult{}, err
 	}
 	runSkills := r.skills.Snapshot()
 
 	// Activate skills
-	skillNames := uniqueNonEmpty(req.Skills)
 	for _, skillName := range skillNames {
 		if err := runSkills.Activate(ctx, skillName); err != nil {
 			if r.logger != nil {
@@ -556,10 +628,13 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			r.logger.Info("Resolved model context window: context_window=%d", contextWindow)
 		}
 	}
-	promptCapture := newTelemetryPromptCapture(r.config.Telemetry.EnabledOrDefault())
-	model = &usageTrackingModel{inner: model, metrics: metrics, promptCapture: promptCapture, contextWindowFn: r.effectiveContextWindow}
+	model = &usageTrackingModel{inner: model, metrics: metrics, promptCapture: promptCapture, contextWindowFn: func() ModelSpec {
+		if r.models != nil {
+			return r.models.Spec()
+		}
+		return ModelSpec{}
+	}}
 
-	currentHints := r.currentEnvironmentHints()
 	memoryCfg := MemoryConfig{Type: "buffer"}
 	var memoryHandle *MemoryHandle
 	if r.memories != nil {
@@ -569,11 +644,6 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	if err != nil {
 		return RunResult{}, err
-	}
-	runID := "run_" + uuid.NewString()
-	episodeID := strings.TrimSpace(req.EpisodeID)
-	if episodeID == "" && r.memoryPlane != nil {
-		episodeID = newTaskEpisodeID(startTime.UTC())
 	}
 	beginResult, err := r.beginSession(ctx, SessionBeginRequest{
 		AgentName:    "default",
@@ -588,12 +658,12 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, err
 	}
-	boundaryTelemetry := beginResult.Boundary
+	boundaryTelemetry = beginResult.Boundary
 	if boundaryTelemetry.PendingRecallCounter == nil {
 		boundaryTelemetry.PendingRecallCounter = &atomic.Int64{}
 	}
 
-	availableTools := r.resolveTools(resolvedSkills)
+	availableTools = r.resolveTools(resolvedSkills)
 	availableTools = wrapSessionRecallTelemetry(availableTools, boundaryTelemetry.PendingRecallCounter)
 	retrieveReq := MemoryRetrieveRequest{
 		Input:        normalizedInput,
@@ -615,7 +685,6 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			memoryContext = retrieved
 		}
 	}
-	var episodeRecorder *EpisodeRecorder
 	if r.memoryPlane != nil {
 		episodeRecorder = r.memoryPlane.NewEpisodeRecorder(retrieveReq, memoryContext)
 		if episodeRecorder != nil {
@@ -702,22 +771,23 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 	}
 
-	// Set platformFn for enter_text_in_field tool (bridge > config > LLM)
-	if textInputTool, ok := r.tools.Get("enter_text_in_field"); ok {
-		// The tool may be wrapped (e.g., postActionScreenshotTool), so we use
-		// an interface to check if it supports SetPlatformFn
-		type platformConfigurable interface {
-			SetPlatformFn(func() string)
+	// Set platformFn for text entry tools (bridge > config > LLM).
+	type platformConfigurable interface {
+		SetPlatformFn(func() string)
+	}
+	platformFn := func() string {
+		if deviceEnv != nil {
+			if p := strings.TrimSpace(deviceEnv.Platform); p != "" {
+				return p
+			}
 		}
-		if tool, ok := textInputTool.(platformConfigurable); ok {
-			tool.SetPlatformFn(func() string {
-				if deviceEnv != nil {
-					if p := strings.TrimSpace(deviceEnv.Platform); p != "" {
-						return p
-					}
-				}
-				return defaultPlatform
-			})
+		return defaultPlatform
+	}
+	for _, name := range []string{"enter_text_in_field", "enter_text_via_bridge"} {
+		if textInputTool, ok := r.tools.Get(name); ok {
+			if tool, ok := textInputTool.(platformConfigurable); ok {
+				tool.SetPlatformFn(platformFn)
+			}
 		}
 	}
 
@@ -731,7 +801,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	executor.SteerWaiter = req.SteerWaiter
 	executor.FinalSteerProvider = req.FinalSteerProvider
 
-	output, err := chains.Run(ctx, executor, normalizedInput, callOptions...)
+	output, err = chains.Run(ctx, executor, normalizedInput, callOptions...)
 	if err != nil {
 		// If the agent couldn't parse the LLM output format, extract the raw
 		// text and return it as the response instead of failing.
@@ -744,14 +814,17 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			}
 		}
 		if err != nil {
-			r.persistRunStatusBestEffort(episodeID, req.RequestID, runID, err)
-			r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture, boundaryTelemetry, req.AsyncEpisodeMaintenance)
 			return RunResult{}, err
 		}
 	}
 
 	output = finalizeAssistantOutput(output)
 	metrics.TotalDuration = float64(time.Since(startTime).Milliseconds())
+	if r.logger != nil && metrics.PromptTokens > 0 {
+		r.logger.Info("LLM usage: prompt_tokens=%d completion_tokens=%d total_tokens=%d cached_tokens=%d cache_hit_rate=%.1f%%",
+			metrics.PromptTokens, metrics.CompletionTokens, metrics.TotalTokens,
+			metrics.CachedPromptTokens, metrics.CacheHitRate()*100)
+	}
 	commitReq := SessionCommitRequest{
 		AgentName: "default",
 		Input:     normalizedInput,
@@ -768,10 +841,10 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 
 	commitResult, err := r.commitSession(ctx, commitReq)
 	if err != nil {
-		r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, err, promptCapture, boundaryTelemetry, req.AsyncEpisodeMaintenance)
 		return RunResult{}, err
 	}
 	r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, nil, promptCapture, boundaryTelemetry, req.AsyncEpisodeMaintenance)
+	episodeCommitted = true
 
 	waitForWakeupRequested, waitForWakeupReason := false, ""
 	if r.waitForWakeup != nil {
@@ -1211,7 +1284,7 @@ func (r *Runtime) buildRoleProfiles(skills ResolvedSkills, availableTools []lang
 			Instruction:         r.config.Instruction,
 			AdditionalPrompt:    r.config.AdditionalPrompt,
 			RuntimeContext:      runtimeContext,
-			ForceSimpleLoop:     r.config.ForceSimpleLoop,
+			ForceSimpleLoop:     true,
 			VoiceToolCallSpeech: r.config.VoiceToolCallSpeech,
 			TTSConfigured:       strings.TrimSpace(r.config.TTS.Provider) != "",
 		},
@@ -1300,6 +1373,9 @@ func recordUsageMetrics(metrics *RunMetrics, res *llms.ContentResponse) {
 	if v, ok := usageMetricInt(info["total_tokens"]); ok {
 		metrics.TotalTokens += v
 	}
+	if v, ok := usageMetricInt(info["cached_tokens"]); ok {
+		metrics.CachedPromptTokens += v
+	}
 }
 
 func usageMetricInt(value any) (int, bool) {
@@ -1368,15 +1444,21 @@ func (h *runtimeCallbackHandler) HandleToolError(ctx context.Context, err error)
 	}
 	action, ok := h.popPendingAction()
 	if ok {
+		var toolErr *ToolError
+		if !errors.As(err, &toolErr) {
+			toolErr = NewToolError(CodeToolExecutionFailed, err.Error())
+		}
+		content := toolErr.Message
 		h.emitRunEvent(ctx, RunEvent{
 			Type:       "tool_result",
 			EpisodeID:  h.episodeID,
 			ToolCallID: action.ToolID,
 			ToolName:   action.Tool,
 			ToolInput:  normalizeToolInput(action.ToolInput),
-			Content:    "error: " + err.Error(),
+			Content:    content,
 			Timestamp:  time.Now(),
 			IsError:    true,
+			ToolError:  cloneToolError(toolErr),
 		})
 	}
 }
@@ -1396,7 +1478,6 @@ func (h *runtimeCallbackHandler) HandleNamedToolEnd(ctx context.Context, name, i
 		ToolInput: input,
 		Content:   output,
 		Timestamp: time.Now(),
-		IsError:   toolOutputLooksLikeError(output),
 	})
 }
 
@@ -1405,15 +1486,21 @@ func (h *runtimeCallbackHandler) HandleNamedToolError(ctx context.Context, name,
 	if h.logger != nil {
 		h.logger.Error("Tool error: name=%s err=%v", name, err)
 	}
+	var toolErr *ToolError
+	if !errors.As(err, &toolErr) {
+		toolErr = NewToolError(CodeToolExecutionFailed, err.Error())
+	}
+	content := toolErr.Message
 	h.removePendingAction(name, input)
 	h.emitRunEvent(ctx, RunEvent{
 		Type:      "tool_result",
 		EpisodeID: h.episodeID,
 		ToolName:  name,
 		ToolInput: input,
-		Content:   "error: " + err.Error(),
+		Content:   content,
 		Timestamp: time.Now(),
 		IsError:   true,
+		ToolError: cloneToolError(toolErr),
 	})
 }
 
@@ -1450,7 +1537,7 @@ func (h *runtimeCallbackHandler) AfterToolCall(ctx context.Context, call ToolCal
 func (h *runtimeCallbackHandler) HandleToolCallResult(ctx context.Context, call ToolCall, result ToolResult) {
 	output := result.EventOutput()
 	if h.logger != nil {
-		if result.IsError {
+		if result.IsError() {
 			h.logger.Error("Tool result: name=%s output=%s", call.Spec.Name, truncateForLog(output, 240))
 		} else {
 			h.logger.Info("Tool result: name=%s output=%s", call.Spec.Name, truncateForLog(output, 240))
@@ -1464,7 +1551,8 @@ func (h *runtimeCallbackHandler) HandleToolCallResult(ctx context.Context, call 
 		ToolInput:  call.Input,
 		Content:    output,
 		Timestamp:  time.Now(),
-		IsError:    result.IsError,
+		IsError:    result.IsError(),
+		ToolError:  cloneToolError(result.Error),
 	})
 }
 
@@ -1585,6 +1673,7 @@ func sessionEventFromRunEvent(event RunEvent, h *runtimeCallbackHandler) Session
 		ToolName:   event.ToolName,
 		ToolInput:  event.ToolInput,
 		IsError:    event.IsError,
+		ToolError:  cloneToolError(event.ToolError),
 	}
 	return sessionEvent
 }

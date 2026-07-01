@@ -1,4 +1,5 @@
 #include "agent_toml.h"
+#include "audio_service_client.h"
 #include "config_web_html.h"
 #include "config_web_llm_html.h"
 #include "system_env_parser.h"
@@ -11,6 +12,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <ctype.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdint.h>
@@ -53,6 +55,8 @@ struct HttpRequest {
     std::string method;
     std::string path;
     std::string body;
+    std::string body_file_path;
+    size_t body_size = 0;
     int error_status_code = 0;
     std::string error_status_text;
     std::string error_body;
@@ -63,6 +67,8 @@ struct ApiResponse {
     std::string status_text = "OK";
     std::string content_type = "application/json; charset=utf-8";
     std::string body = "{}";
+    int body_fd = -1;
+    unsigned long long body_fd_size = 0;
 };
 
 struct CommandResult {
@@ -103,6 +109,13 @@ struct AgentLogSnapshot {
     std::string error;
 };
 
+struct STTTestRecordingState {
+    bool active = false;
+    uint64_t session_id = 0;
+    std::string socket_path;
+    aiden::AudioFormat format;
+};
+
 using SystemProxy = aiden::SystemEnvProxy;
 
 struct TcpPortStatus {
@@ -110,7 +123,22 @@ struct TcpPortStatus {
     std::string detail;
 };
 
+struct AgentHttpTarget {
+    std::string host = "127.0.0.1";
+    int port = 8080;
+    std::string base_path;
+};
+
+struct AgentHttpResponse {
+    int status_code = 0;
+    std::string status_text;
+    std::string content_type = "application/json; charset=utf-8";
+    std::string body;
+    std::string error;
+};
+
 volatile sig_atomic_t g_should_stop = 0;
+STTTestRecordingState g_stt_test_recording;
 
 const char* kAnyBindAddress = "0.0.0.0";
 const char* kUsbBindAddress = "192.168.42.1";
@@ -151,11 +179,9 @@ const size_t kAgentLogDisplaySize = 48 * 1024;
 const size_t kOtaLogReadSize = 128 * 1024;
 const size_t kOtaLogDisplaySize = 96 * 1024;
 // LLM raw HTTP logs live next to the agent config: <dirname(config)>/log.
-// Filenames are llm-http-YYYYMMDDHHMMSSmmm.log. The viewer streams whole
-// files to the browser, so cap the per-file read to keep responses bounded.
+// Filenames are llm-http-YYYYMMDDHHMMSSmmm.log.
 const char* kLlmLogPrefix = "llm-http-";
 const char* kLlmLogSuffix = ".log";
-const size_t kLlmLogMaxReadSize = 16 * 1024 * 1024;
 const size_t kMaxHttpHeaderSize = 8 * 1024;
 const size_t kMaxHttpBodySize = 64 * 1024;
 const int kClientReadTimeoutSeconds = 5;
@@ -167,12 +193,60 @@ std::string read_file_contents(const char* path, size_t max_size);
 bool read_file_contents_checked(const char* path, size_t max_size, std::string* contents, std::string* error);
 std::string validate_proxy_url(const std::string& url);
 std::string lowercase_copy(const std::string& text);
+bool parse_decimal(const std::string& text, int min_value, int max_value, int* value);
 std::string parent_dir(const std::string& path);
+std::string llm_log_dir(const Options& options);
 bool mkdir_p(const std::string& dir, std::string* error);
 bool prepare_ota_update_log_file(const std::string& path, std::string* error);
 bool set_fd_cloexec(int fd, std::string* error);
+bool create_temp_file_in_dir(const std::string& dir,
+                             const std::string& prefix,
+                             mode_t mode,
+                             int* fd,
+                             std::string* path,
+                             std::string* error);
+bool is_llm_log_import_request(const std::string& method, const std::string& path);
+void cleanup_request_temp_file(HttpRequest* request);
+void close_response_stream(ApiResponse* response);
 CommandResult run_command_with_stdin(const std::string& command, const std::string& input, int timeout_ms);
 void update_config_from_json(cJSON* root, aiden::AgentToml* config);
+bool atomic_write_file(const std::string& path, const std::string& content, mode_t mode, std::string* error);
+std::string cjson_to_string(cJSON* json);
+ApiResponse make_json_error(int status_code, const std::string& message);
+ApiResponse make_json_ok(cJSON* root);
+bool parse_stt_test_audio_request(cJSON* root,
+                                  std::string* socket_path,
+                                  aiden::AudioFormat* format,
+                                  std::string* error);
+bool parse_stt_test_values_request(cJSON* root, cJSON** stt_values, std::string* error);
+void discard_stt_test_recording(const STTTestRecordingState& state);
+bool finish_stt_test_recording(const STTTestRecordingState& state,
+                               std::vector<uint8_t>* pcm,
+                               std::string* error);
+std::string base64_encode_bytes(const uint8_t* data, size_t len);
+std::vector<uint8_t> wrap_pcm_in_wav(const std::vector<uint8_t>& pcm,
+                                     const aiden::AudioFormat& format);
+AgentRuntimeStatus query_agent_status();
+ApiResponse run_agent_stt_config_test(const Options& options,
+                                      cJSON* stt_values,
+                                      const std::string& audio_base64);
+bool parse_http_base_url(const std::string& base_url,
+                         AgentHttpTarget* target,
+                         std::string* error);
+std::string join_url_path(const std::string& base_path, const std::string& path);
+int connect_tcp_host(const std::string& host, int port, int timeout_ms, std::string* error);
+bool post_agent_http_json(const AgentHttpTarget& target,
+                          const std::string& path,
+                          const std::string& body,
+                          AgentHttpResponse* response);
+bool resolve_agent_http_target(const Options& options,
+                               AgentHttpTarget* target,
+                               std::string* error);
+ApiResponse proxy_agent_stt_test_request(const Options& options,
+                                         const std::string& agent_path,
+                                         const std::string& body);
+ApiResponse handle_stt_test_start(const Options& options, const std::string& body);
+ApiResponse handle_stt_test_stop(const Options& options, const std::string& body);
 
 // ValidationOutcome distinguishes "the user submitted something invalid" (the
 // CLI ran and rejected it -> 400) from "we could not run validation at all"
@@ -218,6 +292,15 @@ enum ReadStatus {
     READ_STATUS_ERROR,
     READ_STATUS_TIMEOUT,
     READ_STATUS_LIMIT_EXCEEDED,
+};
+
+ReadStatus read_to_eof(int fd, std::string* out, size_t max_size);
+
+enum LlmLogOpenStatus {
+    LLM_LOG_OPEN_OK,
+    LLM_LOG_OPEN_INVALID_NAME,
+    LLM_LOG_OPEN_NOT_FOUND,
+    LLM_LOG_OPEN_ERROR,
 };
 
 void on_signal(int) {
@@ -512,6 +595,7 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"stt", "api_key", CONFIG_FIELD_STRING},
         {"stt", "model", CONFIG_FIELD_STRING},
         {"stt", "base_url", CONFIG_FIELD_STRING},
+        {"stt", "app_id", CONFIG_FIELD_STRING},
         {"stt", "secret_id", CONFIG_FIELD_STRING},
         {"stt", "secret_key", CONFIG_FIELD_STRING},
         {"stt", "region", CONFIG_FIELD_STRING},
@@ -577,7 +661,6 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"agent", "voice_progress_speech_enabled", CONFIG_FIELD_BOOL},
         {"agent", "voice_max_response_tokens", CONFIG_FIELD_NUMBER},
         {"agent", "max_iterations", CONFIG_FIELD_NUMBER},
-        {"agent", "force_simple_loop", CONFIG_FIELD_BOOL},
         {"agent", "screenshot_keep_n", CONFIG_FIELD_NUMBER},
         {"agent", "screenshot_prune_interval", CONFIG_FIELD_NUMBER},
         {"agent", "screen_stable_timeout_ms", CONFIG_FIELD_NUMBER},
@@ -1100,6 +1183,32 @@ ReadStatus read_exact(int fd, std::string* out, size_t length) {
     return READ_STATUS_OK;
 }
 
+ReadStatus read_exact_to_fd(int in_fd, int out_fd, size_t length) {
+    char buf[16 * 1024];
+    size_t remaining = length;
+    while (remaining > 0) {
+        size_t chunk = remaining < sizeof(buf) ? remaining : sizeof(buf);
+        ssize_t n = read(in_fd, buf, chunk);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            if (is_socket_timeout(errno)) {
+                return READ_STATUS_TIMEOUT;
+            }
+            return READ_STATUS_ERROR;
+        }
+        if (n == 0) {
+            return READ_STATUS_EOF;
+        }
+        if (!write_all(out_fd, buf, static_cast<size_t>(n))) {
+            return READ_STATUS_ERROR;
+        }
+        remaining -= static_cast<size_t>(n);
+    }
+    return READ_STATUS_OK;
+}
+
 void set_request_error(HttpRequest* request,
                        int status_code,
                        const char* status_text,
@@ -1110,6 +1219,30 @@ void set_request_error(HttpRequest* request,
     request->error_status_code = status_code;
     request->error_status_text = status_text ? status_text : "Bad Request";
     request->error_body = body ? body : "invalid request";
+}
+
+bool is_llm_log_import_request(const std::string& method, const std::string& path) {
+    static const std::string prefix = "/api/llm-logs/import/";
+    return method == "POST" && path.compare(0, prefix.size(), prefix) == 0;
+}
+
+void cleanup_request_temp_file(HttpRequest* request) {
+    if (!request || request->body_file_path.empty()) {
+        return;
+    }
+    if (unlink(request->body_file_path.c_str()) != 0 && errno != ENOENT) {
+        // Best-effort cleanup only.
+    }
+    request->body_file_path.clear();
+}
+
+void close_response_stream(ApiResponse* response) {
+    if (!response || response->body_fd < 0) {
+        return;
+    }
+    close(response->body_fd);
+    response->body_fd = -1;
+    response->body_fd_size = 0;
 }
 
 bool parse_size(const std::string& text, size_t* value) {
@@ -1144,7 +1277,7 @@ bool set_socket_recv_timeout(int fd, int timeout_seconds) {
     return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == 0;
 }
 
-HttpRequest parse_request(int client_fd) {
+HttpRequest parse_request(int client_fd, const Options& options) {
     HttpRequest req;
     std::string headers;
     ReadStatus header_status = read_until(client_fd, "\r\n\r\n", kMaxHttpHeaderSize, &headers);
@@ -1191,39 +1324,93 @@ HttpRequest parse_request(int client_fd) {
     }
 
     if (content_length > 0) {
-        if (content_length > kMaxHttpBodySize) {
-            set_request_error(&req, 413, "Payload Too Large", "request body too large");
-            return req;
-        }
+        req.body_size = content_length;
+        if (is_llm_log_import_request(req.method, req.path)) {
+            int temp_fd = -1;
+            std::string temp_path;
+            std::string temp_error;
+            if (!create_temp_file_in_dir(llm_log_dir(options), "llm-log-upload-", 0644, &temp_fd, &temp_path, &temp_error)) {
+                set_request_error(&req, 500, "Internal Server Error",
+                                  temp_error.empty() ? "failed to prepare import body file" : temp_error.c_str());
+                return req;
+            }
+            req.body_file_path = temp_path;
 
-        ReadStatus body_status = read_exact(client_fd, &req.body, content_length);
-        if (body_status == READ_STATUS_TIMEOUT) {
-            set_request_error(&req, 408, "Request Timeout", "request body read timed out");
-            return req;
-        }
-        if (body_status != READ_STATUS_OK) {
-            set_request_error(&req, 400, "Bad Request", "truncated request body");
-            return req;
+            ReadStatus body_status = read_exact_to_fd(client_fd, temp_fd, content_length);
+            if (body_status == READ_STATUS_OK && fsync(temp_fd) != 0) {
+                body_status = READ_STATUS_ERROR;
+            }
+            if (close(temp_fd) != 0 && body_status == READ_STATUS_OK) {
+                body_status = READ_STATUS_ERROR;
+            }
+
+            if (body_status == READ_STATUS_TIMEOUT) {
+                cleanup_request_temp_file(&req);
+                set_request_error(&req, 408, "Request Timeout", "request body read timed out");
+                return req;
+            }
+            if (body_status != READ_STATUS_OK) {
+                cleanup_request_temp_file(&req);
+                set_request_error(&req, 400, "Bad Request", "truncated request body");
+                return req;
+            }
+        } else {
+            if (content_length > kMaxHttpBodySize) {
+                set_request_error(&req, 413, "Payload Too Large", "request body too large");
+                return req;
+            }
+
+            ReadStatus body_status = read_exact(client_fd, &req.body, content_length);
+            if (body_status == READ_STATUS_TIMEOUT) {
+                set_request_error(&req, 408, "Request Timeout", "request body read timed out");
+                return req;
+            }
+            if (body_status != READ_STATUS_OK) {
+                set_request_error(&req, 400, "Bad Request", "truncated request body");
+                return req;
+            }
         }
     }
 
     return req;
 }
 
-void send_response(int client_fd,
-                   int status_code,
-                   const std::string& status_text,
-                   const std::string& content_type,
-                   const std::string& body) {
+void send_response(int client_fd, const ApiResponse& response) {
     std::ostringstream header;
-    header << "HTTP/1.1 " << status_code << " " << status_text << "\r\n";
-    header << "Content-Type: " << content_type << "\r\n";
-    header << "Content-Length: " << body.size() << "\r\n";
+    header << "HTTP/1.1 " << response.status_code << " " << response.status_text << "\r\n";
+    header << "Content-Type: " << response.content_type << "\r\n";
+    if (response.body_fd >= 0) {
+        header << "Content-Length: " << response.body_fd_size << "\r\n";
+    } else {
+        header << "Content-Length: " << response.body.size() << "\r\n";
+    }
     header << "Connection: close\r\n\r\n";
 
     std::string header_text = header.str();
     write_all(client_fd, header_text.data(), header_text.size());
-    write_all(client_fd, body.data(), body.size());
+    if (response.body_fd >= 0) {
+        if (lseek(response.body_fd, 0, SEEK_SET) == static_cast<off_t>(-1)) {
+            return;
+        }
+        char buf[16 * 1024];
+        while (true) {
+            ssize_t n = read(response.body_fd, buf, sizeof(buf));
+            if (n < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                return;
+            }
+            if (n == 0) {
+                break;
+            }
+            if (!write_all(client_fd, buf, static_cast<size_t>(n))) {
+                return;
+            }
+        }
+        return;
+    }
+    write_all(client_fd, response.body.data(), response.body.size());
 }
 
 bool validate_agent_config_json(cJSON* root, std::string* error = NULL) {
@@ -1384,6 +1571,661 @@ bool json_secret_present(cJSON* obj, const char* key) {
     return json_bool_value(obj, has_key.c_str());
 }
 
+bool parse_stt_test_audio_request(cJSON* root,
+                                  std::string* socket_path,
+                                  aiden::AudioFormat* format,
+                                  std::string* error) {
+    if (socket_path) {
+        socket_path->clear();
+    }
+    if (format) {
+        *format = aiden::AudioFormat();
+    }
+
+    cJSON* audio_values = root ? cJSON_GetObjectItem(root, "audio_values") : NULL;
+    if (!json_is_object(audio_values)) {
+        if (error) *error = "missing 'audio_values' object";
+        return false;
+    }
+
+    cJSON* socket_item = cJSON_GetObjectItem(audio_values, "socket");
+    cJSON* sample_rate_item = cJSON_GetObjectItem(audio_values, "sample_rate");
+    cJSON* channels_item = cJSON_GetObjectItem(audio_values, "channels");
+    cJSON* bit_width_item = cJSON_GetObjectItem(audio_values, "bit_width");
+
+    const std::string socket = json_is_string(socket_item) ? trim_copy(socket_item->valuestring) : "";
+    if (socket.empty()) {
+        if (error) *error = "audio.socket is required";
+        return false;
+    }
+    if (!json_is_number(sample_rate_item) || sample_rate_item->valueint <= 0) {
+        if (error) *error = "audio.sample_rate must be > 0";
+        return false;
+    }
+    if (!json_is_number(channels_item) || channels_item->valueint != 1) {
+        if (error) *error = "audio.channels must be 1 for STT test";
+        return false;
+    }
+    if (!json_is_number(bit_width_item) || bit_width_item->valueint != 16) {
+        if (error) *error = "audio.bit_width must be 16 for STT test";
+        return false;
+    }
+
+    if (socket_path) {
+        *socket_path = socket;
+    }
+    if (format) {
+        format->sample_rate = static_cast<uint32_t>(sample_rate_item->valueint);
+        format->channels = static_cast<uint32_t>(channels_item->valueint);
+        format->bit_width = static_cast<uint32_t>(bit_width_item->valueint);
+    }
+    if (error) {
+        error->clear();
+    }
+    return true;
+}
+
+bool parse_stt_test_values_request(cJSON* root, cJSON** stt_values, std::string* error) {
+    if (stt_values) {
+        *stt_values = NULL;
+    }
+    cJSON* values = root ? cJSON_GetObjectItem(root, "stt_values") : NULL;
+    if (!json_is_object(values)) {
+        if (error) *error = "missing 'stt_values' object";
+        return false;
+    }
+    if (stt_values) {
+        *stt_values = values;
+    }
+    if (error) {
+        error->clear();
+    }
+    return true;
+}
+
+void discard_stt_test_recording(const STTTestRecordingState& state) {
+    if (!state.active || state.socket_path.empty() || state.session_id == 0) {
+        return;
+    }
+    aiden::AudioServiceClient client(state.socket_path.c_str());
+    (void)client.stop_recording(state.session_id);
+}
+
+bool finish_stt_test_recording(const STTTestRecordingState& state,
+                               std::vector<uint8_t>* pcm,
+                               std::string* error) {
+    if (pcm) {
+        pcm->clear();
+    }
+    if (!state.active || state.socket_path.empty() || state.session_id == 0) {
+        if (error) *error = "STT test recording is not active";
+        return false;
+    }
+
+    aiden::AudioServiceClient client(state.socket_path.c_str());
+    aiden::AidenServiceStatus stop_status = client.stop_recording(state.session_id);
+    if (stop_status != aiden::AidenServiceStatus::OK) {
+        if (error) {
+            *error = std::string("stop device audio recording: ") +
+                     aiden::service_status_to_string(stop_status);
+        }
+        return false;
+    }
+
+    while (true) {
+        aiden::AudioChunkResult chunk;
+        aiden::AidenServiceStatus read_status = client.read_record_chunk(state.session_id, 1000, &chunk);
+        if (read_status == aiden::AidenServiceStatus::OK) {
+            if (pcm && !chunk.pcm.empty()) {
+                pcm->insert(pcm->end(), chunk.pcm.begin(), chunk.pcm.end());
+            }
+            if (chunk.end_of_stream) {
+                if (error) {
+                    error->clear();
+                }
+                return true;
+            }
+            continue;
+        }
+        if (read_status == aiden::AidenServiceStatus::SESSION_NOT_FOUND) {
+            if (error) {
+                error->clear();
+            }
+            return true;
+        }
+        if (error) {
+            *error = std::string("read recorded audio: ") +
+                     aiden::service_status_to_string(read_status);
+        }
+        return false;
+    }
+}
+
+std::string base64_encode_bytes(const uint8_t* data, size_t len) {
+    static const char table[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    if (!data || len == 0) {
+        return "";
+    }
+
+    std::string out;
+    out.reserve(((len + 2) / 3) * 4);
+    for (size_t i = 0; i < len; i += 3) {
+        const uint32_t b0 = data[i];
+        const uint32_t b1 = (i + 1 < len) ? data[i + 1] : 0;
+        const uint32_t b2 = (i + 2 < len) ? data[i + 2] : 0;
+        const uint32_t triple = (b0 << 16) | (b1 << 8) | b2;
+
+        out.push_back(table[(triple >> 18) & 0x3f]);
+        out.push_back(table[(triple >> 12) & 0x3f]);
+        out.push_back(i + 1 < len ? table[(triple >> 6) & 0x3f] : '=');
+        out.push_back(i + 2 < len ? table[triple & 0x3f] : '=');
+    }
+    return out;
+}
+
+void append_le16(std::vector<uint8_t>* out, uint16_t value) {
+    if (!out) {
+        return;
+    }
+    out->push_back(static_cast<uint8_t>(value & 0xff));
+    out->push_back(static_cast<uint8_t>((value >> 8) & 0xff));
+}
+
+void append_le32(std::vector<uint8_t>* out, uint32_t value) {
+    if (!out) {
+        return;
+    }
+    out->push_back(static_cast<uint8_t>(value & 0xff));
+    out->push_back(static_cast<uint8_t>((value >> 8) & 0xff));
+    out->push_back(static_cast<uint8_t>((value >> 16) & 0xff));
+    out->push_back(static_cast<uint8_t>((value >> 24) & 0xff));
+}
+
+std::vector<uint8_t> wrap_pcm_in_wav(const std::vector<uint8_t>& pcm,
+                                     const aiden::AudioFormat& format) {
+    std::vector<uint8_t> wav;
+    const uint16_t channels = static_cast<uint16_t>(format.channels);
+    const uint16_t bit_width = static_cast<uint16_t>(format.bit_width);
+    const uint32_t sample_rate = format.sample_rate;
+    const uint16_t block_align = static_cast<uint16_t>(channels * (bit_width / 8));
+    const uint32_t byte_rate = sample_rate * block_align;
+    const uint32_t data_size = static_cast<uint32_t>(pcm.size());
+
+    wav.reserve(44 + pcm.size());
+    wav.insert(wav.end(), {'R', 'I', 'F', 'F'});
+    append_le32(&wav, 36 + data_size);
+    wav.insert(wav.end(), {'W', 'A', 'V', 'E'});
+    wav.insert(wav.end(), {'f', 'm', 't', ' '});
+    append_le32(&wav, 16);
+    append_le16(&wav, 1);
+    append_le16(&wav, channels);
+    append_le32(&wav, sample_rate);
+    append_le32(&wav, byte_rate);
+    append_le16(&wav, block_align);
+    append_le16(&wav, bit_width);
+    wav.insert(wav.end(), {'d', 'a', 't', 'a'});
+    append_le32(&wav, data_size);
+    wav.insert(wav.end(), pcm.begin(), pcm.end());
+    return wav;
+}
+
+ApiResponse run_agent_stt_config_test(const Options& options,
+                                      cJSON* stt_values,
+                                      const std::string& audio_base64) {
+    cJSON* req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "section", "stt");
+    cJSON_AddItemToObject(req, "values", cJSON_Duplicate(stt_values, 1));
+    cJSON_AddStringToObject(req, "audio_base64", audio_base64.c_str());
+    std::string req_body = cjson_to_string(req);
+    cJSON_Delete(req);
+
+    std::string cmd = shell_quote(agent_bin_path()) +
+                      " config-test --format=json --stdin --section=stt --config=" +
+                      shell_quote(options.agent_config_path) + " 2>&1";
+    CommandResult cr = run_command_with_stdin(cmd, req_body, 60000);
+    if (cr.timed_out) {
+        return make_json_error(503, "agent config-test timed out");
+    }
+
+    cJSON* root = cJSON_Parse(cr.output.c_str());
+    if (!json_is_object(root)) {
+        if (root) {
+            cJSON_Delete(root);
+        }
+        std::string detail = trim_trailing_newlines(cr.output);
+        if (detail.empty()) {
+            detail = "agent config-test returned an unexpected response";
+        } else if (detail.size() > 400) {
+            detail = detail.substr(0, 400) + "...";
+        }
+        return make_json_error(503, detail);
+    }
+    return make_json_ok(root);
+}
+
+bool parse_http_base_url(const std::string& base_url,
+                         AgentHttpTarget* target,
+                         std::string* error) {
+    if (target) {
+        *target = AgentHttpTarget();
+    }
+    std::string trimmed = trim_copy(base_url);
+    if (trimmed.empty()) {
+        if (error) *error = "empty agent HTTP base URL";
+        return false;
+    }
+    if (!starts_with(trimmed, "http://")) {
+        if (error) *error = "agent HTTP base URL must start with http://";
+        return false;
+    }
+
+    std::string rest = trimmed.substr(strlen("http://"));
+    size_t slash = rest.find('/');
+    std::string host_port = slash == std::string::npos ? rest : rest.substr(0, slash);
+    std::string base_path = slash == std::string::npos ? "" : rest.substr(slash);
+    if (host_port.empty()) {
+        if (error) *error = "agent HTTP base URL is missing host";
+        return false;
+    }
+
+    std::string host = host_port;
+    int port = 80;
+    if (host_port[0] == '[') {
+        size_t end = host_port.find(']');
+        if (end == std::string::npos) {
+            if (error) *error = "agent HTTP base URL has invalid IPv6 host";
+            return false;
+        }
+        host = host_port.substr(1, end - 1);
+        if (end + 1 < host_port.size()) {
+            if (host_port[end + 1] != ':') {
+                if (error) *error = "agent HTTP base URL has invalid host:port";
+                return false;
+            }
+            if (!parse_decimal(host_port.substr(end + 2), 1, 65535, &port)) {
+                if (error) *error = "agent HTTP base URL has invalid port";
+                return false;
+            }
+        }
+    } else {
+        size_t colon = host_port.rfind(':');
+        if (colon != std::string::npos) {
+            host = host_port.substr(0, colon);
+            if (!parse_decimal(host_port.substr(colon + 1), 1, 65535, &port)) {
+                if (error) *error = "agent HTTP base URL has invalid port";
+                return false;
+            }
+        }
+    }
+
+    host = trim_copy(host);
+    if (host.empty()) {
+        if (error) *error = "agent HTTP base URL is missing host";
+        return false;
+    }
+
+    if (base_path == "/") {
+        base_path.clear();
+    }
+    if (!base_path.empty() && base_path[0] != '/') {
+        base_path.insert(base_path.begin(), '/');
+    }
+
+    if (target) {
+        target->host = host;
+        target->port = port;
+        target->base_path = base_path;
+    }
+    if (error) {
+        error->clear();
+    }
+    return true;
+}
+
+std::string join_url_path(const std::string& base_path, const std::string& path) {
+    if (base_path.empty()) {
+        return path.empty() ? "/" : path;
+    }
+    if (path.empty() || path == "/") {
+        return base_path;
+    }
+    if (base_path[base_path.size() - 1] == '/' && path[0] == '/') {
+        return base_path + path.substr(1);
+    }
+    if (base_path[base_path.size() - 1] != '/' && path[0] != '/') {
+        return base_path + "/" + path;
+    }
+    return base_path + path;
+}
+
+int connect_tcp_host(const std::string& host, int port, int timeout_ms, std::string* error) {
+    if (error) {
+        error->clear();
+    }
+
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+
+    char port_text[16];
+    snprintf(port_text, sizeof(port_text), "%d", port);
+
+    struct addrinfo* results = NULL;
+    int gai = getaddrinfo(host.c_str(), port_text, &hints, &results);
+    if (gai != 0) {
+        if (error) {
+            *error = std::string("resolve agent host: ") + gai_strerror(gai);
+        }
+        return -1;
+    }
+
+    int fd = -1;
+    std::string last_error = "connect failed";
+    for (struct addrinfo* ai = results; ai != NULL; ai = ai->ai_next) {
+        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd < 0) {
+            last_error = std::string("socket failed: ") + strerror(errno);
+            continue;
+        }
+
+        int flags = fcntl(fd, F_GETFL, 0);
+        if (flags >= 0) {
+            (void)fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+        }
+
+        int rc = connect(fd, ai->ai_addr, ai->ai_addrlen);
+        if (rc == 0) {
+            if (flags >= 0) {
+                (void)fcntl(fd, F_SETFL, flags);
+            }
+            break;
+        }
+        if (errno != EINPROGRESS) {
+            last_error = strerror(errno);
+            close(fd);
+            fd = -1;
+            continue;
+        }
+
+        fd_set write_fds;
+        FD_ZERO(&write_fds);
+        FD_SET(fd, &write_fds);
+        struct timeval timeout;
+        timeout.tv_sec = timeout_ms / 1000;
+        timeout.tv_usec = (timeout_ms % 1000) * 1000;
+        rc = select(fd + 1, NULL, &write_fds, NULL, &timeout);
+        if (rc > 0 && FD_ISSET(fd, &write_fds)) {
+            int socket_error = 0;
+            socklen_t socket_error_len = sizeof(socket_error);
+            if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &socket_error, &socket_error_len) == 0 &&
+                socket_error == 0) {
+                if (flags >= 0) {
+                    (void)fcntl(fd, F_SETFL, flags);
+                }
+                break;
+            }
+            last_error = strerror(socket_error == 0 ? errno : socket_error);
+        } else if (rc == 0) {
+            last_error = "connect timed out";
+        } else {
+            last_error = std::string("select failed: ") + strerror(errno);
+        }
+        close(fd);
+        fd = -1;
+    }
+
+    freeaddrinfo(results);
+
+    if (fd < 0 && error) {
+        *error = last_error;
+    }
+    return fd;
+}
+
+ReadStatus read_to_eof(int fd, std::string* out, size_t max_size) {
+    if (out) {
+        out->clear();
+    }
+
+    char buf[16 * 1024];
+    while (true) {
+        size_t remaining = out ? (max_size > out->size() ? max_size - out->size() : 0) : sizeof(buf);
+        size_t to_read = remaining < sizeof(buf) ? remaining : sizeof(buf);
+        if (to_read == 0) {
+            to_read = 1;
+        }
+
+        ssize_t n = read(fd, buf, to_read);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            if (is_socket_timeout(errno)) {
+                return READ_STATUS_TIMEOUT;
+            }
+            return READ_STATUS_ERROR;
+        }
+        if (n == 0) {
+            return READ_STATUS_OK;
+        }
+        if (out && out->size() + static_cast<size_t>(n) > max_size) {
+            return READ_STATUS_LIMIT_EXCEEDED;
+        }
+        if (out) {
+            out->append(buf, static_cast<size_t>(n));
+        }
+    }
+}
+
+bool post_agent_http_json(const AgentHttpTarget& target,
+                          const std::string& path,
+                          const std::string& body,
+                          AgentHttpResponse* response) {
+    if (response) {
+        *response = AgentHttpResponse();
+    }
+
+    std::string connect_error;
+    int fd = connect_tcp_host(target.host, target.port, 2000, &connect_error);
+    if (fd < 0) {
+        if (response) {
+            response->error = connect_error.empty() ? "connect failed" : connect_error;
+        }
+        return false;
+    }
+
+    if (!set_socket_recv_timeout(fd, kClientReadTimeoutSeconds)) {
+        if (response) {
+            response->error = std::string("set socket timeout failed: ") + strerror(errno);
+        }
+        close(fd);
+        return false;
+    }
+
+    std::string request_path = join_url_path(target.base_path, path);
+    if (request_path.empty()) {
+        request_path = "/";
+    }
+
+    std::ostringstream request;
+    request << "POST " << request_path << " HTTP/1.1\r\n";
+    request << "Host: " << target.host << ":" << target.port << "\r\n";
+    request << "Content-Type: application/json\r\n";
+    request << "Content-Length: " << body.size() << "\r\n";
+    request << "Connection: close\r\n\r\n";
+    request << body;
+    std::string request_text = request.str();
+    if (!write_all(fd, request_text.data(), request_text.size())) {
+        if (response) {
+            response->error = std::string("write request failed: ") + strerror(errno);
+        }
+        close(fd);
+        return false;
+    }
+
+    std::string headers;
+    ReadStatus header_status = read_until(fd, "\r\n\r\n", kMaxHttpHeaderSize, &headers);
+    if (header_status != READ_STATUS_OK) {
+        if (response) {
+            response->error = header_status == READ_STATUS_TIMEOUT
+                ? "agent HTTP response timed out"
+                : "invalid agent HTTP response";
+        }
+        close(fd);
+        return false;
+    }
+
+    std::istringstream header_stream(headers);
+    std::string line;
+    if (!std::getline(header_stream, line)) {
+        if (response) {
+            response->error = "agent HTTP response missing status line";
+        }
+        close(fd);
+        return false;
+    }
+    line = trim_copy(line);
+    std::istringstream status_stream(line);
+    std::string http_version;
+    int status_code = 0;
+    status_stream >> http_version >> status_code;
+    std::string status_text;
+    std::getline(status_stream, status_text);
+    status_text = trim_copy(status_text);
+    if (status_code <= 0) {
+        if (response) {
+            response->error = "agent HTTP response has invalid status code";
+        }
+        close(fd);
+        return false;
+    }
+
+    size_t content_length = 0;
+    bool has_content_length = false;
+    std::string content_type = "application/json; charset=utf-8";
+    while (std::getline(header_stream, line)) {
+        line = trim_copy(line);
+        if (line.empty()) {
+            continue;
+        }
+        std::string lower = lowercase_copy(line);
+        if (starts_with(lower, "content-length:")) {
+            if (!parse_size(trim_copy(line.substr(strlen("Content-Length:"))), &content_length)) {
+                if (response) {
+                    response->error = "agent HTTP response has invalid Content-Length";
+                }
+                close(fd);
+                return false;
+            }
+            has_content_length = true;
+        } else if (starts_with(lower, "content-type:")) {
+            content_type = trim_copy(line.substr(strlen("Content-Type:")));
+        }
+    }
+
+    std::string response_body;
+    if (has_content_length) {
+        if (content_length > kMaxHttpBodySize) {
+            if (response) {
+                response->error = "agent HTTP response body too large";
+            }
+            close(fd);
+            return false;
+        }
+        ReadStatus body_status = read_exact(fd, &response_body, content_length);
+        if (body_status != READ_STATUS_OK) {
+            if (response) {
+                response->error = body_status == READ_STATUS_TIMEOUT
+                    ? "agent HTTP response body timed out"
+                    : "truncated agent HTTP response body";
+            }
+            close(fd);
+            return false;
+        }
+    } else {
+        ReadStatus body_status = read_to_eof(fd, &response_body, kMaxHttpBodySize);
+        if (body_status != READ_STATUS_OK) {
+            if (response) {
+                response->error = body_status == READ_STATUS_TIMEOUT
+                    ? "agent HTTP response body timed out"
+                    : "agent HTTP response body too large";
+            }
+            close(fd);
+            return false;
+        }
+    }
+
+    close(fd);
+
+    if (response) {
+        response->status_code = status_code;
+        response->status_text = status_text.empty() ? "OK" : status_text;
+        response->content_type = content_type.empty() ? "application/json; charset=utf-8" : content_type;
+        response->body = response_body;
+        response->error.clear();
+    }
+    return true;
+}
+
+bool resolve_agent_http_target(const Options& options,
+                               AgentHttpTarget* target,
+                               std::string* error) {
+    if (target) {
+        *target = AgentHttpTarget();
+    }
+
+    const char* override_url = std::getenv("AIDEN_AGENT_HTTP_BASE_URL");
+    if (override_url && override_url[0] != '\0') {
+        return parse_http_base_url(override_url, target, error);
+    }
+
+    AgentRuntimeStatus status = query_agent_status();
+    if (target) {
+        target->host = trim_copy(status.port_host).empty() ? kAgentPortHost : status.port_host;
+        target->port = status.port > 0 ? status.port : kDefaultAgentPort;
+        target->base_path.clear();
+    }
+    if (error) {
+        error->clear();
+    }
+    (void)options;
+    return true;
+}
+
+ApiResponse proxy_agent_stt_test_request(const Options& options,
+                                         const std::string& agent_path,
+                                         const std::string& body) {
+    AgentHttpTarget target;
+    std::string target_error;
+    if (!resolve_agent_http_target(options, &target, &target_error)) {
+        return make_json_error(503, target_error.empty() ? "resolve agent HTTP target failed" : target_error);
+    }
+
+    AgentHttpResponse upstream;
+    if (!post_agent_http_json(target, agent_path, body, &upstream)) {
+        return make_json_error(503, upstream.error.empty() ? "agent HTTP request failed" : upstream.error);
+    }
+
+    ApiResponse response;
+    response.status_code = upstream.status_code > 0 ? upstream.status_code : 200;
+    response.status_text = upstream.status_text.empty() ? "OK" : upstream.status_text;
+    response.content_type = upstream.content_type.empty()
+        ? "application/json; charset=utf-8"
+        : upstream.content_type;
+    response.body = upstream.body;
+    return response;
+}
+
+ApiResponse handle_stt_test_start(const Options& options, const std::string& body) {
+    return proxy_agent_stt_test_request(options, "/api/config-test/stt/start", body);
+}
+
+ApiResponse handle_stt_test_stop(const Options& options, const std::string& body) {
+    return proxy_agent_stt_test_request(options, "/api/config-test/stt/stop", body);
+}
+
 void load_current_wifi_config(const Options& options,
                               aiden::WifiNetworkConfig* config,
                               std::string* load_error) {
@@ -1439,6 +2281,7 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddStringToObject(stt, "api_key", config.stt.api_key.c_str());
     cJSON_AddStringToObject(stt, "model", config.stt.model.c_str());
     cJSON_AddStringToObject(stt, "base_url", config.stt.base_url.c_str());
+    cJSON_AddStringToObject(stt, "app_id", config.stt.app_id.c_str());
     cJSON_AddStringToObject(stt, "secret_id", config.stt.secret_id.c_str());
     cJSON_AddStringToObject(stt, "secret_key", config.stt.secret_key.c_str());
     cJSON_AddStringToObject(stt, "region", config.stt.region.c_str());
@@ -1530,7 +2373,6 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddBoolToObject(agent, "voice_progress_speech_enabled", config.voice_progress_speech_enabled ? 1 : 0);
     cJSON_AddNumberToObject(agent, "voice_max_response_tokens", config.voice_max_response_tokens);
     cJSON_AddNumberToObject(agent, "max_iterations", config.max_iterations);
-    cJSON_AddBoolToObject(agent, "force_simple_loop", config.force_simple_loop ? 1 : 0);
     cJSON_AddNumberToObject(agent, "screenshot_keep_n", config.screenshot_keep_n);
     cJSON_AddNumberToObject(agent, "screenshot_prune_interval", config.screenshot_prune_interval);
     cJSON_AddNumberToObject(agent, "screen_stable_timeout_ms", config.screen_stable_timeout_ms);
@@ -1585,6 +2427,7 @@ ApiResponse make_json_error(int status_code, const std::string& message) {
     response.status_code = status_code;
     switch (status_code) {
         case 400: response.status_text = "Bad Request"; break;
+        case 413: response.status_text = "Payload Too Large"; break;
         case 404: response.status_text = "Not Found"; break;
         case 503: response.status_text = "Service Unavailable"; break;
         default:  response.status_text = "Internal Server Error"; break;
@@ -1710,6 +2553,7 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_str(&config->stt.api_key, stt, "api_key");
         set_json_str(&config->stt.model, stt, "model");
         set_json_str(&config->stt.base_url, stt, "base_url");
+        set_json_str(&config->stt.app_id, stt, "app_id");
         set_json_str(&config->stt.secret_id, stt, "secret_id");
         set_json_str(&config->stt.secret_key, stt, "secret_key");
         set_json_str(&config->stt.region, stt, "region");
@@ -1825,7 +2669,6 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_bool(&config->voice_progress_speech_enabled, agent, "voice_progress_speech_enabled");
         set_json_int(&config->voice_max_response_tokens, agent, "voice_max_response_tokens");
         set_json_int(&config->max_iterations, agent, "max_iterations");
-        set_json_bool(&config->force_simple_loop, agent, "force_simple_loop");
         set_json_int(&config->screenshot_keep_n, agent, "screenshot_keep_n");
         set_json_int(&config->screenshot_prune_interval, agent, "screenshot_prune_interval");
         set_json_int(&config->screen_stable_timeout_ms, agent, "screen_stable_timeout_ms");
@@ -2499,6 +3342,59 @@ bool prepare_ota_update_log_file(const std::string& path, std::string* error) {
     if (close(fd) != 0) {
         if (error) *error = "close " + path + ": " + strerror(errno);
         return false;
+    }
+    return true;
+}
+
+bool create_temp_file_in_dir(const std::string& dir,
+                             const std::string& prefix,
+                             mode_t mode,
+                             int* fd,
+                             std::string* path,
+                             std::string* error) {
+    if (fd) {
+        *fd = -1;
+    }
+    if (path) {
+        path->clear();
+    }
+    if (!mkdir_p(dir, error)) {
+        return false;
+    }
+
+    std::string tmpl = dir;
+    if (tmpl.empty() || tmpl[tmpl.size() - 1] != '/') {
+        tmpl += "/";
+    }
+    tmpl += ".";
+    tmpl += prefix.empty() ? "tmp-" : prefix;
+    tmpl += "XXXXXX";
+
+    std::vector<char> buf(tmpl.begin(), tmpl.end());
+    buf.push_back('\0');
+    int tmp_fd = mkstemp(buf.data());
+    if (tmp_fd < 0) {
+        if (error) *error = "mkstemp " + tmpl + ": " + strerror(errno);
+        return false;
+    }
+    std::string cloexec_error;
+    if (!set_fd_cloexec(tmp_fd, &cloexec_error)) {
+        if (error) *error = cloexec_error;
+        close(tmp_fd);
+        unlink(buf.data());
+        return false;
+    }
+    if (fchmod(tmp_fd, mode) != 0) {
+        if (error) *error = "chmod " + std::string(buf.data()) + ": " + strerror(errno);
+        close(tmp_fd);
+        unlink(buf.data());
+        return false;
+    }
+    if (fd) {
+        *fd = tmp_fd;
+    }
+    if (path) {
+        *path = buf.data();
     }
     return true;
 }
@@ -3296,9 +4192,13 @@ std::string llm_log_dir(const Options& options) {
     return base + "/log";
 }
 
+std::string llm_log_path(const Options& options, const std::string& name) {
+    return llm_log_dir(options) + "/" + name;
+}
+
 // is_llm_log_name reports whether name is a plain llm-http-*.log filename with
 // no path separators. Used both to filter directory listings and to validate
-// the filename segment of /api/llm-logs/file/<name>.
+// the filename segment of the import/export endpoints.
 bool is_llm_log_name(const std::string& name) {
     if (name.find('/') != std::string::npos || name.find('\\') != std::string::npos) {
         return false;
@@ -3326,6 +4226,61 @@ bool is_llm_log_name(const std::string& name) {
         return false;
     }
     return true;
+}
+
+int open_llm_log_file(const Options& options,
+                      const std::string& name,
+                      struct stat* st,
+                      LlmLogOpenStatus* status,
+                      std::string* error) {
+    if (st) {
+        memset(st, 0, sizeof(*st));
+    }
+    if (status) {
+        *status = LLM_LOG_OPEN_ERROR;
+    }
+    if (!is_llm_log_name(name)) {
+        if (status) *status = LLM_LOG_OPEN_INVALID_NAME;
+        if (error) *error = "invalid log file name";
+        return -1;
+    }
+    const std::string full = llm_log_path(options, name);
+    int fd = open(full.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) {
+        const int open_errno = errno;
+        if (open_errno == ENOENT || open_errno == ENOTDIR || open_errno == ELOOP) {
+            if (status) *status = LLM_LOG_OPEN_NOT_FOUND;
+            if (error) *error = "log file not found";
+        } else {
+            if (status) *status = LLM_LOG_OPEN_ERROR;
+            if (error) *error = std::string("failed to open log file: ") + strerror(open_errno);
+        }
+        return -1;
+    }
+    struct stat info;
+    if (fstat(fd, &info) != 0) {
+        const int stat_errno = errno;
+        close(fd);
+        if (status) *status = LLM_LOG_OPEN_ERROR;
+        if (error) *error = std::string("failed to stat log file: ") + strerror(stat_errno);
+        return -1;
+    }
+    if (!S_ISREG(info.st_mode)) {
+        close(fd);
+        if (status) *status = LLM_LOG_OPEN_NOT_FOUND;
+        if (error) *error = "log file not found";
+        return -1;
+    }
+    if (st) {
+        *st = info;
+    }
+    if (status) {
+        *status = LLM_LOG_OPEN_OK;
+    }
+    if (error) {
+        error->clear();
+    }
+    return fd;
 }
 
 ApiResponse handle_get_llm_logs(const Options& options) {
@@ -3370,49 +4325,59 @@ ApiResponse handle_get_llm_logs(const Options& options) {
     return make_json_ok(root);
 }
 
-ApiResponse handle_get_llm_log_file(const Options& options, const std::string& name) {
+ApiResponse handle_export_llm_log_file(const Options& options, const std::string& name) {
+    struct stat st;
+    LlmLogOpenStatus open_status = LLM_LOG_OPEN_ERROR;
+    std::string error;
+    int fd = open_llm_log_file(options, name, &st, &open_status, &error);
+    if (fd < 0) {
+        int status_code = 500;
+        switch (open_status) {
+            case LLM_LOG_OPEN_INVALID_NAME:
+                status_code = 400;
+                break;
+            case LLM_LOG_OPEN_NOT_FOUND:
+                status_code = 404;
+                break;
+            default:
+                status_code = 500;
+                break;
+        }
+        return make_json_error(status_code, error.empty() ? "failed to open log file" : error);
+    }
+    ApiResponse response;
+    response.content_type = "text/plain; charset=utf-8";
+    response.body.clear();
+    response.body_fd = fd;
+    response.body_fd_size = static_cast<unsigned long long>(st.st_size);
+    return response;
+}
+
+ApiResponse handle_import_llm_log_file(const Options& options, const std::string& name, const HttpRequest& request) {
     if (!is_llm_log_name(name)) {
         return make_json_error(400, "invalid log file name");
     }
-    const std::string full = llm_log_dir(options) + "/" + name;
-    // O_NOFOLLOW + fstat/S_ISREG: refuse to follow a symlink and confirm the
-    // opened descriptor is a regular file, closing the TOCTOU gap between the
-    // name check and the read so the viewer can never serve a file outside the
-    // log set via a symlink planted in the directory.
-    int fd = open(full.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-    if (fd < 0) {
-        return make_json_error(404, "log file not found");
-    }
-    struct stat st;
-    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
-        close(fd);
-        return make_json_error(404, "log file not found");
-    }
-    FILE* f = fdopen(fd, "rb");
-    if (!f) {
-        close(fd);
-        return make_json_error(404, "log file not found");
-    }
-    std::string contents;
-    char buf[8192];
-    size_t total = 0;
-    bool truncated = false;
-    while (size_t n = fread(buf, 1, sizeof(buf), f)) {
-        if (total + n > kLlmLogMaxReadSize) {
-            contents.append(buf, kLlmLogMaxReadSize - total);
-            truncated = true;
-            break;
+    const std::string path = llm_log_path(options, name);
+    std::string error;
+    if (!request.body_file_path.empty()) {
+        if (!mkdir_p(parent_dir(path), &error)) {
+            return make_json_error(500, error.empty() ? "failed to prepare log directory" : error);
         }
-        contents.append(buf, n);
-        total += n;
+        if (rename(request.body_file_path.c_str(), path.c_str()) != 0) {
+            return make_json_error(500, std::string("rename ") + request.body_file_path + " -> " + path + ": " + strerror(errno));
+        }
+        if (chmod(path.c_str(), 0644) != 0) {
+            return make_json_error(500, std::string("chmod ") + path + ": " + strerror(errno));
+        }
+    } else if (!atomic_write_file(path, request.body, 0644, &error)) {
+        return make_json_error(500, error.empty() ? "failed to import log file" : error);
     }
-    fclose(f);
 
     cJSON* root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "ok", 1);
     cJSON_AddStringToObject(root, "name", name.c_str());
-    cJSON_AddStringToObject(root, "content", contents.c_str());
-    cJSON_AddBoolToObject(root, "truncated", truncated ? 1 : 0);
+    cJSON_AddNumberToObject(root, "size_bytes", static_cast<double>(request.body_file_path.empty() ? request.body.size() : request.body_size));
+    cJSON_AddStringToObject(root, "message", "llm log imported");
     return make_json_ok(root);
 }
 
@@ -3837,12 +4802,16 @@ static bool is_tencent_asr_provider(const std::string& provider) {
     return provider == "tencent-asr" || provider == "tencent" || provider == "tencent_asr";
 }
 
-std::string provider_default_url(const std::string& provider) {
+std::string provider_default_url(const std::string& provider, const std::string& section = "") {
     if (provider == "openrouter") return "https://openrouter.ai/api/v1";
     if (provider == "openai" || provider == "openai-whisper") return "https://api.openai.com/v1";
     if (provider == "minimax") return "https://api.minimax.io";
     if (provider == "minimax-cn" || provider == "minimax-ws") return "https://api.minimaxi.com";
     if (is_tencent_asr_provider(provider)) return "https://asr.tencentcloudapi.com";
+    if (provider == "google-cloud") {
+        if (section == "tts") return "https://texttospeech.googleapis.com";
+        return "https://speech.googleapis.com";  // STT default
+    }
     return "";
 }
 
@@ -3927,7 +4896,7 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         cJSON* base_url_item = cJSON_GetObjectItem(values, "base_url");
         std::string provider = json_is_string(provider_item) ? trim_copy(provider_item->valuestring) : "";
         std::string base_url = json_is_string(base_url_item) ? trim_copy(base_url_item->valuestring) : "";
-        std::string url = base_url.empty() ? provider_default_url(provider) : base_url;
+        std::string url = base_url.empty() ? provider_default_url(provider, section) : base_url;
         const bool tencent_stt = section == "stt" && is_tencent_asr_provider(provider);
         if (tencent_stt && url.empty()) {
             url = "https://asr.tencentcloudapi.com";
@@ -3955,8 +4924,20 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         cJSON_AddItemToArray(results, r);
 
         if (tencent_stt) {
+            bool app_id_present = json_secret_present(values, "app_id");
             bool secret_id_present = json_secret_present(values, "secret_id");
             bool secret_key_present = json_secret_present(values, "secret_key");
+
+            cJSON* r_appid = cJSON_CreateObject();
+            cJSON_AddStringToObject(r_appid, "check", "streaming_app_id");
+            cJSON_AddBoolToObject(r_appid, "passed", 1);
+            cJSON_AddStringToObject(
+                r_appid,
+                "detail",
+                app_id_present
+                    ? "app_id is set; realtime upload is available"
+                    : "app_id is empty; recording will fall back to one-shot upload");
+            cJSON_AddItemToArray(results, r_appid);
 
             cJSON* r_sid = cJSON_CreateObject();
             cJSON_AddStringToObject(r_sid, "check", "secret_id_present");
@@ -4213,7 +5194,7 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
             const char* allowed[4];
         };
         Check enums[] = {
-            {"input_mode", {"text", "stt", "audio", NULL}},
+            {"input_mode", {"text", "stt", NULL}},
             {"trigger_mode", {"manual", "wakeup", NULL, NULL}},
         };
         for (size_t i = 0; i < sizeof(enums) / sizeof(enums[0]); ++i) {
@@ -4232,6 +5213,23 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
                 cJSON_AddBoolToObject(r, "passed", 0);
                 cJSON_AddStringToObject(r, "detail", "empty");
                 all_passed = false;
+            } else if (std::string(enums[i].key) == "input_mode" && lowercase_copy(val) == "audio") {
+                cJSON_AddBoolToObject(r, "passed", 0);
+                std::string msg = "invalid input_mode: " + val + " (audio mode has been removed; use stt instead)";
+                cJSON_AddStringToObject(r, "detail", msg.c_str());
+                all_passed = false;
+            } else if (ok && std::string(enums[i].key) == "trigger_mode" && val == "wakeup") {
+                cJSON* input_item = cJSON_GetObjectItem(values, "input_mode");
+                std::string input_mode = json_is_string(input_item) ? trim_copy(input_item->valuestring) : "";
+                if (input_mode == "stt") {
+                    cJSON_AddBoolToObject(r, "passed", 1);
+                    cJSON_AddStringToObject(r, "detail", val.c_str());
+                } else {
+                    cJSON_AddBoolToObject(r, "passed", 0);
+                    std::string msg = "wakeup requires input_mode stt, got '" + input_mode + "'";
+                    cJSON_AddStringToObject(r, "detail", msg.c_str());
+                    all_passed = false;
+                }
             } else if (ok) {
                 cJSON_AddBoolToObject(r, "passed", 1);
                 cJSON_AddStringToObject(r, "detail", val.c_str());
@@ -4514,10 +5512,18 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
     }
 
     {
-        const std::string file_prefix = "/api/llm-logs/file/";
-        if (request.method == "GET" && request.path.compare(0, file_prefix.size(), file_prefix) == 0) {
-            std::string name = url_decode(request.path.substr(file_prefix.size()));
-            return handle_get_llm_log_file(options, name);
+        const std::string export_prefix = "/api/llm-logs/export/";
+        if (request.method == "GET" && request.path.compare(0, export_prefix.size(), export_prefix) == 0) {
+            std::string name = url_decode(request.path.substr(export_prefix.size()));
+            return handle_export_llm_log_file(options, name);
+        }
+    }
+
+    {
+        const std::string import_prefix = "/api/llm-logs/import/";
+        if (request.method == "POST" && request.path.compare(0, import_prefix.size(), import_prefix) == 0) {
+            std::string name = url_decode(request.path.substr(import_prefix.size()));
+            return handle_import_llm_log_file(options, name, request);
         }
     }
 
@@ -4568,6 +5574,14 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
 
     if (request.method == "POST" && request.path == "/api/wifi/forget") {
         return handle_wifi_forget(options, request.body);
+    }
+
+    if (request.method == "POST" && request.path == "/api/config/test/stt/start") {
+        return handle_stt_test_start(options, request.body);
+    }
+
+    if (request.method == "POST" && request.path == "/api/config/test/stt/stop") {
+        return handle_stt_test_stop(options, request.body);
     }
 
     if (request.method == "POST" && request.path == "/api/config/test") {
@@ -4717,13 +5731,11 @@ int main(int argc, char** argv) {
             continue;
         }
 
-        HttpRequest request = parse_request(client_fd);
+        HttpRequest request = parse_request(client_fd, options);
         ApiResponse response = handle_request(options, request);
-        send_response(client_fd,
-                      response.status_code,
-                      response.status_text,
-                      response.content_type,
-                      response.body);
+        send_response(client_fd, response);
+        close_response_stream(&response);
+        cleanup_request_temp_file(&request);
         close(client_fd);
     }
 

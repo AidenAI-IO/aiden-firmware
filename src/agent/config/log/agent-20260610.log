@@ -1,5 +1,4 @@
 2026/06/10 18:35:27 [INFO] Agent runtime initialized with config from /Users/jacob/.prowl/repos/aiden-hardware-demo/feat/image_suites/src/agent/config
-2026/06/10 18:35:27 [INFO] app_mapping: using embedded defaults
 2026/06/10 18:35:27 [INFO] TTS enabled: provider=minimax-ws
 2026/06/10 18:35:27 [INFO] Starting HTTP server on 127.0.0.1:18080
 2026/06/10 18:37:52 [INFO] Shutting down HTTP server after signal terminated

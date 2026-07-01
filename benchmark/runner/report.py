@@ -65,14 +65,27 @@ def write_summary(path: Path, suite_name: str, manifest: dict[str, Any],
         f"    p95: {agg.get('tool_calls_p95')}",
         "",
     ]
-    skill_obs = agg.get("skill_read_device_operator") or {}
-    if skill_obs.get("tasks_observed"):
-        hits = skill_obs.get("tasks_with_skill_read", 0)
-        total = skill_obs.get("tasks_observed", 0)
+    trace_observations = agg.get("trace_observations") or {}
+    if trace_observations:
         lines += [
-            "## Skill discovery (informational)",
+            "## Trace Observations (informational)",
             "",
-            f"device-operator skill_read: {hits}/{total} tasks",
+            "| observation | hit / observed |",
+            "|---|---:|",
+        ]
+        for obs_id, obs in trace_observations.items():
+            hits = obs.get("tasks_with_observation", 0)
+            total = obs.get("tasks_observed", 0)
+            lines.append(f"| {obs_id} | {hits}/{total} |")
+        skill_obs = trace_observations.get("skill_read_device_operator") or {}
+        if skill_obs.get("tasks_observed"):
+            hits = skill_obs.get("tasks_with_observation", 0)
+            total = skill_obs.get("tasks_observed", 0)
+            lines += [
+                "",
+                f"device-operator skill activation/read: {hits}/{total} tasks",
+            ]
+        lines += [
             "",
         ]
     lines += [

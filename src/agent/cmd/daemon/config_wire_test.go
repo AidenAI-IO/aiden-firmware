@@ -131,18 +131,6 @@ func TestConfigCheck_WireSearchHasAPIKey(t *testing.T) {
 	}
 }
 
-func TestConfigCheck_WireForceSimpleLoopMapsToAgentConfig(t *testing.T) {
-	dto := webConfigDTO{
-		Model:  modelDTO{Provider: "openai", Model: "gpt-4"},
-		Search: searchDTO{Provider: "duckduckgo"},
-		Agent:  agentDTO{ForceSimpleLoop: true},
-	}
-	cfg := dto.toAgentConfig()
-	if !cfg.ForceSimpleLoop {
-		t.Fatal("force_simple_loop was not mapped onto agent.Config")
-	}
-}
-
 func TestConfigCheck_WireCustomInstructionMapsToAgentConfig(t *testing.T) {
 	dto := webConfigDTO{
 		Model:  modelDTO{Provider: "openai", Model: "gpt-4"},
@@ -175,11 +163,11 @@ func TestConfigCheck_WireTelemetryNested(t *testing.T) {
 func TestConfigCheck_WireLiveActivityNested(t *testing.T) {
 	t.Run("valid relay config passes", func(t *testing.T) {
 		payload := `{"model":{"provider":"openai","model":"gpt-4"},
-			"benchmark":{"api_key":"sk-judge"},
-			"search":{"provider":"duckduckgo"},
-			"live_activity":{"enabled":true,"relay_url":"https://relay.example.com",
-				"has_relay_api_key":true,"board_id":"board-001","phone_id":"phone-001",
-				"environment":"production","timeout_sec":10},"agent":{}}`
+				"benchmark":{"api_key":"sk-judge"},
+				"search":{"provider":"duckduckgo"},
+				"live_activity":{"enabled":true,"relay_url":"https://relay.example.com",
+					"has_relay_api_key":true,"board_id":"board-001",
+					"environment":"production","timeout_sec":10},"agent":{}}`
 		result := checkWire(t, payload)
 		if !result.Valid {
 			t.Fatalf("expected valid=true, got errors: %+v", result.Errors)

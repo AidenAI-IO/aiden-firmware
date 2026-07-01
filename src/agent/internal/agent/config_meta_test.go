@@ -103,13 +103,6 @@ func TestConfigMeta_Valid(t *testing.T) {
 		}
 	}
 
-	forceSimpleLoop, ok := idx["agent.force_simple_loop"]
-	if !ok {
-		t.Fatal("missing agent.force_simple_loop metadata")
-	}
-	if forceSimpleLoop.Widget != WidgetBoolean || forceSimpleLoop.Default != false {
-		t.Fatalf("agent.force_simple_loop metadata = %#v, want boolean default false", forceSimpleLoop)
-	}
 }
 
 // TestConfigMeta_EnumsMatchValidation guards against drift between the metadata
@@ -270,7 +263,7 @@ func TestConfigMeta_TTSModelHiddenForMinimaxProviders(t *testing.T) {
 	if model.VisibleWhen == nil {
 		t.Fatal("tts.model has no visibleWhen rule")
 	}
-	want := VisibleRule{All: []Condition{{Field: "tts.provider", Op: "notIn", Values: []string{"minimax", "minimax-cn"}}}}
+	want := VisibleRule{All: []Condition{{Field: "tts.provider", Op: "in", Values: []string{"openrouter"}}}}
 	if !reflect.DeepEqual(*model.VisibleWhen, want) {
 		t.Fatalf("tts.model visibleWhen = %#v, want %#v", *model.VisibleWhen, want)
 	}
@@ -300,7 +293,8 @@ func TestConfigMeta_STTTencentASRProviderMetadata(t *testing.T) {
 		path string
 		want any
 	}{
-		{"stt.region", "ap-guangzhou"},
+		{"stt.app_id", ""},
+		{"stt.region", "ap-shanghai"},
 		{"stt.language", "zh"},
 	}
 	for _, tt := range tests {
@@ -359,7 +353,7 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 	sections := []sectionType{
 		{"model", reflect.TypeOf(ModelConfig{}), map[string]bool{"responses": true}},
 		{"tts", reflect.TypeOf(TTSConfig{}), map[string]bool{"reference_id": true, "credentials": true}},
-		{"stt", reflect.TypeOf(STTConfig{}), map[string]bool{"engine_model_type": true}},
+		{"stt", reflect.TypeOf(STTConfig{}), nil},
 		{"audio", reflect.TypeOf(AudioConfig{}), nil},
 		{"audio_archive", reflect.TypeOf(AudioArchiveConfig{}), nil},
 		{"hid", reflect.TypeOf(HIDConfig{}), nil},

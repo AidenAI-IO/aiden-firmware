@@ -69,6 +69,9 @@ func (pb *PhoneBridge) handleEnqueueCommand(w http.ResponseWriter, r *http.Reque
 		http.Error(w, `{"error":"command ID must not be empty"}`, http.StatusBadRequest)
 		return
 	}
+	if strings.TrimSpace(req.Command.PhoneID) == "" {
+		req.Command.PhoneID = pb.currentPhoneID()
+	}
 
 	if err := pb.queue.Enqueue(req.Command); err != nil {
 		if pb.logger != nil {
@@ -126,7 +129,8 @@ func (pb *PhoneBridge) handlePollCommands(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	commands := pb.queue.Poll(platform, limit)
+	phoneID := strings.TrimSpace(r.URL.Query().Get("phone_id"))
+	commands := pb.queue.PollForPhone(platform, phoneID, limit)
 
 	if pb.logger != nil && len(commands) > 0 {
 		var cmdIDs []string
@@ -181,7 +185,8 @@ func (pb *PhoneBridge) handleSubmitResult(w http.ResponseWriter, r *http.Request
 	}
 
 	if pb.logger != nil {
-		pb.logger.Info("phone-bridge: result received: id=%s ok=%t", req.ID, req.OK)
+		ok := req.Error == nil
+		pb.logger.Info("phone-bridge: result received: id=%s ok=%t", req.ID, ok)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

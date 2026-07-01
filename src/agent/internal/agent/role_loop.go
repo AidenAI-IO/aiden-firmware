@@ -78,6 +78,7 @@ type executorTurnResult struct {
 	Action          *schema.AgentAction
 	Step            *schema.AgentStep
 	InvalidMetaStep *schema.AgentStep
+	ToolError       *ToolError
 }
 
 func plannerCommitRequiredTurn(action schema.AgentAction) plannerTurnResult {
@@ -112,6 +113,56 @@ func toolNameEqual(got, want string) bool {
 
 func isWaitForWakeupTool(name string) bool {
 	return toolNameEqual(name, toolWaitForWakeup)
+}
+
+func isHumanHandoffTool(name string) bool {
+	return toolNameEqual(name, toolHumanHandoffStep)
+}
+
+func isRunPausingTool(name string) bool {
+	return isWaitForWakeupTool(name) || isHumanHandoffTool(name)
+}
+
+func runPausingToolFinalAnswer(step *schema.AgentStep) string {
+	if step != nil && isHumanHandoffTool(step.Action.Tool) {
+		return humanHandoffFinalAnswer(step)
+	}
+	return waitForWakeupFinalAnswer(step)
+}
+
+func humanHandoffFinalAnswer(step *schema.AgentStep) string {
+	if step != nil {
+		if content := toolContentFromAction(step.Action); content != "" {
+			return content
+		}
+		if message := humanHandoffMessageFromInput(step.Action.ToolInput); message != "" {
+			return message
+		}
+		if message := humanHandoffMessageFromObservation(step.Observation); message != "" {
+			return message
+		}
+	}
+	return waitForWakeupFinalAnswer(step)
+}
+
+func humanHandoffMessageFromInput(input string) string {
+	var req HumanHandoffRequest
+	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &req); err != nil {
+		return ""
+	}
+	return firstNonEmptyString([]string{req.SuggestedAction, req.Details})
+}
+
+func humanHandoffMessageFromObservation(observation string) string {
+	var payload struct {
+		Message         string `json:"message"`
+		SuggestedAction string `json:"suggested_action"`
+		Details         string `json:"details"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(observation)), &payload); err != nil {
+		return ""
+	}
+	return firstNonEmptyString([]string{payload.Message, payload.SuggestedAction, payload.Details})
 }
 
 func waitForWakeupFinalAnswer(step *schema.AgentStep) string {
@@ -484,11 +535,11 @@ func routeShouldUsePlan(request string) bool {
 
 func plannerTaskForPhase(phase loopPhase, state roleLoopState, forceSimpleLoop bool) string {
 	if forceSimpleLoop {
-		return "Single-agent simple loop mode: delegated plan mode is disabled by configuration. Use available tools directly and return a final answer when the request is satisfied. If the task becomes multi-step, use set_todo to maintain a visible todo list without switching modes."
+		return "Single-agent loop mode: use available tools directly. When the request is satisfied, return ordinary user-facing text plus exactly one <tts>...</tts> block containing the concise spoken summary. Do not return JSON or a \"Final Answer:\" wrapper. If the task becomes multi-step, use set_todo to maintain a visible todo list."
 	}
 	switch phase {
 	case phaseDecision:
-		return "Route phase: decide the execution path before normal tools are exposed. Return only JSON: {\"mode\":\"direct_answer|simple|plan\",\"final_answer\":\"plain text only for direct_answer\",\"reason\":\"brief rationale\",\"confidence\":0.0-1.0}. Voice interaction is the core use case, so keep direct answers brief and natural for TTS. Use direct_answer only when the final user-facing answer is available now without tools; leave final_answer empty for simple or plan. Use simple for ordinary one-pass execution such as direct tool use, straightforward arithmetic, or short comparisons. Use plan for tasks that need explicit planning, checkpoints, information gathering before acting, multiple independent stages, record aggregation, reconciliation, branching, or several required output facts. Examples: a single expression or comparing two expressions is simple; invoice reconciliation across stages and expense/category aggregation are plan."
+		return "Route phase: decide the execution path before normal tools are exposed. Return only JSON: {\"mode\":\"direct_answer|simple|plan\",\"final_answer\":\"plain text only for direct_answer\",\"reason\":\"brief rationale\",\"confidence\":0.0-1.0}. Voice interaction is the core use case, so keep direct answers brief and natural for TTS. Use direct_answer only when the final user-facing answer is available now without tools; leave final_answer empty for simple or plan. Use simple for ordinary one-pass execution such as direct tool use, straightforward arithmetic, or short comparisons. Use plan for tasks that need explicit planning, checkpoints, information gathering before acting, multiple independent stages, record aggregation, reconciliation, branching, or several required output facts. Examples: a single expression or comparing two expressions is simple; invoice reconciliation across stages and expense/category aggregation are plan. Important: the visible conversation context only contains recent visible turns and a profile snapshot; prior turns are compressed into archived chunks, and long-term facts/preferences/rules live in a separate memory store — both are invisible to you here. If the user's input asks about or references prior conversation content, previously remembered preferences/rules, or anything else you cannot confirm from the visible context (including denials such as 'we never discussed X'), choose simple so the executor can retrieve from history or memory before answering. Do not assume the visible context is the complete record."
 	case phasePlan:
 		task := "Plan mode: create or revise a structured delegated plan. You may use read-only information-gathering tools before committing if context is missing. Do not use execution, computation, or state-changing tools in plan mode. Call commit_plan to hand concrete steps to the executor, call cancel_plan only when planning should be abandoned, or return a final answer only when existing execution evidence already proves the task complete."
 		if state.PlanCommitRequired {
@@ -504,7 +555,7 @@ func plannerTaskForPhase(phase loopPhase, state roleLoopState, forceSimpleLoop b
 		}
 		return task
 	default:
-		return "Single-agent default mode: use available tools directly as needed and return a final answer when the request is satisfied. If the task becomes multi-step, use set_todo to maintain a visible todo list without switching to delegated plan mode."
+		return "Single-agent default mode: use available tools directly as needed. When the request is satisfied, return ordinary user-facing text plus exactly one <tts>...</tts> block containing the concise spoken summary. Do not return JSON or a \"Final Answer:\" wrapper. If the task becomes multi-step, use set_todo to maintain a visible todo list without switching to delegated plan mode."
 	}
 }
 
@@ -514,9 +565,10 @@ func writeLoopMode(builder *strings.Builder, state roleLoopState) {
 	builder.WriteString(string(state.Phase))
 	builder.WriteByte('\n')
 	if state.ForceSimpleLoop {
-		builder.WriteString("- force_simple_loop: true\n")
-		builder.WriteString("- delegated plan mode tools are disabled; use available tools directly and return a final answer when done.\n")
-		builder.WriteString("- set_todo is available when this single-agent task needs explicit multi-step tracking.\n")
+		builder.WriteString("- single_agent: true\n")
+		builder.WriteString("- use available tools directly and return ordinary final text with exactly one <tts>...</tts> block when done.\n")
+		builder.WriteString("- do not return JSON or a \"Final Answer:\" wrapper for final responses.\n")
+		builder.WriteString("- set_todo is available when this task needs explicit multi-step tracking.\n")
 		return
 	}
 	if state.Phase == phaseDecision {
@@ -547,6 +599,7 @@ func writeLoopMode(builder *strings.Builder, state roleLoopState) {
 	}
 	if state.Phase == phaseDefault {
 		builder.WriteString("- final answers in default mode end the run directly without verifier.\n")
+		builder.WriteString("- final responses must be ordinary text with exactly one <tts>...</tts> block; do not use JSON or a \"Final Answer:\" wrapper.\n")
 		builder.WriteString("- commit_plan is not available in default mode.\n")
 		builder.WriteString("- set_todo is available if this single-agent task needs explicit multi-step tracking.\n")
 		builder.WriteString("- complete directly without a delegated plan unless the user changes the task or the task needs explicit planning.\n")

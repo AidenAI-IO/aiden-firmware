@@ -146,7 +146,7 @@ func TestExecuteToolCallInvalidToolEmitsToolCallAndResult(t *testing.T) {
 		Callback: recorder,
 	})
 
-	if !result.Result.IsError {
+	if !result.Result.IsError() {
 		t.Fatalf("invalid tool should be an error result: %#v", result.Result)
 	}
 	if result.Call.Spec.Name != "missing" || result.Call.Input != "hello" {
@@ -155,7 +155,7 @@ func TestExecuteToolCallInvalidToolEmitsToolCallAndResult(t *testing.T) {
 	if len(recorder.events) != 2 || recorder.events[0] != "start" || recorder.events[1] != "result" {
 		t.Fatalf("callback lifecycle events = %#v, want start then result", recorder.events)
 	}
-	if len(recorder.results) != 1 || !recorder.results[0].IsError {
+	if len(recorder.results) != 1 || !recorder.results[0].IsError() {
 		t.Fatalf("expected one error result callback, got %#v", recorder.results)
 	}
 }
@@ -173,13 +173,13 @@ func TestExecuteToolCallValidationFailureEmitsToolCallAndResult(t *testing.T) {
 		Callback: recorder,
 	})
 
-	if !result.Result.IsError {
+	if !result.Result.IsError() {
 		t.Fatalf("invalid JSON should be an error result: %#v", result.Result)
 	}
 	if len(recorder.calls) != 1 || recorder.calls[0].Input != "not-json" {
 		t.Fatalf("expected one tool_call before validation failure, got %#v", recorder.calls)
 	}
-	if len(recorder.results) != 1 || !recorder.results[0].IsError {
+	if len(recorder.results) != 1 || !recorder.results[0].IsError() {
 		t.Fatalf("expected one error result callback, got %#v", recorder.results)
 	}
 	if len(recorder.events) != 2 || recorder.events[0] != "start" || recorder.events[1] != "result" {
@@ -203,9 +203,8 @@ func TestExecuteToolCallBeforeMayRejectWithToolResult(t *testing.T) {
 		},
 		Before: func(ctx context.Context, call ToolCall) (ToolResult, bool) {
 			return ToolResult{
-				Output:  "blocked by policy",
-				IsError: true,
-				Error:   errors.New("blocked by policy"),
+				Output: "blocked by policy",
+				Error:  NewToolError(CodeToolExecutionFailed, "blocked by policy"),
 			}, false
 		},
 		Callback: recorder,
@@ -214,7 +213,7 @@ func TestExecuteToolCallBeforeMayRejectWithToolResult(t *testing.T) {
 	if len(tool.inputs) != 0 {
 		t.Fatalf("tool should not have been called, inputs=%#v", tool.inputs)
 	}
-	if !result.Result.IsError || result.Result.Output != "blocked by policy" {
+	if !result.Result.IsError() || result.Result.Output != "blocked by policy" {
 		t.Fatalf("unexpected rejection result: %#v", result.Result)
 	}
 	if result.Step.Observation != "blocked by policy" {
@@ -240,11 +239,78 @@ func TestExecuteToolCallWrapsToolErrorsAndContinues(t *testing.T) {
 	if result.Error != nil {
 		t.Fatalf("tool failure should be returned as tool result, got execution error: %v", result.Error)
 	}
-	if !result.Result.IsError {
+	if !result.Result.IsError() {
 		t.Fatalf("result should be marked as error: %#v", result.Result)
 	}
-	if result.Step.Observation != "error: echo failed: boom" {
+	if result.Result.Error == nil || result.Result.Error.Code != CodeToolExecutionFailed || result.Result.Error.Message != "boom" {
+		t.Fatalf("ToolError = %+v, want tool_execution_failed boom", result.Result.Error)
+	}
+	if result.Step.Observation != "boom" {
 		t.Fatalf("observation = %q", result.Step.Observation)
+	}
+}
+
+func TestExecuteToolCallBuiltInStringErrorToolsReturnStructuredErrors(t *testing.T) {
+	tests := []struct {
+		name     string
+		tool     langtools.Tool
+		input    string
+		wantCode string
+	}{
+		{
+			name:     "shell missing command",
+			tool:     &ShellTool{},
+			input:    `{}`,
+			wantCode: CodeInvalidArguments,
+		},
+		{
+			name:     "image diff missing after",
+			tool:     &ImageDiffTool{},
+			input:    `{"before":"x"}`,
+			wantCode: CodeInvalidArguments,
+		},
+		{
+			name:     "web search unconfigured",
+			tool:     &WebSearchTool{provider: "brave"},
+			input:    `{"query":"aiden"}`,
+			wantCode: CodeModuleUnavailable,
+		},
+		{
+			name:     "current time invalid timezone",
+			tool:     &CurrentTimeTool{},
+			input:    `{"timezone":"Not/AZone"}`,
+			wantCode: CodeInvalidArguments,
+		},
+		{
+			name:     "keyboard tap empty keys",
+			tool:     &KeyboardTapTool{},
+			input:    `{"keys":[]}`,
+			wantCode: CodeInvalidArguments,
+		},
+		{
+			name:     "touch gesture missing type",
+			tool:     &TouchGestureTool{},
+			input:    `{}`,
+			wantCode: CodeInvalidArguments,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := executeToolCall(context.Background(), ToolCallExecution{
+				Specs:  NewToolSpecs([]langtools.Tool{tc.tool}),
+				Action: schema.AgentAction{Tool: tc.tool.Name(), ToolInput: tc.input},
+			})
+			if result.Result.Error == nil {
+				t.Fatalf("expected structured ToolError, got result %#v", result.Result)
+			}
+			if result.Result.Error.Code != tc.wantCode {
+				t.Fatalf("Error.Code = %q, want %q (error=%+v)", result.Result.Error.Code, tc.wantCode, result.Result.Error)
+			}
+			if result.Result.Output != result.Result.Error.Message {
+				t.Fatalf("Output must equal Error.Message, got %q vs %q", result.Result.Output, result.Result.Error.Message)
+			}
+		})
 	}
 }
 
@@ -267,14 +333,27 @@ func TestExecuteToolCallPropagatesContextErrors(t *testing.T) {
 			if !errors.Is(result.Error, err) {
 				t.Fatalf("execution error = %v, want %v", result.Error, err)
 			}
-			if !errors.Is(result.Result.Error, err) {
-				t.Fatalf("result error = %v, want %v", result.Result.Error, err)
+			if result.Result.Error == nil {
+				t.Fatalf("result.Error is nil, want structured error for %v", err)
+			}
+			wantCode := CodeCanceled
+			if errors.Is(err, context.DeadlineExceeded) {
+				wantCode = CodeDeadlineExceeded
+			}
+			if result.Result.Error.Code != wantCode {
+				t.Fatalf("result error code = %q, want %q", result.Result.Error.Code, wantCode)
+			}
+			if result.Result.Output != result.Result.Error.Message {
+				t.Fatalf("Output must equal Error.Message, got %q vs %q", result.Result.Output, result.Result.Error.Message)
 			}
 			if len(recorder.events) != 2 || recorder.events[0] != "start" || recorder.events[1] != "result" {
 				t.Fatalf("callback lifecycle events = %#v, want start then result", recorder.events)
 			}
-			if len(recorder.results) != 1 || !errors.Is(recorder.results[0].Error, err) {
-				t.Fatalf("terminal result callback = %#v, want error %v", recorder.results, err)
+			if len(recorder.results) != 1 || recorder.results[0].Error == nil || recorder.results[0].Error.Code != wantCode {
+				t.Fatalf("terminal result callback = %#v, want error code %v", recorder.results, wantCode)
+			}
+			if recorder.results[0].Output != recorder.results[0].Error.Message {
+				t.Fatalf("callback Output must equal Error.Message, got %q vs %q", recorder.results[0].Output, recorder.results[0].Error.Message)
 			}
 		})
 	}
@@ -313,5 +392,77 @@ func TestDefaultAfterToolCallSummarizesScreenshotAndMarksTerminate(t *testing.T)
 	}
 	if result.Step.Observation != result.Result.Output {
 		t.Fatalf("step observation should preserve raw output")
+	}
+}
+
+func TestExecuteToolCallBeforeHookRejectWithEmptyOutputSatisfiesInvariant(t *testing.T) {
+	// Regression: normalizeRejectedToolResult called normalizeToolResult which back-filled
+	// Output with "error: " + Error.Message, breaking Output == Error.Message invariant.
+	tool := &stubTool{name: "echo", description: "Echo text.", output: "should-not-run"}
+	specs := NewToolSpecs([]langtools.Tool{tool})
+
+	result := executeToolCall(context.Background(), ToolCallExecution{
+		Specs: specs,
+		Action: schema.AgentAction{
+			Tool:      "echo",
+			ToolInput: "hello",
+		},
+		Before: func(ctx context.Context, call ToolCall) (ToolResult, bool) {
+			// Hook returns Error but leaves Output empty — the bug case.
+			return ToolResult{
+				Error: NewToolError(CodeToolExecutionFailed, "denied"),
+			}, false
+		},
+	})
+
+	if len(tool.inputs) != 0 {
+		t.Fatalf("tool should not have been called, inputs=%#v", tool.inputs)
+	}
+	if strings.TrimSpace(result.Result.Output) == "" {
+		t.Fatalf("Output must be non-empty so LLM sees a message; got empty string")
+	}
+	if result.Result.Error == nil {
+		t.Fatalf("Error must be set on a rejected result")
+	}
+	if result.Result.Output != result.Result.Error.Message {
+		t.Fatalf("Output == Error.Message invariant violated: Output=%q Error.Message=%q",
+			result.Result.Output, result.Result.Error.Message)
+	}
+}
+
+func TestNormalizeToolResultAlignsNonEmptyErrorMessageToOutput(t *testing.T) {
+	result := normalizeToolResult(ToolResult{
+		Output: "policy override message",
+		Error:  NewToolError(CodeToolExecutionFailed, "original message"),
+	})
+	if result.Error == nil {
+		t.Fatal("expected structured error")
+	}
+	if result.Output != result.Error.Message {
+		t.Fatalf("Output == Error.Message invariant violated: Output=%q Error.Message=%q", result.Output, result.Error.Message)
+	}
+}
+
+func TestToolResultErrorIsStructured(t *testing.T) {
+	ok := ToolResult{Output: "done", Summary: "ok"}
+	if ok.IsError() {
+		t.Errorf("success result reported IsError")
+	}
+	if ok.Error != nil {
+		t.Errorf("success result has non-nil Error: %+v", ok.Error)
+	}
+
+	err := ToolResult{
+		Output: "WeChat is not installed",
+		Error:  NewToolError(CodeAppNotInstalled, "WeChat is not installed"),
+	}
+	if !err.IsError() {
+		t.Errorf("failure result did not report IsError")
+	}
+	if err.Error.Code != CodeAppNotInstalled {
+		t.Errorf("Error.Code = %q", err.Error.Code)
+	}
+	if err.Output != err.Error.Message {
+		t.Errorf("Output must equal Error.Message on failure; got %q vs %q", err.Output, err.Error.Message)
 	}
 }

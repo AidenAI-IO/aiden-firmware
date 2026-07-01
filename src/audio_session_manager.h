@@ -36,7 +36,8 @@ public:
                                          uint32_t timeout_ms,
                                          AudioChunkResult* out);
 
-    // Stop and remove a record session.
+    // Stop a record session. Queued PCM remains readable until EOF, then the
+    // session is removed lazily by read_record_chunk() or the idle reaper.
     AidenServiceStatus stop_recording(uint64_t session_id);
 
     // --- Playback ---
@@ -63,6 +64,11 @@ public:
 
 private:
     using Clock = std::chrono::steady_clock;
+    struct DrainingPlaybackState {
+        std::mutex mutex;
+        std::unordered_map<uint64_t, std::shared_ptr<AudioPlaybackSession>> sessions;
+        std::atomic<uint32_t> count{0};
+    };
 
     uint64_t next_session_id();
     bool persist_playback_volume_if_changed(int volume);
@@ -72,7 +78,7 @@ private:
     mutable std::mutex mutex_;
     std::atomic<bool> stop_reaper_;
     std::thread reaper_thread_;
-    std::shared_ptr<std::atomic<uint32_t>> draining_playback_count_;
+    std::shared_ptr<DrainingPlaybackState> draining_playback_state_;
     std::string volume_state_path_;
     std::mutex volume_set_mutex_;
     int playback_volume_;

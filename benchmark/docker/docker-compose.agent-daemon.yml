@@ -15,9 +15,10 @@ services:
       - ${AIDEN_CONFIG_DIR:-../config}:/config:ro
     environment:
       AIDEN_ENVIRONMENT_BRIDGE_MODE: ${AIDEN_ENVIRONMENT_BRIDGE_MODE:-0}
-      AIDEN_ENVIRONMENT_BRIDGE_TOOLS: "screenshot,touch_gesture,keyboard_text,keyboard_tap,mouse_click,mouse_move,mouse_scroll,quick_action"
+      AIDEN_ENVIRONMENT_BRIDGE_TOOLS: "screenshot,touch_gesture,keyboard_text,keyboard_tap,enter_text_in_field,enter_text_via_bridge,mouse_click,mouse_move,mouse_scroll,quick_action"
       ENVIRONMENT_BRIDGE_ENDPOINT: ${ENVIRONMENT_BRIDGE_ENDPOINT:-}
       AIDEN_BENCHMARK_TASK_ID: ${AIDEN_BENCHMARK_TASK_ID:-}
+      AIDEN_BENCHMARK_TOKEN_FILE: ${AIDEN_BENCHMARK_TOKEN_FILE:-}
       AIDEN_RUNTIME_CONFIG_DIR: /tmp/aiden-config
       HTTPS_PROXY: ${HTTPS_PROXY:-}
       HTTP_PROXY: ${HTTP_PROXY:-}

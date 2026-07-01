@@ -207,9 +207,6 @@ func (m memoryManagerSessionManager) CommitRun(ctx context.Context, req SessionC
 	if err != nil {
 		return SessionCommitResult{}, err
 	}
-	if err := m.memories.SaveSnapshot(ctx, agentName, memorySnapshot); err != nil {
-		return SessionCommitResult{}, err
-	}
 	m.memories.RequestMaintenance()
 	return SessionCommitResult{Memory: memorySnapshot}, nil
 }

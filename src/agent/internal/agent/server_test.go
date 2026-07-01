@@ -31,8 +31,23 @@ import (
 )
 
 type stubSTTClient struct {
-	transcript string
-	inputs     [][]byte
+	transcript         string
+	transcribeErr      error
+	inputs             [][]byte
+	supportsStreaming  bool
+	streamConfigs      []STTStreamConfig
+	streamUploader     *stubSTTStreamUploader
+	streamUploaderErr  error
+	streamUploaderUsed int
+}
+
+type stubSTTStreamUploader struct {
+	transcript  string
+	finalizeErr error
+	closeErr    error
+	writes      [][]byte
+	finalized   bool
+	closed      bool
 }
 
 type mappingStateMutatingTool struct {
@@ -57,7 +72,56 @@ func (t *mappingStateMutatingTool) Call(_ context.Context, input string) (string
 
 func (s *stubSTTClient) TranscribeWAV(wavData []byte) (string, error) {
 	s.inputs = append(s.inputs, append([]byte(nil), wavData...))
+	if s.transcribeErr != nil {
+		return "", s.transcribeErr
+	}
 	return s.transcript, nil
+}
+
+func (s *stubSTTClient) Capabilities() STTCapabilities {
+	return STTCapabilities{SupportsStreamingUpload: s.supportsStreaming}
+}
+
+func (s *stubSTTClient) NewStreamingUploader(_ context.Context, cfg STTStreamConfig) (STTStreamUploader, error) {
+	s.streamConfigs = append(s.streamConfigs, cfg)
+	if !s.supportsStreaming {
+		return nil, fmt.Errorf("streaming upload is not supported")
+	}
+	if s.streamUploaderErr != nil {
+		return nil, s.streamUploaderErr
+	}
+	if s.streamUploader == nil {
+		s.streamUploader = &stubSTTStreamUploader{}
+	}
+	s.streamUploaderUsed++
+	return s.streamUploader, nil
+}
+
+func TestStubSTTClientNewStreamingUploaderRequiresStreamingCapability(t *testing.T) {
+	client := &stubSTTClient{}
+
+	_, err := client.NewStreamingUploader(context.Background(), STTStreamConfig{SampleRate: 16000, Channels: 1, BitWidth: 16})
+	if err == nil {
+		t.Fatal("expected streaming capability error")
+	}
+}
+
+func (s *stubSTTStreamUploader) UploadPCM(pcm []byte) error {
+	s.writes = append(s.writes, append([]byte(nil), pcm...))
+	return nil
+}
+
+func (s *stubSTTStreamUploader) Finalize() (string, error) {
+	s.finalized = true
+	if s.finalizeErr != nil {
+		return "", s.finalizeErr
+	}
+	return s.transcript, nil
+}
+
+func (s *stubSTTStreamUploader) Close() error {
+	s.closed = true
+	return s.closeErr
 }
 
 func firstMessageOfType(messages []Message, messageType string) (Message, bool) {
@@ -72,7 +136,7 @@ func firstMessageOfType(messages []Message, messageType string) (Message, bool) 
 func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, "我先读取当前音量。"),
+			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, "Let me read the current volume."),
 			contentResponse("The current audio volume is 42."),
 		},
 	}
@@ -97,7 +161,7 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	)
 	server := NewServer(runtime, ":0")
 
-	body := bytes.NewBufferString(`{"message":"当前音量是多少？"}`)
+	body := bytes.NewBufferString(`{"message":"What is the current volume?"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/chat", body)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -117,21 +181,21 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 		t.Fatalf("unexpected response: %q", resp.Response)
 	}
 	if len(resp.History) != 6 {
-		t.Fatalf("expected 6 history entries for default-mode planner tool flow, got %d", len(resp.History))
+		t.Fatalf("expected 6 history entries for single-agent tool flow, got %d", len(resp.History))
 	}
 
-	if resp.History[0].Type != "user" || resp.History[0].Content != "当前音量是多少？" {
+	if resp.History[0].Type != "user" || resp.History[0].Content != "What is the current volume?" {
 		t.Fatalf("unexpected first history message: %#v", resp.History[0])
 	}
 	roleOutput, ok := firstMessageOfType(resp.History, "role_output")
-	if !ok || roleOutput.Role != "planner" {
-		t.Fatalf("expected planner role_output in history: %#v", resp.History)
+	if !ok || roleOutput.Role != string(RoleAgent) {
+		t.Fatalf("expected agent role_output in history: %#v", resp.History)
 	}
 	toolCall, ok := firstMessageOfType(resp.History, runEventToolCall)
 	if !ok || toolCall.ToolName != "audio_volume" || toolCall.ToolInput != "{}" {
 		t.Fatalf("unexpected tool_call message: %#v", resp.History)
 	}
-	if toolCall.Content != "我先读取当前音量。" {
+	if toolCall.Content != "Let me read the current volume." {
 		t.Fatalf("unexpected tool_call content: %#v", toolCall)
 	}
 	toolResult, ok := firstMessageOfType(resp.History, "tool_result")
@@ -148,7 +212,7 @@ func TestServerPersistsChatHistoryWithEpisodeReference(t *testing.T) {
 	configDir := t.TempDir()
 	memoryDir := filepath.Join(configDir, "memory")
 	model := &scriptedModel{
-		responses: roleDirectResponses("已完成"),
+		responses: roleDirectResponses("Completed"),
 	}
 	streamingDisabled := false
 	runtime := NewRuntimeWithDeps(
@@ -166,7 +230,7 @@ func TestServerPersistsChatHistoryWithEpisodeReference(t *testing.T) {
 	)
 	server := NewServer(runtime, ":0")
 
-	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"做一个任务"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"Do a task"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	server.handleChat(rec, req)
@@ -217,9 +281,117 @@ func TestServerPersistsChatHistoryWithEpisodeReference(t *testing.T) {
 	}
 }
 
+func TestServerRestoresSessionEventsUsingEventType(t *testing.T) {
+	configDir := t.TempDir()
+	session := NewSessionMemoryStore(filepath.Join(configDir, "memory", "session"))
+	now := time.Now().UTC()
+	events := []SessionEvent{
+		{
+			EventID:   "evt_user",
+			Ts:        now.Format(time.RFC3339Nano),
+			Type:      "user_input",
+			Role:      "user",
+			EpisodeID: "ep_restore",
+			RequestID: "req_restore",
+			Content:   "换头",
+		},
+		{
+			EventID:   "evt_role",
+			Ts:        now.Add(time.Second).Format(time.RFC3339Nano),
+			Type:      "role_output",
+			Role:      "planner",
+			EpisodeID: "ep_restore",
+			RequestID: "req_restore",
+			Content:   `{"can_finish":false,"needs_human_handoff":true}`,
+		},
+		{
+			EventID:   "evt_tool",
+			Ts:        now.Add(2 * time.Second).Format(time.RFC3339Nano),
+			Type:      runEventToolCall,
+			Role:      "assistant",
+			EpisodeID: "ep_restore",
+			RequestID: "req_restore",
+			ToolName:  "screenshot",
+			ToolInput: "{}",
+			ToolError: NewToolErrorWithDetails(CodeToolExecutionFailed, "camera unavailable", map[string]any{"device": "video0"}),
+			Artifacts: []InputArtifact{{
+				Kind:     AttachmentKindImage,
+				Name:     "screen.jpg",
+				MIMEType: "image/jpeg",
+				Path:     "/userdata/agent/artifacts/screen.jpg",
+				Size:     1234,
+				Data:     []byte("binary-image-data"),
+			}},
+			Content: "tool_call: screenshot input={}",
+		},
+		{
+			EventID:   "evt_unknown_planner",
+			Ts:        now.Add(3 * time.Second).Format(time.RFC3339Nano),
+			Type:      "planner_decision",
+			Role:      "planner",
+			EpisodeID: "ep_restore",
+			RequestID: "req_restore",
+			Content:   `{"mode":"simple"}`,
+		},
+		{
+			EventID:   "evt_assistant",
+			Ts:        now.Add(4 * time.Second).Format(time.RFC3339Nano),
+			Type:      "assistant_output",
+			Role:      "assistant",
+			EpisodeID: "ep_restore",
+			RequestID: "req_restore",
+			Content:   "请明确说明您想更换的是聊天对象的头像，还是其他内容。",
+		},
+	}
+	for _, event := range events {
+		if _, err := session.AppendEvent(context.Background(), event); err != nil {
+			t.Fatalf("AppendEvent(%s) error: %v", event.EventID, err)
+		}
+	}
+
+	server := &Server{runtime: &Runtime{config: Config{ConfigDir: configDir}}}
+	server.loadHistoryFromDisk()
+	history := server.historySnapshot()
+	if len(history) != len(events) {
+		t.Fatalf("restored history entries = %d, want %d: %#v", len(history), len(events), history)
+	}
+
+	if history[0].Type != "user" || history[0].Content != "换头" {
+		t.Fatalf("user_input was not restored as user message: %#v", history[0])
+	}
+	if history[1].Type != "role_output" || history[1].Role != "planner" {
+		t.Fatalf("role_output should not be restored as user message: %#v", history[1])
+	}
+	if history[2].Type != runEventToolCall || history[2].ToolName != "screenshot" || history[2].ToolInput != "{}" {
+		t.Fatalf("tool_call metadata not restored: %#v", history[2])
+	}
+	if history[2].ToolError == nil || history[2].ToolError.Code != CodeToolExecutionFailed || history[2].ToolError.Details["device"] != "video0" {
+		t.Fatalf("tool_call structured error not restored: %#v", history[2].ToolError)
+	}
+	if len(history[2].Artifacts) != 1 || history[2].Artifacts[0].Path != "/userdata/agent/artifacts/screen.jpg" || history[2].Artifacts[0].Data != nil {
+		t.Fatalf("tool_call artifacts not restored safely: %#v", history[2].Artifacts)
+	}
+	if history[3].Type != "planner_decision" {
+		t.Fatalf("unknown planner event should preserve its event type: %#v", history[3])
+	}
+	if history[4].Type != "assistant" || history[4].Content == "" {
+		t.Fatalf("assistant_output was not restored as assistant message: %#v", history[4])
+	}
+
+	userCount := 0
+	for _, msg := range history {
+		if msg.Type == "user" {
+			userCount++
+		}
+	}
+	if userCount != 1 {
+		t.Fatalf("restored user message count = %d, want only the original user input: %#v", userCount, history)
+	}
+}
+
 func TestServerHandleChatStreamsRoleToolAndAssistantMessages(t *testing.T) {
 	model := &scriptedModel{
-		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"我先读取当前音量。"}`, "The current audio volume is 42."),
+		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"Let me read the current volume."}`, "The current audio volume is 42."),
 	}
 	runtime := NewRuntimeWithDeps(
 		Config{
@@ -239,7 +411,7 @@ func TestServerHandleChatStreamsRoleToolAndAssistantMessages(t *testing.T) {
 	)
 	server := NewServer(runtime, ":0")
 
-	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"当前音量是多少？"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"What is the current volume?"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/x-ndjson")
 	req.Header.Set("X-Aiden-Stream", "ndjson")
@@ -267,13 +439,13 @@ func TestServerHandleChatStreamsRoleToolAndAssistantMessages(t *testing.T) {
 		t.Fatalf("scan stream: %v", err)
 	}
 
-	var sawPlanner, sawToolCall, sawToolResult, sawAssistant, sawDone bool
+	var sawAgent, sawToolCall, sawToolResult, sawAssistant, sawDone bool
 	for _, event := range events {
 		if event.Type == "message" && event.Message != nil {
 			switch event.Message.Type {
 			case "role_output":
-				if event.Message.Role == "planner" {
-					sawPlanner = true
+				if event.Message.Role == string(RoleAgent) {
+					sawAgent = true
 				}
 			case runEventToolCall:
 				sawToolCall = event.Message.ToolName == "audio_volume"
@@ -287,99 +459,9 @@ func TestServerHandleChatStreamsRoleToolAndAssistantMessages(t *testing.T) {
 			sawDone = true
 		}
 	}
-	if !sawPlanner || !sawToolCall || !sawToolResult || !sawAssistant || !sawDone {
-		t.Fatalf("missing expected stream events: planner=%v tool_call=%v tool_result=%v assistant=%v done=%v events=%#v",
-			sawPlanner, sawToolCall, sawToolResult, sawAssistant, sawDone, events)
-	}
-}
-
-func TestServerHandleChatStreamEmitsAssistantDeltasBeforeDone(t *testing.T) {
-	const expectedAnswer = "Complete answer."
-
-	model := &scriptedModel{
-		responses: []*llms.ContentResponse{
-			contentResponse(`{"mode":"direct_answer","speech":"Short answer.","text":"Complete answer.","final_answer":"Complete answer.","reason":"direct"}`),
-		},
-		streamChunks: [][]string{
-			{
-				`{"mode":"direct_answer","speech":"Short answer.","text":"Complete`,
-				` answer.","final_answer":"Complete answer.","reason":"direct"}`,
-			},
-		},
-	}
-	runtime := NewRuntimeWithDeps(
-		Config{
-			Model:       ModelConfig{Provider: "fake"},
-			Instruction: "Answer directly.",
-		},
-		&testModelResolver{model: model},
-		NewMemoryManager(""),
-		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
-		NewSkillIndex(),
-	)
-	server := NewServer(runtime, ":0")
-
-	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"hello","request_id":"web-req-stream"}`))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/x-ndjson")
-	req.Header.Set("X-Aiden-Stream", "ndjson")
-	rec := httptest.NewRecorder()
-
-	server.handleChat(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
-	}
-
-	var (
-		deltaText              strings.Builder
-		sawDeltaBeforeDone     bool
-		sawAssistantBeforeDone bool
-		assistantContent       string
-		sawDone                bool
-		events                 []ChatStreamEvent
-	)
-	scanner := bufio.NewScanner(strings.NewReader(rec.Body.String()))
-	for scanner.Scan() {
-		var event ChatStreamEvent
-		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
-			t.Fatalf("decode stream event %q: %v", scanner.Text(), err)
-		}
-		events = append(events, event)
-		switch event.Type {
-		case "assistant_delta":
-			if sawDone {
-				t.Fatalf("assistant_delta arrived after done: %#v", events)
-			}
-			sawDeltaBeforeDone = true
-			deltaText.WriteString(event.Delta)
-		case "message":
-			if event.Message != nil && event.Message.Type == "assistant" && !sawDone {
-				sawAssistantBeforeDone = true
-				assistantContent = event.Message.Content
-			}
-		case "done":
-			sawDone = true
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		t.Fatalf("scan stream: %v", err)
-	}
-
-	if !sawDeltaBeforeDone {
-		t.Fatalf("expected assistant_delta before done, events=%#v", events)
-	}
-	if !sawAssistantBeforeDone || !sawDone {
-		t.Fatalf("expected final assistant message and done, assistant=%v done=%v events=%#v", sawAssistantBeforeDone, sawDone, events)
-	}
-	if got := deltaText.String(); got != expectedAnswer {
-		t.Fatalf("assistant deltas = %q, want %q", got, expectedAnswer)
-	}
-	if assistantContent != expectedAnswer {
-		t.Fatalf("assistant message content = %q, want %q", assistantContent, expectedAnswer)
-	}
-	if len(model.sawStreaming) != 1 || !model.sawStreaming[0] {
-		t.Fatalf("expected web chat stream to enable provider streaming, got %#v", model.sawStreaming)
+	if !sawAgent || !sawToolCall || !sawToolResult || !sawAssistant || !sawDone {
+		t.Fatalf("missing expected stream events: agent=%v tool_call=%v tool_result=%v assistant=%v done=%v events=%#v",
+			sawAgent, sawToolCall, sawToolResult, sawAssistant, sawDone, events)
 	}
 }
 
@@ -421,7 +503,7 @@ func TestFinalStreamFanoutWriterResetsAssistantDeltaDraftBeforeFallback(t *testi
 		failingStreamWriter{err: writeErr},
 	)
 
-	if _, err := fanout.Write([]byte(`{"text":"Partial`)); !errors.Is(err, writeErr) {
+	if _, err := fanout.Write([]byte("Partial")); !errors.Is(err, writeErr) {
 		t.Fatalf("first Write() error = %v, want %v", err, writeErr)
 	}
 	resetStreamWriterState(fanout)
@@ -480,7 +562,7 @@ func TestFinalStreamFanoutWriterReportsAnyChildEmission(t *testing.T) {
 	var speech strings.Builder
 
 	fanout := newFinalStreamFanoutWriter(
-		NewJSONFieldOrPlainStreamWriter(&webDelta, "text"),
+		&webDelta,
 		NewSpeechStreamWriter(&speech),
 	)
 	tracker, ok := fanout.(streamOutputTracker)
@@ -488,12 +570,12 @@ func TestFinalStreamFanoutWriterReportsAnyChildEmission(t *testing.T) {
 		t.Fatal("fanout writer must track stream emission")
 	}
 
-	if _, err := fanout.Write([]byte(`{"speech":"Short answer.","final_answer":"Complete answer."}`)); err != nil {
+	if _, err := fanout.Write([]byte("Complete answer.\n<tts>Short answer.</tts>")); err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
 
-	if webDelta.String() != "" {
-		t.Fatalf("web delta stream = %q, want empty when text field is absent", webDelta.String())
+	if webDelta.String() != "Complete answer.\n<tts>Short answer.</tts>" {
+		t.Fatalf("web delta stream = %q", webDelta.String())
 	}
 	if speech.String() != "Short answer." {
 		t.Fatalf("speech stream = %q, want Short answer.", speech.String())
@@ -611,9 +693,48 @@ func TestHandleCoordinateDebugTap(t *testing.T) {
 	}
 }
 
+func TestHandleCoordinateDebugTapMapsStructuredToolErrorStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		toolErr    *ToolError
+		wantStatus int
+	}{
+		{name: "invalid input", toolErr: NewToolError(CodeInvalidArguments, "bad tap"), wantStatus: http.StatusBadRequest},
+		{name: "module unavailable", toolErr: NewToolError(CodeModuleUnavailable, "hid unavailable"), wantStatus: http.StatusServiceUnavailable},
+		{name: "execution failed", toolErr: NewToolError(CodeToolExecutionFailed, "hid write failed"), wantStatus: http.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			toolSet := &ToolSet{tools: map[string]langtools.Tool{
+				"touch_gesture": &contextToolErrorStub{name: "touch_gesture", toolErr: tc.toolErr},
+			}}
+			runtime := NewRuntimeWithDeps(
+				Config{Model: ModelConfig{Provider: "fake"}},
+				&testModelResolver{},
+				NewMemoryManager(""),
+				toolSet,
+				NewSkillIndex(),
+			)
+			server := NewServer(runtime, ":0")
+
+			req := httptest.NewRequest(http.MethodPost, "/api/coordinate-debug/tap", bytes.NewBufferString(`{"x":123,"y":456}`))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+
+			server.handleCoordinateDebugTap(rec, req)
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d body=%s, want %d", rec.Code, rec.Body.String(), tc.wantStatus)
+			}
+			if !strings.Contains(rec.Body.String(), tc.toolErr.Message) {
+				t.Fatalf("body = %s, want message %q", rec.Body.String(), tc.toolErr.Message)
+			}
+		})
+	}
+}
+
 func TestServerHandleChatStreamTagsHistoryWithRequestID(t *testing.T) {
 	model := &scriptedModel{
-		responses: roleDirectResponses("你好！"),
+		responses: roleDirectResponses("Hello!"),
 	}
 	runtime := NewRuntimeWithDeps(
 		Config{
@@ -806,7 +927,6 @@ func TestHandleScreenshotJPEGUpdatesSharedScreenStateFromPhoneAspectRatio(t *tes
 	if !server.bridge.handleAppEvent(BridgeCommandResponse{
 		ID:     "phone_environment",
 		Method: "phone_environment",
-		OK:     true,
 		Data:   envData,
 	}) {
 		t.Fatal("expected phone_environment event to be handled")
@@ -1076,18 +1196,18 @@ func TestServerSpeakToolContentUsesTTS(t *testing.T) {
 		audioClient: NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
 	}
 
-	server.speakToolContent(context.Background(), " 我先读取当前音量。 ")
+	server.speakToolContent(context.Background(), " Let me read the current volume. ")
 
-	if got := provider.texts(); len(got) != 1 || got[0] != "我先读取当前音量。" {
+	if got := provider.texts(); len(got) != 1 || got[0] != "Let me read the current volume." {
 		t.Fatalf("unexpected TTS texts: %#v", got)
 	}
 }
 
 func TestServerHandleChatDoesNotWaitForToolContentTTSWhenEnabled(t *testing.T) {
-	speech := "读取音量。"
+	speech := "Read volume."
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, speech),
+			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, "Reading volume.\n<tts>"+speech+"</tts>"),
 			contentResponse("The current audio volume is 42."),
 		},
 	}
@@ -1118,7 +1238,7 @@ func TestServerHandleChatDoesNotWaitForToolContentTTSWhenEnabled(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"当前音量是多少？"}`)).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"What is the current volume?"}`)).WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
@@ -1150,7 +1270,7 @@ func TestServerHandleChatDoesNotSpeakWaitForWakeup(t *testing.T) {
 	streamingDisabled := false
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			toolCallResponse("wait_1", "wait_for_wakeup", `{"reason":"user asked","speech":"我先待命。"}`),
+			toolCallResponse("wait_1", "wait_for_wakeup", `{"reason":"user asked","speech":"Standby mode."}`),
 		},
 	}
 	controller := NewWaitForWakeupController()
@@ -1188,7 +1308,7 @@ func TestServerHandleChatDoesNotSpeakWaitForWakeup(t *testing.T) {
 func TestServerHandleChatSkipsToolContentTTSWhenDisabled(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, "我先读取当前音量。"),
+			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, "Reading volume.\n<tts>Let me read the current volume.</tts>"),
 			contentResponse("The current audio volume is 42."),
 		},
 	}
@@ -1213,11 +1333,11 @@ func TestServerHandleChatSkipsToolContentTTSWhenDisabled(t *testing.T) {
 		NewSkillIndex(),
 	)
 	server := NewServer(runtime, ":0")
-	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: "我先读取当前音量。"}
+	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: "Let me read the current volume."}
 	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
 	server.audioClient = NewAudioServiceClient("/tmp/audio.sock")
 
-	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"当前音量是多少？"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"What is the current volume?"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
@@ -1230,6 +1350,32 @@ func TestServerHandleChatSkipsToolContentTTSWhenDisabled(t *testing.T) {
 	case <-provider.started:
 		t.Fatal("tool content TTS started despite voice_tool_call_speech=false")
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestServerShouldSpeakToolCallRequiresTTSTag(t *testing.T) {
+	toolSpeechEnabled := true
+	server := &Server{
+		runtime: NewRuntimeWithDeps(
+			Config{VoiceToolCallSpeech: &toolSpeechEnabled, Model: ModelConfig{Provider: "fake"}},
+			&testModelResolver{model: &scriptedModel{}},
+			NewMemoryManager(""),
+			NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+			NewSkillIndex(),
+		),
+	}
+
+	if server.shouldSpeakToolCall(RunEvent{Type: runEventToolCall, ToolName: "recall_memory", Content: "I will check your preferences first."}) {
+		t.Fatal("plain recall_memory tool content should not be spoken")
+	}
+	if server.shouldSpeakToolCall(RunEvent{Type: runEventToolCall, ToolName: "screenshot", Content: "I will inspect the screen first."}) {
+		t.Fatal("plain screenshot tool content should not be spoken")
+	}
+	if server.shouldSpeakToolCall(RunEvent{Type: runEventToolCall, ToolName: "audio_volume", Content: "Check the current volume."}) {
+		t.Fatal("plain audio_volume tool content should not be spoken")
+	}
+	if !server.shouldSpeakToolCall(RunEvent{Type: runEventToolCall, ToolName: "audio_volume", Content: "Checking.\n<tts>Check the current volume.</tts>"}) {
+		t.Fatal("tagged audio_volume tool content should be spoken")
 	}
 }
 
@@ -1274,6 +1420,62 @@ func TestServerHandleChatUsesRequestContextForRun(t *testing.T) {
 	case <-done:
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("handleChat did not return after request cancellation")
+	}
+}
+
+func TestServerHandleChatSyncUsesRequestContextForFinalTTS(t *testing.T) {
+	streamingDisabled := false
+	model := &scriptedModel{
+		responses: roleDirectResponses("Hello from sync final TTS.\n<tts>Hello from sync final TTS.</tts>"),
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:                    ModelConfig{Provider: "fake"},
+			Instruction:              "Answer directly.",
+			VoiceStreamingTTSEnabled: &streamingDisabled,
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	provider := newInterruptibleAudioTTSProvider("server-provider", 48000, true)
+	audioOps := &recordedAudioOps{}
+	server := NewServer(runtime, ":0")
+	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
+	server.audioClient = NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, audioOps))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"hello"}`)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.handleChat(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	waitForTestSignal(t, provider.firstWriteDone(), "sync final TTS playback to start")
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for audioOps.countOp("start_playback") == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("sync final TTS playback never opened a playback session")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancel()
+
+	deadline = time.Now().Add(500 * time.Millisecond)
+	for audioOps.countOp("stop_playback") == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("sync final TTS playback did not stop after request cancellation")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := audioOps.finalChunkCountAfterFirstStop(); got != 0 {
+		t.Fatalf("final write_play_chunk count after stop = %d, want 0", got)
 	}
 }
 
@@ -1332,6 +1534,215 @@ func TestServerHandleChatCancelEndsDanglingLiveActivity(t *testing.T) {
 	state := server.liveActivity.Snapshot("req-1")
 	if state == nil || state.Status != LiveActivityStatusCanceled || state.CanStop {
 		t.Fatalf("live activity state = %#v, want canceled", state)
+	}
+}
+
+func TestServerHandleChatCancelStopsRequestScopedTTSPlayback(t *testing.T) {
+	requestID := "req-stop-1"
+	audioOps := &recordedAudioOps{}
+	provider := newInterruptibleAudioTTSProvider("server-provider", 48000, true)
+	server := &Server{
+		activeRuns:  make(map[string]context.CancelFunc),
+		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
+		audioClient: NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, audioOps)),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	server.registerActiveRun(requestID, cancel)
+	done := make(chan error, 1)
+	go func() {
+		done <- server.speakTextForRequest(ctx, requestID, "final answer", 0)
+	}()
+	waitForTestSignal(t, provider.firstWriteDone(), "final TTS playback to start")
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for audioOps.countOp("start_playback") == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("final TTS playback never opened a playback session")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancelReq := httptest.NewRequest(http.MethodPost, "/api/chat/cancel", bytes.NewBufferString(`{"request_id":"`+requestID+`"}`))
+	cancelReq.Header.Set("Content-Type", "application/json")
+	cancelRec := httptest.NewRecorder()
+	server.handleChatCancel(cancelRec, cancelReq)
+
+	if cancelRec.Code != http.StatusOK {
+		t.Fatalf("unexpected cancel status: %d body=%s", cancelRec.Code, cancelRec.Body.String())
+	}
+	var resp ChatCancelResponse
+	if err := json.NewDecoder(cancelRec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode cancel response: %v", err)
+	}
+	if resp.Status != "canceled" || resp.RequestID != requestID {
+		t.Fatalf("unexpected cancel response: %#v", resp)
+	}
+	if got := audioOps.countOp("stop_playback"); got != 1 {
+		t.Fatalf("stop_playback count = %d, want 1", got)
+	}
+	if got := audioOps.finalChunkCountAfterFirstStop(); got != 0 {
+		t.Fatalf("final write_play_chunk count after stop = %d, want 0", got)
+	}
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("speakTextForRequest() error = %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("request-scoped TTS did not stop after cancel")
+	}
+}
+
+func TestServerHandleChatCancelStopsCompletedAsyncRequestTTSPlayback(t *testing.T) {
+	requestID := "req-stop-async-complete"
+	audioOps := &recordedAudioOps{}
+	provider := newInterruptibleAudioTTSProvider("server-provider", 48000, true)
+	server := &Server{
+		activeRuns:         make(map[string]context.CancelFunc),
+		terminatedRequests: make(map[string]struct{}),
+		ttsManager:         ttsmodule.NewProviderManager(provider, nil),
+		audioClient:        NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, audioOps)),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	server.registerActiveRun(requestID, cancel)
+
+	playbackDone := make(chan error, 1)
+	go func() {
+		playbackDone <- server.speakTextForRequest(ctx, requestID, "completed async final answer", 0)
+	}()
+
+	waitForTestSignal(t, provider.firstWriteDone(), "completed async final TTS playback to start")
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for audioOps.countOp("start_playback") == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("completed async final TTS playback never opened a playback session")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	server.unregisterActiveRun(requestID)
+
+	cancelReq := httptest.NewRequest(http.MethodPost, "/api/chat/cancel", bytes.NewBufferString(`{"request_id":"`+requestID+`"}`))
+	cancelReq.Header.Set("Content-Type", "application/json")
+	cancelRec := httptest.NewRecorder()
+	server.handleChatCancel(cancelRec, cancelReq)
+
+	if cancelRec.Code != http.StatusOK {
+		t.Fatalf("unexpected cancel status: %d body=%s", cancelRec.Code, cancelRec.Body.String())
+	}
+	var resp ChatCancelResponse
+	if err := json.NewDecoder(cancelRec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode cancel response: %v", err)
+	}
+	if resp.Status != "canceled" || resp.RequestID != requestID {
+		t.Fatalf("unexpected cancel response: %#v", resp)
+	}
+	if got := audioOps.countOp("stop_playback"); got != 1 {
+		t.Fatalf("stop_playback count = %d, want 1", got)
+	}
+	if got := audioOps.finalChunkCountAfterFirstStop(); got != 0 {
+		t.Fatalf("final write_play_chunk count after stop = %d, want 0", got)
+	}
+	select {
+	case err := <-playbackDone:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("speakTextForRequest() error = %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("completed async final request-scoped TTS did not stop after cancel")
+	}
+}
+
+func TestSpeakTextForRequestRefusesTerminatedRequest(t *testing.T) {
+	requestID := "req-terminated"
+	audioOps := &recordedAudioOps{}
+	provider := newInterruptibleAudioTTSProvider("server-provider", 48000, true)
+	server := &Server{
+		activeRuns:         make(map[string]context.CancelFunc),
+		terminatedRequests: make(map[string]struct{}),
+		ttsManager:         ttsmodule.NewProviderManager(provider, nil),
+		audioClient:        NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, audioOps)),
+	}
+	server.markRequestTerminated(requestID)
+
+	err := server.speakTextForRequest(context.Background(), requestID, "should not play", 0)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("speakTextForRequest() error = %v, want context canceled", err)
+	}
+	if got := audioOps.countOp("start_playback"); got != 0 {
+		t.Fatalf("start_playback count = %d, want 0", got)
+	}
+}
+
+func TestServerHandleChatCancelStopsRequestScopedStreamingTTSPlayback(t *testing.T) {
+	requestID := "req-stop-streaming"
+	audioOps := &recordedAudioOps{}
+	provider := newInterruptibleAudioTTSProvider("server-provider", 48000, true)
+	server := &Server{
+		activeRuns:  make(map[string]context.CancelFunc),
+		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
+		audioClient: NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, audioOps)),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	server.registerActiveRun(requestID, cancel)
+
+	stream, err := beginManagedTTSStream(ctx, server.ttsManager, server.audioClient, Config{})
+	if err != nil {
+		t.Fatalf("beginManagedTTSStream() error = %v", err)
+	}
+	output := newActiveTTSOutput(nil)
+	output.setStream(stream)
+	unregisterOutput := server.registerActiveOutput(requestID, output)
+	defer unregisterOutput()
+
+	writeDone := make(chan error, 1)
+	go func() {
+		_, writeErr := speechStreamWriterForConfig(stream, Config{}).Write([]byte("<tts>streaming final answer</tts>"))
+		writeDone <- writeErr
+	}()
+
+	waitForTestSignal(t, provider.firstWriteDone(), "request-scoped streaming TTS playback to start")
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for audioOps.countOp("start_playback") == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("streaming TTS playback never opened a playback session")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancelReq := httptest.NewRequest(http.MethodPost, "/api/chat/cancel", bytes.NewBufferString(`{"request_id":"`+requestID+`"}`))
+	cancelReq.Header.Set("Content-Type", "application/json")
+	cancelRec := httptest.NewRecorder()
+	server.handleChatCancel(cancelRec, cancelReq)
+
+	if cancelRec.Code != http.StatusOK {
+		t.Fatalf("unexpected cancel status: %d body=%s", cancelRec.Code, cancelRec.Body.String())
+	}
+	var resp ChatCancelResponse
+	if err := json.NewDecoder(cancelRec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode cancel response: %v", err)
+	}
+	if resp.Status != "canceled" || resp.RequestID != requestID {
+		t.Fatalf("unexpected cancel response: %#v", resp)
+	}
+	if got := audioOps.countOp("stop_playback"); got != 1 {
+		t.Fatalf("stop_playback count = %d, want 1", got)
+	}
+	if got := audioOps.finalChunkCountAfterFirstStop(); got != 0 {
+		t.Fatalf("final write_play_chunk count after stop = %d, want 0", got)
+	}
+	select {
+	case err := <-writeDone:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("stream Write() error = %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("request-scoped streaming TTS did not stop after cancel")
+	}
+	if err := stream.closeAndWait(); err != nil {
+		t.Fatalf("closeAndWait() error = %v", err)
 	}
 }
 
@@ -1467,7 +1878,7 @@ func TestServerHandleChatStreamDuplicateRequestIDDoesNotAppendHistory(t *testing
 }
 
 func TestServerSpeakToolContentUsesCallerContext(t *testing.T) {
-	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: "我先读取当前音量。"}
+	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: "Let me read the current volume."}
 	server := &Server{
 		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
 		audioClient: NewAudioServiceClient("/tmp/audio.sock"),
@@ -1476,7 +1887,7 @@ func TestServerSpeakToolContentUsesCallerContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		server.speakToolContent(ctx, "我先读取当前音量。")
+		server.speakToolContent(ctx, "Let me read the current volume.")
 		close(done)
 	}()
 
@@ -1601,7 +2012,7 @@ func TestServerHandleClearRemovesRuntimeMemory(t *testing.T) {
 		t.Fatalf("Get() error = %v", err)
 	}
 	if err := handle.History.SetMessages(context.Background(), []llms.ChatMessage{
-		llms.HumanChatMessage{Content: "记一下，以后处理蓝海报销App超过100元必须先确认。"},
+		llms.HumanChatMessage{Content: "Remember, expenses over 100 in the Lanhai reimbursement app must be confirmed first."},
 	}); err != nil {
 		t.Fatalf("SetMessages() error = %v", err)
 	}
@@ -1744,13 +2155,13 @@ func TestServerHandleSkillsReloadRejectsGet(t *testing.T) {
 }
 
 func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
-	stt := &stubSTTClient{transcript: "你好，帮我总结一下"}
+	stt := &stubSTTClient{transcript: "Hello, please summarize this"}
 	runtime := NewRuntimeWithDeps(
 		Config{
 			Model:       ModelConfig{Provider: "fake"},
 			Instruction: "Answer directly.",
 		},
-		&testModelResolver{model: &scriptedModel{responses: roleDirectResponses("已处理")}},
+		&testModelResolver{model: &scriptedModel{responses: roleDirectResponses("Completed")}},
 		NewMemoryManager(""),
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
@@ -1791,23 +2202,23 @@ func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 
-	if resp.Response != "已处理" {
+	if resp.Response != "Completed" {
 		t.Fatalf("unexpected response: %q", resp.Response)
 	}
 	if len(resp.History) != 3 {
 		t.Fatalf("expected 3 history entries for default-mode direct finish, got %d", len(resp.History))
 	}
-	if resp.History[0].Content != "你好，帮我总结一下" {
+	if resp.History[0].Content != "Hello, please summarize this" {
 		t.Fatalf("expected transcript as user content, got %#v", resp.History[0])
 	}
-	if len(resp.History[0].Attachments) != 1 || resp.History[0].Attachments[0].Transcript != "你好，帮我总结一下" {
+	if len(resp.History[0].Attachments) != 1 || resp.History[0].Attachments[0].Transcript != "Hello, please summarize this" {
 		t.Fatalf("expected transcript on audio attachment, got %#v", resp.History[0].Attachments)
 	}
 	if _, ok := firstMessageOfType(resp.History, "role_output"); !ok {
 		t.Fatalf("expected role output messages in history: %#v", resp.History)
 	}
 	assistant, ok := firstMessageOfType(resp.History, "assistant")
-	if !ok || assistant.Content != "已处理" {
+	if !ok || assistant.Content != "Completed" {
 		t.Fatalf("unexpected assistant message: %#v", resp.History)
 	}
 }
@@ -1917,6 +2328,448 @@ func TestServerDeviceAudioRecordingEndpointsReturnWAVAttachment(t *testing.T) {
 	}
 	if len(wavData) != 48 {
 		t.Fatalf("expected 2 PCM16 samples in WAV, got %d bytes", len(wavData))
+	}
+}
+
+func TestServerDeviceAudioRecordingStopIncludesStreamingTranscript(t *testing.T) {
+	stopCh := make(chan struct{})
+	var stopOnce sync.Once
+
+	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
+		switch req.Op {
+		case "start_playback":
+			return audioResponse{Status: "OK", SessionID: stringUint64(7)}, nil
+		case "write_play_chunk", "health":
+			return audioResponse{Status: "OK"}, nil
+		case "start_recording":
+			return audioResponse{Status: "OK", SessionID: stringUint64(42)}, nil
+		case "read_record_chunk":
+			select {
+			case <-stopCh:
+				return audioResponse{Status: "OK", EndOfStream: true}, nil
+			default:
+				return audioResponse{Status: "OK"}, []byte{1, 0, 2, 0}
+			}
+		case "stop_recording":
+			stopOnce.Do(func() { close(stopCh) })
+			return audioResponse{Status: "OK"}, nil
+		default:
+			return audioResponse{Status: "INTERNAL_ERROR"}, nil
+		}
+	})
+
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model: ModelConfig{Provider: "fake"},
+			Audio: AudioConfig{
+				Socket:     socketPath,
+				SampleRate: 16000,
+				Channels:   1,
+				BitWidth:   16,
+			},
+		},
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+	server.sttClient = &stubSTTClient{
+		supportsStreaming: true,
+		streamUploader:    &stubSTTStreamUploader{transcript: "streaming upload result"},
+	}
+
+	startReq := httptest.NewRequest(http.MethodPost, "/api/audio/record/start", nil)
+	startRec := httptest.NewRecorder()
+	server.handleAudioRecordStart(startRec, startReq)
+	if startRec.Code != http.StatusOK {
+		t.Fatalf("unexpected start status: %d body=%s", startRec.Code, startRec.Body.String())
+	}
+
+	stopReq := httptest.NewRequest(http.MethodPost, "/api/audio/record/stop", nil)
+	stopRec := httptest.NewRecorder()
+	server.handleAudioRecordStop(stopRec, stopReq)
+	if stopRec.Code != http.StatusOK {
+		t.Fatalf("unexpected stop status: %d body=%s", stopRec.Code, stopRec.Body.String())
+	}
+
+	var resp AudioRecordStopResponse
+	if err := json.NewDecoder(stopRec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode stop response: %v", err)
+	}
+	if resp.Attachment.Transcript != "streaming upload result" {
+		t.Fatalf("Attachment.Transcript = %q, want streaming upload result", resp.Attachment.Transcript)
+	}
+}
+
+func TestServerEndWebRecordingClearsStreamingSessionOnDrainTimeout(t *testing.T) {
+	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
+		switch req.Op {
+		case "stop_recording":
+			return audioResponse{Status: "OK"}, nil
+		default:
+			return audioResponse{Status: "OK"}, nil
+		}
+	})
+
+	uploader := newBlockingFinalizeUploader("")
+	server := &Server{audioClient: NewAudioServiceClient(socketPath)}
+	recording := &webAudioRecording{
+		sessionID:  42,
+		sampleRate: 16000,
+		done:       make(chan struct{}),
+		sttSession: &streamingSTTSession{uploader: uploader},
+	}
+
+	err := server.endWebRecordingWithTimeout(recording, 20*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "timed out waiting for audio recording to drain") {
+		t.Fatalf("endWebRecordingWithTimeout() error = %v, want drain timeout", err)
+	}
+	select {
+	case <-uploader.closed:
+	case <-time.After(time.Second):
+		t.Fatal("expected uploader to be closed after drain timeout")
+	}
+}
+
+func TestServerEndWebRecordingReturnsFinalizeTimeout(t *testing.T) {
+	oldTimeout := webRecordingStreamingSTTFinalizeTimeout
+	webRecordingStreamingSTTFinalizeTimeout = 20 * time.Millisecond
+	t.Cleanup(func() {
+		webRecordingStreamingSTTFinalizeTimeout = oldTimeout
+	})
+
+	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
+		switch req.Op {
+		case "stop_recording":
+			return audioResponse{Status: "OK"}, nil
+		default:
+			return audioResponse{Status: "OK"}, nil
+		}
+	})
+
+	done := make(chan struct{})
+	close(done)
+	uploader := newBlockingFinalizeUploader("")
+	server := &Server{audioClient: NewAudioServiceClient(socketPath)}
+	recording := &webAudioRecording{
+		sessionID:  42,
+		sampleRate: 16000,
+		done:       done,
+		sttSession: &streamingSTTSession{uploader: uploader},
+	}
+
+	err := server.endWebRecordingWithTimeout(recording, time.Second)
+	if !errors.Is(err, errStreamingSTTFinalizeTimeout) {
+		t.Fatalf("endWebRecordingWithTimeout() error = %v, want finalize timeout", err)
+	}
+	select {
+	case <-uploader.closed:
+	case <-time.After(time.Second):
+		t.Fatal("expected uploader to be closed after finalize timeout")
+	}
+}
+
+func TestServerWebAudioInputModeNeverFallsBackToRemovedAudio(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  Config
+		stt  STTClient
+		want string
+	}{
+		{
+			name: "explicit stt",
+			cfg:  Config{InputMode: " stt "},
+			want: TurnModalitySTT,
+		},
+		{
+			name: "text with stt client",
+			cfg:  Config{InputMode: "text"},
+			stt:  &stubSTTClient{},
+			want: TurnModalitySTT,
+		},
+		{
+			name: "default text without stt client",
+			cfg:  Config{},
+			want: TurnModalityText,
+		},
+		{
+			name: "explicit text without stt client",
+			cfg:  Config{InputMode: " text "},
+			want: TurnModalityText,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := &Server{
+				runtime:   &Runtime{config: tt.cfg},
+				sttClient: tt.stt,
+			}
+			got := server.webAudioInputMode()
+			if got != tt.want {
+				t.Fatalf("webAudioInputMode() = %q, want %q", got, tt.want)
+			}
+			if got == TurnModalityAudio {
+				t.Fatalf("webAudioInputMode() returned removed audio mode")
+			}
+		})
+	}
+}
+
+func TestServerHandleChatUsesAttachmentTranscriptWithoutRetranscribing(t *testing.T) {
+	model := &scriptedModel{
+		responses: roleDirectResponses("Completed"),
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use transcript directly.",
+			InputMode:   "stt",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	stt := &stubSTTClient{transcript: "should not be called"}
+	server := &Server{
+		runtime:   runtime,
+		history:   make([]Message, 0),
+		sttClient: stt,
+	}
+
+	payload, err := json.Marshal(ChatRequest{
+		Attachments: []MessageAttachment{{
+			Kind:       AttachmentKindAudio,
+			Name:       "recording.wav",
+			MIMEType:   "audio/wav",
+			Data:       base64.StdEncoding.EncodeToString([]byte("RIFFtest")),
+			Transcript: "directly reused transcript",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	server.handleChat(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(stt.inputs) != 0 {
+		t.Fatalf("expected attachment transcript to skip TranscribeWAV, got %d calls", len(stt.inputs))
+	}
+
+	var resp ChatResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.History[0].Content != "directly reused transcript" {
+		t.Fatalf("expected transcript as user content, got %#v", resp.History[0])
+	}
+}
+
+func TestServerSTTConfigTestLiveSessionUsesStreamingTranscript(t *testing.T) {
+	sentChunk := false
+	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
+		switch req.Op {
+		case "start_recording":
+			return audioResponse{Status: "OK", SessionID: stringUint64(41)}, nil
+		case "read_record_chunk":
+			timeoutMs := int(req.TimeoutMs)
+			if timeoutMs <= 0 {
+				t.Fatalf("unexpected timeout_ms: %d", timeoutMs)
+			}
+			if !sentChunk {
+				sentChunk = true
+				return audioResponse{Status: "OK"}, []byte{1, 0, 2, 0, 3, 0, 4, 0}
+			}
+			return audioResponse{Status: "OK", EndOfStream: true}, nil
+		case "stop_recording":
+			return audioResponse{Status: "OK"}, nil
+		default:
+			return audioResponse{Status: "INTERNAL_ERROR"}, nil
+		}
+	})
+
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model: ModelConfig{Provider: "fake"},
+			Audio: AudioConfig{
+				Socket:     socketPath,
+				SampleRate: 16000,
+				Channels:   1,
+				BitWidth:   16,
+			},
+		},
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+
+	stt := &stubSTTClient{
+		supportsStreaming: true,
+		streamUploader:    &stubSTTStreamUploader{transcript: "streaming upload result"},
+	}
+	previousFactory := newSTTClientFromConfigForLiveTest
+	newSTTClientFromConfigForLiveTest = func(cfg Config) (STTClient, error) {
+		if cfg.STT.Provider != "tencent-asr" {
+			t.Fatalf("provider = %q, want tencent-asr", cfg.STT.Provider)
+		}
+		if cfg.Audio.Socket != socketPath {
+			t.Fatalf("audio socket = %q, want %q", cfg.Audio.Socket, socketPath)
+		}
+		return stt, nil
+	}
+	defer func() {
+		newSTTClientFromConfigForLiveTest = previousFactory
+	}()
+
+	startBody := `{"stt_values":{"provider":"tencent-asr","app_id":"app-1","secret_id":"id","secret_key":"key","region":"ap-shanghai","engine_model_type":"16k_zh"},"audio_values":{"socket":"` + socketPath + `","sample_rate":16000,"channels":1,"bit_width":16}}`
+	startReq := httptest.NewRequest(http.MethodPost, "/api/config-test/stt/start", strings.NewReader(startBody))
+	startReq.Header.Set("Content-Type", "application/json")
+	startRec := httptest.NewRecorder()
+	server.handleSTTConfigTestStart(startRec, startReq)
+	if startRec.Code != http.StatusOK {
+		t.Fatalf("unexpected start status: %d body=%s", startRec.Code, startRec.Body.String())
+	}
+
+	stopReq := httptest.NewRequest(http.MethodPost, "/api/config-test/stt/stop", nil)
+	stopRec := httptest.NewRecorder()
+	server.handleSTTConfigTestStop(stopRec, stopReq)
+	if stopRec.Code != http.StatusOK {
+		t.Fatalf("unexpected stop status: %d body=%s", stopRec.Code, stopRec.Body.String())
+	}
+
+	var resp struct {
+		OK         bool   `json:"ok"`
+		Transcript string `json:"transcript"`
+		Results    []struct {
+			Check  string `json:"check"`
+			Passed bool   `json:"passed"`
+			Detail string `json:"detail"`
+		} `json:"results"`
+	}
+	if err := json.NewDecoder(stopRec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode stop response: %v", err)
+	}
+	if !resp.OK {
+		t.Fatalf("expected ok=true, got %#v", resp)
+	}
+	if resp.Transcript != "streaming upload result" {
+		t.Fatalf("transcript = %q, want streaming upload result", resp.Transcript)
+	}
+	if len(stt.inputs) != 0 {
+		t.Fatalf("expected streaming transcript to skip TranscribeWAV, got %d calls", len(stt.inputs))
+	}
+	if stt.streamUploaderUsed != 1 {
+		t.Fatalf("stream uploader begin count = %d, want 1", stt.streamUploaderUsed)
+	}
+	if stt.streamUploader == nil || len(stt.streamUploader.writes) != 1 {
+		t.Fatalf("stream uploader writes = %#v, want one PCM write", stt.streamUploader)
+	}
+	if len(resp.Results) != 1 || !strings.Contains(resp.Results[0].Detail, "streaming") {
+		t.Fatalf("unexpected results: %#v", resp.Results)
+	}
+}
+
+func TestServerSTTConfigTestLiveSessionFallsBackToOneShot(t *testing.T) {
+	sentChunk := false
+	socketPath := startFakeAudioServiceSocket(t, func(req audioRequest) (audioResponse, []byte) {
+		switch req.Op {
+		case "start_recording":
+			return audioResponse{Status: "OK", SessionID: stringUint64(42)}, nil
+		case "read_record_chunk":
+			if !sentChunk {
+				sentChunk = true
+				return audioResponse{Status: "OK"}, []byte{10, 0, 11, 0, 12, 0, 13, 0}
+			}
+			return audioResponse{Status: "OK", EndOfStream: true}, nil
+		case "stop_recording":
+			return audioResponse{Status: "OK"}, nil
+		default:
+			return audioResponse{Status: "INTERNAL_ERROR"}, nil
+		}
+	})
+
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model: ModelConfig{Provider: "fake"},
+			Audio: AudioConfig{
+				Socket:     socketPath,
+				SampleRate: 16000,
+				Channels:   1,
+				BitWidth:   16,
+			},
+		},
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+
+	stt := &stubSTTClient{transcript: "one-shot result"}
+	previousFactory := newSTTClientFromConfigForLiveTest
+	newSTTClientFromConfigForLiveTest = func(cfg Config) (STTClient, error) {
+		if cfg.STT.Provider != "openai-whisper" {
+			t.Fatalf("provider = %q, want openai-whisper", cfg.STT.Provider)
+		}
+		return stt, nil
+	}
+	defer func() {
+		newSTTClientFromConfigForLiveTest = previousFactory
+	}()
+
+	startBody := `{"stt_values":{"provider":"openai-whisper","api_key":"sk-test","model":"whisper-1","base_url":"http://127.0.0.1:9"},"audio_values":{"socket":"` + socketPath + `","sample_rate":16000,"channels":1,"bit_width":16}}`
+	startReq := httptest.NewRequest(http.MethodPost, "/api/config-test/stt/start", strings.NewReader(startBody))
+	startReq.Header.Set("Content-Type", "application/json")
+	startRec := httptest.NewRecorder()
+	server.handleSTTConfigTestStart(startRec, startReq)
+	if startRec.Code != http.StatusOK {
+		t.Fatalf("unexpected start status: %d body=%s", startRec.Code, startRec.Body.String())
+	}
+
+	stopReq := httptest.NewRequest(http.MethodPost, "/api/config-test/stt/stop", nil)
+	stopRec := httptest.NewRecorder()
+	server.handleSTTConfigTestStop(stopRec, stopReq)
+	if stopRec.Code != http.StatusOK {
+		t.Fatalf("unexpected stop status: %d body=%s", stopRec.Code, stopRec.Body.String())
+	}
+
+	var resp struct {
+		OK         bool   `json:"ok"`
+		Transcript string `json:"transcript"`
+		Results    []struct {
+			Check  string `json:"check"`
+			Passed bool   `json:"passed"`
+			Detail string `json:"detail"`
+		} `json:"results"`
+	}
+	if err := json.NewDecoder(stopRec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode stop response: %v", err)
+	}
+	if !resp.OK {
+		t.Fatalf("expected ok=true, got %#v", resp)
+	}
+	if resp.Transcript != "one-shot result" {
+		t.Fatalf("transcript = %q, want one-shot result", resp.Transcript)
+	}
+	if len(stt.inputs) != 1 {
+		t.Fatalf("TranscribeWAV calls = %d, want 1", len(stt.inputs))
+	}
+	if stt.streamUploaderUsed != 0 {
+		t.Fatalf("stream uploader begin count = %d, want 0", stt.streamUploaderUsed)
+	}
+	if len(resp.Results) != 1 || !strings.Contains(resp.Results[0].Detail, "one-shot") {
+		t.Fatalf("unexpected results: %#v", resp.Results)
 	}
 }
 
@@ -2378,4 +3231,169 @@ func startFakeFrameServiceSocket(t *testing.T, handler func(map[string]any) (str
 	}()
 
 	return socketPath
+}
+
+func newBenchmarkSeedMemoryServer(t *testing.T) (*Server, string) {
+	t.Helper()
+	configDir := t.TempDir()
+	streamingDisabled := false
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:                configDir,
+			Model:                    ModelConfig{Provider: "fake"},
+			Benchmark:                BenchmarkConfig{Token: "test-benchmark-token"},
+			Instruction:              "Answer directly.",
+			VoiceStreamingTTSEnabled: &streamingDisabled,
+			VoiceToolCallSpeech:      &streamingDisabled,
+		},
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(filepath.Join(configDir, "memory")),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	return NewServer(runtime, ":0"), configDir
+}
+
+func TestHandleBenchmarkSeedMemorySucceeds(t *testing.T) {
+	server, configDir := newBenchmarkSeedMemoryServer(t)
+	body := `{"id":"personamem_test_seed_1","type":"preference","title":"Test seed","content":"Seeded fixture content.","tags":["t1"],"priority":80}`
+	req := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_memory", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-benchmark-token")
+	rec := httptest.NewRecorder()
+
+	server.handleBenchmarkSeedMemory(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["status"] != "seeded" || resp["id"] != "personamem_test_seed_1" {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+
+	memPath := filepath.Join(configDir, "memory", "long_term", "memories", "personamem_test_seed_1.md")
+	data, err := os.ReadFile(memPath)
+	if err != nil {
+		t.Fatalf("read seeded memory file: %v", err)
+	}
+	if !strings.Contains(string(data), "Seeded fixture content.") {
+		t.Fatalf("memory file missing content, got: %s", string(data))
+	}
+	if !strings.Contains(string(data), "id: personamem_test_seed_1") {
+		t.Fatalf("memory file missing fixed id, got: %s", string(data))
+	}
+}
+
+func TestHandleBenchmarkSeedMemoryRequiresBenchmarkToken(t *testing.T) {
+	server, _ := newBenchmarkSeedMemoryServer(t)
+	body := `{"id":"personamem_test_seed_1","content":"Seeded fixture content."}`
+	req := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_memory", bytes.NewBufferString(body))
+	rec := httptest.NewRecorder()
+
+	server.handleBenchmarkSeedMemory(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleBenchmarkSeedMemoryOverwritesSameID(t *testing.T) {
+	server, configDir := newBenchmarkSeedMemoryServer(t)
+	mkReq := func(content string) *http.Request {
+		body := fmt.Sprintf(`{"id":"personamem_overwrite_1","type":"fact","content":%q}`, content)
+		req := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_memory", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer test-benchmark-token")
+		return req
+	}
+
+	rec := httptest.NewRecorder()
+	server.handleBenchmarkSeedMemory(rec, mkReq("first content"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first seed status: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec2 := httptest.NewRecorder()
+	server.handleBenchmarkSeedMemory(rec2, mkReq("second content"))
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("second seed status: %d body=%s", rec2.Code, rec2.Body.String())
+	}
+
+	memPath := filepath.Join(configDir, "memory", "long_term", "memories", "personamem_overwrite_1.md")
+	data, err := os.ReadFile(memPath)
+	if err != nil {
+		t.Fatalf("read seeded memory file: %v", err)
+	}
+	if !strings.Contains(string(data), "second content") {
+		t.Fatalf("expected overwrite to second content, got: %s", string(data))
+	}
+	if strings.Contains(string(data), "first content") {
+		t.Fatalf("first content should be overwritten, still present: %s", string(data))
+	}
+}
+
+func TestHandleBenchmarkSeedMemoryRejectsMissingFields(t *testing.T) {
+	server, _ := newBenchmarkSeedMemoryServer(t)
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"missing id", `{"content":"x"}`},
+		{"missing content", `{"id":"x"}`},
+		{"blank id", `{"id":" ","content":"x"}`},
+		{"blank content", `{"id":"x","content":"  "}`},
+		{"malformed json", `{`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_memory", bytes.NewBufferString(tc.body))
+			req.Header.Set("Authorization", "Bearer test-benchmark-token")
+			rec := httptest.NewRecorder()
+			server.handleBenchmarkSeedMemory(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandleBenchmarkSeedMemoryRejectsNonPost(t *testing.T) {
+	server, _ := newBenchmarkSeedMemoryServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/benchmark/seed_memory", nil)
+	req.Header.Set("Authorization", "Bearer test-benchmark-token")
+	rec := httptest.NewRecorder()
+	server.handleBenchmarkSeedMemory(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleBenchmarkSeedMemoryReturns503WhenMemoryUnconfigured(t *testing.T) {
+	streamingDisabled := false
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:                    ModelConfig{Provider: "fake"},
+			Benchmark:                BenchmarkConfig{Token: "test-benchmark-token"},
+			Instruction:              "Answer directly.",
+			VoiceStreamingTTSEnabled: &streamingDisabled,
+			VoiceToolCallSpeech:      &streamingDisabled,
+		},
+		&testModelResolver{model: &scriptedModel{}},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+	body := `{"id":"x","content":"y"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_memory", bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer test-benchmark-token")
+	rec := httptest.NewRecorder()
+	server.handleBenchmarkSeedMemory(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d body=%s", rec.Code, rec.Body.String())
+	}
 }

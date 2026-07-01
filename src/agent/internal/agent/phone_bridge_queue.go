@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -36,13 +37,13 @@ const (
 
 // QueuedCommand wraps a BridgeCommand with queue metadata
 type QueuedCommand struct {
-	Command     BridgeCommand `json:"command"`
-	Status      CommandStatus `json:"status"`
-	QueuedAt    time.Time     `json:"queued_at"`
-	InFlightAt  *time.Time    `json:"in_flight_at,omitempty"`
-	ExpireAt    time.Time     `json:"expire_at"`
-	RetryCount  int           `json:"retry_count"`
-	MaxRetries  int           `json:"max_retries"`
+	Command    BridgeCommand `json:"command"`
+	Status     CommandStatus `json:"status"`
+	QueuedAt   time.Time     `json:"queued_at"`
+	InFlightAt *time.Time    `json:"in_flight_at,omitempty"`
+	ExpireAt   time.Time     `json:"expire_at"`
+	RetryCount int           `json:"retry_count"`
+	MaxRetries int           `json:"max_retries"`
 }
 
 // CommandResult holds the execution result of a command
@@ -121,6 +122,13 @@ func (q *CommandQueue) Get(commandID string) *QueuedCommand {
 
 // Poll retrieves up to `limit` queued commands and marks them as in-flight
 func (q *CommandQueue) Poll(platform string, limit int) []BridgeCommand {
+	return q.PollForPhone(platform, "", limit)
+}
+
+// PollForPhone retrieves queued commands for a platform and optional phone ID.
+// Commands without a phone_id remain compatible and can be picked up by any
+// matching platform client.
+func (q *CommandQueue) PollForPhone(platform, phoneID string, limit int) []BridgeCommand {
 	if limit <= 0 {
 		limit = 10
 	}
@@ -140,8 +148,10 @@ func (q *CommandQueue) Poll(platform string, limit int) []BridgeCommand {
 			continue
 		}
 
-		// Platform filtering
 		if !q.matchesPlatform(&cmd.Command, platform) {
+			continue
+		}
+		if !q.matchesPhoneID(&cmd.Command, phoneID) {
 			continue
 		}
 
@@ -158,27 +168,23 @@ func (q *CommandQueue) Poll(platform string, limit int) []BridgeCommand {
 	}
 
 	if q.logger != nil && len(commands) > 0 {
-		q.logger.Info("phone-bridge-queue: polled %d command(s) for platform=%s", len(commands), platform)
+		q.logger.Info("phone-bridge-queue: polled %d command(s) for platform=%s phone_id=%s", len(commands), platform, phoneID)
 	}
 
 	return commands
 }
 
 // matchesPlatform checks if a command is relevant for the given platform
-func (q *CommandQueue) matchesPlatform(cmd *BridgeCommand, platform string) bool {
-	// If no platform-specific fields, command applies to all platforms
-	if len(cmd.IOSURLs) == 0 && len(cmd.AndroidPackages) == 0 {
-		return true
-	}
+func (q *CommandQueue) matchesPlatform(_ *BridgeCommand, _ string) bool {
+	return true
+}
 
-	switch platform {
-	case "ios":
-		return len(cmd.IOSURLs) > 0
-	case "android":
-		return len(cmd.AndroidPackages) > 0
-	default:
+func (q *CommandQueue) matchesPhoneID(cmd *BridgeCommand, phoneID string) bool {
+	commandPhoneID := strings.TrimSpace(cmd.PhoneID)
+	if commandPhoneID == "" {
 		return true
 	}
+	return commandPhoneID == strings.TrimSpace(phoneID)
 }
 
 // SubmitResult records the execution result and removes the command from the queue
@@ -214,7 +220,8 @@ func (q *CommandQueue) SubmitResult(resp BridgeCommandResponse) error {
 	}
 
 	if q.logger != nil {
-		q.logger.Info("phone-bridge-queue: result submitted for command %s (ok=%v)", resp.ID, resp.OK)
+		ok := resp.Error == nil
+		q.logger.Info("phone-bridge-queue: result submitted for command %s (ok=%v)", resp.ID, ok)
 	}
 
 	return nil
@@ -324,4 +331,3 @@ func (q *CommandQueue) removeCommandID(id string) {
 		}
 	}
 }
-

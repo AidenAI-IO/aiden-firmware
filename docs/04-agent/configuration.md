@@ -155,12 +155,12 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | `max_iterations` | `-1` | Maximum number of tool-call loops per run; `-1` means unlimited |
 | `screenshot_keep_n` | `3` | Number of most recent screenshots to keep when pruning screenshots from the LLM context; unset or `0` uses the default |
 | `screenshot_prune_interval` | `2` | Once screenshots exceed `screenshot_keep_n + screenshot_prune_interval`, replace old screenshots with placeholders in batches; unset or `0` uses the default |
-| `input_mode` | `text` / `stt` / `audio` | Input mode |
+| `input_mode` | `text` / `stt` | Input mode |
 | `todo_reminder_tool_calls` | `3` | In single-agent/default mode, after how many consecutive tool calls to remind the model to update the todo; set to `0` to use the default |
 
 ### Voice & VAD
 
-These fields apply to the `stt` and `audio` input modes.
+These fields apply to the `stt` input mode.
 
 | Field | Default | Description |
 | --- | --- | --- |
@@ -230,12 +230,11 @@ Used for the iOS companion app Live Activity / Dynamic Island task status. The a
 | `enabled` | `true` | Enables agent-side state snapshots and APIs |
 | `relay_url` | preconfigured in official firmware | Aiden Live Activity relay URL; only advanced deployments need to override it |
 | `relay_api_key` | preconfigured in official firmware | Shared relay Bearer token; must match the app build config and relay server `AIDEN_RELAY_API_KEY` |
-| `board_id` | `default` | Board ID in relay; should match the app `LIVE_ACTIVITY_BOARD_ID` |
-| `phone_id` | - | Phone ID in relay; empty lets relay use the default/latest phone registered for this board |
+| `board_id` | generated in `/userdata/agent/board_id` | Board ID in relay; generated on first run. Empty or `default` is not a valid relay identity |
 
 ## `[stt]` and `[tts]`
 
-`[stt]` is required when `input_mode = "stt"`; `[tts]` is required when `input_mode = "stt"` or `"audio"`.
+`[stt]` is required when `input_mode = "stt"`; `[tts]` is required when `input_mode = "stt"`.
 
 STT:
 

@@ -31,6 +31,9 @@ func TestGuardMessagesWithinContextWindowFallbackOmitsCombinedToolResults(t *tes
 	if !strings.Contains(contents[0], "tool result omitted") || !strings.Contains(contents[1], "tool result omitted") {
 		t.Fatalf("combined tool responses should be omitted by fallback pass: %#v", contents)
 	}
+	if !strings.HasPrefix(contents[0], "note:") || !strings.HasPrefix(contents[1], "note:") {
+		t.Fatalf("omission placeholders should use note prefix: %#v", contents)
+	}
 }
 
 func TestGuardMessagesWithinContextWindowDoesNotTreatRawOmissionTextAsAlreadyOmitted(t *testing.T) {
@@ -58,8 +61,41 @@ func TestGuardMessagesWithinContextWindowDoesNotTreatRawOmissionTextAsAlreadyOmi
 	if contents[1] == rawOmissionTextOutput {
 		t.Fatalf("raw tool output containing omission text should not be treated as already omitted")
 	}
-	if !strings.Contains(contents[1], "context_window=") {
+	if !strings.HasPrefix(contents[1], "note:") || !strings.Contains(contents[1], "would exceed the model context window") || !strings.Contains(contents[1], "tool call already completed") {
 		t.Fatalf("second tool response should be replaced with omission metadata, got: %q", contents[1])
+	}
+}
+
+func TestGuardMessagesWithinContextWindowUsesStableOmissionTextAcrossPromptSizes(t *testing.T) {
+	oversizedOutput := strings.Repeat("oversized ", 720)
+	baseMessages := contextBudgetToolMessages(oversizedOutput)
+	extraPromptMessages := []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeSystem, "system prompt"),
+		llms.TextParts(llms.ChatMessageTypeHuman, "summarize tool output"),
+		llms.TextParts(llms.ChatMessageTypeHuman, "extra surrounding context that should not change the omission placeholder"),
+	}
+	extraPromptMessages = append(extraPromptMessages, baseMessages[2:]...)
+
+	baseCandidates := collectToolResponseBudgetCandidates(baseMessages)
+	if len(baseCandidates) != 1 {
+		t.Fatalf("base candidates = %d, want 1", len(baseCandidates))
+	}
+	baseInputBudget := estimateSingleToolResponsePromptTokens(baseMessages, baseCandidates[0]) - 1
+	if baseInputBudget <= 0 {
+		t.Fatalf("base input budget = %d, want > 0", baseInputBudget)
+	}
+
+	executor := &roleCollaborativeExecutor{
+		Model: contextBudgetWindowModel{window: baseInputBudget},
+	}
+
+	baseSanitized := executor.guardMessagesWithinContextWindow(baseMessages, nil)
+	extraSanitized := executor.guardMessagesWithinContextWindow(extraPromptMessages, nil)
+	baseContent := toolResponseContents(t, baseSanitized)[0]
+	extraContent := toolResponseContents(t, extraSanitized)[0]
+
+	if baseContent != extraContent {
+		t.Fatalf("omission placeholder should stay stable across prompt sizes\nbase:  %q\nextra: %q", baseContent, extraContent)
 	}
 }
 

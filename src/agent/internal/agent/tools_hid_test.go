@@ -8,14 +8,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
-
-	"golang.org/x/sys/unix"
 )
 
 func TestResolvePointerPositionNormalized(t *testing.T) {
@@ -598,7 +595,7 @@ func TestKeyboardTextDescriptionWarnsAgainstNonASCII(t *testing.T) {
 		"ASCII",
 		"Do NOT pass non-ASCII",
 		"enter_text_in_field",
-		"pinyin",
+		"Do not transliterate Chinese/CJK targets to pinyin",
 		`{"text":"App Store"}`,
 		"do not pass a bare string",
 	} {
@@ -609,6 +606,7 @@ func TestKeyboardTextDescriptionWarnsAgainstNonASCII(t *testing.T) {
 	for _, unexpected := range []string{
 		"Type a string of text",
 		"hello world",
+		"use pinyin",
 	} {
 		if strings.Contains(desc, unexpected) {
 			t.Fatalf("description should not contain misleading phrase %q:\n%s", unexpected, desc)
@@ -737,7 +735,7 @@ func TestPostActionScreenshotToolFallsBackScreenshotWhenScreenUnstable(t *testin
 	if result.Data != "ZmFrZQ==" {
 		t.Fatalf("screenshot data = %q, want fallback capture", result.Data)
 	}
-	if len(waitStable.inputs) != 1 || waitStable.inputs[0] != `{"timeout_ms":3000,"stable_ms":500,"diff_threshold":2}` {
+	if len(waitStable.inputs) != 1 || waitStable.inputs[0] != `{"timeout_ms":3000,"stable_ms":500,"diff_threshold":5}` {
 		t.Fatalf("wait stable inputs = %#v", waitStable.inputs)
 	}
 	if len(screenshot.inputs) != 1 {
@@ -778,17 +776,60 @@ func TestPostActionScreenshotToolSkipsScreenshotOnActionErrorOutput(t *testing.T
 		output: `{"width":320,"height":240,"format":"jpeg","size":4,"data":"ZmFrZQ=="}`,
 	}
 	tool := newPostActionScreenshotTool(action, screenshot, 0)
+	ctx, _ := WithToolError(context.Background())
 
-	out, err := tool.Call(context.Background(), `{}`)
+	out, err := tool.Call(ctx, `{}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
-	if out != "error: invalid input" {
-		t.Fatalf("Call output = %q, want original error output", out)
+	if out != "invalid input" {
+		t.Fatalf("Call output = %q, want structured error message", out)
+	}
+	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeToolExecutionFailed || got.Message != out {
+		t.Fatalf("ToolError = %+v, want tool_execution_failed with output message", got)
 	}
 	if len(screenshot.inputs) != 0 {
 		t.Fatalf("screenshot should not be called on action error, got inputs %#v", screenshot.inputs)
 	}
+}
+
+func TestPostActionScreenshotToolSkipsScreenshotOnStructuredActionError(t *testing.T) {
+	toolErr := NewToolError(CodeInvalidArguments, "invalid touch gesture")
+	action := &contextToolErrorStub{name: "touch_gesture", toolErr: toolErr}
+	screenshot := &stubTool{
+		name:   "screenshot",
+		output: `{"width":320,"height":240,"format":"jpeg","size":4,"data":"ZmFrZQ=="}`,
+	}
+	tool := newPostActionScreenshotTool(action, screenshot, 0)
+	ctx, _ := WithToolError(context.Background())
+
+	out, err := tool.Call(ctx, `{}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != toolErr.Message {
+		t.Fatalf("Call output = %q, want structured error message %q", out, toolErr.Message)
+	}
+	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeInvalidArguments {
+		t.Fatalf("context ToolError = %+v, want invalid_arguments", got)
+	}
+	if len(screenshot.inputs) != 0 {
+		t.Fatalf("screenshot should not be called on structured action error, got inputs %#v", screenshot.inputs)
+	}
+}
+
+type contextToolErrorStub struct {
+	name    string
+	toolErr *ToolError
+}
+
+func (t *contextToolErrorStub) Name() string { return t.name }
+
+func (t *contextToolErrorStub) Description() string { return "structured error stub" }
+
+func (t *contextToolErrorStub) Call(ctx context.Context, input string) (string, error) {
+	SetToolError(ctx, t.toolErr)
+	return toolErrorString(t.toolErr), nil
 }
 
 func TestHIDDeviceWriteRetriesAfterEndpointShutdown(t *testing.T) {
@@ -821,6 +862,73 @@ func TestHIDDeviceWriteRetriesAfterEndpointShutdown(t *testing.T) {
 	}
 }
 
+func TestHIDDeviceWriteReopensWhenDeviceNodeRecreated(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hidg0")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatalf("create test hid device: %v", err)
+	}
+	dev := NewHIDDevice(path)
+	dev.refreshState = ""
+
+	if err := dev.Write([]byte{1, 2, 3}); err != nil {
+		t.Fatalf("first Write returned error: %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove test hid device: %v", err)
+	}
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatalf("recreate test hid device: %v", err)
+	}
+
+	if err := dev.Write([]byte{4, 5, 6}); err != nil {
+		t.Fatalf("second Write returned error: %v", err)
+	}
+	dev.Close()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read recreated test hid device: %v", err)
+	}
+	if string(data) != string([]byte{4, 5, 6}) {
+		t.Fatalf("recreated device data = %v, want only second report", data)
+	}
+}
+
+func TestHIDDeviceWriteReopensAfterWatchdogRefreshState(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hidg0")
+	statePath := filepath.Join(dir, "aiden_usb_ecm_watchdog.state")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatalf("create test hid device: %v", err)
+	}
+	dev := NewHIDDevice(path)
+	dev.refreshState = statePath
+
+	if err := dev.Write([]byte{1, 2, 3}); err != nil {
+		t.Fatalf("first Write returned error: %v", err)
+	}
+	if err := os.WriteFile(statePath, []byte("last_refresh_result=ok\n"), 0o600); err != nil {
+		t.Fatalf("write watchdog state: %v", err)
+	}
+	refreshTime := dev.openedAt.Add(time.Second)
+	if err := os.Chtimes(statePath, refreshTime, refreshTime); err != nil {
+		t.Fatalf("set watchdog state mtime: %v", err)
+	}
+
+	if err := dev.Write([]byte{4, 5, 6}); err != nil {
+		t.Fatalf("second Write returned error: %v", err)
+	}
+	dev.Close()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read test hid device: %v", err)
+	}
+	if string(data) != string([]byte{4, 5, 6}) {
+		t.Fatalf("device data = %v, want second report after reopen", data)
+	}
+}
+
 func TestHIDDeviceWriteReturnsNonRetryableError(t *testing.T) {
 	dev := &HIDDevice{
 		path: "fake-hid",
@@ -838,49 +946,19 @@ func TestHIDDeviceWriteReturnsNonRetryableError(t *testing.T) {
 	}
 }
 
-func TestHIDDeviceWriteTimesOutWhenFDWouldBlock(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("requires Linux nonblocking pipe semantics")
-	}
-	readFile, writeFile, err := os.Pipe()
+func TestMouseScrollToolRejectsOutOfRangeDelta(t *testing.T) {
+	tool := &MouseScrollTool{}
+	ctx, _ := WithToolError(context.Background())
+
+	out, err := tool.Call(ctx, `{"delta":128}`)
 	if err != nil {
-		t.Fatalf("Pipe: %v", err)
+		t.Fatalf("Call returned error: %v", err)
 	}
-	if err := unix.SetNonblock(int(readFile.Fd()), true); err != nil {
-		t.Fatalf("SetNonblock(read): %v", err)
+	if out != "delta must be between -127 and 127" {
+		t.Fatalf("output = %q", out)
 	}
-	if err := unix.SetNonblock(int(writeFile.Fd()), true); err != nil {
-		t.Fatalf("SetNonblock(write): %v", err)
-	}
-	defer readFile.Close()
-	defer writeFile.Close()
-
-	buf := make([]byte, 4096)
-	for {
-		_, err := unix.Write(int(writeFile.Fd()), buf)
-		if err == unix.EAGAIN {
-			break
-		}
-		if err != nil {
-			t.Fatalf("fill pipe: %v", err)
-		}
-	}
-
-	dev := &HIDDevice{
-		path:         "blocked-hid",
-		file:         writeFile,
-		writeTimeout: 20 * time.Millisecond,
-	}
-	start := time.Now()
-	err = dev.Write([]byte{1})
-	if err == nil {
-		t.Fatal("expected timeout error")
-	}
-	if !strings.Contains(err.Error(), "timed out") {
-		t.Fatalf("error = %v, want timeout", err)
-	}
-	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
-		t.Fatalf("blocked write returned after %v, want bounded timeout", elapsed)
+	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeInvalidArguments || got.Message != out {
+		t.Fatalf("ToolError = %+v, want invalid_arguments with output message", got)
 	}
 }
 

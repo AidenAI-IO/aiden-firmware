@@ -33,8 +33,8 @@ type roleCollaborativeExecutor struct {
 	OutputKey              string
 	Recorder               *EpisodeRecorder
 	ScreenshotPruning      ScreenshotPruningConfig
+	VisualArtifacts        *visualArtifactStore
 	InitialWorldState      worldState
-	ForceSimpleLoop        bool
 	SteerProvider          func(context.Context) (RunSteerMessage, bool)
 	FinalSteerProvider     func(context.Context) (RunSteerMessage, bool)
 	SteerInterrupt         func() <-chan struct{}
@@ -65,9 +65,20 @@ type verifierDecision struct {
 	ObservedState observedWorldState `json:"observed_state,omitempty"`
 }
 
+type defaultFinalReview struct {
+	CanFinish         bool   `json:"can_finish"`
+	FinalAnswer       string `json:"final_answer,omitempty"`
+	NeedsHumanHandoff bool   `json:"needs_human_handoff,omitempty"`
+	HandoffReason     string `json:"handoff_reason,omitempty"`
+	HandoffDetails    string `json:"handoff_details,omitempty"`
+	SuggestedAction   string `json:"suggested_action,omitempty"`
+	Reason            string `json:"reason,omitempty"`
+}
+
 type roleExecutionResult struct {
 	Action          *schema.AgentAction
 	Step            *schema.AgentStep
+	ToolError       *ToolError
 	CandidateAnswer string
 }
 
@@ -129,15 +140,16 @@ type worldDeviceEnvironment struct {
 }
 
 type worldScreenshot struct {
-	SourceTool   string
-	ToolInput    string
-	ActionOutput string
-	Width        int
-	Height       int
-	Format       string
-	Size         int
-	Data         []byte
-	StepNumber   int
+	SourceTool    string
+	ToolInput     string
+	ActionOutput  string
+	Width         int
+	Height        int
+	Format        string
+	Size          int
+	ScreenshotRef string
+	Data          []byte
+	StepNumber    int
 }
 
 type observedWorldState struct {
@@ -208,13 +220,16 @@ func newRoleCollaborativeExecutor(
 		OutputKey:         "output",
 		Recorder:          recorder,
 		ScreenshotPruning: screenshotPruning.WithDefaults(),
+		VisualArtifacts:   newVisualArtifactStore(recorder),
 		InitialWorldState: world,
-		ForceSimpleLoop:   profiles.Planner.SystemPrompt != "" && !profiles.Planner.Capabilities.CanModifyPlan,
 		SteerProvider:     steerProvider,
 	}
 }
 
 func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[string]any, options ...chains.ChainCallOption) (map[string]any, error) {
+	if e.VisualArtifacts != nil {
+		defer e.VisualArtifacts.Close()
+	}
 	inputs, err := executorInputsToString(inputValues)
 	if err != nil {
 		return nil, err
@@ -230,13 +245,9 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 
 	plannerToolSpecs := toolSpecsForRole(RolePlanner, e.Tools)
 	executorToolSpecs := toolSpecsForRole(RoleExecutor, e.Tools)
-	initialPhase := phaseDecision
-	if e.ForceSimpleLoop {
-		initialPhase = phaseDefault
-	}
 	state := roleLoopState{
-		Phase:                 initialPhase,
-		ForceSimpleLoop:       e.ForceSimpleLoop,
+		Phase:                 phaseDefault,
+		ForceSimpleLoop:       true,
 		Todo:                  TodoState{Mode: TodoModeNone},
 		World:                 e.InitialWorldState,
 		TodoReminderToolCalls: e.TodoReminderToolCalls,
@@ -274,6 +285,74 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 					}
 					if consumed {
 						continue
+					}
+					if state.shouldReviewDefaultFinal(plannerToolSpecs) {
+						review, err := e.callDefaultFinalReview(ctx, inputs, state, turn.Answer, options...)
+						if err != nil {
+							return nil, err
+						}
+						if review.NeedsHumanHandoff {
+							handoffTurn, err := e.executeDefaultFinalHandoff(ctx, &state, plannerToolSpecs, review)
+							if err != nil {
+								return nil, err
+							}
+							if handoffTurn.Step != nil {
+								state.ToolSteps = append(state.ToolSteps, *handoffTurn.Step)
+								state.World.UpdateFromStep(*handoffTurn.Step, len(state.ToolSteps), e.Tools, e.VisualArtifacts)
+							}
+							if handoffTurn.Kind == plannerTurnTool {
+								consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
+								if err != nil {
+									return nil, err
+								}
+								if consumed {
+									continue
+								}
+								if _, err := e.consumePendingSteer(ctx, inputs, &state); err != nil {
+									return nil, err
+								}
+								state.noteDefaultToolCallAndMaybeTodoReminder()
+							}
+							if handoffTurn.Kind == plannerTurnSleep {
+								consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
+								if err != nil {
+									return nil, err
+								}
+								if consumed {
+									continue
+								}
+								consumed, err = e.consumeFinalPendingSteer(ctx, inputs, &state)
+								if err != nil {
+									return nil, err
+								}
+								if consumed {
+									continue
+								}
+								answer := runPausingToolFinalAnswer(handoffTurn.Step)
+								if e.Recorder != nil {
+									e.Recorder.RecordDefaultFinish(answer)
+								}
+								return e.finishRunWithoutStreaming(ctx, answer, answer, &state)
+							}
+							continue
+						}
+						if !review.CanFinish {
+							state.Phase = phasePlan
+							state.PlanCommitRequired = true
+							state.PlannerReason = defaultString(review.Reason, "default final review requested replanning")
+							state.VerifierResults = append(state.VerifierResults, verifierDecision{
+								CanFinish:   false,
+								NeedsReplan: true,
+								Reason:      state.PlannerReason,
+							})
+							if e.Recorder != nil {
+								e.Recorder.RecordLoopPhase(phasePlan, state.PlannerReason)
+							}
+							continue
+						}
+						if answer := strings.TrimSpace(review.FinalAnswer); answer != "" {
+							turn.Answer = answer
+						}
 					}
 					if e.Recorder != nil {
 						e.Recorder.RecordDefaultFinish(turn.Answer)
@@ -328,7 +407,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 			case plannerTurnTool, plannerTurnInvalidMeta, plannerTurnSleep:
 				if turn.Step != nil {
 					state.ToolSteps = append(state.ToolSteps, *turn.Step)
-					state.World.UpdateFromStep(*turn.Step, len(state.ToolSteps), e.Tools)
+					state.World.UpdateFromStep(*turn.Step, len(state.ToolSteps), e.Tools, e.VisualArtifacts)
 				}
 				if turn.Kind == plannerTurnTool {
 					consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
@@ -358,7 +437,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 					if consumed {
 						continue
 					}
-					answer := waitForWakeupFinalAnswer(turn.Step)
+					answer := runPausingToolFinalAnswer(turn.Step)
 					if e.Recorder != nil {
 						e.Recorder.RecordDefaultFinish(answer)
 					}
@@ -384,10 +463,10 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 				if turn.Step != nil {
 					state.ToolSteps = append(state.ToolSteps, *turn.Step)
 					state.StepToolSteps = append(state.StepToolSteps, *turn.Step)
-					state.World.UpdateFromStep(*turn.Step, len(state.ToolSteps), e.Tools)
+					state.World.UpdateFromStep(*turn.Step, len(state.ToolSteps), e.Tools, e.VisualArtifacts)
 				}
 				if turn.Kind == executorTurnTool {
-					execution := roleExecutionResult{Action: turn.Action, Step: turn.Step}
+					execution := roleExecutionResult{Action: turn.Action, Step: turn.Step, ToolError: turn.ToolError}
 					state.StepExecutionResults = append(state.StepExecutionResults, execution)
 					state.ExecutionResults = append(state.ExecutionResults, execution)
 					if e.Recorder != nil {
@@ -419,7 +498,7 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 					if consumed {
 						continue
 					}
-					answer := waitForWakeupFinalAnswer(turn.Step)
+					answer := runPausingToolFinalAnswer(turn.Step)
 					if e.Recorder != nil {
 						e.Recorder.RecordDefaultFinish(answer)
 					}
@@ -520,24 +599,9 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 	toolSpecs *ToolSpecs,
 	options ...chains.ChainCallOption,
 ) (plannerTurnResult, error) {
-	if state.Phase == phaseDecision && !e.ForceSimpleLoop {
-		return e.callRouteTurn(ctx, inputs, state, toolSpecs, options...)
-	}
-
-	task := plannerTaskForPhase(state.Phase, *state, e.ForceSimpleLoop)
-	messages := e.roleMessages(e.Profiles.Planner, inputs, *state, task)
+	messages := e.roleMessages(e.Profiles.Planner, inputs, *state, "")
 	state.PendingTodoReminder = ""
-	plannerTools := toolsForRole(RolePlanner, e.Tools)
-	if e.ForceSimpleLoop {
-		plannerTools = appendSimpleTodoMetaTools(plannerTools)
-	} else {
-		switch state.Phase {
-		case phasePlan:
-			plannerTools = appendPlannerReadOnlyTools(loopMetaTools(), plannerTools)
-		default:
-			plannerTools = appendDefaultLoopMetaTools(plannerTools)
-		}
-	}
+	plannerTools := appendSimpleTodoMetaTools(toolsForRole(RolePlanner, e.Tools))
 	parser := &FunctionAgent{
 		Tools:     plannerTools,
 		OutputKey: e.OutputKey,
@@ -551,7 +615,7 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 	// not a tool call; finishRun streams confirmed final answers after parsing.
 	if diagnostics, ok := e.CallbacksHandler.(finalStreamingDecisionLogger); ok {
 		diagnostics.LogFinalStreamingDecision(ctx, RolePlanner, false,
-			fmt.Sprintf("tool_capable_planner_turn phase=%s force_simple=%t tools=%d", state.Phase, e.ForceSimpleLoop, len(plannerTools)))
+			fmt.Sprintf("tool_capable_agent_turn phase=%s single_agent=true tools=%d", state.Phase, len(plannerTools)))
 	}
 	res, err := generate()
 	if err != nil {
@@ -583,6 +647,18 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 			if value, ok := finish.ReturnValues[e.OutputKey].(string); ok {
 				answer = value
 			}
+		}
+		if strings.TrimSpace(answer) == "" {
+			return plannerTurnResult{}, agents.ErrAgentNoReturn
+		}
+		if state.Phase == phaseDefault && looksLikeInternalJSONPlanFinal(answer) {
+			return plannerTurnResult{
+				Kind: plannerTurnInvalidMeta,
+				Step: &schema.AgentStep{
+					Action:      schema.AgentAction{Tool: "final_answer", Log: strings.TrimSpace(answer)},
+					Observation: "final answer looked like an internal JSON plan; use available tools, set_todo, or enter plan mode instead of returning the plan as the user-facing answer",
+				},
+			}, nil
 		}
 		if state.Phase == phasePlan && state.PlanCommitRequired {
 			return plannerCommitRequiredTurn(schema.AgentAction{
@@ -618,12 +694,12 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 		if e.CallbacksHandler != nil {
 			e.CallbacksHandler.HandleAgentAction(ctx, action)
 		}
-		if e.ForceSimpleLoop && !toolNameEqual(action.Tool, toolSetTodo) {
+		if !toolNameEqual(action.Tool, toolSetTodo) {
 			return plannerTurnResult{
 				Kind: plannerTurnInvalidMeta,
 				Step: &schema.AgentStep{
 					Action:      action,
-					Observation: "plan mode tools are disabled by force_simple_loop; use available tools directly or return a final answer",
+					Observation: "plan mode tools are disabled in single-agent mode; use available tools directly or return a final answer",
 				},
 			}, nil
 		}
@@ -637,76 +713,29 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 	return e.executePlannerToolAction(ctx, state, toolSpecs, action)
 }
 
-func (e *roleCollaborativeExecutor) callRouteTurn(
-	ctx context.Context,
-	inputs map[string]string,
-	state *roleLoopState,
-	toolSpecs *ToolSpecs,
-	options ...chains.ChainCallOption,
-) (plannerTurnResult, error) {
-	task := plannerTaskForPhase(phaseDecision, *state, e.ForceSimpleLoop)
-	messages := e.roleMessages(e.Profiles.Planner, inputs, *state, task)
-	callOptions := e.finalStreamingCallOptions(chains.GetLLMCallOptions(options...))
-	res, err := e.withFinalStreaming(ctx, func() (*llms.ContentResponse, error) {
-		return e.generateRoleContent(ctx, RolePlanner, messages, callOptions...)
-	})
-	if err != nil {
-		return plannerTurnResult{}, err
+func looksLikeInternalJSONPlanFinal(answer string) bool {
+	text := strings.TrimSpace(answer)
+	if !strings.HasPrefix(text, "{") {
+		return false
 	}
-	e.emitRoleOutput(ctx, RolePlanner, roleResponseDebugText(res))
-	if consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, state); err != nil {
-		return plannerTurnResult{}, err
-	} else if consumed {
-		return plannerTurnResult{Kind: plannerTurnSteer}, nil
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(text), &payload); err != nil {
+		return false
 	}
-
-	parser := &FunctionAgent{Tools: appendLoopMetaTools(toolsForRole(RolePlanner, e.Tools)), OutputKey: e.OutputKey}
-	actions, _, parseErr := parser.ParseOutput(res)
-	if parseErr != nil && !errors.Is(parseErr, agents.ErrUnableToParseOutput) {
-		return plannerTurnResult{}, parseErr
+	keys := map[string]bool{}
+	for key := range payload {
+		keys[strings.ToLower(strings.TrimSpace(key))] = true
 	}
-	if len(actions) > 0 {
-		action := actions[0]
-		if routeShouldUsePlan(inputs["input"]) || toolNameEqual(action.Tool, toolEnterPlanMode) {
-			return e.enterPlanFromRoute(ctx, state, "route selected plan mode")
-		}
-		if toolNameEqual(action.Tool, toolUseSimpleMode) {
-			state.Phase = phaseDefault
-			state.PlannerReason = parseOptionalReasonInput(normalizeToolInput(action.ToolInput))
-			return plannerTurnResult{Kind: plannerTurnUseSimpleMode}, nil
-		}
-		state.Phase = phaseDefault
-		return e.executePlannerToolAction(ctx, state, toolSpecs, action)
+	if keys["plan"] && (keys["objective"] || keys["completion_criteria"] || keys["next_step"] || keys["reason"]) {
+		return true
 	}
-
-	decision := parseRouteDecision(res, inputs["input"])
-	switch decision.Mode {
-	case routeModeDirectAnswer:
-		return plannerTurnResult{Kind: plannerTurnFinish, Answer: decision.FinalAnswer}, nil
-	case routeModePlan:
-		return e.enterPlanFromRoute(ctx, state, decision.Reason)
-	default:
-		state.Phase = phaseDefault
-		state.PlannerReason = decision.Reason
-		return plannerTurnResult{Kind: plannerTurnUseSimpleMode}, nil
+	mode, _ := payload["mode"].(string)
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "plan" || mode == "simple" {
+		finalAnswer, _ := payload["final_answer"].(string)
+		return strings.TrimSpace(finalAnswer) == ""
 	}
-}
-
-func (e *roleCollaborativeExecutor) enterPlanFromRoute(ctx context.Context, state *roleLoopState, reason string) (plannerTurnResult, error) {
-	reason = strings.TrimSpace(reason)
-	if reason == "" {
-		reason = "route selected plan mode"
-	}
-	payload, _ := json.Marshal(map[string]string{"reason": reason})
-	action := schema.AgentAction{
-		Tool:      toolEnterPlanMode,
-		ToolInput: string(payload),
-		Log:       reason,
-	}
-	if e.CallbacksHandler != nil {
-		e.CallbacksHandler.HandleAgentAction(ctx, action)
-	}
-	return e.handlePlannerMetaTool(phaseDecision, state, action), nil
+	return false
 }
 
 func (e *roleCollaborativeExecutor) executePlannerToolAction(
@@ -721,13 +750,15 @@ func (e *roleCollaborativeExecutor) executePlannerToolAction(
 		Callback:               e.CallbacksHandler,
 		EnvironmentBridge:      e.EnvironmentBridge,
 		EnvironmentBridgeTools: e.EnvironmentBridgeTools,
+		VisualArtifacts:        e.VisualArtifacts,
 	})
 	if toolExecution.Error != nil && !(errors.Is(toolExecution.Error, context.Canceled) && e.steerInterruptSignaled(ctx)) {
 		return plannerTurnResult{}, toolExecution.Error
 	}
 	execution := roleExecutionResult{
-		Action: &toolExecution.Step.Action,
-		Step:   &toolExecution.Step,
+		Action:    &toolExecution.Step.Action,
+		Step:      &toolExecution.Step,
+		ToolError: toolExecution.Result.Error,
 	}
 	state.ExecutionResults = append(state.ExecutionResults, execution)
 	state.PlannerEvidence = append(state.PlannerEvidence, execution)
@@ -735,7 +766,7 @@ func (e *roleCollaborativeExecutor) executePlannerToolAction(
 		e.Recorder.RecordPlannerExecution(execution)
 	}
 	kind := plannerTurnTool
-	if isWaitForWakeupTool(toolExecution.Step.Action.Tool) && !toolExecution.Result.IsError {
+	if isRunPausingTool(toolExecution.Step.Action.Tool) && !toolExecution.Result.IsError() {
 		kind = plannerTurnSleep
 	}
 	return plannerTurnResult{Kind: kind, Step: &toolExecution.Step}, nil
@@ -984,11 +1015,11 @@ func (e *roleCollaborativeExecutor) callExecutorTurn(
 				answer = value
 			}
 		}
-		if extractMarkedFinalAnswer(answer) != "" {
+		if hasTaggedTTSOutput(answer) {
 			payload, _ := json.Marshal(map[string]any{
 				"summary":  strings.TrimSpace(answer),
 				"key_info": []string{strings.TrimSpace(answer)},
-				"reason":   "executor returned an explicit final answer",
+				"reason":   "executor returned tagged final output",
 			})
 			action := schema.AgentAction{
 				Tool:      toolFinishStep,
@@ -1032,19 +1063,21 @@ func (e *roleCollaborativeExecutor) callExecutorTurn(
 		Callback:               e.CallbacksHandler,
 		EnvironmentBridge:      e.EnvironmentBridge,
 		EnvironmentBridgeTools: e.EnvironmentBridgeTools,
+		VisualArtifacts:        e.VisualArtifacts,
 	})
 	if toolExecution.Error != nil && !(errors.Is(toolExecution.Error, context.Canceled) && e.steerInterruptSignaled(ctx)) {
 		return executorTurnResult{}, toolExecution.Error
 	}
 	actionCopy := toolExecution.Step.Action
 	kind := executorTurnTool
-	if isWaitForWakeupTool(toolExecution.Step.Action.Tool) && !toolExecution.Result.IsError {
+	if isRunPausingTool(toolExecution.Step.Action.Tool) && !toolExecution.Result.IsError() {
 		kind = executorTurnSleep
 	}
 	return executorTurnResult{
-		Kind:   kind,
-		Action: &actionCopy,
-		Step:   &toolExecution.Step,
+		Kind:      kind,
+		Action:    &actionCopy,
+		Step:      &toolExecution.Step,
+		ToolError: toolExecution.Result.Error,
 	}, nil
 }
 
@@ -1073,6 +1106,135 @@ func (e *roleCollaborativeExecutor) callVerifier(ctx context.Context, inputs map
 	return parseVerifierDecision(contentResponseText(res), state.lastCandidateAnswer()), nil
 }
 
+func (s roleLoopState) shouldReviewDefaultFinal(toolSpecs *ToolSpecs) bool {
+	// Single-agent mode finishes directly. The separate verifier/final-review
+	// pass is intentionally disabled with the planner/executor/verifier split.
+	return false
+}
+
+func (e *roleCollaborativeExecutor) callDefaultFinalReview(
+	ctx context.Context,
+	inputs map[string]string,
+	state roleLoopState,
+	candidateAnswer string,
+	options ...chains.ChainCallOption,
+) (defaultFinalReview, error) {
+	messages := []llms.MessageContent{
+		{
+			Role: llms.ChatMessageTypeSystem,
+			Parts: []llms.ContentPart{llms.TextPart(
+				"You are a strict final-answer gate for an agent that operates external devices. " +
+					"Return only JSON. Do not solve the task yourself and do not ask the user anything directly.",
+			)},
+		},
+		{
+			Role:  llms.ChatMessageTypeHuman,
+			Parts: buildRoleUserMessageParts(buildDefaultFinalReviewPrompt(inputs, state, candidateAnswer), e.InputAttachments, state.World, true, e.VisualArtifacts),
+		},
+	}
+	res, err := e.generateRoleContent(ctx, RoleVerifier, messages, chains.GetLLMCallOptions(options...)...)
+	if err != nil {
+		return defaultFinalReview{}, err
+	}
+	e.emitRoleOutput(ctx, RoleVerifier, roleResponseDebugText(res))
+	return parseDefaultFinalReview(contentResponseText(res), candidateAnswer), nil
+}
+
+func buildDefaultFinalReviewPrompt(inputs map[string]string, state roleLoopState, candidateAnswer string) string {
+	var builder strings.Builder
+	builder.WriteString("Default-mode final-answer review.\n")
+	builder.WriteString("Decide whether the candidate final answer may end the run, or whether the runtime must continue.\n")
+	builder.WriteString("Return only JSON: {\"can_finish\":true|false,\"final_answer\":\"optional revised final answer when can_finish is true\",\"needs_human_handoff\":true|false,\"handoff_reason\":\"authentication|login_method_selection|captcha|verification_code|sensitive_operation|redirect_confirmation|permission_confirmation|black_screen|ambiguous_situation|unsupported_action|stuck|other\",\"handoff_details\":\"specific device-side blocker\",\"suggested_action\":\"what the user should do on the device\",\"reason\":\"brief rationale\"}.\n\n")
+	builder.WriteString("Language rule:\n")
+	builder.WriteString("- Use ")
+	builder.WriteString(defaultFinalReviewLanguageHint(inputs))
+	builder.WriteString(" for every free-text JSON value that may be shown to the user or reused in a handoff message, including final_answer, handoff_details, suggested_action, and reason. Keep enum fields such as handoff_reason in English.\n\n")
+	builder.WriteString("Rules:\n")
+	builder.WriteString("- can_finish=true only when the original request is already satisfied by the evidence, or the candidate is a truthful terminal failure/status answer that needs no more user or device action.\n")
+	builder.WriteString("- needs_human_handoff=true when progress is blocked on a human-only action on the target device: private credentials, choosing an account or login path, CAPTCHA, verification, biometric/identity checks, system/app redirect confirmations, permission dialogs, or judgment the tools cannot provide.\n")
+	builder.WriteString("- For handoff, set can_finish=false and fill handoff_reason, handoff_details, and suggested_action. The user must complete the action on the device; do not ask for secrets in chat.\n")
+	builder.WriteString("- If more tool work is possible and no human handoff is required, set can_finish=false and needs_human_handoff=false.\n")
+	writeWorldStateWithOptions(&builder, state.World, worldStatePromptOptions{IncludeLatestScreenshot: true})
+	writeRequestContextAndCriteria(&builder, inputs, state)
+	writeSessionContext(&builder, inputs)
+	writeExecutorEvidence(&builder, state)
+	builder.WriteString("\n\nCandidate final answer:\n")
+	if answer := strings.TrimSpace(candidateAnswer); answer != "" {
+		builder.WriteString(answer)
+	} else {
+		builder.WriteString("(empty)")
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func defaultFinalReviewLanguageHint(inputs map[string]string) string {
+	if containsHanRunes(strings.TrimSpace(inputs["input"])) {
+		return "Simplified Chinese, matching the latest user request"
+	}
+	return "the same language as the latest user request"
+}
+
+func parseDefaultFinalReview(raw, candidateAnswer string) defaultFinalReview {
+	var review defaultFinalReview
+	if decodeRoleJSON(raw, &review) != nil {
+		return defaultFinalReview{
+			CanFinish: false,
+			Reason:    "default final review returned non-JSON; replanning required",
+		}
+	}
+	review.FinalAnswer = strings.TrimSpace(review.FinalAnswer)
+	review.Reason = strings.TrimSpace(review.Reason)
+	review.HandoffReason = normalizeHandoffReason(review.HandoffReason)
+	review.HandoffDetails = strings.TrimSpace(review.HandoffDetails)
+	review.SuggestedAction = strings.TrimSpace(review.SuggestedAction)
+	if review.NeedsHumanHandoff {
+		review.CanFinish = false
+		if review.HandoffDetails == "" {
+			review.HandoffDetails = firstNonEmptyString([]string{
+				review.Reason,
+				"Human action is required before the device task can continue.",
+			})
+		}
+		return review
+	}
+	if review.CanFinish {
+		if review.FinalAnswer == "" {
+			review.FinalAnswer = strings.TrimSpace(candidateAnswer)
+		}
+		return review
+	}
+	if review.Reason == "" {
+		review.Reason = "default final review rejected the candidate final answer"
+	}
+	return review
+}
+
+func (e *roleCollaborativeExecutor) executeDefaultFinalHandoff(
+	ctx context.Context,
+	state *roleLoopState,
+	toolSpecs *ToolSpecs,
+	review defaultFinalReview,
+) (plannerTurnResult, error) {
+	if _, ok := toolSpecs.Lookup(toolHumanHandoffStep); !ok {
+		return plannerTurnResult{}, fmt.Errorf("%s is required by default final review but is unavailable", toolHumanHandoffStep)
+	}
+	payload, _ := json.Marshal(HumanHandoffRequest{
+		Reason:          normalizeHandoffReason(review.HandoffReason),
+		Details:         firstNonEmptyString([]string{review.HandoffDetails, review.Reason, "Human action is required before the device task can continue."}),
+		SuggestedAction: strings.TrimSpace(review.SuggestedAction),
+	})
+	action := schema.AgentAction{
+		Tool:      toolHumanHandoffStep,
+		ToolInput: string(payload),
+		Log: formatToolActionLog(toolHumanHandoffStep, string(payload), firstNonEmptyString([]string{
+			review.SuggestedAction,
+			review.HandoffDetails,
+			review.Reason,
+		}), "\n"),
+	}
+	return e.executePlannerToolAction(ctx, state, toolSpecs, action)
+}
+
 func (e *roleCollaborativeExecutor) generateRoleContent(ctx context.Context, role RoleName, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
 	callCtx, cancel := context.WithTimeout(ctx, roleModelCallTimeout)
 	defer cancel()
@@ -1093,10 +1255,18 @@ func (e *roleCollaborativeExecutor) generateRoleContent(ctx context.Context, rol
 func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map[string]string, state roleLoopState, task string) []llms.MessageContent {
 	messages := []llms.MessageContent{{
 		Role:  llms.ChatMessageTypeSystem,
-		Parts: []llms.ContentPart{llms.TextPart(profile.SystemPrompt)},
+		Parts: roleSystemMessageParts(profile),
 	}}
+	var plannerStatePrompt string
 	if profile.Name == RolePlanner {
 		messages = append(messages, e.ConversationHistory...)
+		plannerStatePrompt = buildRoleStatePrompt(profile.Name, inputs, state, task)
+		if state.ForceSimpleLoop && strings.TrimSpace(plannerStatePrompt) != "" {
+			messages = append(messages, llms.MessageContent{
+				Role:  llms.ChatMessageTypeHuman,
+				Parts: []llms.ContentPart{llms.TextPart(plannerStatePrompt)},
+			})
+		}
 		messages = append(messages, llms.MessageContent{
 			Role:  llms.ChatMessageTypeHuman,
 			Parts: plannerCurrentUserMessageParts(inputs, e.InputAttachments),
@@ -1104,19 +1274,18 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 	}
 
 	if profile.Name == RoleExecutor && len(state.StepToolSteps) > 0 {
-		scratchpad := (&FunctionAgent{Tools: appendExecutorMetaTools(toolsForRole(RoleExecutor, e.Tools)), ScreenshotPruning: e.ScreenshotPruning}).constructFunctionScratchPad(state.StepToolSteps)
+		scratchpad := (&FunctionAgent{Tools: appendExecutorMetaTools(toolsForRole(RoleExecutor, e.Tools)), ScreenshotPruning: e.ScreenshotPruning, VisualArtifacts: e.VisualArtifacts}).constructFunctionScratchPad(state.StepToolSteps)
 		messages = append(messages, scratchpad...)
 	} else if roleSeesToolScratchpad(profile.Name) && len(state.ToolSteps) > 0 {
-		scratchpad := (&FunctionAgent{Tools: toolsForRole(profile.Name, e.Tools), ScreenshotPruning: e.ScreenshotPruning}).constructFunctionScratchPad(state.ToolSteps)
+		scratchpad := (&FunctionAgent{Tools: toolsForRole(profile.Name, e.Tools), ScreenshotPruning: e.ScreenshotPruning, VisualArtifacts: e.VisualArtifacts}).constructFunctionScratchPad(state.ToolSteps)
 		messages = append(messages, scratchpad...)
 	}
 
 	if profile.Name == RolePlanner {
-		statePrompt := buildRoleStatePrompt(profile.Name, inputs, state, task)
-		if strings.TrimSpace(statePrompt) != "" {
+		if !state.ForceSimpleLoop && strings.TrimSpace(plannerStatePrompt) != "" {
 			messages = append(messages, llms.MessageContent{
 				Role:  llms.ChatMessageTypeHuman,
-				Parts: []llms.ContentPart{llms.TextPart(statePrompt)},
+				Parts: []llms.ContentPart{llms.TextPart(plannerStatePrompt)},
 			})
 		}
 		for _, steer := range state.SteerMessages {
@@ -1134,7 +1303,7 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 	})
 	messages = append(messages, llms.MessageContent{
 		Role:  llms.ChatMessageTypeHuman,
-		Parts: buildRoleUserMessageParts(statePrompt, e.InputAttachments, state.World, includeWorldStateLatestScreenshot),
+		Parts: buildRoleUserMessageParts(statePrompt, e.InputAttachments, state.World, includeWorldStateLatestScreenshot, e.VisualArtifacts),
 	})
 	for _, steer := range state.SteerMessages {
 		messages = append(messages, llms.MessageContent{
@@ -1143,6 +1312,16 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 		})
 	}
 	return messages
+}
+
+func roleSystemMessageParts(profile RoleProfile) []llms.ContentPart {
+	if strings.TrimSpace(profile.SystemPromptDynamicSuffix) == "" || strings.TrimSpace(profile.SystemPromptCachePrefix) == "" {
+		return []llms.ContentPart{llms.TextPart(profile.SystemPrompt)}
+	}
+	return []llms.ContentPart{
+		llms.TextPart(profile.SystemPromptCachePrefix),
+		llms.TextPart("\n\n" + profile.SystemPromptDynamicSuffix),
+	}
 }
 
 func plannerCurrentUserMessage(inputs map[string]string) string {
@@ -1186,32 +1365,6 @@ func hasProfileTool(profile RoleProfile, name string) bool {
 	return false
 }
 
-func appendPlannerReadOnlyTools(base []langtools.Tool, tools []langtools.Tool) []langtools.Tool {
-	combined := append([]langtools.Tool{}, base...)
-	seen := map[string]bool{}
-	for _, tool := range combined {
-		if tool != nil {
-			seen[toolSpecKey(tool.Name())] = true
-		}
-	}
-	for _, tool := range tools {
-		if tool == nil {
-			continue
-		}
-		spec := NewToolSpec(tool)
-		if !isPlannerReadOnlyToolSpec(spec) {
-			continue
-		}
-		key := toolSpecKey(spec.Name)
-		if seen[key] {
-			continue
-		}
-		combined = append(combined, tool)
-		seen[key] = true
-	}
-	return combined
-}
-
 func isPlannerReadOnlyTool(name string, specs *ToolSpecs) bool {
 	if specs == nil {
 		return false
@@ -1223,6 +1376,8 @@ func isPlannerReadOnlyTool(name string, specs *ToolSpecs) bool {
 func isPlannerReadOnlyToolSpec(spec ToolSpec) bool {
 	switch strings.ToLower(strings.TrimSpace(spec.Category)) {
 	case "observation", "web":
+		return true
+	case "handoff":
 		return true
 	case "memory":
 		switch spec.Name {
@@ -1299,7 +1454,7 @@ func buildSimpleLoopPlannerStatePrompt(inputs map[string]string, state roleLoopS
 	if content == "" {
 		return ""
 	}
-	return "Planner runtime context (synthetic; not a new user request):\n" + content
+	return "Agent runtime context (synthetic; not a new user request):\n" + content
 }
 
 func buildExecutorStatePrompt(inputs map[string]string, state roleLoopState, task string) string {
@@ -1488,12 +1643,19 @@ func compactPromptLine(value string, max int) string {
 	return truncateForLog(singleLineHistoryText(value), max)
 }
 
-func buildRoleUserMessageParts(input string, attachments []InputAttachment, world worldState, includeWorldStateLatestScreenshot bool) []llms.ContentPart {
+func buildRoleUserMessageParts(input string, attachments []InputAttachment, world worldState, includeWorldStateLatestScreenshot bool, artifacts visualArtifactReader) []llms.ContentPart {
 	parts := buildUserMessageParts(input, attachments)
-	if !includeWorldStateLatestScreenshot || world.LatestScreenshot == nil || len(world.LatestScreenshot.Data) == 0 {
+	if !includeWorldStateLatestScreenshot || world.LatestScreenshot == nil {
 		return parts
 	}
-	return append(parts, buildImagePart(world.LatestScreenshot.MIMEType(), world.LatestScreenshot.Data))
+	imageBytes := world.LatestScreenshot.Data
+	if len(imageBytes) == 0 && strings.TrimSpace(world.LatestScreenshot.ScreenshotRef) != "" && artifacts != nil {
+		imageBytes, _ = artifacts.ReadVisualArtifact(world.LatestScreenshot.ScreenshotRef)
+	}
+	if len(imageBytes) == 0 {
+		return parts
+	}
+	return append(parts, buildImagePart(world.LatestScreenshot.MIMEType(), imageBytes))
 }
 
 type worldStatePromptOptions struct {
@@ -1512,7 +1674,7 @@ func writeWorldStateIfPresent(builder *strings.Builder, world worldState) {
 }
 
 func writeWorldStateWithOptions(builder *strings.Builder, world worldState, options worldStatePromptOptions) {
-	builder.WriteString("\n\nWorld State (shared across planner, executor, and verifier):\n")
+	builder.WriteString("\n\nWorld State (single-agent runtime):\n")
 	if world.DeviceEnvironment != nil {
 		env := world.DeviceEnvironment
 		builder.WriteString("- Device environment: available")
@@ -1793,7 +1955,7 @@ func compactScreenshotObservation(toolName, observation string) (string, bool) {
 	if err := json.Unmarshal([]byte(observation), &result); err != nil {
 		return "", false
 	}
-	if result.Data == "" || result.Width <= 0 || result.Height <= 0 {
+	if (result.Data == "" && strings.TrimSpace(result.ScreenshotRef) == "") || result.Width <= 0 || result.Height <= 0 {
 		return "", false
 	}
 	if strings.TrimSpace(toolName) == "" {
@@ -1875,8 +2037,12 @@ func (s roleLoopState) latestExecutionResult() (roleExecutionResult, bool) {
 	return s.ExecutionResults[len(s.ExecutionResults)-1], true
 }
 
-func (s *worldState) UpdateFromStep(step schema.AgentStep, stepNumber int, tools []langtools.Tool) {
-	screenshot, ok := screenshotFromVisualStep(step, stepNumber, tools)
+func (s *worldState) UpdateFromStep(step schema.AgentStep, stepNumber int, tools []langtools.Tool, artifacts ...visualArtifactReader) {
+	var reader visualArtifactReader
+	if len(artifacts) > 0 {
+		reader = artifacts[0]
+	}
+	screenshot, ok := screenshotFromVisualStep(step, stepNumber, tools, reader)
 	if !ok {
 		return
 	}
@@ -1962,8 +2128,8 @@ func screenshotFromStep(step schema.AgentStep, stepNumber int) (worldScreenshot,
 	return worldScreenshotFromVisualObservation(step, stepNumber, visual), true
 }
 
-func screenshotFromVisualStep(step schema.AgentStep, stepNumber int, tools []langtools.Tool) (worldScreenshot, bool) {
-	visual, ok := (&FunctionAgent{Tools: tools}).visualScreenshotObservation(step)
+func screenshotFromVisualStep(step schema.AgentStep, stepNumber int, tools []langtools.Tool, artifacts visualArtifactReader) (worldScreenshot, bool) {
+	visual, ok := (&FunctionAgent{Tools: tools, VisualArtifacts: artifacts}).visualScreenshotObservation(step)
 	if !ok {
 		return worldScreenshot{}, false
 	}
@@ -1972,17 +2138,21 @@ func screenshotFromVisualStep(step schema.AgentStep, stepNumber int, tools []lan
 
 func worldScreenshotFromVisualObservation(step schema.AgentStep, stepNumber int, visual visualScreenshotObservation) worldScreenshot {
 	result := visual.Result
-	return worldScreenshot{
-		SourceTool:   step.Action.Tool,
-		ToolInput:    normalizeToolInput(step.Action.ToolInput),
-		ActionOutput: strings.TrimSpace(result.ActionOutput),
-		Width:        result.Width,
-		Height:       result.Height,
-		Format:       result.Format,
-		Size:         result.Size,
-		Data:         visual.ImageBytes,
-		StepNumber:   stepNumber,
+	screenshot := worldScreenshot{
+		SourceTool:    step.Action.Tool,
+		ToolInput:     normalizeToolInput(step.Action.ToolInput),
+		ActionOutput:  strings.TrimSpace(result.ActionOutput),
+		Width:         result.Width,
+		Height:        result.Height,
+		Format:        result.Format,
+		Size:          result.Size,
+		ScreenshotRef: result.ScreenshotRef,
+		StepNumber:    stepNumber,
 	}
+	if strings.TrimSpace(result.ScreenshotRef) == "" {
+		screenshot.Data = visual.ImageBytes
+	}
+	return screenshot
 }
 
 func (s worldScreenshot) MIMEType() string {
@@ -1999,47 +2169,6 @@ func (s roleLoopState) lastCandidateAnswer() string {
 		}
 	}
 	return ""
-}
-
-func parseRouteDecision(res *llms.ContentResponse, request string) routeDecision {
-	raw := contentResponseText(res)
-	var decision routeDecision
-	if decodeRoleJSON(raw, &decision) == nil {
-		return normalizeRouteDecision(decision, request)
-	}
-
-	text := strings.TrimSpace(raw)
-	if answer := strings.TrimSpace(extractMarkedFinalAnswer(text)); answer != "" {
-		return normalizeRouteDecision(routeDecision{
-			Mode:        routeModeDirectAnswer,
-			FinalAnswer: answer,
-			Reason:      "route returned an explicit final answer",
-		}, request)
-	}
-	lower := strings.ToLower(text)
-	if routeTextHasPlanIntent(lower) {
-		return normalizeRouteDecision(routeDecision{
-			Mode:   routeModePlan,
-			Reason: "route returned non-JSON plan intent",
-		}, request)
-	}
-	if routeTextHasSimpleIntent(lower) {
-		return normalizeRouteDecision(routeDecision{
-			Mode:   routeModeSimple,
-			Reason: "route returned non-JSON simple intent",
-		}, request)
-	}
-	if text != "" {
-		return normalizeRouteDecision(routeDecision{
-			Mode:        routeModeDirectAnswer,
-			FinalAnswer: text,
-			Reason:      "route returned non-JSON text answer",
-		}, request)
-	}
-	return normalizeRouteDecision(routeDecision{
-		Mode:   routeModeSimple,
-		Reason: "route returned empty content",
-	}, request)
 }
 
 func parsePlannerDecision(res *llms.ContentResponse, fallbackStep string) plannerDecision {
@@ -2097,7 +2226,7 @@ func parsePlannerDecision(res *llms.ContentResponse, fallbackStep string) planne
 	}
 
 	// Final fallback: use text content or user input
-	text := strings.TrimSpace(extractFinalAnswer(raw))
+	text := strings.TrimSpace(finalizeAssistantOutput(raw))
 	if text == "" {
 		text = strings.TrimSpace(fallbackStep)
 	}
@@ -2138,33 +2267,22 @@ func parseVerifierDecision(raw, fallbackAnswer string) verifierDecision {
 		return decision
 	}
 
-	text := strings.TrimSpace(extractMarkedFinalAnswer(raw))
-	if text == "" {
+	if !hasTaggedTTSOutput(raw) {
 		return verifierDecision{
 			CanFinish:   false,
 			NeedsReplan: true,
-			Reason:      "verifier returned non-JSON content without explicit final answer",
+			Reason:      "verifier returned non-JSON content without tagged final output",
 		}
 	}
 	return verifierDecision{
 		CanFinish:   true,
-		FinalAnswer: text,
-		Reason:      "verifier returned explicit non-JSON final answer",
+		FinalAnswer: finalizeAssistantOutput(raw),
+		Reason:      "verifier returned tagged final output",
 	}
 }
 
-func extractMarkedFinalAnswer(content string) string {
-	if idx := strings.LastIndex(content, "Final Answer:"); idx >= 0 {
-		return strings.TrimSpace(content[idx+len("Final Answer:"):])
-	}
-	lower := strings.ToLower(content)
-	start := strings.LastIndex(lower, "<final_answer>")
-	end := strings.LastIndex(lower, "</final_answer>")
-	if start >= 0 && end > start {
-		start += len("<final_answer>")
-		return strings.TrimSpace(content[start:end])
-	}
-	return ""
+func hasTaggedTTSOutput(content string) bool {
+	return extractTTSText(content) != ""
 }
 
 func decodeRoleJSON(raw string, out any) error {

@@ -5,28 +5,72 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/BurntSushi/toml"
 )
 
-func TestConfigValidateAcceptsAudioWakeup(t *testing.T) {
+func TestConfigValidateAcceptsSTTWakeup(t *testing.T) {
 	cfg := Config{
 		Model:       ModelConfig{Provider: "fake"},
 		TTS:         TTSConfig{Provider: "minimax-cn"},
-		InputMode:   " audio ",
+		STT:         STTConfig{Provider: "openai-whisper"},
+		InputMode:   " stt ",
 		TriggerMode: " wakeup ",
 	}
 
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}
-	if got := cfg.InputModeOrDefault(); got != "audio" {
-		t.Fatalf("InputModeOrDefault() = %q, want audio", got)
+	if got := cfg.InputModeOrDefault(); got != "stt" {
+		t.Fatalf("InputModeOrDefault() = %q, want stt", got)
 	}
 	if got := cfg.TriggerModeOrDefault(); got != "wakeup" {
 		t.Fatalf("TriggerModeOrDefault() = %q, want wakeup", got)
+	}
+}
+
+func TestConfigValidateRejectsRemovedAudioMode(t *testing.T) {
+	cfg := Config{
+		Model:     ModelConfig{Provider: "fake"},
+		TTS:       TTSConfig{Provider: "minimax-cn"},
+		InputMode: "audio",
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected invalid input_mode error for removed audio mode")
+	}
+	if !strings.Contains(err.Error(), "audio mode has been removed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestConfigInputModeDefaultContract(t *testing.T) {
+	const want = "text"
+
+	if got := DefaultConfig().InputMode; got != want {
+		t.Fatalf("DefaultConfig().InputMode = %q, want %q", got, want)
+	}
+	if got := (Config{}).InputModeOrDefault(); got != want {
+		t.Fatalf("Config{}.InputModeOrDefault() = %q, want %q", got, want)
+	}
+
+	var metaDefault any
+	for _, section := range ConfigMeta().Sections {
+		if section.Name != "agent" {
+			continue
+		}
+		for _, field := range section.Fields {
+			if field.Key == "input_mode" {
+				metaDefault = field.Default
+			}
+		}
+	}
+	if metaDefault != want {
+		t.Fatalf("ConfigMeta agent.input_mode default = %#v, want %q", metaDefault, want)
 	}
 }
 
@@ -455,8 +499,8 @@ provider = "fake"
 		t.Fatalf("write audio config: %v", err)
 	}
 	_, err = LoadRuntimeConfig(audioPath)
-	if err == nil || !strings.Contains(err.Error(), "tts.provider") {
-		t.Fatalf("LoadRuntimeConfig(audio) error = %v, want tts.provider validation error", err)
+	if err == nil || !strings.Contains(err.Error(), "audio mode has been removed") {
+		t.Fatalf("LoadRuntimeConfig(audio) error = %v, want removed audio mode error", err)
 	}
 }
 
@@ -687,7 +731,8 @@ func TestConfigValidateRejectsInvalidTriggerMode(t *testing.T) {
 	cfg := Config{
 		Model:       ModelConfig{Provider: "fake"},
 		TTS:         TTSConfig{Provider: "minimax-cn"},
-		InputMode:   "audio",
+		STT:         STTConfig{Provider: "openai-whisper"},
+		InputMode:   "stt",
 		TriggerMode: "gpio",
 	}
 
@@ -809,11 +854,12 @@ func TestConfigValidateRejectsWakeupForTextInput(t *testing.T) {
 	}
 }
 
-func TestConfigValidateRequiresTTSForAudioWakeup(t *testing.T) {
+func TestConfigValidateRequiresTTSForSTTWakeup(t *testing.T) {
 	cfg := Config{
 		Model:       ModelConfig{Provider: "fake"},
+		STT:         STTConfig{Provider: "openai-whisper"},
 		TTS:         TTSConfig{Provider: "   "},
-		InputMode:   "audio",
+		InputMode:   "stt",
 		TriggerMode: "wakeup",
 	}
 
@@ -854,8 +900,9 @@ func TestConfigValidateRejectsUnsupportedAudioFormatForVoiceInput(t *testing.T) 
 			cfg := Config{
 				Model:       ModelConfig{Provider: "fake"},
 				TTS:         TTSConfig{Provider: "minimax-cn"},
+				STT:         STTConfig{Provider: "openai-whisper"},
 				Audio:       tt.audio,
-				InputMode:   "audio",
+				InputMode:   "stt",
 				TriggerMode: "wakeup",
 			}
 
@@ -879,8 +926,8 @@ func TestVoiceSessionConfigDefaults(t *testing.T) {
 	if cfg.VoiceFirstTurnTimeoutOrDefault() != 10*time.Second {
 		t.Fatalf("VoiceFirstTurnTimeoutOrDefault() = %s, want 10s", cfg.VoiceFirstTurnTimeoutOrDefault())
 	}
-	if cfg.VoiceFollowupTimeoutOrDefault() != 6*time.Second {
-		t.Fatalf("VoiceFollowupTimeoutOrDefault() = %s, want 6s", cfg.VoiceFollowupTimeoutOrDefault())
+	if cfg.VoiceFollowupTimeoutOrDefault() != 5*time.Second {
+		t.Fatalf("VoiceFollowupTimeoutOrDefault() = %s, want 5s", cfg.VoiceFollowupTimeoutOrDefault())
 	}
 	if !cfg.VoiceInterruptOnWakeupOrDefault() {
 		t.Fatal("VoiceInterruptOnWakeupOrDefault() = false, want true")
@@ -1114,7 +1161,6 @@ model = "y"
 relay_url = "https://relay.example.com"
 relay_api_key = "relay-secret"
 board_id = "board-001"
-phone_id = "phone-001"
 bundle_id = "com.example.aiden"
 environment = "sandbox"
 team_id = "TEAMID1234"
@@ -1138,14 +1184,97 @@ timeout_sec = 3
 	if cfg.LiveActivity.RelayURL != "https://relay.example.com" || cfg.LiveActivity.RelayAPIKey != "relay-secret" {
 		t.Fatalf("relay config = %#v, want configured URL/key", cfg.LiveActivity)
 	}
-	if cfg.LiveActivity.BoardIDOrDefault() != "board-001" || cfg.LiveActivity.PhoneID != "phone-001" {
-		t.Fatalf("relay identity = board %q phone %q", cfg.LiveActivity.BoardIDOrDefault(), cfg.LiveActivity.PhoneID)
+	if cfg.LiveActivity.BoardIDOrDefault() != "board-001" {
+		t.Fatalf("relay board_id = %q, want board-001", cfg.LiveActivity.BoardIDOrDefault())
 	}
 	if cfg.LiveActivity.APNsTopic() != "com.example.aiden.push-type.liveactivity" {
 		t.Fatalf("APNsTopic() = %q", cfg.LiveActivity.APNsTopic())
 	}
 	if cfg.LiveActivity.TimeoutOrDefault() != 3*time.Second {
 		t.Fatalf("TimeoutOrDefault() = %s, want 3s", cfg.LiveActivity.TimeoutOrDefault())
+	}
+}
+
+func TestLoadRuntimeConfigFromDirGeneratesLiveActivityBoardID(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.toml")
+	body := `
+[model]
+provider = "fake"
+
+[live_activity]
+relay_url = "https://relay.example.com"
+board_id = "default"
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadRuntimeConfigFromDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	boardID := cfg.LiveActivity.BoardIDOrDefault()
+	if boardID == "" || boardID == "default" || !strings.HasPrefix(boardID, "board-") {
+		t.Fatalf("generated board_id = %q, want non-default board-*", boardID)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, liveActivityBoardIDFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(data)) != boardID {
+		t.Fatalf("persisted board_id = %q, want %q", strings.TrimSpace(string(data)), boardID)
+	}
+
+	cfg, err = LoadRuntimeConfigFromDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.LiveActivity.BoardIDOrDefault(); got != boardID {
+		t.Fatalf("reloaded board_id = %q, want persisted %q", got, boardID)
+	}
+}
+
+func TestLoadOrCreateLiveActivityBoardIDConcurrent(t *testing.T) {
+	dir := t.TempDir()
+	const workers = 16
+	var wg sync.WaitGroup
+	ids := make(chan string, workers)
+	errs := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			boardID, err := loadOrCreateLiveActivityBoardID(dir)
+			if err != nil {
+				errs <- err
+				return
+			}
+			ids <- boardID
+		}()
+	}
+	wg.Wait()
+	close(ids)
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	var first string
+	for id := range ids {
+		if first == "" {
+			first = id
+			continue
+		}
+		if id != first {
+			t.Fatalf("concurrent board_id = %q, want %q", id, first)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(dir, liveActivityBoardIDFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(data)); got != first {
+		t.Fatalf("persisted board_id = %q, want %q", got, first)
 	}
 }
 

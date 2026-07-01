@@ -69,6 +69,7 @@ type TaskEpisodeEvent struct {
 	NextStep           string              `json:"next_step,omitempty" yaml:"next_step,omitempty"`
 	ToolName           string              `json:"tool_name,omitempty" yaml:"tool_name,omitempty"`
 	ToolInput          string              `json:"tool_input,omitempty" yaml:"tool_input,omitempty"`
+	ToolError          *ToolError          `json:"tool_error,omitempty" yaml:"tool_error,omitempty"`
 	Content            string              `json:"content,omitempty" yaml:"content,omitempty"`
 	Todo               *TodoState          `json:"todo,omitempty" yaml:"todo,omitempty"`
 	SpeechEligible     bool                `json:"speech_eligible,omitempty" yaml:"speech_eligible,omitempty"`
@@ -178,6 +179,18 @@ func (r *EpisodeRecorder) ID() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.id
+}
+
+func (r *EpisodeRecorder) visualArtifactRoot() string {
+	if r == nil {
+		return ""
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.store == nil || strings.TrimSpace(r.store.rootDir) == "" {
+		return ""
+	}
+	return r.store.episodeDir(r.baseEpisodeLocked("running", time.Time{}))
 }
 
 func (r *EpisodeRecorder) Start(ctx context.Context) error {
@@ -309,7 +322,8 @@ func (r *EpisodeRecorder) recordExecutionForRole(result roleExecutionResult, rol
 			Type:        "tool_result",
 			Role:        "tool",
 			Observation: compactToolObservation(result.Step.Observation),
-			IsError:     toolOutputLooksLikeError(result.Step.Observation),
+			IsError:     result.ToolError != nil,
+			ToolError:   cloneToolError(result.ToolError),
 		}
 		if result.Step.Action.Tool != "" {
 			event.ToolName = result.Step.Action.Tool
@@ -950,7 +964,15 @@ func (s *TaskEpisodeStore) materializeEventArtifact(dir string, event *TaskEpiso
 		return nil
 	}
 	var result postActionScreenshotResult
-	if err := json.Unmarshal([]byte(raw), &result); err != nil || result.Data == "" {
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		return nil
+	}
+	if strings.TrimSpace(result.ScreenshotRef) != "" {
+		event.ScreenshotRef = result.ScreenshotRef
+		event.Observation = compactMaterializedScreenshotObservation(result)
+		return nil
+	}
+	if result.Data == "" {
 		return nil
 	}
 	imageBytes, err := base64.StdEncoding.DecodeString(result.Data)
@@ -967,19 +989,27 @@ func (s *TaskEpisodeStore) materializeEventArtifact(dir string, event *TaskEpiso
 		return fmt.Errorf("write episode artifact: %w", err)
 	}
 	event.ScreenshotRef = rel
+	result.Format = format
+	result.Size = len(imageBytes)
+	result.Data = ""
+	result.ScreenshotRef = rel
+	event.Observation = compactMaterializedScreenshotObservation(result)
+	return nil
+}
+
+func compactMaterializedScreenshotObservation(result postActionScreenshotResult) string {
 	compact := map[string]interface{}{
 		"width":          result.Width,
 		"height":         result.Height,
-		"format":         format,
+		"format":         result.Format,
 		"size":           result.Size,
-		"screenshot_ref": rel,
+		"screenshot_ref": result.ScreenshotRef,
 	}
 	if strings.TrimSpace(result.ActionOutput) != "" {
 		compact["action_output"] = strings.TrimSpace(result.ActionOutput)
 	}
 	data, _ := json.Marshal(compact)
-	event.Observation = string(data)
-	return nil
+	return string(data)
 }
 
 func writeEpisodeEventsJSONL(path string, events []TaskEpisodeEvent) error {

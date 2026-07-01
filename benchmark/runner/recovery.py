@@ -10,6 +10,9 @@ if TYPE_CHECKING:
     from runner.suite import Suite, TaskSpec
 
 
+DEFAULT_ENVIRONMENT_SETUP_TIMEOUT_SEC = 180
+
+
 def recover_agent_after_timeout(
     client: AgentClient,
     timeout_sec: int = 90,
@@ -53,7 +56,13 @@ def prepare_task_isolation(
         try:
             client.clear_history()
             if environment_url and not task.input_screenshot:
-                call_environment_setup(environment_url, task_id=benchmark_task_id or task.id)
+                call_environment_setup(
+                    environment_url,
+                    task_id=benchmark_task_id or task.id,
+                    timeout=DEFAULT_ENVIRONMENT_SETUP_TIMEOUT_SEC,
+                )
+                if (task.setup or {}).get("type") == "seed_memory":
+                    per_task_setup(client, task.setup)
             elif not task.input_screenshot:
                 per_task_setup(client, task.setup)
             return

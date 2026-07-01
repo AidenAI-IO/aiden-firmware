@@ -292,6 +292,8 @@ def _agent_run_command(payload: dict[str, Any]) -> str:
         "--suite <suite.json>",
         f"--agent-url {payload['agent_url']}",
     ]
+    if payload.get("config_dir"):
+        parts.append(f"--benchmark-token-file {Path(payload['config_dir']) / 'control_token'}")
     if payload.get("environment_bridge_endpoint"):
         parts.append(f"--environment-url {payload['environment_bridge_endpoint']}")
     if payload.get("benchmark_task_id"):

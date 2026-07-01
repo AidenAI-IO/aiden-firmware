@@ -12,6 +12,7 @@ import (
 
 type textInputHardwareDeps struct {
 	mouseClick   langtools.Tool
+	touchGesture langtools.Tool
 	keyboardTap  langtools.Tool
 	keyboardText langtools.Tool
 	quickAction  langtools.Tool
@@ -21,31 +22,54 @@ type textInputHardwareDeps struct {
 type textInputEngine struct {
 	hw     textInputHardwareDeps
 	vision textInputVision
+	sleep  func(context.Context, time.Duration) error
 }
 
 type enterTextInFieldArgs struct {
 	Text        string         `json:"text"`
 	Platform    string         `json:"platform,omitempty"`
+	Mode        string         `json:"mode,omitempty"`
+	SkipFocus   bool           `json:"skip_focus,omitempty"`
 	Focus       focusPointArgs `json:"focus"`
 	MaxAttempts int            `json:"max_attempts,omitempty"`
 	Segments    []string       `json:"segments,omitempty"`
 }
 
 type enterTextInFieldResult struct {
-	OK           bool     `json:"ok"`
-	Committed    bool     `json:"committed"`
-	TargetText   string   `json:"target_text"`
-	FieldText    string   `json:"field_text,omitempty"`
-	RequiredMode string   `json:"required_mode"`
-	Attempts     int      `json:"attempts"`
-	IMESwitches  int      `json:"ime_switches"`
-	VLMCalls     int      `json:"vlm_calls"`
-	Reason       string   `json:"reason,omitempty"`
-	Steps        []string `json:"steps,omitempty"`
+	OK                 bool     `json:"ok"`
+	Committed          bool     `json:"committed"`
+	Interrupted        bool     `json:"interrupted,omitempty"`
+	TargetText         string   `json:"target_text"`
+	FieldText          string   `json:"field_text,omitempty"`
+	RequiredMode       string   `json:"required_mode"`
+	Mode               string   `json:"mode,omitempty"`
+	Attempts           int      `json:"attempts"`
+	IMESwitches        int      `json:"ime_switches"`
+	VLMCalls           int      `json:"vlm_calls"`
+	ObservedMode       string   `json:"observed_mode,omitempty"`
+	CompositionPending bool     `json:"composition_pending,omitempty"`
+	CandidatesVisible  int      `json:"candidates_visible,omitempty"`
+	WrongIMESuspected  bool     `json:"wrong_ime_suspected,omitempty"`
+	Reason             string   `json:"reason,omitempty"`
+	Steps              []string `json:"steps,omitempty"`
 }
 
 func newTextInputEngine(hw textInputHardwareDeps, vision textInputVision) *textInputEngine {
 	return &textInputEngine{hw: hw, vision: vision}
+}
+
+func newTextInputEngineWithSleep(hw textInputHardwareDeps, vision textInputVision, sleep func(context.Context, time.Duration) error) *textInputEngine {
+	engine := newTextInputEngine(hw, vision)
+	engine.sleep = sleep
+	return engine
+}
+
+func (e *textInputEngine) sleepFor(ctx context.Context, delay time.Duration) error {
+	sleep := sleepWithContext
+	if e != nil && e.sleep != nil {
+		sleep = e.sleep
+	}
+	return sleep(ctx, delay)
 }
 
 func (e *textInputEngine) Run(ctx context.Context, args enterTextInFieldArgs) (enterTextInFieldResult, error) {
@@ -60,6 +84,7 @@ func (e *textInputEngine) Run(ctx context.Context, args enterTextInFieldArgs) (e
 	if platform == "" {
 		platform = "android"
 	}
+	interactionMode := normalizeTextInputInteractionMode(args.Mode)
 	maxAttempts := args.MaxAttempts
 	if maxAttempts <= 0 {
 		maxAttempts = textInputMaxAttempts
@@ -73,9 +98,9 @@ func (e *textInputEngine) Run(ctx context.Context, args enterTextInFieldArgs) (e
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		steps = append(steps, fmt.Sprintf("attempt %d begin", attempt))
 		retype := attempt == 1 || retryWrongIME
-		if attempt == 1 || retype {
+		if (attempt == 1 || retype) && !(attempt == 1 && args.SkipFocus) {
 			if err := e.applyFocus(ctx, args.Focus); err != nil {
-				return enterTextInFieldResult{TargetText: args.Text, RequiredMode: string(requiredMode), Attempts: attempt, Reason: err.Error(), Steps: steps, VLMCalls: vlmCalls}, nil
+				return enterTextInFieldResult{TargetText: args.Text, RequiredMode: string(requiredMode), Mode: string(interactionMode), Attempts: attempt, Reason: err.Error(), Steps: steps, VLMCalls: vlmCalls}, nil
 			}
 		}
 		if attempt > 1 && retryWrongIME {
@@ -108,18 +133,31 @@ func (e *textInputEngine) Run(ctx context.Context, args enterTextInFieldArgs) (e
 					steps = append(steps, "keyboard_text failed: "+err.Error())
 					continue
 				}
+				if interactionMode == textInputModeSearch {
+					return enterTextInFieldResult{OK: false, Committed: false, Interrupted: true, TargetText: args.Text, RequiredMode: string(requiredMode), Mode: string(interactionMode), Attempts: attempt, IMESwitches: imeSwitches, VLMCalls: vlmCalls, Reason: "search handoff after ascii input", Steps: append(steps, "search handoff after ascii input")}, nil
+				}
 			} else {
 				segments, err = compositionSegmentsForText(args.Text, args.Segments)
 				if err != nil {
-					return enterTextInFieldResult{TargetText: args.Text, RequiredMode: string(requiredMode), Attempts: attempt, Reason: err.Error(), Steps: steps, VLMCalls: vlmCalls}, nil
+					return enterTextInFieldResult{TargetText: args.Text, RequiredMode: string(requiredMode), Mode: string(interactionMode), Attempts: attempt, Reason: err.Error(), Steps: steps, VLMCalls: vlmCalls}, nil
 				}
-				committed, fieldText, wrongIME, calls, stepNotes, err = e.typeCompositionWithCandidateSelection(ctx, platform, args, segments)
+				if attempt == 1 {
+					steps = append(steps, fmt.Sprintf("wait %s for IME to settle before first composition input", textInputCompositionReadyDelay))
+					if err := e.sleepFor(ctx, textInputCompositionReadyDelay); err != nil {
+						return enterTextInFieldResult{TargetText: args.Text, RequiredMode: string(requiredMode), Mode: string(interactionMode), Attempts: attempt, IMESwitches: imeSwitches, VLMCalls: vlmCalls, Reason: err.Error(), Steps: steps}, nil
+					}
+				}
+				if interactionMode == textInputModeSearch {
+					committed, fieldText, wrongIME, calls, stepNotes, err = e.typeCompositionSearch(ctx, platform, args, segments)
+				} else {
+					committed, fieldText, wrongIME, calls, stepNotes, err = e.typeCompositionWithCandidateSelection(ctx, platform, args, segments)
+				}
 			}
 		} else {
 			if requiredMode == textInputModeComposition {
 				segments, err = compositionSegmentsForText(args.Text, args.Segments)
 				if err != nil {
-					return enterTextInFieldResult{TargetText: args.Text, RequiredMode: string(requiredMode), Attempts: attempt, Reason: err.Error(), Steps: steps, VLMCalls: vlmCalls}, nil
+					return enterTextInFieldResult{TargetText: args.Text, RequiredMode: string(requiredMode), Mode: string(interactionMode), Attempts: attempt, Reason: err.Error(), Steps: steps, VLMCalls: vlmCalls}, nil
 				}
 			}
 		}
@@ -138,8 +176,18 @@ func (e *textInputEngine) Run(ctx context.Context, args enterTextInFieldArgs) (e
 				return enterTextInFieldResult{
 					OK: true, Committed: true, TargetText: args.Text, FieldText: fieldText,
 					RequiredMode: string(requiredMode), Attempts: attempt, IMESwitches: imeSwitches,
-					VLMCalls: vlmCalls, Reason: "field verified", Steps: steps,
+					Mode: string(interactionMode), VLMCalls: vlmCalls, Reason: "field verified", Steps: steps,
 				}, nil
+			}
+			if interactionMode == textInputModeSearch {
+				analysis, calls, stepNotes, analyzeErr := e.analyzeScreen(ctx, platform, args, segments)
+				vlmCalls += calls
+				steps = append(steps, stepNotes...)
+				if analyzeErr != nil {
+					steps = append(steps, "vision analyze failed: "+analyzeErr.Error())
+					return enterTextInFieldResult{OK: false, Committed: false, Interrupted: true, TargetText: args.Text, FieldText: fieldText, RequiredMode: string(requiredMode), Mode: string(interactionMode), Attempts: attempt, IMESwitches: imeSwitches, VLMCalls: vlmCalls, WrongIMESuspected: wrongIME, Reason: "search handoff after composition input", Steps: steps}, nil
+				}
+				return enterTextInFieldResult{OK: false, Committed: false, Interrupted: true, TargetText: args.Text, FieldText: analysis.FieldText, RequiredMode: string(requiredMode), Mode: string(interactionMode), Attempts: attempt, IMESwitches: imeSwitches, VLMCalls: vlmCalls, ObservedMode: string(analysis.ObservedMode), CompositionPending: analysis.CompositionPending, CandidatesVisible: len(analysis.Candidates), WrongIMESuspected: wrongIME || analysis.WrongIMESuspected || analysis.SuggestSwitchIME, Reason: "search handoff after composition input", Steps: append(steps, fmt.Sprintf("search handoff: field=%q", analysis.FieldText))}, nil
 			}
 			if wrongIME {
 				steps = append(steps, fmt.Sprintf("verify failed: field=%q", fieldText))
@@ -170,6 +218,7 @@ func (e *textInputEngine) Run(ctx context.Context, args enterTextInFieldArgs) (e
 				TargetText:   args.Text,
 				FieldText:    fieldText,
 				RequiredMode: string(requiredMode),
+				Mode:         string(interactionMode),
 				Attempts:     attempt,
 				IMESwitches:  imeSwitches,
 				VLMCalls:     vlmCalls,
@@ -189,6 +238,7 @@ func (e *textInputEngine) Run(ctx context.Context, args enterTextInFieldArgs) (e
 		Committed:    false,
 		TargetText:   args.Text,
 		RequiredMode: string(requiredMode),
+		Mode:         string(interactionMode),
 		Attempts:     maxAttempts,
 		IMESwitches:  imeSwitches,
 		VLMCalls:     vlmCalls,
@@ -219,7 +269,9 @@ func (e *textInputEngine) analyzeActVerify(ctx context.Context, platform string,
 			if err := e.applyFocus(ctx, clicks[0]); err != nil {
 				return false, analysis.FieldText, false, imeSwitches, vlmCalls, steps, err
 			}
-			time.Sleep(textInputFocusRestoreDelay)
+			if err := e.sleepFor(ctx, textInputFocusRestoreDelay); err != nil {
+				return false, analysis.FieldText, false, imeSwitches, vlmCalls, steps, err
+			}
 			analysis, calls, stepNotes, err = e.analyzeScreen(ctx, platform, args, segments)
 			vlmCalls += calls
 			steps = append(steps, stepNotes...)
@@ -237,7 +289,9 @@ func (e *textInputEngine) analyzeActVerify(ctx context.Context, platform string,
 					steps = append(steps, "page down failed: "+err.Error())
 					break
 				}
-				time.Sleep(textInputCandidatePageDelay)
+				if err := e.sleepFor(ctx, textInputCandidatePageDelay); err != nil {
+					return false, analysis.FieldText, false, imeSwitches, vlmCalls, steps, err
+				}
 				analysis, calls, stepNotes, err = e.analyzeScreen(ctx, platform, args, segments)
 				vlmCalls += calls
 				steps = append(steps, stepNotes...)
@@ -253,7 +307,9 @@ func (e *textInputEngine) analyzeActVerify(ctx context.Context, platform string,
 					if err := e.applyFocus(ctx, clicks[0]); err != nil {
 						return false, analysis.FieldText, false, imeSwitches, vlmCalls, steps, err
 					}
-					time.Sleep(textInputFocusRestoreDelay)
+					if err := e.sleepFor(ctx, textInputFocusRestoreDelay); err != nil {
+						return false, analysis.FieldText, false, imeSwitches, vlmCalls, steps, err
+					}
 					analysis, calls, stepNotes, err = e.analyzeScreen(ctx, platform, args, segments)
 					vlmCalls += calls
 					steps = append(steps, stepNotes...)
@@ -307,28 +363,36 @@ func (e *textInputEngine) applyFocus(ctx context.Context, focus focusPointArgs) 
 	if coordSpace == "" {
 		coordSpace = "normalized"
 	}
-	out, err := e.hw.mouseClick.Call(ctx, jsonString(map[string]any{
+	_, err := callTextInputTool(ctx, e.hw.mouseClick, jsonString(map[string]any{
 		"x": focus.X, "y": focus.Y, "coord_space": coordSpace,
 	}))
 	if err != nil {
 		return err
 	}
-	if strings.HasPrefix(out, "error:") {
-		return fmt.Errorf("%s", out)
-	}
-	time.Sleep(textInputFocusRestoreDelay)
-	return nil
+	return e.sleepFor(ctx, textInputFocusRestoreDelay)
 }
 
 func (e *textInputEngine) tapKeys(ctx context.Context, keys []string) error {
 	if e == nil || e.hw.keyboardTap == nil {
 		return fmt.Errorf("keyboard_tap is not configured")
 	}
-	out, err := e.hw.keyboardTap.Call(ctx, jsonString(map[string]any{"keys": keys}))
+	out, err := callTextInputTool(ctx, e.hw.keyboardTap, jsonString(map[string]any{"keys": keys}))
 	if err != nil {
 		return err
 	}
 	return interpretTextInputToolOutput(out)
+}
+
+func callTextInputTool(ctx context.Context, tool langtools.Tool, input string) (string, error) {
+	toolCtx, _ := WithToolError(ctx)
+	out, err := tool.Call(toolCtx, input)
+	if err != nil {
+		return out, err
+	}
+	if te := ToolErrorFromContext(toolCtx); te != nil {
+		return out, te
+	}
+	return out, nil
 }
 
 func (e *textInputEngine) cycleIME(ctx context.Context, platform string) (string, error) {
@@ -339,7 +403,9 @@ func (e *textInputEngine) cycleIME(ctx context.Context, platform string) (string
 	if err := e.tapKeys(ctx, keys); err != nil {
 		return "", err
 	}
-	time.Sleep(textInputIMESwitchSettleDelay)
+	if err := e.sleepFor(ctx, textInputIMESwitchSettleDelay); err != nil {
+		return "", err
+	}
 	return strings.Join(keys, "+"), nil
 }
 
@@ -358,14 +424,16 @@ func (e *textInputEngine) typeASCII(ctx context.Context, text string) error {
 			if err := e.tapKeys(ctx, []string{"space"}); err != nil {
 				return err
 			}
-			time.Sleep(textInputKeystrokeGap)
+			if err := e.sleepFor(ctx, textInputKeystrokeGap); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
 
 func (e *textInputEngine) typeASCIIChunk(ctx context.Context, text string) error {
-	out, err := e.hw.keyboardText.Call(ctx, jsonString(map[string]string{"text": text}))
+	out, err := callTextInputTool(ctx, e.hw.keyboardText, jsonString(map[string]string{"text": text}))
 	if err != nil {
 		return err
 	}
@@ -375,21 +443,22 @@ func (e *textInputEngine) typeASCIIChunk(ctx context.Context, text string) error
 func (e *textInputEngine) typeCompositionWithCandidateSelection(ctx context.Context, platform string, args enterTextInFieldArgs, segments []string) (committed bool, fieldText string, wrongIME bool, vlmCalls int, steps []string, err error) {
 	for i, segment := range segments {
 		steps = append(steps, fmt.Sprintf("type segment %d: %q", i+1, segment))
-		out, err := e.hw.keyboardText.Call(ctx, jsonString(map[string]string{"text": segment}))
+		_, err := callTextInputTool(ctx, e.hw.keyboardText, jsonString(map[string]string{"text": segment}))
 		if err != nil {
 			return false, fieldText, false, vlmCalls, steps, err
 		}
-		if strings.HasPrefix(out, "error:") {
-			return false, fieldText, false, vlmCalls, steps, fmt.Errorf("%s", out)
+		if err := e.sleepFor(ctx, textInputKeystrokeGap); err != nil {
+			return false, fieldText, false, vlmCalls, steps, err
 		}
-		time.Sleep(textInputKeystrokeGap)
 	}
 	// All segments typed; press space to commit the current IME composition
 	steps = append(steps, "press space to commit composition")
 	if err := e.tapKeys(ctx, []string{"space"}); err != nil {
 		steps = append(steps, "space commit failed: "+err.Error())
 	}
-	time.Sleep(textInputFocusRestoreDelay)
+	if err := e.sleepFor(ctx, textInputFocusRestoreDelay); err != nil {
+		return false, fieldText, false, vlmCalls, steps, err
+	}
 
 	var calls int
 	var notes []string
@@ -402,16 +471,72 @@ func (e *textInputEngine) typeCompositionWithCandidateSelection(ctx context.Cont
 	return committed, fieldText, wrongIME, vlmCalls, steps, nil
 }
 
+func (e *textInputEngine) typeCompositionSearch(ctx context.Context, platform string, args enterTextInFieldArgs, segments []string) (committed bool, fieldText string, wrongIME bool, vlmCalls int, steps []string, err error) {
+	for i, segment := range segments {
+		steps = append(steps, fmt.Sprintf("type segment %d: %q", i+1, segment))
+		out, err := e.hw.keyboardText.Call(ctx, jsonString(map[string]string{"text": segment}))
+		if err != nil {
+			return false, fieldText, false, vlmCalls, steps, err
+		}
+		if strings.HasPrefix(out, "error:") {
+			return false, fieldText, false, vlmCalls, steps, fmt.Errorf("%s", out)
+		}
+		if err := e.sleepFor(ctx, textInputKeystrokeGap); err != nil {
+			return false, fieldText, false, vlmCalls, steps, err
+		}
+	}
+	steps = append(steps, "press space to commit composition")
+	if err := e.tapKeys(ctx, []string{"space"}); err != nil {
+		steps = append(steps, "space commit failed: "+err.Error())
+	}
+	if err := e.sleepFor(ctx, textInputFocusRestoreDelay); err != nil {
+		return false, fieldText, false, vlmCalls, steps, err
+	}
+	analysis, calls, stepNotes, err := e.analyzeScreen(ctx, platform, args, segments)
+	vlmCalls += calls
+	steps = append(steps, stepNotes...)
+	if err != nil {
+		return false, fieldText, false, vlmCalls, steps, err
+	}
+	if committed, fieldText = evaluateFieldCommit(analysis, args.Text); committed {
+		return true, fieldText, false, vlmCalls, steps, nil
+	}
+	if clicks := analysisToClicks(analysis.Candidates); len(clicks) > 0 {
+		steps = append(steps, fmt.Sprintf("click first candidate of %d", len(clicks)))
+		if err := e.applyFocus(ctx, clicks[0]); err != nil {
+			return false, analysis.FieldText, false, vlmCalls, steps, err
+		}
+		if err := e.sleepFor(ctx, textInputFocusRestoreDelay); err != nil {
+			return false, analysis.FieldText, false, vlmCalls, steps, err
+		}
+		analysis, calls, stepNotes, err = e.analyzeScreen(ctx, platform, args, segments)
+		vlmCalls += calls
+		steps = append(steps, stepNotes...)
+		if err != nil {
+			return false, analysis.FieldText, false, vlmCalls, steps, err
+		}
+		if committed, fieldText = evaluateFieldCommit(analysis, args.Text); committed {
+			return true, fieldText, false, vlmCalls, steps, nil
+		}
+	}
+	fieldText = analysis.FieldText
+	wrongIME = shouldSuspectWrongIME(analysis, fieldText, segments, textInputModeComposition)
+	if wrongIME {
+		steps = append(steps, "wrong IME suspected; search handoff recommended")
+	}
+	return false, fieldText, wrongIME, vlmCalls, steps, nil
+}
+
 func (e *textInputEngine) clearField(ctx context.Context, platform string) error {
 	// Take a screenshot to determine how many characters to delete
 	shot, err := e.captureScreenshot(ctx)
 	if err != nil {
 		// Fallback: use escape to dismiss composition then moderate backspaces
 		_ = e.tapKeys(ctx, []string{"escape"})
-		time.Sleep(textInputKeystrokeGap)
+		_ = e.sleepFor(ctx, textInputKeystrokeGap)
 		for i := 0; i < textInputClearBackspaceFallback; i++ {
 			_ = e.tapKeys(ctx, []string{"backspace"})
-			time.Sleep(textInputKeystrokeGap)
+			_ = e.sleepFor(ctx, textInputKeystrokeGap)
 		}
 		return nil
 	}
@@ -421,10 +546,10 @@ func (e *textInputEngine) clearField(ctx context.Context, platform string) error
 	})
 	if err != nil {
 		_ = e.tapKeys(ctx, []string{"escape"})
-		time.Sleep(textInputKeystrokeGap)
+		_ = e.sleepFor(ctx, textInputKeystrokeGap)
 		for i := 0; i < textInputClearBackspaceFallback; i++ {
 			_ = e.tapKeys(ctx, []string{"backspace"})
-			time.Sleep(textInputKeystrokeGap)
+			_ = e.sleepFor(ctx, textInputKeystrokeGap)
 		}
 		return nil
 	}
@@ -432,7 +557,7 @@ func (e *textInputEngine) clearField(ctx context.Context, platform string) error
 	// Dismiss any active composition in candidate bar first
 	if analysis.CompositionPending {
 		_ = e.tapKeys(ctx, []string{"escape"})
-		time.Sleep(textInputKeystrokeGap)
+		_ = e.sleepFor(ctx, textInputKeystrokeGap)
 	}
 
 	// Backspace once per rune in the committed field text
@@ -444,7 +569,9 @@ func (e *textInputEngine) clearField(ctx context.Context, platform string) error
 		if err := e.tapKeys(ctx, []string{"backspace"}); err != nil {
 			return err
 		}
-		time.Sleep(textInputKeystrokeGap)
+		if err := e.sleepFor(ctx, textInputKeystrokeGap); err != nil {
+			return err
+		}
 	}
 	return nil
 }
