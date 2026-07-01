@@ -12,6 +12,7 @@ import (
 )
 
 const defaultOpenRouterSTTBaseURL = "https://openrouter.ai/api/v1"
+const defaultOpenRouterSTTModel = "openai/whisper-large-v3"
 
 // OpenRouterSTT implements STT using OpenRouter's JSON + base64 audio API.
 type OpenRouterSTT struct {
@@ -26,6 +27,9 @@ type OpenRouterSTT struct {
 func NewOpenRouterSTT(apiKey, model, baseURL, language string, httpClient *http.Client) *OpenRouterSTT {
 	if baseURL == "" {
 		baseURL = defaultOpenRouterSTTBaseURL
+	}
+	if model == "" {
+		model = defaultOpenRouterSTTModel
 	}
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 30 * time.Second}

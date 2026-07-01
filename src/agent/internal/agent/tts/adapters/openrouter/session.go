@@ -39,8 +39,9 @@ func (s *session) WriteText(text string) error {
 
 	s.textBuffer.WriteString(text)
 
-	if containsSentenceBoundary(s.textBuffer.String()) {
-		return s.synthesizeAndClear()
+	// Find sentence boundary and synthesize only up to it, retaining remainder
+	if idx := lastSentenceBoundary(s.textBuffer.String()); idx >= 0 {
+		return s.synthesizeUpTo(idx + 1) // +1 to include the boundary char
 	}
 	return nil
 }
@@ -100,6 +101,33 @@ func (s *session) synthesizeAndClear() error {
 		return nil
 	}
 
+	return s.synthesize(text)
+}
+
+// synthesizeUpTo sends text up to the specified index and retains the remainder.
+// Must be called with s.mu held.
+func (s *session) synthesizeUpTo(endIdx int) error {
+	text := s.textBuffer.String()
+	if endIdx <= 0 || endIdx > len(text) {
+		return nil
+	}
+
+	toSend := text[:endIdx]
+	remainder := text[endIdx:]
+
+	s.textBuffer.Reset()
+	s.textBuffer.WriteString(remainder)
+
+	if strings.TrimSpace(toSend) == "" {
+		return nil
+	}
+
+	return s.synthesize(toSend)
+}
+
+// synthesize sends the given text to OpenRouter TTS API and writes PCM to sink.
+// Must be called with s.mu held.
+func (s *session) synthesize(text string) error {
 	reqBody := speechRequest{
 		Model:          s.adapter.model,
 		Voice:          s.adapter.voice,
@@ -164,6 +192,17 @@ func containsSentenceBoundary(text string) bool {
 		}
 	}
 	return false
+}
+
+// lastSentenceBoundary returns the index of the last sentence boundary char in text, or -1 if none.
+func lastSentenceBoundary(text string) int {
+	for i := len(text) - 1; i >= 0; i-- {
+		switch rune(text[i]) {
+		case '.', '!', '?', '\n', '。', '！', '？', '；':
+			return i
+		}
+	}
+	return -1
 }
 
 type speechRequest struct {
