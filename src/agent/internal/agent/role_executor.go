@@ -1257,8 +1257,16 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 		Role:  llms.ChatMessageTypeSystem,
 		Parts: roleSystemMessageParts(profile),
 	}}
+	var plannerStatePrompt string
 	if profile.Name == RolePlanner {
 		messages = append(messages, e.ConversationHistory...)
+		plannerStatePrompt = buildRoleStatePrompt(profile.Name, inputs, state, task)
+		if state.ForceSimpleLoop && strings.TrimSpace(plannerStatePrompt) != "" {
+			messages = append(messages, llms.MessageContent{
+				Role:  llms.ChatMessageTypeHuman,
+				Parts: []llms.ContentPart{llms.TextPart(plannerStatePrompt)},
+			})
+		}
 		messages = append(messages, llms.MessageContent{
 			Role:  llms.ChatMessageTypeHuman,
 			Parts: plannerCurrentUserMessageParts(inputs, e.InputAttachments),
@@ -1274,11 +1282,10 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 	}
 
 	if profile.Name == RolePlanner {
-		statePrompt := buildRoleStatePrompt(profile.Name, inputs, state, task)
-		if strings.TrimSpace(statePrompt) != "" {
+		if !state.ForceSimpleLoop && strings.TrimSpace(plannerStatePrompt) != "" {
 			messages = append(messages, llms.MessageContent{
 				Role:  llms.ChatMessageTypeHuman,
-				Parts: []llms.ContentPart{llms.TextPart(statePrompt)},
+				Parts: []llms.ContentPart{llms.TextPart(plannerStatePrompt)},
 			})
 		}
 		for _, steer := range state.SteerMessages {
