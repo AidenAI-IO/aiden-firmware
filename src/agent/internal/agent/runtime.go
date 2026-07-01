@@ -69,8 +69,8 @@ type RunRequest struct {
 	RuntimeContext string
 	StreamWriter   io.Writer
 	// StreamFinalChunks allows final-answer chunks to be written through
-	// StreamWriter for audio paths. Non-final LLM calls must remain
-	// non-streaming because they may be planner, tool-call, or verifier turns.
+	// StreamWriter for audio paths. Non-final LLM calls remain non-streaming
+	// because they may still turn into tool calls.
 	StreamFinalChunks bool
 	MaxTokens         int
 	EventHandler      func(RunEvent)
@@ -123,14 +123,14 @@ func canonicalTurnInputFromRunRequest(req RunRequest) TurnInput {
 }
 
 func (r RunResult) SpokenText() string {
-	return strings.TrimSpace(r.Output)
+	return BuildSpeechText(r.Output, Config{})
 }
 
 func (r RunResult) SpokenTextForConfig(cfg Config) string {
 	if r.WaitForWakeupRequested {
 		return ""
 	}
-	return strings.TrimSpace(r.Output)
+	return BuildSpeechText(r.Output, cfg)
 }
 
 type RunSteerMessage struct {
@@ -152,11 +152,9 @@ type RunMetrics struct {
 	// hit rate is CachedPromptTokens / PromptTokens.
 	CachedPromptTokens int `json:"cached_prompt_tokens,omitempty"`
 	// LastPromptTokens holds the largest single prompt-token count in the run.
-	// PromptTokens/CompletionTokens/TotalTokens accumulate across the multiple
-	// planner/executor/verifier calls in a single run, but the compression
-	// heuristic needs the size of one prompt relative to the context window, not
-	// the cumulative sum. Using the largest single prompt keeps a small verifier
-	// call from masking a much larger planner prompt.
+	// PromptTokens/CompletionTokens/TotalTokens accumulate across model calls in
+	// a single run, but the compression heuristic needs the size of one prompt
+	// relative to the context window, not the cumulative sum.
 	LastPromptTokens int `json:"-"`
 }
 
@@ -1286,7 +1284,7 @@ func (r *Runtime) buildRoleProfiles(skills ResolvedSkills, availableTools []lang
 			Instruction:         r.config.Instruction,
 			AdditionalPrompt:    r.config.AdditionalPrompt,
 			RuntimeContext:      runtimeContext,
-			ForceSimpleLoop:     r.config.ForceSimpleLoop,
+			ForceSimpleLoop:     true,
 			VoiceToolCallSpeech: r.config.VoiceToolCallSpeech,
 			TTSConfigured:       strings.TrimSpace(r.config.TTS.Provider) != "",
 		},

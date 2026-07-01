@@ -956,26 +956,6 @@
         }
       }
     },
-    "screenshot_full": {
-      "label": "Screenshot Full Screen",
-      "aliases": ["全屏截图", "screenshot_full"],
-      "category": "system_panel",
-      "platforms": {
-        "ios": {
-          "status": "active",
-          "tool": "keyboard_tap",
-          "input": { "keys": ["shift", "meta", "3"], "hold_ms": 120 },
-          "note": "external keyboard: Cmd+Shift+3 full-screen screenshot (HID shift=0x02, meta=0x08, 3=0x20)"
-        },
-        "android": { "status": "reserved" },
-        "mac": {
-          "status": "active",
-          "tool": "keyboard_tap",
-          "input": { "keys": ["shift", "meta", "3"] },
-          "note": "save full-screen screenshot to desktop (Shift+Cmd+3)"
-        }
-      }
-    },
     "screenshot_region": {
       "label": "Screenshot Region",
       "aliases": ["区域截图", "screenshot_region"],

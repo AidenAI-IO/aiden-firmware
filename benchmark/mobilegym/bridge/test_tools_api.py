@@ -21,6 +21,7 @@ def mock_env_factory():
     class MockEnv:
         def __init__(self):
             self.last_action = None
+            self.actions = []
             self.step_count = 0
 
         async def get_observation(self):
@@ -29,6 +30,7 @@ def mock_env_factory():
 
         async def step(self, action):
             self.last_action = action
+            self.actions.append(action)
             self.step_count += 1
             return MockStepResult()
 
@@ -114,6 +116,8 @@ def test_get_tools_catalog(bridge_server):
 
     enter_text_props = tools["enter_text_in_field"]["args_schema"]["properties"]
     assert tools["enter_text_in_field"]["args_schema"]["additionalProperties"] is False
+    assert "focus" in enter_text_props
+    assert "segments" in enter_text_props
     assert tools["enter_text_via_bridge"]["args_schema"]["additionalProperties"] is False
     assert enter_text_props["platform"]["enum"] == ["ios", "android", "mac"]
     assert enter_text_props["mode"]["enum"] == ["form", "search"]
@@ -464,6 +468,43 @@ def test_invoke_keyboard_text_accepts_plain_text_fallback(bridge_server):
     assert action_to_dict(state.env.last_action) == {
         "action_type": "TYPE",
         "data": {"value": "plain text"},
+    }
+
+
+def test_invoke_enter_text_in_field_focuses_and_types_unicode(bridge_server):
+    _server, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-enter-text"
+
+    request_body = json.dumps(
+        {
+            "input": {
+                "text": "隐私",
+                "platform": "android",
+                "focus": {"coord_space": "normalized", "x": 500, "y": 80},
+                "segments": ["yin", "si"],
+            }
+        }
+    ).encode()
+    req = Request(
+        f"{base_url}/api/tools/enter_text_in_field",
+        data=request_body,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+
+    assert data["is_error"] is False
+    output = json.loads(data["output"])
+    assert output["ok"] is True
+    assert output["committed"] is True
+    assert output["field_text"] == "隐私"
+    assert output["required_mode"] == "composition"
+    assert action_to_dict(state.env.last_action) == {
+        "action_type": "TYPE",
+        "data": {"value": "隐私", "point": [500.0, 80.0]},
     }
 
 

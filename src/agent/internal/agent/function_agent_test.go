@@ -144,6 +144,29 @@ func TestFunctionAgentParseOutputBindsChoiceContentToFirstValidToolCall(t *testi
 	}
 }
 
+func TestFunctionAgentParseOutputKeepsTaggedFinalText(t *testing.T) {
+	agent := &FunctionAgent{OutputKey: "output"}
+	content := "我已经完成了音量检查。\n<tts>我已经完成了任务，请查收。</tts>"
+
+	actions, finish, err := agent.ParseOutput(&llms.ContentResponse{
+		Choices: []*llms.ContentChoice{{
+			Content: content,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("ParseOutput() error = %v", err)
+	}
+	if len(actions) != 0 {
+		t.Fatalf("expected no actions, got %#v", actions)
+	}
+	if finish == nil {
+		t.Fatal("finish = nil")
+	}
+	if got := finish.ReturnValues["output"]; got != content {
+		t.Fatalf("finish output = %#v, want raw tagged content", got)
+	}
+}
+
 func TestFunctionAgentParseOutputExtractsGenericInputWrapper(t *testing.T) {
 	agent := &FunctionAgent{OutputKey: "output"}
 

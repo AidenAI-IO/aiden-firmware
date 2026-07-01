@@ -535,7 +535,7 @@ func routeShouldUsePlan(request string) bool {
 
 func plannerTaskForPhase(phase loopPhase, state roleLoopState, forceSimpleLoop bool) string {
 	if forceSimpleLoop {
-		return "Single-agent simple loop mode: delegated plan mode is disabled by configuration. Use available tools directly and return a final answer when the request is satisfied. If the task becomes multi-step, use set_todo to maintain a visible todo list without switching modes."
+		return "Single-agent loop mode: use available tools directly. When the request is satisfied, return ordinary user-facing text plus exactly one <tts>...</tts> block containing the concise spoken summary. Do not return JSON or a \"Final Answer:\" wrapper. If the task becomes multi-step, use set_todo to maintain a visible todo list."
 	}
 	switch phase {
 	case phaseDecision:
@@ -555,7 +555,7 @@ func plannerTaskForPhase(phase loopPhase, state roleLoopState, forceSimpleLoop b
 		}
 		return task
 	default:
-		return "Single-agent default mode: use available tools directly as needed and return a final answer when the request is satisfied. If the task becomes multi-step, use set_todo to maintain a visible todo list without switching to delegated plan mode."
+		return "Single-agent default mode: use available tools directly as needed. When the request is satisfied, return ordinary user-facing text plus exactly one <tts>...</tts> block containing the concise spoken summary. Do not return JSON or a \"Final Answer:\" wrapper. If the task becomes multi-step, use set_todo to maintain a visible todo list without switching to delegated plan mode."
 	}
 }
 
@@ -565,9 +565,10 @@ func writeLoopMode(builder *strings.Builder, state roleLoopState) {
 	builder.WriteString(string(state.Phase))
 	builder.WriteByte('\n')
 	if state.ForceSimpleLoop {
-		builder.WriteString("- force_simple_loop: true\n")
-		builder.WriteString("- delegated plan mode tools are disabled; use available tools directly and return a final answer when done.\n")
-		builder.WriteString("- set_todo is available when this single-agent task needs explicit multi-step tracking.\n")
+		builder.WriteString("- single_agent: true\n")
+		builder.WriteString("- use available tools directly and return ordinary final text with exactly one <tts>...</tts> block when done.\n")
+		builder.WriteString("- do not return JSON or a \"Final Answer:\" wrapper for final responses.\n")
+		builder.WriteString("- set_todo is available when this task needs explicit multi-step tracking.\n")
 		return
 	}
 	if state.Phase == phaseDecision {
@@ -598,6 +599,7 @@ func writeLoopMode(builder *strings.Builder, state roleLoopState) {
 	}
 	if state.Phase == phaseDefault {
 		builder.WriteString("- final answers in default mode end the run directly without verifier.\n")
+		builder.WriteString("- final responses must be ordinary text with exactly one <tts>...</tts> block; do not use JSON or a \"Final Answer:\" wrapper.\n")
 		builder.WriteString("- commit_plan is not available in default mode.\n")
 		builder.WriteString("- set_todo is available if this single-agent task needs explicit multi-step tracking.\n")
 		builder.WriteString("- complete directly without a delegated plan unless the user changes the task or the task needs explicit planning.\n")
