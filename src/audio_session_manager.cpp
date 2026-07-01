@@ -87,11 +87,17 @@ AidenServiceStatus AudioSessionManager::start_recording(const AudioFormat& fmt,
         record_sessions_.clear();
         record_last_active_.clear();
     }
+    // Stop all stale sessions and wait for their threads to finish.
+    // This prevents use-after-free if the capture thread is still accessing
+    // resources when the session is destroyed.
     for (size_t i = 0; i < stale_records.size(); ++i) {
         stale_records[i].second->stop();
         fprintf(stderr, "[audio_service] record session %llu replaced\n",
                 static_cast<unsigned long long>(stale_records[i].first));
     }
+    // Clear the vector to trigger destructors and join threads before proceeding.
+    // This ensures no stale session is accessing hardware when we start the new one.
+    stale_records.clear();
 
     uint64_t id;
     {
