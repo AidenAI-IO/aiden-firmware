@@ -77,6 +77,10 @@ bool AudioSessionManager::persist_playback_volume_if_changed(int volume) {
 
 AidenServiceStatus AudioSessionManager::start_recording(const AudioFormat& fmt,
                                                          RecordStartResult* out) {
+    // Serialize the entire teardown+start sequence so two concurrent
+    // start_recording() calls cannot overlap hardware access.
+    std::lock_guard<std::mutex> lifecycle_lock(record_lifecycle_mutex_);
+
     const Clock::time_point now = Clock::now();
     std::vector<std::pair<uint64_t, std::shared_ptr<AudioRecordSession>>> stale_records;
     {
