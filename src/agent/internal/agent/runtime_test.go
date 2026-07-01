@@ -4012,6 +4012,75 @@ func TestRuntimeRunDoesNotDuplicateRuntimeContextAcrossTurns(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunPlacesAgentRuntimeContextBeforeCurrentUserMessage(t *testing.T) {
+	model := &scriptedModel{
+		responses: roleDirectResponses("processed"),
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Use context when answering.",
+		},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	const userText = "REAL_USER_REQUEST_MARKER"
+	if _, err := runtime.Run(context.Background(), RunRequest{
+		Input: userText,
+		Attachments: []InputAttachment{
+			{
+				Kind:     AttachmentKindImage,
+				Name:     "photo.png",
+				MIMEType: "image/png",
+				Data:     []byte{0x89, 0x50, 0x4e, 0x47},
+			},
+		},
+		DeviceEnvironment: &PhoneEnvironment{
+			Platform:      "ios",
+			SystemName:    "iOS",
+			SystemVersion: "18.0",
+		},
+	}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(model.messages) != 1 {
+		t.Fatalf("expected one model call, got %d", len(model.messages))
+	}
+
+	var runtimeContextIndex, userMessageIndex = -1, -1
+	messages := model.messages[0]
+	for i := range messages {
+		text := messageText(messages[i : i+1])
+		if strings.Contains(text, "Agent runtime context (synthetic; not a new user request):") {
+			runtimeContextIndex = i
+		}
+		if text == userText+"\n" {
+			userMessageIndex = i
+		}
+	}
+	if runtimeContextIndex < 0 || userMessageIndex < 0 {
+		t.Fatalf("expected runtime context and current user messages, got %#v", messages)
+	}
+	if runtimeContextIndex >= userMessageIndex {
+		t.Fatalf("runtime context index = %d, user message index = %d; want runtime context before current user", runtimeContextIndex, userMessageIndex)
+	}
+	if messages[runtimeContextIndex].Role != llms.ChatMessageTypeHuman || messages[userMessageIndex].Role != llms.ChatMessageTypeHuman {
+		t.Fatalf("unexpected message roles: runtime=%q user=%q", messages[runtimeContextIndex].Role, messages[userMessageIndex].Role)
+	}
+	var userHasImage bool
+	for _, part := range messages[userMessageIndex].Parts {
+		if _, ok := part.(llms.ImageURLContent); ok {
+			userHasImage = true
+		}
+	}
+	if !userHasImage {
+		t.Fatalf("current user message should retain image attachment: %#v", messages[userMessageIndex].Parts)
+	}
+}
+
 func TestRuntimeRunIncludesUserAttachments(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleDirectResponses("processed"),
