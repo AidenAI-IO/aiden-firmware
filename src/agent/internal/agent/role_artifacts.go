@@ -130,7 +130,6 @@ func parsePlanArtifactsAndMisplacedSources(raw json.RawMessage) ([]planArtifact,
 
 func normalizePlanArtifacts(artifacts []planArtifact) []planArtifact {
 	out := make([]planArtifact, 0, len(artifacts))
-	seen := map[string]bool{}
 	for _, artifact := range artifacts {
 		artifact.ID = strings.TrimSpace(artifact.ID)
 		artifact.Kind = normalizePlanArtifactKind(artifact.Kind)
@@ -139,10 +138,6 @@ func normalizePlanArtifacts(artifacts []planArtifact) []planArtifact {
 		artifact.SourceRefs = uniqueNonEmpty(artifact.SourceRefs)
 		artifact.TargetApp = strings.TrimSpace(artifact.TargetApp)
 		artifact.TargetLabel = strings.TrimSpace(artifact.TargetLabel)
-		if artifact.ID == "" || artifact.Kind == "" || seen[artifact.ID] {
-			continue
-		}
-		seen[artifact.ID] = true
 		out = append(out, artifact)
 	}
 	return out
@@ -219,18 +214,13 @@ func decodePlanJSONStrict(raw json.RawMessage, out any) error {
 
 func normalizePlanSources(sources []planSource) []planSource {
 	out := make([]planSource, 0, len(sources))
-	seen := map[string]bool{}
 	for _, source := range sources {
 		source.ID = strings.TrimSpace(source.ID)
 		source.Tool = normalizePlanSourceTool(source.Tool)
 		source.Action = normalizePlanSourceAction(source.Action)
 		source.Query = strings.TrimSpace(source.Query)
-		source.Produces = uniqueNonEmpty(source.Produces)
+		source.Produces = normalizePlanSourceProduces(source.Produces)
 		source.ArtifactID = strings.TrimSpace(source.ArtifactID)
-		if source.ID == "" || source.Tool == "" || seen[source.ID] {
-			continue
-		}
-		seen[source.ID] = true
 		out = append(out, source)
 	}
 	return out
@@ -258,6 +248,30 @@ func normalizePlanSourceAction(action string) string {
 	default:
 		return action
 	}
+}
+
+func normalizePlanSourceProduces(fields []string) []string {
+	out := make([]string, 0, len(fields))
+	seen := map[string]bool{}
+	for _, field := range fields {
+		field = strings.ToLower(strings.TrimSpace(field))
+		field = strings.ReplaceAll(field, "-", "_")
+		field = strings.ReplaceAll(field, " ", "_")
+		switch field {
+		case "phone_number":
+			field = "phone_numbers"
+		case "contact_name", "name", "names":
+			field = "contact_names"
+		case "email":
+			field = "emails"
+		}
+		if field == "" || seen[field] {
+			continue
+		}
+		seen[field] = true
+		out = append(out, field)
+	}
+	return out
 }
 
 func initialPlanArtifactStates(artifacts []planArtifact) []planArtifactState {
@@ -416,10 +430,16 @@ func inferTargetTextConsumeStep(artifact planArtifact, planLen int) int {
 func validatePlanArtifacts(artifacts []planArtifact, planLen int) error {
 	seen := map[string]bool{}
 	for _, artifact := range normalizePlanArtifacts(artifacts) {
+		if artifact.ID == "" {
+			return fmt.Errorf("artifact requires id")
+		}
 		if seen[artifact.ID] {
 			return fmt.Errorf("duplicate artifact id %q", artifact.ID)
 		}
 		seen[artifact.ID] = true
+		if artifact.Kind == "" {
+			return fmt.Errorf("artifact %q requires kind", artifact.ID)
+		}
 		if artifact.Kind == planArtifactKindTargetText {
 			if artifact.Delivery != planArtifactDeliveryClipboard {
 				return fmt.Errorf("target_text artifact %q must use delivery=clipboard", artifact.ID)
@@ -477,10 +497,16 @@ func validatePlanSources(sources []planSource, artifacts []planArtifact, planLen
 		artifactIDs[artifact.ID] = true
 	}
 	for _, source := range sources {
+		if source.ID == "" {
+			return fmt.Errorf("source requires id")
+		}
 		if sourceIDs[source.ID] {
 			return fmt.Errorf("duplicate source id %q", source.ID)
 		}
 		sourceIDs[source.ID] = true
+		if source.Tool == "" {
+			return fmt.Errorf("source %q requires tool", source.ID)
+		}
 		if source.Step <= 0 {
 			return fmt.Errorf("source %q requires step", source.ID)
 		}
@@ -491,6 +517,13 @@ func validatePlanSources(sources []planSource, artifacts []planArtifact, planLen
 		case planSourceToolContacts:
 			if source.Action != planSourceActionQuery {
 				return fmt.Errorf("source %q contacts tool must use action=query", source.ID)
+			}
+			for _, field := range source.Produces {
+				switch field {
+				case "phone_numbers", "contact_names", "emails":
+				default:
+					return fmt.Errorf("source %q contacts produces unsupported field %q", source.ID, field)
+				}
 			}
 		default:
 			return fmt.Errorf("source %q has unsupported tool %q", source.ID, source.Tool)
@@ -806,6 +839,7 @@ type planSourceContract struct {
 	Action     string
 	Step       int
 	Query      string
+	Produces   []string
 }
 
 type contactsSourceValues struct {
@@ -813,6 +847,12 @@ type contactsSourceValues struct {
 	Query        string
 	ContactNames []string
 	PhoneNumbers []string
+}
+
+type contactsResultContact struct {
+	Name         string   `json:"name"`
+	PhoneNumbers []string `json:"phone_numbers"`
+	Emails       []string `json:"emails"`
 }
 
 func (s roleLoopState) pendingSourceContractsForCurrentStep() []planSourceContract {
@@ -858,6 +898,7 @@ func planSourceContractFromState(source planSourceState) planSourceContract {
 		Action:     source.Action,
 		Step:       source.Step,
 		Query:      source.Query,
+		Produces:   append([]string{}, source.Produces...),
 	}
 }
 
@@ -929,7 +970,7 @@ func (s roleLoopState) sourceContractSatisfied(contract planSourceContract) bool
 			if !contactsToolInputMatchesSource(contract, execution.Action.ToolInput) {
 				continue
 			}
-			if contactsQueryResultHasData(execution.Step.Observation) {
+			if contactsQueryResultHasData(execution.Step.Observation, contract.Produces) {
 				return true
 			}
 		}
@@ -974,15 +1015,67 @@ func contactsToolInputMatchesSource(contract planSourceContract, input string) b
 	return strings.TrimSpace(args.Query) == contract.Query
 }
 
-func contactsQueryResultHasData(output string) bool {
+func contactsQueryResultHasData(output string, produces []string) bool {
 	var payload struct {
-		OK       bool              `json:"ok"`
-		Contacts []json.RawMessage `json:"contacts"`
+		OK       bool                    `json:"ok"`
+		Contacts []contactsResultContact `json:"contacts"`
 	}
 	if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &payload); err != nil {
 		return false
 	}
-	return payload.OK && len(payload.Contacts) > 0
+	if !payload.OK || len(payload.Contacts) == 0 {
+		return false
+	}
+	required := normalizePlanSourceProduces(produces)
+	if len(required) == 0 {
+		return true
+	}
+	for _, field := range required {
+		switch field {
+		case "phone_numbers":
+			if !contactsResultHasPhoneNumber(payload.Contacts) {
+				return false
+			}
+		case "contact_names":
+			if !contactsResultHasName(payload.Contacts) {
+				return false
+			}
+		case "emails":
+			if !contactsResultHasEmail(payload.Contacts) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func contactsResultHasPhoneNumber(contacts []contactsResultContact) bool {
+	for _, contact := range contacts {
+		if len(uniqueNonEmpty(contact.PhoneNumbers)) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func contactsResultHasName(contacts []contactsResultContact) bool {
+	for _, contact := range contacts {
+		if strings.TrimSpace(contact.Name) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func contactsResultHasEmail(contacts []contactsResultContact) bool {
+	for _, contact := range contacts {
+		if len(uniqueNonEmpty(contact.Emails)) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func contactsQueryResultValues(output string) []contactsSourceValues {
@@ -1698,11 +1791,14 @@ func (s roleLoopState) preparePhoneWorkflowArtifactMatches(artifact planArtifact
 		return false
 	}
 	contactsValues := s.contactsSourceValuesForArtifact(artifact)
-	if len(contactsValues) > 0 {
-		return len(missingContactsSourceValues(contactsValues, targetText)) == 0
+	if len(contactsValues) > 0 && len(missingContactsSourceValues(contactsValues, targetText)) > 0 {
+		return false
 	}
 	template := strings.TrimSpace(artifact.TextTemplate)
-	return template == "" || artifactTextMatchesTemplate(targetText, template)
+	if template == "" || artifactTextMatchesTemplate(targetText, template) {
+		return true
+	}
+	return len(contactsValues) > 0 && !templateHasPlaceholder(template)
 }
 
 func rejectArtifactToolCall(message string) (ToolResult, bool) {

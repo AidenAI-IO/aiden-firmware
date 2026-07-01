@@ -126,8 +126,11 @@ func (d *ProfileDebouncer) Flush(ctx context.Context) error {
 	}
 	d.mu.Unlock()
 
+	if err := d.WaitIdle(ctx); err != nil {
+		return err
+	}
 	if !shouldRebuild {
-		return d.WaitIdle(ctx)
+		return nil
 	}
 	if d.logger != nil {
 		d.logger.Info("[profile-debouncer] flush: running pending rebuild")

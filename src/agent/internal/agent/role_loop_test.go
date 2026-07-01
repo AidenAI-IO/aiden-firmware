@@ -1126,6 +1126,67 @@ func TestCommitPlanNormalizesGenericSourceRefForSingleSourceWorkflow(t *testing.
 	}
 }
 
+func TestCommitPlanRejectsMalformedAndDuplicateContracts(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name: "duplicate artifact id",
+			input: `{
+				"objective":"prepare duplicate artifacts",
+				"plan":["prepare","send"],
+				"artifacts":[
+					{"id":"message_text","kind":"target_text","delivery":"clipboard","prepare_step":1,"consume_step":2,"text_template":"hello","target_app":"WeChat"},
+					{"id":"message_text","kind":"clipboard_payload","delivery":"clipboard","prepare_step":1}
+				]
+			}`,
+			want: `duplicate artifact id "message_text"`,
+		},
+		{
+			name: "empty artifact id",
+			input: `{
+				"objective":"prepare unnamed artifact",
+				"plan":["prepare","send"],
+				"artifacts":[{"id":"","kind":"target_text","delivery":"clipboard","prepare_step":1,"consume_step":2,"text_template":"hello","target_app":"WeChat"}]
+			}`,
+			want: "artifact requires id",
+		},
+		{
+			name: "duplicate source id",
+			input: `{
+				"objective":"prepare duplicate sources",
+				"plan":["query","prepare","send"],
+				"sources":[
+					{"id":"contact_lookup","tool":"contacts","action":"query","step":1,"query":"Alice","artifact_id":"message_text"},
+					{"id":"contact_lookup","tool":"contacts","action":"query","step":1,"query":"Bob","artifact_id":"message_text"}
+				],
+				"artifacts":[{"id":"message_text","kind":"target_text","delivery":"clipboard","prepare_step":2,"consume_step":3,"text_template":"hello","target_app":"WeChat"}]
+			}`,
+			want: `duplicate source id "contact_lookup"`,
+		},
+		{
+			name: "empty source tool",
+			input: `{
+				"objective":"prepare malformed source",
+				"plan":["query","prepare","send"],
+				"sources":[{"id":"contact_lookup","tool":"","action":"query","step":1,"query":"Alice","artifact_id":"message_text"}],
+				"artifacts":[{"id":"message_text","kind":"target_text","delivery":"clipboard","prepare_step":2,"consume_step":3,"text_template":"hello","target_app":"WeChat"}]
+			}`,
+			want: `source "contact_lookup" requires tool`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseCommitPlanInput(tt.input)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("parseCommitPlanInput() error = %v, want containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestCommitPlanRejectsUnlinkedContactsSourceWhenWorkflowAmbiguous(t *testing.T) {
 	decision, err := parseCommitPlanInput(`{
 		"objective":"look up multiple contacts before a chat message",
@@ -1819,6 +1880,15 @@ func TestContactsSourceContractRequiresContactsBeforeClipboardAndFinish(t *testi
 
 	state.StepExecutionResults = append(state.StepExecutionResults, roleExecutionResult{
 		Action: &schema.AgentAction{Tool: "contacts", ToolInput: `{"action":"query","query":"Example Contact","limit":20}`},
+		Step:   &schema.AgentStep{Observation: `{"ok":true,"contacts":[{"name":"Example Contact","phone_numbers":[]}]}`},
+	})
+	if result, allowed := state.beforeArtifactToolCall(context.Background(), clipCall); allowed || result.Error == nil ||
+		!strings.Contains(result.Output, "source contract") {
+		t.Fatalf("clipboard after contact without phone allowed=%v result=%#v, want source rejection", allowed, result)
+	}
+	state.StepExecutionResults = nil
+	state.StepExecutionResults = append(state.StepExecutionResults, roleExecutionResult{
+		Action: &schema.AgentAction{Tool: "contacts", ToolInput: `{"action":"query","query":"Example Contact","limit":20}`},
 		Step:   &schema.AgentStep{Observation: `{"ok":true,"contacts":[{"name":"Example Contact","phone_numbers":["5550103"]}]}`},
 	})
 	if result, allowed := state.beforeArtifactToolCall(context.Background(), clipCall); !allowed || result.Error != nil {
@@ -1985,7 +2055,7 @@ func TestPreparePhoneWorkflowMarksSingleMatchingArtifactPrepared(t *testing.T) {
 			PrepareStep:  2,
 			ConsumeStep:  4,
 			SourceRefs:   []string{"contact_lookup.phone_numbers"},
-			TextTemplate: "Please confirm whether {{contact_lookup.phone_numbers}} is still active.",
+			TextTemplate: "Please confirm whether {{contact_lookup.phone_numbers}} are still active.",
 			TargetApp:    "WeChat",
 			TargetLabel:  "Target Friend",
 		}}),
@@ -2006,12 +2076,62 @@ func TestPreparePhoneWorkflowMarksSingleMatchingArtifactPrepared(t *testing.T) {
 	}
 	result := ToolResult{Output: `{"ok":true,"workflow":"prepare_phone_app_workflow","target_app":"WeChat","target_text":"Please confirm whether 555 0101 and 5550102 are still active.","clipboard_prepared":true,"opened_target_app":false}`}
 
+	targetText := "Please confirm whether 555 0101 and 5550102 are still active."
+	if !state.preparePhoneWorkflowArtifactMatches(state.PlanArtifacts[0], "WeChat", targetText) {
+		t.Fatal("expected workflow target text to match artifact contract")
+	}
 	state.afterArtifactToolCall(context.Background(), call, result)
 	if got := state.PlanArtifacts[0].PreparedText; got != "Please confirm whether 555 0101 and 5550102 are still active." {
 		t.Fatalf("prepared text = %q", got)
 	}
 	if state.PlanArtifacts[0].PreparedAt.IsZero() {
 		t.Fatal("expected workflow-prepared artifact timestamp")
+	}
+}
+
+func TestPreparePhoneWorkflowRequiresTemplateMatchWithContactsSource(t *testing.T) {
+	state := &roleLoopState{
+		PlanCommitted: true,
+		PlanStepIndex: 0,
+		PlanSources: initialPlanSourceStates([]planSource{{
+			ID:         "contact_lookup",
+			Tool:       planSourceToolContacts,
+			Action:     planSourceActionQuery,
+			Step:       1,
+			Query:      "Example Contact",
+			Produces:   []string{"phone_numbers"},
+			ArtifactID: "fan_phone",
+		}}),
+		PlanArtifacts: initialPlanArtifactStates([]planArtifact{{
+			ID:           "fan_phone",
+			Kind:         planArtifactKindTargetText,
+			Delivery:     planArtifactDeliveryClipboard,
+			PrepareStep:  2,
+			ConsumeStep:  4,
+			SourceRefs:   []string{"contact_lookup.phone_numbers"},
+			TextTemplate: "Please confirm whether {{contact_lookup.phone_numbers}} is still active.",
+			TargetApp:    "WeChat",
+		}}),
+		ExecutionResults: []roleExecutionResult{{
+			Action: &schema.AgentAction{
+				Tool:      "contacts",
+				ToolInput: `{"action":"query","query":"Example Contact"}`,
+			},
+			Step: &schema.AgentStep{
+				Observation: `{"ok":true,"contacts":[{"name":"Example Contact","phone_numbers":["555 0101"]}]}`,
+			},
+		}},
+	}
+
+	call := ToolCall{
+		Spec:  ToolSpec{Name: "prepare_phone_app_workflow"},
+		Input: `{"artifact_id":"fan_phone","target_text":"555 0101","target_app":"WeChat","open_target_app":false}`,
+	}
+	result := ToolResult{Output: `{"ok":true,"workflow":"prepare_phone_app_workflow","target_app":"WeChat","target_text":"555 0101","clipboard_prepared":true,"opened_target_app":false}`}
+
+	state.afterArtifactToolCall(context.Background(), call, result)
+	if got := state.PlanArtifacts[0].PreparedText; got != "" {
+		t.Fatalf("prepared text = %q, want empty because target_text misses template intent", got)
 	}
 }
 

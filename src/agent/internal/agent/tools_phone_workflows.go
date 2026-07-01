@@ -82,7 +82,6 @@ type phoneWorkflowActionResult struct {
 	Action      string `json:"action"`
 	CommandType string `json:"command_type"`
 	Method      string `json:"method,omitempty"`
-	Data        any    `json:"data,omitempty"`
 }
 
 type phoneWorkflowSourceValues struct {
@@ -105,6 +104,7 @@ func (t *PreparePhoneAppWorkflowTool) Call(ctx context.Context, input string) (s
 	args.TargetLabel = strings.TrimSpace(args.TargetLabel)
 	args.TargetText = strings.TrimSpace(args.TargetText)
 	args.TargetTextTemplate = strings.TrimSpace(args.TargetTextTemplate)
+	args.ArtifactID = strings.TrimSpace(args.ArtifactID)
 	if args.TargetApp == "" {
 		te := NewToolError(CodeInvalidArguments, "target_app is required")
 		SetToolError(ctx, te)
@@ -165,8 +165,7 @@ func (t *PreparePhoneAppWorkflowTool) Call(ctx context.Context, input string) (s
 		if resp.Error != nil {
 			return t.toolErrorOutput(ctx, resp.Error), nil
 		}
-		data, err := phoneWorkflowDecodeData(resp.Data)
-		if err != nil {
+		if _, err := phoneWorkflowDecodeData(resp.Data); err != nil {
 			te := NewToolError(CodeToolExecutionFailed, fmt.Sprintf("decode %s data: %v", commandType, err))
 			SetToolError(ctx, te)
 			return toolErrorString(te), nil
@@ -177,7 +176,6 @@ func (t *PreparePhoneAppWorkflowTool) Call(ctx context.Context, input string) (s
 			Action:      action.Action,
 			CommandType: commandType,
 			Method:      resp.Method,
-			Data:        data,
 		})
 		extracted := phoneWorkflowExtractSourceValues(commandType, resp.Data)
 		sourceValues.merge(extracted.sourceValues)
@@ -245,12 +243,17 @@ func (t *PreparePhoneAppWorkflowTool) Call(ctx context.Context, input string) (s
 		"steps":              steps,
 	}
 	if targetText != "" {
-		result["next_tool_hint"] = map[string]any{
+		nextToolHint := map[string]any{
 			"tool":              "enter_text_in_field",
 			"text":              targetText,
 			"send_after_commit": true,
 			"note":              "After the correct target chat field is visible, focus it and use this text. The prepared clipboard can be pasted without reopening Aiden.",
 		}
+		if args.ArtifactID != "" {
+			result["artifact_id"] = args.ArtifactID
+			nextToolHint["artifact_id"] = args.ArtifactID
+		}
+		result["next_tool_hint"] = nextToolHint
 	}
 	if restored {
 		result["restored_from_return_entry"] = true

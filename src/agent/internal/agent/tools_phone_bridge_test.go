@@ -428,13 +428,14 @@ func TestPreparePhoneAppWorkflowBatchesDirectActionsClipboardAndOpen(t *testing.
 	})
 	tool := NewPreparePhoneAppWorkflowTool(bridge, nil)
 
-	out, err := tool.Call(context.Background(), `{"app_side_actions":[{"id":"calendar_lookup","tool":"calendar","action":"query","payload":{"from":"2026-06-30T00:00:00+08:00","to":"2026-07-01T00:00:00+08:00"}}],"target_text_template":"Calendar notes say: {{calendar_lookup.event_notes}}. What is the latest status?","target_app":"WeChat","target_label":"Project Lead","open_target_app":true}`)
+	out, err := tool.Call(context.Background(), `{"app_side_actions":[{"id":"calendar_lookup","tool":"calendar","action":"query","payload":{"from":"2026-06-30T00:00:00+08:00","to":"2026-07-01T00:00:00+08:00"}}],"target_text_template":"Calendar notes say: {{calendar_lookup.event_notes}}. What is the latest status?","artifact_id":"calendar_message","target_app":"WeChat","target_label":"Project Lead","open_target_app":true}`)
 	if err != nil {
 		t.Fatalf("Call returned err: %v", err)
 	}
 	var payload struct {
 		OK                bool   `json:"ok"`
 		Workflow          string `json:"workflow"`
+		ArtifactID        string `json:"artifact_id"`
 		TargetText        string `json:"target_text"`
 		ClipboardPrepared bool   `json:"clipboard_prepared"`
 		OpenedTargetApp   bool   `json:"opened_target_app"`
@@ -445,6 +446,8 @@ func TestPreparePhoneAppWorkflowBatchesDirectActionsClipboardAndOpen(t *testing.
 		} `json:"actions"`
 		NextToolHint struct {
 			Tool            string `json:"tool"`
+			ArtifactID      string `json:"artifact_id"`
+			Text            string `json:"text"`
 			SendAfterCommit bool   `json:"send_after_commit"`
 		} `json:"next_tool_hint"`
 	}
@@ -460,11 +463,30 @@ func TestPreparePhoneAppWorkflowBatchesDirectActionsClipboardAndOpen(t *testing.
 	if len(payload.Actions) != 1 || payload.Actions[0].ID != "calendar_lookup" || payload.Actions[0].CommandType != "calendar_query" {
 		t.Fatalf("actions = %+v", payload.Actions)
 	}
+	if payload.ArtifactID != "calendar_message" {
+		t.Fatalf("artifact_id = %q, want calendar_message", payload.ArtifactID)
+	}
 	if payload.OpenMechanism != "ios_url_scheme" {
 		t.Fatalf("open_mechanism = %q", payload.OpenMechanism)
 	}
-	if payload.NextToolHint.Tool != "enter_text_in_field" || !payload.NextToolHint.SendAfterCommit {
+	if payload.NextToolHint.Tool != "enter_text_in_field" || payload.NextToolHint.ArtifactID != "calendar_message" ||
+		payload.NextToolHint.Text != payload.TargetText || !payload.NextToolHint.SendAfterCommit {
 		t.Fatalf("next_tool_hint = %+v", payload.NextToolHint)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(out), &raw); err != nil {
+		t.Fatalf("output is not JSON: %v\n%s", err, out)
+	}
+	actions, ok := raw["actions"].([]any)
+	if !ok || len(actions) != 1 {
+		t.Fatalf("raw actions = %#v", raw["actions"])
+	}
+	action, ok := actions[0].(map[string]any)
+	if !ok {
+		t.Fatalf("raw action = %#v", actions[0])
+	}
+	if _, ok := action["data"]; ok {
+		t.Fatalf("actions should not expose raw bridge data: %s", out)
 	}
 	mu.Lock()
 	gotTypes := append([]string{}, commandTypes...)
