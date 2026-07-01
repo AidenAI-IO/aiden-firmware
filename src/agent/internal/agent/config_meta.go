@@ -126,7 +126,7 @@ func ConfigMeta() ConfigMetadata {
 				Name: "tts",
 				Fields: []FieldMeta{
 					{Key: "provider", Widget: WidgetSelect,
-						Enum:    enumOptions("minimax", "minimax-cn", "fish-audio", "alicloud", "volcengine", "openrouter"),
+						Enum:    enumOptions("minimax", "minimax-cn", "fish-audio", "alicloud", "volcengine", "openrouter", "google-cloud"),
 						Default: defaults.TTS.Provider},
 					{Key: "api_key", Widget: WidgetText, Secret: true},
 					{Key: "model", Widget: WidgetSelect,
@@ -147,13 +147,13 @@ func ConfigMeta() ConfigMetadata {
 				Name: "stt",
 				Fields: []FieldMeta{
 					{Key: "provider", Widget: WidgetSelect,
-						Enum:    enumOptions("openai-whisper", tencentASRProvider, "openrouter", "qwen-asr"),
+						Enum:    enumOptions("openai-whisper", tencentASRProvider, "openrouter", "qwen-asr", "google-cloud"),
 						Default: defaults.STT.Provider},
 					{Key: "language", Widget: WidgetSelect,
 						Enum:    []EnumOption{{Value: "zh", Label: "中文"}, {Value: "en", Label: "English"}},
 						Default: defaults.STT.Language},
 					{Key: "api_key", Widget: WidgetText, Secret: true,
-						VisibleWhen: all(in("stt.provider", "openai-whisper", "openrouter", "qwen-asr"))},
+						VisibleWhen: all(in("stt.provider", "openai-whisper", "openrouter", "qwen-asr", "google-cloud"))},
 					{Key: "model", Widget: WidgetSelect,
 						Enum: []EnumOption{
 							{Value: "openai/whisper-large-v3-turbo", Label: "OpenAI Whisper v3 Turbo"},

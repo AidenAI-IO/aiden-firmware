@@ -4811,6 +4811,7 @@ std::string provider_default_url(const std::string& provider) {
     if (provider == "minimax") return "https://api.minimax.io";
     if (provider == "minimax-cn" || provider == "minimax-ws") return "https://api.minimaxi.com";
     if (is_tencent_asr_provider(provider)) return "https://asr.tencentcloudapi.com";
+    if (provider == "google-cloud") return "https://speech.googleapis.com";
     return "";
 }
 
