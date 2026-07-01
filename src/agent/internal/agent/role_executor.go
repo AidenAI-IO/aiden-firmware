@@ -1388,7 +1388,7 @@ func (e *roleCollaborativeExecutor) generateRoleContent(ctx context.Context, rol
 func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map[string]string, state roleLoopState, task string) []llms.MessageContent {
 	messages := []llms.MessageContent{{
 		Role:  llms.ChatMessageTypeSystem,
-		Parts: []llms.ContentPart{llms.TextPart(profile.SystemPrompt)},
+		Parts: roleSystemMessageParts(profile),
 	}}
 	if profile.Name == RolePlanner {
 		messages = append(messages, e.ConversationHistory...)
@@ -1438,6 +1438,16 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 		})
 	}
 	return messages
+}
+
+func roleSystemMessageParts(profile RoleProfile) []llms.ContentPart {
+	if strings.TrimSpace(profile.SystemPromptDynamicSuffix) == "" || strings.TrimSpace(profile.SystemPromptCachePrefix) == "" {
+		return []llms.ContentPart{llms.TextPart(profile.SystemPrompt)}
+	}
+	return []llms.ContentPart{
+		llms.TextPart(profile.SystemPromptCachePrefix),
+		llms.TextPart("\n\n" + profile.SystemPromptDynamicSuffix),
+	}
 }
 
 func plannerCurrentUserMessage(inputs map[string]string) string {

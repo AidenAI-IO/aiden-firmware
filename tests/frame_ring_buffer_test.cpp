@@ -128,7 +128,7 @@ TEST_CASE("frame ring buffer returns pinned frame references that survive evicti
     REQUIRE(ring.append_frame(metadata(1, 1, "uyvy", 1), one.data(), one.size(), &seq1) == FrameServiceStatus::OK);
     std::shared_ptr<const FrameBufferFrame> pinned;
     REQUIRE(ring.latest_frame_ref(0, &pinned) == FrameServiceStatus::OK);
-    REQUIRE(pinned);
+    REQUIRE(static_cast<bool>(pinned));
     const uint8_t* pinned_data = pinned->data.data();
 
     REQUIRE(ring.append_frame(metadata(1, 1, "uyvy", 2), two.data(), two.size(), &seq2) == FrameServiceStatus::OK);

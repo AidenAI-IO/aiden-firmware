@@ -1,11 +1,14 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
 	"strings"
 	"testing"
 )
@@ -225,6 +228,91 @@ func TestWaitStableScreenToolUsesJPEGSourceMetadataForSharedScreenState(t *testi
 	if active != want {
 		t.Fatalf("active area = %+v, want %+v", active, want)
 	}
+}
+
+func TestWaitStableScreenToolCropsDetectedActiveAreaForModelObservation(t *testing.T) {
+	rawFrame := make([]byte, 8*4*3/2)
+	for i := range rawFrame {
+		rawFrame[i] = 128
+	}
+	img := image.NewRGBA(image.Rect(0, 0, 8, 4))
+	for y := 0; y < 4; y++ {
+		for x := 2; x < 6; x++ {
+			img.Set(x, y, color.RGBA{255, 255, 255, 255})
+		}
+	}
+	var src []byte
+	for y := 0; y < 4; y++ {
+		for x := 0; x < 8; x++ {
+			r, _, _, _ := img.At(x, y).RGBA()
+			src = append(src, byte(r>>8), byte(r>>8), byte(r>>8))
+		}
+	}
+	fullJPEGData, err := encodeJPEG(src, 8, 4, screenshotJPEGQuality)
+	if err != nil {
+		t.Fatalf("encodeJPEG() error = %v", err)
+	}
+
+	screen := &screenState{}
+	client := &fakeWaitStableFrameClient{
+		rawFrames: []fakeWaitStableFrame{
+			{meta: frameMetadata{Seq: 1, Width: 8, Height: 4, PixelFormat: "nv12"}, data: rawFrame},
+			{meta: frameMetadata{Seq: 2, Width: 8, Height: 4, PixelFormat: "nv12"}, data: rawFrame},
+		},
+		jpegData: fullJPEGData,
+		jpegMeta: frameMetadata{Seq: 99, Width: 8, Height: 4, PixelFormat: "jpeg", Bytes: uint64(len(fullJPEGData))},
+	}
+	tool := &WaitStableScreenTool{
+		client:   client,
+		defaults: ScreenStableDefaults{TimeoutMs: 50, StableMs: 1, DiffThreshold: 2},
+		screen:   screen,
+	}
+
+	out, err := tool.Call(context.Background(), `{}`)
+	if err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+
+	var result waitStableScreenObservationResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("output is not valid wait screenshot JSON: %v", err)
+	}
+	if result.Width != 4 || result.Height != 4 {
+		t.Fatalf("cropped screenshot dimensions = %dx%d, want 4x4", result.Width, result.Height)
+	}
+	if result.ActiveArea != nil || result.ActiveWidth != 0 || result.ActiveHeight != 0 {
+		t.Fatalf("expected cropped observation without active area metadata, got %#v", result.screenshotResult)
+	}
+	if result.Data == base64.StdEncoding.EncodeToString(fullJPEGData) {
+		t.Fatal("expected cropped screenshot bytes, got original full-frame JPEG")
+	}
+	imageBytes, err := base64.StdEncoding.DecodeString(result.Data)
+	if err != nil {
+		t.Fatalf("DecodeString() error = %v", err)
+	}
+	if result.Size != len(imageBytes) {
+		t.Fatalf("result size = %d, want %d", result.Size, len(imageBytes))
+	}
+	decoded, err := jpegDecodeConfig(imageBytes)
+	if err != nil {
+		t.Fatalf("jpegDecodeConfig() error = %v", err)
+	}
+	if decoded.Width != 4 || decoded.Height != 4 {
+		t.Fatalf("decoded cropped jpeg = %dx%d, want 4x4", decoded.Width, decoded.Height)
+	}
+	width, height, active, _, ok := screen.ActiveAreaWithAge()
+	if !ok || width != 8 || height != 4 {
+		t.Fatalf("screen dimensions = %dx%d ok=%v, want 8x4 true", width, height, ok)
+	}
+	want := screenActiveArea{X: 2, Y: 0, Width: 4, Height: 4, Valid: true}
+	if active != want {
+		t.Fatalf("active area = %+v, want %+v", active, want)
+	}
+}
+
+func jpegDecodeConfig(data []byte) (image.Config, error) {
+	config, _, err := image.DecodeConfig(bytes.NewReader(data))
+	return config, err
 }
 
 type fakeWaitStableFrame struct {

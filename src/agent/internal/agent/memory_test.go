@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1839,6 +1840,48 @@ func TestSessionRotationDoesNotDeadlockWithMemoryLoad(t *testing.T) {
 	}
 }
 
+// testSummarizeForRotationAndMaintenance lets archive compression during rotation
+// expire quickly while later maintenance summarize calls block until release.
+func testSummarizeForRotationAndMaintenance(release <-chan struct{}, result string) SummarizeFn {
+	var calls atomic.Int32
+	return func(ctx context.Context, events []SessionEvent) string {
+		if calls.Add(1) == 1 {
+			<-ctx.Done()
+			return ""
+		}
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-release:
+			return result
+		}
+	}
+}
+
+// testBlockingSummarizeOnFirstCall blocks only the first summarize invocation.
+// RotateSessionEvents may call summarize again via compressRemainingForArchive;
+// those later calls must return immediately instead of waiting for the archive timeout.
+func testBlockingSummarizeOnFirstCall(started chan<- struct{}, release <-chan struct{}, result string) SummarizeFn {
+	var calls atomic.Int32
+	var startedOnce sync.Once
+	return func(ctx context.Context, events []SessionEvent) string {
+		if calls.Add(1) != 1 {
+			return summarizeSessionEvents(events)
+		}
+		startedOnce.Do(func() {
+			if started != nil {
+				close(started)
+			}
+		})
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-release:
+			return result
+		}
+	}
+}
+
 func TestMaintainFilesystemMemorySkipsActiveWriteAfterRotation(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
@@ -1848,16 +1891,9 @@ func TestMaintainFilesystemMemorySkipsActiveWriteAfterRotation(t *testing.T) {
 
 	summaryStarted := make(chan struct{})
 	releaseSummary := make(chan struct{})
-	var summaryStartedOnce sync.Once
-	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg), WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
-		summaryStartedOnce.Do(func() { close(summaryStarted) })
-		select {
-		case <-ctx.Done():
-			return ""
-		case <-releaseSummary:
-			return "old active summary"
-		}
-	}))
+	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg), WithSummarizeFn(
+		testBlockingSummarizeOnFirstCall(summaryStarted, releaseSummary, "old active summary"),
+	))
 	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
 	now := time.Now().UTC()
 	for i := 0; i < 10; i++ {

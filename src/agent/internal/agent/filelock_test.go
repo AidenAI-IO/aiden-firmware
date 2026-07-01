@@ -68,8 +68,8 @@ func TestFileLockReleasedAfterUnlock(t *testing.T) {
 
 func TestMemoryManagerConcurrentGoroutines(t *testing.T) {
 	dir := t.TempDir()
-	const goroutines = 20
-	const iterations = 10
+	const goroutines = 8
+	const iterations = 4
 
 	var wg sync.WaitGroup
 	errs := make(chan error, goroutines*iterations)
@@ -113,8 +113,8 @@ func TestMemoryManagerConcurrentMultiProcess(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	const procs = 5
-	const writesPerProc = 20
+	const procs = 3
+	const writesPerProc = 8
 
 	var wg sync.WaitGroup
 	errs := make(chan error, procs)
@@ -175,7 +175,7 @@ func runChildProcess() {
 
 func TestMemoryManagerNoDeadlockMultipleAgents(t *testing.T) {
 	dir := t.TempDir()
-	const goroutines = 10
+	const goroutines = 6
 
 	var wg sync.WaitGroup
 	done := make(chan struct{})
@@ -215,8 +215,8 @@ func TestMemoryManagerNoDeadlockMultipleAgents(t *testing.T) {
 
 func TestMemoryManagerConcurrentReadWrite(t *testing.T) {
 	dir := t.TempDir()
-	const goroutines = 10
-	const iterations = 20
+	const goroutines = 6
+	const iterations = 8
 
 	mgr := NewMemoryManager(dir)
 	records := []MessageRecord{

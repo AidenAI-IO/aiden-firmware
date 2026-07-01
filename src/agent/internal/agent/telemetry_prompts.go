@@ -275,6 +275,9 @@ func telemetryUsageDetails(res *llms.ContentResponse) map[string]int {
 	if v, ok := usageMetricInt(info["total_tokens"]); ok {
 		usage["total"] = v
 	}
+	if v, ok := usageMetricInt(info["cached_tokens"]); ok {
+		usage["cached"] = v
+	}
 	if usage["total"] == 0 && (usage["input"] > 0 || usage["output"] > 0) {
 		usage["total"] = usage["input"] + usage["output"]
 	}
