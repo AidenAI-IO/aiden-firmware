@@ -191,7 +191,7 @@ func (e *roleCollaborativeExecutor) handlePlannerMetaTool(
 		}
 		decision, err := parseCommitPlanInput(input)
 		if err != nil {
-			return commitPlanFailureTurn(state, action, commitPlanFailureObservation(err))
+			return commitPlanFailureTurn(state, action, err)
 		}
 		state.ConsecutiveCommitPlanFailures = 0
 		state.applyCommittedPlan(decision)
@@ -275,11 +275,9 @@ func (e *roleCollaborativeExecutor) handlePlannerMetaTool(
 	}
 }
 
-func commitPlanFailureTurn(state *roleLoopState, action schema.AgentAction, observation string) plannerTurnResult {
-	observation = strings.TrimSpace(observation)
-	if observation == "" {
-		observation = "commit_plan failed"
-	}
+func commitPlanFailureTurn(state *roleLoopState, action schema.AgentAction, err error) plannerTurnResult {
+	observation := commitPlanFailureObservation(err)
+	reason := commitPlanFailureReason(err)
 	step := &schema.AgentStep{
 		Action:      action,
 		Observation: observation,
@@ -291,7 +289,7 @@ func commitPlanFailureTurn(state *roleLoopState, action schema.AgentAction, obse
 			state.PlanCommitRequired = false
 			return plannerTurnResult{
 				Kind:   plannerTurnFinish,
-				Answer: commitPlanFailureFinalAnswer(observation),
+				Answer: commitPlanFailureFinalAnswer(reason),
 				Step:   step,
 			}
 		}
@@ -302,30 +300,32 @@ func commitPlanFailureTurn(state *roleLoopState, action schema.AgentAction, obse
 	}
 }
 
-func commitPlanFailureFinalAnswer(observation string) string {
-	reason := strings.TrimSpace(strings.TrimPrefix(observation, "commit_plan failed:"))
-	var payload struct {
-		Error string `json:"error"`
-	}
-	if err := json.Unmarshal([]byte(reason), &payload); err == nil && strings.TrimSpace(payload.Error) != "" {
-		reason = strings.TrimSpace(payload.Error)
-	}
+func commitPlanFailureFinalAnswer(reason string) string {
+	reason = strings.TrimSpace(reason)
 	if reason == "" {
-		reason = observation
+		reason = "commit_plan failed"
 	}
 	return "规划提交连续失败，已停止重试。最后一次错误：" + reason
 }
 
-func commitPlanFailureObservation(err error) string {
+func commitPlanFailureReason(err error) string {
 	if err == nil {
 		return "commit_plan failed"
 	}
+	reason := strings.TrimSpace(err.Error())
+	if reason == "" {
+		return "commit_plan failed"
+	}
+	return reason
+}
+
+func commitPlanFailureObservation(err error) string {
 	payload := map[string]any{
-		"error": strings.TrimSpace(err.Error()),
+		"error": commitPlanFailureReason(err),
 	}
 	encoded, marshalErr := json.Marshal(payload)
 	if marshalErr != nil {
-		return fmt.Sprintf("commit_plan failed: %v", err)
+		return "commit_plan failed: " + commitPlanFailureReason(err)
 	}
 	return "commit_plan failed: " + string(encoded)
 }
