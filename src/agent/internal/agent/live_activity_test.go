@@ -52,12 +52,12 @@ func TestLiveActivityManagerSummarizesAgentSteps(t *testing.T) {
 
 	state := manager.UpdateFromRunEvent("req-1", RunEvent{
 		Type:      "role_output",
-		Role:      "planner",
+		Role:      string(RoleAgent),
 		Content:   `{"plan":["Open Maps","Search restaurant"],"next_step":"Open Maps"}`,
 		Timestamp: time.Now(),
 	})
-	if state == nil || state.CurrentStep != "Planning: Open Maps" {
-		t.Fatalf("planner step = %#v, want Planning: Open Maps", state)
+	if state == nil || state.CurrentStep != "Open Maps" {
+		t.Fatalf("agent step = %#v, want Open Maps", state)
 	}
 
 	state = manager.UpdateFromRunEvent("req-1", RunEvent{

@@ -661,7 +661,6 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"agent", "voice_progress_speech_enabled", CONFIG_FIELD_BOOL},
         {"agent", "voice_max_response_tokens", CONFIG_FIELD_NUMBER},
         {"agent", "max_iterations", CONFIG_FIELD_NUMBER},
-        {"agent", "force_simple_loop", CONFIG_FIELD_BOOL},
         {"agent", "screenshot_keep_n", CONFIG_FIELD_NUMBER},
         {"agent", "screenshot_prune_interval", CONFIG_FIELD_NUMBER},
         {"agent", "screen_stable_timeout_ms", CONFIG_FIELD_NUMBER},
@@ -2374,7 +2373,6 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddBoolToObject(agent, "voice_progress_speech_enabled", config.voice_progress_speech_enabled ? 1 : 0);
     cJSON_AddNumberToObject(agent, "voice_max_response_tokens", config.voice_max_response_tokens);
     cJSON_AddNumberToObject(agent, "max_iterations", config.max_iterations);
-    cJSON_AddBoolToObject(agent, "force_simple_loop", config.force_simple_loop ? 1 : 0);
     cJSON_AddNumberToObject(agent, "screenshot_keep_n", config.screenshot_keep_n);
     cJSON_AddNumberToObject(agent, "screenshot_prune_interval", config.screenshot_prune_interval);
     cJSON_AddNumberToObject(agent, "screen_stable_timeout_ms", config.screen_stable_timeout_ms);
@@ -2671,7 +2669,6 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_bool(&config->voice_progress_speech_enabled, agent, "voice_progress_speech_enabled");
         set_json_int(&config->voice_max_response_tokens, agent, "voice_max_response_tokens");
         set_json_int(&config->max_iterations, agent, "max_iterations");
-        set_json_bool(&config->force_simple_loop, agent, "force_simple_loop");
         set_json_int(&config->screenshot_keep_n, agent, "screenshot_keep_n");
         set_json_int(&config->screenshot_prune_interval, agent, "screenshot_prune_interval");
         set_json_int(&config->screen_stable_timeout_ms, agent, "screen_stable_timeout_ms");

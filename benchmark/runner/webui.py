@@ -1474,7 +1474,6 @@ def default_agent_toml() -> str:
             'input_mode = "text"',
             'trigger_mode = "manual"',
             "max_iterations = -1",
-            "force_simple_loop = false",
             "voice_streaming_tts_enabled = false",
             "voice_tool_call_speech = false",
             "voice_progress_speech_enabled = false",
