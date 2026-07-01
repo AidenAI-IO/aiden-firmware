@@ -376,7 +376,7 @@ func commitPlanFailureFinalAnswer(observation string) string {
 	if reason == "" {
 		reason = observation
 	}
-	return "规划提交连续失败，已停止重试。最后一次错误：" + reason
+	return "Plan commit failed repeatedly and retries were stopped. Last error: " + reason
 }
 
 func commitPlanFailureObservation(err error) string {

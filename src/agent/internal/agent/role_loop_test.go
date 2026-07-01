@@ -191,7 +191,7 @@ func TestCommitPlanConsecutiveFailuresStopRetryLoop(t *testing.T) {
 	if turn.Kind != plannerTurnFinish {
 		t.Fatalf("final turn kind = %v, want finish", turn.Kind)
 	}
-	if !strings.Contains(turn.Answer, "规划提交连续失败") {
+	if !strings.Contains(turn.Answer, "Plan commit failed repeatedly") {
 		t.Fatalf("answer = %q", turn.Answer)
 	}
 	if state.Phase != phaseDefault || state.PlanCommitRequired {
@@ -1449,11 +1449,8 @@ func TestPlanArtifactAppLabelMatchingPreservesAppNames(t *testing.T) {
 	if got := normalizeArtifactAppLabel("WeChat App"); got != "wechat" {
 		t.Fatalf("normalizeArtifactAppLabel(WeChat App) = %q, want wechat", got)
 	}
-	if got := normalizeArtifactAppLabel("微信app"); got != "wechat" {
-		t.Fatalf("normalizeArtifactAppLabel(微信app) = %q, want wechat", got)
-	}
-	if !appLabelsMatch("微信/WeChat", "weixin") {
-		t.Fatal("expected bilingual app label to match known alias")
+	if !appLabelsMatch("WeChat/Moments", "weixin") {
+		t.Fatal("expected app label with known alias token to match")
 	}
 	if appLabelsMatch("WhatsApp", "Whats") {
 		t.Fatal("unexpected match after app suffix normalization")

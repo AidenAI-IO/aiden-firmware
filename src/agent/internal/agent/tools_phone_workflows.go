@@ -422,9 +422,9 @@ func phoneWorkflowExtractSourceValues(commandType string, raw json.RawMessage) p
 		source := phoneWorkflowSourceValuesFromContacts(data.Contacts)
 		result.sourceValues.ContactNames = source.ContactNames
 		result.sourceValues.PhoneNumbers = source.PhoneNumbers
-		result.placeholders["contact_names"] = strings.Join(source.ContactNames, "、")
+		result.placeholders["contact_names"] = strings.Join(source.ContactNames, ", ")
 		result.placeholders["contact_name"] = phoneWorkflowFirstNonEmpty(source.ContactNames)
-		result.placeholders["phone_numbers"] = strings.Join(source.PhoneNumbers, "、")
+		result.placeholders["phone_numbers"] = strings.Join(source.PhoneNumbers, ", ")
 		result.placeholders["phone_number"] = phoneWorkflowFirstNonEmpty(source.PhoneNumbers)
 		result.placeholders["contacts"] = phoneWorkflowContactsSummary(data.Contacts)
 		result.summary = result.placeholders["contacts"]
@@ -436,11 +436,11 @@ func phoneWorkflowExtractSourceValues(commandType string, raw json.RawMessage) p
 		result.sourceValues.EventTitles = phoneWorkflowEventTitles(data.Events)
 		result.sourceValues.EventNotes = phoneWorkflowEventNotes(data.Events)
 		result.sourceValues.EventLocations = phoneWorkflowEventLocations(data.Events)
-		result.placeholders["event_titles"] = strings.Join(result.sourceValues.EventTitles, "、")
+		result.placeholders["event_titles"] = strings.Join(result.sourceValues.EventTitles, ", ")
 		result.placeholders["event_title"] = phoneWorkflowFirstNonEmpty(result.sourceValues.EventTitles)
-		result.placeholders["event_notes"] = strings.Join(result.sourceValues.EventNotes, "、")
+		result.placeholders["event_notes"] = strings.Join(result.sourceValues.EventNotes, ", ")
 		result.placeholders["event_note"] = phoneWorkflowFirstNonEmpty(result.sourceValues.EventNotes)
-		result.placeholders["event_locations"] = strings.Join(result.sourceValues.EventLocations, "、")
+		result.placeholders["event_locations"] = strings.Join(result.sourceValues.EventLocations, ", ")
 		result.placeholders["event_location"] = phoneWorkflowFirstNonEmpty(result.sourceValues.EventLocations)
 		result.placeholders["events"] = phoneWorkflowEventsSummary(data.Events)
 		result.summary = result.placeholders["events"]
@@ -474,17 +474,17 @@ func (v *phoneWorkflowSourceValues) merge(other phoneWorkflowSourceValues) {
 }
 
 func phoneWorkflowAddAggregateTemplateValues(values map[string]string, source phoneWorkflowSourceValues) {
-	values["contact_names"] = strings.Join(source.ContactNames, "、")
+	values["contact_names"] = strings.Join(source.ContactNames, ", ")
 	values["contact_name"] = phoneWorkflowFirstNonEmpty(source.ContactNames)
-	values["phone_numbers"] = strings.Join(source.PhoneNumbers, "、")
+	values["phone_numbers"] = strings.Join(source.PhoneNumbers, ", ")
 	values["phone_number"] = phoneWorkflowFirstNonEmpty(source.PhoneNumbers)
-	values["event_titles"] = strings.Join(source.EventTitles, "、")
+	values["event_titles"] = strings.Join(source.EventTitles, ", ")
 	values["event_title"] = phoneWorkflowFirstNonEmpty(source.EventTitles)
-	values["event_notes"] = strings.Join(source.EventNotes, "、")
+	values["event_notes"] = strings.Join(source.EventNotes, ", ")
 	values["event_note"] = phoneWorkflowFirstNonEmpty(source.EventNotes)
-	values["event_locations"] = strings.Join(source.EventLocations, "、")
+	values["event_locations"] = strings.Join(source.EventLocations, ", ")
 	values["event_location"] = phoneWorkflowFirstNonEmpty(source.EventLocations)
-	values["clipboard_text"] = strings.Join(source.ClipboardTexts, "、")
+	values["clipboard_text"] = strings.Join(source.ClipboardTexts, ", ")
 }
 
 func renderPhoneWorkflowTemplate(template string, values map[string]string) (string, error) {
@@ -516,7 +516,7 @@ func phoneWorkflowContactsSummary(contacts []phoneWorkflowContact) string {
 	parts := make([]string, 0, len(contacts))
 	for _, contact := range contacts {
 		chunk := strings.TrimSpace(contact.Name)
-		if nums := strings.Join(uniqueNonEmpty(contact.PhoneNumbers), "、"); nums != "" {
+		if nums := strings.Join(uniqueNonEmpty(contact.PhoneNumbers), ", "); nums != "" {
 			if chunk != "" {
 				chunk += ": "
 			}
@@ -526,7 +526,7 @@ func phoneWorkflowContactsSummary(contacts []phoneWorkflowContact) string {
 			parts = append(parts, chunk)
 		}
 	}
-	return strings.Join(parts, "；")
+	return strings.Join(parts, "; ")
 }
 
 func phoneWorkflowEventTitles(events []phoneWorkflowCalendarEvent) []string {
@@ -561,7 +561,7 @@ func phoneWorkflowEventsSummary(events []phoneWorkflowCalendarEvent) string {
 			parts = append(parts, strings.Join(chunkParts, " "))
 		}
 	}
-	return strings.Join(parts, "；")
+	return strings.Join(parts, "; ")
 }
 
 func phoneWorkflowFirstNonEmpty(values []string) string {

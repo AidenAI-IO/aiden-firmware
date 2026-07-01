@@ -27,6 +27,8 @@ const (
 	planErrSourceRefUndeclared             = "source_ref_undeclared"
 	planErrSourceUnlinked                  = "source_not_linked_to_artifact"
 	planErrTargetTextPlaceholderOnly       = "target_text_placeholder_only"
+
+	artifactAppLabelTokenSeparators = "-_/|,;:()[]"
 )
 
 var templatePlaceholderRE = regexp.MustCompile(`\{\{\s*[^{}]+\s*\}\}`)
@@ -1425,7 +1427,6 @@ func normalizeArtifactAppLabelText(label string) string {
 	if label == "" {
 		return ""
 	}
-	label = strings.TrimSuffix(label, "应用")
 	label = trimStandaloneAppSuffix(strings.TrimSpace(label))
 	replacer := strings.NewReplacer(" ", "", "\t", "", "\n", "", "\r", "", "-", "", "_", "")
 	return replacer.Replace(strings.TrimSpace(label))
@@ -1450,15 +1451,15 @@ func trimStandaloneAppSuffix(label string) string {
 func splitArtifactAppLabelTokens(label string) []string {
 	return strings.FieldsFunc(label, func(r rune) bool {
 		return unicode.IsSpace(r) ||
-			strings.ContainsRune("-_/／|,，;；:：()（）[]【】", r)
+			strings.ContainsRune(artifactAppLabelTokenSeparators, r)
 	})
 }
 
 func artifactAppAliasCanonical(label string) (string, bool) {
 	switch label {
-	case "wechat", "weixin", "微信":
+	case "wechat", "weixin":
 		return "wechat", true
-	case "contacts", "contact", "addressbook", "phonebook", "通讯录", "联系人":
+	case "contacts", "contact", "addressbook", "phonebook":
 		return "contacts", true
 	default:
 		return "", false

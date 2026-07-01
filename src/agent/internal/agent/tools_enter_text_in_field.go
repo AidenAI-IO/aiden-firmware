@@ -42,7 +42,7 @@ func (t *EnterTextInFieldTool) ArgsSchema() map[string]any {
 		"artifact_id":       stringArgSchema("Required when consuming a committed-plan target_text artifact prepared before target-app navigation."),
 		"send_after_commit": boolArgSchema("Set true only when the focused field is the final message/form field and the text should be sent after verification."),
 		"focus":             focusPointArgSchema("Input field coordinates."),
-		"segments":          stringArrayArgSchema("Required for composition/CJK: IME romanization syllables in order, e.g. [\"ni\",\"hao\"] for 你好."),
+		"segments":          stringArrayArgSchema("Required for composition/CJK: IME romanization syllables in order, e.g. [\"ni\",\"hao\"] for a CJK greeting."),
 		"max_attempts":      map[string]any{"type": "integer", "description": "Retry attempts on verify failure (default 3)."},
 	}, "text", "focus")
 }
