@@ -69,17 +69,14 @@ func applyTTSPlaybackTestRequest(cfg *Config, req TTSPlaybackTestRequest) {
 	if provider := strings.TrimSpace(req.Provider); provider != "" {
 		cfg.TTS.Provider = provider
 	}
+	// Always apply stdin values — they represent the user's current form state.
+	// Empty string means the field is hidden/cleared, which should override
+	// whatever is persisted in the toml file.
+	cfg.TTS.Model = req.Model
+	cfg.TTS.VoiceID = req.VoiceID
+	cfg.TTS.Emotion = req.Emotion
 	if req.APIKey != "" {
 		cfg.TTS.APIKey = req.APIKey
-	}
-	if req.Model != "" {
-		cfg.TTS.Model = req.Model
-	}
-	if req.VoiceID != "" {
-		cfg.TTS.VoiceID = req.VoiceID
-	}
-	if req.Emotion != "" {
-		cfg.TTS.Emotion = req.Emotion
 	}
 	if req.Speed > 0 {
 		cfg.TTS.Speed = req.Speed

@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"aiden-agent/internal/agent/tts"
 )
@@ -22,7 +23,7 @@ import (
 const (
 	ProviderName    = "openrouter"
 	defaultEndpoint = "https://openrouter.ai/api/v1"
-	defaultModel    = "openai/tts-1"
+	defaultModel    = "google/gemini-3.1-flash-tts-preview"
 	defaultVoice    = "alloy"
 )
 
@@ -56,8 +57,8 @@ func New(cfg tts.ProviderConfig) (tts.TTSProvider, error) {
 		model = m
 	}
 	voice := cfg.Voice
-	if voice == "" {
-		voice = defaultVoice
+	if voice == "" || !isValidOpenRouterVoice(voice) {
+		voice = defaultVoiceForModel(model)
 	}
 	speed := cfg.SpeedRatio
 	if speed == 0 {
@@ -118,4 +119,44 @@ func buildProxyHTTPClient(p tts.ProxyConfig) *http.Client {
 		return url.Parse(proxyURL)
 	}
 	return &http.Client{Transport: transport}
+}
+
+// defaultVoiceForModel returns a known-good voice for the given model.
+func defaultVoiceForModel(model string) string {
+	switch {
+	case strings.HasPrefix(model, "hexgrad/kokoro"):
+		return "af_heart"
+	case strings.HasPrefix(model, "google/"):
+		return "Kore"
+	case strings.Contains(model, "mai-voice"):
+		return "en-US-AndrewMultilingualNeural"
+	default:
+		return defaultVoice // "alloy" works for OpenAI-compatible models
+	}
+}
+
+// isValidOpenRouterVoice returns true if the voice is known to work with
+// OpenRouter TTS models. Voices from other TTS providers (minimax, fish-audio,
+// etc.) will silently fall back to the model default to avoid upstream errors.
+func isValidOpenRouterVoice(voice string) bool {
+	// OpenAI voices
+	switch strings.ToLower(voice) {
+	case "alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer":
+		return true
+	}
+	// Google Gemini voices (capitalized)
+	switch voice {
+	case "Kore", "Puck", "Charon", "Fenrir", "Aoede", "Leda", "Orus", "Zephyr":
+		return true
+	}
+	// Kokoro voices
+	if strings.HasPrefix(voice, "af_") || strings.HasPrefix(voice, "am_") ||
+		strings.HasPrefix(voice, "bf_") || strings.HasPrefix(voice, "bm_") {
+		return true
+	}
+	// Microsoft Azure neural voices (contain "Neural")
+	if strings.Contains(voice, "Neural") {
+		return true
+	}
+	return false
 }

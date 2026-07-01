@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 )
 
 const defaultOpenRouterSTTBaseURL = "https://openrouter.ai/api/v1"
@@ -27,7 +28,9 @@ func NewOpenRouterSTT(apiKey, model, baseURL, language string, httpClient *http.
 		baseURL = defaultOpenRouterSTTBaseURL
 	}
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = &http.Client{Timeout: 30 * time.Second}
+	} else if httpClient.Timeout == 0 {
+		httpClient.Timeout = 30 * time.Second
 	}
 	return &OpenRouterSTT{
 		apiKey:     apiKey,
@@ -40,6 +43,11 @@ func NewOpenRouterSTT(apiKey, model, baseURL, language string, httpClient *http.
 
 // TranscribeWAV transcribes WAV audio data to text via OpenRouter.
 func (s *OpenRouterSTT) TranscribeWAV(wavData []byte) (string, error) {
+	return s.TranscribeWAVWithContext(context.Background(), wavData)
+}
+
+// TranscribeWAVWithContext transcribes WAV audio data with context for timeout/cancellation.
+func (s *OpenRouterSTT) TranscribeWAVWithContext(ctx context.Context, wavData []byte) (string, error) {
 	reqBody := openRouterSTTRequest{
 		Model: s.model,
 		InputAudio: openRouterInputAudio{
@@ -57,7 +65,7 @@ func (s *OpenRouterSTT) TranscribeWAV(wavData []byte) (string, error) {
 	}
 
 	url := fmt.Sprintf("%s/audio/transcriptions", s.baseURL)
-	req, err := http.NewRequest("POST", url, bytes.NewReader(jsonData))
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(jsonData))
 	if err != nil {
 		return "", fmt.Errorf("create request: %w", err)
 	}
