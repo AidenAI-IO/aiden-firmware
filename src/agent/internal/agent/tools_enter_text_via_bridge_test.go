@@ -9,6 +9,13 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
+func newTestPhoneBridge(t *testing.T) *PhoneBridge {
+	t.Helper()
+	pb := NewPhoneBridge(nil)
+	t.Cleanup(pb.queue.Stop)
+	return pb
+}
+
 func TestEnterTextViaBridgeUsesClipboardPathAndVerifiesField(t *testing.T) {
 	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
 		ObservedMode: textInputModeASCII,
@@ -17,7 +24,7 @@ func TestEnterTextViaBridgeUsesClipboardPathAndVerifiesField(t *testing.T) {
 	mouse := &recordingTextInputTool{name: "mouse_click", out: "ok"}
 	touch := &recordingTextInputTool{name: "touch_gesture", out: "ok"}
 	quick := &recordingTextInputTool{name: "quick_action", out: `{"ok":true}`}
-	pb := NewPhoneBridge(nil)
+	pb := newTestPhoneBridge(t)
 	pb.connected = true
 	tool := &EnterTextViaBridgeTool{
 		hw: &textInputHardwareDeps{
@@ -73,7 +80,7 @@ func TestEnterTextViaBridgeRestoresBridgeAppWhenDisconnected(t *testing.T) {
 		ObservedMode: textInputModeASCII,
 		FieldText:    "hello world",
 	}}}
-	pb := NewPhoneBridge(nil)
+	pb := newTestPhoneBridge(t)
 	pb.platform = "ios"
 	pb.appState = "background"
 	pb.returnEntry = "dynamic_island"
@@ -153,7 +160,7 @@ func TestEnterTextViaBridgeRetriesOpeningBridgeAppBeforeFailing(t *testing.T) {
 		ObservedMode: textInputModeASCII,
 		FieldText:    "hello world",
 	}}}
-	pb := NewPhoneBridge(nil)
+	pb := newTestPhoneBridge(t)
 	pb.platform = "ios"
 	pb.appState = "background"
 	pb.returnEntry = "dynamic_island"
@@ -209,7 +216,7 @@ func TestEnterTextViaBridgeSwipesRecentsWhenPreviousAppCardNotInitiallyVisible(t
 		ObservedMode: textInputModeASCII,
 		FieldText:    "hello world",
 	}}}
-	pb := NewPhoneBridge(nil)
+	pb := newTestPhoneBridge(t)
 	pb.connected = true
 	pb.platform = "ios"
 	keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
@@ -271,7 +278,7 @@ func TestEnterTextViaBridgeCountsBridgeVisionCalls(t *testing.T) {
 		contentResponse(`{"observed_mode":"ascii","field_text":"hello world","composition_pending":false,"wrong_ime_suspected":false,"suggest_switch_ime":false,"candidates":[],"evidence":["verified"]}`),
 	}}
 	resolver := &testModelResolver{model: model}
-	pb := NewPhoneBridge(nil)
+	pb := newTestPhoneBridge(t)
 	pb.connected = true
 	tool := &EnterTextViaBridgeTool{
 		hw: &textInputHardwareDeps{
@@ -307,7 +314,7 @@ func TestEnterTextViaBridgeReturnsLastObservedFieldTextAfterFailedPasteAttempts(
 		ObservedMode: textInputModeASCII,
 		FieldText:    "hello wor",
 	}}}
-	pb := NewPhoneBridge(nil)
+	pb := newTestPhoneBridge(t)
 	pb.connected = true
 	tool := &EnterTextViaBridgeTool{
 		hw: &textInputHardwareDeps{
@@ -350,8 +357,7 @@ func TestEnterTextViaBridgeCanPasteSendAndVerify(t *testing.T) {
 		ObservedMode: textInputModeASCII,
 		FieldText:    "",
 	}}}
-	pb := NewPhoneBridge(nil)
-	defer pb.queue.Stop()
+	pb := newTestPhoneBridge(t)
 	pb.NoteClipboardWrite(message)
 	pb.platform = "ios"
 	pb.appState = "background"
@@ -402,8 +408,7 @@ func TestEnterTextViaBridgeFallsBackToKeyboardPasteWhenQuickActionFails(t *testi
 		ObservedMode: textInputModeASCII,
 		FieldText:    message,
 	}}}
-	pb := NewPhoneBridge(nil)
-	defer pb.queue.Stop()
+	pb := newTestPhoneBridge(t)
 	pb.NoteClipboardWrite(message)
 	pb.platform = "ios"
 	pb.appState = "background"

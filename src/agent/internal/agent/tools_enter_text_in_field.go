@@ -70,7 +70,10 @@ func (t *EnterTextInFieldTool) Call(ctx context.Context, input string) (string, 
 	if t.shouldPreferBridgeClipboard(args) {
 		bridgeResult, attempted := t.bridgeTool.runClipboardFirstResult(ctx, args)
 		if attempted && bridgeResult.Committed {
-			return jsonString(bridgeResult), nil
+			return jsonString(finalizeEnterTextInFieldResult(bridgeResult, args.SendAfterCommit)), nil
+		}
+		if attempted && strings.TrimSpace(bridgeResult.FieldText) != "" {
+			args.ClearBeforeInput = true
 		}
 		result, err := t.engine.Run(ctx, args)
 		if err != nil {
@@ -84,15 +87,7 @@ func (t *EnterTextInFieldTool) Call(ctx context.Context, input string) (string, 
 		if attempted {
 			result = mergeClipboardFallbackResult(bridgeResult, result)
 		}
-		if !result.Committed {
-			result.OK = false
-			if result.Reason == "" {
-				result.Reason = "text entry not verified in field"
-			}
-			return jsonString(result), nil
-		}
-		result.OK = true
-		return jsonString(result), nil
+		return jsonString(finalizeEnterTextInFieldResult(result, args.SendAfterCommit)), nil
 	}
 	result, err := t.engine.Run(ctx, args)
 	if err != nil {
@@ -103,15 +98,24 @@ func (t *EnterTextInFieldTool) Call(ctx context.Context, input string) (string, 
 		}
 		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
+	return jsonString(finalizeEnterTextInFieldResult(result, args.SendAfterCommit)), nil
+}
+
+func finalizeEnterTextInFieldResult(result enterTextInFieldResult, sendAfterCommit bool) enterTextInFieldResult {
 	if !result.Committed {
 		result.OK = false
 		if result.Reason == "" {
 			result.Reason = "text entry not verified in field"
 		}
-		return jsonString(result), nil
+		return result
+	}
+	if sendAfterCommit && !result.SendVerified {
+		result.OK = false
+		result.Reason = "field verified but send was not verified"
+		return result
 	}
 	result.OK = true
-	return jsonString(result), nil
+	return result
 }
 
 func mergeClipboardFallbackResult(clipboardResult, fallbackResult enterTextInFieldResult) enterTextInFieldResult {

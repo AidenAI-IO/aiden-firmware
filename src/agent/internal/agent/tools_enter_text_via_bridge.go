@@ -120,40 +120,13 @@ func (t *EnterTextViaBridgeTool) Call(ctx context.Context, input string) (string
 		return jsonString(result), nil
 	}
 	bridgeResult := t.runBridgeFlow(ctx, platform, args)
-	result.Committed = bridgeResult.Committed
-	result.Sent = bridgeResult.Sent
-	result.SendVerified = bridgeResult.SendVerified
-	result.FieldText = bridgeResult.FieldText
-	result.PostSendFieldText = bridgeResult.PostSendFieldText
-	result.VLMCalls = bridgeResult.VLMCalls
-	result.Steps = bridgeResult.Steps
-	result.OK = bridgeResult.Committed
-	if args.SendAfterCommit {
-		result.OK = bridgeResult.Committed && bridgeResult.SendVerified
-	}
-	if bridgeResult.Err != nil {
-		result.Reason = bridgeResult.Err.Error()
-		return jsonString(result), nil
-	}
-	if !bridgeResult.Committed {
-		result.Reason = "bridge clipboard input not verified in field"
-		return jsonString(result), nil
-	}
-	if args.SendAfterCommit && !bridgeResult.SendVerified {
-		result.Reason = "field verified but send was not verified"
-		return jsonString(result), nil
-	}
-	if args.SendAfterCommit {
-		result.Reason = "send verified"
-		return jsonString(result), nil
-	}
-	result.Reason = "field verified"
+	result = textViaBridgeResultToFieldResult(args.Text, bridgeResult, args.SendAfterCommit)
 	return jsonString(result), nil
 }
 
 func (t *EnterTextViaBridgeTool) runBridgeFlow(ctx context.Context, platform string, args enterTextInFieldArgs) textViaBridgeResult {
 	result := t.runClipboardFirstFlow(ctx, platform, args)
-	if result.Attempted {
+	if result.Attempted || result.Err != nil {
 		return result
 	}
 	result.Err = fmt.Errorf("reliable bridge clipboard path unavailable; use enter_text_in_field fallback instead")
@@ -177,8 +150,21 @@ func (t *EnterTextViaBridgeTool) runClipboardFirstResult(ctx context.Context, ar
 	}
 	bridgeResult := t.runAutomaticClipboardFirstFlow(ctx, platform, args)
 	if !bridgeResult.Attempted {
+		if bridgeResult.Err != nil {
+			return textViaBridgeResultToFieldResult(args.Text, bridgeResult, args.SendAfterCommit), true
+		}
 		result.Reason = "reliable bridge clipboard path unavailable"
 		return result, false
+	}
+	return textViaBridgeResultToFieldResult(args.Text, bridgeResult, args.SendAfterCommit), true
+}
+
+func textViaBridgeResultToFieldResult(text string, bridgeResult textViaBridgeResult, sendAfterCommit bool) enterTextInFieldResult {
+	targetText := strings.TrimSpace(text)
+	result := enterTextInFieldResult{
+		TargetText:   targetText,
+		RequiredMode: string(requiredTextInputMode(targetText)),
+		Attempts:     1,
 	}
 	result.Committed = bridgeResult.Committed
 	result.Sent = bridgeResult.Sent
@@ -188,27 +174,27 @@ func (t *EnterTextViaBridgeTool) runClipboardFirstResult(ctx context.Context, ar
 	result.VLMCalls = bridgeResult.VLMCalls
 	result.Steps = bridgeResult.Steps
 	result.OK = bridgeResult.Committed
-	if args.SendAfterCommit {
+	if sendAfterCommit {
 		result.OK = bridgeResult.Committed && bridgeResult.SendVerified
 	}
 	if bridgeResult.Err != nil {
 		result.Reason = bridgeResult.Err.Error()
-		return result, true
+		return result
 	}
 	if !bridgeResult.Committed {
 		result.Reason = "bridge clipboard input not verified in field"
-		return result, true
+		return result
 	}
-	if args.SendAfterCommit && !bridgeResult.SendVerified {
+	if sendAfterCommit && !bridgeResult.SendVerified {
 		result.Reason = "field verified but send was not verified"
-		return result, true
+		return result
 	}
-	if args.SendAfterCommit {
+	if sendAfterCommit {
 		result.Reason = "send verified"
-		return result, true
+		return result
 	}
 	result.Reason = "field verified"
-	return result, true
+	return result
 }
 
 func (t *EnterTextViaBridgeTool) runClipboardFirstFlow(ctx context.Context, platform string, args enterTextInFieldArgs) textViaBridgeResult {

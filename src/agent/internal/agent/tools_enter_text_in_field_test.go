@@ -215,8 +215,7 @@ func TestEnterTextInFieldUsesPreparedClipboardInCurrentIOSApp(t *testing.T) {
 		ObservedMode: textInputModeASCII,
 		FieldText:    message,
 	}}}
-	pb := NewPhoneBridge(nil)
-	defer pb.queue.Stop()
+	pb := newTestPhoneBridge(t)
 	pb.NoteClipboardWrite(message)
 	pb.platform = "ios"
 	pb.appState = "background"
@@ -273,6 +272,86 @@ func TestEnterTextInFieldUsesPreparedClipboardInCurrentIOSApp(t *testing.T) {
 	}
 	if len(mouse.calls) != 1 {
 		t.Fatalf("mouse_click calls=%v", mouse.calls)
+	}
+}
+
+func TestEnterTextInFieldFallbackDoesNotReportSendAfterCommitSuccess(t *testing.T) {
+	message := "Example Contact number 555-0101 still active?"
+	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
+		ObservedMode: textInputModeASCII,
+		FieldText:    "partial paste",
+	}, {
+		ObservedMode: textInputModeASCII,
+		FieldText:    "partial paste",
+	}, {
+		ObservedMode: textInputModeASCII,
+		FieldText:    message,
+	}}}
+	pb := newTestPhoneBridge(t)
+	pb.NoteClipboardWrite(message)
+	pb.platform = "ios"
+	pb.appState = "background"
+	pb.appStateAt = time.Now()
+
+	keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
+	keyboardTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
+	quick := &recordingTextInputTool{name: "quick_action", out: `{"ok":true}`}
+	hw := &textInputHardwareDeps{
+		mouseClick:   &recordingTextInputTool{name: "mouse_click", out: "ok"},
+		touchGesture: &recordingTextInputTool{name: "touch_gesture", out: "ok"},
+		keyboardTap:  keyboardTap,
+		keyboardText: keyboardText,
+		quickAction:  quick,
+		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}
+	bridgeTool := &EnterTextViaBridgeTool{
+		hw:       hw,
+		vision:   vision,
+		bridgeFn: func() *PhoneBridge { return pb },
+		sleep:    testNoWaitSleep,
+	}
+	tool := &EnterTextInFieldTool{
+		engine:     newFastTextInputEngine(*hw, vision),
+		bridgeTool: bridgeTool,
+	}
+
+	out, err := tool.Call(context.Background(), `{"text":"`+message+`","platform":"ios","focus":{"x":400,"y":950,"coord_space":"normalized"},"send_after_commit":true}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"ok": false`,
+		`"committed": true`,
+		"field verified but send was not verified",
+		"cleared field before input",
+		"clipboard-first: falling back to HID/IME",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("unexpected output, missing %q: %s", want, out)
+		}
+	}
+	if len(keyboardText.calls) == 0 {
+		t.Fatalf("keyboard_text calls=%v", keyboardText.calls)
+	}
+	if len(keyboardTap.calls) == 0 {
+		t.Fatalf("keyboard_tap calls=%v, want clear-field backspaces before fallback input", keyboardTap.calls)
+	}
+}
+
+func TestNormalizeTextInputFocusPointKeepsNormalizedCoordinates(t *testing.T) {
+	focus, ok := normalizeTextInputFocusPoint(focusPointArgs{X: 50, Y: 100, CoordSpace: "normalized"})
+	if !ok {
+		t.Fatal("expected normalized focus to be accepted")
+	}
+	if focus.X != 50 || focus.Y != 100 {
+		t.Fatalf("focus=%+v, want unchanged 0-1000 normalized coordinates", focus)
+	}
+	focus, ok = normalizeTextInputFocusPoint(focusPointArgs{X: 1000, Y: 1000})
+	if !ok || focus.X != 1000 || focus.Y != 1000 || focus.CoordSpace != "normalized" {
+		t.Fatalf("focus=%+v ok=%v, want valid default normalized point", focus, ok)
+	}
+	if _, ok := normalizeTextInputFocusPoint(focusPointArgs{X: 1001, Y: 500}); ok {
+		t.Fatal("expected out-of-range normalized focus to be rejected")
 	}
 }
 

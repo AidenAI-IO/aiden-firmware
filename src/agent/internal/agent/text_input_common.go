@@ -287,14 +287,12 @@ func normalizeTextInputFocusPoint(focus focusPointArgs) (focusPointArgs, bool) {
 	if coordSpace != "normalized" {
 		return focus, false
 	}
-	if focus.X < 0 || focus.Y < 0 || focus.X > 100 || focus.Y > 100 {
+	if focus.X < 0 || focus.Y < 0 || focus.X > 1000 || focus.Y > 1000 {
 		return focus, false
 	}
 	if focus.X == 0 && focus.Y == 0 {
 		return focus, false
 	}
-	focus.X *= 10
-	focus.Y *= 10
 	focus.CoordSpace = "normalized"
 	return focus, true
 }
