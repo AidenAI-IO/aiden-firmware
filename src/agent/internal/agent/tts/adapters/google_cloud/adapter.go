@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -116,8 +117,13 @@ func buildProxyHTTPClient(p tts.ProxyConfig) *http.Client {
 		return http.DefaultClient
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	// Note: net/url.Parse handles proxy URLs
-	return &http.Client{Transport: transport}
+	transport.Proxy = func(_ *http.Request) (*url.URL, error) {
+		return url.Parse(proxyURL)
+	}
+	return &http.Client{
+		Transport: transport,
+		Timeout:   30 * time.Second,
+	}
 }
 
 func extractLanguageFromVoice(voice string) string {

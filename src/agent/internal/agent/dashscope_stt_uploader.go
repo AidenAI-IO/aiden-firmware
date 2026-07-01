@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -16,8 +17,10 @@ import (
 type dashScopeUploader struct {
 	conn        *websocket.Conn
 	packetBytes int
+	ctx         context.Context
 
 	mu         sync.Mutex
+	writeMu    sync.Mutex // Protects WriteMessage calls
 	pending    []byte
 	done       chan struct{}
 	ready      chan struct{}
@@ -64,7 +67,10 @@ func (u *dashScopeUploader) UploadPCM(pcm []byte) error {
 			u.finish("", fmt.Errorf("marshal audio append: %w", err))
 			return u.readErr()
 		}
-		if err := u.conn.WriteMessage(websocket.TextMessage, data); err != nil {
+		u.writeMu.Lock()
+		err = u.conn.WriteMessage(websocket.TextMessage, data)
+		u.writeMu.Unlock()
+		if err != nil {
 			u.finish("", fmt.Errorf("write audio chunk: %w", err))
 			return u.readErr()
 		}
@@ -94,7 +100,10 @@ func (u *dashScopeUploader) Finalize() (string, error) {
 			Audio:   base64.StdEncoding.EncodeToString(pending),
 		}
 		data, _ := json.Marshal(msg)
-		if err := u.conn.WriteMessage(websocket.TextMessage, data); err != nil {
+		u.writeMu.Lock()
+		err := u.conn.WriteMessage(websocket.TextMessage, data)
+		u.writeMu.Unlock()
+		if err != nil {
 			u.finish("", fmt.Errorf("write final audio chunk: %w", err))
 			return u.readResult()
 		}
@@ -105,12 +114,24 @@ func (u *dashScopeUploader) Finalize() (string, error) {
 		EventID: u.nextEventID(),
 		Type:    "input_audio_buffer.commit",
 	}
-	if err := u.conn.WriteJSON(commitMsg); err != nil {
+	u.writeMu.Lock()
+	err := u.conn.WriteJSON(commitMsg)
+	u.writeMu.Unlock()
+	if err != nil {
 		u.finish("", fmt.Errorf("write commit: %w", err))
 		return u.readResult()
 	}
 
-	<-u.done
+	// Wait for done with context timeout
+	if u.ctx != nil {
+		select {
+		case <-u.done:
+		case <-u.ctx.Done():
+			u.finish("", fmt.Errorf("dashscope STT: context timeout waiting for response"))
+		}
+	} else {
+		<-u.done
+	}
 	return u.readResult()
 }
 

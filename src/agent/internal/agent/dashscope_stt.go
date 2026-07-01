@@ -123,11 +123,17 @@ func (s *DashScopeRealtimeSTT) newUploader(ctx context.Context, cfg STTStreamCon
 		return nil, fmt.Errorf("dashscope STT: dial websocket: %w", err)
 	}
 
+	packetBytes := cfg.SampleRate * cfg.Channels * (cfg.BitWidth / 8) * dashScopePacketMillis / 1000
+	if packetBytes <= 0 {
+		return nil, fmt.Errorf("dashscope STT: invalid sample rate %d produces zero-byte packets", cfg.SampleRate)
+	}
+
 	uploader := &dashScopeUploader{
 		conn:        conn,
-		packetBytes: cfg.SampleRate * cfg.Channels * (cfg.BitWidth / 8) * dashScopePacketMillis / 1000,
+		packetBytes: packetBytes,
 		done:        make(chan struct{}),
 		ready:       make(chan struct{}),
+		ctx:         ctx,
 	}
 
 	go uploader.readLoop()
@@ -181,23 +187,52 @@ func extractPCMFromWAV(wavData []byte) ([]byte, int, error) {
 	if string(wavData[0:4]) != "RIFF" || string(wavData[8:12]) != "WAVE" {
 		return nil, 0, fmt.Errorf("not a valid WAV file")
 	}
-	sampleRate := int(wavData[24]) | int(wavData[25])<<8 | int(wavData[26])<<16 | int(wavData[27])<<24
-	// Find "data" chunk
-	offset := 12
-	for offset+8 <= len(wavData) {
-		chunkID := string(wavData[offset : offset+4])
-		chunkSize := int(wavData[offset+4]) | int(wavData[offset+5])<<8 | int(wavData[offset+6])<<16 | int(wavData[offset+7])<<24
-		if chunkID == "data" {
-			dataStart := offset + 8
-			dataEnd := dataStart + chunkSize
-			if dataEnd > len(wavData) {
-				dataEnd = len(wavData)
+
+	// Parse fmt chunk to validate format
+	fmtOffset := 12
+	for fmtOffset+8 <= len(wavData) {
+		chunkID := string(wavData[fmtOffset : fmtOffset+4])
+		chunkSize := int(wavData[fmtOffset+4]) | int(wavData[fmtOffset+5])<<8 | int(wavData[fmtOffset+6])<<16 | int(wavData[fmtOffset+7])<<24
+		if chunkID == "fmt " {
+			if fmtOffset+8+16 > len(wavData) {
+				return nil, 0, fmt.Errorf("WAV fmt chunk too short")
 			}
-			return wavData[dataStart:dataEnd], sampleRate, nil
+			audioFormat := int(wavData[fmtOffset+8]) | int(wavData[fmtOffset+9])<<8
+			numChannels := int(wavData[fmtOffset+10]) | int(wavData[fmtOffset+11])<<8
+			sampleRate := int(wavData[fmtOffset+12]) | int(wavData[fmtOffset+13])<<8 | int(wavData[fmtOffset+14])<<16 | int(wavData[fmtOffset+15])<<24
+			bitsPerSample := int(wavData[fmtOffset+22]) | int(wavData[fmtOffset+23])<<8
+
+			// Validate format: must be PCM (format 1), mono (1 channel), 16-bit
+			if audioFormat != 1 {
+				return nil, 0, fmt.Errorf("WAV must be PCM format (got format %d)", audioFormat)
+			}
+			if numChannels != 1 {
+				return nil, 0, fmt.Errorf("WAV must be mono (got %d channels)", numChannels)
+			}
+			if bitsPerSample != 16 {
+				return nil, 0, fmt.Errorf("WAV must be 16-bit (got %d bits)", bitsPerSample)
+			}
+
+			// Find "data" chunk
+			offset := 12
+			for offset+8 <= len(wavData) {
+				chunkID := string(wavData[offset : offset+4])
+				chunkSize := int(wavData[offset+4]) | int(wavData[offset+5])<<8 | int(wavData[offset+6])<<16 | int(wavData[offset+7])<<24
+				if chunkID == "data" {
+					dataStart := offset + 8
+					dataEnd := dataStart + chunkSize
+					if dataEnd > len(wavData) {
+						dataEnd = len(wavData)
+					}
+					return wavData[dataStart:dataEnd], sampleRate, nil
+				}
+				offset += 8 + chunkSize
+			}
+			return nil, 0, fmt.Errorf("WAV data chunk not found")
 		}
-		offset += 8 + chunkSize
+		fmtOffset += 8 + chunkSize
 	}
-	return nil, 0, fmt.Errorf("WAV data chunk not found")
+	return nil, 0, fmt.Errorf("WAV fmt chunk not found")
 }
 
 // --- DashScope protocol message types ---

@@ -112,13 +112,15 @@ func (s *session) synthesizeAndClear() error {
 
 	jsonData, err := json.Marshal(reqBody)
 	if err != nil {
-		return fmt.Errorf("marshal request: %w", err)
+		s.lastErr = fmt.Errorf("marshal request: %w", err)
+		return s.lastErr
 	}
 
 	url := fmt.Sprintf("%s/audio/speech", s.adapter.endpoint)
 	req, err := http.NewRequestWithContext(s.ctx, "POST", url, bytes.NewReader(jsonData))
 	if err != nil {
-		return fmt.Errorf("create request: %w", err)
+		s.lastErr = fmt.Errorf("create request: %w", err)
+		return s.lastErr
 	}
 
 	req.Header.Set("Authorization", "Bearer "+s.adapter.apiKey)
@@ -126,19 +128,22 @@ func (s *session) synthesizeAndClear() error {
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("send request: %w", err)
+		s.lastErr = fmt.Errorf("send request: %w", err)
+		return s.lastErr
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("API error %d: %s", resp.StatusCode, string(body))
+		s.lastErr = fmt.Errorf("API error %d: %s", resp.StatusCode, string(body))
+		return s.lastErr
 	}
 
 	// Response is raw PCM s16le audio stream.
 	pcmData, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("read audio: %w", err)
+		s.lastErr = fmt.Errorf("read audio: %w", err)
+		return s.lastErr
 	}
 
 	if len(pcmData) > 0 {

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -76,8 +77,11 @@ func (s *GoogleCloudSTT) TranscribeWAV(wavData []byte) (string, error) {
 		return "", fmt.Errorf("google cloud STT: marshal request: %w", err)
 	}
 
-	// Create HTTP request
-	req, err := http.NewRequest("POST", s.endpoint, bytes.NewReader(jsonData))
+	// Create HTTP request with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", s.endpoint, bytes.NewReader(jsonData))
 	if err != nil {
 		return "", fmt.Errorf("google cloud STT: create request: %w", err)
 	}
@@ -103,12 +107,27 @@ func (s *GoogleCloudSTT) TranscribeWAV(wavData []byte) (string, error) {
 		return "", fmt.Errorf("google cloud STT: decode response: %w", err)
 	}
 
-	// Extract transcript from results
-	if len(result.Results) == 0 || len(result.Results[0].Alternatives) == 0 {
+	// Extract and concatenate transcripts from all results
+	if len(result.Results) == 0 {
 		return "", fmt.Errorf("google cloud STT: empty transcript")
 	}
 
-	return result.Results[0].Alternatives[0].Transcript, nil
+	var transcript strings.Builder
+	for i, res := range result.Results {
+		if len(res.Alternatives) > 0 {
+			if i > 0 {
+				transcript.WriteString(" ")
+			}
+			transcript.WriteString(res.Alternatives[0].Transcript)
+		}
+	}
+
+	finalTranscript := transcript.String()
+	if finalTranscript == "" {
+		return "", fmt.Errorf("google cloud STT: empty transcript")
+	}
+
+	return finalTranscript, nil
 }
 
 // NewStreamingUploader returns an error as this provider does not support streaming.

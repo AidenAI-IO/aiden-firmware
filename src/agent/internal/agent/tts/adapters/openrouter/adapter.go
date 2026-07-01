@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"aiden-agent/internal/agent/tts"
 )
@@ -118,7 +119,10 @@ func buildProxyHTTPClient(p tts.ProxyConfig) *http.Client {
 	transport.Proxy = func(_ *http.Request) (*url.URL, error) {
 		return url.Parse(proxyURL)
 	}
-	return &http.Client{Transport: transport}
+	return &http.Client{
+		Transport: transport,
+		Timeout:   30 * time.Second,
+	}
 }
 
 // defaultVoiceForModel returns a known-good voice for the given model.
