@@ -95,16 +95,9 @@ func TestRolePromptsIncludeGlobalEnvironmentAndDeviceGuidance(t *testing.T) {
 			"<tts>...</tts>",
 			"device-operator",
 			"visible target UI",
-			"wait_for_stable_screen screenshot",
-			"Do not repeat the same click",
-			"prefer search over blind scrolling",
-			"Base visible UI actions on the latest screenshot",
 			"Prefer direct or semantic tools",
-			"repeated swipes or scrolling",
-			"image_diff feedback",
 			"request confirmation",
-			"probe once with medium",
-			"save_memory with app name, control location, direction, strength/distance, and delta",
+			"Keep detailed UI playbooks in skills",
 		} {
 			if !strings.Contains(profile.SystemPrompt, want) {
 				t.Fatalf("%s system prompt missing %q:\n%s", profile.Name, want, profile.SystemPrompt)
@@ -184,6 +177,16 @@ func TestDefaultAgentBehaviorExcludesMigratedToolDetails(t *testing.T) {
 		"Directional swipe names describe finger movement",
 		"Precision swipe loop",
 		"Horizontal carousels",
+		"In app switchers with overlapping cards",
+		"prefer search over blind scrolling",
+		"return_entry=dynamic_island",
+		"For long text, Chinese, emoji",
+		"committed:true. keyboard_text is ASCII-only",
+		"Base visible UI actions on the latest screenshot",
+		"image_diff feedback",
+		"Picker/wheel controls",
+		"probe once with medium",
+		"save_memory with app name, control location, direction, strength/distance, and delta",
 	} {
 		if strings.Contains(behavior, unexpected) {
 			t.Fatalf("defaultAgentBehavior should not include migrated tool detail %q:\n%s", unexpected, behavior)

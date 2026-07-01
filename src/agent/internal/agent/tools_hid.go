@@ -21,6 +21,8 @@ import (
 const (
 	absMouseMaxPos = 32767
 
+	defaultHIDRefreshStatePath = "/run/aiden_usb_ecm_watchdog.state"
+
 	// defaultTapHoldMs is the dwell between a touch press and release so iOS
 	// registers a tap rather than dropping the sub-millisecond event or
 	// treating it as a long-press.
@@ -133,6 +135,8 @@ type HIDDevice struct {
 	file         io.WriteCloser
 	open         func(string) (io.WriteCloser, error)
 	writeTimeout time.Duration
+	openedAt     time.Time
+	refreshState string
 }
 
 type screenState struct {
@@ -318,6 +322,7 @@ func NewHIDDevice(path string) *HIDDevice {
 	return &HIDDevice{
 		path:         path,
 		writeTimeout: defaultHIDWriteTimeout,
+		refreshState: defaultHIDRefreshStatePath,
 		open: func(path string) (io.WriteCloser, error) {
 			return os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0)
 		},
@@ -332,6 +337,9 @@ func (d *HIDDevice) Write(data []byte) error {
 
 func (d *HIDDevice) writeLocked(data []byte, after func()) error {
 	if err := d.ensureOpenLocked(); err != nil {
+		return err
+	}
+	if err := d.reopenStaleFileLocked(); err != nil {
 		return err
 	}
 
@@ -446,6 +454,7 @@ func (d *HIDDevice) ensureOpenLocked() error {
 		return fmt.Errorf("open %s: %w", d.path, err)
 	}
 	d.file = f
+	d.openedAt = time.Now()
 	return nil
 }
 
@@ -453,7 +462,43 @@ func (d *HIDDevice) closeLocked() {
 	if d.file != nil {
 		_ = d.file.Close()
 		d.file = nil
+		d.openedAt = time.Time{}
 	}
+}
+
+func (d *HIDDevice) reopenStaleFileLocked() error {
+	if d.file == nil {
+		return nil
+	}
+	if !d.openedAt.IsZero() && d.refreshState != "" {
+		if info, err := os.Stat(d.refreshState); err == nil && info.ModTime().After(d.openedAt) {
+			d.closeLocked()
+			return d.ensureOpenLocked()
+		}
+	}
+
+	statter, ok := d.file.(interface{ Stat() (os.FileInfo, error) })
+	if !ok {
+		return nil
+	}
+	fdInfo, err := statter.Stat()
+	if err != nil {
+		d.closeLocked()
+		return d.ensureOpenLocked()
+	}
+	pathInfo, err := os.Stat(d.path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		d.closeLocked()
+		return d.ensureOpenLocked()
+	}
+	if !os.SameFile(fdInfo, pathInfo) {
+		d.closeLocked()
+		return d.ensureOpenLocked()
+	}
+	return nil
 }
 
 func hidShouldRetryWrite(err error) bool {
@@ -587,7 +632,7 @@ func (t *KeyboardTextTool) Description() string {
 		`Allowed characters: a-z, A-Z, 0-9, space, and common US-keyboard punctuation. ` +
 		`For model/tool calls, pass JSON only, for example {"text":"App Store"}; do not pass a bare string. ` +
 		`Do NOT pass non-ASCII text, emoji, or spaced romanization — use enter_text_in_field for input box entry. ` +
-		`For Chinese targets without enter_text_in_field, use pinyin or English keywords (e.g. {"text":"weixin"}), then tap the on-screen candidate. ` +
+		`Do not transliterate Chinese/CJK targets to pinyin or guessed ASCII keywords; if enter_text_in_field is unavailable, report the blocker instead. ` +
 		`keyboard_text remains for simple standalone ASCII typing outside the enter_text_in_field workflow. ` +
 		`Bare plain text is accepted only as a legacy compatibility fallback.`
 }

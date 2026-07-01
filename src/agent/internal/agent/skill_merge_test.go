@@ -821,21 +821,72 @@ func TestSkillManageToolEmptyInputExplainsJSONContract(t *testing.T) {
 	}
 }
 
-func TestBundledDeviceOperatorSkillDocumentsScreenshotFailureRecovery(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "config", "skills", "device-operator", "SKILL.md"))
+func TestBundledDeviceOperatorContainsEmbeddedDevicePlaybooks(t *testing.T) {
+	skillsDir := filepath.Join("..", "..", "config", "skills")
+	deviceData, err := os.ReadFile(filepath.Join(skillsDir, "device-operator", "SKILL.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	content := string(data)
+	deviceContent := string(deviceData)
 	for _, want := range []string{
-		"## Screenshot Failure Recovery",
+		"## Text Entry",
+		"segments",
+		"## App Switching and Launch",
+		"app_switch",
+		"## Scrolling and Picker Controls",
+		"Directional swipe names describe finger movement",
+		"## Screenshot and Capture Recovery",
 		"SERVICE_RECOVERING",
 		"frame_service_cli --socket /run/frame_service/frame_service.sock health",
 		"frame_service_cli --socket /run/frame_service/frame_service.sock restart",
 		"/etc/init.d/S52frame_service restart",
 	} {
-		if !strings.Contains(content, want) {
-			t.Fatalf("device-operator skill missing screenshot recovery fragment %q", want)
+		if !strings.Contains(deviceContent, want) {
+			t.Fatalf("device-operator skill missing embedded playbook fragment %q", want)
+		}
+	}
+	for _, childName := range []string{"app-switching", "frame-service-recovery", "scroll-and-picker", "text-entry"} {
+		if fileExists(filepath.Join(skillsDir, childName, "SKILL.md")) {
+			t.Fatalf("bundled child skill %q should be folded into device-operator", childName)
+		}
+	}
+}
+
+func TestBundledDeviceOperatorAllowedToolsCoverEmbeddedPlaybooks(t *testing.T) {
+	skillsDir := filepath.Join("..", "..", "config", "skills")
+	index, err := LoadSkillsFromDirs([]string{skillsDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	device, ok := index.Get("device-operator")
+	if !ok {
+		t.Fatal("device-operator skill not found")
+	}
+	deviceTools := map[string]struct{}{}
+	for _, tool := range device.AllowedTools {
+		deviceTools[tool] = struct{}{}
+	}
+	for _, tool := range []string{
+		"screenshot",
+		"wait_for_stable_screen",
+		"image_diff",
+		"quick_action",
+		"touch_gesture",
+		"mouse_click",
+		"mouse_move",
+		"mouse_scroll",
+		"keyboard_tap",
+		"keyboard_text",
+		"enter_text_in_field",
+		"enter_text_via_bridge",
+		"search_launch_app",
+		"request_human_handoff",
+		"recall_memory",
+		"save_memory",
+		"shell",
+	} {
+		if _, ok := deviceTools[tool]; !ok {
+			t.Fatalf("device-operator allowed_tools missing %q required by embedded playbooks", tool)
 		}
 	}
 }
