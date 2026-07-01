@@ -72,25 +72,12 @@ func applySTTTranscriptionTestRequest(cfg *Config, req STTTranscriptionTestReque
 	if req.APIKey != "" {
 		cfg.STT.APIKey = req.APIKey
 	}
-	if req.Model != "" {
-		cfg.STT.Model = req.Model
-	}
-	if req.BaseURL != "" {
-		cfg.STT.BaseURL = req.BaseURL
-	}
-	if req.AppID != "" {
-		cfg.STT.AppID = req.AppID
-	}
-	if req.SecretID != "" {
-		cfg.STT.SecretID = req.SecretID
-	}
-	if req.SecretKey != "" {
-		cfg.STT.SecretKey = req.SecretKey
-	}
-	if req.Region != "" {
-		cfg.STT.Region = req.Region
-	}
-	if req.EngineModelType != "" {
-		cfg.STT.EngineModelType = req.EngineModelType
-	}
+	// Always apply these — empty means the field was hidden/cleared by the UI.
+	cfg.STT.Model = req.Model
+	cfg.STT.BaseURL = req.BaseURL
+	cfg.STT.AppID = req.AppID
+	cfg.STT.SecretID = req.SecretID
+	cfg.STT.SecretKey = req.SecretKey
+	cfg.STT.Region = req.Region
+	cfg.STT.EngineModelType = req.EngineModelType
 }

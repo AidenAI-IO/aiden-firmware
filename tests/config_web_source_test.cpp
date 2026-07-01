@@ -1124,7 +1124,8 @@ TEST_CASE("config web tolerates metadata fields without rendered controls") {
     CHECK(html.find("if(!el)return;snap[item[0]]=") != std::string::npos);
     CHECK(html.find("if(!el)return;if(snap[item[0]]!==undefined)") != std::string::npos);
     CHECK(html.find("function readSection(section){const values=Object.assign({},(appState.config&&appState.config[section])||{});") != std::string::npos);
-    CHECK(html.find("if(!el)return;const raw=el.value;") != std::string::npos);
+    // readSection now handles hidden fields - check for the updated logic
+    CHECK(html.find("if(!el)return;const field=el.closest?el.closest('.field'):el.parentNode;") != std::string::npos);
 }
 
 TEST_CASE("config web preserves loaded secret values when password inputs are left blank") {
