@@ -83,7 +83,6 @@ def test_get_tools_catalog(bridge_server):
     assert "screenshot" in tools
     assert "touch_gesture" in tools
     assert "keyboard_text" in tools
-    assert "enter_text_in_field" in tools
     assert "keyboard_tap" in tools
     assert "enter_text_in_field" in tools
     assert "enter_text_via_bridge" in tools
@@ -112,15 +111,13 @@ def test_get_tools_catalog(bridge_server):
 
     keyboard_tap_props = tools["keyboard_tap"]["args_schema"]["properties"]
     assert tools["keyboard_text"]["args_schema"]["additionalProperties"] is False
-    enter_text_props = tools["enter_text_in_field"]["args_schema"]["properties"]
-    assert tools["enter_text_in_field"]["args_schema"]["additionalProperties"] is False
-    assert "focus" in enter_text_props
-    assert "segments" in enter_text_props
     assert tools["keyboard_tap"]["args_schema"]["additionalProperties"] is False
     assert "hold_ms" in keyboard_tap_props
 
     enter_text_props = tools["enter_text_in_field"]["args_schema"]["properties"]
     assert tools["enter_text_in_field"]["args_schema"]["additionalProperties"] is False
+    assert "focus" in enter_text_props
+    assert "segments" in enter_text_props
     assert tools["enter_text_via_bridge"]["args_schema"]["additionalProperties"] is False
     assert enter_text_props["platform"]["enum"] == ["ios", "android", "mac"]
     assert enter_text_props["mode"]["enum"] == ["form", "search"]
@@ -475,7 +472,7 @@ def test_invoke_keyboard_text_accepts_plain_text_fallback(bridge_server):
 
 
 def test_invoke_enter_text_in_field_focuses_and_types_unicode(bridge_server):
-    server, base_url, state = bridge_server
+    _server, base_url, state = bridge_server
     state.active_episode_id = "test-episode-enter-text"
 
     request_body = json.dumps(

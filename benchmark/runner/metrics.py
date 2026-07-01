@@ -1,6 +1,8 @@
 from __future__ import annotations
 import statistics
 from collections import Counter
+from collections.abc import Iterable, Mapping
+from typing import Any
 from runner.models import TaskResult
 
 def aggregate(results: list[TaskResult]) -> dict[str, object]:
@@ -30,7 +32,7 @@ def aggregate(results: list[TaskResult]) -> dict[str, object]:
     walls = [r.metrics.get("wall_ms", 0) for r in results if r.metrics.get("wall_ms")]
     tool_counts = [r.metrics.get("tool_calls", 0) for r in results
                    if r.metrics.get("tool_calls") is not None]
-    trace_observations = _aggregate_trace_observations(results)
+    trace_observations = aggregate_trace_observation_metrics(r.metrics for r in results)
     out = {
         "tasks": len(results),
         "passed": pass_count,
@@ -44,6 +46,7 @@ def aggregate(results: list[TaskResult]) -> dict[str, object]:
     }
     if "skill_read_device_operator" in trace_observations:
         device_obs = trace_observations["skill_read_device_operator"]
+        # Preserve the historical summary key while deriving it from generic buckets.
         out["skill_read_device_operator"] = {
             "tasks_with_skill_read": device_obs["tasks_with_observation"],
             "tasks_observed": device_obs["tasks_observed"],
@@ -60,12 +63,12 @@ def _percentile(values: list[float], pct: float) -> float:
     return s[f] + (s[c] - s[f]) * (k - f)
 
 
-def _aggregate_trace_observations(results: list[TaskResult]) -> dict[str, dict[str, int]]:
+def aggregate_trace_observation_metrics(metrics_rows: Iterable[Mapping[str, Any]]) -> dict[str, dict[str, int]]:
     observed: dict[str, dict[str, int]] = {}
-    for result in results:
+    for metrics in metrics_rows:
         seen_for_task: set[str] = set()
         passed_for_task: set[str] = set()
-        for obs in result.metrics.get("trace_observations") or []:
+        for obs in metrics.get("trace_observations") or []:
             obs_id = str(obs.get("id") or "").strip()
             if not obs_id:
                 continue

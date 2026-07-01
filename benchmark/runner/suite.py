@@ -169,6 +169,7 @@ def load_suite(path: Path) -> Suite:
         raise SuiteValidationError("suite prompt_prefix must be a string")
 
     trace_observations: list[TraceObservationSpec] = []
+    seen_obs_ids: set[str] = set()
     for raw_obs in data.get("trace_observations") or []:
         if not isinstance(raw_obs, dict):
             raise SuiteValidationError("trace_observations entries must be objects")
@@ -187,6 +188,9 @@ def load_suite(path: Path) -> Suite:
             raise SuiteValidationError(
                 f"trace_observations {obs_id!r}: specify only one of skill_name or tool_name"
             )
+        if obs_id in seen_obs_ids:
+            raise SuiteValidationError(f"duplicate trace_observations id: {obs_id!r}")
+        seen_obs_ids.add(obs_id)
         trace_observations.append(
             TraceObservationSpec(
                 id=obs_id,

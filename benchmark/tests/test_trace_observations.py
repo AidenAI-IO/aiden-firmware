@@ -102,6 +102,39 @@ def test_load_suite_rejects_ambiguous_trace_observation_matchers(tmp_path: Path)
         load_suite(path)
 
 
+def test_load_suite_rejects_duplicate_trace_observation_ids(tmp_path: Path):
+    fixture = {
+        "name": "obs",
+        "global_reset": {},
+        "trace_observations": [
+            {
+                "id": "used_search_launch_app",
+                "description": "Used semantic app search.",
+                "tool_name": "search_launch_app",
+            },
+            {
+                "id": "used_search_launch_app",
+                "description": "Loaded device-operator skill.",
+                "skill_name": "device-operator",
+            },
+        ],
+        "tasks": [
+            {
+                "id": "t1",
+                "category": "single_step",
+                "description_for_judge": "Do something.",
+                "prompt": "go",
+                "rubric": [{"id": "ok", "check": "ok"}],
+            }
+        ],
+    }
+    path = tmp_path / "suite.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+
+    with pytest.raises(SuiteValidationError, match="duplicate trace_observations id"):
+        load_suite(path)
+
+
 def test_phone_control_suite_defines_skill_read_observation():
     suite_path = Path(__file__).resolve().parents[1] / "suites" / "phone_control_v1.json"
     suite = load_suite(suite_path)

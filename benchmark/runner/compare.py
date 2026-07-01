@@ -2,6 +2,7 @@ from __future__ import annotations
 import json
 import statistics
 from pathlib import Path
+from runner.metrics import aggregate_trace_observation_metrics
 
 def compare_runs(a: Path, b: Path) -> int:
     rows_a = _load(a)
@@ -50,12 +51,16 @@ def compare_runs(a: Path, b: Path) -> int:
     if obs_ids:
         print("Trace observations:")
     for obs_id in sorted(obs_ids):
-        oa = summary_a["trace_observations"].get(obs_id, {"hits": 0, "observed": 0})
-        ob = summary_b["trace_observations"].get(obs_id, {"hits": 0, "observed": 0})
+        oa = summary_a["trace_observations"].get(
+            obs_id, {"tasks_with_observation": 0, "tasks_observed": 0}
+        )
+        ob = summary_b["trace_observations"].get(
+            obs_id, {"tasks_with_observation": 0, "tasks_observed": 0}
+        )
         print(
-            f"  {obs_id}: {oa['hits']}/{oa['observed']} -> "
-            f"{ob['hits']}/{ob['observed']} "
-            f"(delta {_signed(ob['hits'] - oa['hits'])})"
+            f"  {obs_id}: {oa['tasks_with_observation']}/{oa['tasks_observed']} -> "
+            f"{ob['tasks_with_observation']}/{ob['tasks_observed']} "
+            f"(delta {_signed(ob['tasks_with_observation'] - oa['tasks_with_observation'])})"
         )
     return 0
 
@@ -74,7 +79,9 @@ def _summary(rows: dict[str, dict]) -> dict:
         "passed": sum(1 for row in values if row.get("status") == "passed"),
         "tool_calls_median": _median_metric(values, "tool_calls"),
         "wall_ms_median": _median_metric(values, "wall_ms"),
-        "trace_observations": _trace_observations(values),
+        "trace_observations": aggregate_trace_observation_metrics(
+            row.get("metrics", {}) for row in values
+        ),
     }
 
 
@@ -84,26 +91,6 @@ def _median_metric(rows: list[dict], key: str) -> float | None:
     if not numbers:
         return None
     return float(statistics.median(numbers))
-
-
-def _trace_observations(rows: list[dict]) -> dict[str, dict[str, int]]:
-    out: dict[str, dict[str, int]] = {}
-    for row in rows:
-        seen: set[str] = set()
-        passed: set[str] = set()
-        for obs in row.get("metrics", {}).get("trace_observations") or []:
-            obs_id = str(obs.get("id") or "").strip()
-            if not obs_id:
-                continue
-            seen.add(obs_id)
-            if obs.get("passed"):
-                passed.add(obs_id)
-        for obs_id in seen:
-            bucket = out.setdefault(obs_id, {"hits": 0, "observed": 0})
-            bucket["observed"] += 1
-            if obs_id in passed:
-                bucket["hits"] += 1
-    return out
 
 
 def _delta(new: float | None, old: float | None) -> float | None:
