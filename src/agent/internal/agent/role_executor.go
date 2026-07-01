@@ -35,7 +35,6 @@ type roleCollaborativeExecutor struct {
 	ScreenshotPruning      ScreenshotPruningConfig
 	VisualArtifacts        *visualArtifactStore
 	InitialWorldState      worldState
-	ForceSimpleLoop        bool
 	SteerProvider          func(context.Context) (RunSteerMessage, bool)
 	FinalSteerProvider     func(context.Context) (RunSteerMessage, bool)
 	SteerInterrupt         func() <-chan struct{}
@@ -223,7 +222,6 @@ func newRoleCollaborativeExecutor(
 		ScreenshotPruning: screenshotPruning.WithDefaults(),
 		VisualArtifacts:   newVisualArtifactStore(recorder),
 		InitialWorldState: world,
-		ForceSimpleLoop:   true,
 		SteerProvider:     steerProvider,
 	}
 }
@@ -247,13 +245,9 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 
 	plannerToolSpecs := toolSpecsForRole(RolePlanner, e.Tools)
 	executorToolSpecs := toolSpecsForRole(RoleExecutor, e.Tools)
-	initialPhase := phaseDecision
-	if e.ForceSimpleLoop {
-		initialPhase = phaseDefault
-	}
 	state := roleLoopState{
-		Phase:                 initialPhase,
-		ForceSimpleLoop:       e.ForceSimpleLoop,
+		Phase:                 phaseDefault,
+		ForceSimpleLoop:       true,
 		Todo:                  TodoState{Mode: TodoModeNone},
 		World:                 e.InitialWorldState,
 		TodoReminderToolCalls: e.TodoReminderToolCalls,
@@ -605,24 +599,9 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 	toolSpecs *ToolSpecs,
 	options ...chains.ChainCallOption,
 ) (plannerTurnResult, error) {
-	if state.Phase == phaseDecision && !e.ForceSimpleLoop {
-		return e.callRouteTurn(ctx, inputs, state, toolSpecs, options...)
-	}
-
-	task := plannerTaskForPhase(state.Phase, *state, e.ForceSimpleLoop)
-	messages := e.roleMessages(e.Profiles.Planner, inputs, *state, task)
+	messages := e.roleMessages(e.Profiles.Planner, inputs, *state, "")
 	state.PendingTodoReminder = ""
-	plannerTools := toolsForRole(RolePlanner, e.Tools)
-	if e.ForceSimpleLoop {
-		plannerTools = appendSimpleTodoMetaTools(plannerTools)
-	} else {
-		switch state.Phase {
-		case phasePlan:
-			plannerTools = appendPlannerReadOnlyTools(loopMetaTools(), plannerTools)
-		default:
-			plannerTools = appendDefaultLoopMetaTools(plannerTools)
-		}
-	}
+	plannerTools := appendSimpleTodoMetaTools(toolsForRole(RolePlanner, e.Tools))
 	parser := &FunctionAgent{
 		Tools:     plannerTools,
 		OutputKey: e.OutputKey,
@@ -636,7 +615,7 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 	// not a tool call; finishRun streams confirmed final answers after parsing.
 	if diagnostics, ok := e.CallbacksHandler.(finalStreamingDecisionLogger); ok {
 		diagnostics.LogFinalStreamingDecision(ctx, RolePlanner, false,
-			fmt.Sprintf("tool_capable_agent_turn phase=%s single_agent=%t tools=%d", state.Phase, e.ForceSimpleLoop, len(plannerTools)))
+			fmt.Sprintf("tool_capable_agent_turn phase=%s single_agent=true tools=%d", state.Phase, len(plannerTools)))
 	}
 	res, err := generate()
 	if err != nil {
@@ -715,7 +694,7 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 		if e.CallbacksHandler != nil {
 			e.CallbacksHandler.HandleAgentAction(ctx, action)
 		}
-		if e.ForceSimpleLoop && !toolNameEqual(action.Tool, toolSetTodo) {
+		if !toolNameEqual(action.Tool, toolSetTodo) {
 			return plannerTurnResult{
 				Kind: plannerTurnInvalidMeta,
 				Step: &schema.AgentStep{
@@ -757,78 +736,6 @@ func looksLikeInternalJSONPlanFinal(answer string) bool {
 		return strings.TrimSpace(finalAnswer) == ""
 	}
 	return false
-}
-
-func (e *roleCollaborativeExecutor) callRouteTurn(
-	ctx context.Context,
-	inputs map[string]string,
-	state *roleLoopState,
-	toolSpecs *ToolSpecs,
-	options ...chains.ChainCallOption,
-) (plannerTurnResult, error) {
-	task := plannerTaskForPhase(phaseDecision, *state, e.ForceSimpleLoop)
-	messages := e.roleMessages(e.Profiles.Planner, inputs, *state, task)
-	callOptions := e.finalStreamingCallOptions(chains.GetLLMCallOptions(options...))
-	res, err := e.withFinalStreaming(ctx, func() (*llms.ContentResponse, error) {
-		return e.generateRoleContent(ctx, RolePlanner, messages, callOptions...)
-	})
-	if err != nil {
-		return plannerTurnResult{}, err
-	}
-	e.emitRoleOutput(ctx, RolePlanner, roleResponseDebugText(res))
-	if consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, state); err != nil {
-		return plannerTurnResult{}, err
-	} else if consumed {
-		return plannerTurnResult{Kind: plannerTurnSteer}, nil
-	}
-
-	parser := &FunctionAgent{Tools: appendLoopMetaTools(toolsForRole(RolePlanner, e.Tools)), OutputKey: e.OutputKey}
-	actions, _, parseErr := parser.ParseOutput(res)
-	if parseErr != nil && !errors.Is(parseErr, agents.ErrUnableToParseOutput) {
-		return plannerTurnResult{}, parseErr
-	}
-	if len(actions) > 0 {
-		action := actions[0]
-		if routeShouldUsePlan(inputs["input"]) || toolNameEqual(action.Tool, toolEnterPlanMode) {
-			return e.enterPlanFromRoute(ctx, state, "route selected plan mode")
-		}
-		if toolNameEqual(action.Tool, toolUseSimpleMode) {
-			state.Phase = phaseDefault
-			state.PlannerReason = parseOptionalReasonInput(normalizeToolInput(action.ToolInput))
-			return plannerTurnResult{Kind: plannerTurnUseSimpleMode}, nil
-		}
-		state.Phase = phaseDefault
-		return e.executePlannerToolAction(ctx, state, toolSpecs, action)
-	}
-
-	decision := parseRouteDecision(res, inputs["input"])
-	switch decision.Mode {
-	case routeModeDirectAnswer:
-		return plannerTurnResult{Kind: plannerTurnFinish, Answer: decision.FinalAnswer}, nil
-	case routeModePlan:
-		return e.enterPlanFromRoute(ctx, state, decision.Reason)
-	default:
-		state.Phase = phaseDefault
-		state.PlannerReason = decision.Reason
-		return plannerTurnResult{Kind: plannerTurnUseSimpleMode}, nil
-	}
-}
-
-func (e *roleCollaborativeExecutor) enterPlanFromRoute(ctx context.Context, state *roleLoopState, reason string) (plannerTurnResult, error) {
-	reason = strings.TrimSpace(reason)
-	if reason == "" {
-		reason = "route selected plan mode"
-	}
-	payload, _ := json.Marshal(map[string]string{"reason": reason})
-	action := schema.AgentAction{
-		Tool:      toolEnterPlanMode,
-		ToolInput: string(payload),
-		Log:       reason,
-	}
-	if e.CallbacksHandler != nil {
-		e.CallbacksHandler.HandleAgentAction(ctx, action)
-	}
-	return e.handlePlannerMetaTool(phaseDecision, state, action), nil
 }
 
 func (e *roleCollaborativeExecutor) executePlannerToolAction(
@@ -1203,49 +1110,6 @@ func (s roleLoopState) shouldReviewDefaultFinal(toolSpecs *ToolSpecs) bool {
 	// Single-agent mode finishes directly. The separate verifier/final-review
 	// pass is intentionally disabled with the planner/executor/verifier split.
 	return false
-	if s.Phase != phaseDefault || len(s.ExecutionResults) == 0 {
-		return false
-	}
-	if last := s.lastExecutionTool(); toolNameEqual(last, toolHumanHandoffStep) || isWaitForWakeupTool(last) {
-		return false
-	}
-	for _, result := range s.ExecutionResults {
-		if result.Action == nil {
-			continue
-		}
-		if shouldReviewDefaultFinalTool(result.Action.Tool, toolSpecs) {
-			return true
-		}
-	}
-	return false
-}
-
-func (s roleLoopState) lastExecutionTool() string {
-	for i := len(s.ExecutionResults) - 1; i >= 0; i-- {
-		if s.ExecutionResults[i].Action != nil {
-			return strings.TrimSpace(s.ExecutionResults[i].Action.Tool)
-		}
-	}
-	return ""
-}
-
-func shouldReviewDefaultFinalTool(toolName string, toolSpecs *ToolSpecs) bool {
-	toolName = strings.TrimSpace(toolName)
-	if toolName == "" {
-		return false
-	}
-	category := ""
-	if spec, ok := toolSpecs.Lookup(toolName); ok {
-		category = strings.TrimSpace(spec.Category)
-	} else if meta, ok := builtInToolSpecMetadata[toolName]; ok {
-		category = strings.TrimSpace(meta.Category)
-	}
-	switch category {
-	case "phone", "input", "observation", "handoff":
-		return true
-	default:
-		return false
-	}
 }
 
 func (e *roleCollaborativeExecutor) callDefaultFinalReview(
@@ -1492,32 +1356,6 @@ func hasProfileTool(profile RoleProfile, name string) bool {
 		}
 	}
 	return false
-}
-
-func appendPlannerReadOnlyTools(base []langtools.Tool, tools []langtools.Tool) []langtools.Tool {
-	combined := append([]langtools.Tool{}, base...)
-	seen := map[string]bool{}
-	for _, tool := range combined {
-		if tool != nil {
-			seen[toolSpecKey(tool.Name())] = true
-		}
-	}
-	for _, tool := range tools {
-		if tool == nil {
-			continue
-		}
-		spec := NewToolSpec(tool)
-		if !isPlannerReadOnlyToolSpec(spec) {
-			continue
-		}
-		key := toolSpecKey(spec.Name)
-		if seen[key] {
-			continue
-		}
-		combined = append(combined, tool)
-		seen[key] = true
-	}
-	return combined
 }
 
 func isPlannerReadOnlyTool(name string, specs *ToolSpecs) bool {
@@ -2324,46 +2162,6 @@ func (s roleLoopState) lastCandidateAnswer() string {
 		}
 	}
 	return ""
-}
-
-func parseRouteDecision(res *llms.ContentResponse, request string) routeDecision {
-	raw := contentResponseText(res)
-	var decision routeDecision
-	if decodeRoleJSON(raw, &decision) == nil {
-		return normalizeRouteDecision(decision, request)
-	}
-
-	text := strings.TrimSpace(raw)
-	if hasTaggedTTSOutput(text) {
-		return normalizeRouteDecision(routeDecision{
-			Mode:        routeModeDirectAnswer,
-			FinalAnswer: finalizeAssistantOutput(text),
-			Reason:      "route returned tagged final output",
-		}, request)
-	}
-	lower := strings.ToLower(text)
-	if routeTextHasPlanIntent(lower) {
-		return normalizeRouteDecision(routeDecision{
-			Mode:   routeModePlan,
-			Reason: "route returned non-JSON plan intent",
-		}, request)
-	}
-	if routeTextHasSimpleIntent(lower) {
-		return normalizeRouteDecision(routeDecision{
-			Mode:   routeModeSimple,
-			Reason: "route returned non-JSON simple intent",
-		}, request)
-	}
-	if text != "" {
-		return normalizeRouteDecision(routeDecision{
-			Mode:   routeModeSimple,
-			Reason: "route returned non-JSON text without tagged TTS output",
-		}, request)
-	}
-	return normalizeRouteDecision(routeDecision{
-		Mode:   routeModeSimple,
-		Reason: "route returned empty content",
-	}, request)
 }
 
 func parsePlannerDecision(res *llms.ContentResponse, fallbackStep string) plannerDecision {

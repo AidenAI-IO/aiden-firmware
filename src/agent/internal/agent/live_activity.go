@@ -687,29 +687,17 @@ type liveActivityToolStatus struct {
 }
 
 func liveActivityPhaseFromRole(role, content string) string {
-	role = strings.ToLower(strings.TrimSpace(role))
 	if extractTTSText(content) != "" {
 		return LiveActivityPhaseAnswering
 	}
-	switch role {
-	case "agent":
-		return LiveActivityPhasePlanning
-	default:
-		return LiveActivityPhasePlanning
-	}
+	return LiveActivityPhasePlanning
 }
 
 func liveActivityActionFromRole(role, content string) string {
-	role = strings.ToLower(strings.TrimSpace(role))
 	if extractTTSText(content) != "" {
 		return "answer"
 	}
-	switch role {
-	case "agent":
-		return "think"
-	default:
-		return "think"
-	}
+	return "think"
 }
 
 func liveActivityToolCallStatus(event RunEvent) liveActivityToolStatus {
