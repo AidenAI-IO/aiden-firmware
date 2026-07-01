@@ -15,20 +15,16 @@ type fakeScreenshotFrameClient struct {
 	captureInfo screenCaptureInfo
 }
 
-func (c *fakeScreenshotFrameClient) LatestFrameWithFormat(format string, quality int) (*frameMetadata, []byte, error) {
+func (c *fakeScreenshotFrameClient) LatestFrameWithFormat(format string, quality int) (*frameMetadata, []byte, screenCaptureInfo, error) {
 	if format != "jpeg" {
-		return nil, nil, fmt.Errorf("unexpected format %q", format)
+		return nil, nil, screenCaptureInfo{}, fmt.Errorf("unexpected format %q", format)
 	}
 	if quality != screenshotJPEGQuality {
-		return nil, nil, fmt.Errorf("quality = %d, want %d", quality, screenshotJPEGQuality)
+		return nil, nil, screenCaptureInfo{}, fmt.Errorf("quality = %d, want %d", quality, screenshotJPEGQuality)
 	}
 	c.calls++
 	meta := c.meta
-	return &meta, append([]byte(nil), c.data...), nil
-}
-
-func (c *fakeScreenshotFrameClient) LastCaptureInfo() screenCaptureInfo {
-	return cloneScreenCaptureInfo(c.captureInfo)
+	return &meta, append([]byte(nil), c.data...), cloneScreenCaptureInfo(c.captureInfo), nil
 }
 
 func TestScreenshotToolUsesJPEGSourceMetadataForSharedScreenState(t *testing.T) {

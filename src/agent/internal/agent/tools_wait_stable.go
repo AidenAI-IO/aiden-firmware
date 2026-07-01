@@ -63,8 +63,8 @@ type WaitStableScreenTool struct {
 }
 
 type waitStableFrameClient interface {
-	LatestFrame() (*frameMetadata, []byte, error)
-	LatestFrameWithFormat(format string, quality int) (*frameMetadata, []byte, error)
+	LatestFrame() (*frameMetadata, []byte, screenCaptureInfo, error)
+	LatestFrameWithFormat(format string, quality int) (*frameMetadata, []byte, screenCaptureInfo, error)
 }
 
 type waitStableScreenResult struct {
@@ -151,7 +151,7 @@ func (t *WaitStableScreenTool) Call(ctx context.Context, input string) (string, 
 }
 
 func (t *WaitStableScreenTool) captureScreenshot() (screenshotResult, error) {
-	meta, jpegData, err := t.client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality)
+	meta, jpegData, captureInfo, err := t.client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality)
 	if err != nil {
 		return screenshotResult{}, err
 	}
@@ -195,9 +195,7 @@ func (t *WaitStableScreenTool) captureScreenshot() (screenshotResult, error) {
 		Size:   len(displayData),
 		Data:   base64.StdEncoding.EncodeToString(displayData),
 	}
-	if provider, ok := t.client.(screenshotCaptureInfoProvider); ok {
-		applyScreenCaptureInfo(&result, provider.LastCaptureInfo())
-	}
+	applyScreenCaptureInfo(&result, captureInfo)
 	return result, nil
 }
 
@@ -233,7 +231,7 @@ func (t *WaitStableScreenTool) wait(ctx context.Context, input string) (waitStab
 	start := time.Now()
 	deadline := start.Add(timeout)
 
-	prevMeta, prevFrame, err := t.client.LatestFrame()
+	prevMeta, prevFrame, _, err := t.client.LatestFrame()
 	if err != nil {
 		return waitStableScreenResult{}, err
 	}
@@ -265,7 +263,7 @@ func (t *WaitStableScreenTool) wait(ctx context.Context, input string) (waitStab
 			}
 		}
 
-		meta, frame, err := t.client.LatestFrame()
+		meta, frame, _, err := t.client.LatestFrame()
 		if err != nil {
 			return waitStableScreenResult{}, err
 		}

@@ -33,6 +33,21 @@ copy_if_missing() {
 	cp -p "$src" "$dst" 2>/dev/null || cp "$src" "$dst"
 }
 
+copy_required_host_companion() {
+	src="$1"
+	dst="$2"
+	rollback_key="$3"
+	label="$4"
+	if [ ! -s "$src" ]; then
+		return 0
+	fi
+	if ! copy_if_missing "$src" "$dst" || [ ! -s "$dst" ]; then
+		rm -f "$rollback_key" "${rollback_key}.pub" "${rollback_key}-cert.pub"
+		echo "failed to copy $label: $src -> $dst" >&2
+		return 1
+	fi
+}
+
 remove_empty_file() {
 	path="$1"
 	if [ -f "$path" ] && [ ! -s "$path" ]; then
@@ -90,8 +105,10 @@ ensure_persistent_host_keys() {
 				echo "failed to import legacy SSH host key: $legacy_key" >&2
 				return 1
 			fi
-			[ -s "${legacy_key}.pub" ] && copy_if_missing "${legacy_key}.pub" "${persistent_key}.pub"
-			[ -s "${legacy_key}-cert.pub" ] && copy_if_missing "${legacy_key}-cert.pub" "${persistent_key}-cert.pub"
+			if ! copy_required_host_companion "${legacy_key}.pub" "${persistent_key}.pub" "$persistent_key" "legacy SSH host public key" ||
+				! copy_required_host_companion "${legacy_key}-cert.pub" "${persistent_key}-cert.pub" "$persistent_key" "legacy SSH host certificate"; then
+				return 1
+			fi
 		fi
 
 		if [ ! -s "$persistent_key" ] && [ -s "$etc_key" ]; then
@@ -99,8 +116,10 @@ ensure_persistent_host_keys() {
 				echo "failed to persist SSH host key: $persistent_key" >&2
 				return 1
 			fi
-			[ -s "${etc_key}.pub" ] && copy_if_missing "${etc_key}.pub" "${persistent_key}.pub"
-			[ -s "${etc_key}-cert.pub" ] && copy_if_missing "${etc_key}-cert.pub" "${persistent_key}-cert.pub"
+			if ! copy_required_host_companion "${etc_key}.pub" "${persistent_key}.pub" "$persistent_key" "SSH host public key" ||
+				! copy_required_host_companion "${etc_key}-cert.pub" "${persistent_key}-cert.pub" "$persistent_key" "SSH host certificate"; then
+				return 1
+			fi
 			remove_empty_host_key "$persistent_key"
 		fi
 

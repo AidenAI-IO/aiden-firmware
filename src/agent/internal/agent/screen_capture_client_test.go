@@ -43,10 +43,11 @@ func TestScreenCaptureClientFallsBackWhenPrimaryFails(t *testing.T) {
 		latestFrameWithFormatFn: func(format string, quality int) (*frameMetadata, []byte, error) {
 			return &frameMetadata{Seq: 1, Width: 2, Height: 1, PixelFormat: "jpeg"}, []byte("jpeg"), nil
 		},
+		lastCaptureInfo: screenCaptureInfo{Backend: "adb"},
 	}
 
 	client := newScreenCaptureClient(primary, fallback)
-	meta, frame, err := client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality)
+	meta, frame, info, err := client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality)
 	if err != nil {
 		t.Fatalf("LatestFrameWithFormat() error = %v", err)
 	}
@@ -55,6 +56,9 @@ func TestScreenCaptureClientFallsBackWhenPrimaryFails(t *testing.T) {
 	}
 	if string(frame) != "jpeg" {
 		t.Fatalf("unexpected fallback payload: %q", string(frame))
+	}
+	if info.Backend != "adb" {
+		t.Fatalf("capture backend = %q, want adb", info.Backend)
 	}
 	if primary.latestFrameWithFormatCalls != 1 {
 		t.Fatalf("primary calls = %d, want 1", primary.latestFrameWithFormatCalls)
@@ -74,10 +78,11 @@ func TestScreenCaptureClientTreatsStalePrimaryFrameAsFailure(t *testing.T) {
 		latestFrameFn: func() (*frameMetadata, []byte, error) {
 			return &frameMetadata{Seq: 1, Width: 2, Height: 2, PixelFormat: "png"}, []byte("fresh"), nil
 		},
+		lastCaptureInfo: screenCaptureInfo{Backend: "adb"},
 	}
 
 	client := newScreenCaptureClient(primary, fallback)
-	meta, frame, err := client.LatestFrame()
+	meta, frame, info, err := client.LatestFrame()
 	if err != nil {
 		t.Fatalf("LatestFrame() error = %v", err)
 	}
@@ -86,6 +91,9 @@ func TestScreenCaptureClientTreatsStalePrimaryFrameAsFailure(t *testing.T) {
 	}
 	if string(frame) != "fresh" {
 		t.Fatalf("unexpected fallback payload: %q", string(frame))
+	}
+	if info.Backend != "adb" {
+		t.Fatalf("capture backend = %q, want adb", info.Backend)
 	}
 }
 
@@ -102,10 +110,10 @@ func TestScreenCaptureClientKeepsUsingFallbackBrieflyAfterSuccess(t *testing.T) 
 	}
 
 	client := newScreenCaptureClient(primary, fallback)
-	if _, _, err := client.LatestFrame(); err != nil {
+	if _, _, _, err := client.LatestFrame(); err != nil {
 		t.Fatalf("first LatestFrame() error = %v", err)
 	}
-	if _, _, err := client.LatestFrame(); err != nil {
+	if _, _, _, err := client.LatestFrame(); err != nil {
 		t.Fatalf("second LatestFrame() error = %v", err)
 	}
 	if primary.latestFrameCalls != 1 {
@@ -129,7 +137,7 @@ func TestScreenCaptureClientReturnsPrimaryErrorWhenFallbackUnavailable(t *testin
 	}
 
 	client := newScreenCaptureClient(primary, fallback)
-	_, _, err := client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality)
+	_, _, _, err := client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -159,11 +167,10 @@ func TestScreenCaptureClientReportsFallbackCaptureInfo(t *testing.T) {
 	}
 
 	client := newScreenCaptureClient(primary, fallback)
-	if _, _, err := client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality); err != nil {
+	_, _, info, err := client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality)
+	if err != nil {
 		t.Fatalf("LatestFrameWithFormat() error = %v", err)
 	}
-
-	info := client.LastCaptureInfo()
 	if info.Backend != "adb" {
 		t.Fatalf("capture backend = %q, want adb", info.Backend)
 	}

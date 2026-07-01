@@ -112,7 +112,7 @@ func (c *ADBScreenClient) capture(format string, quality int) (*frameMetadata, [
 	}
 
 	switch strings.ToLower(strings.TrimSpace(format)) {
-	case "", "raw":
+	case "", "raw", "png":
 		return meta, pngData, nil
 	case "jpeg", "jpg":
 		jpegData, err := encodeEncodedImageToJPEG(pngData, quality)

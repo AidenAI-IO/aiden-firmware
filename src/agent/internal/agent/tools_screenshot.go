@@ -26,25 +26,21 @@ type screenCaptureInfo struct {
 }
 
 type screenshotResult struct {
-	Width         int               `json:"width"`
-	Height        int               `json:"height"`
-	ActiveArea    *screenActiveArea `json:"active_area,omitempty"`
-	ActiveWidth   int               `json:"active_width,omitempty"`
-	ActiveHeight  int               `json:"active_height,omitempty"`
-	Format        string            `json:"format"`
-	Size          int               `json:"size"`
-	Data          string            `json:"data,omitempty"`
-	ScreenshotRef string            `json:"screenshot_ref,omitempty"`
+	Width          int               `json:"width"`
+	Height         int               `json:"height"`
+	ActiveArea     *screenActiveArea `json:"active_area,omitempty"`
+	ActiveWidth    int               `json:"active_width,omitempty"`
+	ActiveHeight   int               `json:"active_height,omitempty"`
+	Format         string            `json:"format"`
+	Size           int               `json:"size"`
+	Data           string            `json:"data,omitempty"`
+	ScreenshotRef  string            `json:"screenshot_ref,omitempty"`
 	CaptureBackend string            `json:"capture_backend,omitempty"`
 	ADBDevice      *adbDeviceInfo    `json:"adb_device,omitempty"`
 }
 
 type screenshotFrameClient interface {
-	LatestFrameWithFormat(format string, quality int) (*frameMetadata, []byte, error)
-}
-
-type screenshotCaptureInfoProvider interface {
-	LastCaptureInfo() screenCaptureInfo
+	LatestFrameWithFormat(format string, quality int) (*frameMetadata, []byte, screenCaptureInfo, error)
 }
 
 func cloneADBDeviceInfo(info *adbDeviceInfo) *adbDeviceInfo {
@@ -125,7 +121,7 @@ func (t *ScreenshotTool) ArgsSchema() map[string]any {
 
 func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
 	// Request JPEG format directly from frame_service (hardware-encoded)
-	meta, jpegData, err := t.client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality)
+	meta, jpegData, captureInfo, err := t.client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality)
 	if err != nil {
 		return "", err
 	}
@@ -172,9 +168,7 @@ func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
 		Size:   len(displayData),
 		Data:   base64.StdEncoding.EncodeToString(displayData),
 	}
-	if provider, ok := t.client.(screenshotCaptureInfoProvider); ok {
-		applyScreenCaptureInfo(&result, provider.LastCaptureInfo())
-	}
+	applyScreenCaptureInfo(&result, captureInfo)
 
 	out, _ := json.Marshal(result)
 	return string(out), nil

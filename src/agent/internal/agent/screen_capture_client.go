@@ -13,6 +13,10 @@ type screenCaptureSource interface {
 	LatestFrameWithFormat(format string, quality int) (*frameMetadata, []byte, error)
 }
 
+type screenshotCaptureInfoProvider interface {
+	LastCaptureInfo() screenCaptureInfo
+}
+
 // ScreenCaptureClient prefers frame_service and falls back to adb when the
 // frame socket is unavailable or stale. After a successful adb capture, it
 // stays on adb briefly so stable-screen polling does not bounce between
@@ -21,9 +25,9 @@ type ScreenCaptureClient struct {
 	primary  screenCaptureSource
 	fallback screenCaptureSource
 
+	captureMu           sync.Mutex
 	mu                  sync.Mutex
 	preferFallbackUntil time.Time
-	lastCaptureInfo     screenCaptureInfo
 }
 
 func NewScreenCaptureClient(socketPath string) *ScreenCaptureClient {
@@ -37,72 +41,72 @@ func newScreenCaptureClient(primary, fallback screenCaptureSource) *ScreenCaptur
 	}
 }
 
-func (c *ScreenCaptureClient) LatestFrame() (*frameMetadata, []byte, error) {
+func (c *ScreenCaptureClient) LatestFrame() (*frameMetadata, []byte, screenCaptureInfo, error) {
 	return c.captureWithFallback(func(source screenCaptureSource) (*frameMetadata, []byte, error) {
 		return source.LatestFrame()
 	})
 }
 
-func (c *ScreenCaptureClient) LatestFrameWithFormat(format string, quality int) (*frameMetadata, []byte, error) {
+func (c *ScreenCaptureClient) LatestFrameWithFormat(format string, quality int) (*frameMetadata, []byte, screenCaptureInfo, error) {
 	return c.captureWithFallback(func(source screenCaptureSource) (*frameMetadata, []byte, error) {
 		return source.LatestFrameWithFormat(format, quality)
 	})
 }
 
-func (c *ScreenCaptureClient) captureWithFallback(call func(screenCaptureSource) (*frameMetadata, []byte, error)) (*frameMetadata, []byte, error) {
+func (c *ScreenCaptureClient) captureWithFallback(call func(screenCaptureSource) (*frameMetadata, []byte, error)) (*frameMetadata, []byte, screenCaptureInfo, error) {
 	if c == nil {
-		return nil, nil, fmt.Errorf("screen capture client not configured")
+		return nil, nil, screenCaptureInfo{}, fmt.Errorf("screen capture client not configured")
 	}
+	c.captureMu.Lock()
+	defer c.captureMu.Unlock()
 
 	var fallbackMeta *frameMetadata
 	var fallbackFrame []byte
+	var fallbackInfo screenCaptureInfo
 	var fallbackErr error
 	fallbackTried := false
 	if c.shouldPreferFallback() {
-		fallbackMeta, fallbackFrame, fallbackErr = c.captureFromSource(c.fallback, call)
+		fallbackMeta, fallbackFrame, fallbackInfo, fallbackErr = c.captureFromSource(c.fallback, call)
 		fallbackTried = true
 		if fallbackErr == nil {
-			c.recordLastCaptureInfo(c.captureInfoForSource(c.fallback))
 			c.markFallbackPreferred()
-			return fallbackMeta, fallbackFrame, nil
+			return fallbackMeta, fallbackFrame, fallbackInfo, nil
 		}
 	}
 
-	primaryMeta, primaryFrame, primaryErr := c.captureFromSource(c.primary, call)
+	primaryMeta, primaryFrame, primaryInfo, primaryErr := c.captureFromSource(c.primary, call)
 	if primaryErr == nil {
-		c.recordLastCaptureInfo(c.captureInfoForSource(c.primary))
 		c.clearFallbackPreference()
-		return primaryMeta, primaryFrame, nil
+		return primaryMeta, primaryFrame, primaryInfo, nil
 	}
 
 	if !fallbackTried {
-		fallbackMeta, fallbackFrame, fallbackErr = c.captureFromSource(c.fallback, call)
+		fallbackMeta, fallbackFrame, fallbackInfo, fallbackErr = c.captureFromSource(c.fallback, call)
 		fallbackTried = true
 	}
 	if fallbackTried && fallbackErr == nil {
-		c.recordLastCaptureInfo(c.captureInfoForSource(c.fallback))
 		c.markFallbackPreferred()
-		return fallbackMeta, fallbackFrame, nil
+		return fallbackMeta, fallbackFrame, fallbackInfo, nil
 	}
 
-	return nil, nil, primaryErr
+	return nil, nil, screenCaptureInfo{}, primaryErr
 }
 
-func (c *ScreenCaptureClient) captureFromSource(source screenCaptureSource, call func(screenCaptureSource) (*frameMetadata, []byte, error)) (*frameMetadata, []byte, error) {
+func (c *ScreenCaptureClient) captureFromSource(source screenCaptureSource, call func(screenCaptureSource) (*frameMetadata, []byte, error)) (*frameMetadata, []byte, screenCaptureInfo, error) {
 	if source == nil {
-		return nil, nil, fmt.Errorf("screen capture source not configured")
+		return nil, nil, screenCaptureInfo{}, fmt.Errorf("screen capture source not configured")
 	}
 	meta, frame, err := call(source)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, screenCaptureInfo{}, err
 	}
 	if meta == nil {
-		return nil, nil, fmt.Errorf("screen capture returned no metadata")
+		return nil, nil, screenCaptureInfo{}, fmt.Errorf("screen capture returned no metadata")
 	}
 	if meta.Stale {
-		return nil, nil, fmt.Errorf("frame service: STALE_FRAME")
+		return nil, nil, screenCaptureInfo{}, fmt.Errorf("frame service: STALE_FRAME")
 	}
-	return meta, frame, nil
+	return meta, frame, c.captureInfoForSource(source), nil
 }
 
 func (c *ScreenCaptureClient) shouldPreferFallback() bool {
@@ -123,22 +127,10 @@ func (c *ScreenCaptureClient) clearFallbackPreference() {
 	c.mu.Unlock()
 }
 
-func (c *ScreenCaptureClient) LastCaptureInfo() screenCaptureInfo {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return cloneScreenCaptureInfo(c.lastCaptureInfo)
-}
-
-func (c *ScreenCaptureClient) recordLastCaptureInfo(info screenCaptureInfo) {
-	c.mu.Lock()
-	c.lastCaptureInfo = cloneScreenCaptureInfo(info)
-	c.mu.Unlock()
-}
-
 func (c *ScreenCaptureClient) captureInfoForSource(source screenCaptureSource) screenCaptureInfo {
 	if provider, ok := source.(screenshotCaptureInfoProvider); ok {
 		if info := provider.LastCaptureInfo(); info.Backend != "" || info.ADBDevice != nil {
-			return info
+			return cloneScreenCaptureInfo(info)
 		}
 	}
 	switch source.(type) {

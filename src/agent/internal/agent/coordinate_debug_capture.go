@@ -138,15 +138,30 @@ func coordinateDebugSourceActiveArea(active screenActiveArea, sourceWidth, sourc
 	return &activeCopy
 }
 
+func (s *Server) coordinateDebugCaptureClient() *ScreenCaptureClient {
+	if s == nil {
+		return nil
+	}
+	s.screenCaptureMu.Lock()
+	defer s.screenCaptureMu.Unlock()
+	if s.screenCaptureClient == nil && s.runtime != nil {
+		s.screenCaptureClient = NewScreenCaptureClient(s.runtime.config.HID.FrameSocketOrDefault())
+	}
+	return s.screenCaptureClient
+}
+
 func (s *Server) captureCoordinateDebugScreenshot(options coordinateDebugScreenshotOptions) (*coordinateDebugScreenshotResult, []byte, error) {
 	if s == nil || s.runtime == nil {
 		return nil, nil, fmt.Errorf("runtime not configured")
 	}
 	_ = s.bridgeEnvironment()
 
-	client := NewScreenCaptureClient(s.runtime.config.HID.FrameSocketOrDefault())
+	client := s.coordinateDebugCaptureClient()
+	if client == nil {
+		return nil, nil, fmt.Errorf("screen capture client not configured")
+	}
 	if options.CropBlackBars {
-		meta, jpegData, err := client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality)
+		meta, jpegData, captureInfo, err := client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality)
 		if err == nil && meta != nil {
 			if meta.PixelFormat == "jpeg" {
 				if sourceWidth, sourceHeight, sourceActive, ok := frameMetadataSourceActiveArea(meta); ok {
@@ -155,7 +170,7 @@ func (s *Server) captureCoordinateDebugScreenshot(options coordinateDebugScreens
 						screen.UpdateActiveArea(sourceWidth, sourceHeight, sourceActive)
 					}
 					display := coordinateDebugDisplayScreenshot(jpegData, int(meta.Width), int(meta.Height))
-					applyScreenCaptureInfo(&display, client.LastCaptureInfo())
+					applyScreenCaptureInfo(&display, captureInfo)
 					result := s.newCoordinateDebugScreenshotResult(
 						display,
 						sourceWidth,
@@ -168,7 +183,7 @@ func (s *Server) captureCoordinateDebugScreenshot(options coordinateDebugScreens
 		}
 	}
 
-	meta, frameData, err := client.LatestFrame()
+	meta, frameData, captureInfo, err := client.LatestFrame()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -205,7 +220,7 @@ func (s *Server) captureCoordinateDebugScreenshot(options coordinateDebugScreens
 	result := s.newCoordinateDebugScreenshotResult(
 		func() screenshotResult {
 			display := coordinateDebugDisplayScreenshot(displayJPEGData, displayWidth, displayHeight)
-			applyScreenCaptureInfo(&display, client.LastCaptureInfo())
+			applyScreenCaptureInfo(&display, captureInfo)
 			return display
 		}(),
 		sourceWidth,

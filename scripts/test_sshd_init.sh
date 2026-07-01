@@ -145,6 +145,60 @@ if [ -f "$LOCK_FILE" ] || [ -f "$SSHD_RUNNING" ]; then
 	exit 1
 fi
 
+LEGACY_CERT_FAIL_DIR="$TMP_DIR/legacy-cert-fail"
+LEGACY_CERT_FAIL_ETC="$LEGACY_CERT_FAIL_DIR/etc/ssh"
+LEGACY_CERT_FAIL_ROOT="$LEGACY_CERT_FAIL_DIR/root"
+LEGACY_CERT_FAIL_ROOT_SSH="$LEGACY_CERT_FAIL_ROOT/.ssh"
+LEGACY_CERT_FAIL_HOST="$LEGACY_CERT_FAIL_ROOT_SSH/host"
+LEGACY_CERT_FAIL_LEGACY="$LEGACY_CERT_FAIL_DIR/userdata/ssh/host"
+mkdir -p "$LEGACY_CERT_FAIL_ETC" "$LEGACY_CERT_FAIL_ROOT_SSH" "$LEGACY_CERT_FAIL_LEGACY"
+echo "legacy private ed25519" > "$LEGACY_CERT_FAIL_LEGACY/ssh_host_ed25519_key"
+echo "legacy public ed25519" > "$LEGACY_CERT_FAIL_LEGACY/ssh_host_ed25519_key.pub"
+echo "legacy cert ed25519" > "$LEGACY_CERT_FAIL_LEGACY/ssh_host_ed25519_key-cert.pub"
+
+set +e
+env \
+	BOOT_CONF="$TMP_DIR/missing.conf" \
+	SSHD_BIN="$BIN_DIR/sshd" \
+	SSH_KEYGEN_BIN="$BIN_DIR/ssh-keygen" \
+	PIDOF_BIN="$BIN_DIR/pidof" \
+	KILLALL_BIN="$BIN_DIR/killall" \
+	ETC_SSH_DIR="$LEGACY_CERT_FAIL_ETC" \
+	ROOT_HOME="$LEGACY_CERT_FAIL_ROOT" \
+	ROOT_SSH_DIR="$LEGACY_CERT_FAIL_ROOT_SSH" \
+	PERSISTENT_HOST_DIR="$LEGACY_CERT_FAIL_HOST" \
+	LEGACY_PERSISTENT_HOST_DIR="$LEGACY_CERT_FAIL_LEGACY" \
+	SSHD_RUNNING="$SSHD_RUNNING" \
+	SSHD_ARGS_LOG="$SSHD_ARGS_LOG" \
+	LOCK_FILE="$LOCK_FILE" \
+	PATH="$BIN_DIR:$PATH" \
+	REAL_CP="$REAL_CP" \
+	FAIL_CP_FOR="ssh_host_ed25519_key-cert.pub" \
+	"$SCRIPT" start >/dev/null 2>"$TMP_DIR/legacy-cert-fail.err"
+status="$?"
+set -e
+
+if [ "$status" -eq 0 ]; then
+	echo "sshd start succeeded despite failed legacy host certificate migration" >&2
+	exit 1
+fi
+
+if ! grep -q "failed to copy legacy SSH host certificate" "$TMP_DIR/legacy-cert-fail.err"; then
+	echo "missing legacy host certificate migration failure message" >&2
+	cat "$TMP_DIR/legacy-cert-fail.err" >&2
+	exit 1
+fi
+
+if [ -e "$LEGACY_CERT_FAIL_HOST/ssh_host_ed25519_key" ] || [ -e "$LEGACY_CERT_FAIL_HOST/ssh_host_ed25519_key.pub" ] || [ -e "$LEGACY_CERT_FAIL_HOST/ssh_host_ed25519_key-cert.pub" ]; then
+	echo "failed legacy migration left a partial persisted ed25519 host key set" >&2
+	exit 1
+fi
+
+if [ -f "$SSHD_RUNNING" ]; then
+	echo "sshd was started despite failed legacy host certificate migration" >&2
+	exit 1
+fi
+
 ETC_MIGRATION_DIR="$TMP_DIR/etc-migration"
 ETC_MIGRATION_ETC="$ETC_MIGRATION_DIR/etc/ssh"
 ETC_MIGRATION_ROOT="$ETC_MIGRATION_DIR/root"

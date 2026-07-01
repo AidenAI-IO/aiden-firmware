@@ -46,6 +46,8 @@ type Server struct {
 	ttsManager           *tts.ProviderManager
 	ttsMu                sync.RWMutex
 	audioClient          *AudioServiceClient
+	screenCaptureMu      sync.Mutex
+	screenCaptureClient  *ScreenCaptureClient
 	recordMu             sync.Mutex
 	webRecording         *webAudioRecording
 	sttConfigTestSession *sttConfigTestLiveSession
@@ -337,6 +339,7 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		userFilesReportPath: "/userdata/agent/files_report.html",
 		userFilesToolsDir:   "/userdata/agent_tools",
 		history:             make([]Message, 0),
+		screenCaptureClient: NewScreenCaptureClient(runtime.config.HID.FrameSocketOrDefault()),
 		bridge:              bridge,
 		androidADB:          NewAndroidADBManager(runtime.config.HID.FrameSocketOrDefault(), runtime.logger),
 		liveActivity:        NewLiveActivityManager(runtime.config.LiveActivity, runtime.logger),

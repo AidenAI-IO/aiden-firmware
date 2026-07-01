@@ -76,6 +76,28 @@ func TestAndroidADBStatusMatchesCurrentPhoneUSBIP(t *testing.T) {
 	}
 }
 
+func TestExtractUSBIPv4sUsesOnlyInetAddresses(t *testing.T) {
+	output := strings.Join([]string{
+		"2: rndis0    inet 192.168.42.123/24 brd 192.168.42.255 scope global rndis0",
+		"3: rndis1    inet6 fe80::1234/64 scope link",
+		"4: rndis2    brd 192.168.42.200",
+		"5: rndis3    inet 192.168.42.260/24 scope global rndis3",
+		"6: rndis4    inet 192.168.42.123/24 scope global secondary rndis4",
+		"7: rndis5    inet 192.168.42.88/24 scope global rndis5",
+	}, "\n")
+
+	got := extractUSBIPv4s(output)
+	want := []string{"192.168.42.123", "192.168.42.88"}
+	if len(got) != len(want) {
+		t.Fatalf("extractUSBIPv4s() len = %d, want %d (%v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("extractUSBIPv4s()[%d] = %q, want %q (all=%v)", i, got[i], want[i], got)
+		}
+	}
+}
+
 func TestAndroidADBPairOnlyPairsAndReturnsStatus(t *testing.T) {
 	var commands []string
 	manager := &androidADBManager{
@@ -117,6 +139,55 @@ func TestAndroidADBPairOnlyPairsAndReturnsStatus(t *testing.T) {
 	}
 	if len(commands) != 2 || commands[0] != "pair 192.168.1.10:37099 123456" || commands[1] != "devices" {
 		t.Fatalf("unexpected adb command sequence: %#v", commands)
+	}
+}
+
+func TestNormalizeAndroidADBPairRequestRejectsNonPrivatePairHost(t *testing.T) {
+	tests := []struct {
+		name    string
+		host    string
+		wantErr string
+	}{
+		{
+			name:    "hostname",
+			host:    "example.com",
+			wantErr: "pair_host must be a private IPv4 address shown by Android wireless debugging",
+		},
+		{
+			name:    "publicIPv4",
+			host:    "8.8.8.8",
+			wantErr: "pair_host must be in a private IPv4 range shown by Android wireless debugging",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := normalizeAndroidADBPairRequest(AndroidADBPairRequest{
+				PairHost: tc.host,
+				PairPort: "37099",
+				PairCode: "123456",
+			})
+			if err == nil {
+				t.Fatal("normalizeAndroidADBPairRequest() error = nil, want non-nil")
+			}
+			if err.Error() != tc.wantErr {
+				t.Fatalf("normalizeAndroidADBPairRequest() error = %q, want %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestNormalizeAndroidADBPairRequestAcceptsPrivateIPv4(t *testing.T) {
+	got, err := normalizeAndroidADBPairRequest(AndroidADBPairRequest{
+		PairHost: "[192.168.1.10]",
+		PairPort: "37099",
+		PairCode: "123456",
+	})
+	if err != nil {
+		t.Fatalf("normalizeAndroidADBPairRequest() error = %v", err)
+	}
+	if got.PairHost != "192.168.1.10" {
+		t.Fatalf("PairHost = %q, want %q", got.PairHost, "192.168.1.10")
 	}
 }
 

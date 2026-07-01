@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-var adbUSBIPv4Pattern = regexp.MustCompile(`\b192\.168\.42\.\d+\b`)
+var adbUSBIPv4Pattern = regexp.MustCompile(`(?:^|[[:space:]])inet[[:space:]]+(192\.168\.42\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]))(?:/[0-9]{1,2})?(?:[[:space:]]|$)`)
 
 type androidADBController interface {
 	Status(ctx context.Context, appUSBIP string) AndroidADBStatusResponse
@@ -257,6 +257,9 @@ func normalizeAndroidADBPairRequest(req AndroidADBPairRequest) (normalizedAndroi
 	if normalized.PairHost == "" {
 		return normalized, fmt.Errorf("pair_host is required")
 	}
+	if err := validateAndroidADBPairHost(normalized.PairHost); err != nil {
+		return normalized, err
+	}
 	if err := validatePort("pair_port", normalized.PairPort); err != nil {
 		return normalized, err
 	}
@@ -264,6 +267,17 @@ func normalizeAndroidADBPairRequest(req AndroidADBPairRequest) (normalizedAndroi
 		return normalized, fmt.Errorf("pair_code is required")
 	}
 	return normalized, nil
+}
+
+func validateAndroidADBPairHost(host string) error {
+	ip := net.ParseIP(normalizeHost(host))
+	if ip == nil || ip.To4() == nil {
+		return fmt.Errorf("pair_host must be a private IPv4 address shown by Android wireless debugging")
+	}
+	if !ip.IsPrivate() {
+		return fmt.Errorf("pair_host must be in a private IPv4 range shown by Android wireless debugging")
+	}
+	return nil
 }
 
 func validatePort(name, value string) error {
@@ -306,7 +320,15 @@ func parseADBDevices(output string) []AndroidADBDeviceStatus {
 }
 
 func extractUSBIPv4s(output string) []string {
-	matches := adbUSBIPv4Pattern.FindAllString(output, -1)
+	lines := strings.Split(output, "\n")
+	matches := make([]string, 0, len(lines))
+	for _, line := range lines {
+		submatches := adbUSBIPv4Pattern.FindStringSubmatch(line)
+		if len(submatches) < 2 {
+			continue
+		}
+		matches = append(matches, submatches[1])
+	}
 	return uniqueStrings(matches)
 }
 
