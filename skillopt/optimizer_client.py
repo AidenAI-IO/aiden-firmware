@@ -23,9 +23,12 @@ class OptimizerConfig:
     model: str = DEFAULT_OPTIMIZER_MODEL
     api_key_env: str = "OPENROUTER_API_KEY"
     agent_config_path: str | None = None
-    max_tokens: int = 4096
+    max_tokens: int = 8192
     timeout_sec: int = 180
     request_attempts: int = 2
+    # How many extra attempts to make when the model returns text that
+    # parses as truncated/invalid JSON (separate from transport retries).
+    json_parse_attempts: int = 2
 
 
 class OptimizerError(RuntimeError):
@@ -137,13 +140,14 @@ def extract_json(raw: str) -> dict:
 
     Handles common formats: bare JSON, JSON inside ```json fences, JSON
     embedded in surrounding prose. Raises OptimizerError if nothing
-    parseable is found.
+    parseable is found. The error carries an ``incomplete`` flag when the
+    failure looks like the response was truncated mid-object (vs. a
+    schema/structural error), so callers can ask the model to retry with
+    more headroom.
     """
     s = raw.strip()
-    # Strip code fences if present
     if s.startswith("```"):
         s = s.split("```", 2)
-        # ['', 'json\n{...}', '...'] or ['', '{...}', '...']
         if len(s) >= 2:
             inner = s[1]
             if inner.startswith("json\n"):
@@ -156,10 +160,73 @@ def extract_json(raw: str) -> dict:
     if not isinstance(s, str):
         s = str(s)
     start = s.find("{")
-    end = s.rfind("}")
-    if start == -1 or end == -1 or end <= start:
+    if start == -1:
         raise OptimizerError(f"no JSON object found in optimizer response: {raw[:200]!r}")
+
+    decoder = json.JSONDecoder()
     try:
-        return json.loads(s[start:end + 1])
+        obj, _ = decoder.raw_decode(s[start:])
+        if isinstance(obj, dict):
+            return obj
     except json.JSONDecodeError as e:
-        raise OptimizerError(f"failed to parse optimizer JSON: {e}: {raw[:200]!r}") from e
+        # If the response ends without closing the top-level object,
+        # raw_decode reports the error at end-of-input. Flag it so the
+        # caller can retry with a larger token budget instead of giving up.
+        tail = s[start:].rstrip()
+        incomplete = e.pos >= len(tail) or not tail.endswith("}")
+        err = OptimizerError(
+            f"failed to parse optimizer JSON ({'truncated' if incomplete else 'invalid'}): "
+            f"{e}: {raw[:200]!r}"
+        )
+        err.incomplete = incomplete  # type: ignore[attr-defined]
+        raise err from e
+    raise OptimizerError(f"optimizer JSON was not an object: {raw[:200]!r}")
+
+
+def chat_optimizer_json(
+    cfg: OptimizerConfig,
+    system: str,
+    user: str,
+) -> dict:
+    """Run an optimizer call and parse the response as a JSON object.
+
+    Retries when the model returns text that fails to parse — typically
+    a truncated JSON when the response hit ``max_tokens``. The retry
+    appends a stricter instruction and doubles the token budget once,
+    which is enough to recover for both Anthropic and Bytedance models.
+    """
+    attempts = max(1, int(cfg.json_parse_attempts or 1))
+    bumped_cfg = cfg
+    last_error: OptimizerError | None = None
+    extra_instruction = ""
+    for attempt in range(attempts):
+        raw = chat_optimizer(
+            bumped_cfg,
+            system=system,
+            user=user + extra_instruction,
+        )
+        try:
+            return extract_json(raw)
+        except OptimizerError as exc:
+            last_error = exc
+            if attempt + 1 >= attempts:
+                break
+            incomplete = bool(getattr(exc, "incomplete", False))
+            if incomplete:
+                bumped_cfg = dc.replace(
+                    bumped_cfg,
+                    max_tokens=min(bumped_cfg.max_tokens * 2, 32768),
+                )
+                extra_instruction = (
+                    "\n\nIMPORTANT: your previous response was cut off before the "
+                    "closing brace. Return a single complete JSON object — keep "
+                    "patches short if needed, but the object must end with `}`. "
+                    "No prose, no code fences."
+                )
+            else:
+                extra_instruction = (
+                    "\n\nIMPORTANT: return a single JSON object, no prose, "
+                    "no code fences. Make sure the JSON is syntactically valid."
+                )
+    assert last_error is not None
+    raise last_error

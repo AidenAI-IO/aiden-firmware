@@ -5,7 +5,13 @@ from pathlib import Path
 import urllib.error
 
 import pytest
-from skillopt.optimizer_client import OptimizerConfig, OptimizerError, chat_optimizer, extract_json
+from skillopt.optimizer_client import (
+    OptimizerConfig,
+    OptimizerError,
+    chat_optimizer,
+    chat_optimizer_json,
+    extract_json,
+)
 
 
 def test_extract_json_bare():
@@ -184,3 +190,53 @@ def test_chat_optimizer_retries_transient_http_500_once(monkeypatch):
 
     assert raw == "{}"
     assert attempts == 2
+
+
+def test_extract_json_truncated_flags_incomplete():
+    truncated = '{\n  "batch_size": 2,\n  "success_patterns": ["For cross-app'
+    with pytest.raises(OptimizerError) as exc:
+        extract_json(truncated)
+    assert getattr(exc.value, "incomplete", False) is True
+    assert "truncated" in str(exc.value)
+
+
+def test_extract_json_invalid_flags_not_incomplete():
+    invalid = '{"a": 1, "b": ,}'
+    with pytest.raises(OptimizerError) as exc:
+        extract_json(invalid)
+    assert getattr(exc.value, "incomplete", False) is False
+
+
+def test_chat_optimizer_json_retries_truncated_and_bumps_max_tokens(monkeypatch):
+    call_log: list[dict] = []
+
+    def fake_chat(cfg, system, user):
+        call_log.append({"max_tokens": cfg.max_tokens, "user": user})
+        if len(call_log) == 1:
+            return '{"batch_size": 2, "success_patterns": ["For cross-app'
+        return '{"batch_size": 2, "patch": {"edits": []}}'
+
+    monkeypatch.setattr("skillopt.optimizer_client.chat_optimizer", fake_chat)
+
+    result = chat_optimizer_json(
+        OptimizerConfig(max_tokens=4096, json_parse_attempts=2),
+        system="sys",
+        user="user",
+    )
+    assert result == {"batch_size": 2, "patch": {"edits": []}}
+    assert len(call_log) == 2
+    assert call_log[1]["max_tokens"] == 8192
+    assert "previous response was cut off" in call_log[1]["user"]
+
+
+def test_chat_optimizer_json_gives_up_after_max_parse_attempts(monkeypatch):
+    monkeypatch.setattr(
+        "skillopt.optimizer_client.chat_optimizer",
+        lambda cfg, system, user: '{"broken": ',
+    )
+    with pytest.raises(OptimizerError):
+        chat_optimizer_json(
+            OptimizerConfig(json_parse_attempts=2),
+            system="sys",
+            user="user",
+        )

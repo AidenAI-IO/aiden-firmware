@@ -16,9 +16,7 @@ from pathlib import Path
 
 from skillopt.optimizer_client import (
     OptimizerConfig,
-    OptimizerError,
-    chat_optimizer,
-    extract_json,
+    chat_optimizer_json,
 )
 from skillopt.score import rollout_sample_quality
 from skillopt.types import RawPatch, RolloutResult
@@ -139,8 +137,7 @@ def run_error_analyst_minibatch(
         return None
     system = _load_prompt("analyst_error")
     user = _build_user_prompt(skill_content, items, edit_budget, rejected_context, "Failed")
-    raw = chat_optimizer(cfg, system=system, user=user)
-    result = extract_json(raw)
+    result = chat_optimizer_json(cfg, system=system, user=user)
     result["source_type"] = "failure"
     result.setdefault("batch_size", len(items))
     return RawPatch.from_dict(result)
@@ -158,8 +155,7 @@ def run_success_analyst_minibatch(
         return None
     system = _load_prompt("analyst_success")
     user = _build_user_prompt(skill_content, items, edit_budget, rejected_context, "Successful")
-    raw = chat_optimizer(cfg, system=system, user=user)
-    result = extract_json(raw)
+    result = chat_optimizer_json(cfg, system=system, user=user)
     result["source_type"] = "success"
     result.setdefault("batch_size", len(items))
     return RawPatch.from_dict(result)
