@@ -62,6 +62,14 @@ func NewSTTClientFromConfig(cfg Config) (STTClient, error) {
 	switch provider {
 	case "openai", "openai-whisper":
 		return NewOpenAIWhisperSTT(cfg.STT.APIKey, cfg.STT.Model, cfg.STT.BaseURL, language, httpClient), nil
+	case "openrouter":
+		return NewOpenRouterSTT(cfg.STT.APIKey, cfg.STT.Model, cfg.STT.BaseURL, language, httpClient), nil
+	case "qwen-asr":
+		client := NewDashScopeRealtimeSTT(cfg.STT.APIKey, cfg.STT.Model, cfg.STT.BaseURL, language)
+		client.proxy = proxyConfig
+		return client, nil
+	case "google-cloud":
+		return NewGoogleCloudSTT(cfg.STT.APIKey, cfg.STT.BaseURL, language, cfg.STT.Model, httpClient)
 	case tencentASRProvider, legacyTencentProvider, legacyTencentASRProvider:
 		client := NewTencentASRSTT(cfg.STT.SecretID, cfg.STT.SecretKey, cfg.STT.AppID, cfg.STT.Region, cfg.STT.EngineModelType, language, httpClient)
 		client.proxy = proxyConfig
