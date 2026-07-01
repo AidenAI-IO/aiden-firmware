@@ -782,13 +782,13 @@ func (s *playbackStartedTransientErrorSession) Flush() error { return nil }
 func (s *recordingTTSSession) Close() error {
 	text := s.buf.String()
 	if text != "" {
-		s.provider.mu.Lock()
-		s.provider.seen = append(s.provider.seen, text)
-		s.provider.mu.Unlock()
 		if err := s.sink.WritePCM(make([]byte, testTTSPlaybackStartPCMBytes)); err != nil {
 			s.err = err
 			return err
 		}
+		s.provider.mu.Lock()
+		s.provider.seen = append(s.provider.seen, text)
+		s.provider.mu.Unlock()
 	}
 	return nil
 }
