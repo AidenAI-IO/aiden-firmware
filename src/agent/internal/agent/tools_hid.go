@@ -21,6 +21,8 @@ import (
 const (
 	absMouseMaxPos = 32767
 
+	defaultHIDRefreshStatePath = "/run/aiden_usb_ecm_watchdog.state"
+
 	// defaultTapHoldMs is the dwell between a touch press and release so iOS
 	// registers a tap rather than dropping the sub-millisecond event or
 	// treating it as a long-press.
@@ -133,6 +135,8 @@ type HIDDevice struct {
 	file         io.WriteCloser
 	open         func(string) (io.WriteCloser, error)
 	writeTimeout time.Duration
+	openedAt     time.Time
+	refreshState string
 }
 
 type screenState struct {
@@ -318,6 +322,7 @@ func NewHIDDevice(path string) *HIDDevice {
 	return &HIDDevice{
 		path:         path,
 		writeTimeout: defaultHIDWriteTimeout,
+		refreshState: defaultHIDRefreshStatePath,
 		open: func(path string) (io.WriteCloser, error) {
 			return os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0)
 		},
@@ -332,6 +337,9 @@ func (d *HIDDevice) Write(data []byte) error {
 
 func (d *HIDDevice) writeLocked(data []byte, after func()) error {
 	if err := d.ensureOpenLocked(); err != nil {
+		return err
+	}
+	if err := d.reopenStaleFileLocked(); err != nil {
 		return err
 	}
 
@@ -446,6 +454,7 @@ func (d *HIDDevice) ensureOpenLocked() error {
 		return fmt.Errorf("open %s: %w", d.path, err)
 	}
 	d.file = f
+	d.openedAt = time.Now()
 	return nil
 }
 
@@ -453,7 +462,43 @@ func (d *HIDDevice) closeLocked() {
 	if d.file != nil {
 		_ = d.file.Close()
 		d.file = nil
+		d.openedAt = time.Time{}
 	}
+}
+
+func (d *HIDDevice) reopenStaleFileLocked() error {
+	if d.file == nil {
+		return nil
+	}
+	if !d.openedAt.IsZero() && d.refreshState != "" {
+		if info, err := os.Stat(d.refreshState); err == nil && info.ModTime().After(d.openedAt) {
+			d.closeLocked()
+			return d.ensureOpenLocked()
+		}
+	}
+
+	statter, ok := d.file.(interface{ Stat() (os.FileInfo, error) })
+	if !ok {
+		return nil
+	}
+	fdInfo, err := statter.Stat()
+	if err != nil {
+		d.closeLocked()
+		return d.ensureOpenLocked()
+	}
+	pathInfo, err := os.Stat(d.path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		d.closeLocked()
+		return d.ensureOpenLocked()
+	}
+	if !os.SameFile(fdInfo, pathInfo) {
+		d.closeLocked()
+		return d.ensureOpenLocked()
+	}
+	return nil
 }
 
 func hidShouldRetryWrite(err error) bool {
