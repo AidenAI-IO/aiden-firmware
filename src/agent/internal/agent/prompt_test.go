@@ -17,7 +17,7 @@ func TestRolePromptsIncludeCurrentDate(t *testing.T) {
 
 	want := "Current date: 2026-06-01 (星期一)"
 	profiles := buildRoleProfiles(AgentConfig{}, ResolvedSkills{}, nil, MemoryContext{})
-	for _, profile := range []RoleProfile{profiles.Planner, profiles.Executor, profiles.Verifier} {
+	for _, profile := range []RoleProfile{profiles.Planner} {
 		if !strings.Contains(profile.SystemPrompt, want) {
 			t.Fatalf("%s system prompt missing current date %q:\n%s", profile.Name, want, profile.SystemPrompt)
 		}
@@ -35,7 +35,7 @@ func TestRolePromptsIncludeRealHostRuntimeInfo(t *testing.T) {
 	wantEnvironmentLine := "- You run on the Aiden hardware controller (" + wantLine + "); you are not the device shown in screenshots."
 
 	profiles := buildRoleProfiles(AgentConfig{}, ResolvedSkills{}, nil, MemoryContext{})
-	for _, profile := range []RoleProfile{profiles.Planner, profiles.Executor} {
+	for _, profile := range []RoleProfile{profiles.Planner} {
 		if !strings.Contains(profile.SystemPrompt, wantEnvironmentLine) {
 			t.Fatalf("%s system prompt missing host info in environment guidance %q:\n%s", profile.Name, wantEnvironmentLine, profile.SystemPrompt)
 		}
@@ -69,7 +69,7 @@ func TestRolePromptsIncludeGlobalEnvironmentAndDeviceGuidance(t *testing.T) {
 		MemoryContext{},
 	)
 
-	for _, profile := range []RoleProfile{profiles.Planner, profiles.Executor} {
+	for _, profile := range []RoleProfile{profiles.Planner} {
 		for _, want := range []string{
 			"base instruction",
 			"extra prompt",
@@ -92,19 +92,12 @@ func TestRolePromptsIncludeGlobalEnvironmentAndDeviceGuidance(t *testing.T) {
 			"do not answer from general knowledge alone",
 			"For text-only arithmetic, comparison, summarization, translation, or simple Q&A tasks",
 			"do not observe, wait on, or operate the connected display",
-			"suitable for TTS",
+			"<tts>...</tts>",
 			"device-operator",
 			"visible target UI",
-			"wait_for_stable_screen screenshot",
-			"Do not repeat the same click",
-			"prefer search over blind scrolling",
-			"Base visible UI actions on the latest screenshot",
 			"Prefer direct or semantic tools",
-			"repeated swipes or scrolling",
-			"image_diff feedback",
 			"request confirmation",
-			"probe once with medium",
-			"save_memory with app name, control location, direction, strength/distance, and delta",
+			"Keep detailed UI playbooks in skills",
 		} {
 			if !strings.Contains(profile.SystemPrompt, want) {
 				t.Fatalf("%s system prompt missing %q:\n%s", profile.Name, want, profile.SystemPrompt)
@@ -137,7 +130,7 @@ func TestRolePromptsIncludeGlobalEnvironmentAndDeviceGuidance(t *testing.T) {
 }
 
 func TestDefaultAgentBehaviorExcludesEnvironmentGuidance(t *testing.T) {
-	behavior := defaultAgentBehavior(AgentConfig{})
+	behavior := defaultAgentBehavior()
 
 	for _, unexpected := range []string{
 		"Environment",
@@ -153,7 +146,7 @@ func TestDefaultAgentBehaviorExcludesEnvironmentGuidance(t *testing.T) {
 
 func TestGlobalPromptsExcludeKeyboardTextInputDetails(t *testing.T) {
 	for name, prompt := range map[string]string{
-		"defaultAgentBehavior": defaultAgentBehavior(AgentConfig{}),
+		"defaultAgentBehavior": defaultAgentBehavior(),
 		"defaultInstruction":   defaultInstruction,
 	} {
 		for _, unexpected := range []string{
@@ -172,7 +165,7 @@ func TestGlobalPromptsExcludeKeyboardTextInputDetails(t *testing.T) {
 }
 
 func TestDefaultAgentBehaviorExcludesMigratedToolDetails(t *testing.T) {
-	behavior := defaultAgentBehavior(AgentConfig{})
+	behavior := defaultAgentBehavior()
 	for _, unexpected := range []string{
 		"stable=false means",
 		"audio_volume tool",
@@ -184,6 +177,16 @@ func TestDefaultAgentBehaviorExcludesMigratedToolDetails(t *testing.T) {
 		"Directional swipe names describe finger movement",
 		"Precision swipe loop",
 		"Horizontal carousels",
+		"In app switchers with overlapping cards",
+		"prefer search over blind scrolling",
+		"return_entry=dynamic_island",
+		"For long text, Chinese, emoji",
+		"committed:true. keyboard_text is ASCII-only",
+		"Base visible UI actions on the latest screenshot",
+		"image_diff feedback",
+		"Picker/wheel controls",
+		"probe once with medium",
+		"save_memory with app name, control location, direction, strength/distance, and delta",
 	} {
 		if strings.Contains(behavior, unexpected) {
 			t.Fatalf("defaultAgentBehavior should not include migrated tool detail %q:\n%s", unexpected, behavior)
@@ -203,17 +206,18 @@ func TestRolePromptsRequireToolCallSpeechForExternalStateTools(t *testing.T) {
 		MemoryContext{},
 	)
 
-	for _, profile := range []RoleProfile{profiles.Planner, profiles.Executor} {
+	for _, profile := range []RoleProfile{profiles.Planner} {
 		for _, want := range []string{
 			"The system prompt already includes the current date and weekday",
 			"Do not call current_time for ordinary date or weekday questions",
 			"when a precise clock time, timezone conversion, offset, timestamp, or elapsed-time calculation is required",
-			"Put a brief assistant content message before every tool call that observes, waits for, reads, or changes external state",
-			"screenshot, wait_for_stable_screen, quick_action, mouse_click, touch_gesture, keyboard_text, keyboard_tap, open_app, recall_memory",
-			"assistant content is spoken aloud by the runtime before the tool runs",
+			"Responses must be ordinary user-facing text, followed by exactly one <tts>...</tts> block",
+			"When invoking tools, put brief progress text in assistant content only when it should be spoken",
+			"include exactly one <tts>...</tts> block containing the spoken text",
+			"Content outside <tts> is not spoken",
+			"Do not put speech or description arguments in tool inputs",
 			"Do not put the final answer in tool-call assistant content",
-			"TTS is configured, so user-facing text output will be spoken aloud",
-			"Do not duplicate the same sentence in tool-call assistant content and the final answer",
+			"Do not use JSON, final_answer fields, or \"Final Answer:\" wrappers for final responses",
 		} {
 			if !strings.Contains(profile.SystemPrompt, want) {
 				t.Fatalf("%s prompt missing tool-call speech requirement %q:\n%s", profile.Name, want, profile.SystemPrompt)
@@ -247,7 +251,7 @@ func TestRolePromptsGuideSkillCatalogAndPreloadedSkills(t *testing.T) {
 	}
 	profiles := buildRoleProfiles(AgentConfig{}, skills, nil, MemoryContext{})
 
-	for _, profile := range []RoleProfile{profiles.Planner, profiles.Executor} {
+	for _, profile := range []RoleProfile{profiles.Planner} {
 		for _, want := range []string{
 			"## Available skills",
 			"- planner: Plan before acting",
@@ -343,7 +347,7 @@ func TestRolePromptsKeepVolatileSectionsAfterStaticRoleRules(t *testing.T) {
 		MemoryContext{Planner: RoleMemoryContext{SessionSummary: "session memory tail"}},
 	)
 
-	for _, profile := range []RoleProfile{profiles.Planner, profiles.Executor} {
+	for _, profile := range []RoleProfile{profiles.Planner} {
 		roleRulesAt := strings.Index(profile.SystemPrompt, "## Role rules")
 		runtimeAt := strings.Index(profile.SystemPrompt, "## Runtime context")
 		if roleRulesAt < 0 || runtimeAt < 0 {
@@ -370,7 +374,7 @@ func TestRolePromptsIncludeRuntimeContext(t *testing.T) {
 		MemoryContext{},
 	)
 
-	for _, profile := range []RoleProfile{profiles.Planner, profiles.Executor} {
+	for _, profile := range []RoleProfile{profiles.Planner} {
 		if !strings.Contains(profile.SystemPrompt, "## Runtime context\n"+runtimeContext) {
 			t.Fatalf("%s system prompt missing runtime context:\n%s", profile.Name, profile.SystemPrompt)
 		}

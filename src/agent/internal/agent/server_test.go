@@ -179,15 +179,15 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 		t.Fatalf("unexpected response: %q", resp.Response)
 	}
 	if len(resp.History) != 6 {
-		t.Fatalf("expected 6 history entries for default-mode planner tool flow, got %d", len(resp.History))
+		t.Fatalf("expected 6 history entries for single-agent tool flow, got %d", len(resp.History))
 	}
 
 	if resp.History[0].Type != "user" || resp.History[0].Content != "What is the current volume?" {
 		t.Fatalf("unexpected first history message: %#v", resp.History[0])
 	}
 	roleOutput, ok := firstMessageOfType(resp.History, "role_output")
-	if !ok || roleOutput.Role != "planner" {
-		t.Fatalf("expected planner role_output in history: %#v", resp.History)
+	if !ok || roleOutput.Role != string(RoleAgent) {
+		t.Fatalf("expected agent role_output in history: %#v", resp.History)
 	}
 	toolCall, ok := firstMessageOfType(resp.History, runEventToolCall)
 	if !ok || toolCall.ToolName != "audio_volume" || toolCall.ToolInput != "{}" {
@@ -437,13 +437,13 @@ func TestServerHandleChatStreamsRoleToolAndAssistantMessages(t *testing.T) {
 		t.Fatalf("scan stream: %v", err)
 	}
 
-	var sawPlanner, sawToolCall, sawToolResult, sawAssistant, sawDone bool
+	var sawAgent, sawToolCall, sawToolResult, sawAssistant, sawDone bool
 	for _, event := range events {
 		if event.Type == "message" && event.Message != nil {
 			switch event.Message.Type {
 			case "role_output":
-				if event.Message.Role == "planner" {
-					sawPlanner = true
+				if event.Message.Role == string(RoleAgent) {
+					sawAgent = true
 				}
 			case runEventToolCall:
 				sawToolCall = event.Message.ToolName == "audio_volume"
@@ -457,99 +457,9 @@ func TestServerHandleChatStreamsRoleToolAndAssistantMessages(t *testing.T) {
 			sawDone = true
 		}
 	}
-	if !sawPlanner || !sawToolCall || !sawToolResult || !sawAssistant || !sawDone {
-		t.Fatalf("missing expected stream events: planner=%v tool_call=%v tool_result=%v assistant=%v done=%v events=%#v",
-			sawPlanner, sawToolCall, sawToolResult, sawAssistant, sawDone, events)
-	}
-}
-
-func TestServerHandleChatStreamEmitsAssistantDeltasBeforeDone(t *testing.T) {
-	const expectedAnswer = "Complete answer."
-
-	model := &scriptedModel{
-		responses: []*llms.ContentResponse{
-			contentResponse(`{"mode":"direct_answer","speech":"Short answer.","text":"Complete answer.","final_answer":"Complete answer.","reason":"direct"}`),
-		},
-		streamChunks: [][]string{
-			{
-				`{"mode":"direct_answer","speech":"Short answer.","text":"Complete`,
-				` answer.","final_answer":"Complete answer.","reason":"direct"}`,
-			},
-		},
-	}
-	runtime := NewRuntimeWithDeps(
-		Config{
-			Model:       ModelConfig{Provider: "fake"},
-			Instruction: "Answer directly.",
-		},
-		&testModelResolver{model: model},
-		NewMemoryManager(""),
-		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
-		NewSkillIndex(),
-	)
-	server := NewServer(runtime, ":0")
-
-	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"hello","request_id":"web-req-stream"}`))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/x-ndjson")
-	req.Header.Set("X-Aiden-Stream", "ndjson")
-	rec := httptest.NewRecorder()
-
-	server.handleChat(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
-	}
-
-	var (
-		deltaText              strings.Builder
-		sawDeltaBeforeDone     bool
-		sawAssistantBeforeDone bool
-		assistantContent       string
-		sawDone                bool
-		events                 []ChatStreamEvent
-	)
-	scanner := bufio.NewScanner(strings.NewReader(rec.Body.String()))
-	for scanner.Scan() {
-		var event ChatStreamEvent
-		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
-			t.Fatalf("decode stream event %q: %v", scanner.Text(), err)
-		}
-		events = append(events, event)
-		switch event.Type {
-		case "assistant_delta":
-			if sawDone {
-				t.Fatalf("assistant_delta arrived after done: %#v", events)
-			}
-			sawDeltaBeforeDone = true
-			deltaText.WriteString(event.Delta)
-		case "message":
-			if event.Message != nil && event.Message.Type == "assistant" && !sawDone {
-				sawAssistantBeforeDone = true
-				assistantContent = event.Message.Content
-			}
-		case "done":
-			sawDone = true
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		t.Fatalf("scan stream: %v", err)
-	}
-
-	if !sawDeltaBeforeDone {
-		t.Fatalf("expected assistant_delta before done, events=%#v", events)
-	}
-	if !sawAssistantBeforeDone || !sawDone {
-		t.Fatalf("expected final assistant message and done, assistant=%v done=%v events=%#v", sawAssistantBeforeDone, sawDone, events)
-	}
-	if got := deltaText.String(); got != expectedAnswer {
-		t.Fatalf("assistant deltas = %q, want %q", got, expectedAnswer)
-	}
-	if assistantContent != expectedAnswer {
-		t.Fatalf("assistant message content = %q, want %q", assistantContent, expectedAnswer)
-	}
-	if len(model.sawStreaming) != 1 || !model.sawStreaming[0] {
-		t.Fatalf("expected web chat stream to enable provider streaming, got %#v", model.sawStreaming)
+	if !sawAgent || !sawToolCall || !sawToolResult || !sawAssistant || !sawDone {
+		t.Fatalf("missing expected stream events: agent=%v tool_call=%v tool_result=%v assistant=%v done=%v events=%#v",
+			sawAgent, sawToolCall, sawToolResult, sawAssistant, sawDone, events)
 	}
 }
 
@@ -591,7 +501,7 @@ func TestFinalStreamFanoutWriterResetsAssistantDeltaDraftBeforeFallback(t *testi
 		failingStreamWriter{err: writeErr},
 	)
 
-	if _, err := fanout.Write([]byte(`{"text":"Partial`)); !errors.Is(err, writeErr) {
+	if _, err := fanout.Write([]byte("Partial")); !errors.Is(err, writeErr) {
 		t.Fatalf("first Write() error = %v, want %v", err, writeErr)
 	}
 	resetStreamWriterState(fanout)
@@ -650,7 +560,7 @@ func TestFinalStreamFanoutWriterReportsAnyChildEmission(t *testing.T) {
 	var speech strings.Builder
 
 	fanout := newFinalStreamFanoutWriter(
-		NewJSONFieldOrPlainStreamWriter(&webDelta, "text"),
+		&webDelta,
 		NewSpeechStreamWriter(&speech),
 	)
 	tracker, ok := fanout.(streamOutputTracker)
@@ -658,12 +568,12 @@ func TestFinalStreamFanoutWriterReportsAnyChildEmission(t *testing.T) {
 		t.Fatal("fanout writer must track stream emission")
 	}
 
-	if _, err := fanout.Write([]byte(`{"speech":"Short answer.","final_answer":"Complete answer."}`)); err != nil {
+	if _, err := fanout.Write([]byte("Complete answer.\n<tts>Short answer.</tts>")); err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
 
-	if webDelta.String() != "" {
-		t.Fatalf("web delta stream = %q, want empty when text field is absent", webDelta.String())
+	if webDelta.String() != "Complete answer.\n<tts>Short answer.</tts>" {
+		t.Fatalf("web delta stream = %q", webDelta.String())
 	}
 	if speech.String() != "Short answer." {
 		t.Fatalf("speech stream = %q, want Short answer.", speech.String())
@@ -1210,7 +1120,7 @@ func TestServerHandleChatDoesNotWaitForToolContentTTSWhenEnabled(t *testing.T) {
 	speech := "Read volume."
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, speech),
+			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, "Reading volume.\n<tts>"+speech+"</tts>"),
 			contentResponse("The current audio volume is 42."),
 		},
 	}
@@ -1311,7 +1221,7 @@ func TestServerHandleChatDoesNotSpeakWaitForWakeup(t *testing.T) {
 func TestServerHandleChatSkipsToolContentTTSWhenDisabled(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, "Let me read the current volume."),
+			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, "Reading volume.\n<tts>Let me read the current volume.</tts>"),
 			contentResponse("The current audio volume is 42."),
 		},
 	}
@@ -1356,7 +1266,7 @@ func TestServerHandleChatSkipsToolContentTTSWhenDisabled(t *testing.T) {
 	}
 }
 
-func TestServerShouldSpeakToolCallFiltersLowValueTools(t *testing.T) {
+func TestServerShouldSpeakToolCallRequiresTTSTag(t *testing.T) {
 	toolSpeechEnabled := true
 	server := &Server{
 		runtime: NewRuntimeWithDeps(
@@ -1369,13 +1279,16 @@ func TestServerShouldSpeakToolCallFiltersLowValueTools(t *testing.T) {
 	}
 
 	if server.shouldSpeakToolCall(RunEvent{Type: runEventToolCall, ToolName: "recall_memory", Content: "I will check your preferences first."}) {
-		t.Fatal("recall_memory tool speech should be filtered")
+		t.Fatal("plain recall_memory tool content should not be spoken")
 	}
 	if server.shouldSpeakToolCall(RunEvent{Type: runEventToolCall, ToolName: "screenshot", Content: "I will inspect the screen first."}) {
-		t.Fatal("screenshot tool speech should be filtered")
+		t.Fatal("plain screenshot tool content should not be spoken")
 	}
-	if !server.shouldSpeakToolCall(RunEvent{Type: runEventToolCall, ToolName: "audio_volume", Content: "Check the current volume."}) {
-		t.Fatal("audio_volume tool speech should still be spoken")
+	if server.shouldSpeakToolCall(RunEvent{Type: runEventToolCall, ToolName: "audio_volume", Content: "Check the current volume."}) {
+		t.Fatal("plain audio_volume tool content should not be spoken")
+	}
+	if !server.shouldSpeakToolCall(RunEvent{Type: runEventToolCall, ToolName: "audio_volume", Content: "Checking.\n<tts>Check the current volume.</tts>"}) {
+		t.Fatal("tagged audio_volume tool content should be spoken")
 	}
 }
 
@@ -1426,7 +1339,7 @@ func TestServerHandleChatUsesRequestContextForRun(t *testing.T) {
 func TestServerHandleChatSyncUsesRequestContextForFinalTTS(t *testing.T) {
 	streamingDisabled := false
 	model := &scriptedModel{
-		responses: roleDirectResponses("Hello from sync final TTS."),
+		responses: roleDirectResponses("Hello from sync final TTS.\n<tts>Hello from sync final TTS.</tts>"),
 	}
 	runtime := NewRuntimeWithDeps(
 		Config{
@@ -1699,7 +1612,7 @@ func TestServerHandleChatCancelStopsRequestScopedStreamingTTSPlayback(t *testing
 
 	writeDone := make(chan error, 1)
 	go func() {
-		_, writeErr := speechStreamWriterForConfig(stream, Config{}).Write([]byte("streaming final answer"))
+		_, writeErr := speechStreamWriterForConfig(stream, Config{}).Write([]byte("<tts>streaming final answer</tts>"))
 		writeDone <- writeErr
 	}()
 

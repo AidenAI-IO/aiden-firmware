@@ -130,7 +130,7 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 
 	return nil, &schema.AgentFinish{
 		ReturnValues: map[string]any{
-			a.OutputKey: extractFinalAnswer(choice.Content),
+			a.OutputKey: finalizeAssistantOutput(choice.Content),
 		},
 		Log: choice.Content,
 	}, nil
@@ -543,11 +543,4 @@ func toolContentFromAction(action schema.AgentAction) string {
 		return ""
 	}
 	return strings.TrimSpace(metadata.ToolContent)
-}
-
-func extractFinalAnswer(content string) string {
-	if idx := strings.LastIndex(content, "Final Answer:"); idx >= 0 {
-		return strings.TrimSpace(content[idx+len("Final Answer:"):])
-	}
-	return content
 }

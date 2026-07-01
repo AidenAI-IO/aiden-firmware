@@ -295,7 +295,6 @@ func ConfigMeta() ConfigMetadata {
 						VisibleWhen: all(eq("agent.input_mode", "stt"))},
 					{Key: "todo_reminder_tool_calls", Widget: WidgetNumber, Default: defaults.TodoReminderToolCallsOrDefault()},
 					{Key: "max_iterations", Widget: WidgetNumber, Default: defaults.MaxIterations},
-					{Key: "force_simple_loop", Widget: WidgetBoolean, Default: defaults.ForceSimpleLoop},
 					{Key: "screenshot_keep_n", Widget: WidgetNumber, Default: defaults.ScreenshotKeepN},
 					{Key: "screenshot_prune_interval", Widget: WidgetNumber, Default: defaults.ScreenshotPruneInterval},
 					{Key: "screen_stable_timeout_ms", Widget: WidgetNumber, Default: defaults.ScreenStableTimeoutMs},

@@ -118,26 +118,25 @@ func TestRuntimeRunKeepsCompressedHotWindowAsChatMessages(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunScopesHotWindowConversationHistoryToPlanner(t *testing.T) {
+func TestRuntimeRunIncludesHotWindowConversationHistoryForSingleAgent(t *testing.T) {
 	ctx := context.Background()
 	configDir := t.TempDir()
 	memoryDir := filepath.Join(configDir, "memory")
 	manager := NewMemoryManager(memoryDir, WithSessionBoundaryEnabled(false))
 
 	const (
-		historyUser      = "HOT_WINDOW_USER_ONLY_PLANNER"
-		historyAssistant = "HOT_WINDOW_ASSISTANT_ONLY_PLANNER"
+		historyUser      = "HOT_WINDOW_USER_FOR_AGENT"
+		historyAssistant = "HOT_WINDOW_ASSISTANT_FOR_AGENT"
 	)
 	if err := manager.AppendExchange(ctx, "default", historyUser, historyAssistant); err != nil {
 		t.Fatalf("AppendExchange() error = %v", err)
 	}
 
 	model := &scriptedModel{
-		responses: roleCommittedExecutionResponses(
-			[]string{"use echo"},
-			toolCallResponse("call_1", "echo", `{"__arg1":"ok"}`),
-			finishStepToolCall("used echo"),
-			verifierFinishResponse("done"),
+		responses: roleDefaultToolResponses(
+			"echo",
+			`{"__arg1":"ok"}`,
+			"done",
 		),
 	}
 	runtime := NewRuntimeWithDeps(
@@ -157,29 +156,14 @@ func TestRuntimeRunScopesHotWindowConversationHistoryToPlanner(t *testing.T) {
 	if _, err := runtime.Run(ctx, RunRequest{Input: "continue the current task with echo"}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if len(model.messages) < 5 {
-		t.Fatalf("expected planner, executor, and verifier model calls, got %d", len(model.messages))
+	if len(model.messages) < 2 {
+		t.Fatalf("expected single-agent tool and final model calls, got %d", len(model.messages))
 	}
 
-	plannerPrompt := messageText(model.messages[0])
+	agentPrompt := messageText(model.messages[0])
 	for _, want := range []string{historyUser, historyAssistant} {
-		if !strings.Contains(plannerPrompt, want) {
-			t.Fatalf("planner prompt missing hot-window history %q:\n%s", want, plannerPrompt)
-		}
-	}
-
-	for _, roleMessages := range []struct {
-		name     string
-		messages []llms.MessageContent
-	}{
-		{name: "executor", messages: model.messages[2]},
-		{name: "verifier", messages: model.messages[4]},
-	} {
-		prompt := messageText(roleMessages.messages)
-		for _, unexpected := range []string{historyUser, historyAssistant} {
-			if strings.Contains(prompt, unexpected) {
-				t.Fatalf("%s prompt should not receive hot-window history %q:\n%s", roleMessages.name, unexpected, prompt)
-			}
+		if !strings.Contains(agentPrompt, want) {
+			t.Fatalf("agent prompt missing hot-window history %q:\n%s", want, agentPrompt)
 		}
 	}
 }
@@ -217,12 +201,12 @@ func TestRuntimeRunKeepsHotWindowConversationHistoryForForceSimpleLoop(t *testin
 		t.Fatalf("Run() error = %v", err)
 	}
 	if len(model.messages) != 1 {
-		t.Fatalf("force_simple_loop should use one planner-role model call, got %d", len(model.messages))
+		t.Fatalf("single-agent loop should use one model call, got %d", len(model.messages))
 	}
 	prompt := messageText(model.messages[0])
 	for _, want := range []string{historyUser, historyAssistant} {
 		if !strings.Contains(prompt, want) {
-			t.Fatalf("force_simple_loop prompt missing hot-window history %q:\n%s", want, prompt)
+			t.Fatalf("single-agent prompt missing hot-window history %q:\n%s", want, prompt)
 		}
 	}
 }
@@ -453,7 +437,7 @@ func TestRuntimeRunBudgetsActivePlannerHistoryBeforeModelCall(t *testing.T) {
 		t.Fatalf("expected planner system, history, raw input, and state prompt messages, got %#v", plannerMessages)
 	}
 	historyText := messageText(plannerMessages[1 : len(plannerMessages)-2])
-	for _, want := range []string{"PINNED_ROOT_REQUEST", "KEEP_RECENT_USER", "KEEP_RECENT_ASSISTANT"} {
+	for _, want := range []string{"PINNED_ROOT_REQUEST", "KEEP_RECENT_USER"} {
 		if !strings.Contains(historyText, want) {
 			t.Fatalf("budgeted planner history missing %q:\n%s", want, historyText)
 		}

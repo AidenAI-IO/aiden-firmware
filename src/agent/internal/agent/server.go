@@ -968,8 +968,8 @@ func (s *Server) handleChatAsync(
 				s.liveActivity.UpdateFromRunEvent(requestID, event)
 			}
 
-			if s.shouldSpeakToolCall(event) {
-				go s.speakToolContent(runCtx, event.Content)
+			if text := s.toolCallSpeechText(event); text != "" {
+				go s.speakToolContent(runCtx, text)
 			}
 			if event.Type == runEventTodoUpdate && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
 				if text, ok := progressSpeechTextForEvent(event); ok {
@@ -1251,8 +1251,8 @@ func (s *Server) handleChatSync(
 		StreamFinalChunks: true,
 		EventHandler: func(event RunEvent) {
 			s.appendHistory(messageFromRunEvent(event, episodeID, ""))
-			if s.shouldSpeakToolCall(event) {
-				go s.speakToolContent(r.Context(), event.Content)
+			if text := s.toolCallSpeechText(event); text != "" {
+				go s.speakToolContent(r.Context(), text)
 			}
 			if event.Type == runEventTodoUpdate && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
 				if text, ok := progressSpeechTextForEvent(event); ok {
@@ -1456,8 +1456,8 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			if req.RequestID != "" && s.liveActivity != nil {
 				s.liveActivity.UpdateFromRunEvent(req.RequestID, event)
 			}
-			if s.shouldSpeakToolCall(event) {
-				go s.speakToolContent(ctx, event.Content)
+			if text := s.toolCallSpeechText(event); text != "" {
+				go s.speakToolContent(ctx, text)
 			}
 			if event.Type == runEventTodoUpdate && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
 				if text, ok := progressSpeechTextForEvent(event); ok {
@@ -1664,23 +1664,21 @@ func (w *chatAssistantDeltaWriter) StreamEmitted() bool {
 }
 
 type chatAssistantFinalStreamWriter struct {
-	delta     *chatAssistantDeltaWriter
-	extractor io.Writer
+	delta *chatAssistantDeltaWriter
 }
 
 func newChatAssistantFinalStreamWriter(stream *chatStreamWriter, episodeID, requestID string) io.Writer {
 	delta := newChatAssistantDeltaWriter(stream, episodeID, requestID)
 	return &chatAssistantFinalStreamWriter{
-		delta:     delta,
-		extractor: NewJSONFieldOrPlainStreamWriter(delta, "text"),
+		delta: delta,
 	}
 }
 
 func (w *chatAssistantFinalStreamWriter) Write(p []byte) (int, error) {
-	if w == nil || w.extractor == nil {
+	if w == nil || w.delta == nil {
 		return len(p), nil
 	}
-	return w.extractor.Write(p)
+	return w.delta.Write(p)
 }
 
 func (w *chatAssistantFinalStreamWriter) ResetStreamState() {
@@ -1689,9 +1687,6 @@ func (w *chatAssistantFinalStreamWriter) ResetStreamState() {
 	}
 	if w.delta != nil {
 		w.delta.ResetStreamState()
-	}
-	if resetter, ok := w.extractor.(streamStateResetter); ok {
-		resetter.ResetStreamState()
 	}
 }
 
@@ -1825,13 +1820,17 @@ func (s *Server) speakToolContent(ctx context.Context, content string) {
 }
 
 func (s *Server) shouldSpeakToolCall(event RunEvent) bool {
+	return s.toolCallSpeechText(event) != ""
+}
+
+func (s *Server) toolCallSpeechText(event RunEvent) string {
 	if event.Type != runEventToolCall || event.ToolName == toolWaitForWakeup {
-		return false
+		return ""
 	}
 	if s.runtime == nil || !s.runtime.config.VoiceToolCallSpeechOrDefault() {
-		return false
+		return ""
 	}
-	return shouldSpeakToolCallContent(event.ToolName, event.Content)
+	return BuildSpeechText(event.Content, s.runtime.config)
 }
 
 func (s *Server) newRunProgressSpeaker() *progressSpeaker {

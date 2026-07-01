@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -451,87 +450,6 @@ func TestMemoryPlaneFreezePlannerSnapshotUsesFirstConcurrentRetriever(t *testing
 		t.Fatalf("metadata planner snapshot = %q, want mem_first", got)
 	}
 }
-
-func TestRuntimeRunWritesTaskEpisodeTrace(t *testing.T) {
-	ctx := context.Background()
-	configDir := t.TempDir()
-	memoryDir := filepath.Join(configDir, "memory")
-	model := &scriptedModel{
-		responses: roleCommittedExecutionResponses(
-			[]string{"echo ok"},
-			toolCallResponse("call_1", "echo", `{"__arg1":"ok"}`),
-			finishStepToolCall("echo ok"),
-			verifierFinishResponse("done"),
-		),
-	}
-	runtime := NewRuntimeWithDeps(
-		Config{ConfigDir: configDir, Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."},
-		&testModelResolver{model: model},
-		NewMemoryManager(memoryDir),
-		&ToolSet{tools: map[string]langtools.Tool{
-			"echo": &stubTool{name: "echo", description: "Echo.", output: "ok"},
-		}},
-		NewSkillIndex(),
-	)
-
-	result, err := runtime.Run(ctx, RunRequest{Input: "登录微信App"})
-	if err != nil {
-		t.Fatalf("Run() error = %v", err)
-	}
-	if result.Output != "done" {
-		t.Fatalf("output = %q", result.Output)
-	}
-
-	indexData, err := os.ReadFile(filepath.Join(memoryDir, "episodes", "index.yaml"))
-	if err != nil {
-		t.Fatalf("read episode index: %v", err)
-	}
-	if !strings.Contains(string(indexData), "登录微信App") || !strings.Contains(string(indexData), "success: true") {
-		t.Fatalf("unexpected episode index:\n%s", indexData)
-	}
-
-	eventPaths, err := filepath.Glob(filepath.Join(memoryDir, "episodes", "*", "*", "events.jsonl"))
-	if err != nil || len(eventPaths) != 1 {
-		t.Fatalf("episode events glob paths=%#v err=%v", eventPaths, err)
-	}
-	data, err := os.ReadFile(eventPaths[0])
-	if err != nil {
-		t.Fatalf("read episode events: %v", err)
-	}
-	var sawPlanner, sawToolCall, sawVerifier, sawLoopPhase bool
-	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
-		var event TaskEpisodeEvent
-		if err := json.Unmarshal([]byte(line), &event); err != nil {
-			t.Fatalf("decode event %q: %v", line, err)
-		}
-		switch event.Type {
-		case "planner_decision":
-			sawPlanner = true
-		case runEventToolCall:
-			if event.ToolName == "echo" {
-				sawToolCall = true
-			}
-		case "verifier_decision":
-			sawVerifier = true
-		case "loop_phase":
-			if event.Content == string(phaseExecution) {
-				sawLoopPhase = true
-			}
-		}
-	}
-	if !sawPlanner || !sawToolCall || !sawVerifier || !sawLoopPhase {
-		t.Fatalf("missing events planner=%v tool=%v verifier=%v loop_phase=%v\n%s", sawPlanner, sawToolCall, sawVerifier, sawLoopPhase, data)
-	}
-	procedureFiles, err := filepath.Glob(filepath.Join(memoryDir, "device", "procedures", "*.yaml"))
-	if err != nil || len(procedureFiles) != 1 {
-		t.Fatalf("expected extracted device procedure, paths=%#v err=%v", procedureFiles, err)
-	}
-	appFiles, err := filepath.Glob(filepath.Join(memoryDir, "device", "apps", "*.yaml"))
-	if err != nil || len(appFiles) != 1 {
-		t.Fatalf("expected extracted app profile, paths=%#v err=%v", appFiles, err)
-	}
-}
-
 func TestPersistentEpisodeRecorderWritesIncrementalEventsAndMarksInterrupted(t *testing.T) {
 	ctx := context.Background()
 	store := NewTaskEpisodeStore(filepath.Join(t.TempDir(), "episodes"))

@@ -88,3 +88,27 @@ def test_commerce_ebay_rubrics_allow_honest_no_result_blockers():
             for rubric_id in rubric_ids:
                 check = rubrics[rubric_id].lower()
                 assert "unavailable" in check or "no visible" in check or "no result" in check
+
+
+def test_device_operator_stops_when_hid_text_entry_is_unavailable():
+    skill = _device_operator_skill()
+
+    assert "/dev/hidg" in skill
+    assert "Do not fall back to `keyboard_text` for Chinese/CJK" in skill
+    assert "at most one fresh screenshot" in skill
+    assert "report the blocker" in skill
+
+
+def test_device_operator_never_probes_sensitive_permission_toggles():
+    skill = _device_operator_skill()
+
+    assert "Do not tap a privacy permission switch" in skill
+    assert "just to inspect" in skill
+    assert "ask before touching the switch" in skill
+
+
+def test_device_operator_uses_handoff_when_waiting_for_sensitive_confirmation():
+    skill = _device_operator_skill()
+
+    assert "call `request_human_handoff` immediately" in skill
+    assert "Do not ask in prose and then continue using tools" in skill
