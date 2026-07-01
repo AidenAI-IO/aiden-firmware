@@ -16,7 +16,6 @@ import (
 const (
 	langfuseBatchSize          = 40
 	langfuseTraceIngestReserve = 5 * time.Second
-	legacyPlannerRole          = "planner"
 )
 
 type langfuseIterationWindow struct {
@@ -850,22 +849,17 @@ func langfuseToolParentSpan(iterationSpanID, phaseSpanID, role string) string {
 }
 
 func langfuseToolSpanName(role, toolName string) string {
-	if isAgentOrLegacyPlannerRole(role) {
+	if strings.EqualFold(strings.TrimSpace(role), string(RoleAgent)) {
 		return "agent/tool/" + toolName
 	}
 	return "tool/" + toolName
 }
 
 func langfuseToolResultSpanName(role, toolName string) string {
-	if isAgentOrLegacyPlannerRole(role) {
+	if strings.EqualFold(strings.TrimSpace(role), string(RoleAgent)) {
 		return "agent/tool_result/" + toolName
 	}
 	return "tool_result/" + toolName
-}
-
-func isAgentOrLegacyPlannerRole(role string) bool {
-	role = strings.TrimSpace(role)
-	return strings.EqualFold(role, string(RoleAgent)) || strings.EqualFold(role, legacyPlannerRole)
 }
 
 func langfuseUpdateSpanEndTime(batch []langfuseIngestionEvent, index int, endTime time.Time) {
@@ -1278,7 +1272,7 @@ func episodeDerivedMetrics(events []TaskEpisodeEvent) map[string]interface{} {
 			metrics["todo_closed_count"] = intMetric(metrics, "todo_closed_count") + 1
 		case runEventToolCall:
 			metrics["tool_call_count"] = intMetric(metrics, "tool_call_count") + 1
-			if isAgentOrLegacyPlannerRole(event.Role) {
+			if strings.EqualFold(strings.TrimSpace(event.Role), string(RoleAgent)) {
 				metrics["planner_tool_call_count"] = intMetric(metrics, "planner_tool_call_count") + 1
 			} else if strings.EqualFold(strings.TrimSpace(event.Role), string(RoleExecutor)) {
 				metrics["executor_tool_call_count"] = intMetric(metrics, "executor_tool_call_count") + 1
