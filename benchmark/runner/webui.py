@@ -1316,8 +1316,12 @@ def prepare_run_config(base_config_dir: Path, dest_dir: Path, agent_config_text:
             else:
                 shutil.copy2(item, target)
     skills_dir = dest_dir / "skills"
-    if not skills_dir.exists() and DEFAULT_BUNDLED_SKILLS_DIR.is_dir():
-        shutil.copytree(DEFAULT_BUNDLED_SKILLS_DIR, skills_dir)
+    if DEFAULT_BUNDLED_SKILLS_DIR.is_dir():
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        for skill in DEFAULT_BUNDLED_SKILLS_DIR.iterdir():
+            target = skills_dir / skill.name
+            if skill.is_dir() and not target.exists():
+                shutil.copytree(skill, target)
     for name in ("log", "memory", "skill-state"):
         (dest_dir / name).mkdir(parents=True, exist_ok=True)
     token_path = dest_dir / "control_token"

@@ -1,10 +1,12 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from runner.assertions import evaluate_hard_assertions, evaluate_trace_observations
 from runner.models import ToolCall, Trace
 from runner.runtask import run_one_task
-from runner.suite import HardAssertions, RubricItem, Suite, TaskSpec, TraceObservationSpec, load_suite
+from runner.suite import HardAssertions, RubricItem, Suite, TaskSpec, TraceObservationSpec, SuiteValidationError, load_suite
 
 
 def test_load_suite_parses_trace_observations(tmp_path: Path):
@@ -69,6 +71,35 @@ def test_load_suite_parses_generic_tool_trace_observations(tmp_path: Path):
     assert len(suite.trace_observations) == 1
     assert suite.trace_observations[0].tool_name == "search_launch_app"
     assert suite.trace_observations[0].input_contains == {"app": "Clock"}
+
+
+def test_load_suite_rejects_ambiguous_trace_observation_matchers(tmp_path: Path):
+    fixture = {
+        "name": "obs",
+        "global_reset": {},
+        "trace_observations": [
+            {
+                "id": "ambiguous",
+                "description": "Ambiguous matcher.",
+                "skill_name": "device-operator",
+                "tool_name": "search_launch_app",
+            }
+        ],
+        "tasks": [
+            {
+                "id": "t1",
+                "category": "single_step",
+                "description_for_judge": "Do something.",
+                "prompt": "go",
+                "rubric": [{"id": "ok", "check": "ok"}],
+            }
+        ],
+    }
+    path = tmp_path / "suite.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+
+    with pytest.raises(SuiteValidationError, match="specify only one of skill_name or tool_name"):
+        load_suite(path)
 
 
 def test_phone_control_suite_defines_skill_read_observation():

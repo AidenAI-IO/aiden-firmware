@@ -183,6 +183,10 @@ def load_suite(path: Path) -> Suite:
             raise SuiteValidationError(
                 "trace_observations entries require id, description, and skill_name or tool_name"
             )
+        if skill_name and tool_name:
+            raise SuiteValidationError(
+                f"trace_observations {obs_id!r}: specify only one of skill_name or tool_name"
+            )
         trace_observations.append(
             TraceObservationSpec(
                 id=obs_id,
