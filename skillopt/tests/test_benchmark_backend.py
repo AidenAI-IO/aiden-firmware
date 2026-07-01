@@ -199,37 +199,6 @@ def test_benchmark_runner_backend_applies_mobilegym_profile(tmp_path: Path, monk
     agent_config = (dest / "agent.toml").read_text(encoding="utf-8")
     assert "force_simple_loop" not in agent_config
 
-
-def test_mobilegym_phase_config_preserves_saved_force_simple_loop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    from skillopt import benchmark_backend
-    from skillopt.benchmark_backend import BenchmarkRunnerBackend
-
-    benchmark_root = tmp_path / "benchmark"
-    base_config = _write_base_config(benchmark_root)
-    (base_config / "agent.toml").write_text(
-        "input_mode = \"text\"\nforce_simple_loop = false\n\n[model]\nname = 'test'\n",
-        encoding="utf-8",
-    )
-    shared_skills = _write_shared_skills(tmp_path)
-    profiles_root = tmp_path / "profiles"
-    profile_dir = profiles_root / "mobilegym" / "device-operator"
-    profile_dir.mkdir(parents=True)
-    (profile_dir / "SKILL.md").write_text("MobileGym simulator profile", encoding="utf-8")
-    monkeypatch.setattr(benchmark_backend, "PROFILES_ROOT", profiles_root)
-    backend = BenchmarkRunnerBackend(
-        benchmark_root=benchmark_root,
-        base_config_dir=base_config,
-        shared_skills_dir=shared_skills,
-        environment_url="http://127.0.0.1:50196",
-        environment_profile="mobilegym",
-    )
-
-    dest = backend.prepare_phase_config(tmp_path / "phase-config", "device-operator", "candidate skill")
-
-    agent_config = (dest / "agent.toml").read_text(encoding="utf-8")
-    assert "force_simple_loop = false" in agent_config
-
-
 def test_mobilegym_profile_is_inserted_before_long_base_skill_body(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from skillopt import benchmark_backend
     from skillopt.benchmark_backend import apply_environment_profile

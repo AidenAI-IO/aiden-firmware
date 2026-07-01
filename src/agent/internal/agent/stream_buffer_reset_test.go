@@ -15,14 +15,14 @@ func (r *bufferResetRecorder) Write(p []byte) (int, error) { return len(p), nil 
 func (r *bufferResetRecorder) ResetBuffer()                { r.resetCalls++ }
 
 // TestResetStreamBufferReachesTerminalThroughChain verifies that a buffer
-// reset propagates through the JSON-field-or-plain wrapper and the
-// cancel-on-first-write wrapper down to the underlying TTS sink. This is the
+// reset propagates through the TTS-tag wrapper and the cancel-on-first-write
+// wrapper down to the underlying TTS sink. This is the
 // chain used for streaming voice replies; without propagation, residual
 // tool-call content would survive into the next turn and be spoken twice.
 func TestResetStreamBufferReachesTerminalThroughChain(t *testing.T) {
 	terminal := &bufferResetRecorder{}
-	jsonWriter := NewJSONFieldOrPlainStreamWriter(terminal, "final_answer")
-	chain := newCancelOnFirstWriteWriter(jsonWriter, func() {})
+	ttsWriter := NewTTSTagStreamWriter(terminal)
+	chain := newCancelOnFirstWriteWriter(ttsWriter, func() {})
 
 	resetStreamBuffer(chain)
 
@@ -47,7 +47,7 @@ func TestResetStreamBufferNoopWithoutSupport(t *testing.T) {
 func TestResetStreamBufferReachesTerminalThroughFanout(t *testing.T) {
 	terminal := &bufferResetRecorder{}
 	ttsLeg := newCancelOnFirstWriteWriter(
-		NewJSONFieldOrPlainStreamWriter(terminal, "final_answer"),
+		NewTTSTagStreamWriter(terminal),
 		func() {},
 	)
 	// The SSE leg has no buffer to reset and must be skipped cleanly.

@@ -377,9 +377,9 @@ func TestNewAudioDialogIgnoresInvalidOptionalTTS(t *testing.T) {
 	}
 }
 
-func TestProcessUtteranceSpeaksFullOutputWhenSpeechMissing(t *testing.T) {
-	output := "Setup completed, current volume is 42.\n\n- Read volume\n- Confirm status\n\nThis detailed description is reserved for the screen."
-	expectedSpeech := output
+func TestProcessUtteranceSpeaksTaggedTTSOutput(t *testing.T) {
+	output := "Setup completed, current volume is 42.\n\n- Read volume\n- Confirm status\n\nThis detailed description is reserved for the screen.\n<tts>Setup completed, current volume is 42.</tts>"
+	expectedSpeech := "Setup completed, current volume is 42."
 	model := &scriptedModel{
 		responses: roleDirectResponses(output),
 	}
@@ -439,8 +439,8 @@ func TestAudioDialogSpeaksToolContentAsynchronously(t *testing.T) {
 	toolSpeech := true
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, "Check volume."),
-			contentResponse("Current volume is 42."),
+			toolCallResponseWithContent("call_1", "audio_volume", `{"__arg1":"{}"}`, "Checking volume.\n<tts>Check volume.</tts>"),
+			contentResponse("Current volume is 42.\n<tts>Current volume is 42.</tts>"),
 		},
 	}
 	runtime := NewRuntimeWithDeps(
@@ -522,7 +522,7 @@ func TestAudioDialogSpeaksToolCallContent(t *testing.T) {
 	dialog.HandleRunEvent(context.Background(), RunEvent{
 		Type:     runEventToolCall,
 		ToolName: "audio_volume",
-		Content:  "Read current volume.",
+		Content:  "Reading volume.\n<tts>Read current volume.</tts>",
 	})
 
 	waitForProviderTextCount(t, provider, 1)
@@ -531,7 +531,7 @@ func TestAudioDialogSpeaksToolCallContent(t *testing.T) {
 	}
 }
 
-func TestAudioDialogDoesNotSpeakFilteredToolCallContent(t *testing.T) {
+func TestAudioDialogDoesNotSpeakToolCallWithoutTTSTag(t *testing.T) {
 	toolSpeech := true
 	provider := &recordingTTSProvider{name: "dialog-provider"}
 	dialog := &AudioDialog{
@@ -1002,7 +1002,7 @@ func TestAudioDialogRunAgentTurnConsumesQueuedSteer(t *testing.T) {
 }
 
 func TestAudioDialogRejectsSteerAfterRuntimeFinishesBeforeVoiceHistoryPersist(t *testing.T) {
-	model := &scriptedModel{responses: roleDirectResponses("final answer")}
+	model := &scriptedModel{responses: roleDirectResponses("final answer\n<tts>final answer</tts>")}
 	runtime := NewRuntimeWithDeps(
 		Config{
 			Model:           ModelConfig{Provider: "fake"},
@@ -1057,7 +1057,7 @@ func TestAudioDialogRejectsSteerAfterRuntimeFinishesBeforeVoiceHistoryPersist(t 
 		if runResult.err != nil {
 			t.Fatalf("RunVoiceTurnWithContext() error = %v", runResult.err)
 		}
-		if runResult.result.Output != "final answer" {
+		if runResult.result.Output != "final answer\n<tts>final answer</tts>" {
 			t.Fatalf("Output = %q, want final answer", runResult.result.Output)
 		}
 	case <-time.After(time.Second):

@@ -158,7 +158,7 @@ type Config struct {
 	VoiceMaxResponseTokens     int                     `toml:"voice_max_response_tokens,omitempty"`
 	TodoReminderToolCalls      int                     `toml:"todo_reminder_tool_calls,omitempty"`
 	MaxIterations              int                     `toml:"max_iterations,omitempty"`
-	ForceSimpleLoop            bool                    `toml:"force_simple_loop,omitempty"`
+	ForceSimpleLoop            bool                    `toml:"-"`
 	ScreenshotKeepN            int                     `toml:"screenshot_keep_n,omitempty"`
 	ScreenshotPruneInterval    int                     `toml:"screenshot_prune_interval,omitempty"`
 	ScreenStableTimeoutMs      int                     `toml:"screen_stable_timeout_ms,omitempty"`

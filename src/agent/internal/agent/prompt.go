@@ -102,17 +102,11 @@ func agentEnvironmentGuidance() string {
 	}, "\n")
 }
 
-func defaultAgentBehavior(cfg AgentConfig) string {
-	toolCallSpeechRule := "- When calling a tool, do not add speech or description arguments to tool inputs."
-	if cfg.VoiceToolCallSpeechOrDefault() {
-		toolCallSpeechRule = "- Put a brief assistant content message before every tool call that observes, waits for, reads, or changes external state; this includes screenshot, wait_for_stable_screen, quick_action, mouse_click, touch_gesture, keyboard_text, keyboard_tap, open_app, recall_memory, recall_device_memory, recall_session_chunks, and similar UI/device/memory tools. Use assistant content (choice.Content) for the spoken status; assistant content is spoken aloud by the runtime before the tool runs, so keep it as short as possible, under 20 Chinese characters or 8 English words, in the user's language. Do not put the final answer in tool-call assistant content."
-	}
-	ttsRule := ""
-	if cfg.TTSConfigured {
-		ttsRule = "- TTS is configured, so user-facing text output will be spoken aloud. Do not duplicate the same sentence in tool-call assistant content and the final answer; use tool-call assistant content only for brief progress, and put the actual answer only in the final response."
-	}
+func defaultAgentBehavior() string {
 	rules := []string{
-		"- Default to replying in Simplified Chinese; follow the user's language when they clearly use another language. Keep final replies short, natural, and suitable for TTS; avoid Markdown tables or long lists unless the user asks for them.",
+		"- Default to replying in Simplified Chinese; follow the user's language when they clearly use another language. Keep final replies natural; avoid Markdown tables or long lists unless the user asks for them.",
+		"- Responses must be ordinary user-facing text, followed by exactly one <tts>...</tts> block containing the concise text to speak aloud. The <tts> text is not required to be the same as the response text. Do not use JSON, final_answer fields, or \"Final Answer:\" wrappers for final responses.",
+		"- When invoking tools, put brief progress text in assistant content only when it should be spoken, and include exactly one <tts>...</tts> block containing the spoken text. Content outside <tts> is not spoken. Do not put speech or description arguments in tool inputs. Do not put the final answer in tool-call assistant content.",
 		"- The system prompt already includes the current date and weekday. Do not call current_time for ordinary date or weekday questions; answer from that prompt context. Call current_time only when a precise clock time, timezone conversion, offset, timestamp, or elapsed-time calculation is required.",
 		"- When performing regular user tasks, do not mention or hint at internal automation implementation details such as run_script, local scripts, JSONL, script filenames, pre-recorded steps, demo scripts, or automation scripts; even when using such tools, only describe in terms of user goals, such as \"I'll handle that\", \"Processing\", \"Completed\". Do not expose these details unless the user explicitly asks about implementation or debugging information.",
 		"- When an answer depends on saved long-term preferences, rules, procedures, or facts, call recall_memory first; do not answer from general knowledge alone. Do not use tools unnecessarily for ordinary questions. For text-only arithmetic, comparison, summarization, translation, or simple Q&A tasks, answer directly or use only the non-visual tool needed for the task; do not observe, wait on, or operate the connected display.",
@@ -120,10 +114,6 @@ func defaultAgentBehavior(cfg AgentConfig) string {
 		"- When operating visible target UI, match device-operator in Available skills first; if relevant and not active, load it with skill_read before acting. Keep detailed UI playbooks in skills; do not copy them into the default prompt.",
 		"- Prefer direct or semantic tools that match the requested operation before low-level UI automation; use low-level input tools only when the direct path is unavailable or ineffective.",
 		"- Before irreversible or sensitive actions—send message/email, place order, pay, delete data, change privacy/security settings, grant permissions, or start a call—request confirmation unless the user explicitly asks for that final action.",
-		toolCallSpeechRule,
-	}
-	if ttsRule != "" {
-		rules = append(rules, ttsRule)
 	}
 	return strings.Join(rules, "\n")
 }

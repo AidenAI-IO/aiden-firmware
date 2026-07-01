@@ -194,7 +194,7 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"voice_followup_timeout_ms\":6000,\"voice_first_turn_timeout_ms\":10000,"
         "\"voice_max_turns\":0,\"voice_interrupt_on_wakeup\":true,"
         "\"voice_streaming_tts_enabled\":true,\"voice_tool_call_speech\":false,"
-        "\"voice_max_response_tokens\":300,\"max_iterations\":-1,\"force_simple_loop\":false,"
+        "\"voice_max_response_tokens\":300,\"max_iterations\":-1,"
         "\"screenshot_keep_n\":3,"
         "\"screenshot_prune_interval\":25,\"screen_stable_timeout_ms\":3500,"
         "\"screen_stable_ms\":500,\"screen_stable_diff_threshold\":2}"
@@ -841,37 +841,6 @@ TEST_CASE("config_web: POST /api/config ignores legacy instruction") {
     CHECK(saved.find("custom_instruction") == std::string::npos);
     CHECK(saved.rfind("instruction =", 0) != 0);
     CHECK(saved.find("\ninstruction =") == std::string::npos);
-}
-
-TEST_CASE("config_web: GET /api/config tolerates resolved config without force_simple_loop") {
-    auto tmp = make_temp_dir();
-    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
-        const_cast<char*>(tmp.c_str()),
-        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
-    );
-    const std::string legacy_config = remove_nested_key(
-        resolved_config_json("duckduckgo", false),
-        "agent",
-        "force_simple_loop"
-    );
-    write_file(tmp + "/config.json", legacy_config);
-    StubEnv env;
-    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
-    auto handle = start_server(env);
-    HttpResponse resp = http_request(handle->port, "GET", "/api/config");
-    CHECK(resp.status == 200);
-    CHECK(resp.body.find("agent config missing required fields") == std::string::npos);
-
-    cJSON* parsed = cJSON_Parse(resp.body.c_str());
-    REQUIRE(parsed != nullptr);
-    cJSON* config = cJSON_GetObjectItem(parsed, "config");
-    REQUIRE(config != nullptr);
-    cJSON* agent = cJSON_GetObjectItem(config, "agent");
-    REQUIRE(agent != nullptr);
-    cJSON* force_simple_loop = cJSON_GetObjectItem(agent, "force_simple_loop");
-    REQUIRE(force_simple_loop != nullptr);
-    CHECK((force_simple_loop->type & 0xff) == cJSON_False);
-    cJSON_Delete(parsed);
 }
 
 TEST_CASE("config_web: GET /api/config preserves search api key presence from resolved config") {

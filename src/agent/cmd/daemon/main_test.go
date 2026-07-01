@@ -55,6 +55,10 @@ type fakeAudioDialog struct {
 	recordingActive      bool
 }
 
+func taggedReply(text string) string {
+	return text + "\n<tts>" + text + "</tts>"
+}
+
 type persistedVoiceTurn struct {
 	input     agent.TurnInput
 	result    agent.RunResult
@@ -164,7 +168,7 @@ func (d *fakeAudioDialog) RunAgentTurn(ctx context.Context, input agent.TurnInpu
 	if d.runTurn != nil {
 		return d.runTurn(ctx)
 	}
-	return agent.RunResult{Output: "reply"}, nil
+	return agent.RunResult{Output: taggedReply("reply")}, nil
 }
 
 func (d *fakeAudioDialog) RunVoiceTurn(ctx context.Context, input agent.TurnInput, utterance []int16, runtime *agent.Runtime) (agent.RunResult, error) {
@@ -1060,7 +1064,7 @@ func TestRunWakeupModeSTTWakeupQueuesCorrectionWhileRunActive(t *testing.T) {
 			case "open the group and send money":
 				close(firstRunStarted)
 				<-releaseFirstRun
-				return agent.RunResult{Output: "revised reply"}, nil
+				return agent.RunResult{Output: taggedReply("revised reply")}, nil
 			case "use the shorter search term":
 				t.Fatal("correction input should be queued as steer while the original run is active")
 				return agent.RunResult{}, nil
@@ -1489,7 +1493,7 @@ func TestRunVoiceTurnSignalWaitsForSpeakingGoroutine(t *testing.T) {
 	ctxCanceled := make(chan struct{})
 	dialog := &fakeAudioDialog{
 		runTurn: func(ctx context.Context) (agent.RunResult, error) {
-			return agent.RunResult{Output: "reply"}, nil
+			return agent.RunResult{Output: taggedReply("reply")}, nil
 		},
 		speak: func(ctx context.Context) error {
 			close(speakStarted)
@@ -1628,7 +1632,7 @@ func TestRunVoiceSessionDrainsBurstWakeupsWhileAlreadyListening(t *testing.T) {
 			case <-ctx.Done():
 				return agent.RunResult{}, ctx.Err()
 			case <-allowTurnResult:
-				return agent.RunResult{Output: "reply"}, nil
+				return agent.RunResult{Output: taggedReply("reply")}, nil
 			}
 		},
 	}
@@ -1686,9 +1690,9 @@ func TestRunVoiceSessionWakeupFallsBackToNextTurnWhenSteerQueueUnavailable(t *te
 				close(originalRunStarted)
 				<-releaseOriginalRun
 				close(originalRunReturned)
-				return agent.RunResult{Output: "stale reply"}, nil
+				return agent.RunResult{Output: taggedReply("stale reply")}, nil
 			case "change course":
-				return agent.RunResult{Output: "revised reply"}, nil
+				return agent.RunResult{Output: taggedReply("revised reply")}, nil
 			default:
 				t.Errorf("unexpected run input = %#v", input)
 				return agent.RunResult{}, nil
@@ -1766,7 +1770,7 @@ func TestRunVoiceTurnWakeupQueuesSteerWhileOriginalRunActive(t *testing.T) {
 			}
 			close(runStarted)
 			<-releaseRun
-			return agent.RunResult{Output: "steered reply"}, nil
+			return agent.RunResult{Output: taggedReply("steered reply")}, nil
 		},
 		queueSteer: func(input agent.TurnInput) bool {
 			if input.InputText != "改查深圳。" {
@@ -1838,7 +1842,7 @@ func TestRunVoiceTurnWakeupBeginsSteerInterruptBeforeRecording(t *testing.T) {
 		runVoiceTurn: func(ctx context.Context, input agent.TurnInput, utterance []int16) (agent.RunResult, error) {
 			close(runStarted)
 			<-releaseRun
-			return agent.RunResult{Output: "steered reply"}, nil
+			return agent.RunResult{Output: taggedReply("steered reply")}, nil
 		},
 		queueSteer: func(input agent.TurnInput) bool {
 			close(queuedSteer)
@@ -1900,7 +1904,7 @@ func TestRunVoiceTurnWakeupEmptySteerResumesOriginalRun(t *testing.T) {
 				return agent.RunResult{}, ctx.Err()
 			case <-resumed:
 			}
-			return agent.RunResult{Output: "original reply"}, nil
+			return agent.RunResult{Output: taggedReply("original reply")}, nil
 		},
 		resumeSteerInterrupt: func() bool {
 			close(resumed)
