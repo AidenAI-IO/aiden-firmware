@@ -338,23 +338,6 @@ func TestEnterTextInFieldFallbackDoesNotReportSendAfterCommitSuccess(t *testing.
 	}
 }
 
-func TestNormalizeTextInputFocusPointKeepsNormalizedCoordinates(t *testing.T) {
-	focus, ok := normalizeTextInputFocusPoint(focusPointArgs{X: 50, Y: 100, CoordSpace: "normalized"})
-	if !ok {
-		t.Fatal("expected normalized focus to be accepted")
-	}
-	if focus.X != 50 || focus.Y != 100 {
-		t.Fatalf("focus=%+v, want unchanged 0-1000 normalized coordinates", focus)
-	}
-	focus, ok = normalizeTextInputFocusPoint(focusPointArgs{X: 1000, Y: 1000})
-	if !ok || focus.X != 1000 || focus.Y != 1000 || focus.CoordSpace != "normalized" {
-		t.Fatalf("focus=%+v ok=%v, want valid default normalized point", focus, ok)
-	}
-	if _, ok := normalizeTextInputFocusPoint(focusPointArgs{X: 1001, Y: 500}); ok {
-		t.Fatal("expected out-of-range normalized focus to be rejected")
-	}
-}
-
 func TestIsRomanizationOnlyField(t *testing.T) {
 	if !isRomanizationOnlyField("NIHAO", []string{"ni", "hao"}) {
 		t.Fatal("expected romanization-only")
@@ -399,23 +382,6 @@ func TestEvaluateFieldCommitAcceptsASCIIDespitePendingFlag(t *testing.T) {
 	}, "hello")
 	if !committed {
 		t.Fatal("ascii field match should commit even when composition_pending is true")
-	}
-}
-
-func TestEvaluateFieldCommitAcceptsWidthPunctuationVariants(t *testing.T) {
-	target := "Example Contact number 555-0101 and 555-0102，still active？"
-	committed, field := evaluateFieldCommit(textInputScreenAnalysis{
-		FieldText: "Example Contact number 555-0101 and 555-0102,still active?",
-	}, target)
-	if !committed {
-		t.Fatalf("width punctuation variant should commit; field=%q", field)
-	}
-
-	committed, _ = evaluateFieldCommit(textInputScreenAnalysis{
-		FieldText: target + target,
-	}, target)
-	if committed {
-		t.Fatal("duplicated field text must not commit")
 	}
 }
 

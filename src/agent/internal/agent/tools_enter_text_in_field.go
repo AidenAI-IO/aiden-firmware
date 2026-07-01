@@ -66,7 +66,6 @@ func (t *EnterTextInFieldTool) Call(ctx context.Context, input string) (string, 
 			args.Platform = override
 		}
 	}
-	args.Focus, _ = normalizeTextInputFocusPoint(args.Focus)
 	if t.shouldPreferBridgeClipboard(args) {
 		bridgeResult, attempted := t.bridgeTool.runClipboardFirstResult(ctx, args)
 		if attempted && bridgeResult.Committed {

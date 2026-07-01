@@ -138,7 +138,6 @@ func (t *EnterTextViaBridgeTool) runClipboardFirstResult(ctx context.Context, ar
 	if platform == "" {
 		platform = "android"
 	}
-	args.Focus, _ = normalizeTextInputFocusPoint(args.Focus)
 	result := enterTextInFieldResult{
 		TargetText:   strings.TrimSpace(args.Text),
 		RequiredMode: string(requiredTextInputMode(args.Text)),
