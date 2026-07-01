@@ -39,6 +39,38 @@ def test_load_suite_parses_trace_observations(tmp_path: Path):
     assert suite.tasks[0].hard_assertions.prohibited_actions == ["send", "checkout"]
 
 
+def test_load_suite_parses_generic_tool_trace_observations(tmp_path: Path):
+    fixture = {
+        "name": "obs",
+        "global_reset": {},
+        "trace_observations": [
+            {
+                "id": "used_search_launch_app",
+                "description": "Used semantic app search.",
+                "tool_name": "search_launch_app",
+                "input_contains": {"app": "Clock"},
+            }
+        ],
+        "tasks": [
+            {
+                "id": "t1",
+                "category": "single_step",
+                "description_for_judge": "Do something.",
+                "prompt": "go",
+                "rubric": [{"id": "ok", "check": "ok"}],
+            }
+        ],
+    }
+    path = tmp_path / "suite.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+
+    suite = load_suite(path)
+
+    assert len(suite.trace_observations) == 1
+    assert suite.trace_observations[0].tool_name == "search_launch_app"
+    assert suite.trace_observations[0].input_contains == {"app": "Clock"}
+
+
 def test_phone_control_suite_defines_skill_read_observation():
     suite_path = Path(__file__).resolve().parents[1] / "suites" / "phone_control_v1.json"
     suite = load_suite(suite_path)
@@ -123,6 +155,28 @@ def test_evaluate_hard_assertions_fails_prohibited_checkout_trace_input():
     assert outcome.all_passed is False
     assert outcome.results.prohibited_actions is False
     assert "browser_action input.label=Check-out now at step 1" in outcome.failures[-1].actual
+
+
+def test_evaluate_trace_observations_reports_generic_tool_with_input_subset():
+    trace = Trace(
+        tool_calls=[ToolCall(step=1, tool="search_launch_app", input={"app": "Clock", "platform": "android"})],
+        final_response="",
+        total_tool_calls=1,
+        total_duration_ms=0,
+    )
+    specs = [
+        TraceObservationSpec(
+            id="used_search_launch_app",
+            description="Used app search.",
+            tool_name="search_launch_app",
+            input_contains={"app": "Clock"},
+        )
+    ]
+
+    results = evaluate_trace_observations(trace, specs)
+
+    assert len(results) == 1
+    assert results[0].passed is True
 
 
 class ObservingClient:

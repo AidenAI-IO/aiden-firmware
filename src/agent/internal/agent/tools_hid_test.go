@@ -595,7 +595,7 @@ func TestKeyboardTextDescriptionWarnsAgainstNonASCII(t *testing.T) {
 		"ASCII",
 		"Do NOT pass non-ASCII",
 		"enter_text_in_field",
-		"pinyin",
+		"Do not transliterate Chinese/CJK targets to pinyin",
 		`{"text":"App Store"}`,
 		"do not pass a bare string",
 	} {
@@ -606,6 +606,7 @@ func TestKeyboardTextDescriptionWarnsAgainstNonASCII(t *testing.T) {
 	for _, unexpected := range []string{
 		"Type a string of text",
 		"hello world",
+		"use pinyin",
 	} {
 		if strings.Contains(desc, unexpected) {
 			t.Fatalf("description should not contain misleading phrase %q:\n%s", unexpected, desc)

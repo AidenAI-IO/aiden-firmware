@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import statistics
 from pathlib import Path
 
 def compare_runs(a: Path, b: Path) -> int:
@@ -7,6 +8,25 @@ def compare_runs(a: Path, b: Path) -> int:
     rows_b = _load(b)
     keys = set(rows_a) | set(rows_b)
     print(f"=== {a.name}  vs  {b.name} ===")
+
+    summary_a = _summary(rows_a)
+    summary_b = _summary(rows_b)
+    print(
+        f"Passed: {summary_a['passed']}/{summary_a['total']} -> "
+        f"{summary_b['passed']}/{summary_b['total']} "
+        f"(delta {_signed(summary_b['passed'] - summary_a['passed'])})"
+    )
+    print(
+        f"Tool calls median: {_number(summary_a['tool_calls_median'])} -> "
+        f"{_number(summary_b['tool_calls_median'])} "
+        f"(delta {_signed_number(_delta(summary_b['tool_calls_median'], summary_a['tool_calls_median']))})"
+    )
+    print(
+        f"Wall median: {_ms(summary_a['wall_ms_median'])} -> "
+        f"{_ms(summary_b['wall_ms_median'])} "
+        f"(delta {_signed_ms(_delta(summary_b['wall_ms_median'], summary_a['wall_ms_median']))})"
+    )
+
     flips = 0
     for k in sorted(keys):
         ra = rows_a.get(k)
@@ -25,6 +45,18 @@ def compare_runs(a: Path, b: Path) -> int:
         if wa is not None and wb is not None and abs(wb - wa) > 1000:
             print(f"   wall {wa}ms -> {wb}ms")
     print(f"flips: {flips}")
+
+    obs_ids = set(summary_a["trace_observations"]) | set(summary_b["trace_observations"])
+    if obs_ids:
+        print("Trace observations:")
+    for obs_id in sorted(obs_ids):
+        oa = summary_a["trace_observations"].get(obs_id, {"hits": 0, "observed": 0})
+        ob = summary_b["trace_observations"].get(obs_id, {"hits": 0, "observed": 0})
+        print(
+            f"  {obs_id}: {oa['hits']}/{oa['observed']} -> "
+            f"{ob['hits']}/{ob['observed']} "
+            f"(delta {_signed(ob['hits'] - oa['hits'])})"
+        )
     return 0
 
 def _load(run_dir: Path) -> dict[str, dict]:
@@ -33,3 +65,76 @@ def _load(run_dir: Path) -> dict[str, dict]:
         r = json.loads(line)
         out[f"{r['task_id']}#{r['attempt']}"] = r
     return out
+
+
+def _summary(rows: dict[str, dict]) -> dict:
+    values = list(rows.values())
+    return {
+        "total": len(values),
+        "passed": sum(1 for row in values if row.get("status") == "passed"),
+        "tool_calls_median": _median_metric(values, "tool_calls"),
+        "wall_ms_median": _median_metric(values, "wall_ms"),
+        "trace_observations": _trace_observations(values),
+    }
+
+
+def _median_metric(rows: list[dict], key: str) -> float | None:
+    numbers = [row.get("metrics", {}).get(key) for row in rows]
+    numbers = [value for value in numbers if isinstance(value, int | float)]
+    if not numbers:
+        return None
+    return float(statistics.median(numbers))
+
+
+def _trace_observations(rows: list[dict]) -> dict[str, dict[str, int]]:
+    out: dict[str, dict[str, int]] = {}
+    for row in rows:
+        seen: set[str] = set()
+        passed: set[str] = set()
+        for obs in row.get("metrics", {}).get("trace_observations") or []:
+            obs_id = str(obs.get("id") or "").strip()
+            if not obs_id:
+                continue
+            seen.add(obs_id)
+            if obs.get("passed"):
+                passed.add(obs_id)
+        for obs_id in seen:
+            bucket = out.setdefault(obs_id, {"hits": 0, "observed": 0})
+            bucket["observed"] += 1
+            if obs_id in passed:
+                bucket["hits"] += 1
+    return out
+
+
+def _delta(new: float | None, old: float | None) -> float | None:
+    if new is None or old is None:
+        return None
+    return new - old
+
+
+def _number(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:.1f}"
+
+
+def _ms(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:.0f}ms"
+
+
+def _signed(value: int) -> str:
+    return f"{value:+d}"
+
+
+def _signed_number(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:+.1f}"
+
+
+def _signed_ms(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:+.0f}ms"

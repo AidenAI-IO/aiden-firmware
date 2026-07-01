@@ -20,7 +20,9 @@ class RubricItem:
 class TraceObservationSpec:
     id: str
     description: str
-    skill_name: str
+    skill_name: str = ""
+    tool_name: str = ""
+    input_contains: dict[str, Any] = dc.field(default_factory=dict)
 
 @dc.dataclass
 class HardAssertions:
@@ -172,13 +174,23 @@ def load_suite(path: Path) -> Suite:
             raise SuiteValidationError("trace_observations entries must be objects")
         obs_id = raw_obs.get("id")
         description = raw_obs.get("description")
-        skill_name = raw_obs.get("skill_name")
-        if not obs_id or not description or not skill_name:
+        skill_name = str(raw_obs.get("skill_name") or "").strip()
+        tool_name = str(raw_obs.get("tool_name") or "").strip()
+        input_contains = raw_obs.get("input_contains") or {}
+        if not isinstance(input_contains, dict):
+            raise SuiteValidationError("trace_observations input_contains must be an object")
+        if not obs_id or not description or not (skill_name or tool_name):
             raise SuiteValidationError(
-                "trace_observations entries require id, description, and skill_name"
+                "trace_observations entries require id, description, and skill_name or tool_name"
             )
         trace_observations.append(
-            TraceObservationSpec(id=obs_id, description=description, skill_name=skill_name)
+            TraceObservationSpec(
+                id=obs_id,
+                description=description,
+                skill_name=skill_name,
+                tool_name=tool_name,
+                input_contains=input_contains,
+            )
         )
 
     return Suite(

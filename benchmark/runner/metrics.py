@@ -30,21 +30,8 @@ def aggregate(results: list[TaskResult]) -> dict[str, object]:
     walls = [r.metrics.get("wall_ms", 0) for r in results if r.metrics.get("wall_ms")]
     tool_counts = [r.metrics.get("tool_calls", 0) for r in results
                    if r.metrics.get("tool_calls") is not None]
-    skill_read_hits = sum(
-        1
-        for r in results
-        for obs in r.metrics.get("trace_observations") or []
-        if obs.get("id") == "skill_read_device_operator" and obs.get("passed")
-    )
-    skill_read_total = sum(
-        1
-        for r in results
-        if any(
-            obs.get("id") == "skill_read_device_operator"
-            for obs in (r.metrics.get("trace_observations") or [])
-        )
-    )
-    return {
+    trace_observations = _aggregate_trace_observations(results)
+    out = {
         "tasks": len(results),
         "passed": pass_count,
         "by_status": dict(by_status),
@@ -53,11 +40,15 @@ def aggregate(results: list[TaskResult]) -> dict[str, object]:
         "wall_ms_p95": int(_percentile(walls, 95)) if walls else None,
         "tool_calls_median": int(statistics.median(tool_counts)) if tool_counts else None,
         "tool_calls_p95": int(_percentile(tool_counts, 95)) if tool_counts else None,
-        "skill_read_device_operator": {
-            "tasks_with_skill_read": skill_read_hits,
-            "tasks_observed": skill_read_total,
-        },
+        "trace_observations": trace_observations,
     }
+    if "skill_read_device_operator" in trace_observations:
+        device_obs = trace_observations["skill_read_device_operator"]
+        out["skill_read_device_operator"] = {
+            "tasks_with_skill_read": device_obs["tasks_with_observation"],
+            "tasks_observed": device_obs["tasks_observed"],
+        }
+    return out
 
 def _percentile(values: list[float], pct: float) -> float:
     if not values:
@@ -67,3 +58,23 @@ def _percentile(values: list[float], pct: float) -> float:
     f = int(k)
     c = min(f + 1, len(s) - 1)
     return s[f] + (s[c] - s[f]) * (k - f)
+
+
+def _aggregate_trace_observations(results: list[TaskResult]) -> dict[str, dict[str, int]]:
+    observed: dict[str, dict[str, int]] = {}
+    for result in results:
+        seen_for_task: set[str] = set()
+        passed_for_task: set[str] = set()
+        for obs in result.metrics.get("trace_observations") or []:
+            obs_id = str(obs.get("id") or "").strip()
+            if not obs_id:
+                continue
+            seen_for_task.add(obs_id)
+            if obs.get("passed"):
+                passed_for_task.add(obs_id)
+        for obs_id in seen_for_task:
+            bucket = observed.setdefault(obs_id, {"tasks_with_observation": 0, "tasks_observed": 0})
+            bucket["tasks_observed"] += 1
+            if obs_id in passed_for_task:
+                bucket["tasks_with_observation"] += 1
+    return dict(sorted(observed.items()))

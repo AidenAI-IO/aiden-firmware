@@ -167,6 +167,31 @@ class ToolsAPIHandler:
                 },
             },
             {
+                "name": "enter_text_in_field",
+                "description": "Focus an input field and type text into the MobileGym simulator, including Unicode/CJK text.",
+                "args_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "text": {"type": "string", "description": "Text to enter"},
+                        "platform": {"type": "string"},
+                        "focus": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "x": {"type": "number"},
+                                "y": {"type": "number"},
+                                "coord_space": {"type": "string", "enum": ["auto", "normalized", "absolute"]},
+                            },
+                            "required": ["x", "y"],
+                        },
+                        "segments": {"type": "array", "items": {"type": "string"}},
+                        "max_attempts": {"type": "integer", "minimum": 1},
+                    },
+                    "required": ["text"],
+                },
+            },
+            {
                 "name": "keyboard_tap",
                 "description": "Press keyboard keys in the MobileGym simulator (e.g., enter, back, home).",
                 "args_schema": {
@@ -458,6 +483,8 @@ class ToolsAPIHandler:
             return self._call_touch_gesture(state, tool_input, episode_id)
         elif tool_name == "keyboard_text":
             return self._call_keyboard_text(state, tool_input, episode_id)
+        elif tool_name == "enter_text_in_field":
+            return self._call_enter_text_in_field(state, tool_input, episode_id)
         elif tool_name == "keyboard_tap":
             return self._call_keyboard_tap(state, tool_input, episode_id)
         elif tool_name == "enter_text_in_field":
@@ -767,6 +794,76 @@ class ToolsAPIHandler:
             }
         action = build_action("type_text", {"text": text})
         return self._execute_action(state, action, episode_id, tool_name="keyboard_text", tool_input=tool_input)
+
+    def _call_enter_text_in_field(self, state: BridgeEpisodeState, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
+        """Execute enter_text_in_field via MobileGym tap + type_text actions."""
+        text = tool_input.get("text", "")
+        if not isinstance(text, str):
+            return {"output": "error: text must be a string", "is_error": True}
+        if text == "":
+            return {"output": "error: text is required", "is_error": True}
+
+        focus_action = None
+        focus = tool_input.get("focus")
+        if focus not in (None, ""):
+            if not isinstance(focus, dict):
+                return {"output": "error: focus must be an object", "is_error": True}
+            try:
+                focus_action = build_action("tap", _normalized_point_arg(focus, default_space="normalized"))
+            except (TypeError, ValueError) as exc:
+                return {"output": f"error: {exc}", "is_error": True}
+
+        type_action = build_action("type_text", {"text": text})
+
+        async def step_env(env: Any) -> dict[str, Any]:
+            state.require_active(episode_id)
+            started = time.monotonic()
+            if focus_action is not None:
+                await _maybe_await(env.step(focus_action))
+            step_result = await _maybe_await(env.step(type_action))
+            duration_ms = int((time.monotonic() - started) * 1000)
+
+            observation = _observation_value(step_result, "observation")
+            if observation is None:
+                observation = await _maybe_await(env.get_observation())
+            screenshot = _encode_observation_screenshot(observation)
+
+            action_payload = {
+                "action_type": "COMPOSITE",
+                "data": {
+                    "actions": [
+                        action_to_dict(action)
+                        for action in (focus_action, type_action)
+                        if action is not None
+                    ]
+                },
+            }
+            state.log_action(
+                tool_name="enter_text_in_field",
+                tool_input=tool_input,
+                mobilegym_action=action_payload,
+                duration_ms=duration_ms,
+                error=None,
+                episode_id=episode_id,
+                screenshot=screenshot,
+            )
+
+            output_data = {
+                "ok": True,
+                "committed": True,
+                "target_text": text,
+                "field_text": text,
+                "mode": "mobilegym_bridge",
+                "attempts": 1,
+                "data": screenshot["data"],
+                "width": screenshot["width"],
+                "height": screenshot["height"],
+                "format": screenshot.get("format", "jpeg"),
+            }
+            return {"output": json.dumps(output_data, ensure_ascii=False), "is_error": False}
+
+        future = asyncio.run_coroutine_threadsafe(state.run_env(step_env), state.owner_loop)
+        return future.result(timeout=self.request_timeout_sec)
 
     def _call_keyboard_tap(self, state: BridgeEpisodeState, tool_input: dict[str, Any], episode_id: str) -> dict[str, Any]:
         """Execute keyboard_tap tool."""
