@@ -177,6 +177,78 @@ func TestPhoneBridgeRestorerSuppressesRepeatedTapAfterFailure(t *testing.T) {
 	}
 }
 
+func TestPhoneBridgeRestorerDoesNotCacheCanceledTap(t *testing.T) {
+	bridge := NewPhoneBridge(nil)
+	defer bridge.queue.Stop()
+	bridge.mu.Lock()
+	bridge.platform = "ios"
+	bridge.appState = "background"
+	bridge.returnEntry = "dynamic_island"
+	bridge.returnEntrySeen = true
+	bridge.returnEntryOK = true
+	bridge.mu.Unlock()
+
+	restorer := NewPhoneBridgeRestorer(bridge, nil)
+	restorer.failureCache = time.Minute
+	taps := 0
+	restorer.tapReturnEntry = func(ctx context.Context, status PhoneBridgeStatus) error {
+		taps++
+		return ctx.Err()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if restored, err := restorer.EnsureForeground(ctx); !errors.Is(err, context.Canceled) || restored {
+		t.Fatalf("canceled EnsureForeground() restored=%v err=%v, want context.Canceled without restore", restored, err)
+	}
+	if restorer.lastFailure.err != nil {
+		t.Fatalf("canceled tap cached failure: %v", restorer.lastFailure.err)
+	}
+
+	if restored, err := restorer.EnsureForeground(ctx); !errors.Is(err, context.Canceled) || restored {
+		t.Fatalf("second canceled EnsureForeground() restored=%v err=%v, want fresh context.Canceled", restored, err)
+	}
+	if taps != 2 {
+		t.Fatalf("tap attempts = %d, want retry after uncached cancellation", taps)
+	}
+}
+
+func TestPhoneBridgeRestorerDoesNotCacheCanceledWait(t *testing.T) {
+	bridge := NewPhoneBridge(nil)
+	defer bridge.queue.Stop()
+	bridge.mu.Lock()
+	bridge.platform = "ios"
+	bridge.appState = "background"
+	bridge.returnEntry = "dynamic_island"
+	bridge.returnEntrySeen = true
+	bridge.returnEntryOK = true
+	bridge.mu.Unlock()
+
+	restorer := NewPhoneBridgeRestorer(bridge, nil)
+	restorer.failureCache = time.Minute
+	taps := 0
+	restorer.tapReturnEntry = func(context.Context, PhoneBridgeStatus) error {
+		taps++
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if restored, err := restorer.EnsureForeground(ctx); !errors.Is(err, context.Canceled) || !restored {
+		t.Fatalf("canceled wait EnsureForeground() restored=%v err=%v, want context.Canceled after tap", restored, err)
+	}
+	if restorer.lastFailure.err != nil {
+		t.Fatalf("canceled wait cached failure: %v", restorer.lastFailure.err)
+	}
+
+	if restored, err := restorer.EnsureForeground(ctx); !errors.Is(err, context.Canceled) || !restored {
+		t.Fatalf("second canceled wait EnsureForeground() restored=%v err=%v, want fresh context.Canceled", restored, err)
+	}
+	if taps != 2 {
+		t.Fatalf("tap attempts = %d, want retry after uncached cancellation", taps)
+	}
+}
+
 func TestPhoneBridgeRestorerTapUsesSurfaceMapping(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	screen := &screenState{}

@@ -91,11 +91,17 @@ func (r *PhoneBridgeRestorer) EnsureForeground(ctx context.Context) (bool, error
 		bridge.logger.Info("phone-bridge: restoring foreground via %s before app command", firstNonEmptyPhoneField(status.ReturnEntry, "return_entry"))
 	}
 	if err := r.tap(ctx, status); err != nil {
+		if contextErr := phoneBridgeCallerContextErr(ctx, err); contextErr != nil {
+			return false, contextErr
+		}
 		err = &phoneBridgeReturnEntryTapError{entry: firstNonEmptyPhoneField(status.ReturnEntry, "return_entry"), err: err}
 		r.recordFailureLocked(status, err)
 		return false, err
 	}
 	if _, err := r.waitForeground(ctx); err != nil {
+		if contextErr := phoneBridgeCallerContextErr(ctx, err); contextErr != nil {
+			return true, contextErr
+		}
 		r.recordFailureLocked(status, err)
 		return true, err
 	}
@@ -141,6 +147,20 @@ func (r *PhoneBridgeRestorer) clearLastFailureLocked() {
 		return
 	}
 	r.lastFailure = phoneBridgeRestoreFailure{}
+}
+
+func phoneBridgeCallerContextErr(ctx context.Context, err error) error {
+	if ctx == nil || err == nil {
+		return nil
+	}
+	contextErr := ctx.Err()
+	if contextErr == nil {
+		return nil
+	}
+	if errors.Is(err, contextErr) {
+		return contextErr
+	}
+	return nil
 }
 
 func (r *PhoneBridgeRestorer) nowTime() time.Time {
@@ -275,6 +295,9 @@ func (r *PhoneBridgeRestorer) waitForeground(ctx context.Context) (PhoneBridgeSt
 		}
 		select {
 		case <-waitCtx.Done():
+			if err := ctx.Err(); err != nil {
+				return status, err
+			}
 			return status, fmt.Errorf("phone bridge did not return to foreground within %s (connected=%t app_state=%s return_entry=%s available=%t)", timeout, status.Connected, status.AppState, status.ReturnEntry, phoneBridgeHasReturnEntry(status))
 		case <-ticker.C:
 		}

@@ -165,11 +165,7 @@ func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 
 	restored, err := ensurePhoneBridgeReadyForCommand(ctx, t.bridge, t.restorer)
 	if err != nil {
-		status := PhoneBridgeStatus{}
-		if t.bridge != nil {
-			status = t.bridge.Status()
-		}
-		te := phoneBridgeCommandPreconditionToolError(status, err)
+		te := phoneBridgeCommandPreconditionToolErrorFromBridge(t.bridge, err)
 		SetToolError(ctx, te)
 		return toolErrorString(te), nil
 	}
