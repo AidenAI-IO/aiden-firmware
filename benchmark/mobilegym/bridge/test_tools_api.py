@@ -504,10 +504,11 @@ def test_invoke_enter_text_in_field_focuses_and_types_unicode(bridge_server):
     assert output["ok"] is True
     assert output["committed"] is True
     assert output["field_text"] == "隐私"
-    assert [action_to_dict(action) for action in state.env.actions] == [
-        {"action_type": "CLICK", "data": {"point": [500.0, 80.0]}},
-        {"action_type": "TYPE", "data": {"value": "隐私"}},
-    ]
+    assert output["required_mode"] == "composition"
+    assert action_to_dict(state.env.last_action) == {
+        "action_type": "TYPE",
+        "data": {"value": "隐私", "point": [500.0, 80.0]},
+    }
 
 
 def test_invoke_rejects_non_object_json_body(bridge_server):
