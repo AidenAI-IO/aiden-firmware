@@ -587,7 +587,7 @@ func (t *KeyboardTextTool) Description() string {
 		`Allowed characters: a-z, A-Z, 0-9, space, and common US-keyboard punctuation. ` +
 		`For model/tool calls, pass JSON only, for example {"text":"App Store"}; do not pass a bare string. ` +
 		`Do NOT pass non-ASCII text, emoji, or spaced romanization — use enter_text_in_field for input box entry. ` +
-		`For Chinese targets without enter_text_in_field, use pinyin or English keywords (e.g. {"text":"weixin"}), then tap the on-screen candidate. ` +
+		`Do not transliterate Chinese/CJK targets to pinyin or guessed ASCII keywords; if enter_text_in_field is unavailable, report the blocker instead. ` +
 		`keyboard_text remains for simple standalone ASCII typing outside the enter_text_in_field workflow. ` +
 		`Bare plain text is accepted only as a legacy compatibility fallback.`
 }

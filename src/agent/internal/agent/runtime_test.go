@@ -847,6 +847,7 @@ func TestRuntimeRunPersistsSteerAsConversationHumanMessage(t *testing.T) {
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
 	)
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	var steerCalls int32
 	result, err := runtime.Run(context.Background(), RunRequest{
