@@ -165,7 +165,6 @@ func TestResolvedWebConfigDTO_OverlaysCurrentConfig(t *testing.T) {
 	path := filepath.Join(dir, "agent.toml")
 	if err := os.WriteFile(path, []byte(`
 voice_followup_enabled = true
-force_simple_loop = true
 
 [model]
 provider = "openai"
@@ -192,9 +191,6 @@ llm_http_retention_days = 14
 	}
 	if !dto.Agent.VoiceFollowupEnabled {
 		t.Fatal("agent.voice_followup_enabled = false, want true from current config")
-	}
-	if !dto.Agent.ForceSimpleLoop {
-		t.Fatal("agent.force_simple_loop = false, want true from current config")
 	}
 	if dto.HID.KeyboardDevice != agent.DefaultConfig().HID.KeyboardDevice {
 		t.Fatalf("hid.keyboard_device = %q, want default %q",

@@ -43,7 +43,6 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.voice_progress_speech_enabled = false;
     cfg.voice_max_response_tokens = 240;
     cfg.max_iterations = 6;
-    cfg.force_simple_loop = true;
     cfg.screenshot_keep_n = 5;
     cfg.screenshot_prune_interval = 40;
     cfg.screen_stable_timeout_ms = 4500;
@@ -150,7 +149,6 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
 	CHECK(loaded.voice_progress_speech_enabled == false);
 	CHECK(loaded.voice_max_response_tokens == 240);
 	CHECK(loaded.max_iterations == 6);
-	CHECK(loaded.force_simple_loop == true);
 	CHECK(loaded.screenshot_keep_n == 5);
 	CHECK(loaded.screenshot_prune_interval == 40);
 	CHECK(loaded.screen_stable_timeout_ms == 4500);
@@ -341,7 +339,6 @@ TEST_CASE("agent_toml ignores unknown sections and keys") {
     REQUIRE(err.empty());
     CHECK(cfg.input_mode == "text");
     CHECK(cfg.max_iterations == -1);
-    CHECK(cfg.force_simple_loop == false);
     CHECK(cfg.model.provider == "openai");
     CHECK(cfg.model.model == "gpt-4o-mini");
 

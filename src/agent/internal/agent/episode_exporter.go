@@ -274,7 +274,7 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 			body := map[string]interface{}{
 				"id":          uuid.NewString(),
 				"traceId":     traceID,
-				"name":        "planner/default_finish",
+				"name":        "agent/default_finish",
 				"startTime":   langfuseRFC3339(eventTime),
 				"endTime":     langfuseRFC3339(eventTime),
 				"output":      event.Content,
@@ -849,15 +849,15 @@ func langfuseToolParentSpan(iterationSpanID, phaseSpanID, role string) string {
 }
 
 func langfuseToolSpanName(role, toolName string) string {
-	if strings.EqualFold(strings.TrimSpace(role), string(RolePlanner)) {
-		return "planner/tool/" + toolName
+	if strings.EqualFold(strings.TrimSpace(role), string(RoleAgent)) {
+		return "agent/tool/" + toolName
 	}
 	return "tool/" + toolName
 }
 
 func langfuseToolResultSpanName(role, toolName string) string {
-	if strings.EqualFold(strings.TrimSpace(role), string(RolePlanner)) {
-		return "planner/tool_result/" + toolName
+	if strings.EqualFold(strings.TrimSpace(role), string(RoleAgent)) {
+		return "agent/tool_result/" + toolName
 	}
 	return "tool_result/" + toolName
 }
@@ -1272,7 +1272,7 @@ func episodeDerivedMetrics(events []TaskEpisodeEvent) map[string]interface{} {
 			metrics["todo_closed_count"] = intMetric(metrics, "todo_closed_count") + 1
 		case runEventToolCall:
 			metrics["tool_call_count"] = intMetric(metrics, "tool_call_count") + 1
-			if strings.EqualFold(strings.TrimSpace(event.Role), string(RolePlanner)) {
+			if strings.EqualFold(strings.TrimSpace(event.Role), string(RoleAgent)) {
 				metrics["planner_tool_call_count"] = intMetric(metrics, "planner_tool_call_count") + 1
 			} else if strings.EqualFold(strings.TrimSpace(event.Role), string(RoleExecutor)) {
 				metrics["executor_tool_call_count"] = intMetric(metrics, "executor_tool_call_count") + 1
