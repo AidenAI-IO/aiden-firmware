@@ -432,6 +432,45 @@ func TestRunScriptToolSetRejectsNonScriptCallableTools(t *testing.T) {
 	}
 }
 
+func TestRunScriptToolSetResolvesPhoneWorkflowAfterBridgeRegistration(t *testing.T) {
+	scriptsDir := t.TempDir()
+	writeRunScriptTestFile(t, scriptsDir, "workflow.jsonl", `{"type":"call","tool":"prepare_phone_app_workflow","input":{"target_text":"Please confirm the current status.","target_app":"TaskApp","target_label":"Sample Recipient"}}`)
+
+	bridge := newTestPhoneBridgeWithApp(t, func(cmd BridgeCommand) BridgeCommandResponse {
+		if cmd.Type != "clipboard_write" {
+			return BridgeCommandResponse{ID: cmd.ID, Error: NewToolError(CodeToolExecutionFailed, "unexpected command "+cmd.Type)}
+		}
+		return BridgeCommandResponse{ID: cmd.ID}
+	})
+	tools := NewBuiltinToolSet(
+		HIDConfig{},
+		AudioConfig{},
+		SearchConfig{},
+		ProxyConfig{},
+		WithRunScriptScriptsDir(scriptsDir),
+	)
+	tools.RegisterPhoneBridge(bridge)
+
+	tool, ok := tools.Get("run_script")
+	if !ok {
+		t.Fatal("run_script tool missing")
+	}
+	out, err := tool.Call(context.Background(), `{"file":"workflow.jsonl"}`)
+	if err != nil {
+		t.Fatalf("Call error: %v", err)
+	}
+	var result runScriptResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("invalid result JSON: %v\n%s", err, out)
+	}
+	if !result.OK || result.StepsRun != 1 || len(result.Steps) != 1 || !result.Steps[0].OK {
+		t.Fatalf("result = %#v, output=%s", result, out)
+	}
+	if !strings.Contains(result.Steps[0].Output, `"workflow": "prepare_phone_app_workflow"`) {
+		t.Fatalf("step output = %q", result.Steps[0].Output)
+	}
+}
+
 func writeRunScriptTestFile(t *testing.T, dir, file, content string) string {
 	t.Helper()
 	path := filepath.Join(dir, file)
