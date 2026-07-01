@@ -232,6 +232,7 @@ func (w *TTSTagStreamWriter) ResetBuffer() {
 	if resetter, ok := w.target.(ttsBufferResetter); ok {
 		resetter.ResetBuffer()
 	}
+	w.ResetStreamState()
 }
 
 func (w *TTSTagStreamWriter) StreamEmitted() bool {

@@ -5,6 +5,16 @@ import (
 	"testing"
 )
 
+type resettableSpeechSink struct {
+	strings.Builder
+	resetCalls int
+}
+
+func (s *resettableSpeechSink) ResetBuffer() {
+	s.resetCalls++
+	s.Builder.Reset()
+}
+
 func TestBuildSpeechTextExtractsTTSTag(t *testing.T) {
 	output := strings.Join([]string{
 		"已完成设置，当前音量是 42。",
@@ -161,6 +171,33 @@ func TestSpeechStreamWriterHandlesMultipleTTSTags(t *testing.T) {
 	}
 	if got := sink.String(); got != "第一句。第二句。" {
 		t.Fatalf("streamed speech = %q", got)
+	}
+}
+
+func TestSpeechStreamWriterResetBufferClearsParserState(t *testing.T) {
+	sink := &resettableSpeechSink{}
+	writer := NewSpeechStreamWriter(sink)
+
+	if _, err := writer.Write([]byte("<tts>stale speech already emitted")); err != nil {
+		t.Fatalf("Write(stale) error = %v", err)
+	}
+	if !writer.StreamEmitted() {
+		t.Fatal("StreamEmitted() = false before reset, want true")
+	}
+
+	writer.ResetBuffer()
+
+	if sink.resetCalls != 1 {
+		t.Fatalf("ResetBuffer() calls = %d, want 1", sink.resetCalls)
+	}
+	if writer.StreamEmitted() {
+		t.Fatal("StreamEmitted() = true after reset, want false")
+	}
+	if _, err := writer.Write([]byte("<tts>fresh</tts>")); err != nil {
+		t.Fatalf("Write(fresh) error = %v", err)
+	}
+	if got := sink.String(); got != "fresh" {
+		t.Fatalf("streamed speech after reset = %q, want %q", got, "fresh")
 	}
 }
 
