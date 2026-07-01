@@ -713,7 +713,11 @@ func runConfigTest(args []string) int {
 
 		playback, err := agent.RunTTSPlaybackTest(ctx, cfg, ttsValues.playbackTestRequest(input.Text))
 		if err != nil {
-			writeConfigTestResult(configTestFailure("tts_playback", err.Error()))
+			detail := err.Error()
+			if ttsValues.Provider != "" {
+				detail = fmt.Sprintf("[provider=%s model=%s voice=%s] %s", ttsValues.Provider, ttsValues.Model, ttsValues.VoiceID, detail)
+			}
+			writeConfigTestResult(configTestFailure("tts_playback", detail))
 			return 1
 		}
 		writeConfigTestResult(ConfigTestResult{
