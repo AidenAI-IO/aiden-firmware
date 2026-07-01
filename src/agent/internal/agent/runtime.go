@@ -175,9 +175,13 @@ func (m *RunMetrics) CacheHitRate() float64 {
 }
 
 const (
-	runEventToolCall   = "tool_call"
-	runEventTodoUpdate = "todo_update"
-	runEventTodoClosed = "todo_closed"
+	runEventToolCall       = "tool_call"
+	runEventTodoUpdate     = "todo_update"
+	runEventTodoClosed     = "todo_closed"
+	runEventMemoryRetrieve = "memory_retrieve"
+	runEventSessionBegin   = "session_begin"
+	runEventIterationStart = "iteration_start"
+	runEventIterationEnd   = "iteration_end"
 )
 
 type RunEvent struct {
@@ -645,6 +649,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	if err != nil {
 		return RunResult{}, err
 	}
+	sessionBeginStart := time.Now()
 	beginResult, err := r.beginSession(ctx, SessionBeginRequest{
 		AgentName:    "default",
 		Input:        normalizedInput,
@@ -655,6 +660,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		RunID:        runID,
 		CurrentHints: currentHints,
 	})
+	sessionBeginDuration := time.Since(sessionBeginStart).Milliseconds()
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -662,6 +668,23 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	if boundaryTelemetry.PendingRecallCounter == nil {
 		boundaryTelemetry.PendingRecallCounter = &atomic.Int64{}
 	}
+
+	// Record session begin event after episodeRecorder is created
+	defer func() {
+		if episodeRecorder != nil {
+			metadata := map[string]interface{}{
+				"rotated":  beginResult.Boundary.Rotated,
+				"decision": beginResult.Boundary.Decision,
+				"reason":   beginResult.Boundary.Reason,
+			}
+			episodeRecorder.RecordEvent(TaskEpisodeEvent{
+				Type:       runEventSessionBegin,
+				Ts:         sessionBeginStart.Format(time.RFC3339Nano),
+				DurationMs: &sessionBeginDuration,
+				Metadata:   metadata,
+			})
+		}
+	}()
 
 	availableTools = r.resolveTools(resolvedSkills)
 	availableTools = wrapSessionRecallTelemetry(availableTools, boundaryTelemetry.PendingRecallCounter)
@@ -676,7 +699,10 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}
 	memoryContext := MemoryContext{}
 	if r.memoryPlane != nil {
+		retrieveStart := time.Now()
 		retrieved, retrieveErr := r.memoryPlane.Retrieve(ctx, retrieveReq)
+		retrieveDuration := time.Since(retrieveStart).Milliseconds()
+
 		if retrieveErr != nil {
 			if r.logger != nil {
 				r.logger.Warn("[memory] retrieve failed: %v", retrieveErr)
@@ -684,6 +710,23 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		} else {
 			memoryContext = retrieved
 		}
+
+		// Record memory retrieve event after we have episodeRecorder
+		// This will be recorded after episodeRecorder is created below
+		defer func() {
+			if episodeRecorder != nil {
+				episodeRecorder.RecordEvent(TaskEpisodeEvent{
+					Type:       runEventMemoryRetrieve,
+					Ts:         retrieveStart.Format(time.RFC3339Nano),
+					DurationMs: &retrieveDuration,
+					Metadata: map[string]interface{}{
+						"skill_count": len(skillNames),
+						"tool_count":  len(toolNamesFromTools(availableTools)),
+						"success":     retrieveErr == nil,
+					},
+				})
+			}
+		}()
 	}
 	if r.memoryPlane != nil {
 		episodeRecorder = r.memoryPlane.NewEpisodeRecorder(retrieveReq, memoryContext)

@@ -1495,3 +1495,28 @@ func screenshotContentType(path string) string {
 		return "image/jpeg"
 	}
 }
+
+func avgInt64(values []int64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	var sum int64
+	for _, v := range values {
+		sum += v
+	}
+	return float64(sum) / float64(len(values))
+}
+
+func percentileInt64(sortedValues []int64, p float64) int64 {
+	if len(sortedValues) == 0 {
+		return 0
+	}
+	if p <= 0 {
+		return sortedValues[0]
+	}
+	if p >= 1 {
+		return sortedValues[len(sortedValues)-1]
+	}
+	index := int(float64(len(sortedValues)-1) * p)
+	return sortedValues[index]
+}
