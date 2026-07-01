@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -408,7 +407,7 @@ func TestPreparePhoneAppWorkflowBatchesDirectActionsClipboardAndOpen(t *testing.
 		mu.Unlock()
 		switch cmd.Type {
 		case "calendar_query":
-			return BridgeCommandResponse{ID: cmd.ID, Data: json.RawMessage(`{"events":[{"event_id":"e1","title":"项目跟进","start_at":"2026-06-30T10:00:00+08:00","notes":"确认报价和交付时间"}]}`)}
+			return BridgeCommandResponse{ID: cmd.ID, Data: json.RawMessage(`{"events":[{"event_id":"e1","title":"Project review","start_at":"2026-06-30T10:00:00+08:00","notes":"Confirm pricing and delivery date"}]}`)}
 		case "clipboard_write":
 			var payload struct {
 				Text string `json:"text"`
@@ -429,7 +428,7 @@ func TestPreparePhoneAppWorkflowBatchesDirectActionsClipboardAndOpen(t *testing.
 	})
 	tool := NewPreparePhoneAppWorkflowTool(bridge, nil)
 
-	out, err := tool.Call(context.Background(), `{"app_side_actions":[{"id":"calendar_lookup","tool":"calendar","action":"query","payload":{"from":"2026-06-30T00:00:00+08:00","to":"2026-07-01T00:00:00+08:00"}}],"target_text_template":"今天日历备注里写的是：{{calendar_lookup.event_notes}}，这件事进展如何？","target_app":"微信","target_label":"李四","open_target_app":true}`)
+	out, err := tool.Call(context.Background(), `{"app_side_actions":[{"id":"calendar_lookup","tool":"calendar","action":"query","payload":{"from":"2026-06-30T00:00:00+08:00","to":"2026-07-01T00:00:00+08:00"}}],"target_text_template":"Calendar notes say: {{calendar_lookup.event_notes}}. What is the latest status?","target_app":"WeChat","target_label":"Project Lead","open_target_app":true}`)
 	if err != nil {
 		t.Fatalf("Call returned err: %v", err)
 	}
@@ -455,7 +454,7 @@ func TestPreparePhoneAppWorkflowBatchesDirectActionsClipboardAndOpen(t *testing.
 	if !payload.OK || payload.Workflow != "prepare_phone_app_workflow" || !payload.ClipboardPrepared || !payload.OpenedTargetApp {
 		t.Fatalf("workflow output = %+v raw=%s", payload, out)
 	}
-	if !strings.Contains(payload.TargetText, "确认报价和交付时间") {
+	if !strings.Contains(payload.TargetText, "Confirm pricing and delivery date") {
 		t.Fatalf("target_text = %q", payload.TargetText)
 	}
 	if len(payload.Actions) != 1 || payload.Actions[0].ID != "calendar_lookup" || payload.Actions[0].CommandType != "calendar_query" {
@@ -478,7 +477,7 @@ func TestPreparePhoneAppWorkflowBatchesDirectActionsClipboardAndOpen(t *testing.
 	if gotClipboard != payload.TargetText {
 		t.Fatalf("clipboard text = %q, want target text %q", gotClipboard, payload.TargetText)
 	}
-	if gotOpenedApp != "微信" {
+	if gotOpenedApp != "WeChat" {
 		t.Fatalf("opened app = %q", gotOpenedApp)
 	}
 }
@@ -495,7 +494,7 @@ func TestPreparePhoneAppWorkflowRejectsNonStructuredAppSideTool(t *testing.T) {
 	tool := NewPreparePhoneAppWorkflowTool(bridge, nil)
 	ctx, _ := WithToolError(context.Background())
 
-	out, err := tool.Call(ctx, `{"app_side_actions":[{"id":"x","tool":"app","action":"query","payload":{"name":"Some App"}}],"target_app":"微信","open_target_app":true}`)
+	out, err := tool.Call(ctx, `{"app_side_actions":[{"id":"x","tool":"app","action":"query","payload":{"name":"Some App"}}],"target_app":"WeChat","open_target_app":true}`)
 	if err != nil {
 		t.Fatalf("Call returned err: %v", err)
 	}
@@ -520,7 +519,7 @@ func TestPreparePhoneAppWorkflowRejectsOpenAppInsideAppSideActions(t *testing.T)
 	tool := NewPreparePhoneAppWorkflowTool(bridge, nil)
 	ctx, _ := WithToolError(context.Background())
 
-	out, err := tool.Call(ctx, `{"app_side_actions":[{"id":"bad","tool":"open_app","action":"open","payload":{"app":"微信"}}],"target_app":"微信"}`)
+	out, err := tool.Call(ctx, `{"app_side_actions":[{"id":"bad","tool":"open_app","action":"open","payload":{"app":"WeChat"}}],"target_app":"WeChat"}`)
 	if err != nil {
 		t.Fatalf("Call returned err: %v", err)
 	}
@@ -533,7 +532,7 @@ func TestPreparePhoneAppWorkflowRejectsOpenAppInsideAppSideActions(t *testing.T)
 	}
 }
 
-func TestPreparePhoneMessageWorkflowBatchesContactsClipboardAndOpen(t *testing.T) {
+func TestPreparePhoneAppWorkflowBatchesContactsClipboardAndOpen(t *testing.T) {
 	var mu sync.Mutex
 	var commandTypes []string
 	var clipboardText string
@@ -563,9 +562,9 @@ func TestPreparePhoneMessageWorkflowBatchesContactsClipboardAndOpen(t *testing.T
 			return BridgeCommandResponse{ID: cmd.ID, Error: NewToolError(CodeToolExecutionFailed, "unexpected command "+cmd.Type)}
 		}
 	})
-	tool := NewPreparePhoneMessageTool(bridge, nil)
+	tool := NewPreparePhoneAppWorkflowTool(bridge, nil)
 
-	out, err := tool.Call(context.Background(), `{"contact_query":"Example Contact","message_template":"Example Contact的手机号是{{phone_numbers}}，这个号码还在用吗？","target_app":"微信","target_label":"Target Friend","open_target_app":true}`)
+	out, err := tool.Call(context.Background(), `{"app_side_actions":[{"id":"contact_lookup","tool":"contacts","action":"query","payload":{"query":"Example Contact","limit":10}}],"target_text_template":"Example Contact numbers are {{contact_lookup.phone_numbers}}. Are these numbers still active?","target_app":"WeChat","target_label":"Target Friend","open_target_app":true}`)
 	if err != nil {
 		t.Fatalf("Call returned err: %v", err)
 	}
@@ -586,7 +585,7 @@ func TestPreparePhoneMessageWorkflowBatchesContactsClipboardAndOpen(t *testing.T
 	if !payload.OK || !payload.ClipboardPrepared || !payload.OpenedTargetApp {
 		t.Fatalf("workflow output = %+v raw=%s", payload, out)
 	}
-	for _, want := range []string{"555 0101", "5550102", "还在用吗"} {
+	for _, want := range []string{"555 0101", "5550102", "still active"} {
 		if !strings.Contains(payload.TargetText, want) {
 			t.Fatalf("target_text = %q, missing %q", payload.TargetText, want)
 		}
@@ -608,51 +607,12 @@ func TestPreparePhoneMessageWorkflowBatchesContactsClipboardAndOpen(t *testing.T
 	if gotClipboard != payload.TargetText {
 		t.Fatalf("clipboard text = %q, want target text %q", gotClipboard, payload.TargetText)
 	}
-	if gotOpenedApp != "微信" {
+	if gotOpenedApp != "WeChat" {
 		t.Fatalf("opened app = %q", gotOpenedApp)
 	}
 }
 
-func TestPreparePhoneMessageWorkflowRejectsMissingSourcePhoneNumbers(t *testing.T) {
-	var mu sync.Mutex
-	var commandTypes []string
-	bridge := newTestPhoneBridgeWithApp(t, func(cmd BridgeCommand) BridgeCommandResponse {
-		mu.Lock()
-		commandTypes = append(commandTypes, cmd.Type)
-		mu.Unlock()
-		switch cmd.Type {
-		case "contacts_query":
-			return BridgeCommandResponse{ID: cmd.ID, Data: json.RawMessage(`{"contacts":[{"name":"Example Contact","phone_numbers":["555 0101"]}]}`)}
-		default:
-			return BridgeCommandResponse{ID: cmd.ID, Error: NewToolError(CodeToolExecutionFailed, "unexpected command "+cmd.Type)}
-		}
-	})
-	tool := NewPreparePhoneMessageTool(bridge, nil)
-	ctx, _ := WithToolError(context.Background())
-
-	out, err := tool.Call(ctx, `{"contact_query":"Example Contact","message_template":"Example Contact的手机号还在用吗？","target_app":"微信","target_label":"Target Friend","open_target_app":true}`)
-	if err != nil {
-		t.Fatalf("Call returned err: %v", err)
-	}
-	te := ToolErrorFromContext(ctx)
-	if te == nil || te.Code != CodeInvalidArguments {
-		t.Fatalf("tool error = %+v output=%s", te, out)
-	}
-	if !strings.Contains(out, "omits phone number") {
-		t.Fatalf("unexpected output: %s", out)
-	}
-	if got := te.Details["missing_phone_numbers"]; !strings.Contains(fmt.Sprint(got), "555 0101") {
-		t.Fatalf("missing_phone_numbers detail = %#v", got)
-	}
-	mu.Lock()
-	gotTypes := append([]string{}, commandTypes...)
-	mu.Unlock()
-	if strings.Join(gotTypes, ",") != "contacts_query" {
-		t.Fatalf("commands = %v, want only contacts_query before rejection", gotTypes)
-	}
-}
-
-func TestPreparePhoneMessageWorkflowFixedTextWritesClipboardOnly(t *testing.T) {
+func TestPreparePhoneAppWorkflowFixedTextWritesClipboardOnly(t *testing.T) {
 	var mu sync.Mutex
 	var commandTypes []string
 	var clipboardText string
@@ -674,9 +634,9 @@ func TestPreparePhoneMessageWorkflowFixedTextWritesClipboardOnly(t *testing.T) {
 			return BridgeCommandResponse{ID: cmd.ID, Error: NewToolError(CodeToolExecutionFailed, "unexpected command "+cmd.Type)}
 		}
 	})
-	tool := NewPreparePhoneMessageTool(bridge, nil)
+	tool := NewPreparePhoneAppWorkflowTool(bridge, nil)
 
-	out, err := tool.Call(context.Background(), `{"message_text":"Sample Recipient，你手机号还在用吗？","target_app":"QQ","target_label":"Sample Recipient"}`)
+	out, err := tool.Call(context.Background(), `{"target_text":"Please confirm the current status.","target_app":"TaskApp","target_label":"Sample Recipient"}`)
 	if err != nil {
 		t.Fatalf("Call returned err: %v", err)
 	}
@@ -690,7 +650,7 @@ func TestPreparePhoneMessageWorkflowFixedTextWritesClipboardOnly(t *testing.T) {
 	if strings.Join(gotTypes, ",") != "clipboard_write" {
 		t.Fatalf("commands = %v, want clipboard only", gotTypes)
 	}
-	if gotClipboard != "Sample Recipient，你手机号还在用吗？" {
+	if gotClipboard != "Please confirm the current status." {
 		t.Fatalf("clipboard text = %q", gotClipboard)
 	}
 }

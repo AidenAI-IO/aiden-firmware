@@ -67,7 +67,7 @@ func TestRunScriptExposedToAgentAndToolLab(t *testing.T) {
 }
 
 func TestPhoneBridgeToolsExposedToAgent(t *testing.T) {
-	for _, name := range []string{"open_app", "clipboard", "calendar", "contacts", "notification", "prepare_phone_app_workflow", "prepare_phone_message"} {
+	for _, name := range []string{"open_app", "clipboard", "calendar", "contacts", "notification", "prepare_phone_app_workflow"} {
 		if !isAgentToolExposed(name) {
 			t.Fatalf("expected %s available to conversational agent", name)
 		}
@@ -124,7 +124,7 @@ func TestResolveToolsIncludesPhoneBridgeToolsWhenDisconnected(t *testing.T) {
 			t.Fatalf("resolveTools missing disconnected bridge recovery tool %s: %v", want, names)
 		}
 	}
-	for _, notWant := range []string{"clipboard", "calendar", "contacts", "notification", "prepare_phone_app_workflow", "prepare_phone_message"} {
+	for _, notWant := range []string{"clipboard", "calendar", "contacts", "notification", "prepare_phone_app_workflow"} {
 		for _, name := range names {
 			if name == notWant {
 				t.Fatalf("resolveTools exposed disconnected phone bridge tool %s: %v", notWant, names)
@@ -141,7 +141,7 @@ func TestResolveToolsIncludesPhoneBridgeToolsWhenConnected(t *testing.T) {
 
 	tools := runtime.resolveTools(ResolvedSkills{})
 	names := toolNamesFromTools(tools)
-	for _, want := range []string{"open_app", "clipboard", "calendar", "contacts", "notification", "prepare_phone_app_workflow", "prepare_phone_message"} {
+	for _, want := range []string{"open_app", "clipboard", "calendar", "contacts", "notification", "prepare_phone_app_workflow"} {
 		found := false
 		for _, name := range names {
 			if name == want {

@@ -777,12 +777,12 @@ func TestCommitPlanDoesNotRejectByPhoneWorkflowText(t *testing.T) {
 	state := &roleLoopState{Phase: phasePlan, PlanCommitRequired: true}
 	state.World.UpdateDeviceEnvironment(&PhoneEnvironment{Platform: "ios"})
 	payload, _ := json.Marshal(map[string]any{
-		"objective":           "查通讯录电话号后给微信好友发消息问问电话号是否还在用",
-		"completion_criteria": []string{"微信消息已发送并有截图证据"},
+		"objective":           "look up contact data and send a status message in the target chat app",
+		"completion_criteria": []string{"message is sent with screenshot evidence"},
 		"plan": []string{
-			"查询通讯录里张三的电话号",
-			"打开微信并搜索李四聊天",
-			"把电话号写入剪切板并粘贴到微信输入框后发送",
+			"query the contact data",
+			"open the target chat app and find the recipient chat",
+			"write the target text to clipboard, paste it into the input field, and send it",
 		},
 		"reason": "needs phone workflow",
 	})
@@ -816,30 +816,30 @@ func TestCommitPlanAcceptsBatchedIOSPhoneBridgePlan(t *testing.T) {
 	state := &roleLoopState{Phase: phasePlan, PlanCommitRequired: true}
 	state.World.UpdateDeviceEnvironment(&PhoneEnvironment{Platform: "ios"})
 	payload, _ := json.Marshal(map[string]any{
-		"objective":           "查通讯录电话号后给微信好友发消息问问电话号是否还在用",
-		"completion_criteria": []string{"微信消息已发送并有截图证据"},
+		"objective":           "look up contact data and send a status message in the target chat app",
+		"completion_criteria": []string{"message is sent with screenshot evidence"},
 		"plan": []string{
-			"查询通讯录里张三的电话号，组织最终消息并写入剪切板",
-			"打开微信并搜索李四聊天",
-			"聚焦微信输入框，粘贴已准备剪切板，验证后发送并截图确认",
+			"query contact data, compose the final message, and write it to clipboard",
+			"open the target chat app and find the recipient chat",
+			"focus the input field, paste the prepared clipboard text, verify, send, and capture evidence",
 		},
 		"sources": []map[string]any{{
 			"id":          "contact_lookup",
 			"tool":        "contacts",
 			"action":      "query",
 			"step":        1,
-			"query":       "张三",
+			"query":       "Example Contact",
 			"produces":    []string{"phone_numbers"},
-			"artifact_id": "wechat_message",
+			"artifact_id": "chat_message",
 		}},
 		"artifacts": []map[string]any{{
-			"id":               "wechat_message",
+			"id":               "chat_message",
 			"kind":             "target_text",
 			"delivery":         "clipboard",
 			"prepare_step":     1,
 			"target_open_step": 2,
 			"consume_step":     3,
-			"text_template":    "请确认这个号码 {{contact.phone_numbers}} 是否还在使用",
+			"text_template":    "Please confirm whether {{contact_lookup.phone_numbers}} is still active.",
 			"source_refs":      []string{"contact_lookup.phone_numbers"},
 			"target_app":       "WeChat",
 			"target_label":     "chat recipient",
@@ -855,7 +855,7 @@ func TestCommitPlanAcceptsBatchedIOSPhoneBridgePlan(t *testing.T) {
 	if turn.Kind != plannerTurnCommitPlan {
 		t.Fatalf("turn kind = %v, want commit", turn.Kind)
 	}
-	if state.Phase != phaseExecution || state.NextStep != "查询通讯录里张三的电话号，组织最终消息并写入剪切板" {
+	if state.Phase != phaseExecution || state.NextStep != "query contact data, compose the final message, and write it to clipboard" {
 		t.Fatalf("state = %#v, want execution with batched first step", state)
 	}
 }
@@ -888,8 +888,8 @@ func TestCommitPlanAcceptsFixedTargetTextArtifact(t *testing.T) {
 			"prepare_step":     1,
 			"target_open_step": 2,
 			"consume_step":     2,
-			"text_template":    "Sample Recipient，你手机号还在用吗？",
-			"target_app":       "QQ",
+			"text_template":    "Please confirm whether this number is still active.",
+			"target_app":       "WeChat",
 			"target_label":     "Sample Recipient",
 		}},
 		"reason": "fixed text still needs target-preserving clipboard delivery",
@@ -903,7 +903,7 @@ func TestCommitPlanAcceptsFixedTargetTextArtifact(t *testing.T) {
 	if turn.Kind != plannerTurnCommitPlan {
 		t.Fatalf("turn kind = %v, want commit; step=%#v", turn.Kind, turn.Step)
 	}
-	if len(state.PlanArtifacts) != 1 || state.PlanArtifacts[0].TextTemplate != "Sample Recipient，你手机号还在用吗？" {
+	if len(state.PlanArtifacts) != 1 || state.PlanArtifacts[0].TextTemplate != "Please confirm whether this number is still active." {
 		t.Fatalf("plan artifacts = %#v", state.PlanArtifacts)
 	}
 }
@@ -998,7 +998,7 @@ func TestCommitPlanMovesMisplacedSourcesOutOfArtifacts(t *testing.T) {
 			"tool":"contacts",
 			"action":"query",
 			"step":1,
-			"query":"张三",
+			"query":"Example Contact",
 			"produces":["phone_numbers"],
 			"artifact_id":"message_text"
 		}]
@@ -1019,32 +1019,32 @@ func TestCommitPlanAcceptsLatestLogMisplacedSourceRepairPayload(t *testing.T) {
 		"artifacts": [{
 			"consume_step": 4,
 			"delivery": "clipboard",
-			"id": "wechat_message",
+			"id": "chat_message",
 			"kind": "target_text",
 			"prepare_step": 3,
-			"target_app": "微信",
+			"target_app": "WeChat",
 			"target_label": "Target Friend",
 			"target_open_step": 3,
-			"text_template": "Example Contact的手机号还在用吗？"
+			"text_template": "Please confirm whether this number is still active."
 		}, {
 			"action": "query",
-			"artifact_id": "wechat_message",
+			"artifact_id": "chat_message",
 			"id": "contact_lookup",
 			"produces": ["phone_numbers"],
 			"query": "Example Contact",
 			"step": 1,
 			"tool": "contacts"
 		}],
-		"completion_criteria": ["从通讯录查询结果中确认Example Contact的手机号码", "在微信中成功打开与Target Friend的聊天窗口", "消息已成功发送到Target Friend的聊天窗口"],
-		"objective": "从通讯录查找Example Contact的手机号，然后在微信中向Target Friend发送消息询问该号码是否还在使用。",
-		"plan": ["使用 contacts 工具查询联系人Example Contact，获取其手机号码", "使用 contacts 工具查询联系人Target Friend，获取其联系方式用于搜索", "打开微信 App，在搜索栏搜索Target Friend并进入聊天窗口", "将准备好的消息写入剪贴板，在微信聊天输入框中粘贴并发送"],
-		"reason": "任务涉及两个独立阶段：通讯录查询和微信消息发送，需要跨应用操作，需显式规划步骤和产物。"
+		"completion_criteria": ["contact data is available", "target chat is open", "message is sent"],
+		"objective": "look up contact data, then send a message to Target Friend in WeChat.",
+		"plan": ["query Example Contact with the contacts tool", "prepare the final message text", "open WeChat and find Target Friend", "paste the prepared message into the chat input and send"],
+		"reason": "the task crosses app-side data preparation and target-app UI automation."
 	}`)
 	if err != nil {
 		t.Fatalf("parseCommitPlanInput() error = %v", err)
 	}
-	if len(decision.Artifacts) != 1 || decision.Artifacts[0].ID != "wechat_message" {
-		t.Fatalf("artifacts = %#v, want wechat_message only", decision.Artifacts)
+	if len(decision.Artifacts) != 1 || decision.Artifacts[0].ID != "chat_message" {
+		t.Fatalf("artifacts = %#v, want chat_message only", decision.Artifacts)
 	}
 	if len(decision.Sources) != 1 || decision.Sources[0].ID != "contact_lookup" || decision.Sources[0].Query != "Example Contact" {
 		t.Fatalf("sources = %#v, want moved contact_lookup source", decision.Sources)
@@ -1053,10 +1053,10 @@ func TestCommitPlanAcceptsLatestLogMisplacedSourceRepairPayload(t *testing.T) {
 
 func TestCommitPlanInfersSingleContactsTargetTextWorkflowContract(t *testing.T) {
 	decision, err := parseCommitPlanInput(`{
-		"objective":"查通讯录后发微信",
-		"plan":["查Example Contact电话","准备消息","打开微信","发送"],
+		"objective":"look up contact data and send a chat message",
+		"plan":["query Example Contact","prepare message","open WeChat","send"],
 		"sources":[{
-			"id":"contact_fanchao",
+			"id":"contact_lookup",
 			"tool":"contacts",
 			"action":"query",
 			"step":1,
@@ -1064,21 +1064,21 @@ func TestCommitPlanInfersSingleContactsTargetTextWorkflowContract(t *testing.T) 
 			"produces":["phone_numbers"]
 		}],
 		"artifacts":[{
-			"id":"wechat_message",
+			"id":"chat_message",
 			"kind":"target_text",
 			"delivery":"clipboard",
 			"prepare_step":2,
 			"target_open_step":3,
-			"text_template":"Example Contact的电话还在用吗？",
+			"text_template":"Please confirm whether this number is still active.",
 			"source_refs":[],
-			"target_app":"微信",
-			"target_label":"Target Friend聊天输入框"
+			"target_app":"WeChat",
+			"target_label":"Target Friend chat input"
 		}]
 	}`)
 	if err != nil {
 		t.Fatalf("parseCommitPlanInput() error = %v", err)
 	}
-	if len(decision.Sources) != 1 || decision.Sources[0].ArtifactID != "wechat_message" {
+	if len(decision.Sources) != 1 || decision.Sources[0].ArtifactID != "chat_message" {
 		t.Fatalf("sources = %#v, want source linked to artifact", decision.Sources)
 	}
 	if len(decision.Artifacts) != 1 {
@@ -1088,8 +1088,8 @@ func TestCommitPlanInfersSingleContactsTargetTextWorkflowContract(t *testing.T) 
 	if artifact.ConsumeStep != 3 {
 		t.Fatalf("consume_step = %d, want inferred 3", artifact.ConsumeStep)
 	}
-	if !roleLoopTestStringSliceContains(artifact.SourceRefs, "contact_fanchao.phone_numbers") {
-		t.Fatalf("source_refs = %#v, want inferred contact_fanchao.phone_numbers", artifact.SourceRefs)
+	if !roleLoopTestStringSliceContains(artifact.SourceRefs, "contact_lookup.phone_numbers") {
+		t.Fatalf("source_refs = %#v, want inferred contact_lookup.phone_numbers", artifact.SourceRefs)
 	}
 	if err := validateCommittedPlanPolicy(decision, worldState{}); err != nil {
 		t.Fatalf("validateCommittedPlanPolicy() error = %v", err)
@@ -1098,50 +1098,50 @@ func TestCommitPlanInfersSingleContactsTargetTextWorkflowContract(t *testing.T) 
 
 func TestCommitPlanNormalizesGenericSourceRefForSingleSourceWorkflow(t *testing.T) {
 	decision, err := parseCommitPlanInput(`{
-		"objective":"查通讯录后发微信",
-		"plan":["查Example Contact电话","准备消息","打开微信"],
+		"objective":"look up contact data and send a chat message",
+		"plan":["query Example Contact","prepare message","open WeChat"],
 		"sources":[{
-			"id":"contact_fanchao",
+			"id":"contact_lookup",
 			"tool":"contacts",
 			"action":"query",
 			"step":1,
 			"query":"Example Contact"
 		}],
 		"artifacts":[{
-			"id":"wechat_message",
+			"id":"chat_message",
 			"kind":"target_text",
 			"delivery":"clipboard",
 			"prepare_step":2,
 			"consume_step":3,
-			"text_template":"Example Contact的电话{{source}}还在用吗？",
+			"text_template":"Please confirm whether {{source}} is still active.",
 			"source_refs":["source"],
-			"target_app":"微信"
+			"target_app":"WeChat"
 		}]
 	}`)
 	if err != nil {
 		t.Fatalf("parseCommitPlanInput() error = %v", err)
 	}
-	if refs := decision.Artifacts[0].SourceRefs; !roleLoopTestStringSliceContains(refs, "contact_fanchao.phone_numbers") {
+	if refs := decision.Artifacts[0].SourceRefs; !roleLoopTestStringSliceContains(refs, "contact_lookup.phone_numbers") {
 		t.Fatalf("source_refs = %#v, want generic source normalized", refs)
 	}
 }
 
 func TestCommitPlanRejectsUnlinkedContactsSourceWhenWorkflowAmbiguous(t *testing.T) {
 	decision, err := parseCommitPlanInput(`{
-		"objective":"多联系人后发微信",
-		"plan":["查联系人","准备消息","打开微信"],
+		"objective":"look up multiple contacts before a chat message",
+		"plan":["query contacts","prepare message","open WeChat"],
 		"sources":[
-			{"id":"contact_a","tool":"contacts","action":"query","step":1,"query":"甲"},
-			{"id":"contact_b","tool":"contacts","action":"query","step":1,"query":"乙"}
+			{"id":"contact_a","tool":"contacts","action":"query","step":1,"query":"Contact A"},
+			{"id":"contact_b","tool":"contacts","action":"query","step":1,"query":"Contact B"}
 		],
 		"artifacts":[{
-			"id":"wechat_message",
+			"id":"chat_message",
 			"kind":"target_text",
 			"delivery":"clipboard",
 			"prepare_step":2,
 			"consume_step":3,
-			"text_template":"请确认号码是否还在用",
-			"target_app":"微信"
+			"text_template":"Please confirm whether the number is still active.",
+			"target_app":"WeChat"
 		}]
 	}`)
 	if err != nil {
@@ -1203,7 +1203,7 @@ func TestPlanArtifactContactsSourceBlocksContactsUIAndTargetApp(t *testing.T) {
 			Tool:       planSourceToolContacts,
 			Action:     planSourceActionQuery,
 			Step:       1,
-			Query:      "张三",
+			Query:      "Example Contact",
 			Produces:   []string{"phone_numbers"},
 			ArtifactID: "message_text",
 		}}),
@@ -1216,13 +1216,13 @@ func TestPlanArtifactContactsSourceBlocksContactsUIAndTargetApp(t *testing.T) {
 			ConsumeStep:    2,
 			TextTemplate:   "Message {{value}}",
 			SourceRefs:     []string{"contact_lookup.phone_numbers"},
-			TargetApp:      "微信",
+			TargetApp:      "WeChat",
 		}}),
 	}
 
 	sourceCall := ToolCall{
 		Spec:  ToolSpec{Name: "open_app"},
-		Input: `{"app":"通讯录"}`,
+		Input: `{"app":"Contacts"}`,
 	}
 	if result, allowed := state.beforeArtifactToolCall(context.Background(), sourceCall); allowed || result.Error == nil ||
 		!strings.Contains(result.Output, "do not open Contacts UI") {
@@ -1240,7 +1240,7 @@ func TestPlanArtifactContactsSourceBlocksContactsUIAndTargetApp(t *testing.T) {
 
 	rawSourceCall := ToolCall{
 		Spec:  ToolSpec{Name: "open_app"},
-		Input: "通讯录",
+		Input: "Contacts",
 	}
 	if result, allowed := state.beforeArtifactToolCall(context.Background(), rawSourceCall); allowed || result.Error == nil ||
 		!strings.Contains(result.Output, "do not open Contacts UI") {
@@ -1258,19 +1258,19 @@ func TestPlanArtifactContactsSourceBlocksContactsUIAndTargetApp(t *testing.T) {
 
 	contactsCall := ToolCall{
 		Spec:  ToolSpec{Name: "contacts"},
-		Input: `{"action":"query","query":"张三","limit":20}`,
+		Input: `{"action":"query","query":"Example Contact","limit":20}`,
 	}
 	if result, allowed := state.beforeArtifactToolCall(context.Background(), contactsCall); !allowed || result.Error != nil {
 		t.Fatalf("contacts query allowed=%v result=%#v, want allowed", allowed, result)
 	}
 	state.StepExecutionResults = append(state.StepExecutionResults, roleExecutionResult{
-		Action: &schema.AgentAction{Tool: "contacts", ToolInput: `{"action":"query","query":"张三","limit":20}`},
-		Step:   &schema.AgentStep{Observation: `{"ok":true,"contacts":[{"name":"张三","phone_numbers":["5550103"]}]}`},
+		Action: &schema.AgentAction{Tool: "contacts", ToolInput: `{"action":"query","query":"Example Contact","limit":20}`},
+		Step:   &schema.AgentStep{Observation: `{"ok":true,"contacts":[{"name":"Example Contact","phone_numbers":["5550103"]}]}`},
 	})
 
 	unrelatedContactsCall := ToolCall{
 		Spec:  ToolSpec{Name: "contacts"},
-		Input: `{"action":"query","query":"李四","limit":20}`,
+		Input: `{"action":"query","query":"Other Contact","limit":20}`,
 	}
 	if result, allowed := state.beforeArtifactToolCall(context.Background(), unrelatedContactsCall); allowed || result.Error == nil ||
 		!strings.Contains(result.Output, "declared source contract") {
@@ -1421,7 +1421,7 @@ func TestPlanArtifactDoesNotInferContactsSourceFromStepText(t *testing.T) {
 	state := &roleLoopState{
 		PlanCommitted: true,
 		PlanStepIndex: 0,
-		Plan:          []string{"查询通讯录里张三的电话号，组织最终消息并写入剪切板", "open target app"},
+		Plan:          []string{"query contact data and prepare message text", "open target app"},
 		PlanArtifacts: initialPlanArtifactStates([]planArtifact{{
 			ID:             "message_text",
 			Kind:           planArtifactKindTargetText,
@@ -1430,12 +1430,12 @@ func TestPlanArtifactDoesNotInferContactsSourceFromStepText(t *testing.T) {
 			TargetOpenStep: 2,
 			ConsumeStep:    2,
 			TextTemplate:   "Message {{value}}",
-			TargetApp:      "微信",
+			TargetApp:      "WeChat",
 		}}),
 	}
 	sourceCall := ToolCall{
 		Spec:  ToolSpec{Name: "open_app"},
-		Input: `{"app":"通讯录"}`,
+		Input: `{"app":"Contacts"}`,
 	}
 	if result, allowed := state.beforeArtifactToolCall(context.Background(), sourceCall); !allowed || result.Error != nil {
 		t.Fatalf("source app navigation allowed=%v result=%#v, want allowed without explicit source contract", allowed, result)
@@ -1533,7 +1533,7 @@ func TestCommitPlanAllowsSourceAfterDeclaredTargetOpenBecauseRuntimeBlocksActual
 			"tool":"contacts",
 			"action":"query",
 			"step":3,
-			"query":"张三",
+			"query":"Example Contact",
 			"artifact_id":"message_text"
 		}],
 		"artifacts":[{
@@ -1543,7 +1543,7 @@ func TestCommitPlanAllowsSourceAfterDeclaredTargetOpenBecauseRuntimeBlocksActual
 			"prepare_step":3,
 			"target_open_step":2,
 			"consume_step":4,
-			"text_template":"请确认 {{contact_lookup.phone_numbers}} 是否还在使用",
+			"text_template":"Please confirm whether {{contact_lookup.phone_numbers}} is still active.",
 			"source_refs":["contact_lookup.phone_numbers"],
 			"target_app":"WeChat"
 		}]
@@ -1558,7 +1558,7 @@ func TestCommitPlanAllowsSourceAfterDeclaredTargetOpenBecauseRuntimeBlocksActual
 
 func TestCommitPlanRejectsPlaceholderOnlyTargetTextTemplate(t *testing.T) {
 	decision, err := parseCommitPlanInput(`{
-		"objective":"查询联系人数据后准备目标应用文本",
+		"objective":"query contact data and prepare target-app text",
 		"plan":["query source","prepare clipboard","open target","consume text"],
 		"sources":[{
 			"id":"contact_lookup",
@@ -1577,7 +1577,7 @@ func TestCommitPlanRejectsPlaceholderOnlyTargetTextTemplate(t *testing.T) {
 			"consume_step":4,
 			"text_template":"{{contact_lookup.phone_numbers}}",
 			"source_refs":["contact_lookup.phone_numbers"],
-			"target_app":"微信"
+			"target_app":"WeChat"
 		}]
 	}`)
 	if err != nil {
@@ -1605,12 +1605,12 @@ func TestCommitPlanAllowsAndroidTargetPreservingClipboardPlan(t *testing.T) {
 	state := &roleLoopState{Phase: phasePlan, PlanCommitRequired: true}
 	state.World.UpdateDeviceEnvironment(&PhoneEnvironment{Platform: "android"})
 	payload, _ := json.Marshal(map[string]any{
-		"objective":           "查通讯录电话号后给微信好友发消息问问电话号是否还在用",
-		"completion_criteria": []string{"微信消息已发送并有截图证据"},
+		"objective":           "look up contact data and send a status message in the target chat app",
+		"completion_criteria": []string{"message is sent with screenshot evidence"},
 		"plan": []string{
-			"查询通讯录里张三的电话号",
-			"打开微信并搜索李四聊天",
-			"通过目标保持的剪切板写入和粘贴完成输入，验证后发送",
+			"query contact data",
+			"open the target chat app and find the recipient chat",
+			"use target-preserving clipboard write and paste, verify the field, then send",
 		},
 		"reason": "android can preserve target app",
 	})
@@ -1702,9 +1702,9 @@ func TestTargetTextClipboardDoesNotInferContactsValuesWithoutSourceContract(t *t
 			Delivery:     planArtifactDeliveryClipboard,
 			PrepareStep:  3,
 			ConsumeStep:  4,
-			TextTemplate: "Target Friend，你手机号还在用吗？另外我想查下Example Contact的电话，你那边有吗？",
-			TargetApp:    "微信",
-			TargetLabel:  "Target Friend聊天输入框",
+			TextTemplate: "Target Friend, can you confirm the latest status for Example Contact?",
+			TargetApp:    "WeChat",
+			TargetLabel:  "Target Friend chat input",
 		}}),
 		ExecutionResults: []roleExecutionResult{{
 			Action: &schema.AgentAction{Tool: "contacts", ToolInput: `{"action":"query","query":"Example Contact","limit":10}`},
@@ -1713,7 +1713,7 @@ func TestTargetTextClipboardDoesNotInferContactsValuesWithoutSourceContract(t *t
 	}
 	call := ToolCall{
 		Spec:  ToolSpec{Name: "clipboard"},
-		Input: `{"action":"write","artifact_id":"wechat_message","text":"Target Friend，你手机号还在用吗？另外我想查下Example Contact的电话，你那边有吗？"}`,
+		Input: `{"action":"write","artifact_id":"wechat_message","text":"Target Friend, can you confirm the latest status for Example Contact?"}`,
 	}
 	if result, allowed := state.beforeArtifactToolCall(context.Background(), call); !allowed || result.Error != nil {
 		t.Fatalf("clipboard without explicit source contract allowed=%v result=%#v, want no inferred contacts-value rejection", allowed, result)
@@ -1738,10 +1738,10 @@ func TestTargetTextClipboardRequiresExplicitContactsPhoneValues(t *testing.T) {
 			Delivery:     planArtifactDeliveryClipboard,
 			PrepareStep:  1,
 			ConsumeStep:  2,
-			TextTemplate: "Example Contact手机号 {{contact_lookup.phone_numbers}} 还在用吗？",
+			TextTemplate: "Please confirm whether {{contact_lookup.phone_numbers}} is still active.",
 			SourceRefs:   []string{"contact_lookup.phone_numbers"},
-			TargetApp:    "微信",
-			TargetLabel:  "Target Friend聊天输入框",
+			TargetApp:    "WeChat",
+			TargetLabel:  "Target Friend chat input",
 		}}),
 		StepExecutionResults: []roleExecutionResult{{
 			Action: &schema.AgentAction{Tool: "contacts", ToolInput: `{"action":"query","query":"Example Contact","limit":10}`},
@@ -1750,14 +1750,14 @@ func TestTargetTextClipboardRequiresExplicitContactsPhoneValues(t *testing.T) {
 	}
 	call := ToolCall{
 		Spec:  ToolSpec{Name: "clipboard"},
-		Input: `{"action":"write","artifact_id":"wechat_message","text":"Example Contact手机号 这个号码 还在用吗？"}`,
+		Input: `{"action":"write","artifact_id":"wechat_message","text":"Please confirm whether this number is still active."}`,
 	}
 	if result, allowed := state.beforeArtifactToolCall(context.Background(), call); allowed || result.Error == nil ||
 		!strings.Contains(result.Output, "555 0101") {
 		t.Fatalf("clipboard without explicit source number allowed=%v result=%#v, want rejection", allowed, result)
 	}
 
-	call.Input = `{"action":"write","artifact_id":"wechat_message","text":"Example Contact手机号 555 0101 还在用吗？"}`
+	call.Input = `{"action":"write","artifact_id":"wechat_message","text":"Please confirm whether 555 0101 is still active."}`
 	if result, allowed := state.beforeArtifactToolCall(context.Background(), call); !allowed || result.Error != nil {
 		t.Fatalf("clipboard with explicit source number allowed=%v result=%#v, want allowed", allowed, result)
 	}
@@ -1786,7 +1786,7 @@ func TestContactsSourceContractRequiresContactsBeforeClipboardAndFinish(t *testi
 			Tool:       planSourceToolContacts,
 			Action:     planSourceActionQuery,
 			Step:       1,
-			Query:      "张三",
+			Query:      "Example Contact",
 			Produces:   []string{"phone_numbers"},
 			ArtifactID: "message_text",
 		}}),
@@ -1797,14 +1797,14 @@ func TestContactsSourceContractRequiresContactsBeforeClipboardAndFinish(t *testi
 			PrepareStep:    1,
 			TargetOpenStep: 2,
 			ConsumeStep:    2,
-			TextTemplate:   "请确认 {{contact_lookup.phone_numbers}} 是否还在使用",
+			TextTemplate:   "Please confirm whether {{contact_lookup.phone_numbers}} is still active.",
 			SourceRefs:     []string{"contact_lookup.phone_numbers"},
-			TargetApp:      "微信",
+			TargetApp:      "WeChat",
 		}}),
 	}
 	clipCall := ToolCall{
 		Spec:  ToolSpec{Name: "clipboard"},
-		Input: `{"action":"write","artifact_id":"message_text","text":"请确认 5550103 是否还在使用"}`,
+		Input: `{"action":"write","artifact_id":"message_text","text":"Please confirm whether 5550103 is still active."}`,
 	}
 	if result, allowed := state.beforeArtifactToolCall(context.Background(), clipCall); allowed || result.Error == nil ||
 		!strings.Contains(result.Output, "source contract") {
@@ -1821,8 +1821,8 @@ func TestContactsSourceContractRequiresContactsBeforeClipboardAndFinish(t *testi
 	}
 
 	state.StepExecutionResults = append(state.StepExecutionResults, roleExecutionResult{
-		Action: &schema.AgentAction{Tool: "contacts", ToolInput: `{"action":"query","query":"张三","limit":20}`},
-		Step:   &schema.AgentStep{Observation: `{"ok":true,"contacts":[{"name":"张三","phone_numbers":["5550103"]}]}`},
+		Action: &schema.AgentAction{Tool: "contacts", ToolInput: `{"action":"query","query":"Example Contact","limit":20}`},
+		Step:   &schema.AgentStep{Observation: `{"ok":true,"contacts":[{"name":"Example Contact","phone_numbers":["5550103"]}]}`},
 	})
 	if result, allowed := state.beforeArtifactToolCall(context.Background(), clipCall); !allowed || result.Error != nil {
 		t.Fatalf("clipboard after contacts allowed=%v result=%#v, want allowed", allowed, result)
@@ -1848,7 +1848,7 @@ func TestContactsSourceContractPersistsAcrossPlanSteps(t *testing.T) {
 			Tool:       planSourceToolContacts,
 			Action:     planSourceActionQuery,
 			Step:       1,
-			Query:      "张三",
+			Query:      "Example Contact",
 			ArtifactID: "message_text",
 		}}),
 		PlanArtifacts: initialPlanArtifactStates([]planArtifact{{
@@ -1858,16 +1858,16 @@ func TestContactsSourceContractPersistsAcrossPlanSteps(t *testing.T) {
 			PrepareStep:    1,
 			TargetOpenStep: 2,
 			ConsumeStep:    3,
-			TextTemplate:   "请确认 {{contact_lookup.phone_numbers}} 是否还在使用",
+			TextTemplate:   "Please confirm whether {{contact_lookup.phone_numbers}} is still active.",
 			SourceRefs:     []string{"contact_lookup.phone_numbers"},
-			TargetApp:      "微信",
+			TargetApp:      "WeChat",
 		}}),
 		ExecutionResults: []roleExecutionResult{{
-			Action: &schema.AgentAction{Tool: "contacts", ToolInput: `{"action":"query","query":"张三"}`},
-			Step:   &schema.AgentStep{Observation: `{"ok":true,"contacts":[{"name":"张三","phone_numbers":["5550103"]}]}`},
+			Action: &schema.AgentAction{Tool: "contacts", ToolInput: `{"action":"query","query":"Example Contact"}`},
+			Step:   &schema.AgentStep{Observation: `{"ok":true,"contacts":[{"name":"Example Contact","phone_numbers":["5550103"]}]}`},
 		}},
 	}
-	state.PlanArtifacts[0].PreparedText = "请确认 5550103 是否还在使用"
+	state.PlanArtifacts[0].PreparedText = "Please confirm whether 5550103 is still active."
 	targetCall := ToolCall{
 		Spec:  ToolSpec{Name: "open_app"},
 		Input: `{"app":"WeChat"}`,
@@ -1951,12 +1951,12 @@ func TestPreparePhoneWorkflowCannotOpenBeforeCommittedBoundary(t *testing.T) {
 			TargetOpenStep: 2,
 			ConsumeStep:    3,
 			TextTemplate:   "hello",
-			TargetApp:      "微信",
+			TargetApp:      "WeChat",
 		}}),
 	}
 	call := ToolCall{
-		Spec:  ToolSpec{Name: "prepare_phone_message"},
-		Input: `{"message_text":"hello","target_app":"微信","open_target_app":true}`,
+		Spec:  ToolSpec{Name: "prepare_phone_app_workflow"},
+		Input: `{"target_text":"hello","target_app":"WeChat","open_target_app":true}`,
 	}
 	if result, allowed := state.beforeArtifactToolCall(context.Background(), call); allowed || result.Error == nil {
 		t.Fatalf("prepare workflow open before boundary allowed=%v result=%#v, want rejection", allowed, result)
@@ -1988,8 +1988,8 @@ func TestPreparePhoneWorkflowMarksSingleMatchingArtifactPrepared(t *testing.T) {
 			PrepareStep:  2,
 			ConsumeStep:  4,
 			SourceRefs:   []string{"contact_lookup.phone_numbers"},
-			TextTemplate: "{{source}}的手机号还在用吗？",
-			TargetApp:    "微信",
+			TextTemplate: "Please confirm whether {{contact_lookup.phone_numbers}} is still active.",
+			TargetApp:    "WeChat",
 			TargetLabel:  "Target Friend",
 		}}),
 		ExecutionResults: []roleExecutionResult{{
@@ -2004,13 +2004,13 @@ func TestPreparePhoneWorkflowMarksSingleMatchingArtifactPrepared(t *testing.T) {
 	}
 
 	call := ToolCall{
-		Spec:  ToolSpec{Name: "prepare_phone_message"},
-		Input: `{"message_text":"Example Contact的手机号555 0101和5550102还在用吗？","target_app":"微信","open_target_app":false}`,
+		Spec:  ToolSpec{Name: "prepare_phone_app_workflow"},
+		Input: `{"artifact_id":"fan_phone","target_text":"Please confirm whether 555 0101 and 5550102 are still active.","target_app":"WeChat","open_target_app":false}`,
 	}
-	result := ToolResult{Output: `{"ok":true,"workflow":"prepare_phone_message","target_app":"微信","target_text":"Example Contact的手机号555 0101和5550102还在用吗？","clipboard_prepared":true,"opened_target_app":false}`}
+	result := ToolResult{Output: `{"ok":true,"workflow":"prepare_phone_app_workflow","target_app":"WeChat","target_text":"Please confirm whether 555 0101 and 5550102 are still active.","clipboard_prepared":true,"opened_target_app":false}`}
 
 	state.afterArtifactToolCall(context.Background(), call, result)
-	if got := state.PlanArtifacts[0].PreparedText; got != "Example Contact的手机号555 0101和5550102还在用吗？" {
+	if got := state.PlanArtifacts[0].PreparedText; got != "Please confirm whether 555 0101 and 5550102 are still active." {
 		t.Fatalf("prepared text = %q", got)
 	}
 	if state.PlanArtifacts[0].PreparedAt.IsZero() {
@@ -2041,22 +2041,22 @@ func TestCommitPlanParsesStringPlanAndCriteria(t *testing.T) {
 
 func TestCommitPlanParsesPlanEncodedAsJSONStringArray(t *testing.T) {
 	encodedPlan, err := json.Marshal([]string{
-		"使用 contacts 工具查询通讯录中Example Contact的手机号，获取所有电话号码。",
-		"将Example Contact的手机号组合成询问消息，写入剪贴板，为后续微信发送做准备。",
-		"使用 open_app 打开微信 App。",
-		`等待微信加载完成，然后在微信搜索框中搜索"Target Friend"，进入聊天界面。`,
-		"使用 enter_text_in_field 工具将剪贴板中的消息粘贴到输入框，然后发送消息。",
-		"等待消息发送成功，确认聊天界面显示已发送的消息。",
+		"Use the contacts tool to query Example Contact and collect all phone numbers.",
+		"Compose the final message text from the contact data and write it to clipboard.",
+		"Use open_app to open WeChat.",
+		`Wait for WeChat to load, then search for "Target Friend" and open the chat.`,
+		"Use enter_text_in_field to paste the prepared clipboard text and send the message.",
+		"Wait for send completion and confirm the sent message appears in the chat.",
 	})
 	if err != nil {
 		t.Fatalf("marshal encoded plan: %v", err)
 	}
 	payload, err := json.Marshal(map[string]any{
-		"objective": "查询通讯录中Example Contact的手机号，然后在微信中联系\"Target Friend\"，询问该手机号是否还在使用。",
+		"objective": "Query Example Contact's phone numbers, then message \"Target Friend\" in WeChat to confirm whether the numbers are still active.",
 		"completion_criteria": []string{
-			"从通讯录成功获取Example Contact的手机号",
-			"微信成功打开并进入与Target Friend的聊天界面",
-			"消息已输入并发送成功，聊天界面显示发送出去的消息气泡",
+			"Example Contact phone numbers are returned by the contacts tool",
+			"WeChat is open and the Target Friend chat is visible",
+			"The message is entered, sent, and visible as an outgoing message",
 		},
 		"plan": string(encodedPlan),
 		"sources": []map[string]any{{
@@ -2075,12 +2075,12 @@ func TestCommitPlanParsesPlanEncodedAsJSONStringArray(t *testing.T) {
 			"prepare_step":     2,
 			"consume_step":     5,
 			"source_refs":      []string{"fan_phone_lookup.phone_numbers"},
-			"text_template":    "Example Contact的手机号是{{fan_phone_lookup.phone_numbers}}，这个号还在用吗？",
-			"target_app":       "微信",
+			"text_template":    "Example Contact numbers are {{fan_phone_lookup.phone_numbers}}. Are these numbers still active?",
+			"target_app":       "WeChat",
 			"target_label":     "Target Friend",
 			"target_open_step": 3,
 		}},
-		"reason": "任务需要先查通讯录获取手机号，再打开微信发送消息。",
+		"reason": "The workflow needs app-side contact data before opening WeChat.",
 	})
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
@@ -2102,10 +2102,10 @@ func TestCommitPlanParsesPlanEncodedAsJSONStringArray(t *testing.T) {
 
 func TestCommitPlanParsesLogPlanStringArrayWithUnescapedInnerQuotes(t *testing.T) {
 	planText := `
-["步骤1：使用 contacts 工具查询通讯录中"Example Contact"的手机号，获取所有关联的电话号码。", "步骤2：将Example Contact的手机号整理成询问文本，并通过 clipboard 工具写入剪贴板。", "步骤3：使用 open_app 打开微信，等待微信稳定加载。", "步骤4：在微信中搜索或找到"Target Friend"的聊天会话并点击进入。", "步骤5：使用 enter_text_in_field 将剪贴板中的消息粘贴到输入框，然后点击发送按钮。", "步骤6：截图验证消息是否已成功发送。"]
+["Step 1: Use contacts to query "Example Contact" and collect all phone numbers.", "Step 2: Compose the final message and write it to clipboard.", "Step 3: Use open_app to open WeChat and wait for it to load.", "Step 4: Search for or find the "Target Friend" chat and open it.", "Step 5: Use enter_text_in_field to paste the prepared message, then send it.", "Step 6: Verify with a screenshot that the message was sent."]
 `
 	payload, err := json.Marshal(map[string]any{
-		"objective": "查询通讯录中Example Contact的手机号，然后在微信中向\"Target Friend\"发送消息询问该手机号是否还在使用。",
+		"objective": "Query Example Contact's phone numbers, then message \"Target Friend\" in WeChat to confirm whether the numbers are still active.",
 		"plan":      planText,
 		"sources": []map[string]any{{
 			"id":          "fan_phone_lookup",
@@ -2122,8 +2122,8 @@ func TestCommitPlanParsesLogPlanStringArrayWithUnescapedInnerQuotes(t *testing.T
 			"delivery":      "clipboard",
 			"prepare_step":  2,
 			"consume_step":  5,
-			"text_template": "Example Contact的手机号是{{fan_phone_lookup.phone_numbers}}，这手机号还在用吗？",
-			"target_app":    "微信",
+			"text_template": "Example Contact numbers are {{fan_phone_lookup.phone_numbers}}. Are these numbers still active?",
+			"target_app":    "WeChat",
 			"target_label":  "Target Friend",
 			"source_refs":   []string{"fan_phone_lookup.phone_numbers"},
 		}},

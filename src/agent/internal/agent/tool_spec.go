@@ -271,12 +271,7 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 	"prepare_phone_app_workflow": {
 		Category:     "phone",
 		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"app_side_actions":[{"id":"calendar_lookup","tool":"calendar","action":"query","payload":{"from":"2026-06-30T00:00:00+08:00","to":"2026-07-01T00:00:00+08:00"}}],"target_text_template":"今天日历备注里写的是：{{calendar_lookup.event_notes}}，这件事怎么样了？","target_app":"微信","target_label":"张三","open_target_app":true}`,
-	},
-	"prepare_phone_message": {
-		Category:     "phone",
-		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"contact_query":"张三","message_template":"张三的手机号是{{phone_numbers}}，这个号码还在用吗？","target_app":"微信","target_label":"李四","open_target_app":true}`,
+		ExampleInput: `{"app_side_actions":[{"id":"calendar_lookup","tool":"calendar","action":"query","payload":{"from":"2026-06-30T00:00:00+08:00","to":"2026-07-01T00:00:00+08:00"}}],"target_text_template":"Calendar notes say: {{calendar_lookup.event_notes}}. What is the latest status?","target_app":"WeChat","target_label":"Project Lead","open_target_app":true}`,
 	},
 	"notification": {
 		Category:     "phone",

@@ -1187,7 +1187,7 @@ func (s *roleLoopState) beforeArtifactToolCall(ctx context.Context, call ToolCal
 		return s.beforeClipboardToolCall(ctx, call)
 	case "enter_text_in_field", "enter_text_via_bridge":
 		return s.beforeTextEntryToolCall(ctx, call)
-	case "prepare_phone_message", "prepare_phone_app_workflow":
+	case "prepare_phone_app_workflow":
 		return s.beforePreparePhoneWorkflowToolCall(ctx, call)
 	case "open_app", "search_launch_app":
 		if contracts := s.sourceContractsForCurrentStep(); len(contracts) > 0 {
@@ -1292,7 +1292,7 @@ func (s roleLoopState) targetAppNavigationAlreadyExecuted() bool {
 			if toolObservationOK(execution.Step.Observation) {
 				return true
 			}
-		case "prepare_phone_message", "prepare_phone_app_workflow":
+		case "prepare_phone_app_workflow":
 			if workflowOpenedTargetApp(execution.Step.Observation) {
 				return true
 			}
@@ -1475,7 +1475,7 @@ func (s *roleLoopState) afterArtifactToolCall(ctx context.Context, call ToolCall
 		s.afterClipboardToolCall(call, result)
 	case "enter_text_in_field", "enter_text_via_bridge":
 		s.afterTextEntryToolCall(call, result)
-	case "prepare_phone_message", "prepare_phone_app_workflow":
+	case "prepare_phone_app_workflow":
 		s.afterPreparePhoneWorkflowToolCall(call, result)
 	}
 	return result

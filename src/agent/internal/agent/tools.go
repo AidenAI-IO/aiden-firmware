@@ -72,7 +72,6 @@ var scriptCallableToolNames = map[string]struct{}{
 	"mouse_scroll":               {},
 	"open_app":                   {},
 	"prepare_phone_app_workflow": {},
-	"prepare_phone_message":      {},
 	"quick_action":               {},
 	"screenshot":                 {},
 	"search_launch_app":          {},

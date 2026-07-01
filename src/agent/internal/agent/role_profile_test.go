@@ -165,7 +165,7 @@ func TestBuildRoleProfilesInjectsSkillsAndCapabilities(t *testing.T) {
 		!strings.Contains(profiles.Planner.SystemPrompt, "write it to clipboard while Aiden is foreground") ||
 		!strings.Contains(profiles.Planner.SystemPrompt, "do not create a separate target-app launch milestone before app-side preparation") ||
 		!strings.Contains(profiles.Executor.SystemPrompt, "prefer prepare_phone_app_workflow as the first-class Aiden-foreground workflow") ||
-		!strings.Contains(profiles.Executor.SystemPrompt, "prepare_phone_message is only the Contacts-to-message shortcut") ||
+		!strings.Contains(profiles.Executor.SystemPrompt, "batches direct app-side actions") ||
 		!strings.Contains(profiles.Executor.SystemPrompt, "call clipboard action=write before finish_step") ||
 		!strings.Contains(profiles.Executor.SystemPrompt, "run all reorderable Phone Bridge app-side tools first") ||
 		!strings.Contains(profiles.Executor.SystemPrompt, "including clipboard, calendar, contacts, and notification") ||

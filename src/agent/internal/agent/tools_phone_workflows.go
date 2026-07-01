@@ -7,13 +7,6 @@ import (
 	"strings"
 )
 
-// PreparePhoneMessageTool performs the Aiden-foreground half of a cross-app
-// messaging workflow before the target app is opened.
-type PreparePhoneMessageTool struct {
-	bridge   *PhoneBridge
-	restorer *PhoneBridgeRestorer
-}
-
 // PreparePhoneAppWorkflowTool batches reorderable PhoneBridge app-side work
 // before opening a target app. The clipboard is only one optional carrier in
 // this workflow; the important boundary is target-app navigation.
@@ -22,25 +15,11 @@ type PreparePhoneAppWorkflowTool struct {
 	restorer *PhoneBridgeRestorer
 }
 
-func NewPreparePhoneMessageTool(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) *PreparePhoneMessageTool {
-	return &PreparePhoneMessageTool{bridge: bridge, restorer: restorer}
-}
-
 func NewPreparePhoneAppWorkflowTool(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) *PreparePhoneAppWorkflowTool {
 	return &PreparePhoneAppWorkflowTool{bridge: bridge, restorer: restorer}
 }
 
-func (t *PreparePhoneMessageTool) Name() string { return "prepare_phone_message" }
-
 func (t *PreparePhoneAppWorkflowTool) Name() string { return "prepare_phone_app_workflow" }
-
-func (t *PreparePhoneMessageTool) Description() string {
-	return `Prepare a cross-app phone message while Aiden is foreground, before opening the target app. ` +
-		`This is the first-class workflow for tasks like "query a Contacts phone number, then ask a WeChat friend whether that number is still used". ` +
-		`It batches expensive Aiden app-side work in one foreground phase: optional contacts query, message rendering, clipboard write, and optional target-app open as the final boundary. ` +
-		`Use this instead of separate contacts + clipboard + open_app calls when message text depends on phone-side data. ` +
-		`After it returns ok=true, navigate/search inside the target app if needed, then call enter_text_in_field with the returned target_text and send_after_commit=true.`
-}
 
 func (t *PreparePhoneAppWorkflowTool) Description() string {
 	return `Prepare a target-app phone workflow while Aiden is foreground, before opening the target app. ` +
@@ -48,19 +27,6 @@ func (t *PreparePhoneAppWorkflowTool) Description() string {
 		`Use it for cross-app tasks where the target app message depends on Contacts, Calendar, clipboard read, notification scheduling, or future direct PhoneBridge tools. ` +
 		`Do not use it for UI-only app reading; only structured direct PhoneBridge operations can run before the target app. ` +
 		`After it returns ok=true, navigate/search inside the target app if needed, then call enter_text_in_field with the returned target_text and send_after_commit=true when sending.`
-}
-
-func (t *PreparePhoneMessageTool) ArgsSchema() map[string]any {
-	return objectArgsSchema(map[string]any{
-		"contact_query":    stringArgSchema("Optional Contacts query whose phone numbers or contact name are needed in the message."),
-		"message_template": stringArgSchema("Message template. Supports {{phone_numbers}}, {{phone_number}}, {{contact_name}}, {{contact_names}}, {{contact_query}}, and {{target_label}} placeholders."),
-		"message_text":     stringArgSchema("Exact final message text when no template rendering is needed. If contact_query returns phone numbers, this text must include every returned phone number."),
-		"artifact_id":      stringArgSchema("Optional committed-plan target_text artifact id to mark prepared after clipboard write."),
-		"target_app":       stringArgSchema("Target app to open after clipboard preparation, for example WeChat or 微信."),
-		"target_label":     stringArgSchema("Target chat/contact label inside the target app, for example the WeChat friend to message."),
-		"open_target_app":  boolArgSchema("Open target_app after preparing clipboard. This should be the final Aiden-side action before target-app UI automation."),
-		"limit":            minIntegerArgSchema("Maximum contacts returned by contact_query. Default 10.", 1),
-	}, "target_app")
 }
 
 func (t *PreparePhoneAppWorkflowTool) ArgsSchema() map[string]any {
@@ -79,33 +45,17 @@ func (t *PreparePhoneAppWorkflowTool) ArgsSchema() map[string]any {
 		"target_text":          stringArgSchema("Exact final text when no template rendering is needed."),
 		"artifact_id":          stringArgSchema("Optional committed-plan target_text artifact id to mark prepared after clipboard write."),
 		"prepare_clipboard":    boolArgSchema("Write target_text/target_text_template result to the phone clipboard before opening target_app. Defaults to true when target text is provided."),
-		"target_app":           stringArgSchema("Target app to open after all app-side preparation, for example WeChat or 微信."),
+		"target_app":           stringArgSchema("Target app to open after all app-side preparation, for example WeChat or Tasks."),
 		"target_label":         stringArgSchema("Target chat/contact label inside the target app."),
 		"open_target_app":      boolArgSchema("Open target_app after all app-side actions and optional clipboard preparation. This is the final phase boundary."),
 	}, "target_app")
 }
 
-type preparePhoneMessageArgs struct {
-	ContactQuery    string `json:"contact_query"`
-	MessageTemplate string `json:"message_template"`
-	MessageText     string `json:"message_text"`
-	ArtifactID      string `json:"artifact_id"`
-	TargetApp       string `json:"target_app"`
-	TargetLabel     string `json:"target_label"`
-	OpenTargetApp   bool   `json:"open_target_app"`
-	Limit           int    `json:"limit"`
-}
-
-type phoneMessageContact struct {
+type phoneWorkflowContact struct {
 	ContactID    string   `json:"contact_id,omitempty"`
 	Name         string   `json:"name,omitempty"`
 	PhoneNumbers []string `json:"phone_numbers,omitempty"`
 	Emails       []string `json:"emails,omitempty"`
-}
-
-type phoneMessageSourceValues struct {
-	ContactNames []string `json:"contact_names,omitempty"`
-	PhoneNumbers []string `json:"phone_numbers,omitempty"`
 }
 
 type preparePhoneAppWorkflowArgs struct {
@@ -144,127 +94,10 @@ type phoneWorkflowSourceValues struct {
 	ClipboardTexts []string `json:"clipboard_texts,omitempty"`
 }
 
-func (t *PreparePhoneMessageTool) Call(ctx context.Context, input string) (string, error) {
-	var args preparePhoneMessageArgs
-	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err != nil {
-		te := NewToolError(CodeInvalidArguments, fmt.Sprintf("invalid input: %v. Expected JSON like {\"contact_query\":\"张三\",\"message_template\":\"张三的手机号是{{phone_numbers}}，还在用吗？\",\"target_app\":\"微信\",\"target_label\":\"李四\",\"open_target_app\":true}", err))
-		SetToolError(ctx, te)
-		return toolErrorString(te), nil
-	}
-	args.ContactQuery = strings.TrimSpace(args.ContactQuery)
-	args.MessageTemplate = strings.TrimSpace(args.MessageTemplate)
-	args.MessageText = strings.TrimSpace(args.MessageText)
-	args.TargetApp = strings.TrimSpace(args.TargetApp)
-	args.TargetLabel = strings.TrimSpace(args.TargetLabel)
-	if args.Limit <= 0 {
-		args.Limit = 10
-	}
-	if args.TargetApp == "" {
-		te := NewToolError(CodeInvalidArguments, "target_app is required")
-		SetToolError(ctx, te)
-		return toolErrorString(te), nil
-	}
-	if args.MessageText == "" && args.MessageTemplate == "" {
-		te := NewToolError(CodeInvalidArguments, "message_template or message_text is required")
-		SetToolError(ctx, te)
-		return toolErrorString(te), nil
-	}
-
-	var contacts []phoneMessageContact
-	var source phoneMessageSourceValues
-	restored := false
-	steps := []string{"workflow: start Aiden-foreground message preparation"}
-	if args.ContactQuery != "" {
-		var queryRestored bool
-		var err error
-		contacts, queryRestored, err = t.queryContacts(ctx, args.ContactQuery, args.Limit)
-		if err != nil {
-			return t.toolErrorOutput(ctx, err), nil
-		}
-		restored = restored || queryRestored
-		source = phoneMessageSourceValuesFromContacts(contacts)
-		steps = append(steps, "workflow: queried contacts before target-app navigation")
-		if len(contacts) == 0 {
-			te := NewToolErrorWithDetails(CodeToolExecutionFailed, "contacts query returned no contacts; do not open the target app until source data is available", map[string]any{
-				"contact_query": args.ContactQuery,
-			})
-			SetToolError(ctx, te)
-			return toolErrorString(te), nil
-		}
-	}
-
-	targetText, err := renderPhoneMessageText(args, source)
-	if err != nil {
-		te := NewToolError(CodeInvalidArguments, err.Error())
-		SetToolError(ctx, te)
-		return toolErrorString(te), nil
-	}
-	if missing := missingPhoneMessageSourcePhoneNumbers(source, targetText); len(missing) > 0 {
-		te := NewToolErrorWithDetails(CodeInvalidArguments, "message text omits phone number(s) returned by Contacts; include the source value before opening the target app", map[string]any{
-			"missing_phone_numbers": missing,
-			"contact_query":         args.ContactQuery,
-		})
-		SetToolError(ctx, te)
-		return toolErrorString(te), nil
-	}
-
-	clipboardRestored, err := t.writeClipboard(ctx, targetText)
-	if err != nil {
-		return t.toolErrorOutput(ctx, err), nil
-	}
-	restored = restored || clipboardRestored
-	steps = append(steps, "workflow: wrote final target text to clipboard before target-app navigation")
-
-	openedTarget := false
-	openMechanism := ""
-	if args.OpenTargetApp {
-		if args.TargetApp == "" {
-			te := NewToolError(CodeInvalidArguments, "open_target_app requires target_app")
-			SetToolError(ctx, te)
-			return toolErrorString(te), nil
-		}
-		var openRestored bool
-		var err error
-		openMechanism, openRestored, err = t.openTargetApp(ctx, args.TargetApp)
-		if err != nil {
-			return t.toolErrorOutput(ctx, err), nil
-		}
-		restored = restored || openRestored
-		openedTarget = true
-		steps = append(steps, "workflow: opened target app after clipboard preparation")
-	}
-
-	result := map[string]any{
-		"ok":                 true,
-		"workflow":           "prepare_phone_message",
-		"target_app":         args.TargetApp,
-		"target_label":       args.TargetLabel,
-		"target_text":        targetText,
-		"clipboard_prepared": true,
-		"opened_target_app":  openedTarget,
-		"contacts":           contacts,
-		"source_values":      source,
-		"steps":              steps,
-		"next_tool_hint": map[string]any{
-			"tool":              "enter_text_in_field",
-			"text":              targetText,
-			"send_after_commit": true,
-			"note":              "After the correct target chat field is visible, focus it and use this text. The prepared clipboard can be pasted without reopening Aiden.",
-		},
-	}
-	if restored {
-		result["restored_from_return_entry"] = true
-	}
-	if openMechanism != "" {
-		result["open_mechanism"] = openMechanism
-	}
-	return jsonString(result), nil
-}
-
 func (t *PreparePhoneAppWorkflowTool) Call(ctx context.Context, input string) (string, error) {
 	var args preparePhoneAppWorkflowArgs
 	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &args); err != nil {
-		te := NewToolError(CodeInvalidArguments, fmt.Sprintf("invalid input: %v. Expected JSON like {\"app_side_actions\":[{\"id\":\"calendar_lookup\",\"tool\":\"calendar\",\"action\":\"query\",\"payload\":{\"from\":\"2026-06-30T00:00:00+08:00\",\"to\":\"2026-07-01T00:00:00+08:00\"}}],\"target_text_template\":\"今天日历备注里写的是：{{calendar_lookup.event_notes}}，这件事进展如何？\",\"target_app\":\"微信\",\"target_label\":\"张三\",\"open_target_app\":true}", err))
+		te := NewToolError(CodeInvalidArguments, fmt.Sprintf("invalid input: %v. Expected JSON like {\"app_side_actions\":[{\"id\":\"calendar_lookup\",\"tool\":\"calendar\",\"action\":\"query\",\"payload\":{\"from\":\"2026-06-30T00:00:00+08:00\",\"to\":\"2026-07-01T00:00:00+08:00\"}}],\"target_text_template\":\"Calendar notes say: {{calendar_lookup.event_notes}}. What is the latest status?\",\"target_app\":\"WeChat\",\"target_label\":\"Project Lead\",\"open_target_app\":true}", err))
 		SetToolError(ctx, te)
 		return toolErrorString(te), nil
 	}
@@ -428,70 +261,6 @@ func (t *PreparePhoneAppWorkflowTool) Call(ctx context.Context, input string) (s
 	return jsonString(result), nil
 }
 
-func (t *PreparePhoneMessageTool) queryContacts(ctx context.Context, query string, limit int) ([]phoneMessageContact, bool, error) {
-	payload, _ := json.Marshal(map[string]any{
-		"query": query,
-		"limit": limit,
-	})
-	resp, restored, err := sendForegroundBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
-		ID:        nextBridgeCmdID("workflow_contacts_query"),
-		Type:      "contacts_query",
-		Payload:   payload,
-		TimeoutMs: 8000,
-	})
-	if err != nil {
-		return nil, restored, phoneWorkflowBridgePreconditionError(t.bridge, err)
-	}
-	if resp.Error != nil {
-		return nil, restored, resp.Error
-	}
-	var data struct {
-		Contacts []phoneMessageContact `json:"contacts"`
-	}
-	if len(resp.Data) > 0 {
-		if err := json.Unmarshal(resp.Data, &data); err != nil {
-			return nil, restored, NewToolError(CodeToolExecutionFailed, fmt.Sprintf("decode contacts data: %v", err))
-		}
-	}
-	if data.Contacts == nil {
-		data.Contacts = []phoneMessageContact{}
-	}
-	return data.Contacts, restored, nil
-}
-
-func (t *PreparePhoneMessageTool) writeClipboard(ctx context.Context, text string) (bool, error) {
-	payload, _ := json.Marshal(map[string]string{"text": text})
-	resp, restored, err := sendForegroundBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
-		ID:        nextBridgeCmdID("workflow_clip_write"),
-		Type:      "clipboard_write",
-		Payload:   payload,
-		TimeoutMs: 5000,
-	})
-	if err != nil {
-		return restored, phoneWorkflowBridgePreconditionError(t.bridge, err)
-	}
-	if resp.Error != nil {
-		return restored, resp.Error
-	}
-	return restored, nil
-}
-
-func (t *PreparePhoneMessageTool) openTargetApp(ctx context.Context, app string) (string, bool, error) {
-	resp, restored, err := sendForegroundBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
-		ID:        nextBridgeCmdID("workflow_open_app"),
-		Type:      "open_app",
-		App:       strings.TrimSpace(app),
-		TimeoutMs: 10000,
-	})
-	if err != nil {
-		return "", restored, phoneWorkflowBridgePreconditionError(t.bridge, err)
-	}
-	if resp.Error != nil {
-		return "", restored, resp.Error
-	}
-	return openAppResultMechanism(openAppArgs{App: app}, resp.Method), restored, nil
-}
-
 func (t *PreparePhoneAppWorkflowTool) writeClipboard(ctx context.Context, text string) (bool, error) {
 	payload, _ := json.Marshal(map[string]string{"text": text})
 	resp, restored, err := sendForegroundBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
@@ -525,19 +294,6 @@ func (t *PreparePhoneAppWorkflowTool) openTargetApp(ctx context.Context, app str
 	return openAppResultMechanism(openAppArgs{App: app}, resp.Method), restored, nil
 }
 
-func (t *PreparePhoneMessageTool) toolErrorOutput(ctx context.Context, err error) string {
-	if err == nil {
-		return ""
-	}
-	if te, ok := err.(*ToolError); ok {
-		SetToolError(ctx, te)
-		return toolErrorString(te)
-	}
-	te := NewToolError(CodeToolExecutionFailed, err.Error())
-	SetToolError(ctx, te)
-	return toolErrorString(te)
-}
-
 func (t *PreparePhoneAppWorkflowTool) toolErrorOutput(ctx context.Context, err error) string {
 	if err == nil {
 		return ""
@@ -560,64 +316,17 @@ func phoneWorkflowBridgePreconditionError(bridge *PhoneBridge, err error) *ToolE
 		status = bridge.Status()
 	}
 	return NewToolErrorWithDetails(CodeBridgeNotConnected,
-		fmt.Sprintf("%v. Keep Aiden in foreground while running prepare_phone_app_workflow/prepare_phone_message; after target_app is opened, do not use PhoneBridge app-side preparation tools again.", err),
+		fmt.Sprintf("%v. Keep Aiden in foreground while running prepare_phone_app_workflow; after target_app is opened, do not use PhoneBridge app-side preparation tools again.", err),
 		map[string]any{"fallback": phoneBridgeRecoveryGuidance(status)})
 }
 
-func phoneMessageSourceValuesFromContacts(contacts []phoneMessageContact) phoneMessageSourceValues {
-	var source phoneMessageSourceValues
+func phoneWorkflowSourceValuesFromContacts(contacts []phoneWorkflowContact) phoneWorkflowSourceValues {
+	var source phoneWorkflowSourceValues
 	for _, contact := range contacts {
 		source.ContactNames = uniqueNonEmpty(append(source.ContactNames, contact.Name))
 		source.PhoneNumbers = uniqueNonEmpty(append(source.PhoneNumbers, contact.PhoneNumbers...))
 	}
 	return source
-}
-
-func renderPhoneMessageText(args preparePhoneMessageArgs, source phoneMessageSourceValues) (string, error) {
-	if text := strings.TrimSpace(args.MessageText); text != "" {
-		return text, nil
-	}
-	template := strings.TrimSpace(args.MessageTemplate)
-	if template == "" {
-		return "", fmt.Errorf("message_template or message_text is required")
-	}
-	phoneNumber := ""
-	if len(source.PhoneNumbers) > 0 {
-		phoneNumber = source.PhoneNumbers[0]
-	}
-	contactName := ""
-	if len(source.ContactNames) > 0 {
-		contactName = source.ContactNames[0]
-	}
-	replacer := strings.NewReplacer(
-		"{{phone_numbers}}", strings.Join(source.PhoneNumbers, "、"),
-		"{{phone_number}}", phoneNumber,
-		"{{contact_names}}", strings.Join(source.ContactNames, "、"),
-		"{{contact_name}}", contactName,
-		"{{contact_query}}", strings.TrimSpace(args.ContactQuery),
-		"{{target_label}}", strings.TrimSpace(args.TargetLabel),
-	)
-	text := strings.TrimSpace(replacer.Replace(template))
-	if text == "" {
-		return "", fmt.Errorf("rendered message text is empty")
-	}
-	if templateHasPlaceholder(text) {
-		return "", fmt.Errorf("message_template contains unsupported placeholder(s): %s", strings.Join(templatePlaceholderRE.FindAllString(text, -1), ", "))
-	}
-	return text, nil
-}
-
-func missingPhoneMessageSourcePhoneNumbers(source phoneMessageSourceValues, text string) []string {
-	if len(source.PhoneNumbers) == 0 {
-		return nil
-	}
-	var missing []string
-	for _, phone := range uniqueNonEmpty(source.PhoneNumbers) {
-		if !artifactTextContainsValue(text, phone) {
-			missing = append(missing, phone)
-		}
-	}
-	return missing
 }
 
 func phoneWorkflowBridgeCommandType(action phoneWorkflowAction) (string, error) {
@@ -707,10 +416,10 @@ func phoneWorkflowExtractSourceValues(commandType string, raw json.RawMessage) p
 	switch commandType {
 	case "contacts_query":
 		var data struct {
-			Contacts []phoneMessageContact `json:"contacts"`
+			Contacts []phoneWorkflowContact `json:"contacts"`
 		}
 		_ = json.Unmarshal(raw, &data)
-		source := phoneMessageSourceValuesFromContacts(data.Contacts)
+		source := phoneWorkflowSourceValuesFromContacts(data.Contacts)
 		result.sourceValues.ContactNames = source.ContactNames
 		result.sourceValues.PhoneNumbers = source.PhoneNumbers
 		result.placeholders["contact_names"] = strings.Join(source.ContactNames, "、")
@@ -803,7 +512,7 @@ func renderPhoneWorkflowTemplate(template string, values map[string]string) (str
 	return rendered, nil
 }
 
-func phoneWorkflowContactsSummary(contacts []phoneMessageContact) string {
+func phoneWorkflowContactsSummary(contacts []phoneWorkflowContact) string {
 	parts := make([]string, 0, len(contacts))
 	for _, contact := range contacts {
 		chunk := strings.TrimSpace(contact.Name)
