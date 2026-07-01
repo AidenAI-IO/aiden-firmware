@@ -35,7 +35,6 @@ type roleCollaborativeExecutor struct {
 	ScreenshotPruning      ScreenshotPruningConfig
 	VisualArtifacts        *visualArtifactStore
 	InitialWorldState      worldState
-	ForceSimpleLoop        bool
 	SteerProvider          func(context.Context) (RunSteerMessage, bool)
 	FinalSteerProvider     func(context.Context) (RunSteerMessage, bool)
 	SteerInterrupt         func() <-chan struct{}
@@ -230,7 +229,6 @@ func newRoleCollaborativeExecutor(
 		ScreenshotPruning: screenshotPruning.WithDefaults(),
 		VisualArtifacts:   newVisualArtifactStore(recorder),
 		InitialWorldState: world,
-		ForceSimpleLoop:   profiles.Planner.SystemPrompt != "" && !profiles.Planner.Capabilities.CanModifyPlan,
 		SteerProvider:     steerProvider,
 	}
 }
@@ -254,13 +252,9 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 
 	plannerToolSpecs := toolSpecsForRole(RolePlanner, e.Tools)
 	executorToolSpecs := toolSpecsForRole(RoleExecutor, e.Tools)
-	initialPhase := phaseDecision
-	if e.ForceSimpleLoop {
-		initialPhase = phaseDefault
-	}
 	state := roleLoopState{
-		Phase:                 initialPhase,
-		ForceSimpleLoop:       e.ForceSimpleLoop,
+		Phase:                 phaseDefault,
+		ForceSimpleLoop:       true,
 		Todo:                  TodoState{Mode: TodoModeNone},
 		World:                 e.InitialWorldState,
 		TodoReminderToolCalls: e.TodoReminderToolCalls,
@@ -613,24 +607,9 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 	toolSpecs *ToolSpecs,
 	options ...chains.ChainCallOption,
 ) (plannerTurnResult, error) {
-	if state.Phase == phaseDecision && !e.ForceSimpleLoop {
-		return e.callRouteTurn(ctx, inputs, state, toolSpecs, options...)
-	}
-
-	task := plannerTaskForPhase(state.Phase, *state, e.ForceSimpleLoop)
-	messages := e.roleMessages(e.Profiles.Planner, inputs, *state, task)
+	messages := e.roleMessages(e.Profiles.Planner, inputs, *state, "")
 	state.PendingTodoReminder = ""
-	plannerTools := toolsForRole(RolePlanner, e.Tools)
-	if e.ForceSimpleLoop {
-		plannerTools = appendSimpleTodoMetaTools(plannerTools)
-	} else {
-		switch state.Phase {
-		case phasePlan:
-			plannerTools = appendPlannerReadOnlyTools(loopMetaTools(), plannerTools)
-		default:
-			plannerTools = appendDefaultLoopMetaTools(plannerTools)
-		}
-	}
+	plannerTools := appendSimpleTodoMetaTools(toolsForRole(RolePlanner, e.Tools))
 	parser := &FunctionAgent{
 		Tools:     plannerTools,
 		OutputKey: e.OutputKey,
@@ -644,7 +623,7 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 	// not a tool call; finishRun streams confirmed final answers after parsing.
 	if diagnostics, ok := e.CallbacksHandler.(finalStreamingDecisionLogger); ok {
 		diagnostics.LogFinalStreamingDecision(ctx, RolePlanner, false,
-			fmt.Sprintf("tool_capable_planner_turn phase=%s force_simple=%t tools=%d", state.Phase, e.ForceSimpleLoop, len(plannerTools)))
+			fmt.Sprintf("tool_capable_agent_turn phase=%s single_agent=true tools=%d", state.Phase, len(plannerTools)))
 	}
 	res, err := generate()
 	if err != nil {
@@ -711,12 +690,12 @@ func (e *roleCollaborativeExecutor) callPlannerTurn(
 		if e.CallbacksHandler != nil {
 			e.CallbacksHandler.HandleAgentAction(ctx, action)
 		}
-		if e.ForceSimpleLoop && !toolNameEqual(action.Tool, toolSetTodo) {
+		if !toolNameEqual(action.Tool, toolSetTodo) {
 			return plannerTurnResult{
 				Kind: plannerTurnInvalidMeta,
 				Step: &schema.AgentStep{
 					Action:      action,
-					Observation: "plan mode tools are disabled by force_simple_loop; use available tools directly or return a final answer",
+					Observation: "plan mode tools are disabled in single-agent mode; use available tools directly or return a final answer",
 				},
 			}, nil
 		}
@@ -757,87 +736,18 @@ func plannerMetaTurnIsError(turn plannerTurnResult) bool {
 	return strings.HasPrefix(strings.TrimSpace(turn.Step.Observation), "commit_plan failed:")
 }
 
-func (e *roleCollaborativeExecutor) callRouteTurn(
-	ctx context.Context,
-	inputs map[string]string,
-	state *roleLoopState,
-	toolSpecs *ToolSpecs,
-	options ...chains.ChainCallOption,
-) (plannerTurnResult, error) {
-	task := plannerTaskForPhase(phaseDecision, *state, e.ForceSimpleLoop)
-	messages := e.roleMessages(e.Profiles.Planner, inputs, *state, task)
-	callOptions := e.finalStreamingCallOptions(chains.GetLLMCallOptions(options...))
-	res, err := e.withFinalStreaming(ctx, func() (*llms.ContentResponse, error) {
-		return e.generateRoleContent(ctx, RolePlanner, messages, callOptions...)
-	})
-	if err != nil {
-		return plannerTurnResult{}, err
-	}
-	e.emitRoleOutput(ctx, RolePlanner, roleResponseDebugText(res))
-	if consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, state); err != nil {
-		return plannerTurnResult{}, err
-	} else if consumed {
-		return plannerTurnResult{Kind: plannerTurnSteer}, nil
-	}
-
-	parser := &FunctionAgent{Tools: appendLoopMetaTools(toolsForRole(RolePlanner, e.Tools)), OutputKey: e.OutputKey}
-	actions, _, parseErr := parser.ParseOutput(res)
-	if parseErr != nil && !errors.Is(parseErr, agents.ErrUnableToParseOutput) {
-		return plannerTurnResult{}, parseErr
-	}
-	if len(actions) > 0 {
-		action := actions[0]
-		if routeShouldUsePlan(inputs["input"]) || toolNameEqual(action.Tool, toolEnterPlanMode) {
-			return e.enterPlanFromRoute(ctx, state, "route selected plan mode")
-		}
-		if toolNameEqual(action.Tool, toolUseSimpleMode) {
-			state.Phase = phaseDefault
-			state.PlannerReason = parseOptionalReasonInput(normalizeToolInput(action.ToolInput))
-			return plannerTurnResult{Kind: plannerTurnUseSimpleMode}, nil
-		}
-		state.Phase = phaseDefault
-		return e.executePlannerToolAction(ctx, state, toolSpecs, action)
-	}
-
-	decision := parseRouteDecision(res, inputs["input"])
-	switch decision.Mode {
-	case routeModeDirectAnswer:
-		return plannerTurnResult{Kind: plannerTurnFinish, Answer: decision.FinalAnswer}, nil
-	case routeModePlan:
-		return e.enterPlanFromRoute(ctx, state, decision.Reason)
-	default:
-		state.Phase = phaseDefault
-		state.PlannerReason = decision.Reason
-		return plannerTurnResult{Kind: plannerTurnUseSimpleMode}, nil
-	}
-}
-
-func (e *roleCollaborativeExecutor) enterPlanFromRoute(ctx context.Context, state *roleLoopState, reason string) (plannerTurnResult, error) {
-	reason = strings.TrimSpace(reason)
-	if reason == "" {
-		reason = "route selected plan mode"
-	}
-	payload, _ := json.Marshal(map[string]string{"reason": reason})
-	action := schema.AgentAction{
-		Tool:      toolEnterPlanMode,
-		ToolInput: string(payload),
-		Log:       reason,
-	}
-	if e.CallbacksHandler != nil {
-		e.CallbacksHandler.HandleAgentAction(ctx, action)
-	}
-	return e.handlePlannerMetaTool(phaseDecision, state, action), nil
-}
-
 func (e *roleCollaborativeExecutor) executePlannerToolAction(
 	ctx context.Context,
 	state *roleLoopState,
 	toolSpecs *ToolSpecs,
 	action schema.AgentAction,
 ) (plannerTurnResult, error) {
+	action = state.resolvePreparedTextArtifactAction(action)
 	toolExecution := e.executeToolCall(ctx, ToolCallExecution{
 		Specs:                  toolSpecs,
 		Action:                 action,
+		Before:                 state.beforeArtifactToolCall,
+		After:                  state.afterArtifactToolCall,
 		Callback:               e.CallbacksHandler,
 		EnvironmentBridge:      e.EnvironmentBridge,
 		EnvironmentBridgeTools: e.EnvironmentBridgeTools,
@@ -1106,11 +1016,11 @@ func (e *roleCollaborativeExecutor) callExecutorTurn(
 				answer = value
 			}
 		}
-		if extractMarkedFinalAnswer(answer) != "" {
+		if hasTaggedTTSOutput(answer) {
 			payload, _ := json.Marshal(map[string]any{
 				"summary":  strings.TrimSpace(answer),
 				"key_info": []string{strings.TrimSpace(answer)},
-				"reason":   "executor returned an explicit final answer",
+				"reason":   "executor returned tagged final output",
 			})
 			action := schema.AgentAction{
 				Tool:      toolFinishStep,
@@ -1153,6 +1063,7 @@ func (e *roleCollaborativeExecutor) callExecutorTurn(
 		}
 		return e.handleExecutorMetaTool(state, abortAction), nil
 	}
+	action = state.resolvePreparedTextArtifactAction(action)
 
 	toolExecution := e.executeToolCall(ctx, ToolCallExecution{
 		Specs:                  toolSpecs,
@@ -1206,20 +1117,8 @@ func (e *roleCollaborativeExecutor) callVerifier(ctx context.Context, inputs map
 }
 
 func (s roleLoopState) shouldReviewDefaultFinal(toolSpecs *ToolSpecs) bool {
-	if s.Phase != phaseDefault || len(s.ExecutionResults) == 0 {
-		return false
-	}
-	if last := s.lastExecutionTool(); toolNameEqual(last, toolHumanHandoffStep) || isWaitForWakeupTool(last) {
-		return false
-	}
-	for _, result := range s.ExecutionResults {
-		if result.Action == nil {
-			continue
-		}
-		if shouldReviewDefaultFinalTool(result.Action.Tool, toolSpecs) {
-			return true
-		}
-	}
+	// Single-agent mode finishes directly. The separate verifier/final-review
+	// pass is intentionally disabled with the planner/executor/verifier split.
 	return false
 }
 
@@ -1435,8 +1334,16 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 		Role:  llms.ChatMessageTypeSystem,
 		Parts: []llms.ContentPart{llms.TextPart(profile.SystemPrompt)},
 	}}
+	var plannerStatePrompt string
 	if profile.Name == RolePlanner {
 		messages = append(messages, e.ConversationHistory...)
+		plannerStatePrompt = buildRoleStatePrompt(profile.Name, inputs, state, task)
+		if state.ForceSimpleLoop && strings.TrimSpace(plannerStatePrompt) != "" {
+			messages = append(messages, llms.MessageContent{
+				Role:  llms.ChatMessageTypeHuman,
+				Parts: []llms.ContentPart{llms.TextPart(plannerStatePrompt)},
+			})
+		}
 		messages = append(messages, llms.MessageContent{
 			Role:  llms.ChatMessageTypeHuman,
 			Parts: plannerCurrentUserMessageParts(inputs, e.InputAttachments),
@@ -1452,11 +1359,10 @@ func (e *roleCollaborativeExecutor) roleMessages(profile RoleProfile, inputs map
 	}
 
 	if profile.Name == RolePlanner {
-		statePrompt := buildRoleStatePrompt(profile.Name, inputs, state, task)
-		if strings.TrimSpace(statePrompt) != "" {
+		if !state.ForceSimpleLoop && strings.TrimSpace(plannerStatePrompt) != "" {
 			messages = append(messages, llms.MessageContent{
 				Role:  llms.ChatMessageTypeHuman,
-				Parts: []llms.ContentPart{llms.TextPart(statePrompt)},
+				Parts: []llms.ContentPart{llms.TextPart(plannerStatePrompt)},
 			})
 		}
 		for _, steer := range state.SteerMessages {
@@ -1524,32 +1430,6 @@ func hasProfileTool(profile RoleProfile, name string) bool {
 		}
 	}
 	return false
-}
-
-func appendPlannerReadOnlyTools(base []langtools.Tool, tools []langtools.Tool) []langtools.Tool {
-	combined := append([]langtools.Tool{}, base...)
-	seen := map[string]bool{}
-	for _, tool := range combined {
-		if tool != nil {
-			seen[toolSpecKey(tool.Name())] = true
-		}
-	}
-	for _, tool := range tools {
-		if tool == nil {
-			continue
-		}
-		spec := NewToolSpec(tool)
-		if !isPlannerReadOnlyToolSpec(spec) {
-			continue
-		}
-		key := toolSpecKey(spec.Name)
-		if seen[key] {
-			continue
-		}
-		combined = append(combined, tool)
-		seen[key] = true
-	}
-	return combined
 }
 
 func isPlannerReadOnlyTool(name string, specs *ToolSpecs) bool {
@@ -1642,7 +1522,7 @@ func buildSimpleLoopPlannerStatePrompt(inputs map[string]string, state roleLoopS
 	if content == "" {
 		return ""
 	}
-	return "Planner runtime context (synthetic; not a new user request):\n" + content
+	return "Agent runtime context (synthetic; not a new user request):\n" + content
 }
 
 func buildExecutorStatePrompt(inputs map[string]string, state roleLoopState, task string) string {
@@ -1883,7 +1763,7 @@ func writeWorldStateIfPresent(builder *strings.Builder, world worldState) {
 }
 
 func writeWorldStateWithOptions(builder *strings.Builder, world worldState, options worldStatePromptOptions) {
-	builder.WriteString("\n\nWorld State (shared across planner, executor, and verifier):\n")
+	builder.WriteString("\n\nWorld State (single-agent runtime):\n")
 	if world.DeviceEnvironment != nil {
 		env := world.DeviceEnvironment
 		builder.WriteString("- Device environment: available")
@@ -2390,47 +2270,6 @@ func (s roleLoopState) lastCandidateAnswer() string {
 	return ""
 }
 
-func parseRouteDecision(res *llms.ContentResponse, request string) routeDecision {
-	raw := contentResponseText(res)
-	var decision routeDecision
-	if decodeRoleJSON(raw, &decision) == nil {
-		return normalizeRouteDecision(decision, request)
-	}
-
-	text := strings.TrimSpace(raw)
-	if answer := strings.TrimSpace(extractMarkedFinalAnswer(text)); answer != "" {
-		return normalizeRouteDecision(routeDecision{
-			Mode:        routeModeDirectAnswer,
-			FinalAnswer: answer,
-			Reason:      "route returned an explicit final answer",
-		}, request)
-	}
-	lower := strings.ToLower(text)
-	if routeTextHasPlanIntent(lower) {
-		return normalizeRouteDecision(routeDecision{
-			Mode:   routeModePlan,
-			Reason: "route returned non-JSON plan intent",
-		}, request)
-	}
-	if routeTextHasSimpleIntent(lower) {
-		return normalizeRouteDecision(routeDecision{
-			Mode:   routeModeSimple,
-			Reason: "route returned non-JSON simple intent",
-		}, request)
-	}
-	if text != "" {
-		return normalizeRouteDecision(routeDecision{
-			Mode:        routeModeDirectAnswer,
-			FinalAnswer: text,
-			Reason:      "route returned non-JSON text answer",
-		}, request)
-	}
-	return normalizeRouteDecision(routeDecision{
-		Mode:   routeModeSimple,
-		Reason: "route returned empty content",
-	}, request)
-}
-
 func parsePlannerDecision(res *llms.ContentResponse, fallbackStep string) plannerDecision {
 	raw := contentResponseText(res)
 
@@ -2488,7 +2327,7 @@ func parsePlannerDecision(res *llms.ContentResponse, fallbackStep string) planne
 	}
 
 	// Final fallback: use text content or user input
-	text := strings.TrimSpace(extractFinalAnswer(raw))
+	text := strings.TrimSpace(finalizeAssistantOutput(raw))
 	if text == "" {
 		text = strings.TrimSpace(fallbackStep)
 	}
@@ -2530,33 +2369,22 @@ func parseVerifierDecision(raw, fallbackAnswer string) verifierDecision {
 		return decision
 	}
 
-	text := strings.TrimSpace(extractMarkedFinalAnswer(raw))
-	if text == "" {
+	if !hasTaggedTTSOutput(raw) {
 		return verifierDecision{
 			CanFinish:   false,
 			NeedsReplan: true,
-			Reason:      "verifier returned non-JSON content without explicit final answer",
+			Reason:      "verifier returned non-JSON content without tagged final output",
 		}
 	}
 	return verifierDecision{
 		CanFinish:   true,
-		FinalAnswer: text,
-		Reason:      "verifier returned explicit non-JSON final answer",
+		FinalAnswer: finalizeAssistantOutput(raw),
+		Reason:      "verifier returned tagged final output",
 	}
 }
 
-func extractMarkedFinalAnswer(content string) string {
-	if idx := strings.LastIndex(content, "Final Answer:"); idx >= 0 {
-		return strings.TrimSpace(content[idx+len("Final Answer:"):])
-	}
-	lower := strings.ToLower(content)
-	start := strings.LastIndex(lower, "<final_answer>")
-	end := strings.LastIndex(lower, "</final_answer>")
-	if start >= 0 && end > start {
-		start += len("<final_answer>")
-		return strings.TrimSpace(content[start:end])
-	}
-	return ""
+func hasTaggedTTSOutput(content string) bool {
+	return extractTTSText(content) != ""
 }
 
 func decodeRoleJSON(raw string, out any) error {

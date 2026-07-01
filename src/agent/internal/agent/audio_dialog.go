@@ -919,11 +919,9 @@ func (d *AudioDialog) HandleRunEvent(ctx context.Context, event RunEvent) {
 	if event.Type != runEventToolCall || !d.config.VoiceToolCallSpeechOrDefault() || event.ToolName == toolWaitForWakeup {
 		return
 	}
-	if !shouldSpeakToolCallContent(event.ToolName, event.Content) {
-		return
+	if text := BuildSpeechText(event.Content, d.config); text != "" {
+		go d.SpeakToolContent(text)
 	}
-	// Tool-call speech is only explicit LLM-generated event content.
-	go d.SpeakToolContent(event.Content)
 }
 
 func (d *AudioDialog) newRunProgressSpeaker() *progressSpeaker {

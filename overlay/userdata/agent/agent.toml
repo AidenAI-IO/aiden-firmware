@@ -2,7 +2,6 @@
 # custom_instruction = ""
 # additional_prompt = ""
 # max_iterations = -1
-# force_simple_loop = false
 
 # Screenshot context pruning:
 # keep the latest N screenshots and batch-prune older screenshots every interval

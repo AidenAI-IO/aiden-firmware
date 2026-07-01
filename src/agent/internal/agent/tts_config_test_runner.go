@@ -69,17 +69,21 @@ func applyTTSPlaybackTestRequest(cfg *Config, req TTSPlaybackTestRequest) {
 	if provider := strings.TrimSpace(req.Provider); provider != "" {
 		cfg.TTS.Provider = provider
 	}
+	// Always apply stdin values — they represent the user's current form state.
+	// Empty string means the field is hidden/cleared, which should override
+	// whatever is persisted in the toml file.
+	//
+	// NOTE: Model, VoiceID, and Emotion are unconditionally overwritten (including
+	// with empty strings) to support the form-clearing use case. Provider, APIKey,
+	// and Speed retain the "apply only if non-empty/positive" guard because they
+	// are not expected to be cleared by the form UI. This function is exclusively
+	// called from config_commands.go's handle_tts_playback_test_request with a
+	// complete JSON payload from stdin.
+	cfg.TTS.Model = req.Model
+	cfg.TTS.VoiceID = req.VoiceID
+	cfg.TTS.Emotion = req.Emotion
 	if req.APIKey != "" {
 		cfg.TTS.APIKey = req.APIKey
-	}
-	if req.Model != "" {
-		cfg.TTS.Model = req.Model
-	}
-	if req.VoiceID != "" {
-		cfg.TTS.VoiceID = req.VoiceID
-	}
-	if req.Emotion != "" {
-		cfg.TTS.Emotion = req.Emotion
 	}
 	if req.Speed > 0 {
 		cfg.TTS.Speed = req.Speed

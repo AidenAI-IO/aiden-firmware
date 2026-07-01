@@ -687,37 +687,17 @@ type liveActivityToolStatus struct {
 }
 
 func liveActivityPhaseFromRole(role, content string) string {
-	role = strings.ToLower(strings.TrimSpace(role))
-	if liveActivityJSONHasKey(content, "final_answer") {
+	if extractTTSText(content) != "" {
 		return LiveActivityPhaseAnswering
 	}
-	switch role {
-	case "planner":
-		return LiveActivityPhasePlanning
-	case "executor":
-		return LiveActivityPhaseActing
-	case "verifier":
-		return LiveActivityPhaseVerifying
-	default:
-		return LiveActivityPhasePlanning
-	}
+	return LiveActivityPhasePlanning
 }
 
 func liveActivityActionFromRole(role, content string) string {
-	role = strings.ToLower(strings.TrimSpace(role))
-	if liveActivityJSONHasKey(content, "final_answer") {
+	if extractTTSText(content) != "" {
 		return "answer"
 	}
-	switch role {
-	case "planner":
-		return "plan"
-	case "executor":
-		return "execute"
-	case "verifier":
-		return "verify"
-	default:
-		return "think"
-	}
+	return "think"
 }
 
 func liveActivityToolCallStatus(event RunEvent) liveActivityToolStatus {
@@ -1017,12 +997,8 @@ func liveActivityStepFromRoleOutput(event RunEvent) string {
 		}
 	}
 	switch role {
-	case "planner":
-		return "Planning next step"
-	case "executor":
-		return "Working on the phone"
-	case "verifier":
-		return "Checking result"
+	case "agent":
+		return "Thinking"
 	default:
 		if content != "" && !strings.HasPrefix(content, "{") && !strings.HasPrefix(content, "[") {
 			return content
@@ -1039,17 +1015,10 @@ func liveActivityStepFromJSONRoleOutput(role, content string) string {
 	if _, ok := payload["final_answer"]; ok {
 		return "Preparing answer"
 	}
-	for _, key := range []string{"current_step", "next_step", "executor_summary", "summary", "reason"} {
+	for _, key := range []string{"current_step", "next_step", "summary", "reason"} {
 		if value, ok := payload[key].(string); ok {
 			if value = strings.TrimSpace(value); value != "" {
-				switch role {
-				case "planner":
-					return "Planning: " + value
-				case "verifier":
-					return "Checking: " + value
-				default:
-					return value
-				}
+				return value
 			}
 		}
 	}

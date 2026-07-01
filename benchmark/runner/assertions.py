@@ -54,13 +54,22 @@ def evaluate_trace_observations(
     results: list[TraceObservationResult] = []
     active = {name.strip() for name in active_skills or [] if name.strip()}
     for spec in specs:
-        passed = spec.skill_name in active or trace_has_skill_read(trace, spec.skill_name)
-        if spec.skill_name in active:
-            reason = f"Task requested active skill {spec.skill_name!r} via chat skills payload."
-        elif passed:
-            reason = f"Trace contains skill_read for {spec.skill_name!r}."
+        if spec.skill_name:
+            passed = spec.skill_name in active or trace_has_skill_read(trace, spec.skill_name)
+            if spec.skill_name in active:
+                reason = f"Task requested active skill {spec.skill_name!r} via chat skills payload."
+            elif passed:
+                reason = f"Trace contains skill_read for {spec.skill_name!r}."
+            else:
+                reason = f"No skill_read call for {spec.skill_name!r} in trace."
         else:
-            reason = f"No skill_read call for {spec.skill_name!r} in trace."
+            passed = _trace_has_tool_call(trace, spec.tool_name, spec.input_contains)
+            input_desc = f" with input containing {spec.input_contains!r}" if spec.input_contains else ""
+            reason = (
+                f"Trace contains {spec.tool_name!r}{input_desc}."
+                if passed
+                else f"No {spec.tool_name!r}{input_desc} call in trace."
+            )
         results.append(
             TraceObservationResult(
                 id=spec.id,
@@ -70,6 +79,34 @@ def evaluate_trace_observations(
             )
         )
     return results
+
+
+def _trace_has_tool_call(trace: Trace, tool_name: str, input_contains: dict[str, Any]) -> bool:
+    target = tool_name.strip()
+    if not target:
+        return False
+    for tc in trace.tool_calls:
+        if tc.tool != target:
+            continue
+        if _dict_contains(tc.input if isinstance(tc.input, dict) else {}, input_contains):
+            return True
+    return False
+
+
+def _dict_contains(actual: dict[str, Any], expected: dict[str, Any]) -> bool:
+    for key, expected_value in expected.items():
+        if key not in actual:
+            return False
+        actual_value = actual[key]
+        if isinstance(expected_value, dict):
+            if not isinstance(actual_value, dict):
+                return False
+            if not _dict_contains(actual_value, expected_value):
+                return False
+            continue
+        if actual_value != expected_value:
+            return False
+    return True
 
 
 def evaluate_hard_assertions(trace: Trace, spec: HardAssertions, timed_out: bool) -> AssertionOutcome:

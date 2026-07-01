@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"io"
 	"regexp"
 	"strings"
@@ -11,13 +12,39 @@ var (
 	markdownLinkPattern  = regexp.MustCompile(`\[([^\]]+)\]\(([^)]*)\)`)
 )
 
-// BuildSpeechText returns the full assistant output normalized for fallback TTS.
+const (
+	ttsStartTag = "<tts>"
+	ttsEndTag   = "</tts>"
+)
+
+// BuildSpeechText returns only text explicitly marked for TTS.
 func BuildSpeechText(output string, _ Config) string {
-	output = strings.TrimSpace(output)
-	if output == "" {
+	speech := extractTTSText(output)
+	if speech == "" {
 		return ""
 	}
-	return normalizeMarkdownForSpeech(output)
+	return normalizeMarkdownForSpeech(speech)
+}
+
+func extractTTSText(output string) string {
+	var parts []string
+	remaining := output
+	for {
+		start := asciiIndexFold(remaining, ttsStartTag)
+		if start < 0 {
+			break
+		}
+		remaining = remaining[start+len(ttsStartTag):]
+		end := asciiIndexFold(remaining, ttsEndTag)
+		if end < 0 {
+			break
+		}
+		if text := strings.TrimSpace(remaining[:end]); text != "" {
+			parts = append(parts, text)
+		}
+		remaining = remaining[end+len(ttsEndTag):]
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
 }
 
 func normalizeMarkdownForSpeech(output string) string {
@@ -160,10 +187,10 @@ func normalizeInlineMarkdown(text string) string {
 	return strings.TrimSpace(text)
 }
 
-type SpeechStreamWriter = JSONFieldStreamWriter
+type SpeechStreamWriter = TTSTagStreamWriter
 
 func NewSpeechStreamWriter(target io.Writer) *SpeechStreamWriter {
-	return NewJSONFieldStreamWriter(target, "speech")
+	return NewTTSTagStreamWriter(target)
 }
 
 func finalizeAssistantOutput(raw string) string {
@@ -175,5 +202,132 @@ func speechStreamWriterForConfig(target io.Writer, cfg Config) io.Writer {
 		return nil
 	}
 	_ = cfg
-	return NewJSONFieldOrPlainStreamWriter(target, "final_answer")
+	return NewTTSTagStreamWriter(target)
+}
+
+type TTSTagStreamWriter struct {
+	target  io.Writer
+	pending []byte
+	inTTS   bool
+	emitted bool
+}
+
+func NewTTSTagStreamWriter(target io.Writer) *TTSTagStreamWriter {
+	return &TTSTagStreamWriter{target: target}
+}
+
+func (w *TTSTagStreamWriter) ResetStreamState() {
+	if w == nil {
+		return
+	}
+	w.pending = nil
+	w.inTTS = false
+	w.emitted = false
+}
+
+func (w *TTSTagStreamWriter) ResetBuffer() {
+	if w == nil {
+		return
+	}
+	if resetter, ok := w.target.(ttsBufferResetter); ok {
+		resetter.ResetBuffer()
+	}
+	w.ResetStreamState()
+}
+
+func (w *TTSTagStreamWriter) StreamEmitted() bool {
+	return w != nil && w.emitted
+}
+
+func (w *TTSTagStreamWriter) Write(p []byte) (int, error) {
+	if w == nil || w.target == nil || len(p) == 0 {
+		return len(p), nil
+	}
+	w.pending = append(w.pending, p...)
+	for len(w.pending) > 0 {
+		if !w.inTTS {
+			idx := bytes.Index(asciiLowerBytes(w.pending), []byte(ttsStartTag))
+			if idx < 0 {
+				w.pending = keepTagSearchSuffix(w.pending, len(ttsStartTag)-1)
+				return len(p), nil
+			}
+			w.pending = w.pending[idx+len(ttsStartTag):]
+			w.inTTS = true
+			continue
+		}
+
+		idx := bytes.Index(asciiLowerBytes(w.pending), []byte(ttsEndTag))
+		if idx >= 0 {
+			if err := w.writeTTSBytes(w.pending[:idx]); err != nil {
+				return 0, err
+			}
+			w.pending = w.pending[idx+len(ttsEndTag):]
+			w.inTTS = false
+			continue
+		}
+
+		safeLen := len(w.pending) - (len(ttsEndTag) - 1)
+		if safeLen <= 0 {
+			return len(p), nil
+		}
+		if err := w.writeTTSBytes(w.pending[:safeLen]); err != nil {
+			return 0, err
+		}
+		w.pending = append(w.pending[:0], w.pending[safeLen:]...)
+		return len(p), nil
+	}
+	return len(p), nil
+}
+
+func (w *TTSTagStreamWriter) writeTTSBytes(p []byte) error {
+	if len(p) == 0 {
+		return nil
+	}
+	n, err := w.target.Write(p)
+	if n > 0 {
+		w.emitted = true
+	}
+	return err
+}
+
+func keepTagSearchSuffix(buf []byte, max int) []byte {
+	if max <= 0 || len(buf) <= max {
+		return buf
+	}
+	return append(buf[:0], buf[len(buf)-max:]...)
+}
+
+func asciiIndexFold(s, substr string) int {
+	if substr == "" {
+		return 0
+	}
+	last := len(s) - len(substr)
+	for i := 0; i <= last; i++ {
+		matched := true
+		for j := 0; j < len(substr); j++ {
+			if asciiLowerByte(s[i+j]) != asciiLowerByte(substr[j]) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return i
+		}
+	}
+	return -1
+}
+
+func asciiLowerBytes(buf []byte) []byte {
+	lower := make([]byte, len(buf))
+	for i, b := range buf {
+		lower[i] = asciiLowerByte(b)
+	}
+	return lower
+}
+
+func asciiLowerByte(b byte) byte {
+	if b >= 'A' && b <= 'Z' {
+		return b + ('a' - 'A')
+	}
+	return b
 }

@@ -11,6 +11,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/tmc/langchaingo/schema"
 )
 
 const (
@@ -1680,6 +1682,43 @@ func (s *roleLoopState) beforeTextEntryToolCall(_ context.Context, call ToolCall
 		return rejectArtifactToolCall("text entry text must exactly match prepared text for artifact_id " + strconv.Quote(artifactID))
 	}
 	return ToolResult{}, true
+}
+
+func (s *roleLoopState) resolvePreparedTextArtifactAction(action schema.AgentAction) schema.AgentAction {
+	if s == nil {
+		return action
+	}
+	if !toolNameEqual(action.Tool, "enter_text_in_field") && !toolNameEqual(action.Tool, "enter_text_via_bridge") {
+		return action
+	}
+	input := normalizeToolInput(action.ToolInput)
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(input), &payload); err != nil {
+		return action
+	}
+	artifactID, _ := payload["artifact_id"].(string)
+	artifactID = strings.TrimSpace(artifactID)
+	if artifactID == "" {
+		return action
+	}
+	if text, _ := payload["text"].(string); strings.TrimSpace(text) != "" {
+		return action
+	}
+	artifact, ok := s.findPlanArtifactState(artifactID)
+	if !ok || artifact.Kind != planArtifactKindTargetText {
+		return action
+	}
+	preparedText := strings.TrimSpace(artifact.PreparedText)
+	if preparedText == "" {
+		return action
+	}
+	payload["text"] = preparedText
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return action
+	}
+	action.ToolInput = string(encoded)
+	return action
 }
 
 func (s roleLoopState) canConsumePreparedTargetTextArtifactNow(artifact planArtifactState) bool {

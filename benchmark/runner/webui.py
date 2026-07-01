@@ -44,6 +44,7 @@ BENCHMARK_ROOT = REPO_ROOT / "benchmark"
 DEFAULT_SUITES_DIR = BENCHMARK_ROOT / "suites"
 DEFAULT_RUNS_DIR = BENCHMARK_ROOT / "runs" / "webui"
 DEFAULT_BASE_CONFIG_DIR = BENCHMARK_ROOT / "config"
+DEFAULT_BUNDLED_SKILLS_DIR = REPO_ROOT / "src" / "agent" / "config" / "skills"
 DEFAULT_DAEMON_IMAGE = "aiden-agent-daemon:local"
 DEFAULT_MOBILEGYM_IMAGE = "aiden-mobilegym-simulator:py311"
 BENCHMARK_DOCKER_DIR = BENCHMARK_ROOT / "docker"
@@ -1314,6 +1315,13 @@ def prepare_run_config(base_config_dir: Path, dest_dir: Path, agent_config_text:
                 shutil.copytree(item, target)
             else:
                 shutil.copy2(item, target)
+    skills_dir = dest_dir / "skills"
+    if DEFAULT_BUNDLED_SKILLS_DIR.is_dir():
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        for skill in DEFAULT_BUNDLED_SKILLS_DIR.iterdir():
+            target = skills_dir / skill.name
+            if skill.is_dir() and not target.exists():
+                shutil.copytree(skill, target)
     for name in ("log", "memory", "skill-state"):
         (dest_dir / name).mkdir(parents=True, exist_ok=True)
     token_path = dest_dir / "control_token"
@@ -1466,7 +1474,6 @@ def default_agent_toml() -> str:
             'input_mode = "text"',
             'trigger_mode = "manual"',
             "max_iterations = -1",
-            "force_simple_loop = false",
             "voice_streaming_tts_enabled = false",
             "voice_tool_call_speech = false",
             "voice_progress_speech_enabled = false",
