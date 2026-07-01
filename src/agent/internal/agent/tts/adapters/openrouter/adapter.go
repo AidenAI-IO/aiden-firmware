@@ -112,13 +112,14 @@ func buildProxyHTTPClient(p tts.ProxyConfig) *http.Client {
 	if proxyURL == "" {
 		proxyURL = p.HTTPProxy
 	}
-	if proxyURL == "" {
-		return http.DefaultClient
-	}
+
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.Proxy = func(_ *http.Request) (*url.URL, error) {
-		return url.Parse(proxyURL)
+	if proxyURL != "" {
+		transport.Proxy = func(_ *http.Request) (*url.URL, error) {
+			return url.Parse(proxyURL)
+		}
 	}
+
 	return &http.Client{
 		Transport: transport,
 		Timeout:   30 * time.Second,
