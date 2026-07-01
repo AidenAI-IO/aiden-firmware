@@ -129,6 +129,16 @@ func TestQuickActionDescriptionWarnsAgainstActionList(t *testing.T) {
 	}
 }
 
+func TestQuickActionDoesNotExposeScreenshotFull(t *testing.T) {
+	table := newQuickActionsTable()
+	if id, ok := table.resolveActionID("screenshot_full"); ok {
+		t.Fatalf("screenshot_full resolved to %q", id)
+	}
+	if strings.Contains((&QuickActionTool{}).Description(), "screenshot_full") {
+		t.Fatal("description should not mention screenshot_full")
+	}
+}
+
 func TestQuickActionReservedBinding(t *testing.T) {
 	tool := &QuickActionTool{}
 	ctx, _ := WithToolError(context.Background())
