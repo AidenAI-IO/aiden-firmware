@@ -294,6 +294,7 @@ func TestRuntimeRunRestoresHotWindowHistoryAsChatMessages(t *testing.T) {
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
 	)
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	if _, err := runtime.Run(ctx, RunRequest{Input: "继续上一轮"}); err != nil {
 		t.Fatalf("Run() error = %v", err)
