@@ -60,8 +60,8 @@ Available methods:
 reboot loader
 ```
 
-The firmware image includes the `adb` client on the board so it can connect to
-external Android devices like a host computer. It does not expose `adbd` for
+The firmware image includes the `adb` client on the board so it can act as an
+ADB host for external Android devices.  It does not expose `adbd` for
 host-side `adb shell` login into the board itself. The client is built from the
 nmeum/android-tools 30.0.5p1 release (AOSP platform-tools-30) and reports
 version 1.0.41, so it speaks the current adb auth and pairing protocol.
