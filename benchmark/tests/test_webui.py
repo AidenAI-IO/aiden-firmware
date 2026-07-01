@@ -196,6 +196,31 @@ def test_prepare_run_config_uses_agent_config_text(tmp_path: Path):
     assert (dest / "memory").is_dir()
 
 
+def test_prepare_run_config_includes_bundled_skills(tmp_path: Path):
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "agent.toml.template").write_text('[model]\nprovider = "template"\n', encoding="utf-8")
+
+    dest = tmp_path / "dest"
+    webui.prepare_run_config(base, dest)
+
+    assert (dest / "skills" / "device-operator" / "SKILL.md").exists()
+
+
+def test_prepare_run_config_merges_missing_bundled_skills_with_custom_skills(tmp_path: Path):
+    base = tmp_path / "base"
+    custom_skill = base / "skills" / "custom-skill"
+    custom_skill.mkdir(parents=True)
+    (base / "agent.toml.template").write_text('[model]\nprovider = "template"\n', encoding="utf-8")
+    (custom_skill / "SKILL.md").write_text("---\nname: custom-skill\n---\n", encoding="utf-8")
+
+    dest = tmp_path / "dest"
+    webui.prepare_run_config(base, dest)
+
+    assert (dest / "skills" / "custom-skill" / "SKILL.md").exists()
+    assert (dest / "skills" / "device-operator" / "SKILL.md").exists()
+
+
 def test_default_agent_toml_uses_benchmark_defaults():
     rendered = webui.default_agent_toml()
 

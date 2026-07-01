@@ -29,6 +29,7 @@ func TestEnterTextViaBridgeUsesClipboardPathAndVerifiesField(t *testing.T) {
 		},
 		vision:   vision,
 		bridgeFn: func() *PhoneBridge { return pb },
+		sleep:    testNoWaitSleep,
 		findAppTapFn: func(context.Context, screenshotResult, string) (bridgeSearchResult, error) {
 			return bridgeSearchResult{Found: true, TapPoint: focusPointArgs{X: 500, Y: 220, CoordSpace: "normalized"}, Label: "Aiden"}, nil
 		},
@@ -87,6 +88,7 @@ func TestEnterTextViaBridgeRestoresBridgeAppWhenDisconnected(t *testing.T) {
 		},
 		vision:   vision,
 		bridgeFn: func() *PhoneBridge { return pb },
+		sleep:    testNoWaitSleep,
 		findAppTapFn: func(context.Context, screenshotResult, string) (bridgeSearchResult, error) {
 			return bridgeSearchResult{Found: true, TapPoint: focusPointArgs{X: 500, Y: 220, CoordSpace: "normalized"}, Label: "Aiden Bridge"}, nil
 		},
@@ -164,6 +166,7 @@ func TestEnterTextViaBridgeRetriesOpeningBridgeAppBeforeFailing(t *testing.T) {
 		},
 		vision:   vision,
 		bridgeFn: func() *PhoneBridge { return pb },
+		sleep:    testNoWaitSleep,
 		findAppTapFn: func(context.Context, screenshotResult, string) (bridgeSearchResult, error) {
 			return bridgeSearchResult{Found: true, TapPoint: focusPointArgs{X: 500, Y: 220, CoordSpace: "normalized"}, Label: "Aiden Bridge"}, nil
 		},
@@ -215,6 +218,7 @@ func TestEnterTextViaBridgeSwipesRecentsWhenPreviousAppCardNotInitiallyVisible(t
 		},
 		vision:   vision,
 		bridgeFn: func() *PhoneBridge { return pb },
+		sleep:    testNoWaitSleep,
 		findAppTapFn: func(context.Context, screenshotResult, string) (bridgeSearchResult, error) {
 			return bridgeSearchResult{Found: true, TapPoint: focusPointArgs{X: 500, Y: 220, CoordSpace: "normalized"}, Label: "Aiden"}, nil
 		},
@@ -274,6 +278,7 @@ func TestEnterTextViaBridgeCountsBridgeVisionCalls(t *testing.T) {
 		},
 		vision:           newLLMTextInputVision(resolver),
 		bridgeFn:         func() *PhoneBridge { return pb },
+		sleep:            testNoWaitSleep,
 		clipboardWriteFn: func(context.Context, *PhoneBridge, string) error { return nil },
 	}
 	out, err := tool.Call(context.Background(), `{"text":"hello world","focus":{"x":500,"y":100}}`)
@@ -309,6 +314,7 @@ func TestEnterTextViaBridgeReturnsLastObservedFieldTextAfterFailedPasteAttempts(
 		},
 		vision:   vision,
 		bridgeFn: func() *PhoneBridge { return pb },
+		sleep:    testNoWaitSleep,
 		findAppTapFn: func(context.Context, screenshotResult, string) (bridgeSearchResult, error) {
 			return bridgeSearchResult{Found: true, TapPoint: focusPointArgs{X: 500, Y: 220, CoordSpace: "normalized"}, Label: "Aiden"}, nil
 		},

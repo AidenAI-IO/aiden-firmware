@@ -95,16 +95,9 @@ func TestRolePromptsIncludeGlobalEnvironmentAndDeviceGuidance(t *testing.T) {
 			"suitable for TTS",
 			"device-operator",
 			"visible target UI",
-			"wait_for_stable_screen screenshot",
-			"Do not repeat the same click",
-			"prefer search over blind scrolling",
-			"Base visible UI actions on the latest screenshot",
 			"Prefer direct or semantic tools",
-			"repeated swipes or scrolling",
-			"image_diff feedback",
 			"request confirmation",
-			"probe once with medium",
-			"save_memory with app name, control location, direction, strength/distance, and delta",
+			"Keep detailed UI playbooks in skills",
 		} {
 			if !strings.Contains(profile.SystemPrompt, want) {
 				t.Fatalf("%s system prompt missing %q:\n%s", profile.Name, want, profile.SystemPrompt)
@@ -184,6 +177,16 @@ func TestDefaultAgentBehaviorExcludesMigratedToolDetails(t *testing.T) {
 		"Directional swipe names describe finger movement",
 		"Precision swipe loop",
 		"Horizontal carousels",
+		"In app switchers with overlapping cards",
+		"prefer search over blind scrolling",
+		"return_entry=dynamic_island",
+		"For long text, Chinese, emoji",
+		"committed:true. keyboard_text is ASCII-only",
+		"Base visible UI actions on the latest screenshot",
+		"image_diff feedback",
+		"Picker/wheel controls",
+		"probe once with medium",
+		"save_memory with app name, control location, direction, strength/distance, and delta",
 	} {
 		if strings.Contains(behavior, unexpected) {
 			t.Fatalf("defaultAgentBehavior should not include migrated tool detail %q:\n%s", unexpected, behavior)
@@ -258,6 +261,106 @@ func TestRolePromptsGuideSkillCatalogAndPreloadedSkills(t *testing.T) {
 				t.Fatalf("%s system prompt missing %q:\n%s", profile.Name, want, profile.SystemPrompt)
 			}
 		}
+	}
+}
+
+func commonPrefixLen(a, b string) int {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		if a[i] != b[i] {
+			return i
+		}
+	}
+	return n
+}
+
+// TestRuntimeContextStaysAfterCacheableRoleRules documents the prompt-cache
+// effect of keeping volatile runtime context after the static role rules. Even
+// when heartbeat timestamps change across turns, the cacheable static prefix is
+// byte-identical.
+func TestRuntimeContextStaysAfterCacheableRoleRules(t *testing.T) {
+	hb1 := time.Date(2026, 6, 1, 2, 3, 4, 0, time.UTC)
+	hb2 := hb1.Add(12 * time.Second) // next turn, fresh heartbeat
+	status := func(hb time.Time) PhoneBridgeStatus {
+		return PhoneBridgeStatus{Connected: true, Platform: "ios", LastHeartbeatAt: &hb}
+	}
+
+	ctx1 := phoneBridgeRuntimeContext(status(hb1))
+	ctx2 := phoneBridgeRuntimeContext(status(hb2))
+	if ctx1 == ctx2 {
+		t.Fatalf("runtime context should still reflect heartbeat timestamp changes; test is not exercising volatile context")
+	}
+
+	build := func(rc string) RoleProfile {
+		return buildRoleProfiles(
+			AgentConfig{RuntimeContext: rc},
+			ResolvedSkills{},
+			nil,
+			MemoryContext{},
+		).Planner
+	}
+	profile1, profile2 := build(ctx1), build(ctx2)
+	if profile1.SystemPromptCachePrefix != profile2.SystemPromptCachePrefix {
+		t.Fatalf("cacheable static prefix should stay byte-identical across volatile runtime context:\nturn1:\n%s\nturn2:\n%s", profile1.SystemPromptCachePrefix, profile2.SystemPromptCachePrefix)
+	}
+	if profile1.SystemPromptDynamicSuffix == profile2.SystemPromptDynamicSuffix {
+		t.Fatalf("dynamic suffix should reflect runtime context changes")
+	}
+	for _, unwanted := range []string{"## Runtime context", "last_heartbeat_at"} {
+		if strings.Contains(profile1.SystemPromptCachePrefix, unwanted) {
+			t.Fatalf("cacheable static prefix should not include volatile runtime marker %q:\n%s", unwanted, profile1.SystemPromptCachePrefix)
+		}
+	}
+
+	base := build("").SystemPrompt
+	insertAt := strings.Index(base, "## Role rules")
+	if insertAt < 0 {
+		t.Fatalf("base prompt missing role rules section:\n%s", base)
+	}
+	legacy := func(rc string) string {
+		return base[:insertAt] + "## Runtime context\n" + rc + "\n\n" + base[insertAt:]
+	}
+	legacyTurn1, legacyTurn2 := legacy(ctx1), legacy(ctx2)
+	if legacyTurn1 == legacyTurn2 {
+		t.Fatalf("legacy reconstruction should differ across turns; test is not exercising the regression")
+	}
+
+	legacyPrefix := commonPrefixLen(legacyTurn1, legacyTurn2)
+	if legacyPrefix >= len(profile1.SystemPromptCachePrefix) {
+		t.Fatalf("legacy prompt prefix (%d) should be shorter than new cacheable static prefix (%d)", legacyPrefix, len(profile1.SystemPromptCachePrefix))
+	}
+	t.Logf("cacheable prefix bytes: new=%d/%d, legacy=%d/%d (%.1f%%)",
+		len(profile1.SystemPromptCachePrefix), len(profile1.SystemPrompt),
+		legacyPrefix, len(legacyTurn1),
+		100*float64(legacyPrefix)/float64(len(legacyTurn1)))
+}
+
+func TestRolePromptsKeepVolatileSectionsAfterStaticRoleRules(t *testing.T) {
+	profiles := buildRoleProfiles(
+		AgentConfig{RuntimeContext: "Phone bridge status:\n- connected: true"},
+		ResolvedSkills{},
+		nil,
+		MemoryContext{Planner: RoleMemoryContext{SessionSummary: "session memory tail"}},
+	)
+
+	for _, profile := range []RoleProfile{profiles.Planner, profiles.Executor} {
+		roleRulesAt := strings.Index(profile.SystemPrompt, "## Role rules")
+		runtimeAt := strings.Index(profile.SystemPrompt, "## Runtime context")
+		if roleRulesAt < 0 || runtimeAt < 0 {
+			t.Fatalf("%s prompt missing role rules or runtime context section:\n%s", profile.Name, profile.SystemPrompt)
+		}
+		if runtimeAt < roleRulesAt {
+			t.Fatalf("%s prompt should place volatile runtime context after static role rules for prompt-cache stability:\n%s", profile.Name, profile.SystemPrompt)
+		}
+	}
+
+	memoryAt := strings.Index(profiles.Planner.SystemPrompt, "session memory tail")
+	planRuntimeAt := strings.Index(profiles.Planner.SystemPrompt, "## Runtime context")
+	if memoryAt < 0 || memoryAt < planRuntimeAt {
+		t.Fatalf("planner prompt should keep memory context as the trailing volatile section:\n%s", profiles.Planner.SystemPrompt)
 	}
 }
 

@@ -147,6 +147,10 @@ type RunMetrics struct {
 	TotalTokens      int     `json:"total_tokens,omitempty"`
 	ContextWindow    int     `json:"context_window,omitempty"`
 	FirstTokenTime   float64 `json:"first_token_time_ms,omitempty"`
+	// CachedPromptTokens accumulates provider-reported cached prompt tokens
+	// (usage.prompt_tokens_details.cached_tokens) across the run. The prompt-cache
+	// hit rate is CachedPromptTokens / PromptTokens.
+	CachedPromptTokens int `json:"cached_prompt_tokens,omitempty"`
 	// LastPromptTokens holds the largest single prompt-token count in the run.
 	// PromptTokens/CompletionTokens/TotalTokens accumulate across the multiple
 	// planner/executor/verifier calls in a single run, but the compression
@@ -154,6 +158,22 @@ type RunMetrics struct {
 	// the cumulative sum. Using the largest single prompt keeps a small verifier
 	// call from masking a much larger planner prompt.
 	LastPromptTokens int `json:"-"`
+}
+
+// CacheHitRate returns the prompt-cache hit ratio in [0,1]: cached prompt tokens
+// over total prompt tokens. It returns 0 when no prompt tokens were recorded.
+func (m *RunMetrics) CacheHitRate() float64 {
+	if m == nil || m.PromptTokens <= 0 {
+		return 0
+	}
+	rate := float64(m.CachedPromptTokens) / float64(m.PromptTokens)
+	if rate < 0 {
+		return 0
+	}
+	if rate > 1 {
+		return 1
+	}
+	return rate
 }
 
 const (
@@ -802,6 +822,11 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 
 	output = finalizeAssistantOutput(output)
 	metrics.TotalDuration = float64(time.Since(startTime).Milliseconds())
+	if r.logger != nil && metrics.PromptTokens > 0 {
+		r.logger.Info("LLM usage: prompt_tokens=%d completion_tokens=%d total_tokens=%d cached_tokens=%d cache_hit_rate=%.1f%%",
+			metrics.PromptTokens, metrics.CompletionTokens, metrics.TotalTokens,
+			metrics.CachedPromptTokens, metrics.CacheHitRate()*100)
+	}
 	commitReq := SessionCommitRequest{
 		AgentName: "default",
 		Input:     normalizedInput,
@@ -1349,6 +1374,9 @@ func recordUsageMetrics(metrics *RunMetrics, res *llms.ContentResponse) {
 	}
 	if v, ok := usageMetricInt(info["total_tokens"]); ok {
 		metrics.TotalTokens += v
+	}
+	if v, ok := usageMetricInt(info["cached_tokens"]); ok {
+		metrics.CachedPromptTokens += v
 	}
 }
 

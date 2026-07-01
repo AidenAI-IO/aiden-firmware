@@ -847,6 +847,7 @@ func TestRuntimeRunPersistsSteerAsConversationHumanMessage(t *testing.T) {
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
 	)
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	var steerCalls int32
 	result, err := runtime.Run(context.Background(), RunRequest{
@@ -3997,14 +3998,10 @@ func TestRuntimeRunRotatesSessionOnNewBoundary(t *testing.T) {
 	}
 
 	releaseMaintenance := make(chan struct{})
-	manager := NewMemoryManager(storageDir, WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
-		select {
-		case <-ctx.Done():
-			return ""
-		case <-releaseMaintenance:
-			return "old task summary"
-		}
-	}))
+	manager := NewMemoryManager(storageDir,
+		WithArchiveCompressTimeout(time.Millisecond),
+		WithSummarizeFn(testSummarizeForRotationAndMaintenance(releaseMaintenance, "old task summary")),
+	)
 	defer func() {
 		close(releaseMaintenance)
 		waitCtx, cancel := context.WithTimeout(context.Background(), time.Second)
