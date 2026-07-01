@@ -1,0 +1,237 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+)
+
+const (
+	defaultDashScopeEndpoint    = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+	defaultDashScopeModel       = "qwen3-asr-flash-realtime"
+	dashScopeConnTimeout        = 15 * time.Second
+	dashScopePacketMillis       = 100
+	dashScopeOneShotReadTimeout = 30 * time.Second
+)
+
+// DashScopeRealtimeSTT implements STT using Alibaba DashScope's real-time
+// WebSocket API (qwen3-asr-flash-realtime). It supports both streaming upload
+// and one-shot TranscribeWAV (which opens a WebSocket, sends all audio, then closes).
+type DashScopeRealtimeSTT struct {
+	apiKey   string
+	model    string
+	endpoint string
+	language string
+	proxy    ProxyConfig
+}
+
+// NewDashScopeRealtimeSTT creates a new DashScope real-time STT client.
+func NewDashScopeRealtimeSTT(apiKey, model, endpoint, language string) *DashScopeRealtimeSTT {
+	if model == "" {
+		model = defaultDashScopeModel
+	}
+	if endpoint == "" {
+		endpoint = defaultDashScopeEndpoint
+	}
+	return &DashScopeRealtimeSTT{
+		apiKey:   apiKey,
+		model:    model,
+		endpoint: endpoint,
+		language: language,
+	}
+}
+
+// Capabilities reports that this provider supports streaming upload.
+func (s *DashScopeRealtimeSTT) Capabilities() STTCapabilities {
+	return STTCapabilities{SupportsStreamingUpload: true}
+}
+
+// TranscribeWAV performs one-shot transcription by opening a WebSocket session,
+// sending all audio at once, and waiting for the final result.
+func (s *DashScopeRealtimeSTT) TranscribeWAV(wavData []byte) (string, error) {
+	pcm, sampleRate, err := extractPCMFromWAV(wavData)
+	if err != nil {
+		return "", fmt.Errorf("dashscope stt: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), dashScopeOneShotReadTimeout)
+	defer cancel()
+
+	uploader, err := s.newUploader(ctx, STTStreamConfig{
+		SampleRate: sampleRate,
+		Channels:   1,
+		BitWidth:   16,
+	})
+	if err != nil {
+		return "", fmt.Errorf("dashscope stt one-shot: %w", err)
+	}
+
+	if err := uploader.UploadPCM(pcm); err != nil {
+		_ = uploader.Close()
+		return "", fmt.Errorf("dashscope stt one-shot upload: %w", err)
+	}
+
+	transcript, err := uploader.Finalize()
+	if err != nil {
+		return "", fmt.Errorf("dashscope stt one-shot finalize: %w", err)
+	}
+	return transcript, nil
+}
+
+// NewStreamingUploader creates a new streaming STT session over WebSocket.
+func (s *DashScopeRealtimeSTT) NewStreamingUploader(ctx context.Context, cfg STTStreamConfig) (STTStreamUploader, error) {
+	return s.newUploader(ctx, cfg)
+}
+
+func (s *DashScopeRealtimeSTT) buildEndpointURL() string {
+	base := strings.TrimRight(s.endpoint, "/")
+	if strings.Contains(base, "?") {
+		return base + "&model=" + s.model
+	}
+	return base + "?model=" + s.model
+}
+
+func (s *DashScopeRealtimeSTT) newUploader(ctx context.Context, cfg STTStreamConfig) (*dashScopeUploader, error) {
+	if s.apiKey == "" {
+		return nil, fmt.Errorf("dashscope STT: api_key is required")
+	}
+	if cfg.SampleRate <= 0 {
+		return nil, fmt.Errorf("dashscope STT: sample_rate must be > 0")
+	}
+	if cfg.Channels != 1 {
+		return nil, fmt.Errorf("dashscope STT: only mono audio supported, got %d channels", cfg.Channels)
+	}
+	if cfg.BitWidth != 16 {
+		return nil, fmt.Errorf("dashscope STT: only 16-bit PCM supported, got %d", cfg.BitWidth)
+	}
+
+	dialer, err := newProxyWebSocketDialer(s.proxy, dashScopeConnTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("dashscope STT: configure websocket proxy: %w", err)
+	}
+
+	header := http.Header{}
+	header.Set("Authorization", "Bearer "+s.apiKey)
+
+	endpoint := s.buildEndpointURL()
+	conn, _, err := dialer.DialContext(ctx, endpoint, header)
+	if err != nil {
+		return nil, fmt.Errorf("dashscope STT: dial websocket: %w", err)
+	}
+
+	uploader := &dashScopeUploader{
+		conn:        conn,
+		packetBytes: cfg.SampleRate * cfg.Channels * (cfg.BitWidth / 8) * dashScopePacketMillis / 1000,
+		done:        make(chan struct{}),
+		ready:       make(chan struct{}),
+	}
+
+	go uploader.readLoop()
+
+	// Send session.update to configure the recognition session (manual turn detection).
+	session := dashScopeSession{
+		Modalities:       []string{"text"},
+		InputAudioFormat: "pcm",
+		SampleRate:       cfg.SampleRate,
+		TurnDetection:    json.RawMessage("null"),
+	}
+	if s.language != "" {
+		lang := s.language
+		if lang == "zh" {
+			lang = "zh-CN"
+		} else if lang == "en" {
+			lang = "en-US"
+		}
+		session.Language = lang
+	}
+
+	sessionUpdate := dashScopeMessage{
+		EventID: "evt_" + strconv.FormatInt(time.Now().UnixNano(), 36),
+		Type:    "session.update",
+		Session: &session,
+	}
+
+	if err := conn.WriteJSON(sessionUpdate); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("dashscope STT: send session.update: %w", err)
+	}
+
+	// Wait for session.created or session.updated before sending audio.
+	select {
+	case <-uploader.ready:
+	case <-uploader.done:
+		return nil, fmt.Errorf("dashscope STT: session setup failed: %v", uploader.err)
+	case <-ctx.Done():
+		_ = conn.Close()
+		return nil, fmt.Errorf("dashscope STT: context cancelled waiting for session ready")
+	}
+
+	return uploader, nil
+}
+
+// extractPCMFromWAV strips the WAV header and returns raw PCM data and sample rate.
+func extractPCMFromWAV(wavData []byte) ([]byte, int, error) {
+	if len(wavData) < 44 {
+		return nil, 0, fmt.Errorf("WAV data too short (%d bytes)", len(wavData))
+	}
+	if string(wavData[0:4]) != "RIFF" || string(wavData[8:12]) != "WAVE" {
+		return nil, 0, fmt.Errorf("not a valid WAV file")
+	}
+	sampleRate := int(wavData[24]) | int(wavData[25])<<8 | int(wavData[26])<<16 | int(wavData[27])<<24
+	// Find "data" chunk
+	offset := 12
+	for offset+8 <= len(wavData) {
+		chunkID := string(wavData[offset : offset+4])
+		chunkSize := int(wavData[offset+4]) | int(wavData[offset+5])<<8 | int(wavData[offset+6])<<16 | int(wavData[offset+7])<<24
+		if chunkID == "data" {
+			dataStart := offset + 8
+			dataEnd := dataStart + chunkSize
+			if dataEnd > len(wavData) {
+				dataEnd = len(wavData)
+			}
+			return wavData[dataStart:dataEnd], sampleRate, nil
+		}
+		offset += 8 + chunkSize
+	}
+	return nil, 0, fmt.Errorf("WAV data chunk not found")
+}
+
+// --- DashScope protocol message types ---
+
+type dashScopeMessage struct {
+	EventID string          `json:"event_id"`
+	Type    string          `json:"type"`
+	Session *dashScopeSession `json:"session,omitempty"`
+	Audio   string          `json:"audio,omitempty"`
+}
+
+type dashScopeSession struct {
+	Modalities       []string        `json:"modalities"`
+	InputAudioFormat string          `json:"input_audio_format"`
+	SampleRate       int             `json:"sample_rate"`
+	Language         string          `json:"language,omitempty"`
+	TurnDetection    json.RawMessage `json:"turn_detection,omitempty"`
+}
+
+type dashScopeTurnDetection struct {
+	Type              string `json:"type"`
+	Threshold         float64 `json:"threshold,omitempty"`
+	SilenceDurationMs int    `json:"silence_duration_ms,omitempty"`
+}
+
+type dashScopeServerEvent struct {
+	EventID    string `json:"event_id"`
+	Type       string `json:"type"`
+	Transcript string `json:"transcript,omitempty"`
+	Text       string `json:"text,omitempty"`
+	Error      *dashScopeErrorPayload `json:"error,omitempty"`
+}
+
+type dashScopeErrorPayload struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
