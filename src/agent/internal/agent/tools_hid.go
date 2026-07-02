@@ -550,6 +550,7 @@ func (t *KeyboardTapTool) ArgsSchema() map[string]any {
 				"items": map[string]any{
 					"type": "string",
 				},
+				"examples": [][]string{{"ctrl", "c"}, {"meta"}},
 			},
 			"hold_ms": map[string]any{
 				"type":        "integer",
@@ -715,8 +716,8 @@ func (t *MouseClickTool) ArgsSchema() map[string]any {
 		"type":                 "object",
 		"additionalProperties": false,
 		"properties": map[string]any{
-			"x": coordinateSchema("X coordinate."),
-			"y": coordinateSchema("Y coordinate."),
+			"x": coordinateSchema("X coordinate.", 500),
+			"y": coordinateSchema("Y coordinate.", 300),
 			"button": map[string]any{
 				"type":        "string",
 				"enum":        []string{"left", "right", "middle"},
@@ -773,8 +774,8 @@ func (t *MouseMoveTool) ArgsSchema() map[string]any {
 		"type":                 "object",
 		"additionalProperties": false,
 		"properties": map[string]any{
-			"x":           coordinateSchema("X coordinate."),
-			"y":           coordinateSchema("Y coordinate."),
+			"x":           coordinateSchema("X coordinate.", 500),
+			"y":           coordinateSchema("Y coordinate.", 300),
 			"coord_space": coordSpaceSchema(),
 		},
 		"required": []string{"x", "y"},
@@ -875,18 +876,15 @@ func pointSchema(description string) map[string]any {
 		"additionalProperties": false,
 		"description":          description,
 		"properties": map[string]any{
-			"x": coordinateSchema("X coordinate."),
-			"y": coordinateSchema("Y coordinate."),
+			"x": coordinateSchema("X coordinate.", 500),
+			"y": coordinateSchema("Y coordinate.", 300),
 		},
 		"required": []string{"x", "y"},
 	}
 }
 
-func coordinateSchema(description string) map[string]any {
-	return map[string]any{
-		"type":        "number",
-		"description": description,
-	}
+func coordinateSchema(description string, examples ...float64) map[string]any {
+	return numberArgSchema(description, examples...)
 }
 
 func coordSpaceSchema() map[string]any {
