@@ -30,10 +30,6 @@ bool AudioPlaybackSession::start() {
 
 void AudioPlaybackSession::stop() {
     if (stopped_.exchange(true)) return;
-    // Pause the AO channel to unblock any in-progress SendFrame(-1).
-    // This is safe to call from another thread — it only toggles channel state
-    // without tearing down hardware (unlike player_.stop()).
-    player_.pause();
     cv_.notify_all();
     if (playback_thread_.joinable()) playback_thread_.join();
 }
@@ -120,13 +116,12 @@ void AudioPlaybackSession::playback_loop() {
         }
 
         if (!chunk.empty()) {
-            if (!player_.play(chunk.data(), static_cast<uint32_t>(chunk.size()))) {
-                fprintf(stderr,
-                        "[audio_service] playback session %llu: AudioPlayer::play failed (chunk=%zu)\n",
-                        static_cast<unsigned long long>(session_id_),
-                        chunk.size());
-            } else {
-                last_played_chunk_bytes = chunk.size();
+            while (!stopped_.load()) {
+                if (player_.play(chunk.data(), static_cast<uint32_t>(chunk.size()))) {
+                    last_played_chunk_bytes = chunk.size();
+                    break;
+                }
+                // SendFrame uses 100ms timeout; retry until stopped or success.
             }
         }
     }

@@ -839,7 +839,7 @@ bool AudioPlayer::play(const void* data, uint32_t length) {
     RK_S32 ret = RK_MPI_SYS_CreateMB(&frame.pMbBlk, &extConfig);
     if (ret != RK_SUCCESS) return false;
 
-    ret = RK_MPI_AO_SendFrame(impl_->dev_id, impl_->chn_id, &frame, -1);
+    ret = RK_MPI_AO_SendFrame(impl_->dev_id, impl_->chn_id, &frame, 100);
 
     RK_MPI_MB_ReleaseMB(frame.pMbBlk);
     return ret == RK_SUCCESS;
