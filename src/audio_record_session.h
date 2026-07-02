@@ -35,6 +35,9 @@ public:
     // Signal the session to stop. Unblocks any pending pop_chunk().
     void stop();
 
+    // Wait for the capture thread to exit. Must call stop() first.
+    void join();
+
     bool is_stopped() const { return stopped_.load(); }
 
 private:

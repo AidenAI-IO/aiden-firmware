@@ -1880,6 +1880,29 @@ func TestRuntimeCallbackPropagatesToolErrorToEventsAndMessages(t *testing.T) {
 	}
 }
 
+func TestRuntimeCallbackPersistsSessionEventWithCanceledRunContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var appenderCtxErr error
+	handler := &runtimeCallbackHandler{
+		episodeID: "ep-1",
+		runtimeID: "runtime-1",
+		requestID: "req-1",
+		runID:     "run-1",
+		sessionEventAppender: func(ctx context.Context, event SessionEvent) error {
+			appenderCtxErr = ctx.Err()
+			return appenderCtxErr
+		},
+	}
+
+	handler.emitRunEvent(ctx, RunEvent{Type: "tool_result", Content: "ok"})
+
+	if appenderCtxErr != nil {
+		t.Fatalf("sessionEventAppender ctx.Err() = %v, want nil", appenderCtxErr)
+	}
+}
+
 func runEventsOfType(events []RunEvent, eventType string) []RunEvent {
 	var matching []RunEvent
 	for _, event := range events {
@@ -3206,8 +3229,14 @@ func TestRuntimeRunRotatesSessionOnNewBoundary(t *testing.T) {
 
 	releaseMaintenance := make(chan struct{})
 	manager := NewMemoryManager(storageDir,
-		WithArchiveCompressTimeout(time.Millisecond),
-		WithSummarizeFn(testSummarizeForRotationAndMaintenance(releaseMaintenance, "old task summary")),
+		WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
+			select {
+			case <-ctx.Done():
+				return ""
+			case <-releaseMaintenance:
+				return "old task summary"
+			}
+		}),
 	)
 	defer func() {
 		close(releaseMaintenance)

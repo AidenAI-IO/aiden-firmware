@@ -94,6 +94,10 @@ AudioRecordSession::AudioRecordSession(uint64_t session_id, const AudioFormat& f
 
 AudioRecordSession::~AudioRecordSession() {
     stop();
+    join();
+}
+
+void AudioRecordSession::join() {
     if (capture_thread_.joinable()) capture_thread_.join();
 }
 
