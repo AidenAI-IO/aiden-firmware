@@ -343,35 +343,13 @@ func (t *QuickActionTool) Description() string {
 }
 
 func (t *QuickActionTool) ArgsSchema() map[string]any {
-	return map[string]any{
-		"type":                 "object",
-		"additionalProperties": false,
-		"properties": map[string]any{
-			"action": map[string]any{
-				"type":        "string",
-				"description": `Action id or alias, for example "back", "copy", or "spotlight_search". Do not use "list" here; set list=true to inspect actions.`,
-			},
-			"platform": map[string]any{
-				"type":        "string",
-				"enum":        []string{"ios", "android", "mac"},
-				"description": "Target platform inferred from the observed screen or user context.",
-			},
-			"list": map[string]any{
-				"type":        "boolean",
-				"description": "Set true to list available actions for the platform instead of executing an action.",
-			},
-			"alternative": map[string]any{
-				"type":        "boolean",
-				"description": "Set true to execute an alternative binding listed by a previous quick_action result.",
-			},
-			"alternative_index": map[string]any{
-				"type":        "integer",
-				"minimum":     1,
-				"description": "1-based alternative binding index; defaults to 1 when alternative=true.",
-			},
-		},
-		"required": []string{"platform"},
-	}
+	return objectArgsSchema(map[string]any{
+		"action":            stringArgSchema(`Action id or alias, for example "back", "copy", or "spotlight_search". Do not use "list" here; set list=true to inspect actions.`),
+		"platform":          stringEnumArgSchema("Target platform inferred from the observed screen or user context.", "ios", "android", "mac"),
+		"list":              boolArgSchema("Set true to list available actions for the platform instead of executing an action."),
+		"alternative":       boolArgSchema("Set true to execute an alternative binding listed by a previous quick_action result."),
+		"alternative_index": minIntegerArgSchema("1-based alternative binding index; defaults to 1 when alternative=true.", 1),
+	}, "platform")
 }
 
 type quickActionArgs struct {
