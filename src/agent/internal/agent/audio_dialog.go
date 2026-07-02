@@ -201,20 +201,41 @@ func (d *AudioDialog) StartRecording() error {
 		log.Printf("[audio] Persistent record reader unavailable, using per-request reads: %v\n", err)
 	}
 	d.recordText = ""
-	recordSTT, err := beginStreamingSTTSession(context.Background(), d.sttClient, STTStreamConfig{
-		SampleRate: d.config.Audio.SampleRateOrDefault(),
-		Channels:   d.config.Audio.ChannelsOrDefault(),
-		BitWidth:   d.config.Audio.BitWidthOrDefault(),
-	})
-	if err != nil {
-		log.Printf("[stt] streaming upload unavailable, falling back to one-shot STT: %v\n", err)
-	} else if recordSTT != nil {
+	d.recordActive = true
+
+	// Play the cue tone immediately so the user gets fast feedback.
+	d.playPromptSoundAsync(promptSoundRecordingStart, "recording")
+
+	// Start STT streaming session asynchronously — the network handshake
+	// (WebSocket dial + session setup) can take 1-3s and should not delay
+	// the audible cue. Chunks are buffered by uploadRecordChunkToStreamingSTT
+	// which checks currentRecordSTT() and silently drops if not yet ready.
+	sttSessionID := result.SessionID
+	go func() {
+		recordSTT, err := beginStreamingSTTSession(context.Background(), d.sttClient, STTStreamConfig{
+			SampleRate: d.config.Audio.SampleRateOrDefault(),
+			Channels:   d.config.Audio.ChannelsOrDefault(),
+			BitWidth:   d.config.Audio.BitWidthOrDefault(),
+		})
+		if err != nil {
+			log.Printf("[stt] streaming upload unavailable, falling back to one-shot STT: %v\n", err)
+			return
+		}
+		if recordSTT == nil {
+			return
+		}
+		// Guard: if recording was stopped before STT connected, discard.
+		d.recordMu.Lock()
+		stillActive := d.recordActive && d.sessionID == sttSessionID
+		d.recordMu.Unlock()
+		if !stillActive {
+			_ = recordSTT.Close()
+			return
+		}
 		log.Println("[stt] streaming upload enabled for realtime transcription")
 		d.setRecordSTT(recordSTT)
-	}
-	d.recordActive = true
-	// Open the mic before the cue tone so speech right after Enter is captured.
-	d.playPromptSoundAsync(promptSoundRecordingStart, "recording")
+	}()
+
 	return nil
 }
 
