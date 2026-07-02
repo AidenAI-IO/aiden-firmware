@@ -32,7 +32,10 @@ func effectiveMaxIterations(configured int) int {
 	return configured
 }
 
-const currentEnvironmentHintMaxAge = 10 * time.Minute
+const (
+	currentEnvironmentHintMaxAge      = 10 * time.Minute
+	runtimeSessionEventPersistTimeout = 2 * time.Second
+)
 
 type Runtime struct {
 	config             Config
@@ -1437,13 +1440,20 @@ func (h *runtimeCallbackHandler) emitRunEvent(ctx context.Context, event RunEven
 	if event.EpisodeID == "" {
 		event.EpisodeID = h.episodeID
 	}
-	if h.sessionEventAppender != nil {
-		if err := h.sessionEventAppender(ctx, sessionEventFromRunEvent(event, h)); err != nil && h.logger != nil {
-			h.logger.Warn("[memory] persist runtime session event failed: %v", err)
-		}
-	}
+	h.persistSessionEventBestEffort(sessionEventFromRunEvent(event, h), "[memory] persist runtime session event failed")
 	if h.eventHandler != nil {
 		h.eventHandler(event)
+	}
+}
+
+func (h *runtimeCallbackHandler) persistSessionEventBestEffort(event SessionEvent, warnMessage string) {
+	if h.sessionEventAppender == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), runtimeSessionEventPersistTimeout)
+	defer cancel()
+	if err := h.sessionEventAppender(ctx, event); err != nil && h.logger != nil {
+		h.logger.Warn("%s: %v", warnMessage, err)
 	}
 }
 
@@ -1740,9 +1750,7 @@ func (h *runtimeCallbackHandler) HandlePlannerDecision(ctx context.Context, deci
 	if h.sessionEventAppender != nil {
 		event := sessionEventFromPlannerDecision(decision)
 		event.EpisodeID = h.episodeID
-		if err := h.sessionEventAppender(ctx, event); err != nil && h.logger != nil {
-			h.logger.Warn("[memory] persist planner decision failed: %v", err)
-		}
+		h.persistSessionEventBestEffort(event, "[memory] persist planner decision failed")
 	}
 }
 
@@ -1750,9 +1758,7 @@ func (h *runtimeCallbackHandler) HandleVerifierDecision(ctx context.Context, dec
 	if h.sessionEventAppender != nil {
 		event := sessionEventFromVerifierDecision(decision)
 		event.EpisodeID = h.episodeID
-		if err := h.sessionEventAppender(ctx, event); err != nil && h.logger != nil {
-			h.logger.Warn("[memory] persist verifier decision failed: %v", err)
-		}
+		h.persistSessionEventBestEffort(event, "[memory] persist verifier decision failed")
 	}
 }
 

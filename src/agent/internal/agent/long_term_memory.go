@@ -321,6 +321,10 @@ func (s *LongTermMemoryStore) MarkConflict(ctx context.Context, aID string, bID 
 }
 
 func (s *LongTermMemoryStore) UpdateMemory(ctx context.Context, id string, update func(*MemoryItem)) error {
+	return s.UpdateMemories(ctx, []string{id}, update)
+}
+
+func (s *LongTermMemoryStore) UpdateMemories(ctx context.Context, ids []string, update func(*MemoryItem)) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -329,24 +333,36 @@ func (s *LongTermMemoryStore) UpdateMemory(ctx context.Context, id string, updat
 	if update == nil {
 		return nil
 	}
-	path := s.memoryPath(id)
-	parsed, err := readMemoryMarkdown(path)
-	if err != nil {
-		if os.IsNotExist(err) || errors.Is(err, os.ErrNotExist) {
-			return nil
+	updated := false
+	for _, id := range uniqueNonEmpty(ids) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
 		}
-		return err
+		path := s.memoryPath(id)
+		parsed, err := readMemoryMarkdown(path)
+		if err != nil {
+			if os.IsNotExist(err) || errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return err
+		}
+		update(&parsed.Item)
+		parsed.Item.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		if parsed.Item.Title == "" {
+			parsed.Item.Title = parsed.Title
+		}
+		if parsed.Item.Content == "" {
+			parsed.Item.Content = parsed.Content
+		}
+		if err := writeFileAtomic(path, []byte(formatMemoryMarkdown(parsed.Item)), 0o644); err != nil {
+			return err
+		}
+		updated = true
 	}
-	update(&parsed.Item)
-	parsed.Item.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
-	if parsed.Item.Title == "" {
-		parsed.Item.Title = parsed.Title
-	}
-	if parsed.Item.Content == "" {
-		parsed.Item.Content = parsed.Content
-	}
-	if err := writeFileAtomic(path, []byte(formatMemoryMarkdown(parsed.Item)), 0o644); err != nil {
-		return err
+	if !updated {
+		return nil
 	}
 	return s.RebuildIndex(ctx)
 }
