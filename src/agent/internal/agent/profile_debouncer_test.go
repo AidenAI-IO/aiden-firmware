@@ -133,6 +133,48 @@ func TestProfileDebouncerFlushPreservesPendingWhenWaitIdleFails(t *testing.T) {
 	}
 }
 
+func TestProfileDebouncerFlushPreservesPendingWhenRebuildFails(t *testing.T) {
+	rebuildErr := errors.New("rebuild failed")
+	firstRebuildDone := make(chan struct{})
+	var callCount atomic.Int64
+	rebuild := func(ctx context.Context) error {
+		call := callCount.Add(1)
+		if call == 1 {
+			close(firstRebuildDone)
+			return nil
+		}
+		if call == 2 {
+			return rebuildErr
+		}
+		return nil
+	}
+
+	d := NewProfileDebouncer(rebuild, time.Hour, nil)
+	d.RequestRebuild()
+
+	select {
+	case <-firstRebuildDone:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first rebuild")
+	}
+
+	d.RequestRebuild()
+
+	if err := d.Flush(context.Background()); !errors.Is(err, rebuildErr) {
+		t.Fatalf("Flush() error = %v, want rebuild error", err)
+	}
+	if got := callCount.Load(); got != 2 {
+		t.Fatalf("rebuild count after failed rebuild = %d, want 2", got)
+	}
+
+	if err := d.Flush(context.Background()); err != nil {
+		t.Fatalf("retry Flush() error = %v", err)
+	}
+	if got := callCount.Load(); got != 3 {
+		t.Fatalf("rebuild count after retry flush = %d, want 3", got)
+	}
+}
+
 func TestProfileDebouncerAllowsRebuildAfterIntervalExpires(t *testing.T) {
 	var callCount atomic.Int64
 	rebuild := func(ctx context.Context) error {
