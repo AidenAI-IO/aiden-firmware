@@ -1,6 +1,7 @@
 package context_manager
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/tmc/langchaingo/llms"
@@ -41,6 +42,28 @@ func TestConvertStandardMessageToContextManagerMessage_ToolCall(t *testing.T) {
 	}
 	if message.ToolCalls[0].ID != "call_1" || message.ToolCalls[0].Name != "echo" || message.ToolCalls[0].Arguments != `{"input":"hello"}` {
 		t.Fatalf("tool_calls = %#v", message.ToolCalls)
+	}
+}
+
+func TestConvertStandardMessageToContextManagerMessage_NormalizesInvalidToolCallArguments(t *testing.T) {
+	rawArguments := `{"type": "tap", "point": {"x":}`
+	message := ConvertChoiceToContextManagerMessage(llms.ContentChoice{
+		ToolCalls: []llms.ToolCall{{
+			ID:   "call_1",
+			Type: "function",
+			FunctionCall: &llms.FunctionCall{
+				Name:      "touch_gesture",
+				Arguments: rawArguments,
+			},
+		}},
+	})
+
+	if len(message.ToolCalls) != 1 {
+		t.Fatalf("tool_calls = %#v, want one entry", message.ToolCalls)
+	}
+	want := mustMarshalToolInput(t, rawArguments)
+	if message.ToolCalls[0].Arguments != want {
+		t.Fatalf("arguments = %q, want valid JSON wrapper", message.ToolCalls[0].Arguments)
 	}
 }
 
@@ -114,6 +137,41 @@ func TestConvertToStandardMessageList_ToolCalls(t *testing.T) {
 	if !ok || toolCall.ID != "call_1" || toolCall.FunctionCall == nil || toolCall.FunctionCall.Name != "echo" {
 		t.Fatalf("tool call part = %#v", messages[0].Parts[1])
 	}
+}
+
+func TestConvertToStandardMessageList_NormalizesInvalidToolCallArguments(t *testing.T) {
+	rawArguments := `{"type": "tap", "point": {"x":}`
+	manager := NewContextManager()
+	manager.AppendMessage(Message{
+		Role: MessageRoleToolCall,
+		ToolCalls: []ToolCall{{
+			ID:        "call_1",
+			Name:      "touch_gesture",
+			Arguments: rawArguments,
+		}},
+	})
+
+	messages := manager.ConvertToStandardMessageList()
+	if len(messages) != 1 || len(messages[0].Parts) != 1 {
+		t.Fatalf("messages = %#v, want one tool call message", messages)
+	}
+	toolCall, ok := messages[0].Parts[0].(llms.ToolCall)
+	if !ok || toolCall.FunctionCall == nil {
+		t.Fatalf("tool call part = %#v", messages[0].Parts[0])
+	}
+	want := mustMarshalToolInput(t, rawArguments)
+	if toolCall.FunctionCall.Arguments != want {
+		t.Fatalf("arguments = %q, want valid JSON wrapper", toolCall.FunctionCall.Arguments)
+	}
+}
+
+func mustMarshalToolInput(t *testing.T, input string) string {
+	t.Helper()
+	encoded, err := json.Marshal(map[string]string{"input": input})
+	if err != nil {
+		t.Fatalf("marshal expected input wrapper: %v", err)
+	}
+	return string(encoded)
 }
 
 func TestConvertToStandardMessageList_ToolResults(t *testing.T) {

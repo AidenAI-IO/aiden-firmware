@@ -783,7 +783,7 @@ func convertMessageContent(message llms.MessageContent, explicitPromptCache bool
 				Type: typed.Type,
 				Function: &compatibleFunctionCall{
 					Name:      typed.FunctionCall.Name,
-					Arguments: typed.FunctionCall.Arguments,
+					Arguments: normalizeCompatibleToolArguments(typed.FunctionCall.Arguments),
 				},
 			})
 		default:
@@ -803,6 +803,17 @@ func convertMessageContent(message llms.MessageContent, explicitPromptCache bool
 		msg.Content = textParts
 	}
 	return msg, nil
+}
+
+func normalizeCompatibleToolArguments(arguments string) string {
+	trimmed := strings.TrimSpace(arguments)
+	if trimmed == "" {
+		return "{}"
+	}
+	if json.Valid([]byte(trimmed)) {
+		return trimmed
+	}
+	return encodeToolArguments(arguments)
 }
 
 func convertTools(tools []llms.Tool, functions []llms.FunctionDefinition) []compatibleTool {

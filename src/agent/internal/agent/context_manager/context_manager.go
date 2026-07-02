@@ -1,6 +1,7 @@
 package context_manager
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -13,13 +14,13 @@ import (
 type MessageRole string
 
 const (
-	MessageRoleUser MessageRole = "user"
-	MessageRoleAssistant MessageRole = "assistant"
-	MessageRoleToolCall MessageRole = "tool_call"
+	MessageRoleUser       MessageRole = "user"
+	MessageRoleAssistant  MessageRole = "assistant"
+	MessageRoleToolCall   MessageRole = "tool_call"
 	MessageRoleToolResult MessageRole = "tool_result"
-	MessageRoleState MessageRole = "state"
-	MessageRoleSystem MessageRole = "system"
-	MessageRoleNotice MessageRole = "notice"
+	MessageRoleState      MessageRole = "state"
+	MessageRoleSystem     MessageRole = "system"
+	MessageRoleNotice     MessageRole = "notice"
 )
 
 func (r MessageRole) ToStandardRole() llms.ChatMessageType {
@@ -75,17 +76,17 @@ type Attachment struct {
 // It is thread safe and can be used concurrently by multiple goroutines.
 // SessionID is the id of the session, it is used to identify the session of the agent. Conversation in a same session are shared the same context.
 type ContextManager struct {
-	sessionID string
+	sessionID   string
 	messageList []Message
-	mu sync.RWMutex
+	mu          sync.RWMutex
 }
 
 func NewContextManager() *ContextManager {
 	sessionID := "session_" + uuid.New().String()
 	return &ContextManager{
-		sessionID: sessionID,
+		sessionID:   sessionID,
 		messageList: []Message{},
-		mu: sync.RWMutex{},
+		mu:          sync.RWMutex{},
 	}
 }
 
@@ -131,9 +132,9 @@ func (c *ContextManager) Fork() *ContextManager {
 	}
 	newSessionID := "session_" + uuid.New().String()
 	return &ContextManager{
-		sessionID: newSessionID,
+		sessionID:   newSessionID,
 		messageList: newMessageList,
-		mu: sync.RWMutex{},
+		mu:          sync.RWMutex{},
 	}
 }
 
@@ -143,7 +144,7 @@ func (c *ContextManager) ConvertToStandardMessageList() []llms.MessageContent {
 	standardMessageList := make([]llms.MessageContent, len(c.messageList))
 	for i, message := range c.messageList {
 		newMessage := llms.MessageContent{
-			Role: message.Role.ToStandardRole(),
+			Role:  message.Role.ToStandardRole(),
 			Parts: []llms.ContentPart{},
 		}
 		if message.Role == MessageRoleToolResult {
@@ -174,7 +175,7 @@ func (c *ContextManager) ConvertToStandardMessageList() []llms.MessageContent {
 				Type: "function",
 				FunctionCall: &llms.FunctionCall{
 					Name:      name,
-					Arguments: call.Arguments,
+					Arguments: normalizeToolCallArguments(call.Arguments),
 				},
 			})
 		}
@@ -249,10 +250,25 @@ func toolCallsFromContentChoice(choice llms.ContentChoice) []ToolCall {
 		result = append(result, ToolCall{
 			ID:        strings.TrimSpace(call.ID),
 			Name:      name,
-			Arguments: strings.TrimSpace(call.FunctionCall.Arguments),
+			Arguments: normalizeToolCallArguments(call.FunctionCall.Arguments),
 		})
 	}
 	return result
+}
+
+func normalizeToolCallArguments(arguments string) string {
+	trimmed := strings.TrimSpace(arguments)
+	if trimmed == "" {
+		return "{}"
+	}
+	if json.Valid([]byte(trimmed)) {
+		return trimmed
+	}
+	encoded, err := json.Marshal(map[string]string{"input": arguments})
+	if err != nil {
+		return "{}"
+	}
+	return string(encoded)
 }
 
 func toolCallIDOrFallback(id string, messageIndex, toolIndex int) string {

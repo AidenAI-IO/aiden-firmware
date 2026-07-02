@@ -106,6 +106,56 @@ func TestOpenAICompatibleModelParsesToolCalls(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleModelNormalizesInvalidToolCallArgumentsInRequest(t *testing.T) {
+	rawArguments := `{"type": "tap", "point": {"x":}`
+	var captured struct {
+		Messages []struct {
+			Role      string `json:"role"`
+			ToolCalls []struct {
+				ID       string `json:"id"`
+				Type     string `json:"type"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls,omitempty"`
+		} `json:"messages"`
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	model := newOpenAICompatibleModel(server.URL, "test-model", "", server.Client())
+	_, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
+		Role: llms.ChatMessageTypeAI,
+		Parts: []llms.ContentPart{llms.ToolCall{
+			ID:   "call_1",
+			Type: "function",
+			FunctionCall: &llms.FunctionCall{
+				Name:      "touch_gesture",
+				Arguments: rawArguments,
+			},
+		}},
+	}})
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	if len(captured.Messages) != 1 || len(captured.Messages[0].ToolCalls) != 1 {
+		t.Fatalf("captured messages = %#v, want one tool call", captured.Messages)
+	}
+	got := captured.Messages[0].ToolCalls[0].Function.Arguments
+	if got != encodeToolArguments(rawArguments) || !json.Valid([]byte(got)) {
+		t.Fatalf("arguments = %q, want valid JSON wrapper", got)
+	}
+}
+
 func TestOpenAICompatibleModelLogsRawHTTPWhenEnabled(t *testing.T) {
 	rawResponse := `{"choices":[{"message":{"content":"<think>\n需要查当前时间。\n</think>","tool_calls":[{"id":"call_1","type":"function","function":{"name":"current_time","arguments":"{\"timezone\":\"local\"}"}}]},"finish_reason":"tool_calls"}]}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
