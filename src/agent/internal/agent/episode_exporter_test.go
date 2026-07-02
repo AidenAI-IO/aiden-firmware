@@ -906,6 +906,97 @@ func TestBuildLangfuseBatchMapsDefaultModePlannerTools(t *testing.T) {
 	}
 }
 
+func TestBuildLangfuseBatchUsesIterationTimingSpanAsToolParent(t *testing.T) {
+	start := time.Date(2026, 6, 11, 10, 0, 0, 0, time.UTC)
+	toolDuration := int64(100)
+	episode := TaskEpisode{
+		ID:        "ep_iteration_default",
+		StartedAt: start.Format(time.RFC3339Nano),
+		EndedAt:   start.Add(time.Second).Format(time.RFC3339Nano),
+		UserGoal:  "echo test",
+		Outcome:   TaskEpisodeOutcome{Success: true, FinalAnswer: "done"},
+		Events: []TaskEpisodeEvent{
+			{EventID: "evt_iter_start", Ts: start.Format(time.RFC3339Nano), Type: runEventIterationStart, Metadata: map[string]interface{}{"iteration": 1}},
+			{EventID: "evt_tool", Ts: start.Add(100 * time.Millisecond).Format(time.RFC3339Nano), Type: runEventToolCall, Role: string(RoleAgent), ToolName: "echo", ToolInput: `{"__arg1":"ok"}`},
+			{EventID: "evt_result", Ts: start.Add(200 * time.Millisecond).Format(time.RFC3339Nano), Type: "tool_result", Role: string(RoleAgent), ToolName: "echo", Observation: "ok", DurationMs: &toolDuration},
+			{EventID: "evt_finish", Ts: start.Add(300 * time.Millisecond).Format(time.RFC3339Nano), Type: "default_finish", Role: string(RoleAgent), Content: "done"},
+			{EventID: "evt_iter_end", Ts: start.Add(400 * time.Millisecond).Format(time.RFC3339Nano), Type: runEventIterationEnd, DurationMs: int64Ptr(400), Metadata: map[string]interface{}{"iteration": 1}},
+		},
+	}
+
+	exporter := NewEpisodeExporter(TelemetryConfig{Enabled: boolPtr(true), BaseURL: "http://langfuse.test"}, nil)
+	batch, err := exporter.buildLangfuseBatch(context.Background(), episode, t.TempDir())
+	if err != nil {
+		t.Fatalf("buildLangfuseBatch() error = %v", err)
+	}
+	bodies := langfuseBodiesByName(t, batch)
+	iteration := singleLangfuseBody(t, bodies, "iteration_1")
+	tool := singleLangfuseBody(t, bodies, "agent/tool/echo")
+	finish := singleLangfuseBody(t, bodies, "agent/default_finish")
+	if tool["parentObservationId"] != iteration["id"] {
+		t.Fatalf("tool parentObservationId = %#v, want iteration id %#v", tool["parentObservationId"], iteration["id"])
+	}
+	if finish["parentObservationId"] != iteration["id"] {
+		t.Fatalf("finish parentObservationId = %#v, want iteration id %#v", finish["parentObservationId"], iteration["id"])
+	}
+}
+
+func TestBuildLangfuseBatchDoesNotDuplicatePlannerIterationSpan(t *testing.T) {
+	start := time.Date(2026, 6, 11, 10, 0, 0, 0, time.UTC)
+	episode := TaskEpisode{
+		ID:        "ep_iteration_plan",
+		StartedAt: start.Format(time.RFC3339Nano),
+		EndedAt:   start.Add(time.Second).Format(time.RFC3339Nano),
+		UserGoal:  "plan test",
+		Outcome:   TaskEpisodeOutcome{Success: true, FinalAnswer: "done"},
+		Events: []TaskEpisodeEvent{
+			{EventID: "evt_iter_start", Ts: start.Format(time.RFC3339Nano), Type: runEventIterationStart, Metadata: map[string]interface{}{"iteration": 1}},
+			{EventID: "evt_plan", Ts: start.Add(100 * time.Millisecond).Format(time.RFC3339Nano), Type: "planner_decision", Role: string(RolePlanner), Objective: "do it", Plan: []string{"step 1"}, NextStep: "step 1"},
+			{EventID: "evt_iter_end", Ts: start.Add(500 * time.Millisecond).Format(time.RFC3339Nano), Type: runEventIterationEnd, DurationMs: int64Ptr(500), Metadata: map[string]interface{}{"iteration": 1}},
+		},
+	}
+
+	exporter := NewEpisodeExporter(TelemetryConfig{Enabled: boolPtr(true), BaseURL: "http://langfuse.test"}, nil)
+	batch, err := exporter.buildLangfuseBatch(context.Background(), episode, t.TempDir())
+	if err != nil {
+		t.Fatalf("buildLangfuseBatch() error = %v", err)
+	}
+	bodies := langfuseBodiesByName(t, batch)
+	iteration := singleLangfuseBody(t, bodies, "iteration_1")
+	planner := singleLangfuseBody(t, bodies, "planner")
+	if planner["parentObservationId"] != iteration["id"] {
+		t.Fatalf("planner parentObservationId = %#v, want iteration id %#v", planner["parentObservationId"], iteration["id"])
+	}
+}
+
+func langfuseBodiesByName(t *testing.T, batch []langfuseIngestionEvent) map[string][]map[string]interface{} {
+	t.Helper()
+	bodies := map[string][]map[string]interface{}{}
+	for _, event := range batch {
+		var body map[string]interface{}
+		if err := json.Unmarshal(event.Body, &body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if name, _ := body["name"].(string); name != "" {
+			bodies[name] = append(bodies[name], body)
+		}
+	}
+	return bodies
+}
+
+func singleLangfuseBody(t *testing.T, bodies map[string][]map[string]interface{}, name string) map[string]interface{} {
+	t.Helper()
+	items := bodies[name]
+	if len(items) != 1 {
+		t.Fatalf("%s body count = %d, want 1; bodies=%#v", name, len(items), bodies[name])
+	}
+	return items[0]
+}
+
+func int64Ptr(value int64) *int64 {
+	return &value
+}
+
 func intMetricFromMeta(meta map[string]interface{}, key string) int {
 	if meta == nil {
 		return 0

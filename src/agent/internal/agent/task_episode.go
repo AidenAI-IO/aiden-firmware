@@ -183,6 +183,18 @@ func (r *EpisodeRecorder) ID() string {
 	return r.id
 }
 
+func (r *EpisodeRecorder) setStartedAtIfEarlier(startedAt time.Time) {
+	if r == nil || startedAt.IsZero() {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	startedAt = startedAt.UTC()
+	if r.startedAt.IsZero() || startedAt.Before(r.startedAt) {
+		r.startedAt = startedAt
+	}
+}
+
 func (r *EpisodeRecorder) visualArtifactRoot() string {
 	if r == nil {
 		return ""
@@ -334,6 +346,10 @@ func (r *EpisodeRecorder) recordExecutionForRole(result roleExecutionResult, rol
 			IsError:     result.ToolError != nil,
 			ToolError:   cloneToolError(result.ToolError),
 		}
+		if result.ToolDuration > 0 {
+			durationMs := result.ToolDuration.Milliseconds()
+			event.DurationMs = &durationMs
+		}
 		if result.Step.Action.Tool != "" {
 			event.ToolName = result.Step.Action.Tool
 			event.ToolInput = normalizeToolInput(result.Step.Action.ToolInput)
@@ -383,6 +399,9 @@ func (r *EpisodeRecorder) Finish(output string, metrics *RunMetrics, runErr erro
 		}
 		if metrics.FirstTokenTime > 0 {
 			episode.Extra["first_token_time_ms"] = metrics.FirstTokenTime
+		}
+		if metrics.CachedPromptTokens > 0 {
+			episode.Extra["cached_prompt_tokens"] = metrics.CachedPromptTokens
 		}
 	}
 	if runErr != nil {

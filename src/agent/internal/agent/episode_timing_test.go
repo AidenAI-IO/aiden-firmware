@@ -2,6 +2,7 @@ package agent
 
 import (
 	"testing"
+	"time"
 )
 
 func TestPercentileInt64(t *testing.T) {
@@ -137,6 +138,48 @@ func TestEpisodeDerivedMetrics_ToolLatencyByType(t *testing.T) {
 	}
 	if bashStats["count"] != 1 {
 		t.Errorf("Bash count = %v, want 1", bashStats["count"])
+	}
+}
+
+func TestEpisodeDerivedMetrics_UsesToolResultDuration(t *testing.T) {
+	duration := int64(1500)
+	events := []TaskEpisodeEvent{
+		{Type: runEventToolCall, ToolName: "Read", Ts: "2026-07-02T10:00:00.000Z"},
+		{Type: "tool_result", ToolName: "Read", Ts: "2026-07-02T10:00:00.000Z", DurationMs: &duration},
+	}
+
+	metrics := episodeDerivedMetrics(events)
+
+	if got := metrics["tool_latency_ms_max"]; got != duration {
+		t.Fatalf("tool_latency_ms_max = %v, want %v", got, duration)
+	}
+	toolLatencyByType, ok := metrics["tool_latency_by_type"].(map[string]interface{})
+	if !ok {
+		t.Fatal("tool_latency_by_type not found in metrics")
+	}
+	readStats, ok := toolLatencyByType["Read"].(map[string]interface{})
+	if !ok {
+		t.Fatal("Read tool stats not found")
+	}
+	if got := readStats["max"]; got != duration {
+		t.Fatalf("Read max = %v, want %v", got, duration)
+	}
+}
+
+func TestEpisodeRecorderFinishIncludesCachedPromptTokens(t *testing.T) {
+	recorder := NewEpisodeRecorder(MemoryRetrieveRequest{Input: "hello"}, MemoryContext{})
+	metrics := &RunMetrics{
+		PromptTokens:       1000,
+		CompletionTokens:   50,
+		TotalTokens:        1050,
+		CachedPromptTokens: 750,
+		TotalDuration:      float64((2 * time.Second).Milliseconds()),
+	}
+
+	episode := recorder.Finish("ok", metrics, nil, nil, nil)
+
+	if got := episode.Extra["cached_prompt_tokens"]; got != metrics.CachedPromptTokens {
+		t.Fatalf("cached_prompt_tokens = %v, want %d", got, metrics.CachedPromptTokens)
 	}
 }
 

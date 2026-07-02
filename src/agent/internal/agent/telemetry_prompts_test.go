@@ -1,9 +1,11 @@
 package agent
 
 import (
+	"context"
 	"encoding/base64"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -11,6 +13,68 @@ import (
 func TestTelemetryPromptMetadataSkipsNilCallOption(t *testing.T) {
 	if meta := telemetryPromptMetadata([]llms.CallOption{nil}); meta != nil {
 		t.Fatalf("metadata = %#v, want nil", meta)
+	}
+}
+
+func TestTelemetryPromptCaptureRecordsPromptShapeMetadata(t *testing.T) {
+	capture := newTelemetryPromptCapture(true)
+	messages := []llms.MessageContent{
+		{
+			Role:  llms.ChatMessageTypeSystem,
+			Parts: []llms.ContentPart{llms.TextPart("system rules")},
+		},
+		{
+			Role: llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{
+				llms.TextPart("hello"),
+				llms.BinaryContent{MIMEType: "image/png", Data: []byte("png")},
+			},
+		},
+	}
+	options := []llms.CallOption{llms.WithTools([]llms.Tool{{
+		Type: "function",
+		Function: &llms.FunctionDefinition{
+			Name:        "echo",
+			Description: "Echo input.",
+		},
+	}})}
+
+	capture.Record(
+		context.Background(),
+		time.Date(2026, 7, 2, 10, 0, 0, 0, time.UTC),
+		time.Date(2026, 7, 2, 10, 0, 1, 0, time.UTC),
+		messages,
+		options,
+		contentResponse("ok"),
+		nil,
+		4096,
+	)
+
+	calls := capture.Snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("captured calls = %d, want 1", len(calls))
+	}
+	meta := calls[0].Metadata
+	if got := meta["message_count"]; got != 2 {
+		t.Fatalf("message_count = %v, want 2", got)
+	}
+	if got := meta["text_part_count"]; got != 2 {
+		t.Fatalf("text_part_count = %v, want 2", got)
+	}
+	if got := meta["binary_count"]; got != 1 {
+		t.Fatalf("binary_count = %v, want 1", got)
+	}
+	if got := meta["tool_schema_count"]; got != 1 {
+		t.Fatalf("tool_schema_count = %v, want 1", got)
+	}
+	for _, key := range []string{"estimated_prompt_tokens", "estimated_tool_schema_tokens", "system_text_tokens", "non_system_text_tokens"} {
+		value, ok := meta[key].(int)
+		if !ok || value <= 0 {
+			t.Fatalf("%s = %#v, want positive int", key, meta[key])
+		}
+	}
+	if got := meta["text_chars"]; got != len("system rules")+len("hello") {
+		t.Fatalf("text_chars = %v, want %d", got, len("system rules")+len("hello"))
 	}
 }
 

@@ -76,7 +76,7 @@ func (c *telemetryPromptCapture) Record(ctx context.Context, startedAt, endedAt 
 		UsageDetails:    telemetryUsageDetails(res),
 		CostDetails:     telemetryCostDetails(res),
 		ModelParameters: telemetryModelParameters(options),
-		Metadata:        telemetryPromptMetadata(options),
+		Metadata:        telemetryPromptMetadata(options, messages),
 	}
 	if contextWindow > 0 {
 		if call.ModelParameters == nil {
@@ -372,7 +372,7 @@ func telemetryModelParametersFromCallOptions(opts llms.CallOptions) map[string]i
 	return params
 }
 
-func telemetryPromptMetadata(options []llms.CallOption) map[string]interface{} {
+func telemetryPromptMetadata(options []llms.CallOption, messages ...[]llms.MessageContent) map[string]interface{} {
 	opts := llms.CallOptions{}
 	for _, option := range options {
 		if option == nil {
@@ -381,14 +381,98 @@ func telemetryPromptMetadata(options []llms.CallOption) map[string]interface{} {
 		option(&opts)
 	}
 	meta := map[string]interface{}{}
+	if len(messages) > 0 {
+		addPromptShapeMetadata(meta, messages[0], opts)
+	}
 	if len(opts.Tools) > 0 {
 		meta["tools_count"] = len(opts.Tools)
+		meta["tool_schema_count"] = len(opts.Tools)
 		meta["tool_schemas"] = telemetryToolDefinitions(opts.Tools)
+	}
+	if toolSchemaTokens := estimateToolSchemaTokens(opts); toolSchemaTokens > 0 {
+		meta["estimated_tool_schema_tokens"] = toolSchemaTokens
 	}
 	if len(meta) == 0 {
 		return nil
 	}
 	return meta
+}
+
+func addPromptShapeMetadata(meta map[string]interface{}, messages []llms.MessageContent, opts llms.CallOptions) {
+	if meta == nil {
+		return
+	}
+	meta["message_count"] = len(messages)
+	estimatedMessageTokens := estimateMessagesTokens(messages)
+	meta["estimated_message_tokens"] = estimatedMessageTokens
+	meta["estimated_prompt_tokens"] = estimatedMessageTokens + estimateToolSchemaTokens(opts)
+
+	roleCounts := map[string]int{}
+	var textPartCount int
+	var toolCallCount int
+	var toolResponseCount int
+	var imageCount int
+	var binaryCount int
+	var binaryBytes int
+	var textChars int
+	var systemTextTokens int
+	var nonSystemTextTokens int
+	for _, message := range messages {
+		role := strings.TrimSpace(string(message.Role))
+		if role == "" {
+			role = "unknown"
+		}
+		roleCounts[role]++
+		for _, part := range message.Parts {
+			switch typed := part.(type) {
+			case llms.TextContent:
+				textPartCount++
+				textChars += len(typed.Text)
+				tokens := estimateTextTokens(typed.Text)
+				if message.Role == llms.ChatMessageTypeSystem {
+					systemTextTokens += tokens
+				} else {
+					nonSystemTextTokens += tokens
+				}
+			case llms.ToolCall:
+				toolCallCount++
+			case llms.ToolCallResponse:
+				toolResponseCount++
+			case llms.ImageURLContent:
+				imageCount++
+			case llms.BinaryContent:
+				binaryCount++
+				binaryBytes += len(typed.Data)
+				if strings.HasPrefix(strings.ToLower(strings.TrimSpace(typed.MIMEType)), "image/") {
+					imageCount++
+				}
+			}
+		}
+	}
+	meta["message_role_counts"] = roleCounts
+	if textPartCount > 0 {
+		meta["text_part_count"] = textPartCount
+		meta["text_chars"] = textChars
+	}
+	if toolCallCount > 0 {
+		meta["tool_call_count"] = toolCallCount
+	}
+	if toolResponseCount > 0 {
+		meta["tool_response_count"] = toolResponseCount
+	}
+	if imageCount > 0 {
+		meta["image_count"] = imageCount
+	}
+	if binaryCount > 0 {
+		meta["binary_count"] = binaryCount
+		meta["binary_bytes"] = binaryBytes
+	}
+	if systemTextTokens > 0 {
+		meta["system_text_tokens"] = systemTextTokens
+	}
+	if nonSystemTextTokens > 0 {
+		meta["non_system_text_tokens"] = nonSystemTextTokens
+	}
 }
 
 func telemetryToolDefinitions(tools []llms.Tool) []map[string]interface{} {

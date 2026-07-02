@@ -79,6 +79,7 @@ type roleExecutionResult struct {
 	Action          *schema.AgentAction
 	Step            *schema.AgentStep
 	ToolError       *ToolError
+	ToolDuration    time.Duration
 	CandidateAnswer string
 }
 
@@ -253,367 +254,379 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 		TodoReminderToolCalls: e.TodoReminderToolCalls,
 	}
 	for i := 0; i < e.MaxIterations; i++ {
-		iterationStartTime := time.Now()
-		iterationIndex := i + 1
-		toolCallsBefore := len(state.ToolSteps)
+		iterationResult, iterationDone, iterationErr := func() (map[string]any, bool, error) {
+			iterationStartTime := time.Now()
+			iterationIndex := i + 1
+			toolCallsBefore := len(state.ToolSteps)
 
-		// Record iteration start
-		if e.Recorder != nil {
-			e.Recorder.RecordEvent(TaskEpisodeEvent{
-				Type: runEventIterationStart,
-				Ts:   iterationStartTime.Format(time.RFC3339Nano),
-				Metadata: map[string]interface{}{
-					"iteration": iterationIndex,
-				},
-			})
-		}
-
-		// Helper to record iteration end
-		recordIterationEnd := func() {
+			// Record iteration start
 			if e.Recorder != nil {
-				iterDuration := time.Since(iterationStartTime).Milliseconds()
-				toolCallsInIteration := len(state.ToolSteps) - toolCallsBefore
 				e.Recorder.RecordEvent(TaskEpisodeEvent{
-					Type:       runEventIterationEnd,
-					Ts:         time.Now().Format(time.RFC3339Nano),
-					DurationMs: &iterDuration,
+					Type: runEventIterationStart,
+					Ts:   iterationStartTime.Format(time.RFC3339Nano),
 					Metadata: map[string]interface{}{
-						"iteration":  iterationIndex,
-						"tool_calls": toolCallsInIteration,
+						"iteration": iterationIndex,
 					},
 				})
 			}
-		}
-		defer recordIterationEnd()
 
-		consumedInterrupt, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
-		if err != nil {
-			return nil, err
-		}
-		if consumedInterrupt {
-			continue
-		}
-		switch state.Phase {
-		case phaseDecision, phaseDefault, phasePlan:
-			turn, err := e.callPlannerTurn(ctx, inputs, &state, plannerToolSpecs, options...)
-			if err != nil {
-				return nil, err
+			// Helper to record iteration end
+			recordIterationEnd := func() {
+				if e.Recorder != nil {
+					iterDuration := time.Since(iterationStartTime).Milliseconds()
+					toolCallsInIteration := len(state.ToolSteps) - toolCallsBefore
+					e.Recorder.RecordEvent(TaskEpisodeEvent{
+						Type:       runEventIterationEnd,
+						Ts:         time.Now().Format(time.RFC3339Nano),
+						DurationMs: &iterDuration,
+						Metadata: map[string]interface{}{
+							"iteration":  iterationIndex,
+							"tool_calls": toolCallsInIteration,
+						},
+					})
+				}
 			}
-			switch turn.Kind {
-			case plannerTurnSteer:
-				continue
-			case plannerTurnFinish:
-				consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
+			defer recordIterationEnd()
+			finishIteration := func(result map[string]any, err error) (map[string]any, bool, error) {
+				return result, true, err
+			}
+
+			consumedInterrupt, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
+			if err != nil {
+				return nil, false, err
+			}
+			if consumedInterrupt {
+				return nil, false, nil
+			}
+			switch state.Phase {
+			case phaseDecision, phaseDefault, phasePlan:
+				turn, err := e.callPlannerTurn(ctx, inputs, &state, plannerToolSpecs, options...)
 				if err != nil {
-					return nil, err
+					return nil, false, err
 				}
-				if consumed {
-					continue
-				}
-				canFinish := state.Phase == phaseDecision || state.Phase == phaseDefault || state.canAcceptPlannerFinal(turn.Answer)
-				if canFinish {
-					consumed, err = e.consumeFinalPendingSteer(ctx, inputs, &state)
+				switch turn.Kind {
+				case plannerTurnSteer:
+					return nil, false, nil
+				case plannerTurnFinish:
+					consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
 					if err != nil {
-						return nil, err
+						return nil, false, err
 					}
 					if consumed {
-						continue
+						return nil, false, nil
 					}
-					if state.shouldReviewDefaultFinal(plannerToolSpecs) {
-						review, err := e.callDefaultFinalReview(ctx, inputs, state, turn.Answer, options...)
+					canFinish := state.Phase == phaseDecision || state.Phase == phaseDefault || state.canAcceptPlannerFinal(turn.Answer)
+					if canFinish {
+						consumed, err = e.consumeFinalPendingSteer(ctx, inputs, &state)
 						if err != nil {
-							return nil, err
+							return nil, false, err
 						}
-						if review.NeedsHumanHandoff {
-							handoffTurn, err := e.executeDefaultFinalHandoff(ctx, &state, plannerToolSpecs, review)
+						if consumed {
+							return nil, false, nil
+						}
+						if state.shouldReviewDefaultFinal(plannerToolSpecs) {
+							review, err := e.callDefaultFinalReview(ctx, inputs, state, turn.Answer, options...)
 							if err != nil {
-								return nil, err
+								return nil, false, err
 							}
-							if handoffTurn.Step != nil {
-								state.ToolSteps = append(state.ToolSteps, *handoffTurn.Step)
-								state.World.UpdateFromStep(*handoffTurn.Step, len(state.ToolSteps), e.Tools, e.VisualArtifacts)
+							if review.NeedsHumanHandoff {
+								handoffTurn, err := e.executeDefaultFinalHandoff(ctx, &state, plannerToolSpecs, review)
+								if err != nil {
+									return nil, false, err
+								}
+								if handoffTurn.Step != nil {
+									state.ToolSteps = append(state.ToolSteps, *handoffTurn.Step)
+									state.World.UpdateFromStep(*handoffTurn.Step, len(state.ToolSteps), e.Tools, e.VisualArtifacts)
+								}
+								if handoffTurn.Kind == plannerTurnTool {
+									consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
+									if err != nil {
+										return nil, false, err
+									}
+									if consumed {
+										return nil, false, nil
+									}
+									if _, err := e.consumePendingSteer(ctx, inputs, &state); err != nil {
+										return nil, false, err
+									}
+									state.noteDefaultToolCallAndMaybeTodoReminder()
+								}
+								if handoffTurn.Kind == plannerTurnSleep {
+									consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
+									if err != nil {
+										return nil, false, err
+									}
+									if consumed {
+										return nil, false, nil
+									}
+									consumed, err = e.consumeFinalPendingSteer(ctx, inputs, &state)
+									if err != nil {
+										return nil, false, err
+									}
+									if consumed {
+										return nil, false, nil
+									}
+									answer := runPausingToolFinalAnswer(handoffTurn.Step)
+									if e.Recorder != nil {
+										e.Recorder.RecordDefaultFinish(answer)
+									}
+									return finishIteration(e.finishRunWithoutStreaming(ctx, answer, answer, &state))
+								}
+								return nil, false, nil
 							}
-							if handoffTurn.Kind == plannerTurnTool {
-								consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
-								if err != nil {
-									return nil, err
-								}
-								if consumed {
-									continue
-								}
-								if _, err := e.consumePendingSteer(ctx, inputs, &state); err != nil {
-									return nil, err
-								}
-								state.noteDefaultToolCallAndMaybeTodoReminder()
-							}
-							if handoffTurn.Kind == plannerTurnSleep {
-								consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
-								if err != nil {
-									return nil, err
-								}
-								if consumed {
-									continue
-								}
-								consumed, err = e.consumeFinalPendingSteer(ctx, inputs, &state)
-								if err != nil {
-									return nil, err
-								}
-								if consumed {
-									continue
-								}
-								answer := runPausingToolFinalAnswer(handoffTurn.Step)
+							if !review.CanFinish {
+								state.Phase = phasePlan
+								state.PlanCommitRequired = true
+								state.PlannerReason = defaultString(review.Reason, "default final review requested replanning")
+								state.VerifierResults = append(state.VerifierResults, verifierDecision{
+									CanFinish:   false,
+									NeedsReplan: true,
+									Reason:      state.PlannerReason,
+								})
 								if e.Recorder != nil {
-									e.Recorder.RecordDefaultFinish(answer)
+									e.Recorder.RecordLoopPhase(phasePlan, state.PlannerReason)
 								}
-								return e.finishRunWithoutStreaming(ctx, answer, answer, &state)
+								return nil, false, nil
 							}
-							continue
-						}
-						if !review.CanFinish {
-							state.Phase = phasePlan
-							state.PlanCommitRequired = true
-							state.PlannerReason = defaultString(review.Reason, "default final review requested replanning")
-							state.VerifierResults = append(state.VerifierResults, verifierDecision{
-								CanFinish:   false,
-								NeedsReplan: true,
-								Reason:      state.PlannerReason,
-							})
-							if e.Recorder != nil {
-								e.Recorder.RecordLoopPhase(phasePlan, state.PlannerReason)
+							if answer := strings.TrimSpace(review.FinalAnswer); answer != "" {
+								turn.Answer = answer
 							}
-							continue
 						}
-						if answer := strings.TrimSpace(review.FinalAnswer); answer != "" {
-							turn.Answer = answer
+						if e.Recorder != nil {
+							e.Recorder.RecordDefaultFinish(turn.Answer)
 						}
+						return finishIteration(e.finishRun(ctx, turn.Answer, turn.Answer, &state))
+					}
+					consumed, err = e.consumePendingSteer(ctx, inputs, &state)
+					if err != nil {
+						return nil, false, err
+					}
+					if consumed {
+						return nil, false, nil
+					}
+					return nil, false, nil
+				case plannerTurnUseSimpleMode:
+					return nil, false, nil
+				case plannerTurnEnterPlan:
+					if turn.Step != nil {
+						state.ToolSteps = append(state.ToolSteps, *turn.Step)
 					}
 					if e.Recorder != nil {
-						e.Recorder.RecordDefaultFinish(turn.Answer)
+						e.Recorder.RecordLoopPhase(phasePlan, "enter_plan_mode")
 					}
-					return e.finishRun(ctx, turn.Answer, turn.Answer, &state)
+				case plannerTurnCommitPlan:
+					if turn.Step != nil {
+						state.ToolSteps = append(state.ToolSteps, *turn.Step)
+					}
+					if state.Todo.Mode != TodoModeNone && len(state.Todo.Items) > 0 {
+						e.emitTodoUpdate(ctx, state.Todo, state.Todo.SummaryText(), false)
+					}
+					if e.Recorder != nil {
+						e.Recorder.RecordPlannerDecision(turn.CommittedPlan)
+						e.Recorder.RecordLoopPhase(phaseExecution, "commit_plan")
+					}
+					if handler, ok := e.CallbacksHandler.(plannerDecisionHandler); ok {
+						handler.HandlePlannerDecision(ctx, turn.CommittedPlan)
+					}
+				case plannerTurnSetTodo:
+					if turn.Step != nil {
+						state.ToolSteps = append(state.ToolSteps, *turn.Step)
+					}
+					if turn.Todo.Mode != TodoModeNone && len(turn.Todo.Items) > 0 {
+						e.emitTodoUpdate(ctx, turn.Todo, turn.Todo.CurrentSpeech(), turn.TodoSpeechEligible)
+					}
+				case plannerTurnCancelPlan:
+					if turn.Step != nil {
+						state.ToolSteps = append(state.ToolSteps, *turn.Step)
+					}
+					if e.Recorder != nil {
+						e.Recorder.RecordLoopPhase(phaseDefault, "cancel_plan")
+					}
+				case plannerTurnTool, plannerTurnInvalidMeta, plannerTurnSleep:
+					if turn.Step != nil {
+						state.ToolSteps = append(state.ToolSteps, *turn.Step)
+						state.World.UpdateFromStep(*turn.Step, len(state.ToolSteps), e.Tools, e.VisualArtifacts)
+					}
+					if turn.Kind == plannerTurnTool {
+						consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
+						if err != nil {
+							return nil, false, err
+						}
+						if consumed {
+							return nil, false, nil
+						}
+						if _, err := e.consumePendingSteer(ctx, inputs, &state); err != nil {
+							return nil, false, err
+						}
+						state.noteDefaultToolCallAndMaybeTodoReminder()
+					}
+					if turn.Kind == plannerTurnSleep {
+						consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
+						if err != nil {
+							return nil, false, err
+						}
+						if consumed {
+							return nil, false, nil
+						}
+						consumed, err = e.consumeFinalPendingSteer(ctx, inputs, &state)
+						if err != nil {
+							return nil, false, err
+						}
+						if consumed {
+							return nil, false, nil
+						}
+						answer := runPausingToolFinalAnswer(turn.Step)
+						if e.Recorder != nil {
+							e.Recorder.RecordDefaultFinish(answer)
+						}
+						return finishIteration(e.finishRunWithoutStreaming(ctx, answer, answer, &state))
+					}
 				}
-				consumed, err = e.consumePendingSteer(ctx, inputs, &state)
+			case phaseExecution:
+				if !state.StepExecutionActive {
+					state.syncNextStepFromPlanIndex()
+					state.beginStepExecution()
+					if todo, ok := state.startCurrentTodoStep(); ok {
+						e.emitTodoUpdate(ctx, todo, todo.CurrentSpeech(), true)
+					}
+				}
+				turn, err := e.callExecutorTurn(ctx, inputs, &state, executorToolSpecs, options...)
 				if err != nil {
-					return nil, err
+					return nil, false, err
 				}
-				if consumed {
-					continue
-				}
-				continue
-			case plannerTurnUseSimpleMode:
-				continue
-			case plannerTurnEnterPlan:
-				if turn.Step != nil {
-					state.ToolSteps = append(state.ToolSteps, *turn.Step)
-				}
-				if e.Recorder != nil {
-					e.Recorder.RecordLoopPhase(phasePlan, "enter_plan_mode")
-				}
-			case plannerTurnCommitPlan:
-				if turn.Step != nil {
-					state.ToolSteps = append(state.ToolSteps, *turn.Step)
-				}
-				if state.Todo.Mode != TodoModeNone && len(state.Todo.Items) > 0 {
-					e.emitTodoUpdate(ctx, state.Todo, state.Todo.SummaryText(), false)
-				}
-				if e.Recorder != nil {
-					e.Recorder.RecordPlannerDecision(turn.CommittedPlan)
-					e.Recorder.RecordLoopPhase(phaseExecution, "commit_plan")
-				}
-				if handler, ok := e.CallbacksHandler.(plannerDecisionHandler); ok {
-					handler.HandlePlannerDecision(ctx, turn.CommittedPlan)
-				}
-			case plannerTurnSetTodo:
-				if turn.Step != nil {
-					state.ToolSteps = append(state.ToolSteps, *turn.Step)
-				}
-				if turn.Todo.Mode != TodoModeNone && len(turn.Todo.Items) > 0 {
-					e.emitTodoUpdate(ctx, turn.Todo, turn.Todo.CurrentSpeech(), turn.TodoSpeechEligible)
-				}
-			case plannerTurnCancelPlan:
-				if turn.Step != nil {
-					state.ToolSteps = append(state.ToolSteps, *turn.Step)
-				}
-				if e.Recorder != nil {
-					e.Recorder.RecordLoopPhase(phaseDefault, "cancel_plan")
-				}
-			case plannerTurnTool, plannerTurnInvalidMeta, plannerTurnSleep:
-				if turn.Step != nil {
-					state.ToolSteps = append(state.ToolSteps, *turn.Step)
-					state.World.UpdateFromStep(*turn.Step, len(state.ToolSteps), e.Tools, e.VisualArtifacts)
-				}
-				if turn.Kind == plannerTurnTool {
-					consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
-					if err != nil {
-						return nil, err
+				switch turn.Kind {
+				case executorTurnSteer:
+					return nil, false, nil
+				case executorTurnTool, executorTurnInvalidMeta, executorTurnSleep:
+					if turn.Step != nil {
+						state.ToolSteps = append(state.ToolSteps, *turn.Step)
+						state.StepToolSteps = append(state.StepToolSteps, *turn.Step)
+						state.World.UpdateFromStep(*turn.Step, len(state.ToolSteps), e.Tools, e.VisualArtifacts)
 					}
-					if consumed {
-						continue
+					if turn.Kind == executorTurnTool {
+						execution := roleExecutionResult{Action: turn.Action, Step: turn.Step, ToolError: turn.ToolError, ToolDuration: turn.ToolDuration}
+						state.StepExecutionResults = append(state.StepExecutionResults, execution)
+						state.ExecutionResults = append(state.ExecutionResults, execution)
+						if e.Recorder != nil {
+							e.Recorder.RecordExecution(execution)
+						}
+						consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
+						if err != nil {
+							return nil, false, err
+						}
+						if consumed {
+							return nil, false, nil
+						}
+						if _, err := e.consumePendingSteer(ctx, inputs, &state); err != nil {
+							return nil, false, err
+						}
 					}
-					if _, err := e.consumePendingSteer(ctx, inputs, &state); err != nil {
-						return nil, err
+					if turn.Kind == executorTurnSleep {
+						consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
+						if err != nil {
+							return nil, false, err
+						}
+						if consumed {
+							return nil, false, nil
+						}
+						consumed, err = e.consumeFinalPendingSteer(ctx, inputs, &state)
+						if err != nil {
+							return nil, false, err
+						}
+						if consumed {
+							return nil, false, nil
+						}
+						answer := runPausingToolFinalAnswer(turn.Step)
+						if e.Recorder != nil {
+							e.Recorder.RecordDefaultFinish(answer)
+						}
+						return finishIteration(e.finishRunWithoutStreaming(ctx, answer, answer, &state))
 					}
-					state.noteDefaultToolCallAndMaybeTodoReminder()
-				}
-				if turn.Kind == plannerTurnSleep {
-					consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
-					if err != nil {
-						return nil, err
+				case executorTurnFinishStep, executorTurnAbortStep:
+					if turn.Step != nil {
+						state.ToolSteps = append(state.ToolSteps, *turn.Step)
+						state.StepToolSteps = append(state.StepToolSteps, *turn.Step)
 					}
-					if consumed {
-						continue
-					}
-					consumed, err = e.consumeFinalPendingSteer(ctx, inputs, &state)
-					if err != nil {
-						return nil, err
-					}
-					if consumed {
-						continue
-					}
-					answer := runPausingToolFinalAnswer(turn.Step)
-					if e.Recorder != nil {
-						e.Recorder.RecordDefaultFinish(answer)
-					}
-					return e.finishRunWithoutStreaming(ctx, answer, answer, &state)
-				}
-			}
-		case phaseExecution:
-			if !state.StepExecutionActive {
-				state.syncNextStepFromPlanIndex()
-				state.beginStepExecution()
-				if todo, ok := state.startCurrentTodoStep(); ok {
-					e.emitTodoUpdate(ctx, todo, todo.CurrentSpeech(), true)
-				}
-			}
-			turn, err := e.callExecutorTurn(ctx, inputs, &state, executorToolSpecs, options...)
-			if err != nil {
-				return nil, err
-			}
-			switch turn.Kind {
-			case executorTurnSteer:
-				continue
-			case executorTurnTool, executorTurnInvalidMeta, executorTurnSleep:
-				if turn.Step != nil {
-					state.ToolSteps = append(state.ToolSteps, *turn.Step)
-					state.StepToolSteps = append(state.StepToolSteps, *turn.Step)
-					state.World.UpdateFromStep(*turn.Step, len(state.ToolSteps), e.Tools, e.VisualArtifacts)
-				}
-				if turn.Kind == executorTurnTool {
-					execution := roleExecutionResult{Action: turn.Action, Step: turn.Step, ToolError: turn.ToolError}
-					state.StepExecutionResults = append(state.StepExecutionResults, execution)
-					state.ExecutionResults = append(state.ExecutionResults, execution)
-					if e.Recorder != nil {
-						e.Recorder.RecordExecution(execution)
-					}
-					consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
-					if err != nil {
-						return nil, err
-					}
-					if consumed {
-						continue
-					}
-					if _, err := e.consumePendingSteer(ctx, inputs, &state); err != nil {
-						return nil, err
-					}
-				}
-				if turn.Kind == executorTurnSleep {
-					consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
-					if err != nil {
-						return nil, err
-					}
-					if consumed {
-						continue
-					}
-					consumed, err = e.consumeFinalPendingSteer(ctx, inputs, &state)
-					if err != nil {
-						return nil, err
-					}
-					if consumed {
-						continue
-					}
-					answer := runPausingToolFinalAnswer(turn.Step)
-					if e.Recorder != nil {
-						e.Recorder.RecordDefaultFinish(answer)
-					}
-					return e.finishRunWithoutStreaming(ctx, answer, answer, &state)
-				}
-			case executorTurnFinishStep, executorTurnAbortStep:
-				if turn.Step != nil {
-					state.ToolSteps = append(state.ToolSteps, *turn.Step)
-					state.StepToolSteps = append(state.StepToolSteps, *turn.Step)
-				}
 
-				verification, err := e.callVerifier(ctx, inputs, state, options...)
-				if err != nil {
-					return nil, err
-				}
-				state.World.UpdateObservedState(verification.ObservedState, RoleVerifier)
-				state.VerifierResults = append(state.VerifierResults, verification)
-				if e.Recorder != nil {
-					e.Recorder.RecordVerifierDecision(verification)
-				}
-				if handler, ok := e.CallbacksHandler.(verifierDecisionHandler); ok {
-					handler.HandleVerifierDecision(ctx, verification)
-				}
-				stepSummary := strings.TrimSpace(state.ExecutorStepSummary)
-				state.recordPlanStepResult(verification)
-				if verification.NeedsReplan {
-					if todo, ok := state.blockCurrentTodoStep(verification.Reason); ok {
-						e.emitTodoUpdate(ctx, todo, todo.CurrentSpeech(), false)
+					verification, err := e.callVerifier(ctx, inputs, state, options...)
+					if err != nil {
+						return nil, false, err
 					}
-					state.clearStepExecution()
-					state.Phase = phasePlan
-					state.PlanExhausted = false
+					state.World.UpdateObservedState(verification.ObservedState, RoleVerifier)
+					state.VerifierResults = append(state.VerifierResults, verification)
 					if e.Recorder != nil {
-						e.Recorder.RecordLoopPhase(phasePlan, verification.Reason)
+						e.Recorder.RecordVerifierDecision(verification)
 					}
-					continue
-				}
-				if verification.CanFinish {
-					if todo, ok := state.finishCurrentTodoStep(); ok {
-						e.emitTodoUpdate(ctx, todo, todo.CurrentSpeech(), false)
+					if handler, ok := e.CallbacksHandler.(verifierDecisionHandler); ok {
+						handler.HandleVerifierDecision(ctx, verification)
 					}
+					stepSummary := strings.TrimSpace(state.ExecutorStepSummary)
+					state.recordPlanStepResult(verification)
+					if verification.NeedsReplan {
+						if todo, ok := state.blockCurrentTodoStep(verification.Reason); ok {
+							e.emitTodoUpdate(ctx, todo, todo.CurrentSpeech(), false)
+						}
+						state.clearStepExecution()
+						state.Phase = phasePlan
+						state.PlanExhausted = false
+						if e.Recorder != nil {
+							e.Recorder.RecordLoopPhase(phasePlan, verification.Reason)
+						}
+						return nil, false, nil
+					}
+					if verification.CanFinish {
+						if todo, ok := state.finishCurrentTodoStep(); ok {
+							e.emitTodoUpdate(ctx, todo, todo.CurrentSpeech(), false)
+						}
+						state.clearStepExecution()
+						finalAnswer := strings.TrimSpace(verification.FinalAnswer)
+						if finalAnswer == "" {
+							finalAnswer = stepSummary
+						}
+						consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
+						if err != nil {
+							return nil, false, err
+						}
+						if consumed {
+							state.Phase = phaseDefault
+							return nil, false, nil
+						}
+						consumed, err = e.consumeFinalPendingSteer(ctx, inputs, &state)
+						if err != nil {
+							return nil, false, err
+						}
+						if consumed {
+							state.Phase = phaseDefault
+							return nil, false, nil
+						}
+						return finishIteration(e.finishRun(ctx, finalAnswer, verification.Reason, &state))
+					}
+					doneTodo, doneChanged := state.finishCurrentTodoStep()
 					state.clearStepExecution()
-					finalAnswer := strings.TrimSpace(verification.FinalAnswer)
-					if finalAnswer == "" {
-						finalAnswer = stepSummary
+					if exhausted := state.advancePlanStepOrExhaust(); exhausted {
+						if doneChanged {
+							e.emitTodoUpdate(ctx, doneTodo, doneTodo.CurrentSpeech(), false)
+						}
+						state.Phase = phasePlan
+						if e.Recorder != nil {
+							e.Recorder.RecordLoopPhase(phasePlan, "plan_exhausted")
+						}
+						return nil, false, nil
 					}
-					consumed, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
-					if err != nil {
-						return nil, err
-					}
-					if consumed {
-						state.Phase = phaseDefault
-						continue
-					}
-					consumed, err = e.consumeFinalPendingSteer(ctx, inputs, &state)
-					if err != nil {
-						return nil, err
-					}
-					if consumed {
-						state.Phase = phaseDefault
-						continue
-					}
-					return e.finishRun(ctx, finalAnswer, verification.Reason, &state)
-				}
-				doneTodo, doneChanged := state.finishCurrentTodoStep()
-				state.clearStepExecution()
-				if exhausted := state.advancePlanStepOrExhaust(); exhausted {
-					if doneChanged {
+					if todo, ok := state.startCurrentTodoStep(); ok {
+						e.emitTodoUpdate(ctx, todo, todo.CurrentSpeech(), true)
+					} else if doneChanged {
 						e.emitTodoUpdate(ctx, doneTodo, doneTodo.CurrentSpeech(), false)
 					}
-					state.Phase = phasePlan
-					if e.Recorder != nil {
-						e.Recorder.RecordLoopPhase(phasePlan, "plan_exhausted")
-					}
-					continue
-				}
-				if todo, ok := state.startCurrentTodoStep(); ok {
-					e.emitTodoUpdate(ctx, todo, todo.CurrentSpeech(), true)
-				} else if doneChanged {
-					e.emitTodoUpdate(ctx, doneTodo, doneTodo.CurrentSpeech(), false)
 				}
 			}
+			return nil, false, nil
+		}()
+		if iterationErr != nil {
+			return nil, iterationErr
+		}
+		if iterationDone {
+			return iterationResult, nil
 		}
 	}
 
@@ -789,9 +802,10 @@ func (e *roleCollaborativeExecutor) executePlannerToolAction(
 		return plannerTurnResult{}, toolExecution.Error
 	}
 	execution := roleExecutionResult{
-		Action:    &toolExecution.Step.Action,
-		Step:      &toolExecution.Step,
-		ToolError: toolExecution.Result.Error,
+		Action:       &toolExecution.Step.Action,
+		Step:         &toolExecution.Step,
+		ToolError:    toolExecution.Result.Error,
+		ToolDuration: toolExecution.Result.Duration,
 	}
 	state.ExecutionResults = append(state.ExecutionResults, execution)
 	state.PlannerEvidence = append(state.PlannerEvidence, execution)
@@ -1107,10 +1121,11 @@ func (e *roleCollaborativeExecutor) callExecutorTurn(
 		kind = executorTurnSleep
 	}
 	return executorTurnResult{
-		Kind:      kind,
-		Action:    &actionCopy,
-		Step:      &toolExecution.Step,
-		ToolError: toolExecution.Result.Error,
+		Kind:         kind,
+		Action:       &actionCopy,
+		Step:         &toolExecution.Step,
+		ToolError:    toolExecution.Result.Error,
+		ToolDuration: toolExecution.Result.Duration,
 	}, nil
 }
 
