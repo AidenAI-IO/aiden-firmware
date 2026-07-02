@@ -209,6 +209,135 @@ func TestEnterTextInFieldCompositionSuccess(t *testing.T) {
 	}
 }
 
+func TestEnterTextInFieldUsesPreparedClipboardInCurrentIOSApp(t *testing.T) {
+	message := "Example Contact number 555-0101 and 555-0102 still active?"
+	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
+		ObservedMode: textInputModeASCII,
+		FieldText:    message,
+	}}}
+	pb := newTestPhoneBridge(t)
+	pb.NoteClipboardWrite(message)
+	pb.platform = "ios"
+	pb.appState = "background"
+	pb.appStateAt = time.Now()
+
+	keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
+	keyboardTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
+	quick := &recordingTextInputTool{name: "quick_action", out: `{"ok":true}`}
+	touch := &recordingTextInputTool{name: "touch_gesture", out: "ok"}
+	mouse := &recordingTextInputTool{name: "mouse_click", out: "ok"}
+	hw := &textInputHardwareDeps{
+		mouseClick:   mouse,
+		touchGesture: touch,
+		keyboardTap:  keyboardTap,
+		keyboardText: keyboardText,
+		quickAction:  quick,
+		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}
+	bridgeTool := &EnterTextViaBridgeTool{
+		hw:       hw,
+		vision:   vision,
+		bridgeFn: func() *PhoneBridge { return pb },
+		sleep:    testNoWaitSleep,
+	}
+	tool := &EnterTextInFieldTool{
+		engine:     newFastTextInputEngine(*hw, vision),
+		bridgeTool: bridgeTool,
+	}
+
+	out, err := tool.Call(context.Background(), `{"text":"`+message+`","platform":"ios","focus":{"x":400,"y":950,"coord_space":"normalized"}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"committed": true`,
+		"clipboard-first: using prepared clipboard in current app",
+		"clipboard-first: quick_action-pasted clipboard",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("unexpected output, missing %q: %s", want, out)
+		}
+	}
+	if len(quick.calls) != 1 || !strings.Contains(quick.calls[0], `"action": "paste"`) {
+		t.Fatalf("quick_action calls=%v", quick.calls)
+	}
+	if len(keyboardTap.calls) != 0 {
+		t.Fatalf("keyboard_tap calls=%v", keyboardTap.calls)
+	}
+	if len(touch.calls) != 0 {
+		t.Fatalf("touch_gesture calls=%v", touch.calls)
+	}
+	if len(keyboardText.calls) != 0 {
+		t.Fatalf("keyboard_text calls=%v", keyboardText.calls)
+	}
+	if len(mouse.calls) != 1 {
+		t.Fatalf("mouse_click calls=%v", mouse.calls)
+	}
+}
+
+func TestEnterTextInFieldFallbackDoesNotReportSendAfterCommitSuccess(t *testing.T) {
+	message := "Example Contact number 555-0101 still active?"
+	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
+		ObservedMode: textInputModeASCII,
+		FieldText:    "partial paste",
+	}, {
+		ObservedMode: textInputModeASCII,
+		FieldText:    "partial paste",
+	}, {
+		ObservedMode: textInputModeASCII,
+		FieldText:    message,
+	}}}
+	pb := newTestPhoneBridge(t)
+	pb.NoteClipboardWrite(message)
+	pb.platform = "ios"
+	pb.appState = "background"
+	pb.appStateAt = time.Now()
+
+	keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
+	keyboardTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
+	quick := &recordingTextInputTool{name: "quick_action", out: `{"ok":true}`}
+	hw := &textInputHardwareDeps{
+		mouseClick:   &recordingTextInputTool{name: "mouse_click", out: "ok"},
+		touchGesture: &recordingTextInputTool{name: "touch_gesture", out: "ok"},
+		keyboardTap:  keyboardTap,
+		keyboardText: keyboardText,
+		quickAction:  quick,
+		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}
+	bridgeTool := &EnterTextViaBridgeTool{
+		hw:       hw,
+		vision:   vision,
+		bridgeFn: func() *PhoneBridge { return pb },
+		sleep:    testNoWaitSleep,
+	}
+	tool := &EnterTextInFieldTool{
+		engine:     newFastTextInputEngine(*hw, vision),
+		bridgeTool: bridgeTool,
+	}
+
+	out, err := tool.Call(context.Background(), `{"text":"`+message+`","platform":"ios","focus":{"x":400,"y":950,"coord_space":"normalized"},"send_after_commit":true}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"ok": false`,
+		`"committed": true`,
+		"field verified but send was not verified",
+		"cleared field before input",
+		"clipboard-first: falling back to HID/IME",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("unexpected output, missing %q: %s", want, out)
+		}
+	}
+	if len(keyboardText.calls) == 0 {
+		t.Fatalf("keyboard_text calls=%v", keyboardText.calls)
+	}
+	if len(keyboardTap.calls) == 0 {
+		t.Fatalf("keyboard_tap calls=%v, want clear-field backspaces before fallback input", keyboardTap.calls)
+	}
+}
+
 func TestIsRomanizationOnlyField(t *testing.T) {
 	if !isRomanizationOnlyField("NIHAO", []string{"ni", "hao"}) {
 		t.Fatal("expected romanization-only")

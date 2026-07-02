@@ -126,6 +126,8 @@ type PhoneBridge struct {
 	returnEntrySeen bool
 	environment     *PhoneEnvironment
 	environmentAt   time.Time
+	clipboardText   string
+	clipboardAt     time.Time
 	pendingCmds     map[string]chan BridgeCommandResponse
 	logger          *Logger
 	done            chan struct{}
@@ -464,6 +466,28 @@ func (pb *PhoneBridge) Connected() bool {
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
 	return pb.connected
+}
+
+func (pb *PhoneBridge) NoteClipboardWrite(text string) {
+	if pb == nil {
+		return
+	}
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
+	pb.clipboardText = strings.TrimSpace(text)
+	pb.clipboardAt = time.Now()
+}
+
+func (pb *PhoneBridge) ClipboardRecentlyContains(text string, maxAge time.Duration) bool {
+	if pb == nil || maxAge <= 0 {
+		return false
+	}
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
+	if pb.clipboardAt.IsZero() || time.Since(pb.clipboardAt) > maxAge {
+		return false
+	}
+	return strings.TrimSpace(pb.clipboardText) == strings.TrimSpace(text)
 }
 
 func (pb *PhoneBridge) currentPhoneID() string {
