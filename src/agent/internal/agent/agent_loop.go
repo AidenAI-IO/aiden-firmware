@@ -32,6 +32,7 @@ type AgentLoop struct {
 	EnvironmentBridge      *EnvironmentBridgeClient
 	EnvironmentBridgeTools []string
 	SteerInterrupt         func() <-chan struct{}
+	ContextManager         *context_manager.ContextManager
 }
 
 func NewAgentLoop(
@@ -66,14 +67,17 @@ func (l *AgentLoop) Run(ctx context.Context, input string, options ...chains.Cha
 		return "", err
 	}
 
-	contextManager := context_manager.NewContextManager()
-	seedContextManager(
+	contextManager := l.ContextManager
+	if contextManager == nil {
+		contextManager = context_manager.NewContextManager()
+		l.ContextManager = contextManager
+	}
+	preparePlannerContextManager(
 		contextManager,
 		l.Profile.SystemPrompt,
 		l.ConversationHistory,
 		inputs["input"],
 		l.InputAttachments,
-		buildAgentLoopNotice(inputs),
 	)
 
 	llmExecutor := executor.NewLLMExecutor(l.Model, contextManager)
@@ -171,7 +175,7 @@ func loadAgentLoopInputs(ctx context.Context, memory schema.Memory, input string
 		}
 	}
 	result := map[string]string{"input": input}
-	for _, key := range []string{"history", sessionContextInputKey, rootRequestInputKey, latestUserInputKey} {
+	for _, key := range []string{"history"} {
 		if value, ok := inputValues[key].(string); ok {
 			result[key] = value
 		} else {
@@ -182,14 +186,6 @@ func loadAgentLoopInputs(ctx context.Context, memory schema.Memory, input string
 		result["input"] = input
 	}
 	return result, nil
-}
-
-func buildAgentLoopNotice(inputs map[string]string) string {
-	text := strings.TrimSpace(inputs[sessionContextInputKey])
-	if text == "" {
-		return ""
-	}
-	return "## Session context\n" + text
 }
 
 func (l *AgentLoop) executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallExecutionResult {

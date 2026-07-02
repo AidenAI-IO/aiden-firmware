@@ -99,6 +99,19 @@ func (c *ContextManager) AppendMessage(message Message) {
 	c.messageList = append(c.messageList, message)
 }
 
+func (c *ContextManager) IsEmpty() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return len(c.messageList) == 0
+}
+
+func (c *ContextManager) Reset() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.messageList = nil
+	c.sessionID = "session_" + uuid.New().String()
+}
+
 // Fork creates a new MessageList that is a copy of the current MessageList
 func (c *ContextManager) Fork() *ContextManager {
 	c.mu.RLock()

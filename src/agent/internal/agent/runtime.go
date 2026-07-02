@@ -16,6 +16,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"aiden-agent/internal/agent/context_manager"
+
 	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/agents"
 	"github.com/tmc/langchaingo/callbacks"
@@ -54,6 +56,8 @@ type Runtime struct {
 	telemetrySessionID string
 	environmentBridge  *EnvironmentBridgeClient
 	runGate            chan struct{}
+	plannerContext     *context_manager.ContextManager
+	plannerContextMu   sync.Mutex
 }
 
 type RunRequest struct {
@@ -656,6 +660,9 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		return RunResult{}, err
 	}
 	boundaryTelemetry = beginResult.Boundary
+	if boundaryTelemetry.Rotated {
+		r.resetPlannerContext()
+	}
 	if boundaryTelemetry.PendingRecallCounter == nil {
 		boundaryTelemetry.PendingRecallCounter = &atomic.Int64{}
 	}
@@ -746,7 +753,6 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	if len(conversationHistory) > 0 {
 		plannerMemory = newConversationMessagePlannerMemory(plannerMemory)
 	}
-	plannerMemory = newSessionContextPlannerMemory(plannerMemory, r.memories, "default")
 	var steerStatus steerConversationStatus
 	if req.SteerProvider != nil {
 		plannerMemory = newSteerConversationMemory(plannerMemory, memoryHandle.History)
@@ -789,6 +795,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}
 
 	agentLoop := NewAgentLoop(model, profile, plannerMemory, maxIterations, turnInput.Attachments, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault())
+	agentLoop.ContextManager = r.plannerContextManager()
 	agentLoop.ConversationHistory = conversationHistory
 	agentLoop.EnvironmentBridge = r.environmentBridge
 	agentLoop.EnvironmentBridgeTools = r.config.EnvironmentBridge.Tools
@@ -959,7 +966,11 @@ func (r *Runtime) activeConversationHistoryTokenBudget(contextWindow int) int {
 }
 
 func (r *Runtime) ClearMemory(ctx context.Context) error {
-	return r.memories.ClearSession(ctx, "default")
+	if err := r.memories.ClearSession(ctx, "default"); err != nil {
+		return err
+	}
+	r.resetPlannerContext()
+	return nil
 }
 
 func (r *Runtime) MarkSkillsDirty() {
@@ -997,7 +1008,29 @@ func (r *Runtime) hasLoadedSkills() bool {
 }
 
 func (r *Runtime) ClearAllMemory(ctx context.Context) error {
-	return r.memories.ClearAll(ctx, "default")
+	if err := r.memories.ClearAll(ctx, "default"); err != nil {
+		return err
+	}
+	r.resetPlannerContext()
+	return nil
+}
+
+func (r *Runtime) plannerContextManager() *context_manager.ContextManager {
+	r.plannerContextMu.Lock()
+	defer r.plannerContextMu.Unlock()
+	if r.plannerContext == nil {
+		r.plannerContext = context_manager.NewContextManager()
+	}
+	return r.plannerContext
+}
+
+func (r *Runtime) resetPlannerContext() {
+	r.plannerContextMu.Lock()
+	defer r.plannerContextMu.Unlock()
+	if r.plannerContext == nil {
+		return
+	}
+	r.plannerContext.Reset()
 }
 
 func (r *Runtime) resolveTools(skills ResolvedSkills) []langtools.Tool {

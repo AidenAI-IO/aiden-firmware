@@ -153,3 +153,14 @@ func TestConvertStandardMessageToContextManagerMessage_ReasoningContent(t *testi
 		t.Fatalf("content = %q, want %q", message.Content, want)
 	}
 }
+
+func TestContextManagerReset(t *testing.T) {
+	manager := NewContextManager()
+	manager.AppendMessage(Message{Role: MessageRoleSystem, Content: "system v1"})
+	manager.AppendMessage(Message{Role: MessageRoleUser, Content: "hello"})
+
+	manager.Reset()
+	if !manager.IsEmpty() {
+		t.Fatal("reset context manager should be empty")
+	}
+}

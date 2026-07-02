@@ -69,13 +69,6 @@ func userMessageFromInput(input string, attachments []InputAttachment) context_m
 	})
 }
 
-func noticeMessage(content string) context_manager.Message {
-	return context_manager.Message{
-		Role:    context_manager.MessageRoleNotice,
-		Content: strings.TrimSpace(content),
-	}
-}
-
 func toolResultMessage(toolCallID, toolName, content string) context_manager.Message {
 	return context_manager.Message{
 		Role: context_manager.MessageRoleToolResult,
@@ -106,7 +99,6 @@ func seedContextManager(
 	history []llms.MessageContent,
 	userInput string,
 	attachments []InputAttachment,
-	notice string,
 ) {
 	if strings.TrimSpace(systemPrompt) != "" {
 		manager.AppendMessage(context_manager.Message{
@@ -117,8 +109,22 @@ func seedContextManager(
 	for _, item := range history {
 		manager.AppendMessage(messageFromLLMContent(item))
 	}
-	if strings.TrimSpace(notice) != "" {
-		manager.AppendMessage(noticeMessage(notice))
+	manager.AppendMessage(userMessageFromInput(userInput, attachments))
+}
+
+func preparePlannerContextManager(
+	manager *context_manager.ContextManager,
+	systemPrompt string,
+	history []llms.MessageContent,
+	userInput string,
+	attachments []InputAttachment,
+) {
+	if manager == nil {
+		return
+	}
+	if manager.IsEmpty() {
+		seedContextManager(manager, systemPrompt, history, userInput, attachments)
+		return
 	}
 	manager.AppendMessage(userMessageFromInput(userInput, attachments))
 }

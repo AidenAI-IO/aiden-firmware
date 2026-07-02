@@ -313,7 +313,7 @@ func TestRuntimeRunKeepsCurrentRequestOutOfCompressedHistoryBlock(t *testing.T) 
 	}
 }
 
-func TestRuntimeRunIncludesFullActivePlannerHistoryAndSessionRootContext(t *testing.T) {
+func TestRuntimeRunIncludesFullActivePlannerHistory(t *testing.T) {
 	ctx := context.Background()
 	configDir := t.TempDir()
 	memoryDir := filepath.Join(configDir, "memory")
@@ -358,8 +358,8 @@ func TestRuntimeRunIncludesFullActivePlannerHistoryAndSessionRootContext(t *test
 			t.Fatalf("planner task prompt missing %q:\n%s", want, plannerTaskPrompt)
 		}
 	}
-	if strings.Contains(plannerTaskPrompt, "Root request:") {
-		t.Fatalf("planner task prompt should not repeat root request in session context:\n%s", plannerTaskPrompt)
+	if strings.Contains(plannerTaskPrompt, "Session context view:") {
+		t.Fatalf("planner task prompt should not include session context notice:\n%s", plannerTaskPrompt)
 	}
 }
 
@@ -422,14 +422,14 @@ func TestRuntimeRunBudgetsActivePlannerHistoryBeforeModelCall(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 	if len(model.messages) == 0 || len(model.messages[0]) < 3 {
-		t.Fatalf("expected planner system, history, and state prompt messages, got %#v", model.messages)
+		t.Fatalf("expected planner system, history, and current user messages, got %#v", model.messages)
 	}
 
 	plannerMessages := model.messages[0]
-	if len(plannerMessages) < 4 {
-		t.Fatalf("expected planner system, history, raw input, and state prompt messages, got %#v", plannerMessages)
+	if len(plannerMessages) < 3 {
+		t.Fatalf("expected planner system, history, and current user messages, got %#v", plannerMessages)
 	}
-	historyText := messageText(plannerMessages[1 : len(plannerMessages)-2])
+	historyText := messageText(plannerMessages[1 : len(plannerMessages)-1])
 	for _, want := range []string{"PINNED_ROOT_REQUEST", "KEEP_RECENT_USER"} {
 		if !strings.Contains(historyText, want) {
 			t.Fatalf("budgeted planner history missing %q:\n%s", want, historyText)
