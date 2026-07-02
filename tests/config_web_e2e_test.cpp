@@ -89,12 +89,47 @@ void write_file(const std::string& path, const std::string& content) {
     out << content;
 }
 
+void write_binary_file(const std::string& path, const std::string& content) {
+    std::ofstream out(path, std::ios::binary);
+    REQUIRE(out.good());
+    out.write(content.data(), static_cast<std::streamsize>(content.size()));
+    REQUIRE(out.good());
+}
+
 std::string read_file(const std::string& path) {
     std::ifstream in(path);
     REQUIRE(in.good());
     std::ostringstream buf;
     buf << in.rdbuf();
     return buf.str();
+}
+
+std::string shell_quote(const std::string& text) {
+    std::string out = "'";
+    for (size_t i = 0; i < text.size(); ++i) {
+        if (text[i] == '\'') {
+            out += "'\\''";
+        } else {
+            out.push_back(text[i]);
+        }
+    }
+    out.push_back('\'');
+    return out;
+}
+
+std::string run_command_capture(const std::string& command) {
+    FILE* pipe = ::popen(command.c_str(), "r");
+    REQUIRE(pipe != nullptr);
+    std::string output;
+    char buffer[512];
+    while (fgets(buffer, sizeof(buffer), pipe)) {
+        output += buffer;
+    }
+    int status = ::pclose(pipe);
+    REQUIRE(status >= 0);
+    REQUIRE(WIFEXITED(status));
+    REQUIRE(WEXITSTATUS(status) == 0);
+    return output;
 }
 
 std::string print_json_unformatted(cJSON* root) {
@@ -1561,6 +1596,50 @@ TEST_CASE("config_web: exports llm raw log files without JSON wrapping") {
     HttpResponse resp = http_request(handle->port, "GET", "/api/llm-logs/export/" + name);
     CHECK(resp.status == 200);
     CHECK(resp.body == content);
+}
+
+TEST_CASE("config_web: exports support log archive with langfuse agent and http logs") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string log_dir = handle->tmp_dir + "/log";
+    REQUIRE(::mkdir(log_dir.c_str(), 0755) == 0);
+    write_file(log_dir + "/llm-http-20260701070000123.log", "old http log\n");
+    write_file(log_dir + "/llm-http-20260701080000123.log", "new http log\n");
+
+    const std::string memory_dir = handle->tmp_dir + "/memory";
+    const std::string episodes_dir = memory_dir + "/episodes";
+    const std::string year_dir = episodes_dir + "/2026";
+    const std::string old_episode_dir = year_dir + "/ep_001_old";
+    const std::string new_episode_dir = year_dir + "/ep_999_new";
+    REQUIRE(::mkdir(memory_dir.c_str(), 0755) == 0);
+    REQUIRE(::mkdir(episodes_dir.c_str(), 0755) == 0);
+    REQUIRE(::mkdir(year_dir.c_str(), 0755) == 0);
+    REQUIRE(::mkdir(old_episode_dir.c_str(), 0755) == 0);
+    REQUIRE(::mkdir(new_episode_dir.c_str(), 0755) == 0);
+    write_file(old_episode_dir + "/episode.yaml", "id: old\n");
+    write_file(new_episode_dir + "/episode.yaml", "id: new\nkind: langfuse-source\n");
+
+    HttpResponse resp = http_request(handle->port, "GET", "/api/logs/export");
+    REQUIRE(resp.status == 200);
+    REQUIRE(resp.body.size() > 2);
+    CHECK(static_cast<unsigned char>(resp.body[0]) == 0x1f);
+    CHECK(static_cast<unsigned char>(resp.body[1]) == 0x8b);
+
+    const std::string archive_path = handle->tmp_dir + "/support-logs.tar.gz";
+    write_binary_file(archive_path, resp.body);
+    const std::string archive = shell_quote(archive_path);
+    const std::string entries = run_command_capture("LC_ALL=C tar -tzf " + archive);
+    CHECK(entries.find("langfuse.yaml\n") != std::string::npos);
+    CHECK(entries.find("agent.log\n") != std::string::npos);
+    CHECK(entries.find("http.log\n") != std::string::npos);
+
+    const std::string http_log = run_command_capture("LC_ALL=C tar -xOzf " + archive + " http.log");
+    CHECK(http_log.find("new http log") != std::string::npos);
+
+    const std::string langfuse = run_command_capture("LC_ALL=C tar -xOzf " + archive + " langfuse.yaml");
+    CHECK(langfuse.find("id: new") != std::string::npos);
+    CHECK(langfuse.find("kind: langfuse-source") != std::string::npos);
 }
 
 TEST_CASE("config_web: legacy llm log JSON file endpoint is removed") {
