@@ -11,6 +11,7 @@ CI_WORKFLOW="$ROOT_DIR/.github/workflows/ci.yml"
 REPACK_SCRIPT="$ROOT_DIR/scripts/repack_ota_update_image.sh"
 GITIGNORE="$ROOT_DIR/.gitignore"
 AIDEN_BOARD_CONFIG="$ROOT_DIR/pico-sdk/project/cfg/BoardConfig_IPC/BoardConfig-EMMC-Buildroot-RV1106_Luckfox_Pico_Zero-IPC.mk"
+SYSDRV_MAKEFILE="$ROOT_DIR/pico-sdk/sysdrv/Makefile"
 
 if grep -Eq 'go\.dev/dl|wget .*go|curl .*go|tar .*go\$|GO_TARBALL|GO_TARBALL_SHA256' "$BUILD_SH" "$BUILD_IMAGE_SH"; then
     echo "build scripts must not download or extract Go toolchains" >&2
@@ -292,12 +293,44 @@ for required in \
     'write_at($fh, $inode_offset + 100, "\0" x 4)' \
     'normalize ext4 inode metadata'; do
     if ! grep -Fq -- "$required" "$ROOT_DIR/pico-sdk/project/build.sh" \
-       && ! grep -Fq -- "$required" "$ROOT_DIR/pico-sdk/sysdrv/Makefile" \
+       && ! grep -Fq -- "$required" "$SYSDRV_MAKEFILE" \
        && ! grep -Fq -- "$required" "$ROOT_DIR/pico-sdk/sysdrv/tools/pc/e2fsprogs/mkfs_ext4.sh"; then
         echo "pico-sdk rootfs reproducibility support missing required content: $required" >&2
         exit 1
     fi
 done
+
+refresh_buildroot_state_block=$(sed -n '/^define refresh_buildroot_config_state$/, /^endef$/p' "$SYSDRV_MAKEFILE")
+if printf '%s\n' "$refresh_buildroot_state_block" | grep -Fq 'printf '\''%s\n'\'' "$$state" > "$$stamp"'; then
+    echo "buildroot config refresh must not stamp success before the build completes" >&2
+    exit 1
+fi
+
+for required in \
+    'define buildroot_config_state_value' \
+    'define write_buildroot_config_state_stamp' \
+    '$(call write_buildroot_config_state_stamp)'; do
+    if ! grep -Fq -- "$required" "$SYSDRV_MAKEFILE"; then
+        echo "pico-sdk buildroot state tracking missing required content: $required" >&2
+        exit 1
+    fi
+done
+
+buildroot_target_block=$(sed -n '/^buildroot: prepare$/, /^buildroot_clean:$/p' "$SYSDRV_MAKEFILE")
+refresh_line=$(printf '%s\n' "$buildroot_target_block" | grep -nF '$(call refresh_buildroot_config_state)' | sed 's/:.*//' | head -n 1)
+parallel_build_line=$(printf '%s\n' "$buildroot_target_block" | grep -nF '$(MAKE) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) -j$(SYSDRV_JOBS) -C $(BUILDROOT_DIR)/$(BUILDROOT_VER)' | sed 's/:.*//' | head -n 1)
+write_stamp_line=$(printf '%s\n' "$buildroot_target_block" | grep -nF '$(call write_buildroot_config_state_stamp)' | sed 's/:.*//' | head -n 1)
+if [ -z "$refresh_line" ] || [ -z "$parallel_build_line" ] || [ -z "$write_stamp_line" ] || \
+   [ "$refresh_line" -ge "$parallel_build_line" ] || [ "$write_stamp_line" -le "$parallel_build_line" ]; then
+    echo "buildroot state tracking must refresh before the Buildroot compile and stamp only after it succeeds" >&2
+    exit 1
+fi
+
+last_buildroot_command=$(printf '%s\n' "$buildroot_target_block" | sed '1d;$d;/^[[:space:]]*$/d' | tail -n 1 | sed 's/^[[:space:]]*//')
+if [ "$last_buildroot_command" != '$(call write_buildroot_config_state_stamp)' ]; then
+    echo "buildroot state stamp must be the final successful step in the buildroot target" >&2
+    exit 1
+fi
 
 if ! grep -q 'chown -hR 0:0 "\$USERDATA_DIR"' "$REPACK_SCRIPT"; then
     echo "OTA update repack must normalize userdata ownership before rebuilding userdata.img" >&2
