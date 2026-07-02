@@ -26,7 +26,7 @@ func (t *PreparePhoneAppWorkflowTool) Description() string {
 		`This is the first-class workflow for stabilizing open_app with other PhoneBridge app-side tools: run reorderable direct app operations first, optionally render/write final clipboard text, then optionally open the target app as the final boundary. ` +
 		`Use it for cross-app tasks where the target app message depends on Contacts, Calendar, clipboard read, notification scheduling, or future direct PhoneBridge tools. ` +
 		`Do not use it for UI-only app reading; only structured direct PhoneBridge operations can run before the target app. ` +
-		`After it returns ok=true, navigate/search inside the target app if needed, then call enter_text_in_field with the returned target_text and send_after_commit=true when sending.`
+		`After it returns ok=true, navigate/search inside the target app if needed, then call enter_text_in_field with the returned target_text. Use an explicit send action after field verification when sending is required.`
 }
 
 func (t *PreparePhoneAppWorkflowTool) ArgsSchema() map[string]any {
@@ -177,7 +177,7 @@ func (t *PreparePhoneAppWorkflowTool) Call(ctx context.Context, input string) (s
 			CommandType: commandType,
 			Method:      resp.Method,
 		})
-		extracted := phoneWorkflowExtractSourceValues(commandType, resp.Data)
+		extracted := phoneWorkflowExtractSourceValues(commandType, resp.Data, payload)
 		sourceValues.merge(extracted.sourceValues)
 		templateValues[action.ID] = extracted.summary
 		for key, value := range extracted.placeholders {
@@ -244,10 +244,9 @@ func (t *PreparePhoneAppWorkflowTool) Call(ctx context.Context, input string) (s
 	}
 	if targetText != "" {
 		nextToolHint := map[string]any{
-			"tool":              "enter_text_in_field",
-			"text":              targetText,
-			"send_after_commit": true,
-			"note":              "After the correct target chat field is visible, focus it and use this text. The prepared clipboard can be pasted without reopening Aiden.",
+			"tool": "enter_text_in_field",
+			"text": targetText,
+			"note": "After the correct target chat field is visible, focus it and use this text. If clipboard paste is unavailable, enter_text_in_field can still use HID/IME typing fallback.",
 		}
 		if args.ArtifactID != "" {
 			result["artifact_id"] = args.ArtifactID
@@ -414,7 +413,7 @@ type phoneWorkflowCalendarEvent struct {
 	AllDay   bool   `json:"all_day,omitempty"`
 }
 
-func phoneWorkflowExtractSourceValues(commandType string, raw json.RawMessage) phoneWorkflowExtractedSourceValues {
+func phoneWorkflowExtractSourceValues(commandType string, raw json.RawMessage, payload json.RawMessage) phoneWorkflowExtractedSourceValues {
 	result := phoneWorkflowExtractedSourceValues{placeholders: map[string]string{}}
 	switch commandType {
 	case "contacts_query":
@@ -453,6 +452,14 @@ func phoneWorkflowExtractSourceValues(commandType string, raw json.RawMessage) p
 		}
 		_ = json.Unmarshal(raw, &data)
 		text := strings.TrimSpace(data.Text)
+		if text != "" {
+			result.sourceValues.ClipboardTexts = []string{text}
+		}
+		result.placeholders["text"] = text
+		result.placeholders["clipboard_text"] = text
+		result.summary = text
+	case "clipboard_write":
+		text := phoneWorkflowClipboardWriteText(payload)
 		if text != "" {
 			result.sourceValues.ClipboardTexts = []string{text}
 		}

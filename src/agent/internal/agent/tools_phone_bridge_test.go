@@ -445,10 +445,9 @@ func TestPreparePhoneAppWorkflowBatchesDirectActionsClipboardAndOpen(t *testing.
 			CommandType string `json:"command_type"`
 		} `json:"actions"`
 		NextToolHint struct {
-			Tool            string `json:"tool"`
-			ArtifactID      string `json:"artifact_id"`
-			Text            string `json:"text"`
-			SendAfterCommit bool   `json:"send_after_commit"`
+			Tool       string `json:"tool"`
+			ArtifactID string `json:"artifact_id"`
+			Text       string `json:"text"`
 		} `json:"next_tool_hint"`
 	}
 	if err := json.Unmarshal([]byte(out), &payload); err != nil {
@@ -470,12 +469,19 @@ func TestPreparePhoneAppWorkflowBatchesDirectActionsClipboardAndOpen(t *testing.
 		t.Fatalf("open_mechanism = %q", payload.OpenMechanism)
 	}
 	if payload.NextToolHint.Tool != "enter_text_in_field" || payload.NextToolHint.ArtifactID != "calendar_message" ||
-		payload.NextToolHint.Text != payload.TargetText || !payload.NextToolHint.SendAfterCommit {
+		payload.NextToolHint.Text != payload.TargetText {
 		t.Fatalf("next_tool_hint = %+v", payload.NextToolHint)
 	}
 	var raw map[string]any
 	if err := json.Unmarshal([]byte(out), &raw); err != nil {
 		t.Fatalf("output is not JSON: %v\n%s", err, out)
+	}
+	hint, ok := raw["next_tool_hint"].(map[string]any)
+	if !ok {
+		t.Fatalf("raw next_tool_hint = %#v", raw["next_tool_hint"])
+	}
+	if _, ok := hint["send_after_commit"]; ok {
+		t.Fatalf("next_tool_hint should not imply automatic send: %s", out)
 	}
 	actions, ok := raw["actions"].([]any)
 	if !ok || len(actions) != 1 {
@@ -597,8 +603,7 @@ func TestPreparePhoneAppWorkflowBatchesContactsClipboardAndOpen(t *testing.T) {
 		OpenedTargetApp   bool   `json:"opened_target_app"`
 		OpenMechanism     string `json:"open_mechanism"`
 		NextToolHint      struct {
-			Tool            string `json:"tool"`
-			SendAfterCommit bool   `json:"send_after_commit"`
+			Tool string `json:"tool"`
 		} `json:"next_tool_hint"`
 	}
 	if err := json.Unmarshal([]byte(out), &payload); err != nil {
@@ -615,7 +620,7 @@ func TestPreparePhoneAppWorkflowBatchesContactsClipboardAndOpen(t *testing.T) {
 	if payload.OpenMechanism != "ios_url_scheme" {
 		t.Fatalf("open_mechanism = %q", payload.OpenMechanism)
 	}
-	if payload.NextToolHint.Tool != "enter_text_in_field" || !payload.NextToolHint.SendAfterCommit {
+	if payload.NextToolHint.Tool != "enter_text_in_field" {
 		t.Fatalf("next_tool_hint = %+v", payload.NextToolHint)
 	}
 	mu.Lock()
@@ -631,6 +636,61 @@ func TestPreparePhoneAppWorkflowBatchesContactsClipboardAndOpen(t *testing.T) {
 	}
 	if gotOpenedApp != "WeChat" {
 		t.Fatalf("opened app = %q", gotOpenedApp)
+	}
+}
+
+func TestPreparePhoneAppWorkflowCanRenderClipboardWriteText(t *testing.T) {
+	var mu sync.Mutex
+	var commandTypes []string
+	var clipboardWrites []string
+	bridge := newTestPhoneBridgeWithApp(t, func(cmd BridgeCommand) BridgeCommandResponse {
+		mu.Lock()
+		commandTypes = append(commandTypes, cmd.Type)
+		mu.Unlock()
+		switch cmd.Type {
+		case "clipboard_write":
+			var payload struct {
+				Text string `json:"text"`
+			}
+			_ = json.Unmarshal(cmd.Payload, &payload)
+			mu.Lock()
+			clipboardWrites = append(clipboardWrites, payload.Text)
+			mu.Unlock()
+			return BridgeCommandResponse{ID: cmd.ID}
+		case "open_app":
+			return BridgeCommandResponse{ID: cmd.ID, Method: "ios_url_scheme"}
+		default:
+			return BridgeCommandResponse{ID: cmd.ID, Error: NewToolError(CodeToolExecutionFailed, "unexpected command "+cmd.Type)}
+		}
+	})
+	tool := NewPreparePhoneAppWorkflowTool(bridge, nil)
+
+	out, err := tool.Call(context.Background(), `{"app_side_actions":[{"id":"clipboard_msg","tool":"clipboard","action":"write","payload":{"text":"Please ask Sample Contact whether +1 555 010 2034 is still active."}}],"target_text_template":"{{clipboard_text}}","target_app":"WeChat","target_label":"Demo Recipient","open_target_app":true}`)
+	if err != nil {
+		t.Fatalf("Call returned err: %v", err)
+	}
+	var payload struct {
+		OK                bool   `json:"ok"`
+		TargetText        string `json:"target_text"`
+		ClipboardPrepared bool   `json:"clipboard_prepared"`
+		OpenedTargetApp   bool   `json:"opened_target_app"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("output is not JSON: %v\n%s", err, out)
+	}
+	wantText := "Please ask Sample Contact whether +1 555 010 2034 is still active."
+	if !payload.OK || payload.TargetText != wantText || !payload.ClipboardPrepared || !payload.OpenedTargetApp {
+		t.Fatalf("workflow output = %+v raw=%s", payload, out)
+	}
+	mu.Lock()
+	gotTypes := append([]string{}, commandTypes...)
+	gotWrites := append([]string{}, clipboardWrites...)
+	mu.Unlock()
+	if strings.Join(gotTypes, ",") != "clipboard_write,clipboard_write,open_app" {
+		t.Fatalf("command order = %v", gotTypes)
+	}
+	if len(gotWrites) != 2 || gotWrites[0] != wantText || gotWrites[1] != wantText {
+		t.Fatalf("clipboard writes = %#v", gotWrites)
 	}
 }
 

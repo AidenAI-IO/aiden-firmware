@@ -218,9 +218,9 @@ func TestGeneratedToolSkillPrefersBridgeTextEntryForPhoneApps(t *testing.T) {
 		"runs structured direct app-side actions first",
 		"prepares final `target_text` clipboard while Aiden is foreground",
 		"Do not treat UI-only app reading as reorderable direct data work",
-		"without reopening Aiden",
-		"set `send_after_commit:true`",
-		"keyboard send key",
+		"HID/IME typing fallback is still valid",
+		"Text-entry verification is not send evidence",
+		"perform an explicit send action",
 		"Do not rely on background WebSocket/HTTP clipboard delivery as the primary path",
 	} {
 		if !strings.Contains(skill, want) {

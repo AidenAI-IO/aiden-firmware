@@ -67,7 +67,7 @@ func (t *EnterTextViaBridgeTool) ArgsSchema() map[string]any {
 		"platform":          stringEnumArgSchema("Target platform.", "ios", "android", "mac"),
 		"mode":              stringEnumArgSchema("Interaction mode. Use \"search\" only for target-app navigation/search input; omit for final message/form entry.", "form", "search"),
 		"artifact_id":       stringArgSchema("Required when consuming a committed-plan target_text artifact prepared before target-app navigation."),
-		"send_after_commit": boolArgSchema("Set true only when the focused field is the final message/form field and the text should be sent after verification."),
+		"send_after_commit": boolArgSchema("Compatibility flag for callers. This tool verifies field text only; it does not press a send button or keyboard send key."),
 		"focus":             focusPointArgSchema("Input field coordinates."),
 	}, "text", "focus")
 }
