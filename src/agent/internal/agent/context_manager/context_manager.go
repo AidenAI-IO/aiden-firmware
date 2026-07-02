@@ -3,6 +3,7 @@ package context_manager
 import (
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/google/uuid"
@@ -45,7 +46,14 @@ func (r MessageRole) ToStandardRole() llms.ChatMessageType {
 type Message struct {
 	Role    MessageRole `json:"role"`
 	Content string `json:"content"`
+	ToolCalls []ToolCall `json:"tool_calls"`
 	Attachments []Attachment `json:"attachments"`
+}
+
+type ToolCall struct {
+	ID string `json:"id"`
+	Name string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 // Attachments are files that are attached to the message, they are not loaded into memory, they are only used to track the files that are attached to the message.
@@ -86,10 +94,13 @@ func (c *ContextManager) AppendMessage(message Message) {
 // Fork creates a new MessageList that is a copy of the current MessageList
 func (c *ContextManager) Fork() *ContextManager {
 	c.mu.RLock()
-	defer c.mu.Unlock()
+	defer c.mu.RUnlock()
 	newMessageList := make([]Message, len(c.messageList))
 	for i, msg := range c.messageList {
 		newMessageList[i] = msg
+		if len(msg.ToolCalls) > 0 {
+			newMessageList[i].ToolCalls = append([]ToolCall(nil), msg.ToolCalls...)
+		}
 		if len(msg.Attachments) > 0 {
 			newMessageList[i].Attachments = append([]Attachment(nil), msg.Attachments...)
 		}
@@ -104,14 +115,30 @@ func (c *ContextManager) Fork() *ContextManager {
 
 func (c *ContextManager) ConvertToStandardMessageList() []llms.MessageContent {
 	c.mu.RLock()
-	defer c.mu.Unlock()
+	defer c.mu.RUnlock()
 	standardMessageList := make([]llms.MessageContent, len(c.messageList))
 	for i, message := range c.messageList {
 		newMessage := llms.MessageContent{
 			Role: message.Role.ToStandardRole(),
 			Parts: []llms.ContentPart{},
 		}
-		newMessage.Parts = append(newMessage.Parts, llms.TextPart(message.Content))
+		if content := strings.TrimSpace(message.Content); content != "" {
+			newMessage.Parts = append(newMessage.Parts, llms.TextPart(content))
+		}
+		for toolIndex, call := range message.ToolCalls {
+			name := strings.TrimSpace(call.Name)
+			if name == "" {
+				continue
+			}
+			newMessage.Parts = append(newMessage.Parts, llms.ToolCall{
+				ID:   toolCallIDOrFallback(call.ID, i, toolIndex),
+				Type: "function",
+				FunctionCall: &llms.FunctionCall{
+					Name:      name,
+					Arguments: call.Arguments,
+				},
+			})
+		}
 		for _, attachment := range message.Attachments {
 			data, err := os.ReadFile(attachment.FilePath)
 			if err != nil {
@@ -123,4 +150,68 @@ func (c *ContextManager) ConvertToStandardMessageList() []llms.MessageContent {
 		standardMessageList[i] = newMessage
 	}
 	return standardMessageList
+}
+
+// ConvertChoiceToContextManagerMessage converts a content choice to a context manager message
+func ConvertChoiceToContextManagerMessage(choice llms.ContentChoice) Message {
+	role := MessageRoleAssistant
+	if contentChoiceHasToolCalls(choice) {
+		role = MessageRoleToolCall
+	}
+	return Message{
+		Role:      role,
+		Content:   contentChoiceText(choice),
+		ToolCalls: toolCallsFromContentChoice(choice),
+	}
+}
+
+func contentChoiceHasToolCalls(choice llms.ContentChoice) bool {
+	if len(choice.ToolCalls) > 0 {
+		return true
+	}
+	return choice.FuncCall != nil
+}
+
+func contentChoiceText(choice llms.ContentChoice) string {
+	parts := make([]string, 0, 2)
+	if reasoning := strings.TrimSpace(choice.ReasoningContent); reasoning != "" {
+		parts = append(parts, reasoning)
+	}
+	if content := strings.TrimSpace(choice.Content); content != "" {
+		parts = append(parts, content)
+	}
+	return strings.Join(parts, "\n")
+}
+
+func toolCallsFromContentChoice(choice llms.ContentChoice) []ToolCall {
+	toolCalls := choice.ToolCalls
+	if len(toolCalls) == 0 && choice.FuncCall != nil {
+		toolCalls = []llms.ToolCall{{
+			Type:         "function",
+			FunctionCall: choice.FuncCall,
+		}}
+	}
+	result := make([]ToolCall, 0, len(toolCalls))
+	for _, call := range toolCalls {
+		if call.FunctionCall == nil {
+			continue
+		}
+		name := strings.TrimSpace(call.FunctionCall.Name)
+		if name == "" {
+			continue
+		}
+		result = append(result, ToolCall{
+			ID:        strings.TrimSpace(call.ID),
+			Name:      name,
+			Arguments: strings.TrimSpace(call.FunctionCall.Arguments),
+		})
+	}
+	return result
+}
+
+func toolCallIDOrFallback(id string, messageIndex, toolIndex int) string {
+	if id = strings.TrimSpace(id); id != "" {
+		return id
+	}
+	return fmt.Sprintf("ctx_tool_call_%d_%d", messageIndex, toolIndex)
 }
