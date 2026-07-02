@@ -96,6 +96,20 @@ func TestKeyboardTapSchemaRequiresKeysArray(t *testing.T) {
 func TestTouchGestureSchemaRequiresNamedPointCoordinates(t *testing.T) {
 	schema := (&TouchGestureTool{}).ArgsSchema()
 	props := schema["properties"].(map[string]any)
+	gestureType := props["type"].(map[string]any)
+	enumValues := gestureType["enum"].([]string)
+	for _, want := range []string{"and_home", "and_apps_left", "and_apps_right", "and_apps_back", "and_tasks"} {
+		found := false
+		for _, value := range enumValues {
+			if value == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("type enum missing %s: %#v", want, enumValues)
+		}
+	}
 	point := props["point"].(map[string]any)
 	if point["type"] != "object" {
 		t.Fatalf("point type = %#v, want object", point["type"])
@@ -1383,9 +1397,155 @@ func TestTouchGestureHomeStartsAtBottomPhysicalEdge(t *testing.T) {
 	}
 }
 
+func TestTouchGestureAndHomeWritesShortAndroidTouchscreenSequence(t *testing.T) {
+	skipHIDSleeps(t)
+	dev, path := newTestHIDDevice(t)
+	tool := &TouchGestureTool{pc: testTouchscreenPointerController(dev, &pointerState{}), screen: &screenState{}}
+
+	out, err := tool.Call(context.Background(), `{"type":"and_home"}`)
+	if err != nil {
+		t.Fatalf("Call error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("output = %q, want ok", out)
+	}
+
+	reports := readTouchscreenReports(t, dev, path)
+	if len(reports) != 1+defaultAndHomeSteps+touchReleaseReportCount {
+		t.Fatalf("len(reports) = %d, want %d (down, %d moves, repeated release)", len(reports), 1+defaultAndHomeSteps+touchReleaseReportCount, defaultAndHomeSteps)
+	}
+
+	startX, startY := normalizedToAbsolutePoint(andHomeStartX, andHomeStartY)
+	endX, endY := normalizedToAbsolutePoint(andHomeEndX, andHomeEndY)
+	if reports[0].flags != 0x03 || reports[0].contactID != 1 || reports[0].x != uint16(startX) || reports[0].y != uint16(startY) {
+		t.Fatalf("down report = %+v, want touch at (%d,%d)", reports[0], startX, startY)
+	}
+	finalMove := reports[defaultAndHomeSteps]
+	if finalMove.flags != 0x03 || finalMove.contactID != 1 || finalMove.x != uint16(endX) || finalMove.y != uint16(endY) {
+		t.Fatalf("final move = %+v, want touch at (%d,%d)", finalMove, endX, endY)
+	}
+	for i := 1 + defaultAndHomeSteps; i < len(reports); i++ {
+		if reports[i].flags != 0x00 || reports[i].contactID != 1 || reports[i].x != uint16(endX) || reports[i].y != uint16(endY) {
+			t.Fatalf("release report %d = %+v, want release at (%d,%d)", i-(defaultAndHomeSteps), reports[i], endX, endY)
+		}
+	}
+}
+
+func TestTouchGestureAndAppsLeftWritesTouchscreenPath(t *testing.T) {
+	skipHIDSleeps(t)
+	dev, path := newTestHIDDevice(t)
+	tool := &TouchGestureTool{pc: testTouchscreenPointerController(dev, &pointerState{}), screen: &screenState{}}
+
+	out, err := tool.Call(context.Background(), `{"type":"and_apps_left"}`)
+	if err != nil {
+		t.Fatalf("Call error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("output = %q, want ok", out)
+	}
+
+	reports := readTouchscreenReports(t, dev, path)
+	if len(reports) != len(andAppsLeftPath)+touchReleaseReportCount {
+		t.Fatalf("len(reports) = %d, want %d", len(reports), len(andAppsLeftPath)+touchReleaseReportCount)
+	}
+	startX, startY := normalizedToAbsolutePoint(andAppsLeftPath[0].x, andAppsLeftPath[0].y)
+	endX, endY := normalizedToAbsolutePoint(andAppsLeftPath[len(andAppsLeftPath)-1].x, andAppsLeftPath[len(andAppsLeftPath)-1].y)
+	if reports[0].flags != 0x03 || reports[0].x != uint16(startX) || reports[0].y != uint16(startY) {
+		t.Fatalf("start report = %+v, want touch at (%d,%d)", reports[0], startX, startY)
+	}
+	lastMove := reports[len(andAppsLeftPath)-1]
+	if lastMove.flags != 0x03 || lastMove.x != uint16(endX) || lastMove.y != uint16(endY) {
+		t.Fatalf("last move = %+v, want touch at (%d,%d)", lastMove, endX, endY)
+	}
+}
+
+func TestTouchGestureAndAppsRightWritesTouchscreenPath(t *testing.T) {
+	skipHIDSleeps(t)
+	dev, path := newTestHIDDevice(t)
+	tool := &TouchGestureTool{pc: testTouchscreenPointerController(dev, &pointerState{}), screen: &screenState{}}
+
+	out, err := tool.Call(context.Background(), `{"type":"and_apps_right"}`)
+	if err != nil {
+		t.Fatalf("Call error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("output = %q, want ok", out)
+	}
+
+	reports := readTouchscreenReports(t, dev, path)
+	if len(reports) != len(andAppsRightPath)+touchReleaseReportCount {
+		t.Fatalf("len(reports) = %d, want %d", len(reports), len(andAppsRightPath)+touchReleaseReportCount)
+	}
+	startX, startY := normalizedToAbsolutePoint(andAppsRightPath[0].x, andAppsRightPath[0].y)
+	endX, endY := normalizedToAbsolutePoint(andAppsRightPath[len(andAppsRightPath)-1].x, andAppsRightPath[len(andAppsRightPath)-1].y)
+	if reports[0].flags != 0x03 || reports[0].x != uint16(startX) || reports[0].y != uint16(startY) {
+		t.Fatalf("start report = %+v, want touch at (%d,%d)", reports[0], startX, startY)
+	}
+	lastMove := reports[len(andAppsRightPath)-1]
+	if lastMove.flags != 0x03 || lastMove.x != uint16(endX) || lastMove.y != uint16(endY) {
+		t.Fatalf("last move = %+v, want touch at (%d,%d)", lastMove, endX, endY)
+	}
+}
+
+func TestTouchGestureAndAppsBackWritesTouchscreenPath(t *testing.T) {
+	skipHIDSleeps(t)
+	dev, path := newTestHIDDevice(t)
+	tool := &TouchGestureTool{pc: testTouchscreenPointerController(dev, &pointerState{}), screen: &screenState{}}
+
+	out, err := tool.Call(context.Background(), `{"type":"and_apps_back"}`)
+	if err != nil {
+		t.Fatalf("Call error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("output = %q, want ok", out)
+	}
+
+	reports := readTouchscreenReports(t, dev, path)
+	if len(reports) != len(andAppsBackPath)+touchReleaseReportCount {
+		t.Fatalf("len(reports) = %d, want %d", len(reports), len(andAppsBackPath)+touchReleaseReportCount)
+	}
+	startX, startY := normalizedToAbsolutePoint(andAppsBackPath[0].x, andAppsBackPath[0].y)
+	endX, endY := normalizedToAbsolutePoint(andAppsBackPath[len(andAppsBackPath)-1].x, andAppsBackPath[len(andAppsBackPath)-1].y)
+	if reports[0].flags != 0x03 || reports[0].x != uint16(startX) || reports[0].y != uint16(startY) {
+		t.Fatalf("start report = %+v, want touch at (%d,%d)", reports[0], startX, startY)
+	}
+	lastMove := reports[len(andAppsBackPath)-1]
+	if lastMove.flags != 0x03 || lastMove.x != uint16(endX) || lastMove.y != uint16(endY) {
+		t.Fatalf("last move = %+v, want touch at (%d,%d)", lastMove, endX, endY)
+	}
+}
+
+func TestTouchGestureAndTasksWritesTouchscreenPath(t *testing.T) {
+	skipHIDSleeps(t)
+	dev, path := newTestHIDDevice(t)
+	tool := &TouchGestureTool{pc: testTouchscreenPointerController(dev, &pointerState{}), screen: &screenState{}}
+
+	out, err := tool.Call(context.Background(), `{"type":"and_tasks"}`)
+	if err != nil {
+		t.Fatalf("Call error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("output = %q, want ok", out)
+	}
+
+	reports := readTouchscreenReports(t, dev, path)
+	if len(reports) != len(andTasksPath)+touchReleaseReportCount {
+		t.Fatalf("len(reports) = %d, want %d", len(reports), len(andTasksPath)+touchReleaseReportCount)
+	}
+	startX, startY := normalizedToAbsolutePoint(andTasksPath[0].x, andTasksPath[0].y)
+	endX, endY := normalizedToAbsolutePoint(andTasksPath[len(andTasksPath)-1].x, andTasksPath[len(andTasksPath)-1].y)
+	if reports[0].flags != 0x03 || reports[0].x != uint16(startX) || reports[0].y != uint16(startY) {
+		t.Fatalf("start report = %+v, want touch at (%d,%d)", reports[0], startX, startY)
+	}
+	lastMove := reports[len(andTasksPath)-1]
+	if lastMove.flags != 0x03 || lastMove.x != uint16(endX) || lastMove.y != uint16(endY) {
+		t.Fatalf("last move = %+v, want touch at (%d,%d)", lastMove, endX, endY)
+	}
+}
+
 func TestTouchGestureDescriptionDocumentsEdgeGestureAliases(t *testing.T) {
 	desc := (&TouchGestureTool{}).Description()
-	for _, want := range []string{`"back"`, `"home"`, "x=1", "y=999", "prefer quick_action first", "low-level fallback", "finger movement", "older messages", `not "swipe_up"`, "latest screenshot", "locally scrollable regions", "visible bounds"} {
+	for _, want := range []string{`"back"`, `"home"`, `"and_home"`, `"and_apps_left"`, `"and_apps_right"`, `"and_apps_back"`, `"and_tasks"`, "x=1", "y=999", "lower-right gesture area", "recent-app traces", "prefer quick_action first", "low-level fallback", "finger movement", "older messages", `not "swipe_up"`, "latest screenshot", "locally scrollable regions", "visible bounds"} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q:\n%s", want, desc)
 		}

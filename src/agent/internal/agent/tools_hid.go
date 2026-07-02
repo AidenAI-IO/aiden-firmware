@@ -59,6 +59,21 @@ const (
 	phoneHomeStartY = 999
 	phoneHomeEndY   = 180
 
+	// andHome* matches a verified Android home gesture trace: a short swipe up
+	// from the lower-right gesture area with slight leftward drift.
+	andHomeStartX = 877
+	andHomeStartY = 995
+	andHomeEndX   = 785
+	andHomeEndY   = 900
+
+	defaultAndHomeDurationMs = 96
+	defaultAndHomeSteps      = 12
+
+	defaultAndAppsLeftDurationMs  = 277
+	defaultAndAppsRightDurationMs = 386
+	defaultAndAppsBackDurationMs  = 481
+	defaultAndTasksDurationMs     = 1005
+
 	// defaultCursorSettleMs is the dwell between positioning the HID absolute
 	// cursor and pressing a button at that position. iOS HID cursor mode
 	// smoothly animates the cursor toward the target; if the press lands while
@@ -779,9 +794,9 @@ func (t *TouchGestureTool) Name() string { return "touch_gesture" }
 func (t *TouchGestureTool) Description() string {
 	return `Perform a touch-like gesture using the pointer HID device (absolute mouse or touchscreen depending on agent pointer_mode). ` +
 		`For known semantic platform actions such as back, home, app search, app switching, notification shade, quick settings, and browser navigation, prefer quick_action first; use touch_gesture as a low-level fallback or for custom screen gestures. ` +
-		`Input JSON examples: {"type":"tap","point":{"x":500,"y":500}}, {"type":"swipe","start":{"x":200,"y":500},"end":{"x":800,"y":500},"duration_ms":700,"steps":24}, {"type":"swipe_left"}, {"type":"back"}, {"type":"home"}. ` +
+		`Input JSON examples: {"type":"tap","point":{"x":500,"y":500}}, {"type":"swipe","start":{"x":200,"y":500},"end":{"x":800,"y":500},"duration_ms":700,"steps":24}, {"type":"swipe_left"}, {"type":"back"}, {"type":"home"}, {"type":"and_home"}, {"type":"and_apps_left"}, {"type":"and_apps_right"}, {"type":"and_apps_back"}, {"type":"and_tasks"}. ` +
 		`IMPORTANT: "point", "start", and "end" must be objects with named keys "x" and "y". NEVER omit the key names: {"x":500,"y":300} is correct, {500,300} is invalid and will error. ` +
-		`Supported types: "tap", "double_tap", "long_press", "drag", "swipe", "swipe_left", "swipe_right", "swipe_up", "swipe_down", "back" (left-edge back), "home" (bottom-edge home). ` +
+		`Supported types: "tap", "double_tap", "long_press", "drag", "swipe", "swipe_left", "swipe_right", "swipe_up", "swipe_down", "back" (left-edge back), "home" (bottom-edge home), "and_home" (Android-style short bottom-edge home swipe), "and_apps_left", "and_apps_right", "and_apps_back", and "and_tasks" (verified Android task-view trace). ` +
 		`coord_space defaults to "normalized" (x/y in [0,1000]) and also supports "pixel" and "absolute". ` +
 		`Normalized coordinates use 0-1000 range where (0,0) is top-left, (1000,1000) is bottom-right, (500,500) is center. ` +
 		`Choose the visual center of the target in the latest screenshot; for small controls, estimate the control bounds and touch the midpoint, biased inward. ` +
@@ -794,12 +809,12 @@ func (t *TouchGestureTool) Description() string {
 		`Absolute-mode gestures wait for iOS HID-cursor smoothing to settle before pressing. ` +
 		`Tap and double_tap accept an optional "hold_ms" (dwell between press and release, default 60ms). ` +
 		`Swipe defaults to a slower 700ms / 24-step motion, applies "hold_before_ms" of 80ms after the press, and releases immediately at the destination by default; pass "hold_after_ms" only when a drag-like end dwell is required. ` +
-		`For phone edge gestures, do not use conservative inset coordinates such as 50-100: "back" starts at normalized x=1 and "home" starts at normalized y=999. Drag keeps the previous 250ms / 12-step motion with 0ms hold defaults to avoid unintended long-press behaviour during slow content drag.`
+		`For phone edge gestures, do not use conservative inset coordinates such as 50-100: "back" starts at normalized x=1, "home" starts at normalized y=999, and "and_home" uses a shorter verified Android path from the lower-right gesture area. "and_apps_left/right/back" and "and_tasks" replay verified Android recent-app traces. Drag keeps the previous 250ms / 12-step motion with 0ms hold defaults to avoid unintended long-press behaviour during slow content drag.`
 }
 
 func (t *TouchGestureTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"type":           stringEnumArgSchema("Gesture type.", "tap", "double_tap", "long_press", "drag", "swipe", "swipe_left", "swipe_right", "swipe_up", "swipe_down", "back", "home"),
+		"type":           stringEnumArgSchema("Gesture type.", "tap", "double_tap", "long_press", "drag", "swipe", "swipe_left", "swipe_right", "swipe_up", "swipe_down", "back", "home", "and_home", "and_apps_left", "and_apps_right", "and_apps_back", "and_tasks"),
 		"point":          pointSchema("Point for tap, double_tap, or long_press."),
 		"start":          pointSchema("Start point for swipe or drag."),
 		"end":            pointSchema("End point for swipe or drag."),
@@ -825,7 +840,6 @@ func pointSchema(description string) map[string]any {
 	schema["description"] = description
 	return schema
 }
-
 
 func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, error) {
 	var args struct {
@@ -1009,6 +1023,87 @@ func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, erro
 		); err != nil {
 			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
+	case "and_home":
+		start, err := resolvePointOrDefaultNormalized(t.screen, t.pc.touchscreen, args.Start, coordSpace, andHomeStartX, andHomeStartY)
+		if err != nil {
+			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
+		}
+		end, err := resolvePointOrDefaultNormalized(t.screen, t.pc.touchscreen, args.End, coordSpace, andHomeEndX, andHomeEndY)
+		if err != nil {
+			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
+		}
+		if err := runPositionedDragGesture(
+			t.pc,
+			start,
+			end,
+			button,
+			intOrDefault(args.DurationMs, defaultAndHomeDurationMs),
+			intOrDefault(args.HoldBeforeMs, 0),
+			intOrDefault(args.HoldAfterMs, 0),
+			positiveIntOrDefault(args.Steps, defaultAndHomeSteps),
+		); err != nil {
+			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
+		}
+	case "and_apps_left":
+		path, err := resolveNormalizedGesturePath(t.screen, t.pc.touchscreen, andAppsLeftPath)
+		if err != nil {
+			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
+		}
+		if err := runPathGesture(
+			t.pc,
+			path,
+			button,
+			intOrDefault(args.DurationMs, defaultAndAppsLeftDurationMs),
+			intOrDefault(args.HoldBeforeMs, 0),
+			intOrDefault(args.HoldAfterMs, 0),
+		); err != nil {
+			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
+		}
+	case "and_apps_right":
+		path, err := resolveNormalizedGesturePath(t.screen, t.pc.touchscreen, andAppsRightPath)
+		if err != nil {
+			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
+		}
+		if err := runPathGesture(
+			t.pc,
+			path,
+			button,
+			intOrDefault(args.DurationMs, defaultAndAppsRightDurationMs),
+			intOrDefault(args.HoldBeforeMs, 0),
+			intOrDefault(args.HoldAfterMs, 0),
+		); err != nil {
+			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
+		}
+	case "and_apps_back":
+		path, err := resolveNormalizedGesturePath(t.screen, t.pc.touchscreen, andAppsBackPath)
+		if err != nil {
+			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
+		}
+		if err := runPathGesture(
+			t.pc,
+			path,
+			button,
+			intOrDefault(args.DurationMs, defaultAndAppsBackDurationMs),
+			intOrDefault(args.HoldBeforeMs, 0),
+			intOrDefault(args.HoldAfterMs, 0),
+		); err != nil {
+			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
+		}
+	case "and_tasks":
+		path, err := resolveNormalizedGesturePath(t.screen, t.pc.touchscreen, andTasksPath)
+		if err != nil {
+			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
+		}
+		if err := runPathGesture(
+			t.pc,
+			path,
+			button,
+			intOrDefault(args.DurationMs, defaultAndTasksDurationMs),
+			intOrDefault(args.HoldBeforeMs, 0),
+			intOrDefault(args.HoldAfterMs, 0),
+		); err != nil {
+			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
+		}
 	default:
 		return toolErrorResultf(ctx, CodeInvalidArguments, "unsupported gesture type: %q", args.Type), nil
 	}
@@ -1177,6 +1272,74 @@ type resolvedPointerPoint struct {
 	x int
 	y int
 }
+
+type normalizedGesturePoint struct {
+	x float64
+	y float64
+}
+
+var (
+	andAppsLeftPath = []normalizedGesturePoint{
+		{x: 416, y: 995},
+		{x: 438, y: 990},
+		{x: 471, y: 983},
+		{x: 575, y: 970},
+		{x: 687, y: 966},
+		{x: 808, y: 968},
+		{x: 882, y: 973},
+		{x: 930, y: 987},
+		{x: 976, y: 995},
+	}
+	andAppsRightPath = []normalizedGesturePoint{
+		{x: 953, y: 995},
+		{x: 891, y: 966},
+		{x: 800, y: 930},
+		{x: 673, y: 896},
+		{x: 547, y: 882},
+		{x: 419, y: 881},
+		{x: 318, y: 898},
+		{x: 233, y: 929},
+		{x: 146, y: 960},
+		{x: 103, y: 977},
+	}
+	andAppsBackPath = []normalizedGesturePoint{
+		{x: 12, y: 514},
+		{x: 71, y: 517},
+		{x: 167, y: 524},
+		{x: 225, y: 527},
+		{x: 290, y: 532},
+		{x: 314, y: 535},
+		{x: 346, y: 539},
+		{x: 369, y: 542},
+		{x: 385, y: 544},
+		{x: 393, y: 544},
+		{x: 401, y: 545},
+	}
+	andTasksPath = []normalizedGesturePoint{
+		{x: 571, y: 995},
+		{x: 573, y: 991},
+		{x: 577, y: 981},
+		{x: 582, y: 969},
+		{x: 584, y: 958},
+		{x: 586, y: 946},
+		{x: 590, y: 932},
+		{x: 594, y: 915},
+		{x: 597, y: 906},
+		{x: 599, y: 891},
+		{x: 603, y: 877},
+		{x: 606, y: 862},
+		{x: 609, y: 847},
+		{x: 611, y: 832},
+		{x: 615, y: 822},
+		{x: 620, y: 808},
+		{x: 625, y: 795},
+		{x: 631, y: 779},
+		{x: 631, y: 771},
+		{x: 630, y: 759},
+		{x: 628, y: 754},
+		{x: 624, y: 752},
+	}
+)
 
 const (
 	coordinateSpaceAuto       = "auto"
@@ -1427,6 +1590,55 @@ func runPositionedDragGesture(pc *pointerController, start, end resolvedPointerP
 	return dragPointer(pc, start, end, button, durationMs, holdBeforeMs, holdAfterMs, steps)
 }
 
+func runPathGesture(pc *pointerController, path []resolvedPointerPoint, button uint8, durationMs, holdBeforeMs, holdAfterMs int) (dragErr error) {
+	if len(path) == 0 {
+		return fmt.Errorf("path is required")
+	}
+	if durationMs < 0 {
+		durationMs = 0
+	}
+	if holdBeforeMs < 0 {
+		holdBeforeMs = 0
+	}
+	if holdAfterMs < 0 {
+		holdAfterMs = 0
+	}
+
+	start := path[0]
+	end := path[len(path)-1]
+	if err := settlePointer(pc, start.x, start.y); err != nil {
+		return err
+	}
+	if err := pressPointer(pc, start.x, start.y, button); err != nil {
+		return err
+	}
+
+	defer func() {
+		relErr := releasePointerRepeated(pc, end.x, end.y, touchReleaseReportCount, touchReleaseReportDelayMs)
+		if dragErr == nil {
+			dragErr = relErr
+		}
+	}()
+
+	sleepMs(holdBeforeMs)
+
+	stepDelay := 0
+	if len(path) > 1 {
+		stepDelay = durationMs / (len(path) - 1)
+	}
+	for i := 1; i < len(path); i++ {
+		if err := movePointer(pc, path[i].x, path[i].y, button); err != nil {
+			return err
+		}
+		if i+1 < len(path) {
+			sleepMs(stepDelay)
+		}
+	}
+
+	sleepMs(holdAfterMs)
+	return nil
+}
+
 type directionalSwipeSettings struct {
 	distance     float64
 	durationMs   int
@@ -1450,6 +1662,21 @@ func directionalSwipePreset(strength string) (directionalSwipeSettings, error) {
 	default:
 		return directionalSwipeSettings{}, fmt.Errorf("unsupported strength: %q", strength)
 	}
+}
+
+func resolveNormalizedGesturePath(screen *screenState, touchscreen bool, points []normalizedGesturePoint) ([]resolvedPointerPoint, error) {
+	if len(points) == 0 {
+		return nil, fmt.Errorf("gesture path is empty")
+	}
+	resolved := make([]resolvedPointerPoint, 0, len(points))
+	for _, point := range points {
+		x, y, err := resolvePointerPositionForSurface(screen, touchscreen, point.x, point.y, coordinateSpaceNormalized, coordinateSpaceNormalized)
+		if err != nil {
+			return nil, err
+		}
+		resolved = append(resolved, resolvedPointerPoint{x: x, y: y})
+	}
+	return resolved, nil
 }
 
 func directionalSwipeEndpoints(screen *screenState, touchscreen bool, gestureType string, distance, anchor *float64, preset directionalSwipeSettings) (resolvedPointerPoint, resolvedPointerPoint, error) {

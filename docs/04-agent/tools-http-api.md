@@ -85,7 +85,7 @@ Tool execution failures are also returned in JSON format. Check:
 | `skill_list` | skills | `{"query":"planner","include_archived":false}` |
 | `skill_mark_used` | skills | `{"name":"planner"}` |
 | `skill_read` | skills | `{"name":"planner"}` |
-| `touch_gesture` | input | `{"type":"tap","point":{"x":500,"y":500}}` / `{"type":"back"}` / `{"type":"home"}` |
+| `touch_gesture` | input | `{"type":"tap","point":{"x":500,"y":500}}` / `{"type":"back"}` / `{"type":"home"}` / `{"type":"and_home"}` / `{"type":"and_apps_left"}` / `{"type":"and_apps_right"}` / `{"type":"and_apps_back"}` / `{"type":"and_tasks"}` |
 | `weather` | system | `{"location":"Shanghai"}` |
 | `write_script` | demo | `{"file":"demo.jsonl","content":"# 演示\n{\"type\":\"wait\",\"ms\":500}"}` |
 
@@ -120,7 +120,7 @@ curl -X POST http://127.0.0.1:8080/api/tools/weather \
 A successful `screenshot` output typically includes `width`, `height`, `format`, `size`, and base64 JPEG `data`.
 A successful `wait_for_stable_screen` output includes stability fields `ok`, `stable`, `elapsed_ms`, and also returns a screenshot with `width`, `height`, `format`, `size`, and base64 JPEG `data`; `stable=false` indicates the screen is still changing but the screenshot can still be used as a current observation.
 After successful execution of `keyboard_tap`, `keyboard_text`, `mouse_click`, `mouse_move`, `mouse_scroll`, and `touch_gesture`, the system waits 1s and automatically takes a screenshot; their `output` is JSON containing the original action result `action_output`, plus the screenshot's `width`, `height`, `format`, `size`, and base64 JPEG `data`.
-For `touch_gesture`, `back` swipes from near the left physical edge, and `home` swipes up from near the bottom physical edge; normalized coordinates use the 0-1000 range. When manually writing `swipe`, also use edge-aligned start points, e.g., `start.x=1` or `start.y=999`.
+For `touch_gesture`, `back` swipes from near the left physical edge, `home` swipes up from near the bottom physical edge, `and_home` performs a short verified Android-style home swipe from the lower-right gesture area, and `and_apps_left/right/back/tasks` replay verified Android recent-app traces; normalized coordinates use the 0-1000 range. When manually writing `swipe`, also use edge-aligned start points, e.g., `start.x=1` or `start.y=999`.
 `current_time` supports IANA timezone names (e.g., `Asia/Shanghai`, `America/New_York`), `UTC`, `local`, and UTC offsets (e.g., `+08:00`).
 `weather` supports location names or latitude/longitude coordinates, fetching geocoding, current weather, and short-term forecasts from Open-Meteo at runtime.
 `wait_for_wakeup` is a terminating runtime tool. After a successful tool call, it immediately ends the current Agent run and returns the voice interaction to waiting for the next wakeup; it does not ask the model to provide an additional final answer. The run result will set `wait_for_wakeup_requested` / `wait_for_wakeup_reason`; the old fields `sleep_requested` / `sleep_reason` are retained as compatibility aliases only.
