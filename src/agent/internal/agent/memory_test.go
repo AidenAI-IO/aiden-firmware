@@ -467,7 +467,7 @@ func TestMemoryManagerRestoresOnlyConversationEventsFromRuntimeSession(t *testin
 		{Type: "user_input", Role: "user", Content: "original request"},
 		{Type: runEventToolCall, Role: "tool", ToolName: "tap", ToolInput: `{"x":10}`, Content: "tap button"},
 		{Type: "tool_result", Role: "tool", ToolName: "tap", ToolInput: `{"x":10}`, Content: "tap ok"},
-		{Type: runEventTodoUpdate, Role: "system", Content: "current todo"},
+		{Type: "todo_update", Role: "system", Content: "current todo"},
 		{Type: "steer", Role: "user", Content: "updated instruction"},
 		{Type: "assistant_output", Role: "assistant", Content: "done"},
 	}
@@ -514,7 +514,7 @@ func TestMemoryManagerSaveDoesNotRegressEventCountWithRuntimeEvents(t *testing.T
 	}
 	if err := manager.AppendSessionEvent(ctx, "default", SessionEvent{
 		Type:    "planner_decision",
-		Role:    string(RolePlanner),
+		Role:    string(RoleAgent),
 		Content: `{"objective":"first request","plan":["answer"]}`,
 	}, SessionEventMetadata{}); err != nil {
 		t.Fatalf("AppendSessionEvent(planner) error = %v", err)

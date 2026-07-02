@@ -19,11 +19,7 @@ func TestGuardMessagesWithinContextWindowFallbackOmitsCombinedToolResults(t *tes
 		t.Fatalf("test setup total tokens = %d, want > %d", got, inputBudget)
 	}
 
-	executor := &roleCollaborativeExecutor{
-		Model: contextBudgetWindowModel{window: inputBudget},
-	}
-
-	sanitized := executor.guardMessagesWithinContextWindow(messages, nil)
+	sanitized := guardMessagesWithinContextWindow(contextBudgetWindowModel{window: inputBudget}, messages, nil)
 	if got := estimateMessagesTokens(sanitized); got > inputBudget {
 		t.Fatalf("sanitized tokens = %d, want <= %d", got, inputBudget)
 	}
@@ -52,11 +48,7 @@ func TestGuardMessagesWithinContextWindowDoesNotTreatRawOmissionTextAsAlreadyOmi
 		t.Fatalf("test setup total tokens = %d, want > %d", got, inputBudget)
 	}
 
-	executor := &roleCollaborativeExecutor{
-		Model: contextBudgetWindowModel{window: inputBudget},
-	}
-
-	sanitized := executor.guardMessagesWithinContextWindow(messages, nil)
+	sanitized := guardMessagesWithinContextWindow(contextBudgetWindowModel{window: inputBudget}, messages, nil)
 	contents := toolResponseContents(t, sanitized)
 	if contents[1] == rawOmissionTextOutput {
 		t.Fatalf("raw tool output containing omission text should not be treated as already omitted")
@@ -85,12 +77,9 @@ func TestGuardMessagesWithinContextWindowUsesStableOmissionTextAcrossPromptSizes
 		t.Fatalf("base input budget = %d, want > 0", baseInputBudget)
 	}
 
-	executor := &roleCollaborativeExecutor{
-		Model: contextBudgetWindowModel{window: baseInputBudget},
-	}
-
-	baseSanitized := executor.guardMessagesWithinContextWindow(baseMessages, nil)
-	extraSanitized := executor.guardMessagesWithinContextWindow(extraPromptMessages, nil)
+	model := contextBudgetWindowModel{window: baseInputBudget}
+	baseSanitized := guardMessagesWithinContextWindow(model, baseMessages, nil)
+	extraSanitized := guardMessagesWithinContextWindow(model, extraPromptMessages, nil)
 	baseContent := toolResponseContents(t, baseSanitized)[0]
 	extraContent := toolResponseContents(t, extraSanitized)[0]
 

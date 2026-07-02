@@ -156,32 +156,6 @@ func TestFunctionAgentRehydratesScreenshotReference(t *testing.T) {
 	}
 }
 
-func TestWorldStateRetainsScreenshotReferenceInsteadOfBytes(t *testing.T) {
-	imageBytes := []byte("world-state-image")
-	store := &visualArtifactStore{rootDir: t.TempDir()}
-	ref, err := store.write("jpeg", imageBytes)
-	if err != nil {
-		t.Fatalf("write visual artifact: %v", err)
-	}
-	observation := `{"width":320,"height":240,"format":"jpeg","size":17,"screenshot_ref":"` + ref + `"}`
-	state := worldState{}
-
-	state.UpdateFromStep(schema.AgentStep{
-		Action:      schema.AgentAction{Tool: "screenshot"},
-		Observation: observation,
-	}, 1, []langtools.Tool{&stubTool{name: "screenshot", visual: true}}, store)
-
-	if state.LatestScreenshot == nil {
-		t.Fatal("world state is missing screenshot metadata")
-	}
-	if state.LatestScreenshot.ScreenshotRef != ref {
-		t.Fatalf("screenshot_ref = %q, want %q", state.LatestScreenshot.ScreenshotRef, ref)
-	}
-	if len(state.LatestScreenshot.Data) != 0 {
-		t.Fatalf("world state retained %d image bytes", len(state.LatestScreenshot.Data))
-	}
-}
-
 func TestMaterializeEventArtifactUsesExistingReference(t *testing.T) {
 	store := NewTaskEpisodeStore(t.TempDir())
 	dir := filepath.Join(t.TempDir(), "episode")

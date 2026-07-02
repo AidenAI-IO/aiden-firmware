@@ -71,7 +71,7 @@ func TestSingleAgentRuntimeUsesAgentRoleAndDirectTools(t *testing.T) {
 	if !singleAgentLLMToolsContain(model.tools[0], "audio_volume") {
 		t.Fatalf("agent did not receive audio_volume tool: %#v", model.tools[0])
 	}
-	for _, name := range []string{toolEnterPlanMode, toolCommitPlan, toolCancelPlan, toolFinishStep, toolAbortStep} {
+	for _, name := range []string{"enter_plan_mode", "commit_plan", "cancel_plan", "finish_step", "abort_step"} {
 		if singleAgentLLMToolsContain(model.tools[0], name) {
 			t.Fatalf("single-agent turn exposed delegated meta tool %q: %#v", name, model.tools[0])
 		}

@@ -80,8 +80,8 @@ func TestRuntimeRun(t *testing.T) {
 	if result.Output != "completed" {
 		t.Fatalf("unexpected output: %q", result.Output)
 	}
-	if len(result.Memory) != 2 {
-		t.Fatalf("expected 2 memory entries, got %d", len(result.Memory))
+	if len(result.Memory) != 0 {
+		t.Fatalf("expected empty memory snapshot without a storage dir, got %#v", result.Memory)
 	}
 }
 
@@ -337,7 +337,6 @@ func TestRuntimeRunUsesSessionManager(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
 			contentResponseWithInfo("Old answer.", map[string]any{"prompt_tokens": 321}),
-			contentResponse("Committed answer."),
 		},
 	}
 	manager := &recordingSessionManager{
@@ -357,16 +356,7 @@ func TestRuntimeRunUsesSessionManager(t *testing.T) {
 	)
 	runtime.sessionManager = manager
 
-	var steerCalls int32
-	result, err := runtime.Run(context.Background(), RunRequest{
-		Input: "original request",
-		SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
-			if atomic.AddInt32(&steerCalls, 1) != 1 {
-				return RunSteerMessage{}, false
-			}
-			return RunSteerMessage{ID: "steer-1", Content: "change direction"}, true
-		},
-	})
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "original request"})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -386,10 +376,10 @@ func TestRuntimeRunUsesSessionManager(t *testing.T) {
 	if manager.commitReq.AgentName != "default" {
 		t.Fatalf("agent name = %q, want default", manager.commitReq.AgentName)
 	}
-	if manager.commitReq.Input != "original request" || manager.commitReq.Output != "Committed answer." {
+	if manager.commitReq.Input != "original request" || manager.commitReq.Output != "Old answer." {
 		t.Fatalf("unexpected commit request: %#v", manager.commitReq)
 	}
-	if len(manager.commitReq.Steers) != 1 || manager.commitReq.Steers[0].Content != "change direction" {
+	if len(manager.commitReq.Steers) != 0 {
 		t.Fatalf("unexpected commit steers: %#v", manager.commitReq.Steers)
 	}
 	if manager.commitReq.Metrics == nil || manager.commitReq.Metrics.LastPromptTokens != 321 {
@@ -514,7 +504,7 @@ func TestRuntimeRunAsyncEpisodeMaintenanceDoesNotBlock(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunAttachesPendingSteerToNextToolCall(t *testing.T) {
+func TestRuntimeRunDoesNotConsumePendingSteerDuringToolLoop(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleToolResponses("echo", `{"__arg1":"original action"}`, "Changed course."),
 	}
@@ -560,9 +550,11 @@ func TestRuntimeRunAttachesPendingSteerToNextToolCall(t *testing.T) {
 		t.Fatalf("tool should run before steer is attached, got inputs %#v", tool.inputs)
 	}
 
-	steerEvent, ok := firstRunEventOfType(events, "steer")
-	if !ok || steerEvent.Content != "Use the updated instruction instead." {
-		t.Fatalf("missing steer event: %#v", events)
+	if steerCalls != 0 {
+		t.Fatalf("SteerProvider calls = %d, want 0 for context-manager loop", steerCalls)
+	}
+	if steerEvent, ok := firstRunEventOfType(events, "steer"); ok {
+		t.Fatalf("unexpected steer event: %#v", steerEvent)
 	}
 	toolResult, ok := firstRunEventOfType(events, "tool_result")
 	if !ok {
@@ -572,23 +564,18 @@ func TestRuntimeRunAttachesPendingSteerToNextToolCall(t *testing.T) {
 		t.Fatalf("unexpected steer tool result: %#v", toolResult)
 	}
 	if len(model.messages) < 2 {
-		t.Fatalf("expected follow-up model call with steer message, got %#v", model.messages)
+		t.Fatalf("expected follow-up model call with tool result, got %#v", model.messages)
 	}
-	role, text, ok := runtimeLastMessageText(model.messages[1])
-	if !ok || role != llms.ChatMessageTypeHuman || text != "Use the updated instruction instead." {
-		t.Fatalf("second model call missing steer message: %#v", model.messages)
+	if runtimeModelCallContains(model.messages[1], "Use the updated instruction instead.") {
+		t.Fatalf("second model call unexpectedly contains pending steer: %#v", model.messages[1])
 	}
-	if runtimeModelCallContains(model.messages[1], "User steering update received while the agent was already working") {
-		t.Fatalf("steer should be appended as a human message, not rewritten as prompt text: %#v", model.messages[1])
+	if !runtimeModelCallToolResponseContains(model.messages[1], "tool output") {
+		t.Fatalf("second model call missing tool result: %#v", model.messages[1])
 	}
-	assertMemoryRecords(t, result.Memory, []MessageRecord{
-		{Role: "human", Content: "do the original action"},
-		{Role: "human", Content: "Use the updated instruction instead."},
-		{Role: "ai", Content: "Changed course."},
-	})
+	assertMemoryRecords(t, result.Memory, nil)
 }
 
-func TestRuntimeRunSteerInterruptPausesAfterNonCancelableTool(t *testing.T) {
+func TestRuntimeRunSteerInterruptDoesNotPauseAfterNonCancelableTool(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleToolResponses("slow", `{"__arg1":"original action"}`, "Changed course."),
 	}
@@ -612,7 +599,6 @@ func TestRuntimeRunSteerInterruptPausesAfterNonCancelableTool(t *testing.T) {
 
 	interruptCh := make(chan struct{})
 	waitCalled := make(chan struct{})
-	releaseSteer := make(chan struct{})
 	resultCh := make(chan struct {
 		result RunResult
 		err    error
@@ -625,11 +611,6 @@ func TestRuntimeRunSteerInterruptPausesAfterNonCancelableTool(t *testing.T) {
 			},
 			SteerWaiter: func(ctx context.Context) (RunSteerMessage, bool, error) {
 				close(waitCalled)
-				select {
-				case <-ctx.Done():
-					return RunSteerMessage{}, false, ctx.Err()
-				case <-releaseSteer:
-				}
 				return RunSteerMessage{ID: "steer-1", Content: "Use the updated instruction instead."}, true, nil
 			},
 		})
@@ -646,15 +627,6 @@ func TestRuntimeRunSteerInterruptPausesAfterNonCancelableTool(t *testing.T) {
 	}
 	close(interruptCh)
 	close(releaseTool)
-	select {
-	case <-waitCalled:
-	case <-time.After(time.Second):
-		t.Fatal("runtime did not pause for steering after interrupted tool returned")
-	}
-	if model.callCount != 1 {
-		t.Fatalf("model call count while waiting for steer = %d, want 1", model.callCount)
-	}
-	close(releaseSteer)
 
 	var runResult struct {
 		result RunResult
@@ -663,7 +635,12 @@ func TestRuntimeRunSteerInterruptPausesAfterNonCancelableTool(t *testing.T) {
 	select {
 	case runResult = <-resultCh:
 	case <-time.After(time.Second):
-		t.Fatal("runtime did not finish after steering release")
+		t.Fatal("runtime did not finish after interrupted non-cancelable tool returned")
+	}
+	select {
+	case <-waitCalled:
+		t.Fatal("SteerWaiter was called by context-manager loop")
+	default:
 	}
 	if runResult.err != nil {
 		t.Fatalf("Run() error = %v", runResult.err)
@@ -675,15 +652,14 @@ func TestRuntimeRunSteerInterruptPausesAfterNonCancelableTool(t *testing.T) {
 		t.Fatalf("tool inputs = %#v, want only original action", tool.inputs)
 	}
 	if len(model.messages) < 2 {
-		t.Fatalf("expected second model call after steer, got %#v", model.messages)
+		t.Fatalf("expected second model call after tool result, got %#v", model.messages)
 	}
-	role, text, ok := runtimeLastMessageText(model.messages[1])
-	if !ok || role != llms.ChatMessageTypeHuman || text != "Use the updated instruction instead." {
-		t.Fatalf("second model call missing steer message: %#v", model.messages[1])
+	if runtimeModelCallContains(model.messages[1], "Use the updated instruction instead.") {
+		t.Fatalf("second model call unexpectedly contains steer message: %#v", model.messages[1])
 	}
 }
 
-func TestRuntimeRunEmptySteerInterruptResumesAfterCancelableTool(t *testing.T) {
+func TestRuntimeRunSteerInterruptCancelsCancelableToolWithoutWaitingForSteer(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleToolResponses("slow", `{"__arg1":"original action"}`, "Original done."),
 	}
@@ -706,7 +682,6 @@ func TestRuntimeRunEmptySteerInterruptResumesAfterCancelableTool(t *testing.T) {
 
 	interruptCh := make(chan struct{})
 	waitCalled := make(chan struct{})
-	releaseWait := make(chan struct{})
 	resultCh := make(chan struct {
 		result RunResult
 		err    error
@@ -719,11 +694,6 @@ func TestRuntimeRunEmptySteerInterruptResumesAfterCancelableTool(t *testing.T) {
 			},
 			SteerWaiter: func(ctx context.Context) (RunSteerMessage, bool, error) {
 				close(waitCalled)
-				select {
-				case <-ctx.Done():
-					return RunSteerMessage{}, false, ctx.Err()
-				case <-releaseWait:
-				}
 				return RunSteerMessage{}, false, nil
 			},
 		})
@@ -744,12 +714,6 @@ func TestRuntimeRunEmptySteerInterruptResumesAfterCancelableTool(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("tool context was not canceled after steer interrupt")
 	}
-	select {
-	case <-waitCalled:
-	case <-time.After(time.Second):
-		t.Fatal("runtime did not wait for empty steer decision")
-	}
-	close(releaseWait)
 
 	var runResult struct {
 		result RunResult
@@ -758,24 +722,25 @@ func TestRuntimeRunEmptySteerInterruptResumesAfterCancelableTool(t *testing.T) {
 	select {
 	case runResult = <-resultCh:
 	case <-time.After(time.Second):
-		t.Fatal("runtime did not resume after empty steer decision")
+		t.Fatal("runtime did not return after cancelable tool was canceled")
 	}
-	if runResult.err != nil {
-		t.Fatalf("Run() error = %v", runResult.err)
+	if !errors.Is(runResult.err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want context canceled", runResult.err)
 	}
-	if runResult.result.Output != "Original done." {
-		t.Fatalf("output = %q, want Original done.", runResult.result.Output)
+	select {
+	case <-waitCalled:
+		t.Fatal("SteerWaiter was called by context-manager loop")
+	default:
 	}
 	if len(tool.inputs) != 1 || tool.inputs[0] != "original action" {
 		t.Fatalf("tool inputs = %#v, want only original action", tool.inputs)
 	}
 }
 
-func TestRuntimeRunAttachesPendingSteerBeforeFinalAnswer(t *testing.T) {
+func TestRuntimeRunDoesNotConsumePendingSteerBeforeFinalAnswer(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
 			contentResponse("Old answer."),
-			contentResponse("Changed course."),
 		},
 	}
 	runtime := NewRuntimeWithDeps(
@@ -808,32 +773,26 @@ func TestRuntimeRunAttachesPendingSteerBeforeFinalAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if result.Output != "Changed course." {
-		t.Fatalf("output = %q, want Changed course.", result.Output)
+	if result.Output != "Old answer." {
+		t.Fatalf("output = %q, want Old answer.", result.Output)
 	}
-	if _, ok := firstRunEventOfType(events, "steer"); !ok {
-		t.Fatalf("missing steer event: %#v", events)
+	if steerCalls != 0 {
+		t.Fatalf("SteerProvider calls = %d, want 0 for context-manager loop", steerCalls)
 	}
-	if len(model.messages) < 2 {
-		t.Fatalf("expected follow-up model call with final-boundary steer message, got %#v", model.messages)
+	if steerEvent, ok := firstRunEventOfType(events, "steer"); ok {
+		t.Fatalf("unexpected steer event: %#v", steerEvent)
 	}
-	role, text, ok := runtimeLastMessageText(model.messages[1])
-	if !ok || role != llms.ChatMessageTypeHuman || text != "Actually change direction before answering." {
-		t.Fatalf("second model call missing final-boundary steer message: %#v", model.messages)
+	if len(model.messages) != 1 {
+		t.Fatalf("model calls = %d, want direct final answer in one call", len(model.messages))
 	}
-	assertMemoryRecords(t, result.Memory, []MessageRecord{
-		{Role: "human", Content: "answer the old request"},
-		{Role: "human", Content: "Actually change direction before answering."},
-		{Role: "ai", Content: "Changed course."},
-	})
+	assertMemoryRecords(t, result.Memory, nil)
 }
 
-func TestRuntimeRunPersistsSteerAsConversationHumanMessage(t *testing.T) {
+func TestRuntimeRunDoesNotPersistUnusedSteerProviderAsConversationMessage(t *testing.T) {
 	storageDir := filepath.Join(t.TempDir(), "memory")
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
 			contentResponse("Old answer."),
-			contentResponse("Changed course."),
 		},
 	}
 	runtime := NewRuntimeWithDeps(
@@ -861,11 +820,13 @@ func TestRuntimeRunPersistsSteerAsConversationHumanMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	assertMemoryRecords(t, result.Memory, []MessageRecord{
-		{Role: "human", Content: "original persisted request"},
-		{Role: "human", Content: "persist this steering message"},
-		{Role: "ai", Content: "Changed course."},
-	})
+	if result.Output != "Old answer." {
+		t.Fatalf("output = %q, want Old answer.", result.Output)
+	}
+	if steerCalls != 0 {
+		t.Fatalf("SteerProvider calls = %d, want 0 for context-manager loop", steerCalls)
+	}
+	assertMemoryRecords(t, result.Memory, nil)
 
 	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
 	if !sessionEventsContain(events, func(event SessionEvent) bool {
@@ -874,13 +835,12 @@ func TestRuntimeRunPersistsSteerAsConversationHumanMessage(t *testing.T) {
 		t.Fatalf("expected agent role_output to be persisted in session events: %#v", events)
 	}
 	chatEvents := sessionEventsOfTypes(events, "user_input", "steer", "assistant_output")
-	if len(chatEvents) != 3 {
-		t.Fatalf("expected 3 chat-like session events, got %d: %#v", len(chatEvents), events)
+	if len(chatEvents) != 2 {
+		t.Fatalf("expected 2 chat-like session events, got %d: %#v", len(chatEvents), events)
 	}
 	for i, want := range []SessionEvent{
 		{Role: "user", Content: "original persisted request"},
-		{Role: "user", Content: "persist this steering message"},
-		{Role: "assistant", Content: "Changed course."},
+		{Role: "assistant", Content: "Old answer."},
 	} {
 		if chatEvents[i].Role != want.Role || chatEvents[i].Content != want.Content {
 			t.Fatalf("chat-like session event %d = %#v, want role=%q content=%q; all events: %#v", i, chatEvents[i], want.Role, want.Content, events)
@@ -888,7 +848,7 @@ func TestRuntimeRunPersistsSteerAsConversationHumanMessage(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunPersistsSteerEventsWhenSnapshotWindowIsFull(t *testing.T) {
+func TestRuntimeRunKeepsCurrentExchangeWhenSnapshotWindowIsFull(t *testing.T) {
 	storageDir := filepath.Join(t.TempDir(), "memory")
 	memoryManager := NewMemoryManager(storageDir)
 	ctx := context.Background()
@@ -901,7 +861,6 @@ func TestRuntimeRunPersistsSteerEventsWhenSnapshotWindowIsFull(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
 			contentResponse("Old answer."),
-			contentResponse("Changed course."),
 		},
 	}
 	runtime := NewRuntimeWithDeps(
@@ -928,20 +887,22 @@ func TestRuntimeRunPersistsSteerEventsWhenSnapshotWindowIsFull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if result.Output != "Changed course." {
-		t.Fatalf("output = %q, want Changed course.", result.Output)
+	if result.Output != "Old answer." {
+		t.Fatalf("output = %q, want Old answer.", result.Output)
+	}
+	if steerCalls != 0 {
+		t.Fatalf("SteerProvider calls = %d, want 0 for context-manager loop", steerCalls)
 	}
 
 	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
 	chatEvents := sessionEventsOfTypes(events, "user_input", "steer", "assistant_output")
-	if len(chatEvents) != 23 {
-		t.Fatalf("expected 23 chat-like session events, got %d: %#v", len(chatEvents), events)
+	if len(chatEvents) != 22 {
+		t.Fatalf("expected 22 chat-like session events, got %d: %#v", len(chatEvents), events)
 	}
-	last := chatEvents[len(chatEvents)-3:]
+	last := chatEvents[len(chatEvents)-2:]
 	for i, want := range []SessionEvent{
 		{Role: "user", Content: "windowed request"},
-		{Role: "user", Content: "persist even when the hot window is full"},
-		{Role: "assistant", Content: "Changed course."},
+		{Role: "assistant", Content: "Old answer."},
 	} {
 		if last[i].Role != want.Role || last[i].Content != want.Content {
 			t.Fatalf("last session event %d = %#v, want role=%q content=%q; all events: %#v", i, last[i], want.Role, want.Content, events)
@@ -1258,7 +1219,7 @@ func TestResolveToolsKeepsSkillMetaToolsWhenRestricted(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunReloadsSkillsWhenMarkedDirty(t *testing.T) {
+func TestRuntimeRunReloadsSkillIndexButKeepsExistingPlannerContext(t *testing.T) {
 	configDir := t.TempDir()
 	skillsDir := filepath.Join(configDir, "skills")
 	v1 := "---\nname: alpha\ndescription: Alpha\n---\n\nUse alpha v1.\n"
@@ -1299,13 +1260,16 @@ func TestRuntimeRunReloadsSkillsWhenMarkedDirty(t *testing.T) {
 	if _, err := runtime.Run(context.Background(), RunRequest{Input: "hello again", Skills: []string{"alpha"}}); err != nil {
 		t.Fatalf("second Run() error = %v", err)
 	}
-	// Default mode issues one planner call per run.
-	secondRunPlannerPrompt := model.messages[1]
-	if !runtimeModelCallContains(secondRunPlannerPrompt, "Use alpha v2.") {
-		t.Fatalf("second run missing reloaded v2 skill instructions")
+	if skill, ok := runtime.skills.GetIndex().Get("alpha"); !ok || !strings.Contains(skill.Instructions, "Use alpha v2.") {
+		t.Fatalf("runtime skill index did not reload v2 instructions: %#v ok=%v", skill, ok)
 	}
-	if runtimeModelCallContains(secondRunPlannerPrompt, "Use alpha v1.") {
-		t.Fatalf("second run still contains stale v1 skill instructions")
+	// The context-manager loop reuses its seeded system message across turns.
+	secondRunPlannerPrompt := model.messages[1]
+	if !runtimeModelCallContains(secondRunPlannerPrompt, "Use alpha v1.") {
+		t.Fatalf("second run should keep the existing planner context with v1 skill instructions")
+	}
+	if runtimeModelCallContains(secondRunPlannerPrompt, "Use alpha v2.") {
+		t.Fatalf("second run unexpectedly replaced the existing planner context with v2 instructions")
 	}
 }
 
@@ -1357,6 +1321,17 @@ func runtimeModelCallContains(messages []llms.MessageContent, want string) bool 
 	for _, msg := range messages {
 		for _, part := range msg.Parts {
 			if text, ok := part.(llms.TextContent); ok && strings.Contains(text.Text, want) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func runtimeModelCallToolResponseContains(messages []llms.MessageContent, want string) bool {
+	for _, msg := range messages {
+		for _, part := range msg.Parts {
+			if response, ok := part.(llms.ToolCallResponse); ok && strings.Contains(response.Content, want) {
 				return true
 			}
 		}
@@ -1654,53 +1629,6 @@ func roleReviewedToolResponses(toolName, arguments, finalAnswer string) []*llms.
 	return append(responses, verifierFinishResponse(finalAnswer))
 }
 
-func enterPlanModeToolCall() *llms.ContentResponse {
-	return toolCallResponse("enter_1", toolEnterPlanMode, `{"__arg1":"{}","description":"enter plan mode"}`)
-}
-
-func finishStepToolCall(summary string) *llms.ContentResponse {
-	payload, _ := json.Marshal(map[string]string{"summary": summary})
-	return toolCallResponse("finish_1", toolFinishStep, fmt.Sprintf(`{"__arg1":%q,"description":"finish step"}`, string(payload)))
-}
-
-func abortStepToolCall(reason string) *llms.ContentResponse {
-	payload, _ := json.Marshal(map[string]string{"reason": reason})
-	return toolCallResponse("abort_1", toolAbortStep, fmt.Sprintf(`{"__arg1":%q,"description":"abort step"}`, string(payload)))
-}
-
-func commitPlanToolCall(plan ...string) *llms.ContentResponse {
-	if len(plan) == 0 {
-		plan = []string{"step one"}
-	}
-	payload, _ := json.Marshal(map[string]any{
-		"objective":           "test objective",
-		"completion_criteria": []string{"test request is satisfied"},
-		"plan":                plan,
-		"reason":              "test plan ready",
-	})
-	return toolCallResponse("commit_1", toolCommitPlan, fmt.Sprintf(`{"__arg1":%q,"description":"commit plan"}`, string(payload)))
-}
-
-func setTodoToolCall(id string, items []string, currentIndex int, completed, blocked []int) *llms.ContentResponse {
-	payload, _ := json.Marshal(map[string]any{
-		"objective":         "test objective",
-		"items":             items,
-		"current_index":     currentIndex,
-		"completed_indices": completed,
-		"blocked_indices":   blocked,
-		"reason":            "test todo update",
-	})
-	return toolCallResponse(id, toolSetTodo, fmt.Sprintf(`{"__arg1":%q,"description":"set todo"}`, string(payload)))
-}
-
-func roleCommittedExecutionResponses(planSteps []string, pairs ...*llms.ContentResponse) []*llms.ContentResponse {
-	responses := []*llms.ContentResponse{
-		enterPlanModeToolCall(),
-		commitPlanToolCall(planSteps...),
-	}
-	return append(responses, pairs...)
-}
-
 func firstRunEventOfType(events []RunEvent, eventType string) (RunEvent, bool) {
 	for _, event := range events {
 		if event.Type == eventType {
@@ -1781,19 +1709,6 @@ func taskEpisodeEventsOfType(events []TaskEpisodeEvent, eventType string) []Task
 		}
 	}
 	return matching
-}
-
-func assertTodoItemStatus(t *testing.T, event RunEvent, itemIndex int, status TodoStatus) {
-	t.Helper()
-	if event.Todo == nil {
-		t.Fatalf("event has nil todo: %#v", event)
-	}
-	if itemIndex < 0 || itemIndex >= len(event.Todo.Items) {
-		t.Fatalf("todo item index %d out of range: %#v", itemIndex, event.Todo.Items)
-	}
-	if got := event.Todo.Items[itemIndex].Status; got != status {
-		t.Fatalf("todo item %d status = %q, want %q in event %#v", itemIndex, got, status, event)
-	}
 }
 
 type stubTool struct {
@@ -2022,7 +1937,7 @@ func TestRuntimeRunRestoresPlannerToolCallsIntoNextRunPrompt(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunExecutesOnlyFirstToolCallPerIteration(t *testing.T) {
+func TestRuntimeRunExecutesOnlyFirstToolCallAndKeepsModelToolCallMessage(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
 			multiToolCallResponse(
@@ -2088,8 +2003,8 @@ func TestRuntimeRunExecutesOnlyFirstToolCallPerIteration(t *testing.T) {
 			toolCallNames = append(toolCallNames, toolCall.FunctionCall.Name)
 		}
 	}
-	if len(toolCallNames) != 1 || toolCallNames[0] != "slow_a" {
-		t.Fatalf("scratchpad tool calls = %#v, want only slow_a", toolCallNames)
+	if !slices.Equal(toolCallNames, []string{"slow_a", "slow_b"}) {
+		t.Fatalf("scratchpad tool calls = %#v, want original model tool calls", toolCallNames)
 	}
 }
 
@@ -2355,10 +2270,10 @@ func TestRuntimeDirectAnswerDoesNotGenerateTodo(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if todos := runEventsOfType(events, runEventTodoUpdate); len(todos) != 0 {
+	if todos := runEventsOfType(events, "todo_update"); len(todos) != 0 {
 		t.Fatalf("direct answer emitted todo_update events: %#v", todos)
 	}
-	if closed := runEventsOfType(events, runEventTodoClosed); len(closed) != 0 {
+	if closed := runEventsOfType(events, "todo_closed"); len(closed) != 0 {
 		t.Fatalf("direct answer emitted todo_closed events: %#v", closed)
 	}
 }
@@ -2394,11 +2309,11 @@ func TestRuntimeSimpleLoopDoesNotGenerateImplicitTodo(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	todos := runEventsOfType(events, runEventTodoUpdate)
+	todos := runEventsOfType(events, "todo_update")
 	if len(todos) != 0 {
 		t.Fatalf("simple loop emitted implicit todo_update events: %#v", todos)
 	}
-	if closed := runEventsOfType(events, runEventTodoClosed); len(closed) != 0 {
+	if closed := runEventsOfType(events, "todo_closed"); len(closed) != 0 {
 		t.Fatalf("simple loop emitted implicit todo_closed events: %#v", closed)
 	}
 	if len(screenshot.inputs) != 1 || len(webSearch.inputs) != 1 {
@@ -2431,11 +2346,11 @@ func TestRuntimeForceSimpleLoopDoesNotGenerateTodo(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	todos := runEventsOfType(events, runEventTodoUpdate)
+	todos := runEventsOfType(events, "todo_update")
 	if len(todos) != 0 {
 		t.Fatalf("single-agent loop emitted todo_update events: %#v", todos)
 	}
-	if closed := runEventsOfType(events, runEventTodoClosed); len(closed) != 0 {
+	if closed := runEventsOfType(events, "todo_closed"); len(closed) != 0 {
 		t.Fatalf("single-agent loop emitted todo_closed events: %#v", closed)
 	}
 	if len(webSearch.inputs) != 1 {
@@ -2443,21 +2358,18 @@ func TestRuntimeForceSimpleLoopDoesNotGenerateTodo(t *testing.T) {
 	}
 }
 
-func TestRuntimeForceSimpleLoopExplicitTodoLifecycle(t *testing.T) {
+func TestRuntimeForceSimpleLoopRejectsLegacySetTodoTool(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			setTodoToolCall("todo_1", []string{"inspect state", "write answer"}, 1, nil, nil),
-			toolCallResponse("call_1", "web_search", `{"__arg1":"Aiden"}`),
-			setTodoToolCall("todo_2", []string{"inspect state", "write answer"}, 2, []int{1}, nil),
+			toolCallResponse("todo_1", "set_todo", `{"__arg1":"{\"items\":[\"inspect state\"]}"}`),
 			contentResponse("done"),
 		},
 	}
-	webSearch := &stubTool{name: "web_search", description: "Search web.", output: "result"}
 	runtime := NewRuntimeWithDeps(
 		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", ForceSimpleLoop: true},
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
-		&ToolSet{tools: map[string]langtools.Tool{"web_search": webSearch}},
+		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
 	)
 
@@ -2470,34 +2382,26 @@ func TestRuntimeForceSimpleLoopExplicitTodoLifecycle(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	todos := runEventsOfType(events, runEventTodoUpdate)
-	if len(todos) != 2 {
-		t.Fatalf("todo_update events = %d, want 2: %#v", len(todos), todos)
+	toolCall, ok := firstRunEventOfType(events, runEventToolCall)
+	if !ok || toolCall.ToolName != "set_todo" || toolCall.IsError {
+		t.Fatalf("legacy set_todo should be recorded as a normal tool_call event, got %#v", events)
 	}
-	first := todos[0].Todo
-	if first == nil || first.Mode != TodoModeSimple || first.Revision != 1 || len(first.Items) != 2 {
-		t.Fatalf("unexpected first todo: %#v", first)
+	toolResult, ok := firstRunEventOfType(events, "tool_result")
+	if !ok || !toolResult.IsError || toolResult.ToolName != "set_todo" {
+		t.Fatalf("legacy set_todo should fail in tool_result, got %#v", events)
 	}
-	if !todos[0].SpeechEligible || first.Items[0].Status != TodoInProgress || first.Items[0].Source != TodoSourceExplicitSimple {
-		t.Fatalf("first todo should start item 1 with speech eligibility: event=%#v todo=%#v", todos[0], first)
+	if toolResult.ToolError == nil || toolResult.ToolError.Code != CodeToolNotFound {
+		t.Fatalf("legacy set_todo ToolError = %#v, want tool_not_found", toolResult.ToolError)
 	}
-	second := todos[1].Todo
-	if second == nil || second.Revision != 2 {
-		t.Fatalf("unexpected second todo: %#v", second)
+	if todos := runEventsOfType(events, "todo_update"); len(todos) != 0 {
+		t.Fatalf("legacy set_todo emitted todo_update events: %#v", todos)
 	}
-	if !todos[1].SpeechEligible || second.Items[0].Status != TodoDone || second.Items[1].Status != TodoInProgress {
-		t.Fatalf("second todo should advance to item 2 with speech eligibility: event=%#v todo=%#v", todos[1], second)
-	}
-	closed := runEventsOfType(events, runEventTodoClosed)
-	if len(closed) != 1 {
-		t.Fatalf("todo_closed events = %d, want 1: %#v", len(closed), closed)
-	}
-	if closed[0].Todo == nil || closed[0].Todo.Items[1].Status != TodoInProgress {
-		t.Fatalf("todo_closed should preserve last simple todo snapshot without forcing done: %#v", closed[0])
+	if closed := runEventsOfType(events, "todo_closed"); len(closed) != 0 {
+		t.Fatalf("legacy set_todo emitted todo_closed events: %#v", closed)
 	}
 }
 
-func TestRuntimeSimpleLoopTodoReminderAfterSeveralToolCalls(t *testing.T) {
+func TestRuntimeSimpleLoopDoesNotInjectLegacyTodoReminderAfterSeveralToolCalls(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
 			toolCallResponse("call_1", "web_search", `{"__arg1":"one"}`),
@@ -2519,15 +2423,17 @@ func TestRuntimeSimpleLoopTodoReminderAfterSeveralToolCalls(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 	if len(model.messages) < 4 {
-		t.Fatalf("expected fourth model call after reminder, got %d", len(model.messages))
+		t.Fatalf("expected fourth model call after three tools, got %d", len(model.messages))
 	}
-	prompt := messageText(model.messages[3])
-	if !strings.Contains(prompt, "Todo reminder") || !strings.Contains(prompt, "call set_todo") {
-		t.Fatalf("fourth planner prompt missing todo reminder runtime state:\n%s", prompt)
+	for i, messages := range model.messages {
+		prompt := messageText(messages)
+		if strings.Contains(prompt, "Todo reminder") || strings.Contains(prompt, "call set_todo") {
+			t.Fatalf("model call %d leaked legacy todo reminder runtime state:\n%s", i, prompt)
+		}
 	}
 }
 
-func TestRuntimeSimpleLoopTodoReminderUsesConfiguredToolCallThreshold(t *testing.T) {
+func TestRuntimeSimpleLoopIgnoresLegacyTodoReminderThreshold(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
 			toolCallResponse("call_1", "web_search", `{"__arg1":"one"}`),
@@ -2548,11 +2454,13 @@ func TestRuntimeSimpleLoopTodoReminderUsesConfiguredToolCallThreshold(t *testing
 		t.Fatalf("Run() error = %v", err)
 	}
 	if len(model.messages) < 3 {
-		t.Fatalf("expected third model call after configured reminder, got %d", len(model.messages))
+		t.Fatalf("expected third model call after two tools, got %d", len(model.messages))
 	}
-	prompt := messageText(model.messages[2])
-	if !strings.Contains(prompt, "Todo reminder") || !strings.Contains(prompt, "call set_todo") {
-		t.Fatalf("third planner prompt missing configured todo reminder runtime state:\n%s", prompt)
+	for i, messages := range model.messages {
+		prompt := messageText(messages)
+		if strings.Contains(prompt, "Todo reminder") || strings.Contains(prompt, "call set_todo") {
+			t.Fatalf("model call %d leaked legacy todo reminder runtime state:\n%s", i, prompt)
+		}
 	}
 }
 
@@ -2570,7 +2478,7 @@ func TestRuntimeCallbackRemovesPendingActionWithNormalizedToolInput(t *testing.T
 	}
 }
 
-func TestRuntimeRunOpenRouterStreamsOnlyWhenRequested(t *testing.T) {
+func TestRuntimeRunOpenRouterDoesNotStreamWithoutFinalChunks(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleDirectResponses("completed"),
 	}
@@ -2600,12 +2508,12 @@ func TestRuntimeRunOpenRouterStreamsOnlyWhenRequested(t *testing.T) {
 	if len(model.sawStreaming) != 1 || model.sawStreaming[0] {
 		t.Fatalf("expected default-mode planner call to avoid provider streaming, got %#v", model.sawStreaming)
 	}
-	if stream.String() != "completed" {
+	if stream.String() != "" {
 		t.Fatalf("unexpected stream output: %q", stream.String())
 	}
 }
 
-func TestRuntimeRunFinalSteerProviderClosesBeforeFinalStreaming(t *testing.T) {
+func TestRuntimeRunDoesNotCallFinalSteerProviderForDirectFinalAnswer(t *testing.T) {
 	model := &scriptedModel{
 		responses:    roleDirectResponses("final answer"),
 		streamChunks: [][]string{{}},
@@ -2622,56 +2530,31 @@ func TestRuntimeRunFinalSteerProviderClosesBeforeFinalStreaming(t *testing.T) {
 		NewSkillIndex(),
 	)
 
-	finalSteerClosed := make(chan struct{})
-	writer := &blockingFinalWriter{
-		started: make(chan struct{}),
-		release: make(chan struct{}),
+	var finalSteerCalls int32
+	var stream bytes.Buffer
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Input:             "hello",
+		StreamWriter:      &stream,
+		StreamFinalChunks: true,
+		FinalSteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
+			atomic.AddInt32(&finalSteerCalls, 1)
+			return RunSteerMessage{}, false
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
 	}
-	resultCh := make(chan struct {
-		result RunResult
-		err    error
-	}, 1)
-	go func() {
-		result, err := runtime.Run(context.Background(), RunRequest{
-			Input:             "hello",
-			StreamWriter:      writer,
-			StreamFinalChunks: true,
-			FinalSteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
-				close(finalSteerClosed)
-				return RunSteerMessage{}, false
-			},
-		})
-		resultCh <- struct {
-			result RunResult
-			err    error
-		}{result: result, err: err}
-	}()
-
-	select {
-	case <-writer.started:
-	case <-time.After(time.Second):
-		t.Fatal("final stream writer was not called")
+	if result.Output != "final answer" {
+		t.Fatalf("Output = %q, want final answer", result.Output)
 	}
-	select {
-	case <-finalSteerClosed:
-	default:
-		t.Fatal("FinalSteerProvider was not called before final streaming")
+	if finalSteerCalls != 0 {
+		t.Fatalf("FinalSteerProvider calls = %d, want 0 for context-manager loop", finalSteerCalls)
 	}
-	close(writer.release)
-
-	select {
-	case runResult := <-resultCh:
-		if runResult.err != nil {
-			t.Fatalf("Run() error = %v", runResult.err)
-		}
-		if runResult.result.Output != "final answer" {
-			t.Fatalf("Output = %q, want final answer", runResult.result.Output)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("Run did not finish")
+	if stream.String() != "" {
+		t.Fatalf("stream = %q, want empty", stream.String())
 	}
 }
-func TestRuntimeRunFinalStreamingDoesNotStreamIntermediateToolCalls(t *testing.T) {
+func TestRuntimeRunFinalStreamingDoesNotStreamToolCapableCalls(t *testing.T) {
 	toolSpeech := "我先读取当前音量。"
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
@@ -2721,11 +2604,11 @@ func TestRuntimeRunFinalStreamingDoesNotStreamIntermediateToolCalls(t *testing.T
 	if got, want := model.sawStreaming, []bool{false, false}; !slices.Equal(got, want) {
 		t.Fatalf("expected default-mode tool-capable model calls to avoid provider streaming, got %#v", got)
 	}
-	if stream.String() != "The current audio volume is 42." {
+	if stream.String() != "" {
 		t.Fatalf("unexpected stream output: %q", stream.String())
 	}
 }
-func TestRuntimeRunKeyboardToolAddsPostActionImageObservation(t *testing.T) {
+func TestRuntimeRunKeyboardToolFeedsRawPostActionObservation(t *testing.T) {
 	jpegBytes := []byte("keyboard-post-action-jpeg")
 	model := &scriptedModel{
 		responses: roleReviewedToolResponses("keyboard_tap", `{"keys":["enter"]}`, "The keyboard action updated the UI."),
@@ -2765,27 +2648,23 @@ func TestRuntimeRunKeyboardToolAddsPostActionImageObservation(t *testing.T) {
 			case llms.ToolCallResponse:
 				if p.ToolCallID == "call_1" {
 					foundToolResponse = true
-					if p.Content == tool.output {
-						t.Fatalf("expected keyboard tool response to be summarized, got raw screenshot payload")
+					if p.Content != tool.output {
+						t.Fatalf("keyboard tool response = %q, want raw tool output", p.Content)
 					}
-					if !strings.Contains(p.Content, `keyboard_tap completed with output "ok"`) {
-						t.Fatalf("unexpected keyboard tool response summary: %q", p.Content)
+					if !strings.Contains(p.Content, base64.StdEncoding.EncodeToString(jpegBytes)) {
+						t.Fatalf("keyboard tool response missing screenshot payload: %q", p.Content)
 					}
 				}
 			case llms.ImageURLContent:
 				foundImageURL = true
-				expected := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(jpegBytes)
-				if p.URL != expected {
-					t.Fatalf("unexpected image URL: %q", p.URL)
-				}
 			}
 		}
 	}
 	if !foundToolResponse {
 		t.Fatalf("expected keyboard tool response in second model call")
 	}
-	if !foundImageURL {
-		t.Fatalf("expected keyboard post-action screenshot image URL in second model call")
+	if foundImageURL {
+		t.Fatalf("unexpected keyboard post-action screenshot image URL in second model call")
 	}
 }
 
@@ -2892,8 +2771,8 @@ func TestRuntimePersistsMemoryUnderConfigDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Run() error = %v", err)
 	}
-	if len(firstResult.Memory) != 2 {
-		t.Fatalf("expected 2 memory entries after first run, got %d", len(firstResult.Memory))
+	if len(firstResult.Memory) != 0 {
+		t.Fatalf("first run memory snapshot = %#v, want empty pre-run snapshot", firstResult.Memory)
 	}
 
 	memoryDir := filepath.Join(configDir, "memory")
@@ -2923,11 +2802,14 @@ func TestRuntimePersistsMemoryUnderConfigDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second Run() error = %v", err)
 	}
-	if len(secondResult.Memory) != 4 {
-		t.Fatalf("expected 4 memory entries after reload, got %d", len(secondResult.Memory))
+	if len(secondResult.Memory) != 2 {
+		t.Fatalf("expected 2 restored memory entries after reload, got %d: %#v", len(secondResult.Memory), secondResult.Memory)
 	}
 	if secondResult.Memory[0].Role != "human" || secondResult.Memory[0].Content != "hello" {
 		t.Fatalf("expected first persisted message to be restored, got %#v", secondResult.Memory[0])
+	}
+	if secondResult.Memory[1].Role != "ai" || secondResult.Memory[1].Content != "first" {
+		t.Fatalf("expected first assistant message to be restored, got %#v", secondResult.Memory[1])
 	}
 }
 
@@ -3119,8 +3001,8 @@ func TestRuntimeRunRotatesSessionOnNewBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if len(result.Memory) != 2 || result.Memory[0].Content != "打开微信" {
-		t.Fatalf("expected clean memory snapshot for new task, got %#v", result.Memory)
+	if len(result.Memory) != 0 {
+		t.Fatalf("new task memory snapshot = %#v, want empty pre-run snapshot after rotation", result.Memory)
 	}
 
 	active := readSessionEvents(t, session.eventsPath())
@@ -3215,7 +3097,7 @@ func TestRuntimeRunShortGapKeepsActiveSessionWithoutForcedContinuation(t *testin
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if len(result.Memory) != DefaultBoundaryConfig().SmallSessionEventThreshold+3 {
+	if len(result.Memory) != DefaultBoundaryConfig().SmallSessionEventThreshold+1 {
 		t.Fatalf("short gap should keep previous context, got %#v", result.Memory)
 	}
 
@@ -3294,8 +3176,8 @@ func TestRuntimeRunRepairsTruncatedSessionTailBeforeBoundaryRotation(t *testing.
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if len(result.Memory) != 2 || result.Memory[0].Content != "打开微信" {
-		t.Fatalf("expected clean memory snapshot for new task, got %#v", result.Memory)
+	if len(result.Memory) != 0 {
+		t.Fatalf("new task memory snapshot = %#v, want empty pre-run snapshot after rotation", result.Memory)
 	}
 
 	archiveDirs, err := filepath.Glob(filepath.Join(storageDir, "session_archive", "*"))
@@ -3356,7 +3238,7 @@ func TestRuntimeRunKeepsSmallSessionOnUnrelatedInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if len(result.Memory) != DefaultBoundaryConfig().SmallSessionEventThreshold+2 {
+	if len(result.Memory) != DefaultBoundaryConfig().SmallSessionEventThreshold {
 		t.Fatalf("small session should keep previous context, got %#v", result.Memory)
 	}
 
@@ -3949,7 +3831,7 @@ func TestRuntimeRunIncludesRuntimeContextInSystemMessage(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunDoesNotDuplicateRuntimeContextAcrossTurns(t *testing.T) {
+func TestRuntimeRunReusesInitialRuntimeContextAcrossTurns(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
 			contentResponse("first"),
@@ -3994,11 +3876,11 @@ func TestRuntimeRunDoesNotDuplicateRuntimeContextAcrossTurns(t *testing.T) {
 	if strings.Count(systemPrompt, "## Runtime context") != 1 {
 		t.Fatalf("second system prompt should contain exactly one runtime context section:\n%s", systemPrompt)
 	}
-	if strings.Count(systemPrompt, secondRuntimeContext) != 1 {
-		t.Fatalf("second system prompt should contain current runtime context exactly once:\n%s", systemPrompt)
+	if strings.Count(systemPrompt, firstRuntimeContext) != 1 {
+		t.Fatalf("second system prompt should keep initial runtime context exactly once:\n%s", systemPrompt)
 	}
-	if strings.Contains(systemPrompt, firstRuntimeContext) {
-		t.Fatalf("second system prompt leaked previous runtime context:\n%s", systemPrompt)
+	if strings.Contains(systemPrompt, secondRuntimeContext) {
+		t.Fatalf("second system prompt unexpectedly refreshed runtime context:\n%s", systemPrompt)
 	}
 
 	nonSystemPrompt := messageText(secondCall[1:])
@@ -4009,7 +3891,7 @@ func TestRuntimeRunDoesNotDuplicateRuntimeContextAcrossTurns(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunPlacesAgentRuntimeContextBeforeCurrentUserMessage(t *testing.T) {
+func TestRuntimeRunPlacesSystemPromptBeforeCurrentUserMessage(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleDirectResponses("processed"),
 	}
@@ -4047,34 +3929,29 @@ func TestRuntimeRunPlacesAgentRuntimeContextBeforeCurrentUserMessage(t *testing.
 		t.Fatalf("expected one model call, got %d", len(model.messages))
 	}
 
-	var runtimeContextIndex, userMessageIndex = -1, -1
 	messages := model.messages[0]
-	for i := range messages {
-		text := messageText(messages[i : i+1])
-		if strings.Contains(text, "Agent runtime context (synthetic; not a new user request):") {
-			runtimeContextIndex = i
-		}
-		if text == userText+"\n" {
-			userMessageIndex = i
-		}
+	if len(messages) < 2 {
+		t.Fatalf("expected system and current user messages, got %#v", messages)
 	}
-	if runtimeContextIndex < 0 || userMessageIndex < 0 {
-		t.Fatalf("expected runtime context and current user messages, got %#v", messages)
+	if messages[0].Role != llms.ChatMessageTypeSystem {
+		t.Fatalf("first message role = %q, want system", messages[0].Role)
 	}
-	if runtimeContextIndex >= userMessageIndex {
-		t.Fatalf("runtime context index = %d, user message index = %d; want runtime context before current user", runtimeContextIndex, userMessageIndex)
+	userMessage := messages[len(messages)-1]
+	if userMessage.Role != llms.ChatMessageTypeHuman {
+		t.Fatalf("current user message role = %q, want human", userMessage.Role)
 	}
-	if messages[runtimeContextIndex].Role != llms.ChatMessageTypeHuman || messages[userMessageIndex].Role != llms.ChatMessageTypeHuman {
-		t.Fatalf("unexpected message roles: runtime=%q user=%q", messages[runtimeContextIndex].Role, messages[userMessageIndex].Role)
+	userPrompt := messageText([]llms.MessageContent{userMessage})
+	if !strings.Contains(userPrompt, userText) || !strings.Contains(userPrompt, "Attached content") || !strings.Contains(userPrompt, "data:image/png;base64,") {
+		t.Fatalf("current user message missing attachment-aware prompt: %q", userPrompt)
 	}
 	var userHasImage bool
-	for _, part := range messages[userMessageIndex].Parts {
+	for _, part := range userMessage.Parts {
 		if _, ok := part.(llms.ImageURLContent); ok {
 			userHasImage = true
 		}
 	}
-	if !userHasImage {
-		t.Fatalf("current user message should retain image attachment: %#v", messages[userMessageIndex].Parts)
+	if userHasImage {
+		t.Fatalf("current user message unexpectedly retained separate image URL part: %#v", userMessage.Parts)
 	}
 }
 
@@ -4144,16 +4021,13 @@ func TestRuntimeRunIncludesUserAttachments(t *testing.T) {
 		}
 	}
 
-	for _, unexpected := range []string{"photo.png", "note.wav", "Attached content"} {
-		if strings.Contains(textContent, unexpected) {
-			t.Fatalf("agent user message text should not contain attachment description %q: %q", unexpected, textContent)
+	for _, expected := range []string{"Describe the uploaded media.", "Attached content", "photo.png", "note.wav", "data:image/png;base64,"} {
+		if !strings.Contains(textContent, expected) {
+			t.Fatalf("agent user message text missing %q: %q", expected, textContent)
 		}
 	}
-	if textContent != "Describe the uploaded media." {
-		t.Fatalf("agent user message text = %q, want raw input", textContent)
-	}
-	if imageURL == "" || !strings.HasPrefix(imageURL, "data:image/png;base64,") {
-		t.Fatalf("expected image attachment as data URL, got %q", imageURL)
+	if imageURL != "" {
+		t.Fatalf("image attachment should be folded into text by context manager bridge, got %q", imageURL)
 	}
 	if len(binaryMIMEs) != 1 || binaryMIMEs[0] != "audio/wav" {
 		t.Fatalf("unexpected binary attachment MIME types: %#v", binaryMIMEs)

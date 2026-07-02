@@ -22,18 +22,6 @@ func messageText(messages []llms.MessageContent) string {
 	return builder.String()
 }
 
-func testWorldScreenshot(data []byte) *worldScreenshot {
-	return &worldScreenshot{
-		SourceTool: "screenshot",
-		Width:      320,
-		Height:     240,
-		Format:     "jpeg",
-		Size:       len(data),
-		Data:       data,
-		StepNumber: 1,
-	}
-}
-
 func intPtr(v int) *int { return &v }
 
 func testScreenshotObservationStep(tool string, data []byte) schema.AgentStep {

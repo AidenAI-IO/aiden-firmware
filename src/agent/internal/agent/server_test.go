@@ -580,7 +580,7 @@ func TestServerEventStreamAllowsRunEventMessages(t *testing.T) {
 			t.Fatalf("message type %q should be streamed to web clients", messageType)
 		}
 	}
-	for _, messageType := range []string{"role_output", "episode_status", runEventTodoUpdate, runEventTodoClosed} {
+	for _, messageType := range []string{"role_output", "episode_status", "todo_update", "todo_closed"} {
 		if shouldStreamEventMessage(Message{Type: messageType}) {
 			t.Fatalf("message type %q should not be streamed to web clients", messageType)
 		}
