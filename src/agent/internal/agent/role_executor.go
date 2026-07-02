@@ -253,6 +253,39 @@ func (e *roleCollaborativeExecutor) Call(ctx context.Context, inputValues map[st
 		TodoReminderToolCalls: e.TodoReminderToolCalls,
 	}
 	for i := 0; i < e.MaxIterations; i++ {
+		iterationStartTime := time.Now()
+		iterationIndex := i + 1
+		toolCallsBefore := len(state.ToolSteps)
+
+		// Record iteration start
+		if e.Recorder != nil {
+			e.Recorder.RecordEvent(TaskEpisodeEvent{
+				Type: runEventIterationStart,
+				Ts:   iterationStartTime.Format(time.RFC3339Nano),
+				Metadata: map[string]interface{}{
+					"iteration": iterationIndex,
+				},
+			})
+		}
+
+		// Helper to record iteration end
+		recordIterationEnd := func() {
+			if e.Recorder != nil {
+				iterDuration := time.Since(iterationStartTime).Milliseconds()
+				toolCallsInIteration := len(state.ToolSteps) - toolCallsBefore
+				e.Recorder.RecordEvent(TaskEpisodeEvent{
+					Type:       runEventIterationEnd,
+					Ts:         time.Now().Format(time.RFC3339Nano),
+					DurationMs: &iterDuration,
+					Metadata: map[string]interface{}{
+						"iteration":  iterationIndex,
+						"tool_calls": toolCallsInIteration,
+					},
+				})
+			}
+		}
+		defer recordIterationEnd()
+
 		consumedInterrupt, err := e.consumeSteerInterruptIfSignaled(ctx, inputs, &state)
 		if err != nil {
 			return nil, err
