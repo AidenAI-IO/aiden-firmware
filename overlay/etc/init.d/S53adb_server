@@ -1,0 +1,132 @@
+#!/bin/sh
+# One-shot delayed adb server bootstrap.
+# Starts the local adb host server shortly after boot so adb-based phone
+# capture is ready when frame_service is unavailable.
+
+ADB_BIN=${ADB_BIN:-adb}
+ENV_RUN_BIN=${ENV_RUN_BIN:-/oem/usr/bin/aiden-env-run}
+LOG_PATH=${LOG_PATH:-/var/log/adb/adb-startup.log}
+PID_FILE=${PID_FILE:-/run/adb/adb_start_server.pid}
+DELAY_SEC=${DELAY_SEC:-3}
+
+is_running() {
+    pid="$1"
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+pid_matches_worker() {
+    pid="$1"
+    [ -n "$pid" ] || return 1
+    [ -r "/proc/$pid/cmdline" ] || return 1
+    cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
+    case "$cmd" in
+        *"$0"*|*"S53adb_server"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+worker_pid() {
+    if [ -f "$PID_FILE" ]; then
+        pid="$(cat "$PID_FILE" 2>/dev/null)"
+        case "$pid" in
+            ''|*[!0-9]*) return ;;
+        esac
+        if pid_matches_worker "$pid"; then
+            echo "$pid"
+        fi
+    fi
+}
+
+resolve_adb_bin() {
+    case "$ADB_BIN" in
+        */*)
+            [ -x "$ADB_BIN" ] || return 1
+            printf '%s\n' "$ADB_BIN"
+            ;;
+        *)
+            command -v "$ADB_BIN" 2>/dev/null || return 1
+            ;;
+    esac
+}
+
+run_adb_start_server() {
+    adb_path="$1"
+    if [ -x "$ENV_RUN_BIN" ]; then
+        "$ENV_RUN_BIN" "$adb_path" start-server
+    else
+        "$adb_path" start-server
+    fi
+}
+
+start() {
+    wpid="$(worker_pid)"
+    if is_running "$wpid"; then
+        echo "adb start-server worker already running (pid $wpid)"
+        return 0
+    fi
+
+    mkdir -p "$(dirname "$LOG_PATH")" "$(dirname "$PID_FILE")"
+    chmod 0755 "$(dirname "$LOG_PATH")" "$(dirname "$PID_FILE")"
+
+    (
+        trap 'rm -f "$PID_FILE"; exit 0' INT TERM EXIT
+
+        echo "[adb] delaying start-server by ${DELAY_SEC}s" >> "$LOG_PATH"
+        sleep "$DELAY_SEC"
+
+        adb_path="$(resolve_adb_bin)"
+        if [ -z "$adb_path" ]; then
+            echo "[adb] adb binary not found: $ADB_BIN" >> "$LOG_PATH"
+            exit 1
+        fi
+
+        echo "[adb] starting adb server via $adb_path" >> "$LOG_PATH"
+        run_adb_start_server "$adb_path" >> "$LOG_PATH" 2>&1
+        status="$?"
+        echo "[adb] adb start-server exited with status $status" >> "$LOG_PATH"
+        exit "$status"
+    ) &
+    echo "$!" > "$PID_FILE"
+    echo "Started adb start-server worker"
+}
+
+stop() {
+    wpid="$(worker_pid)"
+    if is_running "$wpid"; then
+        kill "$wpid" 2>/dev/null || true
+    fi
+    rm -f "$PID_FILE"
+    echo "Stopped adb start-server worker"
+}
+
+status() {
+    wpid="$(worker_pid)"
+    if is_running "$wpid"; then
+        echo "adb_start_server=running pid=$wpid delay=${DELAY_SEC}s"
+    else
+        echo "adb_start_server=idle"
+    fi
+    if [ -f "$LOG_PATH" ]; then
+        tail -n 20 "$LOG_PATH"
+    fi
+}
+
+case "${1:-}" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart|reload)
+        stop
+        start
+        ;;
+    status)
+        status
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status}" >&2
+        exit 1
+        ;;
+esac
