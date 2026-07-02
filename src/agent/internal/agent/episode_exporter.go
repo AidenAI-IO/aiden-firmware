@@ -817,6 +817,15 @@ func (e *EpisodeExporter) promptGenerationBody(episode TaskEpisode, traceID stri
 	}
 	if len(call.UsageDetails) > 0 {
 		body["usageDetails"] = call.UsageDetails
+
+		// Add cache hit rate to metadata if we have cached tokens
+		if inputTokens, hasInput := call.UsageDetails["input"]; hasInput && inputTokens > 0 {
+			if cachedTokens, hasCached := call.UsageDetails["cached"]; hasCached && cachedTokens > 0 {
+				if metadata, ok := body["metadata"].(map[string]interface{}); ok {
+					metadata["cache_hit_rate"] = float64(cachedTokens) / float64(inputTokens)
+				}
+			}
+		}
 	}
 	if len(call.CostDetails) > 0 {
 		body["costDetails"] = call.CostDetails
@@ -1321,6 +1330,16 @@ func (e *EpisodeExporter) traceMetadata(episode TaskEpisode, prompts []telemetry
 			meta[role+"_call_ms_avg"] = avgInt64(durations)
 			meta[role+"_call_ms_p50"] = percentileInt64(sorted, 0.5)
 			meta[role+"_call_ms_p95"] = percentileInt64(sorted, 0.95)
+		}
+	}
+
+	// Add prompt cache hit rate from episode.Extra
+	if episode.Extra != nil {
+		if promptTokens, ok := usageMetricInt(episode.Extra["prompt_tokens"]); ok && promptTokens > 0 {
+			if cachedTokens, ok := usageMetricInt(episode.Extra["cached_prompt_tokens"]); ok && cachedTokens > 0 {
+				meta["prompt_cache_hit_rate"] = float64(cachedTokens) / float64(promptTokens)
+				meta["cached_prompt_tokens"] = cachedTokens
+			}
 		}
 	}
 
