@@ -185,6 +185,9 @@ const char* kSupportLogArchivePrefix = "aiden-logs-";
 const char* kSupportLogLangfuseName = "langfuse.yaml";
 const char* kSupportLogAgentName = "agent.log";
 const char* kSupportLogHttpName = "http.log";
+const size_t kSupportLogLangfuseMaxBytes = 1024 * 1024;
+const size_t kSupportLogAgentMaxBytes = 1024 * 1024;
+const size_t kSupportLogHttpMaxBytes = 4 * 1024 * 1024;
 // LLM raw HTTP logs live next to the agent config: <dirname(config)>/log.
 // Filenames are llm-http-YYYYMMDDHHMMSSmmm.log.
 const char* kLlmLogPrefix = "llm-http-";
@@ -3512,10 +3515,16 @@ bool atomic_write_file(const std::string& path,
     return true;
 }
 
-bool copy_regular_file(const std::string& source,
-                       const std::string& destination,
-                       mode_t mode,
-                       std::string* error) {
+bool copy_regular_file_tail(const std::string& source,
+                            const std::string& destination,
+                            size_t max_bytes,
+                            mode_t mode,
+                            std::string* error) {
+    if (max_bytes == 0) {
+        if (error) *error = "max copy size is zero";
+        return false;
+    }
+
     int in = open(source.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     if (in < 0) {
         if (error) *error = "open " + source + ": " + strerror(errno);
@@ -3534,6 +3543,18 @@ bool copy_regular_file(const std::string& source,
         return false;
     }
 
+    off_t start_offset = 0;
+    bool truncated = false;
+    if (st.st_size > 0 && static_cast<unsigned long long>(st.st_size) > max_bytes) {
+        truncated = true;
+        start_offset = st.st_size - static_cast<off_t>(max_bytes);
+    }
+    if (lseek(in, start_offset, SEEK_SET) == static_cast<off_t>(-1)) {
+        if (error) *error = "seek " + source + ": " + strerror(errno);
+        close(in);
+        return false;
+    }
+
     if (!mkdir_p(parent_dir(destination), error)) {
         close(in);
         return false;
@@ -3546,9 +3567,21 @@ bool copy_regular_file(const std::string& source,
     }
 
     bool ok = true;
+    size_t bytes_left = max_bytes;
+    if (truncated) {
+        std::string header = "# truncated: copied latest " + std::to_string(max_bytes) +
+            " of " + std::to_string(static_cast<unsigned long long>(st.st_size)) +
+            " bytes from " + source + "\n";
+        if (!write_all(out, header.data(), header.size())) {
+            if (error) *error = "write " + destination + ": " + strerror(errno);
+            ok = false;
+        }
+    }
+
     char buf[16 * 1024];
-    while (true) {
-        ssize_t n = read(in, buf, sizeof(buf));
+    while (ok && bytes_left > 0) {
+        size_t read_size = std::min(sizeof(buf), bytes_left);
+        ssize_t n = read(in, buf, read_size);
         if (n < 0) {
             if (errno == EINTR) {
                 continue;
@@ -3565,6 +3598,7 @@ bool copy_regular_file(const std::string& source,
             ok = false;
             break;
         }
+        bytes_left -= static_cast<size_t>(n);
     }
 
     if (close(in) != 0 && ok) {
@@ -4608,10 +4642,11 @@ bool stage_file_or_placeholder(const std::string& source,
                                const std::string& destination,
                                const std::string& label,
                                const std::string& missing_detail,
+                               size_t max_bytes,
                                std::string* error) {
     if (!source.empty()) {
         std::string copy_error;
-        if (copy_regular_file(source, destination, 0644, &copy_error)) {
+        if (copy_regular_file_tail(source, destination, max_bytes, 0644, &copy_error)) {
             return true;
         }
         std::ostringstream detail;
@@ -4644,18 +4679,21 @@ ApiResponse handle_export_support_logs(const Options& options) {
         stage_dir + "/" + kSupportLogLangfuseName,
         "Langfuse episode data",
         "No episode.yaml files found under " + episode_dir(options) + ".\n",
+        kSupportLogLangfuseMaxBytes,
         &error);
     staged = staged && stage_file_or_placeholder(
         kAgentLogPath,
         stage_dir + "/" + kSupportLogAgentName,
         "Agent log",
         std::string("Agent log path not available: ") + kAgentLogPath + "\n",
+        kSupportLogAgentMaxBytes,
         &error);
     staged = staged && stage_file_or_placeholder(
         latest_llm_log_path(options),
         stage_dir + "/" + kSupportLogHttpName,
         "HTTP log",
         "No llm-http-*.log files found under " + llm_log_dir(options) + ".\n",
+        kSupportLogHttpMaxBytes,
         &error);
     if (!staged) {
         remove_tree_best_effort(stage_dir);
@@ -4685,9 +4723,12 @@ ApiResponse handle_export_support_logs(const Options& options) {
         shell_quote(kSupportLogLangfuseName) + " " +
         shell_quote(kSupportLogAgentName) + " " +
         shell_quote(kSupportLogHttpName);
+    std::string fallback_tar_path = archive_path + ".tar";
     std::string command = "tar -czf " + tar_args +
-        " 2>/dev/null || (tar -cf - " + tar_stream_args +
-        " | gzip -c > " + shell_quote(archive_path) + ")";
+        " 2>/dev/null || (rm -f " + shell_quote(fallback_tar_path) +
+        " && tar -cf " + shell_quote(fallback_tar_path) + " " + tar_stream_args +
+        " && gzip -c " + shell_quote(fallback_tar_path) + " > " + shell_quote(archive_path) +
+        " && rm -f " + shell_quote(fallback_tar_path) + ")";
     CommandResult tar = run_shell_command_with_timeout(command, kSupportLogExportTimeoutMs);
     if (tar.timed_out || tar.exit_code != 0) {
         std::string detail = tar.timed_out ? "tar timed out" : "tar exited " + std::to_string(tar.exit_code);
@@ -4695,6 +4736,7 @@ ApiResponse handle_export_support_logs(const Options& options) {
             detail += ": " + trim_trailing_newlines(tar.output);
         }
         unlink(archive_path.c_str());
+        unlink(fallback_tar_path.c_str());
         remove_tree_best_effort(stage_dir);
         return make_json_error(500, "failed to create " + std::string(kSupportLogArchiveName) + ": " + detail);
     }
@@ -4713,6 +4755,21 @@ ApiResponse handle_export_support_logs(const Options& options) {
         unlink(archive_path.c_str());
         remove_tree_best_effort(stage_dir);
         return make_json_error(500, stat_error);
+    }
+    unsigned char magic[2];
+    ssize_t magic_read = read(fd, magic, sizeof(magic));
+    if (magic_read != static_cast<ssize_t>(sizeof(magic)) || magic[0] != 0x1f || magic[1] != 0x8b) {
+        close(fd);
+        unlink(archive_path.c_str());
+        remove_tree_best_effort(stage_dir);
+        return make_json_error(500, "failed to create " + std::string(kSupportLogArchiveName) + ": archive is not gzip");
+    }
+    if (lseek(fd, 0, SEEK_SET) == static_cast<off_t>(-1)) {
+        std::string seek_error = std::string("seek ") + archive_path + ": " + strerror(errno);
+        close(fd);
+        unlink(archive_path.c_str());
+        remove_tree_best_effort(stage_dir);
+        return make_json_error(500, seek_error);
     }
 
     unlink(archive_path.c_str());

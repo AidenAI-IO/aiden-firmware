@@ -1642,6 +1642,30 @@ TEST_CASE("config_web: exports support log archive with langfuse agent and http 
     CHECK(langfuse.find("kind: langfuse-source") != std::string::npos);
 }
 
+TEST_CASE("config_web: support log archive caps staged http log tail") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string log_dir = handle->tmp_dir + "/log";
+    REQUIRE(::mkdir(log_dir.c_str(), 0755) == 0);
+    std::string content = "begin-marker\n";
+    content.append(5 * 1024 * 1024, 'x');
+    content += "\nend-marker\n";
+    write_file(log_dir + "/llm-http-20260701090000123.log", content);
+
+    HttpResponse resp = http_request(handle->port, "GET", "/api/logs/export");
+    REQUIRE(resp.status == 200);
+
+    const std::string archive_path = handle->tmp_dir + "/support-logs-large.tar.gz";
+    write_binary_file(archive_path, resp.body);
+    const std::string archive = shell_quote(archive_path);
+    const std::string http_log = run_command_capture("LC_ALL=C tar -xOzf " + archive + " http.log");
+    CHECK(http_log.find("# truncated: copied latest ") != std::string::npos);
+    CHECK(http_log.find("begin-marker") == std::string::npos);
+    CHECK(http_log.find("end-marker") != std::string::npos);
+    CHECK(http_log.size() < content.size());
+}
+
 TEST_CASE("config_web: legacy llm log JSON file endpoint is removed") {
     StubEnv env;
     auto handle = start_server(env);
