@@ -42,6 +42,7 @@
 | `/run/frame_service/frame_service.sock` | Frame Service socket |
 | `/run/audio_service/audio_service.sock` | Audio Service socket |
 | `/var/log/frame_service/frame_service.log` | Frame Service log |
+| `/var/log/adb/adb-startup.log` | adb delayed startup log |
 | `/var/log/audio_service/audio_service.log` | Audio Service log |
 | `/var/log/agent/agent.log` | Agent log (includes init script and runtime output) |
 | `/userdata/agent/log/llm-http-YYYYMMDDHHMMSSmmm.log` | LLM HTTP request/response log (JSONL format, organized by session) |
@@ -56,6 +57,7 @@
 | `overlay/etc/init.d/S20oemslot` | Slot-aware `/oem` mount script |
 | `overlay/etc/init.d/S49ntp` | ntpd daemon startup + `step` one-shot sync subcommand |
 | `overlay/etc/init.d/S50ntp_watchdog` | NTP sync periodic check, triggers `S49ntp step` when not synced |
+| `overlay/etc/init.d/S53adb_server` | Delayed one-shot `adb start-server` bootstrap |
 | `overlay/etc/init.d/S54ota` | Boot-time OTA health one-shot |
 | `overlay/etc/init.d/S99rtcinit` | RTC invalid-date calibration script replacing the SDK default |
 | `overlay/etc/profile.d/aiden-env.sh` | SSH/login shell environment loader snippet |

@@ -14,20 +14,54 @@ import (
 
 const screenshotJPEGQuality = 80
 
+type adbDeviceInfo struct {
+	Serial string `json:"serial,omitempty"`
+	Name   string `json:"name,omitempty"`
+	State  string `json:"state,omitempty"`
+}
+
+type screenCaptureInfo struct {
+	Backend   string         `json:"capture_backend,omitempty"`
+	ADBDevice *adbDeviceInfo `json:"adb_device,omitempty"`
+}
+
 type screenshotResult struct {
-	Width         int               `json:"width"`
-	Height        int               `json:"height"`
-	ActiveArea    *screenActiveArea `json:"active_area,omitempty"`
-	ActiveWidth   int               `json:"active_width,omitempty"`
-	ActiveHeight  int               `json:"active_height,omitempty"`
-	Format        string            `json:"format"`
-	Size          int               `json:"size"`
-	Data          string            `json:"data,omitempty"`
-	ScreenshotRef string            `json:"screenshot_ref,omitempty"`
+	Width          int               `json:"width"`
+	Height         int               `json:"height"`
+	ActiveArea     *screenActiveArea `json:"active_area,omitempty"`
+	ActiveWidth    int               `json:"active_width,omitempty"`
+	ActiveHeight   int               `json:"active_height,omitempty"`
+	Format         string            `json:"format"`
+	Size           int               `json:"size"`
+	Data           string            `json:"data,omitempty"`
+	ScreenshotRef  string            `json:"screenshot_ref,omitempty"`
+	CaptureBackend string            `json:"capture_backend,omitempty"`
+	ADBDevice      *adbDeviceInfo    `json:"adb_device,omitempty"`
 }
 
 type screenshotFrameClient interface {
-	LatestFrameWithFormat(format string, quality int) (*frameMetadata, []byte, error)
+	LatestFrameWithFormat(format string, quality int) (*frameMetadata, []byte, screenCaptureInfo, error)
+}
+
+func cloneADBDeviceInfo(info *adbDeviceInfo) *adbDeviceInfo {
+	if info == nil {
+		return nil
+	}
+	copy := *info
+	return &copy
+}
+
+func cloneScreenCaptureInfo(info screenCaptureInfo) screenCaptureInfo {
+	info.ADBDevice = cloneADBDeviceInfo(info.ADBDevice)
+	return info
+}
+
+func applyScreenCaptureInfo(result *screenshotResult, info screenCaptureInfo) {
+	if result == nil {
+		return
+	}
+	result.CaptureBackend = info.Backend
+	result.ADBDevice = cloneADBDeviceInfo(info.ADBDevice)
 }
 
 // ScreenshotTool captures a screenshot from the frame service.
@@ -67,7 +101,7 @@ func frameMetadataSourceActiveArea(meta *frameMetadata) (sourceWidth, sourceHeig
 
 func NewScreenshotTool(socketPath string, screen *screenState) *ScreenshotTool {
 	return &ScreenshotTool{
-		client: NewFrameServiceClient(socketPath),
+		client: NewScreenCaptureClient(socketPath),
 		screen: screen,
 	}
 }
@@ -87,14 +121,13 @@ func (t *ScreenshotTool) ArgsSchema() map[string]any {
 
 func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
 	// Request JPEG format directly from frame_service (hardware-encoded)
-	meta, jpegData, err := t.client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality)
+	meta, jpegData, captureInfo, err := t.client.LatestFrameWithFormat("jpeg", screenshotJPEGQuality)
 	if err != nil {
 		return "", err
 	}
 	if meta.Stale {
 		return "", fmt.Errorf("frame service: STALE_FRAME")
 	}
-
 	if meta.PixelFormat != "jpeg" {
 		return "", fmt.Errorf("expected jpeg format, got %s", meta.PixelFormat)
 	}
@@ -135,6 +168,7 @@ func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
 		Size:   len(displayData),
 		Data:   base64.StdEncoding.EncodeToString(displayData),
 	}
+	applyScreenCaptureInfo(&result, captureInfo)
 
 	out, _ := json.Marshal(result)
 	return string(out), nil
