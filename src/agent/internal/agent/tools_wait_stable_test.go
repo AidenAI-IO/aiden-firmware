@@ -328,9 +328,9 @@ type fakeWaitStableFrameClient struct {
 	jpegMeta  frameMetadata
 }
 
-func (c *fakeWaitStableFrameClient) LatestFrame() (*frameMetadata, []byte, error) {
+func (c *fakeWaitStableFrameClient) LatestFrame() (*frameMetadata, []byte, screenCaptureInfo, error) {
 	if len(c.rawFrames) == 0 {
-		return nil, nil, fmt.Errorf("no raw frames")
+		return nil, nil, screenCaptureInfo{}, fmt.Errorf("no raw frames")
 	}
 	index := c.rawCalls
 	if index >= len(c.rawFrames) {
@@ -339,15 +339,15 @@ func (c *fakeWaitStableFrameClient) LatestFrame() (*frameMetadata, []byte, error
 	c.rawCalls++
 	frame := c.rawFrames[index]
 	meta := frame.meta
-	return &meta, append([]byte(nil), frame.data...), nil
+	return &meta, append([]byte(nil), frame.data...), screenCaptureInfo{}, nil
 }
 
-func (c *fakeWaitStableFrameClient) LatestFrameWithFormat(format string, quality int) (*frameMetadata, []byte, error) {
+func (c *fakeWaitStableFrameClient) LatestFrameWithFormat(format string, quality int) (*frameMetadata, []byte, screenCaptureInfo, error) {
 	if format != "jpeg" {
-		return nil, nil, fmt.Errorf("unexpected format %q", format)
+		return nil, nil, screenCaptureInfo{}, fmt.Errorf("unexpected format %q", format)
 	}
 	if quality != screenshotJPEGQuality {
-		return nil, nil, fmt.Errorf("quality = %d, want %d", quality, screenshotJPEGQuality)
+		return nil, nil, screenCaptureInfo{}, fmt.Errorf("quality = %d, want %d", quality, screenshotJPEGQuality)
 	}
 	c.jpegCalls++
 	meta := c.jpegMeta
@@ -360,7 +360,7 @@ func (c *fakeWaitStableFrameClient) LatestFrameWithFormat(format string, quality
 			Bytes:       uint64(len(c.jpegData)),
 		}
 	}
-	return &meta, append([]byte(nil), c.jpegData...), nil
+	return &meta, append([]byte(nil), c.jpegData...), screenCaptureInfo{}, nil
 }
 
 type fakeInternalWaitTool struct {

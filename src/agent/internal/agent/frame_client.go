@@ -128,6 +128,33 @@ type frameResponse struct {
 	Frame  frameMetadata `json:"frame"`
 }
 
+type FrameHealthResult struct {
+	State                   string  `json:"state"`
+	LatestSeq               uint64  `json:"latest_seq"`
+	FrameAgeMs              uint64  `json:"frame_age_ms"`
+	RingBufferSize          uint32  `json:"ring_buffer_size"`
+	RingBufferUsed          uint32  `json:"ring_buffer_used"`
+	ConsecutiveFailures     uint32  `json:"consecutive_failures"`
+	LastError               string  `json:"last_error"`
+	LastRecoveryTs          uint64  `json:"last_recovery_ts"`
+	AvgFrameServeLatencyMs  float64 `json:"avg_frame_serve_latency_ms"`
+	AvgCaptureCopyLatencyMs float64 `json:"avg_capture_copy_latency_ms"`
+}
+
+type frameHealthResponse struct {
+	Status                  string  `json:"status"`
+	State                   string  `json:"state"`
+	LatestSeq               uint64  `json:"latest_seq"`
+	FrameAgeMs              uint64  `json:"frame_age_ms"`
+	RingBufferSize          uint32  `json:"ring_buffer_size"`
+	RingBufferUsed          uint32  `json:"ring_buffer_used"`
+	ConsecutiveFailures     uint32  `json:"consecutive_failures"`
+	LastError               string  `json:"last_error"`
+	LastRecoveryTs          uint64  `json:"last_recovery_ts"`
+	AvgFrameServeLatencyMs  float64 `json:"avg_frame_serve_latency_ms"`
+	AvgCaptureCopyLatencyMs float64 `json:"avg_capture_copy_latency_ms"`
+}
+
 // LatestFrame fetches the most recent frame from the service.
 func (c *FrameServiceClient) LatestFrame() (*frameMetadata, []byte, error) {
 	return c.LatestFrameWithFormat("raw", 0)
@@ -163,6 +190,35 @@ func (c *FrameServiceClient) LatestFrameWithFormat(format string, quality int) (
 	}
 	// Return stale frame but let caller check meta.Stale flag
 	return &resp.Frame, payload, nil
+}
+
+// Health queries the frame service health snapshot.
+func (c *FrameServiceClient) Health() (*FrameHealthResult, error) {
+	headerJSON, _, err := c.doRequest(`{"type":"request","method":"health"}`, nil, 5*time.Second)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp frameHealthResponse
+	if err := json.Unmarshal(headerJSON, &resp); err != nil {
+		return nil, fmt.Errorf("parse response: %w", err)
+	}
+	if resp.Status != "OK" {
+		return nil, fmt.Errorf("frame service health failed: %s", resp.Status)
+	}
+
+	return &FrameHealthResult{
+		State:                   resp.State,
+		LatestSeq:               resp.LatestSeq,
+		FrameAgeMs:              resp.FrameAgeMs,
+		RingBufferSize:          resp.RingBufferSize,
+		RingBufferUsed:          resp.RingBufferUsed,
+		ConsecutiveFailures:     resp.ConsecutiveFailures,
+		LastError:               resp.LastError,
+		LastRecoveryTs:          resp.LastRecoveryTs,
+		AvgFrameServeLatencyMs:  resp.AvgFrameServeLatencyMs,
+		AvgCaptureCopyLatencyMs: resp.AvgCaptureCopyLatencyMs,
+	}, nil
 }
 
 func (c *FrameServiceClient) doRequest(requestJSON string, requestPayload []byte, timeout time.Duration) ([]byte, []byte, error) {
