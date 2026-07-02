@@ -76,6 +76,7 @@ private:
     void reap_idle_sessions();
 
     mutable std::mutex mutex_;
+    std::mutex record_lifecycle_mutex_;  // serializes start_recording hardware access
     std::atomic<bool> stop_reaper_;
     std::thread reaper_thread_;
     std::shared_ptr<DrainingPlaybackState> draining_playback_state_;
