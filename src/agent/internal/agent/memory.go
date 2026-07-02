@@ -1475,11 +1475,16 @@ func (m *MemoryManager) compressRemainingForArchive(sessionDir string) error {
 	if len(events) == 0 {
 		return nil
 	}
-	if summary, err := os.ReadFile(session.summaryPath()); err == nil && strings.TrimSpace(string(summary)) != "" {
-		return nil
-	} else if err != nil && !os.IsNotExist(err) {
+	existingSummary, err := os.ReadFile(session.summaryPath())
+	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("read existing session summary: %w", err)
 	}
+	preserveSummary := strings.TrimSpace(string(existingSummary)) != ""
+	existingSummaryArchive, summaryArchiveErr := os.ReadFile(session.summaryArchivePath())
+	if summaryArchiveErr != nil && !os.IsNotExist(summaryArchiveErr) {
+		return fmt.Errorf("read existing session summary archive: %w", summaryArchiveErr)
+	}
+	hadSummaryArchive := summaryArchiveErr == nil
 
 	// Rotation runs on the next request's begin path. Keep this final archive
 	// chunk local-only so a slow LLM summarizer cannot block the new run.
@@ -1490,6 +1495,20 @@ func (m *MemoryManager) compressRemainingForArchive(sessionDir string) error {
 	})
 	if err != nil {
 		return fmt.Errorf("compress remaining events: %w", err)
+	}
+	if preserveSummary {
+		if err := writeFileAtomic(session.summaryPath(), existingSummary, 0o644); err != nil {
+			return fmt.Errorf("restore existing session summary: %w", err)
+		}
+		if hadSummaryArchive {
+			if err := writeFileAtomic(session.summaryArchivePath(), existingSummaryArchive, 0o644); err != nil {
+				return fmt.Errorf("restore existing session summary archive: %w", err)
+			}
+		} else {
+			if err := os.Remove(session.summaryArchivePath()); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("remove generated session summary archive: %w", err)
+			}
+		}
 	}
 	if m.logger != nil {
 		m.logger.Info("[memory] pre-archive compression: %d events into final chunk", len(events))
