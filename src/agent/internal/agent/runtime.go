@@ -643,7 +643,16 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		memoryHandle, err = newMemoryHandle(memoryCfg)
 	}
 	if err != nil {
-		return RunResult{}, err
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return RunResult{}, ctxErr
+		}
+		if r.logger != nil {
+			r.logger.Warn("[memory] load persisted memory failed; continuing with empty history: %v", err)
+		}
+		memoryHandle, err = newMemoryHandle(memoryCfg)
+		if err != nil {
+			return RunResult{}, err
+		}
 	}
 	beginResult, err := r.beginSession(ctx, SessionBeginRequest{
 		AgentName:    "default",
@@ -656,7 +665,13 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		CurrentHints: currentHints,
 	})
 	if err != nil {
-		return RunResult{}, err
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return RunResult{}, ctxErr
+		}
+		if r.logger != nil {
+			r.logger.Warn("[memory] begin session failed; continuing without session update: %v", err)
+		}
+		beginResult = SessionBeginResult{}
 	}
 	boundaryTelemetry = beginResult.Boundary
 	if boundaryTelemetry.PendingRecallCounter == nil {
@@ -743,7 +758,13 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		r.activeConversationHistoryTokenBudget(contextWindow),
 	)
 	if err != nil {
-		return RunResult{}, err
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return RunResult{}, ctxErr
+		}
+		if r.logger != nil {
+			r.logger.Warn("[memory] load conversation history failed; continuing with empty history: %v", err)
+		}
+		conversationHistory = nil
 	}
 	plannerMemory := memoryHandle.Memory
 	if len(conversationHistory) > 0 {
@@ -841,7 +862,13 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 
 	commitResult, err := r.commitSession(ctx, commitReq)
 	if err != nil {
-		return RunResult{}, err
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return RunResult{}, ctxErr
+		}
+		if r.logger != nil {
+			r.logger.Warn("[memory] commit session failed; returning model output without memory snapshot: %v", err)
+		}
+		commitResult = SessionCommitResult{}
 	}
 	r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, nil, promptCapture, boundaryTelemetry, req.AsyncEpisodeMaintenance)
 	episodeCommitted = true
