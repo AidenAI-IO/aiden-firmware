@@ -13,6 +13,7 @@ Firmware integration is done through scripts in `overlay/etc/init.d/`. Most long
 | `S50ntp_watchdog` | Periodically check clock sync status, and trigger `S49ntp step` when not synced |
 | `S50usbdevice` | USB device related initialization |
 | `S52frame_service` | Start and supervise the HDMI frame service |
+| `S53adb_server` | Wait 3 seconds, then run `adb start-server` once |
 | `S53audio_service` | Start and supervise the audio service |
 | `S53agent` | Start and supervise the Go Agent |
 | `S54ota` | Run the OTA health handling once at boot |

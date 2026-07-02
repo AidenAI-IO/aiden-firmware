@@ -178,6 +178,16 @@ const size_t kAgentLogReadSize = 64 * 1024;
 const size_t kAgentLogDisplaySize = 48 * 1024;
 const size_t kOtaLogReadSize = 128 * 1024;
 const size_t kOtaLogDisplaySize = 96 * 1024;
+const int kSupportLogExportTimeoutMs = 30000;
+const char* kSupportLogArchiveName = "aiden-logs.tar.gz";
+const char* kSupportLogStagePrefix = "aiden-logs-stage-";
+const char* kSupportLogArchivePrefix = "aiden-logs-";
+const char* kSupportLogLangfuseName = "langfuse.yaml";
+const char* kSupportLogAgentName = "agent.log";
+const char* kSupportLogHttpName = "http.log";
+const size_t kSupportLogLangfuseMaxBytes = 1024 * 1024;
+const size_t kSupportLogAgentMaxBytes = 1024 * 1024;
+const size_t kSupportLogHttpMaxBytes = 4 * 1024 * 1024;
 // LLM raw HTTP logs live next to the agent config: <dirname(config)>/log.
 // Filenames are llm-http-YYYYMMDDHHMMSSmmm.log.
 const char* kLlmLogPrefix = "llm-http-";
@@ -205,6 +215,10 @@ bool create_temp_file_in_dir(const std::string& dir,
                              int* fd,
                              std::string* path,
                              std::string* error);
+bool create_temp_dir_in_dir(const std::string& dir,
+                            const std::string& prefix,
+                            std::string* path,
+                            std::string* error);
 bool is_llm_log_import_request(const std::string& method, const std::string& path);
 void cleanup_request_temp_file(HttpRequest* request);
 void close_response_stream(ApiResponse* response);
@@ -3399,6 +3413,38 @@ bool create_temp_file_in_dir(const std::string& dir,
     return true;
 }
 
+bool create_temp_dir_in_dir(const std::string& dir,
+                            const std::string& prefix,
+                            std::string* path,
+                            std::string* error) {
+    if (path) {
+        path->clear();
+    }
+    if (!mkdir_p(dir, error)) {
+        return false;
+    }
+
+    std::string tmpl = dir;
+    if (tmpl.empty() || tmpl[tmpl.size() - 1] != '/') {
+        tmpl += "/";
+    }
+    tmpl += ".";
+    tmpl += prefix.empty() ? "tmp-" : prefix;
+    tmpl += "XXXXXX";
+
+    std::vector<char> buf(tmpl.begin(), tmpl.end());
+    buf.push_back('\0');
+    char* created = mkdtemp(buf.data());
+    if (!created) {
+        if (error) *error = "mkdtemp " + tmpl + ": " + strerror(errno);
+        return false;
+    }
+    if (path) {
+        *path = created;
+    }
+    return true;
+}
+
 bool validate_system_proxy_values(const SystemProxy& proxy, std::string* error) {
     struct Field {
         const char* name;
@@ -3467,6 +3513,106 @@ bool atomic_write_file(const std::string& path,
         return false;
     }
     return true;
+}
+
+bool copy_regular_file_tail(const std::string& source,
+                            const std::string& destination,
+                            size_t max_bytes,
+                            mode_t mode,
+                            std::string* error) {
+    if (max_bytes == 0) {
+        if (error) *error = "max copy size is zero";
+        return false;
+    }
+
+    int in = open(source.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (in < 0) {
+        if (error) *error = "open " + source + ": " + strerror(errno);
+        return false;
+    }
+
+    struct stat st;
+    if (fstat(in, &st) != 0) {
+        if (error) *error = "stat " + source + ": " + strerror(errno);
+        close(in);
+        return false;
+    }
+    if (!S_ISREG(st.st_mode)) {
+        if (error) *error = source + " is not a regular file";
+        close(in);
+        return false;
+    }
+
+    off_t start_offset = 0;
+    bool truncated = false;
+    if (st.st_size > 0 && static_cast<unsigned long long>(st.st_size) > max_bytes) {
+        truncated = true;
+        start_offset = st.st_size - static_cast<off_t>(max_bytes);
+    }
+    if (lseek(in, start_offset, SEEK_SET) == static_cast<off_t>(-1)) {
+        if (error) *error = "seek " + source + ": " + strerror(errno);
+        close(in);
+        return false;
+    }
+
+    if (!mkdir_p(parent_dir(destination), error)) {
+        close(in);
+        return false;
+    }
+    int out = open(destination.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, mode);
+    if (out < 0) {
+        if (error) *error = "open " + destination + ": " + strerror(errno);
+        close(in);
+        return false;
+    }
+
+    bool ok = true;
+    size_t bytes_left = max_bytes;
+    if (truncated) {
+        std::string header = "# truncated: copied latest " + std::to_string(max_bytes) +
+            " of " + std::to_string(static_cast<unsigned long long>(st.st_size)) +
+            " bytes from " + source + "\n";
+        if (!write_all(out, header.data(), header.size())) {
+            if (error) *error = "write " + destination + ": " + strerror(errno);
+            ok = false;
+        }
+    }
+
+    char buf[16 * 1024];
+    while (ok && bytes_left > 0) {
+        size_t read_size = std::min(sizeof(buf), bytes_left);
+        ssize_t n = read(in, buf, read_size);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            if (error) *error = "read " + source + ": " + strerror(errno);
+            ok = false;
+            break;
+        }
+        if (n == 0) {
+            break;
+        }
+        if (!write_all(out, buf, static_cast<size_t>(n))) {
+            if (error) *error = "write " + destination + ": " + strerror(errno);
+            ok = false;
+            break;
+        }
+        bytes_left -= static_cast<size_t>(n);
+    }
+
+    if (close(in) != 0 && ok) {
+        if (error) *error = "close " + source + ": " + strerror(errno);
+        ok = false;
+    }
+    if (close(out) != 0 && ok) {
+        if (error) *error = "close " + destination + ": " + strerror(errno);
+        ok = false;
+    }
+    if (!ok) {
+        unlink(destination.c_str());
+    }
+    return ok;
 }
 
 bool save_system_env_content(const std::string& path,
@@ -4379,6 +4525,262 @@ ApiResponse handle_import_llm_log_file(const Options& options, const std::string
     cJSON_AddNumberToObject(root, "size_bytes", static_cast<double>(request.body_file_path.empty() ? request.body.size() : request.body_size));
     cJSON_AddStringToObject(root, "message", "llm log imported");
     return make_json_ok(root);
+}
+
+std::string memory_dir(const Options& options) {
+    std::string base = parent_dir(options.agent_config_path);
+    if (base.empty()) {
+        return "memory";
+    }
+    if (base == "/") {
+        return "/memory";
+    }
+    return base + "/memory";
+}
+
+std::string episode_dir(const Options& options) {
+    return memory_dir(options) + "/episodes";
+}
+
+std::string latest_llm_log_name(const Options& options) {
+    const std::string dir_path = llm_log_dir(options);
+    DIR* dir = opendir(dir_path.c_str());
+    if (!dir) {
+        return "";
+    }
+
+    bool found = false;
+    time_t best_mtime = 0;
+    std::string best_name;
+    struct dirent* entry = NULL;
+    while ((entry = readdir(dir)) != NULL) {
+        std::string name = entry->d_name;
+        if (!is_llm_log_name(name)) {
+            continue;
+        }
+        const std::string full = dir_path + "/" + name;
+        struct stat st;
+        if (lstat(full.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
+            continue;
+        }
+        if (!found || st.st_mtime > best_mtime ||
+            (st.st_mtime == best_mtime && name > best_name)) {
+            found = true;
+            best_mtime = st.st_mtime;
+            best_name = name;
+        }
+    }
+    closedir(dir);
+    return best_name;
+}
+
+std::string latest_llm_log_path(const Options& options) {
+    std::string name = latest_llm_log_name(options);
+    return name.empty() ? "" : llm_log_path(options, name);
+}
+
+std::string latest_episode_yaml_path(const Options& options) {
+    const std::string root = episode_dir(options);
+    std::vector<std::string> pending;
+    pending.push_back(root);
+
+    bool found = false;
+    time_t best_mtime = 0;
+    std::string best_path;
+    while (!pending.empty()) {
+        std::string dir_path = pending.back();
+        pending.pop_back();
+
+        DIR* dir = opendir(dir_path.c_str());
+        if (!dir) {
+            continue;
+        }
+        struct dirent* entry = NULL;
+        while ((entry = readdir(dir)) != NULL) {
+            std::string name = entry->d_name;
+            if (name == "." || name == "..") {
+                continue;
+            }
+            const std::string full = dir_path + "/" + name;
+            struct stat st;
+            if (lstat(full.c_str(), &st) != 0) {
+                continue;
+            }
+            if (S_ISDIR(st.st_mode)) {
+                pending.push_back(full);
+                continue;
+            }
+            if (name != "episode.yaml" || !S_ISREG(st.st_mode)) {
+                continue;
+            }
+            if (!found || st.st_mtime > best_mtime ||
+                (st.st_mtime == best_mtime && full > best_path)) {
+                found = true;
+                best_mtime = st.st_mtime;
+                best_path = full;
+            }
+        }
+        closedir(dir);
+    }
+    return best_path;
+}
+
+bool write_placeholder_file(const std::string& path,
+                            const std::string& label,
+                            const std::string& detail,
+                            std::string* error) {
+    std::ostringstream content;
+    content << label << "\n";
+    content << detail;
+    if (detail.empty() || detail[detail.size() - 1] != '\n') {
+        content << "\n";
+    }
+    return atomic_write_file(path, content.str(), 0644, error);
+}
+
+bool stage_file_or_placeholder(const std::string& source,
+                               const std::string& destination,
+                               const std::string& label,
+                               const std::string& missing_detail,
+                               size_t max_bytes,
+                               std::string* error) {
+    if (!source.empty()) {
+        std::string copy_error;
+        if (copy_regular_file_tail(source, destination, max_bytes, 0644, &copy_error)) {
+            return true;
+        }
+        std::ostringstream detail;
+        detail << "source: " << source << "\n";
+        detail << "copy_error: " << copy_error << "\n";
+        return write_placeholder_file(destination, label + " unavailable", detail.str(), error);
+    }
+    return write_placeholder_file(destination, label + " unavailable", missing_detail, error);
+}
+
+void remove_tree_best_effort(const std::string& path) {
+    if (path.empty()) {
+        return;
+    }
+    CommandResult result = run_shell_command_with_timeout(
+        "rm -rf " + shell_quote(path), 5000);
+    (void)result;
+}
+
+ApiResponse handle_export_support_logs(const Options& options) {
+    std::string stage_dir;
+    std::string error;
+    if (!create_temp_dir_in_dir("/tmp", kSupportLogStagePrefix, &stage_dir, &error)) {
+        return make_json_error(500, error.empty() ? "failed to create log staging directory" : error);
+    }
+
+    bool staged = true;
+    staged = staged && stage_file_or_placeholder(
+        latest_episode_yaml_path(options),
+        stage_dir + "/" + kSupportLogLangfuseName,
+        "Langfuse episode data",
+        "No episode.yaml files found under " + episode_dir(options) + ".\n",
+        kSupportLogLangfuseMaxBytes,
+        &error);
+    staged = staged && stage_file_or_placeholder(
+        kAgentLogPath,
+        stage_dir + "/" + kSupportLogAgentName,
+        "Agent log",
+        std::string("Agent log path not available: ") + kAgentLogPath + "\n",
+        kSupportLogAgentMaxBytes,
+        &error);
+    staged = staged && stage_file_or_placeholder(
+        latest_llm_log_path(options),
+        stage_dir + "/" + kSupportLogHttpName,
+        "HTTP log",
+        "No llm-http-*.log files found under " + llm_log_dir(options) + ".\n",
+        kSupportLogHttpMaxBytes,
+        &error);
+    if (!staged) {
+        remove_tree_best_effort(stage_dir);
+        return make_json_error(500, error.empty() ? "failed to stage support logs" : error);
+    }
+
+    int archive_fd = -1;
+    std::string archive_path;
+    if (!create_temp_file_in_dir("/tmp", kSupportLogArchivePrefix, 0600, &archive_fd, &archive_path, &error)) {
+        remove_tree_best_effort(stage_dir);
+        return make_json_error(500, error.empty() ? "failed to create log archive file" : error);
+    }
+    if (close(archive_fd) != 0) {
+        unlink(archive_path.c_str());
+        remove_tree_best_effort(stage_dir);
+        return make_json_error(500, std::string("close ") + archive_path + ": " + strerror(errno));
+    }
+    archive_fd = -1;
+
+    std::string tar_args = shell_quote(archive_path) +
+        " -C " + shell_quote(stage_dir) + " " +
+        shell_quote(kSupportLogLangfuseName) + " " +
+        shell_quote(kSupportLogAgentName) + " " +
+        shell_quote(kSupportLogHttpName);
+    std::string tar_stream_args =
+        "-C " + shell_quote(stage_dir) + " " +
+        shell_quote(kSupportLogLangfuseName) + " " +
+        shell_quote(kSupportLogAgentName) + " " +
+        shell_quote(kSupportLogHttpName);
+    std::string fallback_tar_path = archive_path + ".tar";
+    std::string command = "tar -czf " + tar_args +
+        " 2>/dev/null || (rm -f " + shell_quote(fallback_tar_path) +
+        " && tar -cf " + shell_quote(fallback_tar_path) + " " + tar_stream_args +
+        " && gzip -c " + shell_quote(fallback_tar_path) + " > " + shell_quote(archive_path) +
+        " && rm -f " + shell_quote(fallback_tar_path) + ")";
+    CommandResult tar = run_shell_command_with_timeout(command, kSupportLogExportTimeoutMs);
+    if (tar.timed_out || tar.exit_code != 0) {
+        std::string detail = tar.timed_out ? "tar timed out" : "tar exited " + std::to_string(tar.exit_code);
+        if (!trim_trailing_newlines(tar.output).empty()) {
+            detail += ": " + trim_trailing_newlines(tar.output);
+        }
+        unlink(archive_path.c_str());
+        unlink(fallback_tar_path.c_str());
+        remove_tree_best_effort(stage_dir);
+        return make_json_error(500, "failed to create " + std::string(kSupportLogArchiveName) + ": " + detail);
+    }
+
+    int fd = open(archive_path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        std::string open_error = std::string("open ") + archive_path + ": " + strerror(errno);
+        unlink(archive_path.c_str());
+        remove_tree_best_effort(stage_dir);
+        return make_json_error(500, open_error);
+    }
+    struct stat st;
+    if (fstat(fd, &st) != 0) {
+        std::string stat_error = std::string("stat ") + archive_path + ": " + strerror(errno);
+        close(fd);
+        unlink(archive_path.c_str());
+        remove_tree_best_effort(stage_dir);
+        return make_json_error(500, stat_error);
+    }
+    unsigned char magic[2];
+    ssize_t magic_read = read(fd, magic, sizeof(magic));
+    if (magic_read != static_cast<ssize_t>(sizeof(magic)) || magic[0] != 0x1f || magic[1] != 0x8b) {
+        close(fd);
+        unlink(archive_path.c_str());
+        remove_tree_best_effort(stage_dir);
+        return make_json_error(500, "failed to create " + std::string(kSupportLogArchiveName) + ": archive is not gzip");
+    }
+    if (lseek(fd, 0, SEEK_SET) == static_cast<off_t>(-1)) {
+        std::string seek_error = std::string("seek ") + archive_path + ": " + strerror(errno);
+        close(fd);
+        unlink(archive_path.c_str());
+        remove_tree_best_effort(stage_dir);
+        return make_json_error(500, seek_error);
+    }
+
+    unlink(archive_path.c_str());
+    remove_tree_best_effort(stage_dir);
+
+    ApiResponse response;
+    response.content_type = "application/gzip";
+    response.body.clear();
+    response.body_fd = fd;
+    response.body_fd_size = static_cast<unsigned long long>(st.st_size);
+    return response;
 }
 
 ApiResponse handle_get_ota_log() {
@@ -5533,6 +5935,10 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
 
     if (request.method == "GET" && request.path == "/api/agent/logs") {
         return handle_get_agent_log();
+    }
+
+    if (request.method == "GET" && request.path == "/api/logs/export") {
+        return handle_export_support_logs(options);
     }
 
     if (request.method == "GET" && request.path == "/api/ota/logs") {

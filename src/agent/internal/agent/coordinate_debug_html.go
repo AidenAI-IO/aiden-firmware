@@ -94,6 +94,8 @@ canvas { border: 2px solid #1f7a63; border-radius: 10px; cursor: crosshair; max-
 <h2>📊 当前信息</h2>
 <div class="info-item"><span class="info-label">图片尺寸:</span><span class="info-value" id="imageSize">-</span></div>
 <div class="info-item"><span class="info-label">原始屏幕尺寸:</span><span class="info-value" id="originalScreenSize">-</span></div>
+<div class="info-item"><span class="info-label">截图来源:</span><span class="info-value" id="captureBackend">-</span></div>
+<div class="info-item"><span class="info-label">ADB 设备:</span><span class="info-value" id="adbDeviceInfo">-</span></div>
 <div class="info-item"><span class="info-label">点击位置 (像素):</span><span class="info-value" id="clickPixel">-</span></div>
 <div class="info-item"><span class="info-label">归一化坐标:</span><span class="info-value" id="normalizedCoord">-</span></div>
 <div class="info-item"><span class="info-label">标记位置 (像素):</span><span class="info-value" id="markerPixel">-</span></div>
@@ -146,7 +148,9 @@ function defaultScreenshotMeta(width, height) {
         source_height: height,
         source_active_area: null,
         original_screen_width_pixels: null,
-        original_screen_height_pixels: null
+        original_screen_height_pixels: null,
+        capture_backend: null,
+        adb_device: null
     };
 }
 
@@ -156,6 +160,19 @@ function formatOriginalScreenSize(meta) {
     const height = meta.original_screen_height_pixels;
     if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) return '-';
     return width + ' × ' + height + ' px';
+}
+
+function formatCaptureBackend(meta) {
+    if (!meta || !meta.capture_backend) return '-';
+    return String(meta.capture_backend);
+}
+
+function formatADBDevice(meta) {
+    if (!meta || !meta.adb_device) return '-';
+    const device = meta.adb_device;
+    const name = device.name || device.serial || '-';
+    const label = device.serial && device.serial !== name ? (name + ' (' + device.serial + ')') : name;
+    return device.state ? (label + ' / ' + device.state) : label;
 }
 
 function normalizeActiveArea(meta) {
@@ -279,6 +296,12 @@ async function captureFromDevice() {
             height: parseInt(res.headers.get('X-Frame-Height') || '0', 10) || 0,
             source_width: parseInt(res.headers.get('X-Source-Width') || '0', 10) || 0,
             source_height: parseInt(res.headers.get('X-Source-Height') || '0', 10) || 0,
+            capture_backend: res.headers.get('X-Capture-Backend') || null,
+            adb_device: res.headers.get('X-Adb-Device-Valid') === 'true' ? {
+                serial: res.headers.get('X-Adb-Device-Serial') || '',
+                name: res.headers.get('X-Adb-Device-Name') || '',
+                state: res.headers.get('X-Adb-Device-State') || ''
+            } : null,
             original_screen_width_pixels: res.headers.get('X-Original-Screen-Valid') === 'true' ? (parseInt(res.headers.get('X-Original-Screen-Width') || '0', 10) || 0) : null,
             original_screen_height_pixels: res.headers.get('X-Original-Screen-Valid') === 'true' ? (parseInt(res.headers.get('X-Original-Screen-Height') || '0', 10) || 0) : null,
             source_active_area: res.headers.get('X-Source-Active-Valid') === 'true' ? {
@@ -333,6 +356,8 @@ function loadImageFromUrl(url, statusText, meta) {
             setCoordinateActionsEnabled(true);
             document.getElementById('imageSize').textContent = img.width + ' × ' + img.height + ' px';
             document.getElementById('originalScreenSize').textContent = formatOriginalScreenSize(currentScreenshotMeta);
+            document.getElementById('captureBackend').textContent = formatCaptureBackend(currentScreenshotMeta);
+            document.getElementById('adbDeviceInfo').textContent = formatADBDevice(currentScreenshotMeta);
             deviceStatus.textContent = statusText;
             resolve(img);
         };

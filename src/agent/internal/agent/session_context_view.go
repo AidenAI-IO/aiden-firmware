@@ -61,7 +61,10 @@ func (m *sessionContextPlannerMemory) LoadMemoryVariables(ctx context.Context, i
 	}
 	events, err := m.manager.LoadActiveSessionEvents(ctx, maxSessionContextEvents)
 	if err != nil {
-		return nil, err
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return values, nil
 	}
 	view := BuildSessionContextView(events, currentInputFromMemoryInputs(inputs))
 	rendered := formatSessionContextView(view)

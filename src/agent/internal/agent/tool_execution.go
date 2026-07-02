@@ -166,6 +166,19 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 		}
 		result := *remote
 		result.Duration = time.Since(call.StartedAt)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			if errors.Is(ctxErr, context.Canceled) {
+				result.Error = NewToolError(CodeCanceled, ctxErr.Error())
+			} else if errors.Is(ctxErr, context.DeadlineExceeded) {
+				result.Error = NewToolError(CodeDeadlineExceeded, ctxErr.Error())
+			} else {
+				result.Error = NewToolError(CodeToolExecutionFailed, ctxErr.Error())
+			}
+			result.Output = result.Error.Message
+			result = runAfterToolCallHook(ctx, execution, call, result)
+			emitToolResult(ctx, execution.Callback, call, result)
+			return ToolCallExecutionResult{Call: call, Result: result, Error: ctxErr}
+		}
 		result = runAfterToolCallHook(ctx, execution, call, result)
 		emitToolResult(ctx, execution.Callback, call, result)
 		return resultForToolCall(call, result, nil)
@@ -174,7 +187,16 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 	ctx2, _ := WithToolError(ctx)
 	output, err := spec.Tool.Call(ctx2, input)
 	var toolErr *ToolError
-	if err != nil {
+	hardErr := ctx.Err()
+	if hardErr != nil {
+		if errors.Is(hardErr, context.Canceled) {
+			toolErr = NewToolError(CodeCanceled, hardErr.Error())
+		} else if errors.Is(hardErr, context.DeadlineExceeded) {
+			toolErr = NewToolError(CodeDeadlineExceeded, hardErr.Error())
+		} else {
+			toolErr = NewToolError(CodeToolExecutionFailed, hardErr.Error())
+		}
+	} else if err != nil {
 		if errors.Is(err, context.Canceled) {
 			toolErr = NewToolError(CodeCanceled, err.Error())
 		} else if errors.Is(err, context.DeadlineExceeded) {
@@ -196,12 +218,12 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 	if err == nil && toolErr != nil {
 		result.Output = toolErr.Message
 	}
-	if err != nil {
+	if err != nil || hardErr != nil {
 		result.Output = toolErr.Message
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		if hardErr != nil {
 			result = runAfterToolCallHook(ctx, execution, call, result)
 			emitToolResult(ctx, execution.Callback, call, result)
-			return ToolCallExecutionResult{Call: call, Result: result, Error: err}
+			return ToolCallExecutionResult{Call: call, Result: result, Error: hardErr}
 		}
 	}
 
