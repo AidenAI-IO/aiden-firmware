@@ -31,7 +31,7 @@ type DashScopeRealtimeSTT struct {
 
 // NewDashScopeRealtimeSTT creates a new DashScope real-time STT client.
 func NewDashScopeRealtimeSTT(apiKey, model, endpoint, language string) *DashScopeRealtimeSTT {
-	if model == "" {
+	if model == "" || !isDashScopeModel(model) {
 		model = defaultDashScopeModel
 	}
 	if endpoint == "" {
@@ -85,6 +85,12 @@ func (s *DashScopeRealtimeSTT) TranscribeWAV(wavData []byte) (string, error) {
 // NewStreamingUploader creates a new streaming STT session over WebSocket.
 func (s *DashScopeRealtimeSTT) NewStreamingUploader(ctx context.Context, cfg STTStreamConfig) (STTStreamUploader, error) {
 	return s.newUploader(ctx, cfg)
+}
+
+// isDashScopeModel returns true if the model name is a valid DashScope ASR model.
+func isDashScopeModel(model string) bool {
+	m := strings.ToLower(model)
+	return strings.Contains(m, "qwen") || strings.Contains(m, "paraformer")
 }
 
 func (s *DashScopeRealtimeSTT) buildEndpointURL() string {
