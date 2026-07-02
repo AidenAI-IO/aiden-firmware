@@ -183,12 +183,20 @@ func (s *DeviceMemoryStore) Upsert(ctx context.Context, item DeviceMemoryItem) (
 }
 
 func (s *DeviceMemoryStore) Update(ctx context.Context, id string, update func(*DeviceMemoryItem)) error {
+	return s.UpdateMany(ctx, []string{id}, update)
+}
+
+func (s *DeviceMemoryStore) UpdateMany(ctx context.Context, ids []string, update func(*DeviceMemoryItem)) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
 	}
-	if s == nil || s.rootDir == "" || strings.TrimSpace(id) == "" || update == nil {
+	idSet := map[string]bool{}
+	for _, id := range uniqueNonEmpty(ids) {
+		idSet[id] = true
+	}
+	if s == nil || s.rootDir == "" || len(idSet) == 0 || update == nil {
 		return nil
 	}
 	items, err := s.readAll()
@@ -196,7 +204,7 @@ func (s *DeviceMemoryStore) Update(ctx context.Context, id string, update func(*
 		return err
 	}
 	for _, item := range items {
-		if item.ID != id {
+		if !idSet[item.ID] {
 			continue
 		}
 		oldPath := s.itemPath(item)
@@ -212,7 +220,9 @@ func (s *DeviceMemoryStore) Update(ctx context.Context, id string, update func(*
 				return removeErr
 			}
 		}
-		return err
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }

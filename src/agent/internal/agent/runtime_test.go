@@ -336,6 +336,32 @@ func TestRuntimeRunAllowsNilMemoryManager(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunContinuesWhenPersistedMemoryCannotLoad(t *testing.T) {
+	memoryDir := filepath.Join(t.TempDir(), "memory")
+	if err := os.MkdirAll(filepath.Join(memoryDir, "session"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(memoryDir, "session", "events.jsonl"), []byte("{not-json\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	model := &scriptedModel{responses: roleDirectResponses("ok")}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
+		&testModelResolver{model: model},
+		NewMemoryManager(memoryDir),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "hello"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "ok" {
+		t.Fatalf("output = %q, want ok", result.Output)
+	}
+}
+
 func TestRuntimeRunUsesSessionManager(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
@@ -399,6 +425,54 @@ func TestRuntimeRunUsesSessionManager(t *testing.T) {
 		t.Fatalf("commit metrics missing prompt tokens: %#v", manager.commitReq.Metrics)
 	}
 	assertMemoryRecords(t, result.Memory, manager.result.Memory)
+}
+
+func TestRuntimeRunContinuesWhenSessionBeginFails(t *testing.T) {
+	model := &scriptedModel{responses: roleDirectResponses("ok")}
+	manager := &recordingSessionManager{beginErr: errors.New("session append failed")}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.sessionManager = manager
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "hello"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "ok" {
+		t.Fatalf("output = %q, want ok", result.Output)
+	}
+	if manager.beginCalls != 1 {
+		t.Fatalf("begin calls = %d, want 1", manager.beginCalls)
+	}
+}
+
+func TestRuntimeRunReturnsOutputWhenSessionCommitFails(t *testing.T) {
+	model := &scriptedModel{responses: roleDirectResponses("ok")}
+	manager := &recordingSessionManager{err: errors.New("session commit failed")}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.sessionManager = manager
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "hello"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "ok" {
+		t.Fatalf("output = %q, want ok", result.Output)
+	}
+	if manager.commitCalls != 1 {
+		t.Fatalf("commit calls = %d, want 1", manager.commitCalls)
+	}
 }
 
 type recordingSessionManager struct {
@@ -894,6 +968,13 @@ func TestRuntimeRunPersistsSteerAsConversationHumanMessage(t *testing.T) {
 func TestRuntimeRunPersistsSteerEventsWhenSnapshotWindowIsFull(t *testing.T) {
 	storageDir := filepath.Join(t.TempDir(), "memory")
 	memoryManager := NewMemoryManager(storageDir)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := memoryManager.WaitMaintenance(ctx); err != nil {
+			t.Fatalf("wait memory maintenance cleanup: %v", err)
+		}
+	})
 	ctx := context.Background()
 	for i := 0; i < 10; i++ {
 		if err := memoryManager.AppendExchange(ctx, "default", fmt.Sprintf("prior user %02d", i), fmt.Sprintf("prior assistant %02d", i)); err != nil {
@@ -1763,6 +1844,29 @@ func TestRuntimeCallbackPropagatesToolErrorToEventsAndMessages(t *testing.T) {
 	}
 	if gotRunEvent.Content != toolErr.Message || message.Content != toolErr.Message {
 		t.Fatalf("error message content mismatch: run=%q message=%q want=%q", gotRunEvent.Content, message.Content, toolErr.Message)
+	}
+}
+
+func TestRuntimeCallbackPersistsSessionEventWithCanceledRunContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var appenderCtxErr error
+	handler := &runtimeCallbackHandler{
+		episodeID: "ep-1",
+		runtimeID: "runtime-1",
+		requestID: "req-1",
+		runID:     "run-1",
+		sessionEventAppender: func(ctx context.Context, event SessionEvent) error {
+			appenderCtxErr = ctx.Err()
+			return appenderCtxErr
+		},
+	}
+
+	handler.emitRunEvent(ctx, RunEvent{Type: "tool_result", Content: "ok"})
+
+	if appenderCtxErr != nil {
+		t.Fatalf("sessionEventAppender ctx.Err() = %v, want nil", appenderCtxErr)
 	}
 }
 
@@ -3092,8 +3196,14 @@ func TestRuntimeRunRotatesSessionOnNewBoundary(t *testing.T) {
 
 	releaseMaintenance := make(chan struct{})
 	manager := NewMemoryManager(storageDir,
-		WithArchiveCompressTimeout(time.Millisecond),
-		WithSummarizeFn(testSummarizeForRotationAndMaintenance(releaseMaintenance, "old task summary")),
+		WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
+			select {
+			case <-ctx.Done():
+				return ""
+			case <-releaseMaintenance:
+				return "old task summary"
+			}
+		}),
 	)
 	defer func() {
 		close(releaseMaintenance)

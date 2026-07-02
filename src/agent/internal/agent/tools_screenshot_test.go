@@ -9,21 +9,22 @@ import (
 )
 
 type fakeScreenshotFrameClient struct {
-	meta  frameMetadata
-	data  []byte
-	calls int
+	meta        frameMetadata
+	data        []byte
+	calls       int
+	captureInfo screenCaptureInfo
 }
 
-func (c *fakeScreenshotFrameClient) LatestFrameWithFormat(format string, quality int) (*frameMetadata, []byte, error) {
+func (c *fakeScreenshotFrameClient) LatestFrameWithFormat(format string, quality int) (*frameMetadata, []byte, screenCaptureInfo, error) {
 	if format != "jpeg" {
-		return nil, nil, fmt.Errorf("unexpected format %q", format)
+		return nil, nil, screenCaptureInfo{}, fmt.Errorf("unexpected format %q", format)
 	}
 	if quality != screenshotJPEGQuality {
-		return nil, nil, fmt.Errorf("quality = %d, want %d", quality, screenshotJPEGQuality)
+		return nil, nil, screenCaptureInfo{}, fmt.Errorf("quality = %d, want %d", quality, screenshotJPEGQuality)
 	}
 	c.calls++
 	meta := c.meta
-	return &meta, append([]byte(nil), c.data...), nil
+	return &meta, append([]byte(nil), c.data...), cloneScreenCaptureInfo(c.captureInfo), nil
 }
 
 func TestScreenshotToolUsesJPEGSourceMetadataForSharedScreenState(t *testing.T) {
@@ -51,6 +52,14 @@ func TestScreenshotToolUsesJPEGSourceMetadataForSharedScreenState(t *testing.T) 
 			Bytes:        uint64(len(jpegData)),
 		},
 		data: jpegData,
+		captureInfo: screenCaptureInfo{
+			Backend: "adb",
+			ADBDevice: &adbDeviceInfo{
+				Serial: "serial123",
+				Name:   "Pixel 9",
+				State:  "device",
+			},
+		},
 	}
 	tool := &ScreenshotTool{
 		client: client,
@@ -71,6 +80,12 @@ func TestScreenshotToolUsesJPEGSourceMetadataForSharedScreenState(t *testing.T) 
 	}
 	if result.ActiveArea != nil {
 		t.Fatalf("expected no active_area in already-cropped jpeg response, got %#v", result.ActiveArea)
+	}
+	if result.CaptureBackend != "adb" {
+		t.Fatalf("capture backend = %q, want adb", result.CaptureBackend)
+	}
+	if result.ADBDevice == nil || result.ADBDevice.Serial != "serial123" || result.ADBDevice.Name != "Pixel 9" || result.ADBDevice.State != "device" {
+		t.Fatalf("unexpected adb device info: %#v", result.ADBDevice)
 	}
 	if result.Data != base64.StdEncoding.EncodeToString(jpegData) {
 		t.Fatalf("unexpected screenshot data: %q", result.Data)
