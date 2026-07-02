@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -170,6 +171,11 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 	iterations := langfuseIterationWindows(episode.Events, startTime, endTime)
 	toolPairsByCall, toolPairsByResult := langfuseToolPairs(episode.Events, startTime)
 
+	var prompts []telemetryPromptCall
+	if len(promptCalls) > 0 {
+		prompts = promptCalls[0]
+	}
+
 	traceBody := map[string]interface{}{
 		"id":          traceID,
 		"timestamp":   langfuseRFC3339(startTime),
@@ -177,7 +183,7 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 		"input":       episode.UserGoal,
 		"output":      episode.Outcome.FinalAnswer,
 		"tags":        e.traceTags(episode),
-		"metadata":    e.traceMetadata(episode),
+		"metadata":    e.traceMetadata(episode, prompts),
 		"environment": e.cfg.EnvironmentOrDefault(),
 		"public":      false,
 	}
@@ -296,6 +302,85 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 				return nil, err
 			}
 			batch = append(batch, finishEvent)
+
+		case runEventMemoryRetrieve:
+			parentID := phaseSpanID
+			duration := int64(0)
+			if event.DurationMs != nil {
+				duration = *event.DurationMs
+			}
+			body := map[string]interface{}{
+				"id":                  uuid.NewString(),
+				"traceId":             traceID,
+				"parentObservationId": parentID,
+				"name":                "memory/retrieve",
+				"startTime":           langfuseRFC3339(eventTime),
+				"endTime":             langfuseRFC3339(eventTime.Add(time.Duration(duration) * time.Millisecond)),
+				"environment":         e.cfg.EnvironmentOrDefault(),
+				"metadata":            event.Metadata,
+			}
+			if version != "" {
+				body["version"] = version
+			}
+			evt, err := newLangfuseEvent("span-create", eventTime, body)
+			if err != nil {
+				return nil, err
+			}
+			batch = append(batch, evt)
+
+		case runEventSessionBegin:
+			parentID := phaseSpanID
+			duration := int64(0)
+			if event.DurationMs != nil {
+				duration = *event.DurationMs
+			}
+			body := map[string]interface{}{
+				"id":                  uuid.NewString(),
+				"traceId":             traceID,
+				"parentObservationId": parentID,
+				"name":                "session/begin",
+				"startTime":           langfuseRFC3339(eventTime),
+				"endTime":             langfuseRFC3339(eventTime.Add(time.Duration(duration) * time.Millisecond)),
+				"environment":         e.cfg.EnvironmentOrDefault(),
+				"metadata":            event.Metadata,
+			}
+			if version != "" {
+				body["version"] = version
+			}
+			evt, err := newLangfuseEvent("span-create", eventTime, body)
+			if err != nil {
+				return nil, err
+			}
+			batch = append(batch, evt)
+
+		case runEventIterationStart:
+			// Just track start time, we'll create span on iteration_end
+			continue
+
+		case runEventIterationEnd:
+			// Create iteration span with full duration
+			duration := int64(0)
+			if event.DurationMs != nil {
+				duration = *event.DurationMs
+			}
+			startTimeForIteration := eventTime.Add(-time.Duration(duration) * time.Millisecond)
+			body := map[string]interface{}{
+				"id":          uuid.NewString(),
+				"traceId":     traceID,
+				"name":        fmt.Sprintf("iteration_%v", event.Metadata["iteration"]),
+				"startTime":   langfuseRFC3339(startTimeForIteration),
+				"endTime":     langfuseRFC3339(eventTime),
+				"environment": e.cfg.EnvironmentOrDefault(),
+				"metadata":    event.Metadata,
+			}
+			if version != "" {
+				body["version"] = version
+			}
+			evt, err := newLangfuseEvent("span-create", eventTime, body)
+			if err != nil {
+				return nil, err
+			}
+			batch = append(batch, evt)
 
 		case "planner_decision":
 			iterationIndex++
@@ -602,10 +687,6 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 		langfuseUpdateSpanEndTime(batch, phaseSpanBatchIdx, endTime)
 	}
 
-	var prompts []telemetryPromptCall
-	if len(promptCalls) > 0 {
-		prompts = promptCalls[0]
-	}
 	if len(prompts) > 0 {
 		for index := range prompts {
 			if prompts[index].ID == "" {
@@ -1194,7 +1275,7 @@ func (e *EpisodeExporter) traceTags(episode TaskEpisode) []string {
 	return uniqueNonEmpty(tags)
 }
 
-func (e *EpisodeExporter) traceMetadata(episode TaskEpisode) map[string]interface{} {
+func (e *EpisodeExporter) traceMetadata(episode TaskEpisode, prompts []telemetryPromptCall) map[string]interface{} {
 	meta := map[string]interface{}{
 		"episode_id":       episode.ID,
 		"status":           episode.Status,
@@ -1215,6 +1296,34 @@ func (e *EpisodeExporter) traceMetadata(episode TaskEpisode) map[string]interfac
 	for key, value := range episodeDerivedMetrics(episode.Events) {
 		meta[key] = value
 	}
+
+	// Add LLM call statistics by role
+	if len(prompts) > 0 {
+		byRole := make(map[string][]int64)
+		for _, call := range prompts {
+			role := strings.TrimSpace(call.Role)
+			if role == "" {
+				role = "unknown"
+			}
+			duration := call.EndedAt.Sub(call.StartedAt).Milliseconds()
+			byRole[role] = append(byRole[role], duration)
+		}
+
+		for role, durations := range byRole {
+			if len(durations) == 0 {
+				continue
+			}
+			sorted := make([]int64, len(durations))
+			copy(sorted, durations)
+			sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+
+			meta[role+"_call_count"] = len(durations)
+			meta[role+"_call_ms_avg"] = avgInt64(durations)
+			meta[role+"_call_ms_p50"] = percentileInt64(sorted, 0.5)
+			meta[role+"_call_ms_p95"] = percentileInt64(sorted, 0.95)
+		}
+	}
+
 	if episode.Extra != nil {
 		for key, value := range episode.Extra {
 			meta[key] = value
@@ -1317,7 +1426,86 @@ func episodeDerivedMetrics(events []TaskEpisodeEvent) map[string]interface{} {
 		}
 		metrics["tool_latency_ms_avg"] = float64(total) / float64(len(toolLatencies))
 		metrics["tool_latency_ms_max"] = max
+
+		// Add percentiles
+		sorted := make([]int64, len(toolLatencies))
+		copy(sorted, toolLatencies)
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+		metrics["tool_latency_ms_p50"] = percentileInt64(sorted, 0.5)
+		metrics["tool_latency_ms_p95"] = percentileInt64(sorted, 0.95)
+		metrics["tool_latency_ms_p99"] = percentileInt64(sorted, 0.99)
 	}
+
+	// Add tool latency by type
+	toolLatenciesByType := make(map[string][]int64)
+	for index, event := range events {
+		if event.Type == runEventToolCall {
+			if pair, ok := toolPairsByCall[index]; ok && pair.HasResult {
+				toolName := strings.TrimSpace(event.ToolName)
+				if toolName == "" {
+					toolName = "unknown"
+				}
+				start := parseEpisodeTime(event.Ts, startTime)
+				if !pair.ResultTime.Before(start) {
+					latency := pair.ResultTime.Sub(start).Milliseconds()
+					toolLatenciesByType[toolName] = append(toolLatenciesByType[toolName], latency)
+				}
+			}
+		}
+	}
+	if len(toolLatenciesByType) > 0 {
+		toolStats := make(map[string]interface{})
+		for toolName, latencies := range toolLatenciesByType {
+			sorted := make([]int64, len(latencies))
+			copy(sorted, latencies)
+			sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+
+			toolStats[toolName] = map[string]interface{}{
+				"count": len(latencies),
+				"avg":   avgInt64(latencies),
+				"p50":   percentileInt64(sorted, 0.5),
+				"p95":   percentileInt64(sorted, 0.95),
+				"max":   sorted[len(sorted)-1],
+			}
+		}
+		metrics["tool_latency_by_type"] = toolStats
+	}
+
+	// Add memory retrieve timing
+	for _, event := range events {
+		if event.Type == runEventMemoryRetrieve && event.DurationMs != nil {
+			metrics["memory_retrieve_ms"] = *event.DurationMs
+			break
+		}
+	}
+
+	// Add session begin timing
+	for _, event := range events {
+		if event.Type == runEventSessionBegin && event.DurationMs != nil {
+			metrics["session_begin_ms"] = *event.DurationMs
+			break
+		}
+	}
+
+	// Add iteration timing statistics
+	var iterationDurations []int64
+	for _, event := range events {
+		if event.Type == runEventIterationEnd && event.DurationMs != nil {
+			iterationDurations = append(iterationDurations, *event.DurationMs)
+		}
+	}
+	if len(iterationDurations) > 0 {
+		sorted := make([]int64, len(iterationDurations))
+		copy(sorted, iterationDurations)
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+
+		metrics["iteration_durations_ms"] = iterationDurations
+		metrics["iteration_ms_avg"] = avgInt64(iterationDurations)
+		metrics["iteration_ms_p50"] = percentileInt64(sorted, 0.5)
+		metrics["iteration_ms_p95"] = percentileInt64(sorted, 0.95)
+		metrics["iteration_ms_p99"] = percentileInt64(sorted, 0.99)
+	}
+
 	if len(phaseTransitions) > 0 {
 		metrics["phase_transitions"] = phaseTransitions
 	}
