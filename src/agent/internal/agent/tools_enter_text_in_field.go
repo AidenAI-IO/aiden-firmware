@@ -41,7 +41,7 @@ func (t *EnterTextInFieldTool) ArgsSchema() map[string]any {
 		"mode":         stringEnumArgSchema("Interaction mode. Use \"search\" for quick handoff in search boxes; omit for normal form entry.", "form", "search"),
 		"focus":        focusPointArgSchema("Input field coordinates."),
 		"segments":     stringArrayArgSchema("Required for composition/CJK: IME romanization syllables in order, e.g. [\"ni\",\"hao\"] for 你好."),
-		"max_attempts": map[string]any{"type": "integer", "description": "Retry attempts on verify failure (default 3)."},
+		"max_attempts": integerArgSchema("Retry attempts on verify failure (default 3)."),
 	}, "text", "focus")
 }
 

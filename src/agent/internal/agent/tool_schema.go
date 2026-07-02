@@ -101,20 +101,11 @@ package agent
 // LEGACY CODE NOTICE
 // ============================================================================
 //
-// Some existing tools may not follow these guidelines yet. You may find:
-// - Direct map[string]any{"type": "string", ...} instead of stringArgSchema(...)
-// - Manual "examples" field additions instead of using the variadic parameter
-// - Complex inline schemas instead of helper function composition
-//
-// This is technical debt being addressed gradually. When you encounter such code:
-// - DO refactor it to use helper functions when making changes to that tool
-// - DO follow the guidelines above for all new code
-// - DO NOT mix old and new styles within the same tool
-//
-// Known legacy code to migrate:
-// - tools_hid.go: Some enum parameters use direct maps (MouseClickTool.button, etc.)
-// - tools_quick_actions.go: All parameters use direct maps
-// - tools_system.go: WaitForWakeupTool.reason uses direct map
+// All known legacy hand-written schema definitions have been migrated to use
+// helper functions. When adding new tools:
+// - DO use helper functions (stringArgSchema, objectArgsSchema, etc.)
+// - DO follow the examples guidelines above
+// - DO NOT use direct map[string]any{"type": ...} for parameter definitions
 //
 // When migrating, preserve existing constraints (minItems, maxItems, etc.) and add
 // examples only where they add value according to the guidelines above.
@@ -229,4 +220,16 @@ func rangedNumberArgSchema(description string, minimum, maximum float64, example
 	schema["minimum"] = minimum
 	schema["maximum"] = maximum
 	return schema
+}
+
+func coordinateSchema(description string, examples ...float64) map[string]any {
+	return numberArgSchema(description, examples...)
+}
+
+func coordSpaceSchema() map[string]any {
+	return stringEnumArgSchema("Coordinate space; normalized uses 0-1000 screen coordinates.", "auto", "pixel", "normalized", "absolute")
+}
+
+func nonNegativeIntegerSchema(description string) map[string]any {
+	return minIntegerArgSchema(description, 0)
 }
