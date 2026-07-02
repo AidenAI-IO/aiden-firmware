@@ -31,6 +31,7 @@ type AudioDialog struct {
 	sttClient     STTClient
 	ttsManager    *tts.ProviderManager
 	vad           *AudioVAD
+	recordMu      sync.Mutex
 	recordActive  bool
 	sessionID     uint64
 	recordReader  *AudioRecordChunkReader
@@ -166,6 +167,9 @@ func NewAudioDialog(cfg Config) (*AudioDialog, error) {
 
 // StartRecording starts an audio recording session
 func (d *AudioDialog) StartRecording() error {
+	d.recordMu.Lock()
+	defer d.recordMu.Unlock()
+
 	if d.recordActive {
 		return nil
 	}
@@ -254,21 +258,25 @@ func startRecordingWithRetry(audio *AudioServiceClient, format AudioFormat, retr
 
 // StopRecording stops the current recording session
 func (d *AudioDialog) StopRecording() error {
+	d.recordMu.Lock()
 	if !d.recordActive {
+		d.recordMu.Unlock()
 		return nil
 	}
 
 	sessionID := d.sessionID
 	reader := d.recordReader
 	recordSTT := d.takeRecordSTT()
+	d.recordActive = false
+	d.sessionID = 0
+	d.recordReader = nil
+	d.recordMu.Unlock()
+
 	if recordSTT != nil {
 		defer func() {
 			_ = recordSTT.Close()
 		}()
 	}
-	d.recordActive = false
-	d.sessionID = 0
-	d.recordReader = nil
 
 	if reader != nil {
 		_ = reader.Close()
@@ -291,25 +299,37 @@ func (d *AudioDialog) StopRecording() error {
 }
 
 func (d *AudioDialog) RecordingActive() bool {
+	d.recordMu.Lock()
+	defer d.recordMu.Unlock()
 	return d.recordActive
 }
 
 // ReadRecordChunk reads a PCM chunk from the recording session
 func (d *AudioDialog) ReadRecordChunk(timeoutMs uint32) (*AudioChunkResult, error) {
+	d.recordMu.Lock()
 	if !d.recordActive || d.sessionID == 0 {
+		d.recordMu.Unlock()
 		return nil, fmt.Errorf("recording is not active")
 	}
-	if d.recordReader != nil {
-		chunk, err := d.recordReader.Read(timeoutMs)
+	reader := d.recordReader
+	sessionID := d.sessionID
+	d.recordMu.Unlock()
+
+	if reader != nil {
+		chunk, err := reader.Read(timeoutMs)
 		if err == nil {
 			d.uploadRecordChunkToStreamingSTT(chunk)
 			return chunk, nil
 		}
 		log.Printf("[audio] Persistent record reader failed, falling back to per-request reads: %v\n", err)
-		_ = d.recordReader.Close()
-		d.recordReader = nil
+		d.recordMu.Lock()
+		if d.recordReader == reader {
+			_ = d.recordReader.Close()
+			d.recordReader = nil
+		}
+		d.recordMu.Unlock()
 	}
-	chunk, err := d.audioClient.ReadRecordChunk(d.sessionID, timeoutMs)
+	chunk, err := d.audioClient.ReadRecordChunk(sessionID, timeoutMs)
 	if err == nil {
 		d.uploadRecordChunkToStreamingSTT(chunk)
 	}
@@ -650,8 +670,10 @@ func (d *AudioDialog) consumeRecordingTranscript() string {
 	if d == nil {
 		return ""
 	}
+	d.recordMu.Lock()
 	transcript := strings.TrimSpace(d.recordText)
 	d.recordText = ""
+	d.recordMu.Unlock()
 	return transcript
 }
 
