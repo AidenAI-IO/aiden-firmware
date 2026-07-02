@@ -45,3 +45,33 @@ func TestChatHistoryStorePersistsLightweightMessages(t *testing.T) {
 		t.Fatalf("tool result screenshot data should be omitted: %s", messages[1].Content)
 	}
 }
+
+func TestChatHistoryStoreKeepsOnlyPublicMessageTypes(t *testing.T) {
+	store := NewChatHistoryStore(t.TempDir())
+	ctx := context.Background()
+
+	for _, message := range []Message{
+		{Type: "role_output", Content: "debug"},
+		{Type: "episode_status", Content: "completed"},
+		{Type: "assistant_output", Role: "assistant", Content: "done"},
+		{Type: runEventToolCall, ToolName: "audio_volume", ToolInput: "{}"},
+	} {
+		if err := store.Append(ctx, message); err != nil {
+			t.Fatalf("Append(%s): %v", message.Type, err)
+		}
+	}
+
+	messages, err := store.Load(ctx)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("messages = %d, want 2 public messages: %#v", len(messages), messages)
+	}
+	if messages[0].Type != "assistant" || messages[0].Role != "" || messages[0].Content != "done" {
+		t.Fatalf("assistant_output was not normalized: %#v", messages[0])
+	}
+	if messages[1].Type != runEventToolCall || messages[1].ToolName != "audio_volume" {
+		t.Fatalf("tool_call was not preserved: %#v", messages[1])
+	}
+}

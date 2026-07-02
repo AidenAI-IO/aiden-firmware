@@ -175,7 +175,7 @@ func (m *RunMetrics) CacheHitRate() float64 {
 }
 
 const (
-	runEventToolCall   = "tool_call"
+	runEventToolCall = "tool_call"
 )
 
 type RunEvent struct {
@@ -836,6 +836,9 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	if err != nil {
 		return RunResult{}, err
 	}
+	if streamCallbackHandler != nil {
+		streamCallbackHandler.HandleAssistantOutput(ctx, output)
+	}
 	r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, nil, promptCapture, boundaryTelemetry, req.AsyncEpisodeMaintenance)
 	episodeCommitted = true
 
@@ -1397,13 +1400,17 @@ func (h *runtimeCallbackHandler) HandleChainError(ctx context.Context, err error
 func (h *runtimeCallbackHandler) HandleToolStart(ctx context.Context, input string) {}
 
 func (h *runtimeCallbackHandler) emitRunEvent(ctx context.Context, event RunEvent) {
+	h.emitRunEventWithPersistence(ctx, event, true)
+}
+
+func (h *runtimeCallbackHandler) emitRunEventWithPersistence(ctx context.Context, event RunEvent, persist bool) {
 	if event.Timestamp.IsZero() {
 		event.Timestamp = time.Now()
 	}
 	if event.EpisodeID == "" {
 		event.EpisodeID = h.episodeID
 	}
-	if h.sessionEventAppender != nil {
+	if persist && h.sessionEventAppender != nil {
 		if err := h.sessionEventAppender(ctx, sessionEventFromRunEvent(event, h)); err != nil && h.logger != nil {
 			h.logger.Warn("[memory] persist runtime session event failed: %v", err)
 		}
@@ -1411,6 +1418,23 @@ func (h *runtimeCallbackHandler) emitRunEvent(ctx context.Context, event RunEven
 	if h.eventHandler != nil {
 		h.eventHandler(event)
 	}
+}
+
+func (h *runtimeCallbackHandler) HandleAssistantOutput(ctx context.Context, content string) {
+	content = finalizeAssistantOutput(content)
+	if content == "" {
+		return
+	}
+	if h.logger != nil {
+		h.logger.Info("Assistant output: %s", truncateForLog(content, 1000))
+	}
+	h.emitRunEventWithPersistence(ctx, RunEvent{
+		Type:      "assistant_output",
+		Role:      "assistant",
+		EpisodeID: h.episodeID,
+		Content:   content,
+		Timestamp: time.Now(),
+	}, false)
 }
 
 func (h *runtimeCallbackHandler) HandleToolEnd(ctx context.Context, output string) {

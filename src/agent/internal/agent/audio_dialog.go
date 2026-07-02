@@ -605,6 +605,11 @@ func (d *AudioDialog) appendVoiceRunEvent(event RunEvent, requestID string) {
 }
 
 func (d *AudioDialog) appendVoiceHistory(message Message) {
+	var ok bool
+	message, ok = normalizeChatHistoryMessage(message)
+	if !ok {
+		return
+	}
 	if d.historyAppend != nil {
 		d.historyAppend(message)
 		return
@@ -715,7 +720,6 @@ func (d *AudioDialog) RunVoiceTurnWithContext(ctx context.Context, input TurnInp
 	if err != nil {
 		return RunResult{}, err
 	}
-	d.persistVoiceAssistantOutput(result, requestID)
 	return result, nil
 }
 
@@ -724,6 +728,7 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 
 	ctx = d.ConfigureRuntimeTools(ctx, runtime)
 	d.playPromptSound(promptSoundAgentSend, "agent send", true)
+	var finalAssistantEvent *RunEvent
 
 	// Send to LLM
 	log.Printf("[llm] Sending request to provider '%s' (model=%s)...\n",
@@ -737,6 +742,11 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 		RuntimeContext: turnContext.RuntimeContext,
 		MaxTokens:      d.config.VoiceMaxResponseTokensOrDefault(),
 		EventHandler: func(event RunEvent) {
+			if event.Type == "assistant_output" {
+				captured := event
+				finalAssistantEvent = &captured
+				return
+			}
 			d.appendVoiceRunEvent(event, requestID)
 			d.HandleRunEvent(ctx, event)
 		},
@@ -781,6 +791,9 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 	}
 	if err != nil {
 		return RunResult{}, fmt.Errorf("LLM request failed: %w", err)
+	}
+	if finalAssistantEvent != nil {
+		d.appendVoiceRunEvent(*finalAssistantEvent, requestID)
 	}
 
 	log.Printf("[llm] Response received\n")

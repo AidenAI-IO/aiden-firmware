@@ -99,9 +99,9 @@ type MessageAttachment struct {
 	Transcript string `json:"transcript,omitempty"`
 }
 
-// Message represents a chat message or tool call
+// Message represents a public chat history message or tool call.
 type Message struct {
-	Type            string              `json:"type"` // "user", "assistant", "tool_call", "tool_result", "role_output"
+	Type            string              `json:"type"` // "user", "assistant", "tool_call", "tool_result"
 	Role            string              `json:"role,omitempty"`
 	EpisodeID       string              `json:"episode_id,omitempty"`
 	RequestID       string              `json:"request_id,omitempty"`
@@ -123,12 +123,32 @@ type Message struct {
 	IsError         bool                `json:"is_error,omitempty"`
 }
 
+func normalizeChatHistoryMessage(message Message) (Message, bool) {
+	switch strings.TrimSpace(message.Type) {
+	case "user", "user_input", "steer":
+		message.Type = "user"
+		message.Role = ""
+	case "assistant", "assistant_output":
+		message.Type = "assistant"
+		if role := strings.TrimSpace(message.Role); role == "assistant" || role == "ai" {
+			message.Role = ""
+		}
+	case runEventToolCall:
+		message.Type = runEventToolCall
+	case "tool_result":
+		message.Type = "tool_result"
+	default:
+		return Message{}, false
+	}
+	return message, true
+}
+
 func messageFromRunEvent(event RunEvent, fallbackEpisodeID string, requestID string) Message {
 	episodeID := event.EpisodeID
 	if episodeID == "" {
 		episodeID = fallbackEpisodeID
 	}
-	return Message{
+	message := Message{
 		Type:           event.Type,
 		Role:           event.Role,
 		EpisodeID:      episodeID,
@@ -141,6 +161,11 @@ func messageFromRunEvent(event RunEvent, fallbackEpisodeID string, requestID str
 		Timestamp:      event.Timestamp,
 		IsError:        event.IsError,
 	}
+	message, ok := normalizeChatHistoryMessage(message)
+	if !ok {
+		return Message{}
+	}
+	return message
 }
 
 func messageFromTurnInput(input TurnInput, episodeID, requestID string, attachments []MessageAttachment, timestamp time.Time) Message {
@@ -949,11 +974,14 @@ func (s *Server) handleChatAsync(
 		// so the client can poll them in near-realtime.
 		eventHandler := func(event RunEvent) {
 			msg := messageFromRunEvent(event, userMsg.EpisodeID, requestID)
-			s.appendHistory(msg)
-			pending.mu.Lock()
-			pending.history = append(pending.history, msg)
-			pending.messages = append(pending.messages, msg)
-			pending.mu.Unlock()
+			if msg.Type != "" {
+				if msg, ok := s.appendHistory(msg); ok {
+					pending.mu.Lock()
+					pending.history = append(pending.history, msg)
+					pending.messages = append(pending.messages, msg)
+					pending.mu.Unlock()
+				}
+			}
 			if s.liveActivity != nil {
 				s.liveActivity.UpdateFromRunEvent(requestID, event)
 			}
@@ -1029,9 +1057,10 @@ func (s *Server) handleChatAsync(
 					Timestamp: time.Now(),
 					IsError:   true,
 				}
-				s.appendHistory(errorMsg)
-				pending.history = append(pending.history, errorMsg)
-				pending.messages = append(pending.messages, errorMsg)
+				if errorMsg, ok := s.appendHistory(errorMsg); ok {
+					pending.history = append(pending.history, errorMsg)
+					pending.messages = append(pending.messages, errorMsg)
+				}
 				if s.liveActivity != nil {
 					s.liveActivity.FailTask(requestID, err.Error())
 				}
@@ -1049,18 +1078,6 @@ func (s *Server) handleChatAsync(
 			return
 		}
 
-		// Add assistant message
-		assistantMsg := Message{
-			Type:      "assistant",
-			EpisodeID: firstNonEmptyString([]string{result.EpisodeID, userMsg.EpisodeID}),
-			RequestID: requestID,
-			Status:    "completed",
-			Content:   result.Output,
-			Timestamp: time.Now(),
-		}
-		s.appendHistory(assistantMsg)
-		pending.history = append(pending.history, assistantMsg)
-		pending.messages = append(pending.messages, assistantMsg)
 		if s.liveActivity != nil {
 			s.liveActivity.CompleteTask(requestID, result.Output)
 		}
@@ -1232,7 +1249,9 @@ func (s *Server) handleChatSync(
 		RuntimeContext:    s.runtimeContext(),
 		StreamFinalChunks: true,
 		EventHandler: func(event RunEvent) {
-			s.appendHistory(messageFromRunEvent(event, episodeID, ""))
+			if message := messageFromRunEvent(event, episodeID, ""); message.Type != "" {
+				s.appendHistory(message)
+			}
 			if text := s.toolCallSpeechText(event); text != "" {
 				go s.speakToolContent(r.Context(), text)
 			}
@@ -1288,13 +1307,6 @@ func (s *Server) handleChatSync(
 		return
 	}
 
-	s.appendHistory(Message{
-		Type:      "assistant",
-		EpisodeID: firstNonEmptyString([]string{result.EpisodeID, episodeID}),
-		Status:    "completed",
-		Content:   result.Output,
-		Timestamp: time.Now(),
-	})
 	historySnapshot := s.historySnapshot()
 
 	speechText := result.SpokenTextForConfig(s.runtime.config)
@@ -1425,8 +1437,11 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		},
 		EventHandler: func(event RunEvent) {
 			message := messageFromRunEvent(event, episodeID, req.RequestID)
-			s.appendHistory(message)
-			stream.Write(ChatStreamEvent{Type: "message", Message: &message})
+			if message.Type != "" {
+				if message, ok := s.appendHistory(message); ok {
+					stream.Write(ChatStreamEvent{Type: "message", Message: &message})
+				}
+			}
 			if req.RequestID != "" && s.liveActivity != nil {
 				s.liveActivity.UpdateFromRunEvent(req.RequestID, event)
 			}
@@ -1494,8 +1509,9 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			Timestamp: time.Now(),
 			IsError:   true,
 		}
-		s.appendHistory(errorMessage)
-		stream.Write(ChatStreamEvent{Type: "message", Message: &errorMessage})
+		if errorMessage, ok := s.appendHistory(errorMessage); ok {
+			stream.Write(ChatStreamEvent{Type: "message", Message: &errorMessage})
+		}
 		if s.logger != nil {
 			s.logger.Error("Agent run failed: %v", err)
 		}
@@ -1503,16 +1519,6 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	assistantMessage := Message{
-		Type:      "assistant",
-		EpisodeID: firstNonEmptyString([]string{result.EpisodeID, episodeID}),
-		RequestID: req.RequestID,
-		Status:    "completed",
-		Content:   result.Output,
-		Timestamp: time.Now(),
-	}
-	s.appendHistory(assistantMessage)
-	stream.Write(ChatStreamEvent{Type: "message", Message: &assistantMessage})
 	historySnapshot := s.historySnapshot()
 	if req.RequestID != "" && s.liveActivity != nil {
 		s.liveActivity.CompleteTask(req.RequestID, result.Output)
@@ -1957,7 +1963,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func shouldStreamEventMessage(msg Message) bool {
-	return strings.TrimSpace(msg.Type) != ""
+	_, ok := normalizeChatHistoryMessage(msg)
+	return ok
 }
 
 func (s *Server) handleEpisodes(w http.ResponseWriter, r *http.Request) {
@@ -2777,7 +2784,11 @@ func legacyToolOutputLooksLikeError(output string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(output)), "error:")
 }
 
-func (s *Server) appendHistory(message Message) {
+func (s *Server) appendHistory(message Message) (Message, bool) {
+	message, ok := normalizeChatHistoryMessage(message)
+	if !ok {
+		return Message{}, false
+	}
 	s.mu.Lock()
 	s.history = append(s.history, message)
 	s.mu.Unlock()
@@ -2788,6 +2799,7 @@ func (s *Server) appendHistory(message Message) {
 	} else if s.eventBroadcaster != nil {
 		s.eventBroadcaster.Broadcast(message)
 	}
+	return message, true
 }
 
 // AppendHistory appends a message through the server history path so persistent
@@ -2804,6 +2816,11 @@ func (s *Server) HistoryStore() *ChatHistoryStore {
 
 // BroadcastMessage sends a message to all SSE subscribers.
 func (s *Server) BroadcastMessage(msg Message) {
+	var ok bool
+	msg, ok = normalizeChatHistoryMessage(msg)
+	if !ok {
+		return
+	}
 	if s.eventBroadcaster != nil {
 		s.eventBroadcaster.Broadcast(msg)
 	}
@@ -2835,13 +2852,15 @@ func (s *Server) loadHistoryFromDisk() {
 		return
 	}
 	for _, evt := range events {
-		s.history = append(s.history, chatMessageFromSessionEvent(evt))
+		if message, ok := chatMessageFromSessionEvent(evt); ok {
+			s.history = append(s.history, message)
+		}
 	}
 }
 
-func chatMessageFromSessionEvent(evt SessionEvent) Message {
+func chatMessageFromSessionEvent(evt SessionEvent) (Message, bool) {
 	ts, _ := time.Parse(time.RFC3339Nano, evt.Ts)
-	return Message{
+	message := Message{
 		Type:         chatMessageTypeFromSessionEvent(evt),
 		Role:         evt.Role,
 		EpisodeID:    evt.EpisodeID,
@@ -2858,6 +2877,7 @@ func chatMessageFromSessionEvent(evt SessionEvent) Message {
 		Timestamp:    ts,
 		IsError:      evt.IsError,
 	}
+	return normalizeChatHistoryMessage(message)
 }
 
 func chatMessageTypeFromSessionEvent(evt SessionEvent) string {
@@ -2870,10 +2890,6 @@ func chatMessageTypeFromSessionEvent(evt SessionEvent) string {
 		return runEventToolCall
 	case "tool_result":
 		return "tool_result"
-	case "role_output":
-		return "role_output"
-	case "episode_status":
-		return "episode_status"
 	}
 
 	switch strings.TrimSpace(evt.Role) {
@@ -2883,14 +2899,9 @@ func chatMessageTypeFromSessionEvent(evt SessionEvent) string {
 		return "assistant"
 	case "tool":
 		return "tool_result"
-	case "system":
-		return "system"
 	}
 
-	if typ := strings.TrimSpace(evt.Type); typ != "" {
-		return typ
-	}
-	return "system"
+	return ""
 }
 
 func (s *Server) resolveRequestInput(req ChatRequest) (TurnInput, []MessageAttachment, error) {

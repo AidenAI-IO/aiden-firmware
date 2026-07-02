@@ -13,7 +13,7 @@ import (
 	langtools "github.com/tmc/langchaingo/tools"
 )
 
-func TestRuntimeStartupPersistsInterruptedEpisodeStatusToChatHistory(t *testing.T) {
+func TestRuntimeStartupDoesNotPersistInterruptedEpisodeStatusToChatHistory(t *testing.T) {
 	ctx := context.Background()
 	configDir := t.TempDir()
 	memoryDir := filepath.Join(configDir, "memory")
@@ -46,17 +46,8 @@ func TestRuntimeStartupPersistsInterruptedEpisodeStatusToChatHistory(t *testing.
 	if err != nil {
 		t.Fatalf("Load chat history: %v", err)
 	}
-	status, ok := firstMessageOfType(messages, "episode_status")
-	if !ok {
-		t.Fatalf("missing episode_status in chat history: %#v", messages)
-	}
-	if status.EpisodeID != "ep_restart_context" || status.Status != "interrupted" {
-		t.Fatalf("unexpected episode status message: %#v", status)
-	}
-	for _, want := range []string{"打开设置", "点击设置", "agent restarted before the task episode completed"} {
-		if !strings.Contains(status.Content, want) {
-			t.Fatalf("episode status missing %q:\n%s", want, status.Content)
-		}
+	if len(messages) != 0 {
+		t.Fatalf("interrupted episode status should not be part of public chat history: %#v", messages)
 	}
 }
 

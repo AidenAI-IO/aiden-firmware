@@ -866,10 +866,6 @@ func TestAudioDialogProcessUtteranceAppendsToHistoryStore(t *testing.T) {
 	if len(userMessage.Attachments) != 0 {
 		t.Fatalf("user voice message should not include audio attachments: %#v", userMessage.Attachments)
 	}
-	roleOutput, ok := firstAudioDialogTestMessageOfType(messages, "role_output")
-	if !ok || roleOutput.Source != "voice" || roleOutput.Content != "voice reply" {
-		t.Fatalf("role_output message = %#v in %#v", roleOutput, messages)
-	}
 	assistantMessage, ok := firstAudioDialogTestMessageOfType(messages, "assistant")
 	if !ok || assistantMessage.Source != "voice" || assistantMessage.Content != "voice reply" {
 		t.Fatalf("assistant message = %#v in %#v", assistantMessage, messages)
@@ -906,7 +902,7 @@ func TestAudioDialogRunAgentTurnAppendsRunEventsToVoiceHistory(t *testing.T) {
 		t.Fatalf("RunAgentTurn() error = %v", err)
 	}
 
-	for _, wantType := range []string{"role_output", runEventToolCall, "tool_result"} {
+	for _, wantType := range []string{runEventToolCall, "tool_result", "assistant"} {
 		message, ok := firstAudioDialogTestMessageOfType(messages, wantType)
 		if !ok {
 			t.Fatalf("missing voice history message type %q: %#v", wantType, messages)
@@ -1213,7 +1209,7 @@ func TestAudioDialogRunVoiceTurnPersistsUserBeforeRunEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunVoiceTurn() error = %v", err)
 	}
-	if len(messages) < 5 {
+	if len(messages) < 4 {
 		t.Fatalf("expected user, run events, and assistant messages, got %#v", messages)
 	}
 	if messages[0].Type != "user" {
@@ -1222,7 +1218,7 @@ func TestAudioDialogRunVoiceTurnPersistsUserBeforeRunEvents(t *testing.T) {
 	if messages[len(messages)-1].Type != "assistant" {
 		t.Fatalf("last message type = %q, want assistant in %#v", messages[len(messages)-1].Type, messages)
 	}
-	for _, wantType := range []string{runEventToolCall, "tool_result", "role_output"} {
+	for _, wantType := range []string{runEventToolCall, "tool_result", "assistant"} {
 		if _, ok := firstAudioDialogTestMessageOfType(messages, wantType); !ok {
 			t.Fatalf("missing voice history message type %q: %#v", wantType, messages)
 		}
