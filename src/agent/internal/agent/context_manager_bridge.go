@@ -80,6 +80,45 @@ func toolResultMessage(toolCallID, toolName, content string) context_manager.Mes
 	}
 }
 
+func visualFollowupMessageFromLLMContent(content llms.MessageContent) context_manager.Message {
+	message := context_manager.Message{Role: messageRoleFromLLM(content.Role)}
+	for _, part := range content.Parts {
+		switch typed := part.(type) {
+		case llms.TextContent:
+			message.Content = mergePromptText(message.Content, typed.Text)
+		case llms.ImageURLContent:
+			mimeType, data, ok := telemetryDataURL(typed.URL)
+			if ok && strings.HasPrefix(strings.ToLower(mimeType), "image/") && len(data) > 0 {
+				message.Attachments = append(message.Attachments, context_manager.Attachment{
+					MIMEType: mimeType,
+					FileSize: int64(len(data)),
+					Data:     append([]byte(nil), data...),
+				})
+				continue
+			}
+			if text := strings.TrimSpace(typed.URL); text != "" {
+				message.Content = mergePromptText(message.Content, text)
+			}
+		case llms.BinaryContent:
+			message.Attachments = append(message.Attachments, context_manager.Attachment{
+				MIMEType: typed.MIMEType,
+				FileSize: int64(len(typed.Data)),
+				Data:     append([]byte(nil), typed.Data...),
+			})
+		default:
+			fallback := messageFromLLMContent(llms.MessageContent{
+				Role:  content.Role,
+				Parts: []llms.ContentPart{part},
+			})
+			message.Content = mergePromptText(message.Content, fallback.Content)
+			message.ToolCalls = append(message.ToolCalls, fallback.ToolCalls...)
+			message.ToolResults = append(message.ToolResults, fallback.ToolResults...)
+			message.Attachments = append(message.Attachments, fallback.Attachments...)
+		}
+	}
+	return message
+}
+
 func mergePromptText(existing, addition string) string {
 	existing = strings.TrimSpace(existing)
 	addition = strings.TrimSpace(addition)

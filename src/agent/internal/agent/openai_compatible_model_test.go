@@ -83,6 +83,51 @@ func TestOpenAICompatibleModelEncodesAudioAsInputAudio(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleModelEncodesImageBinaryAsImageURL(t *testing.T) {
+	var captured struct {
+		Messages []struct {
+			Content []struct {
+				Type     string `json:"type"`
+				Text     string `json:"text,omitempty"`
+				ImageURL *struct {
+					URL string `json:"url"`
+				} `json:"image_url,omitempty"`
+			} `json:"content"`
+		} `json:"messages"`
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	model := newOpenAICompatibleModel(server.URL, "test-model", "", server.Client())
+	imageBytes := []byte("jpeg-image")
+	_, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
+		Role: llms.ChatMessageTypeHuman,
+		Parts: []llms.ContentPart{
+			llms.TextPart("inspect"),
+			llms.BinaryPart("image/jpeg", imageBytes),
+		},
+	}})
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	if len(captured.Messages) != 1 || len(captured.Messages[0].Content) != 2 {
+		t.Fatalf("captured messages = %#v, want text plus image", captured.Messages)
+	}
+	image := captured.Messages[0].Content[1]
+	wantURL := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(imageBytes)
+	if image.Type != "image_url" || image.ImageURL == nil || image.ImageURL.URL != wantURL {
+		t.Fatalf("image content = %#v, want image_url %q", image, wantURL)
+	}
+}
+
 func TestOpenAICompatibleModelParsesToolCalls(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

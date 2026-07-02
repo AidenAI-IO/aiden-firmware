@@ -151,11 +151,7 @@ func (l *AgentLoop) Run(ctx context.Context, input string, options ...chains.Cha
 			return l.finishRun(ctx, answer)
 		}
 
-		llmExecutor.AppendMessage(toolResultMessage(
-			toolExecution.Step.Action.ToolID,
-			toolExecution.Step.Action.Tool,
-			toolExecution.Step.Observation,
-		))
+		appendToolExecutionMessages(llmExecutor, parser, toolExecution.Step)
 	}
 
 	return "", agents.ErrNotFinished
@@ -269,6 +265,30 @@ func roleResponseDebugText(res *llms.ContentResponse) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+func appendToolExecutionMessages(llmExecutor *executor.LLMExecutor, parser *FunctionAgent, step schema.AgentStep) {
+	if llmExecutor == nil {
+		return
+	}
+
+	toolContent := step.Observation
+	var followups []llms.MessageContent
+	if parser != nil && parser.isVisualObservationTool(step.Action.Tool) {
+		if content, visualFollowups := parser.observationMessagesForStep(step, true); len(visualFollowups) > 0 {
+			toolContent = content
+			followups = visualFollowups
+		}
+	}
+
+	llmExecutor.AppendMessage(toolResultMessage(
+		step.Action.ToolID,
+		step.Action.Tool,
+		toolContent,
+	))
+	for _, followup := range followups {
+		llmExecutor.AppendMessage(visualFollowupMessageFromLLMContent(followup))
+	}
 }
 
 func toolNameEqual(got, want string) bool {

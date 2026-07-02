@@ -2608,7 +2608,7 @@ func TestRuntimeRunFinalStreamingDoesNotStreamToolCapableCalls(t *testing.T) {
 		t.Fatalf("unexpected stream output: %q", stream.String())
 	}
 }
-func TestRuntimeRunKeyboardToolFeedsRawPostActionObservation(t *testing.T) {
+func TestRuntimeRunKeyboardToolFeedsPostActionScreenshotImage(t *testing.T) {
 	jpegBytes := []byte("keyboard-post-action-jpeg")
 	model := &scriptedModel{
 		responses: roleReviewedToolResponses("keyboard_tap", `{"keys":["enter"]}`, "The keyboard action updated the UI."),
@@ -2641,30 +2641,32 @@ func TestRuntimeRunKeyboardToolFeedsRawPostActionObservation(t *testing.T) {
 		t.Fatalf("unexpected output: %q", result.Output)
 	}
 
-	var foundToolResponse, foundImageURL bool
+	var foundToolResponse, foundImage bool
 	for _, msg := range model.messages[1] {
 		for _, part := range msg.Parts {
 			switch p := part.(type) {
 			case llms.ToolCallResponse:
 				if p.ToolCallID == "call_1" {
 					foundToolResponse = true
-					if p.Content != tool.output {
-						t.Fatalf("keyboard tool response = %q, want raw tool output", p.Content)
+					if !strings.Contains(p.Content, "returned a screenshot observation") {
+						t.Fatalf("keyboard tool response = %q, want screenshot observation summary", p.Content)
 					}
-					if !strings.Contains(p.Content, base64.StdEncoding.EncodeToString(jpegBytes)) {
-						t.Fatalf("keyboard tool response missing screenshot payload: %q", p.Content)
+					if strings.Contains(p.Content, base64.StdEncoding.EncodeToString(jpegBytes)) {
+						t.Fatalf("keyboard tool response should not inline screenshot payload: %q", p.Content)
 					}
 				}
-			case llms.ImageURLContent:
-				foundImageURL = true
+			case llms.BinaryContent:
+				if p.MIMEType == "image/jpeg" && string(p.Data) == string(jpegBytes) {
+					foundImage = true
+				}
 			}
 		}
 	}
 	if !foundToolResponse {
 		t.Fatalf("expected keyboard tool response in second model call")
 	}
-	if foundImageURL {
-		t.Fatalf("unexpected keyboard post-action screenshot image URL in second model call")
+	if !foundImage {
+		t.Fatalf("expected keyboard post-action screenshot image in second model call")
 	}
 }
 
