@@ -78,6 +78,60 @@ func TestTelemetryPromptCaptureRecordsPromptShapeMetadata(t *testing.T) {
 	}
 }
 
+func TestTelemetryPromptCaptureRecordsProviderMetadata(t *testing.T) {
+	capture := newTelemetryPromptCapture(true)
+	res := contentResponseWithInfo("ok", map[string]any{
+		"prompt_tokens":                100,
+		"completion_tokens":            10,
+		"llm_http_to_headers_ms":       int64(1234),
+		"llm_time_to_first_content_ms": int64(1500),
+		"llm_stream_content_chunks":    3,
+		"openrouter_generation_id":     "gen-test",
+		"openrouter_provider_name":     "TestProvider",
+		"openrouter_metadata": map[string]any{
+			"strategy": "fallback",
+		},
+	})
+
+	capture.Record(
+		context.Background(),
+		time.Date(2026, 7, 2, 10, 0, 0, 0, time.UTC),
+		time.Date(2026, 7, 2, 10, 0, 1, 0, time.UTC),
+		[]llms.MessageContent{{
+			Role:  llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{llms.TextPart("hello")},
+		}},
+		nil,
+		res,
+		nil,
+		0,
+	)
+
+	calls := capture.Snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("captured calls = %d, want 1", len(calls))
+	}
+	meta := calls[0].Metadata
+	if got := meta["llm_http_to_headers_ms"]; got != int64(1234) {
+		t.Fatalf("llm_http_to_headers_ms = %#v, want 1234", got)
+	}
+	if got := meta["llm_time_to_first_content_ms"]; got != int64(1500) {
+		t.Fatalf("llm_time_to_first_content_ms = %#v, want 1500", got)
+	}
+	if got := meta["llm_stream_content_chunks"]; got != 3 {
+		t.Fatalf("llm_stream_content_chunks = %#v, want 3", got)
+	}
+	if got := meta["openrouter_generation_id"]; got != "gen-test" {
+		t.Fatalf("openrouter_generation_id = %#v, want gen-test", got)
+	}
+	if got := meta["openrouter_provider_name"]; got != "TestProvider" {
+		t.Fatalf("openrouter_provider_name = %#v, want TestProvider", got)
+	}
+	if _, ok := meta["prompt_tokens"]; ok {
+		t.Fatalf("usage token fields should stay in usageDetails, metadata = %#v", meta)
+	}
+}
+
 func TestTelemetryMessageInputCapturesBinaryWithoutInlineBase64(t *testing.T) {
 	image := []byte("jpeg-image-bytes")
 	input, media := telemetryMessageInput([]llms.MessageContent{{

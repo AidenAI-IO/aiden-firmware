@@ -65,6 +65,15 @@ func (c *telemetryPromptCapture) Record(ctx context.Context, startedAt, endedAt 
 		return
 	}
 	input, media := telemetryMessageInput(messages)
+	metadata := telemetryPromptMetadata(options, messages)
+	if providerMetadata := telemetryProviderMetadata(res); len(providerMetadata) > 0 {
+		if metadata == nil {
+			metadata = map[string]interface{}{}
+		}
+		for key, value := range providerMetadata {
+			metadata[key] = value
+		}
+	}
 	call := telemetryPromptCall{
 		ID:              uuid.NewString(),
 		Role:            telemetryRoleFromContext(ctx),
@@ -76,7 +85,7 @@ func (c *telemetryPromptCapture) Record(ctx context.Context, startedAt, endedAt 
 		UsageDetails:    telemetryUsageDetails(res),
 		CostDetails:     telemetryCostDetails(res),
 		ModelParameters: telemetryModelParameters(options),
-		Metadata:        telemetryPromptMetadata(options, messages),
+		Metadata:        metadata,
 	}
 	if contextWindow > 0 {
 		if call.ModelParameters == nil {
@@ -319,6 +328,26 @@ func telemetryCostDetailsFromMap(info map[string]any) map[string]float64 {
 		return nil
 	}
 	return cost
+}
+
+func telemetryProviderMetadata(res *llms.ContentResponse) map[string]interface{} {
+	if res == nil || len(res.Choices) == 0 || res.Choices[0] == nil {
+		return nil
+	}
+	info := res.Choices[0].GenerationInfo
+	if len(info) == 0 {
+		return nil
+	}
+	meta := map[string]interface{}{}
+	for key, value := range info {
+		if strings.HasPrefix(key, "llm_") || strings.HasPrefix(key, "openrouter_") {
+			meta[key] = value
+		}
+	}
+	if len(meta) == 0 {
+		return nil
+	}
+	return meta
 }
 
 func telemetryModelParameters(options []llms.CallOption) map[string]interface{} {
