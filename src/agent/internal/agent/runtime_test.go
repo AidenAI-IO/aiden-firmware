@@ -3115,8 +3115,14 @@ func TestRuntimeRunRotatesSessionOnNewBoundary(t *testing.T) {
 
 	releaseMaintenance := make(chan struct{})
 	manager := NewMemoryManager(storageDir,
-		WithArchiveCompressTimeout(time.Millisecond),
-		WithSummarizeFn(testSummarizeForRotationAndMaintenance(releaseMaintenance, "old task summary")),
+		WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
+			select {
+			case <-ctx.Done():
+				return ""
+			case <-releaseMaintenance:
+				return "old task summary"
+			}
+		}),
 	)
 	defer func() {
 		close(releaseMaintenance)

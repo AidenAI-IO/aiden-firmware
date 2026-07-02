@@ -1657,6 +1657,40 @@ func TestSessionRotationDetailedCreatesActiveSessionID(t *testing.T) {
 	}
 }
 
+func TestSessionRotationDoesNotBlockOnPreArchiveSummary(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	manager := NewMemoryManager(storageDir,
+		WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
+			<-ctx.Done()
+			return ""
+		}),
+	)
+	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
+	if _, err := session.AppendEvent(ctx, SessionEvent{
+		EventID: "evt_before_nonblocking_rotate",
+		Ts:      time.Now().UTC().Format(time.RFC3339Nano),
+		Type:    "user_input",
+		Role:    "user",
+		Content: "old task",
+	}); err != nil {
+		t.Fatalf("AppendEvent() error = %v", err)
+	}
+
+	start := time.Now()
+	rotation, err := manager.RotateSessionEventsDetailed()
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("RotateSessionEventsDetailed() error = %v", err)
+	}
+	if elapsed > 200*time.Millisecond {
+		t.Fatalf("RotateSessionEventsDetailed() elapsed = %s, want under 200ms", elapsed)
+	}
+	if rotation.ArchiveDir == "" || rotation.ActiveSessionID == "" {
+		t.Fatalf("rotation missing archive or active session: %#v", rotation)
+	}
+}
+
 func TestSessionRotationRejectsUnsafeMetadataSessionID(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
@@ -1840,27 +1874,7 @@ func TestSessionRotationDoesNotDeadlockWithMemoryLoad(t *testing.T) {
 	}
 }
 
-// testSummarizeForRotationAndMaintenance lets archive compression during rotation
-// expire quickly while later maintenance summarize calls block until release.
-func testSummarizeForRotationAndMaintenance(release <-chan struct{}, result string) SummarizeFn {
-	var calls atomic.Int32
-	return func(ctx context.Context, events []SessionEvent) string {
-		if calls.Add(1) == 1 {
-			<-ctx.Done()
-			return ""
-		}
-		select {
-		case <-ctx.Done():
-			return ""
-		case <-release:
-			return result
-		}
-	}
-}
-
 // testBlockingSummarizeOnFirstCall blocks only the first summarize invocation.
-// RotateSessionEvents may call summarize again via compressRemainingForArchive;
-// those later calls must return immediately instead of waiting for the archive timeout.
 func testBlockingSummarizeOnFirstCall(started chan<- struct{}, release <-chan struct{}, result string) SummarizeFn {
 	var calls atomic.Int32
 	var startedOnce sync.Once
