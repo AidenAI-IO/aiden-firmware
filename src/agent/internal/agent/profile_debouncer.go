@@ -121,25 +121,36 @@ func (d *ProfileDebouncer) Flush(ctx context.Context) error {
 	}
 	shouldRebuild := d.pending
 	d.pending = false
-	if shouldRebuild {
-		d.lastRebuild = time.Now()
-	}
 	d.mu.Unlock()
 
 	if err := d.WaitIdle(ctx); err != nil {
+		if shouldRebuild {
+			d.restorePendingRebuild()
+		}
 		return err
 	}
 	if !shouldRebuild {
 		return nil
 	}
+	d.mu.Lock()
+	d.lastRebuild = time.Now()
+	d.mu.Unlock()
 	if d.logger != nil {
 		d.logger.Info("[profile-debouncer] flush: running pending rebuild")
 	}
 	if err := d.rebuild(ctx); err != nil {
+		d.restorePendingRebuild()
 		return err
 	}
 	d.rebuildCount.Add(1)
 	return d.WaitIdle(ctx)
+}
+
+func (d *ProfileDebouncer) restorePendingRebuild() {
+	d.mu.Lock()
+	d.pending = true
+	d.ensureTimerLocked()
+	d.mu.Unlock()
 }
 
 func (d *ProfileDebouncer) WaitIdle(ctx context.Context) error {

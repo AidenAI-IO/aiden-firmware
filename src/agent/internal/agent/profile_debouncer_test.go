@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -77,6 +79,57 @@ func TestProfileDebouncerFlushNoopWhenNothingPending(t *testing.T) {
 
 	if callCount.Load() != 0 {
 		t.Fatalf("expected 0 rebuilds for noop flush, got %d", callCount.Load())
+	}
+}
+
+func TestProfileDebouncerFlushPreservesPendingWhenWaitIdleFails(t *testing.T) {
+	startedFirst := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() {
+			close(releaseFirst)
+		})
+	}
+	defer release()
+
+	var callCount atomic.Int64
+	rebuild := func(ctx context.Context) error {
+		call := callCount.Add(1)
+		if call == 1 {
+			close(startedFirst)
+			<-releaseFirst
+		}
+		return nil
+	}
+
+	d := NewProfileDebouncer(rebuild, time.Hour, nil)
+	d.RequestRebuild()
+
+	select {
+	case <-startedFirst:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first rebuild to start")
+	}
+
+	d.RequestRebuild()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	err := d.Flush(ctx)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Flush() error = %v, want deadline exceeded", err)
+	}
+	if got := callCount.Load(); got != 1 {
+		t.Fatalf("rebuild count after failed flush = %d, want 1", got)
+	}
+
+	release()
+	if err := d.Flush(context.Background()); err != nil {
+		t.Fatalf("second Flush() error = %v", err)
+	}
+	if got := callCount.Load(); got != 2 {
+		t.Fatalf("rebuild count after retry flush = %d, want 2", got)
 	}
 }
 
