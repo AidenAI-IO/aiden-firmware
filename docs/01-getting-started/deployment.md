@@ -11,6 +11,7 @@ The recommended production deployment method is to build or download a complete 
 /etc/init.d/S49usbhid          # USB HID gadget initialization
 /etc/init.d/S50ntp_watchdog    # NTP sync periodic check, triggers step when not synced
 /etc/init.d/S52frame_service   # Frame Service watchdog
+/etc/init.d/S53adb_server      # Delayed adb host server bootstrap
 /etc/init.d/S53audio_service   # Audio Service watchdog
 /etc/init.d/S53agent           # Go Agent watchdog
 /etc/init.d/S56config_web      # Configuration web page
@@ -54,6 +55,7 @@ If the target device is a more bare system lacking Aiden's init scripts and conf
 
 ```bash
 scp overlay/etc/init.d/S52frame_service root@<device-ip>:/etc/init.d/
+scp overlay/etc/init.d/S53adb_server root@<device-ip>:/etc/init.d/
 scp overlay/etc/init.d/S53audio_service root@<device-ip>:/etc/init.d/
 scp overlay/etc/init.d/S53agent root@<device-ip>:/etc/init.d/
 scp overlay/etc/init.d/S56config_web root@<device-ip>:/etc/init.d/
@@ -74,7 +76,7 @@ scp overlay/userdata/wpa_supplicant.conf root@<device-ip>:/userdata/
 Notes:
 
 - Config Web calls the `/oem/usr/bin/agent` `config`, `config-check`, and `config-meta` subcommands, so copy `agent` whenever copying `config_web`.
-- `S52frame_service`, `S53audio_service`, `S53agent`, and `S56config_web` all launch the actual binaries via `/oem/usr/bin/aiden-env-run` by default, so this wrapper must also be present on the device.
+- `S52frame_service`, `S53adb_server`, `S53audio_service`, `S53agent`, and `S56config_web` all launch the actual binaries or commands via `/oem/usr/bin/aiden-env-run` when available, so this wrapper must also be present on the device.
 - You can also copy binaries to `/root` or `/userdata` for temporary testing, but existing init scripts default to searching `/oem/usr/bin/`.
 - If only updating binaries, run `chmod +x /oem/usr/bin/*` once after copying.
 
@@ -97,18 +99,20 @@ When starting with the firmware, the main service relationships are as follows:
 3. `S50ntp_watchdog` periodically checks clock sync status, triggers `S49ntp step` to force sync when not synced, exits after sync;
 4. `S49usbhid` / `S50usbdevice` configures USB gadget;
 5. `S52frame_service` exclusively uses `/dev/video0` and provides screenshot/frame service;
-6. `S53audio_service` provides audio recording/playback service;
-7. `S53agent` starts the Go Agent;
-8. `S55aiden_usb_dhcp` configures USB network DHCP / dnsmasq related capabilities;
-9. `S56config_web` provides the configuration page;
-10. `S99rtcinit` overrides the SDK default RTC script; when RTC is abnormal, only writes default time when system time is still earlier than baseline date, avoiding overwriting system time already calibrated by NTP.
-11. `S99usb0config` performs USB network interface post-configuration.
+6. `S53adb_server` waits 3 seconds, then runs `adb start-server` once so adb-based Android capture is ready;
+7. `S53audio_service` provides audio recording/playback service;
+8. `S53agent` starts the Go Agent;
+9. `S55aiden_usb_dhcp` configures USB network DHCP / dnsmasq related capabilities;
+10. `S56config_web` provides the configuration page;
+11. `S99rtcinit` overrides the SDK default RTC script; when RTC is abnormal, only writes default time when system time is still earlier than baseline date, avoiding overwriting system time already calibrated by NTP.
+12. `S99usb0config` performs USB network interface post-configuration.
 
 ## Common Service Commands
 
 ```bash
 /etc/init.d/S52frame_service status
 /etc/init.d/S52frame_service restart
+/etc/init.d/S53adb_server status
 /etc/init.d/S53audio_service status
 /etc/init.d/S53audio_service restart
 /etc/init.d/S53agent status
@@ -130,6 +134,7 @@ When starting with the firmware, the main service relationships are as follows:
 | Service | Log |
 | --- | --- |
 | Frame Service | `/var/log/frame_service/frame_service.log` |
+| adb delayed startup | `/var/log/adb/adb-startup.log` |
 | Audio Service | `/var/log/audio_service/audio_service.log` |
 | Agent | `/var/log/agent/agent.log` |
 
