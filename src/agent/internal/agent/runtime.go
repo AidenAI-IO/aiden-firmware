@@ -723,7 +723,6 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		episodeRecorder = r.memoryPlane.NewEpisodeRecorder(retrieveReq, memoryContext)
 		if episodeRecorder != nil {
 			episodeRecorder.setStartedAtIfEarlier(startTime.UTC())
-			retrieveReq.EpisodeID = episodeRecorder.ID()
 			if err := episodeRecorder.Start(ctx); err != nil && r.logger != nil {
 				r.logger.Warn("[memory] start episode failed: %v", err)
 			}
