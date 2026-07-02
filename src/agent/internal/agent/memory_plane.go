@@ -909,10 +909,13 @@ func (c MemoryContext) ReferenceIDs() []string {
 }
 
 func (c MemoryContext) IsEmpty() bool {
-	return strings.TrimSpace(c.RenderForRole(RolePlanner)) == "" && strings.TrimSpace(c.RenderForRole(RoleVerifier)) == ""
+	return strings.TrimSpace(c.RenderForRole(RoleAgent)) == ""
 }
 
 func (c MemoryContext) RenderForRole(role RoleName) string {
+	if role != RoleAgent {
+		return ""
+	}
 	var parts []string
 	if session := strings.TrimSpace(c.Common.SessionSummary); session != "" {
 		parts = append(parts, session)
@@ -920,54 +923,25 @@ func (c MemoryContext) RenderForRole(role RoleName) string {
 	if profile := strings.TrimSpace(c.Common.Profile); profile != "" {
 		parts = append(parts, profile)
 	}
-	switch role {
-	case RolePlanner:
-		if session := strings.TrimSpace(c.Planner.SessionSummary); session != "" {
-			parts = append(parts, session)
-		}
-		if profile := strings.TrimSpace(c.Planner.Profile); profile != "" {
-			parts = append(parts, profile)
-		}
-		if rendered := renderRoleMemoryContext("# Retrieved Device Experience", c.Planner, false); rendered != "" {
-			parts = append(parts, rendered)
-		}
-	case RoleVerifier:
-		if session := strings.TrimSpace(c.Verifier.SessionSummary); session != "" {
-			parts = append(parts, session)
-		}
-		if profile := strings.TrimSpace(c.Verifier.Profile); profile != "" {
-			parts = append(parts, profile)
-		}
-		if rendered := renderRoleMemoryContext("# Known Failure Modes And Conflicts", c.Verifier, true); rendered != "" {
-			parts = append(parts, rendered)
-		}
+	if session := strings.TrimSpace(c.Planner.SessionSummary); session != "" {
+		parts = append(parts, session)
+	}
+	if profile := strings.TrimSpace(c.Planner.Profile); profile != "" {
+		parts = append(parts, profile)
+	}
+	if rendered := renderRoleMemoryContext("# Retrieved Device Experience", c.Planner, false); rendered != "" {
+		parts = append(parts, rendered)
+	}
+	if session := strings.TrimSpace(c.Verifier.SessionSummary); session != "" {
+		parts = append(parts, session)
+	}
+	if profile := strings.TrimSpace(c.Verifier.Profile); profile != "" {
+		parts = append(parts, profile)
+	}
+	if rendered := renderRoleMemoryContext("# Known Failure Modes And Conflicts", c.Verifier, true); rendered != "" {
+		parts = append(parts, rendered)
 	}
 	return strings.TrimSpace(strings.Join(parts, "\n\n"))
-}
-
-func (c MemoryContext) RenderVerifierCautionBlock() string {
-	if len(c.Verifier.FailureModes) == 0 && len(c.Verifier.Conflicts) == 0 {
-		return ""
-	}
-	var builder strings.Builder
-	builder.WriteString("## Verifier memory cautions\n")
-	builder.WriteString("Use these entries as historical failure/conflict warnings only. They are not proof of completion. Approve only when current executor_outcome, tool observations, screenshots, or current step evidence proves the current step.\n")
-	appendSection := func(name string, hits []MemoryHit) {
-		if len(hits) == 0 {
-			return
-		}
-		builder.WriteString("\n### ")
-		builder.WriteString(name)
-		builder.WriteByte('\n')
-		for _, hit := range hits {
-			builder.WriteString("- ")
-			builder.WriteString(renderMemoryHitLine(hit))
-			builder.WriteByte('\n')
-		}
-	}
-	appendSection("Failure modes", c.Verifier.FailureModes)
-	appendSection("Conflicts", c.Verifier.Conflicts)
-	return strings.TrimSpace(builder.String())
 }
 
 func (c *MemoryContext) trim(limit int) {

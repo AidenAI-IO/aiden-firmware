@@ -27,8 +27,6 @@ func TestAgentExposedToolsDoNotExposeLegacyArg1Schema(t *testing.T) {
 		NewContactsTool(nil, nil),
 		NewNotificationTool(nil, nil),
 	)
-	tools = appendLoopMetaTools(tools)
-	tools = appendExecutorMetaTools(tools)
 
 	for _, tool := range tools {
 		if tool == nil {

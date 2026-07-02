@@ -176,8 +176,6 @@ func (m *RunMetrics) CacheHitRate() float64 {
 
 const (
 	runEventToolCall   = "tool_call"
-	runEventTodoUpdate = "todo_update"
-	runEventTodoClosed = "todo_closed"
 )
 
 type RunEvent struct {
@@ -188,7 +186,6 @@ type RunEvent struct {
 	ToolName       string     `json:"tool_name,omitempty"`
 	ToolInput      string     `json:"tool_input,omitempty"`
 	Content        string     `json:"content,omitempty"`
-	Todo           *TodoState `json:"todo,omitempty"`
 	SpeechEligible bool       `json:"speech_eligible,omitempty"`
 	Timestamp      time.Time  `json:"timestamp"`
 	IsError        bool       `json:"is_error,omitempty"`
@@ -734,7 +731,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	if streamCallbackHandler != nil {
 		executorHandler = streamCallbackHandler
 	}
-	profiles := r.buildRoleProfiles(resolvedSkills, availableTools, memoryContext, req.RuntimeContext)
+	profile := r.buildAgentProfile(resolvedSkills, availableTools, memoryContext, req.RuntimeContext)
 	conversationHistory, err := runtimeConversationHistoryMessageContents(
 		ctx,
 		memoryHandle.History,
@@ -791,17 +788,13 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		}
 	}
 
-	executor := newRoleCollaborativeExecutor(model, profiles, availableTools, plannerMemory, maxIterations, turnInput.Attachments, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault(), deviceEnv, req.SteerProvider)
-	executor.ConversationHistory = conversationHistory
-	executor.TodoReminderToolCalls = r.config.TodoReminderToolCallsOrDefault()
-	executor.ToolCallSpeech = r.config.VoiceToolCallSpeechOrDefault()
-	executor.EnvironmentBridge = r.environmentBridge
-	executor.EnvironmentBridgeTools = r.config.EnvironmentBridge.Tools
-	executor.SteerInterrupt = req.SteerInterrupt
-	executor.SteerWaiter = req.SteerWaiter
-	executor.FinalSteerProvider = req.FinalSteerProvider
+	agentLoop := NewAgentLoop(model, profile, plannerMemory, maxIterations, turnInput.Attachments, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault())
+	agentLoop.ConversationHistory = conversationHistory
+	agentLoop.EnvironmentBridge = r.environmentBridge
+	agentLoop.EnvironmentBridgeTools = r.config.EnvironmentBridge.Tools
+	agentLoop.SteerInterrupt = req.SteerInterrupt
 
-	output, err = chains.Run(ctx, executor, normalizedInput, callOptions...)
+	output, err = agentLoop.Run(ctx, normalizedInput, callOptions...)
 	if err != nil {
 		// If the agent couldn't parse the LLM output format, extract the raw
 		// text and return it as the response instead of failing.
@@ -1275,11 +1268,11 @@ func (r *Runtime) exportEpisodeBestEffort(episode TaskEpisode, promptCapture *te
 	}()
 }
 
-func (r *Runtime) buildRoleProfiles(skills ResolvedSkills, availableTools []langtools.Tool, memoryContext MemoryContext, runtimeContext string) RoleProfiles {
+func (r *Runtime) buildAgentProfile(skills ResolvedSkills, availableTools []langtools.Tool, memoryContext MemoryContext, runtimeContext string) RoleProfile {
 	if memoryContext.IsEmpty() && r.config.ConfigDir != "" {
 		memoryContext = normalizeMemoryContext(r.memoryContextForPrompt())
 	}
-	return buildRoleProfiles(
+	return buildAgentProfile(
 		AgentConfig{
 			Instruction:         r.config.Instruction,
 			AdditionalPrompt:    r.config.AdditionalPrompt,
@@ -1567,9 +1560,7 @@ func (h *runtimeCallbackHandler) HandleAgentAction(ctx context.Context, action s
 				action.Tool, truncateForLog(action.ToolInput, 240))
 		}
 	}
-	if !isLoopMetaTool(action.Tool) {
-		h.pushPendingAction(action)
-	}
+	h.pushPendingAction(action)
 	h.emitRunEvent(ctx, RunEvent{
 		Type:       runEventToolCall,
 		EpisodeID:  h.episodeID,
@@ -1582,39 +1573,6 @@ func (h *runtimeCallbackHandler) HandleAgentAction(ctx context.Context, action s
 }
 
 func (h *runtimeCallbackHandler) HandleAgentFinish(ctx context.Context, finish schema.AgentFinish) {}
-
-func (h *runtimeCallbackHandler) HandleTodoUpdate(ctx context.Context, todo TodoState, content string, speechEligible bool) {
-	content = strings.TrimSpace(content)
-	snapshot := todo.Clone()
-	if h.logger != nil {
-		h.logger.Info("Todo update: mode=%s revision=%d current_id=%s speech_eligible=%v content=%s",
-			snapshot.Mode, snapshot.Revision, snapshot.CurrentID, speechEligible, truncateForLog(content, 240))
-	}
-	h.emitRunEvent(ctx, RunEvent{
-		Type:           runEventTodoUpdate,
-		EpisodeID:      h.episodeID,
-		Content:        content,
-		Todo:           &snapshot,
-		SpeechEligible: speechEligible,
-		Timestamp:      time.Now(),
-	})
-}
-
-func (h *runtimeCallbackHandler) HandleTodoClosed(ctx context.Context, todo TodoState, reason string) {
-	reason = strings.TrimSpace(reason)
-	snapshot := todo.Clone()
-	if h.logger != nil {
-		h.logger.Info("Todo closed: mode=%s revision=%d current_id=%s reason=%s",
-			snapshot.Mode, snapshot.Revision, snapshot.CurrentID, truncateForLog(reason, 240))
-	}
-	h.emitRunEvent(ctx, RunEvent{
-		Type:      runEventTodoClosed,
-		EpisodeID: h.episodeID,
-		Content:   reason,
-		Todo:      &snapshot,
-		Timestamp: time.Now(),
-	})
-}
 
 func (h *runtimeCallbackHandler) HandleRoleOutput(ctx context.Context, role, content string) {
 	content = strings.TrimSpace(content)
@@ -1676,57 +1634,6 @@ func sessionEventFromRunEvent(event RunEvent, h *runtimeCallbackHandler) Session
 		ToolError:  cloneToolError(event.ToolError),
 	}
 	return sessionEvent
-}
-
-func sessionEventFromPlannerDecision(decision plannerDecision) SessionEvent {
-	content, _ := json.Marshal(decision)
-	nextStep := strings.TrimSpace(decision.NextStep)
-	if nextStep == "" && len(decision.Plan) > 0 {
-		nextStep = strings.TrimSpace(decision.Plan[0])
-	}
-	return SessionEvent{
-		Type:               "planner_decision",
-		Role:               string(RolePlanner),
-		Content:            string(content),
-		Objective:          strings.TrimSpace(decision.Objective),
-		CompletionCriteria: uniqueNonEmpty(decision.CompletionCriteria),
-		Plan:               uniqueNonEmpty(decision.Plan),
-		NextStep:           nextStep,
-		Reason:             strings.TrimSpace(decision.Reason),
-	}
-}
-
-func sessionEventFromVerifierDecision(decision verifierDecision) SessionEvent {
-	content, _ := json.Marshal(decision)
-	canFinish := decision.CanFinish
-	return SessionEvent{
-		Type:        "verifier_decision",
-		Role:        string(RoleVerifier),
-		Content:     strings.TrimSpace(firstNonEmptyString([]string{decision.FinalAnswer, string(content)})),
-		CanFinish:   &canFinish,
-		NeedsReplan: decision.NeedsReplan,
-		Reason:      strings.TrimSpace(decision.Reason),
-	}
-}
-
-func (h *runtimeCallbackHandler) HandlePlannerDecision(ctx context.Context, decision plannerDecision) {
-	if h.sessionEventAppender != nil {
-		event := sessionEventFromPlannerDecision(decision)
-		event.EpisodeID = h.episodeID
-		if err := h.sessionEventAppender(ctx, event); err != nil && h.logger != nil {
-			h.logger.Warn("[memory] persist planner decision failed: %v", err)
-		}
-	}
-}
-
-func (h *runtimeCallbackHandler) HandleVerifierDecision(ctx context.Context, decision verifierDecision) {
-	if h.sessionEventAppender != nil {
-		event := sessionEventFromVerifierDecision(decision)
-		event.EpisodeID = h.episodeID
-		if err := h.sessionEventAppender(ctx, event); err != nil && h.logger != nil {
-			h.logger.Warn("[memory] persist verifier decision failed: %v", err)
-		}
-	}
 }
 
 func (h *runtimeCallbackHandler) HandleRetrieverStart(ctx context.Context, query string) {}

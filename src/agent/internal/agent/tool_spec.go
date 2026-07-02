@@ -140,7 +140,7 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		Category:     "memory",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"type":"procedure","title":"Login flow","content":"...","tags":["login"]}`,
-		AgentRoles:   []RoleName{RolePlanner},
+		AgentRoles:   []RoleName{RoleAgent},
 	},
 	"forget_memory": {
 		Category:     "memory",

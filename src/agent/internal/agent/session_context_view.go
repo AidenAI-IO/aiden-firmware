@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -18,10 +17,8 @@ const (
 const maxSessionContextEvents = 200
 
 type sessionContextView struct {
-	RootUserRequest       string
-	LatestUserMessage     string
-	LatestCommittedPlan   *plannerDecision
-	LatestVerifierSummary string
+	RootUserRequest   string
+	LatestUserMessage string
 }
 
 type sessionContextPlannerMemory struct {
@@ -122,22 +119,13 @@ func BuildSessionContextView(events []SessionEvent, currentInput string) session
 	}
 
 	root := latestContent
-	rootIndex := latestUserIndex
-	if sessionRoot, index := activeSessionRootUserInput(events, latestUserIndex); sessionRoot != "" {
+	if sessionRoot, _ := activeSessionRootUserInput(events, latestUserIndex); sessionRoot != "" {
 		root = sessionRoot
-		rootIndex = index
 	}
-	view := sessionContextView{
+	return sessionContextView{
 		RootUserRequest:   root,
 		LatestUserMessage: latestContent,
 	}
-	if decision, ok := latestCommittedPlan(events, rootIndex, latestUserIndex); ok {
-		view.LatestCommittedPlan = &decision
-	}
-	if summary := latestVerifierSummary(events, rootIndex, latestUserIndex); summary != "" {
-		view.LatestVerifierSummary = summary
-	}
-	return view
 }
 
 func runtimeSessionContextEvents(events []SessionEvent) []SessionEvent {
@@ -195,120 +183,15 @@ func activeSessionRootUserInput(events []SessionEvent, latestUserIndex int) (str
 	return "", -1
 }
 
-func sessionDecisionScanWindow(events []SessionEvent, rootIndex, latestUserIndex int) (int, int) {
-	limit := latestUserIndex
-	if limit < 0 || limit > len(events) {
-		limit = len(events)
-	}
-	start := 0
-	if rootIndex >= 0 && rootIndex < len(events) {
-		start = rootIndex + 1
-	}
-	if start > limit {
-		start = limit
-	}
-	return start, limit
-}
-
-func latestCommittedPlan(events []SessionEvent, rootIndex, latestUserIndex int) (plannerDecision, bool) {
-	start, limit := sessionDecisionScanWindow(events, rootIndex, latestUserIndex)
-	for i := limit - 1; i >= start; i-- {
-		event := events[i]
-		if event.Type != "planner_decision" {
-			continue
-		}
-		if decision, ok := plannerDecisionFromSessionEvent(event); ok {
-			return decision, true
-		}
-	}
-	return plannerDecision{}, false
-}
-
-func plannerDecisionFromSessionEvent(event SessionEvent) (plannerDecision, bool) {
-	decision := plannerDecision{
-		Objective:          strings.TrimSpace(event.Objective),
-		CompletionCriteria: uniqueNonEmpty(event.CompletionCriteria),
-		Plan:               uniqueNonEmpty(event.Plan),
-		NextStep:           strings.TrimSpace(event.NextStep),
-		Reason:             strings.TrimSpace(event.Reason),
-	}
-	if len(decision.Plan) == 0 && strings.TrimSpace(event.Content) != "" {
-		var payload plannerDecision
-		if err := json.Unmarshal([]byte(event.Content), &payload); err == nil {
-			decision = payload
-			decision.Objective = strings.TrimSpace(decision.Objective)
-			decision.CompletionCriteria = uniqueNonEmpty(decision.CompletionCriteria)
-			decision.Plan = uniqueNonEmpty(decision.Plan)
-			decision.NextStep = strings.TrimSpace(decision.NextStep)
-			decision.Reason = strings.TrimSpace(decision.Reason)
-		}
-	}
-	return decision, len(decision.Plan) > 0 || decision.Objective != "" || decision.NextStep != ""
-}
-
-func latestVerifierSummary(events []SessionEvent, rootIndex, latestUserIndex int) string {
-	start, limit := sessionDecisionScanWindow(events, rootIndex, latestUserIndex)
-	for i := limit - 1; i >= start; i-- {
-		event := events[i]
-		if event.Type != "verifier_decision" {
-			continue
-		}
-		var parts []string
-		if event.CanFinish != nil {
-			parts = append(parts, fmt.Sprintf("can_finish=%t", *event.CanFinish))
-		}
-		if event.NeedsReplan {
-			parts = append(parts, "needs_replan=true")
-		}
-		if reason := strings.TrimSpace(event.Reason); reason != "" {
-			parts = append(parts, "reason="+singleLineHistoryText(reason))
-		}
-		if content := strings.TrimSpace(event.Content); content != "" {
-			parts = append(parts, "content="+singleLineHistoryText(content))
-		}
-		return strings.Join(parts, " ")
-	}
-	return ""
-}
-
 func formatSessionContextView(view sessionContextView) string {
-	if strings.TrimSpace(view.LatestUserMessage) == "" &&
-		view.LatestCommittedPlan == nil &&
-		strings.TrimSpace(view.LatestVerifierSummary) == "" {
+	if strings.TrimSpace(view.LatestUserMessage) == "" {
 		return ""
 	}
 	var builder strings.Builder
 	builder.WriteString("Session context view:\n")
-	if latest := strings.TrimSpace(view.LatestUserMessage); latest != "" {
-		builder.WriteString("- Latest user message: ")
-		builder.WriteString(singleLineHistoryText(latest))
-		builder.WriteByte('\n')
-	}
-	if view.LatestCommittedPlan != nil {
-		decision := view.LatestCommittedPlan
-		builder.WriteString("\nLatest committed plan (runtime-accepted):\n")
-		if objective := strings.TrimSpace(decision.Objective); objective != "" {
-			builder.WriteString("- Objective: ")
-			builder.WriteString(singleLineHistoryText(objective))
-			builder.WriteByte('\n')
-		}
-		if len(decision.CompletionCriteria) > 0 {
-			builder.WriteString("- Completion criteria: ")
-			builder.WriteString(compactStringList(decision.CompletionCriteria, 480))
-			builder.WriteByte('\n')
-		}
-		for i, step := range decision.Plan {
-			if step = strings.TrimSpace(step); step != "" {
-				builder.WriteString(fmt.Sprintf("%d. %s\n", i+1, singleLineHistoryText(step)))
-			}
-		}
-	}
-	if summary := strings.TrimSpace(view.LatestVerifierSummary); summary != "" {
-		builder.WriteString("\nLatest verifier decision:\n")
-		builder.WriteString("- ")
-		builder.WriteString(summary)
-		builder.WriteByte('\n')
-	}
+	builder.WriteString("- Latest user message: ")
+	builder.WriteString(singleLineHistoryText(strings.TrimSpace(view.LatestUserMessage)))
+	builder.WriteByte('\n')
 	return strings.TrimSpace(builder.String())
 }
 

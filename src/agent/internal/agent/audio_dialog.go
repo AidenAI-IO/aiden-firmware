@@ -40,8 +40,6 @@ type AudioDialog struct {
 	speechMu      sync.Mutex
 	outputMu      sync.Mutex
 	activeOutputs map[*activeTTSOutput]struct{}
-	progressMu    sync.Mutex
-	progress      *progressSpeaker
 	runControl    voiceRunControl
 	historyStore  *ChatHistoryStore
 	historyAppend func(Message)
@@ -480,17 +478,8 @@ func (d *AudioDialog) InterruptOutput() {
 	if d == nil {
 		return
 	}
-	d.progressMu.Lock()
-	progress := d.progress
-	d.progressMu.Unlock()
-	if progress != nil {
-		progress.Cancel()
-	}
 
 	outputs := d.snapshotActiveOutputs()
-	if progress != nil || len(outputs) > 0 {
-		log.Printf("[audio] interrupt output requested: active_outputs=%d progress_active=%t\n", len(outputs), progress != nil)
-	}
 	for _, output := range outputs {
 		output.interrupt()
 	}
@@ -740,13 +729,6 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 	log.Printf("[llm] Sending request to provider '%s' (model=%s)...\n",
 		d.config.Model.Provider, d.config.Model.Model)
 
-	progress := d.newRunProgressSpeaker()
-	d.setProgressSpeaker(progress)
-	defer func() {
-		progress.Cancel()
-		d.setProgressSpeaker(nil)
-	}()
-
 	req := RunRequest{
 		Input:          input.InputText,
 		Attachments:    input.Attachments,
@@ -784,7 +766,7 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 			newStream = stream
 			unregisterStream = unregister
 			defer unregisterStream()
-			req.StreamWriter = newCancelOnFirstWriteWriter(speechStreamWriterForConfig(newStream, d.config), progress.Cancel)
+			req.StreamWriter = speechStreamWriterForConfig(newStream, d.config)
 		}
 	}
 
@@ -905,44 +887,12 @@ func (d *AudioDialog) waitForSteerInterrupt(ctx context.Context, requestID strin
 }
 
 func (d *AudioDialog) HandleRunEvent(ctx context.Context, event RunEvent) {
-	if event.Type == runEventTodoUpdate {
-		if !d.config.VoiceProgressSpeechEnabledOrDefault() {
-			return
-		}
-		text, ok := progressSpeechTextForEvent(event)
-		if !ok {
-			return
-		}
-		d.currentProgressSpeaker().Schedule(ctx, text)
-		return
-	}
 	if event.Type != runEventToolCall || !d.config.VoiceToolCallSpeechOrDefault() || event.ToolName == toolWaitForWakeup {
 		return
 	}
 	if text := BuildSpeechText(event.Content, d.config); text != "" {
 		go d.SpeakToolContent(text)
 	}
-}
-
-func (d *AudioDialog) newRunProgressSpeaker() *progressSpeaker {
-	return newProgressSpeaker(func(ctx context.Context, text string) error {
-		return d.speak(ctx, text, nil, toolContentSpeechTimeout)
-	}, progressSpeakerConfig{})
-}
-
-func (d *AudioDialog) setProgressSpeaker(speaker *progressSpeaker) {
-	d.progressMu.Lock()
-	defer d.progressMu.Unlock()
-	d.progress = speaker
-}
-
-func (d *AudioDialog) currentProgressSpeaker() *progressSpeaker {
-	d.progressMu.Lock()
-	defer d.progressMu.Unlock()
-	if d.progress == nil {
-		d.progress = d.newRunProgressSpeaker()
-	}
-	return d.progress
 }
 
 func (d *AudioDialog) SpeakToolContent(content string) {
@@ -1092,13 +1042,6 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 	log.Printf("[llm] Sending request to provider '%s' (model=%s)...\n",
 		d.config.Model.Provider, d.config.Model.Model)
 
-	progress := d.newRunProgressSpeaker()
-	d.setProgressSpeaker(progress)
-	defer func() {
-		progress.Cancel()
-		d.setProgressSpeaker(nil)
-	}()
-
 	req := RunRequest{
 		Input: text,
 		Turn:  NewTextTurnInput(text, nil),
@@ -1118,7 +1061,7 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 			newStream = stream
 			unregisterStream = unregister
 			defer unregisterStream()
-			req.StreamWriter = newCancelOnFirstWriteWriter(speechStreamWriterForConfig(newStream, d.config), progress.Cancel)
+			req.StreamWriter = speechStreamWriterForConfig(newStream, d.config)
 		}
 	}
 

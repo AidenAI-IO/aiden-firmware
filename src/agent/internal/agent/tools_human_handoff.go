@@ -53,6 +53,8 @@ const (
 	HandoffReasonOther                  HandoffReason = "other"
 )
 
+const toolHumanHandoffStep = "request_human_handoff"
+
 var validHandoffReasonValues = []string{
 	string(HandoffReasonAuthentication),
 	string(HandoffReasonLoginMethodSelection),
@@ -94,7 +96,7 @@ func NewHumanHandoffTool() *HumanHandoffTool {
 }
 
 func (t *HumanHandoffTool) Name() string {
-	return "request_human_handoff"
+	return toolHumanHandoffStep
 }
 
 func (t *HumanHandoffTool) Description() string {

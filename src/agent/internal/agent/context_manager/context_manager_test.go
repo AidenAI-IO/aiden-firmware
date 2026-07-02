@@ -116,6 +116,33 @@ func TestConvertToStandardMessageList_ToolCalls(t *testing.T) {
 	}
 }
 
+func TestConvertToStandardMessageList_ToolResults(t *testing.T) {
+	manager := NewContextManager()
+	manager.AppendMessage(Message{
+		Role: MessageRoleToolResult,
+		ToolResults: []ToolResult{{
+			ToolCallID: "call_1",
+			Name:       "echo",
+			Content:    `{"output":"hello"}`,
+		}},
+	})
+
+	messages := manager.ConvertToStandardMessageList()
+	if len(messages) != 1 {
+		t.Fatalf("messages = %#v", messages)
+	}
+	if messages[0].Role != llms.ChatMessageTypeTool {
+		t.Fatalf("role = %v, want Tool", messages[0].Role)
+	}
+	if len(messages[0].Parts) != 1 {
+		t.Fatalf("parts = %#v, want one tool result", messages[0].Parts)
+	}
+	toolResponse, ok := messages[0].Parts[0].(llms.ToolCallResponse)
+	if !ok || toolResponse.ToolCallID != "call_1" || toolResponse.Name != "echo" || toolResponse.Content != `{"output":"hello"}` {
+		t.Fatalf("tool result part = %#v", messages[0].Parts[0])
+	}
+}
+
 func TestConvertStandardMessageToContextManagerMessage_ReasoningContent(t *testing.T) {
 	message := ConvertChoiceToContextManagerMessage(llms.ContentChoice{
 		ReasoningContent: "thinking",

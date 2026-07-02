@@ -10,30 +10,27 @@ import (
 )
 
 func TestSingleAgentProfileDoesNotBuildDelegatedRoles(t *testing.T) {
-	profiles := buildRoleProfiles(
+	profile := buildAgentProfile(
 		AgentConfig{Instruction: "base", AdditionalPrompt: "extra"},
 		ResolvedSkills{Names: []string{"ui"}, Instructions: []string{"[ui] inspect first"}},
 		[]langtools.Tool{&stubTool{name: "screenshot", description: "Capture screen."}},
 		"MEMORY CONTEXT",
 	)
 
-	if profiles.Planner.Name != RoleAgent {
-		t.Fatalf("agent profile name = %q, want %q", profiles.Planner.Name, RoleAgent)
+	if profile.Name != RoleAgent {
+		t.Fatalf("agent profile name = %q, want %q", profile.Name, RoleAgent)
 	}
-	if profiles.Executor.SystemPrompt != "" || profiles.Verifier.SystemPrompt != "" {
-		t.Fatalf("delegated role profiles should not be built: executor=%#v verifier=%#v", profiles.Executor, profiles.Verifier)
-	}
-	if profiles.Planner.Capabilities.CanModifyPlan {
-		t.Fatalf("single agent should not advertise plan modification: %#v", profiles.Planner.Capabilities)
+	if !profile.Capabilities.CanUseTools {
+		t.Fatalf("single agent should advertise tool usage: %#v", profile.Capabilities)
 	}
 	for _, want := range []string{"base", "extra", "[ui] inspect first", "MEMORY CONTEXT", "Use the single-agent loop"} {
-		if !strings.Contains(profiles.Planner.SystemPrompt, want) {
-			t.Fatalf("agent prompt missing %q:\n%s", want, profiles.Planner.SystemPrompt)
+		if !strings.Contains(profile.SystemPrompt, want) {
+			t.Fatalf("agent prompt missing %q:\n%s", want, profile.SystemPrompt)
 		}
 	}
 	for _, unexpected := range []string{"enter_plan_mode", "commit_plan", "cancel_plan", "planner role", "executor role", "verifier role"} {
-		if strings.Contains(profiles.Planner.SystemPrompt, unexpected) {
-			t.Fatalf("agent prompt should not contain old delegated role wording %q:\n%s", unexpected, profiles.Planner.SystemPrompt)
+		if strings.Contains(profile.SystemPrompt, unexpected) {
+			t.Fatalf("agent prompt should not contain old delegated role wording %q:\n%s", unexpected, profile.SystemPrompt)
 		}
 	}
 }

@@ -110,7 +110,6 @@ type Message struct {
 	OriginalText    string              `json:"original_text,omitempty"`
 	Transcript      string              `json:"transcript,omitempty"`
 	Content         string              `json:"content"`
-	Todo            *TodoState          `json:"todo,omitempty"`
 	SpeechEligible  bool                `json:"speech_eligible,omitempty"`
 	ToolName        string              `json:"tool_name,omitempty"`
 	ToolInput       string              `json:"tool_input,omitempty"`
@@ -124,14 +123,6 @@ type Message struct {
 	IsError         bool                `json:"is_error,omitempty"`
 }
 
-func cloneTodoStatePtr(todo *TodoState) *TodoState {
-	if todo == nil {
-		return nil
-	}
-	cloned := todo.Clone()
-	return &cloned
-}
-
 func messageFromRunEvent(event RunEvent, fallbackEpisodeID string, requestID string) Message {
 	episodeID := event.EpisodeID
 	if episodeID == "" {
@@ -143,7 +134,6 @@ func messageFromRunEvent(event RunEvent, fallbackEpisodeID string, requestID str
 		EpisodeID:      episodeID,
 		RequestID:      requestID,
 		Content:        event.Content,
-		Todo:           cloneTodoStatePtr(event.Todo),
 		SpeechEligible: event.SpeechEligible,
 		ToolName:       event.ToolName,
 		ToolInput:      event.ToolInput,
@@ -941,9 +931,7 @@ func (s *Server) handleChatAsync(
 
 	// Run agent in background goroutine
 	go func() {
-		progress := s.newRunProgressSpeaker()
 		defer func() {
-			progress.Cancel()
 			s.unregisterActiveRun(requestID)
 			s.clearPendingSteer(requestID)
 			// Keep the completed result available for polling for 60s,
@@ -972,11 +960,6 @@ func (s *Server) handleChatAsync(
 
 			if text := s.toolCallSpeechText(event); text != "" {
 				go s.speakToolContent(runCtx, text)
-			}
-			if event.Type == runEventTodoUpdate && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
-				if text, ok := progressSpeechTextForEvent(event); ok {
-					progress.Schedule(runCtx, text)
-				}
 			}
 		}
 
@@ -1013,14 +996,13 @@ func (s *Server) handleChatAsync(
 					output := newActiveTTSOutput(nil)
 					output.setStream(newStream)
 					unregisterStreamOutput = s.registerActiveOutput(requestID, output)
-					runReq.StreamWriter = newCancelOnFirstWriteWriter(speechStreamWriterForConfig(newStream, s.runtime.config), progress.Cancel)
+					runReq.StreamWriter = speechStreamWriterForConfig(newStream, s.runtime.config)
 				}
 			}
 		}
 		defer unregisterStreamOutput()
 
 		result, err := s.runtime.Run(runCtx, runReq)
-		progress.Cancel()
 		if newStream != nil {
 			closeErr := newStream.closeAndWait()
 			if closeErr != nil && s.logger != nil {
@@ -1238,8 +1220,6 @@ func (s *Server) handleChatSync(
 
 	s.playPromptSoundAsync(promptSoundAgentSend, "agent send")
 	s.appendHistory(userMsg)
-	progress := s.newRunProgressSpeaker()
-	defer progress.Cancel()
 
 	runReq := RunRequest{
 		Input:             inputText,
@@ -1256,11 +1236,6 @@ func (s *Server) handleChatSync(
 			if text := s.toolCallSpeechText(event); text != "" {
 				go s.speakToolContent(r.Context(), text)
 			}
-			if event.Type == runEventTodoUpdate && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
-				if text, ok := progressSpeechTextForEvent(event); ok {
-					progress.Schedule(ctx, text)
-				}
-			}
 		},
 	}
 
@@ -1276,13 +1251,12 @@ func (s *Server) handleChatSync(
 				}
 			} else {
 				newStream = stream
-				runReq.StreamWriter = newCancelOnFirstWriteWriter(speechStreamWriterForConfig(newStream, s.runtime.config), progress.Cancel)
+				runReq.StreamWriter = speechStreamWriterForConfig(newStream, s.runtime.config)
 			}
 		}
 	}
 
 	result, err := s.runtime.Run(ctx, runReq)
-	progress.Cancel()
 	if newStream != nil {
 		closeErr := newStream.closeAndWait()
 		if closeErr != nil && s.logger != nil {
@@ -1431,8 +1405,6 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 	s.appendHistory(userMessage)
-	progress := s.newRunProgressSpeaker()
-	defer progress.Cancel()
 	if req.RequestID != "" && s.liveActivity != nil {
 		s.liveActivity.StartTask(req.RequestID, inputText, s.liveActivityPhoneID(req))
 	}
@@ -1461,11 +1433,6 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			if text := s.toolCallSpeechText(event); text != "" {
 				go s.speakToolContent(ctx, text)
 			}
-			if event.Type == runEventTodoUpdate && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
-				if text, ok := progressSpeechTextForEvent(event); ok {
-					progress.Schedule(ctx, text)
-				}
-			}
 		},
 	}
 
@@ -1487,7 +1454,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 				output := newActiveTTSOutput(nil)
 				output.setStream(newStream)
 				unregisterStreamOutput = s.registerActiveOutput(req.RequestID, output)
-				finalStreamWriters = append(finalStreamWriters, newCancelOnFirstWriteWriter(speechStreamWriterForConfig(newStream, s.runtime.config), progress.Cancel))
+				finalStreamWriters = append(finalStreamWriters, speechStreamWriterForConfig(newStream, s.runtime.config))
 			}
 		}
 	}
@@ -1495,7 +1462,6 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	runReq.StreamWriter = newFinalStreamFanoutWriter(finalStreamWriters...)
 
 	result, err := s.runtime.Run(ctx, runReq)
-	progress.Cancel()
 	if newStream != nil {
 		closeErr := newStream.closeAndWait()
 		if closeErr != nil && s.logger != nil {
@@ -1833,29 +1799,6 @@ func (s *Server) toolCallSpeechText(event RunEvent) string {
 		return ""
 	}
 	return BuildSpeechText(event.Content, s.runtime.config)
-}
-
-func (s *Server) newRunProgressSpeaker() *progressSpeaker {
-	cfg := progressSpeakerConfig{}
-	if s.logger != nil {
-		cfg.Logf = func(format string, args ...any) {
-			s.logger.Error(format, args...)
-		}
-	}
-	return newProgressSpeaker(func(ctx context.Context, text string) error {
-		if strings.TrimSpace(text) == "" || s.audioClient == nil {
-			return nil
-		}
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		ttsCtx, cancel := context.WithTimeout(ctx, toolContentSpeechTimeout)
-		defer cancel()
-		if s.logger != nil {
-			s.logger.Info("Progress TTS playback: %q", text)
-		}
-		return s.speakText(ttsCtx, text, 0)
-	}, cfg)
 }
 
 func (s *Server) currentTTSManager() *tts.ProviderManager {

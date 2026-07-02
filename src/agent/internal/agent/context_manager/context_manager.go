@@ -44,23 +44,31 @@ func (r MessageRole) ToStandardRole() llms.ChatMessageType {
 }
 
 type Message struct {
-	Role    MessageRole `json:"role"`
-	Content string `json:"content"`
-	ToolCalls []ToolCall `json:"tool_calls"`
-	Attachments []Attachment `json:"attachments"`
+	Role        MessageRole  `json:"role"`
+	Content     string       `json:"content"`
+	ToolCalls   []ToolCall   `json:"tool_calls,omitempty"`
+	ToolResults []ToolResult `json:"tool_results,omitempty"`
+	Attachments []Attachment `json:"attachments,omitempty"`
 }
 
 type ToolCall struct {
-	ID string `json:"id"`
-	Name string `json:"name"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
+}
+
+type ToolResult struct {
+	ToolCallID string `json:"tool_call_id"`
+	Name       string `json:"name"`
+	Content    string `json:"content"`
 }
 
 // Attachments are files that are attached to the message, they are not loaded into memory, they are only used to track the files that are attached to the message.
 type Attachment struct {
 	MIMEType string `json:"mime_type"`
-	FileSize int64 `json:"file_size"`
+	FileSize int64  `json:"file_size"`
 	FilePath string `json:"file_path"`
+	Data     []byte `json:"-"`
 }
 
 // ContextManager is a manager for the context of the agent, it is used to manage the context of the agent, it is used to append messages to the context and to fork the context.
@@ -101,6 +109,9 @@ func (c *ContextManager) Fork() *ContextManager {
 		if len(msg.ToolCalls) > 0 {
 			newMessageList[i].ToolCalls = append([]ToolCall(nil), msg.ToolCalls...)
 		}
+		if len(msg.ToolResults) > 0 {
+			newMessageList[i].ToolResults = append([]ToolResult(nil), msg.ToolResults...)
+		}
 		if len(msg.Attachments) > 0 {
 			newMessageList[i].Attachments = append([]Attachment(nil), msg.Attachments...)
 		}
@@ -122,6 +133,21 @@ func (c *ContextManager) ConvertToStandardMessageList() []llms.MessageContent {
 			Role: message.Role.ToStandardRole(),
 			Parts: []llms.ContentPart{},
 		}
+		if message.Role == MessageRoleToolResult {
+			for resultIndex, result := range message.ToolResults {
+				toolCallID := strings.TrimSpace(result.ToolCallID)
+				if toolCallID == "" {
+					toolCallID = toolCallIDOrFallback("", i, resultIndex)
+				}
+				newMessage.Parts = append(newMessage.Parts, llms.ToolCallResponse{
+					ToolCallID: toolCallID,
+					Name:       strings.TrimSpace(result.Name),
+					Content:    result.Content,
+				})
+			}
+			standardMessageList[i] = newMessage
+			continue
+		}
 		if content := strings.TrimSpace(message.Content); content != "" {
 			newMessage.Parts = append(newMessage.Parts, llms.TextPart(content))
 		}
@@ -140,9 +166,16 @@ func (c *ContextManager) ConvertToStandardMessageList() []llms.MessageContent {
 			})
 		}
 		for _, attachment := range message.Attachments {
-			data, err := os.ReadFile(attachment.FilePath)
-			if err != nil {
-				fmt.Printf("Failed to read attachment file: %v", err)
+			data := attachment.Data
+			if len(data) == 0 && strings.TrimSpace(attachment.FilePath) != "" {
+				var err error
+				data, err = os.ReadFile(attachment.FilePath)
+				if err != nil {
+					fmt.Printf("Failed to read attachment file: %v", err)
+					continue
+				}
+			}
+			if len(data) == 0 {
 				continue
 			}
 			newMessage.Parts = append(newMessage.Parts, llms.BinaryPart(attachment.MIMEType, data))

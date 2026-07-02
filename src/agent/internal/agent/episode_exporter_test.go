@@ -135,7 +135,7 @@ func TestBuildLangfuseBatchUsesCapturedPromptsForGenerations(t *testing.T) {
 	promptCalls := []telemetryPromptCall{
 		{
 			ID:        "11111111-1111-1111-1111-111111111111",
-			Role:      string(RolePlanner),
+			Role:      string(RoleAgent),
 			StartedAt: start,
 			EndedAt:   start.Add(100 * time.Millisecond),
 			Input: []map[string]interface{}{
@@ -246,7 +246,7 @@ func TestBuildLangfuseBatchUsesCapturedPromptsForGenerations(t *testing.T) {
 	if !ok {
 		t.Fatalf("generation metadata = %#v, want map", generations[0]["metadata"])
 	}
-	if metadata["role"] != string(RolePlanner) || metadata["prompt_index"] != float64(1) {
+	if metadata["role"] != string(RoleAgent) || metadata["prompt_index"] != float64(1) {
 		t.Fatalf("generation metadata = %#v, want role/prompt_index", metadata)
 	}
 	if metadata["tools_count"] != float64(1) {
@@ -291,7 +291,7 @@ func TestBuildLangfuseBatchUploadsCapturedPromptMedia(t *testing.T) {
 	callID := "11111111-1111-1111-1111-111111111111"
 	promptCalls := []telemetryPromptCall{{
 		ID:        callID,
-		Role:      string(RolePlanner),
+		Role:      string(RoleAgent),
 		StartedAt: start,
 		EndedAt:   start.Add(time.Millisecond),
 		Input: []map[string]interface{}{{
@@ -368,7 +368,7 @@ func TestBuildLangfuseBatchOmitsPromptImagesWhenScreenshotUploadDisabled(t *test
 	pdfMedia := newTelemetryPromptMedia("application/pdf", pdf)
 	promptCalls := []telemetryPromptCall{{
 		ID:        "11111111-1111-1111-1111-111111111111",
-		Role:      string(RolePlanner),
+		Role:      string(RoleAgent),
 		StartedAt: start,
 		EndedAt:   start.Add(time.Millisecond),
 		Input: []map[string]interface{}{{
@@ -713,7 +713,9 @@ func TestRuntimeStartupExportsInterruptedEpisodeToLangfuse(t *testing.T) {
 	if err := recorder.Start(ctx); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	recorder.RecordPlannerDecision(plannerDecision{
+	recorder.append(TaskEpisodeEvent{
+		Type:      "planner_decision",
+		Role:      string(RoleAgent),
 		Objective: "打开设置",
 		Plan:      []string{"打开设置"},
 		NextStep:  "点击设置",

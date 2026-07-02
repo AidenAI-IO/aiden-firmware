@@ -11,7 +11,7 @@ import (
 func TestBuildSessionContextViewUsesActiveSessionScope(t *testing.T) {
 	events := []SessionEvent{
 		{Type: "user_input", Role: "user", Content: "查天气"},
-		{Type: "planner_decision", Role: string(RolePlanner), Objective: "查询天气", Plan: []string{"打开天气"}},
+		{Type: "planner_decision", Role: string(RoleAgent), Objective: "查询天气", Plan: []string{"打开天气"}},
 		{Type: "user_input", Role: "user", Content: "打开微信"},
 		{Type: "assistant_output", Role: "assistant", Content: "已打开微信"},
 		{Type: "user_input", Role: "user", Content: "然后给张三发消息"},
@@ -21,8 +21,8 @@ func TestBuildSessionContextViewUsesActiveSessionScope(t *testing.T) {
 	if view.RootUserRequest != "查天气" {
 		t.Fatalf("root request = %q, want first active-session user input", view.RootUserRequest)
 	}
-	if view.LatestCommittedPlan == nil || view.LatestCommittedPlan.Objective != "查询天气" {
-		t.Fatalf("latest committed plan should come from active session, got %#v", view.LatestCommittedPlan)
+	if view.LatestUserMessage != "然后给张三发消息" {
+		t.Fatalf("latest user message = %q", view.LatestUserMessage)
 	}
 }
 
@@ -31,7 +31,7 @@ func TestBuildSessionContextViewIgnoresHotWindowEventsWhenRuntimeEventsExist(t *
 		{Type: "user_input", Role: "user", Content: "HOT_WINDOW_USER_ONLY_PLANNER"},
 		{Type: "assistant_output", Role: "assistant", Content: "HOT_WINDOW_ASSISTANT_ONLY_PLANNER"},
 		{Type: "user_input", Role: "user", Content: "打开微信", RunID: "run-1"},
-		{Type: "planner_decision", Role: string(RolePlanner), Objective: "打开微信", Plan: []string{"打开微信"}, RunID: "run-1"},
+		{Type: "planner_decision", Role: string(RoleAgent), Objective: "打开微信", Plan: []string{"打开微信"}, RunID: "run-1"},
 		{Type: "user_input", Role: "user", Content: "继续当前任务", RunID: "run-2"},
 	}
 
@@ -39,28 +39,22 @@ func TestBuildSessionContextViewIgnoresHotWindowEventsWhenRuntimeEventsExist(t *
 	if view.RootUserRequest != "打开微信" {
 		t.Fatalf("root request = %q, want first runtime user input", view.RootUserRequest)
 	}
-	if view.LatestCommittedPlan == nil || view.LatestCommittedPlan.Objective != "打开微信" {
-		t.Fatalf("latest committed plan should come from runtime events, got %#v", view.LatestCommittedPlan)
+	if view.LatestUserMessage != "继续当前任务" {
+		t.Fatalf("latest user message = %q", view.LatestUserMessage)
 	}
 }
 
-func TestBuildSessionContextViewDoesNotLeakPreRootPlanWhenRootIsLatestUser(t *testing.T) {
+func TestBuildSessionContextViewUsesLatestUserAsRootWhenNoEarlierUser(t *testing.T) {
 	canFinish := true
 	events := []SessionEvent{
-		{Type: "planner_decision", Role: string(RolePlanner), Objective: "old objective", Plan: []string{"old step"}, RunID: "run-old"},
-		{Type: "verifier_decision", Role: string(RoleVerifier), Reason: "old verifier", CanFinish: &canFinish, RunID: "run-old"},
+		{Type: "planner_decision", Role: string(RoleAgent), Objective: "old objective", Plan: []string{"old step"}, RunID: "run-old"},
+		{Type: "verifier_decision", Role: string(RoleAgent), Reason: "old verifier", CanFinish: &canFinish, RunID: "run-old"},
 		{Type: "user_input", Role: "user", Content: "new root request", RunID: "run-new"},
 	}
 
 	view := BuildSessionContextView(events, "new root request")
 	if view.RootUserRequest != "new root request" {
 		t.Fatalf("root request = %q, want latest user as root", view.RootUserRequest)
-	}
-	if view.LatestCommittedPlan != nil {
-		t.Fatalf("latest committed plan should not leak from before root, got %#v", view.LatestCommittedPlan)
-	}
-	if view.LatestVerifierSummary != "" {
-		t.Fatalf("latest verifier summary should not leak from before root, got %q", view.LatestVerifierSummary)
 	}
 }
 
@@ -86,6 +80,8 @@ func TestFormatSessionContextViewOmitsLegacyRelationJudgement(t *testing.T) {
 		"Root request:",
 		"continue the existing task using the root request as the authority",
 		"treat the latest user message",
+		"Latest committed plan",
+		"Latest verifier decision",
 	} {
 		if strings.Contains(formatted, unwanted) {
 			t.Fatalf("formatted context should not contain %q:\n%s", unwanted, formatted)

@@ -35,11 +35,11 @@ func (c toolResponseBudgetCandidate) key() toolResponseBudgetCandidateKey {
 	}
 }
 
-func (e *roleCollaborativeExecutor) guardMessagesWithinContextWindow(messages []llms.MessageContent, options []llms.CallOption) []llms.MessageContent {
-	if e == nil || e.Model == nil {
+func guardMessagesWithinContextWindow(model llms.Model, messages []llms.MessageContent, options []llms.CallOption) []llms.MessageContent {
+	if model == nil {
 		return messages
 	}
-	windowProvider, ok := e.Model.(contextWindowModel)
+	windowProvider, ok := model.(contextWindowModel)
 	if !ok {
 		return messages
 	}

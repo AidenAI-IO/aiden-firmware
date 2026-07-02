@@ -71,7 +71,6 @@ type TaskEpisodeEvent struct {
 	ToolInput          string              `json:"tool_input,omitempty" yaml:"tool_input,omitempty"`
 	ToolError          *ToolError          `json:"tool_error,omitempty" yaml:"tool_error,omitempty"`
 	Content            string              `json:"content,omitempty" yaml:"content,omitempty"`
-	Todo               *TodoState          `json:"todo,omitempty" yaml:"todo,omitempty"`
 	SpeechEligible     bool                `json:"speech_eligible,omitempty" yaml:"speech_eligible,omitempty"`
 	Observation        string              `json:"observation,omitempty" yaml:"observation,omitempty"`
 	ScreenshotRef      string              `json:"screenshot_ref,omitempty" yaml:"screenshot_ref,omitempty"`
@@ -226,73 +225,18 @@ func (r *EpisodeRecorder) RecordDefaultFinish(answer string) {
 	}
 	r.append(TaskEpisodeEvent{
 		Type:    "default_finish",
-		Role:    string(RolePlanner),
+		Role:    string(RoleAgent),
 		Content: strings.TrimSpace(answer),
 	})
 }
 
-func (r *EpisodeRecorder) RecordLoopPhase(phase loopPhase, reason string) {
-	if r == nil {
-		return
-	}
-	r.append(TaskEpisodeEvent{
-		Type:    "loop_phase",
-		Role:    string(RolePlanner),
-		Content: string(phase),
-		Reason:  strings.TrimSpace(reason),
-	})
-}
-
-func (r *EpisodeRecorder) RecordTodoUpdate(todo TodoState, content string, speechEligible bool) {
-	if r == nil {
-		return
-	}
-	snapshot := todo.Clone()
-	r.append(TaskEpisodeEvent{
-		Type:           runEventTodoUpdate,
-		Content:        strings.TrimSpace(content),
-		Todo:           &snapshot,
-		SpeechEligible: speechEligible,
-	})
-}
-
-func (r *EpisodeRecorder) RecordTodoClosed(todo TodoState, reason string) {
-	if r == nil {
-		return
-	}
-	snapshot := todo.Clone()
-	r.append(TaskEpisodeEvent{
-		Type:   runEventTodoClosed,
-		Todo:   &snapshot,
-		Reason: strings.TrimSpace(reason),
-	})
-}
-
-func (r *EpisodeRecorder) RecordPlannerDecision(decision plannerDecision) {
-	if r == nil {
-		return
-	}
-	event := TaskEpisodeEvent{
-		Type:               "planner_decision",
-		Role:               string(RolePlanner),
-		Objective:          decision.Objective,
-		CompletionCriteria: append([]string(nil), decision.CompletionCriteria...),
-		Plan:               append([]string(nil), decision.Plan...),
-		NextStep:           decision.NextStep,
-		Reason:             decision.Reason,
-	}
-	if observed := normalizeObservedWorldState(decision.ObservedState); !observed.IsEmpty() {
-		event.ObservedState = &observed
-	}
-	r.append(event)
-}
 
 func (r *EpisodeRecorder) RecordPlannerExecution(result roleExecutionResult) {
-	r.recordExecutionForRole(result, RolePlanner)
+	r.recordExecutionForRole(result, RoleAgent)
 }
 
 func (r *EpisodeRecorder) RecordExecution(result roleExecutionResult) {
-	r.recordExecutionForRole(result, RoleExecutor)
+	r.recordExecutionForRole(result, RoleAgent)
 }
 
 func (r *EpisodeRecorder) recordExecutionForRole(result roleExecutionResult, role RoleName) {
@@ -332,25 +276,6 @@ func (r *EpisodeRecorder) recordExecutionForRole(result roleExecutionResult, rol
 		event.RawObservation = result.Step.Observation
 		r.append(event)
 	}
-}
-
-func (r *EpisodeRecorder) RecordVerifierDecision(decision verifierDecision) {
-	if r == nil {
-		return
-	}
-	canFinish := decision.CanFinish
-	event := TaskEpisodeEvent{
-		Type:        "verifier_decision",
-		Role:        string(RoleVerifier),
-		CanFinish:   &canFinish,
-		NeedsReplan: decision.NeedsReplan,
-		Content:     decision.FinalAnswer,
-		Reason:      decision.Reason,
-	}
-	if observed := normalizeObservedWorldState(decision.ObservedState); !observed.IsEmpty() {
-		event.ObservedState = &observed
-	}
-	r.append(event)
 }
 
 func (r *EpisodeRecorder) Finish(output string, metrics *RunMetrics, runErr error, tags []string, entities []string) TaskEpisode {

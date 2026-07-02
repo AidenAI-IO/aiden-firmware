@@ -16,8 +16,8 @@ func TestRolePromptsIncludeCurrentDate(t *testing.T) {
 	t.Cleanup(func() { promptNow = originalNow })
 
 	want := "Current date: 2026-06-01 (星期一)"
-	profiles := buildRoleProfiles(AgentConfig{}, ResolvedSkills{}, nil, MemoryContext{})
-	for _, profile := range []RoleProfile{profiles.Planner} {
+	profile := buildAgentProfile(AgentConfig{}, ResolvedSkills{}, nil, MemoryContext{})
+	for _, profile := range []RoleProfile{profile} {
 		if !strings.Contains(profile.SystemPrompt, want) {
 			t.Fatalf("%s system prompt missing current date %q:\n%s", profile.Name, want, profile.SystemPrompt)
 		}
@@ -34,8 +34,8 @@ func TestRolePromptsIncludeRealHostRuntimeInfo(t *testing.T) {
 	wantLine := "Host: os=" + operatingSystem + ", hostname=" + hostname + ", arch=" + architecture
 	wantEnvironmentLine := "- You run on the Aiden hardware controller (" + wantLine + "); you are not the device shown in screenshots."
 
-	profiles := buildRoleProfiles(AgentConfig{}, ResolvedSkills{}, nil, MemoryContext{})
-	for _, profile := range []RoleProfile{profiles.Planner} {
+	profile := buildAgentProfile(AgentConfig{}, ResolvedSkills{}, nil, MemoryContext{})
+	for _, profile := range []RoleProfile{profile} {
 		if !strings.Contains(profile.SystemPrompt, wantEnvironmentLine) {
 			t.Fatalf("%s system prompt missing host info in environment guidance %q:\n%s", profile.Name, wantEnvironmentLine, profile.SystemPrompt)
 		}
@@ -59,7 +59,7 @@ func mustUname(t *testing.T, flag string) string {
 }
 
 func TestRolePromptsIncludeGlobalEnvironmentAndDeviceGuidance(t *testing.T) {
-	profiles := buildRoleProfiles(
+	profile := buildAgentProfile(
 		AgentConfig{
 			Instruction:      "base instruction",
 			AdditionalPrompt: "extra prompt",
@@ -69,7 +69,7 @@ func TestRolePromptsIncludeGlobalEnvironmentAndDeviceGuidance(t *testing.T) {
 		MemoryContext{},
 	)
 
-	for _, profile := range []RoleProfile{profiles.Planner} {
+	for _, profile := range []RoleProfile{profile} {
 		for _, want := range []string{
 			"base instruction",
 			"extra prompt",
@@ -196,7 +196,7 @@ func TestDefaultAgentBehaviorExcludesMigratedToolDetails(t *testing.T) {
 
 func TestRolePromptsRequireToolCallSpeechForExternalStateTools(t *testing.T) {
 	enabled := true
-	profiles := buildRoleProfiles(
+	profile := buildAgentProfile(
 		AgentConfig{
 			VoiceToolCallSpeech: &enabled,
 			TTSConfigured:       true,
@@ -206,7 +206,7 @@ func TestRolePromptsRequireToolCallSpeechForExternalStateTools(t *testing.T) {
 		MemoryContext{},
 	)
 
-	for _, profile := range []RoleProfile{profiles.Planner} {
+	for _, profile := range []RoleProfile{profile} {
 		for _, want := range []string{
 			"The system prompt already includes the current date and weekday",
 			"Do not call current_time for ordinary date or weekday questions",
@@ -249,9 +249,9 @@ func TestRolePromptsGuideSkillCatalogAndPreloadedSkills(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	profiles := buildRoleProfiles(AgentConfig{}, skills, nil, MemoryContext{})
+	profile := buildAgentProfile(AgentConfig{}, skills, nil, MemoryContext{})
 
-	for _, profile := range []RoleProfile{profiles.Planner} {
+	for _, profile := range []RoleProfile{profile} {
 		for _, want := range []string{
 			"## Available skills",
 			"- planner: Plan before acting",
@@ -296,12 +296,12 @@ func TestRuntimeContextStaysAfterCacheableRoleRules(t *testing.T) {
 	}
 
 	build := func(rc string) RoleProfile {
-		return buildRoleProfiles(
+		return buildAgentProfile(
 			AgentConfig{RuntimeContext: rc},
 			ResolvedSkills{},
 			nil,
 			MemoryContext{},
-		).Planner
+		)
 	}
 	profile1, profile2 := build(ctx1), build(ctx2)
 	if profile1.SystemPromptCachePrefix != profile2.SystemPromptCachePrefix {
@@ -340,14 +340,14 @@ func TestRuntimeContextStaysAfterCacheableRoleRules(t *testing.T) {
 }
 
 func TestRolePromptsKeepVolatileSectionsAfterStaticRoleRules(t *testing.T) {
-	profiles := buildRoleProfiles(
+	profile := buildAgentProfile(
 		AgentConfig{RuntimeContext: "Phone bridge status:\n- connected: true"},
 		ResolvedSkills{},
 		nil,
 		MemoryContext{Planner: RoleMemoryContext{SessionSummary: "session memory tail"}},
 	)
 
-	for _, profile := range []RoleProfile{profiles.Planner} {
+	for _, profile := range []RoleProfile{profile} {
 		roleRulesAt := strings.Index(profile.SystemPrompt, "## Role rules")
 		runtimeAt := strings.Index(profile.SystemPrompt, "## Runtime context")
 		if roleRulesAt < 0 || runtimeAt < 0 {
@@ -358,23 +358,23 @@ func TestRolePromptsKeepVolatileSectionsAfterStaticRoleRules(t *testing.T) {
 		}
 	}
 
-	memoryAt := strings.Index(profiles.Planner.SystemPrompt, "session memory tail")
-	planRuntimeAt := strings.Index(profiles.Planner.SystemPrompt, "## Runtime context")
+	memoryAt := strings.Index(profile.SystemPrompt, "session memory tail")
+	planRuntimeAt := strings.Index(profile.SystemPrompt, "## Runtime context")
 	if memoryAt < 0 || memoryAt < planRuntimeAt {
-		t.Fatalf("planner prompt should keep memory context as the trailing volatile section:\n%s", profiles.Planner.SystemPrompt)
+		t.Fatalf("agent prompt should keep memory context as the trailing volatile section:\n%s", profile.SystemPrompt)
 	}
 }
 
 func TestRolePromptsIncludeRuntimeContext(t *testing.T) {
 	runtimeContext := "Phone bridge status:\n- connected: true"
-	profiles := buildRoleProfiles(
+	profile := buildAgentProfile(
 		AgentConfig{RuntimeContext: runtimeContext},
 		ResolvedSkills{},
 		nil,
 		MemoryContext{},
 	)
 
-	for _, profile := range []RoleProfile{profiles.Planner} {
+	for _, profile := range []RoleProfile{profile} {
 		if !strings.Contains(profile.SystemPrompt, "## Runtime context\n"+runtimeContext) {
 			t.Fatalf("%s system prompt missing runtime context:\n%s", profile.Name, profile.SystemPrompt)
 		}
