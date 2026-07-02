@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <mutex>
 #include <fcntl.h>
 #include <linux/v4l2-subdev.h>
 #include <linux/videodev2.h>
@@ -26,16 +27,19 @@ extern "C" {
 
 namespace aiden {
 
-static std::atomic<int> sys_init_count{0};
+static std::mutex sys_init_mutex;
+static int sys_init_count = 0;
 
 static void ensure_sys_init() {
-    if (sys_init_count.fetch_add(1) == 0) {
+    std::lock_guard<std::mutex> lock(sys_init_mutex);
+    if (sys_init_count++ == 0) {
         RK_MPI_SYS_Init();
     }
 }
 
 static void maybe_sys_deinit() {
-    if (sys_init_count.fetch_sub(1) == 1) {
+    std::lock_guard<std::mutex> lock(sys_init_mutex);
+    if (--sys_init_count == 0) {
         RK_MPI_SYS_Exit();
     }
 }

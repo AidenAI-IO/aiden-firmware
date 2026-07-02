@@ -10,7 +10,6 @@ AudioPlaybackSession::AudioPlaybackSession(uint64_t session_id, const AudioForma
 
 AudioPlaybackSession::~AudioPlaybackSession() {
     stop();
-    if (playback_thread_.joinable()) playback_thread_.join();
 }
 
 bool AudioPlaybackSession::start() {
@@ -31,8 +30,12 @@ bool AudioPlaybackSession::start() {
 
 void AudioPlaybackSession::stop() {
     if (stopped_.exchange(true)) return;
-    player_.stop();
+    // Pause the AO channel to unblock any in-progress SendFrame(-1).
+    // This is safe to call from another thread — it only toggles channel state
+    // without tearing down hardware (unlike player_.stop()).
+    player_.pause();
     cv_.notify_all();
+    if (playback_thread_.joinable()) playback_thread_.join();
 }
 
 bool AudioPlaybackSession::set_volume(int volume) {
@@ -83,6 +86,7 @@ void AudioPlaybackSession::playback_loop() {
                 fprintf(stderr,
                         "[audio_service] playback session %llu interrupted before drain completed\n",
                         static_cast<unsigned long long>(session_id_));
+                player_.stop();
                 return;
             }
 
@@ -106,6 +110,7 @@ void AudioPlaybackSession::playback_loop() {
                 fprintf(stderr,
                         "[audio_service] playback session %llu interrupted during final drain\n",
                         static_cast<unsigned long long>(session_id_));
+                player_.stop();
                 return;
             }
             fprintf(stderr,
@@ -131,6 +136,9 @@ void AudioPlaybackSession::playback_loop() {
                 "[audio_service] playback session %llu interrupted\n",
                 static_cast<unsigned long long>(session_id_));
     }
+
+    // Tear down hardware from the same thread that called SendFrame — safe.
+    player_.stop();
 }
 
 }  // namespace aiden
