@@ -181,6 +181,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		})
 	}
 	toolCallsInIteration++
+	appendToolExecutionMessages(llmExecutor, parser, toolExecution.Step)
 	if isRunPausingTool(toolExecution.Call.Action.Tool) && !toolExecution.Result.IsError() {
 		answer := runPausingToolFinalAnswer(&toolExecution.Step)
 		if l.Recorder != nil {
@@ -190,7 +191,6 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		return answer, true, err
 	}
 
-	appendToolExecutionMessages(llmExecutor, parser, toolExecution.Step)
 	return "", false, nil
 }
 

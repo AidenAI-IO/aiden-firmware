@@ -217,6 +217,58 @@ func TestRuntimeRunWaitForWakeupTerminatesRoleLoop(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunWaitForWakeupAppendsToolResultBeforeFinishing(t *testing.T) {
+	model := &scriptedModel{responses: []*llms.ContentResponse{
+		toolCallResponse("wait_1", "wait_for_wakeup", `{"reason":"user asked"}`),
+		contentResponse("resumed"),
+	}}
+	controller := NewWaitForWakeupController()
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"wait_for_wakeup": NewWaitForWakeupTool(controller),
+		}},
+		NewSkillIndex(),
+	)
+
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "go to sleep"}); err != nil {
+		t.Fatalf("first Run() error = %v", err)
+	}
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "continue"}); err != nil {
+		t.Fatalf("second Run() error = %v", err)
+	}
+	if len(model.messages) < 2 {
+		t.Fatalf("model calls = %d, want second run planner prompt", len(model.messages))
+	}
+
+	var foundToolCall, foundToolResponse bool
+	for _, msg := range model.messages[1] {
+		for _, part := range msg.Parts {
+			switch typed := part.(type) {
+			case llms.ToolCall:
+				if msg.Role == llms.ChatMessageTypeAI &&
+					typed.ID == "wait_1" &&
+					typed.FunctionCall != nil &&
+					typed.FunctionCall.Name == "wait_for_wakeup" {
+					foundToolCall = true
+				}
+			case llms.ToolCallResponse:
+				if msg.Role == llms.ChatMessageTypeTool &&
+					typed.ToolCallID == "wait_1" &&
+					strings.Contains(typed.Content, "wait_for_wakeup_requested") {
+					foundToolResponse = true
+				}
+			}
+		}
+	}
+	if !foundToolCall || !foundToolResponse {
+		t.Fatalf("second run prompt missing paired wait_for_wakeup scratchpad: found call=%v response=%v messages=%#v",
+			foundToolCall, foundToolResponse, model.messages[1])
+	}
+}
+
 func TestRuntimeRunWaitForWakeupDoesNotStreamWithoutModelText(t *testing.T) {
 	model := &scriptedModel{responses: []*llms.ContentResponse{
 		toolCallResponse("wait_1", "wait_for_wakeup", `{"reason":"user asked"}`),
