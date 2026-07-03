@@ -1,0 +1,136 @@
+#!/bin/sh
+# Bind the persistent root home into /root and align root's passwd entry.
+
+ROOT_HOME=${ROOT_HOME:-/root}
+USERDATA_DIR=${USERDATA_DIR:-/userdata}
+PERSISTENT_HOME=${PERSISTENT_HOME:-$USERDATA_DIR/userhome}
+PASSWD_FILE=${PASSWD_FILE:-/etc/passwd}
+MOUNT_BIN=${MOUNT_BIN:-mount}
+AWK_BIN=${AWK_BIN:-awk}
+MOUNTS_PATH=${MOUNTS_PATH:-/proc/mounts}
+
+path_is_mounted() {
+	path="$1"
+	[ -r "$MOUNTS_PATH" ] || return 1
+	"$AWK_BIN" -v target="$path" '
+		$2 == target { found = 1 }
+		END { exit found ? 0 : 1 }
+	' "$MOUNTS_PATH"
+}
+
+root_home_matches_passwd() {
+	[ -r "$PASSWD_FILE" ] || return 1
+	"$AWK_BIN" -F: -v root_home="$ROOT_HOME" '
+		$1 == "root" {
+			found = 1
+			ok = ($6 == root_home)
+			exit
+		}
+		END { exit found && ok ? 0 : 1 }
+	' "$PASSWD_FILE"
+}
+
+set_root_home_in_passwd() {
+	tmp="${PASSWD_FILE}.tmp.$$"
+	if ! "$AWK_BIN" -F: -v OFS=: -v root_home="$ROOT_HOME" '
+		$1 == "root" {
+			$6 = root_home
+			found = 1
+		}
+		{ print }
+		END { exit found ? 0 : 1 }
+	' "$PASSWD_FILE" > "$tmp"; then
+		rm -f "$tmp"
+		echo "S21root_home: failed to rewrite $PASSWD_FILE" >&2
+		return 1
+	fi
+	if ! mv "$tmp" "$PASSWD_FILE"; then
+		rm -f "$tmp"
+		echo "S21root_home: failed to update $PASSWD_FILE" >&2
+		return 1
+	fi
+	chmod 0644 "$PASSWD_FILE" 2>/dev/null || true
+	return 0
+}
+
+migrate_root_ssh_state() {
+	[ -d "$ROOT_HOME/.ssh" ] || return 0
+	mkdir -p "$PERSISTENT_HOME/.ssh"
+	chmod 0700 "$PERSISTENT_HOME/.ssh" 2>/dev/null || true
+
+	for name in authorized_keys known_hosts config; do
+		src="$ROOT_HOME/.ssh/$name"
+		dst="$PERSISTENT_HOME/.ssh/$name"
+		[ -r "$src" ] || continue
+		[ -e "$dst" ] || [ -L "$dst" ] && continue
+
+		tmp="${dst}.tmp.$$"
+		if cat "$src" > "$tmp"; then
+			mv "$tmp" "$dst"
+			chmod 0600 "$dst" 2>/dev/null || true
+		else
+			rm -f "$tmp"
+			echo "S21root_home: failed to migrate $src" >&2
+			return 1
+		fi
+	done
+	return 0
+}
+
+bind_root_home() {
+	if ! path_is_mounted "$USERDATA_DIR"; then
+		echo "S21root_home: $USERDATA_DIR is not mounted" >&2
+		return 1
+	fi
+
+	mkdir -p "$ROOT_HOME" "$PERSISTENT_HOME"
+	chmod 0700 "$PERSISTENT_HOME" 2>/dev/null || true
+	chown root:root "$PERSISTENT_HOME" 2>/dev/null || true
+
+	migrate_root_ssh_state || return 1
+
+	if path_is_mounted "$ROOT_HOME"; then
+		return 0
+	fi
+
+	"$MOUNT_BIN" -o bind "$PERSISTENT_HOME" "$ROOT_HOME"
+}
+
+start() {
+	if [ -r "$PASSWD_FILE" ] && ! root_home_matches_passwd; then
+		set_root_home_in_passwd || return 1
+	fi
+	bind_root_home
+}
+
+stop() {
+	echo "root home bind is managed at boot"
+}
+
+status() {
+	if path_is_mounted "$ROOT_HOME"; then
+		echo "root_home=bound"
+		return 0
+	fi
+	echo "root_home=unbound"
+	return 1
+}
+
+case "${1:-start}" in
+	start)
+		start
+		;;
+	stop)
+		stop
+		;;
+	restart|reload)
+		start
+		;;
+	status)
+		status
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart|reload|status}" >&2
+		exit 1
+		;;
+esac

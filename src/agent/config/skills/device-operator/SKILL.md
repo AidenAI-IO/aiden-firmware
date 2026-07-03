@@ -22,6 +22,8 @@ Always operate through a visual feedback loop:
 
 Do not perform multiple blind UI actions in a row. Base every coordinate, tap, swipe, and typed input on the latest visual state.
 
+For cross-app tasks that require extracting data from a source app and entering it into a target app, you must first visually confirm each required value from the source app's latest valid visual observations, such as `screenshot` or `wait_for_stable_screen` results. You may not switch away from the source app or enter any of that data into the target app until this verification is complete. Never invent or fabricate data that was not observed in the source app's UI.
+
 ## Tool Choice
 
 Prefer the highest-level reliable tool for the job:
@@ -159,6 +161,8 @@ Use this only when `screenshot`, post-action screenshots, or capture-related too
 
 If `screenshot` fails, output mentions `SERVICE_RECOVERING`, socket errors, empty image data, invalid screenshot JSON, or repeated post-action screenshot failure:
 
+Immediately pause all UI actions (tapping, typing, swiping, navigation) before executing the recovery sequence; no further UI actions may be taken until the capture service is restored and a valid screenshot is obtained.
+
 - Stop tapping, typing, swiping, and guessing from stale visual state.
 - Do not claim a UI task is complete without a fresh screenshot proving the target screen.
 
@@ -250,3 +254,4 @@ Before reporting success:
 - [ ] Text entry was only reported successful when the tool returned committed success or the latest screen visibly confirms it.
 - [ ] Any failed attempts were not repeated blindly.
 - [ ] If blocked, the response says what was tried and what evidence blocked progress.
+- [ ] Each required cross-app source value was visually confirmed from the source app's UI before being entered into a target app, with no invented or fabricated values.

@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -118,6 +119,49 @@ func TestEncodeFrameAsJPEGPassthroughForJPEG(t *testing.T) {
 	}
 	if !bytes.Equal(out, buf.Bytes()) {
 		t.Fatal("expected jpeg input to pass through unchanged")
+	}
+}
+
+func TestConvertFrameToRGBSupportsPNG(t *testing.T) {
+	srcImage := image.NewRGBA(image.Rect(0, 0, 2, 1))
+	srcImage.Set(0, 0, color.RGBA{R: 255, A: 255})
+	srcImage.Set(1, 0, color.RGBA{G: 255, A: 255})
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, srcImage); err != nil {
+		t.Fatalf("encode source png: %v", err)
+	}
+
+	meta := &frameMetadata{Width: 2, Height: 1, PixelFormat: "png"}
+	rgb, err := convertFrameToRGB(meta, buf.Bytes())
+	if err != nil {
+		t.Fatalf("convertFrameToRGB: %v", err)
+	}
+	want := []byte{255, 0, 0, 0, 255, 0}
+	if !bytes.Equal(rgb, want) {
+		t.Fatalf("rgb = %v, want %v", rgb, want)
+	}
+}
+
+func TestEncodeFrameAsJPEGConvertsPNG(t *testing.T) {
+	srcImage := image.NewRGBA(image.Rect(0, 0, 2, 1))
+	srcImage.Set(0, 0, color.RGBA{R: 255, A: 255})
+	srcImage.Set(1, 0, color.RGBA{G: 255, A: 255})
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, srcImage); err != nil {
+		t.Fatalf("encode source png: %v", err)
+	}
+
+	meta := &frameMetadata{Width: 2, Height: 1, PixelFormat: "png"}
+	out, err := encodeFrameAsJPEG(meta, buf.Bytes(), 80)
+	if err != nil {
+		t.Fatalf("encodeFrameAsJPEG: %v", err)
+	}
+	decoded, err := jpeg.Decode(bytes.NewReader(out))
+	if err != nil {
+		t.Fatalf("decode converted jpeg: %v", err)
+	}
+	if bounds := decoded.Bounds(); bounds.Dx() != 2 || bounds.Dy() != 1 {
+		t.Fatalf("decoded bounds = %v, want 2x1", bounds)
 	}
 }
 

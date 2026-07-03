@@ -46,6 +46,21 @@ for defconfig in \
     echo "$(basename "$defconfig") must enable BR2_REPRODUCIBLE so package builds use Buildroot's reproducible timestamp policy" >&2
     exit 1
   fi
+
+  if ! grep -q '^BR2_TAR_OPTIONS="--no-same-owner"$' "$defconfig"; then
+    echo "$(basename "$defconfig") must set BR2_TAR_OPTIONS=--no-same-owner so Dockerized Buildroot extracts archives without restoring unmappable owners" >&2
+    exit 1
+  fi
+
+  if ! grep -q '^BR2_PACKAGE_ANDROID_TOOLS_AIDEN=y$' "$defconfig"; then
+    echo "$(basename "$defconfig") must include the android-tools-aiden adb client (1.0.41) so the board can act as an ADB host" >&2
+    exit 1
+  fi
+
+  if grep -q '^BR2_PACKAGE_ANDROID_TOOLS_ADBD=y$' "$defconfig"; then
+    echo "$(basename "$defconfig") must not enable adbd; Aiden expects the board to run the adb client instead" >&2
+    exit 1
+  fi
 done
 
 if ! grep -q 'define sync_buildroot_board_config' "$PICO_SDK/sysdrv/Makefile" || \
@@ -61,18 +76,26 @@ if ! grep -q 'define refresh_buildroot_config_state' "$PICO_SDK/sysdrv/Makefile"
   exit 1
 fi
 
+buildroot_config_state_value="$(sed -n '/^define buildroot_config_state_value$/,/^endef$/p' "$PICO_SDK/sysdrv/Makefile")"
 refresh_buildroot_config_state="$(sed -n '/^define refresh_buildroot_config_state$/,/^endef$/p' "$PICO_SDK/sysdrv/Makefile")"
-if ! printf '%s\n' "$refresh_buildroot_config_state" | grep -q 'SOURCE_DATE_EPOCH'; then
+if ! printf '%s\n' "$refresh_buildroot_config_state" | grep -Fq '$(call buildroot_config_state_value)'; then
+  echo "pico-sdk Buildroot state refresh must use the shared Buildroot state value" >&2
+  exit 1
+fi
+
+buildroot_config_state_policy="$buildroot_config_state_value
+$refresh_buildroot_config_state"
+if ! printf '%s\n' "$buildroot_config_state_policy" | grep -q 'SOURCE_DATE_EPOCH'; then
   echo "pico-sdk Buildroot state must include SOURCE_DATE_EPOCH so stale package outputs are rebuilt when the reproducible epoch changes" >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$refresh_buildroot_config_state" | grep -q 'AIDEN_BUILDROOT_REPRODUCIBLE_STATE_VERSION'; then
+if ! printf '%s\n' "$buildroot_config_state_policy" | grep -q 'AIDEN_BUILDROOT_REPRODUCIBLE_STATE_VERSION'; then
   echo "pico-sdk Buildroot state must include an Aiden reproducibility state version to invalidate older runner caches" >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$refresh_buildroot_config_state" | grep -Fq 'sha256sum "$(SYSDRV_DIR)/Makefile"'; then
+if ! printf '%s\n' "$buildroot_config_state_policy" | grep -Fq 'sha256sum "$(SYSDRV_DIR)/Makefile"'; then
   echo "pico-sdk Buildroot state must include sysdrv/Makefile so reproducibility policy changes invalidate stale package outputs" >&2
   exit 1
 fi
@@ -101,7 +124,7 @@ if ! printf '%s\n' "$refresh_boardtools_config_state" | grep -q 'tools_board-cle
 fi
 
 if ! printf '%s\n' "$refresh_boardtools_config_state" | grep -q 'tools/board/toolkits/openssl'; then
-  echo "pico-sdk board tool state must include board OpenSSL inputs because adbd links against that cached output" >&2
+  echo "pico-sdk board tool state must include board OpenSSL inputs because adb-related tooling links against that cached output" >&2
   exit 1
 fi
 

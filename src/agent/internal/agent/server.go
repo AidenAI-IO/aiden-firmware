@@ -46,10 +46,13 @@ type Server struct {
 	ttsManager           *tts.ProviderManager
 	ttsMu                sync.RWMutex
 	audioClient          *AudioServiceClient
+	screenCaptureMu      sync.Mutex
+	screenCaptureClient  *ScreenCaptureClient
 	recordMu             sync.Mutex
 	webRecording         *webAudioRecording
 	sttConfigTestSession *sttConfigTestLiveSession
 	bridge               *PhoneBridge
+	androidADB           androidADBController
 	liveActivity         *LiveActivityManager
 	pendingResults       map[string]*chatPendingResult
 	pendingResultsMu     sync.Mutex
@@ -336,7 +339,9 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		userFilesReportPath: "/userdata/agent/files_report.html",
 		userFilesToolsDir:   "/userdata/agent_tools",
 		history:             make([]Message, 0),
+		screenCaptureClient: NewScreenCaptureClient(runtime.config.HID.FrameSocketOrDefault()),
 		bridge:              bridge,
+		androidADB:          NewAndroidADBManager(runtime.config.HID.FrameSocketOrDefault(), runtime.logger),
 		liveActivity:        NewLiveActivityManager(runtime.config.LiveActivity, runtime.logger),
 		pendingResults:      make(map[string]*chatPendingResult),
 		activeRuns:          make(map[string]context.CancelFunc),
@@ -436,6 +441,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/phone-bridge/commands", s.handlePhoneBridgeCommands)
 	mux.HandleFunc("/api/phone-bridge/results", s.handlePhoneBridgeResults)
 	mux.HandleFunc("/api/phone-bridge/results/", s.handlePhoneBridgeResults)
+	mux.HandleFunc("/api/android-adb/status", s.handleAndroidADBStatus)
+	mux.HandleFunc("/api/android-adb/pair", s.handleAndroidADBPair)
 
 	// Coordinate debug tool and its screenshot feed. Exposes live screen data,
 	// so it is intentionally available on all listen addresses (including the
@@ -504,9 +511,10 @@ func isLoopbackServerAddr(addr string) bool {
 }
 
 // handleChat handles chat requests.
-// When req.RequestID is present, runs asynchronously: returns {request_id} immediately,
+// Runs asynchronously: generates request_id if not provided, returns {request_id} immediately,
 // agent runs in a background goroutine, and intermediate tool_call messages become
 // available via GET /api/chat/result?request_id=xxx&offset=N.
+// For streaming responses, set Accept: application/x-ndjson or X-Aiden-Stream: ndjson.
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -523,6 +531,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.RequestID = strings.TrimSpace(req.RequestID)
+	if req.RequestID == "" {
+		req.RequestID = createRequestID()
+	}
 
 	turnInput, historyAttachments, err := s.resolveRequestInput(req)
 	if err != nil {
@@ -533,14 +544,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	userMsg := messageFromTurnInput(turnInput, episodeID, req.RequestID, historyAttachments, time.Now())
 
-	// Async path — when the client provides a request_id
-	if req.RequestID != "" {
-		s.handleChatAsync(w, r, req, turnInput, userMsg)
-		return
-	}
-
-	// Sync path — legacy behaviour for web UI and clients without request_id
-	s.handleChatSync(w, r, req, turnInput, userMsg)
+	s.handleChatAsync(w, r, req, turnInput, userMsg)
 }
 
 func (s *Server) handleChatCancel(w http.ResponseWriter, r *http.Request) {
@@ -885,6 +889,10 @@ func createSteerID() string {
 	return "steer-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 }
 
+func createRequestID() string {
+	return "req-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+}
+
 // handleChatAsync runs the agent in a background goroutine and returns
 // {request_id} immediately. Intermediate results are pushed into
 // chatPendingResult and served by handleChatResult.
@@ -1219,126 +1227,6 @@ func (s *Server) liveActivityPhoneID(req ChatRequest) string {
 	return ""
 }
 
-// handleChatSync is the original synchronous chat handler, kept for the web UI
-// and any clients that don't provide a request_id.
-func (s *Server) handleChatSync(
-	w http.ResponseWriter,
-	r *http.Request,
-	req ChatRequest,
-	turnInput TurnInput,
-	userMsg Message,
-) {
-	ctx := r.Context()
-	episodeID := userMsg.EpisodeID
-	inputText := turnInput.InputText
-
-	if s.logger != nil {
-		s.logger.Info("Chat request (sync): %s attachments=%d", inputText, len(turnInput.Attachments))
-	}
-
-	s.playPromptSoundAsync(promptSoundAgentSend, "agent send")
-	s.appendHistory(userMsg)
-	progress := s.newRunProgressSpeaker()
-	defer progress.Cancel()
-
-	runReq := RunRequest{
-		Input:             inputText,
-		Attachments:       turnInput.Attachments,
-		Turn:              turnInput,
-		Skills:            req.Skills,
-		EpisodeID:         episodeID,
-		RequestID:         req.RequestID,
-		DeviceEnvironment: s.bridgeEnvironment(),
-		RuntimeContext:    s.runtimeContext(),
-		StreamFinalChunks: true,
-		EventHandler: func(event RunEvent) {
-			s.appendHistory(messageFromRunEvent(event, episodeID, ""))
-			if text := s.toolCallSpeechText(event); text != "" {
-				go s.speakToolContent(r.Context(), text)
-			}
-			if event.Type == runEventTodoUpdate && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
-				if text, ok := progressSpeechTextForEvent(event); ok {
-					progress.Schedule(ctx, text)
-				}
-			}
-		},
-	}
-
-	var newStream *streamSessionWriter
-	ttsManager := s.currentTTSManager()
-
-	if s.runtime.config.VoiceStreamingTTSEnabledOrDefault() && s.audioClient != nil {
-		if ttsManager != nil {
-			stream, err := beginManagedTTSStream(ctx, ttsManager, s.audioClient, s.runtime.config)
-			if err != nil {
-				if s.logger != nil {
-					s.logger.Warn("TTS BeginStream failed: %v", err)
-				}
-			} else {
-				newStream = stream
-				runReq.StreamWriter = newCancelOnFirstWriteWriter(speechStreamWriterForConfig(newStream, s.runtime.config), progress.Cancel)
-			}
-		}
-	}
-
-	result, err := s.runtime.Run(ctx, runReq)
-	progress.Cancel()
-	if newStream != nil {
-		closeErr := newStream.closeAndWait()
-		if closeErr != nil && s.logger != nil {
-			s.logger.Error("new TTS stream failed: %v", closeErr)
-		}
-		result.SpeechStreamed = closeErr == nil && newStream.spokeSuccessfully()
-	}
-
-	if err != nil {
-		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
-			if s.logger != nil {
-				s.logger.Info("Agent run canceled")
-			}
-			http.Error(w, "Request canceled", http.StatusRequestTimeout)
-			return
-		}
-		s.appendHistory(Message{
-			Type:      "episode_status",
-			EpisodeID: episodeID,
-			Status:    "failed",
-			Content:   "Agent error: " + err.Error(),
-			Timestamp: time.Now(),
-			IsError:   true,
-		})
-		if s.logger != nil {
-			s.logger.Error("Agent run failed: %v", err)
-		}
-		http.Error(w, fmt.Sprintf("Agent error: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	s.appendHistory(Message{
-		Type:      "assistant",
-		EpisodeID: firstNonEmptyString([]string{result.EpisodeID, episodeID}),
-		Status:    "completed",
-		Content:   result.Output,
-		Timestamp: time.Now(),
-	})
-	historySnapshot := s.historySnapshot()
-
-	speechText := result.SpokenTextForConfig(s.runtime.config)
-	if s.audioClient != nil && speechText != "" && !result.SpeechStreamed {
-		go func(text string) {
-			// Keep legacy sync chat TTS tied to the request lifecycle so a UI stop
-			// or disconnect does not leave playback running in the background.
-			s.speakFinalText(ctx, req.RequestID, text)
-		}(speechText)
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(ChatResponse{
-		Response: result.Output,
-		History:  historySnapshot,
-	})
-}
-
 func (s *Server) runtimeContext() string {
 	if s.bridge == nil {
 		return ""
@@ -1380,6 +1268,9 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.RequestID = strings.TrimSpace(req.RequestID)
+	if req.RequestID == "" {
+		req.RequestID = createRequestID()
+	}
 
 	turnInput, historyAttachments, err := s.resolveRequestInput(req)
 	if err != nil {
@@ -1403,28 +1294,24 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 
 	s.playPromptSoundAsync(promptSoundAgentSend, "agent send")
 
-	ctx := r.Context()
-	cleanupRun := func() {}
-	cleanupRunAtReturn := true
-	if req.RequestID != "" {
-		// A request_id marks a resumable run. Keep it alive if the streaming
-		// HTTP client disconnects; only /api/chat/cancel should stop it.
-		runCtx, cancel := context.WithCancel(context.Background())
-		if !s.registerActiveRun(req.RequestID, cancel) {
-			cancel()
-			http.Error(w, "request_id already in use", http.StatusConflict)
-			return
-		}
-		var cleanupOnce sync.Once
-		cleanupRun = func() {
-			cleanupOnce.Do(func() {
-				s.unregisterActiveRun(req.RequestID)
-				s.clearPendingSteer(req.RequestID)
-				cancel()
-			})
-		}
-		ctx = runCtx
+	// A request_id marks a resumable run. Keep it alive if the streaming
+	// HTTP client disconnects; only /api/chat/cancel should stop it.
+	runCtx, cancel := context.WithCancel(context.Background())
+	if !s.registerActiveRun(req.RequestID, cancel) {
+		cancel()
+		http.Error(w, "request_id already in use", http.StatusConflict)
+		return
 	}
+	var cleanupOnce sync.Once
+	cleanupRun := func() {
+		cleanupOnce.Do(func() {
+			s.unregisterActiveRun(req.RequestID)
+			s.clearPendingSteer(req.RequestID)
+			cancel()
+		})
+	}
+	ctx := runCtx
+	cleanupRunAtReturn := true
 	defer func() {
 		if cleanupRunAtReturn {
 			cleanupRun()
@@ -1433,7 +1320,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	s.appendHistory(userMessage)
 	progress := s.newRunProgressSpeaker()
 	defer progress.Cancel()
-	if req.RequestID != "" && s.liveActivity != nil {
+	if s.liveActivity != nil {
 		s.liveActivity.StartTask(req.RequestID, inputText, s.liveActivityPhoneID(req))
 	}
 
@@ -1447,7 +1334,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		DeviceEnvironment:       s.bridgeEnvironment(),
 		RuntimeContext:          s.runtimeContext(),
 		StreamFinalChunks:       true,
-		AsyncEpisodeMaintenance: req.RequestID != "",
+		AsyncEpisodeMaintenance: true,
 		SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
 			return s.consumePendingSteer(req.RequestID)
 		},
@@ -1455,7 +1342,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			message := messageFromRunEvent(event, episodeID, req.RequestID)
 			s.appendHistory(message)
 			stream.Write(ChatStreamEvent{Type: "message", Message: &message})
-			if req.RequestID != "" && s.liveActivity != nil {
+			if s.liveActivity != nil {
 				s.liveActivity.UpdateFromRunEvent(req.RequestID, event)
 			}
 			if text := s.toolCallSpeechText(event); text != "" {
@@ -1505,7 +1392,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		canceled := errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled)
-		if req.RequestID != "" && s.liveActivity != nil {
+		if s.liveActivity != nil {
 			if canceled {
 				s.liveActivity.CancelTask(req.RequestID)
 			} else {
@@ -1548,21 +1435,17 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	s.appendHistory(assistantMessage)
 	stream.Write(ChatStreamEvent{Type: "message", Message: &assistantMessage})
 	historySnapshot := s.historySnapshot()
-	if req.RequestID != "" && s.liveActivity != nil {
+	if s.liveActivity != nil {
 		s.liveActivity.CompleteTask(req.RequestID, result.Output)
 	}
 
 	speechText := result.SpokenTextForConfig(s.runtime.config)
 	if s.audioClient != nil && speechText != "" && !result.SpeechStreamed {
-		finalTTSCtx := ctx
-		finishRun := func() {}
-		if req.RequestID != "" {
-			// Let request-scoped final TTS outlive the streaming handler while
-			// /api/chat/cancel can still interrupt it via the active run/output.
-			finalTTSCtx = context.Background()
-			finishRun = cleanupRun
-			cleanupRunAtReturn = false
-		}
+		// Let request-scoped final TTS outlive the streaming handler while
+		// /api/chat/cancel can still interrupt it via the active run/output.
+		finalTTSCtx := context.Background()
+		finishRun := cleanupRun
+		cleanupRunAtReturn = false
 		go func(text string, ttsCtx context.Context, finish func()) {
 			defer finish()
 			s.speakFinalText(ttsCtx, req.RequestID, text)

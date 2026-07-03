@@ -34,6 +34,17 @@ func (s *Server) handleScreenshotJPEG(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Frame-Height", fmt.Sprintf("%d", result.Height))
 	w.Header().Set("X-Source-Width", fmt.Sprintf("%d", result.SourceWidth))
 	w.Header().Set("X-Source-Height", fmt.Sprintf("%d", result.SourceHeight))
+	if result.CaptureBackend != "" {
+		w.Header().Set("X-Capture-Backend", result.CaptureBackend)
+	}
+	if result.ADBDevice != nil {
+		w.Header().Set("X-Adb-Device-Valid", "true")
+		w.Header().Set("X-Adb-Device-Serial", result.ADBDevice.Serial)
+		w.Header().Set("X-Adb-Device-Name", result.ADBDevice.Name)
+		w.Header().Set("X-Adb-Device-State", result.ADBDevice.State)
+	} else {
+		w.Header().Set("X-Adb-Device-Valid", "false")
+	}
 	if result.OriginalScreenWidthPixels != nil && result.OriginalScreenHeightPixels != nil {
 		w.Header().Set("X-Original-Screen-Width", fmt.Sprintf("%d", *result.OriginalScreenWidthPixels))
 		w.Header().Set("X-Original-Screen-Height", fmt.Sprintf("%d", *result.OriginalScreenHeightPixels))

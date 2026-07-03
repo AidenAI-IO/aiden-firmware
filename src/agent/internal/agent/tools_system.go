@@ -571,10 +571,7 @@ func (t *WaitForWakeupTool) Description() string {
 
 func (t *WaitForWakeupTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"reason": map[string]any{
-			"type":        "string",
-			"description": "Optional reason for returning to wakeup-waiting mode.",
-		},
+		"reason": stringArgSchema("Optional reason for returning to wakeup-waiting mode."),
 	})
 }
 

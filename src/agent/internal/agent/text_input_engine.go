@@ -26,21 +26,26 @@ type textInputEngine struct {
 }
 
 type enterTextInFieldArgs struct {
-	Text        string         `json:"text"`
-	Platform    string         `json:"platform,omitempty"`
-	Mode        string         `json:"mode,omitempty"`
-	SkipFocus   bool           `json:"skip_focus,omitempty"`
-	Focus       focusPointArgs `json:"focus"`
-	MaxAttempts int            `json:"max_attempts,omitempty"`
-	Segments    []string       `json:"segments,omitempty"`
+	Text             string         `json:"text"`
+	Platform         string         `json:"platform,omitempty"`
+	Mode             string         `json:"mode,omitempty"`
+	SkipFocus        bool           `json:"skip_focus,omitempty"`
+	Focus            focusPointArgs `json:"focus"`
+	MaxAttempts      int            `json:"max_attempts,omitempty"`
+	Segments         []string       `json:"segments,omitempty"`
+	SendAfterCommit  bool           `json:"send_after_commit,omitempty"`
+	ClearBeforeInput bool           `json:"-"`
 }
 
 type enterTextInFieldResult struct {
 	OK                 bool     `json:"ok"`
 	Committed          bool     `json:"committed"`
+	Sent               bool     `json:"sent,omitempty"`
+	SendVerified       bool     `json:"send_verified,omitempty"`
 	Interrupted        bool     `json:"interrupted,omitempty"`
 	TargetText         string   `json:"target_text"`
 	FieldText          string   `json:"field_text,omitempty"`
+	PostSendFieldText  string   `json:"post_send_field_text,omitempty"`
 	RequiredMode       string   `json:"required_mode"`
 	Mode               string   `json:"mode,omitempty"`
 	Attempts           int      `json:"attempts"`
@@ -101,6 +106,13 @@ func (e *textInputEngine) Run(ctx context.Context, args enterTextInFieldArgs) (e
 		if (attempt == 1 || retype) && !(attempt == 1 && args.SkipFocus) {
 			if err := e.applyFocus(ctx, args.Focus); err != nil {
 				return enterTextInFieldResult{TargetText: args.Text, RequiredMode: string(requiredMode), Mode: string(interactionMode), Attempts: attempt, Reason: err.Error(), Steps: steps, VLMCalls: vlmCalls}, nil
+			}
+		}
+		if attempt == 1 && args.ClearBeforeInput {
+			if err := e.clearField(ctx, platform); err != nil {
+				steps = append(steps, "clear field before input failed: "+err.Error())
+			} else {
+				steps = append(steps, "cleared field before input")
 			}
 		}
 		if attempt > 1 && retryWrongIME {
@@ -173,11 +185,12 @@ func (e *textInputEngine) Run(ctx context.Context, args enterTextInFieldArgs) (e
 				continue
 			}
 			if committed {
-				return enterTextInFieldResult{
+				result := enterTextInFieldResult{
 					OK: true, Committed: true, TargetText: args.Text, FieldText: fieldText,
 					RequiredMode: string(requiredMode), Attempts: attempt, IMESwitches: imeSwitches,
 					Mode: string(interactionMode), VLMCalls: vlmCalls, Reason: "field verified", Steps: steps,
-				}, nil
+				}
+				return finalizeEnterTextInFieldResult(result, args.SendAfterCommit), nil
 			}
 			if interactionMode == textInputModeSearch {
 				analysis, calls, stepNotes, analyzeErr := e.analyzeScreen(ctx, platform, args, segments)
@@ -212,7 +225,7 @@ func (e *textInputEngine) Run(ctx context.Context, args enterTextInFieldArgs) (e
 			continue
 		}
 		if committed {
-			return enterTextInFieldResult{
+			result := enterTextInFieldResult{
 				OK:           true,
 				Committed:    true,
 				TargetText:   args.Text,
@@ -224,7 +237,8 @@ func (e *textInputEngine) Run(ctx context.Context, args enterTextInFieldArgs) (e
 				VLMCalls:     vlmCalls,
 				Reason:       "field verified",
 				Steps:        steps,
-			}, nil
+			}
+			return finalizeEnterTextInFieldResult(result, args.SendAfterCommit), nil
 		}
 		steps = append(steps, fmt.Sprintf("verify failed: field=%q", fieldText))
 		retryWrongIME = wrongIME

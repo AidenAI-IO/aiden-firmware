@@ -59,28 +59,30 @@ type TaskEpisodeOutcome struct {
 }
 
 type TaskEpisodeEvent struct {
-	EventID            string              `json:"event_id" yaml:"event_id"`
-	Ts                 string              `json:"ts" yaml:"ts"`
-	Type               string              `json:"type" yaml:"type"`
-	Role               string              `json:"role,omitempty" yaml:"role,omitempty"`
-	Objective          string              `json:"objective,omitempty" yaml:"objective,omitempty"`
-	CompletionCriteria []string            `json:"completion_criteria,omitempty" yaml:"completion_criteria,omitempty"`
-	Plan               []string            `json:"plan,omitempty" yaml:"plan,omitempty"`
-	NextStep           string              `json:"next_step,omitempty" yaml:"next_step,omitempty"`
-	ToolName           string              `json:"tool_name,omitempty" yaml:"tool_name,omitempty"`
-	ToolInput          string              `json:"tool_input,omitempty" yaml:"tool_input,omitempty"`
-	ToolError          *ToolError          `json:"tool_error,omitempty" yaml:"tool_error,omitempty"`
-	Content            string              `json:"content,omitempty" yaml:"content,omitempty"`
-	Todo               *TodoState          `json:"todo,omitempty" yaml:"todo,omitempty"`
-	SpeechEligible     bool                `json:"speech_eligible,omitempty" yaml:"speech_eligible,omitempty"`
-	Observation        string              `json:"observation,omitempty" yaml:"observation,omitempty"`
-	ScreenshotRef      string              `json:"screenshot_ref,omitempty" yaml:"screenshot_ref,omitempty"`
-	CanFinish          *bool               `json:"can_finish,omitempty" yaml:"can_finish,omitempty"`
-	NeedsReplan        bool                `json:"needs_replan,omitempty" yaml:"needs_replan,omitempty"`
-	Reason             string              `json:"reason,omitempty" yaml:"reason,omitempty"`
-	IsError            bool                `json:"is_error,omitempty" yaml:"is_error,omitempty"`
-	ObservedState      *observedWorldState `json:"observed_state,omitempty" yaml:"observed_state,omitempty"`
-	RawObservation     string              `json:"-" yaml:"-"`
+	EventID            string                 `json:"event_id" yaml:"event_id"`
+	Ts                 string                 `json:"ts" yaml:"ts"`
+	Type               string                 `json:"type" yaml:"type"`
+	Role               string                 `json:"role,omitempty" yaml:"role,omitempty"`
+	Objective          string                 `json:"objective,omitempty" yaml:"objective,omitempty"`
+	CompletionCriteria []string               `json:"completion_criteria,omitempty" yaml:"completion_criteria,omitempty"`
+	Plan               []string               `json:"plan,omitempty" yaml:"plan,omitempty"`
+	NextStep           string                 `json:"next_step,omitempty" yaml:"next_step,omitempty"`
+	ToolName           string                 `json:"tool_name,omitempty" yaml:"tool_name,omitempty"`
+	ToolInput          string                 `json:"tool_input,omitempty" yaml:"tool_input,omitempty"`
+	ToolError          *ToolError             `json:"tool_error,omitempty" yaml:"tool_error,omitempty"`
+	Content            string                 `json:"content,omitempty" yaml:"content,omitempty"`
+	Todo               *TodoState             `json:"todo,omitempty" yaml:"todo,omitempty"`
+	SpeechEligible     bool                   `json:"speech_eligible,omitempty" yaml:"speech_eligible,omitempty"`
+	Observation        string                 `json:"observation,omitempty" yaml:"observation,omitempty"`
+	ScreenshotRef      string                 `json:"screenshot_ref,omitempty" yaml:"screenshot_ref,omitempty"`
+	CanFinish          *bool                  `json:"can_finish,omitempty" yaml:"can_finish,omitempty"`
+	NeedsReplan        bool                   `json:"needs_replan,omitempty" yaml:"needs_replan,omitempty"`
+	Reason             string                 `json:"reason,omitempty" yaml:"reason,omitempty"`
+	IsError            bool                   `json:"is_error,omitempty" yaml:"is_error,omitempty"`
+	ObservedState      *observedWorldState    `json:"observed_state,omitempty" yaml:"observed_state,omitempty"`
+	RawObservation     string                 `json:"-" yaml:"-"`
+	DurationMs         *int64                 `json:"duration_ms,omitempty" yaml:"duration_ms,omitempty"`
+	Metadata           map[string]interface{} `json:"metadata,omitempty" yaml:"metadata,omitempty"`
 }
 
 type EpisodeQuery struct {
@@ -181,6 +183,18 @@ func (r *EpisodeRecorder) ID() string {
 	return r.id
 }
 
+func (r *EpisodeRecorder) setStartedAtIfEarlier(startedAt time.Time) {
+	if r == nil || startedAt.IsZero() {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	startedAt = startedAt.UTC()
+	if r.startedAt.IsZero() || startedAt.Before(r.startedAt) {
+		r.startedAt = startedAt
+	}
+}
+
 func (r *EpisodeRecorder) visualArtifactRoot() string {
 	if r == nil {
 		return ""
@@ -268,6 +282,13 @@ func (r *EpisodeRecorder) RecordTodoClosed(todo TodoState, reason string) {
 	})
 }
 
+func (r *EpisodeRecorder) RecordEvent(event TaskEpisodeEvent) {
+	if r == nil {
+		return
+	}
+	r.append(event)
+}
+
 func (r *EpisodeRecorder) RecordPlannerDecision(decision plannerDecision) {
 	if r == nil {
 		return
@@ -325,6 +346,10 @@ func (r *EpisodeRecorder) recordExecutionForRole(result roleExecutionResult, rol
 			IsError:     result.ToolError != nil,
 			ToolError:   cloneToolError(result.ToolError),
 		}
+		if result.ToolDuration > 0 {
+			durationMs := result.ToolDuration.Milliseconds()
+			event.DurationMs = &durationMs
+		}
 		if result.Step.Action.Tool != "" {
 			event.ToolName = result.Step.Action.Tool
 			event.ToolInput = normalizeToolInput(result.Step.Action.ToolInput)
@@ -374,6 +399,9 @@ func (r *EpisodeRecorder) Finish(output string, metrics *RunMetrics, runErr erro
 		}
 		if metrics.FirstTokenTime > 0 {
 			episode.Extra["first_token_time_ms"] = metrics.FirstTokenTime
+		}
+		if metrics.CachedPromptTokens > 0 {
+			episode.Extra["cached_prompt_tokens"] = metrics.CachedPromptTokens
 		}
 	}
 	if runErr != nil {

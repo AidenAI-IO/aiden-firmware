@@ -11,11 +11,13 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
+	"image/png"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -170,11 +172,38 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
 	}
 
-	var resp ChatResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
+	var startResp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&startResp); err != nil {
+		t.Fatalf("decode start response: %v", err)
+	}
+	requestID := startResp["request_id"]
+	if requestID == "" {
+		t.Fatalf("missing request_id in response: %#v", startResp)
 	}
 
+	// Poll for result
+	var resp ChatResultResponse
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		resultReq := httptest.NewRequest(http.MethodGet, "/api/chat/result?request_id="+requestID, nil)
+		resultRec := httptest.NewRecorder()
+		server.handleChatResult(resultRec, resultReq)
+		if resultRec.Code != http.StatusOK {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		if err := json.NewDecoder(resultRec.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode result response: %v", err)
+		}
+		if resp.Status == "complete" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if resp.Status != "complete" {
+		t.Fatalf("result never completed: status=%q", resp.Status)
+	}
 	if resp.Response != "The current audio volume is 42." {
 		t.Fatalf("unexpected response: %q", resp.Response)
 	}
@@ -236,9 +265,37 @@ func TestServerPersistsChatHistoryWithEpisodeReference(t *testing.T) {
 		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
 	}
 
-	var resp ChatResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
+	var startResp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&startResp); err != nil {
+		t.Fatalf("decode start response: %v", err)
+	}
+	requestID := startResp["request_id"]
+	if requestID == "" {
+		t.Fatalf("missing request_id in response: %#v", startResp)
+	}
+
+	// Poll for result
+	var resp ChatResultResponse
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		resultReq := httptest.NewRequest(http.MethodGet, "/api/chat/result?request_id="+requestID, nil)
+		resultRec := httptest.NewRecorder()
+		server.handleChatResult(resultRec, resultReq)
+		if resultRec.Code != http.StatusOK {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		if err := json.NewDecoder(resultRec.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode result response: %v", err)
+		}
+		if resp.Status == "complete" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if resp.Status != "complete" {
+		t.Fatalf("result never completed: status=%q", resp.Status)
 	}
 	assistant, ok := firstMessageOfType(resp.History, "assistant")
 	if !ok || assistant.EpisodeID == "" {
@@ -964,6 +1021,91 @@ func TestHandleScreenshotJPEGUpdatesSharedScreenStateFromPhoneAspectRatio(t *tes
 	}
 }
 
+func TestHandleScreenshotJPEGIncludesADBDeviceHeadersWhenFallbackUsed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test shell script uses /bin/sh")
+	}
+
+	img := image.NewRGBA(image.Rect(0, 0, 2, 1))
+	img.Set(0, 0, color.RGBA{R: 255, A: 255})
+	img.Set(1, 0, color.RGBA{G: 255, A: 255})
+	var pngBuf bytes.Buffer
+	if err := png.Encode(&pngBuf, img); err != nil {
+		t.Fatalf("png.Encode() error = %v", err)
+	}
+
+	tmpDir := t.TempDir()
+	pngPath := filepath.Join(tmpDir, "screen.png")
+	if err := os.WriteFile(pngPath, pngBuf.Bytes(), 0o644); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", pngPath, err)
+	}
+
+	adbPath := filepath.Join(tmpDir, "adb")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"devices\" ] && [ \"$2\" = \"-l\" ]; then\n" +
+		"  printf 'List of devices attached\\nserial123\\tdevice product:panther model:Pixel_7_Pro device:panther transport_id:1\\n'\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"if [ \"$1\" = \"-s\" ] && [ \"$2\" = \"serial123\" ] && [ \"$3\" = \"exec-out\" ] && [ \"$4\" = \"screencap\" ] && [ \"$5\" = \"-p\" ]; then\n" +
+		"  cat \"$AIDEN_TEST_PNG\"\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"echo \"unexpected args: $@\" >&2\n" +
+		"exit 1\n"
+	if err := os.WriteFile(adbPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", adbPath, err)
+	}
+
+	t.Setenv("AIDEN_ADB_PATH", adbPath)
+	t.Setenv("AIDEN_TEST_PNG", pngPath)
+	t.Setenv("AIDEN_ADB_SERIAL", "")
+	t.Setenv("ANDROID_SERIAL", "")
+
+	runtime := NewRuntimeWithDeps(
+		Config{
+			Model: ModelConfig{Provider: "fake"},
+			HID:   HIDConfig{FrameSocket: filepath.Join(tmpDir, "missing-frame.sock")},
+		},
+		&testModelResolver{},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	server := NewServer(runtime, ":0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/screenshot.jpg", nil)
+	rec := httptest.NewRecorder()
+
+	server.handleScreenshotJPEG(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Capture-Backend"); got != "adb" {
+		t.Fatalf("X-Capture-Backend = %q, want adb", got)
+	}
+	if got := rec.Header().Get("X-Adb-Device-Valid"); got != "true" {
+		t.Fatalf("X-Adb-Device-Valid = %q, want true", got)
+	}
+	if got := rec.Header().Get("X-Adb-Device-Serial"); got != "serial123" {
+		t.Fatalf("X-Adb-Device-Serial = %q, want serial123", got)
+	}
+	if got := rec.Header().Get("X-Adb-Device-Name"); got != "Pixel 7 Pro" {
+		t.Fatalf("X-Adb-Device-Name = %q, want Pixel 7 Pro", got)
+	}
+	if got := rec.Header().Get("X-Adb-Device-State"); got != "device" {
+		t.Fatalf("X-Adb-Device-State = %q, want device", got)
+	}
+
+	decoded, err := jpeg.Decode(bytes.NewReader(rec.Body.Bytes()))
+	if err != nil {
+		t.Fatalf("jpeg.Decode() error = %v", err)
+	}
+	if bounds := decoded.Bounds(); bounds.Dx() != 2 || bounds.Dy() != 1 {
+		t.Fatalf("decoded jpeg bounds = %v, want 2x1", bounds)
+	}
+}
+
 func TestHandleCoordinateDebugTapRecapturesUncroppedScreenshot(t *testing.T) {
 	frameSocket := startFakeFrameServiceSocket(t, func(req map[string]any) (string, []byte) {
 		if format, _ := req["format"].(string); format != "raw" {
@@ -1289,106 +1431,6 @@ func TestServerShouldSpeakToolCallRequiresTTSTag(t *testing.T) {
 	}
 	if !server.shouldSpeakToolCall(RunEvent{Type: runEventToolCall, ToolName: "audio_volume", Content: "Checking.\n<tts>Check the current volume.</tts>"}) {
 		t.Fatal("tagged audio_volume tool content should be spoken")
-	}
-}
-
-func TestServerHandleChatUsesRequestContextForRun(t *testing.T) {
-	model := &cancelAwareModel{started: make(chan struct{}), seen: make(chan error, 1)}
-	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}},
-		&testModelResolver{model: model},
-		NewMemoryManager(""),
-		&ToolSet{tools: map[string]langtools.Tool{}},
-		NewSkillIndex(),
-	)
-	server := NewServer(runtime, ":0")
-
-	ctx, cancel := context.WithCancel(context.Background())
-	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"hello"}`)).WithContext(ctx)
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-
-	done := make(chan struct{})
-	go func() {
-		server.handleChat(rec, req)
-		close(done)
-	}()
-
-	select {
-	case <-model.started:
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("runtime did not start model call")
-	}
-	cancel()
-
-	select {
-	case err := <-model.seen:
-		if err == nil {
-			t.Fatal("model saw nil context error, want request cancellation")
-		}
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("runtime did not receive request context cancellation")
-	}
-	select {
-	case <-done:
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("handleChat did not return after request cancellation")
-	}
-}
-
-func TestServerHandleChatSyncUsesRequestContextForFinalTTS(t *testing.T) {
-	streamingDisabled := false
-	model := &scriptedModel{
-		responses: roleDirectResponses("Hello from sync final TTS.\n<tts>Hello from sync final TTS.</tts>"),
-	}
-	runtime := NewRuntimeWithDeps(
-		Config{
-			Model:                    ModelConfig{Provider: "fake"},
-			Instruction:              "Answer directly.",
-			VoiceStreamingTTSEnabled: &streamingDisabled,
-		},
-		&testModelResolver{model: model},
-		NewMemoryManager(""),
-		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
-		NewSkillIndex(),
-	)
-	provider := newInterruptibleAudioTTSProvider("server-provider", 48000, true)
-	audioOps := &recordedAudioOps{}
-	server := NewServer(runtime, ":0")
-	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
-	server.audioClient = NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, audioOps))
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"hello"}`)).WithContext(ctx)
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-
-	server.handleChat(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
-	}
-	waitForTestSignal(t, provider.firstWriteDone(), "sync final TTS playback to start")
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for audioOps.countOp("start_playback") == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("sync final TTS playback never opened a playback session")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	cancel()
-
-	deadline = time.Now().Add(500 * time.Millisecond)
-	for audioOps.countOp("stop_playback") == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("sync final TTS playback did not stop after request cancellation")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if got := audioOps.finalChunkCountAfterFirstStop(); got != 0 {
-		t.Fatalf("final write_play_chunk count after stop = %d, want 0", got)
 	}
 }
 
@@ -2080,9 +2122,11 @@ func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
 		NewSkillIndex(),
 	)
 	server := &Server{
-		runtime:   runtime,
-		history:   make([]Message, 0),
-		sttClient: stt,
+		runtime:        runtime,
+		history:        make([]Message, 0),
+		sttClient:      stt,
+		pendingResults: make(map[string]*chatPendingResult),
+		activeRuns:     make(map[string]context.CancelFunc),
 	}
 
 	payload, err := json.Marshal(ChatRequest{
@@ -2106,15 +2150,44 @@ func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
 	}
+
+	var startResp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&startResp); err != nil {
+		t.Fatalf("decode start response: %v", err)
+	}
+	requestID := startResp["request_id"]
+	if requestID == "" {
+		t.Fatalf("missing request_id in response: %#v", startResp)
+	}
+
+	// STT should have been called during input processing
 	if len(stt.inputs) != 1 {
 		t.Fatalf("expected 1 STT invocation, got %d", len(stt.inputs))
 	}
 
-	var resp ChatResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
+	// Poll for result
+	var resp ChatResultResponse
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		resultReq := httptest.NewRequest(http.MethodGet, "/api/chat/result?request_id="+requestID, nil)
+		resultRec := httptest.NewRecorder()
+		server.handleChatResult(resultRec, resultReq)
+		if resultRec.Code != http.StatusOK {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		if err := json.NewDecoder(resultRec.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode result response: %v", err)
+		}
+		if resp.Status == "complete" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 
+	if resp.Status != "complete" {
+		t.Fatalf("result never completed: status=%q", resp.Status)
+	}
 	if resp.Response != "Completed" {
 		t.Fatalf("unexpected response: %q", resp.Response)
 	}
@@ -2447,9 +2520,11 @@ func TestServerHandleChatUsesAttachmentTranscriptWithoutRetranscribing(t *testin
 	)
 	stt := &stubSTTClient{transcript: "should not be called"}
 	server := &Server{
-		runtime:   runtime,
-		history:   make([]Message, 0),
-		sttClient: stt,
+		runtime:        runtime,
+		history:        make([]Message, 0),
+		sttClient:      stt,
+		pendingResults: make(map[string]*chatPendingResult),
+		activeRuns:     make(map[string]context.CancelFunc),
 	}
 
 	payload, err := json.Marshal(ChatRequest{
@@ -2474,13 +2549,43 @@ func TestServerHandleChatUsesAttachmentTranscriptWithoutRetranscribing(t *testin
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
 	}
+
+	var startResp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&startResp); err != nil {
+		t.Fatalf("decode start response: %v", err)
+	}
+	requestID := startResp["request_id"]
+	if requestID == "" {
+		t.Fatalf("missing request_id in response: %#v", startResp)
+	}
+
+	// Should not have called STT since transcript was provided
 	if len(stt.inputs) != 0 {
 		t.Fatalf("expected attachment transcript to skip TranscribeWAV, got %d calls", len(stt.inputs))
 	}
 
-	var resp ChatResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
+	// Poll for result
+	var resp ChatResultResponse
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		resultReq := httptest.NewRequest(http.MethodGet, "/api/chat/result?request_id="+requestID, nil)
+		resultRec := httptest.NewRecorder()
+		server.handleChatResult(resultRec, resultReq)
+		if resultRec.Code != http.StatusOK {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		if err := json.NewDecoder(resultRec.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode result response: %v", err)
+		}
+		if resp.Status == "complete" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if resp.Status != "complete" {
+		t.Fatalf("result never completed: status=%q", resp.Status)
 	}
 	if resp.History[0].Content != "directly reused transcript" {
 		t.Fatalf("expected transcript as user content, got %#v", resp.History[0])
