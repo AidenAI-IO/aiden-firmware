@@ -913,9 +913,6 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	if streamCallbackHandler != nil {
 		streamCallbackHandler.HandleAssistantOutput(ctx, output)
 	}
-	if streamCallbackHandler != nil {
-		streamCallbackHandler.HandleAssistantOutput(ctx, output)
-	}
 	r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, nil, promptCapture, boundaryTelemetry, req.AsyncEpisodeMaintenance)
 	episodeCommitted = true
 
