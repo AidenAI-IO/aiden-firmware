@@ -5,8 +5,10 @@
 # a "half-up" state: the gadget UDC is still configured and usb0 may be UP, but
 # the host-side composite/HID session is stale. Resetting only the ECM function
 # can leave iOS with a stale external-keyboard session where plain keys work but
-# modifiers/shortcuts are ignored. This watchdog refreshes the whole composite
-# gadget after host configuration changes and when ECM connectivity stalls.
+# modifiers/shortcuts are ignored. This watchdog keeps diagnostics for host
+# configuration changes, exposes an explicit full refresh command for stale HID
+# sessions, and automatically refreshes the composite gadget only when ECM
+# connectivity stalls.
 
 GADGET_UDC=/sys/kernel/config/usb_gadget/aiden_hid/UDC
 GADGET_DIR=/sys/kernel/config/usb_gadget/aiden_hid
@@ -25,7 +27,6 @@ PROBE_FAIL_THRESHOLD=2 # reset after N consecutive probe failures
 ARPING_COUNT=2         # ARP requests per probe
 ARPING_TIMEOUT=2       # seconds to wait for ARP reply
 COOLDOWN=30            # minimum seconds between resets
-HOST_CONFIG_REFRESH_DELAY=2 # seconds after a new configured event before refreshing iOS HID session
 
 log() {
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE"
@@ -174,15 +175,10 @@ watchdog_main() {
     ecm_fail_count=0
     last_reset=0
     last_udc_state=$(read_udc_state)
-    configured_refresh_pending=0
-    configured_refresh_at=0
-    now=$(date +%s)
 
     log_snapshot "watchdog loop start"
     if [ "$last_udc_state" = "configured" ]; then
-        configured_refresh_pending=1
-        configured_refresh_at=$((now + HOST_CONFIG_REFRESH_DELAY))
-        log "watchdog started while UDC already configured; scheduling startup HID session refresh at epoch=$configured_refresh_at"
+        log "watchdog started while UDC already configured; leaving HID session intact"
     fi
 
     while :; do
@@ -193,9 +189,7 @@ watchdog_main() {
         if [ "$state" != "$last_udc_state" ]; then
             log "UDC state changed: ${last_udc_state:-unknown} -> ${state:-unknown}"
             if [ "$state" = "configured" ]; then
-                configured_refresh_pending=1
-                configured_refresh_at=$((now + HOST_CONFIG_REFRESH_DELAY))
-                log "UDC configured transition; scheduling HID session refresh at epoch=$configured_refresh_at"
+                log "UDC configured transition observed; leaving HID session intact"
             fi
             last_udc_state="$state"
         fi
@@ -206,21 +200,6 @@ watchdog_main() {
             fi
             ecm_fail_count=0
             continue
-        fi
-
-        if [ "$configured_refresh_pending" -eq 1 ] && [ "$now" -ge "$configured_refresh_at" ]; then
-            if [ $((now - last_reset)) -ge $COOLDOWN ]; then
-                log "host configured; refreshing composite gadget to clear stale HID session"
-                last_reset=$now
-                configured_refresh_pending=0
-                if reset_composite "host configured"; then
-                    ecm_fail_count=0
-                    last_udc_state=$(read_udc_state)
-                fi
-                continue
-            else
-                log "host configured refresh pending but cooldown active (remaining=$((COOLDOWN - (now - last_reset)))s)"
-            fi
         fi
 
         if probe_ecm_connectivity; then
