@@ -26,6 +26,7 @@ type openAICompatibleModel struct {
 	httpClient          *http.Client
 	rawLogger           *llmRawHTTPLogger
 	explicitPromptCache bool
+	routerMetadata      bool
 	// sessionIDProvider, when set, supplies the value for the x-session-id
 	// request header. It is only wired up for the OpenRouter provider, whose
 	// sticky routing uses the session id to keep multi-turn requests on the same
@@ -93,6 +94,12 @@ func withOpenAICompatibleSessionSticky(provider func() string) openAICompatibleM
 func withOpenAICompatibleExplicitPromptCache() openAICompatibleModelOption {
 	return func(m *openAICompatibleModel) {
 		m.explicitPromptCache = true
+	}
+}
+
+func withOpenAICompatibleRouterMetadata() openAICompatibleModelOption {
+	return func(m *openAICompatibleModel) {
+		m.routerMetadata = true
 	}
 }
 
@@ -315,6 +322,7 @@ func (u *compatibleUsage) generationInfo() map[string]any {
 }
 
 type compatibleChatResponse struct {
+	ID      string `json:"id,omitempty"`
 	Choices []struct {
 		Message struct {
 			Content   any                  `json:"content"`
@@ -322,10 +330,12 @@ type compatibleChatResponse struct {
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
-	Usage *compatibleUsage `json:"usage,omitempty"`
+	Usage              *compatibleUsage `json:"usage,omitempty"`
+	OpenRouterMetadata map[string]any   `json:"openrouter_metadata,omitempty"`
 }
 
 type compatibleChatStreamResponse struct {
+	ID      string `json:"id,omitempty"`
 	Choices []struct {
 		Delta struct {
 			Content   any                       `json:"content,omitempty"`
@@ -333,7 +343,8 @@ type compatibleChatStreamResponse struct {
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
-	Usage *compatibleUsage `json:"usage,omitempty"`
+	Usage              *compatibleUsage `json:"usage,omitempty"`
+	OpenRouterMetadata map[string]any   `json:"openrouter_metadata,omitempty"`
 }
 
 type compatibleToolCallDelta struct {
@@ -385,6 +396,9 @@ func (m *openAICompatibleModel) Call(ctx context.Context, prompt string, options
 }
 
 func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	callStarted := time.Now()
+	generationInfo := map[string]any{}
+	requestPrepareStart := time.Now()
 	callOpts := llms.CallOptions{}
 	for _, option := range options {
 		option(&callOpts)
@@ -419,11 +433,16 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 	if callOpts.JSONMode {
 		reqPayload.ResponseFormat = map[string]string{"type": "json_object"}
 	}
+	generationInfo["llm_request_prepare_ms"] = time.Since(requestPrepareStart).Milliseconds()
 
+	marshalStart := time.Now()
 	payloadBytes, err := json.Marshal(reqPayload)
+	generationInfo["llm_json_marshal_ms"] = time.Since(marshalStart).Milliseconds()
 	if err != nil {
 		return nil, fmt.Errorf("marshal chat request: %w", err)
 	}
+	generationInfo["llm_request_bytes"] = len(payloadBytes)
+	generationInfo["llm_stream"] = reqPayload.Stream
 
 	ctx = m.withRawHTTPLogFileTime(ctx)
 
@@ -450,8 +469,13 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 			req.Header.Set("x-session-id", sid)
 		}
 	}
+	if m.routerMetadata {
+		req.Header.Set("X-OpenRouter-Metadata", "enabled")
+	}
 
+	doStart := time.Now()
 	resp, err := m.httpClient.Do(req)
+	generationInfo["llm_http_to_headers_ms"] = time.Since(doStart).Milliseconds()
 	if err != nil {
 		// Transport-level failure (timeout, connection refused, context
 		// cancelled): no HTTP response arrives, so log status 0 with the error
@@ -460,6 +484,13 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 		return nil, fmt.Errorf("send request: %w", err)
 	}
 	defer resp.Body.Close()
+	generationInfo["llm_http_status"] = resp.StatusCode
+	if contentType := strings.TrimSpace(resp.Header.Get("Content-Type")); contentType != "" {
+		generationInfo["llm_response_content_type"] = contentType
+	}
+	if generationID := strings.TrimSpace(resp.Header.Get("X-Generation-Id")); generationID != "" {
+		generationInfo["openrouter_generation_id"] = generationID
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -468,17 +499,23 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 	}
 
 	if reqPayload.Stream {
-		return m.decodeStreamingResponse(ctx, resp.Body, callOpts.StreamingFunc, reqPayload.Model, resp.StatusCode)
+		return m.decodeStreamingResponse(ctx, resp.Body, callOpts.StreamingFunc, reqPayload.Model, resp.StatusCode, callStarted, generationInfo)
 	}
 
 	var decoded compatibleChatResponse
 	rawLoggingEnabled := m.rawLogger != nil && rawHTTPLogEnabled(ctx)
 	if !rawLoggingEnabled {
+		generationInfo["llm_response_read_ms"] = int64(0)
+		decodeStart := time.Now()
 		if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+			generationInfo["llm_response_decode_ms"] = time.Since(decodeStart).Milliseconds()
 			return nil, fmt.Errorf("decode response: %w", err)
 		}
+		generationInfo["llm_response_decode_ms"] = time.Since(decodeStart).Milliseconds()
 	} else {
+		readStart := time.Now()
 		body, err := io.ReadAll(resp.Body)
+		generationInfo["llm_response_read_ms"] = time.Since(readStart).Milliseconds()
 		if err != nil {
 			// HTTP status arrived but the body could not be read: log the real
 			// status with the read error so the request still has a response.
@@ -486,9 +523,12 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 			return nil, fmt.Errorf("read response: %w", err)
 		}
 		_ = m.logRawHTTP(ctx, reqPayload.Model, "response", resp.StatusCode, string(body))
+		decodeStart := time.Now()
 		if err := json.Unmarshal(body, &decoded); err != nil {
+			generationInfo["llm_response_decode_ms"] = time.Since(decodeStart).Milliseconds()
 			return nil, fmt.Errorf("decode response: %w", err)
 		}
+		generationInfo["llm_response_decode_ms"] = time.Since(decodeStart).Milliseconds()
 	}
 	if len(decoded.Choices) == 0 {
 		return nil, fmt.Errorf("empty response choices")
@@ -503,27 +543,43 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 			ToolCalls:  convertResponseToolCalls(choice.Message.ToolCalls),
 		}},
 	}
-	if info := decoded.Usage.generationInfo(); info != nil {
-		result.Choices[0].GenerationInfo = info
-	}
 	if len(result.Choices[0].ToolCalls) > 0 {
 		result.Choices[0].FuncCall = result.Choices[0].ToolCalls[0].FunctionCall
 	}
+	generationInfo["llm_output_chars"] = len(content)
+	generationInfo["llm_tool_call_count"] = len(result.Choices[0].ToolCalls)
+	if choice.FinishReason != "" {
+		generationInfo["llm_finish_reason"] = choice.FinishReason
+	}
+	if decoded.ID != "" {
+		generationInfo["llm_response_id"] = decoded.ID
+	}
+	addOpenRouterMetadataGenerationInfo(generationInfo, decoded.OpenRouterMetadata)
+	result.Choices[0].GenerationInfo = finalizeLLMGenerationInfo(mergeGenerationInfo(decoded.Usage.generationInfo(), generationInfo), callStarted)
 
 	return result, nil
 }
 
-func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, body io.Reader, stream func(context.Context, []byte) error, requestModel string, statusCode int) (*llms.ContentResponse, error) {
+func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, body io.Reader, stream func(context.Context, []byte) error, requestModel string, statusCode int, callStarted time.Time, generationInfo map[string]any) (*llms.ContentResponse, error) {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
+	if generationInfo == nil {
+		generationInfo = map[string]any{}
+	}
 	var content strings.Builder
 	stopReason := ""
 	toolCalls := map[int]*compatibleToolCall{}
-	var generationInfo map[string]any
+	var usageInfo map[string]any
 	var rawStream strings.Builder
 	hasRawStream := false
 	streamDone := false
+	streamReadStart := time.Now()
+	firstSSESeen := false
+	firstContentSeen := false
+	sseEvents := 0
+	contentChunks := 0
+	commentCount := 0
 	rawLoggingEnabled := m.rawLogger != nil && rawHTTPLogEnabled(ctx)
 	logRawStream := func(scanErr error) {
 		if !rawLoggingEnabled {
@@ -542,7 +598,7 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 				rawSSE = rawStream.String()
 			}
 		}
-		body := formatStreamingRawHTTPLogBody(content.String(), stopReason, orderedCompatibleToolCalls(toolCalls), generationInfo, streamDone, scanErr, rawSSE)
+		body := formatStreamingRawHTTPLogBody(content.String(), stopReason, orderedCompatibleToolCalls(toolCalls), usageInfo, streamDone, scanErr, rawSSE)
 		_ = m.logRawHTTP(ctx, requestModel, "response", logStatusCode, body)
 	}
 	var scanErr error
@@ -558,17 +614,26 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 			hasRawStream = true
 		}
 		line := strings.TrimSpace(rawLine)
-		if line == "" || strings.HasPrefix(line, ":") {
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, ":") {
+			commentCount++
 			continue
 		}
 		if !strings.HasPrefix(line, "data:") {
 			continue
+		}
+		if !firstSSESeen {
+			generationInfo["llm_time_to_first_sse_ms"] = time.Since(callStarted).Milliseconds()
+			firstSSESeen = true
 		}
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if data == "[DONE]" {
 			streamDone = true
 			break
 		}
+		sseEvents++
 
 		var event compatibleChatStreamResponse
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
@@ -576,7 +641,11 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 			return nil, scanErr
 		}
 		if info := event.Usage.generationInfo(); info != nil {
-			generationInfo = info
+			usageInfo = info
+		}
+		addOpenRouterMetadataGenerationInfo(generationInfo, event.OpenRouterMetadata)
+		if event.ID != "" {
+			generationInfo["llm_response_id"] = event.ID
 		}
 		if len(event.Choices) == 0 {
 			continue
@@ -588,6 +657,11 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 
 		chunk := flattenResponseContent(choice.Delta.Content)
 		if chunk != "" {
+			if !firstContentSeen {
+				generationInfo["llm_time_to_first_content_ms"] = time.Since(callStarted).Milliseconds()
+				firstContentSeen = true
+			}
+			contentChunks++
 			content.WriteString(chunk)
 			if stream != nil {
 				if err := stream(ctx, []byte(chunk)); err != nil {
@@ -621,6 +695,10 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 			}
 		}
 	}
+	generationInfo["llm_stream_read_ms"] = time.Since(streamReadStart).Milliseconds()
+	generationInfo["llm_stream_sse_events"] = sseEvents
+	generationInfo["llm_stream_content_chunks"] = contentChunks
+	generationInfo["llm_stream_comment_count"] = commentCount
 	if err := scanner.Err(); err != nil {
 		scanErr = err
 		return nil, fmt.Errorf("read stream response: %w", err)
@@ -636,10 +714,78 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 	if len(choice.ToolCalls) > 0 {
 		choice.FuncCall = choice.ToolCalls[0].FunctionCall
 	}
-	if generationInfo != nil {
-		choice.GenerationInfo = generationInfo
+	generationInfo["llm_output_chars"] = content.Len()
+	generationInfo["llm_tool_call_count"] = len(choice.ToolCalls)
+	if stopReason != "" {
+		generationInfo["llm_finish_reason"] = stopReason
 	}
+	choice.GenerationInfo = finalizeLLMGenerationInfo(mergeGenerationInfo(usageInfo, generationInfo), callStarted)
 	return &llms.ContentResponse{Choices: []*llms.ContentChoice{choice}}, nil
+}
+
+func mergeGenerationInfo(base map[string]any, extras map[string]any) map[string]any {
+	if len(base) == 0 && len(extras) == 0 {
+		return nil
+	}
+	merged := map[string]any{}
+	for key, value := range base {
+		merged[key] = value
+	}
+	for key, value := range extras {
+		merged[key] = value
+	}
+	return merged
+}
+
+func finalizeLLMGenerationInfo(info map[string]any, callStarted time.Time) map[string]any {
+	if info == nil {
+		info = map[string]any{}
+	}
+	totalMs := time.Since(callStarted).Milliseconds()
+	info["llm_total_ms"] = totalMs
+	if completionTokens, ok := usageMetricInt(info["completion_tokens"]); ok && completionTokens > 0 {
+		info["llm_ms_per_output_token"] = float64(totalMs) / float64(completionTokens)
+	}
+	if promptTokens, ok := usageMetricInt(info["prompt_tokens"]); ok && promptTokens > 0 {
+		if ttftMs, ok := usageMetricInt(info["llm_time_to_first_content_ms"]); ok && ttftMs >= 0 {
+			info["llm_ttft_per_input_token"] = float64(ttftMs) / float64(promptTokens)
+		}
+	}
+	return info
+}
+
+func addOpenRouterMetadataGenerationInfo(info map[string]any, metadata map[string]any) {
+	if info == nil || len(metadata) == 0 {
+		return
+	}
+	info["openrouter_metadata"] = metadata
+	copyFirstOpenRouterMetadataValue(info, metadata, "openrouter_provider_name", "provider_name", "provider", "selected_provider")
+	copyFirstOpenRouterMetadataValue(info, metadata, "openrouter_strategy", "strategy", "routing_strategy")
+	copyFirstOpenRouterMetadataValue(info, metadata, "openrouter_region", "region")
+	copyFirstOpenRouterMetadataValue(info, metadata, "openrouter_pipeline", "pipeline")
+	copyFirstOpenRouterMetadataValue(info, metadata, "openrouter_attempt", "attempt")
+	if attempts, ok := metadata["attempts"].([]any); ok {
+		info["openrouter_attempts_count"] = len(attempts)
+	}
+}
+
+func copyFirstOpenRouterMetadataValue(info map[string]any, metadata map[string]any, target string, keys ...string) {
+	for _, key := range keys {
+		value, ok := metadata[key]
+		if !ok {
+			continue
+		}
+		switch typed := value.(type) {
+		case string:
+			if strings.TrimSpace(typed) == "" {
+				continue
+			}
+		case nil:
+			continue
+		}
+		info[target] = value
+		return
+	}
 }
 
 func orderedCompatibleToolCalls(toolCalls map[int]*compatibleToolCall) []compatibleToolCall {
