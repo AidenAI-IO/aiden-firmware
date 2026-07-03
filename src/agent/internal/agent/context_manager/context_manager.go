@@ -117,12 +117,33 @@ func (c *ContextManager) IsEmpty() bool {
 
 func (c *ContextManager) Reset() {
 	c.mu.Lock()
-	store := c.attachmentStore
-	c.attachmentStore = nil
+	store := c.detachAttachmentStoreLocked()
 	c.messageList = nil
 	c.sessionID = "session_" + uuid.New().String()
 	c.mu.Unlock()
 
+	releaseAttachmentStore(store)
+}
+
+// Close releases resources owned by this context manager. Forked managers
+// should be closed when discarded so shared attachment stores can be removed
+// once all owners have released them.
+func (c *ContextManager) Close() error {
+	c.mu.Lock()
+	store := c.detachAttachmentStoreLocked()
+	c.mu.Unlock()
+
+	releaseAttachmentStore(store)
+	return nil
+}
+
+func (c *ContextManager) detachAttachmentStoreLocked() *attachmentStore {
+	store := c.attachmentStore
+	c.attachmentStore = nil
+	return store
+}
+
+func releaseAttachmentStore(store *attachmentStore) {
 	if store != nil {
 		store.release()
 	}

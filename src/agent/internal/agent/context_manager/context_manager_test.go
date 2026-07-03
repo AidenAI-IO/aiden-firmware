@@ -3,6 +3,7 @@ package context_manager
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -315,6 +316,31 @@ func TestContextManagerForkRetainsAttachmentStoreUntilAllManagersReset(t *testin
 	fork.Reset()
 	if _, err := os.Stat(root); !os.IsNotExist(err) {
 		t.Fatalf("attachment root after fork reset: err=%v, want not exist", err)
+	}
+}
+
+func TestContextManagerCloseReleasesForkAttachmentStore(t *testing.T) {
+	manager := NewContextManager()
+	stored, err := manager.StoreAttachment("image/png", []byte("png-bytes"))
+	if err != nil {
+		t.Fatalf("StoreAttachment() error = %v", err)
+	}
+	root := filepath.Dir(stored.FilePath)
+
+	fork := manager.Fork()
+	manager.Reset()
+	if _, err := os.Stat(root); err != nil {
+		t.Fatalf("attachment root should remain while fork is alive: %v", err)
+	}
+
+	if err := fork.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if err := fork.Close(); err != nil {
+		t.Fatalf("second Close() error = %v", err)
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("attachment root after fork close: err=%v, want not exist", err)
 	}
 }
 
