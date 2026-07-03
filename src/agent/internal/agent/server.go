@@ -1267,6 +1267,9 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.RequestID = strings.TrimSpace(req.RequestID)
+	if req.RequestID == "" {
+		req.RequestID = createRequestID()
+	}
 
 	turnInput, historyAttachments, err := s.resolveRequestInput(req)
 	if err != nil {
@@ -1290,28 +1293,24 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 
 	s.playPromptSoundAsync(promptSoundAgentSend, "agent send")
 
-	ctx := r.Context()
-	cleanupRun := func() {}
-	cleanupRunAtReturn := true
-	if req.RequestID != "" {
-		// A request_id marks a resumable run. Keep it alive if the streaming
-		// HTTP client disconnects; only /api/chat/cancel should stop it.
-		runCtx, cancel := context.WithCancel(context.Background())
-		if !s.registerActiveRun(req.RequestID, cancel) {
-			cancel()
-			http.Error(w, "request_id already in use", http.StatusConflict)
-			return
-		}
-		var cleanupOnce sync.Once
-		cleanupRun = func() {
-			cleanupOnce.Do(func() {
-				s.unregisterActiveRun(req.RequestID)
-				s.clearPendingSteer(req.RequestID)
-				cancel()
-			})
-		}
-		ctx = runCtx
+	// A request_id marks a resumable run. Keep it alive if the streaming
+	// HTTP client disconnects; only /api/chat/cancel should stop it.
+	runCtx, cancel := context.WithCancel(context.Background())
+	if !s.registerActiveRun(req.RequestID, cancel) {
+		cancel()
+		http.Error(w, "request_id already in use", http.StatusConflict)
+		return
 	}
+	var cleanupOnce sync.Once
+	cleanupRun := func() {
+		cleanupOnce.Do(func() {
+			s.unregisterActiveRun(req.RequestID)
+			s.clearPendingSteer(req.RequestID)
+			cancel()
+		})
+	}
+	ctx := runCtx
+	cleanupRunAtReturn := true
 	defer func() {
 		if cleanupRunAtReturn {
 			cleanupRun()
@@ -1320,7 +1319,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	s.appendHistory(userMessage)
 	progress := s.newRunProgressSpeaker()
 	defer progress.Cancel()
-	if req.RequestID != "" && s.liveActivity != nil {
+	if s.liveActivity != nil {
 		s.liveActivity.StartTask(req.RequestID, inputText, s.liveActivityPhoneID(req))
 	}
 
@@ -1334,7 +1333,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		DeviceEnvironment:       s.bridgeEnvironment(),
 		RuntimeContext:          s.runtimeContext(),
 		StreamFinalChunks:       true,
-		AsyncEpisodeMaintenance: req.RequestID != "",
+		AsyncEpisodeMaintenance: true,
 		SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
 			return s.consumePendingSteer(req.RequestID)
 		},
@@ -1342,7 +1341,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			message := messageFromRunEvent(event, episodeID, req.RequestID)
 			s.appendHistory(message)
 			stream.Write(ChatStreamEvent{Type: "message", Message: &message})
-			if req.RequestID != "" && s.liveActivity != nil {
+			if s.liveActivity != nil {
 				s.liveActivity.UpdateFromRunEvent(req.RequestID, event)
 			}
 			if text := s.toolCallSpeechText(event); text != "" {
@@ -1392,7 +1391,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		canceled := errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled)
-		if req.RequestID != "" && s.liveActivity != nil {
+		if s.liveActivity != nil {
 			if canceled {
 				s.liveActivity.CancelTask(req.RequestID)
 			} else {
@@ -1435,21 +1434,17 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	s.appendHistory(assistantMessage)
 	stream.Write(ChatStreamEvent{Type: "message", Message: &assistantMessage})
 	historySnapshot := s.historySnapshot()
-	if req.RequestID != "" && s.liveActivity != nil {
+	if s.liveActivity != nil {
 		s.liveActivity.CompleteTask(req.RequestID, result.Output)
 	}
 
 	speechText := result.SpokenTextForConfig(s.runtime.config)
 	if s.audioClient != nil && speechText != "" && !result.SpeechStreamed {
-		finalTTSCtx := ctx
-		finishRun := func() {}
-		if req.RequestID != "" {
-			// Let request-scoped final TTS outlive the streaming handler while
-			// /api/chat/cancel can still interrupt it via the active run/output.
-			finalTTSCtx = context.Background()
-			finishRun = cleanupRun
-			cleanupRunAtReturn = false
-		}
+		// Let request-scoped final TTS outlive the streaming handler while
+		// /api/chat/cancel can still interrupt it via the active run/output.
+		finalTTSCtx := context.Background()
+		finishRun := cleanupRun
+		cleanupRunAtReturn = false
 		go func(text string, ttsCtx context.Context, finish func()) {
 			defer finish()
 			s.speakFinalText(ttsCtx, req.RequestID, text)
