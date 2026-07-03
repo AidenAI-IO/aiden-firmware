@@ -52,7 +52,7 @@ func (b *sentenceBuffer) Flush() string {
 }
 
 // Reset discards any buffered text without synthesizing it. Used to drop
-// residual content left over from a turn that did not produce a final answer.
+// residual content left over from a turn that did not produce spoken output.
 func (b *sentenceBuffer) Reset() {
 	b.mu.Lock()
 	defer b.mu.Unlock()

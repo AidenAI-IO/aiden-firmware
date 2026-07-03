@@ -11,8 +11,11 @@ import (
 // final verifier decision is can_finish=false is not stored as a success.
 func TestEpisodeRecorderFinishRespectsVerifierRejection(t *testing.T) {
 	recorder := NewEpisodeRecorder(MemoryRetrieveRequest{Input: "测试任务"}, MemoryContext{})
-	recorder.RecordVerifierDecision(verifierDecision{
-		CanFinish:   false,
+	canFinish := false
+	recorder.append(TaskEpisodeEvent{
+		Type:        "verifier_decision",
+		Role:        "agent",
+		CanFinish:   &canFinish,
 		NeedsReplan: true,
 		Reason:      "completion criteria not met",
 	})
@@ -30,10 +33,13 @@ func TestEpisodeRecorderFinishRespectsVerifierRejection(t *testing.T) {
 // by the verifier is stored as success with the verifier's final answer.
 func TestEpisodeRecorderFinishAcceptsVerifierApproval(t *testing.T) {
 	recorder := NewEpisodeRecorder(MemoryRetrieveRequest{Input: "测试任务"}, MemoryContext{})
-	recorder.RecordVerifierDecision(verifierDecision{
-		CanFinish:   true,
-		FinalAnswer: "done",
-		Reason:      "all criteria satisfied",
+	canFinish := true
+	recorder.append(TaskEpisodeEvent{
+		Type:      "verifier_decision",
+		Role:      "agent",
+		CanFinish: &canFinish,
+		Content:   "done",
+		Reason:    "all criteria satisfied",
 	})
 
 	episode := recorder.Finish("candidate", nil, nil, nil, nil)
@@ -53,7 +59,10 @@ func TestEpisodeRecorderPersistsToolContent(t *testing.T) {
 	}
 
 	recorder := NewEpisodeRecorder(MemoryRetrieveRequest{Input: "test"}, MemoryContext{})
-	recorder.RecordExecution(roleExecutionResult{Action: &action})
+	recorder.RecordExecution(ToolCallExecutionResult{
+		Call: ToolCall{Action: action},
+		Step: schema.AgentStep{Action: action},
+	})
 	episode := recorder.Finish("", nil, nil, nil, nil)
 	if got := firstToolCallEventContent(episode.Events); got != "I will echo." {
 		t.Fatalf("tool event content = %q", got)

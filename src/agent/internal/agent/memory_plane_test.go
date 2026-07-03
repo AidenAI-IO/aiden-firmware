@@ -166,13 +166,12 @@ func TestMemoryPlaneRetrieveRoutesExperienceByRole(t *testing.T) {
 			t.Fatalf("expired conflict reached verifier: %#v", got.Verifier.Conflicts)
 		}
 	}
-	renderedPlanner := got.RenderForRole(RolePlanner)
-	renderedVerifier := got.RenderForRole(RoleVerifier)
-	if !strings.Contains(renderedPlanner, "Retrieved Device Experience") || !strings.Contains(renderedPlanner, "mem_open_wechat") {
-		t.Fatalf("planner memory prompt missing retrieved experience:\n%s", renderedPlanner)
+	renderedAgent := got.Render()
+	if !strings.Contains(renderedAgent, "Retrieved Device Experience") || !strings.Contains(renderedAgent, "mem_open_wechat") {
+		t.Fatalf("agent memory prompt missing retrieved experience:\n%s", renderedAgent)
 	}
-	if !strings.Contains(renderedVerifier, "Known Failure Modes") || !strings.Contains(renderedVerifier, "mem_wechat_failure") {
-		t.Fatalf("verifier memory prompt missing failure memory:\n%s", renderedVerifier)
+	if !strings.Contains(renderedAgent, "Known Failure Modes") || !strings.Contains(renderedAgent, "mem_wechat_failure") {
+		t.Fatalf("agent memory prompt missing failure memory:\n%s", renderedAgent)
 	}
 }
 
@@ -462,7 +461,9 @@ func TestPersistentEpisodeRecorderWritesIncrementalEventsAndMarksInterrupted(t *
 	if err := recorder.Start(ctx); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	recorder.RecordPlannerDecision(plannerDecision{
+	recorder.append(TaskEpisodeEvent{
+		Type:      "planner_decision",
+		Role:      "agent",
 		Objective: "打开设置",
 		Plan:      []string{"打开设置"},
 		NextStep:  "点击设置",
@@ -604,10 +605,7 @@ func TestRuntimeRetrieveUsesAutomaticScreenHints(t *testing.T) {
 	}
 
 	plannerPrompt := messageText(model.messages[0])
-	if !strings.Contains(plannerPrompt, "mem_matching_context") {
-		t.Fatalf("planner prompt missing matching memory:\n%s", plannerPrompt)
-	}
-	for _, unexpected := range []string{"mem_wrong_screen_runtime"} {
+	for _, unexpected := range []string{"mem_matching_context", "mem_wrong_screen_runtime"} {
 		if strings.Contains(plannerPrompt, unexpected) {
 			t.Fatalf("planner prompt should not contain %s:\n%s", unexpected, plannerPrompt)
 		}

@@ -16,10 +16,6 @@ import (
 
 type telemetryPromptContextKey struct{}
 
-func contextWithTelemetryRole(ctx context.Context, role RoleName) context.Context {
-	return context.WithValue(ctx, telemetryPromptContextKey{}, string(role))
-}
-
 func telemetryRoleFromContext(ctx context.Context) string {
 	if value, ok := ctx.Value(telemetryPromptContextKey{}).(string); ok {
 		return value

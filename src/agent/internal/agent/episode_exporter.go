@@ -506,82 +506,6 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 			}
 			batch = append(batch, evt)
 
-		case runEventTodoUpdate:
-			parentID := iterationSpanID
-			if parentID == "" {
-				parentID = phaseSpanID
-			}
-			metadata := map[string]interface{}{
-				"event_id":        event.EventID,
-				"role":            event.Role,
-				"phase":           currentPhase,
-				"speech_eligible": event.SpeechEligible,
-			}
-			if event.Todo != nil {
-				metadata["todo_mode"] = event.Todo.Mode
-				metadata["todo_revision"] = event.Todo.Revision
-				metadata["todo_current_id"] = event.Todo.CurrentID
-			}
-			body := map[string]interface{}{
-				"id":          uuid.NewString(),
-				"traceId":     traceID,
-				"name":        runEventTodoUpdate,
-				"startTime":   langfuseRFC3339(eventTime),
-				"endTime":     langfuseRFC3339(eventTime),
-				"output":      todoUpdateOutput(event),
-				"environment": e.cfg.EnvironmentOrDefault(),
-				"metadata":    metadata,
-			}
-			if parentID != "" {
-				body["parentObservationId"] = parentID
-			}
-			if version != "" {
-				body["version"] = version
-			}
-			evt, err := newLangfuseEvent("event-create", eventTime, body)
-			if err != nil {
-				return nil, err
-			}
-			batch = append(batch, evt)
-
-		case runEventTodoClosed:
-			parentID := iterationSpanID
-			if parentID == "" {
-				parentID = phaseSpanID
-			}
-			metadata := map[string]interface{}{
-				"event_id": event.EventID,
-				"role":     event.Role,
-				"phase":    currentPhase,
-				"reason":   event.Reason,
-			}
-			if event.Todo != nil {
-				metadata["todo_mode"] = event.Todo.Mode
-				metadata["todo_revision"] = event.Todo.Revision
-				metadata["todo_current_id"] = event.Todo.CurrentID
-			}
-			body := map[string]interface{}{
-				"id":          uuid.NewString(),
-				"traceId":     traceID,
-				"name":        runEventTodoClosed,
-				"startTime":   langfuseRFC3339(eventTime),
-				"endTime":     langfuseRFC3339(eventTime),
-				"output":      todoClosedOutput(event),
-				"environment": e.cfg.EnvironmentOrDefault(),
-				"metadata":    metadata,
-			}
-			if parentID != "" {
-				body["parentObservationId"] = parentID
-			}
-			if version != "" {
-				body["version"] = version
-			}
-			evt, err := newLangfuseEvent("event-create", eventTime, body)
-			if err != nil {
-				return nil, err
-			}
-			batch = append(batch, evt)
-
 		case runEventToolCall:
 			parentID := langfuseToolParentSpan(iterationSpanID, phaseSpanID, event.Role)
 			if parentID == "" {
@@ -646,7 +570,7 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 			if paired && pair.ResultObservationID != "" {
 				resultSpanID = pair.ResultObservationID
 			}
-			var output interface{} = event.Observation
+			var output interface{} = event.Content
 			if e.cfg.UploadScreenshotsOrDefault() && strings.TrimSpace(event.ScreenshotRef) != "" {
 				screenshotCtx, cancel, ok := langfuseScreenshotUploadContext(ctx, e.cfg.UploadTimeoutOrDefault())
 				if ok {
@@ -656,7 +580,7 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 						e.logger.Warn("[telemetry] screenshot upload failed (%s): %v", event.ScreenshotRef, err)
 					} else if mediaRef != "" {
 						output = map[string]interface{}{
-							"observation": event.Observation,
+							"observation": event.Content,
 							"screenshot":  mediaRef,
 						}
 					}
@@ -700,7 +624,7 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 			}
 			if event.IsError {
 				body["level"] = "ERROR"
-				body["statusMessage"] = truncateForLog(event.Observation, 500)
+				body["statusMessage"] = truncateForLog(event.Content, 500)
 			}
 			resultEvent, err := newLangfuseEvent("span-create", eventTime, body)
 			if err != nil {
@@ -997,16 +921,10 @@ func langfuseToolParentSpan(iterationSpanID, phaseSpanID, role string) string {
 }
 
 func langfuseToolSpanName(role, toolName string) string {
-	if strings.EqualFold(strings.TrimSpace(role), string(RoleAgent)) {
-		return "agent/tool/" + toolName
-	}
 	return "tool/" + toolName
 }
 
 func langfuseToolResultSpanName(role, toolName string) string {
-	if strings.EqualFold(strings.TrimSpace(role), string(RoleAgent)) {
-		return "agent/tool_result/" + toolName
-	}
 	return "tool_result/" + toolName
 }
 
@@ -1561,15 +1479,11 @@ func episodeDerivedMetrics(events []TaskEpisodeEvent) map[string]interface{} {
 			metrics["loop_mode"] = "committed"
 		case "candidate_answer":
 			metrics["candidate_answer_count"] = intMetric(metrics, "candidate_answer_count") + 1
-		case runEventTodoUpdate:
-			metrics["todo_update_count"] = intMetric(metrics, "todo_update_count") + 1
-		case runEventTodoClosed:
-			metrics["todo_closed_count"] = intMetric(metrics, "todo_closed_count") + 1
 		case runEventToolCall:
 			metrics["tool_call_count"] = intMetric(metrics, "tool_call_count") + 1
-			if strings.EqualFold(strings.TrimSpace(event.Role), string(RoleAgent)) {
+			if strings.EqualFold(strings.TrimSpace(event.Role), "agent") {
 				metrics["planner_tool_call_count"] = intMetric(metrics, "planner_tool_call_count") + 1
-			} else if strings.EqualFold(strings.TrimSpace(event.Role), string(RoleExecutor)) {
+			} else if strings.EqualFold(strings.TrimSpace(event.Role), "executor") {
 				metrics["executor_tool_call_count"] = intMetric(metrics, "executor_tool_call_count") + 1
 			}
 			toolName := strings.TrimSpace(event.ToolName)
@@ -1840,21 +1754,6 @@ func toolCallInput(event TaskEpisodeEvent) map[string]interface{} {
 		input["content"] = event.Content
 	}
 	return input
-}
-
-func todoUpdateOutput(event TaskEpisodeEvent) map[string]interface{} {
-	return map[string]interface{}{
-		"content":         event.Content,
-		"todo":            event.Todo,
-		"speech_eligible": event.SpeechEligible,
-	}
-}
-
-func todoClosedOutput(event TaskEpisodeEvent) map[string]interface{} {
-	return map[string]interface{}{
-		"reason": event.Reason,
-		"todo":   event.Todo,
-	}
 }
 
 func verifierOutput(event TaskEpisodeEvent) map[string]interface{} {

@@ -13,7 +13,7 @@ import (
 	langtools "github.com/tmc/langchaingo/tools"
 )
 
-func TestRuntimeStartupPersistsInterruptedEpisodeStatusToChatHistory(t *testing.T) {
+func TestRuntimeStartupDoesNotPersistInterruptedEpisodeStatusToChatHistory(t *testing.T) {
 	ctx := context.Background()
 	configDir := t.TempDir()
 	memoryDir := filepath.Join(configDir, "memory")
@@ -26,7 +26,9 @@ func TestRuntimeStartupPersistsInterruptedEpisodeStatusToChatHistory(t *testing.
 	if err := recorder.Start(ctx); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	recorder.RecordPlannerDecision(plannerDecision{
+	recorder.append(TaskEpisodeEvent{
+		Type:      "planner_decision",
+		Role:      "agent",
 		Objective: "打开设置",
 		Plan:      []string{"打开设置"},
 		NextStep:  "点击设置",
@@ -44,17 +46,8 @@ func TestRuntimeStartupPersistsInterruptedEpisodeStatusToChatHistory(t *testing.
 	if err != nil {
 		t.Fatalf("Load chat history: %v", err)
 	}
-	status, ok := firstMessageOfType(messages, "episode_status")
-	if !ok {
-		t.Fatalf("missing episode_status in chat history: %#v", messages)
-	}
-	if status.EpisodeID != "ep_restart_context" || status.Status != "interrupted" {
-		t.Fatalf("unexpected episode status message: %#v", status)
-	}
-	for _, want := range []string{"打开设置", "点击设置", "agent restarted before the task episode completed"} {
-		if !strings.Contains(status.Content, want) {
-			t.Fatalf("episode status missing %q:\n%s", want, status.Content)
-		}
+	if len(messages) != 0 {
+		t.Fatalf("interrupted episode status should not be part of public chat history: %#v", messages)
 	}
 }
 
@@ -320,7 +313,7 @@ func TestRuntimeRunKeepsCurrentRequestOutOfCompressedHistoryBlock(t *testing.T) 
 	}
 }
 
-func TestRuntimeRunIncludesFullActivePlannerHistoryAndSessionRootContext(t *testing.T) {
+func TestRuntimeRunIncludesFullActivePlannerHistory(t *testing.T) {
 	ctx := context.Background()
 	configDir := t.TempDir()
 	memoryDir := filepath.Join(configDir, "memory")
@@ -365,8 +358,8 @@ func TestRuntimeRunIncludesFullActivePlannerHistoryAndSessionRootContext(t *test
 			t.Fatalf("planner task prompt missing %q:\n%s", want, plannerTaskPrompt)
 		}
 	}
-	if strings.Contains(plannerTaskPrompt, "Root request:") {
-		t.Fatalf("planner task prompt should not repeat root request in session context:\n%s", plannerTaskPrompt)
+	if strings.Contains(plannerTaskPrompt, "Session context view:") {
+		t.Fatalf("planner task prompt should not include session context notice:\n%s", plannerTaskPrompt)
 	}
 }
 
@@ -429,14 +422,14 @@ func TestRuntimeRunBudgetsActivePlannerHistoryBeforeModelCall(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 	if len(model.messages) == 0 || len(model.messages[0]) < 3 {
-		t.Fatalf("expected planner system, history, and state prompt messages, got %#v", model.messages)
+		t.Fatalf("expected planner system, history, and current user messages, got %#v", model.messages)
 	}
 
 	plannerMessages := model.messages[0]
-	if len(plannerMessages) < 4 {
-		t.Fatalf("expected planner system, history, raw input, and state prompt messages, got %#v", plannerMessages)
+	if len(plannerMessages) < 3 {
+		t.Fatalf("expected planner system, history, and current user messages, got %#v", plannerMessages)
 	}
-	historyText := messageText(plannerMessages[1 : len(plannerMessages)-2])
+	historyText := messageText(plannerMessages[1 : len(plannerMessages)-1])
 	for _, want := range []string{"PINNED_ROOT_REQUEST", "KEEP_RECENT_USER"} {
 		if !strings.Contains(historyText, want) {
 			t.Fatalf("budgeted planner history missing %q:\n%s", want, historyText)

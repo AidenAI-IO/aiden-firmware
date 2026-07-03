@@ -16,6 +16,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"aiden-agent/internal/agent/context_manager"
+
 	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/agents"
 	"github.com/tmc/langchaingo/callbacks"
@@ -57,6 +59,8 @@ type Runtime struct {
 	telemetrySessionID string
 	environmentBridge  *EnvironmentBridgeClient
 	runGate            chan struct{}
+	plannerContext     *context_manager.ContextManager
+	plannerContextMu   sync.Mutex
 }
 
 type RunRequest struct {
@@ -71,13 +75,9 @@ type RunRequest struct {
 	// hardware/app state. It is not persisted as user configuration.
 	RuntimeContext string
 	StreamWriter   io.Writer
-	// StreamFinalChunks allows final-answer chunks to be written through
-	// StreamWriter for audio paths. Non-final LLM calls remain non-streaming
-	// because they may still turn into tool calls.
-	StreamFinalChunks bool
-	MaxTokens         int
-	EventHandler      func(RunEvent)
-	SteerProvider     func(context.Context) (RunSteerMessage, bool)
+	MaxTokens      int
+	EventHandler   func(RunEvent)
+	SteerProvider  func(context.Context) (RunSteerMessage, bool)
 	// FinalSteerProvider is called at terminal executor boundaries. It should
 	// atomically consume one last pending steer if available; otherwise it should
 	// close the request's steer acceptance window.
@@ -179,8 +179,6 @@ func (m *RunMetrics) CacheHitRate() float64 {
 
 const (
 	runEventToolCall       = "tool_call"
-	runEventTodoUpdate     = "todo_update"
-	runEventTodoClosed     = "todo_closed"
 	runEventMemoryRetrieve = "memory_retrieve"
 	runEventSessionBegin   = "session_begin"
 	runEventIterationStart = "iteration_start"
@@ -195,7 +193,6 @@ type RunEvent struct {
 	ToolName       string     `json:"tool_name,omitempty"`
 	ToolInput      string     `json:"tool_input,omitempty"`
 	Content        string     `json:"content,omitempty"`
-	Todo           *TodoState `json:"todo,omitempty"`
 	SpeechEligible bool       `json:"speech_eligible,omitempty"`
 	Timestamp      time.Time  `json:"timestamp"`
 	IsError        bool       `json:"is_error,omitempty"`
@@ -684,6 +681,9 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		beginResult = SessionBeginResult{}
 	}
 	boundaryTelemetry = beginResult.Boundary
+	if boundaryTelemetry.Rotated {
+		r.resetPlannerContext()
+	}
 	if boundaryTelemetry.PendingRecallCounter == nil {
 		boundaryTelemetry.PendingRecallCounter = &atomic.Int64{}
 	}
@@ -761,16 +761,15 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	persistRuntimeSessionEvents := r.memories != nil && strings.TrimSpace(r.memories.storageDir) != ""
 	if req.StreamWriter != nil || req.EventHandler != nil || req.SteerProvider != nil || r.logger != nil || persistRuntimeSessionEvents {
 		streamCallbackHandler = &runtimeCallbackHandler{
-			writer:                 req.StreamWriter,
-			providerFinalStreaming: req.StreamWriter != nil && req.StreamFinalChunks,
-			metrics:                metrics,
-			startTime:              startTime,
-			logger:                 r.logger,
-			eventHandler:           req.EventHandler,
-			episodeID:              episodeID,
-			runtimeID:              r.runtimeID,
-			requestID:              req.RequestID,
-			runID:                  runID,
+			writer:       req.StreamWriter,
+			metrics:      metrics,
+			startTime:    startTime,
+			logger:       r.logger,
+			eventHandler: req.EventHandler,
+			episodeID:    episodeID,
+			runtimeID:    r.runtimeID,
+			requestID:    req.RequestID,
+			runID:        runID,
 		}
 		if persistRuntimeSessionEvents {
 			streamCallbackHandler.sessionEventAppender = func(ctx context.Context, event SessionEvent) error {
@@ -783,11 +782,18 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 			}
 		}
 	}
+	if streamCallbackHandler != nil && req.StreamWriter != nil {
+		streamCallbackHandler.ResetStreaming(ctx)
+		callOptions = append(callOptions, chains.WithStreamingFunc(func(ctx context.Context, chunk []byte) error {
+			streamCallbackHandler.HandleStreamingFunc(ctx, chunk)
+			return nil
+		}))
+	}
 	var executorHandler callbacks.Handler
 	if streamCallbackHandler != nil {
 		executorHandler = streamCallbackHandler
 	}
-	profiles := r.buildRoleProfiles(resolvedSkills, availableTools, memoryContext, req.RuntimeContext)
+	profile := r.buildAgentProfile(resolvedSkills, availableTools, req.RuntimeContext)
 	conversationHistory, err := runtimeConversationHistoryMessageContents(
 		ctx,
 		memoryHandle.History,
@@ -808,7 +814,6 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	if len(conversationHistory) > 0 {
 		plannerMemory = newConversationMessagePlannerMemory(plannerMemory)
 	}
-	plannerMemory = newSessionContextPlannerMemory(plannerMemory, r.memories, "default")
 	var steerStatus steerConversationStatus
 	if req.SteerProvider != nil {
 		plannerMemory = newSteerConversationMemory(plannerMemory, memoryHandle.History)
@@ -850,17 +855,14 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		}
 	}
 
-	executor := newRoleCollaborativeExecutor(model, profiles, availableTools, plannerMemory, maxIterations, turnInput.Attachments, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault(), deviceEnv, req.SteerProvider)
-	executor.ConversationHistory = conversationHistory
-	executor.TodoReminderToolCalls = r.config.TodoReminderToolCallsOrDefault()
-	executor.ToolCallSpeech = r.config.VoiceToolCallSpeechOrDefault()
-	executor.EnvironmentBridge = r.environmentBridge
-	executor.EnvironmentBridgeTools = r.config.EnvironmentBridge.Tools
-	executor.SteerInterrupt = req.SteerInterrupt
-	executor.SteerWaiter = req.SteerWaiter
-	executor.FinalSteerProvider = req.FinalSteerProvider
+	agentLoop := NewAgentLoop(model, profile, plannerMemory, maxIterations, turnInput.Attachments, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault())
+	agentLoop.ContextManager = r.plannerContextManager()
+	agentLoop.ConversationHistory = conversationHistory
+	agentLoop.EnvironmentBridge = r.environmentBridge
+	agentLoop.EnvironmentBridgeTools = r.config.EnvironmentBridge.Tools
+	agentLoop.SteerInterrupt = req.SteerInterrupt
 
-	output, err = chains.Run(ctx, executor, normalizedInput, callOptions...)
+	output, err = agentLoop.Run(ctx, normalizedInput, callOptions...)
 	if err != nil {
 		// If the agent couldn't parse the LLM output format, extract the raw
 		// text and return it as the response instead of failing.
@@ -907,6 +909,9 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 			r.logger.Warn("[memory] commit session failed; returning model output without memory snapshot: %v", err)
 		}
 		commitResult = SessionCommitResult{}
+	}
+	if streamCallbackHandler != nil {
+		streamCallbackHandler.HandleAssistantOutput(ctx, output)
 	}
 	r.commitEpisodeBestEffort(episodeRecorder, normalizedInput, output, metrics, nil, promptCapture, boundaryTelemetry, req.AsyncEpisodeMaintenance)
 	episodeCommitted = true
@@ -1028,7 +1033,11 @@ func (r *Runtime) activeConversationHistoryTokenBudget(contextWindow int) int {
 }
 
 func (r *Runtime) ClearMemory(ctx context.Context) error {
-	return r.memories.ClearSession(ctx, "default")
+	if err := r.memories.ClearSession(ctx, "default"); err != nil {
+		return err
+	}
+	r.resetPlannerContext()
+	return nil
 }
 
 func (r *Runtime) MarkSkillsDirty() {
@@ -1066,7 +1075,29 @@ func (r *Runtime) hasLoadedSkills() bool {
 }
 
 func (r *Runtime) ClearAllMemory(ctx context.Context) error {
-	return r.memories.ClearAll(ctx, "default")
+	if err := r.memories.ClearAll(ctx, "default"); err != nil {
+		return err
+	}
+	r.resetPlannerContext()
+	return nil
+}
+
+func (r *Runtime) plannerContextManager() *context_manager.ContextManager {
+	r.plannerContextMu.Lock()
+	defer r.plannerContextMu.Unlock()
+	if r.plannerContext == nil {
+		r.plannerContext = context_manager.NewContextManager()
+	}
+	return r.plannerContext
+}
+
+func (r *Runtime) resetPlannerContext() {
+	r.plannerContextMu.Lock()
+	defer r.plannerContextMu.Unlock()
+	if r.plannerContext == nil {
+		return
+	}
+	r.plannerContext.Reset()
 }
 
 func (r *Runtime) resolveTools(skills ResolvedSkills) []langtools.Tool {
@@ -1340,11 +1371,8 @@ func (r *Runtime) exportEpisodeBestEffort(episode TaskEpisode, promptCapture *te
 	}()
 }
 
-func (r *Runtime) buildRoleProfiles(skills ResolvedSkills, availableTools []langtools.Tool, memoryContext MemoryContext, runtimeContext string) RoleProfiles {
-	if memoryContext.IsEmpty() && r.config.ConfigDir != "" {
-		memoryContext = normalizeMemoryContext(r.memoryContextForPrompt())
-	}
-	return buildRoleProfiles(
+func (r *Runtime) buildAgentProfile(skills ResolvedSkills, availableTools []langtools.Tool, runtimeContext string) RoleProfile {
+	return buildAgentProfile(
 		AgentConfig{
 			Instruction:         r.config.Instruction,
 			AdditionalPrompt:    r.config.AdditionalPrompt,
@@ -1355,7 +1383,6 @@ func (r *Runtime) buildRoleProfiles(skills ResolvedSkills, availableTools []lang
 		},
 		skills,
 		availableTools,
-		memoryContext,
 	)
 }
 
@@ -1378,24 +1405,22 @@ func (r *Runtime) memoryContextForPrompt() string {
 // runtimeCallbackHandler implements callbacks.Handler for streaming output and
 // tool/agent observability.
 type runtimeCallbackHandler struct {
-	writer                 io.Writer
-	providerFinalStreaming bool
-	metrics                *RunMetrics
-	startTime              time.Time
-	firstTokenSeen         bool
-	finalTokenSeen         bool
-	finalStreamLogEmitted  bool
-	finalStreamErr         error
-	streamFinal            bool
-	logger                 *Logger
-	eventHandler           func(RunEvent)
-	episodeID              string
-	runtimeID              string
-	requestID              string
-	runID                  string
-	sessionEventAppender   func(context.Context, SessionEvent) error
-	mu                     sync.Mutex
-	pendingActions         []schema.AgentAction
+	writer               io.Writer
+	metrics              *RunMetrics
+	startTime            time.Time
+	firstTokenSeen       bool
+	streamTokenSeen      bool
+	streamLogEmitted     bool
+	streamErr            error
+	logger               *Logger
+	eventHandler         func(RunEvent)
+	episodeID            string
+	runtimeID            string
+	requestID            string
+	runID                string
+	sessionEventAppender func(context.Context, SessionEvent) error
+	mu                   sync.Mutex
+	pendingActions       []schema.AgentAction
 }
 
 func (h *runtimeCallbackHandler) HandleText(ctx context.Context, text string) {
@@ -1469,6 +1494,10 @@ func (h *runtimeCallbackHandler) HandleChainError(ctx context.Context, err error
 func (h *runtimeCallbackHandler) HandleToolStart(ctx context.Context, input string) {}
 
 func (h *runtimeCallbackHandler) emitRunEvent(ctx context.Context, event RunEvent) {
+	h.emitRunEventWithPersistence(ctx, event, true)
+}
+
+func (h *runtimeCallbackHandler) emitRunEventWithPersistence(ctx context.Context, event RunEvent, persist bool) {
 	if event.Timestamp.IsZero() {
 		event.Timestamp = time.Now()
 	}
@@ -1490,6 +1519,23 @@ func (h *runtimeCallbackHandler) persistSessionEventBestEffort(event SessionEven
 	if err := h.sessionEventAppender(ctx, event); err != nil && h.logger != nil {
 		h.logger.Warn("%s: %v", warnMessage, err)
 	}
+}
+
+func (h *runtimeCallbackHandler) HandleAssistantOutput(ctx context.Context, content string) {
+	content = finalizeAssistantOutput(content)
+	if content == "" {
+		return
+	}
+	if h.logger != nil {
+		h.logger.Info("Assistant output: %s", truncateForLog(content, 1000))
+	}
+	h.emitRunEventWithPersistence(ctx, RunEvent{
+		Type:      "assistant_output",
+		Role:      "assistant",
+		EpisodeID: h.episodeID,
+		Content:   content,
+		Timestamp: time.Now(),
+	}, false)
 }
 
 func (h *runtimeCallbackHandler) HandleToolEnd(ctx context.Context, output string) {
@@ -1639,9 +1685,7 @@ func (h *runtimeCallbackHandler) HandleAgentAction(ctx context.Context, action s
 				action.Tool, truncateForLog(action.ToolInput, 240))
 		}
 	}
-	if !isLoopMetaTool(action.Tool) {
-		h.pushPendingAction(action)
-	}
+	h.pushPendingAction(action)
 	h.emitRunEvent(ctx, RunEvent{
 		Type:       runEventToolCall,
 		EpisodeID:  h.episodeID,
@@ -1654,39 +1698,6 @@ func (h *runtimeCallbackHandler) HandleAgentAction(ctx context.Context, action s
 }
 
 func (h *runtimeCallbackHandler) HandleAgentFinish(ctx context.Context, finish schema.AgentFinish) {}
-
-func (h *runtimeCallbackHandler) HandleTodoUpdate(ctx context.Context, todo TodoState, content string, speechEligible bool) {
-	content = strings.TrimSpace(content)
-	snapshot := todo.Clone()
-	if h.logger != nil {
-		h.logger.Info("Todo update: mode=%s revision=%d current_id=%s speech_eligible=%v content=%s",
-			snapshot.Mode, snapshot.Revision, snapshot.CurrentID, speechEligible, truncateForLog(content, 240))
-	}
-	h.emitRunEvent(ctx, RunEvent{
-		Type:           runEventTodoUpdate,
-		EpisodeID:      h.episodeID,
-		Content:        content,
-		Todo:           &snapshot,
-		SpeechEligible: speechEligible,
-		Timestamp:      time.Now(),
-	})
-}
-
-func (h *runtimeCallbackHandler) HandleTodoClosed(ctx context.Context, todo TodoState, reason string) {
-	reason = strings.TrimSpace(reason)
-	snapshot := todo.Clone()
-	if h.logger != nil {
-		h.logger.Info("Todo closed: mode=%s revision=%d current_id=%s reason=%s",
-			snapshot.Mode, snapshot.Revision, snapshot.CurrentID, truncateForLog(reason, 240))
-	}
-	h.emitRunEvent(ctx, RunEvent{
-		Type:      runEventTodoClosed,
-		EpisodeID: h.episodeID,
-		Content:   reason,
-		Todo:      &snapshot,
-		Timestamp: time.Now(),
-	})
-}
 
 func (h *runtimeCallbackHandler) HandleRoleOutput(ctx context.Context, role, content string) {
 	content = strings.TrimSpace(content)
@@ -1750,66 +1761,18 @@ func sessionEventFromRunEvent(event RunEvent, h *runtimeCallbackHandler) Session
 	return sessionEvent
 }
 
-func sessionEventFromPlannerDecision(decision plannerDecision) SessionEvent {
-	content, _ := json.Marshal(decision)
-	nextStep := strings.TrimSpace(decision.NextStep)
-	if nextStep == "" && len(decision.Plan) > 0 {
-		nextStep = strings.TrimSpace(decision.Plan[0])
-	}
-	return SessionEvent{
-		Type:               "planner_decision",
-		Role:               string(RolePlanner),
-		Content:            string(content),
-		Objective:          strings.TrimSpace(decision.Objective),
-		CompletionCriteria: uniqueNonEmpty(decision.CompletionCriteria),
-		Plan:               uniqueNonEmpty(decision.Plan),
-		NextStep:           nextStep,
-		Reason:             strings.TrimSpace(decision.Reason),
-	}
-}
-
-func sessionEventFromVerifierDecision(decision verifierDecision) SessionEvent {
-	content, _ := json.Marshal(decision)
-	canFinish := decision.CanFinish
-	return SessionEvent{
-		Type:        "verifier_decision",
-		Role:        string(RoleVerifier),
-		Content:     strings.TrimSpace(firstNonEmptyString([]string{decision.FinalAnswer, string(content)})),
-		CanFinish:   &canFinish,
-		NeedsReplan: decision.NeedsReplan,
-		Reason:      strings.TrimSpace(decision.Reason),
-	}
-}
-
-func (h *runtimeCallbackHandler) HandlePlannerDecision(ctx context.Context, decision plannerDecision) {
-	if h.sessionEventAppender != nil {
-		event := sessionEventFromPlannerDecision(decision)
-		event.EpisodeID = h.episodeID
-		h.persistSessionEventBestEffort(event, "[memory] persist planner decision failed")
-	}
-}
-
-func (h *runtimeCallbackHandler) HandleVerifierDecision(ctx context.Context, decision verifierDecision) {
-	if h.sessionEventAppender != nil {
-		event := sessionEventFromVerifierDecision(decision)
-		event.EpisodeID = h.episodeID
-		h.persistSessionEventBestEffort(event, "[memory] persist verifier decision failed")
-	}
-}
-
 func (h *runtimeCallbackHandler) HandleRetrieverStart(ctx context.Context, query string) {}
 
 func (h *runtimeCallbackHandler) HandleRetrieverEnd(ctx context.Context, query string, documents []schema.Document) {
 }
 
 func (h *runtimeCallbackHandler) HandleStreamingFunc(ctx context.Context, chunk []byte) {
-	finalStreaming := h.finalStreamingEnabled()
-	if h.writer != nil && finalStreaming && !h.finalStreamingFailed() {
+	if h.writer != nil && !h.streamingFailed() {
 		if _, err := h.writer.Write(chunk); err != nil {
-			h.recordFinalStreamError(err)
+			h.recordStreamError(err)
 		} else if streamWriterEmitted(h.writer) {
-			if h.recordFinalToken() {
-				h.logFinalStreamEmitted(ctx, chunk)
+			if h.recordStreamToken() {
+				h.logStreamEmitted(ctx, chunk)
 			}
 		}
 	}
@@ -1818,37 +1781,16 @@ func (h *runtimeCallbackHandler) HandleStreamingFunc(ctx context.Context, chunk 
 	h.recordFirstToken()
 }
 
-func (h *runtimeCallbackHandler) EnableFinalStreaming(ctx context.Context) {
+func (h *runtimeCallbackHandler) ResetStreaming(ctx context.Context) {
 	resetStreamWriterState(h.writer)
-	// Drop any text the previous turn streamed that the TTS layer buffered but
-	// never synthesized. Without this, residual content from a turn that
-	// returned a tool call (e.g. the assistant's "我查下天气。" preamble) stays
-	// in the sentence buffer and gets prepended to this turn's final answer,
-	// causing it to be spoken twice. Resetting here (before this turn streams
-	// anything) clears the leftover without touching the current turn's text.
+	// Drop any text the previous turn streamed that the writer buffered but
+	// never emitted, so residual content cannot leak into this turn.
 	resetStreamBuffer(h.writer)
 	h.mu.Lock()
-	h.finalTokenSeen = false
-	h.finalStreamLogEmitted = false
-	h.finalStreamErr = nil
-	h.streamFinal = true
+	h.streamTokenSeen = false
+	h.streamLogEmitted = false
+	h.streamErr = nil
 	h.mu.Unlock()
-}
-
-func (h *runtimeCallbackHandler) DisableFinalStreaming(ctx context.Context) {
-	h.mu.Lock()
-	h.streamFinal = false
-	h.mu.Unlock()
-}
-
-func (h *runtimeCallbackHandler) finalStreamingEnabled() bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.streamFinal
-}
-
-func (h *runtimeCallbackHandler) ProviderFinalStreamingEnabled() bool {
-	return h != nil && h.writer != nil && h.providerFinalStreaming
 }
 
 type streamStateResetter interface {
@@ -1881,12 +1823,6 @@ func streamWriterEmitted(writer io.Writer) bool {
 	return tracker.StreamEmitted()
 }
 
-func (h *runtimeCallbackHandler) HasFinalStreamingToken(context.Context) bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.finalTokenSeen && h.finalStreamErr == nil
-}
-
 func (h *runtimeCallbackHandler) recordFirstToken() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -1899,57 +1835,49 @@ func (h *runtimeCallbackHandler) recordFirstToken() {
 	}
 }
 
-func (h *runtimeCallbackHandler) recordFinalToken() bool {
+func (h *runtimeCallbackHandler) recordStreamToken() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.finalStreamErr != nil {
+	if h.streamErr != nil {
 		return false
 	}
-	first := !h.finalTokenSeen
-	h.finalTokenSeen = true
+	first := !h.streamTokenSeen
+	h.streamTokenSeen = true
 	return first
 }
 
-func (h *runtimeCallbackHandler) finalStreamingFailed() bool {
+func (h *runtimeCallbackHandler) streamingFailed() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.finalStreamErr != nil
+	return h.streamErr != nil
 }
 
-func (h *runtimeCallbackHandler) recordFinalStreamError(err error) {
+func (h *runtimeCallbackHandler) recordStreamError(err error) {
 	if err == nil {
 		return
 	}
 	h.mu.Lock()
-	firstErr := h.finalStreamErr == nil
+	firstErr := h.streamErr == nil
 	if firstErr {
-		h.finalStreamErr = err
+		h.streamErr = err
 	}
-	h.finalTokenSeen = false
+	h.streamTokenSeen = false
 	h.mu.Unlock()
 	if firstErr && h.logger != nil {
-		h.logger.Warn("Final stream writer failed; falling back to final answer: %v", err)
+		h.logger.Warn("Stream writer failed; continuing without streaming output: %v", err)
 	}
 }
 
-func (h *runtimeCallbackHandler) LogFinalStreamingDecision(_ context.Context, role RoleName, providerStreaming bool, reason string) {
-	if h == nil || h.logger == nil || !h.providerFinalStreaming {
-		return
-	}
-	h.logger.Info("Final stream decision: role=%s provider_streaming=%t reason=%s request_id=%s run_id=%s",
-		role, providerStreaming, reason, h.requestID, h.runID)
-}
-
-func (h *runtimeCallbackHandler) logFinalStreamEmitted(ctx context.Context, chunk []byte) {
+func (h *runtimeCallbackHandler) logStreamEmitted(ctx context.Context, chunk []byte) {
 	if h == nil || h.logger == nil {
 		return
 	}
 	h.mu.Lock()
-	if h.finalStreamLogEmitted {
+	if h.streamLogEmitted {
 		h.mu.Unlock()
 		return
 	}
-	h.finalStreamLogEmitted = true
+	h.streamLogEmitted = true
 	requestID := h.requestID
 	runID := h.runID
 	h.mu.Unlock()
@@ -1958,7 +1886,7 @@ func (h *runtimeCallbackHandler) logFinalStreamEmitted(ctx context.Context, chun
 	if role == "" {
 		role = "post_parse"
 	}
-	h.logger.Info("Final stream emitted: role=%s chunk_len=%d chunk=%s request_id=%s run_id=%s",
+	h.logger.Info("Stream emitted: role=%s chunk_len=%d chunk=%s request_id=%s run_id=%s",
 		role, len(chunk), truncateForLog(string(chunk), 120), requestID, runID)
 }
 
@@ -2199,6 +2127,7 @@ func (r *Runtime) Close() error {
 		}
 		cancel()
 	}
+	r.resetPlannerContext()
 	if r.logger != nil {
 		r.logger.Info("Shutting down agent runtime")
 		return r.logger.Close()
