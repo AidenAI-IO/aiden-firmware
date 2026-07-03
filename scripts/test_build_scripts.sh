@@ -12,6 +12,7 @@ REPACK_SCRIPT="$ROOT_DIR/scripts/repack_ota_update_image.sh"
 GITIGNORE="$ROOT_DIR/.gitignore"
 AIDEN_BOARD_CONFIG="$ROOT_DIR/pico-sdk/project/cfg/BoardConfig_IPC/BoardConfig-EMMC-Buildroot-RV1106_Luckfox_Pico_Zero-IPC.mk"
 SYSDRV_MAKEFILE="$ROOT_DIR/pico-sdk/sysdrv/Makefile"
+BUILDROOT_MIRROR_SELECT="$ROOT_DIR/pico-sdk/sysdrv/tools/board/mirror_select/buildroot_mirror_select.sh"
 
 if grep -Eq 'go\.dev/dl|wget .*go|curl .*go|tar .*go\$|GO_TARBALL|GO_TARBALL_SHA256' "$BUILD_SH" "$BUILD_IMAGE_SH"; then
     echo "build scripts must not download or extract Go toolchains" >&2
@@ -308,6 +309,8 @@ fi
 
 for required in \
     'define buildroot_config_state_value' \
+    'define sync_buildroot_config_state_inputs' \
+    '$(call sync_buildroot_config_state_inputs)' \
     'define write_buildroot_config_state_stamp' \
     '$(call write_buildroot_config_state_stamp)'; do
     if ! grep -Fq -- "$required" "$SYSDRV_MAKEFILE"; then
@@ -317,12 +320,20 @@ for required in \
 done
 
 buildroot_target_block=$(sed -n '/^buildroot: prepare$/, /^buildroot_clean:$/p' "$SYSDRV_MAKEFILE")
+mirror_select_line=$(printf '%s\n' "$buildroot_target_block" | grep -nF 'buildroot_mirror_select.sh' | sed 's/:.*//' | head -n 1)
+sync_config_line=$(printf '%s\n' "$buildroot_target_block" | grep -nF '$(call sync_buildroot_config_state_inputs)' | sed 's/:.*//' | head -n 1)
 refresh_line=$(printf '%s\n' "$buildroot_target_block" | grep -nF '$(call refresh_buildroot_config_state)' | sed 's/:.*//' | head -n 1)
+source_line=$(printf '%s\n' "$buildroot_target_block" | grep -nF '$(MAKE) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) source -C $(BUILDROOT_DIR)/$(BUILDROOT_VER)' | sed 's/:.*//' | head -n 1)
 parallel_build_line=$(printf '%s\n' "$buildroot_target_block" | grep -nF '$(MAKE) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) -j$(SYSDRV_JOBS) -C $(BUILDROOT_DIR)/$(BUILDROOT_VER)' | sed 's/:.*//' | head -n 1)
 write_stamp_line=$(printf '%s\n' "$buildroot_target_block" | grep -nF '$(call write_buildroot_config_state_stamp)' | sed 's/:.*//' | head -n 1)
-if [ -z "$refresh_line" ] || [ -z "$parallel_build_line" ] || [ -z "$write_stamp_line" ] || \
-   [ "$refresh_line" -ge "$parallel_build_line" ] || [ "$write_stamp_line" -le "$parallel_build_line" ]; then
-    echo "buildroot state tracking must refresh before the Buildroot compile and stamp only after it succeeds" >&2
+if [ -z "$mirror_select_line" ] || [ -z "$sync_config_line" ] || [ -z "$refresh_line" ] || \
+   [ -z "$source_line" ] || [ -z "$parallel_build_line" ] || [ -z "$write_stamp_line" ] || \
+   [ "$mirror_select_line" -ge "$sync_config_line" ] || \
+   [ "$sync_config_line" -ge "$refresh_line" ] || \
+   [ "$refresh_line" -ge "$source_line" ] || \
+   [ "$source_line" -ge "$parallel_build_line" ] || \
+   [ "$write_stamp_line" -le "$parallel_build_line" ]; then
+    echo "buildroot state tracking must sync Buildroot .config before hashing, refresh before compile, and stamp only after compile succeeds" >&2
     exit 1
 fi
 
@@ -331,6 +342,35 @@ if [ "$last_buildroot_command" != '$(call write_buildroot_config_state_stamp)' ]
     echo "buildroot state stamp must be the final successful step in the buildroot target" >&2
     exit 1
 fi
+
+mirror_test_dir=$(mktemp -d "${TMPDIR:-/tmp}/aiden-buildroot-mirror-test.XXXXXX")
+mkdir -p "$mirror_test_dir/bin"
+ln -s "$(command -v mv)" "$mirror_test_dir/bin/mv"
+mirror_test_config="$mirror_test_dir/buildroot.config"
+mirror_test_log="$mirror_test_dir/mirror.log"
+printf '%s\n' \
+    'BR2_PRIMARY_SITE="old"' \
+    'BR2_BACKUP_SITE="old"' > "$mirror_test_config"
+PATH="$mirror_test_dir/bin" "$BUILDROOT_MIRROR_SELECT" "$mirror_test_config" > "$mirror_test_log"
+if ! grep -Fq 'Primary mirror is https://mirrors.nju.edu.cn/buildroot/' "$mirror_test_log" || \
+   ! grep -Fq 'BR2_PRIMARY_SITE="https://mirrors.nju.edu.cn/buildroot/"' "$mirror_test_config"; then
+    echo "buildroot mirror selection must use the fixed default mirror without probing network state" >&2
+    exit 1
+fi
+
+mirror_override_config="$mirror_test_dir/buildroot-override.config"
+mirror_override_log="$mirror_test_dir/mirror-override.log"
+printf '%s\n' \
+    'BR2_PRIMARY_SITE="old"' \
+    'BR2_BACKUP_SITE="old"' > "$mirror_override_config"
+AIDEN_BUILDROOT_MIRROR_URL="https://example.invalid/buildroot/" \
+    PATH="$mirror_test_dir/bin" "$BUILDROOT_MIRROR_SELECT" "$mirror_override_config" > "$mirror_override_log"
+if ! grep -Fq 'Primary mirror is https://example.invalid/buildroot/' "$mirror_override_log" || \
+   ! grep -Fq 'BR2_PRIMARY_SITE="https://example.invalid/buildroot/"' "$mirror_override_config"; then
+    echo "buildroot mirror selection must allow AIDEN_BUILDROOT_MIRROR_URL to override the default mirror" >&2
+    exit 1
+fi
+rm -rf "$mirror_test_dir"
 
 if ! grep -q 'chown -hR 0:0 "\$USERDATA_DIR"' "$REPACK_SCRIPT"; then
     echo "OTA update repack must normalize userdata ownership before rebuilding userdata.img" >&2
