@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"strings"
 
 	"aiden-agent/internal/agent/context_manager"
@@ -23,7 +24,7 @@ func messageRoleFromLLM(role llms.ChatMessageType) context_manager.MessageRole {
 	}
 }
 
-func messageFromLLMContent(content llms.MessageContent) context_manager.Message {
+func messageFromLLMContent(manager *context_manager.ContextManager, content llms.MessageContent) context_manager.Message {
 	message := context_manager.Message{Role: messageRoleFromLLM(content.Role)}
 	for _, part := range content.Parts {
 		switch typed := part.(type) {
@@ -47,11 +48,15 @@ func messageFromLLMContent(content llms.MessageContent) context_manager.Message 
 				Content:    typed.Content,
 			})
 		case llms.BinaryContent:
-			message.Attachments = append(message.Attachments, context_manager.Attachment{
-				MIMEType: typed.MIMEType,
-				FileSize: int64(len(typed.Data)),
-				Data:     append([]byte(nil), typed.Data...),
-			})
+			if manager == nil {
+				continue
+			}
+			stored, err := manager.StoreAttachment(typed.MIMEType, typed.Data)
+			if err != nil {
+				message.Content = mergePromptText(message.Content, attachmentStorageFailureText(typed.MIMEType, err))
+				continue
+			}
+			message.Attachments = append(message.Attachments, stored)
 		case llms.ImageURLContent:
 			if text := strings.TrimSpace(typed.URL); text != "" {
 				message.Content = mergePromptText(message.Content, text)
@@ -61,12 +66,28 @@ func messageFromLLMContent(content llms.MessageContent) context_manager.Message 
 	return message
 }
 
-func userMessageFromInput(input string, attachments []InputAttachment) context_manager.Message {
-	parts := buildUserMessageParts(input, attachments)
-	return messageFromLLMContent(llms.MessageContent{
-		Role:  llms.ChatMessageTypeHuman,
-		Parts: parts,
-	})
+func userMessageFromInput(manager *context_manager.ContextManager, input string, attachments []InputAttachment) context_manager.Message {
+	descriptions := make([]string, 0, len(attachments))
+	message := context_manager.Message{
+		Role:    context_manager.MessageRoleUser,
+		Content: attachmentAwarePrompt(normalizeRunInput(input, attachments), attachments, descriptions),
+	}
+	if manager == nil {
+		return message
+	}
+	for _, attachment := range attachments {
+		if len(attachment.Data) == 0 {
+			continue
+		}
+		mimeType := attachmentMIMETypeOrDefault(attachment)
+		stored, err := manager.StoreAttachment(mimeType, attachment.Data)
+		if err != nil {
+			message.Content = mergePromptText(message.Content, attachmentStorageFailureText(mimeType, err))
+			continue
+		}
+		message.Attachments = append(message.Attachments, stored)
+	}
+	return message
 }
 
 func toolResultMessage(toolCallID, toolName, content string) context_manager.Message {
@@ -80,7 +101,7 @@ func toolResultMessage(toolCallID, toolName, content string) context_manager.Mes
 	}
 }
 
-func visualFollowupMessageFromLLMContent(content llms.MessageContent) context_manager.Message {
+func visualFollowupMessageFromLLMContent(manager *context_manager.ContextManager, content llms.MessageContent) context_manager.Message {
 	message := context_manager.Message{Role: messageRoleFromLLM(content.Role)}
 	for _, part := range content.Parts {
 		switch typed := part.(type) {
@@ -88,25 +109,30 @@ func visualFollowupMessageFromLLMContent(content llms.MessageContent) context_ma
 			message.Content = mergePromptText(message.Content, typed.Text)
 		case llms.ImageURLContent:
 			mimeType, data, ok := telemetryDataURL(typed.URL)
-			if ok && strings.HasPrefix(strings.ToLower(mimeType), "image/") && len(data) > 0 {
-				message.Attachments = append(message.Attachments, context_manager.Attachment{
-					MIMEType: mimeType,
-					FileSize: int64(len(data)),
-					Data:     append([]byte(nil), data...),
-				})
+			if ok && strings.HasPrefix(strings.ToLower(mimeType), "image/") && len(data) > 0 && manager != nil {
+				stored, err := manager.StoreAttachment(mimeType, data)
+				if err == nil {
+					message.Attachments = append(message.Attachments, stored)
+					continue
+				}
+				message.Content = mergePromptText(message.Content, attachmentStorageFailureText(mimeType, err))
 				continue
 			}
 			if text := strings.TrimSpace(typed.URL); text != "" {
 				message.Content = mergePromptText(message.Content, text)
 			}
 		case llms.BinaryContent:
-			message.Attachments = append(message.Attachments, context_manager.Attachment{
-				MIMEType: typed.MIMEType,
-				FileSize: int64(len(typed.Data)),
-				Data:     append([]byte(nil), typed.Data...),
-			})
+			if manager == nil {
+				continue
+			}
+			stored, err := manager.StoreAttachment(typed.MIMEType, typed.Data)
+			if err != nil {
+				message.Content = mergePromptText(message.Content, attachmentStorageFailureText(typed.MIMEType, err))
+				continue
+			}
+			message.Attachments = append(message.Attachments, stored)
 		default:
-			fallback := messageFromLLMContent(llms.MessageContent{
+			fallback := messageFromLLMContent(manager, llms.MessageContent{
 				Role:  content.Role,
 				Parts: []llms.ContentPart{part},
 			})
@@ -117,6 +143,32 @@ func visualFollowupMessageFromLLMContent(content llms.MessageContent) context_ma
 		}
 	}
 	return message
+}
+
+func attachmentMIMETypeOrDefault(attachment InputAttachment) string {
+	mimeType := strings.TrimSpace(attachment.MIMEType)
+	if mimeType != "" {
+		return mimeType
+	}
+	switch attachment.Kind {
+	case AttachmentKindImage:
+		return "image/png"
+	case AttachmentKindAudio:
+		return "audio/wav"
+	default:
+		return "application/octet-stream"
+	}
+}
+
+func attachmentStorageFailureText(mimeType string, err error) string {
+	label := strings.TrimSpace(mimeType)
+	if label == "" {
+		label = "attachment"
+	}
+	if err == nil {
+		return fmt.Sprintf("[Attachment omitted: %s could not be stored.]", label)
+	}
+	return fmt.Sprintf("[Attachment omitted: %s could not be stored: %v]", label, err)
 }
 
 func mergePromptText(existing, addition string) string {
@@ -146,9 +198,9 @@ func seedContextManager(
 		})
 	}
 	for _, item := range history {
-		manager.AppendMessage(messageFromLLMContent(item))
+		manager.AppendMessage(messageFromLLMContent(manager, item))
 	}
-	manager.AppendMessage(userMessageFromInput(userInput, attachments))
+	manager.AppendMessage(userMessageFromInput(manager, userInput, attachments))
 }
 
 func preparePlannerContextManager(
@@ -165,5 +217,5 @@ func preparePlannerContextManager(
 		seedContextManager(manager, systemPrompt, history, userInput, attachments)
 		return
 	}
-	manager.AppendMessage(userMessageFromInput(userInput, attachments))
+	manager.AppendMessage(userMessageFromInput(manager, userInput, attachments))
 }

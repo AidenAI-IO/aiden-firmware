@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -64,21 +65,29 @@ type ToolResult struct {
 	Content    string `json:"content"`
 }
 
-// Attachments are files that are attached to the message, they are not loaded into memory, they are only used to track the files that are attached to the message.
+// Attachment tracks file metadata for message attachments. Binary content is stored on disk
+// and only loaded when ConvertToStandardMessageList is called.
 type Attachment struct {
 	MIMEType string `json:"mime_type"`
 	FileSize int64  `json:"file_size"`
 	FilePath string `json:"file_path"`
-	Data     []byte `json:"-"`
 }
 
 // ContextManager is a manager for the context of the agent, it is used to manage the context of the agent, it is used to append messages to the context and to fork the context.
 // It is thread safe and can be used concurrently by multiple goroutines.
 // SessionID is the id of the session, it is used to identify the session of the agent. Conversation in a same session are shared the same context.
 type ContextManager struct {
-	sessionID   string
-	messageList []Message
-	mu          sync.RWMutex
+	sessionID       string
+	messageList     []Message
+	attachmentStore *attachmentStore
+	mu              sync.RWMutex
+}
+
+type attachmentStore struct {
+	mu   sync.Mutex
+	root string
+	next int
+	refs int
 }
 
 func NewContextManager() *ContextManager {
@@ -108,9 +117,148 @@ func (c *ContextManager) IsEmpty() bool {
 
 func (c *ContextManager) Reset() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	store := c.attachmentStore
+	c.attachmentStore = nil
 	c.messageList = nil
 	c.sessionID = "session_" + uuid.New().String()
+	c.mu.Unlock()
+
+	if store != nil {
+		store.release()
+	}
+}
+
+// StoreAttachment persists attachment bytes on disk and returns metadata only.
+func (c *ContextManager) StoreAttachment(mimeType string, data []byte) (Attachment, error) {
+	if len(data) == 0 {
+		return Attachment{}, fmt.Errorf("attachment data is empty")
+	}
+	mimeType = strings.TrimSpace(mimeType)
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+
+	c.mu.Lock()
+	store, err := c.ensureAttachmentStoreLocked()
+	if err == nil {
+		store.retain()
+	}
+	c.mu.Unlock()
+	if err != nil {
+		return Attachment{}, err
+	}
+	defer store.release()
+
+	return store.store(mimeType, data)
+}
+
+func (c *ContextManager) ensureAttachmentStoreLocked() (*attachmentStore, error) {
+	if c.attachmentStore != nil {
+		return c.attachmentStore, nil
+	}
+	store, err := newAttachmentStore()
+	if err != nil {
+		return nil, err
+	}
+	c.attachmentStore = store
+	return store, nil
+}
+
+func newAttachmentStore() (*attachmentStore, error) {
+	root, err := os.MkdirTemp("", "aiden-agent-ctx-attachments-")
+	if err != nil {
+		return nil, fmt.Errorf("create attachment directory: %w", err)
+	}
+	return &attachmentStore{
+		root: root,
+		refs: 1,
+	}, nil
+}
+
+func (s *attachmentStore) retain() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.refs++
+}
+
+func (s *attachmentStore) release() {
+	if s == nil {
+		return
+	}
+	var root string
+	s.mu.Lock()
+	if s.refs > 0 {
+		s.refs--
+	}
+	if s.refs == 0 && s.root != "" {
+		root = s.root
+		s.root = ""
+		s.next = 0
+	}
+	s.mu.Unlock()
+
+	if root != "" {
+		_ = os.RemoveAll(root)
+	}
+}
+
+func (s *attachmentStore) store(mimeType string, data []byte) (Attachment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.root == "" {
+		return Attachment{}, fmt.Errorf("attachment store is closed")
+	}
+	for {
+		s.next++
+		name := fmt.Sprintf("attachment_%06d%s", s.next, attachmentExtension(mimeType))
+		path := filepath.Join(s.root, name)
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if err != nil {
+			if os.IsExist(err) {
+				continue
+			}
+			return Attachment{}, fmt.Errorf("create attachment file: %w", err)
+		}
+		_, writeErr := file.Write(data)
+		closeErr := file.Close()
+		if writeErr != nil {
+			_ = os.Remove(path)
+			return Attachment{}, fmt.Errorf("write attachment file: %w", writeErr)
+		}
+		if closeErr != nil {
+			_ = os.Remove(path)
+			return Attachment{}, fmt.Errorf("close attachment file: %w", closeErr)
+		}
+		return Attachment{
+			MIMEType: mimeType,
+			FileSize: int64(len(data)),
+			FilePath: path,
+		}, nil
+	}
+}
+
+func attachmentExtension(mimeType string) string {
+	switch strings.ToLower(strings.TrimSpace(mimeType)) {
+	case "image/png":
+		return ".png"
+	case "image/jpeg", "image/jpg":
+		return ".jpg"
+	case "image/webp":
+		return ".webp"
+	case "image/gif":
+		return ".gif"
+	case "audio/wav":
+		return ".wav"
+	case "audio/mpeg":
+		return ".mp3"
+	case "audio/ogg":
+		return ".ogg"
+	default:
+		return ".bin"
+	}
 }
 
 // Fork creates a new MessageList that is a copy of the current MessageList
@@ -131,10 +279,14 @@ func (c *ContextManager) Fork() *ContextManager {
 		}
 	}
 	newSessionID := "session_" + uuid.New().String()
+	if c.attachmentStore != nil {
+		c.attachmentStore.retain()
+	}
 	return &ContextManager{
-		sessionID:   newSessionID,
-		messageList: newMessageList,
-		mu:          sync.RWMutex{},
+		sessionID:       newSessionID,
+		messageList:     newMessageList,
+		attachmentStore: c.attachmentStore,
+		mu:              sync.RWMutex{},
 	}
 }
 
@@ -180,14 +332,14 @@ func (c *ContextManager) ConvertToStandardMessageList() []llms.MessageContent {
 			})
 		}
 		for _, attachment := range message.Attachments {
-			data := attachment.Data
-			if len(data) == 0 && strings.TrimSpace(attachment.FilePath) != "" {
-				var err error
-				data, err = os.ReadFile(attachment.FilePath)
-				if err != nil {
-					fmt.Printf("Failed to read attachment file: %v", err)
-					continue
-				}
+			filePath := strings.TrimSpace(attachment.FilePath)
+			if filePath == "" {
+				continue
+			}
+			data, err := os.ReadFile(filePath)
+			if err != nil {
+				newMessage.Parts = append(newMessage.Parts, llms.TextPart(attachmentOmittedMessage(attachment.MIMEType, err)))
+				continue
 			}
 			if len(data) == 0 {
 				continue
@@ -197,6 +349,17 @@ func (c *ContextManager) ConvertToStandardMessageList() []llms.MessageContent {
 		standardMessageList[i] = newMessage
 	}
 	return standardMessageList
+}
+
+func attachmentOmittedMessage(mimeType string, err error) string {
+	label := strings.TrimSpace(mimeType)
+	if label == "" {
+		label = "attachment"
+	}
+	if err == nil {
+		return fmt.Sprintf("[Attachment omitted: %s could not be loaded.]", label)
+	}
+	return fmt.Sprintf("[Attachment omitted: %s could not be loaded: %v]", label, err)
 }
 
 // ConvertChoiceToContextManagerMessage converts a content choice to a context manager message

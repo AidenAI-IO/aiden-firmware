@@ -287,7 +287,7 @@ func appendToolExecutionMessages(llmExecutor *executor.LLMExecutor, parser *Func
 		toolContent,
 	))
 	for _, followup := range followups {
-		llmExecutor.AppendMessage(visualFollowupMessageFromLLMContent(followup))
+		llmExecutor.AppendMessage(visualFollowupMessageFromLLMContent(llmExecutor.ContextManager(), followup))
 	}
 }
 

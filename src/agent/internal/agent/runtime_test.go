@@ -3943,17 +3943,25 @@ func TestRuntimeRunPlacesSystemPromptBeforeCurrentUserMessage(t *testing.T) {
 		t.Fatalf("current user message role = %q, want human", userMessage.Role)
 	}
 	userPrompt := messageText([]llms.MessageContent{userMessage})
-	if !strings.Contains(userPrompt, userText) || !strings.Contains(userPrompt, "Attached content") || !strings.Contains(userPrompt, "data:image/png;base64,") {
+	if !strings.Contains(userPrompt, userText) || !strings.Contains(userPrompt, "Attached content") || !strings.Contains(userPrompt, "photo.png") {
 		t.Fatalf("current user message missing attachment-aware prompt: %q", userPrompt)
 	}
-	var userHasImage bool
+	var userHasImageURL, userHasImageBinary bool
 	for _, part := range userMessage.Parts {
-		if _, ok := part.(llms.ImageURLContent); ok {
-			userHasImage = true
+		switch typed := part.(type) {
+		case llms.ImageURLContent:
+			userHasImageURL = true
+		case llms.BinaryContent:
+			if typed.MIMEType == "image/png" && string(typed.Data) == string([]byte{0x89, 0x50, 0x4e, 0x47}) {
+				userHasImageBinary = true
+			}
 		}
 	}
-	if userHasImage {
+	if userHasImageURL {
 		t.Fatalf("current user message unexpectedly retained separate image URL part: %#v", userMessage.Parts)
+	}
+	if !userHasImageBinary {
+		t.Fatalf("current user message missing image binary part: %#v", userMessage.Parts)
 	}
 }
 
@@ -4011,7 +4019,7 @@ func TestRuntimeRunIncludesUserAttachments(t *testing.T) {
 
 	var textContent string
 	var imageURL string
-	var binaryMIMEs []string
+	var imageBinary, audioBinary bool
 	for _, part := range userMessage.Parts {
 		switch p := part.(type) {
 		case llms.TextContent:
@@ -4019,20 +4027,28 @@ func TestRuntimeRunIncludesUserAttachments(t *testing.T) {
 		case llms.ImageURLContent:
 			imageURL = p.URL
 		case llms.BinaryContent:
-			binaryMIMEs = append(binaryMIMEs, p.MIMEType)
+			if p.MIMEType == "image/png" && string(p.Data) == string([]byte{0x89, 0x50, 0x4e, 0x47}) {
+				imageBinary = true
+			}
+			if p.MIMEType == "audio/wav" && string(p.Data) == string([]byte{0x52, 0x49, 0x46, 0x46}) {
+				audioBinary = true
+			}
 		}
 	}
 
-	for _, expected := range []string{"Describe the uploaded media.", "Attached content", "photo.png", "note.wav", "data:image/png;base64,"} {
+	for _, expected := range []string{"Describe the uploaded media.", "Attached content", "photo.png", "note.wav"} {
 		if !strings.Contains(textContent, expected) {
 			t.Fatalf("agent user message text missing %q: %q", expected, textContent)
 		}
 	}
+	if strings.Contains(textContent, "data:image/png;base64,") {
+		t.Fatalf("image attachment should not be kept inline in text: %q", textContent)
+	}
 	if imageURL != "" {
 		t.Fatalf("image attachment should be folded into text by context manager bridge, got %q", imageURL)
 	}
-	if len(binaryMIMEs) != 1 || binaryMIMEs[0] != "audio/wav" {
-		t.Fatalf("unexpected binary attachment MIME types: %#v", binaryMIMEs)
+	if !imageBinary || !audioBinary {
+		t.Fatalf("missing binary attachment parts: image=%v audio=%v parts=%#v", imageBinary, audioBinary, userMessage.Parts)
 	}
 }
 
@@ -4078,5 +4094,26 @@ func TestRuntimeClearMemoryRemovesPersistedSession(t *testing.T) {
 	}
 	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
 		t.Fatalf("expected legacy snapshot to be removed, stat err = %v", err)
+	}
+}
+
+func TestRuntimeCloseClearsPlannerContextAttachments(t *testing.T) {
+	runtime := &Runtime{}
+	manager := runtime.plannerContextManager()
+	stored, err := manager.StoreAttachment("image/png", []byte("png-bytes"))
+	if err != nil {
+		t.Fatalf("StoreAttachment() error = %v", err)
+	}
+	root := filepath.Dir(stored.FilePath)
+	if _, err := os.Stat(root); err != nil {
+		t.Fatalf("attachment root before Close() = %v", err)
+	}
+
+	if err := runtime.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("attachment root after Close() err=%v, want not exist", err)
 	}
 }

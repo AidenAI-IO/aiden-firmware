@@ -2095,6 +2095,7 @@ func (r *Runtime) Close() error {
 		}
 		cancel()
 	}
+	r.resetPlannerContext()
 	if r.logger != nil {
 		r.logger.Info("Shutting down agent runtime")
 		return r.logger.Close()

@@ -2,6 +2,8 @@ package context_manager
 
 import (
 	"encoding/json"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/tmc/langchaingo/llms"
@@ -220,5 +222,146 @@ func TestContextManagerReset(t *testing.T) {
 	manager.Reset()
 	if !manager.IsEmpty() {
 		t.Fatal("reset context manager should be empty")
+	}
+}
+
+func TestStoreAttachmentPersistsMetadataOnly(t *testing.T) {
+	manager := NewContextManager()
+	stored, err := manager.StoreAttachment("image/png", []byte("png-bytes"))
+	if err != nil {
+		t.Fatalf("StoreAttachment() error = %v", err)
+	}
+	if stored.FilePath == "" || stored.FileSize != 9 || stored.MIMEType != "image/png" {
+		t.Fatalf("stored attachment = %#v", stored)
+	}
+
+	manager.AppendMessage(Message{
+		Role:        MessageRoleUser,
+		Content:     "see image",
+		Attachments: []Attachment{stored},
+	})
+
+	messages := manager.ConvertToStandardMessageList()
+	if len(messages) != 1 || len(messages[0].Parts) != 2 {
+		t.Fatalf("messages = %#v, want text + binary parts", messages)
+	}
+	binaryPart, ok := messages[0].Parts[1].(llms.BinaryContent)
+	if !ok || string(binaryPart.Data) != "png-bytes" {
+		t.Fatalf("binary part = %#v", messages[0].Parts[1])
+	}
+}
+
+func TestContextManagerResetRemovesStoredAttachments(t *testing.T) {
+	manager := NewContextManager()
+	stored, err := manager.StoreAttachment("image/png", []byte("png-bytes"))
+	if err != nil {
+		t.Fatalf("StoreAttachment() error = %v", err)
+	}
+	root := manager.attachmentStore.root
+	if _, err := os.Stat(stored.FilePath); err != nil {
+		t.Fatalf("stored attachment missing before reset: %v", err)
+	}
+
+	manager.Reset()
+
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("attachment root after reset: err=%v, want not exist", err)
+	}
+}
+
+func TestContextManagerForkRetainsAttachmentStoreUntilAllManagersReset(t *testing.T) {
+	manager := NewContextManager()
+	first, err := manager.StoreAttachment("image/png", []byte("first"))
+	if err != nil {
+		t.Fatalf("StoreAttachment(first) error = %v", err)
+	}
+	manager.AppendMessage(Message{
+		Role:        MessageRoleUser,
+		Content:     "see first",
+		Attachments: []Attachment{first},
+	})
+	root := manager.attachmentStore.root
+
+	fork := manager.Fork()
+	second, err := fork.StoreAttachment("image/png", []byte("second"))
+	if err != nil {
+		t.Fatalf("StoreAttachment(second) error = %v", err)
+	}
+	if first.FilePath == second.FilePath {
+		t.Fatalf("fork store overwrote first attachment path %q", first.FilePath)
+	}
+	firstData, err := os.ReadFile(first.FilePath)
+	if err != nil || string(firstData) != "first" {
+		t.Fatalf("first attachment data = %q err=%v", firstData, err)
+	}
+	secondData, err := os.ReadFile(second.FilePath)
+	if err != nil || string(secondData) != "second" {
+		t.Fatalf("second attachment data = %q err=%v", secondData, err)
+	}
+
+	manager.Reset()
+	if _, err := os.Stat(root); err != nil {
+		t.Fatalf("attachment root should remain while fork is alive: %v", err)
+	}
+	messages := fork.ConvertToStandardMessageList()
+	if len(messages) != 1 || len(messages[0].Parts) != 2 {
+		t.Fatalf("fork messages = %#v, want text + binary parts", messages)
+	}
+	binaryPart, ok := messages[0].Parts[1].(llms.BinaryContent)
+	if !ok || string(binaryPart.Data) != "first" {
+		t.Fatalf("fork binary part = %#v", messages[0].Parts[1])
+	}
+
+	fork.Reset()
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("attachment root after fork reset: err=%v, want not exist", err)
+	}
+}
+
+func TestConvertToStandardMessageListLoadsAttachmentFromFilePath(t *testing.T) {
+	manager := NewContextManager()
+	filePath := t.TempDir() + "/manual.png"
+	if err := os.WriteFile(filePath, []byte("manual-bytes"), 0o644); err != nil {
+		t.Fatalf("write attachment file: %v", err)
+	}
+	manager.AppendMessage(Message{
+		Role:    MessageRoleUser,
+		Content: "see image",
+		Attachments: []Attachment{{
+			MIMEType: "image/png",
+			FileSize: 12,
+			FilePath: filePath,
+		}},
+	})
+
+	messages := manager.ConvertToStandardMessageList()
+	if len(messages) != 1 || len(messages[0].Parts) != 2 {
+		t.Fatalf("messages = %#v, want text + binary parts", messages)
+	}
+	binaryPart, ok := messages[0].Parts[1].(llms.BinaryContent)
+	if !ok || string(binaryPart.Data) != "manual-bytes" {
+		t.Fatalf("binary part = %#v", messages[0].Parts[1])
+	}
+}
+
+func TestConvertToStandardMessageListReportsMissingAttachment(t *testing.T) {
+	manager := NewContextManager()
+	manager.AppendMessage(Message{
+		Role:    MessageRoleUser,
+		Content: "see image",
+		Attachments: []Attachment{{
+			MIMEType: "image/png",
+			FileSize: 12,
+			FilePath: t.TempDir() + "/missing.png",
+		}},
+	})
+
+	messages := manager.ConvertToStandardMessageList()
+	if len(messages) != 1 || len(messages[0].Parts) != 2 {
+		t.Fatalf("messages = %#v, want text + omitted attachment notice", messages)
+	}
+	textPart, ok := messages[0].Parts[1].(llms.TextContent)
+	if !ok || !strings.Contains(textPart.Text, "Attachment omitted") {
+		t.Fatalf("missing attachment part = %#v", messages[0].Parts[1])
 	}
 }
