@@ -352,9 +352,22 @@ printf '%s\n' \
     'BR2_PRIMARY_SITE="old"' \
     'BR2_BACKUP_SITE="old"' > "$mirror_test_config"
 PATH="$mirror_test_dir/bin" "$BUILDROOT_MIRROR_SELECT" "$mirror_test_config" > "$mirror_test_log"
-if ! grep -Fq 'Fast mirror is http://sources.buildroot.net' "$mirror_test_log" || \
-   ! grep -Fq 'BR2_PRIMARY_SITE="http://sources.buildroot.net"' "$mirror_test_config"; then
-    echo "buildroot mirror selection must fall back to a non-empty default mirror when curl is unavailable" >&2
+if ! grep -Fq 'Primary mirror is https://mirrors.nju.edu.cn/buildroot/' "$mirror_test_log" || \
+   ! grep -Fq 'BR2_PRIMARY_SITE="https://mirrors.nju.edu.cn/buildroot/"' "$mirror_test_config"; then
+    echo "buildroot mirror selection must use the fixed default mirror without probing network state" >&2
+    exit 1
+fi
+
+mirror_override_config="$mirror_test_dir/buildroot-override.config"
+mirror_override_log="$mirror_test_dir/mirror-override.log"
+printf '%s\n' \
+    'BR2_PRIMARY_SITE="old"' \
+    'BR2_BACKUP_SITE="old"' > "$mirror_override_config"
+AIDEN_BUILDROOT_MIRROR_URL="https://example.invalid/buildroot/" \
+    PATH="$mirror_test_dir/bin" "$BUILDROOT_MIRROR_SELECT" "$mirror_override_config" > "$mirror_override_log"
+if ! grep -Fq 'Primary mirror is https://example.invalid/buildroot/' "$mirror_override_log" || \
+   ! grep -Fq 'BR2_PRIMARY_SITE="https://example.invalid/buildroot/"' "$mirror_override_config"; then
+    echo "buildroot mirror selection must allow AIDEN_BUILDROOT_MIRROR_URL to override the default mirror" >&2
     exit 1
 fi
 rm -rf "$mirror_test_dir"
