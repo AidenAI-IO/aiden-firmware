@@ -16,6 +16,13 @@ func withDrainWait(t *testing.T, fn func(context.Context, time.Duration) error) 
 	t.Cleanup(func() { waitForEstimatedDrain = original })
 }
 
+func withDrainNow(t *testing.T, fn func() time.Time) {
+	t.Helper()
+	original := playbackDrainNow
+	playbackDrainNow = fn
+	t.Cleanup(func() { playbackDrainNow = original })
+}
+
 func skipDrainWait(t *testing.T) {
 	t.Helper()
 	withDrainWait(t, func(context.Context, time.Duration) error { return nil })
@@ -215,6 +222,38 @@ func TestAudioServiceSinkDrainWaitsForOwnPCMSOnly(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&backend.finalCalls); got != 1 {
 		t.Fatalf("finalCalls = %d, want 1", got)
+	}
+}
+
+func TestAudioServiceSinkDrainSubtractsElapsedPlayback(t *testing.T) {
+	backend := &countingBackend{}
+	format := AudioFormat{SampleRate: 16000, Channels: 1, BitWidth: 16}
+	sink := NewAudioServiceSink(backend, format)
+	startedAt := time.Unix(100, 0)
+	now := startedAt
+	withDrainNow(t, func() time.Time { return now })
+
+	var waitSeen time.Duration
+	withDrainWait(t, func(_ context.Context, wait time.Duration) error {
+		waitSeen = wait
+		return nil
+	})
+
+	if err := sink.WritePCM(make([]byte, pcmBytesForDuration(format, time.Second))); err != nil {
+		t.Fatalf("WritePCM() error = %v", err)
+	}
+	now = startedAt.Add(1500 * time.Millisecond)
+
+	if err := sink.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain() error = %v", err)
+	}
+
+	want := 1216 * time.Millisecond
+	if waitSeen != want {
+		t.Fatalf("Drain() wait = %s, want %s", waitSeen, want)
+	}
+	if waitSeen >= EstimatedPlaybackDrainDuration(format, pcmBytesForDuration(format, 2*time.Second)) {
+		t.Fatalf("Drain() waited as if no streamed playback had elapsed: %s", waitSeen)
 	}
 }
 
