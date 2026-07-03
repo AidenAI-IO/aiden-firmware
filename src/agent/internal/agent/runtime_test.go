@@ -3091,7 +3091,7 @@ func TestRuntimeRunCompactsRealChatExchangesBeyondWindow(t *testing.T) {
 	configDir := t.TempDir()
 	memDir := filepath.Join(configDir, "memory")
 	os.MkdirAll(memDir, 0o755)
-	os.WriteFile(filepath.Join(memDir, "extraction.yaml"), []byte("hot_window_events: 20\n"), 0o644)
+	os.WriteFile(filepath.Join(memDir, "extraction.yaml"), []byte("hot_window_events: 20\ncount_compress_after_events: 24\n"), 0o644)
 
 	response := "ok\n<tts>ok</tts>"
 	responses := make([]string, 90)
@@ -3123,7 +3123,7 @@ func TestRuntimeRunCompactsRealChatExchangesBeyondWindow(t *testing.T) {
 		}
 	}
 
-	waitForSessionCompaction(t, configDir)
+	waitForSessionCompaction(t, configDir, runtime.memories)
 }
 
 func TestRuntimeRunSchedulesMemoryMaintenanceAsync(t *testing.T) {
@@ -3891,8 +3891,15 @@ func TestSessionRecallTelemetryIgnoresCompressedChunkWithPendingPrefix(t *testin
 	}
 }
 
-func waitForSessionCompaction(t *testing.T, configDir string) {
+func waitForSessionCompaction(t *testing.T, configDir string, manager *MemoryManager) {
 	t.Helper()
+	if manager != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := manager.WaitMaintenance(ctx); err != nil {
+			t.Fatalf("wait memory maintenance: %v", err)
+		}
+	}
 	session := NewSessionMemoryStore(filepath.Join(configDir, "memory", "session"))
 	deadline := time.Now().Add(3 * time.Second)
 	var lastEventCount int
