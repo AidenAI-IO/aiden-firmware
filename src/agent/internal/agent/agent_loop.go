@@ -137,7 +137,6 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 	actions, finish, err := parser.ParseOutput(contentResp)
 	if errors.Is(err, agents.ErrUnableToParseOutput) {
 		llmExecutor.AppendMessage(context_manager.ConvertChoiceToContextManagerMessage(*contentResp.Choices[0]))
-		llmExecutor.AppendMessage(toolResultMessage("", "", err.Error()))
 		return "", false, nil
 	}
 	if err != nil {
