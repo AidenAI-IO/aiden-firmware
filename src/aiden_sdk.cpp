@@ -653,6 +653,7 @@ bool AudioCapture::init(const AudioConfig& config) {
 
     ret = RK_MPI_AI_EnableChn(impl_->dev_id, impl_->chn_id);
     if (ret != RK_SUCCESS) {
+        RK_MPI_AI_Disable(impl_->dev_id);
         maybe_sys_deinit();
         return false;
     }

@@ -311,7 +311,9 @@ func (d *AudioDialog) StopRecording() error {
 		if err != nil {
 			log.Printf("[stt] finalize streaming transcript failed, falling back to one-shot STT: %v\n", err)
 		} else {
+			d.recordMu.Lock()
 			d.recordText = transcript
+			d.recordMu.Unlock()
 		}
 	}
 
