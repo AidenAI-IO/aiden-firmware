@@ -97,6 +97,9 @@ jobs:
         git submodule update --init --depth=1 pico-sdk
         git -C pico-sdk clean -f -- .gitmodules
 
+    - name: Verify android-tools compatibility patches
+      run: sh scripts/test_android_tools_aiden_compat.sh
+
     - name: Verify reproducible rootfs policy
       run: bash scripts/test_reproducible_rootfs_policy.sh
 

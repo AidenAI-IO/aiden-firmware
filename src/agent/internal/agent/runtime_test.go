@@ -294,6 +294,7 @@ func TestRuntimeRunRestoresHotWindowHistoryAsChatMessages(t *testing.T) {
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
 	)
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	if _, err := runtime.Run(ctx, RunRequest{Input: "继续上一轮"}); err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -345,13 +346,15 @@ func TestRuntimeRunContinuesWhenPersistedMemoryCannotLoad(t *testing.T) {
 		t.Fatal(err)
 	}
 	model := &scriptedModel{responses: roleDirectResponses("ok")}
+	manager := NewMemoryManager(memoryDir)
 	runtime := NewRuntimeWithDeps(
 		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
 		&testModelResolver{model: model},
-		NewMemoryManager(memoryDir),
+		manager,
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
 	)
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	result, err := runtime.Run(context.Background(), RunRequest{Input: "hello"})
 	if err != nil {
@@ -3341,6 +3344,7 @@ func TestRuntimeRunRotatesSessionOnNewBoundary(t *testing.T) {
 		NewSkillIndex(),
 	)
 	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	result, err := runtime.Run(context.Background(), RunRequest{Input: "打开微信"})
 	if err != nil {
@@ -3437,6 +3441,7 @@ func TestRuntimeRunShortGapKeepsActiveSessionWithoutForcedContinuation(t *testin
 		NewSkillIndex(),
 	)
 	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	result, err := runtime.Run(context.Background(), RunRequest{Input: "打开微信"})
 	if err != nil {
@@ -3516,6 +3521,7 @@ func TestRuntimeRunRepairsTruncatedSessionTailBeforeBoundaryRotation(t *testing.
 		NewSkillIndex(),
 	)
 	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	result, err := runtime.Run(context.Background(), RunRequest{Input: "打开微信"})
 	if err != nil {
@@ -3665,6 +3671,7 @@ func TestRuntimeRunRotatesNeutralFollowUpAfterFinishedEpisode(t *testing.T) {
 		NewSkillIndex(),
 	)
 	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	result, err := runtime.Run(context.Background(), RunRequest{Input: "你有什么爱好？"})
 	if err != nil {
