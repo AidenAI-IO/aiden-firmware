@@ -11,9 +11,6 @@ fail() {
 
 sh -n "$WATCHDOG" || fail "S60usb_ecm_watchdog has invalid shell syntax"
 
-grep -Fq 'HOST_CONFIG_REFRESH_DELAY=' "$WATCHDOG" ||
-    fail "watchdog must delay host-configured HID session refresh"
-
 grep -Fq 'STATE_FILE=' "$WATCHDOG" ||
     fail "watchdog must persist last refresh diagnostics"
 
@@ -32,14 +29,17 @@ grep -Fq 'reset_composite "ECM stall"' "$WATCHDOG" ||
 grep -Fq 'UDC state changed:' "$WATCHDOG" ||
     fail "watchdog_main must track host UDC state transitions"
 
-grep -Fq 'configured_refresh_pending=1' "$WATCHDOG" ||
-    fail "watchdog_main must schedule a refresh after host configuration"
+grep -Fq 'watchdog started while UDC already configured; leaving HID session intact' "$WATCHDOG" ||
+    fail "watchdog_main must preserve an already configured HID session on startup"
 
-grep -Fq 'watchdog started while UDC already configured; scheduling startup HID session refresh' "$WATCHDOG" ||
-    fail "watchdog_main must schedule a refresh when it starts after UDC is already configured"
+grep -Fq 'UDC configured transition observed; leaving HID session intact' "$WATCHDOG" ||
+    fail "watchdog_main must preserve healthy host-configured HID transitions"
 
-grep -Fq 'reset_composite "host configured"' "$WATCHDOG" ||
-    fail "watchdog_main must refresh the composite gadget after host configuration"
+if grep -Fq 'configured_refresh_pending=1' "$WATCHDOG" ||
+    grep -Fq 'HOST_CONFIG_REFRESH_DELAY=' "$WATCHDOG" ||
+    grep -Fq 'reset_composite "host configured"' "$WATCHDOG"; then
+    fail "watchdog must not automatically refresh the composite gadget after healthy host configuration"
+fi
 
 grep -Fq 'refresh) reset_composite "manual refresh" ;;' "$WATCHDOG" ||
     fail "watchdog must expose a manual refresh command for stale HID sessions"
