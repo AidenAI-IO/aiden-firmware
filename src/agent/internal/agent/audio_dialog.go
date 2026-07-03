@@ -1053,11 +1053,17 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 	// Send to LLM
 	log.Printf("[llm] Sending request to provider '%s' (model=%s)...\n",
 		d.config.Model.Provider, d.config.Model.Model)
+	var finalAssistantEvent *RunEvent
 
 	req := RunRequest{
 		Input: text,
 		Turn:  NewTextTurnInput(text, nil),
 		EventHandler: func(event RunEvent) {
+			if event.Type == "assistant_output" {
+				captured := event
+				finalAssistantEvent = &captured
+				return
+			}
 			d.appendVoiceRunEvent(event, "")
 			d.HandleRunEvent(ctx, event)
 		},
@@ -1086,6 +1092,9 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 	}
 	if err != nil {
 		return fmt.Errorf("LLM request failed: %w", err)
+	}
+	if finalAssistantEvent != nil {
+		d.appendVoiceRunEvent(*finalAssistantEvent, "")
 	}
 
 	log.Printf("[llm] Response received\n")
