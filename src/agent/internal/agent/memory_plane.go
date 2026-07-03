@@ -909,13 +909,10 @@ func (c MemoryContext) ReferenceIDs() []string {
 }
 
 func (c MemoryContext) IsEmpty() bool {
-	return strings.TrimSpace(c.RenderForRole(RoleAgent)) == ""
+	return strings.TrimSpace(c.Render()) == ""
 }
 
-func (c MemoryContext) RenderForRole(role RoleName) string {
-	if role != RoleAgent {
-		return ""
-	}
+func (c MemoryContext) Render() string {
 	var parts []string
 	if session := strings.TrimSpace(c.Common.SessionSummary); session != "" {
 		parts = append(parts, session)

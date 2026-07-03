@@ -9,8 +9,9 @@ import (
 
 // TestRecallSessionChunksToolToleratesMalformedLLMInput verifies the fix for
 // the exact failure mode from production logs:
-//   Tool call: name=recall_session_chunks input={"tags": "[]", "limit": "3"}
-//   Tool error: decode recall_session_chunks input: json: cannot unmarshal string into Go struct field ChunkRecallQuery.tags of type []string
+//
+//	Tool call: name=recall_session_chunks input={"tags": "[]", "limit": "3"}
+//	Tool error: decode recall_session_chunks input: json: cannot unmarshal string into Go struct field ChunkRecallQuery.tags of type []string
 func TestRecallSessionChunksToolToleratesMalformedLLMInput(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

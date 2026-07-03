@@ -830,7 +830,7 @@ func TestRuntimeRunDoesNotPersistUnusedSteerProviderAsConversationMessage(t *tes
 
 	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
 	if !sessionEventsContain(events, func(event SessionEvent) bool {
-		return event.Type == "role_output" && event.Role == string(RoleAgent) && event.Content == "Old answer."
+		return event.Type == "role_output" && event.Role == "agent" && event.Content == "Old answer."
 	}) {
 		t.Fatalf("expected agent role_output to be persisted in session events: %#v", events)
 	}
@@ -3687,7 +3687,7 @@ func TestRuntimeRegistersMemoryRecallToolsWhenConfigDirSet(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunInjectsMemoryFilesIntoSystemPrompt(t *testing.T) {
+func TestRuntimeRunOmitsMemoryFilesFromSystemPrompt(t *testing.T) {
 	configDir := t.TempDir()
 	summary := "SESSION SUMMARY SENTINEL"
 	profile := "PROFILE SENTINEL"
@@ -3742,11 +3742,10 @@ func TestRuntimeRunInjectsMemoryFilesIntoSystemPrompt(t *testing.T) {
 			systemText.WriteString(text.Text)
 		}
 	}
-	if !strings.Contains(systemText.String(), summary) {
-		t.Fatalf("system message missing summary:\n%s", systemText.String())
-	}
-	if !strings.Contains(systemText.String(), profile) {
-		t.Fatalf("system message missing profile:\n%s", systemText.String())
+	for _, unexpected := range []string{summary, profile} {
+		if strings.Contains(systemText.String(), unexpected) {
+			t.Fatalf("system message should not include memory file %q:\n%s", unexpected, systemText.String())
+		}
 	}
 }
 
@@ -3793,7 +3792,7 @@ func TestRuntimeMemoryContextIgnoresArchivedSessionSummary(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunIncludesRuntimeContextInSystemMessage(t *testing.T) {
+func TestRuntimeRunOmitsRuntimeContextFromSystemMessage(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleDirectResponses("ok"),
 	}
@@ -3828,12 +3827,12 @@ func TestRuntimeRunIncludesRuntimeContextInSystemMessage(t *testing.T) {
 			systemText.WriteString(text.Text)
 		}
 	}
-	if !strings.Contains(systemText.String(), "## Runtime context\n"+runtimeContext) {
-		t.Fatalf("system message missing runtime context:\n%s", systemText.String())
+	if strings.Contains(systemText.String(), "## Runtime context") || strings.Contains(systemText.String(), runtimeContext) {
+		t.Fatalf("system message should not include runtime context:\n%s", systemText.String())
 	}
 }
 
-func TestRuntimeRunReusesInitialRuntimeContextAcrossTurns(t *testing.T) {
+func TestRuntimeRunDoesNotPersistRuntimeContextAcrossTurns(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
 			contentResponse("first"),
@@ -3875,14 +3874,10 @@ func TestRuntimeRunReusesInitialRuntimeContextAcrossTurns(t *testing.T) {
 
 	secondCall := model.messages[1]
 	systemPrompt := messageText(secondCall[:1])
-	if strings.Count(systemPrompt, "## Runtime context") != 1 {
-		t.Fatalf("second system prompt should contain exactly one runtime context section:\n%s", systemPrompt)
-	}
-	if strings.Count(systemPrompt, firstRuntimeContext) != 1 {
-		t.Fatalf("second system prompt should keep initial runtime context exactly once:\n%s", systemPrompt)
-	}
-	if strings.Contains(systemPrompt, secondRuntimeContext) {
-		t.Fatalf("second system prompt unexpectedly refreshed runtime context:\n%s", systemPrompt)
+	for _, unwanted := range []string{"## Runtime context", firstRuntimeContext, secondRuntimeContext} {
+		if strings.Contains(systemPrompt, unwanted) {
+			t.Fatalf("second system prompt should not contain runtime context %q:\n%s", unwanted, systemPrompt)
+		}
 	}
 
 	nonSystemPrompt := messageText(secondCall[1:])

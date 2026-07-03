@@ -14,16 +14,9 @@ func TestSingleAgentProfileDoesNotBuildDelegatedRoles(t *testing.T) {
 		AgentConfig{Instruction: "base", AdditionalPrompt: "extra"},
 		ResolvedSkills{Names: []string{"ui"}, Instructions: []string{"[ui] inspect first"}},
 		[]langtools.Tool{&stubTool{name: "screenshot", description: "Capture screen."}},
-		"MEMORY CONTEXT",
 	)
 
-	if profile.Name != RoleAgent {
-		t.Fatalf("agent profile name = %q, want %q", profile.Name, RoleAgent)
-	}
-	if !profile.Capabilities.CanUseTools {
-		t.Fatalf("single agent should advertise tool usage: %#v", profile.Capabilities)
-	}
-	for _, want := range []string{"base", "extra", "[ui] inspect first", "MEMORY CONTEXT", "Use the single-agent loop"} {
+	for _, want := range []string{"base", "extra", "[ui] inspect first", "You are the Aiden agent."} {
 		if !strings.Contains(profile.SystemPrompt, want) {
 			t.Fatalf("agent prompt missing %q:\n%s", want, profile.SystemPrompt)
 		}
@@ -80,8 +73,8 @@ func TestSingleAgentRuntimeUsesAgentRoleAndDirectTools(t *testing.T) {
 		t.Fatalf("agent prompt leaked old runtime context:\n%s", prompt)
 	}
 	for _, event := range events {
-		if event.Type == "role_output" && event.Role != string(RoleAgent) {
-			t.Fatalf("role_output role = %q, want %q", event.Role, RoleAgent)
+		if event.Type == "role_output" && event.Role != "agent" {
+			t.Fatalf("role_output role = %q, want %q", event.Role, "agent")
 		}
 	}
 }

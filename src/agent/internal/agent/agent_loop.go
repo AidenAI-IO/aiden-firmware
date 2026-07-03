@@ -220,7 +220,7 @@ func (l *AgentLoop) emitRoleOutput(ctx context.Context, content string) {
 		return
 	}
 	if handler, ok := l.CallbacksHandler.(roleOutputHandler); ok {
-		handler.HandleRoleOutput(ctx, string(RoleAgent), content)
+		handler.HandleRoleOutput(ctx, "agent", content)
 	}
 }
 

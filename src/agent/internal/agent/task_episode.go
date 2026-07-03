@@ -213,27 +213,27 @@ func (r *EpisodeRecorder) RecordDefaultFinish(answer string) {
 	}
 	r.append(TaskEpisodeEvent{
 		Type:    "default_finish",
-		Role:    string(RoleAgent),
+		Role:    "agent",
 		Content: strings.TrimSpace(answer),
 	})
 }
 
 func (r *EpisodeRecorder) RecordPlannerExecution(result roleExecutionResult) {
-	r.recordExecutionForRole(result, RoleAgent)
+	r.recordExecution(result)
 }
 
 func (r *EpisodeRecorder) RecordExecution(result roleExecutionResult) {
-	r.recordExecutionForRole(result, RoleAgent)
+	r.recordExecution(result)
 }
 
-func (r *EpisodeRecorder) recordExecutionForRole(result roleExecutionResult, role RoleName) {
+func (r *EpisodeRecorder) recordExecution(result roleExecutionResult) {
 	if r == nil {
 		return
 	}
 	if strings.TrimSpace(result.CandidateAnswer) != "" {
 		r.append(TaskEpisodeEvent{
 			Type:    "candidate_answer",
-			Role:    string(role),
+			Role:    "agent",
 			Content: result.CandidateAnswer,
 		})
 	}
@@ -241,7 +241,7 @@ func (r *EpisodeRecorder) recordExecutionForRole(result roleExecutionResult, rol
 		input := normalizeToolInput(result.Action.ToolInput)
 		event := TaskEpisodeEvent{
 			Type:      runEventToolCall,
-			Role:      string(role),
+			Role:      "agent",
 			ToolName:  result.Action.Tool,
 			ToolInput: input,
 			Content:   toolContentFromAction(*result.Action),

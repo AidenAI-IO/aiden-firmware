@@ -514,7 +514,7 @@ func TestMemoryManagerSaveDoesNotRegressEventCountWithRuntimeEvents(t *testing.T
 	}
 	if err := manager.AppendSessionEvent(ctx, "default", SessionEvent{
 		Type:    "planner_decision",
-		Role:    string(RoleAgent),
+		Role:    "agent",
 		Content: `{"objective":"first request","plan":["answer"]}`,
 	}, SessionEventMetadata{}); err != nil {
 		t.Fatalf("AppendSessionEvent(planner) error = %v", err)

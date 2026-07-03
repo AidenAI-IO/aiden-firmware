@@ -14,7 +14,7 @@ func TestEpisodeRecorderFinishRespectsVerifierRejection(t *testing.T) {
 	canFinish := false
 	recorder.append(TaskEpisodeEvent{
 		Type:        "verifier_decision",
-		Role:        string(RoleAgent),
+		Role:        "agent",
 		CanFinish:   &canFinish,
 		NeedsReplan: true,
 		Reason:      "completion criteria not met",
@@ -36,7 +36,7 @@ func TestEpisodeRecorderFinishAcceptsVerifierApproval(t *testing.T) {
 	canFinish := true
 	recorder.append(TaskEpisodeEvent{
 		Type:      "verifier_decision",
-		Role:      string(RoleAgent),
+		Role:      "agent",
 		CanFinish: &canFinish,
 		Content:   "done",
 		Reason:    "all criteria satisfied",

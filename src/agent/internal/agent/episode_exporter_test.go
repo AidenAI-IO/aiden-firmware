@@ -135,7 +135,7 @@ func TestBuildLangfuseBatchUsesCapturedPromptsForGenerations(t *testing.T) {
 	promptCalls := []telemetryPromptCall{
 		{
 			ID:        "11111111-1111-1111-1111-111111111111",
-			Role:      string(RoleAgent),
+			Role:      "agent",
 			StartedAt: start,
 			EndedAt:   start.Add(100 * time.Millisecond),
 			Input: []map[string]interface{}{
@@ -246,7 +246,7 @@ func TestBuildLangfuseBatchUsesCapturedPromptsForGenerations(t *testing.T) {
 	if !ok {
 		t.Fatalf("generation metadata = %#v, want map", generations[0]["metadata"])
 	}
-	if metadata["role"] != string(RoleAgent) || metadata["prompt_index"] != float64(1) {
+	if metadata["role"] != "agent" || metadata["prompt_index"] != float64(1) {
 		t.Fatalf("generation metadata = %#v, want role/prompt_index", metadata)
 	}
 	if metadata["tools_count"] != float64(1) {
@@ -291,7 +291,7 @@ func TestBuildLangfuseBatchUploadsCapturedPromptMedia(t *testing.T) {
 	callID := "11111111-1111-1111-1111-111111111111"
 	promptCalls := []telemetryPromptCall{{
 		ID:        callID,
-		Role:      string(RoleAgent),
+		Role:      "agent",
 		StartedAt: start,
 		EndedAt:   start.Add(time.Millisecond),
 		Input: []map[string]interface{}{{
@@ -368,7 +368,7 @@ func TestBuildLangfuseBatchOmitsPromptImagesWhenScreenshotUploadDisabled(t *test
 	pdfMedia := newTelemetryPromptMedia("application/pdf", pdf)
 	promptCalls := []telemetryPromptCall{{
 		ID:        "11111111-1111-1111-1111-111111111111",
-		Role:      string(RoleAgent),
+		Role:      "agent",
 		StartedAt: start,
 		EndedAt:   start.Add(time.Millisecond),
 		Input: []map[string]interface{}{{
@@ -715,7 +715,7 @@ func TestRuntimeStartupExportsInterruptedEpisodeToLangfuse(t *testing.T) {
 	}
 	recorder.append(TaskEpisodeEvent{
 		Type:      "planner_decision",
-		Role:      string(RoleAgent),
+		Role:      "agent",
 		Objective: "打开设置",
 		Plan:      []string{"打开设置"},
 		NextStep:  "点击设置",
@@ -846,7 +846,7 @@ func TestBuildLangfuseBatchMapsDefaultModePlannerTools(t *testing.T) {
 				EventID:   "evt_tool",
 				Ts:        start.Add(time.Second).Format(time.RFC3339Nano),
 				Type:      runEventToolCall,
-				Role:      string(RoleAgent),
+				Role:      "agent",
 				ToolName:  "echo",
 				ToolInput: `{"__arg1":"ok"}`,
 			},
@@ -854,7 +854,7 @@ func TestBuildLangfuseBatchMapsDefaultModePlannerTools(t *testing.T) {
 				EventID:     "evt_result",
 				Ts:          start.Add(2 * time.Second).Format(time.RFC3339Nano),
 				Type:        "tool_result",
-				Role:        string(RoleAgent),
+				Role:        "agent",
 				ToolName:    "echo",
 				Observation: "ok",
 			},
@@ -862,7 +862,7 @@ func TestBuildLangfuseBatchMapsDefaultModePlannerTools(t *testing.T) {
 				EventID: "evt_finish",
 				Ts:      start.Add(3 * time.Second).Format(time.RFC3339Nano),
 				Type:    "default_finish",
-				Role:    string(RoleAgent),
+				Role:    "agent",
 				Content: "done",
 			},
 		},
@@ -891,11 +891,11 @@ func TestBuildLangfuseBatchMapsDefaultModePlannerTools(t *testing.T) {
 	if names["phase/default"] != 1 {
 		t.Fatalf("phase/default count = %d, want 1; names=%#v", names["phase/default"], names)
 	}
-	if names["agent/tool/echo"] != 1 {
-		t.Fatalf("agent/tool/echo count = %d, want 1; names=%#v", names["agent/tool/echo"], names)
+	if names["tool/echo"] != 1 {
+		t.Fatalf("tool/echo count = %d, want 1; names=%#v", names["tool/echo"], names)
 	}
-	if names["agent/tool_result/echo"] != 1 {
-		t.Fatalf("agent/tool_result/echo count = %d, want 1; names=%#v", names["agent/tool_result/echo"], names)
+	if names["tool_result/echo"] != 1 {
+		t.Fatalf("tool_result/echo count = %d, want 1; names=%#v", names["tool_result/echo"], names)
 	}
 	if names["agent/default_finish"] != 1 {
 		t.Fatalf("agent/default_finish count = %d, want 1; names=%#v", names["agent/default_finish"], names)

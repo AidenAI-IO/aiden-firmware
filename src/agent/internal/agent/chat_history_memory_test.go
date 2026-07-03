@@ -28,7 +28,7 @@ func TestRuntimeStartupDoesNotPersistInterruptedEpisodeStatusToChatHistory(t *te
 	}
 	recorder.append(TaskEpisodeEvent{
 		Type:      "planner_decision",
-		Role:      string(RoleAgent),
+		Role:      "agent",
 		Objective: "打开设置",
 		Plan:      []string{"打开设置"},
 		NextStep:  "点击设置",

@@ -52,7 +52,7 @@ func TestLiveActivityManagerSummarizesAgentSteps(t *testing.T) {
 
 	state := manager.UpdateFromRunEvent("req-1", RunEvent{
 		Type:      "role_output",
-		Role:      string(RoleAgent),
+		Role:      "agent",
 		Content:   `{"plan":["Open Maps","Search restaurant"],"next_step":"Open Maps"}`,
 		Timestamp: time.Now(),
 	})

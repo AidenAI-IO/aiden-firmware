@@ -738,7 +738,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	if streamCallbackHandler != nil {
 		executorHandler = streamCallbackHandler
 	}
-	profile := r.buildAgentProfile(resolvedSkills, availableTools, memoryContext, req.RuntimeContext)
+	profile := r.buildAgentProfile(resolvedSkills, availableTools, req.RuntimeContext)
 	conversationHistory, err := runtimeConversationHistoryMessageContents(
 		ctx,
 		memoryHandle.History,
@@ -1304,10 +1304,7 @@ func (r *Runtime) exportEpisodeBestEffort(episode TaskEpisode, promptCapture *te
 	}()
 }
 
-func (r *Runtime) buildAgentProfile(skills ResolvedSkills, availableTools []langtools.Tool, memoryContext MemoryContext, runtimeContext string) RoleProfile {
-	if memoryContext.IsEmpty() && r.config.ConfigDir != "" {
-		memoryContext = normalizeMemoryContext(r.memoryContextForPrompt())
-	}
+func (r *Runtime) buildAgentProfile(skills ResolvedSkills, availableTools []langtools.Tool, runtimeContext string) RoleProfile {
 	return buildAgentProfile(
 		AgentConfig{
 			Instruction:         r.config.Instruction,
@@ -1319,7 +1316,6 @@ func (r *Runtime) buildAgentProfile(skills ResolvedSkills, availableTools []lang
 		},
 		skills,
 		availableTools,
-		memoryContext,
 	)
 }
 
@@ -1828,12 +1824,12 @@ func (h *runtimeCallbackHandler) recordFinalStreamError(err error) {
 	}
 }
 
-func (h *runtimeCallbackHandler) LogFinalStreamingDecision(_ context.Context, role RoleName, providerStreaming bool, reason string) {
+func (h *runtimeCallbackHandler) LogFinalStreamingDecision(_ context.Context, providerStreaming bool, reason string) {
 	if h == nil || h.logger == nil || !h.providerFinalStreaming {
 		return
 	}
-	h.logger.Info("Final stream decision: role=%s provider_streaming=%t reason=%s request_id=%s run_id=%s",
-		role, providerStreaming, reason, h.requestID, h.runID)
+	h.logger.Info("Final stream decision: provider_streaming=%t reason=%s request_id=%s run_id=%s",
+		providerStreaming, reason, h.requestID, h.runID)
 }
 
 func (h *runtimeCallbackHandler) logFinalStreamEmitted(ctx context.Context, chunk []byte) {

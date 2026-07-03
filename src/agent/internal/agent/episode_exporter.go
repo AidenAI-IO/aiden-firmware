@@ -773,16 +773,10 @@ func langfuseToolParentSpan(iterationSpanID, phaseSpanID, role string) string {
 }
 
 func langfuseToolSpanName(role, toolName string) string {
-	if strings.EqualFold(strings.TrimSpace(role), string(RoleAgent)) {
-		return "agent/tool/" + toolName
-	}
 	return "tool/" + toolName
 }
 
 func langfuseToolResultSpanName(role, toolName string) string {
-	if strings.EqualFold(strings.TrimSpace(role), string(RoleAgent)) {
-		return "agent/tool_result/" + toolName
-	}
 	return "tool_result/" + toolName
 }
 
@@ -1192,7 +1186,7 @@ func episodeDerivedMetrics(events []TaskEpisodeEvent) map[string]interface{} {
 			metrics["candidate_answer_count"] = intMetric(metrics, "candidate_answer_count") + 1
 		case runEventToolCall:
 			metrics["tool_call_count"] = intMetric(metrics, "tool_call_count") + 1
-			if strings.EqualFold(strings.TrimSpace(event.Role), string(RoleAgent)) {
+			if strings.EqualFold(strings.TrimSpace(event.Role), "agent") {
 				metrics["planner_tool_call_count"] = intMetric(metrics, "planner_tool_call_count") + 1
 			} else if strings.EqualFold(strings.TrimSpace(event.Role), "executor") {
 				metrics["executor_tool_call_count"] = intMetric(metrics, "executor_tool_call_count") + 1
