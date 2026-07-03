@@ -2251,8 +2251,8 @@ func TestRuntimeRunExecutesOnlyFirstToolCallAndKeepsModelToolCallMessage(t *test
 			toolCallNames = append(toolCallNames, toolCall.FunctionCall.Name)
 		}
 	}
-	if !slices.Equal(toolCallNames, []string{"slow_a", "slow_b"}) {
-		t.Fatalf("scratchpad tool calls = %#v, want original model tool calls", toolCallNames)
+	if !slices.Equal(toolCallNames, []string{"slow_a"}) {
+		t.Fatalf("scratchpad tool calls = %#v, want only first model tool call", toolCallNames)
 	}
 }
 

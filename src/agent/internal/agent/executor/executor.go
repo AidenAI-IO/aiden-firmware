@@ -28,14 +28,22 @@ func (e *LLMExecutor) AppendMessage(message context_manager.Message) {
 	e.contextManager.AppendMessage(message)
 }
 
-func (e *LLMExecutor) Generate(ctx context.Context, options ...llms.CallOption) (context_manager.Message, *llms.ContentResponse, error) {
+func (e *LLMExecutor) GenerateContent(ctx context.Context, options ...llms.CallOption) (*llms.ContentResponse, error) {
 	messages := e.contextManager.ConvertToStandardMessageList()
 	contentResponse, err := e.model.GenerateContent(ctx, messages, options...)
 	if err != nil {
-		return context_manager.Message{}, nil, err
+		return nil, err
 	}
 	if len(contentResponse.Choices) == 0 || contentResponse.Choices[0] == nil {
-		return context_manager.Message{}, contentResponse, fmt.Errorf("model returned no choices")
+		return contentResponse, fmt.Errorf("model returned no choices")
+	}
+	return contentResponse, nil
+}
+
+func (e *LLMExecutor) Generate(ctx context.Context, options ...llms.CallOption) (context_manager.Message, *llms.ContentResponse, error) {
+	contentResponse, err := e.GenerateContent(ctx, options...)
+	if err != nil {
+		return context_manager.Message{}, contentResponse, err
 	}
 	response := context_manager.ConvertChoiceToContextManagerMessage(*contentResponse.Choices[0])
 	e.contextManager.AppendMessage(response)

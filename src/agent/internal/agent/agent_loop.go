@@ -128,7 +128,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 
 	turnOptions := append([]llms.CallOption{}, callOptions...)
 	turnOptions = append(turnOptions, llms.WithTools(parser.toolsAsLLM()))
-	_, contentResp, err := llmExecutor.Generate(ctx, turnOptions...)
+	contentResp, err := llmExecutor.GenerateContent(ctx, turnOptions...)
 	if err != nil {
 		return "", false, err
 	}
@@ -136,6 +136,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 
 	actions, finish, err := parser.ParseOutput(contentResp)
 	if errors.Is(err, agents.ErrUnableToParseOutput) {
+		llmExecutor.AppendMessage(context_manager.ConvertChoiceToContextManagerMessage(*contentResp.Choices[0]))
 		llmExecutor.AppendMessage(toolResultMessage("", "", err.Error()))
 		return "", false, nil
 	}
@@ -143,6 +144,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		return "", false, err
 	}
 	if finish != nil {
+		llmExecutor.AppendMessage(context_manager.ConvertChoiceToContextManagerMessage(*contentResp.Choices[0]))
 		answer, _ := finish.ReturnValues[agentLoopOutputKey].(string)
 		answer = strings.TrimSpace(answer)
 		if answer == "" {
@@ -159,6 +161,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 	}
 
 	action := actions[0]
+	llmExecutor.AppendMessage(context_manager.ConvertChoiceToContextManagerMessage(choiceWithOnlyToolCall(*contentResp.Choices[0], action.ToolID)))
 	toolExecution := l.executeToolCall(ctx, ToolCallExecution{
 		Specs:                  toolSpecs,
 		Action:                 action,
@@ -266,6 +269,36 @@ func (l *AgentLoop) emitRoleOutput(ctx context.Context, content string) {
 
 type roleOutputHandler interface {
 	HandleRoleOutput(ctx context.Context, role, content string)
+}
+
+func choiceWithOnlyToolCall(choice llms.ContentChoice, toolID string) llms.ContentChoice {
+	if len(choice.ToolCalls) == 0 {
+		return choice
+	}
+	toolID = strings.TrimSpace(toolID)
+	var firstValid *llms.ToolCall
+	for i := range choice.ToolCalls {
+		call := choice.ToolCalls[i]
+		if call.FunctionCall == nil {
+			continue
+		}
+		if firstValid == nil {
+			firstValid = &call
+		}
+		if toolID != "" && strings.TrimSpace(call.ID) == toolID {
+			choice.ToolCalls = []llms.ToolCall{call}
+			choice.FuncCall = call.FunctionCall
+			return choice
+		}
+	}
+	if firstValid == nil {
+		choice.ToolCalls = nil
+		choice.FuncCall = nil
+		return choice
+	}
+	choice.ToolCalls = []llms.ToolCall{*firstValid}
+	choice.FuncCall = firstValid.FunctionCall
+	return choice
 }
 
 type roleExecutionResult struct {

@@ -119,28 +119,14 @@ func TestFunctionAgentParseOutputBindsChoiceContentToFirstValidToolCall(t *testi
 	if finish != nil {
 		t.Fatalf("expected no finish, got %#v", finish)
 	}
-	if len(actions) != 2 {
-		t.Fatalf("expected 2 actions, got %#v", actions)
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 action, got %#v", actions)
 	}
 	if actions[0].ToolInput != "first" || actions[0].ToolID != "call_1" {
 		t.Fatalf("unexpected first action: %#v", actions[0])
 	}
-	if actions[1].ToolInput != "second" || actions[1].ToolID != "call_2" {
-		t.Fatalf("unexpected second action: %#v", actions[1])
-	}
 	if got := toolContentFromAction(actions[0]); got != "先检查。" {
 		t.Fatalf("first tool content = %q", got)
-	}
-	if got := toolContentFromAction(actions[1]); got != "" {
-		t.Fatalf("second tool content = %q, want empty", got)
-	}
-
-	var secondLog toolActionLog
-	if err := json.Unmarshal([]byte(actions[1].Log), &secondLog); err != nil {
-		t.Fatalf("second action log should be structured JSON: %v", err)
-	}
-	if strings.Contains(secondLog.Message, "先检查。") {
-		t.Fatalf("second action log repeated assistant content: %#v", secondLog)
 	}
 }
 

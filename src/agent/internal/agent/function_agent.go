@@ -78,8 +78,6 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 	choice := contentResp.Choices[0]
 
 	if len(choice.ToolCalls) > 0 {
-		actions := make([]schema.AgentAction, 0, len(choice.ToolCalls))
-		contentConsumed := false
 		for _, toolCall := range choice.ToolCalls {
 			if toolCall.FunctionCall == nil {
 				continue
@@ -87,25 +85,21 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 			functionName := toolCall.FunctionCall.Name
 			toolInputStr := toolCall.FunctionCall.Arguments
 			invocation := extractToolInvocation(toolInputStr)
-			toolCallContent := ""
-			if !contentConsumed {
-				toolCallContent = strings.TrimSpace(choice.Content)
-				contentConsumed = true
-			}
+			toolCallContent := strings.TrimSpace(choice.Content)
 
 			contentMsg := "\n"
 			if toolCallContent != "" {
 				contentMsg = fmt.Sprintf("responded: %s\n", toolCallContent)
 			}
 
-			actions = append(actions, schema.AgentAction{
+			return []schema.AgentAction{{
 				Tool:      functionName,
 				ToolInput: invocation.Input,
 				Log:       formatToolActionLog(functionName, toolInputStr, toolCallContent, contentMsg),
-				ToolID:    ensureToolCallID(toolCall.ID, len(actions)),
-			})
+				ToolID:    ensureToolCallID(toolCall.ID, 0),
+			}}, nil, nil
 		}
-		return actions, nil, nil
+		return nil, nil, nil
 	}
 
 	if choice.FuncCall != nil {
