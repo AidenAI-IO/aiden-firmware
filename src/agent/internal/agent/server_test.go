@@ -172,11 +172,38 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
 	}
 
-	var resp ChatResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
+	var startResp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&startResp); err != nil {
+		t.Fatalf("decode start response: %v", err)
+	}
+	requestID := startResp["request_id"]
+	if requestID == "" {
+		t.Fatalf("missing request_id in response: %#v", startResp)
 	}
 
+	// Poll for result
+	var resp ChatResultResponse
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		resultReq := httptest.NewRequest(http.MethodGet, "/api/chat/result?request_id="+requestID, nil)
+		resultRec := httptest.NewRecorder()
+		server.handleChatResult(resultRec, resultReq)
+		if resultRec.Code != http.StatusOK {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		if err := json.NewDecoder(resultRec.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode result response: %v", err)
+		}
+		if resp.Status == "complete" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if resp.Status != "complete" {
+		t.Fatalf("result never completed: status=%q", resp.Status)
+	}
 	if resp.Response != "The current audio volume is 42." {
 		t.Fatalf("unexpected response: %q", resp.Response)
 	}
@@ -234,9 +261,37 @@ func TestServerPersistsChatHistoryWithEpisodeReference(t *testing.T) {
 		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
 	}
 
-	var resp ChatResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
+	var startResp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&startResp); err != nil {
+		t.Fatalf("decode start response: %v", err)
+	}
+	requestID := startResp["request_id"]
+	if requestID == "" {
+		t.Fatalf("missing request_id in response: %#v", startResp)
+	}
+
+	// Poll for result
+	var resp ChatResultResponse
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		resultReq := httptest.NewRequest(http.MethodGet, "/api/chat/result?request_id="+requestID, nil)
+		resultRec := httptest.NewRecorder()
+		server.handleChatResult(resultRec, resultReq)
+		if resultRec.Code != http.StatusOK {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		if err := json.NewDecoder(resultRec.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode result response: %v", err)
+		}
+		if resp.Status == "complete" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if resp.Status != "complete" {
+		t.Fatalf("result never completed: status=%q", resp.Status)
 	}
 	assistant, ok := firstMessageOfType(resp.History, "assistant")
 	if !ok || assistant.EpisodeID == "" {
@@ -1367,106 +1422,6 @@ func TestServerShouldSpeakToolCallRequiresTTSTag(t *testing.T) {
 	}
 }
 
-func TestServerHandleChatUsesRequestContextForRun(t *testing.T) {
-	model := &cancelAwareModel{started: make(chan struct{}), seen: make(chan error, 1)}
-	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}},
-		&testModelResolver{model: model},
-		NewMemoryManager(""),
-		&ToolSet{tools: map[string]langtools.Tool{}},
-		NewSkillIndex(),
-	)
-	server := NewServer(runtime, ":0")
-
-	ctx, cancel := context.WithCancel(context.Background())
-	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"hello"}`)).WithContext(ctx)
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-
-	done := make(chan struct{})
-	go func() {
-		server.handleChat(rec, req)
-		close(done)
-	}()
-
-	select {
-	case <-model.started:
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("runtime did not start model call")
-	}
-	cancel()
-
-	select {
-	case err := <-model.seen:
-		if err == nil {
-			t.Fatal("model saw nil context error, want request cancellation")
-		}
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("runtime did not receive request context cancellation")
-	}
-	select {
-	case <-done:
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("handleChat did not return after request cancellation")
-	}
-}
-
-func TestServerHandleChatSyncUsesRequestContextForFinalTTS(t *testing.T) {
-	streamingDisabled := false
-	model := &scriptedModel{
-		responses: roleDirectResponses("Hello from sync final TTS.\n<tts>Hello from sync final TTS.</tts>"),
-	}
-	runtime := NewRuntimeWithDeps(
-		Config{
-			Model:                    ModelConfig{Provider: "fake"},
-			Instruction:              "Answer directly.",
-			VoiceStreamingTTSEnabled: &streamingDisabled,
-		},
-		&testModelResolver{model: model},
-		NewMemoryManager(""),
-		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
-		NewSkillIndex(),
-	)
-	provider := newInterruptibleAudioTTSProvider("server-provider", 48000, true)
-	audioOps := &recordedAudioOps{}
-	server := NewServer(runtime, ":0")
-	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
-	server.audioClient = NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, audioOps))
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"hello"}`)).WithContext(ctx)
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-
-	server.handleChat(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
-	}
-	waitForTestSignal(t, provider.firstWriteDone(), "sync final TTS playback to start")
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for audioOps.countOp("start_playback") == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("sync final TTS playback never opened a playback session")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	cancel()
-
-	deadline = time.Now().Add(500 * time.Millisecond)
-	for audioOps.countOp("stop_playback") == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("sync final TTS playback did not stop after request cancellation")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if got := audioOps.finalChunkCountAfterFirstStop(); got != 0 {
-		t.Fatalf("final write_play_chunk count after stop = %d, want 0", got)
-	}
-}
-
 func TestServerHandleChatCancelCancelsActiveRun(t *testing.T) {
 	server := &Server{activeRuns: make(map[string]context.CancelFunc)}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2155,9 +2110,11 @@ func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
 		NewSkillIndex(),
 	)
 	server := &Server{
-		runtime:   runtime,
-		history:   make([]Message, 0),
-		sttClient: stt,
+		runtime:        runtime,
+		history:        make([]Message, 0),
+		sttClient:      stt,
+		pendingResults: make(map[string]*chatPendingResult),
+		activeRuns:     make(map[string]context.CancelFunc),
 	}
 
 	payload, err := json.Marshal(ChatRequest{
@@ -2181,15 +2138,44 @@ func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
 	}
+
+	var startResp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&startResp); err != nil {
+		t.Fatalf("decode start response: %v", err)
+	}
+	requestID := startResp["request_id"]
+	if requestID == "" {
+		t.Fatalf("missing request_id in response: %#v", startResp)
+	}
+
+	// STT should have been called during input processing
 	if len(stt.inputs) != 1 {
 		t.Fatalf("expected 1 STT invocation, got %d", len(stt.inputs))
 	}
 
-	var resp ChatResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
+	// Poll for result
+	var resp ChatResultResponse
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		resultReq := httptest.NewRequest(http.MethodGet, "/api/chat/result?request_id="+requestID, nil)
+		resultRec := httptest.NewRecorder()
+		server.handleChatResult(resultRec, resultReq)
+		if resultRec.Code != http.StatusOK {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		if err := json.NewDecoder(resultRec.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode result response: %v", err)
+		}
+		if resp.Status == "complete" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 
+	if resp.Status != "complete" {
+		t.Fatalf("result never completed: status=%q", resp.Status)
+	}
 	if resp.Response != "Completed" {
 		t.Fatalf("unexpected response: %q", resp.Response)
 	}
@@ -2519,9 +2505,11 @@ func TestServerHandleChatUsesAttachmentTranscriptWithoutRetranscribing(t *testin
 	)
 	stt := &stubSTTClient{transcript: "should not be called"}
 	server := &Server{
-		runtime:   runtime,
-		history:   make([]Message, 0),
-		sttClient: stt,
+		runtime:        runtime,
+		history:        make([]Message, 0),
+		sttClient:      stt,
+		pendingResults: make(map[string]*chatPendingResult),
+		activeRuns:     make(map[string]context.CancelFunc),
 	}
 
 	payload, err := json.Marshal(ChatRequest{
@@ -2546,13 +2534,43 @@ func TestServerHandleChatUsesAttachmentTranscriptWithoutRetranscribing(t *testin
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
 	}
+
+	var startResp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&startResp); err != nil {
+		t.Fatalf("decode start response: %v", err)
+	}
+	requestID := startResp["request_id"]
+	if requestID == "" {
+		t.Fatalf("missing request_id in response: %#v", startResp)
+	}
+
+	// Should not have called STT since transcript was provided
 	if len(stt.inputs) != 0 {
 		t.Fatalf("expected attachment transcript to skip TranscribeWAV, got %d calls", len(stt.inputs))
 	}
 
-	var resp ChatResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
+	// Poll for result
+	var resp ChatResultResponse
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		resultReq := httptest.NewRequest(http.MethodGet, "/api/chat/result?request_id="+requestID, nil)
+		resultRec := httptest.NewRecorder()
+		server.handleChatResult(resultRec, resultReq)
+		if resultRec.Code != http.StatusOK {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		if err := json.NewDecoder(resultRec.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode result response: %v", err)
+		}
+		if resp.Status == "complete" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if resp.Status != "complete" {
+		t.Fatalf("result never completed: status=%q", resp.Status)
 	}
 	if resp.History[0].Content != "directly reused transcript" {
 		t.Fatalf("expected transcript as user content, got %#v", resp.History[0])
