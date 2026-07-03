@@ -629,7 +629,10 @@ bool AudioCapture::init(const AudioConfig& config) {
     impl_->attr.u32ChnCnt = 2;
 
     RK_S32 ret = RK_MPI_AI_SetPubAttr(impl_->dev_id, &impl_->attr);
-    if (ret != RK_SUCCESS) return false;
+    if (ret != RK_SUCCESS) {
+        maybe_sys_deinit();
+        return false;
+    }
 
     // RV1106 mixer: enable loopback and set ADC volume
     RK_MPI_AMIX_SetControl(impl_->dev_id, "I2STDM Digital Loopback Mode", (char*)"Mode2");
@@ -637,7 +640,10 @@ bool AudioCapture::init(const AudioConfig& config) {
     RK_MPI_AMIX_SetControl(impl_->dev_id, "ADC ALC Right Volume", (char*)"22");
 
     ret = RK_MPI_AI_Enable(impl_->dev_id);
-    if (ret != RK_SUCCESS) return false;
+    if (ret != RK_SUCCESS) {
+        maybe_sys_deinit();
+        return false;
+    }
 
     // Set channel param — s32UsrFrmDepth must be > 0 for GetFrame to work
     AI_CHN_PARAM_S chnParam;
@@ -646,7 +652,10 @@ bool AudioCapture::init(const AudioConfig& config) {
     RK_MPI_AI_SetChnParam(impl_->dev_id, impl_->chn_id, &chnParam);
 
     ret = RK_MPI_AI_EnableChn(impl_->dev_id, impl_->chn_id);
-    if (ret != RK_SUCCESS) return false;
+    if (ret != RK_SUCCESS) {
+        maybe_sys_deinit();
+        return false;
+    }
 
     RK_MPI_AI_SetVolume(impl_->dev_id, 100);
     RK_MPI_AI_SetTrackMode(impl_->dev_id, AUDIO_TRACK_NORMAL);

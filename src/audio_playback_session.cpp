@@ -6,7 +6,7 @@
 namespace aiden {
 
 AudioPlaybackSession::AudioPlaybackSession(uint64_t session_id, const AudioFormat& fmt)
-    : session_id_(session_id), fmt_(fmt), stopped_(false), final_received_(false) {}
+    : session_id_(session_id), fmt_(fmt), stopped_(false), final_received_(false), joined_(false) {}
 
 AudioPlaybackSession::~AudioPlaybackSession() {
     stop();
@@ -31,7 +31,11 @@ bool AudioPlaybackSession::start() {
 void AudioPlaybackSession::stop() {
     if (stopped_.exchange(true)) return;
     cv_.notify_all();
-    if (playback_thread_.joinable()) playback_thread_.join();
+    std::lock_guard<std::mutex> lock(join_mutex_);
+    if (!joined_ && playback_thread_.joinable()) {
+        playback_thread_.join();
+        joined_ = true;
+    }
 }
 
 bool AudioPlaybackSession::set_volume(int volume) {
@@ -64,7 +68,11 @@ AidenServiceStatus AudioPlaybackSession::push_chunk(const uint8_t* data, size_t 
 }
 
 void AudioPlaybackSession::wait_until_done() {
-    if (playback_thread_.joinable()) playback_thread_.join();
+    std::lock_guard<std::mutex> lock(join_mutex_);
+    if (!joined_ && playback_thread_.joinable()) {
+        playback_thread_.join();
+        joined_ = true;
+    }
 }
 
 void AudioPlaybackSession::playback_loop() {
