@@ -88,3 +88,108 @@ func schemaContainsKey(value any, key string) bool {
 	}
 	return false
 }
+
+func TestNumberArgSchema_WithExamples(t *testing.T) {
+	schema := numberArgSchema("Test number", 500, 300.5)
+
+	if schema["type"] != "number" {
+		t.Errorf("expected type number, got %v", schema["type"])
+	}
+
+	if schema["description"] != "Test number" {
+		t.Errorf("expected description 'Test number', got %v", schema["description"])
+	}
+
+	examples, ok := schema["examples"]
+	if !ok {
+		t.Fatal("expected examples field when examples provided")
+	}
+
+	examplesSlice, ok := examples.([]float64)
+	if !ok {
+		t.Fatalf("expected examples to be []float64, got %T", examples)
+	}
+
+	if len(examplesSlice) != 2 {
+		t.Errorf("expected 2 examples, got %d", len(examplesSlice))
+	}
+
+	if examplesSlice[0] != 500 {
+		t.Errorf("expected first example to be 500, got %v", examplesSlice[0])
+	}
+}
+
+func TestNumberArgSchema_WithoutExamples(t *testing.T) {
+	schema := numberArgSchema("Test number")
+
+	if _, ok := schema["examples"]; ok {
+		t.Error("expected no examples field when no examples provided")
+	}
+
+	if schema["type"] != "number" {
+		t.Errorf("expected type number, got %v", schema["type"])
+	}
+}
+
+func TestStringArrayArgSchema_WithExamples(t *testing.T) {
+	schema := stringArrayArgSchema("Keys", []string{"ctrl", "c"})
+
+	examples, ok := schema["examples"]
+	if !ok {
+		t.Fatal("expected examples field")
+	}
+
+	examplesSlice, ok := examples.([][]string)
+	if !ok {
+		t.Fatalf("expected examples to be [][]string, got %T", examples)
+	}
+
+	if len(examplesSlice) != 1 {
+		t.Errorf("expected 1 example, got %d", len(examplesSlice))
+	}
+
+	if len(examplesSlice[0]) != 2 || examplesSlice[0][0] != "ctrl" {
+		t.Errorf("unexpected example content: %v", examplesSlice[0])
+	}
+}
+
+func TestIntegerArgSchema_WithExamples(t *testing.T) {
+	schema := integerArgSchema("Count", 10, 20)
+
+	examples, ok := schema["examples"]
+	if !ok {
+		t.Fatal("expected examples field")
+	}
+
+	examplesSlice, ok := examples.([]int)
+	if !ok {
+		t.Fatalf("expected examples to be []int, got %T", examples)
+	}
+
+	if len(examplesSlice) != 2 {
+		t.Errorf("expected 2 examples, got %d", len(examplesSlice))
+	}
+}
+
+func TestRangedIntegerArgSchema_PreservesMinMax(t *testing.T) {
+	schema := rangedIntegerArgSchema("Volume", 0, 100, 70)
+
+	if schema["minimum"] != 0 {
+		t.Errorf("expected minimum 0, got %v", schema["minimum"])
+	}
+
+	if schema["maximum"] != 100 {
+		t.Errorf("expected maximum 100, got %v", schema["maximum"])
+	}
+
+	examples, ok := schema["examples"]
+	if !ok {
+		t.Fatal("expected examples field")
+	}
+
+	examplesSlice, ok := examples.([]int)
+	if !ok || len(examplesSlice) == 0 || examplesSlice[0] != 70 {
+		t.Errorf("unexpected examples: %v", examples)
+	}
+}
+

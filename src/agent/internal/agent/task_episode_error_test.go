@@ -14,10 +14,10 @@ func TestEpisodeRecorderRecordsStructuredToolError(t *testing.T) {
 	step := schema.AgentStep{Action: action, Observation: "contacts permission denied"}
 	toolErr := NewToolError(CodePermissionDenied, "contacts permission denied")
 
-	recorder.RecordExecution(roleExecutionResult{
-		Action:    &action,
-		Step:      &step,
-		ToolError: toolErr,
+	recorder.RecordExecution(ToolCallExecutionResult{
+		Call:   ToolCall{Action: action},
+		Step:   step,
+		Result: ToolResult{Output: toolErr.Message, Error: toolErr},
 	})
 	episode := recorder.Finish("", nil, nil, nil, nil)
 

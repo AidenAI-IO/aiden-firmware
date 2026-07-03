@@ -59,7 +59,10 @@ func TestEpisodeRecorderPersistsToolContent(t *testing.T) {
 	}
 
 	recorder := NewEpisodeRecorder(MemoryRetrieveRequest{Input: "test"}, MemoryContext{})
-	recorder.RecordExecution(roleExecutionResult{Action: &action})
+	recorder.RecordExecution(ToolCallExecutionResult{
+		Call: ToolCall{Action: action},
+		Step: schema.AgentStep{Action: action},
+	})
 	episode := recorder.Finish("", nil, nil, nil, nil)
 	if got := firstToolCallEventContent(episode.Events); got != "I will echo." {
 		t.Fatalf("tool event content = %q", got)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -31,6 +32,7 @@ type langfuseToolPair struct {
 	CallEventID         string
 	ResultEventID       string
 	ResultTime          time.Time
+	ResultDurationMs    *int64
 	HasCall             bool
 	HasResult           bool
 }
@@ -170,6 +172,11 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 	iterations := langfuseIterationWindows(episode.Events, startTime, endTime)
 	toolPairsByCall, toolPairsByResult := langfuseToolPairs(episode.Events, startTime)
 
+	var prompts []telemetryPromptCall
+	if len(promptCalls) > 0 {
+		prompts = promptCalls[0]
+	}
+
 	traceBody := map[string]interface{}{
 		"id":          traceID,
 		"timestamp":   langfuseRFC3339(startTime),
@@ -177,7 +184,7 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 		"input":       episode.UserGoal,
 		"output":      episode.Outcome.FinalAnswer,
 		"tags":        e.traceTags(episode),
-		"metadata":    e.traceMetadata(episode),
+		"metadata":    e.traceMetadata(episode, prompts),
 		"environment": e.cfg.EnvironmentOrDefault(),
 		"public":      false,
 	}
@@ -207,6 +214,8 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 	phaseWindowIndex := 0
 	currentPhase := "default"
 	phaseWindows := langfusePhaseWindows(episode.Events, startTime, endTime)
+	iterationSpansCreated := map[string]bool{}
+	hasIterationTiming := langfuseHasIterationTimingEvents(episode.Events)
 
 	openPhaseSpan := func(phase string, spanStart time.Time, spanEnd time.Time, metadata map[string]interface{}) error {
 		if phaseSpanBatchIdx >= 0 {
@@ -254,6 +263,37 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 	}); err != nil {
 		return nil, err
 	}
+	openIterationSpan := func(iteration langfuseIterationWindow, metadata map[string]interface{}) error {
+		if iteration.ID == "" || iterationSpansCreated[iteration.ID] {
+			return nil
+		}
+		if metadata == nil {
+			metadata = map[string]interface{}{}
+		}
+		metadata["iteration"] = iteration.Index
+		body := map[string]interface{}{
+			"id":          iteration.ID,
+			"traceId":     traceID,
+			"name":        fmt.Sprintf("iteration_%d", iteration.Index),
+			"startTime":   langfuseRFC3339(iteration.Start),
+			"endTime":     langfuseRFC3339(iteration.End),
+			"environment": e.cfg.EnvironmentOrDefault(),
+			"metadata":    metadata,
+		}
+		if phaseSpanID != "" {
+			body["parentObservationId"] = phaseSpanID
+		}
+		if version != "" {
+			body["version"] = version
+		}
+		iterationEvent, err := newLangfuseEvent("span-create", iteration.Start, body)
+		if err != nil {
+			return err
+		}
+		batch = append(batch, iterationEvent)
+		iterationSpansCreated[iteration.ID] = true
+		return nil
+	}
 
 	for eventIndex, event := range episode.Events {
 		eventTime := parseEpisodeTime(event.Ts, startTime)
@@ -270,7 +310,10 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 			}
 
 		case "default_finish":
-			parentID := phaseSpanID
+			parentID := iterationSpanID
+			if parentID == "" {
+				parentID = phaseSpanID
+			}
 			body := map[string]interface{}{
 				"id":          uuid.NewString(),
 				"traceId":     traceID,
@@ -297,31 +340,119 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 			}
 			batch = append(batch, finishEvent)
 
-		case "planner_decision":
-			iterationIndex++
-			iteration := iterationWindowForIndex(iterations, iterationIndex, eventTime)
-			iterationSpanID = iteration.ID
-			iterBody := map[string]interface{}{
-				"id":          iterationSpanID,
-				"traceId":     traceID,
-				"name":        fmt.Sprintf("iteration_%d", iterationIndex),
-				"startTime":   langfuseRFC3339(iteration.Start),
-				"endTime":     langfuseRFC3339(iteration.End),
-				"environment": e.cfg.EnvironmentOrDefault(),
-				"metadata": map[string]interface{}{
-					"iteration":  iterationIndex,
-					"event_id":   event.EventID,
-					"event_type": event.Type,
-				},
+		case runEventMemoryRetrieve:
+			parentID := phaseSpanID
+			duration := int64(0)
+			if event.DurationMs != nil {
+				duration = *event.DurationMs
+			}
+			body := map[string]interface{}{
+				"id":                  uuid.NewString(),
+				"traceId":             traceID,
+				"parentObservationId": parentID,
+				"name":                "memory/retrieve",
+				"startTime":           langfuseRFC3339(eventTime),
+				"endTime":             langfuseRFC3339(eventTime.Add(time.Duration(duration) * time.Millisecond)),
+				"environment":         e.cfg.EnvironmentOrDefault(),
+				"metadata":            event.Metadata,
 			}
 			if version != "" {
-				iterBody["version"] = version
+				body["version"] = version
 			}
-			iterEvent, err := newLangfuseEvent("span-create", eventTime, iterBody)
+			evt, err := newLangfuseEvent("span-create", eventTime, body)
 			if err != nil {
 				return nil, err
 			}
-			batch = append(batch, iterEvent)
+			batch = append(batch, evt)
+
+		case runEventSessionBegin:
+			parentID := phaseSpanID
+			duration := int64(0)
+			if event.DurationMs != nil {
+				duration = *event.DurationMs
+			}
+			body := map[string]interface{}{
+				"id":                  uuid.NewString(),
+				"traceId":             traceID,
+				"parentObservationId": parentID,
+				"name":                "session/begin",
+				"startTime":           langfuseRFC3339(eventTime),
+				"endTime":             langfuseRFC3339(eventTime.Add(time.Duration(duration) * time.Millisecond)),
+				"environment":         e.cfg.EnvironmentOrDefault(),
+				"metadata":            event.Metadata,
+			}
+			if version != "" {
+				body["version"] = version
+			}
+			evt, err := newLangfuseEvent("span-create", eventTime, body)
+			if err != nil {
+				return nil, err
+			}
+			batch = append(batch, evt)
+
+		case runEventIterationStart:
+			iteration, ok := iterationWindowForEvent(iterations, eventTime)
+			if !ok {
+				continue
+			}
+			iterationSpanID = iteration.ID
+			iterationIndex = iteration.Index
+			metadata := map[string]interface{}{
+				"event_id":   event.EventID,
+				"event_type": event.Type,
+			}
+			for key, value := range event.Metadata {
+				metadata[key] = value
+			}
+			if err := openIterationSpan(iteration, metadata); err != nil {
+				return nil, err
+			}
+
+		case runEventIterationEnd:
+			if iteration, ok := iterationWindowForEvent(iterations, eventTime); ok && iteration.ID == iterationSpanID {
+				iterationSpanID = ""
+			}
+
+		case "planner_decision":
+			if hasIterationTiming {
+				iteration, ok := iterationWindowForEvent(iterations, eventTime)
+				if !ok {
+					iteration = iterationWindowForIndex(iterations, iterationIndex, eventTime)
+				}
+				iterationSpanID = iteration.ID
+				iterationIndex = iteration.Index
+				if err := openIterationSpan(iteration, map[string]interface{}{
+					"event_id":   event.EventID,
+					"event_type": event.Type,
+				}); err != nil {
+					return nil, err
+				}
+			} else {
+				iterationIndex++
+				iteration := iterationWindowForIndex(iterations, iterationIndex, eventTime)
+				iterationSpanID = iteration.ID
+				iterBody := map[string]interface{}{
+					"id":          iterationSpanID,
+					"traceId":     traceID,
+					"name":        fmt.Sprintf("iteration_%d", iterationIndex),
+					"startTime":   langfuseRFC3339(iteration.Start),
+					"endTime":     langfuseRFC3339(iteration.End),
+					"environment": e.cfg.EnvironmentOrDefault(),
+					"metadata": map[string]interface{}{
+						"iteration":  iterationIndex,
+						"event_id":   event.EventID,
+						"event_type": event.Type,
+					},
+				}
+				if version != "" {
+					iterBody["version"] = version
+				}
+				iterEvent, err := newLangfuseEvent("span-create", eventTime, iterBody)
+				if err != nil {
+					return nil, err
+				}
+				batch = append(batch, iterEvent)
+			}
 
 			plannerBody := map[string]interface{}{
 				"id":                  uuid.NewString(),
@@ -389,9 +520,15 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 			if paired && pair.CallObservationID != "" {
 				toolSpanID = pair.CallObservationID
 			}
+			spanStart := eventTime
 			end := eventTime
 			if paired && pair.HasResult {
-				end = pair.ResultTime
+				if pair.ResultDurationMs != nil && *pair.ResultDurationMs >= 0 {
+					end = pair.ResultTime
+					spanStart = end.Add(-time.Duration(*pair.ResultDurationMs) * time.Millisecond)
+				} else {
+					end = pair.ResultTime
+				}
 			}
 			metadata := map[string]interface{}{
 				"event_id":        event.EventID,
@@ -404,12 +541,15 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 				metadata["result_event_id"] = pair.ResultEventID
 				metadata["result_observation_id"] = pair.ResultObservationID
 			}
+			if paired && pair.ResultDurationMs != nil {
+				metadata["duration_ms"] = *pair.ResultDurationMs
+			}
 			body := map[string]interface{}{
 				"id":                  toolSpanID,
 				"traceId":             traceID,
 				"parentObservationId": parentID,
 				"name":                langfuseToolSpanName(event.Role, toolName),
-				"startTime":           langfuseRFC3339(eventTime),
+				"startTime":           langfuseRFC3339(spanStart),
 				"endTime":             langfuseRFC3339(end),
 				"input":               toolCallInput(event),
 				"environment":         e.cfg.EnvironmentOrDefault(),
@@ -430,7 +570,7 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 			if paired && pair.ResultObservationID != "" {
 				resultSpanID = pair.ResultObservationID
 			}
-			var output interface{} = event.Observation
+			var output interface{} = event.Content
 			if e.cfg.UploadScreenshotsOrDefault() && strings.TrimSpace(event.ScreenshotRef) != "" {
 				screenshotCtx, cancel, ok := langfuseScreenshotUploadContext(ctx, e.cfg.UploadTimeoutOrDefault())
 				if ok {
@@ -440,7 +580,7 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 						e.logger.Warn("[telemetry] screenshot upload failed (%s): %v", event.ScreenshotRef, err)
 					} else if mediaRef != "" {
 						output = map[string]interface{}{
-							"observation": event.Observation,
+							"observation": event.Content,
 							"screenshot":  mediaRef,
 						}
 					}
@@ -460,6 +600,9 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 			if paired && pair.CallEventID != "" {
 				metadata["tool_call_event_id"] = pair.CallEventID
 				metadata["tool_call_observation_id"] = pair.CallObservationID
+			}
+			if event.DurationMs != nil {
+				metadata["duration_ms"] = *event.DurationMs
 			}
 			body := map[string]interface{}{
 				"id":          resultSpanID,
@@ -481,7 +624,7 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 			}
 			if event.IsError {
 				body["level"] = "ERROR"
-				body["statusMessage"] = truncateForLog(event.Observation, 500)
+				body["statusMessage"] = truncateForLog(event.Content, 500)
 			}
 			resultEvent, err := newLangfuseEvent("span-create", eventTime, body)
 			if err != nil {
@@ -526,10 +669,6 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 		langfuseUpdateSpanEndTime(batch, phaseSpanBatchIdx, endTime)
 	}
 
-	var prompts []telemetryPromptCall
-	if len(promptCalls) > 0 {
-		prompts = promptCalls[0]
-	}
 	if len(prompts) > 0 {
 		for index := range prompts {
 			if prompts[index].ID == "" {
@@ -660,6 +799,15 @@ func (e *EpisodeExporter) promptGenerationBody(episode TaskEpisode, traceID stri
 	}
 	if len(call.UsageDetails) > 0 {
 		body["usageDetails"] = call.UsageDetails
+
+		// Add cache hit rate to metadata if we have cached tokens
+		if inputTokens, hasInput := call.UsageDetails["input"]; hasInput && inputTokens > 0 {
+			if cachedTokens, hasCached := call.UsageDetails["cached"]; hasCached && cachedTokens > 0 {
+				if metadata, ok := body["metadata"].(map[string]interface{}); ok {
+					metadata["cache_hit_rate"] = float64(cachedTokens) / float64(inputTokens)
+				}
+			}
+		}
 	}
 	if len(call.CostDetails) > 0 {
 		body["costDetails"] = call.CostDetails
@@ -763,7 +911,7 @@ func episodeTokenUsage(episode TaskEpisode) (promptTokens, completionTokens, tot
 }
 
 func langfuseToolParentSpan(iterationSpanID, phaseSpanID, role string) string {
-	if strings.EqualFold(strings.TrimSpace(role), "executor") && iterationSpanID != "" {
+	if iterationSpanID != "" {
 		return iterationSpanID
 	}
 	if phaseSpanID != "" {
@@ -828,6 +976,13 @@ func langfusePhaseWindows(events []TaskEpisodeEvent, startTime, endTime time.Tim
 }
 
 func langfuseIterationWindows(events []TaskEpisodeEvent, startTime, endTime time.Time) []langfuseIterationWindow {
+	if langfuseHasIterationStartEvents(events) {
+		return langfuseIterationTimingWindows(events, startTime, endTime)
+	}
+	return langfusePlannerIterationWindows(events, startTime, endTime)
+}
+
+func langfusePlannerIterationWindows(events []TaskEpisodeEvent, startTime, endTime time.Time) []langfuseIterationWindow {
 	windows := []langfuseIterationWindow{}
 	for _, event := range events {
 		if event.Type != "planner_decision" {
@@ -855,11 +1010,103 @@ func langfuseIterationWindows(events []TaskEpisodeEvent, startTime, endTime time
 	return windows
 }
 
+func langfuseIterationTimingWindows(events []TaskEpisodeEvent, startTime, endTime time.Time) []langfuseIterationWindow {
+	windows := []langfuseIterationWindow{}
+	for _, event := range events {
+		eventTime := parseEpisodeTime(event.Ts, startTime)
+		switch event.Type {
+		case runEventIterationStart:
+			if len(windows) > 0 && windows[len(windows)-1].End.IsZero() {
+				windows[len(windows)-1].End = eventTime
+			}
+			windows = append(windows, langfuseIterationWindow{
+				Index: taskEpisodeEventIterationIndex(event, len(windows)+1),
+				ID:    uuid.NewString(),
+				Start: eventTime,
+			})
+		case runEventIterationEnd:
+			if len(windows) == 0 {
+				continue
+			}
+			match := -1
+			if index := taskEpisodeEventIterationIndex(event, 0); index > 0 {
+				for i := len(windows) - 1; i >= 0; i-- {
+					if windows[i].Index == index {
+						match = i
+						break
+					}
+				}
+			}
+			if match < 0 {
+				match = len(windows) - 1
+			}
+			windows[match].End = eventTime
+		}
+	}
+	for i := range windows {
+		if windows[i].End.IsZero() {
+			windows[i].End = endTime
+		}
+		if windows[i].End.Before(windows[i].Start) {
+			windows[i].End = windows[i].Start
+		}
+	}
+	return windows
+}
+
+func langfuseHasIterationTimingEvents(events []TaskEpisodeEvent) bool {
+	for _, event := range events {
+		if event.Type == runEventIterationStart || event.Type == runEventIterationEnd {
+			return true
+		}
+	}
+	return false
+}
+
+func langfuseHasIterationStartEvents(events []TaskEpisodeEvent) bool {
+	for _, event := range events {
+		if event.Type == runEventIterationStart {
+			return true
+		}
+	}
+	return false
+}
+
 func iterationWindowForIndex(windows []langfuseIterationWindow, index int, fallback time.Time) langfuseIterationWindow {
 	if index > 0 && index <= len(windows) {
 		return windows[index-1]
 	}
 	return langfuseIterationWindow{Index: index, ID: uuid.NewString(), Start: fallback, End: fallback}
+}
+
+func iterationWindowForEvent(windows []langfuseIterationWindow, eventTime time.Time) (langfuseIterationWindow, bool) {
+	for i := len(windows) - 1; i >= 0; i-- {
+		window := windows[i]
+		if timeWithinWindow(eventTime, window) {
+			return window, true
+		}
+	}
+	return langfuseIterationWindow{}, false
+}
+
+func iterationWindowForEventMetadata(windows []langfuseIterationWindow, event TaskEpisodeEvent, eventTime time.Time) (langfuseIterationWindow, bool) {
+	if index := taskEpisodeEventIterationIndex(event, 0); index > 0 {
+		for _, window := range windows {
+			if window.Index == index {
+				return window, true
+			}
+		}
+	}
+	return iterationWindowForEvent(windows, eventTime)
+}
+
+func taskEpisodeEventIterationIndex(event TaskEpisodeEvent, fallback int) int {
+	if event.Metadata != nil {
+		if value, ok := usageMetricInt(event.Metadata["iteration"]); ok && value > 0 {
+			return value
+		}
+	}
+	return fallback
 }
 
 type pendingLangfuseToolCall struct {
@@ -904,6 +1151,7 @@ func langfuseToolPairs(events []TaskEpisodeEvent, startTime time.Time) (map[int]
 					CallEventID:         call.EventID,
 					ResultEventID:       event.EventID,
 					ResultTime:          parseEpisodeTime(event.Ts, startTime),
+					ResultDurationMs:    cloneInt64Ptr(event.DurationMs),
 					HasCall:             true,
 					HasResult:           true,
 				}
@@ -914,6 +1162,7 @@ func langfuseToolPairs(events []TaskEpisodeEvent, startTime time.Time) (map[int]
 					ResultObservationID: resultID,
 					ResultEventID:       event.EventID,
 					ResultTime:          parseEpisodeTime(event.Ts, startTime),
+					ResultDurationMs:    cloneInt64Ptr(event.DurationMs),
 					HasResult:           true,
 				}
 			}
@@ -927,6 +1176,14 @@ func langfuseToolPairs(events []TaskEpisodeEvent, startTime time.Time) (map[int]
 		}
 	}
 	return byCall, byResult
+}
+
+func cloneInt64Ptr(value *int64) *int64 {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func promptParentObservationID(call telemetryPromptCall, iterations, phases []langfuseIterationWindow) string {
@@ -1112,7 +1369,7 @@ func (e *EpisodeExporter) traceTags(episode TaskEpisode) []string {
 	return uniqueNonEmpty(tags)
 }
 
-func (e *EpisodeExporter) traceMetadata(episode TaskEpisode) map[string]interface{} {
+func (e *EpisodeExporter) traceMetadata(episode TaskEpisode, prompts []telemetryPromptCall) map[string]interface{} {
 	meta := map[string]interface{}{
 		"episode_id":       episode.ID,
 		"status":           episode.Status,
@@ -1133,6 +1390,44 @@ func (e *EpisodeExporter) traceMetadata(episode TaskEpisode) map[string]interfac
 	for key, value := range episodeDerivedMetrics(episode.Events) {
 		meta[key] = value
 	}
+
+	// Add LLM call statistics by role
+	if len(prompts) > 0 {
+		byRole := make(map[string][]int64)
+		for _, call := range prompts {
+			role := strings.TrimSpace(call.Role)
+			if role == "" {
+				role = "unknown"
+			}
+			duration := call.EndedAt.Sub(call.StartedAt).Milliseconds()
+			byRole[role] = append(byRole[role], duration)
+		}
+
+		for role, durations := range byRole {
+			if len(durations) == 0 {
+				continue
+			}
+			sorted := make([]int64, len(durations))
+			copy(sorted, durations)
+			sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+
+			meta[role+"_call_count"] = len(durations)
+			meta[role+"_call_ms_avg"] = avgInt64(durations)
+			meta[role+"_call_ms_p50"] = percentileInt64(sorted, 0.5)
+			meta[role+"_call_ms_p95"] = percentileInt64(sorted, 0.95)
+		}
+	}
+
+	// Add prompt cache hit rate from episode.Extra
+	if episode.Extra != nil {
+		if promptTokens, ok := usageMetricInt(episode.Extra["prompt_tokens"]); ok && promptTokens > 0 {
+			if cachedTokens, ok := usageMetricInt(episode.Extra["cached_prompt_tokens"]); ok && cachedTokens > 0 {
+				meta["prompt_cache_hit_rate"] = float64(cachedTokens) / float64(promptTokens)
+				meta["cached_prompt_tokens"] = cachedTokens
+			}
+		}
+	}
+
 	if episode.Extra != nil {
 		for key, value := range episode.Extra {
 			meta[key] = value
@@ -1197,9 +1492,8 @@ func episodeDerivedMetrics(events []TaskEpisodeEvent) map[string]interface{} {
 			}
 			toolCounts[toolName]++
 			if pair, ok := toolPairsByCall[index]; ok && pair.HasResult {
-				start := parseEpisodeTime(event.Ts, startTime)
-				if !pair.ResultTime.Before(start) {
-					toolLatencies = append(toolLatencies, pair.ResultTime.Sub(start).Milliseconds())
+				if latency, ok := toolPairLatencyMs(event, pair, startTime); ok {
+					toolLatencies = append(toolLatencies, latency)
 				}
 			}
 		case "tool_result":
@@ -1231,12 +1525,100 @@ func episodeDerivedMetrics(events []TaskEpisodeEvent) map[string]interface{} {
 		}
 		metrics["tool_latency_ms_avg"] = float64(total) / float64(len(toolLatencies))
 		metrics["tool_latency_ms_max"] = max
+
+		// Add percentiles
+		sorted := make([]int64, len(toolLatencies))
+		copy(sorted, toolLatencies)
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+		metrics["tool_latency_ms_p50"] = percentileInt64(sorted, 0.5)
+		metrics["tool_latency_ms_p95"] = percentileInt64(sorted, 0.95)
+		metrics["tool_latency_ms_p99"] = percentileInt64(sorted, 0.99)
 	}
+
+	// Add tool latency by type
+	toolLatenciesByType := make(map[string][]int64)
+	for index, event := range events {
+		if event.Type == runEventToolCall {
+			if pair, ok := toolPairsByCall[index]; ok && pair.HasResult {
+				toolName := strings.TrimSpace(event.ToolName)
+				if toolName == "" {
+					toolName = "unknown"
+				}
+				if latency, ok := toolPairLatencyMs(event, pair, startTime); ok {
+					toolLatenciesByType[toolName] = append(toolLatenciesByType[toolName], latency)
+				}
+			}
+		}
+	}
+	if len(toolLatenciesByType) > 0 {
+		toolStats := make(map[string]interface{})
+		for toolName, latencies := range toolLatenciesByType {
+			sorted := make([]int64, len(latencies))
+			copy(sorted, latencies)
+			sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+
+			toolStats[toolName] = map[string]interface{}{
+				"count": len(latencies),
+				"avg":   avgInt64(latencies),
+				"p50":   percentileInt64(sorted, 0.5),
+				"p95":   percentileInt64(sorted, 0.95),
+				"max":   sorted[len(sorted)-1],
+			}
+		}
+		metrics["tool_latency_by_type"] = toolStats
+	}
+
+	// Add memory retrieve timing
+	for _, event := range events {
+		if event.Type == runEventMemoryRetrieve && event.DurationMs != nil {
+			metrics["memory_retrieve_ms"] = *event.DurationMs
+			break
+		}
+	}
+
+	// Add session begin timing
+	for _, event := range events {
+		if event.Type == runEventSessionBegin && event.DurationMs != nil {
+			metrics["session_begin_ms"] = *event.DurationMs
+			break
+		}
+	}
+
+	// Add iteration timing statistics
+	var iterationDurations []int64
+	for _, event := range events {
+		if event.Type == runEventIterationEnd && event.DurationMs != nil {
+			iterationDurations = append(iterationDurations, *event.DurationMs)
+		}
+	}
+	if len(iterationDurations) > 0 {
+		sorted := make([]int64, len(iterationDurations))
+		copy(sorted, iterationDurations)
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+
+		metrics["iteration_durations_ms"] = iterationDurations
+		metrics["iteration_ms_avg"] = avgInt64(iterationDurations)
+		metrics["iteration_ms_p50"] = percentileInt64(sorted, 0.5)
+		metrics["iteration_ms_p95"] = percentileInt64(sorted, 0.95)
+		metrics["iteration_ms_p99"] = percentileInt64(sorted, 0.99)
+	}
+
 	if len(phaseTransitions) > 0 {
 		metrics["phase_transitions"] = phaseTransitions
 	}
 	metrics["final_phase"] = finalPhase
 	return metrics
+}
+
+func toolPairLatencyMs(callEvent TaskEpisodeEvent, pair langfuseToolPair, startTime time.Time) (int64, bool) {
+	if pair.ResultDurationMs != nil && *pair.ResultDurationMs >= 0 {
+		return *pair.ResultDurationMs, true
+	}
+	start := parseEpisodeTime(callEvent.Ts, startTime)
+	if pair.ResultTime.Before(start) {
+		return 0, false
+	}
+	return pair.ResultTime.Sub(start).Milliseconds(), true
 }
 
 func episodeLoopTags(events []TaskEpisodeEvent) []string {
@@ -1393,4 +1775,29 @@ func screenshotContentType(path string) string {
 	default:
 		return "image/jpeg"
 	}
+}
+
+func avgInt64(values []int64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	var sum int64
+	for _, v := range values {
+		sum += v
+	}
+	return float64(sum) / float64(len(values))
+}
+
+func percentileInt64(sortedValues []int64, p float64) int64 {
+	if len(sortedValues) == 0 {
+		return 0
+	}
+	if p <= 0 {
+		return sortedValues[0]
+	}
+	if p >= 1 {
+		return sortedValues[len(sortedValues)-1]
+	}
+	index := int(float64(len(sortedValues)-1) * p)
+	return sortedValues[index]
 }

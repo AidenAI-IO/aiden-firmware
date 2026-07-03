@@ -1657,6 +1657,112 @@ func TestSessionRotationDetailedCreatesActiveSessionID(t *testing.T) {
 	}
 }
 
+func TestSessionRotationDoesNotBlockOnPreArchiveSummary(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	manager := NewMemoryManager(storageDir,
+		WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
+			<-ctx.Done()
+			return ""
+		}),
+	)
+	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
+	if _, err := session.AppendEvent(ctx, SessionEvent{
+		EventID: "evt_before_nonblocking_rotate",
+		Ts:      time.Now().UTC().Format(time.RFC3339Nano),
+		Type:    "user_input",
+		Role:    "user",
+		Content: "old task",
+	}); err != nil {
+		t.Fatalf("AppendEvent() error = %v", err)
+	}
+
+	start := time.Now()
+	done := make(chan struct {
+		rotation SessionRotationResult
+		err      error
+	}, 1)
+	go func() {
+		rotation, err := manager.RotateSessionEventsDetailed()
+		done <- struct {
+			rotation SessionRotationResult
+			err      error
+		}{rotation: rotation, err: err}
+	}()
+
+	var rotation SessionRotationResult
+	var err error
+	select {
+	case result := <-done:
+		rotation, err = result.rotation, result.err
+		elapsed := time.Since(start)
+		if elapsed > 200*time.Millisecond {
+			t.Fatalf("RotateSessionEventsDetailed() elapsed = %s, want under 200ms", elapsed)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("RotateSessionEventsDetailed() blocked on pre-archive summary")
+	}
+	if err != nil {
+		t.Fatalf("RotateSessionEventsDetailed() error = %v", err)
+	}
+	if rotation.ArchiveDir == "" || rotation.ActiveSessionID == "" {
+		t.Fatalf("rotation missing archive or active session: %#v", rotation)
+	}
+}
+
+func TestSessionRotationPreservesSummaryAndChunksRemainingEvents(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	manager := NewMemoryManager(storageDir)
+	sessionDir := filepath.Join(storageDir, "session")
+	session := NewSessionMemoryStore(sessionDir)
+	oldSummary := "OLD SESSION SUMMARY MUST BE PRESERVED"
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll session dir: %v", err)
+	}
+	if err := os.WriteFile(session.summaryPath(), []byte(oldSummary), 0o644); err != nil {
+		t.Fatalf("WriteFile summary.md: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := session.AppendEvent(ctx, SessionEvent{
+			EventID: fmt.Sprintf("evt_remaining_%d", i),
+			Ts:      time.Now().UTC().Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
+			Type:    "user_input",
+			Role:    "user",
+			Content: fmt.Sprintf("remaining hot event %d", i),
+		}); err != nil {
+			t.Fatalf("AppendEvent(%d) error = %v", i, err)
+		}
+	}
+
+	rotation, err := manager.RotateSessionEventsDetailed()
+	if err != nil {
+		t.Fatalf("RotateSessionEventsDetailed() error = %v", err)
+	}
+	if rotation.ArchiveDir == "" {
+		t.Fatal("ArchiveDir is empty")
+	}
+	archivedSummary, err := os.ReadFile(filepath.Join(rotation.ArchiveDir, "summary.md"))
+	if err != nil {
+		t.Fatalf("ReadFile archived summary.md: %v", err)
+	}
+	if string(archivedSummary) != oldSummary {
+		t.Fatalf("archived summary = %q, want %q", archivedSummary, oldSummary)
+	}
+
+	archivedStore := NewSessionMemoryStore(rotation.ArchiveDir)
+	chunks, err := archivedStore.RecallChunks(ctx, ChunkRecallQuery{Limit: 10})
+	if err != nil {
+		t.Fatalf("RecallChunks() error = %v", err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 final chunk, got %#v", chunks)
+	}
+	if len(chunks[0].Evidence) != 2 {
+		t.Fatalf("final chunk evidence len = %d, want 2", len(chunks[0].Evidence))
+	}
+}
+
 func TestSessionRotationRejectsUnsafeMetadataSessionID(t *testing.T) {
 	ctx := context.Background()
 	storageDir := t.TempDir()
@@ -1840,27 +1946,7 @@ func TestSessionRotationDoesNotDeadlockWithMemoryLoad(t *testing.T) {
 	}
 }
 
-// testSummarizeForRotationAndMaintenance lets archive compression during rotation
-// expire quickly while later maintenance summarize calls block until release.
-func testSummarizeForRotationAndMaintenance(release <-chan struct{}, result string) SummarizeFn {
-	var calls atomic.Int32
-	return func(ctx context.Context, events []SessionEvent) string {
-		if calls.Add(1) == 1 {
-			<-ctx.Done()
-			return ""
-		}
-		select {
-		case <-ctx.Done():
-			return ""
-		case <-release:
-			return result
-		}
-	}
-}
-
 // testBlockingSummarizeOnFirstCall blocks only the first summarize invocation.
-// RotateSessionEvents may call summarize again via compressRemainingForArchive;
-// those later calls must return immediately instead of waiting for the archive timeout.
 func testBlockingSummarizeOnFirstCall(started chan<- struct{}, release <-chan struct{}, result string) SummarizeFn {
 	var calls atomic.Int32
 	var startedOnce sync.Once

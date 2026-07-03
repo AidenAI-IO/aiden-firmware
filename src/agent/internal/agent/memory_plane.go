@@ -820,20 +820,18 @@ func (p *FilesystemMemoryPlane) updateReferencedMemoryOutcomes(ctx context.Conte
 	if len(refs) == 0 {
 		return nil
 	}
-	for _, id := range refs {
-		if p.longTerm != nil {
-			if err := p.longTerm.UpdateMemory(ctx, id, func(item *MemoryItem) {
-				updateLongTermMemoryFromEpisode(item, episode)
-			}); err != nil {
-				return err
-			}
+	if p.longTerm != nil {
+		if err := p.longTerm.UpdateMemories(ctx, refs, func(item *MemoryItem) {
+			updateLongTermMemoryFromEpisode(item, episode)
+		}); err != nil {
+			return err
 		}
-		if p.device != nil {
-			if err := p.device.Update(ctx, id, func(item *DeviceMemoryItem) {
-				updateDeviceMemoryFromEpisode(item, episode)
-			}); err != nil {
-				return err
-			}
+	}
+	if p.device != nil {
+		if err := p.device.UpdateMany(ctx, refs, func(item *DeviceMemoryItem) {
+			updateDeviceMemoryFromEpisode(item, episode)
+		}); err != nil {
+			return err
 		}
 	}
 	return nil

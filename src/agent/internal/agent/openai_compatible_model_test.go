@@ -1210,6 +1210,122 @@ func TestOpenAICompatibleModelIncludesCachedTokensInGenerationInfo(t *testing.T)
 	}
 }
 
+func TestOpenAICompatibleModelRecordsProviderTimingMetadata(t *testing.T) {
+	var gotMetadataHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMetadataHeader = r.Header.Get("X-OpenRouter-Metadata")
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Generation-Id", "gen-test-123")
+		w.Write([]byte(`{
+			"id":"chatcmpl-test",
+			"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18},
+			"openrouter_metadata":{"provider_name":"TestProvider","strategy":"fallback","attempt":2}
+		}`))
+	}))
+	defer server.Close()
+
+	model := newOpenAICompatibleModel(server.URL, "test-model", "", server.Client(),
+		withOpenAICompatibleRouterMetadata())
+	resp, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
+		Role:  llms.ChatMessageTypeHuman,
+		Parts: []llms.ContentPart{llms.TextPart("hello")},
+	}})
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+	if gotMetadataHeader != "enabled" {
+		t.Fatalf("X-OpenRouter-Metadata = %q, want enabled", gotMetadataHeader)
+	}
+
+	info := resp.Choices[0].GenerationInfo
+	for _, key := range []string{
+		"llm_request_prepare_ms",
+		"llm_json_marshal_ms",
+		"llm_http_to_headers_ms",
+		"llm_response_read_ms",
+		"llm_response_decode_ms",
+		"llm_http_status",
+		"llm_output_chars",
+		"llm_total_ms",
+		"llm_ms_per_output_token",
+	} {
+		if _, ok := info[key]; !ok {
+			t.Fatalf("generation info missing %s: %#v", key, info)
+		}
+	}
+	if info["openrouter_generation_id"] != "gen-test-123" {
+		t.Fatalf("openrouter_generation_id = %#v, want gen-test-123", info["openrouter_generation_id"])
+	}
+	if info["openrouter_provider_name"] != "TestProvider" {
+		t.Fatalf("openrouter_provider_name = %#v, want TestProvider", info["openrouter_provider_name"])
+	}
+	if info["openrouter_strategy"] != "fallback" {
+		t.Fatalf("openrouter_strategy = %#v, want fallback", info["openrouter_strategy"])
+	}
+	if info["openrouter_attempt"] != float64(2) {
+		t.Fatalf("openrouter_attempt = %#v, want 2", info["openrouter_attempt"])
+	}
+}
+
+func TestOpenAICompatibleModelRecordsStreamingTimingMetadata(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("X-Generation-Id", "gen-stream-123")
+		w.Write([]byte(": OPENROUTER PROCESSING\n\n"))
+		w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"he\"}}]}\n\n"))
+		w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"llo\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5},\"openrouter_metadata\":{\"provider_name\":\"StreamProvider\"}}\n\n"))
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	model := newOpenAICompatibleModel(server.URL, "test-model", "", server.Client(),
+		withOpenAICompatibleRouterMetadata())
+	resp, err := model.GenerateContent(
+		contextWithRawHTTPLog(context.Background()),
+		[]llms.MessageContent{{
+			Role:  llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{llms.TextPart("hello")},
+		}},
+		llms.WithStreamingFunc(func(context.Context, []byte) error { return nil }),
+	)
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	info := resp.Choices[0].GenerationInfo
+	for _, key := range []string{
+		"llm_stream_read_ms",
+		"llm_time_to_first_sse_ms",
+		"llm_time_to_first_content_ms",
+		"llm_stream_sse_events",
+		"llm_stream_content_chunks",
+		"llm_stream_comment_count",
+		"llm_total_ms",
+		"llm_ms_per_output_token",
+		"llm_ttft_per_input_token",
+	} {
+		if _, ok := info[key]; !ok {
+			t.Fatalf("generation info missing %s: %#v", key, info)
+		}
+	}
+	if info["llm_stream_sse_events"] != 2 {
+		t.Fatalf("llm_stream_sse_events = %#v, want 2", info["llm_stream_sse_events"])
+	}
+	if info["llm_stream_content_chunks"] != 2 {
+		t.Fatalf("llm_stream_content_chunks = %#v, want 2", info["llm_stream_content_chunks"])
+	}
+	if info["llm_stream_comment_count"] != 1 {
+		t.Fatalf("llm_stream_comment_count = %#v, want 1", info["llm_stream_comment_count"])
+	}
+	if info["openrouter_generation_id"] != "gen-stream-123" {
+		t.Fatalf("openrouter_generation_id = %#v, want gen-stream-123", info["openrouter_generation_id"])
+	}
+	if info["openrouter_provider_name"] != "StreamProvider" {
+		t.Fatalf("openrouter_provider_name = %#v, want StreamProvider", info["openrouter_provider_name"])
+	}
+}
+
 func TestOpenAICompatibleModelSendsSessionHeaderWhenProviderSet(t *testing.T) {
 	var gotHeader string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

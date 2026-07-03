@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -754,6 +755,132 @@ func TestMemoryPlaneUpdatesReferencedMemoryOutcomes(t *testing.T) {
 	}
 	if fail.Item.Status != "conflicted" || !containsMemoryPlaneString(fail.Item.ConflictsWith, "ep_success") {
 		t.Fatalf("expected success to conflict with failure memory, got %#v", fail.Item)
+	}
+}
+
+func TestMemoryPlaneUpdatesReferencedLongTermOutcomesInBatch(t *testing.T) {
+	ctx := context.Background()
+	memoryDir := filepath.Join(t.TempDir(), "memory")
+	longTerm := NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"))
+	refs := []string{"mem_batch_one", "mem_batch_two", "mem_batch_three"}
+	for _, id := range refs {
+		if _, err := longTerm.AddMemory(ctx, MemoryItem{
+			ID:               id,
+			Type:             "procedure",
+			Status:           "active",
+			Priority:         80,
+			Confidence:       0.8,
+			Title:            id,
+			Content:          "Reusable procedure.",
+			EvidenceExcerpts: []string{"Reusable procedure succeeded."},
+			TTL:              "45d",
+		}); err != nil {
+			t.Fatalf("AddMemory(%s): %v", id, err)
+		}
+	}
+	plane := NewFilesystemMemoryPlane(memoryDir, DefaultMemoryExtractionConfig(), nil)
+	plane.device = nil
+
+	limitedCtx := newCancelAfterDoneContext(ctx, 5)
+	if err := plane.updateReferencedMemoryOutcomes(limitedCtx, TaskEpisode{
+		ID:                  "ep_batch_success",
+		RetrievedMemoryRefs: refs,
+		Outcome:             TaskEpisodeOutcome{Success: true},
+	}); err != nil {
+		t.Fatalf("updateReferencedMemoryOutcomes() error = %v", err)
+	}
+
+	for _, id := range refs {
+		parsed, err := readMemoryMarkdown(longTerm.memoryPath(id))
+		if err != nil {
+			t.Fatalf("read %s: %v", id, err)
+		}
+		if parsed.Item.SuccessCount != 1 {
+			t.Fatalf("%s SuccessCount = %d, want 1", id, parsed.Item.SuccessCount)
+		}
+	}
+}
+
+func TestMemoryPlaneUpdatesReferencedDeviceOutcomesInBatch(t *testing.T) {
+	ctx := context.Background()
+	memoryDir := filepath.Join(t.TempDir(), "memory")
+	device := NewDeviceMemoryStore(filepath.Join(memoryDir, "device"))
+	refs := []string{"dev_batch_one", "dev_batch_two", "dev_batch_three"}
+	for _, id := range refs {
+		if _, err := device.Upsert(ctx, DeviceMemoryItem{
+			ID:         id,
+			Type:       "procedure",
+			Status:     "active",
+			Title:      id,
+			Content:    "Device procedure.",
+			DeviceID:   defaultMemoryDeviceID,
+			Confidence: 0.8,
+			TTL:        "45d",
+		}); err != nil {
+			t.Fatalf("Upsert(%s): %v", id, err)
+		}
+	}
+	plane := NewFilesystemMemoryPlane(memoryDir, DefaultMemoryExtractionConfig(), nil)
+	plane.longTerm = nil
+
+	limitedCtx := newCancelAfterDoneContext(ctx, 5)
+	if err := plane.updateReferencedMemoryOutcomes(limitedCtx, TaskEpisode{
+		ID:                  "ep_batch_failure",
+		RetrievedMemoryRefs: refs,
+		Outcome:             TaskEpisodeOutcome{Success: false, FailureReason: "procedure failed"},
+	}); err != nil {
+		t.Fatalf("updateReferencedMemoryOutcomes() error = %v", err)
+	}
+
+	for _, id := range refs {
+		item, found, err := device.Get(ctx, id)
+		if err != nil {
+			t.Fatalf("Get(%s): %v", id, err)
+		}
+		if !found {
+			t.Fatalf("Get(%s) not found", id)
+		}
+		if item.FailureCount != 1 {
+			t.Fatalf("%s FailureCount = %d, want 1", id, item.FailureCount)
+		}
+	}
+}
+
+type cancelAfterDoneContext struct {
+	context.Context
+	allowedOpenDoneCalls int
+
+	mu    sync.Mutex
+	calls int
+	done  chan struct{}
+	once  sync.Once
+}
+
+func newCancelAfterDoneContext(parent context.Context, allowedOpenDoneCalls int) *cancelAfterDoneContext {
+	return &cancelAfterDoneContext{
+		Context:              parent,
+		allowedOpenDoneCalls: allowedOpenDoneCalls,
+		done:                 make(chan struct{}),
+	}
+}
+
+func (c *cancelAfterDoneContext) Done() <-chan struct{} {
+	c.mu.Lock()
+	c.calls++
+	if c.calls > c.allowedOpenDoneCalls {
+		c.once.Do(func() { close(c.done) })
+	}
+	done := c.done
+	c.mu.Unlock()
+	return done
+}
+
+func (c *cancelAfterDoneContext) Err() error {
+	select {
+	case <-c.done:
+		return context.Canceled
+	default:
+		return c.Context.Err()
 	}
 }
 

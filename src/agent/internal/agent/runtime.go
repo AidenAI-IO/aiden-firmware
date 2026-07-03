@@ -34,7 +34,10 @@ func effectiveMaxIterations(configured int) int {
 	return configured
 }
 
-const currentEnvironmentHintMaxAge = 10 * time.Minute
+const (
+	currentEnvironmentHintMaxAge      = 10 * time.Minute
+	runtimeSessionEventPersistTimeout = 2 * time.Second
+)
 
 type Runtime struct {
 	config             Config
@@ -179,7 +182,11 @@ func (m *RunMetrics) CacheHitRate() float64 {
 }
 
 const (
-	runEventToolCall = "tool_call"
+	runEventToolCall       = "tool_call"
+	runEventMemoryRetrieve = "memory_retrieve"
+	runEventSessionBegin   = "session_begin"
+	runEventIterationStart = "iteration_start"
+	runEventIterationEnd   = "iteration_end"
 )
 
 type RunEvent struct {
@@ -577,6 +584,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 			}
 			episodeRecorder = r.memoryPlane.NewEpisodeRecorder(retrieveReq, MemoryContext{})
 			if episodeRecorder != nil {
+				episodeRecorder.setStartedAtIfEarlier(startTime.UTC())
 				episodeID = episodeRecorder.ID()
 				startCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 				if err := episodeRecorder.Start(startCtx); err != nil && r.logger != nil {
@@ -644,8 +652,18 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		memoryHandle, err = newMemoryHandle(memoryCfg)
 	}
 	if err != nil {
-		return RunResult{}, err
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return RunResult{}, ctxErr
+		}
+		if r.logger != nil {
+			r.logger.Warn("[memory] load persisted memory failed; continuing with empty history: %v", err)
+		}
+		memoryHandle, err = newMemoryHandle(memoryCfg)
+		if err != nil {
+			return RunResult{}, err
+		}
 	}
+	sessionBeginStart := time.Now()
 	beginResult, err := r.beginSession(ctx, SessionBeginRequest{
 		AgentName:    "default",
 		Input:        normalizedInput,
@@ -656,8 +674,15 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		RunID:        runID,
 		CurrentHints: currentHints,
 	})
+	sessionBeginDuration := time.Since(sessionBeginStart).Milliseconds()
 	if err != nil {
-		return RunResult{}, err
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return RunResult{}, ctxErr
+		}
+		if r.logger != nil {
+			r.logger.Warn("[memory] begin session failed; continuing without session update: %v", err)
+		}
+		beginResult = SessionBeginResult{}
 	}
 	boundaryTelemetry = beginResult.Boundary
 	if boundaryTelemetry.Rotated {
@@ -665,6 +690,16 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}
 	if boundaryTelemetry.PendingRecallCounter == nil {
 		boundaryTelemetry.PendingRecallCounter = &atomic.Int64{}
+	}
+	sessionBeginEvent := TaskEpisodeEvent{
+		Type:       runEventSessionBegin,
+		Ts:         sessionBeginStart.Format(time.RFC3339Nano),
+		DurationMs: &sessionBeginDuration,
+		Metadata: map[string]interface{}{
+			"rotated":  beginResult.Boundary.Rotated,
+			"decision": beginResult.Boundary.Decision,
+			"reason":   beginResult.Boundary.Reason,
+		},
 	}
 
 	availableTools = r.resolveTools(resolvedSkills)
@@ -679,8 +714,12 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		CurrentHints: currentHints,
 	}
 	memoryContext := MemoryContext{}
+	var memoryRetrieveEvent *TaskEpisodeEvent
 	if r.memoryPlane != nil {
+		retrieveStart := time.Now()
 		retrieved, retrieveErr := r.memoryPlane.Retrieve(ctx, retrieveReq)
+		retrieveDuration := time.Since(retrieveStart).Milliseconds()
+
 		if retrieveErr != nil {
 			if r.logger != nil {
 				r.logger.Warn("[memory] retrieve failed: %v", retrieveErr)
@@ -688,13 +727,27 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		} else {
 			memoryContext = retrieved
 		}
+		memoryRetrieveEvent = &TaskEpisodeEvent{
+			Type:       runEventMemoryRetrieve,
+			Ts:         retrieveStart.Format(time.RFC3339Nano),
+			DurationMs: &retrieveDuration,
+			Metadata: map[string]interface{}{
+				"skill_count": len(skillNames),
+				"tool_count":  len(toolNamesFromTools(availableTools)),
+				"success":     retrieveErr == nil,
+			},
+		}
 	}
 	if r.memoryPlane != nil {
 		episodeRecorder = r.memoryPlane.NewEpisodeRecorder(retrieveReq, memoryContext)
 		if episodeRecorder != nil {
-			retrieveReq.EpisodeID = episodeRecorder.ID()
+			episodeRecorder.setStartedAtIfEarlier(startTime.UTC())
 			if err := episodeRecorder.Start(ctx); err != nil && r.logger != nil {
 				r.logger.Warn("[memory] start episode failed: %v", err)
+			}
+			episodeRecorder.RecordEvent(sessionBeginEvent)
+			if memoryRetrieveEvent != nil {
+				episodeRecorder.RecordEvent(*memoryRetrieveEvent)
 			}
 		}
 	}
@@ -747,7 +800,13 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		r.activeConversationHistoryTokenBudget(contextWindow),
 	)
 	if err != nil {
-		return RunResult{}, err
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return RunResult{}, ctxErr
+		}
+		if r.logger != nil {
+			r.logger.Warn("[memory] load conversation history failed; continuing with empty history: %v", err)
+		}
+		conversationHistory = nil
 	}
 	plannerMemory := memoryHandle.Memory
 	if len(conversationHistory) > 0 {
@@ -841,7 +900,16 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 
 	commitResult, err := r.commitSession(ctx, commitReq)
 	if err != nil {
-		return RunResult{}, err
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return RunResult{}, ctxErr
+		}
+		if r.logger != nil {
+			r.logger.Warn("[memory] commit session failed; returning model output without memory snapshot: %v", err)
+		}
+		commitResult = SessionCommitResult{}
+	}
+	if streamCallbackHandler != nil {
+		streamCallbackHandler.HandleAssistantOutput(ctx, output)
 	}
 	if streamCallbackHandler != nil {
 		streamCallbackHandler.HandleAssistantOutput(ctx, output)
@@ -1439,13 +1507,20 @@ func (h *runtimeCallbackHandler) emitRunEventWithPersistence(ctx context.Context
 	if event.EpisodeID == "" {
 		event.EpisodeID = h.episodeID
 	}
-	if persist && h.sessionEventAppender != nil {
-		if err := h.sessionEventAppender(ctx, sessionEventFromRunEvent(event, h)); err != nil && h.logger != nil {
-			h.logger.Warn("[memory] persist runtime session event failed: %v", err)
-		}
-	}
+	h.persistSessionEventBestEffort(sessionEventFromRunEvent(event, h), "[memory] persist runtime session event failed")
 	if h.eventHandler != nil {
 		h.eventHandler(event)
+	}
+}
+
+func (h *runtimeCallbackHandler) persistSessionEventBestEffort(event SessionEvent, warnMessage string) {
+	if h.sessionEventAppender == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), runtimeSessionEventPersistTimeout)
+	defer cancel()
+	if err := h.sessionEventAppender(ctx, event); err != nil && h.logger != nil {
+		h.logger.Warn("%s: %v", warnMessage, err)
 	}
 }
 

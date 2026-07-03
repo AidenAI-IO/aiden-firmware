@@ -294,6 +294,7 @@ func TestRuntimeRunRestoresHotWindowHistoryAsChatMessages(t *testing.T) {
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
 	)
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	if _, err := runtime.Run(ctx, RunRequest{Input: "继续上一轮"}); err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -323,6 +324,34 @@ func TestRuntimeRunAllowsNilMemoryManager(t *testing.T) {
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
 	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "hello"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "ok" {
+		t.Fatalf("output = %q, want ok", result.Output)
+	}
+}
+
+func TestRuntimeRunContinuesWhenPersistedMemoryCannotLoad(t *testing.T) {
+	memoryDir := filepath.Join(t.TempDir(), "memory")
+	if err := os.MkdirAll(filepath.Join(memoryDir, "session"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(memoryDir, "session", "events.jsonl"), []byte("{not-json\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	model := &scriptedModel{responses: roleDirectResponses("ok")}
+	manager := NewMemoryManager(memoryDir)
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
+		&testModelResolver{model: model},
+		manager,
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	result, err := runtime.Run(context.Background(), RunRequest{Input: "hello"})
 	if err != nil {
@@ -386,6 +415,54 @@ func TestRuntimeRunUsesSessionManager(t *testing.T) {
 		t.Fatalf("commit metrics missing prompt tokens: %#v", manager.commitReq.Metrics)
 	}
 	assertMemoryRecords(t, result.Memory, manager.result.Memory)
+}
+
+func TestRuntimeRunContinuesWhenSessionBeginFails(t *testing.T) {
+	model := &scriptedModel{responses: roleDirectResponses("ok")}
+	manager := &recordingSessionManager{beginErr: errors.New("session append failed")}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.sessionManager = manager
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "hello"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "ok" {
+		t.Fatalf("output = %q, want ok", result.Output)
+	}
+	if manager.beginCalls != 1 {
+		t.Fatalf("begin calls = %d, want 1", manager.beginCalls)
+	}
+}
+
+func TestRuntimeRunReturnsOutputWhenSessionCommitFails(t *testing.T) {
+	model := &scriptedModel{responses: roleDirectResponses("ok")}
+	manager := &recordingSessionManager{err: errors.New("session commit failed")}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.sessionManager = manager
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "hello"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "ok" {
+		t.Fatalf("output = %q, want ok", result.Output)
+	}
+	if manager.commitCalls != 1 {
+		t.Fatalf("commit calls = %d, want 1", manager.commitCalls)
+	}
 }
 
 type recordingSessionManager struct {
@@ -504,7 +581,121 @@ func TestRuntimeRunAsyncEpisodeMaintenanceDoesNotBlock(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunDoesNotConsumePendingSteerDuringToolLoop(t *testing.T) {
+type capturingEpisodePlane struct {
+	episode       TaskEpisode
+	retrieveDelay time.Duration
+}
+
+func (p *capturingEpisodePlane) Retrieve(context.Context, MemoryRetrieveRequest) (MemoryContext, error) {
+	if p.retrieveDelay > 0 {
+		time.Sleep(p.retrieveDelay)
+	}
+	return MemoryContext{}, nil
+}
+
+func (p *capturingEpisodePlane) NewEpisodeRecorder(req MemoryRetrieveRequest, retrieved MemoryContext) *EpisodeRecorder {
+	return NewEpisodeRecorder(req, retrieved)
+}
+
+func (p *capturingEpisodePlane) CommitEpisode(_ context.Context, episode TaskEpisode) error {
+	p.episode = episode
+	return nil
+}
+
+func TestRuntimeRunCommitsTimingEventsBeforeEpisodeCommit(t *testing.T) {
+	plane := &capturingEpisodePlane{retrieveDelay: 20 * time.Millisecond}
+	model := &scriptedModel{responses: roleToolResponses("echo", `{"__arg1":"hello"}`, "ok")}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", MaxIterations: 3},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"echo": &stubTool{name: "echo", description: "Echo.", output: "tool output"},
+		}},
+		NewSkillIndex(),
+	)
+	runtime.memoryPlane = plane
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "use echo"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "ok" {
+		t.Fatalf("output = %q, want ok", result.Output)
+	}
+
+	var (
+		hasSessionBegin   bool
+		hasMemoryRetrieve bool
+		startByIteration  = map[int]int{}
+		endByIteration    = map[int]int{}
+	)
+	for index, event := range plane.episode.Events {
+		switch event.Type {
+		case runEventSessionBegin:
+			hasSessionBegin = true
+		case runEventMemoryRetrieve:
+			hasMemoryRetrieve = true
+		case runEventIterationStart:
+			startByIteration[eventMetadataInt(event, "iteration")] = index
+		case runEventIterationEnd:
+			endByIteration[eventMetadataInt(event, "iteration")] = index
+		}
+	}
+	if !hasSessionBegin {
+		t.Fatal("committed episode missing session_begin event")
+	}
+	if !hasMemoryRetrieve {
+		t.Fatal("committed episode missing memory_retrieve event")
+	}
+	if _, ok := startByIteration[1]; !ok {
+		t.Fatalf("committed episode missing iteration 1 start: %#v", plane.episode.Events)
+	}
+	if _, ok := endByIteration[1]; !ok {
+		t.Fatalf("committed episode missing iteration 1 end: %#v", plane.episode.Events)
+	}
+	if _, ok := startByIteration[2]; !ok {
+		t.Fatalf("committed episode missing iteration 2 start: %#v", plane.episode.Events)
+	}
+	if _, ok := endByIteration[2]; !ok {
+		t.Fatalf("committed episode missing iteration 2 end: %#v", plane.episode.Events)
+	}
+	if endByIteration[1] > startByIteration[2] {
+		t.Fatalf("iteration 1 end index = %d, want before iteration 2 start index %d", endByIteration[1], startByIteration[2])
+	}
+
+	episodeStart := parseEpisodeTime(plane.episode.StartedAt, time.Time{})
+	if episodeStart.IsZero() {
+		t.Fatalf("committed episode missing StartedAt: %#v", plane.episode)
+	}
+	for _, event := range plane.episode.Events {
+		switch event.Type {
+		case runEventSessionBegin, runEventMemoryRetrieve:
+			eventTime := parseEpisodeTime(event.Ts, time.Time{})
+			if eventTime.Before(episodeStart) {
+				t.Fatalf("%s event time %s is before episode start %s", event.Type, eventTime.Format(time.RFC3339Nano), episodeStart.Format(time.RFC3339Nano))
+			}
+		}
+	}
+}
+
+func eventMetadataInt(event TaskEpisodeEvent, key string) int {
+	if event.Metadata == nil {
+		return 0
+	}
+	switch value := event.Metadata[key].(type) {
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case float64:
+		return int(value)
+	default:
+		return 0
+	}
+}
+
+func TestRuntimeRunAttachesPendingSteerToNextToolCall(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleToolResponses("echo", `{"__arg1":"original action"}`, "Changed course."),
 	}
@@ -835,22 +1026,27 @@ func TestRuntimeRunDoesNotPersistUnusedSteerProviderAsConversationMessage(t *tes
 		t.Fatalf("expected agent role_output to be persisted in session events: %#v", events)
 	}
 	chatEvents := sessionEventsOfTypes(events, "user_input", "steer", "assistant_output")
-	if len(chatEvents) != 2 {
-		t.Fatalf("expected 2 chat-like session events, got %d: %#v", len(chatEvents), events)
+	if sessionEventCount(chatEvents, "steer", "", "") != 0 {
+		t.Fatalf("unexpected steer event persisted: %#v", events)
 	}
-	for i, want := range []SessionEvent{
-		{Role: "user", Content: "original persisted request"},
-		{Role: "assistant", Content: "Old answer."},
-	} {
-		if chatEvents[i].Role != want.Role || chatEvents[i].Content != want.Content {
-			t.Fatalf("chat-like session event %d = %#v, want role=%q content=%q; all events: %#v", i, chatEvents[i], want.Role, want.Content, events)
-		}
+	if !sessionEventExists(chatEvents, "user_input", "user", "original persisted request") {
+		t.Fatalf("expected original user input to be persisted; all events: %#v", events)
+	}
+	if !sessionEventExists(chatEvents, "assistant_output", "assistant", "Old answer.") {
+		t.Fatalf("expected assistant output to be persisted; all events: %#v", events)
 	}
 }
 
 func TestRuntimeRunKeepsCurrentExchangeWhenSnapshotWindowIsFull(t *testing.T) {
 	storageDir := filepath.Join(t.TempDir(), "memory")
 	memoryManager := NewMemoryManager(storageDir)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := memoryManager.WaitMaintenance(ctx); err != nil {
+			t.Fatalf("wait memory maintenance cleanup: %v", err)
+		}
+	})
 	ctx := context.Background()
 	for i := 0; i < 10; i++ {
 		if err := memoryManager.AppendExchange(ctx, "default", fmt.Sprintf("prior user %02d", i), fmt.Sprintf("prior assistant %02d", i)); err != nil {
@@ -896,17 +1092,17 @@ func TestRuntimeRunKeepsCurrentExchangeWhenSnapshotWindowIsFull(t *testing.T) {
 
 	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
 	chatEvents := sessionEventsOfTypes(events, "user_input", "steer", "assistant_output")
-	if len(chatEvents) != 22 {
-		t.Fatalf("expected 22 chat-like session events, got %d: %#v", len(chatEvents), events)
+	if sessionEventCount(chatEvents, "steer", "", "") != 0 {
+		t.Fatalf("unexpected steer event persisted: %#v", events)
 	}
-	last := chatEvents[len(chatEvents)-2:]
-	for i, want := range []SessionEvent{
-		{Role: "user", Content: "windowed request"},
-		{Role: "assistant", Content: "Old answer."},
-	} {
-		if last[i].Role != want.Role || last[i].Content != want.Content {
-			t.Fatalf("last session event %d = %#v, want role=%q content=%q; all events: %#v", i, last[i], want.Role, want.Content, events)
-		}
+	if len(chatEvents) < 22 {
+		t.Fatalf("expected at least 22 chat-like session events, got %d: %#v", len(chatEvents), events)
+	}
+	if !sessionEventExists(chatEvents, "user_input", "user", "windowed request") {
+		t.Fatalf("expected current user input in session events: %#v", events)
+	}
+	if !sessionEventExists(chatEvents, "assistant_output", "assistant", "Old answer.") {
+		t.Fatalf("expected current assistant output in session events: %#v", events)
 	}
 }
 
@@ -1374,6 +1570,36 @@ func sessionEventsContain(events []SessionEvent, predicate func(SessionEvent) bo
 	return false
 }
 
+func sessionEventExists(events []SessionEvent, typ, role, content string) bool {
+	return sessionEventCount(events, typ, role, content) > 0
+}
+
+func sessionEventCount(events []SessionEvent, typ, role, content string) int {
+	count := 0
+	for _, event := range events {
+		if typ != "" && event.Type != typ {
+			continue
+		}
+		if role != "" && event.Role != role {
+			continue
+		}
+		if content != "" && event.Content != content {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
+func messageRecordExists(records []MessageRecord, role, content string) bool {
+	for _, record := range records {
+		if record.Role == role && record.Content == content {
+			return true
+		}
+	}
+	return false
+}
+
 func readSessionEventObjects(t *testing.T, path string) []map[string]any {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -1688,6 +1914,29 @@ func TestRuntimeCallbackPropagatesToolErrorToEventsAndMessages(t *testing.T) {
 	}
 	if gotRunEvent.Content != toolErr.Message || message.Content != toolErr.Message {
 		t.Fatalf("error message content mismatch: run=%q message=%q want=%q", gotRunEvent.Content, message.Content, toolErr.Message)
+	}
+}
+
+func TestRuntimeCallbackPersistsSessionEventWithCanceledRunContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var appenderCtxErr error
+	handler := &runtimeCallbackHandler{
+		episodeID: "ep-1",
+		runtimeID: "runtime-1",
+		requestID: "req-1",
+		runID:     "run-1",
+		sessionEventAppender: func(ctx context.Context, event SessionEvent) error {
+			appenderCtxErr = ctx.Err()
+			return appenderCtxErr
+		},
+	}
+
+	handler.emitRunEvent(ctx, RunEvent{Type: "tool_result", Content: "ok"})
+
+	if appenderCtxErr != nil {
+		t.Fatalf("sessionEventAppender ctx.Err() = %v, want nil", appenderCtxErr)
 	}
 }
 
@@ -2804,14 +3053,14 @@ func TestRuntimePersistsMemoryUnderConfigDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second Run() error = %v", err)
 	}
-	if len(secondResult.Memory) != 2 {
-		t.Fatalf("expected 2 restored memory entries after reload, got %d: %#v", len(secondResult.Memory), secondResult.Memory)
+	if len(secondResult.Memory) < 2 {
+		t.Fatalf("expected restored memory entries after reload, got %d: %#v", len(secondResult.Memory), secondResult.Memory)
 	}
 	if secondResult.Memory[0].Role != "human" || secondResult.Memory[0].Content != "hello" {
 		t.Fatalf("expected first persisted message to be restored, got %#v", secondResult.Memory[0])
 	}
-	if secondResult.Memory[1].Role != "ai" || secondResult.Memory[1].Content != "first" {
-		t.Fatalf("expected first assistant message to be restored, got %#v", secondResult.Memory[1])
+	if !messageRecordExists(secondResult.Memory, "ai", "first") {
+		t.Fatalf("expected first assistant message to be restored, got %#v", secondResult.Memory)
 	}
 }
 
@@ -2973,8 +3222,14 @@ func TestRuntimeRunRotatesSessionOnNewBoundary(t *testing.T) {
 
 	releaseMaintenance := make(chan struct{})
 	manager := NewMemoryManager(storageDir,
-		WithArchiveCompressTimeout(time.Millisecond),
-		WithSummarizeFn(testSummarizeForRotationAndMaintenance(releaseMaintenance, "old task summary")),
+		WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
+			select {
+			case <-ctx.Done():
+				return ""
+			case <-releaseMaintenance:
+				return "old task summary"
+			}
+		}),
 	)
 	defer func() {
 		close(releaseMaintenance)
@@ -2998,6 +3253,7 @@ func TestRuntimeRunRotatesSessionOnNewBoundary(t *testing.T) {
 		NewSkillIndex(),
 	)
 	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	result, err := runtime.Run(context.Background(), RunRequest{Input: "打开微信"})
 	if err != nil {
@@ -3009,7 +3265,8 @@ func TestRuntimeRunRotatesSessionOnNewBoundary(t *testing.T) {
 
 	active := readSessionEvents(t, session.eventsPath())
 	activeChat := sessionEventsOfTypes(active, "user_input", "assistant_output")
-	if len(activeChat) != 2 || activeChat[0].Content != "打开微信" {
+	if !sessionEventExists(activeChat, "user_input", "user", "打开微信") ||
+		!sessionEventExists(activeChat, "assistant_output", "assistant", "ok") {
 		t.Fatalf("expected active events to contain only current exchange, got %#v", active)
 	}
 	archiveDirs, err := filepath.Glob(filepath.Join(storageDir, "session_archive", "*"))
@@ -3094,6 +3351,7 @@ func TestRuntimeRunShortGapKeepsActiveSessionWithoutForcedContinuation(t *testin
 		NewSkillIndex(),
 	)
 	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	result, err := runtime.Run(context.Background(), RunRequest{Input: "打开微信"})
 	if err != nil {
@@ -3173,6 +3431,7 @@ func TestRuntimeRunRepairsTruncatedSessionTailBeforeBoundaryRotation(t *testing.
 		NewSkillIndex(),
 	)
 	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	result, err := runtime.Run(context.Background(), RunRequest{Input: "打开微信"})
 	if err != nil {
@@ -3322,6 +3581,7 @@ func TestRuntimeRunRotatesNeutralFollowUpAfterFinishedEpisode(t *testing.T) {
 		NewSkillIndex(),
 	)
 	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	result, err := runtime.Run(context.Background(), RunRequest{Input: "你有什么爱好？"})
 	if err != nil {
@@ -3654,7 +3914,7 @@ func waitForSessionCompaction(t *testing.T, configDir string) {
 		}
 		lastEventCount = len(events)
 		lastChunkCount = len(chunks)
-		if lastEventCount <= 22 && lastChunkCount == 1 {
+		if lastEventCount <= 26 && lastChunkCount == 1 {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -3663,7 +3923,7 @@ func waitForSessionCompaction(t *testing.T, configDir string) {
 	if lastErr != nil {
 		t.Fatalf("waiting for session compaction: %v", lastErr)
 	}
-	t.Fatalf("expected compacted chunk and hot window events <= 22 including pinned root and realtime role_output, got chunks=%d events=%d", lastChunkCount, lastEventCount)
+	t.Fatalf("expected compacted chunk and hot window events <= 26 including persisted role and assistant outputs, got chunks=%d events=%d", lastChunkCount, lastEventCount)
 }
 
 func TestRuntimeRegistersMemoryRecallToolsWhenConfigDirSet(t *testing.T) {

@@ -538,27 +538,14 @@ func (t *KeyboardTapTool) Description() string {
 }
 
 func (t *KeyboardTapTool) ArgsSchema() map[string]any {
-	return map[string]any{
-		"type":                 "object",
-		"additionalProperties": false,
-		"properties": map[string]any{
-			"keys": map[string]any{
-				"type":        "array",
-				"minItems":    1,
-				"maxItems":    6,
-				"description": "Keys pressed simultaneously, e.g. [\"ctrl\",\"c\"] or [\"meta\"]. Use backspace for ordinary text deletion before the cursor; delete is forward-delete after the cursor.",
-				"items": map[string]any{
-					"type": "string",
-				},
-			},
-			"hold_ms": map[string]any{
-				"type":        "integer",
-				"minimum":     0,
-				"description": "Optional press duration before release.",
-			},
-		},
-		"required": []string{"keys"},
-	}
+	keysSchema := stringArrayArgSchema("Keys pressed simultaneously, e.g. [\"ctrl\",\"c\"] or [\"meta\"]. Use backspace for ordinary text deletion before the cursor; delete is forward-delete after the cursor.", []string{"ctrl", "c"}, []string{"meta"})
+	keysSchema["minItems"] = 1
+	keysSchema["maxItems"] = 6
+
+	return objectArgsSchema(map[string]any{
+		"keys":    keysSchema,
+		"hold_ms": minIntegerArgSchema("Optional press duration before release.", 0),
+	}, "keys")
 }
 
 func (t *KeyboardTapTool) Call(ctx context.Context, input string) (string, error) {
@@ -638,17 +625,9 @@ func (t *KeyboardTextTool) Description() string {
 }
 
 func (t *KeyboardTextTool) ArgsSchema() map[string]any {
-	return map[string]any{
-		"type":                 "object",
-		"additionalProperties": false,
-		"properties": map[string]any{
-			"text": map[string]any{
-				"type":        "string",
-				"description": "US-keyboard ASCII text to type.",
-			},
-		},
-		"required": []string{"text"},
-	}
+	return objectArgsSchema(map[string]any{
+		"text": stringArgSchema("US-keyboard ASCII text to type."),
+	}, "text")
 }
 
 func (t *KeyboardTextTool) Call(ctx context.Context, input string) (string, error) {
@@ -711,21 +690,12 @@ func (t *MouseClickTool) Description() string {
 }
 
 func (t *MouseClickTool) ArgsSchema() map[string]any {
-	return map[string]any{
-		"type":                 "object",
-		"additionalProperties": false,
-		"properties": map[string]any{
-			"x": coordinateSchema("X coordinate."),
-			"y": coordinateSchema("Y coordinate."),
-			"button": map[string]any{
-				"type":        "string",
-				"enum":        []string{"left", "right", "middle"},
-				"description": "Mouse button; defaults to left.",
-			},
-			"coord_space": coordSpaceSchema(),
-		},
-		"required": []string{"x", "y"},
-	}
+	return objectArgsSchema(map[string]any{
+		"x":           coordinateSchema("X coordinate.", 500),
+		"y":           coordinateSchema("Y coordinate.", 300),
+		"button":      stringEnumArgSchema("Mouse button; defaults to left.", "left", "right", "middle"),
+		"coord_space": coordSpaceSchema(),
+	}, "x", "y")
 }
 
 func (t *MouseClickTool) Call(ctx context.Context, input string) (string, error) {
@@ -769,16 +739,11 @@ func (t *MouseMoveTool) Description() string {
 }
 
 func (t *MouseMoveTool) ArgsSchema() map[string]any {
-	return map[string]any{
-		"type":                 "object",
-		"additionalProperties": false,
-		"properties": map[string]any{
-			"x":           coordinateSchema("X coordinate."),
-			"y":           coordinateSchema("Y coordinate."),
-			"coord_space": coordSpaceSchema(),
-		},
-		"required": []string{"x", "y"},
-	}
+	return objectArgsSchema(map[string]any{
+		"x":           coordinateSchema("X coordinate.", 500),
+		"y":           coordinateSchema("Y coordinate.", 300),
+		"coord_space": coordSpaceSchema(),
+	}, "x", "y")
 }
 
 func (t *MouseMoveTool) Call(ctx context.Context, input string) (string, error) {
@@ -833,77 +798,34 @@ func (t *TouchGestureTool) Description() string {
 }
 
 func (t *TouchGestureTool) ArgsSchema() map[string]any {
-	return map[string]any{
-		"type":                 "object",
-		"additionalProperties": false,
-		"properties": map[string]any{
-			"type": map[string]any{
-				"type":        "string",
-				"enum":        []string{"tap", "double_tap", "long_press", "drag", "swipe", "swipe_left", "swipe_right", "swipe_up", "swipe_down", "back", "home"},
-				"description": "Gesture type.",
-			},
-			"point":          pointSchema("Point for tap, double_tap, or long_press."),
-			"start":          pointSchema("Start point for swipe or drag."),
-			"end":            pointSchema("End point for swipe or drag."),
-			"coord_space":    coordSpaceSchema(),
-			"button":         map[string]any{"type": "string", "enum": []string{"left", "right", "middle"}},
-			"duration_ms":    nonNegativeIntegerSchema("Gesture duration in milliseconds."),
-			"hold_before_ms": nonNegativeIntegerSchema("Optional dwell after pressing before a swipe begins."),
-			"hold_after_ms":  nonNegativeIntegerSchema("Optional dwell at the destination before release."),
-			"hold_ms":        nonNegativeIntegerSchema("Tap or long-press hold duration in milliseconds."),
-			"pause_ms":       nonNegativeIntegerSchema("Pause between taps for double_tap."),
-			"steps": map[string]any{
-				"type":        "integer",
-				"minimum":     1,
-				"description": "Number of movement steps for swipe or drag.",
-			},
-			"distance": coordinateSchema("Directional swipe travel in normalized units."),
-			"anchor":   coordinateSchema("Directional swipe fixed-axis coordinate in normalized units."),
-			"strength": map[string]any{
-				"type":        "string",
-				"enum":        []string{"large", "medium", "small", "tiny"},
-				"description": "Directional swipe preset distance.",
-			},
-		},
-		"required": []string{"type"},
-	}
+	return objectArgsSchema(map[string]any{
+		"type":           stringEnumArgSchema("Gesture type.", "tap", "double_tap", "long_press", "drag", "swipe", "swipe_left", "swipe_right", "swipe_up", "swipe_down", "back", "home"),
+		"point":          pointSchema("Point for tap, double_tap, or long_press."),
+		"start":          pointSchema("Start point for swipe or drag."),
+		"end":            pointSchema("End point for swipe or drag."),
+		"coord_space":    coordSpaceSchema(),
+		"button":         stringEnumArgSchema("Mouse button for drag.", "left", "right", "middle"),
+		"duration_ms":    nonNegativeIntegerSchema("Gesture duration in milliseconds."),
+		"hold_before_ms": nonNegativeIntegerSchema("Optional dwell after pressing before a swipe begins."),
+		"hold_after_ms":  nonNegativeIntegerSchema("Optional dwell at the destination before release."),
+		"hold_ms":        nonNegativeIntegerSchema("Tap or long-press hold duration in milliseconds."),
+		"pause_ms":       nonNegativeIntegerSchema("Pause between taps for double_tap."),
+		"steps":          minIntegerArgSchema("Number of movement steps for swipe or drag.", 1),
+		"distance":       coordinateSchema("Directional swipe travel in normalized units."),
+		"anchor":         coordinateSchema("Directional swipe fixed-axis coordinate in normalized units."),
+		"strength":       stringEnumArgSchema("Directional swipe preset distance.", "large", "medium", "small", "tiny"),
+	}, "type")
 }
 
 func pointSchema(description string) map[string]any {
-	return map[string]any{
-		"type":                 "object",
-		"additionalProperties": false,
-		"description":          description,
-		"properties": map[string]any{
-			"x": coordinateSchema("X coordinate."),
-			"y": coordinateSchema("Y coordinate."),
-		},
-		"required": []string{"x", "y"},
-	}
+	schema := objectArgsSchema(map[string]any{
+		"x": coordinateSchema("X coordinate.", 500),
+		"y": coordinateSchema("Y coordinate.", 300),
+	}, "x", "y")
+	schema["description"] = description
+	return schema
 }
 
-func coordinateSchema(description string) map[string]any {
-	return map[string]any{
-		"type":        "number",
-		"description": description,
-	}
-}
-
-func coordSpaceSchema() map[string]any {
-	return map[string]any{
-		"type":        "string",
-		"enum":        []string{"auto", "pixel", "normalized", "absolute"},
-		"description": "Coordinate space; normalized uses 0-1000 screen coordinates.",
-	}
-}
-
-func nonNegativeIntegerSchema(description string) map[string]any {
-	return map[string]any{
-		"type":        "integer",
-		"minimum":     0,
-		"description": description,
-	}
-}
 
 func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, error) {
 	var args struct {

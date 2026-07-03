@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 
 	"aiden-agent/internal/agent/context_manager"
 	"aiden-agent/internal/agent/executor"
@@ -88,67 +89,106 @@ func (l *AgentLoop) Run(ctx context.Context, input string, options ...chains.Cha
 	callOptions := chains.GetLLMCallOptions(options...)
 
 	for i := 0; i < l.MaxIterations; i++ {
-		turnOptions := append([]llms.CallOption{}, callOptions...)
-		turnOptions = append(turnOptions, llms.WithTools(parser.toolsAsLLM()))
-		_, contentResp, err := llmExecutor.Generate(ctx, turnOptions...)
+		answer, done, err := l.runIteration(ctx, i+1, callOptions, llmExecutor, parser, toolSpecs)
 		if err != nil {
 			return "", err
 		}
-		l.emitRoleOutput(ctx, roleResponseDebugText(contentResp))
-
-		actions, finish, err := parser.ParseOutput(contentResp)
-		if errors.Is(err, agents.ErrUnableToParseOutput) {
-			llmExecutor.AppendMessage(toolResultMessage("", "", err.Error()))
-			continue
+		if done {
+			return answer, nil
 		}
-		if err != nil {
-			return "", err
-		}
-		if finish != nil {
-			answer, _ := finish.ReturnValues[agentLoopOutputKey].(string)
-			answer = strings.TrimSpace(answer)
-			if answer == "" {
-				return "", agents.ErrAgentNoReturn
-			}
-			if l.Recorder != nil {
-				l.Recorder.RecordDefaultFinish(answer)
-			}
-			return l.finishRun(ctx, answer)
-		}
-		if len(actions) == 0 {
-			return "", agents.ErrAgentNoReturn
-		}
-
-		action := actions[0]
-		toolExecution := l.executeToolCall(ctx, ToolCallExecution{
-			Specs:                  toolSpecs,
-			Action:                 action,
-			Callback:               l.CallbacksHandler,
-			EnvironmentBridge:      l.EnvironmentBridge,
-			EnvironmentBridgeTools: l.EnvironmentBridgeTools,
-		})
-		if toolExecution.Error != nil {
-			return "", toolExecution.Error
-		}
-		if l.Recorder != nil {
-			l.Recorder.RecordPlannerExecution(roleExecutionResult{
-				Action:    &toolExecution.Step.Action,
-				Step:      &toolExecution.Step,
-				ToolError: toolExecution.Result.Error,
-			})
-		}
-		if isRunPausingTool(toolExecution.Step.Action.Tool) && !toolExecution.Result.IsError() {
-			answer := runPausingToolFinalAnswer(&toolExecution.Step)
-			if l.Recorder != nil {
-				l.Recorder.RecordDefaultFinish(answer)
-			}
-			return l.finishRun(ctx, answer)
-		}
-
-		appendToolExecutionMessages(llmExecutor, parser, toolExecution.Step)
 	}
 
 	return "", agents.ErrNotFinished
+}
+
+func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions []llms.CallOption, llmExecutor *executor.LLMExecutor, parser *FunctionAgent, toolSpecs *ToolSpecs) (string, bool, error) {
+	iterationStartTime := time.Now()
+	toolCallsInIteration := 0
+	if l.Recorder != nil {
+		l.Recorder.RecordEvent(TaskEpisodeEvent{
+			Type: runEventIterationStart,
+			Ts:   iterationStartTime.Format(time.RFC3339Nano),
+			Metadata: map[string]interface{}{
+				"iteration": iteration,
+			},
+		})
+		defer func() {
+			iterDuration := time.Since(iterationStartTime).Milliseconds()
+			l.Recorder.RecordEvent(TaskEpisodeEvent{
+				Type:       runEventIterationEnd,
+				Ts:         time.Now().Format(time.RFC3339Nano),
+				DurationMs: &iterDuration,
+				Metadata: map[string]interface{}{
+					"iteration":  iteration,
+					"tool_calls": toolCallsInIteration,
+				},
+			})
+		}()
+	}
+
+	turnOptions := append([]llms.CallOption{}, callOptions...)
+	turnOptions = append(turnOptions, llms.WithTools(parser.toolsAsLLM()))
+	_, contentResp, err := llmExecutor.Generate(ctx, turnOptions...)
+	if err != nil {
+		return "", false, err
+	}
+	l.emitRoleOutput(ctx, roleResponseDebugText(contentResp))
+
+	actions, finish, err := parser.ParseOutput(contentResp)
+	if errors.Is(err, agents.ErrUnableToParseOutput) {
+		llmExecutor.AppendMessage(toolResultMessage("", "", err.Error()))
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	if finish != nil {
+		answer, _ := finish.ReturnValues[agentLoopOutputKey].(string)
+		answer = strings.TrimSpace(answer)
+		if answer == "" {
+			return "", false, agents.ErrAgentNoReturn
+		}
+		if l.Recorder != nil {
+			l.Recorder.RecordDefaultFinish(answer)
+		}
+		answer, err = l.finishRun(ctx, answer)
+		return answer, true, err
+	}
+	if len(actions) == 0 {
+		return "", false, agents.ErrAgentNoReturn
+	}
+
+	action := actions[0]
+	toolExecution := l.executeToolCall(ctx, ToolCallExecution{
+		Specs:                  toolSpecs,
+		Action:                 action,
+		Callback:               l.CallbacksHandler,
+		EnvironmentBridge:      l.EnvironmentBridge,
+		EnvironmentBridgeTools: l.EnvironmentBridgeTools,
+	})
+	if toolExecution.Error != nil {
+		return "", false, toolExecution.Error
+	}
+	if l.Recorder != nil {
+		l.Recorder.RecordExecution(ToolCallExecutionResult{
+			Call:   toolExecution.Call,
+			Step:   toolExecution.Step,
+			Result: toolExecution.Result,
+			Error:  toolExecution.Error,
+		})
+	}
+	toolCallsInIteration++
+	if isRunPausingTool(toolExecution.Call.Action.Tool) && !toolExecution.Result.IsError() {
+		answer := runPausingToolFinalAnswer(&toolExecution.Step)
+		if l.Recorder != nil {
+			l.Recorder.RecordDefaultFinish(answer)
+		}
+		answer, err = l.finishRun(ctx, answer)
+		return answer, true, err
+	}
+
+	appendToolExecutionMessages(llmExecutor, parser, toolExecution.Step)
+	return "", false, nil
 }
 
 func loadAgentLoopInputs(ctx context.Context, memory schema.Memory, input string) (map[string]string, error) {
@@ -233,6 +273,7 @@ type roleExecutionResult struct {
 	Step            *schema.AgentStep
 	ToolError       *ToolError
 	CandidateAnswer string
+	ToolDuration    time.Duration
 }
 
 func roleResponseDebugText(res *llms.ContentResponse) string {
