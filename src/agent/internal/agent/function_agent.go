@@ -15,7 +15,6 @@ type FunctionAgent struct {
 	Tools             []langtools.Tool
 	OutputKey         string
 	ScreenshotPruning ScreenshotPruningConfig
-	VisualArtifacts   visualArtifactReader
 }
 
 type visualObservationTool interface {
@@ -79,8 +78,6 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 	choice := contentResp.Choices[0]
 
 	if len(choice.ToolCalls) > 0 {
-		actions := make([]schema.AgentAction, 0, len(choice.ToolCalls))
-		contentConsumed := false
 		for _, toolCall := range choice.ToolCalls {
 			if toolCall.FunctionCall == nil {
 				continue
@@ -88,25 +85,21 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 			functionName := toolCall.FunctionCall.Name
 			toolInputStr := toolCall.FunctionCall.Arguments
 			invocation := extractToolInvocation(toolInputStr)
-			toolCallContent := ""
-			if !contentConsumed {
-				toolCallContent = strings.TrimSpace(choice.Content)
-				contentConsumed = true
-			}
+			toolCallContent := strings.TrimSpace(choice.Content)
 
 			contentMsg := "\n"
 			if toolCallContent != "" {
 				contentMsg = fmt.Sprintf("responded: %s\n", toolCallContent)
 			}
 
-			actions = append(actions, schema.AgentAction{
+			return []schema.AgentAction{{
 				Tool:      functionName,
 				ToolInput: invocation.Input,
 				Log:       formatToolActionLog(functionName, toolInputStr, toolCallContent, contentMsg),
-				ToolID:    ensureToolCallID(toolCall.ID, len(actions)),
-			})
+				ToolID:    ensureToolCallID(toolCall.ID, 0),
+			}}, nil, nil
 		}
-		return actions, nil, nil
+		return nil, nil, nil
 	}
 
 	if choice.FuncCall != nil {
@@ -328,10 +321,10 @@ func (a *FunctionAgent) visualScreenshotObservation(step schema.AgentStep) (visu
 	if !a.isVisualObservationTool(step.Action.Tool) {
 		return visualScreenshotObservation{}, false
 	}
-	return parseScreenshotObservation(step.Observation, a.VisualArtifacts)
+	return parseScreenshotObservation(step.Observation)
 }
 
-func parseScreenshotObservation(observation string, readers ...visualArtifactReader) (visualScreenshotObservation, bool) {
+func parseScreenshotObservation(observation string) (visualScreenshotObservation, bool) {
 	var result postActionScreenshotResult
 	if err := json.Unmarshal([]byte(observation), &result); err != nil {
 		return visualScreenshotObservation{}, false
@@ -339,20 +332,11 @@ func parseScreenshotObservation(observation string, readers ...visualArtifactRea
 	if result.Width <= 0 || result.Height <= 0 {
 		return visualScreenshotObservation{}, false
 	}
-	var imageBytes []byte
-	if strings.TrimSpace(result.Data) != "" {
-		var err error
-		imageBytes, err = base64.StdEncoding.DecodeString(result.Data)
-		if err != nil || len(imageBytes) == 0 {
-			return visualScreenshotObservation{}, false
-		}
-	} else if strings.TrimSpace(result.ScreenshotRef) != "" && len(readers) > 0 && readers[0] != nil {
-		var err error
-		imageBytes, err = readers[0].ReadVisualArtifact(result.ScreenshotRef)
-		if err != nil || len(imageBytes) == 0 {
-			return visualScreenshotObservation{}, false
-		}
-	} else {
+	if strings.TrimSpace(result.Data) == "" {
+		return visualScreenshotObservation{}, false
+	}
+	imageBytes, err := base64.StdEncoding.DecodeString(result.Data)
+	if err != nil || len(imageBytes) == 0 {
 		return visualScreenshotObservation{}, false
 	}
 	format, ok := normalizeScreenshotFormat(result.Format)

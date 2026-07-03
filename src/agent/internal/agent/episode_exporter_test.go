@@ -135,7 +135,7 @@ func TestBuildLangfuseBatchUsesCapturedPromptsForGenerations(t *testing.T) {
 	promptCalls := []telemetryPromptCall{
 		{
 			ID:        "11111111-1111-1111-1111-111111111111",
-			Role:      string(RolePlanner),
+			Role:      "agent",
 			StartedAt: start,
 			EndedAt:   start.Add(100 * time.Millisecond),
 			Input: []map[string]interface{}{
@@ -246,7 +246,7 @@ func TestBuildLangfuseBatchUsesCapturedPromptsForGenerations(t *testing.T) {
 	if !ok {
 		t.Fatalf("generation metadata = %#v, want map", generations[0]["metadata"])
 	}
-	if metadata["role"] != string(RolePlanner) || metadata["prompt_index"] != float64(1) {
+	if metadata["role"] != "agent" || metadata["prompt_index"] != float64(1) {
 		t.Fatalf("generation metadata = %#v, want role/prompt_index", metadata)
 	}
 	if metadata["tools_count"] != float64(1) {
@@ -291,7 +291,7 @@ func TestBuildLangfuseBatchUploadsCapturedPromptMedia(t *testing.T) {
 	callID := "11111111-1111-1111-1111-111111111111"
 	promptCalls := []telemetryPromptCall{{
 		ID:        callID,
-		Role:      string(RolePlanner),
+		Role:      "agent",
 		StartedAt: start,
 		EndedAt:   start.Add(time.Millisecond),
 		Input: []map[string]interface{}{{
@@ -368,7 +368,7 @@ func TestBuildLangfuseBatchOmitsPromptImagesWhenScreenshotUploadDisabled(t *test
 	pdfMedia := newTelemetryPromptMedia("application/pdf", pdf)
 	promptCalls := []telemetryPromptCall{{
 		ID:        "11111111-1111-1111-1111-111111111111",
-		Role:      string(RolePlanner),
+		Role:      "agent",
 		StartedAt: start,
 		EndedAt:   start.Add(time.Millisecond),
 		Input: []map[string]interface{}{{
@@ -533,7 +533,7 @@ outcome:
 			Ts:            start.Add(time.Second).Format(time.RFC3339Nano),
 			Type:          "tool_result",
 			ToolName:      "screenshot",
-			Observation:   `{"action_output":"ok"}`,
+			Content:       `{"action_output":"ok"}`,
 			ScreenshotRef: "artifacts/step_002.jpeg",
 		},
 	}); err != nil {
@@ -626,7 +626,7 @@ outcome:
 			Ts:            start.Add(time.Second).Format(time.RFC3339Nano),
 			Type:          "tool_result",
 			ToolName:      "screenshot",
-			Observation:   `{"format":"jpeg","size":100}`,
+			Content:       `{"format":"jpeg","size":100}`,
 			ScreenshotRef: "artifacts/step_002.jpeg",
 		},
 	}); err != nil {
@@ -713,7 +713,9 @@ func TestRuntimeStartupExportsInterruptedEpisodeToLangfuse(t *testing.T) {
 	if err := recorder.Start(ctx); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	recorder.RecordPlannerDecision(plannerDecision{
+	recorder.append(TaskEpisodeEvent{
+		Type:      "planner_decision",
+		Role:      "agent",
 		Objective: "打开设置",
 		Plan:      []string{"打开设置"},
 		NextStep:  "点击设置",
@@ -844,23 +846,23 @@ func TestBuildLangfuseBatchMapsDefaultModePlannerTools(t *testing.T) {
 				EventID:   "evt_tool",
 				Ts:        start.Add(time.Second).Format(time.RFC3339Nano),
 				Type:      runEventToolCall,
-				Role:      string(RoleAgent),
+				Role:      "agent",
 				ToolName:  "echo",
 				ToolInput: `{"__arg1":"ok"}`,
 			},
 			{
-				EventID:     "evt_result",
-				Ts:          start.Add(2 * time.Second).Format(time.RFC3339Nano),
-				Type:        "tool_result",
-				Role:        string(RoleAgent),
-				ToolName:    "echo",
-				Observation: "ok",
+				EventID:  "evt_result",
+				Ts:       start.Add(2 * time.Second).Format(time.RFC3339Nano),
+				Type:     "tool_result",
+				Role:     "agent",
+				ToolName: "echo",
+				Content:  "ok",
 			},
 			{
 				EventID: "evt_finish",
 				Ts:      start.Add(3 * time.Second).Format(time.RFC3339Nano),
 				Type:    "default_finish",
-				Role:    string(RoleAgent),
+				Role:    "agent",
 				Content: "done",
 			},
 		},
@@ -874,6 +876,7 @@ func TestBuildLangfuseBatchMapsDefaultModePlannerTools(t *testing.T) {
 
 	names := map[string]int{}
 	var traceMeta map[string]interface{}
+	var toolResultOutput interface{}
 	for _, event := range batch {
 		var body map[string]interface{}
 		if err := json.Unmarshal(event.Body, &body); err != nil {
@@ -884,16 +887,22 @@ func TestBuildLangfuseBatchMapsDefaultModePlannerTools(t *testing.T) {
 		}
 		if name, _ := body["name"].(string); name != "" {
 			names[name]++
+			if name == "tool_result/echo" {
+				toolResultOutput = body["output"]
+			}
 		}
 	}
 	if names["phase/default"] != 1 {
 		t.Fatalf("phase/default count = %d, want 1; names=%#v", names["phase/default"], names)
 	}
-	if names["agent/tool/echo"] != 1 {
-		t.Fatalf("agent/tool/echo count = %d, want 1; names=%#v", names["agent/tool/echo"], names)
+	if names["tool/echo"] != 1 {
+		t.Fatalf("tool/echo count = %d, want 1; names=%#v", names["tool/echo"], names)
 	}
-	if names["agent/tool_result/echo"] != 1 {
-		t.Fatalf("agent/tool_result/echo count = %d, want 1; names=%#v", names["agent/tool_result/echo"], names)
+	if names["tool_result/echo"] != 1 {
+		t.Fatalf("tool_result/echo count = %d, want 1; names=%#v", names["tool_result/echo"], names)
+	}
+	if toolResultOutput != "ok" {
+		t.Fatalf("tool_result/echo output = %#v, want ok", toolResultOutput)
 	}
 	if names["agent/default_finish"] != 1 {
 		t.Fatalf("agent/default_finish count = %d, want 1; names=%#v", names["agent/default_finish"], names)
@@ -917,9 +926,9 @@ func TestBuildLangfuseBatchUsesIterationTimingSpanAsToolParent(t *testing.T) {
 		Outcome:   TaskEpisodeOutcome{Success: true, FinalAnswer: "done"},
 		Events: []TaskEpisodeEvent{
 			{EventID: "evt_iter_start", Ts: start.Format(time.RFC3339Nano), Type: runEventIterationStart, Metadata: map[string]interface{}{"iteration": 1}},
-			{EventID: "evt_tool", Ts: start.Add(100 * time.Millisecond).Format(time.RFC3339Nano), Type: runEventToolCall, Role: string(RoleAgent), ToolName: "echo", ToolInput: `{"__arg1":"ok"}`},
-			{EventID: "evt_result", Ts: start.Add(200 * time.Millisecond).Format(time.RFC3339Nano), Type: "tool_result", Role: string(RoleAgent), ToolName: "echo", Observation: "ok", DurationMs: &toolDuration},
-			{EventID: "evt_finish", Ts: start.Add(300 * time.Millisecond).Format(time.RFC3339Nano), Type: "default_finish", Role: string(RoleAgent), Content: "done"},
+			{EventID: "evt_tool", Ts: start.Add(100 * time.Millisecond).Format(time.RFC3339Nano), Type: runEventToolCall, Role: "agent", ToolName: "echo", ToolInput: `{"__arg1":"ok"}`},
+			{EventID: "evt_result", Ts: start.Add(200 * time.Millisecond).Format(time.RFC3339Nano), Type: "tool_result", Role: "agent", ToolName: "echo", Content: "ok", DurationMs: &toolDuration},
+			{EventID: "evt_finish", Ts: start.Add(300 * time.Millisecond).Format(time.RFC3339Nano), Type: "default_finish", Role: "agent", Content: "done"},
 			{EventID: "evt_iter_end", Ts: start.Add(400 * time.Millisecond).Format(time.RFC3339Nano), Type: runEventIterationEnd, DurationMs: int64Ptr(400), Metadata: map[string]interface{}{"iteration": 1}},
 		},
 	}
@@ -931,41 +940,13 @@ func TestBuildLangfuseBatchUsesIterationTimingSpanAsToolParent(t *testing.T) {
 	}
 	bodies := langfuseBodiesByName(t, batch)
 	iteration := singleLangfuseBody(t, bodies, "iteration_1")
-	tool := singleLangfuseBody(t, bodies, "agent/tool/echo")
+	tool := singleLangfuseBody(t, bodies, "tool/echo")
 	finish := singleLangfuseBody(t, bodies, "agent/default_finish")
 	if tool["parentObservationId"] != iteration["id"] {
 		t.Fatalf("tool parentObservationId = %#v, want iteration id %#v", tool["parentObservationId"], iteration["id"])
 	}
 	if finish["parentObservationId"] != iteration["id"] {
 		t.Fatalf("finish parentObservationId = %#v, want iteration id %#v", finish["parentObservationId"], iteration["id"])
-	}
-}
-
-func TestBuildLangfuseBatchDoesNotDuplicatePlannerIterationSpan(t *testing.T) {
-	start := time.Date(2026, 6, 11, 10, 0, 0, 0, time.UTC)
-	episode := TaskEpisode{
-		ID:        "ep_iteration_plan",
-		StartedAt: start.Format(time.RFC3339Nano),
-		EndedAt:   start.Add(time.Second).Format(time.RFC3339Nano),
-		UserGoal:  "plan test",
-		Outcome:   TaskEpisodeOutcome{Success: true, FinalAnswer: "done"},
-		Events: []TaskEpisodeEvent{
-			{EventID: "evt_iter_start", Ts: start.Format(time.RFC3339Nano), Type: runEventIterationStart, Metadata: map[string]interface{}{"iteration": 1}},
-			{EventID: "evt_plan", Ts: start.Add(100 * time.Millisecond).Format(time.RFC3339Nano), Type: "planner_decision", Role: string(RolePlanner), Objective: "do it", Plan: []string{"step 1"}, NextStep: "step 1"},
-			{EventID: "evt_iter_end", Ts: start.Add(500 * time.Millisecond).Format(time.RFC3339Nano), Type: runEventIterationEnd, DurationMs: int64Ptr(500), Metadata: map[string]interface{}{"iteration": 1}},
-		},
-	}
-
-	exporter := NewEpisodeExporter(TelemetryConfig{Enabled: boolPtr(true), BaseURL: "http://langfuse.test"}, nil)
-	batch, err := exporter.buildLangfuseBatch(context.Background(), episode, t.TempDir())
-	if err != nil {
-		t.Fatalf("buildLangfuseBatch() error = %v", err)
-	}
-	bodies := langfuseBodiesByName(t, batch)
-	iteration := singleLangfuseBody(t, bodies, "iteration_1")
-	planner := singleLangfuseBody(t, bodies, "planner")
-	if planner["parentObservationId"] != iteration["id"] {
-		t.Fatalf("planner parentObservationId = %#v, want iteration id %#v", planner["parentObservationId"], iteration["id"])
 	}
 }
 

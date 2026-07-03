@@ -16,11 +16,9 @@ func TestRolePromptsIncludeCurrentDate(t *testing.T) {
 	t.Cleanup(func() { promptNow = originalNow })
 
 	want := "Current date: 2026-06-01 (星期一)"
-	profiles := buildRoleProfiles(AgentConfig{}, ResolvedSkills{}, nil, MemoryContext{})
-	for _, profile := range []RoleProfile{profiles.Planner} {
-		if !strings.Contains(profile.SystemPrompt, want) {
-			t.Fatalf("%s system prompt missing current date %q:\n%s", profile.Name, want, profile.SystemPrompt)
-		}
+	profile := buildAgentProfile(AgentConfig{}, ResolvedSkills{}, nil)
+	if !strings.Contains(profile.SystemPrompt, want) {
+		t.Fatalf("system prompt missing current date %q:\n%s", want, profile.SystemPrompt)
 	}
 }
 
@@ -34,14 +32,12 @@ func TestRolePromptsIncludeRealHostRuntimeInfo(t *testing.T) {
 	wantLine := "Host: os=" + operatingSystem + ", hostname=" + hostname + ", arch=" + architecture
 	wantEnvironmentLine := "- You run on the Aiden hardware controller (" + wantLine + "); you are not the device shown in screenshots."
 
-	profiles := buildRoleProfiles(AgentConfig{}, ResolvedSkills{}, nil, MemoryContext{})
-	for _, profile := range []RoleProfile{profiles.Planner} {
-		if !strings.Contains(profile.SystemPrompt, wantEnvironmentLine) {
-			t.Fatalf("%s system prompt missing host info in environment guidance %q:\n%s", profile.Name, wantEnvironmentLine, profile.SystemPrompt)
-		}
-		if strings.Contains(profile.SystemPrompt, "kernel=") {
-			t.Fatalf("%s system prompt should not include kernel info:\n%s", profile.Name, profile.SystemPrompt)
-		}
+	profile := buildAgentProfile(AgentConfig{}, ResolvedSkills{}, nil)
+	if !strings.Contains(profile.SystemPrompt, wantEnvironmentLine) {
+		t.Fatalf("system prompt missing host info in environment guidance %q:\n%s", wantEnvironmentLine, profile.SystemPrompt)
+	}
+	if strings.Contains(profile.SystemPrompt, "kernel=") {
+		t.Fatalf("system prompt should not include kernel info:\n%s", profile.SystemPrompt)
 	}
 }
 
@@ -59,73 +55,70 @@ func mustUname(t *testing.T, flag string) string {
 }
 
 func TestRolePromptsIncludeGlobalEnvironmentAndDeviceGuidance(t *testing.T) {
-	profiles := buildRoleProfiles(
+	profile := buildAgentProfile(
 		AgentConfig{
 			Instruction:      "base instruction",
 			AdditionalPrompt: "extra prompt",
 		},
 		ResolvedSkills{},
 		nil,
-		MemoryContext{},
 	)
 
-	for _, profile := range []RoleProfile{profiles.Planner} {
-		for _, want := range []string{
-			"base instruction",
-			"extra prompt",
-			"## Environment",
-			"## Default behavior",
-			"Default to replying in Simplified Chinese",
-			"do not mention or hint at internal automation implementation details",
-			"run_script",
-			"JSONL",
-			"Aiden hardware controller",
-			"not the device shown in screenshots",
-			"shell, local files, processes, and system commands only affect the Aiden hardware controller",
-			"Do not infer target device information from the host OS or architecture",
-			"do not use local system commands instead of target control tools",
-			"Infer the target device and target OS from screenshots",
-			"weak prior, not a detected fact",
-			"Use shell only on the Aiden controller",
-			"do not operate the target UI in screenshots",
-			"recall_memory",
-			"do not answer from general knowledge alone",
-			"For text-only arithmetic, comparison, summarization, translation, or simple Q&A tasks",
-			"do not observe, wait on, or operate the connected display",
-			"<tts>...</tts>",
-			"device-operator",
-			"visible target UI",
-			"Prefer direct or semantic tools",
-			"request confirmation",
-			"Keep detailed UI playbooks in skills",
-		} {
-			if !strings.Contains(profile.SystemPrompt, want) {
-				t.Fatalf("%s system prompt missing %q:\n%s", profile.Name, want, profile.SystemPrompt)
-			}
+	for _, want := range []string{
+		"base instruction",
+		"extra prompt",
+		"## Environment",
+		"## Default behavior",
+		"Default to replying in Simplified Chinese",
+		"do not mention or hint at internal automation implementation details",
+		"run_script",
+		"JSONL",
+		"Aiden hardware controller",
+		"not the device shown in screenshots",
+		"shell, local files, processes, and system commands only affect the Aiden hardware controller",
+		"Do not infer target device information from the host OS or architecture",
+		"do not use local system commands instead of target control tools",
+		"Infer the target device and target OS from screenshots",
+		"weak prior, not a detected fact",
+		"Use shell only on the Aiden controller",
+		"do not operate the target UI in screenshots",
+		"recall_memory",
+		"do not answer from general knowledge alone",
+		"For text-only arithmetic, comparison, summarization, translation, or simple Q&A tasks",
+		"do not observe, wait on, or operate the connected display",
+		"<tts>...</tts>",
+		"device-operator",
+		"visible target UI",
+		"Prefer direct or semantic tools",
+		"request confirmation",
+		"Keep detailed UI playbooks in skills",
+	} {
+		if !strings.Contains(profile.SystemPrompt, want) {
+			t.Fatalf("system prompt missing %q:\n%s", want, profile.SystemPrompt)
 		}
+	}
 
-		for _, unwanted := range []string{
-			"## 环境",
-			"## 默认行为",
-			"宿主机:",
-			"默认用简体中文回答",
-			"Aiden 硬件控制器",
-			"滑动操作策略",
-			"不要因为没有单独的拨打电话工具就说做不到",
-			"osascript",
-			"AppleScript",
-			"PowerShell",
-			"xdotool",
-			"kernel=",
-		} {
-			if strings.Contains(profile.SystemPrompt, unwanted) {
-				t.Fatalf("%s system prompt should not contain old localized guidance %q:\n%s", profile.Name, unwanted, profile.SystemPrompt)
-			}
+	for _, unwanted := range []string{
+		"## 环境",
+		"## 默认行为",
+		"宿主机:",
+		"默认用简体中文回答",
+		"Aiden 硬件控制器",
+		"滑动操作策略",
+		"不要因为没有单独的拨打电话工具就说做不到",
+		"osascript",
+		"AppleScript",
+		"PowerShell",
+		"xdotool",
+		"kernel=",
+	} {
+		if strings.Contains(profile.SystemPrompt, unwanted) {
+			t.Fatalf("system prompt should not contain old localized guidance %q:\n%s", unwanted, profile.SystemPrompt)
 		}
+	}
 
-		if strings.Contains(profile.SystemPrompt, "Use long-term memory if relevant") {
-			t.Fatalf("%s system prompt should not contain legacy memory trigger:\n%s", profile.Name, profile.SystemPrompt)
-		}
+	if strings.Contains(profile.SystemPrompt, "Use long-term memory if relevant") {
+		t.Fatalf("system prompt should not contain legacy memory trigger:\n%s", profile.SystemPrompt)
 	}
 }
 
@@ -196,39 +189,36 @@ func TestDefaultAgentBehaviorExcludesMigratedToolDetails(t *testing.T) {
 
 func TestRolePromptsRequireToolCallSpeechForExternalStateTools(t *testing.T) {
 	enabled := true
-	profiles := buildRoleProfiles(
+	profile := buildAgentProfile(
 		AgentConfig{
 			VoiceToolCallSpeech: &enabled,
 			TTSConfigured:       true,
 		},
 		ResolvedSkills{},
 		nil,
-		MemoryContext{},
 	)
 
-	for _, profile := range []RoleProfile{profiles.Planner} {
-		for _, want := range []string{
-			"The system prompt already includes the current date and weekday",
-			"Do not call current_time for ordinary date or weekday questions",
-			"when a precise clock time, timezone conversion, offset, timestamp, or elapsed-time calculation is required",
-			"Responses must be ordinary user-facing text, followed by exactly one <tts>...</tts> block",
-			"When invoking tools, put brief progress text in assistant content only when it should be spoken",
-			"include exactly one <tts>...</tts> block containing the spoken text",
-			"Content outside <tts> is not spoken",
-			"Do not put speech or description arguments in tool inputs",
-			"Do not put the final answer in tool-call assistant content",
-			"Do not use JSON, final_answer fields, or \"Final Answer:\" wrappers for final responses",
-		} {
-			if !strings.Contains(profile.SystemPrompt, want) {
-				t.Fatalf("%s prompt missing tool-call speech requirement %q:\n%s", profile.Name, want, profile.SystemPrompt)
-			}
+	for _, want := range []string{
+		"The system prompt already includes the current date and weekday",
+		"Do not call current_time for ordinary date or weekday questions",
+		"when a precise clock time, timezone conversion, offset, timestamp, or elapsed-time calculation is required",
+		"Responses must be ordinary user-facing text, followed by exactly one <tts>...</tts> block",
+		"When invoking tools, put brief progress text in assistant content only when it should be spoken",
+		"include exactly one <tts>...</tts> block containing the spoken text",
+		"Content outside <tts> is not spoken",
+		"Do not put speech or description arguments in tool inputs",
+		"Do not put the final answer in tool-call assistant content",
+		"Do not use JSON, final_answer fields, or \"Final Answer:\" wrappers for final responses",
+	} {
+		if !strings.Contains(profile.SystemPrompt, want) {
+			t.Fatalf("prompt missing tool-call speech requirement %q:\n%s", want, profile.SystemPrompt)
 		}
-		if strings.Contains(profile.SystemPrompt, "user-visible tool") {
-			t.Fatalf("%s prompt should not use ambiguous user-visible tool wording:\n%s", profile.Name, profile.SystemPrompt)
-		}
-		if strings.Contains(profile.SystemPrompt, "When voice tool-call speech is enabled") {
-			t.Fatalf("%s prompt should not ask the model to reason about whether voice tool-call speech is enabled:\n%s", profile.Name, profile.SystemPrompt)
-		}
+	}
+	if strings.Contains(profile.SystemPrompt, "user-visible tool") {
+		t.Fatalf("prompt should not use ambiguous user-visible tool wording:\n%s", profile.SystemPrompt)
+	}
+	if strings.Contains(profile.SystemPrompt, "When voice tool-call speech is enabled") {
+		t.Fatalf("prompt should not ask the model to reason about whether voice tool-call speech is enabled:\n%s", profile.SystemPrompt)
 	}
 }
 
@@ -249,134 +239,33 @@ func TestRolePromptsGuideSkillCatalogAndPreloadedSkills(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	profiles := buildRoleProfiles(AgentConfig{}, skills, nil, MemoryContext{})
+	profile := buildAgentProfile(AgentConfig{}, skills, nil)
 
-	for _, profile := range []RoleProfile{profiles.Planner} {
-		for _, want := range []string{
-			"## Available skills",
-			"- planner: Plan before acting",
-			"## Active skills",
-			"[planner] Make a plan.",
-		} {
-			if !strings.Contains(profile.SystemPrompt, want) {
-				t.Fatalf("%s system prompt missing %q:\n%s", profile.Name, want, profile.SystemPrompt)
-			}
+	for _, want := range []string{
+		"## Available skills",
+		"- planner: Plan before acting",
+		"## Active skills",
+		"[planner] Make a plan.",
+	} {
+		if !strings.Contains(profile.SystemPrompt, want) {
+			t.Fatalf("system prompt missing %q:\n%s", want, profile.SystemPrompt)
 		}
 	}
 }
 
-func commonPrefixLen(a, b string) int {
-	n := len(a)
-	if len(b) < n {
-		n = len(b)
-	}
-	for i := 0; i < n; i++ {
-		if a[i] != b[i] {
-			return i
-		}
-	}
-	return n
-}
-
-// TestRuntimeContextStaysAfterCacheableRoleRules documents the prompt-cache
-// effect of keeping volatile runtime context after the static role rules. Even
-// when heartbeat timestamps change across turns, the cacheable static prefix is
-// byte-identical.
-func TestRuntimeContextStaysAfterCacheableRoleRules(t *testing.T) {
-	hb1 := time.Date(2026, 6, 1, 2, 3, 4, 0, time.UTC)
-	hb2 := hb1.Add(12 * time.Second) // next turn, fresh heartbeat
-	status := func(hb time.Time) PhoneBridgeStatus {
-		return PhoneBridgeStatus{Connected: true, Platform: "ios", LastHeartbeatAt: &hb}
-	}
-
-	ctx1 := phoneBridgeRuntimeContext(status(hb1))
-	ctx2 := phoneBridgeRuntimeContext(status(hb2))
-	if ctx1 == ctx2 {
-		t.Fatalf("runtime context should still reflect heartbeat timestamp changes; test is not exercising volatile context")
-	}
-
-	build := func(rc string) RoleProfile {
-		return buildRoleProfiles(
-			AgentConfig{RuntimeContext: rc},
-			ResolvedSkills{},
-			nil,
-			MemoryContext{},
-		).Planner
-	}
-	profile1, profile2 := build(ctx1), build(ctx2)
-	if profile1.SystemPromptCachePrefix != profile2.SystemPromptCachePrefix {
-		t.Fatalf("cacheable static prefix should stay byte-identical across volatile runtime context:\nturn1:\n%s\nturn2:\n%s", profile1.SystemPromptCachePrefix, profile2.SystemPromptCachePrefix)
-	}
-	if profile1.SystemPromptDynamicSuffix == profile2.SystemPromptDynamicSuffix {
-		t.Fatalf("dynamic suffix should reflect runtime context changes")
-	}
-	for _, unwanted := range []string{"## Runtime context", "last_heartbeat_at"} {
-		if strings.Contains(profile1.SystemPromptCachePrefix, unwanted) {
-			t.Fatalf("cacheable static prefix should not include volatile runtime marker %q:\n%s", unwanted, profile1.SystemPromptCachePrefix)
-		}
-	}
-
-	base := build("").SystemPrompt
-	insertAt := strings.Index(base, "## Role rules")
-	if insertAt < 0 {
-		t.Fatalf("base prompt missing role rules section:\n%s", base)
-	}
-	legacy := func(rc string) string {
-		return base[:insertAt] + "## Runtime context\n" + rc + "\n\n" + base[insertAt:]
-	}
-	legacyTurn1, legacyTurn2 := legacy(ctx1), legacy(ctx2)
-	if legacyTurn1 == legacyTurn2 {
-		t.Fatalf("legacy reconstruction should differ across turns; test is not exercising the regression")
-	}
-
-	legacyPrefix := commonPrefixLen(legacyTurn1, legacyTurn2)
-	if legacyPrefix >= len(profile1.SystemPromptCachePrefix) {
-		t.Fatalf("legacy prompt prefix (%d) should be shorter than new cacheable static prefix (%d)", legacyPrefix, len(profile1.SystemPromptCachePrefix))
-	}
-	t.Logf("cacheable prefix bytes: new=%d/%d, legacy=%d/%d (%.1f%%)",
-		len(profile1.SystemPromptCachePrefix), len(profile1.SystemPrompt),
-		legacyPrefix, len(legacyTurn1),
-		100*float64(legacyPrefix)/float64(len(legacyTurn1)))
-}
-
-func TestRolePromptsKeepVolatileSectionsAfterStaticRoleRules(t *testing.T) {
-	profiles := buildRoleProfiles(
+func TestRolePromptOmitsRuntimeAndMemoryContext(t *testing.T) {
+	profile := buildAgentProfile(
 		AgentConfig{RuntimeContext: "Phone bridge status:\n- connected: true"},
 		ResolvedSkills{},
 		nil,
-		MemoryContext{Planner: RoleMemoryContext{SessionSummary: "session memory tail"}},
 	)
 
-	for _, profile := range []RoleProfile{profiles.Planner} {
-		roleRulesAt := strings.Index(profile.SystemPrompt, "## Role rules")
-		runtimeAt := strings.Index(profile.SystemPrompt, "## Runtime context")
-		if roleRulesAt < 0 || runtimeAt < 0 {
-			t.Fatalf("%s prompt missing role rules or runtime context section:\n%s", profile.Name, profile.SystemPrompt)
-		}
-		if runtimeAt < roleRulesAt {
-			t.Fatalf("%s prompt should place volatile runtime context after static role rules for prompt-cache stability:\n%s", profile.Name, profile.SystemPrompt)
-		}
+	if !strings.Contains(profile.SystemPrompt, "## Role rules") {
+		t.Fatalf("prompt missing role rules section:\n%s", profile.SystemPrompt)
 	}
-
-	memoryAt := strings.Index(profiles.Planner.SystemPrompt, "session memory tail")
-	planRuntimeAt := strings.Index(profiles.Planner.SystemPrompt, "## Runtime context")
-	if memoryAt < 0 || memoryAt < planRuntimeAt {
-		t.Fatalf("planner prompt should keep memory context as the trailing volatile section:\n%s", profiles.Planner.SystemPrompt)
-	}
-}
-
-func TestRolePromptsIncludeRuntimeContext(t *testing.T) {
-	runtimeContext := "Phone bridge status:\n- connected: true"
-	profiles := buildRoleProfiles(
-		AgentConfig{RuntimeContext: runtimeContext},
-		ResolvedSkills{},
-		nil,
-		MemoryContext{},
-	)
-
-	for _, profile := range []RoleProfile{profiles.Planner} {
-		if !strings.Contains(profile.SystemPrompt, "## Runtime context\n"+runtimeContext) {
-			t.Fatalf("%s system prompt missing runtime context:\n%s", profile.Name, profile.SystemPrompt)
+	for _, unwanted := range []string{"## Runtime context", "Phone bridge status", "session memory tail"} {
+		if strings.Contains(profile.SystemPrompt, unwanted) {
+			t.Fatalf("system prompt should not include dynamic context %q:\n%s", unwanted, profile.SystemPrompt)
 		}
 	}
 }

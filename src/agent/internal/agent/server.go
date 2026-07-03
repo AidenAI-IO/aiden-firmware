@@ -102,9 +102,9 @@ type MessageAttachment struct {
 	Transcript string `json:"transcript,omitempty"`
 }
 
-// Message represents a chat message or tool call
+// Message represents a public chat history message or tool call.
 type Message struct {
-	Type            string              `json:"type"` // "user", "assistant", "tool_call", "tool_result", "role_output"
+	Type            string              `json:"type"` // "user", "assistant", "tool_call", "tool_result"
 	Role            string              `json:"role,omitempty"`
 	EpisodeID       string              `json:"episode_id,omitempty"`
 	RequestID       string              `json:"request_id,omitempty"`
@@ -113,7 +113,6 @@ type Message struct {
 	OriginalText    string              `json:"original_text,omitempty"`
 	Transcript      string              `json:"transcript,omitempty"`
 	Content         string              `json:"content"`
-	Todo            *TodoState          `json:"todo,omitempty"`
 	SpeechEligible  bool                `json:"speech_eligible,omitempty"`
 	ToolName        string              `json:"tool_name,omitempty"`
 	ToolInput       string              `json:"tool_input,omitempty"`
@@ -127,12 +126,24 @@ type Message struct {
 	IsError         bool                `json:"is_error,omitempty"`
 }
 
-func cloneTodoStatePtr(todo *TodoState) *TodoState {
-	if todo == nil {
-		return nil
+func normalizeChatHistoryMessage(message Message) (Message, bool) {
+	switch strings.TrimSpace(message.Type) {
+	case "user", "user_input", "steer":
+		message.Type = "user"
+		message.Role = ""
+	case "assistant", "assistant_output":
+		message.Type = "assistant"
+		if role := strings.TrimSpace(message.Role); role == "assistant" || role == "ai" {
+			message.Role = ""
+		}
+	case runEventToolCall:
+		message.Type = runEventToolCall
+	case "tool_result":
+		message.Type = "tool_result"
+	default:
+		return Message{}, false
 	}
-	cloned := todo.Clone()
-	return &cloned
+	return message, true
 }
 
 func messageFromRunEvent(event RunEvent, fallbackEpisodeID string, requestID string) Message {
@@ -140,13 +151,12 @@ func messageFromRunEvent(event RunEvent, fallbackEpisodeID string, requestID str
 	if episodeID == "" {
 		episodeID = fallbackEpisodeID
 	}
-	return Message{
+	message := Message{
 		Type:           event.Type,
 		Role:           event.Role,
 		EpisodeID:      episodeID,
 		RequestID:      requestID,
 		Content:        event.Content,
-		Todo:           cloneTodoStatePtr(event.Todo),
 		SpeechEligible: event.SpeechEligible,
 		ToolName:       event.ToolName,
 		ToolInput:      event.ToolInput,
@@ -154,6 +164,11 @@ func messageFromRunEvent(event RunEvent, fallbackEpisodeID string, requestID str
 		Timestamp:      event.Timestamp,
 		IsError:        event.IsError,
 	}
+	message, ok := normalizeChatHistoryMessage(message)
+	if !ok {
+		return Message{}
+	}
+	return message
 }
 
 func messageFromTurnInput(input TurnInput, episodeID, requestID string, attachments []MessageAttachment, timestamp time.Time) Message {
@@ -949,9 +964,7 @@ func (s *Server) handleChatAsync(
 
 	// Run agent in background goroutine
 	go func() {
-		progress := s.newRunProgressSpeaker()
 		defer func() {
-			progress.Cancel()
 			s.unregisterActiveRun(requestID)
 			s.clearPendingSteer(requestID)
 			// Keep the completed result available for polling for 60s,
@@ -969,22 +982,20 @@ func (s *Server) handleChatAsync(
 		// so the client can poll them in near-realtime.
 		eventHandler := func(event RunEvent) {
 			msg := messageFromRunEvent(event, userMsg.EpisodeID, requestID)
-			s.appendHistory(msg)
-			pending.mu.Lock()
-			pending.history = append(pending.history, msg)
-			pending.messages = append(pending.messages, msg)
-			pending.mu.Unlock()
+			if msg.Type != "" {
+				if msg, ok := s.appendHistory(msg); ok {
+					pending.mu.Lock()
+					pending.history = append(pending.history, msg)
+					pending.messages = append(pending.messages, msg)
+					pending.mu.Unlock()
+				}
+			}
 			if s.liveActivity != nil {
 				s.liveActivity.UpdateFromRunEvent(requestID, event)
 			}
 
 			if text := s.toolCallSpeechText(event); text != "" {
 				go s.speakToolContent(runCtx, text)
-			}
-			if event.Type == runEventTodoUpdate && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
-				if text, ok := progressSpeechTextForEvent(event); ok {
-					progress.Schedule(runCtx, text)
-				}
 			}
 		}
 
@@ -998,7 +1009,6 @@ func (s *Server) handleChatAsync(
 			DeviceEnvironment:       s.bridgeEnvironment(),
 			RuntimeContext:          s.runtimeContext(),
 			EventHandler:            eventHandler,
-			StreamFinalChunks:       true,
 			AsyncEpisodeMaintenance: true,
 			SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
 				return s.consumePendingSteer(requestID)
@@ -1021,14 +1031,13 @@ func (s *Server) handleChatAsync(
 					output := newActiveTTSOutput(nil)
 					output.setStream(newStream)
 					unregisterStreamOutput = s.registerActiveOutput(requestID, output)
-					runReq.StreamWriter = newCancelOnFirstWriteWriter(speechStreamWriterForConfig(newStream, s.runtime.config), progress.Cancel)
+					runReq.StreamWriter = speechStreamWriterForConfig(newStream, s.runtime.config)
 				}
 			}
 		}
 		defer unregisterStreamOutput()
 
 		result, err := s.runtime.Run(runCtx, runReq)
-		progress.Cancel()
 		if newStream != nil {
 			closeErr := newStream.closeAndWait()
 			if closeErr != nil && s.logger != nil {
@@ -1055,9 +1064,10 @@ func (s *Server) handleChatAsync(
 					Timestamp: time.Now(),
 					IsError:   true,
 				}
-				s.appendHistory(errorMsg)
-				pending.history = append(pending.history, errorMsg)
-				pending.messages = append(pending.messages, errorMsg)
+				if errorMsg, ok := s.appendHistory(errorMsg); ok {
+					pending.history = append(pending.history, errorMsg)
+					pending.messages = append(pending.messages, errorMsg)
+				}
 				if s.liveActivity != nil {
 					s.liveActivity.FailTask(requestID, err.Error())
 				}
@@ -1075,18 +1085,6 @@ func (s *Server) handleChatAsync(
 			return
 		}
 
-		// Add assistant message
-		assistantMsg := Message{
-			Type:      "assistant",
-			EpisodeID: firstNonEmptyString([]string{result.EpisodeID, userMsg.EpisodeID}),
-			RequestID: requestID,
-			Status:    "completed",
-			Content:   result.Output,
-			Timestamp: time.Now(),
-		}
-		s.appendHistory(assistantMsg)
-		pending.history = append(pending.history, assistantMsg)
-		pending.messages = append(pending.messages, assistantMsg)
 		if s.liveActivity != nil {
 			s.liveActivity.CompleteTask(requestID, result.Output)
 		}
@@ -1318,8 +1316,6 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 	s.appendHistory(userMessage)
-	progress := s.newRunProgressSpeaker()
-	defer progress.Cancel()
 	if s.liveActivity != nil {
 		s.liveActivity.StartTask(req.RequestID, inputText, s.liveActivityPhoneID(req))
 	}
@@ -1333,25 +1329,22 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		RequestID:               req.RequestID,
 		DeviceEnvironment:       s.bridgeEnvironment(),
 		RuntimeContext:          s.runtimeContext(),
-		StreamFinalChunks:       true,
 		AsyncEpisodeMaintenance: true,
 		SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
 			return s.consumePendingSteer(req.RequestID)
 		},
 		EventHandler: func(event RunEvent) {
 			message := messageFromRunEvent(event, episodeID, req.RequestID)
-			s.appendHistory(message)
-			stream.Write(ChatStreamEvent{Type: "message", Message: &message})
+			if message.Type != "" {
+				if message, ok := s.appendHistory(message); ok {
+					stream.Write(ChatStreamEvent{Type: "message", Message: &message})
+				}
+			}
 			if s.liveActivity != nil {
 				s.liveActivity.UpdateFromRunEvent(req.RequestID, event)
 			}
 			if text := s.toolCallSpeechText(event); text != "" {
 				go s.speakToolContent(ctx, text)
-			}
-			if event.Type == runEventTodoUpdate && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
-				if text, ok := progressSpeechTextForEvent(event); ok {
-					progress.Schedule(ctx, text)
-				}
 			}
 		},
 	}
@@ -1359,8 +1352,8 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	var newStream *streamSessionWriter
 	unregisterStreamOutput := func() {}
 	ttsManager := s.currentTTSManager()
-	finalStreamWriters := []io.Writer{
-		newChatAssistantFinalStreamWriter(stream, episodeID, req.RequestID),
+	streamWriters := []io.Writer{
+		newChatAssistantStreamWriter(stream, episodeID, req.RequestID),
 	}
 	if s.runtime.config.VoiceStreamingTTSEnabledOrDefault() && s.audioClient != nil {
 		if ttsManager != nil {
@@ -1374,15 +1367,14 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 				output := newActiveTTSOutput(nil)
 				output.setStream(newStream)
 				unregisterStreamOutput = s.registerActiveOutput(req.RequestID, output)
-				finalStreamWriters = append(finalStreamWriters, newCancelOnFirstWriteWriter(speechStreamWriterForConfig(newStream, s.runtime.config), progress.Cancel))
+				streamWriters = append(streamWriters, speechStreamWriterForConfig(newStream, s.runtime.config))
 			}
 		}
 	}
 	defer unregisterStreamOutput()
-	runReq.StreamWriter = newFinalStreamFanoutWriter(finalStreamWriters...)
+	runReq.StreamWriter = newStreamFanoutWriter(streamWriters...)
 
 	result, err := s.runtime.Run(ctx, runReq)
-	progress.Cancel()
 	if newStream != nil {
 		closeErr := newStream.closeAndWait()
 		if closeErr != nil && s.logger != nil {
@@ -1415,8 +1407,9 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			Timestamp: time.Now(),
 			IsError:   true,
 		}
-		s.appendHistory(errorMessage)
-		stream.Write(ChatStreamEvent{Type: "message", Message: &errorMessage})
+		if errorMessage, ok := s.appendHistory(errorMessage); ok {
+			stream.Write(ChatStreamEvent{Type: "message", Message: &errorMessage})
+		}
 		if s.logger != nil {
 			s.logger.Error("Agent run failed: %v", err)
 		}
@@ -1424,16 +1417,6 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	assistantMessage := Message{
-		Type:      "assistant",
-		EpisodeID: firstNonEmptyString([]string{result.EpisodeID, episodeID}),
-		RequestID: req.RequestID,
-		Status:    "completed",
-		Content:   result.Output,
-		Timestamp: time.Now(),
-	}
-	s.appendHistory(assistantMessage)
-	stream.Write(ChatStreamEvent{Type: "message", Message: &assistantMessage})
 	historySnapshot := s.historySnapshot()
 	if s.liveActivity != nil {
 		s.liveActivity.CompleteTask(req.RequestID, result.Output)
@@ -1548,25 +1531,25 @@ func (w *chatAssistantDeltaWriter) StreamEmitted() bool {
 	return w.emitted
 }
 
-type chatAssistantFinalStreamWriter struct {
+type chatAssistantStreamWriter struct {
 	delta *chatAssistantDeltaWriter
 }
 
-func newChatAssistantFinalStreamWriter(stream *chatStreamWriter, episodeID, requestID string) io.Writer {
+func newChatAssistantStreamWriter(stream *chatStreamWriter, episodeID, requestID string) io.Writer {
 	delta := newChatAssistantDeltaWriter(stream, episodeID, requestID)
-	return &chatAssistantFinalStreamWriter{
+	return &chatAssistantStreamWriter{
 		delta: delta,
 	}
 }
 
-func (w *chatAssistantFinalStreamWriter) Write(p []byte) (int, error) {
+func (w *chatAssistantStreamWriter) Write(p []byte) (int, error) {
 	if w == nil || w.delta == nil {
 		return len(p), nil
 	}
 	return w.delta.Write(p)
 }
 
-func (w *chatAssistantFinalStreamWriter) ResetStreamState() {
+func (w *chatAssistantStreamWriter) ResetStreamState() {
 	if w == nil {
 		return
 	}
@@ -1575,20 +1558,20 @@ func (w *chatAssistantFinalStreamWriter) ResetStreamState() {
 	}
 }
 
-func (w *chatAssistantFinalStreamWriter) StreamEmitted() bool {
+func (w *chatAssistantStreamWriter) StreamEmitted() bool {
 	if w == nil || w.delta == nil {
 		return false
 	}
 	return w.delta.StreamEmitted()
 }
 
-type finalStreamFanoutWriter struct {
+type streamFanoutWriter struct {
 	writers []io.Writer
 	mu      sync.Mutex
 	emitted bool
 }
 
-func newFinalStreamFanoutWriter(writers ...io.Writer) io.Writer {
+func newStreamFanoutWriter(writers ...io.Writer) io.Writer {
 	filtered := make([]io.Writer, 0, len(writers))
 	for _, writer := range writers {
 		if writer != nil {
@@ -1598,10 +1581,10 @@ func newFinalStreamFanoutWriter(writers ...io.Writer) io.Writer {
 	if len(filtered) == 0 {
 		return nil
 	}
-	return &finalStreamFanoutWriter{writers: filtered}
+	return &streamFanoutWriter{writers: filtered}
 }
 
-func (w *finalStreamFanoutWriter) Write(p []byte) (int, error) {
+func (w *streamFanoutWriter) Write(p []byte) (int, error) {
 	if w == nil || len(p) == 0 {
 		return len(p), nil
 	}
@@ -1638,7 +1621,7 @@ func (w *finalStreamFanoutWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (w *finalStreamFanoutWriter) ResetStreamState() {
+func (w *streamFanoutWriter) ResetStreamState() {
 	if w == nil {
 		return
 	}
@@ -1655,7 +1638,7 @@ func (w *finalStreamFanoutWriter) ResetStreamState() {
 // ResetBuffer forwards a buffer reset to every fanned-out writer that supports
 // it (e.g. the TTS stream writer), so residual buffered speech does not leak
 // across turns on the streaming chat path.
-func (w *finalStreamFanoutWriter) ResetBuffer() {
+func (w *streamFanoutWriter) ResetBuffer() {
 	if w == nil {
 		return
 	}
@@ -1666,7 +1649,7 @@ func (w *finalStreamFanoutWriter) ResetBuffer() {
 	}
 }
 
-func (w *finalStreamFanoutWriter) StreamEmitted() bool {
+func (w *streamFanoutWriter) StreamEmitted() bool {
 	if w == nil {
 		return false
 	}
@@ -1716,29 +1699,6 @@ func (s *Server) toolCallSpeechText(event RunEvent) string {
 		return ""
 	}
 	return BuildSpeechText(event.Content, s.runtime.config)
-}
-
-func (s *Server) newRunProgressSpeaker() *progressSpeaker {
-	cfg := progressSpeakerConfig{}
-	if s.logger != nil {
-		cfg.Logf = func(format string, args ...any) {
-			s.logger.Error(format, args...)
-		}
-	}
-	return newProgressSpeaker(func(ctx context.Context, text string) error {
-		if strings.TrimSpace(text) == "" || s.audioClient == nil {
-			return nil
-		}
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		ttsCtx, cancel := context.WithTimeout(ctx, toolContentSpeechTimeout)
-		defer cancel()
-		if s.logger != nil {
-			s.logger.Info("Progress TTS playback: %q", text)
-		}
-		return s.speakText(ttsCtx, text, 0)
-	}, cfg)
 }
 
 func (s *Server) currentTTSManager() *tts.ProviderManager {
@@ -1897,7 +1857,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func shouldStreamEventMessage(msg Message) bool {
-	return strings.TrimSpace(msg.Type) != ""
+	_, ok := normalizeChatHistoryMessage(msg)
+	return ok
 }
 
 func (s *Server) handleEpisodes(w http.ResponseWriter, r *http.Request) {
@@ -2717,7 +2678,11 @@ func legacyToolOutputLooksLikeError(output string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(output)), "error:")
 }
 
-func (s *Server) appendHistory(message Message) {
+func (s *Server) appendHistory(message Message) (Message, bool) {
+	message, ok := normalizeChatHistoryMessage(message)
+	if !ok {
+		return Message{}, false
+	}
 	s.mu.Lock()
 	s.history = append(s.history, message)
 	s.mu.Unlock()
@@ -2728,6 +2693,7 @@ func (s *Server) appendHistory(message Message) {
 	} else if s.eventBroadcaster != nil {
 		s.eventBroadcaster.Broadcast(message)
 	}
+	return message, true
 }
 
 // AppendHistory appends a message through the server history path so persistent
@@ -2744,6 +2710,11 @@ func (s *Server) HistoryStore() *ChatHistoryStore {
 
 // BroadcastMessage sends a message to all SSE subscribers.
 func (s *Server) BroadcastMessage(msg Message) {
+	var ok bool
+	msg, ok = normalizeChatHistoryMessage(msg)
+	if !ok {
+		return
+	}
 	if s.eventBroadcaster != nil {
 		s.eventBroadcaster.Broadcast(msg)
 	}
@@ -2775,13 +2746,15 @@ func (s *Server) loadHistoryFromDisk() {
 		return
 	}
 	for _, evt := range events {
-		s.history = append(s.history, chatMessageFromSessionEvent(evt))
+		if message, ok := chatMessageFromSessionEvent(evt); ok {
+			s.history = append(s.history, message)
+		}
 	}
 }
 
-func chatMessageFromSessionEvent(evt SessionEvent) Message {
+func chatMessageFromSessionEvent(evt SessionEvent) (Message, bool) {
 	ts, _ := time.Parse(time.RFC3339Nano, evt.Ts)
-	return Message{
+	message := Message{
 		Type:         chatMessageTypeFromSessionEvent(evt),
 		Role:         evt.Role,
 		EpisodeID:    evt.EpisodeID,
@@ -2798,6 +2771,7 @@ func chatMessageFromSessionEvent(evt SessionEvent) Message {
 		Timestamp:    ts,
 		IsError:      evt.IsError,
 	}
+	return normalizeChatHistoryMessage(message)
 }
 
 func chatMessageTypeFromSessionEvent(evt SessionEvent) string {
@@ -2810,10 +2784,6 @@ func chatMessageTypeFromSessionEvent(evt SessionEvent) string {
 		return runEventToolCall
 	case "tool_result":
 		return "tool_result"
-	case "role_output":
-		return "role_output"
-	case "episode_status":
-		return "episode_status"
 	}
 
 	switch strings.TrimSpace(evt.Role) {
@@ -2823,14 +2793,9 @@ func chatMessageTypeFromSessionEvent(evt SessionEvent) string {
 		return "assistant"
 	case "tool":
 		return "tool_result"
-	case "system":
-		return "system"
 	}
 
-	if typ := strings.TrimSpace(evt.Type); typ != "" {
-		return typ
-	}
-	return "system"
+	return ""
 }
 
 func (s *Server) resolveRequestInput(req ChatRequest) (TurnInput, []MessageAttachment, error) {

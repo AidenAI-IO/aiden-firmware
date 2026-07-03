@@ -205,11 +205,11 @@ func TestPlanCompactionCountFallbackNeverOpensOnForbiddenEvent(t *testing.T) {
 
 func TestSnapToLegalCutAtOrBeforePrefersLargestBeforeTarget(t *testing.T) {
 	events := []SessionEvent{
-		evt("u0", "user_input", "user", "hi"),       // 0 legal
+		evt("u0", "user_input", "user", "hi"),            // 0 legal
 		evt("a0", "assistant_output", "assistant", "ok"), // 1 legal
-		evt("t0", "tool_result", "tool", "r"),       // 2 forbidden
-		evt("t1", "tool_result", "tool", "r"),       // 3 forbidden
-		evt("u1", "user_input", "user", "hi"),       // 4 legal
+		evt("t0", "tool_result", "tool", "r"),            // 2 forbidden
+		evt("t1", "tool_result", "tool", "r"),            // 3 forbidden
+		evt("u1", "user_input", "user", "hi"),            // 4 legal
 	}
 	// target 3 (forbidden) → largest legal cut <= 3 and > start(0) is index 1.
 	if got := snapToLegalCutAtOrBefore(events, 0, len(events), 3); got != 1 {

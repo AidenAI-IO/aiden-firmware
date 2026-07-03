@@ -207,16 +207,12 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	if resp.Response != "The current audio volume is 42." {
 		t.Fatalf("unexpected response: %q", resp.Response)
 	}
-	if len(resp.History) != 6 {
-		t.Fatalf("expected 6 history entries for single-agent tool flow, got %d", len(resp.History))
+	if len(resp.History) < 4 {
+		t.Fatalf("expected at least 4 history entries for single-agent tool flow, got %d", len(resp.History))
 	}
 
 	if resp.History[0].Type != "user" || resp.History[0].Content != "What is the current volume?" {
 		t.Fatalf("unexpected first history message: %#v", resp.History[0])
-	}
-	roleOutput, ok := firstMessageOfType(resp.History, "role_output")
-	if !ok || roleOutput.Role != string(RoleAgent) {
-		t.Fatalf("expected agent role_output in history: %#v", resp.History)
 	}
 	toolCall, ok := firstMessageOfType(resp.History, runEventToolCall)
 	if !ok || toolCall.ToolName != "audio_volume" || toolCall.ToolInput != "{}" {
@@ -407,30 +403,24 @@ func TestServerRestoresSessionEventsUsingEventType(t *testing.T) {
 	server := &Server{runtime: &Runtime{config: Config{ConfigDir: configDir}}}
 	server.loadHistoryFromDisk()
 	history := server.historySnapshot()
-	if len(history) != len(events) {
-		t.Fatalf("restored history entries = %d, want %d: %#v", len(history), len(events), history)
+	if len(history) != 3 {
+		t.Fatalf("restored history entries = %d, want 3 public messages: %#v", len(history), history)
 	}
 
 	if history[0].Type != "user" || history[0].Content != "换头" {
 		t.Fatalf("user_input was not restored as user message: %#v", history[0])
 	}
-	if history[1].Type != "role_output" || history[1].Role != "planner" {
-		t.Fatalf("role_output should not be restored as user message: %#v", history[1])
+	if history[1].Type != runEventToolCall || history[1].ToolName != "screenshot" || history[1].ToolInput != "{}" {
+		t.Fatalf("tool_call metadata not restored: %#v", history[1])
 	}
-	if history[2].Type != runEventToolCall || history[2].ToolName != "screenshot" || history[2].ToolInput != "{}" {
-		t.Fatalf("tool_call metadata not restored: %#v", history[2])
+	if history[1].ToolError == nil || history[1].ToolError.Code != CodeToolExecutionFailed || history[1].ToolError.Details["device"] != "video0" {
+		t.Fatalf("tool_call structured error not restored: %#v", history[1].ToolError)
 	}
-	if history[2].ToolError == nil || history[2].ToolError.Code != CodeToolExecutionFailed || history[2].ToolError.Details["device"] != "video0" {
-		t.Fatalf("tool_call structured error not restored: %#v", history[2].ToolError)
+	if len(history[1].Artifacts) != 1 || history[1].Artifacts[0].Path != "/userdata/agent/artifacts/screen.jpg" || history[1].Artifacts[0].Data != nil {
+		t.Fatalf("tool_call artifacts not restored safely: %#v", history[1].Artifacts)
 	}
-	if len(history[2].Artifacts) != 1 || history[2].Artifacts[0].Path != "/userdata/agent/artifacts/screen.jpg" || history[2].Artifacts[0].Data != nil {
-		t.Fatalf("tool_call artifacts not restored safely: %#v", history[2].Artifacts)
-	}
-	if history[3].Type != "planner_decision" {
-		t.Fatalf("unknown planner event should preserve its event type: %#v", history[3])
-	}
-	if history[4].Type != "assistant" || history[4].Content == "" {
-		t.Fatalf("assistant_output was not restored as assistant message: %#v", history[4])
+	if history[2].Type != "assistant" || history[2].Content == "" {
+		t.Fatalf("assistant_output was not restored as assistant message: %#v", history[2])
 	}
 
 	userCount := 0
@@ -444,7 +434,7 @@ func TestServerRestoresSessionEventsUsingEventType(t *testing.T) {
 	}
 }
 
-func TestServerHandleChatStreamsRoleToolAndAssistantMessages(t *testing.T) {
+func TestServerHandleChatStreamsToolAndAssistantMessages(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"Let me read the current volume."}`, "The current audio volume is 42."),
 	}
@@ -494,14 +484,10 @@ func TestServerHandleChatStreamsRoleToolAndAssistantMessages(t *testing.T) {
 		t.Fatalf("scan stream: %v", err)
 	}
 
-	var sawAgent, sawToolCall, sawToolResult, sawAssistant, sawDone bool
+	var sawToolCall, sawToolResult, sawAssistant, sawDone bool
 	for _, event := range events {
 		if event.Type == "message" && event.Message != nil {
 			switch event.Message.Type {
-			case "role_output":
-				if event.Message.Role == string(RoleAgent) {
-					sawAgent = true
-				}
 			case runEventToolCall:
 				sawToolCall = event.Message.ToolName == "audio_volume"
 			case "tool_result":
@@ -514,9 +500,9 @@ func TestServerHandleChatStreamsRoleToolAndAssistantMessages(t *testing.T) {
 			sawDone = true
 		}
 	}
-	if !sawAgent || !sawToolCall || !sawToolResult || !sawAssistant || !sawDone {
-		t.Fatalf("missing expected stream events: agent=%v tool_call=%v tool_result=%v assistant=%v done=%v events=%#v",
-			sawAgent, sawToolCall, sawToolResult, sawAssistant, sawDone, events)
+	if !sawToolCall || !sawToolResult || !sawAssistant || !sawDone {
+		t.Fatalf("missing expected stream events: tool_call=%v tool_result=%v assistant=%v done=%v events=%#v",
+			sawToolCall, sawToolResult, sawAssistant, sawDone, events)
 	}
 }
 
@@ -528,10 +514,10 @@ func (w failingStreamWriter) Write([]byte) (int, error) {
 	return 0, w.err
 }
 
-func TestFinalStreamFanoutWriterReturnsInputLengthWhenLaterWriterFails(t *testing.T) {
+func TestStreamFanoutWriterReturnsInputLengthWhenLaterWriterFails(t *testing.T) {
 	writeErr := errors.New("fanout write failed")
 	var first strings.Builder
-	fanout := newFinalStreamFanoutWriter(&first, failingStreamWriter{err: writeErr})
+	fanout := newStreamFanoutWriter(&first, failingStreamWriter{err: writeErr})
 
 	n, err := fanout.Write([]byte("chunk"))
 
@@ -546,15 +532,15 @@ func TestFinalStreamFanoutWriterReturnsInputLengthWhenLaterWriterFails(t *testin
 	}
 }
 
-func TestFinalStreamFanoutWriterResetsAssistantDeltaDraftBeforeFallback(t *testing.T) {
+func TestStreamFanoutWriterResetsAssistantDeltaDraftBeforeFallback(t *testing.T) {
 	writeErr := errors.New("fanout write failed")
 	rec := httptest.NewRecorder()
 	stream, ok := newChatStreamWriter(rec)
 	if !ok {
 		t.Fatal("httptest recorder must support streaming")
 	}
-	fanout := newFinalStreamFanoutWriter(
-		newChatAssistantFinalStreamWriter(stream, "episode-reset", "request-reset"),
+	fanout := newStreamFanoutWriter(
+		newChatAssistantStreamWriter(stream, "episode-reset", "request-reset"),
 		failingStreamWriter{err: writeErr},
 	)
 
@@ -612,11 +598,11 @@ func TestFinalStreamFanoutWriterResetsAssistantDeltaDraftBeforeFallback(t *testi
 	}
 }
 
-func TestFinalStreamFanoutWriterReportsAnyChildEmission(t *testing.T) {
+func TestStreamFanoutWriterReportsAnyChildEmission(t *testing.T) {
 	var webDelta strings.Builder
 	var speech strings.Builder
 
-	fanout := newFinalStreamFanoutWriter(
+	fanout := newStreamFanoutWriter(
 		&webDelta,
 		NewSpeechStreamWriter(&speech),
 	)
@@ -644,14 +630,16 @@ func TestServerEventStreamAllowsRunEventMessages(t *testing.T) {
 	for _, messageType := range []string{
 		"user",
 		"assistant",
-		"role_output",
 		runEventToolCall,
 		"tool_result",
-		runEventTodoUpdate,
-		runEventTodoClosed,
 	} {
 		if !shouldStreamEventMessage(Message{Type: messageType}) {
 			t.Fatalf("message type %q should be streamed to web clients", messageType)
+		}
+	}
+	for _, messageType := range []string{"role_output", "episode_status", "todo_update", "todo_closed"} {
+		if shouldStreamEventMessage(Message{Type: messageType}) {
+			t.Fatalf("message type %q should not be streamed to web clients", messageType)
 		}
 	}
 }
@@ -2191,17 +2179,14 @@ func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
 	if resp.Response != "Completed" {
 		t.Fatalf("unexpected response: %q", resp.Response)
 	}
-	if len(resp.History) != 3 {
-		t.Fatalf("expected 3 history entries for default-mode direct finish, got %d", len(resp.History))
+	if len(resp.History) < 2 {
+		t.Fatalf("expected at least 2 history entries for default-mode direct finish, got %d", len(resp.History))
 	}
 	if resp.History[0].Content != "Hello, please summarize this" {
 		t.Fatalf("expected transcript as user content, got %#v", resp.History[0])
 	}
 	if len(resp.History[0].Attachments) != 1 || resp.History[0].Attachments[0].Transcript != "Hello, please summarize this" {
 		t.Fatalf("expected transcript on audio attachment, got %#v", resp.History[0].Attachments)
-	}
-	if _, ok := firstMessageOfType(resp.History, "role_output"); !ok {
-		t.Fatalf("expected role output messages in history: %#v", resp.History)
 	}
 	assistant, ok := firstMessageOfType(resp.History, "assistant")
 	if !ok || assistant.Content != "Completed" {

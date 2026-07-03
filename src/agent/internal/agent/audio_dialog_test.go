@@ -570,108 +570,6 @@ func TestAudioDialogDoesNotSpeakToolCallWithoutContent(t *testing.T) {
 	assertNoProviderTextWithin(t, provider, 200*time.Millisecond)
 }
 
-func TestAudioDialogProgressSpeechDisabledDoesNotSpeakTodoUpdate(t *testing.T) {
-	disabled := false
-	spoken := make(chan string, 1)
-	dialog := &AudioDialog{
-		config: Config{VoiceProgressSpeechEnabled: &disabled},
-	}
-	dialog.setProgressSpeaker(newProgressSpeaker(func(ctx context.Context, text string) error {
-		spoken <- text
-		return nil
-	}, progressSpeakerConfig{Delay: time.Millisecond, MinInterval: -1}))
-
-	todo := TodoState{
-		Mode:      TodoModePlanned,
-		Revision:  1,
-		CurrentID: "todo-1",
-		Items: []TodoItem{{
-			ID:     "todo-1",
-			Text:   "Inspect current screen",
-			Status: TodoInProgress,
-			Source: TodoSourceCommittedPlan,
-		}},
-	}
-	dialog.HandleRunEvent(context.Background(), RunEvent{
-		Type:           runEventTodoUpdate,
-		Content:        "Inspect current screen",
-		Todo:           &todo,
-		SpeechEligible: true,
-	})
-
-	select {
-	case text := <-spoken:
-		t.Fatalf("progress speech was scheduled despite config=false: %q", text)
-	case <-time.After(50 * time.Millisecond):
-	}
-}
-
-func TestProgressSpeechTextForEventOnlySpeaksInProgressCurrentItem(t *testing.T) {
-	todo := TodoState{
-		Mode:      TodoModePlanned,
-		Revision:  1,
-		CurrentID: "step-1",
-		Items: []TodoItem{{
-			ID:     "step-1",
-			Text:   "Inspect current screen",
-			Status: TodoDone,
-			Source: TodoSourceCommittedPlan,
-		}},
-	}
-	if text, ok := progressSpeechTextForEvent(RunEvent{Type: runEventTodoUpdate, Content: "Inspect current screen", Todo: &todo, SpeechEligible: true}); ok {
-		t.Fatalf("done todo should not be spoken, got %q", text)
-	}
-	todo.Items[0].Status = TodoInProgress
-	if text, ok := progressSpeechTextForEvent(RunEvent{Type: runEventTodoUpdate, Content: "Inspect current screen", Todo: &todo}); ok {
-		t.Fatalf("in-progress todo without speech eligibility should not be spoken, got %q", text)
-	}
-	text, ok := progressSpeechTextForEvent(RunEvent{Type: runEventTodoUpdate, Content: "Inspect current screen", Todo: &todo, SpeechEligible: true})
-	if !ok || text != "Inspect current screen" {
-		t.Fatalf("in-progress todo speech = %q ok=%v", text, ok)
-	}
-}
-
-func TestProgressSpeakerLatestWins(t *testing.T) {
-	spoken := make(chan string, 2)
-	speaker := newProgressSpeaker(func(ctx context.Context, text string) error {
-		spoken <- text
-		return nil
-	}, progressSpeakerConfig{Delay: 20 * time.Millisecond, MinInterval: -1})
-	speaker.Schedule(context.Background(), "first")
-	time.Sleep(5 * time.Millisecond)
-	speaker.Schedule(context.Background(), "second")
-
-	select {
-	case text := <-spoken:
-		if text != "second" {
-			t.Fatalf("spoken text = %q, want latest value", text)
-		}
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("progress speaker did not speak latest pending text")
-	}
-	select {
-	case text := <-spoken:
-		t.Fatalf("unexpected extra progress speech: %q", text)
-	case <-time.After(50 * time.Millisecond):
-	}
-}
-
-func TestProgressSpeakerCancelDropsPending(t *testing.T) {
-	spoken := make(chan string, 1)
-	speaker := newProgressSpeaker(func(ctx context.Context, text string) error {
-		spoken <- text
-		return nil
-	}, progressSpeakerConfig{Delay: 30 * time.Millisecond, MinInterval: -1})
-	speaker.Schedule(context.Background(), "pending")
-	speaker.Cancel()
-
-	select {
-	case text := <-spoken:
-		t.Fatalf("pending progress speech was not canceled: %q", text)
-	case <-time.After(80 * time.Millisecond):
-	}
-}
-
 func TestAudioDialogStreamingSpeechErrorDoesNotHideWaitForWakeupRequest(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleToolResponses("wait_for_wakeup", `{"__arg1":"{\"reason\":\"user asked\"}"}`, "I will wait for the next wakeup."),
@@ -866,10 +764,6 @@ func TestAudioDialogProcessUtteranceAppendsToHistoryStore(t *testing.T) {
 	if len(userMessage.Attachments) != 0 {
 		t.Fatalf("user voice message should not include audio attachments: %#v", userMessage.Attachments)
 	}
-	roleOutput, ok := firstAudioDialogTestMessageOfType(messages, "role_output")
-	if !ok || roleOutput.Source != "voice" || roleOutput.Content != "voice reply" {
-		t.Fatalf("role_output message = %#v in %#v", roleOutput, messages)
-	}
 	assistantMessage, ok := firstAudioDialogTestMessageOfType(messages, "assistant")
 	if !ok || assistantMessage.Source != "voice" || assistantMessage.Content != "voice reply" {
 		t.Fatalf("assistant message = %#v in %#v", assistantMessage, messages)
@@ -906,7 +800,7 @@ func TestAudioDialogRunAgentTurnAppendsRunEventsToVoiceHistory(t *testing.T) {
 		t.Fatalf("RunAgentTurn() error = %v", err)
 	}
 
-	for _, wantType := range []string{"role_output", runEventToolCall, "tool_result"} {
+	for _, wantType := range []string{runEventToolCall, "tool_result", "assistant"} {
 		message, ok := firstAudioDialogTestMessageOfType(messages, wantType)
 		if !ok {
 			t.Fatalf("missing voice history message type %q: %#v", wantType, messages)
@@ -917,7 +811,7 @@ func TestAudioDialogRunAgentTurnAppendsRunEventsToVoiceHistory(t *testing.T) {
 	}
 }
 
-func TestAudioDialogRunAgentTurnConsumesQueuedSteer(t *testing.T) {
+func TestAudioDialogRunAgentTurnQueuesButDoesNotConsumeSteer(t *testing.T) {
 	firstCallStarted := make(chan struct{})
 	releaseFirstCall := make(chan struct{})
 	model := &blockingFirstCallModel{
@@ -983,18 +877,11 @@ func TestAudioDialogRunAgentTurnConsumesQueuedSteer(t *testing.T) {
 	if runResult.err != nil {
 		t.Fatalf("RunAgentTurn() error = %v", runResult.err)
 	}
-	if runResult.result.Output != "steered answer" {
-		t.Fatalf("Output = %q, want steered answer", runResult.result.Output)
+	if runResult.result.Output != "first answer" {
+		t.Fatalf("Output = %q, want first answer", runResult.result.Output)
 	}
-	steerMessage, ok := firstAudioDialogTestMessageOfType(messages, "steer")
-	if !ok {
-		t.Fatalf("missing steer history message: %#v", messages)
-	}
-	if steerMessage.Content != "change direction" {
-		t.Fatalf("steer content = %q, want change direction", steerMessage.Content)
-	}
-	if !strings.HasPrefix(steerMessage.RequestID, "voice-") {
-		t.Fatalf("steer request_id = %q, want voice-*", steerMessage.RequestID)
+	if steerMessage, ok := firstAudioDialogTestMessageOfType(messages, "steer"); ok {
+		t.Fatalf("unexpected steer history message: %#v", steerMessage)
 	}
 	if dialog.QueueSteer(TurnInput{InputText: "too late"}) {
 		t.Fatal("QueueSteer returned true after voice run completed")
@@ -1065,7 +952,7 @@ func TestAudioDialogRejectsSteerAfterRuntimeFinishesBeforeVoiceHistoryPersist(t 
 	}
 }
 
-func TestAudioDialogBeginSteerInterruptWaitsForQueuedCorrection(t *testing.T) {
+func TestAudioDialogBeginSteerInterruptQueuesCorrectionWithoutRuntimeConsumption(t *testing.T) {
 	firstCallStarted := make(chan struct{})
 	releaseFirstCall := make(chan struct{})
 	model := &blockingFirstCallModel{
@@ -1130,11 +1017,11 @@ func TestAudioDialogBeginSteerInterruptWaitsForQueuedCorrection(t *testing.T) {
 	if runResult.err != nil {
 		t.Fatalf("RunAgentTurn() error = %v", runResult.err)
 	}
-	if runResult.result.Output != "corrected answer" {
-		t.Fatalf("Output = %q, want corrected answer", runResult.result.Output)
+	if runResult.result.Output != "stale answer" {
+		t.Fatalf("Output = %q, want stale answer", runResult.result.Output)
 	}
 	if dialog.ResumeSteerInterrupt() {
-		t.Fatal("ResumeSteerInterrupt returned true after interrupted steer was consumed")
+		t.Fatal("ResumeSteerInterrupt returned true after voice run completed")
 	}
 }
 
@@ -1213,7 +1100,7 @@ func TestAudioDialogRunVoiceTurnPersistsUserBeforeRunEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunVoiceTurn() error = %v", err)
 	}
-	if len(messages) < 5 {
+	if len(messages) < 4 {
 		t.Fatalf("expected user, run events, and assistant messages, got %#v", messages)
 	}
 	if messages[0].Type != "user" {
@@ -1222,7 +1109,7 @@ func TestAudioDialogRunVoiceTurnPersistsUserBeforeRunEvents(t *testing.T) {
 	if messages[len(messages)-1].Type != "assistant" {
 		t.Fatalf("last message type = %q, want assistant in %#v", messages[len(messages)-1].Type, messages)
 	}
-	for _, wantType := range []string{runEventToolCall, "tool_result", "role_output"} {
+	for _, wantType := range []string{runEventToolCall, "tool_result", "assistant"} {
 		if _, ok := firstAudioDialogTestMessageOfType(messages, wantType); !ok {
 			t.Fatalf("missing voice history message type %q: %#v", wantType, messages)
 		}

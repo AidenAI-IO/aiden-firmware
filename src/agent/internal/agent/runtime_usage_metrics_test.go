@@ -85,7 +85,8 @@ func TestUsageTrackingModelCapturesFullPromptForTelemetry(t *testing.T) {
 		},
 	}}
 
-	_, err := model.GenerateContent(contextWithTelemetryRole(context.Background(), RolePlanner), messages,
+	ctx := context.WithValue(context.Background(), telemetryPromptContextKey{}, "agent")
+	_, err := model.GenerateContent(ctx, messages,
 		llms.WithTemperature(0.3), llms.WithMaxTokens(123), llms.WithTools(tools))
 	if err != nil {
 		t.Fatalf("GenerateContent() error = %v", err)
@@ -94,8 +95,8 @@ func TestUsageTrackingModelCapturesFullPromptForTelemetry(t *testing.T) {
 	if len(snapshot) != 1 {
 		t.Fatalf("captured prompts = %d, want 1", len(snapshot))
 	}
-	if snapshot[0].Role != string(RolePlanner) {
-		t.Fatalf("captured role = %q, want planner", snapshot[0].Role)
+	if snapshot[0].Role != "agent" {
+		t.Fatalf("captured role = %q, want agent", snapshot[0].Role)
 	}
 	parts, ok := snapshot[0].Input[0]["parts"].([]map[string]interface{})
 	if !ok || len(parts) != 1 || parts[0]["text"] != "full system prompt" {

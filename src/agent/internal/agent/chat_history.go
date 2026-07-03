@@ -48,6 +48,11 @@ func (s *ChatHistoryStore) Append(ctx context.Context, message Message) error {
 	if s == nil || s.rootDir == "" {
 		return nil
 	}
+	var ok bool
+	message, ok = normalizeChatHistoryMessage(message)
+	if !ok {
+		return nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -111,7 +116,9 @@ func (s *ChatHistoryStore) Load(ctx context.Context) ([]Message, error) {
 		}
 		validData = append(validData, line...)
 		validData = append(validData, '\n')
-		messages = append(messages, message)
+		if message, ok := normalizeChatHistoryMessage(message); ok {
+			messages = append(messages, message)
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("scan chat history events: %w", err)

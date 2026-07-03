@@ -431,4 +431,3 @@ func TestMaintainFilesystemMemoryReservesOutputTokens(t *testing.T) {
 		t.Fatalf("expected compression at 4100 tokens (51.25%% of 8k input budget); got no chunks (MaxOutput being ignored?)")
 	}
 }
-

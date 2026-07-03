@@ -23,7 +23,6 @@ type ToolSpec struct {
 	InputMode    string
 	ExampleInput string
 	AgentExposed bool
-	AgentRoles   []RoleName
 }
 
 type ToolSpecs struct {
@@ -57,7 +56,6 @@ type toolSpecMetadata struct {
 	InputMode    string
 	ExampleInput string
 	AgentExposed *bool
-	AgentRoles   []RoleName
 }
 
 var builtInToolSpecMetadata = map[string]toolSpecMetadata{
@@ -140,7 +138,6 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		Category:     "memory",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"type":"procedure","title":"Login flow","content":"...","tags":["login"]}`,
-		AgentRoles:   []RoleName{RolePlanner},
 	},
 	"forget_memory": {
 		Category:     "memory",
@@ -318,23 +315,7 @@ func NewToolSpec(tool langtools.Tool) ToolSpec {
 		InputMode:    defaultString(meta.InputMode, toolInputModeText),
 		ExampleInput: meta.ExampleInput,
 		AgentExposed: agentExposed,
-		AgentRoles:   append([]RoleName{}, meta.AgentRoles...),
 	}
-}
-
-func (spec ToolSpec) AgentExposedToRole(role RoleName) bool {
-	if !spec.AgentExposed {
-		return false
-	}
-	if len(spec.AgentRoles) == 0 {
-		return true
-	}
-	for _, allowed := range spec.AgentRoles {
-		if strings.EqualFold(string(allowed), string(role)) {
-			return true
-		}
-	}
-	return false
 }
 
 func (s *ToolSpecs) Lookup(name string) (ToolSpec, bool) {

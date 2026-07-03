@@ -40,8 +40,6 @@ type AudioDialog struct {
 	speechMu      sync.Mutex
 	outputMu      sync.Mutex
 	activeOutputs map[*activeTTSOutput]struct{}
-	progressMu    sync.Mutex
-	progress      *progressSpeaker
 	runControl    voiceRunControl
 	historyStore  *ChatHistoryStore
 	historyAppend func(Message)
@@ -480,17 +478,8 @@ func (d *AudioDialog) InterruptOutput() {
 	if d == nil {
 		return
 	}
-	d.progressMu.Lock()
-	progress := d.progress
-	d.progressMu.Unlock()
-	if progress != nil {
-		progress.Cancel()
-	}
 
 	outputs := d.snapshotActiveOutputs()
-	if progress != nil || len(outputs) > 0 {
-		log.Printf("[audio] interrupt output requested: active_outputs=%d progress_active=%t\n", len(outputs), progress != nil)
-	}
 	for _, output := range outputs {
 		output.interrupt()
 	}
@@ -616,6 +605,11 @@ func (d *AudioDialog) appendVoiceRunEvent(event RunEvent, requestID string) {
 }
 
 func (d *AudioDialog) appendVoiceHistory(message Message) {
+	var ok bool
+	message, ok = normalizeChatHistoryMessage(message)
+	if !ok {
+		return
+	}
 	if d.historyAppend != nil {
 		d.historyAppend(message)
 		return
@@ -726,7 +720,6 @@ func (d *AudioDialog) RunVoiceTurnWithContext(ctx context.Context, input TurnInp
 	if err != nil {
 		return RunResult{}, err
 	}
-	d.persistVoiceAssistantOutput(result, requestID)
 	return result, nil
 }
 
@@ -735,17 +728,11 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 
 	ctx = d.ConfigureRuntimeTools(ctx, runtime)
 	d.playPromptSound(promptSoundAgentSend, "agent send", true)
+	var finalAssistantEvent *RunEvent
 
 	// Send to LLM
 	log.Printf("[llm] Sending request to provider '%s' (model=%s)...\n",
 		d.config.Model.Provider, d.config.Model.Model)
-
-	progress := d.newRunProgressSpeaker()
-	d.setProgressSpeaker(progress)
-	defer func() {
-		progress.Cancel()
-		d.setProgressSpeaker(nil)
-	}()
 
 	req := RunRequest{
 		Input:          input.InputText,
@@ -755,10 +742,14 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 		RuntimeContext: turnContext.RuntimeContext,
 		MaxTokens:      d.config.VoiceMaxResponseTokensOrDefault(),
 		EventHandler: func(event RunEvent) {
+			if event.Type == "assistant_output" {
+				captured := event
+				finalAssistantEvent = &captured
+				return
+			}
 			d.appendVoiceRunEvent(event, requestID)
 			d.HandleRunEvent(ctx, event)
 		},
-		StreamFinalChunks: true,
 		SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
 			return d.consumePendingSteer(requestID)
 		},
@@ -784,7 +775,7 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 			newStream = stream
 			unregisterStream = unregister
 			defer unregisterStream()
-			req.StreamWriter = newCancelOnFirstWriteWriter(speechStreamWriterForConfig(newStream, d.config), progress.Cancel)
+			req.StreamWriter = speechStreamWriterForConfig(newStream, d.config)
 		}
 	}
 
@@ -799,6 +790,9 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 	}
 	if err != nil {
 		return RunResult{}, fmt.Errorf("LLM request failed: %w", err)
+	}
+	if finalAssistantEvent != nil {
+		d.appendVoiceRunEvent(*finalAssistantEvent, requestID)
 	}
 
 	log.Printf("[llm] Response received\n")
@@ -905,44 +899,12 @@ func (d *AudioDialog) waitForSteerInterrupt(ctx context.Context, requestID strin
 }
 
 func (d *AudioDialog) HandleRunEvent(ctx context.Context, event RunEvent) {
-	if event.Type == runEventTodoUpdate {
-		if !d.config.VoiceProgressSpeechEnabledOrDefault() {
-			return
-		}
-		text, ok := progressSpeechTextForEvent(event)
-		if !ok {
-			return
-		}
-		d.currentProgressSpeaker().Schedule(ctx, text)
-		return
-	}
 	if event.Type != runEventToolCall || !d.config.VoiceToolCallSpeechOrDefault() || event.ToolName == toolWaitForWakeup {
 		return
 	}
 	if text := BuildSpeechText(event.Content, d.config); text != "" {
 		go d.SpeakToolContent(text)
 	}
-}
-
-func (d *AudioDialog) newRunProgressSpeaker() *progressSpeaker {
-	return newProgressSpeaker(func(ctx context.Context, text string) error {
-		return d.speak(ctx, text, nil, toolContentSpeechTimeout)
-	}, progressSpeakerConfig{})
-}
-
-func (d *AudioDialog) setProgressSpeaker(speaker *progressSpeaker) {
-	d.progressMu.Lock()
-	defer d.progressMu.Unlock()
-	d.progress = speaker
-}
-
-func (d *AudioDialog) currentProgressSpeaker() *progressSpeaker {
-	d.progressMu.Lock()
-	defer d.progressMu.Unlock()
-	if d.progress == nil {
-		d.progress = d.newRunProgressSpeaker()
-	}
-	return d.progress
 }
 
 func (d *AudioDialog) SpeakToolContent(content string) {
@@ -1091,22 +1053,20 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 	// Send to LLM
 	log.Printf("[llm] Sending request to provider '%s' (model=%s)...\n",
 		d.config.Model.Provider, d.config.Model.Model)
-
-	progress := d.newRunProgressSpeaker()
-	d.setProgressSpeaker(progress)
-	defer func() {
-		progress.Cancel()
-		d.setProgressSpeaker(nil)
-	}()
+	var finalAssistantEvent *RunEvent
 
 	req := RunRequest{
 		Input: text,
 		Turn:  NewTextTurnInput(text, nil),
 		EventHandler: func(event RunEvent) {
+			if event.Type == "assistant_output" {
+				captured := event
+				finalAssistantEvent = &captured
+				return
+			}
 			d.appendVoiceRunEvent(event, "")
 			d.HandleRunEvent(ctx, event)
 		},
-		StreamFinalChunks: true,
 	}
 	var newStream *streamSessionWriter
 	unregisterStream := func() {}
@@ -1118,7 +1078,7 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 			newStream = stream
 			unregisterStream = unregister
 			defer unregisterStream()
-			req.StreamWriter = newCancelOnFirstWriteWriter(speechStreamWriterForConfig(newStream, d.config), progress.Cancel)
+			req.StreamWriter = speechStreamWriterForConfig(newStream, d.config)
 		}
 	}
 
@@ -1132,6 +1092,9 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 	}
 	if err != nil {
 		return fmt.Errorf("LLM request failed: %w", err)
+	}
+	if finalAssistantEvent != nil {
+		d.appendVoiceRunEvent(*finalAssistantEvent, "")
 	}
 
 	log.Printf("[llm] Response received\n")
