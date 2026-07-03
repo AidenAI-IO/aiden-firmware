@@ -31,6 +31,7 @@ type AudioDialog struct {
 	sttClient     STTClient
 	ttsManager    *tts.ProviderManager
 	vad           *AudioVAD
+	recordMu      sync.Mutex
 	recordActive  bool
 	sessionID     uint64
 	recordReader  *AudioRecordChunkReader
@@ -164,6 +165,9 @@ func NewAudioDialog(cfg Config) (*AudioDialog, error) {
 
 // StartRecording starts an audio recording session
 func (d *AudioDialog) StartRecording() error {
+	d.recordMu.Lock()
+	defer d.recordMu.Unlock()
+
 	if d.recordActive {
 		return nil
 	}
@@ -195,20 +199,41 @@ func (d *AudioDialog) StartRecording() error {
 		log.Printf("[audio] Persistent record reader unavailable, using per-request reads: %v\n", err)
 	}
 	d.recordText = ""
-	recordSTT, err := beginStreamingSTTSession(context.Background(), d.sttClient, STTStreamConfig{
-		SampleRate: d.config.Audio.SampleRateOrDefault(),
-		Channels:   d.config.Audio.ChannelsOrDefault(),
-		BitWidth:   d.config.Audio.BitWidthOrDefault(),
-	})
-	if err != nil {
-		log.Printf("[stt] streaming upload unavailable, falling back to one-shot STT: %v\n", err)
-	} else if recordSTT != nil {
+	d.recordActive = true
+
+	// Play the cue tone immediately so the user gets fast feedback.
+	d.playPromptSoundAsync(promptSoundRecordingStart, "recording")
+
+	// Start STT streaming session asynchronously — the network handshake
+	// (WebSocket dial + session setup) can take 1-3s and should not delay
+	// the audible cue. Chunks are buffered by uploadRecordChunkToStreamingSTT
+	// which checks currentRecordSTT() and silently drops if not yet ready.
+	sttSessionID := result.SessionID
+	go func() {
+		recordSTT, err := beginStreamingSTTSession(context.Background(), d.sttClient, STTStreamConfig{
+			SampleRate: d.config.Audio.SampleRateOrDefault(),
+			Channels:   d.config.Audio.ChannelsOrDefault(),
+			BitWidth:   d.config.Audio.BitWidthOrDefault(),
+		})
+		if err != nil {
+			log.Printf("[stt] streaming upload unavailable, falling back to one-shot STT: %v\n", err)
+			return
+		}
+		if recordSTT == nil {
+			return
+		}
+		// Guard: if recording was stopped before STT connected, discard.
+		d.recordMu.Lock()
+		stillActive := d.recordActive && d.sessionID == sttSessionID
+		d.recordMu.Unlock()
+		if !stillActive {
+			_ = recordSTT.Close()
+			return
+		}
 		log.Println("[stt] streaming upload enabled for realtime transcription")
 		d.setRecordSTT(recordSTT)
-	}
-	d.recordActive = true
-	// Open the mic before the cue tone so speech right after Enter is captured.
-	d.playPromptSoundAsync(promptSoundRecordingStart, "recording")
+	}()
+
 	return nil
 }
 
@@ -252,21 +277,25 @@ func startRecordingWithRetry(audio *AudioServiceClient, format AudioFormat, retr
 
 // StopRecording stops the current recording session
 func (d *AudioDialog) StopRecording() error {
+	d.recordMu.Lock()
 	if !d.recordActive {
+		d.recordMu.Unlock()
 		return nil
 	}
 
 	sessionID := d.sessionID
 	reader := d.recordReader
 	recordSTT := d.takeRecordSTT()
+	d.recordActive = false
+	d.sessionID = 0
+	d.recordReader = nil
+	d.recordMu.Unlock()
+
 	if recordSTT != nil {
 		defer func() {
 			_ = recordSTT.Close()
 		}()
 	}
-	d.recordActive = false
-	d.sessionID = 0
-	d.recordReader = nil
 
 	if reader != nil {
 		_ = reader.Close()
@@ -280,7 +309,9 @@ func (d *AudioDialog) StopRecording() error {
 		if err != nil {
 			log.Printf("[stt] finalize streaming transcript failed, falling back to one-shot STT: %v\n", err)
 		} else {
+			d.recordMu.Lock()
 			d.recordText = transcript
+			d.recordMu.Unlock()
 		}
 	}
 
@@ -289,25 +320,37 @@ func (d *AudioDialog) StopRecording() error {
 }
 
 func (d *AudioDialog) RecordingActive() bool {
+	d.recordMu.Lock()
+	defer d.recordMu.Unlock()
 	return d.recordActive
 }
 
 // ReadRecordChunk reads a PCM chunk from the recording session
 func (d *AudioDialog) ReadRecordChunk(timeoutMs uint32) (*AudioChunkResult, error) {
+	d.recordMu.Lock()
 	if !d.recordActive || d.sessionID == 0 {
+		d.recordMu.Unlock()
 		return nil, fmt.Errorf("recording is not active")
 	}
-	if d.recordReader != nil {
-		chunk, err := d.recordReader.Read(timeoutMs)
+	reader := d.recordReader
+	sessionID := d.sessionID
+	d.recordMu.Unlock()
+
+	if reader != nil {
+		chunk, err := reader.Read(timeoutMs)
 		if err == nil {
 			d.uploadRecordChunkToStreamingSTT(chunk)
 			return chunk, nil
 		}
 		log.Printf("[audio] Persistent record reader failed, falling back to per-request reads: %v\n", err)
-		_ = d.recordReader.Close()
-		d.recordReader = nil
+		d.recordMu.Lock()
+		if d.recordReader == reader {
+			_ = d.recordReader.Close()
+			d.recordReader = nil
+		}
+		d.recordMu.Unlock()
 	}
-	chunk, err := d.audioClient.ReadRecordChunk(d.sessionID, timeoutMs)
+	chunk, err := d.audioClient.ReadRecordChunk(sessionID, timeoutMs)
 	if err == nil {
 		d.uploadRecordChunkToStreamingSTT(chunk)
 	}
@@ -644,8 +687,10 @@ func (d *AudioDialog) consumeRecordingTranscript() string {
 	if d == nil {
 		return ""
 	}
+	d.recordMu.Lock()
 	transcript := strings.TrimSpace(d.recordText)
 	d.recordText = ""
+	d.recordMu.Unlock()
 	return transcript
 }
 

@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <mutex>
 #include <fcntl.h>
 #include <linux/v4l2-subdev.h>
 #include <linux/videodev2.h>
@@ -26,16 +27,19 @@ extern "C" {
 
 namespace aiden {
 
-static std::atomic<int> sys_init_count{0};
+static std::mutex sys_init_mutex;
+static int sys_init_count = 0;
 
 static void ensure_sys_init() {
-    if (sys_init_count.fetch_add(1) == 0) {
+    std::lock_guard<std::mutex> lock(sys_init_mutex);
+    if (sys_init_count++ == 0) {
         RK_MPI_SYS_Init();
     }
 }
 
 static void maybe_sys_deinit() {
-    if (sys_init_count.fetch_sub(1) == 1) {
+    std::lock_guard<std::mutex> lock(sys_init_mutex);
+    if (--sys_init_count == 0) {
         RK_MPI_SYS_Exit();
     }
 }
@@ -625,7 +629,10 @@ bool AudioCapture::init(const AudioConfig& config) {
     impl_->attr.u32ChnCnt = 2;
 
     RK_S32 ret = RK_MPI_AI_SetPubAttr(impl_->dev_id, &impl_->attr);
-    if (ret != RK_SUCCESS) return false;
+    if (ret != RK_SUCCESS) {
+        maybe_sys_deinit();
+        return false;
+    }
 
     // RV1106 mixer: enable loopback and set ADC volume
     RK_MPI_AMIX_SetControl(impl_->dev_id, "I2STDM Digital Loopback Mode", (char*)"Mode2");
@@ -633,7 +640,10 @@ bool AudioCapture::init(const AudioConfig& config) {
     RK_MPI_AMIX_SetControl(impl_->dev_id, "ADC ALC Right Volume", (char*)"22");
 
     ret = RK_MPI_AI_Enable(impl_->dev_id);
-    if (ret != RK_SUCCESS) return false;
+    if (ret != RK_SUCCESS) {
+        maybe_sys_deinit();
+        return false;
+    }
 
     // Set channel param — s32UsrFrmDepth must be > 0 for GetFrame to work
     AI_CHN_PARAM_S chnParam;
@@ -642,7 +652,11 @@ bool AudioCapture::init(const AudioConfig& config) {
     RK_MPI_AI_SetChnParam(impl_->dev_id, impl_->chn_id, &chnParam);
 
     ret = RK_MPI_AI_EnableChn(impl_->dev_id, impl_->chn_id);
-    if (ret != RK_SUCCESS) return false;
+    if (ret != RK_SUCCESS) {
+        RK_MPI_AI_Disable(impl_->dev_id);
+        maybe_sys_deinit();
+        return false;
+    }
 
     RK_MPI_AI_SetVolume(impl_->dev_id, 100);
     RK_MPI_AI_SetTrackMode(impl_->dev_id, AUDIO_TRACK_NORMAL);
@@ -835,7 +849,7 @@ bool AudioPlayer::play(const void* data, uint32_t length) {
     RK_S32 ret = RK_MPI_SYS_CreateMB(&frame.pMbBlk, &extConfig);
     if (ret != RK_SUCCESS) return false;
 
-    ret = RK_MPI_AO_SendFrame(impl_->dev_id, impl_->chn_id, &frame, -1);
+    ret = RK_MPI_AO_SendFrame(impl_->dev_id, impl_->chn_id, &frame, 100);
 
     RK_MPI_MB_ReleaseMB(frame.pMbBlk);
     return ret == RK_SUCCESS;

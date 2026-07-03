@@ -6,11 +6,10 @@
 namespace aiden {
 
 AudioPlaybackSession::AudioPlaybackSession(uint64_t session_id, const AudioFormat& fmt)
-    : session_id_(session_id), fmt_(fmt), stopped_(false), final_received_(false) {}
+    : session_id_(session_id), fmt_(fmt), stopped_(false), final_received_(false), joined_(false) {}
 
 AudioPlaybackSession::~AudioPlaybackSession() {
     stop();
-    if (playback_thread_.joinable()) playback_thread_.join();
 }
 
 bool AudioPlaybackSession::start() {
@@ -31,8 +30,12 @@ bool AudioPlaybackSession::start() {
 
 void AudioPlaybackSession::stop() {
     if (stopped_.exchange(true)) return;
-    player_.stop();
     cv_.notify_all();
+    std::lock_guard<std::mutex> lock(join_mutex_);
+    if (!joined_ && playback_thread_.joinable()) {
+        playback_thread_.join();
+        joined_ = true;
+    }
 }
 
 bool AudioPlaybackSession::set_volume(int volume) {
@@ -65,7 +68,11 @@ AidenServiceStatus AudioPlaybackSession::push_chunk(const uint8_t* data, size_t 
 }
 
 void AudioPlaybackSession::wait_until_done() {
-    if (playback_thread_.joinable()) playback_thread_.join();
+    std::lock_guard<std::mutex> lock(join_mutex_);
+    if (!joined_ && playback_thread_.joinable()) {
+        playback_thread_.join();
+        joined_ = true;
+    }
 }
 
 void AudioPlaybackSession::playback_loop() {
@@ -83,6 +90,7 @@ void AudioPlaybackSession::playback_loop() {
                 fprintf(stderr,
                         "[audio_service] playback session %llu interrupted before drain completed\n",
                         static_cast<unsigned long long>(session_id_));
+                player_.stop();
                 return;
             }
 
@@ -106,6 +114,7 @@ void AudioPlaybackSession::playback_loop() {
                 fprintf(stderr,
                         "[audio_service] playback session %llu interrupted during final drain\n",
                         static_cast<unsigned long long>(session_id_));
+                player_.stop();
                 return;
             }
             fprintf(stderr,
@@ -115,13 +124,12 @@ void AudioPlaybackSession::playback_loop() {
         }
 
         if (!chunk.empty()) {
-            if (!player_.play(chunk.data(), static_cast<uint32_t>(chunk.size()))) {
-                fprintf(stderr,
-                        "[audio_service] playback session %llu: AudioPlayer::play failed (chunk=%zu)\n",
-                        static_cast<unsigned long long>(session_id_),
-                        chunk.size());
-            } else {
-                last_played_chunk_bytes = chunk.size();
+            while (!stopped_.load()) {
+                if (player_.play(chunk.data(), static_cast<uint32_t>(chunk.size()))) {
+                    last_played_chunk_bytes = chunk.size();
+                    break;
+                }
+                // SendFrame uses 100ms timeout; retry until stopped or success.
             }
         }
     }
@@ -131,6 +139,9 @@ void AudioPlaybackSession::playback_loop() {
                 "[audio_service] playback session %llu interrupted\n",
                 static_cast<unsigned long long>(session_id_));
     }
+
+    // Tear down hardware from the same thread that called SendFrame — safe.
+    player_.stop();
 }
 
 }  // namespace aiden
