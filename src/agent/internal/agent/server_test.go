@@ -265,9 +265,37 @@ func TestServerPersistsChatHistoryWithEpisodeReference(t *testing.T) {
 		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
 	}
 
-	var resp ChatResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
+	var startResp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&startResp); err != nil {
+		t.Fatalf("decode start response: %v", err)
+	}
+	requestID := startResp["request_id"]
+	if requestID == "" {
+		t.Fatalf("missing request_id in response: %#v", startResp)
+	}
+
+	// Poll for result
+	var resp ChatResultResponse
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		resultReq := httptest.NewRequest(http.MethodGet, "/api/chat/result?request_id="+requestID, nil)
+		resultRec := httptest.NewRecorder()
+		server.handleChatResult(resultRec, resultReq)
+		if resultRec.Code != http.StatusOK {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		if err := json.NewDecoder(resultRec.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode result response: %v", err)
+		}
+		if resp.Status == "complete" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if resp.Status != "complete" {
+		t.Fatalf("result never completed: status=%q", resp.Status)
 	}
 	assistant, ok := firstMessageOfType(resp.History, "assistant")
 	if !ok || assistant.EpisodeID == "" {
