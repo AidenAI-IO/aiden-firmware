@@ -28,7 +28,6 @@ type AgentLoop struct {
 	InputAttachments       []InputAttachment
 	Recorder               *EpisodeRecorder
 	ScreenshotPruning      ScreenshotPruningConfig
-	VisualArtifacts        *visualArtifactStore
 	EnvironmentBridge      *EnvironmentBridgeClient
 	EnvironmentBridgeTools []string
 	SteerInterrupt         func() <-chan struct{}
@@ -59,9 +58,6 @@ func NewAgentLoop(
 }
 
 func (l *AgentLoop) Run(ctx context.Context, input string, options ...chains.ChainCallOption) (string, error) {
-	if l.VisualArtifacts != nil {
-		defer l.VisualArtifacts.Close()
-	}
 	inputs, err := loadAgentLoopInputs(ctx, l.Memory, input)
 	if err != nil {
 		return "", err
@@ -88,7 +84,6 @@ func (l *AgentLoop) Run(ctx context.Context, input string, options ...chains.Cha
 		Tools:             agentTools,
 		OutputKey:         agentLoopOutputKey,
 		ScreenshotPruning: l.ScreenshotPruning,
-		VisualArtifacts:   l.VisualArtifacts,
 	}
 	callOptions := chains.GetLLMCallOptions(options...)
 
@@ -131,7 +126,6 @@ func (l *AgentLoop) Run(ctx context.Context, input string, options ...chains.Cha
 			Callback:               l.CallbacksHandler,
 			EnvironmentBridge:      l.EnvironmentBridge,
 			EnvironmentBridgeTools: l.EnvironmentBridgeTools,
-			VisualArtifacts:        l.VisualArtifacts,
 		})
 		if toolExecution.Error != nil {
 			return "", toolExecution.Error

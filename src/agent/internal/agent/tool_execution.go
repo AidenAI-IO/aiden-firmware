@@ -39,7 +39,6 @@ type ToolCallExecution struct {
 	Callback               callbacks.Handler
 	EnvironmentBridge      *EnvironmentBridgeClient
 	EnvironmentBridgeTools []string // Tool name globs to forward; empty forwards nothing (see shouldForwardToEnvironmentBridge)
-	VisualArtifacts        *visualArtifactStore
 }
 
 type ToolCallExecutionResult struct {
@@ -261,24 +260,6 @@ func runAfterToolCallHook(ctx context.Context, execution ToolCallExecution, call
 		result = normalizeToolResult(execution.After(ctx, call, result))
 	} else {
 		result = normalizeToolResult(DefaultAfterToolCall(ctx, call, result))
-	}
-	if execution.VisualArtifacts != nil && call.Spec.Tool != nil {
-		if visual, ok := call.Spec.Tool.(visualObservationTool); ok && visual.ReturnsVisualObservation() {
-			output, externalized, err := execution.VisualArtifacts.ExternalizeObservation(result.Output)
-			if err != nil {
-				msg := "failed to store visual artifact: " + err.Error()
-				result.Error = NewToolError(CodeToolExecutionFailed, msg)
-				result.Output = msg
-				result.Summary = result.Output
-			} else if externalized {
-				result.Output = output
-				if summary, ok := compactScreenshotObservation(call.Spec.Name, output); ok {
-					result.Summary = summary
-				} else {
-					result.Summary = compactToolObservation(output)
-				}
-			}
-		}
 	}
 	if handler, ok := execution.Callback.(toolExecutionHookHandler); ok {
 		result = normalizeToolResult(handler.AfterToolCall(ctx, call, result))
