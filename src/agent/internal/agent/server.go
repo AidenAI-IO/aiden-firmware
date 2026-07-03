@@ -511,9 +511,10 @@ func isLoopbackServerAddr(addr string) bool {
 }
 
 // handleChat handles chat requests.
-// When req.RequestID is present, runs asynchronously: returns {request_id} immediately,
+// Runs asynchronously: generates request_id if not provided, returns {request_id} immediately,
 // agent runs in a background goroutine, and intermediate tool_call messages become
 // available via GET /api/chat/result?request_id=xxx&offset=N.
+// For streaming responses, set Accept: application/x-ndjson or X-Aiden-Stream: ndjson.
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
