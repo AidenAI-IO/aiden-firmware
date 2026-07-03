@@ -295,8 +295,19 @@ TEST_CASE("config web exposes live agent logs") {
     const std::string html = html_buffer.str();
 
     CHECK(source.find("\"/api/agent/logs\"") != std::string::npos);
+    CHECK(source.find("\"/api/logs/export\"") != std::string::npos);
     CHECK(source.find("handle_get_agent_log") != std::string::npos);
+    CHECK(source.find("handle_export_support_logs") != std::string::npos);
     CHECK(source.find("read_agent_log_snapshot") != std::string::npos);
+    CHECK(source.find("latest_episode_yaml_path") != std::string::npos);
+    CHECK(source.find("latest_llm_log_path") != std::string::npos);
+    CHECK(source.find("copy_regular_file_tail") != std::string::npos);
+    CHECK(source.find("kSupportLogHttpMaxBytes") != std::string::npos);
+    CHECK(source.find("fallback_tar_path") != std::string::npos);
+    CHECK(source.find("archive is not gzip") != std::string::npos);
+    CHECK(source.find("\"langfuse.yaml\"") != std::string::npos);
+    CHECK(source.find("\"agent.log\"") != std::string::npos);
+    CHECK(source.find("\"http.log\"") != std::string::npos);
     CHECK(source.find("\"agent_log\"") != std::string::npos);
     CHECK(source.find("\"size_bytes\"") != std::string::npos);
     CHECK(source.find("\"truncated\"") != std::string::npos);
@@ -307,6 +318,11 @@ TEST_CASE("config web exposes live agent logs") {
     CHECK(html.find("agentLogMeta") != std::string::npos);
     CHECK(html.find("refreshAgentLog") != std::string::npos);
     CHECK(html.find("/api/agent/logs") != std::string::npos);
+    CHECK(html.find("exportLogs") != std::string::npos);
+    CHECK(html.find("fetch('/api/logs/export')") != std::string::npos);
+    CHECK(html.find("Failed to export logs.") != std::string::npos);
+    CHECK(html.find("/api/logs/export") != std::string::npos);
+    CHECK(html.find("aiden-logs.tar.gz") != std::string::npos);
     CHECK(html.find("setInterval(function(){refreshAgentLog(false);},2000)") != std::string::npos);
 }
 
@@ -1272,6 +1288,14 @@ TEST_CASE("config web exposes a single system env editor backed by the env file"
     CHECK(html.find("system_env_content") != std::string::npos);
     CHECK(html.find("textarea.system-env-editor{min-height:180px}") != std::string::npos);
     CHECK(html.find("<textarea id=\\\"system_env_content\\\" class=\\\"system-env-editor\\\"") != std::string::npos);
+    CHECK(html.find("id=\\\"comment-system_env\\\"") != std::string::npos);
+    CHECK(html.find("onclick=\\\"toggleSystemEnvComment()\\\"") != std::string::npos);
+    CHECK(html.find("function toggleSystemEnvComment()") != std::string::npos);
+    CHECK(html.find("function handleSystemEnvEditorKeydown(event)") != std::string::npos);
+    CHECK(html.find("event.key==='/'") != std::string::npos);
+    CHECK(html.find("function isCommentedSystemEnvLine(line){return /^\\\\s*#/.test(line);}") != std::string::npos);
+    CHECK(html.find("function replaceSystemEnvSelection(el,range,text)") != std::string::npos);
+    CHECK(html.find("document.execCommand('insertText',false,text)") != std::string::npos);
     CHECK(html.find("saveSystemEnv") != std::string::npos);
     CHECK(html.find("system_proxy") == std::string::npos);
     CHECK(html.find("section-proxy") == std::string::npos);

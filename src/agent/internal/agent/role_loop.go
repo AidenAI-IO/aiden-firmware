@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/tmc/langchaingo/schema"
 )
@@ -79,6 +80,7 @@ type executorTurnResult struct {
 	Step            *schema.AgentStep
 	InvalidMetaStep *schema.AgentStep
 	ToolError       *ToolError
+	ToolDuration    time.Duration
 }
 
 func plannerCommitRequiredTurn(action schema.AgentAction) plannerTurnResult {

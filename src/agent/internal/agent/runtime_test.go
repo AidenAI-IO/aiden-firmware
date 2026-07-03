@@ -294,6 +294,7 @@ func TestRuntimeRunRestoresHotWindowHistoryAsChatMessages(t *testing.T) {
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
 	)
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	if _, err := runtime.Run(ctx, RunRequest{Input: "继续上一轮"}); err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -345,13 +346,15 @@ func TestRuntimeRunContinuesWhenPersistedMemoryCannotLoad(t *testing.T) {
 		t.Fatal(err)
 	}
 	model := &scriptedModel{responses: roleDirectResponses("ok")}
+	manager := NewMemoryManager(memoryDir)
 	runtime := NewRuntimeWithDeps(
 		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
 		&testModelResolver{model: model},
-		NewMemoryManager(memoryDir),
+		manager,
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
 	)
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	result, err := runtime.Run(context.Background(), RunRequest{Input: "hello"})
 	if err != nil {
@@ -588,6 +591,120 @@ func TestRuntimeRunAsyncEpisodeMaintenanceDoesNotBlock(t *testing.T) {
 	case <-plane.started:
 	case <-time.After(time.Second):
 		t.Fatal("async episode maintenance did not start")
+	}
+}
+
+type capturingEpisodePlane struct {
+	episode       TaskEpisode
+	retrieveDelay time.Duration
+}
+
+func (p *capturingEpisodePlane) Retrieve(context.Context, MemoryRetrieveRequest) (MemoryContext, error) {
+	if p.retrieveDelay > 0 {
+		time.Sleep(p.retrieveDelay)
+	}
+	return MemoryContext{}, nil
+}
+
+func (p *capturingEpisodePlane) NewEpisodeRecorder(req MemoryRetrieveRequest, retrieved MemoryContext) *EpisodeRecorder {
+	return NewEpisodeRecorder(req, retrieved)
+}
+
+func (p *capturingEpisodePlane) CommitEpisode(_ context.Context, episode TaskEpisode) error {
+	p.episode = episode
+	return nil
+}
+
+func TestRuntimeRunCommitsTimingEventsBeforeEpisodeCommit(t *testing.T) {
+	plane := &capturingEpisodePlane{retrieveDelay: 20 * time.Millisecond}
+	model := &scriptedModel{responses: roleToolResponses("echo", `{"__arg1":"hello"}`, "ok")}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", MaxIterations: 3},
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{
+			"echo": &stubTool{name: "echo", description: "Echo.", output: "tool output"},
+		}},
+		NewSkillIndex(),
+	)
+	runtime.memoryPlane = plane
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "use echo"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "ok" {
+		t.Fatalf("output = %q, want ok", result.Output)
+	}
+
+	var (
+		hasSessionBegin   bool
+		hasMemoryRetrieve bool
+		startByIteration  = map[int]int{}
+		endByIteration    = map[int]int{}
+	)
+	for index, event := range plane.episode.Events {
+		switch event.Type {
+		case runEventSessionBegin:
+			hasSessionBegin = true
+		case runEventMemoryRetrieve:
+			hasMemoryRetrieve = true
+		case runEventIterationStart:
+			startByIteration[eventMetadataInt(event, "iteration")] = index
+		case runEventIterationEnd:
+			endByIteration[eventMetadataInt(event, "iteration")] = index
+		}
+	}
+	if !hasSessionBegin {
+		t.Fatal("committed episode missing session_begin event")
+	}
+	if !hasMemoryRetrieve {
+		t.Fatal("committed episode missing memory_retrieve event")
+	}
+	if _, ok := startByIteration[1]; !ok {
+		t.Fatalf("committed episode missing iteration 1 start: %#v", plane.episode.Events)
+	}
+	if _, ok := endByIteration[1]; !ok {
+		t.Fatalf("committed episode missing iteration 1 end: %#v", plane.episode.Events)
+	}
+	if _, ok := startByIteration[2]; !ok {
+		t.Fatalf("committed episode missing iteration 2 start: %#v", plane.episode.Events)
+	}
+	if _, ok := endByIteration[2]; !ok {
+		t.Fatalf("committed episode missing iteration 2 end: %#v", plane.episode.Events)
+	}
+	if endByIteration[1] > startByIteration[2] {
+		t.Fatalf("iteration 1 end index = %d, want before iteration 2 start index %d", endByIteration[1], startByIteration[2])
+	}
+
+	episodeStart := parseEpisodeTime(plane.episode.StartedAt, time.Time{})
+	if episodeStart.IsZero() {
+		t.Fatalf("committed episode missing StartedAt: %#v", plane.episode)
+	}
+	for _, event := range plane.episode.Events {
+		switch event.Type {
+		case runEventSessionBegin, runEventMemoryRetrieve:
+			eventTime := parseEpisodeTime(event.Ts, time.Time{})
+			if eventTime.Before(episodeStart) {
+				t.Fatalf("%s event time %s is before episode start %s", event.Type, eventTime.Format(time.RFC3339Nano), episodeStart.Format(time.RFC3339Nano))
+			}
+		}
+	}
+}
+
+func eventMetadataInt(event TaskEpisodeEvent, key string) int {
+	if event.Metadata == nil {
+		return 0
+	}
+	switch value := event.Metadata[key].(type) {
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case float64:
+		return int(value)
+	default:
+		return 0
 	}
 }
 
@@ -3227,6 +3344,7 @@ func TestRuntimeRunRotatesSessionOnNewBoundary(t *testing.T) {
 		NewSkillIndex(),
 	)
 	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	result, err := runtime.Run(context.Background(), RunRequest{Input: "打开微信"})
 	if err != nil {
@@ -3323,6 +3441,7 @@ func TestRuntimeRunShortGapKeepsActiveSessionWithoutForcedContinuation(t *testin
 		NewSkillIndex(),
 	)
 	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	result, err := runtime.Run(context.Background(), RunRequest{Input: "打开微信"})
 	if err != nil {
@@ -3402,6 +3521,7 @@ func TestRuntimeRunRepairsTruncatedSessionTailBeforeBoundaryRotation(t *testing.
 		NewSkillIndex(),
 	)
 	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	result, err := runtime.Run(context.Background(), RunRequest{Input: "打开微信"})
 	if err != nil {
@@ -3551,6 +3671,7 @@ func TestRuntimeRunRotatesNeutralFollowUpAfterFinishedEpisode(t *testing.T) {
 		NewSkillIndex(),
 	)
 	runtime.memoryPlane = NewFilesystemMemoryPlane(storageDir, manager.extraction, nil)
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	result, err := runtime.Run(context.Background(), RunRequest{Input: "你有什么爱好？"})
 	if err != nil {
