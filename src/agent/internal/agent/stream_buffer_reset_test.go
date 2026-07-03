@@ -37,7 +37,7 @@ func TestResetStreamBufferNoopWithoutSupport(t *testing.T) {
 
 // TestResetStreamBufferReachesTerminalThroughFanout verifies that a buffer
 // reset propagates through the streaming-chat fanout writer down to the TTS
-// leg. handleChatStream wraps the TTS writer chain in a finalStreamFanoutWriter
+// leg. handleChatStream wraps the TTS writer chain in a streamFanoutWriter
 // alongside the SSE writer; without ResetBuffer forwarding here, residual
 // speech would leak across turns on the streaming chat path.
 func TestResetStreamBufferReachesTerminalThroughFanout(t *testing.T) {
@@ -45,7 +45,7 @@ func TestResetStreamBufferReachesTerminalThroughFanout(t *testing.T) {
 	ttsLeg := NewTTSTagStreamWriter(terminal)
 	// The SSE leg has no buffer to reset and must be skipped cleanly.
 	sseLeg := &bytes.Buffer{}
-	fanout := newFinalStreamFanoutWriter(sseLeg, ttsLeg)
+	fanout := newStreamFanoutWriter(sseLeg, ttsLeg)
 
 	resetStreamBuffer(fanout)
 

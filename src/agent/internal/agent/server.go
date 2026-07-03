@@ -1009,7 +1009,6 @@ func (s *Server) handleChatAsync(
 			DeviceEnvironment:       s.bridgeEnvironment(),
 			RuntimeContext:          s.runtimeContext(),
 			EventHandler:            eventHandler,
-			StreamFinalChunks:       true,
 			AsyncEpisodeMaintenance: true,
 			SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
 				return s.consumePendingSteer(requestID)
@@ -1330,7 +1329,6 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		RequestID:               req.RequestID,
 		DeviceEnvironment:       s.bridgeEnvironment(),
 		RuntimeContext:          s.runtimeContext(),
-		StreamFinalChunks:       true,
 		AsyncEpisodeMaintenance: true,
 		SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
 			return s.consumePendingSteer(req.RequestID)
@@ -1354,8 +1352,8 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	var newStream *streamSessionWriter
 	unregisterStreamOutput := func() {}
 	ttsManager := s.currentTTSManager()
-	finalStreamWriters := []io.Writer{
-		newChatAssistantFinalStreamWriter(stream, episodeID, req.RequestID),
+	streamWriters := []io.Writer{
+		newChatAssistantStreamWriter(stream, episodeID, req.RequestID),
 	}
 	if s.runtime.config.VoiceStreamingTTSEnabledOrDefault() && s.audioClient != nil {
 		if ttsManager != nil {
@@ -1369,12 +1367,12 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 				output := newActiveTTSOutput(nil)
 				output.setStream(newStream)
 				unregisterStreamOutput = s.registerActiveOutput(req.RequestID, output)
-				finalStreamWriters = append(finalStreamWriters, speechStreamWriterForConfig(newStream, s.runtime.config))
+				streamWriters = append(streamWriters, speechStreamWriterForConfig(newStream, s.runtime.config))
 			}
 		}
 	}
 	defer unregisterStreamOutput()
-	runReq.StreamWriter = newFinalStreamFanoutWriter(finalStreamWriters...)
+	runReq.StreamWriter = newStreamFanoutWriter(streamWriters...)
 
 	result, err := s.runtime.Run(ctx, runReq)
 	if newStream != nil {
@@ -1533,25 +1531,25 @@ func (w *chatAssistantDeltaWriter) StreamEmitted() bool {
 	return w.emitted
 }
 
-type chatAssistantFinalStreamWriter struct {
+type chatAssistantStreamWriter struct {
 	delta *chatAssistantDeltaWriter
 }
 
-func newChatAssistantFinalStreamWriter(stream *chatStreamWriter, episodeID, requestID string) io.Writer {
+func newChatAssistantStreamWriter(stream *chatStreamWriter, episodeID, requestID string) io.Writer {
 	delta := newChatAssistantDeltaWriter(stream, episodeID, requestID)
-	return &chatAssistantFinalStreamWriter{
+	return &chatAssistantStreamWriter{
 		delta: delta,
 	}
 }
 
-func (w *chatAssistantFinalStreamWriter) Write(p []byte) (int, error) {
+func (w *chatAssistantStreamWriter) Write(p []byte) (int, error) {
 	if w == nil || w.delta == nil {
 		return len(p), nil
 	}
 	return w.delta.Write(p)
 }
 
-func (w *chatAssistantFinalStreamWriter) ResetStreamState() {
+func (w *chatAssistantStreamWriter) ResetStreamState() {
 	if w == nil {
 		return
 	}
@@ -1560,20 +1558,20 @@ func (w *chatAssistantFinalStreamWriter) ResetStreamState() {
 	}
 }
 
-func (w *chatAssistantFinalStreamWriter) StreamEmitted() bool {
+func (w *chatAssistantStreamWriter) StreamEmitted() bool {
 	if w == nil || w.delta == nil {
 		return false
 	}
 	return w.delta.StreamEmitted()
 }
 
-type finalStreamFanoutWriter struct {
+type streamFanoutWriter struct {
 	writers []io.Writer
 	mu      sync.Mutex
 	emitted bool
 }
 
-func newFinalStreamFanoutWriter(writers ...io.Writer) io.Writer {
+func newStreamFanoutWriter(writers ...io.Writer) io.Writer {
 	filtered := make([]io.Writer, 0, len(writers))
 	for _, writer := range writers {
 		if writer != nil {
@@ -1583,10 +1581,10 @@ func newFinalStreamFanoutWriter(writers ...io.Writer) io.Writer {
 	if len(filtered) == 0 {
 		return nil
 	}
-	return &finalStreamFanoutWriter{writers: filtered}
+	return &streamFanoutWriter{writers: filtered}
 }
 
-func (w *finalStreamFanoutWriter) Write(p []byte) (int, error) {
+func (w *streamFanoutWriter) Write(p []byte) (int, error) {
 	if w == nil || len(p) == 0 {
 		return len(p), nil
 	}
@@ -1623,7 +1621,7 @@ func (w *finalStreamFanoutWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (w *finalStreamFanoutWriter) ResetStreamState() {
+func (w *streamFanoutWriter) ResetStreamState() {
 	if w == nil {
 		return
 	}
@@ -1640,7 +1638,7 @@ func (w *finalStreamFanoutWriter) ResetStreamState() {
 // ResetBuffer forwards a buffer reset to every fanned-out writer that supports
 // it (e.g. the TTS stream writer), so residual buffered speech does not leak
 // across turns on the streaming chat path.
-func (w *finalStreamFanoutWriter) ResetBuffer() {
+func (w *streamFanoutWriter) ResetBuffer() {
 	if w == nil {
 		return
 	}
@@ -1651,7 +1649,7 @@ func (w *finalStreamFanoutWriter) ResetBuffer() {
 	}
 }
 
-func (w *finalStreamFanoutWriter) StreamEmitted() bool {
+func (w *streamFanoutWriter) StreamEmitted() bool {
 	if w == nil {
 		return false
 	}

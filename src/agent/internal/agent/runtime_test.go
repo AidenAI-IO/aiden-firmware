@@ -217,7 +217,7 @@ func TestRuntimeRunWaitForWakeupTerminatesRoleLoop(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunWaitForWakeupDoesNotStreamFinalAnswer(t *testing.T) {
+func TestRuntimeRunWaitForWakeupDoesNotStreamWithoutModelText(t *testing.T) {
 	model := &scriptedModel{responses: []*llms.ContentResponse{
 		toolCallResponse("wait_1", "wait_for_wakeup", `{"reason":"user asked"}`),
 	}}
@@ -234,9 +234,8 @@ func TestRuntimeRunWaitForWakeupDoesNotStreamFinalAnswer(t *testing.T) {
 
 	var stream strings.Builder
 	result, err := runtime.Run(context.Background(), RunRequest{
-		Input:             "go to sleep",
-		StreamWriter:      &stream,
-		StreamFinalChunks: true,
+		Input:        "go to sleep",
+		StreamWriter: &stream,
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -2727,7 +2726,7 @@ func TestRuntimeCallbackRemovesPendingActionWithNormalizedToolInput(t *testing.T
 	}
 }
 
-func TestRuntimeRunOpenRouterDoesNotStreamWithoutFinalChunks(t *testing.T) {
+func TestRuntimeRunOpenRouterStreamsWhenWriterIsProvided(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleDirectResponses("completed"),
 	}
@@ -2754,11 +2753,11 @@ func TestRuntimeRunOpenRouterDoesNotStreamWithoutFinalChunks(t *testing.T) {
 	if result.Output != "completed" {
 		t.Fatalf("unexpected output: %q", result.Output)
 	}
-	if len(model.sawStreaming) != 1 || model.sawStreaming[0] {
-		t.Fatalf("expected default-mode planner call to avoid provider streaming, got %#v", model.sawStreaming)
+	if len(model.sawStreaming) != 1 || !model.sawStreaming[0] {
+		t.Fatalf("expected planner call to use provider streaming, got %#v", model.sawStreaming)
 	}
-	if stream.String() != "" {
-		t.Fatalf("unexpected stream output: %q", stream.String())
+	if stream.String() != "chunk:completed" {
+		t.Fatalf("stream = %q, want streamed model chunk", stream.String())
 	}
 }
 
@@ -2782,9 +2781,8 @@ func TestRuntimeRunDoesNotCallFinalSteerProviderForDirectFinalAnswer(t *testing.
 	var finalSteerCalls int32
 	var stream bytes.Buffer
 	result, err := runtime.Run(context.Background(), RunRequest{
-		Input:             "hello",
-		StreamWriter:      &stream,
-		StreamFinalChunks: true,
+		Input:        "hello",
+		StreamWriter: &stream,
 		FinalSteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
 			atomic.AddInt32(&finalSteerCalls, 1)
 			return RunSteerMessage{}, false
@@ -2803,7 +2801,7 @@ func TestRuntimeRunDoesNotCallFinalSteerProviderForDirectFinalAnswer(t *testing.
 		t.Fatalf("stream = %q, want empty", stream.String())
 	}
 }
-func TestRuntimeRunFinalStreamingDoesNotStreamToolCapableCalls(t *testing.T) {
+func TestRuntimeRunStreamsToolCapableCallsWhenWriterIsProvided(t *testing.T) {
 	toolSpeech := "我先读取当前音量。"
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
@@ -2836,9 +2834,8 @@ func TestRuntimeRunFinalStreamingDoesNotStreamToolCapableCalls(t *testing.T) {
 
 	var stream bytes.Buffer
 	result, err := runtime.Run(context.Background(), RunRequest{
-		Input:             "当前音量是多少？",
-		StreamWriter:      &stream,
-		StreamFinalChunks: true,
+		Input:        "当前音量是多少？",
+		StreamWriter: &stream,
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -2850,11 +2847,11 @@ func TestRuntimeRunFinalStreamingDoesNotStreamToolCapableCalls(t *testing.T) {
 	if len(tool.inputs) != 1 || tool.inputs[0] != "{}" {
 		t.Fatalf("unexpected tool inputs: %#v", tool.inputs)
 	}
-	if got, want := model.sawStreaming, []bool{false, false}; !slices.Equal(got, want) {
-		t.Fatalf("expected default-mode tool-capable model calls to avoid provider streaming, got %#v", got)
+	if got, want := model.sawStreaming, []bool{true, true}; !slices.Equal(got, want) {
+		t.Fatalf("expected tool-capable model calls to use provider streaming, got %#v", got)
 	}
-	if stream.String() != "" {
-		t.Fatalf("unexpected stream output: %q", stream.String())
+	if stream.String() != "我先读取当前音量。The current audio volume is 42." {
+		t.Fatalf("stream = %q, want streamed model chunks", stream.String())
 	}
 }
 func TestRuntimeRunKeyboardToolFeedsPostActionScreenshotImage(t *testing.T) {

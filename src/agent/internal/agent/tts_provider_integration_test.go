@@ -245,7 +245,7 @@ func containsProviderName(values []string, target string) bool {
 	return false
 }
 
-func TestAudioDialogRunAgentTurnDoesNotStreamThroughProviderManager(t *testing.T) {
+func TestAudioDialogRunAgentTurnStreamsTTSTagThroughProviderManager(t *testing.T) {
 	model := &rawStreamingModel{
 		content: "streamed answer\n<tts>streamed answer</tts>",
 		chunks:  []string{"streamed answer\n<t", "ts>streamed ", "answer</tts>"},
@@ -273,15 +273,15 @@ func TestAudioDialogRunAgentTurnDoesNotStreamThroughProviderManager(t *testing.T
 	if err != nil {
 		t.Fatalf("RunAgentTurn() error = %v", err)
 	}
-	if result.SpeechStreamed {
-		t.Fatal("SpeechStreamed = true, want false without final streaming callback")
+	if !result.SpeechStreamed {
+		t.Fatal("SpeechStreamed = false, want true with streaming callback")
 	}
-	if got := provider.texts(); len(got) != 0 {
-		t.Fatalf("provider texts = %#v, want none", got)
+	if got := provider.texts(); len(got) != 1 || got[0] != "streamed answer" {
+		t.Fatalf("provider texts = %#v, want TTS tag content", got)
 	}
 }
 
-func TestAudioDialogRunAgentTurnReturnsFinalAnswerWithoutStreaming(t *testing.T) {
+func TestAudioDialogRunAgentTurnReturnsFullAnswerWithStreamedSpeech(t *testing.T) {
 	model := &rawStreamingModel{
 		content: "已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。\n<tts>已完成设置，当前音量是 42。</tts>",
 		chunks: []string{
@@ -312,15 +312,15 @@ func TestAudioDialogRunAgentTurnReturnsFinalAnswerWithoutStreaming(t *testing.T)
 	if err != nil {
 		t.Fatalf("RunAgentTurn() error = %v", err)
 	}
-	if result.SpeechStreamed {
-		t.Fatal("SpeechStreamed = true, want false without final streaming callback")
+	if !result.SpeechStreamed {
+		t.Fatal("SpeechStreamed = false, want true with streaming callback")
 	}
 	wantOutput := "已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。\n<tts>已完成设置，当前音量是 42。</tts>"
 	if result.Output != wantOutput {
 		t.Fatalf("Output = %q", result.Output)
 	}
-	if got := provider.texts(); len(got) != 0 {
-		t.Fatalf("provider texts = %#v, want none", got)
+	if got := provider.texts(); len(got) != 1 || got[0] != "已完成设置，当前音量是 42。" {
+		t.Fatalf("provider texts = %#v, want TTS tag speech", got)
 	}
 }
 func TestAudioDialogInterruptOutputStopsBackgroundToolSpeech(t *testing.T) {
@@ -353,7 +353,7 @@ func TestAudioDialogInterruptOutputStopsBackgroundToolSpeech(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunDoesNotStreamFinalAnswerToWriter(t *testing.T) {
+func TestRuntimeRunStreamsTTSTaggedChunksToWriter(t *testing.T) {
 	model := &rawStreamingModel{
 		content: "完整回答保留给屏幕。\n<tts>播报摘要。</tts>",
 		chunks: []string{
@@ -371,15 +371,14 @@ func TestRuntimeRunDoesNotStreamFinalAnswerToWriter(t *testing.T) {
 	var stream strings.Builder
 
 	result, err := runtime.Run(context.Background(), RunRequest{
-		Input:             "hello",
-		StreamWriter:      NewTTSTagStreamWriter(&stream),
-		StreamFinalChunks: true,
+		Input:        "hello",
+		StreamWriter: NewTTSTagStreamWriter(&stream),
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if stream.String() != "" {
-		t.Fatalf("stream = %q", stream.String())
+	if stream.String() != "播报摘要。" {
+		t.Fatalf("stream = %q, want TTS tag content", stream.String())
 	}
 	if result.Output != "完整回答保留给屏幕。\n<tts>播报摘要。</tts>" {
 		t.Fatalf("Output = %q", result.Output)

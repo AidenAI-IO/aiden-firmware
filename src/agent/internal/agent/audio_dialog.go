@@ -750,7 +750,6 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 			d.appendVoiceRunEvent(event, requestID)
 			d.HandleRunEvent(ctx, event)
 		},
-		StreamFinalChunks: true,
 		SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
 			return d.consumePendingSteer(requestID)
 		},
@@ -1062,7 +1061,6 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 			d.appendVoiceRunEvent(event, "")
 			d.HandleRunEvent(ctx, event)
 		},
-		StreamFinalChunks: true,
 	}
 	var newStream *streamSessionWriter
 	unregisterStream := func() {}

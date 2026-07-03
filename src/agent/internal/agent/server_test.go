@@ -514,10 +514,10 @@ func (w failingStreamWriter) Write([]byte) (int, error) {
 	return 0, w.err
 }
 
-func TestFinalStreamFanoutWriterReturnsInputLengthWhenLaterWriterFails(t *testing.T) {
+func TestStreamFanoutWriterReturnsInputLengthWhenLaterWriterFails(t *testing.T) {
 	writeErr := errors.New("fanout write failed")
 	var first strings.Builder
-	fanout := newFinalStreamFanoutWriter(&first, failingStreamWriter{err: writeErr})
+	fanout := newStreamFanoutWriter(&first, failingStreamWriter{err: writeErr})
 
 	n, err := fanout.Write([]byte("chunk"))
 
@@ -532,15 +532,15 @@ func TestFinalStreamFanoutWriterReturnsInputLengthWhenLaterWriterFails(t *testin
 	}
 }
 
-func TestFinalStreamFanoutWriterResetsAssistantDeltaDraftBeforeFallback(t *testing.T) {
+func TestStreamFanoutWriterResetsAssistantDeltaDraftBeforeFallback(t *testing.T) {
 	writeErr := errors.New("fanout write failed")
 	rec := httptest.NewRecorder()
 	stream, ok := newChatStreamWriter(rec)
 	if !ok {
 		t.Fatal("httptest recorder must support streaming")
 	}
-	fanout := newFinalStreamFanoutWriter(
-		newChatAssistantFinalStreamWriter(stream, "episode-reset", "request-reset"),
+	fanout := newStreamFanoutWriter(
+		newChatAssistantStreamWriter(stream, "episode-reset", "request-reset"),
 		failingStreamWriter{err: writeErr},
 	)
 
@@ -598,11 +598,11 @@ func TestFinalStreamFanoutWriterResetsAssistantDeltaDraftBeforeFallback(t *testi
 	}
 }
 
-func TestFinalStreamFanoutWriterReportsAnyChildEmission(t *testing.T) {
+func TestStreamFanoutWriterReportsAnyChildEmission(t *testing.T) {
 	var webDelta strings.Builder
 	var speech strings.Builder
 
-	fanout := newFinalStreamFanoutWriter(
+	fanout := newStreamFanoutWriter(
 		&webDelta,
 		NewSpeechStreamWriter(&speech),
 	)

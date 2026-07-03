@@ -75,13 +75,9 @@ type RunRequest struct {
 	// hardware/app state. It is not persisted as user configuration.
 	RuntimeContext string
 	StreamWriter   io.Writer
-	// StreamFinalChunks allows final-answer chunks to be written through
-	// StreamWriter for audio paths. Non-final LLM calls remain non-streaming
-	// because they may still turn into tool calls.
-	StreamFinalChunks bool
-	MaxTokens         int
-	EventHandler      func(RunEvent)
-	SteerProvider     func(context.Context) (RunSteerMessage, bool)
+	MaxTokens      int
+	EventHandler   func(RunEvent)
+	SteerProvider  func(context.Context) (RunSteerMessage, bool)
 	// FinalSteerProvider is called at terminal executor boundaries. It should
 	// atomically consume one last pending steer if available; otherwise it should
 	// close the request's steer acceptance window.
@@ -765,16 +761,15 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	persistRuntimeSessionEvents := r.memories != nil && strings.TrimSpace(r.memories.storageDir) != ""
 	if req.StreamWriter != nil || req.EventHandler != nil || req.SteerProvider != nil || r.logger != nil || persistRuntimeSessionEvents {
 		streamCallbackHandler = &runtimeCallbackHandler{
-			writer:                 req.StreamWriter,
-			providerFinalStreaming: req.StreamWriter != nil && req.StreamFinalChunks,
-			metrics:                metrics,
-			startTime:              startTime,
-			logger:                 r.logger,
-			eventHandler:           req.EventHandler,
-			episodeID:              episodeID,
-			runtimeID:              r.runtimeID,
-			requestID:              req.RequestID,
-			runID:                  runID,
+			writer:       req.StreamWriter,
+			metrics:      metrics,
+			startTime:    startTime,
+			logger:       r.logger,
+			eventHandler: req.EventHandler,
+			episodeID:    episodeID,
+			runtimeID:    r.runtimeID,
+			requestID:    req.RequestID,
+			runID:        runID,
 		}
 		if persistRuntimeSessionEvents {
 			streamCallbackHandler.sessionEventAppender = func(ctx context.Context, event SessionEvent) error {
@@ -786,6 +781,13 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 				})
 			}
 		}
+	}
+	if streamCallbackHandler != nil && req.StreamWriter != nil {
+		streamCallbackHandler.ResetStreaming(ctx)
+		callOptions = append(callOptions, chains.WithStreamingFunc(func(ctx context.Context, chunk []byte) error {
+			streamCallbackHandler.HandleStreamingFunc(ctx, chunk)
+			return nil
+		}))
 	}
 	var executorHandler callbacks.Handler
 	if streamCallbackHandler != nil {
@@ -1406,24 +1408,22 @@ func (r *Runtime) memoryContextForPrompt() string {
 // runtimeCallbackHandler implements callbacks.Handler for streaming output and
 // tool/agent observability.
 type runtimeCallbackHandler struct {
-	writer                 io.Writer
-	providerFinalStreaming bool
-	metrics                *RunMetrics
-	startTime              time.Time
-	firstTokenSeen         bool
-	finalTokenSeen         bool
-	finalStreamLogEmitted  bool
-	finalStreamErr         error
-	streamFinal            bool
-	logger                 *Logger
-	eventHandler           func(RunEvent)
-	episodeID              string
-	runtimeID              string
-	requestID              string
-	runID                  string
-	sessionEventAppender   func(context.Context, SessionEvent) error
-	mu                     sync.Mutex
-	pendingActions         []schema.AgentAction
+	writer               io.Writer
+	metrics              *RunMetrics
+	startTime            time.Time
+	firstTokenSeen       bool
+	streamTokenSeen      bool
+	streamLogEmitted     bool
+	streamErr            error
+	logger               *Logger
+	eventHandler         func(RunEvent)
+	episodeID            string
+	runtimeID            string
+	requestID            string
+	runID                string
+	sessionEventAppender func(context.Context, SessionEvent) error
+	mu                   sync.Mutex
+	pendingActions       []schema.AgentAction
 }
 
 func (h *runtimeCallbackHandler) HandleText(ctx context.Context, text string) {
@@ -1770,13 +1770,12 @@ func (h *runtimeCallbackHandler) HandleRetrieverEnd(ctx context.Context, query s
 }
 
 func (h *runtimeCallbackHandler) HandleStreamingFunc(ctx context.Context, chunk []byte) {
-	finalStreaming := h.finalStreamingEnabled()
-	if h.writer != nil && finalStreaming && !h.finalStreamingFailed() {
+	if h.writer != nil && !h.streamingFailed() {
 		if _, err := h.writer.Write(chunk); err != nil {
-			h.recordFinalStreamError(err)
+			h.recordStreamError(err)
 		} else if streamWriterEmitted(h.writer) {
-			if h.recordFinalToken() {
-				h.logFinalStreamEmitted(ctx, chunk)
+			if h.recordStreamToken() {
+				h.logStreamEmitted(ctx, chunk)
 			}
 		}
 	}
@@ -1785,37 +1784,16 @@ func (h *runtimeCallbackHandler) HandleStreamingFunc(ctx context.Context, chunk 
 	h.recordFirstToken()
 }
 
-func (h *runtimeCallbackHandler) EnableFinalStreaming(ctx context.Context) {
+func (h *runtimeCallbackHandler) ResetStreaming(ctx context.Context) {
 	resetStreamWriterState(h.writer)
-	// Drop any text the previous turn streamed that the TTS layer buffered but
-	// never synthesized. Without this, residual content from a turn that
-	// returned a tool call (e.g. the assistant's "我查下天气。" preamble) stays
-	// in the sentence buffer and gets prepended to this turn's final answer,
-	// causing it to be spoken twice. Resetting here (before this turn streams
-	// anything) clears the leftover without touching the current turn's text.
+	// Drop any text the previous turn streamed that the writer buffered but
+	// never emitted, so residual content cannot leak into this turn.
 	resetStreamBuffer(h.writer)
 	h.mu.Lock()
-	h.finalTokenSeen = false
-	h.finalStreamLogEmitted = false
-	h.finalStreamErr = nil
-	h.streamFinal = true
+	h.streamTokenSeen = false
+	h.streamLogEmitted = false
+	h.streamErr = nil
 	h.mu.Unlock()
-}
-
-func (h *runtimeCallbackHandler) DisableFinalStreaming(ctx context.Context) {
-	h.mu.Lock()
-	h.streamFinal = false
-	h.mu.Unlock()
-}
-
-func (h *runtimeCallbackHandler) finalStreamingEnabled() bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.streamFinal
-}
-
-func (h *runtimeCallbackHandler) ProviderFinalStreamingEnabled() bool {
-	return h != nil && h.writer != nil && h.providerFinalStreaming
 }
 
 type streamStateResetter interface {
@@ -1848,12 +1826,6 @@ func streamWriterEmitted(writer io.Writer) bool {
 	return tracker.StreamEmitted()
 }
 
-func (h *runtimeCallbackHandler) HasFinalStreamingToken(context.Context) bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.finalTokenSeen && h.finalStreamErr == nil
-}
-
 func (h *runtimeCallbackHandler) recordFirstToken() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -1866,57 +1838,49 @@ func (h *runtimeCallbackHandler) recordFirstToken() {
 	}
 }
 
-func (h *runtimeCallbackHandler) recordFinalToken() bool {
+func (h *runtimeCallbackHandler) recordStreamToken() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.finalStreamErr != nil {
+	if h.streamErr != nil {
 		return false
 	}
-	first := !h.finalTokenSeen
-	h.finalTokenSeen = true
+	first := !h.streamTokenSeen
+	h.streamTokenSeen = true
 	return first
 }
 
-func (h *runtimeCallbackHandler) finalStreamingFailed() bool {
+func (h *runtimeCallbackHandler) streamingFailed() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.finalStreamErr != nil
+	return h.streamErr != nil
 }
 
-func (h *runtimeCallbackHandler) recordFinalStreamError(err error) {
+func (h *runtimeCallbackHandler) recordStreamError(err error) {
 	if err == nil {
 		return
 	}
 	h.mu.Lock()
-	firstErr := h.finalStreamErr == nil
+	firstErr := h.streamErr == nil
 	if firstErr {
-		h.finalStreamErr = err
+		h.streamErr = err
 	}
-	h.finalTokenSeen = false
+	h.streamTokenSeen = false
 	h.mu.Unlock()
 	if firstErr && h.logger != nil {
-		h.logger.Warn("Final stream writer failed; falling back to final answer: %v", err)
+		h.logger.Warn("Stream writer failed; continuing without streaming output: %v", err)
 	}
 }
 
-func (h *runtimeCallbackHandler) LogFinalStreamingDecision(_ context.Context, providerStreaming bool, reason string) {
-	if h == nil || h.logger == nil || !h.providerFinalStreaming {
-		return
-	}
-	h.logger.Info("Final stream decision: provider_streaming=%t reason=%s request_id=%s run_id=%s",
-		providerStreaming, reason, h.requestID, h.runID)
-}
-
-func (h *runtimeCallbackHandler) logFinalStreamEmitted(ctx context.Context, chunk []byte) {
+func (h *runtimeCallbackHandler) logStreamEmitted(ctx context.Context, chunk []byte) {
 	if h == nil || h.logger == nil {
 		return
 	}
 	h.mu.Lock()
-	if h.finalStreamLogEmitted {
+	if h.streamLogEmitted {
 		h.mu.Unlock()
 		return
 	}
-	h.finalStreamLogEmitted = true
+	h.streamLogEmitted = true
 	requestID := h.requestID
 	runID := h.runID
 	h.mu.Unlock()
@@ -1925,7 +1889,7 @@ func (h *runtimeCallbackHandler) logFinalStreamEmitted(ctx context.Context, chun
 	if role == "" {
 		role = "post_parse"
 	}
-	h.logger.Info("Final stream emitted: role=%s chunk_len=%d chunk=%s request_id=%s run_id=%s",
+	h.logger.Info("Stream emitted: role=%s chunk_len=%d chunk=%s request_id=%s run_id=%s",
 		role, len(chunk), truncateForLog(string(chunk), 120), requestID, runID)
 }
 
