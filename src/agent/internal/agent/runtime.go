@@ -178,9 +178,13 @@ func (m *RunMetrics) CacheHitRate() float64 {
 }
 
 const (
-	runEventToolCall   = "tool_call"
-	runEventTodoUpdate = "todo_update"
-	runEventTodoClosed = "todo_closed"
+	runEventToolCall       = "tool_call"
+	runEventTodoUpdate     = "todo_update"
+	runEventTodoClosed     = "todo_closed"
+	runEventMemoryRetrieve = "memory_retrieve"
+	runEventSessionBegin   = "session_begin"
+	runEventIterationStart = "iteration_start"
+	runEventIterationEnd   = "iteration_end"
 )
 
 type RunEvent struct {
@@ -579,6 +583,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 			}
 			episodeRecorder = r.memoryPlane.NewEpisodeRecorder(retrieveReq, MemoryContext{})
 			if episodeRecorder != nil {
+				episodeRecorder.setStartedAtIfEarlier(startTime.UTC())
 				episodeID = episodeRecorder.ID()
 				startCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 				if err := episodeRecorder.Start(startCtx); err != nil && r.logger != nil {
@@ -657,6 +662,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 			return RunResult{}, err
 		}
 	}
+	sessionBeginStart := time.Now()
 	beginResult, err := r.beginSession(ctx, SessionBeginRequest{
 		AgentName:    "default",
 		Input:        normalizedInput,
@@ -667,6 +673,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		RunID:        runID,
 		CurrentHints: currentHints,
 	})
+	sessionBeginDuration := time.Since(sessionBeginStart).Milliseconds()
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return RunResult{}, ctxErr
@@ -679,6 +686,16 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	boundaryTelemetry = beginResult.Boundary
 	if boundaryTelemetry.PendingRecallCounter == nil {
 		boundaryTelemetry.PendingRecallCounter = &atomic.Int64{}
+	}
+	sessionBeginEvent := TaskEpisodeEvent{
+		Type:       runEventSessionBegin,
+		Ts:         sessionBeginStart.Format(time.RFC3339Nano),
+		DurationMs: &sessionBeginDuration,
+		Metadata: map[string]interface{}{
+			"rotated":  beginResult.Boundary.Rotated,
+			"decision": beginResult.Boundary.Decision,
+			"reason":   beginResult.Boundary.Reason,
+		},
 	}
 
 	availableTools = r.resolveTools(resolvedSkills)
@@ -693,8 +710,12 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		CurrentHints: currentHints,
 	}
 	memoryContext := MemoryContext{}
+	var memoryRetrieveEvent *TaskEpisodeEvent
 	if r.memoryPlane != nil {
+		retrieveStart := time.Now()
 		retrieved, retrieveErr := r.memoryPlane.Retrieve(ctx, retrieveReq)
+		retrieveDuration := time.Since(retrieveStart).Milliseconds()
+
 		if retrieveErr != nil {
 			if r.logger != nil {
 				r.logger.Warn("[memory] retrieve failed: %v", retrieveErr)
@@ -702,13 +723,27 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		} else {
 			memoryContext = retrieved
 		}
+		memoryRetrieveEvent = &TaskEpisodeEvent{
+			Type:       runEventMemoryRetrieve,
+			Ts:         retrieveStart.Format(time.RFC3339Nano),
+			DurationMs: &retrieveDuration,
+			Metadata: map[string]interface{}{
+				"skill_count": len(skillNames),
+				"tool_count":  len(toolNamesFromTools(availableTools)),
+				"success":     retrieveErr == nil,
+			},
+		}
 	}
 	if r.memoryPlane != nil {
 		episodeRecorder = r.memoryPlane.NewEpisodeRecorder(retrieveReq, memoryContext)
 		if episodeRecorder != nil {
-			retrieveReq.EpisodeID = episodeRecorder.ID()
+			episodeRecorder.setStartedAtIfEarlier(startTime.UTC())
 			if err := episodeRecorder.Start(ctx); err != nil && r.logger != nil {
 				r.logger.Warn("[memory] start episode failed: %v", err)
+			}
+			episodeRecorder.RecordEvent(sessionBeginEvent)
+			if memoryRetrieveEvent != nil {
+				episodeRecorder.RecordEvent(*memoryRetrieveEvent)
 			}
 		}
 	}

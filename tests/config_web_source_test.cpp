@@ -1288,6 +1288,14 @@ TEST_CASE("config web exposes a single system env editor backed by the env file"
     CHECK(html.find("system_env_content") != std::string::npos);
     CHECK(html.find("textarea.system-env-editor{min-height:180px}") != std::string::npos);
     CHECK(html.find("<textarea id=\\\"system_env_content\\\" class=\\\"system-env-editor\\\"") != std::string::npos);
+    CHECK(html.find("id=\\\"comment-system_env\\\"") != std::string::npos);
+    CHECK(html.find("onclick=\\\"toggleSystemEnvComment()\\\"") != std::string::npos);
+    CHECK(html.find("function toggleSystemEnvComment()") != std::string::npos);
+    CHECK(html.find("function handleSystemEnvEditorKeydown(event)") != std::string::npos);
+    CHECK(html.find("event.key==='/'") != std::string::npos);
+    CHECK(html.find("function isCommentedSystemEnvLine(line){return /^\\\\s*#/.test(line);}") != std::string::npos);
+    CHECK(html.find("function replaceSystemEnvSelection(el,range,text)") != std::string::npos);
+    CHECK(html.find("document.execCommand('insertText',false,text)") != std::string::npos);
     CHECK(html.find("saveSystemEnv") != std::string::npos);
     CHECK(html.find("system_proxy") == std::string::npos);
     CHECK(html.find("section-proxy") == std::string::npos);
