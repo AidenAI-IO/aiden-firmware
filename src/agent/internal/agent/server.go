@@ -430,6 +430,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/live-activity/current", s.handleLiveActivityCurrent)
 	mux.HandleFunc("/api/events", s.handleEvents)
 	mux.HandleFunc("/api/history", s.handleHistory)
+	mux.HandleFunc("/api/context-dump", s.handleContextDump)
 	mux.HandleFunc("/api/episodes/", s.handleEpisodes)
 	mux.HandleFunc("/api/setup", s.handleSetup)
 	if s.benchmarkToken() != "" {
@@ -1803,6 +1804,16 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(historySnapshot)
+}
+
+func (s *Server) handleContextDump(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(s.runtime.PlannerContextDump())
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
@@ -4102,6 +4113,7 @@ const webUI = `<!DOCTYPE html>
                 <div class="topbar-actions">
                     <a href="/coordinate-debug" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">🎯 Coordinate Debug</a>
                     <a href="/user_files" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">📁 User files</a>
+                    <a href="/api/context-dump" target="_blank" rel="noopener" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">📋 Context dump</a>
                     <button type="button" class="new-chat-btn" onclick="clearHistory()">New chat</button>
                     <button type="button" class="new-chat-btn" onclick="resetAllMemory()" style="background:#c0392b;">Reset all memory</button>
                 </div>
