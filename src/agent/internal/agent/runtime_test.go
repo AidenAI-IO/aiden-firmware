@@ -1088,6 +1088,30 @@ func TestRuntimeRunDoesNotPersistUnusedSteerProviderAsConversationMessage(t *tes
 	}
 }
 
+func TestRuntimeRunPersistsAssistantOutputOnce(t *testing.T) {
+	storageDir := filepath.Join(t.TempDir(), "memory")
+	memoryManager := NewMemoryManager(storageDir)
+	ctx := context.Background()
+
+	model := &scriptedModel{responses: roleDirectResponses("hello answer")}
+	runtime := NewRuntimeWithDeps(
+		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer."},
+		&testModelResolver{model: model},
+		memoryManager,
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+
+	if _, err := runtime.Run(ctx, RunRequest{Input: "hi"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
+	if got := sessionEventCount(events, "assistant_output", "assistant", "hello answer"); got != 1 {
+		t.Fatalf("assistant_output count = %d, want 1; events=%#v", got, events)
+	}
+}
+
 func TestRuntimeRunKeepsCurrentExchangeWhenSnapshotWindowIsFull(t *testing.T) {
 	storageDir := filepath.Join(t.TempDir(), "memory")
 	memoryManager := NewMemoryManager(storageDir)
