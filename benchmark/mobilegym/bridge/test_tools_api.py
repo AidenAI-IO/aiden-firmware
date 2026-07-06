@@ -469,6 +469,29 @@ def test_invoke_keyboard_tap_keycode_app_switch_uses_swipe(bridge_server):
     }
 
 
+@pytest.mark.parametrize(
+    ("key_name", "action_type"),
+    [("KEYCODE_BACK", "BACK"), ("KEYCODE_HOME", "HOME")],
+)
+def test_invoke_keyboard_tap_keycode_aliases_preserve_actions(bridge_server, key_name, action_type):
+    server, base_url, state = bridge_server
+    state.active_episode_id = f"test-episode-keyboard-{key_name.lower()}"
+
+    req = Request(
+        f"{base_url}/api/tools/keyboard_tap",
+        data=json.dumps({"input": {"keys": [key_name]}}).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+
+    assert data["is_error"] is False
+    assert action_to_dict(state.env.last_action) == {"action_type": action_type, "data": {}}
+
+
 def test_invoke_keyboard_text_accepts_plain_text_fallback(bridge_server):
     """Matches the Go keyboard_text fallback for bare plain text input."""
     server, base_url, state = bridge_server

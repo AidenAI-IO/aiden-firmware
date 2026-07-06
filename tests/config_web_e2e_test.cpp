@@ -188,6 +188,22 @@ int required_json_int(cJSON* object, const char* key) {
     return item->valueint;
 }
 
+cJSON* required_test_result(cJSON* root, const char* check) {
+    cJSON* results = cJSON_GetObjectItem(root, "results");
+    REQUIRE(results != nullptr);
+    REQUIRE((results->type & 0xff) == cJSON_Array);
+    const int count = cJSON_GetArraySize(results);
+    for (int i = 0; i < count; ++i) {
+        cJSON* item = cJSON_GetArrayItem(results, i);
+        REQUIRE(item != nullptr);
+        cJSON* check_item = cJSON_GetObjectItem(item, "check");
+        if (check_item != nullptr && check_item->valuestring != nullptr && std::strcmp(check_item->valuestring, check) == 0) {
+            return item;
+        }
+    }
+    return nullptr;
+}
+
 std::string replace_all(std::string text, const std::string& needle, const std::string& replacement) {
     size_t pos = 0;
     while ((pos = text.find(needle, pos)) != std::string::npos) {
@@ -1037,6 +1053,69 @@ TEST_CASE("config_web: config test rejects blank search api key without stored m
     CHECK(test_resp.status == 200);
     CHECK(test_resp.body.find("\"ok\":false") != std::string::npos);
     CHECK(test_resp.body.find("required for brave") != std::string::npos);
+}
+
+TEST_CASE("config_web: hid config test only requires android keyboard device in touchscreen mode") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string absolute_body =
+        "{\"section\":\"hid\",\"values\":{"
+        "\"keyboard_device\":\"/dev/null\","
+        "\"mouse_device\":\"/dev/null\","
+        "\"android_keyboard_device\":\"\","
+        "\"pointer_mode\":\"absolute\""
+        "}}";
+
+    HttpResponse absolute_resp = http_request(handle->port, "POST", "/api/config/test", absolute_body);
+    REQUIRE(absolute_resp.status == 200);
+    cJSON* absolute_json = cJSON_Parse(absolute_resp.body.c_str());
+    REQUIRE(absolute_json != nullptr);
+    cJSON* absolute_ok = cJSON_GetObjectItem(absolute_json, "ok");
+    REQUIRE(absolute_ok != nullptr);
+    CHECK((absolute_ok->type & 0xff) == cJSON_True);
+    cJSON* absolute_android = required_test_result(absolute_json, "android_keyboard_device");
+    REQUIRE(absolute_android != nullptr);
+    cJSON* absolute_android_passed = cJSON_GetObjectItem(absolute_android, "passed");
+    REQUIRE(absolute_android_passed != nullptr);
+    CHECK((absolute_android_passed->type & 0xff) == cJSON_True);
+    CHECK(required_json_string(absolute_android, "detail") == "not required when pointer_mode is absolute");
+    cJSON* absolute_mode = required_test_result(absolute_json, "pointer_mode");
+    REQUIRE(absolute_mode != nullptr);
+    cJSON* absolute_mode_passed = cJSON_GetObjectItem(absolute_mode, "passed");
+    REQUIRE(absolute_mode_passed != nullptr);
+    CHECK((absolute_mode_passed->type & 0xff) == cJSON_True);
+    CHECK(required_json_string(absolute_mode, "detail") == "effective mode: absolute");
+    cJSON_Delete(absolute_json);
+
+    const std::string touchscreen_body =
+        "{\"section\":\"hid\",\"values\":{"
+        "\"keyboard_device\":\"/dev/null\","
+        "\"mouse_device\":\"/dev/null\","
+        "\"android_keyboard_device\":\"\","
+        "\"pointer_mode\":\"touchscreen\""
+        "}}";
+
+    HttpResponse touchscreen_resp = http_request(handle->port, "POST", "/api/config/test", touchscreen_body);
+    REQUIRE(touchscreen_resp.status == 200);
+    cJSON* touchscreen_json = cJSON_Parse(touchscreen_resp.body.c_str());
+    REQUIRE(touchscreen_json != nullptr);
+    cJSON* touchscreen_ok = cJSON_GetObjectItem(touchscreen_json, "ok");
+    REQUIRE(touchscreen_ok != nullptr);
+    CHECK((touchscreen_ok->type & 0xff) == cJSON_False);
+    cJSON* touchscreen_android = required_test_result(touchscreen_json, "android_keyboard_device");
+    REQUIRE(touchscreen_android != nullptr);
+    cJSON* touchscreen_android_passed = cJSON_GetObjectItem(touchscreen_android, "passed");
+    REQUIRE(touchscreen_android_passed != nullptr);
+    CHECK((touchscreen_android_passed->type & 0xff) == cJSON_False);
+    CHECK(required_json_string(touchscreen_android, "detail") == "path is empty");
+    cJSON* touchscreen_mode = required_test_result(touchscreen_json, "pointer_mode");
+    REQUIRE(touchscreen_mode != nullptr);
+    cJSON* touchscreen_mode_passed = cJSON_GetObjectItem(touchscreen_mode, "passed");
+    REQUIRE(touchscreen_mode_passed != nullptr);
+    CHECK((touchscreen_mode_passed->type & 0xff) == cJSON_True);
+    CHECK(required_json_string(touchscreen_mode, "detail") == "effective mode: touchscreen");
+    cJSON_Delete(touchscreen_json);
 }
 
 TEST_CASE("config_web: config test rejects wakeup trigger for text input") {
