@@ -70,6 +70,7 @@ start() {
 		rm -f "$GADGET_DIR"/configs/c.1/ecm.* 2>/dev/null
 		rmdir "$GADGET_DIR"/functions/hid.usb0 2>/dev/null
 		rmdir "$GADGET_DIR"/functions/hid.usb1 2>/dev/null
+		rmdir "$GADGET_DIR"/functions/hid.usb2 2>/dev/null
 		rmdir "$GADGET_DIR"/functions/ecm.usb0 2>/dev/null
 		rmdir "$GADGET_DIR"/configs/c.1/strings/0x409 2>/dev/null
 		rmdir "$GADGET_DIR"/configs/c.1 2>/dev/null
@@ -124,6 +125,15 @@ start() {
 			> "$GADGET_DIR/functions/hid.usb1/report_desc"
 	fi
 
+	if [ "$POINTER_MODE" = "touchscreen" ]; then
+		mkdir -p "$GADGET_DIR/functions/hid.usb2"
+		echo 0 > "$GADGET_DIR/functions/hid.usb2/protocol"
+		echo 0 > "$GADGET_DIR/functions/hid.usb2/subclass"
+		echo 2 > "$GADGET_DIR/functions/hid.usb2/report_length"
+		printf '\x05\x0c\x09\x01\xa1\x01\x15\x00\x26\xff\x03\x1a\x00\x00\x2a\xff\x03\x75\x10\x95\x01\x81\x00\xc0' \
+			> "$GADGET_DIR/functions/hid.usb2/report_desc"
+	fi
+
 	# CDC ECM function (usb0 network interface)
 	mkdir -p "$GADGET_DIR/functions/ecm.usb0"
 	echo "$ECM_HOST_MAC" > "$GADGET_DIR/functions/ecm.usb0/host_addr"
@@ -132,6 +142,9 @@ start() {
 	# Link all functions, THEN bind UDC (configfs requires this order)
 	ln -s "$GADGET_DIR/functions/hid.usb0" "$GADGET_DIR/configs/c.1/hid.usb0" 2>/dev/null
 	ln -s "$GADGET_DIR/functions/hid.usb1" "$GADGET_DIR/configs/c.1/hid.usb1" 2>/dev/null
+	if [ "$POINTER_MODE" = "touchscreen" ]; then
+		ln -s "$GADGET_DIR/functions/hid.usb2" "$GADGET_DIR/configs/c.1/hid.usb2" 2>/dev/null
+	fi
 	ln -s "$GADGET_DIR/functions/ecm.usb0" "$GADGET_DIR/configs/c.1/ecm.usb0" 2>/dev/null
 
 	echo "$UDC" > "$GADGET_DIR/UDC"
@@ -153,7 +166,11 @@ start() {
 		echo "usb0 did not appear; ECM may not be bound"
 	fi
 
-	echo "Aiden USB composite ready: /dev/hidg0 (keyboard) /dev/hidg1 (pointer:$POINTER_MODE) usb0 (ECM)"
+	if [ "$POINTER_MODE" = "touchscreen" ]; then
+		echo "Aiden USB composite ready: /dev/hidg0 (keyboard) /dev/hidg1 (pointer:$POINTER_MODE) /dev/hidg2 (android-extension) usb0 (ECM)"
+	else
+		echo "Aiden USB composite ready: /dev/hidg0 (keyboard) /dev/hidg1 (pointer:$POINTER_MODE) usb0 (ECM)"
+	fi
 }
 
 stop() {

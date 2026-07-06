@@ -780,6 +780,12 @@ class ToolsAPIHandler:
         normalized_keys = [str(k).strip().lower() for k in keys if str(k).strip()]
         if not normalized_keys:
             return {"output": "error: at least one key or modifier is required", "is_error": True}
+        alias_map = {
+            "keycode_back": "back",
+            "keycode_home": "home",
+            "keycode_app_switch": "app_switch",
+        }
+        normalized_keys = [alias_map.get(k, k) for k in normalized_keys]
         has_meta = any(k in ("meta", "cmd", "super", "win") for k in normalized_keys)
         non_modifiers = [k for k in normalized_keys if k not in ("meta", "cmd", "super", "win", "ctrl", "alt", "shift")]
 
@@ -798,6 +804,8 @@ class ToolsAPIHandler:
                     action = build_action("key", {"key": "home"})
                 elif key in ("back", "escape", "esc"):
                     action = build_action("key", {"key": "back"})
+                elif key in ("app_switch",):
+                    action = build_action("app_switch", {})
                 else:
                     return {"output": f"error: mobilegym keyboard_tap does not support key: {key!r}", "is_error": True}
             else:

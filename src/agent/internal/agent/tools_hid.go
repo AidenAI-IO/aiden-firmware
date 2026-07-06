@@ -128,6 +128,105 @@ var hidModifierMap = map[string]uint8{
 	"super": 0x08, "win": 0x08, "cmd": 0x08,
 }
 
+var androidExtensionUsageMap = map[string]uint16{
+	"android_back":              0x0224,
+	"android_home":              0x0223,
+	"menu":                      0x0040,
+	"search":                    0x0221,
+	"power":                     0x0030,
+	"volume_mute":               0x00e2,
+	"volumeup":                  0x00e9,
+	"volume_up":                 0x00e9,
+	"volumedown":                0x00ea,
+	"volume_down":               0x00ea,
+	"settings":                  0x019f,
+	"key_usage_settings":        0x019f,
+	"language_switch":           0x029d,
+	"key_usage_language_switch": 0x029d,
+	// AOSP Generic.kl checks HID usage codes before Linux scan codes.
+	// 0x0c01A2 is mapped to ALL_APPS, while 0x0c029F is mapped to
+	// RECENT_APPS / KEYCODE_APP_SWITCH.
+	"app_switch": 0x029f,
+}
+
+type androidKeyboardTapAlias struct {
+	Keycode           int
+	Replacement       string
+	UnsupportedReason string
+}
+
+// Keep Android framework keycodes separate from the generic HID usage table.
+// They are routed through hid.usb2, which advertises a Consumer Control
+// interface instead of the boot keyboard report used by hid.usb0.
+var androidKeyboardTapAliases = map[string]androidKeyboardTapAlias{
+	"keycode_call": {
+		Keycode:           5,
+		UnsupportedReason: "call pickup requires an Android telephony/media key path beyond the current hid.usb2 Consumer Control interface",
+	},
+	"keycode_endcall": {
+		Keycode:           6,
+		UnsupportedReason: "call hangup requires an Android telephony/media key path beyond the current hid.usb2 Consumer Control interface",
+	},
+	"keycode_home": {
+		Keycode:     3,
+		Replacement: "android_home",
+	},
+	"keycode_menu": {
+		Keycode:     82,
+		Replacement: "menu",
+	},
+	"keycode_back": {
+		Keycode:     4,
+		Replacement: "android_back",
+	},
+	"keycode_search": {
+		Keycode:     84,
+		Replacement: "search",
+	},
+	"keycode_camera": {
+		Keycode:           27,
+		UnsupportedReason: "camera shutter requires a camera/media key path beyond the current hid.usb2 Consumer Control interface",
+	},
+	"keycode_focus": {
+		Keycode:           80,
+		UnsupportedReason: "camera focus requires a camera/media key path beyond the current hid.usb2 Consumer Control interface",
+	},
+	"keycode_power": {
+		Keycode:     26,
+		Replacement: "power",
+	},
+	"keycode_notification": {
+		Keycode:           83,
+		UnsupportedReason: "notification center has no verified standard Consumer Control usage on this gadget; use quick_action notification_center or touch_gesture instead",
+	},
+	"keycode_mute": {
+		Keycode:           91,
+		UnsupportedReason: "KEYCODE_MUTE is microphone mute, not speaker mute; hid.usb2 only exposes system speaker/stream volume mute",
+	},
+	"keycode_volume_mute": {
+		Keycode:     164,
+		Replacement: "volume_mute",
+	},
+	"keycode_volume_up": {
+		Keycode:     24,
+		Replacement: "volume_up",
+	},
+	"keycode_volume_down": {
+		Keycode:     25,
+		Replacement: "volume_down",
+	},
+	"keycode_app_switch": {
+		Keycode:     187,
+		Replacement: "app_switch",
+	},
+}
+
+type keyboardTapResolvedInput struct {
+	Keys                []string
+	AndroidExtensionKey string
+	AndroidUsage        uint16
+}
+
 // HIDDevice manages a single HID device file with lazy open and auto-reopen.
 type HIDDevice struct {
 	path         string
@@ -520,7 +619,8 @@ func hidWriteWouldBlock(err error) bool {
 
 // KeyboardTapTool sends a key press then release via HID.
 type KeyboardTapTool struct {
-	dev *HIDDevice
+	dev        *HIDDevice
+	androidDev *HIDDevice
 }
 
 func (t *KeyboardTapTool) Name() string { return "keyboard_tap" }
@@ -528,11 +628,13 @@ func (t *KeyboardTapTool) Name() string { return "keyboard_tap" }
 func (t *KeyboardTapTool) Description() string {
 	return `Press and release keyboard keys. Input JSON: {"keys": ["ctrl", "c"]}. ` +
 		`For known semantic platform actions such as back, app search, app switching, copy, paste, undo, redo, select all, delete backward/forward, find, send, or browser navigation, prefer quick_action first; use keyboard_tap as a low-level fallback or for custom key input. ` +
-		`Supports: a-z, 0-9, f1-f12, enter, escape, backspace, tab, space, delete, ` +
+		`Supports on the standard boot keyboard path: a-z, 0-9, f1-f12, enter, escape, backspace, tab, space, delete, ` +
 		`up, down, left, right, home, end, pageup, pagedown, insert, printscreen. ` +
 		`For normal text deletion in an input field, use backspace; the delete key is forward-delete and should only be used when intentionally deleting the character after the cursor. ` +
 		`Modifiers: ctrl, shift, alt, meta/super/win/cmd. ` +
-		`Modifier-only taps are supported (e.g. {"keys":["meta"]} for Android Home). ` +
+		`Android extension keys on hid.usb2: KEYCODE_BACK, KEYCODE_HOME, KEYCODE_APP_SWITCH, KEYCODE_MENU, KEYCODE_SEARCH, KEYCODE_POWER, KEYCODE_VOLUME_MUTE, KEYCODE_VOLUME_UP, KEYCODE_VOLUME_DOWN, KEY_USAGE_SETTINGS, KEY_USAGE_LANGUAGE_SWITCH, plus raw app_switch/menu/search/power/settings/language_switch/volume_* names. ` +
+		`Android extension keys are single-key taps only and cannot be combined with standard keyboard modifiers/chords; unsupported Android-only aliases return an explicit error. ` +
+		`Modifier-only taps are supported (e.g. {"keys":["meta"]}). ` +
 		`Multiple keys are pressed simultaneously (e.g. ctrl+c). ` +
 		`Optional hold_ms keeps the chord pressed before release (default 50ms, 120ms when modifiers are used).`
 }
@@ -560,10 +662,28 @@ func (t *KeyboardTapTool) Call(ctx context.Context, input string) (string, error
 		return toolErrorResultString(ctx, CodeInvalidArguments, "keys array is required"), nil
 	}
 
+	resolved, err := resolveKeyboardTapKeys(args.Keys)
+	if err != nil {
+		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
+	}
+	if resolved.AndroidUsage != 0 {
+		holdMs := args.HoldMs
+		if holdMs <= 0 {
+			holdMs = defaultKeyboardTapHoldMs
+		}
+		if err := t.tapAndroidExtension(resolved.AndroidExtensionKey, resolved.AndroidUsage, holdMs); err != nil {
+			code := CodeToolExecutionFailed
+			if errors.Is(err, errAndroidExtensionUnavailable) {
+				code = CodeModuleUnavailable
+			}
+			return toolErrorResultf(ctx, code, "%v", err), nil
+		}
+		return "ok", nil
+	}
+
 	var modifier uint8
 	var keys []uint8
-	for _, k := range args.Keys {
-		k = strings.ToLower(strings.TrimSpace(k))
+	for _, k := range resolved.Keys {
 		if mod, ok := hidModifierMap[k]; ok {
 			modifier |= mod
 		} else if code, ok := hidKeyboardMap[k]; ok {
@@ -588,6 +708,62 @@ func (t *KeyboardTapTool) Call(ctx context.Context, input string) (string, error
 		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
 	return "ok", nil
+}
+
+func resolveKeyboardTapKeys(rawKeys []string) (keyboardTapResolvedInput, error) {
+	resolved := keyboardTapResolvedInput{Keys: make([]string, 0, len(rawKeys))}
+	androidKeys := make([]string, 0, 1)
+	for _, key := range rawKeys {
+		normalized := strings.ToLower(strings.TrimSpace(key))
+		if normalized == "" {
+			continue
+		}
+		if alias, ok := androidKeyboardTapAliases[normalized]; ok {
+			if alias.UnsupportedReason != "" {
+				return keyboardTapResolvedInput{}, fmt.Errorf("android-only key %q (keycode %d) is not supported by keyboard_tap: %s", normalized, alias.Keycode, alias.UnsupportedReason)
+			}
+			normalized = alias.Replacement
+		}
+		if usage, ok := androidExtensionUsageMap[normalized]; ok {
+			androidKeys = append(androidKeys, normalized)
+			resolved.AndroidUsage = usage
+			continue
+		}
+		resolved.Keys = append(resolved.Keys, normalized)
+	}
+	if len(androidKeys) > 1 {
+		return keyboardTapResolvedInput{}, fmt.Errorf("keyboard_tap supports one Android extension key at a time, got %v", androidKeys)
+	}
+	if len(androidKeys) == 1 {
+		if len(resolved.Keys) > 0 {
+			return keyboardTapResolvedInput{}, fmt.Errorf("Android extension key %q cannot be combined with standard keyboard keys or modifiers", androidKeys[0])
+		}
+		resolved.AndroidExtensionKey = androidKeys[0]
+		return resolved, nil
+	}
+	if len(resolved.Keys) == 0 {
+		return keyboardTapResolvedInput{}, fmt.Errorf("at least one key or modifier is required")
+	}
+	if len(resolved.Keys) > 6 {
+		return keyboardTapResolvedInput{}, fmt.Errorf("keyboard_tap supports at most 6 simultaneous keys after alias expansion")
+	}
+	return resolved, nil
+}
+
+var errAndroidExtensionUnavailable = errors.New("android extension keyboard device is not configured")
+
+func (t *KeyboardTapTool) tapAndroidExtension(key string, usage uint16, holdMs int) error {
+	if t.androidDev == nil {
+		return fmt.Errorf("%w; set hid.pointer_mode=\"touchscreen\" and ensure hid.android_keyboard_device exists to use %s", errAndroidExtensionUnavailable, key)
+	}
+	report := []byte{byte(usage), byte(usage >> 8)}
+	if err := t.androidDev.Write(report); err != nil {
+		return err
+	}
+	if holdMs > 0 {
+		sleepMs(holdMs)
+	}
+	return t.androidDev.Write([]byte{0x00, 0x00})
 }
 
 func (t *KeyboardTapTool) tapKeyboardChord(modifier uint8, keys []uint8, holdMs int) error {
@@ -825,7 +1001,6 @@ func pointSchema(description string) map[string]any {
 	schema["description"] = description
 	return schema
 }
-
 
 func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, error) {
 	var args struct {

@@ -1077,6 +1077,201 @@ func TestKeyboardTapSendsModifierChordWithHold(t *testing.T) {
 	}
 }
 
+func TestKeyboardTapSupportsAndroidBackAlias(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	androidDev, androidPath := newTestHIDDevice(t)
+	tool := &KeyboardTapTool{dev: dev, androidDev: androidDev}
+
+	out, err := tool.Call(context.Background(), `{"keys":["KEYCODE_BACK"]}`)
+	if err != nil {
+		t.Fatalf("Call failed: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("unexpected output: %s", out)
+	}
+
+	dev.Close()
+	androidDev.Close()
+	if data, err := os.ReadFile(path); err != nil {
+		t.Fatalf("ReadFile keyboard path: %v", err)
+	} else if len(data) != 0 {
+		t.Fatalf("standard keyboard path bytes = %v, want none for android extension key", data)
+	}
+	data, err := os.ReadFile(androidPath)
+	if err != nil {
+		t.Fatalf("ReadFile android path: %v", err)
+	}
+	if len(data) != 4 {
+		t.Fatalf("report bytes = %d, want 4 (consumer usage + release)", len(data))
+	}
+	if got := uint16(data[0]) | uint16(data[1])<<8; got != androidExtensionUsageMap["android_back"] {
+		t.Fatalf("android back usage = 0x%04x, want 0x%04x", got, androidExtensionUsageMap["android_back"])
+	}
+	if data[2] != 0 || data[3] != 0 {
+		t.Fatalf("android back release = %v, want [0 0]", data[2:4])
+	}
+}
+
+func TestKeyboardTapSupportsAndroidVolumeAlias(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	androidDev, androidPath := newTestHIDDevice(t)
+	tool := &KeyboardTapTool{dev: dev, androidDev: androidDev}
+
+	out, err := tool.Call(context.Background(), `{"keys":["KEYCODE_VOLUME_UP"]}`)
+	if err != nil {
+		t.Fatalf("Call failed: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("unexpected output: %s", out)
+	}
+
+	dev.Close()
+	androidDev.Close()
+	if data, err := os.ReadFile(path); err != nil {
+		t.Fatalf("ReadFile keyboard path: %v", err)
+	} else if len(data) != 0 {
+		t.Fatalf("standard keyboard path bytes = %v, want none for android extension key", data)
+	}
+	data, err := os.ReadFile(androidPath)
+	if err != nil {
+		t.Fatalf("ReadFile android path: %v", err)
+	}
+	if len(data) != 4 {
+		t.Fatalf("report bytes = %d, want 4 (consumer usage + release)", len(data))
+	}
+	if got := uint16(data[0]) | uint16(data[1])<<8; got != androidExtensionUsageMap["volume_up"] {
+		t.Fatalf("android volume_up usage = 0x%04x, want 0x%04x", got, androidExtensionUsageMap["volume_up"])
+	}
+}
+
+func TestKeyboardTapSupportsAndroidAppSwitchAlias(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	androidDev, androidPath := newTestHIDDevice(t)
+	tool := &KeyboardTapTool{dev: dev, androidDev: androidDev}
+
+	out, err := tool.Call(context.Background(), `{"keys":["KEYCODE_APP_SWITCH"]}`)
+	if err != nil {
+		t.Fatalf("Call failed: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("unexpected output: %s", out)
+	}
+
+	dev.Close()
+	androidDev.Close()
+	if data, err := os.ReadFile(path); err != nil {
+		t.Fatalf("ReadFile keyboard path: %v", err)
+	} else if len(data) != 0 {
+		t.Fatalf("standard keyboard path bytes = %v, want none for android extension key", data)
+	}
+	data, err := os.ReadFile(androidPath)
+	if err != nil {
+		t.Fatalf("ReadFile android path: %v", err)
+	}
+	if len(data) != 4 {
+		t.Fatalf("report bytes = %d, want 4 (consumer usage + release)", len(data))
+	}
+	if got := uint16(data[0]) | uint16(data[1])<<8; got != androidExtensionUsageMap["app_switch"] {
+		t.Fatalf("android app_switch usage = 0x%04x, want 0x%04x", got, androidExtensionUsageMap["app_switch"])
+	}
+}
+
+func TestKeyboardTapSupportsAndroidSettingsUsageAlias(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	androidDev, androidPath := newTestHIDDevice(t)
+	tool := &KeyboardTapTool{dev: dev, androidDev: androidDev}
+
+	out, err := tool.Call(context.Background(), `{"keys":["KEY_USAGE_SETTINGS"]}`)
+	if err != nil {
+		t.Fatalf("Call failed: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("unexpected output: %s", out)
+	}
+
+	dev.Close()
+	androidDev.Close()
+	if data, err := os.ReadFile(path); err != nil {
+		t.Fatalf("ReadFile keyboard path: %v", err)
+	} else if len(data) != 0 {
+		t.Fatalf("standard keyboard path bytes = %v, want none for android extension key", data)
+	}
+	data, err := os.ReadFile(androidPath)
+	if err != nil {
+		t.Fatalf("ReadFile android path: %v", err)
+	}
+	if len(data) != 4 {
+		t.Fatalf("report bytes = %d, want 4 (consumer usage + release)", len(data))
+	}
+	if got := uint16(data[0]) | uint16(data[1])<<8; got != androidExtensionUsageMap["key_usage_settings"] {
+		t.Fatalf("android settings usage = 0x%04x, want 0x%04x", got, androidExtensionUsageMap["key_usage_settings"])
+	}
+}
+
+func TestKeyboardTapSupportsAndroidLanguageSwitchUsageAlias(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	androidDev, androidPath := newTestHIDDevice(t)
+	tool := &KeyboardTapTool{dev: dev, androidDev: androidDev}
+
+	out, err := tool.Call(context.Background(), `{"keys":["KEY_USAGE_LANGUAGE_SWITCH"]}`)
+	if err != nil {
+		t.Fatalf("Call failed: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("unexpected output: %s", out)
+	}
+
+	dev.Close()
+	androidDev.Close()
+	if data, err := os.ReadFile(path); err != nil {
+		t.Fatalf("ReadFile keyboard path: %v", err)
+	} else if len(data) != 0 {
+		t.Fatalf("standard keyboard path bytes = %v, want none for android extension key", data)
+	}
+	data, err := os.ReadFile(androidPath)
+	if err != nil {
+		t.Fatalf("ReadFile android path: %v", err)
+	}
+	if len(data) != 4 {
+		t.Fatalf("report bytes = %d, want 4 (consumer usage + release)", len(data))
+	}
+	if got := uint16(data[0]) | uint16(data[1])<<8; got != androidExtensionUsageMap["key_usage_language_switch"] {
+		t.Fatalf("android language_switch usage = 0x%04x, want 0x%04x", got, androidExtensionUsageMap["key_usage_language_switch"])
+	}
+}
+
+func TestKeyboardTapRejectsAndroidExtensionWithoutAndroidDevice(t *testing.T) {
+	tool := &KeyboardTapTool{}
+	ctx, _ := WithToolError(context.Background())
+
+	out, err := tool.Call(ctx, `{"keys":["KEYCODE_HOME"]}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "android extension keyboard device is not configured") || !strings.Contains(out, "hid.pointer_mode=\"touchscreen\"") {
+		t.Fatalf("output = %q, want android extension device error", out)
+	}
+	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeModuleUnavailable || got.Message != out {
+		t.Fatalf("ToolError = %+v, want module_unavailable with output message", got)
+	}
+}
+
+func TestKeyboardTapRejectsMixedAndroidExtensionChord(t *testing.T) {
+	tool := &KeyboardTapTool{}
+	ctx, _ := WithToolError(context.Background())
+
+	out, err := tool.Call(ctx, `{"keys":["ctrl","KEYCODE_BACK"]}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, `Android extension key "android_back" cannot be combined`) {
+		t.Fatalf("output = %q, want mixed-chord error", out)
+	}
+	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeInvalidArguments || got.Message != out {
+		t.Fatalf("ToolError = %+v, want invalid_arguments with output message", got)
+	}
+}
+
 func readMouseReports(t *testing.T, dev *HIDDevice, path string) []mouseReport {
 	t.Helper()
 
@@ -1404,6 +1599,15 @@ func TestMouseClickDescriptionDocumentsTargetCenter(t *testing.T) {
 func TestKeyboardTapDescriptionDocumentsQuickActionFallback(t *testing.T) {
 	desc := (&KeyboardTapTool{}).Description()
 	for _, want := range []string{"prefer quick_action first", "delete backward/forward", "low-level fallback", "custom key input", "normal text deletion", "use backspace", "delete key is forward-delete"} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("description missing %q:\n%s", want, desc)
+		}
+	}
+}
+
+func TestKeyboardTapDescriptionDocumentsAndroidAliases(t *testing.T) {
+	desc := (&KeyboardTapTool{}).Description()
+	for _, want := range []string{"KEYCODE_BACK", "KEYCODE_HOME", "KEYCODE_APP_SWITCH", "KEYCODE_VOLUME_DOWN", "KEY_USAGE_SETTINGS", "KEY_USAGE_LANGUAGE_SWITCH", "raw app_switch/menu/search/power/settings/language_switch/volume_* names", "single-key taps only"} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q:\n%s", want, desc)
 		}
