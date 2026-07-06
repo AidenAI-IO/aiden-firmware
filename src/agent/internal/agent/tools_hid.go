@@ -129,24 +129,57 @@ var hidModifierMap = map[string]uint8{
 }
 
 var androidExtensionUsageMap = map[string]uint16{
-	"android_back":              0x0224,
-	"android_home":              0x0223,
-	"menu":                      0x0040,
-	"search":                    0x0221,
-	"power":                     0x0030,
-	"volume_mute":               0x00e2,
-	"volumeup":                  0x00e9,
-	"volume_up":                 0x00e9,
-	"volumedown":                0x00ea,
-	"volume_down":               0x00ea,
-	"settings":                  0x019f,
-	"key_usage_settings":        0x019f,
-	"language_switch":           0x029d,
-	"key_usage_language_switch": 0x029d,
+	"android_back":                0x0224,
+	"android_home":                0x0223,
+	"menu":                        0x0040,
+	"search":                      0x0221,
+	"power":                       0x0030,
+	"sleep":                       0x0032,
+	"volume_mute":                 0x00e2,
+	"volumeup":                    0x00e9,
+	"volume_up":                   0x00e9,
+	"volumedown":                  0x00ea,
+	"volume_down":                 0x00ea,
+	"media_fast_forward":          0x00b3,
+	"media_rewind":                0x00b4,
+	"media_next":                  0x00b5,
+	"media_previous":              0x00b6,
+	"media_stop":                  0x00b7,
+	"media_play_pause":            0x00cd,
+	"screenshot":                  0x0065,
+	"key_usage_screenshot":        0x0065,
+	"window":                      0x0067,
+	"key_usage_window":            0x0067,
+	"brightness_up":               0x006f,
+	"key_usage_brightness_up":     0x006f,
+	"brightness_down":             0x0070,
+	"key_usage_brightness_down":   0x0070,
+	"dictate":                     0x00d8,
+	"key_usage_dictate":           0x00d8,
+	"emoji_picker":                0x00d9,
+	"key_usage_emoji_picker":      0x00d9,
+	"media_audio_track":           0x0173,
+	"key_usage_media_audio_track": 0x0173,
+	"profile_switch":              0x019c,
+	"key_usage_profile_switch":    0x019c,
+	"settings":                    0x019f,
+	"key_usage_settings":          0x019f,
+	"new":                         0x0201,
+	"key_usage_new":               0x0201,
+	"close":                       0x0203,
+	"key_usage_close":             0x0203,
+	"print":                       0x0208,
+	"key_usage_print":             0x0208,
+	"refresh":                     0x0227,
+	"key_usage_refresh":           0x0227,
+	"fullscreen":                  0x0232,
+	"key_usage_fullscreen":        0x0232,
+	"language_switch":             0x029d,
+	"key_usage_language_switch":   0x029d,
 	// AOSP Generic.kl checks HID usage codes before Linux scan codes.
 	// 0x0c01A2 is mapped to ALL_APPS, while 0x0c029F is mapped to
 	// RECENT_APPS / KEYCODE_APP_SWITCH.
-	"app_switch": 0x029f,
+	"app_switch":                  0x029f,
 }
 
 type androidKeyboardTapAlias struct {
@@ -195,6 +228,18 @@ var androidKeyboardTapAliases = map[string]androidKeyboardTapAlias{
 		Keycode:     26,
 		Replacement: "power",
 	},
+	"keycode_sleep": {
+		Keycode:     223,
+		Replacement: "sleep",
+	},
+	"keycode_wakeup": {
+		Keycode:           224,
+		UnsupportedReason: "wakeup requires a Generic Desktop/System Control HID path beyond the current hid.usb2 Consumer Control interface",
+	},
+	"keycode_soft_sleep": {
+		Keycode:           276,
+		UnsupportedReason: "soft sleep has no verified standard Consumer Control usage on this gadget",
+	},
 	"keycode_notification": {
 		Keycode:           83,
 		UnsupportedReason: "notification center has no verified standard Consumer Control usage on this gadget; use quick_action notification_center or touch_gesture instead",
@@ -214,6 +259,30 @@ var androidKeyboardTapAliases = map[string]androidKeyboardTapAlias{
 	"keycode_volume_down": {
 		Keycode:     25,
 		Replacement: "volume_down",
+	},
+	"keycode_media_play_pause": {
+		Keycode:     85,
+		Replacement: "media_play_pause",
+	},
+	"keycode_media_stop": {
+		Keycode:     86,
+		Replacement: "media_stop",
+	},
+	"keycode_media_next": {
+		Keycode:     87,
+		Replacement: "media_next",
+	},
+	"keycode_media_previous": {
+		Keycode:     88,
+		Replacement: "media_previous",
+	},
+	"keycode_media_rewind": {
+		Keycode:     89,
+		Replacement: "media_rewind",
+	},
+	"keycode_media_fast_forward": {
+		Keycode:     90,
+		Replacement: "media_fast_forward",
 	},
 	"keycode_app_switch": {
 		Keycode:     187,
@@ -632,7 +701,7 @@ func (t *KeyboardTapTool) Description() string {
 		`up, down, left, right, home, end, pageup, pagedown, insert, printscreen. ` +
 		`For normal text deletion in an input field, use backspace; the delete key is forward-delete and should only be used when intentionally deleting the character after the cursor. ` +
 		`Modifiers: ctrl, shift, alt, meta/super/win/cmd. ` +
-		`Android extension keys on hid.usb2: KEYCODE_BACK, KEYCODE_HOME, KEYCODE_APP_SWITCH, KEYCODE_MENU, KEYCODE_SEARCH, KEYCODE_POWER, KEYCODE_VOLUME_MUTE, KEYCODE_VOLUME_UP, KEYCODE_VOLUME_DOWN, KEY_USAGE_SETTINGS, KEY_USAGE_LANGUAGE_SWITCH, plus raw app_switch/menu/search/power/settings/language_switch/volume_* names. ` +
+		`Android extension keys on hid.usb2 use KEYCODE_* and KEY_USAGE_* aliases; see the Android key guide for the full list. ` +
 		`Android extension keys are single-key taps only and cannot be combined with standard keyboard modifiers/chords; unsupported Android-only aliases return an explicit error. ` +
 		`Modifier-only taps are supported (e.g. {"keys":["meta"]}). ` +
 		`Multiple keys are pressed simultaneously (e.g. ctrl+c). ` +
@@ -666,7 +735,8 @@ func (t *KeyboardTapTool) Call(ctx context.Context, input string) (string, error
 	if err != nil {
 		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 	}
-	if resolved.AndroidUsage != 0 {
+
+	if resolved.AndroidExtensionKey != "" {
 		holdMs := args.HoldMs
 		if holdMs <= 0 {
 			holdMs = defaultKeyboardTapHoldMs

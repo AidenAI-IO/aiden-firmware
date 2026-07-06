@@ -132,6 +132,7 @@ start() {
 		echo 2 > "$GADGET_DIR/functions/hid.usb2/report_length"
 		printf '\x05\x0c\x09\x01\xa1\x01\x15\x00\x26\xff\x03\x1a\x00\x00\x2a\xff\x03\x75\x10\x95\x01\x81\x00\xc0' \
 			> "$GADGET_DIR/functions/hid.usb2/report_desc"
+
 	fi
 
 	# CDC ECM function (usb0 network interface)
