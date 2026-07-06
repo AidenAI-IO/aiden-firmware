@@ -1091,6 +1091,10 @@ func (r *Runtime) plannerContextManager() *context_manager.ContextManager {
 	return r.plannerContext
 }
 
+func (r *Runtime) PlannerContextDump() context_manager.MessageListDump {
+	return r.plannerContextManager().MessageListDump()
+}
+
 func (r *Runtime) resetPlannerContext() {
 	r.plannerContextMu.Lock()
 	defer r.plannerContextMu.Unlock()
@@ -1504,7 +1508,9 @@ func (h *runtimeCallbackHandler) emitRunEventWithPersistence(ctx context.Context
 	if event.EpisodeID == "" {
 		event.EpisodeID = h.episodeID
 	}
-	h.persistSessionEventBestEffort(sessionEventFromRunEvent(event, h), "[memory] persist runtime session event failed")
+	if persist {
+		h.persistSessionEventBestEffort(sessionEventFromRunEvent(event, h), "[memory] persist runtime session event failed")
+	}
 	if h.eventHandler != nil {
 		h.eventHandler(event)
 	}
