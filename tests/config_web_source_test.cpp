@@ -1676,6 +1676,20 @@ TEST_CASE("config web preserves hid pointer mode and avoids hot-restarting usbhi
     CHECK(html.find("poweroff command sent") != std::string::npos);
 }
 
+TEST_CASE("config web hid validation skips android keyboard device outside touchscreen mode") {
+    const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
+    std::ifstream source_in(source_path.c_str());
+    REQUIRE(source_in.good());
+
+    std::ostringstream source_buffer;
+    source_buffer << source_in.rdbuf();
+    const std::string source = source_buffer.str();
+
+    CHECK(source.find("std::string pointer_mode = json_is_string(pointer_item) ? normalize_pointer_mode(pointer_item->valuestring) : \"absolute\";") != std::string::npos);
+    CHECK(source.find("strcmp(dev_keys[i], \"android_keyboard_device\") == 0 && pointer_mode != \"touchscreen\"") != std::string::npos);
+    CHECK(source.find("not required when pointer_mode is ") != std::string::npos);
+}
+
 TEST_CASE("config web usbhid init script does not orchestrate dependent service restarts") {
     const std::string script_path = std::string(AIDEN_SOURCE_DIR) + "/overlay/etc/init.d/S49usbhid";
     std::ifstream script_in(script_path.c_str());

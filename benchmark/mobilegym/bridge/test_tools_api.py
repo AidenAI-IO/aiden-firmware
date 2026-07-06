@@ -447,6 +447,28 @@ def test_invoke_quick_action_handles_mobilegym_common_actions(bridge_server):
         assert state.env.step_count == no_action_count
 
 
+def test_invoke_keyboard_tap_keycode_app_switch_uses_swipe(bridge_server):
+    server, base_url, state = bridge_server
+    state.active_episode_id = "test-episode-keyboard-app-switch"
+
+    req = Request(
+        f"{base_url}/api/tools/keyboard_tap",
+        data=json.dumps({"input": {"keys": ["KEYCODE_APP_SWITCH"]}}).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    with urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+
+    assert data["is_error"] is False
+    assert action_to_dict(state.env.last_action) == {
+        "action_type": "SWIPE",
+        "data": {"point1": [500.0, 1000.0], "point2": [500.0, 500.0], "duration": 900.0},
+    }
+
+
 def test_invoke_keyboard_text_accepts_plain_text_fallback(bridge_server):
     """Matches the Go keyboard_text fallback for bare plain text input."""
     server, base_url, state = bridge_server

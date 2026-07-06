@@ -55,6 +55,13 @@ MOBILEGYM_RESERVED_QUICK_ACTIONS = {
 }
 
 
+def _mobilegym_app_switch_action() -> Any:
+    return build_action(
+        "swipe",
+        {"start_x": 500, "start_y": 1000, "end_x": 500, "end_y": 500, "duration_ms": 900},
+    )
+
+
 class ToolsAPIHandler:
     """Handler for the environment bridge /api/tools endpoint."""
 
@@ -639,10 +646,7 @@ class ToolsAPIHandler:
                 log_tool_input=tool_input,
             )
         if action == "app_switch":
-            action = build_action(
-                "swipe",
-                {"start_x": 500, "start_y": 1000, "end_x": 500, "end_y": 500, "duration_ms": 900},
-            )
+            action = _mobilegym_app_switch_action()
             return self._execute_action(state, action, episode_id, tool_name="quick_action", tool_input=tool_input)
         if action == "spotlight_search":
             return self._call_touch_gesture(
@@ -805,7 +809,7 @@ class ToolsAPIHandler:
                 elif key in ("back", "escape", "esc"):
                     action = build_action("key", {"key": "back"})
                 elif key in ("app_switch",):
-                    action = build_action("app_switch", {})
+                    action = _mobilegym_app_switch_action()
                 else:
                     return {"output": f"error: mobilegym keyboard_tap does not support key: {key!r}", "is_error": True}
             else:
