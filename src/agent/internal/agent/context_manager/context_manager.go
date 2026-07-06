@@ -115,6 +115,33 @@ func (c *ContextManager) IsEmpty() bool {
 	return len(c.messageList) == 0
 }
 
+type MessageListDump struct {
+	SessionID string    `json:"session_id"`
+	Messages  []Message `json:"messages"`
+}
+
+func (c *ContextManager) MessageListDump() MessageListDump {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	messages := make([]Message, len(c.messageList))
+	for i, msg := range c.messageList {
+		messages[i] = msg
+		if len(msg.ToolCalls) > 0 {
+			messages[i].ToolCalls = append([]ToolCall(nil), msg.ToolCalls...)
+		}
+		if len(msg.ToolResults) > 0 {
+			messages[i].ToolResults = append([]ToolResult(nil), msg.ToolResults...)
+		}
+		if len(msg.Attachments) > 0 {
+			messages[i].Attachments = append([]Attachment(nil), msg.Attachments...)
+		}
+	}
+	return MessageListDump{
+		SessionID: c.sessionID,
+		Messages:  messages,
+	}
+}
+
 func (c *ContextManager) Reset() {
 	c.mu.Lock()
 	store := c.detachAttachmentStoreLocked()
