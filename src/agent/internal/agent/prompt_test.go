@@ -337,6 +337,7 @@ func TestPhoneBridgeRuntimeContextPiPBackgroundDisablesOpenApp(t *testing.T) {
 
 	for _, want := range []string{
 		"- pip_bridge:",
+		"available=false hidden_by_pip=true",
 		"PiP Bridge mode is enabled while Aiden is backgrounded",
 		"iOS gives PiP priority over the Dynamic Island",
 		"Dynamic Island return entry is not visible",

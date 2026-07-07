@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 )
@@ -11,7 +10,6 @@ import (
 const (
 	phoneBridgeRestoreTimeout      = 8 * time.Second
 	phoneBridgeRestorePollInterval = 100 * time.Millisecond
-	pipBridgeBackgroundStateMaxAge = 15 * time.Second
 	returnEntryDynamicIslandX      = 500.0
 	returnEntryDynamicIslandY      = 30.0
 )
@@ -152,69 +150,6 @@ func sendRoutedBridgeCommand(ctx context.Context, bridge *PhoneBridge, restorer 
 	}
 	resp, err := bridge.SendCommand(ctx, cmd)
 	return resp, restored, err
-}
-
-func phoneBridgeReadyForCommand(status PhoneBridgeStatus) bool {
-	if !status.Connected {
-		return false
-	}
-	if !strings.EqualFold(strings.TrimSpace(status.Platform), "ios") {
-		return true
-	}
-	state := strings.ToLower(strings.TrimSpace(status.AppState))
-	return state == "" || state == "active"
-}
-
-func phoneBridgeCanUsePiPBackground(status PhoneBridgeStatus, commandType string) bool {
-	if !phoneBridgeBackgroundSafeCommandType(commandType) {
-		return false
-	}
-	if status.PipBridgeEnabled == nil || !*status.PipBridgeEnabled {
-		return false
-	}
-	if status.AppStateUpdatedAt == nil || time.Since(*status.AppStateUpdatedAt) > pipBridgeBackgroundStateMaxAge {
-		return false
-	}
-	state := strings.ToLower(strings.TrimSpace(status.AppState))
-	return state != "active"
-}
-
-func phoneBridgeBackgroundSafeCommandType(commandType string) bool {
-	switch strings.TrimSpace(commandType) {
-	case "clipboard_read", "clipboard_write",
-		"calendar_create", "calendar_query", "calendar_delete",
-		"contacts_query", "contacts_create", "contacts_update",
-		"notification_send":
-		return true
-	default:
-		return false
-	}
-}
-
-func phoneBridgeCanRestoreFromReturnEntry(status PhoneBridgeStatus) bool {
-	if status.ReturnEntryAvailable == nil || !*status.ReturnEntryAvailable {
-		return false
-	}
-	entry := strings.ToLower(strings.TrimSpace(status.ReturnEntry))
-	return entry == "dynamic_island"
-}
-
-func phoneBridgeRestoreUnavailableError(status PhoneBridgeStatus) error {
-	if status.PipBridgeEnabled != nil && *status.PipBridgeEnabled {
-		state := strings.TrimSpace(status.AppState)
-		if state == "" {
-			state = "background"
-		}
-		return fmt.Errorf("phone bridge app is %s with PiP Bridge mode enabled, but this command requires the companion app in foreground", state)
-	}
-	if status.Connected {
-		state := strings.TrimSpace(status.AppState)
-		if state == "" {
-			return fmt.Errorf("phone bridge is connected but not ready for foreground command")
-		}
-		return fmt.Errorf("phone bridge app is %s and no supported Dynamic Island return entry is available", state)
-	}
-	return fmt.Errorf("phone bridge not connected and no supported Dynamic Island return entry is available")
 }
 
 func phoneBridgeDynamicIslandTapPoint() (float64, float64) {

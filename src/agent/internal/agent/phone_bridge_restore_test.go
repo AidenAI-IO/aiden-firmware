@@ -156,6 +156,26 @@ func TestPhoneBridgeCanUsePiPBackgroundOnlyForSafeDataCommands(t *testing.T) {
 	}
 }
 
+func TestPhoneBridgeCannotRestoreFromDynamicIslandWhenPiPBackgroundEnabled(t *testing.T) {
+	enabled := true
+	available := true
+	status := PhoneBridgeStatus{
+		Platform:             "ios",
+		AppState:             "background",
+		ReturnEntry:          "dynamic_island",
+		ReturnEntryAvailable: &available,
+		PipBridgeEnabled:     &enabled,
+	}
+	if phoneBridgeCanRestoreFromReturnEntry(status) {
+		t.Fatal("PiP background bridge mode hides Dynamic Island and must block restore")
+	}
+
+	enabled = false
+	if !phoneBridgeCanRestoreFromReturnEntry(status) {
+		t.Fatal("visible Dynamic Island entry should allow restore when PiP bridge mode is disabled")
+	}
+}
+
 func ptrTime(value time.Time) *time.Time {
 	return &value
 }

@@ -676,11 +676,15 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 		}
 		builder.WriteString(returnEntry)
 		if status.ReturnEntryAvailable != nil {
+			visible := *status.ReturnEntryAvailable && !phoneBridgePiPBackgroundEnabled(status)
 			builder.WriteString(" available=")
-			if *status.ReturnEntryAvailable {
+			if visible {
 				builder.WriteString("true")
 			} else {
 				builder.WriteString("false")
+			}
+			if *status.ReturnEntryAvailable && !visible {
+				builder.WriteString(" hidden_by_pip=true")
 			}
 		}
 		builder.WriteByte('\n')
@@ -715,26 +719,6 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 		builder.WriteString("- If return_entry=dynamic_island and return_entry_available=true, open_app, clipboard, calendar, contacts, and notification will first try to reopen Aiden through Dynamic Island and wait for Phone Bridge before sending the command. Otherwise use screenshot plus HID/touch fallback and tell the user when app-only actions cannot be completed.")
 	}
 	return builder.String()
-}
-
-func phoneBridgeAppNeedsForeground(status PhoneBridgeStatus) bool {
-	appState := strings.ToLower(strings.TrimSpace(status.AppState))
-	return appState == "background" || appState == "inactive"
-}
-
-func phoneBridgeHasReturnEntry(status PhoneBridgeStatus) bool {
-	if status.ReturnEntryAvailable != nil {
-		return *status.ReturnEntryAvailable
-	}
-	entry := strings.ToLower(strings.TrimSpace(status.ReturnEntry))
-	return entry != "" && entry != "none"
-}
-
-func phoneBridgeRecoveryGuidance(status PhoneBridgeStatus) string {
-	if phoneBridgeCanRestoreFromReturnEntry(status) {
-		return "Retry the companion app tool; it can reopen Aiden through the Dynamic Island entry, wait for Phone Bridge to reconnect, then send the command. Use home-screen search or HID fallback only if restore fails."
-	}
-	return "Use screenshot plus HID/touch fallback; only Dynamic Island return entries are auto-tapped, and lock-screen Live Activity entries need visual confirmation."
 }
 
 func appendNonEmptyLine(builder *strings.Builder, prefix, value string) {
