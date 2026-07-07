@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -34,8 +35,8 @@ func TestEnqueueAndPoll(t *testing.T) {
 	}
 
 	// Duplicate ID should fail
-	if err := q.Enqueue(cmd1); err == nil {
-		t.Errorf("expected error when enqueuing duplicate ID")
+	if err := q.Enqueue(cmd1); !errors.Is(err, ErrCommandExists) {
+		t.Errorf("duplicate enqueue error = %v, want ErrCommandExists", err)
 	}
 
 	// Empty ID should fail
@@ -98,6 +99,60 @@ func TestSendQueuedCommandWaitsForHTTPResult(t *testing.T) {
 		Type:      "clipboard_read",
 		TimeoutMs: 1000,
 	})
+	if err != nil {
+		t.Fatalf("SendQueuedCommand() error = %v", err)
+	}
+	if resp.Error != nil {
+		t.Fatalf("SendQueuedCommand() response error = %+v", resp.Error)
+	}
+	if resp.Method != "clipboard" {
+		t.Fatalf("SendQueuedCommand() method = %q, want clipboard", resp.Method)
+	}
+}
+
+func TestSendQueuedCommandReturnsLateResultBeforeContextCancel(t *testing.T) {
+	bridge := NewPhoneBridge(nil)
+	defer bridge.queue.Stop()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		deadline := time.Now().Add(time.Second)
+		for time.Now().Before(deadline) {
+			if bridge.queue.Get("late_clipboard") != nil {
+				break
+			}
+			time.Sleep(time.Millisecond)
+		}
+		time.Sleep(10 * time.Millisecond)
+		commands := bridge.queue.PollForPhone("ios", "", 10)
+		if len(commands) != 1 {
+			t.Errorf("expected one queued command, got %d", len(commands))
+			cancel()
+			return
+		}
+		if commands[0].ID != "late_clipboard" {
+			t.Errorf("queued command id = %q, want late_clipboard", commands[0].ID)
+			cancel()
+			return
+		}
+		if err := bridge.queue.SubmitResult(BridgeCommandResponse{
+			ID:     "late_clipboard",
+			Method: "clipboard",
+			Data:   json.RawMessage(`{"text":"late"}`),
+		}); err != nil {
+			t.Errorf("SubmitResult() error = %v", err)
+		}
+		cancel()
+	}()
+
+	resp, err := bridge.SendQueuedCommand(ctx, BridgeCommand{
+		ID:        "late_clipboard",
+		Type:      "clipboard_read",
+		TimeoutMs: 1000,
+	})
+	<-done
 	if err != nil {
 		t.Fatalf("SendQueuedCommand() error = %v", err)
 	}

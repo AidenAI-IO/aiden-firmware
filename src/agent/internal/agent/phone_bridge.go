@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -353,10 +354,8 @@ func (pb *PhoneBridge) handleAppStateEvent(resp BridgeCommandResponse) bool {
 		}
 		return true
 	}
-	appState := strings.ToLower(strings.TrimSpace(payload.AppState))
-	switch appState {
-	case "active", "background", "inactive":
-	default:
+	appState, ok := normalizeAppState(payload.AppState)
+	if !ok {
 		if pb.logger != nil {
 			pb.logger.Warn("phone-bridge: ignoring unknown app_state=%q", payload.AppState)
 		}
@@ -404,7 +403,7 @@ func (pb *PhoneBridge) SendQueuedCommand(ctx context.Context, cmd BridgeCommand)
 		cmd.PhoneID = pb.currentPhoneID()
 	}
 	if err := pb.queue.Enqueue(cmd); err != nil {
-		if strings.Contains(err.Error(), "already exists") {
+		if errors.Is(err, ErrCommandExists) {
 			return BridgeCommandResponse{
 				ID: cmd.ID,
 				Error: NewToolErrorWithDetails(CodeCommandIDCollision,
@@ -446,6 +445,9 @@ func (pb *PhoneBridge) SendQueuedCommand(ctx context.Context, cmd BridgeCommand)
 
 		select {
 		case <-waitCtx.Done():
+			if result, status := pb.queue.QueryResult(cmd.ID); status == StatusCompleted && result != nil {
+				return result.Response, nil
+			}
 			pb.queue.Cancel(cmd.ID)
 			if ctx.Err() != nil {
 				return BridgeCommandResponse{}, ctx.Err()

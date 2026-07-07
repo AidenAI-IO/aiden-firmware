@@ -58,6 +58,16 @@ func phoneBridgeReadyForCommand(status PhoneBridgeStatus) bool {
 	return state == "" || state == "active"
 }
 
+func normalizeAppState(value string) (string, bool) {
+	state := strings.ToLower(strings.TrimSpace(value))
+	switch state {
+	case "active", "background", "inactive":
+		return state, true
+	default:
+		return "", false
+	}
+}
+
 func phoneBridgeCanUsePiPBackground(status PhoneBridgeStatus, commandType string) bool {
 	if !phoneBridgeBackgroundSafeCommandType(commandType) {
 		return false

@@ -157,14 +157,7 @@ func TestResolveToolsIncludesPhoneBridgeToolsWhenConnected(t *testing.T) {
 
 func TestResolveToolsHidesOpenAppAndKeepsDataToolsDuringPiPBackground(t *testing.T) {
 	runtime := newRuntimeWithTextEntryTools()
-	bridge := NewPhoneBridge(nil)
-	bridge.mu.Lock()
-	bridge.platform = "ios"
-	bridge.appState = "background"
-	bridge.appStateAt = time.Now()
-	bridge.pipBridgeEnabled = true
-	bridge.pipBridgeSeen = true
-	bridge.mu.Unlock()
+	bridge := newIOSPiPBackgroundBridge(t)
 	runtime.tools.RegisterPhoneBridge(bridge)
 
 	tools := runtime.resolveTools(ResolvedSkills{})
@@ -250,14 +243,7 @@ func TestResolveToolsIncludesAllowedPhoneBridgeToolWhenConnected(t *testing.T) {
 
 func TestResolveToolsHidesAllowedOpenAppDuringPiPBackground(t *testing.T) {
 	runtime := newRuntimeWithTextEntryTools()
-	bridge := NewPhoneBridge(nil)
-	bridge.mu.Lock()
-	bridge.platform = "ios"
-	bridge.appState = "background"
-	bridge.appStateAt = time.Now()
-	bridge.pipBridgeEnabled = true
-	bridge.pipBridgeSeen = true
-	bridge.mu.Unlock()
+	bridge := newIOSPiPBackgroundBridge(t)
 	runtime.tools.RegisterPhoneBridge(bridge)
 
 	tools := runtime.resolveTools(ResolvedSkills{
@@ -276,4 +262,18 @@ func TestResolveToolsHidesAllowedOpenAppDuringPiPBackground(t *testing.T) {
 		}
 	}
 	t.Fatalf("resolveTools with allowed_tools missing PiP background clipboard: %v", names)
+}
+
+func newIOSPiPBackgroundBridge(t *testing.T) *PhoneBridge {
+	t.Helper()
+	bridge := NewPhoneBridge(nil)
+	t.Cleanup(func() { bridge.queue.Stop() })
+	bridge.mu.Lock()
+	bridge.platform = "ios"
+	bridge.appState = "background"
+	bridge.appStateAt = time.Now()
+	bridge.pipBridgeEnabled = true
+	bridge.pipBridgeSeen = true
+	bridge.mu.Unlock()
+	return bridge
 }

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -23,6 +24,9 @@ const (
 	// MaxRetries is the number of times a command can be retried after timeout
 	MaxRetries = 3
 )
+
+// ErrCommandExists indicates a queued command already uses the requested ID.
+var ErrCommandExists = errors.New("phone bridge command already exists")
 
 // CommandStatus represents the lifecycle state of a command
 type CommandStatus string
@@ -93,7 +97,7 @@ func (q *CommandQueue) Enqueue(cmd BridgeCommand) error {
 	defer q.mu.Unlock()
 
 	if _, exists := q.commands[cmd.ID]; exists {
-		return fmt.Errorf("command %s already exists", cmd.ID)
+		return fmt.Errorf("command %s already exists: %w", cmd.ID, ErrCommandExists)
 	}
 
 	now := time.Now()
@@ -130,12 +134,7 @@ func (q *CommandQueue) Cancel(commandID string) bool {
 		return false
 	}
 	delete(q.commands, commandID)
-	for i, id := range q.commandIDs {
-		if id == commandID {
-			q.commandIDs = append(q.commandIDs[:i], q.commandIDs[i+1:]...)
-			break
-		}
-	}
+	q.removeCommandIDLocked(commandID)
 	if q.logger != nil {
 		q.logger.Info("phone-bridge-queue: canceled command %s", commandID)
 	}
@@ -225,14 +224,7 @@ func (q *CommandQueue) SubmitResult(resp BridgeCommandResponse) error {
 
 	// Remove from commands map
 	delete(q.commands, resp.ID)
-
-	// Remove from commandIDs slice
-	for i, id := range q.commandIDs {
-		if id == resp.ID {
-			q.commandIDs = append(q.commandIDs[:i], q.commandIDs[i+1:]...)
-			break
-		}
-	}
+	q.removeCommandIDLocked(resp.ID)
 
 	// Store result
 	q.results[resp.ID] = &CommandResult{
@@ -299,7 +291,7 @@ func (q *CommandQueue) cleanup() {
 		// Remove commands past their TTL
 		if now.After(cmd.ExpireAt) {
 			delete(q.commands, id)
-			q.removeCommandID(id)
+			q.removeCommandIDLocked(id)
 			expiredCount++
 			continue
 		}
@@ -321,7 +313,7 @@ func (q *CommandQueue) cleanup() {
 					// Max retries exceeded
 					cmd.Status = StatusTimeout
 					delete(q.commands, id)
-					q.removeCommandID(id)
+					q.removeCommandIDLocked(id)
 					timeoutCount++
 					if q.logger != nil {
 						q.logger.Error("phone-bridge-queue: command %s exceeded max retries, dropped", id)
@@ -344,8 +336,9 @@ func (q *CommandQueue) cleanup() {
 	}
 }
 
-// removeCommandID removes a command ID from the ordered slice
-func (q *CommandQueue) removeCommandID(id string) {
+// removeCommandIDLocked removes a command ID from the ordered slice.
+// The caller must hold q.mu.
+func (q *CommandQueue) removeCommandIDLocked(id string) {
 	for i, cmdID := range q.commandIDs {
 		if cmdID == id {
 			q.commandIDs = append(q.commandIDs[:i], q.commandIDs[i+1:]...)

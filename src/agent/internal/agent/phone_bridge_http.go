@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -78,7 +79,7 @@ func (pb *PhoneBridge) handleEnqueueCommand(w http.ResponseWriter, r *http.Reque
 			pb.logger.Error("phone-bridge: enqueue command failed: %v", err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(err.Error(), "already exists") {
+		if errors.Is(err, ErrCommandExists) {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusConflict)
 		} else {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusBadRequest)
@@ -156,7 +157,7 @@ func (pb *PhoneBridge) handlePollCommands(w http.ResponseWriter, r *http.Request
 func (pb *PhoneBridge) noteHTTPPollState(platform, phoneID, appState, pipBridgeEnabled string) {
 	platform = strings.TrimSpace(platform)
 	phoneID = strings.TrimSpace(phoneID)
-	appState = strings.ToLower(strings.TrimSpace(appState))
+	appState, appStateOK := normalizeAppState(appState)
 	enabled, enabledOK := parseOptionalBoolQuery(pipBridgeEnabled)
 	now := time.Now()
 
@@ -167,8 +168,7 @@ func (pb *PhoneBridge) noteHTTPPollState(platform, phoneID, appState, pipBridgeE
 	if phoneID != "" {
 		pb.phoneID = phoneID
 	}
-	switch appState {
-	case "active", "background", "inactive":
+	if appStateOK {
 		pb.appState = appState
 		pb.appStateAt = now
 	}
