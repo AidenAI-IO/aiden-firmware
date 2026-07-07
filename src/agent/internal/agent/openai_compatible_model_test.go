@@ -1152,6 +1152,166 @@ func TestOpenAICompatibleModelMergesSystemMessages(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleModelMergesConsecutiveSameRoleMessages(t *testing.T) {
+	var captured struct {
+		Messages []struct {
+			Role      string      `json:"role"`
+			Content   interface{} `json:"content"`
+			ToolCalls []struct {
+				ID   string `json:"id"`
+				Type string `json:"type"`
+			} `json:"tool_calls,omitempty"`
+		} `json:"messages"`
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	model := newOpenAICompatibleModel(server.URL, "test-model", "", server.Client())
+
+	// Test consecutive user messages (simulating state/notice role conversion)
+	_, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{
+		{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextPart("System prompt")}},
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("User message 1")}},
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("User message 2")}},
+		{Role: llms.ChatMessageTypeAI, Parts: []llms.ContentPart{llms.TextPart("Assistant response")}},
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("Another user message")}},
+	})
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	// Should have: system, merged user, assistant, user
+	if len(captured.Messages) != 4 {
+		t.Fatalf("expected 4 messages after normalization, got %d: %#v", len(captured.Messages), captured.Messages)
+	}
+
+	if captured.Messages[0].Role != "system" {
+		t.Fatalf("message 0: expected system, got %#v", captured.Messages[0])
+	}
+
+	if captured.Messages[1].Role != "user" {
+		t.Fatalf("message 1: expected user, got %#v", captured.Messages[1])
+	}
+	userContent, ok := captured.Messages[1].Content.(string)
+	if !ok || userContent != "User message 1\n\nUser message 2" {
+		t.Fatalf("message 1: expected merged user content, got %#v", captured.Messages[1].Content)
+	}
+
+	if captured.Messages[2].Role != "assistant" {
+		t.Fatalf("message 2: expected assistant, got %#v", captured.Messages[2])
+	}
+
+	if captured.Messages[3].Role != "user" {
+		t.Fatalf("message 3: expected user, got %#v", captured.Messages[3])
+	}
+}
+
+func TestOpenAICompatibleModelDoesNotMergeToolMessages(t *testing.T) {
+	var captured struct {
+		Messages []struct {
+			Role       string      `json:"role"`
+			Content    interface{} `json:"content"`
+			ToolCallID string      `json:"tool_call_id,omitempty"`
+		} `json:"messages"`
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	model := newOpenAICompatibleModel(server.URL, "test-model", "", server.Client())
+
+	// Tool messages should NOT be merged even if consecutive
+	_, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("use tools")}},
+		{Role: llms.ChatMessageTypeAI, Parts: []llms.ContentPart{
+			llms.ToolCall{ID: "call1", Type: "function", FunctionCall: &llms.FunctionCall{Name: "tool1", Arguments: "{}"}},
+		}},
+		{Role: llms.ChatMessageTypeTool, Parts: []llms.ContentPart{
+			llms.ToolCallResponse{ToolCallID: "call1", Name: "tool1", Content: "result1"},
+		}},
+		{Role: llms.ChatMessageTypeTool, Parts: []llms.ContentPart{
+			llms.ToolCallResponse{ToolCallID: "call2", Name: "tool2", Content: "result2"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	// Should keep all 4 messages separate (tool messages must not merge)
+	if len(captured.Messages) != 4 {
+		t.Fatalf("expected 4 messages (tool messages should not merge), got %d: %#v", len(captured.Messages), captured.Messages)
+	}
+
+	if captured.Messages[2].Role != "tool" || captured.Messages[2].ToolCallID != "call1" {
+		t.Fatalf("message 2: expected separate tool message, got %#v", captured.Messages[2])
+	}
+
+	if captured.Messages[3].Role != "tool" || captured.Messages[3].ToolCallID != "call2" {
+		t.Fatalf("message 3: expected separate tool message, got %#v", captured.Messages[3])
+	}
+}
+
+func TestOpenAICompatibleModelDoesNotMergeAssistantWithToolCalls(t *testing.T) {
+	var captured struct {
+		Messages []struct {
+			Role      string      `json:"role"`
+			Content   interface{} `json:"content"`
+			ToolCalls []struct {
+				ID string `json:"id"`
+			} `json:"tool_calls,omitempty"`
+		} `json:"messages"`
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	model := newOpenAICompatibleModel(server.URL, "test-model", "", server.Client())
+
+	// Assistant messages with tool_calls should NOT merge with other assistant messages
+	_, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("hello")}},
+		{Role: llms.ChatMessageTypeAI, Parts: []llms.ContentPart{llms.TextPart("text response")}},
+		{Role: llms.ChatMessageTypeAI, Parts: []llms.ContentPart{
+			llms.ToolCall{ID: "call1", Type: "function", FunctionCall: &llms.FunctionCall{Name: "tool1", Arguments: "{}"}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	// Should keep 3 messages: user, assistant (text), assistant (tool_calls)
+	if len(captured.Messages) != 3 {
+		t.Fatalf("expected 3 messages (assistant with tool_calls should not merge), got %d: %#v", len(captured.Messages), captured.Messages)
+	}
+
+	if captured.Messages[1].Role != "assistant" || len(captured.Messages[1].ToolCalls) != 0 {
+		t.Fatalf("message 1: expected plain assistant, got %#v", captured.Messages[1])
+	}
+
+	if captured.Messages[2].Role != "assistant" || len(captured.Messages[2].ToolCalls) == 0 {
+		t.Fatalf("message 2: expected assistant with tool_calls, got %#v", captured.Messages[2])
+	}
+}
+
 func TestOpenAICompatibleModelIncludesUsageInGenerationInfo(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
