@@ -451,18 +451,15 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 	if callOpts.JSONMode {
 		reqPayload.ResponseFormat = map[string]string{"type": "json_object"}
 	}
-	// Apply reasoning policy based on config and request context
-	reasoningEffort := m.reasoningEffort
-	if reasoningEffort == "" && len(callOpts.Tools) == 0 && len(callOpts.Functions) == 0 {
-		// Auto-disable reasoning for simple requests without tools when not explicitly configured
-		reasoningEffort = "none"
-	}
-	if reasoningEffort != "" {
+	// Apply reasoning policy: only include reasoning fields when explicitly configured.
+	// Empty string = auto mode = omit from request (let model/provider decide).
+	// This prevents sending unsupported parameters to providers that don't support reasoning.
+	if m.reasoningEffort != "" {
 		reqPayload.Reasoning = &reasoningConfig{
-			Effort:  reasoningEffort,
-			Exclude: reasoningEffort == "none",
+			Effort:  m.reasoningEffort,
+			Exclude: m.reasoningEffort == "none",
 		}
-		reqPayload.ReasoningEffort = reasoningEffort
+		reqPayload.ReasoningEffort = m.reasoningEffort
 	}
 	generationInfo["llm_request_prepare_ms"] = time.Since(requestPrepareStart).Milliseconds()
 

@@ -36,7 +36,8 @@ func TestReasoningPolicyNoTools(t *testing.T) {
 
 	model := newOpenAICompatibleModel(server.URL, "test-model", "token", server.Client())
 
-	// Request without tools - should get reasoning policy
+	// Request without tools and without explicit reasoning_effort config
+	// should NOT include reasoning fields (auto mode = omit from request)
 	_, err := model.GenerateContent(
 		context.Background(),
 		[]llms.MessageContent{
@@ -47,18 +48,12 @@ func TestReasoningPolicyNoTools(t *testing.T) {
 		t.Fatalf("GenerateContent failed: %v", err)
 	}
 
-	// Verify reasoning policy was applied
-	if capturedRequest.Reasoning == nil {
-		t.Fatal("Expected reasoning config to be set for no-tool request")
+	// Verify reasoning fields are omitted when not explicitly configured
+	if capturedRequest.Reasoning != nil {
+		t.Errorf("Expected reasoning config to be nil (auto mode), got %+v", capturedRequest.Reasoning)
 	}
-	if capturedRequest.Reasoning.Effort != "none" {
-		t.Errorf("Expected reasoning effort=none, got %q", capturedRequest.Reasoning.Effort)
-	}
-	if !capturedRequest.Reasoning.Exclude {
-		t.Error("Expected reasoning exclude=true")
-	}
-	if capturedRequest.ReasoningEffort != "none" {
-		t.Errorf("Expected reasoning_effort=none, got %q", capturedRequest.ReasoningEffort)
+	if capturedRequest.ReasoningEffort != "" {
+		t.Errorf("Expected reasoning_effort to be empty (auto mode), got %q", capturedRequest.ReasoningEffort)
 	}
 }
 
