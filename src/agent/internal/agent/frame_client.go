@@ -207,29 +207,44 @@ func (c *FrameServiceClient) Health() (*FrameHealthResult, error) {
 		return nil, fmt.Errorf("frame service health failed: %s", resp.Status)
 	}
 
-	latestSeq, err := parseFlexibleUint64(resp.LatestSeq)
-	if err != nil {
-		return nil, fmt.Errorf("latest_seq: %w", err)
+	parseUint64Field := func(name string, data json.RawMessage) (uint64, error) {
+		value, err := parseFlexibleUint64(data)
+		if err != nil {
+			return 0, fmt.Errorf("%s: %w", name, err)
+		}
+		return value, nil
 	}
-	frameAgeMs, err := parseFlexibleUint64(resp.FrameAgeMs)
-	if err != nil {
-		return nil, fmt.Errorf("frame_age_ms: %w", err)
+	parseUint32Field := func(name string, data json.RawMessage) (uint32, error) {
+		value, err := parseFlexibleUint32(data)
+		if err != nil {
+			return 0, fmt.Errorf("%s: %w", name, err)
+		}
+		return value, nil
 	}
-	ringBufferSize, err := parseFlexibleUint32(resp.RingBufferSize)
+
+	latestSeq, err := parseUint64Field("latest_seq", resp.LatestSeq)
 	if err != nil {
-		return nil, fmt.Errorf("ring_buffer_size: %w", err)
+		return nil, err
 	}
-	ringBufferUsed, err := parseFlexibleUint32(resp.RingBufferUsed)
+	frameAgeMs, err := parseUint64Field("frame_age_ms", resp.FrameAgeMs)
 	if err != nil {
-		return nil, fmt.Errorf("ring_buffer_used: %w", err)
+		return nil, err
 	}
-	consecutiveFailures, err := parseFlexibleUint32(resp.ConsecutiveFailures)
+	ringBufferSize, err := parseUint32Field("ring_buffer_size", resp.RingBufferSize)
 	if err != nil {
-		return nil, fmt.Errorf("consecutive_failures: %w", err)
+		return nil, err
 	}
-	lastRecoveryTs, err := parseFlexibleUint64(resp.LastRecoveryTs)
+	ringBufferUsed, err := parseUint32Field("ring_buffer_used", resp.RingBufferUsed)
 	if err != nil {
-		return nil, fmt.Errorf("last_recovery_ts: %w", err)
+		return nil, err
+	}
+	consecutiveFailures, err := parseUint32Field("consecutive_failures", resp.ConsecutiveFailures)
+	if err != nil {
+		return nil, err
+	}
+	lastRecoveryTs, err := parseUint64Field("last_recovery_ts", resp.LastRecoveryTs)
+	if err != nil {
+		return nil, err
 	}
 
 	return &FrameHealthResult{

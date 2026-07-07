@@ -131,6 +131,22 @@ func TestFrameHealthResponseSupportsStringNumbers(t *testing.T) {
 		t.Fatalf("ring_buffer_size = %d, want 3", ringBufferSize)
 	}
 
+	ringBufferUsed, err := parseFlexibleUint32(resp.RingBufferUsed)
+	if err != nil {
+		t.Fatalf("parse ring_buffer_used: %v", err)
+	}
+	if ringBufferUsed != 3 {
+		t.Fatalf("ring_buffer_used = %d, want 3", ringBufferUsed)
+	}
+
+	consecutiveFailures, err := parseFlexibleUint32(resp.ConsecutiveFailures)
+	if err != nil {
+		t.Fatalf("parse consecutive_failures: %v", err)
+	}
+	if consecutiveFailures != 0 {
+		t.Fatalf("consecutive_failures = %d, want 0", consecutiveFailures)
+	}
+
 	lastRecoveryTs, err := parseFlexibleUint64(resp.LastRecoveryTs)
 	if err != nil {
 		t.Fatalf("parse last_recovery_ts: %v", err)
