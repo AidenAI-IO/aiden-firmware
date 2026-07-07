@@ -184,6 +184,27 @@ func TestExecuteToolCallSkillManageEditAcceptsMarkdownQuotesInContent(t *testing
 	}
 }
 
+func TestExecuteToolCallRepairsQuotesInStringArrayElements(t *testing.T) {
+	tool := &stubTool{name: "shell", description: "Run shell commands.", output: "ok"}
+	specs := NewToolSpecs([]langtools.Tool{tool})
+	input := `{"segments":["tap", "type "done"", "select "first" item"]}`
+
+	result := executeToolCall(context.Background(), ToolCallExecution{
+		Specs: specs,
+		Action: schema.AgentAction{
+			Tool:      "shell",
+			ToolInput: input,
+		},
+	})
+
+	if result.Result.IsError() {
+		t.Fatalf("string-array payload should be repaired, got %s", result.Result.Output)
+	}
+	if len(tool.inputs) != 1 || tool.inputs[0] != `{"segments":["tap", "type \"done\"", "select \"first\" item"]}` {
+		t.Fatalf("tool inputs = %#v, want repaired string-array payload", tool.inputs)
+	}
+}
+
 func TestExecuteToolCallInvalidToolEmitsToolCallAndResult(t *testing.T) {
 	recorder := &toolExecutionCallbackRecorder{}
 	specs := NewToolSpecs([]langtools.Tool{&stubTool{name: "echo", description: "Echo.", output: "ok"}})

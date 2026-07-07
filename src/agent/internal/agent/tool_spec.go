@@ -462,20 +462,8 @@ func repairJSONControlCharsInStrings(input string) string {
 			case '"':
 				b.WriteRune(r)
 				inString = false
-			case '\n':
-				b.WriteString(`\n`)
-			case '\r':
-				b.WriteString(`\r`)
-			case '\t':
-				b.WriteString(`\t`)
-			case '\b':
-				b.WriteString(`\b`)
-			case '\f':
-				b.WriteString(`\f`)
 			default:
-				if r >= 0 && r < 0x20 {
-					fmt.Fprintf(&b, `\u%04x`, r)
-				} else {
+				if !writeEscapedJSONControlRune(&b, r) {
 					b.WriteRune(r)
 				}
 			}
@@ -508,6 +496,7 @@ func repairJSONStringValueQuotes(input string) string {
 	escaped := false
 	valueString := false
 	var prevSignificant rune
+	var containers []rune
 	for i, r := range runes {
 		if escaped {
 			b.WriteRune(r)
@@ -527,20 +516,8 @@ func repairJSONStringValueQuotes(input string) string {
 				} else {
 					b.WriteString(`\"`)
 				}
-			case '\n':
-				b.WriteString(`\n`)
-			case '\r':
-				b.WriteString(`\r`)
-			case '\t':
-				b.WriteString(`\t`)
-			case '\b':
-				b.WriteString(`\b`)
-			case '\f':
-				b.WriteString(`\f`)
 			default:
-				if r >= 0 && r < 0x20 {
-					fmt.Fprintf(&b, `\u%04x`, r)
-				} else {
+				if !writeEscapedJSONControlRune(&b, r) {
 					b.WriteRune(r)
 				}
 			}
@@ -551,10 +528,11 @@ func repairJSONStringValueQuotes(input string) string {
 		if r == '"' {
 			inString = true
 			escaped = false
-			valueString = prevSignificant == ':' || prevSignificant == '['
+			valueString = startsJSONStringValue(prevSignificant, containers)
 			continue
 		}
 		if !isJSONSpace(r) {
+			containers = updateJSONContainerStack(containers, r)
 			prevSignificant = r
 		}
 	}
@@ -564,6 +542,51 @@ func repairJSONStringValueQuotes(input string) string {
 		return repaired
 	}
 	return input
+}
+
+func writeEscapedJSONControlRune(b *strings.Builder, r rune) bool {
+	switch r {
+	case '\n':
+		b.WriteString(`\n`)
+	case '\r':
+		b.WriteString(`\r`)
+	case '\t':
+		b.WriteString(`\t`)
+	case '\b':
+		b.WriteString(`\b`)
+	case '\f':
+		b.WriteString(`\f`)
+	default:
+		if r < 0x20 {
+			fmt.Fprintf(b, `\u%04x`, r)
+			return true
+		}
+		return false
+	}
+	return true
+}
+
+func startsJSONStringValue(prevSignificant rune, containers []rune) bool {
+	return prevSignificant == ':' || prevSignificant == '[' || (prevSignificant == ',' && currentJSONContainer(containers) == '[')
+}
+
+func updateJSONContainerStack(containers []rune, r rune) []rune {
+	switch r {
+	case '{', '[':
+		return append(containers, r)
+	case '}', ']':
+		if len(containers) > 0 {
+			return containers[:len(containers)-1]
+		}
+	}
+	return containers
+}
+
+func currentJSONContainer(containers []rune) rune {
+	if len(containers) == 0 {
+		return 0
+	}
+	return containers[len(containers)-1]
 }
 
 func stringQuoteCloses(valueString bool, next rune) bool {
