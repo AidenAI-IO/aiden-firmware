@@ -100,16 +100,35 @@ type attachmentStore struct {
 }
 
 func NewContextManager() *ContextManager {
-	sessionID := "session_" + uuid.New().String()
 	return &ContextManager{
-		sessionID:   sessionID,
+		sessionID:   newSessionID(),
 		messageList: []Message{},
 		mu:          sync.RWMutex{},
 	}
 }
 
+func newSessionID() string {
+	return "session_" + uuid.New().String()
+}
+
 func (c *ContextManager) GetSessionID() string {
 	return c.sessionID
+}
+
+func (c *ContextManager) Setup(sessionID string, messages []Message, hooks []AppendMessageHook) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		sessionID = newSessionID()
+	}
+
+	c.mu.Lock()
+	store := c.detachAttachmentStoreLocked()
+	c.sessionID = sessionID
+	c.messageList = cloneMessages(messages)
+	c.appendHooks = append([]AppendMessageHook(nil), hooks...)
+	c.mu.Unlock()
+
+	releaseAttachmentStore(store)
 }
 
 func (c *ContextManager) AppendMessage(message Message) {
@@ -173,7 +192,7 @@ func (c *ContextManager) Reset() {
 	c.mu.Lock()
 	store := c.detachAttachmentStoreLocked()
 	c.messageList = nil
-	c.sessionID = "session_" + uuid.New().String()
+	c.sessionID = newSessionID()
 	c.mu.Unlock()
 
 	releaseAttachmentStore(store)

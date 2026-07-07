@@ -227,6 +227,62 @@ func TestContextManagerReset(t *testing.T) {
 	}
 }
 
+func TestContextManagerSetupInitializesWithoutRunningHooks(t *testing.T) {
+	manager := NewContextManager()
+	history := []Message{
+		{Role: MessageRoleSystem, Content: "system"},
+		{Role: MessageRoleUser, Content: "hello"},
+	}
+	hookCalls := 0
+	hooks := []AppendMessageHook{
+		func(message Message) AppendMessageHookResult {
+			hookCalls++
+			message.Content = "hooked:" + message.Content
+			return AppendMessageHookResult{Message: &message}
+		},
+	}
+
+	manager.Setup("session_setup", history, hooks)
+
+	if hookCalls != 0 {
+		t.Fatalf("hook calls = %d, want 0 during setup", hookCalls)
+	}
+	dump := manager.MessageListDump()
+	if dump.SessionID != "session_setup" {
+		t.Fatalf("session id = %q, want %q", dump.SessionID, "session_setup")
+	}
+	if !reflect.DeepEqual(dump.Messages, history) {
+		t.Fatalf("messages = %#v, want %#v", dump.Messages, history)
+	}
+}
+
+func TestContextManagerSetupRegistersHooksForFutureAppends(t *testing.T) {
+	manager := NewContextManager()
+	manager.Setup("session_setup", []Message{
+		{Role: MessageRoleUser, Content: "history"},
+	}, []AppendMessageHook{
+		func(message Message) AppendMessageHookResult {
+			message.Content = "hooked:" + message.Content
+			return AppendMessageHookResult{Message: &message}
+		},
+	})
+
+	manager.AppendMessage(Message{Role: MessageRoleAssistant, Content: "new"})
+
+	dump := manager.MessageListDump()
+	got := []Message{
+		{Role: dump.Messages[0].Role, Content: dump.Messages[0].Content},
+		{Role: dump.Messages[1].Role, Content: dump.Messages[1].Content},
+	}
+	want := []Message{
+		{Role: MessageRoleUser, Content: "history"},
+		{Role: MessageRoleAssistant, Content: "hooked:new"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("messages = %#v, want %#v", got, want)
+	}
+}
+
 func TestContextManagerAppendMessageHookModifiesMessage(t *testing.T) {
 	manager := NewContextManager()
 	manager.AddAppendMessageHook(func(message Message) AppendMessageHookResult {
