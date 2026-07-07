@@ -142,17 +142,17 @@ type FrameHealthResult struct {
 }
 
 type frameHealthResponse struct {
-	Status                  string  `json:"status"`
-	State                   string  `json:"state"`
-	LatestSeq               uint64  `json:"latest_seq"`
-	FrameAgeMs              uint64  `json:"frame_age_ms"`
-	RingBufferSize          uint32  `json:"ring_buffer_size"`
-	RingBufferUsed          uint32  `json:"ring_buffer_used"`
-	ConsecutiveFailures     uint32  `json:"consecutive_failures"`
-	LastError               string  `json:"last_error"`
-	LastRecoveryTs          uint64  `json:"last_recovery_ts"`
-	AvgFrameServeLatencyMs  float64 `json:"avg_frame_serve_latency_ms"`
-	AvgCaptureCopyLatencyMs float64 `json:"avg_capture_copy_latency_ms"`
+	Status                  string          `json:"status"`
+	State                   string          `json:"state"`
+	LatestSeq               json.RawMessage `json:"latest_seq"`
+	FrameAgeMs              json.RawMessage `json:"frame_age_ms"`
+	RingBufferSize          json.RawMessage `json:"ring_buffer_size"`
+	RingBufferUsed          json.RawMessage `json:"ring_buffer_used"`
+	ConsecutiveFailures     json.RawMessage `json:"consecutive_failures"`
+	LastError               string          `json:"last_error"`
+	LastRecoveryTs          json.RawMessage `json:"last_recovery_ts"`
+	AvgFrameServeLatencyMs  float64         `json:"avg_frame_serve_latency_ms"`
+	AvgCaptureCopyLatencyMs float64         `json:"avg_capture_copy_latency_ms"`
 }
 
 // LatestFrame fetches the most recent frame from the service.
@@ -207,15 +207,40 @@ func (c *FrameServiceClient) Health() (*FrameHealthResult, error) {
 		return nil, fmt.Errorf("frame service health failed: %s", resp.Status)
 	}
 
+	latestSeq, err := parseFlexibleUint64(resp.LatestSeq)
+	if err != nil {
+		return nil, fmt.Errorf("latest_seq: %w", err)
+	}
+	frameAgeMs, err := parseFlexibleUint64(resp.FrameAgeMs)
+	if err != nil {
+		return nil, fmt.Errorf("frame_age_ms: %w", err)
+	}
+	ringBufferSize, err := parseFlexibleUint32(resp.RingBufferSize)
+	if err != nil {
+		return nil, fmt.Errorf("ring_buffer_size: %w", err)
+	}
+	ringBufferUsed, err := parseFlexibleUint32(resp.RingBufferUsed)
+	if err != nil {
+		return nil, fmt.Errorf("ring_buffer_used: %w", err)
+	}
+	consecutiveFailures, err := parseFlexibleUint32(resp.ConsecutiveFailures)
+	if err != nil {
+		return nil, fmt.Errorf("consecutive_failures: %w", err)
+	}
+	lastRecoveryTs, err := parseFlexibleUint64(resp.LastRecoveryTs)
+	if err != nil {
+		return nil, fmt.Errorf("last_recovery_ts: %w", err)
+	}
+
 	return &FrameHealthResult{
 		State:                   resp.State,
-		LatestSeq:               resp.LatestSeq,
-		FrameAgeMs:              resp.FrameAgeMs,
-		RingBufferSize:          resp.RingBufferSize,
-		RingBufferUsed:          resp.RingBufferUsed,
-		ConsecutiveFailures:     resp.ConsecutiveFailures,
+		LatestSeq:               latestSeq,
+		FrameAgeMs:              frameAgeMs,
+		RingBufferSize:          ringBufferSize,
+		RingBufferUsed:          ringBufferUsed,
+		ConsecutiveFailures:     consecutiveFailures,
 		LastError:               resp.LastError,
-		LastRecoveryTs:          resp.LastRecoveryTs,
+		LastRecoveryTs:          lastRecoveryTs,
 		AvgFrameServeLatencyMs:  resp.AvgFrameServeLatencyMs,
 		AvgCaptureCopyLatencyMs: resp.AvgCaptureCopyLatencyMs,
 	}, nil

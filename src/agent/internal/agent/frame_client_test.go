@@ -87,6 +87,66 @@ func TestFrameMetadataUnmarshalAllowsOmittedSourceAndCropFields(t *testing.T) {
 	}
 }
 
+func TestFrameHealthResponseSupportsStringNumbers(t *testing.T) {
+	input := []byte(`{
+		"status":"OK",
+		"state":"RUNNING",
+		"latest_seq":"13068",
+		"frame_age_ms":"122",
+		"ring_buffer_size":"3",
+		"ring_buffer_used":"3",
+		"consecutive_failures":"0",
+		"last_error":"capture failed",
+		"last_recovery_ts":"28099571095",
+		"avg_frame_serve_latency_ms":645.125,
+		"avg_capture_copy_latency_ms":18.609
+	}`)
+
+	var resp frameHealthResponse
+	if err := json.Unmarshal(input, &resp); err != nil {
+		t.Fatalf("unmarshal frameHealthResponse: %v", err)
+	}
+
+	latestSeq, err := parseFlexibleUint64(resp.LatestSeq)
+	if err != nil {
+		t.Fatalf("parse latest_seq: %v", err)
+	}
+	if latestSeq != 13068 {
+		t.Fatalf("latest_seq = %d, want 13068", latestSeq)
+	}
+
+	frameAgeMs, err := parseFlexibleUint64(resp.FrameAgeMs)
+	if err != nil {
+		t.Fatalf("parse frame_age_ms: %v", err)
+	}
+	if frameAgeMs != 122 {
+		t.Fatalf("frame_age_ms = %d, want 122", frameAgeMs)
+	}
+
+	ringBufferSize, err := parseFlexibleUint32(resp.RingBufferSize)
+	if err != nil {
+		t.Fatalf("parse ring_buffer_size: %v", err)
+	}
+	if ringBufferSize != 3 {
+		t.Fatalf("ring_buffer_size = %d, want 3", ringBufferSize)
+	}
+
+	lastRecoveryTs, err := parseFlexibleUint64(resp.LastRecoveryTs)
+	if err != nil {
+		t.Fatalf("parse last_recovery_ts: %v", err)
+	}
+	if lastRecoveryTs != 28099571095 {
+		t.Fatalf("last_recovery_ts = %d, want 28099571095", lastRecoveryTs)
+	}
+
+	if resp.AvgFrameServeLatencyMs != 645.125 {
+		t.Fatalf("avg_frame_serve_latency_ms = %v, want 645.125", resp.AvgFrameServeLatencyMs)
+	}
+	if resp.AvgCaptureCopyLatencyMs != 18.609 {
+		t.Fatalf("avg_capture_copy_latency_ms = %v, want 18.609", resp.AvgCaptureCopyLatencyMs)
+	}
+}
+
 func TestParseCoordinateDebugScreenshotOptionsDefaultsToCropping(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/screenshot.jpg", nil)
 	options := parseCoordinateDebugScreenshotOptions(req)
