@@ -21,7 +21,7 @@ const (
 	textInputModeSearch textInputInteractionMode = "search"
 
 	textInputKeystrokeGap           = 60 * time.Millisecond
-	textInputFocusRestoreDelay      = 250 * time.Millisecond
+	textInputFocusRestoreDelay      = time.Second
 	textInputIMESwitchSettleDelay   = time.Second
 	textInputClearBackspaceRepeats  = 32
 	textInputClearBackspaceFallback = 16
