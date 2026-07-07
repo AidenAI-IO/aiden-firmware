@@ -1088,20 +1088,17 @@ func normalizeCompatibleMessages(messages []compatibleMessage) []compatibleMessa
 	}
 
 	if len(systemSegments) == 0 && !preserveSystemParts {
-		return normalized
+		return mergeConsecutiveSameRoleMessages(normalized)
 	}
 	if preserveSystemParts {
-		return append([]compatibleMessage{{Role: "system", Content: systemParts}}, normalized...)
+		return mergeConsecutiveSameRoleMessages(append([]compatibleMessage{{Role: "system", Content: systemParts}}, normalized...))
 	}
 
 	mergedSystem := compatibleMessage{
 		Role:    "system",
 		Content: strings.Join(systemSegments, "\n\n"),
 	}
-	normalized = append([]compatibleMessage{mergedSystem}, normalized...)
-
-	// Merge consecutive messages with the same role (for providers like Claude/Gemini that require strict alternation)
-	return mergeConsecutiveSameRoleMessages(normalized)
+	return mergeConsecutiveSameRoleMessages(append([]compatibleMessage{mergedSystem}, normalized...))
 }
 
 // mergeConsecutiveSameRoleMessages merges consecutive messages with the same role.
