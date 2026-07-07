@@ -39,10 +39,10 @@ func (t *EnterTextInFieldTool) ArgsSchema() map[string]any {
 		"platform":          stringEnumArgSchema("Target platform.", "ios", "android", "mac"),
 		"mode":              stringEnumArgSchema("Interaction mode. Use \"search\" for quick handoff in search boxes; omit for normal form entry.", "form", "search"),
 		"focus":             focusPointArgSchema("Input field coordinates."),
-		"segments":          stringArrayArgSchema("Required for composition/CJK: IME romanization syllables in order, e.g. [\"ni\",\"hao\"] for 你好."),
+		"segments":          stringArrayArgSchema("IME romanization syllables for CJK (e.g. [\"ni\",\"hao\"] for 你好). Pass [] for pure ASCII text."),
 		"max_attempts":      integerArgSchema("Retry attempts on verify failure (default 3)."),
 		"send_after_commit": boolArgSchema("After the exact target text is verified in the field, press send/submit and verify the input cleared or changed. Prefer with prepared clipboard text in an already-open message chat."),
-	}, "text", "focus")
+	}, "text", "focus", "segments")
 }
 
 func (t *EnterTextInFieldTool) Call(ctx context.Context, input string) (string, error) {
