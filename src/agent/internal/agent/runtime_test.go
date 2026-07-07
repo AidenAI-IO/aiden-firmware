@@ -1097,6 +1097,13 @@ func TestRuntimeRunDoesNotPersistUnusedSteerProviderAsConversationMessage(t *tes
 func TestRuntimeRunPersistsAssistantOutputOnce(t *testing.T) {
 	storageDir := filepath.Join(t.TempDir(), "memory")
 	memoryManager := NewMemoryManager(storageDir)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := memoryManager.WaitMaintenance(ctx); err != nil {
+			t.Fatalf("wait memory maintenance cleanup: %v", err)
+		}
+	})
 	ctx := context.Background()
 
 	model := &scriptedModel{responses: roleDirectResponses("hello answer")}

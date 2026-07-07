@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -1077,6 +1078,334 @@ func TestKeyboardTapSendsModifierChordWithHold(t *testing.T) {
 	}
 }
 
+func TestKeyboardTapSupportsAndroidBackAlias(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	androidDev, androidPath := newTestHIDDevice(t)
+	tool := &KeyboardTapTool{dev: dev, androidDev: androidDev}
+
+	out, err := tool.Call(context.Background(), `{"keys":["KEYCODE_BACK"]}`)
+	if err != nil {
+		t.Fatalf("Call failed: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("unexpected output: %s", out)
+	}
+
+	dev.Close()
+	androidDev.Close()
+	if data, err := os.ReadFile(path); err != nil {
+		t.Fatalf("ReadFile keyboard path: %v", err)
+	} else if len(data) != 0 {
+		t.Fatalf("standard keyboard path bytes = %v, want none for android extension key", data)
+	}
+	data, err := os.ReadFile(androidPath)
+	if err != nil {
+		t.Fatalf("ReadFile android path: %v", err)
+	}
+	if len(data) != 4 {
+		t.Fatalf("report bytes = %d, want 4 (consumer usage + release)", len(data))
+	}
+	if got := uint16(data[0]) | uint16(data[1])<<8; got != androidExtensionUsageMap["android_back"] {
+		t.Fatalf("android back usage = 0x%04x, want 0x%04x", got, androidExtensionUsageMap["android_back"])
+	}
+	if data[2] != 0 || data[3] != 0 {
+		t.Fatalf("android back release = %v, want [0 0]", data[2:4])
+	}
+}
+
+func TestKeyboardTapSupportsAndroidVolumeAlias(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	androidDev, androidPath := newTestHIDDevice(t)
+	tool := &KeyboardTapTool{dev: dev, androidDev: androidDev}
+
+	out, err := tool.Call(context.Background(), `{"keys":["KEYCODE_VOLUME_UP"]}`)
+	if err != nil {
+		t.Fatalf("Call failed: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("unexpected output: %s", out)
+	}
+
+	dev.Close()
+	androidDev.Close()
+	if data, err := os.ReadFile(path); err != nil {
+		t.Fatalf("ReadFile keyboard path: %v", err)
+	} else if len(data) != 0 {
+		t.Fatalf("standard keyboard path bytes = %v, want none for android extension key", data)
+	}
+	data, err := os.ReadFile(androidPath)
+	if err != nil {
+		t.Fatalf("ReadFile android path: %v", err)
+	}
+	if len(data) != 4 {
+		t.Fatalf("report bytes = %d, want 4 (consumer usage + release)", len(data))
+	}
+	if got := uint16(data[0]) | uint16(data[1])<<8; got != androidExtensionUsageMap["volume_up"] {
+		t.Fatalf("android volume_up usage = 0x%04x, want 0x%04x", got, androidExtensionUsageMap["volume_up"])
+	}
+}
+
+func TestKeyboardTapSupportsAndroidAppSwitchAlias(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	androidDev, androidPath := newTestHIDDevice(t)
+	tool := &KeyboardTapTool{dev: dev, androidDev: androidDev}
+
+	out, err := tool.Call(context.Background(), `{"keys":["KEYCODE_APP_SWITCH"]}`)
+	if err != nil {
+		t.Fatalf("Call failed: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("unexpected output: %s", out)
+	}
+
+	dev.Close()
+	androidDev.Close()
+	if data, err := os.ReadFile(path); err != nil {
+		t.Fatalf("ReadFile keyboard path: %v", err)
+	} else if len(data) != 0 {
+		t.Fatalf("standard keyboard path bytes = %v, want none for android extension key", data)
+	}
+	data, err := os.ReadFile(androidPath)
+	if err != nil {
+		t.Fatalf("ReadFile android path: %v", err)
+	}
+	if len(data) != 4 {
+		t.Fatalf("report bytes = %d, want 4 (consumer usage + release)", len(data))
+	}
+	if got := uint16(data[0]) | uint16(data[1])<<8; got != androidExtensionUsageMap["app_switch"] {
+		t.Fatalf("android app_switch usage = 0x%04x, want 0x%04x", got, androidExtensionUsageMap["app_switch"])
+	}
+}
+
+func TestKeyboardTapSupportsAdditionalAndroidKeycodeAliases(t *testing.T) {
+	testCases := []struct {
+		input  string
+		mapKey string
+	}{
+		{input: "KEYCODE_SLEEP", mapKey: "sleep"},
+		{input: "KEYCODE_MEDIA_PLAY_PAUSE", mapKey: "media_play_pause"},
+		{input: "KEYCODE_MEDIA_STOP", mapKey: "media_stop"},
+		{input: "KEYCODE_MEDIA_NEXT", mapKey: "media_next"},
+		{input: "KEYCODE_MEDIA_PREVIOUS", mapKey: "media_previous"},
+		{input: "KEYCODE_MEDIA_REWIND", mapKey: "media_rewind"},
+		{input: "KEYCODE_MEDIA_FAST_FORWARD", mapKey: "media_fast_forward"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.input, func(t *testing.T) {
+			dev, path := newTestHIDDevice(t)
+			androidDev, androidPath := newTestHIDDevice(t)
+			tool := &KeyboardTapTool{dev: dev, androidDev: androidDev}
+
+			out, err := tool.Call(context.Background(), fmt.Sprintf(`{"keys":["%s"]}`, tc.input))
+			if err != nil {
+				t.Fatalf("Call failed: %v", err)
+			}
+			if out != "ok" {
+				t.Fatalf("unexpected output: %s", out)
+			}
+
+			dev.Close()
+			androidDev.Close()
+			if data, err := os.ReadFile(path); err != nil {
+				t.Fatalf("ReadFile keyboard path: %v", err)
+			} else if len(data) != 0 {
+				t.Fatalf("standard keyboard path bytes = %v, want none for android extension key", data)
+			}
+			data, err := os.ReadFile(androidPath)
+			if err != nil {
+				t.Fatalf("ReadFile android path: %v", err)
+			}
+			if len(data) != 4 {
+				t.Fatalf("report bytes = %d, want 4 (consumer usage + release)", len(data))
+			}
+			if got := uint16(data[0]) | uint16(data[1])<<8; got != androidExtensionUsageMap[tc.mapKey] {
+				t.Fatalf("usage = 0x%04x, want 0x%04x", got, androidExtensionUsageMap[tc.mapKey])
+			}
+		})
+	}
+}
+
+func TestKeyboardTapSupportsAndroidSettingsUsageAlias(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	androidDev, androidPath := newTestHIDDevice(t)
+	tool := &KeyboardTapTool{dev: dev, androidDev: androidDev}
+
+	out, err := tool.Call(context.Background(), `{"keys":["KEY_USAGE_SETTINGS"]}`)
+	if err != nil {
+		t.Fatalf("Call failed: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("unexpected output: %s", out)
+	}
+
+	dev.Close()
+	androidDev.Close()
+	if data, err := os.ReadFile(path); err != nil {
+		t.Fatalf("ReadFile keyboard path: %v", err)
+	} else if len(data) != 0 {
+		t.Fatalf("standard keyboard path bytes = %v, want none for android extension key", data)
+	}
+	data, err := os.ReadFile(androidPath)
+	if err != nil {
+		t.Fatalf("ReadFile android path: %v", err)
+	}
+	if len(data) != 4 {
+		t.Fatalf("report bytes = %d, want 4 (consumer usage + release)", len(data))
+	}
+	if got := uint16(data[0]) | uint16(data[1])<<8; got != androidExtensionUsageMap["key_usage_settings"] {
+		t.Fatalf("android settings usage = 0x%04x, want 0x%04x", got, androidExtensionUsageMap["key_usage_settings"])
+	}
+}
+
+func TestKeyboardTapSupportsAndroidLanguageSwitchUsageAlias(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	androidDev, androidPath := newTestHIDDevice(t)
+	tool := &KeyboardTapTool{dev: dev, androidDev: androidDev}
+
+	out, err := tool.Call(context.Background(), `{"keys":["KEY_USAGE_LANGUAGE_SWITCH"]}`)
+	if err != nil {
+		t.Fatalf("Call failed: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("unexpected output: %s", out)
+	}
+
+	dev.Close()
+	androidDev.Close()
+	if data, err := os.ReadFile(path); err != nil {
+		t.Fatalf("ReadFile keyboard path: %v", err)
+	} else if len(data) != 0 {
+		t.Fatalf("standard keyboard path bytes = %v, want none for android extension key", data)
+	}
+	data, err := os.ReadFile(androidPath)
+	if err != nil {
+		t.Fatalf("ReadFile android path: %v", err)
+	}
+	if len(data) != 4 {
+		t.Fatalf("report bytes = %d, want 4 (consumer usage + release)", len(data))
+	}
+	if got := uint16(data[0]) | uint16(data[1])<<8; got != androidExtensionUsageMap["key_usage_language_switch"] {
+		t.Fatalf("android language_switch usage = 0x%04x, want 0x%04x", got, androidExtensionUsageMap["key_usage_language_switch"])
+	}
+}
+
+func TestKeyboardTapSupportsAdditionalAndroidUsageAliases(t *testing.T) {
+	testCases := []struct {
+		input  string
+		mapKey string
+	}{
+		{input: "KEY_USAGE_SCREENSHOT", mapKey: "key_usage_screenshot"},
+		{input: "KEY_USAGE_WINDOW", mapKey: "key_usage_window"},
+		{input: "KEY_USAGE_BRIGHTNESS_UP", mapKey: "key_usage_brightness_up"},
+		{input: "KEY_USAGE_BRIGHTNESS_DOWN", mapKey: "key_usage_brightness_down"},
+		{input: "KEY_USAGE_DICTATE", mapKey: "key_usage_dictate"},
+		{input: "KEY_USAGE_EMOJI_PICKER", mapKey: "key_usage_emoji_picker"},
+		{input: "KEY_USAGE_MEDIA_AUDIO_TRACK", mapKey: "key_usage_media_audio_track"},
+		{input: "KEY_USAGE_PROFILE_SWITCH", mapKey: "key_usage_profile_switch"},
+		{input: "KEY_USAGE_NEW", mapKey: "key_usage_new"},
+		{input: "KEY_USAGE_CLOSE", mapKey: "key_usage_close"},
+		{input: "KEY_USAGE_PRINT", mapKey: "key_usage_print"},
+		{input: "KEY_USAGE_REFRESH", mapKey: "key_usage_refresh"},
+		{input: "KEY_USAGE_FULLSCREEN", mapKey: "key_usage_fullscreen"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.input, func(t *testing.T) {
+			dev, path := newTestHIDDevice(t)
+			androidDev, androidPath := newTestHIDDevice(t)
+			tool := &KeyboardTapTool{dev: dev, androidDev: androidDev}
+
+			out, err := tool.Call(context.Background(), fmt.Sprintf(`{"keys":["%s"]}`, tc.input))
+			if err != nil {
+				t.Fatalf("Call failed: %v", err)
+			}
+			if out != "ok" {
+				t.Fatalf("unexpected output: %s", out)
+			}
+
+			dev.Close()
+			androidDev.Close()
+			if data, err := os.ReadFile(path); err != nil {
+				t.Fatalf("ReadFile keyboard path: %v", err)
+			} else if len(data) != 0 {
+				t.Fatalf("standard keyboard path bytes = %v, want none for android extension key", data)
+			}
+			data, err := os.ReadFile(androidPath)
+			if err != nil {
+				t.Fatalf("ReadFile android path: %v", err)
+			}
+			if len(data) != 4 {
+				t.Fatalf("report bytes = %d, want 4 (consumer usage + release)", len(data))
+			}
+			if got := uint16(data[0]) | uint16(data[1])<<8; got != androidExtensionUsageMap[tc.mapKey] {
+				t.Fatalf("usage = 0x%04x, want 0x%04x", got, androidExtensionUsageMap[tc.mapKey])
+			}
+		})
+	}
+}
+
+func TestKeyboardTapRejectsUnsupportedAndroidKeycodeAliases(t *testing.T) {
+	testCases := []struct {
+		input      string
+		messageSub string
+	}{
+		{input: "KEYCODE_WAKEUP", messageSub: "Generic Desktop/System Control HID path"},
+		{input: "KEYCODE_SOFT_SLEEP", messageSub: "no verified standard Consumer Control usage"},
+		{input: "KEYCODE_NOTIFICATION", messageSub: "notification center has no verified standard Consumer Control usage"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.input, func(t *testing.T) {
+			ctx, _ := WithToolError(context.Background())
+			tool := &KeyboardTapTool{}
+
+			out, err := tool.Call(ctx, fmt.Sprintf(`{"keys":["%s"]}`, tc.input))
+			if err != nil {
+				t.Fatalf("Call returned error: %v", err)
+			}
+			if !strings.Contains(out, strings.ToLower(tc.input)) || !strings.Contains(out, tc.messageSub) {
+				t.Fatalf("output = %q, want alias and reason substring %q", out, tc.messageSub)
+			}
+			if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeInvalidArguments || got.Message != out {
+				t.Fatalf("ToolError = %+v, want invalid_arguments with output message", got)
+			}
+		})
+	}
+}
+
+func TestKeyboardTapRejectsAndroidExtensionWithoutAndroidDevice(t *testing.T) {
+	tool := &KeyboardTapTool{}
+	ctx, _ := WithToolError(context.Background())
+
+	out, err := tool.Call(ctx, `{"keys":["KEYCODE_HOME"]}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "android extension keyboard device is not configured") || !strings.Contains(out, "hid.pointer_mode=\"touchscreen\"") {
+		t.Fatalf("output = %q, want android extension device error", out)
+	}
+	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeModuleUnavailable || got.Message != out {
+		t.Fatalf("ToolError = %+v, want module_unavailable with output message", got)
+	}
+}
+
+func TestKeyboardTapRejectsMixedAndroidExtensionChord(t *testing.T) {
+	tool := &KeyboardTapTool{}
+	ctx, _ := WithToolError(context.Background())
+
+	out, err := tool.Call(ctx, `{"keys":["ctrl","KEYCODE_BACK"]}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, `Android extension key "android_back" cannot be combined`) {
+		t.Fatalf("output = %q, want mixed-chord error", out)
+	}
+	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeInvalidArguments || got.Message != out {
+		t.Fatalf("ToolError = %+v, want invalid_arguments with output message", got)
+	}
+}
+
 func readMouseReports(t *testing.T, dev *HIDDevice, path string) []mouseReport {
 	t.Helper()
 
@@ -1385,7 +1714,7 @@ func TestTouchGestureHomeStartsAtBottomPhysicalEdge(t *testing.T) {
 
 func TestTouchGestureDescriptionDocumentsEdgeGestureAliases(t *testing.T) {
 	desc := (&TouchGestureTool{}).Description()
-	for _, want := range []string{`"back"`, `"home"`, "x=1", "y=999", "prefer quick_action first", "low-level fallback", "finger movement", "older messages", `not "swipe_up"`, "latest screenshot", "locally scrollable regions", "visible bounds"} {
+	for _, want := range []string{"back", "home", "Prefer quick_action", "finger movement", "older chat history", "scrollable region", "x=1", "y=999", "coord_space", "never omit x/y key names", "probe with medium/large", "biased inward"} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q:\n%s", want, desc)
 		}
@@ -1394,7 +1723,7 @@ func TestTouchGestureDescriptionDocumentsEdgeGestureAliases(t *testing.T) {
 
 func TestMouseClickDescriptionDocumentsTargetCenter(t *testing.T) {
 	desc := (&MouseClickTool{}).Description()
-	for _, want := range []string{"visual center", "latest screenshot", "small controls", "midpoint", `coord_space:"pixel" only when calibrated`} {
+	for _, want := range []string{"coord_space default is auto", "normalized", "latest screenshot", "visual center", "pixel coordinates require fresh cached screen dimensions", "pointer_mode absolute", "post-action screenshot"} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q:\n%s", want, desc)
 		}
@@ -1403,7 +1732,16 @@ func TestMouseClickDescriptionDocumentsTargetCenter(t *testing.T) {
 
 func TestKeyboardTapDescriptionDocumentsQuickActionFallback(t *testing.T) {
 	desc := (&KeyboardTapTool{}).Description()
-	for _, want := range []string{"prefer quick_action first", "delete backward/forward", "low-level fallback", "custom key input", "normal text deletion", "use backspace", "delete key is forward-delete"} {
+	for _, want := range []string{"Prefer quick_action", "copy", "paste", "send", "custom key input", "backspace", "forward-delete", "Modifier-only", "hold_ms", "Modifiers"} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("description missing %q:\n%s", want, desc)
+		}
+	}
+}
+
+func TestKeyboardTapDescriptionReferencesAndroidGuidePage(t *testing.T) {
+	desc := (&KeyboardTapTool{}).Description()
+	for _, want := range []string{"KEYCODE_*", "KEY_USAGE_*", "Android key guide", "single-key taps only"} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q:\n%s", want, desc)
 		}
