@@ -1030,6 +1030,14 @@ func captureUtteranceWithTimeout(dialog audioDialogRunner, sigChan chan os.Signa
 		case <-sigChan:
 			return nil, true
 		case <-events:
+			if speechDetected && len(captured) > 0 {
+				log.Println("[listen] manual stop: wakeup pressed during recording, returning captured audio")
+				utterance := dialog.FinishManualUtterance(vadPending)
+				if len(utterance) > 0 {
+					return utterance, false
+				}
+				return captured, false
+			}
 			ignoreWakeupWhileListening()
 			continue
 		default:
@@ -1057,6 +1065,14 @@ func captureUtteranceWithTimeout(dialog audioDialogRunner, sigChan chan os.Signa
 		case <-sigChan:
 			return nil, true
 		case <-events:
+			if speechDetected && len(captured) > 0 {
+				log.Println("[listen] manual stop: wakeup pressed during recording, returning captured audio")
+				utterance := dialog.FinishManualUtterance(vadPending)
+				if len(utterance) > 0 {
+					return utterance, false
+				}
+				return captured, false
+			}
 			ignoreWakeupWhileListening()
 		default:
 		}

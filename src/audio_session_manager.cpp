@@ -172,7 +172,7 @@ AidenServiceStatus AudioSessionManager::start_playback(const AudioFormat& fmt,
     const Clock::time_point now = Clock::now();
     std::lock_guard<std::mutex> lock(mutex_);
     if (!playback_sessions_.empty() ||
-        draining_playback_state_->count.load(std::memory_order_relaxed) > 0) {
+        draining_playback_state_->count.load(std::memory_order_acquire) > 0) {
         fprintf(stderr,
                 "[audio_service] rejecting playback start while another playback is active or draining\n");
         return AidenServiceStatus::SERVICE_RECOVERING;
@@ -233,7 +233,7 @@ AidenServiceStatus AudioSessionManager::write_play_chunk(uint64_t session_id,
                 std::lock_guard<std::mutex> draining_lock(draining_state->mutex);
                 draining_state->sessions[session_id] = owned;
             }
-            draining_state->count.fetch_add(1, std::memory_order_relaxed);
+            draining_state->count.fetch_add(1, std::memory_order_release);
 
             // Keep the draining session alive on a detached thread until the
             // playback thread exits or stop_playback() interrupts it.
@@ -244,7 +244,7 @@ AidenServiceStatus AudioSessionManager::write_play_chunk(uint64_t session_id,
                     std::lock_guard<std::mutex> lock(draining_state->mutex);
                     draining_state->sessions.erase(session_id);
                 }
-                draining_state->count.fetch_sub(1, std::memory_order_relaxed);
+                draining_state->count.fetch_sub(1, std::memory_order_release);
             }).detach();
         }
     }
@@ -322,7 +322,7 @@ AidenServiceStatus AudioSessionManager::get_playback_volume(uint32_t* out) const
 
 void AudioSessionManager::fill_health(AudioHealthResult* out) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    const uint32_t draining = draining_playback_state_->count.load(std::memory_order_relaxed);
+    const uint32_t draining = draining_playback_state_->count.load(std::memory_order_acquire);
     out->record_sessions   = static_cast<uint32_t>(record_sessions_.size());
     out->playback_sessions = static_cast<uint32_t>(playback_sessions_.size()) + draining;
     out->recording_active  = !record_sessions_.empty();

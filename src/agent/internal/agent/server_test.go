@@ -28,6 +28,7 @@ import (
 	langtools "github.com/tmc/langchaingo/tools"
 
 	ttsmodule "aiden-agent/internal/agent/tts"
+	"aiden-agent/internal/agent/context_manager"
 )
 
 type stubSTTClient struct {
@@ -1944,6 +1945,42 @@ func TestServerHistoryEndpointIncludesToolMessages(t *testing.T) {
 	}
 	if history[1].Type != runEventToolCall || history[2].Type != "tool_result" {
 		t.Fatalf("unexpected history payload: %#v", history)
+	}
+}
+
+func TestServerContextDumpEndpointReturnsPlannerMessages(t *testing.T) {
+	server := &Server{
+		runtime: NewRuntimeWithDeps(
+			Config{Model: ModelConfig{Provider: "fake"}},
+			&testModelResolver{model: &scriptedModel{}},
+			NewMemoryManager(""),
+			NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+			NewSkillIndex(),
+		),
+	}
+	manager := server.runtime.plannerContextManager()
+	manager.AppendMessage(context_manager.Message{
+		Role:    context_manager.MessageRoleUser,
+		Content: "hello planner",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/context-dump", nil)
+	rec := httptest.NewRecorder()
+	server.handleContextDump(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var dump context_manager.MessageListDump
+	if err := json.NewDecoder(rec.Body).Decode(&dump); err != nil {
+		t.Fatalf("decode context dump: %v", err)
+	}
+	if dump.SessionID == "" {
+		t.Fatal("expected session_id in context dump")
+	}
+	if len(dump.Messages) != 1 || dump.Messages[0].Content != "hello planner" {
+		t.Fatalf("unexpected context dump payload: %#v", dump)
 	}
 }
 

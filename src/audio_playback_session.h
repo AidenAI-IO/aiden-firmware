@@ -87,6 +87,8 @@ private:
     std::queue<std::vector<uint8_t>> queue_;
     std::atomic<bool> stopped_;
     bool final_received_;
+    std::mutex join_mutex_;
+    bool joined_;
 };
 
 }  // namespace aiden
