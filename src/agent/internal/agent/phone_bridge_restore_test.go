@@ -121,3 +121,41 @@ func TestPhoneBridgeReadyForCommandRejectsBackgroundIOS(t *testing.T) {
 		t.Fatal("connected non-iOS bridge should remain ready")
 	}
 }
+
+func TestPhoneBridgeCanUsePiPBackgroundOnlyForSafeDataCommands(t *testing.T) {
+	enabled := true
+	status := PhoneBridgeStatus{
+		Platform:          "ios",
+		AppState:          "background",
+		AppStateUpdatedAt: ptrTime(time.Now()),
+		PipBridgeEnabled:  &enabled,
+	}
+	if !phoneBridgeCanUsePiPBackground(status, "clipboard_read") {
+		t.Fatal("clipboard_read should be allowed in iOS PiP background bridge mode")
+	}
+	if phoneBridgeCanUsePiPBackground(status, "open_app") {
+		t.Fatal("open_app must not be allowed in iOS PiP background bridge mode")
+	}
+
+	status.AppState = "active"
+	if phoneBridgeCanUsePiPBackground(status, "clipboard_read") {
+		t.Fatal("foreground app should use WebSocket path, not PiP background queue")
+	}
+
+	disabled := false
+	status.AppState = "background"
+	status.PipBridgeEnabled = &disabled
+	if phoneBridgeCanUsePiPBackground(status, "clipboard_read") {
+		t.Fatal("disabled PiP bridge mode should not allow background queue")
+	}
+
+	status.PipBridgeEnabled = &enabled
+	status.AppStateUpdatedAt = ptrTime(time.Now().Add(-pipBridgeBackgroundStateMaxAge - time.Second))
+	if phoneBridgeCanUsePiPBackground(status, "clipboard_read") {
+		t.Fatal("stale PiP bridge status should not allow background queue")
+	}
+}
+
+func ptrTime(value time.Time) *time.Time {
+	return &value
+}

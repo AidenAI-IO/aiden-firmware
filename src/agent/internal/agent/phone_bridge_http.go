@@ -130,6 +130,12 @@ func (pb *PhoneBridge) handlePollCommands(w http.ResponseWriter, r *http.Request
 	}
 
 	phoneID := strings.TrimSpace(r.URL.Query().Get("phone_id"))
+	pb.noteHTTPPollState(
+		platform,
+		phoneID,
+		r.URL.Query().Get("app_state"),
+		r.URL.Query().Get("pip_bridge_enabled"),
+	)
 	commands := pb.queue.PollForPhone(platform, phoneID, limit)
 
 	if pb.logger != nil && len(commands) > 0 {
@@ -145,6 +151,43 @@ func (pb *PhoneBridge) handlePollCommands(w http.ResponseWriter, r *http.Request
 		Commands:   commands,
 		ServerTime: time.Now().UTC().Format("2006-01-02T15:04:05Z"),
 	})
+}
+
+func (pb *PhoneBridge) noteHTTPPollState(platform, phoneID, appState, pipBridgeEnabled string) {
+	platform = strings.TrimSpace(platform)
+	phoneID = strings.TrimSpace(phoneID)
+	appState = strings.ToLower(strings.TrimSpace(appState))
+	enabled, enabledOK := parseOptionalBoolQuery(pipBridgeEnabled)
+	now := time.Now()
+
+	pb.mu.Lock()
+	if platform != "" {
+		pb.platform = platform
+	}
+	if phoneID != "" {
+		pb.phoneID = phoneID
+	}
+	switch appState {
+	case "active", "background", "inactive":
+		pb.appState = appState
+		pb.appStateAt = now
+	}
+	if enabledOK {
+		pb.pipBridgeEnabled = enabled
+		pb.pipBridgeSeen = true
+	}
+	pb.mu.Unlock()
+}
+
+func parseOptionalBoolQuery(value string) (bool, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "true", "1", "yes":
+		return true, true
+	case "false", "0", "no":
+		return false, true
+	default:
+		return false, false
+	}
 }
 
 // handleSubmitResult handles POST /api/phone-bridge/results

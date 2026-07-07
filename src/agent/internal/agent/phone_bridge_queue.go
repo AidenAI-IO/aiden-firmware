@@ -120,6 +120,28 @@ func (q *CommandQueue) Get(commandID string) *QueuedCommand {
 	return q.commands[commandID]
 }
 
+// Cancel removes a queued or in-flight command that should no longer be
+// executed, usually because the caller stopped waiting for its result.
+func (q *CommandQueue) Cancel(commandID string) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	if _, exists := q.commands[commandID]; !exists {
+		return false
+	}
+	delete(q.commands, commandID)
+	for i, id := range q.commandIDs {
+		if id == commandID {
+			q.commandIDs = append(q.commandIDs[:i], q.commandIDs[i+1:]...)
+			break
+		}
+	}
+	if q.logger != nil {
+		q.logger.Info("phone-bridge-queue: canceled command %s", commandID)
+	}
+	return true
+}
+
 // Poll retrieves up to `limit` queued commands and marks them as in-flight
 func (q *CommandQueue) Poll(platform string, limit int) []BridgeCommand {
 	return q.PollForPhone(platform, "", limit)

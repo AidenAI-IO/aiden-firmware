@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -64,6 +65,48 @@ func TestEnqueueAndPoll(t *testing.T) {
 		t.Errorf("cmd1 status expected in_flight, got %v", q.commands["test_1"].Status)
 	}
 	q.mu.RUnlock()
+}
+
+func TestSendQueuedCommandWaitsForHTTPResult(t *testing.T) {
+	bridge := NewPhoneBridge(nil)
+	defer bridge.queue.Stop()
+
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		commands := bridge.queue.PollForPhone("ios", "", 10)
+		if len(commands) != 1 {
+			t.Errorf("expected one queued command, got %d", len(commands))
+			return
+		}
+		if commands[0].ID != "queued_clipboard" {
+			t.Errorf("queued command id = %q, want queued_clipboard", commands[0].ID)
+			return
+		}
+		if err := bridge.queue.SubmitResult(BridgeCommandResponse{
+			ID:     "queued_clipboard",
+			Method: "clipboard",
+			Data:   json.RawMessage(`{"text":"hello"}`),
+		}); err != nil {
+			t.Errorf("SubmitResult() error = %v", err)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	resp, err := bridge.SendQueuedCommand(ctx, BridgeCommand{
+		ID:        "queued_clipboard",
+		Type:      "clipboard_read",
+		TimeoutMs: 1000,
+	})
+	if err != nil {
+		t.Fatalf("SendQueuedCommand() error = %v", err)
+	}
+	if resp.Error != nil {
+		t.Fatalf("SendQueuedCommand() response error = %+v", resp.Error)
+	}
+	if resp.Method != "clipboard" {
+		t.Fatalf("SendQueuedCommand() method = %q, want clipboard", resp.Method)
+	}
 }
 
 // TestPollPlatformFilter tests platform filtering

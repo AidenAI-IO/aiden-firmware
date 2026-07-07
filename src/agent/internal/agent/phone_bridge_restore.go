@@ -11,6 +11,7 @@ import (
 const (
 	phoneBridgeRestoreTimeout      = 8 * time.Second
 	phoneBridgeRestorePollInterval = 100 * time.Millisecond
+	pipBridgeBackgroundStateMaxAge = 15 * time.Second
 	returnEntryDynamicIslandX      = 500.0
 	returnEntryDynamicIslandY      = 30.0
 )
@@ -131,7 +132,20 @@ func ensurePhoneBridgeReadyForCommand(ctx context.Context, bridge *PhoneBridge, 
 	return restorer.EnsureForeground(ctx)
 }
 
-func sendForegroundBridgeCommand(ctx context.Context, bridge *PhoneBridge, restorer *PhoneBridgeRestorer, cmd BridgeCommand) (BridgeCommandResponse, bool, error) {
+func sendRoutedBridgeCommand(ctx context.Context, bridge *PhoneBridge, restorer *PhoneBridgeRestorer, cmd BridgeCommand) (BridgeCommandResponse, bool, error) {
+	if bridge == nil {
+		return BridgeCommandResponse{}, false, fmt.Errorf("phone bridge is not initialized")
+	}
+	status := bridge.Status()
+	if phoneBridgeReadyForCommand(status) {
+		resp, err := bridge.SendCommand(ctx, cmd)
+		return resp, false, err
+	}
+	if phoneBridgeCanUsePiPBackground(status, cmd.Type) {
+		resp, err := bridge.SendQueuedCommand(ctx, cmd)
+		return resp, false, err
+	}
+
 	restored, err := ensurePhoneBridgeReadyForCommand(ctx, bridge, restorer)
 	if err != nil {
 		return BridgeCommandResponse{}, restored, err
@@ -151,6 +165,32 @@ func phoneBridgeReadyForCommand(status PhoneBridgeStatus) bool {
 	return state == "" || state == "active"
 }
 
+func phoneBridgeCanUsePiPBackground(status PhoneBridgeStatus, commandType string) bool {
+	if !phoneBridgeBackgroundSafeCommandType(commandType) {
+		return false
+	}
+	if status.PipBridgeEnabled == nil || !*status.PipBridgeEnabled {
+		return false
+	}
+	if status.AppStateUpdatedAt == nil || time.Since(*status.AppStateUpdatedAt) > pipBridgeBackgroundStateMaxAge {
+		return false
+	}
+	state := strings.ToLower(strings.TrimSpace(status.AppState))
+	return state != "active"
+}
+
+func phoneBridgeBackgroundSafeCommandType(commandType string) bool {
+	switch strings.TrimSpace(commandType) {
+	case "clipboard_read", "clipboard_write",
+		"calendar_create", "calendar_query", "calendar_delete",
+		"contacts_query", "contacts_create", "contacts_update",
+		"notification_send":
+		return true
+	default:
+		return false
+	}
+}
+
 func phoneBridgeCanRestoreFromReturnEntry(status PhoneBridgeStatus) bool {
 	if status.ReturnEntryAvailable == nil || !*status.ReturnEntryAvailable {
 		return false
@@ -160,6 +200,13 @@ func phoneBridgeCanRestoreFromReturnEntry(status PhoneBridgeStatus) bool {
 }
 
 func phoneBridgeRestoreUnavailableError(status PhoneBridgeStatus) error {
+	if status.PipBridgeEnabled != nil && *status.PipBridgeEnabled {
+		state := strings.TrimSpace(status.AppState)
+		if state == "" {
+			state = "background"
+		}
+		return fmt.Errorf("phone bridge app is %s with PiP Bridge mode enabled, but this command requires the companion app in foreground", state)
+	}
 	if status.Connected {
 		state := strings.TrimSpace(status.AppState)
 		if state == "" {
