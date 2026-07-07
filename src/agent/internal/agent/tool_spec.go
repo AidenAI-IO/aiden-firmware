@@ -212,7 +212,7 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 	"request_human_handoff": {
 		Category:     "handoff",
 		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"reason":"Need user confirmation"}`,
+		ExampleInput: `{"reason":"authentication","details":"Login screen requires password","suggested_action":"Please enter your credentials on the device"}`,
 	},
 	"run_script": {
 		Category:     "demo",
