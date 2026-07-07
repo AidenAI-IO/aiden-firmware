@@ -174,6 +174,7 @@ static const char* CONFIG_WEB_HTML =
     "            <div class=\"field wide\"><label>model</label><input id=\"model_model\" data-section=\"model\"></div>\n"
     "            <div class=\"field wide\"><label>api_key</label><input id=\"model_api_key\" data-section=\"model\"></div>\n"
     "            <div class=\"field wide\"><label>base_url</label><input id=\"model_base_url\" data-section=\"model\"></div>\n"
+    "            <div class=\"field\"><label>reasoning_effort</label><select id=\"model_reasoning_effort\" data-section=\"model\"></select><div class=\"field-hint\">Empty = auto (disable reasoning only for no-tool requests). none/low/medium/high forces the level on every request.</div></div>\n"
     "            <div class=\"field\"><label>temperature</label><input id=\"model_temperature\" type=\"number\" step=\"0.1\" data-section=\"model\"></div>\n"
     "            <div class=\"field\"><label>max_response_tokens</label><input id=\"model_max_response_tokens\" type=\"number\" data-section=\"model\"></div>\n"
     "            <div class=\"field\"><label>context_window</label><input id=\"model_context_window\" type=\"number\" data-section=\"model\" placeholder=\"0 = auto\" title=\"0 = auto: use provider metadata when available\"><div class=\"field-hint\">0 = auto: use provider metadata when available.</div></div>\n"

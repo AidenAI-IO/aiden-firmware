@@ -585,6 +585,7 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"model", "api_key", CONFIG_FIELD_STRING},
         {"model", "base_url", CONFIG_FIELD_STRING},
         {"model", "token_env", CONFIG_FIELD_STRING},
+        {"model", "reasoning_effort", CONFIG_FIELD_STRING},
         {"model", "temperature", CONFIG_FIELD_NUMBER},
         {"model", "max_response_tokens", CONFIG_FIELD_NUMBER},
         {"model", "context_window", CONFIG_FIELD_NUMBER},
@@ -594,6 +595,7 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"model_text", "api_key", CONFIG_FIELD_STRING},
         {"model_text", "base_url", CONFIG_FIELD_STRING},
         {"model_text", "token_env", CONFIG_FIELD_STRING},
+        {"model_text", "reasoning_effort", CONFIG_FIELD_STRING},
         {"model_text", "temperature", CONFIG_FIELD_NUMBER},
         {"model_text", "max_response_tokens", CONFIG_FIELD_NUMBER},
         {"model_text", "context_window", CONFIG_FIELD_NUMBER},
@@ -2266,6 +2268,7 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddStringToObject(model, "model", config.model.model.c_str());
     cJSON_AddStringToObject(model, "base_url", config.model.base_url.c_str());
     cJSON_AddStringToObject(model, "token_env", config.model.token_env.c_str());
+    cJSON_AddStringToObject(model, "reasoning_effort", config.model.reasoning_effort.c_str());
     cJSON_AddNumberToObject(model, "temperature", config.model.temperature);
     cJSON_AddNumberToObject(model, "max_response_tokens", config.model.max_response_tokens);
     cJSON_AddNumberToObject(model, "context_window", config.model.context_window);
@@ -2538,6 +2541,7 @@ void update_model_from_json(cJSON* obj, aiden::ModelToml* m) {
     set_json_str(&m->base_url, obj, "base_url");
     set_json_str(&m->api_key, obj, "api_key");
     set_json_str(&m->token_env, obj, "token_env");
+    set_json_str(&m->reasoning_effort, obj, "reasoning_effort");
     set_json_double(&m->temperature, obj, "temperature");
     set_json_int(&m->max_response_tokens, obj, "max_response_tokens");
     set_json_int(&m->context_window, obj, "context_window");
