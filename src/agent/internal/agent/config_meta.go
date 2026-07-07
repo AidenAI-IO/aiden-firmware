@@ -220,6 +220,7 @@ func ConfigMeta() ConfigMetadata {
 						Default: defaults.HID.PointerMode},
 					{Key: "keyboard_device", Widget: WidgetText, Default: defaults.HID.KeyboardDevice},
 					{Key: "mouse_device", Widget: WidgetText, Default: defaults.HID.MouseDevice},
+					{Key: "android_keyboard_device", Widget: WidgetText, Default: defaults.HID.AndroidKeyboardDevice},
 					{Key: "frame_socket", Widget: WidgetText, Default: defaults.HID.FrameSocket},
 				},
 			},

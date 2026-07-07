@@ -14,8 +14,8 @@
         "android": {
           "status": "active",
           "tool": "keyboard_tap",
-          "input": { "keys": ["escape"] },
-          "note": "verified: Esc back / dismiss",
+          "input": { "keys": ["KEYCODE_BACK"] },
+          "note": "Android extension key via hid.usb2 consumer control",
           "alternatives": [
             {
               "status": "active",
@@ -53,8 +53,18 @@
           ]
         },
         "android": {
-          "status": "reserved",
-          "note": "no verified keyboard home shortcut; Meta alone opens app search (see spotlight_search)"
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["KEYCODE_HOME"] },
+          "note": "Android extension key via hid.usb2 consumer control",
+          "alternatives": [
+            {
+              "status": "active",
+              "tool": "touch_gesture",
+              "input": { "type": "home" },
+              "note": "edge swipe fallback"
+            }
+          ]
         },
         "mac": {
           "status": "reserved",
@@ -84,8 +94,16 @@
         "android": {
           "status": "active",
           "tool": "keyboard_tap",
-          "input": { "keys": ["meta", "tab"], "hold_ms": 120 },
-          "note": "verified: Meta+Tab open app management center / recents"
+          "input": { "keys": ["KEYCODE_APP_SWITCH"] },
+          "note": "Android extension key via hid.usb2 consumer control",
+          "alternatives": [
+            {
+              "status": "active",
+              "tool": "keyboard_tap",
+              "input": { "keys": ["meta", "tab"], "hold_ms": 120 },
+              "note": "external keyboard fallback"
+            }
+          ]
         },
         "mac": {
           "status": "active",
