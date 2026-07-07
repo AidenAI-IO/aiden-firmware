@@ -165,13 +165,10 @@ func TestRecallToolDescriptionsGuideAgentUsage(t *testing.T) {
 
 	memoryDescription := NewRecallMemoryTool(NewLongTermMemoryStore(t.TempDir())).Description()
 	for _, want := range []string{
-		"Use when",
 		"long-term",
-		"Do not use",
+		"recall_session_chunks",
 		`"tags":["verification"`,
-		`"entities":["AppName"]`,
-		"How to choose filters",
-		"TOPIC/DOMAIN keywords",
+		"topic/domain keywords",
 		"preference",
 		"rule",
 		"procedure",
@@ -183,14 +180,12 @@ func TestRecallToolDescriptionsGuideAgentUsage(t *testing.T) {
 
 	saveDescription := NewSaveMemoryTool(NewLongTermMemoryStore(t.TempDir())).Description()
 	for _, want := range []string{
-		"Mandatory use",
-		"call save_memory before saying it is remembered or saved",
-		"Do not claim a memory was remembered or saved until this tool returns saved or ignored as a duplicate",
-		"type=profile",
-		"location, home city, timezone",
-		"future defaults",
-		"type=fact only",
+		"Mandatory when the user asks to remember/save",
+		"status=saved or status=ignored as a duplicate",
+		"Use profile for durable user facts",
+		"location, timezone",
 		"synthesized user profile",
+		"preference",
 	} {
 		if !strings.Contains(saveDescription, want) {
 			t.Fatalf("save_memory description missing %q:\n%s", want, saveDescription)

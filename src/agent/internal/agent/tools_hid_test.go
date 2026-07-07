@@ -1714,7 +1714,7 @@ func TestTouchGestureHomeStartsAtBottomPhysicalEdge(t *testing.T) {
 
 func TestTouchGestureDescriptionDocumentsEdgeGestureAliases(t *testing.T) {
 	desc := (&TouchGestureTool{}).Description()
-	for _, want := range []string{`"back"`, `"home"`, "x=1", "y=999", "prefer quick_action first", "low-level fallback", "finger movement", "older messages", `not "swipe_up"`, "latest screenshot", "locally scrollable regions", "visible bounds"} {
+	for _, want := range []string{"back", "home", "Prefer quick_action", "finger movement", "older chat history", "scrollable region", "x=1", "y=999", "coord_space", "never omit x/y key names", "probe with medium/large", "biased inward"} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q:\n%s", want, desc)
 		}
@@ -1723,7 +1723,7 @@ func TestTouchGestureDescriptionDocumentsEdgeGestureAliases(t *testing.T) {
 
 func TestMouseClickDescriptionDocumentsTargetCenter(t *testing.T) {
 	desc := (&MouseClickTool{}).Description()
-	for _, want := range []string{"visual center", "latest screenshot", "small controls", "midpoint", `coord_space:"pixel" only when calibrated`} {
+	for _, want := range []string{"coord_space default is auto", "normalized", "latest screenshot", "visual center", "pixel coordinates require fresh cached screen dimensions", "pointer_mode absolute", "post-action screenshot"} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q:\n%s", want, desc)
 		}
@@ -1732,7 +1732,7 @@ func TestMouseClickDescriptionDocumentsTargetCenter(t *testing.T) {
 
 func TestKeyboardTapDescriptionDocumentsQuickActionFallback(t *testing.T) {
 	desc := (&KeyboardTapTool{}).Description()
-	for _, want := range []string{"prefer quick_action first", "delete backward/forward", "low-level fallback", "custom key input", "normal text deletion", "use backspace", "delete key is forward-delete"} {
+	for _, want := range []string{"Prefer quick_action", "copy", "paste", "send", "custom key input", "backspace", "forward-delete", "Modifier-only", "hold_ms", "Modifiers"} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q:\n%s", want, desc)
 		}

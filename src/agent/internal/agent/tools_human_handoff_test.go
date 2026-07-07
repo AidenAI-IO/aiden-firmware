@@ -26,6 +26,12 @@ func TestHumanHandoffTool_Description(t *testing.T) {
 	if !strings.Contains(desc, "returns immediately") {
 		t.Error("Description() doesn't mention non-blocking behavior")
 	}
+	if !strings.Contains(desc, "handoff marker") {
+		t.Error("Description() doesn't mention the handoff marker return contract")
+	}
+	if !strings.Contains(desc, `"reason":"authentication"`) || !strings.Contains(desc, `"details"`) {
+		t.Error("Description() doesn't include a valid handoff JSON example")
+	}
 }
 
 func TestHumanHandoffTool_Call_Success(t *testing.T) {

@@ -179,7 +179,7 @@ var androidExtensionUsageMap = map[string]uint16{
 	// AOSP Generic.kl checks HID usage codes before Linux scan codes.
 	// 0x0c01A2 is mapped to ALL_APPS, while 0x0c029F is mapped to
 	// RECENT_APPS / KEYCODE_APP_SWITCH.
-	"app_switch":                  0x029f,
+	"app_switch": 0x029f,
 }
 
 type androidKeyboardTapAlias struct {
@@ -696,16 +696,13 @@ func (t *KeyboardTapTool) Name() string { return "keyboard_tap" }
 
 func (t *KeyboardTapTool) Description() string {
 	return `Press and release keyboard keys. Input JSON: {"keys": ["ctrl", "c"]}. ` +
-		`For known semantic platform actions such as back, app search, app switching, copy, paste, undo, redo, select all, delete backward/forward, find, send, or browser navigation, prefer quick_action first; use keyboard_tap as a low-level fallback or for custom key input. ` +
-		`Supports on the standard boot keyboard path: a-z, 0-9, f1-f12, enter, escape, backspace, tab, space, delete, ` +
-		`up, down, left, right, home, end, pageup, pagedown, insert, printscreen. ` +
-		`For normal text deletion in an input field, use backspace; the delete key is forward-delete and should only be used when intentionally deleting the character after the cursor. ` +
-		`Modifiers: ctrl, shift, alt, meta/super/win/cmd. ` +
-		`Android extension keys on hid.usb2 use KEYCODE_* and KEY_USAGE_* aliases; see the Android key guide for the full list. ` +
+		`Prefer quick_action first for semantic platform actions such as back, app search, app switching, copy, paste, undo, redo, select all, delete backward/forward, find, send, or browser navigation; use keyboard_tap as a low-level fallback or for custom key input. ` +
+		`Supports on the standard boot keyboard path: a-z, 0-9, f1-f12, enter, escape, backspace, tab, space, delete, arrows, home, end, pageup/down, insert, printscreen. ` +
+		`For ordinary text deletion use backspace; delete is forward-delete after the cursor. ` +
+		`Modifiers: ctrl, shift, alt, meta/super/win/cmd. Android extension keys on hid.usb2 use KEYCODE_* and KEY_USAGE_* aliases; see the Android key guide for the full list. ` +
 		`Android extension keys are single-key taps only and cannot be combined with standard keyboard modifiers/chords; unsupported Android-only aliases return an explicit error. ` +
-		`Modifier-only taps are supported (e.g. {"keys":["meta"]}). ` +
-		`Multiple keys are pressed simultaneously (e.g. ctrl+c). ` +
-		`Optional hold_ms keeps the chord pressed before release (default 50ms, 120ms when modifiers are used).`
+		`Modifier-only taps are supported (e.g. {"keys":["meta"]}). Multiple keys are pressed simultaneously, e.g. ctrl+c. ` +
+		`Optional hold_ms keeps the chord pressed before release; default is 50ms, or 120ms when modifiers are used.`
 }
 
 func (t *KeyboardTapTool) ArgsSchema() map[string]any {
@@ -924,15 +921,11 @@ type MouseClickTool struct {
 func (t *MouseClickTool) Name() string { return "mouse_click" }
 
 func (t *MouseClickTool) Description() string {
-	return `Move mouse to a position and click. Input JSON: {"x": 500, "y": 300, "button": "left", "coord_space": "normalized"}. ` +
-		`coord_space options: "pixel", "normalized", "absolute". Default is "auto": x/y in [0,1000] are treated as normalized, otherwise pixel coordinates are used when a recent screenshot has cached screen dimensions, otherwise HID absolute values in the range 0-32767. ` +
-		`Normalized coordinates use 0-1000 range where (0,0) is top-left, (1000,1000) is bottom-right, (500,500) is center. ` +
-		`Choose the visual center of the target in the latest screenshot; for small controls, estimate the control bounds and click the midpoint, biased inward. ` +
-		`pointer_mode absolute (default): moves to absolute HID coordinates, waits for iOS cursor smoothing, then clicks. ` +
-		`pointer_mode touchscreen (Android): sends a finger down/up at the resolved coordinate. ` +
-		`Use coord_space:"pixel" only when calibrated; pixel coordinates require a recent screenshot, are stale after 30s, and are rejected if outside cached bounds. ` +
-		`Click once and inspect the returned post-action screenshot before repeating. ` +
-		`Button options: "left" (default), "right", "middle".`
+	return `Move mouse to a position and click. Input JSON: {"x":500,"y":300,"button":"left","coord_space":"normalized"}. ` +
+		`coord_space default is auto: x/y in 0-1000 are normalized; otherwise pixel coordinates use a recent screenshot, then absolute HID values. ` +
+		`Prefer normalized coordinates (0-1000) from the latest screenshot and choose the visual center of the target; pixel coordinates require fresh cached screen dimensions. ` +
+		`pointer_mode absolute waits for iOS cursor smoothing before clicking; pointer_mode touchscreen sends a finger down/up at the resolved coordinate. ` +
+		`Click once and inspect the returned post-action screenshot before repeating. Button: left (default), right, middle.`
 }
 
 func (t *MouseClickTool) ArgsSchema() map[string]any {
@@ -1023,24 +1016,14 @@ type TouchGestureTool struct {
 func (t *TouchGestureTool) Name() string { return "touch_gesture" }
 
 func (t *TouchGestureTool) Description() string {
-	return `Perform a touch-like gesture using the pointer HID device (absolute mouse or touchscreen depending on agent pointer_mode). ` +
-		`For known semantic platform actions such as back, home, app search, app switching, notification shade, quick settings, and browser navigation, prefer quick_action first; use touch_gesture as a low-level fallback or for custom screen gestures. ` +
-		`Input JSON examples: {"type":"tap","point":{"x":500,"y":500}}, {"type":"swipe","start":{"x":200,"y":500},"end":{"x":800,"y":500},"duration_ms":700,"steps":24}, {"type":"swipe_left"}, {"type":"back"}, {"type":"home"}. ` +
-		`IMPORTANT: "point", "start", and "end" must be objects with named keys "x" and "y". NEVER omit the key names: {"x":500,"y":300} is correct, {500,300} is invalid and will error. ` +
-		`Supported types: "tap", "double_tap", "long_press", "drag", "swipe", "swipe_left", "swipe_right", "swipe_up", "swipe_down", "back" (left-edge back), "home" (bottom-edge home). ` +
-		`coord_space defaults to "normalized" (x/y in [0,1000]) and also supports "pixel" and "absolute". ` +
-		`Normalized coordinates use 0-1000 range where (0,0) is top-left, (1000,1000) is bottom-right, (500,500) is center. ` +
-		`Choose the visual center of the target in the latest screenshot; for small controls, estimate the control bounds and touch the midpoint, biased inward. ` +
-		`pointer_mode absolute (default, iOS): every gesture moves to absolute coordinates before pressing; choose tap targets from the latest screenshot center and prefer normalized coordinates. ` +
-		`pointer_mode touchscreen (Android): gestures are sent as single-finger touch down/move/up reports. ` +
-		`Directional swipes accept optional "distance" (normalized 0-1000 travel, default 500), "anchor" (fixed-axis coordinate 0-1000, default 500), and "strength" ("large", "medium", "small", "tiny"). ` +
-		`Directional swipe names describe finger movement, not the content you want to reveal: "swipe_up" moves the finger upward and usually scrolls the viewport down to lower/newer items; "swipe_down" moves the finger downward and usually scrolls the viewport up to upper/older items. For chat or message history where older messages are above, use "swipe_down" (pull down), not "swipe_up". ` +
-		`For precise vertical or horizontal controls, first probe with medium/large, observe the screenshot, then use small/tiny near the target; if you overshoot, reverse direction and reduce strength. ` +
-		`For locally scrollable regions such as pickers, modal lists, embedded scroll views, or partial dialogs, keep start/end coordinates inside the control's visible bounds so the outer container does not capture the gesture. ` +
-		`Absolute-mode gestures wait for iOS HID-cursor smoothing to settle before pressing. ` +
-		`Tap and double_tap accept an optional "hold_ms" (dwell between press and release, default 60ms). ` +
-		`Swipe defaults to a slower 700ms / 24-step motion, applies "hold_before_ms" of 80ms after the press, and releases immediately at the destination by default; pass "hold_after_ms" only when a drag-like end dwell is required. ` +
-		`For phone edge gestures, do not use conservative inset coordinates such as 50-100: "back" starts at normalized x=1 and "home" starts at normalized y=999. Drag keeps the previous 250ms / 12-step motion with 0ms hold defaults to avoid unintended long-press behaviour during slow content drag.`
+	return `Perform touch/pointer gesture via HID. Prefer quick_action for semantic platform actions; use this for custom screen gestures. ` +
+		`Input examples: {"type":"tap","point":{"x":500,"y":500}}, {"type":"swipe","start":{"x":200,"y":500},"end":{"x":800,"y":500},"duration_ms":700,"steps":24}, {"type":"swipe_left"}. ` +
+		`Types: tap, double_tap, long_press, drag, swipe, swipe_left/right/up/down, back, home. ` +
+		`Coordinates: point/start/end must be {"x":N,"y":M} objects; never omit x/y key names. coord_space defaults to normalized (0-1000) and also supports pixel or absolute. ` +
+		`Choose the visual center of the target in the latest screenshot; for small controls, estimate bounds and touch the midpoint, biased inward. ` +
+		`Directional swipes accept optional distance, anchor, and strength (large/medium/small/tiny). Swipe direction is finger movement, not content scroll; for older chat history above, usually use swipe_down. ` +
+		`For precise scrolls or pickers, probe with medium/large, observe the screenshot, then use small/tiny; if overshot, reverse direction and reduce strength. ` +
+		`Keep scroll gestures inside the intended scrollable region so the outer container does not capture them. Edge aliases use real edges: back starts at x=1 and home starts at y=999.`
 }
 
 func (t *TouchGestureTool) ArgsSchema() map[string]any {

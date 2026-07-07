@@ -165,7 +165,7 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 		}
 		result := *remote
 		result.Duration = time.Since(call.StartedAt)
-		if ctxErr := ctx.Err(); ctxErr != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil && !(errors.Is(context.Cause(ctx), errSteerInterruptToolCancel) && result.Error == nil) {
 			if errors.Is(ctxErr, context.Canceled) {
 				result.Error = NewToolError(CodeCanceled, ctxErr.Error())
 			} else if errors.Is(ctxErr, context.DeadlineExceeded) {
@@ -187,6 +187,9 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 	output, err := spec.Tool.Call(ctx2, input)
 	var toolErr *ToolError
 	hardErr := ctx.Err()
+	if hardErr != nil && errors.Is(context.Cause(ctx), errSteerInterruptToolCancel) && err == nil {
+		hardErr = nil
+	}
 	if hardErr != nil {
 		if errors.Is(hardErr, context.Canceled) {
 			toolErr = NewToolError(CodeCanceled, hardErr.Error())

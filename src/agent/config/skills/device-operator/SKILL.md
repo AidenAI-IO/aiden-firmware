@@ -3,7 +3,31 @@ name: device-operator
 description: Use when controlling a visible target device UI through screenshots, touch, mouse, keyboard, text entry, scrolling, app switching, or capture recovery.
 metadata:
   preferred_model: primary
-  allowed_tools: [screenshot, wait_for_stable_screen, image_diff, quick_action, touch_gesture, mouse_click, mouse_move, mouse_scroll, keyboard_tap, keyboard_text, enter_text_in_field, enter_text_via_bridge, search_launch_app, request_human_handoff, recall_memory, save_memory, skill_read, run_script, list_scripts, read_script, write_script, shell]
+  allowed_tools:
+    [
+      screenshot,
+      wait_for_stable_screen,
+      image_diff,
+      quick_action,
+      touch_gesture,
+      mouse_click,
+      mouse_move,
+      mouse_scroll,
+      keyboard_tap,
+      keyboard_text,
+      enter_text_in_field,
+      enter_text_via_bridge,
+      search_launch_app,
+      request_human_handoff,
+      recall_memory,
+      save_memory,
+      skill_read,
+      run_script,
+      list_scripts,
+      read_script,
+      write_script,
+      shell,
+    ]
 ---
 
 Use this skill when the task requires operating a visible connected device UI. This is the complete generic device-operation playbook; do not split routine app switching, text entry, scrolling, picker, or screenshot recovery work into child skills.
@@ -43,7 +67,9 @@ Before using coordinates:
 
 - Inspect the screenshot and identify the intended target visually.
 - Use `coord_space: "normalized"` with 0-1000 coordinates when possible: `(0,0)` is top-left, `(1000,1000)` is bottom-right, `(500,500)` is center.
-- Avoid edges unless performing an edge gesture.
+- Choose the visual center of the target. For small controls, estimate the control bounds and aim for the midpoint, biased slightly inward.
+- Prefer normalized coordinates over `coord_space: "pixel"`. Use pixel only when calibrated; pixel coordinates need a recent screenshot, go stale after ~30s, and are rejected outside cached bounds.
+- Avoid edges unless performing an edge gesture. For phone edge gestures, do not use conservative insets like 50-100: left-edge `back` starts at normalized `x=1`, and bottom-edge `home` starts at normalized `y=999`.
 - Do not guess a coordinate if the target is not visible or the screen is stale.
 - If a tap misses, observe again before adjusting. Do not repeat the exact same coordinate blindly.
 
@@ -54,7 +80,12 @@ Use `enter_text_in_field` for normal input boxes such as search fields, forms, a
 Required pattern:
 
 ```json
-{"text":"你好","platform":"android","focus":{"x":450,"y":105,"coord_space":"normalized"},"segments":["ni","hao"]}
+{
+  "text": "你好",
+  "platform": "android",
+  "focus": { "x": 450, "y": 105, "coord_space": "normalized" },
+  "segments": ["ni", "hao"]
+}
 ```
 
 - Focus coordinates must come from the latest screenshot.

@@ -31,6 +31,26 @@ func (s *recordingTextInputTool) Call(_ context.Context, input string) (string, 
 	return s.out, nil
 }
 
+func TestEnterTextInFieldDescriptionDocumentsStrategyAndVerification(t *testing.T) {
+	desc := (&EnterTextInFieldTool{}).Description()
+	for _, want := range []string{
+		"clipboard/paste",
+		"current-app clipboard path",
+		"prepared clipboard text",
+		`mode:"search"`,
+		"send_after_commit=true",
+		"merged vision read",
+		"committed:true",
+		"field_text matches target exactly",
+		"IME candidates/preedit",
+		"normalized coordinates",
+	} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("description missing %q:\n%s", want, desc)
+		}
+	}
+}
+
 func TestEnterTextInFieldASCII(t *testing.T) {
 	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
 		FieldText: "hello",
