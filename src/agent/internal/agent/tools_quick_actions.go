@@ -331,14 +331,9 @@ type QuickActionTool struct {
 func (t *QuickActionTool) Name() string { return "quick_action" }
 
 func (t *QuickActionTool) Description() string {
-	return strings.TrimSpace(`Execute a predefined platform shortcut or system gesture from quick_actions.json. ` +
-		`Prefer this tool first when the requested operation matches a catalog entry. ` +
-		`Input JSON examples: {"action":"back","platform":"ios"}, {"action":"copy","platform":"android"}, {"action":"spotlight_search","platform":"android"}. ` +
-		`Supported platforms: ios, android, mac. ` +
-		`To inspect available actions, pass exactly {"list":true,"platform":"android"}; do not pass {"action":"list"}. ` +
-		`If quick_action returns ok=false, status=reserved, the screen did not change, or the outcome is wrong: do not retry the same binding more than once. ` +
-		`Try alternative=true when alternatives are listed; otherwise fall back immediately to keyboard_tap, touch_gesture, or mouse tools and continue the task. ` +
-		`Do not debate shortcut policy with the user—move on after one failed quick_action attempt unless an alternative binding exists. ` +
+	return strings.TrimSpace(`Execute predefined platform shortcut from quick_actions.json. Prefer before keyboard_tap/touch_gesture when a catalog entry matches. ` +
+		`Input examples: {"action":"back","platform":"ios"}, {"action":"copy","platform":"android"}. ` +
+		`Platforms: ios, android, mac. Use {"list":true,"platform":"android"} to inspect available actions; do not pass {"action":"list"}. ` +
 		quickActionBehaviorSummary())
 }
 
@@ -722,8 +717,8 @@ func quickActionBehaviorSummary() string {
 		"Common actions: back, home, hide_app, quit_app, app_switch, spotlight_search, copy, paste, cut, undo, redo, select_all, delete_backward, delete_forward, find, send, browser_new_tab, browser_close_tab, browser_refresh, browser_address_bar, screenshot_region.",
 		"- Infer platform from screenshot/context and pass platform=ios/android/mac.",
 		"- Prefer quick_action before ad-hoc keyboard_tap or touch_gesture when an active catalog entry exists.",
-		"- If status=reserved in a list result or quick_action returns an error message: skip quick_action and use direct input tools instead.",
-		"- If ok=true but the screenshot shows no expected change: treat as ineffective, try alternative=true once or switch tools.",
+		"- If status=reserved in a list result or quick_action returns ok=false or an error message: skip quick_action and use direct input tools instead.",
+		"- If ok=true but the screenshot shows no expected change or the outcome is wrong: treat as ineffective, try alternative=true once when alternatives are listed, otherwise switch tools.",
 		"- Never loop on the same quick_action binding; change tool or strategy after one failed attempt.",
 	}, "\n")
 }

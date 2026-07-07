@@ -27,6 +27,23 @@ func firstAudioDialogTestMessageOfType(messages []Message, messageType string) (
 	return Message{}, false
 }
 
+func waitForAudioDialogRecordSTT(t *testing.T, dialog *AudioDialog) {
+	t.Helper()
+	deadline := time.After(time.Second)
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if dialog.currentRecordSTT() != nil {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for streaming STT session")
+		case <-ticker.C:
+		}
+	}
+}
+
 func TestAudioDialogFinishManualUtterancePreservesTail(t *testing.T) {
 	vad, err := NewAudioVADWithScorer(AudioVADConfig{
 		SampleRate:      16000,
@@ -251,6 +268,7 @@ func TestAudioDialogPrepareTurnInputUsesStreamingTranscriptFromRecording(t *test
 	if err := dialog.StartRecording(); err != nil {
 		t.Fatalf("StartRecording() error = %v", err)
 	}
+	waitForAudioDialogRecordSTT(t, dialog)
 	chunk, err := dialog.ReadRecordChunk(200)
 	if err != nil {
 		t.Fatalf("ReadRecordChunk() error = %v", err)
