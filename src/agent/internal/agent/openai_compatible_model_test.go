@@ -1748,6 +1748,44 @@ func TestOpenAICompatibleModelLiveUsageParsing(t *testing.T) {
 	t.Logf("live model=%s prompt_tokens=%d cached_tokens=%d telemetry=%v", model, prompt, cached, usage)
 }
 
+// TestOpenAICompatibleModelLiveConsecutiveUserMessages verifies that consecutive
+// user messages (which would cause 400 errors on Gemini/Claude without merging)
+// are handled correctly. Run with:
+//
+//	OPENROUTER_API_KEY=sk-or-... go test -run TestOpenAICompatibleModelLiveConsecutiveUserMessages -v
+func TestOpenAICompatibleModelLiveConsecutiveUserMessages(t *testing.T) {
+	apiKey := os.Getenv("OPENROUTER_API_KEY")
+	if apiKey == "" {
+		t.Skip("OPENROUTER_API_KEY not set; skipping live API verification")
+	}
+	// Use Gemini which enforces strict role alternation
+	model := os.Getenv("OPENROUTER_MODEL")
+	if model == "" {
+		model = "google/gemini-2.5-flash"
+	}
+
+	client := newOpenAICompatibleModel("https://openrouter.ai/api/v1", model, apiKey, http.DefaultClient)
+
+	// Simulate the exact scenario that causes issues:
+	// history ends with a visual followup (user role), then new user input arrives
+	t.Log("Sending consecutive user messages (simulating visual followup + new input)...")
+	resp, err := client.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{
+		{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextPart("You are a terse assistant. Reply in one short sentence.")}},
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("What is 2+2?")}},
+		{Role: llms.ChatMessageTypeAI, Parts: []llms.ContentPart{llms.TextPart("4")}},
+		// This simulates: tool_result followed by visual followup (user) then new user input (user)
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("Screenshot shows a calculator app displaying 4.")}},
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("Now calculate 3+3.")}},
+	}, llms.WithMaxTokens(32), llms.WithTemperature(0))
+	if err != nil {
+		t.Fatalf("GenerateContent() with consecutive user messages failed: %v\n"+
+			"This would have failed WITHOUT message merging on strict providers (Gemini/Claude).", err)
+	}
+
+	t.Logf("SUCCESS: model=%s response=%q", model, resp.Choices[0].Content)
+	t.Log("Message merging correctly handled consecutive user messages.")
+}
+
 func readRawHTTPLog(t *testing.T, logDir string) string {
 	t.Helper()
 	data, err := os.ReadFile(rawHTTPLogPath(logDir))
