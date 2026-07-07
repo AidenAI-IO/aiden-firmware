@@ -141,10 +141,11 @@ type logDTO struct {
 }
 
 type hidDTO struct {
-	KeyboardDevice string `json:"keyboard_device"`
-	MouseDevice    string `json:"mouse_device"`
-	FrameSocket    string `json:"frame_socket"`
-	PointerMode    string `json:"pointer_mode"`
+	KeyboardDevice        string `json:"keyboard_device"`
+	MouseDevice           string `json:"mouse_device"`
+	AndroidKeyboardDevice string `json:"android_keyboard_device"`
+	FrameSocket           string `json:"frame_socket"`
+	PointerMode           string `json:"pointer_mode"`
 }
 
 type searchDTO struct {
@@ -295,10 +296,11 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			LLMHTTPRetentionDays: d.Log.LLMHTTPRetentionDays,
 		},
 		HID: agent.HIDConfig{
-			KeyboardDevice: d.HID.KeyboardDevice,
-			MouseDevice:    d.HID.MouseDevice,
-			FrameSocket:    d.HID.FrameSocket,
-			PointerMode:    d.HID.PointerMode,
+			KeyboardDevice:        d.HID.KeyboardDevice,
+			MouseDevice:           d.HID.MouseDevice,
+			AndroidKeyboardDevice: d.HID.AndroidKeyboardDevice,
+			FrameSocket:           d.HID.FrameSocket,
+			PointerMode:           d.HID.PointerMode,
 		},
 		Search: agent.SearchConfig{
 			Provider: d.Search.Provider,
@@ -424,10 +426,11 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			LLMHTTPRetentionDays: cfg.Log.LLMHTTPRetentionDaysOrDefault(),
 		},
 		HID: hidDTO{
-			KeyboardDevice: cfg.HID.KeyboardDeviceOrDefault(),
-			MouseDevice:    cfg.HID.MouseDeviceOrDefault(),
-			FrameSocket:    cfg.HID.FrameSocketOrDefault(),
-			PointerMode:    cfg.HID.PointerModeOrDefault(),
+			KeyboardDevice:        cfg.HID.KeyboardDeviceOrDefault(),
+			MouseDevice:           cfg.HID.MouseDeviceOrDefault(),
+			AndroidKeyboardDevice: cfg.HID.AndroidKeyboardDeviceOrDefault(),
+			FrameSocket:           cfg.HID.FrameSocketOrDefault(),
+			PointerMode:           cfg.HID.PointerModeOrDefault(),
 		},
 		Search: searchDTO{
 			Provider:  cfg.Search.ProviderOrDefault(),

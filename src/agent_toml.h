@@ -60,6 +60,7 @@ struct LogToml {
 struct HIDToml {
     std::string keyboard_device;
     std::string mouse_device;
+    std::string android_keyboard_device;
     std::string frame_socket;
     std::string pointer_mode;
 };

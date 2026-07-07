@@ -1091,6 +1091,10 @@ func (r *Runtime) plannerContextManager() *context_manager.ContextManager {
 	return r.plannerContext
 }
 
+func (r *Runtime) PlannerContextDump() context_manager.MessageListDump {
+	return r.plannerContextManager().MessageListDump()
+}
+
 func (r *Runtime) resetPlannerContext() {
 	r.plannerContextMu.Lock()
 	defer r.plannerContextMu.Unlock()

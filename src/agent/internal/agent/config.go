@@ -349,11 +349,12 @@ func (a AudioConfig) BitWidthOrDefault() int {
 }
 
 type HIDConfig struct {
-	KeyboardDevice string `toml:"keyboard_device,omitempty"`
-	MouseDevice    string `toml:"mouse_device,omitempty"`
-	FrameSocket    string `toml:"frame_socket,omitempty"`
+	KeyboardDevice        string `toml:"keyboard_device,omitempty"`
+	MouseDevice           string `toml:"mouse_device,omitempty"`
+	AndroidKeyboardDevice string `toml:"android_keyboard_device,omitempty"`
+	FrameSocket           string `toml:"frame_socket,omitempty"`
 	// PointerMode selects the hid.usb1 report format: "absolute" (iOS AssistiveTouch)
-	// or "touchscreen" (Android HID digitizer).
+	// or "touchscreen" (Android HID digitizer + hid.usb2 Android extension keys).
 	PointerMode string `toml:"pointer_mode,omitempty"`
 }
 
@@ -382,6 +383,13 @@ func (h HIDConfig) MouseDeviceOrDefault() string {
 		return h.MouseDevice
 	}
 	return defaultMouseDevice
+}
+
+func (h HIDConfig) AndroidKeyboardDeviceOrDefault() string {
+	if h.AndroidKeyboardDevice != "" {
+		return h.AndroidKeyboardDevice
+	}
+	return defaultAndroidKeyboardDevice
 }
 
 func (h HIDConfig) FrameSocketOrDefault() string {

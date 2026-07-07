@@ -104,9 +104,10 @@ speed = 1.0                   # Speech speed: 0.5 - 2.0
 [hid]
 # keyboard_device = "/dev/hidg0"
 # mouse_device = "/dev/hidg1"
+# android_keyboard_device = "/dev/hidg2"  # Android extension keys (Back/Home/App Switch/Search/Power/Volume) when pointer_mode = "touchscreen"
 # frame_socket = "/run/frame_service/frame_service.sock"
 # pointer_mode = "absolute"     # default, iOS AssistiveTouch / absolute mouse
-# pointer_mode = "touchscreen"  # Android HID touch screen / digitizer
+# pointer_mode = "touchscreen"  # Android HID touch screen / digitizer + hid.usb2 extension keys
 
 # Web search tool configuration
 # provider: "duckduckgo" (free, no key), "brave" (Brave Search, needs api_key), or "tavily" (needs api_key)

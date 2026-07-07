@@ -51,7 +51,7 @@ The page fields cover the following config sections (all detailed later on this 
 - `tts`: provider, api_key, model, voice_id, emotion, speed
 - `audio`: socket, sample_rate, channels, bit_width
 - `log`: LLM HTTP log retention
-- `hid`: keyboard_device, mouse_device, frame_socket
+- `hid`: keyboard_device, mouse_device, android_keyboard_device, frame_socket, pointer_mode
 - `env`: shell-style environment text written to `/userdata/system/env`, including optional proxy variables such as `http_proxy`, `HTTPS_PROXY`, and `NO_PROXY`
 - Wi-Fi: SSID / PSK etc. (written to `/userdata/wpa_supplicant.conf`)
 
@@ -88,6 +88,7 @@ llm_http_retention_days = 7
 [hid]
 keyboard_device = "/dev/hidg0"
 mouse_device = "/dev/hidg1"
+android_keyboard_device = "/dev/hidg2"
 frame_socket = "/run/frame_service/frame_service.sock"
 ```
 
@@ -141,6 +142,7 @@ bit_width = 16
 [hid]
 keyboard_device = "/dev/hidg0"
 mouse_device = "/dev/hidg1"
+android_keyboard_device = "/dev/hidg2"
 frame_socket = "/run/frame_service/frame_service.sock"
 ```
 
@@ -219,7 +221,9 @@ When `vad_helper_path` is still the built-in default, switching `vad_backend` au
 | --- | --- | --- |
 | `keyboard_device` | `/dev/hidg0` | Keyboard HID device |
 | `mouse_device` | `/dev/hidg1` | Mouse/touch HID device |
+| `android_keyboard_device` | `/dev/hidg2` | Android extension-key HID device (`hid.usb2`) used for consumer/system-style keys such as Back, Home, App Switch, Search, Power, and Volume when `pointer_mode = "touchscreen"` |
 | `frame_socket` | `/run/frame_service/frame_service.sock` | Frame Service socket used by the screenshot tool |
+| `pointer_mode` | `absolute` | `absolute` for iOS-style cursor mode on `hid.usb1`; `touchscreen` for Android digitizer mode and to expose `hid.usb2` Android extension keys |
 
 ## `[live_activity]`
 
