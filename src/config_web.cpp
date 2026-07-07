@@ -2539,6 +2539,7 @@ void update_model_from_json(cJSON* obj, aiden::ModelToml* m) {
     set_json_str(&m->base_url, obj, "base_url");
     set_json_str(&m->api_key, obj, "api_key");
     set_json_str(&m->token_env, obj, "token_env");
+    set_json_str(&m->reasoning_effort, obj, "reasoning_effort");
     set_json_double(&m->temperature, obj, "temperature");
     set_json_int(&m->max_response_tokens, obj, "max_response_tokens");
     set_json_int(&m->context_window, obj, "context_window");

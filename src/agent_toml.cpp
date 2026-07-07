@@ -477,7 +477,8 @@ void emit_model(std::ostringstream& out, const char* section, const ModelToml& m
     if (!m.base_url.empty()) emit_string(out, "base_url", m.base_url);
     emit_string(out, "api_key", m.api_key);
     if (!m.token_env.empty()) emit_string(out, "token_env", m.token_env);
-    if (!m.reasoning_effort.empty()) emit_string(out, "reasoning_effort", m.reasoning_effort);
+    // Always emit reasoning_effort, even if empty (empty = "auto" default)
+    emit_string(out, "reasoning_effort", m.reasoning_effort);
     if (m.temperature != 0.0) emit_double(out, "temperature", m.temperature);
     if (m.max_response_tokens != 0) emit_int(out, "max_response_tokens", m.max_response_tokens);
     if (m.context_window != 0) emit_int(out, "context_window", m.context_window);
