@@ -27,6 +27,7 @@ type openAICompatibleModel struct {
 	rawLogger           *llmRawHTTPLogger
 	explicitPromptCache bool
 	routerMetadata      bool
+	reasoningEffort     string
 	// sessionIDProvider, when set, supplies the value for the x-session-id
 	// request header. It is only wired up for the OpenRouter provider, whose
 	// sticky routing uses the session id to keep multi-turn requests on the same
@@ -100,6 +101,12 @@ func withOpenAICompatibleExplicitPromptCache() openAICompatibleModelOption {
 func withOpenAICompatibleRouterMetadata() openAICompatibleModelOption {
 	return func(m *openAICompatibleModel) {
 		m.routerMetadata = true
+	}
+}
+
+func withOpenAICompatibleReasoningEffort(effort string) openAICompatibleModelOption {
+	return func(m *openAICompatibleModel) {
+		m.reasoningEffort = strings.TrimSpace(effort)
 	}
 }
 
@@ -240,6 +247,13 @@ type compatibleChatRequest struct {
 	ToolChoice       any                 `json:"tool_choice,omitempty"`
 	Stream           bool                `json:"stream,omitempty"`
 	ResponseFormat   map[string]string   `json:"response_format,omitempty"`
+	Reasoning        *reasoningConfig    `json:"reasoning,omitempty"`
+	ReasoningEffort  string              `json:"reasoning_effort,omitempty"`
+}
+
+type reasoningConfig struct {
+	Effort  string `json:"effort,omitempty"`
+	Exclude bool   `json:"exclude,omitempty"`
 }
 
 type compatibleMessage struct {
@@ -301,6 +315,7 @@ type compatibleUsage struct {
 	PromptTokens        int `json:"prompt_tokens"`
 	CompletionTokens    int `json:"completion_tokens"`
 	TotalTokens         int `json:"total_tokens"`
+	ReasoningTokens     int `json:"reasoning_tokens,omitempty"`
 	PromptTokensDetails *struct {
 		CachedTokens int `json:"cached_tokens"`
 	} `json:"prompt_tokens_details,omitempty"`
@@ -317,6 +332,9 @@ func (u *compatibleUsage) generationInfo() map[string]any {
 	}
 	if u.PromptTokensDetails != nil {
 		info["cached_tokens"] = u.PromptTokensDetails.CachedTokens
+	}
+	if u.ReasoningTokens > 0 {
+		info["reasoning_tokens"] = u.ReasoningTokens
 	}
 	return info
 }
@@ -432,6 +450,16 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 	}
 	if callOpts.JSONMode {
 		reqPayload.ResponseFormat = map[string]string{"type": "json_object"}
+	}
+	// Apply reasoning policy: only include reasoning fields when explicitly configured.
+	// Empty string = auto mode = omit from request (let model/provider decide).
+	// This prevents sending unsupported parameters to providers that don't support reasoning.
+	if m.reasoningEffort != "" {
+		reqPayload.Reasoning = &reasoningConfig{
+			Effort:  m.reasoningEffort,
+			Exclude: m.reasoningEffort == "none",
+		}
+		reqPayload.ReasoningEffort = m.reasoningEffort
 	}
 	generationInfo["llm_request_prepare_ms"] = time.Since(requestPrepareStart).Milliseconds()
 

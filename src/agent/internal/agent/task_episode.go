@@ -309,6 +309,12 @@ func (r *EpisodeRecorder) Finish(output string, metrics *RunMetrics, runErr erro
 		if metrics.CachedPromptTokens > 0 {
 			episode.Extra["cached_prompt_tokens"] = metrics.CachedPromptTokens
 		}
+		if metrics.ReasoningTokens > 0 {
+			episode.Extra["reasoning_tokens"] = metrics.ReasoningTokens
+		}
+		if metrics.ToolCount > 0 {
+			episode.Extra["tool_count"] = metrics.ToolCount
+		}
 	}
 	if runErr != nil {
 		episode.Outcome.FailureReason = runErr.Error()

@@ -192,14 +192,16 @@ func openRouterExplicitPromptCacheSupported(model string) bool {
 }
 
 func (m *ModelManager) openAICompatibleOptions(cfg ModelConfig) []openAICompatibleModelOption {
-	if !cfg.LogRawHTTP || strings.TrimSpace(m.rawHTTPLogDir) == "" {
-		return nil
+	var opts []openAICompatibleModelOption
+	if cfg.LogRawHTTP && strings.TrimSpace(m.rawHTTPLogDir) != "" {
+		logger := newLLMRawHTTPLogger(m.rawHTTPLogDir, "")
+		logger.SetSessionIDProvider(m.rawHTTPLogSessionID)
+		opts = append(opts, withOpenAICompatibleRawHTTPLogger(logger))
 	}
-	logger := newLLMRawHTTPLogger(m.rawHTTPLogDir, "")
-	logger.SetSessionIDProvider(m.rawHTTPLogSessionID)
-	return []openAICompatibleModelOption{
-		withOpenAICompatibleRawHTTPLogger(logger),
+	if cfg.ReasoningEffort != "" {
+		opts = append(opts, withOpenAICompatibleReasoningEffort(cfg.ReasoningEffort))
 	}
+	return opts
 }
 
 func resolveToken(cfg ModelConfig) string {
