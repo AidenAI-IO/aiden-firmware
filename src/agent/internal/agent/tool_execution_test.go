@@ -135,6 +135,55 @@ func TestExecuteToolCallUnwrapsCompatibleInputBeforeValidation(t *testing.T) {
 	}
 }
 
+func TestExecuteToolCallSkillManageEditAcceptsLiteralNewlinesInContent(t *testing.T) {
+	dir := t.TempDir()
+	writeSKILL(t, dir, "alpha", testSkillA)
+	tool := NewSkillManageTool(dir, "")
+	specs := NewToolSpecs([]langtools.Tool{tool})
+	updated := "---\nname: alpha\ndescription: Alpha edited\n---\n\nDo alpha things better.\n"
+	input := `{"action":"edit","name":"alpha","content":"` + updated + `","reason":"test"}`
+
+	result := executeToolCall(context.Background(), ToolCallExecution{
+		Specs: specs,
+		Action: schema.AgentAction{
+			Tool:      "skill_manage",
+			ToolInput: input,
+		},
+	})
+
+	if result.Result.IsError() {
+		t.Fatalf("skill_manage edit should accept full SKILL.md content with literal newlines, got %s", result.Result.Output)
+	}
+	if got := readSKILL(t, dir, "alpha"); got != updated {
+		t.Fatalf("updated skill content = %q, want %q", got, updated)
+	}
+}
+
+func TestExecuteToolCallSkillManageEditAcceptsMarkdownQuotesInContent(t *testing.T) {
+	dir := t.TempDir()
+	writeSKILL(t, dir, "alpha", testSkillA)
+	tool := NewSkillManageTool(dir, "")
+	specs := NewToolSpecs([]langtools.Tool{tool})
+	updated := "---\nname: alpha\ndescription: Alpha edited\n---\n\n1. **点击\"+\"号**：选择\"从相册选择\"。\n"
+	input := `{"action":"edit","name":"alpha","content":"` + updated + `","reason":"test"}`
+	input = strings.ReplaceAll(input, `\"`, `"`)
+
+	result := executeToolCall(context.Background(), ToolCallExecution{
+		Specs: specs,
+		Action: schema.AgentAction{
+			Tool:      "skill_manage",
+			ToolInput: input,
+		},
+	})
+
+	if result.Result.IsError() {
+		t.Fatalf("skill_manage edit should accept full SKILL.md content with markdown quotes, got %s", result.Result.Output)
+	}
+	if got := readSKILL(t, dir, "alpha"); got != updated {
+		t.Fatalf("updated skill content = %q, want %q", got, updated)
+	}
+}
+
 func TestExecuteToolCallInvalidToolEmitsToolCallAndResult(t *testing.T) {
 	recorder := &toolExecutionCallbackRecorder{}
 	specs := NewToolSpecs([]langtools.Tool{&stubTool{name: "echo", description: "Echo.", output: "ok"}})

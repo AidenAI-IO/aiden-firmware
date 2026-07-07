@@ -395,7 +395,12 @@ func (spec ToolSpec) LLMSchema() map[string]any {
 func (spec ToolSpec) NormalizeInput(input string) string {
 	input = normalizeToolInput(input)
 	input = unwrapCompatibleToolInput(input)
-	return normalizeToolInput(input)
+	input = normalizeToolInput(input)
+	if defaultString(spec.InputMode, toolInputModeJSON) == toolInputModeJSON {
+		input = repairJSONStringValueQuotes(input)
+		input = repairJSONControlCharsInStrings(input)
+	}
+	return input
 }
 
 func (spec ToolSpec) ValidateInput(input string) error {
@@ -431,6 +436,154 @@ func unwrapCompatibleToolInput(input string) string {
 		return input
 	}
 	return arg
+}
+
+func repairJSONControlCharsInStrings(input string) string {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" || json.Valid([]byte(trimmed)) {
+		return input
+	}
+
+	var b strings.Builder
+	b.Grow(len(input))
+	inString := false
+	escaped := false
+	for _, r := range input {
+		if escaped {
+			b.WriteRune(r)
+			escaped = false
+			continue
+		}
+		if inString {
+			switch r {
+			case '\\':
+				b.WriteRune(r)
+				escaped = true
+			case '"':
+				b.WriteRune(r)
+				inString = false
+			case '\n':
+				b.WriteString(`\n`)
+			case '\r':
+				b.WriteString(`\r`)
+			case '\t':
+				b.WriteString(`\t`)
+			case '\b':
+				b.WriteString(`\b`)
+			case '\f':
+				b.WriteString(`\f`)
+			default:
+				if r >= 0 && r < 0x20 {
+					fmt.Fprintf(&b, `\u%04x`, r)
+				} else {
+					b.WriteRune(r)
+				}
+			}
+			continue
+		}
+
+		b.WriteRune(r)
+		if r == '"' {
+			inString = true
+		}
+	}
+
+	repaired := b.String()
+	if json.Valid([]byte(strings.TrimSpace(repaired))) {
+		return repaired
+	}
+	return input
+}
+
+func repairJSONStringValueQuotes(input string) string {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" || json.Valid([]byte(trimmed)) {
+		return input
+	}
+
+	runes := []rune(input)
+	var b strings.Builder
+	b.Grow(len(input))
+	inString := false
+	escaped := false
+	valueString := false
+	var prevSignificant rune
+	for i, r := range runes {
+		if escaped {
+			b.WriteRune(r)
+			escaped = false
+			continue
+		}
+		if inString {
+			switch r {
+			case '\\':
+				b.WriteRune(r)
+				escaped = true
+			case '"':
+				next := nextNonJSONSpaceRune(runes, i+1)
+				if stringQuoteCloses(valueString, next) {
+					b.WriteRune(r)
+					inString = false
+				} else {
+					b.WriteString(`\"`)
+				}
+			case '\n':
+				b.WriteString(`\n`)
+			case '\r':
+				b.WriteString(`\r`)
+			case '\t':
+				b.WriteString(`\t`)
+			case '\b':
+				b.WriteString(`\b`)
+			case '\f':
+				b.WriteString(`\f`)
+			default:
+				if r >= 0 && r < 0x20 {
+					fmt.Fprintf(&b, `\u%04x`, r)
+				} else {
+					b.WriteRune(r)
+				}
+			}
+			continue
+		}
+
+		b.WriteRune(r)
+		if r == '"' {
+			inString = true
+			escaped = false
+			valueString = prevSignificant == ':' || prevSignificant == '['
+			continue
+		}
+		if !isJSONSpace(r) {
+			prevSignificant = r
+		}
+	}
+
+	repaired := b.String()
+	if json.Valid([]byte(strings.TrimSpace(repaired))) {
+		return repaired
+	}
+	return input
+}
+
+func stringQuoteCloses(valueString bool, next rune) bool {
+	if valueString {
+		return next == 0 || next == ',' || next == '}' || next == ']'
+	}
+	return next == ':'
+}
+
+func nextNonJSONSpaceRune(runes []rune, start int) rune {
+	for i := start; i < len(runes); i++ {
+		if !isJSONSpace(runes[i]) {
+			return runes[i]
+		}
+	}
+	return 0
+}
+
+func isJSONSpace(r rune) bool {
+	return r == ' ' || r == '\n' || r == '\r' || r == '\t'
 }
 
 func toolSpecKey(name string) string {
