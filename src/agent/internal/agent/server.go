@@ -467,6 +467,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/coordinate-debug/tap", s.handleCoordinateDebugTap)
 	mux.HandleFunc("/coordinate-debug", s.handleCoordinateDebug)
 	mux.HandleFunc("/coordinate-debug.html", s.handleCoordinateDebug)
+	mux.HandleFunc("/keyboard-tap-android-keys", s.handleKeyboardTapAndroidKeys)
 
 	mux.HandleFunc("/user_files", s.handleUserFiles)
 	mux.HandleFunc("/user_files/regenerate", s.handleUserFilesRegenerate)
@@ -3086,7 +3087,247 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(html))
 }
 
+func (s *Server) handleKeyboardTapAndroidKeys(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/keyboard-tap-android-keys" {
+		http.NotFound(w, r)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write([]byte(keyboardTapAndroidKeysGuideHTML))
+}
+
 const coordinateDebugNavLink = `<a href="/coordinate-debug" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">🎯 Coordinate Debug</a>`
+
+const keyboardTapAndroidKeysGuideHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>keyboard_tap Android key guide</title>
+    <style>
+        :root {
+            color-scheme: light;
+            --bg: #f3efe6;
+            --panel: #fffdf8;
+            --line: rgba(52, 56, 49, 0.14);
+            --text: #1e241d;
+            --muted: #697063;
+            --accent: #1f7a63;
+            --accent-strong: #155646;
+            --code: #f4eee3;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
+            background: var(--bg);
+            color: var(--text);
+        }
+
+        main {
+            max-width: 1120px;
+            margin: 0 auto;
+            padding: 32px 20px 48px;
+        }
+
+        h1, h2 {
+            margin: 0 0 12px;
+        }
+
+        p, li {
+            line-height: 1.6;
+        }
+
+        .eyebrow {
+            margin: 0 0 8px;
+            color: var(--muted);
+            font-size: 0.78rem;
+            font-weight: 700;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+        }
+
+        .panel,
+        .callout {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 18px;
+            padding: 18px 20px;
+            margin-top: 18px;
+        }
+
+        .callout {
+            border-left: 4px solid var(--accent);
+        }
+
+        code {
+            background: var(--code);
+            border-radius: 8px;
+            padding: 2px 6px;
+            font-family: "SFMono-Regular", "Menlo", monospace;
+            font-size: 0.95em;
+        }
+
+        a {
+            color: var(--accent);
+        }
+
+        a:hover {
+            color: var(--accent-strong);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 14px;
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 16px;
+            overflow: hidden;
+        }
+
+        th,
+        td {
+            padding: 12px 14px;
+            border-bottom: 1px solid var(--line);
+            text-align: left;
+            vertical-align: top;
+        }
+
+        th {
+            background: rgba(31, 122, 99, 0.08);
+            font-size: 0.83rem;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+        }
+
+        tr:last-child td {
+            border-bottom: 0;
+        }
+
+        .examples {
+            margin-top: 10px;
+        }
+
+        .examples li {
+            margin-top: 8px;
+        }
+    </style>
+</head>
+<body>
+    <main>
+        <p class="eyebrow">Aiden Agent</p>
+        <h1>keyboard_tap Android key guide</h1>
+        <p>
+            These aliases use <code>hid.usb2</code> and send one 16-bit Consumer Control usage at a time.
+            They require <code>hid.pointer_mode = "touchscreen"</code> and a valid
+            <code>hid.android_keyboard_device</code> such as <code>/dev/hidg2</code>.
+        </p>
+
+        <div class="callout">
+            <strong>Rules:</strong>
+            <ul>
+                <li>Use one Android extension key at a time.</li>
+                <li>Do not combine <code>KEYCODE_*</code> or <code>KEY_USAGE_*</code> with <code>ctrl</code>, <code>alt</code>, <code>shift</code>, <code>meta</code>, or standard keyboard keys.</li>
+                <li>Raw short names such as <code>app_switch</code> or <code>refresh</code> are also accepted where listed below.</li>
+                <li>Android and vendor ROMs may react differently to some usages even when AOSP maps them.</li>
+            </ul>
+        </div>
+
+        <div class="panel">
+            <h2>Examples</h2>
+            <ul class="examples">
+                <li><code>{"keys":["KEYCODE_BACK"]}</code></li>
+                <li><code>{"keys":["KEYCODE_APP_SWITCH"]}</code></li>
+                <li><code>{"keys":["KEYCODE_MEDIA_PLAY_PAUSE"]}</code></li>
+                <li><code>{"keys":["KEY_USAGE_SETTINGS"]}</code></li>
+                <li><code>{"keys":["KEY_USAGE_REFRESH"]}</code></li>
+            </ul>
+        </div>
+
+        <h2>KEYCODE aliases</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Alias</th>
+                    <th>Raw name</th>
+                    <th>Usage</th>
+                    <th>AOSP action</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td><code>KEYCODE_BACK</code></td><td><code>android_back</code></td><td><code>0x0c0224</code></td><td>Back</td></tr>
+                <tr><td><code>KEYCODE_HOME</code></td><td><code>android_home</code></td><td><code>0x0c0223</code></td><td>Home</td></tr>
+                <tr><td><code>KEYCODE_APP_SWITCH</code></td><td><code>app_switch</code></td><td><code>0x0c029F</code></td><td>Recent Apps</td></tr>
+                <tr><td><code>KEYCODE_MENU</code></td><td><code>menu</code></td><td><code>0x0c0040</code></td><td>Menu</td></tr>
+                <tr><td><code>KEYCODE_SEARCH</code></td><td><code>search</code></td><td><code>0x0c0221</code></td><td>Search</td></tr>
+                <tr><td><code>KEYCODE_POWER</code></td><td><code>power</code></td><td><code>0x0c0030</code></td><td>Power</td></tr>
+                <tr><td><code>KEYCODE_SLEEP</code></td><td><code>sleep</code></td><td><code>0x0c0032</code></td><td>Sleep</td></tr>
+                <tr><td><code>KEYCODE_VOLUME_MUTE</code></td><td><code>volume_mute</code></td><td><code>0x0c00E2</code></td><td>Volume Mute</td></tr>
+                <tr><td><code>KEYCODE_VOLUME_UP</code></td><td><code>volume_up</code></td><td><code>0x0c00E9</code></td><td>Volume Up</td></tr>
+                <tr><td><code>KEYCODE_VOLUME_DOWN</code></td><td><code>volume_down</code></td><td><code>0x0c00EA</code></td><td>Volume Down</td></tr>
+                <tr><td><code>KEYCODE_MEDIA_PLAY_PAUSE</code></td><td><code>media_play_pause</code></td><td><code>0x0c00CD</code></td><td>Media Play/Pause</td></tr>
+                <tr><td><code>KEYCODE_MEDIA_STOP</code></td><td><code>media_stop</code></td><td><code>0x0c00B7</code></td><td>Media Stop</td></tr>
+                <tr><td><code>KEYCODE_MEDIA_NEXT</code></td><td><code>media_next</code></td><td><code>0x0c00B5</code></td><td>Media Next</td></tr>
+                <tr><td><code>KEYCODE_MEDIA_PREVIOUS</code></td><td><code>media_previous</code></td><td><code>0x0c00B6</code></td><td>Media Previous</td></tr>
+                <tr><td><code>KEYCODE_MEDIA_REWIND</code></td><td><code>media_rewind</code></td><td><code>0x0c00B4</code></td><td>Media Rewind</td></tr>
+                <tr><td><code>KEYCODE_MEDIA_FAST_FORWARD</code></td><td><code>media_fast_forward</code></td><td><code>0x0c00B3</code></td><td>Media Fast Forward</td></tr>
+            </tbody>
+        </table>
+
+        <h2>KEY_USAGE aliases</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Alias</th>
+                    <th>Raw name</th>
+                    <th>Usage</th>
+                    <th>AOSP action</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td><code>KEY_USAGE_SCREENSHOT</code></td><td><code>screenshot</code></td><td><code>0x0c0065</code></td><td>Screenshot</td></tr>
+                <tr><td><code>KEY_USAGE_WINDOW</code></td><td><code>window</code></td><td><code>0x0c0067</code></td><td>Window</td></tr>
+                <tr><td><code>KEY_USAGE_BRIGHTNESS_UP</code></td><td><code>brightness_up</code></td><td><code>0x0c006F</code></td><td>Brightness Up</td></tr>
+                <tr><td><code>KEY_USAGE_BRIGHTNESS_DOWN</code></td><td><code>brightness_down</code></td><td><code>0x0c0070</code></td><td>Brightness Down</td></tr>
+                <tr><td><code>KEY_USAGE_DICTATE</code></td><td><code>dictate</code></td><td><code>0x0c00D8</code></td><td>Dictate</td></tr>
+                <tr><td><code>KEY_USAGE_EMOJI_PICKER</code></td><td><code>emoji_picker</code></td><td><code>0x0c00D9</code></td><td>Emoji Picker</td></tr>
+                <tr><td><code>KEY_USAGE_MEDIA_AUDIO_TRACK</code></td><td><code>media_audio_track</code></td><td><code>0x0c0173</code></td><td>Media Audio Track</td></tr>
+                <tr><td><code>KEY_USAGE_PROFILE_SWITCH</code></td><td><code>profile_switch</code></td><td><code>0x0c019C</code></td><td>Profile Switch</td></tr>
+                <tr><td><code>KEY_USAGE_SETTINGS</code></td><td><code>settings</code></td><td><code>0x0c019F</code></td><td>Settings</td></tr>
+                <tr><td><code>KEY_USAGE_NEW</code></td><td><code>new</code></td><td><code>0x0c0201</code></td><td>New</td></tr>
+                <tr><td><code>KEY_USAGE_CLOSE</code></td><td><code>close</code></td><td><code>0x0c0203</code></td><td>Close</td></tr>
+                <tr><td><code>KEY_USAGE_PRINT</code></td><td><code>print</code></td><td><code>0x0c0208</code></td><td>Print</td></tr>
+                <tr><td><code>KEY_USAGE_REFRESH</code></td><td><code>refresh</code></td><td><code>0x0c0227</code></td><td>Refresh</td></tr>
+                <tr><td><code>KEY_USAGE_FULLSCREEN</code></td><td><code>fullscreen</code></td><td><code>0x0c0232</code></td><td>Fullscreen</td></tr>
+                <tr><td><code>KEY_USAGE_LANGUAGE_SWITCH</code></td><td><code>language_switch</code></td><td><code>0x0c029D</code></td><td>Language Switch</td></tr>
+            </tbody>
+        </table>
+
+        <div class="panel">
+            <h2>Notes</h2>
+            <p>
+                AOSP resolves HID usage mappings before Linux scan-code mappings. That is why
+                <code>KEYCODE_APP_SWITCH</code> uses <code>0x0c029F</code> rather than
+                <code>0x0c01A2</code>: the former maps to Recent Apps, while the latter maps to All Apps.
+            </p>
+            <p>
+                <code>KEYCODE_WAKEUP</code>, <code>KEYCODE_SOFT_SLEEP</code>, and <code>KEYCODE_NOTIFICATION</code>
+                are reserved aliases but currently return explicit unsupported errors on this gadget.
+            </p>
+            <p>
+                Return to the <a href="/">main UI</a> when you are done.
+            </p>
+        </div>
+    </main>
+</body>
+</html>
+`
 
 const webUI = `<!DOCTYPE html>
 <html lang="en">
@@ -3219,6 +3460,17 @@ const webUI = `<!DOCTYPE html>
         .sidebar-note {
             line-height: 1.45;
             font-size: 0.82rem;
+        }
+
+        .sidebar-note a {
+            color: var(--accent);
+            font-weight: 600;
+            text-decoration: none;
+        }
+
+        .sidebar-note a:hover {
+            color: var(--accent-strong);
+            text-decoration: underline;
         }
 
         .sidebar-kicker {
@@ -4413,13 +4665,28 @@ const webUI = `<!DOCTYPE html>
                 toolSelectEl.value = tool.name;
             }
 
-            toolDescriptionEl.textContent = tool.description || '';
+            renderToolDescription(tool);
             toolInputEl.placeholder = tool.example_input || '';
             if (switched) {
                 toolInputEl.value = tool.example_input || '';
                 toolInputEl.dataset.toolName = tool.name;
             }
             toolStatusEl.classList.remove('error');
+        }
+
+        function renderToolDescription(tool) {
+            toolDescriptionEl.textContent = tool.description || '';
+            if (!tool || tool.name !== 'keyboard_tap') {
+                return;
+            }
+
+            toolDescriptionEl.appendChild(document.createTextNode(' '));
+            const link = document.createElement('a');
+            link.href = '/keyboard-tap-android-keys';
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            link.textContent = 'Open Android key guide';
+            toolDescriptionEl.appendChild(link);
         }
 
         function loadSelectedToolExample() {

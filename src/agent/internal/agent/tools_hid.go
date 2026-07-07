@@ -128,6 +128,174 @@ var hidModifierMap = map[string]uint8{
 	"super": 0x08, "win": 0x08, "cmd": 0x08,
 }
 
+var androidExtensionUsageMap = map[string]uint16{
+	"android_back":                0x0224,
+	"android_home":                0x0223,
+	"menu":                        0x0040,
+	"search":                      0x0221,
+	"power":                       0x0030,
+	"sleep":                       0x0032,
+	"volume_mute":                 0x00e2,
+	"volumeup":                    0x00e9,
+	"volume_up":                   0x00e9,
+	"volumedown":                  0x00ea,
+	"volume_down":                 0x00ea,
+	"media_fast_forward":          0x00b3,
+	"media_rewind":                0x00b4,
+	"media_next":                  0x00b5,
+	"media_previous":              0x00b6,
+	"media_stop":                  0x00b7,
+	"media_play_pause":            0x00cd,
+	"screenshot":                  0x0065,
+	"key_usage_screenshot":        0x0065,
+	"window":                      0x0067,
+	"key_usage_window":            0x0067,
+	"brightness_up":               0x006f,
+	"key_usage_brightness_up":     0x006f,
+	"brightness_down":             0x0070,
+	"key_usage_brightness_down":   0x0070,
+	"dictate":                     0x00d8,
+	"key_usage_dictate":           0x00d8,
+	"emoji_picker":                0x00d9,
+	"key_usage_emoji_picker":      0x00d9,
+	"media_audio_track":           0x0173,
+	"key_usage_media_audio_track": 0x0173,
+	"profile_switch":              0x019c,
+	"key_usage_profile_switch":    0x019c,
+	"settings":                    0x019f,
+	"key_usage_settings":          0x019f,
+	"new":                         0x0201,
+	"key_usage_new":               0x0201,
+	"close":                       0x0203,
+	"key_usage_close":             0x0203,
+	"print":                       0x0208,
+	"key_usage_print":             0x0208,
+	"refresh":                     0x0227,
+	"key_usage_refresh":           0x0227,
+	"fullscreen":                  0x0232,
+	"key_usage_fullscreen":        0x0232,
+	"language_switch":             0x029d,
+	"key_usage_language_switch":   0x029d,
+	// AOSP Generic.kl checks HID usage codes before Linux scan codes.
+	// 0x0c01A2 is mapped to ALL_APPS, while 0x0c029F is mapped to
+	// RECENT_APPS / KEYCODE_APP_SWITCH.
+	"app_switch": 0x029f,
+}
+
+type androidKeyboardTapAlias struct {
+	Keycode           int
+	Replacement       string
+	UnsupportedReason string
+}
+
+// Keep Android framework keycodes separate from the generic HID usage table.
+// They are routed through hid.usb2, which advertises a Consumer Control
+// interface instead of the boot keyboard report used by hid.usb0.
+var androidKeyboardTapAliases = map[string]androidKeyboardTapAlias{
+	"keycode_call": {
+		Keycode:           5,
+		UnsupportedReason: "call pickup requires an Android telephony/media key path beyond the current hid.usb2 Consumer Control interface",
+	},
+	"keycode_endcall": {
+		Keycode:           6,
+		UnsupportedReason: "call hangup requires an Android telephony/media key path beyond the current hid.usb2 Consumer Control interface",
+	},
+	"keycode_home": {
+		Keycode:     3,
+		Replacement: "android_home",
+	},
+	"keycode_menu": {
+		Keycode:     82,
+		Replacement: "menu",
+	},
+	"keycode_back": {
+		Keycode:     4,
+		Replacement: "android_back",
+	},
+	"keycode_search": {
+		Keycode:     84,
+		Replacement: "search",
+	},
+	"keycode_camera": {
+		Keycode:           27,
+		UnsupportedReason: "camera shutter requires a camera/media key path beyond the current hid.usb2 Consumer Control interface",
+	},
+	"keycode_focus": {
+		Keycode:           80,
+		UnsupportedReason: "camera focus requires a camera/media key path beyond the current hid.usb2 Consumer Control interface",
+	},
+	"keycode_power": {
+		Keycode:     26,
+		Replacement: "power",
+	},
+	"keycode_sleep": {
+		Keycode:     223,
+		Replacement: "sleep",
+	},
+	"keycode_wakeup": {
+		Keycode:           224,
+		UnsupportedReason: "wakeup requires a Generic Desktop/System Control HID path beyond the current hid.usb2 Consumer Control interface",
+	},
+	"keycode_soft_sleep": {
+		Keycode:           276,
+		UnsupportedReason: "soft sleep has no verified standard Consumer Control usage on this gadget",
+	},
+	"keycode_notification": {
+		Keycode:           83,
+		UnsupportedReason: "notification center has no verified standard Consumer Control usage on this gadget; use quick_action notification_center or touch_gesture instead",
+	},
+	"keycode_mute": {
+		Keycode:           91,
+		UnsupportedReason: "KEYCODE_MUTE is microphone mute, not speaker mute; hid.usb2 only exposes system speaker/stream volume mute",
+	},
+	"keycode_volume_mute": {
+		Keycode:     164,
+		Replacement: "volume_mute",
+	},
+	"keycode_volume_up": {
+		Keycode:     24,
+		Replacement: "volume_up",
+	},
+	"keycode_volume_down": {
+		Keycode:     25,
+		Replacement: "volume_down",
+	},
+	"keycode_media_play_pause": {
+		Keycode:     85,
+		Replacement: "media_play_pause",
+	},
+	"keycode_media_stop": {
+		Keycode:     86,
+		Replacement: "media_stop",
+	},
+	"keycode_media_next": {
+		Keycode:     87,
+		Replacement: "media_next",
+	},
+	"keycode_media_previous": {
+		Keycode:     88,
+		Replacement: "media_previous",
+	},
+	"keycode_media_rewind": {
+		Keycode:     89,
+		Replacement: "media_rewind",
+	},
+	"keycode_media_fast_forward": {
+		Keycode:     90,
+		Replacement: "media_fast_forward",
+	},
+	"keycode_app_switch": {
+		Keycode:     187,
+		Replacement: "app_switch",
+	},
+}
+
+type keyboardTapResolvedInput struct {
+	Keys                []string
+	AndroidExtensionKey string
+	AndroidUsage        uint16
+}
+
 // HIDDevice manages a single HID device file with lazy open and auto-reopen.
 type HIDDevice struct {
 	path         string
@@ -520,16 +688,20 @@ func hidWriteWouldBlock(err error) bool {
 
 // KeyboardTapTool sends a key press then release via HID.
 type KeyboardTapTool struct {
-	dev *HIDDevice
+	dev        *HIDDevice
+	androidDev *HIDDevice
 }
 
 func (t *KeyboardTapTool) Name() string { return "keyboard_tap" }
 
 func (t *KeyboardTapTool) Description() string {
-	return `Press and release keyboard keys. Prefer quick_action first for semantic platform actions such as back, app search, app switching, copy, paste, undo, redo, select all, delete backward/forward, find, send, or browser navigation; use keyboard_tap as a low-level fallback or for custom key input. ` +
-		`Keys: a-z, 0-9, f1-f12, enter, escape, backspace, tab, space, delete, arrows, home, end, pageup/down, insert, printscreen. ` +
+	return `Press and release keyboard keys. Input JSON: {"keys": ["ctrl", "c"]}. ` +
+		`Prefer quick_action first for semantic platform actions such as back, app search, app switching, copy, paste, undo, redo, select all, delete backward/forward, find, send, or browser navigation; use keyboard_tap as a low-level fallback or for custom key input. ` +
+		`Supports on the standard boot keyboard path: a-z, 0-9, f1-f12, enter, escape, backspace, tab, space, delete, arrows, home, end, pageup/down, insert, printscreen. ` +
 		`For ordinary text deletion use backspace; delete is forward-delete after the cursor. ` +
-		`Modifiers: ctrl, shift, alt, meta/super/win/cmd. Modifier-only taps are supported (e.g. {"keys":["meta"]} for Android Home). Multiple keys are pressed simultaneously, e.g. ctrl+c. ` +
+		`Modifiers: ctrl, shift, alt, meta/super/win/cmd. Android extension keys on hid.usb2 use KEYCODE_* and KEY_USAGE_* aliases; see the Android key guide for the full list. ` +
+		`Android extension keys are single-key taps only and cannot be combined with standard keyboard modifiers/chords; unsupported Android-only aliases return an explicit error. ` +
+		`Modifier-only taps are supported (e.g. {"keys":["meta"]}). Multiple keys are pressed simultaneously, e.g. ctrl+c. ` +
 		`Optional hold_ms keeps the chord pressed before release; default is 50ms, or 120ms when modifiers are used.`
 }
 
@@ -556,10 +728,29 @@ func (t *KeyboardTapTool) Call(ctx context.Context, input string) (string, error
 		return toolErrorResultString(ctx, CodeInvalidArguments, "keys array is required"), nil
 	}
 
+	resolved, err := resolveKeyboardTapKeys(args.Keys)
+	if err != nil {
+		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
+	}
+
+	if resolved.AndroidExtensionKey != "" {
+		holdMs := args.HoldMs
+		if holdMs <= 0 {
+			holdMs = defaultKeyboardTapHoldMs
+		}
+		if err := t.tapAndroidExtension(resolved.AndroidExtensionKey, resolved.AndroidUsage, holdMs); err != nil {
+			code := CodeToolExecutionFailed
+			if errors.Is(err, errAndroidExtensionUnavailable) {
+				code = CodeModuleUnavailable
+			}
+			return toolErrorResultf(ctx, code, "%v", err), nil
+		}
+		return "ok", nil
+	}
+
 	var modifier uint8
 	var keys []uint8
-	for _, k := range args.Keys {
-		k = strings.ToLower(strings.TrimSpace(k))
+	for _, k := range resolved.Keys {
 		if mod, ok := hidModifierMap[k]; ok {
 			modifier |= mod
 		} else if code, ok := hidKeyboardMap[k]; ok {
@@ -584,6 +775,62 @@ func (t *KeyboardTapTool) Call(ctx context.Context, input string) (string, error
 		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
 	return "ok", nil
+}
+
+func resolveKeyboardTapKeys(rawKeys []string) (keyboardTapResolvedInput, error) {
+	resolved := keyboardTapResolvedInput{Keys: make([]string, 0, len(rawKeys))}
+	androidKeys := make([]string, 0, 1)
+	for _, key := range rawKeys {
+		normalized := strings.ToLower(strings.TrimSpace(key))
+		if normalized == "" {
+			continue
+		}
+		if alias, ok := androidKeyboardTapAliases[normalized]; ok {
+			if alias.UnsupportedReason != "" {
+				return keyboardTapResolvedInput{}, fmt.Errorf("android-only key %q (keycode %d) is not supported by keyboard_tap: %s", normalized, alias.Keycode, alias.UnsupportedReason)
+			}
+			normalized = alias.Replacement
+		}
+		if usage, ok := androidExtensionUsageMap[normalized]; ok {
+			androidKeys = append(androidKeys, normalized)
+			resolved.AndroidUsage = usage
+			continue
+		}
+		resolved.Keys = append(resolved.Keys, normalized)
+	}
+	if len(androidKeys) > 1 {
+		return keyboardTapResolvedInput{}, fmt.Errorf("keyboard_tap supports one Android extension key at a time, got %v", androidKeys)
+	}
+	if len(androidKeys) == 1 {
+		if len(resolved.Keys) > 0 {
+			return keyboardTapResolvedInput{}, fmt.Errorf("Android extension key %q cannot be combined with standard keyboard keys or modifiers", androidKeys[0])
+		}
+		resolved.AndroidExtensionKey = androidKeys[0]
+		return resolved, nil
+	}
+	if len(resolved.Keys) == 0 {
+		return keyboardTapResolvedInput{}, fmt.Errorf("at least one key or modifier is required")
+	}
+	if len(resolved.Keys) > 6 {
+		return keyboardTapResolvedInput{}, fmt.Errorf("keyboard_tap supports at most 6 simultaneous keys after alias expansion")
+	}
+	return resolved, nil
+}
+
+var errAndroidExtensionUnavailable = errors.New("android extension keyboard device is not configured")
+
+func (t *KeyboardTapTool) tapAndroidExtension(key string, usage uint16, holdMs int) error {
+	if t.androidDev == nil {
+		return fmt.Errorf("%w; set hid.pointer_mode=\"touchscreen\" and ensure hid.android_keyboard_device exists to use %s", errAndroidExtensionUnavailable, key)
+	}
+	report := []byte{byte(usage), byte(usage >> 8)}
+	if err := t.androidDev.Write(report); err != nil {
+		return err
+	}
+	if holdMs > 0 {
+		sleepMs(holdMs)
+	}
+	return t.androidDev.Write([]byte{0x00, 0x00})
 }
 
 func (t *KeyboardTapTool) tapKeyboardChord(modifier uint8, keys []uint8, holdMs int) error {

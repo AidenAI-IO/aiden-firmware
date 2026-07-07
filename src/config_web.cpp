@@ -625,6 +625,7 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"log", "llm_http_retention_days", CONFIG_FIELD_NUMBER},
         {"hid", "keyboard_device", CONFIG_FIELD_STRING},
         {"hid", "mouse_device", CONFIG_FIELD_STRING},
+        {"hid", "android_keyboard_device", CONFIG_FIELD_STRING},
         {"hid", "frame_socket", CONFIG_FIELD_STRING},
         {"hid", "pointer_mode", CONFIG_FIELD_STRING},
         {"search", "provider", CONFIG_FIELD_STRING},
@@ -2319,6 +2320,7 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON* hid = add_object(root, "hid");
     cJSON_AddStringToObject(hid, "keyboard_device", config.hid.keyboard_device.c_str());
     cJSON_AddStringToObject(hid, "mouse_device", config.hid.mouse_device.c_str());
+    cJSON_AddStringToObject(hid, "android_keyboard_device", config.hid.android_keyboard_device.c_str());
     cJSON_AddStringToObject(hid, "frame_socket", config.hid.frame_socket.c_str());
     cJSON_AddStringToObject(hid, "pointer_mode", normalize_pointer_mode(config.hid.pointer_mode).c_str());
 
@@ -2599,6 +2601,7 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
     if (json_is_object(hid)) {
         set_json_str(&config->hid.keyboard_device, hid, "keyboard_device");
         set_json_str(&config->hid.mouse_device, hid, "mouse_device");
+        set_json_str(&config->hid.android_keyboard_device, hid, "android_keyboard_device");
         set_json_str(&config->hid.frame_socket, hid, "frame_socket");
         set_json_str(&config->hid.pointer_mode, hid, "pointer_mode");
     }
@@ -5559,13 +5562,19 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         }
         cJSON_AddItemToArray(results, r);
     } else if (section == "hid") {
-        const char* dev_keys[] = {"keyboard_device", "mouse_device", NULL};
+        cJSON* pointer_item = cJSON_GetObjectItem(values, "pointer_mode");
+        std::string pointer_mode = json_is_string(pointer_item) ? normalize_pointer_mode(pointer_item->valuestring) : "absolute";
+        const char* dev_keys[] = {"keyboard_device", "mouse_device", "android_keyboard_device", NULL};
         for (int i = 0; dev_keys[i]; ++i) {
             cJSON* item = cJSON_GetObjectItem(values, dev_keys[i]);
             std::string path = json_is_string(item) ? trim_copy(item->valuestring) : "";
             cJSON* r = cJSON_CreateObject();
             cJSON_AddStringToObject(r, "check", dev_keys[i]);
-            if (path.empty()) {
+            if (strcmp(dev_keys[i], "android_keyboard_device") == 0 && pointer_mode != "touchscreen") {
+                cJSON_AddBoolToObject(r, "passed", 1);
+                std::string detail = "not required when pointer_mode is " + pointer_mode;
+                cJSON_AddStringToObject(r, "detail", detail.c_str());
+            } else if (path.empty()) {
                 cJSON_AddBoolToObject(r, "passed", 0);
                 cJSON_AddStringToObject(r, "detail", "path is empty");
                 all_passed = false;
@@ -5580,8 +5589,6 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
             }
             cJSON_AddItemToArray(results, r);
         }
-        cJSON* pointer_item = cJSON_GetObjectItem(values, "pointer_mode");
-        std::string pointer_mode = json_is_string(pointer_item) ? normalize_pointer_mode(pointer_item->valuestring) : "absolute";
         cJSON* r = cJSON_CreateObject();
         cJSON_AddStringToObject(r, "check", "pointer_mode");
         bool valid = pointer_mode == "absolute" || pointer_mode == "touchscreen";
