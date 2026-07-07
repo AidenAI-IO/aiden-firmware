@@ -27,6 +27,26 @@ func firstAudioDialogTestMessageOfType(messages []Message, messageType string) (
 	return Message{}, false
 }
 
+// waitForRecordSTT polls until StartRecording's asynchronous streaming STT
+// goroutine has installed the active session, or until the timeout elapses.
+// StartRecording intentionally sets up streaming STT on a background goroutine
+// so the audible cue is not delayed by the network handshake; tests that stop
+// recording immediately must wait for that goroutine to land, otherwise the
+// finalize path is skipped and the transcript comes back empty (a flake).
+func waitForRecordSTT(t *testing.T, dialog *AudioDialog, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if dialog.currentRecordSTT() != nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("streaming STT session not established within %s", timeout)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 func TestAudioDialogFinishManualUtterancePreservesTail(t *testing.T) {
 	vad, err := NewAudioVADWithScorer(AudioVADConfig{
 		SampleRate:      16000,
@@ -251,6 +271,11 @@ func TestAudioDialogPrepareTurnInputUsesStreamingTranscriptFromRecording(t *test
 	if err := dialog.StartRecording(); err != nil {
 		t.Fatalf("StartRecording() error = %v", err)
 	}
+	// StartRecording kicks off the streaming STT session asynchronously;
+	// wait for it to be installed before reading/stopping so the chunk is
+	// uploaded and the finalize path runs (otherwise the test races the
+	// goroutine and flakily reports an empty transcript).
+	waitForRecordSTT(t, dialog, 2*time.Second)
 	chunk, err := dialog.ReadRecordChunk(200)
 	if err != nil {
 		t.Fatalf("ReadRecordChunk() error = %v", err)
