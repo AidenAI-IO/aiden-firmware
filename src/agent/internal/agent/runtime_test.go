@@ -824,12 +824,13 @@ func TestRuntimeRunSteerInterruptDoesNotPauseAfterNonCancelableTool(t *testing.T
 	toolStarted := make(chan struct{})
 	releaseTool := make(chan struct{})
 	tool := &blockingTool{
-		name:         "slow",
-		description:  "Slow tool.",
-		output:       "tool output",
-		started:      toolStarted,
-		release:      releaseTool,
-		ignoreCancel: true,
+		name:          "slow",
+		description:   "Slow tool.",
+		output:        "tool output",
+		started:       toolStarted,
+		release:       releaseTool,
+		interruptSeen: make(chan struct{}),
+		ignoreCancel:  true,
 	}
 	runtime := NewRuntimeWithDeps(
 		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."},
@@ -868,6 +869,11 @@ func TestRuntimeRunSteerInterruptDoesNotPauseAfterNonCancelableTool(t *testing.T
 		t.Fatal("tool did not start")
 	}
 	close(interruptCh)
+	select {
+	case <-tool.interruptSeen:
+	case <-time.After(time.Second):
+		t.Fatal("tool context was not canceled after steer interrupt")
+	}
 	close(releaseTool)
 
 	var runResult struct {
@@ -1091,6 +1097,13 @@ func TestRuntimeRunDoesNotPersistUnusedSteerProviderAsConversationMessage(t *tes
 func TestRuntimeRunPersistsAssistantOutputOnce(t *testing.T) {
 	storageDir := filepath.Join(t.TempDir(), "memory")
 	memoryManager := NewMemoryManager(storageDir)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := memoryManager.WaitMaintenance(ctx); err != nil {
+			t.Fatalf("wait memory maintenance cleanup: %v", err)
+		}
+	})
 	ctx := context.Background()
 
 	model := &scriptedModel{responses: roleDirectResponses("hello answer")}
@@ -1101,6 +1114,7 @@ func TestRuntimeRunPersistsAssistantOutputOnce(t *testing.T) {
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
 	)
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	if _, err := runtime.Run(ctx, RunRequest{Input: "hi"}); err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -1190,6 +1204,7 @@ func TestRuntimeRunPersistsRootInputBeforeModelFailure(t *testing.T) {
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
 	)
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	_, err := runtime.Run(context.Background(), RunRequest{
 		Input:     "打开微信，进入 den 群，发送100块钱红包",
@@ -1225,6 +1240,7 @@ func TestRuntimeRunPersistsCanonicalVoiceInputBeforeModelFailure(t *testing.T) {
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
 	)
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	_, err := runtime.Run(context.Background(), RunRequest{
 		Turn: TurnInput{
@@ -1286,6 +1302,7 @@ func TestRuntimeRunPersistsAttachmentArtifactsWithoutBinary(t *testing.T) {
 		&ToolSet{tools: map[string]langtools.Tool{}},
 		NewSkillIndex(),
 	)
+	t.Cleanup(func() { _ = runtime.Close() })
 
 	_, err := runtime.Run(context.Background(), RunRequest{
 		Input: "Describe the uploaded image.",
@@ -2059,14 +2076,15 @@ func (t *stubTool) Call(_ context.Context, input string) (string, error) {
 }
 
 type blockingTool struct {
-	name         string
-	description  string
-	output       string
-	inputs       []string
-	started      chan struct{}
-	release      chan struct{}
-	canceled     chan struct{}
-	ignoreCancel bool
+	name          string
+	description   string
+	output        string
+	inputs        []string
+	started       chan struct{}
+	release       chan struct{}
+	canceled      chan struct{}
+	interruptSeen chan struct{}
+	ignoreCancel  bool
 }
 
 func (t *blockingTool) Name() string { return t.name }
@@ -2079,6 +2097,12 @@ func (t *blockingTool) Call(ctx context.Context, input string) (string, error) {
 		close(t.started)
 	}
 	if t.ignoreCancel {
+		if t.interruptSeen != nil {
+			go func() {
+				<-ctx.Done()
+				close(t.interruptSeen)
+			}()
+		}
 		if t.release != nil {
 			<-t.release
 		}

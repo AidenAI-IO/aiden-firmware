@@ -19,6 +19,8 @@ import (
 
 const agentLoopOutputKey = "output"
 
+var errSteerInterruptToolCancel = errors.New("steer interrupt tool cancel")
+
 type AgentLoop struct {
 	Model                  llms.Model
 	Profile                RoleProfile
@@ -229,19 +231,19 @@ func (l *AgentLoop) executeToolCall(ctx context.Context, execution ToolCallExecu
 		return executeToolCall(ctx, execution)
 	}
 
-	toolCtx, cancel := context.WithCancel(ctx)
+	toolCtx, cancel := context.WithCancelCause(ctx)
 	done := make(chan struct{})
 	go func() {
 		select {
 		case <-interruptCh:
-			cancel()
+			cancel(errSteerInterruptToolCancel)
 		case <-toolCtx.Done():
 		case <-done:
 		}
 	}()
 	result := executeToolCall(toolCtx, execution)
 	close(done)
-	cancel()
+	cancel(nil)
 	return result
 }
 

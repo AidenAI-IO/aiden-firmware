@@ -148,8 +148,10 @@ type RunMetrics struct {
 	PromptTokens     int     `json:"prompt_tokens,omitempty"`
 	CompletionTokens int     `json:"completion_tokens,omitempty"`
 	TotalTokens      int     `json:"total_tokens,omitempty"`
+	ReasoningTokens  int     `json:"reasoning_tokens,omitempty"`
 	ContextWindow    int     `json:"context_window,omitempty"`
 	FirstTokenTime   float64 `json:"first_token_time_ms,omitempty"`
+	ToolCount        int     `json:"tool_count,omitempty"`
 	// CachedPromptTokens accumulates provider-reported cached prompt tokens
 	// (usage.prompt_tokens_details.cached_tokens) across the run. The prompt-cache
 	// hit rate is CachedPromptTokens / PromptTokens.
@@ -752,6 +754,9 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}
 
 	maxIterations := effectiveMaxIterations(r.config.MaxIterations)
+
+	// Record tool count in metrics for observability
+	metrics.ToolCount = len(availableTools)
 
 	callOptions := r.models.CallOptions()
 	if req.MaxTokens > 0 {
@@ -1469,6 +1474,9 @@ func recordUsageMetrics(metrics *RunMetrics, res *llms.ContentResponse) {
 	}
 	if v, ok := usageMetricInt(info["cached_tokens"]); ok {
 		metrics.CachedPromptTokens += v
+	}
+	if v, ok := usageMetricInt(info["reasoning_tokens"]); ok {
+		metrics.ReasoningTokens += v
 	}
 }
 

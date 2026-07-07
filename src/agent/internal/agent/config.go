@@ -421,6 +421,7 @@ type ModelConfig struct {
 	Temperature       float64 `toml:"temperature,omitempty"`
 	MaxResponseTokens int     `toml:"max_response_tokens,omitempty"`
 	LogRawHTTP        bool    `toml:"log_raw_http,omitempty"`
+	ReasoningEffort   string  `toml:"reasoning_effort,omitempty"`
 	// These override static model metadata; zero means use the registry/fallback.
 	ContextWindow        int      `toml:"context_window,omitempty"`
 	ModelMaxOutputTokens int      `toml:"model_max_output_tokens,omitempty"`

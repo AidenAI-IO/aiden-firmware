@@ -11,6 +11,7 @@ const (
 	defaultModelTemperature        = 0.2
 	defaultModelMaxResponseTokens  = 1000
 	defaultModelLogRawHTTP         = true
+	defaultModelReasoningEffort    = ""
 	defaultTTSProvider             = "minimax-cn"
 	defaultTTSVoiceID              = "male-qn-qingse"
 	defaultTTSEmotion              = "happy"
@@ -67,6 +68,7 @@ func DefaultConfig() Config {
 			Temperature:       defaultModelTemperature,
 			MaxResponseTokens: defaultModelMaxResponseTokens,
 			LogRawHTTP:        defaultModelLogRawHTTP,
+			ReasoningEffort:   defaultModelReasoningEffort,
 		},
 		TTS: TTSConfig{
 			Provider: defaultTTSProvider,
