@@ -1145,6 +1145,35 @@ TEST_CASE("config_web: hid config test only requires android keyboard device in 
     CHECK((touchscreen_valid_mode_passed->type & 0xff) == cJSON_True);
     CHECK(required_json_string(touchscreen_valid_mode, "detail") == "effective mode: touchscreen");
     cJSON_Delete(touchscreen_valid_json);
+
+    const std::string touchscreen_missing_body =
+        "{\"section\":\"hid\",\"values\":{"
+        "\"keyboard_device\":\"/dev/null\","
+        "\"mouse_device\":\"/dev/null\","
+        "\"android_keyboard_device\":\"/dev/definitely-missing-hidg9\","
+        "\"pointer_mode\":\"touchscreen\""
+        "}}";
+
+    HttpResponse touchscreen_missing_resp = http_request(handle->port, "POST", "/api/config/test", touchscreen_missing_body);
+    REQUIRE(touchscreen_missing_resp.status == 200);
+    cJSON* touchscreen_missing_json = cJSON_Parse(touchscreen_missing_resp.body.c_str());
+    REQUIRE(touchscreen_missing_json != nullptr);
+    cJSON* touchscreen_missing_ok = cJSON_GetObjectItem(touchscreen_missing_json, "ok");
+    REQUIRE(touchscreen_missing_ok != nullptr);
+    CHECK((touchscreen_missing_ok->type & 0xff) == cJSON_False);
+    cJSON* touchscreen_missing_android = required_test_result(touchscreen_missing_json, "android_keyboard_device");
+    REQUIRE(touchscreen_missing_android != nullptr);
+    cJSON* touchscreen_missing_android_passed = cJSON_GetObjectItem(touchscreen_missing_android, "passed");
+    REQUIRE(touchscreen_missing_android_passed != nullptr);
+    CHECK((touchscreen_missing_android_passed->type & 0xff) == cJSON_False);
+    CHECK(required_json_string(touchscreen_missing_android, "detail") == "/dev/definitely-missing-hidg9 not found");
+    cJSON* touchscreen_missing_mode = required_test_result(touchscreen_missing_json, "pointer_mode");
+    REQUIRE(touchscreen_missing_mode != nullptr);
+    cJSON* touchscreen_missing_mode_passed = cJSON_GetObjectItem(touchscreen_missing_mode, "passed");
+    REQUIRE(touchscreen_missing_mode_passed != nullptr);
+    CHECK((touchscreen_missing_mode_passed->type & 0xff) == cJSON_True);
+    CHECK(required_json_string(touchscreen_missing_mode, "detail") == "effective mode: touchscreen");
+    cJSON_Delete(touchscreen_missing_json);
 }
 
 TEST_CASE("config_web: config test rejects wakeup trigger for text input") {
