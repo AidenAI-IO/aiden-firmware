@@ -308,6 +308,7 @@ void apply_kv(AgentToml& cfg,
         else if (key == "base_url") assign_string(&m.base_url, raw, &sub_err);
         else if (key == "api_key") assign_string(&m.api_key, raw, &sub_err);
         else if (key == "token_env") assign_string(&m.token_env, raw, &sub_err);
+        else if (key == "reasoning_effort") assign_string(&m.reasoning_effort, raw, &sub_err);
         else if (key == "temperature") assign_double(&m.temperature, raw, &sub_err);
         else if (key == "max_response_tokens") assign_non_negative_int(&m.max_response_tokens, raw, &sub_err);
         else if (key == "context_window") assign_non_negative_int(&m.context_window, raw, &sub_err);
@@ -476,6 +477,7 @@ void emit_model(std::ostringstream& out, const char* section, const ModelToml& m
     if (!m.base_url.empty()) emit_string(out, "base_url", m.base_url);
     emit_string(out, "api_key", m.api_key);
     if (!m.token_env.empty()) emit_string(out, "token_env", m.token_env);
+    if (!m.reasoning_effort.empty()) emit_string(out, "reasoning_effort", m.reasoning_effort);
     if (m.temperature != 0.0) emit_double(out, "temperature", m.temperature);
     if (m.max_response_tokens != 0) emit_int(out, "max_response_tokens", m.max_response_tokens);
     if (m.context_window != 0) emit_int(out, "context_window", m.context_window);

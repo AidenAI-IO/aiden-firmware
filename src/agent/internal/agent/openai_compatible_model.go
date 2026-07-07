@@ -27,6 +27,7 @@ type openAICompatibleModel struct {
 	rawLogger           *llmRawHTTPLogger
 	explicitPromptCache bool
 	routerMetadata      bool
+	reasoningEffort     string
 	// sessionIDProvider, when set, supplies the value for the x-session-id
 	// request header. It is only wired up for the OpenRouter provider, whose
 	// sticky routing uses the session id to keep multi-turn requests on the same
@@ -100,6 +101,12 @@ func withOpenAICompatibleExplicitPromptCache() openAICompatibleModelOption {
 func withOpenAICompatibleRouterMetadata() openAICompatibleModelOption {
 	return func(m *openAICompatibleModel) {
 		m.routerMetadata = true
+	}
+}
+
+func withOpenAICompatibleReasoningEffort(effort string) openAICompatibleModelOption {
+	return func(m *openAICompatibleModel) {
+		m.reasoningEffort = strings.TrimSpace(effort)
 	}
 }
 
@@ -444,13 +451,18 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 	if callOpts.JSONMode {
 		reqPayload.ResponseFormat = map[string]string{"type": "json_object"}
 	}
-	// Apply reasoning policy: disable reasoning for simple requests without tools
-	if len(callOpts.Tools) == 0 && len(callOpts.Functions) == 0 {
+	// Apply reasoning policy based on config and request context
+	reasoningEffort := m.reasoningEffort
+	if reasoningEffort == "" && len(callOpts.Tools) == 0 && len(callOpts.Functions) == 0 {
+		// Auto-disable reasoning for simple requests without tools when not explicitly configured
+		reasoningEffort = "none"
+	}
+	if reasoningEffort != "" {
 		reqPayload.Reasoning = &reasoningConfig{
-			Effort:  "none",
-			Exclude: true,
+			Effort:  reasoningEffort,
+			Exclude: reasoningEffort == "none",
 		}
-		reqPayload.ReasoningEffort = "none"
+		reqPayload.ReasoningEffort = reasoningEffort
 	}
 	generationInfo["llm_request_prepare_ms"] = time.Since(requestPrepareStart).Milliseconds()
 

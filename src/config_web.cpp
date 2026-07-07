@@ -2266,6 +2266,7 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddStringToObject(model, "model", config.model.model.c_str());
     cJSON_AddStringToObject(model, "base_url", config.model.base_url.c_str());
     cJSON_AddStringToObject(model, "token_env", config.model.token_env.c_str());
+    cJSON_AddStringToObject(model, "reasoning_effort", config.model.reasoning_effort.c_str());
     cJSON_AddNumberToObject(model, "temperature", config.model.temperature);
     cJSON_AddNumberToObject(model, "max_response_tokens", config.model.max_response_tokens);
     cJSON_AddNumberToObject(model, "context_window", config.model.context_window);
