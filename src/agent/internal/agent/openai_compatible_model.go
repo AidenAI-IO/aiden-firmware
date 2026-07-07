@@ -1088,17 +1088,77 @@ func normalizeCompatibleMessages(messages []compatibleMessage) []compatibleMessa
 	}
 
 	if len(systemSegments) == 0 && !preserveSystemParts {
-		return normalized
+		return mergeConsecutiveSameRoleMessages(normalized)
 	}
 	if preserveSystemParts {
-		return append([]compatibleMessage{{Role: "system", Content: systemParts}}, normalized...)
+		return mergeConsecutiveSameRoleMessages(append([]compatibleMessage{{Role: "system", Content: systemParts}}, normalized...))
 	}
 
 	mergedSystem := compatibleMessage{
 		Role:    "system",
 		Content: strings.Join(systemSegments, "\n\n"),
 	}
-	return append([]compatibleMessage{mergedSystem}, normalized...)
+	return mergeConsecutiveSameRoleMessages(append([]compatibleMessage{mergedSystem}, normalized...))
+}
+
+// mergeConsecutiveSameRoleMessages merges consecutive messages with the same role.
+// This is required by some providers (Anthropic Claude, Google Gemini) that enforce
+// strict user/assistant alternation. Tool messages are never merged as they require
+// specific tool_call_id pairing.
+func mergeConsecutiveSameRoleMessages(messages []compatibleMessage) []compatibleMessage {
+	if len(messages) <= 1 {
+		return messages
+	}
+
+	result := make([]compatibleMessage, 0, len(messages))
+	result = append(result, messages[0])
+
+	for i := 1; i < len(messages); i++ {
+		current := messages[i]
+		previous := &result[len(result)-1]
+
+		// Only merge if roles match and neither is a tool message
+		canMerge := current.Role == previous.Role &&
+			current.Role != "tool" &&
+			len(current.ToolCalls) == 0 &&
+			len(previous.ToolCalls) == 0
+
+		if !canMerge {
+			result = append(result, current)
+			continue
+		}
+
+		// Merge content based on type
+		prevContent, prevIsString := previous.Content.(string)
+		currContent, currIsString := current.Content.(string)
+
+		if prevIsString && currIsString {
+			// Both are strings: join with double newline
+			previous.Content = prevContent + "\n\n" + currContent
+		} else if prevIsString && !currIsString {
+			// Previous is string, current is parts: convert previous to parts and merge
+			parts := []compatibleContentPart{{Type: "text", Text: prevContent}}
+			if currParts, ok := current.Content.([]compatibleContentPart); ok {
+				parts = append(parts, currParts...)
+			}
+			previous.Content = parts
+		} else if !prevIsString && currIsString {
+			// Previous is parts, current is string: append as text part
+			if prevParts, ok := previous.Content.([]compatibleContentPart); ok {
+				prevParts = append(prevParts, compatibleContentPart{Type: "text", Text: currContent})
+				previous.Content = prevParts
+			}
+		} else {
+			// Both are parts: concatenate arrays
+			if prevParts, ok := previous.Content.([]compatibleContentPart); ok {
+				if currParts, ok := current.Content.([]compatibleContentPart); ok {
+					previous.Content = append(prevParts, currParts...)
+				}
+			}
+		}
+	}
+
+	return result
 }
 
 func audioFormatFromMIME(mimeType string) string {
