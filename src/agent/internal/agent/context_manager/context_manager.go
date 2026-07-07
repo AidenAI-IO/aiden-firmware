@@ -53,6 +53,14 @@ type Message struct {
 	Attachments []Attachment `json:"attachments,omitempty"`
 }
 
+type AppendMessageHook func(Message) AppendMessageHookResult
+
+type AppendMessageHookResult struct {
+	Before  []Message
+	Message *Message
+	After   []Message
+}
+
 type ToolCall struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
@@ -79,6 +87,7 @@ type Attachment struct {
 type ContextManager struct {
 	sessionID       string
 	messageList     []Message
+	appendHooks     []AppendMessageHook
 	attachmentStore *attachmentStore
 	mu              sync.RWMutex
 }
@@ -104,9 +113,40 @@ func (c *ContextManager) GetSessionID() string {
 }
 
 func (c *ContextManager) AppendMessage(message Message) {
+	c.mu.RLock()
+	hooks := append([]AppendMessageHook(nil), c.appendHooks...)
+	c.mu.RUnlock()
+
+	messages := []Message{cloneMessage(message)}
+	for _, hook := range hooks {
+		var next []Message
+		for _, current := range messages {
+			result := hook(cloneMessage(current))
+			next = append(next, cloneMessages(result.Before)...)
+			if result.Message != nil {
+				next = append(next, cloneMessage(*result.Message))
+			}
+			next = append(next, cloneMessages(result.After)...)
+		}
+		messages = next
+	}
+
+	if len(messages) == 0 {
+		return
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.messageList = append(c.messageList, message)
+	c.messageList = append(c.messageList, messages...)
+}
+
+func (c *ContextManager) AddAppendMessageHook(hook AppendMessageHook) {
+	if hook == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.appendHooks = append(c.appendHooks, hook)
 }
 
 func (c *ContextManager) IsEmpty() bool {
@@ -123,22 +163,9 @@ type MessageListDump struct {
 func (c *ContextManager) MessageListDump() MessageListDump {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	messages := make([]Message, len(c.messageList))
-	for i, msg := range c.messageList {
-		messages[i] = msg
-		if len(msg.ToolCalls) > 0 {
-			messages[i].ToolCalls = append([]ToolCall(nil), msg.ToolCalls...)
-		}
-		if len(msg.ToolResults) > 0 {
-			messages[i].ToolResults = append([]ToolResult(nil), msg.ToolResults...)
-		}
-		if len(msg.Attachments) > 0 {
-			messages[i].Attachments = append([]Attachment(nil), msg.Attachments...)
-		}
-	}
 	return MessageListDump{
 		SessionID: c.sessionID,
-		Messages:  messages,
+		Messages:  cloneMessages(c.messageList),
 	}
 }
 
@@ -313,29 +340,42 @@ func attachmentExtension(mimeType string) string {
 func (c *ContextManager) Fork() *ContextManager {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	newMessageList := make([]Message, len(c.messageList))
-	for i, msg := range c.messageList {
-		newMessageList[i] = msg
-		if len(msg.ToolCalls) > 0 {
-			newMessageList[i].ToolCalls = append([]ToolCall(nil), msg.ToolCalls...)
-		}
-		if len(msg.ToolResults) > 0 {
-			newMessageList[i].ToolResults = append([]ToolResult(nil), msg.ToolResults...)
-		}
-		if len(msg.Attachments) > 0 {
-			newMessageList[i].Attachments = append([]Attachment(nil), msg.Attachments...)
-		}
-	}
 	newSessionID := "session_" + uuid.New().String()
 	if c.attachmentStore != nil {
 		c.attachmentStore.retain()
 	}
 	return &ContextManager{
 		sessionID:       newSessionID,
-		messageList:     newMessageList,
+		messageList:     cloneMessages(c.messageList),
+		appendHooks:     append([]AppendMessageHook(nil), c.appendHooks...),
 		attachmentStore: c.attachmentStore,
 		mu:              sync.RWMutex{},
 	}
+}
+
+func cloneMessages(messages []Message) []Message {
+	if len(messages) == 0 {
+		return nil
+	}
+	cloned := make([]Message, len(messages))
+	for i, msg := range messages {
+		cloned[i] = cloneMessage(msg)
+	}
+	return cloned
+}
+
+func cloneMessage(msg Message) Message {
+	cloned := msg
+	if len(msg.ToolCalls) > 0 {
+		cloned.ToolCalls = append([]ToolCall(nil), msg.ToolCalls...)
+	}
+	if len(msg.ToolResults) > 0 {
+		cloned.ToolResults = append([]ToolResult(nil), msg.ToolResults...)
+	}
+	if len(msg.Attachments) > 0 {
+		cloned.Attachments = append([]Attachment(nil), msg.Attachments...)
+	}
+	return cloned
 }
 
 func (c *ContextManager) ConvertToStandardMessageList() []llms.MessageContent {

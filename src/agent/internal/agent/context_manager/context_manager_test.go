@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -223,6 +224,92 @@ func TestContextManagerReset(t *testing.T) {
 	manager.Reset()
 	if !manager.IsEmpty() {
 		t.Fatal("reset context manager should be empty")
+	}
+}
+
+func TestContextManagerAppendMessageHookModifiesMessage(t *testing.T) {
+	manager := NewContextManager()
+	manager.AddAppendMessageHook(func(message Message) AppendMessageHookResult {
+		message.Content = strings.ToUpper(message.Content)
+		return AppendMessageHookResult{Message: &message}
+	})
+
+	manager.AppendMessage(Message{Role: MessageRoleUser, Content: "hello"})
+
+	dump := manager.MessageListDump()
+	if len(dump.Messages) != 1 {
+		t.Fatalf("messages = %#v, want one entry", dump.Messages)
+	}
+	if dump.Messages[0].Content != "HELLO" {
+		t.Fatalf("content = %q, want %q", dump.Messages[0].Content, "HELLO")
+	}
+}
+
+func TestContextManagerAppendMessageHookInjectsBeforeAndAfter(t *testing.T) {
+	manager := NewContextManager()
+	manager.AddAppendMessageHook(func(message Message) AppendMessageHookResult {
+		modified := message
+		modified.Content = "core:" + message.Content
+		return AppendMessageHookResult{
+			Before:  []Message{{Role: MessageRoleNotice, Content: "before"}},
+			Message: &modified,
+			After:   []Message{{Role: MessageRoleNotice, Content: "after"}},
+		}
+	})
+
+	manager.AppendMessage(Message{Role: MessageRoleUser, Content: "hello"})
+
+	dump := manager.MessageListDump()
+	got := []Message{
+		{Role: dump.Messages[0].Role, Content: dump.Messages[0].Content},
+		{Role: dump.Messages[1].Role, Content: dump.Messages[1].Content},
+		{Role: dump.Messages[2].Role, Content: dump.Messages[2].Content},
+	}
+	want := []Message{
+		{Role: MessageRoleNotice, Content: "before"},
+		{Role: MessageRoleUser, Content: "core:hello"},
+		{Role: MessageRoleNotice, Content: "after"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("messages = %#v, want %#v", got, want)
+	}
+}
+
+func TestContextManagerAppendMessageHookCanDropOriginalMessage(t *testing.T) {
+	manager := NewContextManager()
+	manager.AddAppendMessageHook(func(message Message) AppendMessageHookResult {
+		return AppendMessageHookResult{
+			Before: []Message{{Role: MessageRoleSystem, Content: "replacement"}},
+		}
+	})
+
+	manager.AppendMessage(Message{Role: MessageRoleUser, Content: "hello"})
+
+	dump := manager.MessageListDump()
+	if len(dump.Messages) != 1 {
+		t.Fatalf("messages = %#v, want one replacement entry", dump.Messages)
+	}
+	if dump.Messages[0].Role != MessageRoleSystem || dump.Messages[0].Content != "replacement" {
+		t.Fatalf("message = %#v", dump.Messages[0])
+	}
+}
+
+func TestContextManagerForkRetainsAppendMessageHooks(t *testing.T) {
+	manager := NewContextManager()
+	manager.AddAppendMessageHook(func(message Message) AppendMessageHookResult {
+		message.Content = "hooked:" + message.Content
+		return AppendMessageHookResult{Message: &message}
+	})
+
+	fork := manager.Fork()
+	fork.AppendMessage(Message{Role: MessageRoleUser, Content: "hello"})
+
+	dump := fork.MessageListDump()
+	if len(dump.Messages) != 1 {
+		t.Fatalf("messages = %#v, want one entry", dump.Messages)
+	}
+	if dump.Messages[0].Content != "hooked:hello" {
+		t.Fatalf("content = %q, want %q", dump.Messages[0].Content, "hooked:hello")
 	}
 }
 
