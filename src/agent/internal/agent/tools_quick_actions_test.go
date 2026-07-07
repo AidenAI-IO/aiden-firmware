@@ -119,13 +119,16 @@ func TestQuickActionListActionAlias(t *testing.T) {
 	}
 }
 
-func TestQuickActionDescriptionWarnsAgainstActionList(t *testing.T) {
+func TestQuickActionDescriptionDocumentsListInspection(t *testing.T) {
 	desc := (&QuickActionTool{}).Description()
 	if !strings.Contains(desc, `{"list":true,"platform":"android"}`) {
-		t.Fatalf("description missing list=true example: %s", desc)
+		t.Fatalf("description missing list=true inspection example: %s", desc)
 	}
 	if !strings.Contains(desc, `do not pass {"action":"list"}`) {
 		t.Fatalf("description missing action=list warning: %s", desc)
+	}
+	if !strings.Contains(desc, "Never loop on the same quick_action binding") {
+		t.Fatalf("description missing no-retry guidance: %s", desc)
 	}
 }
 

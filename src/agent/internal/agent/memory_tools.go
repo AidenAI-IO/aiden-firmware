@@ -113,16 +113,12 @@ func (t *RecallMemoryTool) Name() string { return "recall_memory" }
 
 func (t *RecallMemoryTool) Description() string {
 	return strings.Join([]string{
-		"Recall long-term filesystem memories.",
-		"Use when the user asks about remembered preferences, rules, procedures, facts, or failure lessons.",
-		"Do not use for raw recent session details or compressed conversation evidence; use recall_session_chunks for those.",
-		`Input JSON: {"tags":["verification","login"],"entities":["AppName"],"types":["preference"],"limit":5}`,
-		"How to choose filters:",
-		"  - tags: TOPIC/DOMAIN keywords related to the memory content (e.g., 'verification', 'payment', 'expense'). Leave empty [] to match all.",
-		"  - entities: Specific named things (apps, accounts, services, people). Leave empty [] to match all.",
-		"  - types: Memory categories — preference (user likes/dislikes), rule (must/must-not), procedure (how-to steps), fact (stable info), profile (user background). Leave empty [] to match all.",
-		"  - limit: Max results to return (default 5).",
-		"Returns JSON: {\"results\":[{\"id\":\"...\",\"type\":\"preference\",\"title\":\"...\",\"content\":\"...\",\"summary\":\"...\"}]}.",
+		"Recall long-term memories by tags, entities, or types.",
+		"Use for remembered preferences, rules, procedures, facts, or profile info; for raw recent session details use recall_session_chunks instead.",
+		`Input JSON: {"tags":["verification"],"entities":["AppName"],"types":["preference"],"limit":5}.`,
+		"Use tags for topic/domain keywords such as verification, payment, or expense; use entities for named apps, accounts, services, or people. Leave arrays empty to match all.",
+		"Types: preference (likes/dislikes), rule (must/must-not), procedure (how-to), fact (stable info), profile (user background).",
+		"Returns matching memories with id, type, title, content, summary.",
 	}, " ")
 }
 
@@ -166,21 +162,13 @@ func (t *SaveMemoryTool) Name() string { return "save_memory" }
 
 func (t *SaveMemoryTool) Description() string {
 	return strings.Join([]string{
-		"Save a long-term memory for future recall.",
-		"Mandatory use: when the user explicitly asks you to remember, save, record, keep in mind, or use something as a future default, call save_memory before saying it is remembered or saved.",
-		"Do not claim a memory was remembered or saved until this tool returns saved or ignored as a duplicate.",
-		"Also use when you observe a stable user preference, rule, or procedure worth persisting.",
-		`Input JSON: {"type":"preference","title":"short title","content":"what to remember","tags":["tag1"],"entities":["AppName"],"evidence":["exact user quote"],"priority":80}`,
-		"How to choose fields:",
-		"  - type: preference (user likes/dislikes), rule (must/must-not), procedure (how-to steps), fact (stable info), profile (user role/background).",
-		"  - Use type=profile for durable user profile facts such as name, nickname, location, home city, timezone, role, or background so they appear in the synthesized user profile.",
-		"  - Use type=preference or type=rule for future defaults such as the user's default city for weather queries.",
-		"  - Use type=fact only for stable facts that should be recalled but do not need to appear in the synthesized user profile.",
-		"  - tags: TOPIC/DOMAIN keywords for future search (e.g., 'verification', 'payment', 'expense'). NOT time words or vague terms.",
-		"  - entities: Specific named things mentioned (apps, accounts, services, people).",
-		"  - evidence: Original user quotes or context that led to this memory. Helps verify relevance later.",
-		"  - priority: 1-100, higher = more important. Use 80+ for user-stated rules/preferences, 60+ for inferred patterns, 40+ for observations.",
-		"Returns the saved memory ID or indicates the memory was deduplicated.",
+		"Save long-term memory for future recall. Mandatory when the user asks to remember/save; also use for observed stable preferences, rules, or procedures.",
+		"Do not tell the user something was remembered or saved until this tool returns status=saved or status=ignored as a duplicate.",
+		"Types: preference, rule, procedure, fact, profile. Use profile for durable user facts such as name, nickname, location, timezone, home city, role, or background.",
+		"Use preference/rule for future defaults and must/must-not behavior such as a default city; use fact for stable info that should be recalled but not surfaced in the synthesized user profile.",
+		`Input JSON: {"type":"preference","title":"short title","content":"what to remember","tags":["tag1"],"entities":["AppName"],"evidence":["exact user quote"],"priority":80}.`,
+		"Use topic/domain tags, named entities, original evidence quotes, and priority 80+ for user-stated rules/preferences, 60+ for inferred patterns, 40+ for observations.",
+		"Returns status=saved with id, or status=ignored when it is a duplicate.",
 	}, " ")
 }
 
@@ -189,10 +177,10 @@ func (t *SaveMemoryTool) ArgsSchema() map[string]any {
 		"type":     stringEnumArgSchema("Memory category.", "preference", "rule", "procedure", "fact", "profile"),
 		"title":    stringArgSchema("Short title for the memory."),
 		"content":  stringArgSchema("The stable information to remember."),
-		"tags":     stringArrayArgSchema("Topic or domain keywords for future search."),
-		"entities": stringArrayArgSchema("Specific named things mentioned by the memory."),
-		"evidence": stringArrayArgSchema("Original quotes or observations that support this memory."),
-		"priority": rangedIntegerArgSchema("Importance from 1 to 100.", 1, 100),
+		"tags":     stringArrayArgSchema("Topic or domain keywords for future search, e.g. verification, payment, expense. Not time words or vague terms."),
+		"entities": stringArrayArgSchema("Specific named things mentioned by the memory, such as apps, accounts, services, or people."),
+		"evidence": stringArrayArgSchema("Original user quotes or observations that led to this memory, to help verify relevance later."),
+		"priority": rangedIntegerArgSchema("Importance from 1 to 100: 80+ for user-stated rules/preferences, 60+ for inferred patterns, 40+ for observations.", 1, 100),
 	}, "type", "content")
 }
 
