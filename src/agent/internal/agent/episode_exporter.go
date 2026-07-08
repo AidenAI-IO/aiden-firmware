@@ -766,7 +766,7 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 			batch = append(batch, evt)
 
 		case runEventToolCall:
-			parentID := langfuseToolParentSpan(iterationSpanID, phaseSpanID, event.Role)
+			parentID := langfuseToolParentSpan(iterationSpanID, phaseSpanID)
 			if parentID == "" {
 				continue
 			}
@@ -807,7 +807,7 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 				"id":                  toolSpanID,
 				"traceId":             traceID,
 				"parentObservationId": parentID,
-				"name":                langfuseToolSpanName(event.Role, toolName),
+				"name":                langfuseToolSpanName(toolName),
 				"startTime":           langfuseRFC3339(spanStart),
 				"endTime":             langfuseRFC3339(end),
 				"input":               toolCallInput(event),
@@ -866,7 +866,7 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 			body := map[string]interface{}{
 				"id":          resultSpanID,
 				"traceId":     traceID,
-				"name":        langfuseToolResultSpanName(event.Role, toolName),
+				"name":        langfuseToolResultSpanName(toolName),
 				"startTime":   langfuseRFC3339(eventTime),
 				"endTime":     langfuseRFC3339(eventTime),
 				"output":      output,
@@ -878,7 +878,7 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 			}
 			if paired && pair.CallObservationID != "" {
 				body["parentObservationId"] = pair.CallObservationID
-			} else if parentID := langfuseToolParentSpan(iterationSpanID, phaseSpanID, event.Role); parentID != "" {
+			} else if parentID := langfuseToolParentSpan(iterationSpanID, phaseSpanID); parentID != "" {
 				body["parentObservationId"] = parentID
 			}
 			if event.IsError {
@@ -1169,7 +1169,7 @@ func episodeTokenUsage(episode TaskEpisode) (promptTokens, completionTokens, tot
 	return promptTokens, completionTokens, totalTokens, promptTokens > 0 || completionTokens > 0 || totalTokens > 0
 }
 
-func langfuseToolParentSpan(iterationSpanID, phaseSpanID, role string) string {
+func langfuseToolParentSpan(iterationSpanID, phaseSpanID string) string {
 	if iterationSpanID != "" {
 		return iterationSpanID
 	}
@@ -1179,11 +1179,11 @@ func langfuseToolParentSpan(iterationSpanID, phaseSpanID, role string) string {
 	return iterationSpanID
 }
 
-func langfuseToolSpanName(role, toolName string) string {
+func langfuseToolSpanName(toolName string) string {
 	return "tool/" + toolName
 }
 
-func langfuseToolResultSpanName(role, toolName string) string {
+func langfuseToolResultSpanName(toolName string) string {
 	return "tool_result/" + toolName
 }
 

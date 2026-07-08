@@ -315,8 +315,8 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
         }
         std::string header = "{\"type\":\"response\",\"method\":\"health\",\"status\":\"OK\"";
         header += ",\"state\":\"" + escape_json(state) + "\"";
-        header += ",\"latest_seq\":" + u64_json(ring_.latest_seq());
-        header += ",\"frame_age_ms\":" + u64_json(frame_age_ms());
+        header += ",\"latest_seq\":" + std::to_string(ring_.latest_seq());
+        header += ",\"frame_age_ms\":" + std::to_string(frame_age_ms());
         header += ",\"ring_buffer_size\":" + std::to_string(ring_.capacity());
         header += ",\"ring_buffer_used\":" + std::to_string(ring_.size());
         header += ",\"consecutive_failures\":" + std::to_string(consecutive_failures);

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -32,6 +33,20 @@ type LongTermMemoryStore struct {
 	lifecycleDir     string
 	profileFn        ProfileFn
 	profileDebouncer *ProfileDebouncer
+	cacheMu          sync.Mutex
+	indexCache       longTermIndexCache
+	parsedCache      map[string]cachedParsedMemoryMarkdown
+}
+
+type longTermIndexCache struct {
+	signature memoryFileSignature
+	index     memoryIndex
+	valid     bool
+}
+
+type cachedParsedMemoryMarkdown struct {
+	signature memoryFileSignature
+	parsed    parsedMemoryMarkdown
 }
 
 type LongTermMemoryOption func(*LongTermMemoryStore)
@@ -164,6 +179,7 @@ func (s *LongTermMemoryStore) AddMemory(ctx context.Context, item MemoryItem) (s
 	if err := writeFileAtomic(path, []byte(formatMemoryMarkdown(item)), 0o644); err != nil {
 		return "", fmt.Errorf("write memory %q: %w", item.ID, err)
 	}
+	s.invalidateParsedMemoryCache(path)
 	if err := s.RebuildIndex(ctx); err != nil {
 		return "", err
 	}
@@ -192,7 +208,7 @@ func (s *LongTermMemoryStore) Search(ctx context.Context, query MemoryQuery) ([]
 			continue
 		}
 		path := filepath.Join(s.rootDir, entry.File)
-		parsed, err := readMemoryMarkdown(path)
+		parsed, err := s.readMemoryMarkdownCached(path)
 		if err != nil {
 			continue
 		}
@@ -258,6 +274,7 @@ func (s *LongTermMemoryStore) Forget(ctx context.Context, id string, reason stri
 	if err := writeFileAtomic(path, []byte(formatMemoryMarkdown(parsed.Item)), 0o644); err != nil {
 		return fmt.Errorf("write forgotten memory %q: %w", id, err)
 	}
+	s.invalidateParsedMemoryCache(path)
 	if err := s.appendTombstone(id, reason); err != nil {
 		return err
 	}
@@ -285,6 +302,7 @@ func (s *LongTermMemoryStore) SupersedeMemory(ctx context.Context, oldID string,
 	if err := writeFileAtomic(oldPath, []byte(formatMemoryMarkdown(oldParsed.Item)), 0o644); err != nil {
 		return "", fmt.Errorf("update superseded memory %q: %w", oldID, err)
 	}
+	s.invalidateParsedMemoryCache(oldPath)
 
 	newPath := s.memoryPath(newItem.ID)
 	if err := os.MkdirAll(filepath.Dir(newPath), 0o755); err != nil {
@@ -293,6 +311,7 @@ func (s *LongTermMemoryStore) SupersedeMemory(ctx context.Context, oldID string,
 	if err := writeFileAtomic(newPath, []byte(formatMemoryMarkdown(newItem)), 0o644); err != nil {
 		return "", fmt.Errorf("write superseding memory %q: %w", newItem.ID, err)
 	}
+	s.invalidateParsedMemoryCache(newPath)
 	if err := s.RebuildIndex(ctx); err != nil {
 		return "", err
 	}
@@ -314,7 +333,10 @@ func (s *LongTermMemoryStore) MarkConflict(ctx context.Context, aID string, bID 
 		if parsed.Item.Status == "active" {
 			parsed.Item.Status = "conflicted"
 			parsed.Item.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
-			_ = writeFileAtomic(path, []byte(formatMemoryMarkdown(parsed.Item)), 0o644)
+			if err := writeFileAtomic(path, []byte(formatMemoryMarkdown(parsed.Item)), 0o644); err != nil {
+				return fmt.Errorf("mark memory %q conflicted: %w", id, err)
+			}
+			s.invalidateParsedMemoryCache(path)
 		}
 	}
 	return s.RebuildIndex(ctx)
@@ -359,6 +381,7 @@ func (s *LongTermMemoryStore) UpdateMemories(ctx context.Context, ids []string, 
 		if err := writeFileAtomic(path, []byte(formatMemoryMarkdown(parsed.Item)), 0o644); err != nil {
 			return err
 		}
+		s.invalidateParsedMemoryCache(path)
 		updated = true
 	}
 	if !updated {
@@ -473,7 +496,7 @@ func (s *LongTermMemoryStore) RegenerateProfileMD(ctx context.Context) error {
 		if !isProfileRelevantType(entry.Type) {
 			continue
 		}
-		parsed, err := readMemoryMarkdown(filepath.Join(s.rootDir, entry.File))
+		parsed, err := s.readMemoryMarkdownCached(filepath.Join(s.rootDir, entry.File))
 		if err != nil {
 			continue
 		}
@@ -583,6 +606,15 @@ func (s *LongTermMemoryStore) memoryPath(id string) string {
 }
 
 func (s *LongTermMemoryStore) loadIndex(ctx context.Context) (memoryIndex, error) {
+	signature, ok, err := memoryFileSignatureForPath(s.indexPath())
+	if err != nil {
+		return memoryIndex{}, fmt.Errorf("stat memory index: %w", err)
+	}
+	if ok {
+		if index, hit := s.cachedIndex(signature); hit {
+			return index, nil
+		}
+	}
 	data, err := os.ReadFile(s.indexPath())
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -595,12 +627,19 @@ func (s *LongTermMemoryStore) loadIndex(ctx context.Context) (memoryIndex, error
 		if err != nil {
 			return memoryIndex{}, fmt.Errorf("read rebuilt memory index: %w", err)
 		}
+		signature, ok, err = memoryFileSignatureForPath(s.indexPath())
+		if err != nil {
+			return memoryIndex{}, fmt.Errorf("stat rebuilt memory index: %w", err)
+		}
 	}
 	var index memoryIndex
 	if err := yaml.Unmarshal(data, &index); err != nil {
 		return memoryIndex{}, fmt.Errorf("decode memory index: %w", err)
 	}
-	return index, nil
+	if ok {
+		s.storeIndexCache(signature, index)
+	}
+	return cloneMemoryIndex(index), nil
 }
 
 func (s *LongTermMemoryStore) writeIndex(index memoryIndex) error {
@@ -611,7 +650,120 @@ func (s *LongTermMemoryStore) writeIndex(index memoryIndex) error {
 	if err := os.MkdirAll(s.rootDir, 0o755); err != nil {
 		return fmt.Errorf("create long-term memory directory: %w", err)
 	}
-	return writeFileAtomic(s.indexPath(), data, 0o644)
+	if err := writeFileAtomic(s.indexPath(), data, 0o644); err != nil {
+		return err
+	}
+	s.invalidateIndexCache()
+	return nil
+}
+
+func (s *LongTermMemoryStore) cachedIndex(signature memoryFileSignature) (memoryIndex, bool) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	if !s.indexCache.valid || s.indexCache.signature != signature {
+		return memoryIndex{}, false
+	}
+	return cloneMemoryIndex(s.indexCache.index), true
+}
+
+func (s *LongTermMemoryStore) storeIndexCache(signature memoryFileSignature, index memoryIndex) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	s.indexCache = longTermIndexCache{signature: signature, index: cloneMemoryIndex(index), valid: true}
+}
+
+func (s *LongTermMemoryStore) invalidateIndexCache() {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	s.indexCache = longTermIndexCache{}
+}
+
+func (s *LongTermMemoryStore) readMemoryMarkdownCached(path string) (parsedMemoryMarkdown, error) {
+	signature, ok, err := memoryFileSignatureForPath(path)
+	if err != nil {
+		return parsedMemoryMarkdown{}, fmt.Errorf("stat memory markdown %q: %w", path, err)
+	}
+	if ok {
+		if parsed, hit := s.cachedParsedMemory(path, signature); hit {
+			return parsed, nil
+		}
+	}
+	parsed, err := readMemoryMarkdown(path)
+	if err != nil {
+		return parsedMemoryMarkdown{}, err
+	}
+	if ok {
+		s.storeParsedMemoryCache(path, signature, parsed)
+	}
+	return cloneParsedMemoryMarkdown(parsed), nil
+}
+
+func (s *LongTermMemoryStore) cachedParsedMemory(path string, signature memoryFileSignature) (parsedMemoryMarkdown, bool) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	if s.parsedCache == nil {
+		return parsedMemoryMarkdown{}, false
+	}
+	cached, ok := s.parsedCache[path]
+	if !ok || cached.signature != signature {
+		return parsedMemoryMarkdown{}, false
+	}
+	return cloneParsedMemoryMarkdown(cached.parsed), true
+}
+
+func (s *LongTermMemoryStore) storeParsedMemoryCache(path string, signature memoryFileSignature, parsed parsedMemoryMarkdown) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	if s.parsedCache == nil {
+		s.parsedCache = make(map[string]cachedParsedMemoryMarkdown)
+	}
+	s.parsedCache[path] = cachedParsedMemoryMarkdown{signature: signature, parsed: cloneParsedMemoryMarkdown(parsed)}
+}
+
+func (s *LongTermMemoryStore) invalidateParsedMemoryCache(paths ...string) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	if len(paths) == 0 {
+		s.parsedCache = nil
+		return
+	}
+	for _, path := range paths {
+		delete(s.parsedCache, path)
+	}
+}
+
+func cloneMemoryIndex(index memoryIndex) memoryIndex {
+	index.Memories = cloneMemoryIndexEntries(index.Memories)
+	return index
+}
+
+func cloneMemoryIndexEntries(entries []memoryIndexEntry) []memoryIndexEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	cloned := make([]memoryIndexEntry, len(entries))
+	for i, entry := range entries {
+		cloned[i] = entry
+		cloned[i].Tags = append([]string(nil), entry.Tags...)
+		cloned[i].Entities = append([]string(nil), entry.Entities...)
+	}
+	return cloned
+}
+
+func cloneParsedMemoryMarkdown(parsed parsedMemoryMarkdown) parsedMemoryMarkdown {
+	parsed.Item = cloneMemoryItem(parsed.Item)
+	return parsed
+}
+
+func cloneMemoryItem(item MemoryItem) MemoryItem {
+	item.Tags = append([]string(nil), item.Tags...)
+	item.Entities = append([]string(nil), item.Entities...)
+	item.Applicability = cloneStringMap(item.Applicability)
+	item.SourceRefs = cloneMemorySourceRefs(item.SourceRefs)
+	item.EvidenceRefs = cloneMemorySourceRefs(item.EvidenceRefs)
+	item.ConflictsWith = append([]string(nil), item.ConflictsWith...)
+	item.EvidenceExcerpts = append([]string(nil), item.EvidenceExcerpts...)
+	return item
 }
 
 func (s *LongTermMemoryStore) appendTombstone(id string, reason string) error {

@@ -155,6 +155,26 @@ type frameHealthResponse struct {
 	AvgCaptureCopyLatencyMs float64 `json:"avg_capture_copy_latency_ms"`
 }
 
+func (r *frameHealthResponse) UnmarshalJSON(data []byte) error {
+	type frameHealthResponseAlias frameHealthResponse
+	var raw struct {
+		frameHealthResponseAlias
+		LastRecoveryTs          json.RawMessage `json:"last_recovery_ts"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	lastRecoveryTs, err := parseFlexibleUint64(raw.LastRecoveryTs)
+	if err != nil {
+		return fmt.Errorf("last_recovery_ts: %w", err)
+	}
+
+	*r = frameHealthResponse(raw.frameHealthResponseAlias)
+	r.LastRecoveryTs = lastRecoveryTs
+	return nil
+}
+
 // LatestFrame fetches the most recent frame from the service.
 func (c *FrameServiceClient) LatestFrame() (*frameMetadata, []byte, error) {
 	return c.LatestFrameWithFormat("raw", 0)
