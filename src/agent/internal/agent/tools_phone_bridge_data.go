@@ -468,7 +468,7 @@ func (t *ContactsTool) query(ctx context.Context, args contactsArgs) (string, er
 
 func (t *ContactsTool) create(ctx context.Context, args contactsArgs) (string, error) {
 	if strings.TrimSpace(args.Name) == "" {
-		te := NewToolError(CodeInvalidArguments, fmt.Sprintf("create requires a name"))
+		te := NewToolError(CodeInvalidArguments, "create requires a name")
 		SetToolError(ctx, te)
 		return toolErrorString(te), nil
 	}
@@ -514,7 +514,7 @@ func (t *ContactsTool) create(ctx context.Context, args contactsArgs) (string, e
 
 func (t *ContactsTool) update(ctx context.Context, args contactsArgs) (string, error) {
 	if strings.TrimSpace(args.ContactID) == "" {
-		te := NewToolError(CodeInvalidArguments, fmt.Sprintf("update requires a contact_id"))
+		te := NewToolError(CodeInvalidArguments, "update requires a contact_id")
 		SetToolError(ctx, te)
 		return toolErrorString(te), nil
 	}
@@ -596,7 +596,7 @@ func (t *NotificationTool) Call(ctx context.Context, input string) (string, erro
 	}
 
 	if strings.TrimSpace(args.Title) == "" {
-		te := NewToolError(CodeInvalidArguments, fmt.Sprintf("notification requires a title"))
+		te := NewToolError(CodeInvalidArguments, "notification requires a title")
 		SetToolError(ctx, te)
 		return toolErrorString(te), nil
 	}
