@@ -4,10 +4,19 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"strings"
+	"testing"
 
 	"github.com/tmc/langchaingo/llms"
 	"github.com/tmc/langchaingo/schema"
 )
+
+func withTestConfigDir(t *testing.T, cfg Config) Config {
+	t.Helper()
+	if strings.TrimSpace(cfg.ConfigDir) == "" {
+		cfg.ConfigDir = t.TempDir()
+	}
+	return cfg
+}
 
 func messageText(messages []llms.MessageContent) string {
 	var builder strings.Builder

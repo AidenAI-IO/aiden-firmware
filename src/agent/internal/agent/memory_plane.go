@@ -31,7 +31,6 @@ type FilesystemMemoryPlane struct {
 type MemoryRetrieveRequest struct {
 	Input        string
 	Attachments  []InputAttachment
-	Skills       []string
 	ToolNames    []string
 	EpisodeID    string
 	DeviceID     string
