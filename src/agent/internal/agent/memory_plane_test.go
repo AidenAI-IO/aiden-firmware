@@ -175,7 +175,7 @@ func TestMemoryPlaneRetrieveRoutesExperienceByRole(t *testing.T) {
 	}
 }
 
-func TestMemoryPlaneRetrieveFreezesPlannerExperienceWithinActiveSession(t *testing.T) {
+func TestMemoryPlaneRetrieveRefreshesPlannerExperienceForDifferentTaskInActiveSession(t *testing.T) {
 	ctx := context.Background()
 	memoryDir := filepath.Join(t.TempDir(), "memory")
 	longTerm := NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"))
@@ -224,6 +224,9 @@ func TestMemoryPlaneRetrieveFreezesPlannerExperienceWithinActiveSession(t *testi
 	if got := metadata.State.RetrievedDeviceExperience.Planner.Procedures[0].ID; got != "mem_open_wechat" {
 		t.Fatalf("metadata planner snapshot = %q, want mem_open_wechat", got)
 	}
+	if metadata.State.RetrievedDeviceExperience.QueryKey == "" {
+		t.Fatalf("metadata planner snapshot missing query key")
+	}
 	if _, err := os.Stat(filepath.Join(memoryDir, "session", "retrieved_device_experience.json")); !os.IsNotExist(err) {
 		t.Fatalf("unexpected feature-specific snapshot file, stat err = %v", err)
 	}
@@ -235,13 +238,69 @@ func TestMemoryPlaneRetrieveFreezesPlannerExperienceWithinActiveSession(t *testi
 	if err != nil {
 		t.Fatalf("second Retrieve() error = %v", err)
 	}
-	if len(second.Planner.Procedures) == 0 || second.Planner.Procedures[0].ID != "mem_open_wechat" {
-		t.Fatalf("second planner procedures = %#v, want first-session snapshot", second.Planner.Procedures)
+	if len(second.Planner.Procedures) == 0 || second.Planner.Procedures[0].ID != "mem_open_alipay" {
+		t.Fatalf("second planner procedures = %#v, want task-specific retrieval", second.Planner.Procedures)
 	}
 	for _, hit := range second.Planner.Procedures {
-		if hit.ID == "mem_open_alipay" {
-			t.Fatalf("planner experience should stay frozen within session: %#v", second.Planner.Procedures)
+		if hit.ID == "mem_open_wechat" {
+			t.Fatalf("different task should not reuse first planner snapshot: %#v", second.Planner.Procedures)
 		}
+	}
+}
+
+func TestMemoryPlaneRetrieveRefreshesPlannerExperienceForDifferentEpisodeInActiveSession(t *testing.T) {
+	ctx := context.Background()
+	memoryDir := filepath.Join(t.TempDir(), "memory")
+	longTerm := NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"))
+	if _, err := longTerm.AddMemory(ctx, MemoryItem{
+		ID:               "mem_wechat_old",
+		Type:             "procedure",
+		Priority:         70,
+		Confidence:       0.8,
+		Entities:         []string{"微信App"},
+		Title:            "旧微信路径",
+		Content:          "打开微信App时使用旧路径。",
+		EvidenceExcerpts: []string{"旧路径验证成功。"},
+	}); err != nil {
+		t.Fatalf("AddMemory(old): %v", err)
+	}
+
+	plane := NewFilesystemMemoryPlane(memoryDir, DefaultMemoryExtractionConfig(), nil)
+	first, err := plane.Retrieve(ctx, MemoryRetrieveRequest{
+		Input:     "打开微信App",
+		EpisodeID: "ep_first",
+		DeviceID:  "default",
+	})
+	if err != nil {
+		t.Fatalf("first Retrieve() error = %v", err)
+	}
+	if len(first.Planner.Procedures) == 0 || first.Planner.Procedures[0].ID != "mem_wechat_old" {
+		t.Fatalf("first planner procedures = %#v", first.Planner.Procedures)
+	}
+
+	if _, err := longTerm.AddMemory(ctx, MemoryItem{
+		ID:               "mem_wechat_new",
+		Type:             "procedure",
+		Priority:         95,
+		Confidence:       0.9,
+		Entities:         []string{"微信App"},
+		Title:            "新微信路径",
+		Content:          "打开微信App时使用新路径。",
+		EvidenceExcerpts: []string{"新路径验证成功。"},
+	}); err != nil {
+		t.Fatalf("AddMemory(new): %v", err)
+	}
+
+	second, err := plane.Retrieve(ctx, MemoryRetrieveRequest{
+		Input:     "打开微信App",
+		EpisodeID: "ep_second",
+		DeviceID:  "default",
+	})
+	if err != nil {
+		t.Fatalf("second Retrieve() error = %v", err)
+	}
+	if len(second.Planner.Procedures) == 0 || second.Planner.Procedures[0].ID != "mem_wechat_new" {
+		t.Fatalf("second planner procedures = %#v, want refreshed memory", second.Planner.Procedures)
 	}
 }
 
@@ -390,7 +449,7 @@ func TestMemoryPlaneFreezePlannerSnapshotUsesFirstConcurrentRetriever(t *testing
 	secondDone := make(chan retrieveResult, 1)
 
 	go func() {
-		out, err := plane.retrieveWithFrozenPlannerSnapshot(func() (MemoryContext, error) {
+		out, err := plane.retrieveWithFrozenPlannerSnapshot("same-query", func() (MemoryContext, error) {
 			close(firstComputeStarted)
 			<-firstMayFinish
 			return MemoryContext{
@@ -406,7 +465,7 @@ func TestMemoryPlaneFreezePlannerSnapshotUsesFirstConcurrentRetriever(t *testing
 
 	go func() {
 		close(secondCalled)
-		out, err := plane.retrieveWithFrozenPlannerSnapshot(func() (MemoryContext, error) {
+		out, err := plane.retrieveWithFrozenPlannerSnapshot("same-query", func() (MemoryContext, error) {
 			close(secondComputeStarted)
 			return MemoryContext{
 				Planner: RoleMemoryContext{
