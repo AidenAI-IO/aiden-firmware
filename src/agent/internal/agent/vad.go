@@ -507,6 +507,9 @@ func logVADHelperStderr(backend string, stderr io.Reader) {
 	for scanner.Scan() {
 		log.Printf("[vad:%s] %s\n", backend, scanner.Text())
 	}
+	if err := scanner.Err(); err != nil {
+		log.Printf("[vad:%s] %s\n", backend, err)
+	}
 }
 
 func (s *helperVADScorer) stopAfterProtocolError() {

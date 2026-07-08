@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -78,7 +79,7 @@ func (pb *PhoneBridge) handleEnqueueCommand(w http.ResponseWriter, r *http.Reque
 			pb.logger.Error("phone-bridge: enqueue command failed: %v", err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(err.Error(), "already exists") {
+		if errors.Is(err, ErrCommandExists) {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusConflict)
 		} else {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusBadRequest)
@@ -130,6 +131,12 @@ func (pb *PhoneBridge) handlePollCommands(w http.ResponseWriter, r *http.Request
 	}
 
 	phoneID := strings.TrimSpace(r.URL.Query().Get("phone_id"))
+	pb.noteHTTPPollState(
+		platform,
+		phoneID,
+		r.URL.Query().Get("app_state"),
+		r.URL.Query().Get("pip_bridge_enabled"),
+	)
 	commands := pb.queue.PollForPhone(platform, phoneID, limit)
 
 	if pb.logger != nil && len(commands) > 0 {
@@ -145,6 +152,42 @@ func (pb *PhoneBridge) handlePollCommands(w http.ResponseWriter, r *http.Request
 		Commands:   commands,
 		ServerTime: time.Now().UTC().Format("2006-01-02T15:04:05Z"),
 	})
+}
+
+func (pb *PhoneBridge) noteHTTPPollState(platform, phoneID, appState, pipBridgeEnabled string) {
+	platform = strings.TrimSpace(platform)
+	phoneID = strings.TrimSpace(phoneID)
+	appState, appStateOK := normalizeAppState(appState)
+	enabled, enabledOK := parseOptionalBoolQuery(pipBridgeEnabled)
+	now := time.Now()
+
+	pb.mu.Lock()
+	if platform != "" {
+		pb.platform = platform
+	}
+	if phoneID != "" {
+		pb.phoneID = phoneID
+	}
+	if appStateOK {
+		pb.appState = appState
+		pb.appStateAt = now
+	}
+	if enabledOK {
+		pb.pipBridgeEnabled = enabled
+		pb.pipBridgeSeen = true
+	}
+	pb.mu.Unlock()
+}
+
+func parseOptionalBoolQuery(value string) (bool, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "true", "1", "yes":
+		return true, true
+	case "false", "0", "no":
+		return false, true
+	default:
+		return false, false
+	}
 }
 
 // handleSubmitResult handles POST /api/phone-bridge/results

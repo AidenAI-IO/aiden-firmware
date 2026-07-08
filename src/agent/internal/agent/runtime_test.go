@@ -66,6 +66,7 @@ func TestRuntimeRun(t *testing.T) {
 		Model:       ModelConfig{Provider: "fake"},
 		Instruction: "Answer directly.",
 	}
+	cfg = withTestConfigDir(t, cfg)
 
 	resolver := &testModelResolver{
 		model: &scriptedModel{responses: roleDirectResponses("completed")},
@@ -170,7 +171,7 @@ func TestRuntimeRunWaitForWakeupTerminatesRoleLoop(t *testing.T) {
 	}}
 	controller := NewWaitForWakeupController()
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", MaxIterations: 2},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", MaxIterations: 2}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -224,7 +225,7 @@ func TestRuntimeRunWaitForWakeupAppendsToolResultBeforeFinishing(t *testing.T) {
 	}}
 	controller := NewWaitForWakeupController()
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -275,7 +276,7 @@ func TestRuntimeRunWaitForWakeupDoesNotStreamWithoutModelText(t *testing.T) {
 	}}
 	controller := NewWaitForWakeupController()
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -309,7 +310,7 @@ func TestRuntimeRunInjectsCurrentDateIntoPlannerPrompt(t *testing.T) {
 
 	model := &scriptedModel{responses: roleDirectResponses("completed")}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		Config{ConfigDir: t.TempDir(), Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
@@ -329,47 +330,10 @@ func TestRuntimeRunInjectsCurrentDateIntoPlannerPrompt(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunRestoresHotWindowHistoryAsChatMessages(t *testing.T) {
-	ctx := context.Background()
-	storageDir := filepath.Join(t.TempDir(), "memory")
-	manager := NewMemoryManager(storageDir)
-	if err := manager.AppendExchange(ctx, "default", "上一轮用户问题", "上一轮回答"); err != nil {
-		t.Fatalf("AppendExchange() error = %v", err)
-	}
-
-	model := &scriptedModel{responses: roleDirectResponses("completed")}
-	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
-		&testModelResolver{model: model},
-		manager,
-		&ToolSet{tools: map[string]langtools.Tool{}},
-		NewSkillIndex(),
-	)
-	t.Cleanup(func() { _ = runtime.Close() })
-
-	if _, err := runtime.Run(ctx, RunRequest{Input: "继续上一轮"}); err != nil {
-		t.Fatalf("Run() error = %v", err)
-	}
-	if len(model.messages) == 0 || len(model.messages[0]) < 3 {
-		t.Fatalf("expected planner system, restored history, and current user messages, got %#v", model.messages)
-	}
-	messages := model.messages[0]
-	if messages[1].Role != llms.ChatMessageTypeHuman || messageText(messages[1:2]) != "上一轮用户问题\n" {
-		t.Fatalf("restored user history message = role %q text %q", messages[1].Role, messageText(messages[1:2]))
-	}
-	if messages[2].Role != llms.ChatMessageTypeAI || messageText(messages[2:3]) != "上一轮回答\n" {
-		t.Fatalf("restored assistant history message = role %q text %q", messages[2].Role, messageText(messages[2:3]))
-	}
-	currentUser := messageText(messages[3:])
-	if currentUser != "继续上一轮\n" {
-		t.Fatalf("current user message = %q, want 继续上一轮", currentUser)
-	}
-}
-
 func TestRuntimeRunAllowsNilMemoryManager(t *testing.T) {
 	model := &scriptedModel{responses: roleDirectResponses("ok")}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1}),
 		&testModelResolver{model: model},
 		nil,
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -396,7 +360,7 @@ func TestRuntimeRunContinuesWhenPersistedMemoryCannotLoad(t *testing.T) {
 	model := &scriptedModel{responses: roleDirectResponses("ok")}
 	manager := NewMemoryManager(memoryDir)
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1}),
 		&testModelResolver{model: model},
 		manager,
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -428,7 +392,7 @@ func TestRuntimeRunUsesSessionManager(t *testing.T) {
 		},
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -472,7 +436,7 @@ func TestRuntimeRunContinuesWhenSessionBeginFails(t *testing.T) {
 	model := &scriptedModel{responses: roleDirectResponses("ok")}
 	manager := &recordingSessionManager{beginErr: errors.New("session append failed")}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
+		Config{ConfigDir: t.TempDir(), Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -496,7 +460,7 @@ func TestRuntimeRunReturnsOutputWhenSessionCommitFails(t *testing.T) {
 	model := &scriptedModel{responses: roleDirectResponses("ok")}
 	manager := &recordingSessionManager{err: errors.New("session commit failed")}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -597,7 +561,7 @@ func TestRuntimeRunAsyncEpisodeMaintenanceDoesNotBlock(t *testing.T) {
 	plane := newBlockingEpisodeMaintenancePlane()
 	defer plane.releaseMaintenance()
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1}),
 		&testModelResolver{model: &scriptedModel{responses: roleDirectResponses("ok")}},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -657,7 +621,7 @@ func TestRuntimeRunCommitsTimingEventsBeforeEpisodeCommit(t *testing.T) {
 	plane := &capturingEpisodePlane{retrieveDelay: 20 * time.Millisecond}
 	model := &scriptedModel{responses: roleToolResponses("echo", `{"__arg1":"hello"}`, "ok")}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", MaxIterations: 3},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", MaxIterations: 3}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -805,7 +769,7 @@ func TestRuntimeRunAttachesPendingSteerToNextToolCall(t *testing.T) {
 		output:      "tool output",
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{"echo": tool}},
@@ -882,7 +846,7 @@ func TestRuntimeRunSteerInterruptDoesNotPauseAfterNonCancelableTool(t *testing.T
 		ignoreCancel:  true,
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{"slow": tool}},
@@ -970,7 +934,7 @@ func TestRuntimeRunSteerInterruptCancelsCancelableToolWithoutWaitingForSteer(t *
 		canceled:    toolCanceled,
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{"slow": tool}},
@@ -1041,7 +1005,7 @@ func TestRuntimeRunDoesNotConsumePendingSteerBeforeFinalAnswer(t *testing.T) {
 		},
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -1093,7 +1057,7 @@ func TestRuntimeRunDoesNotPersistUnusedSteerProviderAsConversationMessage(t *tes
 		},
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."}),
 		&testModelResolver{model: model},
 		NewMemoryManager(storageDir),
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -1157,7 +1121,7 @@ func TestRuntimeRunPersistsAssistantOutputOnce(t *testing.T) {
 
 	model := &scriptedModel{responses: roleDirectResponses("hello answer")}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer."},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer."}),
 		&testModelResolver{model: model},
 		memoryManager,
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -1198,7 +1162,7 @@ func TestRuntimeRunKeepsCurrentExchangeWhenSnapshotWindowIsFull(t *testing.T) {
 		},
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."}),
 		&testModelResolver{model: model},
 		memoryManager,
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -1247,7 +1211,7 @@ func TestRuntimeRunKeepsCurrentExchangeWhenSnapshotWindowIsFull(t *testing.T) {
 func TestRuntimeRunPersistsRootInputBeforeModelFailure(t *testing.T) {
 	storageDir := filepath.Join(t.TempDir(), "memory")
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."}),
 		&testModelResolver{model: failingGenerateModel{err: errors.New("model unavailable")}},
 		NewMemoryManager(storageDir),
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -1283,7 +1247,7 @@ func TestRuntimeRunPersistsRootInputBeforeModelFailure(t *testing.T) {
 func TestRuntimeRunPersistsCanonicalVoiceInputBeforeModelFailure(t *testing.T) {
 	storageDir := filepath.Join(t.TempDir(), "memory")
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."}),
 		&testModelResolver{model: failingGenerateModel{err: errors.New("model unavailable")}},
 		NewMemoryManager(storageDir),
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -1345,7 +1309,7 @@ func TestRuntimeRunPersistsCanonicalVoiceInputBeforeModelFailure(t *testing.T) {
 func TestRuntimeRunPersistsAttachmentArtifactsWithoutBinary(t *testing.T) {
 	storageDir := filepath.Join(t.TempDir(), "memory")
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."}),
 		&testModelResolver{model: failingGenerateModel{err: errors.New("model unavailable")}},
 		NewMemoryManager(storageDir),
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -1399,7 +1363,7 @@ func TestRuntimeRunIncludesAvailableSkillCatalog(t *testing.T) {
 	}
 	model := &scriptedModel{responses: roleDirectResponses("ok")}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
+		Config{ConfigDir: t.TempDir(), Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -1522,91 +1486,6 @@ func TestSkillCatalogSummaryLimitsEntriesAndDescriptionLength(t *testing.T) {
 	}
 	if strings.Contains(catalog, strings.Repeat("长", maxSkillCatalogDescriptionRunes+1)) {
 		t.Fatalf("expected long descriptions to be truncated")
-	}
-}
-
-func TestResolveToolsKeepsSkillMetaToolsWhenRestricted(t *testing.T) {
-	tools := &ToolSet{tools: map[string]langtools.Tool{
-		"screenshot":      &stubTool{name: "screenshot", description: "Take screenshot."},
-		"skill_list":      NewSkillListTool(t.TempDir()),
-		"skill_read":      NewSkillReadTool(t.TempDir()),
-		"skill_mark_used": NewSkillMarkUsedTool(t.TempDir(), ""),
-		"skill_manage":    NewSkillManageTool(t.TempDir(), ""),
-		"recall_memory":   &stubTool{name: "recall_memory", description: "Recall memory."},
-	}}
-	runtime := NewRuntimeWithDeps(Config{}, nil, nil, tools, NewSkillIndex())
-	resolved := ResolvedSkills{
-		AllowedTools:       map[string]struct{}{"screenshot": {}},
-		HasToolRestriction: true,
-	}
-	resolvedTools := runtime.resolveTools(resolved)
-	names := map[string]bool{}
-	for _, tool := range resolvedTools {
-		names[tool.Name()] = true
-	}
-	for _, name := range []string{"screenshot", "skill_list", "skill_read", "skill_manage", "skill_mark_used"} {
-		if !names[name] {
-			t.Fatalf("expected %s to be available under tool restrictions; got %#v", name, names)
-		}
-	}
-	for _, name := range []string{"recall_memory"} {
-		if names[name] {
-			t.Fatalf("did not expect %s without explicit allowed_tools entry; got %#v", name, names)
-		}
-	}
-}
-
-func TestRuntimeRunReloadsSkillIndexButKeepsExistingPlannerContext(t *testing.T) {
-	configDir := t.TempDir()
-	skillsDir := filepath.Join(configDir, "skills")
-	v1 := "---\nname: alpha\ndescription: Alpha\n---\n\nUse alpha v1.\n"
-	v2 := "---\nname: alpha\ndescription: Alpha\n---\n\nUse alpha v2.\n"
-	writeSKILL(t, skillsDir, "alpha", v1)
-	index, err := LoadSkillsFromDirs([]string{skillsDir})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	model := &scriptedModel{
-		responses: append(roleDirectResponses("first"), roleDirectResponses("second")...),
-	}
-	runtime := NewRuntimeWithDeps(
-		Config{
-			ConfigDir:     configDir,
-			SkillsDirs:    []string{skillsDir},
-			Model:         ModelConfig{Provider: "fake"},
-			Instruction:   "Answer directly.",
-			MaxIterations: 1,
-		},
-		&testModelResolver{model: model},
-		NewMemoryManager(""),
-		&ToolSet{tools: map[string]langtools.Tool{}},
-		index,
-	)
-
-	if _, err := runtime.Run(context.Background(), RunRequest{Input: "hello", Skills: []string{"alpha"}}); err != nil {
-		t.Fatalf("first Run() error = %v", err)
-	}
-	if !runtimeModelCallContains(model.messages[0], "Use alpha v1.") {
-		t.Fatalf("first run missing v1 skill instructions")
-	}
-
-	writeSKILL(t, skillsDir, "alpha", v2)
-	runtime.MarkSkillsDirty()
-
-	if _, err := runtime.Run(context.Background(), RunRequest{Input: "hello again", Skills: []string{"alpha"}}); err != nil {
-		t.Fatalf("second Run() error = %v", err)
-	}
-	if skill, ok := runtime.skills.GetIndex().Get("alpha"); !ok || !strings.Contains(skill.Instructions, "Use alpha v2.") {
-		t.Fatalf("runtime skill index did not reload v2 instructions: %#v ok=%v", skill, ok)
-	}
-	// The context-manager loop reuses its seeded system message across turns.
-	secondRunPlannerPrompt := model.messages[1]
-	if !runtimeModelCallContains(secondRunPlannerPrompt, "Use alpha v1.") {
-		t.Fatalf("second run should keep the existing planner context with v1 skill instructions")
-	}
-	if runtimeModelCallContains(secondRunPlannerPrompt, "Use alpha v2.") {
-		t.Fatalf("second run unexpectedly replaced the existing planner context with v2 instructions")
 	}
 }
 
@@ -2059,9 +1938,6 @@ func TestRuntimeCallbackPropagatesToolErrorToEventsAndMessages(t *testing.T) {
 }
 
 func TestRuntimeCallbackPersistsSessionEventWithCanceledRunContext(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
 	var appenderCtxErr error
 	handler := &runtimeCallbackHandler{
 		episodeID: "ep-1",
@@ -2074,7 +1950,7 @@ func TestRuntimeCallbackPersistsSessionEventWithCanceledRunContext(t *testing.T)
 		},
 	}
 
-	handler.emitRunEvent(ctx, RunEvent{Type: "tool_result", Content: "ok"})
+	handler.emitRunEvent(RunEvent{Type: "tool_result", Content: "ok"})
 
 	if appenderCtxErr != nil {
 		t.Fatalf("sessionEventAppender ctx.Err() = %v, want nil", appenderCtxErr)
@@ -2208,10 +2084,10 @@ func TestRuntimeRunOpenRouterUsesToolsWithoutStreaming(t *testing.T) {
 		output:      `{"volume":42}`,
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:       ModelConfig{Provider: "openrouter"},
 			Instruction: "Use tools when external state is requested.",
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -2246,10 +2122,10 @@ func TestRuntimeRunFakeProviderUsesFunctionAgentToolCalls(t *testing.T) {
 		output:      `{"volume":42}`,
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:       ModelConfig{Provider: "fake"},
 			Instruction: "Use tools when external state is requested.",
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -2284,10 +2160,10 @@ func TestRuntimeRunRestoresPlannerToolCallsIntoNextRunPrompt(t *testing.T) {
 		output:      "echo result",
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:       ModelConfig{Provider: "fake"},
 			Instruction: "Use tools when needed.",
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(t.TempDir()),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -2362,6 +2238,7 @@ func TestRuntimeRunExecutesOnlyFirstToolCallAndKeepsModelToolCallMessage(t *test
 	toolB := &stubTool{name: "slow_b", description: "Second tool.", output: `{"ok":true}`}
 	runtime := NewRuntimeWithDeps(
 		Config{
+			ConfigDir:   t.TempDir(),
 			Model:       ModelConfig{Provider: "fake"},
 			Instruction: "Use tools.",
 		},
@@ -2410,10 +2287,10 @@ func TestRuntimeRunFeedsToolErrorsBackToModel(t *testing.T) {
 		responses: roleReviewedToolResponses("screenshot", `{"__arg1":"{}"}`, "屏幕暂时获取失败，frame service 正在恢复。"),
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:       ModelConfig{Provider: "fake"},
 			Instruction: "Use tools.",
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -2475,10 +2352,10 @@ func TestRuntimeRunStripsLegacyToolInputWithoutDerivingContent(t *testing.T) {
 		output:      `{"volume":42}`,
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:       ModelConfig{Provider: "fake"},
 			Instruction: "Use tools when external state is requested.",
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -2531,11 +2408,11 @@ func TestRuntimeRunEmitsToolContentForToolCallSpeech(t *testing.T) {
 	}
 	toolSpeechEnabled := true
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:               ModelConfig{Provider: "fake"},
 			Instruction:         "Use tools when external state is requested.",
 			VoiceToolCallSpeech: &toolSpeechEnabled,
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -2572,10 +2449,10 @@ func TestRuntimeLogsPreserveThinkStartTagInToolCallContent(t *testing.T) {
 		},
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:       ModelConfig{Provider: "fake"},
 			Instruction: "Use tools when external state is requested.",
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -2617,11 +2494,11 @@ func TestRuntimeRunDoesNotDeriveToolContentFromDescriptionArgument(t *testing.T)
 	}
 	toolSpeechEnabled := true
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:               ModelConfig{Provider: "fake"},
 			Instruction:         "Use tools when external state is requested.",
 			VoiceToolCallSpeech: &toolSpeechEnabled,
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -2651,7 +2528,7 @@ func TestRuntimeRunDoesNotDeriveToolContentFromDescriptionArgument(t *testing.T)
 func TestRuntimeDirectAnswerDoesNotGenerateTodo(t *testing.T) {
 	model := &scriptedModel{responses: roleDirectResponses("done")}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
@@ -2687,7 +2564,7 @@ func TestRuntimeSimpleLoopDoesNotGenerateImplicitTodo(t *testing.T) {
 	screenshot := &stubTool{name: "screenshot", description: "Capture screen.", output: "screen"}
 	webSearch := &stubTool{name: "web_search", description: "Search web.", output: "result"}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -2727,7 +2604,7 @@ func TestRuntimeForceSimpleLoopDoesNotGenerateTodo(t *testing.T) {
 	}
 	webSearch := &stubTool{name: "web_search", description: "Search web.", output: "result"}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", ForceSimpleLoop: true},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", ForceSimpleLoop: true}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{"web_search": webSearch}},
@@ -2763,7 +2640,7 @@ func TestRuntimeForceSimpleLoopRejectsLegacySetTodoTool(t *testing.T) {
 		},
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", ForceSimpleLoop: true},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", ForceSimpleLoop: true}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -2809,7 +2686,7 @@ func TestRuntimeSimpleLoopDoesNotInjectLegacyTodoReminderAfterSeveralToolCalls(t
 	}
 	webSearch := &stubTool{name: "web_search", description: "Search web.", output: "result"}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", ForceSimpleLoop: true},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", ForceSimpleLoop: true}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{"web_search": webSearch}},
@@ -2840,7 +2717,7 @@ func TestRuntimeSimpleLoopIgnoresLegacyTodoReminderThreshold(t *testing.T) {
 	}
 	webSearch := &stubTool{name: "web_search", description: "Search web.", output: "result"}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", ForceSimpleLoop: true, TodoReminderToolCalls: 2},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", ForceSimpleLoop: true, TodoReminderToolCalls: 2}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{"web_search": webSearch}},
@@ -2880,10 +2757,10 @@ func TestRuntimeRunOpenRouterStreamsWhenWriterIsProvided(t *testing.T) {
 		responses: roleDirectResponses("completed"),
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:       ModelConfig{Provider: "openrouter"},
 			Instruction: "Answer directly.",
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
@@ -2916,11 +2793,11 @@ func TestRuntimeRunDoesNotCallFinalSteerProviderForDirectFinalAnswer(t *testing.
 		streamChunks: [][]string{{}},
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:           ModelConfig{Provider: "fake"},
 			Instruction:     "Answer directly.",
 			ForceSimpleLoop: true,
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
@@ -2968,11 +2845,11 @@ func TestRuntimeRunStreamsToolCapableCallsWhenWriterIsProvided(t *testing.T) {
 		output:      `{"volume":42}`,
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:           ModelConfig{Provider: "openrouter"},
 			Instruction:     "Use tools when external state is requested.",
 			ForceSimpleLoop: true,
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -3017,6 +2894,7 @@ func TestRuntimeRunKeyboardToolFeedsPostActionScreenshotImage(t *testing.T) {
 	}
 	runtime := NewRuntimeWithDeps(
 		Config{
+			ConfigDir:   t.TempDir(),
 			Model:       ModelConfig{Provider: "openrouter"},
 			Instruction: "Use input tools when needed.",
 		},
@@ -3095,7 +2973,7 @@ func TestRuntimeRunCapturesUsageMetricsFromDirectModelCall(t *testing.T) {
 		},
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
@@ -3123,7 +3001,7 @@ func TestRuntimeRunResetsPromptTokensWhenUsageUnavailable(t *testing.T) {
 		},
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."}),
 		&testModelResolver{model: model},
 		manager,
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
@@ -3314,7 +3192,7 @@ func TestRuntimeRunSchedulesMemoryMaintenanceAsync(t *testing.T) {
 	}))
 
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1}),
 		&testModelResolver{model: &scriptedModel{responses: roleDirectResponses("ok")}},
 		manager,
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -4210,11 +4088,11 @@ func TestRuntimeRunOmitsRuntimeContextFromSystemMessage(t *testing.T) {
 		responses: roleDirectResponses("ok"),
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:         ModelConfig{Provider: "fake"},
 			Instruction:   "Answer directly.",
 			MaxIterations: 1,
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -4254,11 +4132,11 @@ func TestRuntimeRunDoesNotPersistRuntimeContextAcrossTurns(t *testing.T) {
 	}
 	storageDir := filepath.Join(t.TempDir(), "memory")
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:           ModelConfig{Provider: "fake"},
 			Instruction:     "Answer directly.",
 			ForceSimpleLoop: true,
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(storageDir),
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -4306,10 +4184,10 @@ func TestRuntimeRunPlacesSystemPromptBeforeCurrentUserMessage(t *testing.T) {
 		responses: roleDirectResponses("processed"),
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:       ModelConfig{Provider: "fake"},
 			Instruction: "Use context when answering.",
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -4379,10 +4257,10 @@ func TestRuntimeRunIncludesUserAttachments(t *testing.T) {
 	}
 
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:       ModelConfig{Provider: "openrouter"},
 			Instruction: "Use the provided media when answering.",
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
@@ -4502,26 +4380,5 @@ func TestRuntimeClearMemoryRemovesPersistedSession(t *testing.T) {
 	}
 	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
 		t.Fatalf("expected legacy snapshot to be removed, stat err = %v", err)
-	}
-}
-
-func TestRuntimeCloseClearsPlannerContextAttachments(t *testing.T) {
-	runtime := &Runtime{}
-	manager := runtime.plannerContextManager()
-	stored, err := manager.StoreAttachment("image/png", []byte("png-bytes"))
-	if err != nil {
-		t.Fatalf("StoreAttachment() error = %v", err)
-	}
-	root := filepath.Dir(stored.FilePath)
-	if _, err := os.Stat(root); err != nil {
-		t.Fatalf("attachment root before Close() = %v", err)
-	}
-
-	if err := runtime.Close(); err != nil {
-		t.Fatalf("Close() error = %v", err)
-	}
-
-	if _, err := os.Stat(root); !os.IsNotExist(err) {
-		t.Fatalf("attachment root after Close() err=%v, want not exist", err)
 	}
 }

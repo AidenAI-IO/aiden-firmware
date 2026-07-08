@@ -63,6 +63,41 @@ func TestLongTermMemoryAddWritesMarkdownAndSearchableIndex(t *testing.T) {
 	}
 }
 
+func TestLongTermMemorySearchReflectsUpdatedMarkdownAfterCache(t *testing.T) {
+	ctx := context.Background()
+	store := NewLongTermMemoryStore(filepath.Join(t.TempDir(), "long_term"))
+	if _, err := store.AddMemory(ctx, MemoryItem{
+		ID:               "mem_cached_update",
+		Type:             "fact",
+		Priority:         80,
+		Confidence:       0.9,
+		Tags:             []string{"cache-test"},
+		Title:            "Cached update",
+		Content:          "old content",
+		EvidenceExcerpts: []string{"old evidence"},
+	}); err != nil {
+		t.Fatalf("AddMemory() error = %v", err)
+	}
+
+	if _, err := store.Search(ctx, MemoryQuery{Tags: []string{"cache-test"}, Limit: 5}); err != nil {
+		t.Fatalf("initial Search() error = %v", err)
+	}
+	if err := store.UpdateMemory(ctx, "mem_cached_update", func(item *MemoryItem) {
+		item.Content = "new content"
+		item.EvidenceExcerpts = []string{"new evidence"}
+	}); err != nil {
+		t.Fatalf("UpdateMemory() error = %v", err)
+	}
+
+	results, err := store.Search(ctx, MemoryQuery{Tags: []string{"cache-test"}, Limit: 5})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(results) != 1 || !strings.Contains(results[0].Content, "new content") {
+		t.Fatalf("Search() returned stale result: %#v", results)
+	}
+}
+
 func TestLongTermMemorySearchReadsPlainMarkdownBody(t *testing.T) {
 	ctx := context.Background()
 	store := NewLongTermMemoryStore(filepath.Join(t.TempDir(), "long_term"))

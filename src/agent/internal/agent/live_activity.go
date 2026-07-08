@@ -236,8 +236,8 @@ func (m *LiveActivityManager) UpdateFromRunEvent(requestID string, event RunEven
 		state.RequiresApp = false
 		state.LastError = ""
 		state.LastToolName = ""
-		state.CurrentAction = liveActivityActionFromRole(event.Role, event.Content)
-		state.Phase = liveActivityPhaseFromRole(event.Role, event.Content)
+		state.CurrentAction = liveActivityActionFromRole(event.Content)
+		state.Phase = liveActivityPhaseFromRole(event.Content)
 		if step := truncateLiveActivityText(liveActivityStepFromRoleOutput(event), 120); step != "" {
 			state.CurrentStep = step
 		}
@@ -686,14 +686,14 @@ type liveActivityToolStatus struct {
 	requiresApp bool
 }
 
-func liveActivityPhaseFromRole(role, content string) string {
+func liveActivityPhaseFromRole(content string) string {
 	if extractTTSText(content) != "" {
 		return LiveActivityPhaseAnswering
 	}
 	return LiveActivityPhasePlanning
 }
 
-func liveActivityActionFromRole(role, content string) string {
+func liveActivityActionFromRole(content string) string {
 	if extractTTSText(content) != "" {
 		return "answer"
 	}
@@ -736,7 +736,7 @@ func liveActivityToolCallStatus(event RunEvent) liveActivityToolStatus {
 		status.phase = LiveActivityPhasePhoneBridge
 		status.action = "calendar"
 		status.requiresApp = true
-		status.step = liveActivityActionStep("calendar", event.ToolInput, map[string]string{
+		status.step = liveActivityActionStep(event.ToolInput, map[string]string{
 			"create": "Creating calendar event",
 			"query":  "Checking calendar",
 			"delete": "Deleting calendar event",
@@ -745,7 +745,7 @@ func liveActivityToolCallStatus(event RunEvent) liveActivityToolStatus {
 		status.phase = LiveActivityPhasePhoneBridge
 		status.action = "contacts"
 		status.requiresApp = true
-		status.step = liveActivityActionStep("contacts", event.ToolInput, map[string]string{
+		status.step = liveActivityActionStep(event.ToolInput, map[string]string{
 			"query":  "Checking contacts",
 			"create": "Creating contact",
 			"update": "Updating contact",
@@ -877,7 +877,7 @@ func liveActivityClipboardStep(input string) string {
 	}
 }
 
-func liveActivityActionStep(tool, input string, labels map[string]string, fallback string) string {
+func liveActivityActionStep(input string, labels map[string]string, fallback string) string {
 	payload, ok := liveActivityJSONObject(input)
 	if !ok {
 		return fallback
@@ -992,7 +992,7 @@ func liveActivityStepFromRoleOutput(event RunEvent) string {
 	role := strings.ToLower(strings.TrimSpace(event.Role))
 	content := strings.TrimSpace(event.Content)
 	if content != "" && strings.HasPrefix(content, "{") {
-		if step := liveActivityStepFromJSONRoleOutput(role, content); step != "" {
+		if step := liveActivityStepFromJSONRoleOutput(content); step != "" {
 			return step
 		}
 	}
@@ -1007,7 +1007,7 @@ func liveActivityStepFromRoleOutput(event RunEvent) string {
 	}
 }
 
-func liveActivityStepFromJSONRoleOutput(role, content string) string {
+func liveActivityStepFromJSONRoleOutput(content string) string {
 	var payload map[string]interface{}
 	if err := json.Unmarshal([]byte(content), &payload); err != nil {
 		return ""

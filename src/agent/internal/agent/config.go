@@ -432,10 +432,6 @@ type ModelConfig struct {
 type AgentConfig struct {
 	Instruction         string
 	AdditionalPrompt    string
-	RuntimeContext      string
-	ForceSimpleLoop     bool
-	VoiceToolCallSpeech *bool
-	TTSConfigured       bool
 }
 
 // MemoryConfig is used internally by the memory manager.

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -108,30 +109,33 @@ type PhoneBridgeStatus struct {
 	AppStateUpdatedAt    *time.Time        `json:"app_state_updated_at,omitempty"`
 	ReturnEntry          string            `json:"return_entry,omitempty"`
 	ReturnEntryAvailable *bool             `json:"return_entry_available,omitempty"`
+	PipBridgeEnabled     *bool             `json:"pip_bridge_enabled,omitempty"`
 	Environment          *PhoneEnvironment `json:"environment,omitempty"`
 	EnvironmentUpdatedAt *time.Time        `json:"environment_updated_at,omitempty"`
 }
 
 type PhoneBridge struct {
-	mu              sync.Mutex
-	conn            *websocket.Conn
-	connected       bool
-	platform        string
-	phoneID         string
-	lastHeartbeatAt time.Time
-	appState        string
-	appStateAt      time.Time
-	returnEntry     string
-	returnEntryOK   bool
-	returnEntrySeen bool
-	environment     *PhoneEnvironment
-	environmentAt   time.Time
-	clipboardText   string
-	clipboardAt     time.Time
-	pendingCmds     map[string]chan BridgeCommandResponse
-	logger          *Logger
-	done            chan struct{}
-	queue           *CommandQueue // HTTP queue for background-compatible commands
+	mu               sync.Mutex
+	conn             *websocket.Conn
+	connected        bool
+	platform         string
+	phoneID          string
+	lastHeartbeatAt  time.Time
+	appState         string
+	appStateAt       time.Time
+	returnEntry      string
+	returnEntryOK    bool
+	returnEntrySeen  bool
+	pipBridgeEnabled bool
+	pipBridgeSeen    bool
+	environment      *PhoneEnvironment
+	environmentAt    time.Time
+	clipboardText    string
+	clipboardAt      time.Time
+	pendingCmds      map[string]chan BridgeCommandResponse
+	logger           *Logger
+	done             chan struct{}
+	queue            *CommandQueue // HTTP queue for background-compatible commands
 }
 
 func NewPhoneBridge(logger *Logger) *PhoneBridge {
@@ -342,6 +346,7 @@ func (pb *PhoneBridge) handleAppStateEvent(resp BridgeCommandResponse) bool {
 		ReportedAt           string `json:"reported_at,omitempty"`
 		ReturnEntry          string `json:"return_entry,omitempty"`
 		ReturnEntryAvailable *bool  `json:"return_entry_available,omitempty"`
+		PipBridgeEnabled     *bool  `json:"pip_bridge_enabled,omitempty"`
 	}
 	if err := json.Unmarshal(resp.Data, &payload); err != nil {
 		if pb.logger != nil {
@@ -349,10 +354,8 @@ func (pb *PhoneBridge) handleAppStateEvent(resp BridgeCommandResponse) bool {
 		}
 		return true
 	}
-	appState := strings.ToLower(strings.TrimSpace(payload.AppState))
-	switch appState {
-	case "active", "background", "inactive":
-	default:
+	appState, ok := normalizeAppState(payload.AppState)
+	if !ok {
 		if pb.logger != nil {
 			pb.logger.Warn("phone-bridge: ignoring unknown app_state=%q", payload.AppState)
 		}
@@ -374,12 +377,88 @@ func (pb *PhoneBridge) handleAppStateEvent(resp BridgeCommandResponse) bool {
 		pb.returnEntrySeen = true
 	}
 	pb.returnEntry = strings.ToLower(strings.TrimSpace(payload.ReturnEntry))
+	if payload.PipBridgeEnabled != nil {
+		pb.pipBridgeEnabled = *payload.PipBridgeEnabled
+		pb.pipBridgeSeen = true
+	}
 	pb.lastHeartbeatAt = pb.appStateAt
 	pb.mu.Unlock()
 	if pb.logger != nil {
 		pb.logger.Info("phone-bridge: app state updated (%s)", appState)
 	}
 	return true
+}
+
+func (pb *PhoneBridge) SendQueuedCommand(ctx context.Context, cmd BridgeCommand) (BridgeCommandResponse, error) {
+	if cmd.ID == "" {
+		return BridgeCommandResponse{}, fmt.Errorf("command ID must not be empty")
+	}
+	if pb.queue == nil {
+		return BridgeCommandResponse{
+			ID:    cmd.ID,
+			Error: NewToolError(CodeBridgeNotConnected, "phone bridge command queue is not available"),
+		}, nil
+	}
+	if strings.TrimSpace(cmd.PhoneID) == "" {
+		cmd.PhoneID = pb.currentPhoneID()
+	}
+	if err := pb.queue.Enqueue(cmd); err != nil {
+		if errors.Is(err, ErrCommandExists) {
+			return BridgeCommandResponse{
+				ID: cmd.ID,
+				Error: NewToolErrorWithDetails(CodeCommandIDCollision,
+					fmt.Sprintf("duplicate command ID %q already queued", cmd.ID),
+					map[string]any{"command_id": cmd.ID}),
+			}, nil
+		}
+		return BridgeCommandResponse{
+			ID:    cmd.ID,
+			Error: NewToolError(CodeToolExecutionFailed, fmt.Sprintf("enqueue command: %v", err)),
+		}, nil
+	}
+
+	timeout := 10 * time.Second
+	if cmd.TimeoutMs > 0 {
+		timeout = time.Duration(cmd.TimeoutMs) * time.Millisecond
+		if timeout < 10*time.Second {
+			timeout = 10 * time.Second
+		}
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		result, status := pb.queue.QueryResult(cmd.ID)
+		switch status {
+		case StatusCompleted:
+			if result != nil {
+				return result.Response, nil
+			}
+		case StatusExpired:
+			return BridgeCommandResponse{
+				ID:    cmd.ID,
+				Error: NewToolError(CodeBridgeTimeout, "queued command expired before result"),
+			}, nil
+		}
+
+		select {
+		case <-waitCtx.Done():
+			if result, status := pb.queue.QueryResult(cmd.ID); status == StatusCompleted && result != nil {
+				return result.Response, nil
+			}
+			pb.queue.Cancel(cmd.ID)
+			if ctx.Err() != nil {
+				return BridgeCommandResponse{}, ctx.Err()
+			}
+			return BridgeCommandResponse{
+				ID:    cmd.ID,
+				Error: NewToolError(CodeBridgeTimeout, "queued command timeout"),
+			}, nil
+		case <-ticker.C:
+		}
+	}
 }
 
 func (pb *PhoneBridge) SendCommand(ctx context.Context, cmd BridgeCommand) (BridgeCommandResponse, error) {
@@ -525,6 +604,10 @@ func (pb *PhoneBridge) Status() PhoneBridgeStatus {
 	if pb.returnEntry != "" {
 		status.ReturnEntry = pb.returnEntry
 	}
+	if pb.pipBridgeSeen {
+		enabled := pb.pipBridgeEnabled
+		status.PipBridgeEnabled = &enabled
+	}
 	if pb.connected && pb.environment != nil {
 		env := clonePhoneEnvironment(*pb.environment)
 		status.Environment = &env
@@ -550,7 +633,10 @@ func clonePhoneEnvironment(env PhoneEnvironment) PhoneEnvironment {
 }
 
 func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
-	if !status.Connected && strings.TrimSpace(status.AppState) == "" && strings.TrimSpace(status.Platform) == "" {
+	if !status.Connected &&
+		strings.TrimSpace(status.AppState) == "" &&
+		strings.TrimSpace(status.Platform) == "" &&
+		status.PipBridgeEnabled == nil {
 		return ""
 	}
 	var builder strings.Builder
@@ -592,14 +678,25 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 		}
 		builder.WriteString(returnEntry)
 		if status.ReturnEntryAvailable != nil {
+			visible := *status.ReturnEntryAvailable && !phoneBridgePiPBackgroundEnabled(status)
 			builder.WriteString(" available=")
-			if *status.ReturnEntryAvailable {
+			if visible {
 				builder.WriteString("true")
 			} else {
 				builder.WriteString("false")
 			}
+			if *status.ReturnEntryAvailable && !visible {
+				builder.WriteString(" hidden_by_pip=true")
+			}
 		}
 		builder.WriteByte('\n')
+	}
+	if status.PipBridgeEnabled != nil {
+		builder.WriteString("- pip_bridge: ")
+		builder.WriteString("enabled=")
+		builder.WriteString(fmt.Sprintf("%t", *status.PipBridgeEnabled))
+		builder.WriteByte(' ')
+		builder.WriteString("(PiP mode in the background can hide the Dynamic Island return entry)\n")
 	}
 	if status.Environment != nil {
 		builder.WriteString("- device environment is available in World State for structured use\n")
@@ -609,7 +706,9 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 			builder.WriteByte('\n')
 		}
 	}
-	if phoneBridgeAppNeedsForeground(status) {
+	if phoneBridgePiPBackgroundEnabled(status) {
+		builder.WriteString("- PiP Bridge mode is enabled while Aiden is backgrounded. iOS gives PiP priority over the Dynamic Island, so the Dynamic Island return entry is not visible in this state.\n")
+	} else if phoneBridgeAppNeedsForeground(status) {
 		builder.WriteString("- The Aiden companion app is backgrounded or inactive. On iOS, Phone Bridge commands may time out until Aiden returns to foreground.\n")
 		builder.WriteString("- If return_entry=dynamic_island and return_entry_available=true, open_app, clipboard, calendar, contacts, and notification will first tap the Aiden Dynamic Island entry, wait for app_state=active/Phone Bridge reconnect, then send the command. For lock-screen Live Activity entries, use screenshot/HID fallback or visual confirmation instead of blind tapping.\n")
 	} else if status.Connected {
@@ -622,26 +721,6 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 		builder.WriteString("- If return_entry=dynamic_island and return_entry_available=true, open_app, clipboard, calendar, contacts, and notification will first try to reopen Aiden through Dynamic Island and wait for Phone Bridge before sending the command. Otherwise use screenshot plus HID/touch fallback and tell the user when app-only actions cannot be completed.")
 	}
 	return builder.String()
-}
-
-func phoneBridgeAppNeedsForeground(status PhoneBridgeStatus) bool {
-	appState := strings.ToLower(strings.TrimSpace(status.AppState))
-	return appState == "background" || appState == "inactive"
-}
-
-func phoneBridgeHasReturnEntry(status PhoneBridgeStatus) bool {
-	if status.ReturnEntryAvailable != nil {
-		return *status.ReturnEntryAvailable
-	}
-	entry := strings.ToLower(strings.TrimSpace(status.ReturnEntry))
-	return entry != "" && entry != "none"
-}
-
-func phoneBridgeRecoveryGuidance(status PhoneBridgeStatus) string {
-	if phoneBridgeCanRestoreFromReturnEntry(status) {
-		return "Retry the companion app tool; it can reopen Aiden through the Dynamic Island entry, wait for Phone Bridge to reconnect, then send the command. Use home-screen search or HID fallback only if restore fails."
-	}
-	return "Use screenshot plus HID/touch fallback; only Dynamic Island return entries are auto-tapped, and lock-screen Live Activity entries need visual confirmation."
 }
 
 func appendNonEmptyLine(builder *strings.Builder, prefix, value string) {

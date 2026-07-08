@@ -426,10 +426,10 @@ func TestProcessUtteranceSpeaksTaggedTTSOutput(t *testing.T) {
 	}
 	store := NewChatHistoryStore(t.TempDir())
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:       ModelConfig{Provider: "fake"},
 			Instruction: "Answer directly.",
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -485,11 +485,11 @@ func TestAudioDialogSpeaksToolContentAsynchronously(t *testing.T) {
 		},
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:               ModelConfig{Provider: "fake"},
 			Instruction:         "Use tools when external state is requested.",
 			VoiceToolCallSpeech: &toolSpeech,
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -617,10 +617,10 @@ func TestAudioDialogStreamingSpeechErrorDoesNotHideWaitForWakeupRequest(t *testi
 	}
 	controller := NewWaitForWakeupController()
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:       ModelConfig{Provider: "fake"},
 			Instruction: "Use tools when external state is requested.",
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -764,10 +764,10 @@ func TestAudioDialogProcessUtteranceAppendsToHistoryStore(t *testing.T) {
 		responses: roleDirectResponses("voice reply"),
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:       ModelConfig{Provider: "fake"},
 			Instruction: "Use attached audio.",
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -816,10 +816,10 @@ func TestAudioDialogRunAgentTurnAppendsRunEventsToVoiceHistory(t *testing.T) {
 		responses: roleToolResponses("echo", `{"__arg1":"{}"}`, "voice tool reply"),
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:       ModelConfig{Provider: "fake"},
 			Instruction: "Use tools when requested.",
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -864,11 +864,11 @@ func TestAudioDialogRunAgentTurnQueuesButDoesNotConsumeSteer(t *testing.T) {
 		},
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:           ModelConfig{Provider: "fake"},
 			Instruction:     "Answer directly.",
 			ForceSimpleLoop: true,
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -932,11 +932,11 @@ func TestAudioDialogRunAgentTurnQueuesButDoesNotConsumeSteer(t *testing.T) {
 func TestAudioDialogRejectsSteerAfterRuntimeFinishesBeforeVoiceHistoryPersist(t *testing.T) {
 	model := &scriptedModel{responses: roleDirectResponses("final answer\n<tts>final answer</tts>")}
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:           ModelConfig{Provider: "fake"},
 			Instruction:     "Answer directly.",
 			ForceSimpleLoop: true,
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -1005,11 +1005,11 @@ func TestAudioDialogBeginSteerInterruptQueuesCorrectionWithoutRuntimeConsumption
 		},
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:           ModelConfig{Provider: "fake"},
 			Instruction:     "Answer directly.",
 			ForceSimpleLoop: true,
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -1106,12 +1106,12 @@ func TestAudioDialogRunVoiceTurnPersistsUserBeforeRunEvents(t *testing.T) {
 		responses: roleToolResponses("echo", `{"__arg1":"{}"}`, "voice tool reply"),
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			ConfigDir:       configDir,
 			Model:           ModelConfig{Provider: "fake"},
 			Instruction:     "Use tools when requested.",
 			ForceSimpleLoop: true,
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(filepath.Join(configDir, "memory")),
 		&ToolSet{tools: map[string]langtools.Tool{

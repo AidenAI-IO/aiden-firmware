@@ -48,3 +48,42 @@ func TestDeviceMemoryAppProfilePathUsesASCIIID(t *testing.T) {
 		}
 	}
 }
+
+func TestDeviceMemorySearchReflectsUpsertAfterCache(t *testing.T) {
+	ctx := context.Background()
+	store := NewDeviceMemoryStore(filepath.Join(t.TempDir(), "device"))
+	if _, err := store.Upsert(ctx, DeviceMemoryItem{
+		ID:       "proc_old",
+		Type:     "procedure",
+		Status:   "active",
+		Title:    "Old procedure",
+		Content:  "old path",
+		Tags:     []string{"cache-test"},
+		Priority: 10,
+	}); err != nil {
+		t.Fatalf("Upsert(old): %v", err)
+	}
+	if _, err := store.Search(ctx, DeviceMemoryQuery{Tags: []string{"cache-test"}, Limit: 10}); err != nil {
+		t.Fatalf("initial Search(): %v", err)
+	}
+
+	if _, err := store.Upsert(ctx, DeviceMemoryItem{
+		ID:       "proc_new",
+		Type:     "procedure",
+		Status:   "active",
+		Title:    "New procedure",
+		Content:  "new path",
+		Tags:     []string{"cache-test"},
+		Priority: 90,
+	}); err != nil {
+		t.Fatalf("Upsert(new): %v", err)
+	}
+
+	hits, err := store.Search(ctx, DeviceMemoryQuery{Tags: []string{"cache-test"}, Limit: 10})
+	if err != nil {
+		t.Fatalf("Search(): %v", err)
+	}
+	if len(hits) == 0 || hits[0].ID != "proc_new" {
+		t.Fatalf("Search() returned stale hits: %#v", hits)
+	}
+}

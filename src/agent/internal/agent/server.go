@@ -244,7 +244,6 @@ func messageAttachmentsContainArtifact(attachments []MessageAttachment, artifact
 // ChatRequest represents an incoming chat request
 type ChatRequest struct {
 	Message     string              `json:"message"`
-	Skills      []string            `json:"skills,omitempty"`
 	Attachments []MessageAttachment `json:"attachments,omitempty"`
 	RequestID   string              `json:"request_id,omitempty"`
 	PhoneID     string              `json:"phone_id,omitempty"`
@@ -561,7 +560,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	userMsg := messageFromTurnInput(turnInput, episodeID, req.RequestID, historyAttachments, time.Now())
 
-	s.handleChatAsync(w, r, req, turnInput, userMsg)
+	s.handleChatAsync(w, req, turnInput, userMsg)
 }
 
 func (s *Server) handleChatCancel(w http.ResponseWriter, r *http.Request) {
@@ -915,7 +914,6 @@ func createRequestID() string {
 // chatPendingResult and served by handleChatResult.
 func (s *Server) handleChatAsync(
 	w http.ResponseWriter,
-	r *http.Request,
 	req ChatRequest,
 	turnInput TurnInput,
 	userMsg Message,
@@ -1005,7 +1003,6 @@ func (s *Server) handleChatAsync(
 			Input:                   inputText,
 			Attachments:             turnInput.Attachments,
 			Turn:                    turnInput,
-			Skills:                  req.Skills,
 			EpisodeID:               userMsg.EpisodeID,
 			RequestID:               requestID,
 			DeviceEnvironment:       s.bridgeEnvironment(),
@@ -1326,7 +1323,6 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		Input:                   inputText,
 		Attachments:             turnInput.Attachments,
 		Turn:                    turnInput,
-		Skills:                  req.Skills,
 		EpisodeID:               episodeID,
 		RequestID:               req.RequestID,
 		DeviceEnvironment:       s.bridgeEnvironment(),

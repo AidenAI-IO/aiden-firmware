@@ -90,7 +90,7 @@ func TestStreamSessionWriterDoesNotReportSpokenWhenCloseFails(t *testing.T) {
 
 func TestHandleTTSSettingsPostInitializesManagerWhenAbsent(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
 		&testModelResolver{model: &scriptedModel{}},
 		NewMemoryManager(""),
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
@@ -251,7 +251,7 @@ func TestAudioDialogRunAgentTurnStreamsTTSTagThroughProviderManager(t *testing.T
 		chunks:  []string{"streamed answer\n<t", "ts>streamed ", "answer</tts>"},
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
@@ -290,7 +290,7 @@ func TestAudioDialogRunAgentTurnReturnsFullAnswerWithStreamedSpeech(t *testing.T
 		},
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
@@ -362,7 +362,7 @@ func TestRuntimeRunStreamsTTSTaggedChunksToWriter(t *testing.T) {
 		},
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},
