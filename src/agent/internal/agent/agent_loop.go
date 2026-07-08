@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -171,7 +172,9 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		})
 	}
 	toolCallsInIteration++
-	appendToolExecutionMessages(llmExecutor, parser, toolExecution.Step)
+	if err := appendToolExecutionMessages(llmExecutor, parser, toolExecution.Step); err != nil {
+		return "", false, err
+	}
 	if isRunPausingTool(toolExecution.Call.Action.Tool) && !toolExecution.Result.IsError() {
 		answer := runPausingToolFinalAnswer(&toolExecution.Step)
 		if l.Recorder != nil {
@@ -325,9 +328,9 @@ func roleResponseDebugText(res *llms.ContentResponse) string {
 	return strings.Join(parts, "\n")
 }
 
-func appendToolExecutionMessages(llmExecutor *executor.LLMExecutor, parser *FunctionAgent, step schema.AgentStep) {
+func appendToolExecutionMessages(llmExecutor *executor.LLMExecutor, parser *FunctionAgent, step schema.AgentStep) error {
 	if llmExecutor == nil {
-		return
+		return fmt.Errorf("llm executor is nil")
 	}
 
 	toolContent := step.Observation
@@ -344,13 +347,14 @@ func appendToolExecutionMessages(llmExecutor *executor.LLMExecutor, parser *Func
 		step.Action.Tool,
 		toolContent,
 	)); err != nil {
-		return
+		return fmt.Errorf("failed to append tool result message: %w", err)
 	}
 	for _, followup := range followups {
 		if err := llmExecutor.AppendMessage(visualFollowupMessageFromLLMContent(llmExecutor.ContextManager(), followup)); err != nil {
-			return
+			return fmt.Errorf("failed to append visual followup message: %w", err)
 		}
 	}
+	return nil
 }
 
 func toolNameEqual(got, want string) bool {
