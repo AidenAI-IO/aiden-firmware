@@ -1998,10 +1998,12 @@ func TestServerContextDumpEndpointReturnsPlannerMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewContextManagerFromSessionID() error = %v", err)
 	}
-	manager.AppendMessage(context_manager.Message{
+	if err := manager.AppendMessage(context_manager.Message{
 		Role:    context_manager.MessageRoleUser,
 		Content: "hello planner",
-	})
+	}); err != nil {
+		t.Fatalf("AppendMessage() error = %v", err)
+	}
 	server.runtime.contextManager = manager
 
 	req := httptest.NewRequest(http.MethodGet, "/api/context-dump", nil)
