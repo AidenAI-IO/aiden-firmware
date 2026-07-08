@@ -498,30 +498,30 @@ func (t *WebScraperTool) scrape(ctx context.Context, targetURL string) (string, 
 		scrapedLinks[currentURL] = true
 		scrapedLinksMutex.Unlock()
 
-		siteData.WriteString("\n\nPage URL: " + currentURL)
+		siteData.WriteString("\n\nPage URL: ");siteData.WriteString(currentURL)
 
 		if title := e.ChildText("title"); title != "" {
-			siteData.WriteString("\nPage Title: " + title)
+			siteData.WriteString("\nPage Title: ");siteData.WriteString(title)
 		}
 		if desc := e.ChildAttr("meta[name=description]", "content"); desc != "" {
-			siteData.WriteString("\nPage Description: " + desc)
+			siteData.WriteString("\nPage Description: ");siteData.WriteString(desc)
 		}
 
 		siteData.WriteString("\nHeaders:")
 		e.ForEach("h1, h2, h3, h4, h5, h6", func(_ int, el *colly.HTMLElement) {
-			siteData.WriteString("\n" + el.Text)
+			siteData.WriteString("\n");siteData.WriteString(el.Text)
 		})
 
 		siteData.WriteString("\nContent:")
 		e.ForEach("p", func(_ int, el *colly.HTMLElement) {
-			siteData.WriteString("\n" + el.Text)
+			siteData.WriteString("\n");siteData.WriteString(el.Text)
 		})
 
 		if currentURL == targetURL {
 			e.ForEach("a", func(_ int, el *colly.HTMLElement) {
 				link := el.Attr("href")
 				if link != "" {
-					siteData.WriteString("\nLink: " + link)
+					siteData.WriteString("\nLink: ");siteData.WriteString(link)
 				}
 			})
 		}

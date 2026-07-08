@@ -1942,11 +1942,6 @@ func (b *failOnSecondReadBody) Close() error {
 	return nil
 }
 
-func assertEveryLineIsCompleteRecord(t *testing.T, logText string) {
-	// This is now covered by assertRawHTTPLogIsValidJSONL
-	t.Helper()
-}
-
 func TestModelManagerOpenRouterRetriesEOFInModelCall(t *testing.T) {
 	attempts := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

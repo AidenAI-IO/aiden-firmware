@@ -1443,11 +1443,11 @@ func (h *runtimeCallbackHandler) HandleChainError(ctx context.Context, err error
 
 func (h *runtimeCallbackHandler) HandleToolStart(ctx context.Context, input string) {}
 
-func (h *runtimeCallbackHandler) emitRunEvent(ctx context.Context, event RunEvent) {
-	h.emitRunEventWithPersistence(ctx, event, true)
+func (h *runtimeCallbackHandler) emitRunEvent(event RunEvent) {
+	h.emitRunEventWithPersistence(event, true)
 }
 
-func (h *runtimeCallbackHandler) emitRunEventWithPersistence(ctx context.Context, event RunEvent, persist bool) {
+func (h *runtimeCallbackHandler) emitRunEventWithPersistence(event RunEvent, persist bool) {
 	if event.Timestamp.IsZero() {
 		event.Timestamp = time.Now()
 	}
@@ -1481,7 +1481,7 @@ func (h *runtimeCallbackHandler) HandleAssistantOutput(ctx context.Context, cont
 	if h.logger != nil {
 		h.logger.Info("Assistant output: %s", truncateForLog(content, 1000))
 	}
-	h.emitRunEventWithPersistence(ctx, RunEvent{
+	h.emitRunEventWithPersistence(RunEvent{
 		Type:      "assistant_output",
 		Role:      "assistant",
 		EpisodeID: h.episodeID,
@@ -1496,7 +1496,7 @@ func (h *runtimeCallbackHandler) HandleToolEnd(ctx context.Context, output strin
 	}
 	action, ok := h.popPendingAction()
 	if ok {
-		h.emitRunEvent(ctx, RunEvent{
+		h.emitRunEvent(RunEvent{
 			Type:       "tool_result",
 			EpisodeID:  h.episodeID,
 			ToolCallID: action.ToolID,
@@ -1519,7 +1519,7 @@ func (h *runtimeCallbackHandler) HandleToolError(ctx context.Context, err error)
 			toolErr = NewToolError(CodeToolExecutionFailed, err.Error())
 		}
 		content := toolErr.Message
-		h.emitRunEvent(ctx, RunEvent{
+		h.emitRunEvent(RunEvent{
 			Type:       "tool_result",
 			EpisodeID:  h.episodeID,
 			ToolCallID: action.ToolID,
@@ -1541,7 +1541,7 @@ func (h *runtimeCallbackHandler) HandleNamedToolEnd(ctx context.Context, name, i
 		h.logger.Info("Tool result: name=%s output=%s", name, truncateForLog(output, 240))
 	}
 	h.removePendingAction(name, input)
-	h.emitRunEvent(ctx, RunEvent{
+	h.emitRunEvent(RunEvent{
 		Type:      "tool_result",
 		EpisodeID: h.episodeID,
 		ToolName:  name,
@@ -1562,7 +1562,7 @@ func (h *runtimeCallbackHandler) HandleNamedToolError(ctx context.Context, name,
 	}
 	content := toolErr.Message
 	h.removePendingAction(name, input)
-	h.emitRunEvent(ctx, RunEvent{
+	h.emitRunEvent(RunEvent{
 		Type:      "tool_result",
 		EpisodeID: h.episodeID,
 		ToolName:  name,
@@ -1585,7 +1585,7 @@ func (h *runtimeCallbackHandler) HandleToolCallStart(ctx context.Context, call T
 				call.Spec.Name, truncateForLog(call.Input, 240))
 		}
 	}
-	h.emitRunEvent(ctx, RunEvent{
+	h.emitRunEvent(RunEvent{
 		Type:       runEventToolCall,
 		EpisodeID:  h.episodeID,
 		ToolCallID: call.Action.ToolID,
@@ -1613,7 +1613,7 @@ func (h *runtimeCallbackHandler) HandleToolCallResult(ctx context.Context, call 
 			h.logger.Info("Tool result: name=%s output=%s", call.Spec.Name, truncateForLog(output, 240))
 		}
 	}
-	h.emitRunEvent(ctx, RunEvent{
+	h.emitRunEvent(RunEvent{
 		Type:       "tool_result",
 		EpisodeID:  h.episodeID,
 		ToolCallID: call.Action.ToolID,
@@ -1638,7 +1638,7 @@ func (h *runtimeCallbackHandler) HandleAgentAction(ctx context.Context, action s
 		}
 	}
 	h.pushPendingAction(action)
-	h.emitRunEvent(ctx, RunEvent{
+	h.emitRunEvent(RunEvent{
 		Type:       runEventToolCall,
 		EpisodeID:  h.episodeID,
 		ToolCallID: action.ToolID,
@@ -1656,7 +1656,7 @@ func (h *runtimeCallbackHandler) HandleRoleOutput(ctx context.Context, role, con
 	if h.logger != nil {
 		h.logger.Info("Role output: role=%s content=%s", role, truncateForLog(content, 1000))
 	}
-	h.emitRunEvent(ctx, RunEvent{
+	h.emitRunEvent(RunEvent{
 		Type:      "role_output",
 		Role:      role,
 		EpisodeID: h.episodeID,
@@ -1669,7 +1669,7 @@ func (h *runtimeCallbackHandler) HandleSteerMessage(ctx context.Context, steer R
 	if steer.Timestamp.IsZero() {
 		steer.Timestamp = time.Now()
 	}
-	h.emitRunEvent(ctx, RunEvent{
+	h.emitRunEvent(RunEvent{
 		Type:      "steer",
 		EpisodeID: h.episodeID,
 		Content:   steer.Content,
