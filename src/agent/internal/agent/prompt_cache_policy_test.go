@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -97,5 +98,40 @@ func TestCachedOpenRouterPromptCachePolicyReadsDiskCache(t *testing.T) {
 
 	if got := manager.cachedOpenRouterPromptCachePolicy(); got != PromptCachePolicyExplicit {
 		t.Fatalf("cached policy = %q, want explicit", got)
+	}
+}
+
+func TestProviderMetadataCacheWritesPreserveSpecAndPromptCachePolicy(t *testing.T) {
+	cachePath := filepath.Join(t.TempDir(), "provider-model-metadata.json")
+	manager := NewModelManager(
+		ModelConfig{Provider: "openrouter", Model: "vendor/model-x", APIKey: "k", BaseURL: "http://127.0.0.1:1"},
+		ProxyConfig{},
+		WithProviderModelMetadataCachePath(cachePath),
+	)
+
+	if err := manager.writeProviderModelSpecCache(ModelSpec{ContextWindow: 1024}); err != nil {
+		t.Fatalf("writeProviderModelSpecCache: %v", err)
+	}
+	if err := manager.writeProviderPromptCachePolicyCache(PromptCachePolicyExplicit); err != nil {
+		t.Fatalf("writeProviderPromptCachePolicyCache: %v", err)
+	}
+	if err := manager.writeProviderModelSpecCache(ModelSpec{ContextWindow: 2048}); err != nil {
+		t.Fatalf("writeProviderModelSpecCache second write: %v", err)
+	}
+
+	data, err := os.ReadFile(cachePath)
+	if err != nil {
+		t.Fatalf("ReadFile(cache): %v", err)
+	}
+	var cache providerModelMetadataCacheFile
+	if err := json.Unmarshal(data, &cache); err != nil {
+		t.Fatalf("unmarshal cache: %v", err)
+	}
+	entry := cache.Entries[manager.providerModelSpecCacheKey()]
+	if entry.Spec.ContextWindow != 2048 {
+		t.Fatalf("cached spec = %+v, want context window 2048", entry.Spec)
+	}
+	if entry.PromptCachePolicy != string(PromptCachePolicyExplicit) {
+		t.Fatalf("cached prompt cache policy = %q, want explicit", entry.PromptCachePolicy)
 	}
 }

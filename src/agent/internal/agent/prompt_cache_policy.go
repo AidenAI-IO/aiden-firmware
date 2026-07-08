@@ -212,6 +212,9 @@ func (m *ModelManager) writeProviderPromptCachePolicyCache(policy PromptCachePol
 	if strings.TrimSpace(m.providerMetadataCachePath) == "" || policy == "" {
 		return nil
 	}
+	m.specMu.Lock()
+	defer m.specMu.Unlock()
+
 	cache := providerModelMetadataCacheFile{
 		Version: providerModelMetadataCacheVersion,
 		Entries: map[string]providerModelMetadataCacheEntry{},

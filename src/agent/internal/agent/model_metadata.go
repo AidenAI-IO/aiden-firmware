@@ -162,6 +162,8 @@ func (m *ModelManager) writeProviderModelSpecCache(spec ModelSpec) error {
 	if strings.TrimSpace(m.providerMetadataCachePath) == "" || !hasProviderModelSpecMetadata(spec) {
 		return nil
 	}
+	m.specMu.Lock()
+	defer m.specMu.Unlock()
 
 	cache := providerModelMetadataCacheFile{
 		Version: providerModelMetadataCacheVersion,
