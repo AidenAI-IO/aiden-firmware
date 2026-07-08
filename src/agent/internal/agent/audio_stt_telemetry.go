@@ -131,15 +131,13 @@ func (d *AudioDialog) updateRecordSTTTelemetry(sessionID uint64, update func(*st
 	update(d.recordSTTTelemetry)
 }
 
-func (d *AudioDialog) markRecordSTTUploadError(err error) {
+func (d *AudioDialog) markRecordSTTUploadError(sessionID uint64, err error) {
 	if d == nil || err == nil {
 		return
 	}
-	d.recordMu.Lock()
-	defer d.recordMu.Unlock()
-	if d.recordSTTTelemetry != nil {
-		d.recordSTTTelemetry.streamingUploadError = err.Error()
-	}
+	d.updateRecordSTTTelemetry(sessionID, func(meta *sttTurnTelemetry) {
+		meta.streamingUploadError = err.Error()
+	})
 }
 
 func (d *AudioDialog) stashPendingSTTTelemetry(meta *sttTurnTelemetry) {

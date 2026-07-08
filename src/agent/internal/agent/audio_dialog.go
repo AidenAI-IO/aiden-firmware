@@ -363,7 +363,7 @@ func (d *AudioDialog) ReadRecordChunk(timeoutMs uint32) (*AudioChunkResult, erro
 	if reader != nil {
 		chunk, err := reader.Read(timeoutMs)
 		if err == nil {
-			d.uploadRecordChunkToStreamingSTT(chunk)
+			d.uploadRecordChunkToStreamingSTT(sessionID, chunk)
 			return chunk, nil
 		}
 		log.Printf("[audio] Persistent record reader failed, falling back to per-request reads: %v\n", err)
@@ -376,12 +376,12 @@ func (d *AudioDialog) ReadRecordChunk(timeoutMs uint32) (*AudioChunkResult, erro
 	}
 	chunk, err := d.audioClient.ReadRecordChunk(sessionID, timeoutMs)
 	if err == nil {
-		d.uploadRecordChunkToStreamingSTT(chunk)
+		d.uploadRecordChunkToStreamingSTT(sessionID, chunk)
 	}
 	return chunk, err
 }
 
-func (d *AudioDialog) uploadRecordChunkToStreamingSTT(chunk *AudioChunkResult) {
+func (d *AudioDialog) uploadRecordChunkToStreamingSTT(sessionID uint64, chunk *AudioChunkResult) {
 	if d == nil || chunk == nil || len(chunk.PCM) == 0 {
 		return
 	}
@@ -390,7 +390,7 @@ func (d *AudioDialog) uploadRecordChunkToStreamingSTT(chunk *AudioChunkResult) {
 		return
 	}
 	if err := recordSTT.UploadPCM(chunk.PCM); err != nil {
-		d.markRecordSTTUploadError(err)
+		d.markRecordSTTUploadError(sessionID, err)
 		log.Printf("[stt] streaming upload failed, falling back to one-shot STT: %v\n", err)
 		// Only clear if this is still the active session; StopRecording may have
 		// already swapped it out from another goroutine.

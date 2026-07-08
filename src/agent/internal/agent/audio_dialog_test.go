@@ -375,6 +375,24 @@ func TestAudioDialogStopRecordingFallsBackToOneShotWhenStreamingFinalizeTimesOut
 	}
 }
 
+func TestAudioDialogSTTUploadErrorIgnoresStaleSession(t *testing.T) {
+	dialog := &AudioDialog{
+		recordActive:       true,
+		sessionID:          2,
+		recordSTTTelemetry: &sttTurnTelemetry{},
+	}
+
+	dialog.markRecordSTTUploadError(1, errors.New("old upload failed"))
+	if dialog.recordSTTTelemetry.streamingUploadError != "" {
+		t.Fatalf("stale upload error contaminated telemetry: %#v", dialog.recordSTTTelemetry)
+	}
+
+	dialog.markRecordSTTUploadError(2, errors.New("current upload failed"))
+	if dialog.recordSTTTelemetry.streamingUploadError != "current upload failed" {
+		t.Fatalf("current upload error = %q", dialog.recordSTTTelemetry.streamingUploadError)
+	}
+}
+
 func TestNewAudioDialogSTTWakeupCreatesSTTClient(t *testing.T) {
 	dialog, err := NewAudioDialog(Config{
 		Model:       ModelConfig{Provider: "fake"},
