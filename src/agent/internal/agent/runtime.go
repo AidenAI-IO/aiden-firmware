@@ -835,13 +835,13 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}
 
 	if r.contextManager == nil {
-		r.contextManager, err = freshNewContextManager(profile.SystemPrompt, req.Input, req.Attachments, agentpath.ContextManagerSessionFolder(r.config.ConfigDir))
+		r.contextManager, err = freshNewContextManager(profile.SystemPrompt, turnInput.InputText, turnInput.Attachments, agentpath.ContextManagerSessionFolder(r.config.ConfigDir))
 		if err != nil {
 			return RunResult{}, err
 		}
 	} else {
 		// append user message to context manager
-		if err := r.contextManager.AppendMessage(userMessageFromInput(r.contextManager, req.Input, req.Attachments)); err != nil {
+		if err := r.contextManager.AppendMessage(userMessageFromInput(r.contextManager, turnInput.InputText, turnInput.Attachments)); err != nil {
 			return RunResult{}, err
 		}
 	}
