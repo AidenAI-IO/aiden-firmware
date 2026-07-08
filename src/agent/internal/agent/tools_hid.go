@@ -45,7 +45,7 @@ const (
 
 	// defaultDirectionalSwipeDistance is the normalized travel for swipe_left/right/up/down.
 	// Coordinates use 0-1000 normalized scale.
-	defaultDirectionalSwipeDistance = 500.0
+	defaultDirectionalSwipeDistance = 700.0
 	directionalSwipeLargeDistance   = 700.0
 	directionalSwipeMediumDistance  = 500.0
 	directionalSwipeSmallDistance   = 200.0
