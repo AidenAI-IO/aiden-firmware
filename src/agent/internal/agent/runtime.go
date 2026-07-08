@@ -1071,10 +1071,11 @@ func (r *Runtime) ClearAllMemory(ctx context.Context) error {
 }
 
 func (r *Runtime) PlannerContextDump() context_manager.MessageListDump {
-	if r.contextManager == nil {
+	contextManager := r.contextManager
+	if contextManager == nil {
 		return context_manager.MessageListDump{}
 	}
-	return r.contextManager.MessageListDump()
+	return contextManager.MessageListDump()
 }
 
 func (r *Runtime) resetPlannerContext() {
