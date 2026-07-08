@@ -66,6 +66,7 @@ type modelDTO struct {
 	Model                string  `json:"model"`
 	BaseURL              string  `json:"base_url"`
 	TokenEnv             string  `json:"token_env"`
+	ReasoningEffort      string  `json:"reasoning_effort"`
 	Temperature          float64 `json:"temperature"`
 	MaxResponseTokens    int     `json:"max_response_tokens"`
 	ContextWindow        int     `json:"context_window"`
@@ -374,6 +375,7 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			Model:                cfg.Model.Model,
 			BaseURL:              cfg.Model.BaseURL,
 			TokenEnv:             cfg.Model.TokenEnv,
+			ReasoningEffort:      cfg.Model.ReasoningEffort,
 			Temperature:          cfg.Model.Temperature,
 			MaxResponseTokens:    cfg.Model.MaxResponseTokens,
 			ContextWindow:        cfg.Model.ContextWindow,
@@ -385,6 +387,7 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			Model:                cfg.ModelText.Model,
 			BaseURL:              cfg.ModelText.BaseURL,
 			TokenEnv:             cfg.ModelText.TokenEnv,
+			ReasoningEffort:      cfg.ModelText.ReasoningEffort,
 			Temperature:          cfg.ModelText.Temperature,
 			MaxResponseTokens:    cfg.ModelText.MaxResponseTokens,
 			ContextWindow:        cfg.ModelText.ContextWindow,
