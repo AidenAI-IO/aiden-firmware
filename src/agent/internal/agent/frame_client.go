@@ -156,18 +156,10 @@ type frameHealthResponse struct {
 }
 
 func (r *frameHealthResponse) UnmarshalJSON(data []byte) error {
+	type frameHealthResponseAlias frameHealthResponse
 	var raw struct {
-		Status                  string          `json:"status"`
-		State                   string          `json:"state"`
-		LatestSeq               uint64          `json:"latest_seq"`
-		FrameAgeMs              uint64          `json:"frame_age_ms"`
-		RingBufferSize          uint32          `json:"ring_buffer_size"`
-		RingBufferUsed          uint32          `json:"ring_buffer_used"`
-		ConsecutiveFailures     uint32          `json:"consecutive_failures"`
-		LastError               string          `json:"last_error"`
+		frameHealthResponseAlias
 		LastRecoveryTs          json.RawMessage `json:"last_recovery_ts"`
-		AvgFrameServeLatencyMs  float64         `json:"avg_frame_serve_latency_ms"`
-		AvgCaptureCopyLatencyMs float64         `json:"avg_capture_copy_latency_ms"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
@@ -178,19 +170,8 @@ func (r *frameHealthResponse) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("last_recovery_ts: %w", err)
 	}
 
-	*r = frameHealthResponse{
-		Status:                  raw.Status,
-		State:                   raw.State,
-		LatestSeq:               raw.LatestSeq,
-		FrameAgeMs:              raw.FrameAgeMs,
-		RingBufferSize:          raw.RingBufferSize,
-		RingBufferUsed:          raw.RingBufferUsed,
-		ConsecutiveFailures:     raw.ConsecutiveFailures,
-		LastError:               raw.LastError,
-		LastRecoveryTs:          lastRecoveryTs,
-		AvgFrameServeLatencyMs:  raw.AvgFrameServeLatencyMs,
-		AvgCaptureCopyLatencyMs: raw.AvgCaptureCopyLatencyMs,
-	}
+	*r = frameHealthResponse(raw.frameHealthResponseAlias)
+	r.LastRecoveryTs = lastRecoveryTs
 	return nil
 }
 
