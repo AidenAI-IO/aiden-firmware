@@ -2,11 +2,14 @@ package agent
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -14,6 +17,14 @@ import (
 
 type DeviceMemoryStore struct {
 	rootDir string
+	cacheMu sync.Mutex
+	cache   deviceMemoryReadCache
+}
+
+type deviceMemoryReadCache struct {
+	fingerprint string
+	items       []DeviceMemoryItem
+	valid       bool
 }
 
 type DeviceMemoryQuery struct {
@@ -179,6 +190,7 @@ func (s *DeviceMemoryStore) Upsert(ctx context.Context, item DeviceMemoryItem) (
 	if err := writeYAMLAtomic(path, item); err != nil {
 		return "", err
 	}
+	s.invalidateReadAllCache()
 	return item.ID, nil
 }
 
@@ -224,6 +236,7 @@ func (s *DeviceMemoryStore) UpdateMany(ctx context.Context, ids []string, update
 			return err
 		}
 	}
+	s.invalidateReadAllCache()
 	return nil
 }
 
@@ -258,8 +271,15 @@ func (s *DeviceMemoryStore) readAll() ([]DeviceMemoryItem, error) {
 		}
 		return nil, err
 	}
+	fingerprint, err := s.readAllFingerprint()
+	if err != nil {
+		return nil, err
+	}
+	if cached, ok := s.cachedReadAll(fingerprint); ok {
+		return cached, nil
+	}
 	var items []DeviceMemoryItem
-	err := filepath.WalkDir(s.rootDir, func(path string, entry os.DirEntry, err error) error {
+	err = filepath.WalkDir(s.rootDir, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -283,7 +303,84 @@ func (s *DeviceMemoryStore) readAll() ([]DeviceMemoryItem, error) {
 		items = append(items, item)
 		return nil
 	})
-	return items, err
+	if err != nil {
+		return nil, err
+	}
+	s.storeReadAllCache(fingerprint, items)
+	return cloneDeviceMemoryItems(items), nil
+}
+
+func (s *DeviceMemoryStore) cachedReadAll(fingerprint string) ([]DeviceMemoryItem, bool) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	if !s.cache.valid || s.cache.fingerprint != fingerprint {
+		return nil, false
+	}
+	return cloneDeviceMemoryItems(s.cache.items), true
+}
+
+func (s *DeviceMemoryStore) storeReadAllCache(fingerprint string, items []DeviceMemoryItem) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	s.cache = deviceMemoryReadCache{fingerprint: fingerprint, items: cloneDeviceMemoryItems(items), valid: true}
+}
+
+func (s *DeviceMemoryStore) invalidateReadAllCache() {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	s.cache = deviceMemoryReadCache{}
+}
+
+func (s *DeviceMemoryStore) readAllFingerprint() (string, error) {
+	h := sha1.New()
+	err := filepath.WalkDir(s.rootDir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") || strings.HasSuffix(entry.Name(), "index.yaml") {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(s.rootDir, path)
+		if err != nil {
+			rel = path
+		}
+		_, _ = fmt.Fprintf(h, "%s\x00%d\x00%d\x00", filepath.ToSlash(rel), info.ModTime().UnixNano(), info.Size())
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func cloneDeviceMemoryItems(items []DeviceMemoryItem) []DeviceMemoryItem {
+	if len(items) == 0 {
+		return nil
+	}
+	cloned := make([]DeviceMemoryItem, len(items))
+	for i, item := range items {
+		cloned[i] = cloneDeviceMemoryItem(item)
+	}
+	return cloned
+}
+
+func cloneDeviceMemoryItem(item DeviceMemoryItem) DeviceMemoryItem {
+	item.Tags = append([]string(nil), item.Tags...)
+	item.Entities = append([]string(nil), item.Entities...)
+	item.Aliases = append([]string(nil), item.Aliases...)
+	item.Applicability = cloneStringMap(item.Applicability)
+	item.EvidenceRefs = cloneMemorySourceRefs(item.EvidenceRefs)
+	item.ConflictsWith = append([]string(nil), item.ConflictsWith...)
+	item.Steps = append([]ProcedureStep(nil), item.Steps...)
+	item.PagesSeen = append([]string(nil), item.PagesSeen...)
+	item.ToolsUsed = append([]string(nil), item.ToolsUsed...)
+	item.ProcedureRefs = append([]string(nil), item.ProcedureRefs...)
+	item.KnownIssues = append([]string(nil), item.KnownIssues...)
+	return item
 }
 
 func (s *DeviceMemoryStore) itemPath(item DeviceMemoryItem) string {

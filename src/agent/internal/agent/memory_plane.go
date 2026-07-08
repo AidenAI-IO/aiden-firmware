@@ -303,6 +303,7 @@ func plannerSnapshotCacheKey(req MemoryRetrieveRequest, query memorySearchQuery)
 		Terms            []string `json:"terms"`
 		Tags             []string `json:"tags"`
 		Entities         []string `json:"entities"`
+		EpisodeID        string   `json:"episode_id"`
 		DeviceID         string   `json:"device_id"`
 		Language         string   `json:"language"`
 		AppName          string   `json:"app_name"`
@@ -312,6 +313,7 @@ func plannerSnapshotCacheKey(req MemoryRetrieveRequest, query memorySearchQuery)
 		Terms:            sortedSnapshotKeyStrings(query.Terms),
 		Tags:             sortedSnapshotKeyStrings(query.Tags),
 		Entities:         sortedSnapshotKeyStrings(query.Entities),
+		EpisodeID:        normalizeSnapshotKeyScalar(req.EpisodeID),
 		DeviceID:         normalizeSnapshotKeyScalar(req.DeviceID),
 		Language:         normalizeSnapshotKeyScalar(req.CurrentHints.Language),
 		AppName:          normalizeSnapshotKeyScalar(req.CurrentHints.AppName),
@@ -455,7 +457,7 @@ func (p *FilesystemMemoryPlane) searchLongTermConflicts(ctx context.Context, que
 			continue
 		}
 		path := filepath.Join(p.longTerm.rootDir, entry.File)
-		parsed, err := readMemoryMarkdown(path)
+		parsed, err := p.longTerm.readMemoryMarkdownCached(path)
 		if err != nil {
 			continue
 		}

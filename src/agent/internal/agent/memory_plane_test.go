@@ -248,6 +248,62 @@ func TestMemoryPlaneRetrieveRefreshesPlannerExperienceForDifferentTaskInActiveSe
 	}
 }
 
+func TestMemoryPlaneRetrieveRefreshesPlannerExperienceForDifferentEpisodeInActiveSession(t *testing.T) {
+	ctx := context.Background()
+	memoryDir := filepath.Join(t.TempDir(), "memory")
+	longTerm := NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"))
+	if _, err := longTerm.AddMemory(ctx, MemoryItem{
+		ID:               "mem_wechat_old",
+		Type:             "procedure",
+		Priority:         70,
+		Confidence:       0.8,
+		Entities:         []string{"微信App"},
+		Title:            "旧微信路径",
+		Content:          "打开微信App时使用旧路径。",
+		EvidenceExcerpts: []string{"旧路径验证成功。"},
+	}); err != nil {
+		t.Fatalf("AddMemory(old): %v", err)
+	}
+
+	plane := NewFilesystemMemoryPlane(memoryDir, DefaultMemoryExtractionConfig(), nil)
+	first, err := plane.Retrieve(ctx, MemoryRetrieveRequest{
+		Input:     "打开微信App",
+		EpisodeID: "ep_first",
+		DeviceID:  "default",
+	})
+	if err != nil {
+		t.Fatalf("first Retrieve() error = %v", err)
+	}
+	if len(first.Planner.Procedures) == 0 || first.Planner.Procedures[0].ID != "mem_wechat_old" {
+		t.Fatalf("first planner procedures = %#v", first.Planner.Procedures)
+	}
+
+	if _, err := longTerm.AddMemory(ctx, MemoryItem{
+		ID:               "mem_wechat_new",
+		Type:             "procedure",
+		Priority:         95,
+		Confidence:       0.9,
+		Entities:         []string{"微信App"},
+		Title:            "新微信路径",
+		Content:          "打开微信App时使用新路径。",
+		EvidenceExcerpts: []string{"新路径验证成功。"},
+	}); err != nil {
+		t.Fatalf("AddMemory(new): %v", err)
+	}
+
+	second, err := plane.Retrieve(ctx, MemoryRetrieveRequest{
+		Input:     "打开微信App",
+		EpisodeID: "ep_second",
+		DeviceID:  "default",
+	})
+	if err != nil {
+		t.Fatalf("second Retrieve() error = %v", err)
+	}
+	if len(second.Planner.Procedures) == 0 || second.Planner.Procedures[0].ID != "mem_wechat_new" {
+		t.Fatalf("second planner procedures = %#v, want refreshed memory", second.Planner.Procedures)
+	}
+}
+
 func TestMemoryPlaneRetrieveRefreshesPlannerExperienceAfterSessionRotate(t *testing.T) {
 	ctx := context.Background()
 	memoryDir := filepath.Join(t.TempDir(), "memory")
