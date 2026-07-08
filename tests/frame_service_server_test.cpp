@@ -2,6 +2,7 @@
 #include "frame_ipc.h"
 #include "frame_service_client.h"
 #include "frame_service_server.h"
+#include "cJSON/cJSON.h"
 #include <atomic>
 #include <chrono>
 #include <cstring>
@@ -83,6 +84,12 @@ void request_latest_frame_raw(int fd) {
                                        std::vector<uint8_t>()) == FrameServiceStatus::OK);
 }
 
+void request_health_raw(int fd) {
+    REQUIRE(aiden::write_frame_message(fd,
+                                       "{\"type\":\"request\",\"method\":\"health\"}",
+                                       std::vector<uint8_t>()) == FrameServiceStatus::OK);
+}
+
 void read_response_header(int fd, aiden::FrameWirePrefix* prefix) {
     uint8_t prefix_bytes[aiden::kFrameWirePrefixSize];
     read_exact_or_fail(fd, prefix_bytes, sizeof(prefix_bytes));
@@ -140,6 +147,47 @@ TEST_CASE("FrameServiceServer health reports frame age and serve latency") {
     CHECK(health.ring_buffer_used == 1);
     CHECK(health.avg_frame_serve_latency_ms > 0.0);
 
+    server.stop();
+}
+
+TEST_CASE("FrameServiceServer health emits uint64 fields as JSON numbers") {
+    TempSocketPath socket_path;
+    FrameServiceServer server(socket_path.path.c_str(), 4);
+    REQUIRE(server.start() == FrameServiceStatus::OK);
+
+    std::vector<uint8_t> data = payload({1, 2});
+    uint64_t seq = 0;
+    REQUIRE(server.append_frame(metadata(1, 1, "uyvy", monotonic_ns() - 20ULL * 1000000ULL),
+                                data.data(), data.size(), &seq) == FrameServiceStatus::OK);
+    server.record_recovery("recoverable", true);
+
+    int fd = connect_raw_client(socket_path.path);
+    request_health_raw(fd);
+
+    aiden::FrameIpcMessage response;
+    REQUIRE(aiden::read_frame_message(fd, &response) == FrameServiceStatus::OK);
+    CHECK(response.payload.empty());
+
+    cJSON* root = cJSON_Parse(response.header_json.c_str());
+    REQUIRE(root != nullptr);
+
+    cJSON* latest_seq = cJSON_GetObjectItem(root, "latest_seq");
+    REQUIRE(latest_seq != nullptr);
+    CHECK((latest_seq->type & 0xff) == cJSON_Number);
+    CHECK(static_cast<uint64_t>(latest_seq->valuedouble) == seq);
+
+    cJSON* frame_age_ms = cJSON_GetObjectItem(root, "frame_age_ms");
+    REQUIRE(frame_age_ms != nullptr);
+    CHECK((frame_age_ms->type & 0xff) == cJSON_Number);
+    CHECK(frame_age_ms->valuedouble >= 1.0);
+
+    cJSON* last_recovery_ts = cJSON_GetObjectItem(root, "last_recovery_ts");
+    REQUIRE(last_recovery_ts != nullptr);
+    CHECK((last_recovery_ts->type & 0xff) == cJSON_Number);
+    CHECK(last_recovery_ts->valuedouble > 0.0);
+
+    cJSON_Delete(root);
+    ::close(fd);
     server.stop();
 }
 
