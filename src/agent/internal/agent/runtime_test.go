@@ -698,7 +698,7 @@ func TestRuntimeRunCommitsTurnTelemetryEvents(t *testing.T) {
 	plane := &capturingEpisodePlane{}
 	model := &scriptedModel{responses: roleDirectResponses("ok")}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},

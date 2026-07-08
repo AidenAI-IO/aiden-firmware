@@ -1328,12 +1328,12 @@ func TestAudioDialogRunScriptUsesConfiguredTTS(t *testing.T) {
 func TestAudioDialogRunAgentTurnCommitsVoicePreRunTelemetry(t *testing.T) {
 	plane := &capturingEpisodePlane{}
 	model := &scriptedModel{responses: roleDirectResponses("ok")}
-	cfg := Config{
+	cfg := withTestConfigDir(t, Config{
 		Model:                    ModelConfig{Provider: "fake"},
 		Audio:                    AudioConfig{SampleRate: 16000},
 		VoiceStreamingTTSEnabled: boolPtr(true),
 		VoiceMaxResponseTokens:   64,
-	}
+	})
 	runtime := NewRuntimeWithDeps(
 		cfg,
 		&testModelResolver{model: model},
@@ -1385,11 +1385,11 @@ func TestAudioDialogRunAgentTurnDoesNotWaitForAgentSendPromptDrain(t *testing.T)
 	audioServer := newTestAudioService(t)
 	audioServer.healthPlaybackSessions = []uint32{1}
 	model := &scriptedModel{responses: roleDirectResponses("ok")}
-	cfg := Config{
+	cfg := withTestConfigDir(t, Config{
 		Model:                    ModelConfig{Provider: "fake"},
 		VoiceStreamingTTSEnabled: boolPtr(false),
 		VoiceMaxResponseTokens:   64,
-	}
+	})
 	runtime := NewRuntimeWithDeps(
 		cfg,
 		&testModelResolver{model: model},
@@ -1429,11 +1429,11 @@ func TestAudioDialogRunAgentTurnDoesNotWaitForAgentSendPromptStart(t *testing.T)
 		<-releasePrompt
 	}
 	model := &scriptedModel{responses: roleDirectResponses("ok")}
-	cfg := Config{
+	cfg := withTestConfigDir(t, Config{
 		Model:                    ModelConfig{Provider: "fake"},
 		VoiceStreamingTTSEnabled: boolPtr(false),
 		VoiceMaxResponseTokens:   64,
-	}
+	})
 	runtime := NewRuntimeWithDeps(
 		cfg,
 		&testModelResolver{model: model},
