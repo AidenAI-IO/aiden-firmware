@@ -321,7 +321,7 @@ void FrameServiceServer::handle_request(const UdsMessage& request, int fd) {
         header += ",\"ring_buffer_used\":" + std::to_string(ring_.size());
         header += ",\"consecutive_failures\":" + std::to_string(consecutive_failures);
         header += ",\"last_error\":\"" + escape_json(last_error) + "\"";
-        header += ",\"last_recovery_ts\":" + std::to_string(last_recovery_ts);
+        header += ",\"last_recovery_ts\":" + u64_json(last_recovery_ts);
         header += ",\"avg_frame_serve_latency_ms\":" + std::to_string(avg_frame_serve_latency_ms());
         header += ",\"avg_capture_copy_latency_ms\":" + std::to_string(avg_capture_copy_latency_ms);
         header += "}";

@@ -150,7 +150,7 @@ TEST_CASE("FrameServiceServer health reports frame age and serve latency") {
     server.stop();
 }
 
-TEST_CASE("FrameServiceServer health emits uint64 fields as JSON numbers") {
+TEST_CASE("FrameServiceServer health emits numeric counters and string recovery timestamp") {
     TempSocketPath socket_path;
     FrameServiceServer server(socket_path.path.c_str(), 4);
     REQUIRE(server.start() == FrameServiceStatus::OK);
@@ -183,8 +183,9 @@ TEST_CASE("FrameServiceServer health emits uint64 fields as JSON numbers") {
 
     cJSON* last_recovery_ts = cJSON_GetObjectItem(root, "last_recovery_ts");
     REQUIRE(last_recovery_ts != nullptr);
-    CHECK((last_recovery_ts->type & 0xff) == cJSON_Number);
-    CHECK(last_recovery_ts->valuedouble > 0.0);
+    CHECK((last_recovery_ts->type & 0xff) == cJSON_String);
+    REQUIRE(last_recovery_ts->valuestring != nullptr);
+    CHECK(last_recovery_ts->valuestring[0] != '\0');
 
     cJSON_Delete(root);
     ::close(fd);
