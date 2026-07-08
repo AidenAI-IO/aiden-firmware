@@ -148,11 +148,11 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 	}
 	streamingDisabled := false
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:                    ModelConfig{Provider: "fake"},
 			Instruction:              "Use tools when external state is requested.",
 			VoiceStreamingTTSEnabled: &streamingDisabled,
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -439,8 +439,14 @@ func TestServerHandleChatStreamsToolAndAssistantMessages(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleToolResponses("audio_volume", `{"__arg1":"{}","description":"Let me read the current volume."}`, "The current audio volume is 42."),
 	}
+	configDir, err := os.MkdirTemp("", "aiden-server-chat-stream-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp() error = %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(configDir) })
 	runtime := NewRuntimeWithDeps(
 		Config{
+			ConfigDir:   configDir,
 			Model:       ModelConfig{Provider: "fake"},
 			Instruction: "Use tools when external state is requested.",
 		},
@@ -455,6 +461,7 @@ func TestServerHandleChatStreamsToolAndAssistantMessages(t *testing.T) {
 		}},
 		NewSkillIndex(),
 	)
+	defer runtime.Close()
 	server := NewServer(runtime, ":0")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewBufferString(`{"message":"What is the current volume?"}`))
@@ -665,9 +672,9 @@ func TestHandleCoordinateDebugTap(t *testing.T) {
 		NativeHeightPixels: intPtr(2556),
 	})
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model: ModelConfig{Provider: "fake"},
-		},
+		}),
 		&testModelResolver{},
 		NewMemoryManager(""),
 		toolSet,
@@ -752,7 +759,7 @@ func TestHandleCoordinateDebugTapMapsStructuredToolErrorStatus(t *testing.T) {
 				"touch_gesture": &contextToolErrorStub{name: "touch_gesture", toolErr: tc.toolErr},
 			}}
 			runtime := NewRuntimeWithDeps(
-				Config{Model: ModelConfig{Provider: "fake"}},
+				withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
 				&testModelResolver{},
 				NewMemoryManager(""),
 				toolSet,
@@ -781,10 +788,10 @@ func TestServerHandleChatStreamTagsHistoryWithRequestID(t *testing.T) {
 		responses: roleDirectResponses("Hello!"),
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:       ModelConfig{Provider: "fake"},
 			Instruction: "Answer directly.",
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
@@ -826,7 +833,7 @@ func TestServerHandleChatStreamTagsHistoryWithRequestID(t *testing.T) {
 
 func TestHandleCoordinateDebugTapRejectsInvalidType(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
 		&testModelResolver{},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -850,7 +857,7 @@ func TestHandleCoordinateDebugTapRejectsInvalidType(t *testing.T) {
 
 func TestHandleCoordinateDebugTapRejectsNonJSONContentType(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
 		&testModelResolver{},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -885,10 +892,10 @@ func TestHandleScreenshotJPEGCanDisableBlackBarCropping(t *testing.T) {
 	})
 
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model: ModelConfig{Provider: "fake"},
 			HID:   HIDConfig{FrameSocket: frameSocket},
-		},
+		}),
 		&testModelResolver{},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -945,10 +952,10 @@ func TestHandleScreenshotJPEGUpdatesSharedScreenStateFromPhoneAspectRatio(t *tes
 	})
 
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model: ModelConfig{Provider: "fake"},
 			HID:   HIDConfig{FrameSocket: frameSocket},
-		},
+		}),
 		&testModelResolver{},
 		NewMemoryManager(""),
 		NewBuiltinToolSet(HIDConfig{FrameSocket: frameSocket}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
@@ -1051,10 +1058,10 @@ func TestHandleScreenshotJPEGIncludesADBDeviceHeadersWhenFallbackUsed(t *testing
 	t.Setenv("ANDROID_SERIAL", "")
 
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model: ModelConfig{Provider: "fake"},
 			HID:   HIDConfig{FrameSocket: filepath.Join(tmpDir, "missing-frame.sock")},
-		},
+		}),
 		&testModelResolver{},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -1109,10 +1116,10 @@ func TestHandleCoordinateDebugTapRecapturesUncroppedScreenshot(t *testing.T) {
 		output:      `{"width":1,"height":1,"format":"jpeg","size":4,"data":"ZmFrZQ==","action_output":"ok"}`,
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model: ModelConfig{Provider: "fake"},
 			HID:   HIDConfig{FrameSocket: frameSocket},
-		},
+		}),
 		&testModelResolver{},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -1181,10 +1188,10 @@ func TestHandleCoordinateDebugTapRecapturesScreenshotWhenMappingUnavailable(t *t
 		output:      `{"width":1,"height":1,"format":"jpeg","size":4,"data":"ZmFrZQ==","action_output":"ok"}`,
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model: ModelConfig{Provider: "fake"},
 			HID:   HIDConfig{FrameSocket: frameSocket},
-		},
+		}),
 		&testModelResolver{},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -1230,7 +1237,7 @@ func TestServerSpeakToolContentUsesTTS(t *testing.T) {
 	provider := &recordingTTSProvider{name: "server-provider"}
 	server := &Server{
 		runtime: NewRuntimeWithDeps(
-			Config{Model: ModelConfig{Provider: "fake"}, Audio: AudioConfig{SampleRate: 16000}},
+			withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Audio: AudioConfig{SampleRate: 16000}}),
 			&testModelResolver{model: &scriptedModel{}},
 			NewMemoryManager(""),
 			NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
@@ -1258,12 +1265,12 @@ func TestServerHandleChatDoesNotWaitForToolContentTTSWhenEnabled(t *testing.T) {
 	streamingDisabled := false
 	toolSpeechEnabled := true
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:                    ModelConfig{Provider: "fake"},
 			Instruction:              "Use tools when external state is requested.",
 			VoiceStreamingTTSEnabled: &streamingDisabled,
 			VoiceToolCallSpeech:      &toolSpeechEnabled,
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -1275,6 +1282,7 @@ func TestServerHandleChatDoesNotWaitForToolContentTTSWhenEnabled(t *testing.T) {
 		}},
 		NewSkillIndex(),
 	)
+	defer runtime.Close()
 	server := NewServer(runtime, ":0")
 	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: speech}
 	server.ttsManager = ttsmodule.NewProviderManager(provider, nil)
@@ -1307,6 +1315,32 @@ func TestServerHandleChatDoesNotWaitForToolContentTTSWhenEnabled(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
 	}
+	var startResp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&startResp); err != nil {
+		t.Fatalf("decode start response: %v", err)
+	}
+	requestID := startResp["request_id"]
+	if requestID == "" {
+		t.Fatalf("missing request_id in response: %#v", startResp)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		resultReq := httptest.NewRequest(http.MethodGet, "/api/chat/result?request_id="+requestID, nil)
+		resultRec := httptest.NewRecorder()
+		server.handleChatResult(resultRec, resultReq)
+		if resultRec.Code != http.StatusOK {
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		var resp ChatResultResponse
+		if err := json.NewDecoder(resultRec.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode result response: %v", err)
+		}
+		if resp.Status == "complete" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 func TestServerHandleChatDoesNotSpeakWaitForWakeup(t *testing.T) {
@@ -1319,12 +1353,12 @@ func TestServerHandleChatDoesNotSpeakWaitForWakeup(t *testing.T) {
 	}
 	controller := NewWaitForWakeupController()
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:                    ModelConfig{Provider: "fake"},
 			Instruction:              "Use tools.",
 			VoiceStreamingTTSEnabled: &streamingDisabled,
 			VoiceToolCallSpeech:      &toolSpeechEnabled,
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -1359,12 +1393,12 @@ func TestServerHandleChatSkipsToolContentTTSWhenDisabled(t *testing.T) {
 	streamingDisabled := false
 	toolSpeechDisabled := false
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:                    ModelConfig{Provider: "fake"},
 			Instruction:              "Use tools when external state is requested.",
 			VoiceStreamingTTSEnabled: &streamingDisabled,
 			VoiceToolCallSpeech:      &toolSpeechDisabled,
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -1401,7 +1435,7 @@ func TestServerShouldSpeakToolCallRequiresTTSTag(t *testing.T) {
 	toolSpeechEnabled := true
 	server := &Server{
 		runtime: NewRuntimeWithDeps(
-			Config{VoiceToolCallSpeech: &toolSpeechEnabled, Model: ModelConfig{Provider: "fake"}},
+			withTestConfigDir(t, Config{VoiceToolCallSpeech: &toolSpeechEnabled, Model: ModelConfig{Provider: "fake"}}),
 			&testModelResolver{model: &scriptedModel{}},
 			NewMemoryManager(""),
 			NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
@@ -1915,7 +1949,7 @@ func (s *blockingTTSSession) Err() error {
 func TestServerHistoryEndpointIncludesToolMessages(t *testing.T) {
 	server := &Server{
 		runtime: NewRuntimeWithDeps(
-			Config{Model: ModelConfig{Provider: "fake"}},
+			withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
 			&testModelResolver{model: &scriptedModel{}},
 			NewMemoryManager(""),
 			NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
@@ -1951,18 +1985,26 @@ func TestServerHistoryEndpointIncludesToolMessages(t *testing.T) {
 func TestServerContextDumpEndpointReturnsPlannerMessages(t *testing.T) {
 	server := &Server{
 		runtime: NewRuntimeWithDeps(
-			Config{Model: ModelConfig{Provider: "fake"}},
+			withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
 			&testModelResolver{model: &scriptedModel{}},
 			NewMemoryManager(""),
 			NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 			NewSkillIndex(),
 		),
 	}
-	manager := server.runtime.plannerContextManager()
-	manager.AppendMessage(context_manager.Message{
+	sessionFolder := t.TempDir()
+	sessionID := "test-session"
+	manager, _, err := context_manager.NewContextManagerFromSessionID(sessionFolder, &sessionID)
+	if err != nil {
+		t.Fatalf("NewContextManagerFromSessionID() error = %v", err)
+	}
+	if err := manager.AppendMessage(context_manager.Message{
 		Role:    context_manager.MessageRoleUser,
 		Content: "hello planner",
-	})
+	}); err != nil {
+		t.Fatalf("AppendMessage() error = %v", err)
+	}
+	server.runtime.contextManager = manager
 
 	req := httptest.NewRequest(http.MethodGet, "/api/context-dump", nil)
 	rec := httptest.NewRecorder()
@@ -2005,7 +2047,7 @@ func TestServerHandleClearRemovesRuntimeMemory(t *testing.T) {
 
 	server := &Server{
 		runtime: NewRuntimeWithDeps(
-			Config{Model: ModelConfig{Provider: "fake"}},
+			withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
 			&testModelResolver{model: &scriptedModel{}},
 			memoryManager,
 			NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
@@ -2090,7 +2132,7 @@ func TestServerHandleSkillsReloadMarksDirty(t *testing.T) {
 	storageDir := t.TempDir()
 	server := &Server{
 		runtime: NewRuntimeWithDeps(
-			Config{Model: ModelConfig{Provider: "fake"}},
+			withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
 			&testModelResolver{model: &scriptedModel{}},
 			NewMemoryManager(storageDir),
 			NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
@@ -2117,7 +2159,7 @@ func TestServerHandleSkillsReloadMarksDirty(t *testing.T) {
 func TestServerHandleSkillsReloadRejectsGet(t *testing.T) {
 	server := &Server{
 		runtime: NewRuntimeWithDeps(
-			Config{Model: ModelConfig{Provider: "fake"}},
+			withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
 			&testModelResolver{model: &scriptedModel{}},
 			NewMemoryManager(t.TempDir()),
 			NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
@@ -2137,10 +2179,10 @@ func TestServerHandleSkillsReloadRejectsGet(t *testing.T) {
 func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
 	stt := &stubSTTClient{transcript: "Hello, please summarize this"}
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:       ModelConfig{Provider: "fake"},
 			Instruction: "Answer directly.",
-		},
+		}),
 		&testModelResolver{model: &scriptedModel{responses: roleDirectResponses("Completed")}},
 		NewMemoryManager(""),
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
@@ -2277,13 +2319,13 @@ func TestServerDeviceAudioRecordingEndpointsReturnWAVAttachment(t *testing.T) {
 	})
 
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model: ModelConfig{Provider: "fake"},
 			Audio: AudioConfig{
 				Socket:     socketPath,
 				SampleRate: 16000,
 			},
-		},
+		}),
 		&testModelResolver{model: &scriptedModel{}},
 		NewMemoryManager(""),
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
@@ -2367,7 +2409,7 @@ func TestServerDeviceAudioRecordingStopIncludesStreamingTranscript(t *testing.T)
 	})
 
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model: ModelConfig{Provider: "fake"},
 			Audio: AudioConfig{
 				Socket:     socketPath,
@@ -2375,7 +2417,7 @@ func TestServerDeviceAudioRecordingStopIncludesStreamingTranscript(t *testing.T)
 				Channels:   1,
 				BitWidth:   16,
 			},
-		},
+		}),
 		&testModelResolver{model: &scriptedModel{}},
 		NewMemoryManager(""),
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
@@ -2530,11 +2572,11 @@ func TestServerHandleChatUsesAttachmentTranscriptWithoutRetranscribing(t *testin
 		responses: roleDirectResponses("Completed"),
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:       ModelConfig{Provider: "fake"},
 			Instruction: "Use transcript directly.",
 			InputMode:   "stt",
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
@@ -2638,7 +2680,7 @@ func TestServerSTTConfigTestLiveSessionUsesStreamingTranscript(t *testing.T) {
 	})
 
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model: ModelConfig{Provider: "fake"},
 			Audio: AudioConfig{
 				Socket:     socketPath,
@@ -2646,7 +2688,7 @@ func TestServerSTTConfigTestLiveSessionUsesStreamingTranscript(t *testing.T) {
 				Channels:   1,
 				BitWidth:   16,
 			},
-		},
+		}),
 		&testModelResolver{model: &scriptedModel{}},
 		NewMemoryManager(""),
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
@@ -2740,7 +2782,7 @@ func TestServerSTTConfigTestLiveSessionFallsBackToOneShot(t *testing.T) {
 	})
 
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model: ModelConfig{Provider: "fake"},
 			Audio: AudioConfig{
 				Socket:     socketPath,
@@ -2748,7 +2790,7 @@ func TestServerSTTConfigTestLiveSessionFallsBackToOneShot(t *testing.T) {
 				Channels:   1,
 				BitWidth:   16,
 			},
-		},
+		}),
 		&testModelResolver{model: &scriptedModel{}},
 		NewMemoryManager(""),
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
@@ -2843,10 +2885,10 @@ func TestServerDeviceAudioRecordingStartRecoversStaleSession(t *testing.T) {
 	})
 
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model: ModelConfig{Provider: "fake"},
 			Audio: AudioConfig{Socket: socketPath, SampleRate: 16000},
-		},
+		}),
 		&testModelResolver{model: &scriptedModel{}},
 		NewMemoryManager(""),
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
@@ -2877,7 +2919,7 @@ func TestServerToolCatalogEndpoint(t *testing.T) {
 		output:      "ok",
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
 		&testModelResolver{model: &scriptedModel{}},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -2926,7 +2968,7 @@ func TestServerToolInvokeEndpointAcceptsStructuredJSON(t *testing.T) {
 		output:      `{"status":"ok"}`,
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
 		&testModelResolver{model: &scriptedModel{}},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -2966,7 +3008,7 @@ func TestServerToolInvokeUsesUnifiedExecutionAndNormalizesInput(t *testing.T) {
 		output:      "ok",
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
 		&testModelResolver{model: &scriptedModel{}},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -3007,7 +3049,7 @@ func TestServerDoesNotExposeActivateSkillOverHTTP(t *testing.T) {
 		Instructions: "Plan before acting.",
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
 		&testModelResolver{model: &scriptedModel{}},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -3037,7 +3079,7 @@ func TestServerDoesNotExposeActivateSkillOverHTTP(t *testing.T) {
 
 func TestServerExposesSkillManageOverHTTP(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
 		&testModelResolver{model: &scriptedModel{}},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -3076,7 +3118,7 @@ func TestServerToolSkillsEndpointReturnsGeneratedSkills(t *testing.T) {
 		output:      "ok",
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
 		&testModelResolver{model: &scriptedModel{}},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -3409,31 +3451,5 @@ func TestHandleBenchmarkSeedMemoryRejectsNonPost(t *testing.T) {
 	server.handleBenchmarkSeedMemory(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected 405, got %d body=%s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestHandleBenchmarkSeedMemoryReturns503WhenMemoryUnconfigured(t *testing.T) {
-	streamingDisabled := false
-	runtime := NewRuntimeWithDeps(
-		Config{
-			Model:                    ModelConfig{Provider: "fake"},
-			Benchmark:                BenchmarkConfig{Token: "test-benchmark-token"},
-			Instruction:              "Answer directly.",
-			VoiceStreamingTTSEnabled: &streamingDisabled,
-			VoiceToolCallSpeech:      &streamingDisabled,
-		},
-		&testModelResolver{model: &scriptedModel{}},
-		NewMemoryManager(""),
-		&ToolSet{tools: map[string]langtools.Tool{}},
-		NewSkillIndex(),
-	)
-	server := NewServer(runtime, ":0")
-	body := `{"id":"x","content":"y"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/benchmark/seed_memory", bytes.NewBufferString(body))
-	req.Header.Set("Authorization", "Bearer test-benchmark-token")
-	rec := httptest.NewRecorder()
-	server.handleBenchmarkSeedMemory(rec, req)
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }

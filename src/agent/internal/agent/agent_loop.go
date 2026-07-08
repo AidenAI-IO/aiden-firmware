@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -27,14 +29,12 @@ type AgentLoop struct {
 	Memory                 schema.Memory
 	CallbacksHandler       callbacks.Handler
 	MaxIterations          int
-	ConversationHistory    []llms.MessageContent
-	InputAttachments       []InputAttachment
 	Recorder               *EpisodeRecorder
 	ScreenshotPruning      ScreenshotPruningConfig
 	EnvironmentBridge      *EnvironmentBridgeClient
 	EnvironmentBridgeTools []string
 	SteerInterrupt         func() <-chan struct{}
-	ContextManager         *context_manager.ContextManager
+	contextManager         *context_manager.ContextManager
 }
 
 func NewAgentLoop(
@@ -42,44 +42,28 @@ func NewAgentLoop(
 	profile RoleProfile,
 	memory schema.Memory,
 	maxIterations int,
-	attachments []InputAttachment,
 	callbacksHandler callbacks.Handler,
 	recorder *EpisodeRecorder,
 	screenshotPruning ScreenshotPruningConfig,
+	contextManager *context_manager.ContextManager,
 ) *AgentLoop {
+	if contextManager == nil {
+		log.Fatalf("context manager is nil")
+	}
 	return &AgentLoop{
 		Model:               model,
 		Profile:             profile,
 		Memory:              memory,
 		CallbacksHandler:    callbacksHandler,
 		MaxIterations:       maxIterations,
-		ConversationHistory: nil,
-		InputAttachments:    attachments,
 		Recorder:            recorder,
 		ScreenshotPruning:   screenshotPruning,
+		contextManager:      contextManager,
 	}
 }
 
 func (l *AgentLoop) Run(ctx context.Context, input string, options ...chains.ChainCallOption) (string, error) {
-	inputs, err := loadAgentLoopInputs(ctx, l.Memory, input)
-	if err != nil {
-		return "", err
-	}
-
-	contextManager := l.ContextManager
-	if contextManager == nil {
-		contextManager = context_manager.NewContextManager()
-		l.ContextManager = contextManager
-	}
-	preparePlannerContextManager(
-		contextManager,
-		l.Profile.SystemPrompt,
-		l.ConversationHistory,
-		inputs["input"],
-		l.InputAttachments,
-	)
-
-	llmExecutor := executor.NewLLMExecutor(l.Model, contextManager)
+	llmExecutor := executor.NewLLMExecutor(l.Model, l.contextManager)
 
 	agentTools := l.Profile.Tools
 	toolSpecs := NewToolSpecs(agentTools)
@@ -138,14 +122,18 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 
 	actions, finish, err := parser.ParseOutput(contentResp)
 	if errors.Is(err, agents.ErrUnableToParseOutput) {
-		llmExecutor.AppendMessage(context_manager.ConvertChoiceToContextManagerMessage(*contentResp.Choices[0]))
+		if err := llmExecutor.AppendMessage(context_manager.ConvertChoiceToContextManagerMessage(*contentResp.Choices[0])); err != nil {
+			return "", false, err
+		}
 		return "", false, nil
 	}
 	if err != nil {
 		return "", false, err
 	}
 	if finish != nil {
-		llmExecutor.AppendMessage(context_manager.ConvertChoiceToContextManagerMessage(*contentResp.Choices[0]))
+		if err := llmExecutor.AppendMessage(context_manager.ConvertChoiceToContextManagerMessage(*contentResp.Choices[0])); err != nil {
+			return "", false, err
+		}
 		answer, _ := finish.ReturnValues[agentLoopOutputKey].(string)
 		answer = strings.TrimSpace(answer)
 		if answer == "" {
@@ -162,7 +150,9 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 	}
 
 	action := actions[0]
-	llmExecutor.AppendMessage(context_manager.ConvertChoiceToContextManagerMessage(choiceWithOnlyToolCall(*contentResp.Choices[0], action.ToolID)))
+	if err := llmExecutor.AppendMessage(context_manager.ConvertChoiceToContextManagerMessage(choiceWithOnlyToolCall(*contentResp.Choices[0], action.ToolID))); err != nil {
+		return "", false, err
+	}
 	toolExecution := l.executeToolCall(ctx, ToolCallExecution{
 		Specs:                  toolSpecs,
 		Action:                 action,
@@ -182,7 +172,9 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		})
 	}
 	toolCallsInIteration++
-	appendToolExecutionMessages(llmExecutor, parser, toolExecution.Step)
+	if err := appendToolExecutionMessages(llmExecutor, parser, toolExecution.Step); err != nil {
+		return "", false, err
+	}
 	if isRunPausingTool(toolExecution.Call.Action.Tool) && !toolExecution.Result.IsError() {
 		answer := runPausingToolFinalAnswer(&toolExecution.Step)
 		if l.Recorder != nil {
@@ -336,9 +328,9 @@ func roleResponseDebugText(res *llms.ContentResponse) string {
 	return strings.Join(parts, "\n")
 }
 
-func appendToolExecutionMessages(llmExecutor *executor.LLMExecutor, parser *FunctionAgent, step schema.AgentStep) {
+func appendToolExecutionMessages(llmExecutor *executor.LLMExecutor, parser *FunctionAgent, step schema.AgentStep) error {
 	if llmExecutor == nil {
-		return
+		return fmt.Errorf("llm executor is nil")
 	}
 
 	toolContent := step.Observation
@@ -350,14 +342,19 @@ func appendToolExecutionMessages(llmExecutor *executor.LLMExecutor, parser *Func
 		}
 	}
 
-	llmExecutor.AppendMessage(toolResultMessage(
+	if err := llmExecutor.AppendMessage(toolResultMessage(
 		step.Action.ToolID,
 		step.Action.Tool,
 		toolContent,
-	))
-	for _, followup := range followups {
-		llmExecutor.AppendMessage(visualFollowupMessageFromLLMContent(llmExecutor.ContextManager(), followup))
+	)); err != nil {
+		return fmt.Errorf("failed to append tool result message: %w", err)
 	}
+	for _, followup := range followups {
+		if err := llmExecutor.AppendMessage(visualFollowupMessageFromLLMContent(llmExecutor.ContextManager(), followup)); err != nil {
+			return fmt.Errorf("failed to append visual followup message: %w", err)
+		}
+	}
+	return nil
 }
 
 func toolNameEqual(got, want string) bool {

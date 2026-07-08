@@ -1,6 +1,9 @@
 package agent
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func newRuntimeWithTextEntryTools() *Runtime {
 	tools := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
@@ -80,7 +83,7 @@ func TestAllToolsExposedOverHTTP(t *testing.T) {
 	}
 }
 
-func TestResolveToolsIncludesQuickAction(t *testing.T) {
+func TestAvailableToolsIncludesQuickAction(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
 		Config{},
 		nil,
@@ -89,7 +92,7 @@ func TestResolveToolsIncludesQuickAction(t *testing.T) {
 		NewSkillIndex(),
 	)
 
-	tools := runtime.resolveTools(ResolvedSkills{})
+	tools := runtime.availableTools()
 	names := toolNamesFromTools(tools)
 	found := false
 	for _, name := range names {
@@ -99,15 +102,15 @@ func TestResolveToolsIncludesQuickAction(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("resolveTools missing quick_action: %v", names)
+		t.Fatalf("availableTools missing quick_action: %v", names)
 	}
 }
 
-func TestResolveToolsIncludesPhoneBridgeToolsWhenDisconnected(t *testing.T) {
+func TestAvailableToolsIncludesPhoneBridgeToolsWhenDisconnected(t *testing.T) {
 	runtime := newRuntimeWithTextEntryTools()
 	runtime.tools.RegisterPhoneBridge(NewPhoneBridge(nil))
 
-	tools := runtime.resolveTools(ResolvedSkills{})
+	tools := runtime.availableTools()
 	names := toolNamesFromTools(tools)
 	for _, want := range []string{"open_app", "search_launch_app", "enter_text_via_bridge"} {
 		found := false
@@ -118,25 +121,25 @@ func TestResolveToolsIncludesPhoneBridgeToolsWhenDisconnected(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Fatalf("resolveTools missing disconnected bridge recovery tool %s: %v", want, names)
+			t.Fatalf("availableTools missing disconnected bridge recovery tool %s: %v", want, names)
 		}
 	}
 	for _, notWant := range []string{"clipboard", "calendar", "contacts", "notification"} {
 		for _, name := range names {
 			if name == notWant {
-				t.Fatalf("resolveTools exposed disconnected phone bridge tool %s: %v", notWant, names)
+				t.Fatalf("availableTools exposed disconnected phone bridge tool %s: %v", notWant, names)
 			}
 		}
 	}
 }
 
-func TestResolveToolsIncludesPhoneBridgeToolsWhenConnected(t *testing.T) {
+func TestAvailableToolsIncludesPhoneBridgeToolsWhenConnected(t *testing.T) {
 	runtime := newRuntimeWithTextEntryTools()
 	bridge := NewPhoneBridge(nil)
 	bridge.connected = true
 	runtime.tools.RegisterPhoneBridge(bridge)
 
-	tools := runtime.resolveTools(ResolvedSkills{})
+	tools := runtime.availableTools()
 	names := toolNamesFromTools(tools)
 	for _, want := range []string{"open_app", "clipboard", "calendar", "contacts", "notification"} {
 		found := false
@@ -152,54 +155,16 @@ func TestResolveToolsIncludesPhoneBridgeToolsWhenConnected(t *testing.T) {
 	}
 }
 
-func TestResolveToolsHidesAllowedPhoneBridgeToolWhenDisconnected(t *testing.T) {
-	runtime := newRuntimeWithTextEntryTools()
-	runtime.tools.RegisterPhoneBridge(NewPhoneBridge(nil))
-
-	tools := runtime.resolveTools(ResolvedSkills{
-		HasToolRestriction: true,
-		AllowedTools:       map[string]struct{}{"clipboard": {}},
-	})
-	names := toolNamesFromTools(tools)
-	for _, name := range names {
-		if name == "clipboard" {
-			t.Fatalf("resolveTools with allowed_tools exposed disconnected clipboard: %v", names)
-		}
-	}
-}
-
-func TestResolveToolsIncludesAllowedOpenAppWhenDisconnected(t *testing.T) {
-	runtime := newRuntimeWithTextEntryTools()
-	runtime.tools.RegisterPhoneBridge(NewPhoneBridge(nil))
-
-	tools := runtime.resolveTools(ResolvedSkills{
-		HasToolRestriction: true,
-		AllowedTools:       map[string]struct{}{"open_app": {}},
-	})
-	names := toolNamesFromTools(tools)
-	for _, name := range names {
-		if name == "open_app" {
-			return
-		}
-	}
-	t.Fatalf("resolveTools with allowed_tools missing disconnected open_app: %v", names)
-}
-
-func TestResolveToolsIncludesAllowedPhoneBridgeToolWhenConnected(t *testing.T) {
-	runtime := newRuntimeWithTextEntryTools()
+func newIOSPiPBackgroundBridge(t *testing.T) *PhoneBridge {
+	t.Helper()
 	bridge := NewPhoneBridge(nil)
-	bridge.connected = true
-	runtime.tools.RegisterPhoneBridge(bridge)
-
-	tools := runtime.resolveTools(ResolvedSkills{
-		HasToolRestriction: true,
-		AllowedTools:       map[string]struct{}{"open_app": {}},
-	})
-	names := toolNamesFromTools(tools)
-	for _, name := range names {
-		if name == "open_app" {
-			return
-		}
-	}
-	t.Fatalf("resolveTools with allowed_tools missing connected open_app: %v", names)
+	t.Cleanup(func() { bridge.queue.Stop() })
+	bridge.mu.Lock()
+	bridge.platform = "ios"
+	bridge.appState = "background"
+	bridge.appStateAt = time.Now()
+	bridge.pipBridgeEnabled = true
+	bridge.pipBridgeSeen = true
+	bridge.mu.Unlock()
+	return bridge
 }

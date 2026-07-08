@@ -398,6 +398,55 @@ func TestClipboardReadSuccessPreservesOKField(t *testing.T) {
 	}
 }
 
+func TestClipboardReadUsesPiPBackgroundQueueWhenActive(t *testing.T) {
+	bridge := NewPhoneBridge(nil)
+	t.Cleanup(func() { bridge.queue.Stop() })
+	bridge.mu.Lock()
+	bridge.platform = "ios"
+	bridge.appState = "background"
+	bridge.appStateAt = time.Now()
+	bridge.pipBridgeEnabled = true
+	bridge.pipBridgeSeen = true
+	bridge.mu.Unlock()
+
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		commands := bridge.queue.PollForPhone("ios", "", 10)
+		if len(commands) != 1 {
+			t.Errorf("expected one background command, got %d", len(commands))
+			return
+		}
+		if commands[0].Type != "clipboard_read" {
+			t.Errorf("background command type = %q, want clipboard_read", commands[0].Type)
+			return
+		}
+		if err := bridge.queue.SubmitResult(BridgeCommandResponse{
+			ID:   commands[0].ID,
+			Data: json.RawMessage(`{"text":"queued"}`),
+		}); err != nil {
+			t.Errorf("SubmitResult() error = %v", err)
+		}
+	}()
+
+	tool := NewClipboardTool(bridge, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	out, err := tool.Call(ctx, `{"action":"read"}`)
+	if err != nil {
+		t.Fatalf("Call returned err: %v", err)
+	}
+	var payload struct {
+		OK   bool   `json:"ok"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("output is not JSON: %v", err)
+	}
+	if !payload.OK || payload.Text != "queued" {
+		t.Fatalf("clipboard queue payload = %+v, raw=%s; want ok=true text=queued", payload, out)
+	}
+}
+
 func newTestPhoneBridgeWithApp(t *testing.T, handle func(BridgeCommand) BridgeCommandResponse) *PhoneBridge {
 	t.Helper()
 	bridge := NewPhoneBridge(nil)
