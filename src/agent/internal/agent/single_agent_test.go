@@ -30,24 +30,24 @@ func TestSingleAgentProfileDoesNotBuildDelegatedRoles(t *testing.T) {
 
 func TestSingleAgentRuntimeUsesAgentRoleAndDirectTools(t *testing.T) {
 	model := &scriptedModel{
-		responses: roleToolResponses("audio_volume", `{"__arg1":"{\"volume\":3}"}`, "Volume set to 3."),
+		responses: roleToolResponses("current_time", `{"__arg1":"{\"timezone\":\"UTC\"}"}`, "Time checked."),
 	}
 	tool := &stubTool{
-		name:        "audio_volume",
-		description: "Get or set audio playback volume.",
-		output:      `{"volume":3}`,
+		name:        "current_time",
+		description: "Get the current time.",
+		output:      `{"timezone":"UTC"}`,
 	}
 	runtime := NewRuntimeWithDeps(
 		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use direct tools."},
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
-		&ToolSet{tools: map[string]langtools.Tool{"audio_volume": tool}},
+		&ToolSet{tools: map[string]langtools.Tool{"current_time": tool}},
 		NewSkillIndex(),
 	)
 
 	var events []RunEvent
 	result, err := runtime.Run(context.Background(), RunRequest{
-		Input: "set volume to 3",
+		Input: "what time is it in UTC?",
 		EventHandler: func(event RunEvent) {
 			events = append(events, event)
 		},
@@ -55,14 +55,14 @@ func TestSingleAgentRuntimeUsesAgentRoleAndDirectTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if result.Output != "Volume set to 3." {
+	if result.Output != "Time checked." {
 		t.Fatalf("unexpected output: %q", result.Output)
 	}
 	if len(model.tools) != 2 {
 		t.Fatalf("expected tool call turn and final turn, got %d model calls", len(model.tools))
 	}
-	if !singleAgentLLMToolsContain(model.tools[0], "audio_volume") {
-		t.Fatalf("agent did not receive audio_volume tool: %#v", model.tools[0])
+	if !singleAgentLLMToolsContain(model.tools[0], "current_time") {
+		t.Fatalf("agent did not receive current_time tool: %#v", model.tools[0])
 	}
 	for _, name := range []string{"enter_plan_mode", "commit_plan", "cancel_plan", "finish_step", "abort_step"} {
 		if singleAgentLLMToolsContain(model.tools[0], name) {

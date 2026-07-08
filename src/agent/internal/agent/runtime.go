@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1111,46 +1112,43 @@ func (r *Runtime) resetPlannerContext() {
 
 func (r *Runtime) resolveTools(skills ResolvedSkills) []langtools.Tool {
 	available := make([]langtools.Tool, 0)
+	available = r.appendToolsByExposure(available, ToolExposureAlwaysCore)
 
 	if skills.HasToolRestriction {
+		toolNames := make([]string, 0, len(skills.AllowedTools))
 		for toolName := range skills.AllowedTools {
+			toolNames = append(toolNames, toolName)
+		}
+		sort.Strings(toolNames)
+		for _, toolName := range toolNames {
 			if strings.HasPrefix(toolName, "delegate_") {
 				continue
 			}
 			if !isAgentToolExposed(toolName) {
 				continue
 			}
-			tool, ok := r.tools.Get(toolName)
-			if ok {
-				available = append(available, tool)
-			}
+			available = r.appendToolIfAvailable(available, toolName)
 		}
 	} else {
-		for _, tool := range r.tools.All() {
-			if isAgentToolExposed(tool.Name()) {
-				available = append(available, tool)
-			}
-		}
-	}
-
-	memoryTools := []string{"recall_session_chunks", "recall_memory", "save_memory", "forget_memory", "recall_device_memory", "inspect_episode"}
-	for _, name := range memoryTools {
-		if skills.HasToolRestriction {
-			if _, allowed := skills.AllowedTools[name]; !allowed {
-				continue
-			}
-		}
-		available = r.appendToolIfAvailable(available, name)
-	}
-
-	// Keep skill meta-tools available even when an active skill has allowed_tools
-	// restrictions. Otherwise the Hermes-like flow breaks: the prompt can show
-	// Available skills, but the model cannot read or maintain the matching skill.
-	for _, name := range []string{"skill_list", "skill_read", "skill_manage", "skill_mark_used"} {
-		available = r.appendToolIfAvailable(available, name)
+		available = r.appendToolsByExposure(available, ToolExposureAgentDefault)
 	}
 
 	return available
+}
+
+func (r *Runtime) appendToolsByExposure(tools []langtools.Tool, exposure ToolExposure) []langtools.Tool {
+	if r == nil || r.tools == nil {
+		return tools
+	}
+	for _, tool := range r.tools.All() {
+		if tool == nil {
+			continue
+		}
+		if toolHasExposure(tool.Name(), exposure) {
+			tools = r.appendToolIfAvailable(tools, tool.Name())
+		}
+	}
+	return tools
 }
 
 func (r *Runtime) appendToolIfAvailable(tools []langtools.Tool, name string) []langtools.Tool {

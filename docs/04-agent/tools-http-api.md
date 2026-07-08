@@ -6,7 +6,7 @@ In Web UI mode, the Agent exposes Agent-owned tools that can be safely invoked v
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/api/tools` | List all tools with descriptions, input modes, examples, and HTTP bindings |
+| `GET` | `/api/tools` | List HTTP-visible tools with descriptions, input modes, examples, exposure tags, and HTTP bindings |
 | `POST` | `/api/tools/{tool_name}` | Invoke the specified tool |
 | `GET` | `/api/tool-skills` | Generate a `SKILL.md` bundle suitable for external agents |
 
@@ -46,6 +46,7 @@ Use `raw_input` when you need to pass a raw string. Most tools (including skill 
     "description": "...",
     "input_mode": "json",
     "example_input": "{\"command\":\"pwd\"}",
+    "exposure": ["skill_scoped", "http", "debug"],
     "http": {
       "method": "POST",
       "path": "/api/tools/shell"
@@ -65,31 +66,23 @@ Tool execution failures are also returned in JSON format. Check:
 - Whether `output` contains error information
 - Whether the HTTP transport succeeded
 
-## Current Tool List
+## Exposure Tags
 
-| Tool | Category | Example Input |
-| --- | --- | --- |
-| `audio_volume` | audio | `{}` |
-| `current_time` | system | `{"timezone":"Asia/Shanghai"}` |
-| `wait_for_wakeup` | system | `{"reason":"user asked me to wait for wakeup"}` |
-| `keyboard_tap` | input | `{"keys":["ctrl","c"]}` |
-| `keyboard_text` | input | `{"text":"hello world"}` |
-| `list_scripts` | demo | `{}` |
-| `mouse_click` | input | `{"x":500,"y":500,"button":"left","coord_space":"normalized"}` |
-| `mouse_move` | input | `{"x":500,"y":500,"coord_space":"normalized"}` |
-| `mouse_scroll` | input | `{"delta":-3}` |
-| `read_script` | demo | `{"file":"demo.jsonl"}` |
-| `run_script` | demo | `{"file":"demo.jsonl"}` |
-| `screenshot` | observation | `{}` |
-| `shell` | system | `{"command":"pwd"}` |
-| `skill_list` | skills | `{"query":"planner","include_archived":false}` |
-| `skill_mark_used` | skills | `{"name":"planner"}` |
-| `skill_read` | skills | `{"name":"planner"}` |
-| `touch_gesture` | input | `{"type":"tap","point":{"x":500,"y":500}}` / `{"type":"back"}` / `{"type":"home"}` |
-| `weather` | system | `{"location":"Shanghai"}` |
-| `write_script` | demo | `{"file":"demo.jsonl","content":"# 演示\n{\"type\":\"wait\",\"ms\":500}"}` |
+Each descriptor includes `exposure` tags:
 
-`skill_manage` is an internal skill maintenance tool available to the runtime Agent but not exposed via the HTTP Tool API.
+| Exposure | Meaning |
+| --- | --- |
+| `always_core` | Always available to the conversational Agent when registered, even under skill `allowed_tools` restrictions |
+| `agent_default` | Available in the default Agent tool catalog |
+| `skill_scoped` | Hidden from the default Agent catalog but available when an active skill lists it in `allowed_tools` |
+| `http` | Listed by `GET /api/tools` and callable through `POST /api/tools/{tool_name}` |
+| `script` | Callable from `run_script` script steps |
+| `debug` | Diagnostic or low-level tool; not default Agent-visible unless a debug skill enables it |
+| `admin` | Administrative maintenance tool; not exposed in the default HTTP catalog |
+
+The default LLM catalog is intentionally smaller than the HTTP Tool Lab catalog. It keeps core memory/time/skill-read tools plus default device-operation tools. Specialized tools such as web search, phone data, shell, image diff, mouse movement, script authoring, and low-level text paths are exposed by skills such as `research`, `phone-data`, `debug-operator`, `phone-text-entry`, and `script-author`.
+
+`skill_manage` is an internal skill maintenance tool. It is not in the default Agent tool catalog and is not exposed through the default HTTP Tool API.
 
 ## curl Examples
 

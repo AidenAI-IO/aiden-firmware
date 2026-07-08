@@ -36,8 +36,8 @@ Prefer describing what you see before clicking.
 - Automatically discover `SKILL.md`;
 - Display Available skills in the prompt and load complete `SKILL.md` at runtime via `skill_read`;
 - Inject skill instructions into the system prompt of the three roles' `RoleProfile`;
-- Support `allowed_tools` to restrict ordinary task tools; `skill_list` / `skill_read` / `skill_manage` / `skill_mark_used` are retained by default as skill meta-tools;
-- Provide `skill_list` / `skill_read` / `skill_manage` / `skill_mark_used`;
+- Support `allowed_tools` to progressively disclose skill-scoped tools; when a skill restricts tools, the runtime keeps only `always_core` tools such as `skill_read`, current time, handoff, and user memory tools plus the skill's allowed tools;
+- Provide `skill_list` / `skill_read` / `skill_manage` / `skill_mark_used`, with `skill_read` in the default Agent catalog and `skill_manage` reserved for controlled maintenance paths;
 - `skill_read` supports reading `SKILL.md` as well as UTF-8 supporting files under `references/`, `templates/`, `scripts/`, `assets/`;
 - Record view/use/modify statistics in `usage.json`;
 - Support `active` / `stale` / `archived` lifecycle states; `skill_list` filters out archived by default;

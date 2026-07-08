@@ -22,25 +22,36 @@ func (r *Runtime) ToolSpecs() *ToolSpecs {
 }
 
 func (r *Runtime) ToolDescriptors() []ToolDescriptor {
-	return r.ToolSpecs().Descriptors()
+	specs := r.ToolSpecs()
+	if specs == nil {
+		return nil
+	}
+	descriptors := make([]ToolDescriptor, 0)
+	for _, spec := range specs.All() {
+		if spec.HasExposure(ToolExposureHTTP) {
+			descriptors = append(descriptors, spec.Descriptor())
+		}
+	}
+	return descriptors
 }
 
+// isAgentToolExposed returns true if the named tool is exposed to the agent runtime.
+// A tool is agent-exposed if it has any of: agent_default, always_core, or skill_scoped.
 func isAgentToolExposed(name string) bool {
 	if strings.TrimSpace(name) == "" {
 		return false
 	}
-	meta, ok := builtInToolSpecMetadata[name]
-	if !ok {
-		return true
-	}
-	if meta.AgentExposed != nil {
-		return *meta.AgentExposed
-	}
-	return true
+	return toolHasExposure(name, ToolExposureAgentDefault) ||
+		toolHasExposure(name, ToolExposureAlwaysCore) ||
+		toolHasExposure(name, ToolExposureSkillScoped)
 }
 
 func (r *Runtime) ToolDescriptorByName(name string) (ToolDescriptor, bool) {
-	return r.ToolSpecs().DescriptorByName(name)
+	spec, ok := r.ToolSpecs().Lookup(name)
+	if !ok || !spec.HasExposure(ToolExposureHTTP) {
+		return ToolDescriptor{}, false
+	}
+	return spec.Descriptor(), true
 }
 
 const defaultHTTPToolSkillBaseURL = "http://127.0.0.1:8080"

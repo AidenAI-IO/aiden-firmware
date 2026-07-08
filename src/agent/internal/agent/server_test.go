@@ -27,8 +27,8 @@ import (
 	"github.com/tmc/langchaingo/llms"
 	langtools "github.com/tmc/langchaingo/tools"
 
-	ttsmodule "aiden-agent/internal/agent/tts"
 	"aiden-agent/internal/agent/context_manager"
+	ttsmodule "aiden-agent/internal/agent/tts"
 )
 
 type stubSTTClient struct {
@@ -3035,7 +3035,7 @@ func TestServerDoesNotExposeActivateSkillOverHTTP(t *testing.T) {
 	}
 }
 
-func TestServerExposesSkillManageOverHTTP(t *testing.T) {
+func TestServerHidesSkillManageOverHTTP(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
 		Config{Model: ModelConfig{Provider: "fake"}},
 		&testModelResolver{model: &scriptedModel{}},
@@ -3054,8 +3054,8 @@ func TestServerExposesSkillManageOverHTTP(t *testing.T) {
 	if catalogRec.Code != http.StatusOK {
 		t.Fatalf("unexpected catalog status: %d body=%s", catalogRec.Code, catalogRec.Body.String())
 	}
-	if !bytes.Contains(catalogRec.Body.Bytes(), []byte("skill_manage")) {
-		t.Fatalf("expected skill_manage advertised over HTTP: %s", catalogRec.Body.String())
+	if bytes.Contains(catalogRec.Body.Bytes(), []byte("skill_manage")) {
+		t.Fatalf("skill_manage should not be advertised over HTTP: %s", catalogRec.Body.String())
 	}
 	if !bytes.Contains(catalogRec.Body.Bytes(), []byte("skill_list")) {
 		t.Fatalf("expected skill_list to remain exposed: %s", catalogRec.Body.String())
@@ -3064,8 +3064,8 @@ func TestServerExposesSkillManageOverHTTP(t *testing.T) {
 	invokeReq := httptest.NewRequest(http.MethodPost, "/api/tools/skill_manage", bytes.NewBufferString(`{"raw_input":"{\"action\":\"list\"}"}`))
 	invokeRec := httptest.NewRecorder()
 	server.handleToolInvoke(invokeRec, invokeReq)
-	if invokeRec.Code != http.StatusOK {
-		t.Fatalf("expected skill_manage HTTP invoke to succeed, got %d body=%s", invokeRec.Code, invokeRec.Body.String())
+	if invokeRec.Code != http.StatusNotFound {
+		t.Fatalf("expected skill_manage HTTP invoke to be hidden, got %d body=%s", invokeRec.Code, invokeRec.Body.String())
 	}
 }
 

@@ -869,21 +869,13 @@ func TestBundledDeviceOperatorAllowedToolsCoverEmbeddedPlaybooks(t *testing.T) {
 	for _, tool := range []string{
 		"screenshot",
 		"wait_for_stable_screen",
-		"image_diff",
 		"quick_action",
 		"touch_gesture",
-		"mouse_click",
-		"mouse_move",
-		"mouse_scroll",
 		"keyboard_tap",
-		"keyboard_text",
 		"enter_text_in_field",
-		"enter_text_via_bridge",
+		"open_app",
 		"search_launch_app",
 		"request_human_handoff",
-		"recall_memory",
-		"save_memory",
-		"shell",
 	} {
 		if _, ok := deviceTools[tool]; !ok {
 			t.Fatalf("device-operator allowed_tools missing %q required by embedded playbooks", tool)

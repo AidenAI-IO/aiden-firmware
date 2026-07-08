@@ -1409,7 +1409,7 @@ func TestToolDescriptorsIncludeSkillToolMetadata(t *testing.T) {
 	tools.RegisterSkillTools(filepath.Join(configDir, "skills"), filepath.Join(configDir, "skill-state", ".bundled_manifest.json"))
 	runtime := NewRuntimeWithDeps(Config{}, nil, nil, tools, NewSkillIndex())
 
-	for _, name := range []string{"skill_list", "skill_read", "skill_mark_used"} {
+	for _, name := range []string{"skill_list", "skill_read"} {
 		desc, ok := runtime.ToolDescriptorByName(name)
 		if !ok {
 			t.Fatalf("expected descriptor for %s", name)
@@ -1423,6 +1423,17 @@ func TestToolDescriptorsIncludeSkillToolMetadata(t *testing.T) {
 		if strings.TrimSpace(desc.ExampleInput) == "" {
 			t.Fatalf("%s missing example input", name)
 		}
+	}
+
+	if _, ok := runtime.ToolDescriptorByName("skill_mark_used"); ok {
+		t.Fatal("skill_mark_used should be admin-only and hidden from HTTP descriptors")
+	}
+	spec, ok := runtime.ToolSpecs().Lookup("skill_mark_used")
+	if !ok {
+		t.Fatal("expected registered skill_mark_used spec")
+	}
+	if !spec.HasExposure(ToolExposureAdmin) || spec.HasExposure(ToolExposureHTTP) {
+		t.Fatalf("unexpected skill_mark_used exposure: %#v", spec.Exposure)
 	}
 }
 
@@ -1476,7 +1487,7 @@ func TestSkillCatalogSummaryLimitsEntriesAndDescriptionLength(t *testing.T) {
 	}
 }
 
-func TestResolveToolsKeepsSkillMetaToolsWhenRestricted(t *testing.T) {
+func TestResolveToolsKeepsOnlyAlwaysCoreSkillMetaToolsWhenRestricted(t *testing.T) {
 	tools := &ToolSet{tools: map[string]langtools.Tool{
 		"screenshot":      &stubTool{name: "screenshot", description: "Take screenshot."},
 		"skill_list":      NewSkillListTool(t.TempDir()),
@@ -1495,12 +1506,12 @@ func TestResolveToolsKeepsSkillMetaToolsWhenRestricted(t *testing.T) {
 	for _, tool := range resolvedTools {
 		names[tool.Name()] = true
 	}
-	for _, name := range []string{"screenshot", "skill_list", "skill_read", "skill_manage", "skill_mark_used"} {
+	for _, name := range []string{"screenshot", "skill_read", "recall_memory"} {
 		if !names[name] {
 			t.Fatalf("expected %s to be available under tool restrictions; got %#v", name, names)
 		}
 	}
-	for _, name := range []string{"recall_memory"} {
+	for _, name := range []string{"skill_list", "skill_manage", "skill_mark_used"} {
 		if names[name] {
 			t.Fatalf("did not expect %s without explicit allowed_tools entry; got %#v", name, names)
 		}
@@ -2630,20 +2641,20 @@ func TestRuntimeSimpleLoopDoesNotGenerateImplicitTodo(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
 			toolCallResponse("call_1", "screenshot", `{"__arg1":"{}"}`),
-			toolCallResponse("call_2", "web_search", `{"__arg1":"Aiden"}`),
+			toolCallResponse("call_2", "current_time", `{"__arg1":"{\"timezone\":\"UTC\"}"}`),
 			contentResponse("done"),
 			verifierFinishResponse("done"),
 		},
 	}
 	screenshot := &stubTool{name: "screenshot", description: "Capture screen.", output: "screen"}
-	webSearch := &stubTool{name: "web_search", description: "Search web.", output: "result"}
+	currentTime := &stubTool{name: "current_time", description: "Get time.", output: "time"}
 	runtime := NewRuntimeWithDeps(
 		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."},
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
-			"screenshot": screenshot,
-			"web_search": webSearch,
+			"screenshot":   screenshot,
+			"current_time": currentTime,
 		}},
 		NewSkillIndex(),
 	)
@@ -2664,24 +2675,24 @@ func TestRuntimeSimpleLoopDoesNotGenerateImplicitTodo(t *testing.T) {
 	if closed := runEventsOfType(events, "todo_closed"); len(closed) != 0 {
 		t.Fatalf("simple loop emitted implicit todo_closed events: %#v", closed)
 	}
-	if len(screenshot.inputs) != 1 || len(webSearch.inputs) != 1 {
-		t.Fatalf("expected simple tools to execute without todo, screenshot=%#v web=%#v", screenshot.inputs, webSearch.inputs)
+	if len(screenshot.inputs) != 1 || len(currentTime.inputs) != 1 {
+		t.Fatalf("expected simple tools to execute without todo, screenshot=%#v current_time=%#v", screenshot.inputs, currentTime.inputs)
 	}
 }
 
 func TestRuntimeForceSimpleLoopDoesNotGenerateTodo(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			toolCallResponse("call_1", "web_search", `{"__arg1":"Aiden"}`),
+			toolCallResponse("call_1", "current_time", `{"__arg1":"{\"timezone\":\"UTC\"}"}`),
 			contentResponse("done"),
 		},
 	}
-	webSearch := &stubTool{name: "web_search", description: "Search web.", output: "result"}
+	currentTime := &stubTool{name: "current_time", description: "Get time.", output: "time"}
 	runtime := NewRuntimeWithDeps(
 		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", ForceSimpleLoop: true},
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
-		&ToolSet{tools: map[string]langtools.Tool{"web_search": webSearch}},
+		&ToolSet{tools: map[string]langtools.Tool{"current_time": currentTime}},
 		NewSkillIndex(),
 	)
 
@@ -2701,8 +2712,8 @@ func TestRuntimeForceSimpleLoopDoesNotGenerateTodo(t *testing.T) {
 	if closed := runEventsOfType(events, "todo_closed"); len(closed) != 0 {
 		t.Fatalf("single-agent loop emitted todo_closed events: %#v", closed)
 	}
-	if len(webSearch.inputs) != 1 {
-		t.Fatalf("expected single-agent tool to execute without todo, inputs=%#v", webSearch.inputs)
+	if len(currentTime.inputs) != 1 {
+		t.Fatalf("expected single-agent tool to execute without todo, inputs=%#v", currentTime.inputs)
 	}
 }
 

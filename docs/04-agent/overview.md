@@ -72,18 +72,8 @@ go run ./cmd/demo -config ./config -clear-memory -show-memory -input "Start fres
 
 ## Built-in Tools
 
-- `skill_list`
-- `skill_read`
-- `skill_manage`
-- `skill_mark_used`
-- `keyboard_tap`
-- `keyboard_text`
-- `mouse_click`
-- `mouse_move`
-- `mouse_scroll`
-- `touch_gesture`
-- `screenshot`
-- `audio_volume`
-- `shell`
+Built-in tools are registered with exposure tags. The default Agent catalog is intentionally small: core memory/time/skill-read tools plus common device-operation tools such as screenshot, stable-screen wait, quick action, touch gesture, keyboard tap, verified text entry, app launch, audio volume, and run script. Additional tools are progressively disclosed by skills such as `research`, `phone-data`, `phone-text-entry`, `debug-operator`, and `script-author`.
+
+The HTTP Tool Lab catalog can expose more tools than the default Agent catalog, but internal admin tools such as `skill_manage` are not exposed by default.
 
 For tool details and HTTP invocation methods, see [Tools HTTP API](tools-http-api.md).

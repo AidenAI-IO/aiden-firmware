@@ -7,32 +7,17 @@ metadata:
     [
       screenshot,
       wait_for_stable_screen,
-      image_diff,
       quick_action,
       touch_gesture,
-      mouse_click,
-      mouse_move,
-      mouse_scroll,
       keyboard_tap,
-      keyboard_text,
       enter_text_in_field,
-      enter_text_via_bridge,
+      open_app,
       search_launch_app,
       request_human_handoff,
-      recall_memory,
-      save_memory,
-      skill_read,
-      run_script,
-      list_scripts,
-      read_script,
-      write_script,
-      shell,
     ]
 ---
 
 Use this skill when the task requires operating a visible connected device UI. This is the complete generic device-operation playbook; do not split routine app switching, text entry, scrolling, picker, or screenshot recovery work into child skills.
-
-Use `run_script` only when the user explicitly asks to run a prepared demo script; pass only a script file name from the config directory's `scripts/` folder. It executes JSONL script lines directly without LLM planning between steps, and `tts` lines start playback asynchronously without waiting for speech to finish. Use `list_scripts` to see which scripts exist, `read_script` to inspect a script's content, and `write_script` to create or update one; for the script file format see the script-author skill.
 
 ## Core Loop
 
@@ -56,8 +41,8 @@ Prefer the highest-level reliable tool for the job:
 - Use `touch_gesture` for mobile taps, swipes, drag, back, and home gestures.
 - Use `enter_text_in_field` for normal text input into fields, including Chinese/CJK, emoji, IME, and verified field entry.
 - Use `keyboard_tap` for enter, escape, tab, arrows, shortcuts, and simple key actions.
-- Use `keyboard_text` only for simple standalone ASCII typing. Never use it for Chinese/CJK or emoji field entry.
-- Use `mouse_click`, `mouse_move`, and `mouse_scroll` only when touch-style controls are not appropriate.
+- Use `open_app` for launch-only app, URL, or dialer requests when the Phone Bridge is available.
+- If you need low-level mouse movement, wheel events, ASCII-only keyboard typing, shell, image diff, or script authoring, use the matching specialized skill instead of this default operator skill.
 
 If a semantic tool fails, read the message and choose a different approach. Do not retry the same binding unless the tool explicitly offers a distinct alternative.
 
