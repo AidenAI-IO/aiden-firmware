@@ -11,6 +11,7 @@ struct ModelToml {
     std::string base_url;
     std::string api_key;
     std::string token_env;
+    std::string reasoning_effort;
     double temperature = 0.0;
     int max_response_tokens = 0;
     int context_window = 0;
