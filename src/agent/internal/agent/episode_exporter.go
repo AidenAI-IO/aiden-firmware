@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -294,6 +295,210 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 		iterationSpansCreated[iteration.ID] = true
 		return nil
 	}
+	appendTimedVoiceSpan := func(event TaskEpisodeEvent, eventTime time.Time, spanName string) error {
+		parentID := phaseSpanID
+		duration := int64(0)
+		if event.DurationMs != nil && *event.DurationMs >= 0 {
+			duration = *event.DurationMs
+		}
+		metadata := map[string]interface{}{
+			"event_id": event.EventID,
+			"role":     event.Role,
+			"phase":    currentPhase,
+		}
+		for key, value := range event.Metadata {
+			metadata[key] = value
+		}
+		body := map[string]interface{}{
+			"id":                  uuid.NewString(),
+			"traceId":             traceID,
+			"parentObservationId": parentID,
+			"name":                spanName,
+			"startTime":           langfuseRFC3339(eventTime),
+			"endTime":             langfuseRFC3339(eventTime.Add(time.Duration(duration) * time.Millisecond)),
+			"output":              event.Content,
+			"environment":         e.cfg.EnvironmentOrDefault(),
+			"metadata":            metadata,
+		}
+		if strings.TrimSpace(event.Reason) != "" {
+			body["statusMessage"] = event.Reason
+		}
+		if event.IsError {
+			body["level"] = "ERROR"
+		}
+		if version != "" {
+			body["version"] = version
+		}
+		evt, err := newLangfuseEvent("span-create", eventTime, body)
+		if err != nil {
+			return err
+		}
+		batch = append(batch, evt)
+		return nil
+	}
+	appendSTTDetailSpans := func(event TaskEpisodeEvent, eventTime time.Time, parentDurationMs int64, parentID string) error {
+		if parentID == "" {
+			return nil
+		}
+		parentEnd := eventTime.Add(time.Duration(parentDurationMs) * time.Millisecond)
+		if parentEnd.Before(eventTime) {
+			parentEnd = eventTime
+		}
+		oneShotMS, hasOneShotMS := metadataDurationMS(event.Metadata, "one_shot_ms")
+		oneShotErr := metadataString(event.Metadata, "one_shot_error")
+		oneShotStart := parentEnd
+		if hasOneShotMS {
+			oneShotStart = parentEnd.Add(-time.Duration(oneShotMS) * time.Millisecond)
+			if oneShotStart.Before(eventTime) {
+				oneShotStart = eventTime
+			}
+		}
+		finalizeMS, hasFinalizeMS := metadataDurationMS(event.Metadata, "streaming_finalize_ms")
+		finalizeErr := metadataString(event.Metadata, "streaming_finalize_error")
+		finalizeStart := oneShotStart
+		if !hasOneShotMS {
+			finalizeStart = parentEnd
+		}
+		if hasFinalizeMS {
+			finalizeStart = finalizeStart.Add(-time.Duration(finalizeMS) * time.Millisecond)
+			if finalizeStart.Before(eventTime) {
+				finalizeStart = eventTime
+			}
+		}
+		audioCaptureEnd := finalizeStart
+		if !hasFinalizeMS && !hasOneShotMS {
+			audioCaptureEnd = parentEnd
+		}
+
+		appendChild := func(name string, spanStart, spanEnd time.Time, extra map[string]interface{}, statusMessage string) error {
+			if spanEnd.Before(spanStart) {
+				spanEnd = spanStart
+			}
+			metadata := map[string]interface{}{
+				"event_id": event.EventID,
+				"role":     event.Role,
+				"phase":    currentPhase,
+			}
+			for key, value := range event.Metadata {
+				metadata[key] = value
+			}
+			for key, value := range extra {
+				metadata[key] = value
+			}
+			body := map[string]interface{}{
+				"id":                  uuid.NewString(),
+				"traceId":             traceID,
+				"parentObservationId": parentID,
+				"name":                name,
+				"startTime":           langfuseRFC3339(spanStart),
+				"endTime":             langfuseRFC3339(spanEnd),
+				"environment":         e.cfg.EnvironmentOrDefault(),
+				"metadata":            metadata,
+			}
+			if event.Content != "" {
+				body["output"] = event.Content
+			}
+			if statusMessage != "" {
+				body["level"] = "ERROR"
+				body["statusMessage"] = statusMessage
+			}
+			if version != "" {
+				body["version"] = version
+			}
+			evt, err := newLangfuseEvent("span-create", spanStart, body)
+			if err != nil {
+				return err
+			}
+			batch = append(batch, evt)
+			return nil
+		}
+
+		if audioDurationMS, ok := metadataDurationMS(event.Metadata, "audio_duration_ms"); ok {
+			spanEnd := audioCaptureEnd
+			if spanEnd.Before(eventTime) || spanEnd.After(parentEnd) {
+				spanEnd = parentEnd
+			}
+			spanStart := spanEnd.Add(-time.Duration(audioDurationMS) * time.Millisecond)
+			if spanStart.Before(eventTime) {
+				spanStart = eventTime
+			}
+			if spanStart.After(eventTime) {
+				residualMS := spanStart.Sub(eventTime).Milliseconds()
+				if err := appendChild("stt/listening_overhead", eventTime, spanStart, map[string]interface{}{
+					"step":        "listening_overhead",
+					"duration_ms": residualMS,
+					"estimated":   true,
+				}, ""); err != nil {
+					return err
+				}
+			}
+			if err := appendChild("stt/audio_capture", spanStart, spanEnd, map[string]interface{}{
+				"step":        "audio_capture",
+				"duration_ms": audioDurationMS,
+			}, ""); err != nil {
+				return err
+			}
+		}
+
+		if readyMS, ok := metadataDurationMS(event.Metadata, "streaming_ready_ms"); ok || metadataString(event.Metadata, "streaming_unavailable_error") != "" {
+			spanEnd := eventTime
+			if ok {
+				spanEnd = eventTime.Add(time.Duration(readyMS) * time.Millisecond)
+				if spanEnd.After(parentEnd) {
+					spanEnd = parentEnd
+				}
+			}
+			if err := appendChild("stt/streaming_setup", eventTime, spanEnd, map[string]interface{}{
+				"step":        "streaming_setup",
+				"duration_ms": readyMS,
+			}, metadataString(event.Metadata, "streaming_unavailable_error")); err != nil {
+				return err
+			}
+		}
+
+		if hasFinalizeMS || finalizeErr != "" {
+			spanEnd := parentEnd
+			if hasOneShotMS {
+				spanEnd = oneShotStart
+			}
+			spanStart := spanEnd
+			if hasFinalizeMS {
+				spanStart = spanEnd.Add(-time.Duration(finalizeMS) * time.Millisecond)
+				if spanStart.Before(eventTime) {
+					spanStart = eventTime
+				}
+			}
+			if err := appendChild("stt/streaming_finalize", spanStart, spanEnd, map[string]interface{}{
+				"step":        "streaming_finalize",
+				"duration_ms": finalizeMS,
+			}, finalizeErr); err != nil {
+				return err
+			}
+		}
+
+		if hasOneShotMS || oneShotErr != "" {
+			spanStart := oneShotStart
+			if !hasOneShotMS {
+				spanStart = parentEnd
+			}
+			if err := appendChild("stt/one_shot", spanStart, parentEnd, map[string]interface{}{
+				"step":        "one_shot",
+				"duration_ms": oneShotMS,
+			}, oneShotErr); err != nil {
+				return err
+			}
+		}
+
+		if uploadErr := metadataString(event.Metadata, "streaming_upload_error"); uploadErr != "" {
+			if err := appendChild("stt/streaming_upload", eventTime, eventTime, map[string]interface{}{
+				"step": "streaming_upload",
+			}, uploadErr); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	}
 
 	for eventIndex, event := range episode.Events {
 		eventTime := parseEpisodeTime(event.Ts, startTime)
@@ -389,6 +594,60 @@ func (e *EpisodeExporter) buildLangfuseBatch(ctx context.Context, episode TaskEp
 				return nil, err
 			}
 			batch = append(batch, evt)
+
+		case runEventSTTTranscription:
+			parentID := phaseSpanID
+			duration := int64(0)
+			if event.DurationMs != nil && *event.DurationMs >= 0 {
+				duration = *event.DurationMs
+			}
+			metadata := map[string]interface{}{
+				"event_id": event.EventID,
+				"role":     event.Role,
+				"phase":    currentPhase,
+			}
+			for key, value := range event.Metadata {
+				metadata[key] = value
+			}
+			sttSpanID := uuid.NewString()
+			body := map[string]interface{}{
+				"id":                  sttSpanID,
+				"traceId":             traceID,
+				"parentObservationId": parentID,
+				"name":                "stt/transcription",
+				"startTime":           langfuseRFC3339(eventTime),
+				"endTime":             langfuseRFC3339(eventTime.Add(time.Duration(duration) * time.Millisecond)),
+				"output":              event.Content,
+				"environment":         e.cfg.EnvironmentOrDefault(),
+				"metadata":            metadata,
+			}
+			if strings.TrimSpace(event.Reason) != "" {
+				body["statusMessage"] = event.Reason
+			}
+			if event.IsError {
+				body["level"] = "ERROR"
+			}
+			if version != "" {
+				body["version"] = version
+			}
+			sttEvent, err := newLangfuseEvent("span-create", eventTime, body)
+			if err != nil {
+				return nil, err
+			}
+			batch = append(batch, sttEvent)
+			if err := appendSTTDetailSpans(event, eventTime, duration, sttSpanID); err != nil {
+				return nil, err
+			}
+
+		case runEventVoicePromptSound:
+			if err := appendTimedVoiceSpan(event, eventTime, "voice/prompt_sound_agent_send"); err != nil {
+				return nil, err
+			}
+
+		case runEventTTSStreamPreopen:
+			if err := appendTimedVoiceSpan(event, eventTime, "voice/preopen_tts_stream"); err != nil {
+				return nil, err
+			}
 
 		case runEventIterationStart:
 			iteration, ok := iterationWindowForEvent(iterations, eventTime)
@@ -940,6 +1199,90 @@ func langfuseUpdateSpanEndTime(batch []langfuseIngestionEvent, index int, endTim
 	if raw, err := json.Marshal(body); err == nil {
 		batch[index].Body = raw
 	}
+}
+
+func metadataDurationMS(metadata map[string]interface{}, key string) (int64, bool) {
+	if len(metadata) == 0 {
+		return 0, false
+	}
+	value, ok := metadata[key]
+	if !ok || value == nil {
+		return 0, false
+	}
+	var duration int64
+	switch v := value.(type) {
+	case int:
+		duration = int64(v)
+	case int8:
+		duration = int64(v)
+	case int16:
+		duration = int64(v)
+	case int32:
+		duration = int64(v)
+	case int64:
+		duration = v
+	case uint:
+		duration = int64(v)
+	case uint8:
+		duration = int64(v)
+	case uint16:
+		duration = int64(v)
+	case uint32:
+		duration = int64(v)
+	case uint64:
+		if v > uint64(1<<63-1) {
+			return 0, false
+		}
+		duration = int64(v)
+	case float32:
+		duration = int64(v)
+	case float64:
+		duration = int64(v)
+	case json.Number:
+		parsed, err := v.Int64()
+		if err != nil {
+			floatValue, floatErr := v.Float64()
+			if floatErr != nil {
+				return 0, false
+			}
+			parsed = int64(floatValue)
+		}
+		duration = parsed
+	case string:
+		trimmed := strings.TrimSpace(v)
+		if trimmed == "" {
+			return 0, false
+		}
+		parsed, err := strconv.ParseInt(trimmed, 10, 64)
+		if err != nil {
+			floatValue, floatErr := strconv.ParseFloat(trimmed, 64)
+			if floatErr != nil {
+				return 0, false
+			}
+			parsed = int64(floatValue)
+		}
+		duration = parsed
+	default:
+		return 0, false
+	}
+	if duration < 0 {
+		return 0, false
+	}
+	return duration, true
+}
+
+func metadataString(metadata map[string]interface{}, key string) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	value, ok := metadata[key]
+	if !ok || value == nil {
+		return ""
+	}
+	if s, ok := value.(string); ok {
+		return strings.TrimSpace(s)
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
 }
 
 func langfusePhaseWindows(events []TaskEpisodeEvent, startTime, endTime time.Time) []langfuseIterationWindow {

@@ -110,7 +110,7 @@ type RunResult struct {
 
 func canonicalTurnInputFromRunRequest(req RunRequest) TurnInput {
 	turn := normalizeTurnInput(req.Turn)
-	if turn.InputText == "" && turn.Modality == TurnModalityText && len(turn.Attachments) == 0 && len(turn.Artifacts) == 0 && turn.Transcript == "" && turn.OriginalText == "" {
+	if turn.InputText == "" && turn.Modality == TurnModalityText && len(turn.Attachments) == 0 && len(turn.Artifacts) == 0 && len(turn.TelemetryEvents) == 0 && turn.Transcript == "" && turn.OriginalText == "" {
 		return NewTextTurnInput(req.Input, req.Attachments)
 	}
 	if len(turn.Attachments) == 0 && len(req.Attachments) > 0 {
@@ -123,6 +123,30 @@ func canonicalTurnInputFromRunRequest(req RunRequest) TurnInput {
 		turn.InputText = normalizeRunInput(req.Input, turn.Attachments)
 	}
 	return normalizeTurnInput(turn)
+}
+
+func episodeStartTimeWithEvents(fallback time.Time, events []TaskEpisodeEvent) time.Time {
+	start := fallback
+	for _, event := range events {
+		eventTime, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(event.Ts))
+		if err != nil || eventTime.IsZero() {
+			continue
+		}
+		eventTime = eventTime.UTC()
+		if start.IsZero() || eventTime.Before(start) {
+			start = eventTime
+		}
+	}
+	return start
+}
+
+func recordPreRunEpisodeEvents(recorder *EpisodeRecorder, events []TaskEpisodeEvent) {
+	if recorder == nil {
+		return
+	}
+	for _, event := range events {
+		recorder.RecordEvent(event)
+	}
 }
 
 func (r RunResult) SpokenText() string {
@@ -180,11 +204,14 @@ func (m *RunMetrics) CacheHitRate() float64 {
 }
 
 const (
-	runEventToolCall       = "tool_call"
-	runEventMemoryRetrieve = "memory_retrieve"
-	runEventSessionBegin   = "session_begin"
-	runEventIterationStart = "iteration_start"
-	runEventIterationEnd   = "iteration_end"
+	runEventToolCall         = "tool_call"
+	runEventSTTTranscription = "stt_transcription"
+	runEventVoicePromptSound = "voice_prompt_sound"
+	runEventTTSStreamPreopen = "tts_stream_preopen"
+	runEventMemoryRetrieve   = "memory_retrieve"
+	runEventSessionBegin     = "session_begin"
+	runEventIterationStart   = "iteration_start"
+	runEventIterationEnd     = "iteration_end"
 )
 
 type RunEvent struct {
@@ -539,6 +566,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	startTime := time.Now()
 	metrics := &RunMetrics{}
 	turnInput := canonicalTurnInputFromRunRequest(req)
+	preRunEvents := cloneTaskEpisodeEvents(turnInput.TelemetryEvents)
 	normalizedInput := turnInput.InputText
 	if r.waitForWakeup != nil {
 		r.waitForWakeup.Consume()
@@ -582,13 +610,14 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 			}
 			episodeRecorder = r.memoryPlane.NewEpisodeRecorder(retrieveReq, MemoryContext{})
 			if episodeRecorder != nil {
-				episodeRecorder.setStartedAtIfEarlier(startTime.UTC())
+				episodeRecorder.setStartedAtIfEarlier(episodeStartTimeWithEvents(startTime.UTC(), preRunEvents))
 				episodeID = episodeRecorder.ID()
 				startCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 				if err := episodeRecorder.Start(startCtx); err != nil && r.logger != nil {
 					r.logger.Warn("[memory] start failed episode trace failed: %v", err)
 				}
 				cancel()
+				recordPreRunEpisodeEvents(episodeRecorder, preRunEvents)
 			}
 		}
 		if episodeRecorder == nil {
@@ -739,10 +768,11 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	if r.memoryPlane != nil {
 		episodeRecorder = r.memoryPlane.NewEpisodeRecorder(retrieveReq, memoryContext)
 		if episodeRecorder != nil {
-			episodeRecorder.setStartedAtIfEarlier(startTime.UTC())
+			episodeRecorder.setStartedAtIfEarlier(episodeStartTimeWithEvents(startTime.UTC(), preRunEvents))
 			if err := episodeRecorder.Start(ctx); err != nil && r.logger != nil {
 				r.logger.Warn("[memory] start episode failed: %v", err)
 			}
+			recordPreRunEpisodeEvents(episodeRecorder, preRunEvents)
 			episodeRecorder.RecordEvent(sessionBeginEvent)
 			if memoryRetrieveEvent != nil {
 				episodeRecorder.RecordEvent(*memoryRetrieveEvent)
