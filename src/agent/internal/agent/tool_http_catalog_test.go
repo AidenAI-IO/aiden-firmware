@@ -83,7 +83,7 @@ func TestAllToolsExposedOverHTTP(t *testing.T) {
 	}
 }
 
-func TestResolveToolsIncludesQuickAction(t *testing.T) {
+func TestAvailableToolsIncludesQuickAction(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
 		Config{},
 		nil,
@@ -92,7 +92,7 @@ func TestResolveToolsIncludesQuickAction(t *testing.T) {
 		NewSkillIndex(),
 	)
 
-	tools := runtime.resolveTools(ResolvedSkills{})
+	tools := runtime.availableTools()
 	names := toolNamesFromTools(tools)
 	found := false
 	for _, name := range names {
@@ -102,15 +102,15 @@ func TestResolveToolsIncludesQuickAction(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("resolveTools missing quick_action: %v", names)
+		t.Fatalf("availableTools missing quick_action: %v", names)
 	}
 }
 
-func TestResolveToolsIncludesPhoneBridgeToolsWhenDisconnected(t *testing.T) {
+func TestAvailableToolsIncludesPhoneBridgeToolsWhenDisconnected(t *testing.T) {
 	runtime := newRuntimeWithTextEntryTools()
 	runtime.tools.RegisterPhoneBridge(NewPhoneBridge(nil))
 
-	tools := runtime.resolveTools(ResolvedSkills{})
+	tools := runtime.availableTools()
 	names := toolNamesFromTools(tools)
 	for _, want := range []string{"bridge_open_app", "search_launch_app", "enter_text_via_bridge"} {
 		found := false
@@ -121,25 +121,25 @@ func TestResolveToolsIncludesPhoneBridgeToolsWhenDisconnected(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Fatalf("resolveTools missing disconnected bridge recovery tool %s: %v", want, names)
+			t.Fatalf("availableTools missing disconnected bridge recovery tool %s: %v", want, names)
 		}
 	}
 	for _, notWant := range []string{"bridge_clipboard", "bridge_calendar", "bridge_contacts", "bridge_notification"} {
 		for _, name := range names {
 			if name == notWant {
-				t.Fatalf("resolveTools exposed disconnected phone bridge tool %s: %v", notWant, names)
+				t.Fatalf("availableTools exposed disconnected phone bridge tool %s: %v", notWant, names)
 			}
 		}
 	}
 }
 
-func TestResolveToolsIncludesPhoneBridgeToolsWhenConnected(t *testing.T) {
+func TestAvailableToolsIncludesPhoneBridgeToolsWhenConnected(t *testing.T) {
 	runtime := newRuntimeWithTextEntryTools()
 	bridge := NewPhoneBridge(nil)
 	bridge.connected = true
 	runtime.tools.RegisterPhoneBridge(bridge)
 
-	tools := runtime.resolveTools(ResolvedSkills{})
+	tools := runtime.availableTools()
 	names := toolNamesFromTools(tools)
 	for _, want := range []string{"bridge_open_app", "bridge_clipboard", "bridge_calendar", "bridge_contacts", "bridge_notification"} {
 		found := false
@@ -155,17 +155,17 @@ func TestResolveToolsIncludesPhoneBridgeToolsWhenConnected(t *testing.T) {
 	}
 }
 
-func TestResolveToolsHidesOpenAppAndKeepsDataToolsDuringPiPBackground(t *testing.T) {
+func TestAvailableToolsHidesOpenAppAndKeepsDataToolsDuringPiPBackground(t *testing.T) {
 	runtime := newRuntimeWithTextEntryTools()
 	bridge := newIOSPiPBackgroundBridge(t)
 	runtime.tools.RegisterPhoneBridge(bridge)
 
-	tools := runtime.resolveTools(ResolvedSkills{})
+	tools := runtime.availableTools()
 	names := toolNamesFromTools(tools)
 	for _, notWant := range []string{"bridge_open_app"} {
 		for _, name := range names {
 			if name == notWant {
-				t.Fatalf("resolveTools exposed PiP background unavailable tool %s: %v", notWant, names)
+				t.Fatalf("availableTools exposed PiP background unavailable tool %s: %v", notWant, names)
 			}
 		}
 	}
@@ -187,81 +187,6 @@ func TestResolveToolsHidesOpenAppAndKeepsDataToolsDuringPiPBackground(t *testing
 	if _, ok := runtime.ToolDescriptorByName("bridge_clipboard"); !ok {
 		t.Fatalf("ToolDescriptorByName missing PiP background bridge_clipboard: %v", names)
 	}
-}
-
-func TestResolveToolsHidesAllowedPhoneBridgeToolWhenDisconnected(t *testing.T) {
-	runtime := newRuntimeWithTextEntryTools()
-	runtime.tools.RegisterPhoneBridge(NewPhoneBridge(nil))
-
-	tools := runtime.resolveTools(ResolvedSkills{
-		HasToolRestriction: true,
-		AllowedTools:       map[string]struct{}{"bridge_clipboard": {}},
-	})
-	names := toolNamesFromTools(tools)
-	for _, name := range names {
-		if name == "bridge_clipboard" {
-			t.Fatalf("resolveTools with allowed_tools exposed disconnected bridge_clipboard: %v", names)
-		}
-	}
-}
-
-func TestResolveToolsIncludesAllowedOpenAppWhenDisconnected(t *testing.T) {
-	runtime := newRuntimeWithTextEntryTools()
-	runtime.tools.RegisterPhoneBridge(NewPhoneBridge(nil))
-
-	tools := runtime.resolveTools(ResolvedSkills{
-		HasToolRestriction: true,
-		AllowedTools:       map[string]struct{}{"bridge_open_app": {}},
-	})
-	names := toolNamesFromTools(tools)
-	for _, name := range names {
-		if name == "bridge_open_app" {
-			return
-		}
-	}
-	t.Fatalf("resolveTools with allowed_tools missing disconnected bridge_open_app: %v", names)
-}
-
-func TestResolveToolsIncludesAllowedPhoneBridgeToolWhenConnected(t *testing.T) {
-	runtime := newRuntimeWithTextEntryTools()
-	bridge := NewPhoneBridge(nil)
-	bridge.connected = true
-	runtime.tools.RegisterPhoneBridge(bridge)
-
-	tools := runtime.resolveTools(ResolvedSkills{
-		HasToolRestriction: true,
-		AllowedTools:       map[string]struct{}{"bridge_open_app": {}},
-	})
-	names := toolNamesFromTools(tools)
-	for _, name := range names {
-		if name == "bridge_open_app" {
-			return
-		}
-	}
-	t.Fatalf("resolveTools with allowed_tools missing connected bridge_open_app: %v", names)
-}
-
-func TestResolveToolsHidesAllowedOpenAppDuringPiPBackground(t *testing.T) {
-	runtime := newRuntimeWithTextEntryTools()
-	bridge := newIOSPiPBackgroundBridge(t)
-	runtime.tools.RegisterPhoneBridge(bridge)
-
-	tools := runtime.resolveTools(ResolvedSkills{
-		HasToolRestriction: true,
-		AllowedTools:       map[string]struct{}{"bridge_open_app": {}, "bridge_clipboard": {}},
-	})
-	names := toolNamesFromTools(tools)
-	for _, name := range names {
-		if name == "bridge_open_app" {
-			t.Fatalf("resolveTools with allowed_tools exposed PiP background bridge_open_app: %v", names)
-		}
-	}
-	for _, name := range names {
-		if name == "bridge_clipboard" {
-			return
-		}
-	}
-	t.Fatalf("resolveTools with allowed_tools missing PiP background bridge_clipboard: %v", names)
 }
 
 func newIOSPiPBackgroundBridge(t *testing.T) *PhoneBridge {
