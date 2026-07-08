@@ -74,7 +74,7 @@ struct SingleReplyServer {
 
 TEST_CASE("FrameServiceClient health sends request and parses health response") {
     SingleReplyServer server(
-        R"({"type":"response","method":"health","status":"OK","state":"RUNNING","latest_seq":42,"frame_age_ms":7,"ring_buffer_size":8,"ring_buffer_used":3,"consecutive_failures":0,"avg_frame_serve_latency_ms":1.5})",
+        R"({"type":"response","method":"health","status":"OK","state":"RUNNING","latest_seq":42,"frame_age_ms":7,"ring_buffer_size":8,"ring_buffer_used":3,"consecutive_failures":0,"last_recovery_ts":"9007199254740993","avg_frame_serve_latency_ms":1.5})",
         std::vector<uint8_t>());
     FrameServiceClient client(server.path.path.c_str());
     HealthResult result;
@@ -86,6 +86,7 @@ TEST_CASE("FrameServiceClient health sends request and parses health response") 
     CHECK(result.frame_age_ms == 7);
     CHECK(result.ring_buffer_size == 8);
     CHECK(result.ring_buffer_used == 3);
+    CHECK(result.last_recovery_ts == 9007199254740993ull);
     CHECK(result.avg_frame_serve_latency_ms == doctest::Approx(1.5));
 }
 
