@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 )
@@ -131,43 +130,26 @@ func ensurePhoneBridgeReadyForCommand(ctx context.Context, bridge *PhoneBridge, 
 	return restorer.EnsureForeground(ctx)
 }
 
-func sendForegroundBridgeCommand(ctx context.Context, bridge *PhoneBridge, restorer *PhoneBridgeRestorer, cmd BridgeCommand) (BridgeCommandResponse, bool, error) {
+func sendRoutedBridgeCommand(ctx context.Context, bridge *PhoneBridge, restorer *PhoneBridgeRestorer, cmd BridgeCommand) (BridgeCommandResponse, bool, error) {
+	if bridge == nil {
+		return BridgeCommandResponse{}, false, fmt.Errorf("phone bridge is not initialized")
+	}
+	status := bridge.Status()
+	if phoneBridgeReadyForCommand(status) {
+		resp, err := bridge.SendCommand(ctx, cmd)
+		return resp, false, err
+	}
+	if phoneBridgeCanUsePiPBackground(status, cmd.Type) {
+		resp, err := bridge.SendQueuedCommand(ctx, cmd)
+		return resp, false, err
+	}
+
 	restored, err := ensurePhoneBridgeReadyForCommand(ctx, bridge, restorer)
 	if err != nil {
 		return BridgeCommandResponse{}, restored, err
 	}
 	resp, err := bridge.SendCommand(ctx, cmd)
 	return resp, restored, err
-}
-
-func phoneBridgeReadyForCommand(status PhoneBridgeStatus) bool {
-	if !status.Connected {
-		return false
-	}
-	if !strings.EqualFold(strings.TrimSpace(status.Platform), "ios") {
-		return true
-	}
-	state := strings.ToLower(strings.TrimSpace(status.AppState))
-	return state == "" || state == "active"
-}
-
-func phoneBridgeCanRestoreFromReturnEntry(status PhoneBridgeStatus) bool {
-	if status.ReturnEntryAvailable == nil || !*status.ReturnEntryAvailable {
-		return false
-	}
-	entry := strings.ToLower(strings.TrimSpace(status.ReturnEntry))
-	return entry == "dynamic_island"
-}
-
-func phoneBridgeRestoreUnavailableError(status PhoneBridgeStatus) error {
-	if status.Connected {
-		state := strings.TrimSpace(status.AppState)
-		if state == "" {
-			return fmt.Errorf("phone bridge is connected but not ready for foreground command")
-		}
-		return fmt.Errorf("phone bridge app is %s and no supported Dynamic Island return entry is available", state)
-	}
-	return fmt.Errorf("phone bridge not connected and no supported Dynamic Island return entry is available")
 }
 
 func phoneBridgeDynamicIslandTapPoint() (float64, float64) {

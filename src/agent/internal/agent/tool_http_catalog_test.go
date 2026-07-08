@@ -1,6 +1,9 @@
 package agent
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func newRuntimeWithTextEntryTools() *Runtime {
 	tools := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
@@ -147,7 +150,21 @@ func TestAvailableToolsIncludesPhoneBridgeToolsWhenConnected(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Fatalf("availableTools missing connected phone bridge tool %s: %v", want, names)
+			t.Fatalf("resolveTools missing connected phone bridge tool %s: %v", want, names)
 		}
 	}
+}
+
+func newIOSPiPBackgroundBridge(t *testing.T) *PhoneBridge {
+	t.Helper()
+	bridge := NewPhoneBridge(nil)
+	t.Cleanup(func() { bridge.queue.Stop() })
+	bridge.mu.Lock()
+	bridge.platform = "ios"
+	bridge.appState = "background"
+	bridge.appStateAt = time.Now()
+	bridge.pipBridgeEnabled = true
+	bridge.pipBridgeSeen = true
+	bridge.mu.Unlock()
+	return bridge
 }
