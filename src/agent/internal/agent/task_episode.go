@@ -17,8 +17,16 @@ import (
 )
 
 type TaskEpisodeStore struct {
-	mu      sync.Mutex
-	rootDir string
+	mu         sync.Mutex
+	rootDir    string
+	cacheMu    sync.Mutex
+	indexCache taskEpisodeIndexCache
+}
+
+type taskEpisodeIndexCache struct {
+	signature memoryFileSignature
+	index     episodeIndex
+	valid     bool
 }
 
 type TaskEpisodeWriter struct {
@@ -631,7 +639,7 @@ func (s *TaskEpisodeStore) MarkRunningEpisodesInterruptedWithDetails(ctx context
 	}
 	if changed {
 		index.UpdatedAt = now
-		if err := writeYAMLAtomic(s.indexPath(), index); err != nil {
+		if err := s.writeIndex(index); err != nil {
 			return interrupted, err
 		}
 	}
@@ -773,7 +781,7 @@ func (s *TaskEpisodeStore) RebuildIndex(ctx context.Context) error {
 	var entries []episodeIndexEntry
 	if _, err := os.Stat(s.rootDir); err != nil {
 		if os.IsNotExist(err) {
-			return writeYAMLAtomic(s.indexPath(), episodeIndex{Version: 1, UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)})
+			return s.writeIndex(episodeIndex{Version: 1, UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)})
 		}
 		return err
 	}
@@ -807,7 +815,7 @@ func (s *TaskEpisodeStore) RebuildIndex(ctx context.Context) error {
 	sort.SliceStable(entries, func(i, j int) bool {
 		return entries[i].StartedAt > entries[j].StartedAt
 	})
-	return writeYAMLAtomic(s.indexPath(), episodeIndex{
+	return s.writeIndex(episodeIndex{
 		Version:   1,
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		Episodes:  entries,
@@ -833,6 +841,15 @@ func (s *TaskEpisodeStore) indexPath() string {
 }
 
 func (s *TaskEpisodeStore) loadIndex() (episodeIndex, error) {
+	signature, ok, err := memoryFileSignatureForPath(s.indexPath())
+	if err != nil {
+		return episodeIndex{}, fmt.Errorf("stat episode index: %w", err)
+	}
+	if ok {
+		if index, hit := s.cachedIndex(signature); hit {
+			return index, nil
+		}
+	}
 	data, err := os.ReadFile(s.indexPath())
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -844,7 +861,57 @@ func (s *TaskEpisodeStore) loadIndex() (episodeIndex, error) {
 	if err := yaml.Unmarshal(data, &index); err != nil {
 		return episodeIndex{}, fmt.Errorf("decode episode index: %w", err)
 	}
-	return index, nil
+	if ok {
+		s.storeIndexCache(signature, index)
+	}
+	return cloneEpisodeIndex(index), nil
+}
+
+func (s *TaskEpisodeStore) writeIndex(index episodeIndex) error {
+	if err := writeYAMLAtomic(s.indexPath(), index); err != nil {
+		return err
+	}
+	s.invalidateIndexCache()
+	return nil
+}
+
+func (s *TaskEpisodeStore) cachedIndex(signature memoryFileSignature) (episodeIndex, bool) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	if !s.indexCache.valid || s.indexCache.signature != signature {
+		return episodeIndex{}, false
+	}
+	return cloneEpisodeIndex(s.indexCache.index), true
+}
+
+func (s *TaskEpisodeStore) storeIndexCache(signature memoryFileSignature, index episodeIndex) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	s.indexCache = taskEpisodeIndexCache{signature: signature, index: cloneEpisodeIndex(index), valid: true}
+}
+
+func (s *TaskEpisodeStore) invalidateIndexCache() {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	s.indexCache = taskEpisodeIndexCache{}
+}
+
+func cloneEpisodeIndex(index episodeIndex) episodeIndex {
+	index.Episodes = cloneEpisodeIndexEntries(index.Episodes)
+	return index
+}
+
+func cloneEpisodeIndexEntries(entries []episodeIndexEntry) []episodeIndexEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	cloned := make([]episodeIndexEntry, len(entries))
+	for i, entry := range entries {
+		cloned[i] = entry
+		cloned[i].Tags = append([]string(nil), entry.Tags...)
+		cloned[i].Entities = append([]string(nil), entry.Entities...)
+	}
+	return cloned
 }
 
 func (s *TaskEpisodeStore) upsertIndexEntry(episode TaskEpisode, dir string, events []TaskEpisodeEvent) error {
@@ -869,7 +936,7 @@ func (s *TaskEpisodeStore) upsertIndexEntry(episode TaskEpisode, dir string, eve
 	})
 	index.Version = 1
 	index.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
-	return writeYAMLAtomic(s.indexPath(), index)
+	return s.writeIndex(index)
 }
 
 func (s *TaskEpisodeStore) indexEntryForEpisode(episode TaskEpisode, dir string, events []TaskEpisodeEvent) episodeIndexEntry {
