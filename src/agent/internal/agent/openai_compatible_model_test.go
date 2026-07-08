@@ -1576,15 +1576,23 @@ func TestOpenRouterSupportedModelAddsPromptCacheControlToSystemPrefix(t *testing
 		} `json:"messages"`
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
-			t.Fatalf("decode request: %v", err)
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/endpoints"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"endpoints":[{"supported_parameters":["cache_control"]}]}}`))
+		case r.URL.Path == "/chat/completions":
+			if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+		default:
+			http.NotFound(w, r)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
 	}))
 	defer server.Close()
 
-	manager := NewModelManager(ModelConfig{Provider: "openrouter", Model: "anthropic/claude-sonnet-4", APIKey: "k", BaseURL: server.URL}, ProxyConfig{})
+	manager := NewModelManager(ModelConfig{Provider: "openrouter", Model: "vendor/cache-control-model", APIKey: "k", BaseURL: server.URL}, ProxyConfig{})
 	model, err := manager.Get()
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
@@ -1611,6 +1619,54 @@ func TestOpenRouterSupportedModelAddsPromptCacheControlToSystemPrefix(t *testing
 	}
 }
 
+func TestOpenRouterSupportedModelAddsPromptCacheControlToSingleSystemPart(t *testing.T) {
+	var captured struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/endpoints"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"endpoints":[{"supported_parameters":["cache_control"]}]}}`))
+		case r.URL.Path == "/chat/completions":
+			if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	manager := NewModelManager(ModelConfig{Provider: "openrouter", Model: "vendor/cache-control-model", APIKey: "k", BaseURL: server.URL}, ProxyConfig{})
+	model, err := manager.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if _, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextPart("stable role prompt")}},
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("hello")}},
+	}); err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	if len(captured.Messages) == 0 {
+		t.Fatalf("expected system content, got %#v", captured.Messages)
+	}
+	systemContent := decodePromptCacheSystemContent(t, captured.Messages[0].Content)
+	if len(systemContent) != 1 {
+		t.Fatalf("expected one system content part, got %#v", systemContent)
+	}
+	if got := systemContent[0].CacheControl; got == nil || got.Type != "ephemeral" {
+		t.Fatalf("single system text block should carry cache_control ephemeral, got %#v", systemContent[0])
+	}
+}
+
 func TestOpenRouterUnsupportedModelDoesNotSendPromptCacheControl(t *testing.T) {
 	var captured struct {
 		Messages []struct {
@@ -1619,11 +1675,19 @@ func TestOpenRouterUnsupportedModelDoesNotSendPromptCacheControl(t *testing.T) {
 		} `json:"messages"`
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
-			t.Fatalf("decode request: %v", err)
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/endpoints"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"endpoints":[{"supported_parameters":["temperature"]}]}}`))
+		case r.URL.Path == "/chat/completions":
+			if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+		default:
+			http.NotFound(w, r)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
 	}))
 	defer server.Close()
 
