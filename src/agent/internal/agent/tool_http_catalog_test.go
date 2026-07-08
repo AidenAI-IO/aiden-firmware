@@ -1,6 +1,9 @@
 package agent
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func newRuntimeWithTextEntryTools() *Runtime {
 	tools := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
@@ -152,6 +155,40 @@ func TestResolveToolsIncludesPhoneBridgeToolsWhenConnected(t *testing.T) {
 	}
 }
 
+func TestResolveToolsHidesOpenAppAndKeepsDataToolsDuringPiPBackground(t *testing.T) {
+	runtime := newRuntimeWithTextEntryTools()
+	bridge := newIOSPiPBackgroundBridge(t)
+	runtime.tools.RegisterPhoneBridge(bridge)
+
+	tools := runtime.resolveTools(ResolvedSkills{})
+	names := toolNamesFromTools(tools)
+	for _, notWant := range []string{"open_app"} {
+		for _, name := range names {
+			if name == notWant {
+				t.Fatalf("resolveTools exposed PiP background unavailable tool %s: %v", notWant, names)
+			}
+		}
+	}
+	for _, want := range []string{"clipboard", "calendar", "contacts", "notification", "search_launch_app"} {
+		found := false
+		for _, name := range names {
+			if name == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("resolveTools missing PiP background tool %s: %v", want, names)
+		}
+	}
+	if _, ok := runtime.ToolDescriptorByName("open_app"); ok {
+		t.Fatalf("ToolDescriptorByName exposed PiP background unavailable open_app: %v", names)
+	}
+	if _, ok := runtime.ToolDescriptorByName("clipboard"); !ok {
+		t.Fatalf("ToolDescriptorByName missing PiP background clipboard: %v", names)
+	}
+}
+
 func TestResolveToolsHidesAllowedPhoneBridgeToolWhenDisconnected(t *testing.T) {
 	runtime := newRuntimeWithTextEntryTools()
 	runtime.tools.RegisterPhoneBridge(NewPhoneBridge(nil))
@@ -202,4 +239,41 @@ func TestResolveToolsIncludesAllowedPhoneBridgeToolWhenConnected(t *testing.T) {
 		}
 	}
 	t.Fatalf("resolveTools with allowed_tools missing connected open_app: %v", names)
+}
+
+func TestResolveToolsHidesAllowedOpenAppDuringPiPBackground(t *testing.T) {
+	runtime := newRuntimeWithTextEntryTools()
+	bridge := newIOSPiPBackgroundBridge(t)
+	runtime.tools.RegisterPhoneBridge(bridge)
+
+	tools := runtime.resolveTools(ResolvedSkills{
+		HasToolRestriction: true,
+		AllowedTools:       map[string]struct{}{"open_app": {}, "clipboard": {}},
+	})
+	names := toolNamesFromTools(tools)
+	for _, name := range names {
+		if name == "open_app" {
+			t.Fatalf("resolveTools with allowed_tools exposed PiP background open_app: %v", names)
+		}
+	}
+	for _, name := range names {
+		if name == "clipboard" {
+			return
+		}
+	}
+	t.Fatalf("resolveTools with allowed_tools missing PiP background clipboard: %v", names)
+}
+
+func newIOSPiPBackgroundBridge(t *testing.T) *PhoneBridge {
+	t.Helper()
+	bridge := NewPhoneBridge(nil)
+	t.Cleanup(func() { bridge.queue.Stop() })
+	bridge.mu.Lock()
+	bridge.platform = "ios"
+	bridge.appState = "background"
+	bridge.appStateAt = time.Now()
+	bridge.pipBridgeEnabled = true
+	bridge.pipBridgeSeen = true
+	bridge.mu.Unlock()
+	return bridge
 }

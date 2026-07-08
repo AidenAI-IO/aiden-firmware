@@ -321,6 +321,43 @@ func TestPhoneBridgeRuntimeContextBackgroundAppGuidesDynamicIslandRecovery(t *te
 	}
 }
 
+func TestPhoneBridgeRuntimeContextPiPBackgroundDisablesOpenApp(t *testing.T) {
+	lastHeartbeat := time.Date(2026, 6, 1, 2, 3, 4, 0, time.UTC)
+	enabled := true
+	got := phoneBridgeRuntimeContext(PhoneBridgeStatus{
+		Connected:            false,
+		Platform:             "ios",
+		LastHeartbeatAt:      &lastHeartbeat,
+		AppState:             "background",
+		AppStateUpdatedAt:    &lastHeartbeat,
+		ReturnEntry:          "dynamic_island",
+		ReturnEntryAvailable: testBoolPtr(true),
+		PipBridgeEnabled:     &enabled,
+	})
+
+	for _, want := range []string{
+		"- pip_bridge:",
+		"available=false hidden_by_pip=true",
+		"PiP Bridge mode is enabled while Aiden is backgrounded",
+		"iOS gives PiP priority over the Dynamic Island",
+		"Dynamic Island return entry is not visible",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("runtime context missing %q:\n%s", want, got)
+		}
+	}
+	for _, notWant := range []string{
+		"will first tap the Aiden Dynamic Island entry",
+		"Use open_app as the primary path",
+		"open_app is intentionally unavailable",
+		"Use clipboard, calendar, contacts, and notification only",
+	} {
+		if strings.Contains(got, notWant) {
+			t.Fatalf("PiP background context should not include %q:\n%s", notWant, got)
+		}
+	}
+}
+
 func TestPhoneBridgeRuntimeContextIncludesPhoneEnvironment(t *testing.T) {
 	lastHeartbeat := time.Date(2026, 6, 1, 2, 3, 4, 0, time.UTC)
 	environmentUpdatedAt := time.Date(2026, 6, 1, 2, 3, 5, 0, time.UTC)
