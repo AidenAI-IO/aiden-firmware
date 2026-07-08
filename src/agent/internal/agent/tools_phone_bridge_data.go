@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const phoneBridgeBackgroundSafeDataToolNote = `On iOS, when Aiden is backgrounded with PiP Bridge mode active, this data tool can run through the HTTP command queue without restoring Aiden. If PiP is not active but the Dynamic Island return entry is available, the tool restores Aiden to foreground before sending the command. PiP Bridge mode is not a foreground substitute for open_app or UI actions. `
+const phoneBridgeBackgroundSafeDataToolNote = `On iOS, when Aiden is backgrounded with PiP Bridge mode active, this data tool can run through the HTTP command queue without restoring Aiden. If PiP is not active but the Dynamic Island return entry is available, the tool restores Aiden to foreground before sending the command. PiP Bridge mode is not a foreground substitute for bridge_open_app or UI actions. `
 
 // nextBridgeCmdID builds a unique command id for a bridge command type. It
 // reuses openAppCmdSeq so every outbound bridge command shares one counter.
@@ -52,7 +52,7 @@ func NewClipboardTool(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) *Clipb
 	return &ClipboardTool{bridge: bridge, restorer: restorer}
 }
 
-func (t *ClipboardTool) Name() string { return "clipboard" }
+func (t *ClipboardTool) Name() string { return toolBridgeClipboard }
 
 func (t *ClipboardTool) Description() string {
 	return `Read or write the connected phone's system clipboard via the phone bridge. ` +
@@ -165,7 +165,7 @@ func NewCalendarTool(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) *Calend
 	return &CalendarTool{bridge: bridge, restorer: restorer}
 }
 
-func (t *CalendarTool) Name() string { return "calendar" }
+func (t *CalendarTool) Name() string { return toolBridgeCalendar }
 
 func (t *CalendarTool) Description() string {
 	return `Create, query, or delete system calendar events on the connected phone via the phone bridge. ` +
@@ -362,7 +362,7 @@ func NewContactsTool(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) *Contac
 	return &ContactsTool{bridge: bridge, restorer: restorer}
 }
 
-func (t *ContactsTool) Name() string { return "contacts" }
+func (t *ContactsTool) Name() string { return toolBridgeContacts }
 
 func (t *ContactsTool) Description() string {
 	return `Query, create, or update contacts on the connected phone via the phone bridge. ` +
@@ -558,7 +558,7 @@ func NewNotificationTool(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) *No
 	return &NotificationTool{bridge: bridge, restorer: restorer}
 }
 
-func (t *NotificationTool) Name() string { return "notification" }
+func (t *NotificationTool) Name() string { return toolBridgeNotification }
 
 func (t *NotificationTool) Description() string {
 	return `Send local notifications on the connected phone via the phone bridge. ` +

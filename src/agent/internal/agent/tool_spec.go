@@ -240,8 +240,8 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		ExampleInput: `{"action":"list"}`,
 		AgentExposed: toolSpecBoolPtr(true),
 	},
-	"open_app": {
-		Category:     "phone",
+	toolBridgeOpenApp: {
+		Category:     "bridge",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"app":"微信"}`,
 	},
@@ -250,23 +250,23 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"app":"WeChat"}`,
 	},
-	"clipboard": {
-		Category:     "phone",
+	toolBridgeClipboard: {
+		Category:     "bridge",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{}`,
 	},
-	"calendar": {
-		Category:     "phone",
+	toolBridgeCalendar: {
+		Category:     "bridge",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{}`,
 	},
-	"contacts": {
-		Category:     "phone",
+	toolBridgeContacts: {
+		Category:     "bridge",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{}`,
 	},
-	"notification": {
-		Category:     "phone",
+	toolBridgeNotification: {
+		Category:     "bridge",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{}`,
 	},
