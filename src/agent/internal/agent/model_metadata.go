@@ -121,11 +121,12 @@ type providerModelMetadataCacheFile struct {
 }
 
 type providerModelMetadataCacheEntry struct {
-	Provider  string    `json:"provider"`
-	Model     string    `json:"model"`
-	Endpoint  string    `json:"endpoint"`
-	Spec      ModelSpec `json:"spec"`
-	FetchedAt time.Time `json:"fetched_at"`
+	Provider          string    `json:"provider"`
+	Model             string    `json:"model"`
+	Endpoint          string    `json:"endpoint"`
+	Spec              ModelSpec `json:"spec"`
+	PromptCachePolicy string    `json:"prompt_cache_policy,omitempty"`
+	FetchedAt         time.Time `json:"fetched_at"`
 }
 
 func (m *ModelManager) readProviderModelSpecCache() (ModelSpec, bool) {
@@ -179,13 +180,16 @@ func (m *ModelManager) writeProviderModelSpecCache(spec ModelSpec) error {
 		return err
 	}
 
-	cache.Entries[m.providerModelSpecCacheKey()] = providerModelMetadataCacheEntry{
-		Provider:  normalizedProviderName(m.config.Provider),
-		Model:     normalizedModelName(m.config.Model),
-		Endpoint:  m.providerMetadataEndpoint(),
-		Spec:      spec,
-		FetchedAt: time.Now().UTC(),
+	key := m.providerModelSpecCacheKey()
+	entry := cache.Entries[key]
+	if entry.Provider == "" {
+		entry.Provider = normalizedProviderName(m.config.Provider)
+		entry.Model = normalizedModelName(m.config.Model)
+		entry.Endpoint = m.providerMetadataEndpoint()
 	}
+	entry.Spec = spec
+	entry.FetchedAt = time.Now().UTC()
+	cache.Entries[key] = entry
 
 	encoded, err := json.MarshalIndent(cache, "", "  ")
 	if err != nil {

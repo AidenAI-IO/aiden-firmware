@@ -1576,15 +1576,23 @@ func TestOpenRouterSupportedModelAddsPromptCacheControlToSystemPrefix(t *testing
 		} `json:"messages"`
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
-			t.Fatalf("decode request: %v", err)
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/endpoints"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"endpoints":[{"supported_parameters":["cache_control"]}]}}`))
+		case r.URL.Path == "/chat/completions":
+			if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+		default:
+			http.NotFound(w, r)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
 	}))
 	defer server.Close()
 
-	manager := NewModelManager(ModelConfig{Provider: "openrouter", Model: "anthropic/claude-sonnet-4", APIKey: "k", BaseURL: server.URL}, ProxyConfig{})
+	manager := NewModelManager(ModelConfig{Provider: "openrouter", Model: "vendor/cache-control-model", APIKey: "k", BaseURL: server.URL}, ProxyConfig{})
 	model, err := manager.Get()
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
@@ -1619,11 +1627,19 @@ func TestOpenRouterUnsupportedModelDoesNotSendPromptCacheControl(t *testing.T) {
 		} `json:"messages"`
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
-			t.Fatalf("decode request: %v", err)
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/endpoints"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"endpoints":[{"supported_parameters":["temperature"]}]}}`))
+		case r.URL.Path == "/chat/completions":
+			if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+		default:
+			http.NotFound(w, r)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
 	}))
 	defer server.Close()
 
