@@ -1,6 +1,7 @@
 package context_manager
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -35,19 +36,21 @@ func appendSession(sessionFolder string, sessionID string, messages []Message) e
 		return fmt.Errorf("failed to open session file %s: %w", sessionFile, err)
 	}
 	defer file.Close()
-	// write each message as a new line
+	
+	var buf bytes.Buffer
 	for _, message := range messages {
-		json, err := json.Marshal(message)
+		encoded, err := json.Marshal(message)
 		if err != nil {
 			return fmt.Errorf("failed to marshal message: %w", err)
 		}
-		if _, err := file.WriteString(string(json) + "\n"); err != nil {
-			return fmt.Errorf("failed to write message to session file %s: %w", sessionFile, err)
-		}
-		// sync after each write
-		if err := file.Sync(); err != nil {
-			return fmt.Errorf("failed to sync session file %s: %w", sessionFile, err)
-		}
+		buf.Write(encoded)
+		buf.WriteByte('\n')
+	}
+	if _, err := file.Write(buf.Bytes()); err != nil {
+		return fmt.Errorf("failed to write messages to session file %s: %w", sessionFile, err)
+	}
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("failed to sync session file %s: %w", sessionFile, err)
 	}
 	return nil
 }
