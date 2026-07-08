@@ -139,6 +139,35 @@ class AgentClient:
         if status != 200:
             raise AgentRequestError(f"chat returned {status}")
         body = json.loads(body_bytes)
+
+        # Async mode: agent returns request_id, long poll for completion.
+        request_id = body.get("request_id")
+        if request_id:
+            return self._wait_for_chat_result(request_id, timeout_sec)
+
+        return ChatResponse(
+            response=body.get("response", ""),
+            history=body.get("history", []),
+        )
+
+    def _wait_for_chat_result(
+        self, request_id: str, timeout_sec: int | None = None
+    ) -> ChatResponse:
+        """Long poll /api/chat/result?wait=true until the task completes."""
+        timeout = timeout_sec or self._default_timeout
+        status, body_bytes = self._get(
+            f"/api/chat/result?request_id={request_id}&wait=true",
+            timeout=timeout,
+        )
+        if status != 200:
+            raise AgentRequestError(f"chat/result returned {status}")
+        body = json.loads(body_bytes)
+
+        if body.get("status") == "error":
+            raise AgentRequestError(f"chat failed: {body.get('error', 'unknown')}")
+        if body.get("status") == "not_found":
+            raise AgentRequestError(f"chat result not found for {request_id}")
+
         return ChatResponse(
             response=body.get("response", ""),
             history=body.get("history", []),
