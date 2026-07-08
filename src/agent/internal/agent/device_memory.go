@@ -2,7 +2,7 @@ package agent
 
 import (
 	"context"
-	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -332,7 +332,7 @@ func (s *DeviceMemoryStore) invalidateReadAllCache() {
 }
 
 func (s *DeviceMemoryStore) readAllFingerprint() (string, error) {
-	h := sha1.New()
+	h := sha256.New()
 	err := filepath.WalkDir(s.rootDir, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err

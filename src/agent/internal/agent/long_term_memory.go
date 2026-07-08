@@ -333,9 +333,10 @@ func (s *LongTermMemoryStore) MarkConflict(ctx context.Context, aID string, bID 
 		if parsed.Item.Status == "active" {
 			parsed.Item.Status = "conflicted"
 			parsed.Item.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
-			if err := writeFileAtomic(path, []byte(formatMemoryMarkdown(parsed.Item)), 0o644); err == nil {
-				s.invalidateParsedMemoryCache(path)
+			if err := writeFileAtomic(path, []byte(formatMemoryMarkdown(parsed.Item)), 0o644); err != nil {
+				return fmt.Errorf("mark memory %q conflicted: %w", id, err)
 			}
+			s.invalidateParsedMemoryCache(path)
 		}
 	}
 	return s.RebuildIndex(ctx)
