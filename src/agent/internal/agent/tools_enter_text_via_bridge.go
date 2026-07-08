@@ -269,7 +269,7 @@ func (t *EnterTextViaBridgeTool) runLegacyBridgeFlow(ctx context.Context, platfo
 		return textViaBridgeResult{Attempted: true, Err: fmt.Errorf("phone bridge is not configured")}
 	}
 	engine := newTextInputEngineWithSleep(*t.hw, t.vision, t.sleep)
-	restoreSteps, restoreCalls, restoreErr := t.restoreBridgeAppIfNeeded(ctx, engine, bridge, platform)
+	restoreSteps, restoreCalls, restoreErr := t.restoreBridgeAppIfNeeded(ctx, bridge, platform)
 	steps := append([]string{}, restoreSteps...)
 	vlmCalls := restoreCalls
 	if restoreErr != nil {
@@ -493,7 +493,7 @@ func compactTextForSendVerify(text string) string {
 	return builder.String()
 }
 
-func (t *EnterTextViaBridgeTool) restoreBridgeAppIfNeeded(ctx context.Context, engine *textInputEngine, bridge *PhoneBridge, platform string) (steps []string, vlmCalls int, err error) {
+func (t *EnterTextViaBridgeTool) restoreBridgeAppIfNeeded(ctx context.Context, bridge *PhoneBridge, platform string) (steps []string, vlmCalls int, err error) {
 	if t.hw.quickAction == nil || t.hw.keyboardText == nil || t.hw.touchGesture == nil {
 		return nil, 0, fmt.Errorf("bridge recovery tools are not fully configured")
 	}

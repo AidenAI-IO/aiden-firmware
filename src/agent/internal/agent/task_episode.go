@@ -724,7 +724,7 @@ func (s *TaskEpisodeStore) Get(ctx context.Context, id string) (TaskEpisode, err
 	if err != nil {
 		return TaskEpisode{}, err
 	}
-	if episode, ok, err := s.getFromIndex(ctx, index, id); ok || err != nil {
+	if episode, ok, err := s.getFromIndex(index, id); ok || err != nil {
 		return episode, err
 	}
 	if err := s.RebuildIndex(ctx); err != nil {
@@ -734,13 +734,13 @@ func (s *TaskEpisodeStore) Get(ctx context.Context, id string) (TaskEpisode, err
 	if err != nil {
 		return TaskEpisode{}, err
 	}
-	if episode, ok, err := s.getFromIndex(ctx, index, id); ok || err != nil {
+	if episode, ok, err := s.getFromIndex(index, id); ok || err != nil {
 		return episode, err
 	}
 	return TaskEpisode{}, fmt.Errorf("episode not found: %s", id)
 }
 
-func (s *TaskEpisodeStore) getFromIndex(ctx context.Context, index episodeIndex, id string) (TaskEpisode, bool, error) {
+func (s *TaskEpisodeStore) getFromIndex(index episodeIndex, id string) (TaskEpisode, bool, error) {
 	for _, entry := range index.Episodes {
 		if entry.ID != id {
 			continue
