@@ -186,15 +186,15 @@ func mergePromptText(existing, addition string) string {
 
 func seedContextManager(
 	manager *context_manager.ContextManager,
-	systemPrompt string,
+	systemPrompt []context_manager.PromptSection,
 	history []llms.MessageContent,
 	userInput string,
 	attachments []InputAttachment,
 ) {
-	if strings.TrimSpace(systemPrompt) != "" {
+	if len(systemPrompt) > 0 {
 		manager.AppendMessage(context_manager.Message{
-			Role:    context_manager.MessageRoleSystem,
-			Content: strings.TrimSpace(systemPrompt),
+			Role:           context_manager.MessageRoleSystem,
+			PromptSections: append([]context_manager.PromptSection(nil), systemPrompt...),
 		})
 	}
 	for _, item := range history {
@@ -205,7 +205,7 @@ func seedContextManager(
 
 func preparePlannerContextManager(
 	manager *context_manager.ContextManager,
-	systemPrompt string,
+	systemPrompt []context_manager.PromptSection,
 	history []llms.MessageContent,
 	userInput string,
 	attachments []InputAttachment,

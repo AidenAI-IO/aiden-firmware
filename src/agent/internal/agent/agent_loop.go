@@ -73,7 +73,7 @@ func (l *AgentLoop) Run(ctx context.Context, input string, options ...chains.Cha
 	}
 	preparePlannerContextManager(
 		contextManager,
-		l.Profile.SystemPrompt,
+		l.Profile.SystemPromptSections(),
 		l.ConversationHistory,
 		inputs["input"],
 		l.InputAttachments,

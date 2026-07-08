@@ -11,9 +11,14 @@ import (
 
 func TestPreparePlannerContextManagerReusesExistingContext(t *testing.T) {
 	manager := context_manager.NewContextManager()
+	systemV1 := []context_manager.PromptSection{
+		{Text: "system v1 stable", CacheEphemeral: true},
+		{Text: "system v1 dynamic"},
+	}
+	systemV2 := []context_manager.PromptSection{{Text: "system v2"}}
 	preparePlannerContextManager(
 		manager,
-		"system v1",
+		systemV1,
 		[]llms.MessageContent{
 			{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("prior user")}},
 			{Role: llms.ChatMessageTypeAI, Parts: []llms.ContentPart{llms.TextPart("prior assistant")}},
@@ -23,7 +28,7 @@ func TestPreparePlannerContextManagerReusesExistingContext(t *testing.T) {
 	)
 	preparePlannerContextManager(
 		manager,
-		"system v2",
+		systemV2,
 		[]llms.MessageContent{
 			{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("duplicate prior user")}},
 		},
@@ -35,8 +40,11 @@ func TestPreparePlannerContextManagerReusesExistingContext(t *testing.T) {
 	if len(messages) != 5 {
 		t.Fatalf("messages = %d, want 5 without duplicated history", len(messages))
 	}
-	if text := messageText(messages[:1]); text != "system v1\n" {
-		t.Fatalf("system prompt = %q, want original system v1", text)
+	if text := messageText(messages[:1]); text != "system v1 stable\nsystem v1 dynamic\n" {
+		t.Fatalf("system prompt = %q, want original system v1 sections", text)
+	}
+	if len(messages[0].Parts) != 2 {
+		t.Fatalf("system message parts = %d, want 2 for cache split", len(messages[0].Parts))
 	}
 	if text := messageText(messages[1:2]); text != "prior user\n" {
 		t.Fatalf("history user = %q", text)

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/context_manager"
 	"bufio"
 	"bytes"
 	"context"
@@ -423,8 +424,9 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 	}
 
 	requestMessages := make([]compatibleMessage, 0, len(messages))
-	for _, message := range messages {
-		converted, err := convertMessageContent(message, m.explicitPromptCache)
+	cacheHints, _ := context_manager.PromptCacheHintsFromContext(ctx)
+	for messageIndex, message := range messages {
+		converted, err := convertMessageContent(message, messageIndex, m.explicitPromptCache, cacheHints)
 		if err != nil {
 			return nil, err
 		}
@@ -886,7 +888,7 @@ func (m *openAICompatibleModel) withRawHTTPLogFileTime(ctx context.Context) cont
 	return contextWithRawHTTPLogFileSessionID(ctx, m.rawLogger.currentSessionID())
 }
 
-func convertMessageContent(message llms.MessageContent, explicitPromptCache bool) (compatibleMessage, error) {
+func convertMessageContent(message llms.MessageContent, messageIndex int, explicitPromptCache bool, cacheHints context_manager.PromptCacheHints) (compatibleMessage, error) {
 	msg := compatibleMessage{Role: compatibleRole(message.Role)}
 
 	switch message.Role {
@@ -920,7 +922,7 @@ func convertMessageContent(message llms.MessageContent, explicitPromptCache bool
 				Type: "text",
 				Text: typed.Text,
 			}
-			if explicitPromptCache && message.Role == llms.ChatMessageTypeSystem && i == 0 && len(message.Parts) > 1 {
+			if explicitPromptCache && message.Role == llms.ChatMessageTypeSystem && cacheHints.ShouldCache(messageIndex, i) {
 				converted.CacheControl = &compatibleCacheControl{Type: "ephemeral"}
 			}
 			textParts = append(textParts, converted)
@@ -969,7 +971,7 @@ func convertMessageContent(message llms.MessageContent, explicitPromptCache bool
 		msg.ToolCalls = toolCalls
 	}
 
-	if len(textParts) == 1 && textParts[0].Type == "text" {
+	if len(textParts) == 1 && textParts[0].Type == "text" && textParts[0].CacheControl == nil {
 		msg.Content = textParts[0].Text
 		return msg, nil
 	}

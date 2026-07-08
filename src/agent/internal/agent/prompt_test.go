@@ -17,8 +17,8 @@ func TestRolePromptsIncludeCurrentDate(t *testing.T) {
 
 	want := "Current date: 2026-06-01 (星期一)"
 	profile := buildAgentProfile(AgentConfig{}, ResolvedSkills{}, nil)
-	if !strings.Contains(profile.SystemPrompt, want) {
-		t.Fatalf("system prompt missing current date %q:\n%s", want, profile.SystemPrompt)
+	if !strings.Contains(profile.SystemPrompt(), want) {
+		t.Fatalf("system prompt missing current date %q:\n%s", want, profile.SystemPrompt())
 	}
 }
 
@@ -33,11 +33,11 @@ func TestRolePromptsIncludeRealHostRuntimeInfo(t *testing.T) {
 	wantEnvironmentLine := "- You run on the Aiden hardware controller (" + wantLine + "); you are not the device shown in screenshots."
 
 	profile := buildAgentProfile(AgentConfig{}, ResolvedSkills{}, nil)
-	if !strings.Contains(profile.SystemPrompt, wantEnvironmentLine) {
-		t.Fatalf("system prompt missing host info in environment guidance %q:\n%s", wantEnvironmentLine, profile.SystemPrompt)
+	if !strings.Contains(profile.SystemPrompt(), wantEnvironmentLine) {
+		t.Fatalf("system prompt missing host info in environment guidance %q:\n%s", wantEnvironmentLine, profile.SystemPrompt())
 	}
-	if strings.Contains(profile.SystemPrompt, "kernel=") {
-		t.Fatalf("system prompt should not include kernel info:\n%s", profile.SystemPrompt)
+	if strings.Contains(profile.SystemPrompt(), "kernel=") {
+		t.Fatalf("system prompt should not include kernel info:\n%s", profile.SystemPrompt())
 	}
 }
 
@@ -93,8 +93,8 @@ func TestRolePromptsIncludeGlobalEnvironmentAndDeviceGuidance(t *testing.T) {
 		"request confirmation",
 		"Keep detailed UI playbooks in skills",
 	} {
-		if !strings.Contains(profile.SystemPrompt, want) {
-			t.Fatalf("system prompt missing %q:\n%s", want, profile.SystemPrompt)
+		if !strings.Contains(profile.SystemPrompt(), want) {
+			t.Fatalf("system prompt missing %q:\n%s", want, profile.SystemPrompt())
 		}
 	}
 
@@ -112,13 +112,13 @@ func TestRolePromptsIncludeGlobalEnvironmentAndDeviceGuidance(t *testing.T) {
 		"xdotool",
 		"kernel=",
 	} {
-		if strings.Contains(profile.SystemPrompt, unwanted) {
-			t.Fatalf("system prompt should not contain old localized guidance %q:\n%s", unwanted, profile.SystemPrompt)
+		if strings.Contains(profile.SystemPrompt(), unwanted) {
+			t.Fatalf("system prompt should not contain old localized guidance %q:\n%s", unwanted, profile.SystemPrompt())
 		}
 	}
 
-	if strings.Contains(profile.SystemPrompt, "Use long-term memory if relevant") {
-		t.Fatalf("system prompt should not contain legacy memory trigger:\n%s", profile.SystemPrompt)
+	if strings.Contains(profile.SystemPrompt(), "Use long-term memory if relevant") {
+		t.Fatalf("system prompt should not contain legacy memory trigger:\n%s", profile.SystemPrompt())
 	}
 }
 
@@ -210,15 +210,15 @@ func TestRolePromptsRequireToolCallSpeechForExternalStateTools(t *testing.T) {
 		"Do not put the final answer in tool-call assistant content",
 		"Do not use JSON, final_answer fields, or \"Final Answer:\" wrappers for final responses",
 	} {
-		if !strings.Contains(profile.SystemPrompt, want) {
-			t.Fatalf("prompt missing tool-call speech requirement %q:\n%s", want, profile.SystemPrompt)
+		if !strings.Contains(profile.SystemPrompt(), want) {
+			t.Fatalf("prompt missing tool-call speech requirement %q:\n%s", want, profile.SystemPrompt())
 		}
 	}
-	if strings.Contains(profile.SystemPrompt, "user-visible tool") {
-		t.Fatalf("prompt should not use ambiguous user-visible tool wording:\n%s", profile.SystemPrompt)
+	if strings.Contains(profile.SystemPrompt(), "user-visible tool") {
+		t.Fatalf("prompt should not use ambiguous user-visible tool wording:\n%s", profile.SystemPrompt())
 	}
-	if strings.Contains(profile.SystemPrompt, "When voice tool-call speech is enabled") {
-		t.Fatalf("prompt should not ask the model to reason about whether voice tool-call speech is enabled:\n%s", profile.SystemPrompt)
+	if strings.Contains(profile.SystemPrompt(), "When voice tool-call speech is enabled") {
+		t.Fatalf("prompt should not ask the model to reason about whether voice tool-call speech is enabled:\n%s", profile.SystemPrompt())
 	}
 }
 
@@ -247,8 +247,8 @@ func TestRolePromptsGuideSkillCatalogAndPreloadedSkills(t *testing.T) {
 		"## Active skills",
 		"[planner] Make a plan.",
 	} {
-		if !strings.Contains(profile.SystemPrompt, want) {
-			t.Fatalf("system prompt missing %q:\n%s", want, profile.SystemPrompt)
+		if !strings.Contains(profile.SystemPrompt(), want) {
+			t.Fatalf("system prompt missing %q:\n%s", want, profile.SystemPrompt())
 		}
 	}
 }
@@ -260,12 +260,12 @@ func TestRolePromptOmitsRuntimeAndMemoryContext(t *testing.T) {
 		nil,
 	)
 
-	if !strings.Contains(profile.SystemPrompt, "## Role rules") {
-		t.Fatalf("prompt missing role rules section:\n%s", profile.SystemPrompt)
+	if !strings.Contains(profile.SystemPrompt(), "## Role rules") {
+		t.Fatalf("prompt missing role rules section:\n%s", profile.SystemPrompt())
 	}
 	for _, unwanted := range []string{"## Runtime context", "Phone bridge status", "session memory tail"} {
-		if strings.Contains(profile.SystemPrompt, unwanted) {
-			t.Fatalf("system prompt should not include dynamic context %q:\n%s", unwanted, profile.SystemPrompt)
+		if strings.Contains(profile.SystemPrompt(), unwanted) {
+			t.Fatalf("system prompt should not include dynamic context %q:\n%s", unwanted, profile.SystemPrompt())
 		}
 	}
 }

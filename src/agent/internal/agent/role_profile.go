@@ -3,13 +3,36 @@ package agent
 import (
 	"strings"
 
+	"aiden-agent/internal/agent/context_manager"
+
 	langtools "github.com/tmc/langchaingo/tools"
 )
 
 type RoleProfile struct {
-	SystemPrompt              string
-	Skills                    ResolvedSkills
-	Tools                     []langtools.Tool
+	SystemPromptStable  string
+	SystemPromptDynamic string
+	Skills              ResolvedSkills
+	Tools               []langtools.Tool
+}
+
+// SystemPrompt returns the combined system prompt for logging and legacy checks.
+func (p RoleProfile) SystemPrompt() string {
+	return context_manager.JoinPromptSections(p.SystemPromptSections())
+}
+
+// SystemPromptSections returns cacheable system prompt sections for ContextManager.
+func (p RoleProfile) SystemPromptSections() []context_manager.PromptSection {
+	sections := make([]context_manager.PromptSection, 0, 2)
+	if text := strings.TrimSpace(p.SystemPromptStable); text != "" {
+		sections = append(sections, context_manager.PromptSection{
+			Text:           text,
+			CacheEphemeral: true,
+		})
+	}
+	if text := strings.TrimSpace(p.SystemPromptDynamic); text != "" {
+		sections = append(sections, context_manager.PromptSection{Text: text})
+	}
+	return sections
 }
 
 func buildAgentProfile(cfg AgentConfig, skills ResolvedSkills, availableTools []langtools.Tool) RoleProfile {
@@ -66,7 +89,6 @@ func buildRoleProfile(
 ) RoleProfile {
 	staticParts := []string{
 		"You are the Aiden agent.",
-		currentDateContext(),
 		"",
 		"## Base instruction",
 		combinedAgentInstruction(cfg),
@@ -80,23 +102,21 @@ func buildRoleProfile(
 		"## Available skills",
 		skills.CatalogSummary(),
 	}
-	if text := strings.TrimSpace(skills.CombinedInstructions()); text != "" {
-		staticParts = append(staticParts,
-			"",
-			"## Active skills",
-			text,
-		)
-	}
 	staticParts = append(staticParts, "", "## Role rules")
 	for _, rule := range roleRules {
 		staticParts = append(staticParts, "- "+rule)
 	}
+	staticParts = append(staticParts, "", currentDateContext())
 
-	staticPrompt := strings.Join(staticParts, "\n")
+	dynamicParts := make([]string, 0, 1)
+	if text := strings.TrimSpace(skills.CombinedInstructions()); text != "" {
+		dynamicParts = append(dynamicParts, "## Active skills", text)
+	}
 
 	return RoleProfile{
-		SystemPrompt:              staticPrompt,
-		Skills:                    skills,
-		Tools:                     append([]langtools.Tool{}, tools...),
+		SystemPromptStable:  strings.Join(staticParts, "\n"),
+		SystemPromptDynamic: strings.Join(dynamicParts, "\n"),
+		Skills:              skills,
+		Tools:               append([]langtools.Tool{}, tools...),
 	}
 }

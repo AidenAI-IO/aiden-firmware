@@ -46,11 +46,12 @@ func (r MessageRole) ToStandardRole() llms.ChatMessageType {
 }
 
 type Message struct {
-	Role        MessageRole  `json:"role"`
-	Content     string       `json:"content"`
-	ToolCalls   []ToolCall   `json:"tool_calls,omitempty"`
-	ToolResults []ToolResult `json:"tool_results,omitempty"`
-	Attachments []Attachment `json:"attachments,omitempty"`
+	Role           MessageRole     `json:"role"`
+	Content        string          `json:"content"`
+	PromptSections []PromptSection `json:"prompt_sections,omitempty"`
+	ToolCalls      []ToolCall      `json:"tool_calls,omitempty"`
+	ToolResults    []ToolResult    `json:"tool_results,omitempty"`
+	Attachments    []Attachment    `json:"attachments,omitempty"`
 }
 
 type ToolCall struct {
@@ -134,6 +135,9 @@ func (c *ContextManager) MessageListDump() MessageListDump {
 		}
 		if len(msg.Attachments) > 0 {
 			messages[i].Attachments = append([]Attachment(nil), msg.Attachments...)
+		}
+		if len(msg.PromptSections) > 0 {
+			messages[i].PromptSections = append([]PromptSection(nil), msg.PromptSections...)
 		}
 	}
 	return MessageListDump{
@@ -325,6 +329,9 @@ func (c *ContextManager) Fork() *ContextManager {
 		if len(msg.Attachments) > 0 {
 			newMessageList[i].Attachments = append([]Attachment(nil), msg.Attachments...)
 		}
+		if len(msg.PromptSections) > 0 {
+			newMessageList[i].PromptSections = append([]PromptSection(nil), msg.PromptSections...)
+		}
 	}
 	newSessionID := "session_" + uuid.New().String()
 	if c.attachmentStore != nil {
@@ -339,9 +346,19 @@ func (c *ContextManager) Fork() *ContextManager {
 }
 
 func (c *ContextManager) ConvertToStandardMessageList() []llms.MessageContent {
+	messages, _ := c.convertToStandardMessageList()
+	return messages
+}
+
+func (c *ContextManager) ConvertToStandardMessageListWithCacheHints() ([]llms.MessageContent, PromptCacheHints) {
+	return c.convertToStandardMessageList()
+}
+
+func (c *ContextManager) convertToStandardMessageList() ([]llms.MessageContent, PromptCacheHints) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	standardMessageList := make([]llms.MessageContent, len(c.messageList))
+	hints := PromptCacheHints{}
 	for i, message := range c.messageList {
 		newMessage := llms.MessageContent{
 			Role:  message.Role.ToStandardRole(),
@@ -362,7 +379,21 @@ func (c *ContextManager) ConvertToStandardMessageList() []llms.MessageContent {
 			standardMessageList[i] = newMessage
 			continue
 		}
-		if content := strings.TrimSpace(message.Content); content != "" {
+		if message.Role == MessageRoleSystem && len(message.PromptSections) > 0 {
+			partIndex := 0
+			for _, section := range message.PromptSections {
+				if text := strings.TrimSpace(section.Text); text != "" {
+					newMessage.Parts = append(newMessage.Parts, llms.TextPart(text))
+					if section.CacheEphemeral {
+						hints.EphemeralParts = append(hints.EphemeralParts, PromptCachePartHint{
+							MessageIndex: i,
+							PartIndex:    partIndex,
+						})
+					}
+					partIndex++
+				}
+			}
+		} else if content := strings.TrimSpace(message.Content); content != "" {
 			newMessage.Parts = append(newMessage.Parts, llms.TextPart(content))
 		}
 		for toolIndex, call := range message.ToolCalls {
@@ -396,7 +427,7 @@ func (c *ContextManager) ConvertToStandardMessageList() []llms.MessageContent {
 		}
 		standardMessageList[i] = newMessage
 	}
-	return standardMessageList
+	return standardMessageList, hints
 }
 
 func attachmentOmittedMessage(mimeType string, err error) string {

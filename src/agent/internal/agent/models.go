@@ -34,14 +34,16 @@ type ModelManager struct {
 	proxy  ProxyConfig
 	model  llms.Model
 
-	specMu                    sync.Mutex
-	providerSpec              ModelSpec
-	providerSpecLoaded        bool
-	providerSpecFetchStarted  bool
-	metadataHTTPClient        *http.Client
-	providerMetadataCachePath string
-	rawHTTPLogDir             string
-	rawHTTPLogSessionID       func() string
+	specMu                          sync.Mutex
+	providerSpec                    ModelSpec
+	providerSpecLoaded              bool
+	providerSpecFetchStarted        bool
+	providerPromptCachePolicy       PromptCachePolicy
+	providerPromptCachePolicyLoaded bool
+	metadataHTTPClient              *http.Client
+	providerMetadataCachePath       string
+	rawHTTPLogDir                   string
+	rawHTTPLogSessionID             func() string
 }
 
 type ModelManagerOption func(*ModelManager)
@@ -151,7 +153,7 @@ func (m *ModelManager) build(cfg ModelConfig) (llms.Model, error) {
 			baseURL = "https://openrouter.ai/api/v1"
 		}
 		opts := append(m.openAICompatibleOptions(cfg), withOpenAICompatibleSessionSticky(m.activeSessionID), withOpenAICompatibleRouterMetadata())
-		if openRouterExplicitPromptCacheSupported(cfg.Model) {
+		if m.cachedOpenRouterPromptCachePolicy().UsesExplicitCacheControl() {
 			opts = append(opts, withOpenAICompatibleExplicitPromptCache())
 		}
 		return newOpenAICompatibleModel(baseURL, cfg.Model, token, newRetryHTTPClient(m.proxy), opts...), nil

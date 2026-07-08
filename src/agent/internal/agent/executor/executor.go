@@ -29,7 +29,8 @@ func (e *LLMExecutor) AppendMessage(message context_manager.Message) {
 }
 
 func (e *LLMExecutor) GenerateContent(ctx context.Context, options ...llms.CallOption) (*llms.ContentResponse, error) {
-	messages := e.contextManager.ConvertToStandardMessageList()
+	messages, hints := e.contextManager.ConvertToStandardMessageListWithCacheHints()
+	ctx = context_manager.WithPromptCacheHints(ctx, hints)
 	contentResponse, err := e.model.GenerateContent(ctx, messages, options...)
 	if err != nil {
 		return nil, err
