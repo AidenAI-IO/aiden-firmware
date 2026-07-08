@@ -10,13 +10,16 @@ import (
 )
 
 func TestSingleAgentProfileDoesNotBuildDelegatedRoles(t *testing.T) {
-	profile := buildAgentProfile(
+	index := NewSkillIndex()
+	index.skills["ui"] = &SkillDefinition{Name: "ui", Description: "Inspect first"}
+	profile := buildProfile(
 		AgentConfig{Instruction: "base", AdditionalPrompt: "extra"},
-		ResolvedSkills{Names: []string{"ui"}, Instructions: []string{"[ui] inspect first"}},
+		NewSkillManager(index),
 		[]langtools.Tool{&stubTool{name: "screenshot", description: "Capture screen."}},
+		agentRoleRules(),
 	)
 
-	for _, want := range []string{"base", "extra", "[ui] inspect first", "You are the Aiden agent."} {
+	for _, want := range []string{"base", "extra", "- ui: Inspect first", "You are the Aiden agent."} {
 		if !strings.Contains(profile.SystemPrompt, want) {
 			t.Fatalf("agent prompt missing %q:\n%s", want, profile.SystemPrompt)
 		}
@@ -38,7 +41,7 @@ func TestSingleAgentRuntimeUsesAgentRoleAndDirectTools(t *testing.T) {
 		output:      `{"volume":3}`,
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use direct tools."},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use direct tools."}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{"audio_volume": tool}},
@@ -82,7 +85,7 @@ func TestSingleAgentRuntimeUsesAgentRoleAndDirectTools(t *testing.T) {
 func TestSingleAgentDoesNotRunDefaultFinalVerifierReview(t *testing.T) {
 	model := &scriptedModel{responses: roleToolResponses("screenshot", `{"__arg1":"{}"}`, "screen checked")}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{

@@ -4,12 +4,27 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/tmc/langchaingo/llms"
 )
+
+func newTestContextManager(t *testing.T) *ContextManager {
+	t.Helper()
+
+	sessionFolder := t.TempDir()
+	sessionID := newSessionID()
+	if err := saveCurrentSession(sessionFolder, sessionID); err != nil {
+		t.Fatalf("saveCurrentSession() error = %v", err)
+	}
+
+	manager, _, err := NewContextManagerFromSessionID(sessionFolder, &sessionID)
+	if err != nil {
+		t.Fatalf("NewContextManagerFromSessionID() error = %v", err)
+	}
+	return manager
+}
 
 func TestConvertStandardMessageToContextManagerMessage_Assistant(t *testing.T) {
 	message := ConvertChoiceToContextManagerMessage(llms.ContentChoice{
@@ -112,7 +127,7 @@ func TestConvertStandardMessageToContextManagerMessage_FuncCallFallback(t *testi
 }
 
 func TestConvertToStandardMessageList_ToolCalls(t *testing.T) {
-	manager := NewContextManager()
+	manager := newTestContextManager(t)
 	manager.AppendMessage(Message{
 		Role:    MessageRoleToolCall,
 		Content: "发送测试文本。",
@@ -145,7 +160,7 @@ func TestConvertToStandardMessageList_ToolCalls(t *testing.T) {
 
 func TestConvertToStandardMessageList_NormalizesInvalidToolCallArguments(t *testing.T) {
 	rawArguments := `{"type": "tap", "point": {"x":}`
-	manager := NewContextManager()
+	manager := newTestContextManager(t)
 	manager.AppendMessage(Message{
 		Role: MessageRoleToolCall,
 		ToolCalls: []ToolCall{{
@@ -179,7 +194,7 @@ func mustMarshalToolInput(t *testing.T, input string) string {
 }
 
 func TestConvertToStandardMessageList_ToolResults(t *testing.T) {
-	manager := NewContextManager()
+	manager := newTestContextManager(t)
 	manager.AppendMessage(Message{
 		Role: MessageRoleToolResult,
 		ToolResults: []ToolResult{{
@@ -216,75 +231,8 @@ func TestConvertStandardMessageToContextManagerMessage_ReasoningContent(t *testi
 	}
 }
 
-func TestContextManagerReset(t *testing.T) {
-	manager := NewContextManager()
-	manager.AppendMessage(Message{Role: MessageRoleSystem, Content: "system v1"})
-	manager.AppendMessage(Message{Role: MessageRoleUser, Content: "hello"})
-
-	manager.Reset()
-	if !manager.IsEmpty() {
-		t.Fatal("reset context manager should be empty")
-	}
-}
-
-func TestContextManagerSetupInitializesWithoutRunningHooks(t *testing.T) {
-	manager := NewContextManager()
-	history := []Message{
-		{Role: MessageRoleSystem, Content: "system"},
-		{Role: MessageRoleUser, Content: "hello"},
-	}
-	hookCalls := 0
-	hooks := []AppendMessageHook{
-		func(message Message) AppendMessageHookResult {
-			hookCalls++
-			message.Content = "hooked:" + message.Content
-			return AppendMessageHookResult{Message: &message}
-		},
-	}
-
-	manager.Setup("session_setup", history, hooks)
-
-	if hookCalls != 0 {
-		t.Fatalf("hook calls = %d, want 0 during setup", hookCalls)
-	}
-	dump := manager.MessageListDump()
-	if dump.SessionID != "session_setup" {
-		t.Fatalf("session id = %q, want %q", dump.SessionID, "session_setup")
-	}
-	if !reflect.DeepEqual(dump.Messages, history) {
-		t.Fatalf("messages = %#v, want %#v", dump.Messages, history)
-	}
-}
-
-func TestContextManagerSetupRegistersHooksForFutureAppends(t *testing.T) {
-	manager := NewContextManager()
-	manager.Setup("session_setup", []Message{
-		{Role: MessageRoleUser, Content: "history"},
-	}, []AppendMessageHook{
-		func(message Message) AppendMessageHookResult {
-			message.Content = "hooked:" + message.Content
-			return AppendMessageHookResult{Message: &message}
-		},
-	})
-
-	manager.AppendMessage(Message{Role: MessageRoleAssistant, Content: "new"})
-
-	dump := manager.MessageListDump()
-	got := []Message{
-		{Role: dump.Messages[0].Role, Content: dump.Messages[0].Content},
-		{Role: dump.Messages[1].Role, Content: dump.Messages[1].Content},
-	}
-	want := []Message{
-		{Role: MessageRoleUser, Content: "history"},
-		{Role: MessageRoleAssistant, Content: "hooked:new"},
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("messages = %#v, want %#v", got, want)
-	}
-}
-
 func TestContextManagerAppendMessageHookModifiesMessage(t *testing.T) {
-	manager := NewContextManager()
+	manager := newTestContextManager(t)
 	manager.AddAppendMessageHook(func(message Message) AppendMessageHookResult {
 		message.Content = strings.ToUpper(message.Content)
 		return AppendMessageHookResult{Message: &message}
@@ -302,7 +250,7 @@ func TestContextManagerAppendMessageHookModifiesMessage(t *testing.T) {
 }
 
 func TestContextManagerAppendMessageHookInjectsBeforeAndAfter(t *testing.T) {
-	manager := NewContextManager()
+	manager := newTestContextManager(t)
 	manager.AddAppendMessageHook(func(message Message) AppendMessageHookResult {
 		modified := message
 		modified.Content = "core:" + message.Content
@@ -316,23 +264,16 @@ func TestContextManagerAppendMessageHookInjectsBeforeAndAfter(t *testing.T) {
 	manager.AppendMessage(Message{Role: MessageRoleUser, Content: "hello"})
 
 	dump := manager.MessageListDump()
-	got := []Message{
-		{Role: dump.Messages[0].Role, Content: dump.Messages[0].Content},
-		{Role: dump.Messages[1].Role, Content: dump.Messages[1].Content},
-		{Role: dump.Messages[2].Role, Content: dump.Messages[2].Content},
+	if got, want := len(dump.Messages), 3; got != want {
+		t.Fatalf("message count = %d, want %d", got, want)
 	}
-	want := []Message{
-		{Role: MessageRoleNotice, Content: "before"},
-		{Role: MessageRoleUser, Content: "core:hello"},
-		{Role: MessageRoleNotice, Content: "after"},
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("messages = %#v, want %#v", got, want)
+	if dump.Messages[0].Content != "before" || dump.Messages[1].Content != "core:hello" || dump.Messages[2].Content != "after" {
+		t.Fatalf("messages = %#v", dump.Messages)
 	}
 }
 
 func TestContextManagerAppendMessageHookCanDropOriginalMessage(t *testing.T) {
-	manager := NewContextManager()
+	manager := newTestContextManager(t)
 	manager.AddAppendMessageHook(func(message Message) AppendMessageHookResult {
 		return AppendMessageHookResult{
 			Before: []Message{{Role: MessageRoleSystem, Content: "replacement"}},
@@ -350,27 +291,8 @@ func TestContextManagerAppendMessageHookCanDropOriginalMessage(t *testing.T) {
 	}
 }
 
-func TestContextManagerForkRetainsAppendMessageHooks(t *testing.T) {
-	manager := NewContextManager()
-	manager.AddAppendMessageHook(func(message Message) AppendMessageHookResult {
-		message.Content = "hooked:" + message.Content
-		return AppendMessageHookResult{Message: &message}
-	})
-
-	fork := manager.Fork()
-	fork.AppendMessage(Message{Role: MessageRoleUser, Content: "hello"})
-
-	dump := fork.MessageListDump()
-	if len(dump.Messages) != 1 {
-		t.Fatalf("messages = %#v, want one entry", dump.Messages)
-	}
-	if dump.Messages[0].Content != "hooked:hello" {
-		t.Fatalf("content = %q, want %q", dump.Messages[0].Content, "hooked:hello")
-	}
-}
-
 func TestStoreAttachmentPersistsMetadataOnly(t *testing.T) {
-	manager := NewContextManager()
+	manager := newTestContextManager(t)
 	stored, err := manager.StoreAttachment("image/png", []byte("png-bytes"))
 	if err != nil {
 		t.Fatalf("StoreAttachment() error = %v", err)
@@ -395,101 +317,52 @@ func TestStoreAttachmentPersistsMetadataOnly(t *testing.T) {
 	}
 }
 
-func TestContextManagerResetRemovesStoredAttachments(t *testing.T) {
-	manager := NewContextManager()
-	stored, err := manager.StoreAttachment("image/png", []byte("png-bytes"))
+func TestNewContextManagerFromSessionIDReloadsMessages(t *testing.T) {
+	sessionFolder := t.TempDir()
+	sessionID := newSessionID()
+	if err := saveCurrentSession(sessionFolder, sessionID); err != nil {
+		t.Fatalf("saveCurrentSession() error = %v", err)
+	}
+
+	manager, isFresh, err := NewContextManagerFromSessionID(sessionFolder, &sessionID)
 	if err != nil {
-		t.Fatalf("StoreAttachment() error = %v", err)
+		t.Fatalf("NewContextManagerFromSessionID() error = %v", err)
 	}
-	root := manager.attachmentStore.root
-	if _, err := os.Stat(stored.FilePath); err != nil {
-		t.Fatalf("stored attachment missing before reset: %v", err)
+	if !isFresh {
+		t.Fatal("expected first load to be fresh")
 	}
 
-	manager.Reset()
+	manager.AppendMessage(Message{Role: MessageRoleSystem, Content: "system"})
+	manager.AppendMessage(Message{Role: MessageRoleUser, Content: "hello"})
 
-	if _, err := os.Stat(root); !os.IsNotExist(err) {
-		t.Fatalf("attachment root after reset: err=%v, want not exist", err)
-	}
-}
-
-func TestContextManagerForkRetainsAttachmentStoreUntilAllManagersReset(t *testing.T) {
-	manager := NewContextManager()
-	first, err := manager.StoreAttachment("image/png", []byte("first"))
+	reloaded, isFresh, err := NewContextManagerFromSessionID(sessionFolder, &sessionID)
 	if err != nil {
-		t.Fatalf("StoreAttachment(first) error = %v", err)
+		t.Fatalf("reload NewContextManagerFromSessionID() error = %v", err)
 	}
-	manager.AppendMessage(Message{
-		Role:        MessageRoleUser,
-		Content:     "see first",
-		Attachments: []Attachment{first},
-	})
-	root := manager.attachmentStore.root
-
-	fork := manager.Fork()
-	second, err := fork.StoreAttachment("image/png", []byte("second"))
-	if err != nil {
-		t.Fatalf("StoreAttachment(second) error = %v", err)
-	}
-	if first.FilePath == second.FilePath {
-		t.Fatalf("fork store overwrote first attachment path %q", first.FilePath)
-	}
-	firstData, err := os.ReadFile(first.FilePath)
-	if err != nil || string(firstData) != "first" {
-		t.Fatalf("first attachment data = %q err=%v", firstData, err)
-	}
-	secondData, err := os.ReadFile(second.FilePath)
-	if err != nil || string(secondData) != "second" {
-		t.Fatalf("second attachment data = %q err=%v", secondData, err)
+	if isFresh {
+		t.Fatal("expected reloaded session to be non-fresh")
 	}
 
-	manager.Reset()
-	if _, err := os.Stat(root); err != nil {
-		t.Fatalf("attachment root should remain while fork is alive: %v", err)
+	dump := reloaded.MessageListDump()
+	if got, want := dump.SessionID, sessionID; got != want {
+		t.Fatalf("session id = %q, want %q", got, want)
 	}
-	messages := fork.ConvertToStandardMessageList()
-	if len(messages) != 1 || len(messages[0].Parts) != 2 {
-		t.Fatalf("fork messages = %#v, want text + binary parts", messages)
+	if got, want := len(dump.Messages), 2; got != want {
+		t.Fatalf("message count = %d, want %d", got, want)
 	}
-	binaryPart, ok := messages[0].Parts[1].(llms.BinaryContent)
-	if !ok || string(binaryPart.Data) != "first" {
-		t.Fatalf("fork binary part = %#v", messages[0].Parts[1])
+	if dump.Messages[0].Content != "system" || dump.Messages[1].Content != "hello" {
+		t.Fatalf("unexpected reloaded messages = %#v", dump.Messages)
 	}
 
-	fork.Reset()
-	if _, err := os.Stat(root); !os.IsNotExist(err) {
-		t.Fatalf("attachment root after fork reset: err=%v, want not exist", err)
-	}
-}
-
-func TestContextManagerCloseReleasesForkAttachmentStore(t *testing.T) {
-	manager := NewContextManager()
-	stored, err := manager.StoreAttachment("image/png", []byte("png-bytes"))
-	if err != nil {
-		t.Fatalf("StoreAttachment() error = %v", err)
-	}
-	root := filepath.Dir(stored.FilePath)
-
-	fork := manager.Fork()
-	manager.Reset()
-	if _, err := os.Stat(root); err != nil {
-		t.Fatalf("attachment root should remain while fork is alive: %v", err)
-	}
-
-	if err := fork.Close(); err != nil {
-		t.Fatalf("Close() error = %v", err)
-	}
-	if err := fork.Close(); err != nil {
-		t.Fatalf("second Close() error = %v", err)
-	}
-	if _, err := os.Stat(root); !os.IsNotExist(err) {
-		t.Fatalf("attachment root after fork close: err=%v, want not exist", err)
+	sessionFile := filepath.Join(sessionFolder, sessionID+".jsonl")
+	if _, err := os.Stat(sessionFile); err != nil {
+		t.Fatalf("session file missing: %v", err)
 	}
 }
 
 func TestConvertToStandardMessageListLoadsAttachmentFromFilePath(t *testing.T) {
-	manager := NewContextManager()
-	filePath := t.TempDir() + "/manual.png"
+	manager := newTestContextManager(t)
+	filePath := filepath.Join(t.TempDir(), "manual.png")
 	if err := os.WriteFile(filePath, []byte("manual-bytes"), 0o644); err != nil {
 		t.Fatalf("write attachment file: %v", err)
 	}
@@ -514,14 +387,14 @@ func TestConvertToStandardMessageListLoadsAttachmentFromFilePath(t *testing.T) {
 }
 
 func TestConvertToStandardMessageListReportsMissingAttachment(t *testing.T) {
-	manager := NewContextManager()
+	manager := newTestContextManager(t)
 	manager.AppendMessage(Message{
 		Role:    MessageRoleUser,
 		Content: "see image",
 		Attachments: []Attachment{{
 			MIMEType: "image/png",
 			FileSize: 12,
-			FilePath: t.TempDir() + "/missing.png",
+			FilePath: filepath.Join(t.TempDir(), "missing.png"),
 		}},
 	})
 

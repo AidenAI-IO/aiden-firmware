@@ -184,38 +184,29 @@ func mergePromptText(existing, addition string) string {
 	}
 }
 
-func seedContextManager(
-	manager *context_manager.ContextManager,
+func freshNewContextManager(
 	systemPrompt string,
-	history []llms.MessageContent,
 	userInput string,
 	attachments []InputAttachment,
-) {
-	if strings.TrimSpace(systemPrompt) != "" {
-		manager.AppendMessage(context_manager.Message{
+	sessionFolder string,
+) (*context_manager.ContextManager, error) {
+	manager, isFresh, err := context_manager.NewContextManagerFromSessionID(sessionFolder, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create context manager: %w", err)
+	}
+
+	if isFresh && strings.TrimSpace(systemPrompt) != "" {
+		if err := manager.AppendMessage(context_manager.Message{
 			Role:    context_manager.MessageRoleSystem,
 			Content: strings.TrimSpace(systemPrompt),
-		})
+		}); err != nil {
+			return nil, fmt.Errorf("failed to append system prompt: %w", err)
+		}
 	}
-	for _, item := range history {
-		manager.AppendMessage(messageFromLLMContent(manager, item))
-	}
-	manager.AppendMessage(userMessageFromInput(manager, userInput, attachments))
-}
 
-func preparePlannerContextManager(
-	manager *context_manager.ContextManager,
-	systemPrompt string,
-	history []llms.MessageContent,
-	userInput string,
-	attachments []InputAttachment,
-) {
-	if manager == nil {
-		return
+	if err := manager.AppendMessage(userMessageFromInput(manager, userInput, attachments)); err != nil {
+		return nil, fmt.Errorf("failed to append user message: %w", err)
 	}
-	if manager.IsEmpty() {
-		seedContextManager(manager, systemPrompt, history, userInput, attachments)
-		return
-	}
-	manager.AppendMessage(userMessageFromInput(manager, userInput, attachments))
+
+	return manager, nil
 }
