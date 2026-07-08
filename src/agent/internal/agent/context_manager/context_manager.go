@@ -3,7 +3,6 @@ package context_manager
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"strings"
 	"sync"
@@ -91,8 +90,6 @@ type ContextManager struct {
 	attachmentStore *attachmentStore
 	mu              sync.RWMutex
 	sessionFolder   string
-
-	logger *log.Logger
 }
 
 // NewContextManagerFromSessionID loads a context manager from the session folder, if targetSessionID is nil, it will load the current(last) session.
