@@ -11,5 +11,5 @@ func ContextManagerSessionFolder(configDir string) string {
 	if trimmedConfigDir == "" {
 		log.Fatalf("configDir is required")
 	}
-	return filepath.Join(configDir, "sessions")
+	return filepath.Join(trimmedConfigDir, "sessions")
 }
