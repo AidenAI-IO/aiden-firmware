@@ -146,7 +146,7 @@ func (p *FilesystemMemoryPlane) Retrieve(ctx context.Context, req MemoryRetrieve
 	out.Common.SessionSummary = readTextFileIfExists(filepath.Join(p.memoryDir, "session", "summary.md"))
 	out.Common.Profile = readTextFileIfExists(filepath.Join(p.memoryDir, "long_term", "profile.md"))
 	if p.logger != nil {
-		p.logger.Info("[DEBUG-mem] read session+profile took %dms", time.Since(t0).Milliseconds())
+		p.logger.Debug("[memory] read session+profile took %dms", time.Since(t0).Milliseconds())
 	}
 	query := p.queryFromRequest(req)
 	queryKey := plannerSnapshotCacheKey(req, query)
@@ -160,7 +160,7 @@ func (p *FilesystemMemoryPlane) Retrieve(ctx context.Context, req MemoryRetrieve
 			Limit:    12,
 		})
 		if p.logger != nil {
-			p.logger.Info("[DEBUG-mem] device.Search took %dms, hits=%d", time.Since(t1).Milliseconds(), len(deviceHits))
+			p.logger.Debug("[memory] device.Search took %dms, hits=%d", time.Since(t1).Milliseconds(), len(deviceHits))
 		}
 		if err != nil && p.logger != nil {
 			p.logger.Warn("[memory] device memory retrieval failed: %v", err)
@@ -175,7 +175,7 @@ func (p *FilesystemMemoryPlane) Retrieve(ctx context.Context, req MemoryRetrieve
 		t2 := time.Now()
 		longTermHits, err := p.searchLongTerm(ctx, query)
 		if p.logger != nil {
-			p.logger.Info("[DEBUG-mem] longTerm.Search took %dms, hits=%d", time.Since(t2).Milliseconds(), len(longTermHits))
+			p.logger.Debug("[memory] longTerm.Search took %dms, hits=%d", time.Since(t2).Milliseconds(), len(longTermHits))
 		}
 		if err != nil && p.logger != nil {
 			p.logger.Warn("[memory] long-term memory retrieval failed: %v", err)
@@ -189,7 +189,7 @@ func (p *FilesystemMemoryPlane) Retrieve(ctx context.Context, req MemoryRetrieve
 		t3 := time.Now()
 		conflictHits, err := p.searchLongTermConflicts(ctx, query)
 		if p.logger != nil {
-			p.logger.Info("[DEBUG-mem] longTermConflicts.Search took %dms, hits=%d", time.Since(t3).Milliseconds(), len(conflictHits))
+			p.logger.Debug("[memory] longTermConflicts.Search took %dms, hits=%d", time.Since(t3).Milliseconds(), len(conflictHits))
 		}
 		if err != nil && p.logger != nil {
 			p.logger.Warn("[memory] conflict memory retrieval failed: %v", err)
@@ -210,7 +210,7 @@ func (p *FilesystemMemoryPlane) Retrieve(ctx context.Context, req MemoryRetrieve
 			Limit:    3,
 		})
 		if p.logger != nil {
-			p.logger.Info("[DEBUG-mem] episodes.Search(success) took %dms, hits=%d", time.Since(t4).Milliseconds(), len(successEpisodes))
+			p.logger.Debug("[memory] episodes.Search(success) took %dms, hits=%d", time.Since(t4).Milliseconds(), len(successEpisodes))
 		}
 		if err != nil && p.logger != nil {
 			p.logger.Warn("[memory] episode success retrieval failed: %v", err)
@@ -227,7 +227,7 @@ func (p *FilesystemMemoryPlane) Retrieve(ctx context.Context, req MemoryRetrieve
 			Limit:    3,
 		})
 		if p.logger != nil {
-			p.logger.Info("[DEBUG-mem] episodes.Search(failed) took %dms, hits=%d", time.Since(t5).Milliseconds(), len(failureEpisodes))
+			p.logger.Debug("[memory] episodes.Search(failed) took %dms, hits=%d", time.Since(t5).Milliseconds(), len(failureEpisodes))
 		}
 		if err != nil && p.logger != nil {
 			p.logger.Warn("[memory] episode failure retrieval failed: %v", err)
