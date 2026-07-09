@@ -1140,7 +1140,7 @@ func (r *Runtime) ClearAllMemory(ctx context.Context) error {
 		return err
 	}
 
-	contextmanager.ClearAllSessions(agentpath.ContextManagerSessionFolder(r.config.ConfigDir))
+	_ = contextmanager.ClearAllSessions(agentpath.ContextManagerSessionFolder(r.config.ConfigDir))
 	r.rotateContext()
 
 	return nil
