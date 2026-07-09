@@ -85,8 +85,7 @@ func (t *WebSearchTool) Name() string { return "web_search" }
 
 func (t *WebSearchTool) Description() string {
 	return `Search the public web and return result snippets. ` +
-		`Input JSON: {"query": "..."} or a bare query string. ` +
-		`Use this when you need information that is not on the device, such as ` +
+		`Use when you need information that is not on the device, such as ` +
 		`looking up product details, news, current events, or how a UI element should look.`
 }
 
@@ -302,7 +301,7 @@ func (t *WikipediaTool) Name() string { return "wikipedia" }
 
 func (t *WikipediaTool) Description() string {
 	return `Search Wikipedia for factual information about people, places, companies, ` +
-		`historical events, or other subjects. Input JSON: {"query": "..."} or a bare query string.`
+		`historical events, or other subjects.`
 }
 
 func (t *WikipediaTool) ArgsSchema() map[string]any {
@@ -353,7 +352,6 @@ func (t *CalculatorTool) Name() string { return "calculator" }
 
 func (t *CalculatorTool) Description() string {
 	return `Evaluate a math expression and return the numeric result. ` +
-		`Input JSON: {"expression": "..."} or a bare expression string. ` +
 		`Supports arithmetic, comparisons, and standard math functions (sqrt, sin, cos, etc).`
 }
 
@@ -399,9 +397,8 @@ func (t *WebScraperTool) Name() string { return "web_scraper" }
 
 func (t *WebScraperTool) Description() string {
 	return `Fetch and extract the text content of a web page. ` +
-		`Input JSON: {"url": "..."} or a bare URL string. ` +
 		`Returns page title, headers, paragraphs, and links. ` +
-		`Use this when you need the full content of a specific page rather than search snippets.`
+		`Use when you need the full content of a specific page rather than search snippets.`
 }
 
 func (t *WebScraperTool) ArgsSchema() map[string]any {
@@ -498,30 +495,36 @@ func (t *WebScraperTool) scrape(ctx context.Context, targetURL string) (string, 
 		scrapedLinks[currentURL] = true
 		scrapedLinksMutex.Unlock()
 
-		siteData.WriteString("\n\nPage URL: ");siteData.WriteString(currentURL)
+		siteData.WriteString("\n\nPage URL: ")
+		siteData.WriteString(currentURL)
 
 		if title := e.ChildText("title"); title != "" {
-			siteData.WriteString("\nPage Title: ");siteData.WriteString(title)
+			siteData.WriteString("\nPage Title: ")
+			siteData.WriteString(title)
 		}
 		if desc := e.ChildAttr("meta[name=description]", "content"); desc != "" {
-			siteData.WriteString("\nPage Description: ");siteData.WriteString(desc)
+			siteData.WriteString("\nPage Description: ")
+			siteData.WriteString(desc)
 		}
 
 		siteData.WriteString("\nHeaders:")
 		e.ForEach("h1, h2, h3, h4, h5, h6", func(_ int, el *colly.HTMLElement) {
-			siteData.WriteString("\n");siteData.WriteString(el.Text)
+			siteData.WriteString("\n")
+			siteData.WriteString(el.Text)
 		})
 
 		siteData.WriteString("\nContent:")
 		e.ForEach("p", func(_ int, el *colly.HTMLElement) {
-			siteData.WriteString("\n");siteData.WriteString(el.Text)
+			siteData.WriteString("\n")
+			siteData.WriteString(el.Text)
 		})
 
 		if currentURL == targetURL {
 			e.ForEach("a", func(_ int, el *colly.HTMLElement) {
 				link := el.Attr("href")
 				if link != "" {
-					siteData.WriteString("\nLink: ");siteData.WriteString(link)
+					siteData.WriteString("\nLink: ")
+					siteData.WriteString(link)
 				}
 			})
 		}

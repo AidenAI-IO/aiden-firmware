@@ -81,12 +81,7 @@ func NewListScriptsTool(scriptsDir string) *ListScriptsTool {
 func (t *ListScriptsTool) Name() string { return "list_scripts" }
 
 func (t *ListScriptsTool) Description() string {
-	return strings.Join([]string{
-		"List all demo script files under the agent config directory's scripts/ folder.",
-		"Each result has the file name and its description, taken from the leading '#' comment lines at the top of the script.",
-		"Use this to discover which scripts exist before running one with run_script or before overwriting one with write_script.",
-		`Input: {} (empty JSON object).`,
-	}, " ")
+	return "List all demo script files under scripts/ with their descriptions. Use to discover which scripts exist before running or overwriting one."
 }
 
 func (t *ListScriptsTool) ArgsSchema() map[string]any {
@@ -143,11 +138,7 @@ func NewReadScriptTool(scriptsDir string) *ReadScriptTool {
 func (t *ReadScriptTool) Name() string { return "read_script" }
 
 func (t *ReadScriptTool) Description() string {
-	return strings.Join([]string{
-		"Read the full content of a demo script file under the agent config directory's scripts/ folder.",
-		"Use this to inspect a script's '#' description header and JSONL steps before running it with run_script or before overwriting it with write_script.",
-		`Input JSON: {"file":"demo.jsonl"}. The file name is resolved under scripts/; full paths and directory traversal are rejected.`,
-	}, " ")
+	return "Read the full content of a demo script file. Use to inspect a script's header and steps before running or overwriting it."
 }
 
 func (t *ReadScriptTool) ArgsSchema() map[string]any {
@@ -206,12 +197,8 @@ func NewWriteScriptTool(scriptsDir string) *WriteScriptTool {
 func (t *WriteScriptTool) Name() string { return "write_script" }
 
 func (t *WriteScriptTool) Description() string {
-	return strings.Join([]string{
-		"Create or overwrite a demo script file under the agent config directory's scripts/ folder.",
-		"Start the file with one or more '#' comment lines describing what the script does; list_scripts reports those lines as the description.",
-		"Each remaining non-empty, non-comment line is one JSONL step understood by run_script: {\"type\":\"wait\",\"ms\":500}, {\"type\":\"tts\",\"text\":\"...\"}, or {\"type\":\"call\",\"tool\":\"touch_gesture\",\"input\":{...}}.",
-		`Input JSON: {"file":"demo.jsonl","content":"# description\n{\"type\":\"wait\",\"ms\":500}"}. The file name is resolved under scripts/; full paths and directory traversal are rejected. Writing replaces any existing file with the same name.`,
-	}, " ")
+	return "Create or overwrite a demo script file; writing replaces any existing file with the same name. " +
+		"See the script-author skill for the '#' description header and JSONL step format."
 }
 
 func (t *WriteScriptTool) ArgsSchema() map[string]any {

@@ -36,9 +36,7 @@ func (t *CurrentTimeTool) Name() string { return "current_time" }
 func (t *CurrentTimeTool) Description() string {
 	return `Get the precise current clock time, timezone data, UTC offset, Unix timestamp, or data needed for elapsed-time calculations. ` +
 		`Do not use this tool for ordinary date or weekday questions because the system prompt already provides today's date and weekday. ` +
-		`Use this tool only when a precise clock time, timezone conversion, UTC offset, Unix timestamp, or elapsed-time calculation is required. ` +
-		`Input JSON: {"timezone":"Asia/Shanghai"} or a bare timezone string. ` +
-		`The timezone may be an IANA name such as "America/New_York", "UTC", "local", or a UTC offset such as "+08:00".`
+		`Use this tool only when a precise clock time, timezone conversion, UTC offset, Unix timestamp, or elapsed-time calculation is required.`
 }
 
 func (t *CurrentTimeTool) ArgsSchema() map[string]any {
@@ -154,9 +152,7 @@ func NewWeatherTool(proxy ProxyConfig) *WeatherTool {
 func (t *WeatherTool) Name() string { return "weather" }
 
 func (t *WeatherTool) Description() string {
-	return `Get current weather and a short forecast for a location. ` +
-		`Input JSON: {"location":"Shanghai"} or {"latitude":31.23,"longitude":121.47,"location":"Shanghai"}. ` +
-		`A bare location string is also accepted. Uses Open-Meteo public weather data.`
+	return `Get current weather and a short forecast for a location. Uses Open-Meteo public weather data.`
 }
 
 func (t *WeatherTool) ArgsSchema() map[string]any {
@@ -565,8 +561,7 @@ func (t *WaitForWakeupTool) Name() string { return toolWaitForWakeup }
 
 func (t *WaitForWakeupTool) Description() string {
 	return `End the current agent run and return the voice interaction to wakeup-waiting mode. ` +
-		`Use this when the user asks Aiden to stop listening, go idle, or wait for the next wakeup. ` +
-		`Input JSON is optional: {"reason":"user asked me to wait for wakeup"}.`
+		`Use this when the user asks Aiden to stop listening, go idle, or wait for the next wakeup.`
 }
 
 func (t *WaitForWakeupTool) ArgsSchema() map[string]any {

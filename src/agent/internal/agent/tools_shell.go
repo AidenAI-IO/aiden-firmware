@@ -31,25 +31,14 @@ type ShellTool struct {
 func (t *ShellTool) Name() string { return "shell" }
 
 func (t *ShellTool) Description() string {
-	return `Execute a shell command or manage a running shell session. Input is a JSON object with these fields:
-- command (required for foreground/start): the shell command to run, e.g. "ls -la".
-- timeout: execution timeout in seconds (default 30, max 300).
-- workdir: working directory for the command (default: current directory).
-- background: when true, start a long-running shell session and return a session_id immediately.
-- pty: when true, run the command in a pseudo-terminal for interactive CLI programs.
-- action: session lifecycle action. One of "start", "poll", "write", "submit", "send_keys", "resize", "stop".
-- session_id: required for session actions after "start".
-- input: text to write to the running terminal for "write" or "submit".
-- keys: key sequence names for "send_keys", e.g. ["enter"], ["ctrl+c"], ["tab"].
-- rows / cols: terminal size for PTY start or "resize".
-- bytes: max bytes to return for "poll" (default 12000, max 100000).`
+	return `Execute a shell command or manage a running shell session. For one-shot commands, pass "command" and read the returned output. For interactive or long-running programs, set "background" (or an "action") to start a session that returns a session_id, then drive it with follow-up "action" calls ("poll", "write", "submit", "send_keys", "resize", "stop") carrying that session_id.`
 }
 
 func (t *ShellTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"command":    stringArgSchema("Shell command to run for foreground execution or background start."),
-		"timeout":    numberArgSchema("Execution timeout in seconds."),
-		"workdir":    stringArgSchema("Working directory for the command."),
+		"command":    stringArgSchema("Shell command to run for foreground execution or background start. Required unless driving an existing session."),
+		"timeout":    numberArgSchema("Execution timeout in seconds (default 30, max 300)."),
+		"workdir":    stringArgSchema("Working directory for the command (default: current directory)."),
 		"background": boolArgSchema("Start a long-running shell session and return a session_id immediately."),
 		"pty":        boolArgSchema("Run the command in a pseudo-terminal."),
 		"action":     stringEnumArgSchema("Shell session lifecycle action.", "start", "poll", "write", "submit", "send_keys", "resize", "stop"),
@@ -58,7 +47,7 @@ func (t *ShellTool) ArgsSchema() map[string]any {
 		"keys":       stringArrayArgSchema(`Key sequence names for send_keys, e.g. "enter", "ctrl+c", or "tab".`),
 		"rows":       minIntegerArgSchema("PTY row count for start or resize.", 1),
 		"cols":       minIntegerArgSchema("PTY column count for start or resize.", 1),
-		"bytes":      rangedIntegerArgSchema("Maximum output bytes to return for poll.", 1, shellMaxPollBytes),
+		"bytes":      rangedIntegerArgSchema("Maximum output bytes to return for poll (default 12000).", 1, shellMaxPollBytes),
 	})
 }
 

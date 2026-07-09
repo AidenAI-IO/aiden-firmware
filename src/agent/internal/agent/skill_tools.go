@@ -34,7 +34,6 @@ func (t *SkillListTool) Description() string {
 		"List available skills by name and description, similar to Hermes skills_list.",
 		"Use when the user asks what skills exist, when you need to browse/search skills, or when the Available skills catalog is insufficient.",
 		"For ordinary task execution, prefer the Available skills catalog and call skill_read directly for the matching skill.",
-		`Input: optional query string, or JSON with query, state, include_archived, and limit.`,
 	}, " ")
 }
 
@@ -200,7 +199,7 @@ func (t *SkillReadTool) Description() string {
 		"Load the full SKILL.md instructions for an available skill, similar to Hermes skill_view.",
 		"Use this before acting when the user's task matches an Available skills entry and the skill is not already fully active.",
 		"Also use it when the user explicitly asks to inspect a skill, or before patching a skill with skill_manage.",
-		"Do not read every skill; choose only relevant skills. Reads UTF-8 text files only; binary assets are rejected. Input: skill name or JSON with name and optional file_path.",
+		"Do not read every skill; choose only relevant skills. Reads UTF-8 text files only; binary assets are rejected.",
 	}, " ")
 }
 
@@ -395,14 +394,7 @@ func NewSkillManageTool(skillsDir, manifestPath string, onModify ...func()) *Ski
 func (t *SkillManageTool) Name() string { return "skill_manage" }
 
 func (t *SkillManageTool) Description() string {
-	return `Create, edit, patch, delete, archive, or restore skills, similar to Hermes skill_manage. Use only when the user asks to create/update/delete skills, or after reading a skill with skill_read and deciding a maintenance change is needed. Input: JSON with fields:
-- action: "create"|"edit"|"patch"|"delete"|"write_file"|"remove_file"|"mark_stale"|"archive"|"restore_archive"
-- name: skill name
-- content: full SKILL.md (for create/edit)
-- old_string, new_string: for patch
-- file_path, file_content: for write_file/remove_file under references/, templates/, scripts/, or assets/
-- reason: why this change is being made
-Patch example: {"action":"patch","name":"device-operator","old_string":"old instructions","new_string":"new instructions","reason":"add recovery steps"}`
+	return `Create, edit, patch, delete, archive, or restore skills, similar to Hermes skill_manage. Use only when the user asks to create/update/delete skills, or after reading a skill with skill_read and deciding a maintenance change is needed.`
 }
 
 const skillManageInputExample = `{"action":"patch","name":"device-operator","old_string":"old instructions","new_string":"new instructions","reason":"add recovery steps"}`

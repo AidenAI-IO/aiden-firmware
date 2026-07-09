@@ -2674,7 +2674,11 @@ func firstForwardedHeaderValue(value string) string {
 }
 
 func (s *Server) lookupOwnedToolSpec(name string) (ToolSpec, bool) {
-	return s.runtime.ToolSpecs().Lookup(name)
+	spec, ok := s.runtime.ToolSpecs().Lookup(name)
+	if !ok || !spec.HTTPExposed {
+		return ToolSpec{}, false
+	}
+	return spec, true
 }
 
 func decodeToolInvokeInput(body io.Reader) (string, error) {

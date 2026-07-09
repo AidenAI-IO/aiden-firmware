@@ -1422,7 +1422,7 @@ func TestToolDescriptorsIncludeSkillToolMetadata(t *testing.T) {
 	tools.RegisterSkillTools(filepath.Join(configDir, "skills"), filepath.Join(configDir, "skill-state", ".bundled_manifest.json"))
 	runtime := NewRuntimeWithDeps(Config{}, nil, nil, tools, NewSkillIndex())
 
-	for _, name := range []string{"skill_list", "skill_read", "skill_mark_used"} {
+	for _, name := range []string{"skill_list", "skill_read"} {
 		desc, ok := runtime.ToolDescriptorByName(name)
 		if !ok {
 			t.Fatalf("expected descriptor for %s", name)
@@ -1436,6 +1436,9 @@ func TestToolDescriptorsIncludeSkillToolMetadata(t *testing.T) {
 		if strings.TrimSpace(desc.ExampleInput) == "" {
 			t.Fatalf("%s missing example input", name)
 		}
+	}
+	if _, ok := runtime.ToolDescriptorByName("skill_mark_used"); ok {
+		t.Fatal("skill_mark_used should remain hidden from the HTTP catalog")
 	}
 }
 

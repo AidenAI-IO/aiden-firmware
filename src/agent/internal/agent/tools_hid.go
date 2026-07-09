@@ -695,24 +695,20 @@ type KeyboardTapTool struct {
 func (t *KeyboardTapTool) Name() string { return "keyboard_tap" }
 
 func (t *KeyboardTapTool) Description() string {
-	return `Press and release keyboard keys. Input JSON: {"keys": ["ctrl", "c"]}. ` +
-		`Prefer quick_action first for semantic platform actions such as back, app search, app switching, copy, paste, undo, redo, select all, delete backward/forward, find, send, or browser navigation; use keyboard_tap as a low-level fallback or for custom key input. ` +
-		`Supports on the standard boot keyboard path: a-z, 0-9, f1-f12, enter, escape, backspace, tab, space, delete, arrows, home, end, pageup/down, insert, printscreen. ` +
-		`For ordinary text deletion use backspace; delete is forward-delete after the cursor. ` +
-		`Modifiers: ctrl, shift, alt, meta/super/win/cmd. Android extension keys on hid.usb2 use KEYCODE_* and KEY_USAGE_* aliases; see the Android key guide for the full list. ` +
-		`Android extension keys are single-key taps only and cannot be combined with standard keyboard modifiers/chords; unsupported Android-only aliases return an explicit error. ` +
-		`Modifier-only taps are supported (e.g. {"keys":["meta"]}). Multiple keys are pressed simultaneously, e.g. ctrl+c. ` +
-		`Optional hold_ms keeps the chord pressed before release; default is 50ms, or 120ms when modifiers are used.`
+	return `Press and release keyboard keys, pressed simultaneously as a chord (e.g. {"keys":["ctrl","c"]}). Prefer quick_action first for semantic platform actions; use keyboard_tap as a low-level fallback or for custom key input.`
 }
 
 func (t *KeyboardTapTool) ArgsSchema() map[string]any {
-	keysSchema := stringArrayArgSchema("Keys pressed simultaneously, e.g. [\"ctrl\",\"c\"] or [\"meta\"]. Use backspace for ordinary text deletion before the cursor; delete is forward-delete after the cursor.", []string{"ctrl", "c"}, []string{"meta"})
+	keysSchema := stringArrayArgSchema("Keys pressed simultaneously, e.g. [\"ctrl\",\"c\"] or [\"meta\"]. "+
+		"Standard boot-keyboard keys: a-z, 0-9, f1-f12, enter, escape, backspace, tab, space, delete, arrows, home, end, pageup/down, insert, printscreen; modifiers ctrl, shift, alt, meta/super/win/cmd; modifier-only taps allowed. "+
+		"Use backspace for ordinary text deletion before the cursor; delete is forward-delete after the cursor. "+
+		"Android extension keys (hid.usb2) use KEYCODE_*/KEY_USAGE_* aliases (see the Android key guide for the full list), are single-key taps only, and cannot be combined with modifiers/chords.", []string{"ctrl", "c"}, []string{"meta"})
 	keysSchema["minItems"] = 1
 	keysSchema["maxItems"] = 6
 
 	return objectArgsSchema(map[string]any{
 		"keys":    keysSchema,
-		"hold_ms": minIntegerArgSchema("Optional press duration before release.", 0),
+		"hold_ms": minIntegerArgSchema("Optional press duration before release (default 50ms, or 120ms when modifiers are used).", 0),
 	}, "keys")
 }
 
@@ -921,11 +917,7 @@ type MouseClickTool struct {
 func (t *MouseClickTool) Name() string { return "mouse_click" }
 
 func (t *MouseClickTool) Description() string {
-	return `Move mouse to a position and click. Input JSON: {"x":500,"y":300,"button":"left","coord_space":"normalized"}. ` +
-		`coord_space default is auto: x/y in 0-1000 are normalized; otherwise absolute HID values in the range 0-32767. ` +
-		`Prefer normalized coordinates (0-1000) from the latest screenshot and choose the visual center of the target; absolute coordinates bypass screen dimension resolution. ` +
-		`pointer_mode absolute waits for iOS cursor smoothing before clicking; pointer_mode touchscreen sends a finger down/up at the resolved coordinate. ` +
-		`Click once and inspect the returned post-action screenshot before repeating. Button: left (default), right, middle.`
+	return `Move the mouse to a position and click. Prefer normalized coordinates (0-1000) from the latest screenshot, aiming at the visual center of the target. Click once and inspect the returned post-action screenshot before repeating.`
 }
 
 func (t *MouseClickTool) ArgsSchema() map[string]any {
@@ -970,11 +962,7 @@ type MouseMoveTool struct {
 func (t *MouseMoveTool) Name() string { return "mouse_move" }
 
 func (t *MouseMoveTool) Description() string {
-	return `Move mouse to a position without clicking. Input JSON: {"x": 500, "y": 300, "coord_space": "normalized"}. ` +
-		`coord_space options: "normalized", "absolute". Default is "auto": x/y in [0,1000] are treated as normalized, otherwise HID absolute values in the range 0-32767. ` +
-		`Normalized coordinates use 0-1000 range where (0,0) is top-left, (1000,1000) is bottom-right, (500,500) is center. ` +
-		`pointer_mode absolute (default): writes absolute HID coordinates directly. ` +
-		`pointer_mode touchscreen (Android): moves the logical touch point without pressing.`
+	return `Move the mouse to a position without clicking. Prefer normalized coordinates (0-1000) from the latest screenshot.`
 }
 
 func (t *MouseMoveTool) ArgsSchema() map[string]any {
@@ -1016,19 +1004,13 @@ type TouchGestureTool struct {
 func (t *TouchGestureTool) Name() string { return "touch_gesture" }
 
 func (t *TouchGestureTool) Description() string {
-	return `Perform touch/pointer gesture via HID. Prefer quick_action for semantic platform actions; use this for custom screen gestures. ` +
-		`Input examples: {"type":"tap","point":{"x":500,"y":500}}, {"type":"swipe","start":{"x":200,"y":500},"end":{"x":800,"y":500},"duration_ms":700,"steps":24}, {"type":"swipe_left"}, {"type":"swipe_up","distance":600}. ` +
-		`Types: tap, double_tap, long_press, drag, swipe, swipe_left/right/up/down, back, home. ` +
-		`Coordinates: point/start/end must be {"x":N,"y":M} objects; never omit x/y key names. coord_space defaults to normalized (0-1000) and also supports absolute. ` +
-		`Choose the visual center of the target in the latest screenshot; for small controls, estimate bounds and touch the midpoint, biased inward. ` +
-		`Directional swipes accept optional distance, anchor, and strength (large/medium/small/tiny). Swipe direction is finger movement, not content scroll; for older chat history above, usually use swipe_down. ` +
-		`For precise scrolls or pickers, probe with medium/large, observe the screenshot, then use small/tiny; if overshot, reverse direction and reduce strength. ` +
-		`Keep scroll gestures inside the intended scrollable region so the outer container does not capture them. Edge aliases use real edges: back starts at x=1 and home starts at y=999.`
+	return `Perform a custom touch/pointer gesture via HID. Prefer quick_action for semantic platform actions; use this for tap/swipe/drag and other freehand screen gestures. ` +
+		`Base coordinates on the latest screenshot and aim at the visual center of the target. Swipe direction names describe finger movement, not content scroll.`
 }
 
 func (t *TouchGestureTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"type":           stringEnumArgSchema("Gesture type.", "tap", "double_tap", "long_press", "drag", "swipe", "swipe_left", "swipe_right", "swipe_up", "swipe_down", "back", "home"),
+		"type":           stringEnumArgSchema("Gesture type. Edge aliases use real edges: back starts at x=1, home starts at y=999.", "tap", "double_tap", "long_press", "drag", "swipe", "swipe_left", "swipe_right", "swipe_up", "swipe_down", "back", "home"),
 		"point":          pointSchema("Point for tap, double_tap, or long_press."),
 		"start":          pointSchema("Start point for swipe or drag."),
 		"end":            pointSchema("End point for swipe or drag."),
@@ -1255,9 +1237,7 @@ type MouseScrollTool struct {
 func (t *MouseScrollTool) Name() string { return "mouse_scroll" }
 
 func (t *MouseScrollTool) Description() string {
-	return `Scroll the mouse wheel. Input JSON: {"delta": -3}. ` +
-		`Positive values scroll up, negative scroll down. Range: -127 to 127. This is a wheel event and is not equivalent to a mobile swipe gesture. ` +
-		`Works in pointer_mode absolute; pointer_mode touchscreen ignores wheel events.`
+	return `Scroll the mouse wheel. This is a wheel event, not equivalent to a mobile swipe gesture; use touch_gesture for swipes.`
 }
 
 func (t *MouseScrollTool) ArgsSchema() map[string]any {
