@@ -1,4 +1,4 @@
-package context_manager
+package contextmanager
 
 import (
 	"encoding/json"
@@ -19,9 +19,9 @@ func newTestContextManager(t *testing.T) *ContextManager {
 		t.Fatalf("saveCurrentSession() error = %v", err)
 	}
 
-	manager, _, err := NewContextManagerFromSessionID(sessionFolder, &sessionID)
+	manager, err := LoadContextManagerFromSessionID(sessionFolder, sessionID)
 	if err != nil {
-		t.Fatalf("NewContextManagerFromSessionID() error = %v", err)
+		t.Fatalf("LoadContextManagerFromSessionID() error = %v", err)
 	}
 	return manager
 }
@@ -233,10 +233,10 @@ func TestConvertStandardMessageToContextManagerMessage_ReasoningContent(t *testi
 
 func TestContextManagerAppendMessageHookModifiesMessage(t *testing.T) {
 	manager := newTestContextManager(t)
-	manager.AddAppendMessageHook(func(message Message) AppendMessageHookResult {
+	manager.AddAppendMessageHooks([]AppendMessageHook{func(message Message) AppendMessageHookResult {
 		message.Content = strings.ToUpper(message.Content)
 		return AppendMessageHookResult{Message: &message}
-	})
+	}})
 
 	manager.AppendMessage(Message{Role: MessageRoleUser, Content: "hello"})
 
@@ -251,7 +251,7 @@ func TestContextManagerAppendMessageHookModifiesMessage(t *testing.T) {
 
 func TestContextManagerAppendMessageHookInjectsBeforeAndAfter(t *testing.T) {
 	manager := newTestContextManager(t)
-	manager.AddAppendMessageHook(func(message Message) AppendMessageHookResult {
+	manager.AddAppendMessageHooks([]AppendMessageHook{func(message Message) AppendMessageHookResult {
 		modified := message
 		modified.Content = "core:" + message.Content
 		return AppendMessageHookResult{
@@ -259,7 +259,7 @@ func TestContextManagerAppendMessageHookInjectsBeforeAndAfter(t *testing.T) {
 			Message: &modified,
 			After:   []Message{{Role: MessageRoleNotice, Content: "after"}},
 		}
-	})
+	}})
 
 	manager.AppendMessage(Message{Role: MessageRoleUser, Content: "hello"})
 
@@ -274,11 +274,11 @@ func TestContextManagerAppendMessageHookInjectsBeforeAndAfter(t *testing.T) {
 
 func TestContextManagerAppendMessageHookCanDropOriginalMessage(t *testing.T) {
 	manager := newTestContextManager(t)
-	manager.AddAppendMessageHook(func(message Message) AppendMessageHookResult {
+	manager.AddAppendMessageHooks([]AppendMessageHook{func(message Message) AppendMessageHookResult {
 		return AppendMessageHookResult{
 			Before: []Message{{Role: MessageRoleSystem, Content: "replacement"}},
 		}
-	})
+	}})
 
 	manager.AppendMessage(Message{Role: MessageRoleUser, Content: "hello"})
 
@@ -317,30 +317,23 @@ func TestStoreAttachmentPersistsMetadataOnly(t *testing.T) {
 	}
 }
 
-func TestNewContextManagerFromSessionIDReloadsMessages(t *testing.T) {
+func TestLoadContextManagerFromSessionIDReloadsMessages(t *testing.T) {
 	sessionFolder := t.TempDir()
 	sessionID := newSessionID()
 	if err := saveCurrentSession(sessionFolder, sessionID); err != nil {
 		t.Fatalf("saveCurrentSession() error = %v", err)
 	}
-
-	manager, isFresh, err := NewContextManagerFromSessionID(sessionFolder, &sessionID)
+	manager, err := LoadContextManagerFromSessionID(sessionFolder, sessionID)
 	if err != nil {
-		t.Fatalf("NewContextManagerFromSessionID() error = %v", err)
-	}
-	if !isFresh {
-		t.Fatal("expected first load to be fresh")
+		t.Fatalf("LoadContextManagerFromSessionID() error = %v", err)
 	}
 
 	manager.AppendMessage(Message{Role: MessageRoleSystem, Content: "system"})
 	manager.AppendMessage(Message{Role: MessageRoleUser, Content: "hello"})
 
-	reloaded, isFresh, err := NewContextManagerFromSessionID(sessionFolder, &sessionID)
+	reloaded, err := LoadContextManagerFromSessionID(sessionFolder, sessionID)
 	if err != nil {
-		t.Fatalf("reload NewContextManagerFromSessionID() error = %v", err)
-	}
-	if isFresh {
-		t.Fatal("expected reloaded session to be non-fresh")
+		t.Fatalf("LoadContextManagerFromSessionID() error = %v", err)
 	}
 
 	dump := reloaded.MessageListDump()

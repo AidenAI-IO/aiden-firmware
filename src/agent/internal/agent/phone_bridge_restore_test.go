@@ -8,7 +8,7 @@ import (
 )
 
 func TestPhoneBridgeRestorerReturnsForegroundFromDynamicIsland(t *testing.T) {
-	bridge := NewPhoneBridge(nil)
+	bridge := newPhoneBridgeForTest()
 	defer bridge.queue.Stop()
 	bridge.mu.Lock()
 	bridge.platform = "ios"
@@ -48,13 +48,13 @@ func TestPhoneBridgeRestorerReturnsForegroundFromDynamicIsland(t *testing.T) {
 	if !tapped {
 		t.Fatal("return entry was not tapped")
 	}
-	if !phoneBridgeReadyForCommand(bridge.Status()) {
-		t.Fatalf("bridge status not ready after restore: %+v", bridge.Status())
+	if !phoneBridgeReadyForCommand(bridge.getStatus()) {
+		t.Fatalf("bridge status not ready after restore: %+v", bridge.getStatus())
 	}
 }
 
 func TestPhoneBridgeRestorerDoesNotTapWithoutReturnEntry(t *testing.T) {
-	bridge := NewPhoneBridge(nil)
+	bridge := newPhoneBridgeForTest()
 	defer bridge.queue.Stop()
 	bridge.mu.Lock()
 	bridge.platform = "ios"
@@ -82,7 +82,7 @@ func TestPhoneBridgeRestorerDoesNotTapWithoutReturnEntry(t *testing.T) {
 }
 
 func TestPhoneBridgeRestorerDoesNotTapLockScreenLiveActivity(t *testing.T) {
-	bridge := NewPhoneBridge(nil)
+	bridge := newPhoneBridgeForTest()
 	defer bridge.queue.Stop()
 	bridge.mu.Lock()
 	bridge.platform = "ios"
@@ -251,7 +251,7 @@ func TestSendRoutedBridgeCommandChoosesDeliveryPath(t *testing.T) {
 	})
 
 	t.Run("pip background queue", func(t *testing.T) {
-		bridge := NewPhoneBridge(nil)
+		bridge := newPhoneBridgeForTest()
 		t.Cleanup(func() { bridge.queue.Stop() })
 		bridge.mu.Lock()
 		bridge.platform = "ios"

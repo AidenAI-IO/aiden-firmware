@@ -714,7 +714,7 @@ func platformNote(actionID, platform string, binding quickActionBinding) string 
 
 func quickActionBehaviorSummary() string {
 	return strings.Join([]string{
-		"Common actions: back, home, hide_app, quit_app, app_switch, spotlight_search, copy, paste, cut, undo, redo, select_all, delete_backward, delete_forward, find, send, browser_new_tab, browser_close_tab, browser_refresh, browser_address_bar, screenshot_region.",
+		"Common actions: back, home, hide_app, quit_app, app_switch, spotlight_search, copy, paste, cut, undo, redo, select_all, delete_backward, delete_forward, find, send, browser_new_tab, browser_close_tab, browser_refresh, browser_address_bar.",
 		"- Infer platform from screenshot/context and pass platform=ios/android/mac.",
 		"- Prefer quick_action before ad-hoc keyboard_tap or touch_gesture when an active catalog entry exists.",
 		"- If status=reserved in a list result or quick_action returns ok=false or an error message: skip quick_action and use direct input tools instead.",

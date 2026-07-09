@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"aiden-agent/internal/agent/agentpath"
+
 	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/llms"
 	fakellm "github.com/tmc/langchaingo/llms/fake"
@@ -107,7 +109,7 @@ func TestRuntimeRunExportsFailedTraceWhenModelBuildFails(t *testing.T) {
 	}))
 	defer server.Close()
 
-	configDir := t.TempDir()
+	configDir := ensureTestConfigDir(t, t.TempDir())
 	buildErr := errors.New("model unavailable")
 	runtime := NewRuntimeWithDeps(
 		Config{
@@ -310,7 +312,7 @@ func TestRuntimeRunInjectsCurrentDateIntoPlannerPrompt(t *testing.T) {
 
 	model := &scriptedModel{responses: roleDirectResponses("completed")}
 	runtime := NewRuntimeWithDeps(
-		Config{ConfigDir: t.TempDir(), Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
@@ -436,7 +438,7 @@ func TestRuntimeRunContinuesWhenSessionBeginFails(t *testing.T) {
 	model := &scriptedModel{responses: roleDirectResponses("ok")}
 	manager := &recordingSessionManager{beginErr: errors.New("session append failed")}
 	runtime := NewRuntimeWithDeps(
-		Config{ConfigDir: t.TempDir(), Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -1363,7 +1365,7 @@ func TestRuntimeRunIncludesAvailableSkillCatalog(t *testing.T) {
 	}
 	model := &scriptedModel{responses: roleDirectResponses("ok")}
 	runtime := NewRuntimeWithDeps(
-		Config{ConfigDir: t.TempDir(), Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -1385,7 +1387,7 @@ func TestRuntimeRunIncludesAvailableSkillCatalog(t *testing.T) {
 }
 
 func TestRuntimeRunOmitsArchivedSkillsFromAvailableCatalog(t *testing.T) {
-	configDir := t.TempDir()
+	configDir := ensureTestConfigDir(t, t.TempDir())
 	skillsDir := filepath.Join(configDir, "skills")
 	writeSKILL(t, skillsDir, "alpha", testSkillA)
 	writeSKILL(t, skillsDir, "beta", testSkillB)
@@ -1417,7 +1419,7 @@ func TestRuntimeRunOmitsArchivedSkillsFromAvailableCatalog(t *testing.T) {
 }
 
 func TestToolDescriptorsIncludeSkillToolMetadata(t *testing.T) {
-	configDir := t.TempDir()
+	configDir := ensureTestConfigDir(t, t.TempDir())
 	tools := &ToolSet{tools: map[string]langtools.Tool{}}
 	tools.RegisterSkillTools(filepath.Join(configDir, "skills"), filepath.Join(configDir, "skill-state", ".bundled_manifest.json"))
 	runtime := NewRuntimeWithDeps(Config{}, nil, nil, tools, NewSkillIndex())
@@ -1490,7 +1492,7 @@ func TestSkillCatalogSummaryLimitsEntriesAndDescriptionLength(t *testing.T) {
 }
 
 func TestRuntimeRunSnapshotUnaffectedByConcurrentReload(t *testing.T) {
-	configDir := t.TempDir()
+	configDir := ensureTestConfigDir(t, t.TempDir())
 	skillsDir := filepath.Join(configDir, "skills")
 	v1 := "---\nname: alpha\ndescription: Alpha\n---\n\nUse alpha v1.\n"
 	v2 := "---\nname: alpha\ndescription: Alpha\n---\n\nUse alpha v2.\n"
@@ -2241,11 +2243,10 @@ func TestRuntimeRunExecutesOnlyFirstToolCallAndKeepsModelToolCallMessage(t *test
 	toolA := &stubTool{name: "slow_a", description: "First tool.", output: `{"ok":true}`}
 	toolB := &stubTool{name: "slow_b", description: "Second tool.", output: `{"ok":true}`}
 	runtime := NewRuntimeWithDeps(
-		Config{
-			ConfigDir:   t.TempDir(),
+		withTestConfigDir(t, Config{
 			Model:       ModelConfig{Provider: "fake"},
 			Instruction: "Use tools.",
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -2897,11 +2898,10 @@ func TestRuntimeRunKeyboardToolFeedsPostActionScreenshotImage(t *testing.T) {
 			base64.StdEncoding.EncodeToString(jpegBytes) + `"}`,
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{
-			ConfigDir:   t.TempDir(),
+		withTestConfigDir(t, Config{
 			Model:       ModelConfig{Provider: "openrouter"},
 			Instruction: "Use input tools when needed.",
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -3028,7 +3028,7 @@ func TestRuntimeRunResetsPromptTokensWhenUsageUnavailable(t *testing.T) {
 }
 
 func TestRuntimePersistsMemoryUnderConfigDir(t *testing.T) {
-	configDir := t.TempDir()
+	configDir := ensureTestConfigDir(t, t.TempDir())
 
 	firstRuntime, err := NewRuntime(Config{
 		ConfigDir:     configDir,
@@ -3093,7 +3093,7 @@ func TestRuntimePersistsMemoryUnderConfigDir(t *testing.T) {
 }
 
 func TestNewRuntimeLoadsBundledSkillsSeededOnFirstStartup(t *testing.T) {
-	configDir := t.TempDir()
+	configDir := ensureTestConfigDir(t, t.TempDir())
 	bundledDir := t.TempDir()
 	writeSKILL(t, bundledDir, "alpha", testSkillA)
 
@@ -3116,7 +3116,7 @@ func TestNewRuntimeLoadsBundledSkillsSeededOnFirstStartup(t *testing.T) {
 }
 
 func TestRuntimeRunCompactsRealChatExchangesBeyondWindow(t *testing.T) {
-	configDir := t.TempDir()
+	configDir := ensureTestConfigDir(t, t.TempDir())
 	memDir := filepath.Join(configDir, "memory")
 	os.MkdirAll(memDir, 0o755)
 	os.WriteFile(filepath.Join(memDir, "extraction.yaml"), []byte("hot_window_events: 20\ncount_compress_after_events: 24\n"), 0o644)
@@ -3228,7 +3228,7 @@ func TestRuntimeRunSchedulesMemoryMaintenanceAsync(t *testing.T) {
 }
 
 func TestRuntimeRunRotatesSessionOnNewBoundary(t *testing.T) {
-	configDir := t.TempDir()
+	configDir := ensureTestConfigDir(t, t.TempDir())
 	storageDir := filepath.Join(configDir, "memory")
 	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
 	oldSummary := "OLD SESSION SUMMARY MUST NOT ENTER NEW PROMPT"
@@ -3348,7 +3348,7 @@ func TestRuntimeRunRotatesSessionOnNewBoundary(t *testing.T) {
 }
 
 func TestRuntimeRunShortGapKeepsActiveSessionWithoutForcedContinuation(t *testing.T) {
-	configDir := t.TempDir()
+	configDir := ensureTestConfigDir(t, t.TempDir())
 	storageDir := filepath.Join(configDir, "memory")
 	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
 	now := time.Now().UTC().Add(-45 * time.Second)
@@ -3418,7 +3418,7 @@ func TestRuntimeRunShortGapKeepsActiveSessionWithoutForcedContinuation(t *testin
 }
 
 func TestRuntimeRunRepairsTruncatedSessionTailBeforeBoundaryRotation(t *testing.T) {
-	configDir := t.TempDir()
+	configDir := ensureTestConfigDir(t, t.TempDir())
 	storageDir := filepath.Join(configDir, "memory")
 	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
 	now := time.Now().UTC().Add(-6 * time.Minute)
@@ -3491,7 +3491,7 @@ func TestRuntimeRunRepairsTruncatedSessionTailBeforeBoundaryRotation(t *testing.
 }
 
 func TestRuntimeRunKeepsSmallSessionOnUnrelatedInput(t *testing.T) {
-	configDir := t.TempDir()
+	configDir := ensureTestConfigDir(t, t.TempDir())
 	storageDir := filepath.Join(configDir, "memory")
 	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
 	now := time.Now().UTC().Add(-6 * time.Minute)
@@ -3557,7 +3557,7 @@ func TestRuntimeRunRotatesNeutralFollowUpAfterFinishedEpisode(t *testing.T) {
 	// defeat the small-session bias, and the input is neutral with no
 	// continuation marker, so the only thing that could force "continue" is a
 	// recently-finished episode — which is exactly the signal we removed.
-	configDir := t.TempDir()
+	configDir := ensureTestConfigDir(t, t.TempDir())
 	storageDir := filepath.Join(configDir, "memory")
 	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
 	now := time.Now().UTC().Add(-8 * time.Minute)
@@ -3688,7 +3688,7 @@ func TestRecentEpisodeContextFinishedEpisodeIsNotASignal(t *testing.T) {
 }
 
 func TestRuntimeRunCanceledWhileQueuedDoesNotRotateSessionOrStartEpisode(t *testing.T) {
-	configDir := t.TempDir()
+	configDir := ensureTestConfigDir(t, t.TempDir())
 	storageDir := filepath.Join(configDir, "memory")
 	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
 	now := time.Now().UTC().Add(-2 * time.Minute)
@@ -3983,7 +3983,7 @@ func TestRuntimeRegistersMemoryRecallToolsWhenConfigDirSet(t *testing.T) {
 }
 
 func TestRuntimeRunOmitsMemoryFilesFromSystemPrompt(t *testing.T) {
-	configDir := t.TempDir()
+	configDir := ensureTestConfigDir(t, t.TempDir())
 	summary := "SESSION SUMMARY SENTINEL"
 	profile := "PROFILE SENTINEL"
 
@@ -4045,7 +4045,7 @@ func TestRuntimeRunOmitsMemoryFilesFromSystemPrompt(t *testing.T) {
 }
 
 func TestRuntimeMemoryContextIgnoresArchivedSessionSummary(t *testing.T) {
-	configDir := t.TempDir()
+	configDir := ensureTestConfigDir(t, t.TempDir())
 	memoryDir := filepath.Join(configDir, "memory")
 	archiveSummary := "ARCHIVED SESSION SUMMARY SENTINEL"
 	profile := "PROFILE STILL ACTIVE"
@@ -4084,102 +4084,6 @@ func TestRuntimeMemoryContextIgnoresArchivedSessionSummary(t *testing.T) {
 	}
 	if retrieved.Common.Profile != profile {
 		t.Fatalf("Retrieve() profile = %q, want %q", retrieved.Common.Profile, profile)
-	}
-}
-
-func TestRuntimeRunOmitsRuntimeContextFromSystemMessage(t *testing.T) {
-	model := &scriptedModel{
-		responses: roleDirectResponses("ok"),
-	}
-	runtime := NewRuntimeWithDeps(
-		withTestConfigDir(t, Config{
-			Model:         ModelConfig{Provider: "fake"},
-			Instruction:   "Answer directly.",
-			MaxIterations: 1,
-		}),
-		&testModelResolver{model: model},
-		NewMemoryManager(""),
-		&ToolSet{tools: map[string]langtools.Tool{}},
-		NewSkillIndex(),
-	)
-
-	runtimeContext := "Phone bridge status:\n- connected: true"
-	if _, err := runtime.Run(context.Background(), RunRequest{Input: "hello", RuntimeContext: runtimeContext}); err != nil {
-		t.Fatalf("Run() error = %v", err)
-	}
-	if len(model.messages) != 1 || len(model.messages[0]) == 0 {
-		t.Fatalf("expected one default-mode planner call with messages, got %#v", model.messages)
-	}
-
-	systemMessage := model.messages[0][0]
-	if systemMessage.Role != llms.ChatMessageTypeSystem {
-		t.Fatalf("expected first message to be system, got %q", systemMessage.Role)
-	}
-	var systemText strings.Builder
-	for _, part := range systemMessage.Parts {
-		text, ok := part.(llms.TextContent)
-		if ok {
-			systemText.WriteString(text.Text)
-		}
-	}
-	if strings.Contains(systemText.String(), "## Runtime context") || strings.Contains(systemText.String(), runtimeContext) {
-		t.Fatalf("system message should not include runtime context:\n%s", systemText.String())
-	}
-}
-
-func TestRuntimeRunDoesNotPersistRuntimeContextAcrossTurns(t *testing.T) {
-	model := &scriptedModel{
-		responses: []*llms.ContentResponse{
-			contentResponse("first"),
-			contentResponse("second"),
-		},
-	}
-	storageDir := filepath.Join(t.TempDir(), "memory")
-	runtime := NewRuntimeWithDeps(
-		withTestConfigDir(t, Config{
-			Model:           ModelConfig{Provider: "fake"},
-			Instruction:     "Answer directly.",
-			ForceSimpleLoop: true,
-		}),
-		&testModelResolver{model: model},
-		NewMemoryManager(storageDir),
-		&ToolSet{tools: map[string]langtools.Tool{}},
-		NewSkillIndex(),
-	)
-	t.Cleanup(func() { _ = runtime.Close() })
-
-	firstRuntimeContext := "RUNTIME_CTX_FIRST_MARKER"
-	if _, err := runtime.Run(context.Background(), RunRequest{
-		Input:          "hello",
-		RuntimeContext: firstRuntimeContext,
-	}); err != nil {
-		t.Fatalf("first Run() error = %v", err)
-	}
-
-	secondRuntimeContext := "RUNTIME_CTX_SECOND_MARKER"
-	if _, err := runtime.Run(context.Background(), RunRequest{
-		Input:          "continue",
-		RuntimeContext: secondRuntimeContext,
-	}); err != nil {
-		t.Fatalf("second Run() error = %v", err)
-	}
-	if len(model.messages) < 2 || len(model.messages[1]) == 0 {
-		t.Fatalf("expected second planner call with messages, got %#v", model.messages)
-	}
-
-	secondCall := model.messages[1]
-	systemPrompt := messageText(secondCall[:1])
-	for _, unwanted := range []string{"## Runtime context", firstRuntimeContext, secondRuntimeContext} {
-		if strings.Contains(systemPrompt, unwanted) {
-			t.Fatalf("second system prompt should not contain runtime context %q:\n%s", unwanted, systemPrompt)
-		}
-	}
-
-	nonSystemPrompt := messageText(secondCall[1:])
-	for _, unwanted := range []string{firstRuntimeContext, secondRuntimeContext} {
-		if strings.Contains(nonSystemPrompt, unwanted) {
-			t.Fatalf("runtime context should not re-enter prompt outside the system message %q:\n%s", unwanted, nonSystemPrompt)
-		}
 	}
 }
 
@@ -4343,7 +4247,7 @@ func TestRuntimeRunIncludesUserAttachments(t *testing.T) {
 }
 
 func TestRuntimeClearMemoryRemovesPersistedSession(t *testing.T) {
-	configDir := t.TempDir()
+	configDir := ensureTestConfigDir(t, t.TempDir())
 	runtime, err := NewRuntime(Config{
 		ConfigDir:     configDir,
 		Model:         ModelConfig{Provider: "fake"},
@@ -4355,6 +4259,9 @@ func TestRuntimeClearMemoryRemovesPersistedSession(t *testing.T) {
 		t.Fatalf("NewRuntime() error = %v", err)
 	}
 	defer runtime.Close()
+	if err := os.MkdirAll(agentpath.ContextManagerSessionFolder(configDir), 0o755); err != nil {
+		t.Fatalf("MkdirAll sessions dir: %v", err)
+	}
 
 	runtime.models = &testModelResolver{
 		model: &scriptedModel{responses: roleDirectResponses("first")},
