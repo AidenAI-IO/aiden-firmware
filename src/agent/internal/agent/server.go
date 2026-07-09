@@ -1138,6 +1138,16 @@ func (s *Server) handleChatResult(w http.ResponseWriter, r *http.Request) {
 	// Long polling: wait=true blocks until task completes or context is canceled.
 	waitMode := r.URL.Query().Get("wait") == "true"
 
+	// Add server-side timeout for long polling to prevent indefinite blocking.
+	var loopCtx context.Context
+	var cancel context.CancelFunc
+	if waitMode {
+		loopCtx, cancel = context.WithTimeout(r.Context(), 5*time.Minute)
+		defer cancel()
+	} else {
+		loopCtx = r.Context()
+	}
+
 	for {
 		s.pendingResultsMu.Lock()
 		pending := s.pendingResults[requestID]
@@ -1213,8 +1223,12 @@ func (s *Server) handleChatResult(w http.ResponseWriter, r *http.Request) {
 
 		// Wait mode: sleep briefly then re-check.
 		select {
-		case <-r.Context().Done():
-			http.Error(w, "client disconnected", http.StatusRequestTimeout)
+		case <-loopCtx.Done():
+			if errors.Is(loopCtx.Err(), context.DeadlineExceeded) {
+				http.Error(w, "long poll timeout", http.StatusRequestTimeout)
+			} else {
+				http.Error(w, "client disconnected", http.StatusRequestTimeout)
+			}
 			return
 		case <-time.After(200 * time.Millisecond):
 		}
