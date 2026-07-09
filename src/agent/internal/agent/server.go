@@ -537,7 +537,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if wantsChatStream(r) {
-		s.logger.Info("Handling chat stream")
+		if s.logger != nil {
+			s.logger.Info("Handling chat stream")
+		}
 		s.handleChatStream(w, r)
 		return
 	}
@@ -1404,7 +1406,6 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 
 	s.logger.Info("Running runtime")
 	result, err := s.runtime.Run(ctx, runReq)
-	s.logger.Info("Runtime result: %v", result)
 	if newStream != nil {
 		closeErr := newStream.closeAndWait()
 		if closeErr != nil && s.logger != nil {
