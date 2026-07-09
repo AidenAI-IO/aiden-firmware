@@ -1889,9 +1889,6 @@ func TestRuntimeCallbackPropagatesToolErrorToEventsAndMessages(t *testing.T) {
 }
 
 func TestRuntimeCallbackPersistsSessionEventWithCanceledRunContext(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
 	var appenderCtxErr error
 	handler := &runtimeCallbackHandler{
 		episodeID: "ep-1",
@@ -1904,7 +1901,7 @@ func TestRuntimeCallbackPersistsSessionEventWithCanceledRunContext(t *testing.T)
 		},
 	}
 
-	handler.emitRunEvent(ctx, RunEvent{Type: "tool_result", Content: "ok"})
+	handler.emitRunEvent(RunEvent{Type: "tool_result", Content: "ok"})
 
 	if appenderCtxErr != nil {
 		t.Fatalf("sessionEventAppender ctx.Err() = %v, want nil", appenderCtxErr)
