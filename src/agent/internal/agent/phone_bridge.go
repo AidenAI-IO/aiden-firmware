@@ -598,14 +598,23 @@ func (pb *PhoneBridge) statusUpdated() {
 	} else {
 		pb.stateManager.SetState("app_connected", "false")
 	}
+
 	if status.AppState != "" {
 		pb.stateManager.SetState("app_state", status.AppState)
+	} else {
+		pb.stateManager.DeleteState("app_state")
 	}
+
 	if status.PipBridgeEnabled != nil {
 		pb.stateManager.SetState("app_pip_enabled", fmt.Sprintf("%t", *status.PipBridgeEnabled))
+	} else {
+		pb.stateManager.DeleteState("app_pip_enabled")
 	}
+
 	if status.Environment != nil {
 		pb.stateManager.SetState("app_platform", status.Platform)
+	} else {
+		pb.stateManager.DeleteState("app_platform")
 	}
 }
 
