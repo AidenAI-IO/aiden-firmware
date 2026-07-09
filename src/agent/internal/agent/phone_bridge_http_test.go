@@ -214,6 +214,36 @@ func TestHTTPPollCommands(t *testing.T) {
 	}
 }
 
+func TestHTTPPollCommandsRecordsAndroidFGSBridgeState(t *testing.T) {
+	bridge := NewPhoneBridge(nil)
+	defer bridge.queue.Stop()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/phone-bridge/commands?platform=android&phone_id=android-abc&app_state=background&fgs_bridge_enabled=true", nil)
+	w := httptest.NewRecorder()
+
+	bridge.handlePollCommands(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, w.Code, w.Body.String())
+	}
+	status := bridge.Status()
+	if status.Platform != "android" {
+		t.Fatalf("platform = %q, want android", status.Platform)
+	}
+	if status.PhoneID != "android-abc" {
+		t.Fatalf("phone_id = %q, want android-abc", status.PhoneID)
+	}
+	if status.AppState != "background" {
+		t.Fatalf("app_state = %q, want background", status.AppState)
+	}
+	if status.FgsBridgeEnabled == nil || !*status.FgsBridgeEnabled {
+		t.Fatalf("fgs_bridge_enabled = %#v, want true", status.FgsBridgeEnabled)
+	}
+	if status.FgsBridgeUpdatedAt == nil {
+		t.Fatal("fgs_bridge_updated_at is nil")
+	}
+}
+
 // TestHTTPSubmitResult tests POST /api/phone-bridge/results
 func TestHTTPSubmitResult(t *testing.T) {
 	bridge := NewPhoneBridge(nil)

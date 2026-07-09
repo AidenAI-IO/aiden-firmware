@@ -150,9 +150,56 @@ func TestPhoneBridgeCanUsePiPBackgroundOnlyForSafeDataCommands(t *testing.T) {
 	}
 
 	status.PipBridgeEnabled = &enabled
-	status.AppStateUpdatedAt = ptrTime(time.Now().Add(-pipBridgeBackgroundStateMaxAge - time.Second))
+	status.AppStateUpdatedAt = ptrTime(time.Now().Add(-phoneBridgeBackgroundStateMaxAge - time.Second))
 	if phoneBridgeCanUsePiPBackground(status, "clipboard_read") {
 		t.Fatal("stale PiP bridge status should not allow background queue")
+	}
+}
+
+func TestPhoneBridgeCanUseFGSBackgroundOnlyForSafeDataCommands(t *testing.T) {
+	enabled := true
+	status := PhoneBridgeStatus{
+		Platform:           "android",
+		AppState:           "background",
+		AppStateUpdatedAt:  ptrTime(time.Now()),
+		FgsBridgeEnabled:   &enabled,
+		FgsBridgeUpdatedAt: ptrTime(time.Now()),
+	}
+	if !phoneBridgeCanUseFGSBackground(status, "clipboard_read") {
+		t.Fatal("clipboard_read should be allowed in Android FGS background bridge mode")
+	}
+	if phoneBridgeCanUseFGSBackground(status, "open_app") {
+		t.Fatal("open_app must not be allowed in Android FGS background bridge mode")
+	}
+	if phoneBridgeToolAvailable(status, "open_app") {
+		t.Fatal("open_app tool must be hidden while Android FGS background bridge mode is active")
+	}
+	if !phoneBridgeToolAvailable(status, "clipboard") {
+		t.Fatal("clipboard tool should be available through Android FGS background queue")
+	}
+
+	status.AppState = "active"
+	if phoneBridgeCanUseFGSBackground(status, "clipboard_read") {
+		t.Fatal("foreground app should use WebSocket path, not FGS background queue")
+	}
+
+	disabled := false
+	status.AppState = "background"
+	status.FgsBridgeEnabled = &disabled
+	if phoneBridgeCanUseFGSBackground(status, "clipboard_read") {
+		t.Fatal("disabled FGS bridge mode should not allow background queue")
+	}
+
+	status.Platform = "ios"
+	status.FgsBridgeEnabled = &enabled
+	if phoneBridgeCanUseFGSBackground(status, "clipboard_read") {
+		t.Fatal("FGS bridge mode should only apply to Android")
+	}
+
+	status.Platform = "android"
+	status.FgsBridgeUpdatedAt = ptrTime(time.Now().Add(-phoneBridgeBackgroundStateMaxAge - time.Second))
+	if phoneBridgeCanUseFGSBackground(status, "clipboard_read") {
+		t.Fatal("stale FGS bridge status should not allow background queue")
 	}
 }
 
@@ -257,6 +304,66 @@ func TestSendRoutedBridgeCommandChoosesDeliveryPath(t *testing.T) {
 		}
 		if resp.Method != "queued" {
 			t.Fatalf("response method = %q, want queued", resp.Method)
+		}
+	})
+
+	t.Run("android fgs background queue", func(t *testing.T) {
+		bridge := newTestPhoneBridgeWithApp(t, func(cmd BridgeCommand) BridgeCommandResponse {
+			t.Errorf("websocket should not receive command in Android FGS background mode: %+v", cmd)
+			return BridgeCommandResponse{Method: "unexpected_websocket"}
+		})
+		bridge.mu.Lock()
+		bridge.platform = "android"
+		bridge.appState = "background"
+		bridge.appStateAt = time.Now()
+		bridge.fgsBridgeEnabled = true
+		bridge.fgsBridgeSeen = true
+		bridge.fgsBridgeAt = time.Now()
+		bridge.mu.Unlock()
+
+		tapCalled := false
+		restorer := NewPhoneBridgeRestorer(bridge, nil)
+		restorer.tapReturnEntry = func(context.Context, PhoneBridgeStatus) error {
+			tapCalled = true
+			return nil
+		}
+		go func() {
+			time.Sleep(10 * time.Millisecond)
+			commands := bridge.queue.PollForPhone("android", "", 10)
+			if len(commands) != 1 {
+				t.Errorf("expected one queued command, got %d", len(commands))
+				return
+			}
+			if commands[0].Type != "clipboard_read" {
+				t.Errorf("queued command type = %q, want clipboard_read", commands[0].Type)
+				return
+			}
+			if err := bridge.queue.SubmitResult(BridgeCommandResponse{
+				ID:     commands[0].ID,
+				Method: "queued_android_fgs",
+			}); err != nil {
+				t.Errorf("SubmitResult() error = %v", err)
+			}
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		resp, restored, err := sendRoutedBridgeCommand(ctx, bridge, restorer, BridgeCommand{
+			ID:        "route_android_fgs",
+			Type:      "clipboard_read",
+			TimeoutMs: 1000,
+		})
+		if err != nil {
+			t.Fatalf("sendRoutedBridgeCommand() error = %v", err)
+		}
+		if restored {
+			t.Fatal("sendRoutedBridgeCommand() restored = true, want false")
+		}
+		if tapCalled {
+			t.Fatal("return entry tap should not be used for Android FGS background queue")
+		}
+		if resp.Method != "queued_android_fgs" {
+			t.Fatalf("response method = %q, want queued_android_fgs", resp.Method)
 		}
 	})
 
