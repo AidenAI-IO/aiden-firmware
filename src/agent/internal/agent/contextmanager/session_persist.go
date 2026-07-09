@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -86,7 +87,7 @@ func loadSession(sessionFolder string, sessionID string) ([]Message, error) {
 func ClearAllSessions(sessionFolder string) error {
 	sessionIDFile := filepath.Join(sessionFolder, ".current_session")
 	if err := os.Remove(sessionIDFile); err != nil {
-		return fmt.Errorf("failed to remove current session file %s: %w", sessionIDFile, err)
+		log.Printf("failed to remove current session file %s: %v\n", sessionIDFile, err)
 	}
 	sessionFiles, err := filepath.Glob(filepath.Join(sessionFolder, "*.jsonl"))
 	if err != nil {
@@ -95,10 +96,10 @@ func ClearAllSessions(sessionFolder string) error {
 	for _, sessionFile := range sessionFiles {
 		sessionID := strings.TrimSuffix(filepath.Base(sessionFile), ".jsonl")
 		if err := os.Remove(sessionFile); err != nil {
-			return fmt.Errorf("failed to remove session file %s: %w", sessionFile, err)
+			log.Printf("failed to remove session file %s: %v\n", sessionFile, err)
 		}
 		if err := removeSessionDataDir(sessionFolder, sessionID); err != nil {
-			return err
+			log.Printf("failed to remove session data directory %s: %v\n", sessionID, err)
 		}
 	}
 	return nil
