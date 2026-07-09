@@ -196,7 +196,7 @@ func focusPointArgSchema(description string) map[string]any {
 	schema := objectArgsSchema(map[string]any{
 		"x":           coordinateSchema("X coordinate.", 500),
 		"y":           coordinateSchema("Y coordinate.", 300),
-		"coord_space": stringEnumArgSchema("Coordinate space.", "normalized", "pixel"),
+		"coord_space": stringEnumArgSchema("Coordinate space.", "normalized"),
 	}, "x", "y")
 	schema["description"] = description
 	return schema
