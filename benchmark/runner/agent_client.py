@@ -163,10 +163,15 @@ class AgentClient:
             raise AgentRequestError(f"chat/result returned {status}")
         body = json.loads(body_bytes)
 
-        if body.get("status") == "error":
+        result_status = body.get("status")
+        if result_status == "error":
             raise AgentRequestError(f"chat failed: {body.get('error', 'unknown')}")
-        if body.get("status") == "not_found":
+        if result_status == "not_found":
             raise AgentRequestError(f"chat result not found for {request_id}")
+        if result_status != "complete":
+            raise AgentRequestError(
+                f"unexpected status from wait=true: {result_status}"
+            )
 
         return ChatResponse(
             response=body.get("response", ""),
