@@ -8,6 +8,10 @@ import (
 	"time"
 )
 
+func testPromptProfile(cfg AgentConfig) RoleProfile {
+	return buildProfile(cfg, NewSkillManager(NewSkillIndex()), nil, agentRoleRules())
+}
+
 func TestRolePromptsIncludeCurrentDate(t *testing.T) {
 	originalNow := promptNow
 	promptNow = func() time.Time {
@@ -16,7 +20,7 @@ func TestRolePromptsIncludeCurrentDate(t *testing.T) {
 	t.Cleanup(func() { promptNow = originalNow })
 
 	want := "Current date: 2026-06-01 (星期一)"
-	profile := buildAgentProfile(AgentConfig{}, ResolvedSkills{}, nil)
+	profile := testPromptProfile(AgentConfig{})
 	if !strings.Contains(profile.SystemPrompt, want) {
 		t.Fatalf("system prompt missing current date %q:\n%s", want, profile.SystemPrompt)
 	}
@@ -32,7 +36,7 @@ func TestRolePromptsIncludeRealHostRuntimeInfo(t *testing.T) {
 	wantLine := "Host: os=" + operatingSystem + ", hostname=" + hostname + ", arch=" + architecture
 	wantEnvironmentLine := "- You run on the Aiden hardware controller (" + wantLine + "); you are not the device shown in screenshots."
 
-	profile := buildAgentProfile(AgentConfig{}, ResolvedSkills{}, nil)
+	profile := testPromptProfile(AgentConfig{})
 	if !strings.Contains(profile.SystemPrompt, wantEnvironmentLine) {
 		t.Fatalf("system prompt missing host info in environment guidance %q:\n%s", wantEnvironmentLine, profile.SystemPrompt)
 	}
@@ -55,14 +59,10 @@ func mustUname(t *testing.T, flag string) string {
 }
 
 func TestRolePromptsIncludeGlobalEnvironmentAndDeviceGuidance(t *testing.T) {
-	profile := buildAgentProfile(
-		AgentConfig{
-			Instruction:      "base instruction",
-			AdditionalPrompt: "extra prompt",
-		},
-		ResolvedSkills{},
-		nil,
-	)
+	profile := testPromptProfile(AgentConfig{
+		Instruction:      "base instruction",
+		AdditionalPrompt: "extra prompt",
+	})
 
 	for _, want := range []string{
 		"base instruction",
@@ -70,6 +70,9 @@ func TestRolePromptsIncludeGlobalEnvironmentAndDeviceGuidance(t *testing.T) {
 		"## Environment",
 		"## Default behavior",
 		"Default to replying in Simplified Chinese",
+		"Most user input arrives as voice transcribed by STT",
+		"homophone, near-sound, segmentation, or named-entity errors",
+		"choose likely canonical keywords and try reasonable alternate terms",
 		"do not mention or hint at internal automation implementation details",
 		"run_script",
 		"JSONL",
@@ -187,41 +190,6 @@ func TestDefaultAgentBehaviorExcludesMigratedToolDetails(t *testing.T) {
 	}
 }
 
-func TestRolePromptsRequireToolCallSpeechForExternalStateTools(t *testing.T) {
-	enabled := true
-	profile := buildAgentProfile(
-		AgentConfig{
-			VoiceToolCallSpeech: &enabled,
-			TTSConfigured:       true,
-		},
-		ResolvedSkills{},
-		nil,
-	)
-
-	for _, want := range []string{
-		"The system prompt already includes the current date and weekday",
-		"Do not call current_time for ordinary date or weekday questions",
-		"when a precise clock time, timezone conversion, offset, timestamp, or elapsed-time calculation is required",
-		"Responses must be ordinary user-facing text, followed by exactly one <tts>...</tts> block",
-		"When invoking tools, put brief progress text in assistant content only when it should be spoken",
-		"include exactly one <tts>...</tts> block containing the spoken text",
-		"Content outside <tts> is not spoken",
-		"Do not put speech or description arguments in tool inputs",
-		"Do not put the final answer in tool-call assistant content",
-		"Do not use JSON, final_answer fields, or \"Final Answer:\" wrappers for final responses",
-	} {
-		if !strings.Contains(profile.SystemPrompt, want) {
-			t.Fatalf("prompt missing tool-call speech requirement %q:\n%s", want, profile.SystemPrompt)
-		}
-	}
-	if strings.Contains(profile.SystemPrompt, "user-visible tool") {
-		t.Fatalf("prompt should not use ambiguous user-visible tool wording:\n%s", profile.SystemPrompt)
-	}
-	if strings.Contains(profile.SystemPrompt, "When voice tool-call speech is enabled") {
-		t.Fatalf("prompt should not ask the model to reason about whether voice tool-call speech is enabled:\n%s", profile.SystemPrompt)
-	}
-}
-
 func TestCombinedAgentInstructionFallsBackWhenEmpty(t *testing.T) {
 	if got := combinedAgentInstruction(AgentConfig{}); got != "" {
 		t.Fatalf("combinedAgentInstruction() = %q, want empty string", got)
@@ -232,20 +200,11 @@ func TestRolePromptsGuideSkillCatalogAndPreloadedSkills(t *testing.T) {
 	index := NewSkillIndex()
 	index.skills["planner"] = &SkillDefinition{Name: "planner", Description: "Plan before acting", Instructions: "Make a plan."}
 	manager := NewSkillManager(index)
-	if err := manager.Activate(nil, "planner"); err != nil {
-		t.Fatal(err)
-	}
-	skills, err := manager.Resolve([]string{"planner"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	profile := buildAgentProfile(AgentConfig{}, skills, nil)
+	profile := buildProfile(AgentConfig{}, manager, nil, agentRoleRules())
 
 	for _, want := range []string{
 		"## Available skills",
 		"- planner: Plan before acting",
-		"## Active skills",
-		"[planner] Make a plan.",
 	} {
 		if !strings.Contains(profile.SystemPrompt, want) {
 			t.Fatalf("system prompt missing %q:\n%s", want, profile.SystemPrompt)
@@ -254,11 +213,7 @@ func TestRolePromptsGuideSkillCatalogAndPreloadedSkills(t *testing.T) {
 }
 
 func TestRolePromptOmitsRuntimeAndMemoryContext(t *testing.T) {
-	profile := buildAgentProfile(
-		AgentConfig{RuntimeContext: "Phone bridge status:\n- connected: true"},
-		ResolvedSkills{},
-		nil,
-	)
+	profile := testPromptProfile(AgentConfig{})
 
 	if !strings.Contains(profile.SystemPrompt, "## Role rules") {
 		t.Fatalf("prompt missing role rules section:\n%s", profile.SystemPrompt)
@@ -318,6 +273,43 @@ func TestPhoneBridgeRuntimeContextBackgroundAppGuidesDynamicIslandRecovery(t *te
 	}
 	if strings.Contains(got, "Use open_app as the primary path") {
 		t.Fatalf("backgrounded app context should not present direct open_app as immediately available:\n%s", got)
+	}
+}
+
+func TestPhoneBridgeRuntimeContextPiPBackgroundDisablesOpenApp(t *testing.T) {
+	lastHeartbeat := time.Date(2026, 6, 1, 2, 3, 4, 0, time.UTC)
+	enabled := true
+	got := phoneBridgeRuntimeContext(PhoneBridgeStatus{
+		Connected:            false,
+		Platform:             "ios",
+		LastHeartbeatAt:      &lastHeartbeat,
+		AppState:             "background",
+		AppStateUpdatedAt:    &lastHeartbeat,
+		ReturnEntry:          "dynamic_island",
+		ReturnEntryAvailable: testBoolPtr(true),
+		PipBridgeEnabled:     &enabled,
+	})
+
+	for _, want := range []string{
+		"- pip_bridge:",
+		"available=false hidden_by_pip=true",
+		"PiP Bridge mode is enabled while Aiden is backgrounded",
+		"iOS gives PiP priority over the Dynamic Island",
+		"Dynamic Island return entry is not visible",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("runtime context missing %q:\n%s", want, got)
+		}
+	}
+	for _, notWant := range []string{
+		"will first tap the Aiden Dynamic Island entry",
+		"Use open_app as the primary path",
+		"open_app is intentionally unavailable",
+		"Use clipboard, calendar, contacts, and notification only",
+	} {
+		if strings.Contains(got, notWant) {
+			t.Fatalf("PiP background context should not include %q:\n%s", notWant, got)
+		}
 	}
 }
 

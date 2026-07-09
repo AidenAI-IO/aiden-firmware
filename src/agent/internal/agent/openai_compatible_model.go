@@ -920,7 +920,7 @@ func convertMessageContent(message llms.MessageContent, explicitPromptCache bool
 				Type: "text",
 				Text: typed.Text,
 			}
-			if explicitPromptCache && message.Role == llms.ChatMessageTypeSystem && i == 0 && len(message.Parts) > 1 {
+			if explicitPromptCache && message.Role == llms.ChatMessageTypeSystem && i == 0 {
 				converted.CacheControl = &compatibleCacheControl{Type: "ephemeral"}
 			}
 			textParts = append(textParts, converted)
@@ -969,7 +969,7 @@ func convertMessageContent(message llms.MessageContent, explicitPromptCache bool
 		msg.ToolCalls = toolCalls
 	}
 
-	if len(textParts) == 1 && textParts[0].Type == "text" {
+	if len(textParts) == 1 && textParts[0].Type == "text" && textParts[0].CacheControl == nil {
 		msg.Content = textParts[0].Text
 		return msg, nil
 	}

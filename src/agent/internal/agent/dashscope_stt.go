@@ -152,13 +152,14 @@ func (s *DashScopeRealtimeSTT) newUploader(ctx context.Context, cfg STTStreamCon
 		TurnDetection:    json.RawMessage("null"),
 	}
 	if s.language != "" {
-		lang := s.language
-		if lang == "zh" {
-			lang = "zh-CN"
-		} else if lang == "en" {
-			lang = "en-US"
+		switch s.language {
+		case "zh":
+			session.Language = "zh-CN"
+		case "en":
+			session.Language = "en-US"
+		default:
+			session.Language = s.language
 		}
-		session.Language = lang
 	}
 
 	sessionUpdate := dashScopeMessage{

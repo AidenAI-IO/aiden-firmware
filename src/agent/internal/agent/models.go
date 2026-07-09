@@ -151,7 +151,7 @@ func (m *ModelManager) build(cfg ModelConfig) (llms.Model, error) {
 			baseURL = "https://openrouter.ai/api/v1"
 		}
 		opts := append(m.openAICompatibleOptions(cfg), withOpenAICompatibleSessionSticky(m.activeSessionID), withOpenAICompatibleRouterMetadata())
-		if openRouterExplicitPromptCacheSupported(cfg.Model) {
+		if m.cachedOpenRouterPromptCachePolicy().UsesExplicitCacheControl() {
 			opts = append(opts, withOpenAICompatibleExplicitPromptCache())
 		}
 		return newOpenAICompatibleModel(baseURL, cfg.Model, token, newRetryHTTPClient(m.proxy), opts...), nil

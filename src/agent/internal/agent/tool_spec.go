@@ -207,7 +207,7 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 	"wait_for_stable_screen": {
 		Category:     "observation",
 		InputMode:    toolInputModeJSON,
-		ExampleInput: `{"timeout_ms":3500,"stable_ms":500,"diff_threshold":2}`,
+		ExampleInput: `{"timeout_ms":2200,"stable_ms":250,"diff_threshold":6}`,
 	},
 	"request_human_handoff": {
 		Category:     "handoff",

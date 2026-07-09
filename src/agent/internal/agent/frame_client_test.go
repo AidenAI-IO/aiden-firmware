@@ -87,6 +87,31 @@ func TestFrameMetadataUnmarshalAllowsOmittedSourceAndCropFields(t *testing.T) {
 	}
 }
 
+func TestFrameHealthResponseUnmarshalSupportsStringLastRecoveryTs(t *testing.T) {
+	input := []byte(`{
+		"status":"OK",
+		"state":"RUNNING",
+		"latest_seq":12,
+		"frame_age_ms":7,
+		"ring_buffer_size":8,
+		"ring_buffer_used":3,
+		"consecutive_failures":1,
+		"last_error":"recovering",
+		"last_recovery_ts":"9007199254740993",
+		"avg_frame_serve_latency_ms":1.5,
+		"avg_capture_copy_latency_ms":2.5
+	}`)
+
+	var resp frameHealthResponse
+	if err := json.Unmarshal(input, &resp); err != nil {
+		t.Fatalf("unmarshal frameHealthResponse: %v", err)
+	}
+
+	if resp.LastRecoveryTs != 9007199254740993 {
+		t.Fatalf("unexpected last_recovery_ts: %d", resp.LastRecoveryTs)
+	}
+}
+
 func TestParseCoordinateDebugScreenshotOptionsDefaultsToCropping(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/screenshot.jpg", nil)
 	options := parseCoordinateDebugScreenshotOptions(req)

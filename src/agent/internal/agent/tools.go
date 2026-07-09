@@ -231,15 +231,16 @@ func (s *ToolSet) Names() []string {
 }
 
 func (s *ToolSet) toolAvailable(name string) bool {
-	switch name {
-	case "open_app", "enter_text_via_bridge":
+	if name == "enter_text_via_bridge" {
 		return s.phoneBridge != nil
-	default:
-		if !isPhoneBridgeToolName(name) {
-			return true
-		}
-		return s.phoneBridge != nil && s.phoneBridge.Connected()
 	}
+	if !isPhoneBridgeToolName(name) {
+		return true
+	}
+	if s.phoneBridge == nil {
+		return false
+	}
+	return phoneBridgeToolAvailable(s.phoneBridge.Status(), name)
 }
 
 func (s *ToolSet) CurrentEnvironmentHints(maxAge time.Duration) CurrentEnvironmentHints {

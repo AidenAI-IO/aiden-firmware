@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 
@@ -53,6 +52,14 @@ type Message struct {
 	Attachments []Attachment `json:"attachments,omitempty"`
 }
 
+type AppendMessageHook func(Message) AppendMessageHookResult
+
+type AppendMessageHookResult struct {
+	Before  []Message
+	Message *Message
+	After   []Message
+}
+
 type ToolCall struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
@@ -79,34 +86,107 @@ type Attachment struct {
 type ContextManager struct {
 	sessionID       string
 	messageList     []Message
+	appendHooks     []AppendMessageHook
 	attachmentStore *attachmentStore
 	mu              sync.RWMutex
+	sessionFolder   string
 }
 
-type attachmentStore struct {
-	mu   sync.Mutex
-	root string
-	next int
-	refs int
-}
+// NewContextManagerFromSessionID loads a context manager from the session folder, if targetSessionID is nil, it will load the current(last) session.
+func NewContextManagerFromSessionID(sessionFolder string, targetSessionID *string) (*ContextManager, bool, error){
+	sessionID := ""
+	if targetSessionID != nil {
+		sessionID = *targetSessionID
+	} else {
+		sessionID = fetchCurrentSession(sessionFolder)
+	}
 
-func NewContextManager() *ContextManager {
-	sessionID := "session_" + uuid.New().String()
+	if sessionID == "" {
+		sessionID = newSessionID()
+	}
+
+	messageList, err := loadSession(sessionFolder, sessionID)
+	if err != nil {
+		return nil, false, err
+	}
+
+	attachmentStore, err := newAttachmentStore(sessionFolder, sessionID)
+	if err != nil {
+		return nil, false, err
+	}
+
+	if err := saveCurrentSession(sessionFolder, sessionID); err != nil {
+		return nil, false, err
+	}
+
 	return &ContextManager{
 		sessionID:   sessionID,
-		messageList: []Message{},
+		messageList: messageList,
 		mu:          sync.RWMutex{},
-	}
+		sessionFolder: sessionFolder,
+		attachmentStore: attachmentStore,
+	},len(messageList) == 0, nil
+}
+
+func newSessionID() string {
+	return "s_" + uuid.New().String()
+}
+
+func (c *ContextManager) GetSessionFolder() string {
+	return c.sessionFolder
 }
 
 func (c *ContextManager) GetSessionID() string {
 	return c.sessionID
 }
 
-func (c *ContextManager) AppendMessage(message Message) {
+func (c *ContextManager) appendToList(messages []Message) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.messageList = append(c.messageList, message)
+
+	if err := appendSession(c.sessionFolder, c.sessionID, messages); err != nil {
+		fmt.Printf("Failed to append messages to session: %v\n", err)
+		return err
+	}
+
+	c.messageList = append(c.messageList, messages...)
+
+	return nil
+}
+
+func (c *ContextManager) AppendMessage(message Message) error {
+	c.mu.RLock()
+	hooks := append([]AppendMessageHook(nil), c.appendHooks...)
+	c.mu.RUnlock()
+
+	messages := []Message{cloneMessage(message)}
+	for _, hook := range hooks {
+		var next []Message
+		for _, current := range messages {
+			result := hook(cloneMessage(current))
+			next = append(next, cloneMessages(result.Before)...)
+			if result.Message != nil {
+				next = append(next, cloneMessage(*result.Message))
+			}
+			next = append(next, cloneMessages(result.After)...)
+		}
+		messages = next
+	}
+
+	if len(messages) == 0 {
+		return nil
+	}
+
+	return c.appendToList(messages)
+}
+
+func (c *ContextManager) AddAppendMessageHook(hook AppendMessageHook) {
+	if hook == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.appendHooks = append(c.appendHooks, hook)
 }
 
 func (c *ContextManager) IsEmpty() bool {
@@ -123,56 +203,9 @@ type MessageListDump struct {
 func (c *ContextManager) MessageListDump() MessageListDump {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	messages := make([]Message, len(c.messageList))
-	for i, msg := range c.messageList {
-		messages[i] = msg
-		if len(msg.ToolCalls) > 0 {
-			messages[i].ToolCalls = append([]ToolCall(nil), msg.ToolCalls...)
-		}
-		if len(msg.ToolResults) > 0 {
-			messages[i].ToolResults = append([]ToolResult(nil), msg.ToolResults...)
-		}
-		if len(msg.Attachments) > 0 {
-			messages[i].Attachments = append([]Attachment(nil), msg.Attachments...)
-		}
-	}
 	return MessageListDump{
 		SessionID: c.sessionID,
-		Messages:  messages,
-	}
-}
-
-func (c *ContextManager) Reset() {
-	c.mu.Lock()
-	store := c.detachAttachmentStoreLocked()
-	c.messageList = nil
-	c.sessionID = "session_" + uuid.New().String()
-	c.mu.Unlock()
-
-	releaseAttachmentStore(store)
-}
-
-// Close releases resources owned by this context manager. Forked managers
-// should be closed when discarded so shared attachment stores can be removed
-// once all owners have released them.
-func (c *ContextManager) Close() error {
-	c.mu.Lock()
-	store := c.detachAttachmentStoreLocked()
-	c.mu.Unlock()
-
-	releaseAttachmentStore(store)
-	return nil
-}
-
-func (c *ContextManager) detachAttachmentStoreLocked() *attachmentStore {
-	store := c.attachmentStore
-	c.attachmentStore = nil
-	return store
-}
-
-func releaseAttachmentStore(store *attachmentStore) {
-	if store != nil {
-		store.release()
+		Messages:  cloneMessages(c.messageList),
 	}
 }
 
@@ -186,156 +219,32 @@ func (c *ContextManager) StoreAttachment(mimeType string, data []byte) (Attachme
 		mimeType = "application/octet-stream"
 	}
 
-	c.mu.Lock()
-	store, err := c.ensureAttachmentStoreLocked()
-	if err == nil {
-		store.retain()
-	}
-	c.mu.Unlock()
-	if err != nil {
-		return Attachment{}, err
-	}
-	defer store.release()
-
-	return store.store(mimeType, data)
+	return c.attachmentStore.store(mimeType, data)
 }
 
-func (c *ContextManager) ensureAttachmentStoreLocked() (*attachmentStore, error) {
-	if c.attachmentStore != nil {
-		return c.attachmentStore, nil
+func cloneMessages(messages []Message) []Message {
+	if len(messages) == 0 {
+		return nil
 	}
-	store, err := newAttachmentStore()
-	if err != nil {
-		return nil, err
+	cloned := make([]Message, len(messages))
+	for i, msg := range messages {
+		cloned[i] = cloneMessage(msg)
 	}
-	c.attachmentStore = store
-	return store, nil
+	return cloned
 }
 
-func newAttachmentStore() (*attachmentStore, error) {
-	root, err := os.MkdirTemp("", "aiden-agent-ctx-attachments-")
-	if err != nil {
-		return nil, fmt.Errorf("create attachment directory: %w", err)
+func cloneMessage(msg Message) Message {
+	cloned := msg
+	if len(msg.ToolCalls) > 0 {
+		cloned.ToolCalls = append([]ToolCall(nil), msg.ToolCalls...)
 	}
-	return &attachmentStore{
-		root: root,
-		refs: 1,
-	}, nil
-}
-
-func (s *attachmentStore) retain() {
-	if s == nil {
-		return
+	if len(msg.ToolResults) > 0 {
+		cloned.ToolResults = append([]ToolResult(nil), msg.ToolResults...)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.refs++
-}
-
-func (s *attachmentStore) release() {
-	if s == nil {
-		return
+	if len(msg.Attachments) > 0 {
+		cloned.Attachments = append([]Attachment(nil), msg.Attachments...)
 	}
-	var root string
-	s.mu.Lock()
-	if s.refs > 0 {
-		s.refs--
-	}
-	if s.refs == 0 && s.root != "" {
-		root = s.root
-		s.root = ""
-		s.next = 0
-	}
-	s.mu.Unlock()
-
-	if root != "" {
-		_ = os.RemoveAll(root)
-	}
-}
-
-func (s *attachmentStore) store(mimeType string, data []byte) (Attachment, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.root == "" {
-		return Attachment{}, fmt.Errorf("attachment store is closed")
-	}
-	for {
-		s.next++
-		name := fmt.Sprintf("attachment_%06d%s", s.next, attachmentExtension(mimeType))
-		path := filepath.Join(s.root, name)
-		file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-		if err != nil {
-			if os.IsExist(err) {
-				continue
-			}
-			return Attachment{}, fmt.Errorf("create attachment file: %w", err)
-		}
-		_, writeErr := file.Write(data)
-		closeErr := file.Close()
-		if writeErr != nil {
-			_ = os.Remove(path)
-			return Attachment{}, fmt.Errorf("write attachment file: %w", writeErr)
-		}
-		if closeErr != nil {
-			_ = os.Remove(path)
-			return Attachment{}, fmt.Errorf("close attachment file: %w", closeErr)
-		}
-		return Attachment{
-			MIMEType: mimeType,
-			FileSize: int64(len(data)),
-			FilePath: path,
-		}, nil
-	}
-}
-
-func attachmentExtension(mimeType string) string {
-	switch strings.ToLower(strings.TrimSpace(mimeType)) {
-	case "image/png":
-		return ".png"
-	case "image/jpeg", "image/jpg":
-		return ".jpg"
-	case "image/webp":
-		return ".webp"
-	case "image/gif":
-		return ".gif"
-	case "audio/wav":
-		return ".wav"
-	case "audio/mpeg":
-		return ".mp3"
-	case "audio/ogg":
-		return ".ogg"
-	default:
-		return ".bin"
-	}
-}
-
-// Fork creates a new MessageList that is a copy of the current MessageList
-func (c *ContextManager) Fork() *ContextManager {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	newMessageList := make([]Message, len(c.messageList))
-	for i, msg := range c.messageList {
-		newMessageList[i] = msg
-		if len(msg.ToolCalls) > 0 {
-			newMessageList[i].ToolCalls = append([]ToolCall(nil), msg.ToolCalls...)
-		}
-		if len(msg.ToolResults) > 0 {
-			newMessageList[i].ToolResults = append([]ToolResult(nil), msg.ToolResults...)
-		}
-		if len(msg.Attachments) > 0 {
-			newMessageList[i].Attachments = append([]Attachment(nil), msg.Attachments...)
-		}
-	}
-	newSessionID := "session_" + uuid.New().String()
-	if c.attachmentStore != nil {
-		c.attachmentStore.retain()
-	}
-	return &ContextManager{
-		sessionID:       newSessionID,
-		messageList:     newMessageList,
-		attachmentStore: c.attachmentStore,
-		mu:              sync.RWMutex{},
-	}
+	return cloned
 }
 
 func (c *ContextManager) ConvertToStandardMessageList() []llms.MessageContent {

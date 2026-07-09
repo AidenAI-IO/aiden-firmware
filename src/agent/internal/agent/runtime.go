@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"aiden-agent/internal/agent/agentpath"
 	"aiden-agent/internal/agent/context_manager"
 
 	"github.com/google/uuid"
@@ -55,19 +56,17 @@ type Runtime struct {
 	waitForWakeup      *WaitForWakeupController
 	memoryPlane        MemoryPlane
 	sessionManager     SessionManager
+	contextManager     *context_manager.ContextManager
 	runtimeID          string
 	telemetrySessionID string
 	environmentBridge  *EnvironmentBridgeClient
 	runGate            chan struct{}
-	plannerContext     *context_manager.ContextManager
-	plannerContextMu   sync.Mutex
 }
 
 type RunRequest struct {
 	Input             string
 	Attachments       []InputAttachment
 	Turn              TurnInput
-	Skills            []string
 	EpisodeID         string
 	RequestID         string
 	DeviceEnvironment *PhoneEnvironment
@@ -95,7 +94,6 @@ type RunRequest struct {
 
 type RunResult struct {
 	Output                 string          `json:"output"`
-	Skills                 []string        `json:"skills"`
 	EpisodeID              string          `json:"episode_id,omitempty"`
 	Memory                 []MessageRecord `json:"memory,omitempty"`
 	Metrics                *RunMetrics     `json:"metrics,omitempty"`
@@ -558,7 +556,6 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		episodeID = newTaskEpisodeID(startTime.UTC())
 	}
 	currentHints := r.currentEnvironmentHints()
-	skillNames := uniqueNonEmpty(req.Skills)
 	promptCapture := newTelemetryPromptCapture(r.config.Telemetry.EnabledOrDefault())
 	var episodeRecorder *EpisodeRecorder
 	var availableTools []langtools.Tool
@@ -574,7 +571,6 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 			retrieveReq := MemoryRetrieveRequest{
 				Input:        normalizedInput,
 				Attachments:  turnInput.Attachments,
-				Skills:       skillNames,
 				ToolNames:    toolNamesFromTools(availableTools),
 				EpisodeID:    episodeID,
 				DeviceID:     defaultMemoryDeviceID,
@@ -601,26 +597,6 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}()
 
 	if err := r.reloadSkillsIfDirty(); err != nil {
-		return RunResult{}, err
-	}
-	runSkills := r.skills.Snapshot()
-
-	// Activate skills
-	for _, skillName := range skillNames {
-		if err := runSkills.Activate(ctx, skillName); err != nil {
-			if r.logger != nil {
-				r.logger.Error("Failed to activate skill %q: %v", skillName, err)
-			}
-			return RunResult{}, fmt.Errorf("activate skill %q: %w", skillName, err)
-		}
-	}
-
-	if r.logger != nil && len(skillNames) > 0 {
-		r.logger.Info("Activated skills: %v", skillNames)
-	}
-
-	resolvedSkills, err := runSkills.Resolve(skillNames)
-	if err != nil {
 		return RunResult{}, err
 	}
 
@@ -700,12 +676,11 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		},
 	}
 
-	availableTools = r.resolveTools(resolvedSkills)
+	availableTools = r.availableTools()
 	availableTools = wrapSessionRecallTelemetry(availableTools, boundaryTelemetry.PendingRecallCounter)
 	retrieveReq := MemoryRetrieveRequest{
 		Input:        normalizedInput,
 		Attachments:  turnInput.Attachments,
-		Skills:       skillNames,
 		ToolNames:    toolNamesFromTools(availableTools),
 		EpisodeID:    episodeID,
 		DeviceID:     defaultMemoryDeviceID,
@@ -730,7 +705,6 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 			Ts:         retrieveStart.Format(time.RFC3339Nano),
 			DurationMs: &retrieveDuration,
 			Metadata: map[string]interface{}{
-				"skill_count": len(skillNames),
 				"tool_count":  len(toolNamesFromTools(availableTools)),
 				"success":     retrieveErr == nil,
 			},
@@ -798,7 +772,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	if streamCallbackHandler != nil {
 		executorHandler = streamCallbackHandler
 	}
-	profile := r.buildAgentProfile(resolvedSkills, availableTools, req.RuntimeContext)
+	profile := r.buildAgentProfile(r.skills, availableTools)
 	conversationHistory, err := runtimeConversationHistoryMessageContents(
 		ctx,
 		memoryHandle.History,
@@ -860,9 +834,19 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		}
 	}
 
-	agentLoop := NewAgentLoop(model, profile, plannerMemory, maxIterations, turnInput.Attachments, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault())
-	agentLoop.ContextManager = r.plannerContextManager()
-	agentLoop.ConversationHistory = conversationHistory
+	if r.contextManager == nil {
+		r.contextManager, err = freshNewContextManager(profile.SystemPrompt, turnInput.InputText, turnInput.Attachments, agentpath.ContextManagerSessionFolder(r.config.ConfigDir))
+		if err != nil {
+			return RunResult{}, err
+		}
+	} else {
+		// append user message to context manager
+		if err := r.contextManager.AppendMessage(userMessageFromInput(r.contextManager, turnInput.InputText, turnInput.Attachments)); err != nil {
+			return RunResult{}, err
+		}
+	}
+
+	agentLoop := NewAgentLoop(model, profile, plannerMemory, maxIterations, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault(), r.contextManager)
 	agentLoop.EnvironmentBridge = r.environmentBridge
 	agentLoop.EnvironmentBridgeTools = r.config.EnvironmentBridge.Tools
 	agentLoop.SteerInterrupt = req.SteerInterrupt
@@ -927,7 +911,6 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}
 	return RunResult{
 		Output:                 output,
-		Skills:                 runSkills.GetActivatedSkills(),
 		EpisodeID:              episodeID,
 		Memory:                 commitResult.Memory,
 		Metrics:                metrics,
@@ -1087,67 +1070,25 @@ func (r *Runtime) ClearAllMemory(ctx context.Context) error {
 	return nil
 }
 
-func (r *Runtime) plannerContextManager() *context_manager.ContextManager {
-	r.plannerContextMu.Lock()
-	defer r.plannerContextMu.Unlock()
-	if r.plannerContext == nil {
-		r.plannerContext = context_manager.NewContextManager()
-	}
-	return r.plannerContext
-}
-
 func (r *Runtime) PlannerContextDump() context_manager.MessageListDump {
-	return r.plannerContextManager().MessageListDump()
+	contextManager := r.contextManager
+	if contextManager == nil {
+		return context_manager.MessageListDump{}
+	}
+	return contextManager.MessageListDump()
 }
 
 func (r *Runtime) resetPlannerContext() {
-	r.plannerContextMu.Lock()
-	defer r.plannerContextMu.Unlock()
-	if r.plannerContext == nil {
-		return
-	}
-	r.plannerContext.Reset()
+	r.contextManager = nil
 }
 
-func (r *Runtime) resolveTools(skills ResolvedSkills) []langtools.Tool {
+func (r *Runtime) availableTools() []langtools.Tool {
 	available := make([]langtools.Tool, 0)
 
-	if skills.HasToolRestriction {
-		for toolName := range skills.AllowedTools {
-			if strings.HasPrefix(toolName, "delegate_") {
-				continue
-			}
-			if !isAgentToolExposed(toolName) {
-				continue
-			}
-			tool, ok := r.tools.Get(toolName)
-			if ok {
-				available = append(available, tool)
-			}
+	for _, tool := range r.tools.All() {
+		if isAgentToolExposed(tool.Name()) {
+			available = append(available, tool)
 		}
-	} else {
-		for _, tool := range r.tools.All() {
-			if isAgentToolExposed(tool.Name()) {
-				available = append(available, tool)
-			}
-		}
-	}
-
-	memoryTools := []string{"recall_session_chunks", "recall_memory", "save_memory", "forget_memory", "recall_device_memory", "inspect_episode"}
-	for _, name := range memoryTools {
-		if skills.HasToolRestriction {
-			if _, allowed := skills.AllowedTools[name]; !allowed {
-				continue
-			}
-		}
-		available = r.appendToolIfAvailable(available, name)
-	}
-
-	// Keep skill meta-tools available even when an active skill has allowed_tools
-	// restrictions. Otherwise the Hermes-like flow breaks: the prompt can show
-	// Available skills, but the model cannot read or maintain the matching skill.
-	for _, name := range []string{"skill_list", "skill_read", "skill_manage", "skill_mark_used"} {
-		available = r.appendToolIfAvailable(available, name)
 	}
 
 	return available
@@ -1380,18 +1321,15 @@ func (r *Runtime) exportEpisodeBestEffort(episode TaskEpisode, promptCapture *te
 	}()
 }
 
-func (r *Runtime) buildAgentProfile(skills ResolvedSkills, availableTools []langtools.Tool, runtimeContext string) RoleProfile {
-	return buildAgentProfile(
+func (r *Runtime) buildAgentProfile(skills *SkillManager, availableTools []langtools.Tool) RoleProfile {
+	return buildProfile(
 		AgentConfig{
 			Instruction:         r.config.Instruction,
 			AdditionalPrompt:    r.config.AdditionalPrompt,
-			RuntimeContext:      runtimeContext,
-			ForceSimpleLoop:     true,
-			VoiceToolCallSpeech: r.config.VoiceToolCallSpeech,
-			TTSConfigured:       strings.TrimSpace(r.config.TTS.Provider) != "",
 		},
 		skills,
 		availableTools,
+		agentRoleRules(),
 	)
 }
 
@@ -1505,11 +1443,11 @@ func (h *runtimeCallbackHandler) HandleChainError(ctx context.Context, err error
 
 func (h *runtimeCallbackHandler) HandleToolStart(ctx context.Context, input string) {}
 
-func (h *runtimeCallbackHandler) emitRunEvent(ctx context.Context, event RunEvent) {
-	h.emitRunEventWithPersistence(ctx, event, true)
+func (h *runtimeCallbackHandler) emitRunEvent(event RunEvent) {
+	h.emitRunEventWithPersistence(event, true)
 }
 
-func (h *runtimeCallbackHandler) emitRunEventWithPersistence(ctx context.Context, event RunEvent, persist bool) {
+func (h *runtimeCallbackHandler) emitRunEventWithPersistence(event RunEvent, persist bool) {
 	if event.Timestamp.IsZero() {
 		event.Timestamp = time.Now()
 	}
@@ -1543,7 +1481,7 @@ func (h *runtimeCallbackHandler) HandleAssistantOutput(ctx context.Context, cont
 	if h.logger != nil {
 		h.logger.Info("Assistant output: %s", truncateForLog(content, 1000))
 	}
-	h.emitRunEventWithPersistence(ctx, RunEvent{
+	h.emitRunEventWithPersistence(RunEvent{
 		Type:      "assistant_output",
 		Role:      "assistant",
 		EpisodeID: h.episodeID,
@@ -1558,7 +1496,7 @@ func (h *runtimeCallbackHandler) HandleToolEnd(ctx context.Context, output strin
 	}
 	action, ok := h.popPendingAction()
 	if ok {
-		h.emitRunEvent(ctx, RunEvent{
+		h.emitRunEvent(RunEvent{
 			Type:       "tool_result",
 			EpisodeID:  h.episodeID,
 			ToolCallID: action.ToolID,
@@ -1581,7 +1519,7 @@ func (h *runtimeCallbackHandler) HandleToolError(ctx context.Context, err error)
 			toolErr = NewToolError(CodeToolExecutionFailed, err.Error())
 		}
 		content := toolErr.Message
-		h.emitRunEvent(ctx, RunEvent{
+		h.emitRunEvent(RunEvent{
 			Type:       "tool_result",
 			EpisodeID:  h.episodeID,
 			ToolCallID: action.ToolID,
@@ -1603,7 +1541,7 @@ func (h *runtimeCallbackHandler) HandleNamedToolEnd(ctx context.Context, name, i
 		h.logger.Info("Tool result: name=%s output=%s", name, truncateForLog(output, 240))
 	}
 	h.removePendingAction(name, input)
-	h.emitRunEvent(ctx, RunEvent{
+	h.emitRunEvent(RunEvent{
 		Type:      "tool_result",
 		EpisodeID: h.episodeID,
 		ToolName:  name,
@@ -1624,7 +1562,7 @@ func (h *runtimeCallbackHandler) HandleNamedToolError(ctx context.Context, name,
 	}
 	content := toolErr.Message
 	h.removePendingAction(name, input)
-	h.emitRunEvent(ctx, RunEvent{
+	h.emitRunEvent(RunEvent{
 		Type:      "tool_result",
 		EpisodeID: h.episodeID,
 		ToolName:  name,
@@ -1647,7 +1585,7 @@ func (h *runtimeCallbackHandler) HandleToolCallStart(ctx context.Context, call T
 				call.Spec.Name, truncateForLog(call.Input, 240))
 		}
 	}
-	h.emitRunEvent(ctx, RunEvent{
+	h.emitRunEvent(RunEvent{
 		Type:       runEventToolCall,
 		EpisodeID:  h.episodeID,
 		ToolCallID: call.Action.ToolID,
@@ -1675,7 +1613,7 @@ func (h *runtimeCallbackHandler) HandleToolCallResult(ctx context.Context, call 
 			h.logger.Info("Tool result: name=%s output=%s", call.Spec.Name, truncateForLog(output, 240))
 		}
 	}
-	h.emitRunEvent(ctx, RunEvent{
+	h.emitRunEvent(RunEvent{
 		Type:       "tool_result",
 		EpisodeID:  h.episodeID,
 		ToolCallID: call.Action.ToolID,
@@ -1700,7 +1638,7 @@ func (h *runtimeCallbackHandler) HandleAgentAction(ctx context.Context, action s
 		}
 	}
 	h.pushPendingAction(action)
-	h.emitRunEvent(ctx, RunEvent{
+	h.emitRunEvent(RunEvent{
 		Type:       runEventToolCall,
 		EpisodeID:  h.episodeID,
 		ToolCallID: action.ToolID,
@@ -1718,7 +1656,7 @@ func (h *runtimeCallbackHandler) HandleRoleOutput(ctx context.Context, role, con
 	if h.logger != nil {
 		h.logger.Info("Role output: role=%s content=%s", role, truncateForLog(content, 1000))
 	}
-	h.emitRunEvent(ctx, RunEvent{
+	h.emitRunEvent(RunEvent{
 		Type:      "role_output",
 		Role:      role,
 		EpisodeID: h.episodeID,
@@ -1731,7 +1669,7 @@ func (h *runtimeCallbackHandler) HandleSteerMessage(ctx context.Context, steer R
 	if steer.Timestamp.IsZero() {
 		steer.Timestamp = time.Now()
 	}
-	h.emitRunEvent(ctx, RunEvent{
+	h.emitRunEvent(RunEvent{
 		Type:      "steer",
 		EpisodeID: h.episodeID,
 		Content:   steer.Content,
