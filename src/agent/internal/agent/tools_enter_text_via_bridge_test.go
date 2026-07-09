@@ -16,6 +16,23 @@ func newTestPhoneBridge(t *testing.T) *PhoneBridge {
 	return pb
 }
 
+func TestEnterTextViaBridgeWriteClipboardIsolatesNestedToolError(t *testing.T) {
+	pb := newTestPhoneBridge(t)
+	tool := &EnterTextViaBridgeTool{}
+	ctx, _ := WithToolError(context.Background())
+
+	err := tool.writeClipboard(ctx, pb, "小红书")
+	if err == nil {
+		t.Fatal("expected clipboard write to fail when phone bridge is disconnected")
+	}
+	if !strings.Contains(err.Error(), "phone bridge not connected") {
+		t.Fatalf("error = %v, want phone bridge not connected", err)
+	}
+	if got := ToolErrorFromContext(ctx); got != nil {
+		t.Fatalf("parent ToolError = %+v, want nil after nested clipboard isolation", got)
+	}
+}
+
 func TestEnterTextViaBridgeUsesClipboardPathAndVerifiesField(t *testing.T) {
 	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
 		ObservedMode: textInputModeASCII,
