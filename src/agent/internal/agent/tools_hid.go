@@ -1017,7 +1017,7 @@ func (t *TouchGestureTool) Name() string { return "touch_gesture" }
 
 func (t *TouchGestureTool) Description() string {
 	return `Perform touch/pointer gesture via HID. Prefer quick_action for semantic platform actions; use this for custom screen gestures. ` +
-		`Input examples: {"type":"tap","point":{"x":500,"y":500}}, {"type":"swipe","start":{"x":200,"y":500},"end":{"x":800,"y":500},"duration_ms":700,"steps":24}, {"type":"swipe_left"}. ` +
+		`Input examples: {"type":"tap","point":{"x":500,"y":500}}, {"type":"swipe","start":{"x":200,"y":500},"end":{"x":800,"y":500},"duration_ms":700,"steps":24}, {"type":"swipe_left"}, {"type":"swipe_up","distance":600}. ` +
 		`Types: tap, double_tap, long_press, drag, swipe, swipe_left/right/up/down, back, home. ` +
 		`Coordinates: point/start/end must be {"x":N,"y":M} objects; never omit x/y key names. coord_space defaults to normalized (0-1000) and also supports pixel or absolute. ` +
 		`Choose the visual center of the target in the latest screenshot; for small controls, estimate bounds and touch the midpoint, biased inward. ` +
@@ -1040,8 +1040,8 @@ func (t *TouchGestureTool) ArgsSchema() map[string]any {
 		"hold_ms":        nonNegativeIntegerSchema("Tap or long-press hold duration in milliseconds."),
 		"pause_ms":       nonNegativeIntegerSchema("Pause between taps for double_tap."),
 		"steps":          minIntegerArgSchema("Number of movement steps for swipe or drag.", 1),
-		"distance":       coordinateSchema("Directional swipe travel in normalized units."),
-		"anchor":         coordinateSchema("Directional swipe fixed-axis coordinate in normalized units."),
+		"distance":       coordinateSchema("Directional swipe travel in 0-1000 normalized units (700 ≈ 70% of screen).", 700),
+		"anchor":         coordinateSchema("Directional swipe fixed-axis coordinate in 0-1000 normalized units.", 500),
 		"strength":       stringEnumArgSchema("Directional swipe preset distance.", "large", "medium", "small", "tiny"),
 	}, "type")
 }
