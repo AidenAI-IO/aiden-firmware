@@ -14,10 +14,11 @@ const postActionScreenshotDelay = time.Second
 
 type postActionScreenshotResult struct {
 	screenshotResult
-	ActionOutput string   `json:"action_output,omitempty"`
-	ScreenStable *bool    `json:"screen_stable,omitempty"`
-	StableWaitMs *int64   `json:"stable_wait_ms,omitempty"`
-	LastDiff     *float64 `json:"last_diff,omitempty"`
+	ActionOutput  string   `json:"action_output,omitempty"`
+	ScreenStable  *bool    `json:"screen_stable,omitempty"`
+	StableWaitMs  *int64   `json:"stable_wait_ms,omitempty"`
+	ScreenChanged *bool    `json:"screen_changed,omitempty"`
+	LastDiff      *float64 `json:"last_diff,omitempty"`
 }
 
 type postActionScreenshotTool struct {
@@ -52,7 +53,7 @@ func (t *postActionScreenshotTool) Name() string {
 
 func (t *postActionScreenshotTool) Description() string {
 	if t.waitStable != nil {
-		return t.inner.Description() + " On successful execution, waits for the screen to become stable (or until the configured timeout) and returns a post-action screenshot observation. screen_stable=false means the screen was still changing (for example during video playback) but the screenshot was still captured."
+		return t.inner.Description() + " On successful execution, waits for the screen to become stable (or until the configured timeout) and returns a post-action screenshot observation. screen_changed=false means no visible screen change was observed during the wait window. screen_stable=false means the screen was still changing (for example during video playback) but the screenshot was still captured."
 	}
 	return fmt.Sprintf(
 		"%s On successful execution, waits %s and returns a post-action screenshot observation.",
@@ -142,6 +143,7 @@ func (t *postActionScreenshotTool) Call(ctx context.Context, input string) (stri
 		elapsed := waitResult.ElapsedMs
 		payload.ScreenStable = &stable
 		payload.StableWaitMs = &elapsed
+		payload.ScreenChanged = waitResult.ScreenChanged
 		payload.LastDiff = waitResult.LastDiff
 	}
 

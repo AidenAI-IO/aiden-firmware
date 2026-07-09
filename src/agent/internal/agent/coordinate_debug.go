@@ -91,10 +91,11 @@ type coordinateDebugTapResponse struct {
 
 type coordinateDebugPostActionScreenshotResult struct {
 	coordinateDebugScreenshotResult
-	ActionOutput string   `json:"action_output,omitempty"`
-	ScreenStable *bool    `json:"screen_stable,omitempty"`
-	StableWaitMs *int64   `json:"stable_wait_ms,omitempty"`
-	LastDiff     *float64 `json:"last_diff,omitempty"`
+	ActionOutput  string   `json:"action_output,omitempty"`
+	ScreenStable  *bool    `json:"screen_stable,omitempty"`
+	StableWaitMs  *int64   `json:"stable_wait_ms,omitempty"`
+	ScreenChanged *bool    `json:"screen_changed,omitempty"`
+	LastDiff      *float64 `json:"last_diff,omitempty"`
 }
 
 func writeCoordinateDebugTapError(w http.ResponseWriter, statusCode int, message string) {
