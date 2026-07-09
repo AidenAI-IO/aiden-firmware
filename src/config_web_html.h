@@ -147,6 +147,7 @@ static const char* CONFIG_WEB_HTML =
     "            <div class=\"field\"><label>voice_tool_call_speech</label><input id=\"agent_voice_tool_call_speech\" type=\"checkbox\" data-section=\"agent\"></div>\n"
     "            <div class=\"field\"><label>voice_progress_speech_enabled</label><input id=\"agent_voice_progress_speech_enabled\" type=\"checkbox\" data-section=\"agent\"></div>\n"
     "            <div class=\"field\"><label>voice_max_response_tokens</label><input id=\"agent_voice_max_response_tokens\" type=\"number\" data-section=\"agent\"></div>\n"
+    "            <div class=\"field\"><label>load_all_tools</label><input id=\"agent_load_all_tools\" type=\"checkbox\" data-section=\"agent\"></div>\n"
     "            <div class=\"field\"><label>max_iterations</label><input id=\"agent_max_iterations\" type=\"number\" data-section=\"agent\"></div>\n"
     "            <div class=\"field\"><label>screenshot_keep_n</label><input id=\"agent_screenshot_keep_n\" type=\"number\" data-section=\"agent\"></div>\n"
     "            <div class=\"field\"><label>screenshot_prune_interval</label><input id=\"agent_screenshot_prune_interval\" type=\"number\" data-section=\"agent\"></div>\n"

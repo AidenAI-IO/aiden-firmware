@@ -171,26 +171,34 @@ func TestAvailableToolsIncludesPhoneBridgeToolsWhenConnected(t *testing.T) {
 	}
 }
 
-func TestDefaultAgentCatalogSlimsSpecializedTools(t *testing.T) {
-	for _, name := range []string{
-		"shell",
-		"image_diff",
-		"mouse_click",
-		"mouse_move",
-		"mouse_scroll",
-		"keyboard_text",
-		"web_search",
-		"wikipedia",
-		"web_scraper",
-		"weather",
-		"calculator",
-		"recall_device_memory",
-		"inspect_episode",
-		"skill_manage",
-		"skill_mark_used",
-	} {
+func TestDefaultAgentCatalogSlimsScriptAuthoringTools(t *testing.T) {
+	for _, name := range []string{"list_scripts", "read_script", "write_script"} {
 		if isAgentToolExposed(name) {
 			t.Fatalf("did not expect %s in the default conversational agent catalog", name)
+		}
+	}
+}
+
+func TestLoadAllToolsIncludesScriptAuthoringTools(t *testing.T) {
+	runtime := NewRuntimeWithDeps(
+		Config{LoadAllTools: true},
+		nil,
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	names := toolNamesFromTools(runtime.availableTools())
+	for _, want := range []string{"list_scripts", "read_script", "write_script"} {
+		found := false
+		for _, name := range names {
+			if name == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("availableTools with load_all_tools missing %s: %v", want, names)
 		}
 	}
 }

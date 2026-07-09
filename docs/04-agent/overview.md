@@ -74,6 +74,6 @@ go run ./cmd/demo -config ./config -clear-memory -show-memory -input "Start fres
 
 The conversational Agent has access to the full built-in tool set: memory, time, skill read/list/manage, screenshot, stable-screen wait, quick action, touch gesture, mouse and keyboard input, verified text entry, app launch, audio volume, image diff, shell, web research (search / wikipedia / scraper), weather, calculator, phone data (clipboard / calendar / contacts / notification), and prepared script execution (`run_script`).
 
-The only tools withheld from the default Agent catalog are the script-file authoring tools — `list_scripts`, `read_script`, and `write_script`. The Agent runs prepared scripts through `run_script`; authoring script files stays behind the HTTP Tool Lab. Separately, the skill-maintenance tools `skill_manage` and `skill_mark_used` remain callable by the Agent but are hidden from the HTTP Tool API.
+The only tools withheld from the default Agent catalog are the script-file authoring tools — `list_scripts`, `read_script`, and `write_script`. The Agent runs prepared scripts through `run_script`; script-file authoring stays out of the default LLM `tools` request to keep ordinary prompts smaller. Set `load_all_tools = true` in `agent.toml` to include those script-authoring tools as well. Separately, the skill-maintenance tools `skill_manage` and `skill_mark_used` remain callable by the Agent but are hidden from the HTTP Tool API.
 
 For tool details and HTTP invocation methods, see [Tools HTTP API](tools-http-api.md).

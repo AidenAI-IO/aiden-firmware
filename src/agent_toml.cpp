@@ -283,6 +283,8 @@ void apply_kv(AgentToml& cfg,
             if (!assign_bool(&cfg.voice_progress_speech_enabled, raw, &sub_err)) fail(sub_err);
         } else if (key == "voice_max_response_tokens") {
             if (!assign_int(&cfg.voice_max_response_tokens, raw, &sub_err)) fail(sub_err);
+        } else if (key == "load_all_tools") {
+            if (!assign_bool(&cfg.load_all_tools, raw, &sub_err)) fail(sub_err);
         } else if (key == "max_iterations") {
             if (!assign_int(&cfg.max_iterations, raw, &sub_err)) fail(sub_err);
         } else if (key == "screenshot_keep_n") {
@@ -640,6 +642,7 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
     emit_bool(out, "voice_tool_call_speech", cfg.voice_tool_call_speech);
     emit_bool(out, "voice_progress_speech_enabled", cfg.voice_progress_speech_enabled);
     if (cfg.voice_max_response_tokens != 0) emit_int(out, "voice_max_response_tokens", cfg.voice_max_response_tokens);
+    emit_bool(out, "load_all_tools", cfg.load_all_tools);
     if (cfg.max_iterations != 0) emit_int(out, "max_iterations", cfg.max_iterations);
     if (cfg.screenshot_keep_n != 0) emit_int(out, "screenshot_keep_n", cfg.screenshot_keep_n);
     if (cfg.screenshot_prune_interval != 0) emit_int(out, "screenshot_prune_interval", cfg.screenshot_prune_interval);

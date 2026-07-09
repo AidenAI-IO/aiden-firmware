@@ -135,6 +135,7 @@ struct AgentToml {
     bool voice_tool_call_speech = true;
     bool voice_progress_speech_enabled = true;
     int voice_max_response_tokens = 300;
+    bool load_all_tools = false;
     int max_iterations = -1;
     int screenshot_keep_n = 3;
     int screenshot_prune_interval = 2;

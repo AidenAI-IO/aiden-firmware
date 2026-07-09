@@ -734,8 +734,8 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 			Ts:         retrieveStart.Format(time.RFC3339Nano),
 			DurationMs: &retrieveDuration,
 			Metadata: map[string]interface{}{
-				"tool_count":  len(toolNamesFromTools(availableTools)),
-				"success":     retrieveErr == nil,
+				"tool_count": len(toolNamesFromTools(availableTools)),
+				"success":    retrieveErr == nil,
 			},
 		}
 	}
@@ -1114,9 +1114,10 @@ func (r *Runtime) resetPlannerContext() {
 
 func (r *Runtime) availableTools() []langtools.Tool {
 	available := make([]langtools.Tool, 0)
+	loadAllTools := r != nil && r.config.LoadAllTools
 
 	for _, tool := range r.tools.All() {
-		if isAgentToolExposed(tool.Name()) {
+		if loadAllTools || isAgentToolExposed(tool.Name()) {
 			available = append(available, tool)
 		}
 	}
@@ -1354,8 +1355,8 @@ func (r *Runtime) exportEpisodeBestEffort(episode TaskEpisode, promptCapture *te
 func (r *Runtime) buildAgentProfile(skills *SkillManager, availableTools []langtools.Tool) RoleProfile {
 	return buildProfile(
 		AgentConfig{
-			Instruction:         r.config.Instruction,
-			AdditionalPrompt:    r.config.AdditionalPrompt,
+			Instruction:      r.config.Instruction,
+			AdditionalPrompt: r.config.AdditionalPrompt,
 		},
 		skills,
 		availableTools,

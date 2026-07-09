@@ -80,7 +80,6 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		Category:     "memory",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"id":"ep_..."}`,
-		AgentExposed: toolSpecBoolPtr(false),
 	},
 	"keyboard_tap": {
 		Category:     "input",
@@ -91,7 +90,6 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		Category:     "input",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"text":"Settings"}`,
-		AgentExposed: toolSpecBoolPtr(false),
 	},
 	"enter_text_in_field": {
 		Category:     "input",
@@ -107,19 +105,16 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		Category:     "input",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"x":500,"y":500,"button":"left","coord_space":"normalized"}`,
-		AgentExposed: toolSpecBoolPtr(false),
 	},
 	"mouse_move": {
 		Category:     "input",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"x":500,"y":500,"coord_space":"normalized"}`,
-		AgentExposed: toolSpecBoolPtr(false),
 	},
 	"mouse_scroll": {
 		Category:     "input",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"delta":-3}`,
-		AgentExposed: toolSpecBoolPtr(false),
 	},
 	"quick_action": {
 		Category:     "input",
@@ -130,7 +125,6 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		Category:     "memory",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"terms":["微信"],"tags":["登录"],"entities":["微信App"],"types":["procedure","failure"],"device_id":"default","limit":5}`,
-		AgentExposed: toolSpecBoolPtr(false),
 	},
 	"recall_session_chunks": {
 		Category:     "memory",
@@ -161,13 +155,11 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		Category:     "observation",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"before":"<base64-jpeg>","after":"<base64-jpeg>"}`,
-		AgentExposed: toolSpecBoolPtr(false),
 	},
 	"shell": {
 		Category:     "system",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"command":"pwd"}`,
-		AgentExposed: toolSpecBoolPtr(false),
 	},
 	"skill_list": {
 		Category:     "skills",
@@ -178,7 +170,6 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		Category:     "skills",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"name":"device-operator"}`,
-		AgentExposed: toolSpecBoolPtr(false),
 		HTTPExposed:  toolSpecBoolPtr(false),
 	},
 	"skill_read": {
@@ -195,31 +186,26 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		Category:     "system",
 		InputMode:    toolInputModeText,
 		ExampleInput: `{"location":"Shanghai"}`,
-		AgentExposed: toolSpecBoolPtr(false),
 	},
 	"web_search": {
 		Category:     "web",
 		InputMode:    toolInputModeText,
 		ExampleInput: `{"query":"Aiden hardware agent"}`,
-		AgentExposed: toolSpecBoolPtr(false),
 	},
 	"wikipedia": {
 		Category:     "web",
 		InputMode:    toolInputModeText,
 		ExampleInput: `{"query":"Raspberry Pi"}`,
-		AgentExposed: toolSpecBoolPtr(false),
 	},
 	"calculator": {
 		Category:     "system",
 		InputMode:    toolInputModeText,
 		ExampleInput: `{"expression":"2 + 2"}`,
-		AgentExposed: toolSpecBoolPtr(false),
 	},
 	"web_scraper": {
 		Category:     "web",
 		InputMode:    toolInputModeText,
 		ExampleInput: `{"url":"https://example.com"}`,
-		AgentExposed: toolSpecBoolPtr(false),
 	},
 	"wait_for_stable_screen": {
 		Category:     "observation",
@@ -258,7 +244,6 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		Category:     "skills",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"action":"list"}`,
-		AgentExposed: toolSpecBoolPtr(false),
 		HTTPExposed:  toolSpecBoolPtr(false),
 	},
 	toolBridgeOpenApp: {

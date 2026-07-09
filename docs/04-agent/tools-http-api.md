@@ -69,6 +69,8 @@ Tool execution failures are also returned in JSON format. Check:
 
 The HTTP catalog is generated from registered Agent-owned tools at runtime. It can include diagnostic, browser Tool Lab, and external-agent tools that are intentionally absent from the default conversational Agent prompt.
 
+The conversational Agent omits `list_scripts`, `read_script`, and `write_script` from its default LLM `tools` request. Configure `load_all_tools = true` to send the full runtime-available tool catalog, including those script-authoring tools.
+
 Internal maintenance tools such as `skill_manage` and `skill_mark_used` are not exposed through the default HTTP Tool API.
 
 ## curl Examples
