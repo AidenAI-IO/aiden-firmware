@@ -113,6 +113,10 @@ jobs:
         docker system prune -af || true
         df -h
 
+    - name: Configure Go proxy (self-hosted)
+      if: ${{ inputs.runner == 'self-hosted' || startsWith(inputs.runner, 'aiden-hosted-') }}
+      run: echo "GOPROXY=https://goproxy.cn" >> "$GITHUB_ENV"
+
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
