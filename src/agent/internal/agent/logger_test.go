@@ -57,6 +57,17 @@ func TestCleanupOldLogFilesUsesConfiguredRetentionDays(t *testing.T) {
 	assertPathExists(t, filepath.Join(logDir, "llm-http-202606190900-session2.log"))
 }
 
+func TestCleanupOldLogFilesMissingDirIsNotError(t *testing.T) {
+	// A missing log directory is normal on a fresh device that has not written
+	// any llm-http logs yet. It means there is nothing to clean up, not an error.
+	logDir := filepath.Join(t.TempDir(), "does-not-exist")
+	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.Local)
+
+	if err := cleanupOldLogFiles(logDir, now, 7); err != nil {
+		t.Fatalf("cleanupOldLogFiles() with missing dir error = %v, want nil", err)
+	}
+}
+
 func TestNewLoggerCleansOldLogFilesOnStartup(t *testing.T) {
 	configDir := t.TempDir()
 	logDir := filepath.Join(configDir, "log")
