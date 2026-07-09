@@ -70,6 +70,9 @@ func TestRolePromptsIncludeGlobalEnvironmentAndDeviceGuidance(t *testing.T) {
 		"## Environment",
 		"## Default behavior",
 		"Default to replying in Simplified Chinese",
+		"Most user input arrives as voice transcribed by STT",
+		"homophone, near-sound, segmentation, or named-entity errors",
+		"choose likely canonical keywords and try reasonable alternate terms",
 		"do not mention or hint at internal automation implementation details",
 		"run_script",
 		"JSONL",
@@ -236,8 +239,8 @@ func TestPhoneBridgeRuntimeContextConnected(t *testing.T) {
 		"- platform: ios",
 		"- last_heartbeat_at: 2026-06-01T02:03:04Z",
 		"The phone companion app is connected",
-		"Use open_app as the primary path",
-		"clipboard, calendar, contacts, and notification tools are available",
+		"Use bridge_open_app as the primary path",
+		"bridge_clipboard, bridge_calendar, bridge_contacts, and bridge_notification tools are available",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("runtime context missing %q:\n%s", want, got)
@@ -268,8 +271,8 @@ func TestPhoneBridgeRuntimeContextBackgroundAppGuidesDynamicIslandRecovery(t *te
 			t.Fatalf("runtime context missing %q:\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, "Use open_app as the primary path") {
-		t.Fatalf("backgrounded app context should not present direct open_app as immediately available:\n%s", got)
+	if strings.Contains(got, "Use bridge_open_app as the primary path") {
+		t.Fatalf("backgrounded app context should not present direct bridge_open_app as immediately available:\n%s", got)
 	}
 }
 
@@ -300,9 +303,9 @@ func TestPhoneBridgeRuntimeContextPiPBackgroundDisablesOpenApp(t *testing.T) {
 	}
 	for _, notWant := range []string{
 		"will first tap the Aiden Dynamic Island entry",
-		"Use open_app as the primary path",
-		"open_app is intentionally unavailable",
-		"Use clipboard, calendar, contacts, and notification only",
+		"Use bridge_open_app as the primary path",
+		"bridge_open_app is intentionally unavailable",
+		"Use bridge_clipboard, bridge_calendar, bridge_contacts, and bridge_notification only",
 	} {
 		if strings.Contains(got, notWant) {
 			t.Fatalf("PiP background context should not include %q:\n%s", notWant, got)

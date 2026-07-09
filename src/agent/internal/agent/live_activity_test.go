@@ -62,12 +62,12 @@ func TestLiveActivityManagerSummarizesAgentSteps(t *testing.T) {
 
 	state = manager.UpdateFromRunEvent("req-1", RunEvent{
 		Type:      runEventToolCall,
-		ToolName:  "open_app",
+		ToolName:  "bridge_open_app",
 		ToolInput: `{"app":"Maps"}`,
 		Timestamp: time.Now(),
 	})
 	if state == nil || state.CurrentStep != "Opening Maps" || state.CurrentApp != "Maps" || state.Phase != LiveActivityPhasePhoneBridge {
-		t.Fatalf("open_app step = %#v, want targeted app step and current app", state)
+		t.Fatalf("bridge_open_app step = %#v, want targeted app step and current app", state)
 	}
 
 	state = manager.UpdateFromRunEvent("req-1", RunEvent{
@@ -86,7 +86,7 @@ func TestLiveActivityManagerNeedsAppWhenBridgeUnavailable(t *testing.T) {
 
 	state := manager.UpdateFromRunEvent("req-1", RunEvent{
 		Type:      runEventToolCall,
-		ToolName:  "clipboard",
+		ToolName:  "bridge_clipboard",
 		ToolInput: `{"action":"read"}`,
 		Timestamp: time.Now(),
 	})
@@ -99,7 +99,7 @@ func TestLiveActivityManagerNeedsAppWhenBridgeUnavailable(t *testing.T) {
 
 	state = manager.UpdateFromRunEvent("req-1", RunEvent{
 		Type:      "tool_result",
-		ToolName:  "clipboard",
+		ToolName:  "bridge_clipboard",
 		ToolInput: `{"action":"read"}`,
 		Content:   `{"ok":false,"error":"phone bridge not connected"}`,
 		Timestamp: time.Now(),

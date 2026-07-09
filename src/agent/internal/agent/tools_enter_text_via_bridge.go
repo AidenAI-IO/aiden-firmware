@@ -683,9 +683,15 @@ func (t *EnterTextViaBridgeTool) writeClipboard(ctx context.Context, bridge *Pho
 		return t.clipboardWriteFn(ctx, bridge, text)
 	}
 	clipboard := NewClipboardTool(bridge, nil)
-	clipOut, clipErr := clipboard.Call(ctx, jsonString(map[string]any{"action": "write", "text": text}))
+	// Isolate nested ClipboardTool SetToolError so a bridge failure cannot
+	// poison the parent enter_text / search_launch_app observation.
+	toolCtx, _ := WithToolError(ctx)
+	clipOut, clipErr := clipboard.Call(toolCtx, jsonString(map[string]any{"action": "write", "text": text}))
 	if clipErr != nil {
 		return clipErr
+	}
+	if te := ToolErrorFromContext(toolCtx); te != nil {
+		return te
 	}
 	return interpretTextInputToolOutput(clipOut)
 }

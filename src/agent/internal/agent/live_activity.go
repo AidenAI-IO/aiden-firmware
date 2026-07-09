@@ -721,7 +721,7 @@ func liveActivityToolCallStatus(event RunEvent) liveActivityToolStatus {
 	case "wait_for_stable_screen":
 		status.phase = LiveActivityPhaseObserving
 		status.action = "wait_for_screen"
-	case "open_app":
+	case toolBridgeOpenApp:
 		status.phase = LiveActivityPhasePhoneBridge
 		status.action = "open_app"
 		status.requiresApp = true
@@ -732,12 +732,12 @@ func liveActivityToolCallStatus(event RunEvent) liveActivityToolStatus {
 		if target != "" {
 			status.step = "Opening " + target
 		}
-	case "clipboard":
+	case toolBridgeClipboard:
 		status.phase = LiveActivityPhasePhoneBridge
 		status.action = "clipboard"
 		status.requiresApp = true
 		status.step = liveActivityClipboardStep(event.ToolInput)
-	case "calendar":
+	case toolBridgeCalendar:
 		status.phase = LiveActivityPhasePhoneBridge
 		status.action = "calendar"
 		status.requiresApp = true
@@ -746,7 +746,7 @@ func liveActivityToolCallStatus(event RunEvent) liveActivityToolStatus {
 			"query":  "Checking calendar",
 			"delete": "Deleting calendar event",
 		}, "Updating calendar")
-	case "contacts":
+	case toolBridgeContacts:
 		status.phase = LiveActivityPhasePhoneBridge
 		status.action = "contacts"
 		status.requiresApp = true
@@ -755,7 +755,7 @@ func liveActivityToolCallStatus(event RunEvent) liveActivityToolStatus {
 			"create": "Creating contact",
 			"update": "Updating contact",
 		}, "Checking contacts")
-	case "notification":
+	case toolBridgeNotification:
 		status.phase = LiveActivityPhasePhoneBridge
 		status.action = "notification"
 		status.requiresApp = true
@@ -789,7 +789,7 @@ func liveActivityToolResultPhase(tool string) string {
 	switch strings.ToLower(strings.TrimSpace(tool)) {
 	case "screenshot", "wait_for_stable_screen", "image_diff":
 		return LiveActivityPhaseVerifying
-	case "open_app", "clipboard", "calendar", "contacts", "notification":
+	case toolBridgeOpenApp, toolBridgeClipboard, toolBridgeCalendar, toolBridgeContacts, toolBridgeNotification:
 		return LiveActivityPhasePhoneBridge
 	case "request_human_handoff":
 		return LiveActivityPhaseWaitingUser
@@ -860,7 +860,7 @@ func liveActivityResultNeedsApp(event RunEvent, errText string) bool {
 
 func liveActivityToolRequiresApp(tool string) bool {
 	switch strings.ToLower(strings.TrimSpace(tool)) {
-	case "open_app", "clipboard", "calendar", "contacts", "notification":
+	case toolBridgeOpenApp, toolBridgeClipboard, toolBridgeCalendar, toolBridgeContacts, toolBridgeNotification:
 		return true
 	default:
 		return false
@@ -900,25 +900,25 @@ func liveActivityTargetFromToolCall(event RunEvent) string {
 		return ""
 	}
 	switch strings.ToLower(strings.TrimSpace(event.ToolName)) {
-	case "open_app":
+	case toolBridgeOpenApp:
 		return firstNonEmptyString([]string{
 			liveActivityString(payload, "app"),
 			liveActivityString(payload, "url"),
 			liveActivityString(payload, "phone_number"),
 		})
-	case "calendar":
+	case toolBridgeCalendar:
 		return firstNonEmptyString([]string{
 			liveActivityString(payload, "title"),
 			liveActivityString(payload, "from"),
 			liveActivityString(payload, "event_id"),
 		})
-	case "contacts":
+	case toolBridgeContacts:
 		return firstNonEmptyString([]string{
 			liveActivityString(payload, "name"),
 			liveActivityString(payload, "query"),
 			liveActivityString(payload, "contact_id"),
 		})
-	case "notification":
+	case toolBridgeNotification:
 		return liveActivityString(payload, "title")
 	case "weather":
 		return liveActivityString(payload, "location")
@@ -1041,7 +1041,7 @@ func liveActivityToolCallStep(tool string) string {
 		return "Checking the screen"
 	case "wait_for_stable_screen":
 		return "Waiting for the screen"
-	case "open_app":
+	case toolBridgeOpenApp:
 		return "Opening app"
 	case "touch_gesture", "mouse_click", "quick_action":
 		return "Controlling the phone"
@@ -1053,13 +1053,13 @@ func liveActivityToolCallStep(tool string) string {
 		return "Typing text"
 	case "keyboard_tap":
 		return "Pressing keys"
-	case "clipboard":
+	case toolBridgeClipboard:
 		return "Using clipboard"
-	case "calendar":
+	case toolBridgeCalendar:
 		return "Updating calendar"
-	case "contacts":
+	case toolBridgeContacts:
 		return "Checking contacts"
-	case "notification":
+	case toolBridgeNotification:
 		return "Sending notification"
 	case "web_search", "wikipedia", "web_scraper":
 		return "Searching"
@@ -1090,7 +1090,7 @@ func liveActivityToolResultStep(tool string) string {
 		return "Screen checked"
 	case "wait_for_stable_screen":
 		return "Screen is ready"
-	case "open_app":
+	case toolBridgeOpenApp:
 		return "App opened"
 	case "touch_gesture", "mouse_click", "quick_action", "mouse_move", "mouse_scroll", "keyboard_tap", "keyboard_text":
 		return "Action sent; checking result"
@@ -1112,7 +1112,7 @@ func liveActivityToolErrorStep(tool string) string {
 }
 
 func liveActivityAppFromToolCall(event RunEvent) string {
-	if strings.ToLower(strings.TrimSpace(event.ToolName)) != "open_app" {
+	if strings.ToLower(strings.TrimSpace(event.ToolName)) != toolBridgeOpenApp {
 		return ""
 	}
 	var payload map[string]interface{}

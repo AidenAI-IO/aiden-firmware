@@ -30,13 +30,13 @@ func saveCurrentSession(sessionFolder string, sessionID string) error {
 
 func appendSession(sessionFolder string, sessionID string, messages []Message) error {
 	// append to JSONL file, each message is a new line
-	sessionFile := filepath.Join(sessionFolder, sessionID + ".jsonl")
+	sessionFile := filepath.Join(sessionFolder, sessionID+".jsonl")
 	file, err := os.OpenFile(sessionFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return fmt.Errorf("failed to open session file %s: %w", sessionFile, err)
 	}
 	defer file.Close()
-	
+
 	var buf bytes.Buffer
 	for _, message := range messages {
 		encoded, err := json.Marshal(message)
@@ -56,7 +56,7 @@ func appendSession(sessionFolder string, sessionID string, messages []Message) e
 }
 
 func loadSession(sessionFolder string, sessionID string) ([]Message, error) {
-	sessionFile := filepath.Join(sessionFolder, sessionID + ".jsonl")
+	sessionFile := filepath.Join(sessionFolder, sessionID+".jsonl")
 	if _, err := os.Stat(sessionFile); err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil

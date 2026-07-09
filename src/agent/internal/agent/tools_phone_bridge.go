@@ -20,7 +20,7 @@ func NewOpenAppTool(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) *OpenApp
 	return &OpenAppTool{bridge: bridge, restorer: restorer}
 }
 
-func (t *OpenAppTool) Name() string { return "open_app" }
+func (t *OpenAppTool) Name() string { return toolBridgeOpenApp }
 
 func (t *OpenAppTool) Description() string {
 	return `Open an app or dial a phone number on the connected phone via the phone bridge. ` +
@@ -29,7 +29,7 @@ func (t *OpenAppTool) Description() string {
 		`Input JSON: {"app":"WeChat"}, {"app":"微信"}, {"app":"weixin"}, {"app":"browser"}, {"url":"https://example.com"}, or {"phone_number":"10086"}. ` +
 		`Pass only the desired app, webpage, or phone number; the companion app owns platform-specific launch details. ` +
 		`If this tool returns {"ok":true}, the app launch request is complete; answer the user immediately unless they asked for additional actions inside that app. ` +
-		`PiP Bridge mode does not make open_app background-safe: opening apps, URLs, or phone dialer still requires Aiden in foreground or a restore path such as the Dynamic Island return entry. ` +
+		`PiP Bridge mode does not make bridge_open_app background-safe: opening apps, URLs, or phone dialer still requires Aiden in foreground or a restore path such as the Dynamic Island return entry. ` +
 		`To dial a phone number, use {"phone_number":"10086"}. ` +
 		`Use {"app":"browser"} to open the browser itself, and {"url":"https://example.com"} to open a specific webpage. ` +
 		`Common apps: WeChat(微信), Alipay(支付宝), Safari, Chrome, Settings(设置), Phone(电话), Messages(短信), ` +
@@ -70,7 +70,7 @@ func applyOpenAppURL(args *openAppArgs, rawURL string) *ToolError {
 
 func resolveOpenAppTargets(args *openAppArgs) *ToolError {
 	if args == nil {
-		return NewToolError(CodeInvalidArguments, "missing open_app args")
+		return NewToolError(CodeInvalidArguments, "missing bridge_open_app args")
 	}
 	hasApp := strings.TrimSpace(args.App) != ""
 	hasURL := strings.TrimSpace(args.URL) != ""
@@ -239,9 +239,9 @@ func (s *ToolSet) RegisterPhoneBridge(bridge *PhoneBridge) {
 	if s.phoneBridgeRestorer != nil {
 		s.phoneBridgeRestorer.SetBridge(bridge)
 	}
-	s.tools["open_app"] = NewOpenAppTool(bridge, s.phoneBridgeRestorer)
-	s.tools["clipboard"] = NewClipboardTool(bridge, s.phoneBridgeRestorer)
-	s.tools["calendar"] = NewCalendarTool(bridge, s.phoneBridgeRestorer)
-	s.tools["contacts"] = NewContactsTool(bridge, s.phoneBridgeRestorer)
-	s.tools["notification"] = NewNotificationTool(bridge, s.phoneBridgeRestorer)
+	s.tools[toolBridgeOpenApp] = NewOpenAppTool(bridge, s.phoneBridgeRestorer)
+	s.tools[toolBridgeClipboard] = NewClipboardTool(bridge, s.phoneBridgeRestorer)
+	s.tools[toolBridgeCalendar] = NewCalendarTool(bridge, s.phoneBridgeRestorer)
+	s.tools[toolBridgeContacts] = NewContactsTool(bridge, s.phoneBridgeRestorer)
+	s.tools[toolBridgeNotification] = NewNotificationTool(bridge, s.phoneBridgeRestorer)
 }

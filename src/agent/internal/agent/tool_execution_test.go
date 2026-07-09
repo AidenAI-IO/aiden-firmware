@@ -554,6 +554,75 @@ func TestDefaultAfterToolCallSummarizesScreenshotAndMarksTerminate(t *testing.T)
 	}
 }
 
+func TestExecuteToolCallIgnoresNestedToolErrorPollution(t *testing.T) {
+	// Regression from production logs: search_launch_app / enter_text_in_field
+	// recover after a nested ClipboardTool SetToolError, but executeToolCall used
+	// to overwrite the parent JSON observation with the leftover bridge error.
+	const parentOutput = `{"ok":false,"error":"app did not open","target":"小红书","steps":["opened system search"]}`
+	nestedErr := NewToolError(CodeBridgeNotConnected, "phone bridge not connected and no supported Dynamic Island return entry is available")
+	tool := &stubTool{
+		name:        "search_launch_app",
+		description: "Search and launch an app.",
+		callFn: func(ctx context.Context, input string) (string, error) {
+			SetToolError(ctx, nestedErr)
+			return parentOutput, nil
+		},
+	}
+	specs := NewToolSpecs([]langtools.Tool{tool})
+
+	result := executeToolCall(context.Background(), ToolCallExecution{
+		Specs: specs,
+		Action: schema.AgentAction{
+			Tool:      "search_launch_app",
+			ToolInput: `{"app":"小红书"}`,
+		},
+	})
+
+	if result.Error != nil {
+		t.Fatalf("nested pollution should not become an execution error: %v", result.Error)
+	}
+	if result.Result.IsError() {
+		t.Fatalf("parent recovery should not be marked as tool error: %#v", result.Result)
+	}
+	if result.Result.Output != parentOutput {
+		t.Fatalf("Output = %q, want parent JSON preserved", result.Result.Output)
+	}
+	if result.Step.Observation != parentOutput {
+		t.Fatalf("Observation = %q, want parent JSON preserved", result.Step.Observation)
+	}
+}
+
+func TestExecuteToolCallAdoptsIntentionalTopLevelToolError(t *testing.T) {
+	toolErr := NewToolError(CodeBridgeNotConnected, "phone bridge not connected and no supported Dynamic Island return entry is available")
+	tool := &stubTool{
+		name:        "open_app",
+		description: "Open an app.",
+		callFn: func(ctx context.Context, input string) (string, error) {
+			SetToolError(ctx, toolErr)
+			return toolErrorString(toolErr), nil
+		},
+	}
+	specs := NewToolSpecs([]langtools.Tool{tool})
+
+	result := executeToolCall(context.Background(), ToolCallExecution{
+		Specs: specs,
+		Action: schema.AgentAction{
+			Tool:      "open_app",
+			ToolInput: `{"app":"小红书"}`,
+		},
+	})
+
+	if !result.Result.IsError() {
+		t.Fatalf("intentional top-level SetToolError should remain an error: %#v", result.Result)
+	}
+	if result.Result.Error == nil || result.Result.Error.Code != CodeBridgeNotConnected {
+		t.Fatalf("ToolError = %+v, want bridge_not_connected", result.Result.Error)
+	}
+	if result.Result.Output != toolErr.Message {
+		t.Fatalf("Output = %q, want %q", result.Result.Output, toolErr.Message)
+	}
+}
+
 func TestExecuteToolCallBeforeHookRejectWithEmptyOutputSatisfiesInvariant(t *testing.T) {
 	// Regression: normalizeRejectedToolResult called normalizeToolResult which back-filled
 	// Output with "error: " + Error.Message, breaking Output == Error.Message invariant.
