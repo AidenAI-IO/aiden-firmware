@@ -1984,6 +1984,7 @@ type stubTool struct {
 	err         error
 	visual      bool
 	inputs      []string
+	callFn      func(context.Context, string) (string, error)
 }
 
 func (t *stubTool) Name() string { return t.name }
@@ -1992,8 +1993,11 @@ func (t *stubTool) Description() string { return t.description }
 
 func (t *stubTool) ReturnsVisualObservation() bool { return t.visual }
 
-func (t *stubTool) Call(_ context.Context, input string) (string, error) {
+func (t *stubTool) Call(ctx context.Context, input string) (string, error) {
 	t.inputs = append(t.inputs, input)
+	if t.callFn != nil {
+		return t.callFn(ctx, input)
+	}
 	if t.err != nil {
 		return "", t.err
 	}
