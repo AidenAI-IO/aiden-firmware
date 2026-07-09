@@ -2560,20 +2560,20 @@ func TestRuntimeSimpleLoopDoesNotGenerateImplicitTodo(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
 			toolCallResponse("call_1", "screenshot", `{"__arg1":"{}"}`),
-			toolCallResponse("call_2", "web_search", `{"__arg1":"Aiden"}`),
+			toolCallResponse("call_2", "current_time", `{"__arg1":"{}"}`),
 			contentResponse("done"),
 			verifierFinishResponse("done"),
 		},
 	}
 	screenshot := &stubTool{name: "screenshot", description: "Capture screen.", output: "screen"}
-	webSearch := &stubTool{name: "web_search", description: "Search web.", output: "result"}
+	currentTime := &stubTool{name: "current_time", description: "Get time.", output: "now"}
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
-			"screenshot": screenshot,
-			"web_search": webSearch,
+			"screenshot":   screenshot,
+			"current_time": currentTime,
 		}},
 		NewSkillIndex(),
 	)
@@ -2594,24 +2594,24 @@ func TestRuntimeSimpleLoopDoesNotGenerateImplicitTodo(t *testing.T) {
 	if closed := runEventsOfType(events, "todo_closed"); len(closed) != 0 {
 		t.Fatalf("simple loop emitted implicit todo_closed events: %#v", closed)
 	}
-	if len(screenshot.inputs) != 1 || len(webSearch.inputs) != 1 {
-		t.Fatalf("expected simple tools to execute without todo, screenshot=%#v web=%#v", screenshot.inputs, webSearch.inputs)
+	if len(screenshot.inputs) != 1 || len(currentTime.inputs) != 1 {
+		t.Fatalf("expected simple tools to execute without todo, screenshot=%#v current_time=%#v", screenshot.inputs, currentTime.inputs)
 	}
 }
 
 func TestRuntimeForceSimpleLoopDoesNotGenerateTodo(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			toolCallResponse("call_1", "web_search", `{"__arg1":"Aiden"}`),
+			toolCallResponse("call_1", "current_time", `{"__arg1":"{}"}`),
 			contentResponse("done"),
 		},
 	}
-	webSearch := &stubTool{name: "web_search", description: "Search web.", output: "result"}
+	currentTime := &stubTool{name: "current_time", description: "Get time.", output: "now"}
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", ForceSimpleLoop: true}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
-		&ToolSet{tools: map[string]langtools.Tool{"web_search": webSearch}},
+		&ToolSet{tools: map[string]langtools.Tool{"current_time": currentTime}},
 		NewSkillIndex(),
 	)
 
@@ -2631,8 +2631,8 @@ func TestRuntimeForceSimpleLoopDoesNotGenerateTodo(t *testing.T) {
 	if closed := runEventsOfType(events, "todo_closed"); len(closed) != 0 {
 		t.Fatalf("single-agent loop emitted todo_closed events: %#v", closed)
 	}
-	if len(webSearch.inputs) != 1 {
-		t.Fatalf("expected single-agent tool to execute without todo, inputs=%#v", webSearch.inputs)
+	if len(currentTime.inputs) != 1 {
+		t.Fatalf("expected single-agent tool to execute without todo, inputs=%#v", currentTime.inputs)
 	}
 }
 

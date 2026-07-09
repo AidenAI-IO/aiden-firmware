@@ -6,7 +6,7 @@ In Web UI mode, the Agent exposes Agent-owned tools that can be safely invoked v
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/api/tools` | List all tools with descriptions, input modes, examples, and HTTP bindings |
+| `GET` | `/api/tools` | List HTTP-visible tools with descriptions, input modes, examples, and HTTP bindings |
 | `POST` | `/api/tools/{tool_name}` | Invoke the specified tool |
 | `GET` | `/api/tool-skills` | Generate a `SKILL.md` bundle suitable for external agents |
 
@@ -65,31 +65,11 @@ Tool execution failures are also returned in JSON format. Check:
 - Whether `output` contains error information
 - Whether the HTTP transport succeeded
 
-## Current Tool List
+## Catalog Scope
 
-| Tool | Category | Example Input |
-| --- | --- | --- |
-| `audio_volume` | audio | `{}` |
-| `current_time` | system | `{"timezone":"Asia/Shanghai"}` |
-| `wait_for_wakeup` | system | `{"reason":"user asked me to wait for wakeup"}` |
-| `keyboard_tap` | input | `{"keys":["ctrl","c"]}` |
-| `keyboard_text` | input | `{"text":"hello world"}` |
-| `list_scripts` | demo | `{}` |
-| `mouse_click` | input | `{"x":500,"y":500,"button":"left","coord_space":"normalized"}` |
-| `mouse_move` | input | `{"x":500,"y":500,"coord_space":"normalized"}` |
-| `mouse_scroll` | input | `{"delta":-3}` |
-| `read_script` | demo | `{"file":"demo.jsonl"}` |
-| `run_script` | demo | `{"file":"demo.jsonl"}` |
-| `screenshot` | observation | `{}` |
-| `shell` | system | `{"command":"pwd"}` |
-| `skill_list` | skills | `{"query":"planner","include_archived":false}` |
-| `skill_mark_used` | skills | `{"name":"planner"}` |
-| `skill_read` | skills | `{"name":"planner"}` |
-| `touch_gesture` | input | `{"type":"tap","point":{"x":500,"y":500}}` / `{"type":"back"}` / `{"type":"home"}` |
-| `weather` | system | `{"location":"Shanghai"}` |
-| `write_script` | demo | `{"file":"demo.jsonl","content":"# 演示\n{\"type\":\"wait\",\"ms\":500}"}` |
+The HTTP catalog is generated from registered Agent-owned tools at runtime. It can include diagnostic, browser Tool Lab, and external-agent tools that are intentionally absent from the default conversational Agent prompt.
 
-`skill_manage` is an internal skill maintenance tool available to the runtime Agent but not exposed via the HTTP Tool API.
+Internal maintenance tools such as `skill_manage` and `skill_mark_used` are not exposed through the default HTTP Tool API.
 
 ## curl Examples
 

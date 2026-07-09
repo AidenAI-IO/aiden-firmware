@@ -22,7 +22,17 @@ func (r *Runtime) ToolSpecs() *ToolSpecs {
 }
 
 func (r *Runtime) ToolDescriptors() []ToolDescriptor {
-	return r.ToolSpecs().Descriptors()
+	specs := r.ToolSpecs()
+	if specs == nil {
+		return nil
+	}
+	descriptors := make([]ToolDescriptor, 0)
+	for _, spec := range specs.All() {
+		if spec.HTTPExposed {
+			descriptors = append(descriptors, spec.Descriptor())
+		}
+	}
+	return descriptors
 }
 
 func isAgentToolExposed(name string) bool {
@@ -40,7 +50,11 @@ func isAgentToolExposed(name string) bool {
 }
 
 func (r *Runtime) ToolDescriptorByName(name string) (ToolDescriptor, bool) {
-	return r.ToolSpecs().DescriptorByName(name)
+	spec, ok := r.ToolSpecs().Lookup(name)
+	if !ok || !spec.HTTPExposed {
+		return ToolDescriptor{}, false
+	}
+	return spec.Descriptor(), true
 }
 
 const defaultHTTPToolSkillBaseURL = "http://127.0.0.1:8080"

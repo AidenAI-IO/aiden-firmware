@@ -60,9 +60,15 @@ func TestRunScriptExposedToAgentAndToolLab(t *testing.T) {
 		if _, ok := runtime.ToolDescriptorByName(name); !ok {
 			t.Fatalf("expected %s in Tool Lab HTTP catalog", name)
 		}
+	}
+	if !isAgentToolExposed("run_script") {
+		t.Fatal("expected run_script available to conversational agent")
+	}
+	for _, name := range []string{"list_scripts", "read_script", "write_script"} {
 		if !isAgentToolExposed(name) {
-			t.Fatalf("expected %s available to conversational agent", name)
+			continue
 		}
+		t.Fatalf("did not expect %s in the default conversational agent catalog", name)
 	}
 }
 
@@ -74,12 +80,15 @@ func TestPhoneBridgeToolsExposedToAgent(t *testing.T) {
 	}
 }
 
-func TestAllToolsExposedOverHTTP(t *testing.T) {
-	// Every registered tool, including phone bridge and unregistered tools,
-	// is now exposed through the HTTP catalog.
+func TestUnknownToolsDefaultToHTTPVisible(t *testing.T) {
+	// Injected tools without built-in metadata stay visible by default so tests,
+	// extensions, and environment bridges do not need extra catalog plumbing.
 	spec := NewToolSpec(&stubTool{name: "unregistered_tool", description: "Unregistered."})
 	if spec.Name != "unregistered_tool" {
 		t.Fatalf("unexpected tool spec name: %q", spec.Name)
+	}
+	if !spec.HTTPExposed {
+		t.Fatal("expected unregistered tool to remain HTTP-visible by default")
 	}
 }
 
@@ -151,6 +160,37 @@ func TestAvailableToolsIncludesPhoneBridgeToolsWhenConnected(t *testing.T) {
 		}
 		if !found {
 			t.Fatalf("resolveTools missing connected phone bridge tool %s: %v", want, names)
+		}
+	}
+	for _, notWant := range []string{"clipboard", "calendar", "contacts", "notification"} {
+		for _, name := range names {
+			if name == notWant {
+				t.Fatalf("availableTools exposed phone data tool %s: %v", notWant, names)
+			}
+		}
+	}
+}
+
+func TestDefaultAgentCatalogSlimsSpecializedTools(t *testing.T) {
+	for _, name := range []string{
+		"shell",
+		"image_diff",
+		"mouse_click",
+		"mouse_move",
+		"mouse_scroll",
+		"keyboard_text",
+		"web_search",
+		"wikipedia",
+		"web_scraper",
+		"weather",
+		"calculator",
+		"recall_device_memory",
+		"inspect_episode",
+		"skill_manage",
+		"skill_mark_used",
+	} {
+		if isAgentToolExposed(name) {
+			t.Fatalf("did not expect %s in the default conversational agent catalog", name)
 		}
 	}
 }
