@@ -111,6 +111,8 @@ type PhoneBridgeStatus struct {
 	ReturnEntry          string            `json:"return_entry,omitempty"`
 	ReturnEntryAvailable *bool             `json:"return_entry_available,omitempty"`
 	PipBridgeEnabled     *bool             `json:"pip_bridge_enabled,omitempty"`
+	FgsBridgeEnabled     *bool             `json:"fgs_bridge_enabled,omitempty"`
+	FgsBridgeUpdatedAt   *time.Time        `json:"fgs_bridge_updated_at,omitempty"`
 	Environment          *PhoneEnvironment `json:"environment,omitempty"`
 	EnvironmentUpdatedAt *time.Time        `json:"environment_updated_at,omitempty"`
 }
@@ -129,6 +131,9 @@ type PhoneBridge struct {
 	returnEntrySeen  bool
 	pipBridgeEnabled bool
 	pipBridgeSeen    bool
+	fgsBridgeEnabled bool
+	fgsBridgeSeen    bool
+	fgsBridgeAt      time.Time
 	environment      *PhoneEnvironment
 	environmentAt    time.Time
 	clipboardText    string
@@ -619,7 +624,6 @@ func (pb *PhoneBridge) statusUpdated() {
 }
 
 func (pb *PhoneBridge) getStatus() PhoneBridgeStatus {
-	pb.logger.Info("Getting phone bridge status")
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
 	status := PhoneBridgeStatus{
@@ -649,11 +653,16 @@ func (pb *PhoneBridge) getStatus() PhoneBridgeStatus {
 		enabled := pb.pipBridgeEnabled
 		status.PipBridgeEnabled = &enabled
 	}
-	pb.logger.Info("Phone bridge status: %+v", status)
+	if pb.fgsBridgeSeen {
+		enabled := pb.fgsBridgeEnabled
+		status.FgsBridgeEnabled = &enabled
+		if !pb.fgsBridgeAt.IsZero() {
+			t := pb.fgsBridgeAt
+			status.FgsBridgeUpdatedAt = &t
+		}
+	}
 	if pb.connected && pb.environment != nil {
-		pb.logger.Info("Phone bridge environment: %+v", pb.environment)
 		env := clonePhoneEnvironment(*pb.environment)
-		pb.logger.Info("Cloned phone environment: %+v", env)
 		status.Environment = &env
 		if !pb.environmentAt.IsZero() {
 			t := pb.environmentAt
@@ -680,7 +689,8 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 	if !status.Connected &&
 		strings.TrimSpace(status.AppState) == "" &&
 		strings.TrimSpace(status.Platform) == "" &&
-		status.PipBridgeEnabled == nil {
+		status.PipBridgeEnabled == nil &&
+		status.FgsBridgeEnabled == nil {
 		return ""
 	}
 	var builder strings.Builder
@@ -742,6 +752,16 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 		builder.WriteByte(' ')
 		builder.WriteString("(PiP mode in the background can hide the Dynamic Island return entry)\n")
 	}
+	if status.FgsBridgeEnabled != nil {
+		builder.WriteString("- fgs_bridge: ")
+		builder.WriteString("enabled=")
+		builder.WriteString(fmt.Sprintf("%t", *status.FgsBridgeEnabled))
+		if status.FgsBridgeUpdatedAt != nil {
+			builder.WriteString(" updated_at=")
+			builder.WriteString(status.FgsBridgeUpdatedAt.UTC().Format(time.RFC3339))
+		}
+		builder.WriteByte('\n')
+	}
 	if status.Environment != nil {
 		builder.WriteString("- device environment is available in World State for structured use\n")
 		if status.EnvironmentUpdatedAt != nil {
@@ -750,7 +770,9 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 			builder.WriteByte('\n')
 		}
 	}
-	if phoneBridgePiPBackgroundEnabled(status) {
+	if phoneBridgeFGSBackgroundEnabled(status) {
+		builder.WriteString("- Android Foreground Service bridge is enabled while Aiden is backgrounded. Background-safe data tools can run through the HTTP command queue; open_app and UI actions still require foreground app control or HID fallback.\n")
+	} else if phoneBridgePiPBackgroundEnabled(status) {
 		builder.WriteString("- PiP Bridge mode is enabled while Aiden is backgrounded. iOS gives PiP priority over the Dynamic Island, so the Dynamic Island return entry is not visible in this state.\n")
 	} else if phoneBridgeAppNeedsForeground(status) {
 		builder.WriteString("- The Aiden companion app is backgrounded or inactive. On iOS, Phone Bridge commands may time out until Aiden returns to foreground.\n")
