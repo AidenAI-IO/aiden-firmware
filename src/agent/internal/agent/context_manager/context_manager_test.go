@@ -291,6 +291,31 @@ func TestContextManagerAppendMessageHookCanDropOriginalMessage(t *testing.T) {
 	}
 }
 
+func TestContextManagerAppendMessageHookCleanup(t *testing.T) {
+	manager := newTestContextManager(t)
+	remove := manager.AddAppendMessageHook(func(message Message) AppendMessageHookResult {
+		message.Content = "hooked:" + message.Content
+		return AppendMessageHookResult{Message: &message}
+	})
+
+	if err := manager.AppendMessage(Message{Role: MessageRoleUser, Content: "first"}); err != nil {
+		t.Fatalf("AppendMessage(first) error = %v", err)
+	}
+	remove()
+	remove()
+	if err := manager.AppendMessage(Message{Role: MessageRoleUser, Content: "second"}); err != nil {
+		t.Fatalf("AppendMessage(second) error = %v", err)
+	}
+
+	dump := manager.MessageListDump()
+	if got, want := len(dump.Messages), 2; got != want {
+		t.Fatalf("message count = %d, want %d", got, want)
+	}
+	if dump.Messages[0].Content != "hooked:first" || dump.Messages[1].Content != "second" {
+		t.Fatalf("messages = %#v", dump.Messages)
+	}
+}
+
 func TestStoreAttachmentPersistsMetadataOnly(t *testing.T) {
 	manager := newTestContextManager(t)
 	stored, err := manager.StoreAttachment("image/png", []byte("png-bytes"))

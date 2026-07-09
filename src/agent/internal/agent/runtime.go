@@ -210,7 +210,6 @@ const (
 	runEventSessionBegin     = "session_begin"
 	runEventIterationStart   = "iteration_start"
 	runEventIterationEnd     = "iteration_end"
-	runEventLoopGuardStop    = "loop_guard_stop"
 )
 
 type RunEvent struct {

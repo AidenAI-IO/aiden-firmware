@@ -60,6 +60,11 @@ type AppendMessageHookResult struct {
 	After   []Message
 }
 
+type appendMessageHookEntry struct {
+	ID   uint64
+	Hook AppendMessageHook
+}
+
 type ToolCall struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
@@ -86,14 +91,15 @@ type Attachment struct {
 type ContextManager struct {
 	sessionID       string
 	messageList     []Message
-	appendHooks     []AppendMessageHook
+	appendHooks     []appendMessageHookEntry
+	nextHookID      uint64
 	attachmentStore *attachmentStore
 	mu              sync.RWMutex
 	sessionFolder   string
 }
 
 // NewContextManagerFromSessionID loads a context manager from the session folder, if targetSessionID is nil, it will load the current(last) session.
-func NewContextManagerFromSessionID(sessionFolder string, targetSessionID *string) (*ContextManager, bool, error){
+func NewContextManagerFromSessionID(sessionFolder string, targetSessionID *string) (*ContextManager, bool, error) {
 	sessionID := ""
 	if targetSessionID != nil {
 		sessionID = *targetSessionID
@@ -120,12 +126,12 @@ func NewContextManagerFromSessionID(sessionFolder string, targetSessionID *strin
 	}
 
 	return &ContextManager{
-		sessionID:   sessionID,
-		messageList: messageList,
-		mu:          sync.RWMutex{},
-		sessionFolder: sessionFolder,
+		sessionID:       sessionID,
+		messageList:     messageList,
+		mu:              sync.RWMutex{},
+		sessionFolder:   sessionFolder,
 		attachmentStore: attachmentStore,
-	},len(messageList) == 0, nil
+	}, len(messageList) == 0, nil
 }
 
 func newSessionID() string {
@@ -156,14 +162,14 @@ func (c *ContextManager) appendToList(messages []Message) error {
 
 func (c *ContextManager) AppendMessage(message Message) error {
 	c.mu.RLock()
-	hooks := append([]AppendMessageHook(nil), c.appendHooks...)
+	hooks := append([]appendMessageHookEntry(nil), c.appendHooks...)
 	c.mu.RUnlock()
 
 	messages := []Message{cloneMessage(message)}
-	for _, hook := range hooks {
+	for _, entry := range hooks {
 		var next []Message
 		for _, current := range messages {
-			result := hook(cloneMessage(current))
+			result := entry.Hook(cloneMessage(current))
 			next = append(next, cloneMessages(result.Before)...)
 			if result.Message != nil {
 				next = append(next, cloneMessage(*result.Message))
@@ -180,13 +186,34 @@ func (c *ContextManager) AppendMessage(message Message) error {
 	return c.appendToList(messages)
 }
 
-func (c *ContextManager) AddAppendMessageHook(hook AppendMessageHook) {
+func (c *ContextManager) AddAppendMessageHook(hook AppendMessageHook) func() {
 	if hook == nil {
-		return
+		return func() {}
 	}
 	c.mu.Lock()
+	c.nextHookID++
+	id := c.nextHookID
+	c.appendHooks = append(c.appendHooks, appendMessageHookEntry{ID: id, Hook: hook})
+	c.mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			c.removeAppendMessageHook(id)
+		})
+	}
+}
+
+func (c *ContextManager) removeAppendMessageHook(id uint64) {
+	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.appendHooks = append(c.appendHooks, hook)
+	for i, entry := range c.appendHooks {
+		if entry.ID != id {
+			continue
+		}
+		c.appendHooks = append(c.appendHooks[:i], c.appendHooks[i+1:]...)
+		return
+	}
 }
 
 func (c *ContextManager) IsEmpty() bool {
