@@ -710,15 +710,15 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 		builder.WriteString("- PiP Bridge mode is enabled while Aiden is backgrounded. iOS gives PiP priority over the Dynamic Island, so the Dynamic Island return entry is not visible in this state.\n")
 	} else if phoneBridgeAppNeedsForeground(status) {
 		builder.WriteString("- The Aiden companion app is backgrounded or inactive. On iOS, Phone Bridge commands may time out until Aiden returns to foreground.\n")
-		builder.WriteString("- If return_entry=dynamic_island and return_entry_available=true, open_app, clipboard, calendar, contacts, and notification will first tap the Aiden Dynamic Island entry, wait for app_state=active/Phone Bridge reconnect, then send the command. For lock-screen Live Activity entries, use screenshot/HID fallback or visual confirmation instead of blind tapping.\n")
+		builder.WriteString("- If return_entry=dynamic_island and return_entry_available=true, bridge_open_app, bridge_clipboard, bridge_calendar, bridge_contacts, and bridge_notification will first tap the Aiden Dynamic Island entry, wait for app_state=active/Phone Bridge reconnect, then send the command. For lock-screen Live Activity entries, use screenshot/HID fallback or visual confirmation instead of blind tapping.\n")
 	} else if status.Connected {
-		builder.WriteString("- The phone companion app is connected. Use open_app as the primary path for opening apps, webpages, and phone dialer screens before falling back to screenshot/HID navigation.\n")
-		builder.WriteString("- clipboard, calendar, contacts, and notification tools are available through the companion app: prefer them over manual UI navigation for reading/writing the system clipboard, creating/querying/deleting system calendar events, managing contacts, or sending notifications.\n")
+		builder.WriteString("- The phone companion app is connected. Use bridge_open_app as the primary path for opening apps, webpages, and phone dialer screens before falling back to screenshot/HID navigation.\n")
+		builder.WriteString("- bridge_clipboard, bridge_calendar, bridge_contacts, and bridge_notification tools are available through the companion app: prefer them over manual UI navigation for reading/writing the system clipboard, creating/querying/deleting system calendar events, managing contacts, or sending notifications.\n")
 		builder.WriteString("- For long or non-ASCII text entry, prefer clipboard write through the companion app, switch to the target app, then paste with quick_action/keyboard shortcut instead of typing via HID.\n")
-		builder.WriteString("- If open_app returns {\"ok\":true}, treat the app launch as complete unless the user requested additional in-app actions.")
+		builder.WriteString("- If bridge_open_app returns {\"ok\":true}, treat the app launch as complete unless the user requested additional in-app actions.")
 	} else {
-		builder.WriteString("- The phone companion app is not connected. Do not assume open_app, clipboard, calendar, contacts, or notification tools can control the phone right now.\n")
-		builder.WriteString("- If return_entry=dynamic_island and return_entry_available=true, open_app, clipboard, calendar, contacts, and notification will first try to reopen Aiden through Dynamic Island and wait for Phone Bridge before sending the command. Otherwise use screenshot plus HID/touch fallback and tell the user when app-only actions cannot be completed.")
+		builder.WriteString("- The phone companion app is not connected. Do not assume bridge_open_app, bridge_clipboard, bridge_calendar, bridge_contacts, or bridge_notification tools can control the phone right now.\n")
+		builder.WriteString("- If return_entry=dynamic_island and return_entry_available=true, bridge_open_app, bridge_clipboard, bridge_calendar, bridge_contacts, and bridge_notification will first try to reopen Aiden through Dynamic Island and wait for Phone Bridge before sending the command. Otherwise use screenshot plus HID/touch fallback and tell the user when app-only actions cannot be completed.")
 	}
 	return builder.String()
 }

@@ -10,7 +10,7 @@ import (
 
 func TestEpisodeRecorderRecordsStructuredToolError(t *testing.T) {
 	recorder := NewEpisodeRecorder(MemoryRetrieveRequest{}, MemoryContext{})
-	action := schema.AgentAction{Tool: "contacts", ToolInput: `{"action":"query"}`}
+	action := schema.AgentAction{Tool: "bridge_contacts", ToolInput: `{"action":"query"}`}
 	step := schema.AgentStep{Action: action, Observation: "contacts permission denied"}
 	toolErr := NewToolError(CodePermissionDenied, "contacts permission denied")
 

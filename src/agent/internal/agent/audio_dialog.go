@@ -26,25 +26,27 @@ var (
 
 // AudioDialog manages the audio conversation loop
 type AudioDialog struct {
-	config        Config
-	audioClient   *AudioServiceClient
-	sttClient     STTClient
-	ttsManager    *tts.ProviderManager
-	vad           *AudioVAD
-	recordMu      sync.Mutex
-	recordActive  bool
-	sessionID     uint64
-	recordReader  *AudioRecordChunkReader
-	recordSTTMu   sync.Mutex
-	recordSTT     *streamingSTTSession
-	recordText    string
-	speechMu      sync.Mutex
-	outputMu      sync.Mutex
-	activeOutputs map[*activeTTSOutput]struct{}
-	runControl    voiceRunControl
-	historyStore  *ChatHistoryStore
-	historyAppend func(Message)
-	audioArchive  *AudioArchiveManager
+	config              Config
+	audioClient         *AudioServiceClient
+	sttClient           STTClient
+	ttsManager          *tts.ProviderManager
+	vad                 *AudioVAD
+	recordMu            sync.Mutex
+	recordActive        bool
+	sessionID           uint64
+	recordReader        *AudioRecordChunkReader
+	recordSTTMu         sync.Mutex
+	recordSTT           *streamingSTTSession
+	recordText          string
+	recordSTTTelemetry  *sttTurnTelemetry
+	pendingSTTTelemetry *sttTurnTelemetry
+	speechMu            sync.Mutex
+	outputMu            sync.Mutex
+	activeOutputs       map[*activeTTSOutput]struct{}
+	runControl          voiceRunControl
+	historyStore        *ChatHistoryStore
+	historyAppend       func(Message)
+	audioArchive        *AudioArchiveManager
 }
 
 type activeTTSOutput struct {
@@ -181,6 +183,7 @@ func (d *AudioDialog) StartRecording() error {
 		}
 	}
 
+	recordStartedAt := time.Now().UTC()
 	log.Println("[audio] Opening record session...")
 	format := AudioFormat{
 		SampleRate: uint32(d.config.Audio.SampleRateOrDefault()),
@@ -199,6 +202,7 @@ func (d *AudioDialog) StartRecording() error {
 		log.Printf("[audio] Persistent record reader unavailable, using per-request reads: %v\n", err)
 	}
 	d.recordText = ""
+	d.recordSTTTelemetry = newSTTTurnTelemetry(d.config, d.sttClient, recordStartedAt)
 	d.recordActive = true
 
 	// Play the cue tone immediately so the user gets fast feedback.
@@ -216,6 +220,9 @@ func (d *AudioDialog) StartRecording() error {
 			BitWidth:   d.config.Audio.BitWidthOrDefault(),
 		})
 		if err != nil {
+			d.updateRecordSTTTelemetry(sttSessionID, func(meta *sttTurnTelemetry) {
+				meta.streamingUnavailableError = err.Error()
+			})
 			log.Printf("[stt] streaming upload unavailable, falling back to one-shot STT: %v\n", err)
 			return
 		}
@@ -231,6 +238,11 @@ func (d *AudioDialog) StartRecording() error {
 			return
 		}
 		log.Println("[stt] streaming upload enabled for realtime transcription")
+		streamReadyAt := time.Now().UTC()
+		d.updateRecordSTTTelemetry(sttSessionID, func(meta *sttTurnTelemetry) {
+			meta.streamingReady = true
+			meta.streamingReadyMS = streamReadyAt.Sub(meta.startedAt).Milliseconds()
+		})
 		d.setRecordSTT(recordSTT)
 	}()
 
@@ -286,6 +298,8 @@ func (d *AudioDialog) StopRecording() error {
 	sessionID := d.sessionID
 	reader := d.recordReader
 	recordSTT := d.takeRecordSTT()
+	sttTelemetry := d.recordSTTTelemetry
+	d.recordSTTTelemetry = nil
 	d.recordActive = false
 	d.sessionID = 0
 	d.recordReader = nil
@@ -305,15 +319,25 @@ func (d *AudioDialog) StopRecording() error {
 		return fmt.Errorf("stop recording: %w", err)
 	}
 	if recordSTT != nil {
+		finalizeStart := time.Now()
 		transcript, err := recordSTT.FinalizeWithTimeout(audioDialogStreamingSTTFinalizeTimeout)
+		finalizeDurationMs := time.Since(finalizeStart).Milliseconds()
+		if sttTelemetry == nil {
+			sttTelemetry = newSTTTurnTelemetry(d.config, d.sttClient, finalizeStart)
+		}
+		sttTelemetry.streamingFinalizeMS = finalizeDurationMs
 		if err != nil {
+			sttTelemetry.streamingFinalizeError = err.Error()
 			log.Printf("[stt] finalize streaming transcript failed, falling back to one-shot STT: %v\n", err)
 		} else {
+			sttTelemetry.transcript = transcript
+			sttTelemetry.usedStreamingTranscript = strings.TrimSpace(transcript) != ""
 			d.recordMu.Lock()
 			d.recordText = transcript
 			d.recordMu.Unlock()
 		}
 	}
+	d.stashPendingSTTTelemetry(sttTelemetry)
 
 	log.Println("[audio] Record session closed")
 	return nil
@@ -339,7 +363,7 @@ func (d *AudioDialog) ReadRecordChunk(timeoutMs uint32) (*AudioChunkResult, erro
 	if reader != nil {
 		chunk, err := reader.Read(timeoutMs)
 		if err == nil {
-			d.uploadRecordChunkToStreamingSTT(chunk)
+			d.uploadRecordChunkToStreamingSTT(sessionID, chunk)
 			return chunk, nil
 		}
 		log.Printf("[audio] Persistent record reader failed, falling back to per-request reads: %v\n", err)
@@ -352,12 +376,12 @@ func (d *AudioDialog) ReadRecordChunk(timeoutMs uint32) (*AudioChunkResult, erro
 	}
 	chunk, err := d.audioClient.ReadRecordChunk(sessionID, timeoutMs)
 	if err == nil {
-		d.uploadRecordChunkToStreamingSTT(chunk)
+		d.uploadRecordChunkToStreamingSTT(sessionID, chunk)
 	}
 	return chunk, err
 }
 
-func (d *AudioDialog) uploadRecordChunkToStreamingSTT(chunk *AudioChunkResult) {
+func (d *AudioDialog) uploadRecordChunkToStreamingSTT(sessionID uint64, chunk *AudioChunkResult) {
 	if d == nil || chunk == nil || len(chunk.PCM) == 0 {
 		return
 	}
@@ -366,6 +390,7 @@ func (d *AudioDialog) uploadRecordChunkToStreamingSTT(chunk *AudioChunkResult) {
 		return
 	}
 	if err := recordSTT.UploadPCM(chunk.PCM); err != nil {
+		d.markRecordSTTUploadError(sessionID, err)
 		log.Printf("[stt] streaming upload failed, falling back to one-shot STT: %v\n", err)
 		// Only clear if this is still the active session; StopRecording may have
 		// already swapped it out from another goroutine.
@@ -672,26 +697,35 @@ func (d *AudioDialog) PrepareTurnInput(utterance []int16) (TurnInput, error) {
 	wavData := pcm16MonoToWAV(utterance, d.config.Audio.SampleRateOrDefault())
 	log.Printf("[debug] WAV size: %d bytes\n", len(wavData))
 
-	audioInput, err := PrepareAudioInput(d.config.InputModeOrDefault(), d.sttClient, wavData, d.consumeRecordingTranscript(), "", nil)
+	transcriptHint, sttTelemetry := d.consumeRecordingTranscriptAndTelemetry()
+	inputMode := d.config.InputModeOrDefault()
+	if inputMode == TurnModalitySTT && sttTelemetry == nil {
+		sttTelemetry = newSTTTurnTelemetry(d.config, d.sttClient, time.Now().UTC())
+	}
+	if sttTelemetry != nil {
+		sttTelemetry.audioDurationMS = int64(duration * 1000)
+	}
+	transcribeStart := time.Now()
+	audioInput, err := PrepareAudioInput(inputMode, d.sttClient, wavData, transcriptHint, "", nil)
+	transcribeDurationMs := time.Since(transcribeStart).Milliseconds()
 	if err != nil {
 		return TurnInput{}, err
+	}
+	if sttTelemetry != nil && inputMode == TurnModalitySTT {
+		if strings.TrimSpace(transcriptHint) == "" {
+			sttTelemetry.fallbackOneShot = true
+			sttTelemetry.oneShotMS = transcribeDurationMs
+		} else {
+			sttTelemetry.usedStreamingTranscript = true
+		}
+		sttTelemetry.transcript = audioInput.Transcript
+		audioInput.TelemetryEvents = append(audioInput.TelemetryEvents, sttTelemetry.event(time.Now().UTC()))
 	}
 	audioInput = d.ensureVoiceInputAudioArtifact(audioInput, utterance, wavData)
 	if audioInput.Transcript != "" {
 		log.Printf("[stt] Transcript: %s\n", audioInput.Transcript)
 	}
 	return audioInput, nil
-}
-
-func (d *AudioDialog) consumeRecordingTranscript() string {
-	if d == nil {
-		return ""
-	}
-	d.recordMu.Lock()
-	transcript := strings.TrimSpace(d.recordText)
-	d.recordText = ""
-	d.recordMu.Unlock()
-	return transcript
 }
 
 func (d *AudioDialog) ensureVoiceInputAudioArtifact(input TurnInput, utterance []int16, wavData []byte) TurnInput {
@@ -772,7 +806,25 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 	turnContext = normalizeVoiceTurnContext(turnContext)
 
 	ctx = d.ConfigureRuntimeTools(ctx, runtime)
-	d.playPromptSound(promptSoundAgentSend, "agent send", true)
+	promptStartedAt := time.Now().UTC()
+	promptDispatchStartedAt := time.Now()
+	d.playPromptSoundAsyncWithWait(promptSoundAgentSend, "agent send", false)
+	promptDispatchDuration := time.Since(promptDispatchStartedAt)
+	promptCueDuration := time.Duration(promptSoundDurationMS(promptSoundAgentSend)) * time.Millisecond
+	input.TelemetryEvents = append(input.TelemetryEvents, voicePreRunTelemetryEvent(
+		runEventVoicePromptSound,
+		"agent send",
+		promptStartedAt,
+		promptCueDuration,
+		map[string]interface{}{
+			"prompt":                "agent_send",
+			"wait":                  false,
+			"async":                 true,
+			"cue_audio_duration_ms": int64(promptCueDuration / time.Millisecond),
+			"dispatch_duration_ms":  promptDispatchDuration.Milliseconds(),
+		},
+		nil,
+	))
 	var finalAssistantEvent *RunEvent
 
 	// Send to LLM
@@ -813,7 +865,19 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 	var newStream *streamSessionWriter
 	unregisterStream := func() {}
 	if d.config.VoiceStreamingTTSEnabledOrDefault() && d.ttsManager != nil {
+		preopenStartedAt := time.Now().UTC()
 		stream, unregister, err := d.beginActiveManagedTTSStream(ctx)
+		metadata := map[string]interface{}{
+			"provider": d.ttsManager.Current(),
+		}
+		input.TelemetryEvents = append(input.TelemetryEvents, voicePreRunTelemetryEvent(
+			runEventTTSStreamPreopen,
+			"preopen TTS stream",
+			preopenStartedAt,
+			time.Since(preopenStartedAt),
+			metadata,
+			err,
+		))
 		if err != nil {
 			log.Printf("[error] TTS BeginStream failed: %v\n", err)
 		} else {
@@ -823,6 +887,7 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 			req.StreamWriter = speechStreamWriterForConfig(newStream, d.config)
 		}
 	}
+	req.Turn = input
 
 	result, err := runtime.Run(ctx, req)
 	d.stopAcceptingSteer(requestID)
@@ -1051,15 +1116,19 @@ func (d *AudioDialog) speak(ctx context.Context, text string, interrupt <-chan s
 }
 
 func (d *AudioDialog) playPromptSoundAsync(kind promptSoundKind, label string) {
+	d.playPromptSoundAsyncWithWait(kind, label, true)
+}
+
+func (d *AudioDialog) playPromptSoundAsyncWithWait(kind promptSoundKind, label string, wait bool) {
 	go func() {
-		d.playPromptSound(kind, label, true)
+		_ = d.playPromptSound(kind, label, wait)
 	}()
 }
 
-func (d *AudioDialog) playPromptSound(kind promptSoundKind, label string, wait bool) {
+func (d *AudioDialog) playPromptSound(kind promptSoundKind, label string, wait bool) error {
 	if kind == promptSoundRecordingStart {
 		d.playPromptSoundUninterruptible(kind, label, wait)
-		return
+		return nil
 	}
 
 	outputCtx, cancelOutput := context.WithCancel(context.Background())
@@ -1074,7 +1143,9 @@ func (d *AudioDialog) playPromptSound(kind promptSoundKind, label string, wait b
 	defer d.speechMu.Unlock()
 	if err := playPromptSound(outputCtx, d.audioClient, kind, wait); err != nil {
 		log.Printf("[audio] %s prompt sound failed: %v\n", label, err)
+		return err
 	}
+	return nil
 }
 
 func (d *AudioDialog) playPromptSoundUninterruptible(kind promptSoundKind, label string, wait bool) {
@@ -1093,7 +1164,7 @@ func (d *AudioDialog) playPromptSoundUninterruptible(kind promptSoundKind, label
 func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime *Runtime) error {
 	ctx = d.ConfigureRuntimeTools(ctx, runtime)
 	log.Printf("[text] %s\n", text)
-	d.playPromptSound(promptSoundAgentSend, "agent send", true)
+	d.playPromptSoundAsyncWithWait(promptSoundAgentSend, "agent send", false)
 
 	// Send to LLM
 	log.Printf("[llm] Sending request to provider '%s' (model=%s)...\n",

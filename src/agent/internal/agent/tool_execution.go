@@ -207,17 +207,20 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 			toolErr = NewToolError(CodeToolExecutionFailed, err.Error())
 		}
 	} else if attached := ToolErrorFromContext(ctx2); attached != nil {
-		// Tool surfaced a structured error via SetToolError. Adopt it directly
-		// so the LLM-facing Output (already equal to attached.Message) and the
-		// downstream Error stay aligned.
-		toolErr = attached
+		// Adopt only intentional top-level SetToolError + toolErrorString
+		// results. Nested helpers (e.g. ClipboardTool inside enter_text /
+		// search_launch_app) may leave a leftover ToolError while the parent
+		// recovers and returns its own observation — do not overwrite that.
+		if strings.TrimSpace(output) == "" || output == attached.Message {
+			toolErr = attached
+		}
 	}
 	result := ToolResult{
 		Output:   output,
 		Error:    toolErr,
 		Duration: time.Since(call.StartedAt),
 	}
-	if err == nil && toolErr != nil {
+	if err == nil && toolErr != nil && strings.TrimSpace(result.Output) == "" {
 		result.Output = toolErr.Message
 	}
 	if err != nil || hardErr != nil {
