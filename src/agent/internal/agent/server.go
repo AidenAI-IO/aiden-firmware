@@ -1135,73 +1135,103 @@ func (s *Server) handleChatResult(w http.ResponseWriter, r *http.Request) {
 		offset = n
 	}
 
-	s.pendingResultsMu.Lock()
-	pending := s.pendingResults[requestID]
-	s.pendingResultsMu.Unlock()
+	// Long polling: wait=true blocks until task completes or context is canceled.
+	waitMode := r.URL.Query().Get("wait") == "true"
 
-	if pending == nil {
-		// Request not found — may have completed and been cleaned up,
-		// or may never have existed.
-		liveActivity := s.liveActivitySnapshot(requestID)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(ChatResultResponse{Status: "not_found", LiveActivity: liveActivity})
-		return
-	}
-
-	pending.mu.Lock()
-	errText := pending.err
-	done := pending.done
-
-	msgs := pending.messages
-	if offset < len(msgs) {
-		msgs = append([]Message(nil), msgs[offset:]...)
+	// Add server-side timeout for long polling to prevent indefinite blocking.
+	var loopCtx context.Context
+	var cancel context.CancelFunc
+	if waitMode {
+		loopCtx, cancel = context.WithTimeout(r.Context(), 5*time.Minute)
+		defer cancel()
 	} else {
-		msgs = nil
+		loopCtx = r.Context()
 	}
 
-	var historySnapshot []Message
-	response := ""
-	if done {
-		historySnapshot = make([]Message, len(pending.history))
-		copy(historySnapshot, pending.history)
-		for i := len(pending.history) - 1; i >= 0; i-- {
-			if pending.history[i].Type == "assistant" {
-				response = pending.history[i].Content
-				break
+	for {
+		s.pendingResultsMu.Lock()
+		pending := s.pendingResults[requestID]
+		s.pendingResultsMu.Unlock()
+
+		if pending == nil {
+			liveActivity := s.liveActivitySnapshot(requestID)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(ChatResultResponse{Status: "not_found", LiveActivity: liveActivity})
+			return
+		}
+
+		pending.mu.Lock()
+		errText := pending.err
+		done := pending.done
+
+		msgs := pending.messages
+		if offset < len(msgs) {
+			msgs = append([]Message(nil), msgs[offset:]...)
+		} else {
+			msgs = nil
+		}
+
+		var historySnapshot []Message
+		response := ""
+		if done {
+			historySnapshot = make([]Message, len(pending.history))
+			copy(historySnapshot, pending.history)
+			for i := len(pending.history) - 1; i >= 0; i-- {
+				if pending.history[i].Type == "assistant" {
+					response = pending.history[i].Content
+					break
+				}
 			}
 		}
-	}
-	pending.mu.Unlock()
+		pending.mu.Unlock()
 
-	liveActivity := s.liveActivitySnapshot(requestID)
+		liveActivity := s.liveActivitySnapshot(requestID)
 
-	if errText != "" {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(ChatResultResponse{
-			Status:       "error",
-			Messages:     msgs,
-			Error:        errText,
-			LiveActivity: liveActivity,
-		})
-		return
-	}
+		if errText != "" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(ChatResultResponse{
+				Status:       "error",
+				Messages:     msgs,
+				Error:        errText,
+				LiveActivity: liveActivity,
+			})
+			return
+		}
 
-	if done {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(ChatResultResponse{
-			Status:       "complete",
-			Response:     response,
-			History:      historySnapshot,
-			Messages:     msgs,
-			LiveActivity: liveActivity,
-		})
-	} else {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(ChatResultResponse{
-			Status:       "running",
-			Messages:     msgs,
-			LiveActivity: liveActivity,
-		})
+		if done {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(ChatResultResponse{
+				Status:       "complete",
+				Response:     response,
+				History:      historySnapshot,
+				Messages:     msgs,
+				LiveActivity: liveActivity,
+			})
+			return
+		}
+
+		// Non-wait mode: return running status immediately.
+		if !waitMode {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(ChatResultResponse{
+				Status:       "running",
+				Messages:     msgs,
+				LiveActivity: liveActivity,
+			})
+			return
+		}
+
+		// Wait mode: sleep briefly then re-check.
+		select {
+		case <-loopCtx.Done():
+			if errors.Is(loopCtx.Err(), context.DeadlineExceeded) {
+				http.Error(w, "long poll timeout", http.StatusRequestTimeout)
+			} else {
+				http.Error(w, "client disconnected", http.StatusRequestTimeout)
+			}
+			return
+		case <-time.After(200 * time.Millisecond):
+		}
 	}
 }
 
