@@ -171,11 +171,11 @@ func TestPhoneBridgeCanUseFGSBackgroundOnlyForSafeDataCommands(t *testing.T) {
 	if phoneBridgeCanUseFGSBackground(status, "open_app") {
 		t.Fatal("open_app must not be allowed in Android FGS background bridge mode")
 	}
-	if phoneBridgeToolAvailable(status, "open_app") {
-		t.Fatal("open_app tool must be hidden while Android FGS background bridge mode is active")
+	if phoneBridgeToolAvailable(status, toolBridgeOpenApp) {
+		t.Fatal("bridge_open_app tool must be hidden while Android FGS background bridge mode is active")
 	}
-	if !phoneBridgeToolAvailable(status, "clipboard") {
-		t.Fatal("clipboard tool should be available through Android FGS background queue")
+	if !phoneBridgeToolAvailable(status, toolBridgeClipboard) {
+		t.Fatal("bridge_clipboard tool should be available through Android FGS background queue")
 	}
 
 	status.AppState = "active"
