@@ -35,13 +35,14 @@ type InputArtifact struct {
 }
 
 type TurnInput struct {
-	InputText    string
-	OriginalText string
-	Modality     string
-	Source       string
-	Attachments  []InputAttachment
-	Transcript   string
-	Artifacts    []InputArtifact
+	InputText       string
+	OriginalText    string
+	Modality        string
+	Source          string
+	Attachments     []InputAttachment
+	Transcript      string
+	Artifacts       []InputArtifact
+	TelemetryEvents []TaskEpisodeEvent
 }
 
 type AudioInputResult = TurnInput
@@ -216,6 +217,7 @@ func normalizeTurnInput(input TurnInput) TurnInput {
 	input.Source = strings.TrimSpace(input.Source)
 	input.Attachments = cloneInputAttachments(input.Attachments)
 	input.Artifacts = sanitizeInputArtifacts(input.Artifacts)
+	input.TelemetryEvents = cloneTaskEpisodeEvents(input.TelemetryEvents)
 
 	if input.Modality == "" {
 		input.Modality = TurnModalityText
@@ -236,6 +238,34 @@ func normalizeTurnInput(input TurnInput) TurnInput {
 		}
 	}
 	return input
+}
+
+func cloneTaskEpisodeEvents(events []TaskEpisodeEvent) []TaskEpisodeEvent {
+	if len(events) == 0 {
+		return nil
+	}
+	cloned := make([]TaskEpisodeEvent, 0, len(events))
+	for _, event := range events {
+		copyEvent := event
+		if len(event.CompletionCriteria) > 0 {
+			copyEvent.CompletionCriteria = append([]string(nil), event.CompletionCriteria...)
+		}
+		if len(event.Plan) > 0 {
+			copyEvent.Plan = append([]string(nil), event.Plan...)
+		}
+		if event.DurationMs != nil {
+			durationMs := *event.DurationMs
+			copyEvent.DurationMs = &durationMs
+		}
+		if len(event.Metadata) > 0 {
+			copyEvent.Metadata = make(map[string]interface{}, len(event.Metadata))
+			for key, value := range event.Metadata {
+				copyEvent.Metadata[key] = value
+			}
+		}
+		cloned = append(cloned, copyEvent)
+	}
+	return cloned
 }
 
 func cloneInputAttachments(attachments []InputAttachment) []InputAttachment {
