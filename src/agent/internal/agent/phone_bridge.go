@@ -616,6 +616,12 @@ func (pb *PhoneBridge) statusUpdated() {
 		pb.stateManager.DeleteState("app_pip_enabled")
 	}
 
+	if status.FgsBridgeEnabled != nil {
+		pb.stateManager.SetState("app_fgs_enabled", fmt.Sprintf("%t", *status.FgsBridgeEnabled))
+	} else {
+		pb.stateManager.DeleteState("app_fgs_enabled")
+	}
+
 	if status.Environment != nil {
 		pb.stateManager.SetState("app_platform", status.Platform)
 	} else {
