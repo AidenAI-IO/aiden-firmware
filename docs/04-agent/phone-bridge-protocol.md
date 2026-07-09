@@ -15,6 +15,8 @@ WebSocket is the foreground fast path. The board also exposes `/api/phone-bridge
 
 PiP Bridge is a narrow background queue mode. When the app reports `pip_bridge_enabled=true` while backgrounded, iOS gives PiP priority over the Dynamic Island, so the Dynamic Island return entry is not visible. In that state, the board must not expose `bridge_open_app` as a Phone Bridge tool; only background-safe data tools (`bridge_clipboard`, `bridge_calendar`, `bridge_contacts`, `bridge_notification`) backed by command types (`clipboard_*`, `calendar_*`, `contacts_*`, `notification_send`) may use the HTTP queue.
 
+Android FGS Bridge is also an HTTP queue mode. The foreground service polls `/api/phone-bridge/commands?platform=android&phone_id=<stable>&app_state=background&fgs_bridge_enabled=true&limit=10`; the board treats that as a background queue consumer for background-safe data commands only. It does not treat WebSocket as a reliable Android background transport, and it does not expose `open_app` through the FGS queue.
+
 ## Heartbeat
 
 The app should send a heartbeat message every 10-15 seconds (JSON with id `"heartbeat"` or `"ping"`), and the board will echo it back. The app uses this to detect connection liveness.
@@ -117,7 +119,7 @@ Example:
 }
 ```
 
-The board writes the latest complete environment to the `environment` field of `GET /api/phone-bridge/status`, and keeps `app_state`, `return_entry`, `return_entry_available`, and `pip_bridge_enabled` for Agent runtime context and tool resolution. Runtime context carries compact state facts such as connection status, app foreground/background state, return-entry visibility, PiP/Dynamic Island visibility state, system type/version, language/region/timezone, screen dimensions, and confirmed openable third-party candidate apps. Tool availability is resolved separately: PiP background state hides `bridge_open_app` and keeps only background-safe data tools exposed through the HTTP queue. Environment is cleared on disconnection to avoid using stale information, but the latest app foreground/background state can be retained to decide whether Aiden should be restored through Dynamic Island first.
+The board writes the latest complete environment to the `environment` field of `GET /api/phone-bridge/status`, and keeps `app_state`, `return_entry`, `return_entry_available`, `pip_bridge_enabled`, and `fgs_bridge_enabled` for Agent runtime context and tool resolution. Runtime context carries compact state facts such as connection status, app foreground/background state, return-entry visibility, PiP/Dynamic Island visibility state, Android FGS bridge state, system type/version, language/region/timezone, screen dimensions, and confirmed openable third-party candidate apps. Tool availability is resolved separately: PiP/FGS background state hides `bridge_open_app` and keeps only background-safe data tools exposed through the HTTP queue. Environment is cleared on disconnection to avoid using stale information, but the latest app foreground/background state can be retained to decide whether Aiden should be restored through Dynamic Island first.
 
 `phone_app_state` example:
 

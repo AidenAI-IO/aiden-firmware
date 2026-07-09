@@ -135,6 +135,10 @@ func sendRoutedBridgeCommand(ctx context.Context, bridge *PhoneBridge, restorer 
 		return BridgeCommandResponse{}, false, fmt.Errorf("phone bridge is not initialized")
 	}
 	status := bridge.Status()
+	if phoneBridgeCanUseFGSBackground(status, cmd.Type) {
+		resp, err := bridge.SendQueuedCommand(ctx, cmd)
+		return resp, false, err
+	}
 	if phoneBridgeReadyForCommand(status) {
 		resp, err := bridge.SendCommand(ctx, cmd)
 		return resp, false, err
