@@ -1482,7 +1482,7 @@ func resolvePointerPositionForSurface(screen *screenState, touchscreen bool, x, 
 		}
 		if screen != nil {
 			if width, height, active, age, ok := screen.ActiveAreaWithAge(); ok && age < screenDimensionsStaleAfter {
-				return pixelToAbsolutePoint(x, y, width, height, active)
+				return pixelToAbsolutePoint(x, y, width, height, active, touchscreen)
 			}
 		}
 		return int(clampFloat(math.Round(x), 0, absMouseMaxPos)), int(clampFloat(math.Round(y), 0, absMouseMaxPos)), nil
@@ -1497,7 +1497,7 @@ func resolvePointerPositionForSurface(screen *screenState, touchscreen bool, x, 
 		if age >= screenDimensionsStaleAfter {
 			return 0, 0, fmt.Errorf("cached screen dimensions are %.0fs old; call screenshot to refresh before using pixel coordinates", age.Seconds())
 		}
-		return pixelToAbsolutePoint(x, y, width, height, active)
+		return pixelToAbsolutePoint(x, y, width, height, active, touchscreen)
 	case coordinateSpaceNormalized:
 		absX, absY, err := normalizedToAbsolutePointForSurface(screen, touchscreen, x, y)
 		if err != nil {
@@ -1561,7 +1561,7 @@ func normalizedToAbsolutePoint(x, y float64) (int, int) {
 	return int(math.Round(clampFloat(x, 0, 1000) / 1000.0 * absMouseMaxPos)), int(math.Round(clampFloat(y, 0, 1000) / 1000.0 * absMouseMaxPos))
 }
 
-func pixelToAbsolutePoint(x, y float64, width, height int, active screenActiveArea) (int, int, error) {
+func pixelToAbsolutePoint(x, y float64, width, height int, active screenActiveArea, touchscreen bool) (int, int, error) {
 	if width <= 0 || height <= 0 {
 		return 0, 0, fmt.Errorf("invalid screen dimensions: %dx%d", width, height)
 	}
@@ -1573,6 +1573,14 @@ func pixelToAbsolutePoint(x, y float64, width, height int, active screenActiveAr
 	if x < 0 || y < 0 || x > float64(active.Width-1) || y > float64(active.Height-1) {
 		return 0, 0, fmt.Errorf("pixel coordinates x=%.2f y=%.2f are outside screenshot bounds %dx%d; use coord_space normalized with 0-1000 coordinates, where 500,500 is center", x, y, active.Width, active.Height)
 	}
+	// pointer_mode touchscreen: HID surface covers the full mirrored frame,
+	// so project the active-area-relative pixel into full-frame space first.
+	if touchscreen {
+		fullFramePixelX := float64(active.X) + x
+		fullFramePixelY := float64(active.Y) + y
+		return scalePixelToAbsolute(fullFramePixelX, width), scalePixelToAbsolute(fullFramePixelY, height), nil
+	}
+	// pointer_mode absolute: HID surface is the active_area's own coordinate system.
 	return scalePixelToAbsolute(x, active.Width), scalePixelToAbsolute(y, active.Height), nil
 }
 

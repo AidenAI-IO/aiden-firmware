@@ -202,6 +202,27 @@ func TestResolvePointerPositionTouchscreenNormalizedUsesFrameSpaceWithinActiveAr
 	}
 }
 
+func TestResolvePointerPositionTouchscreenPixelUsesFrameSpace(t *testing.T) {
+	screen := &screenState{}
+	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true})
+
+	// Pixel coords relative to cropped image (608x1080).
+	// x=304 in crop = center of active area → full frame x = 656+304 = 960.
+	x, y, err := resolvePointerPositionForSurface(screen, true, 304, 540, "pixel", coordinateSpaceAuto)
+	if err != nil {
+		t.Fatalf("resolvePointerPositionForSurface returned error: %v", err)
+	}
+
+	wantX := scalePixelToAbsolute(656+304, 1920)
+	wantY := scalePixelToAbsolute(540, 1080)
+	if x != wantX {
+		t.Fatalf("x = %d, want %d (touchscreen pixel should use full frame)", x, wantX)
+	}
+	if y != wantY {
+		t.Fatalf("y = %d, want %d", y, wantY)
+	}
+}
+
 func TestResolvePointerPositionPixelRejectsBlackBar(t *testing.T) {
 	screen := &screenState{}
 	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true})
