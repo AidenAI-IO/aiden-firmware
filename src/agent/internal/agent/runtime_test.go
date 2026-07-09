@@ -694,6 +694,55 @@ func TestRuntimeRunCommitsTimingEventsBeforeEpisodeCommit(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunCommitsTurnTelemetryEvents(t *testing.T) {
+	plane := &capturingEpisodePlane{}
+	model := &scriptedModel{responses: roleDirectResponses("ok")}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.memoryPlane = plane
+
+	startedAt := time.Now().UTC().Add(-2 * time.Second)
+	durationMs := int64(321)
+	telemetryEvent := TaskEpisodeEvent{
+		Type:       runEventSTTTranscription,
+		Ts:         startedAt.Format(time.RFC3339Nano),
+		Content:    "hello from voice",
+		DurationMs: &durationMs,
+		Metadata: map[string]interface{}{
+			"provider":          "qwen-asr",
+			"fallback_one_shot": false,
+		},
+	}
+
+	_, err := runtime.Run(context.Background(), RunRequest{
+		Input: "hello from voice",
+		Turn: TurnInput{
+			InputText:       "hello from voice",
+			Modality:        TurnModalitySTT,
+			Transcript:      "hello from voice",
+			TelemetryEvents: []TaskEpisodeEvent{telemetryEvent},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(plane.episode.Events) == 0 || plane.episode.Events[0].Type != runEventSTTTranscription {
+		t.Fatalf("first episode event = %#v, want STT telemetry first", plane.episode.Events)
+	}
+	if plane.episode.Events[0].Content != "hello from voice" {
+		t.Fatalf("STT event content = %q", plane.episode.Events[0].Content)
+	}
+	episodeStart := parseEpisodeTime(plane.episode.StartedAt, time.Time{})
+	if episodeStart.After(startedAt) {
+		t.Fatalf("episode start = %s, want no later than STT start %s", episodeStart, startedAt)
+	}
+}
+
 func eventMetadataInt(event TaskEpisodeEvent, key string) int {
 	if event.Metadata == nil {
 		return 0

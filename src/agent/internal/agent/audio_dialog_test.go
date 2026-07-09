@@ -287,6 +287,16 @@ func TestAudioDialogPrepareTurnInputUsesStreamingTranscriptFromRecording(t *test
 	if input.Transcript != "streaming result" {
 		t.Fatalf("Transcript = %q, want streaming result", input.Transcript)
 	}
+	if len(input.TelemetryEvents) != 1 {
+		t.Fatalf("TelemetryEvents len = %d, want 1", len(input.TelemetryEvents))
+	}
+	telemetry := input.TelemetryEvents[0]
+	if telemetry.Type != runEventSTTTranscription || telemetry.Content != "streaming result" {
+		t.Fatalf("STT telemetry event = %#v", telemetry)
+	}
+	if telemetry.Metadata["streaming_ready"] != true || telemetry.Metadata["used_streaming_transcript"] != true || telemetry.Metadata["fallback_one_shot"] != false {
+		t.Fatalf("STT telemetry metadata = %#v", telemetry.Metadata)
+	}
 	if len(sttClient.inputs) != 0 {
 		t.Fatalf("expected streaming transcript to skip TranscribeWAV, got %d calls", len(sttClient.inputs))
 	}
@@ -342,6 +352,19 @@ func TestAudioDialogStopRecordingFallsBackToOneShotWhenStreamingFinalizeTimesOut
 	if input.Transcript != "one-shot result" {
 		t.Fatalf("Transcript = %q, want one-shot result", input.Transcript)
 	}
+	if len(input.TelemetryEvents) != 1 {
+		t.Fatalf("TelemetryEvents len = %d, want 1", len(input.TelemetryEvents))
+	}
+	telemetry := input.TelemetryEvents[0]
+	if telemetry.Type != runEventSTTTranscription || telemetry.Content != "one-shot result" {
+		t.Fatalf("STT telemetry event = %#v", telemetry)
+	}
+	if telemetry.Metadata["fallback_one_shot"] != true || telemetry.Metadata["used_streaming_transcript"] != false {
+		t.Fatalf("STT telemetry metadata = %#v", telemetry.Metadata)
+	}
+	if telemetry.Metadata["streaming_finalize_error"] == nil {
+		t.Fatalf("STT telemetry missing streaming_finalize_error: %#v", telemetry.Metadata)
+	}
 	if len(sttClient.inputs) != 1 {
 		t.Fatalf("expected fallback one-shot STT call, got %d", len(sttClient.inputs))
 	}
@@ -349,6 +372,24 @@ func TestAudioDialogStopRecordingFallsBackToOneShotWhenStreamingFinalizeTimesOut
 	case <-uploader.closed:
 	case <-time.After(time.Second):
 		t.Fatal("expected uploader to be closed after finalize timeout")
+	}
+}
+
+func TestAudioDialogSTTUploadErrorIgnoresStaleSession(t *testing.T) {
+	dialog := &AudioDialog{
+		recordActive:       true,
+		sessionID:          2,
+		recordSTTTelemetry: &sttTurnTelemetry{},
+	}
+
+	dialog.markRecordSTTUploadError(1, errors.New("old upload failed"))
+	if dialog.recordSTTTelemetry.streamingUploadError != "" {
+		t.Fatalf("stale upload error contaminated telemetry: %#v", dialog.recordSTTTelemetry)
+	}
+
+	dialog.markRecordSTTUploadError(2, errors.New("current upload failed"))
+	if dialog.recordSTTTelemetry.streamingUploadError != "current upload failed" {
+		t.Fatalf("current upload error = %q", dialog.recordSTTTelemetry.streamingUploadError)
 	}
 }
 
@@ -1299,6 +1340,148 @@ func TestAudioDialogRunScriptUsesConfiguredTTS(t *testing.T) {
 	waitForProviderTextCount(t, provider, 1)
 	if got := provider.texts(); !containsString(got, "脚本语音") {
 		t.Fatalf("provider texts = %#v, want script tts text", got)
+	}
+}
+
+func TestAudioDialogRunAgentTurnCommitsVoicePreRunTelemetry(t *testing.T) {
+	plane := &capturingEpisodePlane{}
+	model := &scriptedModel{responses: roleDirectResponses("ok")}
+	cfg := withTestConfigDir(t, Config{
+		Model:                    ModelConfig{Provider: "fake"},
+		Audio:                    AudioConfig{SampleRate: 16000},
+		VoiceStreamingTTSEnabled: boolPtr(true),
+		VoiceMaxResponseTokens:   64,
+	})
+	runtime := NewRuntimeWithDeps(
+		cfg,
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.memoryPlane = plane
+	provider := &recordingTTSProvider{name: "dialog-provider"}
+	dialog := &AudioDialog{
+		config:      cfg,
+		audioClient: NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
+		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
+	}
+
+	if _, err := dialog.RunAgentTurn(context.Background(), TurnInput{InputText: "hello"}, runtime); err != nil {
+		t.Fatalf("RunAgentTurn() error = %v", err)
+	}
+
+	var promptIndex, preopenIndex, sessionIndex = -1, -1, -1
+	for index, event := range plane.episode.Events {
+		switch event.Type {
+		case runEventVoicePromptSound:
+			promptIndex = index
+			if event.Metadata["prompt"] != "agent_send" || event.Metadata["success"] != true || event.Metadata["wait"] != false || event.Metadata["async"] != true {
+				t.Fatalf("prompt telemetry metadata = %#v", event.Metadata)
+			}
+			if event.DurationMs == nil || *event.DurationMs <= 0 || event.Metadata["cue_audio_duration_ms"] == nil {
+				t.Fatalf("prompt telemetry duration = %v metadata = %#v", event.DurationMs, event.Metadata)
+			}
+		case runEventTTSStreamPreopen:
+			preopenIndex = index
+			if event.Metadata["provider"] != "dialog-provider" || event.Metadata["success"] != true {
+				t.Fatalf("TTS preopen telemetry metadata = %#v", event.Metadata)
+			}
+		case runEventSessionBegin:
+			sessionIndex = index
+		}
+	}
+	if promptIndex < 0 || preopenIndex < 0 || sessionIndex < 0 {
+		t.Fatalf("missing pre-run telemetry/session events: %#v", plane.episode.Events)
+	}
+	if !(promptIndex < preopenIndex && preopenIndex < sessionIndex) {
+		t.Fatalf("event order prompt=%d preopen=%d session=%d events=%#v", promptIndex, preopenIndex, sessionIndex, plane.episode.Events)
+	}
+}
+
+func TestAudioDialogRunAgentTurnDoesNotWaitForAgentSendPromptDrain(t *testing.T) {
+	audioServer := newTestAudioService(t)
+	audioServer.healthPlaybackSessions = []uint32{1}
+	model := &scriptedModel{responses: roleDirectResponses("ok")}
+	cfg := withTestConfigDir(t, Config{
+		Model:                    ModelConfig{Provider: "fake"},
+		VoiceStreamingTTSEnabled: boolPtr(false),
+		VoiceMaxResponseTokens:   64,
+	})
+	runtime := NewRuntimeWithDeps(
+		cfg,
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	dialog := &AudioDialog{
+		config:      cfg,
+		audioClient: NewAudioServiceClient(audioServer.socketPath),
+	}
+
+	startedAt := time.Now()
+	if _, err := dialog.RunAgentTurn(context.Background(), TurnInput{InputText: "hello"}, runtime); err != nil {
+		t.Fatalf("RunAgentTurn() error = %v", err)
+	}
+	if elapsed := time.Since(startedAt); elapsed > 500*time.Millisecond {
+		t.Fatalf("RunAgentTurn waited for prompt drain: elapsed=%s", elapsed)
+	}
+	if got := audioServer.countOp("health"); got != 0 {
+		t.Fatalf("agent send prompt health polls = %d, want 0 for wait=false", got)
+	}
+}
+
+func TestAudioDialogRunAgentTurnDoesNotWaitForAgentSendPromptStart(t *testing.T) {
+	audioServer := newTestAudioService(t)
+	promptStarted := make(chan struct{})
+	releasePrompt := make(chan struct{})
+	var promptOnce sync.Once
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() { close(releasePrompt) })
+	}
+	t.Cleanup(release)
+	audioServer.onStartPlayback = func() {
+		promptOnce.Do(func() { close(promptStarted) })
+		<-releasePrompt
+	}
+	model := &scriptedModel{responses: roleDirectResponses("ok")}
+	cfg := withTestConfigDir(t, Config{
+		Model:                    ModelConfig{Provider: "fake"},
+		VoiceStreamingTTSEnabled: boolPtr(false),
+		VoiceMaxResponseTokens:   64,
+	})
+	runtime := NewRuntimeWithDeps(
+		cfg,
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	dialog := &AudioDialog{
+		config:      cfg,
+		audioClient: NewAudioServiceClient(audioServer.socketPath),
+	}
+
+	startedAt := time.Now()
+	done := make(chan error, 1)
+	go func() {
+		_, err := dialog.RunAgentTurn(context.Background(), TurnInput{InputText: "hello"}, runtime)
+		done <- err
+	}()
+	waitForTestSignal(t, promptStarted, "prompt sound playback to start")
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunAgentTurn() error = %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("RunAgentTurn waited for agent send prompt start to complete")
+	}
+	if elapsed := time.Since(startedAt); elapsed > 500*time.Millisecond {
+		t.Fatalf("RunAgentTurn waited for prompt start: elapsed=%s", elapsed)
 	}
 }
 
