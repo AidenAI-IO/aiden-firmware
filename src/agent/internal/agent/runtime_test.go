@@ -1902,9 +1902,9 @@ func TestRuntimeCallbackPropagatesToolErrorToEventsAndMessages(t *testing.T) {
 		},
 	}
 	call := ToolCall{
-		Spec: ToolSpec{Name: "contacts"},
+		Spec: ToolSpec{Name: "bridge_contacts"},
 		Action: schema.AgentAction{
-			Tool:      "contacts",
+			Tool:      "bridge_contacts",
 			ToolID:    "call-1",
 			ToolInput: `{"action":"query"}`,
 		},
