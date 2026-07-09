@@ -11,7 +11,7 @@ import (
 
 func TestRuntimeStartupDoesNotPersistInterruptedEpisodeStatusToChatHistory(t *testing.T) {
 	ctx := context.Background()
-	configDir := t.TempDir()
+	configDir := ensureTestConfigDir(t, t.TempDir())
 	memoryDir := filepath.Join(configDir, "memory")
 	store := NewTaskEpisodeStore(filepath.Join(memoryDir, "episodes"))
 	recorder := NewPersistentEpisodeRecorder(MemoryRetrieveRequest{

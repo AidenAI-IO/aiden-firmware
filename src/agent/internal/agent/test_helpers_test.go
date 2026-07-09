@@ -3,8 +3,11 @@ package agent
 import (
 	"encoding/base64"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
+
+	"aiden-agent/internal/agent/agentpath"
 
 	"github.com/tmc/langchaingo/llms"
 	"github.com/tmc/langchaingo/schema"
@@ -13,9 +16,19 @@ import (
 func withTestConfigDir(t *testing.T, cfg Config) Config {
 	t.Helper()
 	if strings.TrimSpace(cfg.ConfigDir) == "" {
-		cfg.ConfigDir = t.TempDir()
+		cfg.ConfigDir = ensureTestConfigDir(t, t.TempDir())
+	} else {
+		cfg.ConfigDir = ensureTestConfigDir(t, cfg.ConfigDir)
 	}
 	return cfg
+}
+
+func ensureTestConfigDir(t *testing.T, dir string) string {
+	t.Helper()
+	if err := os.MkdirAll(agentpath.ContextManagerSessionFolder(dir), 0o755); err != nil {
+		t.Fatalf("MkdirAll sessions dir: %v", err)
+	}
+	return dir
 }
 
 func messageText(messages []llms.MessageContent) string {

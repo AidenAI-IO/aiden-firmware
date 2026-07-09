@@ -689,7 +689,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}
 	boundaryTelemetry = beginResult.Boundary
 	if boundaryTelemetry.Rotated {
-		r.resetContext()
+		r.rotateContext()
 	}
 	if boundaryTelemetry.PendingRecallCounter == nil {
 		boundaryTelemetry.PendingRecallCounter = &atomic.Int64{}
@@ -951,6 +951,11 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}, nil
 }
 
+func (r *Runtime) getSystemPrompt() string {
+	profile := r.buildAgentProfile(r.skills, r.availableTools())
+	return profile.SystemPrompt
+}
+
 func (r *Runtime) getStateHook() contextmanager.AppendMessageHook {
 	return func(message contextmanager.Message) contextmanager.AppendMessageHookResult {
 		// if not user message, just skip
@@ -960,6 +965,12 @@ func (r *Runtime) getStateHook() contextmanager.AppendMessageHook {
 			}
 		}
 		entries := r.stateManager.GetAllStates()
+		// if no state entries, just skip
+		if len(entries) == 0 {
+			return contextmanager.AppendMessageHookResult{
+				Message: &message,
+			}
+		}
 		// format state entries into a list
 		// example:
 		// key1: value1
@@ -1086,7 +1097,7 @@ func (r *Runtime) ClearMemory(ctx context.Context) error {
 	if err := r.memories.ClearSession(ctx, "default"); err != nil {
 		return err
 	}
-	r.resetContext()
+	r.rotateContext()
 	return nil
 }
 
@@ -1128,7 +1139,10 @@ func (r *Runtime) ClearAllMemory(ctx context.Context) error {
 	if err := r.memories.ClearAll(ctx, "default"); err != nil {
 		return err
 	}
-	r.resetContext()
+
+	contextmanager.ClearAllSessions(agentpath.ContextManagerSessionFolder(r.config.ConfigDir))
+	r.rotateContext()
+
 	return nil
 }
 
@@ -1140,8 +1154,13 @@ func (r *Runtime) ContextDump() contextmanager.MessageListDump {
 	return contextManager.MessageListDump()
 }
 
-func (r *Runtime) resetContext() {
-	r.contextManager = nil
+func (r *Runtime) rotateContext() {
+	newContextManager, err := contextmanager.NewContextManager(agentpath.ContextManagerSessionFolder(r.config.ConfigDir), r.getSystemPrompt())
+	if err != nil {
+		return
+	}
+	newContextManager.AddAppendMessageHooks([]contextmanager.AppendMessageHook{r.getStateHook()})
+	r.contextManager = newContextManager
 }
 
 func (r *Runtime) availableTools() []langtools.Tool {
@@ -2141,7 +2160,6 @@ func (r *Runtime) Close() error {
 		}
 		cancel()
 	}
-	r.resetContext()
 	if r.logger != nil {
 		r.logger.Info("Shutting down agent runtime")
 		return r.logger.Close()

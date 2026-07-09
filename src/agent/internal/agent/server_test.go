@@ -233,7 +233,7 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 }
 
 func TestServerPersistsChatHistoryWithEpisodeReference(t *testing.T) {
-	configDir := t.TempDir()
+	configDir := ensureTestConfigDir(t, t.TempDir())
 	memoryDir := filepath.Join(configDir, "memory")
 	model := &scriptedModel{
 		responses: roleDirectResponses("Completed"),
@@ -334,7 +334,7 @@ func TestServerPersistsChatHistoryWithEpisodeReference(t *testing.T) {
 }
 
 func TestServerRestoresSessionEventsUsingEventType(t *testing.T) {
-	configDir := t.TempDir()
+	configDir := ensureTestConfigDir(t, t.TempDir())
 	session := NewSessionMemoryStore(filepath.Join(configDir, "memory", "session"))
 	now := time.Now().UTC()
 	events := []SessionEvent{
@@ -443,6 +443,7 @@ func TestServerHandleChatStreamsToolAndAssistantMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MkdirTemp() error = %v", err)
 	}
+	configDir = ensureTestConfigDir(t, configDir)
 	t.Cleanup(func() { _ = os.RemoveAll(configDir) })
 	runtime := NewRuntimeWithDeps(
 		Config{
@@ -1235,7 +1236,7 @@ func TestHandleCoordinateDebugTapRecapturesScreenshotWhenMappingUnavailable(t *t
 
 func TestServerSpeakToolContentUsesTTS(t *testing.T) {
 	provider := &recordingTTSProvider{name: "server-provider"}
-	server := &Server{logger: newTestLogger(), 
+	server := &Server{logger: newTestLogger(),
 		runtime: NewRuntimeWithDeps(
 			withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Audio: AudioConfig{SampleRate: 16000}}),
 			&testModelResolver{model: &scriptedModel{}},
@@ -1433,7 +1434,7 @@ func TestServerHandleChatSkipsToolContentTTSWhenDisabled(t *testing.T) {
 
 func TestServerShouldSpeakToolCallRequiresTTSTag(t *testing.T) {
 	toolSpeechEnabled := true
-	server := &Server{logger: newTestLogger(), 
+	server := &Server{logger: newTestLogger(),
 		runtime: NewRuntimeWithDeps(
 			withTestConfigDir(t, Config{VoiceToolCallSpeech: &toolSpeechEnabled, Model: ModelConfig{Provider: "fake"}}),
 			&testModelResolver{model: &scriptedModel{}},
@@ -1487,7 +1488,7 @@ func TestServerHandleChatCancelCancelsActiveRun(t *testing.T) {
 }
 
 func TestServerHandleChatCancelEndsDanglingLiveActivity(t *testing.T) {
-	server := &Server{logger: newTestLogger(), 
+	server := &Server{logger: newTestLogger(),
 		activeRuns:   make(map[string]context.CancelFunc),
 		liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger()),
 	}
@@ -1519,7 +1520,7 @@ func TestServerHandleChatCancelStopsRequestScopedTTSPlayback(t *testing.T) {
 	requestID := "req-stop-1"
 	audioOps := &recordedAudioOps{}
 	provider := newInterruptibleAudioTTSProvider("server-provider", 48000, true)
-	server := &Server{logger: newTestLogger(), 
+	server := &Server{logger: newTestLogger(),
 		activeRuns:  make(map[string]context.CancelFunc),
 		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
 		audioClient: NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, audioOps)),
@@ -1575,7 +1576,7 @@ func TestServerHandleChatCancelStopsCompletedAsyncRequestTTSPlayback(t *testing.
 	requestID := "req-stop-async-complete"
 	audioOps := &recordedAudioOps{}
 	provider := newInterruptibleAudioTTSProvider("server-provider", 48000, true)
-	server := &Server{logger: newTestLogger(), 
+	server := &Server{logger: newTestLogger(),
 		activeRuns:         make(map[string]context.CancelFunc),
 		terminatedRequests: make(map[string]struct{}),
 		ttsManager:         ttsmodule.NewProviderManager(provider, nil),
@@ -1636,7 +1637,7 @@ func TestSpeakTextForRequestRefusesTerminatedRequest(t *testing.T) {
 	requestID := "req-terminated"
 	audioOps := &recordedAudioOps{}
 	provider := newInterruptibleAudioTTSProvider("server-provider", 48000, true)
-	server := &Server{logger: newTestLogger(), 
+	server := &Server{logger: newTestLogger(),
 		activeRuns:         make(map[string]context.CancelFunc),
 		terminatedRequests: make(map[string]struct{}),
 		ttsManager:         ttsmodule.NewProviderManager(provider, nil),
@@ -1657,7 +1658,7 @@ func TestServerHandleChatCancelStopsRequestScopedStreamingTTSPlayback(t *testing
 	requestID := "req-stop-streaming"
 	audioOps := &recordedAudioOps{}
 	provider := newInterruptibleAudioTTSProvider("server-provider", 48000, true)
-	server := &Server{logger: newTestLogger(), 
+	server := &Server{logger: newTestLogger(),
 		activeRuns:  make(map[string]context.CancelFunc),
 		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
 		audioClient: NewAudioServiceClient(startRecordedTTSPlaybackAudioSocket(t, audioOps)),
@@ -1725,7 +1726,7 @@ func TestServerHandleChatCancelStopsRequestScopedStreamingTTSPlayback(t *testing
 }
 
 func TestServerHandleChatSteerQueuesAndCancelsPendingMessage(t *testing.T) {
-	server := &Server{logger: newTestLogger(), 
+	server := &Server{logger: newTestLogger(),
 		activeRuns:    make(map[string]context.CancelFunc),
 		pendingSteers: make(map[string]pendingSteerMessage),
 	}
@@ -1811,7 +1812,7 @@ func TestWebUISteerModeControlsArePresent(t *testing.T) {
 }
 
 func TestServerHandleChatAsyncDuplicateRequestIDDoesNotAppendHistory(t *testing.T) {
-	server := &Server{logger: newTestLogger(), 
+	server := &Server{logger: newTestLogger(),
 		activeRuns:     make(map[string]context.CancelFunc),
 		pendingResults: map[string]*chatPendingResult{"req-1": {}},
 		history:        make([]Message, 0),
@@ -1831,7 +1832,7 @@ func TestServerHandleChatAsyncDuplicateRequestIDDoesNotAppendHistory(t *testing.
 }
 
 func TestServerHandleChatStreamDuplicateRequestIDDoesNotAppendHistory(t *testing.T) {
-	server := &Server{logger: newTestLogger(), 
+	server := &Server{logger: newTestLogger(),
 		activeRuns: make(map[string]context.CancelFunc),
 		history:    make([]Message, 0),
 	}
@@ -1857,7 +1858,7 @@ func TestServerHandleChatStreamDuplicateRequestIDDoesNotAppendHistory(t *testing
 
 func TestServerSpeakToolContentUsesCallerContext(t *testing.T) {
 	provider := &blockingTTSProvider{started: make(chan struct{}), blockText: "Let me read the current volume."}
-	server := &Server{logger: newTestLogger(), 
+	server := &Server{logger: newTestLogger(),
 		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
 		audioClient: NewAudioServiceClient("/tmp/audio.sock"),
 	}
@@ -1947,7 +1948,7 @@ func (s *blockingTTSSession) Err() error {
 }
 
 func TestServerHistoryEndpointIncludesToolMessages(t *testing.T) {
-	server := &Server{logger: newTestLogger(), 
+	server := &Server{logger: newTestLogger(),
 		runtime: NewRuntimeWithDeps(
 			withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
 			&testModelResolver{model: &scriptedModel{}},
@@ -1983,7 +1984,7 @@ func TestServerHistoryEndpointIncludesToolMessages(t *testing.T) {
 }
 
 func TestServerContextDumpEndpointReturnsPlannerMessages(t *testing.T) {
-	server := &Server{logger: newTestLogger(), 
+	server := &Server{logger: newTestLogger(),
 		runtime: NewRuntimeWithDeps(
 			withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
 			&testModelResolver{model: &scriptedModel{}},
@@ -1994,9 +1995,15 @@ func TestServerContextDumpEndpointReturnsPlannerMessages(t *testing.T) {
 	}
 	sessionFolder := t.TempDir()
 	sessionID := "test-session"
-	manager, _, err := contextmanager.NewContextManagerFromSessionID(sessionFolder, &sessionID)
+	if err := os.MkdirAll(sessionFolder, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionFolder, ".current_session"), []byte(sessionID), 0o644); err != nil {
+		t.Fatalf("WriteFile(.current_session) error = %v", err)
+	}
+	manager, err := contextmanager.LoadContextManagerFromSessionID(sessionFolder, sessionID)
 	if err != nil {
-		t.Fatalf("NewContextManagerFromSessionID() error = %v", err)
+		t.Fatalf("LoadContextManagerFromSessionID() error = %v", err)
 	}
 	if err := manager.AppendMessage(contextmanager.Message{
 		Role:    contextmanager.MessageRoleUser,
@@ -2045,7 +2052,7 @@ func TestServerHandleClearRemovesRuntimeMemory(t *testing.T) {
 		t.Fatalf("expected session events before clear: %v", err)
 	}
 
-	server := &Server{logger: newTestLogger(), 
+	server := &Server{logger: newTestLogger(),
 		runtime: NewRuntimeWithDeps(
 			withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
 			&testModelResolver{model: &scriptedModel{}},
@@ -2072,7 +2079,7 @@ func TestServerHandleClearRemovesRuntimeMemory(t *testing.T) {
 }
 
 func TestServerHandleSetupReturnsSuccessWithoutClearingHistory(t *testing.T) {
-	server := &Server{logger: newTestLogger(), 
+	server := &Server{logger: newTestLogger(),
 		history: []Message{{Type: "user", Content: "hello"}},
 	}
 
@@ -2104,7 +2111,7 @@ func TestServerHandleSetupReturnsSuccessWithoutClearingHistory(t *testing.T) {
 }
 
 func TestServerHandleConcurrentReturnsSingleCapacity(t *testing.T) {
-	server := &Server{logger: newTestLogger(), }
+	server := &Server{logger: newTestLogger()}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/concurrent", nil)
 	rec := httptest.NewRecorder()
@@ -2130,7 +2137,7 @@ func TestServerHandleConcurrentReturnsSingleCapacity(t *testing.T) {
 
 func TestServerHandleSkillsReloadMarksDirty(t *testing.T) {
 	storageDir := t.TempDir()
-	server := &Server{logger: newTestLogger(), 
+	server := &Server{logger: newTestLogger(),
 		runtime: NewRuntimeWithDeps(
 			withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
 			&testModelResolver{model: &scriptedModel{}},
@@ -2157,7 +2164,7 @@ func TestServerHandleSkillsReloadMarksDirty(t *testing.T) {
 }
 
 func TestServerHandleSkillsReloadRejectsGet(t *testing.T) {
-	server := &Server{logger: newTestLogger(), 
+	server := &Server{logger: newTestLogger(),
 		runtime: NewRuntimeWithDeps(
 			withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
 			&testModelResolver{model: &scriptedModel{}},
@@ -2188,7 +2195,7 @@ func TestServerHandleChatWithAudioAttachmentUsesSTT(t *testing.T) {
 		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
 		NewSkillIndex(),
 	)
-	server := &Server{logger: newTestLogger(), 
+	server := &Server{logger: newTestLogger(),
 		runtime:        runtime,
 		history:        make([]Message, 0),
 		sttClient:      stt,
@@ -2552,7 +2559,7 @@ func TestServerWebAudioInputModeNeverFallsBackToRemovedAudio(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			server := &Server{logger: newTestLogger(), 
+			server := &Server{logger: newTestLogger(),
 				runtime:   &Runtime{config: tt.cfg},
 				sttClient: tt.stt,
 			}
@@ -2583,7 +2590,7 @@ func TestServerHandleChatUsesAttachmentTranscriptWithoutRetranscribing(t *testin
 		NewSkillIndex(),
 	)
 	stt := &stubSTTClient{transcript: "should not be called"}
-	server := &Server{logger: newTestLogger(), 
+	server := &Server{logger: newTestLogger(),
 		runtime:        runtime,
 		history:        make([]Message, 0),
 		sttClient:      stt,
@@ -3317,7 +3324,7 @@ func startFakeFrameServiceSocket(t *testing.T, handler func(map[string]any) (str
 
 func newBenchmarkSeedMemoryServer(t *testing.T) (*Server, string) {
 	t.Helper()
-	configDir := t.TempDir()
+	configDir := ensureTestConfigDir(t, t.TempDir())
 	streamingDisabled := false
 	runtime := NewRuntimeWithDeps(
 		Config{

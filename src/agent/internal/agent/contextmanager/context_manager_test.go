@@ -19,9 +19,9 @@ func newTestContextManager(t *testing.T) *ContextManager {
 		t.Fatalf("saveCurrentSession() error = %v", err)
 	}
 
-	manager, _, err := NewContextManagerFromSessionID(sessionFolder, &sessionID)
+	manager, err := LoadContextManagerFromSessionID(sessionFolder, sessionID)
 	if err != nil {
-		t.Fatalf("NewContextManagerFromSessionID() error = %v", err)
+		t.Fatalf("LoadContextManagerFromSessionID() error = %v", err)
 	}
 	return manager
 }
@@ -317,30 +317,23 @@ func TestStoreAttachmentPersistsMetadataOnly(t *testing.T) {
 	}
 }
 
-func TestNewContextManagerFromSessionIDReloadsMessages(t *testing.T) {
+func TestLoadContextManagerFromSessionIDReloadsMessages(t *testing.T) {
 	sessionFolder := t.TempDir()
 	sessionID := newSessionID()
 	if err := saveCurrentSession(sessionFolder, sessionID); err != nil {
 		t.Fatalf("saveCurrentSession() error = %v", err)
 	}
-
-	manager, isFresh, err := NewContextManagerFromSessionID(sessionFolder, &sessionID)
+	manager, err := LoadContextManagerFromSessionID(sessionFolder, sessionID)
 	if err != nil {
-		t.Fatalf("NewContextManagerFromSessionID() error = %v", err)
-	}
-	if !isFresh {
-		t.Fatal("expected first load to be fresh")
+		t.Fatalf("LoadContextManagerFromSessionID() error = %v", err)
 	}
 
 	manager.AppendMessage(Message{Role: MessageRoleSystem, Content: "system"})
 	manager.AppendMessage(Message{Role: MessageRoleUser, Content: "hello"})
 
-	reloaded, isFresh, err := NewContextManagerFromSessionID(sessionFolder, &sessionID)
+	reloaded, err := LoadContextManagerFromSessionID(sessionFolder, sessionID)
 	if err != nil {
-		t.Fatalf("reload NewContextManagerFromSessionID() error = %v", err)
-	}
-	if isFresh {
-		t.Fatal("expected reloaded session to be non-fresh")
+		t.Fatalf("LoadContextManagerFromSessionID() error = %v", err)
 	}
 
 	dump := reloaded.MessageListDump()
