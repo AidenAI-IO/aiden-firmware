@@ -34,6 +34,7 @@ type AgentLoop struct {
 	EnvironmentBridge      *EnvironmentBridgeClient
 	EnvironmentBridgeTools []string
 	SteerInterrupt         func() <-chan struct{}
+	TerminationPolicy      *TerminationPolicy
 	contextManager         *context_manager.ContextManager
 }
 
@@ -51,14 +52,14 @@ func NewAgentLoop(
 		log.Fatalf("context manager is nil")
 	}
 	return &AgentLoop{
-		Model:               model,
-		Profile:             profile,
-		Memory:              memory,
-		CallbacksHandler:    callbacksHandler,
-		MaxIterations:       maxIterations,
-		Recorder:            recorder,
-		ScreenshotPruning:   screenshotPruning,
-		contextManager:      contextManager,
+		Model:             model,
+		Profile:           profile,
+		Memory:            memory,
+		CallbacksHandler:  callbacksHandler,
+		MaxIterations:     maxIterations,
+		Recorder:          recorder,
+		ScreenshotPruning: screenshotPruning,
+		contextManager:    contextManager,
 	}
 }
 
@@ -74,8 +75,13 @@ func (l *AgentLoop) Run(ctx context.Context, input string, options ...chains.Cha
 	}
 	callOptions := chains.GetLLMCallOptions(options...)
 
+	policy := l.loopGuardPolicy()
 	for i := 0; i < l.MaxIterations; i++ {
-		answer, done, err := l.runIteration(ctx, i+1, callOptions, llmExecutor, parser, toolSpecs)
+		if decision := policy.CheckBeforeIteration(ctx, i+1, l.MaxIterations); decision.Stop {
+			answer, err := l.stopWithDecision(ctx, policy, decision)
+			return answer, err
+		}
+		answer, done, err := l.runIteration(ctx, i+1, callOptions, llmExecutor, parser, toolSpecs, policy)
 		if err != nil {
 			return "", err
 		}
@@ -84,10 +90,17 @@ func (l *AgentLoop) Run(ctx context.Context, input string, options ...chains.Cha
 		}
 	}
 
-	return "", agents.ErrNotFinished
+	return l.stopWithDecision(ctx, policy, policy.BudgetExhausted("max_iterations budget exhausted"))
 }
 
-func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions []llms.CallOption, llmExecutor *executor.LLMExecutor, parser *FunctionAgent, toolSpecs *ToolSpecs) (string, bool, error) {
+func (l *AgentLoop) loopGuardPolicy() *TerminationPolicy {
+	if l != nil && l.TerminationPolicy != nil {
+		return l.TerminationPolicy
+	}
+	return NewTerminationPolicy(DefaultTerminationPolicyConfig())
+}
+
+func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions []llms.CallOption, llmExecutor *executor.LLMExecutor, parser *FunctionAgent, toolSpecs *ToolSpecs, policy *TerminationPolicy) (string, bool, error) {
 	iterationStartTime := time.Now()
 	toolCallsInIteration := 0
 	if l.Recorder != nil {
@@ -125,6 +138,13 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		if err := llmExecutor.AppendMessage(context_manager.ConvertChoiceToContextManagerMessage(*contentResp.Choices[0])); err != nil {
 			return "", false, err
 		}
+		decision := policy.RecordParseFailure()
+		if decision.Stop {
+			return l.finishStopDecision(ctx, policy, decision)
+		}
+		if err := l.applyLoopGuardDecision(ctx, llmExecutor, policy, decision); err != nil {
+			return "", false, err
+		}
 		return "", false, nil
 	}
 	if err != nil {
@@ -154,8 +174,15 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		return "", false, err
 	}
 	toolExecution := l.executeToolCall(ctx, ToolCallExecution{
-		Specs:                  toolSpecs,
-		Action:                 action,
+		Specs:  toolSpecs,
+		Action: action,
+		Before: func(ctx context.Context, call ToolCall) (ToolResult, bool) {
+			result, allowed := policy.BeforeToolCall(call.Spec.Name, call.Input)
+			if !allowed {
+				return result, false
+			}
+			return DefaultBeforeToolCall(ctx, call)
+		},
 		Callback:               l.CallbacksHandler,
 		EnvironmentBridge:      l.EnvironmentBridge,
 		EnvironmentBridgeTools: l.EnvironmentBridgeTools,
@@ -184,7 +211,61 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		return answer, true, err
 	}
 
+	decision := policy.AfterToolCall(
+		toolExecution.Call.Spec.Name,
+		toolExecution.Call.Input,
+		toolExecution.Step.Observation,
+		toolExecution.Result.IsError(),
+	)
+	if decision.Stop {
+		return l.finishStopDecision(ctx, policy, decision)
+	}
+	if err := l.applyLoopGuardDecision(ctx, llmExecutor, policy, decision); err != nil {
+		return "", false, err
+	}
+
 	return "", false, nil
+}
+
+func (l *AgentLoop) finishStopDecision(ctx context.Context, policy *TerminationPolicy, decision TerminationDecision) (string, bool, error) {
+	answer, err := l.stopWithDecision(ctx, policy, decision)
+	return answer, true, err
+}
+
+func (l *AgentLoop) applyLoopGuardDecision(ctx context.Context, llmExecutor *executor.LLMExecutor, policy *TerminationPolicy, decision TerminationDecision) error {
+	if policy == nil || llmExecutor == nil || strings.TrimSpace(decision.Notice) == "" {
+		return nil
+	}
+	return llmExecutor.AppendMessage(context_manager.Message{
+		Role:    context_manager.MessageRoleNotice,
+		Content: decision.Notice,
+	})
+}
+
+func (l *AgentLoop) stopWithDecision(ctx context.Context, policy *TerminationPolicy, decision TerminationDecision) (string, error) {
+	if decision.Reason == StopReasonExternal && ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+	}
+	lastTool := ""
+	if policy != nil {
+		lastTool = policy.lastToolName
+	}
+	answer := formatLoopGuardStopMessage(decision, lastTool)
+	if l != nil && l.Recorder != nil {
+		l.Recorder.RecordEvent(TaskEpisodeEvent{
+			Type: runEventLoopGuardStop,
+			Ts:   time.Now().Format(time.RFC3339Nano),
+			Metadata: map[string]interface{}{
+				"reason":  string(decision.Reason),
+				"message": decision.Message,
+				"tier":    int(decision.Tier),
+			},
+		})
+		l.Recorder.RecordDefaultFinish(answer)
+	}
+	return l.finishRun(ctx, answer)
 }
 
 func loadAgentLoopInputs(ctx context.Context, memory schema.Memory, input string) (map[string]string, error) {
