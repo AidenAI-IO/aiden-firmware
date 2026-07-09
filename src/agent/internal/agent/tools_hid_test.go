@@ -130,15 +130,19 @@ func TestResolvePointerPositionPixelUsesActiveArea(t *testing.T) {
 	screen := &screenState{}
 	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true})
 
-	x, y, err := resolvePointerPosition(screen, 960, 540, "pixel", coordinateSpaceAuto)
+	// Pixel coords are now relative to cropped image (608x1080).
+	// x=304 in crop = center of active area (was x=960 in full frame).
+	x, y, err := resolvePointerPosition(screen, 304, 540, "pixel", coordinateSpaceAuto)
 	if err != nil {
 		t.Fatalf("resolvePointerPosition returned error: %v", err)
 	}
-	if x != 16410 {
-		t.Fatalf("x = %d, want 16410", x)
+	wantX := scalePixelToAbsolute(304, 608)
+	wantY := scalePixelToAbsolute(540, 1080)
+	if x != wantX {
+		t.Fatalf("x = %d, want %d", x, wantX)
 	}
-	if y != 16399 {
-		t.Fatalf("y = %d, want 16399", y)
+	if y != wantY {
+		t.Fatalf("y = %d, want %d", y, wantY)
 	}
 }
 
@@ -146,15 +150,19 @@ func TestResolvePointerPositionPixelUses720pActiveArea(t *testing.T) {
 	screen := &screenState{}
 	screen.UpdateActiveArea(1280, 720, screenActiveArea{X: 320, Y: 0, Width: 640, Height: 720, Valid: true})
 
-	x, y, err := resolvePointerPosition(screen, 640, 360, "pixel", coordinateSpaceAuto)
+	// Pixel coords relative to cropped image (640x720).
+	// x=320 in crop = center (was x=640 in full frame).
+	x, y, err := resolvePointerPosition(screen, 320, 360, "pixel", coordinateSpaceAuto)
 	if err != nil {
 		t.Fatalf("resolvePointerPosition returned error: %v", err)
 	}
-	if x != 16409 {
-		t.Fatalf("x = %d, want 16409", x)
+	wantX := scalePixelToAbsolute(320, 640)
+	wantY := scalePixelToAbsolute(360, 720)
+	if x != wantX {
+		t.Fatalf("x = %d, want %d", x, wantX)
 	}
-	if y != 16406 {
-		t.Fatalf("y = %d, want 16406", y)
+	if y != wantY {
+		t.Fatalf("y = %d, want %d", y, wantY)
 	}
 }
 
@@ -198,11 +206,13 @@ func TestResolvePointerPositionPixelRejectsBlackBar(t *testing.T) {
 	screen := &screenState{}
 	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 656, Y: 0, Width: 608, Height: 1080, Valid: true})
 
-	_, _, err := resolvePointerPosition(screen, 100, 540, "pixel", coordinateSpaceAuto)
+	// With pixel relative to cropped image, "black bar" doesn't exist.
+	// But x=700 exceeds cropped width (608), so it should still error.
+	_, _, err := resolvePointerPosition(screen, 700, 540, "pixel", coordinateSpaceAuto)
 	if err == nil {
-		t.Fatal("expected error for pixel coordinates in black bar")
+		t.Fatal("expected error for pixel coordinates outside cropped image bounds")
 	}
-	if !strings.Contains(err.Error(), "outside active screen area") {
+	if !strings.Contains(err.Error(), "outside screenshot bounds") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -211,7 +221,9 @@ func TestScalePixelToAbsoluteUsesActiveAreaYOffset(t *testing.T) {
 	screen := &screenState{}
 	screen.UpdateActiveArea(1280, 720, screenActiveArea{X: 0, Y: 72, Width: 1280, Height: 576, Valid: true})
 
-	x, y, err := resolvePointerPosition(screen, 919, 166, "pixel", coordinateSpaceAuto)
+	// Pixel coords relative to cropped image (1280x576).
+	// y=94 in crop (was y=166 in full frame, 166-72=94).
+	x, y, err := resolvePointerPosition(screen, 919, 94, "pixel", coordinateSpaceAuto)
 	if err != nil {
 		t.Fatalf("resolvePointerPosition returned error: %v", err)
 	}
@@ -256,8 +268,41 @@ func TestResolvePointerPositionPixelRejectsOutOfBounds(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for out-of-bounds pixel coordinates")
 	}
-	if !strings.Contains(err.Error(), "outside cached screenshot bounds 431x947") {
+	if !strings.Contains(err.Error(), "outside screenshot bounds 431x947") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolvePointerPositionPixelRelativeToCroppedImage(t *testing.T) {
+	screen := &screenState{}
+	// Full frame 1920x1080, active area starts at x=712, width=496
+	// LLM sees cropped 496x1080 image, passes coords relative to that
+	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 712, Y: 0, Width: 496, Height: 1080, Valid: true})
+
+	// x=248 is center of cropped image, y=1030 is near bottom
+	x, y, err := resolvePointerPosition(screen, 248, 1030, "pixel", coordinateSpaceAuto)
+	if err != nil {
+		t.Fatalf("pixel coords relative to cropped image should work: %v", err)
+	}
+
+	wantX := scalePixelToAbsolute(248, 496)
+	wantY := scalePixelToAbsolute(1030, 1080)
+	if x != wantX {
+		t.Fatalf("x = %d, want %d", x, wantX)
+	}
+	if y != wantY {
+		t.Fatalf("y = %d, want %d", y, wantY)
+	}
+}
+
+func TestResolvePointerPositionPixelRejectsOutsideCroppedBounds(t *testing.T) {
+	screen := &screenState{}
+	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 712, Y: 0, Width: 496, Height: 1080, Valid: true})
+
+	// x=500 exceeds cropped image width 496
+	_, _, err := resolvePointerPosition(screen, 500, 540, "pixel", coordinateSpaceAuto)
+	if err == nil {
+		t.Fatal("expected error for x=500 outside cropped image width 496")
 	}
 }
 
@@ -1723,7 +1768,7 @@ func TestTouchGestureDescriptionDocumentsEdgeGestureAliases(t *testing.T) {
 
 func TestMouseClickDescriptionDocumentsTargetCenter(t *testing.T) {
 	desc := (&MouseClickTool{}).Description()
-	for _, want := range []string{"coord_space default is auto", "normalized", "latest screenshot", "visual center", "pixel coordinates require fresh cached screen dimensions", "pointer_mode absolute", "post-action screenshot"} {
+	for _, want := range []string{"coord_space default is auto", "normalized", "latest screenshot", "visual center", "pointer_mode absolute", "post-action screenshot"} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q:\n%s", want, desc)
 		}
@@ -1896,5 +1941,44 @@ func TestResolvePointerPositionAutoFallsBackWhenStale(t *testing.T) {
 	}
 	if x != 2000 || y != 3000 {
 		t.Fatalf("auto fallback = (%d,%d), want (2000,3000)", x, y)
+	}
+}
+
+func TestTouchGestureSwipeRejectsPointInsteadOfStartEnd(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}}
+
+	out, err := tool.Call(context.Background(), `{"type":"swipe","point":{"x":500,"y":500}}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "swipe requires start and end, not point") {
+		t.Fatalf("output = %q, want swipe start/end error", out)
+	}
+
+	reports := readMouseReports(t, dev, path)
+	if len(reports) != 0 {
+		t.Fatalf("len(reports) = %d, want no HID writes", len(reports))
+	}
+}
+
+func TestTouchGestureAcceptsArrayPointFormat(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}}
+
+	out, err := tool.Call(context.Background(), `{"type":"tap","point":[500,250]}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("Call output = %q, want ok", out)
+	}
+
+	reports := readMouseReports(t, dev, path)
+	if len(reports) != 2+touchReleaseReportCount {
+		t.Fatalf("len(reports) = %d, want %d", len(reports), 2+touchReleaseReportCount)
+	}
+	if reports[0].x != 16384 || reports[0].y != 8192 {
+		t.Fatalf("point = (%d,%d), want (16384,8192)", reports[0].x, reports[0].y)
 	}
 }

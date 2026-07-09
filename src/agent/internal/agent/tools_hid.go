@@ -922,8 +922,8 @@ func (t *MouseClickTool) Name() string { return "mouse_click" }
 
 func (t *MouseClickTool) Description() string {
 	return `Move mouse to a position and click. Input JSON: {"x":500,"y":300,"button":"left","coord_space":"normalized"}. ` +
-		`coord_space default is auto: x/y in 0-1000 are normalized; otherwise pixel coordinates use a recent screenshot, then absolute HID values. ` +
-		`Prefer normalized coordinates (0-1000) from the latest screenshot and choose the visual center of the target; pixel coordinates require fresh cached screen dimensions. ` +
+		`coord_space default is auto: x/y in 0-1000 are normalized; otherwise absolute HID values in the range 0-32767. ` +
+		`Prefer normalized coordinates (0-1000) from the latest screenshot and choose the visual center of the target; absolute coordinates bypass screen dimension resolution. ` +
 		`pointer_mode absolute waits for iOS cursor smoothing before clicking; pointer_mode touchscreen sends a finger down/up at the resolved coordinate. ` +
 		`Click once and inspect the returned post-action screenshot before repeating. Button: left (default), right, middle.`
 }
@@ -971,7 +971,7 @@ func (t *MouseMoveTool) Name() string { return "mouse_move" }
 
 func (t *MouseMoveTool) Description() string {
 	return `Move mouse to a position without clicking. Input JSON: {"x": 500, "y": 300, "coord_space": "normalized"}. ` +
-		`coord_space options: "pixel", "normalized", "absolute". Default is "auto": x/y in [0,1000] are treated as normalized, otherwise pixel coordinates are used when a recent screenshot has cached screen dimensions, otherwise HID absolute values in the range 0-32767. ` +
+		`coord_space options: "normalized", "absolute". Default is "auto": x/y in [0,1000] are treated as normalized, otherwise HID absolute values in the range 0-32767. ` +
 		`Normalized coordinates use 0-1000 range where (0,0) is top-left, (1000,1000) is bottom-right, (500,500) is center. ` +
 		`pointer_mode absolute (default): writes absolute HID coordinates directly. ` +
 		`pointer_mode touchscreen (Android): moves the logical touch point without pressing.`
@@ -1019,7 +1019,7 @@ func (t *TouchGestureTool) Description() string {
 	return `Perform touch/pointer gesture via HID. Prefer quick_action for semantic platform actions; use this for custom screen gestures. ` +
 		`Input examples: {"type":"tap","point":{"x":500,"y":500}}, {"type":"swipe","start":{"x":200,"y":500},"end":{"x":800,"y":500},"duration_ms":700,"steps":24}, {"type":"swipe_left"}, {"type":"swipe_up","distance":600}. ` +
 		`Types: tap, double_tap, long_press, drag, swipe, swipe_left/right/up/down, back, home. ` +
-		`Coordinates: point/start/end must be {"x":N,"y":M} objects; never omit x/y key names. coord_space defaults to normalized (0-1000) and also supports pixel or absolute. ` +
+		`Coordinates: point/start/end must be {"x":N,"y":M} objects; never omit x/y key names. coord_space defaults to normalized (0-1000) and also supports absolute. ` +
 		`Choose the visual center of the target in the latest screenshot; for small controls, estimate bounds and touch the midpoint, biased inward. ` +
 		`Directional swipes accept optional distance, anchor, and strength (large/medium/small/tiny). Swipe direction is finger movement, not content scroll; for older chat history above, usually use swipe_down. ` +
 		`For precise scrolls or pickers, probe with medium/large, observe the screenshot, then use small/tiny; if overshot, reverse direction and reduce strength. ` +
@@ -1175,6 +1175,9 @@ func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, erro
 			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
 	case "swipe":
+		if args.Start == nil && args.Point != nil {
+			return toolErrorResultString(ctx, CodeInvalidArguments, "swipe requires start and end, not point; use swipe_up/down/left/right for directional swipes from center"), nil
+		}
 		start, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.Start, coordSpace)
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
@@ -1369,6 +1372,23 @@ type pointerPoint struct {
 	Y pointerCoordinate `json:"y"`
 }
 
+func (p *pointerPoint) UnmarshalJSON(data []byte) error {
+	// Accept array format [x, y] as fallback for models that pass coordinates as arrays.
+	var arr []json.RawMessage
+	if json.Unmarshal(data, &arr) == nil && len(arr) == 2 {
+		if err := json.Unmarshal(arr[0], &p.X); err != nil {
+			return fmt.Errorf("coordinate must be a number or numeric string")
+		}
+		if err := json.Unmarshal(arr[1], &p.Y); err != nil {
+			return fmt.Errorf("coordinate must be a number or numeric string")
+		}
+		return nil
+	}
+	// Normal object format {"x":N,"y":M}
+	type plain pointerPoint
+	return json.Unmarshal(data, (*plain)(p))
+}
+
 type pointerCoordinate float64
 
 func (c *pointerCoordinate) UnmarshalJSON(data []byte) error {
@@ -1545,16 +1565,15 @@ func pixelToAbsolutePoint(x, y float64, width, height int, active screenActiveAr
 	if width <= 0 || height <= 0 {
 		return 0, 0, fmt.Errorf("invalid screen dimensions: %dx%d", width, height)
 	}
-	if x < 0 || y < 0 || x > float64(width-1) || y > float64(height-1) {
-		return 0, 0, fmt.Errorf("pixel coordinates x=%.2f y=%.2f are outside cached screenshot bounds %dx%d; use coord_space normalized with 0-1000 coordinates, where 500,500 is center, or refresh/calibrate the screenshot dimensions", x, y, width, height)
-	}
 	if !active.Valid {
 		active = screenActiveArea{X: 0, Y: 0, Width: width, Height: height, Valid: true}
 	}
-	if x < float64(active.X) || y < float64(active.Y) || x > float64(active.X+active.Width-1) || y > float64(active.Y+active.Height-1) {
-		return 0, 0, fmt.Errorf("pixel coordinates x=%.2f y=%.2f are outside active screen area x=%d y=%d width=%d height=%d within screenshot %dx%d", x, y, active.X, active.Y, active.Width, active.Height, width, height)
+	// Pixel coordinates are relative to the cropped active area image that the
+	// LLM sees, not the full HDMI frame. Bounds check against active area size.
+	if x < 0 || y < 0 || x > float64(active.Width-1) || y > float64(active.Height-1) {
+		return 0, 0, fmt.Errorf("pixel coordinates x=%.2f y=%.2f are outside screenshot bounds %dx%d; use coord_space normalized with 0-1000 coordinates, where 500,500 is center", x, y, active.Width, active.Height)
 	}
-	return scalePixelToAbsolute(x-float64(active.X), active.Width), scalePixelToAbsolute(y-float64(active.Y), active.Height), nil
+	return scalePixelToAbsolute(x, active.Width), scalePixelToAbsolute(y, active.Height), nil
 }
 
 func scalePixelToAbsolute(value float64, size int) int {
