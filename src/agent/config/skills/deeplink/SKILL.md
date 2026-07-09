@@ -1,12 +1,12 @@
 ---
 name: deeplink
-description: Phone app launch guidance. Use semantic open_app requests; do not pass platform launch targets from the board.
+description: Phone app launch guidance. Use semantic bridge_open_app requests; do not pass platform launch targets from the board.
 metadata:
   preferred_model: primary
-  allowed_tools: [open_app, screenshot, touch_gesture, mouse_click, keyboard_tap, enter_text_in_field]
+  allowed_tools: [bridge_open_app, screenshot, touch_gesture, mouse_click, keyboard_tap, enter_text_in_field]
 ---
 
-The board-side `open_app` tool is semantic. Do not pass iOS URL schemes,
+The board-side `bridge_open_app` tool is semantic. Do not pass iOS URL schemes,
 Android package names, intent URIs, or deeplinks. The companion app owns those
 platform-specific launch details.
 

@@ -8,6 +8,14 @@ import (
 
 const pipBridgeBackgroundStateMaxAge = 15 * time.Second
 
+const (
+	toolBridgeOpenApp      = "bridge_open_app"
+	toolBridgeClipboard    = "bridge_clipboard"
+	toolBridgeCalendar     = "bridge_calendar"
+	toolBridgeContacts     = "bridge_contacts"
+	toolBridgeNotification = "bridge_notification"
+)
+
 var phoneBridgeBackgroundSafeCommandTypes = map[string]struct{}{
 	"clipboard_read":    {},
 	"clipboard_write":   {},
@@ -21,15 +29,15 @@ var phoneBridgeBackgroundSafeCommandTypes = map[string]struct{}{
 }
 
 var phoneBridgeToolBackgroundCommandTypes = map[string]string{
-	"clipboard":    "clipboard_read",
-	"calendar":     "calendar_query",
-	"contacts":     "contacts_query",
-	"notification": "notification_send",
+	toolBridgeClipboard:    "clipboard_read",
+	toolBridgeCalendar:     "calendar_query",
+	toolBridgeContacts:     "contacts_query",
+	toolBridgeNotification: "notification_send",
 }
 
 func isPhoneBridgeToolName(name string) bool {
 	switch name {
-	case "open_app", "clipboard", "calendar", "contacts", "notification":
+	case toolBridgeOpenApp, toolBridgeClipboard, toolBridgeCalendar, toolBridgeContacts, toolBridgeNotification:
 		return true
 	default:
 		return false
@@ -38,9 +46,9 @@ func isPhoneBridgeToolName(name string) bool {
 
 func phoneBridgeToolAvailable(status PhoneBridgeStatus, name string) bool {
 	switch name {
-	case "open_app":
+	case toolBridgeOpenApp:
 		return !phoneBridgePiPBackgroundEnabled(status)
-	case "clipboard", "calendar", "contacts", "notification":
+	case toolBridgeClipboard, toolBridgeCalendar, toolBridgeContacts, toolBridgeNotification:
 		return status.Connected || phoneBridgeCanUsePiPBackground(status, phoneBridgeBackgroundCommandTypeForTool(name))
 	default:
 		return true

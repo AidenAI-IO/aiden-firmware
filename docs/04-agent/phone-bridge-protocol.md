@@ -13,7 +13,7 @@ This document defines the WebSocket command protocol between the hardware board 
 
 WebSocket is the foreground fast path. The board also exposes `/api/phone-bridge/commands` and `/api/phone-bridge/results` HTTP queue endpoints, but React Native app execution, JS timers, and WebSocket in the iOS background must not be treated as a general tool execution path. On iOS, Phone Bridge tools are foreground capabilities: if the app is backgrounded and reports `return_entry=dynamic_island` with `return_entry_available=true`, board-side tools restore Aiden through Dynamic Island, wait for WebSocket reconnection and active app state, then execute the command. Lock-screen Live Activity entries require visual confirmation instead of blind tapping.
 
-PiP Bridge is a narrow background queue mode. When the app reports `pip_bridge_enabled=true` while backgrounded, iOS gives PiP priority over the Dynamic Island, so the Dynamic Island return entry is not visible. In that state, the board must not expose `open_app` as a Phone Bridge tool; only background-safe data commands (`clipboard_*`, `calendar_*`, `contacts_*`, `notification_send`) may use the HTTP queue.
+PiP Bridge is a narrow background queue mode. When the app reports `pip_bridge_enabled=true` while backgrounded, iOS gives PiP priority over the Dynamic Island, so the Dynamic Island return entry is not visible. In that state, the board must not expose `bridge_open_app` as a Phone Bridge tool; only background-safe data tools (`bridge_clipboard`, `bridge_calendar`, `bridge_contacts`, `bridge_notification`) backed by command types (`clipboard_*`, `calendar_*`, `contacts_*`, `notification_send`) may use the HTTP queue.
 
 ## Heartbeat
 
@@ -117,7 +117,7 @@ Example:
 }
 ```
 
-The board writes the latest complete environment to the `environment` field of `GET /api/phone-bridge/status`, and keeps `app_state`, `return_entry`, `return_entry_available`, and `pip_bridge_enabled` for Agent runtime context and tool resolution. Runtime context carries compact state facts such as connection status, app foreground/background state, return-entry visibility, PiP/Dynamic Island visibility state, system type/version, language/region/timezone, screen dimensions, and confirmed openable third-party candidate apps. Tool availability is resolved separately: PiP background state hides `open_app` and keeps only background-safe data tools exposed through the HTTP queue. Environment is cleared on disconnection to avoid using stale information, but the latest app foreground/background state can be retained to decide whether Aiden should be restored through Dynamic Island first.
+The board writes the latest complete environment to the `environment` field of `GET /api/phone-bridge/status`, and keeps `app_state`, `return_entry`, `return_entry_available`, and `pip_bridge_enabled` for Agent runtime context and tool resolution. Runtime context carries compact state facts such as connection status, app foreground/background state, return-entry visibility, PiP/Dynamic Island visibility state, system type/version, language/region/timezone, screen dimensions, and confirmed openable third-party candidate apps. Tool availability is resolved separately: PiP background state hides `bridge_open_app` and keeps only background-safe data tools exposed through the HTTP queue. Environment is cleared on disconnection to avoid using stale information, but the latest app foreground/background state can be retained to decide whether Aiden should be restored through Dynamic Island first.
 
 `phone_app_state` example:
 
@@ -169,7 +169,7 @@ The board must not send platform launch details. For known apps, send `app` (for
 ```
 
 `method` indicates the underlying mechanism used by the app side, common values include `ios_url_scheme`, `ios_shortcut`, `android_intent`, `android_deeplink`, `launch_package`, `dial`, `open_url`. Where `open_url` only indicates explicit webpage URL.
-The Agent's exposed `open_app` tool normalizes these underlying mechanisms into task-oriented `method` (e.g., opening app returns `open_app`, opening webpage returns `open_url`), and places the underlying value in the `mechanism` field.
+The Agent's exposed `bridge_open_app` tool normalizes these underlying mechanisms into task-oriented `method` (e.g., opening app returns `open_app`, opening webpage returns `open_url`), and places the underlying value in the `mechanism` field.
 
 On failure:
 ```json

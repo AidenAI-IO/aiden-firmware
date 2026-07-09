@@ -67,7 +67,7 @@ func TestRunScriptExposedToAgentAndToolLab(t *testing.T) {
 }
 
 func TestPhoneBridgeToolsExposedToAgent(t *testing.T) {
-	for _, name := range []string{"open_app", "clipboard", "calendar", "contacts", "notification"} {
+	for _, name := range []string{"bridge_open_app", "bridge_clipboard", "bridge_calendar", "bridge_contacts", "bridge_notification"} {
 		if !isAgentToolExposed(name) {
 			t.Fatalf("expected %s available to conversational agent", name)
 		}
@@ -112,7 +112,7 @@ func TestAvailableToolsIncludesPhoneBridgeToolsWhenDisconnected(t *testing.T) {
 
 	tools := runtime.availableTools()
 	names := toolNamesFromTools(tools)
-	for _, want := range []string{"open_app", "search_launch_app", "enter_text_via_bridge"} {
+	for _, want := range []string{"bridge_open_app", "search_launch_app", "enter_text_via_bridge"} {
 		found := false
 		for _, name := range names {
 			if name == want {
@@ -124,7 +124,7 @@ func TestAvailableToolsIncludesPhoneBridgeToolsWhenDisconnected(t *testing.T) {
 			t.Fatalf("availableTools missing disconnected bridge recovery tool %s: %v", want, names)
 		}
 	}
-	for _, notWant := range []string{"clipboard", "calendar", "contacts", "notification"} {
+	for _, notWant := range []string{"bridge_clipboard", "bridge_calendar", "bridge_contacts", "bridge_notification"} {
 		for _, name := range names {
 			if name == notWant {
 				t.Fatalf("availableTools exposed disconnected phone bridge tool %s: %v", notWant, names)
@@ -141,7 +141,7 @@ func TestAvailableToolsIncludesPhoneBridgeToolsWhenConnected(t *testing.T) {
 
 	tools := runtime.availableTools()
 	names := toolNamesFromTools(tools)
-	for _, want := range []string{"open_app", "clipboard", "calendar", "contacts", "notification"} {
+	for _, want := range []string{"bridge_open_app", "bridge_clipboard", "bridge_calendar", "bridge_contacts", "bridge_notification"} {
 		found := false
 		for _, name := range names {
 			if name == want {
@@ -152,6 +152,40 @@ func TestAvailableToolsIncludesPhoneBridgeToolsWhenConnected(t *testing.T) {
 		if !found {
 			t.Fatalf("resolveTools missing connected phone bridge tool %s: %v", want, names)
 		}
+	}
+}
+
+func TestAvailableToolsHidesOpenAppAndKeepsDataToolsDuringPiPBackground(t *testing.T) {
+	runtime := newRuntimeWithTextEntryTools()
+	bridge := newIOSPiPBackgroundBridge(t)
+	runtime.tools.RegisterPhoneBridge(bridge)
+
+	tools := runtime.availableTools()
+	names := toolNamesFromTools(tools)
+	for _, notWant := range []string{"bridge_open_app"} {
+		for _, name := range names {
+			if name == notWant {
+				t.Fatalf("availableTools exposed PiP background unavailable tool %s: %v", notWant, names)
+			}
+		}
+	}
+	for _, want := range []string{"bridge_clipboard", "bridge_calendar", "bridge_contacts", "bridge_notification", "search_launch_app"} {
+		found := false
+		for _, name := range names {
+			if name == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("resolveTools missing PiP background tool %s: %v", want, names)
+		}
+	}
+	if _, ok := runtime.ToolDescriptorByName("bridge_open_app"); ok {
+		t.Fatalf("ToolDescriptorByName exposed PiP background unavailable bridge_open_app: %v", names)
+	}
+	if _, ok := runtime.ToolDescriptorByName("bridge_clipboard"); !ok {
+		t.Fatalf("ToolDescriptorByName missing PiP background bridge_clipboard: %v", names)
 	}
 }
 

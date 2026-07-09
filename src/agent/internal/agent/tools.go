@@ -70,7 +70,7 @@ var scriptCallableToolNames = map[string]struct{}{
 	"mouse_click":            {},
 	"mouse_move":             {},
 	"mouse_scroll":           {},
-	"open_app":               {},
+	toolBridgeOpenApp:        {},
 	"quick_action":           {},
 	"screenshot":             {},
 	"search_launch_app":      {},
