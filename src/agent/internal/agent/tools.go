@@ -240,7 +240,7 @@ func (s *ToolSet) toolAvailable(name string) bool {
 	if s.phoneBridge == nil {
 		return false
 	}
-	return phoneBridgeToolAvailable(s.phoneBridge.Status(), name)
+	return phoneBridgeToolAvailable(s.phoneBridge.getStatus(), name)
 }
 
 func (s *ToolSet) CurrentEnvironmentHints(maxAge time.Duration) CurrentEnvironmentHints {

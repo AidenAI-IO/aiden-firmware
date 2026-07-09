@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/statemanager"
 	"context"
 	"encoding/json"
 	"errors"
@@ -136,13 +137,15 @@ type PhoneBridge struct {
 	logger           *Logger
 	done             chan struct{}
 	queue            *CommandQueue // HTTP queue for background-compatible commands
+	stateManager     *statemanager.StateManager
 }
 
-func NewPhoneBridge(logger *Logger) *PhoneBridge {
+func NewPhoneBridge(logger *Logger, stateManager *statemanager.StateManager) *PhoneBridge {
 	return &PhoneBridge{
-		pendingCmds: make(map[string]chan BridgeCommandResponse),
-		logger:      logger,
-		queue:       NewCommandQueue(logger),
+		pendingCmds:  make(map[string]chan BridgeCommandResponse),
+		logger:       logger,
+		queue:        NewCommandQueue(logger),
+		stateManager: stateManager,
 	}
 }
 
@@ -180,6 +183,8 @@ func (pb *PhoneBridge) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	pb.done = make(chan struct{})
 	done := pb.done
 	pb.mu.Unlock()
+
+	pb.statusUpdated()
 
 	if pb.logger != nil {
 		pb.logger.Info("phone-bridge: client connected (platform=%s phone_id=%s)", platform, phoneID)
@@ -231,6 +236,7 @@ func (pb *PhoneBridge) readLoop(conn *websocket.Conn, done chan struct{}) {
 			}
 		}
 		pb.mu.Unlock()
+		pb.statusUpdated()
 		close(done)
 		conn.Close(websocket.StatusNormalClosure, "")
 		if pb.logger != nil {
@@ -327,6 +333,8 @@ func (pb *PhoneBridge) handleEnvironmentEvent(resp BridgeCommandResponse) bool {
 	pb.lastHeartbeatAt = pb.environmentAt
 	pb.mu.Unlock()
 
+	pb.statusUpdated()
+
 	if pb.logger != nil {
 		pb.logger.Info("phone-bridge: environment updated (platform=%s)", env.Platform)
 	}
@@ -383,6 +391,9 @@ func (pb *PhoneBridge) handleAppStateEvent(resp BridgeCommandResponse) bool {
 	}
 	pb.lastHeartbeatAt = pb.appStateAt
 	pb.mu.Unlock()
+
+	pb.statusUpdated()
+
 	if pb.logger != nil {
 		pb.logger.Info("phone-bridge: app state updated (%s)", appState)
 	}
@@ -578,7 +589,28 @@ func (pb *PhoneBridge) currentPhoneID() string {
 	return strings.TrimSpace(pb.phoneID)
 }
 
-func (pb *PhoneBridge) Status() PhoneBridgeStatus {
+func (pb *PhoneBridge) statusUpdated() {
+	status := pb.getStatus()
+	// update stateManager with the new status
+	// if connected, set app_connected to true
+	if status.Connected {
+		pb.stateManager.SetState("app_connected", "true")
+	} else {
+		pb.stateManager.SetState("app_connected", "false")
+	}
+	if status.AppState != "" {
+		pb.stateManager.SetState("app_state", status.AppState)
+	}
+	if status.PipBridgeEnabled != nil {
+		pb.stateManager.SetState("app_pip_enabled", fmt.Sprintf("%t", *status.PipBridgeEnabled))
+	}
+	if status.Environment != nil {
+		pb.stateManager.SetState("app_platform", status.Platform)
+	}
+}
+
+func (pb *PhoneBridge) getStatus() PhoneBridgeStatus {
+	pb.logger.Info("Getting phone bridge status")
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
 	status := PhoneBridgeStatus{
@@ -608,8 +640,11 @@ func (pb *PhoneBridge) Status() PhoneBridgeStatus {
 		enabled := pb.pipBridgeEnabled
 		status.PipBridgeEnabled = &enabled
 	}
+	pb.logger.Info("Phone bridge status: %+v", status)
 	if pb.connected && pb.environment != nil {
+		pb.logger.Info("Phone bridge environment: %+v", pb.environment)
 		env := clonePhoneEnvironment(*pb.environment)
+		pb.logger.Info("Cloned phone environment: %+v", env)
 		status.Environment = &env
 		if !pb.environmentAt.IsZero() {
 			t := pb.environmentAt

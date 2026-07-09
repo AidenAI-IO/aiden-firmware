@@ -201,7 +201,7 @@ func (t *EnterTextViaBridgeTool) runClipboardFirstFlow(ctx context.Context, plat
 	if bridge == nil {
 		return textViaBridgeResult{Err: fmt.Errorf("phone bridge is not configured")}
 	}
-	status := bridge.Status()
+	status := bridge.getStatus()
 	switch strings.ToLower(strings.TrimSpace(platform)) {
 	case "ios":
 		if bridge.ClipboardRecentlyContains(args.Text, preparedClipboardMaxAge) {
@@ -497,7 +497,7 @@ func (t *EnterTextViaBridgeTool) restoreBridgeAppIfNeeded(ctx context.Context, b
 	if t.hw.quickAction == nil || t.hw.keyboardText == nil || t.hw.touchGesture == nil {
 		return nil, 0, fmt.Errorf("bridge recovery tools are not fully configured")
 	}
-	searchTerm := textViaBridgeSearchTerm(platform, bridge.Status())
+	searchTerm := textViaBridgeSearchTerm(platform, bridge.getStatus())
 	openResult, err := runAppSearchOpenFlow(ctx, appSearchOpenFlowConfig{
 		hw:               t.hw,
 		vision:           t.vision,

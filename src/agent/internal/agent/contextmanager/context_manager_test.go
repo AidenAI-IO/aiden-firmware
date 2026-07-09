@@ -1,4 +1,4 @@
-package context_manager
+package contextmanager
 
 import (
 	"encoding/json"
@@ -233,10 +233,10 @@ func TestConvertStandardMessageToContextManagerMessage_ReasoningContent(t *testi
 
 func TestContextManagerAppendMessageHookModifiesMessage(t *testing.T) {
 	manager := newTestContextManager(t)
-	manager.AddAppendMessageHook(func(message Message) AppendMessageHookResult {
+	manager.AddAppendMessageHooks([]AppendMessageHook{func(message Message) AppendMessageHookResult {
 		message.Content = strings.ToUpper(message.Content)
 		return AppendMessageHookResult{Message: &message}
-	})
+	}})
 
 	manager.AppendMessage(Message{Role: MessageRoleUser, Content: "hello"})
 
@@ -251,7 +251,7 @@ func TestContextManagerAppendMessageHookModifiesMessage(t *testing.T) {
 
 func TestContextManagerAppendMessageHookInjectsBeforeAndAfter(t *testing.T) {
 	manager := newTestContextManager(t)
-	manager.AddAppendMessageHook(func(message Message) AppendMessageHookResult {
+	manager.AddAppendMessageHooks([]AppendMessageHook{func(message Message) AppendMessageHookResult {
 		modified := message
 		modified.Content = "core:" + message.Content
 		return AppendMessageHookResult{
@@ -259,7 +259,7 @@ func TestContextManagerAppendMessageHookInjectsBeforeAndAfter(t *testing.T) {
 			Message: &modified,
 			After:   []Message{{Role: MessageRoleNotice, Content: "after"}},
 		}
-	})
+	}})
 
 	manager.AppendMessage(Message{Role: MessageRoleUser, Content: "hello"})
 
@@ -274,11 +274,11 @@ func TestContextManagerAppendMessageHookInjectsBeforeAndAfter(t *testing.T) {
 
 func TestContextManagerAppendMessageHookCanDropOriginalMessage(t *testing.T) {
 	manager := newTestContextManager(t)
-	manager.AddAppendMessageHook(func(message Message) AppendMessageHookResult {
+	manager.AddAppendMessageHooks([]AppendMessageHook{func(message Message) AppendMessageHookResult {
 		return AppendMessageHookResult{
 			Before: []Message{{Role: MessageRoleSystem, Content: "replacement"}},
 		}
-	})
+	}})
 
 	manager.AppendMessage(Message{Role: MessageRoleUser, Content: "hello"})
 

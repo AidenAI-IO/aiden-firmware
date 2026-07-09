@@ -399,7 +399,7 @@ func TestClipboardReadSuccessPreservesOKField(t *testing.T) {
 }
 
 func TestClipboardReadUsesPiPBackgroundQueueWhenActive(t *testing.T) {
-	bridge := NewPhoneBridge(nil)
+	bridge := newPhoneBridgeForTest()
 	t.Cleanup(func() { bridge.queue.Stop() })
 	bridge.mu.Lock()
 	bridge.platform = "ios"
@@ -449,7 +449,7 @@ func TestClipboardReadUsesPiPBackgroundQueueWhenActive(t *testing.T) {
 
 func newTestPhoneBridgeWithApp(t *testing.T, handle func(BridgeCommand) BridgeCommandResponse) *PhoneBridge {
 	t.Helper()
-	bridge := NewPhoneBridge(nil)
+	bridge := newPhoneBridgeForTest()
 	t.Cleanup(func() { bridge.queue.Stop() })
 
 	server := httptest.NewServer(http.HandlerFunc(bridge.HandleWebSocket))
@@ -490,7 +490,7 @@ func newTestPhoneBridgeWithApp(t *testing.T, handle func(BridgeCommand) BridgeCo
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if bridge.Status().Connected {
+		if bridge.getStatus().Connected {
 			return bridge
 		}
 		time.Sleep(10 * time.Millisecond)

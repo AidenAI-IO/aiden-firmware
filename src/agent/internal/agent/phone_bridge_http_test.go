@@ -11,7 +11,7 @@ import (
 
 // TestHTTPEnqueueCommand tests POST /api/phone-bridge/commands
 func TestHTTPEnqueueCommand(t *testing.T) {
-	bridge := NewPhoneBridge(nil)
+	bridge := newPhoneBridgeForTest()
 	defer bridge.queue.Stop()
 
 	tests := []struct {
@@ -161,7 +161,7 @@ func TestHTTPPollCommands(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create fresh bridge for each test
-			bridge := NewPhoneBridge(nil)
+			bridge := newPhoneBridgeForTest()
 			defer bridge.queue.Stop()
 
 			// Setup commands for this test
@@ -216,7 +216,7 @@ func TestHTTPPollCommands(t *testing.T) {
 
 // TestHTTPSubmitResult tests POST /api/phone-bridge/results
 func TestHTTPSubmitResult(t *testing.T) {
-	bridge := NewPhoneBridge(nil)
+	bridge := newPhoneBridgeForTest()
 	defer bridge.queue.Stop()
 
 	// Enqueue and poll a command first
@@ -277,7 +277,7 @@ func TestHTTPSubmitResult(t *testing.T) {
 
 // TestHTTPQueryResult tests GET /api/phone-bridge/results/:command_id
 func TestHTTPQueryResult(t *testing.T) {
-	bridge := NewPhoneBridge(nil)
+	bridge := newPhoneBridgeForTest()
 	defer bridge.queue.Stop()
 
 	// Enqueue, poll and submit result for a command
@@ -362,7 +362,7 @@ func TestHTTPQueryResult(t *testing.T) {
 
 // TestHTTPEndToEnd tests full workflow: enqueue -> poll -> submit -> query
 func TestHTTPEndToEnd(t *testing.T) {
-	bridge := NewPhoneBridge(nil)
+	bridge := newPhoneBridgeForTest()
 	defer bridge.queue.Stop()
 
 	// Step 1: Agent enqueues a command
@@ -438,7 +438,7 @@ func TestHTTPEndToEnd(t *testing.T) {
 
 // TestHTTPCommandTimeout tests that in-flight commands timeout and get retried
 func TestHTTPCommandTimeout(t *testing.T) {
-	bridge := NewPhoneBridge(nil)
+	bridge := newPhoneBridgeForTest()
 	defer bridge.queue.Stop()
 
 	// Enqueue a command

@@ -108,7 +108,7 @@ func TestAvailableToolsIncludesQuickAction(t *testing.T) {
 
 func TestAvailableToolsIncludesPhoneBridgeToolsWhenDisconnected(t *testing.T) {
 	runtime := newRuntimeWithTextEntryTools()
-	runtime.tools.RegisterPhoneBridge(NewPhoneBridge(nil))
+	runtime.tools.RegisterPhoneBridge(newPhoneBridgeForTest())
 
 	tools := runtime.availableTools()
 	names := toolNamesFromTools(tools)
@@ -135,7 +135,7 @@ func TestAvailableToolsIncludesPhoneBridgeToolsWhenDisconnected(t *testing.T) {
 
 func TestAvailableToolsIncludesPhoneBridgeToolsWhenConnected(t *testing.T) {
 	runtime := newRuntimeWithTextEntryTools()
-	bridge := NewPhoneBridge(nil)
+	bridge := newPhoneBridgeForTest()
 	bridge.connected = true
 	runtime.tools.RegisterPhoneBridge(bridge)
 
@@ -157,7 +157,7 @@ func TestAvailableToolsIncludesPhoneBridgeToolsWhenConnected(t *testing.T) {
 
 func newIOSPiPBackgroundBridge(t *testing.T) *PhoneBridge {
 	t.Helper()
-	bridge := NewPhoneBridge(nil)
+	bridge := newPhoneBridgeForTest()
 	t.Cleanup(func() { bridge.queue.Stop() })
 	bridge.mu.Lock()
 	bridge.platform = "ios"

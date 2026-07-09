@@ -11,7 +11,7 @@ import (
 
 func newTestPhoneBridge(t *testing.T) *PhoneBridge {
 	t.Helper()
-	pb := NewPhoneBridge(nil)
+	pb := newPhoneBridgeForTest()
 	t.Cleanup(pb.queue.Stop)
 	return pb
 }

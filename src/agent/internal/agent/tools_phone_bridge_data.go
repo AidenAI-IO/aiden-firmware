@@ -39,7 +39,7 @@ func bridgeStatusForError(bridge *PhoneBridge) []PhoneBridgeStatus {
 	if bridge == nil {
 		return nil
 	}
-	return []PhoneBridgeStatus{bridge.Status()}
+	return []PhoneBridgeStatus{bridge.getStatus()}
 }
 
 // ClipboardTool reads and writes the connected phone's system clipboard.

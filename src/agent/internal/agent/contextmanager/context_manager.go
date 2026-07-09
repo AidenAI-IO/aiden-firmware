@@ -1,8 +1,9 @@
-package context_manager
+package contextmanager
 
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"sync"
@@ -93,7 +94,7 @@ type ContextManager struct {
 }
 
 // NewContextManagerFromSessionID loads a context manager from the session folder, if targetSessionID is nil, it will load the current(last) session.
-func NewContextManagerFromSessionID(sessionFolder string, targetSessionID *string) (*ContextManager, bool, error){
+func NewContextManagerFromSessionID(sessionFolder string, targetSessionID *string) (*ContextManager, bool, error) {
 	sessionID := ""
 	if targetSessionID != nil {
 		sessionID = *targetSessionID
@@ -120,12 +121,12 @@ func NewContextManagerFromSessionID(sessionFolder string, targetSessionID *strin
 	}
 
 	return &ContextManager{
-		sessionID:   sessionID,
-		messageList: messageList,
-		mu:          sync.RWMutex{},
-		sessionFolder: sessionFolder,
+		sessionID:       sessionID,
+		messageList:     messageList,
+		mu:              sync.RWMutex{},
+		sessionFolder:   sessionFolder,
 		attachmentStore: attachmentStore,
-	},len(messageList) == 0, nil
+	}, len(messageList) == 0, nil
 }
 
 func newSessionID() string {
@@ -145,7 +146,7 @@ func (c *ContextManager) appendToList(messages []Message) error {
 	defer c.mu.Unlock()
 
 	if err := appendSession(c.sessionFolder, c.sessionID, messages); err != nil {
-		fmt.Printf("Failed to append messages to session: %v\n", err)
+		log.Println("[CM] Failed to append messages to session", err)
 		return err
 	}
 
@@ -180,13 +181,14 @@ func (c *ContextManager) AppendMessage(message Message) error {
 	return c.appendToList(messages)
 }
 
-func (c *ContextManager) AddAppendMessageHook(hook AppendMessageHook) {
-	if hook == nil {
+func (c *ContextManager) AddAppendMessageHooks(hooks []AppendMessageHook) {
+	if len(hooks) == 0 {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.appendHooks = append(c.appendHooks, hook)
+	log.Println("[CM] Adding append message hooks", len(hooks))
+	c.appendHooks = append(c.appendHooks, hooks...)
 }
 
 func (c *ContextManager) IsEmpty() bool {
