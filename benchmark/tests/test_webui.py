@@ -5,7 +5,7 @@ from runner import config as runner_config
 from runner import webui
 
 
-def test_list_benchmark_suites_discovers_nested_benchmark_and_unit(tmp_path: Path):
+def test_list_benchmark_suites_discovers_nested_benchmark(tmp_path: Path):
     suites = tmp_path / "suites"
     (suites / "nested").mkdir(parents=True)
     (suites / "nested" / "memory.json").write_text(
@@ -22,16 +22,6 @@ def test_list_benchmark_suites_discovers_nested_benchmark_and_unit(tmp_path: Pat
         ),
         encoding="utf-8",
     )
-    (suites / "unit.json").write_text(
-        json.dumps(
-            {
-                "kind": "unit",
-                "name": "tool_unit",
-                "tests": [{"id": "case_1"}, {"id": "case_2"}],
-            }
-        ),
-        encoding="utf-8",
-    )
 
     result = webui.list_benchmark_suites(suites)
 
@@ -39,8 +29,6 @@ def test_list_benchmark_suites_discovers_nested_benchmark_and_unit(tmp_path: Pat
     assert by_key["nested/memory.json"]["kind"] == "benchmark"
     assert by_key["nested/memory.json"]["task_count"] == 1
     assert by_key["nested/memory.json"]["categories"] == ["memory"]
-    assert by_key["unit.json"]["kind"] == "unit"
-    assert by_key["unit.json"]["task_count"] == 2
 
 
 def test_resolve_suite_path_rejects_traversal(tmp_path: Path):
@@ -1128,22 +1116,22 @@ def test_refresh_job_report_falls_back_to_single_existing_report(tmp_path: Path)
         id="job-test",
         endpoint="http://127.0.0.1:19090",
         docker_endpoint="http://host.docker.internal:19090",
-        suites=["unit.json"],
+        suites=["memory_v1.json"],
         raw_runs_dir=str(raw_runs_dir),
         runner_log=str(tmp_path / "runs" / "job-test" / "runner.log"),
         suite_results=[
             {
-                "suite": "unit.json",
+                "suite": "memory_v1.json",
                 "exit_code": 0,
-                "run_id": "unit-run",
-                "report_url": "/reports/job-test/unit-run/report.html",
+                "run_id": "memory-run",
+                "report_url": "/reports/job-test/memory-run/report.html",
             }
         ],
     )
 
     app._refresh_job_report(job)
 
-    assert job.report_url == "/reports/job-test/unit-run/report.html"
+    assert job.report_url == "/reports/job-test/memory-run/report.html"
 
 
 def test_stop_job_marks_stopping_terminates_runner_and_removes_container(tmp_path: Path, monkeypatch):

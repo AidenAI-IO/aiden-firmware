@@ -29,7 +29,6 @@ from runner.html_report import generate_report_html
 from runner.judge import JudgeConfig
 from runner.reset import ResetError, call_environment_release
 from runner.suite import load_suite
-from runner.unit import is_unit_suite
 
 try:
     from benchmark.runner.environment import EnvironmentManager, MobileGymEnvironment
@@ -756,8 +755,6 @@ class BenchmarkWebApp:
     def _run_mobilegym_suite_parallel(self, job: Job, suite_key: str) -> None:
         self._raise_if_job_stop_requested(job)
         suite_path = resolve_suite_path(self.config.suites_dir, suite_key)
-        if is_unit_suite(suite_path):
-            raise RuntimeError("unit suites are not supported with MobileGym parallel task workers")
 
         suite = load_suite(suite_path)
         task_counts = {
@@ -1129,14 +1126,13 @@ class BenchmarkWebApp:
     def _run_suite(self, job: Job, suite_key: str) -> None:
         self._raise_if_job_stop_requested(job)
         suite_path = resolve_suite_path(self.config.suites_dir, suite_key)
-        suite_is_unit = is_unit_suite(suite_path)
         write_state(
             Path(job.state_file),
             {
                 "status": "running",
                 "suite": suite_key,
                 "run_id": job.id,
-                "total": 1 if suite_is_unit else 0,
+                "total": 0,
                 "completed": 0,
                 "current": 1,
             },
@@ -1146,7 +1142,7 @@ class BenchmarkWebApp:
             sys.executable,
             "-m",
             "runner.main",
-            "unit" if suite_is_unit else "run",
+            "run",
             "--suite",
             str(suite_path),
             "--agent-url",
@@ -1154,20 +1150,19 @@ class BenchmarkWebApp:
             "--out",
             job.raw_runs_dir,
         ]
-        if not suite_is_unit:
-            cmd.extend(["--state-file", job.state_file])
-            cmd.extend(["--benchmark-token-file", str(Path(job.config_dir) / "control_token")])
-            if job.environment_endpoint:
-                cmd.extend(["--environment-url", job.environment_endpoint])
-            if job.no_judge:
-                cmd.append("--no-judge")
-            else:
-                cmd.extend(["--judge-model", job.judge_model or DEFAULT_JUDGE_MODEL])
-            if job.repeats:
-                cmd.extend(["--repeats", str(job.repeats)])
+        cmd.extend(["--state-file", job.state_file])
+        cmd.extend(["--benchmark-token-file", str(Path(job.config_dir) / "control_token")])
+        if job.environment_endpoint:
+            cmd.extend(["--environment-url", job.environment_endpoint])
+        if job.no_judge:
+            cmd.append("--no-judge")
+        else:
+            cmd.extend(["--judge-model", job.judge_model or DEFAULT_JUDGE_MODEL])
+        if job.repeats:
+            cmd.extend(["--repeats", str(job.repeats)])
         append_log(Path(job.runner_log), "\n$ " + " ".join(cmd))
         env = os.environ.copy()
-        if not suite_is_unit and not job.no_judge:
+        if not job.no_judge:
             with self._lock:
                 judge_api_key = self._job_judge_api_keys.get(job.id, "")
             if judge_api_key:
@@ -1203,18 +1198,6 @@ class BenchmarkWebApp:
             manifest = read_json_file(new_runs[-1] / "manifest.json") or {}
             result["manifest"] = manifest
             result["report_url"] = f"/reports/{job.id}/{new_runs[-1].name}/report.html"
-        if suite_is_unit:
-            write_state(
-                Path(job.state_file),
-                {
-                    "status": "stopped" if self._job_stop_requested(job) else "done" if exit_code == 0 else "failed",
-                    "suite": suite_key,
-                    "run_id": job.id,
-                    "total": 1,
-                    "completed": 1,
-                    "current": 1,
-                },
-            )
         if self._job_stop_requested(job):
             update_state_status(Path(job.state_file), "stopped", run_id=job.id)
             result["stopped"] = True
@@ -1242,8 +1225,8 @@ def list_benchmark_suites(suites_dir: Path) -> list[dict[str, Any]]:
                 "error": str(exc),
             }
         else:
-            kind = "unit" if data.get("kind") == "unit" else "benchmark"
-            entries = data.get("tests") if kind == "unit" else data.get("tasks")
+            kind = "benchmark"
+            entries = data.get("tasks")
             entries = entries if isinstance(entries, list) else []
             categories = sorted(
                 {str(task.get("category")) for task in entries if isinstance(task, dict) and task.get("category")}
