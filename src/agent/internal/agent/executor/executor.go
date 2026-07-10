@@ -29,7 +29,7 @@ func (e *LLMExecutor) AppendMessage(message context_manager.Message) error {
 }
 
 func (e *LLMExecutor) GenerateContent(ctx context.Context, options ...llms.CallOption) (*llms.ContentResponse, error) {
-	messages := e.contextManager.ConvertToStandardMessageList()
+	messages := e.contextManager.TakeStandardMessageListForModel()
 	contentResponse, err := e.model.GenerateContent(ctx, messages, options...)
 	if err != nil {
 		return nil, err
