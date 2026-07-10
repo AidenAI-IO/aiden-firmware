@@ -3064,22 +3064,30 @@ INDEX_HTML = r"""<!doctype html>
       font-size: 12px;
     }
     .suite-category-group {
-      border-bottom: 1px solid var(--border);
+      border: 1px solid var(--border);
+      margin-bottom: 12px;
+      border-radius: 4px;
+      overflow: hidden;
+      background: var(--layer);
+    }
+    .suite-category-group:last-child {
+      margin-bottom: 0;
     }
     .suite-category-header {
       position: sticky;
       top: 0;
       background: #f0f0f0;
-      padding: 8px 12px;
-      font-size: 12px;
+      padding: 10px 12px;
+      font-size: 13px;
       font-weight: 600;
-      color: var(--muted);
+      color: var(--text);
       cursor: pointer;
       user-select: none;
       display: flex;
       align-items: center;
       gap: 8px;
       z-index: 1;
+      border-bottom: 1px solid var(--border);
     }
     .suite-category-header:hover {
       background: #e8e8e8;
@@ -3088,15 +3096,67 @@ INDEX_HTML = r"""<!doctype html>
       content: '▼';
       font-size: 10px;
       transition: transform 0.2s;
+      color: var(--muted);
     }
     .suite-category-header.collapsed::before {
       transform: rotate(-90deg);
+    }
+    .suite-category-header.collapsed {
+      border-bottom: 0;
     }
     .suite-category-body {
       display: block;
     }
     .suite-category-body.collapsed {
       display: none;
+    }
+    .suite-category-group table {
+      width: 100%;
+      margin: 0;
+    }
+    .suite-category-group .cell-main {
+      min-width: 0;
+      display: block;
+    }
+    .suite-category-group .cell-main span {
+      display: block;
+      font-weight: 500;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .suite-category-group .cell-main small {
+      display: block;
+      color: var(--muted-2);
+      font-size: 11px;
+      margin-top: 2px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .suite-category-row {
+      background: #f0f0f0;
+      cursor: pointer;
+      user-select: none;
+    }
+    .suite-category-row:hover {
+      background: #e8e8e8;
+    }
+    .suite-category-header-cell {
+      padding: 10px 12px !important;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .category-arrow {
+      display: inline-block;
+      width: 16px;
+      font-size: 10px;
+      color: var(--muted);
+      transition: transform 0.2s;
+    }
+    .suite-row {
+      background: var(--layer);
     }
     .progress {
       height: 8px;
@@ -3793,27 +3853,47 @@ INDEX_HTML = r"""<!doctype html>
         return aIndex - bIndex;
       });
 
-      container.innerHTML = '';
+      // Create single table with category rows
+      const table = document.createElement('table');
+      const thead = document.createElement('thead');
+      thead.innerHTML = '<tr><th style="width:40px"></th><th>Suite</th><th style="width:140px">Kind</th><th style="width:80px">Tasks</th></tr>';
+      table.appendChild(thead);
+
+      const tbody = document.createElement('tbody');
 
       sortedCategories.forEach(category => {
         const items = grouped[category];
         const filtered = items.filter(s => !filter || (s.name + ' ' + s.key).toLowerCase().includes(filter));
         if(!filtered.length) return;
 
-        const categoryDiv = document.createElement('div');
-        categoryDiv.className = 'suite-category-group';
+        // Category header row
+        const categoryRow = document.createElement('tr');
+        categoryRow.className = 'suite-category-row';
+        categoryRow.innerHTML = `<td colspan="4" class="suite-category-header-cell">
+          <span class="category-arrow">▼</span>
+          <span>${escapeHtml(category)}</span>
+          <span class="muted">(${filtered.length})</span>
+        </td>`;
 
-        const header = document.createElement('div');
-        header.className = 'suite-category-header';
-        header.innerHTML = `<span>${escapeHtml(category)}</span><span class="muted">(${filtered.length})</span>`;
+        categoryRow.onclick = () => {
+          const arrow = categoryRow.querySelector('.category-arrow');
+          const collapsed = arrow.textContent === '▶';
+          arrow.textContent = collapsed ? '▼' : '▶';
 
-        const table = document.createElement('table');
-        table.innerHTML = '<thead><tr><th style="width:40px"></th><th>Suite</th><th style="width:96px">Kind</th><th style="width:72px">Tasks</th></tr></thead>';
-        const tbody = document.createElement('tbody');
-        tbody.className = 'suite-category-body';
+          // Toggle visibility of suite rows
+          let nextRow = categoryRow.nextElementSibling;
+          while(nextRow && !nextRow.classList.contains('suite-category-row')) {
+            nextRow.style.display = collapsed ? '' : 'none';
+            nextRow = nextRow.nextElementSibling;
+          }
+        };
 
+        tbody.appendChild(categoryRow);
+
+        // Suite rows
         filtered.forEach(s => {
           const tr = document.createElement('tr');
+          tr.className = 'suite-row';
           tr.innerHTML = `<td><input type="checkbox" ${selectedSuites.has(s.key) ? 'checked' : ''}></td>
             <td title="${escapeHtml(s.key)}"><div class="cell-main"><span>${escapeHtml(s.name)}</span><small>${escapeHtml(s.key)}</small></div></td>
             <td><span class="status">${escapeHtml(s.kind)}</span></td>
@@ -3824,19 +3904,11 @@ INDEX_HTML = r"""<!doctype html>
           };
           tbody.appendChild(tr);
         });
-
-        table.appendChild(tbody);
-
-        // Toggle collapse
-        header.onclick = () => {
-          header.classList.toggle('collapsed');
-          tbody.classList.toggle('collapsed');
-        };
-
-        categoryDiv.appendChild(header);
-        categoryDiv.appendChild(table);
-        container.appendChild(categoryDiv);
       });
+
+      table.appendChild(tbody);
+      container.innerHTML = '';
+      container.appendChild(table);
 
       syncRunState();
     }

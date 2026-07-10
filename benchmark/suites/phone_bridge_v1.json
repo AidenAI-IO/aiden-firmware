@@ -1,0 +1,367 @@
+{
+  "name": "phone_bridge_v1",
+  "suite_category": "Perception & Control",
+  "description": "Phone bridge functionality tests — covers open_app, clipboard, contacts, notification, calendar operations in both foreground and background (PiP/FGS) modes.",
+  "prompt_prefix": "你正在操作一台通过 HDMI 采集画面的手机，手机上已安装并连接 Aiden 伴侣应用。你可以使用 phone bridge 命令（open_app、clipboard、contacts、notification、calendar）以及截图和 UI 工具来验证操作结果。",
+  "global_reset": {},
+  "tasks": [
+    {
+      "id": "bridge_open_app_settings",
+      "category": "single_step",
+      "description_for_judge": "Agent must use bridge open_app to open the Settings app, then verify it opened via screenshot.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请回到主屏幕，确保当前停留在桌面。",
+        "timeout_sec": 30,
+        "clear_history_after": true
+      },
+      "prompt": "请使用 open_app 打开系统设置应用，然后截图确认已打开。",
+      "rubric": [
+        {
+          "id": "used_open_app",
+          "check": "Trace contains an open_app tool call targeting Settings or 设置."
+        },
+        {
+          "id": "settings_opened",
+          "check": "Post-screenshot shows the Settings app main page."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 8,
+        "must_complete_within_sec": 90
+      }
+    },
+    {
+      "id": "bridge_open_app_url",
+      "category": "single_step",
+      "description_for_judge": "Agent must use bridge open_app to open a URL in the browser, then verify the page loaded.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请回到主屏幕，确保当前停留在桌面。",
+        "timeout_sec": 30,
+        "clear_history_after": true
+      },
+      "prompt": "请使用 open_app 打开网址 https://example.com，然后截图确认页面已加载。",
+      "rubric": [
+        {
+          "id": "used_open_app_url",
+          "check": "Trace contains an open_app tool call with a URL argument (https://example.com or similar)."
+        },
+        {
+          "id": "page_loaded",
+          "check": "Post-screenshot shows a browser with the example.com page content loaded."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 8,
+        "must_complete_within_sec": 90
+      }
+    },
+    {
+      "id": "bridge_clipboard_write_and_verify",
+      "category": "multi_step",
+      "description_for_judge": "Agent must use clipboard_write to write text to the clipboard, then open a text editor, paste, and verify the pasted content matches.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请回到主屏幕，确保当前停留在桌面。",
+        "timeout_sec": 30,
+        "clear_history_after": true
+      },
+      "prompt": "请使用 clipboard write 将「Bridge测试文本」写入剪贴板，然后打开备忘录或任何文本编辑器，粘贴并截图确认内容正确。",
+      "rubric": [
+        {
+          "id": "used_clipboard_write",
+          "check": "Trace contains a clipboard tool call with write action and content Bridge测试文本."
+        },
+        {
+          "id": "opened_editor",
+          "check": "Trace shows agent opened a text editor or notes app."
+        },
+        {
+          "id": "paste_verified",
+          "check": "Post-screenshot shows Bridge测试文本 visible in a text field."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 3,
+        "max_tool_calls": 15,
+        "must_complete_within_sec": 180
+      }
+    },
+    {
+      "id": "bridge_clipboard_read",
+      "category": "single_step",
+      "description_for_judge": "Agent must read clipboard content that was previously set, and report it correctly.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请打开备忘录或文本编辑器，输入「Aiden剪贴板测试」，全选并复制到剪贴板，然后回到桌面。",
+        "timeout_sec": 120,
+        "clear_history_after": true
+      },
+      "prompt": "请使用 clipboard read 读取剪贴板内容，告诉我里面是什么文字。",
+      "rubric": [
+        {
+          "id": "used_clipboard_read",
+          "check": "Trace contains a clipboard tool call with read action."
+        },
+        {
+          "id": "reported_correctly",
+          "check": "Agent's final response includes Aiden剪贴板测试 as the clipboard content."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 5,
+        "must_complete_within_sec": 60,
+        "response_required": true
+      }
+    },
+    {
+      "id": "bridge_contacts_create",
+      "category": "multi_step",
+      "description_for_judge": "Agent must use contacts bridge to create a new contact, then open the Contacts app and verify it exists.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请回到主屏幕，确保当前停留在桌面。",
+        "timeout_sec": 30,
+        "clear_history_after": true
+      },
+      "prompt": "请使用 contacts 创建一个联系人：姓名「测试联系人」，电话 13800000001。创建后打开通讯录搜索该联系人，截图确认存在。",
+      "rubric": [
+        {
+          "id": "used_contacts_create",
+          "check": "Trace contains a contacts tool call creating a contact with name 测试联系人 and phone 13800000001."
+        },
+        {
+          "id": "contact_visible",
+          "check": "Post-screenshot shows 测试联系人 in the contacts list or contact detail view."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 2,
+        "max_tool_calls": 15,
+        "must_complete_within_sec": 180
+      }
+    },
+    {
+      "id": "bridge_contacts_query",
+      "category": "single_step",
+      "description_for_judge": "Agent must use contacts bridge to query for a known contact and report the result.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请使用 contacts 创建一个联系人：姓名「查询测试人」，电话 13900000002。创建完成后回到桌面。",
+        "timeout_sec": 120,
+        "clear_history_after": true
+      },
+      "prompt": "请使用 contacts 查询联系人「查询测试人」，告诉我他的电话号码。",
+      "rubric": [
+        {
+          "id": "used_contacts_query",
+          "check": "Trace contains a contacts tool call with a query action for 查询测试人."
+        },
+        {
+          "id": "reported_phone",
+          "check": "Agent's final response includes 13900000002 as the phone number."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 5,
+        "must_complete_within_sec": 60,
+        "response_required": true
+      }
+    },
+    {
+      "id": "bridge_contacts_update",
+      "category": "multi_step",
+      "description_for_judge": "Agent must use contacts bridge to update an existing contact's phone number, then verify via UI.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请使用 contacts 创建一个联系人：姓名「更新测试人」，电话 13700000003。创建完成后回到桌面。",
+        "timeout_sec": 120,
+        "clear_history_after": true
+      },
+      "prompt": "请使用 contacts 将「更新测试人」的电话更新为 13700000099，然后打开通讯录查看该联系人详情，截图确认号码已更新。",
+      "rubric": [
+        {
+          "id": "used_contacts_update",
+          "check": "Trace contains a contacts tool call updating 更新测试人 with new phone 13700000099."
+        },
+        {
+          "id": "phone_updated",
+          "check": "Post-screenshot shows contact detail for 更新测试人 with phone number 13700000099."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 2,
+        "max_tool_calls": 15,
+        "must_complete_within_sec": 180
+      }
+    },
+    {
+      "id": "bridge_notification_send",
+      "category": "multi_step",
+      "description_for_judge": "Agent must use notification bridge to send a notification, then pull down the notification shade and verify it is visible.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请回到主屏幕，确保当前停留在桌面。",
+        "timeout_sec": 30,
+        "clear_history_after": true
+      },
+      "prompt": "请使用 notification 发送一条通知，标题「Benchmark通知」，内容「这是一条测试通知」。发送后打开通知栏，截图确认通知可见。",
+      "rubric": [
+        {
+          "id": "used_notification_send",
+          "check": "Trace contains a notification tool call with title Benchmark通知."
+        },
+        {
+          "id": "notification_visible",
+          "check": "Post-screenshot shows the notification shade with Benchmark通知 or 这是一条测试通知 visible."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 2,
+        "max_tool_calls": 10,
+        "must_complete_within_sec": 120
+      }
+    },
+    {
+      "id": "bridge_calendar_create",
+      "category": "multi_step",
+      "description_for_judge": "Agent must use calendar bridge to create an event, then open the Calendar app and verify the event exists.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请回到主屏幕，确保当前停留在桌面。",
+        "timeout_sec": 30,
+        "clear_history_after": true
+      },
+      "prompt": "请使用 calendar 创建一个日历事件：标题「Benchmark会议」，时间为明天上午 10:00，持续 1 小时。创建后打开日历应用，截图确认事件可见。",
+      "rubric": [
+        {
+          "id": "used_calendar_create",
+          "check": "Trace contains a calendar tool call creating an event with title Benchmark会议."
+        },
+        {
+          "id": "event_visible",
+          "check": "Post-screenshot shows the calendar view with Benchmark会议 event visible."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 2,
+        "max_tool_calls": 15,
+        "must_complete_within_sec": 180
+      }
+    },
+    {
+      "id": "bridge_calendar_query",
+      "category": "single_step",
+      "description_for_judge": "Agent must use calendar bridge to query events and report the result.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请使用 calendar 创建一个日历事件：标题「查询测试会议」，时间为明天下午 3:00。创建完成后回到桌面。",
+        "timeout_sec": 120,
+        "clear_history_after": true
+      },
+      "prompt": "请使用 calendar 查询明天的日历事件，告诉我有没有「查询测试会议」以及它的时间。",
+      "rubric": [
+        {
+          "id": "used_calendar_query",
+          "check": "Trace contains a calendar tool call with a query action."
+        },
+        {
+          "id": "reported_event",
+          "check": "Agent's final response mentions 查询测试会议 and its time (3:00 PM or 15:00)."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 5,
+        "must_complete_within_sec": 60,
+        "response_required": true
+      }
+    },
+    {
+      "id": "bridge_calendar_delete",
+      "category": "multi_step",
+      "description_for_judge": "Agent must use calendar bridge to delete a previously created event, then verify it no longer appears in the Calendar app.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请使用 calendar 创建一个日历事件：标题「删除测试会议」，时间为明天上午 9:00。创建完成后回到桌面。",
+        "timeout_sec": 120,
+        "clear_history_after": true
+      },
+      "prompt": "请使用 calendar 删除「删除测试会议」事件，然后打开日历应用确认该事件已不存在。",
+      "rubric": [
+        {
+          "id": "used_calendar_delete",
+          "check": "Trace contains a calendar tool call with a delete action targeting 删除测试会议."
+        },
+        {
+          "id": "event_gone",
+          "check": "Post-screenshot shows the calendar view without 删除测试会议 event."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 2,
+        "max_tool_calls": 15,
+        "must_complete_within_sec": 180
+      }
+    },
+    {
+      "id": "bridge_background_clipboard_write",
+      "category": "multi_step",
+      "description_for_judge": "Agent must write to clipboard while the companion app is in the background (PiP/FGS mode), then return to foreground and verify the clipboard content.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请打开时钟应用，确保 Aiden 伴侣应用已进入后台（不在前台显示），但 bridge 连接仍然活跃。停留在时钟应用中。",
+        "timeout_sec": 90,
+        "clear_history_after": true
+      },
+      "prompt": "请使用 clipboard write 将「后台写入测试」写入剪贴板，然后打开备忘录粘贴，截图确认内容正确。",
+      "rubric": [
+        {
+          "id": "used_clipboard_write_background",
+          "check": "Trace contains a clipboard write tool call with content 后台写入测试."
+        },
+        {
+          "id": "paste_verified",
+          "check": "Post-screenshot shows 后台写入测试 visible in a text field after pasting."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 3,
+        "max_tool_calls": 15,
+        "must_complete_within_sec": 180
+      }
+    },
+    {
+      "id": "bridge_background_notification_send",
+      "category": "multi_step",
+      "description_for_judge": "Agent must send a notification while the companion app is in the background (PiP/FGS mode), then verify it appears in the notification shade.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请打开时钟应用，确保 Aiden 伴侣应用已进入后台（不在前台显示），但 bridge 连接仍然活跃。停留在时钟应用中。",
+        "timeout_sec": 90,
+        "clear_history_after": true
+      },
+      "prompt": "请使用 notification 发送一条通知，标题「后台通知测试」，内容「在后台发出的通知」。然后打开通知栏截图确认。",
+      "rubric": [
+        {
+          "id": "used_notification_background",
+          "check": "Trace contains a notification tool call with title 后台通知测试."
+        },
+        {
+          "id": "notification_visible",
+          "check": "Post-screenshot shows the notification shade with 后台通知测试 or 在后台发出的通知 visible."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 2,
+        "max_tool_calls": 10,
+        "must_complete_within_sec": 120
+      }
+    }
+  ]
+}
