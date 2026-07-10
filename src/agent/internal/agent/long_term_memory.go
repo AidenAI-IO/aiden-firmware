@@ -35,7 +35,7 @@ type LongTermMemoryStore struct {
 	profileDebouncer *ProfileDebouncer
 	cacheMu          sync.Mutex
 	indexCache       longTermIndexCache
-	parsedCache      map[string]cachedParsedMemoryMarkdown
+	parsedCache      parsedMemoryCache
 }
 
 type longTermIndexCache struct {
@@ -44,10 +44,7 @@ type longTermIndexCache struct {
 	valid     bool
 }
 
-type cachedParsedMemoryMarkdown struct {
-	signature memoryFileSignature
-	parsed    parsedMemoryMarkdown
-}
+const memoryIndexVersion = 2
 
 type LongTermMemoryOption func(*LongTermMemoryStore)
 
@@ -59,8 +56,8 @@ func WithStoreProfileFn(fn ProfileFn) LongTermMemoryOption {
 	return func(s *LongTermMemoryStore) { s.profileFn = fn }
 }
 
-func WithProfileDebouncer(d *ProfileDebouncer) LongTermMemoryOption {
-	return func(s *LongTermMemoryStore) { s.profileDebouncer = d }
+func withParsedCacheCapacity(capacity int) LongTermMemoryOption {
+	return func(s *LongTermMemoryStore) { s.parsedCache.init(capacity) }
 }
 
 type MemorySourceRef struct {
@@ -132,6 +129,7 @@ type memoryIndexEntry struct {
 	File       string   `yaml:"file"`
 	Type       string   `yaml:"type"`
 	Status     string   `yaml:"status"`
+	ExpiresAt  string   `yaml:"expires_at,omitempty"`
 	Priority   int      `yaml:"priority"`
 	Confidence float64  `yaml:"confidence"`
 	Tags       []string `yaml:"tags,omitempty"`
@@ -146,6 +144,7 @@ type scoredMemoryResult struct {
 
 func NewLongTermMemoryStore(rootDir string, opts ...LongTermMemoryOption) *LongTermMemoryStore {
 	s := &LongTermMemoryStore{rootDir: rootDir}
+	s.parsedCache.init(defaultParsedMemoryCacheCapacity)
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -203,16 +202,23 @@ func (s *LongTermMemoryStore) Search(ctx context.Context, query MemoryQuery) ([]
 
 	matches := make([]scoredMemoryResult, 0)
 	matchAll := memoryQueryIsEmpty(query)
+	now := time.Now().UTC()
+	var expiredPaths []string
 	for _, entry := range index.Memories {
 		if entry.Status != "active" {
 			continue
 		}
 		path := filepath.Join(s.rootDir, entry.File)
+		if memoryExpiresAtPassed(entry.ExpiresAt, now) {
+			expiredPaths = append(expiredPaths, path)
+			continue
+		}
 		parsed, err := s.readMemoryMarkdownCached(path)
 		if err != nil {
 			continue
 		}
-		if memoryItemExpired(parsed.Item, time.Now().UTC()) {
+		if memoryItemExpired(parsed.Item, now) {
+			expiredPaths = append(expiredPaths, path)
 			continue
 		}
 		score := scoreMemoryEntry(query, entry, parsed)
@@ -235,6 +241,9 @@ func (s *LongTermMemoryStore) Search(ctx context.Context, query MemoryQuery) ([]
 			SourceRefs:    append([]MemorySourceRef(nil), parsed.Item.SourceRefs...),
 			EvidenceRefs:  append([]MemorySourceRef(nil), parsed.Item.EvidenceRefs...),
 		}})
+	}
+	if len(expiredPaths) > 0 {
+		s.invalidateParsedMemoryCache(expiredPaths...)
 	}
 	sort.SliceStable(matches, func(i, j int) bool {
 		if matches[i].Score != matches[j].Score {
@@ -489,6 +498,9 @@ func (s *LongTermMemoryStore) RegenerateProfileMD(ctx context.Context) error {
 		return err
 	}
 	var entries []ProfileEntry
+	now := time.Now().UTC()
+	var expiredPaths []string
+	unreadableEntries := 0
 	for _, entry := range index.Memories {
 		if entry.Status != "active" {
 			continue
@@ -496,13 +508,33 @@ func (s *LongTermMemoryStore) RegenerateProfileMD(ctx context.Context) error {
 		if !isProfileRelevantType(entry.Type) {
 			continue
 		}
-		parsed, err := s.readMemoryMarkdownCached(filepath.Join(s.rootDir, entry.File))
+		path := filepath.Join(s.rootDir, entry.File)
+		if memoryExpiresAtPassed(entry.ExpiresAt, now) {
+			expiredPaths = append(expiredPaths, path)
+			continue
+		}
+		parsed, err := s.readMemoryMarkdownCached(path)
 		if err != nil {
+			unreadableEntries++
+			continue
+		}
+		if memoryItemExpired(parsed.Item, now) {
+			expiredPaths = append(expiredPaths, path)
 			continue
 		}
 		entries = append(entries, ProfileEntry{Type: entry.Type, Content: strings.TrimSpace(parsed.Content)})
 	}
+	if len(expiredPaths) > 0 {
+		s.invalidateParsedMemoryCache(expiredPaths...)
+	}
 	if len(entries) == 0 {
+		if unreadableEntries > 0 {
+			return nil
+		}
+		profilePath := filepath.Join(s.rootDir, "profile.md")
+		if err := os.Remove(profilePath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove empty long-term profile: %w", err)
+		}
 		return nil
 	}
 
@@ -525,6 +557,10 @@ func (s *LongTermMemoryStore) RequestProfileRebuild() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_ = s.RegenerateProfileMD(ctx)
+}
+
+func (s *LongTermMemoryStore) setProfileDebouncer(debouncer *ProfileDebouncer) {
+	s.profileDebouncer = debouncer
 }
 
 func isProfileRelevantType(t string) bool {
@@ -554,12 +590,12 @@ func (s *LongTermMemoryStore) RebuildIndex(ctx context.Context) error {
 	entries, err := os.ReadDir(s.memoriesDir())
 	if err != nil {
 		if os.IsNotExist(err) {
-			return s.writeIndex(memoryIndex{Version: 1, UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)})
+			return s.writeIndex(memoryIndex{Version: memoryIndexVersion, UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)})
 		}
 		return fmt.Errorf("read memories directory: %w", err)
 	}
 	index := memoryIndex{
-		Version:   1,
+		Version:   memoryIndexVersion,
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		Memories:  make([]memoryIndexEntry, 0, len(entries)),
 	}
@@ -577,6 +613,7 @@ func (s *LongTermMemoryStore) RebuildIndex(ctx context.Context) error {
 			File:       filepath.ToSlash(filepath.Join("memories", entry.Name())),
 			Type:       parsed.Item.Type,
 			Status:     parsed.Item.Status,
+			ExpiresAt:  parsed.Item.ExpiresAt,
 			Priority:   parsed.Item.Priority,
 			Confidence: parsed.Item.Confidence,
 			Tags:       append([]string(nil), parsed.Item.Tags...),
@@ -612,7 +649,13 @@ func (s *LongTermMemoryStore) loadIndex(ctx context.Context) (memoryIndex, error
 	}
 	if ok {
 		if index, hit := s.cachedIndex(signature); hit {
-			return index, nil
+			if index.Version >= memoryIndexVersion {
+				return index, nil
+			}
+			if err := s.RebuildIndex(ctx); err != nil {
+				return memoryIndex{}, err
+			}
+			return s.loadIndex(ctx)
 		}
 	}
 	data, err := os.ReadFile(s.indexPath())
@@ -635,6 +678,12 @@ func (s *LongTermMemoryStore) loadIndex(ctx context.Context) (memoryIndex, error
 	var index memoryIndex
 	if err := yaml.Unmarshal(data, &index); err != nil {
 		return memoryIndex{}, fmt.Errorf("decode memory index: %w", err)
+	}
+	if index.Version < memoryIndexVersion {
+		if err := s.RebuildIndex(ctx); err != nil {
+			return memoryIndex{}, err
+		}
+		return s.loadIndex(ctx)
 	}
 	if ok {
 		s.storeIndexCache(signature, index)
@@ -684,52 +733,29 @@ func (s *LongTermMemoryStore) readMemoryMarkdownCached(path string) (parsedMemor
 		return parsedMemoryMarkdown{}, fmt.Errorf("stat memory markdown %q: %w", path, err)
 	}
 	if ok {
-		if parsed, hit := s.cachedParsedMemory(path, signature); hit {
+		s.cacheMu.Lock()
+		if parsed, hit := s.parsedCache.get(path, signature); hit {
+			s.cacheMu.Unlock()
 			return parsed, nil
 		}
+		s.cacheMu.Unlock()
 	}
 	parsed, err := readMemoryMarkdown(path)
 	if err != nil {
 		return parsedMemoryMarkdown{}, err
 	}
-	if ok {
-		s.storeParsedMemoryCache(path, signature, parsed)
+	if ok && !memoryItemExpired(parsed.Item, time.Now().UTC()) {
+		s.cacheMu.Lock()
+		s.parsedCache.put(path, signature, parsed)
+		s.cacheMu.Unlock()
 	}
 	return cloneParsedMemoryMarkdown(parsed), nil
-}
-
-func (s *LongTermMemoryStore) cachedParsedMemory(path string, signature memoryFileSignature) (parsedMemoryMarkdown, bool) {
-	s.cacheMu.Lock()
-	defer s.cacheMu.Unlock()
-	if s.parsedCache == nil {
-		return parsedMemoryMarkdown{}, false
-	}
-	cached, ok := s.parsedCache[path]
-	if !ok || cached.signature != signature {
-		return parsedMemoryMarkdown{}, false
-	}
-	return cloneParsedMemoryMarkdown(cached.parsed), true
-}
-
-func (s *LongTermMemoryStore) storeParsedMemoryCache(path string, signature memoryFileSignature, parsed parsedMemoryMarkdown) {
-	s.cacheMu.Lock()
-	defer s.cacheMu.Unlock()
-	if s.parsedCache == nil {
-		s.parsedCache = make(map[string]cachedParsedMemoryMarkdown)
-	}
-	s.parsedCache[path] = cachedParsedMemoryMarkdown{signature: signature, parsed: cloneParsedMemoryMarkdown(parsed)}
 }
 
 func (s *LongTermMemoryStore) invalidateParsedMemoryCache(paths ...string) {
 	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
-	if len(paths) == 0 {
-		s.parsedCache = nil
-		return
-	}
-	for _, path := range paths {
-		delete(s.parsedCache, path)
-	}
+	s.parsedCache.evict(paths...)
 }
 
 func cloneMemoryIndex(index memoryIndex) memoryIndex {

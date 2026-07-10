@@ -133,7 +133,7 @@ func TestRecallMemoryToolReturnsMatchingLongTermMemory(t *testing.T) {
 
 func TestToolSetRegistersMemoryRecallTools(t *testing.T) {
 	tools := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
-	tools.RegisterMemoryTools(t.TempDir(), nil, 0, nil)
+	tools.RegisterMemoryTools(t.TempDir(), 0, nil)
 	if _, ok := tools.Get("recall_session_chunks"); !ok {
 		t.Fatalf("expected recall_session_chunks tool to be registered")
 	}

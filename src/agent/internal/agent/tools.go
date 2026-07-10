@@ -271,13 +271,15 @@ func (s *ToolSet) UpdateDeviceEnvironment(env *PhoneEnvironment) {
 	s.screen.UpdatePhoneScreenInfo(env.Screen)
 }
 
-func (s *ToolSet) RegisterMemoryTools(memoryDir string, profileFn ProfileFn, summaryMaxChunks int, debouncer *ProfileDebouncer) {
+func (s *ToolSet) RegisterMemoryTools(memoryDir string, summaryMaxChunks int, longTermStore *LongTermMemoryStore) {
 	if memoryDir == "" {
 		return
 	}
 	sessionStore := NewSessionMemoryStore(filepath.Join(memoryDir, "session"), summaryMaxChunks)
 	archivedStore := NewArchivedSessionStore(filepath.Join(memoryDir, "session_archive"))
-	longTermStore := NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"), WithLifecycleDir(filepath.Join(memoryDir, "lifecycle")), WithStoreProfileFn(profileFn), WithProfileDebouncer(debouncer))
+	if longTermStore == nil {
+		longTermStore = NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"), WithLifecycleDir(filepath.Join(memoryDir, "lifecycle")))
+	}
 	deviceStore := NewDeviceMemoryStore(filepath.Join(memoryDir, "device"))
 	episodeStore := NewTaskEpisodeStore(filepath.Join(memoryDir, "episodes"))
 	s.tools["recall_session_chunks"] = NewRecallSessionChunksTool(sessionStore, archivedStore)

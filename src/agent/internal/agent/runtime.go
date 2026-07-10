@@ -355,15 +355,17 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		longTermDir = filepath.Join(memoryDir, "long_term")
 	}
 	var debouncer *ProfileDebouncer
+	var longTermStore *LongTermMemoryStore
 	if longTermDir != "" {
-		store := NewLongTermMemoryStore(longTermDir, WithLifecycleDir(filepath.Join(memoryDir, "lifecycle")), WithStoreProfileFn(profileFn))
-		debouncer = NewProfileDebouncer(store.RegenerateProfileMD, 60*time.Second, logger)
+		longTermStore = NewLongTermMemoryStore(longTermDir, WithLifecycleDir(filepath.Join(memoryDir, "lifecycle")), WithStoreProfileFn(profileFn))
+		debouncer = NewProfileDebouncer(longTermStore.RegenerateProfileMD, 60*time.Second, logger)
+		longTermStore.setProfileDebouncer(debouncer)
 	}
 
-	toolSet.RegisterMemoryTools(memoryDir, profileFn, extractionCfg.SummaryMaxChunks, debouncer)
+	toolSet.RegisterMemoryTools(memoryDir, extractionCfg.SummaryMaxChunks, longTermStore)
 	toolSet.RegisterEnterTextInFieldTool(modelManager, nil) // platformFn set per-request
 
-	rt := NewRuntimeWithDeps(cfg, modelManager, NewMemoryManager(memoryDir, WithExtractionConfig(extractionCfg), WithSummarizeFn(summarizeFn), WithStructuredSummarizeFn(structuredSummarizeFn), WithProfileFn(profileFn), WithContextWindowFn(contextWindowFn), WithMemoryProfileDebouncer(debouncer), WithMemoryLogger(logger)), toolSet, skillIndex)
+	rt := NewRuntimeWithDeps(cfg, modelManager, NewMemoryManager(memoryDir, WithExtractionConfig(extractionCfg), WithSummarizeFn(summarizeFn), WithStructuredSummarizeFn(structuredSummarizeFn), WithProfileFn(profileFn), WithContextWindowFn(contextWindowFn), WithMemoryProfileDebouncer(debouncer), WithLongTermMemoryStore(longTermStore), WithMemoryLogger(logger)), toolSet, skillIndex)
 
 	// Register skill tools after the runtime exists so skill_manage can mark the
 	// skill index dirty. The updated index is reloaded at the start of the next run.
@@ -392,7 +394,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		rt.mergeWorker = worker
 	}
 
-	rt.memoryPlane = NewFilesystemMemoryPlane(memoryDir, extractionCfg, logger)
+	rt.memoryPlane = NewFilesystemMemoryPlane(memoryDir, extractionCfg, logger, WithMemoryPlaneLongTermStore(longTermStore))
 	rt.markInterruptedEpisodesBestEffort()
 	return rt, nil
 }
@@ -446,7 +448,12 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 		})
 	}
 	if cfg.ConfigDir != "" {
-		rt.memoryPlane = NewFilesystemMemoryPlane(filepath.Join(cfg.ConfigDir, "memory"), LoadMemoryExtractionConfig(cfg.ConfigDir), nil)
+		memoryDir := filepath.Join(cfg.ConfigDir, "memory")
+		var planeOpts []FilesystemMemoryPlaneOption
+		if memories != nil && memories.longTerm != nil {
+			planeOpts = append(planeOpts, WithMemoryPlaneLongTermStore(memories.longTerm))
+		}
+		rt.memoryPlane = NewFilesystemMemoryPlane(memoryDir, LoadMemoryExtractionConfig(cfg.ConfigDir), nil, planeOpts...)
 		rt.markInterruptedEpisodesBestEffort()
 	}
 	rt.sessionManager = newMemoryManagerSessionManager(memories, func() BoundaryEpisodeContext {

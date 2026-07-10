@@ -264,6 +264,8 @@ memory/long_term/
 
 The `save_memory`, `forget_memory`, and episode extraction paths update this store. `profile.md` is rebuilt through the long-term memory profile pipeline, with debouncing to avoid repeated rebuilds during bursts of writes.
 
+Within one runtime, memory tools, `MemoryPlane`, and profile rebuilding share a single `LongTermMemoryStore`. Its parsed-Markdown cache has a fixed admission bound so full scans cannot grow memory without limit or continually replace the useful working set. Long-term index version 2 carries `expires_at`, allowing search and profile generation to reject expired entries before reading their Markdown files.
+
 ### Device And Episode Memory
 
 The episode recorder captures loop phase changes, default-mode finishes, planner decisions, planner and executor tool calls, tool results, verifier decisions, observed world state, and outcome data during the run. `MemoryPlane.CommitEpisode` writes the task episode, extracts reusable lessons, updates device memory, and updates outcomes on referenced memories.

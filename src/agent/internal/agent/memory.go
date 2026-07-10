@@ -76,6 +76,7 @@ type MemoryManager struct {
 	profileFn                      ProfileFn
 	contextWindowFn                ContextWindowFn
 	profileDebouncer               *ProfileDebouncer
+	longTerm                       *LongTermMemoryStore
 	lockTimeout                    time.Duration
 	logger                         *Logger
 	sessionBoundaryEnabledOverride *bool
@@ -182,6 +183,12 @@ func WithProfileFn(fn ProfileFn) MemoryManagerOption {
 // WithMemoryProfileDebouncer sets the profile rebuild debouncer.
 func WithMemoryProfileDebouncer(d *ProfileDebouncer) MemoryManagerOption {
 	return func(m *MemoryManager) { m.profileDebouncer = d }
+}
+
+// WithLongTermMemoryStore shares the runtime's long-term memory store with the
+// memory manager so profile rebuilds use the same cache and index state.
+func WithLongTermMemoryStore(store *LongTermMemoryStore) MemoryManagerOption {
+	return func(m *MemoryManager) { m.longTerm = store }
 }
 
 // WithMemoryLogger sets the logger for memory operations.
@@ -1356,7 +1363,11 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 	}
 	m.mu.Unlock()
 
-	longTerm := NewLongTermMemoryStore(filepath.Join(m.storageDir, "long_term"), WithLifecycleDir(filepath.Join(m.storageDir, "lifecycle")), WithStoreProfileFn(m.profileFn), WithProfileDebouncer(m.profileDebouncer))
+	longTerm := m.longTerm
+	if longTerm == nil {
+		longTerm = NewLongTermMemoryStore(filepath.Join(m.storageDir, "long_term"), WithLifecycleDir(filepath.Join(m.storageDir, "lifecycle")), WithStoreProfileFn(m.profileFn))
+		longTerm.setProfileDebouncer(m.profileDebouncer)
+	}
 	longTerm.RequestProfileRebuild()
 	if m.logger != nil {
 		m.logger.Info("[memory] profile.md regenerated")
