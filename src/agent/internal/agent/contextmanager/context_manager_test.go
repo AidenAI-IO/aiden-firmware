@@ -220,6 +220,154 @@ func TestConvertToStandardMessageList_ToolResults(t *testing.T) {
 	}
 }
 
+func TestModelMessagesDropsPersistedOrphanToolCallBeforeNextUser(t *testing.T) {
+	sessionFolder := t.TempDir()
+	sessionID := newSessionID()
+	if err := saveCurrentSession(sessionFolder, sessionID); err != nil {
+		t.Fatalf("saveCurrentSession() error = %v", err)
+	}
+	manager, err := LoadContextManagerFromSessionID(sessionFolder, sessionID)
+	if err != nil {
+		t.Fatalf("LoadContextManagerFromSessionID() error = %v", err)
+	}
+	if err := manager.AppendMessage(Message{
+		Role:    MessageRoleToolCall,
+		Content: "Checking the device.",
+		ToolCalls: []ToolCall{{
+			ID:        "call_orphan",
+			Name:      "slow",
+			Arguments: `{}`,
+		}},
+	}); err != nil {
+		t.Fatalf("AppendMessage(tool call) error = %v", err)
+	}
+
+	reloaded, err := LoadContextManagerFromSessionID(sessionFolder, sessionID)
+	if err != nil {
+		t.Fatalf("reload context manager error = %v", err)
+	}
+	if err := reloaded.AppendMessage(Message{Role: MessageRoleUser, Content: "continue"}); err != nil {
+		t.Fatalf("AppendMessage(user) error = %v", err)
+	}
+
+	messages := reloaded.ModelMessages()
+	if len(messages) != 2 {
+		t.Fatalf("messages = %#v, want preserved assistant text plus user", messages)
+	}
+	if messages[0].Role != llms.ChatMessageTypeAI || len(messages[0].Parts) != 1 {
+		t.Fatalf("assistant message = %#v, want text-only assistant", messages[0])
+	}
+	if _, ok := messages[0].Parts[0].(llms.TextContent); !ok {
+		t.Fatalf("assistant part = %#v, want text", messages[0].Parts[0])
+	}
+	if messages[1].Role != llms.ChatMessageTypeHuman {
+		t.Fatalf("last role = %q, want human", messages[1].Role)
+	}
+}
+
+func TestModelMessagesKeepsOnlyImmediatelyPairedToolCalls(t *testing.T) {
+	manager := newTestContextManager(t)
+	if err := manager.AppendMessage(Message{
+		Role:    MessageRoleToolCall,
+		Content: "Running tools.",
+		ToolCalls: []ToolCall{
+			{ID: "call_1", Name: "first", Arguments: `{}`},
+			{ID: "call_2", Name: "second", Arguments: `{}`},
+		},
+	}); err != nil {
+		t.Fatalf("AppendMessage(tool calls) error = %v", err)
+	}
+	if err := manager.AppendMessage(Message{
+		Role: MessageRoleToolResult,
+		ToolResults: []ToolResult{{
+			ToolCallID: "call_1",
+			Name:       "first",
+			Content:    "first result",
+		}},
+	}); err != nil {
+		t.Fatalf("AppendMessage(tool result) error = %v", err)
+	}
+	if err := manager.AppendMessage(Message{Role: MessageRoleUser, Content: "continue"}); err != nil {
+		t.Fatalf("AppendMessage(user) error = %v", err)
+	}
+
+	messages := manager.ModelMessages()
+	if len(messages) != 3 {
+		t.Fatalf("messages = %#v, want assistant/tool/user", messages)
+	}
+	var calls []llms.ToolCall
+	for _, part := range messages[0].Parts {
+		if call, ok := part.(llms.ToolCall); ok {
+			calls = append(calls, call)
+		}
+	}
+	if len(calls) != 1 || calls[0].ID != "call_1" {
+		t.Fatalf("tool calls = %#v, want only call_1", calls)
+	}
+	response, ok := messages[1].Parts[0].(llms.ToolCallResponse)
+	if !ok || response.ToolCallID != "call_1" {
+		t.Fatalf("tool response = %#v, want call_1", messages[1])
+	}
+}
+
+func TestModelMessagesDropsOrphanToolResult(t *testing.T) {
+	manager := newTestContextManager(t)
+	if err := manager.AppendMessage(Message{
+		Role: MessageRoleToolResult,
+		ToolResults: []ToolResult{{
+			ToolCallID: "call_orphan",
+			Name:       "echo",
+			Content:    "orphan result",
+		}},
+	}); err != nil {
+		t.Fatalf("AppendMessage(tool result) error = %v", err)
+	}
+	if err := manager.AppendMessage(Message{Role: MessageRoleUser, Content: "continue"}); err != nil {
+		t.Fatalf("AppendMessage(user) error = %v", err)
+	}
+
+	messages := manager.ModelMessages()
+	if len(messages) != 1 || messages[0].Role != llms.ChatMessageTypeHuman {
+		t.Fatalf("messages = %#v, want only user message", messages)
+	}
+}
+
+func TestModelMessagesPairsLegacyMissingToolCallIDByName(t *testing.T) {
+	manager := newTestContextManager(t)
+	if err := manager.AppendMessage(Message{
+		Role: MessageRoleToolCall,
+		ToolCalls: []ToolCall{{
+			Name:      "echo",
+			Arguments: `{}`,
+		}},
+	}); err != nil {
+		t.Fatalf("AppendMessage(tool call) error = %v", err)
+	}
+	if err := manager.AppendMessage(Message{
+		Role: MessageRoleToolResult,
+		ToolResults: []ToolResult{{
+			ToolCallID: "call_legacy",
+			Name:       "echo",
+			Content:    "ok",
+		}},
+	}); err != nil {
+		t.Fatalf("AppendMessage(tool result) error = %v", err)
+	}
+
+	messages := manager.ModelMessages()
+	if len(messages) != 2 {
+		t.Fatalf("messages = %#v, want paired call and result", messages)
+	}
+	call, ok := messages[0].Parts[0].(llms.ToolCall)
+	if !ok || call.ID != "call_legacy" {
+		t.Fatalf("tool call = %#v, want recovered ID call_legacy", messages[0])
+	}
+	response, ok := messages[1].Parts[0].(llms.ToolCallResponse)
+	if !ok || response.ToolCallID != call.ID {
+		t.Fatalf("tool response = %#v, want ID %q", messages[1], call.ID)
+	}
+}
+
 func TestConvertStandardMessageToContextManagerMessage_ReasoningContent(t *testing.T) {
 	message := ConvertChoiceToContextManagerMessage(llms.ContentChoice{
 		ReasoningContent: "thinking",
