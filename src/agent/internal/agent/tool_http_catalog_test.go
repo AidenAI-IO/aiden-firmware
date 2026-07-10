@@ -205,6 +205,16 @@ func TestAvailableToolsDoNotExposePiPDataQueueWithoutRecentPoll(t *testing.T) {
 
 	tools := runtime.availableTools()
 	names := toolNamesFromTools(tools)
+	foundOpenApp := false
+	for _, name := range names {
+		if name == "bridge_open_app" {
+			foundOpenApp = true
+			break
+		}
+	}
+	if !foundOpenApp {
+		t.Fatalf("availableTools missing bridge_open_app for stale PiP restore path: %v", names)
+	}
 	for _, notWant := range []string{"bridge_clipboard", "bridge_calendar", "bridge_contacts", "bridge_notification"} {
 		for _, name := range names {
 			if name == notWant {

@@ -517,7 +517,7 @@ The board-side `current_time` tool can provide the model with current timezone b
 
 ### Implementation Notes
 
-7. If the iOS Aiden app is backgrounded and `return_entry=dynamic_island` with `return_entry_available=true`, and PiP Bridge mode is not enabled, Phone Bridge tools first click Dynamic Island to restore Aiden, wait for foreground bridge reconnection, then send `bridge_open_app`, `bridge_clipboard`, `bridge_calendar`, `bridge_contacts`, or `bridge_notification` commands.
+7. If the iOS Aiden app is backgrounded and `return_entry=dynamic_island` with `return_entry_available=true`, and no active PiP queue is present, Phone Bridge tools first click Dynamic Island to restore Aiden, wait for foreground bridge reconnection, then send `bridge_open_app`, `bridge_clipboard`, `bridge_calendar`, `bridge_contacts`, or `bridge_notification` commands. This restore path is available when PiP is disabled, `pip_bridge_updated_at` is missing, or the PiP poll timestamp is stale.
 8. If `pip_bridge_enabled=true` while Aiden is backgrounded and `pip_bridge_updated_at` is recent, board-side tool resolution hides `bridge_open_app`; `bridge_clipboard`, `bridge_calendar`, `bridge_contacts`, and `bridge_notification` commands can be routed through the HTTP command queue.
 9. If Android FGS polls with `fgs_bridge_enabled=true` while Aiden is backgrounded, board-side tool resolution hides `bridge_open_app`; `bridge_clipboard`, `bridge_calendar`, `bridge_contacts`, and `bridge_notification` commands can be routed through the HTTP command queue.
 10. Board then verifies via HDMI whether target app opened (only `bridge_open_app`).
