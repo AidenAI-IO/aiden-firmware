@@ -792,6 +792,10 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 		builder.WriteString("- The phone companion app is not connected. Do not assume bridge_open_app, bridge_clipboard, bridge_calendar, bridge_contacts, or bridge_notification tools can control the phone right now.\n")
 		builder.WriteString("- If return_entry=dynamic_island and return_entry_available=true, bridge_open_app, bridge_clipboard, bridge_calendar, bridge_contacts, and bridge_notification will first try to reopen Aiden through Dynamic Island and wait for Phone Bridge before sending the command. Otherwise use screenshot plus HID/touch fallback and tell the user when app-only actions cannot be completed.")
 	}
+	if !status.Connected {
+		builder.WriteString("\n- ")
+		builder.WriteString(phoneBridgeDisconnectedRecoveryGuidance)
+	}
 	return builder.String()
 }
 

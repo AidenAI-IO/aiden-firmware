@@ -393,6 +393,9 @@ func TestPhoneBridgeRuntimeContextDisconnectedBackgroundAppGuidesRecovery(t *tes
 		"Phone Bridge commands may time out until Aiden returns to foreground",
 		"return_entry=dynamic_island",
 		"For lock-screen Live Activity entries, use screenshot/HID fallback",
+		"call screenshot first",
+		"then try search_launch_app",
+		"request_human_handoff only after",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("runtime context missing %q:\n%s", want, got)

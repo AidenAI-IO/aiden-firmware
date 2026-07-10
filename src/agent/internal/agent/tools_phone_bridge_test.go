@@ -303,6 +303,24 @@ func TestOpenAppNameFieldIsNotAccepted(t *testing.T) {
 	}
 }
 
+func TestOpenAppDisconnectedGuidesUIFallbackBeforeHandoff(t *testing.T) {
+	tool := &OpenAppTool{}
+	ctx, _ := WithToolError(context.Background())
+	out, err := tool.Call(ctx, `{"app":"小红书"}`)
+	if err != nil {
+		t.Fatalf("Call returned err: %v", err)
+	}
+	te := ToolErrorFromContext(ctx)
+	if te == nil || te.Code != CodeBridgeNotConnected {
+		t.Fatalf("expected bridge_not_connected; got %+v", te)
+	}
+	for _, want := range []string{"call screenshot first", "search_launch_app", "request_human_handoff only after"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("disconnected output missing %q: %s", want, out)
+		}
+	}
+}
+
 func TestResolveOpenAppTargetsUnknownAppStaysSemantic(t *testing.T) {
 	args := openAppArgs{App: "NoSuchApp12345"}
 
