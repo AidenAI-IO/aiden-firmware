@@ -208,17 +208,12 @@ func (s *LongTermMemoryStore) Search(ctx context.Context, query MemoryQuery) ([]
 		if entry.Status != "active" {
 			continue
 		}
-		path := filepath.Join(s.rootDir, entry.File)
-		if memoryExpiresAtPassed(entry.ExpiresAt, now) {
+		parsed, path, expired, err := s.resolveActiveEntry(entry, now)
+		if expired {
 			expiredPaths = append(expiredPaths, path)
 			continue
 		}
-		parsed, err := s.readMemoryMarkdownCached(path)
 		if err != nil {
-			continue
-		}
-		if memoryItemExpired(parsed.Item, now) {
-			expiredPaths = append(expiredPaths, path)
 			continue
 		}
 		score := scoreMemoryEntry(query, entry, parsed)
@@ -265,6 +260,22 @@ func (s *LongTermMemoryStore) Search(ctx context.Context, query MemoryQuery) ([]
 		results = append(results, match.Result)
 	}
 	return results, nil
+}
+
+// resolveActiveEntry loads an index entry and reports whether its backing memory has expired.
+func (s *LongTermMemoryStore) resolveActiveEntry(entry memoryIndexEntry, now time.Time) (parsedMemoryMarkdown, string, bool, error) {
+	path := filepath.Join(s.rootDir, entry.File)
+	if memoryExpiresAtPassed(entry.ExpiresAt, now) {
+		return parsedMemoryMarkdown{}, path, true, nil
+	}
+	parsed, err := s.readMemoryMarkdownCached(path)
+	if err != nil {
+		return parsedMemoryMarkdown{}, path, false, err
+	}
+	if memoryItemExpired(parsed.Item, now) {
+		return parsedMemoryMarkdown{}, path, true, nil
+	}
+	return parsed, path, false, nil
 }
 
 func (s *LongTermMemoryStore) Forget(ctx context.Context, id string, reason string) error {
@@ -508,18 +519,13 @@ func (s *LongTermMemoryStore) RegenerateProfileMD(ctx context.Context) error {
 		if !isProfileRelevantType(entry.Type) {
 			continue
 		}
-		path := filepath.Join(s.rootDir, entry.File)
-		if memoryExpiresAtPassed(entry.ExpiresAt, now) {
+		parsed, path, expired, err := s.resolveActiveEntry(entry, now)
+		if expired {
 			expiredPaths = append(expiredPaths, path)
 			continue
 		}
-		parsed, err := s.readMemoryMarkdownCached(path)
 		if err != nil {
 			unreadableEntries++
-			continue
-		}
-		if memoryItemExpired(parsed.Item, now) {
-			expiredPaths = append(expiredPaths, path)
 			continue
 		}
 		entries = append(entries, ProfileEntry{Type: entry.Type, Content: strings.TrimSpace(parsed.Content)})

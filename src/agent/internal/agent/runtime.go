@@ -421,6 +421,30 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 		)
 	}
 
+	var memoryDir string
+	var longTermStore *LongTermMemoryStore
+	if cfg.ConfigDir != "" {
+		memoryDir = filepath.Join(cfg.ConfigDir, "memory")
+		if memories != nil {
+			longTermStore = memories.longTerm
+		}
+		if longTermStore == nil {
+			storeOpts := []LongTermMemoryOption{WithLifecycleDir(filepath.Join(memoryDir, "lifecycle"))}
+			if memories != nil {
+				storeOpts = append(storeOpts, WithStoreProfileFn(memories.profileFn))
+			}
+			longTermStore = NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"), storeOpts...)
+			if memories != nil {
+				longTermStore.setProfileDebouncer(memories.profileDebouncer)
+				memories.longTerm = longTermStore
+			}
+		}
+		if tools != nil {
+			extractionCfg := LoadMemoryExtractionConfig(cfg.ConfigDir)
+			tools.RegisterMemoryTools(memoryDir, extractionCfg.SummaryMaxChunks, longTermStore)
+		}
+	}
+
 	rt := &Runtime{
 		config:             cfg,
 		models:             models,
@@ -448,12 +472,7 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 		})
 	}
 	if cfg.ConfigDir != "" {
-		memoryDir := filepath.Join(cfg.ConfigDir, "memory")
-		var planeOpts []FilesystemMemoryPlaneOption
-		if memories != nil && memories.longTerm != nil {
-			planeOpts = append(planeOpts, WithMemoryPlaneLongTermStore(memories.longTerm))
-		}
-		rt.memoryPlane = NewFilesystemMemoryPlane(memoryDir, LoadMemoryExtractionConfig(cfg.ConfigDir), nil, planeOpts...)
+		rt.memoryPlane = NewFilesystemMemoryPlane(memoryDir, LoadMemoryExtractionConfig(cfg.ConfigDir), nil, WithMemoryPlaneLongTermStore(longTermStore))
 		rt.markInterruptedEpisodesBestEffort()
 	}
 	rt.sessionManager = newMemoryManagerSessionManager(memories, func() BoundaryEpisodeContext {
