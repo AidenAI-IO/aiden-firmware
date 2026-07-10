@@ -230,6 +230,7 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"audio_archive\":{\"enabled\":true,\"max_files\":500,\"max_size_mb\":100,"
         "\"storage_path\":\"/userdata/audio\"},"
         "\"hid\":{\"keyboard_device\":\"/dev/hidg0\",\"mouse_device\":\"/dev/hidg1\","
+        "\"android_keyboard_device\":\"/dev/hidg2\","
         "\"frame_socket\":\"/run/frame_service/frame_service.sock\",\"pointer_mode\":\"absolute\"},"
         "\"search\":{\"provider\":\"") + search_provider + "\",\"has_api_key\":" +
         (search_has_api_key ? "true" : "false") +
@@ -1341,8 +1342,11 @@ TEST_CASE("config_web: GET /api/config accepts optional field-level omissions fr
         const_cast<char*>(tmp.c_str()),
         [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
     );
-    const std::string partial_config = remove_nested_key(
+    const std::string partial_config = remove_nested_key(remove_nested_key(
         resolved_config_json("duckduckgo", false),
+        "hid",
+        "android_keyboard_device"
+    ),
         "model_text",
         "provider"
     );
@@ -1363,6 +1367,12 @@ TEST_CASE("config_web: GET /api/config accepts optional field-level omissions fr
     REQUIRE(model != nullptr);
     cJSON* model_name = cJSON_GetObjectItem(model, "model");
     REQUIRE(model_name != nullptr);
+    cJSON* hid = cJSON_GetObjectItem(config, "hid");
+    REQUIRE(hid != nullptr);
+    cJSON* android_keyboard_device = cJSON_GetObjectItem(hid, "android_keyboard_device");
+    REQUIRE(android_keyboard_device != nullptr);
+    REQUIRE(android_keyboard_device->valuestring != nullptr);
+    CHECK(std::string(android_keyboard_device->valuestring) == "/dev/hidg2");
     REQUIRE(model_name->valuestring != nullptr);
     CHECK(std::string(model_name->valuestring) == "bytedance-seed/seed-2.0-lite");
     cJSON_Delete(parsed);
