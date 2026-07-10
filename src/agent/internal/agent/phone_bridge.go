@@ -793,7 +793,10 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 		builder.WriteString("- If return_entry=dynamic_island and return_entry_available=true, bridge_open_app, bridge_clipboard, bridge_calendar, bridge_contacts, and bridge_notification will first try to reopen Aiden through Dynamic Island and wait for Phone Bridge before sending the command. Otherwise use screenshot plus HID/touch fallback and tell the user when app-only actions cannot be completed.")
 	}
 	if !status.Connected {
-		builder.WriteString("\n- ")
+		if !strings.HasSuffix(builder.String(), "\n") {
+			builder.WriteByte('\n')
+		}
+		builder.WriteString("- ")
 		builder.WriteString(phoneBridgeDisconnectedRecoveryGuidance)
 	}
 	return builder.String()

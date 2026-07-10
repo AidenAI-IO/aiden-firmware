@@ -319,6 +319,9 @@ func TestOpenAppDisconnectedGuidesUIFallbackBeforeHandoff(t *testing.T) {
 			t.Fatalf("disconnected output missing %q: %s", want, out)
 		}
 	}
+	if got := te.Details["fallback"]; got != phoneBridgeOpenAppRecoveryGuidance {
+		t.Fatalf("fallback detail = %q, want ordered recovery guidance", got)
+	}
 }
 
 func TestResolveOpenAppTargetsUnknownAppStaysSemantic(t *testing.T) {

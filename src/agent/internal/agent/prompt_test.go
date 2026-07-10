@@ -246,6 +246,9 @@ func TestPhoneBridgeRuntimeContextConnected(t *testing.T) {
 			t.Fatalf("runtime context missing %q:\n%s", want, got)
 		}
 	}
+	if strings.Contains(got, "\n\n- "+phoneBridgeDisconnectedRecoveryGuidance) {
+		t.Fatalf("runtime context contains a blank line before disconnected recovery guidance:\n%s", got)
+	}
 }
 
 func TestPhoneBridgeRuntimeContextBackgroundAppGuidesDynamicIslandRecovery(t *testing.T) {
