@@ -34,6 +34,7 @@ type AgentLoop struct {
 	EnvironmentBridge      *EnvironmentBridgeClient
 	EnvironmentBridgeTools []string
 	SteerInterrupt         func() <-chan struct{}
+	SteerProvider          func(context.Context) (RunSteerMessage, bool)
 	TerminationPolicy      *TerminationPolicy
 	contextManager         *context_manager.ContextManager
 }
@@ -226,6 +227,18 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 }
 
 func (l *AgentLoop) finishStopDecision(ctx context.Context, policy *TerminationPolicy, decision TerminationDecision) (string, bool, error) {
+	// When terminating due to loop/no progress, check if there's a pending steer
+	// If yes, return steer message instead of generic loop guard message
+	if decision.Reason == StopReasonLoopDetected || decision.Reason == StopReasonNoProgress {
+		if steer, hasPending := l.checkPendingSteer(ctx); hasPending {
+			answer := formatSteerInterruptMessage(steer)
+			if l.Recorder != nil {
+				l.Recorder.RecordDefaultFinish(answer)
+			}
+			answer, err := l.finishRun(ctx, answer)
+			return answer, true, err
+		}
+	}
 	answer, err := l.stopWithDecision(ctx, policy, decision)
 	return answer, true, err
 }
@@ -317,6 +330,21 @@ func loadAgentLoopInputs(ctx context.Context, memory schema.Memory, input string
 		result["input"] = input
 	}
 	return result, nil
+}
+
+func (l *AgentLoop) checkPendingSteer(ctx context.Context) (RunSteerMessage, bool) {
+	if l == nil || l.SteerProvider == nil {
+		return RunSteerMessage{}, false
+	}
+	return l.SteerProvider(ctx)
+}
+
+func formatSteerInterruptMessage(steer RunSteerMessage) string {
+	content := strings.TrimSpace(steer.Content)
+	if content == "" {
+		return "User interrupted the current task."
+	}
+	return fmt.Sprintf("User interrupted: %s", content)
 }
 
 func (l *AgentLoop) executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallExecutionResult {

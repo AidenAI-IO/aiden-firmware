@@ -881,6 +881,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	agentLoop.EnvironmentBridge = r.environmentBridge
 	agentLoop.EnvironmentBridgeTools = r.config.EnvironmentBridge.Tools
 	agentLoop.SteerInterrupt = req.SteerInterrupt
+	agentLoop.SteerProvider = req.SteerProvider
 
 	output, err = agentLoop.Run(ctx, normalizedInput, callOptions...)
 	if err != nil {
