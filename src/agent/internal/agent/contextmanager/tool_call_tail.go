@@ -4,155 +4,88 @@ import "strings"
 
 const interruptedToolResultContent = "Tool execution was interrupted before a result was recorded."
 
+// repairToolCallTailBeforeAppend enforces the tool-call protocol only at the
+// append boundary. If the last persisted message is a tool call, the first
+// incoming message must be its result. Otherwise an interrupted result is
+// persisted before the incoming batch closes the tool call.
+func repairToolCallTailBeforeAppend(existing, incoming []Message) []Message {
+	if len(existing) == 0 || len(incoming) == 0 {
+		return incoming
+	}
+
+	lastIndex := len(existing) - 1
+	last := existing[lastIndex]
+	if last.Role != MessageRoleToolCall || len(last.ToolCalls) == 0 {
+		return incoming
+	}
+
+	call, ok := lastPendingToolCall(last, lastIndex)
+	if !ok {
+		return incoming
+	}
+	if normalized, ok := normalizeMatchingToolResult(incoming[0], call); ok {
+		result := cloneMessages(incoming)
+		result[0] = normalized
+		return result
+	}
+
+	result := make([]Message, 0, len(incoming)+1)
+	result = append(result, interruptedToolResult(call))
+	result = append(result, incoming...)
+	return result
+}
+
 type pendingToolCall struct {
 	id                string
 	name              string
 	originalIDMissing bool
-	matched           bool
 }
 
-// repairToolCallTailBeforeAppend enforces the tool-call protocol at the point
-// where a new message would close the current tail. A matching tool result is
-// normalized and appended normally. If a user, state, assistant, or new tool
-// call arrives while the previous tool-call group is incomplete, synthetic
-// interrupted results are persisted before the new message.
-//
-// Only the contiguous tool-call group at the tail is inspected. Normal appends
-// therefore remain constant-time for the common single-tool case, and repaired
-// sessions stay valid on disk instead of being filtered on every model request.
-func repairToolCallTailBeforeAppend(existing, incoming []Message) []Message {
-	if len(incoming) == 0 {
-		return nil
-	}
-	pending := pendingToolCallsAtTail(existing)
-	result := make([]Message, 0, len(incoming)+len(pending))
-
-	for _, message := range incoming {
-		if message.Role == MessageRoleToolResult {
-			result = append(result, matchedToolResultMessages(message, pending)...)
-			continue
-		}
-
-		result = append(result, interruptedResultsForPendingCalls(pending)...)
-		for i := range pending {
-			pending[i].matched = true
-		}
-		result = append(result, message)
-	}
-	return result
-}
-
-func pendingToolCallsAtTail(messages []Message) []pendingToolCall {
-	if len(messages) == 0 {
-		return nil
-	}
-
-	callMessageIndex := len(messages) - 1
-	for callMessageIndex >= 0 && messages[callMessageIndex].Role == MessageRoleToolResult {
-		callMessageIndex--
-	}
-	if callMessageIndex < 0 || messages[callMessageIndex].Role != MessageRoleToolCall {
-		return nil
-	}
-
-	callMessage := messages[callMessageIndex]
-	pending := make([]pendingToolCall, 0, len(callMessage.ToolCalls))
-	for toolIndex, call := range callMessage.ToolCalls {
+func lastPendingToolCall(message Message, messageIndex int) (pendingToolCall, bool) {
+	for toolIndex, call := range message.ToolCalls {
 		name := strings.TrimSpace(call.Name)
 		if name == "" {
 			continue
 		}
 		originalID := strings.TrimSpace(call.ID)
-		pending = append(pending, pendingToolCall{
-			id:                toolCallIDOrFallback(originalID, callMessageIndex, toolIndex),
+		return pendingToolCall{
+			id:                toolCallIDOrFallback(originalID, messageIndex, toolIndex),
 			name:              name,
 			originalIDMissing: originalID == "",
-		})
+		}, true
 	}
-	if len(pending) == 0 {
-		return nil
-	}
-
-	for messageIndex := callMessageIndex + 1; messageIndex < len(messages); messageIndex++ {
-		for _, toolResult := range messages[messageIndex].ToolResults {
-			markExistingToolResult(pending, toolResult)
-		}
-	}
-	return pending
+	return pendingToolCall{}, false
 }
 
-func markExistingToolResult(pending []pendingToolCall, result ToolResult) {
-	resultID := strings.TrimSpace(result.ToolCallID)
-	if resultID == "" {
-		return
+func normalizeMatchingToolResult(message Message, call pendingToolCall) (Message, bool) {
+	if message.Role != MessageRoleToolResult || len(message.ToolResults) != 1 {
+		return Message{}, false
 	}
-	for i := range pending {
-		if !pending[i].matched && pending[i].id == resultID {
-			pending[i].matched = true
-			return
-		}
+
+	toolResult := message.ToolResults[0]
+	resultID := strings.TrimSpace(toolResult.ToolCallID)
+	resultName := strings.TrimSpace(toolResult.Name)
+	idMatches := resultID == call.id
+	legacyMatches := call.originalIDMissing && (resultName == "" || resultName == call.name)
+	if !idMatches && !legacyMatches {
+		return Message{}, false
 	}
+
+	toolResult.ToolCallID = call.id
+	if resultName == "" {
+		toolResult.Name = call.name
+	}
+	message.ToolResults = []ToolResult{toolResult}
+	return message, true
 }
 
-func matchedToolResultMessages(message Message, pending []pendingToolCall) []Message {
-	if len(pending) == 0 || len(message.ToolResults) == 0 {
-		return nil
+func interruptedToolResult(call pendingToolCall) Message {
+	return Message{
+		Role: MessageRoleToolResult,
+		ToolResults: []ToolResult{{
+			ToolCallID: call.id,
+			Name:       call.name,
+			Content:    interruptedToolResultContent,
+		}},
 	}
-	matched := make([]Message, 0, len(message.ToolResults))
-	for _, toolResult := range message.ToolResults {
-		pendingIndex := matchingPendingToolCall(pending, toolResult)
-		if pendingIndex < 0 {
-			continue
-		}
-		pending[pendingIndex].matched = true
-		toolResult.ToolCallID = pending[pendingIndex].id
-		if strings.TrimSpace(toolResult.Name) == "" {
-			toolResult.Name = pending[pendingIndex].name
-		}
-		matched = append(matched, Message{
-			Role:        MessageRoleToolResult,
-			ToolResults: []ToolResult{toolResult},
-		})
-	}
-	return matched
-}
-
-func matchingPendingToolCall(pending []pendingToolCall, result ToolResult) int {
-	resultID := strings.TrimSpace(result.ToolCallID)
-	if resultID != "" {
-		for i := range pending {
-			if !pending[i].matched && pending[i].id == resultID {
-				return i
-			}
-		}
-	}
-
-	resultName := strings.TrimSpace(result.Name)
-	for i := range pending {
-		if pending[i].matched || (!pending[i].originalIDMissing && resultID != "") {
-			continue
-		}
-		if resultName == "" || resultName == pending[i].name {
-			return i
-		}
-	}
-	return -1
-}
-
-func interruptedResultsForPendingCalls(pending []pendingToolCall) []Message {
-	result := make([]Message, 0, len(pending))
-	for _, call := range pending {
-		if call.matched {
-			continue
-		}
-		result = append(result, Message{
-			Role: MessageRoleToolResult,
-			ToolResults: []ToolResult{{
-				ToolCallID: call.id,
-				Name:       call.name,
-				Content:    interruptedToolResultContent,
-			}},
-		})
-	}
-	return result
 }

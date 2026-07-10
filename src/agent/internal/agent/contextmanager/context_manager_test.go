@@ -278,66 +278,40 @@ func TestAppendMessageRepairsPersistedOrphanToolCallBeforeNextUser(t *testing.T)
 	}
 }
 
-func TestAppendMessageCompletesPartialToolCallGroupBeforeNextUser(t *testing.T) {
+func TestAppendMessageRepairsToolCallBeforeHookExpandedUserBatch(t *testing.T) {
 	manager := newTestContextManager(t)
 	if err := manager.AppendMessage(Message{
-		Role:    MessageRoleToolCall,
-		Content: "Running tools.",
-		ToolCalls: []ToolCall{
-			{ID: "call_1", Name: "first", Arguments: `{}`},
-			{ID: "call_2", Name: "second", Arguments: `{}`},
-		},
-	}); err != nil {
-		t.Fatalf("AppendMessage(tool calls) error = %v", err)
-	}
-	if err := manager.AppendMessage(Message{
-		Role: MessageRoleToolResult,
-		ToolResults: []ToolResult{{
-			ToolCallID: "call_1",
-			Name:       "first",
-			Content:    "first result",
+		Role: MessageRoleToolCall,
+		ToolCalls: []ToolCall{{
+			ID:        "call_1",
+			Name:      "first",
+			Arguments: `{}`,
 		}},
 	}); err != nil {
-		t.Fatalf("AppendMessage(tool result) error = %v", err)
+		t.Fatalf("AppendMessage(tool call) error = %v", err)
 	}
+	manager.AddAppendMessageHooks([]AppendMessageHook{func(message Message) AppendMessageHookResult {
+		if message.Role != MessageRoleUser {
+			return AppendMessageHookResult{Message: &message}
+		}
+		return AppendMessageHookResult{
+			Before:  []Message{{Role: MessageRoleState, Content: "device state"}},
+			Message: &message,
+		}
+	}})
 	if err := manager.AppendMessage(Message{Role: MessageRoleUser, Content: "continue"}); err != nil {
 		t.Fatalf("AppendMessage(user) error = %v", err)
 	}
 
 	dump := manager.MessageListDump()
 	if len(dump.Messages) != 4 {
-		t.Fatalf("messages = %#v, want assistant, two tool results, user", dump.Messages)
+		t.Fatalf("messages = %#v, want tool call, result, state, user", dump.Messages)
 	}
-	if got := dump.Messages[1].ToolResults[0].ToolCallID; got != "call_1" {
-		t.Fatalf("first result ID = %q, want call_1", got)
+	if got := dump.Messages[1].ToolResults[0]; got.ToolCallID != "call_1" || got.Content != interruptedToolResultContent {
+		t.Fatalf("repair result = %#v", got)
 	}
-	if got := dump.Messages[2].ToolResults[0]; got.ToolCallID != "call_2" || got.Content != interruptedToolResultContent {
-		t.Fatalf("synthetic result = %#v, want interrupted call_2", got)
-	}
-	if dump.Messages[3].Role != MessageRoleUser {
-		t.Fatalf("last message = %#v, want user", dump.Messages[3])
-	}
-}
-
-func TestAppendMessageDropsOrphanToolResult(t *testing.T) {
-	manager := newTestContextManager(t)
-	if err := manager.AppendMessage(Message{
-		Role: MessageRoleToolResult,
-		ToolResults: []ToolResult{{
-			ToolCallID: "call_orphan",
-			Name:       "echo",
-			Content:    "orphan result",
-		}},
-	}); err != nil {
-		t.Fatalf("AppendMessage(tool result) error = %v", err)
-	}
-	if err := manager.AppendMessage(Message{Role: MessageRoleUser, Content: "continue"}); err != nil {
-		t.Fatalf("AppendMessage(user) error = %v", err)
-	}
-
-	dump := manager.MessageListDump()
-	if len(dump.Messages) != 1 || dump.Messages[0].Role != MessageRoleUser {
-		t.Fatalf("messages = %#v, want only user message", dump.Messages)
+	if dump.Messages[2].Role != MessageRoleState || dump.Messages[3].Role != MessageRoleUser {
+		t.Fatalf("tail messages = %#v, want state then user", dump.Messages[2:])
 	}
 }
 
