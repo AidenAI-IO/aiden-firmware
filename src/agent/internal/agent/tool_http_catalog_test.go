@@ -189,6 +189,31 @@ func TestAvailableToolsHidesOpenAppAndKeepsDataToolsDuringPiPBackground(t *testi
 	}
 }
 
+func TestAvailableToolsDoNotExposePiPDataQueueWithoutRecentPoll(t *testing.T) {
+	runtime := newRuntimeWithTextEntryTools()
+	bridge := newPhoneBridgeForTest()
+	t.Cleanup(func() { bridge.queue.Stop() })
+	bridge.mu.Lock()
+	bridge.connected = true
+	bridge.platform = "ios"
+	bridge.appState = "background"
+	bridge.appStateAt = time.Now()
+	bridge.pipBridgeEnabled = true
+	bridge.pipBridgeSeen = true
+	bridge.mu.Unlock()
+	runtime.tools.RegisterPhoneBridge(bridge)
+
+	tools := runtime.availableTools()
+	names := toolNamesFromTools(tools)
+	for _, notWant := range []string{"bridge_clipboard", "bridge_calendar", "bridge_contacts", "bridge_notification"} {
+		for _, name := range names {
+			if name == notWant {
+				t.Fatalf("availableTools exposed stale PiP queue tool %s: %v", notWant, names)
+			}
+		}
+	}
+}
+
 func newIOSPiPBackgroundBridge(t *testing.T) *PhoneBridge {
 	t.Helper()
 	bridge := newPhoneBridgeForTest()
@@ -199,6 +224,7 @@ func newIOSPiPBackgroundBridge(t *testing.T) *PhoneBridge {
 	bridge.appStateAt = time.Now()
 	bridge.pipBridgeEnabled = true
 	bridge.pipBridgeSeen = true
+	bridge.pipBridgeAt = time.Now()
 	bridge.mu.Unlock()
 	return bridge
 }

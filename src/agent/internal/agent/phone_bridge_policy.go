@@ -113,6 +113,9 @@ func phoneBridgePiPBackgroundEnabled(status PhoneBridgeStatus) bool {
 	if status.PipBridgeEnabled == nil || !*status.PipBridgeEnabled {
 		return false
 	}
+	if status.PipBridgeUpdatedAt == nil || time.Since(*status.PipBridgeUpdatedAt) > phoneBridgeBackgroundStateMaxAge {
+		return false
+	}
 	state := strings.ToLower(strings.TrimSpace(status.AppState))
 	return state == "" || state == "background" || state == "inactive"
 }
@@ -172,14 +175,14 @@ func phoneBridgeRestoreUnavailableError(status PhoneBridgeStatus) error {
 		if state == "" {
 			state = "background"
 		}
-		return fmt.Errorf("phone bridge app is %s with Android FGS Bridge enabled, but this command requires the companion app in foreground", state)
+		return fmt.Errorf("phone bridge app is %s with Android FGS Bridge queue active, but this command requires the companion app in foreground", state)
 	}
 	if phoneBridgePiPBackgroundEnabled(status) {
 		state := strings.TrimSpace(status.AppState)
 		if state == "" {
 			state = "background"
 		}
-		return fmt.Errorf("phone bridge app is %s with PiP Bridge mode enabled, but this command requires the companion app in foreground", state)
+		return fmt.Errorf("phone bridge app is %s with PiP Bridge queue active, but this command requires the companion app in foreground", state)
 	}
 	if status.Connected {
 		state := strings.TrimSpace(status.AppState)

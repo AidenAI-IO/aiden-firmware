@@ -245,6 +245,36 @@ func TestHTTPPollCommandsRecordsAndroidFGSBridgeState(t *testing.T) {
 	}
 }
 
+func TestHTTPPollCommandsRecordsIOSPiPBridgeState(t *testing.T) {
+	bridge := NewPhoneBridge(nil, statemanager.NewStateManager())
+	defer bridge.queue.Stop()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/phone-bridge/commands?platform=ios&phone_id=ios-abc&app_state=background&pip_bridge_enabled=true", nil)
+	w := httptest.NewRecorder()
+
+	bridge.handlePollCommands(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, w.Code, w.Body.String())
+	}
+	status := bridge.getStatus()
+	if status.Platform != "ios" {
+		t.Fatalf("platform = %q, want ios", status.Platform)
+	}
+	if status.PhoneID != "ios-abc" {
+		t.Fatalf("phone_id = %q, want ios-abc", status.PhoneID)
+	}
+	if status.AppState != "background" {
+		t.Fatalf("app_state = %q, want background", status.AppState)
+	}
+	if status.PipBridgeEnabled == nil || !*status.PipBridgeEnabled {
+		t.Fatalf("pip_bridge_enabled = %#v, want true", status.PipBridgeEnabled)
+	}
+	if status.PipBridgeUpdatedAt == nil {
+		t.Fatal("pip_bridge_updated_at is nil")
+	}
+}
+
 func TestHTTPPollCommandsSuppressesAndroidForegroundFGSQueue(t *testing.T) {
 	bridge := NewPhoneBridge(nil, statemanager.NewStateManager())
 	defer bridge.queue.Stop()

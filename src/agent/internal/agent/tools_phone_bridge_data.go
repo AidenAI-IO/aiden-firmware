@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const phoneBridgeBackgroundSafeDataToolNote = `When Aiden is backgrounded, this data tool can run through the HTTP command queue if iOS PiP Bridge mode or Android FGS Bridge mode is active. If iOS PiP is not active but the Dynamic Island return entry is available, the tool restores Aiden to foreground before sending the command. Background bridge modes are not foreground substitutes for bridge_open_app or UI actions. `
+const phoneBridgeBackgroundSafeDataToolNote = `When Aiden is backgrounded, this data tool can run through the HTTP command queue only if the iOS PiP Bridge queue or Android FGS Bridge queue is actively polling. If iOS PiP queue polling is not active but the Dynamic Island return entry is available, the tool restores Aiden to foreground before sending the command. Background bridge modes are not foreground substitutes for bridge_open_app or UI actions. `
 
 // nextBridgeCmdID builds a unique command id for a bridge command type. It
 // reuses openAppCmdSeq so every outbound bridge command shares one counter.

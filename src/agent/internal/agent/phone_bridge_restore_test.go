@@ -125,10 +125,11 @@ func TestPhoneBridgeReadyForCommandRejectsBackgroundIOS(t *testing.T) {
 func TestPhoneBridgeCanUsePiPBackgroundOnlyForSafeDataCommands(t *testing.T) {
 	enabled := true
 	status := PhoneBridgeStatus{
-		Platform:          "ios",
-		AppState:          "background",
-		AppStateUpdatedAt: ptrTime(time.Now()),
-		PipBridgeEnabled:  &enabled,
+		Platform:           "ios",
+		AppState:           "background",
+		AppStateUpdatedAt:  ptrTime(time.Now()),
+		PipBridgeEnabled:   &enabled,
+		PipBridgeUpdatedAt: ptrTime(time.Now()),
 	}
 	if !phoneBridgeCanUsePiPBackground(status, "clipboard_read") {
 		t.Fatal("clipboard_read should be allowed in iOS PiP background bridge mode")
@@ -152,7 +153,18 @@ func TestPhoneBridgeCanUsePiPBackgroundOnlyForSafeDataCommands(t *testing.T) {
 	status.PipBridgeEnabled = &enabled
 	status.AppStateUpdatedAt = ptrTime(time.Now().Add(-phoneBridgeBackgroundStateMaxAge - time.Second))
 	if phoneBridgeCanUsePiPBackground(status, "clipboard_read") {
-		t.Fatal("stale PiP bridge status should not allow background queue")
+		t.Fatal("stale PiP app state should not allow background queue")
+	}
+
+	status.AppStateUpdatedAt = ptrTime(time.Now())
+	status.PipBridgeUpdatedAt = nil
+	if phoneBridgeCanUsePiPBackground(status, "clipboard_read") {
+		t.Fatal("PiP background queue should require a recent HTTP poll")
+	}
+
+	status.PipBridgeUpdatedAt = ptrTime(time.Now().Add(-phoneBridgeBackgroundStateMaxAge - time.Second))
+	if phoneBridgeCanUsePiPBackground(status, "clipboard_read") {
+		t.Fatal("stale PiP HTTP poll should not allow background queue")
 	}
 }
 
@@ -212,11 +224,18 @@ func TestPhoneBridgeCannotRestoreFromDynamicIslandWhenPiPBackgroundEnabled(t *te
 		ReturnEntry:          "dynamic_island",
 		ReturnEntryAvailable: &available,
 		PipBridgeEnabled:     &enabled,
+		PipBridgeUpdatedAt:   ptrTime(time.Now()),
 	}
 	if phoneBridgeCanRestoreFromReturnEntry(status) {
 		t.Fatal("PiP background bridge mode hides Dynamic Island and must block restore")
 	}
 
+	status.PipBridgeUpdatedAt = nil
+	if !phoneBridgeCanRestoreFromReturnEntry(status) {
+		t.Fatal("stale PiP bridge mode should not block a visible Dynamic Island entry")
+	}
+
+	status.PipBridgeUpdatedAt = ptrTime(time.Now())
 	enabled = false
 	if !phoneBridgeCanRestoreFromReturnEntry(status) {
 		t.Fatal("visible Dynamic Island entry should allow restore when PiP bridge mode is disabled")
@@ -259,6 +278,7 @@ func TestSendRoutedBridgeCommandChoosesDeliveryPath(t *testing.T) {
 		bridge.appStateAt = time.Now()
 		bridge.pipBridgeEnabled = true
 		bridge.pipBridgeSeen = true
+		bridge.pipBridgeAt = time.Now()
 		bridge.mu.Unlock()
 
 		tapCalled := false

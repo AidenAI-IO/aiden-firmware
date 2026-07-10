@@ -39,7 +39,7 @@ This way there's no need to guess the phone IP, no need for the phone app to ope
 
 The board also exposes `/api/phone-bridge/commands` and `/api/phone-bridge/results` HTTP queue endpoints, but React Native JS, WebSocket, and polling timers in the iOS background must not be treated as a general tool execution path. On iOS, Phone Bridge is normally a foreground fast path: if Aiden is backgrounded and the app has reported `return_entry=dynamic_island`, Agent restores Aiden through Dynamic Island, waits for foreground WebSocket bridge reconnection, then executes the requested tool command. Lock-screen Live Activity entries require visual confirmation rather than fixed-coordinate tapping.
 
-PiP Bridge is a narrow exception. When the app reports `pip_bridge_enabled=true` while backgrounded, iOS gives PiP priority over the Dynamic Island, so the Dynamic Island return entry is not visible. In that state, the Agent dynamically removes `bridge_open_app` from the Phone Bridge tool catalog and keeps only background-safe data tools (`bridge_clipboard`, `bridge_calendar`, `bridge_contacts`, `bridge_notification`) available through the HTTP queue.
+PiP Bridge is a narrow exception. When the app reports `pip_bridge_enabled=true` while backgrounded and recently polls `/api/phone-bridge/commands`, iOS gives PiP priority over the Dynamic Island, so the Dynamic Island return entry is not visible. In that state, the Agent dynamically removes `bridge_open_app` from the Phone Bridge tool catalog and keeps only background-safe data tools (`bridge_clipboard`, `bridge_calendar`, `bridge_contacts`, `bridge_notification`) available through the HTTP queue. Board status exposes the latest PiP poll time as `pip_bridge_updated_at`; stale or missing PiP poll state is not treated as a usable background queue.
 
 Android FGS Bridge follows the same HTTP queue contract without using WebSocket as a background transport. When the Android foreground service polls `/api/phone-bridge/commands` with `app_state=background` and `fgs_bridge_enabled=true`, the Agent keeps `open_app` unavailable and routes only background-safe data tools through the HTTP queue.
 
@@ -63,7 +63,7 @@ If relay app is backgrounded and the Aiden Dynamic Island entry is visible:
     Tap Dynamic Island to return to Aiden
     Wait for app to reconnect to board
     Then send open_app command
-If relay app is backgrounded with PiP Bridge mode enabled:
+If relay app is backgrounded with an active PiP Bridge queue:
     Do not expose Phone Bridge bridge_open_app
     Use HID/screenshot fallback for app opening or wait for Aiden foreground
 Otherwise:
@@ -175,12 +175,12 @@ WebSocket's core value:
 2. Relay app auto-connects to `ws://192.168.42.1:8080/api/phone-bridge` after startup.
 3. App sends periodic heartbeat.
 4. App actively reports `phone_environment` upon connection success and returning from background to foreground, including system version, language/region, timezone, screen/battery, system apps, third-party candidate app availability, etc.
-5. App reports `phone_app_state` when the visible lifecycle state changes among `active`, `background`, and `inactive`, including any available Dynamic Island / Live Activity return entry and PiP Bridge state. Android FGS Bridge reports `fgs_bridge_enabled` through HTTP queue polling.
-6. Board maintains `bridge_connected`, `platform`, `last_heartbeat_at`, `app_state`, `return_entry`, `return_entry_available`, `pip_bridge_enabled`, `fgs_bridge_enabled`, and `environment` status. Complete environment is exposed through status API; Agent runtime context only injects summarized connection state, app foreground/background state, return entry visibility, background bridge state, system type/version, language/region/timezone, screen dimensions, confirmed openable third-party candidate apps, etc.
+5. App reports `phone_app_state` when the visible lifecycle state changes among `active`, `background`, and `inactive`, including any available Dynamic Island / Live Activity return entry and PiP Bridge state. PiP Bridge and Android FGS Bridge also report their queue availability through HTTP polling.
+6. Board maintains `bridge_connected`, `platform`, `last_heartbeat_at`, `app_state`, `return_entry`, `return_entry_available`, `pip_bridge_enabled`, `pip_bridge_updated_at`, `fgs_bridge_enabled`, `fgs_bridge_updated_at`, and `environment` status. Complete environment is exposed through status API; Agent runtime context only injects summarized connection state, app foreground/background state, return entry visibility, background bridge state, system type/version, language/region/timezone, screen dimensions, confirmed openable third-party candidate apps, etc.
 
 `bridge_connected` only means the WebSocket is currently active. It is not equivalent to USB cable connectivity. After the iOS app enters background, WebSocket may disconnect while USB ECM remains reachable; real-time background Dynamic Island updates should go through Live Activity relay/APNs, not the phone bridge WebSocket.
 
-When `app_state=background|inactive`, `return_entry=dynamic_island`, `return_entry_available=true`, and PiP Bridge mode is not enabled, Phone Bridge tools directly click the Aiden Dynamic Island entry, wait for Phone Bridge recovery, then send commands through tools such as `bridge_open_app` or `bridge_clipboard`. Lock-screen Live Activity entries are not blind-tapped because their screen position is not stable; use screenshot/HID fallback or visual confirmation instead. When `pip_bridge_enabled=true` on iOS or `fgs_bridge_enabled=true` on Android in the background, `bridge_open_app` is not exposed, and only background-safe data tools use the HTTP command queue.
+When `app_state=background|inactive`, `return_entry=dynamic_island`, `return_entry_available=true`, and PiP Bridge mode is not active, Phone Bridge tools directly click the Aiden Dynamic Island entry, wait for Phone Bridge recovery, then send commands through tools such as `bridge_open_app` or `bridge_clipboard`. Lock-screen Live Activity entries are not blind-tapped because their screen position is not stable; use screenshot/HID fallback or visual confirmation instead. When `pip_bridge_enabled=true` plus a recent `pip_bridge_updated_at` on iOS, or `fgs_bridge_enabled=true` plus a recent `fgs_bridge_updated_at` on Android in the background, `bridge_open_app` is not exposed, and only background-safe data tools use the HTTP command queue.
 
 ### Command Protocol
 
@@ -518,7 +518,7 @@ The board-side `current_time` tool can provide the model with current timezone b
 ### Implementation Notes
 
 7. If the iOS Aiden app is backgrounded and `return_entry=dynamic_island` with `return_entry_available=true`, and PiP Bridge mode is not enabled, Phone Bridge tools first click Dynamic Island to restore Aiden, wait for foreground bridge reconnection, then send `bridge_open_app`, `bridge_clipboard`, `bridge_calendar`, `bridge_contacts`, or `bridge_notification` commands.
-8. If `pip_bridge_enabled=true` while Aiden is backgrounded, board-side tool resolution hides `bridge_open_app`; `bridge_clipboard`, `bridge_calendar`, `bridge_contacts`, and `bridge_notification` commands can be routed through the HTTP command queue.
+8. If `pip_bridge_enabled=true` while Aiden is backgrounded and `pip_bridge_updated_at` is recent, board-side tool resolution hides `bridge_open_app`; `bridge_clipboard`, `bridge_calendar`, `bridge_contacts`, and `bridge_notification` commands can be routed through the HTTP command queue.
 9. If Android FGS polls with `fgs_bridge_enabled=true` while Aiden is backgrounded, board-side tool resolution hides `bridge_open_app`; `bridge_clipboard`, `bridge_calendar`, `bridge_contacts`, and `bridge_notification` commands can be routed through the HTTP command queue.
 10. Board then verifies via HDMI whether target app opened (only `bridge_open_app`).
 11. Verification failure auto-fallback to HID (only `bridge_open_app`; `bridge_clipboard`/`bridge_calendar`/`bridge_contacts`/`bridge_notification` have no reliable HID/API fallback when neither foreground WebSocket nor PiP/FGS HTTP polling is available. If no usable foreground restore path or background queue is available, the tool returns a clear bridge unavailable error).

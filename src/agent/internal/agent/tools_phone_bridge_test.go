@@ -407,6 +407,7 @@ func TestClipboardReadUsesPiPBackgroundQueueWhenActive(t *testing.T) {
 	bridge.appStateAt = time.Now()
 	bridge.pipBridgeEnabled = true
 	bridge.pipBridgeSeen = true
+	bridge.pipBridgeAt = time.Now()
 	bridge.mu.Unlock()
 
 	go func() {

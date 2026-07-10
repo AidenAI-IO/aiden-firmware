@@ -111,6 +111,7 @@ type PhoneBridgeStatus struct {
 	ReturnEntry          string            `json:"return_entry,omitempty"`
 	ReturnEntryAvailable *bool             `json:"return_entry_available,omitempty"`
 	PipBridgeEnabled     *bool             `json:"pip_bridge_enabled,omitempty"`
+	PipBridgeUpdatedAt   *time.Time        `json:"pip_bridge_updated_at,omitempty"`
 	FgsBridgeEnabled     *bool             `json:"fgs_bridge_enabled,omitempty"`
 	FgsBridgeUpdatedAt   *time.Time        `json:"fgs_bridge_updated_at,omitempty"`
 	Environment          *PhoneEnvironment `json:"environment,omitempty"`
@@ -131,6 +132,7 @@ type PhoneBridge struct {
 	returnEntrySeen  bool
 	pipBridgeEnabled bool
 	pipBridgeSeen    bool
+	pipBridgeAt      time.Time
 	fgsBridgeEnabled bool
 	fgsBridgeSeen    bool
 	fgsBridgeAt      time.Time
@@ -658,6 +660,10 @@ func (pb *PhoneBridge) getStatus() PhoneBridgeStatus {
 	if pb.pipBridgeSeen {
 		enabled := pb.pipBridgeEnabled
 		status.PipBridgeEnabled = &enabled
+		if !pb.pipBridgeAt.IsZero() {
+			t := pb.pipBridgeAt
+			status.PipBridgeUpdatedAt = &t
+		}
 	}
 	if pb.fgsBridgeSeen {
 		enabled := pb.fgsBridgeEnabled
@@ -755,6 +761,10 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 		builder.WriteString("- pip_bridge: ")
 		builder.WriteString("enabled=")
 		builder.WriteString(fmt.Sprintf("%t", *status.PipBridgeEnabled))
+		if status.PipBridgeUpdatedAt != nil {
+			builder.WriteString(" updated_at=")
+			builder.WriteString(status.PipBridgeUpdatedAt.UTC().Format(time.RFC3339))
+		}
 		builder.WriteByte(' ')
 		builder.WriteString("(PiP mode in the background can hide the Dynamic Island return entry)\n")
 	}
@@ -777,9 +787,9 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 		}
 	}
 	if phoneBridgeFGSBackgroundEnabled(status) {
-		builder.WriteString("- Android Foreground Service bridge is enabled while Aiden is backgrounded. Background-safe data tools can run through the HTTP command queue; open_app and UI actions still require foreground app control or HID fallback.\n")
+		builder.WriteString("- Android Foreground Service bridge queue is actively polling while Aiden is backgrounded. Background-safe data tools can run through the HTTP command queue; open_app and UI actions still require foreground app control or HID fallback.\n")
 	} else if phoneBridgePiPBackgroundEnabled(status) {
-		builder.WriteString("- PiP Bridge mode is enabled while Aiden is backgrounded. iOS gives PiP priority over the Dynamic Island, so the Dynamic Island return entry is not visible in this state.\n")
+		builder.WriteString("- PiP Bridge queue is actively polling while Aiden is backgrounded. iOS gives PiP priority over the Dynamic Island, so the Dynamic Island return entry is not visible in this state.\n")
 	} else if phoneBridgeAppNeedsForeground(status) {
 		builder.WriteString("- The Aiden companion app is backgrounded or inactive. On iOS, Phone Bridge commands may time out until Aiden returns to foreground.\n")
 		builder.WriteString("- If return_entry=dynamic_island and return_entry_available=true, bridge_open_app, bridge_clipboard, bridge_calendar, bridge_contacts, and bridge_notification will first tap the Aiden Dynamic Island entry, wait for app_state=active/Phone Bridge reconnect, then send the command. For lock-screen Live Activity entries, use screenshot/HID fallback or visual confirmation instead of blind tapping.\n")

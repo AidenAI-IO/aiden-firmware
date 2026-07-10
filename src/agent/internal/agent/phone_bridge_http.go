@@ -190,6 +190,7 @@ func (pb *PhoneBridge) noteHTTPPollState(platform, phoneID, appState, pipBridgeE
 	if enabledOK {
 		pb.pipBridgeEnabled = enabled
 		pb.pipBridgeSeen = true
+		pb.pipBridgeAt = now
 	}
 	if fgsEnabledOK {
 		pb.fgsBridgeEnabled = fgsEnabled
