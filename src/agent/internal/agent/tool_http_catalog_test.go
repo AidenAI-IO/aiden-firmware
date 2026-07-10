@@ -155,6 +155,29 @@ func TestAvailableToolsIncludesPhoneBridgeToolsWhenConnected(t *testing.T) {
 	}
 }
 
+func TestPhoneBridgeDataToolDescriptorsHaveUsefulExamples(t *testing.T) {
+	runtime := newRuntimeWithTextEntryTools()
+	bridge := newPhoneBridgeForTest()
+	bridge.connected = true
+	runtime.tools.RegisterPhoneBridge(bridge)
+
+	expected := map[string]string{
+		"bridge_clipboard":    `{"action":"read"}`,
+		"bridge_calendar":     `{"action":"query","from":"2026-07-10T00:00:00+08:00","to":"2026-07-11T00:00:00+08:00"}`,
+		"bridge_contacts":     `{"action":"query","query":"Alice","limit":20}`,
+		"bridge_notification": `{"title":"Aiden reminder","body":"Check your phone","sound":true}`,
+	}
+	for name, want := range expected {
+		desc, ok := runtime.ToolDescriptorByName(name)
+		if !ok {
+			t.Fatalf("ToolDescriptorByName missing %s", name)
+		}
+		if desc.ExampleInput != want {
+			t.Fatalf("%s example_input = %q, want %q", name, desc.ExampleInput, want)
+		}
+	}
+}
+
 func TestAvailableToolsHidesOpenAppAndKeepsDataToolsDuringPiPBackground(t *testing.T) {
 	runtime := newRuntimeWithTextEntryTools()
 	bridge := newIOSPiPBackgroundBridge(t)
