@@ -734,8 +734,8 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 			Ts:         retrieveStart.Format(time.RFC3339Nano),
 			DurationMs: &retrieveDuration,
 			Metadata: map[string]interface{}{
-				"tool_count":  len(toolNamesFromTools(availableTools)),
-				"success":     retrieveErr == nil,
+				"tool_count": len(toolNamesFromTools(availableTools)),
+				"success":    retrieveErr == nil,
 			},
 		}
 	}
@@ -880,6 +880,8 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	agentLoop.EnvironmentBridge = r.environmentBridge
 	agentLoop.EnvironmentBridgeTools = r.config.EnvironmentBridge.Tools
 	agentLoop.SteerInterrupt = req.SteerInterrupt
+	agentLoop.DevicePlatform = platformFn()
+	agentLoop.PointerMode = r.config.HID.PointerModeOrDefault()
 
 	output, err = agentLoop.Run(ctx, normalizedInput, callOptions...)
 	if err != nil {
@@ -1354,8 +1356,8 @@ func (r *Runtime) exportEpisodeBestEffort(episode TaskEpisode, promptCapture *te
 func (r *Runtime) buildAgentProfile(skills *SkillManager, availableTools []langtools.Tool) RoleProfile {
 	return buildProfile(
 		AgentConfig{
-			Instruction:         r.config.Instruction,
-			AdditionalPrompt:    r.config.AdditionalPrompt,
+			Instruction:      r.config.Instruction,
+			AdditionalPrompt: r.config.AdditionalPrompt,
 		},
 		skills,
 		availableTools,

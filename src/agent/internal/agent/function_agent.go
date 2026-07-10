@@ -282,6 +282,9 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includ
 			imageAvailability,
 		)
 	}
+	if summary := screenshotObservationStatusSummary(result); summary != "" {
+		toolContent += " " + summary
+	}
 	caption := fmt.Sprintf("This image is the screenshot observation returned by the %s tool. Use it when answering the original request.", step.Action.Tool)
 	if !includeVisual {
 		return toolContent, []llms.MessageContent{{
@@ -300,6 +303,26 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includ
 			buildImagePart(visual.MIMEType, visual.ImageBytes),
 		},
 	}}
+}
+
+func screenshotObservationStatusSummary(result postActionScreenshotResult) string {
+	var notes []string
+	if result.ScreenChanged != nil {
+		if *result.ScreenChanged {
+			notes = append(notes, "Visible screen change was observed during the stable-screen wait.")
+		} else {
+			notes = append(notes, "No visible screen change was observed during the stable-screen wait.")
+			notes = append(notes, "Do not assume the action succeeded from tool output alone; inspect the screenshot and verify whether the expected UI change happened before answering or retrying.")
+		}
+	}
+	if result.ScreenStable != nil {
+		if *result.ScreenStable {
+			notes = append(notes, "The screen was stable when the screenshot was captured.")
+		} else {
+			notes = append(notes, "The wait timed out while the screen was still changing; treat the screenshot as a best-effort observation.")
+		}
+	}
+	return strings.Join(notes, " ")
 }
 
 func (a *FunctionAgent) countVisualObservations(steps []schema.AgentStep) int {

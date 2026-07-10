@@ -111,7 +111,7 @@ func (t *WaitStableScreenTool) Description() string {
 			`Omitted fields use agent config defaults. `+
 			`The screen is stable when consecutive frames stay below diff_threshold for stable_ms. `+
 			`Returns {"ok":true,"stable":true/false,"elapsed_ms":N,"screen_changed":true/false,...} plus a screenshot observation with width, height, format, size, and base64 JPEG data. `+
-			`screen_changed=false means no visible frame change was observed during the wait window. `+
+			`screen_changed=false means no visible frame change was observed during the wait window; if a previous UI action was expected to change the screen, do not assume it succeeded and inspect the screenshot. `+
 			`stable=false means the wait timed out while the screen was still changing (for example video playback); that is not an error and the screenshot is still captured as a best-effort observation.`,
 		resolved.TimeoutMs,
 		resolved.StableMs,

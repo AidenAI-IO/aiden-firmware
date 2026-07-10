@@ -924,3 +924,30 @@ func TestFunctionAgentRejectsVisualObservationWithoutDimensions(t *testing.T) {
 		t.Fatalf("unexpected compacted observation: %q", toolContent)
 	}
 }
+
+func TestFunctionAgentPostActionScreenshotWarnsWhenScreenDidNotChange(t *testing.T) {
+	agent := &FunctionAgent{
+		Tools: []langtools.Tool{&stubTool{name: "keyboard_tap", visual: true}},
+	}
+	observation := `{"action_output":"ok","screen_changed":false,"screen_stable":true,"stable_wait_ms":250,"width":800,"height":600,"format":"jpeg","size":4,"data":"` +
+		base64.StdEncoding.EncodeToString([]byte("img1")) + `"}`
+	step := schema.AgentStep{
+		Action:      schema.AgentAction{Tool: "keyboard_tap"},
+		Observation: observation,
+	}
+
+	toolContent, followups := agent.observationMessagesForStep(step, true)
+
+	if !strings.Contains(toolContent, "No visible screen change was observed") {
+		t.Fatalf("toolContent missing screen_changed warning: %q", toolContent)
+	}
+	if !strings.Contains(toolContent, "Do not assume the action succeeded") {
+		t.Fatalf("toolContent missing success warning: %q", toolContent)
+	}
+	if !strings.Contains(toolContent, "The screen was stable when the screenshot was captured") {
+		t.Fatalf("toolContent missing stable summary: %q", toolContent)
+	}
+	if len(followups) != 1 {
+		t.Fatalf("expected one followup screenshot message, got %#v", followups)
+	}
+}
