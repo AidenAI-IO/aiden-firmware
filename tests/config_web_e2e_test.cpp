@@ -1055,7 +1055,7 @@ TEST_CASE("config_web: config test rejects blank search api key without stored m
     CHECK(test_resp.body.find("required for brave") != std::string::npos);
 }
 
-TEST_CASE("config_web: hid config test only requires android keyboard device in touchscreen mode") {
+TEST_CASE("config_web: hid config test requires extension keyboard device in pointer modes") {
     StubEnv env;
     auto handle = start_server(env);
 
@@ -1073,13 +1073,13 @@ TEST_CASE("config_web: hid config test only requires android keyboard device in 
     REQUIRE(absolute_json != nullptr);
     cJSON* absolute_ok = cJSON_GetObjectItem(absolute_json, "ok");
     REQUIRE(absolute_ok != nullptr);
-    CHECK((absolute_ok->type & 0xff) == cJSON_True);
+    CHECK((absolute_ok->type & 0xff) == cJSON_False);
     cJSON* absolute_android = required_test_result(absolute_json, "android_keyboard_device");
     REQUIRE(absolute_android != nullptr);
     cJSON* absolute_android_passed = cJSON_GetObjectItem(absolute_android, "passed");
     REQUIRE(absolute_android_passed != nullptr);
-    CHECK((absolute_android_passed->type & 0xff) == cJSON_True);
-    CHECK(required_json_string(absolute_android, "detail") == "not required when pointer_mode is absolute");
+    CHECK((absolute_android_passed->type & 0xff) == cJSON_False);
+    CHECK(required_json_string(absolute_android, "detail") == "path is empty");
     cJSON* absolute_mode = required_test_result(absolute_json, "pointer_mode");
     REQUIRE(absolute_mode != nullptr);
     cJSON* absolute_mode_passed = cJSON_GetObjectItem(absolute_mode, "passed");
