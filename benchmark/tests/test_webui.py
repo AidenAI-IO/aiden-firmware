@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from runner import config as runner_config
 from runner import webui
 
@@ -1692,3 +1694,167 @@ def test_stop_mobilegym_environment_removes_container(tmp_path: Path, monkeypatc
     assert stopped is not None
     assert stopped["status"] == "stopped"
     assert removed == [["docker", "rm", "-f", "aiden-mobilegym-env-mg-test"]]
+
+
+def test_adb_android_environment_lifecycle(tmp_path: Path, monkeypatch):
+    from runner import adb_android_environment as adb_env_mod
+
+    launched = []
+    killed = []
+
+    class FakeProc:
+        pid = 6161
+
+    monkeypatch.setattr(
+        adb_env_mod, "start_adb_bridge_process", lambda **kwargs: launched.append(kwargs) or FakeProc()
+    )
+    monkeypatch.setattr(adb_env_mod, "wait_for_http_health", lambda url, timeout: None)
+    monkeypatch.setattr(adb_env_mod, "terminate_pid", lambda pid, **kwargs: killed.append(pid))
+
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(runs_dir=tmp_path / "runs", base_config_dir=tmp_path / "config")
+    )
+
+    environment = app.start_adb_android_environment(
+        {"name": "Genymotion", "serial": "127.0.0.1:6555", "bridge_port": 18899}
+    )
+    assert environment["status"] == "running"
+    assert environment["serial"] == "127.0.0.1:6555"
+    assert environment["public_endpoint"] == "http://127.0.0.1:18899"
+    assert environment["endpoint"] == "http://host.docker.internal:18899"
+    assert environment["parallel_envs"] == 1
+    assert launched[0]["serial"] == "127.0.0.1:6555"
+    assert launched[0]["bridge_port"] == 18899
+    manifest_path = Path(environment["manifest_path"])
+    assert manifest_path.exists()
+
+    listed = app.list_adb_android_environments()
+    assert [env["id"] for env in listed] == [environment["id"]]
+
+    stopped = app.stop_adb_android_environment(environment["id"])
+    assert stopped["status"] == "stopped"
+    assert killed == [6161]
+
+    deleted = app.delete_adb_android_environment(environment["id"])
+    assert deleted is not None
+    assert not manifest_path.exists()
+    assert app.list_adb_android_environments() == []
+
+
+def test_adb_android_environment_recovery(tmp_path: Path, monkeypatch):
+    from runner import adb_android_environment as adb_env_mod
+
+    runs_dir = tmp_path / "runs"
+    env_dir = runs_dir / "environments" / "adb-recovered"
+    env_dir.mkdir(parents=True)
+    (env_dir / adb_env_mod.ADB_ENV_MANIFEST_NAME).write_text(
+        json.dumps(
+            {
+                "id": "adb-recovered",
+                "name": "Genymotion",
+                "pid": 7171,
+                "serial": "127.0.0.1:6555",
+                "bridge_port": 18899,
+                "public_endpoint": "http://127.0.0.1:18899",
+                "log_path": str(env_dir / "adb_android.log"),
+                "created_at": "2026-07-10T00:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(adb_env_mod, "pid_alive", lambda pid: True)
+    monkeypatch.setattr(adb_env_mod, "check_endpoint_health", lambda url, timeout=2.0: True)
+    manager = adb_env_mod.ADBAndroidEnvironmentManager(runs_dir=runs_dir)
+    envs = manager.list_all()
+    assert len(envs) == 1
+    assert envs[0].status == "running"
+    assert "recovered" in envs[0].name
+    assert envs[0].public_endpoint == "http://127.0.0.1:18899"
+
+    # Dead pid (or failing health) must mark the recovered env unhealthy.
+    monkeypatch.setattr(adb_env_mod, "pid_alive", lambda pid: False)
+    manager_unhealthy = adb_env_mod.ADBAndroidEnvironmentManager(runs_dir=runs_dir)
+    envs = [env for env in manager_unhealthy._environments.values()]
+    assert envs[0].status == "unhealthy"
+
+
+def test_start_job_resolves_adb_android_environment(tmp_path: Path, monkeypatch):
+    from runner import adb_android_environment as adb_env_mod
+
+    suites = tmp_path / "suites"
+    suites.mkdir()
+    (suites / "suite.json").write_text(
+        json.dumps({"name": "suite", "tasks": [{"id": "t1", "category": "diagnostic"}]}),
+        encoding="utf-8",
+    )
+
+    class FakeProc:
+        pid = 8181
+
+    monkeypatch.setattr(adb_env_mod, "start_adb_bridge_process", lambda **kwargs: FakeProc())
+    monkeypatch.setattr(adb_env_mod, "wait_for_http_health", lambda url, timeout: None)
+
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            suites_dir=suites,
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+        )
+    )
+    environment = app.start_adb_android_environment(
+        {"name": "Genymotion", "serial": "127.0.0.1:6555", "bridge_port": 18899}
+    )
+
+    class FakeThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(webui.threading, "Thread", FakeThread)
+    monkeypatch.setattr(webui, "reserve_free_port", lambda: 18080)
+
+    job = app.start_job(
+        {
+            "endpoint": environment["endpoint"],
+            "environment_type": "adb_android",
+            "environment_id": environment["id"],
+            "environment": {"id": environment["id"], "type": "adb_android"},
+            "suites": ["suite.json"],
+            "parallel_tasks": 4,
+            "no_judge": True,
+        }
+    )
+
+    assert job["environment_type"] == "adb_android"
+    assert job["environment_endpoint"] == "http://127.0.0.1:18899"
+    assert job["docker_endpoint"] == "http://host.docker.internal:18899"
+    assert job["environment_web_url"] == ""
+    # Single adb device: parallel_tasks is always forced to 1.
+    assert job["parallel_tasks"] == 1
+
+
+def test_start_job_rejects_unknown_environment_type(tmp_path: Path):
+    suites = tmp_path / "suites"
+    suites.mkdir()
+    (suites / "suite.json").write_text(
+        json.dumps({"name": "suite", "tasks": [{"id": "t1", "category": "diagnostic"}]}),
+        encoding="utf-8",
+    )
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            suites_dir=suites,
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+        )
+    )
+    with pytest.raises(ValueError, match="environment_type"):
+        app.start_job(
+            {
+                "endpoint": "http://127.0.0.1:9090",
+                "environment_type": "bogus",
+                "suites": ["suite.json"],
+            }
+        )

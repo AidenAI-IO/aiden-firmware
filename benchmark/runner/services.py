@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -11,6 +12,14 @@ from pathlib import Path
 from typing import Any
 
 from runner.agent_client import AgentClient
+from runner.adb_android_environment import (
+    DEFAULT_ADB_BRIDGE_READY_TIMEOUT_SEC,
+    DEFAULT_ADB_SERIAL,
+    endpoint_for_docker_host,
+    reserve_free_port,
+    start_adb_bridge_process,
+    terminate_pid,
+)
 from runner.webui import (
     BENCHMARK_ROOT,
     DEFAULT_BASE_CONFIG_DIR,
@@ -67,6 +76,20 @@ def add_service_parsers(subparsers: argparse._SubParsersAction[argparse.Argument
     p_mobilegym.add_argument("--no-build-mobilegym-image", action="store_true")
     p_mobilegym.add_argument("--ready-timeout-sec", type=int, default=DEFAULT_MOBILEGYM_READY_TIMEOUT_SEC)
     p_mobilegym.add_argument("--json", action="store_true", help="Print machine-readable JSON")
+
+    p_adb = subparsers.add_parser(
+        "start-adb-android-env",
+        help="Start a local ADB Android environment bridge process.",
+    )
+    p_adb.add_argument("--adb-serial", default=os.environ.get("ANDROID_SERIAL", DEFAULT_ADB_SERIAL),
+                       help="adb device serial, e.g. 127.0.0.1:6555")
+    p_adb.add_argument("--adb-path", default="adb")
+    p_adb.add_argument("--name", default="", help="Stable name suffix for the environment")
+    p_adb.add_argument("--runs-dir", default=str(DEFAULT_CLI_RUNS_DIR))
+    p_adb.add_argument("--bridge-host", default="127.0.0.1")
+    p_adb.add_argument("--bridge-port", type=int, default=0, help="Host port for the bridge API (default: auto)")
+    p_adb.add_argument("--ready-timeout-sec", type=int, default=DEFAULT_ADB_BRIDGE_READY_TIMEOUT_SEC)
+    p_adb.add_argument("--json", action="store_true", help="Print machine-readable JSON")
 
 
 def cmd_start_agent_daemon(args: argparse.Namespace) -> int:
@@ -214,6 +237,99 @@ def cmd_start_mobilegym_env(args: argparse.Namespace) -> int:
     )
     _print_mobilegym_payload(payload, json_output=bool(args.json))
     return 0
+
+
+def cmd_start_adb_android_env(args: argparse.Namespace) -> int:
+    if args.bridge_port < 0:
+        print("Error: --bridge-port must be zero or positive", file=sys.stderr)
+        return 2
+    if args.ready_timeout_sec <= 0:
+        print("Error: --ready-timeout-sec must be positive", file=sys.stderr)
+        return 2
+    serial = str(args.adb_serial or "").strip()
+    if not serial:
+        print("Error: --adb-serial is required (or set ANDROID_SERIAL)", file=sys.stderr)
+        return 2
+
+    service_id = _service_id("adb-android", args.name)
+    service_dir = Path(args.runs_dir) / service_id
+    log_path = service_dir / "adb-android-env.log"
+    pid_path = service_dir / "adb-android.pid"
+    manifest_path = service_dir / "adb-android.json"
+    service_dir.mkdir(parents=True, exist_ok=True)
+
+    bridge_port = int(args.bridge_port or 0) or reserve_free_port()
+    environment_url = f"http://{args.bridge_host}:{bridge_port}"
+    docker_environment_url = endpoint_for_docker_host(environment_url)
+
+    pid = 0
+    try:
+        proc = start_adb_bridge_process(
+            serial=serial,
+            bridge_port=bridge_port,
+            log_path=log_path,
+            adb_path=args.adb_path,
+            bridge_host=args.bridge_host,
+        )
+        pid = proc.pid
+        pid_path.write_text(str(pid), encoding="utf-8")
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "id": service_id,
+                    "pid": pid,
+                    "serial": serial,
+                    "bridge_port": bridge_port,
+                    "public_endpoint": environment_url,
+                    "log_path": str(log_path),
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        wait_for_http_health(f"{environment_url}/health", args.ready_timeout_sec)
+    except Exception as exc:
+        terminate_pid(pid)
+        append_log(log_path, f"ERROR: {exc}")
+        print(f"Error: failed to start ADB Android environment: {exc}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "type": "adb-android-env",
+        "environment_url": environment_url,
+        "docker_environment_url": docker_environment_url,
+        "adb_serial": serial,
+        "pid": pid,
+        "pid_path": str(pid_path),
+        "log_path": str(log_path),
+        "manifest_path": str(manifest_path),
+        "stop_command": f"kill -TERM {pid}",
+        "agent_daemon_command": (
+            "uv run python -m runner start-agent-daemon "
+            f"--environment-bridge-endpoint {environment_url}"
+        ),
+    }
+    _print_adb_android_payload(payload, json_output=bool(args.json))
+    return 0
+
+
+def _print_adb_android_payload(payload: dict[str, Any], *, json_output: bool) -> None:
+    if json_output:
+        print(json.dumps(payload, ensure_ascii=False, indent=2), flush=True)
+        return
+    print("ADB Android environment started", flush=True)
+    _print_kv("environment_url", payload["environment_url"])
+    _print_kv("docker_environment_url", payload["docker_environment_url"])
+    _print_kv("adb_serial", payload["adb_serial"])
+    _print_kv("pid", payload["pid"])
+    _print_kv("pid_path", payload["pid_path"])
+    _print_kv("log_path", payload["log_path"])
+    _print_kv("stop_command", payload["stop_command"])
+    _print_kv("agent_daemon_command", payload["agent_daemon_command"])
+    print("", flush=True)
+    print(f"export AIDEN_ENVIRONMENT_URL={payload['environment_url']}", flush=True)
 
 
 def _wait_for_agent(agent_url: str, timeout_sec: int) -> None:

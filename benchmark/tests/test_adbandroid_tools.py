@@ -1,0 +1,345 @@
+import json
+import urllib.error
+import urllib.request
+
+import pytest
+
+from adbandroid.bridge.server import ADBBridgeServer
+from adbandroid.bridge.tools_api import _normalized_point_arg, _to_pixels
+
+from tests.test_adbandroid_bridge import FakeADBAndroidDevice
+
+
+@pytest.fixture()
+def bridge():
+    device = FakeADBAndroidDevice()  # screen 1080x1920
+    server = ADBBridgeServer(device, host="127.0.0.1", port=0, action_settle_sec=0)
+    base_url = server.start()
+    server.state.acquire("suite:task")  # active episode for tool calls
+    try:
+        yield server, device, base_url
+    finally:
+        server.stop()
+
+
+def _invoke(base_url, tool, tool_input, *, task_id="suite:task"):
+    headers = {"Content-Type": "application/json", "benchmark-task-id": task_id}
+    raw = tool_input if isinstance(tool_input, str) else json.dumps(tool_input)
+    data = json.dumps({"input": raw}).encode("utf-8")
+    req = urllib.request.Request(
+        f"{base_url}/api/tools/{tool}", data=data, headers=headers, method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read().decode("utf-8"))
+
+
+def _post_action_output(body):
+    assert body["is_error"] is False, body
+    return json.loads(body["output"])
+
+
+# ---- coordinate handling ----------------------------------------------------
+
+
+def test_normalized_point_converts_to_pixels():
+    point = _normalized_point_arg({"point": {"x": 500, "y": 500}}, default_space="normalized")
+    assert _to_pixels(point, 1080, 1920) == (540, 960)
+
+
+def test_absolute_point_converts_via_hid_space():
+    point = _normalized_point_arg(
+        {"point": {"x": 32767, "y": 0}, "coord_space": "absolute"}, default_space="normalized"
+    )
+    assert round(point["x"]) == 1000
+    assert point["y"] == 0
+
+
+def test_auto_rejects_out_of_range_coordinates():
+    with pytest.raises(ValueError, match="auto only supports 0-1000"):
+        _normalized_point_arg(
+            {"point": {"x": 1500, "y": 500}, "coord_space": "auto"}, default_space="auto"
+        )
+
+
+def test_pixel_coord_space_requires_screen_size_and_clamps():
+    with pytest.raises(ValueError, match="requires a known screen size"):
+        _normalized_point_arg(
+            {"point": {"x": 540, "y": 960}, "coord_space": "pixel"}, default_space="normalized"
+        )
+    point = _normalized_point_arg(
+        {"point": {"x": 540, "y": 960}, "coord_space": "pixel"},
+        default_space="normalized",
+        screen_size=(1080, 1920),
+    )
+    assert _to_pixels(point, 1080, 1920) == (540, 960)
+    clamped = _normalized_point_arg(
+        {"point": {"x": 99999, "y": 99999}, "coord_space": "pixel"},
+        default_space="normalized",
+        screen_size=(1080, 1920),
+    )
+    assert clamped["x"] <= 1000 and clamped["y"] <= 1000
+
+
+# ---- touch_gesture ----------------------------------------------------------
+
+
+def test_touch_gesture_tap(bridge):
+    _, device, base_url = bridge
+    status, body = _invoke(base_url, "touch_gesture", {"type": "tap", "point": {"x": 500, "y": 500}})
+    assert status == 200
+    output = _post_action_output(body)
+    assert output["action_output"] == "ok"
+    assert ("tap", 540, 960) in device.calls
+
+
+def test_touch_gesture_tap_with_pixel_coord_space(bridge):
+    _, device, base_url = bridge
+    status, body = _invoke(
+        base_url,
+        "touch_gesture",
+        {"type": "tap", "point": {"x": 540, "y": 960}, "coord_space": "pixel"},
+    )
+    assert status == 200
+    assert body["is_error"] is False
+    assert ("tap", 540, 960) in device.calls
+
+
+def test_touch_gesture_swipe(bridge):
+    _, device, base_url = bridge
+    status, body = _invoke(
+        base_url,
+        "touch_gesture",
+        {"type": "swipe", "start": {"x": 500, "y": 800}, "end": {"x": 500, "y": 200}, "duration_ms": 400},
+    )
+    assert status == 200
+    assert body["is_error"] is False
+    assert ("swipe", 540, 1536, 540, 384, 400) in device.calls
+
+
+def test_touch_gesture_directional_swipe(bridge):
+    _, device, base_url = bridge
+    status, body = _invoke(base_url, "touch_gesture", {"type": "swipe_up", "strength": "medium"})
+    assert status == 200
+    assert body["is_error"] is False
+    swipes = [call for call in device.calls if call[0] == "swipe"]
+    assert len(swipes) == 1
+    _, x1, y1, x2, y2, duration = swipes[0]
+    assert x1 == x2 == 540  # anchor 500 normalized
+    assert y1 > y2  # upward
+    assert duration == 650
+
+
+def test_touch_gesture_home_and_back(bridge):
+    _, device, base_url = bridge
+    _invoke(base_url, "touch_gesture", {"type": "home"})
+    _invoke(base_url, "touch_gesture", {"type": "back"})
+    assert ("keyevent", "KEYCODE_HOME") in device.calls
+    assert ("keyevent", "KEYCODE_BACK") in device.calls
+
+
+def test_touch_gesture_auto_out_of_range_is_error(bridge):
+    _, _, base_url = bridge
+    status, body = _invoke(
+        base_url,
+        "touch_gesture",
+        {"type": "tap", "point": {"x": 1500, "y": 500}, "coord_space": "auto"},
+    )
+    assert status == 200
+    assert body["is_error"] is True
+    assert "auto only supports 0-1000" in body["output"]
+
+
+# ---- keyboard tools ----------------------------------------------------------
+
+
+def test_keyboard_tap_keys_array_semantics(bridge):
+    _, device, base_url = bridge
+    status, body = _invoke(base_url, "keyboard_tap", {"keys": ["enter"]})
+    assert status == 200 and body["is_error"] is False
+    assert ("keyevent", 66) in device.calls
+
+    _invoke(base_url, "keyboard_tap", {"keys": ["keycode_back"]})
+    assert ("keyevent", "KEYCODE_BACK") in device.calls
+
+    _invoke(base_url, "keyboard_tap", {"keys": ["meta", "h"]})
+    assert ("keyevent", "KEYCODE_HOME") in device.calls
+
+    _invoke(base_url, "keyboard_tap", {"keys": ["backspace"]})
+    assert ("keyevent", 67) in device.calls
+
+    status, body = _invoke(base_url, "keyboard_tap", {"keys": ["f5"]})
+    assert body["is_error"] is True
+
+    status, body = _invoke(base_url, "keyboard_tap", {"keys": []})
+    assert body["is_error"] is True
+
+
+def test_keyboard_text_accepts_dict_and_plain_string(bridge):
+    _, device, base_url = bridge
+    status, body = _invoke(base_url, "keyboard_text", {"text": "hello android"})
+    assert status == 200 and body["is_error"] is False
+    assert ("input_text", "hello android") in device.calls
+
+    device.calls.clear()
+    status, body = _invoke(base_url, "keyboard_text", "plain text input")
+    assert status == 200 and body["is_error"] is False
+    assert ("input_text", "plain text input") in device.calls
+
+
+def test_keyboard_text_rejects_non_ascii(bridge):
+    _, _, base_url = bridge
+    status, body = _invoke(base_url, "keyboard_text", {"text": "你好"})
+    assert status == 200
+    assert body["is_error"] is True
+    assert "US-keyboard ASCII" in body["output"]
+
+
+def test_enter_text_in_field_taps_focus_then_types(bridge):
+    _, device, base_url = bridge
+    status, body = _invoke(
+        base_url,
+        "enter_text_in_field",
+        {"text": "hello android", "focus": {"x": 500, "y": 100}},
+    )
+    assert status == 200
+    output = json.loads(body["output"])
+    assert output["ok"] is True and output["committed"] is True
+    assert output["target_text"] == "hello android"
+    assert output["required_mode"] == "ascii"
+    tap_index = device.calls.index(("tap", 540, 192))
+    text_index = device.calls.index(("input_text", "hello android"))
+    assert tap_index < text_index
+
+
+def test_enter_text_reports_unsupported_text_without_typing(bridge):
+    _, device, base_url = bridge
+    status, body = _invoke(
+        base_url,
+        "enter_text_via_bridge",
+        {"text": "你好", "focus": {"x": 500, "y": 100}},
+    )
+    assert status == 200
+    assert body["is_error"] is False
+    output = json.loads(body["output"])
+    assert output["ok"] is False and output["committed"] is False
+    assert output["required_mode"] == "composition"
+    assert all(call[0] != "input_text" for call in device.calls)
+
+
+# ---- mouse tools --------------------------------------------------------------
+
+
+def test_mouse_click_taps(bridge):
+    _, device, base_url = bridge
+    status, body = _invoke(base_url, "mouse_click", {"x": 500, "y": 500})
+    assert status == 200 and body["is_error"] is False
+    assert ("tap", 540, 960) in device.calls
+
+
+def test_mouse_move_is_noop_with_screenshot(bridge):
+    _, device, base_url = bridge
+    status, body = _invoke(base_url, "mouse_move", {"x": 500, "y": 500})
+    assert status == 200 and body["is_error"] is False
+    output = json.loads(body["output"])
+    assert output["action_output"] == "ok"
+    assert all(call[0] in ("screenshot_jpeg",) for call in device.calls)
+
+
+def test_mouse_scroll_swipes_vertically(bridge):
+    _, device, base_url = bridge
+    status, body = _invoke(base_url, "mouse_scroll", {"delta": -3})
+    assert status == 200 and body["is_error"] is False
+    swipes = [call for call in device.calls if call[0] == "swipe"]
+    assert len(swipes) == 1
+    _, _, y1, _, y2, _ = swipes[0]
+    assert y1 > y2  # delta < 0 scrolls up
+
+
+# ---- quick_action --------------------------------------------------------------
+
+
+def test_quick_action_requires_platform(bridge):
+    _, _, base_url = bridge
+    status, body = _invoke(base_url, "quick_action", {"action": "home"})
+    assert body["is_error"] is True
+    assert "unsupported platform" in body["output"]
+
+
+def test_quick_action_list_returns_catalog(bridge):
+    _, _, base_url = bridge
+    status, body = _invoke(base_url, "quick_action", {"platform": "android", "list": True})
+    assert status == 200 and body["is_error"] is False
+    output = json.loads(body["output"])
+    ids = {item["id"] for item in output["actions"]}
+    assert {"back", "home", "app_switch", "open_settings", "notification_center", "send"} <= ids
+
+
+def test_quick_action_open_settings(bridge):
+    _, device, base_url = bridge
+    status, body = _invoke(base_url, "quick_action", {"platform": "android", "action": "open_settings"})
+    assert status == 200 and body["is_error"] is False
+    assert ("start_settings",) in device.calls
+
+    # Alias resolution: "settings" maps to open_settings.
+    device.calls.clear()
+    _invoke(base_url, "quick_action", {"platform": "android", "action": "settings"})
+    assert ("start_settings",) in device.calls
+
+
+def test_quick_action_home_back_send(bridge):
+    _, device, base_url = bridge
+    _invoke(base_url, "quick_action", {"platform": "android", "action": "home"})
+    _invoke(base_url, "quick_action", {"platform": "android", "action": "back"})
+    _invoke(base_url, "quick_action", {"platform": "android", "action": "send"})
+    assert ("keyevent", "KEYCODE_HOME") in device.calls
+    assert ("keyevent", "KEYCODE_BACK") in device.calls
+    assert ("keyevent", 66) in device.calls
+
+
+def test_quick_action_statusbar_actions(bridge):
+    _, device, base_url = bridge
+    _invoke(base_url, "quick_action", {"platform": "android", "action": "notification_center"})
+    assert ("expand_notifications",) in device.calls
+    _invoke(base_url, "quick_action", {"platform": "android", "action": "control_center"})
+    assert ("expand_settings",) in device.calls
+    _invoke(base_url, "quick_action", {"platform": "android", "action": "dismiss_panel"})
+    assert ("collapse_statusbar",) in device.calls
+
+
+def test_quick_action_reserved_and_alternative(bridge):
+    _, _, base_url = bridge
+    status, body = _invoke(base_url, "quick_action", {"platform": "android", "action": "copy"})
+    assert status == 200 and body["is_error"] is False
+    output = json.loads(body["output"])
+    assert output["status"] == "reserved"
+
+    status, body = _invoke(
+        base_url, "quick_action", {"platform": "android", "action": "home", "alternative": True}
+    )
+    output = json.loads(body["output"])
+    assert output["status"] == "reserved"
+
+
+# ---- screenshot ------------------------------------------------------------------
+
+
+def test_screenshot_output_shape(bridge):
+    _, _, base_url = bridge
+    status, body = _invoke(base_url, "screenshot", {})
+    assert status == 200 and body["is_error"] is False
+    output = json.loads(body["output"])
+    assert set(output) == {"width", "height", "format", "size", "data"}
+    assert output["width"] == 720 and output["height"] == 1280
+    assert output["format"] == "jpeg"
+    assert output["size"] == len(b"fake-jpeg-bytes")
+
+
+def test_tool_response_envelope_matches_mobilegym(bridge):
+    _, _, base_url = bridge
+    status, body = _invoke(base_url, "touch_gesture", {"type": "home"})
+    assert status == 200
+    assert set(body) >= {"tool", "raw_input", "output", "is_error", "duration_ms"}
+    assert body["tool"] == {"name": "touch_gesture"}

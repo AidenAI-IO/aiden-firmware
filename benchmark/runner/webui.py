@@ -33,9 +33,19 @@ from runner.unit import is_unit_suite
 
 try:
     from benchmark.runner.environment import EnvironmentManager, MobileGymEnvironment
+    from benchmark.runner.adb_android_environment import (
+        ADBAndroidEnvironment,
+        ADBAndroidEnvironmentManager,
+        DEFAULT_ADB_SERIAL,
+    )
     from benchmark.runner.config import AgentConfigManager
 except ImportError:
     from runner.environment import EnvironmentManager, MobileGymEnvironment
+    from runner.adb_android_environment import (
+        ADBAndroidEnvironment,
+        ADBAndroidEnvironmentManager,
+        DEFAULT_ADB_SERIAL,
+    )
     from runner.config import AgentConfigManager
 
 
@@ -159,6 +169,7 @@ class BenchmarkWebApp:
             ready_timeout_sec=config.mobilegym_ready_timeout_sec,
             repo_root=REPO_ROOT,
         )
+        self.adb_env_manager = ADBAndroidEnvironmentManager(runs_dir=config.runs_dir)
         self.config_manager = AgentConfigManager(
             base_config_dir=config.base_config_dir,
             config_path=config.agent_config_path or (config.runs_dir / "agent.toml"),
@@ -312,14 +323,46 @@ class BenchmarkWebApp:
             return None
         return self._mobilegym_environment_payload(env)
 
+    def list_adb_android_environments(self) -> list[dict[str, Any]]:
+        environments = [
+            self._adb_android_environment_payload(env)
+            for env in self.adb_env_manager.list_all()
+        ]
+        environments.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+        return environments
+
+    def start_adb_android_environment(self, payload: dict[str, Any]) -> dict[str, Any]:
+        serial = str(payload.get("serial") or "").strip() or DEFAULT_ADB_SERIAL
+        name = str(payload.get("name") or "").strip() or f"ADB Android ({serial})"
+        bridge_port = 0
+        if payload.get("bridge_port") not in (None, ""):
+            bridge_port = parse_positive_int(payload.get("bridge_port"), default=0, field="bridge_port")
+        env = self.adb_env_manager.start_adb_android(name=name, serial=serial, bridge_port=bridge_port)
+        return self._adb_android_environment_payload(env)
+
+    def stop_adb_android_environment(self, environment_id: str) -> dict[str, Any] | None:
+        env = self.adb_env_manager.stop(environment_id)
+        if env is None:
+            return None
+        return self._adb_android_environment_payload(env)
+
+    def delete_adb_android_environment(self, environment_id: str) -> dict[str, Any] | None:
+        env = self.adb_env_manager.delete(environment_id)
+        if env is None:
+            return None
+        return self._adb_android_environment_payload(env)
+
     def shutdown(self) -> None:
         with self._lock:
             job_ids = list(self._jobs)
         environment_ids = [env.id for env in self.env_manager.list_all()]
+        adb_environment_ids = [env.id for env in self.adb_env_manager.list_all()]
         for job_id in job_ids:
             self.stop_job(job_id)
         for environment_id in environment_ids:
             self.stop_mobilegym_environment(environment_id)
+        for environment_id in adb_environment_ids:
+            self.stop_adb_android_environment(environment_id)
 
     def start_job(self, payload: dict[str, Any]) -> dict[str, Any]:
         endpoint = str(payload.get("endpoint") or "").strip()
@@ -345,8 +388,8 @@ class BenchmarkWebApp:
 
         environment_payload = payload.get("environment") if isinstance(payload.get("environment"), dict) else {}
         environment_type = str(payload.get("environment_type") or environment_payload.get("type") or "device")
-        if environment_type not in {"device", "mobilegym"}:
-            raise ValueError("environment_type must be device or mobilegym")
+        if environment_type not in {"device", "mobilegym", "adb_android"}:
+            raise ValueError("environment_type must be device, mobilegym, or adb_android")
 
         settings = self._load_webui_settings(include_secrets=True)
         judge_settings = settings.get("judge") if isinstance(settings.get("judge"), dict) else {}
@@ -395,6 +438,17 @@ class BenchmarkWebApp:
                 bridge_concurrency = read_environment_bridge_concurrency(environment_endpoint)
                 if bridge_concurrency is not None:
                     parallel_tasks = bridge_concurrency
+        if environment_type == "adb_android":
+            adb_env = self.adb_env_manager.get(environment_id)
+            if adb_env is not None:
+                environment_endpoint = adb_env.public_endpoint.rstrip("/")
+            elif not environment_endpoint:
+                public_endpoint = str(environment_payload.get("public_endpoint") or "").strip()
+                if public_endpoint:
+                    environment_endpoint = public_endpoint.rstrip("/")
+            environment_web_url = ""
+            # Single adb device: never run tasks in parallel.
+            parallel_tasks = 1
 
         job = Job(
             id=job_id,
@@ -595,6 +649,9 @@ class BenchmarkWebApp:
         payload = dc.asdict(env)
         payload["log_tail"] = tail_text(Path(env.log_path), LOG_TAIL_BYTES)
         return payload
+
+    def _adb_android_environment_payload(self, env: ADBAndroidEnvironment) -> dict[str, Any]:
+        return self.adb_env_manager.environment_payload(env)
 
     def _new_task_record(self, job: Job, suite_key: str, task_id: str) -> TaskRecord:
         token = worker_token(suite_key, task_id)
@@ -2340,6 +2397,9 @@ class WebHandler(BaseHTTPRequestHandler):
         if path == "/api/environments/mobilegym":
             self._send_json({"environments": self.server.app.list_mobilegym_environments()})
             return
+        if path == "/api/environments/adb-android":
+            self._send_json({"environments": self.server.app.list_adb_android_environments()})
+            return
         if path.startswith("/screens/jobs/"):
             self._handle_screen_viewer(path)
             return
@@ -2367,6 +2427,15 @@ class WebHandler(BaseHTTPRequestHandler):
             try:
                 payload = self._read_json()
                 environment = self.server.app.start_mobilegym_environment(payload)
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            self._send_json({"environment": environment}, status=HTTPStatus.CREATED)
+            return
+        if path == "/api/environments/adb-android":
+            try:
+                payload = self._read_json()
+                environment = self.server.app.start_adb_android_environment(payload)
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
                 return
@@ -2404,6 +2473,17 @@ class WebHandler(BaseHTTPRequestHandler):
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             environment = self.server.app.stop_mobilegym_environment(parts[3])
+            if environment is None:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            self._send_json({"environment": environment})
+            return
+        if path.startswith("/api/environments/adb-android/") and path.endswith("/stop"):
+            parts = path.strip("/").split("/")
+            if len(parts) != 5:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            environment = self.server.app.stop_adb_android_environment(parts[3])
             if environment is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
@@ -2453,6 +2533,17 @@ class WebHandler(BaseHTTPRequestHandler):
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             environment = self.server.app.delete_mobilegym_environment(parts[3])
+            if environment is None:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            self._send_json({"environment": environment})
+            return
+        if path.startswith("/api/environments/adb-android/"):
+            parts = path.strip("/").split("/")
+            if len(parts) != 4:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            environment = self.server.app.delete_adb_android_environment(parts[3])
             if environment is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
@@ -3378,7 +3469,7 @@ INDEX_HTML = r"""<!doctype html>
       <div class="modal-header">
         <div>
           <h2 id="runEnvTitle" class="tile-title">Choose Environment</h2>
-          <div class="tile-kicker">device / mobilegym</div>
+          <div class="tile-kicker">device / mobilegym / adb android</div>
         </div>
         <button id="closeRunEnv" class="ghost-button table-button" type="button">Close</button>
       </div>
@@ -3388,6 +3479,7 @@ INDEX_HTML = r"""<!doctype html>
             <div class="segmented" role="tablist" aria-label="Environment type">
               <button id="deviceTab" class="active" type="button">Device</button>
               <button id="mobilegymTab" type="button">MobileGym</button>
+              <button id="adbAndroidTab" type="button">ADB Android</button>
             </div>
             <div id="devicePanel" class="env-panel">
               <div class="form-grid">
@@ -3401,6 +3493,14 @@ INDEX_HTML = r"""<!doctype html>
                 <div class="field"><label for="mobilegymName">Name</label><input id="mobilegymName" placeholder="MobileGym" autocomplete="off"></div>
                 <div class="field"><label for="mobilegymParallelEnvs">Envs</label><input id="mobilegymParallelEnvs" type="number" min="1" step="1" value="5"></div>
                 <button id="startMobileGym" class="primary" type="button">Start MobileGym</button>
+              </div>
+            </div>
+            <div id="adbAndroidPanel" class="env-panel" hidden>
+              <div class="form-grid">
+                <div class="field"><label for="adbAndroidName">Name</label><input id="adbAndroidName" placeholder="ADB Android" autocomplete="off"></div>
+                <div class="field"><label for="adbAndroidSerial">ADB Serial</label><input id="adbAndroidSerial" placeholder="127.0.0.1:6555" value="127.0.0.1:6555" autocomplete="off"></div>
+                <div class="field"><label for="adbAndroidBridgePort">Bridge Port</label><input id="adbAndroidBridgePort" type="number" min="0" step="1" placeholder="auto"></div>
+                <button id="startADBAndroid" class="primary" type="button">Start ADB Android</button>
               </div>
             </div>
           </section>
@@ -3424,6 +3524,7 @@ INDEX_HTML = r"""<!doctype html>
     const DEFAULT_JUDGE_MODEL = 'anthropic/claude-sonnet-4-6';
     let deviceEnvironments = [];
     let mobilegymEnvironments = [];
+    let adbAndroidEnvironments = [];
     let selectedEnvironmentId = '';
     let editingDeviceEnvId = null;
     let suites = [];
@@ -3495,7 +3596,7 @@ INDEX_HTML = r"""<!doctype html>
         return false;
       }
     }
-    function allEnvironments(){ return [...deviceEnvironments, ...mobilegymEnvironments]; }
+    function allEnvironments(){ return [...deviceEnvironments, ...mobilegymEnvironments, ...adbAndroidEnvironments]; }
     function envCanRun(env){ return !!env && !!env.endpoint && (env.type === 'device' || env.status === 'running'); }
     function selectedEnv(){
       const current = allEnvironments().find(env => env.id === selectedEnvironmentId);
@@ -3512,10 +3613,13 @@ INDEX_HTML = r"""<!doctype html>
     }
     function setEnvMode(mode){
       const isMobileGym = mode === 'mobilegym';
-      document.getElementById('deviceTab').classList.toggle('active', !isMobileGym);
+      const isADBAndroid = mode === 'adb_android';
+      document.getElementById('deviceTab').classList.toggle('active', !isMobileGym && !isADBAndroid);
       document.getElementById('mobilegymTab').classList.toggle('active', isMobileGym);
-      document.getElementById('devicePanel').hidden = isMobileGym;
+      document.getElementById('adbAndroidTab').classList.toggle('active', isADBAndroid);
+      document.getElementById('devicePanel').hidden = isMobileGym || isADBAndroid;
       document.getElementById('mobilegymPanel').hidden = !isMobileGym;
+      document.getElementById('adbAndroidPanel').hidden = !isADBAndroid;
     }
 
     function currentJudgeSettings(){
@@ -3620,12 +3724,15 @@ INDEX_HTML = r"""<!doctype html>
       }
       envs.forEach(env => {
         const selectable = envCanRun(env);
-        const displayEndpoint = env.type === 'mobilegym' ? (env.public_endpoint || env.endpoint) : env.endpoint;
-        const endpointDetail = env.type === 'mobilegym' ? `${env.endpoint} · ${env.parallel_envs || 5} envs` : 'manual';
-        const status = env.type === 'mobilegym' ? (env.status || 'mobilegym') : 'device';
+        const isManaged = env.type === 'mobilegym' || env.type === 'adb_android';
+        const displayEndpoint = isManaged ? (env.public_endpoint || env.endpoint) : env.endpoint;
+        let endpointDetail = 'manual';
+        if(env.type === 'mobilegym') endpointDetail = `${env.endpoint} · ${env.parallel_envs || 5} envs`;
+        if(env.type === 'adb_android') endpointDetail = `adb ${env.serial || ''}`;
+        const status = isManaged ? (env.status || env.type) : 'device';
         const actionHtml = env.type === 'device'
           ? `<button class="ghost-button" data-edit="${escapeHtml(env.id)}">Edit</button> <button class="danger" data-delete="${escapeHtml(env.id)}">Delete</button>`
-          : mobilegymActionHtml(env);
+          : managedEnvActionHtml(env);
         const tr = document.createElement('tr');
         tr.innerHTML = `<td><input type="radio" name="activeEnv" ${current && current.id === env.id ? 'checked' : ''} ${selectable ? '' : 'disabled'}></td>
           <td title="${escapeHtml(env.name)}"><div class="cell-main"><span>${escapeHtml(env.name)}</span><small>${escapeHtml(status)}</small></div></td>
@@ -3648,15 +3755,15 @@ INDEX_HTML = r"""<!doctype html>
           saveWebuiSettings({keepInputs: true});
         };
         const stop = tr.querySelector('[data-stop]');
-        if(stop) stop.onclick = () => stopMobileGym(env.id);
+        if(stop) stop.onclick = () => env.type === 'adb_android' ? stopADBAndroid(env.id) : stopMobileGym(env.id);
         const remove = tr.querySelector('[data-remove]');
-        if(remove) remove.onclick = () => removeMobileGym(env.id);
+        if(remove) remove.onclick = () => env.type === 'adb_android' ? removeADBAndroid(env.id) : removeMobileGym(env.id);
         tbody.appendChild(tr);
       });
       document.getElementById('selectedEnvLabel').textContent = current ? current.name : 'No environment';
     }
 
-    function mobilegymActionHtml(env){
+    function managedEnvActionHtml(env){
       if(['building', 'starting', 'running', 'stopping'].includes(env.status)){
         return `<button class="danger" data-stop="${escapeHtml(env.id)}" ${env.status === 'stopping' ? 'disabled' : ''}>Stop</button>`;
       }
@@ -3746,6 +3853,72 @@ INDEX_HTML = r"""<!doctype html>
       await loadMobileGymEnvironments();
     }
 
+    async function loadADBAndroidEnvironments(){
+      try {
+        const res = await fetch('/api/environments/adb-android');
+        const body = await res.json();
+        adbAndroidEnvironments = (body.environments || []).map(env => ({...env, type: 'adb_android'}));
+      } catch {
+        adbAndroidEnvironments = [];
+      }
+      renderEnvs();
+      syncRunState();
+    }
+
+    async function startADBAndroid(){
+      const serial = document.getElementById('adbAndroidSerial').value.trim() || '127.0.0.1:6555';
+      const name = document.getElementById('adbAndroidName').value.trim() || `ADB Android (${serial})`;
+      const bridgePortRaw = document.getElementById('adbAndroidBridgePort').value.trim();
+      const button = document.getElementById('startADBAndroid');
+      const previous = button.textContent;
+      button.disabled = true;
+      button.textContent = 'Starting';
+      try {
+        const payload = {name, serial};
+        if(bridgePortRaw) payload.bridge_port = parseInt(bridgePortRaw, 10) || 0;
+        const res = await fetch('/api/environments/adb-android', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload)
+        });
+        const body = await res.json();
+        if(!res.ok){
+          document.getElementById('logBox').textContent = body.error || 'failed to start ADB Android bridge';
+          return;
+        }
+        document.getElementById('adbAndroidName').value = '';
+        if(body.environment){
+          adbAndroidEnvironments = [body.environment, ...adbAndroidEnvironments.filter(env => env.id !== body.environment.id)];
+          selectedEnvironmentId = body.environment.id;
+          saveWebuiSettings({keepInputs: true});
+        }
+        await loadADBAndroidEnvironments();
+      } finally {
+        button.disabled = false;
+        button.textContent = previous;
+      }
+    }
+
+    async function stopADBAndroid(id){
+      if(selectedEnvironmentId === id){
+        selectedEnvironmentId = '';
+        saveWebuiSettings({keepInputs: true});
+      }
+      const res = await fetch(`/api/environments/adb-android/${encodeURIComponent(id)}/stop`, {method: 'POST'});
+      if(!res.ok) document.getElementById('logBox').textContent = await res.text();
+      await loadADBAndroidEnvironments();
+    }
+
+    async function removeADBAndroid(id){
+      if(selectedEnvironmentId === id){
+        selectedEnvironmentId = '';
+        saveWebuiSettings({keepInputs: true});
+      }
+      const res = await fetch(`/api/environments/adb-android/${encodeURIComponent(id)}`, {method: 'DELETE'});
+      if(!res.ok) document.getElementById('logBox').textContent = await res.text();
+      await loadADBAndroidEnvironments();
+    }
+
     async function loadSuites(){
       const res = await fetch('/api/suites');
       suites = (await res.json()).suites || [];
@@ -3795,6 +3968,7 @@ INDEX_HTML = r"""<!doctype html>
     async function openRunEnvironmentDialog(){
       if(selectedSuites.size === 0) return;
       await loadMobileGymEnvironments();
+      await loadADBAndroidEnvironments();
       renderEnvs();
       syncRunState();
       document.getElementById('runEnvDialog').hidden = false;
@@ -3826,7 +4000,7 @@ INDEX_HTML = r"""<!doctype html>
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
           endpoint: env.endpoint,
-          environment: {id: env.id, name: env.name, type: env.type, public_endpoint: env.public_endpoint || '', web_url: env.web_url || '', parallel_envs: env.parallel_envs || 5},
+          environment: {id: env.id, name: env.name, type: env.type, public_endpoint: env.public_endpoint || '', web_url: env.web_url || '', serial: env.serial || '', parallel_envs: env.parallel_envs || 5},
           suites: Array.from(selectedSuites),
           parallel_tasks: env.type === 'mobilegym' ? (env.parallel_envs || 5) : 1,
           no_judge: !judge.enabled,
@@ -4008,8 +4182,10 @@ INDEX_HTML = r"""<!doctype html>
 
     document.getElementById('deviceTab').onclick = () => setEnvMode('device');
     document.getElementById('mobilegymTab').onclick = () => setEnvMode('mobilegym');
+    document.getElementById('adbAndroidTab').onclick = () => setEnvMode('adb_android');
     document.getElementById('saveEnv').onclick = saveEnvFromForm;
     document.getElementById('startMobileGym').onclick = startMobileGym;
+    document.getElementById('startADBAndroid').onclick = startADBAndroid;
     document.getElementById('editAgentConfig').onclick = () => setAgentConfigEditing(true);
     document.getElementById('saveAgentConfig').onclick = () => saveAgentConfig();
     document.getElementById('resetAgentConfig').onclick = resetAgentConfig;
@@ -4037,10 +4213,12 @@ INDEX_HTML = r"""<!doctype html>
     loadWebuiSettings();
     loadAgentConfig();
     loadMobileGymEnvironments();
+    loadADBAndroidEnvironments();
     loadSuites();
     refreshJobs();
     setInterval(refreshJobs, 2000);
     setInterval(loadMobileGymEnvironments, 5000);
+    setInterval(loadADBAndroidEnvironments, 5000);
   </script>
 </body>
 </html>

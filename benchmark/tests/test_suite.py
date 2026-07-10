@@ -49,6 +49,25 @@ def test_mobilegym_basic_suite_loads_device_operation_tasks():
     assert all(task.rubric and task.rubric[0].check for task in suite.tasks)
 
 
+def test_adb_android_basic_suite_loads_device_operation_tasks():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "adb_android_basic.json"
+    suite = load_suite(suite_path)
+
+    assert suite.name == "adb_android_basic"
+    assert {task.category for task in suite.tasks} == {"device_operation"}
+    assert [task.id for task in suite.tasks] == [
+        "screenshot_home",
+        "go_home",
+        "open_settings",
+        "swipe_screen",
+        "type_english_text",
+    ]
+    # Hard assertions only require screenshot so --no-judge runs don't fail on
+    # the agent picking quick_action vs touch_gesture for the same outcome.
+    for task in suite.tasks:
+        assert task.hard_assertions.required_tools == ["screenshot"]
+
+
 def test_benchmark_suites_do_not_use_tool_sequence():
     suites_root = Path(__file__).resolve().parents[1] / "suites"
     offenders = []
