@@ -1,5 +1,6 @@
 {
   "name": "phone_control_v1",
+  "suite_category": "Perception & Control",
   "description": "Agent-driven phone control benchmark v1.",
   "trace_observations": [
     {

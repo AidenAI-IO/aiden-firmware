@@ -1237,6 +1237,7 @@ def list_benchmark_suites(suites_dir: Path) -> list[dict[str, Any]]:
                 "kind": kind,
                 "task_count": len(entries),
                 "categories": categories,
+                "suite_category": data.get("suite_category", "Other"),
             }
         suites.append(item)
     return suites
@@ -3062,6 +3063,41 @@ INDEX_HTML = r"""<!doctype html>
       min-width: 0;
       font-size: 12px;
     }
+    .suite-category-group {
+      border-bottom: 1px solid var(--border);
+    }
+    .suite-category-header {
+      position: sticky;
+      top: 0;
+      background: #f0f0f0;
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
+      cursor: pointer;
+      user-select: none;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      z-index: 1;
+    }
+    .suite-category-header:hover {
+      background: #e8e8e8;
+    }
+    .suite-category-header::before {
+      content: '▼';
+      font-size: 10px;
+      transition: transform 0.2s;
+    }
+    .suite-category-header.collapsed::before {
+      transform: rotate(-90deg);
+    }
+    .suite-category-body {
+      display: block;
+    }
+    .suite-category-body.collapsed {
+      display: none;
+    }
     .progress {
       height: 8px;
       background: #e0e0e0;
@@ -3243,12 +3279,7 @@ INDEX_HTML = r"""<!doctype html>
           </div>
           <input id="suiteFilter" type="search" style="max-width:172px" placeholder="Filter">
         </div>
-        <div class="table-wrap suite-table-wrap">
-          <table>
-            <thead><tr><th style="width:40px"></th><th>Suite</th><th style="width:96px">Kind</th><th style="width:72px">Tasks</th></tr></thead>
-            <tbody id="suiteRows"></tbody>
-          </table>
-        </div>
+        <div class="table-wrap suite-table-wrap" id="suitesContainer"></div>
       </section>
     </aside>
 
@@ -3314,6 +3345,9 @@ INDEX_HTML = r"""<!doctype html>
             <h2 class="tile-title">Jobs</h2>
             <div class="tile-kicker">Recent benchmark runs</div>
           </div>
+          <select id="jobCategoryFilter" style="max-width:200px; padding:4px 8px; border:1px solid var(--border); background:var(--field); border-radius:4px">
+            <option value="">All categories</option>
+          </select>
         </div>
         <div class="table-wrap job-table-wrap">
           <table>
@@ -3738,24 +3772,72 @@ INDEX_HTML = r"""<!doctype html>
 
     function renderSuites(){
       const filter = document.getElementById('suiteFilter').value.toLowerCase();
-      const tbody = document.getElementById('suiteRows');
-      tbody.innerHTML = '';
-      const filtered = suites.filter(s => !filter || (s.name + ' ' + s.key).toLowerCase().includes(filter));
-      if(!filtered.length){
-        tbody.innerHTML = '<tr><td class="empty-row" colspan="4">No suites found</td></tr>';
-      }
-      filtered.forEach(s => {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `<td><input type="checkbox" ${selectedSuites.has(s.key) ? 'checked' : ''}></td>
-          <td title="${escapeHtml(s.key)}"><div class="cell-main"><span>${escapeHtml(s.name)}</span><small>${escapeHtml(s.key)}</small></div></td>
-          <td><span class="status">${escapeHtml(s.kind)}</span></td>
-          <td>${s.task_count || 0}</td>`;
-        tr.querySelector('input').onchange = e => {
-          if(e.target.checked) selectedSuites.add(s.key); else selectedSuites.delete(s.key);
-          syncRunState();
-        };
-        tbody.appendChild(tr);
+      const container = document.getElementById('suitesContainer');
+
+      // Group suites by category
+      const grouped = {};
+      suites.forEach(s => {
+        const category = s.suite_category || 'Other';
+        if(!grouped[category]) grouped[category] = [];
+        grouped[category].push(s);
       });
+
+      // Sort categories
+      const categoryOrder = ['Basic Operations', 'Application Scenarios', 'Perception & Control', 'Memory & Cognition', 'MobileGym', 'Other'];
+      const sortedCategories = Object.keys(grouped).sort((a, b) => {
+        const aIndex = categoryOrder.indexOf(a);
+        const bIndex = categoryOrder.indexOf(b);
+        if(aIndex === -1 && bIndex === -1) return a.localeCompare(b);
+        if(aIndex === -1) return 1;
+        if(bIndex === -1) return -1;
+        return aIndex - bIndex;
+      });
+
+      container.innerHTML = '';
+
+      sortedCategories.forEach(category => {
+        const items = grouped[category];
+        const filtered = items.filter(s => !filter || (s.name + ' ' + s.key).toLowerCase().includes(filter));
+        if(!filtered.length) return;
+
+        const categoryDiv = document.createElement('div');
+        categoryDiv.className = 'suite-category-group';
+
+        const header = document.createElement('div');
+        header.className = 'suite-category-header';
+        header.innerHTML = `<span>${escapeHtml(category)}</span><span class="muted">(${filtered.length})</span>`;
+
+        const table = document.createElement('table');
+        table.innerHTML = '<thead><tr><th style="width:40px"></th><th>Suite</th><th style="width:96px">Kind</th><th style="width:72px">Tasks</th></tr></thead>';
+        const tbody = document.createElement('tbody');
+        tbody.className = 'suite-category-body';
+
+        filtered.forEach(s => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td><input type="checkbox" ${selectedSuites.has(s.key) ? 'checked' : ''}></td>
+            <td title="${escapeHtml(s.key)}"><div class="cell-main"><span>${escapeHtml(s.name)}</span><small>${escapeHtml(s.key)}</small></div></td>
+            <td><span class="status">${escapeHtml(s.kind)}</span></td>
+            <td>${s.task_count || 0}</td>`;
+          tr.querySelector('input').onchange = e => {
+            if(e.target.checked) selectedSuites.add(s.key); else selectedSuites.delete(s.key);
+            syncRunState();
+          };
+          tbody.appendChild(tr);
+        });
+
+        table.appendChild(tbody);
+
+        // Toggle collapse
+        header.onclick = () => {
+          header.classList.toggle('collapsed');
+          tbody.classList.toggle('collapsed');
+        };
+
+        categoryDiv.appendChild(header);
+        categoryDiv.appendChild(table);
+        container.appendChild(categoryDiv);
+      });
+
       syncRunState();
     }
 
@@ -3836,12 +3918,47 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     function renderJobs(){
+      const categoryFilter = document.getElementById('jobCategoryFilter').value;
       const tbody = document.getElementById('jobRows');
       tbody.innerHTML = '';
-      if(!jobs.length){
+
+      // Populate category filter if empty
+      const select = document.getElementById('jobCategoryFilter');
+      if(select.options.length === 1 && suites.length){
+        const categories = new Set();
+        suites.forEach(s => categories.add(s.suite_category || 'Other'));
+        const categoryOrder = ['Basic Operations', 'Application Scenarios', 'Perception & Control', 'Memory & Cognition', 'MobileGym', 'Other'];
+        const sortedCategories = Array.from(categories).sort((a, b) => {
+          const aIndex = categoryOrder.indexOf(a);
+          const bIndex = categoryOrder.indexOf(b);
+          if(aIndex === -1 && bIndex === -1) return a.localeCompare(b);
+          if(aIndex === -1) return 1;
+          if(bIndex === -1) return -1;
+          return aIndex - bIndex;
+        });
+        sortedCategories.forEach(cat => {
+          const option = document.createElement('option');
+          option.value = cat;
+          option.textContent = cat;
+          select.appendChild(option);
+        });
+      }
+
+      // Filter jobs by category
+      const filtered = jobs.filter(job => {
+        if(!categoryFilter) return true;
+        const jobSuiteKeys = (job.suites || []).map(key => String(key));
+        return jobSuiteKeys.some(key => {
+          const suite = suites.find(s => s.key === key);
+          return suite && (suite.suite_category || 'Other') === categoryFilter;
+        });
+      });
+
+      if(!filtered.length){
         tbody.innerHTML = '<tr><td class="empty-row" colspan="6">No jobs yet</td></tr>';
       }
-      jobs.forEach(job => {
+
+      filtered.forEach(job => {
         const suiteKeys = (job.suites || []).map(key => String(key));
         const suiteNames = suiteKeys.map(suiteDisplayName);
         const suiteLabel = suiteNames.length ? suiteNames.join(', ') : 'No suites';
@@ -4006,6 +4123,7 @@ INDEX_HTML = r"""<!doctype html>
       setAgentConfigStatus('Modified');
     };
     document.getElementById('suiteFilter').oninput = renderSuites;
+    document.getElementById('jobCategoryFilter').onchange = renderJobs;
     document.getElementById('runBtn').onclick = openRunEnvironmentDialog;
     document.getElementById('closeRunEnv').onclick = closeRunEnvironmentDialog;
     document.getElementById('cancelRunEnv').onclick = closeRunEnvironmentDialog;
