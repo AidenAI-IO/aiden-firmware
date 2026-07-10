@@ -397,7 +397,7 @@ func (l *AgentLoop) touchPointerModeMismatchContentFinalAnswer(contentResp *llms
 		return ""
 	}
 	choice := contentResp.Choices[0]
-	if len(choice.ToolCalls) == 0 && choice.FuncCall == nil {
+	if !choiceHasToolCall(choice, "touch_gesture") {
 		return ""
 	}
 	content := strings.TrimSpace(choice.Content)
@@ -414,6 +414,18 @@ func (l *AgentLoop) touchPointerModeMismatchContentFinalAnswer(contentResp *llms
 	platform := strings.ToLower(strings.TrimSpace(l.DevicePlatform))
 	pointerMode := strings.ToLower(strings.TrimSpace(l.PointerMode))
 	return touchPointerModeMismatchGuidance(platform, pointerMode)
+}
+
+func choiceHasToolCall(choice *llms.ContentChoice, toolName string) bool {
+	if choice == nil {
+		return false
+	}
+	for _, call := range choice.ToolCalls {
+		if call.FunctionCall != nil && toolNameEqual(call.FunctionCall.Name, toolName) {
+			return true
+		}
+	}
+	return false
 }
 
 func touchPointerModeMismatchGuidance(platform, pointerMode string) string {

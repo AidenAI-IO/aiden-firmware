@@ -320,6 +320,45 @@ func TestRuntimeRunStopsPointerModeMismatchContentBeforeRetryToolCall(t *testing
 	}
 }
 
+func TestRuntimeRunDoesNotStopPointerModeMismatchContentForOtherTool(t *testing.T) {
+	stopMessage := `touch_gesture produced no visible screen change, and the device is configured as Android with hid.pointer_mode="absolute". Stop operation here because the touch mode likely does not match the target. Please switch hid.pointer_mode to "touchscreen", restart the agent, and retry.`
+	model := &scriptedModel{responses: []*llms.ContentResponse{
+		toolCallResponseWithContent("call_1", "screenshot", `{}`, stopMessage),
+		contentResponse("continued after screenshot"),
+	}}
+	tool := &stubTool{
+		name:        "screenshot",
+		description: "Screenshot.",
+		output:      `{"ok":true}`,
+	}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{
+			Model:           ModelConfig{Provider: "fake"},
+			Instruction:     "Use tools.",
+			DefaultPlatform: "android",
+			HID:             HIDConfig{PointerMode: "absolute"},
+		}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"screenshot": tool}},
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "take a screenshot"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "continued after screenshot" {
+		t.Fatalf("output = %q, want model final answer", result.Output)
+	}
+	if model.callCount != 2 {
+		t.Fatalf("model call count = %d, want continue to second model call", model.callCount)
+	}
+	if len(tool.inputs) != 1 {
+		t.Fatalf("screenshot calls = %d, want 1", len(tool.inputs))
+	}
+}
+
 func TestRuntimeRunContinuesTouchGestureWhenPointerModeMatches(t *testing.T) {
 	model := &scriptedModel{responses: roleToolResponses("touch_gesture", `{"type":"tap","point":{"x":500,"y":500}}`, "verified after inspection")}
 	tool := &stubTool{
