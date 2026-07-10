@@ -4,52 +4,57 @@ import (
 	"strings"
 	"testing"
 
+	"aiden-agent/internal/agent/contextmanager"
+
 	"github.com/tmc/langchaingo/llms"
 )
 
 func TestFreshNewContextManagerSeedsSystemPromptOnlyForFreshSession(t *testing.T) {
 	sessionFolder := t.TempDir()
 
-	manager, err := freshNewContextManager("system v1", "first request", nil, sessionFolder)
+	manager, err := InitializeContextManager("system v1", sessionFolder, nil)
 	if err != nil {
 		t.Fatalf("freshNewContextManager() error = %v", err)
 	}
 	messages := manager.ConvertToStandardMessageList()
-	if len(messages) != 2 {
-		t.Fatalf("messages = %d, want 2", len(messages))
+	if len(messages) != 1 {
+		t.Fatalf("messages = %d, want 1", len(messages))
 	}
-	if text := messageText(messages[:1]); text != "system v1\n" {
+	if text := messageText(messages); text != "system v1\n" {
 		t.Fatalf("system prompt = %q, want original system v1", text)
 	}
-	if text := messageText(messages[1:2]); text != "first request\n" {
-		t.Fatalf("first request = %q", text)
+	if err := manager.AppendMessage(contextmanager.Message{Role: contextmanager.MessageRoleUser, Content: "first request"}); err != nil {
+		t.Fatalf("AppendMessage() error = %v", err)
 	}
 
-	reloaded, err := freshNewContextManager("system v2", "second request", nil, sessionFolder)
+	reloaded, err := InitializeContextManager("system v2", sessionFolder, nil)
 	if err != nil {
 		t.Fatalf("reload freshNewContextManager() error = %v", err)
 	}
 	reloadedMessages := reloaded.ConvertToStandardMessageList()
-	if len(reloadedMessages) != 3 {
-		t.Fatalf("messages = %d, want 3", len(reloadedMessages))
+	if len(reloadedMessages) != 2 {
+		t.Fatalf("messages = %d, want 2", len(reloadedMessages))
 	}
 	if strings.Contains(messageText(reloadedMessages), "system v2") {
 		t.Fatalf("reloaded context should not re-seed a second system prompt:\n%s", messageText(reloadedMessages))
 	}
-	if text := messageText(reloadedMessages[2:3]); text != "second request\n" {
-		t.Fatalf("second request = %q", text)
+	if text := messageText(reloadedMessages[1:2]); text != "first request\n" {
+		t.Fatalf("reloaded user message = %q", text)
 	}
 }
 
 func TestUserMessageFromInputPreservesAttachments(t *testing.T) {
-	manager, err := freshNewContextManager("system", "hello", []InputAttachment{{
+	manager, err := InitializeContextManager("system", t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("freshNewContextManager() error = %v", err)
+	}
+	if err := manager.AppendMessage(userMessageFromInput(manager, "hello", []InputAttachment{{
 		Kind:     "image",
 		Name:     "screen.png",
 		MIMEType: "image/png",
 		Data:     []byte("data"),
-	}}, t.TempDir())
-	if err != nil {
-		t.Fatalf("freshNewContextManager() error = %v", err)
+	}})); err != nil {
+		t.Fatalf("AppendMessage() error = %v", err)
 	}
 
 	messages := manager.ConvertToStandardMessageList()

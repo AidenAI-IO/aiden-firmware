@@ -69,7 +69,7 @@ func TestEnqueueAndPoll(t *testing.T) {
 }
 
 func TestSendQueuedCommandWaitsForHTTPResult(t *testing.T) {
-	bridge := NewPhoneBridge(nil)
+	bridge := newPhoneBridgeForTest()
 	defer bridge.queue.Stop()
 
 	go func() {
@@ -111,7 +111,7 @@ func TestSendQueuedCommandWaitsForHTTPResult(t *testing.T) {
 }
 
 func TestSendQueuedCommandReturnsLateResultBeforeContextCancel(t *testing.T) {
-	bridge := NewPhoneBridge(nil)
+	bridge := newPhoneBridgeForTest()
 	defer bridge.queue.Stop()
 
 	ctx, cancel := context.WithCancel(context.Background())

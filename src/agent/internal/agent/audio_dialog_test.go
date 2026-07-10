@@ -1119,7 +1119,7 @@ func TestAudioDialogRunVoiceTurnDoesNotPersistUserWhenVoiceRunActive(t *testing.
 }
 
 func TestAudioDialogRunVoiceTurnPersistsUserBeforeRunEvents(t *testing.T) {
-	configDir := t.TempDir()
+	configDir := ensureTestConfigDir(t, t.TempDir())
 	model := &scriptedModel{
 		responses: roleToolResponses("echo", `{"__arg1":"{}"}`, "voice tool reply"),
 	}
@@ -1298,7 +1298,7 @@ func (m *blockingFirstCallModel) Call(ctx context.Context, prompt string, option
 }
 
 func TestAudioDialogRunScriptUsesConfiguredTTS(t *testing.T) {
-	configDir := t.TempDir()
+	configDir := ensureTestConfigDir(t, t.TempDir())
 	scriptsDir := filepath.Join(configDir, "scripts")
 	if err := os.MkdirAll(scriptsDir, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
@@ -1486,7 +1486,7 @@ func TestAudioDialogRunAgentTurnDoesNotWaitForAgentSendPromptStart(t *testing.T)
 }
 
 func TestAudioDialogConfigureRuntimeToolsDoesNotOverwriteSharedSpeaker(t *testing.T) {
-	configDir := t.TempDir()
+	configDir := ensureTestConfigDir(t, t.TempDir())
 	scriptsDir := filepath.Join(configDir, "scripts")
 	if err := os.MkdirAll(scriptsDir, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)

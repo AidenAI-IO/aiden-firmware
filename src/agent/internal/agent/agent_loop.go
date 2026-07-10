@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"aiden-agent/internal/agent/context_manager"
+	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/executor"
 
 	"github.com/tmc/langchaingo/agents"
@@ -36,7 +36,7 @@ type AgentLoop struct {
 	SteerInterrupt         func() <-chan struct{}
 	DevicePlatform         string
 	PointerMode            string
-	contextManager         *context_manager.ContextManager
+	contextManager         *contextmanager.ContextManager
 }
 
 func NewAgentLoop(
@@ -47,7 +47,7 @@ func NewAgentLoop(
 	callbacksHandler callbacks.Handler,
 	recorder *EpisodeRecorder,
 	screenshotPruning ScreenshotPruningConfig,
-	contextManager *context_manager.ContextManager,
+	contextManager *contextmanager.ContextManager,
 ) *AgentLoop {
 	if contextManager == nil {
 		log.Fatalf("context manager is nil")
@@ -131,7 +131,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 
 	actions, finish, err := parser.ParseOutput(contentResp)
 	if errors.Is(err, agents.ErrUnableToParseOutput) {
-		if err := llmExecutor.AppendMessage(context_manager.ConvertChoiceToContextManagerMessage(*contentResp.Choices[0])); err != nil {
+		if err := llmExecutor.AppendMessage(contextmanager.ConvertChoiceToContextManagerMessage(*contentResp.Choices[0])); err != nil {
 			return "", false, err
 		}
 		return "", false, nil
@@ -140,7 +140,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		return "", false, err
 	}
 	if finish != nil {
-		if err := llmExecutor.AppendMessage(context_manager.ConvertChoiceToContextManagerMessage(*contentResp.Choices[0])); err != nil {
+		if err := llmExecutor.AppendMessage(contextmanager.ConvertChoiceToContextManagerMessage(*contentResp.Choices[0])); err != nil {
 			return "", false, err
 		}
 		answer, _ := finish.ReturnValues[agentLoopOutputKey].(string)
@@ -159,7 +159,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 	}
 
 	action := actions[0]
-	if err := llmExecutor.AppendMessage(context_manager.ConvertChoiceToContextManagerMessage(choiceWithOnlyToolCall(*contentResp.Choices[0], action.ToolID))); err != nil {
+	if err := llmExecutor.AppendMessage(contextmanager.ConvertChoiceToContextManagerMessage(choiceWithOnlyToolCall(*contentResp.Choices[0], action.ToolID))); err != nil {
 		return "", false, err
 	}
 	toolExecution := l.executeToolCall(ctx, ToolCallExecution{

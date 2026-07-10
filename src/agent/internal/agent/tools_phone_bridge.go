@@ -187,7 +187,7 @@ func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 	if err != nil {
 		status := PhoneBridgeStatus{}
 		if t.bridge != nil {
-			status = t.bridge.Status()
+			status = t.bridge.getStatus()
 		}
 		te := NewToolErrorWithDetails(CodeToolExecutionFailed,
 			fmt.Sprintf("send command: %v", err),
@@ -199,7 +199,7 @@ func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 	if resp.Error != nil {
 		status := PhoneBridgeStatus{}
 		if t.bridge != nil {
-			status = t.bridge.Status()
+			status = t.bridge.getStatus()
 		}
 		// Preserve upstream Code/Category; attach app-side fallback hint.
 		te := resp.Error
@@ -232,7 +232,7 @@ func (s *ToolSet) RegisterPhoneBridge(bridge *PhoneBridge) {
 		return
 	}
 	s.phoneBridge = bridge
-	if status := bridge.Status(); status.Environment != nil {
+	if status := bridge.getStatus(); status.Environment != nil {
 		env := clonePhoneEnvironment(*status.Environment)
 		s.UpdateDeviceEnvironment(&env)
 	}
