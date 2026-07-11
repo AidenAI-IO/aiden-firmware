@@ -1113,34 +1113,10 @@ func (r *Runtime) resetPlannerContext() {
 }
 
 func (r *Runtime) availableTools() []langtools.Tool {
-	available := make([]langtools.Tool, 0)
-	loadAllTools := r != nil && r.config.LoadAllTools
-
-	for _, tool := range r.tools.All() {
-		if loadAllTools || isAgentToolExposed(tool.Name()) {
-			available = append(available, tool)
-		}
+	if r == nil || r.tools == nil {
+		return nil
 	}
-
-	return available
-}
-
-func (r *Runtime) appendToolIfAvailable(tools []langtools.Tool, name string) []langtools.Tool {
-	if tool, ok := r.tools.Get(name); ok {
-		if !toolAlreadyIncluded(tools, name) {
-			return append(tools, tool)
-		}
-	}
-	return tools
-}
-
-func toolAlreadyIncluded(tools []langtools.Tool, name string) bool {
-	for _, t := range tools {
-		if t.Name() == name {
-			return true
-		}
-	}
-	return false
+	return NewToolSpecs(r.tools.All()).AgentTools(r.config.LoadAllTools)
 }
 
 func toolNamesFromTools(tools []langtools.Tool) []string {

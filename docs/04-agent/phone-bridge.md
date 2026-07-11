@@ -504,7 +504,7 @@ All time fields must be **RFC3339 format with timezone offset**, e.g.:
 - `2026-06-02T15:00:00+08:00` (3pm GMT+8)
 - `2026-06-02T07:00:00Z` (7am UTC)
 
-The board-side `current_time` tool can provide the model with current timezone baseline.
+Use the phone environment timezone when it is available. The Agent can use `shell` for a controller-time baseline, but must not assume the controller timezone matches the phone.
 
 ### Permissions and Privacy
 

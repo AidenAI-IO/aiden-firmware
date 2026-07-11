@@ -225,7 +225,7 @@ func TestRuntimeRunWaitForWakeupAppendsToolResultBeforeFinishing(t *testing.T) {
 	}}
 	controller := NewWaitForWakeupController()
 	runtime := NewRuntimeWithDeps(
-		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."}),
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", LoadAllTools: true}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -2451,7 +2451,7 @@ func TestRuntimeLogsPreserveThinkStartTagInToolCallContent(t *testing.T) {
 	thinkingContent := "<think>\n需要查当前时间。\n</think>"
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			toolCallResponseWithContent("call_1", "current_time", `{"timezone":"local"}`, thinkingContent),
+			toolCallResponseWithContent("call_1", "shell", `{"command":"date"}`, thinkingContent),
 			contentResponse("已完成。"),
 		},
 	}
@@ -2463,7 +2463,7 @@ func TestRuntimeLogsPreserveThinkStartTagInToolCallContent(t *testing.T) {
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
-			"current_time": NewCurrentTimeTool(),
+			"shell": &stubTool{name: "shell", description: "Run controller commands.", output: "now"},
 		}},
 		NewSkillIndex(),
 	)
@@ -2478,8 +2478,8 @@ func TestRuntimeLogsPreserveThinkStartTagInToolCallContent(t *testing.T) {
 	if !strings.Contains(logText, "Role output: role=agent") {
 		t.Fatalf("missing agent role output log:\n%s", logText)
 	}
-	if !strings.Contains(logText, "Tool call: name=current_time") {
-		t.Fatalf("missing current_time tool call log:\n%s", logText)
+	if !strings.Contains(logText, "Tool call: name=shell") {
+		t.Fatalf("missing shell tool call log:\n%s", logText)
 	}
 	if strings.Count(logText, "<think>") < 2 {
 		t.Fatalf("logs lost think start tag:\n%s", logText)
@@ -2563,20 +2563,20 @@ func TestRuntimeSimpleLoopDoesNotGenerateImplicitTodo(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
 			toolCallResponse("call_1", "screenshot", `{"__arg1":"{}"}`),
-			toolCallResponse("call_2", "current_time", `{"__arg1":"{}"}`),
+			toolCallResponse("call_2", "shell", `{"command":"date"}`),
 			contentResponse("done"),
 			verifierFinishResponse("done"),
 		},
 	}
 	screenshot := &stubTool{name: "screenshot", description: "Capture screen.", output: "screen"}
-	currentTime := &stubTool{name: "current_time", description: "Get time.", output: "now"}
+	shell := &stubTool{name: "shell", description: "Run controller commands.", output: "now"}
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
-			"screenshot":   screenshot,
-			"current_time": currentTime,
+			"screenshot": screenshot,
+			"shell":      shell,
 		}},
 		NewSkillIndex(),
 	)
@@ -2597,24 +2597,24 @@ func TestRuntimeSimpleLoopDoesNotGenerateImplicitTodo(t *testing.T) {
 	if closed := runEventsOfType(events, "todo_closed"); len(closed) != 0 {
 		t.Fatalf("simple loop emitted implicit todo_closed events: %#v", closed)
 	}
-	if len(screenshot.inputs) != 1 || len(currentTime.inputs) != 1 {
-		t.Fatalf("expected simple tools to execute without todo, screenshot=%#v current_time=%#v", screenshot.inputs, currentTime.inputs)
+	if len(screenshot.inputs) != 1 || len(shell.inputs) != 1 {
+		t.Fatalf("expected simple tools to execute without todo, screenshot=%#v shell=%#v", screenshot.inputs, shell.inputs)
 	}
 }
 
 func TestRuntimeForceSimpleLoopDoesNotGenerateTodo(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			toolCallResponse("call_1", "current_time", `{"__arg1":"{}"}`),
+			toolCallResponse("call_1", "shell", `{"command":"date"}`),
 			contentResponse("done"),
 		},
 	}
-	currentTime := &stubTool{name: "current_time", description: "Get time.", output: "now"}
+	shell := &stubTool{name: "shell", description: "Run controller commands.", output: "now"}
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", ForceSimpleLoop: true}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
-		&ToolSet{tools: map[string]langtools.Tool{"current_time": currentTime}},
+		&ToolSet{tools: map[string]langtools.Tool{"shell": shell}},
 		NewSkillIndex(),
 	)
 
@@ -2634,8 +2634,8 @@ func TestRuntimeForceSimpleLoopDoesNotGenerateTodo(t *testing.T) {
 	if closed := runEventsOfType(events, "todo_closed"); len(closed) != 0 {
 		t.Fatalf("single-agent loop emitted todo_closed events: %#v", closed)
 	}
-	if len(currentTime.inputs) != 1 {
-		t.Fatalf("expected single-agent tool to execute without todo, inputs=%#v", currentTime.inputs)
+	if len(shell.inputs) != 1 {
+		t.Fatalf("expected single-agent tool to execute without todo, inputs=%#v", shell.inputs)
 	}
 }
 

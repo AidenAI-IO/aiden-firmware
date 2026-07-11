@@ -42,6 +42,7 @@ type ToolDescriptor struct {
 	Description  string          `json:"description"`
 	InputMode    string          `json:"input_mode"`
 	ExampleInput string          `json:"example_input"`
+	ArgsSchema   map[string]any  `json:"args_schema"`
 	HTTP         ToolHTTPBinding `json:"http"`
 }
 
@@ -65,11 +66,6 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		Category:     "audio",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{}`,
-	},
-	"current_time": {
-		Category:     "system",
-		InputMode:    toolInputModeText,
-		ExampleInput: `{"timezone":"Asia/Shanghai"}`,
 	},
 	toolWaitForWakeup: {
 		Category:     "system",
@@ -196,11 +192,6 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		Category:     "web",
 		InputMode:    toolInputModeText,
 		ExampleInput: `{"query":"Raspberry Pi"}`,
-	},
-	"calculator": {
-		Category:     "system",
-		InputMode:    toolInputModeText,
-		ExampleInput: `{"expression":"2 + 2"}`,
 	},
 	"web_scraper": {
 		Category:     "web",
@@ -350,23 +341,40 @@ func (s *ToolSpecs) All() []ToolSpec {
 	return result
 }
 
-func (s *ToolSpecs) Descriptors() []ToolDescriptor {
+// AgentTools returns the tools sent to the conversational model. loadAll only
+// bypasses AgentExposed; it never changes HTTP exposure policy.
+func (s *ToolSpecs) AgentTools(loadAll bool) []langtools.Tool {
+	if s == nil {
+		return nil
+	}
+	tools := make([]langtools.Tool, 0, len(s.names))
+	for _, spec := range s.All() {
+		if loadAll || spec.AgentExposed {
+			tools = append(tools, spec.Tool)
+		}
+	}
+	return tools
+}
+
+func (s *ToolSpecs) HTTPDescriptors() []ToolDescriptor {
 	if s == nil {
 		return nil
 	}
 	descriptors := make([]ToolDescriptor, 0, len(s.names))
 	for _, spec := range s.All() {
-		descriptors = append(descriptors, spec.Descriptor())
+		if spec.HTTPExposed {
+			descriptors = append(descriptors, spec.Descriptor())
+		}
 	}
 	return descriptors
 }
 
-func (s *ToolSpecs) DescriptorByName(name string) (ToolDescriptor, bool) {
+func (s *ToolSpecs) LookupHTTP(name string) (ToolSpec, bool) {
 	spec, ok := s.Lookup(name)
-	if !ok {
-		return ToolDescriptor{}, false
+	if !ok || !spec.HTTPExposed {
+		return ToolSpec{}, false
 	}
-	return spec.Descriptor(), true
+	return spec, true
 }
 
 func (spec ToolSpec) Descriptor() ToolDescriptor {
@@ -376,6 +384,7 @@ func (spec ToolSpec) Descriptor() ToolDescriptor {
 		Description:  strings.TrimSpace(spec.Description),
 		InputMode:    defaultString(spec.InputMode, toolInputModeText),
 		ExampleInput: spec.ExampleInput,
+		ArgsSchema:   spec.LLMSchema(),
 		HTTP: ToolHTTPBinding{
 			Method: "POST",
 			Path:   "/api/tools/" + spec.Name,

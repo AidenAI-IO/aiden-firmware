@@ -31,7 +31,9 @@ type ShellTool struct {
 func (t *ShellTool) Name() string { return "shell" }
 
 func (t *ShellTool) Description() string {
-	return `Execute a shell command or manage a running shell session. For one-shot commands, pass "command" and read the returned output. For interactive or long-running programs, set "background" (or an "action") to start a session that returns a session_id, then drive it with follow-up "action" calls ("poll", "write", "submit", "send_keys", "resize", "stop") carrying that session_id.`
+	return `Execute a shell command or manage a running shell session on the Aiden hardware controller. ` +
+		`For one-shot commands, pass "command" and read the returned output. Shell can also inspect the controller's precise clock or timezone and perform deterministic calculations with available command-line utilities; these results describe the controller, not the target device shown in screenshots. ` +
+		`For interactive or long-running programs, set "background" (or an "action") to start a session that returns a session_id, then drive it with follow-up "action" calls ("poll", "write", "submit", "send_keys", "resize", "stop") carrying that session_id.`
 }
 
 func (t *ShellTool) ArgsSchema() map[string]any {

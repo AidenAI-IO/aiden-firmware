@@ -771,7 +771,7 @@ func liveActivityToolCallStatus(event RunEvent) liveActivityToolStatus {
 		status.action = "press_keys"
 	case "web_search", "wikipedia", "web_scraper":
 		status.action = "search"
-	case "current_time", "weather":
+	case "weather":
 		status.action = "check_information"
 	}
 	if status.step == "" {
@@ -1062,9 +1062,7 @@ func liveActivityToolCallStep(tool string) string {
 		return "Adjusting audio"
 	case "image_diff":
 		return "Comparing screen changes"
-	case "calculator":
-		return "Calculating"
-	case "current_time", "weather":
+	case "weather":
 		return "Checking information"
 	case "recall_memory", "recall_session_chunks", "recall_device_memory", "inspect_episode":
 		return "Recalling context"

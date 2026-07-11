@@ -1212,7 +1212,7 @@ skill_mark_used
 
 Where `skill_manage` can create, modify, delete any effective skill under `configDir/skills/`, manage supporting files, and maintain lifecycle state. `skill_mark_used` is used to distinguish “actually used a skill” from “only read a skill”.
 
-These skill meta-tools are registered with runtime by default and all four remain callable by the conversational Agent. `allowed_tools` is parsed for validation and forward compatibility; it does not currently expand or narrow the Agent tool catalog for active skills. The HTTP Tool API exposes only the non-maintenance skill tools; `skill_manage` and `skill_mark_used` are not exposed via HTTP.
+These skill meta-tools are registered with runtime and all four remain callable by the conversational Agent. `allowed_tools` is parsed for validation and forward compatibility; it does not currently expand or narrow the Agent tool catalog for active skills. The HTTP Tool API exposes only the non-maintenance skill tools; `skill_manage` and `skill_mark_used` are not exposed via HTTP.
 
 Note:
 

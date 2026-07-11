@@ -211,8 +211,8 @@ func TestShouldForwardToolWithExplicitList(t *testing.T) {
 	if !shouldForwardToEnvironmentBridge("touch_gesture", environmentBridgeTools) {
 		t.Error("touch_gesture should be forwarded when in explicit list")
 	}
-	if shouldForwardToEnvironmentBridge("calculator", environmentBridgeTools) {
-		t.Error("calculator should not be forwarded when not in explicit list")
+	if shouldForwardToEnvironmentBridge("local_utility", environmentBridgeTools) {
+		t.Error("local_utility should not be forwarded when not in explicit list")
 	}
 	if shouldForwardToEnvironmentBridge("keyboard_tap", environmentBridgeTools) {
 		t.Error("keyboard_tap should not be forwarded when not in explicit list")
@@ -222,7 +222,7 @@ func TestShouldForwardToolWithExplicitList(t *testing.T) {
 func TestShouldForwardToolEmptyListForwardsNothing(t *testing.T) {
 	// An empty forward list must forward nothing; there is no hardcoded default.
 	var environmentBridgeTools []string
-	for _, tool := range []string{"screenshot", "keyboard_tap", "calculator"} {
+	for _, tool := range []string{"screenshot", "keyboard_tap", "local_utility"} {
 		if shouldForwardToEnvironmentBridge(tool, environmentBridgeTools) {
 			t.Errorf("%s should not be forwarded when forward list is empty", tool)
 		}
@@ -236,7 +236,7 @@ func TestShouldForwardToolWildcard(t *testing.T) {
 		toolName      string
 		wantForwarded bool
 	}{
-		{"star matches everything", []string{"*"}, "calculator", true},
+		{"star matches everything", []string{"*"}, "local_utility", true},
 		{"star matches device tool", []string{"*"}, "screenshot", true},
 		{"prefix glob matches", []string{"keyboard_*"}, "keyboard_tap", true},
 		{"prefix glob matches text", []string{"keyboard_*"}, "keyboard_text", true},
@@ -261,17 +261,17 @@ func TestShouldForwardToolWildcard(t *testing.T) {
 }
 
 func TestEnvironmentBridgeForwardsByWildcard(t *testing.T) {
-	// Create a mock environment bridge with keyboard_tap and calculator
+	// Create a mock environment bridge with keyboard_tap and a local utility.
 	keyboard := &stubTool{name: "keyboard_tap", description: "Keyboard", output: "remote keyboard"}
-	calculator := &stubTool{name: "calculator", description: "Calculator", output: "remote calc"}
-	server := newMockEnvironmentBridge(t, keyboard, calculator)
+	utility := &stubTool{name: "local_utility", description: "Utility", output: "remote utility"}
+	server := newMockEnvironmentBridge(t, keyboard, utility)
 	defer server.Close()
 
 	localKeyboard := &stubTool{name: "keyboard_tap", description: "Keyboard", output: "local keyboard"}
-	localCalculator := &stubTool{name: "calculator", description: "Calculator", output: "local calc"}
-	specs := NewToolSpecs([]langtools.Tool{localKeyboard, localCalculator})
+	localUtility := &stubTool{name: "local_utility", description: "Utility", output: "local utility"}
+	specs := NewToolSpecs([]langtools.Tool{localKeyboard, localUtility})
 
-	// "keyboard_*" should forward keyboard_tap but not calculator
+	// "keyboard_*" should forward keyboard_tap but not the local utility.
 	environmentBridgeTools := []string{"keyboard_*"}
 
 	kbRes := executeToolCall(context.Background(), ToolCallExecution{
@@ -284,28 +284,28 @@ func TestEnvironmentBridgeForwardsByWildcard(t *testing.T) {
 		t.Errorf("keyboard_tap should be forwarded by keyboard_* glob, got: %q", kbRes.Result.Output)
 	}
 
-	calcRes := executeToolCall(context.Background(), ToolCallExecution{
+	utilityRes := executeToolCall(context.Background(), ToolCallExecution{
 		Specs:                  specs,
-		Action:                 schema.AgentAction{Tool: "calculator", ToolInput: "1+1"},
+		Action:                 schema.AgentAction{Tool: "local_utility", ToolInput: "{}"},
 		EnvironmentBridge:      NewEnvironmentBridgeClient(server.URL),
 		EnvironmentBridgeTools: environmentBridgeTools,
 	})
-	if calcRes.Result.Output != "local calc" {
-		t.Errorf("calculator should run locally with keyboard_* glob, got: %q", calcRes.Result.Output)
+	if utilityRes.Result.Output != "local utility" {
+		t.Errorf("local_utility should run locally with keyboard_* glob, got: %q", utilityRes.Result.Output)
 	}
 }
 
 func TestEnvironmentBridgeOnlyForwardsSpecifiedTools(t *testing.T) {
-	// Create a mock environment bridge with both screenshot and calculator
+	// Create a mock environment bridge with both screenshot and a local utility.
 	screenshot := &stubTool{name: "screenshot", description: "Screenshot", output: "remote screenshot"}
-	calculator := &stubTool{name: "calculator", description: "Calculator", output: "remote calc"}
-	server := newMockEnvironmentBridge(t, screenshot, calculator)
+	utility := &stubTool{name: "local_utility", description: "Utility", output: "remote utility"}
+	server := newMockEnvironmentBridge(t, screenshot, utility)
 	defer server.Close()
 
 	// Create local specs for both tools with different outputs
 	localScreenshot := &stubTool{name: "screenshot", description: "Screenshot", output: "local screenshot"}
-	localCalculator := &stubTool{name: "calculator", description: "Calculator", output: "local calc"}
-	specs := NewToolSpecs([]langtools.Tool{localScreenshot, localCalculator})
+	localUtility := &stubTool{name: "local_utility", description: "Utility", output: "local utility"}
+	specs := NewToolSpecs([]langtools.Tool{localScreenshot, localUtility})
 
 	// Forward only screenshot
 	environmentBridgeTools := []string{"screenshot"}
@@ -321,15 +321,15 @@ func TestEnvironmentBridgeOnlyForwardsSpecifiedTools(t *testing.T) {
 		t.Errorf("screenshot should be forwarded, got output: %q", screenshotRes.Result.Output)
 	}
 
-	// Calculator should run locally (local output)
-	calcRes := executeToolCall(context.Background(), ToolCallExecution{
+	// The local utility should run locally.
+	utilityRes := executeToolCall(context.Background(), ToolCallExecution{
 		Specs:                  specs,
-		Action:                 schema.AgentAction{Tool: "calculator", ToolInput: "1+1"},
+		Action:                 schema.AgentAction{Tool: "local_utility", ToolInput: "{}"},
 		EnvironmentBridge:      NewEnvironmentBridgeClient(server.URL),
 		EnvironmentBridgeTools: environmentBridgeTools,
 	})
-	if calcRes.Result.Output != "local calc" {
-		t.Errorf("calculator should run locally, got output: %q", calcRes.Result.Output)
+	if utilityRes.Result.Output != "local utility" {
+		t.Errorf("local_utility should run locally, got output: %q", utilityRes.Result.Output)
 	}
 }
 

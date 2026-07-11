@@ -23,16 +23,13 @@ metadata:
       save_memory,
       skill_read,
       run_script,
-      list_scripts,
-      read_script,
-      write_script,
       shell,
     ]
 ---
 
 Use this skill when the task requires operating a visible connected device UI. This is the complete generic device-operation playbook; do not split routine app switching, text entry, scrolling, picker, or screenshot recovery work into child skills.
 
-Use `run_script` only when the user explicitly asks to run a prepared demo script; pass only a script file name from the config directory's `scripts/` folder. It executes JSONL script lines directly without LLM planning between steps, and `tts` lines start playback asynchronously without waiting for speech to finish. Use `list_scripts` to see which scripts exist, `read_script` to inspect a script's content, and `write_script` to create or update one; for the script file format see the script-author skill.
+Use `run_script` only when the user explicitly asks to run a prepared demo script; pass only a script file name from the config directory's `scripts/` folder. It executes JSONL script lines directly without LLM planning between steps, and `tts` lines start playback asynchronously without waiting for speech to finish. Script-file listing, reading, and writing require the opt-in `load_all_tools` catalog; when those tools are available, follow the script-author skill.
 
 ## Core Loop
 

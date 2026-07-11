@@ -1029,6 +1029,23 @@ func TestMouseScrollToolRejectsOutOfRangeDelta(t *testing.T) {
 	}
 }
 
+func TestMouseScrollToolRejectsTouchscreenPointerMode(t *testing.T) {
+	tool := &MouseScrollTool{pc: testTouchscreenPointerController(nil, &pointerState{})}
+	ctx, _ := WithToolError(context.Background())
+
+	out, err := tool.Call(ctx, `{"delta":-3}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	want := "mouse_scroll is unsupported when pointer_mode is touchscreen; use touch_gesture"
+	if out != want {
+		t.Fatalf("output = %q, want %q", out, want)
+	}
+	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeInvalidArguments || got.Message != want {
+		t.Fatalf("ToolError = %+v, want invalid_arguments with output message", got)
+	}
+}
+
 func TestMouseScrollUsesLastPointerPosition(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	state := &pointerState{}

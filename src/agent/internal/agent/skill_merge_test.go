@@ -287,7 +287,7 @@ func TestMergeResultOKAcceptsDelegateAllowedTool(t *testing.T) {
 name: alpha
 description: Alpha
 metadata:
-  allowed_tools: [calculator, delegate_researcher]
+  allowed_tools: [shell, delegate_researcher]
 ---
 
 Do alpha.
@@ -904,6 +904,11 @@ func TestBundledDeviceOperatorAllowedToolsCoverEmbeddedPlaybooks(t *testing.T) {
 	} {
 		if _, ok := deviceTools[tool]; !ok {
 			t.Fatalf("device-operator allowed_tools missing %q required by embedded playbooks", tool)
+		}
+	}
+	for _, tool := range []string{"list_scripts", "read_script", "write_script"} {
+		if _, ok := deviceTools[tool]; ok {
+			t.Fatalf("device-operator allowed_tools should not include opt-in script authoring tool %q", tool)
 		}
 	}
 }

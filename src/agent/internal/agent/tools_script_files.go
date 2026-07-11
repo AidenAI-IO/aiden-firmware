@@ -197,14 +197,13 @@ func NewWriteScriptTool(scriptsDir string) *WriteScriptTool {
 func (t *WriteScriptTool) Name() string { return "write_script" }
 
 func (t *WriteScriptTool) Description() string {
-	return "Create or overwrite a demo script file; writing replaces any existing file with the same name. " +
-		"See the script-author skill for the '#' description header and JSONL step format."
+	return "Create or overwrite a demo script file; writing replaces any existing file with the same name. Use the script-author skill for the authoring workflow."
 }
 
 func (t *WriteScriptTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
 		"file":    stringArgSchema("Script file name under scripts/, for example demo.jsonl. Do not pass a path."),
-		"content": stringArgSchema("Full script file content. Begin with '#' description lines, then one JSONL step per line."),
+		"content": stringArgSchema(`Full script file content. Begin with '#' description lines, then one JSONL step per line: {"type":"wait","ms":500}, {"type":"tts","text":"..."}, or {"type":"call","tool":"touch_gesture","input":{...}}.`),
 	}, "file", "content")
 }
 

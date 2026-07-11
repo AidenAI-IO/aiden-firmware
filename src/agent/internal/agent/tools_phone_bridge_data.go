@@ -167,7 +167,7 @@ func (t *CalendarTool) Name() string { return toolBridgeCalendar }
 
 func (t *CalendarTool) Description() string {
 	return `Create, query, or delete system calendar events on the connected phone via the phone bridge. ` +
-		`Times are RFC3339 strings with timezone offset, e.g. "2026-06-02T15:00:00+08:00"; call current_time first if you need the timezone or "now". ` +
+		`Times are RFC3339 strings with timezone offset, e.g. "2026-06-02T15:00:00+08:00". Use the connected phone environment timezone when available; otherwise use shell to obtain a controller-time baseline and do not assume it matches the phone timezone. ` +
 		`Confirm details with the user before creating or deleting events. ` +
 		phoneBridgeBackgroundSafeDataToolNote
 }

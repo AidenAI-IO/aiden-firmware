@@ -1237,7 +1237,7 @@ type MouseScrollTool struct {
 func (t *MouseScrollTool) Name() string { return "mouse_scroll" }
 
 func (t *MouseScrollTool) Description() string {
-	return `Scroll the mouse wheel. This is a wheel event, not equivalent to a mobile swipe gesture; use touch_gesture for swipes.`
+	return `Scroll the mouse wheel. This is a wheel event, not equivalent to a mobile swipe gesture; use touch_gesture for swipes. Unsupported when pointer_mode is touchscreen.`
 }
 
 func (t *MouseScrollTool) ArgsSchema() map[string]any {
@@ -1258,6 +1258,12 @@ func (t *MouseScrollTool) Call(ctx context.Context, input string) (string, error
 	}
 	if args.Delta < -127 || args.Delta > 127 {
 		return toolErrorResultString(ctx, CodeInvalidArguments, "delta must be between -127 and 127"), nil
+	}
+	if t == nil || t.pc == nil {
+		return toolErrorResultString(ctx, CodeModuleUnavailable, "mouse_scroll is not configured"), nil
+	}
+	if t.pc.touchscreen {
+		return toolErrorResultString(ctx, CodeInvalidArguments, "mouse_scroll is unsupported when pointer_mode is touchscreen; use touch_gesture"), nil
 	}
 
 	if err := scrollPointer(t.pc, args.Delta); err != nil {

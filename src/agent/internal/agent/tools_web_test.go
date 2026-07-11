@@ -147,16 +147,6 @@ func TestBraveSearchBackendReportsHTTPError(t *testing.T) {
 	}
 }
 
-func TestCalculatorAcceptsJSONExpression(t *testing.T) {
-	out, err := NewCalculatorTool().Call(context.Background(), `{"expression":"1 + 2 * 3"}`)
-	if err != nil {
-		t.Fatalf("Call returned error: %v", err)
-	}
-	if out != "7" {
-		t.Fatalf("output = %q, want 7", out)
-	}
-}
-
 func TestWebScraperRejectsInvalidURL(t *testing.T) {
 	ctx, _ := WithToolError(context.Background())
 	out, err := NewWebScraperTool(ProxyConfig{}).Call(ctx, `{"url":"not a url"}`)

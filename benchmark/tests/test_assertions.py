@@ -46,7 +46,7 @@ def test_required_tools_pass_when_all_present():
         tool_calls=[
             ToolCall(step=1, tool="enter_plan_mode", input={}),
             ToolCall(step=2, tool="commit_plan", input={}),
-            ToolCall(step=3, tool="calculator", input={}),
+            ToolCall(step=3, tool="shell", input={"command": "printf 1"}),
         ],
         final_response="ok",
         total_tool_calls=3,

@@ -77,13 +77,10 @@ func (t *EnterTextViaBridgeTool) Description() string {
 
 func (t *EnterTextViaBridgeTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"text":     stringArgSchema("Exact text that must appear in the field when done."),
-		"platform": stringEnumArgSchema("Target platform.", "ios", "android", "mac"),
-		"focus":    focusPointArgSchema("Input field coordinates."),
-		"send_after_commit": map[string]any{
-			"type":        "boolean",
-			"description": "After field text is verified, press the platform send/submit key and verify the target text is no longer still present in the input field. Set true only after the target chat/composer is already open.",
-		},
+		"text":              stringArgSchema("Exact text that must appear in the field when done."),
+		"platform":          stringEnumArgSchema("Target platform.", "ios", "android", "mac"),
+		"focus":             focusPointArgSchema("Input field coordinates."),
+		"send_after_commit": boolArgSchema("After field text is verified, press the platform send/submit key and verify the target text is no longer still present in the input field. Set true only after the target chat/composer is already open."),
 	}, "text", "focus")
 }
 

@@ -168,7 +168,7 @@ def test_load_suite_rejects_overlapping_required_and_forbidden_tools(tmp_path: P
             {
                 **FIXTURE["tasks"][0],
                 "hard_assertions": {
-                    "required_tools": ["commit_plan", "calculator"],
+                    "required_tools": ["commit_plan", "shell"],
                     "forbidden_tools": ["screenshot", "commit_plan"],
                 },
             }
@@ -303,6 +303,10 @@ def test_phone_control_suite_constrains_agent_to_phone_ui():
     assert "macOS" in suite.prompt_prefix
     assert "shell" in suite.prompt_prefix
     assert "osascript" in suite.prompt_prefix
+    assert "skill_read" in suite.prompt_prefix
+    assert "device-operator" in suite.prompt_prefix
+    assert "quick_action" in suite.prompt_prefix
+    assert "只能通过截图" not in suite.prompt_prefix
 
 
 def test_phone_control_navigation_tasks_have_setup_pages():
@@ -316,6 +320,26 @@ def test_phone_control_navigation_tasks_have_setup_pages():
         assert setup["type"] == "agent_prompt"
         assert "系统设置" in setup["prompt"]
         assert setup["clear_history_after"] is True
+
+
+def test_phone_control_text_editing_tasks_have_input_setup():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "phone_control_v1.json"
+    suite = load_suite(suite_path)
+    task_by_id = {task.id: task for task in suite.tasks}
+
+    select_setup = task_by_id["select_all_and_delete"].setup
+    assert select_setup is not None
+    assert select_setup["type"] == "agent_prompt"
+    assert "hello-aiden" in select_setup["prompt"]
+    assert "聚焦" in select_setup["prompt"]
+    assert select_setup["clear_history_after"] is True
+
+    copy_setup = task_by_id["copy_paste_text"].setup
+    assert copy_setup is not None
+    assert copy_setup["type"] == "agent_prompt"
+    assert "标题输入框" in copy_setup["prompt"]
+    assert "正文输入区域" in copy_setup["prompt"]
+    assert copy_setup["clear_history_after"] is True
 
 
 def test_phone_control_wifi_toggle_is_split_into_on_and_off_tasks():
@@ -354,13 +378,16 @@ def test_loop_planning_suite_uses_tool_hard_assertions():
 
     assert suite.name == "loop_planning_v1"
     assert "screenshot" in suite.prompt_prefix
+    assert "shell" not in suite.prompt_prefix.lower()
     assert task_by_id["direct_answer_no_plan"].hard_assertions.forbidden_tools
     assert "enter_plan_mode" in task_by_id["single_calculation_no_plan"].hard_assertions.forbidden_tools
     assert "commit_plan" in task_by_id["two_calculation_compare_no_plan"].hard_assertions.forbidden_tools
+    assert "shell" not in task_by_id["single_calculation_no_plan"].prompt.lower()
+    assert "shell" not in task_by_id["two_calculation_compare_no_plan"].prompt.lower()
     assert task_by_id["invoice_reconciliation_requires_plan"].hard_assertions.required_tools == [
         "enter_plan_mode",
         "commit_plan",
-        "calculator",
+        "shell",
     ]
     assert task_by_id["expense_summary_requires_plan"].hard_assertions.required_tools == [
         "enter_plan_mode",
@@ -371,6 +398,30 @@ def test_loop_planning_suite_uses_tool_hard_assertions():
         assert "screenshot" in forbidden
         assert "touch_gesture" in forbidden
         assert "keyboard_text" in forbidden
+
+
+def test_shell_utility_suite_replaces_removed_time_and_calculator_tools():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "shell_utility_v1.json"
+    suite = load_suite(suite_path)
+    task_by_id = {task.id: task for task in suite.tasks}
+
+    assert suite.name == "shell_utility_v1"
+    assert "shell" not in suite.prompt_prefix.lower()
+    assert set(task_by_id) == {
+        "current_time_via_shell",
+        "timezone_conversion_via_shell",
+        "calculation_via_shell",
+    }
+    for task in suite.tasks:
+        assert task.hard_assertions.required_tools == ["shell"]
+        assert "shell" not in task.prompt.lower()
+        assert "current_time" in task.hard_assertions.forbidden_tools
+        assert "calculator" in task.hard_assertions.forbidden_tools
+        assert "screenshot" in task.hard_assertions.forbidden_tools
+
+    calculation = task_by_id["calculation_via_shell"]
+    assert calculation.expected_answer == "(b)"
+    assert calculation.answer_format == "option_letter"
 
 
 def test_skillopt_crossapp_device_operator_suites_target_skill_capabilities():
@@ -567,6 +618,8 @@ def test_episode_memory_suite_guards_against_setup_context_leakage():
 
     assert task.setup["type"] == "agent_prompt"
     assert task.setup["clear_history_after"] is True
+    assert "shell" not in task.setup["prompt"].lower()
+    assert "current_time" not in task.setup["prompt"]
     assert any(
         "recall_device_memory" in item.check and "inspect_episode" in item.check
         for item in task.rubric

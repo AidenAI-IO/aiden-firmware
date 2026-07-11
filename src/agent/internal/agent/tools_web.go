@@ -16,7 +16,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/gocolly/colly"
-	langtools "github.com/tmc/langchaingo/tools"
 	"github.com/tmc/langchaingo/tools/duckduckgo"
 	"github.com/tmc/langchaingo/tools/wikipedia"
 )
@@ -336,51 +335,6 @@ func (t *WikipediaTool) Call(ctx context.Context, input string) (string, error) 
 		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
 	return truncateToolOutput(result), nil
-}
-
-// --- Calculator ---
-
-type CalculatorTool struct {
-	inner langtools.Calculator
-}
-
-func NewCalculatorTool() *CalculatorTool {
-	return &CalculatorTool{inner: langtools.Calculator{}}
-}
-
-func (t *CalculatorTool) Name() string { return "calculator" }
-
-func (t *CalculatorTool) Description() string {
-	return `Evaluate a math expression and return the numeric result. ` +
-		`Supports arithmetic, comparisons, and standard math functions (sqrt, sin, cos, etc).`
-}
-
-func (t *CalculatorTool) ArgsSchema() map[string]any {
-	return objectArgsSchema(map[string]any{
-		"expression": stringArgSchema("Math expression to evaluate."),
-	}, "expression")
-}
-
-func (t *CalculatorTool) Call(ctx context.Context, input string) (string, error) {
-	expr := strings.TrimSpace(input)
-	if expr == "" {
-		return toolErrorResultString(ctx, CodeInvalidArguments, "expression is required"), nil
-	}
-
-	if strings.HasPrefix(expr, "{") {
-		var args struct {
-			Expression string `json:"expression"`
-		}
-		if err := json.Unmarshal([]byte(expr), &args); err == nil && strings.TrimSpace(args.Expression) != "" {
-			expr = strings.TrimSpace(args.Expression)
-		}
-	}
-
-	result, err := t.inner.Call(ctx, expr)
-	if err != nil {
-		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
-	}
-	return result, nil
 }
 
 // --- Web Scraper ---
