@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"aiden-agent/internal/agent/statemanager"
+
 	"github.com/BurntSushi/toml"
 	"github.com/tmc/langchaingo/schema"
 	langtools "github.com/tmc/langchaingo/tools"
@@ -25,7 +27,9 @@ func newMockEnvironmentBridge(t *testing.T, tools ...langtools.Tool) *httptest.S
 		&ToolSet{tools: toolMapFromSlice(tools)},
 		NewSkillIndex(),
 	)
-	server := NewServer(runtime, ":0")
+	runtime.logger = newTestLogger()
+	runtime.stateManager = statemanager.NewStateManager()
+	server := newServerForTest(runtime)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/tools/", server.handleToolInvoke)
 	return httptest.NewServer(mux)

@@ -250,22 +250,22 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 	toolBridgeClipboard: {
 		Category:     "bridge",
 		InputMode:    toolInputModeJSON,
-		ExampleInput: `{}`,
+		ExampleInput: `{"action":"read"}`,
 	},
 	toolBridgeCalendar: {
 		Category:     "bridge",
 		InputMode:    toolInputModeJSON,
-		ExampleInput: `{}`,
+		ExampleInput: `{"action":"query","from":"2026-07-10T00:00:00+08:00","to":"2026-07-11T00:00:00+08:00"}`,
 	},
 	toolBridgeContacts: {
 		Category:     "bridge",
 		InputMode:    toolInputModeJSON,
-		ExampleInput: `{}`,
+		ExampleInput: `{"action":"query","query":"Alice","limit":20}`,
 	},
 	toolBridgeNotification: {
 		Category:     "bridge",
 		InputMode:    toolInputModeJSON,
-		ExampleInput: `{}`,
+		ExampleInput: `{"title":"Aiden reminder","body":"Check your phone","sound":true}`,
 	},
 }
 

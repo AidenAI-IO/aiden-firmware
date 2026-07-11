@@ -190,6 +190,7 @@ func (m *LiveActivityManager) StartTask(requestID, title string, phoneIDs ...str
 	if m == nil || strings.TrimSpace(requestID) == "" {
 		return nil
 	}
+	m.logger.Info("Starting live activity task: %s, %s", requestID, title)
 	phoneID := ""
 	if len(phoneIDs) > 0 {
 		phoneID = firstNonEmptyString(phoneIDs)
@@ -468,6 +469,7 @@ func (m *LiveActivityManager) publish(requestID string, final bool) {
 	if m == nil {
 		return
 	}
+	m.logger.Info("Publishing live activity: %s, %t", requestID, final)
 	m.mu.Lock()
 	state, stateOK := m.states[requestID]
 	registration, regOK := m.registrations[requestID]
@@ -477,9 +479,11 @@ func (m *LiveActivityManager) publish(requestID string, final bool) {
 	hasRelay := m.relay != nil
 	m.mu.Unlock()
 	if !stateOK {
+		m.logger.Error("Live activity state not found: %s", requestID)
 		return
 	}
 	if hasAPNs && regOK {
+		m.logger.Info("Enqueuing APNs push: %s", requestID)
 		m.enqueueAPNsPush(liveActivityPushRequest{
 			requestID: requestID,
 			pushToken: registration.PushToken,
@@ -488,6 +492,7 @@ func (m *LiveActivityManager) publish(requestID string, final bool) {
 		}, apnsQueue)
 	}
 	if hasRelay {
+		m.logger.Info("Enqueuing relay push: %s", requestID)
 		m.enqueueRelayPush(liveActivityPushRequest{
 			requestID: requestID,
 			state:     state,

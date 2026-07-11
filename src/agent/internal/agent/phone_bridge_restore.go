@@ -53,7 +53,7 @@ func (r *PhoneBridgeRestorer) EnsureForeground(ctx context.Context) (bool, error
 	if bridge == nil {
 		return false, fmt.Errorf("phone bridge is not initialized")
 	}
-	status := bridge.Status()
+	status := bridge.getStatus()
 	if phoneBridgeReadyForCommand(status) {
 		return false, nil
 	}
@@ -102,7 +102,7 @@ func (r *PhoneBridgeRestorer) waitForeground(ctx context.Context) (PhoneBridgeSt
 	defer ticker.Stop()
 
 	for {
-		status := r.bridge.Status()
+		status := r.bridge.getStatus()
 		if phoneBridgeReadyForCommand(status) {
 			return status, nil
 		}
@@ -118,11 +118,11 @@ func ensurePhoneBridgeReadyForCommand(ctx context.Context, bridge *PhoneBridge, 
 	if bridge == nil {
 		return false, fmt.Errorf("phone bridge is not initialized")
 	}
-	if phoneBridgeReadyForCommand(bridge.Status()) {
+	if phoneBridgeReadyForCommand(bridge.getStatus()) {
 		return false, nil
 	}
 	if restorer == nil {
-		return false, phoneBridgeRestoreUnavailableError(bridge.Status())
+		return false, phoneBridgeRestoreUnavailableError(bridge.getStatus())
 	}
 	if restorer.bridge == nil {
 		restorer.SetBridge(bridge)
@@ -134,7 +134,11 @@ func sendRoutedBridgeCommand(ctx context.Context, bridge *PhoneBridge, restorer 
 	if bridge == nil {
 		return BridgeCommandResponse{}, false, fmt.Errorf("phone bridge is not initialized")
 	}
-	status := bridge.Status()
+	status := bridge.getStatus()
+	if phoneBridgeCanUseFGSBackground(status, cmd.Type) {
+		resp, err := bridge.SendQueuedCommand(ctx, cmd)
+		return resp, false, err
+	}
 	if phoneBridgeReadyForCommand(status) {
 		resp, err := bridge.SendCommand(ctx, cmd)
 		return resp, false, err

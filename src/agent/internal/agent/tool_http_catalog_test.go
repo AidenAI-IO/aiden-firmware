@@ -187,7 +187,7 @@ func TestAvailableToolsIncludesQuickAction(t *testing.T) {
 
 func TestAvailableToolsIncludesPhoneBridgeToolsWhenDisconnected(t *testing.T) {
 	runtime := newRuntimeWithTextEntryTools()
-	runtime.tools.RegisterPhoneBridge(NewPhoneBridge(nil))
+	runtime.tools.RegisterPhoneBridge(newPhoneBridgeForTest())
 
 	tools := runtime.availableTools()
 	names := toolNamesFromTools(tools)
@@ -214,7 +214,7 @@ func TestAvailableToolsIncludesPhoneBridgeToolsWhenDisconnected(t *testing.T) {
 
 func TestAvailableToolsIncludesPhoneBridgeToolsWhenConnected(t *testing.T) {
 	runtime := newRuntimeWithTextEntryTools()
-	bridge := NewPhoneBridge(nil)
+	bridge := newPhoneBridgeForTest()
 	bridge.connected = true
 	runtime.tools.RegisterPhoneBridge(bridge)
 
@@ -315,6 +315,29 @@ func TestRuntimeLoadAllToolsIncludesScriptAuthoringTools(t *testing.T) {
 	}
 }
 
+func TestPhoneBridgeDataToolDescriptorsHaveUsefulExamples(t *testing.T) {
+	runtime := newRuntimeWithTextEntryTools()
+	bridge := newPhoneBridgeForTest()
+	bridge.connected = true
+	runtime.tools.RegisterPhoneBridge(bridge)
+
+	expected := map[string]string{
+		"bridge_clipboard":    `{"action":"read"}`,
+		"bridge_calendar":     `{"action":"query","from":"2026-07-10T00:00:00+08:00","to":"2026-07-11T00:00:00+08:00"}`,
+		"bridge_contacts":     `{"action":"query","query":"Alice","limit":20}`,
+		"bridge_notification": `{"title":"Aiden reminder","body":"Check your phone","sound":true}`,
+	}
+	for name, want := range expected {
+		desc, ok := runtime.ToolDescriptorByName(name)
+		if !ok {
+			t.Fatalf("ToolDescriptorByName missing %s", name)
+		}
+		if desc.ExampleInput != want {
+			t.Fatalf("%s example_input = %q, want %q", name, desc.ExampleInput, want)
+		}
+	}
+}
+
 func TestAvailableToolsHidesOpenAppAndKeepsDataToolsDuringPiPBackground(t *testing.T) {
 	runtime := newRuntimeWithTextEntryTools()
 	bridge := newIOSPiPBackgroundBridge(t)
@@ -351,7 +374,7 @@ func TestAvailableToolsHidesOpenAppAndKeepsDataToolsDuringPiPBackground(t *testi
 
 func newIOSPiPBackgroundBridge(t *testing.T) *PhoneBridge {
 	t.Helper()
-	bridge := NewPhoneBridge(nil)
+	bridge := newPhoneBridgeForTest()
 	t.Cleanup(func() { bridge.queue.Stop() })
 	bridge.mu.Lock()
 	bridge.platform = "ios"

@@ -136,8 +136,13 @@ func (pb *PhoneBridge) handlePollCommands(w http.ResponseWriter, r *http.Request
 		phoneID,
 		r.URL.Query().Get("app_state"),
 		r.URL.Query().Get("pip_bridge_enabled"),
+		r.URL.Query().Get("fgs_bridge_enabled"),
 	)
-	commands := pb.queue.PollForPhone(platform, phoneID, limit)
+
+	var commands []BridgeCommand
+	if !shouldSuppressHTTPCommandPoll(platform, r.URL.Query().Get("app_state"), r.URL.Query().Get("fgs_bridge_enabled")) {
+		commands = pb.queue.PollForPhone(platform, phoneID, limit)
+	}
 
 	if pb.logger != nil && len(commands) > 0 {
 		var cmdIDs []string
@@ -154,11 +159,21 @@ func (pb *PhoneBridge) handlePollCommands(w http.ResponseWriter, r *http.Request
 	})
 }
 
-func (pb *PhoneBridge) noteHTTPPollState(platform, phoneID, appState, pipBridgeEnabled string) {
+func shouldSuppressHTTPCommandPoll(platform, appState, fgsBridgeEnabled string) bool {
+	if strings.TrimSpace(strings.ToLower(platform)) != "android" {
+		return false
+	}
+	normalizedAppState, appStateOK := normalizeAppState(appState)
+	fgsEnabled, fgsEnabledOK := parseOptionalBoolQuery(fgsBridgeEnabled)
+	return appStateOK && normalizedAppState == "active" && fgsEnabledOK && !fgsEnabled
+}
+
+func (pb *PhoneBridge) noteHTTPPollState(platform, phoneID, appState, pipBridgeEnabled, fgsBridgeEnabled string) {
 	platform = strings.TrimSpace(platform)
 	phoneID = strings.TrimSpace(phoneID)
 	appState, appStateOK := normalizeAppState(appState)
 	enabled, enabledOK := parseOptionalBoolQuery(pipBridgeEnabled)
+	fgsEnabled, fgsEnabledOK := parseOptionalBoolQuery(fgsBridgeEnabled)
 	now := time.Now()
 
 	pb.mu.Lock()
@@ -175,6 +190,11 @@ func (pb *PhoneBridge) noteHTTPPollState(platform, phoneID, appState, pipBridgeE
 	if enabledOK {
 		pb.pipBridgeEnabled = enabled
 		pb.pipBridgeSeen = true
+	}
+	if fgsEnabledOK {
+		pb.fgsBridgeEnabled = fgsEnabled
+		pb.fgsBridgeSeen = true
+		pb.fgsBridgeAt = now
 	}
 	pb.mu.Unlock()
 }
