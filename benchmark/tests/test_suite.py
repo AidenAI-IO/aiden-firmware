@@ -61,6 +61,9 @@ def test_adb_android_basic_suite_loads_device_operation_tasks():
         "open_settings",
         "swipe_screen",
         "type_english_text",
+        "clock_count_alarms",
+        "settings_check_wifi",
+        "open_app_drawer",
     ]
     # Action tasks must not require any specific tool: every action tool
     # already returns a post-action screenshot, so the agent legitimately
@@ -68,8 +71,19 @@ def test_adb_android_basic_suite_loads_device_operation_tasks():
     # and it may pick quick_action vs touch_gesture for the same outcome.
     by_id = {task.id: task for task in suite.tasks}
     assert by_id["screenshot_home"].hard_assertions.required_tools == ["screenshot"]
-    for task_id in ("go_home", "open_settings", "swipe_screen", "type_english_text"):
+    for task_id in (
+        "go_home",
+        "open_settings",
+        "swipe_screen",
+        "type_english_text",
+        "clock_count_alarms",
+        "settings_check_wifi",
+        "open_app_drawer",
+    ):
         assert by_id[task_id].hard_assertions.required_tools == []
+    # The ported multi-step tasks genuinely need navigation before observing.
+    for task_id in ("clock_count_alarms", "settings_check_wifi", "open_app_drawer"):
+        assert by_id[task_id].hard_assertions.min_tool_calls >= 2
 
 
 def test_benchmark_suites_do_not_use_tool_sequence():
