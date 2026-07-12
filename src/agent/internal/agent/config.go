@@ -110,6 +110,50 @@ func (c AudioArchiveConfig) StoragePathOrDefault() string {
 	return path
 }
 
+// StorageConfig tunes the optional microSD data store managed by
+// StorageManager. The preferred storage mode is not configured here; it is
+// runtime state persisted separately (see docs/04-agent/storage-modes.md).
+type StorageConfig struct {
+	MountPoint    string `toml:"mount_point,omitempty"`
+	Device        string `toml:"device,omitempty"`
+	MinCardFreeMB int    `toml:"min_card_free_mb,omitempty"`
+	EMMCReserveMB int    `toml:"emmc_reserve_mb,omitempty"`
+}
+
+// MountPointOrDefault returns MountPoint if non-empty, else "/mnt/sdcard".
+func (c StorageConfig) MountPointOrDefault() string {
+	path := strings.TrimSpace(c.MountPoint)
+	if path == "" {
+		return defaultStorageMountPoint
+	}
+	return path
+}
+
+// DeviceOrDefault returns Device if non-empty, else "mmcblk2".
+func (c StorageConfig) DeviceOrDefault() string {
+	dev := strings.TrimSpace(c.Device)
+	if dev == "" {
+		return defaultStorageDevice
+	}
+	return dev
+}
+
+// MinCardFreeMBOrDefault returns MinCardFreeMB if positive, else 64.
+func (c StorageConfig) MinCardFreeMBOrDefault() int {
+	if c.MinCardFreeMB <= 0 {
+		return defaultStorageMinCardFreeMB
+	}
+	return c.MinCardFreeMB
+}
+
+// EMMCReserveMBOrDefault returns EMMCReserveMB if positive, else 256.
+func (c StorageConfig) EMMCReserveMBOrDefault() int {
+	if c.EMMCReserveMB <= 0 {
+		return defaultStorageEMMCReserveMB
+	}
+	return c.EMMCReserveMB
+}
+
 // LogConfig controls local runtime log retention.
 type LogConfig struct {
 	LLMHTTPRetentionDays int `toml:"llm_http_retention_days,omitempty"`
@@ -132,6 +176,7 @@ type Config struct {
 	Device                     DeviceConfig            `toml:"device,omitempty"`
 	Audio                      AudioConfig             `toml:"audio,omitempty"`
 	AudioArchive               AudioArchiveConfig      `toml:"audio_archive,omitempty"`
+	Storage                    StorageConfig           `toml:"storage,omitempty"`
 	Log                        LogConfig               `toml:"log,omitempty"`
 	Search                     SearchConfig            `toml:"search,omitempty"`
 	EnvironmentBridge          EnvironmentBridgeConfig `toml:"-"` // Only set via CLI flags, never from config file

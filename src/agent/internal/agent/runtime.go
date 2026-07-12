@@ -63,6 +63,7 @@ type Runtime struct {
 	telemetrySessionID string
 	environmentBridge  *EnvironmentBridgeClient
 	runGate            chan struct{}
+	storage            *StorageManager
 }
 
 type RunRequest struct {
@@ -394,7 +395,18 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 
 	rt.memoryPlane = NewFilesystemMemoryPlane(memoryDir, extractionCfg, logger)
 	rt.markInterruptedEpisodesBestEffort()
+
+	// SD/eMMC storage-mode manager (docs/04-agent/storage-modes.md). Absent
+	// hardware degrades to eMMC-only, so starting it is safe everywhere.
+	rt.storage = NewStorageManager(cfg.Storage, cfg.ConfigDir, logger)
+	rt.storage.Start()
 	return rt, nil
+}
+
+// Storage returns the SD/eMMC storage manager, or nil when the runtime was
+// built without one (NewRuntimeWithDeps).
+func (r *Runtime) Storage() *StorageManager {
+	return r.storage
 }
 
 func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManager, tools *ToolSet, skillIndex *SkillIndex) *Runtime {

@@ -65,6 +65,15 @@ api_key = "OPENAI_API_KEY"
 # max_files = 500             # Keep most recent N audio files
 # max_size_mb = 100           # Or stop when total size exceeds this (MB)
 # storage_path = "/userdata/audio"  # Where to store audio files
+                                    # Setting it bypasses the SD/eMMC storage modes
+
+# microSD storage tuning (optional; see docs/04-agent/storage-modes.md)
+# The preferred storage mode itself is set from the Web UI, not here.
+[storage]
+# mount_point = "/mnt/sdcard"   # Where a usable card is mounted
+# device = "mmcblk2"            # SD card block device base name
+# min_card_free_mb = 64         # Cards with less free space are rejected
+# emmc_reserve_mb = 256         # Fallback writes keep this much eMMC free
 
 # Log retention configuration
 [log]

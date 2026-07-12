@@ -449,6 +449,10 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/config-test/stt/stop", s.handleSTTConfigTestStop)
 	mux.HandleFunc("/api/audio/", s.handleAudioFile)
 	mux.HandleFunc("/api/settings/tts", s.handleTTSSettings)
+	mux.HandleFunc("/api/storage/status", s.handleStorageStatus)
+	mux.HandleFunc("/api/storage/mode", s.handleStorageMode)
+	mux.HandleFunc("/api/storage/eject", s.handleStorageEject)
+	mux.HandleFunc("/api/storage/format", s.handleStorageFormat)
 	mux.HandleFunc("/api/tts/providers", s.handleTTSProviders)
 	mux.HandleFunc("/api/phone-bridge", s.bridge.HandleWebSocket)
 	mux.HandleFunc("/api/phone-bridge/status", s.handleBridgeStatus)
@@ -2499,49 +2503,60 @@ func (s *Server) handleAudioFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get audio directory from config
-	audioDir := s.runtime.config.AudioArchive.StoragePathOrDefault()
-
 	// Security: only allow base filenames, no path traversal
 	filename = filepath.Base(filename)
-	fullPath := filepath.Join(audioDir, filename)
 
-	// Resolve symlinks to prevent symlink-based traversal attacks
+	// Recordings may live on the SD card and/or eMMC depending on the
+	// storage mode; search every root and serve the first hit.
+	for _, audioDir := range s.audioReadRoots() {
+		resolvedFullPath, ok := resolveAudioFileInDir(audioDir, filename, s.logger)
+		if !ok {
+			continue
+		}
+		w.Header().Set("Content-Type", "audio/wav")
+		http.ServeFile(w, r, resolvedFullPath)
+		return
+	}
+	http.Error(w, "File not found", http.StatusNotFound)
+}
+
+// audioReadRoots lists every directory that may hold archived recordings.
+// An explicit storage_path bypasses the storage-mode machinery.
+func (s *Server) audioReadRoots() []string {
+	archive := s.runtime.config.AudioArchive
+	if strings.TrimSpace(archive.StoragePath) != "" {
+		return []string{archive.StoragePathOrDefault()}
+	}
+	if sm := s.storageManager(); sm != nil {
+		return sm.ReadRoots(StorageClassAudio)
+	}
+	return []string{archive.StoragePathOrDefault()}
+}
+
+// resolveAudioFileInDir resolves filename inside audioDir with symlinks
+// expanded, rejecting anything that escapes the directory.
+func resolveAudioFileInDir(audioDir, filename string, logger *Logger) (string, bool) {
 	resolvedAudioDir, err := filepath.EvalSymlinks(audioDir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			http.Error(w, "Service unavailable", http.StatusServiceUnavailable)
-			return
+		if !os.IsNotExist(err) && logger != nil {
+			logger.Warn("[audio] resolve audio dir: %v", err)
 		}
-		if s.logger != nil {
-			s.logger.Warn("[audio] resolve audio dir: %v", err)
-		}
-		http.Error(w, "Internal error", http.StatusInternalServerError)
-		return
+		return "", false
 	}
 
-	resolvedFullPath, err := filepath.EvalSymlinks(fullPath)
+	resolvedFullPath, err := filepath.EvalSymlinks(filepath.Join(audioDir, filename))
 	if err != nil {
-		if os.IsNotExist(err) {
-			http.Error(w, "File not found", http.StatusNotFound)
-			return
+		if !os.IsNotExist(err) && logger != nil {
+			logger.Warn("[audio] resolve file path: %v", err)
 		}
-		if s.logger != nil {
-			s.logger.Warn("[audio] resolve file path: %v", err)
-		}
-		http.Error(w, "Internal error", http.StatusInternalServerError)
-		return
+		return "", false
 	}
 
-	// Verify resolved path is within audio directory
+	// Verify the resolved path is within the audio directory.
 	if !strings.HasPrefix(resolvedFullPath, resolvedAudioDir+string(filepath.Separator)) {
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		return
+		return "", false
 	}
-
-	// Serve file
-	w.Header().Set("Content-Type", "audio/wav")
-	http.ServeFile(w, r, resolvedFullPath)
+	return resolvedFullPath, true
 }
 
 func (s *Server) handleTools(w http.ResponseWriter, r *http.Request) {
@@ -4499,6 +4514,24 @@ const webUI = `<!DOCTYPE html>
                 </div>
                 <div class="tool-lab-status" id="skillStatus"></div>
             </div>
+
+            <div class="sidebar-card storage-panel">
+                <div class="sidebar-kicker">Storage</div>
+                <strong>eMMC + microSD</strong>
+                <div class="sidebar-note" id="storageSummary">Loading storage status...</div>
+                <div class="sidebar-note" id="storageWarning" hidden></div>
+                <label class="tool-lab-label" for="storageModeSelect">Preferred mode</label>
+                <select id="storageModeSelect" class="tool-lab-select" onchange="setStorageMode()">
+                    <option value="0">Auto (default)</option>
+                    <option value="1">eMMC only</option>
+                    <option value="2">Dual storage (SD first)</option>
+                </select>
+                <div class="tool-lab-row">
+                    <button type="button" class="composer-btn tool-secondary-btn" id="storageEjectBtn" onclick="ejectStorage()">Safe eject</button>
+                    <button type="button" class="composer-btn tool-secondary-btn" id="storageFormatBtn" onclick="formatStorage()">Format card</button>
+                </div>
+                <div class="tool-lab-status" id="storageStatusMsg"></div>
+            </div>
         </aside>
     </div>
 
@@ -4560,6 +4593,8 @@ const webUI = `<!DOCTYPE html>
         setInterval(refreshCurrentLiveActivity, 2000);
         loadToolCatalog();
         loadToolSkills();
+        loadStorageStatus();
+        setInterval(loadStorageStatus, 5000);
         autoResizeInput();
         connectSSE();
 
@@ -4573,6 +4608,108 @@ const webUI = `<!DOCTYPE html>
                 sendMessage();
             }
         });
+
+        async function loadStorageStatus() {
+            try {
+                const res = await fetch('/api/storage/status');
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                renderStorageStatus(await res.json());
+            } catch (err) {
+                const summary = document.getElementById('storageSummary');
+                if (summary) summary.textContent = 'Storage status unavailable: ' + err.message;
+            }
+        }
+
+        function storageModeName(mode) {
+            if (mode === 1) return 'eMMC only';
+            if (mode === 2) return 'Dual storage';
+            return 'Auto';
+        }
+
+        function storageGB(bytes) {
+            return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
+        }
+
+        function renderStorageStatus(status) {
+            const summary = document.getElementById('storageSummary');
+            const warning = document.getElementById('storageWarning');
+            const select = document.getElementById('storageModeSelect');
+            const ejectBtn = document.getElementById('storageEjectBtn');
+            const formatBtn = document.getElementById('storageFormatBtn');
+            if (!summary || !warning || !select) return;
+
+            let text = 'Preference: ' + storageModeName(status.preferred_mode) +
+                ' — running: ' + storageModeName(status.effective_mode) + '. ';
+            if (status.card.mounted) {
+                text += 'SD card mounted at ' + status.mount_point + ' (' +
+                    storageGB(status.card.free_bytes) + ' free of ' + storageGB(status.card.total_bytes) + ').';
+            } else if (status.card.present) {
+                text += 'SD card present but not in use.';
+            } else {
+                text += 'No SD card.';
+            }
+            summary.textContent = text;
+
+            let warn = '';
+            if (status.falling_back) {
+                warn = 'SD write failed; data is being written to internal storage. ' + (status.fallback_reason || '');
+            } else if (status.card.reason) {
+                warn = 'Card issue: ' + status.card.reason;
+            }
+            warning.textContent = warn;
+            warning.hidden = !warn;
+
+            if (document.activeElement !== select) {
+                select.value = String(status.preferred_mode);
+            }
+            if (ejectBtn) ejectBtn.disabled = !status.card.mounted;
+            if (formatBtn) formatBtn.disabled = !status.card.present;
+        }
+
+        function setStorageStatusMsg(text, isError) {
+            const el = document.getElementById('storageStatusMsg');
+            if (!el) return;
+            el.textContent = text;
+            el.classList.toggle('error', !!isError);
+        }
+
+        async function postStorage(path, body, pendingMsg, okMsg) {
+            setStorageStatusMsg(pendingMsg, false);
+            try {
+                const res = await fetch(path, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+                renderStorageStatus(data);
+                setStorageStatusMsg(okMsg, false);
+            } catch (err) {
+                setStorageStatusMsg(err.message, true);
+                loadStorageStatus();
+            }
+        }
+
+        async function setStorageMode() {
+            const select = document.getElementById('storageModeSelect');
+            if (!select) return;
+            const preferred = parseInt(select.value, 10);
+            await postStorage('/api/storage/mode', { preferred: preferred },
+                'Applying storage mode...', 'Storage mode updated.');
+        }
+
+        async function ejectStorage() {
+            if (!confirm('Sync and unmount the SD card so it can be safely removed?')) return;
+            await postStorage('/api/storage/eject', {}, 'Ejecting...', 'Card ejected. Safe to remove.');
+        }
+
+        async function formatStorage() {
+            if (!confirm('Format the SD card as ext4? ALL DATA ON THE CARD WILL BE ERASED.')) return;
+            if (!confirm('Really erase the card? This cannot be undone.')) return;
+            await postStorage('/api/storage/format', { confirm: 'format-sd-card' },
+                'Formatting card (this can take a while)...', 'Card formatted and mounted.');
+        }
 
         async function loadHistory() {
             try {

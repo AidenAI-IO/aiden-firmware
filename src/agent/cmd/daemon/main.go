@@ -194,6 +194,7 @@ func runAudioMode(cfg agent.Config, runtime *agent.Runtime, server *agent.Server
 		os.Exit(1)
 	}
 	dialog.SetHistoryAppender(server.AppendHistory)
+	dialog.SetStorageManager(runtime.Storage())
 
 	inputMode := cfg.InputModeOrDefault()
 	triggerMode := cfg.TriggerModeOrDefault()

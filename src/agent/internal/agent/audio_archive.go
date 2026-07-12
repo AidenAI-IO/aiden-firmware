@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,7 +14,8 @@ import (
 
 // AudioArchiveManager handles saving and cleanup of audio recordings.
 type AudioArchiveManager struct {
-	config AudioArchiveConfig
+	config  AudioArchiveConfig
+	storage *StorageManager
 }
 
 // NewAudioArchiveManager creates a new audio archive manager.
@@ -21,6 +23,36 @@ func NewAudioArchiveManager(config AudioArchiveConfig) *AudioArchiveManager {
 	return &AudioArchiveManager{
 		config: config,
 	}
+}
+
+// SetStorageManager routes recordings through the SD/eMMC storage modes. An
+// explicit storage_path in the config always wins over the mode machinery.
+func (m *AudioArchiveManager) SetStorageManager(sm *StorageManager) {
+	m.storage = sm
+}
+
+// writeDir returns the directory new recordings should be written to.
+func (m *AudioArchiveManager) writeDir() string {
+	if strings.TrimSpace(m.config.StoragePath) != "" {
+		return m.config.StoragePathOrDefault()
+	}
+	if m.storage != nil {
+		if dir, err := m.storage.ResolveDir(StorageClassAudio); err == nil {
+			return dir
+		}
+	}
+	return m.config.StoragePathOrDefault()
+}
+
+// readDirs returns every directory that may hold recordings, write dir first.
+func (m *AudioArchiveManager) readDirs() []string {
+	if strings.TrimSpace(m.config.StoragePath) != "" {
+		return []string{m.config.StoragePathOrDefault()}
+	}
+	if m.storage != nil {
+		return m.storage.ReadRoots(StorageClassAudio)
+	}
+	return []string{m.config.StoragePathOrDefault()}
 }
 
 // SaveAudio saves audio samples to a WAV file and returns the path, duration in ms, and error.
@@ -39,7 +71,7 @@ func (m *AudioArchiveManager) SaveAudio(samples []int16, sampleRate int) (string
 	}
 
 	// Ensure storage directory exists
-	storagePath := m.config.StoragePathOrDefault()
+	storagePath := m.writeDir()
 	if err := os.MkdirAll(storagePath, 0755); err != nil {
 		return "", 0, fmt.Errorf("create storage dir: %w", err)
 	}
@@ -64,10 +96,21 @@ func (m *AudioArchiveManager) SaveAudio(samples []int16, sampleRate int) (string
 	return filePath, durationMs, nil
 }
 
-// cleanup removes old audio files based on max_files and max_size_mb limits.
+// cleanup applies the max_files and max_size_mb limits to every root that
+// may hold recordings, so the store that is not currently written to (e.g.
+// eMMC while the SD card is active) stays bounded too.
 func (m *AudioArchiveManager) cleanup() error {
-	storagePath := m.config.StoragePathOrDefault()
+	var firstErr error
+	for _, root := range m.readDirs() {
+		if err := m.cleanupDir(root); err != nil && !os.IsNotExist(err) && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
 
+// cleanupDir removes old audio files in one directory based on the limits.
+func (m *AudioArchiveManager) cleanupDir(storagePath string) error {
 	entries, err := os.ReadDir(storagePath)
 	if err != nil {
 		return err

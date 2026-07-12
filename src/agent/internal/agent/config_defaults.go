@@ -32,6 +32,10 @@ const (
 	defaultAudioArchiveMaxFiles    = 500
 	defaultAudioArchiveMaxSizeMB   = 100
 	defaultLLMHTTPLogRetentionDays = 7
+	defaultStorageMountPoint       = "/mnt/sdcard"
+	defaultStorageDevice           = "mmcblk2"
+	defaultStorageMinCardFreeMB    = 64
+	defaultStorageEMMCReserveMB    = 256
 	defaultKeyboardDevice          = "/dev/hidg0"
 	defaultMouseDevice             = "/dev/hidg1"
 	defaultAndroidKeyboardDevice   = "/dev/hidg2"
@@ -92,6 +96,12 @@ func DefaultConfig() Config {
 			MaxFiles:    defaultAudioArchiveMaxFiles,
 			MaxSizeMB:   defaultAudioArchiveMaxSizeMB,
 			StoragePath: defaultAudioArchiveStoragePath,
+		},
+		Storage: StorageConfig{
+			MountPoint:    defaultStorageMountPoint,
+			Device:        defaultStorageDevice,
+			MinCardFreeMB: defaultStorageMinCardFreeMB,
+			EMMCReserveMB: defaultStorageEMMCReserveMB,
 		},
 		Log: LogConfig{
 			LLMHTTPRetentionDays: defaultLLMHTTPLogRetentionDays,
