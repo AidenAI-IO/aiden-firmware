@@ -49,6 +49,7 @@ struct Options {
     std::string ota_state_path = "/userdata/ota/state.json";
     std::string cmdline_path = "/proc/cmdline";
     std::string system_env_path = "/userdata/system/env";
+    std::string storage_state_path = "/run/aiden/storage.state";
 };
 
 struct HttpRequest {
@@ -256,7 +257,7 @@ bool post_agent_http_json(const AgentHttpTarget& target,
 bool resolve_agent_http_target(const Options& options,
                                AgentHttpTarget* target,
                                std::string* error);
-ApiResponse proxy_agent_stt_test_request(const Options& options,
+ApiResponse proxy_agent_json_request(const Options& options,
                                          const std::string& agent_path,
                                          const std::string& body);
 ApiResponse handle_stt_test_start(const Options& options, const std::string& body);
@@ -2278,7 +2279,7 @@ bool resolve_agent_http_target(const Options& options,
     return true;
 }
 
-ApiResponse proxy_agent_stt_test_request(const Options& options,
+ApiResponse proxy_agent_json_request(const Options& options,
                                          const std::string& agent_path,
                                          const std::string& body) {
     AgentHttpTarget target;
@@ -2303,11 +2304,11 @@ ApiResponse proxy_agent_stt_test_request(const Options& options,
 }
 
 ApiResponse handle_stt_test_start(const Options& options, const std::string& body) {
-    return proxy_agent_stt_test_request(options, "/api/config-test/stt/start", body);
+    return proxy_agent_json_request(options, "/api/config-test/stt/start", body);
 }
 
 ApiResponse handle_stt_test_stop(const Options& options, const std::string& body) {
-    return proxy_agent_stt_test_request(options, "/api/config-test/stt/stop", body);
+    return proxy_agent_json_request(options, "/api/config-test/stt/stop", body);
 }
 
 void load_current_wifi_config(const Options& options,
@@ -4392,6 +4393,109 @@ ApiResponse handle_get_agent_log() {
     cJSON_AddItemToObject(root, "agent_log", agent_log_to_json(read_agent_log_snapshot()));
     return make_json_ok(root);
 }
+
+// ----- storage (microSD) ---------------------------------------------------
+//
+// The agent's StorageManager owns the SD card and mirrors its state to a
+// small KEY=VALUE file (docs/04-agent/storage-modes.md). Status reads come
+// straight from that mirror; mutations (mode / format / eject) are proxied to
+// the agent HTTP API, which stays the single executor for card operations.
+
+bool read_storage_state(const std::string& path, std::map<std::string, std::string>* out) {
+    if (!out) {
+        return false;
+    }
+    out->clear();
+    std::string contents = read_file_contents(path.c_str(), 16 * 1024);
+    if (contents.empty()) {
+        return false;
+    }
+    std::istringstream input(contents);
+    std::string line;
+    while (std::getline(input, line)) {
+        std::string trimmed = trim_copy(line);
+        if (trimmed.empty()) {
+            continue;
+        }
+        size_t eq = trimmed.find('=');
+        if (eq == std::string::npos) {
+            continue;
+        }
+        (*out)[trimmed.substr(0, eq)] = trimmed.substr(eq + 1);
+    }
+    return !out->empty();
+}
+
+int storage_state_int(const std::map<std::string, std::string>& kv, const char* key, int fallback) {
+    std::map<std::string, std::string>::const_iterator it = kv.find(key);
+    if (it == kv.end() || it->second.empty()) {
+        return fallback;
+    }
+    char* end = NULL;
+    long value = strtol(it->second.c_str(), &end, 10);
+    if (!end || *end != '\0' || value < 0 || value > 1000000) {
+        return fallback;
+    }
+    return static_cast<int>(value);
+}
+
+double storage_state_double(const std::map<std::string, std::string>& kv, const char* key) {
+    std::map<std::string, std::string>::const_iterator it = kv.find(key);
+    if (it == kv.end() || it->second.empty()) {
+        return 0;
+    }
+    return strtod(it->second.c_str(), NULL);
+}
+
+std::string storage_state_string(const std::map<std::string, std::string>& kv, const char* key) {
+    std::map<std::string, std::string>::const_iterator it = kv.find(key);
+    return it == kv.end() ? std::string() : it->second;
+}
+
+bool storage_state_flag(const std::map<std::string, std::string>& kv, const char* key) {
+    return storage_state_string(kv, key) == "1";
+}
+
+ApiResponse handle_get_storage_status(const Options& options) {
+    std::map<std::string, std::string> kv;
+    bool available = read_storage_state(options.storage_state_path, &kv);
+
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", 1);
+    cJSON_AddBoolToObject(root, "available", available ? 1 : 0);
+    cJSON_AddBoolToObject(root, "sd_present", storage_state_flag(kv, "SD_PRESENT") ? 1 : 0);
+    cJSON_AddBoolToObject(root, "sd_mounted", storage_state_flag(kv, "SD_MOUNTED") ? 1 : 0);
+    cJSON_AddStringToObject(root, "device", storage_state_string(kv, "SD_DEVICE").c_str());
+    cJSON_AddStringToObject(root, "mount_point", storage_state_string(kv, "SD_MOUNTPOINT").c_str());
+    cJSON_AddNumberToObject(root, "effective_mode", storage_state_int(kv, "EFFECTIVE_MODE", 1));
+    cJSON_AddNumberToObject(root, "total_bytes", storage_state_double(kv, "SD_TOTAL_BYTES"));
+    cJSON_AddNumberToObject(root, "free_bytes", storage_state_double(kv, "SD_FREE_BYTES"));
+    cJSON_AddStringToObject(root, "reason", storage_state_string(kv, "REASON").c_str());
+
+    cJSON* job = cJSON_CreateObject();
+    std::string job_status = storage_state_string(kv, "FORMAT_STATUS");
+    cJSON_AddStringToObject(job, "status", job_status.empty() ? "idle" : job_status.c_str());
+    cJSON_AddStringToObject(job, "fs", storage_state_string(kv, "FORMAT_FS").c_str());
+    cJSON_AddBoolToObject(job, "auto", storage_state_flag(kv, "FORMAT_AUTO") ? 1 : 0);
+    cJSON_AddStringToObject(job, "error", storage_state_string(kv, "FORMAT_ERROR").c_str());
+    cJSON_AddItemToObject(root, "format_job", job);
+
+    cJSON* migration = cJSON_CreateObject();
+    std::string migrate_status = storage_state_string(kv, "MIGRATE_STATUS");
+    cJSON_AddStringToObject(migration, "status", migrate_status.empty() ? "idle" : migrate_status.c_str());
+    cJSON_AddStringToObject(migration, "detail", storage_state_string(kv, "MIGRATE_DETAIL").c_str());
+    cJSON_AddStringToObject(migration, "error", storage_state_string(kv, "MIGRATE_ERROR").c_str());
+    cJSON_AddNumberToObject(migration, "moved_files", storage_state_int(kv, "MIGRATE_MOVED_FILES", 0));
+    cJSON_AddNumberToObject(migration, "moved_bytes", storage_state_double(kv, "MIGRATE_MOVED_BYTES"));
+    cJSON_AddItemToObject(root, "migration", migration);
+    return make_json_ok(root);
+}
+
+ApiResponse handle_post_storage(const Options& options,
+                                const std::string& agent_path,
+                                const std::string& body) {
+    return proxy_agent_json_request(options, agent_path, body.empty() ? "{}" : body);
+}
 // LLM_LOG_HANDLERS_PLACEHOLDER
 
 // url_decode expands percent-escapes (%XX) and '+' in a single URL path
@@ -6062,6 +6166,18 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
         }
     }
 
+    if (request.method == "GET" && request.path == "/api/storage/status") {
+        return handle_get_storage_status(options);
+    }
+
+    if (request.method == "POST" && request.path == "/api/storage/format") {
+        return handle_post_storage(options, "/api/storage/format", request.body);
+    }
+
+    if (request.method == "POST" && request.path == "/api/storage/eject") {
+        return handle_post_storage(options, "/api/storage/eject", request.body);
+    }
+
     if (request.method == "GET" && request.path == "/api/agent/status") {
         return handle_get_agent_status();
     }
@@ -6154,7 +6270,8 @@ bool parse_int(const char* text, int min_value, int max_value, int* value) {
 void print_usage(const char* argv0) {
     std::cerr << "Usage: " << argv0 << " [--bind=IP] [--port=PORT]"
               << " [--config=PATH] [--wifi-config=PATH] [--wifi-iface=NAME]"
-              << " [--ota-state=PATH] [--cmdline=PATH] [--system-env=PATH]" << std::endl;
+              << " [--ota-state=PATH] [--cmdline=PATH] [--system-env=PATH]"
+              << " [--storage-state=PATH]" << std::endl;
 }
 
 bool parse_args(int argc, char** argv, Options* options) {
@@ -6176,6 +6293,7 @@ bool parse_args(int argc, char** argv, Options* options) {
         } else if (consume_prefix(arg, "--ota-state=", &options->ota_state_path)) {
         } else if (consume_prefix(arg, "--cmdline=", &options->cmdline_path)) {
         } else if (consume_prefix(arg, "--system-env=", &options->system_env_path)) {
+        } else if (consume_prefix(arg, "--storage-state=", &options->storage_state_path)) {
         } else {
             return false;
         }
