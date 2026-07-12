@@ -62,10 +62,14 @@ def test_adb_android_basic_suite_loads_device_operation_tasks():
         "swipe_screen",
         "type_english_text",
     ]
-    # Hard assertions only require screenshot so --no-judge runs don't fail on
-    # the agent picking quick_action vs touch_gesture for the same outcome.
-    for task in suite.tasks:
-        assert task.hard_assertions.required_tools == ["screenshot"]
+    # Action tasks must not require any specific tool: every action tool
+    # already returns a post-action screenshot, so the agent legitimately
+    # completes them without ever invoking the standalone screenshot tool,
+    # and it may pick quick_action vs touch_gesture for the same outcome.
+    by_id = {task.id: task for task in suite.tasks}
+    assert by_id["screenshot_home"].hard_assertions.required_tools == ["screenshot"]
+    for task_id in ("go_home", "open_settings", "swipe_screen", "type_english_text"):
+        assert by_id[task_id].hard_assertions.required_tools == []
 
 
 def test_benchmark_suites_do_not_use_tool_sequence():

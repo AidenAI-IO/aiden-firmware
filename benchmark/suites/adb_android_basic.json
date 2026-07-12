@@ -29,7 +29,9 @@
       "hard_assertions": {
         "must_complete_within_sec": 60,
         "min_tool_calls": 1,
-        "required_tools": ["screenshot"]
+        "required_tools": [
+          "screenshot"
+        ]
       },
       "repeats": 1
     },
@@ -47,7 +49,7 @@
       "hard_assertions": {
         "must_complete_within_sec": 60,
         "min_tool_calls": 1,
-        "required_tools": ["screenshot"]
+        "required_tools": []
       },
       "repeats": 1
     },
@@ -69,7 +71,7 @@
       "hard_assertions": {
         "must_complete_within_sec": 90,
         "min_tool_calls": 1,
-        "required_tools": ["screenshot"]
+        "required_tools": []
       },
       "repeats": 1
     },
@@ -87,7 +89,7 @@
       "hard_assertions": {
         "must_complete_within_sec": 60,
         "min_tool_calls": 1,
-        "required_tools": ["screenshot"]
+        "required_tools": []
       },
       "repeats": 1
     },
@@ -109,7 +111,7 @@
       "hard_assertions": {
         "must_complete_within_sec": 120,
         "min_tool_calls": 1,
-        "required_tools": ["screenshot"]
+        "required_tools": []
       },
       "repeats": 1
     }
