@@ -139,6 +139,25 @@ func NewTerminationPolicy(cfg TerminationPolicyConfig) *TerminationPolicy {
 	}
 }
 
+func (p *TerminationPolicy) ResetForSteer() {
+	if p == nil {
+		return
+	}
+	p.startedAt = time.Now()
+	p.lastToolSig = ""
+	p.sameSigStreak = 0
+	p.lastResultHash = ""
+	p.sameResultStreak = 0
+	p.lastScreenHash = ""
+	p.screenUnchangedAfterAction = 0
+	p.screenHashBeforeAction = ""
+	p.parseFailures = 0
+	p.stallScore = 0
+	p.tier = TierNone
+	p.lastNoticeTier = TierNone
+	p.lastToolName = ""
+}
+
 func (p *TerminationPolicy) CheckBeforeIteration(ctx context.Context, iteration, maxIterations int) TerminationDecision {
 	if p == nil || !p.cfg.enabled() {
 		return TerminationDecision{}

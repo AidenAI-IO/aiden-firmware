@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"aiden-agent/internal/agent/context_manager"
+	"aiden-agent/internal/agent/contextmanager"
 
 	"github.com/tmc/langchaingo/llms"
 	langtools "github.com/tmc/langchaingo/tools"
@@ -63,7 +63,7 @@ func TestAgentLoopDeliversSoftNoticeAsTransient(t *testing.T) {
 		t.Fatalf("soft notice count in deciding prompt = %d, want 1", got)
 	}
 	for _, message := range manager.MessageListDump().Messages {
-		if message.Role == context_manager.MessageRoleNotice {
+		if message.Role == contextmanager.MessageRoleNotice {
 			t.Fatalf("soft notice should not persist: %#v", manager.MessageListDump().Messages)
 		}
 	}
@@ -109,7 +109,7 @@ func TestAgentLoopEscalatesFromTransientNoticeToRestrictionAndTermination(t *tes
 		t.Fatalf("restriction notice count in deciding prompt = %d, want 1", got)
 	}
 	for _, message := range manager.MessageListDump().Messages {
-		if message.Role == context_manager.MessageRoleNotice {
+		if message.Role == contextmanager.MessageRoleNotice {
 			t.Fatalf("loop guard notice should not persist in context manager: %#v", manager.MessageListDump().Messages)
 		}
 	}

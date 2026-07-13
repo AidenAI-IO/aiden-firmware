@@ -156,6 +156,7 @@ type Config struct {
 	VoiceToolCallSpeech        *bool                   `toml:"voice_tool_call_speech,omitempty"`
 	VoiceProgressSpeechEnabled *bool                   `toml:"voice_progress_speech_enabled,omitempty"`
 	VoiceMaxResponseTokens     int                     `toml:"voice_max_response_tokens,omitempty"`
+	LoadAllTools               bool                    `toml:"load_all_tools,omitempty"`
 	TodoReminderToolCalls      int                     `toml:"todo_reminder_tool_calls,omitempty"`
 	MaxIterations              int                     `toml:"max_iterations,omitempty"`
 	ForceSimpleLoop            bool                    `toml:"-"`
@@ -353,8 +354,9 @@ type HIDConfig struct {
 	MouseDevice           string `toml:"mouse_device,omitempty"`
 	AndroidKeyboardDevice string `toml:"android_keyboard_device,omitempty"`
 	FrameSocket           string `toml:"frame_socket,omitempty"`
-	// PointerMode selects the hid.usb1 report format: "absolute" (iOS AssistiveTouch)
-	// or "touchscreen" (Android HID digitizer + hid.usb2 Android extension keys).
+	// PointerMode selects the hid.usb1 report format: "absolute" (iOS AssistiveTouch
+	// plus limited hid.usb2 media keys) or "touchscreen" (Android HID digitizer
+	// plus full hid.usb2 Android extension keys).
 	PointerMode string `toml:"pointer_mode,omitempty"`
 }
 
@@ -430,8 +432,8 @@ type ModelConfig struct {
 
 // AgentConfig is used internally by the runtime prompt builder.
 type AgentConfig struct {
-	Instruction         string
-	AdditionalPrompt    string
+	Instruction      string
+	AdditionalPrompt string
 }
 
 // MemoryConfig is used internally by the memory manager.

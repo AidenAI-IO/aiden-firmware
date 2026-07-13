@@ -348,12 +348,6 @@ func TestExecuteToolCallBuiltInStringErrorToolsReturnStructuredErrors(t *testing
 			wantCode: CodeModuleUnavailable,
 		},
 		{
-			name:     "current time invalid timezone",
-			tool:     &CurrentTimeTool{},
-			input:    `{"timezone":"Not/AZone"}`,
-			wantCode: CodeInvalidArguments,
-		},
-		{
 			name:     "keyboard tap empty keys",
 			tool:     &KeyboardTapTool{},
 			input:    `{"keys":[]}`,

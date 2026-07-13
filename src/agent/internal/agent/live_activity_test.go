@@ -12,7 +12,7 @@ import (
 )
 
 func TestLiveActivityManagerLifecycle(t *testing.T) {
-	manager := NewLiveActivityManager(LiveActivityConfig{}, nil)
+	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
 	if manager == nil {
 		t.Fatal("NewLiveActivityManager() = nil")
 	}
@@ -47,7 +47,7 @@ func TestLiveActivityManagerLifecycle(t *testing.T) {
 }
 
 func TestLiveActivityManagerSummarizesAgentSteps(t *testing.T) {
-	manager := NewLiveActivityManager(LiveActivityConfig{}, nil)
+	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
 	manager.StartTask("req-1", "Book a table")
 
 	state := manager.UpdateFromRunEvent("req-1", RunEvent{
@@ -81,7 +81,7 @@ func TestLiveActivityManagerSummarizesAgentSteps(t *testing.T) {
 }
 
 func TestLiveActivityManagerNeedsAppWhenBridgeUnavailable(t *testing.T) {
-	manager := NewLiveActivityManager(LiveActivityConfig{}, nil)
+	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
 	manager.StartTask("req-1", "Read clipboard")
 
 	state := manager.UpdateFromRunEvent("req-1", RunEvent{
@@ -117,7 +117,7 @@ func TestLiveActivityManagerNeedsAppWhenBridgeUnavailable(t *testing.T) {
 }
 
 func TestLiveActivityManagerSnapshotActive(t *testing.T) {
-	manager := NewLiveActivityManager(LiveActivityConfig{}, nil)
+	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
 	manager.StartTask("req-1", "First task")
 	manager.StartTask("req-2", "Second task")
 
@@ -134,7 +134,7 @@ func TestLiveActivityManagerSnapshotActive(t *testing.T) {
 }
 
 func TestLiveActivityManagerSnapshotActiveForPhone(t *testing.T) {
-	manager := NewLiveActivityManager(LiveActivityConfig{}, nil)
+	manager := NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())
 	manager.StartTask("req-phone-a", "First phone", "phone-a")
 	manager.StartTask("req-phone-b", "Second phone", "phone-b")
 
@@ -177,7 +177,7 @@ func TestLiveActivityManagerPublishesToRelay(t *testing.T) {
 		RelayURL:    relay.URL,
 		RelayAPIKey: "relay-secret",
 		BoardID:     "board-1",
-	}, nil)
+	}, newTestLogger())
 	manager.relay.httpClient = relay.Client()
 	manager.StartTask("req-1", "Open Settings", "phone-1")
 
@@ -223,7 +223,7 @@ func TestLiveActivityManagerPublishesTerminalStateToRelayAsStandby(t *testing.T)
 	manager := NewLiveActivityManager(LiveActivityConfig{
 		RelayURL: relay.URL,
 		BoardID:  "board-1",
-	}, nil)
+	}, newTestLogger())
 	manager.relay.httpClient = relay.Client()
 	manager.StartTask("req-1", "Open Settings", "phone-1")
 	manager.CompleteTask("req-1", "Done")
@@ -278,7 +278,7 @@ func TestLiveActivityManagerSkipsRelayWithoutPhoneID(t *testing.T) {
 	manager := NewLiveActivityManager(LiveActivityConfig{
 		RelayURL: relay.URL,
 		BoardID:  "board-1",
-	}, nil)
+	}, newTestLogger())
 	manager.relay.httpClient = relay.Client()
 	manager.StartTask("req-1", "Open Settings")
 
@@ -290,7 +290,7 @@ func TestLiveActivityManagerSkipsRelayWithoutPhoneID(t *testing.T) {
 }
 
 func TestServerLiveActivityRegistrationAndStatus(t *testing.T) {
-	server := &Server{liveActivity: NewLiveActivityManager(LiveActivityConfig{}, nil)}
+	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())}
 	server.liveActivity.StartTask("req-1", "Do a task")
 
 	body := bytes.NewBufferString(`{"request_id":"req-1","activity_id":"act-1","push_token":"token-1","platform":"ios"}`)
@@ -335,7 +335,7 @@ func TestServerLiveActivityRegistrationAndStatus(t *testing.T) {
 }
 
 func TestServerLiveActivityCurrent(t *testing.T) {
-	server := &Server{liveActivity: NewLiveActivityManager(LiveActivityConfig{}, nil)}
+	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())}
 	server.liveActivity.StartTask("req-1", "Do a task")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/live-activity/current", nil)
@@ -357,7 +357,7 @@ func TestServerLiveActivityCurrent(t *testing.T) {
 }
 
 func TestServerBridgeStatusIncludesBoardIDWithoutBridge(t *testing.T) {
-	server := &Server{
+	server := &Server{logger: newTestLogger(),
 		runtime: &Runtime{
 			config: Config{
 				LiveActivity: LiveActivityConfig{BoardID: "board-1"},
@@ -385,7 +385,7 @@ func TestServerBridgeStatusIncludesBoardIDWithoutBridge(t *testing.T) {
 }
 
 func TestServerLiveActivityCurrentFiltersPhoneID(t *testing.T) {
-	server := &Server{liveActivity: NewLiveActivityManager(LiveActivityConfig{}, nil)}
+	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())}
 	server.liveActivity.StartTask("req-phone-a", "Do a task", "phone-a")
 	server.liveActivity.StartTask("req-phone-b", "Do another task", "phone-b")
 
@@ -424,7 +424,10 @@ func TestServerLiveActivityCurrentFiltersPhoneID(t *testing.T) {
 }
 
 func TestServerLiveActivityPhoneIDPreference(t *testing.T) {
-	server := &Server{bridge: &PhoneBridge{phoneID: "bridge-phone"}}
+	bridge := newPhoneBridgeForTest()
+	defer bridge.queue.Stop()
+	bridge.phoneID = "bridge-phone"
+	server := &Server{logger: newTestLogger(), bridge: bridge}
 	if got := server.liveActivityPhoneID(ChatRequest{PhoneID: "request-phone"}); got != "request-phone" {
 		t.Fatalf("liveActivityPhoneID request = %q, want request-phone", got)
 	}
@@ -434,7 +437,7 @@ func TestServerLiveActivityPhoneIDPreference(t *testing.T) {
 }
 
 func TestServerLiveActivityCurrentEmpty(t *testing.T) {
-	server := &Server{liveActivity: NewLiveActivityManager(LiveActivityConfig{}, nil)}
+	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/live-activity/current", nil)
 	rec := httptest.NewRecorder()
@@ -454,7 +457,7 @@ func TestServerLiveActivityCurrentEmpty(t *testing.T) {
 }
 
 func TestServerLiveActivityStatusRequiresRequestID(t *testing.T) {
-	server := &Server{liveActivity: NewLiveActivityManager(LiveActivityConfig{}, nil)}
+	server := &Server{logger: newTestLogger(), liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger())}
 	req := httptest.NewRequest(http.MethodGet, "/api/live-activity/status", nil)
 	rec := httptest.NewRecorder()
 
@@ -466,8 +469,8 @@ func TestServerLiveActivityStatusRequiresRequestID(t *testing.T) {
 }
 
 func TestChatResultIncludesLiveActivityState(t *testing.T) {
-	server := &Server{
-		liveActivity: NewLiveActivityManager(LiveActivityConfig{}, nil),
+	server := &Server{logger: newTestLogger(),
+		liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger()),
 		pendingResults: map[string]*chatPendingResult{
 			"req-1": {
 				messages: []Message{},
@@ -494,8 +497,8 @@ func TestChatResultIncludesLiveActivityState(t *testing.T) {
 }
 
 func TestChatResultIncludesTerminalLiveActivityState(t *testing.T) {
-	server := &Server{
-		liveActivity: NewLiveActivityManager(LiveActivityConfig{}, nil),
+	server := &Server{logger: newTestLogger(),
+		liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger()),
 		pendingResults: map[string]*chatPendingResult{
 			"req-1": {
 				messages: []Message{{
@@ -534,8 +537,8 @@ func TestChatResultIncludesTerminalLiveActivityState(t *testing.T) {
 }
 
 func TestChatResultErrorIncludesQueuedMessages(t *testing.T) {
-	server := &Server{
-		liveActivity: NewLiveActivityManager(LiveActivityConfig{}, nil),
+	server := &Server{logger: newTestLogger(),
+		liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger()),
 		pendingResults: map[string]*chatPendingResult{
 			"req-1": {
 				messages: []Message{{

@@ -611,7 +611,7 @@ func TestTaskEpisodeIndexSummaryOmitsScreenshotBase64(t *testing.T) {
 
 func TestRuntimeRetrieveUsesAutomaticScreenHints(t *testing.T) {
 	ctx := context.Background()
-	configDir := t.TempDir()
+	configDir := ensureTestConfigDir(t, t.TempDir())
 	memoryDir := filepath.Join(configDir, "memory")
 	longTerm := NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"))
 	for _, item := range []MemoryItem{

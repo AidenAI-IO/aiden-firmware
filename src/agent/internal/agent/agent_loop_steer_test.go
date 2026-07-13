@@ -18,13 +18,13 @@ func TestAgentLoopSteerInterruptOnTermination(t *testing.T) {
 	var checkCount int
 	steerProvider := func(ctx context.Context) (RunSteerMessage, bool) {
 		checkCount++
-		// Return steer only on the last check (at termination)
-		// Tool execution will check 3 times, then termination will check once
-		if checkCount < 4 {
+		// Each completed tool iteration checks before the model, before the tool,
+		// and after the tool. Return steer only from the termination boundary.
+		if checkCount != 10 {
 			return RunSteerMessage{}, false
 		}
 		return RunSteerMessage{
-			Content:   "停止当前任务",
+			Content:   "Stop the current task.",
 			Timestamp: time.Now(),
 		}, true
 	}
@@ -33,6 +33,7 @@ func TestAgentLoopSteerInterruptOnTermination(t *testing.T) {
 		toolCallResponse("call-1", "touch_gesture", `{"type":"swipe_up"}`),
 		toolCallResponse("call-2", "touch_gesture", `{"type":"swipe_up"}`),
 		toolCallResponse("call-3", "touch_gesture", `{"type":"swipe_up"}`),
+		contentResponse("Stopped as requested."),
 	}}
 
 	manager, err := freshNewContextManager("system", "task", nil, t.TempDir())
@@ -58,12 +59,15 @@ func TestAgentLoopSteerInterruptOnTermination(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 
-	// Should stop due to loop detection and return steer message instead of loop guard message
-	if !strings.Contains(output, "停止当前任务") {
-		t.Fatalf("output = %q, want steer content", output)
+	// The termination boundary should inject the steer and let the model decide.
+	if output != "Stopped as requested." {
+		t.Fatalf("output = %q, want steer-adjusted response", output)
 	}
 	if strings.Contains(output, "not making measurable progress") {
-		t.Fatalf("output = %q, should use steer message not loop guard message", output)
+		t.Fatalf("output = %q, should continue from steer instead of returning loop guard message", output)
+	}
+	if len(model.messages) < 4 || !runtimeModelCallContains(model.messages[3], "Stop the current task.") {
+		t.Fatalf("follow-up model call missing steer: %#v", model.messages)
 	}
 }
 

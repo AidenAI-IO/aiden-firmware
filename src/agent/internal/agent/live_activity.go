@@ -190,6 +190,7 @@ func (m *LiveActivityManager) StartTask(requestID, title string, phoneIDs ...str
 	if m == nil || strings.TrimSpace(requestID) == "" {
 		return nil
 	}
+	m.logger.Info("Starting live activity task: %s, %s", requestID, title)
 	phoneID := ""
 	if len(phoneIDs) > 0 {
 		phoneID = firstNonEmptyString(phoneIDs)
@@ -468,6 +469,7 @@ func (m *LiveActivityManager) publish(requestID string, final bool) {
 	if m == nil {
 		return
 	}
+	m.logger.Info("Publishing live activity: %s, %t", requestID, final)
 	m.mu.Lock()
 	state, stateOK := m.states[requestID]
 	registration, regOK := m.registrations[requestID]
@@ -477,9 +479,11 @@ func (m *LiveActivityManager) publish(requestID string, final bool) {
 	hasRelay := m.relay != nil
 	m.mu.Unlock()
 	if !stateOK {
+		m.logger.Error("Live activity state not found: %s", requestID)
 		return
 	}
 	if hasAPNs && regOK {
+		m.logger.Info("Enqueuing APNs push: %s", requestID)
 		m.enqueueAPNsPush(liveActivityPushRequest{
 			requestID: requestID,
 			pushToken: registration.PushToken,
@@ -488,6 +492,7 @@ func (m *LiveActivityManager) publish(requestID string, final bool) {
 		}, apnsQueue)
 	}
 	if hasRelay {
+		m.logger.Info("Enqueuing relay push: %s", requestID)
 		m.enqueueRelayPush(liveActivityPushRequest{
 			requestID: requestID,
 			state:     state,
@@ -771,7 +776,7 @@ func liveActivityToolCallStatus(event RunEvent) liveActivityToolStatus {
 		status.action = "press_keys"
 	case "web_search", "wikipedia", "web_scraper":
 		status.action = "search"
-	case "current_time", "weather":
+	case "weather":
 		status.action = "check_information"
 	}
 	if status.step == "" {
@@ -1062,9 +1067,7 @@ func liveActivityToolCallStep(tool string) string {
 		return "Adjusting audio"
 	case "image_diff":
 		return "Comparing screen changes"
-	case "calculator":
-		return "Calculating"
-	case "current_time", "weather":
+	case "weather":
 		return "Checking information"
 	case "recall_memory", "recall_session_chunks", "recall_device_memory", "inspect_episode":
 		return "Recalling context"

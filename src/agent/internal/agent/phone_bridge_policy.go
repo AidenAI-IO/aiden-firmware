@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-const pipBridgeBackgroundStateMaxAge = 15 * time.Second
+const phoneBridgeBackgroundStateMaxAge = 15 * time.Second
 
 const (
 	toolBridgeOpenApp      = "bridge_open_app"
@@ -47,9 +47,11 @@ func isPhoneBridgeToolName(name string) bool {
 func phoneBridgeToolAvailable(status PhoneBridgeStatus, name string) bool {
 	switch name {
 	case toolBridgeOpenApp:
-		return !phoneBridgePiPBackgroundEnabled(status)
+		return !phoneBridgePiPBackgroundEnabled(status) && !phoneBridgeFGSBackgroundEnabled(status)
 	case toolBridgeClipboard, toolBridgeCalendar, toolBridgeContacts, toolBridgeNotification:
-		return status.Connected || phoneBridgeCanUsePiPBackground(status, phoneBridgeBackgroundCommandTypeForTool(name))
+		return phoneBridgeReadyForCommand(status) ||
+			phoneBridgeCanUsePiPBackground(status, phoneBridgeBackgroundCommandTypeForTool(name)) ||
+			phoneBridgeCanUseFGSBackground(status, phoneBridgeBackgroundCommandTypeForTool(name))
 	default:
 		return true
 	}
@@ -83,7 +85,20 @@ func phoneBridgeCanUsePiPBackground(status PhoneBridgeStatus, commandType string
 	if !phoneBridgePiPBackgroundEnabled(status) {
 		return false
 	}
-	if status.AppStateUpdatedAt == nil || time.Since(*status.AppStateUpdatedAt) > pipBridgeBackgroundStateMaxAge {
+	if status.AppStateUpdatedAt == nil || time.Since(*status.AppStateUpdatedAt) > phoneBridgeBackgroundStateMaxAge {
+		return false
+	}
+	return true
+}
+
+func phoneBridgeCanUseFGSBackground(status PhoneBridgeStatus, commandType string) bool {
+	if !phoneBridgeBackgroundSafeCommandType(commandType) {
+		return false
+	}
+	if !phoneBridgeFGSBackgroundEnabled(status) {
+		return false
+	}
+	if status.FgsBridgeUpdatedAt == nil || time.Since(*status.FgsBridgeUpdatedAt) > phoneBridgeBackgroundStateMaxAge {
 		return false
 	}
 	return true
@@ -100,6 +115,17 @@ func phoneBridgePiPBackgroundEnabled(status PhoneBridgeStatus) bool {
 	}
 	state := strings.ToLower(strings.TrimSpace(status.AppState))
 	return state == "" || state == "background" || state == "inactive"
+}
+
+func phoneBridgeFGSBackgroundEnabled(status PhoneBridgeStatus) bool {
+	if status.FgsBridgeEnabled == nil || !*status.FgsBridgeEnabled {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(status.Platform), "android") {
+		return false
+	}
+	state := strings.ToLower(strings.TrimSpace(status.AppState))
+	return state == "background" || state == "inactive"
 }
 
 func phoneBridgeBackgroundCommandTypeForTool(name string) string {
@@ -141,6 +167,13 @@ func phoneBridgeRecoveryGuidance(status PhoneBridgeStatus) string {
 }
 
 func phoneBridgeRestoreUnavailableError(status PhoneBridgeStatus) error {
+	if phoneBridgeFGSBackgroundEnabled(status) {
+		state := strings.TrimSpace(status.AppState)
+		if state == "" {
+			state = "background"
+		}
+		return fmt.Errorf("phone bridge app is %s with Android FGS Bridge enabled, but this command requires the companion app in foreground", state)
+	}
 	if phoneBridgePiPBackgroundEnabled(status) {
 		state := strings.TrimSpace(status.AppState)
 		if state == "" {

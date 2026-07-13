@@ -68,20 +68,22 @@ type waitStableFrameClient interface {
 }
 
 type waitStableScreenResult struct {
-	OK        bool     `json:"ok"`
-	Stable    bool     `json:"stable"`
-	ElapsedMs int64    `json:"elapsed_ms"`
-	LastDiff  *float64 `json:"last_diff,omitempty"`
+	OK            bool     `json:"ok"`
+	Stable        bool     `json:"stable"`
+	ElapsedMs     int64    `json:"elapsed_ms"`
+	ScreenChanged *bool    `json:"screen_changed,omitempty"`
+	LastDiff      *float64 `json:"last_diff,omitempty"`
 }
 
 type waitStableScreenObservationResult struct {
 	screenshotResult
-	OK           bool     `json:"ok"`
-	Stable       bool     `json:"stable"`
-	ElapsedMs    int64    `json:"elapsed_ms"`
-	ScreenStable *bool    `json:"screen_stable,omitempty"`
-	StableWaitMs *int64   `json:"stable_wait_ms,omitempty"`
-	LastDiff     *float64 `json:"last_diff,omitempty"`
+	OK            bool     `json:"ok"`
+	Stable        bool     `json:"stable"`
+	ElapsedMs     int64    `json:"elapsed_ms"`
+	ScreenStable  *bool    `json:"screen_stable,omitempty"`
+	StableWaitMs  *int64   `json:"stable_wait_ms,omitempty"`
+	ScreenChanged *bool    `json:"screen_changed,omitempty"`
+	LastDiff      *float64 `json:"last_diff,omitempty"`
 }
 
 func NewWaitStableScreenTool(socketPath string, defaults ScreenStableDefaults, screens ...*screenState) *WaitStableScreenTool {
@@ -108,7 +110,8 @@ func (t *WaitStableScreenTool) Description() string {
 			`Input JSON: {"timeout_ms":%d,"stable_ms":%d,"diff_threshold":%g}. `+
 			`Omitted fields use agent config defaults. `+
 			`The screen is stable when consecutive frames stay below diff_threshold for stable_ms. `+
-			`Returns {"ok":true,"stable":true/false,"elapsed_ms":N,...} plus a screenshot observation with width, height, format, size, and base64 JPEG data. `+
+			`Returns {"ok":true,"stable":true/false,"elapsed_ms":N,"screen_changed":true/false,...} plus a screenshot observation with width, height, format, size, and base64 JPEG data. `+
+			`screen_changed=false means no visible frame change was observed during the wait window; if a previous UI action was expected to change the screen, do not assume it succeeded and inspect the screenshot. `+
 			`stable=false means the wait timed out while the screen was still changing (for example video playback); that is not an error and the screenshot is still captured as a best-effort observation.`,
 		resolved.TimeoutMs,
 		resolved.StableMs,
@@ -145,6 +148,7 @@ func (t *WaitStableScreenTool) Call(ctx context.Context, input string) (string, 
 		ElapsedMs:        result.ElapsedMs,
 		ScreenStable:     &stable,
 		StableWaitMs:     &elapsed,
+		ScreenChanged:    result.ScreenChanged,
 		LastDiff:         result.LastDiff,
 	})
 	return string(out), nil
@@ -241,16 +245,29 @@ func (t *WaitStableScreenTool) wait(ctx context.Context, input string) (waitStab
 	}
 	prevSeq := prevMeta.Seq
 	stableSince := time.Now()
+	screenChanged := false
 	var lastDiff *float64
 
 	for {
 		now := time.Now()
 		if now.Sub(stableSince) >= stableFor {
-			return waitStableScreenResult{OK: true, Stable: true, ElapsedMs: now.Sub(start).Milliseconds(), LastDiff: lastDiff}, nil
+			return waitStableScreenResult{
+				OK:            true,
+				Stable:        true,
+				ElapsedMs:     now.Sub(start).Milliseconds(),
+				ScreenChanged: waitStableBoolPtr(screenChanged),
+				LastDiff:      lastDiff,
+			}, nil
 		}
 		if !now.Before(deadline) {
 			stable := now.Sub(stableSince) >= stableFor
-			return waitStableScreenResult{OK: true, Stable: stable, ElapsedMs: now.Sub(start).Milliseconds(), LastDiff: lastDiff}, nil
+			return waitStableScreenResult{
+				OK:            true,
+				Stable:        stable,
+				ElapsedMs:     now.Sub(start).Milliseconds(),
+				ScreenChanged: waitStableBoolPtr(screenChanged),
+				LastDiff:      lastDiff,
+			}, nil
 		}
 
 		wait := stableWaitPollInterval
@@ -273,6 +290,7 @@ func (t *WaitStableScreenTool) wait(ctx context.Context, input string) (waitStab
 
 		rgb, err := convertFrameToRGB(meta, frame)
 		if err != nil {
+			screenChanged = true
 			prevSeq = meta.Seq
 			stableSince = time.Now()
 			continue
@@ -280,6 +298,9 @@ func (t *WaitStableScreenTool) wait(ctx context.Context, input string) (waitStab
 
 		diff := meanRGBAbsDiff(prevMeta, prevRGB, meta, rgb)
 		lastDiff = &diff
+		if diff > 0 {
+			screenChanged = true
+		}
 		if diff > diffThreshold {
 			stableSince = time.Now()
 		}
@@ -287,6 +308,10 @@ func (t *WaitStableScreenTool) wait(ctx context.Context, input string) (waitStab
 		prevRGB = rgb
 		prevSeq = meta.Seq
 	}
+}
+
+func waitStableBoolPtr(value bool) *bool {
+	return &value
 }
 
 func meanRGBAbsDiff(aMeta *frameMetadata, a []byte, bMeta *frameMetadata, b []byte) float64 {

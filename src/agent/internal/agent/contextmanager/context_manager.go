@@ -1,8 +1,9 @@
-package context_manager
+package contextmanager
 
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"sync"
@@ -105,31 +106,20 @@ type ContextManager struct {
 	sessionFolder   string
 }
 
-// NewContextManagerFromSessionID loads a context manager from the session folder, if targetSessionID is nil, it will load the current(last) session.
-func NewContextManagerFromSessionID(sessionFolder string, targetSessionID *string) (*ContextManager, bool, error) {
-	sessionID := ""
-	if targetSessionID != nil {
-		sessionID = *targetSessionID
-	} else {
-		sessionID = fetchCurrentSession(sessionFolder)
-	}
-
+// LoadContextManagerFromSessionID loads a context manager from the session folder
+func LoadContextManagerFromSessionID(sessionFolder string, sessionID string) (*ContextManager, error) {
 	if sessionID == "" {
-		sessionID = newSessionID()
+		return nil, fmt.Errorf("session ID is empty")
 	}
 
 	messageList, err := loadSession(sessionFolder, sessionID)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 
 	attachmentStore, err := newAttachmentStore(sessionFolder, sessionID)
 	if err != nil {
-		return nil, false, err
-	}
-
-	if err := saveCurrentSession(sessionFolder, sessionID); err != nil {
-		return nil, false, err
+		return nil, err
 	}
 
 	return &ContextManager{
@@ -138,7 +128,38 @@ func NewContextManagerFromSessionID(sessionFolder string, targetSessionID *strin
 		mu:              sync.RWMutex{},
 		sessionFolder:   sessionFolder,
 		attachmentStore: attachmentStore,
-	}, len(messageList) == 0, nil
+	}, nil
+}
+
+func LoadContextManagerFromCurrentSession(sessionFolder string) (*ContextManager, error) {
+	sessionID := fetchCurrentSession(sessionFolder)
+	if sessionID == "" {
+		return nil, fmt.Errorf("current session ID is empty")
+	}
+	return LoadContextManagerFromSessionID(sessionFolder, sessionID)
+}
+
+// NewContextManager creates a new context manager and saves the session ID to the session folder as current session.
+func NewContextManager(sessionFolder string, systemPrompt string) (*ContextManager, error) {
+	newSessionID := newSessionID()
+	if err := saveCurrentSession(sessionFolder, newSessionID); err != nil {
+		return nil, err
+	}
+
+	manager, err := LoadContextManagerFromSessionID(sessionFolder, newSessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	// sessionID is new, so system prompt is necessary
+	if err := manager.AppendMessage(Message{
+		Role:    MessageRoleSystem,
+		Content: systemPrompt,
+	}); err != nil {
+		return nil, err
+	}
+
+	return manager, nil
 }
 
 func newSessionID() string {
@@ -156,12 +177,14 @@ func (c *ContextManager) GetSessionID() string {
 func (c *ContextManager) appendToList(messages []Message) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	messages = repairToolCallTailBeforeAppend(c.messageList, messages)
+	if len(messages) == 0 {
+		return nil
+	}
 
-	if len(messages) > 0 {
-		if err := appendSession(c.sessionFolder, c.sessionID, messages); err != nil {
-			fmt.Printf("Failed to append messages to session: %v\n", err)
-			return err
-		}
+	if err := appendSession(c.sessionFolder, c.sessionID, messages); err != nil {
+		log.Println("[CM] Failed to append messages to session", err)
+		return err
 	}
 
 	c.messageList = append(c.messageList, messages...)
@@ -255,6 +278,22 @@ func (c *ContextManager) removeAppendMessageHook(id uint64) {
 		}
 		c.appendHooks = append(c.appendHooks[:i], c.appendHooks[i+1:]...)
 		break
+	}
+}
+
+func (c *ContextManager) AddAppendMessageHooks(hooks []AppendMessageHook) {
+	if len(hooks) == 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	log.Println("[CM] Adding append message hooks", len(hooks))
+	for _, hook := range hooks {
+		if hook == nil {
+			continue
+		}
+		c.nextHookID++
+		c.appendHooks = append(c.appendHooks, appendMessageHookEntry{ID: c.nextHookID, Hook: hook})
 	}
 }
 

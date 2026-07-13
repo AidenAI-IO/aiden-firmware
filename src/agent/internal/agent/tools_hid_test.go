@@ -767,7 +767,7 @@ func TestPostActionScreenshotToolFallsBackScreenshotWhenScreenUnstable(t *testin
 	action := &stubTool{name: "touch_gesture", output: "ok"}
 	waitStable := &stubTool{
 		name:   "wait_for_stable_screen",
-		output: `{"ok":true,"stable":false,"elapsed_ms":3001,"last_diff":18.5}`,
+		output: `{"ok":true,"stable":false,"elapsed_ms":3001,"screen_changed":true,"last_diff":18.5}`,
 	}
 	screenshot := &stubTool{
 		name:   "screenshot",
@@ -793,6 +793,9 @@ func TestPostActionScreenshotToolFallsBackScreenshotWhenScreenUnstable(t *testin
 	if result.ScreenStable == nil || *result.ScreenStable {
 		t.Fatalf("ScreenStable = %#v, want false", result.ScreenStable)
 	}
+	if result.ScreenChanged == nil || !*result.ScreenChanged {
+		t.Fatalf("ScreenChanged = %#v, want true", result.ScreenChanged)
+	}
 	if result.StableWaitMs == nil || *result.StableWaitMs != 3001 {
 		t.Fatalf("StableWaitMs = %#v, want 3001", result.StableWaitMs)
 	}
@@ -814,7 +817,7 @@ func TestPostActionScreenshotToolOmitsLastDiffWhenStableWaitOmitsIt(t *testing.T
 	action := &stubTool{name: "touch_gesture", output: "ok"}
 	waitStable := &stubTool{
 		name:   "wait_for_stable_screen",
-		output: `{"ok":true,"stable":true,"elapsed_ms":600}`,
+		output: `{"ok":true,"stable":true,"elapsed_ms":600,"screen_changed":false}`,
 	}
 	screenshot := &stubTool{
 		name:   "screenshot",
@@ -833,6 +836,9 @@ func TestPostActionScreenshotToolOmitsLastDiffWhenStableWaitOmitsIt(t *testing.T
 	}
 	if result.LastDiff != nil {
 		t.Fatalf("LastDiff = %#v, want omitted", result.LastDiff)
+	}
+	if result.ScreenChanged == nil || *result.ScreenChanged {
+		t.Fatalf("ScreenChanged = %#v, want false", result.ScreenChanged)
 	}
 }
 
@@ -1029,6 +1035,23 @@ func TestMouseScrollToolRejectsOutOfRangeDelta(t *testing.T) {
 	}
 }
 
+func TestMouseScrollToolRejectsTouchscreenPointerMode(t *testing.T) {
+	tool := &MouseScrollTool{pc: testTouchscreenPointerController(nil, &pointerState{})}
+	ctx, _ := WithToolError(context.Background())
+
+	out, err := tool.Call(ctx, `{"delta":-3}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	want := "mouse_scroll is unsupported when pointer_mode is touchscreen; use touch_gesture"
+	if out != want {
+		t.Fatalf("output = %q, want %q", out, want)
+	}
+	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeInvalidArguments || got.Message != want {
+		t.Fatalf("ToolError = %+v, want invalid_arguments with output message", got)
+	}
+}
+
 func TestMouseScrollUsesLastPointerPosition(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	state := &pointerState{}
@@ -1147,7 +1170,7 @@ func TestKeyboardTapSendsModifierChordWithHold(t *testing.T) {
 func TestKeyboardTapSupportsAndroidBackAlias(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	androidDev, androidPath := newTestHIDDevice(t)
-	tool := &KeyboardTapTool{dev: dev, androidDev: androidDev}
+	tool := &KeyboardTapTool{dev: dev, androidDev: androidDev, pointerMode: "touchscreen"}
 
 	out, err := tool.Call(context.Background(), `{"keys":["KEYCODE_BACK"]}`)
 	if err != nil {
@@ -1182,7 +1205,7 @@ func TestKeyboardTapSupportsAndroidBackAlias(t *testing.T) {
 func TestKeyboardTapSupportsAndroidVolumeAlias(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	androidDev, androidPath := newTestHIDDevice(t)
-	tool := &KeyboardTapTool{dev: dev, androidDev: androidDev}
+	tool := &KeyboardTapTool{dev: dev, androidDev: androidDev, pointerMode: "touchscreen"}
 
 	out, err := tool.Call(context.Background(), `{"keys":["KEYCODE_VOLUME_UP"]}`)
 	if err != nil {
@@ -1214,7 +1237,7 @@ func TestKeyboardTapSupportsAndroidVolumeAlias(t *testing.T) {
 func TestKeyboardTapSupportsAndroidAppSwitchAlias(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	androidDev, androidPath := newTestHIDDevice(t)
-	tool := &KeyboardTapTool{dev: dev, androidDev: androidDev}
+	tool := &KeyboardTapTool{dev: dev, androidDev: androidDev, pointerMode: "touchscreen"}
 
 	out, err := tool.Call(context.Background(), `{"keys":["KEYCODE_APP_SWITCH"]}`)
 	if err != nil {
@@ -1261,7 +1284,7 @@ func TestKeyboardTapSupportsAdditionalAndroidKeycodeAliases(t *testing.T) {
 		t.Run(tc.input, func(t *testing.T) {
 			dev, path := newTestHIDDevice(t)
 			androidDev, androidPath := newTestHIDDevice(t)
-			tool := &KeyboardTapTool{dev: dev, androidDev: androidDev}
+			tool := &KeyboardTapTool{dev: dev, androidDev: androidDev, pointerMode: "touchscreen"}
 
 			out, err := tool.Call(context.Background(), fmt.Sprintf(`{"keys":["%s"]}`, tc.input))
 			if err != nil {
@@ -1295,7 +1318,7 @@ func TestKeyboardTapSupportsAdditionalAndroidKeycodeAliases(t *testing.T) {
 func TestKeyboardTapSupportsAndroidSettingsUsageAlias(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	androidDev, androidPath := newTestHIDDevice(t)
-	tool := &KeyboardTapTool{dev: dev, androidDev: androidDev}
+	tool := &KeyboardTapTool{dev: dev, androidDev: androidDev, pointerMode: "touchscreen"}
 
 	out, err := tool.Call(context.Background(), `{"keys":["KEY_USAGE_SETTINGS"]}`)
 	if err != nil {
@@ -1327,7 +1350,7 @@ func TestKeyboardTapSupportsAndroidSettingsUsageAlias(t *testing.T) {
 func TestKeyboardTapSupportsAndroidLanguageSwitchUsageAlias(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	androidDev, androidPath := newTestHIDDevice(t)
-	tool := &KeyboardTapTool{dev: dev, androidDev: androidDev}
+	tool := &KeyboardTapTool{dev: dev, androidDev: androidDev, pointerMode: "touchscreen"}
 
 	out, err := tool.Call(context.Background(), `{"keys":["KEY_USAGE_LANGUAGE_SWITCH"]}`)
 	if err != nil {
@@ -1380,7 +1403,7 @@ func TestKeyboardTapSupportsAdditionalAndroidUsageAliases(t *testing.T) {
 		t.Run(tc.input, func(t *testing.T) {
 			dev, path := newTestHIDDevice(t)
 			androidDev, androidPath := newTestHIDDevice(t)
-			tool := &KeyboardTapTool{dev: dev, androidDev: androidDev}
+			tool := &KeyboardTapTool{dev: dev, androidDev: androidDev, pointerMode: "touchscreen"}
 
 			out, err := tool.Call(context.Background(), fmt.Sprintf(`{"keys":["%s"]}`, tc.input))
 			if err != nil {
@@ -1408,6 +1431,78 @@ func TestKeyboardTapSupportsAdditionalAndroidUsageAliases(t *testing.T) {
 				t.Fatalf("usage = 0x%04x, want 0x%04x", got, androidExtensionUsageMap[tc.mapKey])
 			}
 		})
+	}
+}
+
+func TestKeyboardTapAbsolutePointerModeAllowsMediaKeySubset(t *testing.T) {
+	testCases := []struct {
+		input  string
+		mapKey string
+	}{
+		{input: "KEYCODE_VOLUME_MUTE", mapKey: "volume_mute"},
+		{input: "KEYCODE_VOLUME_UP", mapKey: "volume_up"},
+		{input: "KEYCODE_VOLUME_DOWN", mapKey: "volume_down"},
+		{input: "KEYCODE_MEDIA_PLAY_PAUSE", mapKey: "media_play_pause"},
+		{input: "KEYCODE_MEDIA_STOP", mapKey: "media_stop"},
+		{input: "KEYCODE_MEDIA_NEXT", mapKey: "media_next"},
+		{input: "KEYCODE_MEDIA_PREVIOUS", mapKey: "media_previous"},
+		{input: "KEYCODE_MEDIA_REWIND", mapKey: "media_rewind"},
+		{input: "KEYCODE_MEDIA_FAST_FORWARD", mapKey: "media_fast_forward"},
+		{input: "KEY_USAGE_SCREENSHOT", mapKey: "key_usage_screenshot"},
+		{input: "KEY_USAGE_BRIGHTNESS_UP", mapKey: "key_usage_brightness_up"},
+		{input: "KEY_USAGE_BRIGHTNESS_DOWN", mapKey: "key_usage_brightness_down"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.input, func(t *testing.T) {
+			dev, path := newTestHIDDevice(t)
+			androidDev, androidPath := newTestHIDDevice(t)
+			tool := &KeyboardTapTool{dev: dev, androidDev: androidDev, pointerMode: "absolute"}
+
+			out, err := tool.Call(context.Background(), fmt.Sprintf(`{"keys":["%s"]}`, tc.input))
+			if err != nil {
+				t.Fatalf("Call failed: %v", err)
+			}
+			if out != "ok" {
+				t.Fatalf("unexpected output: %s", out)
+			}
+
+			dev.Close()
+			androidDev.Close()
+			if data, err := os.ReadFile(path); err != nil {
+				t.Fatalf("ReadFile keyboard path: %v", err)
+			} else if len(data) != 0 {
+				t.Fatalf("standard keyboard path bytes = %v, want none for absolute media key", data)
+			}
+			data, err := os.ReadFile(androidPath)
+			if err != nil {
+				t.Fatalf("ReadFile android path: %v", err)
+			}
+			if len(data) != 4 {
+				t.Fatalf("report bytes = %d, want 4 (consumer usage + release)", len(data))
+			}
+			if got := uint16(data[0]) | uint16(data[1])<<8; got != absolutePointerModeExtensionReports[tc.mapKey] {
+				t.Fatalf("report mask = 0x%04x, want 0x%04x", got, absolutePointerModeExtensionReports[tc.mapKey])
+			}
+		})
+	}
+}
+
+func TestKeyboardTapAbsolutePointerModeRejectsAndroidNavigationKeys(t *testing.T) {
+	dev, _ := newTestHIDDevice(t)
+	androidDev, _ := newTestHIDDevice(t)
+	tool := &KeyboardTapTool{dev: dev, androidDev: androidDev, pointerMode: "absolute"}
+	ctx, _ := WithToolError(context.Background())
+
+	out, err := tool.Call(ctx, `{"keys":["KEYCODE_BACK"]}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, `hid.pointer_mode="touchscreen"`) || !strings.Contains(out, absolutePointerModeExtensionKeyList) {
+		t.Fatalf("output = %q, want absolute pointer mode allow-list error", out)
+	}
+	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeInvalidArguments || got.Message != out {
+		t.Fatalf("ToolError = %+v, want invalid_arguments with output message", got)
 	}
 }
 
@@ -1441,14 +1536,14 @@ func TestKeyboardTapRejectsUnsupportedAndroidKeycodeAliases(t *testing.T) {
 }
 
 func TestKeyboardTapRejectsAndroidExtensionWithoutAndroidDevice(t *testing.T) {
-	tool := &KeyboardTapTool{}
+	tool := &KeyboardTapTool{pointerMode: "touchscreen"}
 	ctx, _ := WithToolError(context.Background())
 
 	out, err := tool.Call(ctx, `{"keys":["KEYCODE_HOME"]}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
-	if !strings.Contains(out, "android extension keyboard device is not configured") || !strings.Contains(out, "hid.pointer_mode=\"touchscreen\"") {
+	if !strings.Contains(out, "android extension keyboard device is not configured") || !strings.Contains(out, "hid.android_keyboard_device") {
 		t.Fatalf("output = %q, want android extension device error", out)
 	}
 	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeModuleUnavailable || got.Message != out {
@@ -1780,16 +1875,26 @@ func TestTouchGestureHomeStartsAtBottomPhysicalEdge(t *testing.T) {
 
 func TestTouchGestureDescriptionDocumentsEdgeGestureAliases(t *testing.T) {
 	desc := (&TouchGestureTool{}).Description()
-	for _, want := range []string{"back", "home", "Prefer quick_action", "finger movement", "older chat history", "scrollable region", "x=1", "y=999", "coord_space", "never omit x/y key names", "probe with medium/large", "biased inward"} {
+	// The description keeps only the load-bearing quick_action disambiguation and swipe-direction rule.
+	for _, want := range []string{"Prefer quick_action", "finger movement"} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q:\n%s", want, desc)
+		}
+	}
+	// Edge-alias coordinates (back x=1, home y=999) now live in the type ArgsSchema field.
+	props, _ := (&TouchGestureTool{}).ArgsSchema()["properties"].(map[string]any)
+	typeSchema, _ := props["type"].(map[string]any)
+	typeDesc, _ := typeSchema["description"].(string)
+	for _, want := range []string{"back", "home", "x=1", "y=999"} {
+		if !strings.Contains(typeDesc, want) {
+			t.Fatalf("type schema missing %q:\n%s", want, typeDesc)
 		}
 	}
 }
 
 func TestMouseClickDescriptionDocumentsTargetCenter(t *testing.T) {
 	desc := (&MouseClickTool{}).Description()
-	for _, want := range []string{"coord_space default is auto", "normalized", "latest screenshot", "visual center", "pointer_mode absolute", "post-action screenshot"} {
+	for _, want := range []string{"normalized", "latest screenshot", "visual center", "post-action screenshot"} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q:\n%s", want, desc)
 		}
@@ -1798,20 +1903,41 @@ func TestMouseClickDescriptionDocumentsTargetCenter(t *testing.T) {
 
 func TestKeyboardTapDescriptionDocumentsQuickActionFallback(t *testing.T) {
 	desc := (&KeyboardTapTool{}).Description()
-	for _, want := range []string{"Prefer quick_action", "copy", "paste", "send", "custom key input", "backspace", "forward-delete", "Modifier-only", "hold_ms", "Modifiers"} {
+	for _, want := range []string{"Prefer quick_action", "custom key input"} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q:\n%s", want, desc)
+		}
+	}
+	// Key mechanics (backspace/forward-delete, modifiers, key list) now live in the keys ArgsSchema field.
+	keysDesc := keyboardTapKeysSchemaDescription(t)
+	for _, want := range []string{"backspace", "forward-delete", "modifier", "modifier-only"} {
+		if !strings.Contains(keysDesc, want) {
+			t.Fatalf("keys schema missing %q:\n%s", want, keysDesc)
 		}
 	}
 }
 
 func TestKeyboardTapDescriptionReferencesAndroidGuidePage(t *testing.T) {
-	desc := (&KeyboardTapTool{}).Description()
-	for _, want := range []string{"KEYCODE_*", "KEY_USAGE_*", "Android key guide", "single-key taps only"} {
-		if !strings.Contains(desc, want) {
-			t.Fatalf("description missing %q:\n%s", want, desc)
+	keysDesc := keyboardTapKeysSchemaDescription(t)
+	for _, want := range []string{"KEYCODE_*", "KEY_USAGE_*", "Android key guide", "single-key taps only", "hid.pointer_mode is absolute", "KEY_USAGE_SCREENSHOT"} {
+		if !strings.Contains(keysDesc, want) {
+			t.Fatalf("keys schema missing %q:\n%s", want, keysDesc)
 		}
 	}
+}
+
+func keyboardTapKeysSchemaDescription(t *testing.T) string {
+	t.Helper()
+	props, ok := (&KeyboardTapTool{}).ArgsSchema()["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("keyboard_tap schema missing properties")
+	}
+	keys, ok := props["keys"].(map[string]any)
+	if !ok {
+		t.Fatal("keyboard_tap schema missing keys property")
+	}
+	desc, _ := keys["description"].(string)
+	return desc
 }
 
 func TestTouchGestureDefaultEdgeGestureRejectsInvalidCoordSpace(t *testing.T) {

@@ -974,41 +974,6 @@
         }
       }
     },
-    "screenshot_region": {
-      "label": "Screenshot Region",
-      "aliases": ["区域截图", "screenshot_region"],
-      "category": "system_panel",
-      "platforms": {
-        "ios": {
-          "status": "active",
-          "tool": "keyboard_tap",
-          "input": { "keys": ["shift", "meta", "4"], "hold_ms": 120 },
-          "note": "external keyboard: Cmd+Shift+4 region screenshot + markup (HID shift=0x02, meta=0x08, 4=0x21)"
-        },
-        "android": { "status": "reserved" },
-        "mac": {
-          "status": "active",
-          "tool": "keyboard_tap",
-          "input": { "keys": ["shift", "meta", "4"] },
-          "note": "capture selected region to desktop (Shift+Cmd+4)"
-        }
-      }
-    },
-    "screenshot_toolbar": {
-      "label": "Screenshot Toolbar",
-      "aliases": ["截图工具栏", "screenshot_toolbar", "screen_record"],
-      "category": "system_panel",
-      "platforms": {
-        "ios": { "status": "reserved" },
-        "android": { "status": "reserved" },
-        "mac": {
-          "status": "active",
-          "tool": "keyboard_tap",
-          "input": { "keys": ["shift", "meta", "5"] },
-          "note": "open screenshot/screen-record toolbar (Shift+Cmd+5)"
-        }
-      }
-    },
     "new_document": {
       "label": "New Document",
       "aliases": ["新建", "new", "new_document", "new_file"],

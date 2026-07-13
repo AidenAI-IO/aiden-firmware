@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const phoneBridgeBackgroundSafeDataToolNote = `On iOS, when Aiden is backgrounded with PiP Bridge mode active, this data tool can run through the HTTP command queue without restoring Aiden. If PiP is not active but the Dynamic Island return entry is available, the tool restores Aiden to foreground before sending the command. PiP Bridge mode is not a foreground substitute for bridge_open_app or UI actions. `
+const phoneBridgeBackgroundSafeDataToolNote = `When Aiden is backgrounded, this data tool can run through the HTTP command queue if iOS PiP Bridge mode or Android FGS Bridge mode is active. If iOS PiP is not active but the Dynamic Island return entry is available, the tool restores Aiden to foreground before sending the command. Background bridge modes are not foreground substitutes for bridge_open_app or UI actions. `
 
 // nextBridgeCmdID builds a unique command id for a bridge command type. It
 // reuses openAppCmdSeq so every outbound bridge command shares one counter.
@@ -39,7 +39,7 @@ func bridgeStatusForError(bridge *PhoneBridge) []PhoneBridgeStatus {
 	if bridge == nil {
 		return nil
 	}
-	return []PhoneBridgeStatus{bridge.Status()}
+	return []PhoneBridgeStatus{bridge.getStatus()}
 }
 
 // ClipboardTool reads and writes the connected phone's system clipboard.
@@ -56,8 +56,6 @@ func (t *ClipboardTool) Name() string { return toolBridgeClipboard }
 
 func (t *ClipboardTool) Description() string {
 	return `Read or write the connected phone's system clipboard via the phone bridge. ` +
-		`Input JSON: {"action":"read"} returns {"ok":true,"text":"..."}; ` +
-		`{"action":"write","text":"content"} sets the clipboard and returns {"ok":true}. ` +
 		`Use this as a fast cross-app content channel for long or non-ASCII text: write the clipboard in Aiden, switch to the target app, then paste. ` +
 		phoneBridgeBackgroundSafeDataToolNote
 }
@@ -169,10 +167,7 @@ func (t *CalendarTool) Name() string { return toolBridgeCalendar }
 
 func (t *CalendarTool) Description() string {
 	return `Create, query, or delete system calendar events on the connected phone via the phone bridge. ` +
-		`Times are RFC3339 strings with timezone offset, e.g. "2026-06-02T15:00:00+08:00". Use current_time first if you need the timezone or "now". ` +
-		`Create: {"action":"create","title":"Dentist","start_at":"2026-06-02T15:00:00+08:00","end_at":"2026-06-02T16:00:00+08:00","all_day":false,"location":"Clinic","notes":"...","alarm_minutes_before":30} -> {"ok":true,"event_id":"..."}. ` +
-		`Query: {"action":"query","from":"2026-06-02T00:00:00+08:00","to":"2026-06-03T00:00:00+08:00"} -> {"ok":true,"events":[{"event_id","title","start_at","end_at","location"}]}. ` +
-		`Delete: {"action":"delete","event_id":"..."} -> {"ok":true}. ` +
+		`Times are RFC3339 strings with timezone offset, e.g. "2026-06-02T15:00:00+08:00". Use the connected phone environment timezone when available; otherwise use shell to obtain a controller-time baseline and do not assume it matches the phone timezone. ` +
 		`Confirm details with the user before creating or deleting events. ` +
 		phoneBridgeBackgroundSafeDataToolNote
 }
@@ -366,9 +361,6 @@ func (t *ContactsTool) Name() string { return toolBridgeContacts }
 
 func (t *ContactsTool) Description() string {
 	return `Query, create, or update contacts on the connected phone via the phone bridge. ` +
-		`Query: {"action":"query","query":"张三","limit":20} -> {"ok":true,"contacts":[{"contact_id","name","phone_numbers","emails"}]}. ` +
-		`Create: {"action":"create","name":"李四","phone_numbers":["+86 139 8765 4321"],"emails":["lisi@example.com"],"organization":"公司","notes":"备注"} -> {"ok":true,"contact_id":"..."}. ` +
-		`Update: {"action":"update","contact_id":"...","name":"新名字","phone_numbers":[...],"emails":[...]} -> {"ok":true}. ` +
 		`Confirm details with the user before creating or updating contacts. ` +
 		phoneBridgeBackgroundSafeDataToolNote
 }
@@ -562,9 +554,6 @@ func (t *NotificationTool) Name() string { return toolBridgeNotification }
 
 func (t *NotificationTool) Description() string {
 	return `Send local notifications on the connected phone via the phone bridge. ` +
-		`Input JSON: {"title":"提醒","body":"该吃药了","schedule_at":"2026-06-04T18:00:00+08:00","sound":true,"badge":1}. ` +
-		`The schedule_at field is optional (RFC3339 with timezone); if omitted, the notification is sent immediately. ` +
-		`Returns {"ok":true,"notification_id":"..."} on success. ` +
 		`Use this to remind the user or bring the companion app back to foreground. ` +
 		phoneBridgeBackgroundSafeDataToolNote
 }
@@ -573,7 +562,7 @@ func (t *NotificationTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
 		"title":       stringArgSchema("Notification title."),
 		"body":        stringArgSchema("Notification body."),
-		"schedule_at": stringArgSchema("Optional scheduled send time as RFC3339 with timezone."),
+		"schedule_at": stringArgSchema("Optional scheduled send time as RFC3339 with timezone; if omitted, sent immediately."),
 		"sound":       boolArgSchema("Whether to play a sound."),
 		"badge":       minIntegerArgSchema("Optional app badge count.", 0),
 	}, "title")

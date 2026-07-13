@@ -4,28 +4,28 @@ import (
 	"fmt"
 	"strings"
 
-	"aiden-agent/internal/agent/context_manager"
+	"aiden-agent/internal/agent/contextmanager"
 
 	"github.com/tmc/langchaingo/llms"
 )
 
-func messageRoleFromLLM(role llms.ChatMessageType) context_manager.MessageRole {
+func messageRoleFromLLM(role llms.ChatMessageType) contextmanager.MessageRole {
 	switch role {
 	case llms.ChatMessageTypeSystem:
-		return context_manager.MessageRoleSystem
+		return contextmanager.MessageRoleSystem
 	case llms.ChatMessageTypeHuman, llms.ChatMessageTypeGeneric:
-		return context_manager.MessageRoleUser
+		return contextmanager.MessageRoleUser
 	case llms.ChatMessageTypeAI:
-		return context_manager.MessageRoleAssistant
+		return contextmanager.MessageRoleAssistant
 	case llms.ChatMessageTypeTool, llms.ChatMessageTypeFunction:
-		return context_manager.MessageRoleToolResult
+		return contextmanager.MessageRoleToolResult
 	default:
-		return context_manager.MessageRoleUser
+		return contextmanager.MessageRoleUser
 	}
 }
 
-func messageFromLLMContent(manager *context_manager.ContextManager, content llms.MessageContent) context_manager.Message {
-	message := context_manager.Message{Role: messageRoleFromLLM(content.Role)}
+func messageFromLLMContent(manager *contextmanager.ContextManager, content llms.MessageContent) contextmanager.Message {
+	message := contextmanager.Message{Role: messageRoleFromLLM(content.Role)}
 	for _, part := range content.Parts {
 		switch typed := part.(type) {
 		case llms.TextContent:
@@ -34,15 +34,15 @@ func messageFromLLMContent(manager *context_manager.ContextManager, content llms
 			if typed.FunctionCall == nil {
 				continue
 			}
-			message.Role = context_manager.MessageRoleToolCall
-			message.ToolCalls = append(message.ToolCalls, context_manager.ToolCall{
+			message.Role = contextmanager.MessageRoleToolCall
+			message.ToolCalls = append(message.ToolCalls, contextmanager.ToolCall{
 				ID:        strings.TrimSpace(typed.ID),
 				Name:      strings.TrimSpace(typed.FunctionCall.Name),
 				Arguments: strings.TrimSpace(typed.FunctionCall.Arguments),
 			})
 		case llms.ToolCallResponse:
-			message.Role = context_manager.MessageRoleToolResult
-			message.ToolResults = append(message.ToolResults, context_manager.ToolResult{
+			message.Role = contextmanager.MessageRoleToolResult
+			message.ToolResults = append(message.ToolResults, contextmanager.ToolResult{
 				ToolCallID: strings.TrimSpace(typed.ToolCallID),
 				Name:       strings.TrimSpace(typed.Name),
 				Content:    typed.Content,
@@ -66,10 +66,10 @@ func messageFromLLMContent(manager *context_manager.ContextManager, content llms
 	return message
 }
 
-func userMessageFromInput(manager *context_manager.ContextManager, input string, attachments []InputAttachment) context_manager.Message {
+func userMessageFromInput(manager *contextmanager.ContextManager, input string, attachments []InputAttachment) contextmanager.Message {
 	descriptions := make([]string, 0, len(attachments))
-	message := context_manager.Message{
-		Role:    context_manager.MessageRoleUser,
+	message := contextmanager.Message{
+		Role:    contextmanager.MessageRoleUser,
 		Content: attachmentAwarePrompt(normalizeRunInput(input, attachments), attachments, descriptions),
 	}
 	if manager == nil {
@@ -90,10 +90,10 @@ func userMessageFromInput(manager *context_manager.ContextManager, input string,
 	return message
 }
 
-func toolResultMessage(toolCallID, toolName, content string) context_manager.Message {
-	return context_manager.Message{
-		Role: context_manager.MessageRoleToolResult,
-		ToolResults: []context_manager.ToolResult{{
+func toolResultMessage(toolCallID, toolName, content string) contextmanager.Message {
+	return contextmanager.Message{
+		Role: contextmanager.MessageRoleToolResult,
+		ToolResults: []contextmanager.ToolResult{{
 			ToolCallID: strings.TrimSpace(toolCallID),
 			Name:       strings.TrimSpace(toolName),
 			Content:    content,
@@ -101,8 +101,8 @@ func toolResultMessage(toolCallID, toolName, content string) context_manager.Mes
 	}
 }
 
-func visualFollowupMessageFromLLMContent(manager *context_manager.ContextManager, content llms.MessageContent) context_manager.Message {
-	message := context_manager.Message{Role: messageRoleFromLLM(content.Role)}
+func visualFollowupMessageFromLLMContent(manager *contextmanager.ContextManager, content llms.MessageContent) contextmanager.Message {
+	message := contextmanager.Message{Role: messageRoleFromLLM(content.Role)}
 	for _, part := range content.Parts {
 		switch typed := part.(type) {
 		case llms.TextContent:
@@ -184,29 +184,27 @@ func mergePromptText(existing, addition string) string {
 	}
 }
 
-func freshNewContextManager(
+// InitializeContextManager initializes a context manager with a system prompt and a session folder if session is new.
+func InitializeContextManager(
 	systemPrompt string,
-	userInput string,
-	attachments []InputAttachment,
 	sessionFolder string,
-) (*context_manager.ContextManager, error) {
-	manager, isFresh, err := context_manager.NewContextManagerFromSessionID(sessionFolder, nil)
+	hooks []contextmanager.AppendMessageHook,
+) (*contextmanager.ContextManager, error) {
+	manager, err := contextmanager.LoadContextManagerFromCurrentSession(sessionFolder)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create context manager: %w", err)
-	}
-
-	if isFresh && strings.TrimSpace(systemPrompt) != "" {
-		if err := manager.AppendMessage(context_manager.Message{
-			Role:    context_manager.MessageRoleSystem,
-			Content: strings.TrimSpace(systemPrompt),
-		}); err != nil {
-			return nil, fmt.Errorf("failed to append system prompt: %w", err)
+		// create a new context manager
+		manager, err = contextmanager.NewContextManager(sessionFolder, systemPrompt)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create context manager: %w", err)
 		}
 	}
 
-	if err := manager.AppendMessage(userMessageFromInput(manager, userInput, attachments)); err != nil {
-		return nil, fmt.Errorf("failed to append user message: %w", err)
+	if manager == nil {
+		return nil, fmt.Errorf("failed to create context manager")
 	}
+
+	// set hooks
+	manager.AddAppendMessageHooks(hooks)
 
 	return manager, nil
 }

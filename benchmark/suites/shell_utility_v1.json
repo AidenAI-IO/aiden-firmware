@@ -1,0 +1,94 @@
+{
+  "name": "shell_utility_v1",
+  "description": "Text-only benchmark verifying that shell replaces the removed current_time and calculator tools for controller-local time, timezone, and deterministic calculation tasks.",
+  "prompt_prefix": "You are completing a text-only controller utility task. Do not use screen, phone, UI, keyboard, mouse, touch, app, or screenshot tools. Use an available non-UI capability when exact external or deterministic information is needed. Do not fabricate command output.",
+  "global_reset": {},
+  "tasks": [
+    {
+      "id": "current_time_via_shell",
+      "category": "single_step",
+      "description_for_judge": "The agent should query the controller clock through shell and report a real timestamp with timezone and Unix seconds.",
+      "prompt": "Aiden 控制器现在的准确时间是什么？请同时给出本地时间、时区名称或 UTC offset，以及 Unix 秒级时间戳。不要把当前连接设备的时间当成控制器时间。",
+      "rubric": [
+        {
+          "id": "used_shell_clock",
+          "check": "The trace contains a shell command that reads the system clock, such as date, rather than echoing a fabricated fixed timestamp."
+        },
+        {
+          "id": "reported_time_and_zone",
+          "check": "The final response contains a plausible current date/time and a timezone name or UTC offset."
+        },
+        {
+          "id": "reported_unix_seconds",
+          "check": "The final response contains a plausible Unix timestamp in seconds."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 2,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["shell"],
+        "forbidden_tools": ["current_time", "calculator", "screenshot", "touch_gesture", "mouse_click", "keyboard_text"]
+      }
+    },
+    {
+      "id": "timezone_conversion_via_shell",
+      "category": "single_step",
+      "description_for_judge": "The agent should use shell timezone support to report the current time in both UTC and Asia/Shanghai.",
+      "prompt": "现在的 UTC 时间和 Asia/Shanghai 时间分别是什么？请用 RFC3339 风格分别给出，并包含各自 UTC offset，确保两个时间表示同一时刻。",
+      "rubric": [
+        {
+          "id": "used_shell_timezone",
+          "check": "The trace contains shell commands that query or format the system clock for UTC and Asia/Shanghai."
+        },
+        {
+          "id": "reported_both_zones",
+          "check": "The final response contains both UTC and Asia/Shanghai current times with appropriate offsets."
+        },
+        {
+          "id": "times_are_consistent",
+          "check": "The two reported times represent the same moment, with Asia/Shanghai approximately eight hours ahead of UTC."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 3,
+        "must_complete_within_sec": 75,
+        "response_required": true,
+        "required_tools": ["shell"],
+        "forbidden_tools": ["current_time", "calculator", "screenshot", "touch_gesture", "mouse_click", "keyboard_text"]
+      }
+    },
+    {
+      "id": "calculation_via_shell",
+      "category": "single_step",
+      "description_for_judge": "The agent should use shell command-line arithmetic instead of the removed calculator tool and return the correct result.",
+      "prompt": "请精确计算 37 * 19 + 42，核验结果后选择正确答案。\n\nOptions:\n(a) 703\n(b) 745\n(c) 779\n(d) 812",
+      "expected_answer": "(b)",
+      "answer_format": "option_letter",
+      "rubric": [
+        {
+          "id": "used_shell_calculation",
+          "check": "The trace contains a shell command that performs the arithmetic."
+        },
+        {
+          "id": "did_not_use_removed_tools",
+          "check": "The trace does not contain current_time or calculator calls."
+        },
+        {
+          "id": "correct_answer",
+          "check": "The final answer is option (b), corresponding to 745."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 2,
+        "must_complete_within_sec": 60,
+        "response_required": true,
+        "required_tools": ["shell"],
+        "forbidden_tools": ["current_time", "calculator", "screenshot", "touch_gesture", "mouse_click", "keyboard_text"]
+      }
+    }
+  ]
+}

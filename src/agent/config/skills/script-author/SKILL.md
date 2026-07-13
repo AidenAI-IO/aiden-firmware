@@ -1,12 +1,14 @@
 ---
 name: script-author
-description: Use when creating, listing, reading, or editing local JSONL demo scripts that run_script plays back, including the description header and step format.
+description: Use when the opt-in script tools are available and the user wants to create, list, read, or edit local JSONL demo scripts that run_script plays back.
 metadata:
   preferred_model: primary
   allowed_tools: [list_scripts, read_script, write_script, run_script]
 ---
 
 Use this skill when the user asks you to author, inspect, or update a prepared demo script — the JSONL files under the agent config directory's `scripts/` folder that `run_script` plays back without LLM planning between steps.
+
+This workflow requires `list_scripts`, `read_script`, and `write_script`, which are present only when `load_all_tools = true`. If they are not in the current tool catalog, do not invent calls to them; explain that script authoring is not enabled for this Agent configuration.
 
 Four tools work together:
 
@@ -36,7 +38,7 @@ After the header, each non-empty, non-comment line is exactly one JSON object �
 - Speak: `{"type":"tts","text":"正在打开设置"}` starts TTS playback asynchronously and immediately continues to the next line; it does not wait for speech to finish. Short form: `{"tts":"正在打开设置"}`.
 - Call a tool: `{"type":"call","tool":"touch_gesture","input":{"type":"tap","point":{"x":500,"y":500}}}` invokes an existing tool with the given input. Short form: `{"call":{"tool":"screenshot","input":{}}}`.
 
-The `tool` of a call step must be one of the script-callable device or utility tools, such as screenshot, touch/mouse/keyboard controls, quick_action, wait_for_stable_screen, image_diff, audio_volume, current_time, or calculator. `run_script` cannot call itself or administrative tools such as shell, memory, skill management, web, or script-file tools. Use the same input shape each allowed tool expects on its own.
+The `tool` of a call step must be one of the script-callable device or utility tools, such as screenshot, touch/mouse/keyboard controls, quick_action, wait_for_stable_screen, image_diff, or audio_volume. `run_script` cannot call itself or administrative tools such as shell, memory, skill management, web, or script-file tools. Use the same input shape each allowed tool expects on its own.
 
 ## Example
 

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"aiden-agent/internal/agent/context_manager"
+	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/executor"
 
 	"github.com/tmc/langchaingo/agents"
@@ -37,7 +37,9 @@ type AgentLoop struct {
 	SteerProvider          func(context.Context) (RunSteerMessage, bool)
 	SteerWaiter            func(context.Context) (RunSteerMessage, bool, error)
 	TerminationPolicy      *TerminationPolicy
-	contextManager         *context_manager.ContextManager
+	DevicePlatform         string
+	PointerMode            string
+	contextManager         *contextmanager.ContextManager
 }
 
 func NewAgentLoop(
@@ -48,7 +50,7 @@ func NewAgentLoop(
 	callbacksHandler callbacks.Handler,
 	recorder *EpisodeRecorder,
 	screenshotPruning ScreenshotPruningConfig,
-	contextManager *context_manager.ContextManager,
+	contextManager *contextmanager.ContextManager,
 ) *AgentLoop {
 	if contextManager == nil {
 		log.Fatalf("context manager is nil")
@@ -133,6 +135,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 	if _, hasPending, err := l.consumeAndPersistSteer(ctx, llmExecutor); err != nil {
 		return "", false, err
 	} else if hasPending {
+		policy.ResetForSteer()
 		return "", false, nil
 	}
 
@@ -165,16 +168,36 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 			if _, hasPending, persistErr := l.consumeAndPersistSteer(ctx, llmExecutor); persistErr != nil {
 				return "", false, persistErr
 			} else if hasPending {
+				policy.ResetForSteer()
 				return "", false, nil
+			}
+			if l.SteerWaiter != nil {
+				waitCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+				waitedSteer, hasText, waitErr := l.SteerWaiter(waitCtx)
+				cancel()
+				if waitErr == nil && hasText {
+					if persistErr := l.persistSteer(ctx, llmExecutor, waitedSteer); persistErr != nil {
+						return "", false, persistErr
+					}
+					policy.ResetForSteer()
+					return "", false, nil
+				}
 			}
 		}
 		return "", false, err
 	}
 	l.emitRoleOutput(ctx, roleResponseDebugText(contentResp))
+	if answer := l.touchPointerModeMismatchContentFinalAnswer(contentResp); answer != "" {
+		if l.Recorder != nil {
+			l.Recorder.RecordDefaultFinish(answer)
+		}
+		answer, err = l.finishRun(ctx, answer)
+		return answer, true, err
+	}
 
 	actions, finish, err := parser.ParseOutput(contentResp)
 	if errors.Is(err, agents.ErrUnableToParseOutput) {
-		if err := llmExecutor.AppendMessage(context_manager.ConvertChoiceToContextManagerMessage(*contentResp.Choices[0])); err != nil {
+		if err := llmExecutor.AppendMessage(contextmanager.ConvertChoiceToContextManagerMessage(*contentResp.Choices[0])); err != nil {
 			return "", false, err
 		}
 		decision := policy.RecordParseFailure()
@@ -187,6 +210,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		if steer, hasPending, err := l.consumeAndPersistSteer(ctx, llmExecutor); err != nil {
 			return "", false, err
 		} else if hasPending {
+			policy.ResetForSteer()
 			log.Printf("[steer:debug] LLM parse failed, steer injected (length=%d)\n", len(steer.Content))
 			return "", false, nil
 		}
@@ -199,7 +223,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 	if finish != nil {
 		// Don't check steer after finish - let this turn complete normally.
 		// Steer will be processed as a new turn.
-		if err := llmExecutor.AppendMessage(context_manager.ConvertChoiceToContextManagerMessage(*contentResp.Choices[0])); err != nil {
+		if err := llmExecutor.AppendMessage(contextmanager.ConvertChoiceToContextManagerMessage(*contentResp.Choices[0])); err != nil {
 			return "", false, err
 		}
 		answer, _ := finish.ReturnValues[agentLoopOutputKey].(string)
@@ -221,8 +245,9 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 	if steer, hasPending, err := l.consumeAndPersistSteer(ctx, llmExecutor); err != nil {
 		return "", false, err
 	} else if hasPending {
+		policy.ResetForSteer()
 		// Append LLM response before steer so context includes what LLM was planning
-		if err := llmExecutor.AppendMessage(context_manager.ConvertChoiceToContextManagerMessage(*contentResp.Choices[0])); err != nil {
+		if err := llmExecutor.AppendMessage(contextmanager.ConvertChoiceToContextManagerMessage(*contentResp.Choices[0])); err != nil {
 			return "", false, err
 		}
 		log.Printf("[steer:debug] LLM action interrupted, steer injected (length=%d)\n", len(steer.Content))
@@ -230,7 +255,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 	}
 
 	action := actions[0]
-	if err := llmExecutor.AppendMessage(context_manager.ConvertChoiceToContextManagerMessage(choiceWithOnlyToolCall(*contentResp.Choices[0], action.ToolID))); err != nil {
+	if err := llmExecutor.AppendMessage(contextmanager.ConvertChoiceToContextManagerMessage(choiceWithOnlyToolCall(*contentResp.Choices[0], action.ToolID))); err != nil {
 		return "", false, err
 	}
 	toolExecution := l.executeToolCall(ctx, ToolCallExecution{
@@ -247,71 +272,6 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		EnvironmentBridge:      l.EnvironmentBridge,
 		EnvironmentBridgeTools: l.EnvironmentBridgeTools,
 	})
-	if toolExecution.Error != nil {
-		// Problem 3: If tool was canceled due to interrupt, check for pending steer
-		// and let iteration continue instead of returning error. Also wait briefly
-		// for steer to arrive if interrupt was signaled but steer not yet ready.
-		if errors.Is(toolExecution.Error, context.Canceled) {
-			// First attempt: check if steer is already available
-			steer, hasPending, err := l.consumeAndPersistSteer(ctx, llmExecutor)
-
-			// Second attempt: if no steer yet but we have SteerWaiter, wait for it
-			if !hasPending && l.SteerWaiter != nil {
-				waitCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-				waitedSteer, hasText, waitErr := l.SteerWaiter(waitCtx)
-				cancel()
-				if waitErr == nil && hasText {
-					// Manually persist the waited steer
-					if err := llmExecutor.AppendMessage(context_manager.Message{
-						Role:    context_manager.MessageRoleUser,
-						Content: waitedSteer.Content,
-					}); err != nil {
-						return "", false, err
-					}
-					if appender, ok := l.Memory.(steerConversationAppender); ok {
-						if err := appender.AppendSteerOnly(ctx, waitedSteer); err != nil {
-							return "", false, err
-						}
-					}
-					if l.CallbacksHandler != nil {
-						if handler, ok := l.CallbacksHandler.(interface {
-							HandleSteerMessage(context.Context, RunSteerMessage)
-						}); ok {
-							handler.HandleSteerMessage(ctx, waitedSteer)
-						}
-					}
-					steer = waitedSteer
-					hasPending = true
-				}
-			}
-
-			if err != nil {
-				return "", false, err
-			}
-			if hasPending {
-				log.Printf("[steer:debug] tool canceled but pending steer exists (length=%d), continuing iteration\n", len(steer.Content))
-				return "", false, nil
-			}
-		}
-
-		// Tool execution failed - let termination policy decide what to do
-		// Record the error in policy and check if we should terminate
-		decision := policy.AfterToolCall(
-			toolExecution.Call.Spec.Name,
-			toolExecution.Call.Input,
-			toolExecution.Error.Error(),
-			true, // isError
-		)
-		if decision.Stop {
-			return l.finishStopDecision(ctx, policy, decision)
-		}
-		l.applyLoopGuardDecision(decision, transientMessages)
-		// Continue iteration with the error in context
-		if err := appendToolExecutionMessages(llmExecutor, parser, toolExecution.Step); err != nil {
-			return "", false, err
-		}
-		return "", false, nil
-	}
 	if l.Recorder != nil {
 		l.Recorder.RecordExecution(ToolCallExecutionResult{
 			Call:   toolExecution.Call,
@@ -321,8 +281,58 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		})
 	}
 	toolCallsInIteration++
-	if err := appendToolExecutionMessages(llmExecutor, parser, toolExecution.Step); err != nil {
-		return "", false, err
+	appendErr := appendToolExecutionMessages(llmExecutor, parser, toolExecution.Step)
+	if toolExecution.Error != nil {
+		if appendErr != nil {
+			return "", false, errors.Join(toolExecution.Error, appendErr)
+		}
+		// If the tool was canceled by steering, consume an already queued steer or
+		// briefly wait for the out-of-band capture to finish.
+		if errors.Is(toolExecution.Error, context.Canceled) {
+			steer, hasPending, err := l.consumeAndPersistSteer(ctx, llmExecutor)
+			if err != nil {
+				return "", false, err
+			}
+			if !hasPending && l.SteerWaiter != nil {
+				waitCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+				waitedSteer, hasText, waitErr := l.SteerWaiter(waitCtx)
+				cancel()
+				if waitErr == nil && hasText {
+					if err := l.persistSteer(ctx, llmExecutor, waitedSteer); err != nil {
+						return "", false, err
+					}
+					steer = waitedSteer
+					hasPending = true
+				}
+			}
+			if hasPending {
+				policy.ResetForSteer()
+				log.Printf("[steer:debug] tool canceled but pending steer exists (length=%d), continuing iteration\n", len(steer.Content))
+				return "", false, nil
+			}
+		}
+
+		decision := policy.AfterToolCall(
+			toolExecution.Call.Spec.Name,
+			toolExecution.Call.Input,
+			toolExecution.Error.Error(),
+			true,
+		)
+		if decision.Stop {
+			return l.finishStopDecision(ctx, policy, decision)
+		}
+		l.applyLoopGuardDecision(decision, transientMessages)
+		return "", false, nil
+	}
+	if appendErr != nil {
+		return "", false, appendErr
+	}
+	if answer := l.touchPointerModeMismatchFinalAnswer(toolExecution.Step); answer != "" {
+		if l.Recorder != nil {
+			l.Recorder.RecordDefaultFinish(answer)
+		}
+		answer, err = l.finishRun(ctx, answer)
+		return answer, true, err
 	}
 
 	// Record tool execution in termination policy BEFORE checking steer
@@ -338,6 +348,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 	if _, hasPending, err := l.consumeAndPersistSteer(ctx, llmExecutor); err != nil {
 		return "", false, err
 	} else if hasPending {
+		policy.ResetForSteer()
 		// Continue iteration - LLM will see tool result + steer content and decide
 		return "", false, nil
 	}
@@ -367,6 +378,7 @@ func (l *AgentLoop) finishStopDecision(ctx context.Context, policy *TerminationP
 		if _, hasPending, err := l.consumeAndPersistSteer(ctx, nil); err != nil {
 			return "", false, err
 		} else if hasPending {
+			policy.ResetForSteer()
 			// Don't terminate - steer was consumed and persisted, continue iteration
 			return "", false, nil
 		}
@@ -379,8 +391,8 @@ func (l *AgentLoop) applyLoopGuardDecision(decision TerminationDecision, transie
 	if transientMessages == nil || strings.TrimSpace(decision.Notice) == "" {
 		return
 	}
-	transientMessages.Append(context_manager.Message{
-		Role:    context_manager.MessageRoleNotice,
+	transientMessages.Append(contextmanager.Message{
+		Role:    contextmanager.MessageRoleNotice,
 		Content: decision.Notice,
 	})
 }
@@ -412,15 +424,15 @@ func (l *AgentLoop) stopWithDecision(ctx context.Context, policy *TerminationPol
 }
 
 type transientMessageScope struct {
-	contextManager *context_manager.ContextManager
+	contextManager *contextmanager.ContextManager
 	remove         []func()
 }
 
-func newTransientMessageScope(contextManager *context_manager.ContextManager) *transientMessageScope {
+func newTransientMessageScope(contextManager *contextmanager.ContextManager) *transientMessageScope {
 	return &transientMessageScope{contextManager: contextManager}
 }
 
-func (s *transientMessageScope) Append(message context_manager.Message) {
+func (s *transientMessageScope) Append(message contextmanager.Message) {
 	if s == nil || s.contextManager == nil {
 		return
 	}
@@ -482,21 +494,34 @@ func (l *AgentLoop) consumeAndPersistSteer(
 	if !hasPending {
 		return RunSteerMessage{}, false, nil
 	}
+	if err := l.persistSteer(ctx, executor, steer); err != nil {
+		return steer, false, err
+	}
+	return steer, true, nil
+}
 
+func (l *AgentLoop) persistSteer(ctx context.Context, executor *executor.LLMExecutor, steer RunSteerMessage) error {
 	// Step 1: Append to context manager
 	if executor != nil {
-		if err := executor.AppendMessage(context_manager.Message{
-			Role:    context_manager.MessageRoleUser,
+		if err := executor.AppendMessage(contextmanager.Message{
+			Role:    contextmanager.MessageRoleUser,
 			Content: steer.Content,
 		}); err != nil {
-			return steer, false, err
+			return err
+		}
+	} else if l.contextManager != nil {
+		if err := l.contextManager.AppendMessage(contextmanager.Message{
+			Role:    contextmanager.MessageRoleUser,
+			Content: steer.Content,
+		}); err != nil {
+			return err
 		}
 	}
 
 	// Step 2: Persist to memory
 	if appender, ok := l.Memory.(steerConversationAppender); ok {
 		if err := appender.AppendSteerOnly(ctx, steer); err != nil {
-			return steer, false, err
+			return err
 		}
 	}
 
@@ -509,7 +534,7 @@ func (l *AgentLoop) consumeAndPersistSteer(
 		}
 	}
 
-	return steer, true, nil
+	return nil
 }
 
 func formatSteerInterruptMessage(steer RunSteerMessage) string {
@@ -583,6 +608,13 @@ type roleOutputHandler interface {
 
 func choiceWithOnlyToolCall(choice llms.ContentChoice, toolID string) llms.ContentChoice {
 	if len(choice.ToolCalls) == 0 {
+		if choice.FuncCall != nil {
+			choice.ToolCalls = []llms.ToolCall{{
+				ID:           ensureToolCallID(toolID, 0),
+				Type:         "function",
+				FunctionCall: choice.FuncCall,
+			}}
+		}
 		return choice
 	}
 	toolID = strings.TrimSpace(toolID)
@@ -672,6 +704,72 @@ func appendToolExecutionMessages(llmExecutor *executor.LLMExecutor, parser *Func
 		}
 	}
 	return nil
+}
+
+func (l *AgentLoop) touchPointerModeMismatchFinalAnswer(step schema.AgentStep) string {
+	if !toolNameEqual(step.Action.Tool, "touch_gesture") {
+		return ""
+	}
+	var payload struct {
+		ScreenChanged *bool `json:"screen_changed"`
+	}
+	if err := json.Unmarshal([]byte(step.Observation), &payload); err != nil {
+		return ""
+	}
+	if payload.ScreenChanged == nil || *payload.ScreenChanged {
+		return ""
+	}
+
+	platform := strings.ToLower(strings.TrimSpace(l.DevicePlatform))
+	pointerMode := strings.ToLower(strings.TrimSpace(l.PointerMode))
+	return touchPointerModeMismatchGuidance(platform, pointerMode)
+}
+
+func (l *AgentLoop) touchPointerModeMismatchContentFinalAnswer(contentResp *llms.ContentResponse) string {
+	if contentResp == nil || len(contentResp.Choices) == 0 || contentResp.Choices[0] == nil {
+		return ""
+	}
+	choice := contentResp.Choices[0]
+	if !choiceHasToolCall(choice, "touch_gesture") {
+		return ""
+	}
+	content := strings.TrimSpace(choice.Content)
+	if content == "" {
+		return ""
+	}
+	lower := strings.ToLower(content)
+	if !strings.Contains(lower, "hid.pointer_mode") {
+		return ""
+	}
+	if !strings.Contains(lower, "stop operation here") && !strings.Contains(lower, "touch mode likely does not match") {
+		return ""
+	}
+	platform := strings.ToLower(strings.TrimSpace(l.DevicePlatform))
+	pointerMode := strings.ToLower(strings.TrimSpace(l.PointerMode))
+	return touchPointerModeMismatchGuidance(platform, pointerMode)
+}
+
+func choiceHasToolCall(choice *llms.ContentChoice, toolName string) bool {
+	if choice == nil {
+		return false
+	}
+	for _, call := range choice.ToolCalls {
+		if call.FunctionCall != nil && toolNameEqual(call.FunctionCall.Name, toolName) {
+			return true
+		}
+	}
+	return false
+}
+
+func touchPointerModeMismatchGuidance(platform, pointerMode string) string {
+	switch {
+	case platform == "android" && pointerMode == "absolute":
+		return `touch_gesture produced no visible screen change, and the device is configured as Android with hid.pointer_mode="absolute". Stop operation here because the touch mode likely does not match the target. Please switch hid.pointer_mode to "touchscreen", restart the agent, and retry.`
+	case (platform == "ios" || platform == "ipados") && pointerMode == "touchscreen":
+		return `touch_gesture produced no visible screen change, and the device is configured as iOS with hid.pointer_mode="touchscreen". Stop operation here because the touch mode likely does not match the target. Please switch hid.pointer_mode to "absolute", restart the agent, and retry.`
+	default:
+		return ""
+	}
 }
 
 func toolNameEqual(got, want string) bool {

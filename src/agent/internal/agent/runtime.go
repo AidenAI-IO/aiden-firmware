@@ -17,7 +17,8 @@ import (
 	"unicode/utf8"
 
 	"aiden-agent/internal/agent/agentpath"
-	"aiden-agent/internal/agent/context_manager"
+	"aiden-agent/internal/agent/contextmanager"
+	"aiden-agent/internal/agent/statemanager"
 
 	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/agents"
@@ -56,7 +57,8 @@ type Runtime struct {
 	waitForWakeup      *WaitForWakeupController
 	memoryPlane        MemoryPlane
 	sessionManager     SessionManager
-	contextManager     *context_manager.ContextManager
+	contextManager     *contextmanager.ContextManager
+	stateManager       *statemanager.StateManager
 	runtimeID          string
 	telemetrySessionID string
 	environmentBridge  *EnvironmentBridgeClient
@@ -70,13 +72,10 @@ type RunRequest struct {
 	EpisodeID         string
 	RequestID         string
 	DeviceEnvironment *PhoneEnvironment
-	// RuntimeContext is dynamic per-turn system context, such as connected
-	// hardware/app state. It is not persisted as user configuration.
-	RuntimeContext string
-	StreamWriter   io.Writer
-	MaxTokens      int
-	EventHandler   func(RunEvent)
-	SteerProvider  func(context.Context) (RunSteerMessage, bool)
+	StreamWriter      io.Writer
+	MaxTokens         int
+	EventHandler      func(RunEvent)
+	SteerProvider     func(context.Context) (RunSteerMessage, bool)
 	// FinalSteerProvider is called at terminal executor boundaries. It should
 	// atomically consume one last pending steer if available; otherwise it should
 	// close the request's steer acceptance window.
@@ -432,6 +431,7 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 		runtimeID:          uuid.NewString(),
 		telemetrySessionID: uuid.NewString(),
 		environmentBridge:  environmentBridge,
+		stateManager:       statemanager.NewStateManager(),
 	}
 	// Use the active memory session ID for raw HTTP log partitioning.
 	if modelManager, ok := models.(*ModelManager); ok {
@@ -690,7 +690,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}
 	boundaryTelemetry = beginResult.Boundary
 	if boundaryTelemetry.Rotated {
-		r.resetPlannerContext()
+		r.rotateContext()
 	}
 	if boundaryTelemetry.PendingRecallCounter == nil {
 		boundaryTelemetry.PendingRecallCounter = &atomic.Int64{}
@@ -865,16 +865,16 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		}
 	}
 
+	// setup context manager if not initialized
 	if r.contextManager == nil {
-		r.contextManager, err = freshNewContextManager(profile.SystemPrompt, turnInput.InputText, turnInput.Attachments, agentpath.ContextManagerSessionFolder(r.config.ConfigDir))
+		r.contextManager, err = InitializeContextManager(profile.SystemPrompt, agentpath.ContextManagerSessionFolder(r.config.ConfigDir), []contextmanager.AppendMessageHook{r.getStateHook()})
 		if err != nil {
 			return RunResult{}, err
 		}
-	} else {
-		// append user message to context manager
-		if err := r.contextManager.AppendMessage(userMessageFromInput(r.contextManager, turnInput.InputText, turnInput.Attachments)); err != nil {
-			return RunResult{}, err
-		}
+	}
+	// append user message to context manager
+	if err := r.contextManager.AppendMessage(userMessageFromInput(r.contextManager, turnInput.InputText, turnInput.Attachments)); err != nil {
+		return RunResult{}, err
 	}
 
 	agentLoop := NewAgentLoop(model, profile, plannerMemory, maxIterations, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault(), r.contextManager)
@@ -883,6 +883,8 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	agentLoop.SteerInterrupt = req.SteerInterrupt
 	agentLoop.SteerProvider = req.SteerProvider
 	agentLoop.SteerWaiter = req.SteerWaiter
+	agentLoop.DevicePlatform = platformFn()
+	agentLoop.PointerMode = r.config.HID.PointerModeOrDefault()
 
 	output, err = agentLoop.Run(ctx, normalizedInput, callOptions...)
 	if err != nil {
@@ -952,6 +954,49 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		SleepRequested:         waitForWakeupRequested,
 		SleepReason:            waitForWakeupReason,
 	}, nil
+}
+
+func (r *Runtime) getSystemPrompt() string {
+	profile := r.buildAgentProfile(r.skills, r.availableTools())
+	return profile.SystemPrompt
+}
+
+func (r *Runtime) getStateHook() contextmanager.AppendMessageHook {
+	return func(message contextmanager.Message) contextmanager.AppendMessageHookResult {
+		// if not user message, just skip
+		if message.Role != contextmanager.MessageRoleUser {
+			return contextmanager.AppendMessageHookResult{
+				Message: &message,
+			}
+		}
+		entries := r.stateManager.GetAllStates()
+		// if no state entries, just skip
+		if len(entries) == 0 {
+			return contextmanager.AppendMessageHookResult{
+				Message: &message,
+			}
+		}
+		// format state entries into a list
+		// example:
+		// key1: value1
+		// key2: value2
+		// ...
+		formated := ""
+		for _, entry := range entries {
+			formated += fmt.Sprintf("%s: %s\n", entry.Key, entry.Value)
+		}
+		tagged := fmt.Sprintf("<state>\n%s\n</state>", formated)
+		// create a new StateMessage
+		stateMessage := contextmanager.Message{
+			Role:    contextmanager.MessageRoleState,
+			Content: tagged,
+		}
+		return contextmanager.AppendMessageHookResult{
+			Before:  []contextmanager.Message{stateMessage},
+			Message: &message,
+			After:   []contextmanager.Message{},
+		}
+	}
 }
 
 func (r *Runtime) beginSession(ctx context.Context, req SessionBeginRequest) (SessionBeginResult, error) {
@@ -1057,7 +1102,7 @@ func (r *Runtime) ClearMemory(ctx context.Context) error {
 	if err := r.memories.ClearSession(ctx, "default"); err != nil {
 		return err
 	}
-	r.resetPlannerContext()
+	r.rotateContext()
 	return nil
 }
 
@@ -1099,50 +1144,35 @@ func (r *Runtime) ClearAllMemory(ctx context.Context) error {
 	if err := r.memories.ClearAll(ctx, "default"); err != nil {
 		return err
 	}
-	r.resetPlannerContext()
+
+	_ = contextmanager.ClearAllSessions(agentpath.ContextManagerSessionFolder(r.config.ConfigDir))
+	r.rotateContext()
+
 	return nil
 }
 
-func (r *Runtime) PlannerContextDump() context_manager.MessageListDump {
+func (r *Runtime) ContextDump() contextmanager.MessageListDump {
 	contextManager := r.contextManager
 	if contextManager == nil {
-		return context_manager.MessageListDump{}
+		return contextmanager.MessageListDump{}
 	}
 	return contextManager.MessageListDump()
 }
 
-func (r *Runtime) resetPlannerContext() {
-	r.contextManager = nil
+func (r *Runtime) rotateContext() {
+	newContextManager, err := contextmanager.NewContextManager(agentpath.ContextManagerSessionFolder(r.config.ConfigDir), r.getSystemPrompt())
+	if err != nil {
+		return
+	}
+	newContextManager.AddAppendMessageHooks([]contextmanager.AppendMessageHook{r.getStateHook()})
+	r.contextManager = newContextManager
 }
 
 func (r *Runtime) availableTools() []langtools.Tool {
-	available := make([]langtools.Tool, 0)
-
-	for _, tool := range r.tools.All() {
-		if isAgentToolExposed(tool.Name()) {
-			available = append(available, tool)
-		}
+	if r == nil || r.tools == nil {
+		return nil
 	}
-
-	return available
-}
-
-func (r *Runtime) appendToolIfAvailable(tools []langtools.Tool, name string) []langtools.Tool {
-	if tool, ok := r.tools.Get(name); ok {
-		if !toolAlreadyIncluded(tools, name) {
-			return append(tools, tool)
-		}
-	}
-	return tools
-}
-
-func toolAlreadyIncluded(tools []langtools.Tool, name string) bool {
-	for _, t := range tools {
-		if t.Name() == name {
-			return true
-		}
-	}
-	return false
+	return NewToolSpecs(r.tools.All()).AgentTools(r.config.LoadAllTools)
 }
 
 func toolNamesFromTools(tools []langtools.Tool) []string {
@@ -2112,7 +2142,6 @@ func (r *Runtime) Close() error {
 		}
 		cancel()
 	}
-	r.resetPlannerContext()
 	if r.logger != nil {
 		r.logger.Info("Shutting down agent runtime")
 		return r.logger.Close()

@@ -41,6 +41,11 @@ func NewLogger(configDir string, llmHTTPRetentionDays int) (*Logger, error) {
 func cleanupOldLogFiles(logDir string, now time.Time, llmHTTPRetentionDays int) error {
 	entries, err := os.ReadDir(logDir)
 	if err != nil {
+		// A missing log directory is normal on a fresh device that has not
+		// written any llm-http logs yet: there is nothing to clean up.
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
 		return fmt.Errorf("read log directory: %w", err)
 	}
 	retention := time.Duration(LogConfig{

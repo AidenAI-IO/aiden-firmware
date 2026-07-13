@@ -43,11 +43,8 @@ func (t *RecallSessionChunksTool) Description() string {
 		"Recall compressed session history chunks from this conversation and prior sessions.",
 		"Call this tool whenever the user references or asks about prior conversation content that is not present in your visible context — including denials such as 'we never discussed X'. The visible context is only the recent hot window; older turns are compressed into archived chunks invisible until recalled.",
 		"The tool automatically searches both the active session and the archive in a single call, so do not retry with different parameters.",
-		"How to recall:",
-		"  - PREFERRED: pass chunk_ids to retrieve specific chunks by ID.",
-		"  - FALLBACK: pass tags (topic keywords inferred from the user's question, e.g. 'payment', 'login', '天气', '京东') to search. Use empty tags [] for recent history.",
-		`Input JSON: {"chunk_ids":["chunk_xxx"]} or {"tags":["topic"],"limit":3}`,
-		"Returns matching chunks (each tagged with source=active|archived and session_id when archived) and their full original events.",
+		"Prefer chunk_ids when known; otherwise pass tags (topic keywords from the user's question) and use empty tags [] for recent history.",
+		"For remembered preferences, rules, procedures, or facts, use recall_memory instead.",
 	}, " ")
 }
 
@@ -113,20 +110,17 @@ func (t *RecallMemoryTool) Name() string { return "recall_memory" }
 
 func (t *RecallMemoryTool) Description() string {
 	return strings.Join([]string{
-		"Recall long-term memories by tags, entities, or types.",
+		"Recall long-term memories by tags, entities, or types. Leave arrays empty to match all.",
 		"Use for remembered preferences, rules, procedures, facts, or profile info; for raw recent session details use recall_session_chunks instead.",
-		`Input JSON: {"tags":["verification"],"entities":["AppName"],"types":["preference"],"limit":5}.`,
-		"Use tags for topic/domain keywords such as verification, payment, or expense; use entities for named apps, accounts, services, or people. Leave arrays empty to match all.",
-		"Types: preference (likes/dislikes), rule (must/must-not), procedure (how-to), fact (stable info), profile (user background).",
 		"Returns matching memories with id, type, title, content, summary.",
 	}, " ")
 }
 
 func (t *RecallMemoryTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"tags":     stringArrayArgSchema("Topic or domain keywords."),
+		"tags":     stringArrayArgSchema("Topic or domain keywords such as verification, payment, or expense."),
 		"entities": stringArrayArgSchema("Specific named things such as apps, accounts, services, or people."),
-		"types":    stringArrayArgSchema("Memory categories such as preference, rule, procedure, fact, or profile."),
+		"types":    stringArrayArgSchema("Memory categories: preference (likes/dislikes), rule (must/must-not), procedure (how-to), fact (stable info), profile (user background)."),
 		"limit":    minIntegerArgSchema("Maximum number of memories to return.", 1),
 	})
 }
@@ -164,10 +158,7 @@ func (t *SaveMemoryTool) Description() string {
 	return strings.Join([]string{
 		"Save long-term memory for future recall. Mandatory when the user asks to remember/save; also use for observed stable preferences, rules, or procedures.",
 		"Do not tell the user something was remembered or saved until this tool returns status=saved or status=ignored as a duplicate.",
-		"Types: preference, rule, procedure, fact, profile. Use profile for durable user facts such as name, nickname, location, timezone, home city, role, or background.",
-		"Use preference/rule for future defaults and must/must-not behavior such as a default city; use fact for stable info that should be recalled but not surfaced in the synthesized user profile.",
-		`Input JSON: {"type":"preference","title":"short title","content":"what to remember","tags":["tag1"],"entities":["AppName"],"evidence":["exact user quote"],"priority":80}.`,
-		"Use topic/domain tags, named entities, original evidence quotes, and priority 80+ for user-stated rules/preferences, 60+ for inferred patterns, 40+ for observations.",
+		"Use profile for durable user facts (name, nickname, location, timezone, home city, role, background); preference/rule for future defaults and must/must-not behavior such as a default city; fact for stable info that should be recalled but not surfaced in the synthesized user profile.",
 		"Returns status=saved with id, or status=ignored when it is a duplicate.",
 	}, " ")
 }
@@ -240,9 +231,8 @@ func (t *ForgetMemoryTool) Name() string { return "forget_memory" }
 func (t *ForgetMemoryTool) Description() string {
 	return strings.Join([]string{
 		"Forget (delete) a long-term memory.",
-		"Use when user asks to remove a previously saved memory.",
+		"Use when the user asks to remove a previously saved memory.",
 		"First use recall_memory to find the memory ID, then call this tool.",
-		`Input JSON: {"id":"mem_xxx","reason":"user requested"}`,
 		"Returns confirmation of deletion.",
 	}, " ")
 }

@@ -345,7 +345,7 @@ type ToolInvokeResponse struct {
 
 // NewServer creates a new HTTP server
 func NewServer(runtime *Runtime, addr string) *Server {
-	bridge := NewPhoneBridge(runtime.logger)
+	bridge := NewPhoneBridge(runtime.logger, runtime.stateManager)
 	s := &Server{
 		runtime:             runtime,
 		addr:                addr,
@@ -537,6 +537,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if wantsChatStream(r) {
+		if s.logger != nil {
+			s.logger.Info("Handling chat stream")
+		}
 		s.handleChatStream(w, r)
 		return
 	}
@@ -560,6 +563,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	userMsg := messageFromTurnInput(turnInput, episodeID, req.RequestID, historyAttachments, time.Now())
 
+	s.logger.Info("Handling chat async")
 	s.handleChatAsync(w, req, turnInput, userMsg)
 }
 
@@ -1006,7 +1010,6 @@ func (s *Server) handleChatAsync(
 			EpisodeID:               userMsg.EpisodeID,
 			RequestID:               requestID,
 			DeviceEnvironment:       s.bridgeEnvironment(),
-			RuntimeContext:          s.runtimeContext(),
 			EventHandler:            eventHandler,
 			AsyncEpisodeMaintenance: true,
 			SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
@@ -1247,18 +1250,11 @@ func (s *Server) liveActivityPhoneID(req ChatRequest) string {
 		return phoneID
 	}
 	if s != nil && s.bridge != nil {
-		if phoneID := strings.TrimSpace(s.bridge.Status().PhoneID); phoneID != "" {
+		if phoneID := strings.TrimSpace(s.bridge.getStatus().PhoneID); phoneID != "" {
 			return phoneID
 		}
 	}
 	return ""
-}
-
-func (s *Server) runtimeContext() string {
-	if s.bridge == nil {
-		return ""
-	}
-	return phoneBridgeRuntimeContext(s.bridge.Status())
 }
 
 func (s *Server) bridgeEnvironment() *PhoneEnvironment {
@@ -1268,7 +1264,7 @@ func (s *Server) bridgeEnvironment() *PhoneEnvironment {
 		}
 		return nil
 	}
-	status := s.bridge.Status()
+	status := s.bridge.getStatus()
 	if status.Environment == nil {
 		if s.runtime != nil && s.runtime.tools != nil {
 			s.runtime.tools.UpdateDeviceEnvironment(nil)
@@ -1325,6 +1321,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	// HTTP client disconnects; only /api/chat/cancel should stop it.
 	runCtx, cancel := context.WithCancel(context.Background())
 	if !s.registerActiveRun(req.RequestID, cancel) {
+		s.logger.Error("Request ID already in use: %s", req.RequestID)
 		cancel()
 		http.Error(w, "request_id already in use", http.StatusConflict)
 		return
@@ -1341,14 +1338,18 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	cleanupRunAtReturn := true
 	defer func() {
 		if cleanupRunAtReturn {
+			s.logger.Info("Cleaning up run at return")
 			cleanupRun()
 		}
 	}()
+	s.logger.Info("Appending history")
 	s.appendHistory(userMessage)
 	if s.liveActivity != nil {
+		s.logger.Info("Starting live activity")
 		s.liveActivity.StartTask(req.RequestID, inputText, s.liveActivityPhoneID(req))
 	}
 
+	s.logger.Info("Creating run request")
 	runReq := RunRequest{
 		Input:                   inputText,
 		Attachments:             turnInput.Attachments,
@@ -1356,7 +1357,6 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		EpisodeID:               episodeID,
 		RequestID:               req.RequestID,
 		DeviceEnvironment:       s.bridgeEnvironment(),
-		RuntimeContext:          s.runtimeContext(),
 		AsyncEpisodeMaintenance: true,
 		SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
 			return s.consumePendingSteer(req.RequestID)
@@ -1384,6 +1384,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		newChatAssistantStreamWriter(stream, episodeID, req.RequestID),
 	}
 	if s.runtime.config.VoiceStreamingTTSEnabledOrDefault() && s.audioClient != nil {
+		s.logger.Info("Starting TTS stream")
 		if ttsManager != nil {
 			streamSession, err := beginManagedTTSStream(ctx, ttsManager, s.audioClient, s.runtime.config)
 			if err != nil {
@@ -1400,8 +1401,10 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	defer unregisterStreamOutput()
+	s.logger.Info("Creating stream writer")
 	runReq.StreamWriter = newStreamFanoutWriter(streamWriters...)
 
+	s.logger.Info("Running runtime")
 	result, err := s.runtime.Run(ctx, runReq)
 	if newStream != nil {
 		closeErr := newStream.closeAndWait()
@@ -1810,6 +1813,7 @@ func (s *Server) speakTextForRequest(ctx context.Context, requestID string, text
 }
 
 func (s *Server) playPromptSoundAsync(kind promptSoundKind, label string) {
+	s.logger.Info("Playing prompt sound: %s, %s", kind, label)
 	if s.audioClient == nil {
 		return
 	}
@@ -1840,7 +1844,7 @@ func (s *Server) handleContextDump(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(s.runtime.PlannerContextDump())
+	json.NewEncoder(w).Encode(s.runtime.ContextDump())
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
@@ -2674,7 +2678,7 @@ func firstForwardedHeaderValue(value string) string {
 }
 
 func (s *Server) lookupOwnedToolSpec(name string) (ToolSpec, bool) {
-	return s.runtime.ToolSpecs().Lookup(name)
+	return s.runtime.ToolSpecs().LookupHTTP(name)
 }
 
 func decodeToolInvokeInput(body io.Reader) (string, error) {
@@ -2968,7 +2972,7 @@ func (s *Server) handleBridgeStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	status := PhoneBridgeStatus{}
 	if s.bridge != nil {
-		status = s.bridge.Status()
+		status = s.bridge.getStatus()
 	}
 	if s.runtime != nil {
 		status.BoardID = s.runtime.config.LiveActivity.BoardIDOrDefault()
@@ -3250,9 +3254,12 @@ const keyboardTapAndroidKeysGuideHTML = `<!DOCTYPE html>
         <p class="eyebrow">Aiden Agent</p>
         <h1>keyboard_tap Android key guide</h1>
         <p>
-            These aliases use <code>hid.usb2</code> and send one 16-bit Consumer Control usage at a time.
-            They require <code>hid.pointer_mode = "touchscreen"</code> and a valid
-            <code>hid.android_keyboard_device</code> such as <code>/dev/hidg2</code>.
+            These aliases use <code>hid.usb2</code>. In <code>hid.pointer_mode = "touchscreen"</code>,
+            they send one 16-bit Consumer Control usage at a time.
+            They require a valid <code>hid.android_keyboard_device</code> such as <code>/dev/hidg2</code>.
+            In <code>hid.pointer_mode = "absolute"</code>, the limited media-key interface sends a
+            12-bit Consumer Control bitmap and only volume, media, screenshot, and brightness aliases
+            are available; Android navigation aliases require <code>hid.pointer_mode = "touchscreen"</code>.
         </p>
 
         <div class="callout">
@@ -5296,6 +5303,10 @@ const webUI = `<!DOCTYPE html>
             };
             delete streamingAssistantDrafts[key];
             const messageKey = messageIdentity(msg);
+            removeRenderedMessage(messageKey);
+        }
+
+        function removeRenderedMessage(messageKey) {
             const existing = renderedMessageNodes.get(messageKey);
             renderedMessageKeys.delete(messageKey);
             renderedMessageNodes.delete(messageKey);
@@ -5310,6 +5321,13 @@ const webUI = `<!DOCTYPE html>
             const key = assistantStreamKey(msg);
             if (key) {
                 delete streamingAssistantDrafts[key];
+            }
+            const messageKey = messageIdentity(msg);
+            if (renderedMessageKeys.has(messageKey)) {
+                // A streamed draft may have been inserted before tool events.
+                // Re-append the finalized assistant message so the live chat
+                // order matches the persisted history and episode trace.
+                removeRenderedMessage(messageKey);
             }
             addMessage(msg);
         }
