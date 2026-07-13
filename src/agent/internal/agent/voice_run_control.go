@@ -178,7 +178,9 @@ func (c *voiceRunControl) consumePending(requestID string) (RunSteerMessage, boo
 	if c.interrupt.active && c.interrupt.done && c.interrupt.hasText {
 		steer := c.interrupt.steer
 		c.resetInterruptLocked()
-		log.Printf("[steer:debug] consumePending success: consuming interrupt steer content=%q\n", steer.Content)
+		// Clear any stale pending steer to prevent old instruction from executing after new one
+		c.clearPendingLocked()
+		log.Printf("[steer:debug] consumePending success: consuming interrupt steer (length=%d)\n", len(steer.Content))
 		return steer, true
 	}
 
@@ -188,7 +190,7 @@ func (c *voiceRunControl) consumePending(requestID string) (RunSteerMessage, boo
 			c.interrupt.active, c.interrupt.done, c.interrupt.hasText)
 		return RunSteerMessage{}, false
 	}
-	log.Printf("[steer:debug] consumePending success: consuming pending steer content=%q\n", c.pendingSteer.Content)
+	log.Printf("[steer:debug] consumePending success: consuming pending steer (length=%d)\n", len(c.pendingSteer.Content))
 	return c.consumePendingLocked()
 }
 

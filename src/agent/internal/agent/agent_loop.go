@@ -35,6 +35,7 @@ type AgentLoop struct {
 	EnvironmentBridgeTools []string
 	SteerInterrupt         func() <-chan struct{}
 	SteerProvider          func(context.Context) (RunSteerMessage, bool)
+	SteerWaiter            func(context.Context) (RunSteerMessage, bool, error)
 	TerminationPolicy      *TerminationPolicy
 	contextManager         *context_manager.ContextManager
 }
@@ -128,10 +129,45 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		}()
 	}
 
+	// Problem 4: Check for pending steer before LLM call
+	if _, hasPending, err := l.consumeAndPersistSteer(ctx, llmExecutor); err != nil {
+		return "", false, err
+	} else if hasPending {
+		return "", false, nil
+	}
+
+	// Problem 4: Support interrupting LLM call during generation
+	llmCtx, llmCancel := context.WithCancelCause(ctx)
+	defer llmCancel(nil)
+
+	if l.SteerInterrupt != nil {
+		interruptCh := l.SteerInterrupt()
+		if interruptCh != nil {
+			done := make(chan struct{})
+			go func() {
+				select {
+				case <-interruptCh:
+					llmCancel(errSteerInterruptToolCancel)
+				case <-llmCtx.Done():
+				case <-done:
+				}
+			}()
+			defer close(done)
+		}
+	}
+
 	turnOptions := append([]llms.CallOption{}, callOptions...)
 	turnOptions = append(turnOptions, llms.WithTools(parser.toolsAsLLM()))
-	contentResp, err := llmExecutor.GenerateContent(ctx, turnOptions...)
+	contentResp, err := llmExecutor.GenerateContent(llmCtx, turnOptions...)
 	if err != nil {
+		// If LLM was canceled due to interrupt, check for pending steer
+		if errors.Is(err, context.Canceled) || errors.Is(err, errSteerInterruptToolCancel) {
+			if _, hasPending, persistErr := l.consumeAndPersistSteer(ctx, llmExecutor); persistErr != nil {
+				return "", false, persistErr
+			} else if hasPending {
+				return "", false, nil
+			}
+		}
 		return "", false, err
 	}
 	l.emitRoleOutput(ctx, roleResponseDebugText(contentResp))
@@ -146,12 +182,23 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 			return l.finishStopDecision(ctx, policy, decision)
 		}
 		l.applyLoopGuardDecision(decision, transientMessages)
+
+		// Problem 4: Check for pending steer after parse failure (continue iteration)
+		if steer, hasPending, err := l.consumeAndPersistSteer(ctx, llmExecutor); err != nil {
+			return "", false, err
+		} else if hasPending {
+			log.Printf("[steer:debug] LLM parse failed, steer injected (length=%d)\n", len(steer.Content))
+			return "", false, nil
+		}
+
 		return "", false, nil
 	}
 	if err != nil {
 		return "", false, err
 	}
 	if finish != nil {
+		// Don't check steer after finish - let this turn complete normally.
+		// Steer will be processed as a new turn.
 		if err := llmExecutor.AppendMessage(context_manager.ConvertChoiceToContextManagerMessage(*contentResp.Choices[0])); err != nil {
 			return "", false, err
 		}
@@ -168,6 +215,18 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 	}
 	if len(actions) == 0 {
 		return "", false, agents.ErrAgentNoReturn
+	}
+
+	// Problem 4: Check for pending steer after LLM returns actions (before tool execution)
+	if steer, hasPending, err := l.consumeAndPersistSteer(ctx, llmExecutor); err != nil {
+		return "", false, err
+	} else if hasPending {
+		// Append LLM response before steer so context includes what LLM was planning
+		if err := llmExecutor.AppendMessage(context_manager.ConvertChoiceToContextManagerMessage(*contentResp.Choices[0])); err != nil {
+			return "", false, err
+		}
+		log.Printf("[steer:debug] LLM action interrupted, steer injected (length=%d)\n", len(steer.Content))
+		return "", false, nil
 	}
 
 	action := actions[0]
@@ -189,7 +248,69 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		EnvironmentBridgeTools: l.EnvironmentBridgeTools,
 	})
 	if toolExecution.Error != nil {
-		return "", false, toolExecution.Error
+		// Problem 3: If tool was canceled due to interrupt, check for pending steer
+		// and let iteration continue instead of returning error. Also wait briefly
+		// for steer to arrive if interrupt was signaled but steer not yet ready.
+		if errors.Is(toolExecution.Error, context.Canceled) {
+			// First attempt: check if steer is already available
+			steer, hasPending, err := l.consumeAndPersistSteer(ctx, llmExecutor)
+
+			// Second attempt: if no steer yet but we have SteerWaiter, wait for it
+			if !hasPending && l.SteerWaiter != nil {
+				waitCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+				waitedSteer, hasText, waitErr := l.SteerWaiter(waitCtx)
+				cancel()
+				if waitErr == nil && hasText {
+					// Manually persist the waited steer
+					if err := llmExecutor.AppendMessage(context_manager.Message{
+						Role:    context_manager.MessageRoleUser,
+						Content: waitedSteer.Content,
+					}); err != nil {
+						return "", false, err
+					}
+					if appender, ok := l.Memory.(steerConversationAppender); ok {
+						if err := appender.AppendSteerOnly(ctx, waitedSteer); err != nil {
+							return "", false, err
+						}
+					}
+					if l.CallbacksHandler != nil {
+						if handler, ok := l.CallbacksHandler.(interface {
+							HandleSteerMessage(context.Context, RunSteerMessage)
+						}); ok {
+							handler.HandleSteerMessage(ctx, waitedSteer)
+						}
+					}
+					steer = waitedSteer
+					hasPending = true
+				}
+			}
+
+			if err != nil {
+				return "", false, err
+			}
+			if hasPending {
+				log.Printf("[steer:debug] tool canceled but pending steer exists (length=%d), continuing iteration\n", len(steer.Content))
+				return "", false, nil
+			}
+		}
+
+		// Tool execution failed - let termination policy decide what to do
+		// Record the error in policy and check if we should terminate
+		decision := policy.AfterToolCall(
+			toolExecution.Call.Spec.Name,
+			toolExecution.Call.Input,
+			toolExecution.Error.Error(),
+			true, // isError
+		)
+		if decision.Stop {
+			return l.finishStopDecision(ctx, policy, decision)
+		}
+		l.applyLoopGuardDecision(decision, transientMessages)
+		// Continue iteration with the error in context
+		if err := appendToolExecutionMessages(llmExecutor, parser, toolExecution.Step); err != nil {
+			return "", false, err
+		}
+		return "", false, nil
 	}
 	if l.Recorder != nil {
 		l.Recorder.RecordExecution(ToolCallExecutionResult{
@@ -204,14 +325,19 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		return "", false, err
 	}
 
+	// Record tool execution in termination policy BEFORE checking steer
+	// This ensures all tool calls are tracked for loop detection
+	decision := policy.AfterToolCall(
+		toolExecution.Call.Spec.Name,
+		toolExecution.Call.Input,
+		toolExecution.Step.Observation,
+		toolExecution.Result.IsError(),
+	)
+
 	// Check for pending steer after tool execution (soft interrupt decision point)
-	if steer, hasPending := l.checkPendingSteer(ctx); hasPending {
-		if err := llmExecutor.AppendMessage(context_manager.Message{
-			Role:    context_manager.MessageRoleUser,
-			Content: steer.Content,
-		}); err != nil {
-			return "", false, err
-		}
+	if _, hasPending, err := l.consumeAndPersistSteer(ctx, llmExecutor); err != nil {
+		return "", false, err
+	} else if hasPending {
 		// Continue iteration - LLM will see tool result + steer content and decide
 		return "", false, nil
 	}
@@ -224,13 +350,6 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		answer, err = l.finishRun(ctx, answer)
 		return answer, true, err
 	}
-
-	decision := policy.AfterToolCall(
-		toolExecution.Call.Spec.Name,
-		toolExecution.Call.Input,
-		toolExecution.Step.Observation,
-		toolExecution.Result.IsError(),
-	)
 	if decision.Stop {
 		return l.finishStopDecision(ctx, policy, decision)
 	}
@@ -240,16 +359,16 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 }
 
 func (l *AgentLoop) finishStopDecision(ctx context.Context, policy *TerminationPolicy, decision TerminationDecision) (string, bool, error) {
-	// When terminating due to loop/no progress, check if there's a pending steer
-	// If yes, return steer message instead of generic loop guard message
-	if decision.Reason == StopReasonLoopDetected || decision.Reason == StopReasonNoProgress {
-		if steer, hasPending := l.checkPendingSteer(ctx); hasPending {
-			answer := formatSteerInterruptMessage(steer)
-			if l.Recorder != nil {
-				l.Recorder.RecordDefaultFinish(answer)
-			}
-			answer, err := l.finishRun(ctx, answer)
-			return answer, true, err
+	// Problem 5: When terminating with pending steer, inject steer as new user message
+	// instead of wrapping it as final answer. Apply to all termination reasons except
+	// external cancellation (where the context is already done and steer is irrelevant).
+	if decision.Reason != StopReasonExternal {
+		// Note: executor is not available here, but consumeAndPersistSteer handles nil executor
+		if _, hasPending, err := l.consumeAndPersistSteer(ctx, nil); err != nil {
+			return "", false, err
+		} else if hasPending {
+			// Don't terminate - steer was consumed and persisted, continue iteration
+			return "", false, nil
 		}
 	}
 	answer, err := l.stopWithDecision(ctx, policy, decision)
@@ -352,6 +471,47 @@ func (l *AgentLoop) checkPendingSteer(ctx context.Context) (RunSteerMessage, boo
 	return l.SteerProvider(ctx)
 }
 
+// consumeAndPersistSteer checks for pending steer, and if found, executes the
+// three-step persistence pipeline: append to context manager, persist to memory,
+// and emit event. Returns the steer message, whether one was found, and any error.
+func (l *AgentLoop) consumeAndPersistSteer(
+	ctx context.Context,
+	executor *executor.LLMExecutor,
+) (RunSteerMessage, bool, error) {
+	steer, hasPending := l.checkPendingSteer(ctx)
+	if !hasPending {
+		return RunSteerMessage{}, false, nil
+	}
+
+	// Step 1: Append to context manager
+	if executor != nil {
+		if err := executor.AppendMessage(context_manager.Message{
+			Role:    context_manager.MessageRoleUser,
+			Content: steer.Content,
+		}); err != nil {
+			return steer, false, err
+		}
+	}
+
+	// Step 2: Persist to memory
+	if appender, ok := l.Memory.(steerConversationAppender); ok {
+		if err := appender.AppendSteerOnly(ctx, steer); err != nil {
+			return steer, false, err
+		}
+	}
+
+	// Step 3: Emit event
+	if l.CallbacksHandler != nil {
+		if handler, ok := l.CallbacksHandler.(interface {
+			HandleSteerMessage(context.Context, RunSteerMessage)
+		}); ok {
+			handler.HandleSteerMessage(ctx, steer)
+		}
+	}
+
+	return steer, true, nil
+}
+
 func formatSteerInterruptMessage(steer RunSteerMessage) string {
 	content := strings.TrimSpace(steer.Content)
 	if content == "" {
@@ -382,6 +542,17 @@ func (l *AgentLoop) executeToolCall(ctx context.Context, execution ToolCallExecu
 	result := executeToolCall(toolCtx, execution)
 	close(done)
 	cancel(nil)
+
+	// If tool was canceled due to interrupt, check for pending steer before returning error
+	// This prevents losing user's new instruction when tool is cancelable
+	if result.Error != nil && ctx.Err() == context.Canceled {
+		if steer, hasPending := l.checkPendingSteer(ctx); hasPending {
+			// Tool was interrupted but we have a new steer to process
+			// Return the error but the steer is preserved for next iteration
+			log.Printf("[steer:debug] tool canceled but pending steer exists (length=%d), will be processed\n", len(steer.Content))
+		}
+	}
+
 	return result
 }
 

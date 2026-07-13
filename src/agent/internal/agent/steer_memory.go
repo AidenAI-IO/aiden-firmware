@@ -13,6 +13,7 @@ import (
 
 type steerConversationAppender interface {
 	AppendSteerMessage(ctx context.Context, input string, steer RunSteerMessage) error
+	AppendSteerOnly(ctx context.Context, steer RunSteerMessage) error
 }
 
 type steerConversationStatus interface {
@@ -94,6 +95,27 @@ func (m *steerConversationMemory) AppendSteerMessage(ctx context.Context, input 
 		}
 		m.inputAppended = true
 	}
+	if err := m.history.AddUserMessage(ctx, content); err != nil {
+		return fmt.Errorf("append steering message: %w", err)
+	}
+	m.steerAppended = true
+	m.steers = append(m.steers, steer)
+	return pruneSteerConversationWindow(ctx, m.inner)
+}
+
+// AppendSteerOnly appends a steer message without re-appending the input.
+// Used when the input is already in the context manager (e.g., during tool
+// execution or LLM thinking period). This method tracks the steer for
+// persistence and event emission.
+func (m *steerConversationMemory) AppendSteerOnly(ctx context.Context, steer RunSteerMessage) error {
+	content := strings.TrimSpace(steer.Content)
+	if content == "" {
+		content = "(empty steering message)"
+	}
+	steer.Content = content
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if err := m.history.AddUserMessage(ctx, content); err != nil {
 		return fmt.Errorf("append steering message: %w", err)
 	}
