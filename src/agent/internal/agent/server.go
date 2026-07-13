@@ -5300,6 +5300,10 @@ const webUI = `<!DOCTYPE html>
             };
             delete streamingAssistantDrafts[key];
             const messageKey = messageIdentity(msg);
+            removeRenderedMessage(messageKey);
+        }
+
+        function removeRenderedMessage(messageKey) {
             const existing = renderedMessageNodes.get(messageKey);
             renderedMessageKeys.delete(messageKey);
             renderedMessageNodes.delete(messageKey);
@@ -5314,6 +5318,13 @@ const webUI = `<!DOCTYPE html>
             const key = assistantStreamKey(msg);
             if (key) {
                 delete streamingAssistantDrafts[key];
+            }
+            const messageKey = messageIdentity(msg);
+            if (renderedMessageKeys.has(messageKey)) {
+                // A streamed draft may have been inserted before tool events.
+                // Re-append the finalized assistant message so the live chat
+                // order matches the persisted history and episode trace.
+                removeRenderedMessage(messageKey);
             }
             addMessage(msg);
         }
