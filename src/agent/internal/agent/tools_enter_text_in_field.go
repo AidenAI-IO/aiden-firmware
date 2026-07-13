@@ -22,15 +22,10 @@ func (t *EnterTextInFieldTool) SetPlatformFn(fn func() string) {
 func (t *EnterTextInFieldTool) Name() string { return "enter_text_in_field" }
 
 func (t *EnterTextInFieldTool) Description() string {
-	return strings.TrimSpace(`Enter target text into a focused input field with automatic clipboard/paste or HID/IME strategy selection and verification. ` +
-		`On iOS/Android, prefers clipboard/paste for CJK, emoji, multiline, or long text when Phone Bridge can provide a reliable current-app clipboard path, then falls back to HID/IME input if clipboard fails. ` +
-		`On iOS, when prepared clipboard text is already available, it focuses the current field, pastes, and verifies; it does not need to switch back to Aiden just to write the clipboard. ` +
+	return `Enter text into a focused input field with automatic strategy selection and verification. ` +
 		`Prefer this over keyboard_text for any input field entry; keyboard_text is ASCII-only and has no field verification. ` +
-		`For search boxes, mode:"search" types one quick pass and hands control back. For message composers, set send_after_commit=true only after the correct chat is open. ` +
-		`One call runs focus -> type romanization/clipboard -> merged vision read of field/IME/candidates -> candidate selection or IME-switch retry -> committed text verification. ` +
-		`CJK/composition text requires segments (romanization syllables), e.g. segments:["ni","hao"] for 你好; ASCII text can omit segments. ` +
-		`Returns committed:true only when the exact target text is fully committed in the input field, not merely visible in IME candidates/preedit. Report success only when committed:true and field_text matches target exactly. ` +
-		`Focus uses the same coord_space system as touch/click tools; prefer normalized coordinates from the latest screenshot.`)
+		`Returns committed:true only when the exact target text is fully committed in the input field. Report success only when committed:true and field_text matches target exactly. ` +
+		`Focus coordinates use the same coord_space system as touch/click tools; prefer normalized coordinates from the latest screenshot.`
 }
 
 func (t *EnterTextInFieldTool) ArgsSchema() map[string]any {

@@ -42,6 +42,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.voice_tool_call_speech = false;
     cfg.voice_progress_speech_enabled = false;
     cfg.voice_max_response_tokens = 240;
+    cfg.load_all_tools = true;
     cfg.max_iterations = 6;
     cfg.screenshot_keep_n = 5;
     cfg.screenshot_prune_interval = 40;
@@ -148,6 +149,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
 	CHECK(loaded.voice_tool_call_speech == false);
 	CHECK(loaded.voice_progress_speech_enabled == false);
 	CHECK(loaded.voice_max_response_tokens == 240);
+	CHECK(loaded.load_all_tools == true);
 	CHECK(loaded.max_iterations == 6);
 	CHECK(loaded.screenshot_keep_n == 5);
 	CHECK(loaded.screenshot_prune_interval == 40);
@@ -186,6 +188,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
 
     CHECK(loaded.hid.keyboard_device == "/dev/hidg0");
     CHECK(loaded.hid.mouse_device == "/dev/hidg1");
+    CHECK(loaded.hid.android_keyboard_device == "/dev/hidg2");
     CHECK(loaded.hid.frame_socket == "/run/frame_service/frame_service.sock");
     CHECK(loaded.hid.pointer_mode == "touchscreen");
 
@@ -220,6 +223,26 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.live_activity.private_key_pem == "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----");
     CHECK(loaded.live_activity.has_private_key_pem == true);
     CHECK(loaded.live_activity.timeout_sec == 12);
+
+    std::remove(path.c_str());
+}
+
+TEST_CASE("agent_toml defaults missing android keyboard device for old configs") {
+    std::string path = make_temp_path("old_hid_defaults.toml");
+    {
+        std::ofstream out(path);
+        out << "[hid]\n"
+            << "keyboard_device = \"/dev/hidg0\"\n"
+            << "mouse_device = \"/dev/hidg1\"\n"
+            << "frame_socket = \"/run/frame_service/frame_service.sock\"\n"
+            << "pointer_mode = \"absolute\"\n";
+    }
+
+    aiden::AgentToml loaded;
+    std::string err;
+    REQUIRE(aiden::load_agent_toml(path.c_str(), loaded, &err));
+    REQUIRE(err.empty());
+    CHECK(loaded.hid.android_keyboard_device == "/dev/hidg2");
 
     std::remove(path.c_str());
 }

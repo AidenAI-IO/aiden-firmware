@@ -389,19 +389,19 @@ func TestRunScriptToolSetUsesConfigScriptsDir(t *testing.T) {
 	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	writeRunScriptTestFile(t, scriptsDir, "math.jsonl", `{"type":"call","tool":"calculator","input":{"expression":"2+3"}}`)
+	writeRunScriptTestFile(t, scriptsDir, "wait.jsonl", `{"type":"wait","ms":1}`)
 
 	tools := NewBuiltinToolSetFromConfig(Config{Model: ModelConfig{Provider: "fake"}, ConfigDir: configDir}, ProxyConfig{}, nil)
 	tool, ok := tools.Get("run_script")
 	if !ok {
 		t.Fatal("run_script tool missing")
 	}
-	out, err := tool.Call(context.Background(), `{"file":"math.jsonl"}`)
+	out, err := tool.Call(context.Background(), `{"file":"wait.jsonl"}`)
 	if err != nil {
 		t.Fatalf("Call error: %v", err)
 	}
-	if !strings.Contains(out, `"ok":true`) || !strings.Contains(out, `"output":"5"`) {
-		t.Fatalf("output = %s, want calculator result from config scripts dir", out)
+	if !strings.Contains(out, `"ok":true`) || !strings.Contains(out, `"type":"wait"`) {
+		t.Fatalf("output = %s, want wait result from config scripts dir", out)
 	}
 }
 

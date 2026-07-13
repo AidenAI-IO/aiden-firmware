@@ -45,7 +45,7 @@ The firmware starts `config_web` on port 80.
 
 The page fields cover the following config sections (all detailed later on this page):
 
-- `agent`: `input_mode`, `trigger_mode`, VAD params, `max_iterations`, `custom_instruction`, `additional_prompt`
+- `agent`: `input_mode`, `trigger_mode`, VAD params, `load_all_tools`, `max_iterations`, `custom_instruction`, `additional_prompt`
 - `model`: provider, token_env, model, api_key, base_url, temperature, max_response_tokens, context_window, model_max_output_tokens. `context_window = 0` means auto-discover from OpenRouter/Ollama metadata when available.
 - `stt`: provider, api_key, model, base_url, Tencent ASR fields
 - `tts`: provider, api_key, model, voice_id, emotion, speed
@@ -154,6 +154,7 @@ frame_socket = "/run/frame_service/frame_service.sock"
 | --- | --- | --- |
 | `custom_instruction` | - | Optional deployment/persona override for the built-in runtime instruction. Leave empty to use the agent binary default; set only for internal testing or deployment-specific behavior. |
 | `additional_prompt` | - | Additional prompt field; appended after the base instruction at runtime |
+| `load_all_tools` | `false` | When `true`, also send `list_scripts`, `read_script`, and `write_script` to the conversational model. This does not expose HTTP-blocked maintenance tools. |
 | `max_iterations` | `-1` | Maximum number of tool-call loops per run; `-1` means unlimited |
 | `screenshot_keep_n` | `3` | Number of most recent screenshots to keep when pruning screenshots from the LLM context; unset or `0` uses the default |
 | `screenshot_prune_interval` | `2` | Once screenshots exceed `screenshot_keep_n + screenshot_prune_interval`, replace old screenshots with placeholders in batches; unset or `0` uses the default |
@@ -221,9 +222,9 @@ When `vad_helper_path` is still the built-in default, switching `vad_backend` au
 | --- | --- | --- |
 | `keyboard_device` | `/dev/hidg0` | Keyboard HID device |
 | `mouse_device` | `/dev/hidg1` | Mouse/touch HID device |
-| `android_keyboard_device` | `/dev/hidg2` | Android extension-key HID device (`hid.usb2`) used for consumer/system-style keys such as Back, Home, App Switch, Search, Power, and Volume when `pointer_mode = "touchscreen"` |
+| `android_keyboard_device` | `/dev/hidg2` | Consumer Control HID device (`hid.usb2`) used for Android extension keys in `pointer_mode = "touchscreen"` and media/volume/brightness/screenshot keys in `pointer_mode = "absolute"` |
 | `frame_socket` | `/run/frame_service/frame_service.sock` | Frame Service socket used by the screenshot tool |
-| `pointer_mode` | `absolute` | `absolute` for iOS-style cursor mode on `hid.usb1`; `touchscreen` for Android digitizer mode and to expose `hid.usb2` Android extension keys |
+| `pointer_mode` | `absolute` | `absolute` for iOS-style cursor mode on `hid.usb1` plus a limited `hid.usb2` media-key interface; `touchscreen` for Android digitizer mode plus full `hid.usb2` Android extension keys |
 
 ## `[live_activity]`
 

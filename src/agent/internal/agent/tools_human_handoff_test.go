@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -29,8 +30,15 @@ func TestHumanHandoffTool_Description(t *testing.T) {
 	if !strings.Contains(desc, "handoff marker") {
 		t.Error("Description() doesn't mention the handoff marker return contract")
 	}
-	if !strings.Contains(desc, `"reason":"authentication"`) || !strings.Contains(desc, `"details"`) {
-		t.Error("Description() doesn't include a valid handoff JSON example")
+	// The reason enum and required fields are declared in ArgsSchema rather than restated as a JSON example.
+	schema := tool.ArgsSchema()
+	props, _ := schema["properties"].(map[string]any)
+	if _, ok := props["reason"].(map[string]any); !ok {
+		t.Error("ArgsSchema() missing reason property")
+	}
+	required, _ := schema["required"].([]string)
+	if !slices.Contains(required, "reason") || !slices.Contains(required, "details") {
+		t.Errorf("ArgsSchema() should require reason and details, got %v", required)
 	}
 }
 

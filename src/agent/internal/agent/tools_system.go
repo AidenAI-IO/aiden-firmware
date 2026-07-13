@@ -8,12 +8,9 @@ import (
 	"math"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
-	"time"
-	_ "time/tzdata"
 )
 
 const (
@@ -22,118 +19,6 @@ const (
 	defaultWeatherForecastDays = 3
 	toolWaitForWakeup          = "wait_for_wakeup"
 )
-
-type CurrentTimeTool struct {
-	now func() time.Time
-}
-
-func NewCurrentTimeTool() *CurrentTimeTool {
-	return &CurrentTimeTool{now: time.Now}
-}
-
-func (t *CurrentTimeTool) Name() string { return "current_time" }
-
-func (t *CurrentTimeTool) Description() string {
-	return `Get the precise current clock time, timezone data, UTC offset, Unix timestamp, or data needed for elapsed-time calculations. ` +
-		`Do not use this tool for ordinary date or weekday questions because the system prompt already provides today's date and weekday. ` +
-		`Use this tool only when a precise clock time, timezone conversion, UTC offset, Unix timestamp, or elapsed-time calculation is required. ` +
-		`Input JSON: {"timezone":"Asia/Shanghai"} or a bare timezone string. ` +
-		`The timezone may be an IANA name such as "America/New_York", "UTC", "local", or a UTC offset such as "+08:00".`
-}
-
-func (t *CurrentTimeTool) ArgsSchema() map[string]any {
-	return objectArgsSchema(map[string]any{
-		"timezone": stringArgSchema(`IANA timezone such as "Asia/Shanghai", "UTC", "local", or a UTC offset such as "+08:00".`),
-	})
-}
-
-func (t *CurrentTimeTool) Call(ctx context.Context, input string) (string, error) {
-	timezone := strings.TrimSpace(input)
-	if strings.HasPrefix(timezone, "{") {
-		var args struct {
-			Timezone string `json:"timezone"`
-		}
-		if err := json.Unmarshal([]byte(timezone), &args); err != nil {
-			return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v. Expected JSON format: {\"timezone\": \"Asia/Shanghai\"} or a bare timezone string like \"UTC\" or \"+08:00\"", err), nil
-		}
-		timezone = strings.TrimSpace(args.Timezone)
-	}
-
-	loc, normalized, err := parseTimezone(timezone)
-	if err != nil {
-		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
-	}
-
-	nowFn := t.now
-	if nowFn == nil {
-		nowFn = time.Now
-	}
-	now := nowFn().In(loc)
-	_, offsetSeconds := now.Zone()
-
-	return jsonString(map[string]interface{}{
-		"timezone":       normalized,
-		"time":           now.Format(time.RFC3339),
-		"date":           now.Format("2006-01-02"),
-		"clock":          now.Format("15:04:05"),
-		"weekday":        now.Weekday().String(),
-		"unix":           now.Unix(),
-		"utc_offset":     formatUTCOffset(offsetSeconds),
-		"offset_seconds": offsetSeconds,
-	}), nil
-}
-
-func parseTimezone(input string) (*time.Location, string, error) {
-	timezone := strings.TrimSpace(input)
-	if timezone == "" || strings.EqualFold(timezone, "local") {
-		return time.Local, "local", nil
-	}
-	if strings.EqualFold(timezone, "utc") || timezone == "Z" {
-		return time.UTC, "UTC", nil
-	}
-	if loc, err := time.LoadLocation(timezone); err == nil {
-		return loc, timezone, nil
-	}
-	if seconds, ok := parseUTCOffset(timezone); ok {
-		name := "UTC" + formatUTCOffset(seconds)
-		return time.FixedZone(name, seconds), name, nil
-	}
-	return nil, "", fmt.Errorf("unknown timezone %q; use an IANA timezone like Asia/Shanghai or an offset like +08:00", timezone)
-}
-
-var utcOffsetPattern = regexp.MustCompile(`(?i)^(?:UTC|GMT)?([+-])(\d{1,2})(?::?(\d{2}))?$`)
-
-func parseUTCOffset(input string) (int, bool) {
-	matches := utcOffsetPattern.FindStringSubmatch(strings.TrimSpace(input))
-	if matches == nil {
-		return 0, false
-	}
-	hours, err := strconv.Atoi(matches[2])
-	if err != nil || hours > 23 {
-		return 0, false
-	}
-	minutes := 0
-	if matches[3] != "" {
-		minutes, err = strconv.Atoi(matches[3])
-		if err != nil || minutes > 59 {
-			return 0, false
-		}
-	}
-	total := hours*3600 + minutes*60
-	if matches[1] == "-" {
-		total = -total
-	}
-	return total, true
-}
-
-func formatUTCOffset(seconds int) string {
-	sign := "+"
-	if seconds < 0 {
-		sign = "-"
-		seconds = -seconds
-	}
-	return fmt.Sprintf("%s%02d:%02d", sign, seconds/3600, (seconds%3600)/60)
-}
 
 type WeatherTool struct {
 	client       *http.Client
@@ -154,9 +39,7 @@ func NewWeatherTool(proxy ProxyConfig) *WeatherTool {
 func (t *WeatherTool) Name() string { return "weather" }
 
 func (t *WeatherTool) Description() string {
-	return `Get current weather and a short forecast for a location. ` +
-		`Input JSON: {"location":"Shanghai"} or {"latitude":31.23,"longitude":121.47,"location":"Shanghai"}. ` +
-		`A bare location string is also accepted. Uses Open-Meteo public weather data.`
+	return `Get current weather and a short forecast for a location. Uses Open-Meteo public weather data.`
 }
 
 func (t *WeatherTool) ArgsSchema() map[string]any {
@@ -565,8 +448,7 @@ func (t *WaitForWakeupTool) Name() string { return toolWaitForWakeup }
 
 func (t *WaitForWakeupTool) Description() string {
 	return `End the current agent run and return the voice interaction to wakeup-waiting mode. ` +
-		`Use this when the user asks Aiden to stop listening, go idle, or wait for the next wakeup. ` +
-		`Input JSON is optional: {"reason":"user asked me to wait for wakeup"}.`
+		`Use this when the user asks Aiden to stop listening, go idle, or wait for the next wakeup.`
 }
 
 func (t *WaitForWakeupTool) ArgsSchema() map[string]any {

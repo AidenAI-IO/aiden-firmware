@@ -155,26 +155,29 @@ func TestRecallToolDescriptionsGuideAgentUsage(t *testing.T) {
 		"visible context",
 		"archived chunks",
 		"chunk_ids",
-		"PREFERRED",
-		"FALLBACK",
+		"recall_memory instead",
 	} {
 		if !strings.Contains(sessionDescription, want) {
 			t.Fatalf("recall_session_chunks description missing %q:\n%s", want, sessionDescription)
 		}
 	}
 
-	memoryDescription := NewRecallMemoryTool(NewLongTermMemoryStore(t.TempDir())).Description()
+	// The JSON input example and per-field keyword guidance moved to ArgsSchema;
+	// the description keeps only the purpose and the cross-tool disambiguation.
+	memoryTool := NewRecallMemoryTool(NewLongTermMemoryStore(t.TempDir()))
+	memoryDescription := memoryTool.Description()
 	for _, want := range []string{
 		"long-term",
 		"recall_session_chunks",
-		`"tags":["verification"`,
-		"topic/domain keywords",
-		"preference",
-		"rule",
-		"procedure",
 	} {
 		if !strings.Contains(memoryDescription, want) {
 			t.Fatalf("recall_memory description missing %q:\n%s", want, memoryDescription)
+		}
+	}
+	memoryTypes, _ := memoryTool.ArgsSchema()["properties"].(map[string]any)["types"].(map[string]any)
+	for _, want := range []string{"preference", "rule", "procedure"} {
+		if td, _ := memoryTypes["description"].(string); !strings.Contains(td, want) {
+			t.Fatalf("recall_memory types schema missing %q:\n%v", want, memoryTypes)
 		}
 	}
 

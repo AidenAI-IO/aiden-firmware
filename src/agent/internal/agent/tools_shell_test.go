@@ -30,6 +30,15 @@ func TestShellToolForegroundEcho(t *testing.T) {
 	}
 }
 
+func TestShellToolDescriptionCoversControllerTimeAndCalculations(t *testing.T) {
+	description := (&ShellTool{}).Description()
+	for _, want := range []string{"hardware controller", "clock", "timezone", "calculations", "not the target device"} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("shell description missing %q:\n%s", want, description)
+		}
+	}
+}
+
 func TestShellToolForegroundInjectsProxyEnv(t *testing.T) {
 	skipOnWindows(t)
 	tool := &ShellTool{proxy: ProxyConfig{

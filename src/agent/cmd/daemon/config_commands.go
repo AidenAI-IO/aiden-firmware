@@ -205,6 +205,7 @@ type agentDTO struct {
 	VoiceToolCallSpeech        bool    `json:"voice_tool_call_speech"`
 	VoiceProgressSpeechEnabled bool    `json:"voice_progress_speech_enabled"`
 	VoiceMaxResponseTokens     int     `json:"voice_max_response_tokens"`
+	LoadAllTools               bool    `json:"load_all_tools"`
 	MaxIterations              int     `json:"max_iterations"`
 	ScreenshotKeepN            int     `json:"screenshot_keep_n"`
 	ScreenshotPruneInterval    int     `json:"screenshot_prune_interval"`
@@ -352,6 +353,7 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 		VoiceToolCallSpeech:        boolPtr(d.Agent.VoiceToolCallSpeech),
 		VoiceProgressSpeechEnabled: boolPtr(d.Agent.VoiceProgressSpeechEnabled),
 		VoiceMaxResponseTokens:     d.Agent.VoiceMaxResponseTokens,
+		LoadAllTools:               d.Agent.LoadAllTools,
 		MaxIterations:              d.Agent.MaxIterations,
 		ScreenshotKeepN:            d.Agent.ScreenshotKeepN,
 		ScreenshotPruneInterval:    d.Agent.ScreenshotPruneInterval,
@@ -485,6 +487,7 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			VoiceToolCallSpeech:        cfg.VoiceToolCallSpeechOrDefault(),
 			VoiceProgressSpeechEnabled: cfg.VoiceProgressSpeechEnabledOrDefault(),
 			VoiceMaxResponseTokens:     cfg.VoiceMaxResponseTokensOrDefault(),
+			LoadAllTools:               cfg.LoadAllTools,
 			MaxIterations:              cfg.MaxIterations,
 			ScreenshotKeepN:            cfg.ScreenshotKeepN,
 			ScreenshotPruneInterval:    cfg.ScreenshotPruneInterval,

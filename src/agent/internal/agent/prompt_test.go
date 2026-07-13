@@ -83,7 +83,11 @@ func TestRolePromptsIncludeGlobalEnvironmentAndDeviceGuidance(t *testing.T) {
 		"do not use local system commands instead of target control tools",
 		"Infer the target device and target OS from screenshots",
 		"weak prior, not a detected fact",
-		"Use shell only on the Aiden controller",
+		"Use shell on the Aiden controller",
+		"precise controller clock or timezone queries",
+		"deterministic calculations",
+		"use shell utilities on the Aiden controller",
+		"do not treat controller-local results as target-device state",
 		"do not operate the target UI in screenshots",
 		"recall_memory",
 		"do not answer from general knowledge alone",
@@ -92,6 +96,8 @@ func TestRolePromptsIncludeGlobalEnvironmentAndDeviceGuidance(t *testing.T) {
 		"<tts>...</tts>",
 		"device-operator",
 		"visible target UI",
+		"discovery summaries only",
+		"before the first screenshot or UI action",
 		"Prefer direct or semantic tools",
 		"request confirmation",
 		"Keep detailed UI playbooks in skills",
@@ -204,6 +210,7 @@ func TestRolePromptsGuideSkillCatalogAndPreloadedSkills(t *testing.T) {
 
 	for _, want := range []string{
 		"## Available skills",
+		"The entries below are discovery summaries only",
 		"- planner: Plan before acting",
 	} {
 		if !strings.Contains(profile.SystemPrompt, want) {

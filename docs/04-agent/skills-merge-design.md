@@ -1212,7 +1212,7 @@ skill_mark_used
 
 Where `skill_manage` can create, modify, delete any effective skill under `configDir/skills/`, manage supporting files, and maintain lifecycle state. `skill_mark_used` is used to distinguish “actually used a skill” from “only read a skill”.
 
-These skill meta-tools are registered with runtime by default. Even if an active skill uses `allowed_tools` to narrow ordinary task tools, `skill_list` / `skill_read` / `skill_manage` / `skill_mark_used` remain available, avoiding cases where prompt requires reading or maintaining skills but model has no corresponding tools. HTTP Tool API only exposes non-maintenance skill tools; `skill_manage` is not exposed via HTTP.
+These skill meta-tools are registered with runtime and all four remain callable by the conversational Agent. `allowed_tools` is parsed for validation and forward compatibility; it does not currently expand or narrow the Agent tool catalog for active skills. The HTTP Tool API exposes only the non-maintenance skill tools; `skill_manage` and `skill_mark_used` are not exposed via HTTP.
 
 Note:
 
@@ -1286,7 +1286,9 @@ description: ...
 ...
 
 ---
+
 Linked files available via skill_read {“name”:”payment-confirm”,”file_path”:...}:
+
 - references/merchant-checklist.md
 ```
 
@@ -1509,7 +1511,17 @@ Because manifest only manages bundled sync, not full skill registry.
     "properties": {
       "action": {
         "type": "string",
-        "enum": ["create", "edit", "patch", "delete", "write_file", "remove_file", "mark_stale", "archive", "restore_archive"]
+        "enum": [
+          "create",
+          "edit",
+          "patch",
+          "delete",
+          "write_file",
+          "remove_file",
+          "mark_stale",
+          "archive",
+          "restore_archive"
+        ]
       },
       "name": {
         "type": "string",
@@ -1586,10 +1598,12 @@ Recommend adding to Aiden system prompt:
 Skills are reusable operation flows, not memory. They suit App operations, troubleshooting, device flows, forms/authorization/payment, repetitive tasks, and validated tool usage patterns.
 
 ### Available Information
+
 - Available skills lists names and descriptions of currently available skills; Active skills lists complete instructions for skills already activated and injected this round.
 - skill_list is for browsing or searching skills, skill_read is for loading relevant skill's SKILL.md or linked files, skill_manage is for creating, editing, archiving, or maintaining skills, skill_mark_used is for recording actual use.
 
 ### Usage Rules
+
 - Before action, check Available skills first; for reusable flows, App operations, troubleshooting, device settings, form submission, payment/authorization, or known repetitive tasks, prioritize matching skills.
 - If Available skills insufficient to judge, use skill_list to search; after finding relevant skill, skill_read first, then execute.
 - Don't read all skills. Only read skills relevant to current task; if relevant skill already in Active skills, prioritize executing according to already-activated instructions, only skill_read again when needing complete SKILL.md details.
@@ -1597,13 +1611,14 @@ Skills are reusable operation flows, not memory. They suit App operations, troub
 - After actually executing according to a skill, if skill_mark_used tool exists, call it with that skill name.
 
 ### Maintenance Rules
+
 - Only write or update skills for reusable flows; don't save one-time progress, temporary state, secrets, raw logs, or personal facts.
 - Must skill_read first before modifying existing skill; prioritize skill_manage action=patch for small changes, only use action=edit for complete rewrite.
 - skill_manage can only maintain skills under configDir/skills, and supporting files under references/, templates/, scripts/, assets/.
 - Don't directly modify bundled source or configDir/skill-state files.
 ```
 
-This prompt section can remain static, because skill meta-tools are registered by default in runtime, and won't be narrowed by active skill's `allowed_tools`.
+This prompt section can remain static because skill instructions are loaded through the static Agent tool catalog rather than by expanding tools from active skill `allowed_tools` metadata.
 
 ### 18.9 Skill Statistics and Usage Records
 
@@ -1859,7 +1874,6 @@ skill_list filters archived by default, unless include_archived=true or explicit
 ```
 
 Lifecycle doesn't participate in real-time task execution, also doesn't affect current skill sync/merge main flow.
-
 
 ## 19. MVP Implementation Phases
 
