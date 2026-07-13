@@ -91,7 +91,13 @@ android_keyboard_device = "/dev/hidg2"
 frame_socket = "/run/frame_service/frame_service.sock"
 ```
 
-When `pointer_mode = "touchscreen"` (Android mode), the firmware also binds `hid.usb2` as `/dev/hidg2`. This second keyboard-like interface advertises Consumer Control usages for Android extension keys such as Back, Home, App Switch, Search, Power, and Volume. In the default `absolute` mode used for iOS cursor control, `hid.usb2` is not exposed.
+The firmware also binds `hid.usb2` as `/dev/hidg2`. This second keyboard-like
+interface advertises Consumer Control usages. In `pointer_mode = "touchscreen"`
+(Android mode), it is used for Android extension keys such as Back, Home, App
+Switch, Search, Power, and Volume. In `pointer_mode = "absolute"` (iOS cursor
+mode), it is exposed as a smaller bitmap media-key interface that advertises
+only volume mute/up/down, media playback controls, screenshot, and brightness
+up/down.
 
 Built-in Agent tools:
 

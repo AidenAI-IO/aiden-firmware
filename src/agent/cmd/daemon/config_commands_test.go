@@ -222,7 +222,8 @@ func TestWebConfigDTOFromAgentConfig_UsesRuntimeDefaults(t *testing.T) {
 		t.Fatalf("audio archive zero config conversion = %+v, want disabled with path and retention defaults", defaults.AudioArchive)
 	}
 	if defaults.HID.FrameSocket == "" || defaults.HID.KeyboardDevice == "" ||
-		defaults.HID.MouseDevice == "" || defaults.HID.PointerMode == "" {
+		defaults.HID.MouseDevice == "" || defaults.HID.AndroidKeyboardDevice == "" ||
+		defaults.HID.PointerMode == "" {
 		t.Fatalf("hid defaults were not populated: %+v", defaults.HID)
 	}
 	if defaults.Log.LLMHTTPRetentionDays != agent.DefaultConfig().Log.LLMHTTPRetentionDaysOrDefault() {

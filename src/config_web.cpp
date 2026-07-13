@@ -5574,11 +5574,7 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
             std::string path = json_is_string(item) ? trim_copy(item->valuestring) : "";
             cJSON* r = cJSON_CreateObject();
             cJSON_AddStringToObject(r, "check", dev_keys[i]);
-            if (strcmp(dev_keys[i], "android_keyboard_device") == 0 && pointer_mode != "touchscreen") {
-                cJSON_AddBoolToObject(r, "passed", 1);
-                std::string detail = "not required when pointer_mode is " + pointer_mode;
-                cJSON_AddStringToObject(r, "detail", detail.c_str());
-            } else if (path.empty()) {
+            if (path.empty()) {
                 cJSON_AddBoolToObject(r, "passed", 0);
                 cJSON_AddStringToObject(r, "detail", "path is empty");
                 all_passed = false;

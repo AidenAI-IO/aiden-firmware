@@ -3254,9 +3254,12 @@ const keyboardTapAndroidKeysGuideHTML = `<!DOCTYPE html>
         <p class="eyebrow">Aiden Agent</p>
         <h1>keyboard_tap Android key guide</h1>
         <p>
-            These aliases use <code>hid.usb2</code> and send one 16-bit Consumer Control usage at a time.
-            They require <code>hid.pointer_mode = "touchscreen"</code> and a valid
-            <code>hid.android_keyboard_device</code> such as <code>/dev/hidg2</code>.
+            These aliases use <code>hid.usb2</code>. In <code>hid.pointer_mode = "touchscreen"</code>,
+            they send one 16-bit Consumer Control usage at a time.
+            They require a valid <code>hid.android_keyboard_device</code> such as <code>/dev/hidg2</code>.
+            In <code>hid.pointer_mode = "absolute"</code>, the limited media-key interface sends a
+            12-bit Consumer Control bitmap and only volume, media, screenshot, and brightness aliases
+            are available; Android navigation aliases require <code>hid.pointer_mode = "touchscreen"</code>.
         </p>
 
         <div class="callout">
