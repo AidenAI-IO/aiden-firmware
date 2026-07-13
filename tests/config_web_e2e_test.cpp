@@ -230,6 +230,7 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"audio_archive\":{\"enabled\":true,\"max_files\":500,\"max_size_mb\":100,"
         "\"storage_path\":\"/userdata/audio\"},"
         "\"hid\":{\"keyboard_device\":\"/dev/hidg0\",\"mouse_device\":\"/dev/hidg1\","
+        "\"android_keyboard_device\":\"/dev/hidg2\","
         "\"frame_socket\":\"/run/frame_service/frame_service.sock\",\"pointer_mode\":\"absolute\"},"
         "\"search\":{\"provider\":\"") + search_provider + "\",\"has_api_key\":" +
         (search_has_api_key ? "true" : "false") +
@@ -1055,7 +1056,7 @@ TEST_CASE("config_web: config test rejects blank search api key without stored m
     CHECK(test_resp.body.find("required for brave") != std::string::npos);
 }
 
-TEST_CASE("config_web: hid config test only requires android keyboard device in touchscreen mode") {
+TEST_CASE("config_web: hid config test requires extension keyboard device in pointer modes") {
     StubEnv env;
     auto handle = start_server(env);
 
@@ -1073,13 +1074,13 @@ TEST_CASE("config_web: hid config test only requires android keyboard device in 
     REQUIRE(absolute_json != nullptr);
     cJSON* absolute_ok = cJSON_GetObjectItem(absolute_json, "ok");
     REQUIRE(absolute_ok != nullptr);
-    CHECK((absolute_ok->type & 0xff) == cJSON_True);
+    CHECK((absolute_ok->type & 0xff) == cJSON_False);
     cJSON* absolute_android = required_test_result(absolute_json, "android_keyboard_device");
     REQUIRE(absolute_android != nullptr);
     cJSON* absolute_android_passed = cJSON_GetObjectItem(absolute_android, "passed");
     REQUIRE(absolute_android_passed != nullptr);
-    CHECK((absolute_android_passed->type & 0xff) == cJSON_True);
-    CHECK(required_json_string(absolute_android, "detail") == "not required when pointer_mode is absolute");
+    CHECK((absolute_android_passed->type & 0xff) == cJSON_False);
+    CHECK(required_json_string(absolute_android, "detail") == "path is empty");
     cJSON* absolute_mode = required_test_result(absolute_json, "pointer_mode");
     REQUIRE(absolute_mode != nullptr);
     cJSON* absolute_mode_passed = cJSON_GetObjectItem(absolute_mode, "passed");
@@ -1341,8 +1342,11 @@ TEST_CASE("config_web: GET /api/config accepts optional field-level omissions fr
         const_cast<char*>(tmp.c_str()),
         [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
     );
-    const std::string partial_config = remove_nested_key(
+    const std::string partial_config = remove_nested_key(remove_nested_key(
         resolved_config_json("duckduckgo", false),
+        "hid",
+        "android_keyboard_device"
+    ),
         "model_text",
         "provider"
     );
@@ -1363,6 +1367,12 @@ TEST_CASE("config_web: GET /api/config accepts optional field-level omissions fr
     REQUIRE(model != nullptr);
     cJSON* model_name = cJSON_GetObjectItem(model, "model");
     REQUIRE(model_name != nullptr);
+    cJSON* hid = cJSON_GetObjectItem(config, "hid");
+    REQUIRE(hid != nullptr);
+    cJSON* android_keyboard_device = cJSON_GetObjectItem(hid, "android_keyboard_device");
+    REQUIRE(android_keyboard_device != nullptr);
+    REQUIRE(android_keyboard_device->valuestring != nullptr);
+    CHECK(std::string(android_keyboard_device->valuestring) == "/dev/hidg2");
     REQUIRE(model_name->valuestring != nullptr);
     CHECK(std::string(model_name->valuestring) == "bytedance-seed/seed-2.0-lite");
     cJSON_Delete(parsed);

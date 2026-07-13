@@ -222,9 +222,9 @@ When `vad_helper_path` is still the built-in default, switching `vad_backend` au
 | --- | --- | --- |
 | `keyboard_device` | `/dev/hidg0` | Keyboard HID device |
 | `mouse_device` | `/dev/hidg1` | Mouse/touch HID device |
-| `android_keyboard_device` | `/dev/hidg2` | Android extension-key HID device (`hid.usb2`) used for consumer/system-style keys such as Back, Home, App Switch, Search, Power, and Volume when `pointer_mode = "touchscreen"` |
+| `android_keyboard_device` | `/dev/hidg2` | Consumer Control HID device (`hid.usb2`) used for Android extension keys in `pointer_mode = "touchscreen"` and media/volume/brightness/screenshot keys in `pointer_mode = "absolute"` |
 | `frame_socket` | `/run/frame_service/frame_service.sock` | Frame Service socket used by the screenshot tool |
-| `pointer_mode` | `absolute` | `absolute` for iOS-style cursor mode on `hid.usb1`; `touchscreen` for Android digitizer mode and to expose `hid.usb2` Android extension keys |
+| `pointer_mode` | `absolute` | `absolute` for iOS-style cursor mode on `hid.usb1` plus a limited `hid.usb2` media-key interface; `touchscreen` for Android digitizer mode plus full `hid.usb2` Android extension keys |
 
 ## `[live_activity]`
 

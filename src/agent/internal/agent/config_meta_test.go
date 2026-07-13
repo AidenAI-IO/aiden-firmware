@@ -212,6 +212,7 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"log.llm_http_retention_days", defaults.Log.LLMHTTPRetentionDaysOrDefault()},
 		{"hid.keyboard_device", defaults.HID.KeyboardDevice},
 		{"hid.mouse_device", defaults.HID.MouseDevice},
+		{"hid.android_keyboard_device", defaults.HID.AndroidKeyboardDevice},
 		{"hid.frame_socket", defaults.HID.FrameSocket},
 		{"hid.pointer_mode", defaults.HID.PointerMode},
 		{"search.provider", defaults.Search.ProviderOrDefault()},

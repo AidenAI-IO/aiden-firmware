@@ -182,6 +182,28 @@ var androidExtensionUsageMap = map[string]uint16{
 	"app_switch": 0x029f,
 }
 
+var absolutePointerModeExtensionReports = map[string]uint16{
+	"volume_mute":               1 << 0,
+	"volumeup":                  1 << 1,
+	"volume_up":                 1 << 1,
+	"volumedown":                1 << 2,
+	"volume_down":               1 << 2,
+	"media_play_pause":          1 << 3,
+	"media_stop":                1 << 4,
+	"media_next":                1 << 5,
+	"media_previous":            1 << 6,
+	"media_rewind":              1 << 7,
+	"media_fast_forward":        1 << 8,
+	"screenshot":                1 << 9,
+	"key_usage_screenshot":      1 << 9,
+	"brightness_up":             1 << 10,
+	"key_usage_brightness_up":   1 << 10,
+	"brightness_down":           1 << 11,
+	"key_usage_brightness_down": 1 << 11,
+}
+
+const absolutePointerModeExtensionKeyList = "KEYCODE_VOLUME_MUTE, KEYCODE_VOLUME_UP, KEYCODE_VOLUME_DOWN, KEYCODE_MEDIA_PLAY_PAUSE, KEYCODE_MEDIA_STOP, KEYCODE_MEDIA_NEXT, KEYCODE_MEDIA_PREVIOUS, KEYCODE_MEDIA_REWIND, KEYCODE_MEDIA_FAST_FORWARD, KEY_USAGE_SCREENSHOT, KEY_USAGE_BRIGHTNESS_UP, KEY_USAGE_BRIGHTNESS_DOWN"
+
 type androidKeyboardTapAlias struct {
 	Keycode           int
 	Replacement       string
@@ -688,8 +710,9 @@ func hidWriteWouldBlock(err error) bool {
 
 // KeyboardTapTool sends a key press then release via HID.
 type KeyboardTapTool struct {
-	dev        *HIDDevice
-	androidDev *HIDDevice
+	dev         *HIDDevice
+	androidDev  *HIDDevice
+	pointerMode string
 }
 
 func (t *KeyboardTapTool) Name() string { return "keyboard_tap" }
@@ -702,7 +725,8 @@ func (t *KeyboardTapTool) ArgsSchema() map[string]any {
 	keysSchema := stringArrayArgSchema("Keys pressed simultaneously, e.g. [\"ctrl\",\"c\"] or [\"meta\"]. "+
 		"Standard boot-keyboard keys: a-z, 0-9, f1-f12, enter, escape, backspace, tab, space, delete, arrows, home, end, pageup/down, insert, printscreen; modifiers ctrl, shift, alt, meta/super/win/cmd; modifier-only taps allowed. "+
 		"Use backspace for ordinary text deletion before the cursor; delete is forward-delete after the cursor. "+
-		"Android extension keys (hid.usb2) use KEYCODE_*/KEY_USAGE_* aliases (see the Android key guide for the full list), are single-key taps only, and cannot be combined with modifiers/chords.", []string{"ctrl", "c"}, []string{"meta"})
+		"Android extension keys (hid.usb2) use KEYCODE_*/KEY_USAGE_* aliases (see the Android key guide for the full list), are single-key taps only, and cannot be combined with modifiers/chords. "+
+		"When hid.pointer_mode is absolute, hid.usb2 only supports media, volume, screenshot, and brightness keys: "+absolutePointerModeExtensionKeyList+".", []string{"ctrl", "c"}, []string{"meta"})
 	keysSchema["minItems"] = 1
 	keysSchema["maxItems"] = 6
 
@@ -738,6 +762,8 @@ func (t *KeyboardTapTool) Call(ctx context.Context, input string) (string, error
 			code := CodeToolExecutionFailed
 			if errors.Is(err, errAndroidExtensionUnavailable) {
 				code = CodeModuleUnavailable
+			} else if errors.Is(err, errAndroidExtensionKeyUnavailableInPointerMode) {
+				code = CodeInvalidArguments
 			}
 			return toolErrorResultf(ctx, code, "%v", err), nil
 		}
@@ -814,12 +840,36 @@ func resolveKeyboardTapKeys(rawKeys []string) (keyboardTapResolvedInput, error) 
 }
 
 var errAndroidExtensionUnavailable = errors.New("android extension keyboard device is not configured")
+var errAndroidExtensionKeyUnavailableInPointerMode = errors.New("android extension key is unavailable in the configured pointer mode")
+
+func (t *KeyboardTapTool) pointerModeOrDefault() string {
+	switch strings.ToLower(strings.TrimSpace(t.pointerMode)) {
+	case "touchscreen":
+		return "touchscreen"
+	default:
+		return "absolute"
+	}
+}
+
+func (t *KeyboardTapTool) androidExtensionPressReport(key string, usage uint16) ([]byte, error) {
+	if t.pointerModeOrDefault() != "absolute" {
+		return []byte{byte(usage), byte(usage >> 8)}, nil
+	}
+	report, ok := absolutePointerModeExtensionReports[key]
+	if !ok {
+		return nil, fmt.Errorf("%w: %q requires hid.pointer_mode=\"touchscreen\"; hid.pointer_mode=\"absolute\" only exposes these hid.usb2 keys: %s", errAndroidExtensionKeyUnavailableInPointerMode, key, absolutePointerModeExtensionKeyList)
+	}
+	return []byte{byte(report), byte(report >> 8)}, nil
+}
 
 func (t *KeyboardTapTool) tapAndroidExtension(key string, usage uint16, holdMs int) error {
-	if t.androidDev == nil {
-		return fmt.Errorf("%w; set hid.pointer_mode=\"touchscreen\" and ensure hid.android_keyboard_device exists to use %s", errAndroidExtensionUnavailable, key)
+	report, err := t.androidExtensionPressReport(key, usage)
+	if err != nil {
+		return err
 	}
-	report := []byte{byte(usage), byte(usage >> 8)}
+	if t.androidDev == nil {
+		return fmt.Errorf("%w; ensure hid.android_keyboard_device exists to use %s", errAndroidExtensionUnavailable, key)
+	}
 	if err := t.androidDev.Write(report); err != nil {
 		return err
 	}

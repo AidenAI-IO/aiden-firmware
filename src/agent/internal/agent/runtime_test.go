@@ -220,6 +220,180 @@ func TestRuntimeRunWaitForWakeupTerminatesRoleLoop(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunStopsTouchGestureOnPointerModeMismatch(t *testing.T) {
+	tests := []struct {
+		name        string
+		platform    string
+		pointerMode string
+		want        string
+	}{
+		{
+			name:        "android absolute",
+			platform:    "android",
+			pointerMode: "absolute",
+			want:        `hid.pointer_mode to "touchscreen"`,
+		},
+		{
+			name:        "ios touchscreen",
+			platform:    "ios",
+			pointerMode: "touchscreen",
+			want:        `hid.pointer_mode to "absolute"`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &scriptedModel{responses: roleToolResponses("touch_gesture", `{"type":"tap","point":{"x":500,"y":500}}`, "should not be used")}
+			tool := &stubTool{
+				name:        "touch_gesture",
+				description: "Touch.",
+				output:      `{"screen_changed":false}`,
+			}
+			runtime := NewRuntimeWithDeps(
+				withTestConfigDir(t, Config{
+					Model:           ModelConfig{Provider: "fake"},
+					Instruction:     "Use tools.",
+					DefaultPlatform: tc.platform,
+					HID:             HIDConfig{PointerMode: tc.pointerMode},
+				}),
+				&testModelResolver{model: model},
+				NewMemoryManager(""),
+				&ToolSet{tools: map[string]langtools.Tool{"touch_gesture": tool}},
+				NewSkillIndex(),
+			)
+
+			result, err := runtime.Run(context.Background(), RunRequest{Input: "tap the screen"})
+			if err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+			if !strings.Contains(result.Output, "touch_gesture produced no visible screen change") {
+				t.Fatalf("output missing no-change stop reason: %q", result.Output)
+			}
+			if !strings.Contains(result.Output, tc.want) {
+				t.Fatalf("output missing pointer mode guidance %q: %q", tc.want, result.Output)
+			}
+			if model.callCount != 1 {
+				t.Fatalf("model call count = %d, want stop before second model call", model.callCount)
+			}
+			if len(tool.inputs) != 1 {
+				t.Fatalf("touch_gesture calls = %d, want 1", len(tool.inputs))
+			}
+		})
+	}
+}
+
+func TestRuntimeRunStopsPointerModeMismatchContentBeforeRetryToolCall(t *testing.T) {
+	stopMessage := `touch_gesture produced no visible screen change, and the device is configured as Android with hid.pointer_mode="absolute". Stop operation here because the touch mode likely does not match the target. Please switch hid.pointer_mode to "touchscreen", restart the agent, and retry.`
+	model := &scriptedModel{responses: []*llms.ContentResponse{
+		toolCallResponseWithContent("call_1", "touch_gesture", `{"type":"long_press","point":{"x":500,"y":500}}`, stopMessage),
+		contentResponse("should not be used"),
+	}}
+	tool := &stubTool{
+		name:        "touch_gesture",
+		description: "Touch.",
+		output:      `{"screen_changed":false}`,
+	}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{
+			Model:           ModelConfig{Provider: "fake"},
+			Instruction:     "Use tools.",
+			DefaultPlatform: "android",
+			HID:             HIDConfig{PointerMode: "absolute"},
+		}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"touch_gesture": tool}},
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "tap the screen"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != stopMessage {
+		t.Fatalf("output = %q, want stop message", result.Output)
+	}
+	if model.callCount != 1 {
+		t.Fatalf("model call count = %d, want stop before second model call", model.callCount)
+	}
+	if len(tool.inputs) != 0 {
+		t.Fatalf("touch_gesture calls = %d, want 0", len(tool.inputs))
+	}
+}
+
+func TestRuntimeRunDoesNotStopPointerModeMismatchContentForOtherTool(t *testing.T) {
+	stopMessage := `touch_gesture produced no visible screen change, and the device is configured as Android with hid.pointer_mode="absolute". Stop operation here because the touch mode likely does not match the target. Please switch hid.pointer_mode to "touchscreen", restart the agent, and retry.`
+	model := &scriptedModel{responses: []*llms.ContentResponse{
+		toolCallResponseWithContent("call_1", "screenshot", `{}`, stopMessage),
+		contentResponse("continued after screenshot"),
+	}}
+	tool := &stubTool{
+		name:        "screenshot",
+		description: "Screenshot.",
+		output:      `{"ok":true}`,
+	}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{
+			Model:           ModelConfig{Provider: "fake"},
+			Instruction:     "Use tools.",
+			DefaultPlatform: "android",
+			HID:             HIDConfig{PointerMode: "absolute"},
+		}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"screenshot": tool}},
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "take a screenshot"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "continued after screenshot" {
+		t.Fatalf("output = %q, want model final answer", result.Output)
+	}
+	if model.callCount != 2 {
+		t.Fatalf("model call count = %d, want continue to second model call", model.callCount)
+	}
+	if len(tool.inputs) != 1 {
+		t.Fatalf("screenshot calls = %d, want 1", len(tool.inputs))
+	}
+}
+
+func TestRuntimeRunContinuesTouchGestureWhenPointerModeMatches(t *testing.T) {
+	model := &scriptedModel{responses: roleToolResponses("touch_gesture", `{"type":"tap","point":{"x":500,"y":500}}`, "verified after inspection")}
+	tool := &stubTool{
+		name:        "touch_gesture",
+		description: "Touch.",
+		output:      `{"screen_changed":false}`,
+	}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{
+			Model:           ModelConfig{Provider: "fake"},
+			Instruction:     "Use tools.",
+			DefaultPlatform: "android",
+			HID:             HIDConfig{PointerMode: "touchscreen"},
+		}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"touch_gesture": tool}},
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "tap the screen"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "verified after inspection" {
+		t.Fatalf("output = %q, want model final answer", result.Output)
+	}
+	if model.callCount != 2 {
+		t.Fatalf("model call count = %d, want continue to second model call", model.callCount)
+	}
+	if len(tool.inputs) != 1 {
+		t.Fatalf("touch_gesture calls = %d, want 1", len(tool.inputs))
+	}
+}
+
 func TestRuntimeRunWaitForWakeupAppendsToolResultBeforeFinishing(t *testing.T) {
 	model := &scriptedModel{responses: []*llms.ContentResponse{
 		toolCallResponse("wait_1", "wait_for_wakeup", `{"reason":"user asked"}`),
@@ -998,6 +1172,110 @@ func TestRuntimeRunSteerInterruptCancelsCancelableToolWithoutWaitingForSteer(t *
 	if len(tool.inputs) != 1 || tool.inputs[0] != "original action" {
 		t.Fatalf("tool inputs = %#v, want only original action", tool.inputs)
 	}
+}
+
+func TestRuntimeRunCanceledToolDoesNotPoisonNextRunToolHistory(t *testing.T) {
+	model := &strictToolPairModel{}
+	toolStarted := make(chan struct{})
+	toolCanceled := make(chan struct{})
+	tool := &blockingTool{
+		name:        "slow",
+		description: "Slow tool.",
+		output:      "tool output",
+		started:     toolStarted,
+		canceled:    toolCanceled,
+	}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"slow": tool}},
+		NewSkillIndex(),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := runtime.Run(ctx, RunRequest{Input: "do the original action"})
+		firstDone <- err
+	}()
+
+	select {
+	case <-toolStarted:
+	case <-time.After(time.Second):
+		t.Fatal("tool did not start")
+	}
+	cancel()
+	select {
+	case <-toolCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("tool context was not canceled")
+	}
+	if err := <-firstDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("first Run() error = %v, want context canceled", err)
+	}
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "continue"})
+	if err != nil {
+		t.Fatalf("second Run() error = %v", err)
+	}
+	if result.Output != "continued" {
+		t.Fatalf("second Run() output = %q, want continued", result.Output)
+	}
+}
+
+type strictToolPairModel struct {
+	calls atomic.Int64
+}
+
+func (m *strictToolPairModel) GenerateContent(_ context.Context, messages []llms.MessageContent, _ ...llms.CallOption) (*llms.ContentResponse, error) {
+	if m.calls.Add(1) == 1 {
+		return toolCallResponseWithContent("call_1", "slow", `{"__arg1":"original action"}`, ""), nil
+	}
+	if err := validateStrictToolMessageSequence(messages); err != nil {
+		return nil, err
+	}
+	return contentResponse("continued"), nil
+}
+
+func (m *strictToolPairModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
+	panic("unexpected Call invocation")
+}
+
+func validateStrictToolMessageSequence(messages []llms.MessageContent) error {
+	pending := map[string]struct{}{}
+	for i, message := range messages {
+		if len(pending) > 0 && message.Role != llms.ChatMessageTypeTool && message.Role != llms.ChatMessageTypeFunction {
+			return fmt.Errorf("message %d arrived before tool responses for %v", i, pending)
+		}
+		switch message.Role {
+		case llms.ChatMessageTypeAI:
+			for _, part := range message.Parts {
+				if call, ok := part.(llms.ToolCall); ok {
+					pending[strings.TrimSpace(call.ID)] = struct{}{}
+				}
+			}
+		case llms.ChatMessageTypeTool, llms.ChatMessageTypeFunction:
+			if len(pending) == 0 {
+				return fmt.Errorf("message %d contains an orphan tool result", i)
+			}
+			for _, part := range message.Parts {
+				response, ok := part.(llms.ToolCallResponse)
+				if !ok {
+					continue
+				}
+				id := strings.TrimSpace(response.ToolCallID)
+				if _, ok := pending[id]; !ok {
+					return fmt.Errorf("message %d responds to unknown tool call %q", i, id)
+				}
+				delete(pending, id)
+			}
+		}
+	}
+	if len(pending) > 0 {
+		return fmt.Errorf("missing tool responses for %v", pending)
+	}
+	return nil
 }
 
 func TestRuntimeRunDoesNotConsumePendingSteerBeforeFinalAnswer(t *testing.T) {
@@ -2897,7 +3175,7 @@ func TestRuntimeRunKeyboardToolFeedsPostActionScreenshotImage(t *testing.T) {
 		name:        "keyboard_tap",
 		description: "Press and release keyboard keys.",
 		visual:      true,
-		output: `{"action_output":"ok","width":800,"height":600,"format":"jpeg","size":25,"data":"` +
+		output: `{"action_output":"ok","screen_changed":false,"screen_stable":true,"stable_wait_ms":250,"width":800,"height":600,"format":"jpeg","size":25,"data":"` +
 			base64.StdEncoding.EncodeToString(jpegBytes) + `"}`,
 	}
 	runtime := NewRuntimeWithDeps(
@@ -2930,6 +3208,12 @@ func TestRuntimeRunKeyboardToolFeedsPostActionScreenshotImage(t *testing.T) {
 					foundToolResponse = true
 					if !strings.Contains(p.Content, "returned a screenshot observation") {
 						t.Fatalf("keyboard tool response = %q, want screenshot observation summary", p.Content)
+					}
+					if !strings.Contains(p.Content, "No visible screen change was observed") {
+						t.Fatalf("keyboard tool response = %q, want screen_changed warning", p.Content)
+					}
+					if !strings.Contains(p.Content, "Do not assume the action succeeded") {
+						t.Fatalf("keyboard tool response = %q, want no-success warning", p.Content)
 					}
 					if strings.Contains(p.Content, base64.StdEncoding.EncodeToString(jpegBytes)) {
 						t.Fatalf("keyboard tool response should not inline screenshot payload: %q", p.Content)

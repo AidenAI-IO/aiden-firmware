@@ -188,6 +188,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
 
     CHECK(loaded.hid.keyboard_device == "/dev/hidg0");
     CHECK(loaded.hid.mouse_device == "/dev/hidg1");
+    CHECK(loaded.hid.android_keyboard_device == "/dev/hidg2");
     CHECK(loaded.hid.frame_socket == "/run/frame_service/frame_service.sock");
     CHECK(loaded.hid.pointer_mode == "touchscreen");
 
@@ -222,6 +223,26 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.live_activity.private_key_pem == "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----");
     CHECK(loaded.live_activity.has_private_key_pem == true);
     CHECK(loaded.live_activity.timeout_sec == 12);
+
+    std::remove(path.c_str());
+}
+
+TEST_CASE("agent_toml defaults missing android keyboard device for old configs") {
+    std::string path = make_temp_path("old_hid_defaults.toml");
+    {
+        std::ofstream out(path);
+        out << "[hid]\n"
+            << "keyboard_device = \"/dev/hidg0\"\n"
+            << "mouse_device = \"/dev/hidg1\"\n"
+            << "frame_socket = \"/run/frame_service/frame_service.sock\"\n"
+            << "pointer_mode = \"absolute\"\n";
+    }
+
+    aiden::AgentToml loaded;
+    std::string err;
+    REQUIRE(aiden::load_agent_toml(path.c_str(), loaded, &err));
+    REQUIRE(err.empty());
+    CHECK(loaded.hid.android_keyboard_device == "/dev/hidg2");
 
     std::remove(path.c_str());
 }

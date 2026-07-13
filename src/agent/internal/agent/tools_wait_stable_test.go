@@ -49,6 +49,7 @@ func TestWaitStableScreenDescriptionDocumentsUsePolicy(t *testing.T) {
 		"Use only while operating a visible target UI",
 		"known UI transition",
 		"do not call for text-only reasoning",
+		"screen_changed=false means",
 		"stable=false means",
 	} {
 		if !strings.Contains(desc, want) {
@@ -96,6 +97,9 @@ func TestWaitStableScreenToolReturnsScreenshotObservationJSON(t *testing.T) {
 	if !result.OK || !result.Stable {
 		t.Fatalf("stable result = ok:%v stable:%v, want true/true", result.OK, result.Stable)
 	}
+	if result.ScreenChanged == nil || *result.ScreenChanged {
+		t.Fatalf("ScreenChanged = %#v, want false", result.ScreenChanged)
+	}
 	if result.ScreenStable == nil || !*result.ScreenStable {
 		t.Fatalf("ScreenStable = %#v, want true", result.ScreenStable)
 	}
@@ -137,6 +141,32 @@ func TestWaitStableScreenToolPropagatesContextCancellation(t *testing.T) {
 	_, err := tool.Call(ctx, `{}`)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Call error = %v, want context.Canceled", err)
+	}
+}
+
+func TestWaitStableScreenToolWaitReportsScreenChangedWhenFramesDiffer(t *testing.T) {
+	rawFrameA := []byte{128, 128, 128, 128, 128, 128}
+	rawFrameB := []byte{140, 140, 140, 140, 128, 128}
+	client := &fakeWaitStableFrameClient{
+		rawFrames: []fakeWaitStableFrame{
+			{meta: frameMetadata{Seq: 1, Width: 2, Height: 2, PixelFormat: "nv12"}, data: rawFrameA},
+			{meta: frameMetadata{Seq: 2, Width: 2, Height: 2, PixelFormat: "nv12"}, data: rawFrameB},
+		},
+	}
+	tool := &WaitStableScreenTool{
+		client:   client,
+		defaults: ScreenStableDefaults{TimeoutMs: 50, StableMs: 20, DiffThreshold: 2},
+	}
+
+	result, err := tool.wait(context.Background(), `{}`)
+	if err != nil {
+		t.Fatalf("wait() error = %v", err)
+	}
+	if result.ScreenChanged == nil || !*result.ScreenChanged {
+		t.Fatalf("ScreenChanged = %#v, want true", result.ScreenChanged)
+	}
+	if result.LastDiff == nil || *result.LastDiff <= 0 {
+		t.Fatalf("LastDiff = %#v, want > 0", result.LastDiff)
 	}
 }
 

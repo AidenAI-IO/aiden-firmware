@@ -67,6 +67,7 @@ const char* kDefaultConfig =
     "\"audio_archive\":{\"enabled\":true,\"max_files\":500,\"max_size_mb\":100,"
     "\"storage_path\":\"/userdata/audio\"},"
     "\"hid\":{\"keyboard_device\":\"/dev/hidg0\",\"mouse_device\":\"/dev/hidg1\","
+    "\"android_keyboard_device\":\"/dev/hidg2\","
     "\"frame_socket\":\"/run/frame_service/frame_service.sock\",\"pointer_mode\":\"absolute\"},"
     "\"search\":{\"provider\":\"duckduckgo\",\"has_api_key\":false},"
     "\"telemetry\":{\"enabled\":false,\"provider\":\"langfuse\",\"base_url\":\"\","

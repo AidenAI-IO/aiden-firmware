@@ -59,11 +59,11 @@ struct LogToml {
 };
 
 struct HIDToml {
-    std::string keyboard_device;
-    std::string mouse_device;
-    std::string android_keyboard_device;
-    std::string frame_socket;
-    std::string pointer_mode;
+    std::string keyboard_device = "/dev/hidg0";
+    std::string mouse_device = "/dev/hidg1";
+    std::string android_keyboard_device = "/dev/hidg2";
+    std::string frame_socket = "/run/frame_service/frame_service.sock";
+    std::string pointer_mode = "absolute";
 };
 
 struct SearchToml {
