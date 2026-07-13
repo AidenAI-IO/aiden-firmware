@@ -3,7 +3,7 @@ name: device-operator
 description: Use when controlling a visible target device UI through screenshots, touch, mouse, keyboard, text entry, scrolling, app switching, or capture recovery.
 metadata:
   preferred_model: primary
-  allowed_tools: [screenshot, wait_for_stable_screen, image_diff, quick_action, touch_gesture, mouse_click, mouse_move, mouse_scroll, keyboard_tap, keyboard_text, enter_text_in_field, enter_text_via_bridge, search_launch_app, request_human_handoff, recall_memory, save_memory, skill_read, run_script, list_scripts, read_script, write_script, shell]
+  allowed_tools: [screenshot, wait_for_stable_screen, image_diff, quick_action, touch_gesture, wheel_nudge, mouse_click, mouse_move, mouse_scroll, keyboard_tap, keyboard_text, enter_text_in_field, enter_text_via_bridge, search_launch_app, request_human_handoff, recall_memory, save_memory, skill_read, run_script, list_scripts, read_script, write_script, shell]
 ---
 
 Use this skill when the task requires operating a visible connected device UI. This is the complete generic device-operation playbook; do not split routine app switching, text entry, scrolling, picker, or screenshot recovery work into child skills.
@@ -30,6 +30,7 @@ Prefer the highest-level reliable tool for the job:
 
 - Use `quick_action` first when a catalog shortcut clearly matches the goal, such as back, home, app switch, search, copy/paste, or browser actions. Pass the observed `platform` when known.
 - Use `touch_gesture` for mobile taps, swipes, drag, back, and home gestures.
+- For picker/wheel controls, tap an adjacent visible unselected row when that is the precise path; include semantic `wheel` metadata so the runtime can reject center-row, wrong-column, and wrong-direction taps. Use `wheel_nudge` only when a bounded drag is needed.
 - Use `enter_text_in_field` for normal text input into fields, including Chinese/CJK, emoji, IME, and verified field entry.
 - Use `keyboard_tap` for enter, escape, tab, arrows, shortcuts, and simple key actions.
 - Use `keyboard_text` only for simple standalone ASCII typing. Never use it for Chinese/CJK or emoji field entry.
@@ -43,6 +44,7 @@ Before using coordinates:
 
 - Inspect the screenshot and identify the intended target visually.
 - Use `coord_space: "normalized"` with 0-1000 coordinates when possible: `(0,0)` is top-left, `(1000,1000)` is bottom-right, `(500,500)` is center.
+- When using pixels measured in a returned cropped screenshot, use `coord_space:"screenshot"`; its width and height are the coordinate bounds. Do not label screenshot pixels as normalized or uncropped `pixel` coordinates.
 - Avoid edges unless performing an edge gesture.
 - Do not guess a coordinate if the target is not visible or the screen is stale.
 - If a tap misses, observe again before adjusting. Do not repeat the exact same coordinate blindly.
@@ -145,15 +147,13 @@ Calibration loop:
 
 If the same list boundary appears again, stop searching in that direction. Try search/filter, a different tab, or ask the user.
 
-Before manipulating a picker or wheel control:
+For picker/wheel controls, discover columns from the current UI rather than assuming hour/minute positions. Give the current visible picker screen a stable `picker_id` (for example `alarm-create` or `date-editor`) and change it after navigating to another picker screen. For each column, identify the selected value, target value, adjacent values, `column_x`, `center_y`, and measured `row_spacing`. Use numeric values or stable ordinal indices for textual lists.
 
-1. Call `recall_memory` for similar picker calibration when relevant.
-2. Without cache, probe once with medium movement.
-3. Observe how many values changed.
-4. Choose subsequent strength by remaining distance.
-5. Screenshot after each adjustment before continuing.
-
-On success, save calibration with app/page/control location, direction, gesture strength/distance, observed delta, and tags `["swipe", "picker", "calibration"]`.
+- Pass `cycle_size:0` for a non-cyclic ordered column. For known cyclic columns, pass the real domain and `cycle_start` (for example months are `1..12`; calendar-day size depends on the selected year/month).
+- `value_step` is the signed value change for one visible row downward. Therefore `value_step > 0` means finger-up increases the selected value, and `value_step < 0` means finger-down increases it.
+- Prefer tapping exactly one adjacent visible unselected row toward the target. Set `row_offset` to `-1` for the row above or `+1` for the row below; the offset describes which row is tapped, not the total value gap. Never tap the selected center row.
+- If a bounded drag is needed, call `wheel_nudge` with the latest current/target/domain metadata. Runtime derives travel from the shortest `remaining_gap` and measured `row_spacing`, bounded to 1/2/3/4 rows. Use `increasing_direction:"unknown"` only when visible ordering is insufficient and a one-row probe is genuinely needed; omit `value_step` for that probe, then report the observed direction on the next call.
+- Take a fresh screenshot after every tap or nudge, re-read the centered value, and recalculate the remaining gap. Stop if the value cannot be measured, a probe produces no change, the screen becomes stale, or the gesture leaves the picker.
 
 ## Screenshot and Capture Recovery
 

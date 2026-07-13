@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,6 +51,10 @@ const (
 	directionalSwipeMediumDistance  = 500.0
 	directionalSwipeSmallDistance   = 200.0
 	directionalSwipeTinyDistance    = 40.0
+
+	wheelNudgeDefaultY     = 460.0
+	wheelNudgeDefaultMs    = 1400
+	wheelNudgeDefaultSteps = 18
 
 	phoneBackStartX = 1
 	phoneBackEndX   = 750
@@ -679,7 +684,7 @@ func (t *MouseClickTool) Name() string { return "mouse_click" }
 
 func (t *MouseClickTool) Description() string {
 	return `Move mouse to a position and click. Input JSON: {"x": 500, "y": 300, "button": "left", "coord_space": "normalized"}. ` +
-		`coord_space options: "pixel", "normalized", "absolute". Default is "auto": x/y in [0,1000] are treated as normalized, otherwise pixel coordinates are used when a recent screenshot has cached screen dimensions, otherwise HID absolute values in the range 0-32767. ` +
+		`coord_space options: "screenshot", "pixel", "normalized", "absolute". screenshot means pixels in the latest returned cropped screenshot; pixel means the uncropped source frame. Default is "auto": x/y in [0,1000] are treated as normalized, otherwise source-frame pixel coordinates are used when a recent screenshot has cached screen dimensions, otherwise HID absolute values in the range 0-32767. ` +
 		`Normalized coordinates use 0-1000 range where (0,0) is top-left, (1000,1000) is bottom-right, (500,500) is center. ` +
 		`Choose the visual center of the target in the latest screenshot; for small controls, estimate the control bounds and click the midpoint, biased inward. ` +
 		`pointer_mode absolute (default): moves to absolute HID coordinates, waits for iOS cursor smoothing, then clicks. ` +
@@ -732,7 +737,7 @@ func (t *MouseMoveTool) Name() string { return "mouse_move" }
 
 func (t *MouseMoveTool) Description() string {
 	return `Move mouse to a position without clicking. Input JSON: {"x": 500, "y": 300, "coord_space": "normalized"}. ` +
-		`coord_space options: "pixel", "normalized", "absolute". Default is "auto": x/y in [0,1000] are treated as normalized, otherwise pixel coordinates are used when a recent screenshot has cached screen dimensions, otherwise HID absolute values in the range 0-32767. ` +
+		`coord_space options: "screenshot", "pixel", "normalized", "absolute". screenshot means pixels in the latest returned cropped screenshot; pixel means the uncropped source frame. Default is "auto": x/y in [0,1000] are treated as normalized, otherwise source-frame pixel coordinates are used when a recent screenshot has cached screen dimensions, otherwise HID absolute values in the range 0-32767. ` +
 		`Normalized coordinates use 0-1000 range where (0,0) is top-left, (1000,1000) is bottom-right, (500,500) is center. ` +
 		`pointer_mode absolute (default): writes absolute HID coordinates directly. ` +
 		`pointer_mode touchscreen (Android): moves the logical touch point without pressing.`
@@ -774,6 +779,21 @@ type TouchGestureTool struct {
 	screen *screenState
 }
 
+type wheelTapMetadata struct {
+	IsPickerRow  bool     `json:"is_picker_row"`
+	PickerID     string   `json:"picker_id"`
+	ColumnX      *float64 `json:"column_x"`
+	CenterY      *float64 `json:"center_y"`
+	CurrentValue *int     `json:"current_value"`
+	TappedValue  *int     `json:"tapped_value"`
+	TargetValue  *int     `json:"target_value"`
+	CycleSize    *int     `json:"cycle_size"`
+	CycleStart   *int     `json:"cycle_start"`
+	RowOffset    *int     `json:"row_offset"`
+	RowSpacing   *float64 `json:"row_spacing"`
+	ValueStep    *int     `json:"value_step"`
+}
+
 func (t *TouchGestureTool) Name() string { return "touch_gesture" }
 
 func (t *TouchGestureTool) Description() string {
@@ -782,9 +802,10 @@ func (t *TouchGestureTool) Description() string {
 		`Input JSON examples: {"type":"tap","point":{"x":500,"y":500}}, {"type":"swipe","start":{"x":200,"y":500},"end":{"x":800,"y":500},"duration_ms":700,"steps":24}, {"type":"swipe_left"}, {"type":"back"}, {"type":"home"}. ` +
 		`IMPORTANT: "point", "start", and "end" must be objects with named keys "x" and "y". NEVER omit the key names: {"x":500,"y":300} is correct, {500,300} is invalid and will error. ` +
 		`Supported types: "tap", "double_tap", "long_press", "drag", "swipe", "swipe_left", "swipe_right", "swipe_up", "swipe_down", "back" (left-edge back), "home" (bottom-edge home). ` +
-		`coord_space defaults to "normalized" (x/y in [0,1000]) and also supports "pixel" and "absolute". ` +
+		`coord_space defaults to "normalized" (x/y in [0,1000]) and also supports "screenshot", "pixel", and "absolute". screenshot means pixel coordinates measured directly in the latest returned cropped screenshot; use it with explicit point/start/end coordinates. ` +
 		`Normalized coordinates use 0-1000 range where (0,0) is top-left, (1000,1000) is bottom-right, (500,500) is center. ` +
 		`Choose the visual center of the target in the latest screenshot; for small controls, estimate the control bounds and touch the midpoint, biased inward. ` +
+		`For every tap on a picker/wheel row, include wheel metadata with is_picker_row:true, a stable picker_id for this visible picker instance, column/value domain fields, and measured row_offset, row_spacing, and value_step. Leave wheel metadata out for ordinary non-picker taps. The runtime rejects center-row taps, row-coordinate/value mismatches, and taps that do not reduce the semantic distance to the target. ` +
 		`pointer_mode absolute (default, iOS): every gesture moves to absolute coordinates before pressing; choose tap targets from the latest screenshot center and prefer normalized coordinates. ` +
 		`pointer_mode touchscreen (Android): gestures are sent as single-finger touch down/move/up reports. ` +
 		`Directional swipes accept optional "distance" (normalized 0-1000 travel, default 500), "anchor" (fixed-axis coordinate 0-1000, default 500), and "strength" ("large", "medium", "small", "tiny"). ` +
@@ -814,6 +835,20 @@ func (t *TouchGestureTool) ArgsSchema() map[string]any {
 		"distance":       coordinateSchema("Directional swipe travel in normalized units."),
 		"anchor":         coordinateSchema("Directional swipe fixed-axis coordinate in normalized units."),
 		"strength":       stringEnumArgSchema("Directional swipe preset distance.", "large", "medium", "small", "tiny"),
+		"wheel": objectArgsSchema(map[string]any{
+			"is_picker_row": map[string]any{"type": "boolean", "const": true, "description": "Must be true. Omit the entire wheel object for ordinary non-picker taps."},
+			"picker_id":     map[string]any{"type": "string", "minLength": 1, "description": "Stable identifier for this visible picker instance, such as alarm-create or date-editor; change it when navigating to another picker screen."},
+			"column_x":      coordinateSchema("Measured center x of this wheel column in coord_space."),
+			"center_y":      coordinateSchema("Measured y of the highlighted selected row in coord_space."),
+			"current_value": nonNegativeIntegerSchema("Current centered numeric/ordinal value."),
+			"tapped_value":  nonNegativeIntegerSchema("Numeric/ordinal value displayed on the unselected row being tapped."),
+			"target_value":  nonNegativeIntegerSchema("Requested numeric/ordinal target value for this column."),
+			"cycle_size":    nonNegativeIntegerSchema("Known cyclic domain size, or 0 for non-cyclic values."),
+			"cycle_start":   nonNegativeIntegerSchema("Lowest cyclic value, such as 0 for 00-based time or 1 for month/day."),
+			"row_offset":    map[string]any{"type": "integer", "description": "Signed visible-row offset from center: -1 is the adjacent row above, +1 the adjacent row below."},
+			"row_spacing":   coordinateSchema("Measured distance between adjacent visible row centers in coord_space."),
+			"value_step":    map[string]any{"type": "integer", "description": "Signed ordinal/value change for one row downward; for 16,17,18 from top to bottom use +1."},
+		}, "is_picker_row", "picker_id", "column_x", "center_y", "current_value", "tapped_value", "target_value", "cycle_size", "cycle_start", "row_offset", "row_spacing", "value_step"),
 	}, "type")
 }
 
@@ -826,24 +861,24 @@ func pointSchema(description string) map[string]any {
 	return schema
 }
 
-
 func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, error) {
 	var args struct {
-		Type         string        `json:"type"`
-		Point        *pointerPoint `json:"point"`
-		Start        *pointerPoint `json:"start"`
-		End          *pointerPoint `json:"end"`
-		CoordSpace   string        `json:"coord_space"`
-		Button       string        `json:"button"`
-		DurationMs   *int          `json:"duration_ms"`
-		HoldBeforeMs *int          `json:"hold_before_ms"`
-		HoldAfterMs  *int          `json:"hold_after_ms"`
-		HoldMs       *int          `json:"hold_ms"`
-		PauseMs      *int          `json:"pause_ms"`
-		Steps        *int          `json:"steps"`
-		Distance     *float64      `json:"distance"`
-		Anchor       *float64      `json:"anchor"`
-		Strength     string        `json:"strength"`
+		Type         string            `json:"type"`
+		Point        *pointerPoint     `json:"point"`
+		Start        *pointerPoint     `json:"start"`
+		End          *pointerPoint     `json:"end"`
+		CoordSpace   string            `json:"coord_space"`
+		Button       string            `json:"button"`
+		DurationMs   *int              `json:"duration_ms"`
+		HoldBeforeMs *int              `json:"hold_before_ms"`
+		HoldAfterMs  *int              `json:"hold_after_ms"`
+		HoldMs       *int              `json:"hold_ms"`
+		PauseMs      *int              `json:"pause_ms"`
+		Steps        *int              `json:"steps"`
+		Distance     *float64          `json:"distance"`
+		Anchor       *float64          `json:"anchor"`
+		Strength     string            `json:"strength"`
+		Wheel        *wheelTapMetadata `json:"wheel"`
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
 		return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v. Common mistakes: missing quotes around string values, incorrect comma placement, point/start/end must be objects with named keys like {\"x\":500,\"y\":300} not bare values. Example: {\"type\":\"tap\",\"point\":{\"x\":500,\"y\":500}}", err), nil
@@ -862,6 +897,11 @@ func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, erro
 
 	switch gestureType {
 	case "tap":
+		if args.Wheel != nil {
+			if err := validateWheelTapMetadata(args.Wheel, args.Point, coordSpace); err != nil {
+				return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
+			}
+		}
 		point, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.Point, coordSpace)
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
@@ -1014,6 +1054,254 @@ func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, erro
 	}
 
 	return "ok", nil
+}
+
+// WheelNudgeTool performs one low-inertia vertical drag inside a visible wheel
+// column. It is intentionally generic: callers identify the column and desired
+// finger direction from screenshots, while the tool guarantees a bounded slow
+// movement that is less likely to fling past the target value.
+type WheelNudgeTool struct {
+	pc         *pointerController
+	screen     *screenState
+	durationMs int
+}
+
+type wheelNudgeArgs struct {
+	PickerID            string   `json:"picker_id"`
+	ColumnX             *float64 `json:"column_x"`
+	Direction           string   `json:"direction"`
+	RemainingGap        *int     `json:"remaining_gap"`
+	CurrentValue        *int     `json:"current_value"`
+	TargetValue         *int     `json:"target_value"`
+	CycleSize           *int     `json:"cycle_size"`
+	CycleStart          *int     `json:"cycle_start"`
+	IncreasingDirection string   `json:"increasing_direction"`
+	RowSpacing          *float64 `json:"row_spacing"`
+	ValueStep           *int     `json:"value_step"`
+	CenterY             *float64 `json:"center_y"`
+	CoordSpace          string   `json:"coord_space"`
+}
+
+type wheelNudgePlan struct {
+	gap      int
+	rows     int
+	distance string
+	probe    bool
+}
+
+func (t *WheelNudgeTool) Name() string { return "wheel_nudge" }
+
+func (t *WheelNudgeTool) Description() string {
+	return `Scroll a visible picker/wheel column toward a target value when that value is NOT already visible on screen. ` +
+		`If the target value is already visible as a row, tap it with touch_gesture instead of using this. ` +
+		`Input JSON: {"picker_id":"alarm-create","column_x":195,"direction":"up","remaining_gap":6,"current_value":10,"target_value":16,"cycle_size":24,"cycle_start":0,"increasing_direction":"up","row_spacing":42,"value_step":1,"center_y":273,"coord_space":"screenshot"}. ` +
+		`For a cropped frame_service phone screenshot, use coord_space:"screenshot" and pass column_x/center_y exactly as measured in the latest returned image; do not copy image pixels into normalized coordinates. ` +
+		`direction describes finger movement only and is opposite the visible rows' movement: if values increase below the selected row (value_step > 0), finger-up increases the selected value; if they decrease below it, finger-down increases it. Use increasing_direction:"unknown" without value_step only when visible ordering is insufficient and a one-row direction probe is genuinely needed. ` +
+		`Actual drag travel is derived from remaining_gap: gaps of 1, 2-4, 5-8, and 9+ values move at most 1, 2, 3, and 4 measured rows using row_spacing, so it cannot become a fling-like full-column swipe. ` +
+		`The tool performs one slow drag and returns a post-action screenshot; read the new centered value and recalculate the remaining gap.`
+}
+
+func (t *WheelNudgeTool) ArgsSchema() map[string]any {
+	return objectArgsSchema(map[string]any{
+		"picker_id":            map[string]any{"type": "string", "minLength": 1, "description": "Stable identifier for this visible picker instance; change it after navigating to another picker screen."},
+		"column_x":             coordinateSchema("X coordinate at the center of the wheel column in the selected coord_space."),
+		"direction":            stringEnumArgSchema(`Finger movement direction only. Derive whether up/down increases or decreases from the ordered visible rows before acting; do not guess with the first gesture.`, "up", "down"),
+		"remaining_gap":        nonNegativeIntegerSchema("Current shortest-path number of values from the centered value to the target, recalculated from the latest screenshot."),
+		"current_value":        nonNegativeIntegerSchema("Current centered numeric value from the latest screenshot."),
+		"target_value":         nonNegativeIntegerSchema("Requested numeric target value for this wheel column."),
+		"cycle_size":           nonNegativeIntegerSchema("Number of values in the known cyclic domain; use 0 for a non-cyclic numeric wheel. Derive this from the actual component rather than assuming an hour/minute wheel."),
+		"cycle_start":          nonNegativeIntegerSchema("Lowest value in a cyclic wheel. Use 0 for 00-based time wheels and 1 for one-based wheels such as months, calendar days, or 12-hour clocks. Ignored when cycle_size is 0."),
+		"increasing_direction": stringEnumArgSchema(`Finger direction that increases the value. Derive "up" or "down" from visible row ordering when possible; use "unknown" only for a necessary one-row probe.`, "unknown", "up", "down"),
+		"row_spacing":          coordinateSchema("Measured distance between adjacent visible row centers in the selected coord_space."),
+		"value_step":           integerArgSchema("Signed ordinal change for one visible row downward; required when increasing_direction is known, omitted for a genuinely unknown one-row probe."),
+		"center_y":             coordinateSchema("Vertical center of the visible wheel selection area in the selected coord_space. Normalized default is 460."),
+		"coord_space":          stringEnumArgSchema("Coordinate space; screenshot uses pixels in the latest returned cropped screenshot, normalized uses 0-1000.", "auto", "screenshot", "normalized"),
+	}, "picker_id", "column_x", "direction", "remaining_gap", "current_value", "target_value", "cycle_size", "cycle_start", "increasing_direction", "row_spacing")
+}
+
+func (t *WheelNudgeTool) Call(ctx context.Context, input string) (string, error) {
+	args, err := parseWheelNudgeArgs(input)
+	if err != nil {
+		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
+	}
+
+	if args.RowSpacing == nil || *args.RowSpacing <= 0 || math.IsNaN(*args.RowSpacing) || math.IsInf(*args.RowSpacing, 0) {
+		return toolErrorResultString(ctx, CodeInvalidArguments, "row_spacing is required and must be a positive finite number measured from the latest screenshot"), nil
+	}
+	if args.CurrentValue == nil || args.TargetValue == nil || args.CycleSize == nil || args.CycleStart == nil || args.IncreasingDirection == "" {
+		return toolErrorResultString(ctx, CodeInvalidArguments, "current_value, target_value, cycle_size, cycle_start, and increasing_direction are required"), nil
+	}
+	plan, err := planWheelNudge(args)
+	if err != nil {
+		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
+	}
+	travel := float64(plan.rows) * *args.RowSpacing
+	coordSpace := args.CoordSpace
+	if coordSpace == "" || coordSpace == coordinateSpaceAuto {
+		coordSpace = coordinateSpaceNormalized
+	}
+
+	centerY := wheelNudgeDefaultY
+	physicalTravel := travel
+	gestureTravel := physicalTravel
+	maxY := 1000.0
+	if coordSpace == coordinateSpaceScreenshot {
+		if t.screen == nil {
+			return toolErrorResultString(ctx, CodeInvalidArguments, "screenshot coordinates require a recent screenshot"), nil
+		}
+		_, _, active, age, ok := t.screen.ActiveAreaWithAge()
+		if !ok || age >= screenDimensionsStaleAfter {
+			return toolErrorResultString(ctx, CodeInvalidArguments, "screenshot coordinates require a fresh screenshot"), nil
+		}
+		maxY = float64(active.Height - 1)
+		centerY = (wheelNudgeDefaultY / 1000.0) * maxY
+	}
+	if args.CenterY != nil {
+		centerY = *args.CenterY
+	}
+
+	x := *args.ColumnX
+	startOffset := gestureTravel / 2
+	var startY, endY float64
+	if args.Direction == "up" {
+		startY = clampFloat(centerY+startOffset, 0, maxY)
+		endY = clampFloat(startY-gestureTravel, 0, maxY)
+	} else {
+		startY = clampFloat(centerY-startOffset, 0, maxY)
+		endY = clampFloat(startY+gestureTravel, 0, maxY)
+	}
+
+	start, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, &pointerPoint{X: pointerCoordinate(x), Y: pointerCoordinate(startY)}, coordSpace)
+	if err != nil {
+		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
+	}
+	end, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, &pointerPoint{X: pointerCoordinate(x), Y: pointerCoordinate(endY)}, coordSpace)
+	if err != nil {
+		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
+	}
+
+	durationMs := t.durationMs
+	if durationMs <= 0 {
+		durationMs = wheelNudgeDefaultMs
+	}
+	if err := runPositionedDragGesture(
+		t.pc,
+		start,
+		end,
+		mouseButtonByte("left"),
+		durationMs,
+		80,
+		0,
+		wheelNudgeDefaultSteps,
+	); err != nil {
+		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
+	}
+
+	return fmt.Sprintf("ok: wheel_nudge direction=%s distance=%s rows=%d physical_travel=%.0f duration_ms=%d", args.Direction, plan.distance, plan.rows, physicalTravel, durationMs), nil
+}
+
+func planWheelNudge(args wheelNudgeArgs) (wheelNudgePlan, error) {
+	probe := args.IncreasingDirection == "unknown"
+	gap, ok := wheelDomainDistance(*args.CurrentValue, *args.TargetValue, *args.CycleSize, *args.CycleStart)
+	if !ok {
+		return wheelNudgePlan{}, fmt.Errorf("wheel values are outside the declared domain")
+	}
+	if *args.RemainingGap != gap {
+		return wheelNudgePlan{}, fmt.Errorf("current_value=%d target_value=%d requires remaining_gap=%d, got %d", *args.CurrentValue, *args.TargetValue, gap, *args.RemainingGap)
+	}
+	if args.ValueStep != nil {
+		derivedIncreasing := wheelIncreasingDirectionFromVisibleStep(*args.ValueStep)
+		if !probe && args.IncreasingDirection != derivedIncreasing {
+			return wheelNudgePlan{}, fmt.Errorf("value_step=%d requires increasing_direction=%q, got %q", *args.ValueStep, derivedIncreasing, args.IncreasingDirection)
+		}
+		semanticArgs := args
+		if probe {
+			semanticArgs.IncreasingDirection = derivedIncreasing
+		}
+		_, allowedDirections, semanticOK := wheelSemanticTarget(semanticArgs)
+		if !semanticOK {
+			return wheelNudgePlan{}, fmt.Errorf("wheel values are outside the declared domain")
+		}
+		if !slices.Contains(allowedDirections, args.Direction) {
+			return wheelNudgePlan{}, fmt.Errorf("wheel shortest path requires direction=%q, got %q", strings.Join(allowedDirections, " or "), args.Direction)
+		}
+	}
+	rows := wheelNudgeRowsForGap(gap)
+	distance := wheelDistanceForGap(gap)
+	if probe {
+		rows = 1
+		distance = "micro"
+	}
+	return wheelNudgePlan{gap: gap, rows: rows, distance: distance, probe: probe}, nil
+}
+
+func parseWheelNudgeArgs(input string) (wheelNudgeArgs, error) {
+	var args wheelNudgeArgs
+	decoder := json.NewDecoder(strings.NewReader(input))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&args); err != nil {
+		return wheelNudgeArgs{}, fmt.Errorf("invalid input: %v. Expected JSON format: {\"picker_id\":\"alarm-create\",\"column_x\":650,\"direction\":\"up\",\"remaining_gap\":11,\"center_y\":460}", err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return wheelNudgeArgs{}, fmt.Errorf("invalid input: expected exactly one JSON object")
+	}
+	if args.ColumnX == nil || math.IsNaN(*args.ColumnX) || math.IsInf(*args.ColumnX, 0) {
+		return wheelNudgeArgs{}, fmt.Errorf("column_x is required and must be a finite number")
+	}
+	args.PickerID = strings.TrimSpace(args.PickerID)
+	if args.PickerID == "" {
+		return wheelNudgeArgs{}, fmt.Errorf("picker_id is required and must identify the current visible picker instance")
+	}
+	args.Direction = strings.ToLower(strings.TrimSpace(args.Direction))
+	if args.Direction != "up" && args.Direction != "down" {
+		return wheelNudgeArgs{}, fmt.Errorf(`direction must be "up" or "down"`)
+	}
+	if args.RemainingGap == nil || *args.RemainingGap < 1 {
+		return wheelNudgeArgs{}, fmt.Errorf("remaining_gap is required and must be at least 1; if the gap is 0, do not nudge the wheel")
+	}
+	args.IncreasingDirection = strings.ToLower(strings.TrimSpace(args.IncreasingDirection))
+	if args.IncreasingDirection != "" && args.IncreasingDirection != "unknown" && args.IncreasingDirection != "up" && args.IncreasingDirection != "down" {
+		return wheelNudgeArgs{}, fmt.Errorf(`increasing_direction must be "unknown", "up", or "down"`)
+	}
+	if args.CycleSize != nil && *args.CycleSize < 0 {
+		return wheelNudgeArgs{}, fmt.Errorf("cycle_size must be non-negative")
+	}
+	if args.CycleStart != nil && *args.CycleStart < 0 {
+		return wheelNudgeArgs{}, fmt.Errorf("cycle_start must be non-negative")
+	}
+	if args.RowSpacing != nil && (*args.RowSpacing <= 0 || math.IsNaN(*args.RowSpacing) || math.IsInf(*args.RowSpacing, 0)) {
+		return wheelNudgeArgs{}, fmt.Errorf("row_spacing must be a positive finite number")
+	}
+	if args.ValueStep != nil && *args.ValueStep == 0 {
+		return wheelNudgeArgs{}, fmt.Errorf("value_step must be non-zero")
+	}
+	args.CoordSpace = strings.ToLower(strings.TrimSpace(args.CoordSpace))
+	if args.CoordSpace != "" && args.CoordSpace != coordinateSpaceAuto && args.CoordSpace != coordinateSpaceScreenshot && args.CoordSpace != coordinateSpaceNormalized {
+		return wheelNudgeArgs{}, fmt.Errorf("unsupported coord_space for wheel_nudge: %q", args.CoordSpace)
+	}
+	if args.CenterY != nil && (math.IsNaN(*args.CenterY) || math.IsInf(*args.CenterY, 0)) {
+		return wheelNudgeArgs{}, fmt.Errorf("center_y must be a finite number")
+	}
+	if args.CurrentValue == nil || args.TargetValue == nil || args.CycleSize == nil || args.CycleStart == nil || args.IncreasingDirection == "" || args.RowSpacing == nil {
+		return wheelNudgeArgs{}, fmt.Errorf("complete wheel metadata required: provide current_value, target_value, cycle_size, cycle_start, increasing_direction, and measured row_spacing")
+	}
+	if args.IncreasingDirection != "unknown" && args.ValueStep == nil {
+		return wheelNudgeArgs{}, fmt.Errorf("value_step is required when increasing_direction is known")
+	}
+	return args, nil
+}
+
+func wheelNudgeRowsForGap(gap int) int {
+	switch {
+	case gap <= 1:
+		return 1
+	case gap <= 4:
+		return min(gap, 2)
+	case gap <= 8:
+		return min(gap, 3)
+	default:
+		return min(gap, 4)
+	}
 }
 
 // MouseScrollTool sends mouse wheel events.
@@ -1180,6 +1468,7 @@ type resolvedPointerPoint struct {
 
 const (
 	coordinateSpaceAuto       = "auto"
+	coordinateSpaceScreenshot = "screenshot"
 	coordinateSpacePixel      = "pixel"
 	coordinateSpaceNormalized = "normalized"
 	coordinateSpaceAbsolute   = "absolute"
@@ -1250,6 +1539,18 @@ func resolvePointerPositionForSurface(screen *screenState, touchscreen bool, x, 
 			return 0, 0, fmt.Errorf("cached screen dimensions are %.0fs old; call screenshot to refresh before using pixel coordinates", age.Seconds())
 		}
 		return pixelToAbsolutePoint(x, y, width, height, active)
+	case coordinateSpaceScreenshot:
+		if screen == nil {
+			return 0, 0, fmt.Errorf("screenshot coordinates require a recent screenshot")
+		}
+		width, height, active, age, ok := screen.ActiveAreaWithAge()
+		if !ok {
+			return 0, 0, fmt.Errorf("screenshot coordinates require a recent screenshot")
+		}
+		if age >= screenDimensionsStaleAfter {
+			return 0, 0, fmt.Errorf("cached screenshot dimensions are %.0fs old; call screenshot again before using screenshot coordinates", age.Seconds())
+		}
+		return screenshotPixelToAbsolutePoint(x, y, width, height, active, touchscreen)
 	case coordinateSpaceNormalized:
 		absX, absY, err := normalizedToAbsolutePointForSurface(screen, touchscreen, x, y)
 		if err != nil {
@@ -1284,7 +1585,7 @@ func normalizedToAbsolutePointForSurface(screen *screenState, touchscreen bool, 
 				fullFramePixelY := float64(active.Y) + activePixelY
 				return scalePixelToAbsolute(fullFramePixelX, width), scalePixelToAbsolute(fullFramePixelY, height), nil
 			}
-			return scalePixelToAbsolute(activePixelX, active.Width), scalePixelToAbsolute(activePixelY, active.Height), nil
+			return activeLocalAxisToAbsolute(activePixelX, active.X, active.Width, width), activeLocalAxisToAbsolute(activePixelY, active.Y, active.Height, height), nil
 		}
 	}
 	absX, absY := normalizedToAbsolutePoint(x, y)
@@ -1302,7 +1603,7 @@ func normalizeCoordinateSpace(coordSpace string, defaultSpace string) (string, e
 	}
 
 	switch space {
-	case coordinateSpaceAuto, coordinateSpacePixel, coordinateSpaceNormalized, coordinateSpaceAbsolute:
+	case coordinateSpaceAuto, coordinateSpaceScreenshot, coordinateSpacePixel, coordinateSpaceNormalized, coordinateSpaceAbsolute:
 		return space, nil
 	default:
 		return "", fmt.Errorf("unsupported coord_space: %q", coordSpace)
@@ -1326,7 +1627,38 @@ func pixelToAbsolutePoint(x, y float64, width, height int, active screenActiveAr
 	if x < float64(active.X) || y < float64(active.Y) || x > float64(active.X+active.Width-1) || y > float64(active.Y+active.Height-1) {
 		return 0, 0, fmt.Errorf("pixel coordinates x=%.2f y=%.2f are outside active screen area x=%d y=%d width=%d height=%d within screenshot %dx%d", x, y, active.X, active.Y, active.Width, active.Height, width, height)
 	}
-	return scalePixelToAbsolute(x-float64(active.X), active.Width), scalePixelToAbsolute(y-float64(active.Y), active.Height), nil
+	return activeLocalAxisToAbsolute(x-float64(active.X), active.X, active.Width, width), activeLocalAxisToAbsolute(y-float64(active.Y), active.Y, active.Height, height), nil
+}
+
+func screenshotPixelToAbsolutePoint(x, y float64, sourceWidth, sourceHeight int, active screenActiveArea, touchscreen bool) (int, int, error) {
+	if sourceWidth <= 0 || sourceHeight <= 0 || !active.Valid || active.Width <= 0 || active.Height <= 0 {
+		return 0, 0, fmt.Errorf("invalid screenshot mapping: source=%dx%d active=%+v", sourceWidth, sourceHeight, active)
+	}
+	if x < 0 || y < 0 || x > float64(active.Width-1) || y > float64(active.Height-1) {
+		return 0, 0, fmt.Errorf("screenshot coordinates x=%.2f y=%.2f are outside latest returned screenshot bounds %dx%d", x, y, active.Width, active.Height)
+	}
+	if touchscreen {
+		return scalePixelToAbsolute(float64(active.X)+x, sourceWidth), scalePixelToAbsolute(float64(active.Y)+y, sourceHeight), nil
+	}
+	return activeLocalAxisToAbsolute(x, active.X, active.Width, sourceWidth), activeLocalAxisToAbsolute(y, active.Y, active.Height, sourceHeight), nil
+}
+
+const nearlyFullSourceAxisRatio = 0.9
+
+// activeLocalAxisToAbsolute maps one coordinate axis from a cropped screenshot
+// to the absolute HID surface. A narrow active axis represents real HDMI
+// letter/pillar-boxing and is de-barred. An active axis covering nearly the
+// whole source often comes from dark UI pixels being mistaken for a small
+// black bar; preserve its source offset so frame-to-frame crop jitter cancels
+// out instead of shifting the touch point.
+func activeLocalAxisToAbsolute(local float64, activeStart, activeSize, sourceSize int) int {
+	if activeSize <= 0 || sourceSize <= 0 {
+		return 0
+	}
+	if float64(activeSize)/float64(sourceSize) >= nearlyFullSourceAxisRatio {
+		return scalePixelToAbsolute(float64(activeStart)+local, sourceSize)
+	}
+	return scalePixelToAbsolute(local, activeSize)
 }
 
 func scalePixelToAbsolute(value float64, size int) int {

@@ -7,6 +7,7 @@ import (
 )
 
 const adbFallbackStickyDuration = 10 * time.Second
+const frameServiceFreshFrameMaxAgeMs = 2000
 
 type screenCaptureSource interface {
 	LatestFrame() (*frameMetadata, []byte, error)
@@ -15,6 +16,10 @@ type screenCaptureSource interface {
 
 type screenshotCaptureInfoProvider interface {
 	LastCaptureInfo() screenCaptureInfo
+}
+
+type screenCaptureHealthSource interface {
+	Health() (*FrameHealthResult, error)
 }
 
 // ScreenCaptureClient prefers frame_service and falls back to adb when the
@@ -96,6 +101,23 @@ func (c *ScreenCaptureClient) captureFromSource(source screenCaptureSource, call
 	if source == nil {
 		return nil, nil, screenCaptureInfo{}, fmt.Errorf("screen capture source not configured")
 	}
+	var health *FrameHealthResult
+	if healthSource, ok := source.(screenCaptureHealthSource); ok {
+		var healthErr error
+		health, healthErr = healthSource.Health()
+		if healthErr != nil {
+			return nil, nil, screenCaptureInfo{}, fmt.Errorf("frame service health: %w", healthErr)
+		}
+		if health == nil || health.State != "RUNNING" || health.FrameAgeMs > frameServiceFreshFrameMaxAgeMs {
+			state := "UNKNOWN"
+			var age uint64
+			if health != nil {
+				state = health.State
+				age = health.FrameAgeMs
+			}
+			return nil, nil, screenCaptureInfo{}, fmt.Errorf("frame service: STALE_FRAME (state=%s frame_age_ms=%d)", state, age)
+		}
+	}
 	meta, frame, err := call(source)
 	if err != nil {
 		return nil, nil, screenCaptureInfo{}, err
@@ -105,6 +127,9 @@ func (c *ScreenCaptureClient) captureFromSource(source screenCaptureSource, call
 	}
 	if meta.Stale {
 		return nil, nil, screenCaptureInfo{}, fmt.Errorf("frame service: STALE_FRAME")
+	}
+	if health != nil && health.LatestSeq > 0 && meta.Seq < health.LatestSeq {
+		return nil, nil, screenCaptureInfo{}, fmt.Errorf("frame service: STALE_FRAME (frame_seq=%d health_latest_seq=%d)", meta.Seq, health.LatestSeq)
 	}
 	return meta, frame, c.captureInfoForSource(source), nil
 }

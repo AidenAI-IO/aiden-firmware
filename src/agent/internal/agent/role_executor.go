@@ -124,6 +124,7 @@ type roleLoopState struct {
 	DefaultToolCallsSinceTodoTouch int
 	PendingTodoReminder            string
 	TodoReminderToolCalls          int
+	WheelNudges                    wheelNudgeGuard
 }
 
 type worldState struct {
@@ -793,6 +794,7 @@ func (e *roleCollaborativeExecutor) executePlannerToolAction(
 	toolExecution := e.executeToolCall(ctx, ToolCallExecution{
 		Specs:                  toolSpecs,
 		Action:                 action,
+		Before:                 state.WheelNudges.BeforeToolCall,
 		Callback:               e.CallbacksHandler,
 		EnvironmentBridge:      e.EnvironmentBridge,
 		EnvironmentBridgeTools: e.EnvironmentBridgeTools,
@@ -1107,6 +1109,7 @@ func (e *roleCollaborativeExecutor) callExecutorTurn(
 	toolExecution := e.executeToolCall(ctx, ToolCallExecution{
 		Specs:                  toolSpecs,
 		Action:                 action,
+		Before:                 state.WheelNudges.BeforeToolCall,
 		Callback:               e.CallbacksHandler,
 		EnvironmentBridge:      e.EnvironmentBridge,
 		EnvironmentBridgeTools: e.EnvironmentBridgeTools,

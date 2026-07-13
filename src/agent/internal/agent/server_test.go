@@ -885,7 +885,11 @@ func TestHandleCoordinateDebugTapRejectsNonJSONContentType(t *testing.T) {
 
 func TestHandleScreenshotJPEGCanDisableBlackBarCropping(t *testing.T) {
 	frameSocket := startFakeFrameServiceSocket(t, func(req map[string]any) (string, []byte) {
-		if method, _ := req["method"].(string); method != "latest_frame" {
+		method, _ := req["method"].(string)
+		if method == "health" {
+			return `{"type":"response","method":"health","status":"OK","state":"RUNNING","latest_seq":1,"frame_age_ms":10}`, nil
+		}
+		if method != "latest_frame" {
 			t.Fatalf("unexpected method: %#v", req["method"])
 		}
 		if format, _ := req["format"].(string); format != "raw" {
@@ -948,6 +952,9 @@ func TestHandleScreenshotJPEGUpdatesSharedScreenStateFromPhoneAspectRatio(t *tes
 	jpegData := jpegBuf.Bytes()
 
 	frameSocket := startFakeFrameServiceSocket(t, func(req map[string]any) (string, []byte) {
+		if method, _ := req["method"].(string); method == "health" {
+			return `{"type":"response","method":"health","status":"OK","state":"RUNNING","latest_seq":1,"frame_age_ms":10}`, nil
+		}
 		if format, _ := req["format"].(string); format != "jpeg" {
 			t.Fatalf("expected jpeg format request, got %#v", req["format"])
 		}
@@ -1108,6 +1115,9 @@ func TestHandleScreenshotJPEGIncludesADBDeviceHeadersWhenFallbackUsed(t *testing
 
 func TestHandleCoordinateDebugTapRecapturesUncroppedScreenshot(t *testing.T) {
 	frameSocket := startFakeFrameServiceSocket(t, func(req map[string]any) (string, []byte) {
+		if method, _ := req["method"].(string); method == "health" {
+			return `{"type":"response","method":"health","status":"OK","state":"RUNNING","latest_seq":2,"frame_age_ms":10}`, nil
+		}
 		if format, _ := req["format"].(string); format != "raw" {
 			t.Fatalf("expected raw format request when crop_black_bars=false, got %#v", req["format"])
 		}
@@ -1180,6 +1190,9 @@ func TestHandleCoordinateDebugTapRecapturesScreenshotWhenMappingUnavailable(t *t
 		t.Fatalf("encodeJPEG() error = %v", err)
 	}
 	frameSocket := startFakeFrameServiceSocket(t, func(req map[string]any) (string, []byte) {
+		if method, _ := req["method"].(string); method == "health" {
+			return `{"type":"response","method":"health","status":"OK","state":"RUNNING","latest_seq":2,"frame_age_ms":10}`, nil
+		}
 		if format, _ := req["format"].(string); format != "jpeg" {
 			t.Fatalf("expected jpeg format request when remapping cropped screenshot, got %#v", req["format"])
 		}
