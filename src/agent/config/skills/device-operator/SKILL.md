@@ -46,6 +46,10 @@ Always operate through a visual feedback loop:
 
 Do not perform multiple blind UI actions in a row. Base every coordinate, tap, swipe, and typed input on the latest visual state.
 
+For actions that were expected to visibly change the UI, treat `screen_changed=false` in a post-action screenshot or `wait_for_stable_screen` result as "effect not yet verified". In that case, do not say the action succeeded just because `action_output` is `ok`; inspect the screenshot, compare it with the expected target change, and continue checking or choose a different action if the UI still looks unchanged.
+
+If `touch_gesture` returns `screen_changed=false` and the configured touch mode does not match the target platform, stop instead of retrying blind touches: Android expects `hid.pointer_mode="touchscreen"`, while iOS/iPadOS expects `hid.pointer_mode="absolute"`. Ask the user to switch the pointer mode and restart the agent before continuing.
+
 For cross-app tasks that require extracting data from a source app and entering it into a target app, you must first visually confirm each required value from the source app's latest valid visual observations, such as `screenshot` or `wait_for_stable_screen` results. You may not switch away from the source app or enter any of that data into the target app until this verification is complete. Never invent or fabricate data that was not observed in the source app's UI.
 
 ## Tool Choice
@@ -234,6 +238,8 @@ When reporting a blocker, include the screenshot error, recovery commands tried,
 ## Failed Attempt Handling
 
 Treat an attempt as failed when the expected change did not happen, text was not entered, navigation did not move, the screen changed unexpectedly, or a tool result reports an error.
+
+If an action was expected to change the UI and the returned observation says `screen_changed=false`, treat that as a failed or unverified attempt until the screenshot itself proves otherwise. Do not report success from tool output alone.
 
 After a failed attempt:
 

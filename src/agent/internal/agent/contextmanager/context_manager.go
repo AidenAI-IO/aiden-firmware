@@ -164,6 +164,10 @@ func (c *ContextManager) GetSessionID() string {
 func (c *ContextManager) appendToList(messages []Message) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	messages = repairToolCallTailBeforeAppend(c.messageList, messages)
+	if len(messages) == 0 {
+		return nil
+	}
 
 	if err := appendSession(c.sessionFolder, c.sessionID, messages); err != nil {
 		log.Println("[CM] Failed to append messages to session", err)

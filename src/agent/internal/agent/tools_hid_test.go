@@ -767,7 +767,7 @@ func TestPostActionScreenshotToolFallsBackScreenshotWhenScreenUnstable(t *testin
 	action := &stubTool{name: "touch_gesture", output: "ok"}
 	waitStable := &stubTool{
 		name:   "wait_for_stable_screen",
-		output: `{"ok":true,"stable":false,"elapsed_ms":3001,"last_diff":18.5}`,
+		output: `{"ok":true,"stable":false,"elapsed_ms":3001,"screen_changed":true,"last_diff":18.5}`,
 	}
 	screenshot := &stubTool{
 		name:   "screenshot",
@@ -793,6 +793,9 @@ func TestPostActionScreenshotToolFallsBackScreenshotWhenScreenUnstable(t *testin
 	if result.ScreenStable == nil || *result.ScreenStable {
 		t.Fatalf("ScreenStable = %#v, want false", result.ScreenStable)
 	}
+	if result.ScreenChanged == nil || !*result.ScreenChanged {
+		t.Fatalf("ScreenChanged = %#v, want true", result.ScreenChanged)
+	}
 	if result.StableWaitMs == nil || *result.StableWaitMs != 3001 {
 		t.Fatalf("StableWaitMs = %#v, want 3001", result.StableWaitMs)
 	}
@@ -814,7 +817,7 @@ func TestPostActionScreenshotToolOmitsLastDiffWhenStableWaitOmitsIt(t *testing.T
 	action := &stubTool{name: "touch_gesture", output: "ok"}
 	waitStable := &stubTool{
 		name:   "wait_for_stable_screen",
-		output: `{"ok":true,"stable":true,"elapsed_ms":600}`,
+		output: `{"ok":true,"stable":true,"elapsed_ms":600,"screen_changed":false}`,
 	}
 	screenshot := &stubTool{
 		name:   "screenshot",
@@ -833,6 +836,9 @@ func TestPostActionScreenshotToolOmitsLastDiffWhenStableWaitOmitsIt(t *testing.T
 	}
 	if result.LastDiff != nil {
 		t.Fatalf("LastDiff = %#v, want omitted", result.LastDiff)
+	}
+	if result.ScreenChanged == nil || *result.ScreenChanged {
+		t.Fatalf("ScreenChanged = %#v, want false", result.ScreenChanged)
 	}
 }
 
