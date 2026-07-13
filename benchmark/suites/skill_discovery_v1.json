@@ -32,6 +32,93 @@
         "required_skill_reads": ["device-operator"],
         "forbidden_tools": ["shell", "current_time", "calculator"]
       }
+    },
+    {
+      "id": "discover_device_operator_for_settings_search",
+      "category": "multi_step",
+      "description_for_judge": "The agent should autonomously load the relevant device-operation skill, search Settings for Bluetooth, and open the Bluetooth page.",
+      "prompt": "请打开系统设置，搜索蓝牙，然后进入蓝牙设置页面。",
+      "rubric": [
+        {
+          "id": "loaded_skill_before_ui",
+          "check": "The trace shows device-operator was loaded before the agent began screenshot or UI actions."
+        },
+        {
+          "id": "searched_bluetooth",
+          "check": "The trace shows the agent used a Settings search field with the Chinese keyword 蓝牙, or followed an equally direct visible Settings navigation path."
+        },
+        {
+          "id": "on_bluetooth_page",
+          "check": "Post-screenshot shows the Bluetooth settings page with its toggle or device list."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 3,
+        "max_tool_calls": 14,
+        "must_complete_within_sec": 150,
+        "response_required": true,
+        "required_tools": ["skill_read"],
+        "required_skill_reads": ["device-operator"],
+        "forbidden_tools": ["shell", "current_time", "calculator"]
+      }
+    },
+    {
+      "id": "discover_device_operator_for_mixed_text_entry",
+      "category": "multi_step",
+      "description_for_judge": "The agent should autonomously load the relevant device-operation skill, create a note, and enter mixed Chinese and ASCII text into a visible field.",
+      "prompt": "请打开笔记应用，新建一条笔记，并在标题输入框中输入：Aiden测试 benchmark-2026!",
+      "rubric": [
+        {
+          "id": "loaded_skill_before_ui",
+          "check": "The trace shows device-operator was loaded before the agent began screenshot or UI actions."
+        },
+        {
+          "id": "note_editor_open",
+          "check": "Post-screenshot shows a note creation or editing page with a focused title field."
+        },
+        {
+          "id": "mixed_text_visible",
+          "check": "The title field visibly contains the exact text Aiden测试 benchmark-2026! with both Chinese and ASCII portions intact."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 4,
+        "max_tool_calls": 16,
+        "must_complete_within_sec": 180,
+        "response_required": true,
+        "required_tools": ["skill_read"],
+        "required_skill_reads": ["device-operator"],
+        "forbidden_tools": ["shell", "current_time", "calculator"]
+      }
+    },
+    {
+      "id": "discover_device_operator_for_scrolling_navigation",
+      "category": "multi_step",
+      "description_for_judge": "The agent should autonomously load the relevant device-operation skill, navigate Settings, scroll deliberately, and open the About-phone page.",
+      "prompt": "请打开系统设置，在设置列表中向下查找“关于手机”或同等的设备信息入口，并进入该页面。",
+      "rubric": [
+        {
+          "id": "loaded_skill_before_ui",
+          "check": "The trace shows device-operator was loaded before the agent began screenshot or UI actions."
+        },
+        {
+          "id": "used_verified_navigation",
+          "check": "The trace shows the agent inspected screenshots between navigation or scrolling actions rather than issuing repeated blind actions."
+        },
+        {
+          "id": "on_about_page",
+          "check": "Post-screenshot shows an About-phone, device information, or equivalent system information page."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 4,
+        "max_tool_calls": 16,
+        "must_complete_within_sec": 180,
+        "response_required": true,
+        "required_tools": ["skill_read"],
+        "required_skill_reads": ["device-operator"],
+        "forbidden_tools": ["shell", "current_time", "calculator"]
+      }
     }
   ]
 }

@@ -427,16 +427,25 @@ def test_shell_utility_suite_replaces_removed_time_and_calculator_tools():
 def test_skill_discovery_suite_does_not_prompt_for_skill_read():
     suite_path = Path(__file__).resolve().parents[1] / "suites" / "skill_discovery_v1.json"
     suite = load_suite(suite_path)
-    task = suite.tasks[0]
 
     assert suite.name == "skill_discovery_v1"
     assert "skill_read" not in suite.prompt_prefix
-    assert "skill_read" not in task.prompt
     assert "device-operator" not in suite.prompt_prefix
-    assert "device-operator" not in task.prompt
-    assert task.hard_assertions.required_tools == ["skill_read"]
-    assert task.hard_assertions.required_skill_reads == ["device-operator"]
-    assert "shell" in task.hard_assertions.forbidden_tools
+    assert {task.id for task in suite.tasks} == {
+        "discover_device_operator_for_settings",
+        "discover_device_operator_for_settings_search",
+        "discover_device_operator_for_mixed_text_entry",
+        "discover_device_operator_for_scrolling_navigation",
+    }
+    assert len(suite.tasks) == 4
+    assert sum(task.category == "multi_step" for task in suite.tasks) == 3
+
+    for task in suite.tasks:
+        assert "skill_read" not in task.prompt
+        assert "device-operator" not in task.prompt
+        assert task.hard_assertions.required_tools == ["skill_read"]
+        assert task.hard_assertions.required_skill_reads == ["device-operator"]
+        assert "shell" in task.hard_assertions.forbidden_tools
 
 
 def test_skillopt_crossapp_device_operator_suites_target_skill_capabilities():
