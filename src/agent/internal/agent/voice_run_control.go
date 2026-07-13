@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -164,9 +165,30 @@ func (c *voiceRunControl) resumeInterrupt() (string, bool) {
 func (c *voiceRunControl) consumePending(requestID string) (RunSteerMessage, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if requestID == "" || c.activeRequestID != requestID || !c.acceptingSteer || !c.hasPendingSteer {
+	if requestID == "" {
+		log.Printf("[steer:debug] consumePending failed: empty requestID\n")
 		return RunSteerMessage{}, false
 	}
+	if c.activeRequestID != requestID {
+		log.Printf("[steer:debug] consumePending failed: requestID mismatch (want=%s got=%s)\n", c.activeRequestID, requestID)
+		return RunSteerMessage{}, false
+	}
+
+	// 优先检查 interrupt steer（被打断场景）
+	if c.interrupt.active && c.interrupt.done && c.interrupt.hasText {
+		steer := c.interrupt.steer
+		c.resetInterruptLocked()
+		log.Printf("[steer:debug] consumePending success: consuming interrupt steer content=%q\n", steer.Content)
+		return steer, true
+	}
+
+	// 再检查 pending steer（正常场景）
+	if !c.hasPendingSteer {
+		log.Printf("[steer:debug] consumePending: no pending steer (interrupt.active=%v interrupt.done=%v interrupt.hasText=%v)\n",
+			c.interrupt.active, c.interrupt.done, c.interrupt.hasText)
+		return RunSteerMessage{}, false
+	}
+	log.Printf("[steer:debug] consumePending success: consuming pending steer content=%q\n", c.pendingSteer.Content)
 	return c.consumePendingLocked()
 }
 
