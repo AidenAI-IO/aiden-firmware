@@ -51,14 +51,14 @@ func NewAgentLoop(
 		log.Fatalf("context manager is nil")
 	}
 	return &AgentLoop{
-		Model:               model,
-		Profile:             profile,
-		Memory:              memory,
-		CallbacksHandler:    callbacksHandler,
-		MaxIterations:       maxIterations,
-		Recorder:            recorder,
-		ScreenshotPruning:   screenshotPruning,
-		contextManager:      contextManager,
+		Model:             model,
+		Profile:           profile,
+		Memory:            memory,
+		CallbacksHandler:  callbacksHandler,
+		MaxIterations:     maxIterations,
+		Recorder:          recorder,
+		ScreenshotPruning: screenshotPruning,
+		contextManager:    contextManager,
 	}
 }
 
@@ -160,9 +160,6 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		EnvironmentBridge:      l.EnvironmentBridge,
 		EnvironmentBridgeTools: l.EnvironmentBridgeTools,
 	})
-	if toolExecution.Error != nil {
-		return "", false, toolExecution.Error
-	}
 	if l.Recorder != nil {
 		l.Recorder.RecordExecution(ToolCallExecutionResult{
 			Call:   toolExecution.Call,
@@ -172,8 +169,15 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		})
 	}
 	toolCallsInIteration++
-	if err := appendToolExecutionMessages(llmExecutor, parser, toolExecution.Step); err != nil {
-		return "", false, err
+	appendErr := appendToolExecutionMessages(llmExecutor, parser, toolExecution.Step)
+	if toolExecution.Error != nil {
+		if appendErr != nil {
+			return "", false, errors.Join(toolExecution.Error, appendErr)
+		}
+		return "", false, toolExecution.Error
+	}
+	if appendErr != nil {
+		return "", false, appendErr
 	}
 	if isRunPausingTool(toolExecution.Call.Action.Tool) && !toolExecution.Result.IsError() {
 		answer := runPausingToolFinalAnswer(&toolExecution.Step)
@@ -266,6 +270,13 @@ type roleOutputHandler interface {
 
 func choiceWithOnlyToolCall(choice llms.ContentChoice, toolID string) llms.ContentChoice {
 	if len(choice.ToolCalls) == 0 {
+		if choice.FuncCall != nil {
+			choice.ToolCalls = []llms.ToolCall{{
+				ID:           ensureToolCallID(toolID, 0),
+				Type:         "function",
+				FunctionCall: choice.FuncCall,
+			}}
+		}
 		return choice
 	}
 	toolID = strings.TrimSpace(toolID)
