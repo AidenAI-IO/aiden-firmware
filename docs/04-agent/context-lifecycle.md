@@ -183,7 +183,9 @@ commit task episode and extract reusable memory
 
 ### Runtime Context
 
-Runtime context is supplied per request and is not written back into memory. The phone bridge is the main producer today. It keeps connection status, platform, heartbeat time, and the latest phone environment. Each run receives only a compact summary: connection state, system type and version, locale/timezone, screen size, and confirmed launchable third-party app candidates. When the bridge disconnects, stale environment data is cleared.
+Runtime context is supplied per request and is not written back into memory. The phone bridge is the main producer today. It keeps connection status, platform, heartbeat time, app foreground/background state, return-entry state, PiP Bridge state, and the latest phone environment. Each run receives only compact state facts: connection state, system type and version, locale/timezone, screen size, return-entry visibility, PiP/Dynamic Island visibility constraints, and confirmed launchable third-party app candidates. When the bridge disconnects, stale environment data is cleared.
+
+Tool availability is not encoded as runtime context. It belongs to the tool catalog. For example, when iOS PiP Bridge is active while Aiden is backgrounded, `bridge_open_app` is omitted from resolved tools because PiP hides the Dynamic Island return path and app launching is not background-safe; background-safe data tools such as `bridge_clipboard`, `bridge_calendar`, `bridge_contacts`, and `bridge_notification` can remain exposed through the HTTP command queue.
 
 External runtime signals may add model-facing facts to runtime context without
 overriding session-boundary detection. For example, when the physical wakeup

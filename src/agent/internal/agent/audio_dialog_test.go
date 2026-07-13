@@ -27,6 +27,23 @@ func firstAudioDialogTestMessageOfType(messages []Message, messageType string) (
 	return Message{}, false
 }
 
+func waitForAudioDialogRecordSTT(t *testing.T, dialog *AudioDialog) {
+	t.Helper()
+	deadline := time.After(time.Second)
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if dialog.currentRecordSTT() != nil {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for streaming STT session")
+		case <-ticker.C:
+		}
+	}
+}
+
 func TestAudioDialogFinishManualUtterancePreservesTail(t *testing.T) {
 	vad, err := NewAudioVADWithScorer(AudioVADConfig{
 		SampleRate:      16000,
@@ -251,6 +268,7 @@ func TestAudioDialogPrepareTurnInputUsesStreamingTranscriptFromRecording(t *test
 	if err := dialog.StartRecording(); err != nil {
 		t.Fatalf("StartRecording() error = %v", err)
 	}
+	waitForAudioDialogRecordSTT(t, dialog)
 	chunk, err := dialog.ReadRecordChunk(200)
 	if err != nil {
 		t.Fatalf("ReadRecordChunk() error = %v", err)
@@ -268,6 +286,16 @@ func TestAudioDialogPrepareTurnInputUsesStreamingTranscriptFromRecording(t *test
 	}
 	if input.Transcript != "streaming result" {
 		t.Fatalf("Transcript = %q, want streaming result", input.Transcript)
+	}
+	if len(input.TelemetryEvents) != 1 {
+		t.Fatalf("TelemetryEvents len = %d, want 1", len(input.TelemetryEvents))
+	}
+	telemetry := input.TelemetryEvents[0]
+	if telemetry.Type != runEventSTTTranscription || telemetry.Content != "streaming result" {
+		t.Fatalf("STT telemetry event = %#v", telemetry)
+	}
+	if telemetry.Metadata["streaming_ready"] != true || telemetry.Metadata["used_streaming_transcript"] != true || telemetry.Metadata["fallback_one_shot"] != false {
+		t.Fatalf("STT telemetry metadata = %#v", telemetry.Metadata)
 	}
 	if len(sttClient.inputs) != 0 {
 		t.Fatalf("expected streaming transcript to skip TranscribeWAV, got %d calls", len(sttClient.inputs))
@@ -324,6 +352,19 @@ func TestAudioDialogStopRecordingFallsBackToOneShotWhenStreamingFinalizeTimesOut
 	if input.Transcript != "one-shot result" {
 		t.Fatalf("Transcript = %q, want one-shot result", input.Transcript)
 	}
+	if len(input.TelemetryEvents) != 1 {
+		t.Fatalf("TelemetryEvents len = %d, want 1", len(input.TelemetryEvents))
+	}
+	telemetry := input.TelemetryEvents[0]
+	if telemetry.Type != runEventSTTTranscription || telemetry.Content != "one-shot result" {
+		t.Fatalf("STT telemetry event = %#v", telemetry)
+	}
+	if telemetry.Metadata["fallback_one_shot"] != true || telemetry.Metadata["used_streaming_transcript"] != false {
+		t.Fatalf("STT telemetry metadata = %#v", telemetry.Metadata)
+	}
+	if telemetry.Metadata["streaming_finalize_error"] == nil {
+		t.Fatalf("STT telemetry missing streaming_finalize_error: %#v", telemetry.Metadata)
+	}
 	if len(sttClient.inputs) != 1 {
 		t.Fatalf("expected fallback one-shot STT call, got %d", len(sttClient.inputs))
 	}
@@ -331,6 +372,24 @@ func TestAudioDialogStopRecordingFallsBackToOneShotWhenStreamingFinalizeTimesOut
 	case <-uploader.closed:
 	case <-time.After(time.Second):
 		t.Fatal("expected uploader to be closed after finalize timeout")
+	}
+}
+
+func TestAudioDialogSTTUploadErrorIgnoresStaleSession(t *testing.T) {
+	dialog := &AudioDialog{
+		recordActive:       true,
+		sessionID:          2,
+		recordSTTTelemetry: &sttTurnTelemetry{},
+	}
+
+	dialog.markRecordSTTUploadError(1, errors.New("old upload failed"))
+	if dialog.recordSTTTelemetry.streamingUploadError != "" {
+		t.Fatalf("stale upload error contaminated telemetry: %#v", dialog.recordSTTTelemetry)
+	}
+
+	dialog.markRecordSTTUploadError(2, errors.New("current upload failed"))
+	if dialog.recordSTTTelemetry.streamingUploadError != "current upload failed" {
+		t.Fatalf("current upload error = %q", dialog.recordSTTTelemetry.streamingUploadError)
 	}
 }
 
@@ -385,10 +444,10 @@ func TestProcessUtteranceSpeaksTaggedTTSOutput(t *testing.T) {
 	}
 	store := NewChatHistoryStore(t.TempDir())
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:       ModelConfig{Provider: "fake"},
 			Instruction: "Answer directly.",
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -444,11 +503,11 @@ func TestAudioDialogSpeaksToolContentAsynchronously(t *testing.T) {
 		},
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:               ModelConfig{Provider: "fake"},
 			Instruction:         "Use tools when external state is requested.",
 			VoiceToolCallSpeech: &toolSpeech,
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -570,118 +629,16 @@ func TestAudioDialogDoesNotSpeakToolCallWithoutContent(t *testing.T) {
 	assertNoProviderTextWithin(t, provider, 200*time.Millisecond)
 }
 
-func TestAudioDialogProgressSpeechDisabledDoesNotSpeakTodoUpdate(t *testing.T) {
-	disabled := false
-	spoken := make(chan string, 1)
-	dialog := &AudioDialog{
-		config: Config{VoiceProgressSpeechEnabled: &disabled},
-	}
-	dialog.setProgressSpeaker(newProgressSpeaker(func(ctx context.Context, text string) error {
-		spoken <- text
-		return nil
-	}, progressSpeakerConfig{Delay: time.Millisecond, MinInterval: -1}))
-
-	todo := TodoState{
-		Mode:      TodoModePlanned,
-		Revision:  1,
-		CurrentID: "todo-1",
-		Items: []TodoItem{{
-			ID:     "todo-1",
-			Text:   "Inspect current screen",
-			Status: TodoInProgress,
-			Source: TodoSourceCommittedPlan,
-		}},
-	}
-	dialog.HandleRunEvent(context.Background(), RunEvent{
-		Type:           runEventTodoUpdate,
-		Content:        "Inspect current screen",
-		Todo:           &todo,
-		SpeechEligible: true,
-	})
-
-	select {
-	case text := <-spoken:
-		t.Fatalf("progress speech was scheduled despite config=false: %q", text)
-	case <-time.After(50 * time.Millisecond):
-	}
-}
-
-func TestProgressSpeechTextForEventOnlySpeaksInProgressCurrentItem(t *testing.T) {
-	todo := TodoState{
-		Mode:      TodoModePlanned,
-		Revision:  1,
-		CurrentID: "step-1",
-		Items: []TodoItem{{
-			ID:     "step-1",
-			Text:   "Inspect current screen",
-			Status: TodoDone,
-			Source: TodoSourceCommittedPlan,
-		}},
-	}
-	if text, ok := progressSpeechTextForEvent(RunEvent{Type: runEventTodoUpdate, Content: "Inspect current screen", Todo: &todo, SpeechEligible: true}); ok {
-		t.Fatalf("done todo should not be spoken, got %q", text)
-	}
-	todo.Items[0].Status = TodoInProgress
-	if text, ok := progressSpeechTextForEvent(RunEvent{Type: runEventTodoUpdate, Content: "Inspect current screen", Todo: &todo}); ok {
-		t.Fatalf("in-progress todo without speech eligibility should not be spoken, got %q", text)
-	}
-	text, ok := progressSpeechTextForEvent(RunEvent{Type: runEventTodoUpdate, Content: "Inspect current screen", Todo: &todo, SpeechEligible: true})
-	if !ok || text != "Inspect current screen" {
-		t.Fatalf("in-progress todo speech = %q ok=%v", text, ok)
-	}
-}
-
-func TestProgressSpeakerLatestWins(t *testing.T) {
-	spoken := make(chan string, 2)
-	speaker := newProgressSpeaker(func(ctx context.Context, text string) error {
-		spoken <- text
-		return nil
-	}, progressSpeakerConfig{Delay: 20 * time.Millisecond, MinInterval: -1})
-	speaker.Schedule(context.Background(), "first")
-	time.Sleep(5 * time.Millisecond)
-	speaker.Schedule(context.Background(), "second")
-
-	select {
-	case text := <-spoken:
-		if text != "second" {
-			t.Fatalf("spoken text = %q, want latest value", text)
-		}
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("progress speaker did not speak latest pending text")
-	}
-	select {
-	case text := <-spoken:
-		t.Fatalf("unexpected extra progress speech: %q", text)
-	case <-time.After(50 * time.Millisecond):
-	}
-}
-
-func TestProgressSpeakerCancelDropsPending(t *testing.T) {
-	spoken := make(chan string, 1)
-	speaker := newProgressSpeaker(func(ctx context.Context, text string) error {
-		spoken <- text
-		return nil
-	}, progressSpeakerConfig{Delay: 30 * time.Millisecond, MinInterval: -1})
-	speaker.Schedule(context.Background(), "pending")
-	speaker.Cancel()
-
-	select {
-	case text := <-spoken:
-		t.Fatalf("pending progress speech was not canceled: %q", text)
-	case <-time.After(80 * time.Millisecond):
-	}
-}
-
 func TestAudioDialogStreamingSpeechErrorDoesNotHideWaitForWakeupRequest(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleToolResponses("wait_for_wakeup", `{"__arg1":"{\"reason\":\"user asked\"}"}`, "I will wait for the next wakeup."),
 	}
 	controller := NewWaitForWakeupController()
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:       ModelConfig{Provider: "fake"},
 			Instruction: "Use tools when external state is requested.",
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -825,10 +782,10 @@ func TestAudioDialogProcessUtteranceAppendsToHistoryStore(t *testing.T) {
 		responses: roleDirectResponses("voice reply"),
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:       ModelConfig{Provider: "fake"},
 			Instruction: "Use attached audio.",
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -866,10 +823,6 @@ func TestAudioDialogProcessUtteranceAppendsToHistoryStore(t *testing.T) {
 	if len(userMessage.Attachments) != 0 {
 		t.Fatalf("user voice message should not include audio attachments: %#v", userMessage.Attachments)
 	}
-	roleOutput, ok := firstAudioDialogTestMessageOfType(messages, "role_output")
-	if !ok || roleOutput.Source != "voice" || roleOutput.Content != "voice reply" {
-		t.Fatalf("role_output message = %#v in %#v", roleOutput, messages)
-	}
 	assistantMessage, ok := firstAudioDialogTestMessageOfType(messages, "assistant")
 	if !ok || assistantMessage.Source != "voice" || assistantMessage.Content != "voice reply" {
 		t.Fatalf("assistant message = %#v in %#v", assistantMessage, messages)
@@ -881,10 +834,10 @@ func TestAudioDialogRunAgentTurnAppendsRunEventsToVoiceHistory(t *testing.T) {
 		responses: roleToolResponses("echo", `{"__arg1":"{}"}`, "voice tool reply"),
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:       ModelConfig{Provider: "fake"},
 			Instruction: "Use tools when requested.",
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -906,7 +859,7 @@ func TestAudioDialogRunAgentTurnAppendsRunEventsToVoiceHistory(t *testing.T) {
 		t.Fatalf("RunAgentTurn() error = %v", err)
 	}
 
-	for _, wantType := range []string{"role_output", runEventToolCall, "tool_result"} {
+	for _, wantType := range []string{runEventToolCall, "tool_result", "assistant"} {
 		message, ok := firstAudioDialogTestMessageOfType(messages, wantType)
 		if !ok {
 			t.Fatalf("missing voice history message type %q: %#v", wantType, messages)
@@ -917,7 +870,7 @@ func TestAudioDialogRunAgentTurnAppendsRunEventsToVoiceHistory(t *testing.T) {
 	}
 }
 
-func TestAudioDialogRunAgentTurnConsumesQueuedSteer(t *testing.T) {
+func TestAudioDialogRunAgentTurnQueuesButDoesNotConsumeSteer(t *testing.T) {
 	firstCallStarted := make(chan struct{})
 	releaseFirstCall := make(chan struct{})
 	model := &blockingFirstCallModel{
@@ -929,11 +882,11 @@ func TestAudioDialogRunAgentTurnConsumesQueuedSteer(t *testing.T) {
 		},
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:           ModelConfig{Provider: "fake"},
 			Instruction:     "Answer directly.",
 			ForceSimpleLoop: true,
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -983,18 +936,11 @@ func TestAudioDialogRunAgentTurnConsumesQueuedSteer(t *testing.T) {
 	if runResult.err != nil {
 		t.Fatalf("RunAgentTurn() error = %v", runResult.err)
 	}
-	if runResult.result.Output != "steered answer" {
-		t.Fatalf("Output = %q, want steered answer", runResult.result.Output)
+	if runResult.result.Output != "first answer" {
+		t.Fatalf("Output = %q, want first answer", runResult.result.Output)
 	}
-	steerMessage, ok := firstAudioDialogTestMessageOfType(messages, "steer")
-	if !ok {
-		t.Fatalf("missing steer history message: %#v", messages)
-	}
-	if steerMessage.Content != "change direction" {
-		t.Fatalf("steer content = %q, want change direction", steerMessage.Content)
-	}
-	if !strings.HasPrefix(steerMessage.RequestID, "voice-") {
-		t.Fatalf("steer request_id = %q, want voice-*", steerMessage.RequestID)
+	if steerMessage, ok := firstAudioDialogTestMessageOfType(messages, "steer"); ok {
+		t.Fatalf("unexpected steer history message: %#v", steerMessage)
 	}
 	if dialog.QueueSteer(TurnInput{InputText: "too late"}) {
 		t.Fatal("QueueSteer returned true after voice run completed")
@@ -1004,11 +950,11 @@ func TestAudioDialogRunAgentTurnConsumesQueuedSteer(t *testing.T) {
 func TestAudioDialogRejectsSteerAfterRuntimeFinishesBeforeVoiceHistoryPersist(t *testing.T) {
 	model := &scriptedModel{responses: roleDirectResponses("final answer\n<tts>final answer</tts>")}
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:           ModelConfig{Provider: "fake"},
 			Instruction:     "Answer directly.",
 			ForceSimpleLoop: true,
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -1065,7 +1011,7 @@ func TestAudioDialogRejectsSteerAfterRuntimeFinishesBeforeVoiceHistoryPersist(t 
 	}
 }
 
-func TestAudioDialogBeginSteerInterruptWaitsForQueuedCorrection(t *testing.T) {
+func TestAudioDialogBeginSteerInterruptQueuesCorrectionWithoutRuntimeConsumption(t *testing.T) {
 	firstCallStarted := make(chan struct{})
 	releaseFirstCall := make(chan struct{})
 	model := &blockingFirstCallModel{
@@ -1077,11 +1023,11 @@ func TestAudioDialogBeginSteerInterruptWaitsForQueuedCorrection(t *testing.T) {
 		},
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			Model:           ModelConfig{Provider: "fake"},
 			Instruction:     "Answer directly.",
 			ForceSimpleLoop: true,
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -1130,11 +1076,11 @@ func TestAudioDialogBeginSteerInterruptWaitsForQueuedCorrection(t *testing.T) {
 	if runResult.err != nil {
 		t.Fatalf("RunAgentTurn() error = %v", runResult.err)
 	}
-	if runResult.result.Output != "corrected answer" {
-		t.Fatalf("Output = %q, want corrected answer", runResult.result.Output)
+	if runResult.result.Output != "stale answer" {
+		t.Fatalf("Output = %q, want stale answer", runResult.result.Output)
 	}
 	if dialog.ResumeSteerInterrupt() {
-		t.Fatal("ResumeSteerInterrupt returned true after interrupted steer was consumed")
+		t.Fatal("ResumeSteerInterrupt returned true after voice run completed")
 	}
 }
 
@@ -1173,17 +1119,17 @@ func TestAudioDialogRunVoiceTurnDoesNotPersistUserWhenVoiceRunActive(t *testing.
 }
 
 func TestAudioDialogRunVoiceTurnPersistsUserBeforeRunEvents(t *testing.T) {
-	configDir := t.TempDir()
+	configDir := ensureTestConfigDir(t, t.TempDir())
 	model := &scriptedModel{
 		responses: roleToolResponses("echo", `{"__arg1":"{}"}`, "voice tool reply"),
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{
+		withTestConfigDir(t, Config{
 			ConfigDir:       configDir,
 			Model:           ModelConfig{Provider: "fake"},
 			Instruction:     "Use tools when requested.",
 			ForceSimpleLoop: true,
-		},
+		}),
 		&testModelResolver{model: model},
 		NewMemoryManager(filepath.Join(configDir, "memory")),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -1213,7 +1159,7 @@ func TestAudioDialogRunVoiceTurnPersistsUserBeforeRunEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunVoiceTurn() error = %v", err)
 	}
-	if len(messages) < 5 {
+	if len(messages) < 4 {
 		t.Fatalf("expected user, run events, and assistant messages, got %#v", messages)
 	}
 	if messages[0].Type != "user" {
@@ -1222,7 +1168,7 @@ func TestAudioDialogRunVoiceTurnPersistsUserBeforeRunEvents(t *testing.T) {
 	if messages[len(messages)-1].Type != "assistant" {
 		t.Fatalf("last message type = %q, want assistant in %#v", messages[len(messages)-1].Type, messages)
 	}
-	for _, wantType := range []string{runEventToolCall, "tool_result", "role_output"} {
+	for _, wantType := range []string{runEventToolCall, "tool_result", "assistant"} {
 		if _, ok := firstAudioDialogTestMessageOfType(messages, wantType); !ok {
 			t.Fatalf("missing voice history message type %q: %#v", wantType, messages)
 		}
@@ -1352,7 +1298,7 @@ func (m *blockingFirstCallModel) Call(ctx context.Context, prompt string, option
 }
 
 func TestAudioDialogRunScriptUsesConfiguredTTS(t *testing.T) {
-	configDir := t.TempDir()
+	configDir := ensureTestConfigDir(t, t.TempDir())
 	scriptsDir := filepath.Join(configDir, "scripts")
 	if err := os.MkdirAll(scriptsDir, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
@@ -1397,8 +1343,150 @@ func TestAudioDialogRunScriptUsesConfiguredTTS(t *testing.T) {
 	}
 }
 
+func TestAudioDialogRunAgentTurnCommitsVoicePreRunTelemetry(t *testing.T) {
+	plane := &capturingEpisodePlane{}
+	model := &scriptedModel{responses: roleDirectResponses("ok")}
+	cfg := withTestConfigDir(t, Config{
+		Model:                    ModelConfig{Provider: "fake"},
+		Audio:                    AudioConfig{SampleRate: 16000},
+		VoiceStreamingTTSEnabled: boolPtr(true),
+		VoiceMaxResponseTokens:   64,
+	})
+	runtime := NewRuntimeWithDeps(
+		cfg,
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.memoryPlane = plane
+	provider := &recordingTTSProvider{name: "dialog-provider"}
+	dialog := &AudioDialog{
+		config:      cfg,
+		audioClient: NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
+		ttsManager:  ttsmodule.NewProviderManager(provider, nil),
+	}
+
+	if _, err := dialog.RunAgentTurn(context.Background(), TurnInput{InputText: "hello"}, runtime); err != nil {
+		t.Fatalf("RunAgentTurn() error = %v", err)
+	}
+
+	var promptIndex, preopenIndex, sessionIndex = -1, -1, -1
+	for index, event := range plane.episode.Events {
+		switch event.Type {
+		case runEventVoicePromptSound:
+			promptIndex = index
+			if event.Metadata["prompt"] != "agent_send" || event.Metadata["success"] != true || event.Metadata["wait"] != false || event.Metadata["async"] != true {
+				t.Fatalf("prompt telemetry metadata = %#v", event.Metadata)
+			}
+			if event.DurationMs == nil || *event.DurationMs <= 0 || event.Metadata["cue_audio_duration_ms"] == nil {
+				t.Fatalf("prompt telemetry duration = %v metadata = %#v", event.DurationMs, event.Metadata)
+			}
+		case runEventTTSStreamPreopen:
+			preopenIndex = index
+			if event.Metadata["provider"] != "dialog-provider" || event.Metadata["success"] != true {
+				t.Fatalf("TTS preopen telemetry metadata = %#v", event.Metadata)
+			}
+		case runEventSessionBegin:
+			sessionIndex = index
+		}
+	}
+	if promptIndex < 0 || preopenIndex < 0 || sessionIndex < 0 {
+		t.Fatalf("missing pre-run telemetry/session events: %#v", plane.episode.Events)
+	}
+	if !(promptIndex < preopenIndex && preopenIndex < sessionIndex) {
+		t.Fatalf("event order prompt=%d preopen=%d session=%d events=%#v", promptIndex, preopenIndex, sessionIndex, plane.episode.Events)
+	}
+}
+
+func TestAudioDialogRunAgentTurnDoesNotWaitForAgentSendPromptDrain(t *testing.T) {
+	audioServer := newTestAudioService(t)
+	audioServer.healthPlaybackSessions = []uint32{1}
+	model := &scriptedModel{responses: roleDirectResponses("ok")}
+	cfg := withTestConfigDir(t, Config{
+		Model:                    ModelConfig{Provider: "fake"},
+		VoiceStreamingTTSEnabled: boolPtr(false),
+		VoiceMaxResponseTokens:   64,
+	})
+	runtime := NewRuntimeWithDeps(
+		cfg,
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	dialog := &AudioDialog{
+		config:      cfg,
+		audioClient: NewAudioServiceClient(audioServer.socketPath),
+	}
+
+	startedAt := time.Now()
+	if _, err := dialog.RunAgentTurn(context.Background(), TurnInput{InputText: "hello"}, runtime); err != nil {
+		t.Fatalf("RunAgentTurn() error = %v", err)
+	}
+	if elapsed := time.Since(startedAt); elapsed > 500*time.Millisecond {
+		t.Fatalf("RunAgentTurn waited for prompt drain: elapsed=%s", elapsed)
+	}
+	if got := audioServer.countOp("health"); got != 0 {
+		t.Fatalf("agent send prompt health polls = %d, want 0 for wait=false", got)
+	}
+}
+
+func TestAudioDialogRunAgentTurnDoesNotWaitForAgentSendPromptStart(t *testing.T) {
+	audioServer := newTestAudioService(t)
+	promptStarted := make(chan struct{})
+	releasePrompt := make(chan struct{})
+	var promptOnce sync.Once
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() { close(releasePrompt) })
+	}
+	t.Cleanup(release)
+	audioServer.onStartPlayback = func() {
+		promptOnce.Do(func() { close(promptStarted) })
+		<-releasePrompt
+	}
+	model := &scriptedModel{responses: roleDirectResponses("ok")}
+	cfg := withTestConfigDir(t, Config{
+		Model:                    ModelConfig{Provider: "fake"},
+		VoiceStreamingTTSEnabled: boolPtr(false),
+		VoiceMaxResponseTokens:   64,
+	})
+	runtime := NewRuntimeWithDeps(
+		cfg,
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	dialog := &AudioDialog{
+		config:      cfg,
+		audioClient: NewAudioServiceClient(audioServer.socketPath),
+	}
+
+	startedAt := time.Now()
+	done := make(chan error, 1)
+	go func() {
+		_, err := dialog.RunAgentTurn(context.Background(), TurnInput{InputText: "hello"}, runtime)
+		done <- err
+	}()
+	waitForTestSignal(t, promptStarted, "prompt sound playback to start")
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunAgentTurn() error = %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("RunAgentTurn waited for agent send prompt start to complete")
+	}
+	if elapsed := time.Since(startedAt); elapsed > 500*time.Millisecond {
+		t.Fatalf("RunAgentTurn waited for prompt start: elapsed=%s", elapsed)
+	}
+}
+
 func TestAudioDialogConfigureRuntimeToolsDoesNotOverwriteSharedSpeaker(t *testing.T) {
-	configDir := t.TempDir()
+	configDir := ensureTestConfigDir(t, t.TempDir())
 	scriptsDir := filepath.Join(configDir, "scripts")
 	if err := os.MkdirAll(scriptsDir, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)

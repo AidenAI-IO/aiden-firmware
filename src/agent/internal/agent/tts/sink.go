@@ -17,15 +17,17 @@ const (
 
 // AudioServiceSink implements AudioSink by writing PCM to AudioServiceClient.
 type AudioServiceSink struct {
-	mu        sync.Mutex
-	audio     AudioServiceBackend
-	format    AudioFormat
-	sessionID uint64
-	started   bool
-	stopped   bool
-	finalSent bool
-	pcmBytes  int
-	pending   []byte
+	mu                sync.Mutex
+	audio             AudioServiceBackend
+	format            AudioFormat
+	sessionID         uint64
+	started           bool
+	stopped           bool
+	finalSent         bool
+	pcmBytes          int
+	lastChunkBytes    int
+	playbackStartedAt time.Time
+	pending           []byte
 }
 
 // AudioServiceBackend is a minimal interface over *AudioServiceClient used by the sink.
@@ -70,6 +72,7 @@ func (s *AudioServiceSink) writePCMChunks(data []byte) error {
 		}
 		s.sessionID = id
 		s.started = true
+		s.playbackStartedAt = playbackDrainNow()
 	}
 	for off := 0; off < len(data); off += chunkBytes {
 		end := off + chunkBytes
@@ -79,7 +82,9 @@ func (s *AudioServiceSink) writePCMChunks(data []byte) error {
 		if err := s.audio.WritePlayChunk(s.sessionID, data[off:end], false); err != nil {
 			return fmt.Errorf("write play chunk: %w", err)
 		}
-		s.pcmBytes += end - off
+		written := end - off
+		s.pcmBytes += written
+		s.lastChunkBytes = written
 	}
 	return nil
 }
@@ -166,7 +171,11 @@ func (s *AudioServiceSink) Drain(ctx context.Context) error {
 		}
 		s.finalSent = true
 	}
-	wait := EstimatedPlaybackDrainDuration(s.format, s.pcmBytes)
+	elapsed := time.Duration(0)
+	if !s.playbackStartedAt.IsZero() {
+		elapsed = playbackDrainNow().Sub(s.playbackStartedAt)
+	}
+	wait := EstimatedPlaybackDrainRemainingDuration(s.format, s.pcmBytes, elapsed, s.lastChunkBytes)
 	s.mu.Unlock()
 
 	waitCtx, cancel := context.WithTimeout(ctx, drainTimeout)

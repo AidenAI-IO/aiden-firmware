@@ -70,25 +70,17 @@ func (t *EnterTextViaBridgeTool) SetPlatformFn(fn func() string) {
 func (t *EnterTextViaBridgeTool) Name() string { return "enter_text_via_bridge" }
 
 func (t *EnterTextViaBridgeTool) Description() string {
-	return strings.TrimSpace(`Use the Phone Bridge clipboard path to place known text into an input field. ` +
-		`On iOS, if the target text was already prepared with clipboard write, it focuses the current target field, pastes, and verifies without reopening Aiden. ` +
-		`When explicitly needed and Dynamic Island return is available, this tool can restore Aiden, write clipboard in the app, return to the target app, focus the field, paste, and verify the field text. ` +
-		`On Android, one call writes clipboard through the connected bridge, focuses the field, pastes, and verifies. ` +
-		`For message composition fields, set send_after_commit=true only after the target chat is open; the tool then runs focus → paste → verify field text → keyboard send → verify the input cleared/changed after send. ` +
-		`Use enter_text_in_field for normal field entry; it automatically prefers this clipboard strategy when appropriate and falls back to HID/IME input if needed. ` +
-		`If the reliable clipboard path is unavailable, it returns committed:false. ` +
-		`Returns committed:true only when the exact target text is verified in the input field; when send_after_commit=true, ok=true also requires send_verified:true.`)
+	return `Use the Phone Bridge clipboard path to place known text into an input field, then focus, paste, and verify. ` +
+		`Normally use enter_text_in_field instead; it automatically prefers this clipboard strategy when appropriate and falls back to HID/IME input if needed. Use this directly only when that clipboard path is explicitly required. ` +
+		`Returns committed:true only when the exact target text is verified in the field; when send_after_commit=true, ok=true also requires send_verified:true.`
 }
 
 func (t *EnterTextViaBridgeTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"text":     stringArgSchema("Exact text that must appear in the field when done."),
-		"platform": stringEnumArgSchema("Target platform.", "ios", "android", "mac"),
-		"focus":    focusPointArgSchema("Input field coordinates."),
-		"send_after_commit": map[string]any{
-			"type":        "boolean",
-			"description": "After field text is verified, press the platform send/submit key and verify the target text is no longer still present in the input field.",
-		},
+		"text":              stringArgSchema("Exact text that must appear in the field when done."),
+		"platform":          stringEnumArgSchema("Target platform.", "ios", "android", "mac"),
+		"focus":             focusPointArgSchema("Input field coordinates."),
+		"send_after_commit": boolArgSchema("After field text is verified, press the platform send/submit key and verify the target text is no longer still present in the input field. Set true only after the target chat/composer is already open."),
 	}, "text", "focus")
 }
 
@@ -201,7 +193,7 @@ func (t *EnterTextViaBridgeTool) runClipboardFirstFlow(ctx context.Context, plat
 	if bridge == nil {
 		return textViaBridgeResult{Err: fmt.Errorf("phone bridge is not configured")}
 	}
-	status := bridge.Status()
+	status := bridge.getStatus()
 	switch strings.ToLower(strings.TrimSpace(platform)) {
 	case "ios":
 		if bridge.ClipboardRecentlyContains(args.Text, preparedClipboardMaxAge) {
@@ -269,7 +261,7 @@ func (t *EnterTextViaBridgeTool) runLegacyBridgeFlow(ctx context.Context, platfo
 		return textViaBridgeResult{Attempted: true, Err: fmt.Errorf("phone bridge is not configured")}
 	}
 	engine := newTextInputEngineWithSleep(*t.hw, t.vision, t.sleep)
-	restoreSteps, restoreCalls, restoreErr := t.restoreBridgeAppIfNeeded(ctx, engine, bridge, platform)
+	restoreSteps, restoreCalls, restoreErr := t.restoreBridgeAppIfNeeded(ctx, bridge, platform)
 	steps := append([]string{}, restoreSteps...)
 	vlmCalls := restoreCalls
 	if restoreErr != nil {
@@ -493,11 +485,11 @@ func compactTextForSendVerify(text string) string {
 	return builder.String()
 }
 
-func (t *EnterTextViaBridgeTool) restoreBridgeAppIfNeeded(ctx context.Context, engine *textInputEngine, bridge *PhoneBridge, platform string) (steps []string, vlmCalls int, err error) {
+func (t *EnterTextViaBridgeTool) restoreBridgeAppIfNeeded(ctx context.Context, bridge *PhoneBridge, platform string) (steps []string, vlmCalls int, err error) {
 	if t.hw.quickAction == nil || t.hw.keyboardText == nil || t.hw.touchGesture == nil {
 		return nil, 0, fmt.Errorf("bridge recovery tools are not fully configured")
 	}
-	searchTerm := textViaBridgeSearchTerm(platform, bridge.Status())
+	searchTerm := textViaBridgeSearchTerm(platform, bridge.getStatus())
 	openResult, err := runAppSearchOpenFlow(ctx, appSearchOpenFlowConfig{
 		hw:               t.hw,
 		vision:           t.vision,
@@ -683,9 +675,15 @@ func (t *EnterTextViaBridgeTool) writeClipboard(ctx context.Context, bridge *Pho
 		return t.clipboardWriteFn(ctx, bridge, text)
 	}
 	clipboard := NewClipboardTool(bridge, nil)
-	clipOut, clipErr := clipboard.Call(ctx, jsonString(map[string]any{"action": "write", "text": text}))
+	// Isolate nested ClipboardTool SetToolError so a bridge failure cannot
+	// poison the parent enter_text / search_launch_app observation.
+	toolCtx, _ := WithToolError(ctx)
+	clipOut, clipErr := clipboard.Call(toolCtx, jsonString(map[string]any{"action": "write", "text": text}))
 	if clipErr != nil {
 		return clipErr
+	}
+	if te := ToolErrorFromContext(toolCtx); te != nil {
+		return te
 	}
 	return interpretTextInputToolOutput(clipOut)
 }

@@ -15,7 +15,6 @@ type FunctionAgent struct {
 	Tools             []langtools.Tool
 	OutputKey         string
 	ScreenshotPruning ScreenshotPruningConfig
-	VisualArtifacts   visualArtifactReader
 }
 
 type visualObservationTool interface {
@@ -34,6 +33,7 @@ type structuredInputTool interface {
 
 const toolActionLogVersion = 1
 const maxToolObservationRunes = 4000
+const maxSkillReadObservationRunes = 20000
 
 type ScreenshotPruningConfig struct {
 	KeepN    int
@@ -79,8 +79,6 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 	choice := contentResp.Choices[0]
 
 	if len(choice.ToolCalls) > 0 {
-		actions := make([]schema.AgentAction, 0, len(choice.ToolCalls))
-		contentConsumed := false
 		for _, toolCall := range choice.ToolCalls {
 			if toolCall.FunctionCall == nil {
 				continue
@@ -88,25 +86,21 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 			functionName := toolCall.FunctionCall.Name
 			toolInputStr := toolCall.FunctionCall.Arguments
 			invocation := extractToolInvocation(toolInputStr)
-			toolCallContent := ""
-			if !contentConsumed {
-				toolCallContent = strings.TrimSpace(choice.Content)
-				contentConsumed = true
-			}
+			toolCallContent := strings.TrimSpace(choice.Content)
 
 			contentMsg := "\n"
 			if toolCallContent != "" {
 				contentMsg = fmt.Sprintf("responded: %s\n", toolCallContent)
 			}
 
-			actions = append(actions, schema.AgentAction{
+			return []schema.AgentAction{{
 				Tool:      functionName,
 				ToolInput: invocation.Input,
 				Log:       formatToolActionLog(functionName, toolInputStr, toolCallContent, contentMsg),
-				ToolID:    ensureToolCallID(toolCall.ID, len(actions)),
-			})
+				ToolID:    ensureToolCallID(toolCall.ID, 0),
+			}}, nil, nil
 		}
-		return actions, nil, nil
+		return nil, nil, nil
 	}
 
 	if choice.FuncCall != nil {
@@ -259,7 +253,7 @@ func scratchpadToolCallID(action schema.AgentAction, groupStart, index int) stri
 func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includeVisual bool) (string, []llms.MessageContent) {
 	visual, ok := a.visualScreenshotObservation(step)
 	if !ok {
-		return compactToolObservation(step.Observation), nil
+		return compactToolObservationForTool(step.Action.Tool, step.Observation), nil
 	}
 	result := visual.Result
 
@@ -289,6 +283,9 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includ
 			imageAvailability,
 		)
 	}
+	if summary := screenshotObservationStatusSummary(result); summary != "" {
+		toolContent += " " + summary
+	}
 	caption := fmt.Sprintf("This image is the screenshot observation returned by the %s tool. Use it when answering the original request.", step.Action.Tool)
 	if !includeVisual {
 		return toolContent, []llms.MessageContent{{
@@ -307,6 +304,26 @@ func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includ
 			buildImagePart(visual.MIMEType, visual.ImageBytes),
 		},
 	}}
+}
+
+func screenshotObservationStatusSummary(result postActionScreenshotResult) string {
+	var notes []string
+	if result.ScreenChanged != nil {
+		if *result.ScreenChanged {
+			notes = append(notes, "Visible screen change was observed during the stable-screen wait.")
+		} else {
+			notes = append(notes, "No visible screen change was observed during the stable-screen wait.")
+			notes = append(notes, "Do not assume the action succeeded from tool output alone; inspect the screenshot and verify whether the expected UI change happened before answering or retrying.")
+		}
+	}
+	if result.ScreenStable != nil {
+		if *result.ScreenStable {
+			notes = append(notes, "The screen was stable when the screenshot was captured.")
+		} else {
+			notes = append(notes, "The wait timed out while the screen was still changing; treat the screenshot as a best-effort observation.")
+		}
+	}
+	return strings.Join(notes, " ")
 }
 
 func (a *FunctionAgent) countVisualObservations(steps []schema.AgentStep) int {
@@ -328,10 +345,10 @@ func (a *FunctionAgent) visualScreenshotObservation(step schema.AgentStep) (visu
 	if !a.isVisualObservationTool(step.Action.Tool) {
 		return visualScreenshotObservation{}, false
 	}
-	return parseScreenshotObservation(step.Observation, a.VisualArtifacts)
+	return parseScreenshotObservation(step.Observation)
 }
 
-func parseScreenshotObservation(observation string, readers ...visualArtifactReader) (visualScreenshotObservation, bool) {
+func parseScreenshotObservation(observation string) (visualScreenshotObservation, bool) {
 	var result postActionScreenshotResult
 	if err := json.Unmarshal([]byte(observation), &result); err != nil {
 		return visualScreenshotObservation{}, false
@@ -339,20 +356,11 @@ func parseScreenshotObservation(observation string, readers ...visualArtifactRea
 	if result.Width <= 0 || result.Height <= 0 {
 		return visualScreenshotObservation{}, false
 	}
-	var imageBytes []byte
-	if strings.TrimSpace(result.Data) != "" {
-		var err error
-		imageBytes, err = base64.StdEncoding.DecodeString(result.Data)
-		if err != nil || len(imageBytes) == 0 {
-			return visualScreenshotObservation{}, false
-		}
-	} else if strings.TrimSpace(result.ScreenshotRef) != "" && len(readers) > 0 && readers[0] != nil {
-		var err error
-		imageBytes, err = readers[0].ReadVisualArtifact(result.ScreenshotRef)
-		if err != nil || len(imageBytes) == 0 {
-			return visualScreenshotObservation{}, false
-		}
-	} else {
+	if strings.TrimSpace(result.Data) == "" {
+		return visualScreenshotObservation{}, false
+	}
+	imageBytes, err := base64.StdEncoding.DecodeString(result.Data)
+	if err != nil || len(imageBytes) == 0 {
 		return visualScreenshotObservation{}, false
 	}
 	format, ok := normalizeScreenshotFormat(result.Format)
@@ -394,12 +402,23 @@ func screenshotMIMEType(format string) string {
 }
 
 func compactToolObservation(observation string) string {
+	return compactToolObservationLimit(observation, maxToolObservationRunes)
+}
+
+func compactToolObservationForTool(toolName, observation string) string {
+	if strings.TrimSpace(toolName) == "skill_read" {
+		return compactToolObservationLimit(observation, maxSkillReadObservationRunes)
+	}
+	return compactToolObservation(observation)
+}
+
+func compactToolObservationLimit(observation string, maxRunes int) string {
 	observation = strings.TrimSpace(observation)
-	if observation == "" || len([]rune(observation)) <= maxToolObservationRunes {
+	if observation == "" || len([]rune(observation)) <= maxRunes {
 		return observation
 	}
 	runes := []rune(observation)
-	return string(runes[:maxToolObservationRunes]) + fmt.Sprintf("\n...[truncated %d chars]", len(runes)-maxToolObservationRunes)
+	return string(runes[:maxRunes]) + fmt.Sprintf("\n...[truncated %d chars]", len(runes)-maxRunes)
 }
 
 func (a *FunctionAgent) isVisualObservationTool(name string) bool {

@@ -16,12 +16,25 @@ const (
 // EstimatedPlaybackDrainDuration returns how long to wait for a playback
 // session to finish after its final chunk was accepted by audio_service.
 func EstimatedPlaybackDrainDuration(format AudioFormat, pcmBytes int) time.Duration {
+	return EstimatedPlaybackDrainRemainingDuration(format, pcmBytes, 0, chunkBytes)
+}
+
+// EstimatedPlaybackDrainRemainingDuration returns how long to wait after the
+// final chunk is accepted, subtracting playback time that has already elapsed.
+func EstimatedPlaybackDrainRemainingDuration(format AudioFormat, pcmBytes int, elapsed time.Duration, lastChunkBytes int) time.Duration {
 	bytesPerSecond := format.BytesPerSecond()
 	if bytesPerSecond <= 0 {
 		bytesPerSecond = 16000 * 1 * 2
 	}
 	playback := time.Duration(pcmBytes) * time.Second / time.Duration(bytesPerSecond)
-	return playback + playbackTailDrainGrace(format, chunkBytes)
+	remaining := playback - elapsed
+	if remaining < 0 {
+		remaining = 0
+	}
+	if lastChunkBytes <= 0 {
+		lastChunkBytes = chunkBytes
+	}
+	return remaining + playbackTailDrainGrace(format, lastChunkBytes)
 }
 
 func playbackTailDrainGrace(format AudioFormat, lastChunkBytes int) time.Duration {
@@ -74,6 +87,7 @@ func (f AudioFormat) BytesPerSecond() int {
 }
 
 var waitForEstimatedDrain = waitForEstimatedDrainTimer
+var playbackDrainNow = time.Now
 
 func waitForEstimatedDrainTimer(ctx context.Context, wait time.Duration) error {
 	if wait <= 0 {

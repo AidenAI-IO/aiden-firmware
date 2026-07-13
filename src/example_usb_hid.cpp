@@ -152,6 +152,47 @@ const uint8_t kTouchscreenDescriptor[] = {
     0xc0,                   // End Collection (Application)
 };
 
+const uint8_t kAndroidExtensionDescriptor[] = {
+    0x05, 0x0c,             // Usage Page (Consumer)
+    0x09, 0x01,             // Usage (Consumer Control)
+    0xa1, 0x01,             // Collection (Application)
+    0x15, 0x00,             //   Logical Minimum (0)
+    0x26, 0xff, 0x03,       //   Logical Maximum (1023)
+    0x1a, 0x00, 0x00,       //   Usage Minimum (0)
+    0x2a, 0xff, 0x03,       //   Usage Maximum (1023)
+    0x75, 0x10,             //   Report Size (16)
+    0x95, 0x01,             //   Report Count (1)
+    0x81, 0x00,             //   Input (Data, Ary, Abs)
+    0xc0,                   // End Collection (Application)
+};
+
+const uint8_t kAbsoluteMediaKeyDescriptor[] = {
+    0x05, 0x0c,             // Usage Page (Consumer)
+    0x09, 0x01,             // Usage (Consumer Control)
+    0xa1, 0x01,             // Collection (Application)
+    0x15, 0x00,             //   Logical Minimum (0)
+    0x25, 0x01,             //   Logical Maximum (1)
+    0x09, 0xe2,             //   Usage (Mute)
+    0x09, 0xe9,             //   Usage (Volume Increment)
+    0x09, 0xea,             //   Usage (Volume Decrement)
+    0x09, 0xcd,             //   Usage (Play/Pause)
+    0x09, 0xb7,             //   Usage (Stop)
+    0x09, 0xb5,             //   Usage (Scan Next Track)
+    0x09, 0xb6,             //   Usage (Scan Previous Track)
+    0x09, 0xb4,             //   Usage (Rewind)
+    0x09, 0xb3,             //   Usage (Fast Forward)
+    0x09, 0x65,             //   Usage (Snapshot)
+    0x09, 0x6f,             //   Usage (Brightness Increment)
+    0x09, 0x70,             //   Usage (Brightness Decrement)
+    0x75, 0x01,             //   Report Size (1)
+    0x95, 0x0c,             //   Report Count (12)
+    0x81, 0x02,             //   Input (Data, Var, Abs)
+    0x75, 0x01,             //   Report Size (1)
+    0x95, 0x04,             //   Report Count (4)
+    0x81, 0x03,             //   Input (Const, Var, Abs)
+    0xc0,                   // End Collection (Application)
+};
+
 std::string gadget_path(const Options& options) {
     return options.gadget_root + "/" + options.gadget_name;
 }
@@ -511,6 +552,20 @@ void setup_touch_function(const std::string& gadget, const Options& options) {
     ensure_symlink(function_path, gadget + "/configs/c.1/hid.usb1");
 }
 
+void setup_android_extension_function(const std::string& gadget, bool pointer_touchscreen) {
+    std::string function_path = gadget + "/functions/hid.usb2";
+    ensure_dir(function_path);
+    write_text_file(function_path + "/protocol", "0");
+    write_text_file(function_path + "/subclass", "0");
+    write_text_file(function_path + "/report_length", "2");
+    if (pointer_touchscreen) {
+        write_binary_file(function_path + "/report_desc", kAndroidExtensionDescriptor, sizeof(kAndroidExtensionDescriptor));
+    } else {
+        write_binary_file(function_path + "/report_desc", kAbsoluteMediaKeyDescriptor, sizeof(kAbsoluteMediaKeyDescriptor));
+    }
+    ensure_symlink(function_path, gadget + "/configs/c.1/hid.usb2");
+}
+
 void cleanup_gadget(const Options& options) {
     std::string gadget = gadget_path(options);
     if (!path_exists(gadget)) {
@@ -524,8 +579,10 @@ void cleanup_gadget(const Options& options) {
 
     remove_if_exists(gadget + "/configs/c.1/hid.usb0");
     remove_if_exists(gadget + "/configs/c.1/hid.usb1");
+    remove_if_exists(gadget + "/configs/c.1/hid.usb2");
     rmdir_if_exists(gadget + "/functions/hid.usb0");
     rmdir_if_exists(gadget + "/functions/hid.usb1");
+    rmdir_if_exists(gadget + "/functions/hid.usb2");
     rmdir_if_exists(gadget + "/configs/c.1/strings/0x409");
     rmdir_if_exists(gadget + "/configs/c.1");
     rmdir_if_exists(gadget + "/strings/0x409");
@@ -580,6 +637,9 @@ void setup_gadget(const Options& options, const std::string& mode) {
     }
     if (mode == "touch" || mode == "composite") {
         setup_touch_function(gadget, options);
+    }
+    if (mode == "keyboard" || mode == "composite") {
+        setup_android_extension_function(gadget, options.pointer_touchscreen);
     }
 
     std::string udc = options.udc.empty() ? first_udc_name() : options.udc;

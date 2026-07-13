@@ -32,9 +32,8 @@ int main(int argc, char* argv[]) {
     int chunks = 0;
     size_t bytes_read;
     while ((bytes_read = fread(buffer, 1, sizeof(buffer), fp)) > 0) {
-        if (!player.play(buffer, bytes_read)) {
-            fprintf(stderr, "Failed to play audio chunk\n");
-            break;
+        while (!player.play(buffer, bytes_read)) {
+            // SendFrame uses 100ms timeout; retry when AO buffer is temporarily full
         }
         chunks++;
     }

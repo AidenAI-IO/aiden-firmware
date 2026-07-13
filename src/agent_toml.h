@@ -11,6 +11,7 @@ struct ModelToml {
     std::string base_url;
     std::string api_key;
     std::string token_env;
+    std::string reasoning_effort;
     double temperature = 0.0;
     int max_response_tokens = 0;
     int context_window = 0;
@@ -58,10 +59,11 @@ struct LogToml {
 };
 
 struct HIDToml {
-    std::string keyboard_device;
-    std::string mouse_device;
-    std::string frame_socket;
-    std::string pointer_mode;
+    std::string keyboard_device = "/dev/hidg0";
+    std::string mouse_device = "/dev/hidg1";
+    std::string android_keyboard_device = "/dev/hidg2";
+    std::string frame_socket = "/run/frame_service/frame_service.sock";
+    std::string pointer_mode = "absolute";
 };
 
 struct SearchToml {
@@ -133,6 +135,7 @@ struct AgentToml {
     bool voice_tool_call_speech = true;
     bool voice_progress_speech_enabled = true;
     int voice_max_response_tokens = 300;
+    bool load_all_tools = false;
     int max_iterations = -1;
     int screenshot_keep_n = 3;
     int screenshot_prune_interval = 2;

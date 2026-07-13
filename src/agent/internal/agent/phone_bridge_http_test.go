@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/statemanager"
 	"bytes"
 	"encoding/json"
 	"net/http"
@@ -11,7 +12,7 @@ import (
 
 // TestHTTPEnqueueCommand tests POST /api/phone-bridge/commands
 func TestHTTPEnqueueCommand(t *testing.T) {
-	bridge := NewPhoneBridge(nil)
+	bridge := newPhoneBridgeForTest()
 	defer bridge.queue.Stop()
 
 	tests := []struct {
@@ -161,7 +162,7 @@ func TestHTTPPollCommands(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create fresh bridge for each test
-			bridge := NewPhoneBridge(nil)
+			bridge := newPhoneBridgeForTest()
 			defer bridge.queue.Stop()
 
 			// Setup commands for this test
@@ -214,9 +215,78 @@ func TestHTTPPollCommands(t *testing.T) {
 	}
 }
 
+func TestHTTPPollCommandsRecordsAndroidFGSBridgeState(t *testing.T) {
+	bridge := NewPhoneBridge(nil, statemanager.NewStateManager())
+	defer bridge.queue.Stop()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/phone-bridge/commands?platform=android&phone_id=android-abc&app_state=background&fgs_bridge_enabled=true", nil)
+	w := httptest.NewRecorder()
+
+	bridge.handlePollCommands(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, w.Code, w.Body.String())
+	}
+	status := bridge.getStatus()
+	if status.Platform != "android" {
+		t.Fatalf("platform = %q, want android", status.Platform)
+	}
+	if status.PhoneID != "android-abc" {
+		t.Fatalf("phone_id = %q, want android-abc", status.PhoneID)
+	}
+	if status.AppState != "background" {
+		t.Fatalf("app_state = %q, want background", status.AppState)
+	}
+	if status.FgsBridgeEnabled == nil || !*status.FgsBridgeEnabled {
+		t.Fatalf("fgs_bridge_enabled = %#v, want true", status.FgsBridgeEnabled)
+	}
+	if status.FgsBridgeUpdatedAt == nil {
+		t.Fatal("fgs_bridge_updated_at is nil")
+	}
+}
+
+func TestHTTPPollCommandsSuppressesAndroidForegroundFGSQueue(t *testing.T) {
+	bridge := NewPhoneBridge(nil, statemanager.NewStateManager())
+	defer bridge.queue.Stop()
+
+	if err := bridge.queue.Enqueue(BridgeCommand{
+		ID:      "fgs_foreground_cmd",
+		Type:    "clipboard_read",
+		PhoneID: "android-abc",
+	}); err != nil {
+		t.Fatalf("Enqueue() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/phone-bridge/commands?platform=android&phone_id=android-abc&app_state=active&fgs_bridge_enabled=false", nil)
+	w := httptest.NewRecorder()
+
+	bridge.handlePollCommands(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, w.Code, w.Body.String())
+	}
+	var resp PollCommandsResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if len(resp.Commands) != 0 {
+		t.Fatalf("commands = %#v, want empty foreground FGS poll", resp.Commands)
+	}
+	status := bridge.getStatus()
+	if status.AppState != "active" {
+		t.Fatalf("app_state = %q, want active", status.AppState)
+	}
+	if status.FgsBridgeEnabled == nil || *status.FgsBridgeEnabled {
+		t.Fatalf("fgs_bridge_enabled = %#v, want false", status.FgsBridgeEnabled)
+	}
+	if _, commandStatus := bridge.queue.QueryResult("fgs_foreground_cmd"); commandStatus != StatusQueued {
+		t.Fatalf("command status = %s, want %s", commandStatus, StatusQueued)
+	}
+}
+
 // TestHTTPSubmitResult tests POST /api/phone-bridge/results
 func TestHTTPSubmitResult(t *testing.T) {
-	bridge := NewPhoneBridge(nil)
+	bridge := newPhoneBridgeForTest()
 	defer bridge.queue.Stop()
 
 	// Enqueue and poll a command first
@@ -277,7 +347,7 @@ func TestHTTPSubmitResult(t *testing.T) {
 
 // TestHTTPQueryResult tests GET /api/phone-bridge/results/:command_id
 func TestHTTPQueryResult(t *testing.T) {
-	bridge := NewPhoneBridge(nil)
+	bridge := newPhoneBridgeForTest()
 	defer bridge.queue.Stop()
 
 	// Enqueue, poll and submit result for a command
@@ -362,7 +432,7 @@ func TestHTTPQueryResult(t *testing.T) {
 
 // TestHTTPEndToEnd tests full workflow: enqueue -> poll -> submit -> query
 func TestHTTPEndToEnd(t *testing.T) {
-	bridge := NewPhoneBridge(nil)
+	bridge := newPhoneBridgeForTest()
 	defer bridge.queue.Stop()
 
 	// Step 1: Agent enqueues a command
@@ -438,7 +508,7 @@ func TestHTTPEndToEnd(t *testing.T) {
 
 // TestHTTPCommandTimeout tests that in-flight commands timeout and get retried
 func TestHTTPCommandTimeout(t *testing.T) {
-	bridge := NewPhoneBridge(nil)
+	bridge := newPhoneBridgeForTest()
 	defer bridge.queue.Stop()
 
 	// Enqueue a command

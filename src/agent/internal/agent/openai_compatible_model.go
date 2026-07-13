@@ -27,6 +27,7 @@ type openAICompatibleModel struct {
 	rawLogger           *llmRawHTTPLogger
 	explicitPromptCache bool
 	routerMetadata      bool
+	reasoningEffort     string
 	// sessionIDProvider, when set, supplies the value for the x-session-id
 	// request header. It is only wired up for the OpenRouter provider, whose
 	// sticky routing uses the session id to keep multi-turn requests on the same
@@ -100,6 +101,12 @@ func withOpenAICompatibleExplicitPromptCache() openAICompatibleModelOption {
 func withOpenAICompatibleRouterMetadata() openAICompatibleModelOption {
 	return func(m *openAICompatibleModel) {
 		m.routerMetadata = true
+	}
+}
+
+func withOpenAICompatibleReasoningEffort(effort string) openAICompatibleModelOption {
+	return func(m *openAICompatibleModel) {
+		m.reasoningEffort = strings.TrimSpace(effort)
 	}
 }
 
@@ -240,6 +247,13 @@ type compatibleChatRequest struct {
 	ToolChoice       any                 `json:"tool_choice,omitempty"`
 	Stream           bool                `json:"stream,omitempty"`
 	ResponseFormat   map[string]string   `json:"response_format,omitempty"`
+	Reasoning        *reasoningConfig    `json:"reasoning,omitempty"`
+	ReasoningEffort  string              `json:"reasoning_effort,omitempty"`
+}
+
+type reasoningConfig struct {
+	Effort  string `json:"effort,omitempty"`
+	Exclude bool   `json:"exclude,omitempty"`
 }
 
 type compatibleMessage struct {
@@ -301,6 +315,7 @@ type compatibleUsage struct {
 	PromptTokens        int `json:"prompt_tokens"`
 	CompletionTokens    int `json:"completion_tokens"`
 	TotalTokens         int `json:"total_tokens"`
+	ReasoningTokens     int `json:"reasoning_tokens,omitempty"`
 	PromptTokensDetails *struct {
 		CachedTokens int `json:"cached_tokens"`
 	} `json:"prompt_tokens_details,omitempty"`
@@ -317,6 +332,9 @@ func (u *compatibleUsage) generationInfo() map[string]any {
 	}
 	if u.PromptTokensDetails != nil {
 		info["cached_tokens"] = u.PromptTokensDetails.CachedTokens
+	}
+	if u.ReasoningTokens > 0 {
+		info["reasoning_tokens"] = u.ReasoningTokens
 	}
 	return info
 }
@@ -432,6 +450,16 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 	}
 	if callOpts.JSONMode {
 		reqPayload.ResponseFormat = map[string]string{"type": "json_object"}
+	}
+	// Apply reasoning policy: only include reasoning fields when explicitly configured.
+	// Empty string = auto mode = omit from request (let model/provider decide).
+	// This prevents sending unsupported parameters to providers that don't support reasoning.
+	if m.reasoningEffort != "" {
+		reqPayload.Reasoning = &reasoningConfig{
+			Effort:  m.reasoningEffort,
+			Exclude: m.reasoningEffort == "none",
+		}
+		reqPayload.ReasoningEffort = m.reasoningEffort
 	}
 	generationInfo["llm_request_prepare_ms"] = time.Since(requestPrepareStart).Milliseconds()
 
@@ -892,7 +920,7 @@ func convertMessageContent(message llms.MessageContent, explicitPromptCache bool
 				Type: "text",
 				Text: typed.Text,
 			}
-			if explicitPromptCache && message.Role == llms.ChatMessageTypeSystem && i == 0 && len(message.Parts) > 1 {
+			if explicitPromptCache && message.Role == llms.ChatMessageTypeSystem && i == 0 {
 				converted.CacheControl = &compatibleCacheControl{Type: "ephemeral"}
 			}
 			textParts = append(textParts, converted)
@@ -929,7 +957,7 @@ func convertMessageContent(message llms.MessageContent, explicitPromptCache bool
 				Type: typed.Type,
 				Function: &compatibleFunctionCall{
 					Name:      typed.FunctionCall.Name,
-					Arguments: typed.FunctionCall.Arguments,
+					Arguments: normalizeCompatibleToolArguments(typed.FunctionCall.Arguments),
 				},
 			})
 		default:
@@ -941,7 +969,7 @@ func convertMessageContent(message llms.MessageContent, explicitPromptCache bool
 		msg.ToolCalls = toolCalls
 	}
 
-	if len(textParts) == 1 && textParts[0].Type == "text" {
+	if len(textParts) == 1 && textParts[0].Type == "text" && textParts[0].CacheControl == nil {
 		msg.Content = textParts[0].Text
 		return msg, nil
 	}
@@ -949,6 +977,17 @@ func convertMessageContent(message llms.MessageContent, explicitPromptCache bool
 		msg.Content = textParts
 	}
 	return msg, nil
+}
+
+func normalizeCompatibleToolArguments(arguments string) string {
+	trimmed := strings.TrimSpace(arguments)
+	if trimmed == "" {
+		return "{}"
+	}
+	if json.Valid([]byte(trimmed)) {
+		return trimmed
+	}
+	return encodeToolArguments(arguments)
 }
 
 func convertTools(tools []llms.Tool, functions []llms.FunctionDefinition) []compatibleTool {
@@ -1077,17 +1116,77 @@ func normalizeCompatibleMessages(messages []compatibleMessage) []compatibleMessa
 	}
 
 	if len(systemSegments) == 0 && !preserveSystemParts {
-		return normalized
+		return mergeConsecutiveSameRoleMessages(normalized)
 	}
 	if preserveSystemParts {
-		return append([]compatibleMessage{{Role: "system", Content: systemParts}}, normalized...)
+		return mergeConsecutiveSameRoleMessages(append([]compatibleMessage{{Role: "system", Content: systemParts}}, normalized...))
 	}
 
 	mergedSystem := compatibleMessage{
 		Role:    "system",
 		Content: strings.Join(systemSegments, "\n\n"),
 	}
-	return append([]compatibleMessage{mergedSystem}, normalized...)
+	return mergeConsecutiveSameRoleMessages(append([]compatibleMessage{mergedSystem}, normalized...))
+}
+
+// mergeConsecutiveSameRoleMessages merges consecutive messages with the same role.
+// This is required by some providers (Anthropic Claude, Google Gemini) that enforce
+// strict user/assistant alternation. Tool messages are never merged as they require
+// specific tool_call_id pairing.
+func mergeConsecutiveSameRoleMessages(messages []compatibleMessage) []compatibleMessage {
+	if len(messages) <= 1 {
+		return messages
+	}
+
+	result := make([]compatibleMessage, 0, len(messages))
+	result = append(result, messages[0])
+
+	for i := 1; i < len(messages); i++ {
+		current := messages[i]
+		previous := &result[len(result)-1]
+
+		// Only merge if roles match and neither is a tool message
+		canMerge := current.Role == previous.Role &&
+			current.Role != "tool" &&
+			len(current.ToolCalls) == 0 &&
+			len(previous.ToolCalls) == 0
+
+		if !canMerge {
+			result = append(result, current)
+			continue
+		}
+
+		// Merge content based on type
+		prevContent, prevIsString := previous.Content.(string)
+		currContent, currIsString := current.Content.(string)
+
+		if prevIsString && currIsString {
+			// Both are strings: join with double newline
+			previous.Content = prevContent + "\n\n" + currContent
+		} else if prevIsString && !currIsString {
+			// Previous is string, current is parts: convert previous to parts and merge
+			parts := []compatibleContentPart{{Type: "text", Text: prevContent}}
+			if currParts, ok := current.Content.([]compatibleContentPart); ok {
+				parts = append(parts, currParts...)
+			}
+			previous.Content = parts
+		} else if !prevIsString && currIsString {
+			// Previous is parts, current is string: append as text part
+			if prevParts, ok := previous.Content.([]compatibleContentPart); ok {
+				prevParts = append(prevParts, compatibleContentPart{Type: "text", Text: currContent})
+				previous.Content = prevParts
+			}
+		} else {
+			// Both are parts: concatenate arrays
+			if prevParts, ok := previous.Content.([]compatibleContentPart); ok {
+				if currParts, ok := current.Content.([]compatibleContentPart); ok {
+					previous.Content = append(prevParts, currParts...)
+				}
+			}
+		}
+	}
+
+	return result
 }
 
 func audioFormatFromMIME(mimeType string) string {

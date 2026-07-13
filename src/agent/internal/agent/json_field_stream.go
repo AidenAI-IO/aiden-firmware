@@ -241,9 +241,10 @@ func (w *JSONFieldStreamWriter) skipValueRune(r rune) error {
 		if w.depth > 0 {
 			w.depth--
 		}
-		if w.depth == 0 {
+		switch w.depth {
+		case 0:
 			w.state = jsonFieldStreamDone
-		} else if w.depth == w.skipValueRoot {
+		case w.skipValueRoot:
 			w.state = jsonFieldStreamExpectKey
 		}
 	case ',':

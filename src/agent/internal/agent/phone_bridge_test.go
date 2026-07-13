@@ -8,7 +8,7 @@ import (
 )
 
 func TestPhoneBridgeHandlesEnvironmentEvent(t *testing.T) {
-	bridge := NewPhoneBridge(nil)
+	bridge := newPhoneBridgeForTest()
 	defer bridge.queue.Stop()
 
 	bridge.mu.Lock()
@@ -42,7 +42,7 @@ func TestPhoneBridgeHandlesEnvironmentEvent(t *testing.T) {
 		t.Fatal("environment event was not handled")
 	}
 
-	status := bridge.Status()
+	status := bridge.getStatus()
 	if status.Environment == nil {
 		t.Fatal("expected environment in status")
 	}
@@ -71,7 +71,7 @@ func TestPhoneBridgeHandlesEnvironmentEvent(t *testing.T) {
 }
 
 func TestPhoneBridgeHandlesAppStateEvent(t *testing.T) {
-	bridge := NewPhoneBridge(nil)
+	bridge := newPhoneBridgeForTest()
 	defer bridge.queue.Stop()
 
 	handled := bridge.handleAppEvent(BridgeCommandResponse{
@@ -83,7 +83,7 @@ func TestPhoneBridgeHandlesAppStateEvent(t *testing.T) {
 		t.Fatal("app state event was not handled")
 	}
 
-	status := bridge.Status()
+	status := bridge.getStatus()
 	if status.AppState != "background" {
 		t.Fatalf("app_state = %q, want background", status.AppState)
 	}

@@ -14,8 +14,8 @@
         "android": {
           "status": "active",
           "tool": "keyboard_tap",
-          "input": { "keys": ["escape"] },
-          "note": "verified: Esc back / dismiss",
+          "input": { "keys": ["KEYCODE_BACK"] },
+          "note": "Android extension key via hid.usb2 consumer control",
           "alternatives": [
             {
               "status": "active",
@@ -53,8 +53,18 @@
           ]
         },
         "android": {
-          "status": "reserved",
-          "note": "no verified keyboard home shortcut; Meta alone opens app search (see spotlight_search)"
+          "status": "active",
+          "tool": "keyboard_tap",
+          "input": { "keys": ["KEYCODE_HOME"] },
+          "note": "Android extension key via hid.usb2 consumer control",
+          "alternatives": [
+            {
+              "status": "active",
+              "tool": "touch_gesture",
+              "input": { "type": "home" },
+              "note": "edge swipe fallback"
+            }
+          ]
         },
         "mac": {
           "status": "reserved",
@@ -84,8 +94,16 @@
         "android": {
           "status": "active",
           "tool": "keyboard_tap",
-          "input": { "keys": ["meta", "tab"], "hold_ms": 120 },
-          "note": "verified: Meta+Tab open app management center / recents"
+          "input": { "keys": ["KEYCODE_APP_SWITCH"] },
+          "note": "Android extension key via hid.usb2 consumer control",
+          "alternatives": [
+            {
+              "status": "active",
+              "tool": "keyboard_tap",
+              "input": { "keys": ["meta", "tab"], "hold_ms": 120 },
+              "note": "external keyboard fallback"
+            }
+          ]
         },
         "mac": {
           "status": "active",
@@ -953,41 +971,6 @@
         "mac": {
           "status": "reserved",
           "note": "unreliable via HID: Option+Cmd+D triple-modifier"
-        }
-      }
-    },
-    "screenshot_region": {
-      "label": "Screenshot Region",
-      "aliases": ["区域截图", "screenshot_region"],
-      "category": "system_panel",
-      "platforms": {
-        "ios": {
-          "status": "active",
-          "tool": "keyboard_tap",
-          "input": { "keys": ["shift", "meta", "4"], "hold_ms": 120 },
-          "note": "external keyboard: Cmd+Shift+4 region screenshot + markup (HID shift=0x02, meta=0x08, 4=0x21)"
-        },
-        "android": { "status": "reserved" },
-        "mac": {
-          "status": "active",
-          "tool": "keyboard_tap",
-          "input": { "keys": ["shift", "meta", "4"] },
-          "note": "capture selected region to desktop (Shift+Cmd+4)"
-        }
-      }
-    },
-    "screenshot_toolbar": {
-      "label": "Screenshot Toolbar",
-      "aliases": ["截图工具栏", "screenshot_toolbar", "screen_record"],
-      "category": "system_panel",
-      "platforms": {
-        "ios": { "status": "reserved" },
-        "android": { "status": "reserved" },
-        "mac": {
-          "status": "active",
-          "tool": "keyboard_tap",
-          "input": { "keys": ["shift", "meta", "5"] },
-          "note": "open screenshot/screen-record toolbar (Shift+Cmd+5)"
         }
       }
     },

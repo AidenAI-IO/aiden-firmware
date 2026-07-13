@@ -46,7 +46,7 @@ def test_required_tools_pass_when_all_present():
         tool_calls=[
             ToolCall(step=1, tool="enter_plan_mode", input={}),
             ToolCall(step=2, tool="commit_plan", input={}),
-            ToolCall(step=3, tool="calculator", input={}),
+            ToolCall(step=3, tool="shell", input={"command": "printf 1"}),
         ],
         final_response="ok",
         total_tool_calls=3,
@@ -69,6 +69,7 @@ def test_required_tools_fail_when_missing():
     assert out.failures[0].id == "required_tools"
     assert out.failures[0].requirement == "Must call: enter_plan_mode."
     assert out.failures[0].actual == "Missing: enter_plan_mode. Used: x."
+
 
 def test_forbidden_tools_fail_when_present():
     trace = Trace(

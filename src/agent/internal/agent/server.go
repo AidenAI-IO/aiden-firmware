@@ -102,9 +102,9 @@ type MessageAttachment struct {
 	Transcript string `json:"transcript,omitempty"`
 }
 
-// Message represents a chat message or tool call
+// Message represents a public chat history message or tool call.
 type Message struct {
-	Type            string              `json:"type"` // "user", "assistant", "tool_call", "tool_result", "role_output"
+	Type            string              `json:"type"` // "user", "assistant", "tool_call", "tool_result"
 	Role            string              `json:"role,omitempty"`
 	EpisodeID       string              `json:"episode_id,omitempty"`
 	RequestID       string              `json:"request_id,omitempty"`
@@ -113,7 +113,6 @@ type Message struct {
 	OriginalText    string              `json:"original_text,omitempty"`
 	Transcript      string              `json:"transcript,omitempty"`
 	Content         string              `json:"content"`
-	Todo            *TodoState          `json:"todo,omitempty"`
 	SpeechEligible  bool                `json:"speech_eligible,omitempty"`
 	ToolName        string              `json:"tool_name,omitempty"`
 	ToolInput       string              `json:"tool_input,omitempty"`
@@ -127,12 +126,24 @@ type Message struct {
 	IsError         bool                `json:"is_error,omitempty"`
 }
 
-func cloneTodoStatePtr(todo *TodoState) *TodoState {
-	if todo == nil {
-		return nil
+func normalizeChatHistoryMessage(message Message) (Message, bool) {
+	switch strings.TrimSpace(message.Type) {
+	case "user", "user_input", "steer":
+		message.Type = "user"
+		message.Role = ""
+	case "assistant", "assistant_output":
+		message.Type = "assistant"
+		if role := strings.TrimSpace(message.Role); role == "assistant" || role == "ai" {
+			message.Role = ""
+		}
+	case runEventToolCall:
+		message.Type = runEventToolCall
+	case "tool_result":
+		message.Type = "tool_result"
+	default:
+		return Message{}, false
 	}
-	cloned := todo.Clone()
-	return &cloned
+	return message, true
 }
 
 func messageFromRunEvent(event RunEvent, fallbackEpisodeID string, requestID string) Message {
@@ -140,13 +151,12 @@ func messageFromRunEvent(event RunEvent, fallbackEpisodeID string, requestID str
 	if episodeID == "" {
 		episodeID = fallbackEpisodeID
 	}
-	return Message{
+	message := Message{
 		Type:           event.Type,
 		Role:           event.Role,
 		EpisodeID:      episodeID,
 		RequestID:      requestID,
 		Content:        event.Content,
-		Todo:           cloneTodoStatePtr(event.Todo),
 		SpeechEligible: event.SpeechEligible,
 		ToolName:       event.ToolName,
 		ToolInput:      event.ToolInput,
@@ -154,6 +164,11 @@ func messageFromRunEvent(event RunEvent, fallbackEpisodeID string, requestID str
 		Timestamp:      event.Timestamp,
 		IsError:        event.IsError,
 	}
+	message, ok := normalizeChatHistoryMessage(message)
+	if !ok {
+		return Message{}
+	}
+	return message
 }
 
 func messageFromTurnInput(input TurnInput, episodeID, requestID string, attachments []MessageAttachment, timestamp time.Time) Message {
@@ -229,7 +244,6 @@ func messageAttachmentsContainArtifact(attachments []MessageAttachment, artifact
 // ChatRequest represents an incoming chat request
 type ChatRequest struct {
 	Message     string              `json:"message"`
-	Skills      []string            `json:"skills,omitempty"`
 	Attachments []MessageAttachment `json:"attachments,omitempty"`
 	RequestID   string              `json:"request_id,omitempty"`
 	PhoneID     string              `json:"phone_id,omitempty"`
@@ -331,7 +345,7 @@ type ToolInvokeResponse struct {
 
 // NewServer creates a new HTTP server
 func NewServer(runtime *Runtime, addr string) *Server {
-	bridge := NewPhoneBridge(runtime.logger)
+	bridge := NewPhoneBridge(runtime.logger, runtime.stateManager)
 	s := &Server{
 		runtime:             runtime,
 		addr:                addr,
@@ -415,6 +429,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/live-activity/current", s.handleLiveActivityCurrent)
 	mux.HandleFunc("/api/events", s.handleEvents)
 	mux.HandleFunc("/api/history", s.handleHistory)
+	mux.HandleFunc("/api/context-dump", s.handleContextDump)
 	mux.HandleFunc("/api/episodes/", s.handleEpisodes)
 	mux.HandleFunc("/api/setup", s.handleSetup)
 	if s.benchmarkToken() != "" {
@@ -451,6 +466,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/coordinate-debug/tap", s.handleCoordinateDebugTap)
 	mux.HandleFunc("/coordinate-debug", s.handleCoordinateDebug)
 	mux.HandleFunc("/coordinate-debug.html", s.handleCoordinateDebug)
+	mux.HandleFunc("/keyboard-tap-android-keys", s.handleKeyboardTapAndroidKeys)
 
 	mux.HandleFunc("/user_files", s.handleUserFiles)
 	mux.HandleFunc("/user_files/regenerate", s.handleUserFilesRegenerate)
@@ -521,6 +537,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if wantsChatStream(r) {
+		if s.logger != nil {
+			s.logger.Info("Handling chat stream")
+		}
 		s.handleChatStream(w, r)
 		return
 	}
@@ -544,7 +563,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	userMsg := messageFromTurnInput(turnInput, episodeID, req.RequestID, historyAttachments, time.Now())
 
-	s.handleChatAsync(w, r, req, turnInput, userMsg)
+	s.logger.Info("Handling chat async")
+	s.handleChatAsync(w, req, turnInput, userMsg)
 }
 
 func (s *Server) handleChatCancel(w http.ResponseWriter, r *http.Request) {
@@ -898,7 +918,6 @@ func createRequestID() string {
 // chatPendingResult and served by handleChatResult.
 func (s *Server) handleChatAsync(
 	w http.ResponseWriter,
-	r *http.Request,
 	req ChatRequest,
 	turnInput TurnInput,
 	userMsg Message,
@@ -949,9 +968,7 @@ func (s *Server) handleChatAsync(
 
 	// Run agent in background goroutine
 	go func() {
-		progress := s.newRunProgressSpeaker()
 		defer func() {
-			progress.Cancel()
 			s.unregisterActiveRun(requestID)
 			s.clearPendingSteer(requestID)
 			// Keep the completed result available for polling for 60s,
@@ -969,11 +986,14 @@ func (s *Server) handleChatAsync(
 		// so the client can poll them in near-realtime.
 		eventHandler := func(event RunEvent) {
 			msg := messageFromRunEvent(event, userMsg.EpisodeID, requestID)
-			s.appendHistory(msg)
-			pending.mu.Lock()
-			pending.history = append(pending.history, msg)
-			pending.messages = append(pending.messages, msg)
-			pending.mu.Unlock()
+			if msg.Type != "" {
+				if msg, ok := s.appendHistory(msg); ok {
+					pending.mu.Lock()
+					pending.history = append(pending.history, msg)
+					pending.messages = append(pending.messages, msg)
+					pending.mu.Unlock()
+				}
+			}
 			if s.liveActivity != nil {
 				s.liveActivity.UpdateFromRunEvent(requestID, event)
 			}
@@ -981,24 +1001,16 @@ func (s *Server) handleChatAsync(
 			if text := s.toolCallSpeechText(event); text != "" {
 				go s.speakToolContent(runCtx, text)
 			}
-			if event.Type == runEventTodoUpdate && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
-				if text, ok := progressSpeechTextForEvent(event); ok {
-					progress.Schedule(runCtx, text)
-				}
-			}
 		}
 
 		runReq := RunRequest{
 			Input:                   inputText,
 			Attachments:             turnInput.Attachments,
 			Turn:                    turnInput,
-			Skills:                  req.Skills,
 			EpisodeID:               userMsg.EpisodeID,
 			RequestID:               requestID,
 			DeviceEnvironment:       s.bridgeEnvironment(),
-			RuntimeContext:          s.runtimeContext(),
 			EventHandler:            eventHandler,
-			StreamFinalChunks:       true,
 			AsyncEpisodeMaintenance: true,
 			SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
 				return s.consumePendingSteer(requestID)
@@ -1021,14 +1033,13 @@ func (s *Server) handleChatAsync(
 					output := newActiveTTSOutput(nil)
 					output.setStream(newStream)
 					unregisterStreamOutput = s.registerActiveOutput(requestID, output)
-					runReq.StreamWriter = newCancelOnFirstWriteWriter(speechStreamWriterForConfig(newStream, s.runtime.config), progress.Cancel)
+					runReq.StreamWriter = speechStreamWriterForConfig(newStream, s.runtime.config)
 				}
 			}
 		}
 		defer unregisterStreamOutput()
 
 		result, err := s.runtime.Run(runCtx, runReq)
-		progress.Cancel()
 		if newStream != nil {
 			closeErr := newStream.closeAndWait()
 			if closeErr != nil && s.logger != nil {
@@ -1055,9 +1066,10 @@ func (s *Server) handleChatAsync(
 					Timestamp: time.Now(),
 					IsError:   true,
 				}
-				s.appendHistory(errorMsg)
-				pending.history = append(pending.history, errorMsg)
-				pending.messages = append(pending.messages, errorMsg)
+				if errorMsg, ok := s.appendHistory(errorMsg); ok {
+					pending.history = append(pending.history, errorMsg)
+					pending.messages = append(pending.messages, errorMsg)
+				}
 				if s.liveActivity != nil {
 					s.liveActivity.FailTask(requestID, err.Error())
 				}
@@ -1075,18 +1087,6 @@ func (s *Server) handleChatAsync(
 			return
 		}
 
-		// Add assistant message
-		assistantMsg := Message{
-			Type:      "assistant",
-			EpisodeID: firstNonEmptyString([]string{result.EpisodeID, userMsg.EpisodeID}),
-			RequestID: requestID,
-			Status:    "completed",
-			Content:   result.Output,
-			Timestamp: time.Now(),
-		}
-		s.appendHistory(assistantMsg)
-		pending.history = append(pending.history, assistantMsg)
-		pending.messages = append(pending.messages, assistantMsg)
 		if s.liveActivity != nil {
 			s.liveActivity.CompleteTask(requestID, result.Output)
 		}
@@ -1138,73 +1138,103 @@ func (s *Server) handleChatResult(w http.ResponseWriter, r *http.Request) {
 		offset = n
 	}
 
-	s.pendingResultsMu.Lock()
-	pending := s.pendingResults[requestID]
-	s.pendingResultsMu.Unlock()
+	// Long polling: wait=true blocks until task completes or context is canceled.
+	waitMode := r.URL.Query().Get("wait") == "true"
 
-	if pending == nil {
-		// Request not found — may have completed and been cleaned up,
-		// or may never have existed.
-		liveActivity := s.liveActivitySnapshot(requestID)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(ChatResultResponse{Status: "not_found", LiveActivity: liveActivity})
-		return
-	}
-
-	pending.mu.Lock()
-	errText := pending.err
-	done := pending.done
-
-	msgs := pending.messages
-	if offset < len(msgs) {
-		msgs = append([]Message(nil), msgs[offset:]...)
+	// Add server-side timeout for long polling to prevent indefinite blocking.
+	var loopCtx context.Context
+	var cancel context.CancelFunc
+	if waitMode {
+		loopCtx, cancel = context.WithTimeout(r.Context(), 5*time.Minute)
+		defer cancel()
 	} else {
-		msgs = nil
+		loopCtx = r.Context()
 	}
 
-	var historySnapshot []Message
-	response := ""
-	if done {
-		historySnapshot = make([]Message, len(pending.history))
-		copy(historySnapshot, pending.history)
-		for i := len(pending.history) - 1; i >= 0; i-- {
-			if pending.history[i].Type == "assistant" {
-				response = pending.history[i].Content
-				break
+	for {
+		s.pendingResultsMu.Lock()
+		pending := s.pendingResults[requestID]
+		s.pendingResultsMu.Unlock()
+
+		if pending == nil {
+			liveActivity := s.liveActivitySnapshot(requestID)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(ChatResultResponse{Status: "not_found", LiveActivity: liveActivity})
+			return
+		}
+
+		pending.mu.Lock()
+		errText := pending.err
+		done := pending.done
+
+		msgs := pending.messages
+		if offset < len(msgs) {
+			msgs = append([]Message(nil), msgs[offset:]...)
+		} else {
+			msgs = nil
+		}
+
+		var historySnapshot []Message
+		response := ""
+		if done {
+			historySnapshot = make([]Message, len(pending.history))
+			copy(historySnapshot, pending.history)
+			for i := len(pending.history) - 1; i >= 0; i-- {
+				if pending.history[i].Type == "assistant" {
+					response = pending.history[i].Content
+					break
+				}
 			}
 		}
-	}
-	pending.mu.Unlock()
+		pending.mu.Unlock()
 
-	liveActivity := s.liveActivitySnapshot(requestID)
+		liveActivity := s.liveActivitySnapshot(requestID)
 
-	if errText != "" {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(ChatResultResponse{
-			Status:       "error",
-			Messages:     msgs,
-			Error:        errText,
-			LiveActivity: liveActivity,
-		})
-		return
-	}
+		if errText != "" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(ChatResultResponse{
+				Status:       "error",
+				Messages:     msgs,
+				Error:        errText,
+				LiveActivity: liveActivity,
+			})
+			return
+		}
 
-	if done {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(ChatResultResponse{
-			Status:       "complete",
-			Response:     response,
-			History:      historySnapshot,
-			Messages:     msgs,
-			LiveActivity: liveActivity,
-		})
-	} else {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(ChatResultResponse{
-			Status:       "running",
-			Messages:     msgs,
-			LiveActivity: liveActivity,
-		})
+		if done {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(ChatResultResponse{
+				Status:       "complete",
+				Response:     response,
+				History:      historySnapshot,
+				Messages:     msgs,
+				LiveActivity: liveActivity,
+			})
+			return
+		}
+
+		// Non-wait mode: return running status immediately.
+		if !waitMode {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(ChatResultResponse{
+				Status:       "running",
+				Messages:     msgs,
+				LiveActivity: liveActivity,
+			})
+			return
+		}
+
+		// Wait mode: sleep briefly then re-check.
+		select {
+		case <-loopCtx.Done():
+			if errors.Is(loopCtx.Err(), context.DeadlineExceeded) {
+				http.Error(w, "long poll timeout", http.StatusRequestTimeout)
+			} else {
+				http.Error(w, "client disconnected", http.StatusRequestTimeout)
+			}
+			return
+		case <-time.After(200 * time.Millisecond):
+		}
 	}
 }
 
@@ -1220,18 +1250,11 @@ func (s *Server) liveActivityPhoneID(req ChatRequest) string {
 		return phoneID
 	}
 	if s != nil && s.bridge != nil {
-		if phoneID := strings.TrimSpace(s.bridge.Status().PhoneID); phoneID != "" {
+		if phoneID := strings.TrimSpace(s.bridge.getStatus().PhoneID); phoneID != "" {
 			return phoneID
 		}
 	}
 	return ""
-}
-
-func (s *Server) runtimeContext() string {
-	if s.bridge == nil {
-		return ""
-	}
-	return phoneBridgeRuntimeContext(s.bridge.Status())
 }
 
 func (s *Server) bridgeEnvironment() *PhoneEnvironment {
@@ -1241,7 +1264,7 @@ func (s *Server) bridgeEnvironment() *PhoneEnvironment {
 		}
 		return nil
 	}
-	status := s.bridge.Status()
+	status := s.bridge.getStatus()
 	if status.Environment == nil {
 		if s.runtime != nil && s.runtime.tools != nil {
 			s.runtime.tools.UpdateDeviceEnvironment(nil)
@@ -1298,6 +1321,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	// HTTP client disconnects; only /api/chat/cancel should stop it.
 	runCtx, cancel := context.WithCancel(context.Background())
 	if !s.registerActiveRun(req.RequestID, cancel) {
+		s.logger.Error("Request ID already in use: %s", req.RequestID)
 		cancel()
 		http.Error(w, "request_id already in use", http.StatusConflict)
 		return
@@ -1314,44 +1338,41 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	cleanupRunAtReturn := true
 	defer func() {
 		if cleanupRunAtReturn {
+			s.logger.Info("Cleaning up run at return")
 			cleanupRun()
 		}
 	}()
+	s.logger.Info("Appending history")
 	s.appendHistory(userMessage)
-	progress := s.newRunProgressSpeaker()
-	defer progress.Cancel()
 	if s.liveActivity != nil {
+		s.logger.Info("Starting live activity")
 		s.liveActivity.StartTask(req.RequestID, inputText, s.liveActivityPhoneID(req))
 	}
 
+	s.logger.Info("Creating run request")
 	runReq := RunRequest{
 		Input:                   inputText,
 		Attachments:             turnInput.Attachments,
 		Turn:                    turnInput,
-		Skills:                  req.Skills,
 		EpisodeID:               episodeID,
 		RequestID:               req.RequestID,
 		DeviceEnvironment:       s.bridgeEnvironment(),
-		RuntimeContext:          s.runtimeContext(),
-		StreamFinalChunks:       true,
 		AsyncEpisodeMaintenance: true,
 		SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
 			return s.consumePendingSteer(req.RequestID)
 		},
 		EventHandler: func(event RunEvent) {
 			message := messageFromRunEvent(event, episodeID, req.RequestID)
-			s.appendHistory(message)
-			stream.Write(ChatStreamEvent{Type: "message", Message: &message})
+			if message.Type != "" {
+				if message, ok := s.appendHistory(message); ok {
+					stream.Write(ChatStreamEvent{Type: "message", Message: &message})
+				}
+			}
 			if s.liveActivity != nil {
 				s.liveActivity.UpdateFromRunEvent(req.RequestID, event)
 			}
 			if text := s.toolCallSpeechText(event); text != "" {
 				go s.speakToolContent(ctx, text)
-			}
-			if event.Type == runEventTodoUpdate && s.runtime.config.VoiceProgressSpeechEnabledOrDefault() {
-				if text, ok := progressSpeechTextForEvent(event); ok {
-					progress.Schedule(ctx, text)
-				}
 			}
 		},
 	}
@@ -1359,10 +1380,11 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	var newStream *streamSessionWriter
 	unregisterStreamOutput := func() {}
 	ttsManager := s.currentTTSManager()
-	finalStreamWriters := []io.Writer{
-		newChatAssistantFinalStreamWriter(stream, episodeID, req.RequestID),
+	streamWriters := []io.Writer{
+		newChatAssistantStreamWriter(stream, episodeID, req.RequestID),
 	}
 	if s.runtime.config.VoiceStreamingTTSEnabledOrDefault() && s.audioClient != nil {
+		s.logger.Info("Starting TTS stream")
 		if ttsManager != nil {
 			streamSession, err := beginManagedTTSStream(ctx, ttsManager, s.audioClient, s.runtime.config)
 			if err != nil {
@@ -1374,15 +1396,16 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 				output := newActiveTTSOutput(nil)
 				output.setStream(newStream)
 				unregisterStreamOutput = s.registerActiveOutput(req.RequestID, output)
-				finalStreamWriters = append(finalStreamWriters, newCancelOnFirstWriteWriter(speechStreamWriterForConfig(newStream, s.runtime.config), progress.Cancel))
+				streamWriters = append(streamWriters, speechStreamWriterForConfig(newStream, s.runtime.config))
 			}
 		}
 	}
 	defer unregisterStreamOutput()
-	runReq.StreamWriter = newFinalStreamFanoutWriter(finalStreamWriters...)
+	s.logger.Info("Creating stream writer")
+	runReq.StreamWriter = newStreamFanoutWriter(streamWriters...)
 
+	s.logger.Info("Running runtime")
 	result, err := s.runtime.Run(ctx, runReq)
-	progress.Cancel()
 	if newStream != nil {
 		closeErr := newStream.closeAndWait()
 		if closeErr != nil && s.logger != nil {
@@ -1415,8 +1438,9 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			Timestamp: time.Now(),
 			IsError:   true,
 		}
-		s.appendHistory(errorMessage)
-		stream.Write(ChatStreamEvent{Type: "message", Message: &errorMessage})
+		if errorMessage, ok := s.appendHistory(errorMessage); ok {
+			stream.Write(ChatStreamEvent{Type: "message", Message: &errorMessage})
+		}
 		if s.logger != nil {
 			s.logger.Error("Agent run failed: %v", err)
 		}
@@ -1424,16 +1448,6 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	assistantMessage := Message{
-		Type:      "assistant",
-		EpisodeID: firstNonEmptyString([]string{result.EpisodeID, episodeID}),
-		RequestID: req.RequestID,
-		Status:    "completed",
-		Content:   result.Output,
-		Timestamp: time.Now(),
-	}
-	s.appendHistory(assistantMessage)
-	stream.Write(ChatStreamEvent{Type: "message", Message: &assistantMessage})
 	historySnapshot := s.historySnapshot()
 	if s.liveActivity != nil {
 		s.liveActivity.CompleteTask(req.RequestID, result.Output)
@@ -1548,25 +1562,25 @@ func (w *chatAssistantDeltaWriter) StreamEmitted() bool {
 	return w.emitted
 }
 
-type chatAssistantFinalStreamWriter struct {
+type chatAssistantStreamWriter struct {
 	delta *chatAssistantDeltaWriter
 }
 
-func newChatAssistantFinalStreamWriter(stream *chatStreamWriter, episodeID, requestID string) io.Writer {
+func newChatAssistantStreamWriter(stream *chatStreamWriter, episodeID, requestID string) io.Writer {
 	delta := newChatAssistantDeltaWriter(stream, episodeID, requestID)
-	return &chatAssistantFinalStreamWriter{
+	return &chatAssistantStreamWriter{
 		delta: delta,
 	}
 }
 
-func (w *chatAssistantFinalStreamWriter) Write(p []byte) (int, error) {
+func (w *chatAssistantStreamWriter) Write(p []byte) (int, error) {
 	if w == nil || w.delta == nil {
 		return len(p), nil
 	}
 	return w.delta.Write(p)
 }
 
-func (w *chatAssistantFinalStreamWriter) ResetStreamState() {
+func (w *chatAssistantStreamWriter) ResetStreamState() {
 	if w == nil {
 		return
 	}
@@ -1575,20 +1589,20 @@ func (w *chatAssistantFinalStreamWriter) ResetStreamState() {
 	}
 }
 
-func (w *chatAssistantFinalStreamWriter) StreamEmitted() bool {
+func (w *chatAssistantStreamWriter) StreamEmitted() bool {
 	if w == nil || w.delta == nil {
 		return false
 	}
 	return w.delta.StreamEmitted()
 }
 
-type finalStreamFanoutWriter struct {
+type streamFanoutWriter struct {
 	writers []io.Writer
 	mu      sync.Mutex
 	emitted bool
 }
 
-func newFinalStreamFanoutWriter(writers ...io.Writer) io.Writer {
+func newStreamFanoutWriter(writers ...io.Writer) io.Writer {
 	filtered := make([]io.Writer, 0, len(writers))
 	for _, writer := range writers {
 		if writer != nil {
@@ -1598,10 +1612,10 @@ func newFinalStreamFanoutWriter(writers ...io.Writer) io.Writer {
 	if len(filtered) == 0 {
 		return nil
 	}
-	return &finalStreamFanoutWriter{writers: filtered}
+	return &streamFanoutWriter{writers: filtered}
 }
 
-func (w *finalStreamFanoutWriter) Write(p []byte) (int, error) {
+func (w *streamFanoutWriter) Write(p []byte) (int, error) {
 	if w == nil || len(p) == 0 {
 		return len(p), nil
 	}
@@ -1638,7 +1652,7 @@ func (w *finalStreamFanoutWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (w *finalStreamFanoutWriter) ResetStreamState() {
+func (w *streamFanoutWriter) ResetStreamState() {
 	if w == nil {
 		return
 	}
@@ -1655,7 +1669,7 @@ func (w *finalStreamFanoutWriter) ResetStreamState() {
 // ResetBuffer forwards a buffer reset to every fanned-out writer that supports
 // it (e.g. the TTS stream writer), so residual buffered speech does not leak
 // across turns on the streaming chat path.
-func (w *finalStreamFanoutWriter) ResetBuffer() {
+func (w *streamFanoutWriter) ResetBuffer() {
 	if w == nil {
 		return
 	}
@@ -1666,7 +1680,7 @@ func (w *finalStreamFanoutWriter) ResetBuffer() {
 	}
 }
 
-func (w *finalStreamFanoutWriter) StreamEmitted() bool {
+func (w *streamFanoutWriter) StreamEmitted() bool {
 	if w == nil {
 		return false
 	}
@@ -1716,29 +1730,6 @@ func (s *Server) toolCallSpeechText(event RunEvent) string {
 		return ""
 	}
 	return BuildSpeechText(event.Content, s.runtime.config)
-}
-
-func (s *Server) newRunProgressSpeaker() *progressSpeaker {
-	cfg := progressSpeakerConfig{}
-	if s.logger != nil {
-		cfg.Logf = func(format string, args ...any) {
-			s.logger.Error(format, args...)
-		}
-	}
-	return newProgressSpeaker(func(ctx context.Context, text string) error {
-		if strings.TrimSpace(text) == "" || s.audioClient == nil {
-			return nil
-		}
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		ttsCtx, cancel := context.WithTimeout(ctx, toolContentSpeechTimeout)
-		defer cancel()
-		if s.logger != nil {
-			s.logger.Info("Progress TTS playback: %q", text)
-		}
-		return s.speakText(ttsCtx, text, 0)
-	}, cfg)
 }
 
 func (s *Server) currentTTSManager() *tts.ProviderManager {
@@ -1822,6 +1813,7 @@ func (s *Server) speakTextForRequest(ctx context.Context, requestID string, text
 }
 
 func (s *Server) playPromptSoundAsync(kind promptSoundKind, label string) {
+	s.logger.Info("Playing prompt sound: %s, %s", kind, label)
 	if s.audioClient == nil {
 		return
 	}
@@ -1843,6 +1835,16 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(historySnapshot)
+}
+
+func (s *Server) handleContextDump(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(s.runtime.ContextDump())
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
@@ -1897,7 +1899,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func shouldStreamEventMessage(msg Message) bool {
-	return strings.TrimSpace(msg.Type) != ""
+	_, ok := normalizeChatHistoryMessage(msg)
+	return ok
 }
 
 func (s *Server) handleEpisodes(w http.ResponseWriter, r *http.Request) {
@@ -2675,7 +2678,7 @@ func firstForwardedHeaderValue(value string) string {
 }
 
 func (s *Server) lookupOwnedToolSpec(name string) (ToolSpec, bool) {
-	return s.runtime.ToolSpecs().Lookup(name)
+	return s.runtime.ToolSpecs().LookupHTTP(name)
 }
 
 func decodeToolInvokeInput(body io.Reader) (string, error) {
@@ -2717,7 +2720,11 @@ func legacyToolOutputLooksLikeError(output string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(output)), "error:")
 }
 
-func (s *Server) appendHistory(message Message) {
+func (s *Server) appendHistory(message Message) (Message, bool) {
+	message, ok := normalizeChatHistoryMessage(message)
+	if !ok {
+		return Message{}, false
+	}
 	s.mu.Lock()
 	s.history = append(s.history, message)
 	s.mu.Unlock()
@@ -2728,6 +2735,7 @@ func (s *Server) appendHistory(message Message) {
 	} else if s.eventBroadcaster != nil {
 		s.eventBroadcaster.Broadcast(message)
 	}
+	return message, true
 }
 
 // AppendHistory appends a message through the server history path so persistent
@@ -2744,6 +2752,11 @@ func (s *Server) HistoryStore() *ChatHistoryStore {
 
 // BroadcastMessage sends a message to all SSE subscribers.
 func (s *Server) BroadcastMessage(msg Message) {
+	var ok bool
+	msg, ok = normalizeChatHistoryMessage(msg)
+	if !ok {
+		return
+	}
 	if s.eventBroadcaster != nil {
 		s.eventBroadcaster.Broadcast(msg)
 	}
@@ -2775,13 +2788,15 @@ func (s *Server) loadHistoryFromDisk() {
 		return
 	}
 	for _, evt := range events {
-		s.history = append(s.history, chatMessageFromSessionEvent(evt))
+		if message, ok := chatMessageFromSessionEvent(evt); ok {
+			s.history = append(s.history, message)
+		}
 	}
 }
 
-func chatMessageFromSessionEvent(evt SessionEvent) Message {
+func chatMessageFromSessionEvent(evt SessionEvent) (Message, bool) {
 	ts, _ := time.Parse(time.RFC3339Nano, evt.Ts)
-	return Message{
+	message := Message{
 		Type:         chatMessageTypeFromSessionEvent(evt),
 		Role:         evt.Role,
 		EpisodeID:    evt.EpisodeID,
@@ -2798,6 +2813,7 @@ func chatMessageFromSessionEvent(evt SessionEvent) Message {
 		Timestamp:    ts,
 		IsError:      evt.IsError,
 	}
+	return normalizeChatHistoryMessage(message)
 }
 
 func chatMessageTypeFromSessionEvent(evt SessionEvent) string {
@@ -2810,10 +2826,6 @@ func chatMessageTypeFromSessionEvent(evt SessionEvent) string {
 		return runEventToolCall
 	case "tool_result":
 		return "tool_result"
-	case "role_output":
-		return "role_output"
-	case "episode_status":
-		return "episode_status"
 	}
 
 	switch strings.TrimSpace(evt.Role) {
@@ -2823,14 +2835,9 @@ func chatMessageTypeFromSessionEvent(evt SessionEvent) string {
 		return "assistant"
 	case "tool":
 		return "tool_result"
-	case "system":
-		return "system"
 	}
 
-	if typ := strings.TrimSpace(evt.Type); typ != "" {
-		return typ
-	}
-	return "system"
+	return ""
 }
 
 func (s *Server) resolveRequestInput(req ChatRequest) (TurnInput, []MessageAttachment, error) {
@@ -2965,7 +2972,7 @@ func (s *Server) handleBridgeStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	status := PhoneBridgeStatus{}
 	if s.bridge != nil {
-		status = s.bridge.Status()
+		status = s.bridge.getStatus()
 	}
 	if s.runtime != nil {
 		status.BoardID = s.runtime.config.LiveActivity.BoardIDOrDefault()
@@ -3110,7 +3117,250 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(html))
 }
 
+func (s *Server) handleKeyboardTapAndroidKeys(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/keyboard-tap-android-keys" {
+		http.NotFound(w, r)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write([]byte(keyboardTapAndroidKeysGuideHTML))
+}
+
 const coordinateDebugNavLink = `<a href="/coordinate-debug" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">🎯 Coordinate Debug</a>`
+
+const keyboardTapAndroidKeysGuideHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>keyboard_tap Android key guide</title>
+    <style>
+        :root {
+            color-scheme: light;
+            --bg: #f3efe6;
+            --panel: #fffdf8;
+            --line: rgba(52, 56, 49, 0.14);
+            --text: #1e241d;
+            --muted: #697063;
+            --accent: #1f7a63;
+            --accent-strong: #155646;
+            --code: #f4eee3;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
+            background: var(--bg);
+            color: var(--text);
+        }
+
+        main {
+            max-width: 1120px;
+            margin: 0 auto;
+            padding: 32px 20px 48px;
+        }
+
+        h1, h2 {
+            margin: 0 0 12px;
+        }
+
+        p, li {
+            line-height: 1.6;
+        }
+
+        .eyebrow {
+            margin: 0 0 8px;
+            color: var(--muted);
+            font-size: 0.78rem;
+            font-weight: 700;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+        }
+
+        .panel,
+        .callout {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 18px;
+            padding: 18px 20px;
+            margin-top: 18px;
+        }
+
+        .callout {
+            border-left: 4px solid var(--accent);
+        }
+
+        code {
+            background: var(--code);
+            border-radius: 8px;
+            padding: 2px 6px;
+            font-family: "SFMono-Regular", "Menlo", monospace;
+            font-size: 0.95em;
+        }
+
+        a {
+            color: var(--accent);
+        }
+
+        a:hover {
+            color: var(--accent-strong);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 14px;
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 16px;
+            overflow: hidden;
+        }
+
+        th,
+        td {
+            padding: 12px 14px;
+            border-bottom: 1px solid var(--line);
+            text-align: left;
+            vertical-align: top;
+        }
+
+        th {
+            background: rgba(31, 122, 99, 0.08);
+            font-size: 0.83rem;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+        }
+
+        tr:last-child td {
+            border-bottom: 0;
+        }
+
+        .examples {
+            margin-top: 10px;
+        }
+
+        .examples li {
+            margin-top: 8px;
+        }
+    </style>
+</head>
+<body>
+    <main>
+        <p class="eyebrow">Aiden Agent</p>
+        <h1>keyboard_tap Android key guide</h1>
+        <p>
+            These aliases use <code>hid.usb2</code>. In <code>hid.pointer_mode = "touchscreen"</code>,
+            they send one 16-bit Consumer Control usage at a time.
+            They require a valid <code>hid.android_keyboard_device</code> such as <code>/dev/hidg2</code>.
+            In <code>hid.pointer_mode = "absolute"</code>, the limited media-key interface sends a
+            12-bit Consumer Control bitmap and only volume, media, screenshot, and brightness aliases
+            are available; Android navigation aliases require <code>hid.pointer_mode = "touchscreen"</code>.
+        </p>
+
+        <div class="callout">
+            <strong>Rules:</strong>
+            <ul>
+                <li>Use one Android extension key at a time.</li>
+                <li>Do not combine <code>KEYCODE_*</code> or <code>KEY_USAGE_*</code> with <code>ctrl</code>, <code>alt</code>, <code>shift</code>, <code>meta</code>, or standard keyboard keys.</li>
+                <li>Raw short names such as <code>app_switch</code> or <code>refresh</code> are also accepted where listed below.</li>
+                <li>Android and vendor ROMs may react differently to some usages even when AOSP maps them.</li>
+            </ul>
+        </div>
+
+        <div class="panel">
+            <h2>Examples</h2>
+            <ul class="examples">
+                <li><code>{"keys":["KEYCODE_BACK"]}</code></li>
+                <li><code>{"keys":["KEYCODE_APP_SWITCH"]}</code></li>
+                <li><code>{"keys":["KEYCODE_MEDIA_PLAY_PAUSE"]}</code></li>
+                <li><code>{"keys":["KEY_USAGE_SETTINGS"]}</code></li>
+                <li><code>{"keys":["KEY_USAGE_REFRESH"]}</code></li>
+            </ul>
+        </div>
+
+        <h2>KEYCODE aliases</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Alias</th>
+                    <th>Raw name</th>
+                    <th>Usage</th>
+                    <th>AOSP action</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td><code>KEYCODE_BACK</code></td><td><code>android_back</code></td><td><code>0x0c0224</code></td><td>Back</td></tr>
+                <tr><td><code>KEYCODE_HOME</code></td><td><code>android_home</code></td><td><code>0x0c0223</code></td><td>Home</td></tr>
+                <tr><td><code>KEYCODE_APP_SWITCH</code></td><td><code>app_switch</code></td><td><code>0x0c029F</code></td><td>Recent Apps</td></tr>
+                <tr><td><code>KEYCODE_MENU</code></td><td><code>menu</code></td><td><code>0x0c0040</code></td><td>Menu</td></tr>
+                <tr><td><code>KEYCODE_SEARCH</code></td><td><code>search</code></td><td><code>0x0c0221</code></td><td>Search</td></tr>
+                <tr><td><code>KEYCODE_POWER</code></td><td><code>power</code></td><td><code>0x0c0030</code></td><td>Power</td></tr>
+                <tr><td><code>KEYCODE_SLEEP</code></td><td><code>sleep</code></td><td><code>0x0c0032</code></td><td>Sleep</td></tr>
+                <tr><td><code>KEYCODE_VOLUME_MUTE</code></td><td><code>volume_mute</code></td><td><code>0x0c00E2</code></td><td>Volume Mute</td></tr>
+                <tr><td><code>KEYCODE_VOLUME_UP</code></td><td><code>volume_up</code></td><td><code>0x0c00E9</code></td><td>Volume Up</td></tr>
+                <tr><td><code>KEYCODE_VOLUME_DOWN</code></td><td><code>volume_down</code></td><td><code>0x0c00EA</code></td><td>Volume Down</td></tr>
+                <tr><td><code>KEYCODE_MEDIA_PLAY_PAUSE</code></td><td><code>media_play_pause</code></td><td><code>0x0c00CD</code></td><td>Media Play/Pause</td></tr>
+                <tr><td><code>KEYCODE_MEDIA_STOP</code></td><td><code>media_stop</code></td><td><code>0x0c00B7</code></td><td>Media Stop</td></tr>
+                <tr><td><code>KEYCODE_MEDIA_NEXT</code></td><td><code>media_next</code></td><td><code>0x0c00B5</code></td><td>Media Next</td></tr>
+                <tr><td><code>KEYCODE_MEDIA_PREVIOUS</code></td><td><code>media_previous</code></td><td><code>0x0c00B6</code></td><td>Media Previous</td></tr>
+                <tr><td><code>KEYCODE_MEDIA_REWIND</code></td><td><code>media_rewind</code></td><td><code>0x0c00B4</code></td><td>Media Rewind</td></tr>
+                <tr><td><code>KEYCODE_MEDIA_FAST_FORWARD</code></td><td><code>media_fast_forward</code></td><td><code>0x0c00B3</code></td><td>Media Fast Forward</td></tr>
+            </tbody>
+        </table>
+
+        <h2>KEY_USAGE aliases</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Alias</th>
+                    <th>Raw name</th>
+                    <th>Usage</th>
+                    <th>AOSP action</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td><code>KEY_USAGE_SCREENSHOT</code></td><td><code>screenshot</code></td><td><code>0x0c0065</code></td><td>Screenshot</td></tr>
+                <tr><td><code>KEY_USAGE_WINDOW</code></td><td><code>window</code></td><td><code>0x0c0067</code></td><td>Window</td></tr>
+                <tr><td><code>KEY_USAGE_BRIGHTNESS_UP</code></td><td><code>brightness_up</code></td><td><code>0x0c006F</code></td><td>Brightness Up</td></tr>
+                <tr><td><code>KEY_USAGE_BRIGHTNESS_DOWN</code></td><td><code>brightness_down</code></td><td><code>0x0c0070</code></td><td>Brightness Down</td></tr>
+                <tr><td><code>KEY_USAGE_DICTATE</code></td><td><code>dictate</code></td><td><code>0x0c00D8</code></td><td>Dictate</td></tr>
+                <tr><td><code>KEY_USAGE_EMOJI_PICKER</code></td><td><code>emoji_picker</code></td><td><code>0x0c00D9</code></td><td>Emoji Picker</td></tr>
+                <tr><td><code>KEY_USAGE_MEDIA_AUDIO_TRACK</code></td><td><code>media_audio_track</code></td><td><code>0x0c0173</code></td><td>Media Audio Track</td></tr>
+                <tr><td><code>KEY_USAGE_PROFILE_SWITCH</code></td><td><code>profile_switch</code></td><td><code>0x0c019C</code></td><td>Profile Switch</td></tr>
+                <tr><td><code>KEY_USAGE_SETTINGS</code></td><td><code>settings</code></td><td><code>0x0c019F</code></td><td>Settings</td></tr>
+                <tr><td><code>KEY_USAGE_NEW</code></td><td><code>new</code></td><td><code>0x0c0201</code></td><td>New</td></tr>
+                <tr><td><code>KEY_USAGE_CLOSE</code></td><td><code>close</code></td><td><code>0x0c0203</code></td><td>Close</td></tr>
+                <tr><td><code>KEY_USAGE_PRINT</code></td><td><code>print</code></td><td><code>0x0c0208</code></td><td>Print</td></tr>
+                <tr><td><code>KEY_USAGE_REFRESH</code></td><td><code>refresh</code></td><td><code>0x0c0227</code></td><td>Refresh</td></tr>
+                <tr><td><code>KEY_USAGE_FULLSCREEN</code></td><td><code>fullscreen</code></td><td><code>0x0c0232</code></td><td>Fullscreen</td></tr>
+                <tr><td><code>KEY_USAGE_LANGUAGE_SWITCH</code></td><td><code>language_switch</code></td><td><code>0x0c029D</code></td><td>Language Switch</td></tr>
+            </tbody>
+        </table>
+
+        <div class="panel">
+            <h2>Notes</h2>
+            <p>
+                AOSP resolves HID usage mappings before Linux scan-code mappings. That is why
+                <code>KEYCODE_APP_SWITCH</code> uses <code>0x0c029F</code> rather than
+                <code>0x0c01A2</code>: the former maps to Recent Apps, while the latter maps to All Apps.
+            </p>
+            <p>
+                <code>KEYCODE_WAKEUP</code>, <code>KEYCODE_SOFT_SLEEP</code>, and <code>KEYCODE_NOTIFICATION</code>
+                are reserved aliases but currently return explicit unsupported errors on this gadget.
+            </p>
+            <p>
+                Return to the <a href="/">main UI</a> when you are done.
+            </p>
+        </div>
+    </main>
+</body>
+</html>
+`
 
 const webUI = `<!DOCTYPE html>
 <html lang="en">
@@ -3243,6 +3493,17 @@ const webUI = `<!DOCTYPE html>
         .sidebar-note {
             line-height: 1.45;
             font-size: 0.82rem;
+        }
+
+        .sidebar-note a {
+            color: var(--accent);
+            font-weight: 600;
+            text-decoration: none;
+        }
+
+        .sidebar-note a:hover {
+            color: var(--accent-strong);
+            text-decoration: underline;
         }
 
         .sidebar-kicker {
@@ -4137,6 +4398,7 @@ const webUI = `<!DOCTYPE html>
                 <div class="topbar-actions">
                     <a href="/coordinate-debug" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">🎯 Coordinate Debug</a>
                     <a href="/user_files" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">📁 User files</a>
+                    <a href="/api/context-dump" target="_blank" rel="noopener" class="new-chat-btn" style="text-decoration:none;display:inline-flex;align-items:center;">📋 Context dump</a>
                     <button type="button" class="new-chat-btn" onclick="clearHistory()">New chat</button>
                     <button type="button" class="new-chat-btn" onclick="resetAllMemory()" style="background:#c0392b;">Reset all memory</button>
                 </div>
@@ -4436,13 +4698,28 @@ const webUI = `<!DOCTYPE html>
                 toolSelectEl.value = tool.name;
             }
 
-            toolDescriptionEl.textContent = tool.description || '';
+            renderToolDescription(tool);
             toolInputEl.placeholder = tool.example_input || '';
             if (switched) {
                 toolInputEl.value = tool.example_input || '';
                 toolInputEl.dataset.toolName = tool.name;
             }
             toolStatusEl.classList.remove('error');
+        }
+
+        function renderToolDescription(tool) {
+            toolDescriptionEl.textContent = tool.description || '';
+            if (!tool || tool.name !== 'keyboard_tap') {
+                return;
+            }
+
+            toolDescriptionEl.appendChild(document.createTextNode(' '));
+            const link = document.createElement('a');
+            link.href = '/keyboard-tap-android-keys';
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            link.textContent = 'Open Android key guide';
+            toolDescriptionEl.appendChild(link);
         }
 
         function loadSelectedToolExample() {
@@ -5026,6 +5303,10 @@ const webUI = `<!DOCTYPE html>
             };
             delete streamingAssistantDrafts[key];
             const messageKey = messageIdentity(msg);
+            removeRenderedMessage(messageKey);
+        }
+
+        function removeRenderedMessage(messageKey) {
             const existing = renderedMessageNodes.get(messageKey);
             renderedMessageKeys.delete(messageKey);
             renderedMessageNodes.delete(messageKey);
@@ -5040,6 +5321,13 @@ const webUI = `<!DOCTYPE html>
             const key = assistantStreamKey(msg);
             if (key) {
                 delete streamingAssistantDrafts[key];
+            }
+            const messageKey = messageIdentity(msg);
+            if (renderedMessageKeys.has(messageKey)) {
+                // A streamed draft may have been inserted before tool events.
+                // Re-append the finalized assistant message so the live chat
+                // order matches the persisted history and episode trace.
+                removeRenderedMessage(messageKey);
             }
             addMessage(msg);
         }

@@ -10,30 +10,23 @@ import (
 )
 
 func TestSingleAgentProfileDoesNotBuildDelegatedRoles(t *testing.T) {
-	profiles := buildRoleProfiles(
+	index := NewSkillIndex()
+	index.skills["ui"] = &SkillDefinition{Name: "ui", Description: "Inspect first"}
+	profile := buildProfile(
 		AgentConfig{Instruction: "base", AdditionalPrompt: "extra"},
-		ResolvedSkills{Names: []string{"ui"}, Instructions: []string{"[ui] inspect first"}},
+		NewSkillManager(index),
 		[]langtools.Tool{&stubTool{name: "screenshot", description: "Capture screen."}},
-		"MEMORY CONTEXT",
+		agentRoleRules(),
 	)
 
-	if profiles.Planner.Name != RoleAgent {
-		t.Fatalf("agent profile name = %q, want %q", profiles.Planner.Name, RoleAgent)
-	}
-	if profiles.Executor.SystemPrompt != "" || profiles.Verifier.SystemPrompt != "" {
-		t.Fatalf("delegated role profiles should not be built: executor=%#v verifier=%#v", profiles.Executor, profiles.Verifier)
-	}
-	if profiles.Planner.Capabilities.CanModifyPlan {
-		t.Fatalf("single agent should not advertise plan modification: %#v", profiles.Planner.Capabilities)
-	}
-	for _, want := range []string{"base", "extra", "[ui] inspect first", "MEMORY CONTEXT", "Use the single-agent loop"} {
-		if !strings.Contains(profiles.Planner.SystemPrompt, want) {
-			t.Fatalf("agent prompt missing %q:\n%s", want, profiles.Planner.SystemPrompt)
+	for _, want := range []string{"base", "extra", "- ui: Inspect first", "You are the Aiden agent."} {
+		if !strings.Contains(profile.SystemPrompt, want) {
+			t.Fatalf("agent prompt missing %q:\n%s", want, profile.SystemPrompt)
 		}
 	}
 	for _, unexpected := range []string{"enter_plan_mode", "commit_plan", "cancel_plan", "planner role", "executor role", "verifier role"} {
-		if strings.Contains(profiles.Planner.SystemPrompt, unexpected) {
-			t.Fatalf("agent prompt should not contain old delegated role wording %q:\n%s", unexpected, profiles.Planner.SystemPrompt)
+		if strings.Contains(profile.SystemPrompt, unexpected) {
+			t.Fatalf("agent prompt should not contain old delegated role wording %q:\n%s", unexpected, profile.SystemPrompt)
 		}
 	}
 }
@@ -48,7 +41,7 @@ func TestSingleAgentRuntimeUsesAgentRoleAndDirectTools(t *testing.T) {
 		output:      `{"volume":3}`,
 	}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use direct tools."},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use direct tools."}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{"audio_volume": tool}},
@@ -74,7 +67,7 @@ func TestSingleAgentRuntimeUsesAgentRoleAndDirectTools(t *testing.T) {
 	if !singleAgentLLMToolsContain(model.tools[0], "audio_volume") {
 		t.Fatalf("agent did not receive audio_volume tool: %#v", model.tools[0])
 	}
-	for _, name := range []string{toolEnterPlanMode, toolCommitPlan, toolCancelPlan, toolFinishStep, toolAbortStep} {
+	for _, name := range []string{"enter_plan_mode", "commit_plan", "cancel_plan", "finish_step", "abort_step"} {
 		if singleAgentLLMToolsContain(model.tools[0], name) {
 			t.Fatalf("single-agent turn exposed delegated meta tool %q: %#v", name, model.tools[0])
 		}
@@ -83,8 +76,8 @@ func TestSingleAgentRuntimeUsesAgentRoleAndDirectTools(t *testing.T) {
 		t.Fatalf("agent prompt leaked old runtime context:\n%s", prompt)
 	}
 	for _, event := range events {
-		if event.Type == "role_output" && event.Role != string(RoleAgent) {
-			t.Fatalf("role_output role = %q, want %q", event.Role, RoleAgent)
+		if event.Type == "role_output" && event.Role != "agent" {
+			t.Fatalf("role_output role = %q, want %q", event.Role, "agent")
 		}
 	}
 }
@@ -92,7 +85,7 @@ func TestSingleAgentRuntimeUsesAgentRoleAndDirectTools(t *testing.T) {
 func TestSingleAgentDoesNotRunDefaultFinalVerifierReview(t *testing.T) {
 	model := &scriptedModel{responses: roleToolResponses("screenshot", `{"__arg1":"{}"}`, "screen checked")}
 	runtime := NewRuntimeWithDeps(
-		Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."},
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{

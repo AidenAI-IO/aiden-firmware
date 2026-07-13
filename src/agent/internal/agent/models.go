@@ -151,7 +151,7 @@ func (m *ModelManager) build(cfg ModelConfig) (llms.Model, error) {
 			baseURL = "https://openrouter.ai/api/v1"
 		}
 		opts := append(m.openAICompatibleOptions(cfg), withOpenAICompatibleSessionSticky(m.activeSessionID), withOpenAICompatibleRouterMetadata())
-		if openRouterExplicitPromptCacheSupported(cfg.Model) {
+		if m.cachedOpenRouterPromptCachePolicy().UsesExplicitCacheControl() {
 			opts = append(opts, withOpenAICompatibleExplicitPromptCache())
 		}
 		return newOpenAICompatibleModel(baseURL, cfg.Model, token, newRetryHTTPClient(m.proxy), opts...), nil
@@ -192,14 +192,16 @@ func openRouterExplicitPromptCacheSupported(model string) bool {
 }
 
 func (m *ModelManager) openAICompatibleOptions(cfg ModelConfig) []openAICompatibleModelOption {
-	if !cfg.LogRawHTTP || strings.TrimSpace(m.rawHTTPLogDir) == "" {
-		return nil
+	var opts []openAICompatibleModelOption
+	if cfg.LogRawHTTP && strings.TrimSpace(m.rawHTTPLogDir) != "" {
+		logger := newLLMRawHTTPLogger(m.rawHTTPLogDir, "")
+		logger.SetSessionIDProvider(m.rawHTTPLogSessionID)
+		opts = append(opts, withOpenAICompatibleRawHTTPLogger(logger))
 	}
-	logger := newLLMRawHTTPLogger(m.rawHTTPLogDir, "")
-	logger.SetSessionIDProvider(m.rawHTTPLogSessionID)
-	return []openAICompatibleModelOption{
-		withOpenAICompatibleRawHTTPLogger(logger),
+	if cfg.ReasoningEffort != "" {
+		opts = append(opts, withOpenAICompatibleReasoningEffort(cfg.ReasoningEffort))
 	}
+	return opts
 }
 
 func resolveToken(cfg ModelConfig) string {

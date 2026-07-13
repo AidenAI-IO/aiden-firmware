@@ -83,6 +83,51 @@ func TestOpenAICompatibleModelEncodesAudioAsInputAudio(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleModelEncodesImageBinaryAsImageURL(t *testing.T) {
+	var captured struct {
+		Messages []struct {
+			Content []struct {
+				Type     string `json:"type"`
+				Text     string `json:"text,omitempty"`
+				ImageURL *struct {
+					URL string `json:"url"`
+				} `json:"image_url,omitempty"`
+			} `json:"content"`
+		} `json:"messages"`
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	model := newOpenAICompatibleModel(server.URL, "test-model", "", server.Client())
+	imageBytes := []byte("jpeg-image")
+	_, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
+		Role: llms.ChatMessageTypeHuman,
+		Parts: []llms.ContentPart{
+			llms.TextPart("inspect"),
+			llms.BinaryPart("image/jpeg", imageBytes),
+		},
+	}})
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	if len(captured.Messages) != 1 || len(captured.Messages[0].Content) != 2 {
+		t.Fatalf("captured messages = %#v, want text plus image", captured.Messages)
+	}
+	image := captured.Messages[0].Content[1]
+	wantURL := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(imageBytes)
+	if image.Type != "image_url" || image.ImageURL == nil || image.ImageURL.URL != wantURL {
+		t.Fatalf("image content = %#v, want image_url %q", image, wantURL)
+	}
+}
+
 func TestOpenAICompatibleModelParsesToolCalls(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -106,8 +151,58 @@ func TestOpenAICompatibleModelParsesToolCalls(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleModelNormalizesInvalidToolCallArgumentsInRequest(t *testing.T) {
+	rawArguments := `{"type": "tap", "point": {"x":}`
+	var captured struct {
+		Messages []struct {
+			Role      string `json:"role"`
+			ToolCalls []struct {
+				ID       string `json:"id"`
+				Type     string `json:"type"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls,omitempty"`
+		} `json:"messages"`
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	model := newOpenAICompatibleModel(server.URL, "test-model", "", server.Client())
+	_, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{{
+		Role: llms.ChatMessageTypeAI,
+		Parts: []llms.ContentPart{llms.ToolCall{
+			ID:   "call_1",
+			Type: "function",
+			FunctionCall: &llms.FunctionCall{
+				Name:      "touch_gesture",
+				Arguments: rawArguments,
+			},
+		}},
+	}})
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	if len(captured.Messages) != 1 || len(captured.Messages[0].ToolCalls) != 1 {
+		t.Fatalf("captured messages = %#v, want one tool call", captured.Messages)
+	}
+	got := captured.Messages[0].ToolCalls[0].Function.Arguments
+	if got != encodeToolArguments(rawArguments) || !json.Valid([]byte(got)) {
+		t.Fatalf("arguments = %q, want valid JSON wrapper", got)
+	}
+}
+
 func TestOpenAICompatibleModelLogsRawHTTPWhenEnabled(t *testing.T) {
-	rawResponse := `{"choices":[{"message":{"content":"<think>\n需要查当前时间。\n</think>","tool_calls":[{"id":"call_1","type":"function","function":{"name":"current_time","arguments":"{\"timezone\":\"local\"}"}}]},"finish_reason":"tool_calls"}]}`
+	rawResponse := `{"choices":[{"message":{"content":"<think>\n需要查当前时间。\n</think>","tool_calls":[{"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"date\"}"}}]},"finish_reason":"tool_calls"}]}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(rawResponse))
@@ -1057,6 +1152,166 @@ func TestOpenAICompatibleModelMergesSystemMessages(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleModelMergesConsecutiveSameRoleMessages(t *testing.T) {
+	var captured struct {
+		Messages []struct {
+			Role      string      `json:"role"`
+			Content   interface{} `json:"content"`
+			ToolCalls []struct {
+				ID   string `json:"id"`
+				Type string `json:"type"`
+			} `json:"tool_calls,omitempty"`
+		} `json:"messages"`
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	model := newOpenAICompatibleModel(server.URL, "test-model", "", server.Client())
+
+	// Test consecutive user messages (simulating state/notice role conversion)
+	_, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{
+		{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextPart("System prompt")}},
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("User message 1")}},
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("User message 2")}},
+		{Role: llms.ChatMessageTypeAI, Parts: []llms.ContentPart{llms.TextPart("Assistant response")}},
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("Another user message")}},
+	})
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	// Should have: system, merged user, assistant, user
+	if len(captured.Messages) != 4 {
+		t.Fatalf("expected 4 messages after normalization, got %d: %#v", len(captured.Messages), captured.Messages)
+	}
+
+	if captured.Messages[0].Role != "system" {
+		t.Fatalf("message 0: expected system, got %#v", captured.Messages[0])
+	}
+
+	if captured.Messages[1].Role != "user" {
+		t.Fatalf("message 1: expected user, got %#v", captured.Messages[1])
+	}
+	userContent, ok := captured.Messages[1].Content.(string)
+	if !ok || userContent != "User message 1\n\nUser message 2" {
+		t.Fatalf("message 1: expected merged user content, got %#v", captured.Messages[1].Content)
+	}
+
+	if captured.Messages[2].Role != "assistant" {
+		t.Fatalf("message 2: expected assistant, got %#v", captured.Messages[2])
+	}
+
+	if captured.Messages[3].Role != "user" {
+		t.Fatalf("message 3: expected user, got %#v", captured.Messages[3])
+	}
+}
+
+func TestOpenAICompatibleModelDoesNotMergeToolMessages(t *testing.T) {
+	var captured struct {
+		Messages []struct {
+			Role       string      `json:"role"`
+			Content    interface{} `json:"content"`
+			ToolCallID string      `json:"tool_call_id,omitempty"`
+		} `json:"messages"`
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	model := newOpenAICompatibleModel(server.URL, "test-model", "", server.Client())
+
+	// Tool messages should NOT be merged even if consecutive
+	_, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("use tools")}},
+		{Role: llms.ChatMessageTypeAI, Parts: []llms.ContentPart{
+			llms.ToolCall{ID: "call1", Type: "function", FunctionCall: &llms.FunctionCall{Name: "tool1", Arguments: "{}"}},
+		}},
+		{Role: llms.ChatMessageTypeTool, Parts: []llms.ContentPart{
+			llms.ToolCallResponse{ToolCallID: "call1", Name: "tool1", Content: "result1"},
+		}},
+		{Role: llms.ChatMessageTypeTool, Parts: []llms.ContentPart{
+			llms.ToolCallResponse{ToolCallID: "call2", Name: "tool2", Content: "result2"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	// Should keep all 4 messages separate (tool messages must not merge)
+	if len(captured.Messages) != 4 {
+		t.Fatalf("expected 4 messages (tool messages should not merge), got %d: %#v", len(captured.Messages), captured.Messages)
+	}
+
+	if captured.Messages[2].Role != "tool" || captured.Messages[2].ToolCallID != "call1" {
+		t.Fatalf("message 2: expected separate tool message, got %#v", captured.Messages[2])
+	}
+
+	if captured.Messages[3].Role != "tool" || captured.Messages[3].ToolCallID != "call2" {
+		t.Fatalf("message 3: expected separate tool message, got %#v", captured.Messages[3])
+	}
+}
+
+func TestOpenAICompatibleModelDoesNotMergeAssistantWithToolCalls(t *testing.T) {
+	var captured struct {
+		Messages []struct {
+			Role      string      `json:"role"`
+			Content   interface{} `json:"content"`
+			ToolCalls []struct {
+				ID string `json:"id"`
+			} `json:"tool_calls,omitempty"`
+		} `json:"messages"`
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	model := newOpenAICompatibleModel(server.URL, "test-model", "", server.Client())
+
+	// Assistant messages with tool_calls should NOT merge with other assistant messages
+	_, err := model.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("hello")}},
+		{Role: llms.ChatMessageTypeAI, Parts: []llms.ContentPart{llms.TextPart("text response")}},
+		{Role: llms.ChatMessageTypeAI, Parts: []llms.ContentPart{
+			llms.ToolCall{ID: "call1", Type: "function", FunctionCall: &llms.FunctionCall{Name: "tool1", Arguments: "{}"}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	// Should keep 3 messages: user, assistant (text), assistant (tool_calls)
+	if len(captured.Messages) != 3 {
+		t.Fatalf("expected 3 messages (assistant with tool_calls should not merge), got %d: %#v", len(captured.Messages), captured.Messages)
+	}
+
+	if captured.Messages[1].Role != "assistant" || len(captured.Messages[1].ToolCalls) != 0 {
+		t.Fatalf("message 1: expected plain assistant, got %#v", captured.Messages[1])
+	}
+
+	if captured.Messages[2].Role != "assistant" || len(captured.Messages[2].ToolCalls) == 0 {
+		t.Fatalf("message 2: expected assistant with tool_calls, got %#v", captured.Messages[2])
+	}
+}
+
 func TestOpenAICompatibleModelIncludesUsageInGenerationInfo(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1321,15 +1576,23 @@ func TestOpenRouterSupportedModelAddsPromptCacheControlToSystemPrefix(t *testing
 		} `json:"messages"`
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
-			t.Fatalf("decode request: %v", err)
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/endpoints"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"endpoints":[{"supported_parameters":["cache_control"]}]}}`))
+		case r.URL.Path == "/chat/completions":
+			if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+		default:
+			http.NotFound(w, r)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
 	}))
 	defer server.Close()
 
-	manager := NewModelManager(ModelConfig{Provider: "openrouter", Model: "anthropic/claude-sonnet-4", APIKey: "k", BaseURL: server.URL}, ProxyConfig{})
+	manager := NewModelManager(ModelConfig{Provider: "openrouter", Model: "vendor/cache-control-model", APIKey: "k", BaseURL: server.URL}, ProxyConfig{})
 	model, err := manager.Get()
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
@@ -1356,6 +1619,54 @@ func TestOpenRouterSupportedModelAddsPromptCacheControlToSystemPrefix(t *testing
 	}
 }
 
+func TestOpenRouterSupportedModelAddsPromptCacheControlToSingleSystemPart(t *testing.T) {
+	var captured struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/endpoints"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"endpoints":[{"supported_parameters":["cache_control"]}]}}`))
+		case r.URL.Path == "/chat/completions":
+			if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	manager := NewModelManager(ModelConfig{Provider: "openrouter", Model: "vendor/cache-control-model", APIKey: "k", BaseURL: server.URL}, ProxyConfig{})
+	model, err := manager.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if _, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+		{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextPart("stable role prompt")}},
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("hello")}},
+	}); err != nil {
+		t.Fatalf("GenerateContent() error = %v", err)
+	}
+
+	if len(captured.Messages) == 0 {
+		t.Fatalf("expected system content, got %#v", captured.Messages)
+	}
+	systemContent := decodePromptCacheSystemContent(t, captured.Messages[0].Content)
+	if len(systemContent) != 1 {
+		t.Fatalf("expected one system content part, got %#v", systemContent)
+	}
+	if got := systemContent[0].CacheControl; got == nil || got.Type != "ephemeral" {
+		t.Fatalf("single system text block should carry cache_control ephemeral, got %#v", systemContent[0])
+	}
+}
+
 func TestOpenRouterUnsupportedModelDoesNotSendPromptCacheControl(t *testing.T) {
 	var captured struct {
 		Messages []struct {
@@ -1364,11 +1675,19 @@ func TestOpenRouterUnsupportedModelDoesNotSendPromptCacheControl(t *testing.T) {
 		} `json:"messages"`
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
-			t.Fatalf("decode request: %v", err)
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/endpoints"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"endpoints":[{"supported_parameters":["temperature"]}]}}`))
+		case r.URL.Path == "/chat/completions":
+			if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+		default:
+			http.NotFound(w, r)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
 	}))
 	defer server.Close()
 
@@ -1493,6 +1812,44 @@ func TestOpenAICompatibleModelLiveUsageParsing(t *testing.T) {
 	t.Logf("live model=%s prompt_tokens=%d cached_tokens=%d telemetry=%v", model, prompt, cached, usage)
 }
 
+// TestOpenAICompatibleModelLiveConsecutiveUserMessages verifies that consecutive
+// user messages (which would cause 400 errors on Gemini/Claude without merging)
+// are handled correctly. Run with:
+//
+//	OPENROUTER_API_KEY=sk-or-... go test -run TestOpenAICompatibleModelLiveConsecutiveUserMessages -v
+func TestOpenAICompatibleModelLiveConsecutiveUserMessages(t *testing.T) {
+	apiKey := os.Getenv("OPENROUTER_API_KEY")
+	if apiKey == "" {
+		t.Skip("OPENROUTER_API_KEY not set; skipping live API verification")
+	}
+	// Use Gemini which enforces strict role alternation
+	model := os.Getenv("OPENROUTER_MODEL")
+	if model == "" {
+		model = "google/gemini-2.5-flash"
+	}
+
+	client := newOpenAICompatibleModel("https://openrouter.ai/api/v1", model, apiKey, http.DefaultClient)
+
+	// Simulate the exact scenario that causes issues:
+	// history ends with a visual followup (user role), then new user input arrives
+	t.Log("Sending consecutive user messages (simulating visual followup + new input)...")
+	resp, err := client.GenerateContent(contextWithRawHTTPLog(context.Background()), []llms.MessageContent{
+		{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextPart("You are a terse assistant. Reply in one short sentence.")}},
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("What is 2+2?")}},
+		{Role: llms.ChatMessageTypeAI, Parts: []llms.ContentPart{llms.TextPart("4")}},
+		// This simulates: tool_result followed by visual followup (user) then new user input (user)
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("Screenshot shows a math app displaying 4.")}},
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("Now calculate 3+3.")}},
+	}, llms.WithMaxTokens(32), llms.WithTemperature(0))
+	if err != nil {
+		t.Fatalf("GenerateContent() with consecutive user messages failed: %v\n"+
+			"This would have failed WITHOUT message merging on strict providers (Gemini/Claude).", err)
+	}
+
+	t.Logf("SUCCESS: model=%s response=%q", model, resp.Choices[0].Content)
+	t.Log("Message merging correctly handled consecutive user messages.")
+}
+
 func readRawHTTPLog(t *testing.T, logDir string) string {
 	t.Helper()
 	data, err := os.ReadFile(rawHTTPLogPath(logDir))
@@ -1583,11 +1940,6 @@ func (b *failOnSecondReadBody) Read(p []byte) (int, error) {
 
 func (b *failOnSecondReadBody) Close() error {
 	return nil
-}
-
-func assertEveryLineIsCompleteRecord(t *testing.T, logText string) {
-	// This is now covered by assertRawHTTPLogIsValidJSONL
-	t.Helper()
 }
 
 func TestModelManagerOpenRouterRetriesEOFInModelCall(t *testing.T) {

@@ -53,6 +53,8 @@ const (
 	HandoffReasonOther                  HandoffReason = "other"
 )
 
+const toolHumanHandoffStep = "request_human_handoff"
+
 var validHandoffReasonValues = []string{
 	string(HandoffReasonAuthentication),
 	string(HandoffReasonLoginMethodSelection),
@@ -94,23 +96,13 @@ func NewHumanHandoffTool() *HumanHandoffTool {
 }
 
 func (t *HumanHandoffTool) Name() string {
-	return "request_human_handoff"
+	return toolHumanHandoffStep
 }
 
 func (t *HumanHandoffTool) Description() string {
-	return `Request human intervention when you encounter a situation that requires human judgment, credentials, or actions beyond your capabilities. ` +
-		`Input JSON: {"reason": "authentication", "details": "Login screen requires password", "suggested_action": "Please enter your credentials"}. ` +
-		`Valid reasons: "authentication" (login/credentials required), "login_method_selection" (the user must choose a login method), ` +
-		`"captcha" (CAPTCHA challenge), "verification_code" (SMS/email code needed), "sensitive_operation" (payment/banking/security), ` +
-		`"redirect_confirmation" (system/app redirect confirmation dialog), "permission_confirmation" (permission dialog confirmation), ` +
-		`"black_screen" (screen not visible), "ambiguous_situation" (unclear what to do), ` +
-		`"unsupported_action" (action not possible with available tools), "stuck" (unable to make progress), "other" (specify in details). ` +
-		`The "details" field should clearly explain the situation. The "suggested_action" field optionally tells the human what to do. ` +
-		`This tool returns immediately with a structured handoff marker. Wait for the user to complete the task and tell you to continue in their next message. ` +
-		`Use this when: you need credentials you don't have, encounter CAPTCHA, need verification codes, face sensitive operations requiring human approval, ` +
-		`need the user to choose a login method, need a system/app redirect or permission dialog confirmed, see a black/blank screen preventing progress, ` +
-		`are genuinely stuck after multiple attempts, or the task fundamentally requires human judgment. ` +
-		`After the user confirms completion in their next message, take a screenshot to verify the result before continuing.`
+	return `Request human intervention for credentials, CAPTCHA, verification codes, sensitive operations, or when stuck. ` +
+		`suggested_action should tell the human what to do without asking them to share private credentials in chat. ` +
+		`This tool returns immediately with a handoff marker; wait for the user to continue, then verify the result with a screenshot before proceeding.`
 }
 
 func (t *HumanHandoffTool) ArgsSchema() map[string]any {

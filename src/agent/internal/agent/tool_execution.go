@@ -39,7 +39,6 @@ type ToolCallExecution struct {
 	Callback               callbacks.Handler
 	EnvironmentBridge      *EnvironmentBridgeClient
 	EnvironmentBridgeTools []string // Tool name globs to forward; empty forwards nothing (see shouldForwardToEnvironmentBridge)
-	VisualArtifacts        *visualArtifactStore
 }
 
 type ToolCallExecutionResult struct {
@@ -162,11 +161,11 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 			}
 			result = runAfterToolCallHook(ctx, execution, call, result)
 			emitToolResult(ctx, execution.Callback, call, result)
-			return ToolCallExecutionResult{Call: call, Result: result, Error: err}
+			return resultForToolCall(call, result, err)
 		}
 		result := *remote
 		result.Duration = time.Since(call.StartedAt)
-		if ctxErr := ctx.Err(); ctxErr != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil && !(errors.Is(context.Cause(ctx), errSteerInterruptToolCancel) && result.Error == nil) {
 			if errors.Is(ctxErr, context.Canceled) {
 				result.Error = NewToolError(CodeCanceled, ctxErr.Error())
 			} else if errors.Is(ctxErr, context.DeadlineExceeded) {
@@ -177,7 +176,7 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 			result.Output = result.Error.Message
 			result = runAfterToolCallHook(ctx, execution, call, result)
 			emitToolResult(ctx, execution.Callback, call, result)
-			return ToolCallExecutionResult{Call: call, Result: result, Error: ctxErr}
+			return resultForToolCall(call, result, ctxErr)
 		}
 		result = runAfterToolCallHook(ctx, execution, call, result)
 		emitToolResult(ctx, execution.Callback, call, result)
@@ -188,6 +187,9 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 	output, err := spec.Tool.Call(ctx2, input)
 	var toolErr *ToolError
 	hardErr := ctx.Err()
+	if hardErr != nil && errors.Is(context.Cause(ctx), errSteerInterruptToolCancel) && err == nil {
+		hardErr = nil
+	}
 	if hardErr != nil {
 		if errors.Is(hardErr, context.Canceled) {
 			toolErr = NewToolError(CodeCanceled, hardErr.Error())
@@ -205,17 +207,20 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 			toolErr = NewToolError(CodeToolExecutionFailed, err.Error())
 		}
 	} else if attached := ToolErrorFromContext(ctx2); attached != nil {
-		// Tool surfaced a structured error via SetToolError. Adopt it directly
-		// so the LLM-facing Output (already equal to attached.Message) and the
-		// downstream Error stay aligned.
-		toolErr = attached
+		// Adopt only intentional top-level SetToolError + toolErrorString
+		// results. Nested helpers (e.g. ClipboardTool inside enter_text /
+		// search_launch_app) may leave a leftover ToolError while the parent
+		// recovers and returns its own observation — do not overwrite that.
+		if strings.TrimSpace(output) == "" || output == attached.Message {
+			toolErr = attached
+		}
 	}
 	result := ToolResult{
 		Output:   output,
 		Error:    toolErr,
 		Duration: time.Since(call.StartedAt),
 	}
-	if err == nil && toolErr != nil {
+	if err == nil && toolErr != nil && strings.TrimSpace(result.Output) == "" {
 		result.Output = toolErr.Message
 	}
 	if err != nil || hardErr != nil {
@@ -223,7 +228,7 @@ func executeToolCall(ctx context.Context, execution ToolCallExecution) ToolCallE
 		if hardErr != nil {
 			result = runAfterToolCallHook(ctx, execution, call, result)
 			emitToolResult(ctx, execution.Callback, call, result)
-			return ToolCallExecutionResult{Call: call, Result: result, Error: hardErr}
+			return resultForToolCall(call, result, hardErr)
 		}
 	}
 
@@ -283,24 +288,6 @@ func runAfterToolCallHook(ctx context.Context, execution ToolCallExecution, call
 		result = normalizeToolResult(execution.After(ctx, call, result))
 	} else {
 		result = normalizeToolResult(DefaultAfterToolCall(ctx, call, result))
-	}
-	if execution.VisualArtifacts != nil && call.Spec.Tool != nil {
-		if visual, ok := call.Spec.Tool.(visualObservationTool); ok && visual.ReturnsVisualObservation() {
-			output, externalized, err := execution.VisualArtifacts.ExternalizeObservation(result.Output)
-			if err != nil {
-				msg := "failed to store visual artifact: " + err.Error()
-				result.Error = NewToolError(CodeToolExecutionFailed, msg)
-				result.Output = msg
-				result.Summary = result.Output
-			} else if externalized {
-				result.Output = output
-				if summary, ok := compactScreenshotObservation(call.Spec.Name, output); ok {
-					result.Summary = summary
-				} else {
-					result.Summary = compactToolObservation(output)
-				}
-			}
-		}
 	}
 	if handler, ok := execution.Callback.(toolExecutionHookHandler); ok {
 		result = normalizeToolResult(handler.AfterToolCall(ctx, call, result))

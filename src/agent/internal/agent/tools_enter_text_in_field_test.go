@@ -31,6 +31,33 @@ func (s *recordingTextInputTool) Call(_ context.Context, input string) (string, 
 	return s.out, nil
 }
 
+func TestEnterTextInFieldDescriptionDocumentsStrategyAndVerification(t *testing.T) {
+	desc := (&EnterTextInFieldTool{}).Description()
+	// Description keeps only the load-bearing rules: keyboard_text disambiguation,
+	// the committed-only success contract, and the coordinate reference. Clipboard/IME
+	// strategy detail lives in device-operator SKILL.md; field mechanics live in ArgsSchema.
+	for _, want := range []string{
+		"keyboard_text",
+		"committed:true",
+		"field_text matches target exactly",
+		"normalized coordinates",
+	} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("description missing %q:\n%s", want, desc)
+		}
+	}
+	// mode and segments mechanics moved to the schema fields.
+	props, _ := (&EnterTextInFieldTool{}).ArgsSchema()["properties"].(map[string]any)
+	modeSchema, _ := props["mode"].(map[string]any)
+	if modeDesc, _ := modeSchema["description"].(string); !strings.Contains(modeDesc, "search") {
+		t.Fatalf("mode schema missing search semantics:\n%v", modeSchema)
+	}
+	segSchema, _ := props["segments"].(map[string]any)
+	if segDesc, _ := segSchema["description"].(string); !strings.Contains(segDesc, "romanization") {
+		t.Fatalf("segments schema missing romanization semantics:\n%v", segSchema)
+	}
+}
+
 func TestEnterTextInFieldASCII(t *testing.T) {
 	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
 		FieldText: "hello",

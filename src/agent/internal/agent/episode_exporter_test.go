@@ -135,7 +135,7 @@ func TestBuildLangfuseBatchUsesCapturedPromptsForGenerations(t *testing.T) {
 	promptCalls := []telemetryPromptCall{
 		{
 			ID:        "11111111-1111-1111-1111-111111111111",
-			Role:      string(RolePlanner),
+			Role:      "agent",
 			StartedAt: start,
 			EndedAt:   start.Add(100 * time.Millisecond),
 			Input: []map[string]interface{}{
@@ -246,7 +246,7 @@ func TestBuildLangfuseBatchUsesCapturedPromptsForGenerations(t *testing.T) {
 	if !ok {
 		t.Fatalf("generation metadata = %#v, want map", generations[0]["metadata"])
 	}
-	if metadata["role"] != string(RolePlanner) || metadata["prompt_index"] != float64(1) {
+	if metadata["role"] != "agent" || metadata["prompt_index"] != float64(1) {
 		t.Fatalf("generation metadata = %#v, want role/prompt_index", metadata)
 	}
 	if metadata["tools_count"] != float64(1) {
@@ -270,6 +270,177 @@ func TestBuildLangfuseBatchUsesCapturedPromptsForGenerations(t *testing.T) {
 	}
 }
 
+func TestBuildLangfuseBatchExportsSTTTranscriptionSpans(t *testing.T) {
+	start := time.Date(2026, 6, 3, 10, 0, 0, 0, time.UTC)
+	durationMs := int64(9000)
+	episode := TaskEpisode{
+		ID:        "ep_stt_span",
+		StartedAt: start.Format(time.RFC3339Nano),
+		EndedAt:   start.Add(2 * time.Second).Format(time.RFC3339Nano),
+		UserGoal:  "打开天气",
+		Outcome:   TaskEpisodeOutcome{Success: true, FinalAnswer: "done"},
+		Events: []TaskEpisodeEvent{
+			{
+				EventID:    "evt_stt",
+				Ts:         start.Add(100 * time.Millisecond).Format(time.RFC3339Nano),
+				Type:       runEventSTTTranscription,
+				Role:       "system",
+				Content:    "打开天气",
+				DurationMs: &durationMs,
+				Metadata: map[string]interface{}{
+					"provider":                  "qwen-asr",
+					"model":                     "qwen3-asr-flash-realtime",
+					"audio_duration_ms":         int64(1200),
+					"streaming_supported":       true,
+					"streaming_ready":           true,
+					"streaming_ready_ms":        int64(320),
+					"streaming_finalize_ms":     int64(90),
+					"used_streaming_transcript": true,
+					"fallback_one_shot":         true,
+					"one_shot_ms":               int64(750),
+				},
+			},
+		},
+	}
+
+	exporter := NewEpisodeExporter(TelemetryConfig{Enabled: boolPtr(true), BaseURL: "http://langfuse.test"}, nil)
+	batch, err := exporter.buildLangfuseBatch(context.Background(), episode, t.TempDir())
+	if err != nil {
+		t.Fatalf("buildLangfuseBatch() error = %v", err)
+	}
+
+	var sttSpan map[string]interface{}
+	for _, event := range batch {
+		if event.Type != "span-create" {
+			continue
+		}
+		var body map[string]interface{}
+		if err := json.Unmarshal(event.Body, &body); err != nil {
+			t.Fatalf("decode span body: %v", err)
+		}
+		if body["name"] == "stt/transcription" {
+			sttSpan = body
+			break
+		}
+	}
+	if sttSpan == nil {
+		t.Fatalf("missing stt/transcription span in batch: %#v", batch)
+	}
+	if sttSpan["output"] != "打开天气" {
+		t.Fatalf("STT output = %#v, want transcript", sttSpan["output"])
+	}
+	metadata, ok := sttSpan["metadata"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("STT metadata = %#v", sttSpan["metadata"])
+	}
+	if metadata["event_id"] != "evt_stt" || metadata["provider"] != "qwen-asr" || metadata["fallback_one_shot"] != true {
+		t.Fatalf("STT metadata = %#v", metadata)
+	}
+	for _, spanName := range []string{"stt/listening_overhead", "stt/audio_capture", "stt/streaming_setup", "stt/streaming_finalize", "stt/one_shot"} {
+		detailSpan := langfuseSpanBodyByName(t, batch, spanName)
+		if detailSpan == nil {
+			t.Fatalf("missing %s child span", spanName)
+		}
+		if detailSpan["parentObservationId"] != sttSpan["id"] {
+			t.Fatalf("%s parentObservationId = %#v, want %#v", spanName, detailSpan["parentObservationId"], sttSpan["id"])
+		}
+		detailMetadata, ok := detailSpan["metadata"].(map[string]interface{})
+		if !ok || detailMetadata["event_id"] != "evt_stt" {
+			t.Fatalf("%s metadata = %#v", spanName, detailSpan["metadata"])
+		}
+	}
+}
+
+func TestBuildLangfuseBatchExportsVoicePreRunSpans(t *testing.T) {
+	start := time.Date(2026, 7, 8, 6, 18, 19, 0, time.UTC)
+	promptDurationMs := promptSoundDurationMS(promptSoundAgentSend)
+	preopenDurationMs := int64(120)
+	episode := TaskEpisode{
+		ID:        "ep_voice_prerun",
+		StartedAt: start.Format(time.RFC3339Nano),
+		EndedAt:   start.Add(6 * time.Second).Format(time.RFC3339Nano),
+		UserGoal:  "天气怎么样",
+		Outcome:   TaskEpisodeOutcome{Success: true, FinalAnswer: "done"},
+		Events: []TaskEpisodeEvent{
+			{
+				EventID:    "evt_prompt",
+				Ts:         start.Add(3500 * time.Millisecond).Format(time.RFC3339Nano),
+				Type:       runEventVoicePromptSound,
+				Role:       "system",
+				Content:    "agent send",
+				DurationMs: &promptDurationMs,
+				Metadata: map[string]interface{}{
+					"prompt":                "agent_send",
+					"wait":                  false,
+					"async":                 true,
+					"cue_audio_duration_ms": promptDurationMs,
+					"dispatch_duration_ms":  int64(0),
+					"success":               true,
+				},
+			},
+			{
+				EventID:    "evt_preopen",
+				Ts:         start.Add(5450 * time.Millisecond).Format(time.RFC3339Nano),
+				Type:       runEventTTSStreamPreopen,
+				Role:       "system",
+				Content:    "preopen TTS stream",
+				DurationMs: &preopenDurationMs,
+				Metadata: map[string]interface{}{
+					"provider": "alicloud",
+					"success":  true,
+				},
+			},
+		},
+	}
+
+	exporter := NewEpisodeExporter(TelemetryConfig{Enabled: boolPtr(true), BaseURL: "http://langfuse.test"}, nil)
+	batch, err := exporter.buildLangfuseBatch(context.Background(), episode, t.TempDir())
+	if err != nil {
+		t.Fatalf("buildLangfuseBatch() error = %v", err)
+	}
+
+	promptSpan := langfuseSpanBodyByName(t, batch, "voice/prompt_sound_agent_send")
+	if promptSpan == nil {
+		t.Fatalf("missing voice/prompt_sound_agent_send span")
+	}
+	if promptSpan["output"] != "agent send" {
+		t.Fatalf("prompt span output = %#v", promptSpan["output"])
+	}
+	promptMetadata, ok := promptSpan["metadata"].(map[string]interface{})
+	if !ok || promptMetadata["prompt"] != "agent_send" || promptMetadata["success"] != true || promptMetadata["async"] != true {
+		t.Fatalf("prompt metadata = %#v", promptSpan["metadata"])
+	}
+	if promptSpan["startTime"] == promptSpan["endTime"] {
+		t.Fatalf("prompt span has zero duration: %#v", promptSpan)
+	}
+
+	preopenSpan := langfuseSpanBodyByName(t, batch, "voice/preopen_tts_stream")
+	if preopenSpan == nil {
+		t.Fatalf("missing voice/preopen_tts_stream span")
+	}
+	preopenMetadata, ok := preopenSpan["metadata"].(map[string]interface{})
+	if !ok || preopenMetadata["provider"] != "alicloud" || preopenMetadata["success"] != true {
+		t.Fatalf("preopen metadata = %#v", preopenSpan["metadata"])
+	}
+}
+
+func langfuseSpanBodyByName(t *testing.T, batch []langfuseIngestionEvent, name string) map[string]interface{} {
+	t.Helper()
+	for _, event := range batch {
+		if event.Type != "span-create" {
+			continue
+		}
+		var body map[string]interface{}
+		if err := json.Unmarshal(event.Body, &body); err != nil {
+			t.Fatalf("decode span body: %v", err)
+		}
+		if body["name"] == name {
+			return body
+		}
+	}
+	return nil
+}
+
 func TestBuildLangfuseBatchUploadsCapturedPromptMedia(t *testing.T) {
 	var mediaRequest langfuseMediaCreateRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -291,7 +462,7 @@ func TestBuildLangfuseBatchUploadsCapturedPromptMedia(t *testing.T) {
 	callID := "11111111-1111-1111-1111-111111111111"
 	promptCalls := []telemetryPromptCall{{
 		ID:        callID,
-		Role:      string(RolePlanner),
+		Role:      "agent",
 		StartedAt: start,
 		EndedAt:   start.Add(time.Millisecond),
 		Input: []map[string]interface{}{{
@@ -368,7 +539,7 @@ func TestBuildLangfuseBatchOmitsPromptImagesWhenScreenshotUploadDisabled(t *test
 	pdfMedia := newTelemetryPromptMedia("application/pdf", pdf)
 	promptCalls := []telemetryPromptCall{{
 		ID:        "11111111-1111-1111-1111-111111111111",
-		Role:      string(RolePlanner),
+		Role:      "agent",
 		StartedAt: start,
 		EndedAt:   start.Add(time.Millisecond),
 		Input: []map[string]interface{}{{
@@ -533,7 +704,7 @@ outcome:
 			Ts:            start.Add(time.Second).Format(time.RFC3339Nano),
 			Type:          "tool_result",
 			ToolName:      "screenshot",
-			Observation:   `{"action_output":"ok"}`,
+			Content:       `{"action_output":"ok"}`,
 			ScreenshotRef: "artifacts/step_002.jpeg",
 		},
 	}); err != nil {
@@ -626,7 +797,7 @@ outcome:
 			Ts:            start.Add(time.Second).Format(time.RFC3339Nano),
 			Type:          "tool_result",
 			ToolName:      "screenshot",
-			Observation:   `{"format":"jpeg","size":100}`,
+			Content:       `{"format":"jpeg","size":100}`,
 			ScreenshotRef: "artifacts/step_002.jpeg",
 		},
 	}); err != nil {
@@ -713,7 +884,9 @@ func TestRuntimeStartupExportsInterruptedEpisodeToLangfuse(t *testing.T) {
 	if err := recorder.Start(ctx); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	recorder.RecordPlannerDecision(plannerDecision{
+	recorder.append(TaskEpisodeEvent{
+		Type:      "planner_decision",
+		Role:      "agent",
 		Objective: "打开设置",
 		Plan:      []string{"打开设置"},
 		NextStep:  "点击设置",
@@ -844,23 +1017,23 @@ func TestBuildLangfuseBatchMapsDefaultModePlannerTools(t *testing.T) {
 				EventID:   "evt_tool",
 				Ts:        start.Add(time.Second).Format(time.RFC3339Nano),
 				Type:      runEventToolCall,
-				Role:      string(RoleAgent),
+				Role:      "agent",
 				ToolName:  "echo",
 				ToolInput: `{"__arg1":"ok"}`,
 			},
 			{
-				EventID:     "evt_result",
-				Ts:          start.Add(2 * time.Second).Format(time.RFC3339Nano),
-				Type:        "tool_result",
-				Role:        string(RoleAgent),
-				ToolName:    "echo",
-				Observation: "ok",
+				EventID:  "evt_result",
+				Ts:       start.Add(2 * time.Second).Format(time.RFC3339Nano),
+				Type:     "tool_result",
+				Role:     "agent",
+				ToolName: "echo",
+				Content:  "ok",
 			},
 			{
 				EventID: "evt_finish",
 				Ts:      start.Add(3 * time.Second).Format(time.RFC3339Nano),
 				Type:    "default_finish",
-				Role:    string(RoleAgent),
+				Role:    "agent",
 				Content: "done",
 			},
 		},
@@ -874,6 +1047,7 @@ func TestBuildLangfuseBatchMapsDefaultModePlannerTools(t *testing.T) {
 
 	names := map[string]int{}
 	var traceMeta map[string]interface{}
+	var toolResultOutput interface{}
 	for _, event := range batch {
 		var body map[string]interface{}
 		if err := json.Unmarshal(event.Body, &body); err != nil {
@@ -884,16 +1058,22 @@ func TestBuildLangfuseBatchMapsDefaultModePlannerTools(t *testing.T) {
 		}
 		if name, _ := body["name"].(string); name != "" {
 			names[name]++
+			if name == "tool_result/echo" {
+				toolResultOutput = body["output"]
+			}
 		}
 	}
 	if names["phase/default"] != 1 {
 		t.Fatalf("phase/default count = %d, want 1; names=%#v", names["phase/default"], names)
 	}
-	if names["agent/tool/echo"] != 1 {
-		t.Fatalf("agent/tool/echo count = %d, want 1; names=%#v", names["agent/tool/echo"], names)
+	if names["tool/echo"] != 1 {
+		t.Fatalf("tool/echo count = %d, want 1; names=%#v", names["tool/echo"], names)
 	}
-	if names["agent/tool_result/echo"] != 1 {
-		t.Fatalf("agent/tool_result/echo count = %d, want 1; names=%#v", names["agent/tool_result/echo"], names)
+	if names["tool_result/echo"] != 1 {
+		t.Fatalf("tool_result/echo count = %d, want 1; names=%#v", names["tool_result/echo"], names)
+	}
+	if toolResultOutput != "ok" {
+		t.Fatalf("tool_result/echo output = %#v, want ok", toolResultOutput)
 	}
 	if names["agent/default_finish"] != 1 {
 		t.Fatalf("agent/default_finish count = %d, want 1; names=%#v", names["agent/default_finish"], names)
@@ -917,9 +1097,9 @@ func TestBuildLangfuseBatchUsesIterationTimingSpanAsToolParent(t *testing.T) {
 		Outcome:   TaskEpisodeOutcome{Success: true, FinalAnswer: "done"},
 		Events: []TaskEpisodeEvent{
 			{EventID: "evt_iter_start", Ts: start.Format(time.RFC3339Nano), Type: runEventIterationStart, Metadata: map[string]interface{}{"iteration": 1}},
-			{EventID: "evt_tool", Ts: start.Add(100 * time.Millisecond).Format(time.RFC3339Nano), Type: runEventToolCall, Role: string(RoleAgent), ToolName: "echo", ToolInput: `{"__arg1":"ok"}`},
-			{EventID: "evt_result", Ts: start.Add(200 * time.Millisecond).Format(time.RFC3339Nano), Type: "tool_result", Role: string(RoleAgent), ToolName: "echo", Observation: "ok", DurationMs: &toolDuration},
-			{EventID: "evt_finish", Ts: start.Add(300 * time.Millisecond).Format(time.RFC3339Nano), Type: "default_finish", Role: string(RoleAgent), Content: "done"},
+			{EventID: "evt_tool", Ts: start.Add(100 * time.Millisecond).Format(time.RFC3339Nano), Type: runEventToolCall, Role: "agent", ToolName: "echo", ToolInput: `{"__arg1":"ok"}`},
+			{EventID: "evt_result", Ts: start.Add(200 * time.Millisecond).Format(time.RFC3339Nano), Type: "tool_result", Role: "agent", ToolName: "echo", Content: "ok", DurationMs: &toolDuration},
+			{EventID: "evt_finish", Ts: start.Add(300 * time.Millisecond).Format(time.RFC3339Nano), Type: "default_finish", Role: "agent", Content: "done"},
 			{EventID: "evt_iter_end", Ts: start.Add(400 * time.Millisecond).Format(time.RFC3339Nano), Type: runEventIterationEnd, DurationMs: int64Ptr(400), Metadata: map[string]interface{}{"iteration": 1}},
 		},
 	}
@@ -931,41 +1111,13 @@ func TestBuildLangfuseBatchUsesIterationTimingSpanAsToolParent(t *testing.T) {
 	}
 	bodies := langfuseBodiesByName(t, batch)
 	iteration := singleLangfuseBody(t, bodies, "iteration_1")
-	tool := singleLangfuseBody(t, bodies, "agent/tool/echo")
+	tool := singleLangfuseBody(t, bodies, "tool/echo")
 	finish := singleLangfuseBody(t, bodies, "agent/default_finish")
 	if tool["parentObservationId"] != iteration["id"] {
 		t.Fatalf("tool parentObservationId = %#v, want iteration id %#v", tool["parentObservationId"], iteration["id"])
 	}
 	if finish["parentObservationId"] != iteration["id"] {
 		t.Fatalf("finish parentObservationId = %#v, want iteration id %#v", finish["parentObservationId"], iteration["id"])
-	}
-}
-
-func TestBuildLangfuseBatchDoesNotDuplicatePlannerIterationSpan(t *testing.T) {
-	start := time.Date(2026, 6, 11, 10, 0, 0, 0, time.UTC)
-	episode := TaskEpisode{
-		ID:        "ep_iteration_plan",
-		StartedAt: start.Format(time.RFC3339Nano),
-		EndedAt:   start.Add(time.Second).Format(time.RFC3339Nano),
-		UserGoal:  "plan test",
-		Outcome:   TaskEpisodeOutcome{Success: true, FinalAnswer: "done"},
-		Events: []TaskEpisodeEvent{
-			{EventID: "evt_iter_start", Ts: start.Format(time.RFC3339Nano), Type: runEventIterationStart, Metadata: map[string]interface{}{"iteration": 1}},
-			{EventID: "evt_plan", Ts: start.Add(100 * time.Millisecond).Format(time.RFC3339Nano), Type: "planner_decision", Role: string(RolePlanner), Objective: "do it", Plan: []string{"step 1"}, NextStep: "step 1"},
-			{EventID: "evt_iter_end", Ts: start.Add(500 * time.Millisecond).Format(time.RFC3339Nano), Type: runEventIterationEnd, DurationMs: int64Ptr(500), Metadata: map[string]interface{}{"iteration": 1}},
-		},
-	}
-
-	exporter := NewEpisodeExporter(TelemetryConfig{Enabled: boolPtr(true), BaseURL: "http://langfuse.test"}, nil)
-	batch, err := exporter.buildLangfuseBatch(context.Background(), episode, t.TempDir())
-	if err != nil {
-		t.Fatalf("buildLangfuseBatch() error = %v", err)
-	}
-	bodies := langfuseBodiesByName(t, batch)
-	iteration := singleLangfuseBody(t, bodies, "iteration_1")
-	planner := singleLangfuseBody(t, bodies, "planner")
-	if planner["parentObservationId"] != iteration["id"] {
-		t.Fatalf("planner parentObservationId = %#v, want iteration id %#v", planner["parentObservationId"], iteration["id"])
 	}
 }
 

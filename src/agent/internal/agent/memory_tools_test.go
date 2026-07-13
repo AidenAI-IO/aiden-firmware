@@ -155,42 +155,40 @@ func TestRecallToolDescriptionsGuideAgentUsage(t *testing.T) {
 		"visible context",
 		"archived chunks",
 		"chunk_ids",
-		"PREFERRED",
-		"FALLBACK",
+		"recall_memory instead",
 	} {
 		if !strings.Contains(sessionDescription, want) {
 			t.Fatalf("recall_session_chunks description missing %q:\n%s", want, sessionDescription)
 		}
 	}
 
-	memoryDescription := NewRecallMemoryTool(NewLongTermMemoryStore(t.TempDir())).Description()
+	// The JSON input example and per-field keyword guidance moved to ArgsSchema;
+	// the description keeps only the purpose and the cross-tool disambiguation.
+	memoryTool := NewRecallMemoryTool(NewLongTermMemoryStore(t.TempDir()))
+	memoryDescription := memoryTool.Description()
 	for _, want := range []string{
-		"Use when",
 		"long-term",
-		"Do not use",
-		`"tags":["verification"`,
-		`"entities":["AppName"]`,
-		"How to choose filters",
-		"TOPIC/DOMAIN keywords",
-		"preference",
-		"rule",
-		"procedure",
+		"recall_session_chunks",
 	} {
 		if !strings.Contains(memoryDescription, want) {
 			t.Fatalf("recall_memory description missing %q:\n%s", want, memoryDescription)
 		}
 	}
+	memoryTypes, _ := memoryTool.ArgsSchema()["properties"].(map[string]any)["types"].(map[string]any)
+	for _, want := range []string{"preference", "rule", "procedure"} {
+		if td, _ := memoryTypes["description"].(string); !strings.Contains(td, want) {
+			t.Fatalf("recall_memory types schema missing %q:\n%v", want, memoryTypes)
+		}
+	}
 
 	saveDescription := NewSaveMemoryTool(NewLongTermMemoryStore(t.TempDir())).Description()
 	for _, want := range []string{
-		"Mandatory use",
-		"call save_memory before saying it is remembered or saved",
-		"Do not claim a memory was remembered or saved until this tool returns saved or ignored as a duplicate",
-		"type=profile",
-		"location, home city, timezone",
-		"future defaults",
-		"type=fact only",
+		"Mandatory when the user asks to remember/save",
+		"status=saved or status=ignored as a duplicate",
+		"Use profile for durable user facts",
+		"location, timezone",
 		"synthesized user profile",
+		"preference",
 	} {
 		if !strings.Contains(saveDescription, want) {
 			t.Fatalf("save_memory description missing %q:\n%s", want, saveDescription)

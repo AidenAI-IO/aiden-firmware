@@ -522,10 +522,10 @@ def test_report_falls_back_to_compose_log_tool_calls_when_bridge_artifact_is_mis
         "daemon-1     | 2026/06/15 10:20:16 [INFO] Role output: role=planner content=(b)\n"
         "daemon-1     | 2026/06/15 10:20:16 [INFO] Chat request (sync): setup memory.\n"
         "daemon-1     | 2026/06/15 10:20:16 [INFO] Starting agent run: input=\"setup memory.\" attachments=0\n"
-        "daemon-1     | 2026/06/15 10:20:16 [INFO] Tool call: name=calculator input={\"expression\": \"1 + 1\"} description=Setup-only call.\n"
+        "daemon-1     | 2026/06/15 10:20:16 [INFO] Tool call: name=shell input={\"command\": \"printf 2\"} description=Setup-only call.\n"
         "daemon-1     | 2026/06/15 10:20:17 [INFO] Chat request (sync): Analyze the expense list.\n"
         "daemon-1     | 2026/06/15 10:20:17 [INFO] Starting agent run: input=\"Analyze the expense list.\" attachments=0\n"
-        "daemon-1     | 2026/06/15 10:20:25 [INFO] Tool call: name=calculator input={\"expression\": \"128.40 + 72.60\"} description=Compute travel total.\n",
+        "daemon-1     | 2026/06/15 10:20:25 [INFO] Tool call: name=shell input={\"command\": \"awk 'BEGIN { print 128.40 + 72.60 }'\"} description=Compute travel total.\n",
         encoding="utf-8",
     )
 
@@ -536,8 +536,8 @@ def test_report_falls_back_to_compose_log_tool_calls_when_bridge_artifact_is_mis
     assert tasks[0]["tool_calls_detail"] == ""
     assert "results.jsonl" in tasks[0]["artifacts_detail"]
     assert tasks[1]["tool_calls_count"] == 1
-    assert "[calculator]" in tasks[1]["tool_calls_detail"]
-    assert '"expression": "128.40 + 72.60"' in tasks[1]["tool_calls_detail"]
+    assert "[shell]" in tasks[1]["tool_calls_detail"]
+    assert "128.40 + 72.60" in tasks[1]["tool_calls_detail"]
 
 
 def test_report_omits_empty_aiden_suite_shards_from_task_records(tmp_path):

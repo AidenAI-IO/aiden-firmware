@@ -66,6 +66,7 @@ type modelDTO struct {
 	Model                string  `json:"model"`
 	BaseURL              string  `json:"base_url"`
 	TokenEnv             string  `json:"token_env"`
+	ReasoningEffort      string  `json:"reasoning_effort"`
 	Temperature          float64 `json:"temperature"`
 	MaxResponseTokens    int     `json:"max_response_tokens"`
 	ContextWindow        int     `json:"context_window"`
@@ -141,10 +142,11 @@ type logDTO struct {
 }
 
 type hidDTO struct {
-	KeyboardDevice string `json:"keyboard_device"`
-	MouseDevice    string `json:"mouse_device"`
-	FrameSocket    string `json:"frame_socket"`
-	PointerMode    string `json:"pointer_mode"`
+	KeyboardDevice        string `json:"keyboard_device"`
+	MouseDevice           string `json:"mouse_device"`
+	AndroidKeyboardDevice string `json:"android_keyboard_device"`
+	FrameSocket           string `json:"frame_socket"`
+	PointerMode           string `json:"pointer_mode"`
 }
 
 type searchDTO struct {
@@ -203,6 +205,7 @@ type agentDTO struct {
 	VoiceToolCallSpeech        bool    `json:"voice_tool_call_speech"`
 	VoiceProgressSpeechEnabled bool    `json:"voice_progress_speech_enabled"`
 	VoiceMaxResponseTokens     int     `json:"voice_max_response_tokens"`
+	LoadAllTools               bool    `json:"load_all_tools"`
 	MaxIterations              int     `json:"max_iterations"`
 	ScreenshotKeepN            int     `json:"screenshot_keep_n"`
 	ScreenshotPruneInterval    int     `json:"screenshot_prune_interval"`
@@ -295,10 +298,11 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			LLMHTTPRetentionDays: d.Log.LLMHTTPRetentionDays,
 		},
 		HID: agent.HIDConfig{
-			KeyboardDevice: d.HID.KeyboardDevice,
-			MouseDevice:    d.HID.MouseDevice,
-			FrameSocket:    d.HID.FrameSocket,
-			PointerMode:    d.HID.PointerMode,
+			KeyboardDevice:        d.HID.KeyboardDevice,
+			MouseDevice:           d.HID.MouseDevice,
+			AndroidKeyboardDevice: d.HID.AndroidKeyboardDevice,
+			FrameSocket:           d.HID.FrameSocket,
+			PointerMode:           d.HID.PointerMode,
 		},
 		Search: agent.SearchConfig{
 			Provider: d.Search.Provider,
@@ -349,6 +353,7 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 		VoiceToolCallSpeech:        boolPtr(d.Agent.VoiceToolCallSpeech),
 		VoiceProgressSpeechEnabled: boolPtr(d.Agent.VoiceProgressSpeechEnabled),
 		VoiceMaxResponseTokens:     d.Agent.VoiceMaxResponseTokens,
+		LoadAllTools:               d.Agent.LoadAllTools,
 		MaxIterations:              d.Agent.MaxIterations,
 		ScreenshotKeepN:            d.Agent.ScreenshotKeepN,
 		ScreenshotPruneInterval:    d.Agent.ScreenshotPruneInterval,
@@ -372,6 +377,7 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			Model:                cfg.Model.Model,
 			BaseURL:              cfg.Model.BaseURL,
 			TokenEnv:             cfg.Model.TokenEnv,
+			ReasoningEffort:      cfg.Model.ReasoningEffort,
 			Temperature:          cfg.Model.Temperature,
 			MaxResponseTokens:    cfg.Model.MaxResponseTokens,
 			ContextWindow:        cfg.Model.ContextWindow,
@@ -383,6 +389,7 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			Model:                cfg.ModelText.Model,
 			BaseURL:              cfg.ModelText.BaseURL,
 			TokenEnv:             cfg.ModelText.TokenEnv,
+			ReasoningEffort:      cfg.ModelText.ReasoningEffort,
 			Temperature:          cfg.ModelText.Temperature,
 			MaxResponseTokens:    cfg.ModelText.MaxResponseTokens,
 			ContextWindow:        cfg.ModelText.ContextWindow,
@@ -424,10 +431,11 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			LLMHTTPRetentionDays: cfg.Log.LLMHTTPRetentionDaysOrDefault(),
 		},
 		HID: hidDTO{
-			KeyboardDevice: cfg.HID.KeyboardDeviceOrDefault(),
-			MouseDevice:    cfg.HID.MouseDeviceOrDefault(),
-			FrameSocket:    cfg.HID.FrameSocketOrDefault(),
-			PointerMode:    cfg.HID.PointerModeOrDefault(),
+			KeyboardDevice:        cfg.HID.KeyboardDeviceOrDefault(),
+			MouseDevice:           cfg.HID.MouseDeviceOrDefault(),
+			AndroidKeyboardDevice: cfg.HID.AndroidKeyboardDeviceOrDefault(),
+			FrameSocket:           cfg.HID.FrameSocketOrDefault(),
+			PointerMode:           cfg.HID.PointerModeOrDefault(),
 		},
 		Search: searchDTO{
 			Provider:  cfg.Search.ProviderOrDefault(),
@@ -479,6 +487,7 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			VoiceToolCallSpeech:        cfg.VoiceToolCallSpeechOrDefault(),
 			VoiceProgressSpeechEnabled: cfg.VoiceProgressSpeechEnabledOrDefault(),
 			VoiceMaxResponseTokens:     cfg.VoiceMaxResponseTokensOrDefault(),
+			LoadAllTools:               cfg.LoadAllTools,
 			MaxIterations:              cfg.MaxIterations,
 			ScreenshotKeepN:            cfg.ScreenshotKeepN,
 			ScreenshotPruneInterval:    cfg.ScreenshotPruneInterval,

@@ -87,8 +87,17 @@ sudo ./build/bin/example_usb_hid cleanup
 [hid]
 keyboard_device = "/dev/hidg0"
 mouse_device = "/dev/hidg1"
+android_keyboard_device = "/dev/hidg2"
 frame_socket = "/run/frame_service/frame_service.sock"
 ```
+
+The firmware also binds `hid.usb2` as `/dev/hidg2`. This second keyboard-like
+interface advertises Consumer Control usages. In `pointer_mode = "touchscreen"`
+(Android mode), it is used for Android extension keys such as Back, Home, App
+Switch, Search, Power, and Volume. In `pointer_mode = "absolute"` (iOS cursor
+mode), it is exposed as a smaller bitmap media-key interface that advertises
+only volume mute/up/down, media playback controls, screenshot, and brightness
+up/down.
 
 Built-in Agent tools:
 
@@ -107,7 +116,16 @@ For dense targets such as small buttons, list items, and input boxes, prioritize
 
 On iOS, HID text input and HID keyboard shortcuts are separate failure domains. `keyboard_text` can successfully type ASCII while shortcuts such as paste (`keyboard_tap` with `["meta","v"]` / `Cmd+V`) still have no UI effect.
 
-The keyboard HID function is advertised as a boot keyboard (`protocol=1`, `subclass=1`) for broad host compatibility. If iOS retains a stale external-keyboard session, it may accept plain keycodes while ignoring modifier chords; symptoms include `Shift+1` producing `1` instead of `!`, and `Cmd+A` / `Cmd+V` doing nothing. Force a clean composite gadget re-enumeration before chasing HID timing or key mappings.
+The keyboard HID function is advertised as a boot keyboard (`protocol=1`, `subclass=1`) for broad host compatibility. If iOS retains a stale external-keyboard session, it may accept plain keycodes while ignoring modifier chords; symptoms include `Shift+1` producing `1` instead of `!`, and `Cmd+A` / `Cmd+V` doing nothing. Force a clean composite gadget re-enumeration before chasing HID timing or key mappings, but do it as an explicit recovery step rather than after every healthy host configuration event.
+
+For stale iOS HID sessions, capture the current watchdog snapshot first and then run the manual refresh command:
+
+```bash
+/etc/init.d/S60usb_ecm_watchdog snapshot
+/etc/init.d/S60usb_ecm_watchdog refresh
+```
+
+The watchdog intentionally preserves normal `configured` transitions. Automatically refreshing a healthy composite gadget can leave `/dev/hidg0` or `/dev/hidg1` present but unopenable until the phone fully re-enumerates the interfaces.
 
 Before validating shortcut-based paste on iPhone or iPad, turn on:
 

@@ -1,0 +1,210 @@
+package agent
+
+import (
+	"fmt"
+	"strings"
+
+	"aiden-agent/internal/agent/contextmanager"
+
+	"github.com/tmc/langchaingo/llms"
+)
+
+func messageRoleFromLLM(role llms.ChatMessageType) contextmanager.MessageRole {
+	switch role {
+	case llms.ChatMessageTypeSystem:
+		return contextmanager.MessageRoleSystem
+	case llms.ChatMessageTypeHuman, llms.ChatMessageTypeGeneric:
+		return contextmanager.MessageRoleUser
+	case llms.ChatMessageTypeAI:
+		return contextmanager.MessageRoleAssistant
+	case llms.ChatMessageTypeTool, llms.ChatMessageTypeFunction:
+		return contextmanager.MessageRoleToolResult
+	default:
+		return contextmanager.MessageRoleUser
+	}
+}
+
+func messageFromLLMContent(manager *contextmanager.ContextManager, content llms.MessageContent) contextmanager.Message {
+	message := contextmanager.Message{Role: messageRoleFromLLM(content.Role)}
+	for _, part := range content.Parts {
+		switch typed := part.(type) {
+		case llms.TextContent:
+			message.Content = mergePromptText(message.Content, typed.Text)
+		case llms.ToolCall:
+			if typed.FunctionCall == nil {
+				continue
+			}
+			message.Role = contextmanager.MessageRoleToolCall
+			message.ToolCalls = append(message.ToolCalls, contextmanager.ToolCall{
+				ID:        strings.TrimSpace(typed.ID),
+				Name:      strings.TrimSpace(typed.FunctionCall.Name),
+				Arguments: strings.TrimSpace(typed.FunctionCall.Arguments),
+			})
+		case llms.ToolCallResponse:
+			message.Role = contextmanager.MessageRoleToolResult
+			message.ToolResults = append(message.ToolResults, contextmanager.ToolResult{
+				ToolCallID: strings.TrimSpace(typed.ToolCallID),
+				Name:       strings.TrimSpace(typed.Name),
+				Content:    typed.Content,
+			})
+		case llms.BinaryContent:
+			if manager == nil {
+				continue
+			}
+			stored, err := manager.StoreAttachment(typed.MIMEType, typed.Data)
+			if err != nil {
+				message.Content = mergePromptText(message.Content, attachmentStorageFailureText(typed.MIMEType, err))
+				continue
+			}
+			message.Attachments = append(message.Attachments, stored)
+		case llms.ImageURLContent:
+			if text := strings.TrimSpace(typed.URL); text != "" {
+				message.Content = mergePromptText(message.Content, text)
+			}
+		}
+	}
+	return message
+}
+
+func userMessageFromInput(manager *contextmanager.ContextManager, input string, attachments []InputAttachment) contextmanager.Message {
+	descriptions := make([]string, 0, len(attachments))
+	message := contextmanager.Message{
+		Role:    contextmanager.MessageRoleUser,
+		Content: attachmentAwarePrompt(normalizeRunInput(input, attachments), attachments, descriptions),
+	}
+	if manager == nil {
+		return message
+	}
+	for _, attachment := range attachments {
+		if len(attachment.Data) == 0 {
+			continue
+		}
+		mimeType := attachmentMIMETypeOrDefault(attachment)
+		stored, err := manager.StoreAttachment(mimeType, attachment.Data)
+		if err != nil {
+			message.Content = mergePromptText(message.Content, attachmentStorageFailureText(mimeType, err))
+			continue
+		}
+		message.Attachments = append(message.Attachments, stored)
+	}
+	return message
+}
+
+func toolResultMessage(toolCallID, toolName, content string) contextmanager.Message {
+	return contextmanager.Message{
+		Role: contextmanager.MessageRoleToolResult,
+		ToolResults: []contextmanager.ToolResult{{
+			ToolCallID: strings.TrimSpace(toolCallID),
+			Name:       strings.TrimSpace(toolName),
+			Content:    content,
+		}},
+	}
+}
+
+func visualFollowupMessageFromLLMContent(manager *contextmanager.ContextManager, content llms.MessageContent) contextmanager.Message {
+	message := contextmanager.Message{Role: messageRoleFromLLM(content.Role)}
+	for _, part := range content.Parts {
+		switch typed := part.(type) {
+		case llms.TextContent:
+			message.Content = mergePromptText(message.Content, typed.Text)
+		case llms.ImageURLContent:
+			mimeType, data, ok := telemetryDataURL(typed.URL)
+			if ok && strings.HasPrefix(strings.ToLower(mimeType), "image/") && len(data) > 0 && manager != nil {
+				stored, err := manager.StoreAttachment(mimeType, data)
+				if err == nil {
+					message.Attachments = append(message.Attachments, stored)
+					continue
+				}
+				message.Content = mergePromptText(message.Content, attachmentStorageFailureText(mimeType, err))
+				continue
+			}
+			if text := strings.TrimSpace(typed.URL); text != "" {
+				message.Content = mergePromptText(message.Content, text)
+			}
+		case llms.BinaryContent:
+			if manager == nil {
+				continue
+			}
+			stored, err := manager.StoreAttachment(typed.MIMEType, typed.Data)
+			if err != nil {
+				message.Content = mergePromptText(message.Content, attachmentStorageFailureText(typed.MIMEType, err))
+				continue
+			}
+			message.Attachments = append(message.Attachments, stored)
+		default:
+			fallback := messageFromLLMContent(manager, llms.MessageContent{
+				Role:  content.Role,
+				Parts: []llms.ContentPart{part},
+			})
+			message.Content = mergePromptText(message.Content, fallback.Content)
+			message.ToolCalls = append(message.ToolCalls, fallback.ToolCalls...)
+			message.ToolResults = append(message.ToolResults, fallback.ToolResults...)
+			message.Attachments = append(message.Attachments, fallback.Attachments...)
+		}
+	}
+	return message
+}
+
+func attachmentMIMETypeOrDefault(attachment InputAttachment) string {
+	mimeType := strings.TrimSpace(attachment.MIMEType)
+	if mimeType != "" {
+		return mimeType
+	}
+	switch attachment.Kind {
+	case AttachmentKindImage:
+		return "image/png"
+	case AttachmentKindAudio:
+		return "audio/wav"
+	default:
+		return "application/octet-stream"
+	}
+}
+
+func attachmentStorageFailureText(mimeType string, err error) string {
+	label := strings.TrimSpace(mimeType)
+	if label == "" {
+		label = "attachment"
+	}
+	if err == nil {
+		return fmt.Sprintf("[Attachment omitted: %s could not be stored.]", label)
+	}
+	return fmt.Sprintf("[Attachment omitted: %s could not be stored: %v]", label, err)
+}
+
+func mergePromptText(existing, addition string) string {
+	existing = strings.TrimSpace(existing)
+	addition = strings.TrimSpace(addition)
+	switch {
+	case existing == "":
+		return addition
+	case addition == "":
+		return existing
+	default:
+		return existing + "\n" + addition
+	}
+}
+
+// InitializeContextManager initializes a context manager with a system prompt and a session folder if session is new.
+func InitializeContextManager(
+	systemPrompt string,
+	sessionFolder string,
+	hooks []contextmanager.AppendMessageHook,
+) (*contextmanager.ContextManager, error) {
+	manager, err := contextmanager.LoadContextManagerFromCurrentSession(sessionFolder)
+	if err != nil {
+		// create a new context manager
+		manager, err = contextmanager.NewContextManager(sessionFolder, systemPrompt)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create context manager: %w", err)
+		}
+	}
+
+	if manager == nil {
+		return nil, fmt.Errorf("failed to create context manager")
+	}
+
+	// set hooks
+	manager.AddAppendMessageHooks(hooks)
+
+	return manager, nil
+}

@@ -135,6 +135,76 @@ func TestExecuteToolCallUnwrapsCompatibleInputBeforeValidation(t *testing.T) {
 	}
 }
 
+func TestExecuteToolCallSkillManageEditAcceptsLiteralNewlinesInContent(t *testing.T) {
+	dir := t.TempDir()
+	writeSKILL(t, dir, "alpha", testSkillA)
+	tool := NewSkillManageTool(dir, "")
+	specs := NewToolSpecs([]langtools.Tool{tool})
+	updated := "---\nname: alpha\ndescription: Alpha edited\n---\n\nDo alpha things better.\n"
+	input := `{"action":"edit","name":"alpha","content":"` + updated + `","reason":"test"}`
+
+	result := executeToolCall(context.Background(), ToolCallExecution{
+		Specs: specs,
+		Action: schema.AgentAction{
+			Tool:      "skill_manage",
+			ToolInput: input,
+		},
+	})
+
+	if result.Result.IsError() {
+		t.Fatalf("skill_manage edit should accept full SKILL.md content with literal newlines, got %s", result.Result.Output)
+	}
+	if got := readSKILL(t, dir, "alpha"); got != updated {
+		t.Fatalf("updated skill content = %q, want %q", got, updated)
+	}
+}
+
+func TestExecuteToolCallSkillManageEditAcceptsMarkdownQuotesInContent(t *testing.T) {
+	dir := t.TempDir()
+	writeSKILL(t, dir, "alpha", testSkillA)
+	tool := NewSkillManageTool(dir, "")
+	specs := NewToolSpecs([]langtools.Tool{tool})
+	updated := "---\nname: alpha\ndescription: Alpha edited\n---\n\n1. **点击\"+\"号**：选择\"从相册选择\"。\n"
+	input := `{"action":"edit","name":"alpha","content":"` + updated + `","reason":"test"}`
+	input = strings.ReplaceAll(input, `\"`, `"`)
+
+	result := executeToolCall(context.Background(), ToolCallExecution{
+		Specs: specs,
+		Action: schema.AgentAction{
+			Tool:      "skill_manage",
+			ToolInput: input,
+		},
+	})
+
+	if result.Result.IsError() {
+		t.Fatalf("skill_manage edit should accept full SKILL.md content with markdown quotes, got %s", result.Result.Output)
+	}
+	if got := readSKILL(t, dir, "alpha"); got != updated {
+		t.Fatalf("updated skill content = %q, want %q", got, updated)
+	}
+}
+
+func TestExecuteToolCallRepairsQuotesInStringArrayElements(t *testing.T) {
+	tool := &stubTool{name: "shell", description: "Run shell commands.", output: "ok"}
+	specs := NewToolSpecs([]langtools.Tool{tool})
+	input := `{"segments":["tap", "type "done"", "select "first" item"]}`
+
+	result := executeToolCall(context.Background(), ToolCallExecution{
+		Specs: specs,
+		Action: schema.AgentAction{
+			Tool:      "shell",
+			ToolInput: input,
+		},
+	})
+
+	if result.Result.IsError() {
+		t.Fatalf("string-array payload should be repaired, got %s", result.Result.Output)
+	}
+	if len(tool.inputs) != 1 || tool.inputs[0] != `{"segments":["tap", "type \"done\"", "select \"first\" item"]}` {
+		t.Fatalf("tool inputs = %#v, want repaired string-array payload", tool.inputs)
+	}
+}
+
 func TestExecuteToolCallInvalidToolEmitsToolCallAndResult(t *testing.T) {
 	recorder := &toolExecutionCallbackRecorder{}
 	specs := NewToolSpecs([]langtools.Tool{&stubTool{name: "echo", description: "Echo.", output: "ok"}})
@@ -276,12 +346,6 @@ func TestExecuteToolCallBuiltInStringErrorToolsReturnStructuredErrors(t *testing
 			tool:     &WebSearchTool{provider: "brave"},
 			input:    `{"query":"aiden"}`,
 			wantCode: CodeModuleUnavailable,
-		},
-		{
-			name:     "current time invalid timezone",
-			tool:     &CurrentTimeTool{},
-			input:    `{"timezone":"Not/AZone"}`,
-			wantCode: CodeInvalidArguments,
 		},
 		{
 			name:     "keyboard tap empty keys",
@@ -481,6 +545,75 @@ func TestDefaultAfterToolCallSummarizesScreenshotAndMarksTerminate(t *testing.T)
 	}
 	if result.Step.Observation != result.Result.Output {
 		t.Fatalf("step observation should preserve raw output")
+	}
+}
+
+func TestExecuteToolCallIgnoresNestedToolErrorPollution(t *testing.T) {
+	// Regression from production logs: search_launch_app / enter_text_in_field
+	// recover after a nested ClipboardTool SetToolError, but executeToolCall used
+	// to overwrite the parent JSON observation with the leftover bridge error.
+	const parentOutput = `{"ok":false,"error":"app did not open","target":"小红书","steps":["opened system search"]}`
+	nestedErr := NewToolError(CodeBridgeNotConnected, "phone bridge not connected and no supported Dynamic Island return entry is available")
+	tool := &stubTool{
+		name:        "search_launch_app",
+		description: "Search and launch an app.",
+		callFn: func(ctx context.Context, input string) (string, error) {
+			SetToolError(ctx, nestedErr)
+			return parentOutput, nil
+		},
+	}
+	specs := NewToolSpecs([]langtools.Tool{tool})
+
+	result := executeToolCall(context.Background(), ToolCallExecution{
+		Specs: specs,
+		Action: schema.AgentAction{
+			Tool:      "search_launch_app",
+			ToolInput: `{"app":"小红书"}`,
+		},
+	})
+
+	if result.Error != nil {
+		t.Fatalf("nested pollution should not become an execution error: %v", result.Error)
+	}
+	if result.Result.IsError() {
+		t.Fatalf("parent recovery should not be marked as tool error: %#v", result.Result)
+	}
+	if result.Result.Output != parentOutput {
+		t.Fatalf("Output = %q, want parent JSON preserved", result.Result.Output)
+	}
+	if result.Step.Observation != parentOutput {
+		t.Fatalf("Observation = %q, want parent JSON preserved", result.Step.Observation)
+	}
+}
+
+func TestExecuteToolCallAdoptsIntentionalTopLevelToolError(t *testing.T) {
+	toolErr := NewToolError(CodeBridgeNotConnected, "phone bridge not connected and no supported Dynamic Island return entry is available")
+	tool := &stubTool{
+		name:        "open_app",
+		description: "Open an app.",
+		callFn: func(ctx context.Context, input string) (string, error) {
+			SetToolError(ctx, toolErr)
+			return toolErrorString(toolErr), nil
+		},
+	}
+	specs := NewToolSpecs([]langtools.Tool{tool})
+
+	result := executeToolCall(context.Background(), ToolCallExecution{
+		Specs: specs,
+		Action: schema.AgentAction{
+			Tool:      "open_app",
+			ToolInput: `{"app":"小红书"}`,
+		},
+	})
+
+	if !result.Result.IsError() {
+		t.Fatalf("intentional top-level SetToolError should remain an error: %#v", result.Result)
+	}
+	if result.Result.Error == nil || result.Result.Error.Code != CodeBridgeNotConnected {
+		t.Fatalf("ToolError = %+v, want bridge_not_connected", result.Result.Error)
+	}
+	if result.Result.Output != toolErr.Message {
+		t.Fatalf("Output = %q, want %q", result.Result.Output, toolErr.Message)
 	}
 }
 

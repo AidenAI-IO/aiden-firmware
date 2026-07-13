@@ -20,22 +20,15 @@ func NewOpenAppTool(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) *OpenApp
 	return &OpenAppTool{bridge: bridge, restorer: restorer}
 }
 
-func (t *OpenAppTool) Name() string { return "open_app" }
+func (t *OpenAppTool) Name() string { return toolBridgeOpenApp }
 
 func (t *OpenAppTool) Description() string {
-	return `Open an app or dial a phone number on the connected phone via the phone bridge. ` +
+	return `Open an app, webpage, or dial a phone number on the connected phone via the phone bridge. ` +
 		`Use this instead of manually finding and tapping app icons when the phone bridge is connected. ` +
 		`If the Aiden companion app is backgrounded on iOS and the Dynamic Island entry is visible, reopen Aiden from that entry first, then use this tool before searching the home screen. ` +
-		`Input JSON: {"app":"WeChat"}, {"app":"微信"}, {"app":"weixin"}, {"app":"browser"}, {"url":"https://example.com"}, or {"phone_number":"10086"}. ` +
-		`Pass only the desired app, webpage, or phone number; the companion app owns platform-specific launch details. ` +
-		`If this tool returns {"ok":true}, the app launch request is complete; answer the user immediately unless they asked for additional actions inside that app. ` +
-		`To dial a phone number, use {"phone_number":"10086"}. ` +
-		`Use {"app":"browser"} to open the browser itself, and {"url":"https://example.com"} to open a specific webpage. ` +
-		`Common apps: WeChat(微信), Alipay(支付宝), Safari, Chrome, Settings(设置), Phone(电话), Messages(短信), ` +
-		`Camera(相机), Photos(相册), Maps(地图), Notes(备忘录), Calendar(日历), Reminders(提醒事项), ` +
-		`Contacts(通讯录), Mail(邮件), AppStore(应用商店), Music(音乐), Files(文件), Clock(时钟), Health(健康), ` +
-		`Taobao(淘宝), Douyin(抖音), Meituan(美团), Didi(滴滴), Xiaohongshu(小红书), Bilibili(哔哩哔哩), JD(京东), Eleme(饿了么). ` +
-		`On iOS, if Aiden is in background and a Dynamic Island return entry is available, this tool restores Aiden to foreground and waits for WebSocket reconnect before opening the target.`
+		`Pass the desired app name (WeChat/微信, browser, Taobao/淘宝, Douyin/抖音, Settings/设置, Safari, Chrome), webpage URL, or phone number; the companion app owns platform-specific launch details. ` +
+		`When this tool returns ok:true, the app launch is complete; answer the user immediately unless they asked for additional actions inside that app. ` +
+		`PiP Bridge mode does not make bridge_open_app background-safe: opening apps, URLs, or phone dialer still requires Aiden in foreground or a restore path such as the Dynamic Island entry.`
 }
 
 func (t *OpenAppTool) ArgsSchema() map[string]any {
@@ -69,7 +62,7 @@ func applyOpenAppURL(args *openAppArgs, rawURL string) *ToolError {
 
 func resolveOpenAppTargets(args *openAppArgs) *ToolError {
 	if args == nil {
-		return NewToolError(CodeInvalidArguments, "missing open_app args")
+		return NewToolError(CodeInvalidArguments, "missing bridge_open_app args")
 	}
 	hasApp := strings.TrimSpace(args.App) != ""
 	hasURL := strings.TrimSpace(args.URL) != ""
@@ -186,7 +179,7 @@ func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 	if err != nil {
 		status := PhoneBridgeStatus{}
 		if t.bridge != nil {
-			status = t.bridge.Status()
+			status = t.bridge.getStatus()
 		}
 		te := NewToolErrorWithDetails(CodeToolExecutionFailed,
 			fmt.Sprintf("send command: %v", err),
@@ -198,7 +191,7 @@ func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 	if resp.Error != nil {
 		status := PhoneBridgeStatus{}
 		if t.bridge != nil {
-			status = t.bridge.Status()
+			status = t.bridge.getStatus()
 		}
 		// Preserve upstream Code/Category; attach app-side fallback hint.
 		te := resp.Error
@@ -231,25 +224,16 @@ func (s *ToolSet) RegisterPhoneBridge(bridge *PhoneBridge) {
 		return
 	}
 	s.phoneBridge = bridge
-	if status := bridge.Status(); status.Environment != nil {
+	if status := bridge.getStatus(); status.Environment != nil {
 		env := clonePhoneEnvironment(*status.Environment)
 		s.UpdateDeviceEnvironment(&env)
 	}
 	if s.phoneBridgeRestorer != nil {
 		s.phoneBridgeRestorer.SetBridge(bridge)
 	}
-	s.tools["open_app"] = NewOpenAppTool(bridge, s.phoneBridgeRestorer)
-	s.tools["clipboard"] = NewClipboardTool(bridge, s.phoneBridgeRestorer)
-	s.tools["calendar"] = NewCalendarTool(bridge, s.phoneBridgeRestorer)
-	s.tools["contacts"] = NewContactsTool(bridge, s.phoneBridgeRestorer)
-	s.tools["notification"] = NewNotificationTool(bridge, s.phoneBridgeRestorer)
-}
-
-func isPhoneBridgeToolName(name string) bool {
-	switch name {
-	case "open_app", "clipboard", "calendar", "contacts", "notification":
-		return true
-	default:
-		return false
-	}
+	s.tools[toolBridgeOpenApp] = NewOpenAppTool(bridge, s.phoneBridgeRestorer)
+	s.tools[toolBridgeClipboard] = NewClipboardTool(bridge, s.phoneBridgeRestorer)
+	s.tools[toolBridgeCalendar] = NewCalendarTool(bridge, s.phoneBridgeRestorer)
+	s.tools[toolBridgeContacts] = NewContactsTool(bridge, s.phoneBridgeRestorer)
+	s.tools[toolBridgeNotification] = NewNotificationTool(bridge, s.phoneBridgeRestorer)
 }

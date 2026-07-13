@@ -188,6 +188,22 @@ int required_json_int(cJSON* object, const char* key) {
     return item->valueint;
 }
 
+cJSON* required_test_result(cJSON* root, const char* check) {
+    cJSON* results = cJSON_GetObjectItem(root, "results");
+    REQUIRE(results != nullptr);
+    REQUIRE((results->type & 0xff) == cJSON_Array);
+    const int count = cJSON_GetArraySize(results);
+    for (int i = 0; i < count; ++i) {
+        cJSON* item = cJSON_GetArrayItem(results, i);
+        REQUIRE(item != nullptr);
+        cJSON* check_item = cJSON_GetObjectItem(item, "check");
+        if (check_item != nullptr && check_item->valuestring != nullptr && std::strcmp(check_item->valuestring, check) == 0) {
+            return item;
+        }
+    }
+    return nullptr;
+}
+
 std::string replace_all(std::string text, const std::string& needle, const std::string& replacement) {
     size_t pos = 0;
     while ((pos = text.find(needle, pos)) != std::string::npos) {
@@ -214,6 +230,7 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"audio_archive\":{\"enabled\":true,\"max_files\":500,\"max_size_mb\":100,"
         "\"storage_path\":\"/userdata/audio\"},"
         "\"hid\":{\"keyboard_device\":\"/dev/hidg0\",\"mouse_device\":\"/dev/hidg1\","
+        "\"android_keyboard_device\":\"/dev/hidg2\","
         "\"frame_socket\":\"/run/frame_service/frame_service.sock\",\"pointer_mode\":\"absolute\"},"
         "\"search\":{\"provider\":\"") + search_provider + "\",\"has_api_key\":" +
         (search_has_api_key ? "true" : "false") +
@@ -229,7 +246,7 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"voice_followup_timeout_ms\":6000,\"voice_first_turn_timeout_ms\":10000,"
         "\"voice_max_turns\":0,\"voice_interrupt_on_wakeup\":true,"
         "\"voice_streaming_tts_enabled\":true,\"voice_tool_call_speech\":false,"
-        "\"voice_max_response_tokens\":300,\"max_iterations\":-1,"
+        "\"voice_max_response_tokens\":300,\"load_all_tools\":false,\"max_iterations\":-1,"
         "\"screenshot_keep_n\":3,"
         "\"screenshot_prune_interval\":25,\"screen_stable_timeout_ms\":3500,"
         "\"screen_stable_ms\":500,\"screen_stable_diff_threshold\":2}"
@@ -1039,6 +1056,127 @@ TEST_CASE("config_web: config test rejects blank search api key without stored m
     CHECK(test_resp.body.find("required for brave") != std::string::npos);
 }
 
+TEST_CASE("config_web: hid config test requires extension keyboard device in pointer modes") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string absolute_body =
+        "{\"section\":\"hid\",\"values\":{"
+        "\"keyboard_device\":\"/dev/null\","
+        "\"mouse_device\":\"/dev/null\","
+        "\"android_keyboard_device\":\"\","
+        "\"pointer_mode\":\"absolute\""
+        "}}";
+
+    HttpResponse absolute_resp = http_request(handle->port, "POST", "/api/config/test", absolute_body);
+    REQUIRE(absolute_resp.status == 200);
+    cJSON* absolute_json = cJSON_Parse(absolute_resp.body.c_str());
+    REQUIRE(absolute_json != nullptr);
+    cJSON* absolute_ok = cJSON_GetObjectItem(absolute_json, "ok");
+    REQUIRE(absolute_ok != nullptr);
+    CHECK((absolute_ok->type & 0xff) == cJSON_False);
+    cJSON* absolute_android = required_test_result(absolute_json, "android_keyboard_device");
+    REQUIRE(absolute_android != nullptr);
+    cJSON* absolute_android_passed = cJSON_GetObjectItem(absolute_android, "passed");
+    REQUIRE(absolute_android_passed != nullptr);
+    CHECK((absolute_android_passed->type & 0xff) == cJSON_False);
+    CHECK(required_json_string(absolute_android, "detail") == "path is empty");
+    cJSON* absolute_mode = required_test_result(absolute_json, "pointer_mode");
+    REQUIRE(absolute_mode != nullptr);
+    cJSON* absolute_mode_passed = cJSON_GetObjectItem(absolute_mode, "passed");
+    REQUIRE(absolute_mode_passed != nullptr);
+    CHECK((absolute_mode_passed->type & 0xff) == cJSON_True);
+    CHECK(required_json_string(absolute_mode, "detail") == "effective mode: absolute");
+    cJSON_Delete(absolute_json);
+
+    const std::string touchscreen_body =
+        "{\"section\":\"hid\",\"values\":{"
+        "\"keyboard_device\":\"/dev/null\","
+        "\"mouse_device\":\"/dev/null\","
+        "\"android_keyboard_device\":\"\","
+        "\"pointer_mode\":\"touchscreen\""
+        "}}";
+
+    HttpResponse touchscreen_resp = http_request(handle->port, "POST", "/api/config/test", touchscreen_body);
+    REQUIRE(touchscreen_resp.status == 200);
+    cJSON* touchscreen_json = cJSON_Parse(touchscreen_resp.body.c_str());
+    REQUIRE(touchscreen_json != nullptr);
+    cJSON* touchscreen_ok = cJSON_GetObjectItem(touchscreen_json, "ok");
+    REQUIRE(touchscreen_ok != nullptr);
+    CHECK((touchscreen_ok->type & 0xff) == cJSON_False);
+    cJSON* touchscreen_android = required_test_result(touchscreen_json, "android_keyboard_device");
+    REQUIRE(touchscreen_android != nullptr);
+    cJSON* touchscreen_android_passed = cJSON_GetObjectItem(touchscreen_android, "passed");
+    REQUIRE(touchscreen_android_passed != nullptr);
+    CHECK((touchscreen_android_passed->type & 0xff) == cJSON_False);
+    CHECK(required_json_string(touchscreen_android, "detail") == "path is empty");
+    cJSON* touchscreen_mode = required_test_result(touchscreen_json, "pointer_mode");
+    REQUIRE(touchscreen_mode != nullptr);
+    cJSON* touchscreen_mode_passed = cJSON_GetObjectItem(touchscreen_mode, "passed");
+    REQUIRE(touchscreen_mode_passed != nullptr);
+    CHECK((touchscreen_mode_passed->type & 0xff) == cJSON_True);
+    CHECK(required_json_string(touchscreen_mode, "detail") == "effective mode: touchscreen");
+    cJSON_Delete(touchscreen_json);
+
+    const std::string touchscreen_valid_body =
+        "{\"section\":\"hid\",\"values\":{"
+        "\"keyboard_device\":\"/dev/null\","
+        "\"mouse_device\":\"/dev/null\","
+        "\"android_keyboard_device\":\"/dev/null\","
+        "\"pointer_mode\":\"touchscreen\""
+        "}}";
+
+    HttpResponse touchscreen_valid_resp = http_request(handle->port, "POST", "/api/config/test", touchscreen_valid_body);
+    REQUIRE(touchscreen_valid_resp.status == 200);
+    cJSON* touchscreen_valid_json = cJSON_Parse(touchscreen_valid_resp.body.c_str());
+    REQUIRE(touchscreen_valid_json != nullptr);
+    cJSON* touchscreen_valid_ok = cJSON_GetObjectItem(touchscreen_valid_json, "ok");
+    REQUIRE(touchscreen_valid_ok != nullptr);
+    CHECK((touchscreen_valid_ok->type & 0xff) == cJSON_True);
+    cJSON* touchscreen_valid_android = required_test_result(touchscreen_valid_json, "android_keyboard_device");
+    REQUIRE(touchscreen_valid_android != nullptr);
+    cJSON* touchscreen_valid_android_passed = cJSON_GetObjectItem(touchscreen_valid_android, "passed");
+    REQUIRE(touchscreen_valid_android_passed != nullptr);
+    CHECK((touchscreen_valid_android_passed->type & 0xff) == cJSON_True);
+    CHECK(required_json_string(touchscreen_valid_android, "detail") == "/dev/null exists");
+    cJSON* touchscreen_valid_mode = required_test_result(touchscreen_valid_json, "pointer_mode");
+    REQUIRE(touchscreen_valid_mode != nullptr);
+    cJSON* touchscreen_valid_mode_passed = cJSON_GetObjectItem(touchscreen_valid_mode, "passed");
+    REQUIRE(touchscreen_valid_mode_passed != nullptr);
+    CHECK((touchscreen_valid_mode_passed->type & 0xff) == cJSON_True);
+    CHECK(required_json_string(touchscreen_valid_mode, "detail") == "effective mode: touchscreen");
+    cJSON_Delete(touchscreen_valid_json);
+
+    const std::string touchscreen_missing_body =
+        "{\"section\":\"hid\",\"values\":{"
+        "\"keyboard_device\":\"/dev/null\","
+        "\"mouse_device\":\"/dev/null\","
+        "\"android_keyboard_device\":\"/dev/definitely-missing-hidg9\","
+        "\"pointer_mode\":\"touchscreen\""
+        "}}";
+
+    HttpResponse touchscreen_missing_resp = http_request(handle->port, "POST", "/api/config/test", touchscreen_missing_body);
+    REQUIRE(touchscreen_missing_resp.status == 200);
+    cJSON* touchscreen_missing_json = cJSON_Parse(touchscreen_missing_resp.body.c_str());
+    REQUIRE(touchscreen_missing_json != nullptr);
+    cJSON* touchscreen_missing_ok = cJSON_GetObjectItem(touchscreen_missing_json, "ok");
+    REQUIRE(touchscreen_missing_ok != nullptr);
+    CHECK((touchscreen_missing_ok->type & 0xff) == cJSON_False);
+    cJSON* touchscreen_missing_android = required_test_result(touchscreen_missing_json, "android_keyboard_device");
+    REQUIRE(touchscreen_missing_android != nullptr);
+    cJSON* touchscreen_missing_android_passed = cJSON_GetObjectItem(touchscreen_missing_android, "passed");
+    REQUIRE(touchscreen_missing_android_passed != nullptr);
+    CHECK((touchscreen_missing_android_passed->type & 0xff) == cJSON_False);
+    CHECK(required_json_string(touchscreen_missing_android, "detail") == "/dev/definitely-missing-hidg9 not found");
+    cJSON* touchscreen_missing_mode = required_test_result(touchscreen_missing_json, "pointer_mode");
+    REQUIRE(touchscreen_missing_mode != nullptr);
+    cJSON* touchscreen_missing_mode_passed = cJSON_GetObjectItem(touchscreen_missing_mode, "passed");
+    REQUIRE(touchscreen_missing_mode_passed != nullptr);
+    CHECK((touchscreen_missing_mode_passed->type & 0xff) == cJSON_True);
+    CHECK(required_json_string(touchscreen_missing_mode, "detail") == "effective mode: touchscreen");
+    cJSON_Delete(touchscreen_missing_json);
+}
+
 TEST_CASE("config_web: config test rejects wakeup trigger for text input") {
     StubEnv env;
     auto handle = start_server(env);
@@ -1204,8 +1342,11 @@ TEST_CASE("config_web: GET /api/config accepts optional field-level omissions fr
         const_cast<char*>(tmp.c_str()),
         [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
     );
-    const std::string partial_config = remove_nested_key(
+    const std::string partial_config = remove_nested_key(remove_nested_key(
         resolved_config_json("duckduckgo", false),
+        "hid",
+        "android_keyboard_device"
+    ),
         "model_text",
         "provider"
     );
@@ -1226,6 +1367,12 @@ TEST_CASE("config_web: GET /api/config accepts optional field-level omissions fr
     REQUIRE(model != nullptr);
     cJSON* model_name = cJSON_GetObjectItem(model, "model");
     REQUIRE(model_name != nullptr);
+    cJSON* hid = cJSON_GetObjectItem(config, "hid");
+    REQUIRE(hid != nullptr);
+    cJSON* android_keyboard_device = cJSON_GetObjectItem(hid, "android_keyboard_device");
+    REQUIRE(android_keyboard_device != nullptr);
+    REQUIRE(android_keyboard_device->valuestring != nullptr);
+    CHECK(std::string(android_keyboard_device->valuestring) == "/dev/hidg2");
     REQUIRE(model_name->valuestring != nullptr);
     CHECK(std::string(model_name->valuestring) == "bytedance-seed/seed-2.0-lite");
     cJSON_Delete(parsed);

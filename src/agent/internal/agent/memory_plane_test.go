@@ -166,17 +166,16 @@ func TestMemoryPlaneRetrieveRoutesExperienceByRole(t *testing.T) {
 			t.Fatalf("expired conflict reached verifier: %#v", got.Verifier.Conflicts)
 		}
 	}
-	renderedPlanner := got.RenderForRole(RolePlanner)
-	renderedVerifier := got.RenderForRole(RoleVerifier)
-	if !strings.Contains(renderedPlanner, "Retrieved Device Experience") || !strings.Contains(renderedPlanner, "mem_open_wechat") {
-		t.Fatalf("planner memory prompt missing retrieved experience:\n%s", renderedPlanner)
+	renderedAgent := got.Render()
+	if !strings.Contains(renderedAgent, "Retrieved Device Experience") || !strings.Contains(renderedAgent, "mem_open_wechat") {
+		t.Fatalf("agent memory prompt missing retrieved experience:\n%s", renderedAgent)
 	}
-	if !strings.Contains(renderedVerifier, "Known Failure Modes") || !strings.Contains(renderedVerifier, "mem_wechat_failure") {
-		t.Fatalf("verifier memory prompt missing failure memory:\n%s", renderedVerifier)
+	if !strings.Contains(renderedAgent, "Known Failure Modes") || !strings.Contains(renderedAgent, "mem_wechat_failure") {
+		t.Fatalf("agent memory prompt missing failure memory:\n%s", renderedAgent)
 	}
 }
 
-func TestMemoryPlaneRetrieveFreezesPlannerExperienceWithinActiveSession(t *testing.T) {
+func TestMemoryPlaneRetrieveRefreshesPlannerExperienceForDifferentTaskInActiveSession(t *testing.T) {
 	ctx := context.Background()
 	memoryDir := filepath.Join(t.TempDir(), "memory")
 	longTerm := NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"))
@@ -225,6 +224,9 @@ func TestMemoryPlaneRetrieveFreezesPlannerExperienceWithinActiveSession(t *testi
 	if got := metadata.State.RetrievedDeviceExperience.Planner.Procedures[0].ID; got != "mem_open_wechat" {
 		t.Fatalf("metadata planner snapshot = %q, want mem_open_wechat", got)
 	}
+	if metadata.State.RetrievedDeviceExperience.QueryKey == "" {
+		t.Fatalf("metadata planner snapshot missing query key")
+	}
 	if _, err := os.Stat(filepath.Join(memoryDir, "session", "retrieved_device_experience.json")); !os.IsNotExist(err) {
 		t.Fatalf("unexpected feature-specific snapshot file, stat err = %v", err)
 	}
@@ -236,13 +238,69 @@ func TestMemoryPlaneRetrieveFreezesPlannerExperienceWithinActiveSession(t *testi
 	if err != nil {
 		t.Fatalf("second Retrieve() error = %v", err)
 	}
-	if len(second.Planner.Procedures) == 0 || second.Planner.Procedures[0].ID != "mem_open_wechat" {
-		t.Fatalf("second planner procedures = %#v, want first-session snapshot", second.Planner.Procedures)
+	if len(second.Planner.Procedures) == 0 || second.Planner.Procedures[0].ID != "mem_open_alipay" {
+		t.Fatalf("second planner procedures = %#v, want task-specific retrieval", second.Planner.Procedures)
 	}
 	for _, hit := range second.Planner.Procedures {
-		if hit.ID == "mem_open_alipay" {
-			t.Fatalf("planner experience should stay frozen within session: %#v", second.Planner.Procedures)
+		if hit.ID == "mem_open_wechat" {
+			t.Fatalf("different task should not reuse first planner snapshot: %#v", second.Planner.Procedures)
 		}
+	}
+}
+
+func TestMemoryPlaneRetrieveRefreshesPlannerExperienceForDifferentEpisodeInActiveSession(t *testing.T) {
+	ctx := context.Background()
+	memoryDir := filepath.Join(t.TempDir(), "memory")
+	longTerm := NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"))
+	if _, err := longTerm.AddMemory(ctx, MemoryItem{
+		ID:               "mem_wechat_old",
+		Type:             "procedure",
+		Priority:         70,
+		Confidence:       0.8,
+		Entities:         []string{"微信App"},
+		Title:            "旧微信路径",
+		Content:          "打开微信App时使用旧路径。",
+		EvidenceExcerpts: []string{"旧路径验证成功。"},
+	}); err != nil {
+		t.Fatalf("AddMemory(old): %v", err)
+	}
+
+	plane := NewFilesystemMemoryPlane(memoryDir, DefaultMemoryExtractionConfig(), nil)
+	first, err := plane.Retrieve(ctx, MemoryRetrieveRequest{
+		Input:     "打开微信App",
+		EpisodeID: "ep_first",
+		DeviceID:  "default",
+	})
+	if err != nil {
+		t.Fatalf("first Retrieve() error = %v", err)
+	}
+	if len(first.Planner.Procedures) == 0 || first.Planner.Procedures[0].ID != "mem_wechat_old" {
+		t.Fatalf("first planner procedures = %#v", first.Planner.Procedures)
+	}
+
+	if _, err := longTerm.AddMemory(ctx, MemoryItem{
+		ID:               "mem_wechat_new",
+		Type:             "procedure",
+		Priority:         95,
+		Confidence:       0.9,
+		Entities:         []string{"微信App"},
+		Title:            "新微信路径",
+		Content:          "打开微信App时使用新路径。",
+		EvidenceExcerpts: []string{"新路径验证成功。"},
+	}); err != nil {
+		t.Fatalf("AddMemory(new): %v", err)
+	}
+
+	second, err := plane.Retrieve(ctx, MemoryRetrieveRequest{
+		Input:     "打开微信App",
+		EpisodeID: "ep_second",
+		DeviceID:  "default",
+	})
+	if err != nil {
+		t.Fatalf("second Retrieve() error = %v", err)
+	}
+	if len(second.Planner.Procedures) == 0 || second.Planner.Procedures[0].ID != "mem_wechat_new" {
+		t.Fatalf("second planner procedures = %#v, want refreshed memory", second.Planner.Procedures)
 	}
 }
 
@@ -391,7 +449,7 @@ func TestMemoryPlaneFreezePlannerSnapshotUsesFirstConcurrentRetriever(t *testing
 	secondDone := make(chan retrieveResult, 1)
 
 	go func() {
-		out, err := plane.retrieveWithFrozenPlannerSnapshot(func() (MemoryContext, error) {
+		out, err := plane.retrieveWithFrozenPlannerSnapshot("same-query", func() (MemoryContext, error) {
 			close(firstComputeStarted)
 			<-firstMayFinish
 			return MemoryContext{
@@ -407,7 +465,7 @@ func TestMemoryPlaneFreezePlannerSnapshotUsesFirstConcurrentRetriever(t *testing
 
 	go func() {
 		close(secondCalled)
-		out, err := plane.retrieveWithFrozenPlannerSnapshot(func() (MemoryContext, error) {
+		out, err := plane.retrieveWithFrozenPlannerSnapshot("same-query", func() (MemoryContext, error) {
 			close(secondComputeStarted)
 			return MemoryContext{
 				Planner: RoleMemoryContext{
@@ -462,7 +520,9 @@ func TestPersistentEpisodeRecorderWritesIncrementalEventsAndMarksInterrupted(t *
 	if err := recorder.Start(ctx); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	recorder.RecordPlannerDecision(plannerDecision{
+	recorder.append(TaskEpisodeEvent{
+		Type:      "planner_decision",
+		Role:      "agent",
 		Objective: "打开设置",
 		Plan:      []string{"打开设置"},
 		NextStep:  "点击设置",
@@ -551,7 +611,7 @@ func TestTaskEpisodeIndexSummaryOmitsScreenshotBase64(t *testing.T) {
 
 func TestRuntimeRetrieveUsesAutomaticScreenHints(t *testing.T) {
 	ctx := context.Background()
-	configDir := t.TempDir()
+	configDir := ensureTestConfigDir(t, t.TempDir())
 	memoryDir := filepath.Join(configDir, "memory")
 	longTerm := NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"))
 	for _, item := range []MemoryItem{
@@ -604,10 +664,7 @@ func TestRuntimeRetrieveUsesAutomaticScreenHints(t *testing.T) {
 	}
 
 	plannerPrompt := messageText(model.messages[0])
-	if !strings.Contains(plannerPrompt, "mem_matching_context") {
-		t.Fatalf("planner prompt missing matching memory:\n%s", plannerPrompt)
-	}
-	for _, unexpected := range []string{"mem_wrong_screen_runtime"} {
+	for _, unexpected := range []string{"mem_matching_context", "mem_wrong_screen_runtime"} {
 		if strings.Contains(plannerPrompt, unexpected) {
 			t.Fatalf("planner prompt should not contain %s:\n%s", unexpected, plannerPrompt)
 		}

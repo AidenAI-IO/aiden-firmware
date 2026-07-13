@@ -121,6 +121,17 @@ func promptSoundPCM(kind promptSoundKind) []byte {
 	}
 }
 
+func promptSoundDurationMS(kind promptSoundKind) int64 {
+	pcm := promptSoundPCM(kind)
+	bytesPerSample := promptSoundBitWidth / 8
+	frameBytes := promptSoundChannels * bytesPerSample
+	if frameBytes <= 0 || promptSoundSampleRate <= 0 {
+		return 0
+	}
+	frames := len(pcm) / frameBytes
+	return int64(frames) * 1000 / promptSoundSampleRate
+}
+
 type promptTone struct {
 	frequency float64
 	duration  time.Duration

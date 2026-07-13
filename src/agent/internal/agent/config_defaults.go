@@ -11,6 +11,7 @@ const (
 	defaultModelTemperature        = 0.2
 	defaultModelMaxResponseTokens  = 1000
 	defaultModelLogRawHTTP         = true
+	defaultModelReasoningEffort    = ""
 	defaultTTSProvider             = "minimax-cn"
 	defaultTTSVoiceID              = "male-qn-qingse"
 	defaultTTSEmotion              = "happy"
@@ -33,6 +34,7 @@ const (
 	defaultLLMHTTPLogRetentionDays = 7
 	defaultKeyboardDevice          = "/dev/hidg0"
 	defaultMouseDevice             = "/dev/hidg1"
+	defaultAndroidKeyboardDevice   = "/dev/hidg2"
 	defaultFrameServiceSocket      = "/run/frame_service/frame_service.sock"
 	defaultPointerMode             = "absolute"
 	defaultInputMode               = "text"
@@ -66,6 +68,7 @@ func DefaultConfig() Config {
 			Temperature:       defaultModelTemperature,
 			MaxResponseTokens: defaultModelMaxResponseTokens,
 			LogRawHTTP:        defaultModelLogRawHTTP,
+			ReasoningEffort:   defaultModelReasoningEffort,
 		},
 		TTS: TTSConfig{
 			Provider: defaultTTSProvider,
@@ -94,10 +97,11 @@ func DefaultConfig() Config {
 			LLMHTTPRetentionDays: defaultLLMHTTPLogRetentionDays,
 		},
 		HID: HIDConfig{
-			KeyboardDevice: defaultKeyboardDevice,
-			MouseDevice:    defaultMouseDevice,
-			FrameSocket:    defaultFrameServiceSocket,
-			PointerMode:    defaultPointerMode,
+			KeyboardDevice:        defaultKeyboardDevice,
+			MouseDevice:           defaultMouseDevice,
+			AndroidKeyboardDevice: defaultAndroidKeyboardDevice,
+			FrameSocket:           defaultFrameServiceSocket,
+			PointerMode:           defaultPointerMode,
 		},
 		Search: SearchConfig{
 			Provider: searchProviderDuckDuckGo,

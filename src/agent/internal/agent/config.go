@@ -156,6 +156,7 @@ type Config struct {
 	VoiceToolCallSpeech        *bool                   `toml:"voice_tool_call_speech,omitempty"`
 	VoiceProgressSpeechEnabled *bool                   `toml:"voice_progress_speech_enabled,omitempty"`
 	VoiceMaxResponseTokens     int                     `toml:"voice_max_response_tokens,omitempty"`
+	LoadAllTools               bool                    `toml:"load_all_tools,omitempty"`
 	TodoReminderToolCalls      int                     `toml:"todo_reminder_tool_calls,omitempty"`
 	MaxIterations              int                     `toml:"max_iterations,omitempty"`
 	ForceSimpleLoop            bool                    `toml:"-"`
@@ -349,11 +350,13 @@ func (a AudioConfig) BitWidthOrDefault() int {
 }
 
 type HIDConfig struct {
-	KeyboardDevice string `toml:"keyboard_device,omitempty"`
-	MouseDevice    string `toml:"mouse_device,omitempty"`
-	FrameSocket    string `toml:"frame_socket,omitempty"`
-	// PointerMode selects the hid.usb1 report format: "absolute" (iOS AssistiveTouch)
-	// or "touchscreen" (Android HID digitizer).
+	KeyboardDevice        string `toml:"keyboard_device,omitempty"`
+	MouseDevice           string `toml:"mouse_device,omitempty"`
+	AndroidKeyboardDevice string `toml:"android_keyboard_device,omitempty"`
+	FrameSocket           string `toml:"frame_socket,omitempty"`
+	// PointerMode selects the hid.usb1 report format: "absolute" (iOS AssistiveTouch
+	// plus limited hid.usb2 media keys) or "touchscreen" (Android HID digitizer
+	// plus full hid.usb2 Android extension keys).
 	PointerMode string `toml:"pointer_mode,omitempty"`
 }
 
@@ -382,6 +385,13 @@ func (h HIDConfig) MouseDeviceOrDefault() string {
 		return h.MouseDevice
 	}
 	return defaultMouseDevice
+}
+
+func (h HIDConfig) AndroidKeyboardDeviceOrDefault() string {
+	if h.AndroidKeyboardDevice != "" {
+		return h.AndroidKeyboardDevice
+	}
+	return defaultAndroidKeyboardDevice
 }
 
 func (h HIDConfig) FrameSocketOrDefault() string {
@@ -413,6 +423,7 @@ type ModelConfig struct {
 	Temperature       float64 `toml:"temperature,omitempty"`
 	MaxResponseTokens int     `toml:"max_response_tokens,omitempty"`
 	LogRawHTTP        bool    `toml:"log_raw_http,omitempty"`
+	ReasoningEffort   string  `toml:"reasoning_effort,omitempty"`
 	// These override static model metadata; zero means use the registry/fallback.
 	ContextWindow        int      `toml:"context_window,omitempty"`
 	ModelMaxOutputTokens int      `toml:"model_max_output_tokens,omitempty"`
@@ -421,12 +432,8 @@ type ModelConfig struct {
 
 // AgentConfig is used internally by the runtime prompt builder.
 type AgentConfig struct {
-	Instruction         string
-	AdditionalPrompt    string
-	RuntimeContext      string
-	ForceSimpleLoop     bool
-	VoiceToolCallSpeech *bool
-	TTSConfigured       bool
+	Instruction      string
+	AdditionalPrompt string
 }
 
 // MemoryConfig is used internally by the memory manager.

@@ -6,7 +6,7 @@ import "testing"
 // sub-threshold text the buffer is still holding, so it cannot leak into a
 // later Write/Flush cycle. This guards the tool-call-speech duplication fix:
 // a short tool-call preamble such as "我查下天气。" (< minChunkRunes) must not
-// survive to be prepended to a subsequent final answer.
+// survive to be prepended to a subsequent answer.
 func TestSentenceBufferResetDropsResidual(t *testing.T) {
 	var b sentenceBuffer
 

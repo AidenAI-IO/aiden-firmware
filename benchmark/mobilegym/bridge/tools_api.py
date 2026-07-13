@@ -55,6 +55,13 @@ MOBILEGYM_RESERVED_QUICK_ACTIONS = {
 }
 
 
+def _mobilegym_app_switch_action() -> Any:
+    return build_action(
+        "swipe",
+        {"start_x": 500, "start_y": 1000, "end_x": 500, "end_y": 500, "duration_ms": 900},
+    )
+
+
 class ToolsAPIHandler:
     """Handler for the environment bridge /api/tools endpoint."""
 
@@ -639,10 +646,7 @@ class ToolsAPIHandler:
                 log_tool_input=tool_input,
             )
         if action == "app_switch":
-            action = build_action(
-                "swipe",
-                {"start_x": 500, "start_y": 1000, "end_x": 500, "end_y": 500, "duration_ms": 900},
-            )
+            action = _mobilegym_app_switch_action()
             return self._execute_action(state, action, episode_id, tool_name="quick_action", tool_input=tool_input)
         if action == "spotlight_search":
             return self._call_touch_gesture(
@@ -780,6 +784,12 @@ class ToolsAPIHandler:
         normalized_keys = [str(k).strip().lower() for k in keys if str(k).strip()]
         if not normalized_keys:
             return {"output": "error: at least one key or modifier is required", "is_error": True}
+        alias_map = {
+            "keycode_back": "back",
+            "keycode_home": "home",
+            "keycode_app_switch": "app_switch",
+        }
+        normalized_keys = [alias_map.get(k, k) for k in normalized_keys]
         has_meta = any(k in ("meta", "cmd", "super", "win") for k in normalized_keys)
         non_modifiers = [k for k in normalized_keys if k not in ("meta", "cmd", "super", "win", "ctrl", "alt", "shift")]
 
@@ -798,6 +808,8 @@ class ToolsAPIHandler:
                     action = build_action("key", {"key": "home"})
                 elif key in ("back", "escape", "esc"):
                     action = build_action("key", {"key": "back"})
+                elif key in ("app_switch",):
+                    action = _mobilegym_app_switch_action()
                 else:
                     return {"output": f"error: mobilegym keyboard_tap does not support key: {key!r}", "is_error": True}
             else:

@@ -60,8 +60,6 @@ func NewBuiltinToolSetFromConfig(cfg Config, proxyCfg ProxyConfig, options ...Bu
 
 var scriptCallableToolNames = map[string]struct{}{
 	"audio_volume":           {},
-	"calculator":             {},
-	"current_time":           {},
 	"enter_text_in_field":    {},
 	"enter_text_via_bridge":  {},
 	"image_diff":             {},
@@ -70,7 +68,7 @@ var scriptCallableToolNames = map[string]struct{}{
 	"mouse_click":            {},
 	"mouse_move":             {},
 	"mouse_scroll":           {},
-	"open_app":               {},
+	toolBridgeOpenApp:        {},
 	"quick_action":           {},
 	"screenshot":             {},
 	"search_launch_app":      {},
@@ -92,12 +90,13 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	}
 
 	kbDev := NewHIDDevice(hidCfg.KeyboardDeviceOrDefault())
+	androidKbDev := NewHIDDevice(hidCfg.AndroidKeyboardDeviceOrDefault())
 	screen := &screenState{}
 	pointer := newPointerController(hidCfg)
 	screenshot := NewScreenshotTool(hidCfg.FrameSocketOrDefault(), screen)
 	screenStable := toolOptions.screenStable.Resolved()
 	waitStable := NewWaitStableScreenTool(hidCfg.FrameSocketOrDefault(), screenStable, screen)
-	keyboardTap := &KeyboardTapTool{dev: kbDev}
+	keyboardTap := &KeyboardTapTool{dev: kbDev, androidDev: androidKbDev, pointerMode: hidCfg.PointerModeOrDefault()}
 	keyboardText := &KeyboardTextTool{dev: kbDev}
 	touchGesture := &TouchGestureTool{pc: pointer, screen: screen}
 	wheelNudge := &WheelNudgeTool{pc: pointer, screen: screen}
@@ -126,11 +125,9 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 		"image_diff":             &ImageDiffTool{},
 		"audio_volume":           NewAudioVolumeTool(audioCfg.SocketOrDefault()),
 		"shell":                  &ShellTool{proxy: proxyCfg},
-		"current_time":           NewCurrentTimeTool(),
 		"weather":                NewWeatherTool(proxyCfg),
 		"web_search":             NewWebSearchTool(searchCfg, proxyCfg),
 		"wikipedia":              NewWikipediaTool(proxyCfg),
-		"calculator":             NewCalculatorTool(),
 		"web_scraper":            NewWebScraperTool(proxyCfg),
 	}
 	if toolOptions.waitForWakeupController != nil {
@@ -229,15 +226,16 @@ func (s *ToolSet) Names() []string {
 }
 
 func (s *ToolSet) toolAvailable(name string) bool {
-	switch name {
-	case "open_app", "enter_text_via_bridge":
+	if name == "enter_text_via_bridge" {
 		return s.phoneBridge != nil
-	default:
-		if !isPhoneBridgeToolName(name) {
-			return true
-		}
-		return s.phoneBridge != nil && s.phoneBridge.Connected()
 	}
+	if !isPhoneBridgeToolName(name) {
+		return true
+	}
+	if s.phoneBridge == nil {
+		return false
+	}
+	return phoneBridgeToolAvailable(s.phoneBridge.getStatus(), name)
 }
 
 func (s *ToolSet) CurrentEnvironmentHints(maxAge time.Duration) CurrentEnvironmentHints {

@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+const phoneBridgeBackgroundSafeDataToolNote = `When Aiden is backgrounded, this data tool can run through the HTTP command queue if iOS PiP Bridge mode or Android FGS Bridge mode is active. If iOS PiP is not active but the Dynamic Island return entry is available, the tool restores Aiden to foreground before sending the command. Background bridge modes are not foreground substitutes for bridge_open_app or UI actions. `
+
 // nextBridgeCmdID builds a unique command id for a bridge command type. It
 // reuses openAppCmdSeq so every outbound bridge command shares one counter.
 func nextBridgeCmdID(prefix string) string {
@@ -37,7 +39,7 @@ func bridgeStatusForError(bridge *PhoneBridge) []PhoneBridgeStatus {
 	if bridge == nil {
 		return nil
 	}
-	return []PhoneBridgeStatus{bridge.Status()}
+	return []PhoneBridgeStatus{bridge.getStatus()}
 }
 
 // ClipboardTool reads and writes the connected phone's system clipboard.
@@ -50,14 +52,12 @@ func NewClipboardTool(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) *Clipb
 	return &ClipboardTool{bridge: bridge, restorer: restorer}
 }
 
-func (t *ClipboardTool) Name() string { return "clipboard" }
+func (t *ClipboardTool) Name() string { return toolBridgeClipboard }
 
 func (t *ClipboardTool) Description() string {
 	return `Read or write the connected phone's system clipboard via the phone bridge. ` +
-		`Input JSON: {"action":"read"} returns {"ok":true,"text":"..."}; ` +
-		`{"action":"write","text":"content"} sets the clipboard and returns {"ok":true}. ` +
 		`Use this as a fast cross-app content channel for long or non-ASCII text: write the clipboard in Aiden, switch to the target app, then paste. ` +
-		`On iOS, if Aiden is in background and a Dynamic Island return entry is available, this tool restores Aiden to foreground and waits for WebSocket reconnect before using the clipboard.`
+		phoneBridgeBackgroundSafeDataToolNote
 }
 
 func (t *ClipboardTool) ArgsSchema() map[string]any {
@@ -94,7 +94,7 @@ func (t *ClipboardTool) Call(ctx context.Context, input string) (string, error) 
 }
 
 func (t *ClipboardTool) read(ctx context.Context) (string, error) {
-	resp, restored, err := sendForegroundBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
+	resp, restored, err := sendRoutedBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
 		ID:        nextBridgeCmdID("clip_read"),
 		Type:      "clipboard_read",
 		TimeoutMs: 5000,
@@ -127,7 +127,7 @@ func (t *ClipboardTool) read(ctx context.Context) (string, error) {
 
 func (t *ClipboardTool) write(ctx context.Context, text string) (string, error) {
 	payload, _ := json.Marshal(map[string]string{"text": text})
-	resp, restored, err := sendForegroundBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
+	resp, restored, err := sendRoutedBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
 		ID:        nextBridgeCmdID("clip_write"),
 		Type:      "clipboard_write",
 		Payload:   payload,
@@ -163,15 +163,13 @@ func NewCalendarTool(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) *Calend
 	return &CalendarTool{bridge: bridge, restorer: restorer}
 }
 
-func (t *CalendarTool) Name() string { return "calendar" }
+func (t *CalendarTool) Name() string { return toolBridgeCalendar }
 
 func (t *CalendarTool) Description() string {
 	return `Create, query, or delete system calendar events on the connected phone via the phone bridge. ` +
-		`Times are RFC3339 strings with timezone offset, e.g. "2026-06-02T15:00:00+08:00". Use current_time first if you need the timezone or "now". ` +
-		`Create: {"action":"create","title":"Dentist","start_at":"2026-06-02T15:00:00+08:00","end_at":"2026-06-02T16:00:00+08:00","all_day":false,"location":"Clinic","notes":"...","alarm_minutes_before":30} -> {"ok":true,"event_id":"..."}. ` +
-		`Query: {"action":"query","from":"2026-06-02T00:00:00+08:00","to":"2026-06-03T00:00:00+08:00"} -> {"ok":true,"events":[{"event_id","title","start_at","end_at","location"}]}. ` +
-		`Delete: {"action":"delete","event_id":"..."} -> {"ok":true}. ` +
-		`Confirm details with the user before creating or deleting events. On iOS, if Aiden is in background and a Dynamic Island return entry is available, this tool restores Aiden before sending the calendar command.`
+		`Times are RFC3339 strings with timezone offset, e.g. "2026-06-02T15:00:00+08:00". Use the connected phone environment timezone when available; otherwise use shell to obtain a controller-time baseline and do not assume it matches the phone timezone. ` +
+		`Confirm details with the user before creating or deleting events. ` +
+		phoneBridgeBackgroundSafeDataToolNote
 }
 
 func (t *CalendarTool) ArgsSchema() map[string]any {
@@ -246,7 +244,7 @@ func (t *CalendarTool) create(ctx context.Context, args calendarArgs) (string, e
 		"notes":                args.Notes,
 		"alarm_minutes_before": args.AlarmMinutesBefore,
 	})
-	resp, restored, err := sendForegroundBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
+	resp, restored, err := sendRoutedBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
 		ID:        nextBridgeCmdID("cal_create"),
 		Type:      "calendar_create",
 		Payload:   payload,
@@ -285,7 +283,7 @@ func (t *CalendarTool) query(ctx context.Context, args calendarArgs) (string, er
 		return toolErrorString(te), nil
 	}
 	payload, _ := json.Marshal(map[string]string{"from": args.From, "to": args.To})
-	resp, restored, err := sendForegroundBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
+	resp, restored, err := sendRoutedBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
 		ID:        nextBridgeCmdID("cal_query"),
 		Type:      "calendar_query",
 		Payload:   payload,
@@ -327,7 +325,7 @@ func (t *CalendarTool) delete(ctx context.Context, args calendarArgs) (string, e
 		return toolErrorString(te), nil
 	}
 	payload, _ := json.Marshal(map[string]string{"event_id": args.EventID})
-	resp, restored, err := sendForegroundBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
+	resp, restored, err := sendRoutedBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
 		ID:        nextBridgeCmdID("cal_delete"),
 		Type:      "calendar_delete",
 		Payload:   payload,
@@ -359,14 +357,12 @@ func NewContactsTool(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) *Contac
 	return &ContactsTool{bridge: bridge, restorer: restorer}
 }
 
-func (t *ContactsTool) Name() string { return "contacts" }
+func (t *ContactsTool) Name() string { return toolBridgeContacts }
 
 func (t *ContactsTool) Description() string {
 	return `Query, create, or update contacts on the connected phone via the phone bridge. ` +
-		`Query: {"action":"query","query":"张三","limit":20} -> {"ok":true,"contacts":[{"contact_id","name","phone_numbers","emails"}]}. ` +
-		`Create: {"action":"create","name":"李四","phone_numbers":["+86 139 8765 4321"],"emails":["lisi@example.com"],"organization":"公司","notes":"备注"} -> {"ok":true,"contact_id":"..."}. ` +
-		`Update: {"action":"update","contact_id":"...","name":"新名字","phone_numbers":[...],"emails":[...]} -> {"ok":true}. ` +
-		`Confirm details with the user before creating or updating contacts. On iOS, if Aiden is in background and a Dynamic Island return entry is available, this tool restores Aiden before sending the contacts command.`
+		`Confirm details with the user before creating or updating contacts. ` +
+		phoneBridgeBackgroundSafeDataToolNote
 }
 
 func (t *ContactsTool) ArgsSchema() map[string]any {
@@ -426,7 +422,7 @@ func (t *ContactsTool) query(ctx context.Context, args contactsArgs) (string, er
 		"query": args.Query,
 		"limit": limit,
 	})
-	resp, restored, err := sendForegroundBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
+	resp, restored, err := sendRoutedBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
 		ID:        nextBridgeCmdID("contacts_query"),
 		Type:      "contacts_query",
 		Payload:   payload,
@@ -464,7 +460,7 @@ func (t *ContactsTool) query(ctx context.Context, args contactsArgs) (string, er
 
 func (t *ContactsTool) create(ctx context.Context, args contactsArgs) (string, error) {
 	if strings.TrimSpace(args.Name) == "" {
-		te := NewToolError(CodeInvalidArguments, fmt.Sprintf("create requires a name"))
+		te := NewToolError(CodeInvalidArguments, "create requires a name")
 		SetToolError(ctx, te)
 		return toolErrorString(te), nil
 	}
@@ -475,7 +471,7 @@ func (t *ContactsTool) create(ctx context.Context, args contactsArgs) (string, e
 		"organization":  args.Organization,
 		"notes":         args.Notes,
 	})
-	resp, restored, err := sendForegroundBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
+	resp, restored, err := sendRoutedBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
 		ID:        nextBridgeCmdID("contacts_create"),
 		Type:      "contacts_create",
 		Payload:   payload,
@@ -510,7 +506,7 @@ func (t *ContactsTool) create(ctx context.Context, args contactsArgs) (string, e
 
 func (t *ContactsTool) update(ctx context.Context, args contactsArgs) (string, error) {
 	if strings.TrimSpace(args.ContactID) == "" {
-		te := NewToolError(CodeInvalidArguments, fmt.Sprintf("update requires a contact_id"))
+		te := NewToolError(CodeInvalidArguments, "update requires a contact_id")
 		SetToolError(ctx, te)
 		return toolErrorString(te), nil
 	}
@@ -522,7 +518,7 @@ func (t *ContactsTool) update(ctx context.Context, args contactsArgs) (string, e
 		"organization":  args.Organization,
 		"notes":         args.Notes,
 	})
-	resp, restored, err := sendForegroundBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
+	resp, restored, err := sendRoutedBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
 		ID:        nextBridgeCmdID("contacts_update"),
 		Type:      "contacts_update",
 		Payload:   payload,
@@ -554,22 +550,19 @@ func NewNotificationTool(bridge *PhoneBridge, restorer *PhoneBridgeRestorer) *No
 	return &NotificationTool{bridge: bridge, restorer: restorer}
 }
 
-func (t *NotificationTool) Name() string { return "notification" }
+func (t *NotificationTool) Name() string { return toolBridgeNotification }
 
 func (t *NotificationTool) Description() string {
 	return `Send local notifications on the connected phone via the phone bridge. ` +
-		`Input JSON: {"title":"提醒","body":"该吃药了","schedule_at":"2026-06-04T18:00:00+08:00","sound":true,"badge":1}. ` +
-		`The schedule_at field is optional (RFC3339 with timezone); if omitted, the notification is sent immediately. ` +
-		`Returns {"ok":true,"notification_id":"..."} on success. ` +
 		`Use this to remind the user or bring the companion app back to foreground. ` +
-		`On iOS, if Aiden is in background and a Dynamic Island return entry is available, this tool restores Aiden before sending the notification command.`
+		phoneBridgeBackgroundSafeDataToolNote
 }
 
 func (t *NotificationTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
 		"title":       stringArgSchema("Notification title."),
 		"body":        stringArgSchema("Notification body."),
-		"schedule_at": stringArgSchema("Optional scheduled send time as RFC3339 with timezone."),
+		"schedule_at": stringArgSchema("Optional scheduled send time as RFC3339 with timezone; if omitted, sent immediately."),
 		"sound":       boolArgSchema("Whether to play a sound."),
 		"badge":       minIntegerArgSchema("Optional app badge count.", 0),
 	}, "title")
@@ -592,7 +585,7 @@ func (t *NotificationTool) Call(ctx context.Context, input string) (string, erro
 	}
 
 	if strings.TrimSpace(args.Title) == "" {
-		te := NewToolError(CodeInvalidArguments, fmt.Sprintf("notification requires a title"))
+		te := NewToolError(CodeInvalidArguments, "notification requires a title")
 		SetToolError(ctx, te)
 		return toolErrorString(te), nil
 	}
@@ -604,7 +597,7 @@ func (t *NotificationTool) Call(ctx context.Context, input string) (string, erro
 		"sound":       args.Sound,
 		"badge":       args.Badge,
 	})
-	resp, restored, err := sendForegroundBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
+	resp, restored, err := sendRoutedBridgeCommand(ctx, t.bridge, t.restorer, BridgeCommand{
 		ID:        nextBridgeCmdID("notification"),
 		Type:      "notification_send",
 		Payload:   payload,

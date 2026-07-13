@@ -316,7 +316,7 @@ type ttsBufferResetter interface {
 
 // ResetBuffer discards any text buffered by the underlying TTS session but not
 // yet synthesized. Used to prevent residual content from a tool-call turn from
-// leaking into a later final-answer turn.
+// leaking into a later streaming turn.
 func (w *streamSessionWriter) ResetBuffer() {
 	w.mu.Lock()
 	session := w.session

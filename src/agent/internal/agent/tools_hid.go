@@ -46,7 +46,7 @@ const (
 
 	// defaultDirectionalSwipeDistance is the normalized travel for swipe_left/right/up/down.
 	// Coordinates use 0-1000 normalized scale.
-	defaultDirectionalSwipeDistance = 500.0
+	defaultDirectionalSwipeDistance = 700.0
 	directionalSwipeLargeDistance   = 700.0
 	directionalSwipeMediumDistance  = 500.0
 	directionalSwipeSmallDistance   = 200.0
@@ -131,6 +131,196 @@ var hidModifierMap = map[string]uint8{
 	"alt": 0x04, "lalt": 0x04, "ralt": 0x40,
 	"meta": 0x08, "lmeta": 0x08, "rmeta": 0x80,
 	"super": 0x08, "win": 0x08, "cmd": 0x08,
+}
+
+var androidExtensionUsageMap = map[string]uint16{
+	"android_back":                0x0224,
+	"android_home":                0x0223,
+	"menu":                        0x0040,
+	"search":                      0x0221,
+	"power":                       0x0030,
+	"sleep":                       0x0032,
+	"volume_mute":                 0x00e2,
+	"volumeup":                    0x00e9,
+	"volume_up":                   0x00e9,
+	"volumedown":                  0x00ea,
+	"volume_down":                 0x00ea,
+	"media_fast_forward":          0x00b3,
+	"media_rewind":                0x00b4,
+	"media_next":                  0x00b5,
+	"media_previous":              0x00b6,
+	"media_stop":                  0x00b7,
+	"media_play_pause":            0x00cd,
+	"screenshot":                  0x0065,
+	"key_usage_screenshot":        0x0065,
+	"window":                      0x0067,
+	"key_usage_window":            0x0067,
+	"brightness_up":               0x006f,
+	"key_usage_brightness_up":     0x006f,
+	"brightness_down":             0x0070,
+	"key_usage_brightness_down":   0x0070,
+	"dictate":                     0x00d8,
+	"key_usage_dictate":           0x00d8,
+	"emoji_picker":                0x00d9,
+	"key_usage_emoji_picker":      0x00d9,
+	"media_audio_track":           0x0173,
+	"key_usage_media_audio_track": 0x0173,
+	"profile_switch":              0x019c,
+	"key_usage_profile_switch":    0x019c,
+	"settings":                    0x019f,
+	"key_usage_settings":          0x019f,
+	"new":                         0x0201,
+	"key_usage_new":               0x0201,
+	"close":                       0x0203,
+	"key_usage_close":             0x0203,
+	"print":                       0x0208,
+	"key_usage_print":             0x0208,
+	"refresh":                     0x0227,
+	"key_usage_refresh":           0x0227,
+	"fullscreen":                  0x0232,
+	"key_usage_fullscreen":        0x0232,
+	"language_switch":             0x029d,
+	"key_usage_language_switch":   0x029d,
+	// AOSP Generic.kl checks HID usage codes before Linux scan codes.
+	// 0x0c01A2 is mapped to ALL_APPS, while 0x0c029F is mapped to
+	// RECENT_APPS / KEYCODE_APP_SWITCH.
+	"app_switch": 0x029f,
+}
+
+var absolutePointerModeExtensionReports = map[string]uint16{
+	"volume_mute":               1 << 0,
+	"volumeup":                  1 << 1,
+	"volume_up":                 1 << 1,
+	"volumedown":                1 << 2,
+	"volume_down":               1 << 2,
+	"media_play_pause":          1 << 3,
+	"media_stop":                1 << 4,
+	"media_next":                1 << 5,
+	"media_previous":            1 << 6,
+	"media_rewind":              1 << 7,
+	"media_fast_forward":        1 << 8,
+	"screenshot":                1 << 9,
+	"key_usage_screenshot":      1 << 9,
+	"brightness_up":             1 << 10,
+	"key_usage_brightness_up":   1 << 10,
+	"brightness_down":           1 << 11,
+	"key_usage_brightness_down": 1 << 11,
+}
+
+const absolutePointerModeExtensionKeyList = "KEYCODE_VOLUME_MUTE, KEYCODE_VOLUME_UP, KEYCODE_VOLUME_DOWN, KEYCODE_MEDIA_PLAY_PAUSE, KEYCODE_MEDIA_STOP, KEYCODE_MEDIA_NEXT, KEYCODE_MEDIA_PREVIOUS, KEYCODE_MEDIA_REWIND, KEYCODE_MEDIA_FAST_FORWARD, KEY_USAGE_SCREENSHOT, KEY_USAGE_BRIGHTNESS_UP, KEY_USAGE_BRIGHTNESS_DOWN"
+
+type androidKeyboardTapAlias struct {
+	Keycode           int
+	Replacement       string
+	UnsupportedReason string
+}
+
+// Keep Android framework keycodes separate from the generic HID usage table.
+// They are routed through hid.usb2, which advertises a Consumer Control
+// interface instead of the boot keyboard report used by hid.usb0.
+var androidKeyboardTapAliases = map[string]androidKeyboardTapAlias{
+	"keycode_call": {
+		Keycode:           5,
+		UnsupportedReason: "call pickup requires an Android telephony/media key path beyond the current hid.usb2 Consumer Control interface",
+	},
+	"keycode_endcall": {
+		Keycode:           6,
+		UnsupportedReason: "call hangup requires an Android telephony/media key path beyond the current hid.usb2 Consumer Control interface",
+	},
+	"keycode_home": {
+		Keycode:     3,
+		Replacement: "android_home",
+	},
+	"keycode_menu": {
+		Keycode:     82,
+		Replacement: "menu",
+	},
+	"keycode_back": {
+		Keycode:     4,
+		Replacement: "android_back",
+	},
+	"keycode_search": {
+		Keycode:     84,
+		Replacement: "search",
+	},
+	"keycode_camera": {
+		Keycode:           27,
+		UnsupportedReason: "camera shutter requires a camera/media key path beyond the current hid.usb2 Consumer Control interface",
+	},
+	"keycode_focus": {
+		Keycode:           80,
+		UnsupportedReason: "camera focus requires a camera/media key path beyond the current hid.usb2 Consumer Control interface",
+	},
+	"keycode_power": {
+		Keycode:     26,
+		Replacement: "power",
+	},
+	"keycode_sleep": {
+		Keycode:     223,
+		Replacement: "sleep",
+	},
+	"keycode_wakeup": {
+		Keycode:           224,
+		UnsupportedReason: "wakeup requires a Generic Desktop/System Control HID path beyond the current hid.usb2 Consumer Control interface",
+	},
+	"keycode_soft_sleep": {
+		Keycode:           276,
+		UnsupportedReason: "soft sleep has no verified standard Consumer Control usage on this gadget",
+	},
+	"keycode_notification": {
+		Keycode:           83,
+		UnsupportedReason: "notification center has no verified standard Consumer Control usage on this gadget; use quick_action notification_center or touch_gesture instead",
+	},
+	"keycode_mute": {
+		Keycode:           91,
+		UnsupportedReason: "KEYCODE_MUTE is microphone mute, not speaker mute; hid.usb2 only exposes system speaker/stream volume mute",
+	},
+	"keycode_volume_mute": {
+		Keycode:     164,
+		Replacement: "volume_mute",
+	},
+	"keycode_volume_up": {
+		Keycode:     24,
+		Replacement: "volume_up",
+	},
+	"keycode_volume_down": {
+		Keycode:     25,
+		Replacement: "volume_down",
+	},
+	"keycode_media_play_pause": {
+		Keycode:     85,
+		Replacement: "media_play_pause",
+	},
+	"keycode_media_stop": {
+		Keycode:     86,
+		Replacement: "media_stop",
+	},
+	"keycode_media_next": {
+		Keycode:     87,
+		Replacement: "media_next",
+	},
+	"keycode_media_previous": {
+		Keycode:     88,
+		Replacement: "media_previous",
+	},
+	"keycode_media_rewind": {
+		Keycode:     89,
+		Replacement: "media_rewind",
+	},
+	"keycode_media_fast_forward": {
+		Keycode:     90,
+		Replacement: "media_fast_forward",
+	},
+	"keycode_app_switch": {
+		Keycode:     187,
+		Replacement: "app_switch",
+	},
+}
+
+type keyboardTapResolvedInput struct {
+	Keys                []string
+	AndroidExtensionKey string
+	AndroidUsage        uint16
 }
 
 // HIDDevice manages a single HID device file with lazy open and auto-reopen.
@@ -525,31 +715,29 @@ func hidWriteWouldBlock(err error) bool {
 
 // KeyboardTapTool sends a key press then release via HID.
 type KeyboardTapTool struct {
-	dev *HIDDevice
+	dev         *HIDDevice
+	androidDev  *HIDDevice
+	pointerMode string
 }
 
 func (t *KeyboardTapTool) Name() string { return "keyboard_tap" }
 
 func (t *KeyboardTapTool) Description() string {
-	return `Press and release keyboard keys. Input JSON: {"keys": ["ctrl", "c"]}. ` +
-		`For known semantic platform actions such as back, app search, app switching, copy, paste, undo, redo, select all, delete backward/forward, find, send, or browser navigation, prefer quick_action first; use keyboard_tap as a low-level fallback or for custom key input. ` +
-		`Supports: a-z, 0-9, f1-f12, enter, escape, backspace, tab, space, delete, ` +
-		`up, down, left, right, home, end, pageup, pagedown, insert, printscreen. ` +
-		`For normal text deletion in an input field, use backspace; the delete key is forward-delete and should only be used when intentionally deleting the character after the cursor. ` +
-		`Modifiers: ctrl, shift, alt, meta/super/win/cmd. ` +
-		`Modifier-only taps are supported (e.g. {"keys":["meta"]} for Android Home). ` +
-		`Multiple keys are pressed simultaneously (e.g. ctrl+c). ` +
-		`Optional hold_ms keeps the chord pressed before release (default 50ms, 120ms when modifiers are used).`
+	return `Press and release keyboard keys, pressed simultaneously as a chord (e.g. {"keys":["ctrl","c"]}). Prefer quick_action first for semantic platform actions; use keyboard_tap as a low-level fallback or for custom key input.`
 }
 
 func (t *KeyboardTapTool) ArgsSchema() map[string]any {
-	keysSchema := stringArrayArgSchema("Keys pressed simultaneously, e.g. [\"ctrl\",\"c\"] or [\"meta\"]. Use backspace for ordinary text deletion before the cursor; delete is forward-delete after the cursor.", []string{"ctrl", "c"}, []string{"meta"})
+	keysSchema := stringArrayArgSchema("Keys pressed simultaneously, e.g. [\"ctrl\",\"c\"] or [\"meta\"]. "+
+		"Standard boot-keyboard keys: a-z, 0-9, f1-f12, enter, escape, backspace, tab, space, delete, arrows, home, end, pageup/down, insert, printscreen; modifiers ctrl, shift, alt, meta/super/win/cmd; modifier-only taps allowed. "+
+		"Use backspace for ordinary text deletion before the cursor; delete is forward-delete after the cursor. "+
+		"Android extension keys (hid.usb2) use KEYCODE_*/KEY_USAGE_* aliases (see the Android key guide for the full list), are single-key taps only, and cannot be combined with modifiers/chords. "+
+		"When hid.pointer_mode is absolute, hid.usb2 only supports media, volume, screenshot, and brightness keys: "+absolutePointerModeExtensionKeyList+".", []string{"ctrl", "c"}, []string{"meta"})
 	keysSchema["minItems"] = 1
 	keysSchema["maxItems"] = 6
 
 	return objectArgsSchema(map[string]any{
 		"keys":    keysSchema,
-		"hold_ms": minIntegerArgSchema("Optional press duration before release.", 0),
+		"hold_ms": minIntegerArgSchema("Optional press duration before release (default 50ms, or 120ms when modifiers are used).", 0),
 	}, "keys")
 }
 
@@ -565,10 +753,31 @@ func (t *KeyboardTapTool) Call(ctx context.Context, input string) (string, error
 		return toolErrorResultString(ctx, CodeInvalidArguments, "keys array is required"), nil
 	}
 
+	resolved, err := resolveKeyboardTapKeys(args.Keys)
+	if err != nil {
+		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
+	}
+
+	if resolved.AndroidExtensionKey != "" {
+		holdMs := args.HoldMs
+		if holdMs <= 0 {
+			holdMs = defaultKeyboardTapHoldMs
+		}
+		if err := t.tapAndroidExtension(resolved.AndroidExtensionKey, resolved.AndroidUsage, holdMs); err != nil {
+			code := CodeToolExecutionFailed
+			if errors.Is(err, errAndroidExtensionUnavailable) {
+				code = CodeModuleUnavailable
+			} else if errors.Is(err, errAndroidExtensionKeyUnavailableInPointerMode) {
+				code = CodeInvalidArguments
+			}
+			return toolErrorResultf(ctx, code, "%v", err), nil
+		}
+		return "ok", nil
+	}
+
 	var modifier uint8
 	var keys []uint8
-	for _, k := range args.Keys {
-		k = strings.ToLower(strings.TrimSpace(k))
+	for _, k := range resolved.Keys {
 		if mod, ok := hidModifierMap[k]; ok {
 			modifier |= mod
 		} else if code, ok := hidKeyboardMap[k]; ok {
@@ -593,6 +802,86 @@ func (t *KeyboardTapTool) Call(ctx context.Context, input string) (string, error
 		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
 	return "ok", nil
+}
+
+func resolveKeyboardTapKeys(rawKeys []string) (keyboardTapResolvedInput, error) {
+	resolved := keyboardTapResolvedInput{Keys: make([]string, 0, len(rawKeys))}
+	androidKeys := make([]string, 0, 1)
+	for _, key := range rawKeys {
+		normalized := strings.ToLower(strings.TrimSpace(key))
+		if normalized == "" {
+			continue
+		}
+		if alias, ok := androidKeyboardTapAliases[normalized]; ok {
+			if alias.UnsupportedReason != "" {
+				return keyboardTapResolvedInput{}, fmt.Errorf("android-only key %q (keycode %d) is not supported by keyboard_tap: %s", normalized, alias.Keycode, alias.UnsupportedReason)
+			}
+			normalized = alias.Replacement
+		}
+		if usage, ok := androidExtensionUsageMap[normalized]; ok {
+			androidKeys = append(androidKeys, normalized)
+			resolved.AndroidUsage = usage
+			continue
+		}
+		resolved.Keys = append(resolved.Keys, normalized)
+	}
+	if len(androidKeys) > 1 {
+		return keyboardTapResolvedInput{}, fmt.Errorf("keyboard_tap supports one Android extension key at a time, got %v", androidKeys)
+	}
+	if len(androidKeys) == 1 {
+		if len(resolved.Keys) > 0 {
+			return keyboardTapResolvedInput{}, fmt.Errorf("Android extension key %q cannot be combined with standard keyboard keys or modifiers", androidKeys[0])
+		}
+		resolved.AndroidExtensionKey = androidKeys[0]
+		return resolved, nil
+	}
+	if len(resolved.Keys) == 0 {
+		return keyboardTapResolvedInput{}, fmt.Errorf("at least one key or modifier is required")
+	}
+	if len(resolved.Keys) > 6 {
+		return keyboardTapResolvedInput{}, fmt.Errorf("keyboard_tap supports at most 6 simultaneous keys after alias expansion")
+	}
+	return resolved, nil
+}
+
+var errAndroidExtensionUnavailable = errors.New("android extension keyboard device is not configured")
+var errAndroidExtensionKeyUnavailableInPointerMode = errors.New("android extension key is unavailable in the configured pointer mode")
+
+func (t *KeyboardTapTool) pointerModeOrDefault() string {
+	switch strings.ToLower(strings.TrimSpace(t.pointerMode)) {
+	case "touchscreen":
+		return "touchscreen"
+	default:
+		return "absolute"
+	}
+}
+
+func (t *KeyboardTapTool) androidExtensionPressReport(key string, usage uint16) ([]byte, error) {
+	if t.pointerModeOrDefault() != "absolute" {
+		return []byte{byte(usage), byte(usage >> 8)}, nil
+	}
+	report, ok := absolutePointerModeExtensionReports[key]
+	if !ok {
+		return nil, fmt.Errorf("%w: %q requires hid.pointer_mode=\"touchscreen\"; hid.pointer_mode=\"absolute\" only exposes these hid.usb2 keys: %s", errAndroidExtensionKeyUnavailableInPointerMode, key, absolutePointerModeExtensionKeyList)
+	}
+	return []byte{byte(report), byte(report >> 8)}, nil
+}
+
+func (t *KeyboardTapTool) tapAndroidExtension(key string, usage uint16, holdMs int) error {
+	report, err := t.androidExtensionPressReport(key, usage)
+	if err != nil {
+		return err
+	}
+	if t.androidDev == nil {
+		return fmt.Errorf("%w; ensure hid.android_keyboard_device exists to use %s", errAndroidExtensionUnavailable, key)
+	}
+	if err := t.androidDev.Write(report); err != nil {
+		return err
+	}
+	if holdMs > 0 {
+		sleepMs(holdMs)
+	}
+	return t.androidDev.Write([]byte{0x00, 0x00})
 }
 
 func (t *KeyboardTapTool) tapKeyboardChord(modifier uint8, keys []uint8, holdMs int) error {
@@ -683,15 +972,7 @@ type MouseClickTool struct {
 func (t *MouseClickTool) Name() string { return "mouse_click" }
 
 func (t *MouseClickTool) Description() string {
-	return `Move mouse to a position and click. Input JSON: {"x": 500, "y": 300, "button": "left", "coord_space": "normalized"}. ` +
-		`coord_space options: "screenshot", "pixel", "normalized", "absolute". screenshot means pixels in the latest returned cropped screenshot; pixel means the uncropped source frame. Default is "auto": x/y in [0,1000] are treated as normalized, otherwise source-frame pixel coordinates are used when a recent screenshot has cached screen dimensions, otherwise HID absolute values in the range 0-32767. ` +
-		`Normalized coordinates use 0-1000 range where (0,0) is top-left, (1000,1000) is bottom-right, (500,500) is center. ` +
-		`Choose the visual center of the target in the latest screenshot; for small controls, estimate the control bounds and click the midpoint, biased inward. ` +
-		`pointer_mode absolute (default): moves to absolute HID coordinates, waits for iOS cursor smoothing, then clicks. ` +
-		`pointer_mode touchscreen (Android): sends a finger down/up at the resolved coordinate. ` +
-		`Use coord_space:"pixel" only when calibrated; pixel coordinates require a recent screenshot, are stale after 30s, and are rejected if outside cached bounds. ` +
-		`Click once and inspect the returned post-action screenshot before repeating. ` +
-		`Button options: "left" (default), "right", "middle".`
+	return `Move the mouse to a position and click. Prefer normalized coordinates (0-1000) from the latest screenshot, aiming at the visual center of the target. Use coord_space:"screenshot" only for pixels measured directly in that returned image. Click once and inspect the post-action screenshot before repeating.`
 }
 
 func (t *MouseClickTool) ArgsSchema() map[string]any {
@@ -736,11 +1017,7 @@ type MouseMoveTool struct {
 func (t *MouseMoveTool) Name() string { return "mouse_move" }
 
 func (t *MouseMoveTool) Description() string {
-	return `Move mouse to a position without clicking. Input JSON: {"x": 500, "y": 300, "coord_space": "normalized"}. ` +
-		`coord_space options: "screenshot", "pixel", "normalized", "absolute". screenshot means pixels in the latest returned cropped screenshot; pixel means the uncropped source frame. Default is "auto": x/y in [0,1000] are treated as normalized, otherwise source-frame pixel coordinates are used when a recent screenshot has cached screen dimensions, otherwise HID absolute values in the range 0-32767. ` +
-		`Normalized coordinates use 0-1000 range where (0,0) is top-left, (1000,1000) is bottom-right, (500,500) is center. ` +
-		`pointer_mode absolute (default): writes absolute HID coordinates directly. ` +
-		`pointer_mode touchscreen (Android): moves the logical touch point without pressing.`
+	return `Move the mouse without clicking. Prefer normalized coordinates (0-1000); use coord_space:"screenshot" only for pixels measured directly in the latest returned image.`
 }
 
 func (t *MouseMoveTool) ArgsSchema() map[string]any {
@@ -797,30 +1074,14 @@ type wheelTapMetadata struct {
 func (t *TouchGestureTool) Name() string { return "touch_gesture" }
 
 func (t *TouchGestureTool) Description() string {
-	return `Perform a touch-like gesture using the pointer HID device (absolute mouse or touchscreen depending on agent pointer_mode). ` +
-		`For known semantic platform actions such as back, home, app search, app switching, notification shade, quick settings, and browser navigation, prefer quick_action first; use touch_gesture as a low-level fallback or for custom screen gestures. ` +
-		`Input JSON examples: {"type":"tap","point":{"x":500,"y":500}}, {"type":"swipe","start":{"x":200,"y":500},"end":{"x":800,"y":500},"duration_ms":700,"steps":24}, {"type":"swipe_left"}, {"type":"back"}, {"type":"home"}. ` +
-		`IMPORTANT: "point", "start", and "end" must be objects with named keys "x" and "y". NEVER omit the key names: {"x":500,"y":300} is correct, {500,300} is invalid and will error. ` +
-		`Supported types: "tap", "double_tap", "long_press", "drag", "swipe", "swipe_left", "swipe_right", "swipe_up", "swipe_down", "back" (left-edge back), "home" (bottom-edge home). ` +
-		`coord_space defaults to "normalized" (x/y in [0,1000]) and also supports "screenshot", "pixel", and "absolute". screenshot means pixel coordinates measured directly in the latest returned cropped screenshot; use it with explicit point/start/end coordinates. ` +
-		`Normalized coordinates use 0-1000 range where (0,0) is top-left, (1000,1000) is bottom-right, (500,500) is center. ` +
-		`Choose the visual center of the target in the latest screenshot; for small controls, estimate the control bounds and touch the midpoint, biased inward. ` +
-		`For every tap on a picker/wheel row, include wheel metadata with is_picker_row:true, a stable picker_id for this visible picker instance, column/value domain fields, and measured row_offset, row_spacing, and value_step. Leave wheel metadata out for ordinary non-picker taps. The runtime rejects center-row taps, row-coordinate/value mismatches, and taps that do not reduce the semantic distance to the target. ` +
-		`pointer_mode absolute (default, iOS): every gesture moves to absolute coordinates before pressing; choose tap targets from the latest screenshot center and prefer normalized coordinates. ` +
-		`pointer_mode touchscreen (Android): gestures are sent as single-finger touch down/move/up reports. ` +
-		`Directional swipes accept optional "distance" (normalized 0-1000 travel, default 500), "anchor" (fixed-axis coordinate 0-1000, default 500), and "strength" ("large", "medium", "small", "tiny"). ` +
-		`Directional swipe names describe finger movement, not the content you want to reveal: "swipe_up" moves the finger upward and usually scrolls the viewport down to lower/newer items; "swipe_down" moves the finger downward and usually scrolls the viewport up to upper/older items. For chat or message history where older messages are above, use "swipe_down" (pull down), not "swipe_up". ` +
-		`For precise vertical or horizontal controls, first probe with medium/large, observe the screenshot, then use small/tiny near the target; if you overshoot, reverse direction and reduce strength. ` +
-		`For locally scrollable regions such as pickers, modal lists, embedded scroll views, or partial dialogs, keep start/end coordinates inside the control's visible bounds so the outer container does not capture the gesture. ` +
-		`Absolute-mode gestures wait for iOS HID-cursor smoothing to settle before pressing. ` +
-		`Tap and double_tap accept an optional "hold_ms" (dwell between press and release, default 60ms). ` +
-		`Swipe defaults to a slower 700ms / 24-step motion, applies "hold_before_ms" of 80ms after the press, and releases immediately at the destination by default; pass "hold_after_ms" only when a drag-like end dwell is required. ` +
-		`For phone edge gestures, do not use conservative inset coordinates such as 50-100: "back" starts at normalized x=1 and "home" starts at normalized y=999. Drag keeps the previous 250ms / 12-step motion with 0ms hold defaults to avoid unintended long-press behaviour during slow content drag.`
+	return `Perform a custom touch/pointer gesture via HID. Prefer quick_action for semantic platform actions; use this for tap/swipe/drag and other freehand screen gestures. ` +
+		`Base coordinates on the latest screenshot and aim at the visual center of the target. Use coord_space:"screenshot" only for pixels measured directly in that returned image. Swipe direction names describe finger movement, not content scroll. ` +
+		`For a picker-row tap, include wheel metadata with a stable picker_id and measured row/domain values; omit wheel metadata for ordinary taps.`
 }
 
 func (t *TouchGestureTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"type":           stringEnumArgSchema("Gesture type.", "tap", "double_tap", "long_press", "drag", "swipe", "swipe_left", "swipe_right", "swipe_up", "swipe_down", "back", "home"),
+		"type":           stringEnumArgSchema("Gesture type. Edge aliases use real edges: back starts at x=1, home starts at y=999.", "tap", "double_tap", "long_press", "drag", "swipe", "swipe_left", "swipe_right", "swipe_up", "swipe_down", "back", "home"),
 		"point":          pointSchema("Point for tap, double_tap, or long_press."),
 		"start":          pointSchema("Start point for swipe or drag."),
 		"end":            pointSchema("End point for swipe or drag."),
@@ -832,8 +1093,8 @@ func (t *TouchGestureTool) ArgsSchema() map[string]any {
 		"hold_ms":        nonNegativeIntegerSchema("Tap or long-press hold duration in milliseconds."),
 		"pause_ms":       nonNegativeIntegerSchema("Pause between taps for double_tap."),
 		"steps":          minIntegerArgSchema("Number of movement steps for swipe or drag.", 1),
-		"distance":       coordinateSchema("Directional swipe travel in normalized units."),
-		"anchor":         coordinateSchema("Directional swipe fixed-axis coordinate in normalized units."),
+		"distance":       coordinateSchema("Directional swipe travel in 0-1000 normalized units (700 ≈ 70% of screen).", 700),
+		"anchor":         coordinateSchema("Directional swipe fixed-axis coordinate in 0-1000 normalized units.", 500),
 		"strength":       stringEnumArgSchema("Directional swipe preset distance.", "large", "medium", "small", "tiny"),
 		"wheel": objectArgsSchema(map[string]any{
 			"is_picker_row": map[string]any{"type": "boolean", "const": true, "description": "Must be true. Omit the entire wheel object for ordinary non-picker taps."},
@@ -987,6 +1248,9 @@ func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, erro
 			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
 	case "swipe":
+		if args.Start == nil && args.Point != nil {
+			return toolErrorResultString(ctx, CodeInvalidArguments, "swipe requires start and end, not point; use swipe_up/down/left/right for directional swipes from center"), nil
+		}
 		start, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.Start, coordSpace)
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
@@ -1312,9 +1576,7 @@ type MouseScrollTool struct {
 func (t *MouseScrollTool) Name() string { return "mouse_scroll" }
 
 func (t *MouseScrollTool) Description() string {
-	return `Scroll the mouse wheel. Input JSON: {"delta": -3}. ` +
-		`Positive values scroll up, negative scroll down. Range: -127 to 127. This is a wheel event and is not equivalent to a mobile swipe gesture. ` +
-		`Works in pointer_mode absolute; pointer_mode touchscreen ignores wheel events.`
+	return `Scroll the mouse wheel. This is a wheel event, not equivalent to a mobile swipe gesture; use touch_gesture for swipes. Unsupported when pointer_mode is touchscreen.`
 }
 
 func (t *MouseScrollTool) ArgsSchema() map[string]any {
@@ -1335,6 +1597,12 @@ func (t *MouseScrollTool) Call(ctx context.Context, input string) (string, error
 	}
 	if args.Delta < -127 || args.Delta > 127 {
 		return toolErrorResultString(ctx, CodeInvalidArguments, "delta must be between -127 and 127"), nil
+	}
+	if t == nil || t.pc == nil {
+		return toolErrorResultString(ctx, CodeModuleUnavailable, "mouse_scroll is not configured"), nil
+	}
+	if t.pc.touchscreen {
+		return toolErrorResultString(ctx, CodeInvalidArguments, "mouse_scroll is unsupported when pointer_mode is touchscreen; use touch_gesture"), nil
 	}
 
 	if err := scrollPointer(t.pc, args.Delta); err != nil {
@@ -1427,6 +1695,23 @@ func (pc *pointerController) scroll(delta int) error {
 type pointerPoint struct {
 	X pointerCoordinate `json:"x"`
 	Y pointerCoordinate `json:"y"`
+}
+
+func (p *pointerPoint) UnmarshalJSON(data []byte) error {
+	// Accept array format [x, y] as fallback for models that pass coordinates as arrays.
+	var arr []json.RawMessage
+	if json.Unmarshal(data, &arr) == nil && len(arr) == 2 {
+		if err := json.Unmarshal(arr[0], &p.X); err != nil {
+			return fmt.Errorf("coordinate must be a number or numeric string")
+		}
+		if err := json.Unmarshal(arr[1], &p.Y); err != nil {
+			return fmt.Errorf("coordinate must be a number or numeric string")
+		}
+		return nil
+	}
+	// Normal object format {"x":N,"y":M}
+	type plain pointerPoint
+	return json.Unmarshal(data, (*plain)(p))
 }
 
 type pointerCoordinate float64
@@ -1523,7 +1808,7 @@ func resolvePointerPositionForSurface(screen *screenState, touchscreen bool, x, 
 		}
 		if screen != nil {
 			if width, height, active, age, ok := screen.ActiveAreaWithAge(); ok && age < screenDimensionsStaleAfter {
-				return pixelToAbsolutePoint(x, y, width, height, active)
+				return pixelToAbsolutePoint(x, y, width, height, active, touchscreen)
 			}
 		}
 		return int(clampFloat(math.Round(x), 0, absMouseMaxPos)), int(clampFloat(math.Round(y), 0, absMouseMaxPos)), nil
@@ -1538,7 +1823,7 @@ func resolvePointerPositionForSurface(screen *screenState, touchscreen bool, x, 
 		if age >= screenDimensionsStaleAfter {
 			return 0, 0, fmt.Errorf("cached screen dimensions are %.0fs old; call screenshot to refresh before using pixel coordinates", age.Seconds())
 		}
-		return pixelToAbsolutePoint(x, y, width, height, active)
+		return pixelToAbsolutePoint(x, y, width, height, active, touchscreen)
 	case coordinateSpaceScreenshot:
 		if screen == nil {
 			return 0, 0, fmt.Errorf("screenshot coordinates require a recent screenshot")
@@ -1614,20 +1899,23 @@ func normalizedToAbsolutePoint(x, y float64) (int, int) {
 	return int(math.Round(clampFloat(x, 0, 1000) / 1000.0 * absMouseMaxPos)), int(math.Round(clampFloat(y, 0, 1000) / 1000.0 * absMouseMaxPos))
 }
 
-func pixelToAbsolutePoint(x, y float64, width, height int, active screenActiveArea) (int, int, error) {
+func pixelToAbsolutePoint(x, y float64, width, height int, active screenActiveArea, touchscreen bool) (int, int, error) {
 	if width <= 0 || height <= 0 {
 		return 0, 0, fmt.Errorf("invalid screen dimensions: %dx%d", width, height)
-	}
-	if x < 0 || y < 0 || x > float64(width-1) || y > float64(height-1) {
-		return 0, 0, fmt.Errorf("pixel coordinates x=%.2f y=%.2f are outside cached screenshot bounds %dx%d; use coord_space normalized with 0-1000 coordinates, where 500,500 is center, or refresh/calibrate the screenshot dimensions", x, y, width, height)
 	}
 	if !active.Valid {
 		active = screenActiveArea{X: 0, Y: 0, Width: width, Height: height, Valid: true}
 	}
-	if x < float64(active.X) || y < float64(active.Y) || x > float64(active.X+active.Width-1) || y > float64(active.Y+active.Height-1) {
-		return 0, 0, fmt.Errorf("pixel coordinates x=%.2f y=%.2f are outside active screen area x=%d y=%d width=%d height=%d within screenshot %dx%d", x, y, active.X, active.Y, active.Width, active.Height, width, height)
+	// Pixel coordinates are relative to the cropped active area image that the
+	// LLM sees, not the full HDMI frame. Bounds check against active area size.
+	if x < 0 || y < 0 || x > float64(active.Width-1) || y > float64(active.Height-1) {
+		return 0, 0, fmt.Errorf("pixel coordinates x=%.2f y=%.2f are outside screenshot bounds %dx%d; use coord_space normalized with 0-1000 coordinates, where 500,500 is center", x, y, active.Width, active.Height)
 	}
-	return activeLocalAxisToAbsolute(x-float64(active.X), active.X, active.Width, width), activeLocalAxisToAbsolute(y-float64(active.Y), active.Y, active.Height, height), nil
+	// pointer_mode touchscreen: HID surface covers the full mirrored frame.
+	if touchscreen {
+		return scalePixelToAbsolute(float64(active.X)+x, width), scalePixelToAbsolute(float64(active.Y)+y, height), nil
+	}
+	return scalePixelToAbsolute(x, active.Width), scalePixelToAbsolute(y, active.Height), nil
 }
 
 func screenshotPixelToAbsolutePoint(x, y float64, sourceWidth, sourceHeight int, active screenActiveArea, touchscreen bool) (int, int, error) {

@@ -45,6 +45,18 @@ func TestFunctionAgentParseOutputSkipsNilToolCalls(t *testing.T) {
 	}
 }
 
+func TestChoiceWithOnlyToolCallAssignsIDToLegacyFunctionCall(t *testing.T) {
+	functionCall := &llms.FunctionCall{Name: "echo", Arguments: `{}`}
+	choice := choiceWithOnlyToolCall(llms.ContentChoice{FuncCall: functionCall}, "call_legacy")
+
+	if len(choice.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %#v, want one synthesized tool call", choice.ToolCalls)
+	}
+	if choice.ToolCalls[0].ID != "call_legacy" || choice.ToolCalls[0].FunctionCall != functionCall {
+		t.Fatalf("tool call = %#v, want ID call_legacy and original function call", choice.ToolCalls[0])
+	}
+}
+
 func TestFunctionAgentParseOutputUsesChoiceContentAsToolContent(t *testing.T) {
 	agent := &FunctionAgent{OutputKey: "output"}
 
@@ -119,28 +131,14 @@ func TestFunctionAgentParseOutputBindsChoiceContentToFirstValidToolCall(t *testi
 	if finish != nil {
 		t.Fatalf("expected no finish, got %#v", finish)
 	}
-	if len(actions) != 2 {
-		t.Fatalf("expected 2 actions, got %#v", actions)
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 action, got %#v", actions)
 	}
 	if actions[0].ToolInput != "first" || actions[0].ToolID != "call_1" {
 		t.Fatalf("unexpected first action: %#v", actions[0])
 	}
-	if actions[1].ToolInput != "second" || actions[1].ToolID != "call_2" {
-		t.Fatalf("unexpected second action: %#v", actions[1])
-	}
 	if got := toolContentFromAction(actions[0]); got != "先检查。" {
 		t.Fatalf("first tool content = %q", got)
-	}
-	if got := toolContentFromAction(actions[1]); got != "" {
-		t.Fatalf("second tool content = %q, want empty", got)
-	}
-
-	var secondLog toolActionLog
-	if err := json.Unmarshal([]byte(actions[1].Log), &secondLog); err != nil {
-		t.Fatalf("second action log should be structured JSON: %v", err)
-	}
-	if strings.Contains(secondLog.Message, "先检查。") {
-		t.Fatalf("second action log repeated assistant content: %#v", secondLog)
 	}
 }
 
@@ -894,6 +892,37 @@ func TestFunctionAgentCompactsInvalidVisualObservation(t *testing.T) {
 	}
 }
 
+func TestFunctionAgentPreservesFullSkillReadObservation(t *testing.T) {
+	agent := &FunctionAgent{Tools: []langtools.Tool{&stubTool{name: "skill_read"}}}
+	observation := strings.Repeat("x", maxToolObservationRunes+10)
+
+	toolContent, followups := agent.observationMessagesForStep(schema.AgentStep{
+		Action:      schema.AgentAction{Tool: "skill_read"},
+		Observation: observation,
+	}, true)
+
+	if followups != nil {
+		t.Fatalf("expected no followup messages, got %#v", followups)
+	}
+	if toolContent != observation {
+		t.Fatalf("skill_read observation was unexpectedly compacted: got %d runes, want %d", len([]rune(toolContent)), len([]rune(observation)))
+	}
+}
+
+func TestFunctionAgentCapsOversizedSkillReadObservation(t *testing.T) {
+	agent := &FunctionAgent{Tools: []langtools.Tool{&stubTool{name: "skill_read"}}}
+	observation := strings.Repeat("x", maxSkillReadObservationRunes+10)
+
+	toolContent, _ := agent.observationMessagesForStep(schema.AgentStep{
+		Action:      schema.AgentAction{Tool: "skill_read"},
+		Observation: observation,
+	}, true)
+
+	if !strings.Contains(toolContent, "[truncated 10 chars]") {
+		t.Fatalf("oversized skill_read observation was not capped: %q", toolContent[len(toolContent)-40:])
+	}
+}
+
 func TestFunctionAgentRejectsEmptyVisualObservationData(t *testing.T) {
 	agent := &FunctionAgent{
 		Tools: []langtools.Tool{&stubTool{name: "screenshot", visual: true}},
@@ -936,5 +965,32 @@ func TestFunctionAgentRejectsVisualObservationWithoutDimensions(t *testing.T) {
 	}
 	if toolContent != observation {
 		t.Fatalf("unexpected compacted observation: %q", toolContent)
+	}
+}
+
+func TestFunctionAgentPostActionScreenshotWarnsWhenScreenDidNotChange(t *testing.T) {
+	agent := &FunctionAgent{
+		Tools: []langtools.Tool{&stubTool{name: "keyboard_tap", visual: true}},
+	}
+	observation := `{"action_output":"ok","screen_changed":false,"screen_stable":true,"stable_wait_ms":250,"width":800,"height":600,"format":"jpeg","size":4,"data":"` +
+		base64.StdEncoding.EncodeToString([]byte("img1")) + `"}`
+	step := schema.AgentStep{
+		Action:      schema.AgentAction{Tool: "keyboard_tap"},
+		Observation: observation,
+	}
+
+	toolContent, followups := agent.observationMessagesForStep(step, true)
+
+	if !strings.Contains(toolContent, "No visible screen change was observed") {
+		t.Fatalf("toolContent missing screen_changed warning: %q", toolContent)
+	}
+	if !strings.Contains(toolContent, "Do not assume the action succeeded") {
+		t.Fatalf("toolContent missing success warning: %q", toolContent)
+	}
+	if !strings.Contains(toolContent, "The screen was stable when the screenshot was captured") {
+		t.Fatalf("toolContent missing stable summary: %q", toolContent)
+	}
+	if len(followups) != 1 {
+		t.Fatalf("expected one followup screenshot message, got %#v", followups)
 	}
 }
