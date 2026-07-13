@@ -3056,16 +3056,19 @@ INDEX_HTML = r"""<!doctype html>
     }
     .segmented {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       border: 1px solid var(--border-strong);
       margin-bottom: 16px;
     }
     .segmented button {
       height: 32px;
       min-width: 0;
+      padding: 0 8px;
       background: var(--layer);
       color: var(--text);
       border-right: 1px solid var(--border-strong);
+      overflow: hidden;
+      text-overflow: ellipsis;
       font-weight: 500;
     }
     .segmented button:last-child { border-right: 0; }
@@ -3269,7 +3272,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     .modal-backdrop[hidden] { display: none; }
     .modal {
-      width: min(960px, 100%);
+      width: min(1120px, calc(100vw - 32px));
       max-height: calc(100vh - 48px);
       overflow: auto;
       background: var(--layer);
@@ -3295,7 +3298,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     .modal-env-grid {
       display: grid;
-      grid-template-columns: minmax(220px, 0.42fr) minmax(420px, 1fr);
+      grid-template-columns: minmax(360px, 0.5fr) minmax(420px, 1fr);
       gap: 16px;
       align-items: start;
     }
@@ -3329,6 +3332,9 @@ INDEX_HTML = r"""<!doctype html>
       .run-config-grid { grid-template-columns: 1fr; align-items: stretch; }
       .judge-inline { grid-template-columns: 1fr; align-items: stretch; }
       .detail-grid { grid-template-columns: 1fr; }
+      .modal-env-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 1120px) {
       .modal-env-grid { grid-template-columns: 1fr; }
     }
   </style>
