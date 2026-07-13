@@ -266,8 +266,6 @@ func allowedToolsExist(tools []string) bool {
 
 var knownToolNames = map[string]struct{}{
 	"audio_volume":           {},
-	"calculator":             {},
-	"current_time":           {},
 	"forget_memory":          {},
 	"image_diff":             {},
 	"keyboard_tap":           {},

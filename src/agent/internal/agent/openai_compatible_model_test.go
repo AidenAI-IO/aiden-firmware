@@ -202,7 +202,7 @@ func TestOpenAICompatibleModelNormalizesInvalidToolCallArgumentsInRequest(t *tes
 }
 
 func TestOpenAICompatibleModelLogsRawHTTPWhenEnabled(t *testing.T) {
-	rawResponse := `{"choices":[{"message":{"content":"<think>\n需要查当前时间。\n</think>","tool_calls":[{"id":"call_1","type":"function","function":{"name":"current_time","arguments":"{\"timezone\":\"local\"}"}}]},"finish_reason":"tool_calls"}]}`
+	rawResponse := `{"choices":[{"message":{"content":"<think>\n需要查当前时间。\n</think>","tool_calls":[{"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"date\"}"}}]},"finish_reason":"tool_calls"}]}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(rawResponse))
@@ -1838,7 +1838,7 @@ func TestOpenAICompatibleModelLiveConsecutiveUserMessages(t *testing.T) {
 		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("What is 2+2?")}},
 		{Role: llms.ChatMessageTypeAI, Parts: []llms.ContentPart{llms.TextPart("4")}},
 		// This simulates: tool_result followed by visual followup (user) then new user input (user)
-		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("Screenshot shows a calculator app displaying 4.")}},
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("Screenshot shows a math app displaying 4.")}},
 		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("Now calculate 3+3.")}},
 	}, llms.WithMaxTokens(32), llms.WithTemperature(0))
 	if err != nil {

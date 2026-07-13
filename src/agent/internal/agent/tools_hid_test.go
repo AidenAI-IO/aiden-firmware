@@ -1035,6 +1035,23 @@ func TestMouseScrollToolRejectsOutOfRangeDelta(t *testing.T) {
 	}
 }
 
+func TestMouseScrollToolRejectsTouchscreenPointerMode(t *testing.T) {
+	tool := &MouseScrollTool{pc: testTouchscreenPointerController(nil, &pointerState{})}
+	ctx, _ := WithToolError(context.Background())
+
+	out, err := tool.Call(ctx, `{"delta":-3}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	want := "mouse_scroll is unsupported when pointer_mode is touchscreen; use touch_gesture"
+	if out != want {
+		t.Fatalf("output = %q, want %q", out, want)
+	}
+	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeInvalidArguments || got.Message != want {
+		t.Fatalf("ToolError = %+v, want invalid_arguments with output message", got)
+	}
+}
+
 func TestMouseScrollUsesLastPointerPosition(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	state := &pointerState{}
@@ -1858,16 +1875,26 @@ func TestTouchGestureHomeStartsAtBottomPhysicalEdge(t *testing.T) {
 
 func TestTouchGestureDescriptionDocumentsEdgeGestureAliases(t *testing.T) {
 	desc := (&TouchGestureTool{}).Description()
-	for _, want := range []string{"back", "home", "Prefer quick_action", "finger movement", "older chat history", "scrollable region", "x=1", "y=999", "coord_space", "never omit x/y key names", "probe with medium/large", "biased inward"} {
+	// The description keeps only the load-bearing quick_action disambiguation and swipe-direction rule.
+	for _, want := range []string{"Prefer quick_action", "finger movement"} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q:\n%s", want, desc)
+		}
+	}
+	// Edge-alias coordinates (back x=1, home y=999) now live in the type ArgsSchema field.
+	props, _ := (&TouchGestureTool{}).ArgsSchema()["properties"].(map[string]any)
+	typeSchema, _ := props["type"].(map[string]any)
+	typeDesc, _ := typeSchema["description"].(string)
+	for _, want := range []string{"back", "home", "x=1", "y=999"} {
+		if !strings.Contains(typeDesc, want) {
+			t.Fatalf("type schema missing %q:\n%s", want, typeDesc)
 		}
 	}
 }
 
 func TestMouseClickDescriptionDocumentsTargetCenter(t *testing.T) {
 	desc := (&MouseClickTool{}).Description()
-	for _, want := range []string{"coord_space default is auto", "normalized", "latest screenshot", "visual center", "pointer_mode absolute", "post-action screenshot"} {
+	for _, want := range []string{"normalized", "latest screenshot", "visual center", "post-action screenshot"} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q:\n%s", want, desc)
 		}
@@ -1876,20 +1903,41 @@ func TestMouseClickDescriptionDocumentsTargetCenter(t *testing.T) {
 
 func TestKeyboardTapDescriptionDocumentsQuickActionFallback(t *testing.T) {
 	desc := (&KeyboardTapTool{}).Description()
-	for _, want := range []string{"Prefer quick_action", "copy", "paste", "send", "custom key input", "backspace", "forward-delete", "Modifier-only", "hold_ms", "Modifiers"} {
+	for _, want := range []string{"Prefer quick_action", "custom key input"} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q:\n%s", want, desc)
+		}
+	}
+	// Key mechanics (backspace/forward-delete, modifiers, key list) now live in the keys ArgsSchema field.
+	keysDesc := keyboardTapKeysSchemaDescription(t)
+	for _, want := range []string{"backspace", "forward-delete", "modifier", "modifier-only"} {
+		if !strings.Contains(keysDesc, want) {
+			t.Fatalf("keys schema missing %q:\n%s", want, keysDesc)
 		}
 	}
 }
 
 func TestKeyboardTapDescriptionReferencesAndroidGuidePage(t *testing.T) {
-	desc := (&KeyboardTapTool{}).Description()
-	for _, want := range []string{"KEYCODE_*", "KEY_USAGE_*", "Android key guide", "single-key taps only"} {
-		if !strings.Contains(desc, want) {
-			t.Fatalf("description missing %q:\n%s", want, desc)
+	keysDesc := keyboardTapKeysSchemaDescription(t)
+	for _, want := range []string{"KEYCODE_*", "KEY_USAGE_*", "Android key guide", "single-key taps only", "hid.pointer_mode is absolute", "KEY_USAGE_SCREENSHOT"} {
+		if !strings.Contains(keysDesc, want) {
+			t.Fatalf("keys schema missing %q:\n%s", want, keysDesc)
 		}
 	}
+}
+
+func keyboardTapKeysSchemaDescription(t *testing.T) string {
+	t.Helper()
+	props, ok := (&KeyboardTapTool{}).ArgsSchema()["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("keyboard_tap schema missing properties")
+	}
+	keys, ok := props["keys"].(map[string]any)
+	if !ok {
+		t.Fatal("keyboard_tap schema missing keys property")
+	}
+	desc, _ := keys["description"].(string)
+	return desc
 }
 
 func TestTouchGestureDefaultEdgeGestureRejectsInvalidCoordSpace(t *testing.T) {

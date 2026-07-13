@@ -234,14 +234,14 @@ func TestWriteScriptRequiresFileAndContent(t *testing.T) {
 
 func TestWriteScriptThenRunScriptSkipsCommentLines(t *testing.T) {
 	scriptsDir := t.TempDir()
-	calledTool := &stubTool{name: "calculator", output: "5"}
+	calledTool := &stubTool{name: "touch_gesture", output: "ok"}
 	writer := NewWriteScriptTool(scriptsDir)
 	content := strings.Join([]string{
-		"# 计算演示",
+		"# 点击演示",
 		"# 解释说明",
-		`{"type":"call","tool":"calculator","input":{"expression":"2+3"}}`,
+		`{"type":"call","tool":"touch_gesture","input":{"type":"tap","point":{"x":500,"y":500}}}`,
 	}, "\n")
-	in, _ := json.Marshal(map[string]string{"file": "math.jsonl", "content": content})
+	in, _ := json.Marshal(map[string]string{"file": "tap.jsonl", "content": content})
 	if _, err := writer.Call(context.Background(), string(in)); err != nil {
 		t.Fatalf("write Call error: %v", err)
 	}
@@ -252,7 +252,7 @@ func TestWriteScriptThenRunScriptSkipsCommentLines(t *testing.T) {
 		}
 		return nil, false
 	})
-	out, err := runner.Call(context.Background(), `{"file":"math.jsonl"}`)
+	out, err := runner.Call(context.Background(), `{"file":"tap.jsonl"}`)
 	if err != nil {
 		t.Fatalf("run Call error: %v", err)
 	}
@@ -263,8 +263,9 @@ func TestWriteScriptThenRunScriptSkipsCommentLines(t *testing.T) {
 	if !result.OK || result.StepsRun != 1 {
 		t.Fatalf("result = %#v, comment lines should be skipped", result)
 	}
-	if len(calledTool.inputs) != 1 || calledTool.inputs[0] != `{"expression":"2+3"}` {
-		t.Fatalf("calculator inputs = %#v", calledTool.inputs)
+	wantInput := `{"type":"tap","point":{"x":500,"y":500}}`
+	if len(calledTool.inputs) != 1 || calledTool.inputs[0] != wantInput {
+		t.Fatalf("touch_gesture inputs = %#v, want %s", calledTool.inputs, wantInput)
 	}
 }
 

@@ -43,7 +43,7 @@ func TestAudioVolumeToolGet(t *testing.T) {
 
 func TestAudioVolumeDescriptionDocumentsPlaybackScope(t *testing.T) {
 	desc := (&AudioVolumeTool{}).Description()
-	for _, want := range []string{"Aiden playback/TTS volume", "do not use it for phone system UI volume"} {
+	for _, want := range []string{"Aiden playback/TTS volume", "not phone system UI volume"} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q:\n%s", want, desc)
 		}

@@ -22,25 +22,15 @@ func (r *Runtime) ToolSpecs() *ToolSpecs {
 }
 
 func (r *Runtime) ToolDescriptors() []ToolDescriptor {
-	return r.ToolSpecs().Descriptors()
-}
-
-func isAgentToolExposed(name string) bool {
-	if strings.TrimSpace(name) == "" {
-		return false
-	}
-	meta, ok := builtInToolSpecMetadata[name]
-	if !ok {
-		return true
-	}
-	if meta.AgentExposed != nil {
-		return *meta.AgentExposed
-	}
-	return true
+	return r.ToolSpecs().HTTPDescriptors()
 }
 
 func (r *Runtime) ToolDescriptorByName(name string) (ToolDescriptor, bool) {
-	return r.ToolSpecs().DescriptorByName(name)
+	spec, ok := r.ToolSpecs().LookupHTTP(name)
+	if !ok {
+		return ToolDescriptor{}, false
+	}
+	return spec.Descriptor(), true
 }
 
 const defaultHTTPToolSkillBaseURL = "http://127.0.0.1:8080"
@@ -60,11 +50,11 @@ func (r *Runtime) HTTPToolSkills(baseURL string) []ToolSkillDefinition {
 
 	return []ToolSkillDefinition{{
 		Name:        "aiden-http-tool-suite",
-		Description: "Use the Aiden HTTP tool API to observe and operate the connected device with the full built-in tool set.",
+		Description: "Use the Aiden HTTP tool API to observe and operate the connected device with all HTTP-exposed tools.",
 		ToolNames:   names,
 		Markdown: buildHTTPToolSkillMarkdown(
 			"aiden-http-tool-suite",
-			"Use the Aiden HTTP tool API to observe and operate the connected device with the full built-in tool set.",
+			"Use the Aiden HTTP tool API to observe and operate the connected device with all HTTP-exposed tools.",
 			baseURL,
 			descriptors,
 		),
