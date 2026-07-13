@@ -107,7 +107,7 @@ func buildHTTPToolSkillMarkdown(name, description string, baseURL string, descri
 	builder.WriteString("Recommended workflow:\n")
 	builder.WriteString("- Start with `GET /api/tools` if you need to confirm the tool list or example payloads.\n")
 	builder.WriteString("- Use `screenshot` before input actions when you need current screen context; keyboard, mouse, and touch tools automatically wait for screen stability (or until the configured timeout) and return a post-action screenshot.\n")
-	builder.WriteString("- After actions that may animate, navigate, or load content, call `wait_for_stable_screen` before judging the result. It returns a screenshot observation; `stable=false` means the screen kept changing (for example video playback), so treat the screenshot as a best-effort observation.\n")
+	builder.WriteString("- After actions that may animate, navigate, or load content, call `wait_for_stable_screen` before judging the result. It returns a screenshot observation; `screen_changed=false` means no visible change was observed during the wait window, and `stable=false` means the screen kept changing (for example video playback), so treat the screenshot as a best-effort observation.\n")
 	builder.WriteString("- After any screenshot, wait_for_stable_screen screenshot, or post-action screenshot, inspect the current screen before choosing the next action; do not repeat the same click, gesture, or key unless the image proves the previous action did not take effect.\n")
 	builder.WriteString("- When opening apps or finding contacts, settings, products, or page content on a phone, prefer system search, in-app search, or visible search fields before scrolling through pages or lists. Use `search_launch_app` when app search plus tapping is the fastest path.\n")
 	builder.WriteString("- Phone Bridge routing is state-dependent: foreground Aiden uses WebSocket; iOS background with PiP Bridge mode enabled can run only background-safe data tools (`bridge_clipboard`, `bridge_calendar`, `bridge_contacts`, `bridge_notification`) through the HTTP queue; `bridge_open_app` and UI actions still require foreground Aiden, Dynamic Island restore, or HID/screenshot fallback.\n")
@@ -120,9 +120,9 @@ func buildHTTPToolSkillMarkdown(name, description string, baseURL string, descri
 		if descriptor.Name == "screenshot" {
 			builder.WriteString("  Successful output JSON includes `width`, `height`, `format`, `size`, and base64 JPEG `data`.\n")
 		} else if descriptor.Name == "wait_for_stable_screen" {
-			builder.WriteString("  Successful output JSON includes `ok`, `stable`, `elapsed_ms`, optional `last_diff`, plus `screen_stable`, `stable_wait_ms`, `width`, `height`, `format`, `size`, and base64 JPEG `data` from the captured screenshot.\n")
+			builder.WriteString("  Successful output JSON includes `ok`, `stable`, `elapsed_ms`, `screen_changed`, optional `last_diff`, plus `screen_stable`, `stable_wait_ms`, `width`, `height`, `format`, `size`, and base64 JPEG `data` from the captured screenshot.\n")
 		} else if descriptor.Category == "input" {
-			builder.WriteString("  On successful execution, output JSON includes `action_output`, `screen_stable`, `stable_wait_ms`, `width`, `height`, `format`, `size`, and base64 JPEG `data` from a post-action screenshot. `screen_stable=false` is not a failure.\n")
+			builder.WriteString("  On successful execution, output JSON includes `action_output`, `screen_stable`, `stable_wait_ms`, `screen_changed`, `width`, `height`, `format`, `size`, and base64 JPEG `data` from a post-action screenshot. `screen_changed=false` means no visible change was observed during the wait window; `screen_stable=false` is not a failure.\n")
 		}
 		if strings.TrimSpace(descriptor.ExampleInput) != "" {
 			builder.WriteString(fmt.Sprintf("  Example input: `%s`\n", descriptor.ExampleInput))
@@ -131,7 +131,7 @@ func buildHTTPToolSkillMarkdown(name, description string, baseURL string, descri
 	builder.WriteString("\nExecution rules:\n")
 	builder.WriteString("- Treat `is_error=true` or outputs that start with `error:` as failures.\n")
 	builder.WriteString("- Avoid pixel-based pointer actions unless calibrated; if you must use them, call `screenshot` first because stale or mismatched screen dimensions will be rejected.\n")
-	builder.WriteString("- For successful keyboard, mouse, and touch calls, inspect the returned post-action screenshot before deciding the next step. `screen_stable=false` means the wait timed out while the screen kept changing; continue if the screenshot is still useful. For separate observations after an action, call `wait_for_stable_screen` and inspect its returned screenshot.\n")
+	builder.WriteString("- For successful keyboard, mouse, and touch calls, inspect the returned post-action screenshot before deciding the next step. `screen_changed=false` means no visible change was observed during the wait window. `screen_stable=false` means the wait timed out while the screen kept changing; continue if the screenshot is still useful. For separate observations after an action, call `wait_for_stable_screen` and inspect its returned screenshot.\n")
 	builder.WriteString("- Do not use repeated scrolling as the first search strategy on phone UIs; try available search controls first.\n")
 	builder.WriteString("- Keep tool input minimal and deterministic; prefer the example payloads as a starting point.\n")
 	return builder.String()

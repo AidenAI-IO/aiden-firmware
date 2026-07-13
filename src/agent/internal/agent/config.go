@@ -353,8 +353,9 @@ type HIDConfig struct {
 	MouseDevice           string `toml:"mouse_device,omitempty"`
 	AndroidKeyboardDevice string `toml:"android_keyboard_device,omitempty"`
 	FrameSocket           string `toml:"frame_socket,omitempty"`
-	// PointerMode selects the hid.usb1 report format: "absolute" (iOS AssistiveTouch)
-	// or "touchscreen" (Android HID digitizer + hid.usb2 Android extension keys).
+	// PointerMode selects the hid.usb1 report format: "absolute" (iOS AssistiveTouch
+	// plus limited hid.usb2 media keys) or "touchscreen" (Android HID digitizer
+	// plus full hid.usb2 Android extension keys).
 	PointerMode string `toml:"pointer_mode,omitempty"`
 }
 
@@ -430,8 +431,8 @@ type ModelConfig struct {
 
 // AgentConfig is used internally by the runtime prompt builder.
 type AgentConfig struct {
-	Instruction         string
-	AdditionalPrompt    string
+	Instruction      string
+	AdditionalPrompt string
 }
 
 // MemoryConfig is used internally by the memory manager.
