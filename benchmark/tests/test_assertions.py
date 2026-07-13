@@ -71,42 +71,6 @@ def test_required_tools_fail_when_missing():
     assert out.failures[0].actual == "Missing: enter_plan_mode. Used: x."
 
 
-def test_required_skill_reads_match_skill_read_input():
-    trace = Trace(
-        tool_calls=[ToolCall(step=1, tool="skill_read", input={"name": "device-operator"})],
-        final_response="done",
-        total_tool_calls=1,
-        total_duration_ms=0,
-    )
-    out = evaluate_hard_assertions(
-        trace,
-        HardAssertions(required_skill_reads=["device-operator"]),
-        timed_out=False,
-    )
-
-    assert out.all_passed is True
-    assert out.results.required_skill_reads is True
-
-
-def test_required_skill_reads_fail_for_wrong_skill():
-    trace = Trace(
-        tool_calls=[ToolCall(step=1, tool="skill_read", input={"name": "other-skill"})],
-        final_response="done",
-        total_tool_calls=1,
-        total_duration_ms=0,
-    )
-    out = evaluate_hard_assertions(
-        trace,
-        HardAssertions(required_skill_reads=["device-operator"]),
-        timed_out=False,
-    )
-
-    assert out.all_passed is False
-    assert out.results.required_skill_reads is False
-    assert out.failures[0].id == "required_skill_reads"
-    assert out.failures[0].requirement == "Must read skills: device-operator."
-    assert out.failures[0].actual == "Missing skill_read calls for: device-operator."
-
 def test_forbidden_tools_fail_when_present():
     trace = Trace(
         tool_calls=[ToolCall(step=1, tool="screenshot", input={})],

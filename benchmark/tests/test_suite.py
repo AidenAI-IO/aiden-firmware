@@ -431,6 +431,7 @@ def test_skill_discovery_suite_does_not_prompt_for_skill_read():
     assert suite.name == "skill_discovery_v1"
     assert "skill_read" not in suite.prompt_prefix
     assert "device-operator" not in suite.prompt_prefix
+    assert [obs.skill_name for obs in suite.trace_observations] == ["device-operator"]
     assert {task.id for task in suite.tasks} == {
         "discover_device_operator_for_settings",
         "discover_device_operator_for_settings_search",
@@ -443,8 +444,7 @@ def test_skill_discovery_suite_does_not_prompt_for_skill_read():
     for task in suite.tasks:
         assert "skill_read" not in task.prompt
         assert "device-operator" not in task.prompt
-        assert task.hard_assertions.required_tools == ["skill_read"]
-        assert task.hard_assertions.required_skill_reads == ["device-operator"]
+        assert task.hard_assertions.required_tools == []
         assert "shell" in task.hard_assertions.forbidden_tools
 
 

@@ -117,9 +117,6 @@ def evaluate_hard_assertions(trace: Trace, spec: HardAssertions, timed_out: bool
         min_tool_calls=trace.total_tool_calls >= spec.min_tool_calls,
         max_tool_calls=trace.total_tool_calls <= spec.max_tool_calls,
         required_tools=all(tool in tools_used for tool in spec.required_tools),
-        required_skill_reads=all(
-            trace_has_skill_read(trace, skill_name) for skill_name in spec.required_skill_reads
-        ),
         forbidden_tools=not any(tool in tools_used for tool in spec.forbidden_tools),
         prohibited_actions=not prohibited_action_offenders if spec.prohibited_actions else None,
         timeout=not timed_out,
@@ -175,20 +172,6 @@ def evaluate_hard_assertions(trace: Trace, spec: HardAssertions, timed_out: bool
                 ),
             )
         )
-    if results.required_skill_reads is False:
-        missing = [
-            skill_name
-            for skill_name in spec.required_skill_reads
-            if not trace_has_skill_read(trace, skill_name)
-        ]
-        failures.append(
-            HardAssertionFailure(
-                id="required_skill_reads",
-                label="Required Skill Reads",
-                requirement=f"Must read skills: {_format_list(spec.required_skill_reads)}.",
-                actual=f"Missing skill_read calls for: {_format_list(missing)}.",
-            )
-        )
     if results.forbidden_tools is False:
         offenders = [
             f"{tc.tool} at step {tc.step}"
@@ -219,7 +202,6 @@ def evaluate_hard_assertions(trace: Trace, spec: HardAssertions, timed_out: bool
         results.min_tool_calls
         and results.max_tool_calls
         and results.required_tools
-        and results.required_skill_reads
         and results.forbidden_tools
         and (results.prohibited_actions is not False)
         and results.timeout
