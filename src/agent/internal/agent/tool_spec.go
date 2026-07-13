@@ -23,6 +23,7 @@ type ToolSpec struct {
 	InputMode    string
 	ExampleInput string
 	AgentExposed bool
+	HTTPExposed  bool
 }
 
 type ToolSpecs struct {
@@ -41,6 +42,7 @@ type ToolDescriptor struct {
 	Description  string          `json:"description"`
 	InputMode    string          `json:"input_mode"`
 	ExampleInput string          `json:"example_input"`
+	ArgsSchema   map[string]any  `json:"args_schema"`
 	HTTP         ToolHTTPBinding `json:"http"`
 }
 
@@ -56,6 +58,7 @@ type toolSpecMetadata struct {
 	InputMode    string
 	ExampleInput string
 	AgentExposed *bool
+	HTTPExposed  *bool
 }
 
 var builtInToolSpecMetadata = map[string]toolSpecMetadata{
@@ -63,11 +66,6 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		Category:     "audio",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{}`,
-	},
-	"current_time": {
-		Category:     "system",
-		InputMode:    toolInputModeText,
-		ExampleInput: `{"timezone":"Asia/Shanghai"}`,
 	},
 	toolWaitForWakeup: {
 		Category:     "system",
@@ -168,6 +166,7 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		Category:     "skills",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"name":"device-operator"}`,
+		HTTPExposed:  toolSpecBoolPtr(false),
 	},
 	"skill_read": {
 		Category:     "skills",
@@ -194,11 +193,6 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		InputMode:    toolInputModeText,
 		ExampleInput: `{"query":"Raspberry Pi"}`,
 	},
-	"calculator": {
-		Category:     "system",
-		InputMode:    toolInputModeText,
-		ExampleInput: `{"expression":"2 + 2"}`,
-	},
 	"web_scraper": {
 		Category:     "web",
 		InputMode:    toolInputModeText,
@@ -223,22 +217,25 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		Category:     "demo",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{}`,
+		AgentExposed: toolSpecBoolPtr(false),
 	},
 	"read_script": {
 		Category:     "demo",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"file":"demo.jsonl"}`,
+		AgentExposed: toolSpecBoolPtr(false),
 	},
 	"write_script": {
 		Category:     "demo",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"file":"demo.jsonl","content":"# 打开设置演示\n{\"type\":\"wait\",\"ms\":500}\n{\"type\":\"tts\",\"text\":\"正在打开设置\"}"}`,
+		AgentExposed: toolSpecBoolPtr(false),
 	},
 	"skill_manage": {
 		Category:     "skills",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"action":"list"}`,
-		AgentExposed: toolSpecBoolPtr(true),
+		HTTPExposed:  toolSpecBoolPtr(false),
 	},
 	toolBridgeOpenApp: {
 		Category:     "bridge",
@@ -307,6 +304,10 @@ func NewToolSpec(tool langtools.Tool) ToolSpec {
 	if meta.AgentExposed != nil {
 		agentExposed = *meta.AgentExposed
 	}
+	httpExposed := true
+	if meta.HTTPExposed != nil {
+		httpExposed = *meta.HTTPExposed
+	}
 	return ToolSpec{
 		Tool:         tool,
 		Name:         name,
@@ -315,6 +316,7 @@ func NewToolSpec(tool langtools.Tool) ToolSpec {
 		InputMode:    defaultString(meta.InputMode, toolInputModeText),
 		ExampleInput: meta.ExampleInput,
 		AgentExposed: agentExposed,
+		HTTPExposed:  httpExposed,
 	}
 }
 
@@ -339,23 +341,40 @@ func (s *ToolSpecs) All() []ToolSpec {
 	return result
 }
 
-func (s *ToolSpecs) Descriptors() []ToolDescriptor {
+// AgentTools returns the tools sent to the conversational model. loadAll only
+// bypasses AgentExposed; it never changes HTTP exposure policy.
+func (s *ToolSpecs) AgentTools(loadAll bool) []langtools.Tool {
+	if s == nil {
+		return nil
+	}
+	tools := make([]langtools.Tool, 0, len(s.names))
+	for _, spec := range s.All() {
+		if loadAll || spec.AgentExposed {
+			tools = append(tools, spec.Tool)
+		}
+	}
+	return tools
+}
+
+func (s *ToolSpecs) HTTPDescriptors() []ToolDescriptor {
 	if s == nil {
 		return nil
 	}
 	descriptors := make([]ToolDescriptor, 0, len(s.names))
 	for _, spec := range s.All() {
-		descriptors = append(descriptors, spec.Descriptor())
+		if spec.HTTPExposed {
+			descriptors = append(descriptors, spec.Descriptor())
+		}
 	}
 	return descriptors
 }
 
-func (s *ToolSpecs) DescriptorByName(name string) (ToolDescriptor, bool) {
+func (s *ToolSpecs) LookupHTTP(name string) (ToolSpec, bool) {
 	spec, ok := s.Lookup(name)
-	if !ok {
-		return ToolDescriptor{}, false
+	if !ok || !spec.HTTPExposed {
+		return ToolSpec{}, false
 	}
-	return spec.Descriptor(), true
+	return spec, true
 }
 
 func (spec ToolSpec) Descriptor() ToolDescriptor {
@@ -365,6 +384,7 @@ func (spec ToolSpec) Descriptor() ToolDescriptor {
 		Description:  strings.TrimSpace(spec.Description),
 		InputMode:    defaultString(spec.InputMode, toolInputModeText),
 		ExampleInput: spec.ExampleInput,
+		ArgsSchema:   spec.LLMSchema(),
 		HTTP: ToolHTTPBinding{
 			Method: "POST",
 			Path:   "/api/tools/" + spec.Name,

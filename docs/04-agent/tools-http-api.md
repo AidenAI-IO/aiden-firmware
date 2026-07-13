@@ -6,7 +6,7 @@ In Web UI mode, the Agent exposes Agent-owned tools that can be safely invoked v
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/api/tools` | List all tools with descriptions, input modes, examples, and HTTP bindings |
+| `GET` | `/api/tools` | List HTTP-visible tools with descriptions, input modes, examples, and HTTP bindings |
 | `POST` | `/api/tools/{tool_name}` | Invoke the specified tool |
 | `GET` | `/api/tool-skills` | Generate a `SKILL.md` bundle suitable for external agents |
 
@@ -46,6 +46,13 @@ Use `raw_input` when you need to pass a raw string. Most tools (including skill 
     "description": "...",
     "input_mode": "json",
     "example_input": "{\"command\":\"pwd\"}",
+    "args_schema": {
+      "type": "object",
+      "properties": {
+        "command": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
     "http": {
       "method": "POST",
       "path": "/api/tools/shell"
@@ -65,31 +72,13 @@ Tool execution failures are also returned in JSON format. Check:
 - Whether `output` contains error information
 - Whether the HTTP transport succeeded
 
-## Current Tool List
+## Catalog Scope
 
-| Tool | Category | Example Input |
-| --- | --- | --- |
-| `audio_volume` | audio | `{}` |
-| `current_time` | system | `{"timezone":"Asia/Shanghai"}` |
-| `wait_for_wakeup` | system | `{"reason":"user asked me to wait for wakeup"}` |
-| `keyboard_tap` | input | `{"keys":["ctrl","c"]}` |
-| `keyboard_text` | input | `{"text":"hello world"}` |
-| `list_scripts` | demo | `{}` |
-| `mouse_click` | input | `{"x":500,"y":500,"button":"left","coord_space":"normalized"}` |
-| `mouse_move` | input | `{"x":500,"y":500,"coord_space":"normalized"}` |
-| `mouse_scroll` | input | `{"delta":-3}` |
-| `read_script` | demo | `{"file":"demo.jsonl"}` |
-| `run_script` | demo | `{"file":"demo.jsonl"}` |
-| `screenshot` | observation | `{}` |
-| `shell` | system | `{"command":"pwd"}` |
-| `skill_list` | skills | `{"query":"planner","include_archived":false}` |
-| `skill_mark_used` | skills | `{"name":"planner"}` |
-| `skill_read` | skills | `{"name":"planner"}` |
-| `touch_gesture` | input | `{"type":"tap","point":{"x":500,"y":500}}` / `{"type":"back"}` / `{"type":"home"}` |
-| `weather` | system | `{"location":"Shanghai"}` |
-| `write_script` | demo | `{"file":"demo.jsonl","content":"# 演示\n{\"type\":\"wait\",\"ms\":500}"}` |
+The HTTP catalog is generated from registered Agent-owned tools at runtime. It can include diagnostic, browser Tool Lab, and external-agent tools that are intentionally absent from the default conversational Agent prompt.
 
-`skill_manage` is an internal skill maintenance tool available to the runtime Agent but not exposed via the HTTP Tool API.
+`current_time` and `calculator` are not registered and therefore do not appear in either the conversational or HTTP tool catalogs. Use `shell` for controller-local precise time, timezone, and deterministic calculations. The conversational Agent omits `list_scripts`, `read_script`, and `write_script` from its default LLM `tools` request; configure `load_all_tools = true` to include those three script-authoring tools.
+
+The HTTP catalog is a separate policy. It exposes registered operational and specialized tools together with their `args_schema`, but internal maintenance tools such as `skill_manage` and `skill_mark_used` are never listed or callable through the default HTTP Tool API.
 
 ## curl Examples
 
@@ -108,10 +97,6 @@ curl -X POST http://127.0.0.1:8080/api/tools/screenshot \
   -H 'Content-Type: application/json' \
   -d '{"input":{}}'
 
-curl -X POST http://127.0.0.1:8080/api/tools/current_time \
-  -H 'Content-Type: application/json' \
-  -d '{"input":{"timezone":"Asia/Shanghai"}}'
-
 curl -X POST http://127.0.0.1:8080/api/tools/weather \
   -H 'Content-Type: application/json' \
   -d '{"input":{"location":"Shanghai"}}'
@@ -121,7 +106,6 @@ A successful `screenshot` output typically includes `width`, `height`, `format`,
 A successful `wait_for_stable_screen` output includes stability fields `ok`, `stable`, `elapsed_ms`, `screen_changed`, and also returns a screenshot with `width`, `height`, `format`, `size`, and base64 JPEG `data`; `screen_changed=false` means no visible screen change was observed during the wait window, while `stable=false` indicates the screen is still changing but the screenshot can still be used as a current observation.
 After successful execution of `keyboard_tap`, `keyboard_text`, `mouse_click`, `mouse_move`, `mouse_scroll`, and `touch_gesture`, the system waits for screen stability (or until timeout) and automatically takes a screenshot; their `output` is JSON containing the original action result `action_output`, the stability fields `screen_stable`, `stable_wait_ms`, `screen_changed`, and the screenshot's `width`, `height`, `format`, `size`, and base64 JPEG `data`.
 For `touch_gesture`, `back` swipes from near the left physical edge, and `home` swipes up from near the bottom physical edge; normalized coordinates use the 0-1000 range. When manually writing `swipe`, also use edge-aligned start points, e.g., `start.x=1` or `start.y=999`.
-`current_time` supports IANA timezone names (e.g., `Asia/Shanghai`, `America/New_York`), `UTC`, `local`, and UTC offsets (e.g., `+08:00`).
 `weather` supports location names or latitude/longitude coordinates, fetching geocoding, current weather, and short-term forecasts from Open-Meteo at runtime.
 `wait_for_wakeup` is a terminating runtime tool. After a successful tool call, it immediately ends the current Agent run and returns the voice interaction to waiting for the next wakeup; it does not ask the model to provide an additional final answer. The run result will set `wait_for_wakeup_requested` / `wait_for_wakeup_reason`; the old fields `sleep_requested` / `sleep_reason` are retained as compatibility aliases only.
 `run_script` executes local JSONL demo scripts from the config directory's `scripts/` folder, without calling the LLM between script steps. Input accepts only a filename, such as `{"file":"demo.jsonl"}`; full paths or subdirectories are not allowed. Each non-empty line is a JSON instruction, for example `{"type":"wait","ms":500}`, `{"type":"tts","text":"Opening settings"}`, `{"type":"call","tool":"touch_gesture","input":{"type":"tap","point":{"x":500,"y":500}}}`; shorthand is also supported: `{"wait":500}`, `{"tts":"Opening settings"}`, `{"call":{"tool":"screenshot","input":{}}}`. `tts` starts voice playback asynchronously and immediately continues to the next line without waiting for synthesis or playback to complete; the corresponding step in the returned result will include the original `text` and `output:"queued"`; the script stops at the first synchronous error.

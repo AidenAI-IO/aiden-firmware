@@ -33,6 +33,7 @@ type structuredInputTool interface {
 
 const toolActionLogVersion = 1
 const maxToolObservationRunes = 4000
+const maxSkillReadObservationRunes = 20000
 
 type ScreenshotPruningConfig struct {
 	KeepN    int
@@ -252,7 +253,7 @@ func scratchpadToolCallID(action schema.AgentAction, groupStart, index int) stri
 func (a *FunctionAgent) observationMessagesForStep(step schema.AgentStep, includeVisual bool) (string, []llms.MessageContent) {
 	visual, ok := a.visualScreenshotObservation(step)
 	if !ok {
-		return compactToolObservation(step.Observation), nil
+		return compactToolObservationForTool(step.Action.Tool, step.Observation), nil
 	}
 	result := visual.Result
 
@@ -401,12 +402,23 @@ func screenshotMIMEType(format string) string {
 }
 
 func compactToolObservation(observation string) string {
+	return compactToolObservationLimit(observation, maxToolObservationRunes)
+}
+
+func compactToolObservationForTool(toolName, observation string) string {
+	if strings.TrimSpace(toolName) == "skill_read" {
+		return compactToolObservationLimit(observation, maxSkillReadObservationRunes)
+	}
+	return compactToolObservation(observation)
+}
+
+func compactToolObservationLimit(observation string, maxRunes int) string {
 	observation = strings.TrimSpace(observation)
-	if observation == "" || len([]rune(observation)) <= maxToolObservationRunes {
+	if observation == "" || len([]rune(observation)) <= maxRunes {
 		return observation
 	}
 	runes := []rune(observation)
-	return string(runes[:maxToolObservationRunes]) + fmt.Sprintf("\n...[truncated %d chars]", len(runes)-maxToolObservationRunes)
+	return string(runes[:maxRunes]) + fmt.Sprintf("\n...[truncated %d chars]", len(runes)-maxRunes)
 }
 
 func (a *FunctionAgent) isVisualObservationTool(name string) bool {

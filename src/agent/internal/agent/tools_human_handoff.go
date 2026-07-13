@@ -101,10 +101,7 @@ func (t *HumanHandoffTool) Name() string {
 
 func (t *HumanHandoffTool) Description() string {
 	return `Request human intervention for credentials, CAPTCHA, verification codes, sensitive operations, or when stuck. ` +
-		`Input JSON: {"reason":"authentication","details":"Login screen requires password","suggested_action":"Please enter your credentials on the device"}. ` +
-		`Reasons: authentication, login_method_selection, captcha, verification_code, sensitive_operation, redirect_confirmation, permission_confirmation, black_screen, ambiguous_situation, unsupported_action, stuck, other. ` +
-		`Use this when credentials are needed, a CAPTCHA or verification code appears, the user must choose a login method, a sensitive payment/security operation needs approval, a redirect/permission dialog needs confirmation, the screen is black/blank, or multiple attempts are stuck. ` +
-		`details should clearly explain the situation; suggested_action should tell the human what to do without asking them to share private credentials in chat. ` +
+		`suggested_action should tell the human what to do without asking them to share private credentials in chat. ` +
 		`This tool returns immediately with a handoff marker; wait for the user to continue, then verify the result with a screenshot before proceeding.`
 }
 

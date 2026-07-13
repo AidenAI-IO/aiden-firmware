@@ -42,6 +42,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.voice_tool_call_speech = false;
     cfg.voice_progress_speech_enabled = false;
     cfg.voice_max_response_tokens = 240;
+    cfg.load_all_tools = true;
     cfg.max_iterations = 6;
     cfg.screenshot_keep_n = 5;
     cfg.screenshot_prune_interval = 40;
@@ -148,6 +149,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
 	CHECK(loaded.voice_tool_call_speech == false);
 	CHECK(loaded.voice_progress_speech_enabled == false);
 	CHECK(loaded.voice_max_response_tokens == 240);
+	CHECK(loaded.load_all_tools == true);
 	CHECK(loaded.max_iterations == 6);
 	CHECK(loaded.screenshot_keep_n == 5);
 	CHECK(loaded.screenshot_prune_interval == 40);

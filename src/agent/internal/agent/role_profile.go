@@ -46,6 +46,7 @@ func buildProfile(
 		defaultAgentBehavior(),
 		"",
 		"## Available skills",
+		"The entries below are discovery summaries only. Load the matching skill with skill_read before following its instructions.",
 		skills.CatalogSummary(),
 	}
 

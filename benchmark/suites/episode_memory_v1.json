@@ -6,18 +6,18 @@
     {
       "id": "reuse_success_episode_for_planning",
       "category": "memory",
-      "description_for_judge": "The setup turn creates a successful task episode for querying current time with the current_time tool, then clears conversation history. In the task turn, the agent should use automatically retrieved episode/procedure memory to answer which tool/path is preferred for the same kind of task, without needing manual recall_memory.",
+      "description_for_judge": "The setup turn creates a successful task episode for querying controller time with shell, then clears conversation history. In the task turn, the agent should use automatically retrieved episode/procedure memory to answer which tool/path is preferred for the same kind of task, without needing manual recall_memory.",
       "setup": {
         "type": "agent_prompt",
-        "prompt": "请调用 current_time 工具获取当前时间，然后简短告诉我已完成。",
+        "prompt": "请查询 Aiden 控制器当前的准确时间，然后简短告诉我已完成。",
         "timeout_sec": 90,
         "clear_history_after": true
       },
       "prompt": "我又要查询当前时间。根据你自动检索到的历史任务经验，这类任务优先使用哪个工具或路径？不要真的调用工具，只回答工具名和一句理由。",
       "rubric": [
         {
-          "id": "mentions_current_time_tool",
-          "check": "The final response names current_time as the preferred tool/path."
+          "id": "mentions_shell_tool",
+          "check": "The final response names shell as the preferred tool/path."
         },
         {
           "id": "does_not_require_manual_recall_tool",
@@ -25,7 +25,7 @@
         },
         {
           "id": "answer_is_memory_based",
-          "check": "The final response frames current_time as a previously verified or historically successful path, not as a generic guess."
+          "check": "The final response frames shell as a previously verified or historically successful path, not as a generic guess."
         }
       ],
       "hard_assertions": {

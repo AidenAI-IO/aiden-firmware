@@ -287,7 +287,7 @@ func TestMergeResultOKAcceptsDelegateAllowedTool(t *testing.T) {
 name: alpha
 description: Alpha
 metadata:
-  allowed_tools: [calculator, delegate_researcher]
+  allowed_tools: [shell, delegate_researcher]
 ---
 
 Do alpha.
@@ -781,7 +781,7 @@ func TestSkillToolDescriptionsMirrorHermesRoles(t *testing.T) {
 		{
 			name: "skill_manage",
 			desc: NewSkillManageTool(dir, "").Description(),
-			want: []string{"similar to Hermes skill_manage", "Create, edit, patch, delete", "write_file"},
+			want: []string{"similar to Hermes skill_manage", "Create, edit, patch, delete"},
 		},
 	} {
 		for _, want := range tt.want {
@@ -792,18 +792,35 @@ func TestSkillToolDescriptionsMirrorHermesRoles(t *testing.T) {
 	}
 }
 
-func TestSkillManageToolDescriptionShowsPatchJSONExample(t *testing.T) {
-	desc := NewSkillManageTool(t.TempDir(), "").Description()
-	for _, want := range []string{
-		`{"action":"patch"`,
-		`"name":"device-operator"`,
-		`"old_string"`,
-		`"new_string"`,
-	} {
-		if !strings.Contains(desc, want) {
-			t.Fatalf("skill_manage description missing patch example fragment %q:\n%s", want, desc)
+// TestSkillManageActionsDocumentedInSchema verifies the per-action field
+// contract (previously spelled out in the description) is carried by ArgsSchema,
+// which is where the input shape now lives after the description was trimmed.
+func TestSkillManageActionsDocumentedInSchema(t *testing.T) {
+	schema := NewSkillManageTool(t.TempDir(), "").ArgsSchema()
+	props, _ := schema["properties"].(map[string]any)
+	if props == nil {
+		t.Fatalf("skill_manage schema missing properties: %v", schema)
+	}
+	for _, field := range []string{"action", "name", "content", "old_string", "new_string", "file_path", "file_content", "reason"} {
+		if _, ok := props[field]; !ok {
+			t.Fatalf("skill_manage schema missing field %q: %v", field, props)
 		}
 	}
+	actionDesc, _ := props["action"].(map[string]any)["description"].(string)
+	for _, want := range []string{"write_file", "remove_file", "archive", "restore_archive"} {
+		if enum, _ := props["action"].(map[string]any)["enum"].([]string); !containsStr(enum, want) && !strings.Contains(actionDesc, want) {
+			t.Fatalf("skill_manage action schema missing %q: %v", want, props["action"])
+		}
+	}
+}
+
+func containsStr(xs []string, want string) bool {
+	for _, x := range xs {
+		if x == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestSkillManageToolEmptyInputExplainsJSONContract(t *testing.T) {
@@ -887,6 +904,11 @@ func TestBundledDeviceOperatorAllowedToolsCoverEmbeddedPlaybooks(t *testing.T) {
 	} {
 		if _, ok := deviceTools[tool]; !ok {
 			t.Fatalf("device-operator allowed_tools missing %q required by embedded playbooks", tool)
+		}
+	}
+	for _, tool := range []string{"list_scripts", "read_script", "write_script"} {
+		if _, ok := deviceTools[tool]; ok {
+			t.Fatalf("device-operator allowed_tools should not include opt-in script authoring tool %q", tool)
 		}
 	}
 }
