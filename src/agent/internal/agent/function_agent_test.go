@@ -45,6 +45,18 @@ func TestFunctionAgentParseOutputSkipsNilToolCalls(t *testing.T) {
 	}
 }
 
+func TestChoiceWithOnlyToolCallAssignsIDToLegacyFunctionCall(t *testing.T) {
+	functionCall := &llms.FunctionCall{Name: "echo", Arguments: `{}`}
+	choice := choiceWithOnlyToolCall(llms.ContentChoice{FuncCall: functionCall}, "call_legacy")
+
+	if len(choice.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %#v, want one synthesized tool call", choice.ToolCalls)
+	}
+	if choice.ToolCalls[0].ID != "call_legacy" || choice.ToolCalls[0].FunctionCall != functionCall {
+		t.Fatalf("tool call = %#v, want ID call_legacy and original function call", choice.ToolCalls[0])
+	}
+}
+
 func TestFunctionAgentParseOutputUsesChoiceContentAsToolContent(t *testing.T) {
 	agent := &FunctionAgent{OutputKey: "output"}
 

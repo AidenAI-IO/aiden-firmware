@@ -1174,6 +1174,110 @@ func TestRuntimeRunSteerInterruptCancelsCancelableToolWithoutWaitingForSteer(t *
 	}
 }
 
+func TestRuntimeRunCanceledToolDoesNotPoisonNextRunToolHistory(t *testing.T) {
+	model := &strictToolPairModel{}
+	toolStarted := make(chan struct{})
+	toolCanceled := make(chan struct{})
+	tool := &blockingTool{
+		name:        "slow",
+		description: "Slow tool.",
+		output:      "tool output",
+		started:     toolStarted,
+		canceled:    toolCanceled,
+	}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"slow": tool}},
+		NewSkillIndex(),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := runtime.Run(ctx, RunRequest{Input: "do the original action"})
+		firstDone <- err
+	}()
+
+	select {
+	case <-toolStarted:
+	case <-time.After(time.Second):
+		t.Fatal("tool did not start")
+	}
+	cancel()
+	select {
+	case <-toolCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("tool context was not canceled")
+	}
+	if err := <-firstDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("first Run() error = %v, want context canceled", err)
+	}
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "continue"})
+	if err != nil {
+		t.Fatalf("second Run() error = %v", err)
+	}
+	if result.Output != "continued" {
+		t.Fatalf("second Run() output = %q, want continued", result.Output)
+	}
+}
+
+type strictToolPairModel struct {
+	calls atomic.Int64
+}
+
+func (m *strictToolPairModel) GenerateContent(_ context.Context, messages []llms.MessageContent, _ ...llms.CallOption) (*llms.ContentResponse, error) {
+	if m.calls.Add(1) == 1 {
+		return toolCallResponseWithContent("call_1", "slow", `{"__arg1":"original action"}`, ""), nil
+	}
+	if err := validateStrictToolMessageSequence(messages); err != nil {
+		return nil, err
+	}
+	return contentResponse("continued"), nil
+}
+
+func (m *strictToolPairModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
+	panic("unexpected Call invocation")
+}
+
+func validateStrictToolMessageSequence(messages []llms.MessageContent) error {
+	pending := map[string]struct{}{}
+	for i, message := range messages {
+		if len(pending) > 0 && message.Role != llms.ChatMessageTypeTool && message.Role != llms.ChatMessageTypeFunction {
+			return fmt.Errorf("message %d arrived before tool responses for %v", i, pending)
+		}
+		switch message.Role {
+		case llms.ChatMessageTypeAI:
+			for _, part := range message.Parts {
+				if call, ok := part.(llms.ToolCall); ok {
+					pending[strings.TrimSpace(call.ID)] = struct{}{}
+				}
+			}
+		case llms.ChatMessageTypeTool, llms.ChatMessageTypeFunction:
+			if len(pending) == 0 {
+				return fmt.Errorf("message %d contains an orphan tool result", i)
+			}
+			for _, part := range message.Parts {
+				response, ok := part.(llms.ToolCallResponse)
+				if !ok {
+					continue
+				}
+				id := strings.TrimSpace(response.ToolCallID)
+				if _, ok := pending[id]; !ok {
+					return fmt.Errorf("message %d responds to unknown tool call %q", i, id)
+				}
+				delete(pending, id)
+			}
+		}
+	}
+	if len(pending) > 0 {
+		return fmt.Errorf("missing tool responses for %v", pending)
+	}
+	return nil
+}
+
 func TestRuntimeRunDoesNotConsumePendingSteerBeforeFinalAnswer(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{

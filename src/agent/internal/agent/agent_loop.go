@@ -169,9 +169,6 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		EnvironmentBridge:      l.EnvironmentBridge,
 		EnvironmentBridgeTools: l.EnvironmentBridgeTools,
 	})
-	if toolExecution.Error != nil {
-		return "", false, toolExecution.Error
-	}
 	if l.Recorder != nil {
 		l.Recorder.RecordExecution(ToolCallExecutionResult{
 			Call:   toolExecution.Call,
@@ -181,8 +178,15 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		})
 	}
 	toolCallsInIteration++
-	if err := appendToolExecutionMessages(llmExecutor, parser, toolExecution.Step); err != nil {
-		return "", false, err
+	appendErr := appendToolExecutionMessages(llmExecutor, parser, toolExecution.Step)
+	if toolExecution.Error != nil {
+		if appendErr != nil {
+			return "", false, errors.Join(toolExecution.Error, appendErr)
+		}
+		return "", false, toolExecution.Error
+	}
+	if appendErr != nil {
+		return "", false, appendErr
 	}
 	if answer := l.touchPointerModeMismatchFinalAnswer(toolExecution.Step); answer != "" {
 		if l.Recorder != nil {
@@ -282,6 +286,13 @@ type roleOutputHandler interface {
 
 func choiceWithOnlyToolCall(choice llms.ContentChoice, toolID string) llms.ContentChoice {
 	if len(choice.ToolCalls) == 0 {
+		if choice.FuncCall != nil {
+			choice.ToolCalls = []llms.ToolCall{{
+				ID:           ensureToolCallID(toolID, 0),
+				Type:         "function",
+				FunctionCall: choice.FuncCall,
+			}}
+		}
 		return choice
 	}
 	toolID = strings.TrimSpace(toolID)
