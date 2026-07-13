@@ -242,12 +242,14 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 	}
 
 	// Problem 4: Check for pending steer after LLM returns actions (before tool execution)
-	if steer, hasPending, err := l.consumeAndPersistSteer(ctx, llmExecutor); err != nil {
-		return "", false, err
-	} else if hasPending {
+	if steer, hasPending := l.checkPendingSteer(ctx); hasPending {
 		policy.ResetForSteer()
-		// Append LLM response before steer so context includes what LLM was planning
+		// Append LLM response first, then steer, so context order is correct:
+		// assistant(tool_call) → user(steer)
 		if err := llmExecutor.AppendMessage(contextmanager.ConvertChoiceToContextManagerMessage(*contentResp.Choices[0])); err != nil {
+			return "", false, err
+		}
+		if err := l.persistSteer(ctx, llmExecutor, steer); err != nil {
 			return "", false, err
 		}
 		log.Printf("[steer:debug] LLM action interrupted, steer injected (length=%d)\n", len(steer.Content))
