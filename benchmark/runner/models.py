@@ -27,6 +27,7 @@ class HardAssertionResults:
     min_tool_calls: bool | None = None
     max_tool_calls: bool | None = None
     required_tools: bool | None = None
+    required_skill_reads: bool | None = None
     forbidden_tools: bool | None = None
     prohibited_actions: bool | None = None
     timeout: bool = True

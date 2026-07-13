@@ -31,6 +31,7 @@ class HardAssertions:
     must_complete_within_sec: int = 180
     response_required: bool = True
     required_tools: list[str] = dc.field(default_factory=list)
+    required_skill_reads: list[str] = dc.field(default_factory=list)
     forbidden_tools: list[str] = dc.field(default_factory=list)
     prohibited_actions: list[str] = dc.field(default_factory=list)
 
@@ -105,6 +106,9 @@ def load_suite(path: Path) -> Suite:
         if min_tc < 0 or max_tc < 0 or timeout_sec <= 0:
             raise SuiteValidationError(f"task {tid}: hard_assertions values must be non-negative")
         required_tools = _string_list_assertion(ha.get("required_tools", []), tid, "required_tools")
+        required_skill_reads = _string_list_assertion(
+            ha.get("required_skill_reads", []), tid, "required_skill_reads"
+        )
         forbidden_tools = _string_list_assertion(ha.get("forbidden_tools", []), tid, "forbidden_tools")
         prohibited_actions = _string_list_assertion(ha.get("prohibited_actions", []), tid, "prohibited_actions")
         overlap = sorted(set(required_tools) & set(forbidden_tools))
@@ -118,6 +122,7 @@ def load_suite(path: Path) -> Suite:
             must_complete_within_sec=timeout_sec,
             response_required=rr,
             required_tools=required_tools,
+            required_skill_reads=required_skill_reads,
             forbidden_tools=forbidden_tools,
             prohibited_actions=prohibited_actions,
         )

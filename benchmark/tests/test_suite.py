@@ -424,6 +424,21 @@ def test_shell_utility_suite_replaces_removed_time_and_calculator_tools():
     assert calculation.answer_format == "option_letter"
 
 
+def test_skill_discovery_suite_does_not_prompt_for_skill_read():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "skill_discovery_v1.json"
+    suite = load_suite(suite_path)
+    task = suite.tasks[0]
+
+    assert suite.name == "skill_discovery_v1"
+    assert "skill_read" not in suite.prompt_prefix
+    assert "skill_read" not in task.prompt
+    assert "device-operator" not in suite.prompt_prefix
+    assert "device-operator" not in task.prompt
+    assert task.hard_assertions.required_tools == ["skill_read"]
+    assert task.hard_assertions.required_skill_reads == ["device-operator"]
+    assert "shell" in task.hard_assertions.forbidden_tools
+
+
 def test_skillopt_crossapp_device_operator_suites_target_skill_capabilities():
     suite_root = Path(__file__).resolve().parents[2] / "skillopt" / "suites" / "device-operator"
     train = load_suite(suite_root / "crossapp_train.json")

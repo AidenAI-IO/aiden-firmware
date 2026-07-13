@@ -1,0 +1,37 @@
+{
+  "name": "skill_discovery_v1",
+  "description": "Verifies that the default Agent prompt discovers and reads device-operator before a visible phone UI task without benchmark hints about skill tools.",
+  "prompt_prefix": "你正在操作一台通过 HDMI 采集画面的手机，不是控制器本机或桌面系统。请完成用户的目标，并根据当前可用能力自行选择操作方式。",
+  "global_reset": {},
+  "tasks": [
+    {
+      "id": "discover_device_operator_for_settings",
+      "category": "single_step",
+      "description_for_judge": "The agent should autonomously load the relevant device-operation skill and open the phone Settings app.",
+      "prompt": "请打开系统设置。",
+      "rubric": [
+        {
+          "id": "loaded_skill_before_ui",
+          "check": "The trace shows device-operator was loaded before the agent began screenshot or UI actions."
+        },
+        {
+          "id": "in_settings",
+          "check": "Post-screenshot shows the Settings app main page."
+        },
+        {
+          "id": "no_error",
+          "check": "No crash dialog or error overlay is visible."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 2,
+        "max_tool_calls": 8,
+        "must_complete_within_sec": 90,
+        "response_required": true,
+        "required_tools": ["skill_read"],
+        "required_skill_reads": ["device-operator"],
+        "forbidden_tools": ["shell", "current_time", "calculator"]
+      }
+    }
+  ]
+}
