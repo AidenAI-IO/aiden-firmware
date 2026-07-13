@@ -4894,7 +4894,6 @@ const webUI = `<!DOCTYPE html>
 
             inputEl.value = '';
             autoResizeInput();
-            setComposerState(true);
             clearDraftAttachments();
             currentChatRequestId = createRequestId();
             externalActiveRequestId = '';
@@ -4902,6 +4901,7 @@ const webUI = `<!DOCTYPE html>
             currentChatCancelRequested = false;
             currentChatStartedAt = Date.now();
             resetStopRunArm();
+            setComposerState(true); // Call after setting currentChatRequestId so button shows "Steer"
 
             addMessage({
                 type: 'user',
