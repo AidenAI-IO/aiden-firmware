@@ -15,8 +15,14 @@ func TestAgentLoopSteerInterruptOnTermination(t *testing.T) {
 
 	// Simulate: agent hits termination policy (loop detected), checks for pending steer
 	screen := `{"width":100,"height":100,"format":"jpeg","data":"same-screen"}`
+	var checkCount int
 	steerProvider := func(ctx context.Context) (RunSteerMessage, bool) {
-		// Steer is available when checked
+		checkCount++
+		// Return steer only on the last check (at termination)
+		// Tool execution will check 3 times, then termination will check once
+		if checkCount < 4 {
+			return RunSteerMessage{}, false
+		}
 		return RunSteerMessage{
 			Content:   "停止当前任务",
 			Timestamp: time.Now(),
@@ -27,7 +33,6 @@ func TestAgentLoopSteerInterruptOnTermination(t *testing.T) {
 		toolCallResponse("call-1", "touch_gesture", `{"type":"swipe_up"}`),
 		toolCallResponse("call-2", "touch_gesture", `{"type":"swipe_up"}`),
 		toolCallResponse("call-3", "touch_gesture", `{"type":"swipe_up"}`),
-		toolCallResponse("call-4", "touch_gesture", `{"type":"swipe_up"}`),
 	}}
 
 	manager, err := freshNewContextManager("system", "task", nil, t.TempDir())

@@ -761,7 +761,10 @@ func eventMetadataInt(event TaskEpisodeEvent, key string) int {
 
 func TestRuntimeRunAttachesPendingSteerToNextToolCall(t *testing.T) {
 	model := &scriptedModel{
-		responses: roleToolResponses("echo", `{"__arg1":"original action"}`, "Changed course."),
+		responses: roleToolResponses(
+			"echo", `{"__arg1":"original action"}`,
+			"Adjusted based on feedback.",
+		),
 	}
 	tool := &stubTool{
 		name:        "echo",
@@ -798,34 +801,33 @@ func TestRuntimeRunAttachesPendingSteerToNextToolCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if result.Output != "Changed course." {
-		t.Fatalf("output = %q, want Changed course.", result.Output)
+	if result.Output != "Adjusted based on feedback." {
+		t.Fatalf("output = %q, want steer-adjusted response", result.Output)
 	}
 	if len(tool.inputs) != 1 || tool.inputs[0] != "original action" {
-		t.Fatalf("tool should run before steer is attached, got inputs %#v", tool.inputs)
+		t.Fatalf("tool inputs = %#v, want single original action", tool.inputs)
 	}
 
-	if steerCalls != 0 {
-		t.Fatalf("SteerProvider calls = %d, want 0 for context-manager loop", steerCalls)
-	}
-	if steerEvent, ok := firstRunEventOfType(events, "steer"); ok {
-		t.Fatalf("unexpected steer event: %#v", steerEvent)
+	// SteerProvider should be called once after tool execution
+	if steerCalls != 1 {
+		t.Fatalf("SteerProvider calls = %d, want 1", steerCalls)
 	}
 	toolResult, ok := firstRunEventOfType(events, "tool_result")
 	if !ok {
 		t.Fatalf("missing tool_result event: %#v", events)
 	}
 	if toolResult.Content != "tool output" || toolResult.IsError {
-		t.Fatalf("unexpected steer tool result: %#v", toolResult)
+		t.Fatalf("unexpected tool result: %#v", toolResult)
 	}
+	// Second LLM call should include steer content
 	if len(model.messages) < 2 {
-		t.Fatalf("expected follow-up model call with tool result, got %#v", model.messages)
+		t.Fatalf("expected second LLM call after steer, got %#v", model.messages)
 	}
-	if runtimeModelCallContains(model.messages[1], "Use the updated instruction instead.") {
-		t.Fatalf("second model call unexpectedly contains pending steer: %#v", model.messages[1])
+	if !runtimeModelCallContains(model.messages[1], "Use the updated instruction instead.") {
+		t.Fatalf("second LLM call missing steer: %#v", model.messages[1])
 	}
 	if !runtimeModelCallToolResponseContains(model.messages[1], "tool output") {
-		t.Fatalf("second model call missing tool result: %#v", model.messages[1])
+		t.Fatalf("second LLM call missing tool result: %#v", model.messages[1])
 	}
 	assertMemoryRecords(t, result.Memory, nil)
 }

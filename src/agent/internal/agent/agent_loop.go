@@ -203,6 +203,19 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 	if err := appendToolExecutionMessages(llmExecutor, parser, toolExecution.Step); err != nil {
 		return "", false, err
 	}
+
+	// Check for pending steer after tool execution (soft interrupt decision point)
+	if steer, hasPending := l.checkPendingSteer(ctx); hasPending {
+		if err := llmExecutor.AppendMessage(context_manager.Message{
+			Role:    context_manager.MessageRoleUser,
+			Content: steer.Content,
+		}); err != nil {
+			return "", false, err
+		}
+		// Continue iteration - LLM will see tool result + steer content and decide
+		return "", false, nil
+	}
+
 	if isRunPausingTool(toolExecution.Call.Action.Tool) && !toolExecution.Result.IsError() {
 		answer := runPausingToolFinalAnswer(&toolExecution.Step)
 		if l.Recorder != nil {
