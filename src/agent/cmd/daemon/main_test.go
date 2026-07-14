@@ -1343,6 +1343,53 @@ func TestRunVoiceTurnSignalWaitsForThinkingGoroutine(t *testing.T) {
 	}
 }
 
+func TestRunVoiceTurnWakeupDuringThinkingImmediatelyCancelsRun(t *testing.T) {
+	sigChan := make(chan os.Signal, 1)
+	events := make(chan voiceEvent, 1)
+	runStarted := make(chan struct{})
+	ctxCanceled := make(chan struct{})
+	interruptOutputCalls := 0
+	dialog := &fakeAudioDialog{
+		runTurn: func(ctx context.Context) (agent.RunResult, error) {
+			close(runStarted)
+			<-ctx.Done()
+			close(ctxCanceled)
+			return agent.RunResult{}, ctx.Err()
+		},
+		interruptOutput: func() {
+			interruptOutputCalls++
+		},
+	}
+
+	go func() {
+		<-runStarted
+		events <- voiceEventWakeup
+	}()
+
+	result := runVoiceTurn(agent.Config{}, dialog, nil, []int16{1}, sigChan, events)
+	if !result.interrupted || result.exit || result.waitForWakeupRequested || result.nextTurn != nil {
+		t.Fatalf("runVoiceTurn = interrupted:%v exit:%v wait:%v nextTurn:%v, want true false false nil",
+			result.interrupted, result.exit, result.waitForWakeupRequested, result.nextTurn)
+	}
+	if got, want := result.followUpContext, interruptedVoiceCorrectionContext(); got != want {
+		t.Fatalf("follow-up context = %#v, want %#v", got, want)
+	}
+	select {
+	case <-ctxCanceled:
+	default:
+		t.Fatal("RunAgentTurn goroutine was not canceled before result returned")
+	}
+	if interruptOutputCalls != 1 {
+		t.Fatalf("InterruptOutput calls = %d, want 1", interruptOutputCalls)
+	}
+	if len(dialog.queuedSteers) != 0 {
+		t.Fatalf("queued steers = %#v, want none for GPIO hard interrupt during thinking", dialog.queuedSteers)
+	}
+	if dialog.steerInterrupts != 0 {
+		t.Fatalf("steer interrupts = %d, want 0 for GPIO hard interrupt during thinking", dialog.steerInterrupts)
+	}
+}
+
 func TestRunVoiceTurnPersistsUserBeforeRunEvents(t *testing.T) {
 	sigChan := make(chan os.Signal, 1)
 	events := make(chan voiceEvent, 1)
