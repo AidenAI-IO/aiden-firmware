@@ -40,6 +40,39 @@ func TestEffectiveMaxIterationsDefaultsAndUnlimited(t *testing.T) {
 	}
 }
 
+func TestRuntimeUsesConfiguredTerminationPolicy(t *testing.T) {
+	model := &scriptedModel{responses: []*llms.ContentResponse{
+		{
+			Choices: []*llms.ContentChoice{{
+				ToolCalls: []llms.ToolCall{{ID: "invalid-tool-call"}},
+			}},
+		},
+		contentResponse("should not be reached"),
+	}}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{
+			Model:             ModelConfig{Provider: "fake"},
+			Instruction:       "Answer directly.",
+			TerminationPolicy: TerminationPolicyConfig{ParseFailureLimit: 1},
+		}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "test configured parse limit"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !strings.Contains(result.Output, string(StopReasonParseFailure)) {
+		t.Fatalf("output = %q, want configured parse-failure termination", result.Output)
+	}
+	if model.callCount != 1 {
+		t.Fatalf("model call count = %d, want 1", model.callCount)
+	}
+}
+
 type testModelResolver struct {
 	model llms.Model
 	err   error

@@ -883,6 +883,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	agentLoop.SteerInterrupt = req.SteerInterrupt
 	agentLoop.SteerProvider = req.SteerProvider
 	agentLoop.SteerWaiter = req.SteerWaiter
+	agentLoop.TerminationPolicy = NewTerminationPolicy(r.config.TerminationPolicy)
 	agentLoop.DevicePlatform = platformFn()
 	agentLoop.PointerMode = r.config.HID.PointerModeOrDefault()
 

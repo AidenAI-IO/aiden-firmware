@@ -42,10 +42,11 @@ type ToolCallExecution struct {
 }
 
 type ToolCallExecutionResult struct {
-	Call   ToolCall
-	Result ToolResult
-	Step   schema.AgentStep
-	Error  error
+	Call               ToolCall
+	Result             ToolResult
+	Step               schema.AgentStep
+	Error              error
+	InterruptedBySteer bool
 }
 
 type BeforeToolCallHook func(context.Context, ToolCall) (ToolResult, bool)
