@@ -245,135 +245,14 @@ func TestWheelSemanticTargetSupportsOneBasedCycles(t *testing.T) {
 	}
 }
 
-func TestWheelGestureGuardBlocksTouchTapOnExhaustedColumn(t *testing.T) {
+func TestWheelGestureGuardIgnoresTouchGestureWithProviderPopulatedWheelMetadata(t *testing.T) {
 	var guard wheelNudgeGuard
-	for attempt := 0; attempt < wheelNudgeMaxPerColumn; attempt++ {
-		call := wheelNudgeGuardCall(validWheelGuardInput(196, 274, attempt, 10, 0, 0, "screenshot"))
-		if result, allowed := guard.BeforeToolCall(context.Background(), call); !allowed {
-			t.Fatalf("nudge %d unexpectedly blocked: %#v", attempt+1, result)
-		}
-	}
-
-	tap := ToolCall{
+	swipe := ToolCall{
 		Spec:  ToolSpec{Name: "touch_gesture"},
-		Input: `{"type":"tap","coord_space":"screenshot","point":{"x":190,"y":326}}`,
+		Input: `{"type":"swipe_down","coord_space":"normalized","start":{"x":500,"y":200},"end":{"x":500,"y":520},"wheel":{"is_picker_row":true,"picker_id":"bad","column_x":0,"center_y":0,"current_value":0,"tapped_value":0,"target_value":0,"cycle_size":0,"cycle_start":0,"row_offset":0,"row_spacing":0,"value_step":0}}`,
 	}
-	result, allowed := guard.BeforeToolCall(context.Background(), tap)
-	if allowed {
-		t.Fatal("tap on exhausted wheel column should be blocked")
-	}
-	if result.Error == nil || result.Error.Code != CodeWheelGestureLimit {
-		t.Fatalf("blocked result error = %#v, want %s", result.Error, CodeWheelGestureLimit)
-	}
-	if !strings.Contains(result.Output, "touch_gesture") {
-		t.Fatalf("blocked output = %q, want touch gesture explanation", result.Output)
-	}
-}
-
-func TestWheelGestureGuardBlocksRowTapAfterWheelNudgeStarts(t *testing.T) {
-	var guard wheelNudgeGuard
-	probe := wheelNudgeGuardCall(`{"picker_id":"test-picker","column_x":196,"direction":"up","remaining_gap":7,"current_value":4,"target_value":11,"cycle_size":24,"cycle_start":0,"increasing_direction":"unknown","row_spacing":38,"value_step":1,"coord_space":"screenshot","center_y":273}`)
-	if result, allowed := guard.BeforeToolCall(context.Background(), probe); !allowed {
-		t.Fatalf("micro probe unexpectedly blocked: %#v", result)
-	}
-
-	tap := ToolCall{
-		Spec:  ToolSpec{Name: "touch_gesture"},
-		Input: `{"type":"tap","coord_space":"screenshot","point":{"x":197,"y":287}}`,
-	}
-	result, allowed := guard.BeforeToolCall(context.Background(), tap)
-	if allowed {
-		t.Fatal("row tap after wheel_nudge starts should be blocked")
-	}
-	if result.Error == nil || result.Error.Code != CodeInvalidArguments {
-		t.Fatalf("blocked result error = %#v, want %s", result.Error, CodeInvalidArguments)
-	}
-	if !strings.Contains(result.Output, "numeric keypad") {
-		t.Fatalf("blocked output = %q, want keypad explanation", result.Output)
-	}
-}
-
-func TestWheelGestureGuardAllowsUnselectedVisibleRowTap(t *testing.T) {
-	var guard wheelNudgeGuard
-	probe := wheelNudgeGuardCall(`{"picker_id":"test-picker","column_x":196,"direction":"up","remaining_gap":7,"current_value":4,"target_value":11,"cycle_size":24,"cycle_start":0,"increasing_direction":"unknown","row_spacing":38,"value_step":1,"coord_space":"screenshot","center_y":273}`)
-	if result, allowed := guard.BeforeToolCall(context.Background(), probe); !allowed {
-		t.Fatalf("micro probe unexpectedly blocked: %#v", result)
-	}
-
-	tap := ToolCall{
-		Spec:  ToolSpec{Name: "touch_gesture"},
-		Input: `{"type":"tap","coord_space":"screenshot","point":{"x":197,"y":235}}`,
-	}
-	if result, allowed := guard.BeforeToolCall(context.Background(), tap); !allowed || result.Error != nil {
-		t.Fatalf("unselected visible row tap should be allowed: allowed=%v result=%#v", allowed, result)
-	}
-}
-
-func TestWheelGestureGuardRejectsSemanticRowTapThatMovesAwayFromTarget(t *testing.T) {
-	var guard wheelNudgeGuard
-	tap := ToolCall{
-		Spec:  ToolSpec{Name: "touch_gesture"},
-		Input: `{"type":"tap","coord_space":"screenshot","point":{"x":196,"y":201},"wheel":{"is_picker_row":true,"picker_id":"test-picker","column_x":196,"center_y":273,"current_value":15,"tapped_value":14,"target_value":21,"cycle_size":24,"cycle_start":0,"row_offset":-1,"row_spacing":72,"value_step":1}}`,
-	}
-	result, allowed := guard.BeforeToolCall(context.Background(), tap)
-	if allowed {
-		t.Fatal("semantic wheel tap that increases target distance should be blocked")
-	}
-	if result.Error == nil || !strings.Contains(result.Output, "moves away") {
-		t.Fatalf("blocked result = %#v, want moves-away explanation", result)
-	}
-}
-
-func TestWheelGestureGuardTracksFirstSemanticRowTapAndBlocksCenterTap(t *testing.T) {
-	var guard wheelNudgeGuard
-	tap := ToolCall{
-		Spec:  ToolSpec{Name: "touch_gesture"},
-		Input: `{"type":"tap","coord_space":"screenshot","point":{"x":196,"y":345},"wheel":{"is_picker_row":true,"picker_id":"test-picker","column_x":196,"center_y":273,"current_value":15,"tapped_value":18,"target_value":21,"cycle_size":24,"cycle_start":0,"row_offset":1,"row_spacing":72,"value_step":3}}`,
-	}
-	if result, allowed := guard.BeforeToolCall(context.Background(), tap); !allowed || result.Error != nil {
-		t.Fatalf("progressing semantic row tap should be allowed: allowed=%v result=%#v", allowed, result)
-	}
-	centerTap := ToolCall{
-		Spec:  ToolSpec{Name: "touch_gesture"},
-		Input: `{"type":"tap","coord_space":"screenshot","point":{"x":196,"y":273}}`,
-	}
-	if result, allowed := guard.BeforeToolCall(context.Background(), centerTap); allowed || result.Error == nil {
-		t.Fatalf("center tap after first semantic row tap should be blocked: allowed=%v result=%#v", allowed, result)
-	}
-}
-
-func TestWheelGestureGuardIgnoresDefaultWheelMetadataOnOrdinaryTap(t *testing.T) {
-	var guard wheelNudgeGuard
-	tap := ToolCall{
-		Spec:  ToolSpec{Name: "touch_gesture"},
-		Input: `{"type":"tap","coord_space":"normalized","point":{"x":186,"y":431},"wheel":{"is_picker_row":false,"column_x":0,"center_y":0,"current_value":0,"tapped_value":0,"target_value":0,"cycle_size":0,"cycle_start":0,"row_offset":0,"row_spacing":0,"value_step":0}}`,
-	}
-	if result, allowed := guard.BeforeToolCall(context.Background(), tap); !allowed || result.Error != nil {
-		t.Fatalf("ordinary tap with default wheel object should be allowed: allowed=%v result=%#v", allowed, result)
-	}
-}
-
-func TestWheelGestureGuardRejectsSemanticTapWithMismatchedRowCoordinate(t *testing.T) {
-	var guard wheelNudgeGuard
-	tap := ToolCall{
-		Spec:  ToolSpec{Name: "touch_gesture"},
-		Input: `{"type":"tap","coord_space":"screenshot","point":{"x":196,"y":411},"wheel":{"is_picker_row":true,"picker_id":"test-picker","column_x":196,"center_y":299,"current_value":19,"tapped_value":20,"target_value":21,"cycle_size":24,"cycle_start":0,"row_offset":1,"row_spacing":38,"value_step":1}}`,
-	}
-	result, allowed := guard.BeforeToolCall(context.Background(), tap)
-	if allowed || result.Error == nil || !strings.Contains(result.Output, "coordinate mismatch") {
-		t.Fatalf("mismatched semantic row coordinate should be blocked: allowed=%v result=%#v", allowed, result)
-	}
-}
-
-func TestWheelGestureGuardRejectsMultiRowSemanticTap(t *testing.T) {
-	var guard wheelNudgeGuard
-	tap := ToolCall{
-		Spec:  ToolSpec{Name: "touch_gesture"},
-		Input: `{"type":"tap","coord_space":"screenshot","point":{"x":196,"y":375},"wheel":{"is_picker_row":true,"picker_id":"test-picker","column_x":196,"center_y":299,"current_value":19,"tapped_value":21,"target_value":21,"cycle_size":24,"cycle_start":0,"row_offset":2,"row_spacing":38,"value_step":1}}`,
-	}
-	result, allowed := guard.BeforeToolCall(context.Background(), tap)
-	if allowed || result.Error == nil || !strings.Contains(result.Output, "adjacent unselected row") {
-		t.Fatalf("multi-row semantic tap should be blocked: allowed=%v result=%#v", allowed, result)
+	if result, allowed := guard.BeforeToolCall(context.Background(), swipe); !allowed || result.Error != nil {
+		t.Fatalf("generic touch gesture must not be inspected by wheel guard: allowed=%v result=%#v", allowed, result)
 	}
 }
 

@@ -1056,27 +1056,12 @@ type TouchGestureTool struct {
 	screen *screenState
 }
 
-type wheelTapMetadata struct {
-	IsPickerRow  bool     `json:"is_picker_row"`
-	PickerID     string   `json:"picker_id"`
-	ColumnX      *float64 `json:"column_x"`
-	CenterY      *float64 `json:"center_y"`
-	CurrentValue *int     `json:"current_value"`
-	TappedValue  *int     `json:"tapped_value"`
-	TargetValue  *int     `json:"target_value"`
-	CycleSize    *int     `json:"cycle_size"`
-	CycleStart   *int     `json:"cycle_start"`
-	RowOffset    *int     `json:"row_offset"`
-	RowSpacing   *float64 `json:"row_spacing"`
-	ValueStep    *int     `json:"value_step"`
-}
-
 func (t *TouchGestureTool) Name() string { return "touch_gesture" }
 
 func (t *TouchGestureTool) Description() string {
 	return `Perform a custom touch/pointer gesture via HID. Prefer quick_action for semantic platform actions; use this for tap/swipe/drag and other freehand screen gestures. ` +
 		`Base coordinates on the latest screenshot and aim at the visual center of the target. Use coord_space:"screenshot" only for pixels measured directly in that returned image. Swipe direction names describe finger movement, not content scroll. ` +
-		`For a picker-row tap, include wheel metadata with a stable picker_id and measured row/domain values; omit wheel metadata for ordinary taps.`
+		`This is a generic input tool and has no picker/wheel semantics; use wheel_nudge for every wheel interaction.`
 }
 
 func (t *TouchGestureTool) ArgsSchema() map[string]any {
@@ -1096,20 +1081,6 @@ func (t *TouchGestureTool) ArgsSchema() map[string]any {
 		"distance":       coordinateSchema("Directional swipe travel in 0-1000 normalized units (700 ≈ 70% of screen).", 700),
 		"anchor":         coordinateSchema("Directional swipe fixed-axis coordinate in 0-1000 normalized units.", 500),
 		"strength":       stringEnumArgSchema("Directional swipe preset distance.", "large", "medium", "small", "tiny"),
-		"wheel": objectArgsSchema(map[string]any{
-			"is_picker_row": map[string]any{"type": "boolean", "const": true, "description": "Must be true. Omit the entire wheel object for ordinary non-picker taps."},
-			"picker_id":     map[string]any{"type": "string", "minLength": 1, "description": "Stable identifier for this visible picker instance, such as alarm-create or date-editor; change it when navigating to another picker screen."},
-			"column_x":      coordinateSchema("Measured center x of this wheel column in coord_space."),
-			"center_y":      coordinateSchema("Measured y of the highlighted selected row in coord_space."),
-			"current_value": nonNegativeIntegerSchema("Current centered numeric/ordinal value."),
-			"tapped_value":  nonNegativeIntegerSchema("Numeric/ordinal value displayed on the unselected row being tapped."),
-			"target_value":  nonNegativeIntegerSchema("Requested numeric/ordinal target value for this column."),
-			"cycle_size":    nonNegativeIntegerSchema("Known cyclic domain size, or 0 for non-cyclic values."),
-			"cycle_start":   nonNegativeIntegerSchema("Lowest cyclic value, such as 0 for 00-based time or 1 for month/day."),
-			"row_offset":    map[string]any{"type": "integer", "description": "Signed visible-row offset from center: -1 is the adjacent row above, +1 the adjacent row below."},
-			"row_spacing":   coordinateSchema("Measured distance between adjacent visible row centers in coord_space."),
-			"value_step":    map[string]any{"type": "integer", "description": "Signed ordinal/value change for one row downward; for 16,17,18 from top to bottom use +1."},
-		}, "is_picker_row", "picker_id", "column_x", "center_y", "current_value", "tapped_value", "target_value", "cycle_size", "cycle_start", "row_offset", "row_spacing", "value_step"),
 	}, "type")
 }
 
@@ -1124,22 +1095,21 @@ func pointSchema(description string) map[string]any {
 
 func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, error) {
 	var args struct {
-		Type         string            `json:"type"`
-		Point        *pointerPoint     `json:"point"`
-		Start        *pointerPoint     `json:"start"`
-		End          *pointerPoint     `json:"end"`
-		CoordSpace   string            `json:"coord_space"`
-		Button       string            `json:"button"`
-		DurationMs   *int              `json:"duration_ms"`
-		HoldBeforeMs *int              `json:"hold_before_ms"`
-		HoldAfterMs  *int              `json:"hold_after_ms"`
-		HoldMs       *int              `json:"hold_ms"`
-		PauseMs      *int              `json:"pause_ms"`
-		Steps        *int              `json:"steps"`
-		Distance     *float64          `json:"distance"`
-		Anchor       *float64          `json:"anchor"`
-		Strength     string            `json:"strength"`
-		Wheel        *wheelTapMetadata `json:"wheel"`
+		Type         string        `json:"type"`
+		Point        *pointerPoint `json:"point"`
+		Start        *pointerPoint `json:"start"`
+		End          *pointerPoint `json:"end"`
+		CoordSpace   string        `json:"coord_space"`
+		Button       string        `json:"button"`
+		DurationMs   *int          `json:"duration_ms"`
+		HoldBeforeMs *int          `json:"hold_before_ms"`
+		HoldAfterMs  *int          `json:"hold_after_ms"`
+		HoldMs       *int          `json:"hold_ms"`
+		PauseMs      *int          `json:"pause_ms"`
+		Steps        *int          `json:"steps"`
+		Distance     *float64      `json:"distance"`
+		Anchor       *float64      `json:"anchor"`
+		Strength     string        `json:"strength"`
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
 		return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v. Common mistakes: missing quotes around string values, incorrect comma placement, point/start/end must be objects with named keys like {\"x\":500,\"y\":300} not bare values. Example: {\"type\":\"tap\",\"point\":{\"x\":500,\"y\":500}}", err), nil
@@ -1158,11 +1128,6 @@ func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, erro
 
 	switch gestureType {
 	case "tap":
-		if args.Wheel != nil {
-			if err := validateWheelTapMetadata(args.Wheel, args.Point, coordSpace); err != nil {
-				return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
-			}
-		}
 		point, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.Point, coordSpace)
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
@@ -1320,10 +1285,9 @@ func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, erro
 	return "ok", nil
 }
 
-// WheelNudgeTool performs one low-inertia vertical drag inside a visible wheel
-// column. It is intentionally generic: callers identify the column and desired
-// finger direction from screenshots, while the tool guarantees a bounded slow
-// movement that is less likely to fling past the target value.
+// WheelNudgeTool performs one bounded interaction inside a visible wheel
+// column. It taps an adjacent target row when possible, otherwise it uses a
+// low-inertia vertical drag that is less likely to fling past the target.
 type WheelNudgeTool struct {
 	pc         *pointerController
 	screen     *screenState
@@ -1347,29 +1311,30 @@ type wheelNudgeArgs struct {
 }
 
 type wheelNudgePlan struct {
-	gap      int
-	rows     int
-	distance string
-	probe    bool
+	gap       int
+	rows      int
+	distance  string
+	probe     bool
+	rowOffset int
 }
 
 func (t *WheelNudgeTool) Name() string { return "wheel_nudge" }
 
 func (t *WheelNudgeTool) Description() string {
-	return `Scroll a visible picker/wheel column toward a target value when that value is NOT already visible on screen. ` +
-		`If the target value is already visible as a row, tap it with touch_gesture instead of using this. ` +
+	return `Move a visible picker/wheel column toward a target value. This is the only tool for wheel interactions; never attach wheel semantics to touch_gesture. ` +
+		`When the target is exactly one visible row above or below the selected row, the tool taps that unselected row. Otherwise it performs one bounded low-inertia drag. ` +
 		`Input JSON: {"picker_id":"alarm-create","column_x":195,"direction":"up","remaining_gap":6,"current_value":10,"target_value":16,"cycle_size":24,"cycle_start":0,"increasing_direction":"up","row_spacing":42,"value_step":1,"center_y":273,"coord_space":"screenshot"}. ` +
 		`For a cropped frame_service phone screenshot, use coord_space:"screenshot" and pass column_x/center_y exactly as measured in the latest returned image; do not copy image pixels into normalized coordinates. ` +
-		`direction describes finger movement only and is opposite the visible rows' movement: if values increase below the selected row (value_step > 0), finger-up increases the selected value; if they decrease below it, finger-down increases it. Use increasing_direction:"unknown" without value_step only when visible ordering is insufficient and a one-row direction probe is genuinely needed. ` +
+		`direction describes the equivalent finger movement toward the target and is used when a drag is required; an adjacent-row tap derives its tap position from target_value and value_step. If values increase below the selected row (value_step > 0), finger-up increases the selected value; if they decrease below it, finger-down increases it. Use increasing_direction:"unknown" without value_step only when visible ordering is insufficient and a one-row direction probe is genuinely needed. ` +
 		`Actual drag travel is derived from remaining_gap: gaps of 1, 2-4, 5-8, and 9+ values move at most 1, 2, 3, and 4 measured rows using row_spacing, so it cannot become a fling-like full-column swipe. ` +
-		`The tool performs one slow drag and returns a post-action screenshot; read the new centered value and recalculate the remaining gap.`
+		`The tool performs one tap or slow drag and returns a post-action screenshot; read the new centered value and recalculate the remaining gap.`
 }
 
 func (t *WheelNudgeTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
 		"picker_id":            map[string]any{"type": "string", "minLength": 1, "description": "Stable identifier for this visible picker instance; change it after navigating to another picker screen."},
 		"column_x":             coordinateSchema("X coordinate at the center of the wheel column in the selected coord_space."),
-		"direction":            stringEnumArgSchema(`Finger movement direction only. Derive whether up/down increases or decreases from the ordered visible rows before acting; do not guess with the first gesture.`, "up", "down"),
+		"direction":            stringEnumArgSchema(`Equivalent finger movement direction toward the target, used for path validation and for non-tap execution. Derive whether up/down increases or decreases from the ordered visible rows before acting; do not guess with the first gesture.`, "up", "down"),
 		"remaining_gap":        nonNegativeIntegerSchema("Current shortest-path number of values from the centered value to the target, recalculated from the latest screenshot."),
 		"current_value":        nonNegativeIntegerSchema("Current centered numeric value from the latest screenshot."),
 		"target_value":         nonNegativeIntegerSchema("Requested numeric target value for this wheel column."),
@@ -1425,6 +1390,21 @@ func (t *WheelNudgeTool) Call(ctx context.Context, input string) (string, error)
 	}
 
 	x := *args.ColumnX
+	if plan.rowOffset != 0 {
+		tapY := centerY + float64(plan.rowOffset)*(*args.RowSpacing)
+		if tapY < 0 || tapY > maxY {
+			return toolErrorResultf(ctx, CodeInvalidArguments, "adjacent wheel row y=%.0f is outside the visible coordinate range 0..%.0f", tapY, maxY), nil
+		}
+		point, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, &pointerPoint{X: pointerCoordinate(x), Y: pointerCoordinate(tapY)}, coordSpace)
+		if err != nil {
+			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
+		}
+		if err := tapPointerWithHold(t.pc, point.x, point.y, mouseButtonByte("left"), defaultTapHoldMs); err != nil {
+			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
+		}
+		return fmt.Sprintf("ok: wheel_nudge interaction=tap row_offset=%d target_value=%d", plan.rowOffset, *args.TargetValue), nil
+	}
+
 	startOffset := gestureTravel / 2
 	var startY, endY float64
 	if args.Direction == "up" {
@@ -1496,7 +1476,24 @@ func planWheelNudge(args wheelNudgeArgs) (wheelNudgePlan, error) {
 		rows = 1
 		distance = "micro"
 	}
-	return wheelNudgePlan{gap: gap, rows: rows, distance: distance, probe: probe}, nil
+	rowOffset := 0
+	if !probe && args.ValueStep != nil {
+		rowOffset = wheelAdjacentTargetRowOffset(*args.CurrentValue, *args.TargetValue, *args.ValueStep, *args.CycleSize, *args.CycleStart)
+	}
+	return wheelNudgePlan{gap: gap, rows: rows, distance: distance, probe: probe, rowOffset: rowOffset}, nil
+}
+
+func wheelAdjacentTargetRowOffset(current, target, valueStep, cycleSize, cycleStart int) int {
+	for _, offset := range []int{-1, 1} {
+		candidate := current + offset*valueStep
+		if cycleSize > 0 {
+			candidate = cycleStart + ((candidate-cycleStart)%cycleSize+cycleSize)%cycleSize
+		}
+		if candidate == target {
+			return offset
+		}
+	}
+	return 0
 }
 
 func parseWheelNudgeArgs(input string) (wheelNudgeArgs, error) {

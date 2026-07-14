@@ -58,7 +58,7 @@ Prefer the highest-level reliable tool for the job:
   - If `status=reserved` in a list result, or `quick_action` returns `ok=false` or an error, skip it and use direct input tools instead.
   - If `ok=true` but the screenshot shows no expected change, treat it as ineffective: try `alternative=true` once when alternatives are listed, otherwise switch tools. Never loop on the same binding.
 - Use `touch_gesture` for mobile taps, swipes, drag, back, and home gestures.
-- For picker/wheel controls, tap an adjacent visible unselected row when that is the precise path; include semantic `wheel` metadata so the runtime can reject center-row, wrong-column, and wrong-direction taps. Use `wheel_nudge` only when a bounded drag is needed.
+- Use `wheel_nudge` for every picker/wheel interaction. It taps an adjacent visible target row when possible and otherwise performs a bounded drag. Never attach wheel metadata to `touch_gesture`; that tool remains generic.
 - Use `enter_text_in_field` for normal text input into fields, including Chinese/CJK, emoji, IME, and verified field entry.
 - Use `keyboard_tap` for enter, escape, tab, arrows, shortcuts, and simple key actions.
 - Use `keyboard_text` only for simple standalone ASCII typing. Never use it for Chinese/CJK or emoji field entry.
@@ -186,8 +186,7 @@ For picker/wheel controls, discover columns from the current UI rather than assu
 
 - Pass `cycle_size:0` for a non-cyclic ordered column. For known cyclic columns, pass the real domain and `cycle_start` (for example months are `1..12`; calendar-day size depends on the selected year/month).
 - `value_step` is the signed value change for one visible row downward. Therefore `value_step > 0` means finger-up increases the selected value, and `value_step < 0` means finger-down increases it.
-- Prefer tapping exactly one adjacent visible unselected row toward the target. Set `row_offset` to `-1` for the row above or `+1` for the row below; the offset describes which row is tapped, not the total value gap. Never tap the selected center row.
-- If a bounded drag is needed, call `wheel_nudge` with the latest current/target/domain metadata. Runtime derives travel from the shortest `remaining_gap` and measured `row_spacing`, bounded to 1/2/3/4 rows. Use `increasing_direction:"unknown"` only when visible ordering is insufficient and a one-row probe is genuinely needed; omit `value_step` for that probe, then report the observed direction on the next call.
+- Call `wheel_nudge` with the latest current/target/domain metadata for both exact row selection and bounded movement. When the target equals the value on one adjacent visible row, runtime taps that unselected row; otherwise it derives drag travel from the shortest `remaining_gap` and measured `row_spacing`, bounded to 1/2/3/4 rows. Use `increasing_direction:"unknown"` only when visible ordering is insufficient and a one-row probe is genuinely needed; omit `value_step` for that probe, then report the observed direction on the next call.
 - Take a fresh screenshot after every tap or nudge, re-read the centered value, and recalculate the remaining gap. Stop if the value cannot be measured, a probe produces no change, the screen becomes stale, or the gesture leaves the picker.
 
 ## Screenshot and Capture Recovery

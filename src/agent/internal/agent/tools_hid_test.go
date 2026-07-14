@@ -109,6 +109,33 @@ func TestWheelNudgeWritesLowInertiaDrag(t *testing.T) {
 	}
 }
 
+func TestWheelNudgeTapsAdjacentVisibleTarget(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
+
+	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":650,"direction":"up","remaining_gap":1,"current_value":10,"target_value":11,"cycle_size":24,"cycle_start":0,"increasing_direction":"up","row_spacing":70,"value_step":1,"center_y":500}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "wheel_nudge interaction=tap") || !strings.Contains(out, "row_offset=1") {
+		t.Fatalf("Call output = %q, want adjacent-row tap summary", out)
+	}
+
+	reports := readMouseReports(t, dev, path)
+	if len(reports) != 2+touchReleaseReportCount {
+		t.Fatalf("len(reports) = %d, want %d", len(reports), 2+touchReleaseReportCount)
+	}
+	expectedX, expectedY := normalizedToAbsolutePoint(650, 570)
+	for index, report := range reports {
+		if report.x != uint16(expectedX) || report.y != uint16(expectedY) {
+			t.Fatalf("report[%d] = (%d,%d), want (%d,%d)", index, report.x, report.y, expectedX, expectedY)
+		}
+	}
+	if reports[0].buttons != 0 || reports[1].buttons != 1 {
+		t.Fatalf("tap reports buttons = %d,%d, want 0,1", reports[0].buttons, reports[1].buttons)
+	}
+}
+
 func TestWheelNudgeLargeSupportsDown(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
@@ -235,27 +262,18 @@ func TestWheelNudgeSchemaDerivesTravelFromGap(t *testing.T) {
 	}
 }
 
-func TestTouchGestureSchemaExposesSemanticWheelTapMetadata(t *testing.T) {
+func TestTouchGestureSchemaDoesNotExposeWheelMetadata(t *testing.T) {
 	schema := (&TouchGestureTool{}).ArgsSchema()
 	props := schema["properties"].(map[string]any)
-	wheel, ok := props["wheel"].(map[string]any)
-	if !ok {
-		t.Fatalf("touch_gesture schema missing semantic wheel metadata: %#v", props)
-	}
-	wheelProps := wheel["properties"].(map[string]any)
-	for _, name := range []string{"is_picker_row", "picker_id", "column_x", "center_y", "current_value", "tapped_value", "target_value", "cycle_size", "cycle_start", "row_offset", "row_spacing", "value_step"} {
-		if _, ok := wheelProps[name]; !ok {
-			t.Fatalf("wheel metadata missing %q: %#v", name, wheelProps)
-		}
-	}
-	if wheelProps["is_picker_row"].(map[string]any)["const"] != true {
-		t.Fatalf("wheel metadata must be picker-only: %#v", wheelProps["is_picker_row"])
+	if _, ok := props["wheel"]; ok {
+		t.Fatalf("touch_gesture must remain generic and must not expose wheel metadata: %#v", props)
 	}
 }
 
 func TestWheelNudgeDescriptionDefinesRemainingGapThresholds(t *testing.T) {
 	description := (&WheelNudgeTool{}).Description()
 	for _, want := range []string{
+		"tap or slow drag",
 		"gaps of 1",
 		"2-4",
 		"5-8",
