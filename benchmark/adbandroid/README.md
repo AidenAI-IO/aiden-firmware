@@ -119,11 +119,11 @@ uv run python -m runner run \
   --agent-url http://127.0.0.1:<agent-port> \
   --environment-url http://127.0.0.1:8899 \
   --benchmark-task-id cli-task \
-  --judge-model claude-sonnet-4-6 \
+  --judge-model anthropic/claude-sonnet-4-6 \
   -v
 ```
 
-`--judge-model` 可省略（默认 `claude-sonnet-4-6`）；想换判分模型时传 OpenRouter 的
+`--judge-model` 可省略（默认 `anthropic/claude-sonnet-4-6`）；想换判分模型时传 OpenRouter 的
 模型名，如 `anthropic/claude-sonnet-4-6`。
 
 > 多步任务（时钟数闹钟 / 检查 WiFi / 打开应用抽屉）的正确性只有 judge 能验证，
@@ -138,7 +138,7 @@ uv run python -m runner run \
 export OPENROUTER_API_KEY=sk-or-...
 uv run python -m runner rejudge \
   --run-dir runs/<那次运行的目录> \
-  --judge-model claude-sonnet-4-6
+  --judge-model anthropic/claude-sonnet-4-6
 ```
 
 调 rubric 措辞、或先跑 no-judge 验证链路再补分时，这样省掉一整轮真机操作。
