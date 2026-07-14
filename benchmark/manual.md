@@ -37,6 +37,7 @@ Benchmark 用来评估 Aiden agent 在手机 UI、记忆、规划、感知等任
 | Agent client | `benchmark/runner/agent_client.py` | 调用 Go agent 的 `/api/chat`、`/api/tools/*`、`/api/history` |
 | Judge | `benchmark/runner/judge.py` | 调用 OpenRouter 兼容接口，使用 pre/post screenshot 和 trace 判分 |
 | MobileGym bridge | `benchmark/mobilegym/bridge/` | 把 MobileGym env 包装成 environment bridge API |
+| ADB Android bridge | `benchmark/adbandroid/` | 通过 adb 把 Android 模拟器/真机包装成 environment bridge API（见其 README） |
 | Docker daemon worker | `benchmark/docker/Dockerfile.agent-daemon` | WebUI 运行 job 时启动隔离的 agent daemon |
 
 ### 1.3 执行流程
