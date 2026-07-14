@@ -3833,6 +3833,9 @@ INDEX_HTML = r"""<!doctype html>
     // Suite category display order
     const CATEGORY_ORDER = ['Basic Operations', 'Application Scenarios', 'Perception & Control', 'End-to-End Workflow', 'Memory & Cognition', 'MobileGym', 'Other'];
 
+    // Track collapsed category state across re-renders
+    const collapsedCategories = new Set();
+
     function renderSuites(){
       const filter = document.getElementById('suiteFilter').value.toLowerCase();
       const container = document.getElementById('suitesContainer');
@@ -3871,8 +3874,9 @@ INDEX_HTML = r"""<!doctype html>
         // Category header row
         const categoryRow = document.createElement('tr');
         categoryRow.className = 'suite-category-row';
+        const isCollapsed = collapsedCategories.has(category);
         categoryRow.innerHTML = `<td colspan="4" class="suite-category-header-cell">
-          <span class="category-arrow">▼</span>
+          <span class="category-arrow">${isCollapsed ? '▶' : '▼'}</span>
           <span>${escapeHtml(category)}</span>
           <span class="muted">(${filtered.length})</span>
         </td>`;
@@ -3881,6 +3885,13 @@ INDEX_HTML = r"""<!doctype html>
           const arrow = categoryRow.querySelector('.category-arrow');
           const collapsed = arrow.textContent === '▶';
           arrow.textContent = collapsed ? '▼' : '▶';
+
+          // Update collapsed state
+          if(collapsed) {
+            collapsedCategories.delete(category);
+          } else {
+            collapsedCategories.add(category);
+          }
 
           // Toggle visibility of suite rows
           let nextRow = categoryRow.nextElementSibling;
@@ -3896,6 +3907,7 @@ INDEX_HTML = r"""<!doctype html>
         filtered.forEach(s => {
           const tr = document.createElement('tr');
           tr.className = 'suite-row';
+          if(isCollapsed) tr.style.display = 'none';
           tr.innerHTML = `<td><input type="checkbox" ${selectedSuites.has(s.key) ? 'checked' : ''}></td>
             <td title="${escapeHtml(s.key)}"><div class="cell-main"><span>${escapeHtml(s.name)}</span><small>${escapeHtml(s.key)}</small></div></td>
             <td><span class="status">${escapeHtml(s.kind)}</span></td>
