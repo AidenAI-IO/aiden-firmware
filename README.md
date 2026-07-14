@@ -1,6 +1,6 @@
-# Aiden Hardware Demo
+# Aiden Firmware
 
-Aiden Hardware Demo is the firmware and device-side agent runtime for the
+Aiden Firmware is the firmware and device-side agent runtime for the
 current Aiden development board. The board observes a target device through
 HDMI capture and controls it through USB HID, so the agent can operate normal
 mobile or desktop apps without relying on app-specific automation APIs.
