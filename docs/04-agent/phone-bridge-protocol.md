@@ -3,7 +3,7 @@
 **Version**: 1.1
 **Date**: 2026-06-10
 
-This document defines the WebSocket command protocol between the hardware board (aiden-hardware-demo) and phone app (aiden-app).
+This document defines the WebSocket command protocol between the hardware board (aiden-firmware) and phone app (aiden-app).
 
 ## Connection
 

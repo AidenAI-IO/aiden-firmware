@@ -116,7 +116,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 
 	turnOptions := append([]llms.CallOption{}, callOptions...)
 	turnOptions = append(turnOptions, llms.WithTools(parser.toolsAsLLM()))
-	contentResp, err := llmExecutor.GenerateContent(ctx, turnOptions...)
+	contentResp, err := llmExecutor.GenerateContent(contextWithRawHTTPLog(ctx), turnOptions...)
 	if err != nil {
 		return "", false, err
 	}

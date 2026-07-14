@@ -70,7 +70,7 @@ Most developers will use GitHub to build and host firmware.
 1. **Generate manifest with GitHub direct URLs:**
 ```bash
 TAG="v1.0.0-custom"
-REPO="YOUR_USERNAME/aiden-hardware-demo"
+REPO="YOUR_USERNAME/aiden-firmware"
 BASE_URL="https://github.com/$REPO/releases/download/$TAG"
 
 scripts/generate_ota_manifest.sh \
