@@ -69,7 +69,7 @@ func TestWheelGestureGuardNoMovementAllowsMicroRetry(t *testing.T) {
 		t.Fatalf("no-movement observation must clear pending state: %#v", guard.columns[0].pending)
 	}
 
-	micro := wheelNudgeGuardCall(`{"picker_id":"test-picker","column_x":351,"center_y":460,"coord_space":"normalized","direction":"up","remaining_gap":20,"current_value":0,"target_value":20,"cycle_size":0,"cycle_start":0,"increasing_direction":"unknown","row_spacing":42}`)
+	micro := wheelNudgeGuardCall(`{"picker_id":"test-picker","column_x":351,"center_y":460,"coord_space":"normalized","remaining_gap":1,"current_value":0,"target_value":20,"cycle_size":0,"cycle_start":0,"row_spacing":42}`)
 	if result, allowed := guard.BeforeToolCall(context.Background(), micro); !allowed || result.Error != nil {
 		t.Fatalf("micro retry after no movement should be allowed: allowed=%v result=%#v", allowed, result)
 	}
@@ -264,10 +264,62 @@ func TestWheelGestureGuardBucketsCoordinatesAfterToolClamping(t *testing.T) {
 
 func TestWheelGestureGuardAllowsKnownDirectionWithoutProbe(t *testing.T) {
 	var guard wheelNudgeGuard
-	call := wheelNudgeGuardCall(`{"picker_id":"test-picker","column_x":184,"center_y":274,"coord_space":"screenshot","direction":"up","remaining_gap":11,"current_value":10,"target_value":21,"cycle_size":24,"cycle_start":0,"increasing_direction":"up","row_spacing":42,"value_step":1}`)
+	call := wheelNudgeGuardCall(`{"picker_id":"test-picker","column_x":184,"center_y":274,"coord_space":"screenshot","remaining_gap":11,"current_value":10,"target_value":21,"cycle_size":24,"cycle_start":0,"row_spacing":42,"value_step":1}`)
 	allowAndCommitWheel(t, &guard, call)
 	if guard.total != 1 || len(guard.columns) != 1 || guard.columns[0].direction != "up" {
 		t.Fatalf("known-direction nudge state = total=%d columns=%#v", guard.total, guard.columns)
+	}
+}
+
+func TestWheelGestureGuardTracksAdjacentMicroDragWithoutVisibleTarget(t *testing.T) {
+	var guard wheelNudgeGuard
+	call := wheelNudgeGuardCall(`{"picker_id":"test-picker","column_x":184,"center_y":274,"coord_space":"screenshot","remaining_gap":1,"current_value":10,"target_value":11,"cycle_size":24,"cycle_start":0,"row_spacing":42,"value_step":1}`)
+	allowAndCommitWheel(t, &guard, call)
+	if len(guard.columns) != 1 || guard.columns[0].pending == nil {
+		t.Fatalf("adjacent target without visible_target_y executes a drag and must remain pending: %#v", guard.columns)
+	}
+}
+
+func TestWheelGestureGuardDoesNotTrackVerifiedAdjacentTap(t *testing.T) {
+	var guard wheelNudgeGuard
+	call := wheelNudgeGuardCall(`{"picker_id":"test-picker","column_x":184,"center_y":274,"coord_space":"screenshot","remaining_gap":1,"current_value":10,"target_value":11,"cycle_size":24,"cycle_start":0,"row_spacing":42,"value_step":1,"visible_target_y":316}`)
+	allowAndCommitWheel(t, &guard, call)
+	if len(guard.columns) != 1 || guard.columns[0].pending != nil {
+		t.Fatalf("verified adjacent tap must not create drag observation state: %#v", guard.columns)
+	}
+}
+
+func TestWheelGestureGuardExpandsBudgetAfterDirectionProbe(t *testing.T) {
+	var guard wheelNudgeGuard
+	probe := wheelNudgeGuardCall(`{"picker_id":"large-picker","column_x":184,"center_y":274,"coord_space":"screenshot","remaining_gap":1,"current_value":0,"target_value":200,"cycle_size":0,"cycle_start":0,"row_spacing":42}`)
+	allowAndCommitWheel(t, &guard, probe)
+
+	known := wheelNudgeGuardCall(`{"picker_id":"large-picker","column_x":184,"center_y":274,"coord_space":"screenshot","remaining_gap":199,"current_value":1,"target_value":200,"cycle_size":0,"cycle_start":0,"row_spacing":42,"value_step":1}`)
+	if result, allowed := guard.BeforeToolCall(context.Background(), known); !allowed || result.Error != nil {
+		t.Fatalf("known step after probe unexpectedly blocked: allowed=%v result=%#v", allowed, result)
+	}
+	if guard.columns[0].limit != wheelNudgeMinPerColumn {
+		t.Fatalf("budget expanded before the larger nudge executed: %d", guard.columns[0].limit)
+	}
+	guard.AfterToolCall(context.Background(), known, ToolResult{Output: "ok"})
+	wantLimit := wheelNudgeLimitForGap(199)
+	if guard.columns[0].limit != wantLimit {
+		t.Fatalf("column limit after large known gap = %d, want %d", guard.columns[0].limit, wantLimit)
+	}
+}
+
+func TestWheelGestureGuardRejectedObservationDoesNotExpandBudget(t *testing.T) {
+	var guard wheelNudgeGuard
+	probe := wheelNudgeGuardCall(`{"picker_id":"large-picker","column_x":184,"center_y":274,"coord_space":"screenshot","remaining_gap":1,"current_value":0,"target_value":200,"cycle_size":0,"cycle_start":0,"row_spacing":42}`)
+	allowAndCommitWheel(t, &guard, probe)
+	originalLimit := guard.columns[0].limit
+
+	wrongStep := wheelNudgeGuardCall(`{"picker_id":"large-picker","column_x":184,"center_y":274,"coord_space":"screenshot","remaining_gap":199,"current_value":1,"target_value":200,"cycle_size":0,"cycle_start":0,"row_spacing":42,"value_step":-1}`)
+	if result, allowed := guard.BeforeToolCall(context.Background(), wrongStep); allowed || result.Error == nil {
+		t.Fatalf("step contradicting the probe should be rejected: allowed=%v result=%#v", allowed, result)
+	}
+	if guard.columns[0].limit != originalLimit {
+		t.Fatalf("rejected call changed column limit from %d to %d", originalLimit, guard.columns[0].limit)
 	}
 }
 
@@ -302,10 +354,10 @@ func TestWheelGestureGuardDoesNotClampHighResolutionScreenshotColumns(t *testing
 
 func TestWheelGestureGuardSeparatesSameXColumnsByPickerID(t *testing.T) {
 	var guard wheelNudgeGuard
-	hour := wheelNudgeGuardCall(`{"picker_id":"alarm-create","column_x":196,"direction":"up","remaining_gap":11,"current_value":10,"target_value":21,"cycle_size":24,"cycle_start":0,"increasing_direction":"up","row_spacing":42,"value_step":1,"coord_space":"screenshot","center_y":274}`)
+	hour := wheelNudgeGuardCall(`{"picker_id":"alarm-create","column_x":196,"remaining_gap":11,"current_value":10,"target_value":21,"cycle_size":24,"cycle_start":0,"row_spacing":42,"value_step":1,"coord_space":"screenshot","center_y":274}`)
 	allowAndCommitWheel(t, &guard, hour)
 
-	month := wheelNudgeGuardCall(`{"picker_id":"date-editor","column_x":196,"direction":"up","remaining_gap":11,"current_value":10,"target_value":21,"cycle_size":24,"cycle_start":0,"increasing_direction":"up","row_spacing":42,"value_step":1,"coord_space":"screenshot","center_y":274}`)
+	month := wheelNudgeGuardCall(`{"picker_id":"date-editor","column_x":196,"remaining_gap":11,"current_value":10,"target_value":21,"cycle_size":24,"cycle_start":0,"row_spacing":42,"value_step":1,"coord_space":"screenshot","center_y":274}`)
 	result, allowed := guard.BeforeToolCall(context.Background(), month)
 	if !allowed || result.Error != nil {
 		t.Fatalf("same-x column on another picker should have independent state: allowed=%v result=%#v", allowed, result)
@@ -318,10 +370,10 @@ func TestWheelGestureGuardSeparatesSameXColumnsByPickerID(t *testing.T) {
 
 func TestWheelGestureGuardKeepsColumnIdentityWhenDomainChanges(t *testing.T) {
 	var guard wheelNudgeGuard
-	first := wheelNudgeGuardCall(`{"picker_id":"date-editor","column_x":196,"direction":"up","remaining_gap":4,"current_value":1,"target_value":5,"cycle_size":31,"cycle_start":1,"increasing_direction":"up","row_spacing":42,"value_step":1,"coord_space":"screenshot","center_y":274}`)
+	first := wheelNudgeGuardCall(`{"picker_id":"date-editor","column_x":196,"remaining_gap":4,"current_value":1,"target_value":5,"cycle_size":31,"cycle_start":1,"row_spacing":42,"value_step":1,"coord_space":"screenshot","center_y":274}`)
 	allowAndCommitWheel(t, &guard, first)
 
-	second := wheelNudgeGuardCall(`{"picker_id":"date-editor","column_x":196,"direction":"up","remaining_gap":3,"current_value":2,"target_value":5,"cycle_size":30,"cycle_start":1,"increasing_direction":"up","row_spacing":42,"value_step":1,"coord_space":"screenshot","center_y":274}`)
+	second := wheelNudgeGuardCall(`{"picker_id":"date-editor","column_x":196,"remaining_gap":3,"current_value":2,"target_value":5,"cycle_size":30,"cycle_start":1,"row_spacing":42,"value_step":1,"coord_space":"screenshot","center_y":274}`)
 	if result, allowed := guard.BeforeToolCall(context.Background(), second); !allowed {
 		t.Fatalf("day-column nudge after month-domain change unexpectedly blocked: %#v", result)
 	}
@@ -331,52 +383,43 @@ func TestWheelGestureGuardKeepsColumnIdentityWhenDomainChanges(t *testing.T) {
 	}
 }
 
-func TestWheelGestureGuardRejectsDirectionOppositeShortestCyclicPath(t *testing.T) {
-	var guard wheelNudgeGuard
-	probe := wheelNudgeGuardCall(`{"picker_id":"test-picker","column_x":210,"direction":"up","remaining_gap":11,"current_value":10,"target_value":21,"cycle_size":24,"cycle_start":0,"increasing_direction":"unknown","row_spacing":42,"value_step":1,"coord_space":"screenshot","center_y":304}`)
-	allowAndCommitWheel(t, &guard, probe)
-
-	wrong := wheelNudgeGuardCall(`{"picker_id":"test-picker","column_x":210,"direction":"up","remaining_gap":4,"current_value":11,"target_value":7,"cycle_size":24,"cycle_start":0,"increasing_direction":"up","row_spacing":42,"value_step":1,"coord_space":"screenshot","center_y":304}`)
-	result, allowed := guard.BeforeToolCall(context.Background(), wrong)
-	if allowed {
-		t.Fatal("01 -> 21 on a 24-hour wheel should reject the increasing direction")
+func TestWheelNudgePlanDerivesShortestCyclicDirection(t *testing.T) {
+	current, target, cycleSize, cycleStart, remainingGap, valueStep := 15, 9, 24, 0, 6, 1
+	plan, err := planWheelNudge(wheelNudgeArgs{
+		CurrentValue: &current, TargetValue: &target, CycleSize: &cycleSize,
+		CycleStart: &cycleStart, RemainingGap: &remainingGap, ValueStep: &valueStep,
+	})
+	if err != nil {
+		t.Fatalf("planWheelNudge returned error: %v", err)
 	}
-	if result.Error == nil || result.Error.Code != CodeInvalidArguments {
-		t.Fatalf("blocked result error = %#v, want %s", result.Error, CodeInvalidArguments)
-	}
-	if !strings.Contains(result.Output, `direction="down"`) {
-		t.Fatalf("blocked output = %q, want required down direction", result.Output)
-	}
-}
-
-func TestWheelGestureGuardRejectsFirstProbeOppositeVisibleRowOrdering(t *testing.T) {
-	var guard wheelNudgeGuard
-	call := wheelNudgeGuardCall(`{"picker_id":"test-picker","column_x":314,"center_y":270,"coord_space":"screenshot","direction":"down","remaining_gap":10,"current_value":2,"target_value":12,"cycle_size":60,"cycle_start":0,"increasing_direction":"unknown","row_spacing":42,"value_step":1}`)
-
-	result, allowed := guard.BeforeToolCall(context.Background(), call)
-	if allowed {
-		t.Fatal("finger-down probe must be blocked when values increase below the center row")
-	}
-	if result.Error == nil || !strings.Contains(result.Output, `direction="up"`) {
-		t.Fatalf("blocked result = %#v, want derived finger-up direction", result)
-	}
-	if guard.total != 0 {
-		t.Fatalf("blocked wrong-direction probe consumed budget: %d", guard.total)
+	if plan.direction != "down" {
+		t.Fatalf("15 -> 9 with positive downward row step derived %q, want down", plan.direction)
 	}
 }
 
 func TestWheelGestureGuardValidatesObservedProbeDirection(t *testing.T) {
 	var guard wheelNudgeGuard
-	probe := wheelNudgeGuardCall(`{"picker_id":"test-picker","column_x":314,"center_y":270,"coord_space":"screenshot","direction":"up","remaining_gap":10,"current_value":2,"target_value":12,"cycle_size":60,"cycle_start":0,"increasing_direction":"unknown","row_spacing":42}`)
+	probe := wheelNudgeGuardCall(`{"picker_id":"test-picker","column_x":314,"center_y":270,"coord_space":"screenshot","remaining_gap":1,"current_value":2,"target_value":12,"cycle_size":60,"cycle_start":0,"row_spacing":42}`)
 	allowAndCommitWheel(t, &guard, probe)
 
-	wrongMapping := wheelNudgeGuardCall(`{"picker_id":"test-picker","column_x":314,"center_y":270,"coord_space":"screenshot","direction":"down","remaining_gap":9,"current_value":3,"target_value":12,"cycle_size":60,"cycle_start":0,"increasing_direction":"down","row_spacing":42,"value_step":1}`)
+	wrongMapping := wheelNudgeGuardCall(`{"picker_id":"test-picker","column_x":314,"center_y":270,"coord_space":"screenshot","remaining_gap":9,"current_value":3,"target_value":12,"cycle_size":60,"cycle_start":0,"row_spacing":42,"value_step":-1}`)
 	result, allowed := guard.BeforeToolCall(context.Background(), wrongMapping)
 	if allowed {
 		t.Fatal("mapping that contradicts the observed 2 -> 3 probe must be blocked")
 	}
-	if result.Error == nil || !strings.Contains(result.Output, `increasing_direction="up"`) {
-		t.Fatalf("blocked result = %#v, want observed increasing direction", result)
+	if result.Error == nil || !strings.Contains(result.Output, "does not match value_step=-1") {
+		t.Fatalf("blocked result = %#v, want observed step mismatch", result)
+	}
+}
+
+func TestWheelGestureGuardValidatesObservedMovementUsingDeclaredStep(t *testing.T) {
+	var guard wheelNudgeGuard
+	first := wheelNudgeGuardCall(`{"picker_id":"stepped-cycle","column_x":314,"center_y":270,"coord_space":"screenshot","remaining_gap":1,"current_value":0,"target_value":40,"cycle_size":60,"cycle_start":0,"row_spacing":42,"value_step":40}`)
+	allowAndCommitWheel(t, &guard, first)
+
+	second := wheelNudgeGuardCall(`{"picker_id":"stepped-cycle","column_x":314,"center_y":270,"coord_space":"screenshot","remaining_gap":1,"current_value":40,"target_value":20,"cycle_size":60,"cycle_start":0,"row_spacing":42,"value_step":40}`)
+	if result, allowed := guard.BeforeToolCall(context.Background(), second); !allowed || result.Error != nil {
+		t.Fatalf("0 -> 40 must validate as one positive step on a 60-value cycle: allowed=%v result=%#v", allowed, result)
 	}
 }
 
@@ -385,15 +428,34 @@ func TestWheelSemanticTargetSupportsOneBasedCycles(t *testing.T) {
 	target := 1
 	cycleSize := 12
 	cycleStart := 1
+	valueStep := 1
 	gap, directions, ok := wheelSemanticTarget(wheelNudgeArgs{
-		CurrentValue:        &current,
-		TargetValue:         &target,
-		CycleSize:           &cycleSize,
-		CycleStart:          &cycleStart,
-		IncreasingDirection: "up",
-	})
+		CurrentValue: &current,
+		TargetValue:  &target,
+		CycleSize:    &cycleSize,
+		CycleStart:   &cycleStart,
+		ValueStep:    &valueStep,
+	}, "up")
 	if !ok || gap != 1 || len(directions) != 1 || directions[0] != "up" {
 		t.Fatalf("12 -> 1 on a one-based month wheel = gap %d directions %#v ok=%v, want 1 [up] true", gap, directions, ok)
+	}
+}
+
+func TestWheelSemanticTargetHandlesLargeCycleWithoutScanning(t *testing.T) {
+	current := 0
+	target := 999_999_999
+	cycleSize := 1_000_000_000
+	cycleStart := 0
+	valueStep := 1
+	gap, directions, ok := wheelSemanticTarget(wheelNudgeArgs{
+		CurrentValue: &current,
+		TargetValue:  &target,
+		CycleSize:    &cycleSize,
+		CycleStart:   &cycleStart,
+		ValueStep:    &valueStep,
+	}, "up")
+	if !ok || gap != 1 || len(directions) != 1 || directions[0] != "down" {
+		t.Fatalf("large cyclic target = gap %d directions %#v ok=%v, want 1 [down] true", gap, directions, ok)
 	}
 }
 
@@ -513,11 +575,11 @@ func TestWheelNudgeGuardDoesNotCountSemanticallyInvalidCalls(t *testing.T) {
 	var guard wheelNudgeGuard
 	invalidInputs := []string{
 		`{"column_x":350,"direction":"left"}`,
-		`{"column_x":350,"direction":"up","distance":"huge"}`,
-		`{"column_x":350,"direction":"up","coord_space":"pixel"}`,
-		`{"column_x":350,"direction":"up","duration_ms":-1}`,
-		`{"column_x":"350","direction":"up"}`,
-		`{"column_x":350,"direction":"up","travel":80}`,
+		`{"column_x":350,"distance":"huge"}`,
+		`{"column_x":350,"coord_space":"pixel"}`,
+		`{"column_x":350,"duration_ms":-1}`,
+		`{"column_x":"350"}`,
+		`{"column_x":350,"travel":80}`,
 	}
 	for _, input := range invalidInputs {
 		if result, allowed := guard.BeforeToolCall(context.Background(), wheelNudgeGuardCall(input)); !allowed || result.Error != nil {
@@ -555,16 +617,11 @@ func validWheelGuardInput(columnX, centerY float64, currentValue, targetValue, c
 	if !ok || gap == 0 {
 		panic("validWheelGuardInput requires distinct values inside the declared domain")
 	}
-	direction := "up"
-	if cycleSize == 0 && targetValue < currentValue {
-		direction = "down"
-	}
 	return fmt.Sprintf(
-		`{"picker_id":"test-picker","column_x":%g,"center_y":%g,"coord_space":%q,"direction":%q,"remaining_gap":%d,"current_value":%d,"target_value":%d,"cycle_size":%d,"cycle_start":%d,"increasing_direction":"up","row_spacing":42,"value_step":1}`,
+		`{"picker_id":"test-picker","column_x":%g,"center_y":%g,"coord_space":%q,"remaining_gap":%d,"current_value":%d,"target_value":%d,"cycle_size":%d,"cycle_start":%d,"row_spacing":42,"value_step":1}`,
 		columnX,
 		centerY,
 		coordSpace,
-		direction,
 		gap,
 		currentValue,
 		targetValue,

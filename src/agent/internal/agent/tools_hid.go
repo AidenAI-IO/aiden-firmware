@@ -9,7 +9,6 @@ import (
 	"io"
 	"math"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,6 +54,7 @@ const (
 	wheelNudgeDefaultY     = 460.0
 	wheelNudgeDefaultMs    = 1400
 	wheelNudgeDefaultSteps = 18
+	wheelNudgeRowTolerance = 0.20
 
 	phoneBackStartX = 1
 	phoneBackEndX   = 750
@@ -914,6 +914,7 @@ func (t *KeyboardTextTool) Description() string {
 		`For model/tool calls, pass JSON only, for example {"text":"App Store"}; do not pass a bare string. ` +
 		`Do NOT pass non-ASCII text, emoji, or spaced romanization — use enter_text_in_field for input box entry. ` +
 		`Do not transliterate Chinese/CJK targets to pinyin or guessed ASCII keywords; if enter_text_in_field is unavailable, report the blocker instead. ` +
+		`For a numeric picker, use this only when the latest screenshot visibly shows keyboard/edit mode. Make one verified attempt, then inspect the post-action screenshot; if the value did not change exactly as intended, stop keyboard input and use wheel_nudge. ` +
 		`keyboard_text remains for simple standalone ASCII typing outside the enter_text_in_field workflow. ` +
 		`Bare plain text is accepted only as a legacy compatibility fallback.`
 }
@@ -1061,7 +1062,7 @@ func (t *TouchGestureTool) Name() string { return "touch_gesture" }
 func (t *TouchGestureTool) Description() string {
 	return `Perform a custom touch/pointer gesture via HID. Prefer quick_action for semantic platform actions; use this for tap/swipe/drag and other freehand screen gestures. ` +
 		`Base coordinates on the latest screenshot and aim at the visual center of the target. Use coord_space:"screenshot" only for pixels measured directly in that returned image. Swipe direction names describe finger movement, not content scroll. ` +
-		`This is a generic input tool and has no picker/wheel semantics; use wheel_nudge for every wheel interaction.`
+		`This is a generic input tool and has no picker/wheel movement semantics. A single tap on the selected center row may open a visibly supported numeric edit mode; use wheel_nudge for unselected-row taps and every picker drag.`
 }
 
 func (t *TouchGestureTool) ArgsSchema() map[string]any {
@@ -1318,26 +1319,25 @@ type WheelNudgeTool struct {
 }
 
 type wheelNudgeArgs struct {
-	PickerID            string   `json:"picker_id"`
-	ColumnX             *float64 `json:"column_x"`
-	Direction           string   `json:"direction"`
-	RemainingGap        *int     `json:"remaining_gap"`
-	CurrentValue        *int     `json:"current_value"`
-	TargetValue         *int     `json:"target_value"`
-	CycleSize           *int     `json:"cycle_size"`
-	CycleStart          *int     `json:"cycle_start"`
-	IncreasingDirection string   `json:"increasing_direction"`
-	RowSpacing          *float64 `json:"row_spacing"`
-	ValueStep           *int     `json:"value_step"`
-	CenterY             *float64 `json:"center_y"`
-	VisibleTargetY      *float64 `json:"visible_target_y"`
-	CoordSpace          string   `json:"coord_space"`
+	PickerID       string   `json:"picker_id"`
+	ColumnX        *float64 `json:"column_x"`
+	RemainingGap   *int     `json:"remaining_gap"`
+	CurrentValue   *int     `json:"current_value"`
+	TargetValue    *int     `json:"target_value"`
+	CycleSize      *int     `json:"cycle_size"`
+	CycleStart     *int     `json:"cycle_start"`
+	RowSpacing     *float64 `json:"row_spacing"`
+	ValueStep      *int     `json:"value_step"`
+	CenterY        *float64 `json:"center_y"`
+	VisibleTargetY *float64 `json:"visible_target_y"`
+	CoordSpace     string   `json:"coord_space"`
 }
 
 type wheelNudgePlan struct {
 	gap       int
 	rows      int
 	distance  string
+	direction string
 	probe     bool
 	rowOffset int
 	tapY      *float64
@@ -1348,30 +1348,28 @@ func (t *WheelNudgeTool) Name() string { return "wheel_nudge" }
 func (t *WheelNudgeTool) Description() string {
 	return `Move a visible picker/wheel column toward a target value. This is the only tool for wheel interactions; never attach wheel semantics to touch_gesture. ` +
 		`When the target is exactly one visibly observed row above or below the selected row, pass visible_target_y and the tool taps that coordinate. Without that evidence it performs one bounded low-inertia drag. ` +
-		`Input JSON: {"picker_id":"alarm-create","column_x":195,"direction":"up","remaining_gap":6,"current_value":10,"target_value":16,"cycle_size":24,"cycle_start":0,"increasing_direction":"up","row_spacing":42,"value_step":1,"center_y":273,"coord_space":"screenshot"}. ` +
+		`Input JSON: {"picker_id":"alarm-create","column_x":195,"remaining_gap":6,"current_value":10,"target_value":16,"cycle_size":24,"cycle_start":0,"row_spacing":42,"value_step":1,"center_y":273,"coord_space":"screenshot"}. ` +
 		`For a cropped frame_service phone screenshot, use coord_space:"screenshot" and pass column_x/center_y exactly as measured in the latest returned image; do not copy image pixels into normalized coordinates. ` +
-		`direction describes the equivalent finger movement toward the target and is used when a drag is required; an adjacent-row tap derives its tap position from target_value and value_step. If values increase below the selected row (value_step > 0), finger-up increases the selected value; if they decrease below it, finger-down increases it. Use increasing_direction:"unknown" without value_step only when visible ordering is insufficient and a one-row direction probe is genuinely needed. ` +
-		`Actual drag travel is derived from remaining_gap: gaps of 1, 2-4, 5-8, and 9+ values move at most 1, 2, 3, and 4 measured rows using row_spacing, so it cannot become a fling-like full-column swipe. ` +
+		`value_step is the signed numeric change for one visible row downward. The tool derives both the increasing direction and the shortest finger movement from value_step plus the current/target/domain metadata, so callers must not guess gesture directions. Omit value_step only when visible ordering is insufficient; set remaining_gap to 1 for that call and the tool performs one fixed finger-up row probe. ` +
+		`Actual drag travel is derived from remaining_gap: gaps of 1, 2-4, 5-8, and 9+ picker rows move at most 1, 2, 3, and 4 measured rows using row_spacing, so it cannot become a fling-like full-column swipe. ` +
 		`The tool performs one tap or slow drag and returns a post-action screenshot; read the new centered value and recalculate the remaining gap.`
 }
 
 func (t *WheelNudgeTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"picker_id":            map[string]any{"type": "string", "minLength": 1, "description": "Stable identifier for this visible picker instance; change it after navigating to another picker screen."},
-		"column_x":             coordinateSchema("X coordinate at the center of the wheel column in the selected coord_space."),
-		"direction":            stringEnumArgSchema(`Equivalent finger movement direction toward the target, used for path validation and for non-tap execution. Derive whether up/down increases or decreases from the ordered visible rows before acting; do not guess with the first gesture.`, "up", "down"),
-		"remaining_gap":        nonNegativeIntegerSchema("Current shortest-path number of values from the centered value to the target, recalculated from the latest screenshot."),
-		"current_value":        nonNegativeIntegerSchema("Current centered numeric value from the latest screenshot."),
-		"target_value":         nonNegativeIntegerSchema("Requested numeric target value for this wheel column."),
-		"cycle_size":           nonNegativeIntegerSchema("Number of values in the known cyclic domain; use 0 for a non-cyclic numeric wheel. Derive this from the actual component rather than assuming an hour/minute wheel."),
-		"cycle_start":          nonNegativeIntegerSchema("Lowest value in a cyclic wheel. Use 0 for 00-based time wheels and 1 for one-based wheels such as months, calendar days, or 12-hour clocks. Ignored when cycle_size is 0."),
-		"increasing_direction": stringEnumArgSchema(`Finger direction that increases the value. Derive "up" or "down" from visible row ordering when possible; use "unknown" only for a necessary one-row probe.`, "unknown", "up", "down"),
-		"row_spacing":          coordinateSchema("Measured distance between adjacent visible row centers in the selected coord_space."),
-		"value_step":           integerArgSchema("Signed ordinal change for one visible row downward; required when increasing_direction is known, omitted for a genuinely unknown one-row probe."),
-		"center_y":             coordinateSchema("Vertical center of the visible wheel selection area in the selected coord_space. Normalized default is 460."),
-		"visible_target_y":     coordinateSchema("Exact Y coordinate of a target value visibly observed one row above or below center_y. Omit unless the target row is actually visible in the latest screenshot."),
-		"coord_space":          stringEnumArgSchema("Coordinate space; screenshot uses pixels in the latest returned cropped screenshot, normalized uses 0-1000.", "auto", "screenshot", "normalized"),
-	}, "picker_id", "column_x", "direction", "remaining_gap", "current_value", "target_value", "cycle_size", "cycle_start", "increasing_direction", "row_spacing")
+		"picker_id":        map[string]any{"type": "string", "minLength": 1, "description": "Stable identifier for this visible picker instance; change it after navigating to another picker screen."},
+		"column_x":         coordinateSchema("X coordinate at the center of the wheel column in the selected coord_space."),
+		"remaining_gap":    nonNegativeIntegerSchema("Current shortest-path number of picker rows from the centered value to the target, recalculated using value_step. When value_step is omitted for a direction probe, pass 1."),
+		"current_value":    nonNegativeIntegerSchema("Current centered numeric value from the latest screenshot."),
+		"target_value":     nonNegativeIntegerSchema("Requested numeric target value for this wheel column."),
+		"cycle_size":       nonNegativeIntegerSchema("Numeric span/modulus of the cyclic domain, not the number of displayed rows; use 0 for a non-cyclic numeric wheel. For a 00..59 minute wheel with value_step 5, cycle_size is still 60."),
+		"cycle_start":      nonNegativeIntegerSchema("Lowest value in a cyclic wheel. Use 0 for 00-based time wheels and 1 for one-based wheels such as months, calendar days, or 12-hour clocks. Ignored when cycle_size is 0."),
+		"row_spacing":      coordinateSchema("Measured distance between adjacent visible row centers in the selected coord_space."),
+		"value_step":       integerArgSchema("Signed numeric change for one visible row downward. The tool derives gesture direction from this value; omit only for a genuinely unknown one-row probe."),
+		"center_y":         coordinateSchema("Vertical center of the visible wheel selection area in the selected coord_space. Normalized default is 460."),
+		"visible_target_y": coordinateSchema("Exact Y coordinate of a target value visibly observed one row above or below center_y. Omit unless the target row is actually visible in the latest screenshot."),
+		"coord_space":      stringEnumArgSchema("Coordinate space; screenshot uses pixels in the latest returned cropped screenshot, normalized uses 0-1000.", "auto", "screenshot", "normalized"),
+	}, "picker_id", "column_x", "remaining_gap", "current_value", "target_value", "cycle_size", "cycle_start", "row_spacing")
 }
 
 func (t *WheelNudgeTool) Call(ctx context.Context, input string) (string, error) {
@@ -1383,8 +1381,8 @@ func (t *WheelNudgeTool) Call(ctx context.Context, input string) (string, error)
 	if args.RowSpacing == nil || *args.RowSpacing <= 0 || math.IsNaN(*args.RowSpacing) || math.IsInf(*args.RowSpacing, 0) {
 		return toolErrorResultString(ctx, CodeInvalidArguments, "row_spacing is required and must be a positive finite number measured from the latest screenshot"), nil
 	}
-	if args.CurrentValue == nil || args.TargetValue == nil || args.CycleSize == nil || args.CycleStart == nil || args.IncreasingDirection == "" {
-		return toolErrorResultString(ctx, CodeInvalidArguments, "current_value, target_value, cycle_size, cycle_start, and increasing_direction are required"), nil
+	if args.CurrentValue == nil || args.TargetValue == nil || args.CycleSize == nil || args.CycleStart == nil {
+		return toolErrorResultString(ctx, CodeInvalidArguments, "current_value, target_value, cycle_size, and cycle_start are required"), nil
 	}
 	plan, err := planWheelNudge(args)
 	if err != nil {
@@ -1436,7 +1434,7 @@ func (t *WheelNudgeTool) Call(ctx context.Context, input string) (string, error)
 
 	startOffset := gestureTravel / 2
 	var startY, endY float64
-	if args.Direction == "up" {
+	if plan.direction == "up" {
 		startY = clampFloat(centerY+startOffset, 0, maxY)
 		endY = clampFloat(startY-gestureTravel, 0, maxY)
 	} else {
@@ -1473,34 +1471,29 @@ func (t *WheelNudgeTool) Call(ctx context.Context, input string) (string, error)
 		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
 
-	return fmt.Sprintf("ok: wheel_nudge direction=%s distance=%s rows=%d physical_travel=%.0f duration_ms=%d", args.Direction, plan.distance, plan.rows, physicalTravel, durationMs), nil
+	return fmt.Sprintf("ok: wheel_nudge direction=%s distance=%s rows=%d physical_travel=%.0f duration_ms=%d", plan.direction, plan.distance, plan.rows, physicalTravel, durationMs), nil
 }
 
 func planWheelNudge(args wheelNudgeArgs) (wheelNudgePlan, error) {
-	probe := args.IncreasingDirection == "unknown"
-	gap, ok := wheelDomainDistance(*args.CurrentValue, *args.TargetValue, *args.CycleSize, *args.CycleStart)
+	probe := args.ValueStep == nil
+	rawGap, ok := wheelDomainDistance(*args.CurrentValue, *args.TargetValue, *args.CycleSize, *args.CycleStart)
 	if !ok {
 		return wheelNudgePlan{}, fmt.Errorf("wheel values are outside the declared domain")
 	}
-	if *args.RemainingGap != gap {
-		return wheelNudgePlan{}, fmt.Errorf("current_value=%d target_value=%d requires remaining_gap=%d, got %d", *args.CurrentValue, *args.TargetValue, gap, *args.RemainingGap)
-	}
-	if args.ValueStep != nil {
-		derivedIncreasing := wheelIncreasingDirectionFromVisibleStep(*args.ValueStep)
-		if !probe && args.IncreasingDirection != derivedIncreasing {
-			return wheelNudgePlan{}, fmt.Errorf("value_step=%d requires increasing_direction=%q, got %q", *args.ValueStep, derivedIncreasing, args.IncreasingDirection)
-		}
-		semanticArgs := args
-		if probe {
-			semanticArgs.IncreasingDirection = derivedIncreasing
-		}
-		_, allowedDirections, semanticOK := wheelSemanticTarget(semanticArgs)
+	gap := rawGap
+	direction := "up"
+	if probe {
+		gap = 1
+	} else {
+		rowGap, allowedDirections, semanticOK := wheelSemanticTarget(args, wheelIncreasingDirectionFromVisibleStep(*args.ValueStep))
 		if !semanticOK {
-			return wheelNudgePlan{}, fmt.Errorf("wheel values are outside the declared domain")
+			return wheelNudgePlan{}, fmt.Errorf("target_value=%d is not reachable by value_step=%d within the declared domain", *args.TargetValue, *args.ValueStep)
 		}
-		if !slices.Contains(allowedDirections, args.Direction) {
-			return wheelNudgePlan{}, fmt.Errorf("wheel shortest path requires direction=%q, got %q", strings.Join(allowedDirections, " or "), args.Direction)
-		}
+		gap = rowGap
+		direction = allowedDirections[0]
+	}
+	if *args.RemainingGap != gap {
+		return wheelNudgePlan{}, fmt.Errorf("current_value=%d target_value=%d requires remaining_gap=%d rows, got %d", *args.CurrentValue, *args.TargetValue, gap, *args.RemainingGap)
 	}
 	rows := wheelNudgeRowsForGap(gap)
 	distance := wheelDistanceForGap(gap)
@@ -1510,22 +1503,21 @@ func planWheelNudge(args wheelNudgeArgs) (wheelNudgePlan, error) {
 	}
 	rowOffset := 0
 	var tapY *float64
-	if !probe && args.ValueStep != nil && args.VisibleTargetY != nil {
+	if !probe && args.ValueStep != nil {
 		rowOffset = wheelAdjacentTargetRowOffset(*args.CurrentValue, *args.TargetValue, *args.ValueStep, *args.CycleSize, *args.CycleStart)
-		if rowOffset == 0 {
-			return wheelNudgePlan{}, fmt.Errorf("visible_target_y is only valid when target_value is exactly one adjacent row")
+		if rowOffset != 0 && args.VisibleTargetY != nil {
+			if args.CenterY == nil {
+				return wheelNudgePlan{}, fmt.Errorf("center_y is required with visible_target_y")
+			}
+			expectedY := *args.CenterY + float64(rowOffset)*(*args.RowSpacing)
+			tolerance := max(3.0, *args.RowSpacing*wheelNudgeRowTolerance)
+			if math.Abs(*args.VisibleTargetY-expectedY) > tolerance {
+				return wheelNudgePlan{}, fmt.Errorf("visible_target_y=%.0f does not match the observed adjacent row near y=%.0f", *args.VisibleTargetY, expectedY)
+			}
+			tapY = args.VisibleTargetY
 		}
-		if args.CenterY == nil {
-			return wheelNudgePlan{}, fmt.Errorf("center_y is required with visible_target_y")
-		}
-		expectedY := *args.CenterY + float64(rowOffset)*(*args.RowSpacing)
-		tolerance := max(3.0, *args.RowSpacing*0.35)
-		if math.Abs(*args.VisibleTargetY-expectedY) > tolerance {
-			return wheelNudgePlan{}, fmt.Errorf("visible_target_y=%.0f does not match the observed adjacent row near y=%.0f", *args.VisibleTargetY, expectedY)
-		}
-		tapY = args.VisibleTargetY
 	}
-	return wheelNudgePlan{gap: gap, rows: rows, distance: distance, probe: probe, rowOffset: rowOffset, tapY: tapY}, nil
+	return wheelNudgePlan{gap: gap, rows: rows, distance: distance, direction: direction, probe: probe, rowOffset: rowOffset, tapY: tapY}, nil
 }
 
 func wheelAdjacentTargetRowOffset(current, target, valueStep, cycleSize, cycleStart int) int {
@@ -1546,7 +1538,7 @@ func parseWheelNudgeArgs(input string) (wheelNudgeArgs, error) {
 	decoder := json.NewDecoder(strings.NewReader(input))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&args); err != nil {
-		return wheelNudgeArgs{}, fmt.Errorf("invalid input: %v. Expected JSON format: {\"picker_id\":\"alarm-create\",\"column_x\":650,\"direction\":\"up\",\"remaining_gap\":11,\"center_y\":460}", err)
+		return wheelNudgeArgs{}, fmt.Errorf("invalid input: %v. Expected JSON format: {\"picker_id\":\"alarm-create\",\"column_x\":650,\"remaining_gap\":11,\"center_y\":460}", err)
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		return wheelNudgeArgs{}, fmt.Errorf("invalid input: expected exactly one JSON object")
@@ -1558,16 +1550,8 @@ func parseWheelNudgeArgs(input string) (wheelNudgeArgs, error) {
 	if args.PickerID == "" {
 		return wheelNudgeArgs{}, fmt.Errorf("picker_id is required and must identify the current visible picker instance")
 	}
-	args.Direction = strings.ToLower(strings.TrimSpace(args.Direction))
-	if args.Direction != "up" && args.Direction != "down" {
-		return wheelNudgeArgs{}, fmt.Errorf(`direction must be "up" or "down"`)
-	}
 	if args.RemainingGap == nil || *args.RemainingGap < 1 {
 		return wheelNudgeArgs{}, fmt.Errorf("remaining_gap is required and must be at least 1; if the gap is 0, do not nudge the wheel")
-	}
-	args.IncreasingDirection = strings.ToLower(strings.TrimSpace(args.IncreasingDirection))
-	if args.IncreasingDirection != "" && args.IncreasingDirection != "unknown" && args.IncreasingDirection != "up" && args.IncreasingDirection != "down" {
-		return wheelNudgeArgs{}, fmt.Errorf(`increasing_direction must be "unknown", "up", or "down"`)
 	}
 	if args.CycleSize != nil && *args.CycleSize < 0 {
 		return wheelNudgeArgs{}, fmt.Errorf("cycle_size must be non-negative")
@@ -1591,11 +1575,8 @@ func parseWheelNudgeArgs(input string) (wheelNudgeArgs, error) {
 	if args.VisibleTargetY != nil && (math.IsNaN(*args.VisibleTargetY) || math.IsInf(*args.VisibleTargetY, 0)) {
 		return wheelNudgeArgs{}, fmt.Errorf("visible_target_y must be a finite number")
 	}
-	if args.CurrentValue == nil || args.TargetValue == nil || args.CycleSize == nil || args.CycleStart == nil || args.IncreasingDirection == "" || args.RowSpacing == nil {
-		return wheelNudgeArgs{}, fmt.Errorf("complete wheel metadata required: provide current_value, target_value, cycle_size, cycle_start, increasing_direction, and measured row_spacing")
-	}
-	if args.IncreasingDirection != "unknown" && args.ValueStep == nil {
-		return wheelNudgeArgs{}, fmt.Errorf("value_step is required when increasing_direction is known")
+	if args.CurrentValue == nil || args.TargetValue == nil || args.CycleSize == nil || args.CycleStart == nil || args.RowSpacing == nil {
+		return wheelNudgeArgs{}, fmt.Errorf("complete wheel metadata required: provide current_value, target_value, cycle_size, cycle_start, and measured row_spacing")
 	}
 	return args, nil
 }

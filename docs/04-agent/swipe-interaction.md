@@ -106,11 +106,15 @@ Typical scenarios: time picker, date picker, city picker.
 Strategy:
 1. Screenshot, recognize picker current value and target value
 2. Read visible row ordering, selected value, target value, row spacing, and the column center
-3. Call `wheel_nudge`; it validates the shortest direction and moves at most 1/2/3/4 measured rows based on the remaining gap
-4. When the target is an actually visible adjacent row, pass its exact `visible_target_y`; otherwise omit it and use the bounded drag path
-5. Wait for the returned screenshot and read the new centered value
-6. Recalculate from the new observation; if no movement occurred, retry one micro probe rather than repeating a large gesture
-7. Stop when the target is centered or the run-scoped safety policy reports no progress
+   - For stepped cyclic wheels, `cycle_size` is the numeric modulus rather than visible row count (for example `00..59` by fives still uses `cycle_size:60`, `value_step:5`)
+   - If row ordering is unknown, omit `value_step` and pass `remaining_gap:1` for the single-row probe; report the real row gap after observing the result
+3. If the latest screenshot visibly shows that the selected row supports numeric keyboard/edit mode, open it once and make one keyboard attempt; verify the exact value in the returned screenshot
+4. If keyboard mode is unavailable or the attempt has no verified effect, stop keyboard retries and call `wheel_nudge`
+5. `wheel_nudge` validates that the target is reachable by `value_step`, derives the shortest direction, and moves at most 1/2/3/4 measured rows based on `remaining_gap` expressed as picker rows rather than raw numeric difference
+6. When the target is an actually visible adjacent row, pass its exact `visible_target_y`; otherwise omit it and use the bounded drag path
+7. Wait for the returned screenshot and read the new centered value
+8. Recalculate from the new observation; if no movement occurred, retry one micro probe rather than repeating a large gesture
+9. Stop when the target is centered or the run-scoped safety policy reports no progress
 ```
 
 **Key parameters**: `row_spacing` is measured from the latest screenshot. Per-action travel is bounded, and usage is committed only after a successful tool result.

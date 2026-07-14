@@ -57,6 +57,7 @@ type wheelNudgeAttempt struct {
 type wheelNudgeObservation struct {
 	beforeValue int
 	direction   string
+	maxRows     int
 	cycleSize   int
 	cycleStart  int
 }
@@ -107,33 +108,38 @@ func (g *wheelNudgeGuard) BeforeToolCall(_ context.Context, call ToolCall) (Tool
 	}
 	if columnIndex < 0 {
 		columnLimit = wheelNudgeLimitForGap(plan.gap)
+	} else {
+		columnLimit = max(g.columns[columnIndex].limit, wheelNudgeLimitForGap(plan.gap))
 	}
 	if columnIndex >= 0 {
 		column := &g.columns[columnIndex]
 		if column.pending != nil {
-			observedDirection, ok := wheelObservedIncreasingDirection(*column.pending, *args.CurrentValue)
-			if !ok {
+			if *args.CurrentValue == column.pending.beforeValue {
 				column.pending = nil
 				column.allowProbe = true
 				message := "wheel direction probe produced no measurable value change; do not declare a mapping or issue a larger nudge—use an adjacent visible-row tap or retry one micro nudge after a fresh screenshot"
 				return invalidWheelResult(message, map[string]any{"column_x": representativeX, "retry_same_column": true}), false
 			}
-			if args.IncreasingDirection != observedDirection {
-				message := fmt.Sprintf("wheel observed direction mismatch: the previous finger-%s nudge changed %d -> %d, which requires increasing_direction=\"%s\", got %q", column.pending.direction, column.pending.beforeValue, *args.CurrentValue, observedDirection, args.IncreasingDirection)
+			if args.ValueStep == nil {
+				message := fmt.Sprintf("the previous finger-%s nudge changed %d -> %d; report value_step from the latest visible row ordering before the next movement", column.pending.direction, column.pending.beforeValue, *args.CurrentValue)
+				return invalidWheelResult(message, map[string]any{"column_x": representativeX, "value_step_required": true, "retry_same_column": true}), false
+			}
+			if !wheelObservationMatchesStep(*column.pending, *args.CurrentValue, *args.ValueStep) {
+				message := fmt.Sprintf("wheel observed movement mismatch: the previous finger-%s nudge changed %d -> %d, which does not match value_step=%d", column.pending.direction, column.pending.beforeValue, *args.CurrentValue, *args.ValueStep)
 				return invalidWheelResult(message, map[string]any{
-					"column_x": representativeX, "required_increasing_direction": observedDirection, "retry_same_column": true,
+					"column_x": representativeX, "retry_same_column": true,
 				}), false
 			}
-			column.direction = observedDirection
+			column.direction = wheelIncreasingDirectionFromVisibleStep(*args.ValueStep)
 			column.pending = nil
 		}
 		if plan.probe && column.direction != "" && !column.allowProbe {
-			message := fmt.Sprintf("wheel direction is already known for this column: provide increasing_direction=%q", column.direction)
-			return invalidWheelResult(message, map[string]any{"column_x": representativeX, "required_increasing_direction": column.direction, "retry_same_column": true}), false
+			message := fmt.Sprintf("wheel row ordering is already known for this column: provide value_step with %s sign from the latest visible rows", wheelValueStepSignForIncreasingDirection(column.direction))
+			return invalidWheelResult(message, map[string]any{"column_x": representativeX, "required_value_step_sign": wheelValueStepSignForIncreasingDirection(column.direction), "retry_same_column": true}), false
 		}
-		if column.direction != "" && args.IncreasingDirection != column.direction && !(plan.probe && column.allowProbe) {
-			message := fmt.Sprintf("wheel direction mapping changed unexpectedly: this column was observed with increasing_direction=\"%s\", got %q", column.direction, args.IncreasingDirection)
-			return invalidWheelResult(message, map[string]any{"column_x": representativeX, "required_increasing_direction": column.direction, "retry_same_column": true}), false
+		if column.direction != "" && args.ValueStep != nil && wheelIncreasingDirectionFromVisibleStep(*args.ValueStep) != column.direction && !(plan.probe && column.allowProbe) {
+			message := fmt.Sprintf("wheel row ordering changed unexpectedly: this column requires value_step with %s sign", wheelValueStepSignForIncreasingDirection(column.direction))
+			return invalidWheelResult(message, map[string]any{"column_x": representativeX, "required_value_step_sign": wheelValueStepSignForIncreasingDirection(column.direction), "retry_same_column": true}), false
 		}
 	}
 
@@ -210,13 +216,14 @@ func (g *wheelNudgeGuard) AfterToolCall(_ context.Context, call ToolCall, result
 		column.used++
 		column.allowProbe = false
 		g.total++
-		if attempt.args.IncreasingDirection != "unknown" {
-			column.direction = attempt.args.IncreasingDirection
+		if attempt.args.ValueStep != nil {
+			column.direction = wheelIncreasingDirectionFromVisibleStep(*attempt.args.ValueStep)
 		}
-		if attempt.plan.rowOffset == 0 {
+		if attempt.plan.tapY == nil {
 			column.pending = &wheelNudgeObservation{
 				beforeValue: *attempt.args.CurrentValue,
-				direction:   attempt.args.Direction,
+				direction:   attempt.plan.direction,
+				maxRows:     attempt.plan.rows,
 				cycleSize:   *attempt.args.CycleSize,
 				cycleStart:  *attempt.args.CycleStart,
 			}
@@ -241,6 +248,16 @@ func planGapOrZero(args wheelNudgeArgs) int {
 	if args.CycleStart != nil {
 		cycleStart = *args.CycleStart
 	}
+	if args.ValueStep == nil {
+		return 1
+	}
+	if args.ValueStep != nil {
+		gap, _, ok := wheelSemanticTarget(args, wheelIncreasingDirectionFromVisibleStep(*args.ValueStep))
+		if ok {
+			return gap
+		}
+		return 0
+	}
 	gap, _ := wheelDomainDistance(*args.CurrentValue, *args.TargetValue, *args.CycleSize, cycleStart)
 	return gap
 }
@@ -262,41 +279,29 @@ func wheelIncreasingDirectionFromVisibleStep(valueStep int) string {
 	return "down"
 }
 
-func wheelObservedIncreasingDirection(observation wheelNudgeObservation, afterValue int) (string, bool) {
-	delta, ok := wheelSignedDelta(observation.beforeValue, afterValue, observation.cycleSize, observation.cycleStart)
-	if !ok || delta == 0 {
-		return "", false
-	}
-	if delta > 0 {
-		return observation.direction, true
-	}
-	return oppositeWheelDirection(observation.direction), true
-}
-
-func wheelSignedDelta(from, to, cycleSize, cycleStart int) (int, bool) {
-	if cycleSize == 0 {
-		return to - from, true
-	}
-	cycleEnd := cycleStart + cycleSize
-	if from < cycleStart || to < cycleStart || from >= cycleEnd || to >= cycleEnd {
-		return 0, false
-	}
-	forward := (to - from + cycleSize) % cycleSize
-	backward := (from - to + cycleSize) % cycleSize
-	if forward == backward {
-		return 0, false
-	}
-	if forward < backward {
-		return forward, true
-	}
-	return -backward, true
-}
-
-func oppositeWheelDirection(direction string) string {
+func wheelValueStepSignForIncreasingDirection(direction string) string {
 	if direction == "up" {
-		return "down"
+		return "positive"
 	}
-	return "up"
+	return "negative"
+}
+
+func wheelObservationMatchesStep(observation wheelNudgeObservation, afterValue, valueStep int) bool {
+	rowStep := valueStep
+	if observation.direction == "down" {
+		rowStep = -rowStep
+	}
+	maxRows := max(1, observation.maxRows)
+	for rows := 1; rows <= maxRows; rows++ {
+		candidate := observation.beforeValue + rows*rowStep
+		if observation.cycleSize > 0 {
+			candidate = observation.cycleStart + ((candidate-observation.cycleStart)%observation.cycleSize+observation.cycleSize)%observation.cycleSize
+		}
+		if candidate == afterValue {
+			return true
+		}
+	}
+	return false
 }
 
 func (g *wheelNudgeGuard) columnIndex(pickerID string, columnX, centerY float64, coordSpace string) int {
@@ -331,8 +336,8 @@ func wheelDistanceForGap(gap int) string {
 	}
 }
 
-func wheelSemanticTarget(args wheelNudgeArgs) (int, []string, bool) {
-	if args.CurrentValue == nil || args.TargetValue == nil || args.CycleSize == nil || args.IncreasingDirection == "" || args.IncreasingDirection == "unknown" {
+func wheelSemanticTarget(args wheelNudgeArgs, increasingDirection string) (int, []string, bool) {
+	if args.CurrentValue == nil || args.TargetValue == nil || args.CycleSize == nil || args.ValueStep == nil || *args.ValueStep == 0 || (increasingDirection != "up" && increasingDirection != "down") {
 		return 0, nil, false
 	}
 	current := *args.CurrentValue
@@ -342,31 +347,76 @@ func wheelSemanticTarget(args wheelNudgeArgs) (int, []string, bool) {
 	if args.CycleStart != nil {
 		cycleStart = *args.CycleStart
 	}
-	increase := args.IncreasingDirection
+	increase := increasingDirection
 	decrease := "down"
 	if increase == "down" {
 		decrease = "up"
 	}
+	step := int(math.Abs(float64(*args.ValueStep)))
 	if cycle == 0 {
-		if target >= current {
-			return target - current, []string{increase}, true
+		delta := target - current
+		if delta%step != 0 {
+			return 0, nil, false
 		}
-		return current - target, []string{decrease}, true
+		if delta >= 0 {
+			return delta / step, []string{increase}, true
+		}
+		return -delta / step, []string{decrease}, true
 	}
 	cycleEnd := cycleStart + cycle
 	if current < cycleStart || target < cycleStart || current >= cycleEnd || target >= cycleEnd {
 		return 0, nil, false
 	}
-	forward := (target - current + cycle) % cycle
-	backward := (current - target + cycle) % cycle
-	switch {
-	case forward < backward:
-		return forward, []string{increase}, true
-	case backward < forward:
-		return backward, []string{decrease}, true
-	default:
-		return forward, []string{increase, decrease}, true
+	forwardDelta := (target - current + cycle) % cycle
+	divisor := greatestCommonDivisor(step, cycle)
+	if forwardDelta%divisor != 0 {
+		return 0, nil, false
 	}
+	cycleRows := cycle / divisor
+	forwardRows := 0
+	if cycleRows > 1 {
+		inverse, ok := modularInverse(int64(step/divisor), int64(cycleRows))
+		if !ok {
+			return 0, nil, false
+		}
+		forwardRows = int((int64(forwardDelta/divisor) * inverse) % int64(cycleRows))
+	}
+	backwardRows := (cycleRows - forwardRows) % cycleRows
+	switch {
+	case forwardRows < backwardRows:
+		return forwardRows, []string{increase}, true
+	case backwardRows < forwardRows:
+		return backwardRows, []string{decrease}, true
+	default:
+		return forwardRows, []string{increase, decrease}, true
+	}
+}
+
+func greatestCommonDivisor(a, b int) int {
+	for b != 0 {
+		a, b = b, a%b
+	}
+	return a
+}
+
+func modularInverse(value, modulus int64) (int64, bool) {
+	if modulus <= 1 {
+		return 0, modulus == 1
+	}
+	t, nextT := int64(0), int64(1)
+	r, nextR := modulus, value%modulus
+	for nextR != 0 {
+		quotient := r / nextR
+		t, nextT = nextT, t-quotient*nextT
+		r, nextR = nextR, r-quotient*nextR
+	}
+	if r != 1 {
+		return 0, false
+	}
+	if t < 0 {
+		t += modulus
+	}
+	return t, true
 }
 
 func wheelDomainDistance(from, target, cycleSize, cycleStart int) (int, bool) {
