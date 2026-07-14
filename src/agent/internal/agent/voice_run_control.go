@@ -172,7 +172,7 @@ func (c *voiceRunControl) consumePending(requestID string) (RunSteerMessage, boo
 		return RunSteerMessage{}, false
 	}
 
-	// 优先检查 interrupt steer（被打断场景）
+	// Check interrupt steer first (interrupted scenario takes priority)
 	if c.interrupt.active && c.interrupt.done && c.interrupt.hasText {
 		steer := c.interrupt.steer
 		c.resetInterruptLocked()
@@ -182,7 +182,7 @@ func (c *voiceRunControl) consumePending(requestID string) (RunSteerMessage, boo
 		return steer, true
 	}
 
-	// 再检查 pending steer（正常场景）
+	// Then check pending steer (normal scenario)
 	if !c.hasPendingSteer {
 		return RunSteerMessage{}, false
 	}
