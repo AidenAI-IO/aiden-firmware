@@ -902,6 +902,9 @@ func (s *Server) consumePendingSteer(requestID string) (RunSteerMessage, bool) {
 		return RunSteerMessage{}, false
 	}
 	delete(s.pendingSteers, requestID)
+	if s.logger != nil {
+		s.logger.Info("[steer] consumePendingSteer: steer consumed request_id=%s len=%d", requestID, len(steer.Content))
+	}
 	return RunSteerMessage{
 		ID:        steer.ID,
 		RequestID: steer.RequestID,
@@ -916,9 +919,19 @@ func (s *Server) signalSteer(requestID string) {
 	s.steerSignalsMu.Lock()
 	defer s.steerSignalsMu.Unlock()
 	ch, ok := s.steerSignals[requestID]
-	if ok && ch != nil {
+	if !ok || ch == nil {
+		return
+	}
+	// Check if already closed to avoid panic
+	select {
+	case <-ch:
+		// Already closed, nothing to do
+		return
+	default:
 		close(ch)
-		s.steerSignals[requestID] = nil
+		// Leave the closed channel in place so subsequent signalSteer calls
+		// before resetSteerSignal() don't panic on double-close.
+		// The closed channel still signals interrupt to any select waiting on it.
 	}
 }
 

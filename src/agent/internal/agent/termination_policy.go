@@ -130,6 +130,10 @@ type TerminationPolicy struct {
 	lastNoticeTier InterventionTier
 
 	lastToolName string
+
+	// onClearNotice is called when the policy resets state that should clear
+	// any active transient notice from the context.
+	onClearNotice func()
 }
 
 func NewTerminationPolicy(cfg TerminationPolicyConfig) *TerminationPolicy {
@@ -156,6 +160,9 @@ func (p *TerminationPolicy) ResetForSteer() {
 	p.tier = TierNone
 	p.lastNoticeTier = TierNone
 	p.lastToolName = ""
+	if p.onClearNotice != nil {
+		p.onClearNotice()
+	}
 }
 
 func (p *TerminationPolicy) CheckBeforeIteration(ctx context.Context, iteration, maxIterations int) TerminationDecision {
@@ -312,6 +319,9 @@ func (p *TerminationPolicy) recordProgress() {
 	p.sameResultStreak = 1
 	p.screenUnchangedAfterAction = 0
 	p.screenHashBeforeAction = ""
+	if p.onClearNotice != nil {
+		p.onClearNotice()
+	}
 }
 
 func (p *TerminationPolicy) refreshTier() {

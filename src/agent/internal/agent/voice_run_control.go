@@ -196,7 +196,7 @@ func (c *voiceRunControl) consumePending(requestID string) (RunSteerMessage, boo
 		return steer, true
 	}
 
-	// Then check pending steer (normal scenario)
+	// Check pending steer next (normal scenario)
 	if !c.hasPendingSteer {
 		return RunSteerMessage{}, false
 	}
@@ -271,6 +271,12 @@ func (c *voiceRunControl) consumePendingLocked() (RunSteerMessage, bool) {
 	steer := c.pendingSteer
 	c.clearPendingLocked()
 	return steer, true
+}
+
+func (c *voiceRunControl) isActiveRequest(requestID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.activeRequestID != "" && c.activeRequestID == requestID
 }
 
 func (c *voiceRunControl) closeAcceptanceLocked() {

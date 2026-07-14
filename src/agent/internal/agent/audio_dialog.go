@@ -634,7 +634,7 @@ func (d *AudioDialog) persistVoiceUserInput(input TurnInput, utterance []int16, 
 	if userMsg.Source == "" {
 		userMsg.Source = "voice"
 	}
-	d.appendVoiceHistory(userMsg)
+	d.appendVoiceHistory(userMsg, requestID)
 }
 
 func (d *AudioDialog) PersistVoiceAssistantOutput(result RunResult) {
@@ -656,7 +656,7 @@ func (d *AudioDialog) persistVoiceAssistantOutput(result RunResult, requestID st
 			Source:    "voice",
 			Timestamp: now,
 		}
-		d.appendVoiceHistory(assistantMsg)
+		d.appendVoiceHistory(assistantMsg, requestID)
 	}
 }
 
@@ -664,15 +664,23 @@ func (d *AudioDialog) appendVoiceRunEvent(event RunEvent, requestID string) {
 	if d.historyAppend == nil && d.historyStore == nil {
 		return
 	}
+	// Ignore events from stale requests after ForceResetVoiceRun
+	if !d.runControl.isActiveRequest(requestID) {
+		return
+	}
 	message := messageFromRunEvent(event, event.EpisodeID, requestID)
 	if message.Type == "" {
 		return
 	}
 	message.Source = "voice"
-	d.appendVoiceHistory(message)
+	d.appendVoiceHistory(message, requestID)
 }
 
-func (d *AudioDialog) appendVoiceHistory(message Message) {
+func (d *AudioDialog) appendVoiceHistory(message Message, requestID string) {
+	// Ignore messages from stale requests after ForceResetVoiceRun
+	if requestID != "" && !d.runControl.isActiveRequest(requestID) {
+		return
+	}
 	var ok bool
 	message, ok = normalizeChatHistoryMessage(message)
 	if !ok {
