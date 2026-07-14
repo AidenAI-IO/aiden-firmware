@@ -9,8 +9,8 @@ import (
 )
 
 const (
-	wheelNudgeMaxTotal        = 8
-	wheelNudgeMaxPerColumn    = 4
+	wheelNudgeMaxTotal        = 30
+	wheelNudgeMaxPerColumn    = 10
 	wheelNudgeCenterTolerance = 60.0
 	// This tolerance is used in either normalized or screenshot-pixel space.
 	// Keep it below the ~95px separation between the hour and minute columns

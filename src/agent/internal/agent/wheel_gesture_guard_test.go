@@ -7,22 +7,22 @@ import (
 	"testing"
 )
 
-func TestWheelGestureGuardBudgetsSupportTwoFourStepColumns(t *testing.T) {
-	if wheelNudgeMaxPerColumn != 4 || wheelNudgeMaxTotal != 8 {
-		t.Fatalf("wheel budgets = per_column:%d total:%d, want 4 and 8", wheelNudgeMaxPerColumn, wheelNudgeMaxTotal)
+func TestWheelGestureGuardBudgetsSupportThreeLargeColumns(t *testing.T) {
+	if wheelNudgeMaxPerColumn != 10 || wheelNudgeMaxTotal != 30 {
+		t.Fatalf("wheel budgets = per_column:%d total:%d, want 10 and 30", wheelNudgeMaxPerColumn, wheelNudgeMaxTotal)
 	}
 }
 
 func TestWheelGestureGuardStopsNudgeAfterPerColumnLimit(t *testing.T) {
 	var guard wheelNudgeGuard
 	for attempt := 0; attempt < wheelNudgeMaxPerColumn; attempt++ {
-		call := wheelNudgeGuardCall(validWheelGuardInput(351, 460, attempt, 10, 0, 0, "normalized"))
+		call := wheelNudgeGuardCall(validWheelGuardInput(351, 460, attempt, 20, 0, 0, "normalized"))
 		if result, allowed := guard.BeforeToolCall(context.Background(), call); !allowed {
 			t.Fatalf("attempt %d unexpectedly blocked: %#v", attempt+1, result)
 		}
 	}
 
-	result, allowed := guard.BeforeToolCall(context.Background(), wheelNudgeGuardCall(validWheelGuardInput(351, 460, wheelNudgeMaxPerColumn, 10, 0, 0, "normalized")))
+	result, allowed := guard.BeforeToolCall(context.Background(), wheelNudgeGuardCall(validWheelGuardInput(351, 460, wheelNudgeMaxPerColumn, 20, 0, 0, "normalized")))
 	if allowed {
 		t.Fatal("nudge after per-column limit should be blocked")
 	}
@@ -44,7 +44,7 @@ func TestWheelGestureGuardStopsNudgeAfterTotalLimit(t *testing.T) {
 	for column := 0; len(inputs) < wheelNudgeMaxTotal; column++ {
 		x := 100.0 + float64(column)*200
 		for attempt := 0; attempt < 2 && len(inputs) < wheelNudgeMaxTotal; attempt++ {
-			inputs = append(inputs, validWheelGuardInput(x, 460, attempt, 10, 0, 0, "normalized"))
+			inputs = append(inputs, validWheelGuardInput(x, 460, attempt, 10, 0, 0, "screenshot"))
 		}
 	}
 	for index, input := range inputs {
@@ -55,7 +55,7 @@ func TestWheelGestureGuardStopsNudgeAfterTotalLimit(t *testing.T) {
 
 	result, allowed := guard.BeforeToolCall(
 		context.Background(),
-		wheelNudgeGuardCall(validWheelGuardInput(850, 460, 0, 10, 0, 0, "normalized")),
+		wheelNudgeGuardCall(validWheelGuardInput(99999, 460, 0, 10, 0, 0, "screenshot")),
 	)
 	if allowed {
 		t.Fatal("nudge after total limit should be blocked")
@@ -74,7 +74,7 @@ func TestWheelGestureGuardBucketsNearbyColumnCoordinates(t *testing.T) {
 	xs := []float64{349, 351, 369, 352}
 	for attempt := 0; attempt < wheelNudgeMaxPerColumn; attempt++ {
 		x := xs[attempt%len(xs)]
-		input := validWheelGuardInput(x, 460, attempt, 10, 0, 0, "normalized")
+		input := validWheelGuardInput(x, 460, attempt, 20, 0, 0, "normalized")
 		if result, allowed := guard.BeforeToolCall(context.Background(), wheelNudgeGuardCall(input)); !allowed {
 			t.Fatalf("column x=%.0f unexpectedly blocked: %#v", x, result)
 		}
@@ -82,7 +82,7 @@ func TestWheelGestureGuardBucketsNearbyColumnCoordinates(t *testing.T) {
 
 	if _, allowed := guard.BeforeToolCall(
 		context.Background(),
-		wheelNudgeGuardCall(validWheelGuardInput(352, 460, wheelNudgeMaxPerColumn, 10, 0, 0, "normalized")),
+		wheelNudgeGuardCall(validWheelGuardInput(352, 460, wheelNudgeMaxPerColumn, 20, 0, 0, "normalized")),
 	); allowed {
 		t.Fatal("nearby coordinates should share the same per-column limit")
 	}
@@ -93,7 +93,7 @@ func TestWheelGestureGuardBucketsCoordinatesAfterToolClamping(t *testing.T) {
 	xs := []float64{-25, 0, 20, 10}
 	for attempt := 0; attempt < wheelNudgeMaxPerColumn; attempt++ {
 		x := xs[attempt%len(xs)]
-		input := validWheelGuardInput(x, 460, attempt, 10, 0, 0, "normalized")
+		input := validWheelGuardInput(x, 460, attempt, 20, 0, 0, "normalized")
 		if result, allowed := guard.BeforeToolCall(context.Background(), wheelNudgeGuardCall(input)); !allowed {
 			t.Fatalf("column x=%.0f unexpectedly blocked: %#v", x, result)
 		}
@@ -101,7 +101,7 @@ func TestWheelGestureGuardBucketsCoordinatesAfterToolClamping(t *testing.T) {
 
 	if _, allowed := guard.BeforeToolCall(
 		context.Background(),
-		wheelNudgeGuardCall(validWheelGuardInput(10, 460, wheelNudgeMaxPerColumn, 10, 0, 0, "normalized")),
+		wheelNudgeGuardCall(validWheelGuardInput(10, 460, wheelNudgeMaxPerColumn, 20, 0, 0, "normalized")),
 	); allowed {
 		t.Fatal("coordinates clamped to the same screen edge should share one column limit")
 	}
