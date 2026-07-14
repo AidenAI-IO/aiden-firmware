@@ -1,7 +1,7 @@
 [project]
 name = "aiden-benchmark"
 version = "0.1.0"
-description = "Agent-driven phone-control benchmark for the Aiden hardware demo"
+description = "Agent-driven phone-control benchmark for Aiden Firmware"
 requires-python = ">=3.10"
 dependencies = [
     "playwright>=1.40.0",
