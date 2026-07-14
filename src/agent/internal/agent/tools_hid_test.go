@@ -271,6 +271,30 @@ func TestWheelNudgeLargeSupportsDown(t *testing.T) {
 	}
 }
 
+func TestWheelNudgeReportsEffectiveTravelAfterEdgeClamping(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
+
+	out, err := tool.Call(context.Background(), `{"picker_id":"edge-picker","column_x":500,"remaining_gap":12,"current_value":0,"target_value":12,"cycle_size":0,"cycle_start":0,"row_spacing":300,"value_step":1,"center_y":990}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "physical_travel=1000") {
+		t.Fatalf("Call output = %q, want clamped effective travel", out)
+	}
+
+	reports := readMouseReports(t, dev, path)
+	expectedX, expectedStartY := normalizedToAbsolutePoint(500, 1000)
+	_, expectedEndY := normalizedToAbsolutePoint(500, 0)
+	if reports[0].x != uint16(expectedX) || reports[0].y != uint16(expectedStartY) {
+		t.Fatalf("pre-move = (%d,%d), want (%d,%d)", reports[0].x, reports[0].y, expectedX, expectedStartY)
+	}
+	finalMove := reports[1+wheelNudgeDefaultSteps]
+	if finalMove.y != uint16(expectedEndY) {
+		t.Fatalf("final y = %d, want %d", finalMove.y, expectedEndY)
+	}
+}
+
 func TestWheelNudgeUsesScreenshotRelativeColumnAndCenter(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	screen := &screenState{}

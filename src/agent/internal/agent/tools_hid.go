@@ -1396,8 +1396,7 @@ func (t *WheelNudgeTool) Call(ctx context.Context, input string) (string, error)
 	}
 
 	centerY := wheelNudgeDefaultY
-	physicalTravel := travel
-	gestureTravel := physicalTravel
+	gestureTravel := travel
 	maxY := 1000.0
 	if coordSpace == coordinateSpaceScreenshot {
 		if t.screen == nil {
@@ -1442,6 +1441,7 @@ func (t *WheelNudgeTool) Call(ctx context.Context, input string) (string, error)
 		startY = clampFloat(centerY-startOffset, 0, maxY)
 		endY = clampFloat(startY+gestureTravel, 0, maxY)
 	}
+	physicalTravel := math.Abs(endY - startY)
 
 	start, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, &pointerPoint{X: pointerCoordinate(x), Y: pointerCoordinate(startY)}, coordSpace)
 	if err != nil {

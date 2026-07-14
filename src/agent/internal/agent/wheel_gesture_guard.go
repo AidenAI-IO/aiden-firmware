@@ -590,6 +590,10 @@ func (g *wheelNudgeGuard) beforeMouseClick(call ToolCall) (ToolResult, bool) {
 		if column.coordSpace != pointSpace || !wheelPointInsideColumnSafetyZone(column, x, y) {
 			continue
 		}
+		if column.used >= column.limit {
+			message := fmt.Sprintf("wheel gesture safety stop: refusing mouse_click near exhausted wheel column x=%.0f (%d/%d nudges used)", column.centerX, column.used, column.limit)
+			return g.blockedResult(message, column.centerX, column.used, column.limit), false
+		}
 		message := fmt.Sprintf("active wheel column is owned by wheel_nudge: refusing mouse_click near x=%.0f", column.centerX)
 		return invalidWheelResult(message, map[string]any{"column_x": column.centerX, "retry_same_column": true}), false
 	}

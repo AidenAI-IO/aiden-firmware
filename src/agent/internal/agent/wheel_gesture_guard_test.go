@@ -549,6 +549,30 @@ func TestWheelGestureGuardBlocksMouseClickAcrossCoordinateSpaces(t *testing.T) {
 	}
 }
 
+func TestWheelGestureGuardBlocksMouseClickOnExhaustedColumnWithoutRetry(t *testing.T) {
+	var guard wheelNudgeGuard
+	limit := wheelNudgeLimitForGap(200)
+	for attempt := 0; attempt < limit; attempt++ {
+		call := wheelNudgeGuardCall(validWheelGuardInput(351, 460, attempt, 200, 0, 0, "normalized"))
+		allowAndCommitWheel(t, &guard, call)
+	}
+
+	click := ToolCall{
+		Spec:  ToolSpec{Name: "mouse_click"},
+		Input: `{"x":351,"y":460,"coord_space":"normalized"}`,
+	}
+	result, allowed := guard.BeforeToolCall(context.Background(), click)
+	if allowed {
+		t.Fatal("mouse click on an exhausted wheel column should be blocked")
+	}
+	if result.Error == nil || result.Error.Code != CodeWheelGestureLimit {
+		t.Fatalf("blocked result error = %#v, want %s", result.Error, CodeWheelGestureLimit)
+	}
+	if retry, _ := result.Error.Details["retry_same_column"].(bool); retry {
+		t.Fatalf("blocked result = %#v, exhausted column must not be retried", result)
+	}
+}
+
 func TestWheelGestureGuardBlocksPixelTouchAcrossCoordinateSpaces(t *testing.T) {
 	screen := &screenState{}
 	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
