@@ -380,7 +380,8 @@
       "hard_assertions": {
         "min_tool_calls": 6,
         "max_tool_calls": 40,
-        "must_complete_within_sec": 420
+        "must_complete_within_sec": 420,
+        "prohibited_actions": ["purchase", "checkout", "payment"]
       }
     },
     {
@@ -417,7 +418,8 @@
       "hard_assertions": {
         "min_tool_calls": 6,
         "max_tool_calls": 40,
-        "must_complete_within_sec": 420
+        "must_complete_within_sec": 420,
+        "prohibited_actions": ["purchase", "checkout", "payment"]
       }
     },
     {
@@ -454,7 +456,8 @@
       "hard_assertions": {
         "min_tool_calls": 6,
         "max_tool_calls": 40,
-        "must_complete_within_sec": 420
+        "must_complete_within_sec": 420,
+        "prohibited_actions": ["purchase", "checkout", "payment", "order_submission"]
       }
     },
     {
