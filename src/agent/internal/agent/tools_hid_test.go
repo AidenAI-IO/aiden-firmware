@@ -113,7 +113,7 @@ func TestWheelNudgeTapsAdjacentVisibleTarget(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
 
-	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":650,"direction":"up","remaining_gap":1,"current_value":10,"target_value":11,"cycle_size":24,"cycle_start":0,"increasing_direction":"up","row_spacing":70,"value_step":1,"center_y":500}`)
+	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":650,"direction":"up","remaining_gap":1,"current_value":10,"target_value":11,"cycle_size":24,"cycle_start":0,"increasing_direction":"up","row_spacing":70,"value_step":1,"center_y":500,"visible_target_y":570}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
@@ -133,6 +133,48 @@ func TestWheelNudgeTapsAdjacentVisibleTarget(t *testing.T) {
 	}
 	if reports[0].buttons != 0 || reports[1].buttons != 1 {
 		t.Fatalf("tap reports buttons = %d,%d, want 0,1", reports[0].buttons, reports[1].buttons)
+	}
+}
+
+func TestWheelNudgeAdjacentTargetWithoutVisibleCoordinateUsesMicroDrag(t *testing.T) {
+	dev, _ := newTestHIDDevice(t)
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
+
+	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":650,"direction":"up","remaining_gap":1,"current_value":10,"target_value":11,"cycle_size":24,"cycle_start":0,"increasing_direction":"up","row_spacing":70,"value_step":1,"center_y":500}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if strings.Contains(out, "interaction=tap") || !strings.Contains(out, "rows=1") {
+		t.Fatalf("Call output = %q, want one-row micro drag without visible target evidence", out)
+	}
+}
+
+func TestWheelNudgeRejectsUnverifiedVisibleTargetCoordinate(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
+
+	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":650,"direction":"up","remaining_gap":1,"current_value":10,"target_value":11,"cycle_size":24,"cycle_start":0,"increasing_direction":"up","row_spacing":70,"value_step":1,"center_y":500,"visible_target_y":800}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "does not match the observed adjacent row") {
+		t.Fatalf("Call output = %q, want visible target validation error", out)
+	}
+	if reports := readMouseReports(t, dev, path); len(reports) != 0 {
+		t.Fatalf("invalid visible target wrote %d HID reports", len(reports))
+	}
+}
+
+func TestTouchGestureRejectsDistinctInputsResolvingToSameHIDPoint(t *testing.T) {
+	dev, _ := newTestHIDDevice(t)
+	tool := &TouchGestureTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}}
+
+	out, err := tool.Call(context.Background(), `{"type":"drag","coord_space":"normalized","start":{"x":500,"y":500},"end":{"x":500.001,"y":500.001}}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "same HID point") {
+		t.Fatalf("Call output = %q, want resolved zero-distance rejection", out)
 	}
 }
 
@@ -244,7 +286,7 @@ func TestWheelNudgeSchemaDerivesTravelFromGap(t *testing.T) {
 		"picker_id": true, "column_x": true, "direction": true,
 		"remaining_gap": true, "current_value": true, "target_value": true,
 		"cycle_size": true, "cycle_start": true, "increasing_direction": true,
-		"row_spacing": true, "value_step": true,
+		"row_spacing": true, "value_step": true, "visible_target_y": true,
 		"center_y": true, "coord_space": true,
 	}
 	if len(props) != len(want) {
@@ -1123,6 +1165,25 @@ func TestPostActionScreenshotToolFallsBackScreenshotWhenScreenUnstable(t *testin
 	}
 	if len(screenshot.inputs) != 1 {
 		t.Fatalf("screenshot should still be called, got inputs %#v", screenshot.inputs)
+	}
+}
+
+func TestPostActionScreenshotFailureMarksActionAsCompleted(t *testing.T) {
+	action := &stubTool{name: "wheel_nudge", output: "ok: wheel_nudge rows=2"}
+	screenshot := &stubTool{name: "screenshot", err: errors.New("capture unavailable")}
+	tool := newPostActionScreenshotTool(action, screenshot, 0)
+	ctx, _ := WithToolError(context.Background())
+
+	out, err := tool.Call(ctx, `{}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	toolErr := ToolErrorFromContext(ctx)
+	if toolErr == nil || toolErr.Message != out {
+		t.Fatalf("ToolError = %#v, output=%q", toolErr, out)
+	}
+	if completed, _ := toolErr.Details[postActionCompletedDetail].(bool); !completed {
+		t.Fatalf("post-action error details = %#v, want action_completed=true", toolErr.Details)
 	}
 }
 

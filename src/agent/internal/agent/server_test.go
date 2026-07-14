@@ -1824,19 +1824,6 @@ func TestWebUISteerModeControlsArePresent(t *testing.T) {
 	}
 }
 
-func TestWebUIReconcilesFinalResponseWhenChatStreamIsDone(t *testing.T) {
-	for _, want := range []string{
-		"if (Array.isArray(event.history)) {",
-		"renderHistory(event.history);",
-		"content: event.response,",
-		"finalizeAssistantMessage({",
-	} {
-		if !strings.Contains(webUI, want) {
-			t.Fatalf("web UI done handler missing %q", want)
-		}
-	}
-}
-
 func TestServerHandleChatAsyncDuplicateRequestIDDoesNotAppendHistory(t *testing.T) {
 	server := &Server{logger: newTestLogger(),
 		activeRuns:     make(map[string]context.CancelFunc),

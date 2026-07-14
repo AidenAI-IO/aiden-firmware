@@ -24,19 +24,20 @@ const agentLoopOutputKey = "output"
 var errSteerInterruptToolCancel = errors.New("steer interrupt tool cancel")
 
 type AgentLoop struct {
-	Model                  llms.Model
-	Profile                RoleProfile
-	Memory                 schema.Memory
-	CallbacksHandler       callbacks.Handler
-	MaxIterations          int
-	Recorder               *EpisodeRecorder
-	ScreenshotPruning      ScreenshotPruningConfig
-	EnvironmentBridge      *EnvironmentBridgeClient
-	EnvironmentBridgeTools []string
-	SteerInterrupt         func() <-chan struct{}
-	DevicePlatform         string
-	PointerMode            string
-	contextManager         *contextmanager.ContextManager
+	Model                    llms.Model
+	Profile                  RoleProfile
+	Memory                   schema.Memory
+	CallbacksHandler         callbacks.Handler
+	MaxIterations            int
+	Recorder                 *EpisodeRecorder
+	ScreenshotPruning        ScreenshotPruningConfig
+	EnvironmentBridge        *EnvironmentBridgeClient
+	EnvironmentBridgeTools   []string
+	SteerInterrupt           func() <-chan struct{}
+	DevicePlatform           string
+	PointerMode              string
+	toolExecutionHookFactory func() toolExecutionHookHandler
+	contextManager           *contextmanager.ContextManager
 }
 
 func NewAgentLoop(
@@ -75,10 +76,13 @@ func (l *AgentLoop) Run(ctx context.Context, input string, options ...chains.Cha
 		ScreenshotPruning: l.ScreenshotPruning,
 	}
 	callOptions := chains.GetLLMCallOptions(options...)
-	var wheelNudges wheelNudgeGuard
+	var toolExecutionHooks toolExecutionHookHandler
+	if l.toolExecutionHookFactory != nil {
+		toolExecutionHooks = l.toolExecutionHookFactory()
+	}
 
 	for i := 0; i < l.MaxIterations; i++ {
-		answer, done, err := l.runIteration(ctx, i+1, callOptions, llmExecutor, parser, toolSpecs, &wheelNudges)
+		answer, done, err := l.runIteration(ctx, i+1, callOptions, llmExecutor, parser, toolSpecs, toolExecutionHooks)
 		if err != nil {
 			return "", err
 		}
@@ -90,7 +94,7 @@ func (l *AgentLoop) Run(ctx context.Context, input string, options ...chains.Cha
 	return "", agents.ErrNotFinished
 }
 
-func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions []llms.CallOption, llmExecutor *executor.LLMExecutor, parser *FunctionAgent, toolSpecs *ToolSpecs, wheelNudges *wheelNudgeGuard) (string, bool, error) {
+func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions []llms.CallOption, llmExecutor *executor.LLMExecutor, parser *FunctionAgent, toolSpecs *ToolSpecs, toolExecutionHooks toolExecutionHookHandler) (string, bool, error) {
 	iterationStartTime := time.Now()
 	toolCallsInIteration := 0
 	if l.Recorder != nil {
@@ -163,10 +167,20 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 	if err := llmExecutor.AppendMessage(contextmanager.ConvertChoiceToContextManagerMessage(choiceWithOnlyToolCall(*contentResp.Choices[0], action.ToolID))); err != nil {
 		return "", false, err
 	}
+	var before BeforeToolCallHook
+	var after AfterToolCallHook
+	if toolExecutionHooks != nil {
+		before = toolExecutionHooks.BeforeToolCall
+		after = func(ctx context.Context, call ToolCall, result ToolResult) ToolResult {
+			result = DefaultAfterToolCall(ctx, call, result)
+			return toolExecutionHooks.AfterToolCall(ctx, call, result)
+		}
+	}
 	toolExecution := l.executeToolCall(ctx, ToolCallExecution{
 		Specs:                  toolSpecs,
 		Action:                 action,
-		Before:                 wheelNudges.BeforeToolCall,
+		Before:                 before,
+		After:                  after,
 		Callback:               l.CallbacksHandler,
 		EnvironmentBridge:      l.EnvironmentBridge,
 		EnvironmentBridgeTools: l.EnvironmentBridgeTools,

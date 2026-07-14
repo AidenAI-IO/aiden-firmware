@@ -1,5 +1,12 @@
 # Universal Swipe Interaction Design
 
+> Implementation update (2026-07): picker testing on physical devices showed
+> that generic `touch_gesture` swipes could reverse direction, fling past the
+> target, or activate editable fields below a picker. Picker interaction now
+> uses the dedicated, run-scoped `wheel_nudge` policy described below. The
+> earlier prompt-only strategy remains applicable to ordinary scrolling, not
+> wheel controls.
+
 ## I. Challenges and Reality Boundaries
 
 The current architecture simulates touch via USB HID absolute coordinate mouse and obtains visual feedback via HDMI screenshots. Compared to native test frameworks (iOS XCTest, Android UIAutomator), it lacks key feedback channels:
@@ -17,7 +24,7 @@ The current architecture simulates touch via USB HID absolute coordinate mouse a
 - Image diff can determine "whether it moved", but **cannot reliably quantify "how much it moved"** (JPEG compression noise, animation intermediate frames, similar content interference)
 - LLM visual value reading has errors and cannot be the sole basis, but is viable as final confirmation method
 
-**Conclusion**: Abandon precise quantification, shift to **small-step iteration + visual confirmation** closed-loop strategy.
+**Conclusion**: Ordinary scrolling avoids precise displacement claims and uses **small-step iteration + visual confirmation**. Picker wheels additionally use measured adjacent-row spacing only to bound each `wheel_nudge`; every step still requires a fresh visual observation.
 
 ---
 
@@ -89,7 +96,7 @@ Output:
 2. **Prioritize small steps** (distance ≤ 50), increase after confirming effectiveness
 3. **Use image_diff to determine "whether it moved"**, diff_ratio < 0.03 means no effect
 4. **Iteration is more reliable than precision**, don't try to get it right in one swipe
-5. **Maximum 10 retries**, report failure after exceeding, don't loop infinitely
+5. **Maximum 10 retries for generic swipe calibration**, report failure after exceeding. `wheel_nudge` instead derives a per-column allowance from the initial remaining gap, with bounded per-action travel and a hard run-level ceiling.
 
 ### Picker / Wheel
 
@@ -98,18 +105,15 @@ Typical scenarios: time picker, date picker, city picker.
 ```text
 Strategy:
 1. Screenshot, recognize picker current value and target value
-2. Determine direction (target value > current value → swipe up; otherwise down)
-3. Execute swipe:
-   - distance: 30 (about 1 notch)
-   - duration_ms: 400, steps: 16 (slow speed, reduce inertia)
-   - hold_after_ms: 100 (pause before lifting, suppress iOS inertia)
-4. Wait for screenshot, read new value
-5. If image_diff.changed=false → increase distance to 50, retry
-6. If reached target → end
-7. If overshot → reverse swipe 1 notch, reconfirm
+2. Read visible row ordering, selected value, target value, row spacing, and the column center
+3. Call `wheel_nudge`; it validates the shortest direction and moves at most 1/2/3/4 measured rows based on the remaining gap
+4. When the target is an actually visible adjacent row, pass its exact `visible_target_y`; otherwise omit it and use the bounded drag path
+5. Wait for the returned screenshot and read the new centered value
+6. Recalculate from the new observation; if no movement occurred, retry one micro probe rather than repeating a large gesture
+7. Stop when the target is centered or the run-scoped safety policy reports no progress
 ```
 
-**Key parameters**: Slow speed (duration_ms=400) + hold_after_ms=100 is the most effective combination for suppressing iOS inertia, more reliable than anti_overshoot reverse micro-movement.
+**Key parameters**: `row_spacing` is measured from the latest screenshot. Per-action travel is bounded, and usage is committed only after a successful tool result.
 
 ### List Scrolling
 
@@ -183,7 +187,7 @@ Implemented via existing `save_memory`, LLM autonomously decides storage timing,
 | Image diff quantify displacement (shift_y_normalized) | JPEG noise + animation frames + similar content, unreliable results |
 | Adaptive step calibration tool | LLM + save_memory already sufficient, no need for dedicated tool |
 | anti_overshoot reverse micro-movement | Empirical parameters, large effect differences across devices/versions |
-| Dedicated scroll_picker tool | touch_gesture swipe already sufficient, difference is in prompt strategy |
+| Prompt-only picker control | Superseded after physical-device testing; dedicated `wheel_nudge` prevents generic touch fallbacks, bounds travel, and validates observed direction/progress |
 | OCR tool (current phase) | Not needed when LLM visual value reading accuracy > 90%, can add as needed later |
 
 ---
@@ -194,4 +198,6 @@ Implemented via existing `save_memory`, LLM autonomously decides storage timing,
 |------|----------|------|
 | `src/agent/internal/agent/tools_image_diff.go` | New | ImageDiffTool implementation |
 | `src/agent/internal/agent/tools.go` | Modify | Register image_diff |
+| `src/agent/internal/agent/tools_hid.go` | Modify | Add bounded `wheel_nudge` picker interaction |
+| `src/agent/internal/agent/wheel_gesture_guard.go` | New | Add run-scoped wheel progress, budget, and generic-input policy |
 | `src/agent/internal/agent/prompt.go` | Modify | Add swipe strategy guidance |

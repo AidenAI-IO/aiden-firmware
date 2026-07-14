@@ -1179,6 +1179,9 @@ func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, erro
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
+		if sameResolvedPointerPoint(start, end) {
+			return toolErrorResultString(ctx, CodeInvalidArguments, "directional swipe resolved to the same HID point"), nil
+		}
 		if err := runSwipeLikeGesture(
 			t.pc,
 			start,
@@ -1202,6 +1205,9 @@ func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, erro
 		end, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.End, coordSpace)
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
+		}
+		if sameResolvedPointerPoint(start, end) {
+			return toolErrorResultString(ctx, CodeInvalidArguments, "drag start and end resolve to the same HID point"), nil
 		}
 		if err := runPositionedDragGesture(
 			t.pc,
@@ -1229,6 +1235,9 @@ func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, erro
 		end, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.End, coordSpace)
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
+		}
+		if sameResolvedPointerPoint(start, end) {
+			return toolErrorResultString(ctx, CodeInvalidArguments, "swipe start and end resolve to the same HID point"), nil
 		}
 		if err := runSwipeLikeGesture(
 			t.pc,
@@ -1295,6 +1304,10 @@ func samePointerPoint(first, second *pointerPoint) bool {
 	return first != nil && second != nil && first.X == second.X && first.Y == second.Y
 }
 
+func sameResolvedPointerPoint(first, second resolvedPointerPoint) bool {
+	return first.x == second.x && first.y == second.y
+}
+
 // WheelNudgeTool performs one bounded interaction inside a visible wheel
 // column. It taps an adjacent target row when possible, otherwise it uses a
 // low-inertia vertical drag that is less likely to fling past the target.
@@ -1317,6 +1330,7 @@ type wheelNudgeArgs struct {
 	RowSpacing          *float64 `json:"row_spacing"`
 	ValueStep           *int     `json:"value_step"`
 	CenterY             *float64 `json:"center_y"`
+	VisibleTargetY      *float64 `json:"visible_target_y"`
 	CoordSpace          string   `json:"coord_space"`
 }
 
@@ -1326,13 +1340,14 @@ type wheelNudgePlan struct {
 	distance  string
 	probe     bool
 	rowOffset int
+	tapY      *float64
 }
 
 func (t *WheelNudgeTool) Name() string { return "wheel_nudge" }
 
 func (t *WheelNudgeTool) Description() string {
 	return `Move a visible picker/wheel column toward a target value. This is the only tool for wheel interactions; never attach wheel semantics to touch_gesture. ` +
-		`When the target is exactly one visible row above or below the selected row, the tool taps that unselected row. Otherwise it performs one bounded low-inertia drag. ` +
+		`When the target is exactly one visibly observed row above or below the selected row, pass visible_target_y and the tool taps that coordinate. Without that evidence it performs one bounded low-inertia drag. ` +
 		`Input JSON: {"picker_id":"alarm-create","column_x":195,"direction":"up","remaining_gap":6,"current_value":10,"target_value":16,"cycle_size":24,"cycle_start":0,"increasing_direction":"up","row_spacing":42,"value_step":1,"center_y":273,"coord_space":"screenshot"}. ` +
 		`For a cropped frame_service phone screenshot, use coord_space:"screenshot" and pass column_x/center_y exactly as measured in the latest returned image; do not copy image pixels into normalized coordinates. ` +
 		`direction describes the equivalent finger movement toward the target and is used when a drag is required; an adjacent-row tap derives its tap position from target_value and value_step. If values increase below the selected row (value_step > 0), finger-up increases the selected value; if they decrease below it, finger-down increases it. Use increasing_direction:"unknown" without value_step only when visible ordering is insufficient and a one-row direction probe is genuinely needed. ` +
@@ -1354,6 +1369,7 @@ func (t *WheelNudgeTool) ArgsSchema() map[string]any {
 		"row_spacing":          coordinateSchema("Measured distance between adjacent visible row centers in the selected coord_space."),
 		"value_step":           integerArgSchema("Signed ordinal change for one visible row downward; required when increasing_direction is known, omitted for a genuinely unknown one-row probe."),
 		"center_y":             coordinateSchema("Vertical center of the visible wheel selection area in the selected coord_space. Normalized default is 460."),
+		"visible_target_y":     coordinateSchema("Exact Y coordinate of a target value visibly observed one row above or below center_y. Omit unless the target row is actually visible in the latest screenshot."),
 		"coord_space":          stringEnumArgSchema("Coordinate space; screenshot uses pixels in the latest returned cropped screenshot, normalized uses 0-1000.", "auto", "screenshot", "normalized"),
 	}, "picker_id", "column_x", "direction", "remaining_gap", "current_value", "target_value", "cycle_size", "cycle_start", "increasing_direction", "row_spacing")
 }
@@ -1398,10 +1414,13 @@ func (t *WheelNudgeTool) Call(ctx context.Context, input string) (string, error)
 	if args.CenterY != nil {
 		centerY = *args.CenterY
 	}
+	if centerY < 0 || centerY > maxY {
+		return toolErrorResultf(ctx, CodeInvalidArguments, "center_y=%.0f is outside the visible coordinate range 0..%.0f", centerY, maxY), nil
+	}
 
 	x := *args.ColumnX
-	if plan.rowOffset != 0 {
-		tapY := centerY + float64(plan.rowOffset)*(*args.RowSpacing)
+	if plan.tapY != nil {
+		tapY := *plan.tapY
 		if tapY < 0 || tapY > maxY {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "adjacent wheel row y=%.0f is outside the visible coordinate range 0..%.0f", tapY, maxY), nil
 		}
@@ -1432,6 +1451,9 @@ func (t *WheelNudgeTool) Call(ctx context.Context, input string) (string, error)
 	end, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, &pointerPoint{X: pointerCoordinate(x), Y: pointerCoordinate(endY)}, coordSpace)
 	if err != nil {
 		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
+	}
+	if sameResolvedPointerPoint(start, end) {
+		return toolErrorResultString(ctx, CodeInvalidArguments, "wheel_nudge resolved to the same HID point; refresh the screenshot and use a valid center_y/row_spacing"), nil
 	}
 
 	durationMs := t.durationMs
@@ -1487,10 +1509,23 @@ func planWheelNudge(args wheelNudgeArgs) (wheelNudgePlan, error) {
 		distance = "micro"
 	}
 	rowOffset := 0
-	if !probe && args.ValueStep != nil {
+	var tapY *float64
+	if !probe && args.ValueStep != nil && args.VisibleTargetY != nil {
 		rowOffset = wheelAdjacentTargetRowOffset(*args.CurrentValue, *args.TargetValue, *args.ValueStep, *args.CycleSize, *args.CycleStart)
+		if rowOffset == 0 {
+			return wheelNudgePlan{}, fmt.Errorf("visible_target_y is only valid when target_value is exactly one adjacent row")
+		}
+		if args.CenterY == nil {
+			return wheelNudgePlan{}, fmt.Errorf("center_y is required with visible_target_y")
+		}
+		expectedY := *args.CenterY + float64(rowOffset)*(*args.RowSpacing)
+		tolerance := max(3.0, *args.RowSpacing*0.35)
+		if math.Abs(*args.VisibleTargetY-expectedY) > tolerance {
+			return wheelNudgePlan{}, fmt.Errorf("visible_target_y=%.0f does not match the observed adjacent row near y=%.0f", *args.VisibleTargetY, expectedY)
+		}
+		tapY = args.VisibleTargetY
 	}
-	return wheelNudgePlan{gap: gap, rows: rows, distance: distance, probe: probe, rowOffset: rowOffset}, nil
+	return wheelNudgePlan{gap: gap, rows: rows, distance: distance, probe: probe, rowOffset: rowOffset, tapY: tapY}, nil
 }
 
 func wheelAdjacentTargetRowOffset(current, target, valueStep, cycleSize, cycleStart int) int {
@@ -1552,6 +1587,9 @@ func parseWheelNudgeArgs(input string) (wheelNudgeArgs, error) {
 	}
 	if args.CenterY != nil && (math.IsNaN(*args.CenterY) || math.IsInf(*args.CenterY, 0)) {
 		return wheelNudgeArgs{}, fmt.Errorf("center_y must be a finite number")
+	}
+	if args.VisibleTargetY != nil && (math.IsNaN(*args.VisibleTargetY) || math.IsInf(*args.VisibleTargetY, 0)) {
+		return wheelNudgeArgs{}, fmt.Errorf("visible_target_y must be a finite number")
 	}
 	if args.CurrentValue == nil || args.TargetValue == nil || args.CycleSize == nil || args.CycleStart == nil || args.IncreasingDirection == "" || args.RowSpacing == nil {
 		return wheelNudgeArgs{}, fmt.Errorf("complete wheel metadata required: provide current_value, target_value, cycle_size, cycle_start, increasing_direction, and measured row_spacing")

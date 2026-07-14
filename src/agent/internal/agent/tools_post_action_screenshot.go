@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 )
 
 const postActionScreenshotDelay = time.Second
+const postActionCompletedDetail = "action_completed"
 
 type postActionScreenshotResult struct {
 	screenshotResult
@@ -94,36 +96,36 @@ func (t *postActionScreenshotTool) Call(ctx context.Context, input string) (stri
 		if waiter, ok := t.waitStable.(stableScreenWaiter); ok {
 			waitResult, err = waiter.wait(ctx, t.waitInput)
 			if err != nil {
-				return toolErrorResultf(ctx, CodeToolExecutionFailed, "%s completed with output %q, but stable-screen wait failed: %v", t.inner.Name(), actionOutput, err), nil
+				return postActionErrorResultf(ctx, postActionErrorCode(err), "%s completed with output %q, but stable-screen wait failed: %v", t.inner.Name(), actionOutput, err), nil
 			}
 		} else {
 			waitOutput, err := t.waitStable.Call(ctx, t.waitInput)
 			if err != nil {
-				return "", err
+				return postActionErrorResultf(ctx, postActionErrorCode(err), "%s completed with output %q, but stable-screen wait failed: %v", t.inner.Name(), actionOutput, err), nil
 			}
 			if te := ToolErrorFromContext(ctx); te != nil {
 				return wrapPostActionSubtoolError(ctx, te, "%s completed with output %q, but stable-screen wait failed: %s", t.inner.Name(), actionOutput, te.Message), nil
 			}
 			if legacyToolOutputLooksLikeError(waitOutput) {
-				return toolErrorResultf(ctx, CodeToolExecutionFailed, "%s completed with output %q, but stable-screen wait failed: %s", t.inner.Name(), actionOutput, waitOutput), nil
+				return postActionErrorResultf(ctx, CodeToolExecutionFailed, "%s completed with output %q, but stable-screen wait failed: %s", t.inner.Name(), actionOutput, waitOutput), nil
 			}
 			if err := json.Unmarshal([]byte(waitOutput), &waitResult); err != nil {
-				return toolErrorResultf(ctx, CodeToolExecutionFailed, "%s completed with output %q, but stable-screen wait returned invalid JSON: %v", t.inner.Name(), actionOutput, err), nil
+				return postActionErrorResultf(ctx, CodeToolExecutionFailed, "%s completed with output %q, but stable-screen wait returned invalid JSON: %v", t.inner.Name(), actionOutput, err), nil
 			}
 			if !waitResult.OK {
-				return toolErrorResultf(ctx, CodeToolExecutionFailed, "%s completed with output %q, but stable-screen wait failed: %s", t.inner.Name(), actionOutput, waitOutput), nil
+				return postActionErrorResultf(ctx, CodeToolExecutionFailed, "%s completed with output %q, but stable-screen wait failed: %s", t.inner.Name(), actionOutput, waitOutput), nil
 			}
 		}
 		if !waitResult.OK {
-			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%s completed with output %q, but stable-screen wait failed", t.inner.Name(), actionOutput), nil
+			return postActionErrorResultf(ctx, CodeToolExecutionFailed, "%s completed with output %q, but stable-screen wait failed", t.inner.Name(), actionOutput), nil
 		}
 	} else if err := waitForPostActionScreenshot(ctx, t.delay); err != nil {
-		return "", err
+		return postActionErrorResultf(ctx, postActionErrorCode(err), "%s completed with output %q, but post-action delay failed: %v", t.inner.Name(), actionOutput, err), nil
 	}
 
 	screenshotOutput, err := t.screenshot.Call(ctx, "{}")
 	if err != nil {
-		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%s completed with output %q, but post-action screenshot failed: %v", t.inner.Name(), actionOutput, err), nil
+		return postActionErrorResultf(ctx, postActionErrorCode(err), "%s completed with output %q, but post-action screenshot failed: %v", t.inner.Name(), actionOutput, err), nil
 	}
 	if te := ToolErrorFromContext(ctx); te != nil {
 		return wrapPostActionSubtoolError(ctx, te, "%s completed with output %q, but post-action screenshot failed: %s", t.inner.Name(), actionOutput, te.Message), nil
@@ -131,7 +133,7 @@ func (t *postActionScreenshotTool) Call(ctx context.Context, input string) (stri
 
 	var result screenshotResult
 	if err := json.Unmarshal([]byte(screenshotOutput), &result); err != nil {
-		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%s completed with output %q, but post-action screenshot was invalid: %v", t.inner.Name(), actionOutput, err), nil
+		return postActionErrorResultf(ctx, CodeToolExecutionFailed, "%s completed with output %q, but post-action screenshot was invalid: %v", t.inner.Name(), actionOutput, err), nil
 	}
 
 	payload := postActionScreenshotResult{
@@ -152,9 +154,31 @@ func (t *postActionScreenshotTool) Call(ctx context.Context, input string) (stri
 }
 
 func wrapPostActionSubtoolError(ctx context.Context, te *ToolError, format string, args ...any) string {
-	wrapped := NewToolErrorWithDetails(te.Code, fmt.Sprintf(format, args...), te.Details)
+	details := make(map[string]any, len(te.Details)+1)
+	for key, value := range te.Details {
+		details[key] = value
+	}
+	details[postActionCompletedDetail] = true
+	wrapped := NewToolErrorWithDetails(te.Code, fmt.Sprintf(format, args...), details)
 	SetToolError(ctx, wrapped)
 	return toolErrorString(wrapped)
+}
+
+func postActionErrorResultf(ctx context.Context, code string, format string, args ...any) string {
+	toolErr := NewToolErrorWithDetails(code, fmt.Sprintf(format, args...), map[string]any{postActionCompletedDetail: true})
+	SetToolError(ctx, toolErr)
+	return toolErrorString(toolErr)
+}
+
+func postActionErrorCode(err error) string {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return CodeCanceled
+	case errors.Is(err, context.DeadlineExceeded):
+		return CodeDeadlineExceeded
+	default:
+		return CodeToolExecutionFailed
+	}
 }
 
 func waitForPostActionScreenshot(ctx context.Context, delay time.Duration) error {

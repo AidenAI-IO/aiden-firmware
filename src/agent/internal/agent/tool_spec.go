@@ -182,6 +182,7 @@ var builtInToolSpecMetadata = map[string]toolSpecMetadata{
 		Category:     "input",
 		InputMode:    toolInputModeJSON,
 		ExampleInput: `{"picker_id":"alarm-create","column_x":650,"direction":"up","remaining_gap":11,"current_value":10,"target_value":21,"cycle_size":24,"cycle_start":0,"increasing_direction":"up","row_spacing":42,"value_step":1,"center_y":460}`,
+		HTTPExposed:  toolSpecBoolPtr(false),
 	},
 	"weather": {
 		Category:     "system",
