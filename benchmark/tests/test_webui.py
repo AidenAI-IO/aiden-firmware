@@ -29,6 +29,7 @@ def test_list_benchmark_suites_discovers_nested_benchmark(tmp_path: Path):
     assert by_key["nested/memory.json"]["kind"] == "benchmark"
     assert by_key["nested/memory.json"]["task_count"] == 1
     assert by_key["nested/memory.json"]["categories"] == ["memory"]
+    assert by_key["nested/memory.json"]["suite_category"] == "Other"
 
 
 def test_resolve_suite_path_rejects_traversal(tmp_path: Path):
