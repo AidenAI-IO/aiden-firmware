@@ -223,6 +223,19 @@ bool assign_double(double* dst, const std::string& raw, std::string* err) {
     return parse_double(raw, dst, err);
 }
 
+bool assign_non_negative_double(double* dst, const std::string& raw, std::string* err) {
+    double value = 0.0;
+    if (!assign_double(&value, raw, err)) {
+        return false;
+    }
+    if (value < 0.0) {
+        if (err) *err = "must be >= 0";
+        return false;
+    }
+    *dst = value;
+    return true;
+}
+
 bool assign_bool(bool* dst, const std::string& raw, std::string* err) {
     return parse_bool(raw, dst, err);
 }
@@ -382,6 +395,17 @@ void apply_kv(AgentToml& cfg,
         else if (key == "max_retry") assign_int(&cfg.telemetry.max_retry, raw, &sub_err);
         else if (key == "tags") assign_string_array(&cfg.telemetry.tags, raw, &sub_err);
         else if (key == "environment") assign_string(&cfg.telemetry.environment, raw, &sub_err);
+        if (!sub_err.empty()) fail(sub_err);
+    } else if (section == "termination_policy") {
+        if (key == "enabled") assign_bool(&cfg.termination_policy.enabled, raw, &sub_err);
+        else if (key == "max_seconds") assign_non_negative_double(&cfg.termination_policy.max_seconds, raw, &sub_err);
+        else if (key == "repeat_action_limit") assign_non_negative_int(&cfg.termination_policy.repeat_action_limit, raw, &sub_err);
+        else if (key == "same_result_limit") assign_non_negative_int(&cfg.termination_policy.same_result_limit, raw, &sub_err);
+        else if (key == "screen_unchanged_limit") assign_non_negative_int(&cfg.termination_policy.screen_unchanged_limit, raw, &sub_err);
+        else if (key == "soft_notice_stall_score") assign_non_negative_int(&cfg.termination_policy.soft_notice_stall_score, raw, &sub_err);
+        else if (key == "restrict_tools_stall_score") assign_non_negative_int(&cfg.termination_policy.restrict_tools_stall_score, raw, &sub_err);
+        else if (key == "terminate_stall_score") assign_non_negative_int(&cfg.termination_policy.terminate_stall_score, raw, &sub_err);
+        else if (key == "parse_failure_limit") assign_non_negative_int(&cfg.termination_policy.parse_failure_limit, raw, &sub_err);
         if (!sub_err.empty()) fail(sub_err);
     } else if (section == "live_activity") {
         if (key == "enabled") assign_bool(&cfg.live_activity.enabled, raw, &sub_err);
@@ -721,6 +745,18 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
     if (cfg.telemetry.max_retry != 0) emit_int(out, "max_retry", cfg.telemetry.max_retry);
     if (!cfg.telemetry.tags.empty()) emit_string_array(out, "tags", cfg.telemetry.tags);
     if (!cfg.telemetry.environment.empty()) emit_string(out, "environment", cfg.telemetry.environment);
+    out << "\n";
+
+    out << "[termination_policy]\n";
+    emit_bool(out, "enabled", cfg.termination_policy.enabled);
+    if (cfg.termination_policy.max_seconds > 0.0) emit_double(out, "max_seconds", cfg.termination_policy.max_seconds);
+    if (cfg.termination_policy.repeat_action_limit != 0) emit_int(out, "repeat_action_limit", cfg.termination_policy.repeat_action_limit);
+    if (cfg.termination_policy.same_result_limit != 0) emit_int(out, "same_result_limit", cfg.termination_policy.same_result_limit);
+    if (cfg.termination_policy.screen_unchanged_limit != 0) emit_int(out, "screen_unchanged_limit", cfg.termination_policy.screen_unchanged_limit);
+    if (cfg.termination_policy.soft_notice_stall_score != 0) emit_int(out, "soft_notice_stall_score", cfg.termination_policy.soft_notice_stall_score);
+    if (cfg.termination_policy.restrict_tools_stall_score != 0) emit_int(out, "restrict_tools_stall_score", cfg.termination_policy.restrict_tools_stall_score);
+    if (cfg.termination_policy.terminate_stall_score != 0) emit_int(out, "terminate_stall_score", cfg.termination_policy.terminate_stall_score);
+    if (cfg.termination_policy.parse_failure_limit != 0) emit_int(out, "parse_failure_limit", cfg.termination_policy.parse_failure_limit);
     out << "\n";
 
     out << "[live_activity]\n";

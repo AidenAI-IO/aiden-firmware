@@ -357,7 +357,7 @@ func TestServerLiveActivityCurrent(t *testing.T) {
 }
 
 func TestServerBridgeStatusIncludesBoardIDWithoutBridge(t *testing.T) {
-	server := &Server{logger: newTestLogger(), 
+	server := &Server{logger: newTestLogger(),
 		runtime: &Runtime{
 			config: Config{
 				LiveActivity: LiveActivityConfig{BoardID: "board-1"},
@@ -469,7 +469,7 @@ func TestServerLiveActivityStatusRequiresRequestID(t *testing.T) {
 }
 
 func TestChatResultIncludesLiveActivityState(t *testing.T) {
-	server := &Server{logger: newTestLogger(), 
+	server := &Server{logger: newTestLogger(),
 		liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger()),
 		pendingResults: map[string]*chatPendingResult{
 			"req-1": {
@@ -497,7 +497,7 @@ func TestChatResultIncludesLiveActivityState(t *testing.T) {
 }
 
 func TestChatResultIncludesTerminalLiveActivityState(t *testing.T) {
-	server := &Server{logger: newTestLogger(), 
+	server := &Server{logger: newTestLogger(),
 		liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger()),
 		pendingResults: map[string]*chatPendingResult{
 			"req-1": {
@@ -537,7 +537,7 @@ func TestChatResultIncludesTerminalLiveActivityState(t *testing.T) {
 }
 
 func TestChatResultErrorIncludesQueuedMessages(t *testing.T) {
-	server := &Server{logger: newTestLogger(), 
+	server := &Server{logger: newTestLogger(),
 		liveActivity: NewLiveActivityManager(LiveActivityConfig{}, newTestLogger()),
 		pendingResults: map[string]*chatPendingResult{
 			"req-1": {

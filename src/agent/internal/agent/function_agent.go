@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/tmc/langchaingo/agents"
 	"github.com/tmc/langchaingo/llms"
 	"github.com/tmc/langchaingo/schema"
 	langtools "github.com/tmc/langchaingo/tools"
@@ -100,7 +101,8 @@ func (a *FunctionAgent) ParseOutput(contentResp *llms.ContentResponse) ([]schema
 				ToolID:    ensureToolCallID(toolCall.ID, 0),
 			}}, nil, nil
 		}
-		return nil, nil, nil
+		// All tool calls had nil FunctionCall - treat as parse failure
+		return nil, nil, agents.ErrUnableToParseOutput
 	}
 
 	if choice.FuncCall != nil {
