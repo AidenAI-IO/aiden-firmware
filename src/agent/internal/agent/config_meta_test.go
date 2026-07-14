@@ -162,6 +162,20 @@ func TestConfigMeta_EnumsMatchValidation(t *testing.T) {
 		}
 	}
 
+	// hid.input_backend enum must match Validate()'s accepted set.
+	inputBackendEnum := enumValues("hid.input_backend")
+	for _, b := range []string{"hid", "adb"} {
+		if !contains(inputBackendEnum, b) {
+			t.Errorf("hid.input_backend enum missing %q", b)
+		}
+	}
+	for _, b := range inputBackendEnum {
+		c := Config{HID: HIDConfig{InputBackend: b}, Model: ModelConfig{Provider: "openai", Model: "x"}}
+		if err := c.Validate(); err != nil {
+			t.Errorf("hid.input_backend enum value %q rejected by Validate: %v", b, err)
+		}
+	}
+
 	// vad_backend enum must match normalizeVADBackend's accepted set.
 	for _, b := range enumValues("agent.vad_backend") {
 		if _, err := normalizeVADBackend(b); err != nil {
@@ -215,6 +229,7 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"hid.android_keyboard_device", defaults.HID.AndroidKeyboardDevice},
 		{"hid.frame_socket", defaults.HID.FrameSocket},
 		{"hid.pointer_mode", defaults.HID.PointerMode},
+		{"hid.input_backend", defaults.HID.InputBackend},
 		{"search.provider", defaults.Search.ProviderOrDefault()},
 		{"agent.input_mode", defaults.InputMode},
 		{"agent.trigger_mode", defaults.TriggerMode},

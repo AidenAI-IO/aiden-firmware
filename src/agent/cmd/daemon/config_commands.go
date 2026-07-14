@@ -147,6 +147,7 @@ type hidDTO struct {
 	AndroidKeyboardDevice string `json:"android_keyboard_device"`
 	FrameSocket           string `json:"frame_socket"`
 	PointerMode           string `json:"pointer_mode"`
+	InputBackend          string `json:"input_backend"`
 }
 
 type searchDTO struct {
@@ -303,6 +304,7 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			AndroidKeyboardDevice: d.HID.AndroidKeyboardDevice,
 			FrameSocket:           d.HID.FrameSocket,
 			PointerMode:           d.HID.PointerMode,
+			InputBackend:          d.HID.InputBackend,
 		},
 		Search: agent.SearchConfig{
 			Provider: d.Search.Provider,
@@ -436,6 +438,7 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			AndroidKeyboardDevice: cfg.HID.AndroidKeyboardDeviceOrDefault(),
 			FrameSocket:           cfg.HID.FrameSocketOrDefault(),
 			PointerMode:           cfg.HID.PointerModeOrDefault(),
+			InputBackend:          cfg.HID.InputBackendOrDefault(),
 		},
 		Search: searchDTO{
 			Provider:  cfg.Search.ProviderOrDefault(),

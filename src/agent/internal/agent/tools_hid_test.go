@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -107,6 +108,246 @@ func TestTouchGestureSchemaRequiresNamedPointCoordinates(t *testing.T) {
 	}
 	if _, ok := pointProps["y"]; !ok {
 		t.Fatalf("point schema missing y: %#v", pointProps)
+	}
+}
+
+type recordingADBRunner struct {
+	commands [][]string
+	timeouts []time.Duration
+	handler  func(args []string) (string, error)
+}
+
+func (r *recordingADBRunner) run(ctx context.Context, _ string, args ...string) ([]byte, []byte, error) {
+	copied := append([]string(nil), args...)
+	r.commands = append(r.commands, copied)
+	if deadline, ok := ctx.Deadline(); ok {
+		r.timeouts = append(r.timeouts, time.Until(deadline))
+	} else {
+		r.timeouts = append(r.timeouts, 0)
+	}
+	if r.handler == nil {
+		return nil, nil, nil
+	}
+	out, err := r.handler(copied)
+	if err != nil {
+		return []byte(out), nil, err
+	}
+	return []byte(out), nil, nil
+}
+
+func newTestADBInputController(t *testing.T, screen *screenState, runner *recordingADBRunner) *ADBInputController {
+	t.Helper()
+	t.Setenv("AIDEN_ADB_PATH", "/fake/adb")
+	t.Setenv("AIDEN_ADB_SERIAL", "serial123")
+	if screen == nil {
+		screen = &screenState{}
+	}
+	return &ADBInputController{
+		screen: screen,
+		client: NewADBScreenClient(),
+		runADB: runner.run,
+	}
+}
+
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func stringSliceMatrixEqual(a, b [][]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !stringSlicesEqual(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func TestADBMouseClickUsesInputTapWithNormalizedCoordinates(t *testing.T) {
+	screen := &screenState{}
+	screen.UpdatePhoneScreenInfo(PhoneScreenInfo{WidthPixels: intPtr(1080), HeightPixels: intPtr(2400)})
+	runner := &recordingADBRunner{}
+	tool := &MouseClickTool{screen: screen, adb: newTestADBInputController(t, screen, runner)}
+
+	out, err := tool.Call(context.Background(), `{"x":500,"y":250,"coord_space":"normalized"}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("Call output = %q, want ok", out)
+	}
+
+	want := []string{"-s", "serial123", "shell", "input", "tap", "540", "600"}
+	if len(runner.commands) != 1 || !stringSlicesEqual(runner.commands[0], want) {
+		t.Fatalf("adb commands = %#v, want %#v", runner.commands, want)
+	}
+}
+
+func TestADBTouchGestureSwipeUsesInputSwipe(t *testing.T) {
+	screen := &screenState{}
+	screen.UpdatePhoneScreenInfo(PhoneScreenInfo{WidthPixels: intPtr(1001), HeightPixels: intPtr(1001)})
+	runner := &recordingADBRunner{}
+	tool := &TouchGestureTool{screen: screen, adb: newTestADBInputController(t, screen, runner)}
+
+	out, err := tool.Call(context.Background(), `{"type":"swipe","start":{"x":100,"y":900},"end":{"x":900,"y":100},"duration_ms":321}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("Call output = %q, want ok", out)
+	}
+
+	want := []string{"-s", "serial123", "shell", "input", "swipe", "100", "900", "900", "100", "321"}
+	if len(runner.commands) != 1 || !stringSlicesEqual(runner.commands[0], want) {
+		t.Fatalf("adb commands = %#v, want %#v", runner.commands, want)
+	}
+}
+
+func TestADBTouchGestureLongPressExtendsCommandTimeout(t *testing.T) {
+	screen := &screenState{}
+	screen.UpdatePhoneScreenInfo(PhoneScreenInfo{WidthPixels: intPtr(1001), HeightPixels: intPtr(1001)})
+	runner := &recordingADBRunner{}
+	tool := &TouchGestureTool{screen: screen, adb: newTestADBInputController(t, screen, runner)}
+
+	out, err := tool.Call(context.Background(), `{"type":"long_press","point":{"x":50,"y":50},"duration_ms":9000}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("Call output = %q, want ok", out)
+	}
+
+	want := []string{"-s", "serial123", "shell", "input", "swipe", "50", "50", "50", "50", "9000"}
+	if len(runner.commands) != 1 || !stringSlicesEqual(runner.commands[0], want) {
+		t.Fatalf("adb commands = %#v, want %#v", runner.commands, want)
+	}
+	if len(runner.timeouts) != 1 {
+		t.Fatalf("adb timeouts = %#v, want one timeout", runner.timeouts)
+	}
+	if runner.timeouts[0] < 11*time.Second {
+		t.Fatalf("adb timeout = %v, want at least 11s for 9s gesture", runner.timeouts[0])
+	}
+}
+
+func TestADBTouchGestureBackUsesKeyevent(t *testing.T) {
+	runner := &recordingADBRunner{}
+	tool := &TouchGestureTool{screen: &screenState{}, adb: newTestADBInputController(t, nil, runner)}
+
+	out, err := tool.Call(context.Background(), `{"type":"back"}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("Call output = %q, want ok", out)
+	}
+
+	want := []string{"-s", "serial123", "shell", "input", "keyevent", "4"}
+	if len(runner.commands) != 1 || !stringSlicesEqual(runner.commands[0], want) {
+		t.Fatalf("adb commands = %#v, want %#v", runner.commands, want)
+	}
+}
+
+func TestADBKeyboardTapUsesKeyCombinationForChords(t *testing.T) {
+	runner := &recordingADBRunner{}
+	tool := &KeyboardTapTool{adb: newTestADBInputController(t, nil, runner)}
+
+	out, err := tool.Call(context.Background(), `{"keys":["ctrl","c"],"hold_ms":77}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("Call output = %q, want ok", out)
+	}
+
+	want := []string{"-s", "serial123", "shell", "input", "keycombination", "-t", "77", "KEYCODE_CTRL_LEFT", "KEYCODE_C"}
+	if len(runner.commands) != 1 || !stringSlicesEqual(runner.commands[0], want) {
+		t.Fatalf("adb commands = %#v, want %#v", runner.commands, want)
+	}
+}
+
+func TestADBKeyboardTextUsesADBKeyboardBroadcastAndRestoresIME(t *testing.T) {
+	origSleep := sleepMs
+	sleepMs = func(int) {}
+	defer func() { sleepMs = origSleep }()
+
+	runner := &recordingADBRunner{handler: func(args []string) (string, error) {
+		if strings.Join(args, " ") == "-s serial123 shell settings get secure default_input_method" {
+			return "com.example/.Keyboard", nil
+		}
+		return "", nil
+	}}
+	tool := &KeyboardTextTool{adb: newTestADBInputController(t, nil, runner)}
+
+	out, err := tool.Call(context.Background(), `{"text":"Hello!"}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("Call output = %q, want ok", out)
+	}
+
+	encoded := base64.StdEncoding.EncodeToString([]byte("Hello!"))
+	want := [][]string{
+		{"-s", "serial123", "shell", "settings", "get", "secure", "default_input_method"},
+		{"-s", "serial123", "shell", "ime", "set", adbKeyboardIME},
+		{"-s", "serial123", "shell", "am", "broadcast", "-a", "ADB_INPUT_B64", "--es", "msg", encoded},
+		{"-s", "serial123", "shell", "ime", "set", "com.example/.Keyboard"},
+	}
+	if !stringSliceMatrixEqual(runner.commands, want) {
+		t.Fatalf("adb commands = %#v, want %#v", runner.commands, want)
+	}
+}
+
+func TestADBKeyboardTextFallsBackToKeyEventsWhenADBKeyboardUnavailable(t *testing.T) {
+	runner := &recordingADBRunner{handler: func(args []string) (string, error) {
+		if strings.Join(args, " ") == "-s serial123 shell settings get secure default_input_method" {
+			return "com.example/.Keyboard", nil
+		}
+		if strings.Join(args, " ") == "-s serial123 shell ime set "+adbKeyboardIME {
+			return "Unknown input method", errors.New("exit status 1")
+		}
+		return "", nil
+	}}
+	tool := &KeyboardTextTool{adb: newTestADBInputController(t, nil, runner)}
+
+	out, err := tool.Call(context.Background(), `{"text":"A z!"}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("Call output = %q, want ok", out)
+	}
+
+	want := [][]string{
+		{"-s", "serial123", "shell", "settings", "get", "secure", "default_input_method"},
+		{"-s", "serial123", "shell", "ime", "set", adbKeyboardIME},
+		{"-s", "serial123", "shell", "input", "keycombination", "-t", "50", "KEYCODE_SHIFT_LEFT", "KEYCODE_A"},
+		{"-s", "serial123", "shell", "input", "keyevent", "KEYCODE_SPACE"},
+		{"-s", "serial123", "shell", "input", "keyevent", "KEYCODE_Z"},
+		{"-s", "serial123", "shell", "input", "keycombination", "-t", "50", "KEYCODE_SHIFT_LEFT", "KEYCODE_1"},
+	}
+	if !stringSliceMatrixEqual(runner.commands, want) {
+		t.Fatalf("adb commands = %#v, want %#v", runner.commands, want)
+	}
+}
+
+func TestParseADBWMSizePrefersOverrideSize(t *testing.T) {
+	size, ok := parseADBWMSize("Physical size: 1080x2400\nOverride size: 720x1600\n")
+	if !ok {
+		t.Fatal("parseADBWMSize ok = false")
+	}
+	if size.width != 720 || size.height != 1600 {
+		t.Fatalf("size = %+v, want 720x1600", size)
 	}
 }
 

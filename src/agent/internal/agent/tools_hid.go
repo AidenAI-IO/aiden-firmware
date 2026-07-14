@@ -713,6 +713,7 @@ type KeyboardTapTool struct {
 	dev         *HIDDevice
 	androidDev  *HIDDevice
 	pointerMode string
+	adb         *ADBInputController
 }
 
 func (t *KeyboardTapTool) Name() string { return "keyboard_tap" }
@@ -746,6 +747,13 @@ func (t *KeyboardTapTool) Call(ctx context.Context, input string) (string, error
 	}
 	if len(args.Keys) == 0 {
 		return toolErrorResultString(ctx, CodeInvalidArguments, "keys array is required"), nil
+	}
+
+	if t.adb != nil {
+		if err := t.adb.KeyTap(ctx, args.Keys, args.HoldMs); err != nil {
+			return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
+		}
+		return "ok", nil
 	}
 
 	resolved, err := resolveKeyboardTapKeys(args.Keys)
@@ -899,6 +907,7 @@ func (t *KeyboardTapTool) tapKeyboardChord(modifier uint8, keys []uint8, holdMs 
 // KeyboardTextTool types a string character by character via HID.
 type KeyboardTextTool struct {
 	dev *HIDDevice
+	adb *ADBInputController
 }
 
 func (t *KeyboardTextTool) Name() string { return "keyboard_text" }
@@ -937,6 +946,13 @@ func (t *KeyboardTextTool) Call(ctx context.Context, input string) (string, erro
 		return toolErrorResultString(ctx, CodeInvalidArguments, "keyboard_text received spaced romanization; use enter_text_in_field instead."), nil
 	}
 
+	if t.adb != nil {
+		if err := t.adb.Text(ctx, text); err != nil {
+			return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
+		}
+		return "ok", nil
+	}
+
 	releaseReport := make([]byte, 8)
 	for _, ch := range text {
 		modifier, code, ok := charToHIDKey(byte(ch))
@@ -962,6 +978,7 @@ func (t *KeyboardTextTool) Call(ctx context.Context, input string) (string, erro
 type MouseClickTool struct {
 	pc     *pointerController
 	screen *screenState
+	adb    *ADBInputController
 }
 
 func (t *MouseClickTool) Name() string { return "mouse_click" }
@@ -988,6 +1005,20 @@ func (t *MouseClickTool) Call(ctx context.Context, input string) (string, error)
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
 		return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v. Expected JSON format: {\"x\": 500, \"y\": 300, \"button\": \"left\", \"coord_space\": \"normalized\"}. Common mistakes: x and y must be numbers, missing quotes around field names", err), nil
+	}
+
+	if t.adb != nil {
+		if button := strings.ToLower(strings.TrimSpace(args.Button)); button != "" && button != "left" {
+			return toolErrorResultf(ctx, CodeInvalidArguments, "adb mouse_click supports only left button taps, got %q", args.Button), nil
+		}
+		point, err := t.adb.ResolvePosition(ctx, args.X.Float64(), args.Y.Float64(), args.CoordSpace, coordinateSpaceAuto)
+		if err != nil {
+			return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
+		}
+		if err := t.adb.Tap(ctx, point); err != nil {
+			return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
+		}
+		return "ok", nil
 	}
 
 	absX, absY, err := resolvePointerPositionForSurface(t.screen, t.pc.touchscreen, args.X.Float64(), args.Y.Float64(), args.CoordSpace, coordinateSpaceAuto)
@@ -1049,6 +1080,7 @@ func (t *MouseMoveTool) Call(ctx context.Context, input string) (string, error) 
 type TouchGestureTool struct {
 	pc     *pointerController
 	screen *screenState
+	adb    *ADBInputController
 }
 
 func (t *TouchGestureTool) Name() string { return "touch_gesture" }
@@ -1119,6 +1151,84 @@ func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, erro
 		coordSpace = coordinateSpaceNormalized
 	}
 	button := mouseButtonByte(args.Button)
+
+	if t.adb != nil {
+		if rawButton := strings.ToLower(strings.TrimSpace(args.Button)); rawButton != "" && rawButton != "left" {
+			return toolErrorResultf(ctx, CodeInvalidArguments, "adb touch_gesture supports only left-button touch semantics, got %q", args.Button), nil
+		}
+		switch gestureType {
+		case "tap":
+			point, err := t.adb.ResolveRequiredPoint(ctx, args.Point, coordSpace)
+			if err != nil {
+				return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
+			}
+			if err := t.adb.Tap(ctx, point); err != nil {
+				return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
+			}
+		case "double_tap":
+			point, err := t.adb.ResolveRequiredPoint(ctx, args.Point, coordSpace)
+			if err != nil {
+				return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
+			}
+			if err := t.adb.Tap(ctx, point); err != nil {
+				return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
+			}
+			sleepMs(intOrDefault(args.PauseMs, 100))
+			if err := t.adb.Tap(ctx, point); err != nil {
+				return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
+			}
+		case "long_press":
+			point, err := t.adb.ResolveRequiredPoint(ctx, args.Point, coordSpace)
+			if err != nil {
+				return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
+			}
+			if err := t.adb.LongPress(ctx, point, intOrDefault(args.DurationMs, 500)); err != nil {
+				return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
+			}
+		case "swipe_left", "swipe_right", "swipe_up", "swipe_down":
+			preset, err := directionalSwipePreset(args.Strength)
+			if err != nil {
+				return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
+			}
+			start, end, err := t.adb.DirectionalSwipeEndpoints(ctx, gestureType, args.Distance, args.Anchor, preset)
+			if err != nil {
+				return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
+			}
+			if err := t.adb.Swipe(ctx, start, end, intOrDefault(args.DurationMs, preset.durationMs)); err != nil {
+				return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
+			}
+		case "drag", "swipe":
+			if gestureType == "swipe" && args.Start == nil && args.Point != nil {
+				return toolErrorResultString(ctx, CodeInvalidArguments, "swipe requires start and end, not point; use swipe_up/down/left/right for directional swipes from center"), nil
+			}
+			start, err := t.adb.ResolveRequiredPoint(ctx, args.Start, coordSpace)
+			if err != nil {
+				return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
+			}
+			end, err := t.adb.ResolveRequiredPoint(ctx, args.End, coordSpace)
+			if err != nil {
+				return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
+			}
+			defaultDuration := defaultSwipeDurationMs
+			if gestureType == "drag" {
+				defaultDuration = 250
+			}
+			if err := t.adb.Swipe(ctx, start, end, intOrDefault(args.DurationMs, defaultDuration)); err != nil {
+				return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
+			}
+		case "back", "edge_back", "left_edge_back":
+			if err := t.adb.KeyTap(ctx, []string{"keycode_back"}, defaultKeyboardTapHoldMs); err != nil {
+				return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
+			}
+		case "home", "home_swipe", "bottom_edge_home":
+			if err := t.adb.KeyTap(ctx, []string{"keycode_home"}, defaultKeyboardTapHoldMs); err != nil {
+				return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
+			}
+		default:
+			return toolErrorResultf(ctx, CodeInvalidArguments, "unsupported gesture type: %q", args.Type), nil
+		}
+		return "ok", nil
+	}
 
 	switch gestureType {
 	case "tap":
@@ -1744,6 +1854,23 @@ func directionalSwipePreset(strength string) (directionalSwipeSettings, error) {
 }
 
 func directionalSwipeEndpoints(screen *screenState, touchscreen bool, gestureType string, distance, anchor *float64, preset directionalSwipeSettings) (resolvedPointerPoint, resolvedPointerPoint, error) {
+	startX, startY, endX, endY, err := directionalSwipeNormalizedCoordinates(gestureType, distance, anchor, preset)
+	if err != nil {
+		return resolvedPointerPoint{}, resolvedPointerPoint{}, err
+	}
+
+	startAbsX, startAbsY, err := normalizedToAbsolutePointForSurface(screen, touchscreen, startX, startY)
+	if err != nil {
+		return resolvedPointerPoint{}, resolvedPointerPoint{}, err
+	}
+	endAbsX, endAbsY, err := normalizedToAbsolutePointForSurface(screen, touchscreen, endX, endY)
+	if err != nil {
+		return resolvedPointerPoint{}, resolvedPointerPoint{}, err
+	}
+	return resolvedPointerPoint{x: startAbsX, y: startAbsY}, resolvedPointerPoint{x: endAbsX, y: endAbsY}, nil
+}
+
+func directionalSwipeNormalizedCoordinates(gestureType string, distance, anchor *float64, preset directionalSwipeSettings) (float64, float64, float64, float64, error) {
 	travel := preset.distance
 	if travel <= 0 {
 		travel = defaultDirectionalSwipeDistance
@@ -1772,18 +1899,10 @@ func directionalSwipeEndpoints(screen *screenState, touchscreen bool, gestureTyp
 		startY, endY = center-half, center+half
 		startX, endX = center, center
 	default:
-		return resolvedPointerPoint{}, resolvedPointerPoint{}, fmt.Errorf("unsupported directional swipe: %q", gestureType)
+		return 0, 0, 0, 0, fmt.Errorf("unsupported directional swipe: %q", gestureType)
 	}
 
-	startAbsX, startAbsY, err := normalizedToAbsolutePointForSurface(screen, touchscreen, startX, startY)
-	if err != nil {
-		return resolvedPointerPoint{}, resolvedPointerPoint{}, err
-	}
-	endAbsX, endAbsY, err := normalizedToAbsolutePointForSurface(screen, touchscreen, endX, endY)
-	if err != nil {
-		return resolvedPointerPoint{}, resolvedPointerPoint{}, err
-	}
-	return resolvedPointerPoint{x: startAbsX, y: startAbsY}, resolvedPointerPoint{x: endAbsX, y: endAbsY}, nil
+	return startX, startY, endX, endY, nil
 }
 
 func dragPointer(pc *pointerController, start, end resolvedPointerPoint, button uint8, durationMs, holdBeforeMs, holdAfterMs, steps int) (dragErr error) {

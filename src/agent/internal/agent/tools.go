@@ -93,14 +93,18 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	androidKbDev := NewHIDDevice(hidCfg.AndroidKeyboardDeviceOrDefault())
 	screen := &screenState{}
 	pointer := newPointerController(hidCfg)
+	var adbInput *ADBInputController
+	if hidCfg.InputBackendADB() {
+		adbInput = NewADBInputController(screen)
+	}
 	screenshot := NewScreenshotTool(hidCfg.FrameSocketOrDefault(), screen)
 	screenStable := toolOptions.screenStable.Resolved()
 	waitStable := NewWaitStableScreenTool(hidCfg.FrameSocketOrDefault(), screenStable, screen)
-	keyboardTap := &KeyboardTapTool{dev: kbDev, androidDev: androidKbDev, pointerMode: hidCfg.PointerModeOrDefault()}
-	keyboardText := &KeyboardTextTool{dev: kbDev}
-	touchGesture := &TouchGestureTool{pc: pointer, screen: screen}
+	keyboardTap := &KeyboardTapTool{dev: kbDev, androidDev: androidKbDev, pointerMode: hidCfg.PointerModeOrDefault(), adb: adbInput}
+	keyboardText := &KeyboardTextTool{dev: kbDev, adb: adbInput}
+	touchGesture := &TouchGestureTool{pc: pointer, screen: screen, adb: adbInput}
 	quickAction := &QuickActionTool{keyboard: keyboardTap, touch: touchGesture}
-	mouseClick := &MouseClickTool{pc: pointer, screen: screen}
+	mouseClick := &MouseClickTool{pc: pointer, screen: screen, adb: adbInput}
 	textInputHW := &textInputHardwareDeps{
 		mouseClick:   mouseClick,
 		touchGesture: touchGesture,
