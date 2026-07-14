@@ -2,14 +2,15 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
 )
 
 const (
-	wheelNudgeMaxTotal        = 6
-	wheelNudgeMaxPerColumn    = 3
+	wheelNudgeMaxTotal        = 8
+	wheelNudgeMaxPerColumn    = 4
 	wheelNudgeCenterTolerance = 60.0
 	// This tolerance is used in either normalized or screenshot-pixel space.
 	// Keep it below the ~95px separation between the hour and minute columns
@@ -47,6 +48,9 @@ func (g *wheelNudgeGuard) BeforeToolCall(_ context.Context, call ToolCall) (Tool
 		return ToolResult{}, true
 	}
 	toolName := strings.ToLower(strings.TrimSpace(call.Spec.Name))
+	if toolName == "touch_gesture" {
+		return g.beforeTouchGesture(call)
+	}
 	if toolName != "wheel_nudge" {
 		return ToolResult{}, true
 	}
@@ -305,6 +309,55 @@ func wheelCenterY(args wheelNudgeArgs) float64 {
 		return *args.CenterY
 	}
 	return wheelNudgeDefaultY
+}
+
+func (g *wheelNudgeGuard) beforeTouchGesture(call ToolCall) (ToolResult, bool) {
+	if len(g.columns) == 0 {
+		return ToolResult{}, true
+	}
+	var args struct {
+		Type       string        `json:"type"`
+		Point      *pointerPoint `json:"point"`
+		Start      *pointerPoint `json:"start"`
+		End        *pointerPoint `json:"end"`
+		CoordSpace string        `json:"coord_space"`
+	}
+	if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
+		return ToolResult{}, true
+	}
+	gestureType := strings.ToLower(strings.TrimSpace(args.Type))
+	var points []*pointerPoint
+	switch gestureType {
+	case "tap", "double_tap", "long_press":
+		points = []*pointerPoint{args.Point}
+	case "drag", "swipe":
+		points = []*pointerPoint{args.Start, args.End}
+	default:
+		return ToolResult{}, true
+	}
+	coordSpace := normalizedWheelCoordSpace(args.CoordSpace)
+	for _, point := range points {
+		if point == nil {
+			continue
+		}
+		x := float64(point.X)
+		for _, column := range g.columns {
+			if column.coordSpace != coordSpace || math.Abs(column.centerX-x) > wheelNudgeColumnTolerance {
+				continue
+			}
+			if column.used >= wheelNudgeMaxPerColumn {
+				message := fmt.Sprintf("wheel gesture safety stop: refusing touch_gesture %s near exhausted wheel column x=%.0f (%d/%d nudges used); do not bypass the wheel limit with generic touch input", gestureType, column.centerX, column.used, wheelNudgeMaxPerColumn)
+				return g.blockedResult(message, column.centerX, column.used), false
+			}
+			message := fmt.Sprintf("active wheel column is owned by wheel_nudge: refusing touch_gesture %s near x=%.0f because generic taps or drags can activate fields outside the picker; continue with wheel_nudge using the latest visible value", gestureType, column.centerX)
+			return invalidWheelResult(message, map[string]any{
+				"column_x":          column.centerX,
+				"column_used":       column.used,
+				"retry_same_column": true,
+			}), false
+		}
+	}
+	return ToolResult{}, true
 }
 
 func (g *wheelNudgeGuard) blockedResult(message string, columnX float64, columnUsed int) ToolResult {

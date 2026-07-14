@@ -7,7 +7,13 @@ import (
 	"testing"
 )
 
-func TestWheelGestureGuardStopsFourthNudgeOnSameColumn(t *testing.T) {
+func TestWheelGestureGuardBudgetsSupportTwoFourStepColumns(t *testing.T) {
+	if wheelNudgeMaxPerColumn != 4 || wheelNudgeMaxTotal != 8 {
+		t.Fatalf("wheel budgets = per_column:%d total:%d, want 4 and 8", wheelNudgeMaxPerColumn, wheelNudgeMaxTotal)
+	}
+}
+
+func TestWheelGestureGuardStopsNudgeAfterPerColumnLimit(t *testing.T) {
 	var guard wheelNudgeGuard
 	for attempt := 0; attempt < wheelNudgeMaxPerColumn; attempt++ {
 		call := wheelNudgeGuardCall(validWheelGuardInput(351, 460, attempt, 10, 0, 0, "normalized"))
@@ -16,14 +22,15 @@ func TestWheelGestureGuardStopsFourthNudgeOnSameColumn(t *testing.T) {
 		}
 	}
 
-	result, allowed := guard.BeforeToolCall(context.Background(), wheelNudgeGuardCall(validWheelGuardInput(351, 460, 3, 10, 0, 0, "normalized")))
+	result, allowed := guard.BeforeToolCall(context.Background(), wheelNudgeGuardCall(validWheelGuardInput(351, 460, wheelNudgeMaxPerColumn, 10, 0, 0, "normalized")))
 	if allowed {
-		t.Fatal("fourth nudge on one column should be blocked")
+		t.Fatal("nudge after per-column limit should be blocked")
 	}
 	if result.Error == nil || result.Error.Code != CodeWheelGestureLimit {
 		t.Fatalf("blocked result error = %#v, want %s", result.Error, CodeWheelGestureLimit)
 	}
-	if !strings.Contains(result.Output, "column") || !strings.Contains(result.Output, "3/3") {
+	wantUsage := fmt.Sprintf("%d/%d", wheelNudgeMaxPerColumn, wheelNudgeMaxPerColumn)
+	if !strings.Contains(result.Output, "column") || !strings.Contains(result.Output, wantUsage) {
 		t.Fatalf("blocked output = %q, want per-column usage", result.Output)
 	}
 	if guard.total != wheelNudgeMaxPerColumn {
@@ -31,15 +38,14 @@ func TestWheelGestureGuardStopsFourthNudgeOnSameColumn(t *testing.T) {
 	}
 }
 
-func TestWheelGestureGuardStopsSeventhNudgeAcrossColumns(t *testing.T) {
+func TestWheelGestureGuardStopsNudgeAfterTotalLimit(t *testing.T) {
 	var guard wheelNudgeGuard
-	inputs := []string{
-		validWheelGuardInput(150, 460, 0, 10, 0, 0, "normalized"),
-		validWheelGuardInput(150, 460, 1, 10, 0, 0, "normalized"),
-		validWheelGuardInput(350, 460, 0, 10, 0, 0, "normalized"),
-		validWheelGuardInput(350, 460, 1, 10, 0, 0, "normalized"),
-		validWheelGuardInput(650, 460, 0, 10, 0, 0, "normalized"),
-		validWheelGuardInput(650, 460, 1, 10, 0, 0, "normalized"),
+	var inputs []string
+	for column := 0; len(inputs) < wheelNudgeMaxTotal; column++ {
+		x := 100.0 + float64(column)*200
+		for attempt := 0; attempt < 2 && len(inputs) < wheelNudgeMaxTotal; attempt++ {
+			inputs = append(inputs, validWheelGuardInput(x, 460, attempt, 10, 0, 0, "normalized"))
+		}
 	}
 	for index, input := range inputs {
 		if result, allowed := guard.BeforeToolCall(context.Background(), wheelNudgeGuardCall(input)); !allowed {
@@ -52,19 +58,22 @@ func TestWheelGestureGuardStopsSeventhNudgeAcrossColumns(t *testing.T) {
 		wheelNudgeGuardCall(validWheelGuardInput(850, 460, 0, 10, 0, 0, "normalized")),
 	)
 	if allowed {
-		t.Fatal("seventh wheel nudge in one run should be blocked")
+		t.Fatal("nudge after total limit should be blocked")
 	}
 	if result.Error == nil || result.Error.Code != CodeWheelGestureLimit {
 		t.Fatalf("blocked result error = %#v, want %s", result.Error, CodeWheelGestureLimit)
 	}
-	if !strings.Contains(result.Output, "6/6") {
+	wantUsage := fmt.Sprintf("%d/%d", wheelNudgeMaxTotal, wheelNudgeMaxTotal)
+	if !strings.Contains(result.Output, wantUsage) {
 		t.Fatalf("blocked output = %q, want total usage", result.Output)
 	}
 }
 
 func TestWheelGestureGuardBucketsNearbyColumnCoordinates(t *testing.T) {
 	var guard wheelNudgeGuard
-	for attempt, x := range []float64{349, 351, 369} {
+	xs := []float64{349, 351, 369, 352}
+	for attempt := 0; attempt < wheelNudgeMaxPerColumn; attempt++ {
+		x := xs[attempt%len(xs)]
 		input := validWheelGuardInput(x, 460, attempt, 10, 0, 0, "normalized")
 		if result, allowed := guard.BeforeToolCall(context.Background(), wheelNudgeGuardCall(input)); !allowed {
 			t.Fatalf("column x=%.0f unexpectedly blocked: %#v", x, result)
@@ -73,7 +82,7 @@ func TestWheelGestureGuardBucketsNearbyColumnCoordinates(t *testing.T) {
 
 	if _, allowed := guard.BeforeToolCall(
 		context.Background(),
-		wheelNudgeGuardCall(validWheelGuardInput(352, 460, 3, 10, 0, 0, "normalized")),
+		wheelNudgeGuardCall(validWheelGuardInput(352, 460, wheelNudgeMaxPerColumn, 10, 0, 0, "normalized")),
 	); allowed {
 		t.Fatal("nearby coordinates should share the same per-column limit")
 	}
@@ -81,7 +90,9 @@ func TestWheelGestureGuardBucketsNearbyColumnCoordinates(t *testing.T) {
 
 func TestWheelGestureGuardBucketsCoordinatesAfterToolClamping(t *testing.T) {
 	var guard wheelNudgeGuard
-	for attempt, x := range []float64{-25, 0, 20} {
+	xs := []float64{-25, 0, 20, 10}
+	for attempt := 0; attempt < wheelNudgeMaxPerColumn; attempt++ {
+		x := xs[attempt%len(xs)]
 		input := validWheelGuardInput(x, 460, attempt, 10, 0, 0, "normalized")
 		if result, allowed := guard.BeforeToolCall(context.Background(), wheelNudgeGuardCall(input)); !allowed {
 			t.Fatalf("column x=%.0f unexpectedly blocked: %#v", x, result)
@@ -90,7 +101,7 @@ func TestWheelGestureGuardBucketsCoordinatesAfterToolClamping(t *testing.T) {
 
 	if _, allowed := guard.BeforeToolCall(
 		context.Background(),
-		wheelNudgeGuardCall(validWheelGuardInput(10, 460, 3, 10, 0, 0, "normalized")),
+		wheelNudgeGuardCall(validWheelGuardInput(10, 460, wheelNudgeMaxPerColumn, 10, 0, 0, "normalized")),
 	); allowed {
 		t.Fatal("coordinates clamped to the same screen edge should share one column limit")
 	}
@@ -253,6 +264,40 @@ func TestWheelGestureGuardIgnoresTouchGestureWithProviderPopulatedWheelMetadata(
 	}
 	if result, allowed := guard.BeforeToolCall(context.Background(), swipe); !allowed || result.Error != nil {
 		t.Fatalf("generic touch gesture must not be inspected by wheel guard: allowed=%v result=%#v", allowed, result)
+	}
+}
+
+func TestWheelGestureGuardBlocksTouchGestureOnActiveWheelColumn(t *testing.T) {
+	var guard wheelNudgeGuard
+	if result, allowed := guard.BeforeToolCall(context.Background(), wheelNudgeGuardCall(validWheelGuardInput(314, 289, 48, 5, 60, 0, "screenshot"))); !allowed || result.Error != nil {
+		t.Fatalf("wheel nudge unexpectedly blocked: allowed=%v result=%#v", allowed, result)
+	}
+
+	drag := ToolCall{
+		Spec:  ToolSpec{Name: "touch_gesture"},
+		Input: `{"type":"drag","coord_space":"screenshot","start":{"x":313,"y":513},"end":{"x":313,"y":513},"steps":20}`,
+	}
+	result, allowed := guard.BeforeToolCall(context.Background(), drag)
+	if allowed {
+		t.Fatal("touch gesture on an active wheel column should be blocked")
+	}
+	if result.Error == nil || !strings.Contains(result.Output, "wheel_nudge") {
+		t.Fatalf("blocked result = %#v, want wheel_nudge guidance", result)
+	}
+}
+
+func TestWheelGestureGuardAllowsTouchGestureOutsideActiveWheelColumn(t *testing.T) {
+	var guard wheelNudgeGuard
+	if result, allowed := guard.BeforeToolCall(context.Background(), wheelNudgeGuardCall(validWheelGuardInput(314, 289, 48, 5, 60, 0, "screenshot"))); !allowed || result.Error != nil {
+		t.Fatalf("wheel nudge unexpectedly blocked: allowed=%v result=%#v", allowed, result)
+	}
+
+	saveTap := ToolCall{
+		Spec:  ToolSpec{Name: "touch_gesture"},
+		Input: `{"type":"tap","coord_space":"screenshot","point":{"x":450,"y":95}}`,
+	}
+	if result, allowed := guard.BeforeToolCall(context.Background(), saveTap); !allowed || result.Error != nil {
+		t.Fatalf("touch outside active wheel columns should remain allowed: allowed=%v result=%#v", allowed, result)
 	}
 }
 

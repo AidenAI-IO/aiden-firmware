@@ -1192,6 +1192,9 @@ func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, erro
 			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
 	case "drag":
+		if samePointerPoint(args.Start, args.End) {
+			return toolErrorResultString(ctx, CodeInvalidArguments, "drag requires distinct start and end points; a zero-distance drag behaves like a press and may activate the control instead of moving it"), nil
+		}
 		start, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.Start, coordSpace)
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
@@ -1215,6 +1218,9 @@ func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, erro
 	case "swipe":
 		if args.Start == nil && args.Point != nil {
 			return toolErrorResultString(ctx, CodeInvalidArguments, "swipe requires start and end, not point; use swipe_up/down/left/right for directional swipes from center"), nil
+		}
+		if samePointerPoint(args.Start, args.End) {
+			return toolErrorResultString(ctx, CodeInvalidArguments, "swipe requires distinct start and end points"), nil
 		}
 		start, err := resolveRequiredPoint(t.screen, t.pc.touchscreen, args.Start, coordSpace)
 		if err != nil {
@@ -1283,6 +1289,10 @@ func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, erro
 	}
 
 	return "ok", nil
+}
+
+func samePointerPoint(first, second *pointerPoint) bool {
+	return first != nil && second != nil && first.X == second.X && first.Y == second.Y
 }
 
 // WheelNudgeTool performs one bounded interaction inside a visible wheel
