@@ -10,7 +10,7 @@ services:
         HTTPS_PROXY: ${HTTPS_PROXY:-}
         NO_PROXY: ${NO_PROXY:-}
     ports:
-      - "${AIDEN_DAEMON_HOST_PORT:-8080}:8080"
+      - "127.0.0.1:${AIDEN_DAEMON_HOST_PORT:-8080}:8080"
     volumes:
       - ${AIDEN_CONFIG_DIR:-../config}:/config:ro
     environment:
