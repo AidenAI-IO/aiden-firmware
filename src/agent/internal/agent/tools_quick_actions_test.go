@@ -57,6 +57,23 @@ func TestQuickActionExposesStructuredSchema(t *testing.T) {
 	}
 }
 
+func TestQuickActionTinyChangeRetryOnlyForTouchscreenTouchBindings(t *testing.T) {
+	tool := &QuickActionTool{touch: &TouchGestureTool{pc: &pointerController{touchscreen: true}}}
+	if !tool.ShouldRetryPostActionTinyChange(`{"action":"notification_center","platform":"android"}`) {
+		t.Fatal("expected Android notification_center touch binding to allow tiny-change retry")
+	}
+	if tool.ShouldRetryPostActionTinyChange(`{"action":"back","platform":"android"}`) {
+		t.Fatal("expected non-touch binding to skip tiny-change retry")
+	}
+	if tool.ShouldRetryPostActionTinyChange(`{"list":true,"platform":"android"}`) {
+		t.Fatal("expected list requests to skip tiny-change retry")
+	}
+	tool.touch.pc.touchscreen = false
+	if tool.ShouldRetryPostActionTinyChange(`{"action":"notification_center","platform":"android"}`) {
+		t.Fatal("expected non-touchscreen pointer mode to skip tiny-change retry")
+	}
+}
+
 func TestQuickActionsSuggestUnknownAction(t *testing.T) {
 	table := newQuickActionsTable()
 	suggestions := table.suggestActionIDs("go browser backward", 3)

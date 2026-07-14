@@ -585,13 +585,15 @@ func TestTouchscreenTapWritesTouchDownAndUp(t *testing.T) {
 	}
 
 	reports := readTouchscreenReports(t, dev, path)
-	if len(reports) != 1+touchReleaseReportCount {
-		t.Fatalf("len(reports) = %d, want %d (down, repeated up)", len(reports), 1+touchReleaseReportCount)
+	wantReports := 1 + touchReleaseReportCount
+	if len(reports) != wantReports {
+		t.Fatalf("len(reports) = %d, want %d (down, repeated up)", len(reports), wantReports)
 	}
-	if reports[0].flags != 0x03 || reports[0].contactID != 1 || reports[0].x != 16384 || reports[0].y != 8192 {
-		t.Fatalf("down report = %+v, want touch at (16384,8192)", reports[0])
+	downIndex := 0
+	if reports[downIndex].flags != 0x03 || reports[downIndex].contactID != 1 || reports[downIndex].x != 16384 || reports[downIndex].y != 8192 {
+		t.Fatalf("down report = %+v, want touch at (16384,8192)", reports[downIndex])
 	}
-	for i := 1; i < len(reports); i++ {
+	for i := downIndex + 1; i < len(reports); i++ {
 		if reports[i].flags != 0x00 || reports[i].contactID != 1 || reports[i].x != 16384 || reports[i].y != 8192 {
 			t.Fatalf("up report %d = %+v, want release at (16384,8192)", i, reports[i])
 		}
@@ -613,18 +615,49 @@ func TestTouchscreenTapUsesFrameSpaceForActiveArea(t *testing.T) {
 	}
 
 	reports := readTouchscreenReports(t, dev, path)
-	if len(reports) != 1+touchReleaseReportCount {
-		t.Fatalf("len(reports) = %d, want %d (down, repeated up)", len(reports), 1+touchReleaseReportCount)
+	wantReports := 1 + touchReleaseReportCount
+	if len(reports) != wantReports {
+		t.Fatalf("len(reports) = %d, want %d (down, repeated up)", len(reports), wantReports)
 	}
 	wantX := uint16(scalePixelToAbsolute(float64(656)+(627.0/1000.0)*float64(608-1), 1920))
 	wantY := uint16(scalePixelToAbsolute((180.0/1000.0)*float64(1080-1), 1080))
-	if reports[0].flags != 0x03 || reports[0].contactID != 1 || reports[0].x != wantX || reports[0].y != wantY {
-		t.Fatalf("down report = %+v, want touch at (%d,%d)", reports[0], wantX, wantY)
+	downIndex := 0
+	if reports[downIndex].flags != 0x03 || reports[downIndex].contactID != 1 || reports[downIndex].x != wantX || reports[downIndex].y != wantY {
+		t.Fatalf("down report = %+v, want touch at (%d,%d)", reports[downIndex], wantX, wantY)
 	}
-	for i := 1; i < len(reports); i++ {
+	for i := downIndex + 1; i < len(reports); i++ {
 		if reports[i].flags != 0x00 || reports[i].contactID != 1 || reports[i].x != wantX || reports[i].y != wantY {
 			t.Fatalf("up report %d = %+v, want release at (%d,%d)", i, reports[i], wantX, wantY)
 		}
+	}
+}
+
+func TestTouchscreenTapWritesNoPrimeBetweenTaps(t *testing.T) {
+	skipHIDSleeps(t)
+
+	dev, path := newTestHIDDevice(t)
+	tool := &TouchGestureTool{pc: testTouchscreenPointerController(dev, &pointerState{}), screen: &screenState{}}
+
+	for i := 0; i < 2; i++ {
+		out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":500,"y":500}}`)
+		if err != nil {
+			t.Fatalf("Call %d returned error: %v", i+1, err)
+		}
+		if out != "ok" {
+			t.Fatalf("Call %d output = %q, want ok", i+1, out)
+		}
+	}
+
+	reports := readTouchscreenReports(t, dev, path)
+	firstTapReports := 1 + touchReleaseReportCount
+	secondTapReports := 1 + touchReleaseReportCount
+	if len(reports) != firstTapReports+secondTapReports {
+		t.Fatalf("len(reports) = %d, want first tap (%d) + second tap (%d)", len(reports), firstTapReports, secondTapReports)
+	}
+
+	secondTapStart := firstTapReports
+	if reports[secondTapStart].flags != 0x03 {
+		t.Fatalf("second tap first report = %+v, want touch down", reports[secondTapStart])
 	}
 }
 
@@ -641,14 +674,17 @@ func TestTouchscreenSwipeWritesTouchSequence(t *testing.T) {
 	}
 
 	reports := readTouchscreenReports(t, dev, path)
-	if len(reports) != 2+2+touchReleaseReportCount-1 {
-		t.Fatalf("len(reports) = %d, want down + 2 moves + repeated releases", len(reports))
+	wantReports := 1 + 2 + touchReleaseReportCount
+	if len(reports) != wantReports {
+		t.Fatalf("len(reports) = %d, want %d (down + 2 moves + repeated releases)", len(reports), wantReports)
 	}
-	if reports[0].flags != 0x03 || reports[0].x != 6553 {
-		t.Fatalf("down report = %+v, want start touch", reports[0])
+	downIndex := 0
+	if reports[downIndex].flags != 0x03 || reports[downIndex].x != 6553 {
+		t.Fatalf("down report = %+v, want start touch", reports[downIndex])
 	}
-	if reports[2].flags != 0x03 || reports[2].x != 26214 {
-		t.Fatalf("final move = %+v, want end while touching", reports[2])
+	finalMoveIndex := downIndex + 2
+	if reports[finalMoveIndex].flags != 0x03 || reports[finalMoveIndex].x != 26214 {
+		t.Fatalf("final move = %+v, want end while touching", reports[finalMoveIndex])
 	}
 	last := reports[len(reports)-1]
 	if last.flags != 0x00 || last.x != 26214 {
@@ -839,6 +875,99 @@ func TestPostActionScreenshotToolOmitsLastDiffWhenStableWaitOmitsIt(t *testing.T
 	}
 	if result.ScreenChanged == nil || *result.ScreenChanged {
 		t.Fatalf("ScreenChanged = %#v, want false", result.ScreenChanged)
+	}
+}
+
+type postActionRetryStub struct {
+	*stubTool
+	allowRetry bool
+}
+
+func (t *postActionRetryStub) ShouldRetryPostActionTinyChange(input string) bool {
+	return t.allowRetry
+}
+
+func TestPostActionScreenshotToolRetriesTinyChangeOnceForRetryableTouch(t *testing.T) {
+	action := &postActionRetryStub{
+		stubTool:   &stubTool{name: "touch_gesture", output: "ok"},
+		allowRetry: true,
+	}
+	waitOutputs := []string{
+		`{"ok":true,"stable":true,"elapsed_ms":600,"screen_changed":true,"last_diff":0.006}`,
+		`{"ok":true,"stable":true,"elapsed_ms":700,"screen_changed":true,"last_diff":1.25}`,
+	}
+	waitStable := &stubTool{name: "wait_for_stable_screen"}
+	waitStable.callFn = func(context.Context, string) (string, error) {
+		idx := len(waitStable.inputs) - 1
+		if idx >= len(waitOutputs) {
+			idx = len(waitOutputs) - 1
+		}
+		return waitOutputs[idx], nil
+	}
+	screenshot := &stubTool{
+		name:   "screenshot",
+		output: `{"width":320,"height":240,"format":"jpeg","size":4,"data":"ZmFrZQ=="}`,
+	}
+	tool := newPostActionStableScreenshotToolWithTinyChangeRetry(action, waitStable, screenshot, 0, ScreenStableDefaults{})
+
+	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":500,"y":500}}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+
+	var result postActionScreenshotResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("output is not valid post-action screenshot JSON: %v", err)
+	}
+	if len(action.inputs) != 2 {
+		t.Fatalf("action inputs = %#v, want retry", action.inputs)
+	}
+	if len(waitStable.inputs) != 2 {
+		t.Fatalf("wait stable inputs = %#v, want one wait per action attempt", waitStable.inputs)
+	}
+	if len(screenshot.inputs) != 2 {
+		t.Fatalf("screenshot inputs = %#v, want pre-retry refresh and final screenshot", screenshot.inputs)
+	}
+	if result.ActionRetryCount != 1 {
+		t.Fatalf("ActionRetryCount = %d, want 1", result.ActionRetryCount)
+	}
+	if result.LastDiff == nil || *result.LastDiff != 1.25 {
+		t.Fatalf("LastDiff = %#v, want final retry diff 1.25", result.LastDiff)
+	}
+}
+
+func TestPostActionScreenshotToolDoesNotRetryTinyChangeWhenToolDeclines(t *testing.T) {
+	action := &postActionRetryStub{
+		stubTool:   &stubTool{name: "touch_gesture", output: "ok"},
+		allowRetry: false,
+	}
+	waitStable := &stubTool{
+		name:   "wait_for_stable_screen",
+		output: `{"ok":true,"stable":true,"elapsed_ms":600,"screen_changed":true,"last_diff":0.006}`,
+	}
+	screenshot := &stubTool{
+		name:   "screenshot",
+		output: `{"width":320,"height":240,"format":"jpeg","size":4,"data":"ZmFrZQ=="}`,
+	}
+	tool := newPostActionStableScreenshotToolWithTinyChangeRetry(action, waitStable, screenshot, 0, ScreenStableDefaults{})
+
+	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":500,"y":500}}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+
+	var result postActionScreenshotResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("output is not valid post-action screenshot JSON: %v", err)
+	}
+	if len(action.inputs) != 1 {
+		t.Fatalf("action inputs = %#v, want no retry", action.inputs)
+	}
+	if len(screenshot.inputs) != 1 {
+		t.Fatalf("screenshot inputs = %#v, want only final screenshot", screenshot.inputs)
+	}
+	if result.ActionRetryCount != 0 {
+		t.Fatalf("ActionRetryCount = %d, want 0", result.ActionRetryCount)
 	}
 }
 
@@ -1728,6 +1857,25 @@ func TestTouchGestureTapAcceptsHoldMs(t *testing.T) {
 	gap := times[2].Sub(times[1])
 	if gap < 130*time.Millisecond {
 		t.Fatalf("press-to-release gap = %v, want >= 130ms", gap)
+	}
+}
+
+func TestTouchscreenTapDoesNotInsertCursorSettleReport(t *testing.T) {
+	dev, w := newTimedHIDDevice()
+	tool := &TouchGestureTool{pc: testTouchscreenPointerController(dev, &pointerState{}), screen: &screenState{}}
+
+	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":500,"y":500},"hold_ms":0}`)
+	if err != nil {
+		t.Fatalf("Call error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("output = %q, want ok", out)
+	}
+
+	times := w.writeTimes()
+	wantWrites := 1 + touchReleaseReportCount
+	if len(times) != wantWrites {
+		t.Fatalf("len(times) = %d, want %d (down, repeated release)", len(times), wantWrites)
 	}
 }
 

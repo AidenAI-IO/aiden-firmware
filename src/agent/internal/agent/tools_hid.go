@@ -966,6 +966,10 @@ type MouseClickTool struct {
 
 func (t *MouseClickTool) Name() string { return "mouse_click" }
 
+func (t *MouseClickTool) ShouldRetryPostActionTinyChange(input string) bool {
+	return t != nil && t.pc != nil && t.pc.touchscreen
+}
+
 func (t *MouseClickTool) Description() string {
 	return `Move the mouse to a position and click. Prefer normalized coordinates (0-1000) from the latest screenshot, aiming at the visual center of the target. Click once and inspect the returned post-action screenshot before repeating.`
 }
@@ -1052,6 +1056,10 @@ type TouchGestureTool struct {
 }
 
 func (t *TouchGestureTool) Name() string { return "touch_gesture" }
+
+func (t *TouchGestureTool) ShouldRetryPostActionTinyChange(input string) bool {
+	return t != nil && t.pc != nil && t.pc.touchscreen
+}
 
 func (t *TouchGestureTool) Description() string {
 	return `Perform a custom touch/pointer gesture via HID. Prefer quick_action for semantic platform actions; use this for tap/swipe/drag and other freehand screen gestures. ` +

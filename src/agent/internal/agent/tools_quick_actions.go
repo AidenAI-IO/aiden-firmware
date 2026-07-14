@@ -330,6 +330,57 @@ type QuickActionTool struct {
 
 func (t *QuickActionTool) Name() string { return "quick_action" }
 
+func (t *QuickActionTool) ShouldRetryPostActionTinyChange(input string) bool {
+	if t == nil || t.touch == nil || !t.touch.ShouldRetryPostActionTinyChange(input) {
+		return false
+	}
+
+	var args quickActionArgs
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return false
+	}
+	if strings.HasPrefix(trimmed, "{") {
+		if err := json.Unmarshal([]byte(trimmed), &args); err != nil {
+			return false
+		}
+	} else {
+		args.Action = trimmed
+	}
+	if strings.EqualFold(strings.TrimSpace(args.Action), "list") || args.List {
+		return false
+	}
+
+	platform, err := normalizeQuickActionPlatform(args.Platform)
+	if err != nil {
+		return false
+	}
+	actionID, ok := globalQuickActions.resolveActionID(args.Action)
+	if !ok {
+		return false
+	}
+	_, binding, ok := globalQuickActions.lookup(actionID, platform)
+	if !ok {
+		return false
+	}
+
+	selected := binding
+	if args.Alternative {
+		idx := args.AlternativeN
+		if idx <= 0 {
+			idx = 1
+		}
+		if len(binding.Alternatives) < idx {
+			return false
+		}
+		selected = binding.Alternatives[idx-1]
+	}
+	if strings.TrimSpace(selected.Status) != quickActionStatusActive {
+		return false
+	}
+	return quickActionBindingUsesTool(selected, "touch_gesture")
+}
+
 func (t *QuickActionTool) Description() string {
 	return strings.TrimSpace(`Execute a predefined platform shortcut from quick_actions.json. Prefer before keyboard_tap/touch_gesture when a catalog entry matches the goal. ` +
 		`Use {"list":true,"platform":"android"} to inspect available actions; do not pass {"action":"list"}.`)
@@ -614,6 +665,22 @@ func (t *QuickActionTool) delegate(ctx context.Context, toolName, payload string
 		return output, NewToolError(CodeToolExecutionFailed, message), nil
 	}
 	return output, nil, nil
+}
+
+func quickActionBindingUsesTool(binding quickActionBinding, toolName string) bool {
+	toolName = strings.TrimSpace(toolName)
+	if toolName == "" {
+		return false
+	}
+	if len(binding.Steps) > 0 {
+		for _, step := range binding.Steps {
+			if strings.TrimSpace(step.Tool) == toolName {
+				return true
+			}
+		}
+		return false
+	}
+	return strings.TrimSpace(binding.Tool) == toolName
 }
 
 var sleepQuickActionDelay = realSleepQuickActionDelay
