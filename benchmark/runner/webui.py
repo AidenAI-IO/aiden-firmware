@@ -3830,6 +3830,9 @@ INDEX_HTML = r"""<!doctype html>
       if(jobs.length) renderJobs();
     }
 
+    // Suite category display order
+    const CATEGORY_ORDER = ['Basic Operations', 'Application Scenarios', 'Perception & Control', 'End-to-End Workflow', 'Memory & Cognition', 'MobileGym', 'Other'];
+
     function renderSuites(){
       const filter = document.getElementById('suiteFilter').value.toLowerCase();
       const container = document.getElementById('suitesContainer');
@@ -3843,10 +3846,9 @@ INDEX_HTML = r"""<!doctype html>
       });
 
       // Sort categories
-      const categoryOrder = ['Basic Operations', 'Application Scenarios', 'Perception & Control', 'Memory & Cognition', 'MobileGym', 'Other'];
       const sortedCategories = Object.keys(grouped).sort((a, b) => {
-        const aIndex = categoryOrder.indexOf(a);
-        const bIndex = categoryOrder.indexOf(b);
+        const aIndex = CATEGORY_ORDER.indexOf(a);
+        const bIndex = CATEGORY_ORDER.indexOf(b);
         if(aIndex === -1 && bIndex === -1) return a.localeCompare(b);
         if(aIndex === -1) return 1;
         if(bIndex === -1) return -1;
@@ -3999,10 +4001,9 @@ INDEX_HTML = r"""<!doctype html>
       if(select.options.length === 1 && suites.length){
         const categories = new Set();
         suites.forEach(s => categories.add(s.suite_category || 'Other'));
-        const categoryOrder = ['Basic Operations', 'Application Scenarios', 'Perception & Control', 'Memory & Cognition', 'MobileGym', 'Other'];
         const sortedCategories = Array.from(categories).sort((a, b) => {
-          const aIndex = categoryOrder.indexOf(a);
-          const bIndex = categoryOrder.indexOf(b);
+          const aIndex = CATEGORY_ORDER.indexOf(a);
+          const bIndex = CATEGORY_ORDER.indexOf(b);
           if(aIndex === -1 && bIndex === -1) return a.localeCompare(b);
           if(aIndex === -1) return 1;
           if(bIndex === -1) return -1;
