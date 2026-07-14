@@ -189,8 +189,11 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 				policy.ResetForSteer()
 				return "", false, nil
 			}
-			if l.SteerWaiter != nil {
-				waitCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			// Only wait for out-of-band steer if cancellation was triggered by steer interrupt,
+			// not by external cancellation (shutdown, timeout, etc.)
+			if errors.Is(context.Cause(llmCtx), errSteerInterruptToolCancel) && l.SteerWaiter != nil {
+				// Use ctx (not Background) so outer cancellation can abort the wait
+				waitCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 				waitedSteer, hasText, waitErr := l.SteerWaiter(waitCtx)
 				cancel()
 				if waitErr == nil && hasText {
@@ -313,8 +316,11 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 			if err != nil {
 				return "", false, err
 			}
-			if !hasPending && l.SteerWaiter != nil {
-				waitCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			// Only wait for out-of-band steer if cancellation was triggered by steer interrupt.
+			// Check if outer ctx is still valid - if it's canceled, this is external cancellation.
+			if !hasPending && ctx.Err() == nil && l.SteerWaiter != nil {
+				// Use ctx (not Background) so outer cancellation can abort the wait
+				waitCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 				waitedSteer, hasText, waitErr := l.SteerWaiter(waitCtx)
 				cancel()
 				if waitErr == nil && hasText {
