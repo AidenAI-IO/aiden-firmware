@@ -19,7 +19,6 @@ mkdir -p "$test_dir/bin"
 docker_args_log="$test_dir/docker-args.log"
 cat > "$test_dir/bin/docker" <<EOF
 #!/bin/sh
-: > "$docker_args_log"
 for arg in "\$@"; do
     printf '%s\n' "\$arg" >> "$docker_args_log"
 done
@@ -35,10 +34,12 @@ chmod +x "$test_dir/bin/docker"
         HTTPS_PROXY="http://proxy.example:8080" \
         PATH="$test_dir/bin:$PATH" \
         "$BUILD_IMAGE_SH"
-) >/dev/null 2>&1 || true
+) > "$test_dir/build.log" 2>&1 || true
 
 if [ ! -s "$docker_args_log" ]; then
     echo "build_image.sh did not invoke docker run; cannot verify Go proxy forwarding" >&2
+    echo "build_image.sh output:" >&2
+    cat "$test_dir/build.log" >&2
     exit 1
 fi
 
