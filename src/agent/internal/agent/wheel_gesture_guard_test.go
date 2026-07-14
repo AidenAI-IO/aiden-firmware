@@ -75,6 +75,26 @@ func TestWheelGestureGuardNoMovementAllowsMicroRetry(t *testing.T) {
 	}
 }
 
+func TestWheelGestureGuardLocksFinalTargetPerColumn(t *testing.T) {
+	guard := newWheelNudgeGuard(nil)
+	probe := wheelNudgeGuardCall(`{"picker_id":"alarm-create","column_x":157,"center_y":274,"coord_space":"screenshot","remaining_gap":1,"current_value":17,"target_value":1,"cycle_size":24,"cycle_start":0,"row_spacing":43}`)
+	allowAndCommitWheel(t, guard, probe)
+
+	intermediate := wheelNudgeGuardCall(`{"picker_id":"alarm-create","column_x":157,"center_y":274,"coord_space":"screenshot","remaining_gap":3,"current_value":18,"target_value":15,"cycle_size":24,"cycle_start":0,"row_spacing":43,"value_step":1}`)
+	result, allowed := guard.BeforeToolCall(context.Background(), intermediate)
+	if allowed || result.Error == nil {
+		t.Fatalf("changing the final target on an active column must be blocked: allowed=%v result=%#v", allowed, result)
+	}
+	if !strings.Contains(result.Output, "target_value=1") || !strings.Contains(result.Output, "must remain fixed") {
+		t.Fatalf("blocked output = %q, want locked target guidance", result.Output)
+	}
+
+	finalTarget := wheelNudgeGuardCall(`{"picker_id":"alarm-create","column_x":157,"center_y":274,"coord_space":"screenshot","remaining_gap":7,"current_value":18,"target_value":1,"cycle_size":24,"cycle_start":0,"row_spacing":43,"value_step":1}`)
+	if result, allowed := guard.BeforeToolCall(context.Background(), finalTarget); !allowed || result.Error != nil {
+		t.Fatalf("locked final target should remain usable after rejecting the intermediate target: allowed=%v result=%#v", allowed, result)
+	}
+}
+
 func TestWheelGestureGuardMatchesScreenshotWheelWithNormalizedTouch(t *testing.T) {
 	screen := &screenState{}
 	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
@@ -414,12 +434,12 @@ func TestWheelGestureGuardValidatesObservedProbeDirection(t *testing.T) {
 
 func TestWheelGestureGuardValidatesObservedMovementUsingDeclaredStep(t *testing.T) {
 	var guard wheelNudgeGuard
-	first := wheelNudgeGuardCall(`{"picker_id":"stepped-cycle","column_x":314,"center_y":270,"coord_space":"screenshot","remaining_gap":1,"current_value":0,"target_value":40,"cycle_size":60,"cycle_start":0,"row_spacing":42,"value_step":40}`)
+	first := wheelNudgeGuardCall(`{"picker_id":"stepped-cycle","column_x":314,"center_y":270,"coord_space":"screenshot","remaining_gap":2,"current_value":0,"target_value":20,"cycle_size":100,"cycle_start":0,"row_spacing":42,"value_step":40}`)
 	allowAndCommitWheel(t, &guard, first)
 
-	second := wheelNudgeGuardCall(`{"picker_id":"stepped-cycle","column_x":314,"center_y":270,"coord_space":"screenshot","remaining_gap":1,"current_value":40,"target_value":20,"cycle_size":60,"cycle_start":0,"row_spacing":42,"value_step":40}`)
+	second := wheelNudgeGuardCall(`{"picker_id":"stepped-cycle","column_x":314,"center_y":270,"coord_space":"screenshot","remaining_gap":1,"current_value":60,"target_value":20,"cycle_size":100,"cycle_start":0,"row_spacing":42,"value_step":40}`)
 	if result, allowed := guard.BeforeToolCall(context.Background(), second); !allowed || result.Error != nil {
-		t.Fatalf("0 -> 40 must validate as one positive step on a 60-value cycle: allowed=%v result=%#v", allowed, result)
+		t.Fatalf("0 -> 60 must validate as one finger-down step toward a stable target on a 100-value cycle: allowed=%v result=%#v", allowed, result)
 	}
 }
 

@@ -30,16 +30,18 @@ type wheelNudgeGuard struct {
 }
 
 type wheelNudgeColumnUsage struct {
-	pickerID   string
-	centerX    float64
-	centerY    float64
-	rowSpacing float64
-	coordSpace string
-	used       int
-	limit      int
-	direction  string
-	allowProbe bool
-	pending    *wheelNudgeObservation
+	pickerID    string
+	targetValue int
+	targetSet   bool
+	centerX     float64
+	centerY     float64
+	rowSpacing  float64
+	coordSpace  string
+	used        int
+	limit       int
+	direction   string
+	allowProbe  bool
+	pending     *wheelNudgeObservation
 }
 
 type wheelNudgeAttempt struct {
@@ -101,6 +103,13 @@ func (g *wheelNudgeGuard) BeforeToolCall(_ context.Context, call ToolCall) (Tool
 		columnUsed = g.columns[columnIndex].used
 		columnLimit = g.columns[columnIndex].limit
 		representativeX = g.columns[columnIndex].centerX
+		if g.columns[columnIndex].targetSet && *args.TargetValue != g.columns[columnIndex].targetValue {
+			lockedTarget := g.columns[columnIndex].targetValue
+			message := fmt.Sprintf("wheel target_value=%d must remain fixed for this active column; got %d. Continue toward the original requested target instead of introducing an intermediate target", lockedTarget, *args.TargetValue)
+			return invalidWheelResult(message, map[string]any{
+				"column_x": representativeX, "locked_target_value": lockedTarget, "retry_same_column": true,
+			}), false
+		}
 	}
 	plan, planErr := planWheelNudge(args)
 	if planErr != nil {
@@ -199,16 +208,22 @@ func (g *wheelNudgeGuard) AfterToolCall(_ context.Context, call ToolCall, result
 		columnIndex := attempt.columnIndex
 		if columnIndex < 0 {
 			g.columns = append(g.columns, wheelNudgeColumnUsage{
-				pickerID:   attempt.args.PickerID,
-				centerX:    attempt.columnX,
-				centerY:    attempt.centerY,
-				rowSpacing: attempt.rowSpacing,
-				coordSpace: attempt.coordSpace,
-				limit:      attempt.columnLimit,
+				pickerID:    attempt.args.PickerID,
+				targetValue: *attempt.args.TargetValue,
+				targetSet:   true,
+				centerX:     attempt.columnX,
+				centerY:     attempt.centerY,
+				rowSpacing:  attempt.rowSpacing,
+				coordSpace:  attempt.coordSpace,
+				limit:       attempt.columnLimit,
 			})
 			columnIndex = len(g.columns) - 1
 		}
 		column := &g.columns[columnIndex]
+		if !column.targetSet {
+			column.targetValue = *attempt.args.TargetValue
+			column.targetSet = true
+		}
 		column.centerX = attempt.columnX
 		column.centerY = attempt.centerY
 		column.rowSpacing = attempt.rowSpacing

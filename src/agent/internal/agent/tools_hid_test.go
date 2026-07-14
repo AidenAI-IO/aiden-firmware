@@ -381,6 +381,8 @@ func TestWheelNudgeDescriptionDefinesRemainingGapThresholds(t *testing.T) {
 		"2-4",
 		"5-8",
 		"9+ picker rows",
+		"final requested value",
+		"never substitute an intermediate visible value",
 	} {
 		if !strings.Contains(description, want) {
 			t.Fatalf("wheel_nudge description = %q, want %q", description, want)
@@ -1102,9 +1104,10 @@ func TestKeyboardTextDescriptionDefinesNumericPickerFallback(t *testing.T) {
 	desc := (&KeyboardTextTool{}).Description()
 	for _, want := range []string{
 		"numeric picker",
+		"prefer this before wheel_nudge",
 		"latest screenshot visibly shows",
 		"one verified attempt",
-		"wheel_nudge",
+		"do not switch back to keyboard input",
 	} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing picker fallback guidance %q:\n%s", want, desc)
@@ -1120,10 +1123,12 @@ func TestDeviceOperatorSkillDefinesKeyboardToWheelFallback(t *testing.T) {
 	}
 	content := string(data)
 	for _, want := range []string{
+		"prefer a visibly supported numeric keyboard/edit mode before `wheel_nudge`",
 		"one verified keyboard attempt",
 		"fresh post-action screenshot",
 		"fall back to `wheel_nudge`",
 		"Do not repeat blind keyboard input",
+		"do not switch back to keyboard input",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("device-operator SKILL.md missing keyboard fallback guidance %q", want)
