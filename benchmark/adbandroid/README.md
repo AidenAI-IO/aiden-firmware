@@ -1,6 +1,6 @@
 # ADB Android Environment Bridge
 
-通过 adb 控制 Android 模拟器（Genymotion / 官方 AVD）或真机，并向 benchmark 暴露与
+通过 adb 控制 Android 模拟器（Genymotion）或真机，并向 benchmark 暴露与
 MobileGym bridge **完全兼容的 HTTP 协议**。Aiden Go agent 不感知设备实现，仍然只用
 `--environment-bridge-mode` 转发工具调用。
 
