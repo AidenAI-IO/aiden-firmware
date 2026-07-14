@@ -25,7 +25,7 @@ const (
 	DefaultOTAConfigPath             = "/userdata/ota/config.json"
 	DefaultOTAStateDir               = "/userdata/ota"
 	DefaultOTAUpdateLockName         = "update.lock"
-	DefaultReleaseURL                = "https://api.github.com/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+	DefaultReleaseURL                = "https://api.github.com/repos/AidenAI-IO/aiden-firmware/releases/latest"
 	MaxRemoteManifestBytes           = 1 << 20
 	DefaultHTTPRequestLimit          = 30 * time.Minute
 	DefaultHTTPResponseHeaderTimeout = 30 * time.Second
