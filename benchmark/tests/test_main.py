@@ -146,6 +146,108 @@ def test_run_manifest_records_agent_model(monkeypatch, tmp_path):
     assert manifest["judge_config"] is None
 
 
+def test_run_state_file_records_incremental_totals(monkeypatch, tmp_path):
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "name": "progress_suite",
+                "tasks": [
+                    {
+                        "id": "first",
+                        "category": "diagnostic",
+                        "prompt": "first",
+                        "description_for_judge": "first",
+                        "rubric": [{"id": "done", "check": "done"}],
+                    },
+                    {
+                        "id": "second",
+                        "category": "diagnostic",
+                        "prompt": "second",
+                        "description_for_judge": "second",
+                        "rubric": [{"id": "done", "check": "done"}],
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    state_file = tmp_path / "state.json"
+    observed_before_second_task = {}
+
+    class FakeClient:
+        def __init__(self, base_url, benchmark_token=""):
+            self.base_url = base_url
+            self.benchmark_token = benchmark_token
+
+        def health(self):
+            return True
+
+        def close(self):
+            pass
+
+    def fake_run_one_task(client, suite, task, attempt, artifact_dir, *args, **kwargs):
+        if task.id == "second":
+            observed_before_second_task.update(json.loads(state_file.read_text(encoding="utf-8")))
+        status = "passed" if task.id == "first" else "failed"
+        return TaskResult(
+            suite=suite.name,
+            run_id="progress-run",
+            task_id=task.id,
+            category=task.category,
+            attempt=attempt,
+            status=status,
+            rubric=[],
+            rubric_pass_count=0,
+            rubric_total=0,
+            artifact_dir=str(artifact_dir),
+        )
+
+    monkeypatch.setattr(main, "AgentClient", FakeClient)
+    monkeypatch.setattr(main, "wait_for_agent_ready", lambda *args, **kwargs: True)
+    monkeypatch.setattr(main, "wait_for_agent_clock", lambda *args, **kwargs: True)
+    monkeypatch.setattr(main, "recover_agent_after_timeout", lambda *args, **kwargs: True)
+    monkeypatch.setattr(main, "run_one_task", fake_run_one_task)
+    monkeypatch.setattr(main, "generate_report_html", lambda run_dir: "<html></html>")
+    monkeypatch.setattr(main, "upload_report", lambda *args, **kwargs: False)
+
+    rc = main.cli(
+        [
+            "run",
+            "--suite",
+            str(suite_path),
+            "--out",
+            str(tmp_path / "runs"),
+            "--run-id",
+            "progress-run",
+            "--state-file",
+            str(state_file),
+            "--no-judge",
+        ]
+    )
+
+    assert rc == 1
+    assert observed_before_second_task["completed"] == 1
+    assert observed_before_second_task["totals"] == {
+        "tasks": 2,
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "judge_error": 0,
+        "timeout": 0,
+    }
+    final_state = json.loads(state_file.read_text(encoding="utf-8"))
+    assert final_state["status"] == "done"
+    assert final_state["totals"] == {
+        "tasks": 2,
+        "passed": 1,
+        "failed": 1,
+        "skipped": 0,
+        "judge_error": 0,
+        "timeout": 0,
+    }
+
+
 def test_run_triggers_llm_analysis_when_enabled(monkeypatch, tmp_path):
     suite_path = tmp_path / "suite.json"
     suite_path.write_text(json.dumps({"name": "empty_suite", "tasks": []}), encoding="utf-8")

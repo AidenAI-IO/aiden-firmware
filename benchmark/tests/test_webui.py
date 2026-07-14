@@ -1458,6 +1458,8 @@ def test_index_html_exposes_judge_settings_panel():
     assert "screen_url" in webui.INDEX_HTML
     assert "const report = job.report_url" in webui.INDEX_HTML
     assert "(job.suite_results || []).filter(r => r.report_url)" not in webui.INDEX_HTML
+    assert "const progressTotals = progress.totals || {}" in webui.INDEX_HTML
+    assert "Object.keys(progressTotals).length ? progressTotals : suiteTotals" in webui.INDEX_HTML
 
 
 def test_run_job_uses_saved_webui_agent_config(tmp_path: Path, monkeypatch):
