@@ -132,8 +132,8 @@ troubleshooting.
 Clone the repository:
 
 ```bash
-git clone --recursive git@github.com:AidenAI-IO/aiden-hardware-demo.git
-cd aiden-hardware-demo
+git clone --recursive git@github.com:AidenAI-IO/aiden-firmware.git
+cd aiden-firmware
 ```
 
 Run host-native unit tests:

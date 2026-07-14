@@ -3,8 +3,8 @@
 ## Clone the Project
 
 ```bash
-git clone --recursive git@github.com:AidenAI-IO/aiden-hardware-demo.git
-cd aiden-hardware-demo
+git clone --recursive git@github.com:AidenAI-IO/aiden-firmware.git
+cd aiden-firmware
 ```
 
 The project includes the `pico-sdk` submodule. It's recommended to use `--recursive` on the first clone. If you've already cloned but the submodule is missing:
