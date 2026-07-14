@@ -49,6 +49,7 @@ class SetupClient:
     def __init__(self, fail_clears: int = 0):
         self.fail_clears = fail_clears
         self.clears = 0
+        self.chats = []
         self.seeded_memories = []
 
     def health(self) -> bool:
@@ -66,7 +67,7 @@ class SetupClient:
         raise AssertionError("unexpected agent-side tool call")
 
     def chat(self, message, timeout_sec=None):
-        raise AssertionError("unexpected agent-side setup chat")
+        self.chats.append((message, timeout_sec))
 
     def seed_memory(self, memory, timeout=30):
         self.seeded_memories.append((memory, timeout))
@@ -98,7 +99,7 @@ def test_prepare_task_isolation_retries_clear(monkeypatch):
     assert client.clears == 2
 
 
-def test_prepare_task_isolation_uses_environment_setup_without_agent_side_setup(monkeypatch):
+def test_prepare_task_isolation_runs_agent_prompt_after_environment_setup(monkeypatch):
     setup_calls = []
 
     def fake_environment_setup(environment_url, task_id=None, timeout=30):
@@ -123,7 +124,7 @@ def test_prepare_task_isolation_uses_environment_setup_without_agent_side_setup(
         prompt="open settings",
         rubric=[RubricItem(id="ok", check="ok")],
         hard_assertions=HardAssertions(min_tool_calls=1, max_tool_calls=3),
-        setup={"type": "agent_prompt", "prompt": "should not run"},
+        setup={"type": "agent_prompt", "prompt": "open a settings sub-page", "timeout_sec": 45},
     )
 
     prepare_task_isolation(
@@ -137,7 +138,8 @@ def test_prepare_task_isolation_uses_environment_setup_without_agent_side_setup(
     )
 
     assert setup_calls == [("http://127.0.0.1:9090", "suite.json:open_settings", 180)]
-    assert client.clears == 1
+    assert client.chats == [("open a settings sub-page", 45)]
+    assert client.clears == 2
 
 
 def test_prepare_task_isolation_runs_seed_memory_with_environment_setup(monkeypatch):

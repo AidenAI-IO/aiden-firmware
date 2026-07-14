@@ -5,11 +5,11 @@
   "trace_observations": [
     {
       "id": "skill_read_device_operator",
-      "description": "Agent proactively loaded device-operator via skill_read (informational only).",
+      "description": "Agent loaded device-operator via skill_read before operating the phone UI (informational only).",
       "skill_name": "device-operator"
     }
   ],
-  "prompt_prefix": "你正在操作一台通过 HDMI 采集画面的手机，不是 macOS、Linux 或桌面系统；测试环境可能是 iOS、Android 或其他移动系统。只能通过截图、touch_gesture、mouse_click、keyboard_text、keyboard_tap 等手机 UI 工具操作目标设备；不要使用 shell、open、osascript 或桌面命令来打开目标手机上的 App。每次工具返回截图后，先判断页面是否变化、是否已经进入目标页面，再继续下一步；如果截图没有变化，不要反复点击同一坐标。打开系统设置或时钟时，优先点击当前手机主屏幕上可见的图标，或使用系统搜索。",
+  "prompt_prefix": "你正在操作一台通过 HDMI 采集画面的手机，不是 macOS、Linux 或桌面系统；测试环境可能是 iOS、Android 或其他移动系统。开始操作目标 UI 前，必须先调用 skill_read 读取 device-operator；读取后优先使用 quick_action 等语义工具，再根据需要使用 screenshot、touch_gesture、mouse_click、enter_text_in_field、keyboard_text、keyboard_tap 等手机 UI 工具。不要使用 shell、open、osascript 或桌面命令来打开目标手机上的 App。每次工具返回截图后，先判断页面是否变化、是否已经进入目标页面，再继续下一步；如果截图没有变化，不要反复点击同一坐标。打开系统设置或时钟时，优先点击当前手机主屏幕上可见的图标，或使用系统搜索。",
   "global_reset": {},
   "tasks": [
     {
@@ -335,6 +335,12 @@
       "id": "select_all_and_delete",
       "category": "multi_step",
       "description_for_judge": "Agent must clear an input field that already contains text by selecting all and deleting.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请先打开笔记应用并新建一条笔记，在标题输入框中输入 hello-aiden。完成后保持标题输入框聚焦且文字可见，不要清空、不要返回。",
+        "timeout_sec": 120,
+        "clear_history_after": true
+      },
       "prompt": "请把输入框里已有的文字全部清空。",
       "rubric": [
         {
@@ -356,6 +362,12 @@
       "id": "copy_paste_text",
       "category": "multi_step",
       "description_for_judge": "Agent must type a phrase, select all and copy it, then move to a different input field and paste it.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请先打开笔记应用并新建一条空白笔记，确保标题输入框和正文输入区域同时可见且都为空。完成后停留在编辑页面，不要输入任何文字、不要返回。",
+        "timeout_sec": 120,
+        "clear_history_after": true
+      },
       "prompt": "在第一个输入框输入 hello-aiden，然后选中复制，切到第二个输入框粘贴。",
       "rubric": [
         {

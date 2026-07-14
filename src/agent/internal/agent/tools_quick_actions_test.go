@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -127,9 +128,8 @@ func TestQuickActionDescriptionDocumentsListInspection(t *testing.T) {
 	if !strings.Contains(desc, `do not pass {"action":"list"}`) {
 		t.Fatalf("description missing action=list warning: %s", desc)
 	}
-	if !strings.Contains(desc, "Never loop on the same quick_action binding") {
-		t.Fatalf("description missing no-retry guidance: %s", desc)
-	}
+	// The reserved/alternative/no-retry behavior playbook now lives in the
+	// device-operator skill, not the tool description.
 }
 
 func TestQuickActionDoesNotExposeScreenshotFull(t *testing.T) {
@@ -139,6 +139,24 @@ func TestQuickActionDoesNotExposeScreenshotFull(t *testing.T) {
 	}
 	if strings.Contains((&QuickActionTool{}).Description(), "screenshot_full") {
 		t.Fatal("description should not mention screenshot_full")
+	}
+}
+
+// TestQuickActionPlaybookLivesInSkill guards the backstop for the reserved/
+// alternative/no-retry guidance trimmed out of the tool description: it must
+// remain documented in the device-operator skill so the agent can still recall
+// it via skill_read.
+func TestQuickActionPlaybookLivesInSkill(t *testing.T) {
+	skillPath := filepath.Join("..", "..", "config", "skills", "device-operator", "SKILL.md")
+	data, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Skipf("device-operator SKILL.md not readable from test cwd: %v", err)
+	}
+	content := string(data)
+	for _, want := range []string{"status=reserved", "alternative=true", "Never loop on the same binding"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("device-operator SKILL.md missing quick_action guidance %q", want)
+		}
 	}
 }
 

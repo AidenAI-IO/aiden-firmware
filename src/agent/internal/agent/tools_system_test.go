@@ -8,69 +8,22 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 )
-
-func TestCurrentTimeToolSupportsIANAAndOffsetTimezones(t *testing.T) {
-	tool := NewCurrentTimeTool()
-	tool.now = func() time.Time {
-		return time.Date(2026, 5, 23, 4, 5, 6, 0, time.UTC)
-	}
-
-	out, err := tool.Call(context.Background(), `{"timezone":"Asia/Shanghai"}`)
-	if err != nil {
-		t.Fatalf("Call returned error: %v", err)
-	}
-	if !strings.Contains(out, `"timezone": "Asia/Shanghai"`) || !strings.Contains(out, `"time": "2026-05-23T12:05:06+08:00"`) {
-		t.Fatalf("unexpected Asia/Shanghai output: %s", out)
-	}
-
-	out, err = tool.Call(context.Background(), `{"timezone":"+05:30"}`)
-	if err != nil {
-		t.Fatalf("Call returned error: %v", err)
-	}
-	if !strings.Contains(out, `"timezone": "UTC+05:30"`) || !strings.Contains(out, `"utc_offset": "+05:30"`) {
-		t.Fatalf("unexpected offset output: %s", out)
-	}
-}
-
-func TestCurrentTimeToolDescriptionAvoidsOrdinaryDateQuestions(t *testing.T) {
-	description := NewCurrentTimeTool().Description()
-
-	for _, want := range []string{
-		"Do not use this tool for ordinary date or weekday questions",
-		"the system prompt already provides today's date and weekday",
-		"Use this tool only when a precise clock time, timezone conversion, UTC offset, Unix timestamp, or elapsed-time calculation is required",
-	} {
-		if !strings.Contains(description, want) {
-			t.Fatalf("current_time description missing %q:\n%s", want, description)
-		}
-	}
-}
 
 func TestBuiltinToolSetRegistersSystemTools(t *testing.T) {
 	tools := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
-	for _, name := range []string{"current_time", "weather", "run_script"} {
+	for _, name := range []string{"weather", "run_script", "shell"} {
 		if _, ok := tools.Get(name); !ok {
 			t.Fatalf("builtin tool %q was not registered", name)
 		}
 	}
+	for _, name := range []string{"calculator", "current_time"} {
+		if _, ok := tools.Get(name); ok {
+			t.Fatalf("removed utility tool %q is still registered", name)
+		}
+	}
 	if _, ok := tools.Get("wait_for_wakeup"); ok {
 		t.Fatal("wait_for_wakeup should not be registered")
-	}
-}
-
-func TestCurrentTimeToolRejectsUnknownTimezone(t *testing.T) {
-	ctx, _ := WithToolError(context.Background())
-	out, err := NewCurrentTimeTool().Call(ctx, `{"timezone":"Mars/Base"}`)
-	if err != nil {
-		t.Fatalf("Call returned error: %v", err)
-	}
-	if !strings.Contains(out, `unknown timezone "Mars/Base"`) {
-		t.Fatalf("output = %q, want timezone error message", out)
-	}
-	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeInvalidArguments || got.Message != out {
-		t.Fatalf("ToolError = %+v, want invalid_arguments with output message", got)
 	}
 }
 

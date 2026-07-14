@@ -331,10 +331,8 @@ type QuickActionTool struct {
 func (t *QuickActionTool) Name() string { return "quick_action" }
 
 func (t *QuickActionTool) Description() string {
-	return strings.TrimSpace(`Execute predefined platform shortcut from quick_actions.json. Prefer before keyboard_tap/touch_gesture when a catalog entry matches. ` +
-		`Input examples: {"action":"back","platform":"ios"}, {"action":"copy","platform":"android"}. ` +
-		`Platforms: ios, android, mac. Use {"list":true,"platform":"android"} to inspect available actions; do not pass {"action":"list"}. ` +
-		quickActionBehaviorSummary())
+	return strings.TrimSpace(`Execute a predefined platform shortcut from quick_actions.json. Prefer before keyboard_tap/touch_gesture when a catalog entry matches the goal. ` +
+		`Use {"list":true,"platform":"android"} to inspect available actions; do not pass {"action":"list"}.`)
 }
 
 func (t *QuickActionTool) ArgsSchema() map[string]any {

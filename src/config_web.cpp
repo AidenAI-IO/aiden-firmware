@@ -677,6 +677,7 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"agent", "voice_tool_call_speech", CONFIG_FIELD_BOOL},
         {"agent", "voice_progress_speech_enabled", CONFIG_FIELD_BOOL},
         {"agent", "voice_max_response_tokens", CONFIG_FIELD_NUMBER},
+        {"agent", "load_all_tools", CONFIG_FIELD_BOOL},
         {"agent", "max_iterations", CONFIG_FIELD_NUMBER},
         {"agent", "screenshot_keep_n", CONFIG_FIELD_NUMBER},
         {"agent", "screenshot_prune_interval", CONFIG_FIELD_NUMBER},
@@ -2391,6 +2392,7 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddBoolToObject(agent, "voice_tool_call_speech", config.voice_tool_call_speech ? 1 : 0);
     cJSON_AddBoolToObject(agent, "voice_progress_speech_enabled", config.voice_progress_speech_enabled ? 1 : 0);
     cJSON_AddNumberToObject(agent, "voice_max_response_tokens", config.voice_max_response_tokens);
+    cJSON_AddBoolToObject(agent, "load_all_tools", config.load_all_tools ? 1 : 0);
     cJSON_AddNumberToObject(agent, "max_iterations", config.max_iterations);
     cJSON_AddNumberToObject(agent, "screenshot_keep_n", config.screenshot_keep_n);
     cJSON_AddNumberToObject(agent, "screenshot_prune_interval", config.screenshot_prune_interval);
@@ -2689,6 +2691,7 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_bool(&config->voice_tool_call_speech, agent, "voice_tool_call_speech");
         set_json_bool(&config->voice_progress_speech_enabled, agent, "voice_progress_speech_enabled");
         set_json_int(&config->voice_max_response_tokens, agent, "voice_max_response_tokens");
+        set_json_bool(&config->load_all_tools, agent, "load_all_tools");
         set_json_int(&config->max_iterations, agent, "max_iterations");
         set_json_int(&config->screenshot_keep_n, agent, "screenshot_keep_n");
         set_json_int(&config->screenshot_prune_interval, agent, "screenshot_prune_interval");
@@ -5574,11 +5577,7 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
             std::string path = json_is_string(item) ? trim_copy(item->valuestring) : "";
             cJSON* r = cJSON_CreateObject();
             cJSON_AddStringToObject(r, "check", dev_keys[i]);
-            if (strcmp(dev_keys[i], "android_keyboard_device") == 0 && pointer_mode != "touchscreen") {
-                cJSON_AddBoolToObject(r, "passed", 1);
-                std::string detail = "not required when pointer_mode is " + pointer_mode;
-                cJSON_AddStringToObject(r, "detail", detail.c_str());
-            } else if (path.empty()) {
+            if (path.empty()) {
                 cJSON_AddBoolToObject(r, "passed", 0);
                 cJSON_AddStringToObject(r, "detail", "path is empty");
                 all_passed = false;

@@ -69,9 +69,7 @@ func (t *RunScriptTool) Name() string { return "run_script" }
 
 func (t *RunScriptTool) Description() string {
 	return `Execute a local JSONL demo script without LLM involvement between steps. ` +
-		`Input JSON: {"file":"demo.jsonl"}. The file name is resolved under the agent config directory's scripts/ folder; full paths and directory traversal are rejected. ` +
-		`Each non-empty line is one JSON object: {"type":"wait","ms":500}, {"type":"tts","text":"..."}, or {"type":"call","tool":"touch_gesture","input":{"type":"tap","point":{"x":500,"y":500}}}. Short forms such as {"wait":500}, {"tts":"..."}, and {"call":{"tool":"screenshot","input":{}}} are also accepted. ` +
-		`The tts step starts speech playback asynchronously and immediately continues to the next line. The call step invokes an existing tool with the supplied input. Script execution stops on the first synchronous error. This tool is intended for controlled demo recording scripts.`
+		`Script execution stops on the first synchronous error. Intended for controlled demo recording scripts; see the script-author skill for the step format.`
 }
 
 func (t *RunScriptTool) ArgsSchema() map[string]any {

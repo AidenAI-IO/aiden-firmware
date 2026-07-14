@@ -34,6 +34,8 @@ type AgentLoop struct {
 	EnvironmentBridge      *EnvironmentBridgeClient
 	EnvironmentBridgeTools []string
 	SteerInterrupt         func() <-chan struct{}
+	DevicePlatform         string
+	PointerMode            string
 	contextManager         *contextmanager.ContextManager
 }
 
@@ -51,14 +53,14 @@ func NewAgentLoop(
 		log.Fatalf("context manager is nil")
 	}
 	return &AgentLoop{
-		Model:               model,
-		Profile:             profile,
-		Memory:              memory,
-		CallbacksHandler:    callbacksHandler,
-		MaxIterations:       maxIterations,
-		Recorder:            recorder,
-		ScreenshotPruning:   screenshotPruning,
-		contextManager:      contextManager,
+		Model:             model,
+		Profile:           profile,
+		Memory:            memory,
+		CallbacksHandler:  callbacksHandler,
+		MaxIterations:     maxIterations,
+		Recorder:          recorder,
+		ScreenshotPruning: screenshotPruning,
+		contextManager:    contextManager,
 	}
 }
 
@@ -114,11 +116,18 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 
 	turnOptions := append([]llms.CallOption{}, callOptions...)
 	turnOptions = append(turnOptions, llms.WithTools(parser.toolsAsLLM()))
-	contentResp, err := llmExecutor.GenerateContent(ctx, turnOptions...)
+	contentResp, err := llmExecutor.GenerateContent(contextWithRawHTTPLog(ctx), turnOptions...)
 	if err != nil {
 		return "", false, err
 	}
 	l.emitRoleOutput(ctx, roleResponseDebugText(contentResp))
+	if answer := l.touchPointerModeMismatchContentFinalAnswer(contentResp); answer != "" {
+		if l.Recorder != nil {
+			l.Recorder.RecordDefaultFinish(answer)
+		}
+		answer, err = l.finishRun(ctx, answer)
+		return answer, true, err
+	}
 
 	actions, finish, err := parser.ParseOutput(contentResp)
 	if errors.Is(err, agents.ErrUnableToParseOutput) {
@@ -160,9 +169,6 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		EnvironmentBridge:      l.EnvironmentBridge,
 		EnvironmentBridgeTools: l.EnvironmentBridgeTools,
 	})
-	if toolExecution.Error != nil {
-		return "", false, toolExecution.Error
-	}
 	if l.Recorder != nil {
 		l.Recorder.RecordExecution(ToolCallExecutionResult{
 			Call:   toolExecution.Call,
@@ -172,8 +178,22 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		})
 	}
 	toolCallsInIteration++
-	if err := appendToolExecutionMessages(llmExecutor, parser, toolExecution.Step); err != nil {
-		return "", false, err
+	appendErr := appendToolExecutionMessages(llmExecutor, parser, toolExecution.Step)
+	if toolExecution.Error != nil {
+		if appendErr != nil {
+			return "", false, errors.Join(toolExecution.Error, appendErr)
+		}
+		return "", false, toolExecution.Error
+	}
+	if appendErr != nil {
+		return "", false, appendErr
+	}
+	if answer := l.touchPointerModeMismatchFinalAnswer(toolExecution.Step); answer != "" {
+		if l.Recorder != nil {
+			l.Recorder.RecordDefaultFinish(answer)
+		}
+		answer, err = l.finishRun(ctx, answer)
+		return answer, true, err
 	}
 	if isRunPausingTool(toolExecution.Call.Action.Tool) && !toolExecution.Result.IsError() {
 		answer := runPausingToolFinalAnswer(&toolExecution.Step)
@@ -266,6 +286,13 @@ type roleOutputHandler interface {
 
 func choiceWithOnlyToolCall(choice llms.ContentChoice, toolID string) llms.ContentChoice {
 	if len(choice.ToolCalls) == 0 {
+		if choice.FuncCall != nil {
+			choice.ToolCalls = []llms.ToolCall{{
+				ID:           ensureToolCallID(toolID, 0),
+				Type:         "function",
+				FunctionCall: choice.FuncCall,
+			}}
+		}
 		return choice
 	}
 	toolID = strings.TrimSpace(toolID)
@@ -355,6 +382,72 @@ func appendToolExecutionMessages(llmExecutor *executor.LLMExecutor, parser *Func
 		}
 	}
 	return nil
+}
+
+func (l *AgentLoop) touchPointerModeMismatchFinalAnswer(step schema.AgentStep) string {
+	if !toolNameEqual(step.Action.Tool, "touch_gesture") {
+		return ""
+	}
+	var payload struct {
+		ScreenChanged *bool `json:"screen_changed"`
+	}
+	if err := json.Unmarshal([]byte(step.Observation), &payload); err != nil {
+		return ""
+	}
+	if payload.ScreenChanged == nil || *payload.ScreenChanged {
+		return ""
+	}
+
+	platform := strings.ToLower(strings.TrimSpace(l.DevicePlatform))
+	pointerMode := strings.ToLower(strings.TrimSpace(l.PointerMode))
+	return touchPointerModeMismatchGuidance(platform, pointerMode)
+}
+
+func (l *AgentLoop) touchPointerModeMismatchContentFinalAnswer(contentResp *llms.ContentResponse) string {
+	if contentResp == nil || len(contentResp.Choices) == 0 || contentResp.Choices[0] == nil {
+		return ""
+	}
+	choice := contentResp.Choices[0]
+	if !choiceHasToolCall(choice, "touch_gesture") {
+		return ""
+	}
+	content := strings.TrimSpace(choice.Content)
+	if content == "" {
+		return ""
+	}
+	lower := strings.ToLower(content)
+	if !strings.Contains(lower, "hid.pointer_mode") {
+		return ""
+	}
+	if !strings.Contains(lower, "stop operation here") && !strings.Contains(lower, "touch mode likely does not match") {
+		return ""
+	}
+	platform := strings.ToLower(strings.TrimSpace(l.DevicePlatform))
+	pointerMode := strings.ToLower(strings.TrimSpace(l.PointerMode))
+	return touchPointerModeMismatchGuidance(platform, pointerMode)
+}
+
+func choiceHasToolCall(choice *llms.ContentChoice, toolName string) bool {
+	if choice == nil {
+		return false
+	}
+	for _, call := range choice.ToolCalls {
+		if call.FunctionCall != nil && toolNameEqual(call.FunctionCall.Name, toolName) {
+			return true
+		}
+	}
+	return false
+}
+
+func touchPointerModeMismatchGuidance(platform, pointerMode string) string {
+	switch {
+	case platform == "android" && pointerMode == "absolute":
+		return `touch_gesture produced no visible screen change, and the device is configured as Android with hid.pointer_mode="absolute". Stop operation here because the touch mode likely does not match the target. Please switch hid.pointer_mode to "touchscreen", restart the agent, and retry.`
+	case (platform == "ios" || platform == "ipados") && pointerMode == "touchscreen":
+		return `touch_gesture produced no visible screen change, and the device is configured as iOS with hid.pointer_mode="touchscreen". Stop operation here because the touch mode likely does not match the target. Please switch hid.pointer_mode to "absolute", restart the agent, and retry.`
+	default:
+		return ""
+	}
 }
 
 func toolNameEqual(got, want string) bool {

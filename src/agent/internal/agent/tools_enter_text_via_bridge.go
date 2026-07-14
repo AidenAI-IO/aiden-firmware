@@ -70,25 +70,17 @@ func (t *EnterTextViaBridgeTool) SetPlatformFn(fn func() string) {
 func (t *EnterTextViaBridgeTool) Name() string { return "enter_text_via_bridge" }
 
 func (t *EnterTextViaBridgeTool) Description() string {
-	return strings.TrimSpace(`Use the Phone Bridge clipboard path to place known text into an input field. ` +
-		`On iOS, if the target text was already prepared with clipboard write, it focuses the current target field, pastes, and verifies without reopening Aiden. ` +
-		`When explicitly needed and Dynamic Island return is available, this tool can restore Aiden, write clipboard in the app, return to the target app, focus the field, paste, and verify the field text. ` +
-		`On Android, one call writes clipboard through the connected bridge, focuses the field, pastes, and verifies. ` +
-		`For message composition fields, set send_after_commit=true only after the target chat is open; the tool then runs focus → paste → verify field text → keyboard send → verify the input cleared/changed after send. ` +
-		`Use enter_text_in_field for normal field entry; it automatically prefers this clipboard strategy when appropriate and falls back to HID/IME input if needed. ` +
-		`If the reliable clipboard path is unavailable, it returns committed:false. ` +
-		`Returns committed:true only when the exact target text is verified in the input field; when send_after_commit=true, ok=true also requires send_verified:true.`)
+	return `Use the Phone Bridge clipboard path to place known text into an input field, then focus, paste, and verify. ` +
+		`Normally use enter_text_in_field instead; it automatically prefers this clipboard strategy when appropriate and falls back to HID/IME input if needed. Use this directly only when that clipboard path is explicitly required. ` +
+		`Returns committed:true only when the exact target text is verified in the field; when send_after_commit=true, ok=true also requires send_verified:true.`
 }
 
 func (t *EnterTextViaBridgeTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
-		"text":     stringArgSchema("Exact text that must appear in the field when done."),
-		"platform": stringEnumArgSchema("Target platform.", "ios", "android", "mac"),
-		"focus":    focusPointArgSchema("Input field coordinates."),
-		"send_after_commit": map[string]any{
-			"type":        "boolean",
-			"description": "After field text is verified, press the platform send/submit key and verify the target text is no longer still present in the input field.",
-		},
+		"text":              stringArgSchema("Exact text that must appear in the field when done."),
+		"platform":          stringEnumArgSchema("Target platform.", "ios", "android", "mac"),
+		"focus":             focusPointArgSchema("Input field coordinates."),
+		"send_after_commit": boolArgSchema("After field text is verified, press the platform send/submit key and verify the target text is no longer still present in the input field. Set true only after the target chat/composer is already open."),
 	}, "text", "focus")
 }
 

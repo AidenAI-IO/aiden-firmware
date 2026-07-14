@@ -60,8 +60,6 @@ func NewBuiltinToolSetFromConfig(cfg Config, proxyCfg ProxyConfig, options ...Bu
 
 var scriptCallableToolNames = map[string]struct{}{
 	"audio_volume":           {},
-	"calculator":             {},
-	"current_time":           {},
 	"enter_text_in_field":    {},
 	"enter_text_via_bridge":  {},
 	"image_diff":             {},
@@ -92,16 +90,13 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	}
 
 	kbDev := NewHIDDevice(hidCfg.KeyboardDeviceOrDefault())
-	var androidKbDev *HIDDevice
-	if hidCfg.PointerTouchscreen() {
-		androidKbDev = NewHIDDevice(hidCfg.AndroidKeyboardDeviceOrDefault())
-	}
+	androidKbDev := NewHIDDevice(hidCfg.AndroidKeyboardDeviceOrDefault())
 	screen := &screenState{}
 	pointer := newPointerController(hidCfg)
 	screenshot := NewScreenshotTool(hidCfg.FrameSocketOrDefault(), screen)
 	screenStable := toolOptions.screenStable.Resolved()
 	waitStable := NewWaitStableScreenTool(hidCfg.FrameSocketOrDefault(), screenStable, screen)
-	keyboardTap := &KeyboardTapTool{dev: kbDev, androidDev: androidKbDev}
+	keyboardTap := &KeyboardTapTool{dev: kbDev, androidDev: androidKbDev, pointerMode: hidCfg.PointerModeOrDefault()}
 	keyboardText := &KeyboardTextTool{dev: kbDev}
 	touchGesture := &TouchGestureTool{pc: pointer, screen: screen}
 	quickAction := &QuickActionTool{keyboard: keyboardTap, touch: touchGesture}
@@ -128,11 +123,9 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 		"image_diff":             &ImageDiffTool{},
 		"audio_volume":           NewAudioVolumeTool(audioCfg.SocketOrDefault()),
 		"shell":                  &ShellTool{proxy: proxyCfg},
-		"current_time":           NewCurrentTimeTool(),
 		"weather":                NewWeatherTool(proxyCfg),
 		"web_search":             NewWebSearchTool(searchCfg, proxyCfg),
 		"wikipedia":              NewWikipediaTool(proxyCfg),
-		"calculator":             NewCalculatorTool(),
 		"web_scraper":            NewWebScraperTool(proxyCfg),
 	}
 	if toolOptions.waitForWakeupController != nil {

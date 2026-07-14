@@ -36,8 +36,8 @@ Prefer describing what you see before clicking.
 - Automatically discover `SKILL.md`;
 - Display Available skills in the prompt and load complete `SKILL.md` at runtime via `skill_read`;
 - Inject skill instructions into the system prompt of the three roles' `RoleProfile`;
-- Support `allowed_tools` to restrict ordinary task tools; `skill_list` / `skill_read` / `skill_manage` / `skill_mark_used` are retained by default as skill meta-tools;
-- Provide `skill_list` / `skill_read` / `skill_manage` / `skill_mark_used`;
+- Parse `allowed_tools` metadata for validation and future compatibility, but tool availability is currently controlled by the static Agent tool catalog rather than by active skills;
+- Provide `skill_list` / `skill_read` / `skill_manage` / `skill_mark_used` to the Agent; the HTTP Tool API exposes only the non-maintenance ones (`skill_list` / `skill_read`);
 - `skill_read` supports reading `SKILL.md` as well as UTF-8 supporting files under `references/`, `templates/`, `scripts/`, `assets/`;
 - Record view/use/modify statistics in `usage.json`;
 - Support `active` / `stale` / `archived` lifecycle states; `skill_list` filters out archived by default;
@@ -61,6 +61,7 @@ Both `planner` and `executor` receive callable function tools. `verifier` does n
 ## Parsed but Not Fully Enforced Fields
 
 - `preferred_model`
+- `allowed_tools`
 - `allowed_children`
 
 These fields can serve as metadata for future extensions but should not be relied upon for current runtime enforcement.
@@ -79,7 +80,7 @@ This endpoint generates a skill bundle describing the Aiden HTTP Tool API, makin
 
 - Skill content should describe high-level strategies; do not hardcode volatile coordinates;
 - For UI operation skills, recommend requiring screenshot before clicking;
-- `allowed_tools` should be narrowed as much as possible to avoid activating unrelated tools;
+- `allowed_tools` should be kept narrow for documentation and forward compatibility, but current runtime tool availability does not expand based on active skills;
 - `allowed_tools` can only reference currently registered tools or `delegate_<child>` form child Agent delegation pseudo-tools;
 - Do not write one-time task progress, temporary state, secrets, raw logs, or personal facts into skills; these do not belong to reusable procedures.
 

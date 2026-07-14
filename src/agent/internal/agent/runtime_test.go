@@ -88,6 +88,30 @@ func TestRuntimeRun(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunMarksMainAgentModelCallsForRawHTTPLog(t *testing.T) {
+	model := &scriptedModel{responses: roleDirectResponses("completed")}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Answer directly.",
+		}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "hello"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(model.rawHTTPLogEnabled) != 1 {
+		t.Fatalf("expected one model call, got %d", len(model.rawHTTPLogEnabled))
+	}
+	if !model.rawHTTPLogEnabled[0] {
+		t.Fatal("main agent model call was not marked for raw HTTP logging")
+	}
+}
+
 func TestRuntimeRunExportsFailedTraceWhenModelBuildFails(t *testing.T) {
 	ingestCh := make(chan langfuseIngestionRequest, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -220,6 +244,180 @@ func TestRuntimeRunWaitForWakeupTerminatesRoleLoop(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunStopsTouchGestureOnPointerModeMismatch(t *testing.T) {
+	tests := []struct {
+		name        string
+		platform    string
+		pointerMode string
+		want        string
+	}{
+		{
+			name:        "android absolute",
+			platform:    "android",
+			pointerMode: "absolute",
+			want:        `hid.pointer_mode to "touchscreen"`,
+		},
+		{
+			name:        "ios touchscreen",
+			platform:    "ios",
+			pointerMode: "touchscreen",
+			want:        `hid.pointer_mode to "absolute"`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &scriptedModel{responses: roleToolResponses("touch_gesture", `{"type":"tap","point":{"x":500,"y":500}}`, "should not be used")}
+			tool := &stubTool{
+				name:        "touch_gesture",
+				description: "Touch.",
+				output:      `{"screen_changed":false}`,
+			}
+			runtime := NewRuntimeWithDeps(
+				withTestConfigDir(t, Config{
+					Model:           ModelConfig{Provider: "fake"},
+					Instruction:     "Use tools.",
+					DefaultPlatform: tc.platform,
+					HID:             HIDConfig{PointerMode: tc.pointerMode},
+				}),
+				&testModelResolver{model: model},
+				NewMemoryManager(""),
+				&ToolSet{tools: map[string]langtools.Tool{"touch_gesture": tool}},
+				NewSkillIndex(),
+			)
+
+			result, err := runtime.Run(context.Background(), RunRequest{Input: "tap the screen"})
+			if err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+			if !strings.Contains(result.Output, "touch_gesture produced no visible screen change") {
+				t.Fatalf("output missing no-change stop reason: %q", result.Output)
+			}
+			if !strings.Contains(result.Output, tc.want) {
+				t.Fatalf("output missing pointer mode guidance %q: %q", tc.want, result.Output)
+			}
+			if model.callCount != 1 {
+				t.Fatalf("model call count = %d, want stop before second model call", model.callCount)
+			}
+			if len(tool.inputs) != 1 {
+				t.Fatalf("touch_gesture calls = %d, want 1", len(tool.inputs))
+			}
+		})
+	}
+}
+
+func TestRuntimeRunStopsPointerModeMismatchContentBeforeRetryToolCall(t *testing.T) {
+	stopMessage := `touch_gesture produced no visible screen change, and the device is configured as Android with hid.pointer_mode="absolute". Stop operation here because the touch mode likely does not match the target. Please switch hid.pointer_mode to "touchscreen", restart the agent, and retry.`
+	model := &scriptedModel{responses: []*llms.ContentResponse{
+		toolCallResponseWithContent("call_1", "touch_gesture", `{"type":"long_press","point":{"x":500,"y":500}}`, stopMessage),
+		contentResponse("should not be used"),
+	}}
+	tool := &stubTool{
+		name:        "touch_gesture",
+		description: "Touch.",
+		output:      `{"screen_changed":false}`,
+	}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{
+			Model:           ModelConfig{Provider: "fake"},
+			Instruction:     "Use tools.",
+			DefaultPlatform: "android",
+			HID:             HIDConfig{PointerMode: "absolute"},
+		}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"touch_gesture": tool}},
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "tap the screen"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != stopMessage {
+		t.Fatalf("output = %q, want stop message", result.Output)
+	}
+	if model.callCount != 1 {
+		t.Fatalf("model call count = %d, want stop before second model call", model.callCount)
+	}
+	if len(tool.inputs) != 0 {
+		t.Fatalf("touch_gesture calls = %d, want 0", len(tool.inputs))
+	}
+}
+
+func TestRuntimeRunDoesNotStopPointerModeMismatchContentForOtherTool(t *testing.T) {
+	stopMessage := `touch_gesture produced no visible screen change, and the device is configured as Android with hid.pointer_mode="absolute". Stop operation here because the touch mode likely does not match the target. Please switch hid.pointer_mode to "touchscreen", restart the agent, and retry.`
+	model := &scriptedModel{responses: []*llms.ContentResponse{
+		toolCallResponseWithContent("call_1", "screenshot", `{}`, stopMessage),
+		contentResponse("continued after screenshot"),
+	}}
+	tool := &stubTool{
+		name:        "screenshot",
+		description: "Screenshot.",
+		output:      `{"ok":true}`,
+	}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{
+			Model:           ModelConfig{Provider: "fake"},
+			Instruction:     "Use tools.",
+			DefaultPlatform: "android",
+			HID:             HIDConfig{PointerMode: "absolute"},
+		}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"screenshot": tool}},
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "take a screenshot"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "continued after screenshot" {
+		t.Fatalf("output = %q, want model final answer", result.Output)
+	}
+	if model.callCount != 2 {
+		t.Fatalf("model call count = %d, want continue to second model call", model.callCount)
+	}
+	if len(tool.inputs) != 1 {
+		t.Fatalf("screenshot calls = %d, want 1", len(tool.inputs))
+	}
+}
+
+func TestRuntimeRunContinuesTouchGestureWhenPointerModeMatches(t *testing.T) {
+	model := &scriptedModel{responses: roleToolResponses("touch_gesture", `{"type":"tap","point":{"x":500,"y":500}}`, "verified after inspection")}
+	tool := &stubTool{
+		name:        "touch_gesture",
+		description: "Touch.",
+		output:      `{"screen_changed":false}`,
+	}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{
+			Model:           ModelConfig{Provider: "fake"},
+			Instruction:     "Use tools.",
+			DefaultPlatform: "android",
+			HID:             HIDConfig{PointerMode: "touchscreen"},
+		}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"touch_gesture": tool}},
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "tap the screen"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "verified after inspection" {
+		t.Fatalf("output = %q, want model final answer", result.Output)
+	}
+	if model.callCount != 2 {
+		t.Fatalf("model call count = %d, want continue to second model call", model.callCount)
+	}
+	if len(tool.inputs) != 1 {
+		t.Fatalf("touch_gesture calls = %d, want 1", len(tool.inputs))
+	}
+}
+
 func TestRuntimeRunWaitForWakeupAppendsToolResultBeforeFinishing(t *testing.T) {
 	model := &scriptedModel{responses: []*llms.ContentResponse{
 		toolCallResponse("wait_1", "wait_for_wakeup", `{"reason":"user asked"}`),
@@ -227,7 +425,7 @@ func TestRuntimeRunWaitForWakeupAppendsToolResultBeforeFinishing(t *testing.T) {
 	}}
 	controller := NewWaitForWakeupController()
 	runtime := NewRuntimeWithDeps(
-		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."}),
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", LoadAllTools: true}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
@@ -1000,6 +1198,110 @@ func TestRuntimeRunSteerInterruptCancelsCancelableToolWithoutWaitingForSteer(t *
 	}
 }
 
+func TestRuntimeRunCanceledToolDoesNotPoisonNextRunToolHistory(t *testing.T) {
+	model := &strictToolPairModel{}
+	toolStarted := make(chan struct{})
+	toolCanceled := make(chan struct{})
+	tool := &blockingTool{
+		name:        "slow",
+		description: "Slow tool.",
+		output:      "tool output",
+		started:     toolStarted,
+		canceled:    toolCanceled,
+	}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{"slow": tool}},
+		NewSkillIndex(),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := runtime.Run(ctx, RunRequest{Input: "do the original action"})
+		firstDone <- err
+	}()
+
+	select {
+	case <-toolStarted:
+	case <-time.After(time.Second):
+		t.Fatal("tool did not start")
+	}
+	cancel()
+	select {
+	case <-toolCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("tool context was not canceled")
+	}
+	if err := <-firstDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("first Run() error = %v, want context canceled", err)
+	}
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "continue"})
+	if err != nil {
+		t.Fatalf("second Run() error = %v", err)
+	}
+	if result.Output != "continued" {
+		t.Fatalf("second Run() output = %q, want continued", result.Output)
+	}
+}
+
+type strictToolPairModel struct {
+	calls atomic.Int64
+}
+
+func (m *strictToolPairModel) GenerateContent(_ context.Context, messages []llms.MessageContent, _ ...llms.CallOption) (*llms.ContentResponse, error) {
+	if m.calls.Add(1) == 1 {
+		return toolCallResponseWithContent("call_1", "slow", `{"__arg1":"original action"}`, ""), nil
+	}
+	if err := validateStrictToolMessageSequence(messages); err != nil {
+		return nil, err
+	}
+	return contentResponse("continued"), nil
+}
+
+func (m *strictToolPairModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
+	panic("unexpected Call invocation")
+}
+
+func validateStrictToolMessageSequence(messages []llms.MessageContent) error {
+	pending := map[string]struct{}{}
+	for i, message := range messages {
+		if len(pending) > 0 && message.Role != llms.ChatMessageTypeTool && message.Role != llms.ChatMessageTypeFunction {
+			return fmt.Errorf("message %d arrived before tool responses for %v", i, pending)
+		}
+		switch message.Role {
+		case llms.ChatMessageTypeAI:
+			for _, part := range message.Parts {
+				if call, ok := part.(llms.ToolCall); ok {
+					pending[strings.TrimSpace(call.ID)] = struct{}{}
+				}
+			}
+		case llms.ChatMessageTypeTool, llms.ChatMessageTypeFunction:
+			if len(pending) == 0 {
+				return fmt.Errorf("message %d contains an orphan tool result", i)
+			}
+			for _, part := range message.Parts {
+				response, ok := part.(llms.ToolCallResponse)
+				if !ok {
+					continue
+				}
+				id := strings.TrimSpace(response.ToolCallID)
+				if _, ok := pending[id]; !ok {
+					return fmt.Errorf("message %d responds to unknown tool call %q", i, id)
+				}
+				delete(pending, id)
+			}
+		}
+	}
+	if len(pending) > 0 {
+		return fmt.Errorf("missing tool responses for %v", pending)
+	}
+	return nil
+}
+
 func TestRuntimeRunDoesNotConsumePendingSteerBeforeFinalAnswer(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
@@ -1424,7 +1726,7 @@ func TestToolDescriptorsIncludeSkillToolMetadata(t *testing.T) {
 	tools.RegisterSkillTools(filepath.Join(configDir, "skills"), filepath.Join(configDir, "skill-state", ".bundled_manifest.json"))
 	runtime := NewRuntimeWithDeps(Config{}, nil, nil, tools, NewSkillIndex())
 
-	for _, name := range []string{"skill_list", "skill_read", "skill_mark_used"} {
+	for _, name := range []string{"skill_list", "skill_read"} {
 		desc, ok := runtime.ToolDescriptorByName(name)
 		if !ok {
 			t.Fatalf("expected descriptor for %s", name)
@@ -1438,6 +1740,9 @@ func TestToolDescriptorsIncludeSkillToolMetadata(t *testing.T) {
 		if strings.TrimSpace(desc.ExampleInput) == "" {
 			t.Fatalf("%s missing example input", name)
 		}
+	}
+	if _, ok := runtime.ToolDescriptorByName("skill_mark_used"); ok {
+		t.Fatal("skill_mark_used should remain hidden from the HTTP catalog")
 	}
 }
 
@@ -1657,12 +1962,13 @@ func sessionEventsOfTypes(events []SessionEvent, types ...string) []SessionEvent
 }
 
 type scriptedModel struct {
-	responses    []*llms.ContentResponse
-	streamChunks [][]string
-	callCount    int
-	sawStreaming []bool
-	messages     [][]llms.MessageContent
-	tools        [][]llms.Tool
+	responses         []*llms.ContentResponse
+	streamChunks      [][]string
+	callCount         int
+	sawStreaming      []bool
+	messages          [][]llms.MessageContent
+	tools             [][]llms.Tool
+	rawHTTPLogEnabled []bool
 }
 
 type blockingFinalWriter struct {
@@ -1716,6 +2022,7 @@ func (m *scriptedModel) GenerateContent(ctx context.Context, messages []llms.Mes
 	m.sawStreaming = append(m.sawStreaming, callOptions.StreamingFunc != nil)
 	m.messages = append(m.messages, messages)
 	m.tools = append(m.tools, callOptions.Tools)
+	m.rawHTTPLogEnabled = append(m.rawHTTPLogEnabled, rawHTTPLogEnabled(ctx))
 
 	if callOptions.StreamingFunc != nil && m.callCount < len(m.responses) {
 		if m.streamChunks != nil && m.callCount < len(m.streamChunks) {
@@ -2449,7 +2756,7 @@ func TestRuntimeLogsPreserveThinkStartTagInToolCallContent(t *testing.T) {
 	thinkingContent := "<think>\n需要查当前时间。\n</think>"
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			toolCallResponseWithContent("call_1", "current_time", `{"timezone":"local"}`, thinkingContent),
+			toolCallResponseWithContent("call_1", "shell", `{"command":"date"}`, thinkingContent),
 			contentResponse("已完成。"),
 		},
 	}
@@ -2461,7 +2768,7 @@ func TestRuntimeLogsPreserveThinkStartTagInToolCallContent(t *testing.T) {
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
-			"current_time": NewCurrentTimeTool(),
+			"shell": &stubTool{name: "shell", description: "Run controller commands.", output: "now"},
 		}},
 		NewSkillIndex(),
 	)
@@ -2476,8 +2783,8 @@ func TestRuntimeLogsPreserveThinkStartTagInToolCallContent(t *testing.T) {
 	if !strings.Contains(logText, "Role output: role=agent") {
 		t.Fatalf("missing agent role output log:\n%s", logText)
 	}
-	if !strings.Contains(logText, "Tool call: name=current_time") {
-		t.Fatalf("missing current_time tool call log:\n%s", logText)
+	if !strings.Contains(logText, "Tool call: name=shell") {
+		t.Fatalf("missing shell tool call log:\n%s", logText)
 	}
 	if strings.Count(logText, "<think>") < 2 {
 		t.Fatalf("logs lost think start tag:\n%s", logText)
@@ -2561,20 +2868,20 @@ func TestRuntimeSimpleLoopDoesNotGenerateImplicitTodo(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
 			toolCallResponse("call_1", "screenshot", `{"__arg1":"{}"}`),
-			toolCallResponse("call_2", "web_search", `{"__arg1":"Aiden"}`),
+			toolCallResponse("call_2", "shell", `{"command":"date"}`),
 			contentResponse("done"),
 			verifierFinishResponse("done"),
 		},
 	}
 	screenshot := &stubTool{name: "screenshot", description: "Capture screen.", output: "screen"}
-	webSearch := &stubTool{name: "web_search", description: "Search web.", output: "result"}
+	shell := &stubTool{name: "shell", description: "Run controller commands.", output: "now"}
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools."}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{
 			"screenshot": screenshot,
-			"web_search": webSearch,
+			"shell":      shell,
 		}},
 		NewSkillIndex(),
 	)
@@ -2595,24 +2902,24 @@ func TestRuntimeSimpleLoopDoesNotGenerateImplicitTodo(t *testing.T) {
 	if closed := runEventsOfType(events, "todo_closed"); len(closed) != 0 {
 		t.Fatalf("simple loop emitted implicit todo_closed events: %#v", closed)
 	}
-	if len(screenshot.inputs) != 1 || len(webSearch.inputs) != 1 {
-		t.Fatalf("expected simple tools to execute without todo, screenshot=%#v web=%#v", screenshot.inputs, webSearch.inputs)
+	if len(screenshot.inputs) != 1 || len(shell.inputs) != 1 {
+		t.Fatalf("expected simple tools to execute without todo, screenshot=%#v shell=%#v", screenshot.inputs, shell.inputs)
 	}
 }
 
 func TestRuntimeForceSimpleLoopDoesNotGenerateTodo(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
-			toolCallResponse("call_1", "web_search", `{"__arg1":"Aiden"}`),
+			toolCallResponse("call_1", "shell", `{"command":"date"}`),
 			contentResponse("done"),
 		},
 	}
-	webSearch := &stubTool{name: "web_search", description: "Search web.", output: "result"}
+	shell := &stubTool{name: "shell", description: "Run controller commands.", output: "now"}
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Use tools.", ForceSimpleLoop: true}),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
-		&ToolSet{tools: map[string]langtools.Tool{"web_search": webSearch}},
+		&ToolSet{tools: map[string]langtools.Tool{"shell": shell}},
 		NewSkillIndex(),
 	)
 
@@ -2632,8 +2939,8 @@ func TestRuntimeForceSimpleLoopDoesNotGenerateTodo(t *testing.T) {
 	if closed := runEventsOfType(events, "todo_closed"); len(closed) != 0 {
 		t.Fatalf("single-agent loop emitted todo_closed events: %#v", closed)
 	}
-	if len(webSearch.inputs) != 1 {
-		t.Fatalf("expected single-agent tool to execute without todo, inputs=%#v", webSearch.inputs)
+	if len(shell.inputs) != 1 {
+		t.Fatalf("expected single-agent tool to execute without todo, inputs=%#v", shell.inputs)
 	}
 }
 
@@ -2894,7 +3201,7 @@ func TestRuntimeRunKeyboardToolFeedsPostActionScreenshotImage(t *testing.T) {
 		name:        "keyboard_tap",
 		description: "Press and release keyboard keys.",
 		visual:      true,
-		output: `{"action_output":"ok","width":800,"height":600,"format":"jpeg","size":25,"data":"` +
+		output: `{"action_output":"ok","screen_changed":false,"screen_stable":true,"stable_wait_ms":250,"width":800,"height":600,"format":"jpeg","size":25,"data":"` +
 			base64.StdEncoding.EncodeToString(jpegBytes) + `"}`,
 	}
 	runtime := NewRuntimeWithDeps(
@@ -2927,6 +3234,12 @@ func TestRuntimeRunKeyboardToolFeedsPostActionScreenshotImage(t *testing.T) {
 					foundToolResponse = true
 					if !strings.Contains(p.Content, "returned a screenshot observation") {
 						t.Fatalf("keyboard tool response = %q, want screenshot observation summary", p.Content)
+					}
+					if !strings.Contains(p.Content, "No visible screen change was observed") {
+						t.Fatalf("keyboard tool response = %q, want screen_changed warning", p.Content)
+					}
+					if !strings.Contains(p.Content, "Do not assume the action succeeded") {
+						t.Fatalf("keyboard tool response = %q, want no-success warning", p.Content)
 					}
 					if strings.Contains(p.Content, base64.StdEncoding.EncodeToString(jpegBytes)) {
 						t.Fatalf("keyboard tool response should not inline screenshot payload: %q", p.Content)
