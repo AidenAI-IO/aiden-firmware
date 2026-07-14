@@ -88,6 +88,30 @@ func TestRuntimeRun(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunMarksMainAgentModelCallsForRawHTTPLog(t *testing.T) {
+	model := &scriptedModel{responses: roleDirectResponses("completed")}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Answer directly.",
+		}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "hello"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(model.rawHTTPLogEnabled) != 1 {
+		t.Fatalf("expected one model call, got %d", len(model.rawHTTPLogEnabled))
+	}
+	if !model.rawHTTPLogEnabled[0] {
+		t.Fatal("main agent model call was not marked for raw HTTP logging")
+	}
+}
+
 func TestRuntimeRunExportsFailedTraceWhenModelBuildFails(t *testing.T) {
 	ingestCh := make(chan langfuseIngestionRequest, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1938,12 +1962,13 @@ func sessionEventsOfTypes(events []SessionEvent, types ...string) []SessionEvent
 }
 
 type scriptedModel struct {
-	responses    []*llms.ContentResponse
-	streamChunks [][]string
-	callCount    int
-	sawStreaming []bool
-	messages     [][]llms.MessageContent
-	tools        [][]llms.Tool
+	responses         []*llms.ContentResponse
+	streamChunks      [][]string
+	callCount         int
+	sawStreaming      []bool
+	messages          [][]llms.MessageContent
+	tools             [][]llms.Tool
+	rawHTTPLogEnabled []bool
 }
 
 type blockingFinalWriter struct {
@@ -1997,6 +2022,7 @@ func (m *scriptedModel) GenerateContent(ctx context.Context, messages []llms.Mes
 	m.sawStreaming = append(m.sawStreaming, callOptions.StreamingFunc != nil)
 	m.messages = append(m.messages, messages)
 	m.tools = append(m.tools, callOptions.Tools)
+	m.rawHTTPLogEnabled = append(m.rawHTTPLogEnabled, rawHTTPLogEnabled(ctx))
 
 	if callOptions.StreamingFunc != nil && m.callCount < len(m.responses) {
 		if m.streamChunks != nil && m.callCount < len(m.streamChunks) {
