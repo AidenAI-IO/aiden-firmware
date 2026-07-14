@@ -41,6 +41,24 @@ const storageSDSubdir = "aiden"
 // StorageFormatConfirmToken must be sent by clients to confirm a destructive format.
 const StorageFormatConfirmToken = "format-sd-card"
 
+// Filesystems the format job can create. FAT32 is the default for PC/phone
+// interoperability; ext4 is journaled and has on-device fsck support.
+const (
+	StorageFormatFAT32 = "fat32"
+	StorageFormatExt4  = "ext4"
+)
+
+// Format job states surfaced through Status and the state mirror.
+const (
+	StorageFormatIdle    = "idle"
+	StorageFormatRunning = "running"
+	StorageFormatSuccess = "success"
+	StorageFormatFailed  = "failed"
+)
+
+// storageVolumeLabel is stamped on freshly formatted cards.
+const storageVolumeLabel = "AIDEN"
+
 // storageStateFileName mirrors runtime state for external processes (cmd/ota).
 const defaultStorageStatePath = "/run/aiden/storage.state"
 
@@ -57,6 +75,17 @@ type StorageCardStatus struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+// StorageFormatJob tracks the asynchronous card-format task. Formatting
+// rewrites the whole card: a fresh MBR with one partition plus a new
+// filesystem, so it runs as a background job with polled status.
+type StorageFormatJob struct {
+	Status     string    `json:"status"` // idle | running | success | failed
+	FS         string    `json:"fs,omitempty"`
+	Error      string    `json:"error,omitempty"`
+	StartedAt  time.Time `json:"started_at,omitempty"`
+	FinishedAt time.Time `json:"finished_at,omitempty"`
+}
+
 // StorageStatus is the API-facing snapshot of the storage subsystem.
 type StorageStatus struct {
 	PreferredMode  StorageMode       `json:"preferred_mode"`
@@ -65,6 +94,7 @@ type StorageStatus struct {
 	FallingBack    bool              `json:"falling_back"`
 	FallbackReason string            `json:"fallback_reason,omitempty"`
 	MountPoint     string            `json:"mount_point"`
+	FormatJob      StorageFormatJob  `json:"format_job"`
 }
 
 // StorageEvent notifies subscribers that the effective mode changed.
@@ -87,8 +117,10 @@ type storageSysOps interface {
 	Healthy(mountPoint string) bool
 	// SpaceInfo returns free/total bytes for the filesystem containing path.
 	SpaceInfo(path string) (free, total int64, err error)
-	// Format creates a fresh ext4 filesystem on dev. Destructive.
-	Format(dev string) error
+	// FormatDisk rewrites the whole card: fresh MBR with one partition plus
+	// a new filesystem of the given type. Destructive. Returns the partition
+	// device node to mount.
+	FormatDisk(fs string) (string, error)
 }
 
 // StorageManager owns SD card mounting, mode derivation, and per-class
@@ -114,7 +146,8 @@ type StorageManager struct {
 	presenceRaw    bool
 	presenceCount  int
 	subscribers    []chan StorageEvent
-	stateWriteErr  bool // log the mirror-write failure only once
+	stateWriteErr  bool             // log the mirror-write failure only once
+	formatJob      StorageFormatJob // async format task state
 
 	stopOnce sync.Once
 	stop     chan struct{}
@@ -141,6 +174,7 @@ func newStorageManagerWithOps(cfg StorageConfig, ops storageSysOps, prefPath, st
 		emmcRoot:      emmcRoot,
 		pollInterval:  2 * time.Second,
 		lastEffective: StorageModeEMMCOnly,
+		formatJob:     StorageFormatJob{Status: StorageFormatIdle},
 		stop:          make(chan struct{}),
 	}
 	m.preferred = m.loadPreference()
@@ -199,6 +233,7 @@ func (m *StorageManager) Status() StorageStatus {
 		FallingBack:    m.fallingBack,
 		FallbackReason: m.fallbackReason,
 		MountPoint:     m.cfg.MountPointOrDefault(),
+		FormatJob:      m.formatJob,
 	}
 }
 
@@ -211,6 +246,10 @@ func (m *StorageManager) SetPreferredMode(mode StorageMode) error {
 		return fmt.Errorf("invalid storage mode %d", mode)
 	}
 	m.mu.Lock()
+	if m.formatJob.Status == StorageFormatRunning {
+		m.mu.Unlock()
+		return fmt.Errorf("cannot change mode while a format job is running")
+	}
 	m.preferred = mode
 	if err := m.persistPreferenceLocked(); err != nil {
 		m.mu.Unlock()
@@ -235,6 +274,9 @@ func (m *StorageManager) SetPreferredMode(mode StorageMode) error {
 func (m *StorageManager) SafeEject() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.formatJob.Status == StorageFormatRunning {
+		return fmt.Errorf("cannot eject while a format job is running")
+	}
 	if !m.card.Mounted {
 		return fmt.Errorf("no mounted card to eject")
 	}
@@ -244,33 +286,66 @@ func (m *StorageManager) SafeEject() error {
 	return nil
 }
 
-// Format erases the card with a fresh ext4 filesystem, then mounts it.
-// confirm must equal StorageFormatConfirmToken.
-func (m *StorageManager) Format(confirm string) error {
+// StartFormat launches the asynchronous format job: fresh MBR with one
+// partition plus a new filesystem. Erases the entire card, including any
+// partitions not created by this device. confirm must equal
+// StorageFormatConfirmToken. Progress is polled via Status().FormatJob.
+// After formatting, the card is mounted unless the preferred mode is
+// eMMC-only, whose "card untouched" semantics win.
+func (m *StorageManager) StartFormat(fs, confirm string) error {
 	if confirm != StorageFormatConfirmToken {
 		return fmt.Errorf("format not confirmed")
 	}
+	if fs == "" {
+		fs = StorageFormatFAT32
+	}
+	if fs != StorageFormatFAT32 && fs != StorageFormatExt4 {
+		return fmt.Errorf("unsupported filesystem %q (want %s or %s)", fs, StorageFormatFAT32, StorageFormatExt4)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	dev, present := m.ops.CardDevice()
-	if !present {
+	if m.formatJob.Status == StorageFormatRunning {
+		return fmt.Errorf("a format job is already running")
+	}
+	if _, present := m.ops.CardDevice(); !present {
 		return fmt.Errorf("no card present")
 	}
 	if m.card.Mounted {
 		m.unmountLocked(false, "")
 	}
-	if err := m.ops.Format(dev); err != nil {
+	m.formatJob = StorageFormatJob{Status: StorageFormatRunning, FS: fs, StartedAt: time.Now()}
+	m.writeStateFileLocked()
+	go m.runFormatJob(fs)
+	return nil
+}
+
+// runFormatJob executes the destructive format outside the manager lock so
+// status polling stays responsive; the running-job flag keeps the poll loop
+// and other operations away from the card meanwhile.
+func (m *StorageManager) runFormatJob(fs string) {
+	_, err := m.ops.FormatDisk(fs)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.formatJob.FinishedAt = time.Now()
+	if err != nil {
+		m.formatJob.Status = StorageFormatFailed
+		m.formatJob.Error = err.Error()
 		m.card.Reason = fmt.Sprintf("format failed: %v", err)
+		m.logf("[storage] format (%s) failed: %v", fs, err)
 		m.finishTransitionLocked()
-		return fmt.Errorf("format %s: %w", dev, err)
+		return
 	}
+	m.formatJob.Status = StorageFormatSuccess
+	m.card.Reason = ""
 	m.ejected = false
 	m.mountFailed = false
 	if m.preferred != StorageModeEMMCOnly {
 		m.tryMountLocked()
+	} else {
+		m.logf("[storage] format (%s) done; card left unmounted (eMMC-only mode)", fs)
 	}
 	m.finishTransitionLocked()
-	return nil
 }
 
 // Subscribe returns a channel that receives an event whenever the effective
@@ -388,6 +463,11 @@ func (m *StorageManager) tick() {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// A running format owns the card exclusively; skip reconciliation.
+	if m.formatJob.Status == StorageFormatRunning {
+		return
+	}
 
 	// Debounce: require two consecutive observations before accepting a
 	// presence change (contact bounce on physical slots is common).
@@ -578,8 +658,13 @@ func (m *StorageManager) writeStateFileLocked() {
 	writeKV("SD_MOUNTPOINT", m.cfg.MountPointOrDefault())
 	writeKV("PREFERRED_MODE", fmt.Sprintf("%d", m.preferred))
 	writeKV("EFFECTIVE_MODE", fmt.Sprintf("%d", deriveEffectiveMode(m.preferred, m.card.Mounted)))
+	writeKV("SD_TOTAL_BYTES", fmt.Sprintf("%d", m.card.TotalBytes))
+	writeKV("SD_FREE_BYTES", fmt.Sprintf("%d", m.card.FreeBytes))
 	writeKV("FALLING_BACK", bool01(m.fallingBack))
 	writeKV("REASON", strings.ReplaceAll(m.card.Reason, "\n", " "))
+	writeKV("FORMAT_STATUS", m.formatJob.Status)
+	writeKV("FORMAT_FS", m.formatJob.FS)
+	writeKV("FORMAT_ERROR", strings.ReplaceAll(m.formatJob.Error, "\n", " "))
 
 	tmp := m.statePath + ".tmp"
 	err := os.MkdirAll(filepath.Dir(m.statePath), 0o755)
@@ -619,18 +704,16 @@ func (o *realStorageOps) CardDevice() (string, bool) {
 	return "/dev/" + o.device, true
 }
 
-// Prepare runs the usability gate: fsck auto-repair, read-write mount, and a
+// Prepare runs the usability gate: best-effort fsck, read-write mount, and a
 // probe write. Never formats.
 func (o *realStorageOps) Prepare(dev, mountPoint string) error {
 	if err := os.MkdirAll(mountPoint, 0o755); err != nil {
 		return fmt.Errorf("create mount point: %w", err)
 	}
-	// fsck exit code 1 means errors were corrected; both 0 and 1 are fine.
-	if out, err := exec.Command("fsck", "-p", dev).CombinedOutput(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() > 1 {
-			return fmt.Errorf("fsck %s: %v: %s", dev, err, strings.TrimSpace(string(out)))
-		}
-	}
+	// fsck is advisory: the device ships fsck.ext4 but no fsck.fat, so a
+	// missing checker (or a repair failure) must not reject the card; the
+	// mount plus probe write below are the authoritative gate.
+	_ = exec.Command("fsck", "-p", dev).Run()
 	// ext4 gets a tighter journal commit; other filesystems reject those
 	// options, so retry with the portable set.
 	if out, err := exec.Command("mount", "-o", "noatime,errors=remount-ro,commit=2", dev, mountPoint).CombinedOutput(); err != nil {
@@ -693,9 +776,139 @@ func (o *realStorageOps) SpaceInfo(path string) (int64, int64, error) {
 	return int64(st.Bavail) * bsize, int64(st.Blocks) * bsize, nil
 }
 
-func (o *realStorageOps) Format(dev string) error {
-	if out, err := exec.Command("mkfs.ext4", "-F", dev).CombinedOutput(); err != nil {
-		return fmt.Errorf("mkfs.ext4 %s: %v: %s", dev, err, strings.TrimSpace(string(out)))
+// mbrPartitionStartLBA aligns the single partition to 4 MB (SD erase blocks).
+const mbrPartitionStartLBA = 8192
+
+// blkrrpartIoctl asks the kernel to re-read the partition table (BLKRRPART).
+const blkrrpartIoctl = 0x125F
+
+// buildMBRSector builds a 512-byte MBR with one partition spanning the card
+// from mbrPartitionStartLBA to the end. Pure function so the partition math
+// is host-testable without touching a block device.
+func buildMBRSector(totalSectors uint64, partType byte) ([]byte, error) {
+	if totalSectors <= mbrPartitionStartLBA+2048 {
+		return nil, fmt.Errorf("device too small: %d sectors", totalSectors)
 	}
-	return nil
+	numSectors := totalSectors - mbrPartitionStartLBA
+	if numSectors > 0xFFFFFFFF {
+		numSectors = 0xFFFFFFFF // MBR limit (~2 TiB); clamp rather than fail
+	}
+	sector := make([]byte, 512)
+	entry := sector[446:462]
+	entry[0] = 0x00                                 // not bootable
+	entry[1], entry[2], entry[3] = 0xFE, 0xFF, 0xFF // CHS begin: LBA marker
+	entry[4] = partType                             // filesystem type
+	entry[5], entry[6], entry[7] = 0xFE, 0xFF, 0xFF // CHS end: LBA marker
+	putLE32(entry[8:12], mbrPartitionStartLBA)      // first LBA
+	putLE32(entry[12:16], uint32(numSectors))       // sector count
+	sector[510], sector[511] = 0x55, 0xAA           // boot signature
+	return sector, nil
+}
+
+func putLE32(b []byte, v uint32) {
+	b[0] = byte(v)
+	b[1] = byte(v >> 8)
+	b[2] = byte(v >> 16)
+	b[3] = byte(v >> 24)
+}
+
+// mbrPartitionType maps a format filesystem to its MBR partition type byte.
+func mbrPartitionType(fs string) (byte, error) {
+	switch fs {
+	case StorageFormatFAT32:
+		return 0x0C, nil // W95 FAT32 (LBA)
+	case StorageFormatExt4:
+		return 0x83, nil // Linux
+	default:
+		return 0, fmt.Errorf("unsupported filesystem %q", fs)
+	}
+}
+
+// FormatDisk rewrites the MBR with a single partition and creates the
+// filesystem on it. Erases the entire card.
+func (o *realStorageOps) FormatDisk(fs string) (string, error) {
+	partType, err := mbrPartitionType(fs)
+	if err != nil {
+		return "", err
+	}
+	totalSectors, err := o.deviceSectors()
+	if err != nil {
+		return "", err
+	}
+	sector, err := buildMBRSector(totalSectors, partType)
+	if err != nil {
+		return "", err
+	}
+
+	base := "/dev/" + o.device
+	f, err := os.OpenFile(base, os.O_WRONLY, 0)
+	if err != nil {
+		return "", fmt.Errorf("open %s: %w", base, err)
+	}
+	if _, err := f.WriteAt(sector, 0); err != nil {
+		f.Close()
+		return "", fmt.Errorf("write MBR to %s: %w", base, err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return "", fmt.Errorf("sync %s: %w", base, err)
+	}
+	// Ask the kernel to re-read the partition table; retry while it still
+	// considers the old partitions busy.
+	var rrErr syscall.Errno
+	for attempt := 0; attempt < 5; attempt++ {
+		_, _, rrErr = syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), blkrrpartIoctl, 0)
+		if rrErr == 0 {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	f.Close()
+	if rrErr != 0 {
+		return "", fmt.Errorf("re-read partition table on %s: %v", base, rrErr)
+	}
+
+	part := base + "p1"
+	if err := waitForPath(part, 10*time.Second); err != nil {
+		return "", fmt.Errorf("partition %s did not appear: %w", part, err)
+	}
+
+	var cmd *exec.Cmd
+	switch fs {
+	case StorageFormatFAT32:
+		// busybox mkfs.vfat creates FAT32 volumes.
+		cmd = exec.Command("mkfs.vfat", "-n", storageVolumeLabel, part)
+	case StorageFormatExt4:
+		cmd = exec.Command("mkfs.ext4", "-F", "-L", storageVolumeLabel, part)
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("%s %s: %v: %s", cmd.Path, part, err, strings.TrimSpace(string(out)))
+	}
+	return part, nil
+}
+
+// deviceSectors reads the card size in 512-byte sectors from sysfs.
+func (o *realStorageOps) deviceSectors() (uint64, error) {
+	data, err := os.ReadFile(filepath.Join("/sys/block", o.device, "size"))
+	if err != nil {
+		return 0, fmt.Errorf("read device size: %w", err)
+	}
+	var sectors uint64
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(data)), "%d", &sectors); err != nil {
+		return 0, fmt.Errorf("parse device size %q: %w", strings.TrimSpace(string(data)), err)
+	}
+	return sectors, nil
+}
+
+func waitForPath(path string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out after %s", timeout)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 }

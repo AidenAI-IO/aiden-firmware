@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fakeStorageOps struct {
@@ -18,11 +19,12 @@ type fakeStorageOps struct {
 	spaceErr   error
 	formatErr  error
 
-	mounted    bool
-	prepares   int
-	unmounts   int
-	lazyUnmnts int
-	formats    int
+	mounted      bool
+	prepares     int
+	unmounts     int
+	lazyUnmnts   int
+	formats      int
+	lastFormatFS string
 }
 
 func (f *fakeStorageOps) CardDevice() (string, bool) {
@@ -64,12 +66,13 @@ func (f *fakeStorageOps) SpaceInfo(path string) (int64, int64, error) {
 	return f.free, f.total, nil
 }
 
-func (f *fakeStorageOps) Format(dev string) error {
+func (f *fakeStorageOps) FormatDisk(fs string) (string, error) {
 	f.formats++
+	f.lastFormatFS = fs
 	if f.formatErr != nil {
-		return f.formatErr
+		return "", f.formatErr
 	}
-	return nil
+	return "/dev/mmcblk2p1", nil
 }
 
 func newTestStorageManager(t *testing.T, ops *fakeStorageOps) *StorageManager {
@@ -360,25 +363,160 @@ func TestStorageManagerReadRootsMergesSDFirst(t *testing.T) {
 	}
 }
 
+// waitForFormatJob polls until the async format job leaves the running state.
+func waitForFormatJob(t *testing.T, m *StorageManager) StorageFormatJob {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		job := m.Status().FormatJob
+		if job.Status != StorageFormatRunning && job.Status != StorageFormatIdle {
+			return job
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("format job did not finish: %+v", job)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestStorageManagerFormatRequiresConfirmation(t *testing.T) {
 	ops := &fakeStorageOps{present: true, free: 1 << 30, total: 1 << 31, healthy: true}
 	m := newTestStorageManager(t, ops)
 	tickN(m, 2)
 
-	if err := m.Format("yes"); err == nil {
+	if err := m.StartFormat(StorageFormatFAT32, "yes"); err == nil {
 		t.Fatal("format without the confirm token succeeded")
 	}
-	if ops.formats != 0 {
-		t.Fatal("format executed without confirmation")
+	if err := m.StartFormat("ntfs", StorageFormatConfirmToken); err == nil {
+		t.Fatal("format with unsupported filesystem succeeded")
 	}
-	if err := m.Format(StorageFormatConfirmToken); err != nil {
+	if ops.formats != 0 {
+		t.Fatal("format executed without valid request")
+	}
+
+	if err := m.StartFormat("", StorageFormatConfirmToken); err != nil {
 		t.Fatal(err)
+	}
+	job := waitForFormatJob(t, m)
+	if job.Status != StorageFormatSuccess {
+		t.Fatalf("job = %+v, want success", job)
+	}
+	if ops.lastFormatFS != StorageFormatFAT32 {
+		t.Fatalf("format fs = %q, want fat32 default", ops.lastFormatFS)
 	}
 	if ops.formats != 1 {
 		t.Fatalf("formats = %d, want 1", ops.formats)
 	}
 	if !m.Status().Card.Mounted {
 		t.Fatal("card not remounted after format")
+	}
+}
+
+func TestStorageManagerFormatEMMCOnlyLeavesCardUnmounted(t *testing.T) {
+	ops := &fakeStorageOps{present: true, free: 1 << 30, total: 1 << 31, healthy: true}
+	m := newTestStorageManager(t, ops)
+	if err := m.SetPreferredMode(StorageModeEMMCOnly); err != nil {
+		t.Fatal(err)
+	}
+	tickN(m, 2)
+
+	if err := m.StartFormat(StorageFormatExt4, StorageFormatConfirmToken); err != nil {
+		t.Fatal(err)
+	}
+	job := waitForFormatJob(t, m)
+	if job.Status != StorageFormatSuccess {
+		t.Fatalf("job = %+v, want success", job)
+	}
+	if ops.lastFormatFS != StorageFormatExt4 {
+		t.Fatalf("format fs = %q, want ext4", ops.lastFormatFS)
+	}
+	if m.Status().Card.Mounted {
+		t.Fatal("card mounted after format despite eMMC-only preference")
+	}
+}
+
+func TestStorageManagerFormatFailureReported(t *testing.T) {
+	ops := &fakeStorageOps{present: true, free: 1 << 30, total: 1 << 31, healthy: true, formatErr: errors.New("card yanked")}
+	m := newTestStorageManager(t, ops)
+	tickN(m, 2)
+
+	if err := m.StartFormat(StorageFormatFAT32, StorageFormatConfirmToken); err != nil {
+		t.Fatal(err)
+	}
+	job := waitForFormatJob(t, m)
+	if job.Status != StorageFormatFailed || !strings.Contains(job.Error, "card yanked") {
+		t.Fatalf("job = %+v, want failure with reason", job)
+	}
+	if m.Status().Card.Mounted {
+		t.Fatal("card mounted after failed format")
+	}
+}
+
+func TestStorageManagerRejectsActionsDuringFormat(t *testing.T) {
+	ops := &fakeStorageOps{present: true, free: 1 << 30, total: 1 << 31, healthy: true}
+	m := newTestStorageManager(t, ops)
+	tickN(m, 2)
+
+	// Freeze the job in the running state without spawning the goroutine.
+	m.mu.Lock()
+	m.formatJob = StorageFormatJob{Status: StorageFormatRunning, FS: StorageFormatFAT32}
+	m.mu.Unlock()
+
+	if err := m.StartFormat(StorageFormatFAT32, StorageFormatConfirmToken); err == nil {
+		t.Fatal("second format accepted while one is running")
+	}
+	if err := m.SafeEject(); err == nil {
+		t.Fatal("eject accepted while formatting")
+	}
+	if err := m.SetPreferredMode(StorageModeEMMCOnly); err == nil {
+		t.Fatal("mode change accepted while formatting")
+	}
+	prepares := ops.prepares
+	tickN(m, 3)
+	if ops.prepares != prepares {
+		t.Fatal("poll loop touched the card while formatting")
+	}
+}
+
+func TestBuildMBRSector(t *testing.T) {
+	const totalSectors = 62333952 // ~29.7 GiB card
+	sector, err := buildMBRSector(totalSectors, 0x0C)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sector) != 512 {
+		t.Fatalf("sector length = %d, want 512", len(sector))
+	}
+	if sector[510] != 0x55 || sector[511] != 0xAA {
+		t.Fatal("missing MBR boot signature")
+	}
+	entry := sector[446:462]
+	if entry[0] != 0x00 {
+		t.Fatal("partition marked bootable")
+	}
+	if entry[4] != 0x0C {
+		t.Fatalf("partition type = %#x, want 0x0C", entry[4])
+	}
+	start := uint32(entry[8]) | uint32(entry[9])<<8 | uint32(entry[10])<<16 | uint32(entry[11])<<24
+	count := uint32(entry[12]) | uint32(entry[13])<<8 | uint32(entry[14])<<16 | uint32(entry[15])<<24
+	if start != mbrPartitionStartLBA {
+		t.Fatalf("partition start = %d, want %d", start, mbrPartitionStartLBA)
+	}
+	if uint64(count) != totalSectors-mbrPartitionStartLBA {
+		t.Fatalf("partition sectors = %d, want %d", count, totalSectors-mbrPartitionStartLBA)
+	}
+	// Bytes 2-445 stay zero so no stale bootstrap code survives.
+	for i := 0; i < 446; i++ {
+		if sector[i] != 0 {
+			t.Fatalf("bootstrap area byte %d = %#x, want 0", i, sector[i])
+		}
+	}
+
+	if _, err := buildMBRSector(4096, 0x0C); err == nil {
+		t.Fatal("tiny device accepted")
+	}
+	if _, err := mbrPartitionType("ntfs"); err == nil {
+		t.Fatal("unsupported fs accepted for partition type")
 	}
 }
 

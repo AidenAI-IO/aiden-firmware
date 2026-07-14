@@ -4528,8 +4528,8 @@ const webUI = `<!DOCTYPE html>
                 </select>
                 <div class="tool-lab-row">
                     <button type="button" class="composer-btn tool-secondary-btn" id="storageEjectBtn" onclick="ejectStorage()">Safe eject</button>
-                    <button type="button" class="composer-btn tool-secondary-btn" id="storageFormatBtn" onclick="formatStorage()">Format card</button>
                 </div>
+                <div class="sidebar-note">Formatting is available in the setup portal (192.168.42.1).</div>
                 <div class="tool-lab-status" id="storageStatusMsg"></div>
             </div>
         </aside>
@@ -4635,7 +4635,6 @@ const webUI = `<!DOCTYPE html>
             const warning = document.getElementById('storageWarning');
             const select = document.getElementById('storageModeSelect');
             const ejectBtn = document.getElementById('storageEjectBtn');
-            const formatBtn = document.getElementById('storageFormatBtn');
             if (!summary || !warning || !select) return;
 
             let text = 'Preference: ' + storageModeName(status.preferred_mode) +
@@ -4651,7 +4650,9 @@ const webUI = `<!DOCTYPE html>
             summary.textContent = text;
 
             let warn = '';
-            if (status.falling_back) {
+            if (status.format_job && status.format_job.status === 'running') {
+                warn = 'Formatting card (' + status.format_job.fs + ')...';
+            } else if (status.falling_back) {
                 warn = 'SD write failed; data is being written to internal storage. ' + (status.fallback_reason || '');
             } else if (status.card.reason) {
                 warn = 'Card issue: ' + status.card.reason;
@@ -4659,11 +4660,12 @@ const webUI = `<!DOCTYPE html>
             warning.textContent = warn;
             warning.hidden = !warn;
 
+            const formatting = status.format_job && status.format_job.status === 'running';
             if (document.activeElement !== select) {
                 select.value = String(status.preferred_mode);
             }
-            if (ejectBtn) ejectBtn.disabled = !status.card.mounted;
-            if (formatBtn) formatBtn.disabled = !status.card.present;
+            select.disabled = formatting;
+            if (ejectBtn) ejectBtn.disabled = !status.card.mounted || formatting;
         }
 
         function setStorageStatusMsg(text, isError) {
@@ -4702,13 +4704,6 @@ const webUI = `<!DOCTYPE html>
         async function ejectStorage() {
             if (!confirm('Sync and unmount the SD card so it can be safely removed?')) return;
             await postStorage('/api/storage/eject', {}, 'Ejecting...', 'Card ejected. Safe to remove.');
-        }
-
-        async function formatStorage() {
-            if (!confirm('Format the SD card as ext4? ALL DATA ON THE CARD WILL BE ERASED.')) return;
-            if (!confirm('Really erase the card? This cannot be undone.')) return;
-            await postStorage('/api/storage/format', { confirm: 'format-sd-card' },
-                'Formatting card (this can take a while)...', 'Card formatted and mounted.');
         }
 
         async function loadHistory() {

@@ -78,7 +78,9 @@ func (s *Server) handleStorageEject(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(sm.Status())
 }
 
-// handleStorageFormat serves POST /api/storage/format {"confirm": "format-sd-card"}.
+// handleStorageFormat serves POST /api/storage/format
+// {"fs": "fat32"|"ext4", "confirm": "format-sd-card"}. The format runs as an
+// asynchronous job; poll /api/storage/status (format_job) for the outcome.
 func (s *Server) handleStorageFormat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeStorageError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -90,16 +92,18 @@ func (s *Server) handleStorageFormat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
+		FS      string `json:"fs"`
 		Confirm string `json:"confirm"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeStorageError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if err := sm.Format(req.Confirm); err != nil {
+	if err := sm.StartFormat(req.FS, req.Confirm); err != nil {
 		writeStorageError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(sm.Status())
 }
