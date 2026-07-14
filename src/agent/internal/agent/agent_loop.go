@@ -211,7 +211,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 			return "", false, err
 		} else if hasPending {
 			policy.ResetForSteer()
-			log.Printf("[steer:debug] LLM parse failed, steer injected (length=%d)\n", len(steer.Content))
+			log.Printf("[steer] LLM parse failed, steer injected (length=%d)\n", len(steer.Content))
 			return "", false, nil
 		}
 
@@ -252,7 +252,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		if err := l.persistSteer(ctx, llmExecutor, steer); err != nil {
 			return "", false, err
 		}
-		log.Printf("[steer:debug] LLM action interrupted, steer injected (length=%d)\n", len(steer.Content))
+		log.Printf("[steer] LLM action interrupted, steer injected (length=%d)\n", len(steer.Content))
 		return "", false, nil
 	}
 
@@ -309,7 +309,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 			}
 			if hasPending {
 				policy.ResetForSteer()
-				log.Printf("[steer:debug] tool canceled but pending steer exists (length=%d), continuing iteration\n", len(steer.Content))
+				log.Printf("[steer] tool canceled but pending steer exists (length=%d), continuing iteration\n", len(steer.Content))
 				return "", false, nil
 			}
 		}
@@ -576,7 +576,7 @@ func (l *AgentLoop) executeToolCall(ctx context.Context, execution ToolCallExecu
 		if steer, hasPending := l.checkPendingSteer(ctx); hasPending {
 			// Tool was interrupted but we have a new steer to process
 			// Return the error but the steer is preserved for next iteration
-			log.Printf("[steer:debug] tool canceled but pending steer exists (length=%d), will be processed\n", len(steer.Content))
+			log.Printf("[steer] tool canceled but pending steer exists (length=%d), will be processed\n", len(steer.Content))
 		}
 	}
 

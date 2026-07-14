@@ -166,11 +166,9 @@ func (c *voiceRunControl) consumePending(requestID string) (RunSteerMessage, boo
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if requestID == "" {
-		log.Printf("[steer:debug] consumePending failed: empty requestID\n")
 		return RunSteerMessage{}, false
 	}
 	if c.activeRequestID != requestID {
-		log.Printf("[steer:debug] consumePending failed: requestID mismatch (want=%s got=%s)\n", c.activeRequestID, requestID)
 		return RunSteerMessage{}, false
 	}
 
@@ -180,17 +178,15 @@ func (c *voiceRunControl) consumePending(requestID string) (RunSteerMessage, boo
 		c.resetInterruptLocked()
 		// Clear any stale pending steer to prevent old instruction from executing after new one
 		c.clearPendingLocked()
-		log.Printf("[steer:debug] consumePending success: consuming interrupt steer (length=%d)\n", len(steer.Content))
+		log.Printf("[steer] consumePending: interrupt steer consumed (length=%d)\n", len(steer.Content))
 		return steer, true
 	}
 
 	// 再检查 pending steer（正常场景）
 	if !c.hasPendingSteer {
-		log.Printf("[steer:debug] consumePending: no pending steer (interrupt.active=%v interrupt.done=%v interrupt.hasText=%v)\n",
-			c.interrupt.active, c.interrupt.done, c.interrupt.hasText)
 		return RunSteerMessage{}, false
 	}
-	log.Printf("[steer:debug] consumePending success: consuming pending steer (length=%d)\n", len(c.pendingSteer.Content))
+	log.Printf("[steer] consumePending: pending steer consumed (length=%d)\n", len(c.pendingSteer.Content))
 	return c.consumePendingLocked()
 }
 

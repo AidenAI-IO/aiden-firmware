@@ -64,6 +64,8 @@ type Server struct {
 	activeOutputsMu      sync.Mutex
 	pendingSteers        map[string]pendingSteerMessage
 	pendingSteersMu      sync.Mutex
+	steerSignals         map[string]chan struct{}
+	steerSignalsMu       sync.Mutex
 	eventBroadcaster     *EventBroadcaster
 }
 
@@ -361,6 +363,7 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		activeRuns:          make(map[string]context.CancelFunc),
 		terminatedRequests:  make(map[string]struct{}),
 		pendingSteers:       make(map[string]pendingSteerMessage),
+		steerSignals:        make(map[string]chan struct{}),
 		eventBroadcaster:    NewEventBroadcaster(),
 	}
 	if runtime.config.ConfigDir != "" {
@@ -861,6 +864,8 @@ func (s *Server) setPendingSteer(requestID, content string) (pendingSteerMessage
 	}
 	s.pendingSteers[requestID] = steer
 	s.pendingSteersMu.Unlock()
+	// Signal the agent loop that a steer is available (interrupt LLM/tool call)
+	s.signalSteer(requestID)
 	return steer, true
 }
 
@@ -903,6 +908,43 @@ func (s *Server) consumePendingSteer(requestID string) (RunSteerMessage, bool) {
 		Content:   steer.Content,
 		Timestamp: steer.Timestamp,
 	}, true
+}
+
+// signalSteer closes the current steer signal channel for the request,
+// causing any blocking LLM/tool call to observe the interrupt.
+func (s *Server) signalSteer(requestID string) {
+	s.steerSignalsMu.Lock()
+	defer s.steerSignalsMu.Unlock()
+	ch, ok := s.steerSignals[requestID]
+	if ok && ch != nil {
+		close(ch)
+		s.steerSignals[requestID] = nil
+	}
+}
+
+// resetSteerSignal creates a fresh signal channel for the request.
+// Called after consuming a steer so the next steer can interrupt again.
+func (s *Server) resetSteerSignal(requestID string) {
+	s.steerSignalsMu.Lock()
+	defer s.steerSignalsMu.Unlock()
+	if s.steerSignals == nil {
+		s.steerSignals = make(map[string]chan struct{})
+	}
+	s.steerSignals[requestID] = make(chan struct{})
+}
+
+// steerSignalChannel returns the current steer signal channel for the request.
+func (s *Server) steerSignalChannel(requestID string) <-chan struct{} {
+	s.steerSignalsMu.Lock()
+	defer s.steerSignalsMu.Unlock()
+	return s.steerSignals[requestID]
+}
+
+// clearSteerSignal removes the signal channel for a finished request.
+func (s *Server) clearSteerSignal(requestID string) {
+	s.steerSignalsMu.Lock()
+	defer s.steerSignalsMu.Unlock()
+	delete(s.steerSignals, requestID)
 }
 
 func createSteerID() string {
@@ -967,10 +1009,12 @@ func (s *Server) handleChatAsync(
 	json.NewEncoder(w).Encode(map[string]string{"request_id": requestID})
 
 	// Run agent in background goroutine
+	s.resetSteerSignal(requestID)
 	go func() {
 		defer func() {
 			s.unregisterActiveRun(requestID)
 			s.clearPendingSteer(requestID)
+			s.clearSteerSignal(requestID)
 			// Keep the completed result available for polling for 60s,
 			// then clean up. The client (PhoneBridge) polls /api/chat/result
 			// every ~1s; immediate deletion creates a race where the app
@@ -1013,7 +1057,14 @@ func (s *Server) handleChatAsync(
 			EventHandler:            eventHandler,
 			AsyncEpisodeMaintenance: true,
 			SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
-				return s.consumePendingSteer(requestID)
+				steer, ok := s.consumePendingSteer(requestID)
+				if ok {
+					s.resetSteerSignal(requestID)
+				}
+				return steer, ok
+			},
+			SteerInterrupt: func() <-chan struct{} {
+				return s.steerSignalChannel(requestID)
 			},
 		}
 
@@ -1331,6 +1382,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		cleanupOnce.Do(func() {
 			s.unregisterActiveRun(req.RequestID)
 			s.clearPendingSteer(req.RequestID)
+			s.clearSteerSignal(req.RequestID)
 			cancel()
 		})
 	}
@@ -1349,6 +1401,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		s.liveActivity.StartTask(req.RequestID, inputText, s.liveActivityPhoneID(req))
 	}
 
+	s.resetSteerSignal(req.RequestID)
 	s.logger.Info("Creating run request")
 	runReq := RunRequest{
 		Input:                   inputText,
@@ -1359,7 +1412,14 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		DeviceEnvironment:       s.bridgeEnvironment(),
 		AsyncEpisodeMaintenance: true,
 		SteerProvider: func(ctx context.Context) (RunSteerMessage, bool) {
-			return s.consumePendingSteer(req.RequestID)
+			steer, ok := s.consumePendingSteer(req.RequestID)
+			if ok {
+				s.resetSteerSignal(req.RequestID)
+			}
+			return steer, ok
+		},
+		SteerInterrupt: func() <-chan struct{} {
+			return s.steerSignalChannel(req.RequestID)
 		},
 		EventHandler: func(event RunEvent) {
 			message := messageFromRunEvent(event, episodeID, req.RequestID)
