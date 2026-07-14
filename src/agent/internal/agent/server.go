@@ -5267,6 +5267,16 @@ const webUI = `<!DOCTYPE html>
                 return false;
             }
             if (event.type === 'done') {
+                if (Array.isArray(event.history)) {
+                    renderHistory(event.history);
+                } else if (event.response) {
+                    finalizeAssistantMessage({
+                        type: 'assistant',
+                        request_id: event.request_id || currentChatRequestId || '',
+                        content: event.response,
+                        timestamp: new Date().toISOString()
+                    });
+                }
                 return true;
             }
             if (event.type === 'error') {
