@@ -92,9 +92,12 @@ func TestNewLoggerCleansOldLogFilesOnStartup(t *testing.T) {
 	assertPathMissing(t, oldLog)
 }
 
-func TestNewLoggerCreatesLLMHTTPLogDirOnStartup(t *testing.T) {
+func TestNewLoggerTreatsUnavailableLLMHTTPLogDirAsNonFatal(t *testing.T) {
 	configDir := t.TempDir()
 	logDir := filepath.Join(configDir, "log")
+	if err := os.WriteFile(logDir, []byte("not a directory"), 0644); err != nil {
+		t.Fatalf("write log path: %v", err)
+	}
 
 	logger, err := NewLogger(configDir, 7)
 	if err != nil {
@@ -103,8 +106,6 @@ func TestNewLoggerCreatesLLMHTTPLogDirOnStartup(t *testing.T) {
 	if err := logger.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
-
-	assertPathExists(t, logDir)
 }
 
 func writeTestLogFile(t *testing.T, dir, name string, modTime time.Time) {

@@ -28,9 +28,6 @@ func NewLogger(configDir string, llmHTTPRetentionDays int) (*Logger, error) {
 	// Cleanup old llm-http logs in configDir if set
 	if configDir != "" {
 		llmLogDir := filepath.Join(configDir, "log")
-		if err := os.MkdirAll(llmLogDir, 0755); err != nil {
-			return nil, fmt.Errorf("create llm http log directory: %w", err)
-		}
 		if err := cleanupOldLogFiles(llmLogDir, time.Now(), llmHTTPRetentionDays); err != nil {
 			logger.Printf("[WARN] log cleanup failed: %v", err)
 		}
