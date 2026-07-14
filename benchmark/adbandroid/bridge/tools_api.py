@@ -60,6 +60,11 @@ ADB_RESERVED_QUICK_ACTIONS = {
 }
 DEFAULT_DOUBLE_TAP_PAUSE_MS = 120
 DEFAULT_LONG_PRESS_MS = 500
+# Upper bound for caller-supplied durations (swipe/long_press/pause). All
+# actions run under the single shared device lock, and the adb subprocess
+# timeout scales with the gesture duration — an unclamped value from a bad
+# LLM tool call could block every other request against the device.
+MAX_ACTION_DURATION_MS = 10_000
 FOCUS_SETTLE_SEC = 0.3
 # Wait after an action before the post-action screenshot: adb commands (e.g.
 # `am start`, keyevents) return before the UI transition finishes, so an
@@ -152,11 +157,11 @@ class ADBToolsAPIHandler:
                             "required": ["x", "y"],
                             "description": "End point for swipe/drag",
                         },
-                        "duration_ms": {"type": "integer", "minimum": 0, "description": "Duration in milliseconds"},
-                        "hold_before_ms": {"type": "integer", "minimum": 0, "description": "Optional dwell after pressing before a swipe begins."},
-                        "hold_after_ms": {"type": "integer", "minimum": 0, "description": "Optional dwell at the destination before release."},
-                        "hold_ms": {"type": "integer", "minimum": 0, "description": "Tap or long-press hold duration in milliseconds."},
-                        "pause_ms": {"type": "integer", "minimum": 0, "description": "Pause between taps for double_tap."},
+                        "duration_ms": {"type": "integer", "minimum": 0, "maximum": 10000, "description": "Duration in milliseconds (clamped to 10000)"},
+                        "hold_before_ms": {"type": "integer", "minimum": 0, "maximum": 10000, "description": "Optional dwell after pressing before a swipe begins."},
+                        "hold_after_ms": {"type": "integer", "minimum": 0, "maximum": 10000, "description": "Optional dwell at the destination before release."},
+                        "hold_ms": {"type": "integer", "minimum": 0, "maximum": 10000, "description": "Tap or long-press hold duration in milliseconds (clamped to 10000)."},
+                        "pause_ms": {"type": "integer", "minimum": 0, "maximum": 10000, "description": "Pause between taps for double_tap (clamped to 10000)."},
                         "steps": {"type": "integer", "minimum": 1, "description": "Number of movement steps for swipe or drag."},
                         "distance": {"type": "number", "description": "Directional swipe travel in normalized 0-1000 units"},
                         "anchor": {"type": "number", "description": "Directional swipe fixed-axis coordinate in normalized 0-1000 units"},
@@ -197,7 +202,7 @@ class ADBToolsAPIHandler:
                             "items": {"type": "string"},
                             "description": "Keys to press (e.g., ['enter'], ['meta', 'h'])",
                         },
-                        "hold_ms": {"type": "integer", "minimum": 0, "description": "Optional press duration before release."},
+                        "hold_ms": {"type": "integer", "minimum": 0, "maximum": 10000, "description": "Accepted but ignored on the adb path: adb `input keyevent` cannot hold a key for an arbitrary duration."},
                     },
                     "required": ["keys"],
                 },
@@ -479,7 +484,9 @@ class ADBToolsAPIHandler:
                         adb_summary=f"input tap {x} {y}",
                     )
                 if gesture_type == "double_tap":
-                    pause_ms = int(tool_input.get("pause_ms") or DEFAULT_DOUBLE_TAP_PAUSE_MS)
+                    pause_ms = _duration_ms_arg(
+                        tool_input.get("pause_ms"), DEFAULT_DOUBLE_TAP_PAUSE_MS, minimum=0
+                    )
 
                     def double_tap() -> None:
                         device.tap(x, y)
@@ -492,8 +499,9 @@ class ADBToolsAPIHandler:
                         tool_input=log_input,
                         adb_summary=f"input tap {x} {y} (x2)",
                     )
-                hold_ms = int(
-                    tool_input.get("duration_ms") or tool_input.get("hold_ms") or DEFAULT_LONG_PRESS_MS
+                hold_ms = _duration_ms_arg(
+                    tool_input.get("duration_ms") or tool_input.get("hold_ms"),
+                    DEFAULT_LONG_PRESS_MS,
                 )
                 return self._execute_device(
                     lambda: device.swipe(x, y, x, y, hold_ms),
@@ -519,7 +527,7 @@ class ADBToolsAPIHandler:
                     default_space="normalized",
                     screen_size=(width, height),
                 )
-                duration_ms = int(tool_input.get("duration_ms") or 300)
+                duration_ms = _duration_ms_arg(tool_input.get("duration_ms"), 300)
                 x1, y1 = _to_pixels(start, width, height)
                 x2, y2 = _to_pixels(end, width, height)
                 return self._execute_device(
@@ -816,7 +824,15 @@ class ADBToolsAPIHandler:
         }
         normalized_keys = [alias_map.get(k, k) for k in normalized_keys]
         has_meta = any(k in ("meta", "cmd", "super", "win") for k in normalized_keys)
-        non_modifiers = [k for k in normalized_keys if k not in ("meta", "cmd", "super", "win", "ctrl", "alt", "shift")]
+        # Unlike the HID path (and unlike MobileGym, which silently drops
+        # them), adb has no reliable way to inject ctrl/alt/shift combos —
+        # reject instead of executing a different action than requested.
+        if any(k in ("ctrl", "alt", "shift") for k in normalized_keys):
+            return {
+                "output": "error: adb keyboard_tap does not support ctrl/alt/shift modifiers; use the bare key, keyboard_text, or quick_action instead",
+                "is_error": True,
+            }
+        non_modifiers = [k for k in normalized_keys if k not in ("meta", "cmd", "super", "win")]
 
         keycode_map: dict[str, str | int] = {
             "enter": KEYCODE_ENTER,
@@ -992,8 +1008,21 @@ def _directional_swipe_payload(gesture_type: str, tool_input: dict[str, Any]) ->
         "start_y": max(0.0, min(1000.0, start_y)),
         "end_x": max(0.0, min(1000.0, end_x)),
         "end_y": max(0.0, min(1000.0, end_y)),
-        "duration_ms": int(tool_input.get("duration_ms") or preset_duration),
+        "duration_ms": _duration_ms_arg(tool_input.get("duration_ms"), preset_duration),
     }
+
+
+def _duration_ms_arg(value: Any, default: int, *, minimum: int = 1) -> int:
+    """Clamp a caller-supplied duration to [minimum, MAX_ACTION_DURATION_MS].
+
+    Bad or missing values fall back to the default; out-of-range values are
+    clamped rather than rejected, matching how distance/anchor are handled.
+    """
+    try:
+        parsed = int(value) if value not in (None, "") else int(default)
+    except (TypeError, ValueError):
+        parsed = int(default)
+    return max(minimum, min(MAX_ACTION_DURATION_MS, parsed))
 
 
 def _positive_float(value: Any, default: float) -> float:

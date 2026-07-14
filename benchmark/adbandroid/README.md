@@ -55,6 +55,8 @@ uv run python -m runner start-agent-daemon \
   --environment-bridge-endpoint http://127.0.0.1:8899
 
 # 3. 运行 benchmark（--agent-url / token 参数以第 2 步输出为准）
+#    上面这条会启用 judge——需先 export OPENROUTER_API_KEY，详见「判分」一节。
+#    只想验证链路、不判分时，追加 --no-judge。
 uv run python -m runner run \
   --suite suites/adb_android_basic.json \
   --agent-url http://127.0.0.1:<agent-port> \
@@ -96,6 +98,50 @@ uv run python -m runner webui
 浏览器打开后：选择 suite → Run → 环境弹窗切到 **ADB Android** 标签 → 填 serial →
 Start → 选中该环境 → Run。WebUI 负责启动/停止 bridge 进程，重启后能通过
 pidfile + `/health` 探测找回仍在运行的 bridge。
+
+## 判分（judge）
+
+judge 用每个任务的 pre/post 截图 + trace 逐条评 rubric（例如"设置真的打开了吗"、
+"闹钟数对了吗"），走 OpenRouter 兼容接口。judge 模型与被测 agent 模型完全独立
+（agent 模型在 `agent.toml` 里配）。
+
+- **`--no-judge`**：不判分，rubric 记 0/N，通过与否只看硬断言（有动作、未超时）。
+  适合先验证链路是否跑通。
+- **启用 judge**（`run` 的默认行为，即不加 `--no-judge`）：必须提供
+  `OPENROUTER_API_KEY`，否则报 `missing env var OPENROUTER_API_KEY`。
+
+```bash
+cd benchmark
+export OPENROUTER_API_KEY=sk-or-...
+
+uv run python -m runner run \
+  --suite suites/adb_android_basic.json \
+  --agent-url http://127.0.0.1:<agent-port> \
+  --environment-url http://127.0.0.1:8899 \
+  --benchmark-task-id cli-task \
+  --judge-model claude-sonnet-4-6 \
+  -v
+```
+
+`--judge-model` 可省略（默认 `claude-sonnet-4-6`）；想换判分模型时传 OpenRouter 的
+模型名，如 `anthropic/claude-sonnet-4-6`。
+
+> 多步任务（时钟数闹钟 / 检查 WiFi / 打开应用抽屉）的正确性只有 judge 能验证，
+> `--no-judge` 下它们的 rubric 恒为 0/N。
+
+### 对已有结果补判分（rejudge）
+
+已用 `--no-judge` 跑完一轮后，pre/post 截图和 trace 都存在 run 目录里，可以**不重跑
+真机**直接补判分：
+
+```bash
+export OPENROUTER_API_KEY=sk-or-...
+uv run python -m runner rejudge \
+  --run-dir runs/<那次运行的目录> \
+  --judge-model claude-sonnet-4-6
+```
+
+调 rubric 措辞、或先跑 no-judge 验证链路再补分时，这样省掉一整轮真机操作。
 
 ## 测试套件
 

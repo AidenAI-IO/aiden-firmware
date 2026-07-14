@@ -1860,3 +1860,95 @@ def test_start_job_rejects_unknown_environment_type(tmp_path: Path):
                 "suites": ["suite.json"],
             }
         )
+
+
+def test_failed_adb_start_does_not_leave_resurrectable_manifest(tmp_path: Path, monkeypatch):
+    from runner import adb_android_environment as adb_env_mod
+
+    class FakeProc:
+        pid = 9191
+
+    killed = []
+    monkeypatch.setattr(adb_env_mod, "start_adb_bridge_process", lambda **kwargs: FakeProc())
+    monkeypatch.setattr(adb_env_mod, "terminate_pid", lambda pid, **kwargs: killed.append(pid))
+
+    def failing_health(url, timeout):
+        raise RuntimeError("bridge never became healthy")
+
+    monkeypatch.setattr(adb_env_mod, "wait_for_http_health", failing_health)
+
+    runs_dir = tmp_path / "runs"
+    manager = adb_env_mod.ADBAndroidEnvironmentManager(runs_dir=runs_dir)
+    with pytest.raises(RuntimeError, match="failed to start"):
+        manager.start_adb_android(name="Genymotion", serial="127.0.0.1:6555", bridge_port=18899)
+    assert killed == [9191]
+
+    env = next(iter(manager._environments.values()))
+    env_dir = runs_dir / "environments" / env.id
+    # Manifest and pidfile must be gone; the log stays for debugging.
+    assert not (env_dir / adb_env_mod.ADB_ENV_MANIFEST_NAME).exists()
+    assert not (env_dir / adb_env_mod.ADB_ENV_PID_NAME).exists()
+    assert (env_dir / adb_env_mod.ADB_ENV_LOG_NAME).exists()
+
+    # A restarted WebUI must not resurrect the failed environment.
+    reloaded = adb_env_mod.ADBAndroidEnvironmentManager(runs_dir=runs_dir)
+    assert reloaded.list_all() == []
+
+
+def test_stopped_adb_environment_does_not_resurface_after_restart(tmp_path: Path, monkeypatch):
+    from runner import adb_android_environment as adb_env_mod
+
+    class FakeProc:
+        pid = 9292
+
+    monkeypatch.setattr(adb_env_mod, "start_adb_bridge_process", lambda **kwargs: FakeProc())
+    monkeypatch.setattr(adb_env_mod, "wait_for_http_health", lambda url, timeout: None)
+    monkeypatch.setattr(adb_env_mod, "terminate_pid", lambda pid, **kwargs: None)
+
+    runs_dir = tmp_path / "runs"
+    manager = adb_env_mod.ADBAndroidEnvironmentManager(runs_dir=runs_dir)
+    env = manager.start_adb_android(name="Genymotion", serial="127.0.0.1:6555", bridge_port=18899)
+    manifest_path = Path(env.manifest_path)
+    assert manifest_path.exists()
+
+    stopped = manager.stop(env.id)
+    assert stopped.status == "stopped"
+    # Deliberate stop removes the manifest: it must not come back as a
+    # misleading "(recovered, unhealthy)" ghost after a WebUI restart.
+    assert not manifest_path.exists()
+
+    reloaded = adb_env_mod.ADBAndroidEnvironmentManager(runs_dir=runs_dir)
+    assert reloaded.list_all() == []
+
+
+def test_start_adb_android_environment_treats_port_zero_as_auto(tmp_path: Path, monkeypatch):
+    from runner import adb_android_environment as adb_env_mod
+
+    class FakeProc:
+        pid = 9393
+
+    launched = []
+    monkeypatch.setattr(
+        adb_env_mod, "start_adb_bridge_process", lambda **kwargs: launched.append(kwargs) or FakeProc()
+    )
+    monkeypatch.setattr(adb_env_mod, "wait_for_http_health", lambda url, timeout: None)
+    monkeypatch.setattr(adb_env_mod, "reserve_free_port", lambda: 28899)
+
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(runs_dir=tmp_path / "runs", base_config_dir=tmp_path / "config")
+    )
+
+    # 0 (form input) means auto-pick, matching the CLI --bridge-port 0 sentinel.
+    environment = app.start_adb_android_environment({"serial": "127.0.0.1:6555", "bridge_port": 0})
+    assert environment["bridge_port"] == 28899
+    assert launched[0]["bridge_port"] == 28899
+
+    # Explicit positive port still validated and honored.
+    environment = app.start_adb_android_environment({"serial": "127.0.0.1:6555", "bridge_port": "18899"})
+    assert environment["bridge_port"] == 18899
+
+    # Garbage still rejected.
+    with pytest.raises(ValueError, match="bridge_port"):
+        app.start_adb_android_environment({"serial": "127.0.0.1:6555", "bridge_port": "abc"})
+    with pytest.raises(ValueError, match="bridge_port"):
+        app.start_adb_android_environment({"serial": "127.0.0.1:6555", "bridge_port": -1})

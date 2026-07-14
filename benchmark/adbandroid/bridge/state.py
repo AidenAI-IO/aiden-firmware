@@ -67,19 +67,27 @@ class ADBBridgeState:
                     f"adb bridge device is owned by benchmark task {self.active_task_id!r}"
                 )
 
-    def acquire(self, task_id: str) -> str:
-        """Take (or idempotently re-take) ownership and start a fresh episode."""
+    def acquire(self, task_id: str) -> tuple[str, bool]:
+        """Take (or idempotently re-take) ownership and start a fresh episode.
+
+        Returns (episode_id, newly_acquired). newly_acquired is True only when
+        this call transferred ownership to task_id; callers use it to roll back
+        ownership if the device reset that follows fails, without dropping
+        ownership a running task already held (idempotent re-setup).
+        """
         task_id = str(task_id or "").strip()
         with self.lock:
+            newly_acquired = False
             if task_id:
                 if self.active_task_id and self.active_task_id != task_id:
                     raise NoBridgeEnvAvailableError(
                         f"adb bridge device is owned by benchmark task {self.active_task_id!r}"
                     )
+                newly_acquired = self.active_task_id != task_id
                 self.active_task_id = task_id
             self.active_episode_id = task_id or f"reset-{uuid.uuid4().hex}"
             self.action_log.clear()
-            return self.active_episode_id
+            return self.active_episode_id, newly_acquired
 
     def release(self, task_id: str) -> bool:
         """Release ownership held by task_id. Empty/mismatched ids release nothing."""

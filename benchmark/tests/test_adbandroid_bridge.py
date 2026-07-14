@@ -243,3 +243,48 @@ def test_tools_catalog_lists_expected_tools(bridge):
         "mouse_scroll",
         "quick_action",
     }
+
+
+def test_request_handler_applies_socket_timeout():
+    # A stalled client (e.g. partial request body) must not pin its
+    # connection thread forever: the handler class carries the configured
+    # request timeout, which StreamRequestHandler applies to the socket.
+    device = FakeADBAndroidDevice()
+    server = ADBBridgeServer(device, host="127.0.0.1", port=0, request_timeout_sec=42)
+    server.start()
+    try:
+        assert server._httpd.RequestHandlerClass.timeout == 42
+    finally:
+        server.stop()
+
+
+def test_failed_setup_rolls_back_new_ownership(bridge):
+    server, device, base_url = bridge
+    device.healthy = False
+
+    status, body = _request(base_url, "/api/setup", method="POST", task_id="suite:task-1")
+    assert status == 500
+    assert body["error"]["code"] == "adb_error"
+    # Ownership must not leak: the device stays free for the next task.
+    assert server.state.active_task_id == ""
+
+    device.healthy = True
+    status, _ = _request(base_url, "/api/setup", method="POST", task_id="suite:task-2")
+    assert status == 200
+
+
+def test_failed_idempotent_resetup_keeps_existing_ownership(bridge):
+    server, device, base_url = bridge
+    status, _ = _request(base_url, "/api/setup", method="POST", task_id="suite:task-1")
+    assert status == 200
+
+    # A transient adb failure during the owner's re-setup must NOT release
+    # ownership, or another task could steal the device mid-run.
+    device.healthy = False
+    status, _ = _request(base_url, "/api/setup", method="POST", task_id="suite:task-1")
+    assert status == 500
+    assert server.state.active_task_id == "suite:task-1"
+
+    status, body = _request(base_url, "/api/setup", method="POST", task_id="suite:task-2")
+    assert status == 429
+    assert body["error"]["code"] == "no_bridge_env_available"

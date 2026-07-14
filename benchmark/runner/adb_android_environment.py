@@ -303,6 +303,10 @@ class ADBAndroidEnvironmentManager:
         except Exception as exc:
             append_log(log_path, f"ERROR: {exc}")
             terminate_pid(env.process_id)
+            # Drop the persisted manifest/pidfile (keep the log for debugging)
+            # so a WebUI restart does not resurrect this failed environment as
+            # a ghost "(recovered, unhealthy)" entry.
+            self._remove_persisted_files(env_id)
             self._set_environment(env, status="failed", stopped_at=now_iso(), message=str(exc))
             raise RuntimeError(f"failed to start ADB Android environment: {exc}") from exc
 
@@ -316,6 +320,10 @@ class ADBAndroidEnvironmentManager:
             env.status = "stopping"
             env.message = "stopping bridge process"
         terminate_pid(env.process_id)
+        # A deliberately stopped environment must not resurface after a WebUI
+        # restart: the manifest plays the role of MobileGym's docker container,
+        # which also ceases to exist on stop.
+        self._remove_persisted_files(env_id)
         self._set_environment(env, status="stopped", stopped_at=now_iso(), message="")
         return env
 
@@ -325,13 +333,16 @@ class ADBAndroidEnvironmentManager:
             return None
         with self._lock:
             removed = self._environments.pop(env_id, None)
-        # Drop the manifest so a WebUI restart does not resurrect the entry.
+        self._remove_persisted_files(env_id)
+        return removed if removed is not None else env
+
+    def _remove_persisted_files(self, env_id: str) -> None:
+        """Remove manifest + pidfile (never the log) for an environment."""
         for file_name in (ADB_ENV_MANIFEST_NAME, ADB_ENV_PID_NAME):
             try:
                 (self._env_dir(env_id) / file_name).unlink(missing_ok=True)
             except OSError:
                 pass
-        return removed if removed is not None else env
 
     def shutdown_all(self) -> None:
         with self._lock:

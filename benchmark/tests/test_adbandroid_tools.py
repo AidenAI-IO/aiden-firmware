@@ -343,3 +343,72 @@ def test_tool_response_envelope_matches_mobilegym(bridge):
     assert status == 200
     assert set(body) >= {"tool", "raw_input", "output", "is_error", "duration_ms"}
     assert body["tool"] == {"name": "touch_gesture"}
+
+
+# ---- duration clamping ---------------------------------------------------------
+
+
+def test_swipe_duration_is_clamped(bridge):
+    _, device, base_url = bridge
+    status, body = _invoke(
+        base_url,
+        "touch_gesture",
+        {"type": "swipe", "start": {"x": 500, "y": 800}, "end": {"x": 500, "y": 200}, "duration_ms": 99999999},
+    )
+    assert status == 200 and body["is_error"] is False
+    swipes = [call for call in device.calls if call[0] == "swipe"]
+    assert swipes[0][5] == 10000  # MAX_ACTION_DURATION_MS
+
+
+def test_long_press_duration_is_clamped(bridge):
+    _, device, base_url = bridge
+    status, body = _invoke(
+        base_url,
+        "touch_gesture",
+        {"type": "long_press", "point": {"x": 500, "y": 500}, "duration_ms": 3600000},
+    )
+    assert status == 200 and body["is_error"] is False
+    swipes = [call for call in device.calls if call[0] == "swipe"]
+    assert swipes[0][5] == 10000
+
+
+def test_directional_swipe_duration_is_clamped(bridge):
+    _, device, base_url = bridge
+    status, body = _invoke(
+        base_url,
+        "touch_gesture",
+        {"type": "swipe_up", "strength": "medium", "duration_ms": -5},
+    )
+    assert status == 200 and body["is_error"] is False
+    swipes = [call for call in device.calls if call[0] == "swipe"]
+    # Negative/garbage durations floor at 1ms instead of erroring.
+    assert swipes[0][5] == 1
+
+
+def test_invalid_duration_falls_back_to_default(bridge):
+    _, device, base_url = bridge
+    status, body = _invoke(
+        base_url,
+        "touch_gesture",
+        {"type": "swipe", "start": {"x": 500, "y": 800}, "end": {"x": 500, "y": 200}, "duration_ms": "abc"},
+    )
+    assert status == 200 and body["is_error"] is False
+    swipes = [call for call in device.calls if call[0] == "swipe"]
+    assert swipes[0][5] == 300  # default swipe duration
+
+
+def test_keyboard_tap_rejects_ctrl_alt_shift_combos(bridge):
+    _, device, base_url = bridge
+    # Silently executing plain Enter for ctrl+enter would record an action
+    # that diverges from what actually ran on the device — must error instead.
+    for combo in (["ctrl", "enter"], ["alt", "tab"], ["shift", "enter"]):
+        status, body = _invoke(base_url, "keyboard_tap", {"keys": combo})
+        assert status == 200
+        assert body["is_error"] is True
+        assert "ctrl/alt/shift" in body["output"]
+    assert all(call[0] != "keyevent" for call in device.calls)
+
+    # meta-based home shortcuts keep working (MobileGym-compatible semantics).
+    status, body = _invoke(base_url, "keyboard_tap", {"keys": ["meta", "h"]})
+    assert status == 200 and body["is_error"] is False
+    assert ("keyevent", "KEYCODE_HOME") in device.calls

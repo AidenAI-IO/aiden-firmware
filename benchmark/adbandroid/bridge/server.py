@@ -71,6 +71,12 @@ class ADBBridgeServer:
 
 def _handler_for(bridge: ADBBridgeServer):
     class ADBBridgeRequestHandler(BaseHTTPRequestHandler):
+        # Socket read timeout: without this a stalled client (e.g. a partial
+        # request body) would pin its connection thread forever. Timeouts are
+        # caught by BaseHTTPRequestHandler.handle_one_request, which logs and
+        # closes the connection.
+        timeout = bridge.request_timeout_sec
+
         def do_GET(self) -> None:
             path = self.path.split("?", 1)[0]
             if path == "/api/tools":
@@ -129,9 +135,19 @@ def _handler_for(bridge: ADBBridgeServer):
 
         def _handle_setup(self, payload: dict[str, Any]) -> None:
             task_id = benchmark_task_id_from_headers(self.headers)
-            episode_id = bridge.state.acquire(task_id)
-            bridge.state.device.check_device()
-            bridge.state.device.reset_home()
+            episode_id, newly_acquired = bridge.state.acquire(task_id)
+            try:
+                bridge.state.device.check_device()
+                bridge.state.device.reset_home()
+            except Exception:
+                # Roll back ownership taken by THIS call so a failed setup does
+                # not leave the device 429-locked for every other task. Keep
+                # ownership held before this call (idempotent re-setup): a
+                # transient adb error must not let another task steal the
+                # device from a task that is still running.
+                if newly_acquired:
+                    bridge.state.release(task_id)
+                raise
             self._send_json(
                 200,
                 bridge_ok({"episode_id": episode_id, "reset": True, "task_id": task_id}),

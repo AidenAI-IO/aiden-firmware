@@ -334,9 +334,13 @@ class BenchmarkWebApp:
     def start_adb_android_environment(self, payload: dict[str, Any]) -> dict[str, Any]:
         serial = str(payload.get("serial") or "").strip() or DEFAULT_ADB_SERIAL
         name = str(payload.get("name") or "").strip() or f"ADB Android ({serial})"
-        bridge_port = 0
-        if payload.get("bridge_port") not in (None, ""):
-            bridge_port = parse_positive_int(payload.get("bridge_port"), default=0, field="bridge_port")
+        raw_port = payload.get("bridge_port")
+        # 0 is the same "auto-pick a free port" sentinel the CLI uses
+        # (--bridge-port 0); only positive values need validation.
+        if raw_port in (None, "", 0, "0"):
+            bridge_port = 0
+        else:
+            bridge_port = parse_positive_int(raw_port, default=0, field="bridge_port")
         env = self.adb_env_manager.start_adb_android(name=name, serial=serial, bridge_port=bridge_port)
         return self._adb_android_environment_payload(env)
 
