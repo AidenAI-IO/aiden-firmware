@@ -84,7 +84,7 @@ func (l *AgentLoop) Run(ctx context.Context, input string, options ...chains.Cha
 
 	for i := 0; i < l.MaxIterations; i++ {
 		if decision := policy.CheckBeforeIteration(ctx, i+1, l.MaxIterations); decision.Stop {
-			answer, err := l.stopWithDecision(ctx, policy, decision)
+			answer, err := l.stopWithSteerCheck(ctx, llmExecutor, policy, decision)
 			return answer, err
 		}
 		answer, done, err := l.runIteration(ctx, i+1, callOptions, llmExecutor, parser, toolSpecs, policy, transientMessages)
@@ -96,7 +96,7 @@ func (l *AgentLoop) Run(ctx context.Context, input string, options ...chains.Cha
 		}
 	}
 
-	return l.stopWithDecision(ctx, policy, policy.BudgetExhausted("max_iterations budget exhausted"))
+	return l.stopWithSteerCheck(ctx, llmExecutor, policy, policy.BudgetExhausted("max_iterations budget exhausted"))
 }
 
 func (l *AgentLoop) loopGuardPolicy() *TerminationPolicy {
@@ -104,6 +104,24 @@ func (l *AgentLoop) loopGuardPolicy() *TerminationPolicy {
 		return l.TerminationPolicy
 	}
 	return NewTerminationPolicy(DefaultTerminationPolicyConfig())
+}
+
+// stopWithSteerCheck checks for pending steer before terminating, giving steer priority.
+// If steer is pending, it's consumed and the function returns an error to signal the caller
+// should continue the loop. Otherwise, it proceeds with termination.
+func (l *AgentLoop) stopWithSteerCheck(ctx context.Context, executor *executor.LLMExecutor, policy *TerminationPolicy, decision TerminationDecision) (string, error) {
+	// Check for pending steer before terminating (except for external cancellation)
+	if decision.Reason != StopReasonExternal {
+		if _, hasPending, err := l.consumeAndPersistSteer(ctx, executor); err != nil {
+			return "", err
+		} else if hasPending {
+			policy.ResetForSteer()
+			// Return empty string with no error to signal continuation is needed
+			// Caller should treat this as "not done yet, continue loop"
+			return "", nil
+		}
+	}
+	return l.stopWithDecision(ctx, policy, decision)
 }
 
 func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions []llms.CallOption, llmExecutor *executor.LLMExecutor, parser *FunctionAgent, toolSpecs *ToolSpecs, policy *TerminationPolicy, transientMessages *transientMessageScope) (string, bool, error) {
