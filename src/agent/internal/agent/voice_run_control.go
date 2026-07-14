@@ -79,6 +79,20 @@ func (c *voiceRunControl) end(requestID string) {
 	}
 }
 
+func (c *voiceRunControl) forceReset() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.resolveInterruptLocked(RunSteerMessage{}, false)
+	c.activeRequestID = ""
+	c.acceptingSteer = false
+	c.clearPendingLocked()
+	c.interrupt = voiceSteerInterruptState{}
+	if c.inactive != nil {
+		close(c.inactive)
+		c.inactive = nil
+	}
+}
+
 func (c *voiceRunControl) waitUntilInactive(ctx context.Context) bool {
 	if ctx == nil {
 		ctx = context.Background()

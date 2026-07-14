@@ -8,9 +8,14 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
+// MessageGuard transforms the message list before sending to the LLM.
+// Typically used to prune messages that exceed the model's context window.
+type MessageGuard func(model llms.Model, messages []llms.MessageContent, options []llms.CallOption) []llms.MessageContent
+
 type LLMExecutor struct {
 	model          llms.Model
 	contextManager *contextmanager.ContextManager
+	messageGuard   MessageGuard
 }
 
 func NewLLMExecutor(model llms.Model, contextManager *contextmanager.ContextManager) *LLMExecutor {
@@ -18,6 +23,10 @@ func NewLLMExecutor(model llms.Model, contextManager *contextmanager.ContextMana
 		model:          model,
 		contextManager: contextManager,
 	}
+}
+
+func (e *LLMExecutor) SetMessageGuard(guard MessageGuard) {
+	e.messageGuard = guard
 }
 
 func (e *LLMExecutor) ContextManager() *contextmanager.ContextManager {
@@ -30,6 +39,9 @@ func (e *LLMExecutor) AppendMessage(message contextmanager.Message) error {
 
 func (e *LLMExecutor) GenerateContent(ctx context.Context, options ...llms.CallOption) (*llms.ContentResponse, error) {
 	messages := e.contextManager.TakeStandardMessageListForModel()
+	if e.messageGuard != nil {
+		messages = e.messageGuard(e.model, messages, options)
+	}
 	contentResponse, err := e.model.GenerateContent(ctx, messages, options...)
 	if err != nil {
 		return nil, err

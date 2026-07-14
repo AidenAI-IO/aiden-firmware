@@ -69,6 +69,7 @@ func NewAgentLoop(
 
 func (l *AgentLoop) Run(ctx context.Context, input string, options ...chains.ChainCallOption) (string, error) {
 	llmExecutor := executor.NewLLMExecutor(l.Model, l.contextManager)
+	llmExecutor.SetMessageGuard(guardMessagesWithinContextWindow)
 
 	agentTools := l.Profile.Tools
 	toolSpecs := NewToolSpecs(agentTools)

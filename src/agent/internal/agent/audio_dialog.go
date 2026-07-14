@@ -929,6 +929,13 @@ func (d *AudioDialog) WaitForVoiceRunIdle(ctx context.Context) bool {
 	return d.runControl.waitUntilInactive(ctx)
 }
 
+func (d *AudioDialog) ForceResetVoiceRun() {
+	if d == nil {
+		return
+	}
+	d.runControl.forceReset()
+}
+
 func (d *AudioDialog) QueueSteer(input TurnInput) bool {
 	content := steerContentFromTurnInput(input)
 	if content == "" {
