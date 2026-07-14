@@ -1123,7 +1123,8 @@ func TestDeviceOperatorSkillDefinesKeyboardToWheelFallback(t *testing.T) {
 	}
 	content := string(data)
 	for _, want := range []string{
-		"prefer a visibly supported numeric keyboard/edit mode before `wheel_nudge`",
+		"before the first `wheel_nudge` on that picker",
+		"do not infer that keyboard entry is unsupported merely because the keyboard is initially hidden",
 		"one verified keyboard attempt",
 		"fresh post-action screenshot",
 		"fall back to `wheel_nudge`",
@@ -1132,6 +1133,20 @@ func TestDeviceOperatorSkillDefinesKeyboardToWheelFallback(t *testing.T) {
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("device-operator SKILL.md missing keyboard fallback guidance %q", want)
+		}
+	}
+}
+
+func TestTouchGestureDescriptionDefinesNumericPickerEditProbe(t *testing.T) {
+	desc := (&TouchGestureTool{}).Description()
+	for _, want := range []string{
+		"Before the first wheel_nudge on a numeric picker",
+		"selected center row",
+		"even when the keyboard is initially hidden",
+		"use keyboard_text once if edit mode appears",
+	} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("touch_gesture description missing numeric picker edit probe guidance %q:\n%s", want, desc)
 		}
 	}
 }
