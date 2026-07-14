@@ -1784,6 +1784,134 @@ func TestServerHandleChatSteerQueuesAndCancelsPendingMessage(t *testing.T) {
 	}
 }
 
+func TestServerSteerSignalRemainsObservableUntilSteerIsConsumed(t *testing.T) {
+	server := &Server{
+		logger:        newTestLogger(),
+		activeRuns:    make(map[string]context.CancelFunc),
+		pendingSteers: make(map[string]pendingSteerMessage),
+		steerSignals:  make(map[string]chan struct{}),
+	}
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	server.registerActiveRun("req-1", cancel)
+	server.resetSteerSignal("req-1")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat/steer", bytes.NewBufferString(`{"request_id":"req-1","message":"change direction"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.handleChatSteer(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	lateSubscriber := server.steerSignalChannel("req-1")
+	if lateSubscriber == nil {
+		t.Fatal("late interrupt subscriber received nil after steer was signaled")
+	}
+	select {
+	case <-lateSubscriber:
+		// A subscriber installed after the HTTP request must still observe it.
+	default:
+		t.Fatal("late interrupt subscriber did not observe queued steer")
+	}
+}
+
+func TestServerCancelPendingSteerRearmsInterruptForNextSteer(t *testing.T) {
+	server := &Server{
+		logger:        newTestLogger(),
+		activeRuns:    make(map[string]context.CancelFunc),
+		pendingSteers: make(map[string]pendingSteerMessage),
+		steerSignals:  make(map[string]chan struct{}),
+	}
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	server.registerActiveRun("req-1", cancel)
+	server.resetSteerSignal("req-1")
+
+	queue := func(message string) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/api/chat/steer", bytes.NewBufferString(`{"request_id":"req-1","message":"`+message+`"}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		server.handleChatSteer(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("queue steer status: %d body=%s", rec.Code, rec.Body.String())
+		}
+	}
+
+	queue("first")
+	cancelReq := httptest.NewRequest(http.MethodPost, "/api/chat/steer/cancel", bytes.NewBufferString(`{"request_id":"req-1"}`))
+	cancelReq.Header.Set("Content-Type", "application/json")
+	cancelRec := httptest.NewRecorder()
+	server.handleChatSteerCancel(cancelRec, cancelReq)
+	if cancelRec.Code != http.StatusOK {
+		t.Fatalf("cancel steer status: %d body=%s", cancelRec.Code, cancelRec.Body.String())
+	}
+
+	nextInterrupt := server.steerSignalChannel("req-1")
+	if nextInterrupt == nil {
+		t.Fatal("canceling a pending steer did not rearm the interrupt channel")
+	}
+	select {
+	case <-nextInterrupt:
+		t.Fatal("rearmed interrupt channel was already closed")
+	default:
+	}
+
+	queue("second")
+	select {
+	case <-nextInterrupt:
+		// The next steer must still interrupt the active run.
+	default:
+		t.Fatal("second steer did not close the rearmed interrupt channel")
+	}
+}
+
+func TestServerStaleSignalDoesNotCloseRearmedChannelWithoutPendingSteer(t *testing.T) {
+	server := &Server{
+		pendingSteers: make(map[string]pendingSteerMessage),
+		steerSignals:  make(map[string]chan struct{}),
+	}
+	server.resetSteerSignal("req-1")
+	server.pendingSteers["req-1"] = pendingSteerMessage{RequestID: "req-1", Content: "first"}
+	if !server.cancelPendingSteer("req-1") {
+		t.Fatal("cancelPendingSteer() = false, want true")
+	}
+
+	// Model a delayed signal from the canceled setPendingSteer call.
+	server.signalSteer("req-1")
+	interrupt := server.steerSignalChannel("req-1")
+	if interrupt == nil {
+		t.Fatal("rearmed interrupt channel is nil")
+	}
+	select {
+	case <-interrupt:
+		t.Fatal("stale signal closed channel without a pending steer")
+	default:
+	}
+}
+
+func TestServerResetSignalKeepsQueuedSteerObservable(t *testing.T) {
+	server := &Server{
+		pendingSteers: make(map[string]pendingSteerMessage),
+		steerSignals:  make(map[string]chan struct{}),
+	}
+	server.pendingSteers["req-1"] = pendingSteerMessage{RequestID: "req-1", Content: "second"}
+
+	// Model a reset racing after a second steer has already been queued.
+	server.resetSteerSignal("req-1")
+	interrupt := server.steerSignalChannel("req-1")
+	if interrupt == nil {
+		t.Fatal("reset interrupt channel is nil")
+	}
+	select {
+	case <-interrupt:
+		// A queued steer must remain observable after any reset.
+	default:
+		t.Fatal("reset signal lost an already queued steer")
+	}
+}
+
 func TestServerHandleChatSteerRejectsNonRunningRequest(t *testing.T) {
 	server := &Server{logger: newTestLogger(), activeRuns: make(map[string]context.CancelFunc)}
 	req := httptest.NewRequest(http.MethodPost, "/api/chat/steer", bytes.NewBufferString(`{"request_id":"req-1","message":"hello"}`))

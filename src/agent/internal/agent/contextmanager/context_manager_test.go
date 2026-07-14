@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/tmc/langchaingo/llms"
@@ -420,6 +421,118 @@ func TestContextManagerAppendMessageHookCanDropOriginalMessage(t *testing.T) {
 	if dump.Messages[0].Role != MessageRoleSystem || dump.Messages[0].Content != "replacement" {
 		t.Fatalf("message = %#v", dump.Messages[0])
 	}
+}
+
+func TestContextManagerAppendMessageHookCleanup(t *testing.T) {
+	manager := newTestContextManager(t)
+	remove := manager.AddAppendMessageHook(func(message Message) AppendMessageHookResult {
+		message.Content = "hooked:" + message.Content
+		return AppendMessageHookResult{Message: &message}
+	})
+
+	if err := manager.AppendMessage(Message{Role: MessageRoleUser, Content: "first"}); err != nil {
+		t.Fatalf("AppendMessage(first) error = %v", err)
+	}
+	remove()
+	remove()
+	if err := manager.AppendMessage(Message{Role: MessageRoleUser, Content: "second"}); err != nil {
+		t.Fatalf("AppendMessage(second) error = %v", err)
+	}
+
+	dump := manager.MessageListDump()
+	if got, want := len(dump.Messages), 2; got != want {
+		t.Fatalf("message count = %d, want %d", got, want)
+	}
+	if dump.Messages[0].Content != "hooked:first" || dump.Messages[1].Content != "second" {
+		t.Fatalf("messages = %#v", dump.Messages)
+	}
+}
+
+func TestContextManagerTransientMessageIsConsumedOnceWithoutPersistence(t *testing.T) {
+	manager := newTestContextManager(t)
+	if err := manager.AppendMessage(Message{Role: MessageRoleUser, Content: "hello"}); err != nil {
+		t.Fatalf("AppendMessage() error = %v", err)
+	}
+	manager.AppendTransientMessage(Message{Role: MessageRoleNotice, Content: "one-shot notice"})
+	if got := len(manager.MessageListDump().Messages); got != 1 {
+		t.Fatalf("persisted message count = %d, want 1", got)
+	}
+
+	firstPrompt := manager.TakeStandardMessageListForModel()
+	if got := len(firstPrompt); got != 2 {
+		t.Fatalf("first prompt message count = %d, want persisted + transient", got)
+	}
+	if firstPrompt[1].Role != llms.ChatMessageTypeHuman || standardMessageText(firstPrompt[1]) != "one-shot notice" {
+		t.Fatalf("transient prompt message = %#v", firstPrompt[1])
+	}
+	if got := len(manager.TakeStandardMessageListForModel()); got != 1 {
+		t.Fatalf("second prompt message count = %d, want transient consumed", got)
+	}
+
+	reloaded, err := LoadContextManagerFromSessionID(manager.sessionFolder, manager.sessionID)
+	if err != nil {
+		t.Fatalf("reload context manager: %v", err)
+	}
+	if got := len(reloaded.ConvertToStandardMessageList()); got != 1 {
+		t.Fatalf("reloaded message count = %d, want transient excluded", got)
+	}
+}
+
+func TestContextManagerTransientMessageCleanupRemovesPendingMessage(t *testing.T) {
+	manager := newTestContextManager(t)
+	if err := manager.AppendMessage(Message{Role: MessageRoleUser, Content: "hello"}); err != nil {
+		t.Fatalf("AppendMessage() error = %v", err)
+	}
+	remove := manager.AppendTransientMessage(Message{Role: MessageRoleNotice, Content: "stale"})
+	remove()
+	if got := len(manager.TakeStandardMessageListForModel()); got != 1 {
+		t.Fatalf("prompt message count after cleanup = %d, want persisted message only", got)
+	}
+}
+
+func TestContextManagerConcurrentAppendWithStatefulHook(t *testing.T) {
+	manager := newTestContextManager(t)
+	var hookMu sync.Mutex
+	var hookCalls int
+	manager.AddAppendMessageHook(func(message Message) AppendMessageHookResult {
+		hookMu.Lock()
+		hookCalls++
+		hookMu.Unlock()
+		return AppendMessageHookResult{Message: &message}
+	})
+
+	const appends = 32
+	var wg sync.WaitGroup
+	for i := 0; i < appends; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := manager.AppendMessage(Message{Role: MessageRoleUser, Content: "hello"}); err != nil {
+				t.Errorf("AppendMessage() error = %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	hookMu.Lock()
+	gotHookCalls := hookCalls
+	hookMu.Unlock()
+	if gotHookCalls != appends {
+		t.Fatalf("hook calls = %d, want %d", gotHookCalls, appends)
+	}
+	if got := len(manager.MessageListDump().Messages); got != appends {
+		t.Fatalf("message count = %d, want %d", got, appends)
+	}
+}
+
+func standardMessageText(message llms.MessageContent) string {
+	var parts []string
+	for _, part := range message.Parts {
+		if text, ok := part.(llms.TextContent); ok {
+			parts = append(parts, text.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 func TestStoreAttachmentPersistsMetadataOnly(t *testing.T) {

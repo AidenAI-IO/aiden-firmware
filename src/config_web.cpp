@@ -643,6 +643,15 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"telemetry", "max_retry", CONFIG_FIELD_NUMBER},
         {"telemetry", "tags", CONFIG_FIELD_ARRAY},
         {"telemetry", "environment", CONFIG_FIELD_STRING},
+        {"termination_policy", "enabled", CONFIG_FIELD_BOOL},
+        {"termination_policy", "max_seconds", CONFIG_FIELD_NUMBER},
+        {"termination_policy", "repeat_action_limit", CONFIG_FIELD_NUMBER},
+        {"termination_policy", "same_result_limit", CONFIG_FIELD_NUMBER},
+        {"termination_policy", "screen_unchanged_limit", CONFIG_FIELD_NUMBER},
+        {"termination_policy", "soft_notice_stall_score", CONFIG_FIELD_NUMBER},
+        {"termination_policy", "restrict_tools_stall_score", CONFIG_FIELD_NUMBER},
+        {"termination_policy", "terminate_stall_score", CONFIG_FIELD_NUMBER},
+        {"termination_policy", "parse_failure_limit", CONFIG_FIELD_NUMBER},
         {"live_activity", "enabled", CONFIG_FIELD_BOOL},
         {"live_activity", "relay_url", CONFIG_FIELD_STRING},
         {"live_activity", "relay_api_key", CONFIG_FIELD_STRING},
@@ -1431,14 +1440,15 @@ void send_response(int client_fd, const ApiResponse& response) {
     write_all(client_fd, response.body.data(), response.body.size());
 }
 
-bool validate_agent_config_json(cJSON* root, std::string* error = NULL) {
+bool validate_agent_config_patch_json(cJSON* root, std::string* error = NULL) {
     if (!json_is_object(root)) {
         return config_schema_error(error, "root", "object", root);
     }
 
     const char* sections[] = {
         "model", "model_text", "tts", "stt", "audio", "audio_archive",
-        "log", "hid", "search", "telemetry", "live_activity", "agent", NULL,
+        "log", "hid", "search", "telemetry", "termination_policy",
+        "live_activity", "agent", NULL,
     };
     for (int i = 0; sections[i]; ++i) {
         cJSON* section = cJSON_GetObjectItem(root, sections[i]);
@@ -1446,8 +1456,14 @@ bool validate_agent_config_json(cJSON* root, std::string* error = NULL) {
             return config_schema_error(error, sections[i], "object", section);
         }
     }
+    return validate_known_config_field_types(root, error);
+}
+
+bool validate_agent_config_json(cJSON* root, std::string* error = NULL) {
+    if (!validate_agent_config_patch_json(root, error)) {
+        return false;
+    }
     if (!validate_model_section(root, error) ||
-        !validate_known_config_field_types(root, error) ||
         !validate_search_secret_presence(root, error)) {
         return false;
     }
@@ -2345,6 +2361,17 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     add_string_array_to_object(telemetry, "tags", config.telemetry.tags);
     cJSON_AddStringToObject(telemetry, "environment", config.telemetry.environment.c_str());
 
+    cJSON* termination_policy = add_object(root, "termination_policy");
+    cJSON_AddBoolToObject(termination_policy, "enabled", config.termination_policy.enabled ? 1 : 0);
+    cJSON_AddNumberToObject(termination_policy, "max_seconds", config.termination_policy.max_seconds);
+    cJSON_AddNumberToObject(termination_policy, "repeat_action_limit", config.termination_policy.repeat_action_limit);
+    cJSON_AddNumberToObject(termination_policy, "same_result_limit", config.termination_policy.same_result_limit);
+    cJSON_AddNumberToObject(termination_policy, "screen_unchanged_limit", config.termination_policy.screen_unchanged_limit);
+    cJSON_AddNumberToObject(termination_policy, "soft_notice_stall_score", config.termination_policy.soft_notice_stall_score);
+    cJSON_AddNumberToObject(termination_policy, "restrict_tools_stall_score", config.termination_policy.restrict_tools_stall_score);
+    cJSON_AddNumberToObject(termination_policy, "terminate_stall_score", config.termination_policy.terminate_stall_score);
+    cJSON_AddNumberToObject(termination_policy, "parse_failure_limit", config.termination_policy.parse_failure_limit);
+
     cJSON* live_activity = add_object(root, "live_activity");
     cJSON_AddBoolToObject(live_activity, "enabled", config.live_activity.enabled ? 1 : 0);
     cJSON_AddStringToObject(live_activity, "relay_url", config.live_activity.relay_url.c_str());
@@ -2635,6 +2662,19 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_int(&config->telemetry.max_retry, telemetry, "max_retry");
         set_json_string_vector(&config->telemetry.tags, telemetry, "tags");
         set_json_str(&config->telemetry.environment, telemetry, "environment");
+    }
+
+    cJSON* termination_policy = cJSON_GetObjectItem(root, "termination_policy");
+    if (json_is_object(termination_policy)) {
+        set_json_bool(&config->termination_policy.enabled, termination_policy, "enabled");
+        set_json_double(&config->termination_policy.max_seconds, termination_policy, "max_seconds");
+        set_json_int(&config->termination_policy.repeat_action_limit, termination_policy, "repeat_action_limit");
+        set_json_int(&config->termination_policy.same_result_limit, termination_policy, "same_result_limit");
+        set_json_int(&config->termination_policy.screen_unchanged_limit, termination_policy, "screen_unchanged_limit");
+        set_json_int(&config->termination_policy.soft_notice_stall_score, termination_policy, "soft_notice_stall_score");
+        set_json_int(&config->termination_policy.restrict_tools_stall_score, termination_policy, "restrict_tools_stall_score");
+        set_json_int(&config->termination_policy.terminate_stall_score, termination_policy, "terminate_stall_score");
+        set_json_int(&config->termination_policy.parse_failure_limit, termination_policy, "parse_failure_limit");
     }
 
     cJSON* live_activity = cJSON_GetObjectItem(root, "live_activity");
@@ -4863,7 +4903,12 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     std::string original_pointer_mode = normalize_pointer_mode(config.hid.pointer_mode);
 
     cJSON* config_json = cJSON_GetObjectItem(root, "config");
-    if (json_is_object(config_json)) {
+    if (config_json) {
+        std::string schema_error;
+        if (!validate_agent_config_patch_json(config_json, &schema_error)) {
+            cJSON_Delete(root);
+            return make_json_error(400, schema_error.empty() ? "invalid config schema" : schema_error);
+        }
         update_config_from_json(config_json, &config);
         preserve_redacted_agent_secrets(options, &config);
     }

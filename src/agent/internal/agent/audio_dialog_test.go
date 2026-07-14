@@ -1011,7 +1011,7 @@ func TestAudioDialogRejectsSteerAfterRuntimeFinishesBeforeVoiceHistoryPersist(t 
 	}
 }
 
-func TestAudioDialogBeginSteerInterruptQueuesCorrectionWithoutRuntimeConsumption(t *testing.T) {
+func TestAudioDialogBeginSteerInterruptAppliesQueuedCorrection(t *testing.T) {
 	firstCallStarted := make(chan struct{})
 	releaseFirstCall := make(chan struct{})
 	model := &blockingFirstCallModel{
@@ -1062,7 +1062,6 @@ func TestAudioDialogBeginSteerInterruptQueuesCorrectionWithoutRuntimeConsumption
 	if !dialog.QueueSteer(TurnInput{InputText: "change direction", Transcript: "change direction"}) {
 		t.Fatal("QueueSteer returned false for interrupted voice run")
 	}
-	close(releaseFirstCall)
 
 	var runResult struct {
 		result RunResult
@@ -1076,8 +1075,8 @@ func TestAudioDialogBeginSteerInterruptQueuesCorrectionWithoutRuntimeConsumption
 	if runResult.err != nil {
 		t.Fatalf("RunAgentTurn() error = %v", runResult.err)
 	}
-	if runResult.result.Output != "stale answer" {
-		t.Fatalf("Output = %q, want stale answer", runResult.result.Output)
+	if runResult.result.Output != "corrected answer" {
+		t.Fatalf("Output = %q, want corrected answer", runResult.result.Output)
 	}
 	if dialog.ResumeSteerInterrupt() {
 		t.Fatal("ResumeSteerInterrupt returned true after voice run completed")

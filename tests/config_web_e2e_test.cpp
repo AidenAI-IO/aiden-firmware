@@ -1527,6 +1527,18 @@ TEST_CASE("config_web: POST /api/config returns 200 when stub config-check appro
     CHECK(resp.status == 200);
 }
 
+TEST_CASE("config_web: POST /api/config rejects non-object termination_policy") {
+    StubEnv env;
+    auto handle = start_server(env);
+    const std::string body =
+        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
+        "\"termination_policy\":123,\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+    CHECK(resp.status == 400);
+    CHECK(resp.body.find("termination_policy: expected object") != std::string::npos);
+}
+
 TEST_CASE("config_web: POST /api/config legacy wifi fields update saved networks") {
     StubEnv env;  // defaults: check returns valid:true
     auto handle = start_server(env);

@@ -37,7 +37,7 @@ func TestUpdaterHappyPathDownloadsWritesSwitchesAndReboots(t *testing.T) {
 		"oem_b.img":  []byte("oem-b-v2"),
 		"rootfs.img": []byte("rootfs-v2"),
 	})
-	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
 
 	result, err := env.updater().CheckOnce(context.Background())
 	if err != nil {
@@ -102,7 +102,7 @@ func TestUpdaterDownloadsTarGzAssetsAndWritesExtractedImages(t *testing.T) {
 		"oem_b.img.tar.gz":  oemArchive,
 		"rootfs.img.tar.gz": rootfsArchive,
 	})
-	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
 
 	result, err := env.updater().CheckOnce(context.Background())
 	if err != nil {
@@ -153,7 +153,7 @@ func TestUpdaterRejectsTarGzImageSHA256MismatchBeforeWriting(t *testing.T) {
 		"oem_b.img":         []byte("oem-b-v2"),
 		"rootfs.img":        []byte("rootfs-v2"),
 	})
-	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
 
 	_, err := env.updater().CheckOnce(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "image_sha256") {
@@ -206,7 +206,7 @@ func TestUpdaterUsesPerRequestHTTPTimeout(t *testing.T) {
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(80 * time.Millisecond)
-		if strings.HasSuffix(r.URL.Path, "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest") {
+		if strings.HasSuffix(r.URL.Path, "/repos/AidenAI-IO/aiden-firmware/releases/latest") {
 			var release struct {
 				Assets []githubAsset `json:"assets"`
 			}
@@ -230,7 +230,7 @@ func TestUpdaterUsesPerRequestHTTPTimeout(t *testing.T) {
 		http.NotFound(w, r)
 	}))
 	t.Cleanup(server.Close)
-	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
 
 	if _, err := env.updater().CheckOnce(context.Background()); err != nil {
 		t.Fatalf("CheckOnce() error = %v", err)
@@ -254,7 +254,7 @@ func TestUpdaterNoUpdateReturnsNoop(t *testing.T) {
 	env.saveState(t)
 	manifest := env.signedManifest(map[string][]byte{"boot_a.img": []byte("boot-a-v2"), "boot_b.img": []byte("boot-b-v2"), "oem_a.img": []byte("oem-a-v2"), "oem_b.img": []byte("oem-b-v2"), "rootfs.img": []byte("rootfs-v2")}, nil)
 	server := env.releaseServer(t, manifest, map[string][]byte{"boot_b.img": []byte("boot-b-v2"), "oem_b.img": []byte("oem-b-v2"), "rootfs.img": []byte("rootfs-v2")})
-	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
 
 	result, err := env.updater().CheckOnce(context.Background())
 	if err != nil {
@@ -275,7 +275,7 @@ func TestUpdaterCheckOnceRejectsConcurrentUpdateLock(t *testing.T) {
 	env.saveState(t)
 	manifest := env.signedManifest(map[string][]byte{"boot_a.img": []byte("boot-a-v2"), "boot_b.img": []byte("boot-b-v2"), "oem_a.img": []byte("oem-a-v2"), "oem_b.img": []byte("oem-b-v2"), "rootfs.img": []byte("rootfs-v2")}, nil)
 	server := env.releaseServer(t, manifest, map[string][]byte{"boot_b.img": []byte("boot-b-v2"), "oem_b.img": []byte("oem-b-v2"), "rootfs.img": []byte("rootfs-v2")})
-	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
 
 	lockFile, err := os.OpenFile(filepath.Join(env.stateDir, "update.lock"), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
@@ -306,7 +306,7 @@ func TestProcessPendingHealthOnceDoesNotCheckForUpdates(t *testing.T) {
 		http.Error(w, "unexpected automatic OTA check", http.StatusTeapot)
 	}))
 	t.Cleanup(server.Close)
-	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
 
 	select {
 	case err := <-processPendingHealthOnceAsync(env.updater(), context.Background()):
@@ -366,7 +366,7 @@ func TestUpdaterSkipsAssetDownloadWhenCachedFileMatchesSHA256(t *testing.T) {
 
 	assetRequests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest") {
+		if strings.HasSuffix(r.URL.Path, "/repos/AidenAI-IO/aiden-firmware/releases/latest") {
 			var release struct {
 				Assets []githubAsset `json:"assets"`
 			}
@@ -389,7 +389,7 @@ func TestUpdaterSkipsAssetDownloadWhenCachedFileMatchesSHA256(t *testing.T) {
 		http.NotFound(w, r)
 	}))
 	t.Cleanup(server.Close)
-	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
 
 	result, err := env.updater().CheckOnce(context.Background())
 	if err != nil {
@@ -429,7 +429,7 @@ func TestUpdaterSkipsDownloadAndWriteWhenTargetPartitionHashMatches(t *testing.T
 
 	oemRequests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest") {
+		if strings.HasSuffix(r.URL.Path, "/repos/AidenAI-IO/aiden-firmware/releases/latest") {
 			var release struct {
 				Assets []githubAsset `json:"assets"`
 			}
@@ -458,7 +458,7 @@ func TestUpdaterSkipsDownloadAndWriteWhenTargetPartitionHashMatches(t *testing.T
 		http.NotFound(w, r)
 	}))
 	t.Cleanup(server.Close)
-	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
 
 	result, err := env.updater().CheckOnce(context.Background())
 	if err != nil {
@@ -570,7 +570,7 @@ func TestUpdaterRejectsDowngradeOnFreshDeviceWithFactoryConfig(t *testing.T) {
 		"oem_b.img":  []byte("oem-b-v1"),
 		"rootfs.img": []byte("rootfs-v1"),
 	})
-	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
 
 	_, err := env.updater().CheckOnce(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "reject downgrade") {
@@ -685,7 +685,7 @@ func TestUpdaterRejectsOversizedAssetWithDefaultPartitionSizes(t *testing.T) {
 	})
 	assetDownloads := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest") {
+		if strings.HasSuffix(r.URL.Path, "/repos/AidenAI-IO/aiden-firmware/releases/latest") {
 			release := struct {
 				Assets []githubAsset `json:"assets"`
 			}{Assets: []githubAsset{
@@ -707,7 +707,7 @@ func TestUpdaterRejectsOversizedAssetWithDefaultPartitionSizes(t *testing.T) {
 		http.NotFound(w, r)
 	}))
 	t.Cleanup(server.Close)
-	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
 
 	_, err := env.updater().CheckOnce(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "larger than partition") {
@@ -730,7 +730,7 @@ func TestUpdaterRejectsBadSignature(t *testing.T) {
 	manifest := env.signedManifest(map[string][]byte{"boot_a.img": []byte("boot-a-v2"), "boot_b.img": []byte("boot-b-v2"), "oem_a.img": []byte("oem-a-v2"), "oem_b.img": []byte("oem-b-v2"), "rootfs.img": []byte("rootfs-v2")}, nil)
 	manifest = []byte(strings.Replace(string(manifest), env.version, "20260521-130000-tamper", 1))
 	server := env.releaseServer(t, manifest, map[string][]byte{"boot_b.img": []byte("boot-b-v2"), "oem_b.img": []byte("oem-b-v2"), "rootfs.img": []byte("rootfs-v2")})
-	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
 
 	_, err := env.updater().CheckOnce(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "signature") {
@@ -746,7 +746,7 @@ func TestUpdaterRejectsHashMismatchBeforeWriting(t *testing.T) {
 	assets := map[string][]byte{"boot_a.img": []byte("boot-a-v2"), "boot_b.img": []byte("boot-b-v2"), "oem_a.img": []byte("oem-a-v2"), "oem_b.img": []byte("oem-b-v2"), "rootfs.img": []byte("rootfs-v2")}
 	manifest := env.signedManifest(assets, func(m *Manifest) { m.Parts[0].AssetB.SHA256 = testHashC })
 	server := env.releaseServer(t, manifest, assets)
-	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
 
 	_, err := env.updater().CheckOnce(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "sha256") {
@@ -763,7 +763,7 @@ func TestUpdaterUsesGitHubTokenForManifestAndImageDownloads(t *testing.T) {
 	env.config.GitHubToken = "secret-token"
 	manifest := env.signedManifest(map[string][]byte{"boot_a.img": []byte("boot-a-v2"), "boot_b.img": []byte("boot-b-v2"), "oem_a.img": []byte("oem-a-v2"), "oem_b.img": []byte("oem-b-v2"), "rootfs.img": []byte("rootfs-v2")}, nil)
 	server := env.authReleaseServer(t, manifest, map[string][]byte{"boot_b.img": []byte("boot-b-v2"), "oem_b.img": []byte("oem-b-v2"), "rootfs.img": []byte("rootfs-v2")}, "Bearer secret-token")
-	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
 
 	result, err := env.updater().CheckOnce(context.Background())
 	if err != nil {
@@ -790,7 +790,7 @@ func TestUpdaterLogsVisibleCheckProgress(t *testing.T) {
 		"oem_b.img":  []byte("oem-b-v2"),
 		"rootfs.img": []byte("rootfs-v2"),
 	})
-	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
 
 	result, err := env.updater().CheckOnce(context.Background())
 	if err != nil {
@@ -831,7 +831,7 @@ func TestUpdaterRejectsStaleTargetSlotForSelectiveUpdate(t *testing.T) {
 		m.Parts[0].RequiresPartitions = []string{"oem=factory:" + testHashA, "rootfs=factory:" + testHashA}
 	})
 	server := env.releaseServer(t, manifest, map[string][]byte{"boot_b.img": []byte("boot-b-v2")})
-	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
 
 	_, err := env.updater().CheckOnce(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "selective update") {
@@ -844,7 +844,7 @@ func TestUpdaterInvalidatesTargetSlotMetadataBeforePartialWriteFailure(t *testin
 	env := newUpdaterTestEnv(t)
 	manifest := env.signedManifest(map[string][]byte{"boot_a.img": []byte("boot-a-v2"), "boot_b.img": []byte("boot-b-v2"), "oem_a.img": []byte("oem-a-v2"), "oem_b.img": []byte("oem-b-v2"), "rootfs.img": []byte("rootfs-v2")}, nil)
 	server := env.releaseServer(t, manifest, map[string][]byte{"boot_b.img": []byte("boot-b-v2"), "oem_b.img": []byte("oem-b-v2"), "rootfs.img": []byte("rootfs-v2")})
-	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
 	if err := os.Remove(filepath.Join(env.blockDir, "oem_b")); err != nil {
 		t.Fatalf("Remove(oem_b) error = %v", err)
 	}
@@ -876,7 +876,7 @@ func TestUpdaterRejectsActiveSlotWrite(t *testing.T) {
 	env.config.TargetSlotOverride = "a"
 	manifest := env.signedManifest(map[string][]byte{"boot_a.img": []byte("boot-a-v2"), "boot_b.img": []byte("boot-b-v2"), "oem_a.img": []byte("oem-a-v2"), "oem_b.img": []byte("oem-b-v2"), "rootfs.img": []byte("rootfs-v2")}, nil)
 	server := env.releaseServer(t, manifest, map[string][]byte{"boot_a.img": []byte("boot-a-v2"), "oem_a.img": []byte("oem-a-v2"), "rootfs.img": []byte("rootfs-v2")})
-	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
 
 	_, err := env.updater().CheckOnce(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "active slot") {
@@ -900,7 +900,7 @@ func TestUpdaterUsesRunningSlotToProtectWritesWhenMiscPrefersOtherSlot(t *testin
 	env.config.TargetSlotOverride = "a"
 	manifest := env.signedManifest(map[string][]byte{"boot_a.img": []byte("boot-a-v2"), "boot_b.img": []byte("boot-b-v2"), "oem_a.img": []byte("oem-a-v2"), "oem_b.img": []byte("oem-b-v2"), "rootfs.img": []byte("rootfs-v2")}, nil)
 	server := env.releaseServer(t, manifest, map[string][]byte{"boot_a.img": []byte("boot-a-v2"), "oem_a.img": []byte("oem-a-v2"), "rootfs.img": []byte("rootfs-v2")})
-	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
 	updater := env.updater()
 	updater.currentSlot = func() (Slot, bool, error) { return SlotA, true, nil }
 
@@ -916,7 +916,7 @@ func TestUpdaterDryRunDoesNotWritePartitionsOrSwitchMisc(t *testing.T) {
 	env.config.DryRun = true
 	manifest := env.signedManifest(map[string][]byte{"boot_a.img": []byte("boot-a-v2"), "boot_b.img": []byte("boot-b-v2"), "oem_a.img": []byte("oem-a-v2"), "oem_b.img": []byte("oem-b-v2"), "rootfs.img": []byte("rootfs-v2")}, nil)
 	server := env.releaseServer(t, manifest, map[string][]byte{"boot_b.img": []byte("boot-b-v2"), "oem_b.img": []byte("oem-b-v2"), "rootfs.img": []byte("rootfs-v2")})
-	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
 
 	result, err := env.updater().CheckOnce(context.Background())
 	if err != nil {
@@ -951,7 +951,7 @@ func TestUpdaterRejectsSameBuildTimeDifferentVersion(t *testing.T) {
 	env.saveState(t)
 	manifest := env.signedManifest(map[string][]byte{"boot_a.img": []byte("boot-a-v2"), "boot_b.img": []byte("boot-b-v2"), "oem_a.img": []byte("oem-a-v2"), "oem_b.img": []byte("oem-b-v2"), "rootfs.img": []byte("rootfs-v2")}, nil)
 	server := env.releaseServer(t, manifest, map[string][]byte{"boot_b.img": []byte("boot-b-v2"), "oem_b.img": []byte("oem-b-v2"), "rootfs.img": []byte("rootfs-v2")})
-	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
 
 	_, err := env.updater().CheckOnce(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "downgrade") {
@@ -1137,7 +1137,7 @@ func TestUpdaterSelectiveOEMCommitPreservesCompatibleOmittedTargetPartitions(t *
 		m.Parts[0].RequiresPartitions = []string{"boot=factory:" + testHashA, "rootfs=factory:" + testHashA}
 	})
 	server := env.releaseServer(t, manifest, map[string][]byte{"oem_b.img": []byte("oem-b-v2")})
-	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
 
 	result, err := env.updater().CheckOnce(context.Background())
 	if err != nil {
@@ -1252,7 +1252,7 @@ func TestUpdaterCleansPendingBootWhenMiscSwitchFails(t *testing.T) {
 	env := newUpdaterTestEnv(t)
 	manifest := env.signedManifest(map[string][]byte{"boot_a.img": []byte("boot-a-v2"), "boot_b.img": []byte("boot-b-v2"), "oem_a.img": []byte("oem-a-v2"), "oem_b.img": []byte("oem-b-v2"), "rootfs.img": []byte("rootfs-v2")}, nil)
 	server := env.releaseServer(t, manifest, map[string][]byte{"boot_b.img": []byte("boot-b-v2"), "oem_b.img": []byte("oem-b-v2"), "rootfs.img": []byte("rootfs-v2")})
-	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest"
+	env.config.ReleaseURL = server.URL + "/repos/AidenAI-IO/aiden-firmware/releases/latest"
 	updater := env.updater()
 	updater.writeABData = func(ABData) error { return fmt.Errorf("forced misc write failure") }
 
@@ -1444,7 +1444,7 @@ func testTarGzImage(t *testing.T, imageName string, image []byte) []byte {
 func (e *updaterTestEnv) releaseServer(t *testing.T, manifest []byte, assets map[string][]byte) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest") {
+		if strings.HasSuffix(r.URL.Path, "/repos/AidenAI-IO/aiden-firmware/releases/latest") {
 			var release struct {
 				Assets []githubAsset `json:"assets"`
 			}
@@ -1478,7 +1478,7 @@ func (e *updaterTestEnv) authReleaseServer(t *testing.T, manifest []byte, assets
 			http.Error(w, "missing auth", http.StatusUnauthorized)
 			return
 		}
-		if strings.HasSuffix(r.URL.Path, "/repos/AidenAI-IO/aiden-hardware-demo/releases/latest") {
+		if strings.HasSuffix(r.URL.Path, "/repos/AidenAI-IO/aiden-firmware/releases/latest") {
 			var release struct {
 				Assets []githubAsset `json:"assets"`
 			}

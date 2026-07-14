@@ -209,6 +209,7 @@ const (
 	runEventSessionBegin     = "session_begin"
 	runEventIterationStart   = "iteration_start"
 	runEventIterationEnd     = "iteration_end"
+	runEventLoopGuardStop    = "loop_guard_stop"
 )
 
 type RunEvent struct {
@@ -880,6 +881,9 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	agentLoop.EnvironmentBridge = r.environmentBridge
 	agentLoop.EnvironmentBridgeTools = r.config.EnvironmentBridge.Tools
 	agentLoop.SteerInterrupt = req.SteerInterrupt
+	agentLoop.SteerProvider = req.SteerProvider
+	agentLoop.SteerWaiter = req.SteerWaiter
+	agentLoop.TerminationPolicy = NewTerminationPolicy(r.config.TerminationPolicy)
 	agentLoop.DevicePlatform = platformFn()
 	agentLoop.PointerMode = r.config.HID.PointerModeOrDefault()
 
