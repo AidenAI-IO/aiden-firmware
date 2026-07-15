@@ -1,0 +1,612 @@
+{
+  "name": "quick_action_v1",
+  "suite_category": "Perception & Control",
+  "description": "Tests for quick_action navigation shortcuts — verifies the agent correctly uses predefined platform shortcuts.",
+  "prompt_prefix": "你正在操作一台通过 HDMI 采集画面的手机。可以使用 quick_action、screenshot、touch_gesture、keyboard_text、keyboard_tap 等工具。每次工具返回截图后，先判断页面是否变化再继续下一步。",
+  "global_reset": {},
+  "tasks": [
+    {
+      "id": "quick_action_home",
+      "category": "single_step",
+      "description_for_judge": "Agent must open Settings first, then use quick_action home to return to the home screen.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请打开系统设置，确保当前停留在设置页面内，不在主屏幕。",
+        "timeout_sec": 60,
+        "clear_history_after": true
+      },
+      "prompt": "请使用 quick_action 回到主屏幕。",
+      "rubric": [
+        {
+          "id": "used_quick_action_home",
+          "check": "Trace contains a quick_action call with action=home or equivalent alias."
+        },
+        {
+          "id": "on_home_screen",
+          "check": "Post-screenshot shows the device home screen (app icons grid visible, not inside Settings or any app)."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 8,
+        "must_complete_within_sec": 90
+      }
+    },
+    {
+      "id": "quick_action_app_switch_clear",
+      "category": "multi_step",
+      "description_for_judge": "Agent must open the app switcher via quick_action app_switch, then close/clear the Settings app from recents.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请打开系统设置，在设置中随意浏览一下确保它在后台任务列表中，然后停留在设置页面。",
+        "timeout_sec": 60,
+        "clear_history_after": true
+      },
+      "prompt": "请使用 quick_action 打开多任务管理器，然后把设置应用从后台清除。",
+      "rubric": [
+        {
+          "id": "used_quick_action_app_switch",
+          "check": "Trace contains a quick_action call with action=app_switch or equivalent alias."
+        },
+        {
+          "id": "recents_shown",
+          "check": "Trace screenshots show the app switcher / recents view at some point."
+        },
+        {
+          "id": "settings_cleared",
+          "check": "Post-screenshot shows Settings app has been removed from recents, or the recents list no longer contains a Settings card."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 2,
+        "max_tool_calls": 15,
+        "must_complete_within_sec": 120
+      }
+    },
+    {
+      "id": "quick_action_switch_left",
+      "category": "single_step",
+      "description_for_judge": "Agent must use quick_app_switch_left from the home screen to switch to the previous app.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请先打开系统设置浏览一下，然后回到主屏幕，确保当前停留在桌面。",
+        "timeout_sec": 60,
+        "clear_history_after": true
+      },
+      "prompt": "请使用 quick_action 向左快速切换到上一个应用。",
+      "rubric": [
+        {
+          "id": "used_quick_action_switch_left",
+          "check": "Trace contains a quick_action call with action=quick_app_switch_left or equivalent alias."
+        },
+        {
+          "id": "switched_to_app",
+          "check": "Post-screenshot shows a different app (not home screen), indicating the quick switch worked."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 8,
+        "must_complete_within_sec": 90
+      }
+    },
+    {
+      "id": "quick_action_switch_right",
+      "category": "single_step",
+      "description_for_judge": "Agent must use quick_app_switch_right from the home screen to switch to the next app.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请先打开系统设置浏览一下，然后回到主屏幕，确保当前停留在桌面。",
+        "timeout_sec": 60,
+        "clear_history_after": true
+      },
+      "prompt": "请使用 quick_action 向右快速切换到下一个应用。",
+      "rubric": [
+        {
+          "id": "used_quick_action_switch_right",
+          "check": "Trace contains a quick_action call with action=quick_app_switch_right or equivalent alias."
+        },
+        {
+          "id": "switched_to_app",
+          "check": "Post-screenshot shows a different app (not home screen), indicating the quick switch worked."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 8,
+        "must_complete_within_sec": 90
+      }
+    },
+    {
+      "id": "quick_action_home_screen_left",
+      "category": "single_step",
+      "description_for_judge": "Agent must use quick_action home_screen_left to switch to the previous home screen page.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请回到主屏幕，确保当前停留在桌面。",
+        "timeout_sec": 30,
+        "clear_history_after": true
+      },
+      "prompt": "请使用 quick_action 将桌面向左翻页。",
+      "rubric": [
+        {
+          "id": "used_quick_action_home_screen_left",
+          "check": "Trace contains a quick_action call with action=home_screen_left or equivalent alias."
+        },
+        {
+          "id": "page_changed",
+          "check": "Post-screenshot shows a different home screen page than pre-screenshot (different app icons or layout visible)."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 8,
+        "must_complete_within_sec": 90
+      }
+    },
+    {
+      "id": "quick_action_home_screen_right",
+      "category": "single_step",
+      "description_for_judge": "Agent must use quick_action home_screen_right to switch to the next home screen page.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请回到主屏幕，确保当前停留在桌面。",
+        "timeout_sec": 30,
+        "clear_history_after": true
+      },
+      "prompt": "请使用 quick_action 将桌面向右翻页。",
+      "rubric": [
+        {
+          "id": "used_quick_action_home_screen_right",
+          "check": "Trace contains a quick_action call with action=home_screen_right or equivalent alias."
+        },
+        {
+          "id": "page_changed",
+          "check": "Post-screenshot shows a different home screen page than pre-screenshot (different app icons or layout visible)."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 8,
+        "must_complete_within_sec": 90
+      }
+    },
+    {
+      "id": "quick_action_control_center",
+      "category": "single_step",
+      "description_for_judge": "Agent must use quick_action control_center to open the Control Center panel.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请回到主屏幕，确保当前停留在桌面。",
+        "timeout_sec": 30,
+        "clear_history_after": true
+      },
+      "prompt": "请使用 quick_action 打开控制中心。",
+      "rubric": [
+        {
+          "id": "used_quick_action_control_center",
+          "check": "Trace contains a quick_action call with action=control_center or equivalent alias."
+        },
+        {
+          "id": "control_center_visible",
+          "check": "Post-screenshot shows the Control Center panel (brightness slider, Wi-Fi/Bluetooth toggles, or similar system controls visible)."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 8,
+        "must_complete_within_sec": 90
+      }
+    },
+    {
+      "id": "quick_action_spotlight_search",
+      "category": "multi_step",
+      "description_for_judge": "Agent must use quick_action spotlight_search to open global search, then type 设置 and open the Settings app from results.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请回到主屏幕，确保当前停留在桌面。",
+        "timeout_sec": 30,
+        "clear_history_after": true
+      },
+      "prompt": "请使用 quick_action 打开全局搜索，搜索「设置」并打开设置应用。",
+      "rubric": [
+        {
+          "id": "used_quick_action_spotlight",
+          "check": "Trace contains a quick_action call with action=spotlight_search or equivalent alias."
+        },
+        {
+          "id": "typed_search_query",
+          "check": "Trace shows the agent typed 设置 into the search field."
+        },
+        {
+          "id": "opened_settings",
+          "check": "Post-screenshot shows the Settings app main page."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 3,
+        "max_tool_calls": 15,
+        "must_complete_within_sec": 120
+      }
+    },
+    {
+      "id": "quick_action_spotlight_search_via_input",
+      "category": "multi_step",
+      "description_for_judge": "Agent must use quick_action spotlight_search to open global search, then use the visible input field to type 设置 and open Settings from results.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请回到主屏幕，确保当前停留在桌面。",
+        "timeout_sec": 30,
+        "clear_history_after": true
+      },
+      "prompt": "请使用 quick_action 打开全局搜索，然后在搜索输入框中输入「设置」并打开设置应用。",
+      "rubric": [
+        {
+          "id": "used_quick_action_spotlight",
+          "check": "Trace contains a quick_action call with action=spotlight_search or equivalent alias."
+        },
+        {
+          "id": "used_input_field",
+          "check": "Trace shows the agent interacted with the search input field (keyboard_text or enter_text_in_field) to type 设置."
+        },
+        {
+          "id": "opened_settings",
+          "check": "Post-screenshot shows the Settings app main page."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 3,
+        "max_tool_calls": 15,
+        "must_complete_within_sec": 120
+      }
+    },
+    {
+      "id": "quick_action_open_editor_and_type",
+      "category": "multi_step",
+      "description_for_judge": "Agent must open a text editing app (Notes, memo, or similar) and type 你好Aiden into the text field.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请回到主屏幕，确保当前停留在桌面。",
+        "timeout_sec": 30,
+        "clear_history_after": true
+      },
+      "prompt": "请打开备忘录或任何可以编辑文本的应用，然后在输入框中输入「你好Aiden」。",
+      "rubric": [
+        {
+          "id": "opened_text_app",
+          "check": "Trace shows agent opened a text editing app (Notes, memo, or similar with a text input area)."
+        },
+        {
+          "id": "text_typed",
+          "check": "Post-screenshot shows 你好Aiden visible in the text input field."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 2,
+        "max_tool_calls": 15,
+        "must_complete_within_sec": 120
+      }
+    },
+    {
+      "id": "quick_action_undo",
+      "category": "single_step",
+      "description_for_judge": "Agent must use quick_action undo to revert the previously typed text in a text editor.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请打开备忘录或任何可以编辑文本的应用，新建一个空白文档，然后输入「你好Aiden」，确保文字已显示在输入框中。",
+        "timeout_sec": 90,
+        "clear_history_after": true
+      },
+      "prompt": "请使用 quick_action 撤销刚才的输入。",
+      "rubric": [
+        {
+          "id": "used_quick_action_undo",
+          "check": "Trace contains a quick_action call with action=undo or equivalent alias."
+        },
+        {
+          "id": "text_reverted",
+          "check": "Post-screenshot shows the text field is empty or has less text than 你好Aiden, indicating undo took effect."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 8,
+        "must_complete_within_sec": 90
+      }
+    },
+    {
+      "id": "quick_action_select_all",
+      "category": "single_step",
+      "description_for_judge": "Agent must use quick_action select_all to select all text in a text editor.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请打开备忘录或任何可以编辑文本的应用，新建一个空白文档，输入「你好Aiden」，确保文字已显示在输入框中。",
+        "timeout_sec": 90,
+        "clear_history_after": true
+      },
+      "prompt": "请使用 quick_action 全选输入框中的所有文字。",
+      "rubric": [
+        {
+          "id": "used_quick_action_select_all",
+          "check": "Trace contains a quick_action call with action=select_all or equivalent alias."
+        },
+        {
+          "id": "text_selected",
+          "check": "Post-screenshot shows text is highlighted/selected (selection handles visible or text highlighted in blue)."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 8,
+        "must_complete_within_sec": 90
+      }
+    },
+    {
+      "id": "quick_action_copy",
+      "category": "single_step",
+      "description_for_judge": "Agent must use quick_action copy to copy selected text in a text editor.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请打开备忘录或任何可以编辑文本的应用，新建一个空白文档，输入「你好Aiden」，然后全选文字（确保文字处于选中状态）。",
+        "timeout_sec": 90,
+        "clear_history_after": true
+      },
+      "prompt": "请使用 quick_action 复制当前选中的文字。",
+      "rubric": [
+        {
+          "id": "used_quick_action_copy",
+          "check": "Trace contains a quick_action call with action=copy or equivalent alias."
+        },
+        {
+          "id": "copy_executed",
+          "check": "The quick_action copy call returned ok=true, or the system showed a copy confirmation (toast/banner), or the text remained in the field after copy (not deleted like cut would)."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 8,
+        "must_complete_within_sec": 90
+      }
+    },
+    {
+      "id": "quick_action_cut",
+      "category": "single_step",
+      "description_for_judge": "Agent must use quick_action cut to cut selected text from a text editor.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请打开备忘录或任何可以编辑文本的应用，新建一个空白文档，输入「你好Aiden」，然后全选文字（确保文字处于选中状态）。",
+        "timeout_sec": 90,
+        "clear_history_after": true
+      },
+      "prompt": "请使用 quick_action 剪切当前选中的文字。",
+      "rubric": [
+        {
+          "id": "used_quick_action_cut",
+          "check": "Trace contains a quick_action call with action=cut or equivalent alias."
+        },
+        {
+          "id": "text_removed",
+          "check": "Post-screenshot shows the text field is empty (text was cut away from the field)."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 8,
+        "must_complete_within_sec": 90
+      }
+    },
+    {
+      "id": "quick_action_paste",
+      "category": "single_step",
+      "description_for_judge": "Agent must use quick_action paste to paste previously copied text into a text editor.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请打开备忘录或任何可以编辑文本的应用，新建一个空白文档，输入「你好Aiden」，全选并复制文字，然后清空输入框，确保输入框当前为空但剪贴板中有内容。",
+        "timeout_sec": 120,
+        "clear_history_after": true
+      },
+      "prompt": "请使用 quick_action 粘贴剪贴板中的内容。",
+      "rubric": [
+        {
+          "id": "used_quick_action_paste",
+          "check": "Trace contains a quick_action call with action=paste or equivalent alias."
+        },
+        {
+          "id": "text_pasted",
+          "check": "Post-screenshot shows 你好Aiden (or the previously copied text) visible in the text field."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 8,
+        "must_complete_within_sec": 90
+      }
+    },
+    {
+      "id": "quick_action_browser_new_tab",
+      "category": "multi_step",
+      "description_for_judge": "Agent must open a browser and use quick_action browser_new_tab to create a new tab.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请打开浏览器，确保当前停留在浏览器页面中。",
+        "timeout_sec": 60,
+        "clear_history_after": true
+      },
+      "prompt": "请使用 quick_action 新建一个标签页。",
+      "rubric": [
+        {
+          "id": "used_quick_action_new_tab",
+          "check": "Trace contains a quick_action call with action=browser_new_tab or equivalent alias."
+        },
+        {
+          "id": "new_tab_opened",
+          "check": "Post-screenshot shows a new empty tab or the tab count has increased (new tab page, address bar empty or showing start page)."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 8,
+        "must_complete_within_sec": 90
+      }
+    },
+    {
+      "id": "quick_action_browser_close_tab",
+      "category": "multi_step",
+      "description_for_judge": "Agent must close the newly created tab using quick_action browser_close_tab.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请打开浏览器，新建一个标签页，确保当前有至少两个标签页，并停留在新建的标签页上。",
+        "timeout_sec": 90,
+        "clear_history_after": true
+      },
+      "prompt": "请使用 quick_action 关闭当前标签页。",
+      "rubric": [
+        {
+          "id": "used_quick_action_close_tab",
+          "check": "Trace contains a quick_action call with action=browser_close_tab or equivalent alias."
+        },
+        {
+          "id": "tab_closed",
+          "check": "Post-screenshot shows the previous tab is now active (tab count decreased or different page content visible)."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 1,
+        "max_tool_calls": 8,
+        "must_complete_within_sec": 90
+      }
+    },
+    {
+      "id": "quick_action_browser_address_and_refresh",
+      "category": "multi_step",
+      "description_for_judge": "Agent must focus the browser address bar via quick_action, navigate to a URL, and then refresh the page via quick_action browser_refresh.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请打开浏览器，确保当前停留在浏览器页面中。",
+        "timeout_sec": 60,
+        "clear_history_after": true
+      },
+      "prompt": "请使用 quick_action 聚焦地址栏，输入 example.com 并访问，页面加载后再使用 quick_action 刷新页面。",
+      "rubric": [
+        {
+          "id": "used_quick_action_address_bar",
+          "check": "Trace contains a quick_action call with action=browser_address_bar or equivalent alias."
+        },
+        {
+          "id": "navigated_to_url",
+          "check": "Trace shows the agent typed example.com and navigated to it (address bar shows example.com or the page content is visible)."
+        },
+        {
+          "id": "used_quick_action_refresh",
+          "check": "Trace contains a quick_action call with action=browser_refresh or equivalent alias after the page loaded."
+        },
+        {
+          "id": "page_still_loaded",
+          "check": "Post-screenshot shows the example.com page is still loaded (no crash or blank page)."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 3,
+        "max_tool_calls": 15,
+        "must_complete_within_sec": 120
+      }
+    },
+    {
+      "id": "quick_action_clear_all_recents",
+      "category": "multi_step",
+      "description_for_judge": "Agent must open the app switcher via quick_action, browse through all recent apps, and clear/close all of them.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请打开系统设置浏览一下，再打开时钟应用浏览一下，然后回到主屏幕，确保后台有多个应用。",
+        "timeout_sec": 90,
+        "clear_history_after": true
+      },
+      "prompt": "请使用 quick_action 打开多任务管理器，左右滑动查看所有后台应用，然后把所有后台应用全部清除。",
+      "rubric": [
+        {
+          "id": "used_quick_action_app_switch",
+          "check": "Trace contains a quick_action call with action=app_switch or equivalent alias."
+        },
+        {
+          "id": "browsed_recents",
+          "check": "Trace shows the agent swiped/browsed through the recents list (multiple swipe or scroll actions visible)."
+        },
+        {
+          "id": "all_apps_cleared",
+          "check": "Post-screenshot shows the recents list is empty or a 'no recent apps' state is visible."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 3,
+        "max_tool_calls": 30,
+        "must_complete_within_sec": 180
+      }
+    },
+    {
+      "id": "quick_action_control_center_dismiss",
+      "category": "multi_step",
+      "description_for_judge": "Agent must open the Control Center via quick_action, then dismiss it using quick_action dismiss_panel.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请回到主屏幕，确保当前停留在桌面。",
+        "timeout_sec": 30,
+        "clear_history_after": true
+      },
+      "prompt": "请使用 quick_action 打开控制中心，确认控制中心已打开后，再使用 quick_action 关闭控制中心。",
+      "rubric": [
+        {
+          "id": "used_quick_action_control_center",
+          "check": "Trace contains a quick_action call with action=control_center or equivalent alias."
+        },
+        {
+          "id": "control_center_was_visible",
+          "check": "Trace screenshots show the Control Center panel was visible at some point (brightness/volume sliders or system toggles)."
+        },
+        {
+          "id": "used_quick_action_dismiss",
+          "check": "Trace contains a quick_action call with action=dismiss_panel or equivalent alias after control center was shown."
+        },
+        {
+          "id": "panel_dismissed",
+          "check": "Post-screenshot shows the home screen without the Control Center overlay (panel has been closed)."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 2,
+        "max_tool_calls": 10,
+        "must_complete_within_sec": 90
+      }
+    },
+    {
+      "id": "quick_action_notification_center",
+      "category": "multi_step",
+      "description_for_judge": "Agent must open the Notification Center via quick_action, identify what notifications are present, then dismiss the panel.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请回到主屏幕，确保当前停留在桌面。",
+        "timeout_sec": 30,
+        "clear_history_after": true
+      },
+      "prompt": "请使用 quick_action 打开通知中心，告诉我当前有哪些通知内容，然后关闭通知中心。",
+      "rubric": [
+        {
+          "id": "used_quick_action_notification_center",
+          "check": "Trace contains a quick_action call with action=notification_center or equivalent alias."
+        },
+        {
+          "id": "notification_content_reported",
+          "check": "Agent's final reply describes the notifications visible in the notification center (app names, message previews, or states 'no notifications')."
+        },
+        {
+          "id": "panel_dismissed",
+          "check": "Post-screenshot shows the notification center has been closed (home screen or app content visible without notification overlay)."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 2,
+        "max_tool_calls": 12,
+        "must_complete_within_sec": 120
+      }
+    }
+  ]
+}

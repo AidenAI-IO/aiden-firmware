@@ -112,7 +112,8 @@ func (t *ScreenshotTool) ReturnsVisualObservation() bool { return true }
 
 func (t *ScreenshotTool) Description() string {
 	return `Capture a screenshot from the connected display. No input required (pass empty JSON {} or ""). ` +
-		`Returns a JSON object with width, height, and base64-encoded JPEG image data.`
+		`Returns a JSON object with width, height, and base64-encoded JPEG image data. ` +
+		`The returned width and height define coord_space:"screenshot": use pixel coordinates exactly as measured in this returned image.`
 }
 
 func (t *ScreenshotTool) ArgsSchema() map[string]any {

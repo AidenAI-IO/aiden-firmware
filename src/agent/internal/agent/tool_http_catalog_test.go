@@ -137,6 +137,13 @@ func TestUnknownToolsDefaultToHTTPVisible(t *testing.T) {
 	}
 }
 
+func TestWheelNudgeIsNotDirectlyHTTPExposed(t *testing.T) {
+	spec := NewToolSpec(&WheelNudgeTool{})
+	if spec.HTTPExposed {
+		t.Fatal("wheel_nudge must run through the Agent's run-scoped execution policy")
+	}
+}
+
 func TestHTTPDescriptorIncludesStructuredArgsSchema(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
 		Config{},

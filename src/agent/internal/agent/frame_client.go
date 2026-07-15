@@ -156,22 +156,47 @@ type frameHealthResponse struct {
 }
 
 func (r *frameHealthResponse) UnmarshalJSON(data []byte) error {
-	type frameHealthResponseAlias frameHealthResponse
 	var raw struct {
-		frameHealthResponseAlias
+		Status                  string          `json:"status"`
+		State                   string          `json:"state"`
+		LatestSeq               json.RawMessage `json:"latest_seq"`
+		FrameAgeMs              json.RawMessage `json:"frame_age_ms"`
+		RingBufferSize          uint32          `json:"ring_buffer_size"`
+		RingBufferUsed          uint32          `json:"ring_buffer_used"`
+		ConsecutiveFailures     uint32          `json:"consecutive_failures"`
+		LastError               string          `json:"last_error"`
 		LastRecoveryTs          json.RawMessage `json:"last_recovery_ts"`
+		AvgFrameServeLatencyMs  float64         `json:"avg_frame_serve_latency_ms"`
+		AvgCaptureCopyLatencyMs float64         `json:"avg_capture_copy_latency_ms"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-
+	latestSeq, err := parseFlexibleUint64(raw.LatestSeq)
+	if err != nil {
+		return fmt.Errorf("latest_seq: %w", err)
+	}
+	frameAgeMs, err := parseFlexibleUint64(raw.FrameAgeMs)
+	if err != nil {
+		return fmt.Errorf("frame_age_ms: %w", err)
+	}
 	lastRecoveryTs, err := parseFlexibleUint64(raw.LastRecoveryTs)
 	if err != nil {
 		return fmt.Errorf("last_recovery_ts: %w", err)
 	}
-
-	*r = frameHealthResponse(raw.frameHealthResponseAlias)
-	r.LastRecoveryTs = lastRecoveryTs
+	*r = frameHealthResponse{
+		Status:                  raw.Status,
+		State:                   raw.State,
+		LatestSeq:               latestSeq,
+		FrameAgeMs:              frameAgeMs,
+		RingBufferSize:          raw.RingBufferSize,
+		RingBufferUsed:          raw.RingBufferUsed,
+		ConsecutiveFailures:     raw.ConsecutiveFailures,
+		LastError:               raw.LastError,
+		LastRecoveryTs:          lastRecoveryTs,
+		AvgFrameServeLatencyMs:  raw.AvgFrameServeLatencyMs,
+		AvgCaptureCopyLatencyMs: raw.AvgCaptureCopyLatencyMs,
+	}
 	return nil
 }
 

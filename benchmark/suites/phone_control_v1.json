@@ -1,5 +1,6 @@
 {
   "name": "phone_control_v1",
+  "suite_category": "Perception & Control",
   "description": "Agent-driven phone control benchmark v1.",
   "trace_observations": [
     {
@@ -415,6 +416,64 @@
         "min_tool_calls": 3,
         "max_tool_calls": 20,
         "must_complete_within_sec": 240
+      }
+    },
+    {
+      "id": "long_press_app_icon",
+      "category": "single_step",
+      "description_for_judge": "Agent must long-press the Settings app icon on the home screen to trigger the contextual popup menu.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请返回主屏幕，确保当前停留在桌面。",
+        "timeout_sec": 30,
+        "clear_history_after": true
+      },
+      "prompt": "请长按桌面上的设置图标，直到弹出操作菜单。",
+      "rubric": [
+        {
+          "id": "long_press_performed",
+          "check": "Trace contains a touch_gesture long_press action on the Settings icon area."
+        },
+        {
+          "id": "popup_visible",
+          "check": "Post-screenshot shows a contextual popup menu or action overlay near the Settings icon."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 2,
+        "max_tool_calls": 10,
+        "must_complete_within_sec": 90
+      }
+    },
+    {
+      "id": "drag_app_icon",
+      "category": "multi_step",
+      "description_for_judge": "Agent must drag the Settings app icon from its current position to a different location on the home screen. The icon should end up in a visibly different grid position.",
+      "setup": {
+        "type": "agent_prompt",
+        "prompt": "请返回主屏幕，确保当前停留在桌面。",
+        "timeout_sec": 30,
+        "clear_history_after": true
+      },
+      "prompt": "请找到桌面上的设置图标，将它拖到另一个位置。",
+      "rubric": [
+        {
+          "id": "icon_located",
+          "check": "Trace shows agent took a screenshot and identified the Settings icon position."
+        },
+        {
+          "id": "drag_performed",
+          "check": "Trace contains a touch_gesture drag action with start and end coordinates that differ significantly."
+        },
+        {
+          "id": "icon_moved",
+          "check": "Post-screenshot shows the Settings icon in a different grid position compared to the pre-screenshot."
+        }
+      ],
+      "hard_assertions": {
+        "min_tool_calls": 3,
+        "max_tool_calls": 15,
+        "must_complete_within_sec": 120
       }
     }
   ]

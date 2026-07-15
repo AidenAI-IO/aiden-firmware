@@ -293,6 +293,7 @@ var knownToolNames = map[string]struct{}{
 	"skill_read":             {},
 	"touch_gesture":          {},
 	"wait_for_stable_screen": {},
+	"wheel_nudge":            {},
 	"weather":                {},
 	"web_scraper":            {},
 	"web_search":             {},

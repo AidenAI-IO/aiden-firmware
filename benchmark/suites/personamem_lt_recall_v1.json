@@ -1,5 +1,6 @@
 {
   "name": "personamem_lt_recall_v1",
+  "suite_category": "Memory & Cognition",
   "description": "PersonaMem-derived long-term memory recall/application benchmark. Each task preloads a compact LT memory distilled from PersonaMem context, clears chat history via the runner, then scores the multiple-choice answer deterministically.",
   "prompt_prefix": "You are being evaluated on long-term memory. Before answering, you must call recall_memory with relevant tags/entities to inspect the preloaded memory. Do not answer from general reasoning or the option text alone.",
   "global_reset": {},

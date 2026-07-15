@@ -1,5 +1,6 @@
 {
   "name": "loop_planning_v1",
+  "suite_category": "Memory & Cognition",
   "description": "Text-only benchmark for checking whether the agent uses plan mode only for sufficiently complex tasks. It avoids screen and phone tools so failures are easier to interpret.",
   "prompt_prefix": "You are completing text-only tasks. Do not use screen, phone, UI, keyboard, mouse, touch, app, clipboard, calendar, contacts, notification, or screenshot tools. Use an available non-UI capability when deterministic computation is appropriate to avoid arithmetic mistakes. End with exactly one final line like <final_answer>(a)</final_answer>.",
   "global_reset": {},
