@@ -85,7 +85,7 @@ func newTestStorageManager(t *testing.T, ops *fakeStorageOps) *StorageManager {
 	t.Helper()
 	dir := t.TempDir()
 	cfg := StorageConfig{MountPoint: filepath.Join(dir, "sdcard")}
-	m := newStorageManagerWithOps(cfg, ops, filepath.Join(dir, "storage_mode.json"), filepath.Join(dir, "storage.state"), filepath.Join(dir, "emmc"), nil)
+	m := newStorageManagerWithOps(cfg, ops, filepath.Join(dir, "storage.state"), filepath.Join(dir, "emmc"), nil)
 	return m
 }
 
@@ -97,25 +97,11 @@ func tickN(m *StorageManager, n int) {
 }
 
 func TestDeriveEffectiveMode(t *testing.T) {
-	tests := []struct {
-		name      string
-		preferred StorageMode
-		mounted   bool
-		want      StorageMode
-	}{
-		{"auto without card", StorageModeAuto, false, StorageModeEMMCOnly},
-		{"auto with card", StorageModeAuto, true, StorageModeDual},
-		{"emmc without card", StorageModeEMMCOnly, false, StorageModeEMMCOnly},
-		{"emmc with card", StorageModeEMMCOnly, true, StorageModeEMMCOnly},
-		{"dual without card", StorageModeDual, false, StorageModeEMMCOnly},
-		{"dual with card", StorageModeDual, true, StorageModeDual},
+	if got := deriveEffectiveMode(false); got != StorageModeEMMCOnly {
+		t.Fatalf("deriveEffectiveMode(false) = %d, want eMMC-only", got)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := deriveEffectiveMode(tt.preferred, tt.mounted); got != tt.want {
-				t.Fatalf("deriveEffectiveMode(%d, %t) = %d, want %d", tt.preferred, tt.mounted, got, tt.want)
-			}
-		})
+	if got := deriveEffectiveMode(true); got != StorageModeDual {
+		t.Fatalf("deriveEffectiveMode(true) = %d, want dual", got)
 	}
 }
 
@@ -184,58 +170,6 @@ func TestStorageManagerUnhealthyMountTreatedAsRemoval(t *testing.T) {
 	}
 	if status.EffectiveMode != StorageModeEMMCOnly {
 		t.Fatalf("effective mode = %d, want eMMC-only", status.EffectiveMode)
-	}
-}
-
-func TestStorageManagerPreferenceEMMCOnlyLeavesCardUnmounted(t *testing.T) {
-	ops := &fakeStorageOps{present: true, free: 1 << 30, total: 1 << 31, healthy: true}
-	m := newTestStorageManager(t, ops)
-	if err := m.SetPreferredMode(StorageModeEMMCOnly); err != nil {
-		t.Fatal(err)
-	}
-	tickN(m, 3)
-	if ops.prepares != 0 {
-		t.Fatalf("prepares = %d, want 0: eMMC-only mode must not touch the card", ops.prepares)
-	}
-
-	// Switching the preference back to auto mounts the card immediately.
-	if err := m.SetPreferredMode(StorageModeAuto); err != nil {
-		t.Fatal(err)
-	}
-	if m.EffectiveMode() != StorageModeDual {
-		t.Fatalf("effective mode = %d, want dual after preference change", m.EffectiveMode())
-	}
-}
-
-func TestStorageManagerPreferencePersistsAndReloads(t *testing.T) {
-	ops := &fakeStorageOps{}
-	m := newTestStorageManager(t, ops)
-	if err := m.SetPreferredMode(StorageModeDual); err != nil {
-		t.Fatal(err)
-	}
-
-	reloaded := newStorageManagerWithOps(m.cfg, ops, m.prefPath, m.statePath, m.emmcRoot, nil)
-	if reloaded.Status().PreferredMode != StorageModeDual {
-		t.Fatalf("reloaded preference = %d, want dual", reloaded.Status().PreferredMode)
-	}
-}
-
-func TestStorageManagerCorruptPreferenceFallsBackToAuto(t *testing.T) {
-	ops := &fakeStorageOps{}
-	m := newTestStorageManager(t, ops)
-	if err := os.WriteFile(m.prefPath, []byte("{not json"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	reloaded := newStorageManagerWithOps(m.cfg, ops, m.prefPath, m.statePath, m.emmcRoot, nil)
-	if reloaded.Status().PreferredMode != StorageModeAuto {
-		t.Fatalf("preference from corrupt file = %d, want auto", reloaded.Status().PreferredMode)
-	}
-}
-
-func TestStorageManagerRejectsInvalidMode(t *testing.T) {
-	m := newTestStorageManager(t, &fakeStorageOps{})
-	if err := m.SetPreferredMode(StorageMode(7)); err == nil {
-		t.Fatal("SetPreferredMode(7) succeeded, want error")
 	}
 }
 
@@ -418,12 +352,9 @@ func TestStorageManagerFormatRequiresConfirmation(t *testing.T) {
 	}
 }
 
-func TestStorageManagerFormatEMMCOnlyLeavesCardUnmounted(t *testing.T) {
+func TestStorageManagerFormatExt4MountsAfterSuccess(t *testing.T) {
 	ops := &fakeStorageOps{present: true, free: 1 << 30, total: 1 << 31, healthy: true}
 	m := newTestStorageManager(t, ops)
-	if err := m.SetPreferredMode(StorageModeEMMCOnly); err != nil {
-		t.Fatal(err)
-	}
 	tickN(m, 2)
 
 	if err := m.StartFormat(StorageFormatExt4, StorageFormatConfirmToken); err != nil {
@@ -436,8 +367,8 @@ func TestStorageManagerFormatEMMCOnlyLeavesCardUnmounted(t *testing.T) {
 	if ops.lastFormatFS != StorageFormatExt4 {
 		t.Fatalf("format fs = %q, want ext4", ops.lastFormatFS)
 	}
-	if m.Status().Card.Mounted {
-		t.Fatal("card mounted after format despite eMMC-only preference")
+	if status := m.Status(); !status.Card.Mounted || status.EffectiveMode != StorageModeDual {
+		t.Fatalf("status = %+v, want mounted dual storage after format", status)
 	}
 }
 
@@ -473,9 +404,6 @@ func TestStorageManagerRejectsActionsDuringFormat(t *testing.T) {
 	}
 	if err := m.SafeEject(); err == nil {
 		t.Fatal("eject accepted while formatting")
-	}
-	if err := m.SetPreferredMode(StorageModeEMMCOnly); err == nil {
-		t.Fatal("mode change accepted while formatting")
 	}
 	prepares := ops.prepares
 	tickN(m, 3)
@@ -558,21 +486,6 @@ func TestStorageManagerAutoFormatOncePerInsertion(t *testing.T) {
 	job = waitForFormatJob(t, m)
 	if job.Status != StorageFormatSuccess || ops.formats != 2 {
 		t.Fatalf("job = %+v formats = %d, want success on reinsertion", job, ops.formats)
-	}
-}
-
-func TestStorageManagerEMMCOnlyNeverAutoFormats(t *testing.T) {
-	ops := &fakeStorageOps{
-		present: true, healthy: true,
-		prepareErr: errors.New("no filesystem"), blank: true,
-	}
-	m := newTestStorageManager(t, ops)
-	if err := m.SetPreferredMode(StorageModeEMMCOnly); err != nil {
-		t.Fatal(err)
-	}
-	tickN(m, 4)
-	if ops.formats != 0 || ops.prepares != 0 {
-		t.Fatalf("formats = %d prepares = %d, want 0/0: eMMC-only must not touch the card", ops.formats, ops.prepares)
 	}
 }
 

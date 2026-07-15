@@ -111,8 +111,8 @@ func (c AudioArchiveConfig) StoragePathOrDefault() string {
 }
 
 // StorageConfig tunes the optional microSD data store managed by
-// StorageManager. The preferred storage mode is not configured here; it is
-// runtime state persisted separately (see docs/04-agent/storage-modes.md).
+// StorageManager. The storage mode itself is not configurable: a usable
+// card means dual storage, otherwise eMMC only (docs/04-agent/storage-modes.md).
 type StorageConfig struct {
 	MountPoint    string `toml:"mount_point,omitempty"`
 	Device        string `toml:"device,omitempty"`

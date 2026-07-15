@@ -450,7 +450,6 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/audio/", s.handleAudioFile)
 	mux.HandleFunc("/api/settings/tts", s.handleTTSSettings)
 	mux.HandleFunc("/api/storage/status", s.handleStorageStatus)
-	mux.HandleFunc("/api/storage/mode", s.handleStorageMode)
 	mux.HandleFunc("/api/storage/eject", s.handleStorageEject)
 	mux.HandleFunc("/api/storage/format", s.handleStorageFormat)
 	mux.HandleFunc("/api/tts/providers", s.handleTTSProviders)
@@ -4520,12 +4519,6 @@ const webUI = `<!DOCTYPE html>
                 <strong>eMMC + microSD</strong>
                 <div class="sidebar-note" id="storageSummary">Loading storage status...</div>
                 <div class="sidebar-note" id="storageWarning" hidden></div>
-                <label class="tool-lab-label" for="storageModeSelect">Preferred mode</label>
-                <select id="storageModeSelect" class="tool-lab-select" onchange="setStorageMode()">
-                    <option value="0">Auto (default)</option>
-                    <option value="1">eMMC only</option>
-                    <option value="2">Dual storage (SD first)</option>
-                </select>
                 <div class="tool-lab-row">
                     <button type="button" class="composer-btn tool-secondary-btn" id="storageEjectBtn" onclick="ejectStorage()">Safe eject</button>
                 </div>
@@ -4633,12 +4626,10 @@ const webUI = `<!DOCTYPE html>
         function renderStorageStatus(status) {
             const summary = document.getElementById('storageSummary');
             const warning = document.getElementById('storageWarning');
-            const select = document.getElementById('storageModeSelect');
             const ejectBtn = document.getElementById('storageEjectBtn');
-            if (!summary || !warning || !select) return;
+            if (!summary || !warning) return;
 
-            let text = 'Preference: ' + storageModeName(status.preferred_mode) +
-                ' — running: ' + storageModeName(status.effective_mode) + '. ';
+            let text = 'Running: ' + storageModeName(status.effective_mode) + '. ';
             if (status.card.mounted) {
                 text += 'SD card mounted at ' + status.mount_point + ' (' +
                     storageGB(status.card.free_bytes) + ' free of ' + storageGB(status.card.total_bytes) + ').';
@@ -4661,10 +4652,6 @@ const webUI = `<!DOCTYPE html>
             warning.hidden = !warn;
 
             const formatting = status.format_job && status.format_job.status === 'running';
-            if (document.activeElement !== select) {
-                select.value = String(status.preferred_mode);
-            }
-            select.disabled = formatting;
             if (ejectBtn) ejectBtn.disabled = !status.card.mounted || formatting;
         }
 
@@ -4691,14 +4678,6 @@ const webUI = `<!DOCTYPE html>
                 setStorageStatusMsg(err.message, true);
                 loadStorageStatus();
             }
-        }
-
-        async function setStorageMode() {
-            const select = document.getElementById('storageModeSelect');
-            if (!select) return;
-            const preferred = parseInt(select.value, 10);
-            await postStorage('/api/storage/mode', { preferred: preferred },
-                'Applying storage mode...', 'Storage mode updated.');
         }
 
         async function ejectStorage() {

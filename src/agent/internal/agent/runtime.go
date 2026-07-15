@@ -396,9 +396,9 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	rt.memoryPlane = NewFilesystemMemoryPlane(memoryDir, extractionCfg, logger)
 	rt.markInterruptedEpisodesBestEffort()
 
-	// SD/eMMC storage-mode manager (docs/04-agent/storage-modes.md). Absent
+	// SD/eMMC storage manager (docs/04-agent/storage-modes.md). Absent
 	// hardware degrades to eMMC-only, so starting it is safe everywhere.
-	rt.storage = NewStorageManager(cfg.Storage, cfg.ConfigDir, logger)
+	rt.storage = NewStorageManager(cfg.Storage, logger)
 	rt.storage.Start()
 	return rt, nil
 }

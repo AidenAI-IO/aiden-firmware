@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -13,14 +12,14 @@ import (
 	"time"
 )
 
-// StorageMode selects where governed application data is written.
+// StorageMode reports where governed application data is written. The mode
+// is derived purely from card availability — a usable card means dual
+// storage, no usable card means eMMC only. There is no user preference.
 // See docs/04-agent/storage-modes.md for the full design.
 type StorageMode int
 
 const (
-	// StorageModeAuto resolves to StorageModeDual when a usable card is mounted.
-	StorageModeAuto StorageMode = 0
-	// StorageModeEMMCOnly leaves the SD card unmounted and untouched.
+	// StorageModeEMMCOnly is the fallback when no usable card is mounted.
 	StorageModeEMMCOnly StorageMode = 1
 	// StorageModeDual writes governed data to SD first, falling back to eMMC.
 	StorageModeDual StorageMode = 2
@@ -63,8 +62,6 @@ const storageVolumeLabel = "AIDEN"
 // storageStateFileName mirrors runtime state for external processes (cmd/ota).
 const defaultStorageStatePath = "/run/aiden/storage.state"
 
-const storagePreferenceFileName = "storage_mode.json"
-
 // StorageCardStatus describes the SD card as last observed.
 type StorageCardStatus struct {
 	Present    bool   `json:"present"`
@@ -91,7 +88,6 @@ type StorageFormatJob struct {
 
 // StorageStatus is the API-facing snapshot of the storage subsystem.
 type StorageStatus struct {
-	PreferredMode  StorageMode       `json:"preferred_mode"`
 	EffectiveMode  StorageMode       `json:"effective_mode"`
 	Card           StorageCardStatus `json:"card"`
 	FallingBack    bool              `json:"falling_back"`
@@ -138,13 +134,11 @@ type StorageManager struct {
 	cfg          StorageConfig
 	logger       *Logger
 	ops          storageSysOps
-	prefPath     string // "" disables persistence
 	statePath    string // "" disables the state mirror
 	emmcRoot     string
 	pollInterval time.Duration
 
 	mu             sync.Mutex
-	preferred      StorageMode
 	card           StorageCardStatus
 	lastEffective  StorageMode
 	ejected        bool // safe-eject latch; cleared when the card is removed
@@ -163,22 +157,15 @@ type StorageManager struct {
 }
 
 // NewStorageManager builds a manager with real platform operations.
-// configDir hosts the preference file; empty disables persistence.
-func NewStorageManager(cfg StorageConfig, configDir string, logger *Logger) *StorageManager {
-	prefPath := ""
-	if configDir != "" {
-		prefPath = filepath.Join(configDir, storagePreferenceFileName)
-	}
-	m := newStorageManagerWithOps(cfg, &realStorageOps{device: cfg.DeviceOrDefault()}, prefPath, defaultStorageStatePath, "/userdata", logger)
-	return m
+func NewStorageManager(cfg StorageConfig, logger *Logger) *StorageManager {
+	return newStorageManagerWithOps(cfg, &realStorageOps{device: cfg.DeviceOrDefault()}, defaultStorageStatePath, "/userdata", logger)
 }
 
-func newStorageManagerWithOps(cfg StorageConfig, ops storageSysOps, prefPath, statePath, emmcRoot string, logger *Logger) *StorageManager {
-	m := &StorageManager{
+func newStorageManagerWithOps(cfg StorageConfig, ops storageSysOps, statePath, emmcRoot string, logger *Logger) *StorageManager {
+	return &StorageManager{
 		cfg:           cfg,
 		logger:        logger,
 		ops:           ops,
-		prefPath:      prefPath,
 		statePath:     statePath,
 		emmcRoot:      emmcRoot,
 		pollInterval:  2 * time.Second,
@@ -186,8 +173,6 @@ func newStorageManagerWithOps(cfg StorageConfig, ops storageSysOps, prefPath, st
 		formatJob:     StorageFormatJob{Status: StorageFormatIdle},
 		stop:          make(chan struct{}),
 	}
-	m.preferred = m.loadPreference()
-	return m
 }
 
 // Start launches the polling loop. Safe to call once.
@@ -214,21 +199,18 @@ func (m *StorageManager) Stop() {
 
 // deriveEffectiveMode is the single rule from which all boot and hot-plug
 // behavior follows.
-func deriveEffectiveMode(preferred StorageMode, cardMounted bool) StorageMode {
+func deriveEffectiveMode(cardMounted bool) StorageMode {
 	if !cardMounted {
 		return StorageModeEMMCOnly
 	}
-	if preferred == StorageModeAuto {
-		return StorageModeDual
-	}
-	return preferred
+	return StorageModeDual
 }
 
 // EffectiveMode returns the currently derived mode.
 func (m *StorageManager) EffectiveMode() StorageMode {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return deriveEffectiveMode(m.preferred, m.card.Mounted)
+	return deriveEffectiveMode(m.card.Mounted)
 }
 
 // Status returns an API-facing snapshot.
@@ -236,8 +218,7 @@ func (m *StorageManager) Status() StorageStatus {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return StorageStatus{
-		PreferredMode:  m.preferred,
-		EffectiveMode:  deriveEffectiveMode(m.preferred, m.card.Mounted),
+		EffectiveMode:  deriveEffectiveMode(m.card.Mounted),
 		Card:           m.card,
 		FallingBack:    m.fallingBack,
 		FallbackReason: m.fallbackReason,
@@ -246,40 +227,8 @@ func (m *StorageManager) Status() StorageStatus {
 	}
 }
 
-// SetPreferredMode validates, persists, and applies a new preference.
-// Any preference may be set at any time; the effective mode is re-derived
-// from card availability, so preferring dual storage without a card simply
-// runs eMMC-only until a card appears.
-func (m *StorageManager) SetPreferredMode(mode StorageMode) error {
-	if mode < StorageModeAuto || mode > StorageModeDual {
-		return fmt.Errorf("invalid storage mode %d", mode)
-	}
-	m.mu.Lock()
-	if m.formatJob.Status == StorageFormatRunning {
-		m.mu.Unlock()
-		return fmt.Errorf("cannot change mode while a format job is running")
-	}
-	m.preferred = mode
-	if err := m.persistPreferenceLocked(); err != nil {
-		m.mu.Unlock()
-		return err
-	}
-	if mode == StorageModeEMMCOnly && m.card.Mounted {
-		m.unmountLocked(false, "")
-	}
-	if mode != StorageModeEMMCOnly && m.card.Present && !m.card.Mounted {
-		m.ejected = false
-		m.mountFailed = false
-		m.tryMountLocked()
-	}
-	m.finishTransitionLocked()
-	m.mu.Unlock()
-	return nil
-}
-
 // SafeEject syncs and unmounts the card so it can be pulled. The card is not
-// remounted until it is physically removed and reinserted, or the preference
-// is set again to a card-using mode.
+// remounted until it is physically removed and reinserted.
 func (m *StorageManager) SafeEject() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -299,8 +248,7 @@ func (m *StorageManager) SafeEject() error {
 // partition plus a new filesystem. Erases the entire card, including any
 // partitions not created by this device. confirm must equal
 // StorageFormatConfirmToken. Progress is polled via Status().FormatJob.
-// After formatting, the card is mounted unless the preferred mode is
-// eMMC-only, whose "card untouched" semantics win.
+// After a successful format the card is mounted and dual storage resumes.
 func (m *StorageManager) StartFormat(fs, confirm string) error {
 	if confirm != StorageFormatConfirmToken {
 		return fmt.Errorf("format not confirmed")
@@ -349,11 +297,7 @@ func (m *StorageManager) runFormatJob(fs string) {
 	m.card.Reason = ""
 	m.ejected = false
 	m.mountFailed = false
-	if m.preferred != StorageModeEMMCOnly {
-		m.tryMountLocked()
-	} else {
-		m.logf("[storage] format (%s) done; card left unmounted (eMMC-only mode)", fs)
-	}
+	m.tryMountLocked()
 	m.finishTransitionLocked()
 }
 
@@ -373,7 +317,7 @@ func (m *StorageManager) Subscribe() <-chan StorageEvent {
 // falling-back flag surfaced via Status.
 func (m *StorageManager) ResolveDir(class StorageDataClass) (string, error) {
 	m.mu.Lock()
-	mode := deriveEffectiveMode(m.preferred, m.card.Mounted)
+	mode := deriveEffectiveMode(m.card.Mounted)
 	mountPoint := m.cfg.MountPointOrDefault()
 	m.mu.Unlock()
 
@@ -503,9 +447,7 @@ func (m *StorageManager) tick() {
 		m.ejected = false
 		m.mountFailed = false
 		m.autoFormatDone = false
-		if m.preferred != StorageModeEMMCOnly {
-			m.tryMountLocked()
-		}
+		m.tryMountLocked()
 	case !present && m.card.Present:
 		if m.card.Mounted {
 			m.unmountLocked(true, "card removed")
@@ -521,9 +463,8 @@ func (m *StorageManager) tick() {
 			m.refreshSpaceLocked()
 		}
 	case present && !m.card.Mounted:
-		// Card sitting idle: mount only if the mode wants it and we are not
-		// ejected and not stuck on a known-bad card.
-		if m.preferred != StorageModeEMMCOnly && !m.ejected && !m.mountFailed {
+		// Card sitting idle: mount unless safe-ejected or known bad.
+		if !m.ejected && !m.mountFailed {
 			m.tryMountLocked()
 		}
 	}
@@ -600,7 +541,7 @@ func (m *StorageManager) refreshSpaceLocked() {
 // finishTransitionLocked re-derives the effective mode and, on change,
 // notifies subscribers and refreshes the state mirror. Caller holds m.mu.
 func (m *StorageManager) finishTransitionLocked() {
-	effective := deriveEffectiveMode(m.preferred, m.card.Mounted)
+	effective := deriveEffectiveMode(m.card.Mounted)
 	if effective == m.lastEffective {
 		m.writeStateFileLocked()
 		return
@@ -611,7 +552,7 @@ func (m *StorageManager) finishTransitionLocked() {
 		m.fallingBack = false
 		m.fallbackReason = ""
 	}
-	m.logf("[storage] effective mode -> %d (preferred %d, card mounted %t)", effective, m.preferred, m.card.Mounted)
+	m.logf("[storage] effective mode -> %d (card mounted %t)", effective, m.card.Mounted)
 	for _, ch := range m.subscribers {
 		select {
 		case ch <- StorageEvent{EffectiveMode: effective}:
@@ -619,46 +560,6 @@ func (m *StorageManager) finishTransitionLocked() {
 		}
 	}
 	m.writeStateFileLocked()
-}
-
-// loadPreference reads the persisted preference; corruption falls back to auto.
-func (m *StorageManager) loadPreference() StorageMode {
-	if m.prefPath == "" {
-		return StorageModeAuto
-	}
-	data, err := os.ReadFile(m.prefPath)
-	if err != nil {
-		return StorageModeAuto
-	}
-	var stored struct {
-		Preferred StorageMode `json:"preferred"`
-	}
-	if err := json.Unmarshal(data, &stored); err != nil || stored.Preferred < StorageModeAuto || stored.Preferred > StorageModeDual {
-		m.logf("[storage] invalid preference file %s, using auto", m.prefPath)
-		return StorageModeAuto
-	}
-	return stored.Preferred
-}
-
-// persistPreferenceLocked writes the preference atomically. Caller holds m.mu.
-func (m *StorageManager) persistPreferenceLocked() error {
-	if m.prefPath == "" {
-		return nil
-	}
-	data, err := json.Marshal(struct {
-		Preferred StorageMode `json:"preferred"`
-	}{Preferred: m.preferred})
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(m.prefPath), 0o755); err != nil {
-		return err
-	}
-	tmp := m.prefPath + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, m.prefPath)
 }
 
 // writeStateFileLocked mirrors state for external processes. Best effort:
@@ -680,8 +581,7 @@ func (m *StorageManager) writeStateFileLocked() {
 	writeKV("SD_MOUNTED", bool01(m.card.Mounted))
 	writeKV("SD_DEVICE", m.card.Device)
 	writeKV("SD_MOUNTPOINT", m.cfg.MountPointOrDefault())
-	writeKV("PREFERRED_MODE", fmt.Sprintf("%d", m.preferred))
-	writeKV("EFFECTIVE_MODE", fmt.Sprintf("%d", deriveEffectiveMode(m.preferred, m.card.Mounted)))
+	writeKV("EFFECTIVE_MODE", fmt.Sprintf("%d", deriveEffectiveMode(m.card.Mounted)))
 	writeKV("SD_TOTAL_BYTES", fmt.Sprintf("%d", m.card.TotalBytes))
 	writeKV("SD_FREE_BYTES", fmt.Sprintf("%d", m.card.FreeBytes))
 	writeKV("FALLING_BACK", bool01(m.fallingBack))

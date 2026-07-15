@@ -404,10 +404,10 @@ private:
                 << body;
             return out.str();
         }
-        if (path == "/api/storage/mode") {
+        if (path == "/api/storage/eject") {
             const std::string body =
-                "{\"preferred_mode\":2,\"effective_mode\":2,"
-                "\"card\":{\"present\":true,\"mounted\":true},"
+                "{\"effective_mode\":1,"
+                "\"card\":{\"present\":true,\"mounted\":false},"
                 "\"format_job\":{\"status\":\"idle\"}}";
             std::ostringstream out;
             out << "HTTP/1.1 200 OK\r\n"
@@ -1367,7 +1367,6 @@ TEST_CASE("config_web: GET /api/storage/status parses the agent state mirror") {
         "SD_MOUNTED=1\n"
         "SD_DEVICE=/dev/mmcblk2p1\n"
         "SD_MOUNTPOINT=/mnt/sdcard\n"
-        "PREFERRED_MODE=0\n"
         "EFFECTIVE_MODE=2\n"
         "SD_TOTAL_BYTES=31914983424\n"
         "SD_FREE_BYTES=31834701824\n"
@@ -1386,7 +1385,6 @@ TEST_CASE("config_web: GET /api/storage/status parses the agent state mirror") {
     CHECK((cJSON_GetObjectItem(parsed, "sd_present")->type & 0xff) == cJSON_True);
     CHECK((cJSON_GetObjectItem(parsed, "sd_mounted")->type & 0xff) == cJSON_True);
     CHECK(required_json_string(parsed, "mount_point") == "/mnt/sdcard");
-    CHECK(cJSON_GetObjectItem(parsed, "preferred_mode")->valueint == 0);
     CHECK(cJSON_GetObjectItem(parsed, "effective_mode")->valueint == 2);
     CHECK(cJSON_GetObjectItem(parsed, "total_bytes")->valuedouble == doctest::Approx(31914983424.0));
     cJSON* job = cJSON_GetObjectItem(parsed, "format_job");
@@ -1409,21 +1407,20 @@ TEST_CASE("config_web: GET /api/storage/status reports unavailable without a sta
     cJSON_Delete(parsed);
 }
 
-TEST_CASE("config_web: POST /api/storage/mode proxies to the agent") {
+TEST_CASE("config_web: POST /api/storage/eject proxies to the agent") {
     StubAgentSTTTestServer agent_server;
     StubEnv env;
     env.set("AIDEN_AGENT_HTTP_BASE_URL", "http://127.0.0.1:" + std::to_string(agent_server.port()));
     auto handle = start_server(env);
 
-    HttpResponse resp = http_request(handle->port, "POST", "/api/storage/mode", "{\"preferred\":2}");
+    HttpResponse resp = http_request(handle->port, "POST", "/api/storage/eject", "{}");
     REQUIRE(resp.status == 200);
-    CHECK(resp.body.find("\"effective_mode\":2") != std::string::npos);
+    CHECK(resp.body.find("\"effective_mode\":1") != std::string::npos);
 
     auto requests = agent_server.requests();
     REQUIRE(requests.size() == 1);
     CHECK(requests[0].method == "POST");
-    CHECK(requests[0].path == "/api/storage/mode");
-    CHECK(requests[0].body.find("\"preferred\":2") != std::string::npos);
+    CHECK(requests[0].path == "/api/storage/eject");
 }
 
 TEST_CASE("config_web: GET /api/config accepts optional field-level omissions from resolved config") {

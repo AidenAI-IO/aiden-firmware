@@ -68,7 +68,8 @@ api_key = "OPENAI_API_KEY"
                                     # Setting it bypasses the SD/eMMC storage modes
 
 # microSD storage tuning (optional; see docs/04-agent/storage-modes.md)
-# The preferred storage mode itself is set from the Web UI, not here.
+# Storage mode is automatic: a usable card means dual storage, otherwise
+# eMMC only. There is no mode setting.
 [storage]
 # mount_point = "/mnt/sdcard"   # Where a usable card is mounted
 # device = "mmcblk2"            # SD card block device base name

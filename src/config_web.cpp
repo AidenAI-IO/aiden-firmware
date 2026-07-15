@@ -4372,7 +4372,6 @@ ApiResponse handle_get_storage_status(const Options& options) {
     cJSON_AddBoolToObject(root, "sd_mounted", storage_state_flag(kv, "SD_MOUNTED") ? 1 : 0);
     cJSON_AddStringToObject(root, "device", storage_state_string(kv, "SD_DEVICE").c_str());
     cJSON_AddStringToObject(root, "mount_point", storage_state_string(kv, "SD_MOUNTPOINT").c_str());
-    cJSON_AddNumberToObject(root, "preferred_mode", storage_state_int(kv, "PREFERRED_MODE", 0));
     cJSON_AddNumberToObject(root, "effective_mode", storage_state_int(kv, "EFFECTIVE_MODE", 1));
     cJSON_AddNumberToObject(root, "total_bytes", storage_state_double(kv, "SD_TOTAL_BYTES"));
     cJSON_AddNumberToObject(root, "free_bytes", storage_state_double(kv, "SD_FREE_BYTES"));
@@ -6039,10 +6038,6 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
 
     if (request.method == "GET" && request.path == "/api/storage/status") {
         return handle_get_storage_status(options);
-    }
-
-    if (request.method == "POST" && request.path == "/api/storage/mode") {
-        return handle_post_storage(options, "/api/storage/mode", request.body);
     }
 
     if (request.method == "POST" && request.path == "/api/storage/format") {
