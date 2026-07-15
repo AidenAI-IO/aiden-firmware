@@ -634,7 +634,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 
 	unlockRun, err := r.lockRun(ctx)
 	if err != nil {
-		return RunResult{Preempted: true}, err
+		return RunResult{}, err
 	}
 	defer unlockRun()
 

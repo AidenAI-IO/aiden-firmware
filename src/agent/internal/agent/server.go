@@ -594,7 +594,6 @@ func (s *Server) handleChatCancel(w http.ResponseWriter, r *http.Request) {
 	source := chatCancelRequestSource(r)
 
 	s.markRequestTerminated(requestID)
-	s.runtime.Preempt()
 	runCanceled := s.cancelActiveRun(requestID)
 	outputCanceled := s.interruptRequestOutputs(requestID)
 	if runCanceled || outputCanceled {
