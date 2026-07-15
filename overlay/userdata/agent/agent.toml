@@ -116,7 +116,7 @@ speed = 1.0                   # Speech speed: 0.5 - 2.0
 [hid]
 # keyboard_device = "/dev/hidg0"
 # mouse_device = "/dev/hidg1"
-# android_keyboard_device = "/dev/hidg2"  # hid.usb2 Consumer Control keys; Android nav keys in touchscreen mode, media/volume/brightness/screenshot keys in absolute mode
+# android_keyboard_device = "/dev/hidg4"  # unavailable in the Magic Keyboard + ECM POC; hidg2-3 are Apple vendor interfaces
 # frame_socket = "/run/frame_service/frame_service.sock"
 # pointer_mode = "absolute"     # default, iOS AssistiveTouch / absolute mouse
 # pointer_mode = "touchscreen"  # Android HID touch screen / digitizer + full hid.usb2 Android extension keys

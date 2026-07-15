@@ -34,7 +34,9 @@ const (
 	defaultLLMHTTPLogRetentionDays = 7
 	defaultKeyboardDevice          = "/dev/hidg0"
 	defaultMouseDevice             = "/dev/hidg1"
-	defaultAndroidKeyboardDevice   = "/dev/hidg2"
+	// The Magic Keyboard + ECM POC consumes hidg2-3 with Apple vendor reports.
+	// Keep extension/media-key writes away from those interfaces.
+	defaultAndroidKeyboardDevice   = "/dev/hidg4"
 	defaultFrameServiceSocket      = "/run/frame_service/frame_service.sock"
 	defaultPointerMode             = "absolute"
 	defaultInputMode               = "text"

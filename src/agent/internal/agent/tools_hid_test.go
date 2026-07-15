@@ -1192,7 +1192,7 @@ func TestKeyboardTextAcceptsBareTextFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	if len(data) != len("App Store")*16 {
+	if len(data) != len("App Store")*magicKeyboardReportLength*2 {
 		t.Fatalf("expected 2 keyboard reports per ASCII character, got %d bytes", len(data))
 	}
 }
@@ -1625,23 +1625,26 @@ func TestKeyboardTapSendsModifierOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	if len(data) != 16 {
-		t.Fatalf("report bytes = %d, want 16 (modifier + release)", len(data))
+	if len(data) != magicKeyboardReportLength*2 {
+		t.Fatalf("report bytes = %d, want %d (modifier + release)", len(data), magicKeyboardReportLength*2)
 	}
 
-	chord := data[0:8]
-	release := data[8:16]
-	if chord[0] != 0x08 {
-		t.Fatalf("chord modifier = 0x%02x, want 0x08", chord[0])
+	chord := data[0:magicKeyboardReportLength]
+	release := data[magicKeyboardReportLength : magicKeyboardReportLength*2]
+	if chord[0] != magicKeyboardReportID || chord[1] != 0x08 {
+		t.Fatalf("chord report ID/modifier = 0x%02x/0x%02x, want 0x%02x/0x08", chord[0], chord[1], magicKeyboardReportID)
 	}
-	for i := 2; i < 8; i++ {
+	for i := 3; i < 9; i++ {
 		if chord[i] != 0 {
 			t.Fatalf("chord key slot [%d] = 0x%02x, want 0", i, chord[i])
 		}
 	}
-	for i := range release {
+	if release[0] != magicKeyboardReportID {
+		t.Fatalf("release report ID = 0x%02x, want 0x%02x", release[0], magicKeyboardReportID)
+	}
+	for i := 1; i < len(release); i++ {
 		if release[i] != 0 {
-			t.Fatalf("release report = %v, want all zeros", release)
+			t.Fatalf("release report = %v, want report ID followed by zeros", release)
 		}
 	}
 }
@@ -1663,19 +1666,22 @@ func TestKeyboardTapSendsModifierChordWithHold(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	if len(data) != 16 {
-		t.Fatalf("report bytes = %d, want 16 (chord + release)", len(data))
+	if len(data) != magicKeyboardReportLength*2 {
+		t.Fatalf("report bytes = %d, want %d (chord + release)", len(data), magicKeyboardReportLength*2)
 	}
 
-	chord := data[0:8]
-	release := data[8:16]
+	chord := data[0:magicKeyboardReportLength]
+	release := data[magicKeyboardReportLength : magicKeyboardReportLength*2]
 
-	if chord[0] != 0x08 || chord[2] != 0x14 {
+	if chord[0] != magicKeyboardReportID || chord[1] != 0x08 || chord[3] != 0x14 {
 		t.Fatalf("chord report = %v, want modifier 0x08 and key q(0x14)", chord)
 	}
-	for i := range release {
+	if release[0] != magicKeyboardReportID {
+		t.Fatalf("release report ID = 0x%02x, want 0x%02x", release[0], magicKeyboardReportID)
+	}
+	for i := 1; i < len(release); i++ {
 		if release[i] != 0 {
-			t.Fatalf("release report = %v, want all zeros", release)
+			t.Fatalf("release report = %v, want report ID followed by zeros", release)
 		}
 	}
 }

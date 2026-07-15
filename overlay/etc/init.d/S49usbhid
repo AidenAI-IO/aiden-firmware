@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# Aiden USB composite gadget: HID (keyboard + touch) + CDC ECM (usb0).
+# Apple Magic Keyboard compatibility POC + Aiden pointer/media + CDC ECM.
 # ECM brings up usb0 at 192.168.42.1/24 so the device serves the config portal
 # to a phone/PC over USB while WiFi handles the data plane.
 #
@@ -71,6 +71,8 @@ start() {
 		rmdir "$GADGET_DIR"/functions/hid.usb0 2>/dev/null
 		rmdir "$GADGET_DIR"/functions/hid.usb1 2>/dev/null
 		rmdir "$GADGET_DIR"/functions/hid.usb2 2>/dev/null
+		rmdir "$GADGET_DIR"/functions/hid.usb3 2>/dev/null
+		rmdir "$GADGET_DIR"/functions/hid.usb4 2>/dev/null
 		rmdir "$GADGET_DIR"/functions/ecm.usb0 2>/dev/null
 		rmdir "$GADGET_DIR"/configs/c.1/strings/0x409 2>/dev/null
 		rmdir "$GADGET_DIR"/configs/c.1 2>/dev/null
@@ -80,9 +82,14 @@ start() {
 
 	# Create gadget
 	mkdir -p "$GADGET_DIR"
-	echo 0x1d6b > "$GADGET_DIR/idVendor"
-	echo 0x0104 > "$GADGET_DIR/idProduct"
-	echo 0x0100 > "$GADGET_DIR/bcdDevice"
+	# Internal compatibility experiment: use the USB identity and HID report
+	# topology observed from an Apple Magic Keyboard (05ac:0267). This is not a
+	# production USB identity; it exists only to determine whether iOS's
+	# AppleUSBTopCaseHIDDriver repairs per-scene key-command registration more
+	# reliably than the generic HID driver.
+	echo 0x05ac > "$GADGET_DIR/idVendor"
+	echo 0x0267 > "$GADGET_DIR/idProduct"
+	echo 0x0870 > "$GADGET_DIR/bcdDevice"
 	echo 0x0200 > "$GADGET_DIR/bcdUSB"
 
 	# IAD-based multi-function device
@@ -91,23 +98,25 @@ start() {
 	echo 0x01 > "$GADGET_DIR/bDeviceProtocol"
 
 	mkdir -p "$GADGET_DIR/strings/0x409"
-	echo "0123456789ABCDEF" > "$GADGET_DIR/strings/0x409/serialnumber"
-	echo "Aiden" > "$GADGET_DIR/strings/0x409/manufacturer"
-	echo "Aiden HID+ECM" > "$GADGET_DIR/strings/0x409/product"
+	echo "AIDENAPPLEPOC0001" > "$GADGET_DIR/strings/0x409/serialnumber"
+	echo "Apple Inc." > "$GADGET_DIR/strings/0x409/manufacturer"
+	echo "Magic Keyboard" > "$GADGET_DIR/strings/0x409/product"
 
 	mkdir -p "$GADGET_DIR/configs/c.1/strings/0x409"
-	echo "HID + ECM Composite" > "$GADGET_DIR/configs/c.1/strings/0x409/configuration"
+	echo "Magic Keyboard + Aiden HID + ECM POC" > "$GADGET_DIR/configs/c.1/strings/0x409/configuration"
 	echo 500 > "$GADGET_DIR/configs/c.1/MaxPower"
 
-	# Keyboard HID function (8-byte boot keyboard report).
-	# Keep the boot subclass/protocol for broad host compatibility. iOS modifier
-	# failures are caused by stale host-side HID sessions; force a clean
-	# re-enumeration after binding instead of changing the advertised protocol.
+	# Magic Keyboard interface. The descriptor is the 05ac:0267 keyboard and
+	# consumer-control descriptor captured from iOS. Report ID 1 uses a 10-byte
+	# input report: [0x01, modifier, reserved, key1..key6, vendor/consumer bits].
+	# Report ID 0x3f is the largest report (65 bytes including the report ID), so
+	# report_length must cover it even though normal key events are only 10 bytes.
 	mkdir -p "$GADGET_DIR/functions/hid.usb0"
-	echo 1 > "$GADGET_DIR/functions/hid.usb0/protocol"
-	echo 1 > "$GADGET_DIR/functions/hid.usb0/subclass"
-	echo 8 > "$GADGET_DIR/functions/hid.usb0/report_length"
-	printf '\x05\x01\x09\x06\xa1\x01\x05\x07\x19\xe0\x29\xe7\x15\x00\x25\x01\x75\x01\x95\x08\x81\x02\x95\x01\x75\x08\x81\x01\x95\x06\x75\x08\x15\x00\x25\x65\x05\x07\x19\x00\x29\x65\x81\x00\xc0' \
+	echo 0 > "$GADGET_DIR/functions/hid.usb0/protocol"
+	echo 0 > "$GADGET_DIR/functions/hid.usb0/subclass"
+	echo 1 > "$GADGET_DIR/functions/hid.usb0/no_out_endpoint"
+	echo 65 > "$GADGET_DIR/functions/hid.usb0/report_length"
+	printf '\x05\x01\x09\x06\xa1\x01\x85\x01\x05\x07\x19\xe0\x29\xe7\x15\x00\x25\x01\x75\x01\x95\x08\x81\x02\x95\x01\x75\x08\x81\x01\x95\x05\x75\x01\x05\x08\x19\x01\x29\x05\x91\x02\x95\x01\x75\x03\x91\x01\x95\x06\x75\x08\x15\x00\x26\xff\x00\x05\x07\x19\x00\x29\xff\x81\x00\x05\x0c\x75\x01\x95\x01\x09\xb8\x15\x00\x25\x01\x81\x02\x05\xff\x09\x03\x75\x07\x95\x01\x81\x02\xc0\x05\x0c\x09\x01\xa1\x01\x85\x52\x15\x00\x25\x01\x75\x01\x95\x01\x09\xcd\x81\x02\x09\xb3\x81\x02\x09\xb4\x81\x02\x09\xb5\x81\x02\x09\xb6\x81\x02\x81\x01\x81\x01\x81\x01\x85\x09\x15\x00\x25\x01\x75\x08\x95\x01\x06\x01\xff\x09\x0b\xb1\x02\x75\x08\x95\x02\xb1\x01\xc0\x06\x00\xff\x09\x06\xa1\x01\x06\x00\xff\x09\x06\x15\x00\x26\xff\x00\x75\x08\x95\x40\x85\x3f\x81\x22\xc0' \
 		> "$GADGET_DIR/functions/hid.usb0/report_desc"
 
 	# Touch / mouse HID function (report format follows agent.toml pointer_mode)
@@ -125,17 +134,27 @@ start() {
 			> "$GADGET_DIR/functions/hid.usb1/report_desc"
 	fi
 
-	mkdir -p "$GADGET_DIR/functions/hid.usb2"
-	echo 0 > "$GADGET_DIR/functions/hid.usb2/protocol"
-	echo 0 > "$GADGET_DIR/functions/hid.usb2/subclass"
-	echo 2 > "$GADGET_DIR/functions/hid.usb2/report_length"
-	if [ "$POINTER_MODE" = "touchscreen" ]; then
-		printf '\x05\x0c\x09\x01\xa1\x01\x15\x00\x26\xff\x03\x1a\x00\x00\x2a\xff\x03\x75\x10\x95\x01\x81\x00\xc0' \
-			> "$GADGET_DIR/functions/hid.usb2/report_desc"
-	else
-		printf '\x05\x0c\x09\x01\xa1\x01\x15\x00\x25\x01\x09\xe2\x09\xe9\x09\xea\x09\xcd\x09\xb7\x09\xb5\x09\xb6\x09\xb4\x09\xb3\x09\x65\x09\x6f\x09\x70\x75\x01\x95\x0c\x81\x02\x75\x01\x95\x04\x81\x03\xc0' \
-			> "$GADGET_DIR/functions/hid.usb2/report_desc"
-	fi
+	# The real 05ac:0267 exposes two vendor-defined HID interfaces before its
+	# keyboard interface. Create them after hid.usb0-1. The board kernel supports at most four HID gadget
+	# instances, so this iOS experiment keeps the keyboard and pointer but omits
+	# Aiden's separate media-key function. Creating the Apple functions after
+	# hid.usb0-1 keeps /dev/hidg0 as keyboard and /dev/hidg1 as pointer; linking
+	# them first below preserves the real keyboard's interface order.
+	mkdir -p "$GADGET_DIR/functions/hid.usb3"
+	echo 0 > "$GADGET_DIR/functions/hid.usb3/protocol"
+	echo 0 > "$GADGET_DIR/functions/hid.usb3/subclass"
+	echo 1 > "$GADGET_DIR/functions/hid.usb3/no_out_endpoint"
+	echo 109 > "$GADGET_DIR/functions/hid.usb3/report_length"
+	printf '\x06\x00\xff\x09\x03\xa1\x01\x06\x00\xff\x09\x03\x15\x00\x26\xff\x00\x85\xc0\x96\x6b\x00\x75\x08\x81\x02\xc0' \
+		> "$GADGET_DIR/functions/hid.usb3/report_desc"
+
+	mkdir -p "$GADGET_DIR/functions/hid.usb4"
+	echo 0 > "$GADGET_DIR/functions/hid.usb4/protocol"
+	echo 0 > "$GADGET_DIR/functions/hid.usb4/subclass"
+	echo 1 > "$GADGET_DIR/functions/hid.usb4/no_out_endpoint"
+	echo 5 > "$GADGET_DIR/functions/hid.usb4/report_length"
+	printf '\x06\x00\xff\x09\x0b\xa1\x01\x06\x00\xff\x09\x0b\x15\x00\x26\xff\x00\x75\x08\x96\x04\x00\x85\xe0\x81\x22\x09\x0b\x96\x01\x00\x85\x9a\x81\x22\xc0\x06\x00\xff\x09\x14\xa1\x01\x85\x90\x05\x84\x75\x01\x95\x03\x15\x00\x25\x01\x09\x61\x05\x85\x09\x44\x09\x46\x81\x02\x95\x05\x81\x01\x75\x08\x95\x01\x15\x00\x26\xff\x00\x09\x65\x81\x02\xc0' \
+		> "$GADGET_DIR/functions/hid.usb4/report_desc"
 
 	# CDC ECM function (usb0 network interface)
 	mkdir -p "$GADGET_DIR/functions/ecm.usb0"
@@ -143,9 +162,10 @@ start() {
 	echo "$ECM_DEV_MAC"  > "$GADGET_DIR/functions/ecm.usb0/dev_addr"
 
 	# Link all functions, THEN bind UDC (configfs requires this order)
+	ln -s "$GADGET_DIR/functions/hid.usb3" "$GADGET_DIR/configs/c.1/hid.usb3" 2>/dev/null
+	ln -s "$GADGET_DIR/functions/hid.usb4" "$GADGET_DIR/configs/c.1/hid.usb4" 2>/dev/null
 	ln -s "$GADGET_DIR/functions/hid.usb0" "$GADGET_DIR/configs/c.1/hid.usb0" 2>/dev/null
 	ln -s "$GADGET_DIR/functions/hid.usb1" "$GADGET_DIR/configs/c.1/hid.usb1" 2>/dev/null
-	ln -s "$GADGET_DIR/functions/hid.usb2" "$GADGET_DIR/configs/c.1/hid.usb2" 2>/dev/null
 	ln -s "$GADGET_DIR/functions/ecm.usb0" "$GADGET_DIR/configs/c.1/ecm.usb0" 2>/dev/null
 
 	echo "$UDC" > "$GADGET_DIR/UDC"
@@ -167,11 +187,7 @@ start() {
 		echo "usb0 did not appear; ECM may not be bound"
 	fi
 
-	if [ "$POINTER_MODE" = "touchscreen" ]; then
-		echo "Aiden USB composite ready: /dev/hidg0 (keyboard) /dev/hidg1 (pointer:$POINTER_MODE) /dev/hidg2 (android-extension) usb0 (ECM)"
-	else
-		echo "Aiden USB composite ready: /dev/hidg0 (keyboard) /dev/hidg1 (pointer:$POINTER_MODE) /dev/hidg2 (media-keys) usb0 (ECM)"
-	fi
+	echo "Magic Keyboard POC ready: /dev/hidg0 (keyboard) /dev/hidg1 (pointer:$POINTER_MODE) /dev/hidg2-3 (Apple vendor HID) usb0 (ECM)"
 }
 
 stop() {

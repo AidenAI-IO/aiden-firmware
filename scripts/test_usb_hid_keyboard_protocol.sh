@@ -12,11 +12,32 @@ fail() {
 
 sh -n "$INIT_SCRIPT" || fail "S49usbhid has invalid shell syntax"
 
-grep -Fq 'echo 1 > "$GADGET_DIR/functions/hid.usb0/protocol"' "$INIT_SCRIPT" ||
-    fail "S49usbhid must keep keyboard HID boot protocol=1 for host compatibility"
+grep -Fq 'echo 0x05ac > "$GADGET_DIR/idVendor"' "$INIT_SCRIPT" ||
+    fail "S49usbhid Apple compatibility POC must advertise Apple VID 05ac"
 
-grep -Fq 'echo 1 > "$GADGET_DIR/functions/hid.usb0/subclass"' "$INIT_SCRIPT" ||
-    fail "S49usbhid must keep keyboard HID boot subclass=1 for host compatibility"
+grep -Fq 'echo 0x0267 > "$GADGET_DIR/idProduct"' "$INIT_SCRIPT" ||
+    fail "S49usbhid Apple compatibility POC must advertise Magic Keyboard PID 0267"
+
+grep -Fq 'echo "Magic Keyboard" > "$GADGET_DIR/strings/0x409/product"' "$INIT_SCRIPT" ||
+    fail "S49usbhid Apple compatibility POC must advertise the Magic Keyboard product"
+
+grep -Fq 'echo 0 > "$GADGET_DIR/functions/hid.usb0/protocol"' "$INIT_SCRIPT" ||
+    fail "S49usbhid Magic Keyboard interface must use report protocol"
+
+grep -Fq 'echo 0 > "$GADGET_DIR/functions/hid.usb0/subclass"' "$INIT_SCRIPT" ||
+    fail "S49usbhid Magic Keyboard interface must use the captured non-boot subclass"
+
+grep -Fq 'echo 65 > "$GADGET_DIR/functions/hid.usb0/report_length"' "$INIT_SCRIPT" ||
+    fail "S49usbhid Magic Keyboard interface must cover report ID 0x3f"
+
+grep -Fq 'mkdir -p "$GADGET_DIR/functions/hid.usb3"' "$INIT_SCRIPT" ||
+    fail "S49usbhid must expose the first Apple vendor-defined HID interface"
+
+grep -Fq 'mkdir -p "$GADGET_DIR/functions/hid.usb4"' "$INIT_SCRIPT" ||
+    fail "S49usbhid must expose the second Apple vendor-defined HID interface"
+
+grep -Fq 'mkdir -p "$GADGET_DIR/functions/ecm.usb0"' "$INIT_SCRIPT" ||
+    fail "S49usbhid Apple compatibility POC must retain ECM"
 
 grep -Fq 'reenumerate_composite()' "$INIT_SCRIPT" ||
     fail "S49usbhid must define startup composite re-enumeration for iOS HID session refresh"
