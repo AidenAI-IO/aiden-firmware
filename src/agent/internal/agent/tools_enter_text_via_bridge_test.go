@@ -16,6 +16,24 @@ func newTestPhoneBridge(t *testing.T) *PhoneBridge {
 	return pb
 }
 
+func TestEnterTextViaBridgeDescriptionDocumentsChatClipboardPath(t *testing.T) {
+	desc := (&EnterTextViaBridgeTool{}).Description()
+	for _, want := range []string{
+		"final chat/message composer",
+		"runtime Phone Bridge status",
+		"CJK",
+		"iOS PiP queue",
+		"Android connected/FGS bridge",
+		"do not call bridge_clipboard first",
+		"search terms",
+		"contact names",
+	} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("description missing %q:\n%s", want, desc)
+		}
+	}
+}
+
 func TestEnterTextViaBridgeWriteClipboardIsolatesNestedToolError(t *testing.T) {
 	pb := newTestPhoneBridge(t)
 	tool := &EnterTextViaBridgeTool{}
@@ -30,6 +48,109 @@ func TestEnterTextViaBridgeWriteClipboardIsolatesNestedToolError(t *testing.T) {
 	}
 	if got := ToolErrorFromContext(ctx); got != nil {
 		t.Fatalf("parent ToolError = %+v, want nil after nested clipboard isolation", got)
+	}
+}
+
+func TestEnterTextViaBridgeUsesPiPBackgroundClipboardQueue(t *testing.T) {
+	message := "请确认这个方案是否可以直接发送？"
+	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
+		ObservedMode: textInputModeASCII,
+		FieldText:    message,
+	}}}
+	pb := newTestPhoneBridge(t)
+	pb.platform = "ios"
+	pb.appState = "background"
+	pb.appStateAt = time.Now()
+	pb.pipBridgeEnabled = true
+	pb.pipBridgeSeen = true
+	mouse := &recordingTextInputTool{name: "mouse_click", out: "ok"}
+	touch := &recordingTextInputTool{name: "touch_gesture", out: "ok"}
+	keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
+	quick := &recordingTextInputTool{name: "quick_action", out: `{"ok":true}`}
+	tool := &EnterTextViaBridgeTool{
+		hw: &textInputHardwareDeps{
+			mouseClick:   mouse,
+			touchGesture: touch,
+			keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
+			keyboardText: keyboardText,
+			quickAction:  quick,
+			screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+		},
+		vision:   vision,
+		bridgeFn: func() *PhoneBridge { return pb },
+		sleep:    testNoWaitSleep,
+	}
+
+	queueResult := make(chan string, 1)
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		commands := pb.queue.PollForPhone("ios", "", 10)
+		if len(commands) != 1 {
+			queueResult <- "expected one queued clipboard command"
+			return
+		}
+		if commands[0].Type != "clipboard_write" {
+			queueResult <- "unexpected queued command type: " + commands[0].Type
+			return
+		}
+		if !strings.Contains(string(commands[0].Payload), message) {
+			queueResult <- "queued clipboard payload missing target text: " + string(commands[0].Payload)
+			return
+		}
+		if err := pb.queue.SubmitResult(BridgeCommandResponse{ID: commands[0].ID, Method: "queued"}); err != nil {
+			queueResult <- "submit queued clipboard result failed: " + err.Error()
+			return
+		}
+		queueResult <- ""
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	out, err := tool.Call(ctx, `{"text":"`+message+`","platform":"ios","focus":{"x":400,"y":950,"coord_space":"normalized"}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queueErr := <-queueResult; queueErr != "" {
+		t.Fatal(queueErr)
+	}
+	for _, want := range []string{
+		`"committed": true`,
+		"clipboard-first: wrote clipboard through background bridge queue",
+		"clipboard-first: quick_action-pasted clipboard",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("unexpected output, missing %q: %s", want, out)
+		}
+	}
+	if len(quick.calls) != 1 || !strings.Contains(quick.calls[0], `"action": "paste"`) {
+		t.Fatalf("quick_action calls=%v", quick.calls)
+	}
+	if len(mouse.calls) != 1 {
+		t.Fatalf("mouse_click calls=%v", mouse.calls)
+	}
+	if len(touch.calls) != 0 {
+		t.Fatalf("touch_gesture calls=%v, want no app switching in PiP background path", touch.calls)
+	}
+	if len(keyboardText.calls) != 0 {
+		t.Fatalf("keyboard_text calls=%v, want no bridge app search in PiP background path", keyboardText.calls)
+	}
+}
+
+func TestEnterTextViaBridgeRejectsStalePiPBackgroundClipboardState(t *testing.T) {
+	pb := newTestPhoneBridge(t)
+	pb.platform = "ios"
+	pb.appState = "background"
+	pb.appStateAt = time.Now().Add(-phoneBridgeBackgroundStateMaxAge - time.Second)
+	pb.pipBridgeEnabled = true
+	pb.pipBridgeSeen = true
+
+	tool := &EnterTextViaBridgeTool{bridgeFn: func() *PhoneBridge { return pb }}
+	result := tool.runClipboardFirstFlow(context.Background(), "ios", enterTextInFieldArgs{Text: "过期状态不应写入"})
+	if result.Attempted || result.Err != nil {
+		t.Fatalf("stale PiP state result = %+v, want unavailable without attempt", result)
+	}
+	if commands := pb.queue.PollForPhone("ios", "", 10); len(commands) != 0 {
+		t.Fatalf("stale PiP state queued commands = %+v, want none", commands)
 	}
 }
 

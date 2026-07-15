@@ -780,10 +780,16 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 			builder.WriteByte('\n')
 		}
 	}
-	if phoneBridgeFGSBackgroundEnabled(status) {
-		builder.WriteString("- Android Foreground Service bridge is enabled while Aiden is backgrounded. Background-safe data tools can run through the HTTP command queue; open_app and UI actions still require foreground app control or HID fallback.\n")
+	if phoneBridgeCanUseFGSBackground(status, "clipboard_write") {
+		builder.WriteString("- Android Foreground Service bridge is actively polling while Aiden is backgrounded. Background-safe data tools can run through the HTTP command queue; open_app and UI actions still require foreground app control or HID fallback.\n")
+		builder.WriteString("- For a visible final chat/message composer, use enter_text_via_bridge for long, multiline, CJK, or other non-ASCII text. It writes the clipboard without leaving the target app, pastes with quick_action/keyboard fallback, and verifies the field/send; do not stage bridge_clipboard manually.\n")
+	} else if phoneBridgeFGSBackgroundEnabled(status) {
+		builder.WriteString("- Android FGS Bridge is reported enabled, but no recent background poll confirms that its command queue is currently usable. Do not assume clipboard writes will work; use enter_text_in_field and screenshot/HID fallback until the state becomes fresh.\n")
+	} else if phoneBridgeCanUsePiPBackground(status, "clipboard_write") {
+		builder.WriteString("- PiP Bridge mode is actively polling while Aiden is backgrounded. Background-safe data tools can run through the HTTP command queue. iOS gives PiP priority over the Dynamic Island, so the Dynamic Island return entry is not visible in this state.\n")
+		builder.WriteString("- For a visible final chat/message composer, use enter_text_via_bridge for long, multiline, CJK, or other non-ASCII text, including short replies when IME would be less reliable. It writes the clipboard through the PiP queue, pastes with quick_action/keyboard fallback, and verifies the field/send; do not stage bridge_clipboard manually.\n")
 	} else if phoneBridgePiPBackgroundEnabled(status) {
-		builder.WriteString("- PiP Bridge mode is enabled while Aiden is backgrounded. iOS gives PiP priority over the Dynamic Island, so the Dynamic Island return entry is not visible in this state.\n")
+		builder.WriteString("- PiP Bridge mode is reported enabled, but no recent background poll confirms that its command queue is currently usable. The Dynamic Island return entry is hidden by PiP. Do not assume clipboard writes will work; use enter_text_in_field and screenshot/HID fallback until the state becomes fresh.\n")
 	} else if phoneBridgeAppNeedsForeground(status) {
 		if phoneBridgeIsIOS(status) {
 			builder.WriteString("- The Aiden companion app is backgrounded or inactive. On iOS, Phone Bridge commands may time out until Aiden returns to foreground.\n")
@@ -793,17 +799,18 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 		} else {
 			builder.WriteString("- The Aiden companion app is backgrounded or inactive. Phone Bridge foreground commands may time out until Aiden returns to foreground; use screenshot/HID fallback when reconnect is unavailable.\n")
 		}
+		builder.WriteString("- Prefer enter_text_in_field for short search/contact input. Use enter_text_via_bridge only when long or non-ASCII final composer text justifies restoring Aiden and returning to the target app; it owns clipboard write, paste, and verification.\n")
 	} else if status.Connected {
 		builder.WriteString("- The phone companion app is connected. Use bridge_open_app as the primary path for opening apps, webpages, and phone dialer screens before falling back to screenshot/HID navigation.\n")
 		builder.WriteString("- bridge_clipboard, bridge_calendar, bridge_contacts, and bridge_notification tools are available through the companion app: prefer them over manual UI navigation for reading/writing the system clipboard, creating/querying/deleting system calendar events, managing contacts, or sending notifications.\n")
-		builder.WriteString("- For long or non-ASCII text entry, prefer clipboard write through the companion app, switch to the target app, then paste with quick_action/keyboard shortcut instead of typing via HID.\n")
+		builder.WriteString("- For long, multiline, CJK, or other non-ASCII final composer text, use enter_text_via_bridge instead of manually chaining bridge_clipboard, app switching, and paste. Prefer enter_text_in_field for short search/contact input.\n")
 		builder.WriteString("- If bridge_open_app returns {\"ok\":true}, treat the app launch as complete unless the user requested additional in-app actions.")
 	} else {
 		builder.WriteString("- The phone companion app is not connected. Do not assume bridge_open_app, bridge_clipboard, bridge_calendar, bridge_contacts, or bridge_notification tools can control the phone right now.\n")
 		if phoneBridgeIsIOS(status) {
-			builder.WriteString("- If return_entry=dynamic_island and return_entry_available=true, bridge_open_app, bridge_clipboard, bridge_calendar, bridge_contacts, and bridge_notification will first try to reopen Aiden through Dynamic Island and wait for Phone Bridge before sending the command. Otherwise use screenshot plus HID/touch fallback and tell the user when app-only actions cannot be completed.")
+			builder.WriteString("- If return_entry=dynamic_island and return_entry_available=true, bridge_open_app, bridge_clipboard, bridge_calendar, bridge_contacts, and bridge_notification will first try to reopen Aiden through Dynamic Island and wait for Phone Bridge before sending the command. Otherwise use enter_text_in_field plus screenshot/HID fallback and tell the user when app-only actions cannot be completed.")
 		} else if phoneBridgeIsAndroid(status) {
-			builder.WriteString("- Keep Aiden open in the foreground and wait for Phone Bridge to reconnect before retrying bridge_open_app; otherwise use screenshot plus HID/touch fallback.")
+			builder.WriteString("- Keep Aiden open in the foreground and wait for Phone Bridge to reconnect before retrying bridge_open_app; otherwise use enter_text_in_field plus screenshot/HID fallback.")
 		} else {
 			builder.WriteString("- Retry companion app tools only after Phone Bridge reconnects or a visible platform return entry is confirmed; otherwise use screenshot plus HID/touch fallback and tell the user when app-only actions cannot be completed.")
 		}

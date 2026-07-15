@@ -248,6 +248,8 @@ func TestPhoneBridgeRuntimeContextConnected(t *testing.T) {
 		"The phone companion app is connected",
 		"Use bridge_open_app as the primary path",
 		"bridge_clipboard, bridge_calendar, bridge_contacts, and bridge_notification tools are available",
+		"use enter_text_via_bridge instead of manually chaining bridge_clipboard",
+		"Prefer enter_text_in_field for short search/contact input",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("runtime context missing %q:\n%s", want, got)
@@ -287,7 +289,7 @@ func TestPhoneBridgeRuntimeContextBackgroundAppGuidesDynamicIslandRecovery(t *te
 }
 
 func TestPhoneBridgeRuntimeContextPiPBackgroundDisablesOpenApp(t *testing.T) {
-	lastHeartbeat := time.Date(2026, 6, 1, 2, 3, 4, 0, time.UTC)
+	lastHeartbeat := time.Now()
 	enabled := true
 	got := phoneBridgeRuntimeContext(PhoneBridgeStatus{
 		Connected:            false,
@@ -303,9 +305,12 @@ func TestPhoneBridgeRuntimeContextPiPBackgroundDisablesOpenApp(t *testing.T) {
 	for _, want := range []string{
 		"- pip_bridge:",
 		"available=false hidden_by_pip=true",
-		"PiP Bridge mode is enabled while Aiden is backgrounded",
+		"PiP Bridge mode is actively polling while Aiden is backgrounded",
+		"Background-safe data tools can run through the HTTP command queue",
 		"iOS gives PiP priority over the Dynamic Island",
 		"Dynamic Island return entry is not visible",
+		"use enter_text_via_bridge",
+		"do not stage bridge_clipboard manually",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("runtime context missing %q:\n%s", want, got)
@@ -315,10 +320,55 @@ func TestPhoneBridgeRuntimeContextPiPBackgroundDisablesOpenApp(t *testing.T) {
 		"will first tap the Aiden Dynamic Island entry",
 		"Use bridge_open_app as the primary path",
 		"bridge_open_app is intentionally unavailable",
-		"Use bridge_clipboard, bridge_calendar, bridge_contacts, and bridge_notification only",
 	} {
 		if strings.Contains(got, notWant) {
 			t.Fatalf("PiP background context should not include %q:\n%s", notWant, got)
+		}
+	}
+}
+
+func TestPhoneBridgeRuntimeContextStalePiPBackgroundFallsBackToIME(t *testing.T) {
+	enabled := true
+	stale := time.Now().Add(-phoneBridgeBackgroundStateMaxAge - time.Second)
+	got := phoneBridgeRuntimeContext(PhoneBridgeStatus{
+		Platform:          "ios",
+		AppState:          "background",
+		AppStateUpdatedAt: &stale,
+		PipBridgeEnabled:  &enabled,
+	})
+
+	for _, want := range []string{
+		"no recent background poll",
+		"Do not assume clipboard writes will work",
+		"use enter_text_in_field",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("stale PiP runtime context missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "actively polling") || strings.Contains(got, "use enter_text_via_bridge") {
+		t.Fatalf("stale PiP runtime context advertised active bridge route:\n%s", got)
+	}
+}
+
+func TestPhoneBridgeRuntimeContextFGSBackgroundUsesTargetPreservingTextEntry(t *testing.T) {
+	enabled := true
+	now := time.Now()
+	got := phoneBridgeRuntimeContext(PhoneBridgeStatus{
+		Platform:           "android",
+		AppState:           "background",
+		FgsBridgeEnabled:   &enabled,
+		FgsBridgeUpdatedAt: &now,
+	})
+
+	for _, want := range []string{
+		"actively polling",
+		"use enter_text_via_bridge",
+		"without leaving the target app",
+		"do not stage bridge_clipboard manually",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("FGS runtime context missing %q:\n%s", want, got)
 		}
 	}
 }

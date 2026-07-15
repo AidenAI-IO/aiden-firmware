@@ -34,10 +34,16 @@ func (s *recordingTextInputTool) Call(_ context.Context, input string) (string, 
 func TestEnterTextInFieldDescriptionDocumentsStrategyAndVerification(t *testing.T) {
 	desc := (&EnterTextInFieldTool{}).Description()
 	// Description keeps only the load-bearing rules: keyboard_text disambiguation,
-	// the committed-only success contract, and the coordinate reference. Clipboard/IME
-	// strategy detail lives in device-operator SKILL.md; field mechanics live in ArgsSchema.
+	// the committed-only success contract, and the chat-message clipboard handoff.
+	// Field mechanics live in ArgsSchema.
 	for _, want := range []string{
 		"keyboard_text",
+		"search fields",
+		"contact names",
+		"chat/message composer",
+		"runtime Phone Bridge status",
+		"target-preserving",
+		"enter_text_via_bridge",
 		"committed:true",
 		"field_text matches target exactly",
 		"normalized coordinates",
@@ -55,6 +61,39 @@ func TestEnterTextInFieldDescriptionDocumentsStrategyAndVerification(t *testing.
 	segSchema, _ := props["segments"].(map[string]any)
 	if segDesc, _ := segSchema["description"].(string); !strings.Contains(segDesc, "romanization") {
 		t.Fatalf("segments schema missing romanization semantics:\n%v", segSchema)
+	}
+}
+
+func TestEnterTextInFieldBridgePreferenceUsesInteractionAndBridgeState(t *testing.T) {
+	pb := newTestPhoneBridge(t)
+	pb.platform = "ios"
+	pb.appState = "background"
+	pb.appStateAt = time.Now()
+	pb.pipBridgeEnabled = true
+	pb.pipBridgeSeen = true
+	tool := &EnterTextInFieldTool{bridgeTool: &EnterTextViaBridgeTool{bridgeFn: func() *PhoneBridge { return pb }}}
+
+	if tool.shouldPreferBridgeClipboard(enterTextInFieldArgs{
+		Text: "小红书", Platform: "ios", Mode: "search", SendAfterCommit: true,
+	}) {
+		t.Fatal("search input should stay on IME even when PiP clipboard queue is available")
+	}
+	if tool.shouldPreferBridgeClipboard(enterTextInFieldArgs{
+		Text: "联系人", Platform: "ios",
+	}) {
+		t.Fatal("short non-send form input should stay on IME")
+	}
+	if !tool.shouldPreferBridgeClipboard(enterTextInFieldArgs{
+		Text: "可以，我们就按这个方案继续处理。", Platform: "ios", SendAfterCommit: true,
+	}) {
+		t.Fatal("final non-ASCII composer text should use fresh target-preserving PiP clipboard route")
+	}
+
+	pb.appStateAt = time.Now().Add(-phoneBridgeBackgroundStateMaxAge - time.Second)
+	if tool.shouldPreferBridgeClipboard(enterTextInFieldArgs{
+		Text: "可以，我们就按这个方案继续处理。", Platform: "ios", SendAfterCommit: true,
+	}) {
+		t.Fatal("stale PiP state should not select bridge clipboard route")
 	}
 }
 

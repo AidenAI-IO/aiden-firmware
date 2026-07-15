@@ -71,7 +71,8 @@ func (t *EnterTextViaBridgeTool) Name() string { return "enter_text_via_bridge" 
 
 func (t *EnterTextViaBridgeTool) Description() string {
 	return `Use the Phone Bridge clipboard path to place known text into an input field, then focus, paste, and verify. ` +
-		`Normally use enter_text_in_field instead; it automatically prefers this clipboard strategy when appropriate and falls back to HID/IME input if needed. Use this directly only when that clipboard path is explicitly required. ` +
+		`Use this for final chat/message composer text when runtime Phone Bridge status reports a usable clipboard route, especially for long, multiline, CJK, or other non-ASCII text. Target-preserving routes such as a prepared clipboard, iOS PiP queue, or Android connected/FGS bridge are suitable even for short replies. ` +
+		`It writes the clipboard itself when needed, so do not call bridge_clipboard first as a staging step. If Bridge would need app restoration or is unavailable, prefer enter_text_in_field for short search terms, contact names, and normal IME/pinyin entry. ` +
 		`Returns committed:true only when the exact target text is verified in the field; when send_after_commit=true, ok=true also requires send_verified:true.`
 }
 
@@ -199,11 +200,17 @@ func (t *EnterTextViaBridgeTool) runClipboardFirstFlow(ctx context.Context, plat
 		if bridge.ClipboardRecentlyContains(args.Text, preparedClipboardMaxAge) {
 			return t.runPreparedClipboardPasteFlow(ctx, platform, args)
 		}
+		if phoneBridgeCanUsePiPBackground(status, "clipboard_write") {
+			return t.runBackgroundClipboardQueueFlow(ctx, platform, args)
+		}
 		if phoneBridgeCanRestoreFromReturnEntry(status) || phoneBridgeReadyForCommand(status) {
 			return t.runLegacyBridgeFlow(ctx, platform, args)
 		}
 		return textViaBridgeResult{}
 	case "android":
+		if bridge.ClipboardRecentlyContains(args.Text, preparedClipboardMaxAge) {
+			return t.runPreparedClipboardPasteFlow(ctx, platform, args)
+		}
 		return t.runTargetPreservingClipboardFlow(ctx, platform, args)
 	default:
 		return textViaBridgeResult{}
@@ -215,13 +222,24 @@ func (t *EnterTextViaBridgeTool) runAutomaticClipboardFirstFlow(ctx context.Cont
 	if bridge == nil {
 		return textViaBridgeResult{Err: fmt.Errorf("phone bridge is not configured")}
 	}
+	status := bridge.getStatus()
 	switch strings.ToLower(strings.TrimSpace(platform)) {
 	case "ios":
-		if !bridge.ClipboardRecentlyContains(args.Text, preparedClipboardMaxAge) {
+		if bridge.ClipboardRecentlyContains(args.Text, preparedClipboardMaxAge) {
+			return t.runPreparedClipboardPasteFlow(ctx, platform, args)
+		}
+		if phoneBridgeCanUsePiPBackground(status, "clipboard_write") {
+			return t.runBackgroundClipboardQueueFlow(ctx, platform, args)
+		}
+		return textViaBridgeResult{}
+	case "android":
+		if bridge.ClipboardRecentlyContains(args.Text, preparedClipboardMaxAge) {
+			return t.runPreparedClipboardPasteFlow(ctx, platform, args)
+		}
+		if !phoneBridgeReadyForCommand(status) &&
+			!phoneBridgeCanUseFGSBackground(status, "clipboard_write") {
 			return textViaBridgeResult{}
 		}
-		return t.runPreparedClipboardPasteFlow(ctx, platform, args)
-	case "android":
 		return t.runTargetPreservingClipboardFlow(ctx, platform, args)
 	default:
 		return textViaBridgeResult{}
@@ -252,6 +270,21 @@ func (t *EnterTextViaBridgeTool) runPreparedClipboardPasteFlow(ctx context.Conte
 	result := t.focusPasteVerify(ctx, engine, platform, args)
 	result.Attempted = true
 	result.Steps = append([]string{"clipboard-first: using prepared clipboard in current app"}, result.Steps...)
+	return result
+}
+
+func (t *EnterTextViaBridgeTool) runBackgroundClipboardQueueFlow(ctx context.Context, platform string, args enterTextInFieldArgs) textViaBridgeResult {
+	bridge := t.currentBridge()
+	if bridge == nil {
+		return textViaBridgeResult{Attempted: true, Err: fmt.Errorf("phone bridge is not configured")}
+	}
+	if err := t.writeClipboard(ctx, bridge, args.Text); err != nil {
+		return textViaBridgeResult{Attempted: true, Steps: []string{"clipboard-first: background clipboard write failed"}, Err: err}
+	}
+	engine := newTextInputEngineWithSleep(*t.hw, t.vision, t.sleep)
+	result := t.focusPasteVerify(ctx, engine, platform, args)
+	result.Attempted = true
+	result.Steps = append([]string{"clipboard-first: wrote clipboard through background bridge queue"}, result.Steps...)
 	return result
 }
 
@@ -301,11 +334,15 @@ func (t *EnterTextViaBridgeTool) canUseClipboardFirst(platform string, text stri
 	if bridge == nil {
 		return false
 	}
+	if bridge.ClipboardRecentlyContains(text, preparedClipboardMaxAge) {
+		return true
+	}
+	status := bridge.getStatus()
 	switch strings.ToLower(strings.TrimSpace(platform)) {
 	case "ios":
-		return bridge.ClipboardRecentlyContains(text, preparedClipboardMaxAge)
+		return phoneBridgeCanUsePiPBackground(status, "clipboard_write")
 	case "android":
-		return t.canWriteClipboardPreservingTarget(platform)
+		return phoneBridgeReadyForCommand(status) || phoneBridgeCanUseFGSBackground(status, "clipboard_write")
 	default:
 		return false
 	}
