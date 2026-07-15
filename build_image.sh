@@ -30,6 +30,21 @@ if [ -n "${OTA_PUBLIC_KEY_PATH:-}" ]; then
   docker_ota_key_args=(-v "${ota_key_host_path}:${OTA_PUBLIC_KEY_PATH}:ro")
 fi
 
+# Forward Go module proxy and HTTP proxy configuration into the build
+# container. The Go build runs inside this container, so a GOPROXY exported
+# only on the host (e.g. the workflow's "Configure Go proxy" step) never
+# reaches it; without this the build falls back to the default proxy.golang.org
+# and fails on restricted networks. Only set variables are forwarded so unset
+# ones do not clobber the container defaults with empty values.
+docker_proxy_args=()
+for name in http_proxy https_proxy all_proxy no_proxy \
+            HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY \
+            GOPROXY GOSUMDB GOPRIVATE GONOSUMDB GONOPROXY; do
+  if [ -n "${!name:-}" ]; then
+    docker_proxy_args+=(-e "${name}=${!name}")
+  fi
+done
+
 docker_command=("./_build_image.sh")
 if [ "$#" -gt 0 ]; then
   docker_command=("$@")
@@ -83,6 +98,9 @@ docker_run_args=(
   -e SOURCE_DATE_EPOCH
   -e TAR_OPTIONS=--no-same-owner
 )
+if [ "${#docker_proxy_args[@]}" -gt 0 ]; then
+  docker_run_args+=("${docker_proxy_args[@]}")
+fi
 if [ "${#docker_go_args[@]}" -gt 0 ]; then
   docker_run_args+=("${docker_go_args[@]}")
 fi

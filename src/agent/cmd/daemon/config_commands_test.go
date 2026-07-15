@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -300,6 +301,28 @@ func TestWebConfigDTOMapsLog(t *testing.T) {
 	roundTrip := webConfigDTOFromAgentConfig(agent.Config{Log: agent.LogConfig{LLMHTTPRetentionDays: 21}})
 	if roundTrip.Log.LLMHTTPRetentionDays != 21 {
 		t.Fatalf("round-trip log.llm_http_retention_days = %d, want 21", roundTrip.Log.LLMHTTPRetentionDays)
+	}
+}
+
+func TestWebConfigDTOMapsTerminationPolicy(t *testing.T) {
+	enabled := false
+	policy := agent.TerminationPolicyConfig{
+		Enabled:                 &enabled,
+		MaxSeconds:              12.5,
+		RepeatActionLimit:       7,
+		SameResultLimit:         8,
+		ScreenUnchangedLimit:    9,
+		SoftNoticeStallScore:    10,
+		RestrictToolsStallScore: 11,
+		TerminateStallScore:     12,
+		ParseFailureLimit:       13,
+	}
+	dto := webConfigDTO{TerminationPolicy: policy}
+	if got := dto.toAgentConfig().TerminationPolicy; !reflect.DeepEqual(got, policy) {
+		t.Fatalf("TerminationPolicy = %#v, want %#v", got, policy)
+	}
+	if got := webConfigDTOFromAgentConfig(agent.Config{TerminationPolicy: policy}).TerminationPolicy; !reflect.DeepEqual(got, policy) {
+		t.Fatalf("round-trip TerminationPolicy = %#v, want %#v", got, policy)
 	}
 }
 

@@ -143,7 +143,7 @@ To flash a specific dev-branch build onto a device for testing, you must point a
 
 ```bash
 TAG="20260604-120000-abc1234"
-REPO="AidenAI-IO/aiden-hardware-demo"
+REPO="AidenAI-IO/aiden-firmware"
 
 ota update \
   --manifest-url "https://github.com/$REPO/releases/download/$TAG/manifest.json" \

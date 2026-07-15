@@ -43,7 +43,7 @@ When you want to flash a development branch build onto a device for testing, fet
 # 1. Find the release tag for your branch build on the Releases page
 #    (it will be marked as "Pre-release")
 TAG="20260604-120000-abc1234"
-REPO="AidenAI-IO/aiden-hardware-demo"
+REPO="AidenAI-IO/aiden-firmware"
 
 # 2. Update the device using the dev release manifest URL
 ota update \

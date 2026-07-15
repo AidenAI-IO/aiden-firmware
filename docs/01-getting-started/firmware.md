@@ -4,7 +4,7 @@
 
 If you don't want to compile the firmware locally from scratch, you can download a prebuilt image from Releases:
 
-- [Aiden Hardware Demo Releases](https://github.com/AidenAI-IO/aiden-hardware-demo/releases)
+- [Aiden Firmware Releases](https://github.com/AidenAI-IO/aiden-firmware/releases)
 
 When flashing the full firmware, you typically use `update.img`.
 
@@ -71,7 +71,7 @@ version 1.0.41, so it speaks the current adb auth and pairing protocol.
 The project ships with an `upgrade_tool` that works on macOS. The Linux / Windows versions can be obtained from `pico-sdk/tools/`.
 
 ```bash
-cd aiden-hardware-demo
+cd aiden-firmware
 ./upgrade_tool/upgrade_tool uf ./update.img
 ```
 

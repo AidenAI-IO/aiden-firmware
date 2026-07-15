@@ -35,15 +35,15 @@ const (
 
 // TerminationPolicyConfig controls loop-guard thresholds. Zero values use defaults.
 type TerminationPolicyConfig struct {
-	Enabled                 *bool
-	MaxSeconds              float64
-	RepeatActionLimit       int
-	SameResultLimit         int
-	ScreenUnchangedLimit    int
-	SoftNoticeStallScore    int
-	RestrictToolsStallScore int
-	TerminateStallScore     int
-	ParseFailureLimit       int
+	Enabled                 *bool   `toml:"enabled,omitempty" json:"enabled,omitempty"`
+	MaxSeconds              float64 `toml:"max_seconds,omitempty" json:"max_seconds,omitempty"`
+	RepeatActionLimit       int     `toml:"repeat_action_limit,omitempty" json:"repeat_action_limit,omitempty"`
+	SameResultLimit         int     `toml:"same_result_limit,omitempty" json:"same_result_limit,omitempty"`
+	ScreenUnchangedLimit    int     `toml:"screen_unchanged_limit,omitempty" json:"screen_unchanged_limit,omitempty"`
+	SoftNoticeStallScore    int     `toml:"soft_notice_stall_score,omitempty" json:"soft_notice_stall_score,omitempty"`
+	RestrictToolsStallScore int     `toml:"restrict_tools_stall_score,omitempty" json:"restrict_tools_stall_score,omitempty"`
+	TerminateStallScore     int     `toml:"terminate_stall_score,omitempty" json:"terminate_stall_score,omitempty"`
+	ParseFailureLimit       int     `toml:"parse_failure_limit,omitempty" json:"parse_failure_limit,omitempty"`
 }
 
 func DefaultTerminationPolicyConfig() TerminationPolicyConfig {
@@ -96,6 +96,40 @@ func (c TerminationPolicyConfig) enabled() bool {
 	return *c.Enabled
 }
 
+func (c TerminationPolicyConfig) Validate() error {
+	if c.MaxSeconds < 0 {
+		return fmt.Errorf("termination_policy.max_seconds must be >= 0, got %g", c.MaxSeconds)
+	}
+	values := []struct {
+		name  string
+		value int
+	}{
+		{"repeat_action_limit", c.RepeatActionLimit},
+		{"same_result_limit", c.SameResultLimit},
+		{"screen_unchanged_limit", c.ScreenUnchangedLimit},
+		{"soft_notice_stall_score", c.SoftNoticeStallScore},
+		{"restrict_tools_stall_score", c.RestrictToolsStallScore},
+		{"terminate_stall_score", c.TerminateStallScore},
+		{"parse_failure_limit", c.ParseFailureLimit},
+	}
+	for _, item := range values {
+		if item.value < 0 {
+			return fmt.Errorf("termination_policy.%s must be >= 0, got %d", item.name, item.value)
+		}
+	}
+	resolved := c.resolved()
+	if resolved.SoftNoticeStallScore >= resolved.RestrictToolsStallScore ||
+		resolved.RestrictToolsStallScore >= resolved.TerminateStallScore {
+		return fmt.Errorf(
+			"termination_policy stall scores must satisfy soft_notice < restrict_tools < terminate, got %d < %d < %d",
+			resolved.SoftNoticeStallScore,
+			resolved.RestrictToolsStallScore,
+			resolved.TerminateStallScore,
+		)
+	}
+	return nil
+}
+
 func terminationPolicyBoolPtr(value bool) *bool {
 	return &value
 }
@@ -130,10 +164,6 @@ type TerminationPolicy struct {
 	lastNoticeTier InterventionTier
 
 	lastToolName string
-
-	// onClearNotice is called when the policy resets state that should clear
-	// any active transient notice from the context.
-	onClearNotice func()
 }
 
 func NewTerminationPolicy(cfg TerminationPolicyConfig) *TerminationPolicy {
@@ -160,9 +190,6 @@ func (p *TerminationPolicy) ResetForSteer() {
 	p.tier = TierNone
 	p.lastNoticeTier = TierNone
 	p.lastToolName = ""
-	if p.onClearNotice != nil {
-		p.onClearNotice()
-	}
 }
 
 func (p *TerminationPolicy) CheckBeforeIteration(ctx context.Context, iteration, maxIterations int) TerminationDecision {
@@ -319,9 +346,6 @@ func (p *TerminationPolicy) recordProgress() {
 	p.sameResultStreak = 1
 	p.screenUnchangedAfterAction = 0
 	p.screenHashBeforeAction = ""
-	if p.onClearNotice != nil {
-		p.onClearNotice()
-	}
 }
 
 func (p *TerminationPolicy) refreshTier() {
