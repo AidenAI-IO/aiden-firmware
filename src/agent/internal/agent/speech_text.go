@@ -289,9 +289,15 @@ func validUTF8PrefixLen(buf []byte, n int) int {
 		n = len(buf)
 	}
 	if n <= 0 {
+		return 0
+	}
+
+	// Fast path: if already valid UTF-8, return immediately
+	if utf8.Valid(buf[:n]) {
 		return n
 	}
 
+	// Slow path: find the last complete rune boundary
 	start := n - 1
 	lower := n - utf8.UTFMax
 	if lower < 0 {
@@ -300,6 +306,8 @@ func validUTF8PrefixLen(buf []byte, n int) int {
 	for start >= lower && !utf8.RuneStart(buf[start]) {
 		start--
 	}
+	// If no rune start found within utf8.UTFMax bytes, data is likely corrupt.
+	// Pass through and let downstream handle it.
 	if start < lower {
 		return n
 	}
