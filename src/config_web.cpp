@@ -4383,6 +4383,7 @@ ApiResponse handle_get_storage_status(const Options& options) {
     std::string job_status = storage_state_string(kv, "FORMAT_STATUS");
     cJSON_AddStringToObject(job, "status", job_status.empty() ? "idle" : job_status.c_str());
     cJSON_AddStringToObject(job, "fs", storage_state_string(kv, "FORMAT_FS").c_str());
+    cJSON_AddBoolToObject(job, "auto", storage_state_flag(kv, "FORMAT_AUTO") ? 1 : 0);
     cJSON_AddStringToObject(job, "error", storage_state_string(kv, "FORMAT_ERROR").c_str());
     cJSON_AddItemToObject(root, "format_job", job);
     return make_json_ok(root);

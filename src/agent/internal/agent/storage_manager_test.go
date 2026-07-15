@@ -18,6 +18,7 @@ type fakeStorageOps struct {
 	total      int64
 	spaceErr   error
 	formatErr  error
+	blank      bool
 
 	mounted      bool
 	prepares     int
@@ -72,8 +73,13 @@ func (f *fakeStorageOps) FormatDisk(fs string) (string, error) {
 	if f.formatErr != nil {
 		return "", f.formatErr
 	}
+	// A freshly formatted card is no longer blank and mounts cleanly.
+	f.blank = false
+	f.prepareErr = nil
 	return "/dev/mmcblk2p1", nil
 }
+
+func (f *fakeStorageOps) CardIsBlank() bool { return f.blank }
 
 func newTestStorageManager(t *testing.T, ops *fakeStorageOps) *StorageManager {
 	t.Helper()
@@ -475,6 +481,98 @@ func TestStorageManagerRejectsActionsDuringFormat(t *testing.T) {
 	tickN(m, 3)
 	if ops.prepares != prepares {
 		t.Fatal("poll loop touched the card while formatting")
+	}
+}
+
+func TestStorageManagerAutoFormatsBlankCard(t *testing.T) {
+	ops := &fakeStorageOps{
+		present: true, healthy: true, free: 1 << 30, total: 1 << 31,
+		prepareErr: errors.New("mount: Invalid argument"), blank: true,
+	}
+	m := newTestStorageManager(t, ops)
+	tickN(m, 2)
+
+	job := waitForFormatJob(t, m)
+	if job.Status != StorageFormatSuccess {
+		t.Fatalf("auto-format job = %+v, want success", job)
+	}
+	if !job.Auto {
+		t.Fatal("job not marked as auto-triggered")
+	}
+	if job.FS != StorageFormatFAT32 {
+		t.Fatalf("auto-format fs = %q, want fat32", job.FS)
+	}
+	if ops.formats != 1 {
+		t.Fatalf("formats = %d, want 1", ops.formats)
+	}
+	if status := m.Status(); !status.Card.Mounted || status.EffectiveMode != StorageModeDual {
+		t.Fatalf("card not mounted after auto-format: %+v", status)
+	}
+}
+
+func TestStorageManagerNeverAutoFormatsUnreadableCard(t *testing.T) {
+	// A card that fails to mount but carries recognizable content (blank=false,
+	// e.g. NTFS or an encrypted volume) must never be formatted.
+	ops := &fakeStorageOps{
+		present: true, healthy: true,
+		prepareErr: errors.New("mount: Invalid argument"), blank: false,
+	}
+	m := newTestStorageManager(t, ops)
+	tickN(m, 4)
+
+	if ops.formats != 0 {
+		t.Fatalf("formats = %d, want 0: unreadable card was auto-formatted", ops.formats)
+	}
+	status := m.Status()
+	if status.Card.Mounted || status.EffectiveMode != StorageModeEMMCOnly {
+		t.Fatalf("status = %+v, want rejected card on eMMC-only", status)
+	}
+	if !strings.Contains(status.Card.Reason, "Invalid argument") {
+		t.Fatalf("reason = %q, want the mount failure", status.Card.Reason)
+	}
+}
+
+func TestStorageManagerAutoFormatOncePerInsertion(t *testing.T) {
+	ops := &fakeStorageOps{
+		present: true, healthy: true,
+		prepareErr: errors.New("no filesystem"), blank: true,
+		formatErr: errors.New("card yanked"),
+	}
+	m := newTestStorageManager(t, ops)
+	tickN(m, 2)
+	job := waitForFormatJob(t, m)
+	if job.Status != StorageFormatFailed {
+		t.Fatalf("job = %+v, want failure", job)
+	}
+	tickN(m, 4)
+	if ops.formats != 1 {
+		t.Fatalf("formats = %d, want 1: failed auto-format must not retry in place", ops.formats)
+	}
+
+	// Removal and reinsertion earns a fresh attempt.
+	ops.present = false
+	tickN(m, 2)
+	ops.present = true
+	ops.formatErr = nil
+	tickN(m, 2)
+	job = waitForFormatJob(t, m)
+	if job.Status != StorageFormatSuccess || ops.formats != 2 {
+		t.Fatalf("job = %+v formats = %d, want success on reinsertion", job, ops.formats)
+	}
+}
+
+func TestStorageManagerEMMCOnlyNeverAutoFormats(t *testing.T) {
+	ops := &fakeStorageOps{
+		present: true, healthy: true,
+		prepareErr: errors.New("no filesystem"), blank: true,
+	}
+	m := newTestStorageManager(t, ops)
+	if err := m.SetPreferredMode(StorageModeEMMCOnly); err != nil {
+		t.Fatal(err)
+	}
+	tickN(m, 4)
+	if ops.formats != 0 || ops.prepares != 0 {
+		t.Fatalf("formats = %d prepares = %d, want 0/0: eMMC-only must not touch the card", ops.formats, ops.prepares)
 	}
 }
 

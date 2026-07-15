@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -79,9 +80,11 @@ type StorageCardStatus struct {
 // rewrites the whole card: a fresh MBR with one partition plus a new
 // filesystem, so it runs as a background job with polled status.
 type StorageFormatJob struct {
-	Status     string    `json:"status"` // idle | running | success | failed
-	FS         string    `json:"fs,omitempty"`
-	Error      string    `json:"error,omitempty"`
+	Status string `json:"status"` // idle | running | success | failed
+	FS     string `json:"fs,omitempty"`
+	Error  string `json:"error,omitempty"`
+	// Auto marks a job started by blank-card detection rather than a user.
+	Auto       bool      `json:"auto,omitempty"`
 	StartedAt  time.Time `json:"started_at,omitempty"`
 	FinishedAt time.Time `json:"finished_at,omitempty"`
 }
@@ -121,6 +124,11 @@ type storageSysOps interface {
 	// a new filesystem of the given type. Destructive. Returns the partition
 	// device node to mount.
 	FormatDisk(fs string) (string, error)
+	// CardIsBlank reports whether the card carries no recognizable content
+	// at all: no kernel-visible partitions, no blkid signature (filesystem /
+	// RAID / crypto / partition table), and no MBR/GPT magic in the first
+	// sectors. Anything unverifiable must be reported as NOT blank.
+	CardIsBlank() bool
 }
 
 // StorageManager owns SD card mounting, mode derivation, and per-class
@@ -148,6 +156,7 @@ type StorageManager struct {
 	subscribers    []chan StorageEvent
 	stateWriteErr  bool             // log the mirror-write failure only once
 	formatJob      StorageFormatJob // async format task state
+	autoFormatDone bool             // one auto-format attempt per insertion
 
 	stopOnce sync.Once
 	stop     chan struct{}
@@ -493,6 +502,7 @@ func (m *StorageManager) tick() {
 		m.card.Reason = ""
 		m.ejected = false
 		m.mountFailed = false
+		m.autoFormatDone = false
 		if m.preferred != StorageModeEMMCOnly {
 			m.tryMountLocked()
 		}
@@ -503,6 +513,7 @@ func (m *StorageManager) tick() {
 		m.card = StorageCardStatus{}
 		m.ejected = false
 		m.mountFailed = false
+		m.autoFormatDone = false
 	case present && m.card.Mounted:
 		if !m.ops.Healthy(m.cfg.MountPointOrDefault()) {
 			m.unmountLocked(true, "card unresponsive (removed or IO failure)")
@@ -532,6 +543,19 @@ func (m *StorageManager) tryMountLocked() {
 		m.card.Mounted = false
 		m.card.Reason = err.Error()
 		m.mountFailed = true
+		// A truly blank card (no partitions, no data signature of any kind)
+		// is auto-formatted FAT32 and mounted. Cards with unreadable but
+		// recognizable content are never touched — the user decides in the
+		// portal. One attempt per insertion.
+		if !m.autoFormatDone && m.formatJob.Status != StorageFormatRunning && m.ops.CardIsBlank() {
+			m.autoFormatDone = true
+			m.card.Reason = "blank card detected; formatting as FAT32"
+			m.formatJob = StorageFormatJob{Status: StorageFormatRunning, FS: StorageFormatFAT32, Auto: true, StartedAt: time.Now()}
+			m.writeStateFileLocked()
+			m.logf("[storage] card %s is blank; auto-formatting as FAT32", dev)
+			go m.runFormatJob(StorageFormatFAT32)
+			return
+		}
 		m.logf("[storage] card %s failed the usability gate: %v", dev, err)
 		return
 	}
@@ -664,6 +688,7 @@ func (m *StorageManager) writeStateFileLocked() {
 	writeKV("REASON", strings.ReplaceAll(m.card.Reason, "\n", " "))
 	writeKV("FORMAT_STATUS", m.formatJob.Status)
 	writeKV("FORMAT_FS", m.formatJob.FS)
+	writeKV("FORMAT_AUTO", bool01(m.formatJob.Auto))
 	writeKV("FORMAT_ERROR", strings.ReplaceAll(m.formatJob.Error, "\n", " "))
 
 	tmp := m.statePath + ".tmp"
@@ -702,6 +727,40 @@ func (o *realStorageOps) CardDevice() (string, bool) {
 		return "/dev/" + part, true
 	}
 	return "/dev/" + o.device, true
+}
+
+// CardIsBlank reports whether the card carries no recognizable content.
+// The check is deliberately conservative: any partition, any signature blkid
+// recognizes (filesystem, RAID, crypto, partition table), any MBR/GPT magic,
+// or any failure to verify means NOT blank — we only ever auto-format a card
+// we could positively identify as empty.
+func (o *realStorageOps) CardIsBlank() bool {
+	sysPath := filepath.Join("/sys/block", o.device)
+	if _, err := os.Stat(filepath.Join(sysPath, o.device+"p1")); err == nil {
+		return false // kernel sees a partition table
+	}
+	dev := "/dev/" + o.device
+	if out, err := exec.Command("blkid", dev).CombinedOutput(); err == nil && len(strings.TrimSpace(string(out))) > 0 {
+		return false // blkid found a signature
+	}
+	// blkid found nothing (or is unavailable): double-check the raw MBR/GPT
+	// signatures before declaring the card blank.
+	f, err := os.Open(dev)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	buf := make([]byte, 1024)
+	if _, err := io.ReadFull(f, buf); err != nil {
+		return false
+	}
+	if buf[510] == 0x55 && buf[511] == 0xAA {
+		return false // MBR / FAT boot sector signature
+	}
+	if string(buf[512:520]) == "EFI PART" {
+		return false // GPT header at LBA 1
+	}
+	return true
 }
 
 // Prepare runs the usability gate: best-effort fsck, read-write mount, and a
