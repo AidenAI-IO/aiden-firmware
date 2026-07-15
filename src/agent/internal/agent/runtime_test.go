@@ -1794,7 +1794,7 @@ func TestParseChunkStructuredSummaryJSONRejectsProseWrappedJSON(t *testing.T) {
 
 func TestToolDescriptorsIncludeMemoryToolMetadata(t *testing.T) {
 	tools := &ToolSet{tools: map[string]langtools.Tool{}}
-	tools.RegisterMemoryTools(t.TempDir(), nil, 3, nil)
+	tools.RegisterMemoryTools(t.TempDir(), 3, nil)
 	runtime := NewRuntimeWithDeps(Config{}, nil, nil, tools, NewSkillIndex())
 
 	for _, name := range []string{"recall_device_memory", "inspect_episode"} {
