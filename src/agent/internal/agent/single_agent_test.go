@@ -111,6 +111,115 @@ func TestSingleAgentDoesNotRunDefaultFinalVerifierReview(t *testing.T) {
 	}
 }
 
+func TestSingleAgentUsesUIFallbackAfterDisconnectedOpenApp(t *testing.T) {
+	model := &disconnectedOpenAppFallbackModel{}
+	bridge := NewPhoneBridge(nil, nil)
+	bridge.mu.Lock()
+	bridge.platform = "ios"
+	bridge.appState = "background"
+	bridge.returnEntry = "dynamic_island"
+	bridge.returnEntrySeen = true
+	bridge.returnEntryOK = true
+	bridge.mu.Unlock()
+	screenshot := &stubTool{
+		name:        "screenshot",
+		description: "Capture the current phone screen.",
+		visual:      true,
+		output:      `{"format":"jpeg","width":1,"height":1,"size":0}`,
+	}
+	searchLaunch := &stubTool{
+		name:        "search_launch_app",
+		description: "Open an app through visible system search.",
+		output:      `{"ok":true,"opened":true}`,
+	}
+	toolSet := &ToolSet{
+		phoneBridge: bridge,
+		tools: map[string]langtools.Tool{
+			"bridge_open_app":       NewOpenAppTool(bridge, nil),
+			"request_human_handoff": NewHumanHandoffTool(),
+			"screenshot":            screenshot,
+			"search_launch_app":     searchLaunch,
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Operate the connected phone."}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		toolSet,
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "打开小红书"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "已通过屏幕搜索继续打开小红书。" {
+		t.Fatalf("Output = %q, want UI fallback completion", result.Output)
+	}
+	if model.callCount != 4 {
+		t.Fatalf("model calls = %d, want open_app failure, screenshot, UI fallback, and completion", model.callCount)
+	}
+	if len(screenshot.inputs) != 1 || len(searchLaunch.inputs) != 1 {
+		t.Fatalf("fallback calls: screenshot=%v search_launch_app=%v", screenshot.inputs, searchLaunch.inputs)
+	}
+}
+
+type disconnectedOpenAppFallbackModel struct {
+	callCount int
+}
+
+func (m *disconnectedOpenAppFallbackModel) GenerateContent(_ context.Context, messages []llms.MessageContent, _ ...llms.CallOption) (*llms.ContentResponse, error) {
+	m.callCount++
+	switch m.callCount {
+	case 1:
+		return toolCallResponse("call_open", "bridge_open_app", `{"app":"小红书"}`), nil
+	case 2:
+		if modelMessagesContain(messages, "call screenshot first") {
+			return toolCallResponse("call_screen", "screenshot", `{}`), nil
+		}
+	case 3:
+		if modelMessagesContainToolResult(messages, "screenshot") {
+			return toolCallResponse("call_search", "search_launch_app", `{"app":"小红书","platform":"ios"}`), nil
+		}
+	case 4:
+		return contentResponse("已通过屏幕搜索继续打开小红书。"), nil
+	}
+	return contentResponse("手机连接断开，无法继续。"), nil
+}
+
+func (m *disconnectedOpenAppFallbackModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
+	panic("unexpected Call invocation")
+}
+
+func modelMessagesContain(messages []llms.MessageContent, want string) bool {
+	for _, message := range messages {
+		for _, part := range message.Parts {
+			switch typed := part.(type) {
+			case llms.TextContent:
+				if strings.Contains(typed.Text, want) {
+					return true
+				}
+			case llms.ToolCallResponse:
+				if strings.Contains(typed.Content, want) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func modelMessagesContainToolResult(messages []llms.MessageContent, name string) bool {
+	for _, message := range messages {
+		for _, part := range message.Parts {
+			if result, ok := part.(llms.ToolCallResponse); ok && result.Name == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func singleAgentLLMToolsContain(tools []llms.Tool, name string) bool {
 	for _, tool := range tools {
 		if tool.Function != nil && tool.Function.Name == name {

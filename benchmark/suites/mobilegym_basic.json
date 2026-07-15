@@ -1,5 +1,6 @@
 {
   "name": "mobilegym_basic",
+  "suite_category": "MobileGym",
   "version": "1.0",
   "description": "Basic MobileGym device control tests using simulator-only approach",
   "prompt_prefix": "你正在控制一台 Android 模拟器。使用 screenshot 工具查看屏幕，使用 touch_gesture 工具执行 tap、swipe 等操作。",

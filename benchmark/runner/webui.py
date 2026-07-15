@@ -29,7 +29,6 @@ from runner.html_report import generate_report_html
 from runner.judge import JudgeConfig
 from runner.reset import ResetError, call_environment_release
 from runner.suite import load_suite
-from runner.unit import is_unit_suite
 
 try:
     from benchmark.runner.environment import EnvironmentManager, MobileGymEnvironment
@@ -817,8 +816,6 @@ class BenchmarkWebApp:
     def _run_mobilegym_suite_parallel(self, job: Job, suite_key: str) -> None:
         self._raise_if_job_stop_requested(job)
         suite_path = resolve_suite_path(self.config.suites_dir, suite_key)
-        if is_unit_suite(suite_path):
-            raise RuntimeError("unit suites are not supported with MobileGym parallel task workers")
 
         suite = load_suite(suite_path)
         task_counts = {
@@ -1190,14 +1187,13 @@ class BenchmarkWebApp:
     def _run_suite(self, job: Job, suite_key: str) -> None:
         self._raise_if_job_stop_requested(job)
         suite_path = resolve_suite_path(self.config.suites_dir, suite_key)
-        suite_is_unit = is_unit_suite(suite_path)
         write_state(
             Path(job.state_file),
             {
                 "status": "running",
                 "suite": suite_key,
                 "run_id": job.id,
-                "total": 1 if suite_is_unit else 0,
+                "total": 0,
                 "completed": 0,
                 "current": 1,
             },
@@ -1207,7 +1203,7 @@ class BenchmarkWebApp:
             sys.executable,
             "-m",
             "runner.main",
-            "unit" if suite_is_unit else "run",
+            "run",
             "--suite",
             str(suite_path),
             "--agent-url",
@@ -1215,20 +1211,19 @@ class BenchmarkWebApp:
             "--out",
             job.raw_runs_dir,
         ]
-        if not suite_is_unit:
-            cmd.extend(["--state-file", job.state_file])
-            cmd.extend(["--benchmark-token-file", str(Path(job.config_dir) / "control_token")])
-            if job.environment_endpoint:
-                cmd.extend(["--environment-url", job.environment_endpoint])
-            if job.no_judge:
-                cmd.append("--no-judge")
-            else:
-                cmd.extend(["--judge-model", job.judge_model or DEFAULT_JUDGE_MODEL])
-            if job.repeats:
-                cmd.extend(["--repeats", str(job.repeats)])
+        cmd.extend(["--state-file", job.state_file])
+        cmd.extend(["--benchmark-token-file", str(Path(job.config_dir) / "control_token")])
+        if job.environment_endpoint:
+            cmd.extend(["--environment-url", job.environment_endpoint])
+        if job.no_judge:
+            cmd.append("--no-judge")
+        else:
+            cmd.extend(["--judge-model", job.judge_model or DEFAULT_JUDGE_MODEL])
+        if job.repeats:
+            cmd.extend(["--repeats", str(job.repeats)])
         append_log(Path(job.runner_log), "\n$ " + " ".join(cmd))
         env = os.environ.copy()
-        if not suite_is_unit and not job.no_judge:
+        if not job.no_judge:
             with self._lock:
                 judge_api_key = self._job_judge_api_keys.get(job.id, "")
             if judge_api_key:
@@ -1264,18 +1259,6 @@ class BenchmarkWebApp:
             manifest = read_json_file(new_runs[-1] / "manifest.json") or {}
             result["manifest"] = manifest
             result["report_url"] = f"/reports/{job.id}/{new_runs[-1].name}/report.html"
-        if suite_is_unit:
-            write_state(
-                Path(job.state_file),
-                {
-                    "status": "stopped" if self._job_stop_requested(job) else "done" if exit_code == 0 else "failed",
-                    "suite": suite_key,
-                    "run_id": job.id,
-                    "total": 1,
-                    "completed": 1,
-                    "current": 1,
-                },
-            )
         if self._job_stop_requested(job):
             update_state_status(Path(job.state_file), "stopped", run_id=job.id)
             result["stopped"] = True
@@ -1303,8 +1286,8 @@ def list_benchmark_suites(suites_dir: Path) -> list[dict[str, Any]]:
                 "error": str(exc),
             }
         else:
-            kind = "unit" if data.get("kind") == "unit" else "benchmark"
-            entries = data.get("tests") if kind == "unit" else data.get("tasks")
+            kind = "benchmark"
+            entries = data.get("tasks")
             entries = entries if isinstance(entries, list) else []
             categories = sorted(
                 {str(task.get("category")) for task in entries if isinstance(task, dict) and task.get("category")}
@@ -1315,6 +1298,7 @@ def list_benchmark_suites(suites_dir: Path) -> list[dict[str, Any]]:
                 "kind": kind,
                 "task_count": len(entries),
                 "categories": categories,
+                "suite_category": data.get("suite_category", "Other"),
             }
         suites.append(item)
     return suites
@@ -3177,6 +3161,101 @@ INDEX_HTML = r"""<!doctype html>
       min-width: 0;
       font-size: 12px;
     }
+    .suite-category-group {
+      border: 1px solid var(--border);
+      margin-bottom: 12px;
+      border-radius: 4px;
+      overflow: hidden;
+      background: var(--layer);
+    }
+    .suite-category-group:last-child {
+      margin-bottom: 0;
+    }
+    .suite-category-header {
+      position: sticky;
+      top: 0;
+      background: #f0f0f0;
+      padding: 10px 12px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      cursor: pointer;
+      user-select: none;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      z-index: 1;
+      border-bottom: 1px solid var(--border);
+    }
+    .suite-category-header:hover {
+      background: #e8e8e8;
+    }
+    .suite-category-header::before {
+      content: '▼';
+      font-size: 10px;
+      transition: transform 0.2s;
+      color: var(--muted);
+    }
+    .suite-category-header.collapsed::before {
+      transform: rotate(-90deg);
+    }
+    .suite-category-header.collapsed {
+      border-bottom: 0;
+    }
+    .suite-category-body {
+      display: block;
+    }
+    .suite-category-body.collapsed {
+      display: none;
+    }
+    .suite-category-group table {
+      width: 100%;
+      margin: 0;
+    }
+    .suite-category-group .cell-main {
+      min-width: 0;
+      display: block;
+    }
+    .suite-category-group .cell-main span {
+      display: block;
+      font-weight: 500;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .suite-category-group .cell-main small {
+      display: block;
+      color: var(--muted-2);
+      font-size: 11px;
+      margin-top: 2px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .suite-category-row {
+      background: #f0f0f0;
+      cursor: pointer;
+      user-select: none;
+    }
+    .suite-category-row:hover {
+      background: #e8e8e8;
+    }
+    .suite-category-header-cell {
+      padding: 10px 12px !important;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .category-arrow {
+      display: inline-block;
+      width: 16px;
+      font-size: 10px;
+      color: var(--muted);
+      transition: transform 0.2s;
+    }
+    .suite-row {
+      background: var(--layer);
+    }
     .progress {
       height: 8px;
       background: #e0e0e0;
@@ -3361,12 +3440,7 @@ INDEX_HTML = r"""<!doctype html>
           </div>
           <input id="suiteFilter" type="search" style="max-width:172px" placeholder="Filter">
         </div>
-        <div class="table-wrap suite-table-wrap">
-          <table>
-            <thead><tr><th style="width:40px"></th><th>Suite</th><th style="width:96px">Kind</th><th style="width:72px">Tasks</th></tr></thead>
-            <tbody id="suiteRows"></tbody>
-          </table>
-        </div>
+        <div class="table-wrap suite-table-wrap" id="suitesContainer"></div>
       </section>
     </aside>
 
@@ -3432,6 +3506,9 @@ INDEX_HTML = r"""<!doctype html>
             <h2 class="tile-title">Jobs</h2>
             <div class="tile-kicker">Recent benchmark runs</div>
           </div>
+          <select id="jobCategoryFilter" style="max-width:200px; padding:4px 8px; border:1px solid var(--border); background:var(--field); border-radius:4px">
+            <option value="">All categories</option>
+          </select>
         </div>
         <div class="table-wrap job-table-wrap">
           <table>
@@ -3936,26 +4013,100 @@ INDEX_HTML = r"""<!doctype html>
       if(jobs.length) renderJobs();
     }
 
+    // Suite category display order
+    const CATEGORY_ORDER = ['Basic Operations', 'Application Scenarios', 'End-to-End Workflow', 'Perception & Control', 'Memory & Cognition', 'MobileGym', 'Other'];
+
+    // Track collapsed category state across re-renders
+    const collapsedCategories = new Set();
+
     function renderSuites(){
       const filter = document.getElementById('suiteFilter').value.toLowerCase();
-      const tbody = document.getElementById('suiteRows');
-      tbody.innerHTML = '';
-      const filtered = suites.filter(s => !filter || (s.name + ' ' + s.key).toLowerCase().includes(filter));
-      if(!filtered.length){
-        tbody.innerHTML = '<tr><td class="empty-row" colspan="4">No suites found</td></tr>';
-      }
-      filtered.forEach(s => {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `<td><input type="checkbox" ${selectedSuites.has(s.key) ? 'checked' : ''}></td>
-          <td title="${escapeHtml(s.key)}"><div class="cell-main"><span>${escapeHtml(s.name)}</span><small>${escapeHtml(s.key)}</small></div></td>
-          <td><span class="status">${escapeHtml(s.kind)}</span></td>
-          <td>${s.task_count || 0}</td>`;
-        tr.querySelector('input').onchange = e => {
-          if(e.target.checked) selectedSuites.add(s.key); else selectedSuites.delete(s.key);
-          syncRunState();
-        };
-        tbody.appendChild(tr);
+      const container = document.getElementById('suitesContainer');
+
+      // Group suites by category
+      const grouped = {};
+      suites.forEach(s => {
+        const category = s.suite_category || 'Other';
+        if(!grouped[category]) grouped[category] = [];
+        grouped[category].push(s);
       });
+
+      // Sort categories
+      const sortedCategories = Object.keys(grouped).sort((a, b) => {
+        const aIndex = CATEGORY_ORDER.indexOf(a);
+        const bIndex = CATEGORY_ORDER.indexOf(b);
+        if(aIndex === -1 && bIndex === -1) return a.localeCompare(b);
+        if(aIndex === -1) return 1;
+        if(bIndex === -1) return -1;
+        return aIndex - bIndex;
+      });
+
+      // Create single table with category rows
+      const table = document.createElement('table');
+      const thead = document.createElement('thead');
+      thead.innerHTML = '<tr><th style="width:40px"></th><th>Suite</th><th style="width:140px">Kind</th><th style="width:80px">Tasks</th></tr>';
+      table.appendChild(thead);
+
+      const tbody = document.createElement('tbody');
+
+      sortedCategories.forEach(category => {
+        const items = grouped[category];
+        const filtered = items.filter(s => !filter || (s.name + ' ' + s.key).toLowerCase().includes(filter));
+        if(!filtered.length) return;
+
+        // Category header row
+        const categoryRow = document.createElement('tr');
+        categoryRow.className = 'suite-category-row';
+        const isCollapsed = collapsedCategories.has(category);
+        categoryRow.innerHTML = `<td colspan="4" class="suite-category-header-cell">
+          <span class="category-arrow">${isCollapsed ? '▶' : '▼'}</span>
+          <span>${escapeHtml(category)}</span>
+          <span class="muted">(${filtered.length})</span>
+        </td>`;
+
+        categoryRow.onclick = () => {
+          const arrow = categoryRow.querySelector('.category-arrow');
+          const collapsed = arrow.textContent === '▶';
+          arrow.textContent = collapsed ? '▼' : '▶';
+
+          // Update collapsed state
+          if(collapsed) {
+            collapsedCategories.delete(category);
+          } else {
+            collapsedCategories.add(category);
+          }
+
+          // Toggle visibility of suite rows
+          let nextRow = categoryRow.nextElementSibling;
+          while(nextRow && !nextRow.classList.contains('suite-category-row')) {
+            nextRow.style.display = collapsed ? '' : 'none';
+            nextRow = nextRow.nextElementSibling;
+          }
+        };
+
+        tbody.appendChild(categoryRow);
+
+        // Suite rows
+        filtered.forEach(s => {
+          const tr = document.createElement('tr');
+          tr.className = 'suite-row';
+          if(isCollapsed) tr.style.display = 'none';
+          tr.innerHTML = `<td><input type="checkbox" ${selectedSuites.has(s.key) ? 'checked' : ''}></td>
+            <td title="${escapeHtml(s.key)}"><div class="cell-main"><span>${escapeHtml(s.name)}</span><small>${escapeHtml(s.key)}</small></div></td>
+            <td><span class="status">${escapeHtml(s.kind)}</span></td>
+            <td>${s.task_count || 0}</td>`;
+          tr.querySelector('input').onchange = e => {
+            if(e.target.checked) selectedSuites.add(s.key); else selectedSuites.delete(s.key);
+            syncRunState();
+          };
+          tbody.appendChild(tr);
+        });
+      });
+
+      table.appendChild(tbody);
+      container.innerHTML = '';
+      container.appendChild(table);
+
       syncRunState();
     }
 
@@ -4037,12 +4188,46 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     function renderJobs(){
+      const categoryFilter = document.getElementById('jobCategoryFilter').value;
       const tbody = document.getElementById('jobRows');
       tbody.innerHTML = '';
-      if(!jobs.length){
+
+      // Populate category filter if empty
+      const select = document.getElementById('jobCategoryFilter');
+      if(select.options.length === 1 && suites.length){
+        const categories = new Set();
+        suites.forEach(s => categories.add(s.suite_category || 'Other'));
+        const sortedCategories = Array.from(categories).sort((a, b) => {
+          const aIndex = CATEGORY_ORDER.indexOf(a);
+          const bIndex = CATEGORY_ORDER.indexOf(b);
+          if(aIndex === -1 && bIndex === -1) return a.localeCompare(b);
+          if(aIndex === -1) return 1;
+          if(bIndex === -1) return -1;
+          return aIndex - bIndex;
+        });
+        sortedCategories.forEach(cat => {
+          const option = document.createElement('option');
+          option.value = cat;
+          option.textContent = cat;
+          select.appendChild(option);
+        });
+      }
+
+      // Filter jobs by category
+      const filtered = jobs.filter(job => {
+        if(!categoryFilter) return true;
+        const jobSuiteKeys = (job.suites || []).map(key => String(key));
+        return jobSuiteKeys.some(key => {
+          const suite = suites.find(s => s.key === key);
+          return suite && (suite.suite_category || 'Other') === categoryFilter;
+        });
+      });
+
+      if(!filtered.length){
         tbody.innerHTML = '<tr><td class="empty-row" colspan="6">No jobs yet</td></tr>';
       }
-      jobs.forEach(job => {
+
+      filtered.forEach(job => {
         const suiteKeys = (job.suites || []).map(key => String(key));
         const suiteNames = suiteKeys.map(suiteDisplayName);
         const suiteLabel = suiteNames.length ? suiteNames.join(', ') : 'No suites';
@@ -4211,6 +4396,7 @@ INDEX_HTML = r"""<!doctype html>
       setAgentConfigStatus('Modified');
     };
     document.getElementById('suiteFilter').oninput = renderSuites;
+    document.getElementById('jobCategoryFilter').onchange = renderJobs;
     document.getElementById('runBtn').onclick = openRunEnvironmentDialog;
     document.getElementById('closeRunEnv').onclick = closeRunEnvironmentDialog;
     document.getElementById('cancelRunEnv').onclick = closeRunEnvironmentDialog;

@@ -63,6 +63,30 @@ func TestFrameMetadataUnmarshalSupportsStringNumbers(t *testing.T) {
 	}
 }
 
+func TestFrameHealthResponseUnmarshalSupportsStringUint64Fields(t *testing.T) {
+	input := []byte(`{
+		"status":"OK",
+		"state":"RUNNING",
+		"latest_seq":"10663",
+		"frame_age_ms":"139",
+		"ring_buffer_size":3,
+		"ring_buffer_used":3,
+		"consecutive_failures":0,
+		"last_error":"",
+		"last_recovery_ts":"22965550301",
+		"avg_frame_serve_latency_ms":1090.015,
+		"avg_capture_copy_latency_ms":19.126
+	}`)
+
+	var response frameHealthResponse
+	if err := json.Unmarshal(input, &response); err != nil {
+		t.Fatalf("unmarshal frameHealthResponse: %v", err)
+	}
+	if response.LatestSeq != 10663 || response.FrameAgeMs != 139 || response.LastRecoveryTs != 22965550301 {
+		t.Fatalf("unexpected health response: %+v", response)
+	}
+}
+
 func TestFrameMetadataUnmarshalAllowsOmittedSourceAndCropFields(t *testing.T) {
 	input := []byte(`{
 		"seq":"123",

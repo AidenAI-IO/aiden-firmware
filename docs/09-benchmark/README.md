@@ -5,7 +5,7 @@ perception, and environment-control tasks. The current recommended entry points
 are:
 
 - WebUI for day-to-day runs, MobileGym concurrency, task-level logs/screens, and reports.
-- CLI for scripted runs, single-suite debugging, rejudge, compare, and unit tool tests.
+- CLI for scripted runs, single-suite debugging, rejudge, and compare.
 
 For the full manual, see [`benchmark/manual.md`](../../benchmark/manual.md).
 
@@ -79,7 +79,7 @@ benchmark/
 │   ├── runtask.py       # Task execution
 │   ├── judge.py         # OpenRouter-compatible LLM judge
 │   └── html_report.py   # HTML report generation
-├── suites/              # Benchmark and unit suites
+├── suites/              # Benchmark suites
 ├── environment_bridge.md
 ├── manual.md
 └── runs/<run_id>/       # CLI run results
@@ -115,14 +115,6 @@ Common options:
 - `--repeats N` - Override task repeats.
 - `--state-file PATH` - Write progress JSON for WebUI or scripts.
 - `--verbose` - Print detailed rubric results.
-
-### `unit`
-
-```bash
-uv run python -m runner unit --suite suites/unit/tools/<suite>.json
-```
-
-Unit suites call tools directly and do not use LLM judge.
 
 ### `rejudge`
 

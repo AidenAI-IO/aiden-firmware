@@ -112,18 +112,32 @@ type memorySearchQuery struct {
 	Limit    int
 }
 
-func NewFilesystemMemoryPlane(memoryDir string, extraction MemoryExtractionConfig, logger *Logger) *FilesystemMemoryPlane {
+type FilesystemMemoryPlaneOption func(*FilesystemMemoryPlane)
+
+// WithMemoryPlaneLongTermStore shares an existing long-term memory store with
+// the memory plane instead of creating a second cache for the same directory.
+func WithMemoryPlaneLongTermStore(store *LongTermMemoryStore) FilesystemMemoryPlaneOption {
+	return func(p *FilesystemMemoryPlane) { p.longTerm = store }
+}
+
+func NewFilesystemMemoryPlane(memoryDir string, extraction MemoryExtractionConfig, logger *Logger, opts ...FilesystemMemoryPlaneOption) *FilesystemMemoryPlane {
 	if strings.TrimSpace(memoryDir) == "" {
 		return nil
 	}
-	return &FilesystemMemoryPlane{
+	p := &FilesystemMemoryPlane{
 		memoryDir:  memoryDir,
 		extraction: extraction,
 		episodes:   NewTaskEpisodeStore(filepath.Join(memoryDir, "episodes")),
 		device:     NewDeviceMemoryStore(filepath.Join(memoryDir, "device")),
-		longTerm:   NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"), WithLifecycleDir(filepath.Join(memoryDir, "lifecycle"))),
 		logger:     logger,
 	}
+	for _, opt := range opts {
+		opt(p)
+	}
+	if p.longTerm == nil {
+		p.longTerm = NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"), WithLifecycleDir(filepath.Join(memoryDir, "lifecycle")))
+	}
+	return p
 }
 
 func (p *FilesystemMemoryPlane) LongTerm() *LongTermMemoryStore {
@@ -451,16 +465,23 @@ func (p *FilesystemMemoryPlane) searchLongTermConflicts(ctx context.Context, que
 		limit = 5
 	}
 	var hits []MemoryHit
+	now := time.Now().UTC()
+	var expiredPaths []string
 	for _, entry := range index.Memories {
 		if entry.Status != "conflicted" {
 			continue
 		}
 		path := filepath.Join(p.longTerm.rootDir, entry.File)
+		if memoryExpiresAtPassed(entry.ExpiresAt, now) {
+			expiredPaths = append(expiredPaths, path)
+			continue
+		}
 		parsed, err := p.longTerm.readMemoryMarkdownCached(path)
 		if err != nil {
 			continue
 		}
-		if memoryItemExpired(parsed.Item, time.Now().UTC()) {
+		if memoryItemExpired(parsed.Item, now) {
+			expiredPaths = append(expiredPaths, path)
 			continue
 		}
 		result := MemoryResult{
@@ -489,6 +510,9 @@ func (p *FilesystemMemoryPlane) searchLongTermConflicts(ctx context.Context, que
 			continue
 		}
 		hits = append(hits, memoryResultToHit(result))
+	}
+	if len(expiredPaths) > 0 {
+		p.longTerm.invalidateParsedMemoryCache(expiredPaths...)
 	}
 	sort.SliceStable(hits, func(i, j int) bool {
 		scoreI := scoreMemoryHit(hits[i], query.Terms)

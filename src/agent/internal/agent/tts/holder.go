@@ -109,12 +109,25 @@ type trackedSession struct {
 	StreamSession
 	done      *sync.WaitGroup
 	closeOnce sync.Once
+	err       error
 }
 
 func (t *trackedSession) Close() error {
-	err := t.StreamSession.Close()
 	t.closeOnce.Do(func() {
-		t.done.Done()
+		defer t.done.Done()
+		t.err = t.StreamSession.Close()
 	})
-	return err
+	return t.err
+}
+
+func (t *trackedSession) Abort() error {
+	t.closeOnce.Do(func() {
+		defer t.done.Done()
+		if aborter, ok := t.StreamSession.(interface{ Abort() error }); ok {
+			t.err = aborter.Abort()
+		} else {
+			t.err = t.StreamSession.Close()
+		}
+	})
+	return t.err
 }

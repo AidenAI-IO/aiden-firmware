@@ -106,11 +106,6 @@ def cli(argv: list[str] | None = None) -> int:
         type=int,
         default=_int_env("AIDEN_BENCHMARK_ANALYSIS_TIMEOUT_SEC", 180),
     )
-    p_unit = sub.add_parser("unit")
-    p_unit.add_argument("--suite")
-    p_unit.add_argument("--suite-dir")
-    p_unit.add_argument("--agent-url", default=os.environ.get("AIDEN_AGENT_URL", "http://localhost:8080"))
-    p_unit.add_argument("--out", default=str(REPO_ROOT / "benchmark" / "runs"))
     p_run.add_argument("--verbose", "-v", action="store_true",
                        help="Show detailed rubric results for each task")
     p_rejudge = sub.add_parser("rejudge")
@@ -134,9 +129,6 @@ def cli(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.cmd == "run":
         return _cmd_run(args)
-    if args.cmd == "unit":
-        from runner.unit import cmd_unit
-        return cmd_unit(args)
     if args.cmd == "rejudge":
         from runner.rejudge import rejudge_run
         return rejudge_run(Path(args.run_dir), args.judge_model)
