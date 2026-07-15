@@ -99,6 +99,7 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	keyboardTap := &KeyboardTapTool{dev: kbDev, androidDev: androidKbDev, pointerMode: hidCfg.PointerModeOrDefault()}
 	keyboardText := &KeyboardTextTool{dev: kbDev}
 	touchGesture := &TouchGestureTool{pc: pointer, screen: screen}
+	wheelNudge := &WheelNudgeTool{pc: pointer, screen: screen}
 	quickAction := &QuickActionTool{keyboard: keyboardTap, touch: touchGesture}
 	mouseClick := &MouseClickTool{pc: pointer, screen: screen}
 	textInputHW := &textInputHardwareDeps{
@@ -117,6 +118,7 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 		"mouse_move":             newPostActionStableScreenshotTool(&MouseMoveTool{pc: pointer, screen: screen}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"mouse_scroll":           newPostActionStableScreenshotTool(&MouseScrollTool{pc: pointer}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"touch_gesture":          newPostActionStableScreenshotTool(touchGesture, waitStable, screenshot, postActionScreenshotDelay, screenStable),
+		"wheel_nudge":            newPostActionStableScreenshotTool(wheelNudge, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"quick_action":           newPostActionStableScreenshotTool(quickAction, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"screenshot":             screenshot,
 		"wait_for_stable_screen": waitStable,

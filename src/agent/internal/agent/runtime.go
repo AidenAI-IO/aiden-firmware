@@ -972,6 +972,12 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}
 
 	agentLoop := NewAgentLoop(model, profile, plannerMemory, maxIterations, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault(), r.contextManager)
+	agentLoop.toolExecutionHookFactory = func() toolExecutionHookHandler {
+		if r.tools == nil {
+			return newWheelNudgeGuard(nil)
+		}
+		return newWheelNudgeGuard(r.tools.screen)
+	}
 	agentLoop.EnvironmentBridge = r.environmentBridge
 	agentLoop.EnvironmentBridgeTools = r.config.EnvironmentBridge.Tools
 	agentLoop.SteerInterrupt = req.SteerInterrupt

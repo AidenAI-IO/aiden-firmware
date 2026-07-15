@@ -32,22 +32,23 @@ const (
 )
 
 type AgentLoop struct {
-	Model                  llms.Model
-	Profile                RoleProfile
-	Memory                 schema.Memory
-	CallbacksHandler       callbacks.Handler
-	MaxIterations          int
-	Recorder               *EpisodeRecorder
-	ScreenshotPruning      ScreenshotPruningConfig
-	EnvironmentBridge      *EnvironmentBridgeClient
-	EnvironmentBridgeTools []string
-	SteerInterrupt         func() <-chan struct{}
-	SteerProvider          func(context.Context) (RunSteerMessage, bool)
-	SteerWaiter            func(context.Context) (RunSteerMessage, bool, error)
-	TerminationPolicy      *TerminationPolicy
-	DevicePlatform         string
-	PointerMode            string
-	contextManager         *contextmanager.ContextManager
+	Model                    llms.Model
+	Profile                  RoleProfile
+	Memory                   schema.Memory
+	CallbacksHandler         callbacks.Handler
+	MaxIterations            int
+	Recorder                 *EpisodeRecorder
+	ScreenshotPruning        ScreenshotPruningConfig
+	EnvironmentBridge        *EnvironmentBridgeClient
+	EnvironmentBridgeTools   []string
+	SteerInterrupt           func() <-chan struct{}
+	SteerProvider            func(context.Context) (RunSteerMessage, bool)
+	SteerWaiter              func(context.Context) (RunSteerMessage, bool, error)
+	TerminationPolicy        *TerminationPolicy
+	DevicePlatform           string
+	PointerMode              string
+	toolExecutionHookFactory func() toolExecutionHookHandler
+	contextManager           *contextmanager.ContextManager
 }
 
 func NewAgentLoop(
@@ -86,6 +87,10 @@ func (l *AgentLoop) Run(ctx context.Context, input string, options ...chains.Cha
 		ScreenshotPruning: l.ScreenshotPruning,
 	}
 	callOptions := chains.GetLLMCallOptions(options...)
+	var toolExecutionHooks toolExecutionHookHandler
+	if l.toolExecutionHookFactory != nil {
+		toolExecutionHooks = l.toolExecutionHookFactory()
+	}
 	policy := l.loopGuardPolicy()
 	transientMessages := newTransientMessageScope(l.contextManager)
 	defer transientMessages.Clear()
@@ -103,7 +108,7 @@ restartBudget:
 				}
 				continue restartBudget
 			}
-			answer, outcome, err := l.runIteration(ctx, i+1, callOptions, llmExecutor, parser, toolSpecs, policy, transientMessages)
+			answer, outcome, err := l.runIteration(ctx, i+1, callOptions, llmExecutor, parser, toolSpecs, toolExecutionHooks, policy, transientMessages)
 			if err != nil {
 				return "", err
 			}
@@ -149,7 +154,7 @@ func (l *AgentLoop) stopWithSteerCheck(ctx context.Context, executor *executor.L
 	return answer, true, err
 }
 
-func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions []llms.CallOption, llmExecutor *executor.LLMExecutor, parser *FunctionAgent, toolSpecs *ToolSpecs, policy *TerminationPolicy, transientMessages *transientMessageScope) (string, iterationOutcome, error) {
+func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions []llms.CallOption, llmExecutor *executor.LLMExecutor, parser *FunctionAgent, toolSpecs *ToolSpecs, toolExecutionHooks toolExecutionHookHandler, policy *TerminationPolicy, transientMessages *transientMessageScope) (string, iterationOutcome, error) {
 	iterationStartTime := time.Now()
 	toolCallsInIteration := 0
 	if l.Recorder != nil {
@@ -312,6 +317,13 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 	if err := llmExecutor.AppendMessage(contextmanager.ConvertChoiceToContextManagerMessage(choiceWithOnlyToolCall(*contentResp.Choices[0], action.ToolID))); err != nil {
 		return "", iterationContinue, err
 	}
+	var after AfterToolCallHook
+	if toolExecutionHooks != nil {
+		after = func(ctx context.Context, call ToolCall, result ToolResult) ToolResult {
+			result = DefaultAfterToolCall(ctx, call, result)
+			return toolExecutionHooks.AfterToolCall(ctx, call, result)
+		}
+	}
 	toolExecution := l.executeToolCall(ctx, ToolCallExecution{
 		Specs:  toolSpecs,
 		Action: action,
@@ -320,8 +332,13 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 			if !allowed {
 				return result, false
 			}
-			return DefaultBeforeToolCall(ctx, call)
+			result, allowed = DefaultBeforeToolCall(ctx, call)
+			if !allowed || toolExecutionHooks == nil {
+				return result, allowed
+			}
+			return toolExecutionHooks.BeforeToolCall(ctx, call)
 		},
+		After:                  after,
 		Callback:               l.CallbacksHandler,
 		EnvironmentBridge:      l.EnvironmentBridge,
 		EnvironmentBridgeTools: l.EnvironmentBridgeTools,
