@@ -343,3 +343,59 @@ func TestRuntimeFallbackStoreIdempotency(t *testing.T) {
 	}
 }
 
+// TestRuntimeConcurrentFallbackStoreInitialization verifies that concurrent
+// calls to NewRuntimeWithDeps with the same manager create and share exactly
+// one fallback store, not multiple duplicate stores.
+func TestRuntimeConcurrentFallbackStoreInitialization(t *testing.T) {
+	configDir := t.TempDir()
+	memoryDir := filepath.Join(configDir, "memory")
+
+	manager := NewMemoryManager(memoryDir)
+
+	const concurrency = 10
+	var wg sync.WaitGroup
+	runtimes := make([]*Runtime, concurrency)
+	errors := make(chan error, concurrency)
+
+	// Create multiple runtimes concurrently with the same manager
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			tools := NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{})
+			tools.RegisterMemoryTools(memoryDir, 0, nil)
+			rt := NewRuntimeWithDeps(Config{ConfigDir: configDir}, nil, manager, tools, nil)
+			runtimes[idx] = rt
+		}(i)
+	}
+
+	wg.Wait()
+	close(errors)
+
+	// Check for errors
+	for err := range errors {
+		t.Fatalf("concurrent initialization error: %v", err)
+	}
+
+	// Verify all runtimes share the SAME fallback store
+	firstStore := manager.longTerm
+	if firstStore == nil {
+		t.Fatal("manager.longTerm was not initialized")
+	}
+
+	for i, rt := range runtimes {
+		plane, ok := rt.memoryPlane.(*FilesystemMemoryPlane)
+		if !ok {
+			t.Fatalf("runtime[%d] plane type = %T, want *FilesystemMemoryPlane", i, rt.memoryPlane)
+		}
+		if plane.LongTerm() != firstStore {
+			t.Fatalf("runtime[%d] plane references store %p, want %p (first store)",
+				i, plane.LongTerm(), firstStore)
+		}
+	}
+
+	// All runtimes should reference the exact same store instance
+	t.Logf("Success: %d concurrent runtimes all share store %p", concurrency, firstStore)
+}
+
+

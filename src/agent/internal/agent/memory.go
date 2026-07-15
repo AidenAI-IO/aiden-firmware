@@ -77,6 +77,7 @@ type MemoryManager struct {
 	contextWindowFn                ContextWindowFn
 	profileDebouncer               *ProfileDebouncer
 	longTerm                       *LongTermMemoryStore
+	longTermOnce                   sync.Once
 	lockTimeout                    time.Duration
 	logger                         *Logger
 	sessionBoundaryEnabledOverride *bool

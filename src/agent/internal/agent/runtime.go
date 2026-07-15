@@ -426,18 +426,21 @@ func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManage
 	if cfg.ConfigDir != "" {
 		memoryDir = filepath.Join(cfg.ConfigDir, "memory")
 		if memories != nil {
+			// Use sync.Once to ensure exactly one goroutine creates the fallback store
+			memories.longTermOnce.Do(func() {
+				if memories.longTerm == nil {
+					storeOpts := []LongTermMemoryOption{WithLifecycleDir(filepath.Join(memoryDir, "lifecycle"))}
+					storeOpts = append(storeOpts, WithStoreProfileFn(memories.profileFn))
+					store := NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"), storeOpts...)
+					store.setProfileDebouncer(memories.profileDebouncer)
+					memories.longTerm = store
+				}
+			})
 			longTermStore = memories.longTerm
-		}
-		if longTermStore == nil {
+		} else if longTermStore == nil {
+			// No manager provided, create a standalone store
 			storeOpts := []LongTermMemoryOption{WithLifecycleDir(filepath.Join(memoryDir, "lifecycle"))}
-			if memories != nil {
-				storeOpts = append(storeOpts, WithStoreProfileFn(memories.profileFn))
-			}
 			longTermStore = NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"), storeOpts...)
-			if memories != nil {
-				longTermStore.setProfileDebouncer(memories.profileDebouncer)
-				memories.longTerm = longTermStore
-			}
 		}
 		if tools != nil {
 			extractionCfg := LoadMemoryExtractionConfig(cfg.ConfigDir)
