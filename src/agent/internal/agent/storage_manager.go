@@ -710,9 +710,20 @@ func (o *realStorageOps) Prepare(dev, mountPoint string) error {
 	if err := os.MkdirAll(mountPoint, 0o755); err != nil {
 		return fmt.Errorf("create mount point: %w", err)
 	}
-	// fsck is advisory: the device ships fsck.ext4 but no fsck.fat, so a
-	// missing checker (or a repair failure) must not reject the card; the
-	// mount plus probe write below are the authoritative gate.
+	// Adopt an existing mount (e.g. left behind by a previous agent run that
+	// the watchdog restarted) instead of mounting on top of it — a second
+	// mount of the same device fails with EBUSY. The probe write below still
+	// validates the adopted mount.
+	if o.IsMounted(mountPoint) {
+		probe := filepath.Join(mountPoint, ".aiden-write-probe")
+		if err := os.WriteFile(probe, []byte("ok"), 0o644); err != nil {
+			return fmt.Errorf("existing mount at %s is not writable: %w", mountPoint, err)
+		}
+		_ = os.Remove(probe)
+		return nil
+	}
+	// fsck is advisory: a missing or failing checker must not reject the
+	// card; the mount plus probe write below are the authoritative gate.
 	_ = exec.Command("fsck", "-p", dev).Run()
 	// ext4 gets a tighter journal commit; other filesystems reject those
 	// options, so retry with the portable set.
