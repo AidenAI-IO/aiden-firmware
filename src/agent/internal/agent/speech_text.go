@@ -259,8 +259,12 @@ func (w *TTSTagStreamWriter) Write(p []byte) (int, error) {
 
 		idx := bytes.Index(asciiLowerBytes(w.pending), []byte(ttsEndTag))
 		if idx >= 0 {
-			if err := w.writeTTSBytes(w.pending[:idx]); err != nil {
-				return 0, err
+			// Validate UTF-8 before emitting the final chunk
+			safeIdx := validUTF8PrefixLen(w.pending, idx)
+			if safeIdx > 0 {
+				if err := w.writeTTSBytes(w.pending[:safeIdx]); err != nil {
+					return 0, err
+				}
 			}
 			w.pending = w.pending[idx+len(ttsEndTag):]
 			w.inTTS = false
@@ -297,7 +301,7 @@ func validUTF8PrefixLen(buf []byte, n int) int {
 		return n
 	}
 
-	// Slow path: find the last complete rune boundary
+	// Slow path: find the last complete rune boundary within the last UTFMax bytes
 	start := n - 1
 	lower := n - utf8.UTFMax
 	if lower < 0 {
@@ -306,15 +310,38 @@ func validUTF8PrefixLen(buf []byte, n int) int {
 	for start >= lower && !utf8.RuneStart(buf[start]) {
 		start--
 	}
-	// If no rune start found within utf8.UTFMax bytes, data is likely corrupt.
-	// Pass through and let downstream handle it.
-	if start < lower {
-		return n
+
+	// If we found a rune start and there's valid content before it, truncate there
+	if start >= lower {
+		if start > 0 && utf8.Valid(buf[:start]) {
+			return start
+		}
+		// The rune start we found is at position 0 or itself part of invalid sequence
+		// Keep scanning backwards to find a valid boundary (skip position 0)
+		for i := start - 1; i > 0; i-- {
+			if utf8.Valid(buf[:i]) {
+				return i
+			}
+		}
+		// If we're here, start is 0 or all positions checked are invalid
+		// Check if position 0 itself is valid
+		if start == 0 && utf8.Valid(buf[:1]) {
+			return 1
+		}
+		return 0
 	}
-	if !utf8.FullRune(buf[start:n]) {
-		return start
+
+	// No rune start found in scan window - scan entire buffer for last valid boundary
+	for i := n - 1; i > 0; i-- {
+		if utf8.Valid(buf[:i]) {
+			return i
+		}
 	}
-	return n
+	// Last resort: check if first byte is valid
+	if utf8.Valid(buf[:1]) {
+		return 1
+	}
+	return 0
 }
 
 func (w *TTSTagStreamWriter) writeTTSBytes(p []byte) error {
