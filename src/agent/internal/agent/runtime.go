@@ -63,6 +63,10 @@ type Runtime struct {
 	telemetrySessionID string
 	environmentBridge  *EnvironmentBridgeClient
 	runGate            chan struct{}
+	preemptMu          sync.Mutex
+	activeCancel       context.CancelFunc
+	preemptHooks       []func()
+	lastPreemptTime    time.Time
 }
 
 type RunRequest struct {
@@ -103,6 +107,7 @@ type RunResult struct {
 	// Deprecated: use WaitForWakeupReason.
 	SleepReason    string `json:"sleep_reason,omitempty"`
 	SpeechStreamed bool   `json:"-"`
+	Preempted      bool   `json:"preempted,omitempty"`
 }
 
 func canonicalTurnInputFromRunRequest(req RunRequest) TurnInput {
@@ -489,6 +494,44 @@ func (r *Runtime) lockRun(ctx context.Context) (func(), error) {
 	}
 }
 
+// Preempt terminates the currently active run and releases all associated
+// resources (audio recording, TTS playback) via registered hooks.
+func (r *Runtime) Preempt() {
+	if r == nil {
+		return
+	}
+	r.preemptMu.Lock()
+	defer r.preemptMu.Unlock()
+	if r.activeCancel != nil {
+		r.activeCancel()
+		r.lastPreemptTime = time.Now()
+	}
+	for _, hook := range r.preemptHooks {
+		hook()
+	}
+}
+
+// RegisterPreemptHook adds a callback invoked when a new run preempts the
+// current one. Used to release audio resources (stop recording, stop TTS).
+func (r *Runtime) RegisterPreemptHook(hook func()) {
+	if r == nil || hook == nil {
+		return
+	}
+	r.preemptMu.Lock()
+	defer r.preemptMu.Unlock()
+	r.preemptHooks = append(r.preemptHooks, hook)
+}
+
+// WasPreempted reports whether a preemption occurred within the last duration.
+func (r *Runtime) WasPreempted(within time.Duration) bool {
+	if r == nil {
+		return false
+	}
+	r.preemptMu.Lock()
+	defer r.preemptMu.Unlock()
+	return !r.lastPreemptTime.IsZero() && time.Since(r.lastPreemptTime) < within
+}
+
 func (r *Runtime) NewEpisodeID() string {
 	if r == nil || r.memoryPlane == nil {
 		return ""
@@ -556,11 +599,33 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	if ctx == nil {
 		ctx = context.Background()
 	}
+
+	// Preempt any currently active run and its resources.
+	r.Preempt()
+
 	unlockRun, err := r.lockRun(ctx)
 	if err != nil {
-		return RunResult{}, err
+		return RunResult{Preempted: true}, err
 	}
 	defer unlockRun()
+
+	// Register this run's cancel so future callers can preempt us.
+	runCtx, runCancel := context.WithCancel(ctx)
+	r.preemptMu.Lock()
+	r.activeCancel = runCancel
+	r.preemptMu.Unlock()
+	defer func() {
+		r.preemptMu.Lock()
+		r.activeCancel = nil
+		r.preemptMu.Unlock()
+		runCancel()
+	}()
+
+	// Check if we were preempted while waiting for runGate.
+	if err := runCtx.Err(); err != nil {
+		return RunResult{Preempted: true}, err
+	}
+	ctx = runCtx // Use preemptable context for the rest of the run.
 
 	startTime := time.Now()
 	metrics := &RunMetrics{}

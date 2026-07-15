@@ -4644,3 +4644,104 @@ func TestRuntimeClearMemoryRemovesPersistedSession(t *testing.T) {
 		t.Fatalf("expected legacy snapshot to be removed, stat err = %v", err)
 	}
 }
+
+func TestRuntimePreemptCancelsActiveRun(t *testing.T) {
+	t.Parallel()
+
+	// Model that blocks until context is canceled.
+	model := &blockingFirstCallModel{
+		firstCallStarted: make(chan struct{}),
+		releaseFirstCall: make(chan struct{}),
+		responses:        []*llms.ContentResponse{contentResponse("first"), contentResponse("second")},
+	}
+
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "test"}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	// Start first run in background.
+	firstDone := make(chan struct{})
+	var firstErr error
+	go func() {
+		defer close(firstDone)
+		_, firstErr = runtime.Run(context.Background(), RunRequest{Input: "first task"})
+	}()
+
+	// Wait for first run to actually start the model call.
+	select {
+	case <-model.firstCallStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first run did not start model call")
+	}
+
+	// Start second run — should preempt the first.
+	secondResult, secondErr := runtime.Run(context.Background(), RunRequest{Input: "second task"})
+
+	// First run should have been canceled.
+	select {
+	case <-firstDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first run did not finish after preemption")
+	}
+	if firstErr == nil {
+		t.Fatal("expected first run to return error after preemption")
+	}
+
+	// Second run should succeed.
+	if secondErr != nil {
+		t.Fatalf("second run error = %v", secondErr)
+	}
+	if secondResult.Output != "second" {
+		t.Fatalf("second run output = %q, want 'second'", secondResult.Output)
+	}
+
+	// WasPreempted should report true.
+	if !runtime.WasPreempted(5 * time.Second) {
+		t.Fatal("WasPreempted should return true after preemption")
+	}
+}
+
+func TestRuntimePreemptHooksAreCalled(t *testing.T) {
+	t.Parallel()
+
+	model := &blockingFirstCallModel{
+		firstCallStarted: make(chan struct{}),
+		releaseFirstCall: make(chan struct{}),
+		responses:        []*llms.ContentResponse{contentResponse("first"), contentResponse("second")},
+	}
+
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "test"}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	var hookCalled atomic.Int32
+	runtime.RegisterPreemptHook(func() {
+		hookCalled.Add(1)
+	})
+
+	// Start first run.
+	go func() {
+		runtime.Run(context.Background(), RunRequest{Input: "first"})
+	}()
+
+	select {
+	case <-model.firstCallStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first run did not start")
+	}
+
+	// Second run triggers preemption.
+	runtime.Run(context.Background(), RunRequest{Input: "second"})
+
+	if hookCalled.Load() == 0 {
+		t.Fatal("preempt hook was not called")
+	}
+}

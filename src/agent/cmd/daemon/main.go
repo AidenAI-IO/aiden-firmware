@@ -195,6 +195,14 @@ func runAudioMode(cfg agent.Config, runtime *agent.Runtime, server *agent.Server
 	}
 	dialog.SetHistoryAppender(server.AppendHistory)
 
+	// Register preempt hook: when a new run starts, release GPIO audio resources.
+	runtime.RegisterPreemptHook(func() {
+		dialog.InterruptOutput()
+		if dialog.RecordingActive() {
+			_ = dialog.StopRecording()
+		}
+	})
+
 	inputMode := cfg.InputModeOrDefault()
 	triggerMode := cfg.TriggerModeOrDefault()
 

@@ -235,7 +235,7 @@ func (d *fakeAudioDialog) WaitForVoiceRunIdle(ctx context.Context) bool {
 }
 
 func (d *fakeAudioDialog) ForceResetVoiceRun() {
-	// No-op for tests
+	d.ops = append(d.ops, "force_reset_voice_run")
 }
 
 func (d *fakeAudioDialog) InterruptOutput() {
