@@ -259,12 +259,18 @@ func (w *TTSTagStreamWriter) Write(p []byte) (int, error) {
 
 		idx := bytes.Index(asciiLowerBytes(w.pending), []byte(ttsEndTag))
 		if idx >= 0 {
-			// Validate UTF-8 before emitting the final chunk
-			safeIdx := validUTF8PrefixLen(w.pending, idx)
-			if safeIdx > 0 {
-				if err := w.writeTTSBytes(w.pending[:safeIdx]); err != nil {
-					return 0, err
+			// Find the longest valid UTF-8 prefix before the end tag
+			skipBytes := 0
+			for idx > skipBytes {
+				safeIdx := validUTF8PrefixLen(w.pending[skipBytes:], idx-skipBytes)
+				if safeIdx > 0 {
+					if err := w.writeTTSBytes(w.pending[skipBytes : skipBytes+safeIdx]); err != nil {
+						return 0, err
+					}
+					break
 				}
+				// Skip this invalid leading byte
+				skipBytes++
 			}
 			w.pending = w.pending[idx+len(ttsEndTag):]
 			w.inTTS = false
@@ -277,7 +283,14 @@ func (w *TTSTagStreamWriter) Write(p []byte) (int, error) {
 		}
 		safeLen = validUTF8PrefixLen(w.pending, safeLen)
 		if safeLen <= 0 {
-			return len(p), nil
+			// Check if the first byte is a valid rune start
+			if len(w.pending) > 0 && utf8.RuneStart(w.pending[0]) {
+				// Incomplete multi-byte sequence; keep it and wait for more data
+				return len(p), nil
+			}
+			// Invalid byte; drop it to avoid stalling
+			w.pending = w.pending[1:]
+			continue
 		}
 		if err := w.writeTTSBytes(w.pending[:safeLen]); err != nil {
 			return 0, err

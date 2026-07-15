@@ -2,6 +2,7 @@ package tts
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -236,3 +237,63 @@ func TestTrackedSessionAbortAndCloseShareCloseOnce(t *testing.T) {
 			totalCalls, started.abortCalls, started.closeCalls)
 	}
 }
+
+func TestTrackedSessionCachesTerminalError(t *testing.T) {
+	provider := &errorProvider{startErr: nil, closeErr: fmt.Errorf("terminal error")}
+	holder := NewProviderHolder(provider)
+
+	session, err := holder.BeginStream(context.Background(), noopSink{})
+	if err != nil {
+		t.Fatalf("BeginStream() error = %v", err)
+	}
+
+	// First call captures the error
+	err1 := session.Close()
+	if err1 == nil || err1.Error() != "terminal error" {
+		t.Fatalf("first Close() = %v, want 'terminal error'", err1)
+	}
+
+	// Subsequent calls should return the same cached error
+	err2 := session.Close()
+	if err2 != err1 {
+		t.Fatalf("second Close() = %v, want same instance as first (%v)", err2, err1)
+	}
+
+	// Abort should also return the cached error
+	aborter, ok := session.(interface{ Abort() error })
+	if !ok {
+		t.Fatal("tracked session does not expose Abort")
+	}
+	err3 := aborter.Abort()
+	if err3 != err1 {
+		t.Fatalf("Abort() after Close() = %v, want same cached error (%v)", err3, err1)
+	}
+}
+
+type errorProvider struct {
+	startErr error
+	closeErr error
+}
+
+func (p *errorProvider) Name() string { return "error-provider" }
+
+func (p *errorProvider) Capabilities() Capabilities { return Capabilities{} }
+
+func (p *errorProvider) BeginStream(context.Context, AudioSink) (StreamSession, error) {
+	if p.startErr != nil {
+		return nil, p.startErr
+	}
+	return &errorSession{closeErr: p.closeErr}, nil
+}
+
+func (p *errorProvider) Close() error { return nil }
+
+type errorSession struct {
+	closeErr error
+}
+
+func (s *errorSession) WriteText(string) error { return nil }
+func (s *errorSession) Flush() error           { return nil }
+func (s *errorSession) Close() error           { return s.closeErr }
+func (s *errorSession) Err() error             { return nil }
+

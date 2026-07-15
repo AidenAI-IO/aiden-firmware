@@ -267,6 +267,10 @@ func TestSpeechStreamWriterFiltersInvalidUTF8BeforeStreaming(t *testing.T) {
 	if !strings.Contains(got, "ab") {
 		t.Fatalf("streamed speech missing valid prefix: %q", got)
 	}
+	// The valid content after the invalid byte should also be preserved
+	if !strings.Contains(got, "cdefghijk") {
+		t.Fatalf("streamed speech missing valid suffix: %q", got)
+	}
 }
 
 func TestSpeechStreamWriterHandlesMultipleTTSTags(t *testing.T) {
