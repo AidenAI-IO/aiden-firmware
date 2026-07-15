@@ -3,7 +3,7 @@
 本文说明当前 `benchmark/` 目录下 Aiden benchmark 的设计和使用方式，覆盖推荐入口：
 
 - WebUI：适合日常运行、多 suite、MobileGym 并发和人工查看报告。
-- CLI：适合脚本化运行、单 suite 调试、rejudge、compare 和 unit tool 测试。
+- CLI：适合脚本化运行、单 suite 调试、rejudge 和 compare。
 
 以下命令默认从仓库根目录进入 `benchmark/` 后执行：
 
@@ -159,8 +159,6 @@ Bridge server 是具体环境和 Aiden benchmark 之间的 HTTP 适配层。Mobi
 | `input_screenshot` | 静态图片输入，适合 perception 类任务 |
 | `expected_answer` | 多选题/确定答案任务的直接判定答案 |
 | `trace_observations` | 对 trace 中特定行为的检查，例如是否读取某个 skill |
-
-Unit suite 是另一种格式，`kind` 为 `unit`，用于直接测试某个 tool 的输入输出，不经过 agent chat。
 
 ## 2. WebUI 使用说明
 
@@ -441,29 +439,7 @@ uv run python -m runner run \
   --agent-config ./local.agent.toml
 ```
 
-### 3.3 unit：运行 tool 单元测试 suite
-
-Unit suite 用于直接调用某个 tool，检查输出结构和错误状态。
-
-运行单个 unit suite：
-
-```bash
-uv run python -m runner unit \
-  --suite suites/unit/tools/quick_action_android_v1.json \
-  --agent-url http://127.0.0.1:8080
-```
-
-运行目录下所有 unit suite：
-
-```bash
-uv run python -m runner unit \
-  --suite-dir suites/unit/tools \
-  --agent-url http://127.0.0.1:8080
-```
-
-`unit` 不调用 LLM judge。
-
-### 3.4 rejudge：重新判分
+### 3.3 rejudge：重新判分
 
 当只修改 rubric 或想换 judge model 时，不需要重新操作设备：
 
@@ -475,7 +451,7 @@ uv run python -m runner rejudge \
 
 `rejudge` 会读取已有 artifact 和 `rubric_spec`，重写 judge verdict/status。
 
-### 3.5 compare：比较两次 run
+### 3.4 compare：比较两次 run
 
 ```bash
 uv run python -m runner compare \
@@ -484,7 +460,7 @@ uv run python -m runner compare \
 
 用于查看任务状态变化和性能变化，适合回归检查。
 
-### 3.6 webui：从 CLI 启动 WebUI
+### 3.5 webui：从 CLI 启动 WebUI
 
 ```bash
 uv run python -m runner webui \
