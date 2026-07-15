@@ -39,6 +39,7 @@ This documentation hub is the structured entry point for the project. The root `
 - [Voice Capabilities: VAD / STT / TTS](04-agent/audio-features.md)
 - [Skills Mechanism](04-agent/skills.md)
 - [Skills Merge Design](04-agent/skills-merge-design.md)
+- [Hermes 定时任务实现调研](04-agent/hermes-cron-research.md)
 - [Human Handoff](04-agent/human-handoff.md)
 - [Live Activity / Dynamic Island](04-agent/live-activity.md)
 - [Phone Bridge](04-agent/phone-bridge.md)
