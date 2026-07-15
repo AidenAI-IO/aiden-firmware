@@ -97,11 +97,9 @@ func (g *wheelNudgeGuard) BeforeToolCall(_ context.Context, call ToolCall) (Tool
 	columnX, centerY, rowSpacing, coordSpace := g.guardCoordinates(args.CoordSpace, *args.ColumnX, wheelCenterY(args), *args.RowSpacing)
 	columnIndex := g.columnIndex(args.PickerID, columnX, centerY, coordSpace)
 	columnUsed := 0
-	columnLimit := wheelNudgeLimitForGap(planGapOrZero(args))
 	representativeX := columnX
 	if columnIndex >= 0 {
 		columnUsed = g.columns[columnIndex].used
-		columnLimit = g.columns[columnIndex].limit
 		representativeX = g.columns[columnIndex].centerX
 		if g.columns[columnIndex].targetSet && *args.TargetValue != g.columns[columnIndex].targetValue {
 			lockedTarget := g.columns[columnIndex].targetValue
@@ -115,10 +113,9 @@ func (g *wheelNudgeGuard) BeforeToolCall(_ context.Context, call ToolCall) (Tool
 	if planErr != nil {
 		return invalidWheelResult(planErr.Error(), map[string]any{"column_x": representativeX, "retry_same_column": true}), false
 	}
-	if columnIndex < 0 {
-		columnLimit = wheelNudgeLimitForGap(plan.gap)
-	} else {
-		columnLimit = max(g.columns[columnIndex].limit, wheelNudgeLimitForGap(plan.gap))
+	columnLimit := wheelNudgeLimitForGap(plan.gap)
+	if columnIndex >= 0 {
+		columnLimit = max(g.columns[columnIndex].limit, columnLimit)
 	}
 	if columnIndex >= 0 {
 		column := &g.columns[columnIndex]
@@ -253,28 +250,6 @@ func (g *wheelNudgeGuard) AfterToolCall(_ context.Context, call ToolCall, result
 		}
 	}
 	return result
-}
-
-func planGapOrZero(args wheelNudgeArgs) int {
-	if args.CurrentValue == nil || args.TargetValue == nil || args.CycleSize == nil {
-		return 0
-	}
-	cycleStart := 0
-	if args.CycleStart != nil {
-		cycleStart = *args.CycleStart
-	}
-	if args.ValueStep == nil {
-		return 1
-	}
-	if args.ValueStep != nil {
-		gap, _, ok := wheelSemanticTarget(args, wheelIncreasingDirectionFromVisibleStep(*args.ValueStep))
-		if ok {
-			return gap
-		}
-		return 0
-	}
-	gap, _ := wheelDomainDistance(*args.CurrentValue, *args.TargetValue, *args.CycleSize, cycleStart)
-	return gap
 }
 
 func wheelNudgeLimitForGap(gap int) int {
