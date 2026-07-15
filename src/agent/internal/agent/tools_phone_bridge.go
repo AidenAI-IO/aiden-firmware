@@ -159,8 +159,8 @@ func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 	restored, err := ensurePhoneBridgeReadyForCommand(ctx, t.bridge, t.restorer)
 	if err != nil {
 		te := NewToolErrorWithDetails(CodeBridgeNotConnected,
-			fmt.Sprintf("%v. If a Dynamic Island entry is visible, tap it to reopen Aiden, wait for Phone Bridge to reconnect, then retry; otherwise use HID actions.", err),
-			map[string]any{"fallback": "tap Dynamic Island or use HID"})
+			fmt.Sprintf("%v. %s", err, phoneBridgeOpenAppRecoveryGuidance),
+			map[string]any{"fallback": phoneBridgeOpenAppRecoveryGuidance})
 		SetToolError(ctx, te)
 		return toolErrorString(te), nil
 	}

@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLongTermMemoryAddWritesMarkdownAndSearchableIndex(t *testing.T) {
@@ -378,5 +380,175 @@ func TestLongTermMemoryForgetExcludesMemoryFromSearch(t *testing.T) {
 	}
 	if !strings.Contains(string(tombstoneData), "mem_forget_me") || !strings.Contains(string(tombstoneData), "user_request") {
 		t.Fatalf("expected tombstone for forgotten memory, got %s", tombstoneData)
+	}
+}
+
+func TestLongTermMemoryParsedCacheEvictsBeyondCapacity(t *testing.T) {
+	ctx := context.Background()
+	const cap = 4
+	store := NewLongTermMemoryStore(filepath.Join(t.TempDir(), "long_term"), withParsedCacheCapacity(cap))
+
+	const total = cap + 3
+	for i := 0; i < total; i++ {
+		if _, err := store.AddMemory(ctx, MemoryItem{
+			ID:               fmt.Sprintf("mem_cap_%02d", i),
+			Type:             "fact",
+			Priority:         50,
+			Confidence:       0.8,
+			Tags:             []string{fmt.Sprintf("tag_%02d", i)},
+			Title:            fmt.Sprintf("memory %02d", i),
+			Content:          fmt.Sprintf("content body %02d", i),
+			EvidenceExcerpts: []string{fmt.Sprintf("evidence %02d", i)},
+		}); err != nil {
+			t.Fatalf("AddMemory(%d) error = %v", i, err)
+		}
+	}
+
+	// A full match-all search reads every active memory markdown, which would
+	// populate one parsed-cache entry per file without a bound.
+	if _, err := store.Search(ctx, MemoryQuery{Limit: total}); err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+
+	store.cacheMu.Lock()
+	got := store.parsedCache.len()
+	store.cacheMu.Unlock()
+	if got != cap {
+		t.Fatalf("parsed cache size = %d, want %d", got, cap)
+	}
+}
+
+func TestLongTermMemoryParsedCacheDoesNotCacheExpiredEntries(t *testing.T) {
+	ctx := context.Background()
+	store := NewLongTermMemoryStore(filepath.Join(t.TempDir(), "long_term"), withParsedCacheCapacity(1))
+
+	liveID := "a_live"
+	if _, err := store.AddMemory(ctx, MemoryItem{
+		ID:               liveID,
+		Type:             "fact",
+		Priority:         50,
+		Confidence:       0.8,
+		Tags:             []string{"durable"},
+		Title:            "durable memory",
+		Content:          "long lived content",
+		EvidenceExcerpts: []string{"evidence live"},
+	}); err != nil {
+		t.Fatalf("AddMemory(live) error = %v", err)
+	}
+
+	expiredID := "z_expired"
+	if _, err := store.AddMemory(ctx, MemoryItem{
+		ID:               expiredID,
+		Type:             "fact",
+		Priority:         50,
+		Confidence:       0.8,
+		Tags:             []string{"ephemeral"},
+		Title:            "ephemeral memory",
+		Content:          "short lived content",
+		ExpiresAt:        time.Now().UTC().Add(-time.Hour).Format(time.RFC3339Nano),
+		EvidenceExcerpts: []string{"evidence expired"},
+	}); err != nil {
+		t.Fatalf("AddMemory() error = %v", err)
+	}
+
+	if _, err := store.Search(ctx, MemoryQuery{Limit: 5}); err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+
+	store.cacheMu.Lock()
+	hasLive := store.parsedCache.has(store.memoryPath(liveID))
+	hasExpired := store.parsedCache.has(store.memoryPath(expiredID))
+	store.cacheMu.Unlock()
+	if !hasLive {
+		t.Fatal("expected live memory to remain cached")
+	}
+	if hasExpired {
+		t.Fatal("expected expired memory not to be cached")
+	}
+}
+
+func TestLongTermMemoryIndexUpgradeAddsExpiryMetadata(t *testing.T) {
+	ctx := context.Background()
+	store := NewLongTermMemoryStore(filepath.Join(t.TempDir(), "long_term"))
+	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano)
+
+	if _, err := store.AddMemory(ctx, MemoryItem{
+		ID:               "mem_index_upgrade",
+		Type:             "fact",
+		Priority:         50,
+		Confidence:       0.8,
+		Content:          "memory with expiry metadata",
+		ExpiresAt:        expiresAt,
+		EvidenceExcerpts: []string{"evidence"},
+	}); err != nil {
+		t.Fatalf("AddMemory() error = %v", err)
+	}
+
+	if err := store.writeIndex(memoryIndex{
+		Version:   1,
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		Memories: []memoryIndexEntry{{
+			ID:     "mem_index_upgrade",
+			File:   filepath.ToSlash(filepath.Join("memories", "mem_index_upgrade.md")),
+			Type:   "fact",
+			Status: "active",
+		}},
+	}); err != nil {
+		t.Fatalf("writeIndex(v1) error = %v", err)
+	}
+
+	index, err := store.loadIndex(ctx)
+	if err != nil {
+		t.Fatalf("loadIndex() error = %v", err)
+	}
+	if index.Version != memoryIndexVersion {
+		t.Fatalf("index version = %d, want %d", index.Version, memoryIndexVersion)
+	}
+	if len(index.Memories) != 1 || index.Memories[0].ExpiresAt != expiresAt {
+		t.Fatalf("upgraded index missing expiry metadata: %#v", index.Memories)
+	}
+}
+
+func TestLongTermMemoryProfileSkipsExpiredEntries(t *testing.T) {
+	ctx := context.Background()
+	profileCalls := 0
+	rootDir := filepath.Join(t.TempDir(), "long_term")
+	store := NewLongTermMemoryStore(rootDir, WithStoreProfileFn(func(context.Context, []ProfileEntry) string {
+		profileCalls++
+		return "unexpected"
+	}))
+
+	if _, err := store.AddMemory(ctx, MemoryItem{
+		ID:               "mem_expired_profile",
+		Type:             "profile",
+		Priority:         90,
+		Confidence:       0.9,
+		Content:          "expired profile content",
+		ExpiresAt:        time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano),
+		EvidenceExcerpts: []string{"evidence"},
+	}); err != nil {
+		t.Fatalf("AddMemory() error = %v", err)
+	}
+	memoryPath := store.memoryPath("mem_expired_profile")
+	parsed, err := readMemoryMarkdown(memoryPath)
+	if err != nil {
+		t.Fatalf("readMemoryMarkdown() error = %v", err)
+	}
+	parsed.Item.ExpiresAt = time.Now().UTC().Add(-time.Hour).Format(time.RFC3339Nano)
+	if err := writeFileAtomic(memoryPath, []byte(formatMemoryMarkdown(parsed.Item)), 0o644); err != nil {
+		t.Fatalf("expire memory without rebuilding index: %v", err)
+	}
+	profilePath := filepath.Join(rootDir, "profile.md")
+	if err := os.WriteFile(profilePath, []byte("stale expired profile"), 0o644); err != nil {
+		t.Fatalf("write stale profile: %v", err)
+	}
+	if err := store.RegenerateProfileMD(ctx); err != nil {
+		t.Fatalf("RegenerateProfileMD() error = %v", err)
+	}
+	if profileCalls != 0 {
+		t.Fatalf("profile function calls = %d, want 0", profileCalls)
+	}
+	if _, err := os.Stat(profilePath); !os.IsNotExist(err) {
+		t.Fatalf("profile file still exists after all sources expired: %v", err)
 	}
 }
