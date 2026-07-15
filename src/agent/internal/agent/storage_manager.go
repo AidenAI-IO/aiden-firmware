@@ -181,9 +181,23 @@ type StorageManager struct {
 	stop     chan struct{}
 }
 
+// storageEMMCRootEnv overrides the eMMC data root. This is a test hook used
+// by tests/board/test_storage_migration.sh to point the watermark migrator
+// at a small loop-mounted filesystem instead of the real 3 GB /userdata;
+// production deployments never set it.
+const storageEMMCRootEnv = "AIDEN_STORAGE_EMMC_ROOT"
+
 // NewStorageManager builds a manager with real platform operations.
 func NewStorageManager(cfg StorageConfig, logger *Logger) *StorageManager {
-	return newStorageManagerWithOps(cfg, &realStorageOps{device: cfg.DeviceOrDefault()}, defaultStorageStatePath, "/userdata", logger)
+	emmcRoot := "/userdata"
+	if override := strings.TrimSpace(os.Getenv(storageEMMCRootEnv)); override != "" {
+		emmcRoot = override
+		if logger != nil {
+			logger.Warn("[storage] %s=%s overrides the eMMC data root (test hook; unset it for production use)",
+				storageEMMCRootEnv, override)
+		}
+	}
+	return newStorageManagerWithOps(cfg, &realStorageOps{device: cfg.DeviceOrDefault()}, defaultStorageStatePath, emmcRoot, logger)
 }
 
 func newStorageManagerWithOps(cfg StorageConfig, ops storageSysOps, statePath, emmcRoot string, logger *Logger) *StorageManager {

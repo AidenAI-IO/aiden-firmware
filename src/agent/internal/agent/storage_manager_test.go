@@ -679,6 +679,21 @@ func TestStorageManagerCleanupRoots(t *testing.T) {
 	}
 }
 
+func TestNewStorageManagerEMMCRootEnvOverride(t *testing.T) {
+	m := NewStorageManager(StorageConfig{}, nil)
+	m.Stop()
+	if m.emmcRoot != "/userdata" {
+		t.Fatalf("default emmc root = %q, want /userdata", m.emmcRoot)
+	}
+
+	t.Setenv(storageEMMCRootEnv, "/tmp/stmig/emmc")
+	m = NewStorageManager(StorageConfig{}, nil)
+	m.Stop()
+	if m.emmcRoot != "/tmp/stmig/emmc" {
+		t.Fatalf("overridden emmc root = %q, want /tmp/stmig/emmc", m.emmcRoot)
+	}
+}
+
 func TestBuildMBRSector(t *testing.T) {
 	const totalSectors = 62333952 // ~29.7 GiB card
 	sector, err := buildMBRSector(totalSectors, 0x0C)
