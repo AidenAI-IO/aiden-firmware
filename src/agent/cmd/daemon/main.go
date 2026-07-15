@@ -121,6 +121,9 @@ func main() {
 	} else if wrote {
 		log.Printf("[ota] health marker written")
 	}
+	if err := runtime.PrimeScreenMappingOnStartup(context.Background()); err != nil {
+		log.Printf("[init] screen mapping prime failed: %v", err)
+	}
 
 	inputMode := cfg.InputModeOrDefault()
 

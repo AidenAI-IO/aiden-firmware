@@ -165,6 +165,7 @@ func (t *WaitStableScreenTool) captureScreenshot() (screenshotResult, error) {
 	if meta.PixelFormat != "jpeg" {
 		return screenshotResult{}, fmt.Errorf("expected jpeg format, got %s", meta.PixelFormat)
 	}
+	touchscreenRCALogf("wait_stable.captureScreenshot frame meta=%s capture_backend=%q mapping_before={%s}", formatTouchscreenRCAMetadata(meta), captureInfo.Backend, formatTouchscreenRCAScreenMapping(t.screen))
 	active := screenActiveArea{}
 	sourceWidth := int(meta.Width)
 	sourceHeight := int(meta.Height)
@@ -177,6 +178,16 @@ func (t *WaitStableScreenTool) captureScreenshot() (screenshotResult, error) {
 	} else {
 		active = detectScreenshotActiveAreaForScreen(t.screen, jpegData, int(meta.Width), int(meta.Height))
 	}
+	touchscreenRCALogf(
+		"wait_stable.captureScreenshot resolved active_area source=%dx%d active=%s already_cropped=%v jpeg_dimensions=%dx%d mapping_before_update={%s}",
+		sourceWidth,
+		sourceHeight,
+		formatTouchscreenRCAActiveArea(active),
+		alreadyCropped,
+		meta.Width,
+		meta.Height,
+		formatTouchscreenRCAScreenMapping(t.screen),
+	)
 	if t.screen != nil {
 		t.screen.UpdateActiveArea(sourceWidth, sourceHeight, active)
 	}
@@ -200,6 +211,14 @@ func (t *WaitStableScreenTool) captureScreenshot() (screenshotResult, error) {
 		Data:   base64.StdEncoding.EncodeToString(displayData),
 	}
 	applyScreenCaptureInfo(&result, captureInfo)
+	touchscreenRCALogf(
+		"wait_stable.captureScreenshot result display=%dx%d size=%d capture_backend=%q mapping_after={%s}",
+		displayWidth,
+		displayHeight,
+		len(displayData),
+		result.CaptureBackend,
+		formatTouchscreenRCAScreenMapping(t.screen),
+	)
 	return result, nil
 }
 
@@ -231,14 +250,22 @@ func (t *WaitStableScreenTool) wait(ctx context.Context, input string) (waitStab
 	if diffThreshold <= 0 {
 		diffThreshold = resolvedDefaults.DiffThreshold
 	}
+	touchscreenRCALogf(
+		"wait_stable.wait start timeout_ms=%d stable_ms=%d diff_threshold=%.3f mapping_before={%s}",
+		timeout.Milliseconds(),
+		stableFor.Milliseconds(),
+		diffThreshold,
+		formatTouchscreenRCAScreenMapping(t.screen),
+	)
 
 	start := time.Now()
 	deadline := start.Add(timeout)
 
-	prevMeta, prevFrame, _, err := t.client.LatestFrame()
+	prevMeta, prevFrame, prevCaptureInfo, err := t.client.LatestFrame()
 	if err != nil {
 		return waitStableScreenResult{}, err
 	}
+	touchscreenRCALogf("wait_stable.wait initial frame meta=%s capture_backend=%q", formatTouchscreenRCAMetadata(prevMeta), prevCaptureInfo.Backend)
 	prevRGB, err := convertFrameToRGB(prevMeta, prevFrame)
 	if err != nil {
 		return waitStableScreenResult{}, err
@@ -251,23 +278,27 @@ func (t *WaitStableScreenTool) wait(ctx context.Context, input string) (waitStab
 	for {
 		now := time.Now()
 		if now.Sub(stableSince) >= stableFor {
-			return waitStableScreenResult{
+			result := waitStableScreenResult{
 				OK:            true,
 				Stable:        true,
 				ElapsedMs:     now.Sub(start).Milliseconds(),
 				ScreenChanged: waitStableBoolPtr(screenChanged),
 				LastDiff:      lastDiff,
-			}, nil
+			}
+			touchscreenRCALogf("wait_stable.wait completed stable=%v elapsed_ms=%d screen_changed=%v last_diff=%s mapping_after_wait={%s}", result.Stable, result.ElapsedMs, screenChanged, formatTouchscreenRCAFloatPtr(lastDiff), formatTouchscreenRCAScreenMapping(t.screen))
+			return result, nil
 		}
 		if !now.Before(deadline) {
 			stable := now.Sub(stableSince) >= stableFor
-			return waitStableScreenResult{
+			result := waitStableScreenResult{
 				OK:            true,
 				Stable:        stable,
 				ElapsedMs:     now.Sub(start).Milliseconds(),
 				ScreenChanged: waitStableBoolPtr(screenChanged),
 				LastDiff:      lastDiff,
-			}, nil
+			}
+			touchscreenRCALogf("wait_stable.wait timeout stable=%v elapsed_ms=%d screen_changed=%v last_diff=%s mapping_after_wait={%s}", result.Stable, result.ElapsedMs, screenChanged, formatTouchscreenRCAFloatPtr(lastDiff), formatTouchscreenRCAScreenMapping(t.screen))
+			return result, nil
 		}
 
 		wait := stableWaitPollInterval
@@ -280,16 +311,18 @@ func (t *WaitStableScreenTool) wait(ctx context.Context, input string) (waitStab
 			}
 		}
 
-		meta, frame, _, err := t.client.LatestFrame()
+		meta, frame, captureInfo, err := t.client.LatestFrame()
 		if err != nil {
 			return waitStableScreenResult{}, err
 		}
 		if meta.Stale || meta.Seq <= prevSeq {
+			touchscreenRCALogf("wait_stable.wait skipped frame meta=%s capture_backend=%q prev_seq=%d", formatTouchscreenRCAMetadata(meta), captureInfo.Backend, prevSeq)
 			continue
 		}
 
 		rgb, err := convertFrameToRGB(meta, frame)
 		if err != nil {
+			touchscreenRCALogf("wait_stable.wait convert error meta=%s capture_backend=%q err=%v", formatTouchscreenRCAMetadata(meta), captureInfo.Backend, err)
 			screenChanged = true
 			prevSeq = meta.Seq
 			stableSince = time.Now()
@@ -304,6 +337,15 @@ func (t *WaitStableScreenTool) wait(ctx context.Context, input string) (waitStab
 		if diff > diffThreshold {
 			stableSince = time.Now()
 		}
+		touchscreenRCALogf(
+			"wait_stable.wait frame meta=%s capture_backend=%q diff=%.3f threshold=%.3f screen_changed=%v stable_for_ms=%d",
+			formatTouchscreenRCAMetadata(meta),
+			captureInfo.Backend,
+			diff,
+			diffThreshold,
+			screenChanged,
+			time.Since(stableSince).Milliseconds(),
+		)
 		prevMeta = meta
 		prevRGB = rgb
 		prevSeq = meta.Seq
