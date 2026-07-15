@@ -627,6 +627,32 @@ func (pb *PhoneBridge) statusUpdated() {
 	} else {
 		pb.stateManager.DeleteState("app_platform")
 	}
+
+	if strategy := phoneBridgeTextEntryState(status); strategy != "" {
+		pb.stateManager.SetState("app_text_entry_strategy", strategy)
+	} else {
+		pb.stateManager.DeleteState("app_text_entry_strategy")
+	}
+}
+
+func phoneBridgeTextEntryState(status PhoneBridgeStatus) string {
+	platform := strings.ToLower(strings.TrimSpace(status.Platform))
+	if platform != "ios" && platform != "android" {
+		return ""
+	}
+	if phoneBridgeCanUsePiPBackground(status, "clipboard_write") || phoneBridgeCanUseFGSBackground(status, "clipboard_write") {
+		return "target_preserving_bridge: for non-search CJK/non-ASCII or final composer text use enter_text_via_bridge (enter_text_in_field may auto-route); it owns clipboard write, verified paste, and long-press Paste fallback; set send_after_commit=true when the user asked to send/reply/message"
+	}
+	if phoneBridgePiPBackgroundEnabled(status) || phoneBridgeFGSBackgroundEnabled(status) {
+		return "ime_fallback: background Bridge mode is reported but its poll state is stale; use enter_text_in_field until a fresh target-preserving clipboard route appears"
+	}
+	if phoneBridgeReadyForCommand(status) {
+		return "bridge_connected: use enter_text_via_bridge for long/multiline or final CJK/non-ASCII composer text; use enter_text_in_field for search/contact lookup"
+	}
+	if phoneBridgeCanRestoreFromReturnEntry(status) {
+		return "bridge_restore_available: prefer enter_text_in_field for short input; use enter_text_via_bridge only when long/non-ASCII final composer text justifies restoring Aiden"
+	}
+	return "ime_fallback: no usable Phone Bridge clipboard route; use enter_text_in_field"
 }
 
 func (pb *PhoneBridge) getStatus() PhoneBridgeStatus {

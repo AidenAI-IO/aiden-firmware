@@ -24,7 +24,7 @@ func (t *EnterTextInFieldTool) Name() string { return "enter_text_in_field" }
 func (t *EnterTextInFieldTool) Description() string {
 	return `Enter text into a focused input field with automatic strategy selection and verification. ` +
 		`Prefer this over keyboard_text for any input field entry; keyboard_text is ASCII-only and has no field verification. ` +
-		`Use this for search fields, contact names, short text when no target-preserving Phone Bridge clipboard path is available, and normal IME/pinyin entry. When runtime Phone Bridge status reports a usable target-preserving clipboard path, prefer enter_text_via_bridge for final CJK or other non-ASCII chat/message composer text with send_after_commit=true; it owns clipboard write and paste, so do not stage bridge_clipboard manually. ` +
+		`Use this for search fields, contact lookup, short text when no target-preserving Phone Bridge clipboard path is available, and normal IME/pinyin entry. When runtime Phone Bridge status reports a usable target-preserving clipboard path, non-search CJK or other non-ASCII text is automatically routed through enter_text_via_bridge for clipboard write and verified paste. For a user request to send, reply, or message from an already-open composer, set send_after_commit=true. ` +
 		`Returns committed:true only when the exact target text is fully committed in the input field. Report success only when committed:true and field_text matches target exactly. ` +
 		`Focus coordinates use the same coord_space system as touch/click tools; prefer normalized coordinates from the latest screenshot.`
 }
@@ -37,7 +37,7 @@ func (t *EnterTextInFieldTool) ArgsSchema() map[string]any {
 		"focus":             focusPointArgSchema("Input field coordinates."),
 		"segments":          stringArrayArgSchema("IME romanization syllables for CJK (e.g. [\"ni\",\"hao\"] for 你好). Pass [] for pure ASCII text."),
 		"max_attempts":      integerArgSchema("Retry attempts on verify failure (default 3)."),
-		"send_after_commit": boolArgSchema("After the exact target text is verified in the field, press send/submit and verify the input cleared or changed. Set true only when the target chat/composer is already open."),
+		"send_after_commit": boolArgSchema("After the exact target text is verified in the field, press send/submit and verify the input cleared or changed. Set true when the user asked to send, reply, or message and the target chat/composer is already open."),
 	}, "text", "focus", "segments")
 }
 
@@ -144,18 +144,21 @@ func (t *EnterTextInFieldTool) shouldPreferBridgeClipboard(args enterTextInField
 		return false
 	}
 	text := strings.TrimSpace(args.Text)
-	if text == "" || !textShouldPreferBridgeClipboard(text, args.SendAfterCommit) {
+	if text == "" || !textShouldPreferBridgeClipboard(text) {
 		return false
 	}
 	return t.bridgeTool.canUseClipboardFirst(platform, text)
 }
 
-func textShouldPreferBridgeClipboard(text string, sendAfterCommit bool) bool {
+func textShouldPreferBridgeClipboard(text string) bool {
+	if needsCompositionInput(text) {
+		return true
+	}
 	if strings.ContainsAny(text, "\r\n\t") {
 		return true
 	}
 	if len([]rune(strings.TrimSpace(text))) >= 24 {
 		return true
 	}
-	return sendAfterCommit && needsCompositionInput(text)
+	return false
 }

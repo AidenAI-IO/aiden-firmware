@@ -197,6 +197,7 @@ func (pb *PhoneBridge) noteHTTPPollState(platform, phoneID, appState, pipBridgeE
 		pb.fgsBridgeAt = now
 	}
 	pb.mu.Unlock()
+	pb.statusUpdated()
 }
 
 func parseOptionalBoolQuery(value string) (bool, bool) {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -216,7 +217,8 @@ func TestHTTPPollCommands(t *testing.T) {
 }
 
 func TestHTTPPollCommandsRecordsAndroidFGSBridgeState(t *testing.T) {
-	bridge := NewPhoneBridge(nil, statemanager.NewStateManager())
+	stateManager := statemanager.NewStateManager()
+	bridge := NewPhoneBridge(nil, stateManager)
 	defer bridge.queue.Stop()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/phone-bridge/commands?platform=android&phone_id=android-abc&app_state=background&fgs_bridge_enabled=true", nil)
@@ -242,6 +244,30 @@ func TestHTTPPollCommandsRecordsAndroidFGSBridgeState(t *testing.T) {
 	}
 	if status.FgsBridgeUpdatedAt == nil {
 		t.Fatal("fgs_bridge_updated_at is nil")
+	}
+	strategy := stateManager.GetState("app_text_entry_strategy")
+	if !strings.Contains(strategy, "target_preserving_bridge") || !strings.Contains(strategy, "long-press Paste fallback") {
+		t.Fatalf("app_text_entry_strategy = %q, want fresh target-preserving guidance", strategy)
+	}
+}
+
+func TestHTTPPollCommandsRecordsIOSPiPTextEntryStrategy(t *testing.T) {
+	stateManager := statemanager.NewStateManager()
+	bridge := NewPhoneBridge(nil, stateManager)
+	defer bridge.queue.Stop()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/phone-bridge/commands?platform=ios&phone_id=ios-abc&app_state=background&pip_bridge_enabled=true", nil)
+	w := httptest.NewRecorder()
+	bridge.handlePollCommands(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, w.Code, w.Body.String())
+	}
+	strategy := stateManager.GetState("app_text_entry_strategy")
+	for _, want := range []string{"target_preserving_bridge", "non-search CJK/non-ASCII", "send_after_commit=true"} {
+		if !strings.Contains(strategy, want) {
+			t.Fatalf("app_text_entry_strategy missing %q: %q", want, strategy)
+		}
 	}
 }
 

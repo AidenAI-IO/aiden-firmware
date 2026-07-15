@@ -25,8 +25,10 @@ func TestEnterTextViaBridgeDescriptionDocumentsChatClipboardPath(t *testing.T) {
 		"iOS PiP queue",
 		"Android connected/FGS bridge",
 		"do not call bridge_clipboard first",
+		"long-pressing the field",
+		"Paste/粘贴",
 		"search terms",
-		"contact names",
+		"contact lookup",
 	} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q:\n%s", want, desc)
@@ -584,6 +586,70 @@ func TestEnterTextViaBridgeFallsBackToKeyboardPasteWhenQuickActionFails(t *testi
 	}
 	if len(keyboardTap.calls) != 1 || !strings.Contains(keyboardTap.calls[0], `"meta"`) || !strings.Contains(keyboardTap.calls[0], `"v"`) {
 		t.Fatalf("keyboard_tap calls=%v", keyboardTap.calls)
+	}
+}
+
+func TestEnterTextViaBridgeFallsBackToLongPressPasteMenuWhenShortcutHasNoEffect(t *testing.T) {
+	message := "中午吃食堂是不是"
+	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
+		ObservedMode: textInputModeComposition,
+		FieldText:    "",
+	}, {
+		ObservedMode: textInputModeComposition,
+		FieldText:    message,
+	}}}
+	pb := newTestPhoneBridge(t)
+	pb.NoteClipboardWrite(message)
+	pb.platform = "ios"
+	pb.appState = "background"
+	pb.appStateAt = time.Now()
+	keyboardTap := &recordingTextInputTool{name: "keyboard_tap", out: "ok"}
+	quick := &recordingTextInputTool{name: "quick_action", out: `{"ok":true}`}
+	touch := &recordingTextInputTool{name: "touch_gesture", out: "ok"}
+	tool := &EnterTextViaBridgeTool{
+		hw: &textInputHardwareDeps{
+			mouseClick:   &recordingTextInputTool{name: "mouse_click", out: "ok"},
+			touchGesture: touch,
+			keyboardTap:  keyboardTap,
+			keyboardText: &recordingTextInputTool{name: "keyboard_text", out: "ok"},
+			quickAction:  quick,
+			screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+		},
+		vision:   vision,
+		bridgeFn: func() *PhoneBridge { return pb },
+		sleep:    testNoWaitSleep,
+		findPasteMenuFn: func(context.Context, screenshotResult, string) (pasteMenuResult, error) {
+			return pasteMenuResult{
+				Found:    true,
+				TapPoint: focusPointArgs{X: 430, Y: 720, CoordSpace: "normalized"},
+				Label:    "粘贴",
+			}, nil
+		},
+	}
+
+	out, err := tool.Call(context.Background(), `{"text":"`+message+`","platform":"ios","focus":{"x":300,"y":940,"coord_space":"normalized"}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"committed": true`,
+		"shortcut paste had no visible effect",
+		"long-pressed focused field",
+		`context menu action \"粘贴\"`,
+		"context-menu-pasted clipboard",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("unexpected output, missing %q: %s", want, out)
+		}
+	}
+	if len(quick.calls) != 1 {
+		t.Fatalf("quick_action calls=%v, want one shortcut attempt", quick.calls)
+	}
+	if len(keyboardTap.calls) != 0 {
+		t.Fatalf("keyboard_tap calls=%v, want no keyboard fallback after quick_action returned ok", keyboardTap.calls)
+	}
+	if len(touch.calls) != 2 || !strings.Contains(touch.calls[0], `"type": "long_press"`) || !strings.Contains(touch.calls[1], `"type": "tap"`) {
+		t.Fatalf("touch_gesture calls=%v, want long_press then paste-menu tap", touch.calls)
 	}
 }
 

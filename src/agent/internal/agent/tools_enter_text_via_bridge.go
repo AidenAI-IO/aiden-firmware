@@ -13,11 +13,13 @@ const (
 	textViaBridgePollInterval   = 200 * time.Millisecond
 	textViaBridgePostWriteDelay = 2 * time.Second
 	textViaBridgePostPasteDelay = 350 * time.Millisecond
+	textViaBridgeMenuDelay      = 450 * time.Millisecond
 	textViaBridgePostSendDelay  = 800 * time.Millisecond
 	textViaBridgeOpenAttempts   = 2
 	textViaBridgePasteAttempts  = 2
 	textViaBridgeRecentsSwipes  = 3
 	preparedClipboardMaxAge     = 5 * time.Minute
+	textViaBridgeLongPressMS    = 900
 )
 
 type bridgeSearchResult struct {
@@ -32,6 +34,12 @@ type bridgeAppOpenResult struct {
 }
 
 type previousAppCardResult struct {
+	Found    bool           `json:"found"`
+	TapPoint focusPointArgs `json:"tap_point"`
+	Label    string         `json:"label,omitempty"`
+}
+
+type pasteMenuResult struct {
 	Found    bool           `json:"found"`
 	TapPoint focusPointArgs `json:"tap_point"`
 	Label    string         `json:"label,omitempty"`
@@ -57,6 +65,7 @@ type EnterTextViaBridgeTool struct {
 	findAppTapFn     func(context.Context, screenshotResult, string) (bridgeSearchResult, error)
 	confirmAppOpenFn func(context.Context, screenshotResult, string) (bridgeAppOpenResult, error)
 	findPrevAppFn    func(context.Context, screenshotResult) (previousAppCardResult, error)
+	findPasteMenuFn  func(context.Context, screenshotResult, string) (pasteMenuResult, error)
 	platformFn       func() string
 	sleep            func(context.Context, time.Duration) error
 }
@@ -72,7 +81,7 @@ func (t *EnterTextViaBridgeTool) Name() string { return "enter_text_via_bridge" 
 func (t *EnterTextViaBridgeTool) Description() string {
 	return `Use the Phone Bridge clipboard path to place known text into an input field, then focus, paste, and verify. ` +
 		`Use this for final chat/message composer text when runtime Phone Bridge status reports a usable clipboard route, especially for long, multiline, CJK, or other non-ASCII text. Target-preserving routes such as a prepared clipboard, iOS PiP queue, or Android connected/FGS bridge are suitable even for short replies. ` +
-		`It writes the clipboard itself when needed, so do not call bridge_clipboard first as a staging step. If Bridge would need app restoration or is unavailable, prefer enter_text_in_field for short search terms, contact names, and normal IME/pinyin entry. ` +
+		`It writes the clipboard itself when needed, so do not call bridge_clipboard first as a staging step. It verifies whether shortcut paste actually changed the field and falls back to long-pressing the field and tapping the visible Paste/粘贴 menu action when needed. If Bridge would need app restoration or is unavailable, prefer enter_text_in_field for short search terms, contact lookup, and normal IME/pinyin entry. ` +
 		`Returns committed:true only when the exact target text is verified in the field; when send_after_commit=true, ok=true also requires send_verified:true.`
 }
 
@@ -81,7 +90,7 @@ func (t *EnterTextViaBridgeTool) ArgsSchema() map[string]any {
 		"text":              stringArgSchema("Exact text that must appear in the field when done."),
 		"platform":          stringEnumArgSchema("Target platform.", "ios", "android", "mac"),
 		"focus":             focusPointArgSchema("Input field coordinates."),
-		"send_after_commit": boolArgSchema("After field text is verified, press the platform send/submit key and verify the target text is no longer still present in the input field. Set true only after the target chat/composer is already open."),
+		"send_after_commit": boolArgSchema("After field text is verified, press the platform send/submit key and verify the target text is no longer still present in the input field. Set true when the user asked to send, reply, or message and the target chat/composer is already open."),
 	}, "text", "focus")
 }
 
@@ -371,14 +380,39 @@ func (t *EnterTextViaBridgeTool) focusPasteVerify(ctx context.Context, engine *t
 			return result
 		}
 		result.Steps = append(result.Steps, fmt.Sprintf("clipboard-first: focused field (attempt %d)", attempt))
-		pasteMethod, fallbackReason, err := t.pasteClipboard(ctx, platform)
-		if err != nil {
-			result.Steps = append(result.Steps, "clipboard-first paste failed")
-			result.Err = err
-			return result
-		}
-		if fallbackReason != "" {
-			result.Steps = append(result.Steps, "clipboard-first: quick_action paste failed, used keyboard fallback: "+fallbackReason)
+		pasteMethod := ""
+		if attempt == 1 {
+			var fallbackReason string
+			var err error
+			pasteMethod, fallbackReason, err = t.pasteClipboard(ctx, platform)
+			if fallbackReason != "" && err == nil {
+				result.Steps = append(result.Steps, "clipboard-first: quick_action paste failed, used keyboard fallback: "+fallbackReason)
+			}
+			if err != nil {
+				result.Steps = append(result.Steps, "clipboard-first: shortcut paste failed, trying long-press context menu: "+err.Error())
+				var menuSteps []string
+				var calls int
+				pasteMethod, calls, menuSteps, err = t.pasteViaContextMenu(ctx, engine, platform, args.Focus)
+				result.VLMCalls += calls
+				result.Steps = append(result.Steps, menuSteps...)
+				if err != nil {
+					result.Steps = append(result.Steps, "clipboard-first paste failed")
+					result.Err = err
+					return result
+				}
+			}
+		} else {
+			var menuSteps []string
+			var calls int
+			var err error
+			pasteMethod, calls, menuSteps, err = t.pasteViaContextMenu(ctx, engine, platform, args.Focus)
+			result.VLMCalls += calls
+			result.Steps = append(result.Steps, menuSteps...)
+			if err != nil {
+				result.Steps = append(result.Steps, "clipboard-first context-menu paste failed")
+				result.Err = err
+				return result
+			}
 		}
 		result.Steps = append(result.Steps, fmt.Sprintf("clipboard-first: %s-pasted clipboard (attempt %d)", pasteMethod, attempt))
 		if err := t.sleepAfterPaste(ctx); err != nil {
@@ -413,9 +447,100 @@ func (t *EnterTextViaBridgeTool) focusPasteVerify(ctx context.Context, engine *t
 				result.Steps = append(result.Steps, "clipboard-first: not retrying paste because field already contains unverified text")
 				return result
 			}
+			if attempt == 1 {
+				result.Steps = append(result.Steps, "clipboard-first: shortcut paste had no visible effect; trying long-press Paste menu")
+			}
 		}
 	}
 	return result
+}
+
+func (t *EnterTextViaBridgeTool) pasteViaContextMenu(ctx context.Context, engine *textInputEngine, platform string, focus focusPointArgs) (method string, vlmCalls int, steps []string, err error) {
+	if t == nil || t.hw == nil || t.hw.touchGesture == nil {
+		return "", 0, steps, fmt.Errorf("touch_gesture is not configured for long-press paste fallback")
+	}
+	coordSpace := strings.TrimSpace(focus.CoordSpace)
+	if coordSpace == "" {
+		coordSpace = "normalized"
+	}
+	_, err = callTextInputTool(ctx, t.hw.touchGesture, jsonString(map[string]any{
+		"type":        "long_press",
+		"point":       map[string]any{"x": focus.X, "y": focus.Y},
+		"coord_space": coordSpace,
+		"hold_ms":     textViaBridgeLongPressMS,
+	}))
+	if err != nil {
+		return "", 0, steps, fmt.Errorf("long-press focused field: %w", err)
+	}
+	steps = append(steps, "clipboard-first: long-pressed focused field to open paste menu")
+	if err := t.sleepAfterMenuOpen(ctx); err != nil {
+		return "", 0, steps, err
+	}
+	shot, err := engine.captureScreenshot(ctx)
+	if err != nil {
+		return "", 0, steps, err
+	}
+	menu, calls, err := t.findPasteMenuAction(ctx, shot, platform)
+	vlmCalls += calls
+	if err != nil {
+		return "", vlmCalls, steps, err
+	}
+	if !menu.Found {
+		return "", vlmCalls, steps, fmt.Errorf("Paste/粘贴 menu action was not visible after long press")
+	}
+	if _, err := callTextInputTool(ctx, t.hw.touchGesture, jsonString(map[string]any{
+		"type":        "tap",
+		"point":       map[string]any{"x": menu.TapPoint.X, "y": menu.TapPoint.Y},
+		"coord_space": menu.TapPoint.CoordSpace,
+	})); err != nil {
+		return "", vlmCalls, steps, fmt.Errorf("tap paste menu action: %w", err)
+	}
+	label := strings.TrimSpace(menu.Label)
+	if label == "" {
+		label = "Paste/粘贴"
+	}
+	steps = append(steps, fmt.Sprintf("clipboard-first: tapped context menu action %q", label))
+	return "context-menu", vlmCalls, steps, nil
+}
+
+func (t *EnterTextViaBridgeTool) findPasteMenuAction(ctx context.Context, shot screenshotResult, platform string) (pasteMenuResult, int, error) {
+	if t != nil && t.findPasteMenuFn != nil {
+		result, err := t.findPasteMenuFn(ctx, shot, platform)
+		if strings.TrimSpace(result.TapPoint.CoordSpace) == "" {
+			result.TapPoint.CoordSpace = "normalized"
+		}
+		return result, 0, err
+	}
+	modelVision, ok := t.vision.(*llmTextInputVision)
+	if !ok || modelVision == nil {
+		return pasteMenuResult{}, 0, fmt.Errorf("paste menu vision is not configured")
+	}
+	prompt := strings.TrimSpace(fmt.Sprintf(`Analyze this %s device screenshot after a long press inside a focused text field.
+Find the visible system context-menu action that pastes the clipboard into that field. The label may be Paste, 粘贴, or another localized equivalent.
+Return JSON only:
+{
+  "found": true,
+  "tap_point": {"x": 500, "y": 700, "coord_space": "normalized"},
+  "label": "Paste"
+}
+
+Rules:
+- Return found=true only when a visible paste action is clearly tappable.
+- Prefer the plain Paste/粘贴 action over unrelated actions such as Select, Look Up, Share, or Autofill.
+- tap_point must be centered inside the visible paste action using normalized 0-1000 coordinates.
+- If no paste action is visible, return {"found": false, "tap_point": {"x": 0, "y": 0, "coord_space": "normalized"}}.`, platform))
+	raw, err := modelVision.visionJSON(ctx, prompt, shot)
+	if err != nil {
+		return pasteMenuResult{}, 1, err
+	}
+	var result pasteMenuResult
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		return pasteMenuResult{}, 1, fmt.Errorf("parse paste menu action: %w", err)
+	}
+	if strings.TrimSpace(result.TapPoint.CoordSpace) == "" {
+		result.TapPoint.CoordSpace = "normalized"
+	}
+	return result, 1, nil
 }
 
 func (t *EnterTextViaBridgeTool) keyboardPaste(ctx context.Context, platform string) error {
@@ -679,6 +804,14 @@ func (t *EnterTextViaBridgeTool) sleepAfterPaste(ctx context.Context) error {
 		sleep = t.sleep
 	}
 	return sleep(ctx, textViaBridgePostPasteDelay)
+}
+
+func (t *EnterTextViaBridgeTool) sleepAfterMenuOpen(ctx context.Context) error {
+	sleep := sleepWithContext
+	if t != nil && t.sleep != nil {
+		sleep = t.sleep
+	}
+	return sleep(ctx, textViaBridgeMenuDelay)
 }
 
 func (t *EnterTextViaBridgeTool) sleepAfterSend(ctx context.Context) error {
