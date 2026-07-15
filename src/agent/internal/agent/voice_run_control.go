@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -164,9 +165,28 @@ func (c *voiceRunControl) resumeInterrupt() (string, bool) {
 func (c *voiceRunControl) consumePending(requestID string) (RunSteerMessage, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if requestID == "" || c.activeRequestID != requestID || !c.acceptingSteer || !c.hasPendingSteer {
+	if requestID == "" {
 		return RunSteerMessage{}, false
 	}
+	if c.activeRequestID != requestID {
+		return RunSteerMessage{}, false
+	}
+
+	// Check interrupt steer first (interrupted scenario takes priority)
+	if c.interrupt.active && c.interrupt.done && c.interrupt.hasText {
+		steer := c.interrupt.steer
+		c.resetInterruptLocked()
+		// Clear any stale pending steer to prevent old instruction from executing after new one
+		c.clearPendingLocked()
+		log.Printf("[steer] consumePending: interrupt steer consumed (length=%d)\n", len(steer.Content))
+		return steer, true
+	}
+
+	// Then check pending steer (normal scenario)
+	if !c.hasPendingSteer {
+		return RunSteerMessage{}, false
+	}
+	log.Printf("[steer] consumePending: pending steer consumed (length=%d)\n", len(c.pendingSteer.Content))
 	return c.consumePendingLocked()
 }
 

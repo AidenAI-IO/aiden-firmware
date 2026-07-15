@@ -187,6 +187,40 @@ These fields apply to the `stt` input mode.
 The model pointed to by `vad_model_path` must first be converted from the Silero ONNX to RV1106 RKNN on a PC using `silero-vad/convert_silero_vad_to_rknn.py`, then placed at the corresponding path on the device. The CPU backend requires `silero_vad_6_2_lstm_decoder_weights.bin` to include the Conv1d encoder extension, which can be generated from the TorchScript file shipped with the repo using `silero-vad/export_silero_vad_v6_2_weights.py`.
 When `vad_helper_path` is still the built-in default, switching `vad_backend` automatically switches the helper; only when set to a custom path does it run that custom path.
 
+## `[termination_policy]`
+
+The termination policy prevents stalled runs from looping indefinitely. These
+fields can be edited directly in `agent.toml`; omitted or zero-valued numeric
+fields use the defaults below.
+
+```toml
+[termination_policy]
+enabled = true
+max_seconds = 0
+repeat_action_limit = 3
+same_result_limit = 3
+screen_unchanged_limit = 5
+soft_notice_stall_score = 2
+restrict_tools_stall_score = 4
+terminate_stall_score = 6
+parse_failure_limit = 3
+```
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `enabled` | `true` | Enable tiered loop detection and graceful termination |
+| `max_seconds` | `0` | Wall-clock budget per instruction; `0` disables the time budget, and a consumed steer starts a fresh budget |
+| `repeat_action_limit` | `3` | Stop after this many identical tool calls with identical results |
+| `same_result_limit` | `3` | Number of repeated identical results considered stalled |
+| `screen_unchanged_limit` | `5` | Stop after this many UI actions without a screen change |
+| `soft_notice_stall_score` | `2` | Stall score that injects a one-shot strategy-change notice |
+| `restrict_tools_stall_score` | `4` | Stall score that temporarily blocks repeated UI action tools |
+| `terminate_stall_score` | `6` | Stall score that ends the run gracefully |
+| `parse_failure_limit` | `3` | Stop after this many consecutive unparseable model outputs |
+
+The three stall-score thresholds must satisfy
+`soft_notice_stall_score < restrict_tools_stall_score < terminate_stall_score`.
+
 ## `[model]`
 
 | Field | Description |

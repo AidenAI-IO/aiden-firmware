@@ -61,6 +61,16 @@ type AppendMessageHookResult struct {
 	After   []Message
 }
 
+type appendMessageHookEntry struct {
+	ID   uint64
+	Hook AppendMessageHook
+}
+
+type transientMessageEntry struct {
+	ID      uint64
+	Message Message
+}
+
 type ToolCall struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
@@ -87,7 +97,10 @@ type Attachment struct {
 type ContextManager struct {
 	sessionID       string
 	messageList     []Message
-	appendHooks     []AppendMessageHook
+	appendHooks     []appendMessageHookEntry
+	transient       []transientMessageEntry
+	nextHookID      uint64
+	nextTransientID uint64
 	attachmentStore *attachmentStore
 	mu              sync.RWMutex
 	sessionFolder   string
@@ -181,14 +194,14 @@ func (c *ContextManager) appendToList(messages []Message) error {
 
 func (c *ContextManager) AppendMessage(message Message) error {
 	c.mu.RLock()
-	hooks := append([]AppendMessageHook(nil), c.appendHooks...)
+	hooks := append([]appendMessageHookEntry(nil), c.appendHooks...)
 	c.mu.RUnlock()
 
 	messages := []Message{cloneMessage(message)}
-	for _, hook := range hooks {
+	for _, entry := range hooks {
 		var next []Message
 		for _, current := range messages {
-			result := hook(cloneMessage(current))
+			result := entry.Hook(cloneMessage(current))
 			next = append(next, cloneMessages(result.Before)...)
 			if result.Message != nil {
 				next = append(next, cloneMessage(*result.Message))
@@ -205,6 +218,69 @@ func (c *ContextManager) AppendMessage(message Message) error {
 	return c.appendToList(messages)
 }
 
+// AppendTransientMessage adds a one-shot message to the next model prompt
+// without writing it to the session. The returned function discards it if it
+// has not been consumed yet.
+func (c *ContextManager) AppendTransientMessage(message Message) func() {
+	if c == nil {
+		return func() {}
+	}
+	c.mu.Lock()
+	c.nextTransientID++
+	id := c.nextTransientID
+	c.transient = append(c.transient, transientMessageEntry{ID: id, Message: cloneMessage(message)})
+	c.mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			c.removeTransientMessage(id)
+		})
+	}
+}
+
+func (c *ContextManager) removeTransientMessage(id uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	kept := c.transient[:0]
+	for _, entry := range c.transient {
+		if entry.ID != id {
+			kept = append(kept, entry)
+		}
+	}
+	c.transient = kept
+}
+
+func (c *ContextManager) AddAppendMessageHook(hook AppendMessageHook) func() {
+	if hook == nil {
+		return func() {}
+	}
+	c.mu.Lock()
+	c.nextHookID++
+	id := c.nextHookID
+	c.appendHooks = append(c.appendHooks, appendMessageHookEntry{ID: id, Hook: hook})
+	c.mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			c.removeAppendMessageHook(id)
+		})
+	}
+}
+
+func (c *ContextManager) removeAppendMessageHook(id uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i, entry := range c.appendHooks {
+		if entry.ID != id {
+			continue
+		}
+		c.appendHooks = append(c.appendHooks[:i], c.appendHooks[i+1:]...)
+		break
+	}
+}
+
 func (c *ContextManager) AddAppendMessageHooks(hooks []AppendMessageHook) {
 	if len(hooks) == 0 {
 		return
@@ -212,7 +288,13 @@ func (c *ContextManager) AddAppendMessageHooks(hooks []AppendMessageHook) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	log.Println("[CM] Adding append message hooks", len(hooks))
-	c.appendHooks = append(c.appendHooks, hooks...)
+	for _, hook := range hooks {
+		if hook == nil {
+			continue
+		}
+		c.nextHookID++
+		c.appendHooks = append(c.appendHooks, appendMessageHookEntry{ID: c.nextHookID, Hook: hook})
+	}
 }
 
 func (c *ContextManager) IsEmpty() bool {
@@ -275,9 +357,27 @@ func cloneMessage(msg Message) Message {
 
 func (c *ContextManager) ConvertToStandardMessageList() []llms.MessageContent {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-	standardMessageList := make([]llms.MessageContent, len(c.messageList))
-	for i, message := range c.messageList {
+	messages := cloneMessages(c.messageList)
+	c.mu.RUnlock()
+	return convertToStandardMessageList(messages)
+}
+
+// TakeStandardMessageListForModel returns persisted context plus one-shot
+// transient messages and clears the transient messages atomically.
+func (c *ContextManager) TakeStandardMessageListForModel() []llms.MessageContent {
+	c.mu.Lock()
+	messages := cloneMessages(c.messageList)
+	for _, entry := range c.transient {
+		messages = append(messages, cloneMessage(entry.Message))
+	}
+	c.transient = nil
+	c.mu.Unlock()
+	return convertToStandardMessageList(messages)
+}
+
+func convertToStandardMessageList(messages []Message) []llms.MessageContent {
+	standardMessageList := make([]llms.MessageContent, len(messages))
+	for i, message := range messages {
 		newMessage := llms.MessageContent{
 			Role:  message.Role.ToStandardRole(),
 			Parts: []llms.ContentPart{},

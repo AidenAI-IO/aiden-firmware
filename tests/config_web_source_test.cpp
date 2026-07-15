@@ -1357,6 +1357,21 @@ TEST_CASE("config web exposes telemetry settings section") {
     CHECK(html.find("<textarea id=\\\"telemetry_tags\\\"") != std::string::npos);
 }
 
+TEST_CASE("config web keeps termination policy settings internal") {
+    const std::string html_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web_html.h";
+    std::ifstream html_in(html_path.c_str());
+    REQUIRE(html_in.good());
+
+    std::ostringstream html_buffer;
+    html_buffer << html_in.rdbuf();
+    const std::string html = html_buffer.str();
+
+    CHECK(html.find("section-termination_policy") == std::string::npos);
+    CHECK(html.find("termination_policy_enabled") == std::string::npos);
+    CHECK(html.find("enterEditSection('termination_policy')") == std::string::npos);
+    CHECK(html.find("save-termination_policy") == std::string::npos);
+}
+
 TEST_CASE("config web does not expose benchmark settings section") {
     const std::string source_path = std::string(AIDEN_SOURCE_DIR) + "/src/config_web.cpp";
     std::ifstream source_in(source_path.c_str());
