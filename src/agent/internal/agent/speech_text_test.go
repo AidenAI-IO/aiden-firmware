@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -208,6 +209,51 @@ func TestSpeechStreamWriterKeepsUTF8BoundaryWhenHoldingEndTagSuffix(t *testing.T
 	}
 	if got != "上海现在天气晴朗，气温35.8度。" {
 		t.Fatalf("streamed speech = %q", got)
+	}
+}
+
+func TestValidUTF8PrefixLenOnlyTruncatesIncompleteTrailingRune(t *testing.T) {
+	tests := []struct {
+		name string
+		buf  []byte
+		n    int
+		want int
+	}{
+		{name: "ascii", buf: []byte("hello"), n: 5, want: 5},
+		{name: "complete multibyte", buf: []byte("好"), n: len([]byte("好")), want: len([]byte("好"))},
+		{name: "incomplete multibyte suffix", buf: []byte{'a', 0xe4, 0xb8}, n: 3, want: 1},
+		{name: "incomplete lead byte suffix", buf: []byte{'a', 0xe4}, n: 2, want: 1},
+		{name: "invalid byte passes through", buf: []byte{'a', 0xff}, n: 2, want: 2},
+		{name: "invalid continuation passes through", buf: []byte{'a', 0x80}, n: 2, want: 2},
+		{name: "invalid middle byte passes through", buf: []byte{'a', 0xff, 'b'}, n: 3, want: 3},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := validUTF8PrefixLen(tt.buf, tt.n); got != tt.want {
+				t.Fatalf("validUTF8PrefixLen(%v, %d) = %d, want %d", tt.buf, tt.n, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSpeechStreamWriterDoesNotStallOnInvalidUTF8Byte(t *testing.T) {
+	var sink bytes.Buffer
+	writer := NewSpeechStreamWriter(&sink)
+
+	if _, err := writer.Write([]byte{'<', 't', 't', 's', '>', 'a', 'b', 0xff, 'c', 'd', 'e', 'f'}); err != nil {
+		t.Fatalf("Write(first) error = %v", err)
+	}
+	if _, err := writer.Write([]byte("ghijk")); err != nil {
+		t.Fatalf("Write(second) error = %v", err)
+	}
+
+	got := sink.Bytes()
+	if !bytes.Contains(got, []byte{0xff}) {
+		t.Fatalf("streamed speech %v does not contain invalid byte", got)
+	}
+	if len(got) <= 2 {
+		t.Fatalf("streamed speech stalled after valid prefix: %v", got)
 	}
 }
 

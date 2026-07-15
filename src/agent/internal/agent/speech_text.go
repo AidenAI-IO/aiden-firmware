@@ -288,8 +288,23 @@ func validUTF8PrefixLen(buf []byte, n int) int {
 	if n > len(buf) {
 		n = len(buf)
 	}
-	for n > 0 && !utf8.Valid(buf[:n]) {
-		n--
+	if n <= 0 {
+		return n
+	}
+
+	start := n - 1
+	lower := n - utf8.UTFMax
+	if lower < 0 {
+		lower = 0
+	}
+	for start >= lower && !utf8.RuneStart(buf[start]) {
+		start--
+	}
+	if start < lower {
+		return n
+	}
+	if !utf8.FullRune(buf[start:n]) {
+		return start
 	}
 	return n
 }
