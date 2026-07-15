@@ -333,6 +333,7 @@ func (s *session) Abort() error {
 		if err := s.sink.Stop(); err != nil {
 			s.recordErr(fmt.Errorf("abort stop: %w", err))
 		}
+
 		s.writeMu.Lock()
 		if s.conn != nil {
 			if err := s.conn.Close(); err != nil {
@@ -341,6 +342,9 @@ func (s *session) Abort() error {
 			s.conn = nil
 		}
 		s.writeMu.Unlock()
+
+		// Wait for reader to exit (will error out on closed connection)
+		<-s.readDone
 	})
 	return s.Err()
 }

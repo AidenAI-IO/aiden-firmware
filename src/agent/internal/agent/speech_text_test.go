@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bytes"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -223,9 +222,13 @@ func TestValidUTF8PrefixLenOnlyTruncatesIncompleteTrailingRune(t *testing.T) {
 		{name: "complete multibyte", buf: []byte("好"), n: len([]byte("好")), want: len([]byte("好"))},
 		{name: "incomplete multibyte suffix", buf: []byte{'a', 0xe4, 0xb8}, n: 3, want: 1},
 		{name: "incomplete lead byte suffix", buf: []byte{'a', 0xe4}, n: 2, want: 1},
-		{name: "invalid byte passes through", buf: []byte{'a', 0xff}, n: 2, want: 2},
-		{name: "invalid continuation passes through", buf: []byte{'a', 0x80}, n: 2, want: 2},
-		{name: "invalid middle byte passes through", buf: []byte{'a', 0xff, 'b'}, n: 3, want: 3},
+		{name: "invalid byte in middle filtered out", buf: []byte{'a', 0xff}, n: 2, want: 1},
+		{name: "invalid continuation filtered out", buf: []byte{'a', 0x80}, n: 2, want: 1},
+		{name: "invalid middle byte filtered out", buf: []byte{'a', 0xff, 'b'}, n: 3, want: 1},
+		{name: "multiple consecutive invalid bytes", buf: []byte{'a', 0xff, 0xfe, 0xfd}, n: 4, want: 1},
+		{name: "incomplete 3-byte sequence", buf: []byte("hello世"), n: len([]byte("hello")) + 2, want: len([]byte("hello"))},
+		{name: "incomplete 4-byte sequence", buf: []byte{0xf0, 0x9f, 0x98}, n: 3, want: 0},
+		{name: "all invalid returns zero", buf: []byte{0xff, 0xfe, 0xfd}, n: 3, want: 0},
 	}
 
 	for _, tt := range tests {
@@ -237,23 +240,32 @@ func TestValidUTF8PrefixLenOnlyTruncatesIncompleteTrailingRune(t *testing.T) {
 	}
 }
 
-func TestSpeechStreamWriterDoesNotStallOnInvalidUTF8Byte(t *testing.T) {
-	var sink bytes.Buffer
+func TestSpeechStreamWriterFiltersInvalidUTF8BeforeStreaming(t *testing.T) {
+	var sink validatingSpeechChunkSink
 	writer := NewSpeechStreamWriter(&sink)
 
+	// Write chunk with invalid UTF-8 byte in the middle
 	if _, err := writer.Write([]byte{'<', 't', 't', 's', '>', 'a', 'b', 0xff, 'c', 'd', 'e', 'f'}); err != nil {
 		t.Fatalf("Write(first) error = %v", err)
 	}
-	if _, err := writer.Write([]byte("ghijk")); err != nil {
+	// Write second chunk that should trigger emission of the first valid prefix
+	if _, err := writer.Write([]byte("ghijk</tts>")); err != nil {
 		t.Fatalf("Write(second) error = %v", err)
 	}
 
-	got := sink.Bytes()
-	if !bytes.Contains(got, []byte{0xff}) {
-		t.Fatalf("streamed speech %v does not contain invalid byte", got)
+	// All streamed chunks must be valid UTF-8
+	if len(sink.invalid) != 0 {
+		t.Fatalf("streamed speech contains invalid UTF-8 chunks: %q", sink.invalid)
 	}
-	if len(got) <= 2 {
-		t.Fatalf("streamed speech stalled after valid prefix: %v", got)
+
+	// The invalid byte should be filtered out, but valid content should flow through
+	got := sink.String()
+	if !utf8.ValidString(got) {
+		t.Fatalf("final streamed speech is not valid UTF-8: %q", got)
+	}
+	// Should contain the valid prefix before the invalid byte
+	if !strings.Contains(got, "ab") {
+		t.Fatalf("streamed speech missing valid prefix: %q", got)
 	}
 }
 

@@ -196,3 +196,43 @@ func (noopSink) Format() AudioFormat         { return AudioFormat{} }
 func (noopSink) WritePCM([]byte) error       { return nil }
 func (noopSink) Drain(context.Context) error { return nil }
 func (noopSink) Stop() error                 { return nil }
+
+func TestTrackedSessionAbortAndCloseShareCloseOnce(t *testing.T) {
+	provider := &blockingProvider{name: "test", started: make(chan *blockingSession, 1)}
+	holder := NewProviderHolder(provider)
+
+	session, err := holder.BeginStream(context.Background(), noopSink{})
+	if err != nil {
+		t.Fatalf("BeginStream() error = %v", err)
+	}
+	started := waitForBlockingSession(t, provider.started)
+
+	aborter, ok := session.(interface{ Abort() error })
+	if !ok {
+		t.Fatal("tracked session does not expose Abort")
+	}
+
+	// Call both Abort and Close concurrently
+	done := make(chan error, 2)
+	go func() { done <- aborter.Abort() }()
+	go func() { done <- session.Close() }()
+
+	// Both should return without error
+	for i := 0; i < 2; i++ {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("concurrent call %d returned error: %v", i, err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("concurrent call did not return")
+		}
+	}
+
+	// Exactly one of Abort or Close should have been called on the underlying session
+	totalCalls := started.abortCalls + started.closeCalls
+	if totalCalls != 1 {
+		t.Fatalf("underlying session got %d abort+close calls, want 1 (abort=%d, close=%d)",
+			totalCalls, started.abortCalls, started.closeCalls)
+	}
+}
