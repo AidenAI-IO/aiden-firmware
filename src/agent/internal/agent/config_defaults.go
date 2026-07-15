@@ -33,11 +33,10 @@ const (
 	defaultAudioArchiveMaxSizeMB   = 100
 	defaultLLMHTTPLogRetentionDays = 7
 	defaultKeyboardDevice          = "/dev/hidg0"
-	// The pure Magic Keyboard POC uses hidg1-2 for Apple vendor reports.
+	// The pure generic keyboard experiment intentionally exposes no pointer.
 	defaultMouseDevice = "/dev/hidg9"
-	// The Magic Keyboard + ECM POC consumes hidg2-3 with Apple vendor reports.
-	// Keep extension/media-key writes away from those interfaces.
-	defaultAndroidKeyboardDevice   = "/dev/hidg4"
+	// The pure generic keyboard experiment exposes no extension/media interface.
+	defaultAndroidKeyboardDevice   = "/dev/hidg9"
 	defaultFrameServiceSocket      = "/run/frame_service/frame_service.sock"
 	defaultPointerMode             = "absolute"
 	defaultInputMode               = "text"

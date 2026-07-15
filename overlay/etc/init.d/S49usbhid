@@ -1,10 +1,11 @@
 #!/bin/sh
 #
-# Pure Apple Magic Keyboard compatibility POC.
+# Pure generic USB boot keyboard control experiment.
 #
-# This temporary profile intentionally exposes only the three HID interfaces
-# captured from a real 05ac:0267 Magic Keyboard. Pointer, media-key, and CDC
-# ECM functions are omitted so iOS sees the same HID-only device topology.
+# This temporary profile intentionally exposes exactly one standards-based HID
+# keyboard. Pointer, media-key, Apple vendor HID, and CDC ECM functions are
+# omitted so it can be compared with the pure Magic Keyboard profile while
+# preserving Full Speed and a single clean UDC bind.
 #
 
 GADGET_DIR=/sys/kernel/config/usb_gadget/aiden_hid
@@ -29,7 +30,7 @@ cleanup_gadget() {
 }
 
 start() {
-	echo "Setting up pure Magic Keyboard HID gadget..."
+	echo "Setting up pure generic HID keyboard gadget..."
 
 	USB_MODE=$(cat "$USB_MODE_PATH" 2>/dev/null)
 	if [ "$USB_MODE" != "peripheral" ]; then
@@ -56,64 +57,42 @@ start() {
 	cleanup_gadget
 
 	mkdir -p "$GADGET_DIR"
-	echo 0x05ac > "$GADGET_DIR/idVendor"
-	echo 0x0267 > "$GADGET_DIR/idProduct"
-	echo 0x0870 > "$GADGET_DIR/bcdDevice"
+	echo 0x1d6b > "$GADGET_DIR/idVendor"
+	echo 0x0104 > "$GADGET_DIR/idProduct"
+	echo 0x0100 > "$GADGET_DIR/bcdDevice"
 	echo 0x0200 > "$GADGET_DIR/bcdUSB"
 	echo full-speed > "$GADGET_DIR/max_speed"
 
-	# Real Magic Keyboard is a per-interface-class HID device, not an IAD/CDC
-	# composite device.
+	# Use per-interface class identification for a single generic HID keyboard.
 	echo 0x00 > "$GADGET_DIR/bDeviceClass"
 	echo 0x00 > "$GADGET_DIR/bDeviceSubClass"
 	echo 0x00 > "$GADGET_DIR/bDeviceProtocol"
 
 	mkdir -p "$GADGET_DIR/strings/0x409"
-	echo "AIDENAPPLEPOC0001" > "$GADGET_DIR/strings/0x409/serialnumber"
-	echo "Apple Inc." > "$GADGET_DIR/strings/0x409/manufacturer"
-	echo "Magic Keyboard" > "$GADGET_DIR/strings/0x409/product"
+	echo "AIDENGENERICHID0001" > "$GADGET_DIR/strings/0x409/serialnumber"
+	echo "Aiden" > "$GADGET_DIR/strings/0x409/manufacturer"
+	echo "Aiden Generic Keyboard" > "$GADGET_DIR/strings/0x409/product"
 
 	mkdir -p "$GADGET_DIR/configs/c.1/strings/0x409"
-	echo "Magic Keyboard" > "$GADGET_DIR/configs/c.1/strings/0x409/configuration"
+	echo "Generic HID Keyboard" > "$GADGET_DIR/configs/c.1/strings/0x409/configuration"
 	echo 500 > "$GADGET_DIR/configs/c.1/MaxPower"
 
-	# Create the keyboard function first so it remains /dev/hidg0 for Agent
-	# writes. It is linked third below to match the real USB interface order.
+	# Standard 8-byte USB boot keyboard report:
+	# [modifier, reserved, key1, key2, key3, key4, key5, key6].
 	mkdir -p "$GADGET_DIR/functions/hid.usb0"
-	echo 0 > "$GADGET_DIR/functions/hid.usb0/protocol"
-	echo 0 > "$GADGET_DIR/functions/hid.usb0/subclass"
+	echo 1 > "$GADGET_DIR/functions/hid.usb0/protocol"
+	echo 1 > "$GADGET_DIR/functions/hid.usb0/subclass"
 	echo 1 > "$GADGET_DIR/functions/hid.usb0/no_out_endpoint"
-	echo 65 > "$GADGET_DIR/functions/hid.usb0/report_length"
-	printf '\x05\x01\x09\x06\xa1\x01\x85\x01\x05\x07\x19\xe0\x29\xe7\x15\x00\x25\x01\x75\x01\x95\x08\x81\x02\x95\x01\x75\x08\x81\x01\x95\x05\x75\x01\x05\x08\x19\x01\x29\x05\x91\x02\x95\x01\x75\x03\x91\x01\x95\x06\x75\x08\x15\x00\x26\xff\x00\x05\x07\x19\x00\x29\xff\x81\x00\x05\x0c\x75\x01\x95\x01\x09\xb8\x15\x00\x25\x01\x81\x02\x05\xff\x09\x03\x75\x07\x95\x01\x81\x02\xc0\x05\x0c\x09\x01\xa1\x01\x85\x52\x15\x00\x25\x01\x75\x01\x95\x01\x09\xcd\x81\x02\x09\xb3\x81\x02\x09\xb4\x81\x02\x09\xb5\x81\x02\x09\xb6\x81\x02\x81\x01\x81\x01\x81\x01\x85\x09\x15\x00\x25\x01\x75\x08\x95\x01\x06\x01\xff\x09\x0b\xb1\x02\x75\x08\x95\x02\xb1\x01\xc0\x06\x00\xff\x09\x06\xa1\x01\x06\x00\xff\x09\x06\x15\x00\x26\xff\x00\x75\x08\x95\x40\x85\x3f\x81\x22\xc0' \
+	echo 8 > "$GADGET_DIR/functions/hid.usb0/report_length"
+	printf '\x05\x01\x09\x06\xa1\x01\x05\x07\x19\xe0\x29\xe7\x15\x00\x25\x01\x75\x01\x95\x08\x81\x02\x95\x01\x75\x08\x81\x01\x95\x06\x75\x08\x15\x00\x25\x65\x05\x07\x19\x00\x29\x65\x81\x00\xc0' \
 		> "$GADGET_DIR/functions/hid.usb0/report_desc"
 
-	# Apple vendor-defined interface 0 (report ID 0xc0).
-	mkdir -p "$GADGET_DIR/functions/hid.usb1"
-	echo 0 > "$GADGET_DIR/functions/hid.usb1/protocol"
-	echo 0 > "$GADGET_DIR/functions/hid.usb1/subclass"
-	echo 1 > "$GADGET_DIR/functions/hid.usb1/no_out_endpoint"
-	echo 109 > "$GADGET_DIR/functions/hid.usb1/report_length"
-	printf '\x06\x00\xff\x09\x03\xa1\x01\x06\x00\xff\x09\x03\x15\x00\x26\xff\x00\x85\xc0\x96\x6b\x00\x75\x08\x81\x02\xc0' \
-		> "$GADGET_DIR/functions/hid.usb1/report_desc"
-
-	# Apple vendor-defined interface 1 (report IDs 0xe0, 0x9a, and 0x90).
-	mkdir -p "$GADGET_DIR/functions/hid.usb2"
-	echo 0 > "$GADGET_DIR/functions/hid.usb2/protocol"
-	echo 0 > "$GADGET_DIR/functions/hid.usb2/subclass"
-	echo 1 > "$GADGET_DIR/functions/hid.usb2/no_out_endpoint"
-	echo 5 > "$GADGET_DIR/functions/hid.usb2/report_length"
-	printf '\x06\x00\xff\x09\x0b\xa1\x01\x06\x00\xff\x09\x0b\x15\x00\x26\xff\x00\x75\x08\x96\x04\x00\x85\xe0\x81\x22\x09\x0b\x96\x01\x00\x85\x9a\x81\x22\xc0\x06\x00\xff\x09\x14\xa1\x01\x85\x90\x05\x84\x75\x01\x95\x03\x15\x00\x25\x01\x09\x61\x05\x85\x09\x44\x09\x46\x81\x02\x95\x05\x81\x01\x75\x08\x95\x01\x15\x00\x26\xff\x00\x09\x65\x81\x02\xc0' \
-		> "$GADGET_DIR/functions/hid.usb2/report_desc"
-
-	# Match the real 05ac:0267 interface order: vendor 0, vendor 1, keyboard.
-	ln -s "$GADGET_DIR/functions/hid.usb1" "$GADGET_DIR/configs/c.1/hid.usb1"
-	ln -s "$GADGET_DIR/functions/hid.usb2" "$GADGET_DIR/configs/c.1/hid.usb2"
 	ln -s "$GADGET_DIR/functions/hid.usb0" "$GADGET_DIR/configs/c.1/hid.usb0"
 
 	# Bind exactly once. A second automatic re-enumeration would invalidate the
 	# clean first-attach handshake this experiment is intended to observe.
 	echo "$UDC" > "$GADGET_DIR/UDC"
-	echo "Pure Magic Keyboard ready: /dev/hidg0 keyboard, /dev/hidg1-2 Apple vendor HID, no pointer, no ECM"
+	echo "Pure generic keyboard ready: /dev/hidg0 keyboard only, no pointer, no ECM"
 }
 
 stop() {

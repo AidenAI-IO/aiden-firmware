@@ -97,12 +97,6 @@ const (
 	// keyboardModifierTapHoldMs keeps modifier chords pressed long enough for
 	// macOS/iOS hosts to register shortcuts like Cmd+Q.
 	keyboardModifierTapHoldMs = 120
-
-	// The experimental USB gadget profile mirrors the 05ac:0267 Magic Keyboard
-	// descriptor. Its keyboard collection uses report ID 1 and a 10-byte input
-	// report: [id, modifier, reserved, key1..key6, consumer/vendor bits].
-	magicKeyboardReportID     = 0x01
-	magicKeyboardReportLength = 10
 )
 
 var hidKeyboardMap = map[string]uint8{
@@ -891,7 +885,12 @@ func (t *KeyboardTapTool) tapAndroidExtension(key string, usage uint16, holdMs i
 }
 
 func (t *KeyboardTapTool) tapKeyboardChord(modifier uint8, keys []uint8, holdMs int) error {
-	report := newMagicKeyboardReport(modifier, keys)
+	// HID keyboard report: [modifier, reserved, key1..key6]
+	report := make([]byte, 8)
+	report[0] = modifier
+	for i := 0; i < len(keys) && i < 6; i++ {
+		report[2+i] = keys[i]
+	}
 
 	if err := t.dev.Write(report); err != nil {
 		return err
@@ -899,17 +898,7 @@ func (t *KeyboardTapTool) tapKeyboardChord(modifier uint8, keys []uint8, holdMs 
 	if holdMs > 0 {
 		sleepMs(holdMs)
 	}
-	return t.dev.Write(newMagicKeyboardReport(0, nil))
-}
-
-func newMagicKeyboardReport(modifier uint8, keys []uint8) []byte {
-	report := make([]byte, magicKeyboardReportLength)
-	report[0] = magicKeyboardReportID
-	report[1] = modifier
-	for i := 0; i < len(keys) && i < 6; i++ {
-		report[3+i] = keys[i]
-	}
-	return report
+	return t.dev.Write(make([]byte, 8))
 }
 
 // KeyboardTextTool types a string character by character via HID.
@@ -954,13 +943,15 @@ func (t *KeyboardTextTool) Call(ctx context.Context, input string) (string, erro
 		return toolErrorResultString(ctx, CodeInvalidArguments, "keyboard_text received spaced romanization; use enter_text_in_field instead."), nil
 	}
 
-	releaseReport := newMagicKeyboardReport(0, nil)
+	releaseReport := make([]byte, 8)
 	for _, ch := range text {
 		modifier, code, ok := charToHIDKey(byte(ch))
 		if !ok {
 			continue
 		}
-		report := newMagicKeyboardReport(modifier, []uint8{code})
+		report := make([]byte, 8)
+		report[0] = modifier
+		report[2] = code
 		// Press then release immediately, same as keyboard_tap.
 		if err := t.dev.Write(report); err != nil {
 			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil

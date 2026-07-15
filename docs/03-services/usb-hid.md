@@ -25,19 +25,16 @@ This script will:
 
 On the firmware image, `overlay/etc/init.d/S49usbhid` is the authoritative startup path. It also brings up `usb0` at `192.168.42.1` for the config page and local USB networking.
 
-## Pure Magic Keyboard compatibility experiment
+## Pure generic keyboard control experiment
 
-This experimental branch advertises a HID-only Apple Magic Keyboard
-`05ac:0267`. It reproduces the three captured Magic Keyboard HID interfaces in
-the same order and limits the gadget to USB Full Speed. The normal keyboard
-input report is 10 bytes and begins with report ID `0x01`; Agent HID writes in
-this branch use that format.
+This experimental branch advertises a single standards-based USB boot keyboard
+using an 8-byte input report and limits the gadget to USB Full Speed. It binds
+the UDC exactly once during boot.
 
-This profile intentionally uses Apple's USB identity only for internal root
-cause investigation. It is not a production USB identity. Pointer, media-key,
-and CDC ECM functions are disabled so the first-attach handshake can be
-compared directly with a real Magic Keyboard. Board control and screenshots
-therefore require Wi-Fi while this profile is active.
+Pointer, media-key, Apple vendor HID, and CDC ECM functions are disabled. This
+isolates whether the stable shortcut behavior of the pure Magic Keyboard test
+required Apple's identity or only a clean HID-only enumeration. Board control
+and screenshots therefore require Wi-Fi while this profile is active.
 
 ## example_usb_hid Usage
 

@@ -266,31 +266,28 @@ func readKeyboardReports(t *testing.T, dev *HIDDevice, path string) [][]byte {
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	if len(data)%magicKeyboardReportLength != 0 {
-		t.Fatalf("keyboard report data length = %d, want multiple of %d", len(data), magicKeyboardReportLength)
+	if len(data)%8 != 0 {
+		t.Fatalf("keyboard report data length = %d, want multiple of 8", len(data))
 	}
-	reports := make([][]byte, 0, len(data)/magicKeyboardReportLength)
-	for i := 0; i < len(data); i += magicKeyboardReportLength {
-		reports = append(reports, data[i:i+magicKeyboardReportLength])
+	reports := make([][]byte, 0, len(data)/8)
+	for i := 0; i < len(data); i += 8 {
+		reports = append(reports, data[i:i+8])
 	}
 	return reports
 }
 
 func assertKeyboardReport(t *testing.T, report []byte, modifier, key uint8, label string) {
 	t.Helper()
-	if report[0] != magicKeyboardReportID || report[1] != modifier || report[3] != key {
+	if report[0] != modifier || report[2] != key {
 		t.Fatalf("%s report = %v, want modifier 0x%02x key 0x%02x", label, report, modifier, key)
 	}
 }
 
 func assertReleaseReport(t *testing.T, report []byte, label string) {
 	t.Helper()
-	if report[0] != magicKeyboardReportID {
-		t.Fatalf("%s report ID = 0x%02x, want 0x%02x", label, report[0], magicKeyboardReportID)
-	}
-	for _, b := range report[1:] {
+	for _, b := range report {
 		if b != 0 {
-			t.Fatalf("%s = %v, want report ID followed by zeros", label, report)
+			t.Fatalf("%s = %v, want all zeros", label, report)
 		}
 	}
 }
@@ -314,11 +311,11 @@ func TestQuickActionDeleteBackwardUsesBackspace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	if len(data) != magicKeyboardReportLength*2 {
-		t.Fatalf("report bytes = %d, want %d (backspace + release)", len(data), magicKeyboardReportLength*2)
+	if len(data) != 16 {
+		t.Fatalf("report bytes = %d, want 16 (backspace + release)", len(data))
 	}
-	if data[3] != hidKeyboardMap["backspace"] {
-		t.Fatalf("delete_backward key = 0x%02x, want backspace 0x%02x", data[3], hidKeyboardMap["backspace"])
+	if data[2] != hidKeyboardMap["backspace"] {
+		t.Fatalf("delete_backward key = 0x%02x, want backspace 0x%02x", data[2], hidKeyboardMap["backspace"])
 	}
 }
 
