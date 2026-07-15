@@ -4728,7 +4728,9 @@ func TestRuntimePreemptHooksAreCalled(t *testing.T) {
 	})
 
 	// Start first run.
+	firstDone := make(chan struct{})
 	go func() {
+		defer close(firstDone)
 		runtime.Run(context.Background(), RunRequest{Input: "first"})
 	}()
 
@@ -4743,5 +4745,12 @@ func TestRuntimePreemptHooksAreCalled(t *testing.T) {
 
 	if hookCalled.Load() == 0 {
 		t.Fatal("preempt hook was not called")
+	}
+
+	// Wait for first run to complete.
+	select {
+	case <-firstDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first run did not complete")
 	}
 }

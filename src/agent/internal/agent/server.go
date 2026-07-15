@@ -880,7 +880,20 @@ func (s *Server) abortWebRecording() {
 	if s.logger != nil {
 		s.logger.Info("[preempt] Aborting web audio recording")
 	}
-	_ = s.audioClient.StopRecording(recording.sessionID)
+
+	// Close STT session if present to avoid resource leak.
+	recording.mu.Lock()
+	sttSession := recording.sttSession
+	recording.sttSession = nil
+	recording.mu.Unlock()
+	if sttSession != nil {
+		_ = sttSession.Close()
+	}
+
+	// Stop the audio recording session.
+	if err := s.audioClient.StopRecording(recording.sessionID); err != nil && s.logger != nil {
+		s.logger.Warn("[preempt] StopRecording failed: %v", err)
+	}
 }
 
 func (s *Server) setPendingSteer(requestID, content string) (pendingSteerMessage, bool) {
