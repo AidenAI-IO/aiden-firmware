@@ -1,62 +1,68 @@
 # ADB Android Environment Bridge
 
-通过 adb 控制 Android 模拟器（Genymotion）或真机，并向 benchmark 暴露与
-MobileGym bridge **完全兼容的 HTTP 协议**。Aiden Go agent 不感知设备实现，仍然只用
-`--environment-bridge-mode` 转发工具调用。
+Controls an Android emulator (Genymotion) or a physical device through adb, and
+exposes an HTTP protocol to the benchmark that is **fully compatible with the
+MobileGym bridge**. The Aiden Go agent is unaware of the device implementation —
+it still only uses `--environment-bridge-mode` to forward tool calls.
 
 ```text
-benchmark/runner (测试编排)
+benchmark/runner (test orchestration)
   ↓ /api/chat
 Aiden Go Daemon (environment-bridge mode)
-  ↓ POST /api/tools/{tool}         ← 工具调用（screenshot / touch_gesture / ...）
-ADB Android Bridge (本模块, 本地 Python 进程)
+  ↓ POST /api/tools/{tool}         ← tool calls (screenshot / touch_gesture / ...)
+ADB Android Bridge (this module, local Python process)
   ↓ adb -s <serial> shell input ...
-Android 模拟器 / 真机
+Android emulator / physical device
 ```
 
-与 MobileGym 的差异：MobileGym 跑在 Docker 里、支持多环境并发；ADB bridge 是**本地进程 +
-单设备**（`/api/concurrent` 恒为 1），不需要 Docker。
+Differences from MobileGym: MobileGym runs in Docker and supports multiple
+concurrent environments; the ADB bridge is a **local process driving a single
+device** (`/api/concurrent` is always 1) and needs no Docker.
 
-## 前置条件
+## Prerequisites
 
-1. **adb 可用**：`adb` 在 PATH 中（或用 `--adb-path` 指定），`adb devices` 能看到目标设备：
+1. **adb available**: `adb` on `PATH` (or pass `--adb-path`), and `adb devices`
+   shows the target device:
 
    ```text
    $ adb devices
    List of devices attached
-   127.0.0.1:6555	device        # Genymotion（默认值）
-   emulator-5554	device        # 官方 AVD 是这个名字
-   XXXXXXXX	device            # USB 真机
+   127.0.0.1:6555	device        # Genymotion (default)
+   emulator-5554	device        # this is what an official AVD looks like
+   XXXXXXXX	device            # a USB physical device
    ```
 
-   ⚠️ 默认 serial 是 Genymotion 的 `127.0.0.1:6555`。用 AVD 或真机必须显式传
-   `--adb-serial <serial>`（或设置环境变量 `ANDROID_SERIAL`）。
+   ⚠️ The default serial is Genymotion's `127.0.0.1:6555`. For an AVD or a
+   physical device you must pass `--adb-serial <serial>` explicitly (or set the
+   `ANDROID_SERIAL` environment variable).
 
-2. **Python 依赖**：在 `benchmark/` 目录用 `uv` 运行即可（Pillow 用于截图压缩，已在
-   `pyproject.toml` 依赖中）。
+2. **Python dependencies**: just run under `uv` from the `benchmark/` directory
+   (Pillow is used for screenshot compression and is already in
+   `pyproject.toml`).
 
-3. **agent 配置**：Go daemon 需要你自己的配置目录（LLM provider 与 API key），参考
-   `benchmark/config/agent.toml.template`。仓库不含任何密钥。
+3. **agent config**: the Go daemon needs your own config directory (LLM provider
+   and API key); see `benchmark/config/agent.toml.template`. The repo contains no
+   secrets.
 
-## 快速开始
+## Quick start
 
-### 方式 1：CLI（推荐）
+### Option 1: CLI (recommended)
 
 ```bash
 cd benchmark
 
-# 1. 启动 bridge（后台进程，输出 environment_url 等信息）
+# 1. Start the bridge (background process; prints environment_url and more)
 uv run python -m runner start-adb-android-env \
   --adb-serial 127.0.0.1:6555 \
   --bridge-port 8899
 
-# 2. 启动 agent daemon（Docker 容器，自动构建镜像）
+# 2. Start the agent daemon (Docker container; builds the image automatically)
 uv run python -m runner start-agent-daemon \
   --environment-bridge-endpoint http://127.0.0.1:8899
 
-# 3. 运行 benchmark（--agent-url / token 参数以第 2 步输出为准）
-#    上面这条会启用 judge——需先 export OPENROUTER_API_KEY，详见「判分」一节。
-#    只想验证链路、不判分时，追加 --no-judge。
+# 3. Run the benchmark (take --agent-url / token from step 2's output).
+#    This command enables the judge — export OPENROUTER_API_KEY first;
+#    see the "Judging" section. Append --no-judge to only exercise the pipeline.
 uv run python -m runner run \
   --suite suites/adb_android_basic.json \
   --agent-url http://127.0.0.1:<agent-port> \
@@ -65,50 +71,55 @@ uv run python -m runner run \
   -v
 ```
 
-停止 bridge：用第 1 步输出里的 `stop_command`（`kill -TERM <pid>`）。
+Stop the bridge with the `stop_command` (`kill -TERM <pid>`) printed by step 1.
 
-### 方式 2：手动启动（调试 Go daemon 时）
+### Option 2: Manual startup (when debugging the Go daemon)
 
 ```bash
-# 1. 直接启动 bridge 前台进程
+# 1. Start the bridge as a foreground process
 cd benchmark
 uv run python -m adbandroid.scripts.start_bridge \
   --adb-serial 127.0.0.1:6555 \
   --bridge-port 8899
 
-# 2. 本地跑 daemon（注意 daemon 和 runner 必须用同一个 benchmark-task-id）
+# 2. Run the daemon locally (the daemon and the runner must use the SAME benchmark-task-id)
 cd ../src/agent
 go run ./cmd/daemon \
-  -config <你的配置目录> \
+  -config <your config directory> \
   --environment-bridge-mode \
   --environment-bridge-endpoint http://127.0.0.1:8899 \
   --environment-bridge-tools "screenshot,touch_gesture,keyboard_text,keyboard_tap,enter_text_in_field,enter_text_via_bridge,mouse_click,mouse_move,mouse_scroll,quick_action" \
   --benchmark-task-id cli-task
 
-# 3. 运行 benchmark（同方式 1 第 3 步，--benchmark-task-id cli-task）
+# 3. Run the benchmark (same as Option 1 step 3, with --benchmark-task-id cli-task)
 ```
 
-### 方式 3：WebUI
+### Option 3: WebUI
 
 ```bash
 cd benchmark
 uv run python -m runner webui
 ```
 
-浏览器打开后：选择 suite → Run → 环境弹窗切到 **ADB Android** 标签 → 填 serial →
-Start → 选中该环境 → Run。WebUI 负责启动/停止 bridge 进程，重启后能通过
-pidfile + `/health` 探测找回仍在运行的 bridge。
+In the browser: pick a suite → Run → in the environment dialog switch to the
+**ADB Android** tab → fill in the serial → Start → select that environment →
+Run. The WebUI starts/stops the bridge process and, after a restart, can recover
+a still-running bridge via its pidfile + a `/health` probe.
 
-## 判分（judge）
+## Judging
 
-judge 用每个任务的 pre/post 截图 + trace 逐条评 rubric（例如"设置真的打开了吗"、
-"闹钟数对了吗"），走 OpenRouter 兼容接口。judge 模型与被测 agent 模型完全独立
-（agent 模型在 `agent.toml` 里配）。
+The judge scores each task's rubric item by item using the pre/post screenshots
+and the trace (e.g. "did Settings actually open?", "was the alarm count
+correct?"), over an OpenRouter-compatible endpoint. The judge model is
+completely independent of the agent-under-test model (the agent model is set in
+`agent.toml`).
 
-- **`--no-judge`**：不判分，rubric 记 0/N，通过与否只看硬断言（有动作、未超时）。
-  适合先验证链路是否跑通。
-- **启用 judge**（`run` 的默认行为，即不加 `--no-judge`）：必须提供
-  `OPENROUTER_API_KEY`，否则报 `missing env var OPENROUTER_API_KEY`。
+- **`--no-judge`**: no judging; rubrics record 0/N and pass/fail depends only on
+  the hard assertions (an action ran, no timeout). Good for first verifying that
+  the pipeline works end to end.
+- **Judge enabled** (the default for `run`, i.e. without `--no-judge`): you must
+  provide `OPENROUTER_API_KEY`, otherwise it fails with
+  `missing env var OPENROUTER_API_KEY`.
 
 ```bash
 cd benchmark
@@ -123,97 +134,117 @@ uv run python -m runner run \
   -v
 ```
 
-`--judge-model` 可省略（默认 `anthropic/claude-sonnet-4-6`）；想换判分模型时传 OpenRouter 的
-模型名，如 `anthropic/claude-sonnet-4-6`。
+`--judge-model` can be omitted (default `anthropic/claude-sonnet-4-6`); pass an
+OpenRouter model name to use a different judge model.
 
-> 多步任务（时钟数闹钟 / 检查 WiFi / 打开应用抽屉）的正确性只有 judge 能验证，
-> `--no-judge` 下它们的 rubric 恒为 0/N。
+> The correctness of the multi-step tasks (count alarms in Clock / check WiFi /
+> open the app drawer) can only be verified by the judge; under `--no-judge`
+> their rubrics are always 0/N.
 
-### 对已有结果补判分（rejudge）
+### Re-scoring existing results (rejudge)
 
-已用 `--no-judge` 跑完一轮后，pre/post 截图和 trace 都存在 run 目录里，可以**不重跑
-真机**直接补判分：
+After a `--no-judge` run, the pre/post screenshots and the trace are already
+saved in the run directory, so you can re-score **without re-running the
+device**:
 
 ```bash
 export OPENROUTER_API_KEY=sk-or-...
 uv run python -m runner rejudge \
-  --run-dir runs/<那次运行的目录> \
+  --run-dir runs/<that run's directory> \
   --judge-model anthropic/claude-sonnet-4-6
 ```
 
-调 rubric 措辞、或先跑 no-judge 验证链路再补分时，这样省掉一整轮真机操作。
+This saves a full round of device operations when tuning rubric wording, or when
+you ran `--no-judge` first to verify the pipeline and want to score afterward.
 
-## 测试套件
+## Test suite
 
-`benchmark/suites/adb_android_basic.json`，8 个任务：
+`benchmark/suites/adb_android_basic.json`, 8 tasks:
 
-- 基础能力（5）：截图、返回 Home、打开设置、滑动、输入英文文本
-- 多步任务（3，移植自 mobilegym_basic）：打开时钟数闹钟、检查 WiFi 状态、打开应用抽屉
+- Basic capabilities (5): screenshot, go Home, open Settings, swipe, enter
+  English text.
+- Multi-step tasks (3, ported from mobilegym_basic): count alarms in Clock,
+  check WiFi status, open the app drawer.
 
-注意：动作类任务的 `required_tools` 故意留空——daemon 的每个动作工具都自带
-post-action 截图，且 agent 可能用 `quick_action` 或 `touch_gesture` 达成同一目标。
-多步任务的正确性主要靠 judge rubric 评定，`--no-judge` 下硬断言只能验证「有动作且未超时」。
+Note: `required_tools` for the action tasks is intentionally left empty — every
+action tool on the daemon already returns a post-action screenshot, and the
+agent may reach the same outcome with either `quick_action` or `touch_gesture`.
+The correctness of the multi-step tasks is judged mainly by the rubric; under
+`--no-judge` the hard assertions can only check "an action ran and it did not
+time out".
 
-## HTTP 协议
+## HTTP protocol
 
-与 MobileGym bridge 一致（runner 和 Go agent 均按此对接）：
+Consistent with the MobileGym bridge (both the runner and the Go agent integrate
+against this):
 
-| 端点 | 说明 |
+| Endpoint | Description |
 |---|---|
-| `GET /health` | 设备在线返回 200；adb 不可达返回 503 |
-| `GET /api/concurrent` | `{"ok":true,"data":{"concurrent":1,...}}`，单设备恒为 1 |
-| `GET /api/screen` | 当前截图（无需 setup，供 runner 抓 pre/post 截图） |
-| `POST /api/setup` | 复位到主屏 + 建立 episode；按 `benchmark-task-id` 头做单设备占用 |
-| `POST /api/release` | 释放 task id 占用 |
-| `GET /api/tools` | 工具目录 |
-| `POST /api/tools/{tool}` | 工具调用（Go agent 转发入口） |
+| `GET /health` | Returns 200 when the device is online; 503 when adb is unreachable |
+| `GET /api/concurrent` | `{"ok":true,"data":{"concurrent":1,...}}`; always 1 for a single device |
+| `GET /api/screen` | Current screenshot (no setup required; used by the runner for pre/post capture) |
+| `POST /api/setup` | Reset to home + create an episode; single-device ownership keyed on the `benchmark-task-id` header |
+| `POST /api/release` | Release the task id's ownership |
+| `GET /api/tools` | Tool catalog |
+| `POST /api/tools/{tool}` | Tool invocation (the Go agent's forwarding entry point) |
 
-任务路由语义（单设备版，与 MobileGym 单 env 行为对齐）：
+Task-routing semantics (single-device variant, aligned with MobileGym's
+single-env behavior):
 
-- **空 `benchmark-task-id`**：直接落到唯一设备状态，不做占用校验（WebUI 串行模式下
-  daemon 工具调用不带该头，依赖此行为）
-- **带 task id**：首次 setup 占用；同 id 幂等；不同 id 未 release 时返回
-  `429 no_bridge_env_available`
+- **Empty `benchmark-task-id`**: falls straight through to the one device state
+  without an ownership check (the WebUI serial path relies on this, because the
+  daemon's tool calls carry no such header).
+- **With a task id**: the first setup takes ownership; the same id is idempotent;
+  a different id returns `429 no_bridge_env_available` until the owner releases.
 
-## 工具与坐标
+## Tools and coordinates
 
-支持的工具与 MobileGym 相同：`screenshot` `touch_gesture` `keyboard_text` `keyboard_tap`
-`enter_text_in_field` `enter_text_via_bridge` `mouse_click` `mouse_move` `mouse_scroll`
-`quick_action`。
+The tools match MobileGym: `screenshot` `touch_gesture` `keyboard_text`
+`keyboard_tap` `enter_text_in_field` `enter_text_via_bridge` `mouse_click`
+`mouse_move` `mouse_scroll` `quick_action`.
 
-坐标空间（`coord_space`）：
+Coordinate spaces (`coord_space`):
 
-- `normalized`（默认）：0-1000 → 按 `adb shell wm size` 换算为像素（Override 优先）
-- `absolute`：0-32767（HID 空间）→ 像素
-- `auto`：仅接受 0-1000，越界报错（与 MobileGym 一致）
-- `pixel`：ADB bridge 额外支持的真实像素坐标，需显式指定并会 clamp 到屏幕范围
+- `normalized` (default): 0-1000 → converted to pixels via `adb shell wm size`
+  (Override wins over Physical).
+- `absolute`: 0-32767 (HID space) → pixels.
+- `auto`: only accepts 0-1000, errors when out of range (same as MobileGym).
+- `pixel`: real pixel coordinates additionally supported by the ADB bridge; must
+  be requested explicitly and is clamped to the screen bounds.
 
-`quick_action`（`platform=android`）：`back` / `home` / `app_switch` / `send` /
-`open_settings`（`am start -a android.settings.SETTINGS`）/ `notification_center` /
-`control_center` / `dismiss_panel`（`cmd statusbar` 系列，失败自动回退手势）。
-传 `{"list": true}` 可查完整 catalog。
+`quick_action` (`platform=android`): `back` / `home` / `app_switch` / `send` /
+`open_settings` (`am start -a android.settings.SETTINGS`) / `notification_center`
+/ `control_center` / `dismiss_panel` (the `cmd statusbar` family, falling back to
+a gesture on failure). Pass `{"list": true}` to see the full catalog.
 
-## 已知限制
+## Known limitations
 
-- **文本输入仅支持英文**：`adb input text` 无法输入中文/IME 组合文本，非 ASCII 会返回
-  明确错误；文本中的字面 `%s` 会被输成空格（`input text` 的转义约定）。中文输入需要
-  clipboard/IME 方案，暂未实现。
-- **单设备串行**：一个 bridge 只管一台设备，不支持并发任务。多设备需起多个 bridge
-  实例（不同端口 + 不同 serial）。
-- 动作后固定等待 0.6s 再截图（`DEFAULT_ACTION_SETTLE_SEC`），慢速模拟器上个别转场
-  动画可能仍未结束，agent 可再调一次 `screenshot` 确认。
+- **Text input is English-only**: `adb input text` cannot type Chinese/IME
+  composed text; non-ASCII returns an explicit error, and a literal `%s` in the
+  text is typed as a space (the `input text` escaping convention). Chinese input
+  would need a clipboard/IME approach, not yet implemented.
+- **Single-device, serial**: one bridge drives one device and does not support
+  concurrent tasks. For multiple devices run multiple bridge instances (different
+  ports + different serials).
+- **`keyboard_tap` does not support ctrl/alt/shift combos**: adb has no reliable
+  way to inject them, so such combos are rejected with an error rather than
+  silently executing a different key. `hold_ms` is accepted but ignored — adb
+  `input keyevent` cannot hold a key for an arbitrary duration.
+- After an action the bridge waits 0.6s before taking the screenshot
+  (`DEFAULT_ACTION_SETTLE_SEC`); on slow emulators a transition animation may
+  still be in flight, and the agent can call `screenshot` again to confirm.
 
-## 排障
+## Troubleshooting
 
-| 现象 | 原因 / 处理 |
+| Symptom | Cause / fix |
 |---|---|
-| `/health` 返回 503 `device_unavailable` | `adb devices` 确认 serial 正确且状态为 `device`（不是 `offline`/`unauthorized`） |
-| 启动报 `adb binary not found` | adb 不在 PATH，传 `--adb-path /path/to/adb` |
-| 工具调用返回 429 `no_bridge_env_available` | 设备被其他 task id 占用：确认 daemon 与 runner 的 `--benchmark-task-id` 一致，或调 `/api/release` |
-| 工具调用返回 409 `no_active_episode` | 未先调 `/api/setup`（runner 会自动做；手动 curl 调试时需先 setup） |
-| 截图报 Pillow 相关 ImportError | venv 安装损坏，`uv sync --reinstall-package pillow` |
+| `/health` returns 503 `device_unavailable` | Check with `adb devices` that the serial is correct and the state is `device` (not `offline`/`unauthorized`) |
+| Startup reports `adb binary not found` | adb is not on `PATH`; pass `--adb-path /path/to/adb` |
+| A tool call returns 429 `no_bridge_env_available` | The device is owned by another task id: make sure the daemon and the runner use the same `--benchmark-task-id`, or call `/api/release` |
+| A tool call returns 409 `no_active_episode` | `/api/setup` was not called first (the runner does this automatically; when debugging with curl you must setup first) |
+| A screenshot raises a Pillow-related ImportError | The venv install is corrupt; `uv sync --reinstall-package pillow` |
 
-单元测试（无需真机）：
+Unit tests (no real device needed):
 
 ```bash
 cd benchmark
