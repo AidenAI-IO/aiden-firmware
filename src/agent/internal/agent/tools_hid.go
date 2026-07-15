@@ -378,22 +378,30 @@ func (s *screenState) UpdatePhoneScreenInfo(info PhoneScreenInfo) {
 	if s == nil {
 		return
 	}
-	touchscreenRCALogf("screen.UpdatePhoneScreenInfo before={%s} new_phone_screen=%q", formatTouchscreenRCAScreenMapping(s), formatPhoneScreen(info))
+	if touchscreenRCADebugEnabledCached() {
+		touchscreenRCALogf("screen.UpdatePhoneScreenInfo before={%s} new_phone_screen=%q", formatTouchscreenRCAScreenMapping(s), formatPhoneScreen(info))
+	}
 	s.mu.Lock()
 	s.phoneScreen = info
 	s.mu.Unlock()
-	touchscreenRCALogf("screen.UpdatePhoneScreenInfo after={%s}", formatTouchscreenRCAScreenMapping(s))
+	if touchscreenRCADebugEnabledCached() {
+		touchscreenRCALogf("screen.UpdatePhoneScreenInfo after={%s}", formatTouchscreenRCAScreenMapping(s))
+	}
 }
 
 func (s *screenState) ClearPhoneScreenInfo() {
 	if s == nil {
 		return
 	}
-	touchscreenRCALogf("screen.ClearPhoneScreenInfo before={%s}", formatTouchscreenRCAScreenMapping(s))
+	if touchscreenRCADebugEnabledCached() {
+		touchscreenRCALogf("screen.ClearPhoneScreenInfo before={%s}", formatTouchscreenRCAScreenMapping(s))
+	}
 	s.mu.Lock()
 	s.phoneScreen = PhoneScreenInfo{}
 	s.mu.Unlock()
-	touchscreenRCALogf("screen.ClearPhoneScreenInfo after={%s}", formatTouchscreenRCAScreenMapping(s))
+	if touchscreenRCADebugEnabledCached() {
+		touchscreenRCALogf("screen.ClearPhoneScreenInfo after={%s}", formatTouchscreenRCAScreenMapping(s))
+	}
 }
 
 func (s *screenState) PhoneScreenInfo() PhoneScreenInfo {
@@ -407,7 +415,9 @@ func (s *screenState) PhoneScreenInfo() PhoneScreenInfo {
 
 func (s *screenState) UpdateActiveArea(width, height int, active screenActiveArea) {
 	if width <= 0 || height <= 0 {
-		touchscreenRCALogf("screen.UpdateActiveArea ignored invalid dimensions width=%d height=%d active=%s before={%s}", width, height, formatTouchscreenRCAActiveArea(active), formatTouchscreenRCAScreenMapping(s))
+		if touchscreenRCADebugEnabledCached() {
+			touchscreenRCALogf("screen.UpdateActiveArea ignored invalid dimensions width=%d height=%d active=%s before={%s}", width, height, formatTouchscreenRCAActiveArea(active), formatTouchscreenRCAScreenMapping(s))
+		}
 		return
 	}
 	requestedActive := active
@@ -417,21 +427,25 @@ func (s *screenState) UpdateActiveArea(width, height int, active screenActiveAre
 		}
 	}
 
-	touchscreenRCALogf(
-		"screen.UpdateActiveArea before={%s} request_width=%d request_height=%d requested_active=%s committed_active=%s",
-		formatTouchscreenRCAScreenMapping(s),
-		width,
-		height,
-		formatTouchscreenRCAActiveArea(requestedActive),
-		formatTouchscreenRCAActiveArea(active),
-	)
+	if touchscreenRCADebugEnabledCached() {
+		touchscreenRCALogf(
+			"screen.UpdateActiveArea before={%s} request_width=%d request_height=%d requested_active=%s committed_active=%s",
+			formatTouchscreenRCAScreenMapping(s),
+			width,
+			height,
+			formatTouchscreenRCAActiveArea(requestedActive),
+			formatTouchscreenRCAActiveArea(active),
+		)
+	}
 	s.mu.Lock()
 	s.width = width
 	s.height = height
 	s.active = active
 	s.updatedAt = time.Now()
 	s.mu.Unlock()
-	touchscreenRCALogf("screen.UpdateActiveArea after={%s}", formatTouchscreenRCAScreenMapping(s))
+	if touchscreenRCADebugEnabledCached() {
+		touchscreenRCALogf("screen.UpdateActiveArea after={%s}", formatTouchscreenRCAScreenMapping(s))
+	}
 }
 
 func (s *screenState) Dimensions() (width, height int, ok bool) {
@@ -1160,12 +1174,14 @@ func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, erro
 	if err := t.ensureTouchscreenMapping(ctx, coordSpace); err != nil {
 		return toolErrorResultf(ctx, CodeToolExecutionFailed, "touchscreen mapping unavailable: %v", err), nil
 	}
-	touchscreenRCALogf(
-		"touch_gesture start type=%q coord_space=%q mapping_before={%s}",
-		gestureType,
-		coordSpace,
-		formatTouchscreenRCAMappingSummary(t.screen),
-	)
+	if touchscreenRCADebugEnabledCached() {
+		touchscreenRCALogf(
+			"touch_gesture start type=%q coord_space=%q mapping_before={%s}",
+			gestureType,
+			coordSpace,
+			formatTouchscreenRCAMappingSummary(t.screen),
+		)
+	}
 
 	switch gestureType {
 	case "tap":
@@ -1223,17 +1239,19 @@ func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, erro
 		if err != nil {
 			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 		}
-		touchscreenRCALogf(
-			"touch_gesture directional resolved type=%q start_abs=(%d,%d) end_abs=(%d,%d) coord_space=%q pointer_mode=%s mapping_at_resolve={%s}",
-			gestureType,
-			start.x,
-			start.y,
-			end.x,
-			end.y,
-			coordinateSpaceNormalized,
-			touchscreenRCAPointerMode(t.pc),
-			formatTouchscreenRCAScreenMapping(t.screen),
-		)
+		if touchscreenRCADebugEnabledCached() {
+			touchscreenRCALogf(
+				"touch_gesture directional resolved type=%q start_abs=(%d,%d) end_abs=(%d,%d) coord_space=%q pointer_mode=%s mapping_at_resolve={%s}",
+				gestureType,
+				start.x,
+				start.y,
+				end.x,
+				end.y,
+				coordinateSpaceNormalized,
+				touchscreenRCAPointerMode(t.pc),
+				formatTouchscreenRCAScreenMapping(t.screen),
+			)
+		}
 		if sameResolvedPointerPoint(start, end) {
 			return toolErrorResultString(ctx, CodeInvalidArguments, "directional swipe resolved to the same HID point"), nil
 		}
@@ -1360,7 +1378,9 @@ func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, erro
 		return toolErrorResultf(ctx, CodeInvalidArguments, "unsupported gesture type: %q", args.Type), nil
 	}
 
-	touchscreenRCALogf("touch_gesture completed type=%q mapping_after_action_before_post_screenshot={%s}", gestureType, formatTouchscreenRCAScreenMapping(t.screen))
+	if touchscreenRCADebugEnabledCached() {
+		touchscreenRCALogf("touch_gesture completed type=%q mapping_after_action_before_post_screenshot={%s}", gestureType, formatTouchscreenRCAScreenMapping(t.screen))
+	}
 	return "ok", nil
 }
 
@@ -1378,11 +1398,15 @@ func (t *TouchGestureTool) ensureTouchscreenMapping(ctx context.Context, coordSp
 	if t.screen.FreshActiveArea(screenDimensionsStaleAfter) {
 		return nil
 	}
-	touchscreenRCALogf("touch_gesture prime mapping before input coord_space=%q mapping_before={%s}", coordSpace, formatTouchscreenRCAScreenMapping(t.screen))
+	if touchscreenRCADebugEnabledCached() {
+		touchscreenRCALogf("touch_gesture prime mapping before input coord_space=%q mapping_before={%s}", coordSpace, formatTouchscreenRCAScreenMapping(t.screen))
+	}
 	if err := t.primeScreenMapping(ctx); err != nil {
 		return err
 	}
-	touchscreenRCALogf("touch_gesture prime mapping succeeded mapping_after={%s}", formatTouchscreenRCAScreenMapping(t.screen))
+	if touchscreenRCADebugEnabledCached() {
+		touchscreenRCALogf("touch_gesture prime mapping succeeded mapping_after={%s}", formatTouchscreenRCAScreenMapping(t.screen))
+	}
 	return nil
 }
 
@@ -1771,25 +1795,31 @@ func writeTouchscreenReport(dev *HIDDevice, state *pointerState, x, y int, touch
 	if dev != nil {
 		path = dev.path
 	}
-	touchscreenRCALogf(
-		"hid touchscreen report write start path=%s requested=(%d,%d) clamped=(%d,%d) touching=%v flags=0x%02x report=% x",
-		path,
-		x,
-		y,
-		absX,
-		absY,
-		touching,
-		report[0],
-		report,
-	)
+	if touchscreenRCADebugEnabledCached() {
+		touchscreenRCALogf(
+			"hid touchscreen report write start path=%s requested=(%d,%d) clamped=(%d,%d) touching=%v flags=0x%02x report=% x",
+			path,
+			x,
+			y,
+			absX,
+			absY,
+			touching,
+			report[0],
+			report,
+		)
+	}
 	dev.mu.Lock()
 	defer dev.mu.Unlock()
 	err := dev.writeLocked(report, after)
 	if err != nil {
-		touchscreenRCALogf("hid touchscreen report write error path=%s clamped=(%d,%d) touching=%v err=%v", path, absX, absY, touching, err)
+		if touchscreenRCADebugEnabledCached() {
+			touchscreenRCALogf("hid touchscreen report write error path=%s clamped=(%d,%d) touching=%v err=%v", path, absX, absY, touching, err)
+		}
 		return err
 	}
-	touchscreenRCALogf("hid touchscreen report write ok path=%s clamped=(%d,%d) touching=%v", path, absX, absY, touching)
+	if touchscreenRCADebugEnabledCached() {
+		touchscreenRCALogf("hid touchscreen report write ok path=%s clamped=(%d,%d) touching=%v", path, absX, absY, touching)
+	}
 	return nil
 }
 
@@ -2003,14 +2033,34 @@ func normalizedToAbsolutePointForSurface(screen *screenState, touchscreen bool, 
 				fullFramePixelY := float64(active.Y) + activePixelY
 				absX := scalePixelToAbsolute(fullFramePixelX, width)
 				absY := scalePixelToAbsolute(fullFramePixelY, height)
+				if touchscreenRCADebugEnabledCached() {
+					touchscreenRCALogf(
+						"normalizedToAbsolute touchscreen using active_area input_norm=(%.2f,%.2f) active_pixel=(%.2f,%.2f) full_frame_pixel=(%.2f,%.2f) source=%dx%d active=%s age_ms=%d absolute=(%d,%d)",
+						x,
+						y,
+						activePixelX,
+						activePixelY,
+						fullFramePixelX,
+						fullFramePixelY,
+						width,
+						height,
+						formatTouchscreenRCAActiveArea(active),
+						age.Milliseconds(),
+						absX,
+						absY,
+					)
+				}
+				return absX, absY, nil
+			}
+			absX := activeLocalAxisToAbsolute(activePixelX, active.X, active.Width, width)
+			absY := activeLocalAxisToAbsolute(activePixelY, active.Y, active.Height, height)
+			if touchscreenRCADebugEnabledCached() {
 				touchscreenRCALogf(
-					"normalizedToAbsolute touchscreen using active_area input_norm=(%.2f,%.2f) active_pixel=(%.2f,%.2f) full_frame_pixel=(%.2f,%.2f) source=%dx%d active=%s age_ms=%d absolute=(%d,%d)",
+					"normalizedToAbsolute absolute_mouse using active_area input_norm=(%.2f,%.2f) active_pixel=(%.2f,%.2f) source=%dx%d active=%s age_ms=%d absolute=(%d,%d)",
 					x,
 					y,
 					activePixelX,
 					activePixelY,
-					fullFramePixelX,
-					fullFramePixelY,
 					width,
 					height,
 					formatTouchscreenRCAActiveArea(active),
@@ -2018,28 +2068,14 @@ func normalizedToAbsolutePointForSurface(screen *screenState, touchscreen bool, 
 					absX,
 					absY,
 				)
-				return absX, absY, nil
 			}
-			absX := activeLocalAxisToAbsolute(activePixelX, active.X, active.Width, width)
-			absY := activeLocalAxisToAbsolute(activePixelY, active.Y, active.Height, height)
-			touchscreenRCALogf(
-				"normalizedToAbsolute absolute_mouse using active_area input_norm=(%.2f,%.2f) active_pixel=(%.2f,%.2f) source=%dx%d active=%s age_ms=%d absolute=(%d,%d)",
-				x,
-				y,
-				activePixelX,
-				activePixelY,
-				width,
-				height,
-				formatTouchscreenRCAActiveArea(active),
-				age.Milliseconds(),
-				absX,
-				absY,
-			)
 			return absX, absY, nil
 		}
 	}
 	absX, absY := normalizedToAbsolutePoint(x, y)
-	touchscreenRCALogf("normalizedToAbsolute fallback input_norm=(%.2f,%.2f) touchscreen=%v absolute=(%d,%d) mapping={%s}", x, y, touchscreen, absX, absY, formatTouchscreenRCAScreenMapping(screen))
+	if touchscreenRCADebugEnabledCached() {
+		touchscreenRCALogf("normalizedToAbsolute fallback input_norm=(%.2f,%.2f) touchscreen=%v absolute=(%d,%d) mapping={%s}", x, y, touchscreen, absX, absY, formatTouchscreenRCAScreenMapping(screen))
+	}
 	return absX, absY, nil
 }
 
@@ -2285,22 +2321,24 @@ func directionalSwipeEndpoints(screen *screenState, touchscreen bool, gestureTyp
 	if err != nil {
 		return resolvedPointerPoint{}, resolvedPointerPoint{}, err
 	}
-	touchscreenRCALogf(
-		"directionalSwipeEndpoints type=%q touchscreen=%v travel=%.2f anchor=%.2f start_norm=(%.2f,%.2f) end_norm=(%.2f,%.2f) start_abs=(%d,%d) end_abs=(%d,%d) mapping_at_resolve={%s}",
-		gestureType,
-		touchscreen,
-		travel,
-		center,
-		startX,
-		startY,
-		endX,
-		endY,
-		startAbsX,
-		startAbsY,
-		endAbsX,
-		endAbsY,
-		formatTouchscreenRCAScreenMapping(screen),
-	)
+	if touchscreenRCADebugEnabledCached() {
+		touchscreenRCALogf(
+			"directionalSwipeEndpoints type=%q touchscreen=%v travel=%.2f anchor=%.2f start_norm=(%.2f,%.2f) end_norm=(%.2f,%.2f) start_abs=(%d,%d) end_abs=(%d,%d) mapping_at_resolve={%s}",
+			gestureType,
+			touchscreen,
+			travel,
+			center,
+			startX,
+			startY,
+			endX,
+			endY,
+			startAbsX,
+			startAbsY,
+			endAbsX,
+			endAbsY,
+			formatTouchscreenRCAScreenMapping(screen),
+		)
+	}
 	return resolvedPointerPoint{x: startAbsX, y: startAbsY}, resolvedPointerPoint{x: endAbsX, y: endAbsY}, nil
 }
 

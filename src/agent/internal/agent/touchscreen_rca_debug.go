@@ -5,13 +5,20 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
 const touchscreenRCADebugEnv = "AIDEN_TOUCHSCREEN_RCA_DEBUG"
 
+var touchscreenRCADebugEnabledValue atomic.Bool
+
+func init() {
+	touchscreenRCADebugEnabledValue.Store(touchscreenRCADebugEnabledFromEnv())
+}
+
 func touchscreenRCALogf(format string, args ...any) {
-	if !touchscreenRCADebugEnabled() {
+	if !touchscreenRCADebugEnabledCached() {
 		return
 	}
 	message := fmt.Sprintf("[touchscreen-rca] "+format, args...)
@@ -19,7 +26,11 @@ func touchscreenRCALogf(format string, args ...any) {
 	log.Print(message)
 }
 
-func touchscreenRCADebugEnabled() bool {
+func touchscreenRCADebugEnabledCached() bool {
+	return touchscreenRCADebugEnabledValue.Load()
+}
+
+func touchscreenRCADebugEnabledFromEnv() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(touchscreenRCADebugEnv))) {
 	case "1", "true", "t", "yes", "y", "on":
 		return true
@@ -33,6 +44,9 @@ func formatTouchscreenRCAActiveArea(active screenActiveArea) string {
 }
 
 func formatTouchscreenRCAMetadata(meta *frameMetadata) string {
+	if !touchscreenRCADebugEnabledCached() {
+		return ""
+	}
 	if meta == nil {
 		return "<nil>"
 	}
@@ -55,6 +69,9 @@ func formatTouchscreenRCAMetadata(meta *frameMetadata) string {
 }
 
 func formatTouchscreenRCAScreenMapping(screen *screenState) string {
+	if !touchscreenRCADebugEnabledCached() {
+		return ""
+	}
 	if screen == nil {
 		return "screen=nil"
 	}
@@ -92,6 +109,9 @@ func formatTouchscreenRCAScreenMapping(screen *screenState) string {
 }
 
 func formatTouchscreenRCAMappingSummary(screen *screenState) string {
+	if !touchscreenRCADebugEnabledCached() {
+		return ""
+	}
 	if screen == nil {
 		return "screen=nil"
 	}
@@ -133,6 +153,9 @@ func formatTouchscreenRCAFloatPtr(value *float64) string {
 }
 
 func formatTouchscreenRCAQuickActionMapping(tool *QuickActionTool) string {
+	if !touchscreenRCADebugEnabledCached() {
+		return ""
+	}
 	if tool == nil {
 		return "quick_action=nil"
 	}
@@ -143,6 +166,9 @@ func formatTouchscreenRCAQuickActionMapping(tool *QuickActionTool) string {
 }
 
 func formatTouchscreenRCAQuickActionMappingSummary(tool *QuickActionTool) string {
+	if !touchscreenRCADebugEnabledCached() {
+		return ""
+	}
 	if tool == nil {
 		return "quick_action=nil"
 	}
@@ -153,6 +179,9 @@ func formatTouchscreenRCAQuickActionMappingSummary(tool *QuickActionTool) string
 }
 
 func touchscreenRCALogResolvedPoint(label string, screen *screenState, pc *pointerController, raw *pointerPoint, coordSpace string, resolved resolvedPointerPoint) {
+	if !touchscreenRCADebugEnabledCached() {
+		return
+	}
 	touchscreenRCALogf(
 		"%s resolved raw_point=%s coord_space=%q pointer_mode=%s absolute=(%d,%d) mapping_at_resolve={%s}",
 		label,
