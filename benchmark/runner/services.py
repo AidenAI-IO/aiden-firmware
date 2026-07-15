@@ -106,6 +106,26 @@ def cmd_start_agent_daemon(args: argparse.Namespace) -> int:
     service_dir = Path(args.runs_dir) / service_id
     config_dir = service_dir / "config"
     log_path = service_dir / "agent-daemon.log"
+
+    # Check if a service with this ID already exists and is still running.
+    # For Docker-based agent daemons, check if the container is still active.
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "--format", "{{.State.Running}}", project],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0 and result.stdout.strip().lower() == "true":
+            print(
+                f"Error: service ID '{service_id}' already exists with running container '{project}'.\n"
+                f"Stop it first (docker stop {project}) or use a different --name.",
+                file=sys.stderr,
+            )
+            return 2
+    except FileNotFoundError:
+        pass  # docker not available, proceed
+
     service_dir.mkdir(parents=True, exist_ok=True)
 
     agent_config_text = None
@@ -256,6 +276,22 @@ def cmd_start_adb_android_env(args: argparse.Namespace) -> int:
     log_path = service_dir / "adb-android-env.log"
     pid_path = service_dir / "adb-android.pid"
     manifest_path = service_dir / "adb-android.json"
+
+    # Check if a service with this ID already exists and is still running.
+    if pid_path.exists():
+        try:
+            existing_pid = int(pid_path.read_text(encoding="utf-8").strip())
+            from runner.adb_android_environment import pid_alive
+            if pid_alive(existing_pid):
+                print(
+                    f"Error: service ID '{service_id}' already exists with running process {existing_pid}.\n"
+                    f"Stop it first (kill {existing_pid}) or use a different --name.",
+                    file=sys.stderr,
+                )
+                return 2
+        except (ValueError, OSError):
+            pass  # Stale or corrupted pid file, proceed with cleanup
+
     service_dir.mkdir(parents=True, exist_ok=True)
 
     bridge_port = int(args.bridge_port or 0) or reserve_free_port()

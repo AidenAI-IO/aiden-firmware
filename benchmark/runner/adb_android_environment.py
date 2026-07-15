@@ -217,10 +217,15 @@ class ADBAndroidEnvironmentManager:
             status = "running"
             name = f"{name} (recovered)"
             message = "recovered from existing bridge process"
+            process_id = pid
         else:
             status = "unhealthy"
             name = f"{name} (recovered, unhealthy)"
             message = "bridge process is gone or unresponsive - remove and start fresh"
+            # Clear the PID: once unhealthy, we cannot safely terminate it
+            # (PID may have been recycled), and stop() must not kill an
+            # unrelated process.
+            process_id = 0
         return ADBAndroidEnvironment(
             id=env_id,
             name=name,
@@ -232,7 +237,7 @@ class ADBAndroidEnvironmentManager:
             message=message,
             created_at=str(manifest.get("created_at") or ""),
             started_at=str(manifest.get("created_at") or ""),
-            process_id=pid,
+            process_id=process_id,
             bridge_port=int(manifest.get("bridge_port") or 0),
             log_path=str(manifest.get("log_path") or ""),
             manifest_path=str(manifest_path),
@@ -247,7 +252,14 @@ class ADBAndroidEnvironmentManager:
             if env.status == "running" and not (
                 pid_alive(env.process_id) and check_endpoint_health(f"{env.public_endpoint}/health")
             ):
-                self._set_environment(env, status="unhealthy", message="bridge process is gone or unresponsive")
+                # Clear the PID when marking unhealthy: the process is either
+                # gone or unresponsive, and a recycled PID must not be killed.
+                self._set_environment(
+                    env,
+                    status="unhealthy",
+                    message="bridge process is gone or unresponsive",
+                    process_id=0,
+                )
         return environments
 
     def get(self, env_id: str) -> ADBAndroidEnvironment | None:

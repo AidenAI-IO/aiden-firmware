@@ -65,6 +65,7 @@ DEFAULT_LONG_PRESS_MS = 500
 # timeout scales with the gesture duration — an unclamped value from a bad
 # LLM tool call could block every other request against the device.
 MAX_ACTION_DURATION_MS = 10_000
+MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024  # 10MB
 FOCUS_SETTLE_SEC = 0.3
 # Wait after an action before the post-action screenshot: adb commands (e.g.
 # `am start`, keyevents) return before the UI transition finishes, so an
@@ -304,6 +305,12 @@ class ADBToolsAPIHandler:
             content_length = int(handler.headers.get("Content-Length", "0") or "0")
         except ValueError:
             self._send_json(handler, 400, {"error": "bad_header", "output": "invalid Content-Length", "is_error": True})
+            return
+        if content_length < 0:
+            self._send_json(handler, 400, {"error": "bad_header", "output": "Content-Length must be non-negative", "is_error": True})
+            return
+        if content_length > MAX_REQUEST_BODY_BYTES:
+            self._send_json(handler, 413, {"error": "request_too_large", "output": f"request body exceeds {MAX_REQUEST_BODY_BYTES} bytes", "is_error": True})
             return
 
         raw_body = handler.rfile.read(content_length) if content_length else b"{}"
@@ -809,6 +816,13 @@ class ADBToolsAPIHandler:
             return {"output": "error: keys array is required", "is_error": True}
         if not isinstance(keys, list):
             return {"output": "error: keys must be an array", "is_error": True}
+
+        # Reject hold_ms explicitly: adb keyevent cannot hold keys for a duration.
+        if "hold_ms" in tool_input and tool_input.get("hold_ms") not in (None, 0):
+            return {
+                "output": "error: adb keyboard_tap does not support hold_ms; adb input keyevent cannot hold a key for an arbitrary duration",
+                "is_error": True,
+            }
 
         normalized_keys = [str(k).strip().lower() for k in keys if str(k).strip()]
         if not normalized_keys:

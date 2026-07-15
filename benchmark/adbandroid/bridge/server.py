@@ -23,6 +23,7 @@ from .tools_api import ADBToolsAPIHandler
 
 
 DEFAULT_BRIDGE_REQUEST_TIMEOUT_SEC = 120
+MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024  # 10MB
 
 
 class ADBBridgeServer:
@@ -182,6 +183,12 @@ def _handler_for(bridge: ADBBridgeServer):
                 length = int(self.headers.get("Content-Length", "0") or "0")
             except ValueError:
                 self._send_error(400, "bad_header", "invalid Content-Length")
+                return None
+            if length < 0:
+                self._send_error(400, "bad_header", "Content-Length must be non-negative")
+                return None
+            if length > MAX_REQUEST_BODY_BYTES:
+                self._send_error(413, "request_too_large", f"request body exceeds {MAX_REQUEST_BODY_BYTES} bytes")
                 return None
             raw = self.rfile.read(length) if length else b"{}"
             try:
