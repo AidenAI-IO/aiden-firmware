@@ -21,6 +21,74 @@ func (t *loopGuardEchoTool) Call(context.Context, string) (string, error) {
 	return t.output, nil
 }
 
+type loopToolExecutionHookRecorder struct {
+	beforeCalls     int
+	afterCalls      int
+	afterSawSummary bool
+}
+
+func (r *loopToolExecutionHookRecorder) BeforeToolCall(context.Context, ToolCall) (ToolResult, bool) {
+	r.beforeCalls++
+	return ToolResult{}, true
+}
+
+func (r *loopToolExecutionHookRecorder) AfterToolCall(_ context.Context, _ ToolCall, result ToolResult) ToolResult {
+	r.afterCalls++
+	r.afterSawSummary = result.Summary != ""
+	return result
+}
+
+func TestAgentLoopCombinesTerminationPolicyWithToolExecutionHooks(t *testing.T) {
+	t.Parallel()
+
+	model := &scriptedModel{responses: []*llms.ContentResponse{
+		toolCallResponse("call-1", "touch_gesture", `{"type":"tap"}`),
+		contentResponse("Done"),
+	}}
+	manager, err := freshNewContextManager("system", "tap once", nil, t.TempDir())
+	if err != nil {
+		t.Fatalf("freshNewContextManager() error = %v", err)
+	}
+	recorder := &loopToolExecutionHookRecorder{}
+	factoryCalls := 0
+	loop := NewAgentLoop(
+		model,
+		RoleProfile{Tools: []langtools.Tool{&loopGuardEchoTool{output: "ok"}}},
+		nil,
+		10,
+		nil,
+		nil,
+		ScreenshotPruningConfig{}.WithDefaults(),
+		manager,
+	)
+	loop.toolExecutionHookFactory = func() toolExecutionHookHandler {
+		factoryCalls++
+		return recorder
+	}
+	loop.TerminationPolicy = NewTerminationPolicy(TerminationPolicyConfig{
+		RepeatActionLimit:       100,
+		SameResultLimit:         100,
+		ScreenUnchangedLimit:    100,
+		SoftNoticeStallScore:    100,
+		RestrictToolsStallScore: 100,
+		TerminateStallScore:     100,
+	})
+
+	output, err := loop.Run(context.Background(), "tap once")
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if output != "Done" {
+		t.Fatalf("output = %q, want Done", output)
+	}
+	if factoryCalls != 1 || recorder.beforeCalls != 1 || recorder.afterCalls != 1 {
+		t.Fatalf("hook calls = factory:%d before:%d after:%d, want 1/1/1", factoryCalls, recorder.beforeCalls, recorder.afterCalls)
+	}
+	if !recorder.afterSawSummary {
+		t.Fatal("custom after hook should observe DefaultAfterToolCall normalization")
+	}
+}
+
 func TestAgentLoopDeliversSoftNoticeAsTransient(t *testing.T) {
 	t.Parallel()
 

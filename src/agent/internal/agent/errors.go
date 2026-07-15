@@ -43,6 +43,7 @@ const (
 	// unsupported — change path; do not retry the same tool
 	CodeQuickActionReserved            = "quick_action_reserved"
 	CodeQuickActionUnsupportedPlatform = "quick_action_unsupported_platform"
+	CodeWheelGestureLimit              = "wheel_gesture_limit"
 
 	// transient — retry may help
 	CodeBridgeTimeout              = "bridge_timeout"
@@ -93,6 +94,7 @@ var codeRegistry = map[string]ToolErrorSpec{
 	// unsupported
 	CodeQuickActionReserved:            {Category: CategoryUnsupported, Severity: "info"},
 	CodeQuickActionUnsupportedPlatform: {Category: CategoryUnsupported, Severity: "info"},
+	CodeWheelGestureLimit:              {Category: CategoryUnsupported, Severity: "warning"},
 
 	// transient
 	CodeBridgeTimeout:              {Category: CategoryTransient, Severity: "warning"},
