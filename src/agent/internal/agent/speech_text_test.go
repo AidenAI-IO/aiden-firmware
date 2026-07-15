@@ -3,6 +3,7 @@ package agent
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 type resettableSpeechSink struct {
@@ -13,6 +14,23 @@ type resettableSpeechSink struct {
 func (s *resettableSpeechSink) ResetBuffer() {
 	s.resetCalls++
 	s.Builder.Reset()
+}
+
+type validatingSpeechChunkSink struct {
+	parts   []string
+	invalid [][]byte
+}
+
+func (s *validatingSpeechChunkSink) Write(p []byte) (int, error) {
+	if !utf8.Valid(p) {
+		s.invalid = append(s.invalid, append([]byte(nil), p...))
+	}
+	s.parts = append(s.parts, string(p))
+	return len(p), nil
+}
+
+func (s *validatingSpeechChunkSink) String() string {
+	return strings.Join(s.parts, "")
 }
 
 func TestBuildSpeechTextExtractsTTSTag(t *testing.T) {
@@ -158,6 +176,37 @@ func TestSpeechStreamWriterHandlesSplitUTF8Rune(t *testing.T) {
 		t.Fatalf("Write(second) error = %v", err)
 	}
 	if got := sink.String(); got != "好" {
+		t.Fatalf("streamed speech = %q", got)
+	}
+}
+
+func TestSpeechStreamWriterKeepsUTF8BoundaryWhenHoldingEndTagSuffix(t *testing.T) {
+	var sink validatingSpeechChunkSink
+	writer := NewSpeechStreamWriter(&sink)
+	chunks := []string{
+		"<tts",
+		">上海",
+		"现在天气",
+		"晴朗，",
+		"气温3",
+		"5.",
+		"8度",
+		"。</tts>",
+	}
+	for _, chunk := range chunks {
+		if _, err := writer.Write([]byte(chunk)); err != nil {
+			t.Fatalf("Write(%q) error = %v", chunk, err)
+		}
+	}
+
+	if len(sink.invalid) != 0 {
+		t.Fatalf("streamed speech contains invalid UTF-8 chunks: %q", sink.invalid)
+	}
+	got := sink.String()
+	if !utf8.ValidString(got) {
+		t.Fatalf("streamed speech is not valid UTF-8: %q", got)
+	}
+	if got != "上海现在天气晴朗，气温35.8度。" {
 		t.Fatalf("streamed speech = %q", got)
 	}
 }

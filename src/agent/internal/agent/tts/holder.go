@@ -118,3 +118,16 @@ func (t *trackedSession) Close() error {
 	})
 	return err
 }
+
+func (t *trackedSession) Abort() error {
+	var err error
+	if aborter, ok := t.StreamSession.(interface{ Abort() error }); ok {
+		err = aborter.Abort()
+	} else {
+		err = t.StreamSession.Close()
+	}
+	t.closeOnce.Do(func() {
+		t.done.Done()
+	})
+	return err
+}

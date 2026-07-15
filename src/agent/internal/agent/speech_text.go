@@ -5,6 +5,7 @@ import (
 	"io"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 var (
@@ -270,6 +271,10 @@ func (w *TTSTagStreamWriter) Write(p []byte) (int, error) {
 		if safeLen <= 0 {
 			return len(p), nil
 		}
+		safeLen = validUTF8PrefixLen(w.pending, safeLen)
+		if safeLen <= 0 {
+			return len(p), nil
+		}
 		if err := w.writeTTSBytes(w.pending[:safeLen]); err != nil {
 			return 0, err
 		}
@@ -277,6 +282,16 @@ func (w *TTSTagStreamWriter) Write(p []byte) (int, error) {
 		return len(p), nil
 	}
 	return len(p), nil
+}
+
+func validUTF8PrefixLen(buf []byte, n int) int {
+	if n > len(buf) {
+		n = len(buf)
+	}
+	for n > 0 && !utf8.Valid(buf[:n]) {
+		n--
+	}
+	return n
 }
 
 func (w *TTSTagStreamWriter) writeTTSBytes(p []byte) error {

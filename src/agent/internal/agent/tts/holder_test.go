@@ -94,6 +94,62 @@ func TestProviderHolderCloseWaitsForActiveSessionClose(t *testing.T) {
 	}
 }
 
+func TestProviderHolderTrackedSessionAbortReleasesActiveSession(t *testing.T) {
+	provider := &blockingProvider{name: "current", started: make(chan *blockingSession, 1)}
+	holder := NewProviderHolder(provider)
+
+	session, err := holder.BeginStream(context.Background(), noopSink{})
+	if err != nil {
+		t.Fatalf("BeginStream() error = %v", err)
+	}
+	started := waitForBlockingSession(t, provider.started)
+
+	swapped := make(chan TTSProvider, 1)
+	go func() {
+		swapped <- holder.Swap(&blockingProvider{name: "next", started: make(chan *blockingSession, 1)})
+	}()
+
+	select {
+	case <-swapped:
+		t.Fatal("Swap returned before the active session was aborted")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	aborter, ok := session.(interface{ Abort() error })
+	if !ok {
+		t.Fatal("tracked session does not expose Abort")
+	}
+	if err := aborter.Abort(); err != nil {
+		t.Fatalf("Abort() error = %v", err)
+	}
+	if started.abortCalls != 1 {
+		t.Fatalf("underlying Abort() calls = %d, want 1", started.abortCalls)
+	}
+	if started.closeCalls != 0 {
+		t.Fatalf("underlying Close() calls = %d, want 0", started.closeCalls)
+	}
+
+	select {
+	case old := <-swapped:
+		if old != provider {
+			t.Fatalf("Swap returned %#v, want provider", old)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Swap did not return after session abort")
+	}
+}
+
+func waitForBlockingSession(t *testing.T, ch <-chan *blockingSession) *blockingSession {
+	t.Helper()
+	select {
+	case session := <-ch:
+		return session
+	case <-time.After(time.Second):
+		t.Fatal("provider did not start a session")
+		return nil
+	}
+}
+
 type blockingProvider struct {
 	name    string
 	started chan *blockingSession
@@ -117,12 +173,22 @@ func (p *blockingProvider) Close() error {
 	return nil
 }
 
-type blockingSession struct{}
+type blockingSession struct {
+	closeCalls int
+	abortCalls int
+}
 
 func (s *blockingSession) WriteText(string) error { return nil }
 func (s *blockingSession) Flush() error           { return nil }
-func (s *blockingSession) Close() error           { return nil }
-func (s *blockingSession) Err() error             { return nil }
+func (s *blockingSession) Close() error {
+	s.closeCalls++
+	return nil
+}
+func (s *blockingSession) Abort() error {
+	s.abortCalls++
+	return nil
+}
+func (s *blockingSession) Err() error { return nil }
 
 type noopSink struct{}
 

@@ -328,6 +328,19 @@ func (s *session) Close() error {
 	return s.Err()
 }
 
+func (s *session) Abort() error {
+	s.closeOnce.Do(func() {
+		_ = s.sink.Stop()
+		s.writeMu.Lock()
+		if s.conn != nil {
+			_ = s.conn.Close()
+			s.conn = nil
+		}
+		s.writeMu.Unlock()
+	})
+	return nil
+}
+
 func (s *session) Err() error {
 	s.errMu.Lock()
 	defer s.errMu.Unlock()
