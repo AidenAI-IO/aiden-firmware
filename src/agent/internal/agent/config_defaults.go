@@ -33,7 +33,8 @@ const (
 	defaultAudioArchiveMaxSizeMB   = 100
 	defaultLLMHTTPLogRetentionDays = 7
 	defaultKeyboardDevice          = "/dev/hidg0"
-	defaultMouseDevice             = "/dev/hidg1"
+	// The pure Magic Keyboard POC uses hidg1-2 for Apple vendor reports.
+	defaultMouseDevice = "/dev/hidg9"
 	// The Magic Keyboard + ECM POC consumes hidg2-3 with Apple vendor reports.
 	// Keep extension/media-key writes away from those interfaces.
 	defaultAndroidKeyboardDevice   = "/dev/hidg4"

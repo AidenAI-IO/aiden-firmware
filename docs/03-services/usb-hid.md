@@ -25,22 +25,19 @@ This script will:
 
 On the firmware image, `overlay/etc/init.d/S49usbhid` is the authoritative startup path. It also brings up `usb0` at `192.168.42.1` for the config page and local USB networking.
 
-## Magic Keyboard + ECM compatibility experiment
+## Pure Magic Keyboard compatibility experiment
 
-This experimental branch advertises the composite device as Apple Magic
-Keyboard `05ac:0267` while retaining the Aiden pointer and CDC ECM
-functions. It reproduces the three captured Magic Keyboard HID interfaces so
-iOS can be tested against the Apple-specific HID driver path. The normal
-keyboard input report is 10 bytes and begins with report ID `0x01`; Agent HID
-writes in this branch use that format.
+This experimental branch advertises a HID-only Apple Magic Keyboard
+`05ac:0267`. It reproduces the three captured Magic Keyboard HID interfaces in
+the same order and limits the gadget to USB Full Speed. The normal keyboard
+input report is 10 bytes and begins with report ID `0x01`; Agent HID writes in
+this branch use that format.
 
 This profile intentionally uses Apple's USB identity only for internal root
-cause investigation. It is not a production USB identity. Because the real
-Magic Keyboard is a HID-only device while this experiment remains a composite
-HID + ECM device, driver matching and behavior must be confirmed from iOS logs
-after deployment. The board kernel permits four HID gadget instances, so the
-normal separate Aiden media-key interface is omitted in this profile; its two
-slots are used by the Apple vendor-defined HID interfaces.
+cause investigation. It is not a production USB identity. Pointer, media-key,
+and CDC ECM functions are disabled so the first-attach handshake can be
+compared directly with a real Magic Keyboard. Board control and screenshots
+therefore require Wi-Fi while this profile is active.
 
 ## example_usb_hid Usage
 

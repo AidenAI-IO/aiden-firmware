@@ -30,47 +30,32 @@ grep -Fq 'echo 0 > "$GADGET_DIR/functions/hid.usb0/subclass"' "$INIT_SCRIPT" ||
 grep -Fq 'echo 65 > "$GADGET_DIR/functions/hid.usb0/report_length"' "$INIT_SCRIPT" ||
     fail "S49usbhid Magic Keyboard interface must cover report ID 0x3f"
 
-grep -Fq 'mkdir -p "$GADGET_DIR/functions/hid.usb3"' "$INIT_SCRIPT" ||
+grep -Fq 'echo full-speed > "$GADGET_DIR/max_speed"' "$INIT_SCRIPT" ||
+    fail "S49usbhid pure Magic Keyboard profile must force USB full-speed"
+
+grep -Fq 'echo 0x00 > "$GADGET_DIR/bDeviceClass"' "$INIT_SCRIPT" ||
+    fail "S49usbhid pure Magic Keyboard profile must use per-interface device class"
+
+grep -Fq 'mkdir -p "$GADGET_DIR/functions/hid.usb1"' "$INIT_SCRIPT" ||
     fail "S49usbhid must expose the first Apple vendor-defined HID interface"
 
-grep -Fq 'mkdir -p "$GADGET_DIR/functions/hid.usb4"' "$INIT_SCRIPT" ||
+grep -Fq 'mkdir -p "$GADGET_DIR/functions/hid.usb2"' "$INIT_SCRIPT" ||
     fail "S49usbhid must expose the second Apple vendor-defined HID interface"
 
-grep -Fq 'mkdir -p "$GADGET_DIR/functions/ecm.usb0"' "$INIT_SCRIPT" ||
-    fail "S49usbhid Apple compatibility POC must retain ECM"
+if grep -Fq 'mkdir -p "$GADGET_DIR/functions/ecm.usb0"' "$INIT_SCRIPT"; then
+    fail "S49usbhid pure Magic Keyboard profile must not create ECM"
+fi
 
-grep -Fq 'reenumerate_composite()' "$INIT_SCRIPT" ||
-    fail "S49usbhid must define startup composite re-enumeration for iOS HID session refresh"
-
-awk -v unbind="echo \"\" > \"\$GADGET_DIR/UDC\" 2>/dev/null" \
-    -v rebind="echo \"\$UDC\" > \"\$GADGET_DIR/UDC\"" '
-    /^reenumerate_composite\(\)[[:space:]]*\{/ { in_fn=1; next }
-    in_fn && /^\}/ { done=1; exit }
-    in_fn && index($0, unbind) { found_unbind=1 }
-    in_fn && index($0, rebind) { found_rebind=1 }
-    END { exit(done && found_unbind && found_rebind ? 0 : 1) }
+awk '
+    /ln -s .*functions\/hid\.usb1.*configs\/c\.1\/hid\.usb1/ { vendor0=NR }
+    /ln -s .*functions\/hid\.usb2.*configs\/c\.1\/hid\.usb2/ { vendor1=NR }
+    /ln -s .*functions\/hid\.usb0.*configs\/c\.1\/hid\.usb0/ { keyboard=NR }
+    END { exit(vendor0 && vendor1 && keyboard && vendor0 < vendor1 && vendor1 < keyboard ? 0 : 1) }
 ' "$INIT_SCRIPT" ||
-    fail "S49usbhid startup re-enumeration must unbind and rebind the UDC in reenumerate_composite"
+    fail "S49usbhid must link Apple vendor interfaces before the keyboard interface"
 
-awk -v bind="echo \"\$UDC\" > \"\$GADGET_DIR/UDC\"" '
-    /^start\(\)[[:space:]]*\{/ { in_start=1; next }
-    in_start && /^\}/ { exit }
-    !in_start { next }
-    index($0, bind) { after_bind=1; step=0; next }
-    after_bind && $0 ~ /^[[:space:]]*(#.*)?$/ { next }
-    after_bind {
-        step++
-        if (step == 1 && $0 !~ /^[[:space:]]*sleep[[:space:]]+1[[:space:]]*$/) {
-            exit
-        }
-        if (step == 2) {
-            found=($0 ~ /^[[:space:]]*reenumerate_composite[[:space:]]*$/)
-            exit
-        }
-    }
-    END { exit(found ? 0 : 1) }
-' "$INIT_SCRIPT" ||
-    fail "S49usbhid must re-enumerate the composite gadget immediately after initial bind"
+[ "$(grep -Fc 'echo "$UDC" > "$GADGET_DIR/UDC"' "$INIT_SCRIPT")" -eq 1 ] ||
+    fail "S49usbhid pure profile must bind the UDC exactly once"
 
 grep -Fq 'write_text_file(function_path + "/protocol", "1");' "$EXAMPLE_SRC" ||
     fail "example_usb_hid setup must keep keyboard HID boot protocol=1"

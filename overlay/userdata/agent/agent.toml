@@ -115,7 +115,7 @@ speed = 1.0                   # Speech speed: 0.5 - 2.0
 # HID (Human Interface Device) configuration
 [hid]
 # keyboard_device = "/dev/hidg0"
-# mouse_device = "/dev/hidg1"
+# mouse_device = "/dev/hidg9"  # unavailable in the pure Magic Keyboard POC; hidg1-2 are Apple vendor interfaces
 # android_keyboard_device = "/dev/hidg4"  # unavailable in the Magic Keyboard + ECM POC; hidg2-3 are Apple vendor interfaces
 # frame_socket = "/run/frame_service/frame_service.sock"
 # pointer_mode = "absolute"     # default, iOS AssistiveTouch / absolute mouse
