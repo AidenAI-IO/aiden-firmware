@@ -77,15 +77,15 @@ func (t *postActionScreenshotTool) ArgsSchema() map[string]any {
 }
 
 func (t *postActionScreenshotTool) Call(ctx context.Context, input string) (string, error) {
-	touchscreenRCALogf("post_action start inner=%q input=%s", t.inner.Name(), strings.TrimSpace(input))
+	touchscreenRCALogf("post_action start inner=%q input_len=%d", t.inner.Name(), len(input))
 	actionOutput, err := t.inner.Call(ctx, input)
 	if err != nil {
-		touchscreenRCALogf("post_action inner error inner=%q err=%v", t.inner.Name(), err)
+		touchscreenRCALogf("post_action inner error inner=%q err_type=%T", t.inner.Name(), err)
 		return "", err
 	}
-	touchscreenRCALogf("post_action inner completed inner=%q output=%q", t.inner.Name(), actionOutput)
+	touchscreenRCALogf("post_action inner completed inner=%q output_len=%d", t.inner.Name(), len(actionOutput))
 	if te := ToolErrorFromContext(ctx); te != nil {
-		touchscreenRCALogf("post_action inner tool_error inner=%q code=%q message=%q", t.inner.Name(), te.Code, te.Message)
+		touchscreenRCALogf("post_action inner tool_error inner=%q code=%q category=%q", t.inner.Name(), te.Code, te.Category)
 		return toolErrorString(te), nil
 	}
 	if legacyToolOutputLooksLikeError(actionOutput) {
@@ -97,17 +97,17 @@ func (t *postActionScreenshotTool) Call(ctx context.Context, input string) (stri
 
 	var waitResult waitStableScreenResult
 	if t.waitStable != nil {
-		touchscreenRCALogf("post_action wait_stable start inner=%q wait_input=%s", t.inner.Name(), t.waitInput)
+		touchscreenRCALogf("post_action wait_stable start inner=%q", t.inner.Name())
 		if waiter, ok := t.waitStable.(stableScreenWaiter); ok {
 			waitResult, err = waiter.wait(ctx, t.waitInput)
 			if err != nil {
-				touchscreenRCALogf("post_action wait_stable error inner=%q err=%v", t.inner.Name(), err)
+				touchscreenRCALogf("post_action wait_stable error inner=%q err_type=%T", t.inner.Name(), err)
 				return postActionErrorResultf(ctx, postActionErrorCode(err), "%s completed with output %q, but stable-screen wait failed: %v", t.inner.Name(), actionOutput, err), nil
 			}
 		} else {
 			waitOutput, err := t.waitStable.Call(ctx, t.waitInput)
 			if err != nil {
-				touchscreenRCALogf("post_action wait_stable call error inner=%q err=%v", t.inner.Name(), err)
+				touchscreenRCALogf("post_action wait_stable call error inner=%q err_type=%T", t.inner.Name(), err)
 				return postActionErrorResultf(ctx, postActionErrorCode(err), "%s completed with output %q, but stable-screen wait failed: %v", t.inner.Name(), actionOutput, err), nil
 			}
 			if te := ToolErrorFromContext(ctx); te != nil {
@@ -141,7 +141,7 @@ func (t *postActionScreenshotTool) Call(ctx context.Context, input string) (stri
 	touchscreenRCALogf("post_action screenshot start inner=%q", t.inner.Name())
 	screenshotOutput, err := t.screenshot.Call(ctx, "{}")
 	if err != nil {
-		touchscreenRCALogf("post_action screenshot error inner=%q err=%v", t.inner.Name(), err)
+		touchscreenRCALogf("post_action screenshot error inner=%q err_type=%T", t.inner.Name(), err)
 		return postActionErrorResultf(ctx, postActionErrorCode(err), "%s completed with output %q, but post-action screenshot failed: %v", t.inner.Name(), actionOutput, err), nil
 	}
 	if te := ToolErrorFromContext(ctx); te != nil {

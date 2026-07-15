@@ -3,16 +3,29 @@ package agent
 import (
 	"fmt"
 	"log"
+	"os"
+	"strings"
 	"time"
 )
 
-const touchscreenRCADebugEnabled = true
+const touchscreenRCADebugEnv = "AIDEN_TOUCHSCREEN_RCA_DEBUG"
 
 func touchscreenRCALogf(format string, args ...any) {
-	if !touchscreenRCADebugEnabled {
+	if !touchscreenRCADebugEnabled() {
 		return
 	}
-	log.Printf("[touchscreen-rca] "+format, args...)
+	message := fmt.Sprintf("[touchscreen-rca] "+format, args...)
+	message = strings.NewReplacer("\r", "\\r", "\n", "\\n").Replace(message)
+	log.Print(message)
+}
+
+func touchscreenRCADebugEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(touchscreenRCADebugEnv))) {
+	case "1", "true", "t", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func formatTouchscreenRCAActiveArea(active screenActiveArea) string {
@@ -78,6 +91,23 @@ func formatTouchscreenRCAScreenMapping(screen *screenState) string {
 	)
 }
 
+func formatTouchscreenRCAMappingSummary(screen *screenState) string {
+	if screen == nil {
+		return "screen=nil"
+	}
+	width, height, active, age, ok := screen.ActiveAreaWithAge()
+	if !ok {
+		return "active_area_ok=false"
+	}
+	return fmt.Sprintf(
+		"active_area_ok=true width=%d height=%d active=%s age_ms=%d",
+		width,
+		height,
+		formatTouchscreenRCAActiveArea(active),
+		age.Milliseconds(),
+	)
+}
+
 func formatTouchscreenRCAPointerPoint(point *pointerPoint) string {
 	if point == nil {
 		return "<nil>"
@@ -110,6 +140,16 @@ func formatTouchscreenRCAQuickActionMapping(tool *QuickActionTool) string {
 		return "quick_action.touch=nil"
 	}
 	return formatTouchscreenRCAScreenMapping(tool.touch.screen)
+}
+
+func formatTouchscreenRCAQuickActionMappingSummary(tool *QuickActionTool) string {
+	if tool == nil {
+		return "quick_action=nil"
+	}
+	if tool.touch == nil {
+		return "quick_action.touch=nil"
+	}
+	return formatTouchscreenRCAMappingSummary(tool.touch.screen)
 }
 
 func touchscreenRCALogResolvedPoint(label string, screen *screenState, pc *pointerController, raw *pointerPoint, coordSpace string, resolved resolvedPointerPoint) {

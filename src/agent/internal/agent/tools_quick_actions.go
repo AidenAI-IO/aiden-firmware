@@ -356,7 +356,7 @@ type quickActionArgs struct {
 func (t *QuickActionTool) Call(ctx context.Context, input string) (string, error) {
 	var args quickActionArgs
 	trimmed := strings.TrimSpace(input)
-	touchscreenRCALogf("quick_action start input=%s mapping_before={%s}", trimmed, formatTouchscreenRCAQuickActionMapping(t))
+	touchscreenRCALogf("quick_action start input_len=%d mapping_before={%s}", len(input), formatTouchscreenRCAQuickActionMappingSummary(t))
 	if trimmed == "" {
 		te := NewToolError(CodeInvalidArguments, "action or list is required")
 		SetToolError(ctx, te)
@@ -425,15 +425,14 @@ func (t *QuickActionTool) Call(ctx context.Context, input string) (string, error
 		selectedSource = fmt.Sprintf("alternative_%d", idx)
 	}
 	touchscreenRCALogf(
-		"quick_action selected action=%q label=%q platform=%q binding=%q status=%q tool=%q steps=%d mapping_before_delegate={%s}",
+		"quick_action selected action=%q platform=%q binding=%q status=%q tool=%q steps=%d mapping_before_delegate={%s}",
 		actionID,
-		action.Label,
 		platform,
 		selectedSource,
 		selected.Status,
 		selected.Tool,
 		len(selected.Steps),
-		formatTouchscreenRCAQuickActionMapping(t),
+		formatTouchscreenRCAQuickActionMappingSummary(t),
 	)
 
 	status := strings.TrimSpace(selected.Status)
@@ -593,7 +592,7 @@ func (t *QuickActionTool) Call(ctx context.Context, input string) (string, error
 		}
 		result["alternatives"] = alts
 	}
-	touchscreenRCALogf("quick_action completed action=%q platform=%q tool=%q mapping_after_delegate={%s}", actionID, platform, toolName, formatTouchscreenRCAQuickActionMapping(t))
+	touchscreenRCALogf("quick_action completed action=%q platform=%q tool=%q mapping_after_delegate={%s}", actionID, platform, toolName, formatTouchscreenRCAQuickActionMappingSummary(t))
 	return jsonString(result), nil
 }
 
@@ -601,7 +600,7 @@ func (t *QuickActionTool) delegate(ctx context.Context, toolName, payload string
 	subCtx, _ := WithToolError(ctx)
 	var output string
 	var err error
-	touchscreenRCALogf("quick_action delegate start tool=%q payload=%s mapping_before={%s}", toolName, payload, formatTouchscreenRCAQuickActionMapping(t))
+	touchscreenRCALogf("quick_action delegate start tool=%q payload_len=%d mapping_before={%s}", toolName, len(payload), formatTouchscreenRCAQuickActionMappingSummary(t))
 	switch toolName {
 	case "keyboard_tap":
 		if t.keyboard == nil {
@@ -617,20 +616,20 @@ func (t *QuickActionTool) delegate(ctx context.Context, toolName, payload string
 		return "", nil, fmt.Errorf("unsupported delegated tool %q", toolName)
 	}
 	if err != nil {
-		touchscreenRCALogf("quick_action delegate error tool=%q err=%v mapping_after={%s}", toolName, err, formatTouchscreenRCAQuickActionMapping(t))
+		touchscreenRCALogf("quick_action delegate error tool=%q err_type=%T mapping_after={%s}", toolName, err, formatTouchscreenRCAQuickActionMappingSummary(t))
 		return output, nil, err
 	}
 	if te := ToolErrorFromContext(subCtx); te != nil {
-		touchscreenRCALogf("quick_action delegate tool_error tool=%q code=%q message=%q mapping_after={%s}", toolName, te.Code, te.Message, formatTouchscreenRCAQuickActionMapping(t))
+		touchscreenRCALogf("quick_action delegate tool_error tool=%q code=%q category=%q mapping_after={%s}", toolName, te.Code, te.Category, formatTouchscreenRCAQuickActionMappingSummary(t))
 		return output, te, nil
 	}
 	if legacyToolOutputLooksLikeError(output) {
 		trimmed := strings.TrimSpace(output)
 		message := strings.TrimSpace(trimmed[len("error:"):])
-		touchscreenRCALogf("quick_action delegate legacy_error tool=%q message=%q mapping_after={%s}", toolName, message, formatTouchscreenRCAQuickActionMapping(t))
+		touchscreenRCALogf("quick_action delegate legacy_error tool=%q output_len=%d mapping_after={%s}", toolName, len(output), formatTouchscreenRCAQuickActionMappingSummary(t))
 		return output, NewToolError(CodeToolExecutionFailed, message), nil
 	}
-	touchscreenRCALogf("quick_action delegate completed tool=%q output=%q mapping_after={%s}", toolName, output, formatTouchscreenRCAQuickActionMapping(t))
+	touchscreenRCALogf("quick_action delegate completed tool=%q output_len=%d mapping_after={%s}", toolName, len(output), formatTouchscreenRCAQuickActionMappingSummary(t))
 	return output, nil, nil
 }
 

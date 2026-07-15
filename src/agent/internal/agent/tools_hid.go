@@ -479,11 +479,15 @@ func (s *screenState) MappingState() screenMappingState {
 }
 
 func (s *screenState) FreshActiveArea(maxAge time.Duration) bool {
-	state := s.MappingState()
-	if state.width <= 0 || state.height <= 0 || !state.active.Valid || state.updatedAt.IsZero() {
+	if s == nil {
 		return false
 	}
-	if maxAge > 0 && time.Since(state.updatedAt) >= maxAge {
+	_, _, active, age, ok := s.ActiveAreaWithAge()
+	state := s.MappingState()
+	if !ok || !active.Valid || state.updatedAt.IsZero() {
+		return false
+	}
+	if maxAge > 0 && age >= maxAge {
 		return false
 	}
 	return true
@@ -1157,13 +1161,10 @@ func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, erro
 		return toolErrorResultf(ctx, CodeToolExecutionFailed, "touchscreen mapping unavailable: %v", err), nil
 	}
 	touchscreenRCALogf(
-		"touch_gesture start type=%q coord_space=%q pointer_mode=%s button=0x%02x input=%s mapping_before={%s}",
+		"touch_gesture start type=%q coord_space=%q mapping_before={%s}",
 		gestureType,
 		coordSpace,
-		touchscreenRCAPointerMode(t.pc),
-		button,
-		strings.TrimSpace(input),
-		formatTouchscreenRCAScreenMapping(t.screen),
+		formatTouchscreenRCAMappingSummary(t.screen),
 	)
 
 	switch gestureType {
