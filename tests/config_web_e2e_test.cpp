@@ -1370,11 +1370,15 @@ TEST_CASE("config_web: GET /api/storage/status parses the agent state mirror") {
         "EFFECTIVE_MODE=2\n"
         "SD_TOTAL_BYTES=31914983424\n"
         "SD_FREE_BYTES=31834701824\n"
-        "FALLING_BACK=0\n"
         "REASON=\n"
         "FORMAT_STATUS=idle\n"
         "FORMAT_FS=\n"
-        "FORMAT_ERROR=\n";
+        "FORMAT_ERROR=\n"
+        "MIGRATE_STATUS=running\n"
+        "MIGRATE_DETAIL=\n"
+        "MIGRATE_ERROR=\n"
+        "MIGRATE_MOVED_FILES=12\n"
+        "MIGRATE_MOVED_BYTES=3145728\n";
     auto handle = start_server(env);
 
     HttpResponse resp = http_request(handle->port, "GET", "/api/storage/status");
@@ -1390,6 +1394,11 @@ TEST_CASE("config_web: GET /api/storage/status parses the agent state mirror") {
     cJSON* job = cJSON_GetObjectItem(parsed, "format_job");
     REQUIRE(job != nullptr);
     CHECK(required_json_string(job, "status") == "idle");
+    cJSON* migration = cJSON_GetObjectItem(parsed, "migration");
+    REQUIRE(migration != nullptr);
+    CHECK(required_json_string(migration, "status") == "running");
+    CHECK(cJSON_GetObjectItem(migration, "moved_files")->valueint == 12);
+    CHECK(cJSON_GetObjectItem(migration, "moved_bytes")->valuedouble == doctest::Approx(3145728.0));
     cJSON_Delete(parsed);
 }
 

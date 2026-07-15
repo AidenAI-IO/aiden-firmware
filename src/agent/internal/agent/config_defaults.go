@@ -35,28 +35,31 @@ const (
 	defaultStorageMountPoint       = "/mnt/sdcard"
 	defaultStorageDevice           = "mmcblk2"
 	defaultStorageMinCardFreeMB    = 64
-	defaultStorageEMMCReserveMB    = 256
-	defaultKeyboardDevice          = "/dev/hidg0"
-	defaultMouseDevice             = "/dev/hidg1"
-	defaultAndroidKeyboardDevice   = "/dev/hidg2"
-	defaultFrameServiceSocket      = "/run/frame_service/frame_service.sock"
-	defaultPointerMode             = "absolute"
-	defaultInputMode               = "text"
-	defaultTriggerMode             = "manual"
-	defaultSilenceMs               = 550
-	defaultMinSpeechMs             = 300
-	defaultVoiceFollowupTimeoutMs  = 5000
-	defaultVoiceFirstTurnTimeoutMs = 10000
-	defaultVoiceMaxTurns           = 0
-	defaultVoiceMaxResponseTokens  = 300
-	defaultTodoReminderToolCalls   = 3
-	defaultMaxIterations           = -1
-	defaultScreenshotKeepN         = 3
-	defaultScreenshotPruneInterval = 2
-	defaultTelemetryProvider       = "langfuse"
-	defaultTelemetryTimeoutSec     = 30
-	defaultTelemetryMaxRetry       = 2
-	defaultTelemetryEnvironment    = "default"
+	// Migration watermarks: start when eMMC free space drops below 10%,
+	// stop once it is back at or above 30%.
+	defaultStorageMigrateStartFreePct = 10
+	defaultStorageMigrateStopFreePct  = 30
+	defaultKeyboardDevice             = "/dev/hidg0"
+	defaultMouseDevice                = "/dev/hidg1"
+	defaultAndroidKeyboardDevice      = "/dev/hidg2"
+	defaultFrameServiceSocket         = "/run/frame_service/frame_service.sock"
+	defaultPointerMode                = "absolute"
+	defaultInputMode                  = "text"
+	defaultTriggerMode                = "manual"
+	defaultSilenceMs                  = 550
+	defaultMinSpeechMs                = 300
+	defaultVoiceFollowupTimeoutMs     = 5000
+	defaultVoiceFirstTurnTimeoutMs    = 10000
+	defaultVoiceMaxTurns              = 0
+	defaultVoiceMaxResponseTokens     = 300
+	defaultTodoReminderToolCalls      = 3
+	defaultMaxIterations              = -1
+	defaultScreenshotKeepN            = 3
+	defaultScreenshotPruneInterval    = 2
+	defaultTelemetryProvider          = "langfuse"
+	defaultTelemetryTimeoutSec        = 30
+	defaultTelemetryMaxRetry          = 2
+	defaultTelemetryEnvironment       = "default"
 )
 
 func defaultBoolPtr(value bool) *bool {
@@ -98,10 +101,11 @@ func DefaultConfig() Config {
 			StoragePath: defaultAudioArchiveStoragePath,
 		},
 		Storage: StorageConfig{
-			MountPoint:    defaultStorageMountPoint,
-			Device:        defaultStorageDevice,
-			MinCardFreeMB: defaultStorageMinCardFreeMB,
-			EMMCReserveMB: defaultStorageEMMCReserveMB,
+			MountPoint:          defaultStorageMountPoint,
+			Device:              defaultStorageDevice,
+			MinCardFreeMB:       defaultStorageMinCardFreeMB,
+			MigrateStartFreePct: defaultStorageMigrateStartFreePct,
+			MigrateStopFreePct:  defaultStorageMigrateStopFreePct,
 		},
 		Log: LogConfig{
 			LLMHTTPRetentionDays: defaultLLMHTTPLogRetentionDays,

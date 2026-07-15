@@ -220,7 +220,8 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "mount_point", Widget: WidgetText, Default: defaults.Storage.MountPointOrDefault()},
 					{Key: "device", Widget: WidgetText, Default: defaults.Storage.DeviceOrDefault()},
 					{Key: "min_card_free_mb", Widget: WidgetNumber, Default: defaults.Storage.MinCardFreeMBOrDefault()},
-					{Key: "emmc_reserve_mb", Widget: WidgetNumber, Default: defaults.Storage.EMMCReserveMBOrDefault()},
+					{Key: "migrate_start_free_pct", Widget: WidgetNumber, Default: defaults.Storage.MigrateStartFreePct},
+					{Key: "migrate_stop_free_pct", Widget: WidgetNumber, Default: defaults.Storage.MigrateStopFreePct},
 				},
 			},
 			{

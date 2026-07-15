@@ -19,6 +19,9 @@ type fakeStorageOps struct {
 	spaceErr   error
 	formatErr  error
 	blank      bool
+	// spaceFn, when set, answers SpaceInfo per path (used by migration
+	// tests to model eMMC free space changing as files move).
+	spaceFn func(path string) (int64, int64, error)
 
 	mounted      bool
 	prepares     int
@@ -63,6 +66,9 @@ func (f *fakeStorageOps) Healthy(mountPoint string) bool   { return f.healthy }
 func (f *fakeStorageOps) SpaceInfo(path string) (int64, int64, error) {
 	if f.spaceErr != nil {
 		return 0, 0, f.spaceErr
+	}
+	if f.spaceFn != nil {
+		return f.spaceFn(path)
 	}
 	return f.free, f.total, nil
 }
@@ -220,79 +226,48 @@ func TestStorageManagerMountFailureRecordsReasonAndDoesNotRetryEveryTick(t *test
 	}
 }
 
-func TestStorageManagerResolveDirDualWritesToSD(t *testing.T) {
+func TestStorageManagerResolveDirAlwaysEMMC(t *testing.T) {
+	// New data always lands on eMMC, card or no card; the migrator moves
+	// older files to SD when eMMC runs low.
 	ops := &fakeStorageOps{present: true, free: 1 << 30, total: 1 << 31, healthy: true}
 	m := newTestStorageManager(t, ops)
 	tickN(m, 2)
 
+	want := filepath.Join(m.emmcRoot, "audio")
 	dir, err := m.ResolveDir(StorageClassAudio)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(m.cfg.MountPointOrDefault(), storageSDSubdir, "audio")
 	if dir != want {
-		t.Fatalf("ResolveDir = %s, want %s", dir, want)
+		t.Fatalf("ResolveDir with card = %s, want %s", dir, want)
 	}
 	if _, err := os.Stat(dir); err != nil {
 		t.Fatalf("resolved dir not created: %v", err)
 	}
-}
 
-func TestStorageManagerResolveDirEMMCOnly(t *testing.T) {
-	m := newTestStorageManager(t, &fakeStorageOps{})
+	ops.present = false
 	tickN(m, 2)
-	dir, err := m.ResolveDir(StorageClassAudio)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := filepath.Join(m.emmcRoot, "audio"); dir != want {
-		t.Fatalf("ResolveDir = %s, want %s", dir, want)
+	if dir, err = m.ResolveDir(StorageClassAudio); err != nil || dir != want {
+		t.Fatalf("ResolveDir without card = %s (%v), want %s", dir, err, want)
 	}
 }
 
-func TestStorageManagerResolveDirFallbackRespectsReserve(t *testing.T) {
-	ops := &fakeStorageOps{present: true, free: 1 << 30, total: 1 << 31, healthy: true}
-	m := newTestStorageManager(t, ops)
-	tickN(m, 2)
-
-	// Make the SD class dir un-creatable: occupy the path with a file.
-	sdDir := filepath.Join(m.cfg.MountPointOrDefault(), storageSDSubdir)
-	if err := os.MkdirAll(filepath.Dir(sdDir), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(sdDir, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	dir, err := m.ResolveDir(StorageClassAudio)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := filepath.Join(m.emmcRoot, "audio"); dir != want {
-		t.Fatalf("fallback dir = %s, want %s", dir, want)
-	}
-	if status := m.Status(); !status.FallingBack {
-		t.Fatal("falling_back flag not raised on fallback")
-	}
-
-	// With eMMC below the reserve, the fallback write is refused.
-	ops.free = 1 << 20 // 1 MB, below the 256 MB default reserve
-	if _, err := m.ResolveDir(StorageClassAudio); err == nil {
-		t.Fatal("fallback below eMMC reserve succeeded, want error")
-	}
-}
-
-func TestStorageManagerReadRootsMergesSDFirst(t *testing.T) {
+func TestStorageManagerReadRootsMergesEMMCFirst(t *testing.T) {
 	ops := &fakeStorageOps{present: true, free: 1 << 30, total: 1 << 31, healthy: true}
 	m := newTestStorageManager(t, ops)
 	tickN(m, 2)
 
 	roots := m.ReadRoots(StorageClassAudio)
 	if len(roots) != 2 {
-		t.Fatalf("roots = %v, want SD + eMMC", roots)
+		t.Fatalf("roots = %v, want eMMC + SD", roots)
 	}
-	if roots[0] != filepath.Join(m.cfg.MountPointOrDefault(), storageSDSubdir, "audio") {
-		t.Fatalf("first root = %s, want the SD dir", roots[0])
+	// eMMC first: during the migration crash window the eMMC copy is
+	// authoritative, so first-hit readers must see it before the SD copy.
+	if roots[0] != filepath.Join(m.emmcRoot, "audio") {
+		t.Fatalf("first root = %s, want the eMMC dir", roots[0])
+	}
+	if roots[1] != filepath.Join(m.cfg.MountPointOrDefault(), storageSDSubdir, "audio") {
+		t.Fatalf("second root = %s, want the SD dir", roots[1])
 	}
 
 	ops.present = false
@@ -486,6 +461,221 @@ func TestStorageManagerAutoFormatOncePerInsertion(t *testing.T) {
 	job = waitForFormatJob(t, m)
 	if job.Status != StorageFormatSuccess || ops.formats != 2 {
 		t.Fatalf("job = %+v formats = %d, want success on reinsertion", job, ops.formats)
+	}
+}
+
+// waitForMigration polls until the migration job leaves the running state.
+func waitForMigration(t *testing.T, m *StorageManager) StorageMigrationJob {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		job := m.Status().Migration
+		if job.Status != StorageFormatRunning && job.Status != StorageFormatIdle {
+			return job
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("migration did not finish: %+v", job)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// writeAgedFile creates a file and backdates its mtime so it is migratable.
+func writeAgedFile(t *testing.T, path string, size int, age time.Duration) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, make([]byte, size), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stamp := time.Now().Add(-age)
+	if err := os.Chtimes(path, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// dirBytes sums the sizes of regular files directly inside dir.
+func dirBytes(t *testing.T, dir string) int64 {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return 0
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var total int64
+	for _, entry := range entries {
+		if info, err := entry.Info(); err == nil && info.Mode().IsRegular() {
+			total += info.Size()
+		}
+	}
+	return total
+}
+
+// migrationSpaceFn models a 1000-byte eMMC filesystem whose free space grows
+// as files leave srcDir: free = base + (initial - remaining). The card side
+// reports plenty of space.
+func migrationSpaceFn(t *testing.T, m *StorageManager, srcDir string, base, initial int64) func(string) (int64, int64, error) {
+	return func(path string) (int64, int64, error) {
+		if path == m.emmcRoot {
+			return base + (initial - dirBytes(t, srcDir)), 1000, nil
+		}
+		return 1 << 30, 1 << 31, nil
+	}
+}
+
+func TestStorageManagerMigratesOldestFilesUntilStopWatermark(t *testing.T) {
+	ops := &fakeStorageOps{present: true, healthy: true}
+	m := newTestStorageManager(t, ops)
+	srcDir := filepath.Join(m.emmcRoot, "audio")
+
+	// Four aged 100-byte files (a oldest ... d newest) plus one fresh file.
+	// eMMC free starts at 40/1000 (4% < 10% start watermark) and gains 100
+	// per migrated file; after a, b, c it is 340/1000 (34% ≥ 30% stop).
+	writeAgedFile(t, filepath.Join(srcDir, "a.wav"), 100, 4*time.Hour)
+	writeAgedFile(t, filepath.Join(srcDir, "b.wav"), 100, 3*time.Hour)
+	writeAgedFile(t, filepath.Join(srcDir, "c.wav"), 100, 2*time.Hour)
+	writeAgedFile(t, filepath.Join(srcDir, "d.wav"), 100, 1*time.Hour)
+	writeAgedFile(t, filepath.Join(srcDir, "fresh.wav"), 100, 0)
+	ops.spaceFn = migrationSpaceFn(t, m, srcDir, 40, 500) // 40/1000 free initially
+
+	tickN(m, 2)
+	job := waitForMigration(t, m)
+
+	if job.Status != StorageFormatSuccess {
+		t.Fatalf("migration job = %+v, want success", job)
+	}
+	if !strings.Contains(job.Detail, "stop watermark") {
+		t.Fatalf("detail = %q, want stop-watermark completion", job.Detail)
+	}
+	if job.MovedFiles != 3 || job.MovedBytes != 300 {
+		t.Fatalf("moved = %d files / %d bytes, want 3/300", job.MovedFiles, job.MovedBytes)
+	}
+	sdDir := filepath.Join(m.cfg.MountPointOrDefault(), storageSDSubdir, "audio")
+	for _, name := range []string{"a.wav", "b.wav", "c.wav"} {
+		if _, err := os.Stat(filepath.Join(sdDir, name)); err != nil {
+			t.Fatalf("oldest file %s not migrated to SD: %v", name, err)
+		}
+		if _, err := os.Stat(filepath.Join(srcDir, name)); !os.IsNotExist(err) {
+			t.Fatalf("migrated file %s still on eMMC", name)
+		}
+	}
+	for _, name := range []string{"d.wav", "fresh.wav"} {
+		if _, err := os.Stat(filepath.Join(srcDir, name)); err != nil {
+			t.Fatalf("file %s should have stayed on eMMC: %v", name, err)
+		}
+	}
+}
+
+func TestStorageManagerMigrationDedupesAndSkipsConflicts(t *testing.T) {
+	ops := &fakeStorageOps{present: true, healthy: true}
+	m := newTestStorageManager(t, ops)
+	srcDir := filepath.Join(m.emmcRoot, "audio")
+	sdDir := filepath.Join(m.cfg.MountPointOrDefault(), storageSDSubdir, "audio")
+
+	writeAgedFile(t, filepath.Join(srcDir, "same.wav"), 100, 3*time.Hour)
+	writeAgedFile(t, filepath.Join(srcDir, "conflict.wav"), 100, 2*time.Hour)
+	// same.wav already fully copied by an interrupted run; conflict.wav
+	// exists on SD with a different size and must never be overwritten.
+	writeAgedFile(t, filepath.Join(sdDir, "same.wav"), 100, 3*time.Hour)
+	writeAgedFile(t, filepath.Join(sdDir, "conflict.wav"), 42, 2*time.Hour)
+	// A stale in-flight copy from a crashed run must be swept.
+	writeAgedFile(t, filepath.Join(sdDir, "x.wav"+migrationPartialSuffix), 10, time.Hour)
+	// Watermark can never be satisfied: free space stays below stop.
+	ops.spaceFn = func(path string) (int64, int64, error) {
+		if path == m.emmcRoot {
+			return 50, 1000, nil
+		}
+		return 1 << 30, 1 << 31, nil
+	}
+
+	tickN(m, 2)
+	job := waitForMigration(t, m)
+
+	if job.Status != StorageFormatFailed || !strings.Contains(job.Error, "1 files failed") {
+		t.Fatalf("job = %+v, want failure reporting the conflict", job)
+	}
+	// The interrupted transaction was completed: source gone, SD copy kept.
+	if _, err := os.Stat(filepath.Join(srcDir, "same.wav")); !os.IsNotExist(err) {
+		t.Fatal("deduped file still on eMMC")
+	}
+	// The conflicting file was left untouched on both sides.
+	if _, err := os.Stat(filepath.Join(srcDir, "conflict.wav")); err != nil {
+		t.Fatalf("conflicting source removed: %v", err)
+	}
+	if info, err := os.Stat(filepath.Join(sdDir, "conflict.wav")); err != nil || info.Size() != 42 {
+		t.Fatalf("conflicting SD copy modified: %v", err)
+	}
+	// Stale partial swept.
+	if _, err := os.Stat(filepath.Join(sdDir, "x.wav"+migrationPartialSuffix)); !os.IsNotExist(err) {
+		t.Fatal("stale partial not removed")
+	}
+	// Failed runs enter the retry cooldown instead of retriggering each tick.
+	m.mu.Lock()
+	retryAt := m.migrationRetryAt
+	m.mu.Unlock()
+	if retryAt.IsZero() || !retryAt.After(time.Now()) {
+		t.Fatalf("retry cooldown not set after failed run: %v", retryAt)
+	}
+}
+
+func TestStorageManagerMigrationExhaustionWarnsAndCoolsDown(t *testing.T) {
+	ops := &fakeStorageOps{present: true, healthy: true}
+	m := newTestStorageManager(t, ops)
+	// eMMC below the start watermark but the audio dir is empty: nothing to
+	// migrate, so the run must end with a diagnostic and a cooldown.
+	ops.spaceFn = func(path string) (int64, int64, error) {
+		if path == m.emmcRoot {
+			return 50, 1000, nil
+		}
+		return 1 << 30, 1 << 31, nil
+	}
+
+	tickN(m, 2)
+	job := waitForMigration(t, m)
+	if job.Status != StorageFormatSuccess || !strings.Contains(job.Detail, "no migratable files") {
+		t.Fatalf("job = %+v, want no-candidates diagnostic", job)
+	}
+	prev := job.FinishedAt
+	tickN(m, 3)
+	if got := m.Status().Migration.FinishedAt; !got.Equal(prev) {
+		t.Fatal("migration retriggered during the cooldown window")
+	}
+}
+
+func TestStorageManagerNoMigrationAboveWatermark(t *testing.T) {
+	ops := &fakeStorageOps{present: true, healthy: true, free: 1 << 30, total: 1 << 31}
+	m := newTestStorageManager(t, ops)
+	srcDir := filepath.Join(m.emmcRoot, "audio")
+	writeAgedFile(t, filepath.Join(srcDir, "a.wav"), 100, time.Hour)
+
+	tickN(m, 3)
+	if job := m.Status().Migration; job.Status != StorageFormatIdle {
+		t.Fatalf("migration ran with 50%% free space: %+v", job)
+	}
+	if _, err := os.Stat(filepath.Join(srcDir, "a.wav")); err != nil {
+		t.Fatalf("file moved despite healthy free space: %v", err)
+	}
+}
+
+func TestStorageManagerCleanupRoots(t *testing.T) {
+	ops := &fakeStorageOps{present: true, free: 1 << 30, total: 1 << 31, healthy: true}
+	m := newTestStorageManager(t, ops)
+	tickN(m, 2)
+
+	roots := m.CleanupRoots(StorageClassAudio)
+	sdDir := filepath.Join(m.cfg.MountPointOrDefault(), storageSDSubdir, "audio")
+	if len(roots) != 1 || roots[0] != sdDir {
+		t.Fatalf("cleanup roots with card = %v, want only the SD dir", roots)
+	}
+
+	ops.present = false
+	tickN(m, 2)
+	roots = m.CleanupRoots(StorageClassAudio)
+	if len(roots) != 1 || roots[0] != filepath.Join(m.emmcRoot, "audio") {
+		t.Fatalf("cleanup roots without card = %v, want only the eMMC dir", roots)
 	}
 }
 

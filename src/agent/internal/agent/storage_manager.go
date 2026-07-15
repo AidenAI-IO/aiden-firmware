@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -59,6 +60,15 @@ const (
 // storageVolumeLabel is stamped on freshly formatted cards.
 const storageVolumeLabel = "AIDEN"
 
+// Migration tuning. Only immutable, closed files are moved: the minimum age
+// guards against touching a file that is still being written.
+const (
+	migrationMinFileAge    = 60 * time.Second
+	migrationFilePause     = 100 * time.Millisecond // throttle between files
+	migrationRetryCooldown = 10 * time.Minute       // after failed/exhausted runs
+	migrationPartialSuffix = ".aiden-partial"       // in-flight copy marker on SD
+)
+
 // storageStateFileName mirrors runtime state for external processes (cmd/ota).
 const defaultStorageStatePath = "/run/aiden/storage.state"
 
@@ -86,14 +96,26 @@ type StorageFormatJob struct {
 	FinishedAt time.Time `json:"finished_at,omitempty"`
 }
 
+// StorageMigrationJob tracks the background eMMC→SD migration of older
+// governed data, triggered by the eMMC free-space watermarks.
+type StorageMigrationJob struct {
+	Status string `json:"status"` // idle | running | success | failed
+	// Detail is a human-readable summary of how the last run ended.
+	Detail     string    `json:"detail,omitempty"`
+	Error      string    `json:"error,omitempty"`
+	MovedFiles int       `json:"moved_files,omitempty"`
+	MovedBytes int64     `json:"moved_bytes,omitempty"`
+	StartedAt  time.Time `json:"started_at,omitempty"`
+	FinishedAt time.Time `json:"finished_at,omitempty"`
+}
+
 // StorageStatus is the API-facing snapshot of the storage subsystem.
 type StorageStatus struct {
-	EffectiveMode  StorageMode       `json:"effective_mode"`
-	Card           StorageCardStatus `json:"card"`
-	FallingBack    bool              `json:"falling_back"`
-	FallbackReason string            `json:"fallback_reason,omitempty"`
-	MountPoint     string            `json:"mount_point"`
-	FormatJob      StorageFormatJob  `json:"format_job"`
+	EffectiveMode StorageMode         `json:"effective_mode"`
+	Card          StorageCardStatus   `json:"card"`
+	MountPoint    string              `json:"mount_point"`
+	FormatJob     StorageFormatJob    `json:"format_job"`
+	Migration     StorageMigrationJob `json:"migration"`
 }
 
 // StorageEvent notifies subscribers that the effective mode changed.
@@ -143,14 +165,17 @@ type StorageManager struct {
 	lastEffective  StorageMode
 	ejected        bool // safe-eject latch; cleared when the card is removed
 	mountFailed    bool // avoid retrying a failing mount every tick
-	fallingBack    bool
-	fallbackReason string
 	presenceRaw    bool
 	presenceCount  int
 	subscribers    []chan StorageEvent
 	stateWriteErr  bool             // log the mirror-write failure only once
 	formatJob      StorageFormatJob // async format task state
 	autoFormatDone bool             // one auto-format attempt per insertion
+
+	migration        StorageMigrationJob
+	migrationCancel  chan struct{} // non-nil while a migration run is active
+	migrationDone    chan struct{} // closed when the migration worker exits
+	migrationRetryAt time.Time     // cooldown after a failed/exhausted run
 
 	stopOnce sync.Once
 	stop     chan struct{}
@@ -171,6 +196,7 @@ func newStorageManagerWithOps(cfg StorageConfig, ops storageSysOps, statePath, e
 		pollInterval:  2 * time.Second,
 		lastEffective: StorageModeEMMCOnly,
 		formatJob:     StorageFormatJob{Status: StorageFormatIdle},
+		migration:     StorageMigrationJob{Status: StorageFormatIdle},
 		stop:          make(chan struct{}),
 	}
 }
@@ -218,18 +244,21 @@ func (m *StorageManager) Status() StorageStatus {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return StorageStatus{
-		EffectiveMode:  deriveEffectiveMode(m.card.Mounted),
-		Card:           m.card,
-		FallingBack:    m.fallingBack,
-		FallbackReason: m.fallbackReason,
-		MountPoint:     m.cfg.MountPointOrDefault(),
-		FormatJob:      m.formatJob,
+		EffectiveMode: deriveEffectiveMode(m.card.Mounted),
+		Card:          m.card,
+		MountPoint:    m.cfg.MountPointOrDefault(),
+		FormatJob:     m.formatJob,
+		Migration:     m.migration,
 	}
 }
 
 // SafeEject syncs and unmounts the card so it can be pulled. The card is not
 // remounted until it is physically removed and reinserted.
 func (m *StorageManager) SafeEject() error {
+	// Ejecting invalidates the migration target; stop the worker first.
+	if err := m.cancelMigrationAndWait("eject"); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.formatJob.Status == StorageFormatRunning {
@@ -258,6 +287,10 @@ func (m *StorageManager) StartFormat(fs, confirm string) error {
 	}
 	if fs != StorageFormatFAT32 && fs != StorageFormatExt4 {
 		return fmt.Errorf("unsupported filesystem %q (want %s or %s)", fs, StorageFormatFAT32, StorageFormatExt4)
+	}
+	// Formatting owns the card exclusively; stop a running migration first.
+	if err := m.cancelMigrationAndWait("format"); err != nil {
+		return err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -301,6 +334,338 @@ func (m *StorageManager) runFormatJob(fs string) {
 	m.finishTransitionLocked()
 }
 
+// ----- eMMC → SD migration --------------------------------------------------
+
+// maybeStartMigrationLocked launches the background migration when a card is
+// mounted and eMMC free space fell below the start watermark. Caller holds m.mu.
+func (m *StorageManager) maybeStartMigrationLocked() {
+	if !m.card.Mounted ||
+		m.formatJob.Status == StorageFormatRunning ||
+		m.migration.Status == StorageFormatRunning {
+		return
+	}
+	if !m.migrationRetryAt.IsZero() && time.Now().Before(m.migrationRetryAt) {
+		return
+	}
+	startPct, stopPct := m.cfg.MigrateWatermarksOrDefault()
+	freePct, err := m.emmcFreePct()
+	if err != nil {
+		m.warnf("[storage] migration trigger: cannot read eMMC space at %s: %v", m.emmcRoot, err)
+		return
+	}
+	if freePct >= float64(startPct) {
+		return
+	}
+	m.migration = StorageMigrationJob{Status: StorageFormatRunning, StartedAt: time.Now()}
+	m.migrationCancel = make(chan struct{})
+	m.migrationDone = make(chan struct{})
+	m.writeStateFileLocked()
+	m.logf("[storage] eMMC free space %.1f%% is below the %d%% watermark; migrating older data to SD until %d%%",
+		freePct, startPct, stopPct)
+	go m.runMigration(m.migrationCancel, m.migrationDone, stopPct)
+}
+
+func (m *StorageManager) emmcFreePct() (float64, error) {
+	free, total, err := m.ops.SpaceInfo(m.emmcRoot)
+	if err != nil {
+		return 0, err
+	}
+	if total <= 0 {
+		return 0, fmt.Errorf("filesystem total size reported as %d", total)
+	}
+	return float64(free) / float64(total) * 100, nil
+}
+
+// requestMigrationCancelLocked signals the migration worker to stop after the
+// current file. Caller holds m.mu.
+func (m *StorageManager) requestMigrationCancelLocked(reason string) {
+	if m.migrationCancel == nil {
+		return
+	}
+	m.logf("[storage] canceling migration: %s", reason)
+	close(m.migrationCancel)
+	m.migrationCancel = nil
+}
+
+// cancelMigrationAndWait stops a running migration and waits for the worker
+// to exit, so callers (format, eject) get exclusive card access. Must be
+// called without m.mu held.
+func (m *StorageManager) cancelMigrationAndWait(reason string) error {
+	m.mu.Lock()
+	m.requestMigrationCancelLocked(reason)
+	done := m.migrationDone
+	m.mu.Unlock()
+	if done == nil {
+		return nil
+	}
+	select {
+	case <-done:
+		return nil
+	case <-time.After(15 * time.Second):
+		return fmt.Errorf("migration is still stopping; retry %s shortly", reason)
+	}
+}
+
+// runMigration moves the oldest migratable files from eMMC to the SD card
+// until the stop watermark is reached, no eligible files remain, or the run
+// is canceled. Every failure path logs with full context.
+func (m *StorageManager) runMigration(cancel <-chan struct{}, done chan<- struct{}, stopPct int) {
+	defer close(done)
+
+	movedFiles := 0
+	var movedBytes int64
+	finish := func(status, detail, errText string, cooldown bool) {
+		m.mu.Lock()
+		m.migration.Status = status
+		m.migration.Detail = detail
+		m.migration.Error = errText
+		m.migration.MovedFiles = movedFiles
+		m.migration.MovedBytes = movedBytes
+		m.migration.FinishedAt = time.Now()
+		m.migrationCancel = nil
+		m.migrationDone = nil
+		if cooldown {
+			m.migrationRetryAt = time.Now().Add(migrationRetryCooldown)
+		}
+		m.writeStateFileLocked()
+		m.mu.Unlock()
+		if errText != "" {
+			m.warnf("[storage] migration finished: %s (%s); moved %d files / %d bytes", detail, errText, movedFiles, movedBytes)
+		} else {
+			m.logf("[storage] migration finished: %s; moved %d files / %d bytes", detail, movedFiles, movedBytes)
+		}
+	}
+
+	srcDir := m.emmcClassDir(StorageClassAudio)
+	m.mu.Lock()
+	dstDir := m.sdClassDir(m.cfg.MountPointOrDefault(), StorageClassAudio)
+	m.mu.Unlock()
+	if err := os.MkdirAll(dstDir, 0o755); err != nil {
+		finish(StorageFormatFailed, "cannot create SD target directory "+dstDir, err.Error(), true)
+		return
+	}
+	m.cleanStalePartials(dstDir)
+
+	// Snapshot the candidates once, oldest first. Files created after this
+	// point are by definition the newest and are never migration targets in
+	// this run.
+	candidates, err := m.listMigratable(srcDir)
+	if err != nil {
+		finish(StorageFormatFailed, "cannot list "+srcDir, err.Error(), true)
+		return
+	}
+	if len(candidates) == 0 {
+		finish(StorageFormatSuccess,
+			"no migratable files (only system data or files still in use occupy eMMC); free space remains below the watermark",
+			"", true)
+		return
+	}
+
+	failedFiles := 0
+	for _, candidate := range candidates {
+		select {
+		case <-cancel:
+			finish(StorageFormatSuccess, "canceled", "", false)
+			return
+		default:
+		}
+
+		freePct, err := m.emmcFreePct()
+		if err != nil {
+			finish(StorageFormatFailed, "cannot read eMMC space during migration", err.Error(), true)
+			return
+		}
+		if freePct >= float64(stopPct) {
+			finish(StorageFormatSuccess, fmt.Sprintf("reached the %d%% stop watermark", stopPct), "", false)
+			return
+		}
+		m.mu.Lock()
+		mounted := m.card.Mounted
+		m.mu.Unlock()
+		if !mounted {
+			finish(StorageFormatFailed, "card no longer mounted", "migration aborted", true)
+			return
+		}
+
+		size, err := m.migrateOneFile(filepath.Join(srcDir, candidate), filepath.Join(dstDir, candidate))
+		if err != nil {
+			failedFiles++
+			m.warnf("[storage] migrate %s -> %s failed: %v", filepath.Join(srcDir, candidate), dstDir, err)
+			continue // a single bad file must not stall the whole run
+		}
+		movedFiles++
+		movedBytes += size
+		m.logf("[storage] migrated %s (%d bytes) to SD", candidate, size)
+		m.mu.Lock()
+		m.migration.MovedFiles = movedFiles
+		m.migration.MovedBytes = movedBytes
+		m.writeStateFileLocked()
+		m.mu.Unlock()
+
+		// Throttle so recordings and system IO are not starved.
+		select {
+		case <-cancel:
+			finish(StorageFormatSuccess, "canceled", "", false)
+			return
+		case <-time.After(migrationFilePause):
+		}
+	}
+
+	// Candidates exhausted: re-check where that left us.
+	detail := "all migratable files moved; free space remains below the stop watermark"
+	cooldown := true
+	if freePct, err := m.emmcFreePct(); err == nil && freePct >= float64(stopPct) {
+		detail = fmt.Sprintf("reached the %d%% stop watermark", stopPct)
+		cooldown = false
+	}
+	errText := ""
+	status := StorageFormatSuccess
+	if failedFiles > 0 {
+		status = StorageFormatFailed
+		errText = fmt.Sprintf("%d files failed to migrate", failedFiles)
+		cooldown = true
+	}
+	finish(status, detail, errText, cooldown)
+}
+
+// listMigratable returns basenames of regular files in dir older than
+// migrationMinFileAge, oldest first.
+func (m *StorageManager) listMigratable(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	type fileAge struct {
+		name    string
+		modTime time.Time
+	}
+	cutoff := time.Now().Add(-migrationMinFileAge)
+	var files []fileAge
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			m.warnf("[storage] migration: stat %s: %v", filepath.Join(dir, entry.Name()), err)
+			continue
+		}
+		if !info.Mode().IsRegular() || info.ModTime().After(cutoff) {
+			continue
+		}
+		files = append(files, fileAge{name: entry.Name(), modTime: info.ModTime()})
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].modTime.Before(files[j].modTime) })
+	names := make([]string, len(files))
+	for i, f := range files {
+		names[i] = f.name
+	}
+	return names, nil
+}
+
+// migrateOneFile is the idempotent per-file transaction:
+// copy to a .aiden-partial temp name → fsync → verify size → rename →
+// delete source. A crash at any point leaves either both copies (resolved by
+// the destination-exists check on the next run and by eMMC-first ReadRoots)
+// or the migrated file only.
+func (m *StorageManager) migrateOneFile(src, dst string) (int64, error) {
+	info, err := os.Stat(src)
+	if err != nil {
+		return 0, fmt.Errorf("stat source: %w", err)
+	}
+	if dstInfo, err := os.Stat(dst); err == nil {
+		if dstInfo.Size() == info.Size() {
+			// Left over from an interrupted run: the copy completed but the
+			// source was not deleted. Just finish the transaction.
+			if err := os.Remove(src); err != nil {
+				return 0, fmt.Errorf("destination already migrated but removing source failed: %w", err)
+			}
+			m.logf("[storage] migration: %s already on SD (same size); removed eMMC copy", filepath.Base(src))
+			return info.Size(), nil
+		}
+		return 0, fmt.Errorf("destination exists with different size (src %d, dst %d); refusing to overwrite", info.Size(), dstInfo.Size())
+	}
+
+	partial := dst + migrationPartialSuffix
+	if err := copyFileSync(src, partial); err != nil {
+		if rmErr := os.Remove(partial); rmErr != nil && !os.IsNotExist(rmErr) {
+			m.warnf("[storage] migration: cleanup of %s failed: %v", partial, rmErr)
+		}
+		return 0, err
+	}
+	partialInfo, err := os.Stat(partial)
+	if err != nil {
+		return 0, fmt.Errorf("stat copied file: %w", err)
+	}
+	if partialInfo.Size() != info.Size() {
+		if rmErr := os.Remove(partial); rmErr != nil {
+			m.warnf("[storage] migration: cleanup of %s failed: %v", partial, rmErr)
+		}
+		return 0, fmt.Errorf("size mismatch after copy (src %d, copy %d)", info.Size(), partialInfo.Size())
+	}
+	// The rename is the commit point: only then does the file appear under
+	// its real name on the SD card.
+	if err := os.Rename(partial, dst); err != nil {
+		if rmErr := os.Remove(partial); rmErr != nil {
+			m.warnf("[storage] migration: cleanup of %s failed: %v", partial, rmErr)
+		}
+		return 0, fmt.Errorf("commit rename: %w", err)
+	}
+	if err := os.Remove(src); err != nil {
+		return 0, fmt.Errorf("copied to SD but removing eMMC source failed: %w", err)
+	}
+	return info.Size(), nil
+}
+
+// cleanStalePartials removes leftover in-flight copies from interrupted runs.
+func (m *StorageManager) cleanStalePartials(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			m.warnf("[storage] migration: cannot scan %s for stale partial files: %v", dir, err)
+		}
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), migrationPartialSuffix) {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		if err := os.Remove(path); err != nil {
+			m.warnf("[storage] migration: cannot remove stale partial %s: %v", path, err)
+		} else {
+			m.logf("[storage] migration: removed stale partial %s", path)
+		}
+	}
+}
+
+func copyFileSync(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("open source: %w", err)
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("create copy: %w", err)
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return fmt.Errorf("copy data: %w", err)
+	}
+	if err := out.Sync(); err != nil {
+		out.Close()
+		return fmt.Errorf("sync copy: %w", err)
+	}
+	if err := out.Close(); err != nil {
+		return fmt.Errorf("close copy: %w", err)
+	}
+	return nil
+}
+
 // Subscribe returns a channel that receives an event whenever the effective
 // mode changes. Events are dropped rather than blocking the manager.
 func (m *StorageManager) Subscribe() <-chan StorageEvent {
@@ -312,51 +677,51 @@ func (m *StorageManager) Subscribe() <-chan StorageEvent {
 }
 
 // ResolveDir returns the directory new data of the given class should be
-// written to, creating it if needed. In dual mode a failed SD write path
-// falls back to eMMC, subject to the eMMC free-space reserve, and raises the
-// falling-back flag surfaced via Status.
+// written to, creating it if needed. New data always lands on eMMC (fast,
+// reliable, unaffected by card removal); the background migrator moves
+// older files to the SD card when eMMC runs low (see runMigration).
 func (m *StorageManager) ResolveDir(class StorageDataClass) (string, error) {
-	m.mu.Lock()
-	mode := deriveEffectiveMode(m.card.Mounted)
-	mountPoint := m.cfg.MountPointOrDefault()
-	m.mu.Unlock()
-
-	if mode == StorageModeDual {
-		sdDir := m.sdClassDir(mountPoint, class)
-		if err := os.MkdirAll(sdDir, 0o755); err == nil {
-			m.setFallback(false, "")
-			return sdDir, nil
-		} else {
-			m.logf("[storage] SD dir %s unavailable, falling back to eMMC: %v", sdDir, err)
-			m.setFallback(true, err.Error())
-		}
-	}
 	dir := m.emmcClassDir(class)
-	if mode == StorageModeDual {
-		// Fallback writes must not starve the system partition.
-		if err := m.checkEMMCReserve(dir); err != nil {
-			return "", err
-		}
-	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("create %s: %w", dir, err)
 	}
 	return dir, nil
 }
 
-// ReadRoots returns every root that may hold data of the given class, SD
-// first. Callers merge their views across all roots.
+// ReadRoots returns every root that may hold data of the given class, eMMC
+// first. Callers merge their views across all roots; during the migration
+// crash window a file may briefly exist on both stores, and the eMMC copy is
+// authoritative until the source is deleted, so first-hit readers resolve
+// duplicates correctly.
 func (m *StorageManager) ReadRoots(class StorageDataClass) []string {
 	m.mu.Lock()
 	mounted := m.card.Mounted
 	mountPoint := m.cfg.MountPointOrDefault()
 	m.mu.Unlock()
 
-	var roots []string
+	roots := []string{m.emmcClassDir(class)}
 	if mounted {
 		roots = append(roots, m.sdClassDir(mountPoint, class))
 	}
-	return append(roots, m.emmcClassDir(class))
+	return roots
+}
+
+// CleanupRoots returns the roots whose contents are subject to the
+// audio-archive retention limits. With a mounted card, eMMC space is managed
+// by watermark migration, so the limits apply to the SD side only (the final
+// eviction tier). Without a card the limits keep the eMMC store bounded as
+// before — note that this can mass-evict files that migration had allowed to
+// accumulate, which the archive cleanup logs.
+func (m *StorageManager) CleanupRoots(class StorageDataClass) []string {
+	m.mu.Lock()
+	mounted := m.card.Mounted
+	mountPoint := m.cfg.MountPointOrDefault()
+	m.mu.Unlock()
+
+	if mounted {
+		return []string{m.sdClassDir(mountPoint, class)}
+	}
+	return []string{m.emmcClassDir(class)}
 }
 
 func (m *StorageManager) sdClassDir(mountPoint string, class StorageDataClass) string {
@@ -374,40 +739,6 @@ func (m *StorageManager) emmcClassDir(class StorageDataClass) string {
 	default:
 		return filepath.Join(m.emmcRoot, string(class))
 	}
-}
-
-func (m *StorageManager) checkEMMCReserve(dir string) error {
-	probe := dir
-	for {
-		if _, err := os.Stat(probe); err == nil {
-			break
-		}
-		parent := filepath.Dir(probe)
-		if parent == probe {
-			break
-		}
-		probe = parent
-	}
-	free, _, err := m.ops.SpaceInfo(probe)
-	if err != nil {
-		return nil // cannot measure; do not block writes on it
-	}
-	reserve := int64(m.cfg.EMMCReserveMBOrDefault()) * 1024 * 1024
-	if free < reserve {
-		return fmt.Errorf("eMMC free space %d bytes is below the %d MB reserve; refusing fallback write", free, m.cfg.EMMCReserveMBOrDefault())
-	}
-	return nil
-}
-
-func (m *StorageManager) setFallback(active bool, reason string) {
-	m.mu.Lock()
-	changed := m.fallingBack != active
-	m.fallingBack = active
-	m.fallbackReason = reason
-	if changed {
-		m.writeStateFileLocked()
-	}
-	m.mu.Unlock()
 }
 
 // tick is one poll cycle: debounce presence, then reconcile mount state.
@@ -449,6 +780,7 @@ func (m *StorageManager) tick() {
 		m.autoFormatDone = false
 		m.tryMountLocked()
 	case !present && m.card.Present:
+		m.requestMigrationCancelLocked("card removed")
 		if m.card.Mounted {
 			m.unmountLocked(true, "card removed")
 		}
@@ -458,6 +790,7 @@ func (m *StorageManager) tick() {
 		m.autoFormatDone = false
 	case present && m.card.Mounted:
 		if !m.ops.Healthy(m.cfg.MountPointOrDefault()) {
+			m.requestMigrationCancelLocked("card unresponsive")
 			m.unmountLocked(true, "card unresponsive (removed or IO failure)")
 		} else {
 			m.refreshSpaceLocked()
@@ -468,6 +801,7 @@ func (m *StorageManager) tick() {
 			m.tryMountLocked()
 		}
 	}
+	m.maybeStartMigrationLocked()
 	m.finishTransitionLocked()
 }
 
@@ -547,11 +881,6 @@ func (m *StorageManager) finishTransitionLocked() {
 		return
 	}
 	m.lastEffective = effective
-	if effective == StorageModeEMMCOnly {
-		// Fallback status is meaningless once we are eMMC-only by mode.
-		m.fallingBack = false
-		m.fallbackReason = ""
-	}
 	m.logf("[storage] effective mode -> %d (card mounted %t)", effective, m.card.Mounted)
 	for _, ch := range m.subscribers {
 		select {
@@ -584,12 +913,16 @@ func (m *StorageManager) writeStateFileLocked() {
 	writeKV("EFFECTIVE_MODE", fmt.Sprintf("%d", deriveEffectiveMode(m.card.Mounted)))
 	writeKV("SD_TOTAL_BYTES", fmt.Sprintf("%d", m.card.TotalBytes))
 	writeKV("SD_FREE_BYTES", fmt.Sprintf("%d", m.card.FreeBytes))
-	writeKV("FALLING_BACK", bool01(m.fallingBack))
 	writeKV("REASON", strings.ReplaceAll(m.card.Reason, "\n", " "))
 	writeKV("FORMAT_STATUS", m.formatJob.Status)
 	writeKV("FORMAT_FS", m.formatJob.FS)
 	writeKV("FORMAT_AUTO", bool01(m.formatJob.Auto))
 	writeKV("FORMAT_ERROR", strings.ReplaceAll(m.formatJob.Error, "\n", " "))
+	writeKV("MIGRATE_STATUS", m.migration.Status)
+	writeKV("MIGRATE_DETAIL", strings.ReplaceAll(m.migration.Detail, "\n", " "))
+	writeKV("MIGRATE_ERROR", strings.ReplaceAll(m.migration.Error, "\n", " "))
+	writeKV("MIGRATE_MOVED_FILES", fmt.Sprintf("%d", m.migration.MovedFiles))
+	writeKV("MIGRATE_MOVED_BYTES", fmt.Sprintf("%d", m.migration.MovedBytes))
 
 	tmp := m.statePath + ".tmp"
 	err := os.MkdirAll(filepath.Dir(m.statePath), 0o755)
@@ -607,6 +940,12 @@ func (m *StorageManager) writeStateFileLocked() {
 func (m *StorageManager) logf(format string, args ...interface{}) {
 	if m.logger != nil {
 		m.logger.Info(format, args...)
+	}
+}
+
+func (m *StorageManager) warnf(format string, args ...interface{}) {
+	if m.logger != nil {
+		m.logger.Warn(format, args...)
 	}
 }
 

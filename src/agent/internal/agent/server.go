@@ -4643,8 +4643,11 @@ const webUI = `<!DOCTYPE html>
             let warn = '';
             if (status.format_job && status.format_job.status === 'running') {
                 warn = 'Formatting card (' + status.format_job.fs + ')...';
-            } else if (status.falling_back) {
-                warn = 'SD write failed; data is being written to internal storage. ' + (status.fallback_reason || '');
+            } else if (status.migration && status.migration.status === 'running') {
+                warn = 'eMMC is filling up; migrating older recordings to SD (' +
+                    (status.migration.moved_files || 0) + ' files moved)...';
+            } else if (status.migration && status.migration.status === 'failed') {
+                warn = 'Storage migration failed: ' + (status.migration.error || status.migration.detail || 'unknown error');
             } else if (status.card.reason) {
                 warn = 'Card issue: ' + status.card.reason;
             }

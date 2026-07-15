@@ -4375,7 +4375,6 @@ ApiResponse handle_get_storage_status(const Options& options) {
     cJSON_AddNumberToObject(root, "effective_mode", storage_state_int(kv, "EFFECTIVE_MODE", 1));
     cJSON_AddNumberToObject(root, "total_bytes", storage_state_double(kv, "SD_TOTAL_BYTES"));
     cJSON_AddNumberToObject(root, "free_bytes", storage_state_double(kv, "SD_FREE_BYTES"));
-    cJSON_AddBoolToObject(root, "falling_back", storage_state_flag(kv, "FALLING_BACK") ? 1 : 0);
     cJSON_AddStringToObject(root, "reason", storage_state_string(kv, "REASON").c_str());
 
     cJSON* job = cJSON_CreateObject();
@@ -4385,6 +4384,15 @@ ApiResponse handle_get_storage_status(const Options& options) {
     cJSON_AddBoolToObject(job, "auto", storage_state_flag(kv, "FORMAT_AUTO") ? 1 : 0);
     cJSON_AddStringToObject(job, "error", storage_state_string(kv, "FORMAT_ERROR").c_str());
     cJSON_AddItemToObject(root, "format_job", job);
+
+    cJSON* migration = cJSON_CreateObject();
+    std::string migrate_status = storage_state_string(kv, "MIGRATE_STATUS");
+    cJSON_AddStringToObject(migration, "status", migrate_status.empty() ? "idle" : migrate_status.c_str());
+    cJSON_AddStringToObject(migration, "detail", storage_state_string(kv, "MIGRATE_DETAIL").c_str());
+    cJSON_AddStringToObject(migration, "error", storage_state_string(kv, "MIGRATE_ERROR").c_str());
+    cJSON_AddNumberToObject(migration, "moved_files", storage_state_int(kv, "MIGRATE_MOVED_FILES", 0));
+    cJSON_AddNumberToObject(migration, "moved_bytes", storage_state_double(kv, "MIGRATE_MOVED_BYTES"));
+    cJSON_AddItemToObject(root, "migration", migration);
     return make_json_ok(root);
 }
 

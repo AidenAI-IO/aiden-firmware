@@ -44,13 +44,16 @@ func (m *AudioArchiveManager) writeDir() string {
 	return m.config.StoragePathOrDefault()
 }
 
-// readDirs returns every directory that may hold recordings, write dir first.
-func (m *AudioArchiveManager) readDirs() []string {
+// cleanupRoots returns the directories the retention limits apply to. With
+// the storage manager present, eMMC space is governed by watermark migration
+// and the limits act as the final eviction tier (SD when a card is mounted,
+// eMMC otherwise); an explicit storage_path bypasses all of that.
+func (m *AudioArchiveManager) cleanupRoots() []string {
 	if strings.TrimSpace(m.config.StoragePath) != "" {
 		return []string{m.config.StoragePathOrDefault()}
 	}
 	if m.storage != nil {
-		return m.storage.ReadRoots(StorageClassAudio)
+		return m.storage.CleanupRoots(StorageClassAudio)
 	}
 	return []string{m.config.StoragePathOrDefault()}
 }
@@ -96,12 +99,11 @@ func (m *AudioArchiveManager) SaveAudio(samples []int16, sampleRate int) (string
 	return filePath, durationMs, nil
 }
 
-// cleanup applies the max_files and max_size_mb limits to every root that
-// may hold recordings, so the store that is not currently written to (e.g.
-// eMMC while the SD card is active) stays bounded too.
+// cleanup applies the max_files and max_size_mb limits to the eviction-tier
+// roots (see cleanupRoots).
 func (m *AudioArchiveManager) cleanup() error {
 	var firstErr error
-	for _, root := range m.readDirs() {
+	for _, root := range m.cleanupRoots() {
 		if err := m.cleanupDir(root); err != nil && !os.IsNotExist(err) && firstErr == nil {
 			firstErr = err
 		}
@@ -156,6 +158,8 @@ func (m *AudioArchiveManager) cleanupDir(storagePath string) error {
 	}
 
 	// Delete oldest files until under limits
+	removedFiles := 0
+	var removedBytes int64
 	for len(files) > maxFiles || totalSize > maxSizeBytes {
 		if len(files) == 0 {
 			break
@@ -165,8 +169,14 @@ func (m *AudioArchiveManager) cleanupDir(storagePath string) error {
 		if err := os.Remove(oldest.path); err != nil {
 			return fmt.Errorf("remove %s: %w", oldest.path, err)
 		}
+		removedFiles++
+		removedBytes += oldest.size
 		files = files[1:]
 		totalSize -= oldest.size
+	}
+	if removedFiles > 0 {
+		fmt.Fprintf(os.Stderr, "[audio_archive] evicted %d oldest recordings (%d bytes) from %s to stay within max_files=%d/max_size_mb=%d\n",
+			removedFiles, removedBytes, storagePath, maxFiles, m.config.MaxSizeMBOrDefault())
 	}
 
 	return nil

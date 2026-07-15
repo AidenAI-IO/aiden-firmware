@@ -117,7 +117,11 @@ type StorageConfig struct {
 	MountPoint    string `toml:"mount_point,omitempty"`
 	Device        string `toml:"device,omitempty"`
 	MinCardFreeMB int    `toml:"min_card_free_mb,omitempty"`
-	EMMCReserveMB int    `toml:"emmc_reserve_mb,omitempty"`
+	// Watermarks for the background migration of older governed data from
+	// eMMC to the SD card: migration starts when eMMC free space drops
+	// below MigrateStartFreePct and stops once it reaches MigrateStopFreePct.
+	MigrateStartFreePct int `toml:"migrate_start_free_pct,omitempty"`
+	MigrateStopFreePct  int `toml:"migrate_stop_free_pct,omitempty"`
 }
 
 // MountPointOrDefault returns MountPoint if non-empty, else "/mnt/sdcard".
@@ -146,12 +150,22 @@ func (c StorageConfig) MinCardFreeMBOrDefault() int {
 	return c.MinCardFreeMB
 }
 
-// EMMCReserveMBOrDefault returns EMMCReserveMB if positive, else 256.
-func (c StorageConfig) EMMCReserveMBOrDefault() int {
-	if c.EMMCReserveMB <= 0 {
-		return defaultStorageEMMCReserveMB
+// MigrateWatermarksOrDefault returns the (start, stop) free-space
+// percentages for eMMC→SD migration. Defaults: start below 10%, stop at
+// 30%. An inverted or out-of-range pair falls back to the defaults so a
+// bad config cannot disable or loop the migrator.
+func (c StorageConfig) MigrateWatermarksOrDefault() (int, int) {
+	start, stop := c.MigrateStartFreePct, c.MigrateStopFreePct
+	if start <= 0 {
+		start = defaultStorageMigrateStartFreePct
 	}
-	return c.EMMCReserveMB
+	if stop <= 0 {
+		stop = defaultStorageMigrateStopFreePct
+	}
+	if start >= stop || stop > 95 {
+		return defaultStorageMigrateStartFreePct, defaultStorageMigrateStopFreePct
+	}
+	return start, stop
 }
 
 // LogConfig controls local runtime log retention.

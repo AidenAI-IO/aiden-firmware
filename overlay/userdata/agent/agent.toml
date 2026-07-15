@@ -69,12 +69,15 @@ api_key = "OPENAI_API_KEY"
 
 # microSD storage tuning (optional; see docs/04-agent/storage-modes.md)
 # Storage mode is automatic: a usable card means dual storage, otherwise
-# eMMC only. There is no mode setting.
+# eMMC only. New data is always written to eMMC; when eMMC free space drops
+# below migrate_start_free_pct, the oldest recordings are moved to the SD
+# card until free space is back at migrate_stop_free_pct.
 [storage]
-# mount_point = "/mnt/sdcard"   # Where a usable card is mounted
-# device = "mmcblk2"            # SD card block device base name
-# min_card_free_mb = 64         # Cards with less free space are rejected
-# emmc_reserve_mb = 256         # Fallback writes keep this much eMMC free
+# mount_point = "/mnt/sdcard"       # Where a usable card is mounted
+# device = "mmcblk2"                # SD card block device base name
+# min_card_free_mb = 64             # Cards with less free space are rejected
+# migrate_start_free_pct = 10       # Start migrating below this eMMC free %
+# migrate_stop_free_pct = 30        # Stop once eMMC free % reaches this
 
 # Log retention configuration
 [log]
