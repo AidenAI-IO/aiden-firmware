@@ -1,6 +1,7 @@
 {
-  "global_reset": {},
   "name": "perception_v1",
+  "suite_category": "Perception & Control",
+  "global_reset": {},
   "tasks": [
     {
       "id": "find_settings_iphone",
