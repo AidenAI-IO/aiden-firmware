@@ -8,6 +8,8 @@ Implementations in this repository:
 
 - Go agent device bridge: fixed concurrency `1`.
 - MobileGym bridge: concurrency equals the started env pool size.
+- ADB Android bridge (`benchmark/adbandroid/`, see its README): drives an
+  Android emulator or physical device through adb; fixed concurrency `1`.
 
 ## Required Endpoints
 

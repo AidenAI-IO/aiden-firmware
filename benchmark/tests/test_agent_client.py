@@ -61,6 +61,32 @@ def test_chat_returns_response_and_history():
     assert resp.history == history
 
 
+def test_chat_long_polls_async_result_until_complete():
+    history = [
+        {"type": "user", "content": "请打开设置"},
+        {"type": "assistant", "content": "done"},
+    ]
+    seen = []
+    responses = [
+        FakeResponse(200, {"request_id": "req-1"}),
+        FakeResponse(200, {"status": "complete", "response": "done", "history": history}),
+    ]
+
+    def fake_urlopen(req, timeout=None):
+        seen.append((req.full_url, req.get_method(), timeout))
+        return responses.pop(0)
+
+    client = AgentClient(base_url="http://test")
+    with patch("urllib.request.urlopen", fake_urlopen):
+        resp = client.chat("请打开设置", timeout_sec=30)
+
+    assert resp.response == "done"
+    assert resp.history == history
+    assert seen[0][0].endswith("/api/chat")
+    assert seen[1][0].endswith("/api/chat/result?request_id=req-1&wait=true")
+    assert seen[1][2] == 30
+
+
 def test_get_history_returns_current_history():
     history = [{"type": "tool_call", "tool_name": "screenshot"}]
     seen = {}
