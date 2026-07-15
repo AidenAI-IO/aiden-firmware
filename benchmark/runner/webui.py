@@ -3831,7 +3831,7 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     // Suite category display order
-    const CATEGORY_ORDER = ['Basic Operations', 'Application Scenarios', 'Perception & Control', 'End-to-End Workflow', 'Memory & Cognition', 'MobileGym', 'Other'];
+    const CATEGORY_ORDER = ['Basic Operations', 'Application Scenarios', 'End-to-End Workflow', 'Perception & Control', 'Memory & Cognition', 'MobileGym', 'Other'];
 
     // Track collapsed category state across re-renders
     const collapsedCategories = new Set();
