@@ -160,10 +160,8 @@ On iOS, if Phone Bridge context says the Aiden companion app is backgrounded/ina
 
 Directional swipe names describe finger movement, not content direction:
 
-- `swipe_up`: finger moves up; content usually moves down to lower/newer items.
-- `swipe_down`: finger moves down; content usually moves up to upper/older items.
-
-In chat/message history, to see older messages above the current viewport, usually use `swipe_down` inside the message list.
+- `swipe_up`: finger moves up → viewport scrolls down → reveals content below.
+- `swipe_down`: finger moves down → viewport scrolls up → reveals content above.
 
 Scrollable region discipline:
 
