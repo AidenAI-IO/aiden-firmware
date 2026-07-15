@@ -5,6 +5,7 @@ import (
 	"io"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 var (
@@ -258,8 +259,18 @@ func (w *TTSTagStreamWriter) Write(p []byte) (int, error) {
 
 		idx := bytes.Index(asciiLowerBytes(w.pending), []byte(ttsEndTag))
 		if idx >= 0 {
-			if err := w.writeTTSBytes(w.pending[:idx]); err != nil {
-				return 0, err
+			// Find the longest valid UTF-8 prefix before the end tag
+			skipBytes := 0
+			for idx > skipBytes {
+				safeIdx := validUTF8PrefixLen(w.pending[skipBytes:], idx-skipBytes)
+				if safeIdx > 0 {
+					if err := w.writeTTSBytes(w.pending[skipBytes : skipBytes+safeIdx]); err != nil {
+						return 0, err
+					}
+					break
+				}
+				// Skip this invalid leading byte
+				skipBytes++
 			}
 			w.pending = w.pending[idx+len(ttsEndTag):]
 			w.inTTS = false
@@ -270,6 +281,17 @@ func (w *TTSTagStreamWriter) Write(p []byte) (int, error) {
 		if safeLen <= 0 {
 			return len(p), nil
 		}
+		safeLen = validUTF8PrefixLen(w.pending, safeLen)
+		if safeLen <= 0 {
+			// Check if the first byte is a valid rune start
+			if len(w.pending) > 0 && utf8.RuneStart(w.pending[0]) {
+				// Incomplete multi-byte sequence; keep it and wait for more data
+				return len(p), nil
+			}
+			// Invalid byte; drop it to avoid stalling
+			w.pending = w.pending[1:]
+			continue
+		}
 		if err := w.writeTTSBytes(w.pending[:safeLen]); err != nil {
 			return 0, err
 		}
@@ -277,6 +299,62 @@ func (w *TTSTagStreamWriter) Write(p []byte) (int, error) {
 		return len(p), nil
 	}
 	return len(p), nil
+}
+
+func validUTF8PrefixLen(buf []byte, n int) int {
+	if n > len(buf) {
+		n = len(buf)
+	}
+	if n <= 0 {
+		return 0
+	}
+
+	// Fast path: if already valid UTF-8, return immediately
+	if utf8.Valid(buf[:n]) {
+		return n
+	}
+
+	// Slow path: find the last complete rune boundary within the last UTFMax bytes
+	start := n - 1
+	lower := n - utf8.UTFMax
+	if lower < 0 {
+		lower = 0
+	}
+	for start >= lower && !utf8.RuneStart(buf[start]) {
+		start--
+	}
+
+	// If we found a rune start and there's valid content before it, truncate there
+	if start >= lower {
+		if start > 0 && utf8.Valid(buf[:start]) {
+			return start
+		}
+		// The rune start we found is at position 0 or itself part of invalid sequence
+		// Keep scanning backwards to find a valid boundary (skip position 0)
+		for i := start - 1; i > 0; i-- {
+			if utf8.Valid(buf[:i]) {
+				return i
+			}
+		}
+		// If we're here, start is 0 or all positions checked are invalid
+		// Check if position 0 itself is valid
+		if start == 0 && utf8.Valid(buf[:1]) {
+			return 1
+		}
+		return 0
+	}
+
+	// No rune start found in scan window - scan entire buffer for last valid boundary
+	for i := n - 1; i > 0; i-- {
+		if utf8.Valid(buf[:i]) {
+			return i
+		}
+	}
+	// Last resort: check if first byte is valid
+	if utf8.Valid(buf[:1]) {
+		return 1
+	}
+	return 0
 }
 
 func (w *TTSTagStreamWriter) writeTTSBytes(p []byte) error {

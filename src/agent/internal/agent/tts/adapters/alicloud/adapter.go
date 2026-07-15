@@ -328,6 +328,27 @@ func (s *session) Close() error {
 	return s.Err()
 }
 
+func (s *session) Abort() error {
+	s.closeOnce.Do(func() {
+		if err := s.sink.Stop(); err != nil {
+			s.recordErr(fmt.Errorf("abort stop: %w", err))
+		}
+
+		s.writeMu.Lock()
+		if s.conn != nil {
+			if err := s.conn.Close(); err != nil {
+				s.recordErr(fmt.Errorf("abort close: %w", err))
+			}
+			s.conn = nil
+		}
+		s.writeMu.Unlock()
+
+		// Wait for reader to exit (will error out on closed connection)
+		<-s.readDone
+	})
+	return s.Err()
+}
+
 func (s *session) Err() error {
 	s.errMu.Lock()
 	defer s.errMu.Unlock()
