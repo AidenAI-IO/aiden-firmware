@@ -9,10 +9,10 @@ import (
 )
 
 const (
-	wheelNudgeMinPerColumn    = 10
+	wheelNudgeMinPerColumn    = 12
 	wheelNudgeMaxPerColumn    = 64
 	wheelNudgeMaxTotal        = 128
-	wheelNudgeRetrySlack      = 2
+	wheelNudgeRetrySlack      = 4
 	wheelNudgeCenterTolerance = 60.0
 	wheelNudgeColumnTolerance = 60.0
 	wheelNudgeActionBarInset  = 100.0
@@ -59,7 +59,6 @@ type wheelNudgeAttempt struct {
 type wheelNudgeObservation struct {
 	beforeValue int
 	direction   string
-	maxRows     int
 	cycleSize   int
 	cycleStart  int
 }
@@ -130,11 +129,22 @@ func (g *wheelNudgeGuard) BeforeToolCall(_ context.Context, call ToolCall) (Tool
 				message := fmt.Sprintf("the previous finger-%s nudge changed %d -> %d; report value_step from the latest visible row ordering before the next movement", column.pending.direction, column.pending.beforeValue, *args.CurrentValue)
 				return invalidWheelResult(message, map[string]any{"column_x": representativeX, "value_step_required": true, "retry_same_column": true}), false
 			}
-			if !wheelObservationMatchesStep(*column.pending, *args.CurrentValue, *args.ValueStep) {
-				message := fmt.Sprintf("wheel observed movement mismatch: the previous finger-%s nudge changed %d -> %d, which does not match value_step=%d", column.pending.direction, column.pending.beforeValue, *args.CurrentValue, *args.ValueStep)
-				return invalidWheelResult(message, map[string]any{
-					"column_x": representativeX, "retry_same_column": true,
-				}), false
+			observedRows, observedOK := wheelObservationRows(*column.pending, *args.CurrentValue, *args.ValueStep)
+			oppositeRows, oppositeOK := wheelObservationRows(*column.pending, *args.CurrentValue, -*args.ValueStep)
+			if !observedOK || (oppositeOK && oppositeRows < observedRows) {
+				requiredStep := -*args.ValueStep
+				requiredSign := "positive"
+				if requiredStep < 0 {
+					requiredSign = "negative"
+				}
+				details := map[string]any{"column_x": representativeX, "retry_same_column": true}
+				message := fmt.Sprintf("wheel observed direction mismatch: the previous finger-%s nudge changed %d -> %d; this movement requires value_step with %s sign, got %d", column.pending.direction, column.pending.beforeValue, *args.CurrentValue, requiredSign, *args.ValueStep)
+				if oppositeOK {
+					details["required_value_step_sign"] = requiredSign
+				} else {
+					message = fmt.Sprintf("wheel observed movement mismatch: the previous finger-%s nudge changed %d -> %d, which is not reachable by value_step=%d", column.pending.direction, column.pending.beforeValue, *args.CurrentValue, *args.ValueStep)
+				}
+				return invalidWheelResult(message, details), false
 			}
 			column.direction = wheelIncreasingDirectionFromVisibleStep(*args.ValueStep)
 			column.pending = nil
@@ -235,7 +245,6 @@ func (g *wheelNudgeGuard) AfterToolCall(_ context.Context, call ToolCall, result
 			column.pending = &wheelNudgeObservation{
 				beforeValue: *attempt.args.CurrentValue,
 				direction:   attempt.plan.direction,
-				maxRows:     attempt.plan.rows,
 				cycleSize:   *attempt.args.CycleSize,
 				cycleStart:  *attempt.args.CycleStart,
 			}
@@ -276,22 +285,35 @@ func wheelValueStepSignForIncreasingDirection(direction string) string {
 	return "negative"
 }
 
-func wheelObservationMatchesStep(observation wheelNudgeObservation, afterValue, valueStep int) bool {
+func wheelObservationRows(observation wheelNudgeObservation, afterValue, valueStep int) (int, bool) {
+	if valueStep == 0 {
+		return 0, false
+	}
 	rowStep := valueStep
 	if observation.direction == "down" {
 		rowStep = -rowStep
 	}
-	maxRows := max(1, observation.maxRows)
-	for rows := 1; rows <= maxRows; rows++ {
-		candidate := observation.beforeValue + rows*rowStep
-		if observation.cycleSize > 0 {
-			candidate = observation.cycleStart + ((candidate-observation.cycleStart)%observation.cycleSize+observation.cycleSize)%observation.cycleSize
+	if observation.cycleSize <= 0 {
+		delta := afterValue - observation.beforeValue
+		if delta == 0 || delta%rowStep != 0 {
+			return 0, false
 		}
+		rows := delta / rowStep
+		return rows, rows > 0
+	}
+	cycleEnd := observation.cycleStart + observation.cycleSize
+	if observation.beforeValue < observation.cycleStart || afterValue < observation.cycleStart || observation.beforeValue >= cycleEnd || afterValue >= cycleEnd {
+		return 0, false
+	}
+	cycleRows := observation.cycleSize / greatestCommonDivisor(int(math.Abs(float64(rowStep))), observation.cycleSize)
+	for rows := 1; rows <= cycleRows; rows++ {
+		candidate := observation.beforeValue + rows*rowStep
+		candidate = observation.cycleStart + ((candidate-observation.cycleStart)%observation.cycleSize+observation.cycleSize)%observation.cycleSize
 		if candidate == afterValue {
-			return true
+			return rows, true
 		}
 	}
-	return false
+	return 0, false
 }
 
 func (g *wheelNudgeGuard) columnIndex(pickerID string, columnX, centerY float64, coordSpace string) int {

@@ -341,15 +341,15 @@ func TestWheelNudgeLargeSupportsDown(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
 
-	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":500,"remaining_gap":12,"current_value":12,"target_value":0,"cycle_size":0,"cycle_start":0,"row_spacing":42,"value_step":1}`)
+	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":500,"current_value":16,"target_value":0,"cycle_size":0,"cycle_start":0,"row_spacing":42,"value_step":1}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
-	if !strings.Contains(out, "wheel_nudge direction=down") || !strings.Contains(out, "rows=4") {
+	if !strings.Contains(out, "wheel_nudge direction=down") || !strings.Contains(out, "rows=5") {
 		t.Fatalf("Call output = %q, want large wheel_nudge summary", out)
 	}
-	if !strings.Contains(out, "physical_travel=168") || !strings.Contains(out, "duration_ms=1") {
-		t.Fatalf("Call output = %q, want four-row slow drag", out)
+	if !strings.Contains(out, "physical_travel=210") || !strings.Contains(out, "duration_ms=2") {
+		t.Fatalf("Call output = %q, want five-row slow drag", out)
 	}
 
 	reports := readMouseReports(t, dev, path)
@@ -358,8 +358,8 @@ func TestWheelNudgeLargeSupportsDown(t *testing.T) {
 	}
 	// Large drags start near the highlighted row so they cannot begin at a
 	// screen edge and trigger an iOS system gesture.
-	expectedX, expectedStartY := normalizedToAbsolutePoint(500, 376)
-	_, expectedEndY := normalizedToAbsolutePoint(500, 544)
+	expectedX, expectedStartY := normalizedToAbsolutePoint(500, 355)
+	_, expectedEndY := normalizedToAbsolutePoint(500, 565)
 	if reports[0].x != uint16(expectedX) || reports[0].y != uint16(expectedStartY) || reports[0].buttons != 0x00 {
 		t.Fatalf("pre-move = (%d,%d,%d), want (%d,%d,0)", reports[0].x, reports[0].y, reports[0].buttons, expectedX, expectedStartY)
 	}
@@ -373,7 +373,7 @@ func TestWheelNudgeReportsEffectiveTravelAfterEdgeClamping(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
 
-	out, err := tool.Call(context.Background(), `{"picker_id":"edge-picker","column_x":500,"remaining_gap":12,"current_value":0,"target_value":12,"cycle_size":0,"cycle_start":0,"row_spacing":300,"value_step":1,"center_y":990}`)
+	out, err := tool.Call(context.Background(), `{"picker_id":"edge-picker","column_x":500,"current_value":0,"target_value":12,"cycle_size":0,"cycle_start":0,"row_spacing":300,"value_step":1,"center_y":990}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
@@ -399,7 +399,7 @@ func TestWheelNudgeUsesScreenshotRelativeColumnAndCenter(t *testing.T) {
 	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
 	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: screen, durationMs: 1}
 
-	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":195,"remaining_gap":3,"current_value":10,"target_value":13,"cycle_size":24,"cycle_start":0,"row_spacing":38,"value_step":1,"center_y":273,"coord_space":"screenshot"}`)
+	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":195,"current_value":10,"target_value":13,"cycle_size":24,"cycle_start":0,"row_spacing":38,"value_step":1,"center_y":273,"coord_space":"screenshot"}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
@@ -427,7 +427,7 @@ func TestWheelNudgeDerivesBoundedTravelFromGapAndRowSpacing(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
 
-	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":500,"center_y":500,"remaining_gap":5,"current_value":8,"target_value":13,"cycle_size":24,"cycle_start":0,"row_spacing":42,"value_step":1}`)
+	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":500,"center_y":500,"current_value":8,"target_value":13,"cycle_size":24,"cycle_start":0,"row_spacing":42,"value_step":1}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
@@ -449,11 +449,24 @@ func TestWheelNudgeDerivesBoundedTravelFromGapAndRowSpacing(t *testing.T) {
 	}
 }
 
+func TestWheelNudgeIgnoresLegacyRemainingGapAndDerivesShortestPath(t *testing.T) {
+	dev, _ := newTestHIDDevice(t)
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
+
+	out, err := tool.Call(context.Background(), `{"picker_id":"minute-picker","column_x":500,"center_y":500,"remaining_gap":46,"current_value":47,"target_value":1,"cycle_size":60,"cycle_start":0,"row_spacing":42,"value_step":1}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "direction=up") || !strings.Contains(out, "rows=5") {
+		t.Fatalf("Call output = %q, want runtime-derived 14-row shortest path with a five-row coarse drag", out)
+	}
+}
+
 func TestWheelNudgeFirstMicroProbeUsesExactlyOneMeasuredRow(t *testing.T) {
 	dev, _ := newTestHIDDevice(t)
 	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
 
-	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":500,"center_y":500,"remaining_gap":1,"current_value":2,"target_value":12,"cycle_size":60,"cycle_start":0,"row_spacing":42}`)
+	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":500,"center_y":500,"current_value":2,"target_value":12,"cycle_size":60,"cycle_start":0,"row_spacing":42}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
@@ -467,7 +480,7 @@ func TestWheelNudgeSchemaDerivesTravelFromGap(t *testing.T) {
 	props := schema["properties"].(map[string]any)
 	want := map[string]bool{
 		"picker_id": true, "column_x": true,
-		"remaining_gap": true, "current_value": true, "target_value": true,
+		"current_value": true, "target_value": true,
 		"cycle_size": true, "cycle_start": true,
 		"row_spacing": true, "value_step": true, "visible_target_y": true,
 		"center_y": true,
@@ -495,17 +508,20 @@ func TestTouchGestureSchemaDoesNotExposeWheelMetadata(t *testing.T) {
 	}
 }
 
-func TestWheelNudgeDescriptionDefinesRemainingGapThresholds(t *testing.T) {
+func TestWheelNudgeDescriptionDefinesAdaptiveTravelAndKeyboardFirst(t *testing.T) {
 	description := (&WheelNudgeTool{}).Description()
 	for _, want := range []string{
 		"tap or slow drag",
-		"gaps of 1",
+		"9+",
 		"2-4",
 		"5-8",
-		"9+ picker rows",
 		"final requested value",
 		"never substitute an intermediate visible value",
 		"normalized 0-1000 coordinates",
+		"screenshot height",
+		"tap the selected current value",
+		"keyboard_text",
+		"derives the shortest row gap",
 	} {
 		if !strings.Contains(description, want) {
 			t.Fatalf("wheel_nudge description = %q, want %q", description, want)
