@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"aiden-agent/internal/netproxy"
 )
@@ -16,6 +17,14 @@ func newProxyHTTPClient(proxy ProxyConfig) *http.Client {
 func newProxyTransport(proxy ProxyConfig) http.RoundTripper {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = proxyFunc(proxy)
+
+	// Optimize for LLM/STT/TTS endpoints: increase connection pool and keep-alive
+	transport.MaxIdleConns = 100
+	transport.MaxIdleConnsPerHost = 8
+	transport.IdleConnTimeout = 90 * time.Second
+	transport.TLSHandshakeTimeout = 10 * time.Second
+	transport.ExpectContinueTimeout = 1 * time.Second
+
 	return transport
 }
 
