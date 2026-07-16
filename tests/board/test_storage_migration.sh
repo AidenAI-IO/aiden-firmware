@@ -23,9 +23,19 @@
 set -u
 
 BOARD="${BOARD:-root@192.168.42.1}"
-# ServerAlive* ensures a hung command (e.g. a remote process that keeps a
-# pipe open) drops the connection instead of blocking the test forever.
-SSH_OPTS="${SSH_OPTS:--o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o ServerAliveInterval=10 -o ServerAliveCountMax=3}"
+# SSH strategy for a frequently reflashed board:
+#   - No BatchMode, so ssh falls back to a password prompt when key auth is
+#     unavailable (reflashing wipes /userdata and thus authorized_keys).
+#   - A shared ControlMaster connection: the FIRST ssh authenticates (one
+#     password prompt if no key), every later ssh reuses it with zero prompts,
+#     so the dozens of calls this test makes never re-ask.
+#   - UserKnownHostsFile=/dev/null + StrictHostKeyChecking=no: a reflashed
+#     board gets a new host key; this avoids the "identification changed"
+#     refusal without touching your real ~/.ssh/known_hosts.
+#   - ServerAlive* drops a hung command instead of blocking forever.
+SSH_CTL="${TMPDIR:-/tmp}/stmig-ssh-$$"
+SSH_OPTS="${SSH_OPTS:--o ConnectTimeout=10 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=10 -o ServerAliveCountMax=3}"
+SSH_OPTS="$SSH_OPTS -o ControlMaster=auto -o ControlPath=$SSH_CTL -o ControlPersist=600"
 
 # The loop image lives on the real eMMC (/userdata, ~2.6 GB free); /tmp is a
 # small tmpfs that cannot hold it. The loop mount point below is what the
@@ -134,6 +144,8 @@ cleanup() {
     bsh "if [ -f $SYS_ENV_BAK ]; then mv $SYS_ENV_BAK $SYS_ENV; else grep -v '^$ENV_LINE\$' $SYS_ENV > $SYS_ENV.tmp 2>/dev/null && mv $SYS_ENV.tmp $SYS_ENV; fi" 2>/dev/null
     restart_agent
     bsh "umount $EMMC 2>/dev/null; rm -rf $TEST_ROOT; rm -f $SD_AUDIO/${PREFIX}*" 2>/dev/null
+    # Close the shared ssh connection.
+    ssh $SSH_OPTS -O exit "$BOARD" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
@@ -145,7 +157,12 @@ fatal() {
 log "=== storage migration on-board test (board: $BOARD) ==="
 
 # --- preflight ---------------------------------------------------------------
-bsh "true" || fatal "cannot ssh to $BOARD (set BOARD=user@host)"
+# Open the shared master connection first. This is the one and only place a
+# password may be prompted (when key auth is unavailable, e.g. right after a
+# reflash); every bsh call afterwards reuses it silently.
+log "--- connecting to $BOARD (enter the board password if prompted)"
+ssh $SSH_OPTS "$BOARD" true \
+    || fatal "cannot connect to $BOARD. Check the address (BOARD=user@host), that the board is reachable, and the password."
 [ "$(state_get SD_MOUNTED)" = "1" ] || fatal "SD card not mounted (state: $(bsh "cat $STATE 2>/dev/null" | tr '\n' ' ')); insert a usable card first"
 bsh "touch -t 202601010101 /tmp/.stmig-touch && rm -f /tmp/.stmig-touch" || fatal "busybox touch -t unsupported; cannot backdate files"
 bsh "which mkfs.ext4 >/dev/null" || fatal "mkfs.ext4 not found on the device"
