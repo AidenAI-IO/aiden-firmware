@@ -305,15 +305,27 @@ func wheelObservationRows(observation wheelNudgeObservation, afterValue, valueSt
 	if observation.beforeValue < observation.cycleStart || afterValue < observation.cycleStart || observation.beforeValue >= cycleEnd || afterValue >= cycleEnd {
 		return 0, false
 	}
-	cycleRows := observation.cycleSize / greatestCommonDivisor(int(math.Abs(float64(rowStep))), observation.cycleSize)
-	for rows := 1; rows <= cycleRows; rows++ {
-		candidate := observation.beforeValue + rows*rowStep
-		candidate = observation.cycleStart + ((candidate-observation.cycleStart)%observation.cycleSize+observation.cycleSize)%observation.cycleSize
-		if candidate == afterValue {
-			return rows, true
-		}
+	delta := (afterValue - observation.beforeValue + observation.cycleSize) % observation.cycleSize
+	stepMagnitude := rowStep
+	if stepMagnitude < 0 {
+		stepMagnitude = -stepMagnitude
 	}
-	return 0, false
+	divisor := greatestCommonDivisor(stepMagnitude, observation.cycleSize)
+	if delta%divisor != 0 {
+		return 0, false
+	}
+	reducedCycle := observation.cycleSize / divisor
+	reducedStep := rowStep / divisor
+	reducedStep = (reducedStep%reducedCycle + reducedCycle) % reducedCycle
+	inverse, ok := modularInverse(int64(reducedStep), int64(reducedCycle))
+	if !ok {
+		return 0, false
+	}
+	rows := int((int64(delta/divisor) * inverse) % int64(reducedCycle))
+	if rows == 0 {
+		rows = reducedCycle
+	}
+	return rows, true
 }
 
 func (g *wheelNudgeGuard) columnIndex(pickerID string, columnX, centerY float64, coordSpace string) int {

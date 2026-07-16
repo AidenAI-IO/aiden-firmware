@@ -107,6 +107,51 @@ func TestWheelGestureGuardReportsRequiredStepSignForOppositeMapping(t *testing.T
 	}
 }
 
+func TestWheelObservationRowsSolvesLargeCycleWithoutEnumeration(t *testing.T) {
+	const cycleSize = 1_000_000_007
+	const valueStep = 37
+	const wantRows = 900_000_000
+	afterValue := int((int64(wantRows) * valueStep) % cycleSize)
+	observation := wheelNudgeObservation{
+		beforeValue: 0,
+		direction:   "up",
+		cycleSize:   cycleSize,
+		cycleStart:  0,
+	}
+
+	rows, ok := wheelObservationRows(observation, afterValue, valueStep)
+	if !ok || rows != wantRows {
+		t.Fatalf("large-cycle rows = %d, %v, want %d, true", rows, ok, wantRows)
+	}
+}
+
+func TestWheelObservationRowsRejectsUnreachableLargeCycleDelta(t *testing.T) {
+	observation := wheelNudgeObservation{
+		beforeValue: 0,
+		direction:   "up",
+		cycleSize:   1_000_000_000,
+		cycleStart:  0,
+	}
+
+	if rows, ok := wheelObservationRows(observation, 999_999_999, 6); ok {
+		t.Fatalf("unreachable large-cycle rows = %d, true, want false", rows)
+	}
+}
+
+func TestWheelObservationRowsMapsZeroResidueToSmallestPositiveCycle(t *testing.T) {
+	observation := wheelNudgeObservation{
+		beforeValue: 13,
+		direction:   "up",
+		cycleSize:   24,
+		cycleStart:  0,
+	}
+
+	rows, ok := wheelObservationRows(observation, 13, 6)
+	if !ok || rows != 4 {
+		t.Fatalf("full-cycle rows = %d, %v, want 4, true", rows, ok)
+	}
+}
+
 func TestWheelGestureGuardLocksFinalTargetPerColumn(t *testing.T) {
 	guard := newWheelNudgeGuard(nil)
 	probe := wheelNudgeGuardCall(`{"picker_id":"alarm-create","column_x":157,"center_y":274,"coord_space":"screenshot","remaining_gap":1,"current_value":17,"target_value":1,"cycle_size":24,"cycle_start":0,"row_spacing":43}`)
