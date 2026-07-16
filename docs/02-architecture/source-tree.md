@@ -1,7 +1,7 @@
 # Source Code and Directory Structure
 
 ```text
-aiden-hardware-demo/
+aiden-firmware/
 ├── CMakeLists.txt                 # Main C/C++ build configuration
 ├── Makefile                       # Local build/test shortcut entry point
 ├── build.sh / _build.sh           # Docker cross-compile the application

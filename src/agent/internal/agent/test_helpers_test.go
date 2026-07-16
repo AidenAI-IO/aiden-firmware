@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"aiden-agent/internal/agent/agentpath"
+	"aiden-agent/internal/agent/contextmanager"
 
 	"github.com/tmc/langchaingo/llms"
 	"github.com/tmc/langchaingo/schema"
@@ -29,6 +30,17 @@ func ensureTestConfigDir(t *testing.T, dir string) string {
 		t.Fatalf("MkdirAll sessions dir: %v", err)
 	}
 	return dir
+}
+
+func freshNewContextManager(systemPrompt, userInput string, attachments []InputAttachment, sessionFolder string) (*contextmanager.ContextManager, error) {
+	manager, err := contextmanager.NewContextManager(sessionFolder, systemPrompt)
+	if err != nil {
+		return nil, err
+	}
+	if err := manager.AppendMessage(userMessageFromInput(manager, userInput, attachments)); err != nil {
+		return nil, err
+	}
+	return manager, nil
 }
 
 func messageText(messages []llms.MessageContent) string {

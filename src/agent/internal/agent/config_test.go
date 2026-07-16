@@ -74,6 +74,58 @@ func TestConfigInputModeDefaultContract(t *testing.T) {
 	}
 }
 
+func TestLoadRuntimeConfigParsesTerminationPolicyOverrides(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	contents := `
+[model]
+provider = "fake"
+
+[termination_policy]
+enabled = false
+max_seconds = 12.5
+repeat_action_limit = 7
+same_result_limit = 8
+screen_unchanged_limit = 9
+soft_notice_stall_score = 10
+restrict_tools_stall_score = 11
+terminate_stall_score = 12
+parse_failure_limit = 13
+`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	policy := cfg.TerminationPolicy
+	if policy.Enabled == nil || *policy.Enabled {
+		t.Fatalf("termination policy enabled = %#v, want false", policy.Enabled)
+	}
+	if policy.MaxSeconds != 12.5 || policy.RepeatActionLimit != 7 || policy.SameResultLimit != 8 ||
+		policy.ScreenUnchangedLimit != 9 || policy.SoftNoticeStallScore != 10 ||
+		policy.RestrictToolsStallScore != 11 || policy.TerminateStallScore != 12 ||
+		policy.ParseFailureLimit != 13 {
+		t.Fatalf("termination policy overrides = %#v", policy)
+	}
+}
+
+func TestConfigRejectsInvalidTerminationPolicyThresholdOrder(t *testing.T) {
+	cfg := Config{
+		Model: ModelConfig{Provider: "fake"},
+		TerminationPolicy: TerminationPolicyConfig{
+			SoftNoticeStallScore:    5,
+			RestrictToolsStallScore: 4,
+			TerminateStallScore:     6,
+		},
+	}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "soft_notice < restrict_tools < terminate") {
+		t.Fatalf("Validate() error = %v, want ordered termination-policy threshold error", err)
+	}
+}
+
 func TestBundledSkillsDirCandidatesUseOEMOnly(t *testing.T) {
 	want := []string{"/oem/usr/share/aiden/skills"}
 	if got := bundledSkillsDirCandidates(); !reflect.DeepEqual(got, want) {

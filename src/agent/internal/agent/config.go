@@ -159,6 +159,7 @@ type Config struct {
 	LoadAllTools               bool                    `toml:"load_all_tools,omitempty"`
 	TodoReminderToolCalls      int                     `toml:"todo_reminder_tool_calls,omitempty"`
 	MaxIterations              int                     `toml:"max_iterations,omitempty"`
+	TerminationPolicy          TerminationPolicyConfig `toml:"termination_policy,omitempty"`
 	ForceSimpleLoop            bool                    `toml:"-"`
 	ScreenshotKeepN            int                     `toml:"screenshot_keep_n,omitempty"`
 	ScreenshotPruneInterval    int                     `toml:"screenshot_prune_interval,omitempty"`
@@ -171,6 +172,10 @@ type Config struct {
 	SkillMergeModel            SkillMergeModel         `toml:"-"`
 	Telemetry                  TelemetryConfig         `toml:"telemetry,omitempty"`
 	ConfigDir                  string                  `toml:"-"`
+}
+
+func (c Config) TerminationPolicyOrDefault() TerminationPolicyConfig {
+	return c.TerminationPolicy.resolved()
 }
 
 type TelemetryConfig struct {
@@ -885,6 +890,9 @@ func (c Config) Validate() error {
 
 	if c.MaxIterations < -1 {
 		return fmt.Errorf("max_iterations must be >= -1 (-1 means unlimited), got %d", c.MaxIterations)
+	}
+	if err := c.TerminationPolicy.Validate(); err != nil {
+		return err
 	}
 
 	switch strings.ToLower(strings.TrimSpace(c.HID.PointerMode)) {

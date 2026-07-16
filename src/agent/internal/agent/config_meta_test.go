@@ -402,7 +402,7 @@ func TestConfigMeta_CoversConfigFields(t *testing.T) {
 	// fields are surfaced under their own sections or not at all.
 	agentSkip := map[string]bool{
 		"model": true, "model_text": true, "tts": true, "stt": true, "hid": true,
-		"audio": true, "search": true, "log": true, "telemetry": true, "live_activity": true,
+		"audio": true, "search": true, "log": true, "telemetry": true, "termination_policy": true, "live_activity": true,
 		"skills_dirs": true, "bundled_skills_dir": true,
 	}
 	cfgType := reflect.TypeOf(Config{})

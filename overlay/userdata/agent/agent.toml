@@ -39,6 +39,18 @@ trigger_mode = "wakeup"
 # voice_progress_speech_enabled = true
 # voice_max_response_tokens = 300
 
+# Tiered loop guard and termination policy. Zero-valued numeric fields use defaults.
+[termination_policy]
+# enabled = true
+# max_seconds = 0
+# repeat_action_limit = 3
+# same_result_limit = 3
+# screen_unchanged_limit = 5
+# soft_notice_stall_score = 2
+# restrict_tools_stall_score = 4
+# terminate_stall_score = 6
+# parse_failure_limit = 3
+
 # Primary LLM model configuration
 [model]
 provider = "openai"

@@ -104,6 +104,18 @@ struct LiveActivityToml {
     int timeout_sec = 0;
 };
 
+struct TerminationPolicyToml {
+    bool enabled = true;
+    double max_seconds = 0.0;
+    int repeat_action_limit = 3;
+    int same_result_limit = 3;
+    int screen_unchanged_limit = 5;
+    int soft_notice_stall_score = 2;
+    int restrict_tools_stall_score = 4;
+    int terminate_stall_score = 6;
+    int parse_failure_limit = 3;
+};
+
 struct AgentToml {
     ModelToml model;
     ModelToml model_text;
@@ -116,6 +128,7 @@ struct AgentToml {
     SearchToml search;
     TelemetryToml telemetry;
     LiveActivityToml live_activity;
+    TerminationPolicyToml termination_policy;
 
     std::string custom_instruction;
     std::string additional_prompt;

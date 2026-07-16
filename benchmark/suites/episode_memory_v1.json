@@ -1,5 +1,6 @@
 {
   "name": "episode_memory_v1",
+  "suite_category": "Memory & Cognition",
   "description": "Task episode and device memory benchmark — verifies runtime automatic retrieval, failure-memory use, and conflict handling.",
   "global_reset": {},
   "tasks": [

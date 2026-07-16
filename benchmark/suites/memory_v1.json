@@ -1,5 +1,6 @@
 {
   "name": "memory_v1",
+  "suite_category": "Memory & Cognition",
   "description": "Agent memory benchmark — verifies save/recall/update/forget and negative memory behavior end-to-end through the runner.",
   "global_reset": {},
   "tasks": [

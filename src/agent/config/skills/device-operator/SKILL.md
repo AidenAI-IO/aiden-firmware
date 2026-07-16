@@ -10,6 +10,7 @@ metadata:
       image_diff,
       quick_action,
       touch_gesture,
+      wheel_nudge,
       mouse_click,
       mouse_move,
       mouse_scroll,
@@ -57,9 +58,10 @@ Prefer the highest-level reliable tool for the job:
   - If `status=reserved` in a list result, or `quick_action` returns `ok=false` or an error, skip it and use direct input tools instead.
   - If `ok=true` but the screenshot shows no expected change, treat it as ineffective: try `alternative=true` once when alternatives are listed, otherwise switch tools. Never loop on the same binding.
 - Use `touch_gesture` for mobile taps, swipes, drag, back, and home gestures.
+- For a numeric picker, before the first `wheel_nudge` on that picker, tap the selected center row once to probe for keyboard/edit mode; do not infer that keyboard entry is unsupported merely because the keyboard is initially hidden. If edit mode appears, make one verified `keyboard_text` attempt and inspect the returned screenshot. If the tap has no effect, the keyboard does not appear, or the typed value is not exactly confirmed, fall back to `wheel_nudge`; once wheel fallback begins for that picker, do not switch back to keyboard input. Use `wheel_nudge` for all direct unselected-row taps and picker drags; after a successful wheel nudge, runtime reserves that region so generic input cannot activate a field outside the picker.
 - Use `enter_text_in_field` for normal text input into fields, including Chinese/CJK, emoji, IME, and verified field entry.
 - Use `keyboard_tap` for enter, escape, tab, arrows, shortcuts, and simple key actions.
-- Use `keyboard_text` only for simple standalone ASCII typing. Never use it for Chinese/CJK or emoji field entry.
+- Use `keyboard_text` only for simple standalone ASCII typing or a visibly focused numeric picker edit mode. Never use it for Chinese/CJK or emoji field entry.
 - Use `mouse_click`, `mouse_move`, and `mouse_scroll` only when touch-style controls are not appropriate.
 
 If a semantic tool fails, read the message and choose a different approach. Do not retry the same binding unless the tool explicitly offers a distinct alternative.
@@ -70,8 +72,9 @@ Before using coordinates:
 
 - Inspect the screenshot and identify the intended target visually.
 - Use `coord_space: "normalized"` with 0-1000 coordinates when possible: `(0,0)` is top-left, `(1000,1000)` is bottom-right, `(500,500)` is center.
+- When using pixels measured in a returned cropped screenshot, use `coord_space:"screenshot"`; its width and height are the coordinate bounds. Do not label screenshot pixels as normalized or uncropped `pixel` coordinates.
 - Choose the visual center of the target. For small controls, estimate the control bounds and aim for the midpoint, biased slightly inward.
-- Prefer normalized coordinates over `coord_space: "pixel"`. Use pixel only when calibrated; pixel coordinates need a recent screenshot, go stale after ~30s, and are rejected outside cached bounds.
+- Prefer normalized coordinates. Use `coord_space:"screenshot"` only for pixels measured directly in the latest returned cropped screenshot.
 - Avoid edges unless performing an edge gesture. For phone edge gestures, do not use conservative insets like 50-100: left-edge `back` starts at normalized `x=1`, and bottom-edge `home` starts at normalized `y=999`.
 - Do not guess a coordinate if the target is not visible or the screen is stale.
 - If a tap misses, observe again before adjusting. Do not repeat the exact same coordinate blindly.
@@ -157,10 +160,8 @@ On iOS, if Phone Bridge context says the Aiden companion app is backgrounded/ina
 
 Directional swipe names describe finger movement, not content direction:
 
-- `swipe_up`: finger moves up; content usually moves down to lower/newer items.
-- `swipe_down`: finger moves down; content usually moves up to upper/older items.
-
-In chat/message history, to see older messages above the current viewport, usually use `swipe_down` inside the message list.
+- `swipe_up`: finger moves up → viewport scrolls down → reveals content below.
+- `swipe_down`: finger moves down → viewport scrolls up → reveals content above.
 
 Scrollable region discipline:
 
@@ -179,15 +180,16 @@ Calibration loop:
 
 If the same list boundary appears again, stop searching in that direction. Try search/filter, a different tab, or ask the user.
 
-Before manipulating a picker or wheel control:
+For picker/wheel controls, discover columns from the current UI rather than assuming hour/minute positions. Give the current visible picker screen a stable `picker_id` (for example `alarm-create` or `date-editor`) and change it after navigating to another picker screen. For each column, identify the selected value, target value, adjacent values, `column_x`, `center_y`, and measured `row_spacing`. Use numeric values or stable ordinal indices for textual lists.
 
-1. Call `recall_memory` for similar picker calibration when relevant.
-2. Without cache, probe once with medium movement.
-3. Observe how many values changed.
-4. Choose subsequent strength by remaining distance.
-5. Screenshot after each adjustment before continuing.
+Numeric picker keyboard support is often hidden until the selected value is tapped. Therefore, before the first `wheel_nudge` on a numeric picker, tap the selected center row exactly once as an edit-mode probe. Do not skip this probe merely because no keyboard or text field is visible in the initial screenshot. If keyboard/edit mode appears, make one verified keyboard attempt using `keyboard_text` and confirm the exact requested value in the fresh post-action screenshot. If the tap has no effect, the keyboard does not appear, the input has no effect, the value is wrong, or the result cannot be confirmed, stop: Do not repeat blind keyboard input. Dismiss the keyboard if necessary and fall back to `wheel_nudge`. After wheel fallback starts for this picker, stay with `wheel_nudge` instead of trying keyboard input again. Direct taps on unselected picker rows and all picker drags still belong to `wheel_nudge`.
 
-On success, save calibration with app/page/control location, direction, gesture strength/distance, observed delta, and tags `["swipe", "picker", "calibration"]`.
+- Pass `cycle_size:0` for a non-cyclic ordered column. For cyclic columns, `cycle_size` is the numeric domain span/modulus, not the number of displayed rows: a `00..59` minute wheel with `value_step:5` still uses `cycle_size:60`, while months use `cycle_start:1, cycle_size:12`; calendar-day size depends on the selected year/month.
+- `value_step` is the signed value change for one visible row downward. Therefore `value_step > 0` means finger-up increases the selected value, and `value_step < 0` means finger-down increases it.
+- Keep `target_value` equal to the user's final requested value for that column across the entire picker interaction. Never replace it with a nearer intermediate row such as changing a requested hour `01` to `15`; runtime locks the first executed target for the active column. Use `visible_target_y` only when that final target itself is visibly adjacent.
+- Call `wheel_nudge` with the latest current/target/domain metadata for both exact row selection and bounded movement. Report `value_step` as the signed numeric change for one visible row downward, and report `remaining_gap` as the shortest number of picker rows to the target—not the raw numeric difference. Runtime validates reachability, derives the increasing direction and shortest finger movement, and rejects targets that cannot be reached by the declared step, so never supply or guess direction fields. When the target equals a row that is visibly present in the latest screenshot, pass its exact Y coordinate as `visible_target_y`; runtime verifies that it matches one adjacent row before tapping it. Omit `visible_target_y` when the row is not actually visible, and the tool will use a bounded drag instead. Other drag travel is derived from `remaining_gap` and measured `row_spacing`, bounded to 1/2/3/4 rows. If visible ordering is genuinely insufficient, omit `value_step`, pass `remaining_gap:1`, and let the tool perform one fixed finger-up micro probe; then use the next screenshot to report `value_step` and the real row gap. Runtime expands the column budget after that known-step call.
+- Never extrapolate `visible_target_y` beyond rows actually visible in the latest screenshot. If the target is not visibly adjacent, omit it and call `wheel_nudge` again after the bounded drag; do not guess a lower Y coordinate because picker columns often have editable fields directly underneath them.
+- Take a fresh screenshot after every tap or nudge, re-read the centered value, and recalculate the remaining gap. Stop if the value cannot be measured, a probe produces no change, the screen becomes stale, or the gesture leaves the picker.
 
 ## Screenshot and Capture Recovery
 

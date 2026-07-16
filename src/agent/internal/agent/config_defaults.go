@@ -137,6 +137,7 @@ func DefaultConfig() Config {
 		VoiceMaxResponseTokens:     defaultVoiceMaxResponseTokens,
 		TodoReminderToolCalls:      defaultTodoReminderToolCalls,
 		MaxIterations:              defaultMaxIterations,
+		TerminationPolicy:          DefaultTerminationPolicyConfig(),
 		ScreenshotKeepN:            defaultScreenshotKeepN,
 		ScreenshotPruneInterval:    defaultScreenshotPruneInterval,
 		ScreenStableTimeoutMs:      defaultStableWaitTimeoutMs,

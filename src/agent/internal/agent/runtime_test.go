@@ -40,6 +40,39 @@ func TestEffectiveMaxIterationsDefaultsAndUnlimited(t *testing.T) {
 	}
 }
 
+func TestRuntimeUsesConfiguredTerminationPolicy(t *testing.T) {
+	model := &scriptedModel{responses: []*llms.ContentResponse{
+		{
+			Choices: []*llms.ContentChoice{{
+				ToolCalls: []llms.ToolCall{{ID: "invalid-tool-call"}},
+			}},
+		},
+		contentResponse("should not be reached"),
+	}}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{
+			Model:             ModelConfig{Provider: "fake"},
+			Instruction:       "Answer directly.",
+			TerminationPolicy: TerminationPolicyConfig{ParseFailureLimit: 1},
+		}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "test configured parse limit"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !strings.Contains(result.Output, string(StopReasonParseFailure)) {
+		t.Fatalf("output = %q, want configured parse-failure termination", result.Output)
+	}
+	if model.callCount != 1 {
+		t.Fatalf("model call count = %d, want 1", model.callCount)
+	}
+}
+
 type testModelResolver struct {
 	model llms.Model
 	err   error
@@ -85,6 +118,30 @@ func TestRuntimeRun(t *testing.T) {
 	}
 	if len(result.Memory) != 0 {
 		t.Fatalf("expected empty memory snapshot without a storage dir, got %#v", result.Memory)
+	}
+}
+
+func TestRuntimeRunMarksMainAgentModelCallsForRawHTTPLog(t *testing.T) {
+	model := &scriptedModel{responses: roleDirectResponses("completed")}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{
+			Model:       ModelConfig{Provider: "fake"},
+			Instruction: "Answer directly.",
+		}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	if _, err := runtime.Run(context.Background(), RunRequest{Input: "hello"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(model.rawHTTPLogEnabled) != 1 {
+		t.Fatalf("expected one model call, got %d", len(model.rawHTTPLogEnabled))
+	}
+	if !model.rawHTTPLogEnabled[0] {
+		t.Fatal("main agent model call was not marked for raw HTTP logging")
 	}
 }
 
@@ -937,7 +994,10 @@ func eventMetadataInt(event TaskEpisodeEvent, key string) int {
 
 func TestRuntimeRunAttachesPendingSteerToNextToolCall(t *testing.T) {
 	model := &scriptedModel{
-		responses: roleToolResponses("echo", `{"__arg1":"original action"}`, "Changed course."),
+		responses: roleToolResponses(
+			"echo", `{"__arg1":"original action"}`,
+			"Adjusted based on feedback.",
+		),
 	}
 	tool := &stubTool{
 		name:        "echo",
@@ -974,36 +1034,34 @@ func TestRuntimeRunAttachesPendingSteerToNextToolCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if result.Output != "Changed course." {
-		t.Fatalf("output = %q, want Changed course.", result.Output)
+	if result.Output != "Adjusted based on feedback." {
+		t.Fatalf("output = %q, want steer-adjusted response", result.Output)
 	}
 	if len(tool.inputs) != 1 || tool.inputs[0] != "original action" {
-		t.Fatalf("tool should run before steer is attached, got inputs %#v", tool.inputs)
+		t.Fatalf("tool inputs = %#v, want single original action", tool.inputs)
 	}
 
-	if steerCalls != 0 {
-		t.Fatalf("SteerProvider calls = %d, want 0 for context-manager loop", steerCalls)
-	}
-	if steerEvent, ok := firstRunEventOfType(events, "steer"); ok {
-		t.Fatalf("unexpected steer event: %#v", steerEvent)
+	if steerCalls == 0 {
+		t.Fatal("SteerProvider was not polled")
 	}
 	toolResult, ok := firstRunEventOfType(events, "tool_result")
 	if !ok {
 		t.Fatalf("missing tool_result event: %#v", events)
 	}
 	if toolResult.Content != "tool output" || toolResult.IsError {
-		t.Fatalf("unexpected steer tool result: %#v", toolResult)
+		t.Fatalf("unexpected tool result: %#v", toolResult)
 	}
+	// Second LLM call should include steer content
 	if len(model.messages) < 2 {
-		t.Fatalf("expected follow-up model call with tool result, got %#v", model.messages)
+		t.Fatalf("expected second LLM call after steer, got %#v", model.messages)
 	}
-	if runtimeModelCallContains(model.messages[1], "Use the updated instruction instead.") {
-		t.Fatalf("second model call unexpectedly contains pending steer: %#v", model.messages[1])
+	if !runtimeModelCallContains(model.messages[1], "Use the updated instruction instead.") {
+		t.Fatalf("second LLM call missing steer: %#v", model.messages[1])
 	}
 	if !runtimeModelCallToolResponseContains(model.messages[1], "tool output") {
-		t.Fatalf("second model call missing tool result: %#v", model.messages[1])
+		t.Fatalf("second LLM call missing tool result: %#v", model.messages[1])
 	}
-	assertMemoryRecords(t, result.Memory, nil)
+	assertMemoryRecords(t, result.Memory, []MessageRecord{{Role: "human", Content: "Use the updated instruction instead."}})
 }
 
 func TestRuntimeRunSteerInterruptDoesNotPauseAfterNonCancelableTool(t *testing.T) {
@@ -1096,7 +1154,7 @@ func TestRuntimeRunSteerInterruptDoesNotPauseAfterNonCancelableTool(t *testing.T
 	}
 }
 
-func TestRuntimeRunSteerInterruptCancelsCancelableToolWithoutWaitingForSteer(t *testing.T) {
+func TestRuntimeRunSteerInterruptWaitsThenContinuesWithoutInput(t *testing.T) {
 	model := &scriptedModel{
 		responses: roleToolResponses("slow", `{"__arg1":"original action"}`, "Original done."),
 	}
@@ -1161,13 +1219,17 @@ func TestRuntimeRunSteerInterruptCancelsCancelableToolWithoutWaitingForSteer(t *
 	case <-time.After(time.Second):
 		t.Fatal("runtime did not return after cancelable tool was canceled")
 	}
-	if !errors.Is(runResult.err, context.Canceled) {
-		t.Fatalf("Run() error = %v, want context canceled", runResult.err)
+	if runResult.err != nil {
+		t.Fatalf("Run() error = %v", runResult.err)
+	}
+	if runResult.result.Output != "Original done." {
+		t.Fatalf("output = %q, want Original done.", runResult.result.Output)
 	}
 	select {
 	case <-waitCalled:
-		t.Fatal("SteerWaiter was called by context-manager loop")
+		// Expected: the canceled tool waits briefly for steering capture.
 	default:
+		t.Fatal("SteerWaiter was not called after tool cancellation")
 	}
 	if len(tool.inputs) != 1 || tool.inputs[0] != "original action" {
 		t.Fatalf("tool inputs = %#v, want only original action", tool.inputs)
@@ -1278,7 +1340,7 @@ func validateStrictToolMessageSequence(messages []llms.MessageContent) error {
 	return nil
 }
 
-func TestRuntimeRunDoesNotConsumePendingSteerBeforeFinalAnswer(t *testing.T) {
+func TestRuntimeRunConsumesPendingSteerBeforeFinalAnswer(t *testing.T) {
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
 			contentResponse("Old answer."),
@@ -1317,19 +1379,19 @@ func TestRuntimeRunDoesNotConsumePendingSteerBeforeFinalAnswer(t *testing.T) {
 	if result.Output != "Old answer." {
 		t.Fatalf("output = %q, want Old answer.", result.Output)
 	}
-	if steerCalls != 0 {
-		t.Fatalf("SteerProvider calls = %d, want 0 for context-manager loop", steerCalls)
+	if steerCalls == 0 {
+		t.Fatal("SteerProvider was not polled")
 	}
-	if steerEvent, ok := firstRunEventOfType(events, "steer"); ok {
-		t.Fatalf("unexpected steer event: %#v", steerEvent)
+	if steerEvent, ok := firstRunEventOfType(events, "steer"); !ok || steerEvent.Content != "Actually change direction before answering." {
+		t.Fatalf("missing steer event: %#v", events)
 	}
 	if len(model.messages) != 1 {
 		t.Fatalf("model calls = %d, want direct final answer in one call", len(model.messages))
 	}
-	assertMemoryRecords(t, result.Memory, nil)
+	assertMemoryRecords(t, result.Memory, []MessageRecord{{Role: "human", Content: "Actually change direction before answering."}})
 }
 
-func TestRuntimeRunDoesNotPersistUnusedSteerProviderAsConversationMessage(t *testing.T) {
+func TestRuntimeRunPersistsConsumedSteerAsConversationMessage(t *testing.T) {
 	storageDir := filepath.Join(t.TempDir(), "memory")
 	model := &scriptedModel{
 		responses: []*llms.ContentResponse{
@@ -1364,10 +1426,10 @@ func TestRuntimeRunDoesNotPersistUnusedSteerProviderAsConversationMessage(t *tes
 	if result.Output != "Old answer." {
 		t.Fatalf("output = %q, want Old answer.", result.Output)
 	}
-	if steerCalls != 0 {
-		t.Fatalf("SteerProvider calls = %d, want 0 for context-manager loop", steerCalls)
+	if steerCalls == 0 {
+		t.Fatal("SteerProvider was not polled")
 	}
-	assertMemoryRecords(t, result.Memory, nil)
+	assertMemoryRecords(t, result.Memory, []MessageRecord{{Role: "human", Content: "persist this steering message"}})
 
 	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
 	if !sessionEventsContain(events, func(event SessionEvent) bool {
@@ -1376,8 +1438,8 @@ func TestRuntimeRunDoesNotPersistUnusedSteerProviderAsConversationMessage(t *tes
 		t.Fatalf("expected agent role_output to be persisted in session events: %#v", events)
 	}
 	chatEvents := sessionEventsOfTypes(events, "user_input", "steer", "assistant_output")
-	if sessionEventCount(chatEvents, "steer", "", "") != 0 {
-		t.Fatalf("unexpected steer event persisted: %#v", events)
+	if sessionEventCount(chatEvents, "steer", "", "") != 1 {
+		t.Fatalf("expected one persisted steer event: %#v", events)
 	}
 	if !sessionEventExists(chatEvents, "user_input", "user", "original persisted request") {
 		t.Fatalf("expected original user input to be persisted; all events: %#v", events)
@@ -1468,14 +1530,14 @@ func TestRuntimeRunKeepsCurrentExchangeWhenSnapshotWindowIsFull(t *testing.T) {
 	if result.Output != "Old answer." {
 		t.Fatalf("output = %q, want Old answer.", result.Output)
 	}
-	if steerCalls != 0 {
-		t.Fatalf("SteerProvider calls = %d, want 0 for context-manager loop", steerCalls)
+	if steerCalls == 0 {
+		t.Fatal("SteerProvider was not polled")
 	}
 
 	events := readSessionEvents(t, filepath.Join(storageDir, "session", "events.jsonl"))
 	chatEvents := sessionEventsOfTypes(events, "user_input", "steer", "assistant_output")
-	if sessionEventCount(chatEvents, "steer", "", "") != 0 {
-		t.Fatalf("unexpected steer event persisted: %#v", events)
+	if sessionEventCount(chatEvents, "steer", "", "") != 1 {
+		t.Fatalf("expected one persisted steer event: %#v", events)
 	}
 	if len(chatEvents) < 22 {
 		t.Fatalf("expected at least 22 chat-like session events, got %d: %#v", len(chatEvents), events)
@@ -1732,7 +1794,7 @@ func TestParseChunkStructuredSummaryJSONRejectsProseWrappedJSON(t *testing.T) {
 
 func TestToolDescriptorsIncludeMemoryToolMetadata(t *testing.T) {
 	tools := &ToolSet{tools: map[string]langtools.Tool{}}
-	tools.RegisterMemoryTools(t.TempDir(), nil, 3, nil)
+	tools.RegisterMemoryTools(t.TempDir(), 3, nil)
 	runtime := NewRuntimeWithDeps(Config{}, nil, nil, tools, NewSkillIndex())
 
 	for _, name := range []string{"recall_device_memory", "inspect_episode"} {
@@ -1938,12 +2000,13 @@ func sessionEventsOfTypes(events []SessionEvent, types ...string) []SessionEvent
 }
 
 type scriptedModel struct {
-	responses    []*llms.ContentResponse
-	streamChunks [][]string
-	callCount    int
-	sawStreaming []bool
-	messages     [][]llms.MessageContent
-	tools        [][]llms.Tool
+	responses         []*llms.ContentResponse
+	streamChunks      [][]string
+	callCount         int
+	sawStreaming      []bool
+	messages          [][]llms.MessageContent
+	tools             [][]llms.Tool
+	rawHTTPLogEnabled []bool
 }
 
 type blockingFinalWriter struct {
@@ -1997,6 +2060,7 @@ func (m *scriptedModel) GenerateContent(ctx context.Context, messages []llms.Mes
 	m.sawStreaming = append(m.sawStreaming, callOptions.StreamingFunc != nil)
 	m.messages = append(m.messages, messages)
 	m.tools = append(m.tools, callOptions.Tools)
+	m.rawHTTPLogEnabled = append(m.rawHTTPLogEnabled, rawHTTPLogEnabled(ctx))
 
 	if callOptions.StreamingFunc != nil && m.callCount < len(m.responses) {
 		if m.streamChunks != nil && m.callCount < len(m.streamChunks) {

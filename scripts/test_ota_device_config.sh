@@ -29,12 +29,12 @@ JSON
 
 bash "$GENERATOR" \
     --manifest "$TMP_DIR/manifest.json" \
-    --repo AidenAI-IO/aiden-hardware-demo \
+    --repo AidenAI-IO/aiden-firmware \
     --channel stable \
     --output "$TMP_DIR/config.json"
 
 jq -e '
-  .repo == "AidenAI-IO/aiden-hardware-demo" and
+  .repo == "AidenAI-IO/aiden-firmware" and
   .channel == "stable" and
   .factory_version == "20260523-120000-abcdef0" and
   .factory_build_time == "2026-05-23T12:00:00Z" and
@@ -48,10 +48,10 @@ jq -e '
 
 for repo in \
     AidenAI-IO \
-    AidenAI-IO/aiden-hardware-demo/extra \
-    /AidenAI-IO/aiden-hardware-demo \
+    AidenAI-IO/aiden-firmware/extra \
+    /AidenAI-IO/aiden-firmware \
     AidenAI-IO/ \
-    AidenAI-IO//aiden-hardware-demo; do
+    AidenAI-IO//aiden-firmware; do
     if bash "$GENERATOR" \
         --manifest "$TMP_DIR/manifest.json" \
         --repo "$repo" \

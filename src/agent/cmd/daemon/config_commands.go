@@ -46,18 +46,19 @@ type ConfigTestCheck struct {
 // Keep this struct in lockstep with config_to_json(); the round-trip is covered
 // by TestConfigCheck_WireFormatContract.
 type webConfigDTO struct {
-	Model        modelDTO        `json:"model"`
-	ModelText    modelDTO        `json:"model_text"`
-	TTS          ttsDTO          `json:"tts"`
-	STT          sttDTO          `json:"stt"`
-	Audio        audioDTO        `json:"audio"`
-	AudioArchive audioArchiveDTO `json:"audio_archive"`
-	Log          logDTO          `json:"log"`
-	HID          hidDTO          `json:"hid"`
-	Search       searchDTO       `json:"search"`
-	Telemetry    telemetryDTO    `json:"telemetry"`
-	LiveActivity liveActivityDTO `json:"live_activity"`
-	Agent        agentDTO        `json:"agent"`
+	Model             modelDTO                      `json:"model"`
+	ModelText         modelDTO                      `json:"model_text"`
+	TTS               ttsDTO                        `json:"tts"`
+	STT               sttDTO                        `json:"stt"`
+	Audio             audioDTO                      `json:"audio"`
+	AudioArchive      audioArchiveDTO               `json:"audio_archive"`
+	Log               logDTO                        `json:"log"`
+	HID               hidDTO                        `json:"hid"`
+	Search            searchDTO                     `json:"search"`
+	Telemetry         telemetryDTO                  `json:"telemetry"`
+	LiveActivity      liveActivityDTO               `json:"live_activity"`
+	TerminationPolicy agent.TerminationPolicyConfig `json:"termination_policy"`
+	Agent             agentDTO                      `json:"agent"`
 }
 
 type modelDTO struct {
@@ -336,6 +337,7 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			PrivateKeyPEM:  liveActivityPrivateKeyPEM,
 			TimeoutSec:     d.LiveActivity.TimeoutSec,
 		},
+		TerminationPolicy:          d.TerminationPolicy,
 		Instruction:                d.Agent.CustomInstruction,
 		AdditionalPrompt:           d.Agent.AdditionalPrompt,
 		InputMode:                  d.Agent.InputMode,
@@ -470,6 +472,7 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			HasPrivateKeyPEM: strings.TrimSpace(cfg.LiveActivity.PrivateKeyPEM) != "",
 			TimeoutSec:       int(cfg.LiveActivity.TimeoutOrDefault().Seconds()),
 		},
+		TerminationPolicy: cfg.TerminationPolicyOrDefault(),
 		Agent: agentDTO{
 			CustomInstruction:          customInstructionValue(cfg.Instruction),
 			AdditionalPrompt:           cfg.AdditionalPrompt,

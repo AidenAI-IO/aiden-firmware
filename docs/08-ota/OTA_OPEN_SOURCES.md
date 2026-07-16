@@ -68,7 +68,7 @@ This way, even if non-main branch firmware is published, it will not affect the 
 ```bash
 # Manually specify dev branch release via manifest-url (marked as Pre-release)
 ota update \
-  --manifest-url "https://github.com/AidenAI-IO/aiden-hardware-demo/releases/download/TAG/manifest.json" \
+  --manifest-url "https://github.com/AidenAI-IO/aiden-firmware/releases/download/TAG/manifest.json" \
   --public-key /oem/etc/ota_pubkey.pem
 ```
 

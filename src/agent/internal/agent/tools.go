@@ -97,12 +97,21 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	if hidCfg.InputBackendADB() {
 		adbInput = NewADBInputController(screen)
 	}
+	touchscreenRCALogf(
+		"newHardwareToolSet pointer_mode=%q pointer_device=%q keyboard_device=%q android_keyboard_device=%q frame_socket=%q",
+		hidCfg.PointerModeOrDefault(),
+		hidCfg.MouseDeviceOrDefault(),
+		hidCfg.KeyboardDeviceOrDefault(),
+		hidCfg.AndroidKeyboardDeviceOrDefault(),
+		hidCfg.FrameSocketOrDefault(),
+	)
 	screenshot := NewScreenshotTool(hidCfg.FrameSocketOrDefault(), screen)
 	screenStable := toolOptions.screenStable.Resolved()
 	waitStable := NewWaitStableScreenTool(hidCfg.FrameSocketOrDefault(), screenStable, screen)
 	keyboardTap := &KeyboardTapTool{dev: kbDev, androidDev: androidKbDev, pointerMode: hidCfg.PointerModeOrDefault(), adb: adbInput}
 	keyboardText := &KeyboardTextTool{dev: kbDev, adb: adbInput}
 	touchGesture := &TouchGestureTool{pc: pointer, screen: screen, adb: adbInput}
+	wheelNudge := &WheelNudgeTool{pc: pointer, screen: screen}
 	quickAction := &QuickActionTool{keyboard: keyboardTap, touch: touchGesture}
 	mouseClick := &MouseClickTool{pc: pointer, screen: screen, adb: adbInput}
 	textInputHW := &textInputHardwareDeps{
@@ -121,6 +130,7 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 		"mouse_move":             newPostActionStableScreenshotTool(&MouseMoveTool{pc: pointer, screen: screen}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"mouse_scroll":           newPostActionStableScreenshotTool(&MouseScrollTool{pc: pointer}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"touch_gesture":          newPostActionStableScreenshotTool(touchGesture, waitStable, screenshot, postActionScreenshotDelay, screenStable),
+		"wheel_nudge":            newPostActionStableScreenshotTool(wheelNudge, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"quick_action":           newPostActionStableScreenshotTool(quickAction, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"screenshot":             screenshot,
 		"wait_for_stable_screen": waitStable,
@@ -149,12 +159,14 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	// Always register human handoff tool - no callback needed for non-blocking version
 	tools["request_human_handoff"] = NewHumanHandoffTool()
 
-	return &ToolSet{
+	toolSet := &ToolSet{
 		tools:               tools,
 		screen:              screen,
 		phoneBridgeRestorer: NewPhoneBridgeRestorer(nil, pointer),
 		textInputHW:         textInputHW,
 	}
+	touchGesture.primeScreenMapping = toolSet.PrimeScreenMapping
+	return toolSet
 }
 
 func (s *ToolSet) RegisterEnterTextInFieldTool(models ModelResolver, platformFn func() string) {
@@ -268,13 +280,15 @@ func (s *ToolSet) UpdateDeviceEnvironment(env *PhoneEnvironment) {
 	s.screen.UpdatePhoneScreenInfo(env.Screen)
 }
 
-func (s *ToolSet) RegisterMemoryTools(memoryDir string, profileFn ProfileFn, summaryMaxChunks int, debouncer *ProfileDebouncer) {
+func (s *ToolSet) RegisterMemoryTools(memoryDir string, summaryMaxChunks int, longTermStore *LongTermMemoryStore) {
 	if memoryDir == "" {
 		return
 	}
 	sessionStore := NewSessionMemoryStore(filepath.Join(memoryDir, "session"), summaryMaxChunks)
 	archivedStore := NewArchivedSessionStore(filepath.Join(memoryDir, "session_archive"))
-	longTermStore := NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"), WithLifecycleDir(filepath.Join(memoryDir, "lifecycle")), WithStoreProfileFn(profileFn), WithProfileDebouncer(debouncer))
+	if longTermStore == nil {
+		longTermStore = NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"), WithLifecycleDir(filepath.Join(memoryDir, "lifecycle")))
+	}
 	deviceStore := NewDeviceMemoryStore(filepath.Join(memoryDir, "device"))
 	episodeStore := NewTaskEpisodeStore(filepath.Join(memoryDir, "episodes"))
 	s.tools["recall_session_chunks"] = NewRecallSessionChunksTool(sessionStore, archivedStore)

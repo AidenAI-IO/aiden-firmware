@@ -233,6 +233,97 @@ def test_daemon_compose_env_enables_benchmark_token_for_config_dir(tmp_path: Pat
     assert env["AIDEN_BENCHMARK_TOKEN_FILE"] == "/config/control_token"
 
 
+def test_start_adb_android_env_prints_environment_urls(tmp_path: Path, monkeypatch, capsys):
+    launched = []
+    health_urls = []
+
+    class FakeProc:
+        pid = 4242
+
+    def fake_start_bridge(**kwargs):
+        launched.append(kwargs)
+        return FakeProc()
+
+    monkeypatch.setattr(services, "start_adb_bridge_process", fake_start_bridge)
+    monkeypatch.setattr(services, "wait_for_http_health", lambda url, timeout: health_urls.append((url, timeout)))
+
+    args = _ns(
+        adb_serial="127.0.0.1:6555",
+        adb_path="adb",
+        name="smoke",
+        runs_dir=str(tmp_path),
+        bridge_host="127.0.0.1",
+        bridge_port=18899,
+        ready_timeout_sec=12,
+        json=True,
+    )
+
+    assert services.cmd_start_adb_android_env(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["type"] == "adb-android-env"
+    assert payload["environment_url"] == "http://127.0.0.1:18899"
+    assert payload["docker_environment_url"] == "http://host.docker.internal:18899"
+    assert payload["adb_serial"] == "127.0.0.1:6555"
+    assert payload["pid"] == 4242
+    assert payload["stop_command"] == "kill -TERM 4242"
+    assert payload["agent_daemon_command"] == (
+        "uv run python -m runner start-agent-daemon "
+        "--environment-bridge-endpoint http://127.0.0.1:18899"
+    )
+    assert health_urls == [("http://127.0.0.1:18899/health", 12)]
+    assert launched[0]["serial"] == "127.0.0.1:6555"
+    assert launched[0]["bridge_port"] == 18899
+
+    pid_path = Path(payload["pid_path"])
+    assert pid_path.read_text(encoding="utf-8") == "4242"
+    manifest = json.loads(Path(payload["manifest_path"]).read_text(encoding="utf-8"))
+    assert manifest["public_endpoint"] == "http://127.0.0.1:18899"
+    assert manifest["pid"] == 4242
+
+
+def test_start_adb_android_env_requires_serial(tmp_path: Path, capsys):
+    args = _ns(
+        adb_serial="",
+        adb_path="adb",
+        name="",
+        runs_dir=str(tmp_path),
+        bridge_host="127.0.0.1",
+        bridge_port=0,
+        ready_timeout_sec=12,
+        json=True,
+    )
+    assert services.cmd_start_adb_android_env(args) == 2
+
+
+def test_start_adb_android_env_terminates_process_on_health_failure(tmp_path: Path, monkeypatch, capsys):
+    killed = []
+
+    class FakeProc:
+        pid = 5151
+
+    monkeypatch.setattr(services, "start_adb_bridge_process", lambda **kwargs: FakeProc())
+    monkeypatch.setattr(services, "terminate_pid", lambda pid: killed.append(pid))
+
+    def failing_health(url, timeout):
+        raise RuntimeError("bridge never became healthy")
+
+    monkeypatch.setattr(services, "wait_for_http_health", failing_health)
+
+    args = _ns(
+        adb_serial="127.0.0.1:6555",
+        adb_path="adb",
+        name="fail",
+        runs_dir=str(tmp_path),
+        bridge_host="127.0.0.1",
+        bridge_port=18899,
+        ready_timeout_sec=1,
+        json=True,
+    )
+    assert services.cmd_start_adb_android_env(args) == 1
+    assert killed == [5151]
+
+
 def _ns(**kwargs):
     class Namespace:
         pass

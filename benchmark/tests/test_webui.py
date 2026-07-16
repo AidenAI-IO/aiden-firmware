@@ -1,11 +1,13 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from runner import config as runner_config
 from runner import webui
 
 
-def test_list_benchmark_suites_discovers_nested_benchmark_and_unit(tmp_path: Path):
+def test_list_benchmark_suites_discovers_nested_benchmark(tmp_path: Path):
     suites = tmp_path / "suites"
     (suites / "nested").mkdir(parents=True)
     (suites / "nested" / "memory.json").write_text(
@@ -22,16 +24,6 @@ def test_list_benchmark_suites_discovers_nested_benchmark_and_unit(tmp_path: Pat
         ),
         encoding="utf-8",
     )
-    (suites / "unit.json").write_text(
-        json.dumps(
-            {
-                "kind": "unit",
-                "name": "tool_unit",
-                "tests": [{"id": "case_1"}, {"id": "case_2"}],
-            }
-        ),
-        encoding="utf-8",
-    )
 
     result = webui.list_benchmark_suites(suites)
 
@@ -39,8 +31,7 @@ def test_list_benchmark_suites_discovers_nested_benchmark_and_unit(tmp_path: Pat
     assert by_key["nested/memory.json"]["kind"] == "benchmark"
     assert by_key["nested/memory.json"]["task_count"] == 1
     assert by_key["nested/memory.json"]["categories"] == ["memory"]
-    assert by_key["unit.json"]["kind"] == "unit"
-    assert by_key["unit.json"]["task_count"] == 2
+    assert by_key["nested/memory.json"]["suite_category"] == "Other"
 
 
 def test_resolve_suite_path_rejects_traversal(tmp_path: Path):
@@ -1128,22 +1119,22 @@ def test_refresh_job_report_falls_back_to_single_existing_report(tmp_path: Path)
         id="job-test",
         endpoint="http://127.0.0.1:19090",
         docker_endpoint="http://host.docker.internal:19090",
-        suites=["unit.json"],
+        suites=["memory_v1.json"],
         raw_runs_dir=str(raw_runs_dir),
         runner_log=str(tmp_path / "runs" / "job-test" / "runner.log"),
         suite_results=[
             {
-                "suite": "unit.json",
+                "suite": "memory_v1.json",
                 "exit_code": 0,
-                "run_id": "unit-run",
-                "report_url": "/reports/job-test/unit-run/report.html",
+                "run_id": "memory-run",
+                "report_url": "/reports/job-test/memory-run/report.html",
             }
         ],
     )
 
     app._refresh_job_report(job)
 
-    assert job.report_url == "/reports/job-test/unit-run/report.html"
+    assert job.report_url == "/reports/job-test/memory-run/report.html"
 
 
 def test_stop_job_marks_stopping_terminates_runner_and_removes_container(tmp_path: Path, monkeypatch):
@@ -1456,6 +1447,8 @@ def test_index_html_exposes_judge_settings_panel():
     assert "screen_url" in webui.INDEX_HTML
     assert "const report = job.report_url" in webui.INDEX_HTML
     assert "(job.suite_results || []).filter(r => r.report_url)" not in webui.INDEX_HTML
+    assert "const progressTotals = progress.totals || {}" in webui.INDEX_HTML
+    assert "Object.keys(progressTotals).length ? progressTotals : suiteTotals" in webui.INDEX_HTML
 
 
 def test_run_job_uses_saved_webui_agent_config(tmp_path: Path, monkeypatch):
@@ -1692,3 +1685,259 @@ def test_stop_mobilegym_environment_removes_container(tmp_path: Path, monkeypatc
     assert stopped is not None
     assert stopped["status"] == "stopped"
     assert removed == [["docker", "rm", "-f", "aiden-mobilegym-env-mg-test"]]
+
+
+def test_adb_android_environment_lifecycle(tmp_path: Path, monkeypatch):
+    from runner import adb_android_environment as adb_env_mod
+
+    launched = []
+    killed = []
+
+    class FakeProc:
+        pid = 6161
+
+    monkeypatch.setattr(
+        adb_env_mod, "start_adb_bridge_process", lambda **kwargs: launched.append(kwargs) or FakeProc()
+    )
+    monkeypatch.setattr(adb_env_mod, "wait_for_http_health", lambda url, timeout: None)
+    monkeypatch.setattr(adb_env_mod, "terminate_pid", lambda pid, **kwargs: killed.append(pid))
+
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(runs_dir=tmp_path / "runs", base_config_dir=tmp_path / "config")
+    )
+
+    environment = app.start_adb_android_environment(
+        {"name": "Genymotion", "serial": "127.0.0.1:6555", "bridge_port": 18899}
+    )
+    assert environment["status"] == "running"
+    assert environment["serial"] == "127.0.0.1:6555"
+    assert environment["public_endpoint"] == "http://127.0.0.1:18899"
+    assert environment["endpoint"] == "http://host.docker.internal:18899"
+    assert environment["parallel_envs"] == 1
+    assert launched[0]["serial"] == "127.0.0.1:6555"
+    assert launched[0]["bridge_port"] == 18899
+    manifest_path = Path(environment["manifest_path"])
+    assert manifest_path.exists()
+
+    listed = app.list_adb_android_environments()
+    assert [env["id"] for env in listed] == [environment["id"]]
+
+    stopped = app.stop_adb_android_environment(environment["id"])
+    assert stopped["status"] == "stopped"
+    assert killed == [6161]
+
+    deleted = app.delete_adb_android_environment(environment["id"])
+    assert deleted is not None
+    assert not manifest_path.exists()
+    assert app.list_adb_android_environments() == []
+
+
+def test_adb_android_environment_recovery(tmp_path: Path, monkeypatch):
+    from runner import adb_android_environment as adb_env_mod
+
+    runs_dir = tmp_path / "runs"
+    env_dir = runs_dir / "environments" / "adb-recovered"
+    env_dir.mkdir(parents=True)
+    (env_dir / adb_env_mod.ADB_ENV_MANIFEST_NAME).write_text(
+        json.dumps(
+            {
+                "id": "adb-recovered",
+                "name": "Genymotion",
+                "pid": 7171,
+                "serial": "127.0.0.1:6555",
+                "bridge_port": 18899,
+                "public_endpoint": "http://127.0.0.1:18899",
+                "log_path": str(env_dir / "adb_android.log"),
+                "created_at": "2026-07-10T00:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(adb_env_mod, "pid_alive", lambda pid: True)
+    monkeypatch.setattr(adb_env_mod, "check_endpoint_health", lambda url, timeout=2.0: True)
+    manager = adb_env_mod.ADBAndroidEnvironmentManager(runs_dir=runs_dir)
+    envs = manager.list_all()
+    assert len(envs) == 1
+    assert envs[0].status == "running"
+    assert "recovered" in envs[0].name
+    assert envs[0].public_endpoint == "http://127.0.0.1:18899"
+
+    # Dead pid (or failing health) must mark the recovered env unhealthy.
+    monkeypatch.setattr(adb_env_mod, "pid_alive", lambda pid: False)
+    manager_unhealthy = adb_env_mod.ADBAndroidEnvironmentManager(runs_dir=runs_dir)
+    envs = [env for env in manager_unhealthy._environments.values()]
+    assert envs[0].status == "unhealthy"
+
+
+def test_start_job_resolves_adb_android_environment(tmp_path: Path, monkeypatch):
+    from runner import adb_android_environment as adb_env_mod
+
+    suites = tmp_path / "suites"
+    suites.mkdir()
+    (suites / "suite.json").write_text(
+        json.dumps({"name": "suite", "tasks": [{"id": "t1", "category": "diagnostic"}]}),
+        encoding="utf-8",
+    )
+
+    class FakeProc:
+        pid = 8181
+
+    monkeypatch.setattr(adb_env_mod, "start_adb_bridge_process", lambda **kwargs: FakeProc())
+    monkeypatch.setattr(adb_env_mod, "wait_for_http_health", lambda url, timeout: None)
+
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            suites_dir=suites,
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+        )
+    )
+    environment = app.start_adb_android_environment(
+        {"name": "Genymotion", "serial": "127.0.0.1:6555", "bridge_port": 18899}
+    )
+
+    class FakeThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(webui.threading, "Thread", FakeThread)
+    monkeypatch.setattr(webui, "reserve_free_port", lambda: 18080)
+
+    job = app.start_job(
+        {
+            "endpoint": environment["endpoint"],
+            "environment_type": "adb_android",
+            "environment_id": environment["id"],
+            "environment": {"id": environment["id"], "type": "adb_android"},
+            "suites": ["suite.json"],
+            "parallel_tasks": 4,
+            "no_judge": True,
+        }
+    )
+
+    assert job["environment_type"] == "adb_android"
+    assert job["environment_endpoint"] == "http://127.0.0.1:18899"
+    assert job["docker_endpoint"] == "http://host.docker.internal:18899"
+    assert job["environment_web_url"] == ""
+    # Single adb device: parallel_tasks is always forced to 1.
+    assert job["parallel_tasks"] == 1
+
+
+def test_start_job_rejects_unknown_environment_type(tmp_path: Path):
+    suites = tmp_path / "suites"
+    suites.mkdir()
+    (suites / "suite.json").write_text(
+        json.dumps({"name": "suite", "tasks": [{"id": "t1", "category": "diagnostic"}]}),
+        encoding="utf-8",
+    )
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(
+            suites_dir=suites,
+            runs_dir=tmp_path / "runs",
+            base_config_dir=tmp_path / "config",
+        )
+    )
+    with pytest.raises(ValueError, match="environment_type"):
+        app.start_job(
+            {
+                "endpoint": "http://127.0.0.1:9090",
+                "environment_type": "bogus",
+                "suites": ["suite.json"],
+            }
+        )
+
+
+def test_failed_adb_start_does_not_leave_resurrectable_manifest(tmp_path: Path, monkeypatch):
+    from runner import adb_android_environment as adb_env_mod
+
+    class FakeProc:
+        pid = 9191
+
+    killed = []
+    monkeypatch.setattr(adb_env_mod, "start_adb_bridge_process", lambda **kwargs: FakeProc())
+    monkeypatch.setattr(adb_env_mod, "terminate_pid", lambda pid, **kwargs: killed.append(pid))
+
+    def failing_health(url, timeout):
+        raise RuntimeError("bridge never became healthy")
+
+    monkeypatch.setattr(adb_env_mod, "wait_for_http_health", failing_health)
+
+    runs_dir = tmp_path / "runs"
+    manager = adb_env_mod.ADBAndroidEnvironmentManager(runs_dir=runs_dir)
+    with pytest.raises(RuntimeError, match="failed to start"):
+        manager.start_adb_android(name="Genymotion", serial="127.0.0.1:6555", bridge_port=18899)
+    assert killed == [9191]
+
+    env = next(iter(manager._environments.values()))
+    env_dir = runs_dir / "environments" / env.id
+    # Manifest and pidfile must be gone; the log stays for debugging.
+    assert not (env_dir / adb_env_mod.ADB_ENV_MANIFEST_NAME).exists()
+    assert not (env_dir / adb_env_mod.ADB_ENV_PID_NAME).exists()
+    assert (env_dir / adb_env_mod.ADB_ENV_LOG_NAME).exists()
+
+    # A restarted WebUI must not resurrect the failed environment.
+    reloaded = adb_env_mod.ADBAndroidEnvironmentManager(runs_dir=runs_dir)
+    assert reloaded.list_all() == []
+
+
+def test_stopped_adb_environment_does_not_resurface_after_restart(tmp_path: Path, monkeypatch):
+    from runner import adb_android_environment as adb_env_mod
+
+    class FakeProc:
+        pid = 9292
+
+    monkeypatch.setattr(adb_env_mod, "start_adb_bridge_process", lambda **kwargs: FakeProc())
+    monkeypatch.setattr(adb_env_mod, "wait_for_http_health", lambda url, timeout: None)
+    monkeypatch.setattr(adb_env_mod, "terminate_pid", lambda pid, **kwargs: None)
+
+    runs_dir = tmp_path / "runs"
+    manager = adb_env_mod.ADBAndroidEnvironmentManager(runs_dir=runs_dir)
+    env = manager.start_adb_android(name="Genymotion", serial="127.0.0.1:6555", bridge_port=18899)
+    manifest_path = Path(env.manifest_path)
+    assert manifest_path.exists()
+
+    stopped = manager.stop(env.id)
+    assert stopped.status == "stopped"
+    # Deliberate stop removes the manifest: it must not come back as a
+    # misleading "(recovered, unhealthy)" ghost after a WebUI restart.
+    assert not manifest_path.exists()
+
+    reloaded = adb_env_mod.ADBAndroidEnvironmentManager(runs_dir=runs_dir)
+    assert reloaded.list_all() == []
+
+
+def test_start_adb_android_environment_treats_port_zero_as_auto(tmp_path: Path, monkeypatch):
+    from runner import adb_android_environment as adb_env_mod
+
+    class FakeProc:
+        pid = 9393
+
+    launched = []
+    monkeypatch.setattr(
+        adb_env_mod, "start_adb_bridge_process", lambda **kwargs: launched.append(kwargs) or FakeProc()
+    )
+    monkeypatch.setattr(adb_env_mod, "wait_for_http_health", lambda url, timeout: None)
+    monkeypatch.setattr(adb_env_mod, "reserve_free_port", lambda: 28899)
+
+    app = webui.BenchmarkWebApp(
+        webui.WebUIConfig(runs_dir=tmp_path / "runs", base_config_dir=tmp_path / "config")
+    )
+
+    # 0 (form input) means auto-pick, matching the CLI --bridge-port 0 sentinel.
+    environment = app.start_adb_android_environment({"serial": "127.0.0.1:6555", "bridge_port": 0})
+    assert environment["bridge_port"] == 28899
+    assert launched[0]["bridge_port"] == 28899
+
+    # Explicit positive port still validated and honored.
+    environment = app.start_adb_android_environment({"serial": "127.0.0.1:6555", "bridge_port": "18899"})
+    assert environment["bridge_port"] == 18899
+
+    # Garbage still rejected.
+    with pytest.raises(ValueError, match="bridge_port"):
+        app.start_adb_android_environment({"serial": "127.0.0.1:6555", "bridge_port": "abc"})
+    with pytest.raises(ValueError, match="bridge_port"):
+        app.start_adb_android_environment({"serial": "127.0.0.1:6555", "bridge_port": -1})

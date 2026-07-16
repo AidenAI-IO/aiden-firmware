@@ -112,7 +112,8 @@ func (t *ScreenshotTool) ReturnsVisualObservation() bool { return true }
 
 func (t *ScreenshotTool) Description() string {
 	return `Capture a screenshot from the connected display. No input required (pass empty JSON {} or ""). ` +
-		`Returns a JSON object with width, height, and base64-encoded JPEG image data.`
+		`Returns a JSON object with width, height, and base64-encoded JPEG image data. ` +
+		`The returned width and height define coord_space:"screenshot": use pixel coordinates exactly as measured in this returned image.`
 }
 
 func (t *ScreenshotTool) ArgsSchema() map[string]any {
@@ -131,6 +132,9 @@ func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
 	if meta.PixelFormat != "jpeg" {
 		return "", fmt.Errorf("expected jpeg format, got %s", meta.PixelFormat)
 	}
+	if touchscreenRCADebugEnabledCached() {
+		touchscreenRCALogf("screenshot frame meta=%s capture_backend=%q mapping_before={%s}", formatTouchscreenRCAMetadata(meta), captureInfo.Backend, formatTouchscreenRCAScreenMapping(t.screen))
+	}
 	active := screenActiveArea{}
 	sourceWidth := int(meta.Width)
 	sourceHeight := int(meta.Height)
@@ -142,6 +146,18 @@ func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
 		alreadyCropped = true
 	} else {
 		active = detectScreenshotActiveAreaForScreen(t.screen, jpegData, int(meta.Width), int(meta.Height))
+	}
+	if touchscreenRCADebugEnabledCached() {
+		touchscreenRCALogf(
+			"screenshot resolved active_area source=%dx%d active=%s already_cropped=%v jpeg_dimensions=%dx%d mapping_before_update={%s}",
+			sourceWidth,
+			sourceHeight,
+			formatTouchscreenRCAActiveArea(active),
+			alreadyCropped,
+			meta.Width,
+			meta.Height,
+			formatTouchscreenRCAScreenMapping(t.screen),
+		)
 	}
 	if t.screen != nil {
 		t.screen.UpdateActiveArea(sourceWidth, sourceHeight, active)
@@ -169,6 +185,16 @@ func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
 		Data:   base64.StdEncoding.EncodeToString(displayData),
 	}
 	applyScreenCaptureInfo(&result, captureInfo)
+	if touchscreenRCADebugEnabledCached() {
+		touchscreenRCALogf(
+			"screenshot result display=%dx%d size=%d capture_backend=%q mapping_after={%s}",
+			displayWidth,
+			displayHeight,
+			len(displayData),
+			result.CaptureBackend,
+			formatTouchscreenRCAScreenMapping(t.screen),
+		)
+	}
 
 	out, _ := json.Marshal(result)
 	return string(out), nil

@@ -356,6 +356,9 @@ type quickActionArgs struct {
 func (t *QuickActionTool) Call(ctx context.Context, input string) (string, error) {
 	var args quickActionArgs
 	trimmed := strings.TrimSpace(input)
+	if touchscreenRCADebugEnabledCached() {
+		touchscreenRCALogf("quick_action start input_len=%d mapping_before={%s}", len(input), formatTouchscreenRCAQuickActionMappingSummary(t))
+	}
 	if trimmed == "" {
 		te := NewToolError(CodeInvalidArguments, "action or list is required")
 		SetToolError(ctx, te)
@@ -422,6 +425,18 @@ func (t *QuickActionTool) Call(ctx context.Context, input string) (string, error
 		}
 		selected = binding.Alternatives[idx-1]
 		selectedSource = fmt.Sprintf("alternative_%d", idx)
+	}
+	if touchscreenRCADebugEnabledCached() {
+		touchscreenRCALogf(
+			"quick_action selected action=%q platform=%q binding=%q status=%q tool=%q steps=%d mapping_before_delegate={%s}",
+			actionID,
+			platform,
+			selectedSource,
+			selected.Status,
+			selected.Tool,
+			len(selected.Steps),
+			formatTouchscreenRCAQuickActionMappingSummary(t),
+		)
 	}
 
 	status := strings.TrimSpace(selected.Status)
@@ -581,6 +596,9 @@ func (t *QuickActionTool) Call(ctx context.Context, input string) (string, error
 		}
 		result["alternatives"] = alts
 	}
+	if touchscreenRCADebugEnabledCached() {
+		touchscreenRCALogf("quick_action completed action=%q platform=%q tool=%q mapping_after_delegate={%s}", actionID, platform, toolName, formatTouchscreenRCAQuickActionMappingSummary(t))
+	}
 	return jsonString(result), nil
 }
 
@@ -588,6 +606,9 @@ func (t *QuickActionTool) delegate(ctx context.Context, toolName, payload string
 	subCtx, _ := WithToolError(ctx)
 	var output string
 	var err error
+	if touchscreenRCADebugEnabledCached() {
+		touchscreenRCALogf("quick_action delegate start tool=%q payload_len=%d mapping_before={%s}", toolName, len(payload), formatTouchscreenRCAQuickActionMappingSummary(t))
+	}
 	switch toolName {
 	case "keyboard_tap":
 		if t.keyboard == nil {
@@ -603,15 +624,27 @@ func (t *QuickActionTool) delegate(ctx context.Context, toolName, payload string
 		return "", nil, fmt.Errorf("unsupported delegated tool %q", toolName)
 	}
 	if err != nil {
+		if touchscreenRCADebugEnabledCached() {
+			touchscreenRCALogf("quick_action delegate error tool=%q err_type=%T mapping_after={%s}", toolName, err, formatTouchscreenRCAQuickActionMappingSummary(t))
+		}
 		return output, nil, err
 	}
 	if te := ToolErrorFromContext(subCtx); te != nil {
+		if touchscreenRCADebugEnabledCached() {
+			touchscreenRCALogf("quick_action delegate tool_error tool=%q code=%q category=%q mapping_after={%s}", toolName, te.Code, te.Category, formatTouchscreenRCAQuickActionMappingSummary(t))
+		}
 		return output, te, nil
 	}
 	if legacyToolOutputLooksLikeError(output) {
 		trimmed := strings.TrimSpace(output)
 		message := strings.TrimSpace(trimmed[len("error:"):])
+		if touchscreenRCADebugEnabledCached() {
+			touchscreenRCALogf("quick_action delegate legacy_error tool=%q output_len=%d mapping_after={%s}", toolName, len(output), formatTouchscreenRCAQuickActionMappingSummary(t))
+		}
 		return output, NewToolError(CodeToolExecutionFailed, message), nil
+	}
+	if touchscreenRCADebugEnabledCached() {
+		touchscreenRCALogf("quick_action delegate completed tool=%q output_len=%d mapping_after={%s}", toolName, len(output), formatTouchscreenRCAQuickActionMappingSummary(t))
 	}
 	return output, nil, nil
 }

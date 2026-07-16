@@ -575,7 +575,7 @@ rebuild_ext4_image() {
     fi
 }
 
-echo "=== Aiden Hardware Demo - Image Builder ==="
+echo "=== Aiden Firmware - Image Builder ==="
 echo ""
 
 # Step 1: 编译应用程序. _build.sh requires a verified Go in PATH and disables
