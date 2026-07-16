@@ -358,6 +358,26 @@ func TestStorageManagerFormatExt4MountsAfterSuccess(t *testing.T) {
 	}
 }
 
+func TestStorageManagerFormatExFATMountsAfterSuccess(t *testing.T) {
+	ops := &fakeStorageOps{present: true, free: 1 << 30, total: 1 << 31, healthy: true}
+	m := newTestStorageManager(t, ops)
+	tickN(m, 2)
+
+	if err := m.StartFormat(StorageFormatExFAT, StorageFormatConfirmToken); err != nil {
+		t.Fatal(err)
+	}
+	job := waitForFormatJob(t, m)
+	if job.Status != StorageFormatSuccess {
+		t.Fatalf("job = %+v, want success", job)
+	}
+	if ops.lastFormatFS != StorageFormatExFAT {
+		t.Fatalf("format fs = %q, want exfat", ops.lastFormatFS)
+	}
+	if status := m.Status(); !status.Card.Mounted || status.EffectiveMode != StorageModeDual {
+		t.Fatalf("status = %+v, want mounted dual storage after format", status)
+	}
+}
+
 func TestStorageManagerFormatFailureReported(t *testing.T) {
 	ops := &fakeStorageOps{present: true, free: 1 << 30, total: 1 << 31, healthy: true, formatErr: errors.New("card yanked")}
 	m := newTestStorageManager(t, ops)

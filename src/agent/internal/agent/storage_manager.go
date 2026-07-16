@@ -43,10 +43,13 @@ const storageSDSubdir = "aiden"
 const StorageFormatConfirmToken = "format-sd-card"
 
 // Filesystems the format job can create. FAT32 is the default for PC/phone
-// interoperability; ext4 is journaled and has on-device fsck support.
+// interoperability; ext4 is journaled and has on-device fsck support; exFAT
+// keeps PC/phone interoperability on large cards without FAT32's 4 GB
+// file-size limit.
 const (
 	StorageFormatFAT32 = "fat32"
 	StorageFormatExt4  = "ext4"
+	StorageFormatExFAT = "exfat"
 )
 
 // Format job states surfaced through Status and the state mirror.
@@ -299,8 +302,8 @@ func (m *StorageManager) StartFormat(fs, confirm string) error {
 	if fs == "" {
 		fs = StorageFormatFAT32
 	}
-	if fs != StorageFormatFAT32 && fs != StorageFormatExt4 {
-		return fmt.Errorf("unsupported filesystem %q (want %s or %s)", fs, StorageFormatFAT32, StorageFormatExt4)
+	if fs != StorageFormatFAT32 && fs != StorageFormatExt4 && fs != StorageFormatExFAT {
+		return fmt.Errorf("unsupported filesystem %q (want %s, %s or %s)", fs, StorageFormatFAT32, StorageFormatExt4, StorageFormatExFAT)
 	}
 	// Formatting owns the card exclusively; stop a running migration first.
 	if err := m.cancelMigrationAndWait("format"); err != nil {
@@ -1142,6 +1145,8 @@ func mbrPartitionType(fs string) (byte, error) {
 		return 0x0C, nil // W95 FAT32 (LBA)
 	case StorageFormatExt4:
 		return 0x83, nil // Linux
+	case StorageFormatExFAT:
+		return 0x07, nil // HPFS/NTFS/exFAT
 	default:
 		return 0, fmt.Errorf("unsupported filesystem %q", fs)
 	}
@@ -1199,10 +1204,13 @@ func (o *realStorageOps) FormatDisk(fs string) (string, error) {
 	var cmd *exec.Cmd
 	switch fs {
 	case StorageFormatFAT32:
-		// busybox mkfs.vfat creates FAT32 volumes.
+		// mkfs.vfat from the SDK-bundled dosfstools creates FAT32 volumes.
 		cmd = exec.Command("mkfs.vfat", "-n", storageVolumeLabel, part)
 	case StorageFormatExt4:
 		cmd = exec.Command("mkfs.ext4", "-F", "-L", storageVolumeLabel, part)
+	case StorageFormatExFAT:
+		// mkfs.exfat from the SDK-bundled exfatprogs.
+		cmd = exec.Command("mkfs.exfat", "-L", storageVolumeLabel, part)
 	}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("%s %s: %v: %s", cmd.Path, part, err, strings.TrimSpace(string(out)))

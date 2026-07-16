@@ -53,7 +53,7 @@ func (s *Server) handleStorageEject(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleStorageFormat serves POST /api/storage/format
-// {"fs": "fat32"|"ext4", "confirm": "format-sd-card"}. The format runs as an
+// {"fs": "fat32"|"ext4"|"exfat", "confirm": "format-sd-card"}. The format runs as an
 // asynchronous job; poll /api/storage/status (format_job) for the outcome.
 func (s *Server) handleStorageFormat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

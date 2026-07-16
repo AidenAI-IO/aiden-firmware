@@ -360,6 +360,7 @@ static const char* CONFIG_WEB_HTML =
     "        <select id=\"storageFormatFs\" disabled>\n"
     "          <option value=\"fat32\">FAT32 (readable on PC / phone)</option>\n"
     "          <option value=\"ext4\">ext4 (best for on-device use)</option>\n"
+    "          <option value=\"exfat\">exFAT (large cards / files, PC / phone)</option>\n"
     "        </select>\n"
     "        <button id=\"storageFormatBtn\" class=\"button\" onclick=\"startStorageFormat()\" disabled>Format card</button>\n"
     "        <button id=\"storageEjectBtn\" class=\"button ghost\" onclick=\"ejectStorageCard()\" disabled>Safe eject</button>\n"
