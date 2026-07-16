@@ -8,7 +8,7 @@
 # /userdata/system/env, which aiden-env-run exports to the agent on every
 # start). Backdated recordings push free space below the 10% start watermark;
 # the test then asserts that the oldest files stream to the SD card until free
-# space is back at the 30% stop watermark.
+# space is back at the 50% stop watermark.
 #
 # Requirements: board reachable over ssh, an SD card inserted and mounted,
 # firmware with the AIDEN_STORAGE_EMMC_ROOT hook.
@@ -151,7 +151,7 @@ bsh "touch -t 202601010101 /tmp/.stmig-touch && rm -f /tmp/.stmig-touch" || fata
 bsh "which mkfs.ext4 >/dev/null" || fatal "mkfs.ext4 not found on the device"
 
 # --- phase 1: below start watermark => migrate until stop watermark ----------
-log "--- phase 1: trigger below 10%, stop at 30%"
+log "--- phase 1: trigger below 10%, stop at 50%"
 make_loop_image
 bsh "rm -f $SD_AUDIO/${PREFIX}*"
 
@@ -207,7 +207,7 @@ log "  newest index on SD: ${max_sd:-none}; oldest index left on eMMC: ${min_src
 
 check "migration finished with status=success" [ "$status" = "success" ]
 case "$detail" in *"stop watermark"*) check "run ended at the stop watermark" true ;; *) check "run ended at the stop watermark (got: $detail)" false ;; esac
-check "loop fs free space recovered to >= 30% (got ${after_pct}%)" [ "$after_pct" -ge 30 ]
+check "loop fs free space recovered to >= 50% (got ${after_pct}%)" [ "$after_pct" -ge 50 ]
 check "moved at least one file" [ "$moved_files" -ge 1 ]
 check "did not move everything (newest files stay on eMMC)" [ "$moved_files" -lt "$NFILES" ]
 check "oldest files migrated first (max SD index ${max_sd:-none} < min eMMC index ${min_src:-none})" \

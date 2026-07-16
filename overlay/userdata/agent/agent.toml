@@ -77,7 +77,7 @@ api_key = "OPENAI_API_KEY"
 # device = "mmcblk2"                # SD card block device base name
 # min_card_free_mb = 64             # Cards with less free space are rejected
 # migrate_start_free_pct = 10       # Start migrating below this eMMC free %
-# migrate_stop_free_pct = 30        # Stop once eMMC free % reaches this
+# migrate_stop_free_pct = 50        # Stop once eMMC free % reaches this
 
 # Log retention configuration
 [log]

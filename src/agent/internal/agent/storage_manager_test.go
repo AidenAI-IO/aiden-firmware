@@ -88,9 +88,20 @@ func (f *fakeStorageOps) FormatDisk(fs string) (string, error) {
 func (f *fakeStorageOps) CardIsBlank() bool { return f.blank }
 
 func newTestStorageManager(t *testing.T, ops *fakeStorageOps) *StorageManager {
+	return newTestStorageManagerWithWatermarks(t, ops, 0, 0)
+}
+
+// newTestStorageManagerWithWatermarks lets migration tests pin the start/stop
+// percentages (0 = use the built-in defaults) so they do not depend on the
+// production default values.
+func newTestStorageManagerWithWatermarks(t *testing.T, ops *fakeStorageOps, startPct, stopPct int) *StorageManager {
 	t.Helper()
 	dir := t.TempDir()
-	cfg := StorageConfig{MountPoint: filepath.Join(dir, "sdcard")}
+	cfg := StorageConfig{
+		MountPoint:          filepath.Join(dir, "sdcard"),
+		MigrateStartFreePct: startPct,
+		MigrateStopFreePct:  stopPct,
+	}
 	m := newStorageManagerWithOps(cfg, ops, filepath.Join(dir, "storage.state"), filepath.Join(dir, "emmc"), nil)
 	return m
 }
@@ -528,7 +539,9 @@ func migrationSpaceFn(t *testing.T, m *StorageManager, srcDir string, base, init
 
 func TestStorageManagerMigratesOldestFilesUntilStopWatermark(t *testing.T) {
 	ops := &fakeStorageOps{present: true, healthy: true}
-	m := newTestStorageManager(t, ops)
+	// Pin watermarks (start 10 / stop 30) so the arithmetic below is
+	// independent of the production defaults.
+	m := newTestStorageManagerWithWatermarks(t, ops, 10, 30)
 	srcDir := filepath.Join(m.emmcRoot, "audio")
 
 	// Four aged 100-byte files (a oldest ... d newest) plus one fresh file.

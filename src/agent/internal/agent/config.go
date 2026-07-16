@@ -152,7 +152,7 @@ func (c StorageConfig) MinCardFreeMBOrDefault() int {
 
 // MigrateWatermarksOrDefault returns the (start, stop) free-space
 // percentages for eMMC→SD migration. Defaults: start below 10%, stop at
-// 30%. An inverted or out-of-range pair falls back to the defaults so a
+// 50%. An inverted or out-of-range pair falls back to the defaults so a
 // bad config cannot disable or loop the migrator.
 func (c StorageConfig) MigrateWatermarksOrDefault() (int, int) {
 	start, stop := c.MigrateStartFreePct, c.MigrateStopFreePct

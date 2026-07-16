@@ -36,9 +36,9 @@ const (
 	defaultStorageDevice           = "mmcblk2"
 	defaultStorageMinCardFreeMB    = 64
 	// Migration watermarks: start when eMMC free space drops below 10%,
-	// stop once it is back at or above 30%.
+	// stop once it is back at or above 50%.
 	defaultStorageMigrateStartFreePct = 10
-	defaultStorageMigrateStopFreePct  = 30
+	defaultStorageMigrateStopFreePct  = 50
 	defaultKeyboardDevice             = "/dev/hidg0"
 	defaultMouseDevice                = "/dev/hidg1"
 	defaultAndroidKeyboardDevice      = "/dev/hidg2"
