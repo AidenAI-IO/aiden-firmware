@@ -1088,6 +1088,7 @@ func (t *MouseClickTool) Call(ctx context.Context, input string) (string, error)
 type MouseMoveTool struct {
 	pc     *pointerController
 	screen *screenState
+	adb    *ADBInputController
 }
 
 func (t *MouseMoveTool) Name() string { return "mouse_move" }
@@ -1112,6 +1113,13 @@ func (t *MouseMoveTool) Call(ctx context.Context, input string) (string, error) 
 	}
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
 		return toolErrorResultf(ctx, CodeInvalidArguments, "invalid input: %v. Expected JSON format: {\"x\": 500, \"y\": 300, \"coord_space\": \"normalized\"}. Common mistakes: x and y must be numbers, missing quotes around field names", err), nil
+	}
+
+	if t.adb != nil {
+		if _, err := t.adb.ResolvePosition(ctx, args.X.Float64(), args.Y.Float64(), args.CoordSpace, coordinateSpaceAuto); err != nil {
+			return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
+		}
+		return "ok", nil
 	}
 
 	absX, absY, err := resolvePointerPositionForSurface(t.screen, t.pc.touchscreen, args.X.Float64(), args.Y.Float64(), args.CoordSpace, coordinateSpaceAuto)
@@ -1816,7 +1824,8 @@ func wheelNudgeRowsForGap(gap int) int {
 
 // MouseScrollTool sends mouse wheel events.
 type MouseScrollTool struct {
-	pc *pointerController
+	pc  *pointerController
+	adb *ADBInputController
 }
 
 func (t *MouseScrollTool) Name() string { return "mouse_scroll" }
@@ -1843,6 +1852,28 @@ func (t *MouseScrollTool) Call(ctx context.Context, input string) (string, error
 	}
 	if args.Delta < -127 || args.Delta > 127 {
 		return toolErrorResultString(ctx, CodeInvalidArguments, "delta must be between -127 and 127"), nil
+	}
+	if t != nil && t.adb != nil {
+		strength := "small"
+		if absInt(args.Delta) >= 3 {
+			strength = "medium"
+		}
+		gestureType := "swipe_down"
+		if args.Delta < 0 {
+			gestureType = "swipe_up"
+		}
+		preset, err := directionalSwipePreset(strength)
+		if err != nil {
+			return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
+		}
+		start, end, err := t.adb.DirectionalSwipeEndpoints(ctx, gestureType, nil, nil, preset)
+		if err != nil {
+			return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
+		}
+		if err := t.adb.Swipe(ctx, start, end, preset.durationMs); err != nil {
+			return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
+		}
+		return "ok", nil
 	}
 	if t == nil || t.pc == nil {
 		return toolErrorResultString(ctx, CodeModuleUnavailable, "mouse_scroll is not configured"), nil
@@ -2579,6 +2610,13 @@ func clampInt(val, min, max int) int {
 	}
 	if val > max {
 		return max
+	}
+	return val
+}
+
+func absInt(val int) int {
+	if val < 0 {
+		return -val
 	}
 	return val
 }

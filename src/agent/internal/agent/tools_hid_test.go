@@ -659,6 +659,24 @@ func TestADBMouseClickUsesInputTapWithNormalizedCoordinates(t *testing.T) {
 	}
 }
 
+func TestADBMouseClickAutoRejectsOutOfRangeCoordinates(t *testing.T) {
+	screen := &screenState{}
+	screen.UpdatePhoneScreenInfo(PhoneScreenInfo{WidthPixels: intPtr(1080), HeightPixels: intPtr(2400)})
+	runner := &recordingADBRunner{}
+	tool := &MouseClickTool{screen: screen, adb: newTestADBInputController(t, screen, runner)}
+
+	out, err := tool.Call(context.Background(), `{"x":1500,"y":500,"coord_space":"auto"}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "auto only supports 0-1000 normalized coordinates") {
+		t.Fatalf("Call output = %q, want auto coordinate error", out)
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("adb commands = %#v, want no command for invalid auto coordinates", runner.commands)
+	}
+}
+
 func TestADBTouchGestureSwipeUsesInputSwipe(t *testing.T) {
 	screen := &screenState{}
 	screen.UpdatePhoneScreenInfo(PhoneScreenInfo{WidthPixels: intPtr(1001), HeightPixels: intPtr(1001)})
@@ -717,9 +735,47 @@ func TestADBTouchGestureBackUsesKeyevent(t *testing.T) {
 		t.Fatalf("Call output = %q, want ok", out)
 	}
 
-	want := []string{"-s", "serial123", "shell", "input", "keyevent", "4"}
+	want := []string{"-s", "serial123", "shell", "input", "keyevent", "KEYCODE_BACK"}
 	if len(runner.commands) != 1 || !stringSlicesEqual(runner.commands[0], want) {
 		t.Fatalf("adb commands = %#v, want %#v", runner.commands, want)
+	}
+}
+
+func TestADBKeyboardTapAndroidAliasesAlignWithBridge(t *testing.T) {
+	tests := []struct {
+		name string
+		keys []string
+		want string
+	}{
+		{name: "home", keys: []string{"home"}, want: "KEYCODE_HOME"},
+		{name: "keycode home", keys: []string{"KEYCODE_HOME"}, want: "KEYCODE_HOME"},
+		{name: "escape as android back", keys: []string{"escape"}, want: "KEYCODE_BACK"},
+		{name: "return", keys: []string{"return"}, want: "KEYCODE_ENTER"},
+		{name: "delete backward", keys: []string{"delete_backward"}, want: "KEYCODE_DEL"},
+		{name: "app switch", keys: []string{"keycode_app_switch"}, want: "KEYCODE_APP_SWITCH"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &recordingADBRunner{}
+			tool := &KeyboardTapTool{adb: newTestADBInputController(t, nil, runner)}
+
+			payload, err := json.Marshal(map[string]any{"keys": tt.keys})
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, err := tool.Call(context.Background(), string(payload))
+			if err != nil {
+				t.Fatalf("Call returned error: %v", err)
+			}
+			if out != "ok" {
+				t.Fatalf("Call output = %q, want ok", out)
+			}
+			want := []string{"-s", "serial123", "shell", "input", "keyevent", tt.want}
+			if len(runner.commands) != 1 || !stringSlicesEqual(runner.commands[0], want) {
+				t.Fatalf("adb commands = %#v, want %#v", runner.commands, want)
+			}
+		})
 	}
 }
 
@@ -803,6 +859,43 @@ func TestADBKeyboardTextFallsBackToKeyEventsWhenADBKeyboardUnavailable(t *testin
 		{"-s", "serial123", "shell", "input", "keycombination", "-t", "50", "KEYCODE_SHIFT_LEFT", "KEYCODE_1"},
 	}
 	if !stringSliceMatrixEqual(runner.commands, want) {
+		t.Fatalf("adb commands = %#v, want %#v", runner.commands, want)
+	}
+}
+
+func TestADBMouseMoveValidatesCoordinatesWithoutHIDCommand(t *testing.T) {
+	screen := &screenState{}
+	screen.UpdatePhoneScreenInfo(PhoneScreenInfo{WidthPixels: intPtr(1080), HeightPixels: intPtr(2400)})
+	runner := &recordingADBRunner{}
+	tool := &MouseMoveTool{screen: screen, adb: newTestADBInputController(t, screen, runner)}
+
+	out, err := tool.Call(context.Background(), `{"x":500,"y":250,"coord_space":"normalized"}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("Call output = %q, want ok", out)
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("adb commands = %#v, want mouse_move no-op when coordinates are valid", runner.commands)
+	}
+}
+
+func TestADBMouseScrollUsesSwipeApproximation(t *testing.T) {
+	screen := &screenState{}
+	screen.UpdatePhoneScreenInfo(PhoneScreenInfo{WidthPixels: intPtr(1001), HeightPixels: intPtr(1001)})
+	runner := &recordingADBRunner{}
+	tool := &MouseScrollTool{adb: newTestADBInputController(t, screen, runner)}
+
+	out, err := tool.Call(context.Background(), `{"delta":-3}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("Call output = %q, want ok", out)
+	}
+	want := []string{"-s", "serial123", "shell", "input", "swipe", "500", "750", "500", "250", "650"}
+	if len(runner.commands) != 1 || !stringSlicesEqual(runner.commands[0], want) {
 		t.Fatalf("adb commands = %#v, want %#v", runner.commands, want)
 	}
 }

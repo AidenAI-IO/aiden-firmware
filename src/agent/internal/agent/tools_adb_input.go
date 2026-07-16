@@ -19,6 +19,7 @@ const (
 	adbInputScreenSizeTTL     = 30 * time.Second
 	adbKeyboardIME            = "com.android.adbkeyboard/.AdbIME"
 	defaultADBTextRestoreWait = 80
+	maxADBActionDurationMs    = 10_000
 )
 
 var (
@@ -58,9 +59,7 @@ func (c *ADBInputController) Tap(ctx context.Context, point resolvedPointerPoint
 }
 
 func (c *ADBInputController) Swipe(ctx context.Context, start, end resolvedPointerPoint, durationMs int) error {
-	if durationMs < 0 {
-		durationMs = 0
-	}
+	durationMs = clampADBActionDurationMs(durationMs, 0, 0)
 	return c.runShellWithTimeout(ctx, adbInputTimeoutForDuration(durationMs), "input", "swipe",
 		strconv.Itoa(start.x), strconv.Itoa(start.y),
 		strconv.Itoa(end.x), strconv.Itoa(end.y),
@@ -69,9 +68,7 @@ func (c *ADBInputController) Swipe(ctx context.Context, start, end resolvedPoint
 }
 
 func (c *ADBInputController) LongPress(ctx context.Context, point resolvedPointerPoint, durationMs int) error {
-	if durationMs <= 0 {
-		durationMs = 500
-	}
+	durationMs = clampADBActionDurationMs(durationMs, 500, 1)
 	return c.Swipe(ctx, point, point, durationMs)
 }
 
@@ -89,6 +86,7 @@ func (c *ADBInputController) KeyTap(ctx context.Context, keys []string, holdMs i
 	if holdMs <= 0 {
 		holdMs = defaultKeyboardTapHoldMs
 	}
+	holdMs = clampADBActionDurationMs(holdMs, defaultKeyboardTapHoldMs, 1)
 	args := []string{"input", "keycombination", "-t", strconv.Itoa(holdMs)}
 	args = append(args, keycodes...)
 	return c.runShell(ctx, args...)
@@ -175,6 +173,10 @@ func (c *ADBInputController) ResolvePosition(ctx context.Context, x, y float64, 
 		return resolvedPointerPoint{}, fmt.Errorf("%w: %v", errADBInputInvalidArgument, err)
 	}
 
+	if space == coordinateSpaceAuto && !looksLikeNormalizedPoint(x, y) {
+		return resolvedPointerPoint{}, fmt.Errorf("%w: adb coord_space auto only supports 0-1000 normalized coordinates; use coord_space pixel for screenshot pixels or absolute for HID-space coordinates", errADBInputInvalidArgument)
+	}
+
 	size, err := c.screenSize(ctx)
 	if err != nil {
 		return resolvedPointerPoint{}, err
@@ -182,18 +184,8 @@ func (c *ADBInputController) ResolvePosition(ctx context.Context, x, y float64, 
 
 	switch space {
 	case coordinateSpaceAuto:
-		if looksLikeNormalizedPoint(x, y) {
-			return normalizedToADBPoint(size, x, y), nil
-		}
-		if displayWidth, displayHeight, ok := c.displayPixelBounds(); ok {
-			point, err := pixelToADBPoint(size, x, y, displayWidth, displayHeight)
-			if err != nil {
-				return resolvedPointerPoint{}, err
-			}
-			return point, nil
-		}
-		return absoluteToADBPoint(size, x, y), nil
-	case coordinateSpacePixel:
+		return normalizedToADBPoint(size, x, y), nil
+	case coordinateSpacePixel, coordinateSpaceScreenshot:
 		displayWidth, displayHeight, ok := c.displayPixelBounds()
 		if !ok {
 			displayWidth = size.width
@@ -398,6 +390,19 @@ func adbInputTimeoutForDuration(durationMs int) time.Duration {
 	return timeout
 }
 
+func clampADBActionDurationMs(value, fallback, minimum int) int {
+	if value <= 0 {
+		value = fallback
+	}
+	if value < minimum {
+		value = minimum
+	}
+	if value > maxADBActionDurationMs {
+		value = maxADBActionDurationMs
+	}
+	return value
+}
+
 func parseADBWMSize(output string) (adbInputScreenSize, bool) {
 	var size adbInputScreenSize
 	for _, match := range adbWMSizePattern.FindAllStringSubmatch(output, -1) {
@@ -473,11 +478,11 @@ func resolveADBKeycodes(rawKeys []string) ([]string, error) {
 }
 
 func resolveADBKeycode(key string) (string, error) {
-	if alias, ok := androidKeyboardTapAliases[key]; ok && alias.Keycode > 0 {
-		return strconv.Itoa(alias.Keycode), nil
-	}
 	if keycode, ok := adbAndroidKeycodeAliases[key]; ok {
 		return keycode, nil
+	}
+	if alias, ok := androidKeyboardTapAliases[key]; ok && alias.Keycode > 0 {
+		return strconv.Itoa(alias.Keycode), nil
 	}
 	if keycode, ok := adbKeyboardKeycodeMap[key]; ok {
 		return keycode, nil
@@ -493,16 +498,27 @@ func resolveADBKeycode(key string) (string, error) {
 
 var adbAndroidKeycodeAliases = map[string]string{
 	"android_back":              "KEYCODE_BACK",
+	"back":                      "KEYCODE_BACK",
+	"keycode_back":              "KEYCODE_BACK",
 	"android_home":              "KEYCODE_HOME",
+	"home":                      "KEYCODE_HOME",
+	"keycode_home":              "KEYCODE_HOME",
 	"menu":                      "KEYCODE_MENU",
+	"keycode_menu":              "KEYCODE_MENU",
 	"search":                    "KEYCODE_SEARCH",
+	"keycode_search":            "KEYCODE_SEARCH",
 	"power":                     "KEYCODE_POWER",
+	"keycode_power":             "KEYCODE_POWER",
 	"sleep":                     "KEYCODE_SLEEP",
+	"keycode_sleep":             "KEYCODE_SLEEP",
 	"volume_mute":               "KEYCODE_VOLUME_MUTE",
+	"keycode_volume_mute":       "KEYCODE_VOLUME_MUTE",
 	"volumeup":                  "KEYCODE_VOLUME_UP",
 	"volume_up":                 "KEYCODE_VOLUME_UP",
+	"keycode_volume_up":         "KEYCODE_VOLUME_UP",
 	"volumedown":                "KEYCODE_VOLUME_DOWN",
 	"volume_down":               "KEYCODE_VOLUME_DOWN",
+	"keycode_volume_down":       "KEYCODE_VOLUME_DOWN",
 	"media_fast_forward":        "KEYCODE_MEDIA_FAST_FORWARD",
 	"media_rewind":              "KEYCODE_MEDIA_REWIND",
 	"media_next":                "KEYCODE_MEDIA_NEXT",
@@ -510,6 +526,16 @@ var adbAndroidKeycodeAliases = map[string]string{
 	"media_stop":                "KEYCODE_MEDIA_STOP",
 	"media_play_pause":          "KEYCODE_MEDIA_PLAY_PAUSE",
 	"app_switch":                "KEYCODE_APP_SWITCH",
+	"keycode_app_switch":        "KEYCODE_APP_SWITCH",
+	"recents":                   "KEYCODE_APP_SWITCH",
+	"return":                    "KEYCODE_ENTER",
+	"send":                      "KEYCODE_ENTER",
+	"delete_backward":           "KEYCODE_DEL",
+	"backward_delete":           "KEYCODE_DEL",
+	"esc":                       "KEYCODE_BACK",
+	"escape":                    "KEYCODE_BACK",
+	"move_home":                 "KEYCODE_MOVE_HOME",
+	"keyboard_home":             "KEYCODE_MOVE_HOME",
 	"screenshot":                "KEYCODE_SYSRQ",
 	"key_usage_screenshot":      "KEYCODE_SYSRQ",
 	"brightness_up":             "KEYCODE_BRIGHTNESS_UP",
