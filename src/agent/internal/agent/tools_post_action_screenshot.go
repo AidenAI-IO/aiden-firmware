@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -29,6 +30,7 @@ type postActionScreenshotTool struct {
 	screenshot langtools.Tool
 	delay      time.Duration
 	waitInput  string
+	defaults   ScreenStableDefaults
 }
 
 type stableScreenWaiter interface {
@@ -46,6 +48,7 @@ func newPostActionStableScreenshotTool(inner langtools.Tool, waitStable langtool
 		screenshot: screenshot,
 		delay:      delay,
 		waitInput:  defaults.InputJSON(),
+		defaults:   defaults,
 	}
 }
 
@@ -123,6 +126,8 @@ func (t *postActionScreenshotTool) Call(ctx context.Context, input string) (stri
 				return postActionErrorResultf(ctx, CodeToolExecutionFailed, "%s completed with output %q, but stable-screen wait failed: %s", t.inner.Name(), actionOutput, waitOutput), nil
 			}
 		}
+		resolved := t.defaults.Resolved()
+		log.Printf("[INFO] stable-screen: tool=%s timeout_ms=%d elapsed_ms=%d stable=%v", t.inner.Name(), resolved.TimeoutMs, waitResult.ElapsedMs, waitResult.Stable)
 		if !waitResult.OK {
 			return postActionErrorResultf(ctx, CodeToolExecutionFailed, "%s completed with output %q, but stable-screen wait failed", t.inner.Name(), actionOutput), nil
 		}
