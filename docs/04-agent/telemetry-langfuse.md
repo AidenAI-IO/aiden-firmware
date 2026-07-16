@@ -37,7 +37,7 @@ Credentials are written directly into the `[telemetry]` section of `agent.toml`.
 
 ```text
 Runtime.Run()
-  → Phased role loop (default / plan / execution)
+  → Agent execution loop
   → EpisodeRecorder records events
   → CommitEpisode persists to disk (episode.yaml + events.jsonl + artifacts/)
   → exportEpisodeBestEffort async reports to Langfuse
@@ -48,12 +48,8 @@ Runtime.Run()
 | Aiden Episode | Langfuse |
 | --- | --- |
 | `TaskEpisode` | Trace (`aiden-episode`) |
-| Run start | Span `phase/default` (created for all runs by default, covers default phase activity) |
-| `loop_phase` | Span `phase/{content}` (`default` / `plan` / `execution`), metadata contains `reason` (e.g., `enter_plan_mode`, `commit_plan`) |
-| `default_finish` | Span `planner/default_finish` (nested under current phase span) |
-| `planner_decision` | Span `iteration_N` + child Span `planner` (committed plan from `commit_plan`) |
-| `tool_call` / `tool_result` | Planner tools: `planner/tool/{name}` + `planner/tool_result/{name}`; Executor tools: `tool/{name}` + `tool_result/{name}` |
-| `verifier_decision` | Span `verifier` (nested under `iteration_N`, execution phase only) |
+| Run start | Span `run` (created for all runs, covers main execution activity) |
+| `tool_call` / `tool_result` | Span `tool/{name}` + `tool_result/{name}` |
 | `Outcome.Success` | Boolean Score `success=1/0` |
 | `artifacts/*.jpeg` | Media upload + observation reference |
 | `Extra` metrics | Trace metadata + generation model/cost/usage fields |
@@ -62,53 +58,33 @@ Typical trace structure:
 
 ```text
 aiden-episode (trace)
-├── phase/default
-│   ├── planner/tool/audio_volume
-│   │   └── planner/tool_result/audio_volume
-│   └── planner/default_finish
-└── phase/plan
-    └── loop_phase/enter_plan_mode (via phase/plan span metadata)
-
-aiden-episode (committed execution)
-├── phase/default
-├── phase/plan
-├── phase/execution
-├── iteration_1
-│   ├── planner
-│   ├── tool/mouse_click
-│   │   └── tool_result/mouse_click
-│   └── verifier
-└── generation (planner/executor/verifier LLM calls)
+├── run
+│   ├── tool/audio_volume
+│   │   └── tool_result/audio_volume
+│   ├── tool/screenshot
+│   │   └── tool_result/screenshot
+│   └── tool/mouse_click
+│       └── tool_result/mouse_click
+└── generation (LLM calls)
 ```
 
 ### Trace Metadata and Tags
 
-In addition to tokens, duration, and model info in `episode.Extra`, the exporter derives loop metrics from the event chain and writes them into trace `metadata`:
+In addition to tokens, duration, and model info in `episode.Extra`, the exporter derives execution metrics from the event chain and writes them into trace `metadata`:
 
 | Field | Description |
 | --- | --- |
-| `loop_mode` | `default` (direct finish) or `committed` (went through `commit_plan`) |
-| `final_phase` | Phase at completion |
-| `phase_transitions` | Phase transition sequence, e.g., `["plan:enter_plan_mode","execution:commit_plan"]` |
-| `loop_phase_count` | Number of phase transitions |
-| `enter_plan_mode_count` / `commit_plan_count` / `cancel_plan_count` / `plan_exhausted_count` | Trigger count for each meta tool |
-| `default_finish` | Whether finished directly in default phase |
-| `planner_tool_call_count` / `executor_tool_call_count` | Tool call count split by role |
-| `replan_count` | Number of replans triggered by verifier |
+| `tool_call_count` | Total number of tool calls in the episode |
+| `iteration_count` | Number of agent iterations (from episode recorder counter or episode.Extra) |
 
 Additional trace `tags`:
 
 | Tag | Condition |
 | --- | --- |
-| `loop:default_finish` | `default_finish` event exists |
-| `loop:committed` | `planner_decision` (commit) exists |
-| `loop:plan` | Entered plan mode |
-| `loop:execution` | Entered execution after commit |
-| `loop:cancelled` | cancel_plan |
-| `loop:exhausted` | Plan steps exhausted |
-| `loop:replan` | verifier `needs_replan` |
+| `success` | Task completed successfully |
+| `failure` | Task failed |
 
-In Langfuse UI, you can quickly filter simple tasks vs. multi-step delegated tasks using `loop:default_finish` and `loop:committed`.
+In Langfuse UI, you can filter tasks by success/failure and tool usage patterns.
 
 Local episodes are still written to `/userdata/agent/memory/episodes/`; Langfuse serves as an additional copy for centralized analysis and dataset management.
 
@@ -134,12 +110,11 @@ Components: Langfuse Web + Worker, Postgres, ClickHouse, Redis, MinIO (screensho
 3. Execute a task (Web UI or benchmark)
 4. Confirm in Langfuse UI → Traces:
    - `aiden-episode` trace exists
-   - Contains `phase/default` (and `phase/plan`, `phase/execution` as needed)
-   - Simple tasks show `planner/tool/*` and `planner/default_finish`
-   - Delegated tasks show `iteration_N` + `tool/*` + `verifier`
+   - Contains `run` span with nested tool calls
+   - Tool calls show as `tool/*` and `tool_result/*` spans
    - Screenshots can be previewed in tool_result observations
-   - Metadata contains `loop_mode`, `phase_transitions`, `planner_tool_call_count`, `executor_tool_call_count`, token stats, tool/error/replan counts
-   - Tags contain `loop:default_finish` or `loop:committed`
+   - Metadata contains `tool_call_count`, `iteration_count`, token stats
+   - Tags contain `success` or `failure`
    - Trace contains `userId` (device ID) and `sessionId` (runtime session ID)
 
 ## Trace → Dataset → Benchmark Workflow

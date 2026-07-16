@@ -3,7 +3,7 @@
   "suite_category": "MobileGym",
   "version": "1.0",
   "description": "Basic MobileGym device control tests using simulator-only approach",
-  "prompt_prefix": "你正在控制一台 Android 模拟器。使用 screenshot 工具查看屏幕，使用 tap、swipe 等工具进行操作。",
+  "prompt_prefix": "你正在控制一台 Android 模拟器。使用 screenshot 工具查看屏幕，使用 touch_gesture 工具执行 tap、swipe 等操作。",
   "global_reset": {
     "type": "agent_prompt",
     "prompt": "请返回主屏幕（如果不在主屏幕，点击 home 按钮）。",
@@ -34,7 +34,7 @@
       "hard_assertions": {
         "must_complete_within_sec": 120,
         "min_tool_calls": 2,
-        "required_tools": ["screenshot", "tap"]
+        "required_tools": ["screenshot", "touch_gesture"]
       },
       "repeats": 1
     },
@@ -60,7 +60,7 @@
       "hard_assertions": {
         "must_complete_within_sec": 120,
         "min_tool_calls": 3,
-        "required_tools": ["screenshot", "tap"]
+        "required_tools": ["screenshot", "touch_gesture"]
       },
       "repeats": 1
     },
@@ -86,7 +86,7 @@
       "hard_assertions": {
         "must_complete_within_sec": 60,
         "min_tool_calls": 2,
-        "required_tools": ["screenshot", "swipe"]
+        "required_tools": ["screenshot", "touch_gesture"]
       },
       "repeats": 1
     }
