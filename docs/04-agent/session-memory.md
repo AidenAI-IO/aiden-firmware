@@ -1,6 +1,6 @@
 # Session Memory Compaction
 
-This document describes Aiden Agent's session-level conversation memory compaction. The mechanism turns a growing event stream into chunk summaries and keeps only the latest hot window available to the planner as native chat messages.
+This document describes Aiden Agent's session-level conversation memory compaction. The mechanism turns a growing event stream into chunk summaries and keeps only the latest hot window available to the Agent as native chat messages.
 
 This is separate from the [Memory Plane design](memory-plane.md). Memory Plane handles device and task-episode experience memory; session memory handles the dialogue history for one active session.
 
@@ -102,7 +102,7 @@ Maintenance may run asynchronously while the next turn is being appended. To avo
   - `prompt_tokens / context_window >= compress_at_percent%`.
 - Without prompt-token data, such as cold start, a provider response without usage metadata, or before the first LLM call, compaction triggers when `event_count > count_compress_after_events`.
 
-The prompt-token value is the largest single LLM prompt observed in the latest run. This avoids missing compaction when the planner prompt is large but a later verifier prompt is small.
+The prompt-token value is the largest single LLM prompt observed in the latest run. This avoids missing compaction when the main prompt is large but a later prompt in the same turn is small.
 
 `context_window` prefers the active model window from `ModelResolver`, so runtime model swaps take effect without restart. Unknown models fall back to `context_window` from `extraction.yaml`.
 
@@ -151,11 +151,11 @@ When the cut lands inside a turn rather than on a `user_input` boundary, the hot
 3. The chunk summary stores `history + "\n\n---\n\nTurn Context (split turn):\n" + prefixSummary` for recall.
 4. The hot window receives a synthetic `system_event` containing the prefix summary for immediate prompt context.
 
-The prefix summary is intentionally written to both the chunk summary and the hot window: the former serves historical retrieval, while the latter serves the next planner prompt.
+The prefix summary is intentionally written to both the chunk summary and the hot window: the former serves historical retrieval, while the latter serves the next Agent prompt.
 
 ## summary.md and Rolling Summary
 
-The active session's `summary.md` is injected into the planner prompt and has
+The active session's `summary.md` is injected into the Agent prompt and has
 two sections:
 
 ```markdown
@@ -179,14 +179,14 @@ The Rolling Summary currently has a 100-line cap (`maxRollingSummaryLines`). Whe
 
 Compressed session summaries are loaded into the role memory context, while the
 retained hot-window events are converted into native chat messages and inserted
-between the planner system prompt and the current planner task message. They are
+between the system prompt and the current task message. They are
 not rendered inside a `Conversation history:` text block. Compressed-history
 state is not exposed through a hot-window label, and no synthetic hot-window
 start/end markers are added. The session compaction thresholds and model context
 budget are the controls for prompt growth.
 
 **Note**: The `chat_history` store, while persisted, is NOT injected into the
-planner context. See `context-lifecycle.md` for rationale.
+Agent context. See `context-lifecycle.md` for rationale.
 
 Synthetic prompt text must not be persisted into `ChatMessageHistory`.
 `Snapshot()` reads history verbatim and `appendSessionEvents()` writes records
