@@ -113,16 +113,25 @@ func (o *activeTTSOutput) finish() {
 
 // collectWarmupEndpoints extracts base URLs from LLM, STT, and TTS configurations
 func collectWarmupEndpoints(cfg Config) []string {
+	seen := make(map[string]bool)
 	var endpoints []string
 
 	// LLM endpoint
 	if cfg.Model.BaseURL != "" {
-		endpoints = append(endpoints, extractBaseURL(cfg.Model.BaseURL))
+		base := extractBaseURL(cfg.Model.BaseURL)
+		if !seen[base] {
+			seen[base] = true
+			endpoints = append(endpoints, base)
+		}
 	}
 
 	// STT endpoint
 	if cfg.STT.BaseURL != "" {
-		endpoints = append(endpoints, extractBaseURL(cfg.STT.BaseURL))
+		base := extractBaseURL(cfg.STT.BaseURL)
+		if !seen[base] {
+			seen[base] = true
+			endpoints = append(endpoints, base)
+		}
 	}
 
 	// TTS endpoints - providers typically use different base URLs
