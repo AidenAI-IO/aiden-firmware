@@ -4738,9 +4738,15 @@ ApiResponse handle_export_support_logs(const Options& options) {
         std::string("Agent log path not available: ") + kAgentLogPath + "\n",
         kSupportLogAgentMaxBytes,
         &error);
+
+    // Keep the original LLM log filename instead of renaming to http.log
+    std::string llm_log_original_name = latest_llm_log_name(options);
+    if (llm_log_original_name.empty()) {
+        llm_log_original_name = kSupportLogHttpName;
+    }
     staged = staged && stage_file_or_placeholder(
         latest_llm_log_path(options),
-        stage_dir + "/" + kSupportLogHttpName,
+        stage_dir + "/" + llm_log_original_name,
         "HTTP log",
         "No llm-http-*.log files found under " + llm_log_dir(options) + ".\n",
         kSupportLogHttpMaxBytes,
@@ -4767,12 +4773,12 @@ ApiResponse handle_export_support_logs(const Options& options) {
         " -C " + shell_quote(stage_dir) + " " +
         shell_quote(kSupportLogLangfuseName) + " " +
         shell_quote(kSupportLogAgentName) + " " +
-        shell_quote(kSupportLogHttpName);
+        shell_quote(llm_log_original_name);
     std::string tar_stream_args =
         "-C " + shell_quote(stage_dir) + " " +
         shell_quote(kSupportLogLangfuseName) + " " +
         shell_quote(kSupportLogAgentName) + " " +
-        shell_quote(kSupportLogHttpName);
+        shell_quote(llm_log_original_name);
     std::string fallback_tar_path = archive_path + ".tar";
     std::string command = "tar -czf " + tar_args +
         " 2>/dev/null || (rm -f " + shell_quote(fallback_tar_path) +
