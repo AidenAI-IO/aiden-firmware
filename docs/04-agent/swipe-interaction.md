@@ -106,6 +106,7 @@ Typical scenarios: time picker, date picker, city picker.
 Strategy:
 1. Screenshot, recognize picker current value and target value
 2. Read visible row ordering, selected value, target value, row spacing, and the column center
+   - Convert all wheel geometry to normalized 0-1000 coordinates before calling `wheel_nudge`; the model-facing wheel contract does not expose a coordinate-space selector
    - For stepped cyclic wheels, `cycle_size` is the numeric modulus rather than visible row count (for example `00..59` by fives still uses `cycle_size:60`, `value_step:5`)
    - If row ordering is unknown, omit `value_step` and pass `remaining_gap:1` for the single-row probe; report the real row gap after observing the result
 3. If the latest screenshot visibly shows that the selected row supports numeric keyboard/edit mode, open it once and make one keyboard attempt; verify the exact value in the returned screenshot

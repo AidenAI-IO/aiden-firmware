@@ -470,7 +470,7 @@ func TestWheelNudgeSchemaDerivesTravelFromGap(t *testing.T) {
 		"remaining_gap": true, "current_value": true, "target_value": true,
 		"cycle_size": true, "cycle_start": true,
 		"row_spacing": true, "value_step": true, "visible_target_y": true,
-		"center_y": true, "coord_space": true,
+		"center_y": true,
 	}
 	if len(props) != len(want) {
 		t.Fatalf("wheel_nudge schema properties = %#v, want only portable contract %#v", props, want)
@@ -505,10 +505,14 @@ func TestWheelNudgeDescriptionDefinesRemainingGapThresholds(t *testing.T) {
 		"9+ picker rows",
 		"final requested value",
 		"never substitute an intermediate visible value",
+		"normalized 0-1000 coordinates",
 	} {
 		if !strings.Contains(description, want) {
 			t.Fatalf("wheel_nudge description = %q, want %q", description, want)
 		}
+	}
+	if strings.Contains(description, "coord_space") {
+		t.Fatalf("wheel_nudge description must not expose coord_space: %q", description)
 	}
 }
 
@@ -731,7 +735,7 @@ func TestResolvePointerPositionScreenshotUsesReturnedCropPixels(t *testing.T) {
 	}
 }
 
-func TestScreenshotCoordinateSpaceIsExposedForTouchAndWheel(t *testing.T) {
+func TestScreenshotCoordinateSpaceIsExposedForTouchButNotWheel(t *testing.T) {
 	touchSchema := (&TouchGestureTool{}).ArgsSchema()
 	touchProps := touchSchema["properties"].(map[string]any)
 	touchSpaces := touchProps["coord_space"].(map[string]any)["enum"].([]string)
@@ -741,9 +745,8 @@ func TestScreenshotCoordinateSpaceIsExposedForTouchAndWheel(t *testing.T) {
 
 	wheelSchema := (&WheelNudgeTool{}).ArgsSchema()
 	wheelProps := wheelSchema["properties"].(map[string]any)
-	wheelSpaces := wheelProps["coord_space"].(map[string]any)["enum"].([]string)
-	if !slices.Contains(wheelSpaces, "screenshot") {
-		t.Fatalf("wheel coord_space enum = %#v, want screenshot", wheelSpaces)
+	if _, ok := wheelProps["coord_space"]; ok {
+		t.Fatalf("wheel coord_space must not be exposed to the model: %#v", wheelProps)
 	}
 }
 

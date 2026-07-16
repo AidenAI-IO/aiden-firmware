@@ -1458,8 +1458,8 @@ func (t *WheelNudgeTool) Description() string {
 	return `Move a visible picker/wheel column toward a target value. This is the only tool for wheel interactions; never attach wheel semantics to touch_gesture. ` +
 		`target_value is the final requested value for this column and must remain fixed across calls; never substitute an intermediate visible value just because it is closer on screen. ` +
 		`When the target is exactly one visibly observed row above or below the selected row, pass visible_target_y and the tool taps that coordinate. Without that evidence it performs one bounded low-inertia drag. ` +
-		`Input JSON: {"picker_id":"alarm-create","column_x":195,"remaining_gap":6,"current_value":10,"target_value":16,"cycle_size":24,"cycle_start":0,"row_spacing":42,"value_step":1,"center_y":273,"coord_space":"screenshot"}. ` +
-		`For a cropped frame_service phone screenshot, use coord_space:"screenshot" and pass column_x/center_y exactly as measured in the latest returned image; do not copy image pixels into normalized coordinates. ` +
+		`Input JSON: {"picker_id":"alarm-create","column_x":393,"remaining_gap":6,"current_value":10,"target_value":16,"cycle_size":24,"cycle_start":0,"row_spacing":39,"value_step":1,"center_y":253}. ` +
+		`All wheel geometry uses normalized 0-1000 coordinates. Convert measurements from the latest screenshot before passing column_x, center_y, row_spacing, or visible_target_y. ` +
 		`value_step is the signed numeric change for one visible row downward. The tool derives both the increasing direction and the shortest finger movement from value_step plus the current/target/domain metadata, so callers must not guess gesture directions. Omit value_step only when visible ordering is insufficient; set remaining_gap to 1 for that call and the tool performs one fixed finger-up row probe. ` +
 		`Actual drag travel is derived from remaining_gap: gaps of 1, 2-4, 5-8, and 9+ picker rows move at most 1, 2, 3, and 4 measured rows using row_spacing, so it cannot become a fling-like full-column swipe. ` +
 		`The tool performs one tap or slow drag and returns a post-action screenshot; read the new centered value and recalculate the remaining gap.`
@@ -1468,17 +1468,16 @@ func (t *WheelNudgeTool) Description() string {
 func (t *WheelNudgeTool) ArgsSchema() map[string]any {
 	return objectArgsSchema(map[string]any{
 		"picker_id":        map[string]any{"type": "string", "minLength": 1, "description": "Stable identifier for this visible picker instance; change it after navigating to another picker screen."},
-		"column_x":         coordinateSchema("X coordinate at the center of the wheel column in the selected coord_space."),
+		"column_x":         coordinateSchema("Normalized 0-1000 X coordinate at the center of the wheel column."),
 		"remaining_gap":    nonNegativeIntegerSchema("Current shortest-path number of picker rows from the centered value to the target, recalculated using value_step. When value_step is omitted for a direction probe, pass 1."),
 		"current_value":    nonNegativeIntegerSchema("Current centered numeric value from the latest screenshot."),
 		"target_value":     nonNegativeIntegerSchema("Requested numeric target value for this wheel column."),
 		"cycle_size":       nonNegativeIntegerSchema("Numeric span/modulus of the cyclic domain, not the number of displayed rows; use 0 for a non-cyclic numeric wheel. For a 00..59 minute wheel with value_step 5, cycle_size is still 60."),
 		"cycle_start":      nonNegativeIntegerSchema("Lowest value in a cyclic wheel. Use 0 for 00-based time wheels and 1 for one-based wheels such as months, calendar days, or 12-hour clocks. Ignored when cycle_size is 0."),
-		"row_spacing":      coordinateSchema("Measured distance between adjacent visible row centers in the selected coord_space."),
+		"row_spacing":      coordinateSchema("Normalized 0-1000 distance between adjacent visible row centers."),
 		"value_step":       integerArgSchema("Signed numeric change for one visible row downward. The tool derives gesture direction from this value; omit only for a genuinely unknown one-row probe."),
-		"center_y":         coordinateSchema("Vertical center of the visible wheel selection area in the selected coord_space. Normalized default is 460."),
-		"visible_target_y": coordinateSchema("Exact Y coordinate of a target value visibly observed one row above or below center_y. Omit unless the target row is actually visible in the latest screenshot."),
-		"coord_space":      stringEnumArgSchema("Coordinate space; screenshot uses pixels in the latest returned cropped screenshot, normalized uses 0-1000.", "auto", "screenshot", "normalized"),
+		"center_y":         coordinateSchema("Normalized 0-1000 vertical center of the visible wheel selection area. Default is 460."),
+		"visible_target_y": coordinateSchema("Exact normalized 0-1000 Y coordinate of a target value visibly observed one row above or below center_y. Omit unless the target row is actually visible in the latest screenshot."),
 	}, "picker_id", "column_x", "remaining_gap", "current_value", "target_value", "cycle_size", "cycle_start", "row_spacing")
 }
 
