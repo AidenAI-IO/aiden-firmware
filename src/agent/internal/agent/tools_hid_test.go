@@ -580,12 +580,14 @@ func TestTouchGestureSchemaRequiresNamedPointCoordinates(t *testing.T) {
 type recordingADBRunner struct {
 	commands [][]string
 	timeouts []time.Duration
+	ctxErrs  []error
 	handler  func(args []string) (string, error)
 }
 
 func (r *recordingADBRunner) run(ctx context.Context, _ string, args ...string) ([]byte, []byte, error) {
 	copied := append([]string(nil), args...)
 	r.commands = append(r.commands, copied)
+	r.ctxErrs = append(r.ctxErrs, ctx.Err())
 	if deadline, ok := ctx.Deadline(); ok {
 		r.timeouts = append(r.timeouts, time.Until(deadline))
 	} else {
@@ -697,6 +699,32 @@ func TestADBTouchGestureSwipeUsesInputSwipe(t *testing.T) {
 	}
 }
 
+func TestADBTouchGestureSwipeAndDragRejectSameResolvedPoint(t *testing.T) {
+	for _, gestureType := range []string{"swipe", "drag"} {
+		t.Run(gestureType, func(t *testing.T) {
+			screen := &screenState{}
+			screen.UpdatePhoneScreenInfo(PhoneScreenInfo{WidthPixels: intPtr(1001), HeightPixels: intPtr(1001)})
+			runner := &recordingADBRunner{}
+			tool := &TouchGestureTool{screen: screen, adb: newTestADBInputController(t, screen, runner)}
+			ctx, _ := WithToolError(context.Background())
+
+			out, err := tool.Call(ctx, fmt.Sprintf(`{"type":%q,"start":{"x":500,"y":500},"end":{"x":500,"y":500}}`, gestureType))
+			if err != nil {
+				t.Fatalf("Call returned error: %v", err)
+			}
+			if !strings.Contains(out, gestureType+" start and end resolve to the same point") {
+				t.Fatalf("Call output = %q, want same-point error", out)
+			}
+			if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeInvalidArguments || got.Message != out {
+				t.Fatalf("ToolError = %+v, want invalid_arguments with output message", got)
+			}
+			if len(runner.commands) != 0 {
+				t.Fatalf("adb commands = %#v, want no swipe command for identical points", runner.commands)
+			}
+		})
+	}
+}
+
 func TestADBTouchGestureLongPressExtendsCommandTimeout(t *testing.T) {
 	screen := &screenState{}
 	screen.UpdatePhoneScreenInfo(PhoneScreenInfo{WidthPixels: intPtr(1001), HeightPixels: intPtr(1001)})
@@ -735,6 +763,29 @@ func TestADBTouchGestureBackUsesKeyevent(t *testing.T) {
 		t.Fatalf("Call output = %q, want ok", out)
 	}
 
+	want := []string{"-s", "serial123", "shell", "input", "keyevent", "KEYCODE_BACK"}
+	if len(runner.commands) != 1 || !stringSlicesEqual(runner.commands[0], want) {
+		t.Fatalf("adb commands = %#v, want %#v", runner.commands, want)
+	}
+}
+
+func TestADBTouchGestureBackDoesNotPrimeTouchscreenMapping(t *testing.T) {
+	runner := &recordingADBRunner{}
+	tool := &TouchGestureTool{
+		screen: &screenState{},
+		adb:    newTestADBInputController(t, nil, runner),
+		primeScreenMapping: func(context.Context) error {
+			return errors.New("mapping should not run for adb")
+		},
+	}
+
+	out, err := tool.Call(context.Background(), `{"type":"back"}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("Call output = %q, want ok", out)
+	}
 	want := []string{"-s", "serial123", "shell", "input", "keyevent", "KEYCODE_BACK"}
 	if len(runner.commands) != 1 || !stringSlicesEqual(runner.commands[0], want) {
 		t.Fatalf("adb commands = %#v, want %#v", runner.commands, want)
@@ -830,6 +881,41 @@ func TestADBKeyboardTextUsesADBKeyboardBroadcastAndRestoresIME(t *testing.T) {
 	}
 }
 
+func TestADBKeyboardTextRestoresIMEAfterCallerContextCanceled(t *testing.T) {
+	origSleep := sleepMs
+	sleepMs = func(int) {}
+	defer func() { sleepMs = origSleep }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runner := &recordingADBRunner{handler: func(args []string) (string, error) {
+		switch strings.Join(args, " ") {
+		case "-s serial123 shell settings get secure default_input_method":
+			return "com.example/.Keyboard", nil
+		case "-s serial123 shell am broadcast -a ADB_INPUT_B64 --es msg " + base64.StdEncoding.EncodeToString([]byte("Hello")):
+			cancel()
+		}
+		return "", nil
+	}}
+	tool := &KeyboardTextTool{adb: newTestADBInputController(t, nil, runner)}
+
+	out, err := tool.Call(ctx, `{"text":"Hello"}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("Call output = %q, want ok", out)
+	}
+
+	wantRestore := []string{"-s", "serial123", "shell", "ime", "set", "com.example/.Keyboard"}
+	if len(runner.commands) != 4 || !stringSlicesEqual(runner.commands[3], wantRestore) {
+		t.Fatalf("adb commands = %#v, want final restore command %#v", runner.commands, wantRestore)
+	}
+	if runner.ctxErrs[3] != nil {
+		t.Fatalf("restore ctx err = %v, want independent uncanceled context", runner.ctxErrs[3])
+	}
+}
+
 func TestADBKeyboardTextFallsBackToKeyEventsWhenADBKeyboardUnavailable(t *testing.T) {
 	runner := &recordingADBRunner{handler: func(args []string) (string, error) {
 		if strings.Join(args, " ") == "-s serial123 shell settings get secure default_input_method" {
@@ -863,21 +949,25 @@ func TestADBKeyboardTextFallsBackToKeyEventsWhenADBKeyboardUnavailable(t *testin
 	}
 }
 
-func TestADBMouseMoveValidatesCoordinatesWithoutHIDCommand(t *testing.T) {
+func TestADBMouseMoveRejectsUnsupportedAfterCoordinateValidation(t *testing.T) {
 	screen := &screenState{}
 	screen.UpdatePhoneScreenInfo(PhoneScreenInfo{WidthPixels: intPtr(1080), HeightPixels: intPtr(2400)})
 	runner := &recordingADBRunner{}
 	tool := &MouseMoveTool{screen: screen, adb: newTestADBInputController(t, screen, runner)}
+	ctx, _ := WithToolError(context.Background())
 
-	out, err := tool.Call(context.Background(), `{"x":500,"y":250,"coord_space":"normalized"}`)
+	out, err := tool.Call(ctx, `{"x":500,"y":250,"coord_space":"normalized"}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
-	if out != "ok" {
-		t.Fatalf("Call output = %q, want ok", out)
+	if !strings.Contains(out, "adb mouse_move is unsupported") {
+		t.Fatalf("Call output = %q, want unsupported adb mouse_move error", out)
+	}
+	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeModuleUnavailable || got.Message != out {
+		t.Fatalf("ToolError = %+v, want module_unavailable with output message", got)
 	}
 	if len(runner.commands) != 0 {
-		t.Fatalf("adb commands = %#v, want mouse_move no-op when coordinates are valid", runner.commands)
+		t.Fatalf("adb commands = %#v, want no command for unsupported mouse_move", runner.commands)
 	}
 }
 

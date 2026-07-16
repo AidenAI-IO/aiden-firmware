@@ -120,7 +120,9 @@ func (c *ADBInputController) Text(ctx context.Context, text string) error {
 				return
 			}
 			sleepMs(defaultADBTextRestoreWait)
-			_ = c.runShell(ctx, "ime", "set", originalIME)
+			restoreCtx, cancel := context.WithTimeout(context.Background(), adbInputCommandTimeout)
+			defer cancel()
+			_ = c.runShell(restoreCtx, "ime", "set", originalIME)
 		}()
 	}
 

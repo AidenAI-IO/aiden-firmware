@@ -1119,7 +1119,7 @@ func (t *MouseMoveTool) Call(ctx context.Context, input string) (string, error) 
 		if _, err := t.adb.ResolvePosition(ctx, args.X.Float64(), args.Y.Float64(), args.CoordSpace, coordinateSpaceAuto); err != nil {
 			return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
 		}
-		return "ok", nil
+		return toolErrorResultString(ctx, CodeModuleUnavailable, "adb mouse_move is unsupported because adb input has no hover/pointer move primitive; use touch_gesture for taps, swipes, or drags"), nil
 	}
 
 	absX, absY, err := resolvePointerPositionForSurface(t.screen, t.pc.touchscreen, args.X.Float64(), args.Y.Float64(), args.CoordSpace, coordinateSpaceAuto)
@@ -1211,17 +1211,6 @@ func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, erro
 		coordSpace = coordinateSpaceNormalized
 	}
 	button := mouseButtonByte(args.Button)
-	if err := t.ensureTouchscreenMapping(ctx, coordSpace); err != nil {
-		return toolErrorResultf(ctx, CodeToolExecutionFailed, "touchscreen mapping unavailable: %v", err), nil
-	}
-	if touchscreenRCADebugEnabledCached() {
-		touchscreenRCALogf(
-			"touch_gesture start type=%q coord_space=%q mapping_before={%s}",
-			gestureType,
-			coordSpace,
-			formatTouchscreenRCAMappingSummary(t.screen),
-		)
-	}
 
 	if t.adb != nil {
 		if rawButton := strings.ToLower(strings.TrimSpace(args.Button)); rawButton != "" && rawButton != "left" {
@@ -1284,6 +1273,9 @@ func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, erro
 			if gestureType == "drag" {
 				defaultDuration = 250
 			}
+			if sameResolvedPointerPoint(start, end) {
+				return toolErrorResultString(ctx, CodeInvalidArguments, gestureType+" start and end resolve to the same point"), nil
+			}
 			if err := t.adb.Swipe(ctx, start, end, intOrDefault(args.DurationMs, defaultDuration)); err != nil {
 				return toolErrorResultf(ctx, adbInputToolErrorCode(err), "%v", err), nil
 			}
@@ -1299,6 +1291,18 @@ func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, erro
 			return toolErrorResultf(ctx, CodeInvalidArguments, "unsupported gesture type: %q", args.Type), nil
 		}
 		return "ok", nil
+	}
+
+	if err := t.ensureTouchscreenMapping(ctx, coordSpace); err != nil {
+		return toolErrorResultf(ctx, CodeToolExecutionFailed, "touchscreen mapping unavailable: %v", err), nil
+	}
+	if touchscreenRCADebugEnabledCached() {
+		touchscreenRCALogf(
+			"touch_gesture start type=%q coord_space=%q mapping_before={%s}",
+			gestureType,
+			coordSpace,
+			formatTouchscreenRCAMappingSummary(t.screen),
+		)
 	}
 
 	switch gestureType {

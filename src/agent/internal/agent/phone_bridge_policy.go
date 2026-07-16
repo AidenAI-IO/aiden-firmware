@@ -52,9 +52,12 @@ func isPhoneBridgeToolName(name string) bool {
 func phoneBridgeToolAvailable(status PhoneBridgeStatus, name string) bool {
 	switch name {
 	case toolBridgeOpenApp:
-		return !phoneBridgePiPBackgroundEnabled(status) && !phoneBridgeFGSBackgroundEnabled(status)
+		if phoneBridgePiPBackgroundEnabled(status) || phoneBridgeFGSBackgroundEnabled(status) {
+			return false
+		}
+		return !phoneBridgeIsAndroid(status) || !status.Connected || phoneBridgeReadyForCommand(status, "open_app")
 	case toolBridgeClipboard, toolBridgeCalendar, toolBridgeContacts, toolBridgeNotification:
-		return phoneBridgeReadyForCommand(status) ||
+		return phoneBridgeReadyForCommand(status, phoneBridgeBackgroundCommandTypeForTool(name)) ||
 			phoneBridgeCanUsePiPBackground(status, phoneBridgeBackgroundCommandTypeForTool(name)) ||
 			phoneBridgeCanUseFGSBackground(status, phoneBridgeBackgroundCommandTypeForTool(name))
 	default:
@@ -62,8 +65,22 @@ func phoneBridgeToolAvailable(status PhoneBridgeStatus, name string) bool {
 	}
 }
 
-func phoneBridgeReadyForCommand(status PhoneBridgeStatus) bool {
+func phoneBridgeReadyForCommand(status PhoneBridgeStatus, commandTypes ...string) bool {
 	if !status.Connected {
+		return false
+	}
+	commandType := ""
+	if len(commandTypes) > 0 {
+		commandType = strings.TrimSpace(commandTypes[0])
+	}
+	if phoneBridgeIsAndroid(status) {
+		state := strings.ToLower(strings.TrimSpace(status.AppState))
+		if state == "active" {
+			return true
+		}
+		if phoneBridgeBackgroundSafeCommandType(commandType) {
+			return true
+		}
 		return false
 	}
 	if !phoneBridgeIsIOS(status) {
