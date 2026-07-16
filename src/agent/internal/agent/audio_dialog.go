@@ -47,6 +47,7 @@ type AudioDialog struct {
 	historyStore        *ChatHistoryStore
 	historyAppend       func(Message)
 	audioArchive        *AudioArchiveManager
+	connWarmer          *ConnectionWarmer
 }
 
 type activeTTSOutput struct {
@@ -110,6 +111,35 @@ func (o *activeTTSOutput) finish() {
 	}
 }
 
+// collectWarmupEndpoints extracts base URLs from LLM, STT, and TTS configurations
+func collectWarmupEndpoints(cfg Config) []string {
+	seen := make(map[string]bool)
+	var endpoints []string
+
+	// LLM endpoint
+	if cfg.Model.BaseURL != "" {
+		base := extractBaseURL(cfg.Model.BaseURL)
+		if !seen[base] {
+			seen[base] = true
+			endpoints = append(endpoints, base)
+		}
+	}
+
+	// STT endpoint
+	if cfg.STT.BaseURL != "" {
+		base := extractBaseURL(cfg.STT.BaseURL)
+		if !seen[base] {
+			seen[base] = true
+			endpoints = append(endpoints, base)
+		}
+	}
+
+	// TTS endpoints - providers typically use different base URLs
+	// Most TTS providers have built-in endpoints, we skip warmup for those
+
+	return endpoints
+}
+
 // NewAudioDialog creates a new audio dialog manager
 func NewAudioDialog(cfg Config) (*AudioDialog, error) {
 	// Create audio client
@@ -155,6 +185,16 @@ func NewAudioDialog(cfg Config) (*AudioDialog, error) {
 		return nil, err
 	}
 
+	// Collect endpoints for connection warming
+	endpoints := collectWarmupEndpoints(cfg)
+	var connWarmer *ConnectionWarmer
+	if len(endpoints) > 0 {
+		// Use the optimized HTTP client with proxy support
+		proxyConfig := ProxyConfigFromEnvironment()
+		client := newProxyHTTPClient(proxyConfig)
+		connWarmer = NewConnectionWarmer(client, endpoints)
+	}
+
 	return &AudioDialog{
 		config:       cfg,
 		audioClient:  audioClient,
@@ -162,6 +202,7 @@ func NewAudioDialog(cfg Config) (*AudioDialog, error) {
 		ttsManager:   ttsManager,
 		vad:          vad,
 		audioArchive: NewAudioArchiveManager(cfg.AudioArchive),
+		connWarmer:   connWarmer,
 	}, nil
 }
 
@@ -207,6 +248,12 @@ func (d *AudioDialog) StartRecording() error {
 
 	// Play the cue tone immediately so the user gets fast feedback.
 	d.playPromptSoundAsync(promptSoundRecordingStart, "recording")
+
+	// Warmup connections in the background during the recording gap
+	// This saves TLS handshake time for the upcoming LLM/STT/TTS requests
+	if d.connWarmer != nil {
+		d.connWarmer.WarmupAsync(context.Background())
+	}
 
 	// Start STT streaming session asynchronously — the network handshake
 	// (WebSocket dial + session setup) can take 1-3s and should not delay
