@@ -159,6 +159,9 @@ def cli(argv: list[str] | None = None) -> int:
     if args.cmd == "start-mobilegym-env":
         from runner.services import cmd_start_mobilegym_env
         return cmd_start_mobilegym_env(args)
+    if args.cmd == "start-adb-android-env":
+        from runner.services import cmd_start_adb_android_env
+        return cmd_start_adb_android_env(args)
     return 2
 
 
@@ -224,6 +227,22 @@ def _write_state(path: str | None, payload: dict) -> None:
         tmp.replace(p)
     except Exception as e:
         print(f"warning: failed to write benchmark state: {e}", file=sys.stderr, flush=True)
+
+
+def _result_totals(results: list[object], total_tasks: int | None = None) -> dict[str, int]:
+    totals = {
+        "tasks": len(results) if total_tasks is None else int(total_tasks),
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "judge_error": 0,
+        "timeout": 0,
+    }
+    for result in results:
+        status = str(getattr(result, "status", "") or "")
+        if status in totals and status != "tasks":
+            totals[status] += 1
+    return totals
 
 
 def _selected_task_ids(args: argparse.Namespace) -> list[str]:
@@ -328,6 +347,7 @@ def _cmd_run_auto_agent_setup(
         "started_at": started,
         "parallel": min(max(1, concurrency), max(1, total_runs)),
         "auto_agent_setup": True,
+        "totals": _result_totals([], total_runs),
     }
     _write_state(args.state_file, base_state)
 
@@ -442,8 +462,10 @@ def _cmd_run_auto_agent_setup(
                 "current_task": task.id,
                 "current_attempt": attempt,
                 "last_result": result.status,
+                "totals": _result_totals(results, total_runs),
             })
 
+    totals = _result_totals(results, total_runs)
     manifest = {
         "run_id": run_id, "git_sha": sha, "git_dirty": dirty,
         "suite_path": str(suite.source_path), "suite_sha256": suite.sha256,
@@ -457,19 +479,19 @@ def _cmd_run_auto_agent_setup(
         "auto_agent_setup": True,
         "concurrency": max_workers,
         "started_at": started, "finished_at": now_iso(),
-        "totals": {"tasks": len(results),
-                   "passed": sum(1 for r in results if r.status == "passed"),
-                   "failed": sum(1 for r in results if r.status == "failed"),
-                   "skipped": sum(1 for r in results if r.status == "skipped"),
-                   "judge_error": sum(1 for r in results if r.status == "judge_error"),
-                   "timeout": sum(1 for r in results if r.status == "timeout")},
+        "totals": totals,
     }
     write_manifest(run_dir / "manifest.json", manifest)
     write_jsonl(run_dir / "results.jsonl", results)
     write_summary(run_dir / "summary.md", suite.name, manifest, results)
     html = generate_report_html(run_dir)
     (run_dir / "report.html").write_text(html, encoding="utf-8")
-    _write_state(args.state_file, {**base_state, "status": "done", "completed": completed})
+    _write_state(args.state_file, {
+        **base_state,
+        "status": "done",
+        "completed": completed,
+        "totals": totals,
+    })
 
     print("\n" + "="*60, flush=True)
     print(f"Benchmark Summary - {suite.name}", flush=True)
@@ -532,6 +554,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         "total": total_runs,
         "completed": 0,
         "started_at": started,
+        "totals": _result_totals(results, total_runs),
     }
     _write_state(args.state_file, base_state)
     try:
@@ -550,6 +573,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
                         "current": current_index,
                         "current_task": task.id,
                         "current_attempt": attempt,
+                        "totals": _result_totals(results, total_runs),
                     })
                     print(f"[{progress}] RUNNING    {task.id} attempt={attempt}", flush=True)
                     if not wait_for_agent_ready(
@@ -578,6 +602,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
                             "current_task": task.id,
                             "current_attempt": attempt,
                             "last_result": "skipped",
+                            "totals": _result_totals(results, total_runs),
                         })
                         continue
 
@@ -601,6 +626,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
                         "current_task": task.id,
                         "current_attempt": attempt,
                         "last_result": r.status,
+                        "totals": _result_totals(results, total_runs),
                     })
 
                     if r.status in {"timeout", "skipped", "judge_error", "failed"}:
@@ -620,6 +646,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
                             print(f"warning: failed to release environment task route for {task_benchmark_id}: {exc}", file=sys.stderr, flush=True)
     finally:
         client.close()
+    totals = _result_totals(results, total_runs)
     manifest = {
         "run_id": run_id, "git_sha": sha, "git_dirty": dirty,
         "suite_path": str(suite.source_path), "suite_sha256": suite.sha256,
@@ -631,12 +658,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         "judge_config": {"provider": "openrouter", "model": args.judge_model} if judge_cfg else None,
         "judge_prompt_version": "v1",
         "started_at": started, "finished_at": now_iso(),
-        "totals": {"tasks": len(results),
-                   "passed": sum(1 for r in results if r.status == "passed"),
-                   "failed": sum(1 for r in results if r.status == "failed"),
-                   "skipped": sum(1 for r in results if r.status == "skipped"),
-                   "judge_error": sum(1 for r in results if r.status == "judge_error"),
-                   "timeout": sum(1 for r in results if r.status == "timeout")},
+        "totals": totals,
     }
     write_manifest(run_dir / "manifest.json", manifest)
     write_jsonl(run_dir / "results.jsonl", results)
@@ -660,6 +682,13 @@ def _cmd_run(args: argparse.Namespace) -> int:
             )
         html = generate_report_html(run_dir)
         (run_dir / "report.html").write_text(html, encoding="utf-8")
+
+    _write_state(args.state_file, {
+        **base_state,
+        "status": "done",
+        "completed": completed,
+        "totals": totals,
+    })
 
     # Print final summary
     print("\n" + "="*60, flush=True)

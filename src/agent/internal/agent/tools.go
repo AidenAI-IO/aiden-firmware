@@ -93,6 +93,14 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	androidKbDev := NewHIDDevice(hidCfg.AndroidKeyboardDeviceOrDefault())
 	screen := &screenState{}
 	pointer := newPointerController(hidCfg)
+	touchscreenRCALogf(
+		"newHardwareToolSet pointer_mode=%q pointer_device=%q keyboard_device=%q android_keyboard_device=%q frame_socket=%q",
+		hidCfg.PointerModeOrDefault(),
+		hidCfg.MouseDeviceOrDefault(),
+		hidCfg.KeyboardDeviceOrDefault(),
+		hidCfg.AndroidKeyboardDeviceOrDefault(),
+		hidCfg.FrameSocketOrDefault(),
+	)
 	screenshot := NewScreenshotTool(hidCfg.FrameSocketOrDefault(), screen)
 	screenStable := toolOptions.screenStable.Resolved()
 	waitStable := NewWaitStableScreenTool(hidCfg.FrameSocketOrDefault(), screenStable, screen)
@@ -147,12 +155,14 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	// Always register human handoff tool - no callback needed for non-blocking version
 	tools["request_human_handoff"] = NewHumanHandoffTool()
 
-	return &ToolSet{
+	toolSet := &ToolSet{
 		tools:               tools,
 		screen:              screen,
 		phoneBridgeRestorer: NewPhoneBridgeRestorer(nil, pointer),
 		textInputHW:         textInputHW,
 	}
+	touchGesture.primeScreenMapping = toolSet.PrimeScreenMapping
+	return toolSet
 }
 
 func (s *ToolSet) RegisterEnterTextInFieldTool(models ModelResolver, platformFn func() string) {

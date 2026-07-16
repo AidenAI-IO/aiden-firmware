@@ -239,6 +239,104 @@ func TestTouchGestureRejectsDistinctInputsResolvingToSameHIDPoint(t *testing.T) 
 	}
 }
 
+func TestTouchGestureTouchscreenPrimesMappingBeforeNormalizedInput(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	screen := &screenState{}
+	primeCalls := 0
+	tool := &TouchGestureTool{
+		pc:     testTouchscreenPointerController(dev, &pointerState{}),
+		screen: screen,
+		primeScreenMapping: func(context.Context) error {
+			primeCalls++
+			screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 711, Y: 0, Width: 497, Height: 1080, Valid: true})
+			return nil
+		},
+	}
+
+	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":931,"y":83}}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("Call output = %q, want ok", out)
+	}
+	if primeCalls != 1 {
+		t.Fatalf("prime calls = %d, want 1", primeCalls)
+	}
+
+	reports := readTouchscreenReports(t, dev, path)
+	if len(reports) != 1+touchReleaseReportCount {
+		t.Fatalf("len(reports) = %d, want %d", len(reports), 1+touchReleaseReportCount)
+	}
+	expectedX := scalePixelToAbsolute(711+(931.0/1000.0)*496, 1920)
+	expectedY := scalePixelToAbsolute((83.0/1000.0)*1079, 1080)
+	if reports[0].x != uint16(expectedX) || reports[0].y != uint16(expectedY) {
+		t.Fatalf("first report = (%d,%d), want (%d,%d)", reports[0].x, reports[0].y, expectedX, expectedY)
+	}
+	fallbackX, fallbackY := normalizedToAbsolutePoint(931, 83)
+	if reports[0].x == uint16(fallbackX) && reports[0].y == uint16(fallbackY) {
+		t.Fatalf("first report used fallback coordinates (%d,%d)", reports[0].x, reports[0].y)
+	}
+}
+
+func TestTouchGestureTouchscreenDoesNotWriteWhenMappingPrimeFails(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	tool := &TouchGestureTool{
+		pc:     testTouchscreenPointerController(dev, &pointerState{}),
+		screen: &screenState{},
+		primeScreenMapping: func(context.Context) error {
+			return errors.New("frame service recovering")
+		},
+	}
+
+	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":931,"y":83}}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "touchscreen mapping unavailable") {
+		t.Fatalf("Call output = %q, want mapping error", out)
+	}
+	if reports := readTouchscreenReports(t, dev, path); len(reports) != 0 {
+		t.Fatalf("len(reports) = %d, want no HID writes", len(reports))
+	}
+}
+
+func TestTouchGestureTouchscreenKeepsFreshFullFrameMappingWhenPrimeWouldFail(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	screen := &screenState{}
+	screen.UpdateActiveArea(1920, 1080, screenActiveArea{})
+	primeCalls := 0
+	tool := &TouchGestureTool{
+		pc:     testTouchscreenPointerController(dev, &pointerState{}),
+		screen: screen,
+		primeScreenMapping: func(context.Context) error {
+			primeCalls++
+			return errors.New("frame service unavailable")
+		},
+	}
+
+	out, err := tool.Call(context.Background(), `{"type":"tap","point":{"x":931,"y":83}}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("Call output = %q, want ok", out)
+	}
+	if primeCalls != 0 {
+		t.Fatalf("prime calls = %d, want 0", primeCalls)
+	}
+
+	reports := readTouchscreenReports(t, dev, path)
+	if len(reports) != 1+touchReleaseReportCount {
+		t.Fatalf("len(reports) = %d, want %d", len(reports), 1+touchReleaseReportCount)
+	}
+	expectedX := scalePixelToAbsolute((931.0/1000.0)*1919, 1920)
+	expectedY := scalePixelToAbsolute((83.0/1000.0)*1079, 1080)
+	if reports[0].x != uint16(expectedX) || reports[0].y != uint16(expectedY) {
+		t.Fatalf("first report = (%d,%d), want (%d,%d)", reports[0].x, reports[0].y, expectedX, expectedY)
+	}
+}
+
 func TestWheelNudgeLargeSupportsDown(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
@@ -2565,6 +2663,23 @@ func TestScreenStateDimensionsWithAge(t *testing.T) {
 	}
 	if age > time.Second {
 		t.Fatalf("fresh age = %v, want < 1s", age)
+	}
+}
+
+func TestScreenStateFreshActiveAreaUsesFullFrameFallbackAndExpires(t *testing.T) {
+	screen := &screenState{}
+	screen.UpdateActiveArea(1920, 1080, screenActiveArea{})
+
+	if !screen.FreshActiveArea(screenDimensionsStaleAfter) {
+		t.Fatal("expected fresh full-frame fallback mapping")
+	}
+
+	screen.mu.Lock()
+	screen.updatedAt = time.Now().Add(-2 * screenDimensionsStaleAfter)
+	screen.mu.Unlock()
+
+	if screen.FreshActiveArea(screenDimensionsStaleAfter) {
+		t.Fatal("expected stale full-frame fallback mapping to expire")
 	}
 }
 

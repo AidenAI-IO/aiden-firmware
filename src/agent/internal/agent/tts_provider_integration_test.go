@@ -88,6 +88,39 @@ func TestStreamSessionWriterDoesNotReportSpokenWhenCloseFails(t *testing.T) {
 	}
 }
 
+func TestStreamSessionWriterAbortsPreopenedSessionWhenNoTextWritten(t *testing.T) {
+	session := &abortableStreamSession{}
+	w := &streamSessionWriter{session: session}
+
+	if err := w.closeAndWait(); err != nil {
+		t.Fatalf("closeAndWait() error = %v", err)
+	}
+	if session.abortCalls != 1 {
+		t.Fatalf("Abort() calls = %d, want 1", session.abortCalls)
+	}
+	if session.closeCalls != 0 {
+		t.Fatalf("Close() calls = %d, want 0", session.closeCalls)
+	}
+}
+
+func TestStreamSessionWriterClosesSessionWhenTextWritten(t *testing.T) {
+	session := &abortableStreamSession{}
+	w := &streamSessionWriter{session: session}
+
+	if _, err := w.Write([]byte("hello")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if err := w.closeAndWait(); err != nil {
+		t.Fatalf("closeAndWait() error = %v", err)
+	}
+	if session.closeCalls != 1 {
+		t.Fatalf("Close() calls = %d, want 1", session.closeCalls)
+	}
+	if session.abortCalls != 0 {
+		t.Fatalf("Abort() calls = %d, want 0", session.abortCalls)
+	}
+}
+
 func TestHandleTTSSettingsPostInitializesManagerWhenAbsent(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
@@ -667,6 +700,23 @@ func (s *failingStreamSession) WriteText(string) error { return nil }
 func (s *failingStreamSession) Flush() error           { return nil }
 func (s *failingStreamSession) Close() error           { return s.closeErr }
 func (s *failingStreamSession) Err() error             { return s.closeErr }
+
+type abortableStreamSession struct {
+	closeCalls int
+	abortCalls int
+}
+
+func (s *abortableStreamSession) WriteText(string) error { return nil }
+func (s *abortableStreamSession) Flush() error           { return nil }
+func (s *abortableStreamSession) Close() error {
+	s.closeCalls++
+	return nil
+}
+func (s *abortableStreamSession) Abort() error {
+	s.abortCalls++
+	return nil
+}
+func (s *abortableStreamSession) Err() error { return nil }
 
 type formatCheckingTTSProvider struct {
 	name       string

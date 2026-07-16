@@ -1,135 +1,166 @@
-# Benchmark 使用手册
+# Benchmark User Manual
 
-本文说明当前 `benchmark/` 目录下 Aiden benchmark 的设计和使用方式，覆盖推荐入口：
+This document describes the design and usage of the Aiden benchmark under the
+current `benchmark/` directory, covering the recommended entry points:
 
-- WebUI：适合日常运行、多 suite、MobileGym 并发和人工查看报告。
-- CLI：适合脚本化运行、单 suite 调试、rejudge 和 compare。
+- WebUI: best for day-to-day runs, multiple suites, MobileGym concurrency, and
+  viewing reports interactively.
+- CLI: best for scripted runs, single-suite debugging, rejudge, compare, and unit
+  tool tests.
 
-以下命令默认从仓库根目录进入 `benchmark/` 后执行：
+The commands below assume you have entered `benchmark/` from the repo root:
 
 ```bash
 cd benchmark
 uv sync
 ```
 
-## 1. 设计说明
+## 1. Design overview
 
-### 1.1 核心目标
+### 1.1 Core goal
 
-Benchmark 用来评估 Aiden agent 在手机 UI、记忆、规划、感知等任务上的表现。它把“执行任务”和“判分”分开：
+The benchmark evaluates the Aiden agent on phone UI, memory, planning, perception,
+and similar tasks. It separates "running the task" from "scoring":
 
-1. Python runner 读取 `benchmark/suites/*.json`。
-2. Runner 通过 HTTP 调用 Aiden Go agent daemon。
-3. Agent 根据 prompt 调用工具操作设备或模拟器。
-4. Runner 收集 history、trace、pre/post screenshot、日志等 artifact。
-5. Hard assertions 先做确定性检查。
-6. 可选 judge model 再根据 rubric、trace 和截图做离线判定。
+1. The Python runner reads `benchmark/suites/*.json`.
+2. The runner calls the Aiden Go agent daemon over HTTP.
+3. The agent calls tools to operate a device or simulator based on the prompt.
+4. The runner collects artifacts: history, trace, pre/post screenshots, logs.
+5. Hard assertions run first as deterministic checks.
+6. An optional judge model then scores offline against the rubric, trace, and
+   screenshots.
 
-这种设计的好处是：任务执行依赖真实 agent 和环境，判分可以离线重跑；失败时可以查看完整 trace 和截图，不必重新操作设备。
+The benefit of this design: task execution depends on a real agent and
+environment, but scoring can be re-run offline; on failure you can inspect the
+full trace and screenshots without re-operating the device.
 
-### 1.2 主要组件
+### 1.2 Main components
 
-| 组件 | 位置 | 作用 |
+| Component | Location | Role |
 | --- | --- | --- |
-| Suite | `benchmark/suites/*.json` | 定义任务、prompt、rubric、hard assertions、setup |
-| Runner | `benchmark/runner/main.py` | CLI 入口，负责执行 suite、生成报告 |
-| WebUI | `benchmark/runner/webui.py` | Web 控制台，负责管理 suites、jobs、environments、logs、reports |
-| Agent client | `benchmark/runner/agent_client.py` | 调用 Go agent 的 `/api/chat`、`/api/tools/*`、`/api/history` |
-| Judge | `benchmark/runner/judge.py` | 调用 OpenRouter 兼容接口，使用 pre/post screenshot 和 trace 判分 |
-| MobileGym bridge | `benchmark/mobilegym/bridge/` | 把 MobileGym env 包装成 environment bridge API |
-| Docker daemon worker | `benchmark/docker/Dockerfile.agent-daemon` | WebUI 运行 job 时启动隔离的 agent daemon |
+| Suite | `benchmark/suites/*.json` | Defines tasks, prompts, rubric, hard assertions, setup |
+| Runner | `benchmark/runner/main.py` | CLI entry point; runs suites and generates reports |
+| WebUI | `benchmark/runner/webui.py` | Web console; manages suites, jobs, environments, logs, reports |
+| Agent client | `benchmark/runner/agent_client.py` | Calls the Go agent's `/api/chat`, `/api/tools/*`, `/api/history` |
+| Judge | `benchmark/runner/judge.py` | Calls an OpenRouter-compatible endpoint; scores using pre/post screenshots and the trace |
+| MobileGym bridge | `benchmark/mobilegym/bridge/` | Wraps a MobileGym env as an environment bridge API |
+| ADB Android bridge | `benchmark/adbandroid/` | Wraps an Android emulator/physical device as an environment bridge API via adb (see its README) |
+| Docker daemon worker | `benchmark/docker/Dockerfile.agent-daemon` | The isolated agent daemon the WebUI starts when running a job |
 
-### 1.3 执行流程
+### 1.3 Execution flow
 
-单个 task 的主流程在 `runner/runtask.py`：
+The main flow for a single task lives in `runner/runtask.py`:
 
-1. 检查 agent daemon 是否可用。
-2. 清空 agent conversation history。
-3. 如果有 `environment_url`，调用 environment 的 `/api/setup`。
-4. 执行 suite/task 的可选 setup。
-5. 如果有 `environment_url`，通过 `/api/screen` 获取 `pre.jpg`。
-6. 调用 agent `/api/chat` 执行正式 prompt。
-7. 如果有 `environment_url`，再次通过 `/api/screen` 获取 `post.jpg`。
-8. 从 agent history 提取 tool trace。
-9. 执行 hard assertions。
-10. 如果启用 judge，提交 rubric、trace、final response、pre/post screenshot 给 judge model。
-11. 写入 `manifest.json`、`results.jsonl`、`summary.md`、`report.html` 和每个 task 的 artifact。
-12. 如果有 `environment_url`，调用 `/api/release` 释放 task route。
+1. Check that the agent daemon is reachable.
+2. Clear the agent conversation history.
+3. If `environment_url` is set, call the environment's `/api/setup`.
+4. Run the suite/task's optional setup.
+5. If `environment_url` is set, fetch `pre.jpg` via `/api/screen`.
+6. Call the agent's `/api/chat` with the actual prompt.
+7. If `environment_url` is set, fetch `post.jpg` via `/api/screen` again.
+8. Extract the tool trace from the agent history.
+9. Run the hard assertions.
+10. If the judge is enabled, submit the rubric, trace, final response, and
+    pre/post screenshots to the judge model.
+11. Write `manifest.json`, `results.jsonl`, `summary.md`, `report.html`, and each
+    task's artifacts.
+12. If `environment_url` is set, call `/api/release` to free the task route.
 
-Judge 当前只使用两张图片：任务开始前的 `pre.jpg` 和任务结束后的 `post.jpg`。它不会消费每一步截图。
+The judge currently uses only two images: `pre.jpg` before the task and `post.jpg`
+after. It does not consume every intermediate screenshot.
 
-### 1.4 Environment bridge 是什么
+### 1.4 What is an environment bridge
 
-Environment bridge 是 benchmark 连接真实设备、模拟器或其它环境的统一 HTTP 协议。Go agent 和 MobileGym bridge 都实现这组接口；Go agent daemon 也可以启用 environment bridge mode，把部分本地工具调用转发到另一个 bridge。
+The environment bridge is the unified HTTP protocol the benchmark uses to connect
+to a real device, a simulator, or another environment. Both the Go agent and the
+MobileGym bridge implement this interface set; the Go agent daemon can also enable
+environment bridge mode to forward some of its local tool calls to another bridge.
 
-典型场景：
+Typical scenario:
 
-- WebUI 为每个 job/task worker 启动一个隔离的 Docker agent daemon。
-- 这个 daemon 通过 `--environment-bridge-mode` 把设备相关工具转发到所选 environment bridge。
-- 对 agent 来说，仍然是在调用普通工具，例如 `screenshot`、`touch_gesture`、`keyboard_text`。
-- 对环境来说，实际收到的是 HTTP `/api/tools/<tool>` 请求。
+- The WebUI starts an isolated Docker agent daemon per job/task worker.
+- That daemon uses `--environment-bridge-mode` to forward device-related tools to
+  the selected environment bridge.
+- From the agent's perspective it is still calling ordinary tools such as
+  `screenshot`, `touch_gesture`, `keyboard_text`.
+- From the environment's perspective it actually receives HTTP `/api/tools/<tool>`
+  requests.
 
-默认 WebUI Docker daemon 转发的工具包括：
+The tools the default WebUI Docker daemon forwards include:
 
 ```text
 screenshot,touch_gesture,keyboard_text,keyboard_tap,mouse_click,mouse_move,mouse_scroll,quick_action
 ```
 
-需要注意：
+Notes:
 
-- Environment bridge 是 agent 执行动作、runner 初始化环境和采集 pre/post screenshot 的统一通道。
-- Runner 获取 pre/post screenshot 不通过 agent tool 调用，而是直接调用 environment bridge 的 `/api/screen`。
-- CLI `run --agent-url ...` 是直接调用指定 agent，不会自动启动 environment bridge；如需 environment bridge，需要自行启动 daemon 并传入相关 daemon 参数。
+- The environment bridge is the single channel through which the agent performs
+  actions and the runner initializes the environment and captures pre/post
+  screenshots.
+- The runner does not obtain pre/post screenshots through agent tool calls; it
+  calls the environment bridge's `/api/screen` directly.
+- `run --agent-url ...` on the CLI calls the specified agent directly and does not
+  start an environment bridge automatically; if you need an environment bridge you
+  must start the daemon yourself and pass the relevant daemon parameters.
 
-### 1.5 Bridge server 的作用
+### 1.5 What the bridge server does
 
-Bridge server 是具体环境和 Aiden benchmark 之间的 HTTP 适配层。MobileGym bridge 把 MobileGym env 暴露成 environment bridge；Go agent 在连接真实设备时也暴露同一组接口。
+The bridge server is the HTTP adapter layer between a concrete environment and the
+Aiden benchmark. The MobileGym bridge exposes a MobileGym env as an environment
+bridge; the Go agent exposes the same interface set when connected to a real
+device.
 
-接入新环境时参考 [`benchmark/environment_bridge.md`](environment_bridge.md)。
+When integrating a new environment, see
+[`benchmark/environment_bridge.md`](environment_bridge.md).
 
-标准 environment bridge 接口：
+Standard environment bridge interface:
 
-| Endpoint | 用途 |
+| Endpoint | Purpose |
 | --- | --- |
-| `GET /health` | 健康检查 |
-| `GET /api/tools` | 工具目录，供 agent health check 和 environment bridge 使用 |
-| `POST /api/tools/<tool>` | 执行工具，例如 screenshot/touch/keyboard |
-| `POST /api/setup` | 为某个 benchmark task reset/claim env |
-| `POST /api/release` | 释放某个 benchmark task 占用的 env |
-| `GET /api/concurrent` | 返回当前 bridge 支持的并发 task 数量 |
-| `GET /api/screen` | 返回 JSON screenshot，runner 和 WebUI task screen 页面使用 |
+| `GET /health` | Health check |
+| `GET /api/tools` | Tool catalog, used by the agent health check and the environment bridge |
+| `POST /api/tools/<tool>` | Execute a tool, e.g. screenshot/touch/keyboard |
+| `POST /api/setup` | Reset/claim the env for a benchmark task |
+| `POST /api/release` | Release the env held by a benchmark task |
+| `GET /api/concurrent` | Return how many concurrent tasks this bridge supports |
+| `GET /api/screen` | Return a JSON screenshot; used by the runner and the WebUI task screen page |
 
-并发 MobileGym 通过 `benchmark-task-id` 路由：
+Concurrent MobileGym is routed by `benchmark-task-id`:
 
-- WebUI 为每个 task worker 生成形如 `<suite-key>:<task-id>` 的 `benchmark-task-id`。
-- Runner 调用 `/api/setup`、`/api/release`、`/api/screen` 时会带这个 header。
-- Agent daemon 的 environment bridge tool 请求也会带同一个 benchmark task id。
-- Bridge 根据这个 id 把请求路由到同一个 env。
+- The WebUI generates a `benchmark-task-id` of the form `<suite-key>:<task-id>` per
+  task worker.
+- The runner sends this header when calling `/api/setup`, `/api/release`,
+  `/api/screen`.
+- The agent daemon's environment bridge tool requests carry the same benchmark
+  task id.
+- The bridge routes requests to the same env based on this id.
 
-如果 MobileGym environment 的 env pool 容量是 `N`，而 suite 中 task 数量大于 `N`：
+If a MobileGym environment's env pool capacity is `N` and the suite has more than
+`N` tasks:
 
-- WebUI 通过 `/api/concurrent` 读取 bridge 容量，最多同时启动 `N` 个 task worker。
-- 多出来的 task 在 runner 的 worker queue 中等待。
-- 已完成 task 调用 `/api/release` 后，对应 env 可被后续 task 复用。
+- The WebUI reads the bridge capacity via `/api/concurrent` and starts at most `N`
+  task workers at once.
+- The excess tasks wait in the runner's worker queue.
+- After a finished task calls `/api/release`, its env can be reused by later tasks.
 
-当前 WebUI 创建 MobileGym environment 时，`Envs` 默认值是 `5`。
+When the WebUI currently creates a MobileGym environment, `Envs` defaults to `5`.
 
-### 1.6 Suite 结构
+### 1.6 Suite structure
 
-普通 suite 的最小结构：
+Minimal structure of a regular suite:
 
 ```json
 {
   "name": "phone_control_v1",
   "description": "Agent-driven phone control benchmark.",
-  "prompt_prefix": "附加到每个 task prompt 前的通用约束。",
+  "prompt_prefix": "Common constraints prepended to every task prompt.",
   "global_reset": {},
   "tasks": [
     {
       "id": "open_settings",
       "category": "single_step",
       "description_for_judge": "Agent must open system Settings.",
-      "prompt": "请打开系统设置。",
+      "prompt": "Please open system Settings.",
       "rubric": [
         {
           "id": "in_settings",
@@ -146,142 +177,155 @@ Bridge server 是具体环境和 Aiden benchmark 之间的 HTTP 适配层。Mobi
 }
 ```
 
-常用字段：
+Common fields:
 
-| 字段 | 说明 |
+| Field | Description |
 | --- | --- |
-| `prompt_prefix` | 每个 task prompt 的前缀，用于约束设备类型、工具使用方式等 |
-| `global_reset` | suite 级 reset 配置 |
-| `setup` | task 级前置步骤，目前支持 `{"type": "agent_prompt", ...}` |
-| `rubric` | judge model 的判定项 |
-| `hard_assertions` | 确定性检查，例如工具调用数量、超时、必需/禁用工具 |
-| `repeats` | 单个 task 重复运行次数 |
-| `input_screenshot` | 静态图片输入，适合 perception 类任务 |
-| `expected_answer` | 多选题/确定答案任务的直接判定答案 |
-| `trace_observations` | 对 trace 中特定行为的检查，例如是否读取某个 skill |
+| `prompt_prefix` | Prefix for every task prompt; constrains device type, tool usage, etc. |
+| `global_reset` | Suite-level reset configuration |
+| `setup` | Task-level pre-steps; currently supports `{"type": "agent_prompt", ...}` |
+| `rubric` | The judge model's scoring items |
+| `hard_assertions` | Deterministic checks, e.g. tool-call counts, timeout, required/forbidden tools |
+| `repeats` | Number of times a single task is repeated |
+| `input_screenshot` | Static image input, suitable for perception tasks |
+| `expected_answer` | Direct answer for multiple-choice/fixed-answer tasks |
+| `trace_observations` | Checks on specific behaviors in the trace, e.g. whether a given skill was read |
 
-## 2. WebUI 使用说明
+A unit suite is a different format with `kind` set to `unit`; it tests a tool's
+input/output directly without going through agent chat.
 
-### 2.1 启动
+## 2. WebUI guide
 
-推荐命令：
+### 2.1 Startup
+
+Recommended command:
 
 ```bash
 cd benchmark
 uv run python -m runner webui
 ```
 
-默认地址：
+Default address:
 
 ```text
 http://127.0.0.1:8765
 ```
 
-常用参数：
+Common parameters:
 
-| 参数 | 默认值 | 说明 |
+| Parameter | Default | Description |
 | --- | --- | --- |
-| `--host` | `127.0.0.1` | WebUI 监听地址 |
-| `--port` | `8765` | WebUI 监听端口 |
-| `--suites-dir` | `benchmark/suites` | suite 扫描目录 |
-| `--runs-dir` | `benchmark/runs/webui` | WebUI job、raw run、日志保存目录 |
-| `--base-config-dir` | `benchmark/config` | agent 配置模板目录 |
-| `--agent-config` | 空 | 指定 WebUI 使用的 agent.toml 保存路径 |
-| `--daemon-image` | `aiden-agent-daemon:local` | job worker daemon 镜像 |
-| `--mobilegym-image` | `aiden-mobilegym-simulator:py311` | MobileGym environment 镜像 |
-| `--no-build-daemon-image` | false | 不自动构建 daemon 镜像 |
-| `--no-build-mobilegym-image` | false | 不自动构建 MobileGym 镜像 |
+| `--host` | `127.0.0.1` | WebUI listen address |
+| `--port` | `8765` | WebUI listen port |
+| `--suites-dir` | `benchmark/suites` | Suite scan directory |
+| `--runs-dir` | `benchmark/runs/webui` | Directory for WebUI jobs, raw runs, logs |
+| `--base-config-dir` | `benchmark/config` | Agent config template directory |
+| `--agent-config` | empty | Path where the WebUI's `agent.toml` is saved |
+| `--daemon-image` | `aiden-agent-daemon:local` | Job worker daemon image |
+| `--mobilegym-image` | `aiden-mobilegym-simulator:py311` | MobileGym environment image |
+| `--no-build-daemon-image` | false | Do not build the daemon image automatically |
+| `--no-build-mobilegym-image` | false | Do not build the MobileGym image automatically |
 
-### 2.2 页面区域
+### 2.2 Page areas
 
-WebUI 首屏主要区域：
+Main areas on the WebUI home screen:
 
-- Suites：左侧 suite 列表，可筛选、勾选一个或多个 suite。
-- Run configuration：judge 开关、judge model、API key。
-- Run selected suites：点击后弹出 environment 选择/配置窗口。
-- Progress：当前 active job 的总体进度。
-- Task workers：MobileGym 并发任务的 task 粒度状态、screen、log、stop。
-- Jobs：历史 job，显示 job id、suite 名称、environment、状态、综合 report。
-- Agent config：查看和编辑本次 WebUI 使用的 `agent.toml`。
-- Log：查看 job 或 task worker 的 runner/daemon 日志。
+- Suites: the suite list on the left; filter and select one or more suites.
+- Run configuration: judge toggle, judge model, API key.
+- Run selected suites: opens the environment selection/configuration dialog.
+- Progress: overall progress of the current active job.
+- Task workers: task-level status, screen, log, and stop for MobileGym concurrent
+  tasks.
+- Jobs: historical jobs, showing job id, suite name, environment, status, and the
+  combined report.
+- Agent config: view and edit the `agent.toml` used by this WebUI session.
+- Log: view the runner/daemon logs of a job or task worker.
 
-### 2.3 配置 judge
+### 2.3 Configuring the judge
 
-WebUI 默认启用 judge。当前 judge 通过 OpenRouter 兼容接口调用，API key 使用 `OPENROUTER_API_KEY`。
+The WebUI enables the judge by default. The judge is currently called over an
+OpenRouter-compatible endpoint, using the `OPENROUTER_API_KEY` API key.
 
-使用方式：
+Usage:
 
-1. 保持 `Enable judge` 勾选。
-2. 填写 `Judge model`，默认是 `anthropic/claude-sonnet-4-6`。
-3. 填写 API key。保存后 WebUI 会持久化设置，但页面不会回显明文 key。
+1. Keep `Enable judge` checked.
+2. Fill in `Judge model`; the default is `anthropic/claude-sonnet-4-6`.
+3. Fill in the API key. After saving, the WebUI persists the setting but does not
+   echo the plaintext key back on the page.
 
-如果只想收集 trace 和截图，不调用 judge，可以取消 `Enable judge`。
+If you only want to collect the trace and screenshots without calling the judge,
+uncheck `Enable judge`.
 
-### 2.4 配置 environment
+### 2.4 Configuring the environment
 
-点击 `Run selected suites` 后会弹出 environment 窗口。
+Clicking `Run selected suites` opens the environment dialog.
 
 #### Device environment
 
-Device environment 用于已有的设备/tool endpoint。填写：
+A device environment is for an existing device/tool endpoint. Fill in:
 
-- Name：自定义名称。
-- Endpoint：HTTP endpoint。
+- Name: a custom name.
+- Endpoint: the HTTP endpoint.
 
-WebUI 启动 job 时会：
+When the WebUI starts a job it will:
 
-1. 为 job 启动隔离 Docker agent daemon。
-2. 把该 daemon 的设备工具通过 environment bridge 转发到这个 endpoint。
-3. 用隔离 daemon 的 `/api/chat` 跑 benchmark。
+1. Start an isolated Docker agent daemon for the job.
+2. Forward that daemon's device tools to this endpoint via the environment bridge.
+3. Run the benchmark using the isolated daemon's `/api/chat`.
 
-这种方式适合需要隔离 agent 配置、日志、memory 的实机或外部工具环境。
+This is suitable for a real device or external tool environment that needs
+isolated agent config, logs, and memory.
 
 #### MobileGym environment
 
-MobileGym environment 由 WebUI 直接创建和管理：
+A MobileGym environment is created and managed by the WebUI directly:
 
-1. 切到 `MobileGym` tab。
-2. 填写名称。
-3. 设置 `Envs`，默认 `5`。
-4. 点击 `Start MobileGym`。
-5. 等状态变为 running 后选择该 environment。
-6. 点击弹窗底部 `Run selected suites`。
+1. Switch to the `MobileGym` tab.
+2. Fill in a name.
+3. Set `Envs`, default `5`.
+4. Click `Start MobileGym`.
+5. Wait for the status to become running, then select that environment.
+6. Click `Run selected suites` at the bottom of the dialog.
 
-WebUI 会启动 MobileGym container 和 bridge server，并记录：
+The WebUI starts the MobileGym container and bridge server and records:
 
-- Bridge endpoint：供 Docker daemon environment bridge 使用。
-- Public endpoint：供 WebUI 和 runner 调用 `/api/concurrent`、`/api/setup`、`/api/screen`、`/api/release`。
-- Task screen link：每个 task worker 的 screen 链接由 WebUI 提供，WebUI 后端通过 bridge `/api/screen` 拉取截图。
+- Bridge endpoint: used by the Docker daemon's environment bridge.
+- Public endpoint: used by the WebUI and the runner to call `/api/concurrent`,
+  `/api/setup`, `/api/screen`, `/api/release`.
+- Task screen link: the screen link for each task worker is provided by the WebUI;
+  the WebUI backend pulls the screenshot via the bridge's `/api/screen`.
 
-### 2.5 运行 job
+### 2.5 Running a job
 
-流程：
+Flow:
 
-1. 勾选一个或多个 suite。
-2. 设置 judge。
-3. 点击 `Run selected suites`。
-4. 在弹窗中选择或创建 environment。
-5. 点击弹窗底部确认运行。
+1. Select one or more suites.
+2. Configure the judge.
+3. Click `Run selected suites`.
+4. Select or create an environment in the dialog.
+5. Confirm the run at the bottom of the dialog.
 
-运行后：
+After running:
 
-- Jobs 表显示 suite 名称和 job 状态。
-- Progress 显示总体进度。
-- MobileGym 并发模式下，Task workers 会显示每个 task 的状态、screen、log。
-- 可以对整个 job 点击 Stop，也可以对单个 task worker 点击 Stop。
+- The Jobs table shows the suite name and job status.
+- Progress shows overall progress.
+- In MobileGym concurrent mode, Task workers shows each task's status, screen, and
+  log.
+- You can click Stop for the whole job, or Stop for an individual task worker.
 
-### 2.6 查看结果
+### 2.6 Viewing results
 
-Jobs 表中的 `report` 是综合 report，不是单个 task report。
+The `report` in the Jobs table is a combined report, not a single-task report.
 
-Report 内容包括：
+Report contents include:
 
-- task 列表和通过率。
-- 每个 task 的 prompt、final response、hard assertions、rubric。
-- pre/post screenshot。
-- `View full trace`，用于人工查看执行过程和校验 judge 是否合理。
+- The task list and pass rate.
+- Each task's prompt, final response, hard assertions, rubric.
+- Pre/post screenshots.
+- `View full trace`, for inspecting the execution manually and validating whether
+  the judge was reasonable.
 
-WebUI 运行数据默认保存在：
+WebUI run data is saved by default under:
 
 ```text
 benchmark/runs/webui/<job-id>/
@@ -294,56 +338,63 @@ benchmark/runs/webui/<job-id>/
 └── workers/
 ```
 
-WebUI 会持久化 job record。重启 WebUI 后，历史 job 会从 `job.json` 恢复；如果重启前 job 仍在运行，恢复时会标记为 stopped。
+The WebUI persists job records. After a WebUI restart, historical jobs are restored
+from `job.json`; if a job was still running before the restart, it is marked as
+stopped on recovery.
 
-### 2.7 常见问题
+### 2.7 Common issues
 
-#### MobileGym screen 没有显示
+#### The MobileGym screen does not show
 
-优先检查：
+Check first:
 
-- MobileGym environment 是否 running。
-- Task worker 是否已经开始运行。
-- `screen` 链接是否带了 `benchmark-task-id`。
-- 对应 task 是否已经 release；release 后 screen 可能没有 active env。
+- Whether the MobileGym environment is running.
+- Whether the task worker has already started running.
+- Whether the `screen` link carries a `benchmark-task-id`.
+- Whether the task has already been released; after release the screen may have no
+  active env.
 
-#### Judge 说没有截图
+#### The judge says there are no screenshots
 
-检查 report 中 task metrics：
+Check the task metrics in the report:
 
 - `pre_screenshot_file`
 - `post_screenshot_file`
 - `judge_image_count`
 - `judge_image_labels`
 
-MobileGym 模式下，runner 应通过 bridge `/api/screen` 生成 `pre.jpg` 和 `post.jpg`。如果缺失，通常是 environment endpoint 不可达、缺少 `benchmark-task-id` 路由，或 task 在截图前已经 release/失败。
+In MobileGym mode the runner should produce `pre.jpg` and `post.jpg` via the
+bridge's `/api/screen`. If they are missing, it is usually because the environment
+endpoint is unreachable, the `benchmark-task-id` routing is missing, or the task
+was released/failed before the screenshot.
 
-#### Suite task 数量大于 Envs
+#### The suite has more tasks than Envs
 
-这是正常情况。WebUI 会按 env pool 容量并发运行，剩余 task 排队。
+This is normal. The WebUI runs concurrently up to the env pool capacity and queues
+the remaining tasks.
 
-## 3. CLI 使用说明
+## 3. CLI guide
 
-### 3.1 入口
+### 3.1 Entry points
 
-推荐入口：
+Recommended entry point:
 
 ```bash
 cd benchmark
 uv run python -m runner <command> [options]
 ```
 
-兼容入口：
+Compatibility entry point:
 
 ```bash
 python3 scripts/aiden_benchmark.py <command> [options]
 ```
 
-如果省略 `<command>`，legacy 脚本会按 `run` 处理。
+If `<command>` is omitted, the legacy script treats it as `run`.
 
-### 3.2 run：运行普通 suite
+### 3.2 run: run a regular suite
 
-基本命令：
+Basic command:
 
 ```bash
 uv run python -m runner run \
@@ -351,35 +402,35 @@ uv run python -m runner run \
   --agent-url http://127.0.0.1:8080
 ```
 
-常用参数：
+Common parameters:
 
-| 参数 | 说明 |
+| Parameter | Description |
 | --- | --- |
-| `--suite PATH` | 必填，suite JSON 路径 |
-| `--agent-url URL` | agent daemon 地址，默认 `http://localhost:8080` 或 `AIDEN_AGENT_URL` |
-| `--environment-url URL` | 可选，environment bridge 地址；用于 `/api/setup`、`/api/screen`、`/api/release` |
-| `--auto-agent-setup` | 忽略 `--agent-url`，自动按 `/api/concurrent` 并发启动隔离 agent daemon |
-| `--daemon-image IMAGE` | `--auto-agent-setup` 使用的 agent daemon image |
-| `--base-config-dir DIR` | `--auto-agent-setup` 使用的 agent 配置模板目录 |
-| `--agent-config PATH` | `--auto-agent-setup` 使用的 agent.toml |
-| `--no-build-daemon-image` | 不自动构建 agent daemon image |
-| `--judge-model MODEL` | judge model，默认 `claude-sonnet-4-6` |
-| `--no-judge` | 跳过 LLM judge，只做 hard assertions |
-| `--repeats N` | 覆盖 task 内的 repeats |
-| `--out DIR` | 输出目录，默认 `benchmark/runs` |
-| `--state-file PATH` | 写入运行状态 JSON，WebUI 使用它显示进度 |
-| `--task-id ID` | 只运行某个 task，可重复传入 |
-| `--task-ids A,B` | 只运行逗号分隔的多个 task |
-| `--run-id ID` | 指定 run 目录名 |
-| `--benchmark-task-id ID` | environment 路由 id，MobileGym worker 使用 |
-| `--skip-clock-wait` | 不等待 agent board clock 同步 |
-| `--clock-timeout-sec N` | 等待 clock 同步的最长时间 |
-| `--agent-ready-timeout-sec N` | 每个 task 前等待 agent ready 的时间 |
-| `--agent-recovery-timeout-sec N` | timeout/skipped/failed 后的恢复等待时间 |
-| `--inter-task-cooldown-sec N` | task 之间的冷却时间 |
-| `--verbose` / `-v` | 输出详细 rubric 结果 |
+| `--suite PATH` | Required, path to the suite JSON |
+| `--agent-url URL` | Agent daemon address; default `http://localhost:8080` or `AIDEN_AGENT_URL` |
+| `--environment-url URL` | Optional, environment bridge address; used for `/api/setup`, `/api/screen`, `/api/release` |
+| `--auto-agent-setup` | Ignore `--agent-url`; auto-start isolated agent daemons concurrently per `/api/concurrent` |
+| `--daemon-image IMAGE` | Agent daemon image used by `--auto-agent-setup` |
+| `--base-config-dir DIR` | Agent config template directory used by `--auto-agent-setup` |
+| `--agent-config PATH` | agent.toml used by `--auto-agent-setup` |
+| `--no-build-daemon-image` | Do not build the agent daemon image automatically |
+| `--judge-model MODEL` | Judge model; default `claude-sonnet-4-6` |
+| `--no-judge` | Skip the LLM judge; only run hard assertions |
+| `--repeats N` | Override the task's `repeats` |
+| `--out DIR` | Output directory; default `benchmark/runs` |
+| `--state-file PATH` | Write the run-state JSON; used by the WebUI to show progress |
+| `--task-id ID` | Run only one task; can be repeated |
+| `--task-ids A,B` | Run only the comma-separated tasks |
+| `--run-id ID` | Set the run directory name |
+| `--benchmark-task-id ID` | Environment routing id, used by MobileGym workers |
+| `--skip-clock-wait` | Do not wait for the agent board clock to sync |
+| `--clock-timeout-sec N` | Max time to wait for clock sync |
+| `--agent-ready-timeout-sec N` | Time to wait for the agent to be ready before each task |
+| `--agent-recovery-timeout-sec N` | Recovery wait after timeout/skipped/failed |
+| `--inter-task-cooldown-sec N` | Cooldown between tasks |
+| `--verbose` / `-v` | Print detailed rubric results |
 
-只跑某几个 task：
+Run only a few tasks:
 
 ```bash
 uv run python -m runner run \
@@ -388,7 +439,7 @@ uv run python -m runner run \
   --task-id scroll_page_down
 ```
 
-不调用 judge：
+Without the judge:
 
 ```bash
 uv run python -m runner run \
@@ -396,7 +447,7 @@ uv run python -m runner run \
   --no-judge
 ```
 
-带 MobileGym bridge 的 CLI 运行：
+CLI run with the MobileGym bridge:
 
 ```bash
 uv run python -m runner run \
@@ -405,13 +456,16 @@ uv run python -m runner run \
   --environment-url http://127.0.0.1:8888
 ```
 
-说明：
+Notes:
 
-- `--agent-url` 是 agent daemon。
-- `--environment-url` 是实现 `/api/setup`、`/api/screen`、`/api/release` 的 environment bridge endpoint。
-- 如果没有 `--environment-url`，runner 仍可执行 agent chat，但不会保存 live pre/post screenshot；依赖视觉截图的 judge 结果会变弱。
+- `--agent-url` is the agent daemon.
+- `--environment-url` is the environment bridge endpoint that implements
+  `/api/setup`, `/api/screen`, `/api/release`.
+- Without `--environment-url`, the runner can still run agent chat but will not
+  save live pre/post screenshots; judge results that rely on visual screenshots
+  will be weaker.
 
-自动启动 agent daemon 并按 bridge 容量并发运行：
+Auto-start the agent daemon and run concurrently per bridge capacity:
 
 ```bash
 uv run python -m runner run \
@@ -420,16 +474,27 @@ uv run python -m runner run \
   --auto-agent-setup
 ```
 
-该模式会忽略 `--agent-url`，读取 environment bridge `/api/concurrent`；如果读取失败，按并发 `1` 运行。
+This mode ignores `--agent-url` and reads the environment bridge's
+`/api/concurrent`; if that read fails, it runs with concurrency `1`.
 
-Agent 配置说明：
+Agent configuration notes:
 
-- `runner run --agent-url ...` 只调用一个已经启动的 agent daemon，本身不会读取或修改 `agent.toml`。这种模式下要在启动 daemon 时配置 agent，例如使用 `start-agent-daemon --agent-config path/to/agent.toml`，或按 daemon 自身的方式挂载配置。
-- `runner run --auto-agent-setup` 会为每个并发 task worker 自动准备独立的 agent config 目录并启动 daemon。此时可以通过 `--agent-config path/to/agent.toml` 指定 benchmark 使用的 agent 配置。
-- `--base-config-dir` 默认是 `benchmark/config`，runner 会先把这个目录复制到 worker config 目录，保留其中的 skills、control token 模板等文件。
-- 如果指定 `--agent-config`，该文件内容会写成 worker 的 `agent.toml`；如果不指定，runner 会优先使用 `--base-config-dir/agent.toml.template` 渲染生成 `agent.toml`，再退回默认配置。
+- `runner run --agent-url ...` only calls an already-started agent daemon and does
+  not read or modify `agent.toml` itself. In this mode, configure the agent when
+  starting the daemon, e.g. `start-agent-daemon --agent-config path/to/agent.toml`,
+  or mount the config the way the daemon expects.
+- `runner run --auto-agent-setup` prepares a separate agent config directory and
+  starts a daemon automatically for each concurrent task worker. Here you can use
+  `--agent-config path/to/agent.toml` to specify the agent config the benchmark
+  uses.
+- `--base-config-dir` defaults to `benchmark/config`; the runner copies this
+  directory into the worker config directory first, preserving the skills, control
+  token template, and other files in it.
+- If `--agent-config` is specified, its content is written as the worker's
+  `agent.toml`; if not, the runner prefers rendering `agent.toml` from
+  `--base-config-dir/agent.toml.template`, then falls back to the default config.
 
-示例：
+Example:
 
 ```bash
 uv run python -m runner run \
@@ -439,9 +504,33 @@ uv run python -m runner run \
   --agent-config ./local.agent.toml
 ```
 
-### 3.3 rejudge：重新判分
+### 3.3 unit: run a tool unit-test suite
 
-当只修改 rubric 或想换 judge model 时，不需要重新操作设备：
+A unit suite calls a single tool directly and checks the output structure and
+error state.
+
+Run a single unit suite:
+
+```bash
+uv run python -m runner unit \
+  --suite suites/unit/tools/quick_action_android_v1.json \
+  --agent-url http://127.0.0.1:8080
+```
+
+Run all unit suites under a directory:
+
+```bash
+uv run python -m runner unit \
+  --suite-dir suites/unit/tools \
+  --agent-url http://127.0.0.1:8080
+```
+
+`unit` does not call the LLM judge.
+
+### 3.4 rejudge: re-score
+
+When you only modify the rubric or want to switch the judge model, you do not need
+to re-operate the device:
 
 ```bash
 uv run python -m runner rejudge \
@@ -449,18 +538,20 @@ uv run python -m runner rejudge \
   --judge-model anthropic/claude-sonnet-4-6
 ```
 
-`rejudge` 会读取已有 artifact 和 `rubric_spec`，重写 judge verdict/status。
+`rejudge` reads the existing artifacts and `rubric_spec` and rewrites the judge
+verdict/status.
 
-### 3.4 compare：比较两次 run
+### 3.5 compare: compare two runs
 
 ```bash
 uv run python -m runner compare \
   --runs runs/<run-a> runs/<run-b>
 ```
 
-用于查看任务状态变化和性能变化，适合回归检查。
+Use it to see task status changes and performance changes; good for regression
+checks.
 
-### 3.5 webui：从 CLI 启动 WebUI
+### 3.6 webui: start the WebUI from the CLI
 
 ```bash
 uv run python -m runner webui \
@@ -468,39 +559,43 @@ uv run python -m runner webui \
   --port 8765
 ```
 
-这个命令和第 2 节 WebUI 使用的是同一个入口。
+This command uses the same entry point as the WebUI in Section 2.
 
-### 3.7 start-mobilegym-env：启动 MobileGym environment
+### 3.7 start-mobilegym-env: start a MobileGym environment
 
-如果不使用 WebUI，也可以从 CLI 启动一个 detached MobileGym simulator + bridge container：
+If you are not using the WebUI, you can also start a detached MobileGym
+simulator + bridge container from the CLI:
 
 ```bash
 uv run python -m runner start-mobilegym-env
 ```
 
-命令会打印：
+The command prints:
 
-- `environment_url`：runner 使用的 `--environment-url`。
-- `docker_environment_url`：agent daemon 容器内访问 bridge 时使用的 endpoint。
-- `web_url`：MobileGym simulator 页面。
-- `stop_command`：停止该 environment 的命令。
+- `environment_url`: the `--environment-url` the runner uses.
+- `docker_environment_url`: the endpoint the agent daemon container uses to reach
+  the bridge.
+- `web_url`: the MobileGym simulator page.
+- `stop_command`: the command to stop this environment.
 
-常用参数：
+Common parameters:
 
-| 参数 | 默认值 | 说明 |
+| Parameter | Default | Description |
 | --- | --- | --- |
-| `--envs` / `--parallel-envs` | `1` | bridge 后面的 MobileGym env 数量 |
-| `--web-port` | auto | MobileGym web 页面端口 |
-| `--bridge-port` | auto | bridge API 端口 |
+| `--envs` / `--parallel-envs` | `1` | Number of MobileGym envs behind the bridge |
+| `--web-port` | auto | MobileGym web page port |
+| `--bridge-port` | auto | Bridge API port |
 | `--mobilegym-image` | `aiden-mobilegym-simulator:py311` | MobileGym container image |
-| `--no-build-mobilegym-image` | false | 只使用本地已有镜像 |
-| `--json` | false | 输出机器可读 JSON |
+| `--no-build-mobilegym-image` | false | Use only a locally available image |
+| `--json` | false | Print machine-readable JSON |
 
-`start-mobilegym-env` 不绑定 `benchmark-task-id`。Bridge 根据后续每个 setup、screen 或 tool 请求里携带的 `benchmark-task-id` 做路由。
+`start-mobilegym-env` does not bind a `benchmark-task-id`. The bridge routes based
+on the `benchmark-task-id` carried by each subsequent setup, screen, or tool
+request.
 
-### 3.8 start-agent-daemon：启动 agent daemon
+### 3.8 start-agent-daemon: start an agent daemon
 
-启动一个 detached benchmark agent daemon container：
+Start a detached benchmark agent daemon container:
 
 ```bash
 uv run python -m runner start-agent-daemon \
@@ -508,30 +603,36 @@ uv run python -m runner start-agent-daemon \
   --benchmark-task-id cli-task
 ```
 
-命令会打印：
+The command prints:
 
-- `agent_url`：runner 使用的 `--agent-url`。
-- `environment_bridge_endpoint`：宿主机视角的 environment endpoint。
-- `docker_environment_bridge_endpoint`：容器内视角的 environment endpoint。
-- `benchmark_task_id`：daemon environment bridge 请求会携带的 route id。
-- `stop_command`：停止该 daemon 的命令。
+- `agent_url`: the `--agent-url` the runner uses.
+- `environment_bridge_endpoint`: the environment endpoint from the host's
+  perspective.
+- `docker_environment_bridge_endpoint`: the environment endpoint from inside the
+  container.
+- `benchmark_task_id`: the route id the daemon's environment bridge requests carry.
+- `stop_command`: the command to stop this daemon.
 
-常用参数：
+Common parameters:
 
-| 参数 | 默认值 | 说明 |
+| Parameter | Default | Description |
 | --- | --- | --- |
-| `--port` | auto | agent daemon API 端口 |
-| `--environment-bridge-endpoint` | 空 | 设备或 MobileGym bridge endpoint；为空时不启用 environment bridge |
-| `--benchmark-task-id` | `cli-task` | environment bridge 请求使用的 route id |
-| `--agent-config` | 空 | 指定 agent.toml |
-| `--base-config-dir` | `benchmark/config` | agent 配置模板目录 |
-| `--daemon-image` | `aiden-agent-daemon:local` | agent daemon image |
-| `--no-build-daemon-image` | false | 只使用本地已有镜像 |
-| `--json` | false | 输出机器可读 JSON |
+| `--port` | auto | Agent daemon API port |
+| `--environment-bridge-endpoint` | empty | Device or MobileGym bridge endpoint; empty disables the environment bridge |
+| `--benchmark-task-id` | `cli-task` | Route id used by environment bridge requests |
+| `--agent-config` | empty | Specify agent.toml |
+| `--base-config-dir` | `benchmark/config` | Agent config template directory |
+| `--daemon-image` | `aiden-agent-daemon:local` | Agent daemon image |
+| `--no-build-daemon-image` | false | Use only a locally available image |
+| `--json` | false | Print machine-readable JSON |
 
-`start-agent-daemon` 使用的 agent 配置规则与 `run --auto-agent-setup` 相同：先复制 `--base-config-dir`，再用 `--agent-config` 覆盖生成的 `agent.toml`；如果没有 `--agent-config`，则使用 `agent.toml.template` 或默认配置。手动启动 daemon 后，再把打印出的 `agent_url` 传给 `runner run --agent-url`。
+The agent config rules used by `start-agent-daemon` are the same as
+`run --auto-agent-setup`: copy `--base-config-dir` first, then override the
+generated `agent.toml` with `--agent-config`; if `--agent-config` is absent, use
+`agent.toml.template` or the default config. After starting the daemon manually,
+pass the printed `agent_url` to `runner run --agent-url`.
 
-推荐的 CLI MobileGym 调试流程：
+Recommended CLI MobileGym debug flow:
 
 ```bash
 uv run python -m runner start-mobilegym-env --bridge-port 19090
@@ -542,7 +643,8 @@ uv run python -m runner run \
   --auto-agent-setup
 ```
 
-如需手动固定一个 route 调试单 task，也可以显式启动 agent daemon：
+If you want to manually pin one route to debug a single task, you can also start
+the agent daemon explicitly:
 
 ```bash
 uv run python -m runner start-agent-daemon \
@@ -557,11 +659,16 @@ uv run python -m runner run \
   --benchmark-task-id cli-task
 ```
 
-注意：如果 MobileGym bridge 后面有多个 env，`/api/setup`、`/api/screen`、`/api/tools/*` 和 `/api/release` 都必须使用同一个 `benchmark-task-id`。CLI 手动启动一个长期 agent daemon 时，建议用固定 route id，例如 `cli-task`；需要并发跑多个 task 时，优先使用 WebUI，让每个 task worker 拥有独立 daemon 和独立 route id。
+Note: if there are multiple envs behind the MobileGym bridge, `/api/setup`,
+`/api/screen`, `/api/tools/*`, and `/api/release` must all use the same
+`benchmark-task-id`. When manually starting a long-lived agent daemon from the CLI,
+use a fixed route id such as `cli-task`; when you need to run multiple tasks
+concurrently, prefer the WebUI so each task worker gets its own daemon and its own
+route id.
 
-## 4. 输出与报告
+## 4. Output and reports
 
-普通 CLI run 默认输出：
+Default output of a regular CLI run:
 
 ```text
 benchmark/runs/<run-id>/
@@ -578,40 +685,41 @@ benchmark/runs/<run-id>/
     └── judge.json
 ```
 
-关键文件：
+Key files:
 
-| 文件 | 说明 |
+| File | Description |
 | --- | --- |
-| `manifest.json` | run 元数据、suite sha、git sha、totals |
-| `results.jsonl` | 每个 task 一行结果，便于脚本处理 |
-| `summary.md` | 文本摘要 |
-| `report.html` | 人工查看的主报告 |
-| `history.json` | agent 原始 history |
-| `trace.json` | 从 history 抽取的工具调用和 final response |
-| `pre.jpg` / `post.jpg` | judge 使用的前后截图 |
-| `judge.json` | judge verdict、reason、image_count、cache_key |
+| `manifest.json` | Run metadata, suite sha, git sha, totals |
+| `results.jsonl` | One result line per task, for scripting |
+| `summary.md` | Text summary |
+| `report.html` | Main report for manual viewing |
+| `history.json` | Raw agent history |
+| `trace.json` | Tool calls and final response extracted from history |
+| `pre.jpg` / `post.jpg` | Before/after screenshots used by the judge |
+| `judge.json` | Judge verdict, reason, image_count, cache_key |
 
-Runner 结束时会尝试把 report 上传到 agent board 的 `/benchmark` 页面。如果上传失败，本地 `report.html` 仍然可用。
+At the end of a run, the runner tries to upload the report to the agent board's
+`/benchmark` page. If the upload fails, the local `report.html` is still available.
 
-## 5. 环境变量
+## 5. Environment variables
 
-常用环境变量：
+Common environment variables:
 
-| 变量 | 说明 |
+| Variable | Description |
 | --- | --- |
-| `AIDEN_AGENT_URL` | CLI `--agent-url` 默认值 |
-| `AIDEN_ENVIRONMENT_URL` | CLI `--environment-url` 默认值 |
-| `OPENROUTER_API_KEY` | judge API key |
-| `AIDEN_MODEL` / `MODEL_NAME` / `OPENAI_MODEL` | 记录到 manifest 的 agent model |
-| `BENCHMARK_STATE_FILE` | CLI `--state-file` 默认值 |
-| `MOBILEGYM_PARALLEL_ENVS` | `start_simulator.py` 默认 parallel env 数 |
+| `AIDEN_AGENT_URL` | Default for CLI `--agent-url` |
+| `AIDEN_ENVIRONMENT_URL` | Default for CLI `--environment-url` |
+| `OPENROUTER_API_KEY` | Judge API key |
+| `AIDEN_MODEL` / `MODEL_NAME` / `OPENAI_MODEL` | Agent model recorded in the manifest |
+| `BENCHMARK_STATE_FILE` | Default for CLI `--state-file` |
+| `MOBILEGYM_PARALLEL_ENVS` | Default parallel env count for `start_simulator.py` |
 | `AIDEN_BRIDGE_BIND_HOST` | MobileGym bridge bind host |
 | `AIDEN_BRIDGE_PORT` | MobileGym bridge port |
-| `AIDEN_BRIDGE_PUBLIC_HOST` | Docker 场景下 bridge 对外 hostname |
+| `AIDEN_BRIDGE_PUBLIC_HOST` | Bridge external hostname in Docker scenarios |
 
-## 6. 推荐工作流
+## 6. Recommended workflows
 
-### 调试单个任务
+### Debug a single task
 
 ```bash
 uv run python -m runner run \
@@ -621,9 +729,9 @@ uv run python -m runner run \
   --verbose
 ```
 
-先确认 agent 能完成操作，再打开 judge。
+Confirm the agent can complete the operation first, then enable the judge.
 
-### 跑完整回归
+### Run a full regression
 
 ```bash
 uv run python -m runner run \
@@ -632,23 +740,23 @@ uv run python -m runner run \
   --verbose
 ```
 
-### MobileGym 并发回归
+### MobileGym concurrent regression
 
-推荐使用 WebUI：
+The WebUI is recommended:
 
 ```bash
 uv run python -m runner webui
 ```
 
-在页面中：
+On the page:
 
-1. Start MobileGym，设置 `Envs`。
-2. 勾选 suite。
-3. 点击 `Run selected suites`。
-4. 选择 MobileGym environment。
-5. 运行并查看 Task workers、screen、log 和 report。
+1. Start MobileGym and set `Envs`.
+2. Select the suite.
+3. Click `Run selected suites`.
+4. Select the MobileGym environment.
+5. Run and inspect Task workers, screen, log, and report.
 
-### 改 rubric 后重新判分
+### Re-score after changing the rubric
 
 ```bash
 uv run python -m runner rejudge \
@@ -656,60 +764,63 @@ uv run python -m runner rejudge \
   --judge-model anthropic/claude-sonnet-4-6
 ```
 
-## 7. 故障排查
+## 7. Troubleshooting
 
-### agent 不可达
+### The agent is unreachable
 
-现象：
+Symptom:
 
 ```text
 agent at http://... is not reachable
 ```
 
-检查：
+Check:
 
 ```bash
 curl http://127.0.0.1:8080/api/tools
 ```
 
-如果是 WebUI job，查看 job 的 daemon log。
+If it is a WebUI job, look at the job's daemon log.
 
-### judge 报 missing env var OPENROUTER_API_KEY
+### The judge reports missing env var OPENROUTER_API_KEY
 
-CLI：
+CLI:
 
 ```bash
 export OPENROUTER_API_KEY=...
 ```
 
-WebUI：
+WebUI:
 
-在 Run configuration 中填写 API key，或关闭 `Enable judge`。
+Fill in the API key in Run configuration, or turn off `Enable judge`.
 
-### report 没有 pre/post 图片
+### The report has no pre/post images
 
-检查是否传入了 `--environment-url`，且该 endpoint 支持：
+Check whether `--environment-url` was passed and whether that endpoint supports:
 
 ```bash
 curl http://127.0.0.1:8888/api/screen
 ```
 
-MobileGym 并发时需要带 task id：
+MobileGym concurrency requires a task id:
 
 ```bash
 curl -H 'benchmark-task-id: suite.json:task_id' \
   http://127.0.0.1:8888/api/screen
 ```
 
-### MobileGym task 一直 pending 或 no env available
+### A MobileGym task stays pending or reports no env available
 
-检查：
+Check:
 
-- MobileGym environment 是否 running。
-- `Envs` 是否大于 0。
-- 任务请求是否带 `benchmark-task-id`。
-- 是否有任务异常退出但没有 release；停止 job 后重新启动 environment 通常可以清理状态。
+- Whether the MobileGym environment is running.
+- Whether `Envs` is greater than 0.
+- Whether task requests carry a `benchmark-task-id`.
+- Whether a task exited abnormally without releasing; stopping the job and
+  restarting the environment usually clears the state.
 
-### WebUI 重启后运行中的 job 变 stopped
+### After a WebUI restart, a running job becomes stopped
 
-这是当前设计。WebUI 会持久化历史记录，但不会恢复已中断的进程；重启时未终态 job 会标记为 stopped，避免误显示为仍在运行。
+This is by design. The WebUI persists history but does not recover interrupted
+processes; on restart, non-terminal jobs are marked as stopped to avoid falsely
+showing them as still running.
