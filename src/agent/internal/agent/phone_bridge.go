@@ -756,7 +756,11 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 		builder.WriteString("enabled=")
 		builder.WriteString(fmt.Sprintf("%t", *status.PipBridgeEnabled))
 		builder.WriteByte(' ')
-		builder.WriteString("(PiP mode in the background can hide the Dynamic Island return entry)\n")
+		if phoneBridgeIsIOS(status) {
+			builder.WriteString("(PiP mode in the background can hide the Dynamic Island return entry)\n")
+		} else {
+			builder.WriteString("(background bridge mode status)\n")
+		}
 	}
 	if status.FgsBridgeEnabled != nil {
 		builder.WriteString("- fgs_bridge: ")
@@ -781,8 +785,14 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 	} else if phoneBridgePiPBackgroundEnabled(status) {
 		builder.WriteString("- PiP Bridge mode is enabled while Aiden is backgrounded. iOS gives PiP priority over the Dynamic Island, so the Dynamic Island return entry is not visible in this state.\n")
 	} else if phoneBridgeAppNeedsForeground(status) {
-		builder.WriteString("- The Aiden companion app is backgrounded or inactive. On iOS, Phone Bridge commands may time out until Aiden returns to foreground.\n")
-		builder.WriteString("- If return_entry=dynamic_island and return_entry_available=true, bridge_open_app, bridge_clipboard, bridge_calendar, bridge_contacts, and bridge_notification will first tap the Aiden Dynamic Island entry, wait for app_state=active/Phone Bridge reconnect, then send the command. For lock-screen Live Activity entries, use screenshot/HID fallback or visual confirmation instead of blind tapping.\n")
+		if phoneBridgeIsIOS(status) {
+			builder.WriteString("- The Aiden companion app is backgrounded or inactive. On iOS, Phone Bridge commands may time out until Aiden returns to foreground.\n")
+			builder.WriteString("- If return_entry=dynamic_island and return_entry_available=true, bridge_open_app, bridge_clipboard, bridge_calendar, bridge_contacts, and bridge_notification will first tap the Aiden Dynamic Island entry, wait for app_state=active/Phone Bridge reconnect, then send the command. For lock-screen Live Activity entries, use screenshot/HID fallback or visual confirmation instead of blind tapping.\n")
+		} else if phoneBridgeIsAndroid(status) {
+			builder.WriteString("- The Android Aiden companion app is backgrounded or inactive. bridge_open_app and UI actions require foreground app control or HID fallback; Android FGS Bridge mode only supports background-safe data tools.\n")
+		} else {
+			builder.WriteString("- The Aiden companion app is backgrounded or inactive. Phone Bridge foreground commands may time out until Aiden returns to foreground; use screenshot/HID fallback when reconnect is unavailable.\n")
+		}
 	} else if status.Connected {
 		builder.WriteString("- The phone companion app is connected. Use bridge_open_app as the primary path for opening apps, webpages, and phone dialer screens before falling back to screenshot/HID navigation.\n")
 		builder.WriteString("- bridge_clipboard, bridge_calendar, bridge_contacts, and bridge_notification tools are available through the companion app: prefer them over manual UI navigation for reading/writing the system clipboard, creating/querying/deleting system calendar events, managing contacts, or sending notifications.\n")
@@ -790,7 +800,13 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 		builder.WriteString("- If bridge_open_app returns {\"ok\":true}, treat the app launch as complete unless the user requested additional in-app actions.")
 	} else {
 		builder.WriteString("- The phone companion app is not connected. Do not assume bridge_open_app, bridge_clipboard, bridge_calendar, bridge_contacts, or bridge_notification tools can control the phone right now.\n")
-		builder.WriteString("- If return_entry=dynamic_island and return_entry_available=true, bridge_open_app, bridge_clipboard, bridge_calendar, bridge_contacts, and bridge_notification will first try to reopen Aiden through Dynamic Island and wait for Phone Bridge before sending the command. Otherwise use screenshot plus HID/touch fallback and tell the user when app-only actions cannot be completed.")
+		if phoneBridgeIsIOS(status) {
+			builder.WriteString("- If return_entry=dynamic_island and return_entry_available=true, bridge_open_app, bridge_clipboard, bridge_calendar, bridge_contacts, and bridge_notification will first try to reopen Aiden through Dynamic Island and wait for Phone Bridge before sending the command. Otherwise use screenshot plus HID/touch fallback and tell the user when app-only actions cannot be completed.")
+		} else if phoneBridgeIsAndroid(status) {
+			builder.WriteString("- Keep Aiden open in the foreground and wait for Phone Bridge to reconnect before retrying bridge_open_app; otherwise use screenshot plus HID/touch fallback.")
+		} else {
+			builder.WriteString("- Retry companion app tools only after Phone Bridge reconnects or a visible platform return entry is confirmed; otherwise use screenshot plus HID/touch fallback and tell the user when app-only actions cannot be completed.")
+		}
 	}
 	if !status.Connected {
 		if !strings.HasSuffix(builder.String(), "\n") {

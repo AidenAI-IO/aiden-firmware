@@ -64,6 +64,7 @@ struct HIDToml {
     std::string android_keyboard_device = "/dev/hidg2";
     std::string frame_socket = "/run/frame_service/frame_service.sock";
     std::string pointer_mode = "absolute";
+    std::string input_backend = "hid";
 };
 
 struct SearchToml {

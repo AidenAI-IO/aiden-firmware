@@ -1064,6 +1064,7 @@ func TestHandleScreenshotJPEGIncludesADBDeviceHeadersWhenFallbackUsed(t *testing
 	t.Setenv("AIDEN_TEST_PNG", pngPath)
 	t.Setenv("AIDEN_ADB_SERIAL", "")
 	t.Setenv("ANDROID_SERIAL", "")
+	defer clearAutoConfiguredADBSerial("serial123")
 
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, Config{

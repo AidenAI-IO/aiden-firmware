@@ -144,6 +144,15 @@ func main() {
 	}
 	if _, port, err := net.SplitHostPort(*addr); err == nil && port != "" {
 		fmt.Printf("🌐 Web UI: http://localhost:%s\n", port)
+		if cfg.HID.InputBackendADB() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := agent.EnsureADBReverse(ctx, port, port); err != nil {
+				log.Printf("[adb] reverse tcp:%s -> tcp:%s setup failed: %v", port, port, err)
+			} else {
+				log.Printf("[adb] reverse tcp:%s -> tcp:%s configured for companion app desktop bridge", port, port)
+			}
+			cancel()
+		}
 	}
 	fmt.Printf("📝 Logs: %s/log/\n", *configDir)
 

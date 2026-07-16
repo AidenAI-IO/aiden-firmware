@@ -117,8 +117,34 @@ func TestPhoneBridgeReadyForCommandRejectsBackgroundIOS(t *testing.T) {
 	if !phoneBridgeReadyForCommand(PhoneBridgeStatus{Connected: true, Platform: "ios", AppState: "active"}) {
 		t.Fatal("active iOS bridge should be ready")
 	}
-	if !phoneBridgeReadyForCommand(PhoneBridgeStatus{Connected: true, Platform: "android", AppState: "background"}) {
-		t.Fatal("connected non-iOS bridge should remain ready")
+	if phoneBridgeReadyForCommand(PhoneBridgeStatus{Connected: true, Platform: "android", AppState: "background"}) {
+		t.Fatal("background Android bridge should not be considered ready for foreground command")
+	}
+	if phoneBridgeReadyForCommand(PhoneBridgeStatus{Connected: true, Platform: "android", AppState: "background"}, "open_app") {
+		t.Fatal("background Android bridge should not be ready for open_app")
+	}
+	if !phoneBridgeReadyForCommand(PhoneBridgeStatus{Connected: true, Platform: "android", AppState: "background"}, "clipboard_read") {
+		t.Fatal("background-safe Android command should preserve connected-ready behavior")
+	}
+	if !phoneBridgeReadyForCommand(PhoneBridgeStatus{Connected: true, Platform: "android", AppState: "active"}, "open_app") {
+		t.Fatal("active Android bridge should be ready for open_app")
+	}
+	if !phoneBridgeReadyForCommand(PhoneBridgeStatus{Connected: true, Platform: "unknown", AppState: "background"}) {
+		t.Fatal("connected non-iOS/non-Android bridge should preserve previous ready behavior")
+	}
+}
+
+func TestPhoneBridgeOpenAppUnavailableForBackgroundAndroid(t *testing.T) {
+	status := PhoneBridgeStatus{
+		Connected: true,
+		Platform:  "android",
+		AppState:  "background",
+	}
+	if phoneBridgeToolAvailable(status, toolBridgeOpenApp) {
+		t.Fatal("bridge_open_app must be unavailable while Android app is backgrounded")
+	}
+	if !phoneBridgeToolAvailable(status, toolBridgeClipboard) {
+		t.Fatal("background-safe data tools should remain available for connected Android bridge")
 	}
 }
 
