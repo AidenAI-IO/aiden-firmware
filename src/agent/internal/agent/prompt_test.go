@@ -413,6 +413,33 @@ func TestPhoneBridgeRuntimeContextDisconnectedBackgroundAppGuidesRecovery(t *tes
 	}
 }
 
+func TestPhoneBridgeRuntimeContextDisconnectedAndroidAvoidsIOSRecovery(t *testing.T) {
+	got := phoneBridgeRuntimeContext(PhoneBridgeStatus{
+		Connected: false,
+		Platform:  "android",
+	})
+
+	for _, want := range []string{
+		"- connected: false",
+		"- platform: android",
+		"Keep Aiden open in the foreground",
+		"call screenshot first",
+		"then try search_launch_app",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("runtime context missing %q:\n%s", want, got)
+		}
+	}
+	for _, notWant := range []string{
+		"Dynamic Island",
+		"return_entry=dynamic_island",
+	} {
+		if strings.Contains(got, notWant) {
+			t.Fatalf("Android runtime context should not include %q:\n%s", notWant, got)
+		}
+	}
+}
+
 func testBoolPtr(v bool) *bool        { return &v }
 func testIntPtr(v int) *int           { return &v }
 func testFloatPtr(v float64) *float64 { return &v }

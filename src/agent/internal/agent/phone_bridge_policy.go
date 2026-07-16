@@ -10,7 +10,7 @@ const phoneBridgeBackgroundStateMaxAge = 15 * time.Second
 
 const (
 	phoneBridgeDisconnectedRecoveryGuidance = "If Phone Bridge recovery is unavailable, do not stop the task: call screenshot first to inspect the current phone state, then try search_launch_app or suitable HID/touch tools. Call request_human_handoff only after observation or input fallback is also unavailable, or the next step truly requires user action."
-	phoneBridgeOpenAppRecoveryGuidance      = "If a Dynamic Island entry is visible, tap it to reopen Aiden, wait for Phone Bridge to reconnect, then retry. " + phoneBridgeDisconnectedRecoveryGuidance
+	phoneBridgeIOSOpenAppRecoveryGuidance   = "If a Dynamic Island entry is visible, tap it to reopen Aiden, wait for Phone Bridge to reconnect, then retry. " + phoneBridgeDisconnectedRecoveryGuidance
 )
 
 const (
@@ -66,7 +66,7 @@ func phoneBridgeReadyForCommand(status PhoneBridgeStatus) bool {
 	if !status.Connected {
 		return false
 	}
-	if !strings.EqualFold(strings.TrimSpace(status.Platform), "ios") {
+	if !phoneBridgeIsIOS(status) {
 		return true
 	}
 	state := strings.ToLower(strings.TrimSpace(status.AppState))
@@ -126,7 +126,7 @@ func phoneBridgeFGSBackgroundEnabled(status PhoneBridgeStatus) bool {
 	if status.FgsBridgeEnabled == nil || !*status.FgsBridgeEnabled {
 		return false
 	}
-	if !strings.EqualFold(strings.TrimSpace(status.Platform), "android") {
+	if !phoneBridgeIsAndroid(status) {
 		return false
 	}
 	state := strings.ToLower(strings.TrimSpace(status.AppState))
@@ -137,7 +137,23 @@ func phoneBridgeBackgroundCommandTypeForTool(name string) string {
 	return phoneBridgeToolBackgroundCommandTypes[strings.TrimSpace(name)]
 }
 
+func phoneBridgePlatform(status PhoneBridgeStatus) string {
+	return strings.ToLower(strings.TrimSpace(status.Platform))
+}
+
+func phoneBridgeIsIOS(status PhoneBridgeStatus) bool {
+	return phoneBridgePlatform(status) == "ios"
+}
+
+func phoneBridgeIsAndroid(status PhoneBridgeStatus) bool {
+	return phoneBridgePlatform(status) == "android"
+}
+
 func phoneBridgeCanRestoreFromReturnEntry(status PhoneBridgeStatus) bool {
+	platform := phoneBridgePlatform(status)
+	if platform != "" && platform != "ios" {
+		return false
+	}
 	if phoneBridgePiPBackgroundEnabled(status) {
 		return false
 	}
@@ -168,7 +184,23 @@ func phoneBridgeRecoveryGuidance(status PhoneBridgeStatus) string {
 	if phoneBridgeCanRestoreFromReturnEntry(status) {
 		return "Retry the companion app tool; it can reopen Aiden through the Dynamic Island entry, wait for Phone Bridge to reconnect, then send the command. Use home-screen search or HID fallback only if restore fails."
 	}
-	return "Use screenshot plus HID/touch fallback; only visible Dynamic Island return entries are auto-tapped, and lock-screen Live Activity or PiP-hidden entries need visual confirmation."
+	if phoneBridgeIsAndroid(status) {
+		return "Use screenshot plus HID/touch fallback; Android FGS Bridge mode only supports background-safe data tools."
+	}
+	if phoneBridgeIsIOS(status) {
+		return "Use screenshot plus HID/touch fallback; only visible Dynamic Island return entries are auto-tapped, and lock-screen Live Activity or PiP-hidden entries need visual confirmation."
+	}
+	return "Use screenshot plus HID/touch fallback; retry companion app tools only after Phone Bridge reconnects or a visible platform return entry is confirmed."
+}
+
+func phoneBridgeOpenAppRecoveryGuidance(status PhoneBridgeStatus) string {
+	if phoneBridgeIsIOS(status) || phoneBridgeCanRestoreFromReturnEntry(status) {
+		return phoneBridgeIOSOpenAppRecoveryGuidance
+	}
+	if phoneBridgeIsAndroid(status) {
+		return "On Android, keep Aiden open in the foreground and wait for Phone Bridge to reconnect, then retry. " + phoneBridgeDisconnectedRecoveryGuidance
+	}
+	return "Open Aiden and wait for Phone Bridge to reconnect, then retry. " + phoneBridgeDisconnectedRecoveryGuidance
 }
 
 func phoneBridgeRestoreUnavailableError(status PhoneBridgeStatus) error {
@@ -191,7 +223,19 @@ func phoneBridgeRestoreUnavailableError(status PhoneBridgeStatus) error {
 		if state == "" {
 			return fmt.Errorf("phone bridge is connected but not ready for foreground command")
 		}
+		if phoneBridgeIsAndroid(status) {
+			return fmt.Errorf("phone bridge app is %s; Android bridge commands require a connected foreground Aiden app", state)
+		}
+		if !phoneBridgeIsIOS(status) {
+			return fmt.Errorf("phone bridge app is %s and no supported foreground return entry is available", state)
+		}
 		return fmt.Errorf("phone bridge app is %s and no supported Dynamic Island return entry is available", state)
+	}
+	if phoneBridgeIsAndroid(status) {
+		return fmt.Errorf("phone bridge not connected for Android companion app")
+	}
+	if !phoneBridgeIsIOS(status) {
+		return fmt.Errorf("phone bridge not connected")
 	}
 	return fmt.Errorf("phone bridge not connected and no supported Dynamic Island return entry is available")
 }

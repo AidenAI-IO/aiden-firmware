@@ -158,9 +158,14 @@ func (t *OpenAppTool) Call(ctx context.Context, input string) (string, error) {
 
 	restored, err := ensurePhoneBridgeReadyForCommand(ctx, t.bridge, t.restorer)
 	if err != nil {
+		status := PhoneBridgeStatus{}
+		if t.bridge != nil {
+			status = t.bridge.getStatus()
+		}
+		guidance := phoneBridgeOpenAppRecoveryGuidance(status)
 		te := NewToolErrorWithDetails(CodeBridgeNotConnected,
-			fmt.Sprintf("%v. %s", err, phoneBridgeOpenAppRecoveryGuidance),
-			map[string]any{"fallback": phoneBridgeOpenAppRecoveryGuidance})
+			fmt.Sprintf("%v. %s", err, guidance),
+			map[string]any{"fallback": guidance})
 		SetToolError(ctx, te)
 		return toolErrorString(te), nil
 	}
