@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestWaitStableScreenToolDynamicExampleInput(t *testing.T) {
+func TestWaitStableScreenToolExampleInputIsEmpty(t *testing.T) {
 	t.Parallel()
 
 	// Create tool with custom defaults
@@ -19,43 +19,27 @@ func TestWaitStableScreenToolDynamicExampleInput(t *testing.T) {
 	// Create tool spec
 	spec := NewToolSpec(tool)
 
-	// Verify ExampleInput uses the configured values, not hardcoded 2200
-	if !strings.Contains(spec.ExampleInput, "3500") {
-		t.Errorf("ExampleInput should contain configured timeout_ms 3500, got: %s", spec.ExampleInput)
-	}
-	if !strings.Contains(spec.ExampleInput, "500") {
-		t.Errorf("ExampleInput should contain configured stable_ms 500, got: %s", spec.ExampleInput)
-	}
-	if !strings.Contains(spec.ExampleInput, "2") {
-		t.Errorf("ExampleInput should contain configured diff_threshold 2, got: %s", spec.ExampleInput)
-	}
-
-	// Verify it's valid JSON
-	expected := `{"timeout_ms":3500,"stable_ms":500,"diff_threshold":2}`
+	// ExampleInput should be empty JSON, regardless of config
+	expected := "{}"
 	if spec.ExampleInput != expected {
-		t.Errorf("ExampleInput = %q, want %q", spec.ExampleInput, expected)
+		t.Errorf("ExampleInput = %q, want %q (tool accepts no parameters)", spec.ExampleInput, expected)
 	}
 }
 
-func TestWaitStableScreenToolDynamicExampleInputUsesDefaults(t *testing.T) {
+func TestWaitStableScreenToolExampleInputWithDefaults(t *testing.T) {
 	t.Parallel()
 
-	// Create tool with zero defaults (should use code defaults)
+	// Create tool with zero defaults (uses code defaults)
 	defaults := ScreenStableDefaults{}
 	tool := NewWaitStableScreenTool("/tmp/test.sock", defaults)
 
 	// Create tool spec
 	spec := NewToolSpec(tool)
 
-	// Should use code defaults: 2000, 250, 6.0
-	if !strings.Contains(spec.ExampleInput, "2000") {
-		t.Errorf("ExampleInput should contain default timeout_ms 2000, got: %s", spec.ExampleInput)
-	}
-	if !strings.Contains(spec.ExampleInput, "250") {
-		t.Errorf("ExampleInput should contain default stable_ms 250, got: %s", spec.ExampleInput)
-	}
-	if !strings.Contains(spec.ExampleInput, "6") {
-		t.Errorf("ExampleInput should contain default diff_threshold 6, got: %s", spec.ExampleInput)
+	// Should still be empty JSON
+	expected := "{}"
+	if spec.ExampleInput != expected {
+		t.Errorf("ExampleInput = %q, want %q (tool accepts no parameters)", spec.ExampleInput, expected)
 	}
 }
 

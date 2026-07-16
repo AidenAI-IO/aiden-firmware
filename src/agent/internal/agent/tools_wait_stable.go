@@ -103,7 +103,7 @@ func (t *WaitStableScreenTool) Name() string { return "wait_for_stable_screen" }
 func (t *WaitStableScreenTool) ReturnsVisualObservation() bool { return true }
 
 func (t *WaitStableScreenTool) DynamicExampleInput() string {
-	return t.defaults.InputJSON()
+	return "{}"
 }
 
 func (t *WaitStableScreenTool) Description() string {
