@@ -75,6 +75,7 @@ type RunRequest struct {
 	Turn              TurnInput
 	EpisodeID         string
 	RequestID         string
+	RuntimeContext    string
 	DeviceEnvironment *PhoneEnvironment
 	StreamWriter      io.Writer
 	MaxTokens         int
@@ -963,6 +964,15 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	if r.contextManager == nil {
 		r.contextManager, err = InitializeContextManager(profile.SystemPrompt, agentpath.ContextManagerSessionFolder(r.config.ConfigDir), []contextmanager.AppendMessageHook{r.getStateHook()})
 		if err != nil {
+			return RunResult{}, err
+		}
+	}
+	// append runtime context as assistant message if present (e.g., voice interruption notification)
+	if runtimeContext := strings.TrimSpace(req.RuntimeContext); runtimeContext != "" {
+		if err := r.contextManager.AppendMessage(contextmanager.Message{
+			Role:    contextmanager.MessageRoleAssistant,
+			Content: runtimeContext,
+		}); err != nil {
 			return RunResult{}, err
 		}
 	}

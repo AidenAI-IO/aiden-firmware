@@ -840,11 +840,12 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 		d.config.Model.Provider, d.config.Model.Model)
 
 	req := RunRequest{
-		Input:       input.InputText,
-		Attachments: input.Attachments,
-		Turn:        input,
-		RequestID:   requestID,
-		MaxTokens:   d.config.VoiceMaxResponseTokensOrDefault(),
+		Input:          input.InputText,
+		Attachments:    input.Attachments,
+		Turn:           input,
+		RequestID:      requestID,
+		RuntimeContext: turnContext.RuntimeContext,
+		MaxTokens:      d.config.VoiceMaxResponseTokensOrDefault(),
 		EventHandler: func(event RunEvent) {
 			if event.Type == "assistant_output" {
 				captured := event

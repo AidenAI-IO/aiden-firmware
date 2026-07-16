@@ -1371,8 +1371,13 @@ func TestRunVoiceTurnWakeupDuringThinkingImmediatelyCancelsRun(t *testing.T) {
 		t.Fatalf("runVoiceTurn = interrupted:%v exit:%v wait:%v nextTurn:%v, want true false false nil",
 			result.interrupted, result.exit, result.waitForWakeupRequested, result.nextTurn)
 	}
-	if got, want := result.followUpContext, interruptedVoiceCorrectionContext(); got != want {
-		t.Fatalf("follow-up context = %#v, want %#v", got, want)
+	// Verify the context includes interruption marker and original user input
+	followUpContext := result.followUpContext.RuntimeContext
+	if !strings.Contains(followUpContext, "Voice interruption") {
+		t.Errorf("follow-up context missing interruption marker: %s", followUpContext)
+	}
+	if !strings.Contains(followUpContext, "voice") {
+		t.Errorf("follow-up context missing original user input: %s", followUpContext)
 	}
 	select {
 	case <-ctxCanceled:
@@ -1751,8 +1756,16 @@ func TestRunVoiceSessionSpeakingInterruptMarksNextUtteranceCorrection(t *testing
 	if dialog.voiceTurnContexts[0] != (agent.VoiceTurnContext{}) {
 		t.Fatalf("first voice turn context = %#v, want ordinary new task", dialog.voiceTurnContexts[0])
 	}
-	if got, want := dialog.voiceTurnContexts[1], interruptedVoiceCorrectionContext(); got != want {
-		t.Fatalf("second voice turn context = %#v, want %#v", got, want)
+	// Verify the second turn has interruption context with preserved user input and agent response
+	secondContext := dialog.voiceTurnContexts[1].RuntimeContext
+	if !strings.Contains(secondContext, "Voice interruption") {
+		t.Errorf("second turn context missing interruption marker: %s", secondContext)
+	}
+	if !strings.Contains(secondContext, "订今天的票") && !strings.Contains(secondContext, "总结这段内容") {
+		t.Errorf("second turn context missing original user input: %s", secondContext)
+	}
+	if !strings.Contains(secondContext, "reply") {
+		t.Errorf("second turn context missing agent response: %s", secondContext)
 	}
 }
 
@@ -1827,8 +1840,16 @@ func TestRunWakeupModeSTTSpeakingInterruptMarksNextTurnCorrection(t *testing.T) 
 	if dialog.voiceTurnContexts[0] != (agent.VoiceTurnContext{}) {
 		t.Fatalf("first voice turn context = %#v, want ordinary new task", dialog.voiceTurnContexts[0])
 	}
-	if got, want := dialog.voiceTurnContexts[1], interruptedVoiceCorrectionContext(); got != want {
-		t.Fatalf("second voice turn context = %#v, want %#v", got, want)
+	// Verify the second turn has interruption context with preserved user input and agent response
+	secondContext := dialog.voiceTurnContexts[1].RuntimeContext
+	if !strings.Contains(secondContext, "Voice interruption") {
+		t.Errorf("second turn context missing interruption marker: %s", secondContext)
+	}
+	if !strings.Contains(secondContext, "订今天的票") && !strings.Contains(secondContext, "总结这段内容") {
+		t.Errorf("second turn context missing original user input: %s", secondContext)
+	}
+	if !strings.Contains(secondContext, "reply") {
+		t.Errorf("second turn context missing agent response: %s", secondContext)
 	}
 }
 

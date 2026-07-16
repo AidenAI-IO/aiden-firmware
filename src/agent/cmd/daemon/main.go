@@ -824,17 +824,17 @@ thinking:
 		select {
 		case <-sigChan:
 			cancel()
-			waitForTurnCancellation(dialog, resultCh)
+			_ = waitForTurnCancellation(dialog, resultCh)
 			return voiceTurnResult{exit: true}
 		case <-events:
 			if interruptOnWakeup {
 				log.Println("[interrupt] GPIO wakeup during active turn, immediately canceling")
 				dialog.InterruptOutput()
 				cancel()
-				waitForTurnCancellation(dialog, resultCh)
+				canceledInfo := waitForTurnCancellation(dialog, resultCh)
 				return voiceTurnResult{
 					interrupted:     true,
-					followUpContext: interruptedVoiceCorrectionContext(),
+					followUpContext: buildInterruptedContext(input, canceledInfo),
 				}
 			}
 			log.Println("[interrupt] wakeup received during thinking, ignoring because wakeup interrupt is disabled")
@@ -883,9 +883,10 @@ speaking:
 				dialog.InterruptOutput()
 				cancelSpeak()
 				waitForSpeakCancel(speakCh)
+				// During speaking phase, the turn has already completed, so we have the full result
 				return voiceTurnResult{
 					interrupted:     true,
-					followUpContext: interruptedVoiceCorrectionContext(),
+					followUpContext: buildInterruptedContextWithResult(input, result),
 				}
 			}
 		case err := <-speakCh:
@@ -943,21 +944,98 @@ func interruptedVoiceCorrectionContext() agent.VoiceTurnContext {
 	}
 }
 
+// buildInterruptedContext constructs context for an interrupted turn during thinking/execution phase.
+// It preserves the user's input and any partial execution history from the canceled turn.
+func buildInterruptedContext(originalInput agent.TurnInput, canceledInfo canceledTurnInfo) agent.VoiceTurnContext {
+	var contextParts []string
+
+	// Base interruption message
+	contextParts = append(contextParts, voiceWakeupInterruptedCorrectionContext)
+
+	// Add the user's original input
+	userInput := strings.TrimSpace(originalInput.InputText)
+	if userInput == "" && originalInput.Transcript != "" {
+		userInput = strings.TrimSpace(originalInput.Transcript)
+	}
+	if userInput != "" {
+		contextParts = append(contextParts, fmt.Sprintf("\nThe interrupted turn's user input was: \"%s\"", userInput))
+	}
+
+	// Add episode information if available for history lookup
+	if canceledInfo.episodeID != "" {
+		contextParts = append(contextParts, fmt.Sprintf("\nInterrupted episode ID: %s (you can inspect this episode for partial execution history)", canceledInfo.episodeID))
+	}
+
+	// Add error information if the turn failed
+	if canceledInfo.err != nil && !errors.Is(canceledInfo.err, context.Canceled) {
+		contextParts = append(contextParts, fmt.Sprintf("\nThe interrupted turn encountered an error: %v", canceledInfo.err))
+	}
+
+	return agent.VoiceTurnContext{
+		RuntimeContext: strings.Join(contextParts, ""),
+	}
+}
+
+// buildInterruptedContextWithResult constructs context for an interrupted turn during speaking phase.
+// At this point the turn has fully completed, so we have the complete result.
+func buildInterruptedContextWithResult(originalInput agent.TurnInput, result agent.RunResult) agent.VoiceTurnContext {
+	var contextParts []string
+
+	// Base interruption message
+	contextParts = append(contextParts, voiceWakeupInterruptedCorrectionContext)
+
+	// Add the user's original input
+	userInput := strings.TrimSpace(originalInput.InputText)
+	if userInput == "" && originalInput.Transcript != "" {
+		userInput = strings.TrimSpace(originalInput.Transcript)
+	}
+	if userInput != "" {
+		contextParts = append(contextParts, fmt.Sprintf("\nThe interrupted turn's user input was: \"%s\"", userInput))
+	}
+
+	// Add the agent's output that was interrupted during playback
+	agentOutput := strings.TrimSpace(result.Output)
+	if agentOutput != "" {
+		contextParts = append(contextParts, fmt.Sprintf("\nThe agent's response (interrupted during playback) was: \"%s\"", agentOutput))
+	}
+
+	// Add episode information for full history
+	if result.EpisodeID != "" {
+		contextParts = append(contextParts, fmt.Sprintf("\nCompleted episode ID: %s (contains full execution history)", result.EpisodeID))
+	}
+
+	return agent.VoiceTurnContext{
+		RuntimeContext: strings.Join(contextParts, ""),
+	}
+}
+
+type canceledTurnInfo struct {
+	result    agent.RunResult
+	err       error
+	episodeID string
+}
+
 func waitForTurnCancellation(dialog audioDialogRunner, resultCh <-chan struct {
 	result agent.RunResult
 	err    error
-}) {
+}) canceledTurnInfo {
 	select {
-	case <-resultCh:
+	case turnResult := <-resultCh:
+		return canceledTurnInfo{
+			result:    turnResult.result,
+			err:       turnResult.err,
+			episodeID: turnResult.result.EpisodeID,
+		}
 	case <-time.After(voiceTurnCancelWaitTimeout):
 		log.Println("[interrupt] current turn did not finish after signal cancellation; waiting for voice run to go idle")
 		idleCtx, cancel := context.WithTimeout(context.Background(), voiceTurnCancelWaitTimeout)
 		defer cancel()
 		if dialog.WaitForVoiceRunIdle(idleCtx) {
-			return
+			return canceledTurnInfo{}
 		}
 		log.Println("[interrupt] voice run still active after cancellation wait; forcing reset")
 		dialog.ForceResetVoiceRun()
+		return canceledTurnInfo{}
 	}
 }
 
