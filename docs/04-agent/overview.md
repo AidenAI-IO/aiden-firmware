@@ -28,7 +28,7 @@ In the firmware, it is installed by default to:
 - Built-in tool calling: HID, screenshots, audio volume, shell
 - HTTP Tool API for Web UI, external agents, or manual invocation
 - Auto-discovery and runtime activation of skills from `SKILL.md`
-- Three-stage role loop (`default` / `plan` / `execution`): simple tasks are directly executed by the planner, complex tasks go through `commit_plan` into executor-verifier collaboration; see [Agent Context Lifecycle](context-lifecycle.md)
+- Single-agent execution loop with streamlined tool calling and response handling
 - Conversation memory persistence, session memory compaction; see [Session Memory Compaction](session-memory.md)
 - Device / Task Episode memory design; see [Memory Plane Design](memory-plane.md)
 - Web UI: chat history, browser recording, attachments, Tool Lab, Skill Export
