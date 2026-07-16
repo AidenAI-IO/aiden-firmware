@@ -47,6 +47,7 @@ type AudioDialog struct {
 	historyStore        *ChatHistoryStore
 	historyAppend       func(Message)
 	audioArchive        *AudioArchiveManager
+	connWarmer          *ConnectionWarmer
 }
 
 type activeTTSOutput struct {
@@ -110,6 +111,35 @@ func (o *activeTTSOutput) finish() {
 	}
 }
 
+// collectWarmupEndpoints extracts base URLs from LLM, STT, and TTS configurations
+func collectWarmupEndpoints(cfg Config) []string {
+	seen := make(map[string]bool)
+	var endpoints []string
+
+	// LLM endpoint
+	if cfg.Model.BaseURL != "" {
+		base := extractBaseURL(cfg.Model.BaseURL)
+		if !seen[base] {
+			seen[base] = true
+			endpoints = append(endpoints, base)
+		}
+	}
+
+	// STT endpoint
+	if cfg.STT.BaseURL != "" {
+		base := extractBaseURL(cfg.STT.BaseURL)
+		if !seen[base] {
+			seen[base] = true
+			endpoints = append(endpoints, base)
+		}
+	}
+
+	// TTS endpoints - providers typically use different base URLs
+	// Most TTS providers have built-in endpoints, we skip warmup for those
+
+	return endpoints
+}
+
 // NewAudioDialog creates a new audio dialog manager
 func NewAudioDialog(cfg Config) (*AudioDialog, error) {
 	// Create audio client
@@ -155,6 +185,16 @@ func NewAudioDialog(cfg Config) (*AudioDialog, error) {
 		return nil, err
 	}
 
+	// Collect endpoints for connection warming
+	endpoints := collectWarmupEndpoints(cfg)
+	var connWarmer *ConnectionWarmer
+	if len(endpoints) > 0 {
+		// Use the optimized HTTP client with proxy support
+		proxyConfig := ProxyConfigFromEnvironment()
+		client := newProxyHTTPClient(proxyConfig)
+		connWarmer = NewConnectionWarmer(client, endpoints)
+	}
+
 	return &AudioDialog{
 		config:       cfg,
 		audioClient:  audioClient,
@@ -162,6 +202,7 @@ func NewAudioDialog(cfg Config) (*AudioDialog, error) {
 		ttsManager:   ttsManager,
 		vad:          vad,
 		audioArchive: NewAudioArchiveManager(cfg.AudioArchive),
+		connWarmer:   connWarmer,
 	}, nil
 }
 
@@ -207,6 +248,12 @@ func (d *AudioDialog) StartRecording() error {
 
 	// Play the cue tone immediately so the user gets fast feedback.
 	d.playPromptSoundAsync(promptSoundRecordingStart, "recording")
+
+	// Warmup connections in the background during the recording gap
+	// This saves TLS handshake time for the upcoming LLM/STT/TTS requests
+	if d.connWarmer != nil {
+		d.connWarmer.WarmupAsync(context.Background())
+	}
 
 	// Start STT streaming session asynchronously — the network handshake
 	// (WebSocket dial + session setup) can take 1-3s and should not delay
@@ -634,7 +681,7 @@ func (d *AudioDialog) persistVoiceUserInput(input TurnInput, utterance []int16, 
 	if userMsg.Source == "" {
 		userMsg.Source = "voice"
 	}
-	d.appendVoiceHistory(userMsg)
+	d.appendVoiceHistory(userMsg, requestID)
 }
 
 func (d *AudioDialog) PersistVoiceAssistantOutput(result RunResult) {
@@ -656,7 +703,7 @@ func (d *AudioDialog) persistVoiceAssistantOutput(result RunResult, requestID st
 			Source:    "voice",
 			Timestamp: now,
 		}
-		d.appendVoiceHistory(assistantMsg)
+		d.appendVoiceHistory(assistantMsg, requestID)
 	}
 }
 
@@ -664,15 +711,23 @@ func (d *AudioDialog) appendVoiceRunEvent(event RunEvent, requestID string) {
 	if d.historyAppend == nil && d.historyStore == nil {
 		return
 	}
+	// Ignore events from stale requests after ForceResetVoiceRun
+	if !d.runControl.isActiveRequest(requestID) {
+		return
+	}
 	message := messageFromRunEvent(event, event.EpisodeID, requestID)
 	if message.Type == "" {
 		return
 	}
 	message.Source = "voice"
-	d.appendVoiceHistory(message)
+	d.appendVoiceHistory(message, requestID)
 }
 
-func (d *AudioDialog) appendVoiceHistory(message Message) {
+func (d *AudioDialog) appendVoiceHistory(message Message, requestID string) {
+	// Ignore messages from stale requests after ForceResetVoiceRun
+	if requestID != "" && !d.runControl.isActiveRequest(requestID) {
+		return
+	}
 	var ok bool
 	message, ok = normalizeChatHistoryMessage(message)
 	if !ok {
@@ -832,11 +887,12 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 		d.config.Model.Provider, d.config.Model.Model)
 
 	req := RunRequest{
-		Input:       input.InputText,
-		Attachments: input.Attachments,
-		Turn:        input,
-		RequestID:   requestID,
-		MaxTokens:   d.config.VoiceMaxResponseTokensOrDefault(),
+		Input:          input.InputText,
+		Attachments:    input.Attachments,
+		Turn:           input,
+		RequestID:      requestID,
+		RuntimeContext: turnContext.RuntimeContext,
+		MaxTokens:      d.config.VoiceMaxResponseTokensOrDefault(),
 		EventHandler: func(event RunEvent) {
 			if event.Type == "assistant_output" {
 				captured := event
@@ -927,6 +983,13 @@ func (d *AudioDialog) WaitForVoiceRunIdle(ctx context.Context) bool {
 		return true
 	}
 	return d.runControl.waitUntilInactive(ctx)
+}
+
+func (d *AudioDialog) ForceResetVoiceRun() {
+	if d == nil {
+		return
+	}
+	d.runControl.forceReset()
 }
 
 func (d *AudioDialog) QueueSteer(input TurnInput) bool {
