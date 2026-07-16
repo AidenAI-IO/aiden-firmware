@@ -53,6 +53,7 @@ func TestADBScreenClientCapturesPNGAndJPEG(t *testing.T) {
 	t.Setenv("AIDEN_TEST_PNG", pngPath)
 	t.Setenv("AIDEN_ADB_SERIAL", "")
 	t.Setenv("ANDROID_SERIAL", "")
+	defer clearAutoConfiguredADBSerial("serial123")
 
 	client := NewADBScreenClient()
 
@@ -138,6 +139,7 @@ func TestEnsureADBReverseUsesResolvedSerial(t *testing.T) {
 	t.Setenv("AIDEN_TEST_ADB_LOG", logPath)
 	t.Setenv("AIDEN_ADB_SERIAL", "")
 	t.Setenv("ANDROID_SERIAL", "")
+	defer clearAutoConfiguredADBSerial("serial123")
 
 	if err := EnsureADBReverse(context.Background(), "8080", "8080"); err != nil {
 		t.Fatalf("EnsureADBReverse() error = %v", err)
@@ -153,5 +155,72 @@ func TestEnsureADBReverseUsesResolvedSerial(t *testing.T) {
 	}
 	if !strings.Contains(logText, "-s serial123 reverse tcp:8080 tcp:8080") {
 		t.Fatalf("adb log missing reverse call: %q", logText)
+	}
+}
+
+func TestADBScreenClientAutoSetsAIDENADBSerialForUniqueDevice(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test shell script uses /bin/sh")
+	}
+
+	tmpDir := t.TempDir()
+	adbPath := filepath.Join(tmpDir, "adb")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"devices\" ] && [ \"$2\" = \"-l\" ]; then\n" +
+		"  printf 'List of devices attached\\nserial123\\tdevice product:panther model:Pixel_7_Pro device:panther transport_id:1\\n'\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"echo \"unexpected args: $@\" >&2\n" +
+		"exit 1\n"
+	if err := os.WriteFile(adbPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", adbPath, err)
+	}
+
+	t.Setenv("AIDEN_ADB_PATH", adbPath)
+	t.Setenv("AIDEN_ADB_SERIAL", "")
+	t.Setenv("ANDROID_SERIAL", "")
+	defer clearAutoConfiguredADBSerial("serial123")
+
+	client := NewADBScreenClient()
+	serial, err := client.resolveSerial(context.Background(), adbPath)
+	if err != nil {
+		t.Fatalf("resolveSerial() error = %v", err)
+	}
+	if serial != "serial123" {
+		t.Fatalf("resolveSerial() = %q, want serial123", serial)
+	}
+	if got := os.Getenv("AIDEN_ADB_SERIAL"); got != "serial123" {
+		t.Fatalf("AIDEN_ADB_SERIAL = %q, want serial123", got)
+	}
+
+	if err := os.Unsetenv("AIDEN_ADB_SERIAL"); err != nil {
+		t.Fatalf("Unsetenv(AIDEN_ADB_SERIAL) error = %v", err)
+	}
+	serial, err = client.resolveSerial(context.Background(), adbPath)
+	if err != nil {
+		t.Fatalf("resolveSerial() cached error = %v", err)
+	}
+	if serial != "serial123" {
+		t.Fatalf("resolveSerial() cached = %q, want serial123", serial)
+	}
+	if got := os.Getenv("AIDEN_ADB_SERIAL"); got != "serial123" {
+		t.Fatalf("cached resolve AIDEN_ADB_SERIAL = %q, want serial123", got)
+	}
+
+	client.invalidateAutoSerial("serial123")
+	if got := os.Getenv("AIDEN_ADB_SERIAL"); got != "" {
+		t.Fatalf("AIDEN_ADB_SERIAL after invalidate = %q, want empty", got)
+	}
+}
+
+func TestADBScreenClientDoesNotOverrideConfiguredADBSerial(t *testing.T) {
+	t.Setenv("AIDEN_ADB_SERIAL", "manual123")
+	t.Setenv("ANDROID_SERIAL", "")
+
+	if err := setAutoConfiguredADBSerial("auto123"); err != nil {
+		t.Fatalf("setAutoConfiguredADBSerial() error = %v", err)
+	}
+	if got := os.Getenv("AIDEN_ADB_SERIAL"); got != "manual123" {
+		t.Fatalf("AIDEN_ADB_SERIAL = %q, want manual123", got)
 	}
 }
