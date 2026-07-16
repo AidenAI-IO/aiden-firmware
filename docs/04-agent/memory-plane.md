@@ -146,7 +146,7 @@ type RoleMemoryContext struct {
 }
 ```
 
-The Agent receives Device Profile, App Profile, Interaction Procedures, Calibration Memory, similar successful Task Episodes, Failure Memory, and conflicting memories to inform its execution strategy.
+The Agent receives Device Profile, App Profile, Interaction Procedures, Calibration Memory, similar successful Task Episodes, and Failure Memory to inform its execution strategy. Conflicting memories are surfaced as cautions rather than normal execution context.
 
 ## Data Models
 
@@ -369,7 +369,7 @@ Replace current single `memoryContextForPrompt()`, generate role-specific contex
 - [cal_id] ...
 ```
 
-Verifier additional injection:
+Agent caution injection:
 
 ```text
 # Known Failure Modes And Conflicts
@@ -391,9 +391,9 @@ Role constraints:
 Success episode writes:
 
 - User goal, completion criteria, final state.
-- Planner decision sequence and plan revisions.
+- Agent decision sequence and execution flow.
 - Tool call sequence, tool results, post-action screenshot refs.
-- Verifier final approval reason.
+- Task completion reason.
 - Reusable experience candidates, e.g. more stable entry points, verified coordinate systems, wait times.
 
 Failed episode writes:
@@ -432,7 +432,7 @@ Conflict sources:
 - New observation clearly contradicts active memory.
 - Under same app/goal/procedure, success path and failure path negate each other.
 - Current device profile changes, e.g. language, resolution, input method changes.
-- Verifier fails multiple times due to same experience.
+- Task fails multiple times due to same experience.
 
 Handling rules:
 
@@ -564,8 +564,8 @@ Phase 4: Benchmark
 ✅ Complete episode recording implemented:
 - `TaskEpisodeStore` and `EpisodeRecorder` fully implemented
 - Record tool call trace, generate structured `events.jsonl`
-- `MemoryPlane.Retrieve` recalls from `long_term`, `device`, `episodes` and routes by role
-- Planner/verifier inject retrieved context by role
+- `MemoryPlane.Retrieve` recalls from `long_term`, `device`, `episodes` and routes by memory type
+- Agent injects retrieved context
 
 #### Device Memory Types (Phase 2 Core)
 
@@ -592,7 +592,7 @@ Phase 4: Benchmark
 **4. Navigation Memory (New)**
 - Extracts **page transition rules**: `Meituan/Home → Meituan/Cart`
 - Records tools, coordinates, tool-call content, decoupled from specific task goals
-- Routes to Planner at same level as procedure
+- Surfaced to Agent as execution guidance
 
 **5. Calibration Memory**
 - Records calibration info like normalized coordinate preference
@@ -600,7 +600,7 @@ Phase 4: Benchmark
 
 **6. Failure Memory**
 - Writes failure-type memories on failure
-- Routes to Verifier to indicate known failure modes
+- Surfaced to Agent as cautions to indicate known failure modes
 
 #### Data Extraction Capabilities
 
@@ -621,9 +621,9 @@ New `episode_extraction.go` provides complete episode event parsing:
 
 #### Retrieval and Rendering
 
-- ✅ `routeHit`: Route by memory type to different Planner/Verifier fields
+- ✅ `routeHit`: Route by memory type to different context fields
 - ✅ `renderMemoryHitLine`: Expand Steps rendering for procedure/navigation
-- ✅ `RenderForRole`: Generate different memory context by role
+- ✅ `RenderForRole`: Generate memory context for Agent
 
 #### Directory Structure
 
@@ -686,7 +686,7 @@ All existing tests pass.
 | Scenario | Design Goal | Current Implementation |
 |----------|-------------|------------------------|
 | Similar task reuse | After "order Mixue Ice City on Meituan", executing "order Starbucks on Meituan" can reuse navigation | ✅ Hits "Meituan/Home→Cart" navigation + "Cart" page procedure |
-| Planner sees procedure | Detailed steps, coordinates, page transitions | ✅ "step 1: launch_app(Meituan)→Home / step 2: touch_gesture(@x=500,y=850)→Cart" |
+| Agent sees procedure | Detailed steps, coordinates, page transitions | ✅ "step 1: launch_app(Meituan)→Home / step 2: touch_gesture(@x=500,y=850)→Cart" |
 | App prior knowledge | First time using an app can see commonly used pages and tools | ✅ app_profile accumulates pages_seen, tools_used |
 | Failure experience tracking | Failure modes surface as cautions | ✅ failure memory routes to Agent context |
 | Page-level indexing | Retrieve procedure by page_name | ✅ procedure ID includes page, page_name in entities/tags |

@@ -14,7 +14,7 @@ Each run is assembled from several layers. Some layers are persisted memory, whi
 | Runtime context | `RunRequest.RuntimeContext`, for example phone bridge state | Agent | not persisted |
 | Tool catalog | resolved built-in tools plus skill tools | Agent can call | not persisted in memory |
 | Retrieved memory context | `MemoryPlane.Retrieve` output | Agent | filesystem memory |
-| Conversation history | hot-window memory, optional compressed-history markers, optional persisted chat history | Agent | filesystem memory |
+| Conversation history | hot-window memory, optional compressed-history markers | Agent | filesystem memory |
 | Input attachments | `RunRequest.Attachments` | Agent user messages | current run only |
 
 ## Agent Execution Loop

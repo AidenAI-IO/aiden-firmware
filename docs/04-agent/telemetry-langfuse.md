@@ -75,7 +75,7 @@ In addition to tokens, duration, and model info in `episode.Extra`, the exporter
 | Field | Description |
 | --- | --- |
 | `tool_call_count` | Total number of tool calls in the episode |
-| `iteration_count` | Number of agent iterations |
+| `iteration_count` | Number of agent iterations (from episode recorder counter or episode.Extra) |
 
 Additional trace `tags`:
 
