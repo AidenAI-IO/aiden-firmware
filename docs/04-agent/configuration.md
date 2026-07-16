@@ -464,5 +464,4 @@ Optional. Place `memory/extraction.yaml` under the config directory to control s
 ## Known limitations
 
 - `preferred_model`, `allowed_children`, and `model_text` are currently parsed but not fully wired into execution;
-- The Agent loop has been split into three RoleProfiles: `planner`, `executor`, and `verifier`; skill instructions go into each role profile, function tools are exposed only to the executor, and the tool catalog is given to other roles as planning/review reference; the `verifier` validates against the original task and completion criteria;
 - Example skills may reference old tools and should be checked before production use.

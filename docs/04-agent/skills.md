@@ -1,6 +1,6 @@
 # Skills and RoleProfile Mechanism
 
-The Agent automatically discovers `SKILL.md` files from the config directory, displays an Available skills catalog in the system prompt, and loads the complete instructions of relevant skills on demand via `skill_read`. Activated skills enter the multi-role `RoleProfile`: `planner`, `executor`, `verifier`.
+The Agent automatically discovers `SKILL.md` files from the config directory, displays an Available skills catalog in the system prompt, and loads the complete instructions of relevant skills on demand via `skill_read`. Activated skills are injected into the Agent's `RoleProfile`, which contains the system prompt, skill instructions, and available tools.
 
 ## Directory Structure
 
@@ -35,7 +35,7 @@ Prefer describing what you see before clicking.
 
 - Automatically discover `SKILL.md`;
 - Display Available skills in the prompt and load complete `SKILL.md` at runtime via `skill_read`;
-- Inject skill instructions into the system prompt of the three roles' `RoleProfile`;
+- Inject skill instructions into the Agent's system prompt via `RoleProfile`;
 - Parse `allowed_tools` metadata for validation and future compatibility, but tool availability is currently controlled by the static Agent tool catalog rather than by active skills;
 - Provide `skill_list` / `skill_read` / `skill_manage` / `skill_mark_used` to the Agent; the HTTP Tool API exposes only the non-maintenance ones (`skill_list` / `skill_read`);
 - `skill_read` supports reading `SKILL.md` as well as UTF-8 supporting files under `references/`, `templates/`, `scripts/`, `assets/`;
@@ -44,19 +44,11 @@ Prefer describing what you see before clicking.
 - For skills with `source: agent` or `created_by: agent`, `skill_list` automatically executes lifecycle based on last use time: enter `stale` after 90 days of non-use, enter `archived` after 180 days; this automatic scan runs at most once every 24 hours;
 - `skill_mark_used` automatically restores `stale` / `archived` skills to `active`.
 
-## Role Permissions
+## Agent Execution
 
-The Agent loop uses a `default` / `plan` / `execution` three-phase state machine. See [Agent Context Lifecycle](context-lifecycle.md) for details.
+The Agent uses a streamlined execution loop that handles tool calls and generates responses in a single unified flow. All tools are available to the Agent throughout execution, and the Agent directly manages its own task breakdown and execution strategy.
 
-- `planner`:
-  - In `default` mode, only handles simple tasks (direct answer, single tool call, or at most two steps); when **3 or more steps** are expected, must first `enter_plan_mode`, and must not continue executing directly in default;
-  - In `plan` mode, can explore and maintain draft plan, and switch phases via `commit_plan` / `cancel_plan`;
-  - Is the only role allowed to create or modify plans;
-  - Additionally sees loop meta tools: `use_simple_mode`, `enter_plan_mode`, `commit_plan`, `cancel_plan`.
-- `executor`: Runs only in `execution` phase; can only execute the `next_step` already committed by planner, enters verifier review via `finish_step` / `abort_step`, cannot modify plan or decide to end.
-- `verifier`: runs only in `execution`; its system prompt contains the current date, `## Role rules`, and optional `## Verifier memory cautions`; each turn verifies only the current executor `step_text`; intermediate step success advances to the next step, and only final-step success may set `can_finish`; step failure sets `needs_replan`; it does not receive the tool catalog, skills, base instruction, runtime context, or global memory.
-
-Both `planner` and `executor` receive callable function tools. `verifier` does not call tools, only performs review based on executor evidence.
+Tool execution is integrated into the main loop with callback handlers for streaming responses and episode recording.
 
 ## Parsed but Not Fully Enforced Fields
 

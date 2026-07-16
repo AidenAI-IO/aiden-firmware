@@ -10,16 +10,14 @@ The existing Go Agent memory already has several capabilities:
 - `SessionMemoryStore` compresses older events from the active session into chunks, writes `session/summary.md`, and provides `recall_session_chunks` for active-session chunks only.
 - `LongTermMemoryStore` stores profile, rule, preference, procedure, fact as markdown frontmatter, generates `long_term/index.yaml` and `long_term/profile.md`, and provides `recall_memory`, `save_memory`, `forget_memory`.
 - `Runtime.Run` reads only the current active `session/summary.md` and `long_term/profile.md` for prompt context. Long-term memory retrieval mainly depends on the model calling tools; it is not stable input for every planning pass. Closed sessions under `session_archive/` are logs and are not prompt or recall context.
-- Agent loop is split into `planner`, `executor`, `verifier`, and uses a `default` / `plan` / `execution` three-phase state machine. Simple tasks in `default` have planner directly call tools and finish; complex tasks go through `enter_plan_mode` -> `commit_plan` into `execution`, then `executor` / `verifier` collaborate. `planner` and `verifier` can see history and world state; `executor` is deliberately limited to only executing the planner's committed `next_step`.
-
-The new design should preserve this layering: automatic retrieval goes to `planner` and `verifier`, don't expose all historical experience directly to `executor`.
+- Agent uses a streamlined execution loop that handles tool calls and generates responses directly in a unified flow.
 
 ## Design Goals
 
 1. Automatically retrieve device experience before running, reducing warm-up cost for each task.
 2. Automatically write task episodes after running, saving goal, environment, state sequence, tool sequence, result, and experience.
 3. Long-term memory supports TTL, evidence, applicability conditions, and conflict handling, avoiding expired experience polluting planning.
-4. Similar successful tasks go to planner, failed experience goes to verifier; if a separate policy role is added in the future, the same failed experience can be directly routed to policy.
+4. Similar successful tasks and failure experience are retrieved for the Agent to inform its execution strategy.
 5. Continue using existing filesystem persistence, atomic writes, index rebuilding, and lifecycle validation approach; do not introduce database yet.
 
 ## Overall Structure
@@ -37,7 +35,7 @@ MemoryPlane.Retrieve
   └─ task episode retrieval
   │
   ▼
-phased role loop (default / plan / execution)
+agent execution loop
   │
   ▼
 TaskEpisodeWriter
@@ -52,13 +50,12 @@ Suggested new code boundaries:
 
 | File | Responsibility |
 | --- | --- |
-| `memory_plane.go` | `MemoryPlane.Retrieve`, role memory context routing, ranking |
+| `memory_plane.go` | `MemoryPlane.Retrieve`, memory context routing, ranking |
 | `device_memory.go` | device/app/procedure/calibration/failure schema, store, search |
 | `task_episode.go` | `TaskEpisode`, `TaskEpisodeStore`, `TaskEpisodeWriter` |
 | `memory_lifecycle.go` or extend `lifecycle.go` | TTL, expiration cleanup, traceability verification |
-| Extend `runtime.go` | Retrieve before building role profiles, CommitEpisode after run ends |
-| Extend `role_profile.go` | planner/verifier use different memory context |
-| Extend `role_executor.go` | Output structured planner/verifier/tool trace to writer |
+| Extend `runtime.go` | Retrieve before building role profile, CommitEpisode after run ends |
+| Extend `role_profile.go` | Agent uses unified memory context |
 
 ## Storage Layout
 
@@ -129,14 +126,12 @@ type MemoryRetrieveRequest struct {
 }
 ```
 
-`CurrentHints` should not actively operate on devices. It only carries information already known to runtime, such as configured frame socket, most recent screenshot dimensions, last recognized app/page. Whether to take screenshots should still be decided by planner.
+`CurrentHints` should not actively operate on devices. It only carries information already known to runtime, such as configured frame socket, most recent screenshot dimensions, last recognized app/page. Whether to take screenshots should still be decided by the Agent.
 
-`MemoryContext` splits by role:
+`MemoryContext` provides retrieved memory for the Agent:
 
 ```go
 type MemoryContext struct {
-    Planner  RoleMemoryContext
-    Verifier RoleMemoryContext
     Common   RoleMemoryContext
 }
 
@@ -151,13 +146,7 @@ type RoleMemoryContext struct {
 }
 ```
 
-Routing rules:
-
-- `planner` receives Device Profile, App Profile, Interaction Procedures, Calibration Memory, similar successful Task Episodes.
-- `verifier` receives Failure Memory, conflicting memories, validation experience related to the task, and key evidence references used by planner.
-- `executor` does not receive global memory by default; it still only sees `next_step`, latest world state, and previous step local result. When experience needs to be used, planner compresses experience into specific next steps.
-
-Current code has no independent `policy` role, so failure experience goes to `verifier` first. When policy is added in the future, can directly reuse `MemoryContext.Verifier.FailureModes` as `PolicyHints`.
+The Agent receives Device Profile, App Profile, Interaction Procedures, Calibration Memory, similar successful Task Episodes, Failure Memory, and conflicting memories to inform its execution strategy.
 
 ## Data Models
 
@@ -266,7 +255,7 @@ ttl: 30d
 
 ### Failure Memory
 
-Failure modes go to verifier/policy, avoiding repeated bad paths.
+Failure modes are retrieved as cautions, helping the Agent avoid repeated bad paths.
 
 ```yaml
 id: fail_direct_chinese_input
@@ -312,7 +301,7 @@ initial_state:
 outcome:
   success: true
   final_state: "Zhang San chat page"
-  verifier_reason: "visible chat title matches target"
+  completion_reason: "visible chat title matches target"
 retrieved_memory_refs:
   - proc_open_app_system_search
 reusable_lessons:
@@ -324,10 +313,10 @@ conflicts: []
 `events.jsonl` records complete sequence:
 
 ```json
-{"type":"planner_decision","plan":["home","system search","open WeChat"],"next_step":"go home"}
 {"type":"tool_call","tool_name":"touch_gesture","tool_input":"{\"type\":\"home\"}"}
 {"type":"tool_result","tool_name":"touch_gesture","is_error":false,"screenshot_ref":"artifacts/step_001.jpg"}
-{"type":"verifier_decision","can_finish":false,"reason":"contact not open yet"}
+{"type":"tool_call","tool_name":"mouse_click","tool_input":"{\"x\":320,\"y\":100}"}
+{"type":"tool_result","tool_name":"mouse_click","is_error":false,"screenshot_ref":"artifacts/step_002.jpg"}
 ```
 
 Episodes should not long-term save large base64 blocks. Screenshots go to `artifacts/`, events only contain relative paths, dimensions, hash, necessary summary, and short evidence excerpts.
@@ -391,9 +380,9 @@ Verifier additional injection:
 
 Role constraints:
 
-- planner can use experience to modify plans, but must still be based on current screenshot and tool results.
-- verifier cannot approve this completion just because historical episode succeeded, must require current observation to prove completion conditions.
-- executor does not directly see experience, reducing probability of it bypassing planner or having blind spots based on old experience.
+- The Agent can use experience to inform its strategy, but must still be based on current screenshot and tool results.
+- The Agent cannot approve completion just because historical episode succeeded; must require current observation to prove completion conditions.
+- Retrieved experience helps guide execution but doesn't replace direct observation.
 
 ## Write Strategy
 
@@ -448,7 +437,7 @@ Conflict sources:
 Handling rules:
 
 1. More specific new evidence for same fact supersedes old memory first.
-2. When cannot determine who is correct, mark both as `conflicted`, don't enter planner's normal experience, only enter verifier's conflict reminder.
+2. When cannot determine who is correct, mark both as `conflicted`, don't enter the Agent's normal experience, only surface as conflict reminder.
 3. Expiration is not deletion. First mark `expired` or filter from index, then GC deletes according to retention.
 4. User explicit instructions have higher priority than automatic experience. When conflicting with user rules, automatic experience is downweighted or marked conflict.
 
@@ -458,7 +447,7 @@ Handling rules:
 | --- | --- | --- |
 | Device Profile | 90d | Re-verified by current screenshot/configuration |
 | App Profile | 30d | App opened, page structure or entry re-verified |
-| Interaction Procedure | 45d | Process succeeded and verifier approved |
+| Interaction Procedure | 45d | Process succeeded and task completed |
 | Calibration Memory | 30d | Coordinates, waits, screenshot dimensions re-verified |
 | Failure Memory | 60d | Same type of failure occurs again |
 | Task Episode | 30d full trace, 180d summary | Retain evidence excerpt if referenced by long-term memory |
@@ -497,10 +486,10 @@ go r.memoryPlane.CommitEpisode(context.Background(), episode)
 
 ### Role executor
 
-`roleLoopState` already has objective, criteria, plan, tool steps, verifier results, and world state. Need to supplement:
+`loopState` already has objective, criteria, tool steps, and world state. Need to supplement:
 
-- Parsed planner decision event.
-- Parsed verifier decision event.
+- Episode outcome data.
+- Parsed tool call/result events.
 - Initial/final world state summary.
 - Tool result screenshot artifact export hook.
 - Max iteration / parse error / tool error failure reason.
@@ -515,7 +504,7 @@ Suggest recording through `EpisodeRecorder` interface rather than inferring from
 func buildRoleProfiles(..., memory MemoryContext) RoleProfiles
 ```
 
-The planner prompt receives `memory.Planner` plus `memory.Common`. The verifier prompt receives only `memory.Verifier.FailureModes` and `memory.Verifier.Conflicts` as a caution block; `memory.Common` is not injected into verifier. The executor prompt receives no memory context.
+The Agent prompt receives retrieved memory context including device profiles, procedures, similar episodes, and failure cautions.
 
 ### Tools
 
@@ -533,9 +522,9 @@ These two tools are not MVP required; core path should be automatically retrieve
 Phase 1: Episode recording and retrieval injection
 
 - Add `TaskEpisodeStore` and `TaskEpisodeWriter`.
-- Record planner/tool/verifier trace.
+- Record tool call trace.
 - Add `MemoryPlane.Retrieve`, first do keyword recall from `long_term` and `episodes/index.yaml`.
-- Planner/verifier inject retrieved context by role.
+- Agent injects retrieved context.
 
 Phase 2: Device memory types
 

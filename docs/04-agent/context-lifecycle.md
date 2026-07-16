@@ -8,81 +8,45 @@ Each run is assembled from several layers. Some layers are persisted memory, whi
 
 | Layer | Source | Visibility | Persistence |
 | --- | --- | --- | --- |
-| Base instruction | built-in runtime instruction, optional `agent.toml` `custom_instruction`, and `additional_prompt` | planner and executor | configuration |
-| Runtime defaults | built-in prompt rules, current date, host runtime information | planner and executor receive all defaults; verifier receives current date and verifier role rules only | not persisted |
-| Skills | skill index plus active `SKILL.md` content | planner and executor | skill files and skill state |
-| Runtime context | `RunRequest.RuntimeContext`, for example phone bridge state | planner and executor | not persisted |
-| Tool catalog | resolved built-in tools plus skill tools | planner and executor can call; verifier does not receive a tool catalog | not persisted in memory |
-| Planner loop meta tools | `use_simple_mode`, `enter_plan_mode`, `commit_plan`, `cancel_plan` | planner only | not persisted in memory |
-| Executor loop meta tools | `finish_step`, `abort_step` | executor only | not persisted in memory |
-| Retrieved memory context | `MemoryPlane.Retrieve` output | planner receives common and planner memory; verifier receives failure/conflict caution memory only | filesystem memory |
-| Planner conversation history | hot-window memory, optional compressed-history markers, optional persisted chat history | planner only | filesystem memory |
-| Role loop state | phase, objective, plan, `plan_step_index`, next step, tool evidence, verifier feedback, world state | role-specific | current run only |
-| Input attachments | `RunRequest.Attachments`; verifier-only latest screenshot image when world state has one | role user messages | current run only |
+| Base instruction | built-in runtime instruction, optional `agent.toml` `custom_instruction`, and `additional_prompt` | Agent | configuration |
+| Runtime defaults | built-in prompt rules, current date, host runtime information | Agent | not persisted |
+| Skills | skill index plus active `SKILL.md` content | Agent | skill files and skill state |
+| Runtime context | `RunRequest.RuntimeContext`, for example phone bridge state | Agent | not persisted |
+| Tool catalog | resolved built-in tools plus skill tools | Agent can call | not persisted in memory |
+| Retrieved memory context | `MemoryPlane.Retrieve` output | Agent | filesystem memory |
+| Conversation history | hot-window memory, optional compressed-history markers, optional persisted chat history | Agent | filesystem memory |
+| Input attachments | `RunRequest.Attachments` | Agent user messages | current run only |
 
-The executor intentionally does not receive global memory or full conversation history. It receives the planner-approved `next_step`, latest world state, and the latest local execution result only.
+## Agent Execution Loop
 
-## Phased Role Loop
+The Agent uses a streamlined execution loop that processes user input through tool calls and generates responses directly. All runs share a single iteration budget controlled by `MaxIterations`.
 
-`roleCollaborativeExecutor` drives a three-phase state machine. All phases share one global `MaxIterations` budget.
-
-| Phase | Planner behavior | Other roles |
-| --- | --- | --- |
-| `decision` | Route to direct answer, `default`, or `plan` before ordinary tools are exposed | not used |
-| `default` | Call built-in tools directly, return a final answer when done, or call `enter_plan_mode` for complex work | not used |
-| `plan` | Explore with tools, maintain a draft plan, then call `commit_plan` or `cancel_plan` | not used |
-| `execution` | not called | `executor` runs one approved step, then `verifier` reviews evidence |
-
-Phase transitions:
+Execution flow:
 
 ```text
-Run starts in decision
+Run starts
   |
-  +-- direct_answer --> run ends (no verifier)
+  v
+Agent receives user input and context
   |
-  +-- simple / use_simple_mode --> default
-  |     |
-  |     +-- planner finishes --> run ends (no verifier)
-  |     |
-  |     +-- planner calls domain tool --> default
-  |     |
-  |     +-- enter_plan_mode --> plan
+  v
+Agent decides on action (tool call or final answer)
   |
-  +-- plan / enter_plan_mode --> plan
-        |
-        +-- cancel_plan --> default
-        |
-        +-- commit_plan --> execution
-              |
-              +-- executor finish_step / abort_step --> verifier
-                    |
-                    +-- verifier can_finish --> run ends
-                    |
-                    +-- verifier needs_replan --> plan
-                    |
-                    +-- verifier continues and plan has more steps --> next execution step
-                    |
-                    +-- verifier continues and plan is exhausted --> plan
+  v
+Execute tool calls as needed
+  |
+  v
+Generate final response
+  |
+  v
+Run ends
 ```
 
-Planner loop meta tools are visible only to the planner and are intercepted by the runtime controller. Executor loop meta tools are visible only to the executor for step-boundary review. They never reach the device tool layer.
-
-| Meta tool | Role | Allowed in | Effect |
-| --- | --- | --- | --- |
-| `use_simple_mode` | planner | `decision` | route to `default` |
-| `enter_plan_mode` | planner | `decision`, `default` | switch to `plan` |
-| `commit_plan` | planner | `plan` only | commit objective, completion criteria, and plan steps; switch to `execution` |
-| `cancel_plan` | planner | `plan` | clear draft planning state; switch to `default` |
-| `finish_step` | executor | `execution` | mark the current step ready for verifier review |
-| `abort_step` | executor | `execution` | mark the current step blocked or failed for verifier review |
-
-After `commit_plan`, runtime owns step progression. `plan_step_index` selects the current committed step, and `next_step` is synchronized from that index before each executor turn. The executor must not reorder or rewrite the plan.
-
-Simple tasks should stay in `default` (direct answer, one tool call, or at most two short steps). If completing the request will likely need three or more steps, the planner must call `enter_plan_mode` before executing further. Also use `plan` for branching, sustained tracking, or explicit completion criteria before delegation.
+The Agent has access to all registered tools throughout execution and manages its own task breakdown strategy based on the request complexity.
 
 ## Prompt Shape
 
-For the current multi-role loop, `Runtime.Run` builds `RoleProfiles` before execution. Planner and executor system prompts contain:
+For the current execution loop, `Runtime.Run` builds a `RoleProfile` before execution. The Agent system prompt contains:
 
 1. role identity;
 2. base instruction;
@@ -92,50 +56,22 @@ For the current multi-role loop, `Runtime.Run` builds `RoleProfiles` before exec
 6. request-local runtime context, if provided;
 7. role rules;
 8. available tool information;
-9. role-specific rendered memory context, if any.
+9. rendered memory context, if any.
 
-The verifier system prompt is intentionally narrower. It contains the current date, verifier role rules, and an optional `## Verifier memory cautions` block. It does not receive base instruction, default behavior, skills, runtime context, tool catalog, common memory, or planner memory.
-
-The per-call user message is then built from the current loop state:
-
-- planner sees the current loop mode, world state, original request, conversation history, draft or committed plan, executor results, and verifier feedback;
-- executor sees the current world state and the planner-approved `next_step`;
-- verifier sees the current world state, the step under verification (`step_index`, `step_text`, `is_final_committed_step`), the latest executor result for that step, and the latest world-state screenshot image when available.
-
-Planner and executor receive tool scratchpads after tools have run. `WorldState.LatestScreenshot` is retained as verifier-only visual evidence: planner and executor do not receive it through World State, which keeps their world-state prompt prefix stable for model cache reuse.
+The per-call user message is built from the current loop state, including the original request, conversation history, world state, and any previous tool results.
 
 ## Retrieved Memory Context
 
-`MemoryPlane.Retrieve` builds a `MemoryContext` with three buckets:
-
-```go
-type MemoryContext struct {
-    Planner  RoleMemoryContext
-    Verifier RoleMemoryContext
-    Common   RoleMemoryContext
-}
-```
-
-`Common` is rendered into planner memory context. It currently includes:
+`MemoryPlane.Retrieve` builds a `MemoryContext` that is rendered into the Agent's memory context. It currently includes:
 
 - `session/summary.md`, the compressed session summary;
-- `long_term/profile.md`, the synthesized user profile.
-
-Planner-specific retrieval includes:
-
+- `long_term/profile.md`, the synthesized user profile;
 - device profile;
 - app profiles;
 - verified procedures and navigation memory;
 - similar successful episodes;
-- calibration notes.
-
-Verifier-specific retrieval includes:
-
-- failure memories;
-- conflicting memories;
-- failed task episodes relevant to the current request.
-
-Verifier-specific retrieval is rendered as `## Verifier memory cautions`. These entries are historical failure/conflict warnings only; they are not proof of completion. Verifier approval must still be based on the current executor outcome, tool observations, screenshots, or current step evidence.
+- calibration notes;
+- failure memories and conflicting memories as cautions.
 
 Each hit is filtered by applicability, ranked by the store search logic, routed by memory type, and trimmed per category before rendering.
 
@@ -162,10 +98,10 @@ MemoryPlane.Retrieve(input, attachments, skills, tools, current hints)
 start EpisodeRecorder
   |
   v
-build role profiles and planner memory
+build role profile and agent memory
   |
   v
-phased role loop (decision / default / plan / execution)
+agent execution loop
   |
   v
 commit session: append assistant output and save snapshot
@@ -177,7 +113,7 @@ request session-memory maintenance
 commit task episode and extract reusable memory
 ```
 
-`CurrentEnvironmentHints` are lightweight facts already known to runtime, such as screenshot size, language, and last observed app name. They must not perform device actions. If fresh screen evidence is needed, the planner must ask the executor to use tools.
+`CurrentEnvironmentHints` are lightweight facts already known to runtime, such as screenshot size, language, and last observed app name. They must not perform device actions. If fresh screen evidence is needed, the Agent must use tools.
 
 ## Update Mechanisms
 
@@ -210,7 +146,7 @@ memory/session/events.jsonl
 ```
 
 At prompt time, retained hot-window events are converted into native chat
-messages and inserted between the planner system prompt and the current planner
+messages and inserted between the system prompt and the current
 task message. Prompt construction does not render them inside a
 `Conversation history:` text block and does not add hot-window labels or
 boundary markers.
@@ -268,17 +204,13 @@ Within one runtime, memory tools, `MemoryPlane`, and profile rebuilding share a 
 
 ### Device And Episode Memory
 
-The episode recorder captures loop phase changes, default-mode finishes, planner decisions, planner and executor tool calls, tool results, verifier decisions, observed world state, and outcome data during the run. `MemoryPlane.CommitEpisode` writes the task episode, extracts reusable lessons, updates device memory, and updates outcomes on referenced memories.
+The episode recorder captures tool calls, tool results, observed world state, and outcome data during the run. `MemoryPlane.CommitEpisode` writes the task episode, extracts reusable lessons, updates device memory, and updates outcomes on referenced memories.
 
 Common episode event types:
 
 | Event type | When recorded |
 | --- | --- |
-| `loop_phase` | `enter_plan_mode`, `commit_plan`, `cancel_plan`, `plan_exhausted`, or `needs_replan` |
-| `default_finish` | planner returns a final answer directly in `default` |
-| `planner_decision` | `commit_plan` commits objective, criteria, and plan steps |
-| `tool_call` / `tool_result` | planner tool use in `default`/`plan`, or executor tool use in `execution` |
-| `verifier_decision` | verifier review in `execution` |
+| `tool_call` / `tool_result` | Agent tool use during execution |
 
 The main stores are:
 
@@ -292,11 +224,11 @@ Successful episodes can create or update procedures, navigation memory, app prof
 
 ### Persisted Chat History
 
-**NOTE: As of this branch, chat_history injection into planner context is DISABLED.**
+**NOTE: As of the current architecture, chat_history injection into Agent context is DISABLED.**
 
-The `chat_history/` store persists UI-level conversation logs but is NOT automatically injected into the planner's context. This prevents:
+The `chat_history/` store persists UI-level conversation logs but is NOT automatically injected into the Agent's context. This prevents:
 - Duplicate, uncompressed context competing with the session system
-- Unbounded growth of planner prompts
+- Unbounded growth of Agent prompts
 - Confusion between active session and archived history
 
 For "resume interrupted task" scenarios, use explicit session restore or recall tools instead. The session system already provides comprehensive history management with compaction, archiving, and recall capabilities.
@@ -342,11 +274,6 @@ The chat_history store remains available for:
   session summaries are logs and are not prompt or recall context.
 - Hot-window labels or boundary markers are not injected into prompts or
   durable memory.
-- Planner owns plans and sees retrieved experience memory.
-- In `default`, planner may call tools and finish the run without verifier review.
-- In `execution`, executor executes exactly one approved step and does not receive global memory.
-- In `execution`, verifier validates only the current committed step; intermediate step success advances the plan, and `can_finish` is allowed only on the final committed step.
-- `commit_plan` is only valid in `plan`; runtime owns `plan_step_index` after commit.
-- Loop meta tools are planner/executor control tools handled by the runtime controller, not the device tool layer.
+- The Agent sees retrieved experience memory and manages its own execution strategy.
 - Tool results and screenshots are evidence for the current run; reusable lessons are written only after episode commit or explicit memory-tool calls.
 - Device actions must be based on current tool observations or screenshots, not on stale remembered state alone.
