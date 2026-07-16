@@ -484,7 +484,7 @@ episode := recorder.Finish(output, metrics, err, tags, entities)
 go r.memoryPlane.CommitEpisode(context.Background(), episode)
 ```
 
-### Role executor
+### Episode Recording
 
 `loopState` already has objective, criteria, tool steps, and world state. Need to supplement:
 
@@ -496,12 +496,12 @@ go r.memoryPlane.CommitEpisode(context.Background(), episode)
 
 Suggest recording through `EpisodeRecorder` interface rather than inferring from HTTP server's `history`. Server history is a UI artifact and should not be the sole source for memory writer.
 
-### Role profiles
+### Agent Profile
 
-`buildRoleProfiles` receives structured `MemoryContext` and returns `RoleProfiles`:
+`buildRoleProfile` receives structured `MemoryContext` and returns `RoleProfile`:
 
 ```go
-func buildRoleProfiles(..., memory MemoryContext) RoleProfiles
+func buildRoleProfile(..., memory MemoryContext) RoleProfile
 ```
 
 The Agent prompt receives retrieved memory context including device profiles, procedures, similar episodes, and failure cautions.
@@ -541,15 +541,15 @@ Phase 3: Conflict and lifecycle
 Phase 4: Benchmark
 
 - Add episode memory benchmark: does second execution of same task type reduce tool steps, does it avoid historical failure paths.
-- Add conflict benchmark: old experience should not continue to pollute planner after language/resolution changes.
-- Add failure experience benchmark: failure modes should enter verifier, preventing repeated approval of completions without evidence.
+- Add conflict benchmark: old experience should not continue to pollute the Agent after language/resolution changes.
+- Add failure experience benchmark: failure modes should surface as cautions, preventing repeated approval of completions without evidence.
 
 ## Acceptance Criteria
 
 - After clearing session conversation, similar tasks on same device can still obtain experience from episode/procedure.
-- Similar successful episodes will change planner's plan or next_step, and memory ref is visible in role_output.
-- Known failure modes enter verifier prompt; verifier will not pass current task based solely on historical success experience.
-- Expired, conflicted, or inapplicable memories do not enter planner's normal experience.
+- Similar successful episodes will influence the Agent's strategy, and memory ref is visible in output.
+- Known failure modes are surfaced as cautions; the Agent will not approve completion based solely on historical success experience.
+- Expired, conflicted, or inapplicable memories do not enter the Agent's normal experience.
 - Task failures also produce episodes and can extract searchable failure memory.
 - Memory write failures do not cause user task failure, but must have logs.
 
@@ -563,7 +563,7 @@ Phase 4: Benchmark
 
 ✅ Complete episode recording implemented:
 - `TaskEpisodeStore` and `EpisodeRecorder` fully implemented
-- Record planner/tool/verifier trace, generate structured `events.jsonl`
+- Record tool call trace, generate structured `events.jsonl`
 - `MemoryPlane.Retrieve` recalls from `long_term`, `device`, `episodes` and routes by role
 - Planner/verifier inject retrieved context by role
 
@@ -688,7 +688,7 @@ All existing tests pass.
 | Similar task reuse | After "order Mixue Ice City on Meituan", executing "order Starbucks on Meituan" can reuse navigation | ✅ Hits "Meituan/Home→Cart" navigation + "Cart" page procedure |
 | Planner sees procedure | Detailed steps, coordinates, page transitions | ✅ "step 1: launch_app(Meituan)→Home / step 2: touch_gesture(@x=500,y=850)→Cart" |
 | App prior knowledge | First time using an app can see commonly used pages and tools | ✅ app_profile accumulates pages_seen, tools_used |
-| Failure experience tracking | Failure modes enter verifier | ✅ failure memory routes to Verifier.FailureModes |
+| Failure experience tracking | Failure modes surface as cautions | ✅ failure memory routes to Agent context |
 | Page-level indexing | Retrieve procedure by page_name | ✅ procedure ID includes page, page_name in entities/tags |
 
 ### Differences from Design Doc

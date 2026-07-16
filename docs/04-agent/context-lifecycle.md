@@ -220,7 +220,7 @@ memory/episodes/
 memory/lifecycle/
 ```
 
-Successful episodes can create or update procedures, navigation memory, app profiles, calibration notes, and task summaries. Failed episodes can create failure memories that are routed to verifier on future similar tasks.
+Successful episodes can create or update procedures, navigation memory, app profiles, calibration notes, and task summaries. Failed episodes can create failure memories that are retrieved as cautions on future similar tasks.
 
 ### Persisted Chat History
 

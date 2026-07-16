@@ -151,7 +151,7 @@ When the cut lands inside a turn rather than on a `user_input` boundary, the hot
 3. The chunk summary stores `history + "\n\n---\n\nTurn Context (split turn):\n" + prefixSummary` for recall.
 4. The hot window receives a synthetic `system_event` containing the prefix summary for immediate prompt context.
 
-The prefix summary is intentionally written to both the chunk summary and the hot window: the former serves historical retrieval, while the latter serves the next planner prompt.
+The prefix summary is intentionally written to both the chunk summary and the hot window: the former serves historical retrieval, while the latter serves the next Agent prompt.
 
 ## summary.md and Rolling Summary
 
