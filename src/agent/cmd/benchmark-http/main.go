@@ -51,7 +51,10 @@ func main() {
 	}
 
 	transport := createTransport(*optimized)
-	client := &http.Client{Transport: transport}
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   30 * time.Second,
+	}
 
 	configName := "Default"
 	if *optimized {
@@ -73,22 +76,14 @@ func main() {
 }
 
 func createTransport(optimized bool) *http.Transport {
-	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
-	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
 
 	if optimized {
-		transport.MaxIdleConns = 100
 		transport.MaxIdleConnsPerHost = 8
-		transport.IdleConnTimeout = 90 * time.Second
-		transport.TLSHandshakeTimeout = 10 * time.Second
-		transport.ExpectContinueTimeout = 1 * time.Second
-		fmt.Println("Transport settings: MaxIdleConnsPerHost=8, IdleConnTimeout=90s")
+		fmt.Println("Transport settings: MaxIdleConnsPerHost=8 (optimized)")
 	} else {
 		transport.MaxIdleConnsPerHost = 2
-		transport.IdleConnTimeout = 90 * time.Second
-		transport.TLSHandshakeTimeout = 10 * time.Second
-		fmt.Println("Transport settings: MaxIdleConnsPerHost=2 (default)")
+		fmt.Println("Transport settings: MaxIdleConnsPerHost=2 (baseline)")
 	}
 
 	return transport

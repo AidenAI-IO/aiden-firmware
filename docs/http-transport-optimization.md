@@ -15,16 +15,15 @@ Modified `src/agent/internal/agent/proxy.go` to optimize the HTTP transport:
 MaxIdleConnsPerHost = 2
 
 // After
-MaxIdleConns = 100
 MaxIdleConnsPerHost = 8
-IdleConnTimeout = 90 * time.Second
-TLSHandshakeTimeout = 10 * time.Second
-ExpectContinueTimeout = 1 * time.Second
 ```
+
+**Note**: Other settings like `MaxIdleConns=100`, `IdleConnTimeout=90s`, `TLSHandshakeTimeout=10s`, and `ExpectContinueTimeout=1s` are already set by `http.DefaultTransport` and inherited via `Clone()`. Only `MaxIdleConnsPerHost` is changed from the default value of 2.
 
 These settings allow better connection reuse, especially for scenarios with multiple requests to the same endpoints (LLM, STT, TTS).
 
 ### 2. Connection Warmup
+
 
 Implemented proactive connection warming in `src/agent/internal/agent/connection_warmup.go`:
 
@@ -49,6 +48,7 @@ Implemented proactive connection warming in `src/agent/internal/agent/connection
 - **Improvement**: **15.2%**
 
 #### Concurrent 4 Requests (50 iterations)
+
 | Config | Latency | Memory Alloc | Alloc Count |
 |--------|---------|--------------|-------------|
 | Default | 58.5 ms | 298 KB | 1,998 |
@@ -56,6 +56,7 @@ Implemented proactive connection warming in `src/agent/internal/agent/connection
 | **Improvement** | **11.2%** | **88.7%↓** | **83.0%↓** |
 
 #### Concurrent 8 Requests (50 iterations)
+
 | Config | Latency | Memory Alloc | Alloc Count |
 |--------|---------|--------------|-------------|
 | Default | 61.7 ms | 852 KB | 5,632 |

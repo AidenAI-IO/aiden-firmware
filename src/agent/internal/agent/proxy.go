@@ -18,12 +18,10 @@ func newProxyTransport(proxy ProxyConfig) http.RoundTripper {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = proxyFunc(proxy)
 
-	// Optimize for LLM/STT/TTS endpoints: increase connection pool and keep-alive
-	transport.MaxIdleConns = 100
+	// Optimize for LLM/STT/TTS endpoints: increase per-host connection pool.
+	// Other settings (MaxIdleConns=100, IdleConnTimeout=90s, TLSHandshakeTimeout=10s,
+	// ExpectContinueTimeout=1s) already match http.DefaultTransport via Clone().
 	transport.MaxIdleConnsPerHost = 8
-	transport.IdleConnTimeout = 90 * time.Second
-	transport.TLSHandshakeTimeout = 10 * time.Second
-	transport.ExpectContinueTimeout = 1 * time.Second
 
 	return transport
 }

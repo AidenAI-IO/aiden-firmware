@@ -5,7 +5,8 @@ echo ""
 echo "Running benchmark comparison..."
 echo ""
 
-cd /Users/apple/IdeaProjects/aiden-firmware/src/agent
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR" || exit 1
 
 echo "----------------------------------------"
 echo "1. Single Request Latency Test (100 iterations)"
