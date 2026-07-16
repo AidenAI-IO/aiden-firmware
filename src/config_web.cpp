@@ -4740,12 +4740,17 @@ ApiResponse handle_export_support_logs(const Options& options) {
         &error);
 
     // Keep the original LLM log filename instead of renaming to http.log
+    // Capture both name and path atomically to avoid race conditions during log rotation
     std::string llm_log_original_name = latest_llm_log_name(options);
+    std::string llm_log_source_path;
     if (llm_log_original_name.empty()) {
         llm_log_original_name = kSupportLogHttpName;
+        llm_log_source_path = "";  // Will trigger placeholder
+    } else {
+        llm_log_source_path = llm_log_path(options, llm_log_original_name);
     }
     staged = staged && stage_file_or_placeholder(
-        latest_llm_log_path(options),
+        llm_log_source_path,
         stage_dir + "/" + llm_log_original_name,
         "HTTP log",
         "No llm-http-*.log files found under " + llm_log_dir(options) + ".\n",
