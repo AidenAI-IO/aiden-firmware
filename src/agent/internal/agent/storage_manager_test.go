@@ -18,6 +18,7 @@ type fakeStorageOps struct {
 	total      int64
 	spaceErr   error
 	formatErr  error
+	unmountErr error
 	blank      bool
 	// spaceFn, when set, answers SpaceInfo per path (used by migration
 	// tests to model eMMC free space changing as files move).
@@ -55,6 +56,9 @@ func (f *fakeStorageOps) Unmount(mountPoint string, lazy bool) error {
 	f.unmounts++
 	if lazy {
 		f.lazyUnmnts++
+	}
+	if f.unmountErr != nil && !lazy {
+		return f.unmountErr // mount point busy: the mount survives
 	}
 	f.mounted = false
 	return nil
@@ -709,6 +713,54 @@ func TestStorageManagerCleanupRoots(t *testing.T) {
 	roots = m.CleanupRoots(StorageClassAudio)
 	if len(roots) != 1 || roots[0] != filepath.Join(m.emmcRoot, "audio") {
 		t.Fatalf("cleanup roots without card = %v, want only the eMMC dir", roots)
+	}
+}
+
+func TestStorageManagerBusyUnmountKeepsStateMounted(t *testing.T) {
+	// A busy mount point (e.g. a shell cwd on the card) makes non-lazy
+	// unmounts fail. Format and eject must then refuse with a clear error
+	// while the in-memory state keeps matching reality: still mounted, still
+	// dual storage, no mount/EBUSY churn from the poll loop.
+	ops := &fakeStorageOps{present: true, free: 1 << 30, total: 1 << 31, healthy: true}
+	m := newTestStorageManager(t, ops)
+	tickN(m, 2)
+	if !m.Status().Card.Mounted {
+		t.Fatal("setup: card not mounted")
+	}
+
+	ops.unmountErr = errors.New("umount: target is busy")
+
+	if err := m.StartFormat(StorageFormatFAT32, StorageFormatConfirmToken); err == nil || !strings.Contains(err.Error(), "busy") {
+		t.Fatalf("StartFormat = %v, want busy-unmount refusal", err)
+	}
+	if m.Status().FormatJob.Status == StorageFormatRunning {
+		t.Fatal("format job started despite failed unmount")
+	}
+	if err := m.SafeEject(); err == nil || !strings.Contains(err.Error(), "busy") {
+		t.Fatalf("SafeEject = %v, want busy-unmount refusal", err)
+	}
+
+	status := m.Status()
+	if !status.Card.Mounted {
+		t.Fatal("state says unmounted while the mount survived (desync)")
+	}
+	if status.EffectiveMode != StorageModeDual {
+		t.Fatalf("effective mode = %d, want dual (card is still usable)", status.EffectiveMode)
+	}
+	// The poll loop must not try to re-mount over the surviving mount.
+	prepares := ops.prepares
+	tickN(m, 3)
+	if ops.prepares != prepares {
+		t.Fatal("poll loop attempted to mount over an existing mount")
+	}
+
+	// Once the holder goes away, format proceeds normally.
+	ops.unmountErr = nil
+	if err := m.StartFormat(StorageFormatFAT32, StorageFormatConfirmToken); err != nil {
+		t.Fatalf("StartFormat after holder released = %v", err)
+	}
+	if job := waitForFormatJob(t, m); job.Status != StorageFormatSuccess {
+		t.Fatalf("job = %+v, want success", job)
 	}
 }
 

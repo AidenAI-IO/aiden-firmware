@@ -1,7 +1,0 @@
-# Masks the SDK rule of the same name in /lib/udev/rules.d/, which auto-mounts
-# any SD-card partition to /mnt/sdcard on hot-plug. The agent's StorageManager
-# is the single owner of SD card mounting (docs/04-agent/storage-modes.md):
-# udev auto-mounting races the manager's usability gate (EBUSY at boot) and
-# breaks the "eMMC only" mode and safe-eject semantics.
-#
-# Intentionally left with no rules.

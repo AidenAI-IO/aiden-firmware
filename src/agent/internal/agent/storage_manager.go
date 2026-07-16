@@ -284,7 +284,9 @@ func (m *StorageManager) SafeEject() error {
 	if !m.card.Mounted {
 		return fmt.Errorf("no mounted card to eject")
 	}
-	m.unmountLocked(false, "")
+	if err := m.unmountLocked(false, ""); err != nil {
+		return fmt.Errorf("cannot eject: %w (close any shell or process using %s and retry)", err, m.cfg.MountPointOrDefault())
+	}
 	m.ejected = true
 	m.finishTransitionLocked()
 	return nil
@@ -318,7 +320,9 @@ func (m *StorageManager) StartFormat(fs, confirm string) error {
 		return fmt.Errorf("no card present")
 	}
 	if m.card.Mounted {
-		m.unmountLocked(false, "")
+		if err := m.unmountLocked(false, ""); err != nil {
+			return fmt.Errorf("cannot format: %w (close any shell or process using %s and retry)", err, m.cfg.MountPointOrDefault())
+		}
 	}
 	m.formatJob = StorageFormatJob{Status: StorageFormatRunning, FS: fs, StartedAt: time.Now()}
 	m.writeStateFileLocked()
@@ -857,20 +861,34 @@ func (m *StorageManager) tryMountLocked() {
 	m.refreshSpaceLocked()
 	free := int64(m.cfg.MinCardFreeMBOrDefault()) * 1024 * 1024
 	if m.card.FreeBytes < free {
-		m.card.Reason = fmt.Sprintf("card has %d bytes free, below the %d MB minimum", m.card.FreeBytes, m.cfg.MinCardFreeMBOrDefault())
-		m.unmountLocked(false, m.card.Reason)
+		reason := fmt.Sprintf("card has %d bytes free, below the %d MB minimum", m.card.FreeBytes, m.cfg.MinCardFreeMBOrDefault())
+		// If the unmount fails the card simply stays mounted (and usable);
+		// only the failed unmount keeps it from being rejected.
+		_ = m.unmountLocked(false, reason)
 		m.mountFailed = true
-		m.logf("[storage] %s", m.card.Reason)
+		m.logf("[storage] %s", reason)
 		return
 	}
 	m.logf("[storage] mounted %s at %s (%d bytes free)", dev, mountPoint, m.card.FreeBytes)
 }
 
 // unmountLocked detaches the card. Caller holds m.mu.
-func (m *StorageManager) unmountLocked(lazy bool, reason string) {
+//
+// On a non-lazy unmount failure the card is STILL mounted (e.g. a shell has
+// its cwd on the mount point), so the in-memory state keeps saying mounted
+// and an error is returned — marking it unmounted here would desynchronize
+// state from reality and send the poll loop into mount/EBUSY churn. Lazy
+// unmounts are used when the card is physically gone; their failures cannot
+// leave a working mount behind, so state is cleared regardless.
+func (m *StorageManager) unmountLocked(lazy bool, reason string) error {
 	mountPoint := m.cfg.MountPointOrDefault()
 	if err := m.ops.Unmount(mountPoint, lazy); err != nil {
-		m.logf("[storage] unmount %s: %v", mountPoint, err)
+		if !lazy {
+			m.card.Reason = fmt.Sprintf("unmount failed: %v", err)
+			m.warnf("[storage] unmount %s failed; card stays mounted: %v", mountPoint, err)
+			return err
+		}
+		m.logf("[storage] lazy unmount %s: %v", mountPoint, err)
 	}
 	m.card.Mounted = false
 	m.card.TotalBytes = 0
@@ -879,6 +897,7 @@ func (m *StorageManager) unmountLocked(lazy bool, reason string) {
 		m.card.Reason = reason
 		m.logf("[storage] card detached: %s", reason)
 	}
+	return nil
 }
 
 func (m *StorageManager) refreshSpaceLocked() {
