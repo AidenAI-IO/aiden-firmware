@@ -296,4 +296,3 @@ func (s *errorSession) WriteText(string) error { return nil }
 func (s *errorSession) Flush() error           { return nil }
 func (s *errorSession) Close() error           { return s.closeErr }
 func (s *errorSession) Err() error             { return nil }
-

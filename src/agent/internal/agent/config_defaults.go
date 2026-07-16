@@ -37,6 +37,7 @@ const (
 	defaultAndroidKeyboardDevice   = "/dev/hidg2"
 	defaultFrameServiceSocket      = "/run/frame_service/frame_service.sock"
 	defaultPointerMode             = "absolute"
+	defaultInputBackend            = "hid"
 	defaultInputMode               = "text"
 	defaultTriggerMode             = "manual"
 	defaultSilenceMs               = 550
@@ -102,6 +103,7 @@ func DefaultConfig() Config {
 			AndroidKeyboardDevice: defaultAndroidKeyboardDevice,
 			FrameSocket:           defaultFrameServiceSocket,
 			PointerMode:           defaultPointerMode,
+			InputBackend:          defaultInputBackend,
 		},
 		Search: SearchConfig{
 			Provider: searchProviderDuckDuckGo,

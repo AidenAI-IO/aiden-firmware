@@ -363,6 +363,9 @@ type HIDConfig struct {
 	// plus limited hid.usb2 media keys) or "touchscreen" (Android HID digitizer
 	// plus full hid.usb2 Android extension keys).
 	PointerMode string `toml:"pointer_mode,omitempty"`
+	// InputBackend selects the low-level input path for keyboard/touch tools:
+	// "hid" writes USB HID reports, "adb" sends Android adb shell input commands.
+	InputBackend string `toml:"input_backend,omitempty"`
 }
 
 type DeviceConfig struct {
@@ -417,6 +420,19 @@ func (h HIDConfig) PointerModeOrDefault() string {
 
 func (h HIDConfig) PointerTouchscreen() bool {
 	return h.PointerModeOrDefault() == "touchscreen"
+}
+
+func (h HIDConfig) InputBackendOrDefault() string {
+	switch strings.ToLower(strings.TrimSpace(h.InputBackend)) {
+	case "adb":
+		return "adb"
+	default:
+		return "hid"
+	}
+}
+
+func (h HIDConfig) InputBackendADB() bool {
+	return h.InputBackendOrDefault() == "adb"
 }
 
 type ModelConfig struct {
@@ -883,6 +899,11 @@ func (c Config) Validate() error {
 	case "", "absolute", "touchscreen":
 	default:
 		return fmt.Errorf("invalid hid.pointer_mode: %s (expected absolute or touchscreen)", c.HID.PointerMode)
+	}
+	switch strings.ToLower(strings.TrimSpace(c.HID.InputBackend)) {
+	case "", "hid", "adb":
+	default:
+		return fmt.Errorf("invalid hid.input_backend: %s (expected hid or adb)", c.HID.InputBackend)
 	}
 
 	if err := c.Telemetry.Validate(); err != nil {

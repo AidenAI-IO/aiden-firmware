@@ -375,6 +375,14 @@ std::string normalize_pointer_mode(const std::string& value) {
     return mode.empty() ? "absolute" : mode;
 }
 
+std::string normalize_input_backend(const std::string& value) {
+    std::string backend = trim_copy(value);
+    for (size_t i = 0; i < backend.size(); ++i) {
+        backend[i] = static_cast<char>(tolower(static_cast<unsigned char>(backend[i])));
+    }
+    return backend.empty() ? "hid" : backend;
+}
+
 bool starts_with(const std::string& text, const std::string& prefix) {
     return text.compare(0, prefix.size(), prefix) == 0;
 }
@@ -630,6 +638,7 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"hid", "android_keyboard_device", CONFIG_FIELD_STRING},
         {"hid", "frame_socket", CONFIG_FIELD_STRING},
         {"hid", "pointer_mode", CONFIG_FIELD_STRING},
+        {"hid", "input_backend", CONFIG_FIELD_STRING},
         {"search", "provider", CONFIG_FIELD_STRING},
         {"search", "api_key", CONFIG_FIELD_STRING},
         {"search", "has_api_key", CONFIG_FIELD_BOOL},
@@ -2343,6 +2352,7 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddStringToObject(hid, "android_keyboard_device", config.hid.android_keyboard_device.c_str());
     cJSON_AddStringToObject(hid, "frame_socket", config.hid.frame_socket.c_str());
     cJSON_AddStringToObject(hid, "pointer_mode", normalize_pointer_mode(config.hid.pointer_mode).c_str());
+    cJSON_AddStringToObject(hid, "input_backend", normalize_input_backend(config.hid.input_backend).c_str());
 
     cJSON* search = add_object(root, "search");
     cJSON_AddStringToObject(search, "provider", config.search.provider.c_str());
@@ -2637,6 +2647,7 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_str(&config->hid.android_keyboard_device, hid, "android_keyboard_device");
         set_json_str(&config->hid.frame_socket, hid, "frame_socket");
         set_json_str(&config->hid.pointer_mode, hid, "pointer_mode");
+        set_json_str(&config->hid.input_backend, hid, "input_backend");
     }
 
     cJSON* search = cJSON_GetObjectItem(root, "search");
@@ -4738,9 +4749,20 @@ ApiResponse handle_export_support_logs(const Options& options) {
         std::string("Agent log path not available: ") + kAgentLogPath + "\n",
         kSupportLogAgentMaxBytes,
         &error);
+
+    // Keep the original LLM log filename instead of renaming to http.log
+    // Capture both name and path atomically to avoid race conditions during log rotation
+    std::string llm_log_original_name = latest_llm_log_name(options);
+    std::string llm_log_source_path;
+    if (llm_log_original_name.empty()) {
+        llm_log_original_name = kSupportLogHttpName;
+        llm_log_source_path = "";  // Will trigger placeholder
+    } else {
+        llm_log_source_path = llm_log_path(options, llm_log_original_name);
+    }
     staged = staged && stage_file_or_placeholder(
-        latest_llm_log_path(options),
-        stage_dir + "/" + kSupportLogHttpName,
+        llm_log_source_path,
+        stage_dir + "/" + llm_log_original_name,
         "HTTP log",
         "No llm-http-*.log files found under " + llm_log_dir(options) + ".\n",
         kSupportLogHttpMaxBytes,
@@ -4767,12 +4789,12 @@ ApiResponse handle_export_support_logs(const Options& options) {
         " -C " + shell_quote(stage_dir) + " " +
         shell_quote(kSupportLogLangfuseName) + " " +
         shell_quote(kSupportLogAgentName) + " " +
-        shell_quote(kSupportLogHttpName);
+        shell_quote(llm_log_original_name);
     std::string tar_stream_args =
         "-C " + shell_quote(stage_dir) + " " +
         shell_quote(kSupportLogLangfuseName) + " " +
         shell_quote(kSupportLogAgentName) + " " +
-        shell_quote(kSupportLogHttpName);
+        shell_quote(llm_log_original_name);
     std::string fallback_tar_path = archive_path + ".tar";
     std::string command = "tar -czf " + tar_args +
         " 2>/dev/null || (rm -f " + shell_quote(fallback_tar_path) +
@@ -4939,6 +4961,7 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
 
     cJSON_Delete(root);
     config.hid.pointer_mode = normalize_pointer_mode(config.hid.pointer_mode);
+    config.hid.input_backend = normalize_input_backend(config.hid.input_backend);
     bool usbhid_restart_scheduled = original_pointer_mode != config.hid.pointer_mode;
 
     std::string save_error;
@@ -5616,13 +5639,18 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
     } else if (section == "hid") {
         cJSON* pointer_item = cJSON_GetObjectItem(values, "pointer_mode");
         std::string pointer_mode = json_is_string(pointer_item) ? normalize_pointer_mode(pointer_item->valuestring) : "absolute";
+        cJSON* backend_item = cJSON_GetObjectItem(values, "input_backend");
+        std::string input_backend = json_is_string(backend_item) ? normalize_input_backend(backend_item->valuestring) : "hid";
         const char* dev_keys[] = {"keyboard_device", "mouse_device", "android_keyboard_device", NULL};
         for (int i = 0; dev_keys[i]; ++i) {
             cJSON* item = cJSON_GetObjectItem(values, dev_keys[i]);
             std::string path = json_is_string(item) ? trim_copy(item->valuestring) : "";
             cJSON* r = cJSON_CreateObject();
             cJSON_AddStringToObject(r, "check", dev_keys[i]);
-            if (path.empty()) {
+            if (input_backend == "adb") {
+                cJSON_AddBoolToObject(r, "passed", 1);
+                cJSON_AddStringToObject(r, "detail", "skipped when input_backend=adb");
+            } else if (path.empty()) {
                 cJSON_AddBoolToObject(r, "passed", 0);
                 cJSON_AddStringToObject(r, "detail", "path is empty");
                 all_passed = false;
@@ -5642,6 +5670,15 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
         bool valid = pointer_mode == "absolute" || pointer_mode == "touchscreen";
         cJSON_AddBoolToObject(r, "passed", valid ? 1 : 0);
         std::string detail = valid ? "effective mode: " + pointer_mode : "must be absolute or touchscreen";
+        cJSON_AddStringToObject(r, "detail", detail.c_str());
+        if (!valid) all_passed = false;
+        cJSON_AddItemToArray(results, r);
+
+        r = cJSON_CreateObject();
+        cJSON_AddStringToObject(r, "check", "input_backend");
+        valid = input_backend == "hid" || input_backend == "adb";
+        cJSON_AddBoolToObject(r, "passed", valid ? 1 : 0);
+        detail = valid ? "effective backend: " + input_backend : "must be hid or adb";
         cJSON_AddStringToObject(r, "detail", detail.c_str());
         if (!valid) all_passed = false;
         cJSON_AddItemToArray(results, r);

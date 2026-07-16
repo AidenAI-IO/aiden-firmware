@@ -93,6 +93,10 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	androidKbDev := NewHIDDevice(hidCfg.AndroidKeyboardDeviceOrDefault())
 	screen := &screenState{}
 	pointer := newPointerController(hidCfg)
+	var adbInput *ADBInputController
+	if hidCfg.InputBackendADB() {
+		adbInput = NewADBInputController(screen)
+	}
 	touchscreenRCALogf(
 		"newHardwareToolSet pointer_mode=%q pointer_device=%q keyboard_device=%q android_keyboard_device=%q frame_socket=%q",
 		hidCfg.PointerModeOrDefault(),
@@ -104,12 +108,12 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	screenshot := NewScreenshotTool(hidCfg.FrameSocketOrDefault(), screen)
 	screenStable := toolOptions.screenStable.Resolved()
 	waitStable := NewWaitStableScreenTool(hidCfg.FrameSocketOrDefault(), screenStable, screen)
-	keyboardTap := &KeyboardTapTool{dev: kbDev, androidDev: androidKbDev, pointerMode: hidCfg.PointerModeOrDefault()}
-	keyboardText := &KeyboardTextTool{dev: kbDev}
-	touchGesture := &TouchGestureTool{pc: pointer, screen: screen}
+	keyboardTap := &KeyboardTapTool{dev: kbDev, androidDev: androidKbDev, pointerMode: hidCfg.PointerModeOrDefault(), adb: adbInput}
+	keyboardText := &KeyboardTextTool{dev: kbDev, adb: adbInput}
+	touchGesture := &TouchGestureTool{pc: pointer, screen: screen, adb: adbInput}
 	wheelNudge := &WheelNudgeTool{pc: pointer, screen: screen}
 	quickAction := &QuickActionTool{keyboard: keyboardTap, touch: touchGesture}
-	mouseClick := &MouseClickTool{pc: pointer, screen: screen}
+	mouseClick := &MouseClickTool{pc: pointer, screen: screen, adb: adbInput}
 	textInputHW := &textInputHardwareDeps{
 		mouseClick:   mouseClick,
 		touchGesture: touchGesture,
@@ -123,8 +127,8 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 		"keyboard_tap":           newPostActionStableScreenshotTool(keyboardTap, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"keyboard_text":          newPostActionStableScreenshotTool(keyboardText, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"mouse_click":            newPostActionStableScreenshotTool(mouseClick, waitStable, screenshot, postActionScreenshotDelay, screenStable),
-		"mouse_move":             newPostActionStableScreenshotTool(&MouseMoveTool{pc: pointer, screen: screen}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
-		"mouse_scroll":           newPostActionStableScreenshotTool(&MouseScrollTool{pc: pointer}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
+		"mouse_move":             newPostActionStableScreenshotTool(&MouseMoveTool{pc: pointer, screen: screen, adb: adbInput}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
+		"mouse_scroll":           newPostActionStableScreenshotTool(&MouseScrollTool{pc: pointer, adb: adbInput}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"touch_gesture":          newPostActionStableScreenshotTool(touchGesture, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"wheel_nudge":            newPostActionStableScreenshotTool(wheelNudge, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"quick_action":           newPostActionStableScreenshotTool(quickAction, waitStable, screenshot, postActionScreenshotDelay, screenStable),

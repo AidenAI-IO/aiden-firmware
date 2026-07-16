@@ -285,6 +285,7 @@ static const char* CONFIG_WEB_HTML =
     "          </div>\n"
     "          <div class=\"grid\">\n"
     "            <div class=\"field\"><label>pointer_mode</label><select id=\"hid_pointer_mode\" data-section=\"hid\"></select></div>\n"
+    "            <div class=\"field\"><label>input_backend</label><select id=\"hid_input_backend\" data-section=\"hid\"></select></div>\n"
     "            <div class=\"field wide\"><label>keyboard_device</label><input id=\"hid_keyboard_device\" data-section=\"hid\"></div>\n"
     "            <div class=\"field wide\"><label>mouse_device</label><input id=\"hid_mouse_device\" data-section=\"hid\"></div>\n"
     "            <div class=\"field wide\"><label>android_keyboard_device</label><input id=\"hid_android_keyboard_device\" data-section=\"hid\"></div>\n"
