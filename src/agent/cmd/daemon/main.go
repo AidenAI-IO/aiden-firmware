@@ -24,9 +24,11 @@ const (
 	wakeupDebounceInterval                  = 500 * time.Millisecond
 	defaultVoiceSteerListenTimeout          = 45 * time.Second
 	voiceWakeupInterruptedCorrectionContext = "Voice interruption: the user pressed the physical wakeup button " +
-		"while the previous voice turn was still running. The latest voice input was spoken after that interruption. " +
-		"Treat it as a correction or steering update to the interrupted turn, not as an independent new task unless " +
-		"the user explicitly asks to start over."
+		"while the previous voice turn was still running. The previous task was interrupted and did NOT complete. " +
+		"Based on the user's new input, judge the relationship to the interrupted task:\n" +
+		"- If the new input replaces the old task (e.g. \"don't do that\", \"do B instead\") → only execute the new request.\n" +
+		"- If the new input adds to or reorders (e.g. \"then do B\", \"do B first\") → execute the new request first, then briefly ask whether to resume the interrupted task.\n" +
+		"- If ambiguous → briefly confirm the user's intent before acting."
 )
 
 var voiceSteerListenTimeout = defaultVoiceSteerListenTimeout
