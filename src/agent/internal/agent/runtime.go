@@ -536,8 +536,19 @@ func (r *Runtime) Preempt() {
 		r.activeCancel()
 		r.lastPreemptTime = time.Now()
 	}
-	for _, hook := range r.preemptHooks {
-		hook()
+	for i, hook := range r.preemptHooks {
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					if r.logger != nil {
+						r.logger.Warn("[preempt] hook %d panicked: %v", i, recovered)
+					} else {
+						log.Printf("[preempt] hook %d panicked: %v", i, recovered)
+					}
+				}
+			}()
+			hook()
+		}()
 	}
 }
 

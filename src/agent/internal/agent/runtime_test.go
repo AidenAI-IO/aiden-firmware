@@ -4754,3 +4754,71 @@ func TestRuntimePreemptHooksAreCalled(t *testing.T) {
 		t.Fatal("first run did not complete")
 	}
 }
+
+func TestRuntimePreemptHookPanicDoesNotStopOtherHooks(t *testing.T) {
+	t.Parallel()
+
+	model := &blockingFirstCallModel{
+		firstCallStarted: make(chan struct{}),
+		releaseFirstCall: make(chan struct{}),
+		responses:        []*llms.ContentResponse{contentResponse("first"), contentResponse("second")},
+	}
+
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "test"}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		NewBuiltinToolSet(HIDConfig{}, AudioConfig{}, SearchConfig{}, ProxyConfig{}),
+		NewSkillIndex(),
+	)
+
+	var hook1Called atomic.Int32
+	var hook2Called atomic.Int32
+	var hook3Called atomic.Int32
+
+	// Register hooks: first and third work normally, second panics.
+	runtime.RegisterPreemptHook(func() {
+		hook1Called.Add(1)
+	})
+	runtime.RegisterPreemptHook(func() {
+		hook2Called.Add(1)
+		panic("intentional test panic")
+	})
+	runtime.RegisterPreemptHook(func() {
+		hook3Called.Add(1)
+	})
+
+	// Start first run.
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		runtime.Run(context.Background(), RunRequest{Input: "first"})
+	}()
+
+	select {
+	case <-model.firstCallStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first run did not start")
+	}
+
+	// Second run triggers preemption with panicking hook.
+	runtime.Run(context.Background(), RunRequest{Input: "second"})
+
+	// All hooks should be called despite the panic in hook 2.
+	if hook1Called.Load() == 0 {
+		t.Error("hook 1 was not called")
+	}
+	if hook2Called.Load() == 0 {
+		t.Error("hook 2 was not called (should have been called before panic)")
+	}
+	if hook3Called.Load() == 0 {
+		t.Error("hook 3 was not called (panic in hook 2 should not stop subsequent hooks)")
+	}
+
+	// Wait for first run to complete.
+	select {
+	case <-firstDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first run did not complete")
+	}
+}
