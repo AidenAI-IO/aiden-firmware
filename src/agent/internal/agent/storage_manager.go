@@ -1169,6 +1169,18 @@ func (o *realStorageOps) FormatDisk(fs string) (string, error) {
 	}
 
 	base := "/dev/" + o.device
+
+	// BLKRRPART fails EBUSY while ANY partition of the device is still held:
+	// umount returning does not mean the kernel has released the bdev (journal
+	// commits and page-cache writeback are asynchronous), and udev's blkid
+	// probe may briefly open the partition after change events. Make sure no
+	// partition is mounted anymore, flush, and give stragglers a moment.
+	if err := o.waitNoMounts(5 * time.Second); err != nil {
+		return "", err
+	}
+	_ = exec.Command("sync").Run()
+	time.Sleep(300 * time.Millisecond)
+
 	f, err := os.OpenFile(base, os.O_WRONLY, 0)
 	if err != nil {
 		return "", fmt.Errorf("open %s: %w", base, err)
@@ -1181,19 +1193,25 @@ func (o *realStorageOps) FormatDisk(fs string) (string, error) {
 		f.Close()
 		return "", fmt.Errorf("sync %s: %w", base, err)
 	}
-	// Ask the kernel to re-read the partition table; retry while it still
-	// considers the old partitions busy.
+	// Ask the kernel to re-read the partition table. Retry with backoff for
+	// up to ~10 s: transient holders (writeback, udev blkid) normally clear
+	// within a couple of seconds.
 	var rrErr syscall.Errno
-	for attempt := 0; attempt < 5; attempt++ {
+	delay := 200 * time.Millisecond
+	deadline := time.Now().Add(10 * time.Second)
+	for {
 		_, _, rrErr = syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), blkrrpartIoctl, 0)
-		if rrErr == 0 {
+		if rrErr == 0 || time.Now().After(deadline) {
 			break
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(delay)
+		if delay < 2*time.Second {
+			delay *= 2
+		}
 	}
 	f.Close()
 	if rrErr != 0 {
-		return "", fmt.Errorf("re-read partition table on %s: %v", base, rrErr)
+		return "", fmt.Errorf("re-read partition table on %s: %v (holders: %s)", base, rrErr, o.deviceHolders())
 	}
 
 	part := base + "p1"
@@ -1216,6 +1234,80 @@ func (o *realStorageOps) FormatDisk(fs string) (string, error) {
 		return "", fmt.Errorf("%s %s: %v: %s", cmd.Path, part, err, strings.TrimSpace(string(out)))
 	}
 	return part, nil
+}
+
+// waitNoMounts blocks until no partition of the card appears in the mount
+// table (a lazy umount detaches asynchronously), or fails naming the mount.
+func (o *realStorageOps) waitNoMounts(timeout time.Duration) error {
+	prefix := "/dev/" + o.device
+	deadline := time.Now().Add(timeout)
+	for {
+		mounted := ""
+		if data, err := os.ReadFile("/proc/self/mounts"); err == nil {
+			for _, line := range strings.Split(string(data), "\n") {
+				fields := strings.Fields(line)
+				if len(fields) >= 2 && strings.HasPrefix(fields[0], prefix) {
+					mounted = fields[0] + " at " + fields[1]
+					break
+				}
+			}
+		}
+		if mounted == "" {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("cannot format: %s is still mounted", mounted)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// deviceHolders reports what still references the card when BLKRRPART fails,
+// so the error message names the culprit instead of a bare EBUSY: lingering
+// mounts of any partition, and processes holding the device nodes open.
+func (o *realStorageOps) deviceHolders() string {
+	var findings []string
+
+	// Any partition of the card still mounted?
+	if data, err := os.ReadFile("/proc/self/mounts"); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 && strings.HasPrefix(fields[0], "/dev/"+o.device) {
+				findings = append(findings, fmt.Sprintf("%s mounted at %s", fields[0], fields[1]))
+			}
+		}
+	}
+
+	// Any process with an open fd on the device or a partition? (busybox has
+	// no fuser/lsof; scan /proc/*/fd directly.)
+	prefix := "/dev/" + o.device
+	if procs, err := os.ReadDir("/proc"); err == nil {
+		for _, proc := range procs {
+			pid := proc.Name()
+			if pid[0] < '0' || pid[0] > '9' {
+				continue
+			}
+			fdDir := filepath.Join("/proc", pid, "fd")
+			fds, err := os.ReadDir(fdDir)
+			if err != nil {
+				continue
+			}
+			for _, fd := range fds {
+				target, err := os.Readlink(filepath.Join(fdDir, fd.Name()))
+				if err != nil || !strings.HasPrefix(target, prefix) {
+					continue
+				}
+				comm, _ := os.ReadFile(filepath.Join("/proc", pid, "comm"))
+				findings = append(findings, fmt.Sprintf("pid %s (%s) holds %s", pid, strings.TrimSpace(string(comm)), target))
+				break
+			}
+		}
+	}
+
+	if len(findings) == 0 {
+		return "none visible (transient kernel reference, e.g. writeback)"
+	}
+	return strings.Join(findings, "; ")
 }
 
 // deviceSectors reads the card size in 512-byte sectors from sysfs.
