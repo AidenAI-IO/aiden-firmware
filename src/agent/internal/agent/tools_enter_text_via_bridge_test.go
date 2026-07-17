@@ -45,6 +45,11 @@ func TestEnterTextViaBridgeDescriptionDocumentsChatClipboardPath(t *testing.T) {
 	desc := (&EnterTextViaBridgeTool{}).Description()
 	for _, want := range []string{
 		"final chat/message composer",
+		"latest screenshot",
+		"actual editable field",
+		"folder/list view",
+		"create/new button",
+		"guessed blank space",
 		"runtime Phone Bridge status",
 		"CJK",
 		"iOS PiP queue",
@@ -61,6 +66,11 @@ func TestEnterTextViaBridgeDescriptionDocumentsChatClipboardPath(t *testing.T) {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q:\n%s", want, desc)
 		}
+	}
+	props, _ := (&EnterTextViaBridgeTool{}).ArgsSchema()["properties"].(map[string]any)
+	focusSchema, _ := props["focus"].(map[string]any)
+	if focusDesc, _ := focusSchema["description"].(string); !strings.Contains(focusDesc, "actual editable field") || !strings.Contains(focusDesc, "blank space") {
+		t.Fatalf("focus schema missing input-readiness guard:\n%v", focusSchema)
 	}
 }
 

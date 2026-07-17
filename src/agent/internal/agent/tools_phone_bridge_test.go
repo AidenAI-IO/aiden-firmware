@@ -12,6 +12,15 @@ import (
 	"nhooyr.io/websocket"
 )
 
+func TestSearchLaunchAppDescriptionRequiresFollowUpNavigation(t *testing.T) {
+	desc := (&appSearchOpenTool{}).Description()
+	for _, want := range []string{"target app is visibly opened", "does not mean", "editor", "input field is ready", "create/open/navigation step"} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("search_launch_app description missing %q: %s", want, desc)
+		}
+	}
+}
+
 func TestResolveOpenAppTargetsAppAliasStaysSemantic(t *testing.T) {
 	args := openAppArgs{App: " weixin "}
 

@@ -38,6 +38,11 @@ func TestEnterTextInFieldDescriptionDocumentsStrategyAndVerification(t *testing.
 	// Field mechanics live in ArgsSchema.
 	for _, want := range []string{
 		"keyboard_text",
+		"latest screenshot",
+		"actual editable field",
+		"folder/list view",
+		"create/new button",
+		"guessed blank-space coordinate",
 		"search fields",
 		"contact lookup",
 		"already-open composer",
@@ -65,6 +70,10 @@ func TestEnterTextInFieldDescriptionDocumentsStrategyAndVerification(t *testing.
 	segSchema, _ := props["segments"].(map[string]any)
 	if segDesc, _ := segSchema["description"].(string); !strings.Contains(segDesc, "romanization") {
 		t.Fatalf("segments schema missing romanization semantics:\n%v", segSchema)
+	}
+	focusSchema, _ := props["focus"].(map[string]any)
+	if focusDesc, _ := focusSchema["description"].(string); !strings.Contains(focusDesc, "actual editable field") || !strings.Contains(focusDesc, "blank space") {
+		t.Fatalf("focus schema missing input-readiness guard:\n%v", focusSchema)
 	}
 }
 

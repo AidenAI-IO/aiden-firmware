@@ -24,6 +24,7 @@ func (t *EnterTextInFieldTool) Name() string { return "enter_text_in_field" }
 func (t *EnterTextInFieldTool) Description() string {
 	return `Enter text into a focused input field with automatic strategy selection and verification. ` +
 		`Prefer this over keyboard_text for any input field entry; keyboard_text is ASCII-only and has no field verification. ` +
+		`Precondition: the latest screenshot must clearly show the actual editable field or composer, and focus coordinates must be inside that visible field. Opening an app, folder/list view, or screen that only shows a create/new button is not enough; first create or open the document/message and observe its editor. Never use a guessed blank-space coordinate. ` +
 		`Use this for search fields, contact lookup, short text when no target-preserving Phone Bridge clipboard path is available, and normal IME/pinyin entry. When runtime app_text_entry_strategy is target_preserving_bridge, do not use this for non-search CJK/non-ASCII, multiline, or final composer text; call enter_text_via_bridge directly and pass the reported app_platform. For a user request to send, reply, or message from an already-open composer, set send_after_commit=true. ` +
 		`Returns committed:true only when the exact target text is fully committed in the input field. Report success only when committed:true and field_text matches target exactly. ` +
 		`Focus coordinates use the same coord_space system as touch/click tools; prefer normalized coordinates from the latest screenshot.`
@@ -34,7 +35,7 @@ func (t *EnterTextInFieldTool) ArgsSchema() map[string]any {
 		"text":              stringArgSchema("Exact text that must appear in the field when done."),
 		"platform":          stringEnumArgSchema("Target platform.", "ios", "android", "mac"),
 		"mode":              stringEnumArgSchema("Interaction mode. Use \"search\" for quick handoff in search boxes; omit for normal form entry.", "form", "search"),
-		"focus":             focusPointArgSchema("Input field coordinates."),
+		"focus":             focusPointArgSchema("Coordinates inside an actual editable field or composer that is clearly visible in the latest screenshot; do not use blank space, an app/folder/list page, or a create/new button as the field."),
 		"segments":          stringArrayArgSchema("IME romanization syllables for CJK (e.g. [\"ni\",\"hao\"] for 你好). Pass [] for pure ASCII text."),
 		"max_attempts":      integerArgSchema("Retry attempts on verify failure (default 3)."),
 		"send_after_commit": boolArgSchema("After the exact target text is verified in the field, press send/submit and verify the input cleared or changed. Set true when the user asked to send, reply, or message and the target chat/composer is already open."),
