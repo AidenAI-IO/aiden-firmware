@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/model"
 	"bytes"
 	"context"
 	"errors"
@@ -20,22 +21,13 @@ import (
 	"github.com/tmc/langchaingo/llms/ollama"
 )
 
-type ModelResolver interface {
-	Get() (llms.Model, error)
-	CallOptions() []chains.ChainCallOption
-	// Spec returns capabilities (context window, max output) for the configured
-	// model. Implementations return a zero-value ModelSpec for unknown models;
-	// callers must fall back to a configured default.
-	Spec() ModelSpec
-}
-
 type ModelManager struct {
 	config ModelConfig
 	proxy  ProxyConfig
 	model  llms.Model
 
 	specMu                    sync.Mutex
-	providerSpec              ModelSpec
+	providerSpec              model.ModelSpec
 	providerSpecLoaded        bool
 	providerSpecFetchStarted  bool
 	metadataHTTPClient        *http.Client
@@ -109,7 +101,7 @@ func (m *ModelManager) CallOptions() []chains.ChainCallOption {
 	return options
 }
 
-func (m *ModelManager) Spec() ModelSpec {
+func (m *ModelManager) Spec() model.ModelSpec {
 	spec, _ := LookupModelSpec(m.config.Provider, m.config.Model)
 
 	explicitContextWindow := m.config.ContextWindow > 0

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/model"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,7 +13,7 @@ import (
 	"time"
 )
 
-func waitForModelSpec(t *testing.T, mgr *ModelManager, want ModelSpec) ModelSpec {
+func waitForModelSpec(t *testing.T, mgr *ModelManager, want model.ModelSpec) model.ModelSpec {
 	t.Helper()
 
 	deadline := time.Now().Add(2 * time.Second)
@@ -148,7 +149,7 @@ func TestModelManagerSpecUsesRegistryBeforeProviderMetadata(t *testing.T) {
 		APIKey:   "test-token",
 	}
 	cacheWriter := NewModelManager(cfg, ProxyConfig{}, WithProviderModelMetadataCachePath(cachePath))
-	if err := cacheWriter.writeProviderModelSpecCache(ModelSpec{ContextWindow: 524_288, MaxOutput: 16_384}); err != nil {
+	if err := cacheWriter.writeProviderModelSpecCache(model.ModelSpec{ContextWindow: 524_288, MaxOutput: 16_384}); err != nil {
 		t.Fatalf("writeProviderModelSpecCache: %v", err)
 	}
 
@@ -204,7 +205,7 @@ func TestModelManagerSpecFetchesOpenRouterContextWindowWhenRegistryUnknown(t *te
 	}, ProxyConfig{})
 
 	for i := 0; i < 2; i++ {
-		waitForModelSpec(t, mgr, ModelSpec{ContextWindow: 524_288, MaxOutput: 16_384})
+		waitForModelSpec(t, mgr, model.ModelSpec{ContextWindow: 524_288, MaxOutput: 16_384})
 	}
 	if got := requests.Load(); got != 1 {
 		t.Fatalf("requests = %d, want 1 cached request", got)
@@ -342,7 +343,7 @@ func TestModelManagerSpecReadsProviderMetadataFromFileCache(t *testing.T) {
 	}
 
 	first := NewModelManager(cfg, ProxyConfig{}, WithProviderModelMetadataCachePath(cachePath))
-	waitForModelSpec(t, first, ModelSpec{ContextWindow: 131_072, MaxOutput: 4_096})
+	waitForModelSpec(t, first, model.ModelSpec{ContextWindow: 131_072, MaxOutput: 4_096})
 
 	second := NewModelManager(cfg, ProxyConfig{}, WithProviderModelMetadataCachePath(cachePath))
 	if spec := second.Spec(); spec.ContextWindow != 131_072 || spec.MaxOutput != 4_096 {
@@ -371,7 +372,7 @@ func TestModelManagerSpecReadsProviderMaxOutputOnlyFromFileCache(t *testing.T) {
 	}
 
 	cacheWriter := NewModelManager(cfg, ProxyConfig{}, WithProviderModelMetadataCachePath(cachePath))
-	if err := cacheWriter.writeProviderModelSpecCache(ModelSpec{MaxOutput: 16_384}); err != nil {
+	if err := cacheWriter.writeProviderModelSpecCache(model.ModelSpec{MaxOutput: 16_384}); err != nil {
 		t.Fatalf("writeProviderModelSpecCache: %v", err)
 	}
 
@@ -409,7 +410,7 @@ func TestModelManagerSpecFetchesProviderMaxOutputWhenContextWindowOverrideSet(t 
 		ContextWindow: 64_000,
 	}, ProxyConfig{})
 
-	spec := waitForModelSpec(t, mgr, ModelSpec{ContextWindow: 64_000, MaxOutput: 16_384})
+	spec := waitForModelSpec(t, mgr, model.ModelSpec{ContextWindow: 64_000, MaxOutput: 16_384})
 	if spec.ContextWindow != 64_000 {
 		t.Fatalf("Spec().ContextWindow = %d, want explicit override 64_000", spec.ContextWindow)
 	}
@@ -463,7 +464,7 @@ func TestModelManagerRetriesProviderMetadataAfterFailure(t *testing.T) {
 		APIKey:   "test-token",
 	}, ProxyConfig{})
 
-	waitForModelSpec(t, mgr, ModelSpec{ContextWindow: 131_072, MaxOutput: 4_096})
+	waitForModelSpec(t, mgr, model.ModelSpec{ContextWindow: 131_072, MaxOutput: 4_096})
 	if got := requests.Load(); got != 2 {
 		t.Fatalf("requests = %d, want 2 with retry after failure", got)
 	}
@@ -503,7 +504,7 @@ func TestModelManagerSpecFetchesOllamaContextWindowWhenAuto(t *testing.T) {
 	}, ProxyConfig{})
 
 	for i := 0; i < 2; i++ {
-		waitForModelSpec(t, mgr, ModelSpec{ContextWindow: 8_192})
+		waitForModelSpec(t, mgr, model.ModelSpec{ContextWindow: 8_192})
 	}
 	if got := requests.Load(); got != 1 {
 		t.Fatalf("requests = %d, want 1 cached request", got)

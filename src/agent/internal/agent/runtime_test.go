@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"aiden-agent/internal/agent/agentpath"
+	"aiden-agent/internal/agent/model"
 
 	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/llms"
@@ -77,7 +78,7 @@ type testModelResolver struct {
 	model llms.Model
 	err   error
 	calls int
-	spec  ModelSpec
+	spec  model.ModelSpec
 }
 
 func (r *testModelResolver) Get() (llms.Model, error) {
@@ -92,7 +93,7 @@ func (r *testModelResolver) CallOptions() []chains.ChainCallOption {
 	return nil
 }
 
-func (r *testModelResolver) Spec() ModelSpec {
+func (r *testModelResolver) Spec() model.ModelSpec {
 	return r.spec
 }
 

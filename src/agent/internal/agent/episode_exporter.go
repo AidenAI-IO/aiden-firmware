@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/util"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -1154,13 +1155,13 @@ func episodeTokenUsage(episode TaskEpisode) (promptTokens, completionTokens, tot
 	if episode.Extra == nil {
 		return 0, 0, 0, false
 	}
-	if v, found := usageMetricInt(episode.Extra["prompt_tokens"]); found {
+	if v, found := util.UsageMetricInt(episode.Extra["prompt_tokens"]); found {
 		promptTokens = v
 	}
-	if v, found := usageMetricInt(episode.Extra["completion_tokens"]); found {
+	if v, found := util.UsageMetricInt(episode.Extra["completion_tokens"]); found {
 		completionTokens = v
 	}
-	if v, found := usageMetricInt(episode.Extra["total_tokens"]); found {
+	if v, found := util.UsageMetricInt(episode.Extra["total_tokens"]); found {
 		totalTokens = v
 	}
 	if totalTokens == 0 && (promptTokens > 0 || completionTokens > 0) {
@@ -1445,7 +1446,7 @@ func iterationWindowForEventMetadata(windows []langfuseIterationWindow, event Ta
 
 func taskEpisodeEventIterationIndex(event TaskEpisodeEvent, fallback int) int {
 	if event.Metadata != nil {
-		if value, ok := usageMetricInt(event.Metadata["iteration"]); ok && value > 0 {
+		if value, ok := util.UsageMetricInt(event.Metadata["iteration"]); ok && value > 0 {
 			return value
 		}
 	}
@@ -1621,7 +1622,7 @@ func episodeModelParameters(episode TaskEpisode) map[string]interface{} {
 	if v, ok := costMetricFloat(episode.Extra["temperature"]); ok && v != 0 {
 		params["temperature"] = v
 	}
-	if v, ok := usageMetricInt(episode.Extra["max_tokens"]); ok && v > 0 {
+	if v, ok := util.UsageMetricInt(episode.Extra["max_tokens"]); ok && v > 0 {
 		params["max_tokens"] = v
 	}
 	if len(params) == 0 {
@@ -1763,8 +1764,8 @@ func (e *EpisodeExporter) traceMetadata(episode TaskEpisode, prompts []telemetry
 
 	// Add prompt cache hit rate from episode.Extra
 	if episode.Extra != nil {
-		if promptTokens, ok := usageMetricInt(episode.Extra["prompt_tokens"]); ok && promptTokens > 0 {
-			if cachedTokens, ok := usageMetricInt(episode.Extra["cached_prompt_tokens"]); ok && cachedTokens > 0 {
+		if promptTokens, ok := util.UsageMetricInt(episode.Extra["prompt_tokens"]); ok && promptTokens > 0 {
+			if cachedTokens, ok := util.UsageMetricInt(episode.Extra["cached_prompt_tokens"]); ok && cachedTokens > 0 {
 				meta["prompt_cache_hit_rate"] = float64(cachedTokens) / float64(promptTokens)
 				meta["cached_prompt_tokens"] = cachedTokens
 			}
