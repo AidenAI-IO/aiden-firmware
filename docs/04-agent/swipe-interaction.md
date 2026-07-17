@@ -106,14 +106,15 @@ Typical scenarios: time picker, date picker, city picker.
 Strategy:
 1. Screenshot, recognize picker current value and target value
 2. Read visible row ordering, selected value, target value, row spacing, and the column center
+   - Convert all wheel geometry to normalized 0-1000 coordinates before calling `wheel_nudge`; use screenshot width for `column_x`, but screenshot height for `center_y`, `row_spacing`, and `visible_target_y`; the model-facing wheel contract does not expose a coordinate-space selector
    - For stepped cyclic wheels, `cycle_size` is the numeric modulus rather than visible row count (for example `00..59` by fives still uses `cycle_size:60`, `value_step:5`)
-   - If row ordering is unknown, omit `value_step` and pass `remaining_gap:1` for the single-row probe; report the real row gap after observing the result
-3. If the latest screenshot visibly shows that the selected row supports numeric keyboard/edit mode, open it once and make one keyboard attempt; verify the exact value in the returned screenshot
+   - If row ordering is unknown, omit `value_step` for the single-row probe
+3. Tap the selected current value once as the first choice for a numeric picker. If keyboard/edit mode appears, make one `keyboard_text` attempt and verify the exact value in the returned screenshot
 4. If keyboard mode is unavailable or the attempt has no verified effect, stop keyboard retries and call `wheel_nudge`
-5. `wheel_nudge` validates that the target is reachable by `value_step`, derives the shortest direction, and moves at most 1/2/3/4 measured rows based on `remaining_gap` expressed as picker rows rather than raw numeric difference
+5. `wheel_nudge` validates that the target is reachable by `value_step`, derives the shortest direction and row gap internally, and uses coarse-to-fine travel: at most 5/3/2/1 measured rows for gaps of 9+/5-8/2-4/1
 6. When the target is an actually visible adjacent row, pass its exact `visible_target_y`; otherwise omit it and use the bounded drag path
 7. Wait for the returned screenshot and read the new centered value
-8. Recalculate from the new observation; if no movement occurred, retry one micro probe rather than repeating a large gesture
+8. Continue from the new observation; if no movement occurred, retry one micro probe rather than repeating a large gesture
 9. Stop when the target is centered or the run-scoped safety policy reports no progress
 ```
 

@@ -75,6 +75,83 @@ func TestWheelGestureGuardNoMovementAllowsMicroRetry(t *testing.T) {
 	}
 }
 
+func TestWheelGestureGuardAcceptsCorrectDirectionBeyondPlannedRows(t *testing.T) {
+	guard := newWheelNudgeGuard(nil)
+	first := wheelNudgeGuardCall(`{"picker_id":"alarm-create-hour","column_x":422,"center_y":257,"remaining_gap":9,"current_value":13,"target_value":4,"cycle_size":24,"cycle_start":0,"row_spacing":48,"value_step":1}`)
+	allowAndCommitWheel(t, guard, first)
+
+	// Physical picker inertia moved six rows even though the bounded plan
+	// targeted fewer. The direction and declared visible row ordering are still
+	// correct, so the guard must accept the fresh value and continue the loop.
+	next := wheelNudgeGuardCall(`{"picker_id":"alarm-create-hour","column_x":422,"center_y":257,"remaining_gap":3,"current_value":7,"target_value":4,"cycle_size":24,"cycle_start":0,"row_spacing":48,"value_step":1}`)
+	if result, allowed := guard.BeforeToolCall(context.Background(), next); !allowed || result.Error != nil {
+		t.Fatalf("correct-direction 13 -> 7 observation unexpectedly blocked: allowed=%v result=%#v", allowed, result)
+	}
+	if guard.columns[0].pending != nil {
+		t.Fatalf("accepted observation left stale pending state: %#v", guard.columns[0].pending)
+	}
+}
+
+func TestWheelGestureGuardReportsRequiredStepSignForOppositeMapping(t *testing.T) {
+	guard := newWheelNudgeGuard(nil)
+	first := wheelNudgeGuardCall(`{"picker_id":"alarm-create-hour","column_x":422,"center_y":257,"remaining_gap":9,"current_value":13,"target_value":4,"cycle_size":24,"cycle_start":0,"row_spacing":48,"value_step":1}`)
+	allowAndCommitWheel(t, guard, first)
+
+	wrongSign := wheelNudgeGuardCall(`{"picker_id":"alarm-create-hour","column_x":422,"center_y":257,"remaining_gap":3,"current_value":7,"target_value":4,"cycle_size":24,"cycle_start":0,"row_spacing":48,"value_step":-1}`)
+	result, allowed := guard.BeforeToolCall(context.Background(), wrongSign)
+	if allowed || result.Error == nil {
+		t.Fatalf("opposite value_step sign must be blocked: allowed=%v result=%#v", allowed, result)
+	}
+	if !strings.Contains(result.Output, "requires value_step with positive sign") {
+		t.Fatalf("blocked result = %#v, want explicit required sign", result)
+	}
+}
+
+func TestWheelObservationRowsSolvesLargeCycleWithoutEnumeration(t *testing.T) {
+	const cycleSize = 1_000_000_007
+	const valueStep = 37
+	const wantRows = 900_000_000
+	afterValue := int((int64(wantRows) * valueStep) % cycleSize)
+	observation := wheelNudgeObservation{
+		beforeValue: 0,
+		direction:   "up",
+		cycleSize:   cycleSize,
+		cycleStart:  0,
+	}
+
+	rows, ok := wheelObservationRows(observation, afterValue, valueStep)
+	if !ok || rows != wantRows {
+		t.Fatalf("large-cycle rows = %d, %v, want %d, true", rows, ok, wantRows)
+	}
+}
+
+func TestWheelObservationRowsRejectsUnreachableLargeCycleDelta(t *testing.T) {
+	observation := wheelNudgeObservation{
+		beforeValue: 0,
+		direction:   "up",
+		cycleSize:   1_000_000_000,
+		cycleStart:  0,
+	}
+
+	if rows, ok := wheelObservationRows(observation, 999_999_999, 6); ok {
+		t.Fatalf("unreachable large-cycle rows = %d, true, want false", rows)
+	}
+}
+
+func TestWheelObservationRowsMapsZeroResidueToSmallestPositiveCycle(t *testing.T) {
+	observation := wheelNudgeObservation{
+		beforeValue: 13,
+		direction:   "up",
+		cycleSize:   24,
+		cycleStart:  0,
+	}
+
+	rows, ok := wheelObservationRows(observation, 13, 6)
+	if !ok || rows != 4 {
+		t.Fatalf("full-cycle rows = %d, %v, want 4, true", rows, ok)
+	}
+}
+
 func TestWheelGestureGuardLocksFinalTargetPerColumn(t *testing.T) {
 	guard := newWheelNudgeGuard(nil)
 	probe := wheelNudgeGuardCall(`{"picker_id":"alarm-create","column_x":157,"center_y":274,"coord_space":"screenshot","remaining_gap":1,"current_value":17,"target_value":1,"cycle_size":24,"cycle_start":0,"row_spacing":43}`)
@@ -181,20 +258,41 @@ func TestWheelGestureGuardAllowsDistantYearPickerProgress(t *testing.T) {
 		current -= wheelNudgeRowsForGap(gap)
 		steps++
 	}
-	if steps <= 10 {
-		t.Fatalf("test did not exceed legacy fixed budget: steps=%d", steps)
+	if steps != 13 {
+		t.Fatalf("distant year picker completed in %d steps, want 13 coarse-to-fine nudges", steps)
+	}
+}
+
+func TestWheelGestureGuardAllowsConservativePickerProgress(t *testing.T) {
+	guard := newWheelNudgeGuard(nil)
+	// The real iOS minute picker moved three rows for nominal four-row drags,
+	// then two rows for nominal three-row drags. Reaching 00 from 29 therefore
+	// needs an eleventh call even though the initial progress-derived budget is
+	// ten calls.
+	for _, current := range []int{29, 26, 23, 20, 17, 14, 11, 8, 6, 4, 2} {
+		call := wheelNudgeGuardCall(fmt.Sprintf(`{"picker_id":"alarm-create","column_x":590,"center_y":261,"remaining_gap":%d,"current_value":%d,"target_value":0,"cycle_size":60,"cycle_start":0,"row_spacing":38,"value_step":1}`, current, current))
+		if result, allowed := guard.BeforeToolCall(context.Background(), call); !allowed || result.Error != nil {
+			t.Fatalf("conservative minute progress blocked at %02d: allowed=%v result=%#v", current, allowed, result)
+		}
+		guard.AfterToolCall(context.Background(), call, ToolResult{Output: "ok"})
+	}
+	if got := guard.columns[0].used; got != 11 {
+		t.Fatalf("minute column used %d calls, want 11", got)
+	}
+	if got := guard.columns[0].limit; got < 11 {
+		t.Fatalf("conservative progress column limit = %d, want at least 11", got)
 	}
 }
 
 func TestWheelGestureGuardBudgetsSupportThreeLargeColumns(t *testing.T) {
-	if wheelNudgeMinPerColumn != 10 || wheelNudgeMaxPerColumn != 64 || wheelNudgeMaxTotal != 128 {
-		t.Fatalf("wheel budgets = min:%d max:%d total:%d, want 10, 64, and 128", wheelNudgeMinPerColumn, wheelNudgeMaxPerColumn, wheelNudgeMaxTotal)
+	if wheelNudgeMinPerColumn != 12 || wheelNudgeMaxPerColumn != 64 || wheelNudgeMaxTotal != 128 {
+		t.Fatalf("wheel budgets = min:%d max:%d total:%d, want 12, 64, and 128", wheelNudgeMinPerColumn, wheelNudgeMaxPerColumn, wheelNudgeMaxTotal)
 	}
 	if short := wheelNudgeLimitForGap(20); short != wheelNudgeMinPerColumn {
 		t.Fatalf("short wheel limit = %d, want %d", short, wheelNudgeMinPerColumn)
 	}
-	if distant := wheelNudgeLimitForGap(200); distant <= 32 || distant >= wheelNudgeMaxPerColumn {
-		t.Fatalf("distant wheel limit = %d, want a progress-derived limit between 33 and %d", distant, wheelNudgeMaxPerColumn-1)
+	if distant := wheelNudgeLimitForGap(200); distant <= 24 || distant >= wheelNudgeMaxPerColumn {
+		t.Fatalf("distant wheel limit = %d, want a progress-derived limit between 25 and %d", distant, wheelNudgeMaxPerColumn-1)
 	}
 }
 
@@ -427,8 +525,8 @@ func TestWheelGestureGuardValidatesObservedProbeDirection(t *testing.T) {
 	if allowed {
 		t.Fatal("mapping that contradicts the observed 2 -> 3 probe must be blocked")
 	}
-	if result.Error == nil || !strings.Contains(result.Output, "does not match value_step=-1") {
-		t.Fatalf("blocked result = %#v, want observed step mismatch", result)
+	if result.Error == nil || !strings.Contains(result.Output, "requires value_step with positive sign") {
+		t.Fatalf("blocked result = %#v, want explicit required sign", result)
 	}
 }
 
