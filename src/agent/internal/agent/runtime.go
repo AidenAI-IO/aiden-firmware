@@ -998,11 +998,11 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	compactor := compactor.NewCompactor(compactor.DefaultProtectRule, r.models)
 	tokenUsage := compactor.EstimateTokenUsage(r.contextManager)
 	// TODO: make this configurable
-	if tokenUsage > int(float64(contextWindow)*0.8) {
+	if tokenUsage > int(float64(max(contextWindow, 8192))*0.8) {
 		if r.logger != nil {
 			r.logger.Info("Compaction: token usage reached the threshold, try to compact the context... tokenUsage: %d, contextWindow: %d", tokenUsage, contextWindow)
 		}
-		newManager, compacted, err := compactor.Compact(r.contextManager)
+		newManager, compacted, err := compactor.Compact(ctx, r.contextManager)
 		if err != nil {
 			return RunResult{}, err
 		}

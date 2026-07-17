@@ -57,11 +57,10 @@ func (c *Compactor) EstimateTokenUsage(session *contextmanager.ContextManager) i
 			tokenUsage += len(msg.Attachments) * tokencounter.EstimateImageTokens
 		}
 	}
-	log.Printf("token usage estimated for session %s: %d", session.GetSessionID(), tokenUsage)
 	return tokenUsage
 }
 
-func (c *Compactor) Compact(session *contextmanager.ContextManager) (*contextmanager.ContextManager, bool, error) {
+func (c *Compactor) Compact(ctx context.Context, session *contextmanager.ContextManager) (*contextmanager.ContextManager, bool, error) {
 	HeadN := c.ProtectRule.HeadN
 	TailN := c.ProtectRule.TailN
 	messageList := session.CloneMessageList()
@@ -90,7 +89,7 @@ func (c *Compactor) Compact(session *contextmanager.ContextManager) (*contextman
 	tails := messageList[len(messageList)-TailN:]
 	mids := messageList[HeadN : len(messageList)-TailN]
 	// compact mids into one single user message
-	summary := c.generateSummary(context.Background(), mids)
+	summary := c.generateSummary(ctx, mids)
 	if summary == "" {
 		return nil, false, fmt.Errorf("failed to generate summary")
 	}
@@ -105,7 +104,6 @@ func (c *Compactor) Compact(session *contextmanager.ContextManager) (*contextman
 	if err != nil {
 		return nil, false, err
 	}
-	log.Printf("compacted session %s to %s", session.GetSessionID(), newManager.GetSessionID())
 	return newManager, true, nil
 }
 

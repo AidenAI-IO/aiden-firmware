@@ -2102,16 +2102,18 @@ func contentResponse(content string) *llms.ContentResponse {
 func TestRuntimeRunCompactsWithoutLogger(t *testing.T) {
 	configDir := ensureTestConfigDir(t, t.TempDir())
 	sessionFolder := agentpath.ContextManagerSessionFolder(configDir)
+	// Runtime compaction uses a minimum context window of 8192 tokens, so this
+	// fixture must comfortably exceed the ~80% threshold to force compaction.
 	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []contextmanager.Message{
 		{Role: contextmanager.MessageRoleSystem, Content: "Answer directly."},
-		{Role: contextmanager.MessageRoleUser, Content: strings.Repeat("user ", 40)},
-		{Role: contextmanager.MessageRoleAssistant, Content: strings.Repeat("assistant ", 40)},
+		{Role: contextmanager.MessageRoleUser, Content: strings.Repeat("user ", 1600)},
+		{Role: contextmanager.MessageRoleAssistant, Content: strings.Repeat("assistant ", 1600)},
 		{
 			Role: contextmanager.MessageRoleToolCall,
 			ToolCalls: []contextmanager.ToolCall{{
 				ID:        "call_1",
 				Name:      "echo",
-				Arguments: `{"input":"` + strings.Repeat("x", 120) + `"}`,
+				Arguments: `{"input":"` + strings.Repeat("x", 4000) + `"}`,
 			}},
 		},
 		{
@@ -2119,7 +2121,7 @@ func TestRuntimeRunCompactsWithoutLogger(t *testing.T) {
 			ToolResults: []contextmanager.ToolResult{{
 				ToolCallID: "call_1",
 				Name:       "echo",
-				Content:    strings.Repeat("result ", 40),
+				Content:    strings.Repeat("result ", 1600),
 			}},
 		},
 		{Role: contextmanager.MessageRoleAssistant, Content: "recent tail"},
