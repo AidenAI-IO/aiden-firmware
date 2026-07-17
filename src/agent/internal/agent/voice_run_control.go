@@ -79,6 +79,20 @@ func (c *voiceRunControl) end(requestID string) {
 	}
 }
 
+func (c *voiceRunControl) forceReset() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.resolveInterruptLocked(RunSteerMessage{}, false)
+	c.activeRequestID = ""
+	c.acceptingSteer = false
+	c.clearPendingLocked()
+	c.interrupt = voiceSteerInterruptState{}
+	if c.inactive != nil {
+		close(c.inactive)
+		c.inactive = nil
+	}
+}
+
 func (c *voiceRunControl) waitUntilInactive(ctx context.Context) bool {
 	if ctx == nil {
 		ctx = context.Background()
@@ -172,7 +186,7 @@ func (c *voiceRunControl) consumePending(requestID string) (RunSteerMessage, boo
 		return RunSteerMessage{}, false
 	}
 
-	// Check interrupt steer first (interrupted scenario takes priority)
+	// Check interrupt steer first (interruption scenario)
 	if c.interrupt.active && c.interrupt.done && c.interrupt.hasText {
 		steer := c.interrupt.steer
 		c.resetInterruptLocked()
@@ -182,7 +196,7 @@ func (c *voiceRunControl) consumePending(requestID string) (RunSteerMessage, boo
 		return steer, true
 	}
 
-	// Then check pending steer (normal scenario)
+	// Check pending steer next (normal scenario)
 	if !c.hasPendingSteer {
 		return RunSteerMessage{}, false
 	}
@@ -257,6 +271,12 @@ func (c *voiceRunControl) consumePendingLocked() (RunSteerMessage, bool) {
 	steer := c.pendingSteer
 	c.clearPendingLocked()
 	return steer, true
+}
+
+func (c *voiceRunControl) isActiveRequest(requestID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.activeRequestID != "" && c.activeRequestID == requestID
 }
 
 func (c *voiceRunControl) closeAcceptanceLocked() {

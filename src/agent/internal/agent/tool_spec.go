@@ -15,6 +15,12 @@ const (
 	toolInputModeText = "text"
 )
 
+// dynamicExampleInputProvider allows tools to provide dynamic example inputs
+// that reflect runtime configuration instead of static hardcoded values.
+type dynamicExampleInputProvider interface {
+	DynamicExampleInput() string
+}
+
 type ToolSpec struct {
 	Tool         langtools.Tool
 	Name         string
@@ -314,13 +320,22 @@ func NewToolSpec(tool langtools.Tool) ToolSpec {
 	if meta.HTTPExposed != nil {
 		httpExposed = *meta.HTTPExposed
 	}
+
+	// Use dynamic example input if the tool provides it
+	exampleInput := meta.ExampleInput
+	if provider, ok := tool.(dynamicExampleInputProvider); ok {
+		if dynamicExample := provider.DynamicExampleInput(); dynamicExample != "" {
+			exampleInput = dynamicExample
+		}
+	}
+
 	return ToolSpec{
 		Tool:         tool,
 		Name:         name,
 		Description:  strings.TrimSpace(tool.Description()),
 		Category:     defaultString(meta.Category, "general"),
 		InputMode:    defaultString(meta.InputMode, toolInputModeText),
-		ExampleInput: meta.ExampleInput,
+		ExampleInput: exampleInput,
 		AgentExposed: agentExposed,
 		HTTPExposed:  httpExposed,
 	}

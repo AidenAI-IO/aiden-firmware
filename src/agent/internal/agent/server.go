@@ -413,6 +413,12 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		return err
 	})
 
+	// Register preempt hook: when a new run starts, release WebUI audio resources.
+	runtime.RegisterPreemptHook(func() {
+		s.interruptAllActiveOutputs()
+		s.abortWebRecording()
+	})
+
 	return s
 }
 
@@ -845,6 +851,51 @@ func (s *Server) interruptRequestOutputs(requestID string) bool {
 	return true
 }
 
+// interruptAllActiveOutputs interrupts TTS outputs for all active requests.
+func (s *Server) interruptAllActiveOutputs() {
+	s.activeOutputsMu.Lock()
+	var all []*activeTTSOutput
+	for _, outputs := range s.activeOutputs {
+		for output := range outputs {
+			all = append(all, output)
+		}
+	}
+	s.activeOutputsMu.Unlock()
+	for _, output := range all {
+		output.interrupt()
+	}
+}
+
+// abortWebRecording immediately stops any active web audio recording session,
+// discarding any buffered audio. Used during preemption to release the
+// microphone for the new turn.
+func (s *Server) abortWebRecording() {
+	s.recordMu.Lock()
+	recording := s.webRecording
+	s.webRecording = nil
+	s.recordMu.Unlock()
+	if recording == nil {
+		return
+	}
+	if s.logger != nil {
+		s.logger.Info("[preempt] Aborting web audio recording")
+	}
+
+	// Close STT session if present to avoid resource leak.
+	recording.mu.Lock()
+	sttSession := recording.sttSession
+	recording.sttSession = nil
+	recording.mu.Unlock()
+	if sttSession != nil {
+		_ = sttSession.Close()
+	}
+
+	// Stop the audio recording session.
+	if err := s.audioClient.StopRecording(recording.sessionID); err != nil && s.logger != nil {
+		s.logger.Warn("[preempt] StopRecording failed: %v", err)
+	}
+}
+
 func (s *Server) setPendingSteer(requestID, content string) (pendingSteerMessage, bool) {
 	s.activeRunsMu.Lock()
 	defer s.activeRunsMu.Unlock()
@@ -1137,7 +1188,11 @@ func (s *Server) handleChatAsync(
 				if s.liveActivity != nil {
 					s.liveActivity.CancelTask(requestID)
 				}
-				pending.err = "request canceled"
+				if s.runtime.WasPreempted(5 * time.Second) {
+					pending.err = "preempted by another input source"
+				} else {
+					pending.err = "request canceled"
+				}
 			} else {
 				errorMsg := Message{
 					Type:      "episode_status",

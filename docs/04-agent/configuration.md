@@ -259,6 +259,7 @@ The three stall-score thresholds must satisfy
 | `android_keyboard_device` | `/dev/hidg2` | Consumer Control HID device (`hid.usb2`) used for Android extension keys in `pointer_mode = "touchscreen"` and media/volume/brightness/screenshot keys in `pointer_mode = "absolute"` |
 | `frame_socket` | `/run/frame_service/frame_service.sock` | Frame Service socket used by the screenshot tool |
 | `pointer_mode` | `absolute` | `absolute` for iOS-style cursor mode on `hid.usb1` plus a limited `hid.usb2` media-key interface; `touchscreen` for Android digitizer mode plus full `hid.usb2` Android extension keys |
+| `input_backend` | `hid` | Low-level input backend for click/touch/keyboard tools. `hid` writes USB HID reports; `adb` uses the paired Android ADB connection and `adb shell input`/ADBKeyboard commands. |
 
 ## `[live_activity]`
 
