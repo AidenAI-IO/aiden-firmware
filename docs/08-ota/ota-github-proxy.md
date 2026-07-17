@@ -43,7 +43,7 @@ github_proxy_url = "https://gh-proxy.com/"
 
 You can use any GitHub proxy service that follows the standard pattern:
 
-```
+```text
 https://your-proxy.example.com/https://github.com/...
 ```
 
