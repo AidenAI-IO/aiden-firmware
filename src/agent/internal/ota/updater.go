@@ -830,7 +830,14 @@ func (u *Updater) fetchLatestReleaseAssets(parent context.Context, releaseURL st
 func (u *Updater) fetchBytesWithTokenLimit(parent context.Context, url string, token string, limit int64) ([]byte, error) {
 	ctx, cancel := u.httpContext(parent)
 	defer cancel()
-	return fetchBytesWithTokenLimit(ctx, url, token, limit)
+
+	// Apply GitHub proxy if configured
+	fetchURL := ApplyGitHubProxy(url, u.config.GitHubProxyURL)
+	if fetchURL != url {
+		fmt.Fprintf(os.Stderr, "ota: using GitHub proxy for manifest download\n")
+	}
+
+	return fetchBytesWithTokenLimit(ctx, fetchURL, token, limit)
 }
 
 func (u *Updater) downloadFileWithToken(parent context.Context, url string, dst string, expectedSize int64, token string) error {
