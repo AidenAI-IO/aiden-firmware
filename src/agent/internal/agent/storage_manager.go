@@ -1015,8 +1015,8 @@ func (o *realStorageOps) CardIsBlank() bool {
 		return false // kernel sees a partition table
 	}
 	dev := "/dev/" + o.device
-	if out, err := exec.Command("blkid", dev).CombinedOutput(); err == nil && len(strings.TrimSpace(string(out))) > 0 {
-		return false // blkid found a signature
+	if fs, pt := probeBlkid(dev); fs != "" || pt != "" {
+		return false // a filesystem or partition-table signature exists
 	}
 	// blkid found nothing (or is unavailable): double-check the raw MBR/GPT
 	// signatures before declaring the card blank.
@@ -1267,22 +1267,31 @@ func (o *realStorageOps) FormatDisk(fs string) (string, error) {
 	return part, nil
 }
 
+// blkidCandidates lists probe binaries in preference order. The device PATH
+// resolves plain "blkid" to /sbin/blkid, a busybox applet that knows few
+// signatures (prints nothing for APFS/NTFS, exits 0) and ignores -p; the
+// full util-linux blkid at /usr/sbin/blkid recognizes them and supports
+// low-level probing, so it must be tried first.
+var blkidCandidates = []string{"/usr/sbin/blkid", "/sbin/blkid", "blkid"}
+
 // probeBlkid asks blkid what the device carries: a filesystem signature
 // (TYPE) and/or a partition table (PTTYPE, e.g. a card whose volumes were
 // deleted on a PC). Plain blkid may print nothing for a bare partition
-// table, so fall back to low-level probing (-p). Empty strings mean blkid
-// is unavailable or found nothing.
+// table, so low-level probing (-p) is also tried. Empty strings mean no
+// probe found anything.
 func probeBlkid(dev string) (fsType, ptType string) {
-	out, err := exec.Command("blkid", dev).CombinedOutput()
-	if err == nil {
-		fsType, ptType = parseBlkidLine(string(out))
-	}
-	if fsType == "" && ptType == "" {
-		if out, err := exec.Command("blkid", "-p", dev).CombinedOutput(); err == nil {
-			fsType, ptType = parseBlkidLine(string(out))
+	for _, bin := range blkidCandidates {
+		for _, args := range [][]string{{dev}, {"-p", dev}} {
+			out, err := exec.Command(bin, args...).CombinedOutput()
+			if err != nil {
+				continue
+			}
+			if fs, pt := parseBlkidLine(string(out)); fs != "" || pt != "" {
+				return fs, pt
+			}
 		}
 	}
-	return fsType, ptType
+	return "", ""
 }
 
 // parseBlkidLine extracts TYPE and PTTYPE values from a blkid output line
