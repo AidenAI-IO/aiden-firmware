@@ -229,6 +229,7 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"channels\":1,\"bit_width\":16},"
         "\"audio_archive\":{\"enabled\":true,\"max_files\":500,\"max_size_mb\":100,"
         "\"storage_path\":\"/userdata/audio\"},"
+        "\"ota\":{\"github_proxy_url\":\"https://gh-proxy.com\"},"
         "\"hid\":{\"keyboard_device\":\"/dev/hidg0\",\"mouse_device\":\"/dev/hidg1\","
         "\"android_keyboard_device\":\"/dev/hidg2\","
         "\"frame_socket\":\"/run/frame_service/frame_service.sock\",\"pointer_mode\":\"absolute\"},"
@@ -836,6 +837,60 @@ TEST_CASE("config_web: POST /api/config writes audio_archive section") {
     CHECK(saved.find("max_files = 123") != std::string::npos);
     CHECK(saved.find("max_size_mb = 45") != std::string::npos);
     CHECK(saved.find("storage_path = \"/userdata/custom-audio\"") != std::string::npos);
+}
+
+TEST_CASE("config_web: POST /api/config writes ota section") {
+    // Regression test: update_config_from_json() must handle the ota section.
+    // It was added to AgentToml, TOML read/write, and validation, but was
+    // missed here, so a saved github_proxy_url silently failed to persist.
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string body =
+        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
+        "\"ota\":{\"github_proxy_url\":\"https://gh-proxy.com\"},"
+        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    HttpResponse post_resp = http_request(handle->port, "POST", "/api/config", body);
+    CHECK(post_resp.status == 200);
+
+    std::ifstream saved_in((handle->tmp_dir + "/agent.toml").c_str());
+    REQUIRE(saved_in.good());
+    std::ostringstream saved_buffer;
+    saved_buffer << saved_in.rdbuf();
+    const std::string saved = saved_buffer.str();
+    CHECK(saved.find("[ota]") != std::string::npos);
+    CHECK(saved.find("github_proxy_url = \"https://gh-proxy.com\"") != std::string::npos);
+}
+
+TEST_CASE("config_web: GET /api/config returns ota section from resolved config") {
+    // Regression test: config_to_json() must serialize the ota section from
+    // the agent's resolved config. It was added to AgentToml and TOML
+    // read/write, but was missed here, so github_proxy_url never came back
+    // on GET even though it was correctly persisted to agent.toml.
+    auto tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    write_file(tmp + "/config.json", resolved_config_json("duckduckgo", false));
+    StubEnv env;
+    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
+    auto handle = start_server(env);
+
+    HttpResponse get_resp = http_request(handle->port, "GET", "/api/config");
+    CHECK(get_resp.status == 200);
+    cJSON* parsed = cJSON_Parse(get_resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    cJSON* config = cJSON_GetObjectItem(parsed, "config");
+    REQUIRE(config != nullptr);
+    cJSON* ota = cJSON_GetObjectItem(config, "ota");
+    REQUIRE(ota != nullptr);
+    cJSON* proxy_url = cJSON_GetObjectItem(ota, "github_proxy_url");
+    REQUIRE(proxy_url != nullptr);
+    REQUIRE(proxy_url->valuestring != nullptr);
+    CHECK(std::string(proxy_url->valuestring) == "https://gh-proxy.com");
+    cJSON_Delete(parsed);
 }
 
 TEST_CASE("config_web: POST /api/config accepts empty audio_archive storage_path") {

@@ -51,6 +51,8 @@ func TestLookupModelSpecKnownModels(t *testing.T) {
 		{"claude sonnet 4.6 prefixed", "openrouter", "anthropic/claude-sonnet-4.6", 1_000_000, 64_000},
 		{"claude haiku 4.5 bare", "anthropic", "claude-haiku-4.5", 200_000, 64_000},
 		{"gemini 3.5 pro bare", "google", "gemini-3.5-pro", 1_048_576, 65_536},
+		{"kimi k3 bare", "openai", "kimi-k3", 1_048_576, 131_072},
+		{"kimi k3 prefixed", "openrouter", "moonshotai/kimi-k3", 1_048_576, 131_072},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
