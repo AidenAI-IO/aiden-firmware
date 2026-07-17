@@ -27,8 +27,8 @@ func TestImageDiffNonJPEGDetection(t *testing.T) {
 			t.Errorf("Expected 'only supports JPEG' in error message, got: %s", result)
 		}
 
-		if !strings.Contains(result, "screenshot tool results") {
-			t.Errorf("Expected guidance about screenshot tool, got: %s", result)
+		if !strings.Contains(result, "'data' field from screenshot tool results") {
+			t.Errorf("Expected specific guidance about 'data' field, got: %s", result)
 		}
 
 		t.Logf("Non-JPEG detection working correctly. Error message: %s", result)
@@ -52,8 +52,8 @@ func TestImageDiffNonJPEGDetection(t *testing.T) {
 			t.Errorf("Expected 'only supports JPEG' in error message, got: %s", result)
 		}
 
-		if !strings.Contains(result, "screenshot tool results") {
-			t.Errorf("Expected guidance about screenshot tool, got: %s", result)
+		if !strings.Contains(result, "'data' field from screenshot tool results") {
+			t.Errorf("Expected specific guidance about 'data' field, got: %s", result)
 		}
 
 		t.Logf("Non-JPEG detection working correctly for 'after'. Error message: %s", result)
