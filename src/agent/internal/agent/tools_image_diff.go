@@ -72,10 +72,10 @@ func (t *ImageDiffTool) Call(ctx context.Context, input string) (string, error) 
 
 	// Validate image format: only JPEG is supported (must start with 0xFF 0xD8)
 	if len(beforeData) < 2 {
-		return toolErrorResultString(ctx, CodeInvalidArguments, "before data too short"), nil
+		return toolErrorResultString(ctx, CodeInvalidArguments, "before data too short. Use the 'data' field from screenshot tool results."), nil
 	}
 	if len(afterData) < 2 {
-		return toolErrorResultString(ctx, CodeInvalidArguments, "after data too short"), nil
+		return toolErrorResultString(ctx, CodeInvalidArguments, "after data too short. Use the 'data' field from screenshot tool results."), nil
 	}
 	// JPEG signature: 0xFF 0xD8
 	if beforeData[0] != 0xFF || beforeData[1] != 0xD8 {
