@@ -61,11 +61,9 @@ func DownloadFileWithOptions(ctx context.Context, url string, dst string, expect
 
 	// Apply GitHub proxy if configured
 	downloadURL := ApplyGitHubProxy(url, options.GitHubProxyURL)
-	if downloadURL != url && options.GitHubProxyURL != "" {
+	if downloadURL != url && resumeAt == 0 {
 		// Log proxy usage for diagnostics (only log once per download, not on resume)
-		if resumeAt == 0 {
-			fmt.Fprintf(os.Stderr, "ota: using GitHub proxy %s for download\n", options.GitHubProxyURL)
-		}
+		fmt.Fprintf(os.Stderr, "ota: using GitHub proxy for download\n")
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)

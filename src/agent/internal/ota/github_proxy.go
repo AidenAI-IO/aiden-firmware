@@ -15,6 +15,11 @@ import (
 //
 // If proxyURL is empty or url is not a GitHub URL, returns url unchanged.
 func ApplyGitHubProxy(url string, proxyURL string) string {
+	url = strings.TrimSpace(url)
+	if url == "" {
+		return ""
+	}
+
 	proxyURL = strings.TrimSpace(proxyURL)
 	if proxyURL == "" {
 		return url

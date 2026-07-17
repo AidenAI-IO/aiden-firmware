@@ -69,6 +69,24 @@ func TestApplyGitHubProxy(t *testing.T) {
 			proxyURL: "  https://gh-proxy.com/  ",
 			want:     "https://gh-proxy.com/https://github.com/owner/repo/releases/download/v1.0.0/file.tar.gz",
 		},
+		{
+			name:     "empty GitHub URL",
+			url:      "",
+			proxyURL: "https://gh-proxy.com/",
+			want:     "",
+		},
+		{
+			name:     "whitespace-only GitHub URL",
+			url:      "   ",
+			proxyURL: "https://gh-proxy.com/",
+			want:     "",
+		},
+		{
+			name:     "proxy URL with path",
+			url:      "https://github.com/owner/repo/file.tar.gz",
+			proxyURL: "https://my-proxy.com/github-mirror/",
+			want:     "https://my-proxy.com/github-mirror/https://github.com/owner/repo/file.tar.gz",
+		},
 	}
 
 	for _, tt := range tests {

@@ -581,6 +581,45 @@ bool validate_search_secret_presence(cJSON* root, std::string* error) {
     return true;
 }
 
+bool validate_ota_github_proxy_url(cJSON* root, std::string* error) {
+    cJSON* ota = cJSON_GetObjectItem(root, "ota");
+    if (!ota) {
+        return true;
+    }
+    if (!json_is_object(ota)) {
+        return config_schema_error(error, "ota", "object", ota);
+    }
+
+    cJSON* proxy_url_item = cJSON_GetObjectItem(ota, "github_proxy_url");
+    if (!proxy_url_item || !json_is_string(proxy_url_item)) {
+        return true;
+    }
+
+    std::string url = trim_copy(proxy_url_item->valuestring);
+    if (url.empty()) {
+        return true; // Empty is valid (no proxy)
+    }
+
+    // Check for https:// prefix (case-insensitive)
+    std::string lower_url = lowercase_copy(url);
+    if (lower_url.find("https://") != 0) {
+        if (error) {
+            *error = "ota.github_proxy_url: must use https (got: " + url + ")";
+        }
+        return false;
+    }
+
+    // Check that there's content after https://
+    if (url.length() <= 8) { // "https://" is 8 chars
+        if (error) {
+            *error = "ota.github_proxy_url: missing host";
+        }
+        return false;
+    }
+
+    return true;
+}
+
 bool validate_known_config_field_types(cJSON* root, std::string* error) {
     struct FieldSpec {
         const char* section;
@@ -1474,7 +1513,8 @@ bool validate_agent_config_json(cJSON* root, std::string* error = NULL) {
         return false;
     }
     if (!validate_model_section(root, error) ||
-        !validate_search_secret_presence(root, error)) {
+        !validate_search_secret_presence(root, error) ||
+        !validate_ota_github_proxy_url(root, error)) {
         return false;
     }
     return true;

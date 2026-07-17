@@ -24,9 +24,9 @@ func FetchLatestReleaseAssets(ctx context.Context, baseAPIURL string, bearerToke
 func FetchLatestReleaseAssetsWithProxy(ctx context.Context, baseAPIURL string, bearerToken string, githubProxyURL string) (map[string]string, error) {
 	// Apply GitHub proxy if configured
 	apiURL := ApplyGitHubProxy(baseAPIURL, githubProxyURL)
-	if apiURL != baseAPIURL && githubProxyURL != "" {
+	if apiURL != baseAPIURL {
 		// Log proxy usage for diagnostics
-		fmt.Fprintf(os.Stderr, "ota: using GitHub proxy %s for API request\n", githubProxyURL)
+		fmt.Fprintf(os.Stderr, "ota: using GitHub proxy for API request\n")
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
