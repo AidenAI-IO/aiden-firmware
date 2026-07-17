@@ -633,6 +633,7 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"audio_archive", "max_files", CONFIG_FIELD_NUMBER},
         {"audio_archive", "max_size_mb", CONFIG_FIELD_NUMBER},
         {"log", "llm_http_retention_days", CONFIG_FIELD_NUMBER},
+        {"ota", "github_proxy_url", CONFIG_FIELD_STRING},
         {"hid", "keyboard_device", CONFIG_FIELD_STRING},
         {"hid", "mouse_device", CONFIG_FIELD_STRING},
         {"hid", "android_keyboard_device", CONFIG_FIELD_STRING},
