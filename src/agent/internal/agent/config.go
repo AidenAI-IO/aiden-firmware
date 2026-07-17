@@ -123,6 +123,16 @@ func (c LogConfig) LLMHTTPRetentionDaysOrDefault() int {
 	return c.LLMHTTPRetentionDays
 }
 
+// OTAConfig controls OTA update behavior.
+type OTAConfig struct {
+	GitHubProxyURL string `toml:"github_proxy_url,omitempty"`
+}
+
+// GitHubProxyURLOrDefault returns GitHubProxyURL if non-empty and valid, else empty string.
+func (c OTAConfig) GitHubProxyURLOrDefault() string {
+	return strings.TrimSpace(c.GitHubProxyURL)
+}
+
 type Config struct {
 	Model                      ModelConfig             `toml:"model"`
 	ModelText                  ModelConfig             `toml:"model_text,omitempty"` // Override for STT-then-text mode
@@ -133,6 +143,7 @@ type Config struct {
 	Audio                      AudioConfig             `toml:"audio,omitempty"`
 	AudioArchive               AudioArchiveConfig      `toml:"audio_archive,omitempty"`
 	Log                        LogConfig               `toml:"log,omitempty"`
+	OTA                        OTAConfig               `toml:"ota,omitempty"`
 	Search                     SearchConfig            `toml:"search,omitempty"`
 	EnvironmentBridge          EnvironmentBridgeConfig `toml:"-"` // Only set via CLI flags, never from config file
 	Benchmark                  BenchmarkConfig         `toml:"-"` // Only set via CLI flags, never from config file
