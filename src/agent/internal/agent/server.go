@@ -3403,7 +3403,7 @@ const keyboardTapAndroidKeysGuideHTML = `<!DOCTYPE html>
             <strong>Rules:</strong>
             <ul>
                 <li>Use one Android extension key at a time.</li>
-                <li>Do not combine <code>KEYCODE_*</code> or <code>KEY_USAGE_*</code> with <code>ctrl</code>, <code>alt</code>, <code>shift</code>, <code>meta</code>, or standard keyboard keys.</li>
+                <li>Do not combine <code>KEYCODE_*</code> aliases, or legacy <code>KEY_USAGE_*</code> compatibility names, with <code>ctrl</code>, <code>alt</code>, <code>shift</code>, <code>meta</code>, or standard keyboard keys.</li>
                 <li>Raw short names such as <code>app_switch</code> or <code>refresh</code> are also accepted where listed below.</li>
                 <li>Android and vendor ROMs may react differently to some usages even when AOSP maps them.</li>
             </ul>
@@ -3415,8 +3415,8 @@ const keyboardTapAndroidKeysGuideHTML = `<!DOCTYPE html>
                 <li><code>{"keys":["KEYCODE_BACK"]}</code></li>
                 <li><code>{"keys":["KEYCODE_APP_SWITCH"]}</code></li>
                 <li><code>{"keys":["KEYCODE_MEDIA_PLAY_PAUSE"]}</code></li>
-                <li><code>{"keys":["KEY_USAGE_SETTINGS"]}</code></li>
-                <li><code>{"keys":["KEY_USAGE_REFRESH"]}</code></li>
+                <li><code>{"keys":["KEYCODE_SETTINGS"]}</code></li>
+                <li><code>{"keys":["KEYCODE_REFRESH"]}</code></li>
             </ul>
         </div>
 
@@ -3450,34 +3450,41 @@ const keyboardTapAndroidKeysGuideHTML = `<!DOCTYPE html>
             </tbody>
         </table>
 
-        <h2>KEY_USAGE aliases</h2>
+        <h2>HID-backed KEYCODE aliases</h2>
         <table>
             <thead>
                 <tr>
                     <th>Alias</th>
                     <th>Raw name</th>
                     <th>Usage</th>
+                    <th>Android API</th>
                     <th>AOSP action</th>
                 </tr>
             </thead>
-            <tbody>
-                <tr><td><code>KEY_USAGE_SCREENSHOT</code></td><td><code>screenshot</code></td><td><code>0x0c0065</code></td><td>Screenshot</td></tr>
-                <tr><td><code>KEY_USAGE_WINDOW</code></td><td><code>window</code></td><td><code>0x0c0067</code></td><td>Window</td></tr>
-                <tr><td><code>KEY_USAGE_BRIGHTNESS_UP</code></td><td><code>brightness_up</code></td><td><code>0x0c006F</code></td><td>Brightness Up</td></tr>
-                <tr><td><code>KEY_USAGE_BRIGHTNESS_DOWN</code></td><td><code>brightness_down</code></td><td><code>0x0c0070</code></td><td>Brightness Down</td></tr>
-                <tr><td><code>KEY_USAGE_DICTATE</code></td><td><code>dictate</code></td><td><code>0x0c00D8</code></td><td>Dictate</td></tr>
-                <tr><td><code>KEY_USAGE_EMOJI_PICKER</code></td><td><code>emoji_picker</code></td><td><code>0x0c00D9</code></td><td>Emoji Picker</td></tr>
-                <tr><td><code>KEY_USAGE_MEDIA_AUDIO_TRACK</code></td><td><code>media_audio_track</code></td><td><code>0x0c0173</code></td><td>Media Audio Track</td></tr>
-                <tr><td><code>KEY_USAGE_PROFILE_SWITCH</code></td><td><code>profile_switch</code></td><td><code>0x0c019C</code></td><td>Profile Switch</td></tr>
-                <tr><td><code>KEY_USAGE_SETTINGS</code></td><td><code>settings</code></td><td><code>0x0c019F</code></td><td>Settings</td></tr>
-                <tr><td><code>KEY_USAGE_NEW</code></td><td><code>new</code></td><td><code>0x0c0201</code></td><td>New</td></tr>
-                <tr><td><code>KEY_USAGE_CLOSE</code></td><td><code>close</code></td><td><code>0x0c0203</code></td><td>Close</td></tr>
-                <tr><td><code>KEY_USAGE_PRINT</code></td><td><code>print</code></td><td><code>0x0c0208</code></td><td>Print</td></tr>
-                <tr><td><code>KEY_USAGE_REFRESH</code></td><td><code>refresh</code></td><td><code>0x0c0227</code></td><td>Refresh</td></tr>
-                <tr><td><code>KEY_USAGE_FULLSCREEN</code></td><td><code>fullscreen</code></td><td><code>0x0c0232</code></td><td>Fullscreen</td></tr>
-                <tr><td><code>KEY_USAGE_LANGUAGE_SWITCH</code></td><td><code>language_switch</code></td><td><code>0x0c029D</code></td><td>Language Switch</td></tr>
-            </tbody>
-        </table>
+	            <tbody>
+	                <tr><td><code>KEYCODE_SCREENSHOT</code></td><td><code>screenshot</code></td><td><code>0x0c0065</code></td><td>35</td><td>Screenshot</td></tr>
+	                <tr><td><code>KEYCODE_SETTINGS</code></td><td><code>settings</code></td><td><code>0x0c019F</code></td><td>11</td><td>Settings</td></tr>
+	                <tr><td><code>KEYCODE_WINDOW</code></td><td><code>window</code></td><td><code>0x0c0067</code></td><td>11</td><td>Window</td></tr>
+                <tr><td><code>KEYCODE_BRIGHTNESS_UP</code></td><td><code>brightness_up</code></td><td><code>0x0c006F</code></td><td>18</td><td>Brightness Up</td></tr>
+                <tr><td><code>KEYCODE_BRIGHTNESS_DOWN</code></td><td><code>brightness_down</code></td><td><code>0x0c0070</code></td><td>18</td><td>Brightness Down</td></tr>
+                <tr><td><code>KEYCODE_DICTATE</code></td><td><code>dictate</code></td><td><code>0x0c00D8</code></td><td>36</td><td>Dictate</td></tr>
+                <tr><td><code>KEYCODE_EMOJI_PICKER</code></td><td><code>emoji_picker</code></td><td><code>0x0c00D9</code></td><td>35</td><td>Emoji Picker</td></tr>
+                <tr><td><code>KEYCODE_MEDIA_AUDIO_TRACK</code></td><td><code>media_audio_track</code></td><td><code>0x0c0173</code></td><td>19</td><td>Media Audio Track</td></tr>
+                <tr><td><code>KEYCODE_PROFILE_SWITCH</code></td><td><code>profile_switch</code></td><td><code>0x0c019C</code></td><td>29</td><td>Profile Switch</td></tr>
+	                <tr><td><code>KEYCODE_NEW</code></td><td><code>new</code></td><td><code>0x0c0201</code></td><td>36</td><td>New</td></tr>
+	                <tr><td><code>KEYCODE_LANGUAGE_SWITCH</code></td><td><code>language_switch</code></td><td><code>0x0c029D</code></td><td>14</td><td>Language Switch</td></tr>
+	                <tr><td><code>KEYCODE_FULLSCREEN</code></td><td><code>fullscreen</code></td><td><code>0x0c0232</code></td><td>36</td><td>Fullscreen</td></tr>
+	                <tr><td><code>KEYCODE_REFRESH</code></td><td><code>refresh</code></td><td><code>0x0c0227</code></td><td>28</td><td>Refresh</td></tr>
+	                <tr><td><code>KEYCODE_CLOSE</code></td><td><code>close</code></td><td><code>0x0c0203</code></td><td>36</td><td>Close</td></tr>
+	                <tr><td><code>KEYCODE_PRINT</code></td><td><code>print</code></td><td><code>0x0c0208</code></td><td>36</td><td>Print</td></tr>
+	            </tbody>
+	        </table>
+
+	        <h2>Legacy HID usage aliases</h2>
+	        <p>
+	            Older <code>KEY_USAGE_*</code> spellings for the migrated rows remain accepted for compatibility;
+	            new calls should use the <code>KEYCODE_*</code> aliases above.
+	        </p>
 
         <div class="panel">
             <h2>Notes</h2>

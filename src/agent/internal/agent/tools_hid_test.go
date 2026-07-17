@@ -2369,12 +2369,12 @@ func TestKeyboardTapSupportsAdditionalAndroidKeycodeAliases(t *testing.T) {
 	}
 }
 
-func TestKeyboardTapSupportsAndroidSettingsUsageAlias(t *testing.T) {
+func TestKeyboardTapSupportsAndroidSettingsKeycodeAlias(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	androidDev, androidPath := newTestHIDDevice(t)
 	tool := &KeyboardTapTool{dev: dev, androidDev: androidDev, pointerMode: "touchscreen"}
 
-	out, err := tool.Call(context.Background(), `{"keys":["KEY_USAGE_SETTINGS"]}`)
+	out, err := tool.Call(context.Background(), `{"keys":["KEYCODE_SETTINGS"]}`)
 	if err != nil {
 		t.Fatalf("Call failed: %v", err)
 	}
@@ -2396,17 +2396,17 @@ func TestKeyboardTapSupportsAndroidSettingsUsageAlias(t *testing.T) {
 	if len(data) != 4 {
 		t.Fatalf("report bytes = %d, want 4 (consumer usage + release)", len(data))
 	}
-	if got := uint16(data[0]) | uint16(data[1])<<8; got != androidExtensionUsageMap["key_usage_settings"] {
-		t.Fatalf("android settings usage = 0x%04x, want 0x%04x", got, androidExtensionUsageMap["key_usage_settings"])
+	if got := uint16(data[0]) | uint16(data[1])<<8; got != androidExtensionUsageMap["settings"] {
+		t.Fatalf("android settings usage = 0x%04x, want 0x%04x", got, androidExtensionUsageMap["settings"])
 	}
 }
 
-func TestKeyboardTapSupportsAndroidLanguageSwitchUsageAlias(t *testing.T) {
+func TestKeyboardTapSupportsAndroidLanguageSwitchKeycodeAlias(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	androidDev, androidPath := newTestHIDDevice(t)
 	tool := &KeyboardTapTool{dev: dev, androidDev: androidDev, pointerMode: "touchscreen"}
 
-	out, err := tool.Call(context.Background(), `{"keys":["KEY_USAGE_LANGUAGE_SWITCH"]}`)
+	out, err := tool.Call(context.Background(), `{"keys":["KEYCODE_LANGUAGE_SWITCH"]}`)
 	if err != nil {
 		t.Fatalf("Call failed: %v", err)
 	}
@@ -2428,29 +2428,29 @@ func TestKeyboardTapSupportsAndroidLanguageSwitchUsageAlias(t *testing.T) {
 	if len(data) != 4 {
 		t.Fatalf("report bytes = %d, want 4 (consumer usage + release)", len(data))
 	}
-	if got := uint16(data[0]) | uint16(data[1])<<8; got != androidExtensionUsageMap["key_usage_language_switch"] {
-		t.Fatalf("android language_switch usage = 0x%04x, want 0x%04x", got, androidExtensionUsageMap["key_usage_language_switch"])
+	if got := uint16(data[0]) | uint16(data[1])<<8; got != androidExtensionUsageMap["language_switch"] {
+		t.Fatalf("android language_switch usage = 0x%04x, want 0x%04x", got, androidExtensionUsageMap["language_switch"])
 	}
 }
 
-func TestKeyboardTapSupportsAdditionalAndroidUsageAliases(t *testing.T) {
+func TestKeyboardTapSupportsHIDBackedAndroidKeycodeAliases(t *testing.T) {
 	testCases := []struct {
 		input  string
 		mapKey string
 	}{
-		{input: "KEY_USAGE_SCREENSHOT", mapKey: "key_usage_screenshot"},
-		{input: "KEY_USAGE_WINDOW", mapKey: "key_usage_window"},
-		{input: "KEY_USAGE_BRIGHTNESS_UP", mapKey: "key_usage_brightness_up"},
-		{input: "KEY_USAGE_BRIGHTNESS_DOWN", mapKey: "key_usage_brightness_down"},
-		{input: "KEY_USAGE_DICTATE", mapKey: "key_usage_dictate"},
-		{input: "KEY_USAGE_EMOJI_PICKER", mapKey: "key_usage_emoji_picker"},
-		{input: "KEY_USAGE_MEDIA_AUDIO_TRACK", mapKey: "key_usage_media_audio_track"},
-		{input: "KEY_USAGE_PROFILE_SWITCH", mapKey: "key_usage_profile_switch"},
-		{input: "KEY_USAGE_NEW", mapKey: "key_usage_new"},
-		{input: "KEY_USAGE_CLOSE", mapKey: "key_usage_close"},
-		{input: "KEY_USAGE_PRINT", mapKey: "key_usage_print"},
-		{input: "KEY_USAGE_REFRESH", mapKey: "key_usage_refresh"},
-		{input: "KEY_USAGE_FULLSCREEN", mapKey: "key_usage_fullscreen"},
+		{input: "KEYCODE_SCREENSHOT", mapKey: "screenshot"},
+		{input: "KEYCODE_WINDOW", mapKey: "window"},
+		{input: "KEYCODE_BRIGHTNESS_UP", mapKey: "brightness_up"},
+		{input: "KEYCODE_BRIGHTNESS_DOWN", mapKey: "brightness_down"},
+		{input: "KEYCODE_DICTATE", mapKey: "dictate"},
+		{input: "KEYCODE_EMOJI_PICKER", mapKey: "emoji_picker"},
+		{input: "KEYCODE_MEDIA_AUDIO_TRACK", mapKey: "media_audio_track"},
+		{input: "KEYCODE_PROFILE_SWITCH", mapKey: "profile_switch"},
+		{input: "KEYCODE_NEW", mapKey: "new"},
+		{input: "KEYCODE_CLOSE", mapKey: "close"},
+		{input: "KEYCODE_PRINT", mapKey: "print"},
+		{input: "KEYCODE_REFRESH", mapKey: "refresh"},
+		{input: "KEYCODE_FULLSCREEN", mapKey: "fullscreen"},
 	}
 
 	for _, tc := range testCases {
@@ -2488,6 +2488,33 @@ func TestKeyboardTapSupportsAdditionalAndroidUsageAliases(t *testing.T) {
 	}
 }
 
+func TestKeyboardTapKeepsLegacyHIDUsageAliases(t *testing.T) {
+	testCases := []struct {
+		input  string
+		mapKey string
+	}{
+		{input: "KEY_USAGE_SCREENSHOT", mapKey: "key_usage_screenshot"},
+		{input: "KEY_USAGE_SETTINGS", mapKey: "key_usage_settings"},
+		{input: "KEY_USAGE_LANGUAGE_SWITCH", mapKey: "key_usage_language_switch"},
+		{input: "KEY_USAGE_PRINT", mapKey: "key_usage_print"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.input, func(t *testing.T) {
+			resolved, err := resolveKeyboardTapKeys([]string{tc.input})
+			if err != nil {
+				t.Fatalf("resolveKeyboardTapKeys failed: %v", err)
+			}
+			if resolved.AndroidExtensionKey != tc.mapKey {
+				t.Fatalf("AndroidExtensionKey = %q, want %q", resolved.AndroidExtensionKey, tc.mapKey)
+			}
+			if resolved.AndroidUsage != androidExtensionUsageMap[tc.mapKey] {
+				t.Fatalf("AndroidUsage = 0x%04x, want 0x%04x", resolved.AndroidUsage, androidExtensionUsageMap[tc.mapKey])
+			}
+		})
+	}
+}
+
 func TestKeyboardTapAbsolutePointerModeAllowsMediaKeySubset(t *testing.T) {
 	testCases := []struct {
 		input  string
@@ -2502,9 +2529,9 @@ func TestKeyboardTapAbsolutePointerModeAllowsMediaKeySubset(t *testing.T) {
 		{input: "KEYCODE_MEDIA_PREVIOUS", mapKey: "media_previous"},
 		{input: "KEYCODE_MEDIA_REWIND", mapKey: "media_rewind"},
 		{input: "KEYCODE_MEDIA_FAST_FORWARD", mapKey: "media_fast_forward"},
-		{input: "KEY_USAGE_SCREENSHOT", mapKey: "key_usage_screenshot"},
-		{input: "KEY_USAGE_BRIGHTNESS_UP", mapKey: "key_usage_brightness_up"},
-		{input: "KEY_USAGE_BRIGHTNESS_DOWN", mapKey: "key_usage_brightness_down"},
+		{input: "KEYCODE_SCREENSHOT", mapKey: "screenshot"},
+		{input: "KEYCODE_BRIGHTNESS_UP", mapKey: "brightness_up"},
+		{input: "KEYCODE_BRIGHTNESS_DOWN", mapKey: "brightness_down"},
 	}
 
 	for _, tc := range testCases {
@@ -2973,7 +3000,7 @@ func TestKeyboardTapDescriptionDocumentsQuickActionFallback(t *testing.T) {
 
 func TestKeyboardTapDescriptionReferencesAndroidGuidePage(t *testing.T) {
 	keysDesc := keyboardTapKeysSchemaDescription(t)
-	for _, want := range []string{"KEYCODE_*", "KEY_USAGE_*", "Android key guide", "single-key taps only", "hid.pointer_mode is absolute", "KEY_USAGE_SCREENSHOT"} {
+	for _, want := range []string{"KEYCODE_*", "legacy KEY_USAGE_*", "Android key guide", "single-key taps only", "hid.pointer_mode is absolute", "KEYCODE_SCREENSHOT", "KEYCODE_BRIGHTNESS_UP"} {
 		if !strings.Contains(keysDesc, want) {
 			t.Fatalf("keys schema missing %q:\n%s", want, keysDesc)
 		}
