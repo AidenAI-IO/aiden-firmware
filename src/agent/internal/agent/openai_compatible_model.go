@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/util"
 	"bufio"
 	"bytes"
 	"context"
@@ -771,11 +772,11 @@ func finalizeLLMGenerationInfo(info map[string]any, callStarted time.Time) map[s
 	}
 	totalMs := time.Since(callStarted).Milliseconds()
 	info["llm_total_ms"] = totalMs
-	if completionTokens, ok := usageMetricInt(info["completion_tokens"]); ok && completionTokens > 0 {
+	if completionTokens, ok := util.UsageMetricInt(info["completion_tokens"]); ok && completionTokens > 0 {
 		info["llm_ms_per_output_token"] = float64(totalMs) / float64(completionTokens)
 	}
-	if promptTokens, ok := usageMetricInt(info["prompt_tokens"]); ok && promptTokens > 0 {
-		if ttftMs, ok := usageMetricInt(info["llm_time_to_first_content_ms"]); ok && ttftMs >= 0 {
+	if promptTokens, ok := util.UsageMetricInt(info["prompt_tokens"]); ok && promptTokens > 0 {
+		if ttftMs, ok := util.UsageMetricInt(info["llm_time_to_first_content_ms"]); ok && ttftMs >= 0 {
 			info["llm_ttft_per_input_token"] = float64(ttftMs) / float64(promptTokens)
 		}
 	}
