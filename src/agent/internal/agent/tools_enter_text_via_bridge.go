@@ -245,7 +245,7 @@ func (t *EnterTextViaBridgeTool) runAutomaticClipboardFirstFlow(ctx context.Cont
 		if bridge.ClipboardRecentlyContains(args.Text, preparedClipboardMaxAge) {
 			return t.runPreparedClipboardPasteFlow(ctx, platform, args)
 		}
-		if !phoneBridgeReadyForCommand(status) &&
+		if !phoneBridgeReadyForCommand(status, "clipboard_write") &&
 			!phoneBridgeCanUseFGSBackground(status, "clipboard_write") {
 			return textViaBridgeResult{}
 		}
@@ -351,7 +351,7 @@ func (t *EnterTextViaBridgeTool) canUseClipboardFirst(platform string, text stri
 	case "ios":
 		return phoneBridgeCanUsePiPBackground(status, "clipboard_write")
 	case "android":
-		return phoneBridgeReadyForCommand(status) || phoneBridgeCanUseFGSBackground(status, "clipboard_write")
+		return phoneBridgeReadyForCommand(status, "clipboard_write") || phoneBridgeCanUseFGSBackground(status, "clipboard_write")
 	default:
 		return false
 	}
@@ -381,25 +381,15 @@ func (t *EnterTextViaBridgeTool) focusPasteVerify(ctx context.Context, engine *t
 		}
 		result.Steps = append(result.Steps, fmt.Sprintf("clipboard-first: focused field (attempt %d)", attempt))
 		pasteMethod := ""
+		var pasteErr error
 		if attempt == 1 {
 			var fallbackReason string
-			var err error
-			pasteMethod, fallbackReason, err = t.pasteClipboard(ctx, platform)
-			if fallbackReason != "" && err == nil {
+			pasteMethod, fallbackReason, pasteErr = t.pasteClipboard(ctx, platform)
+			if fallbackReason != "" && pasteErr == nil {
 				result.Steps = append(result.Steps, "clipboard-first: quick_action paste failed, used keyboard fallback: "+fallbackReason)
 			}
-			if err != nil {
-				result.Steps = append(result.Steps, "clipboard-first: shortcut paste failed, trying long-press context menu: "+err.Error())
-				var menuSteps []string
-				var calls int
-				pasteMethod, calls, menuSteps, err = t.pasteViaContextMenu(ctx, engine, platform, args.Focus)
-				result.VLMCalls += calls
-				result.Steps = append(result.Steps, menuSteps...)
-				if err != nil {
-					result.Steps = append(result.Steps, "clipboard-first paste failed")
-					result.Err = err
-					return result
-				}
+			if pasteErr != nil {
+				result.Steps = append(result.Steps, "clipboard-first: shortcut paste reported an error; observing field before fallback: "+pasteErr.Error())
 			}
 		} else {
 			var menuSteps []string
@@ -414,7 +404,9 @@ func (t *EnterTextViaBridgeTool) focusPasteVerify(ctx context.Context, engine *t
 				return result
 			}
 		}
-		result.Steps = append(result.Steps, fmt.Sprintf("clipboard-first: %s-pasted clipboard (attempt %d)", pasteMethod, attempt))
+		if pasteErr == nil {
+			result.Steps = append(result.Steps, fmt.Sprintf("clipboard-first: %s-pasted clipboard (attempt %d)", pasteMethod, attempt))
+		}
 		if err := t.sleepAfterPaste(ctx); err != nil {
 			result.Steps = append(result.Steps, "clipboard-first: wait after paste canceled")
 			result.Err = err
@@ -448,7 +440,11 @@ func (t *EnterTextViaBridgeTool) focusPasteVerify(ctx context.Context, engine *t
 				return result
 			}
 			if attempt == 1 {
-				result.Steps = append(result.Steps, "clipboard-first: shortcut paste had no visible effect; trying long-press Paste menu")
+				if pasteErr != nil {
+					result.Steps = append(result.Steps, "clipboard-first: fresh observation confirmed the shortcut had no visible effect; trying long-press Paste menu")
+				} else {
+					result.Steps = append(result.Steps, "clipboard-first: shortcut paste had no visible effect; trying long-press Paste menu")
+				}
 			}
 		}
 	}
@@ -592,8 +588,11 @@ func (t *EnterTextViaBridgeTool) keyboardTap(ctx context.Context, keys []string)
 	if t == nil || t.hw == nil || t.hw.keyboardTap == nil {
 		return fmt.Errorf("keyboard_tap is not configured")
 	}
-	_, err := callTextInputTool(ctx, t.hw.keyboardTap, jsonString(map[string]any{"keys": keys}))
-	return err
+	out, err := callTextInputTool(ctx, t.hw.keyboardTap, jsonString(map[string]any{"keys": keys}))
+	if err != nil {
+		return err
+	}
+	return interpretTextInputToolOutput(out)
 }
 
 func keyboardPasteKeys(platform string) []string {

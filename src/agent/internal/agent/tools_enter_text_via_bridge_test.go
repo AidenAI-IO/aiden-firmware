@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -12,8 +13,32 @@ import (
 func newTestPhoneBridge(t *testing.T) *PhoneBridge {
 	t.Helper()
 	pb := newPhoneBridgeForTest()
-	t.Cleanup(pb.queue.Stop)
+	t.Cleanup(func() {
+		pb.statusPublishMu.Lock()
+		if pb.statusExpiryTimer != nil {
+			pb.statusExpiryTimer.Stop()
+		}
+		pb.statusPublishMu.Unlock()
+		pb.queue.Stop()
+	})
 	return pb
+}
+
+func waitForQueuedBridgeCommand(queue *CommandQueue, platform string, timeout time.Duration) (BridgeCommand, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		commands := queue.PollForPhone(platform, "", 10)
+		if len(commands) > 0 {
+			if len(commands) != 1 {
+				return BridgeCommand{}, fmt.Errorf("expected one queued command, got %d", len(commands))
+			}
+			return commands[0], nil
+		}
+		if time.Now().After(deadline) {
+			return BridgeCommand{}, fmt.Errorf("timed out waiting for queued %s command", platform)
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 func TestEnterTextViaBridgeDescriptionDocumentsChatClipboardPath(t *testing.T) {
@@ -57,9 +82,9 @@ func TestEnterTextViaBridgeWriteClipboardIsolatesNestedToolError(t *testing.T) {
 }
 
 func TestEnterTextViaBridgeUsesPiPBackgroundClipboardQueue(t *testing.T) {
-	message := "请确认这个方案是否可以直接发送？"
+	message := "桥接输入测试"
 	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
-		ObservedMode: textInputModeASCII,
+		ObservedMode: textInputModeComposition,
 		FieldText:    message,
 	}}}
 	pb := newTestPhoneBridge(t)
@@ -88,21 +113,20 @@ func TestEnterTextViaBridgeUsesPiPBackgroundClipboardQueue(t *testing.T) {
 
 	queueResult := make(chan string, 1)
 	go func() {
-		time.Sleep(10 * time.Millisecond)
-		commands := pb.queue.PollForPhone("ios", "", 10)
-		if len(commands) != 1 {
-			queueResult <- "expected one queued clipboard command"
+		command, err := waitForQueuedBridgeCommand(pb.queue, "ios", 500*time.Millisecond)
+		if err != nil {
+			queueResult <- err.Error()
 			return
 		}
-		if commands[0].Type != "clipboard_write" {
-			queueResult <- "unexpected queued command type: " + commands[0].Type
+		if command.Type != "clipboard_write" {
+			queueResult <- "unexpected queued command type: " + command.Type
 			return
 		}
-		if !strings.Contains(string(commands[0].Payload), message) {
-			queueResult <- "queued clipboard payload missing target text: " + string(commands[0].Payload)
+		if !strings.Contains(string(command.Payload), message) {
+			queueResult <- "queued clipboard payload missing target text: " + string(command.Payload)
 			return
 		}
-		if err := pb.queue.SubmitResult(BridgeCommandResponse{ID: commands[0].ID, Method: "queued"}); err != nil {
+		if err := pb.queue.SubmitResult(BridgeCommandResponse{ID: command.ID, Method: "queued"}); err != nil {
 			queueResult <- "submit queued clipboard result failed: " + err.Error()
 			return
 		}
@@ -593,7 +617,7 @@ func TestEnterTextViaBridgeFallsBackToKeyboardPasteWhenQuickActionFails(t *testi
 }
 
 func TestEnterTextViaBridgeFallsBackToLongPressPasteMenuWhenShortcutHasNoEffect(t *testing.T) {
-	message := "中午吃食堂是不是"
+	message := "桥接粘贴测试"
 	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
 		ObservedMode: textInputModeComposition,
 		FieldText:    "",
@@ -653,6 +677,53 @@ func TestEnterTextViaBridgeFallsBackToLongPressPasteMenuWhenShortcutHasNoEffect(
 	}
 	if len(touch.calls) != 2 || !strings.Contains(touch.calls[0], `"type": "long_press"`) || !strings.Contains(touch.calls[1], `"type": "tap"`) {
 		t.Fatalf("touch_gesture calls=%v, want long_press then paste-menu tap", touch.calls)
+	}
+}
+
+func TestEnterTextViaBridgeObservesFieldBeforeFallbackAfterShortcutError(t *testing.T) {
+	message := "已由快捷键粘贴"
+	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
+		ObservedMode: textInputModeComposition,
+		FieldText:    message,
+	}}}
+	pb := newTestPhoneBridge(t)
+	pb.NoteClipboardWrite(message)
+	pb.platform = "ios"
+	pb.appState = "background"
+	pb.appStateAt = time.Now()
+	touch := &recordingTextInputTool{name: "touch_gesture", out: "ok"}
+	tool := &EnterTextViaBridgeTool{
+		hw: &textInputHardwareDeps{
+			mouseClick:   &recordingTextInputTool{name: "mouse_click", out: "ok"},
+			touchGesture: touch,
+			keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: `{"ok":false,"message":"keyboard report unavailable"}`},
+			keyboardText: &recordingTextInputTool{name: "keyboard_text", out: "ok"},
+			quickAction:  &recordingTextInputTool{name: "quick_action", out: `{"ok":false,"message":"post-action capture failed"}`},
+			screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+		},
+		vision:   vision,
+		bridgeFn: func() *PhoneBridge { return pb },
+		sleep:    testNoWaitSleep,
+		findPasteMenuFn: func(context.Context, screenshotResult, string) (pasteMenuResult, error) {
+			t.Fatal("paste menu lookup must not run when fresh observation shows the target text")
+			return pasteMenuResult{}, nil
+		},
+	}
+
+	out, err := tool.Call(context.Background(), `{"text":"`+message+`","platform":"ios","focus":{"x":300,"y":940,"coord_space":"normalized"}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"committed": true`,
+		"shortcut paste reported an error; observing field before fallback",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("unexpected output, missing %q: %s", want, out)
+		}
+	}
+	if len(touch.calls) != 0 {
+		t.Fatalf("touch_gesture calls=%v, want no long-press fallback after observed success", touch.calls)
 	}
 }
 

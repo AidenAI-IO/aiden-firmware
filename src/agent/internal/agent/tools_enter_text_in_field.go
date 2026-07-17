@@ -60,7 +60,13 @@ func (t *EnterTextInFieldTool) Call(ctx context.Context, input string) (string, 
 			return jsonString(finalizeEnterTextInFieldResult(bridgeResult, args.SendAfterCommit)), nil
 		}
 		if attempted && strings.TrimSpace(bridgeResult.FieldText) != "" {
-			args.ClearBeforeInput = true
+			bridgeResult.Steps = append(bridgeResult.Steps, "clipboard-first: preserving unverified field text until a fresh observation identifies a concrete mismatch")
+			if strings.TrimSpace(bridgeResult.Reason) != "" {
+				bridgeResult.Reason += "; fresh observation required before corrective input"
+			} else {
+				bridgeResult.Reason = "fresh observation required before corrective input"
+			}
+			return jsonString(finalizeEnterTextInFieldResult(bridgeResult, args.SendAfterCommit)), nil
 		}
 		result, err := t.engine.Run(ctx, args)
 		if err != nil {

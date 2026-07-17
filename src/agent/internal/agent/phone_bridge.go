@@ -118,31 +118,33 @@ type PhoneBridgeStatus struct {
 }
 
 type PhoneBridge struct {
-	mu               sync.Mutex
-	conn             *websocket.Conn
-	connected        bool
-	platform         string
-	phoneID          string
-	lastHeartbeatAt  time.Time
-	appState         string
-	appStateAt       time.Time
-	returnEntry      string
-	returnEntryOK    bool
-	returnEntrySeen  bool
-	pipBridgeEnabled bool
-	pipBridgeSeen    bool
-	fgsBridgeEnabled bool
-	fgsBridgeSeen    bool
-	fgsBridgeAt      time.Time
-	environment      *PhoneEnvironment
-	environmentAt    time.Time
-	clipboardText    string
-	clipboardAt      time.Time
-	pendingCmds      map[string]chan BridgeCommandResponse
-	logger           *Logger
-	done             chan struct{}
-	queue            *CommandQueue // HTTP queue for background-compatible commands
-	stateManager     *statemanager.StateManager
+	mu                sync.Mutex
+	statusPublishMu   sync.Mutex
+	statusExpiryTimer *time.Timer
+	conn              *websocket.Conn
+	connected         bool
+	platform          string
+	phoneID           string
+	lastHeartbeatAt   time.Time
+	appState          string
+	appStateAt        time.Time
+	returnEntry       string
+	returnEntryOK     bool
+	returnEntrySeen   bool
+	pipBridgeEnabled  bool
+	pipBridgeSeen     bool
+	fgsBridgeEnabled  bool
+	fgsBridgeSeen     bool
+	fgsBridgeAt       time.Time
+	environment       *PhoneEnvironment
+	environmentAt     time.Time
+	clipboardText     string
+	clipboardAt       time.Time
+	pendingCmds       map[string]chan BridgeCommandResponse
+	logger            *Logger
+	done              chan struct{}
+	queue             *CommandQueue // HTTP queue for background-compatible commands
+	stateManager      *statemanager.StateManager
 }
 
 func NewPhoneBridge(logger *Logger, stateManager *statemanager.StateManager) *PhoneBridge {
@@ -595,6 +597,16 @@ func (pb *PhoneBridge) currentPhoneID() string {
 }
 
 func (pb *PhoneBridge) statusUpdated() {
+	if pb == nil || pb.stateManager == nil {
+		return
+	}
+
+	// Serialize snapshot publication so an older status callback cannot publish
+	// after a newer HTTP poll or WebSocket event. The freshness expiry callback
+	// uses the same path.
+	pb.statusPublishMu.Lock()
+	defer pb.statusPublishMu.Unlock()
+
 	status := pb.getStatus()
 	// update stateManager with the new status
 	// if connected, set app_connected to true
@@ -622,7 +634,8 @@ func (pb *PhoneBridge) statusUpdated() {
 		pb.stateManager.DeleteState("app_fgs_enabled")
 	}
 
-	if platform := strings.ToLower(strings.TrimSpace(status.Platform)); platform != "" {
+	platform := strings.ToLower(strings.TrimSpace(status.Platform))
+	if platform == "ios" || platform == "android" {
 		pb.stateManager.SetState("app_platform", platform)
 	} else {
 		pb.stateManager.DeleteState("app_platform")
@@ -633,7 +646,16 @@ func (pb *PhoneBridge) statusUpdated() {
 	} else {
 		pb.stateManager.DeleteState("app_text_entry_strategy")
 	}
+
+	pb.scheduleStatusExpiryLocked(status)
 }
+
+const (
+	phoneBridgeTextEntryTargetPreserving = "target_preserving_bridge"
+	phoneBridgeTextEntryConnected        = "bridge_connected"
+	phoneBridgeTextEntryRestoreAvailable = "bridge_restore_available"
+	phoneBridgeTextEntryIMEFallback      = "ime_fallback"
+)
 
 func phoneBridgeTextEntryState(status PhoneBridgeStatus) string {
 	platform := strings.ToLower(strings.TrimSpace(status.Platform))
@@ -641,18 +663,63 @@ func phoneBridgeTextEntryState(status PhoneBridgeStatus) string {
 		return ""
 	}
 	if phoneBridgeCanUsePiPBackground(status, "clipboard_write") || phoneBridgeCanUseFGSBackground(status, "clipboard_write") {
-		return fmt.Sprintf("target_preserving_bridge: MUST call enter_text_via_bridge directly with platform=%q for non-search CJK/non-ASCII, multiline, or final composer text; do not call enter_text_in_field, do not type the target through IME, and do not stage bridge_clipboard manually; enter_text_via_bridge owns clipboard write, one shortcut attempt, verification, and long-press Paste fallback; if its structured result conflicts with the attached screenshot, make one fresh observation before deciding, preserve the current field while evidence conflicts, and perform corrective input only after fresh evidence identifies a concrete mismatch; set send_after_commit=true when the user asked to send/reply/message", platform)
+		return phoneBridgeTextEntryTargetPreserving
+	}
+	if platform == "android" && phoneBridgeAppNeedsForeground(status) && phoneBridgeReadyForCommand(status, "clipboard_write") {
+		return phoneBridgeTextEntryTargetPreserving
 	}
 	if phoneBridgePiPBackgroundEnabled(status) || phoneBridgeFGSBackgroundEnabled(status) {
-		return "ime_fallback: background Bridge mode is reported but its poll state is stale; use enter_text_in_field until a fresh target-preserving clipboard route appears"
+		return phoneBridgeTextEntryIMEFallback
 	}
-	if phoneBridgeReadyForCommand(status) {
-		return "bridge_connected: use enter_text_via_bridge for long/multiline or final CJK/non-ASCII composer text; use enter_text_in_field for search/contact lookup"
+	if phoneBridgeReadyForCommand(status, "clipboard_write") {
+		return phoneBridgeTextEntryConnected
 	}
 	if phoneBridgeCanRestoreFromReturnEntry(status) {
-		return "bridge_restore_available: prefer enter_text_in_field for short input; use enter_text_via_bridge only when long/non-ASCII final composer text justifies restoring Aiden"
+		return phoneBridgeTextEntryRestoreAvailable
 	}
-	return "ime_fallback: no usable Phone Bridge clipboard route; use enter_text_in_field"
+	return phoneBridgeTextEntryIMEFallback
+}
+
+func (pb *PhoneBridge) scheduleStatusExpiryLocked(status PhoneBridgeStatus) {
+	if pb.statusExpiryTimer != nil {
+		pb.statusExpiryTimer.Stop()
+		pb.statusExpiryTimer = nil
+	}
+
+	delay, ok := phoneBridgeTextEntryStateExpiry(status)
+	if !ok {
+		return
+	}
+	pb.statusExpiryTimer = time.AfterFunc(delay, pb.statusUpdated)
+}
+
+func phoneBridgeTextEntryStateExpiry(status PhoneBridgeStatus) (time.Duration, bool) {
+	var deadline time.Time
+	consider := func(updatedAt *time.Time) {
+		if updatedAt == nil {
+			return
+		}
+		candidate := updatedAt.Add(phoneBridgeBackgroundStateMaxAge)
+		if deadline.IsZero() || candidate.Before(deadline) {
+			deadline = candidate
+		}
+	}
+
+	if phoneBridgePiPBackgroundEnabled(status) {
+		consider(status.AppStateUpdatedAt)
+	}
+	if phoneBridgeFGSBackgroundEnabled(status) {
+		consider(status.FgsBridgeUpdatedAt)
+	}
+	if deadline.IsZero() {
+		return 0, false
+	}
+
+	delay := time.Until(deadline) + time.Millisecond
+	if delay <= 0 {
+		return 0, false
+	}
+	return delay, true
 }
 
 func (pb *PhoneBridge) getStatus() PhoneBridgeStatus {
@@ -806,16 +873,10 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 			builder.WriteByte('\n')
 		}
 	}
-	if phoneBridgeCanUseFGSBackground(status, "clipboard_write") {
-		builder.WriteString("- Android Foreground Service bridge is actively polling while Aiden is backgrounded. Background-safe data tools can run through the HTTP command queue; open_app and UI actions still require foreground app control or HID fallback.\n")
-		builder.WriteString("- For non-search CJK/non-ASCII, multiline, or final composer text, call enter_text_via_bridge directly with platform=\"android\". Do not call enter_text_in_field or type the target through IME. It writes the clipboard without leaving the target app, tries the shortcut once, verifies it, then uses long-press Paste fallback; do not stage bridge_clipboard manually. If the structured result conflicts with the attached screenshot, make one fresh observation and preserve the current field while evidence conflicts; apply corrective input only after fresh evidence identifies a concrete mismatch.\n")
-	} else if phoneBridgeFGSBackgroundEnabled(status) {
-		builder.WriteString("- Android FGS Bridge is reported enabled, but no recent background poll confirms that its command queue is currently usable. Do not assume clipboard writes will work; use enter_text_in_field and screenshot/HID fallback until the state becomes fresh.\n")
-	} else if phoneBridgeCanUsePiPBackground(status, "clipboard_write") {
-		builder.WriteString("- PiP Bridge mode is actively polling while Aiden is backgrounded. Background-safe data tools can run through the HTTP command queue. iOS gives PiP priority over the Dynamic Island, so the Dynamic Island return entry is not visible in this state.\n")
-		builder.WriteString("- For non-search CJK/non-ASCII, multiline, or final composer text, call enter_text_via_bridge directly with platform=\"ios\". Do not call enter_text_in_field or type the target through IME. It writes the clipboard through the PiP queue, tries the shortcut once, verifies it, then uses long-press Paste fallback; do not stage bridge_clipboard manually. If the structured result conflicts with the attached screenshot, make one fresh observation and preserve the current field while evidence conflicts; apply corrective input only after fresh evidence identifies a concrete mismatch.\n")
+	if phoneBridgeFGSBackgroundEnabled(status) {
+		builder.WriteString("- Android Foreground Service bridge is enabled while Aiden is backgrounded. Background-safe data tools can run through the HTTP command queue; open_app and UI actions still require foreground app control or HID fallback.\n")
 	} else if phoneBridgePiPBackgroundEnabled(status) {
-		builder.WriteString("- PiP Bridge mode is reported enabled, but no recent background poll confirms that its command queue is currently usable. The Dynamic Island return entry is hidden by PiP. Do not assume clipboard writes will work; use enter_text_in_field and screenshot/HID fallback until the state becomes fresh.\n")
+		builder.WriteString("- PiP Bridge mode is enabled while Aiden is backgrounded. iOS gives PiP priority over the Dynamic Island, so the Dynamic Island return entry is not visible in this state.\n")
 	} else if phoneBridgeAppNeedsForeground(status) {
 		if phoneBridgeIsIOS(status) {
 			builder.WriteString("- The Aiden companion app is backgrounded or inactive. On iOS, Phone Bridge commands may time out until Aiden returns to foreground.\n")
@@ -825,18 +886,17 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 		} else {
 			builder.WriteString("- The Aiden companion app is backgrounded or inactive. Phone Bridge foreground commands may time out until Aiden returns to foreground; use screenshot/HID fallback when reconnect is unavailable.\n")
 		}
-		builder.WriteString("- Prefer enter_text_in_field for short search/contact input. Use enter_text_via_bridge only when long or non-ASCII final composer text justifies restoring Aiden and returning to the target app; it owns clipboard write, paste, and verification.\n")
 	} else if status.Connected {
 		builder.WriteString("- The phone companion app is connected. Use bridge_open_app as the primary path for opening apps, webpages, and phone dialer screens before falling back to screenshot/HID navigation.\n")
 		builder.WriteString("- bridge_clipboard, bridge_calendar, bridge_contacts, and bridge_notification tools are available through the companion app: prefer them over manual UI navigation for reading/writing the system clipboard, creating/querying/deleting system calendar events, managing contacts, or sending notifications.\n")
-		builder.WriteString("- For long, multiline, CJK, or other non-ASCII final composer text, use enter_text_via_bridge instead of manually chaining bridge_clipboard, app switching, and paste. Prefer enter_text_in_field for short search/contact input.\n")
+		builder.WriteString("- For long or non-ASCII text entry, prefer clipboard write through the companion app, switch to the target app, then paste with quick_action/keyboard shortcut instead of typing via HID.\n")
 		builder.WriteString("- If bridge_open_app returns {\"ok\":true}, treat the app launch as complete unless the user requested additional in-app actions.")
 	} else {
 		builder.WriteString("- The phone companion app is not connected. Do not assume bridge_open_app, bridge_clipboard, bridge_calendar, bridge_contacts, or bridge_notification tools can control the phone right now.\n")
 		if phoneBridgeIsIOS(status) {
-			builder.WriteString("- If return_entry=dynamic_island and return_entry_available=true, bridge_open_app, bridge_clipboard, bridge_calendar, bridge_contacts, and bridge_notification will first try to reopen Aiden through Dynamic Island and wait for Phone Bridge before sending the command. Otherwise use enter_text_in_field plus screenshot/HID fallback and tell the user when app-only actions cannot be completed.")
+			builder.WriteString("- If return_entry=dynamic_island and return_entry_available=true, bridge_open_app, bridge_clipboard, bridge_calendar, bridge_contacts, and bridge_notification will first try to reopen Aiden through Dynamic Island and wait for Phone Bridge before sending the command. Otherwise use screenshot plus HID/touch fallback and tell the user when app-only actions cannot be completed.")
 		} else if phoneBridgeIsAndroid(status) {
-			builder.WriteString("- Keep Aiden open in the foreground and wait for Phone Bridge to reconnect before retrying bridge_open_app; otherwise use enter_text_in_field plus screenshot/HID fallback.")
+			builder.WriteString("- Keep Aiden open in the foreground and wait for Phone Bridge to reconnect before retrying bridge_open_app; otherwise use screenshot plus HID/touch fallback.")
 		} else {
 			builder.WriteString("- Retry companion app tools only after Phone Bridge reconnects or a visible platform return entry is confirmed; otherwise use screenshot plus HID/touch fallback and tell the user when app-only actions cannot be completed.")
 		}
