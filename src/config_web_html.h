@@ -283,7 +283,7 @@ static const char* CONFIG_WEB_HTML =
     "            </div>\n"
     "          </div>\n"
     "          <div class=\"grid\">\n"
-    "            <div class=\"field wide\"><label>GitHub Proxy URL</label><input id=\"ota_github_proxy_url\" data-section=\"ota\" placeholder=\"https://gh-proxy.com/ or leave empty\"><div class=\"field-hint\">Optional proxy to accelerate GitHub downloads (e.g., https://gh-proxy.com/ or https://ghfast.top/)</div></div>\n"
+    "            <div class=\"field wide\"><label>GitHub Proxy URL</label><input id=\"ota_github_proxy_url\" data-section=\"ota\" placeholder=\"Leave empty to disable\"><div class=\"field-hint\">Optional proxy to accelerate GitHub downloads (e.g., https://gh-proxy.com/ or https://ghfast.top/)</div></div>\n"
     "          </div>\n"
     "        </div>\n"
     "        <div class=\"section-card\" id=\"section-hid\">\n"
