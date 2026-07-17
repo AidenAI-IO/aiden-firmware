@@ -2369,76 +2369,13 @@ func TestKeyboardTapSupportsAdditionalAndroidKeycodeAliases(t *testing.T) {
 	}
 }
 
-func TestKeyboardTapSupportsAndroidSettingsKeycodeAlias(t *testing.T) {
-	dev, path := newTestHIDDevice(t)
-	androidDev, androidPath := newTestHIDDevice(t)
-	tool := &KeyboardTapTool{dev: dev, androidDev: androidDev, pointerMode: "touchscreen"}
-
-	out, err := tool.Call(context.Background(), `{"keys":["KEYCODE_SETTINGS"]}`)
-	if err != nil {
-		t.Fatalf("Call failed: %v", err)
-	}
-	if out != "ok" {
-		t.Fatalf("unexpected output: %s", out)
-	}
-
-	dev.Close()
-	androidDev.Close()
-	if data, err := os.ReadFile(path); err != nil {
-		t.Fatalf("ReadFile keyboard path: %v", err)
-	} else if len(data) != 0 {
-		t.Fatalf("standard keyboard path bytes = %v, want none for android extension key", data)
-	}
-	data, err := os.ReadFile(androidPath)
-	if err != nil {
-		t.Fatalf("ReadFile android path: %v", err)
-	}
-	if len(data) != 4 {
-		t.Fatalf("report bytes = %d, want 4 (consumer usage + release)", len(data))
-	}
-	if got := uint16(data[0]) | uint16(data[1])<<8; got != androidExtensionUsageMap["settings"] {
-		t.Fatalf("android settings usage = 0x%04x, want 0x%04x", got, androidExtensionUsageMap["settings"])
-	}
-}
-
-func TestKeyboardTapSupportsAndroidLanguageSwitchKeycodeAlias(t *testing.T) {
-	dev, path := newTestHIDDevice(t)
-	androidDev, androidPath := newTestHIDDevice(t)
-	tool := &KeyboardTapTool{dev: dev, androidDev: androidDev, pointerMode: "touchscreen"}
-
-	out, err := tool.Call(context.Background(), `{"keys":["KEYCODE_LANGUAGE_SWITCH"]}`)
-	if err != nil {
-		t.Fatalf("Call failed: %v", err)
-	}
-	if out != "ok" {
-		t.Fatalf("unexpected output: %s", out)
-	}
-
-	dev.Close()
-	androidDev.Close()
-	if data, err := os.ReadFile(path); err != nil {
-		t.Fatalf("ReadFile keyboard path: %v", err)
-	} else if len(data) != 0 {
-		t.Fatalf("standard keyboard path bytes = %v, want none for android extension key", data)
-	}
-	data, err := os.ReadFile(androidPath)
-	if err != nil {
-		t.Fatalf("ReadFile android path: %v", err)
-	}
-	if len(data) != 4 {
-		t.Fatalf("report bytes = %d, want 4 (consumer usage + release)", len(data))
-	}
-	if got := uint16(data[0]) | uint16(data[1])<<8; got != androidExtensionUsageMap["language_switch"] {
-		t.Fatalf("android language_switch usage = 0x%04x, want 0x%04x", got, androidExtensionUsageMap["language_switch"])
-	}
-}
-
 func TestKeyboardTapSupportsHIDBackedAndroidKeycodeAliases(t *testing.T) {
 	testCases := []struct {
 		input  string
 		mapKey string
 	}{
 		{input: "KEYCODE_SCREENSHOT", mapKey: "screenshot"},
+		{input: "KEYCODE_SETTINGS", mapKey: "settings"},
 		{input: "KEYCODE_WINDOW", mapKey: "window"},
 		{input: "KEYCODE_BRIGHTNESS_UP", mapKey: "brightness_up"},
 		{input: "KEYCODE_BRIGHTNESS_DOWN", mapKey: "brightness_down"},
@@ -2449,6 +2386,7 @@ func TestKeyboardTapSupportsHIDBackedAndroidKeycodeAliases(t *testing.T) {
 		{input: "KEYCODE_NEW", mapKey: "new"},
 		{input: "KEYCODE_CLOSE", mapKey: "close"},
 		{input: "KEYCODE_PRINT", mapKey: "print"},
+		{input: "KEYCODE_LANGUAGE_SWITCH", mapKey: "language_switch"},
 		{input: "KEYCODE_REFRESH", mapKey: "refresh"},
 		{input: "KEYCODE_FULLSCREEN", mapKey: "fullscreen"},
 	}
