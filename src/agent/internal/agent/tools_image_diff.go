@@ -70,19 +70,19 @@ func (t *ImageDiffTool) Call(ctx context.Context, input string) (string, error) 
 		return toolErrorResultf(ctx, CodeInvalidArguments, "decode after: %v", err), nil
 	}
 
-	// Validate image format: only JPEG is supported
-	if len(beforeData) < 4 {
+	// Validate image format: only JPEG is supported (must start with 0xFF 0xD8)
+	if len(beforeData) < 2 {
 		return toolErrorResultString(ctx, CodeInvalidArguments, "before data too short"), nil
 	}
-	if len(afterData) < 4 {
+	if len(afterData) < 2 {
 		return toolErrorResultString(ctx, CodeInvalidArguments, "after data too short"), nil
 	}
-	// PNG signature: 0x89 0x50 0x4E 0x47
-	if len(beforeData) >= 4 && beforeData[0] == 0x89 && beforeData[1] == 0x50 && beforeData[2] == 0x4E && beforeData[3] == 0x47 {
-		return toolErrorResultString(ctx, CodeInvalidArguments, "before is PNG format, but image_diff requires JPEG. Use the 'data' field from screenshot tool results."), nil
+	// JPEG signature: 0xFF 0xD8
+	if beforeData[0] != 0xFF || beforeData[1] != 0xD8 {
+		return toolErrorResultString(ctx, CodeInvalidArguments, "before is not JPEG format (image_diff only supports JPEG). Use the 'data' field from screenshot tool results."), nil
 	}
-	if len(afterData) >= 4 && afterData[0] == 0x89 && afterData[1] == 0x50 && afterData[2] == 0x4E && afterData[3] == 0x47 {
-		return toolErrorResultString(ctx, CodeInvalidArguments, "after is PNG format, but image_diff requires JPEG. Use the 'data' field from screenshot tool results."), nil
+	if afterData[0] != 0xFF || afterData[1] != 0xD8 {
+		return toolErrorResultString(ctx, CodeInvalidArguments, "after is not JPEG format (image_diff only supports JPEG). Use the 'data' field from screenshot tool results."), nil
 	}
 
 	beforeImg, err := jpeg.Decode(bytes.NewReader(beforeData))
