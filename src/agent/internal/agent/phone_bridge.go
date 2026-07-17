@@ -622,8 +622,8 @@ func (pb *PhoneBridge) statusUpdated() {
 		pb.stateManager.DeleteState("app_fgs_enabled")
 	}
 
-	if status.Environment != nil {
-		pb.stateManager.SetState("app_platform", status.Platform)
+	if platform := strings.ToLower(strings.TrimSpace(status.Platform)); platform != "" {
+		pb.stateManager.SetState("app_platform", platform)
 	} else {
 		pb.stateManager.DeleteState("app_platform")
 	}
@@ -641,7 +641,7 @@ func phoneBridgeTextEntryState(status PhoneBridgeStatus) string {
 		return ""
 	}
 	if phoneBridgeCanUsePiPBackground(status, "clipboard_write") || phoneBridgeCanUseFGSBackground(status, "clipboard_write") {
-		return "target_preserving_bridge: for non-search CJK/non-ASCII or final composer text use enter_text_via_bridge (enter_text_in_field may auto-route); it owns clipboard write, verified paste, and long-press Paste fallback; set send_after_commit=true when the user asked to send/reply/message"
+		return fmt.Sprintf("target_preserving_bridge: MUST call enter_text_via_bridge directly with platform=%q for non-search CJK/non-ASCII, multiline, or final composer text; do not call enter_text_in_field, do not type the target through IME, and do not stage bridge_clipboard manually; enter_text_via_bridge owns clipboard write, one shortcut attempt, verification, and long-press Paste fallback; set send_after_commit=true when the user asked to send/reply/message", platform)
 	}
 	if phoneBridgePiPBackgroundEnabled(status) || phoneBridgeFGSBackgroundEnabled(status) {
 		return "ime_fallback: background Bridge mode is reported but its poll state is stale; use enter_text_in_field until a fresh target-preserving clipboard route appears"
@@ -808,12 +808,12 @@ func phoneBridgeRuntimeContext(status PhoneBridgeStatus) string {
 	}
 	if phoneBridgeCanUseFGSBackground(status, "clipboard_write") {
 		builder.WriteString("- Android Foreground Service bridge is actively polling while Aiden is backgrounded. Background-safe data tools can run through the HTTP command queue; open_app and UI actions still require foreground app control or HID fallback.\n")
-		builder.WriteString("- For a visible final chat/message composer, use enter_text_via_bridge for long, multiline, CJK, or other non-ASCII text. It writes the clipboard without leaving the target app, pastes with quick_action/keyboard fallback, and verifies the field/send; do not stage bridge_clipboard manually.\n")
+		builder.WriteString("- For non-search CJK/non-ASCII, multiline, or final composer text, call enter_text_via_bridge directly with platform=\"android\". Do not call enter_text_in_field or type the target through IME. It writes the clipboard without leaving the target app, tries the shortcut once, verifies it, then uses long-press Paste fallback; do not stage bridge_clipboard manually.\n")
 	} else if phoneBridgeFGSBackgroundEnabled(status) {
 		builder.WriteString("- Android FGS Bridge is reported enabled, but no recent background poll confirms that its command queue is currently usable. Do not assume clipboard writes will work; use enter_text_in_field and screenshot/HID fallback until the state becomes fresh.\n")
 	} else if phoneBridgeCanUsePiPBackground(status, "clipboard_write") {
 		builder.WriteString("- PiP Bridge mode is actively polling while Aiden is backgrounded. Background-safe data tools can run through the HTTP command queue. iOS gives PiP priority over the Dynamic Island, so the Dynamic Island return entry is not visible in this state.\n")
-		builder.WriteString("- For a visible final chat/message composer, use enter_text_via_bridge for long, multiline, CJK, or other non-ASCII text, including short replies when IME would be less reliable. It writes the clipboard through the PiP queue, pastes with quick_action/keyboard fallback, and verifies the field/send; do not stage bridge_clipboard manually.\n")
+		builder.WriteString("- For non-search CJK/non-ASCII, multiline, or final composer text, call enter_text_via_bridge directly with platform=\"ios\". Do not call enter_text_in_field or type the target through IME. It writes the clipboard through the PiP queue, tries the shortcut once, verifies it, then uses long-press Paste fallback; do not stage bridge_clipboard manually.\n")
 	} else if phoneBridgePiPBackgroundEnabled(status) {
 		builder.WriteString("- PiP Bridge mode is reported enabled, but no recent background poll confirms that its command queue is currently usable. The Dynamic Island return entry is hidden by PiP. Do not assume clipboard writes will work; use enter_text_in_field and screenshot/HID fallback until the state becomes fresh.\n")
 	} else if phoneBridgeAppNeedsForeground(status) {

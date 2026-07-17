@@ -246,8 +246,11 @@ func TestHTTPPollCommandsRecordsAndroidFGSBridgeState(t *testing.T) {
 		t.Fatal("fgs_bridge_updated_at is nil")
 	}
 	strategy := stateManager.GetState("app_text_entry_strategy")
-	if !strings.Contains(strategy, "target_preserving_bridge") || !strings.Contains(strategy, "long-press Paste fallback") {
+	if !strings.Contains(strategy, "target_preserving_bridge") || !strings.Contains(strategy, `platform="android"`) || !strings.Contains(strategy, "long-press Paste fallback") {
 		t.Fatalf("app_text_entry_strategy = %q, want fresh target-preserving guidance", strategy)
+	}
+	if platform := stateManager.GetState("app_platform"); platform != "android" {
+		t.Fatalf("app_platform = %q, want android", platform)
 	}
 }
 
@@ -264,10 +267,13 @@ func TestHTTPPollCommandsRecordsIOSPiPTextEntryStrategy(t *testing.T) {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, w.Code, w.Body.String())
 	}
 	strategy := stateManager.GetState("app_text_entry_strategy")
-	for _, want := range []string{"target_preserving_bridge", "non-search CJK/non-ASCII", "send_after_commit=true"} {
+	for _, want := range []string{"target_preserving_bridge", `platform="ios"`, "MUST call enter_text_via_bridge directly", "do not call enter_text_in_field", "one shortcut attempt", "send_after_commit=true"} {
 		if !strings.Contains(strategy, want) {
 			t.Fatalf("app_text_entry_strategy missing %q: %q", want, strategy)
 		}
+	}
+	if platform := stateManager.GetState("app_platform"); platform != "ios" {
+		t.Fatalf("app_platform = %q, want ios", platform)
 	}
 }
 

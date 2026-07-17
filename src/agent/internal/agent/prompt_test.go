@@ -309,7 +309,10 @@ func TestPhoneBridgeRuntimeContextPiPBackgroundDisablesOpenApp(t *testing.T) {
 		"Background-safe data tools can run through the HTTP command queue",
 		"iOS gives PiP priority over the Dynamic Island",
 		"Dynamic Island return entry is not visible",
-		"use enter_text_via_bridge",
+		"call enter_text_via_bridge directly with platform=\"ios\"",
+		"Do not call enter_text_in_field or type the target through IME",
+		"tries the shortcut once",
+		"long-press Paste fallback",
 		"do not stage bridge_clipboard manually",
 	} {
 		if !strings.Contains(got, want) {
@@ -363,7 +366,10 @@ func TestPhoneBridgeRuntimeContextFGSBackgroundUsesTargetPreservingTextEntry(t *
 
 	for _, want := range []string{
 		"actively polling",
-		"use enter_text_via_bridge",
+		"call enter_text_via_bridge directly with platform=\"android\"",
+		"Do not call enter_text_in_field or type the target through IME",
+		"tries the shortcut once",
+		"long-press Paste fallback",
 		"without leaving the target app",
 		"do not stage bridge_clipboard manually",
 	} {

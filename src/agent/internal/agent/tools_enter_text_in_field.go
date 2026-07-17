@@ -24,7 +24,7 @@ func (t *EnterTextInFieldTool) Name() string { return "enter_text_in_field" }
 func (t *EnterTextInFieldTool) Description() string {
 	return `Enter text into a focused input field with automatic strategy selection and verification. ` +
 		`Prefer this over keyboard_text for any input field entry; keyboard_text is ASCII-only and has no field verification. ` +
-		`Use this for search fields, contact lookup, short text when no target-preserving Phone Bridge clipboard path is available, and normal IME/pinyin entry. When runtime Phone Bridge status reports a usable target-preserving clipboard path, non-search CJK or other non-ASCII text is automatically routed through enter_text_via_bridge for clipboard write and verified paste. For a user request to send, reply, or message from an already-open composer, set send_after_commit=true. ` +
+		`Use this for search fields, contact lookup, short text when no target-preserving Phone Bridge clipboard path is available, and normal IME/pinyin entry. When runtime app_text_entry_strategy is target_preserving_bridge, do not use this for non-search CJK/non-ASCII, multiline, or final composer text; call enter_text_via_bridge directly and pass the reported app_platform. For a user request to send, reply, or message from an already-open composer, set send_after_commit=true. ` +
 		`Returns committed:true only when the exact target text is fully committed in the input field. Report success only when committed:true and field_text matches target exactly. ` +
 		`Focus coordinates use the same coord_space system as touch/click tools; prefer normalized coordinates from the latest screenshot.`
 }
