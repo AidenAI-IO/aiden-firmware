@@ -1063,6 +1063,18 @@ func (o *realStorageOps) Prepare(dev, mountPoint string) error {
 	// options, so retry with the portable set.
 	if out, err := exec.Command("mount", "-o", "noatime,errors=remount-ro,commit=2", dev, mountPoint).CombinedOutput(); err != nil {
 		if out2, err2 := exec.Command("mount", "-o", "noatime", dev, mountPoint).CombinedOutput(); err2 != nil {
+			// An unmountable card usually means a filesystem this kernel has
+			// no driver for (APFS, HFS+, NTFS, ...) or a partition table with
+			// every partition deleted (Windows "delete volume"). Name the
+			// actual situation and point at the fix instead of surfacing a
+			// bare "Invalid argument".
+			fsType, ptType := probeBlkid(dev)
+			if fsType != "" && !kernelSupportsFilesystem(fsType) {
+				return fmt.Errorf("unsupported filesystem %q on %s; format the card (Settings page) as FAT32/exFAT/ext4 to use it on this device", fsType, dev)
+			}
+			if fsType == "" && ptType != "" {
+				return fmt.Errorf("card has a %s partition table but no usable partition (volume deleted?); format the card (Settings page) to use it on this device", ptType)
+			}
 			return fmt.Errorf("mount %s: %v: %s / %v: %s", dev, err, strings.TrimSpace(string(out)), err2, strings.TrimSpace(string(out2)))
 		}
 	}
@@ -1253,6 +1265,62 @@ func (o *realStorageOps) FormatDisk(fs string) (string, error) {
 		return "", fmt.Errorf("%s %s: %v: %s", cmd.Path, part, err, strings.TrimSpace(string(out)))
 	}
 	return part, nil
+}
+
+// probeBlkid asks blkid what the device carries: a filesystem signature
+// (TYPE) and/or a partition table (PTTYPE, e.g. a card whose volumes were
+// deleted on a PC). Plain blkid may print nothing for a bare partition
+// table, so fall back to low-level probing (-p). Empty strings mean blkid
+// is unavailable or found nothing.
+func probeBlkid(dev string) (fsType, ptType string) {
+	out, err := exec.Command("blkid", dev).CombinedOutput()
+	if err == nil {
+		fsType, ptType = parseBlkidLine(string(out))
+	}
+	if fsType == "" && ptType == "" {
+		if out, err := exec.Command("blkid", "-p", dev).CombinedOutput(); err == nil {
+			fsType, ptType = parseBlkidLine(string(out))
+		}
+	}
+	return fsType, ptType
+}
+
+// parseBlkidLine extracts TYPE and PTTYPE values from a blkid output line
+// like `/dev/mmcblk2p1: UUID="..." TYPE="apfs"` or
+// `/dev/mmcblk2: PTUUID="..." PTTYPE="dos"`.
+func parseBlkidLine(line string) (fsType, ptType string) {
+	return blkidValue(line, ` TYPE="`), blkidValue(line, ` PTTYPE="`)
+}
+
+func blkidValue(line, marker string) string {
+	start := strings.Index(line, marker)
+	if start < 0 {
+		return ""
+	}
+	rest := line[start+len(marker):]
+	end := strings.IndexByte(rest, '"')
+	if end <= 0 {
+		return ""
+	}
+	return rest[:end]
+}
+
+// kernelSupportsFilesystem reports whether the running kernel can mount the
+// given filesystem type, per /proc/filesystems. Unknown on read failure —
+// err on the side of NOT claiming "unsupported" so the raw mount error
+// (which may have a different cause) is preserved.
+func kernelSupportsFilesystem(fsType string) bool {
+	data, err := os.ReadFile("/proc/filesystems")
+	if err != nil {
+		return true
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && fields[len(fields)-1] == fsType {
+			return true
+		}
+	}
+	return false
 }
 
 // waitNoMounts blocks until no partition of the card appears in the mount

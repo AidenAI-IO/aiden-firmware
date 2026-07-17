@@ -764,6 +764,32 @@ func TestStorageManagerBusyUnmountKeepsStateMounted(t *testing.T) {
 	}
 }
 
+func TestParseBlkidLine(t *testing.T) {
+	tests := []struct {
+		line   string
+		wantFS string
+		wantPT string
+	}{
+		{`/dev/mmcblk2p1: UUID="0a1b2c3d" TYPE="apfs" PARTUUID="deadbeef-01"`, "apfs", ""},
+		{`/dev/mmcblk2p1: LABEL="AIDEN" UUID="ABCD-1234" TYPE="vfat"`, "vfat", ""},
+		{`/dev/mmcblk2p1: TYPE="hfsplus"`, "hfsplus", ""},
+		// Whole-device probe of a card whose volumes were deleted on a PC:
+		// a partition table signature but no filesystem.
+		{`/dev/mmcblk2: PTUUID="1c6a2f34" PTTYPE="dos"`, "", "dos"},
+		{`/dev/mmcblk2: PTUUID="a3b2c1d0-..." PTTYPE="gpt"`, "", "gpt"},
+		// PTTYPE must not be mistaken for TYPE and vice versa.
+		{`/dev/mmcblk2p1: TYPE="vfat" PTTYPE="dos"`, "vfat", "dos"},
+		{`/dev/mmcblk2p1: PARTUUID="deadbeef-01"`, "", ""},
+		{``, "", ""},
+	}
+	for _, tt := range tests {
+		gotFS, gotPT := parseBlkidLine(tt.line)
+		if gotFS != tt.wantFS || gotPT != tt.wantPT {
+			t.Fatalf("parseBlkidLine(%q) = (%q, %q), want (%q, %q)", tt.line, gotFS, gotPT, tt.wantFS, tt.wantPT)
+		}
+	}
+}
+
 func TestNewStorageManagerEMMCRootEnvOverride(t *testing.T) {
 	m := NewStorageManager(StorageConfig{}, nil)
 	m.Stop()
