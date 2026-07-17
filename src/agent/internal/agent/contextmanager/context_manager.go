@@ -162,8 +162,41 @@ func NewContextManager(sessionFolder string, systemPrompt string) (*ContextManag
 	return manager, nil
 }
 
+func NewContextManagerFromMessageList(sessionFolder string, messageList []Message) (*ContextManager, error) {
+	newSessionID := newSessionID()
+	attachmentStore, err := newAttachmentStore(sessionFolder, newSessionID)
+	if err != nil {
+		return nil, err
+	}
+	manager := &ContextManager{
+		sessionFolder:   sessionFolder,
+		sessionID:       newSessionID,
+		messageList:     messageList,
+		mu:              sync.RWMutex{},
+		attachmentStore: attachmentStore,
+	}
+	if err := manager.flushFull(); err != nil {
+		return nil, err
+	}
+	return manager, nil
+}
+
 func newSessionID() string {
 	return "s_" + uuid.New().String()
+}
+
+func SwitchSession(sessionFolder string, sessionID string) error {
+	// save session ID to current session file
+	if err := saveCurrentSession(sessionFolder, sessionID); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *ContextManager) CloneMessageList() []Message {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return cloneMessages(c.messageList)
 }
 
 func (c *ContextManager) GetSessionFolder() string {
@@ -190,6 +223,16 @@ func (c *ContextManager) appendToList(messages []Message) error {
 	c.messageList = append(c.messageList, messages...)
 
 	return nil
+}
+
+func (c *ContextManager) flushFull() error {
+	c.mu.RLock()
+	messages := cloneMessages(c.messageList)
+	c.mu.RUnlock()
+	if len(messages) == 0 {
+		return nil
+	}
+	return appendSession(c.sessionFolder, c.sessionID, messages)
 }
 
 func (c *ContextManager) AppendMessage(message Message) error {

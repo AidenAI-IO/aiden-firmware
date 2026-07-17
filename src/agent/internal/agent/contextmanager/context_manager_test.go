@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -226,6 +227,44 @@ func TestConvertToStandardMessageList_ToolResults(t *testing.T) {
 	toolResponse, ok := messages[1].Parts[0].(llms.ToolCallResponse)
 	if !ok || toolResponse.ToolCallID != "call_1" || toolResponse.Name != "echo" || toolResponse.Content != `{"output":"hello"}` {
 		t.Fatalf("tool result part = %#v", messages[1].Parts[0])
+	}
+}
+
+func TestNewContextManagerFromMessageListPersistsMessages(t *testing.T) {
+	sessionFolder := t.TempDir()
+	want := []Message{
+		{Role: MessageRoleSystem, Content: "system prompt"},
+		{
+			Role:    MessageRoleToolCall,
+			Content: "checking",
+			ToolCalls: []ToolCall{{
+				ID:        "call_1",
+				Name:      "echo",
+				Arguments: `{"input":"hello"}`,
+			}},
+		},
+		{
+			Role: MessageRoleToolResult,
+			ToolResults: []ToolResult{{
+				ToolCallID: "call_1",
+				Name:       "echo",
+				Content:    `{"output":"hello"}`,
+			}},
+		},
+	}
+
+	manager, err := NewContextManagerFromMessageList(sessionFolder, want)
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+
+	reloaded, err := LoadContextManagerFromSessionID(sessionFolder, manager.GetSessionID())
+	if err != nil {
+		t.Fatalf("LoadContextManagerFromSessionID() error = %v", err)
+	}
+
+	if got := reloaded.CloneMessageList(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("reloaded messages = %#v, want %#v", got, want)
 	}
 }
 

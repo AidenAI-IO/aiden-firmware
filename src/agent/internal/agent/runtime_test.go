@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"aiden-agent/internal/agent/agentpath"
+	"aiden-agent/internal/agent/contextmanager"
+	"aiden-agent/internal/agent/model"
 
 	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/llms"
@@ -77,7 +79,7 @@ type testModelResolver struct {
 	model llms.Model
 	err   error
 	calls int
-	spec  ModelSpec
+	spec  model.ModelSpec
 }
 
 func (r *testModelResolver) Get() (llms.Model, error) {
@@ -92,7 +94,7 @@ func (r *testModelResolver) CallOptions() []chains.ChainCallOption {
 	return nil
 }
 
-func (r *testModelResolver) Spec() ModelSpec {
+func (r *testModelResolver) Spec() model.ModelSpec {
 	return r.spec
 }
 
@@ -2095,6 +2097,73 @@ func (m *scriptedModel) Call(context.Context, string, ...llms.CallOption) (strin
 
 func contentResponse(content string) *llms.ContentResponse {
 	return contentResponseWithInfo(content, nil)
+}
+
+func TestRuntimeRunCompactsWithoutLogger(t *testing.T) {
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	sessionFolder := agentpath.ContextManagerSessionFolder(configDir)
+	// Runtime compaction uses a minimum context window of 8192 tokens, so this
+	// fixture must comfortably exceed the ~80% threshold to force compaction.
+	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []contextmanager.Message{
+		{Role: contextmanager.MessageRoleSystem, Content: "Answer directly."},
+		{Role: contextmanager.MessageRoleUser, Content: strings.Repeat("user ", 1600)},
+		{Role: contextmanager.MessageRoleAssistant, Content: strings.Repeat("assistant ", 1600)},
+		{
+			Role: contextmanager.MessageRoleToolCall,
+			ToolCalls: []contextmanager.ToolCall{{
+				ID:        "call_1",
+				Name:      "echo",
+				Arguments: `{"input":"` + strings.Repeat("x", 4000) + `"}`,
+			}},
+		},
+		{
+			Role: contextmanager.MessageRoleToolResult,
+			ToolResults: []contextmanager.ToolResult{{
+				ToolCallID: "call_1",
+				Name:       "echo",
+				Content:    strings.Repeat("result ", 1600),
+			}},
+		},
+		{Role: contextmanager.MessageRoleAssistant, Content: "recent tail"},
+	})
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+
+	llmModel := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			contentResponse("compacted summary"),
+			contentResponse("ok"),
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:     configDir,
+			Model:         ModelConfig{Provider: "fake"},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{
+			model: llmModel,
+			spec:  model.ModelSpec{ContextWindow: 100},
+		},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.contextManager = manager
+	runtime.logger = nil
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "hello"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "ok" {
+		t.Fatalf("output = %q, want ok", result.Output)
+	}
+	if len(llmModel.messages) != 2 {
+		t.Fatalf("model call count = %d, want 2 (summary + planner)", len(llmModel.messages))
+	}
 }
 
 func contentResponseWithInfo(content string, info map[string]any) *llms.ContentResponse {
