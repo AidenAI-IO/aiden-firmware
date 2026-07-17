@@ -103,11 +103,13 @@ Required pattern:
 
 Use `enter_text_via_bridge` only when:
 
+- runtime `app_text_entry_strategy` is `target_preserving_bridge` and the target is non-search CJK/non-ASCII, multiline, or final composer text;
 - the user explicitly asks to use the companion app, bridge, or clipboard;
 - direct field entry failed and the bridge is available;
 - the text is long, emoji-heavy, or otherwise unsuitable for HID typing.
 
 After bridge entry, verify the target field or submitted result before reporting success.
+If `enter_text_via_bridge` returns `committed:false` but its attached screenshot appears to show the full target, treat this as a possible verification false negative. Call `wait_for_stable_screen` once and compare the requested text line by line. If the fresh screenshot visibly confirms the complete target, stop and report success. During this conflict check, preserve the existing field: never use select all, backspace/delete, cut, another paste, or retyping unless the fresh screenshot clearly proves the target is incomplete.
 
 For simple keys:
 

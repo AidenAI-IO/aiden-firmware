@@ -27,6 +27,8 @@ func TestEnterTextViaBridgeDescriptionDocumentsChatClipboardPath(t *testing.T) {
 		"do not call bridge_clipboard first",
 		"long-pressing the field",
 		"Paste/粘贴",
+		"wait_for_stable_screen once",
+		"do not select_all, delete, cut, or retype",
 		"search terms",
 		"contact lookup",
 	} {
