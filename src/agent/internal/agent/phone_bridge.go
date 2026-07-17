@@ -695,11 +695,15 @@ func (pb *PhoneBridge) scheduleStatusExpiryLocked(status PhoneBridgeStatus) {
 
 func phoneBridgeTextEntryStateExpiry(status PhoneBridgeStatus) (time.Duration, bool) {
 	var deadline time.Time
+	now := time.Now()
 	consider := func(updatedAt *time.Time) {
 		if updatedAt == nil {
 			return
 		}
-		candidate := updatedAt.Add(phoneBridgeBackgroundStateMaxAge)
+		candidate := updatedAt.Add(phoneBridgeBackgroundStateMaxAge).Add(time.Millisecond)
+		if !candidate.After(now) {
+			return
+		}
 		if deadline.IsZero() || candidate.Before(deadline) {
 			deadline = candidate
 		}
@@ -715,7 +719,7 @@ func phoneBridgeTextEntryStateExpiry(status PhoneBridgeStatus) (time.Duration, b
 		return 0, false
 	}
 
-	delay := time.Until(deadline) + time.Millisecond
+	delay := time.Until(deadline)
 	if delay <= 0 {
 		return 0, false
 	}
