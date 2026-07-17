@@ -267,7 +267,7 @@ func TestHTTPPollCommandsRecordsIOSPiPTextEntryStrategy(t *testing.T) {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, w.Code, w.Body.String())
 	}
 	strategy := stateManager.GetState("app_text_entry_strategy")
-	for _, want := range []string{"target_preserving_bridge", `platform="ios"`, "MUST call enter_text_via_bridge directly", "do not call enter_text_in_field", "one shortcut attempt", "observe once more", "never select_all, delete, or retype", "send_after_commit=true"} {
+	for _, want := range []string{"target_preserving_bridge", `platform="ios"`, "MUST call enter_text_via_bridge directly", "do not call enter_text_in_field", "one shortcut attempt", "make one fresh observation", "preserve the current field while evidence conflicts", "corrective input only after fresh evidence identifies a concrete mismatch", "send_after_commit=true"} {
 		if !strings.Contains(strategy, want) {
 			t.Fatalf("app_text_entry_strategy missing %q: %q", want, strategy)
 		}

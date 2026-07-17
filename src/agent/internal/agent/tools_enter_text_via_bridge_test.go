@@ -28,7 +28,8 @@ func TestEnterTextViaBridgeDescriptionDocumentsChatClipboardPath(t *testing.T) {
 		"long-pressing the field",
 		"Paste/粘贴",
 		"wait_for_stable_screen once",
-		"do not select_all, delete, cut, or retype",
+		"Preserve the current field while evidence conflicts",
+		"corrective input only after the fresh observation identifies a concrete mismatch",
 		"search terms",
 		"contact lookup",
 	} {

@@ -109,7 +109,7 @@ Use `enter_text_via_bridge` only when:
 - the text is long, emoji-heavy, or otherwise unsuitable for HID typing.
 
 After bridge entry, verify the target field or submitted result before reporting success.
-If `enter_text_via_bridge` returns `committed:false` but its attached screenshot appears to show the full target, treat this as a possible verification false negative. Call `wait_for_stable_screen` once and compare the requested text line by line. If the fresh screenshot visibly confirms the complete target, stop and report success. During this conflict check, preserve the existing field: never use select all, backspace/delete, cut, another paste, or retyping unless the fresh screenshot clearly proves the target is incomplete.
+If the structured result from `enter_text_via_bridge` conflicts with its attached screenshot, treat this as uncertain verification rather than immediate input failure. Call `wait_for_stable_screen` once and compare the requested text with the fresh observation. Preserve the current field while evidence conflicts; do not perform corrective input until the fresh observation identifies a concrete mismatch. If correction is necessary, change only the confirmed mismatch and keep already-correct content intact.
 
 For simple keys:
 

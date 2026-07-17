@@ -313,8 +313,9 @@ func TestPhoneBridgeRuntimeContextPiPBackgroundDisablesOpenApp(t *testing.T) {
 		"Do not call enter_text_in_field or type the target through IME",
 		"tries the shortcut once",
 		"long-press Paste fallback",
-		"observe once more and preserve the existing text",
-		"never select all, delete, or retype",
+		"make one fresh observation",
+		"preserve the current field while evidence conflicts",
+		"corrective input only after fresh evidence identifies a concrete mismatch",
 		"do not stage bridge_clipboard manually",
 	} {
 		if !strings.Contains(got, want) {
@@ -372,8 +373,9 @@ func TestPhoneBridgeRuntimeContextFGSBackgroundUsesTargetPreservingTextEntry(t *
 		"Do not call enter_text_in_field or type the target through IME",
 		"tries the shortcut once",
 		"long-press Paste fallback",
-		"observe once more and preserve the existing text",
-		"never select all, delete, or retype",
+		"make one fresh observation",
+		"preserve the current field while evidence conflicts",
+		"corrective input only after fresh evidence identifies a concrete mismatch",
 		"without leaving the target app",
 		"do not stage bridge_clipboard manually",
 	} {
