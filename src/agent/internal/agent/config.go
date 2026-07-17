@@ -123,6 +123,47 @@ func (c LogConfig) LLMHTTPRetentionDaysOrDefault() int {
 	return c.LLMHTTPRetentionDays
 }
 
+// OTAConfig controls OTA update behavior.
+type OTAConfig struct {
+	GitHubProxyURL string `toml:"github_proxy_url,omitempty"`
+}
+
+// GitHubProxyURLOrDefault returns GitHubProxyURL if non-empty and valid, else empty string.
+func (c OTAConfig) GitHubProxyURLOrDefault() string {
+	return strings.TrimSpace(c.GitHubProxyURL)
+}
+
+// Validate checks if the GitHub proxy URL is valid when configured
+func (c OTAConfig) Validate() error {
+	proxyURL := strings.TrimSpace(c.GitHubProxyURL)
+	if proxyURL == "" {
+		return nil // Empty is valid (no proxy)
+	}
+
+	// Parse the URL
+	parsed, err := url.Parse(proxyURL)
+	if err != nil {
+		return fmt.Errorf("ota.github_proxy_url: invalid URL: %w", err)
+	}
+
+	// Must have a scheme
+	if parsed.Scheme == "" {
+		return fmt.Errorf("ota.github_proxy_url: must be an absolute URL with scheme (e.g., https://example.com/)")
+	}
+
+	// Must be HTTPS
+	if parsed.Scheme != "https" {
+		return fmt.Errorf("ota.github_proxy_url: must use https, got %s", parsed.Scheme)
+	}
+
+	// Must have a host
+	if parsed.Host == "" {
+		return fmt.Errorf("ota.github_proxy_url: missing host")
+	}
+
+	return nil
+}
+
 type Config struct {
 	Model                      ModelConfig             `toml:"model"`
 	ModelText                  ModelConfig             `toml:"model_text,omitempty"` // Override for STT-then-text mode
@@ -133,6 +174,7 @@ type Config struct {
 	Audio                      AudioConfig             `toml:"audio,omitempty"`
 	AudioArchive               AudioArchiveConfig      `toml:"audio_archive,omitempty"`
 	Log                        LogConfig               `toml:"log,omitempty"`
+	OTA                        OTAConfig               `toml:"ota,omitempty"`
 	Search                     SearchConfig            `toml:"search,omitempty"`
 	EnvironmentBridge          EnvironmentBridgeConfig `toml:"-"` // Only set via CLI flags, never from config file
 	Benchmark                  BenchmarkConfig         `toml:"-"` // Only set via CLI flags, never from config file
@@ -910,6 +952,9 @@ func (c Config) Validate() error {
 		return err
 	}
 	if err := c.LiveActivity.Validate(); err != nil {
+		return err
+	}
+	if err := c.OTA.Validate(); err != nil {
 		return err
 	}
 

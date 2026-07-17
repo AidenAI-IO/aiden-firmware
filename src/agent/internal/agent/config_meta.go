@@ -222,6 +222,12 @@ func ConfigMeta() ConfigMetadata {
 				},
 			},
 			{
+				Name: "ota",
+				Fields: []FieldMeta{
+					{Key: "github_proxy_url", Widget: WidgetText, Default: ""},
+				},
+			},
+			{
 				Name: "hid",
 				Fields: []FieldMeta{
 					{Key: "pointer_mode", Widget: WidgetSelect,
