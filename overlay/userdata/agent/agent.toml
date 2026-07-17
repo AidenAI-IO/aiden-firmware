@@ -63,6 +63,14 @@ api_key = "OPENAI_API_KEY"
 # context_window = 128000
 # model_max_output_tokens = 8192
 
+# For Moonshot Kimi K3, use the "kimi" (global) or "kimi-cn" (mainland China)
+# provider. Each has a built-in Moonshot base_url, so only model + api_key are
+# needed. Set base_url only to override the default (e.g. a proxy).
+# provider = "kimi"       # global: https://api.moonshot.ai/v1
+# provider = "kimi-cn"    # mainland China: https://api.moonshot.cn/v1
+# model = "kimi-k3"
+# api_key = "MOONSHOT_API_KEY"
+
 # Audio service configuration
 [audio]
 # socket = "/run/audio_service/audio_service.sock"

@@ -45,6 +45,11 @@ var modelSpecRegistry = map[string]model.ModelSpec{
 	"google/gemini-3.5-flash": {ContextWindow: 1_048_576, MaxOutput: 65_536},
 	"gemini-3.5-flash":        {ContextWindow: 1_048_576, MaxOutput: 65_536},
 
+	// Moonshot Kimi K3 (vision + tool calling). Reached via the Moonshot
+	// OpenAI-compatible endpoint (bare model name) or the OpenRouter route.
+	"moonshotai/kimi-k3": {ContextWindow: 1_048_576, MaxOutput: 131_072},
+	"kimi-k3":            {ContextWindow: 1_048_576, MaxOutput: 131_072},
+
 	// Existing entries retained for back-compat with dev/staging configs.
 	"anthropic/claude-3.5-sonnet":  {ContextWindow: 200_000, MaxOutput: 8_192},
 	"anthropic/claude-3.7-sonnet":  {ContextWindow: 200_000, MaxOutput: 8_192},

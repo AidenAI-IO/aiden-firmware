@@ -225,15 +225,36 @@ The three stall-score thresholds must satisfy
 
 | Field | Description |
 | --- | --- |
-| `provider` | `openai`, `openrouter`, `ollama`, `fake` |
+| `provider` | `openai`, `openrouter`, `kimi`, `kimi-cn`, `ollama`, `fake`. `kimi` targets the Moonshot global site (`https://api.moonshot.ai/v1`) and `kimi-cn` targets the mainland China site (`https://api.moonshot.cn/v1`); both accept a `base_url` override. |
 | `model` | Model name; usually required except for `fake` |
-| `base_url` | Custom OpenAI-compatible endpoint |
+| `base_url` | Custom OpenAI-compatible endpoint. Optional for `kimi`/`kimi-cn` (each has a built-in default). |
 | `api_key` | API key written directly |
 | `token_env` | Read the API key from the specified environment variable; only supported by `[model]` |
 | `temperature` | Sampling temperature |
 | `max_response_tokens` | Maximum output tokens passed to the model on request |
 | `context_window` | Optional total context window override in tokens. Unset or `0` uses provider metadata for OpenRouter/Ollama when available, then the built-in registry, then memory fallback. |
 | `model_max_output_tokens` | Optional advertised max output override in tokens. Unset or `0` uses provider metadata when fetched, then the built-in registry. |
+
+### Moonshot Kimi K3
+
+Use the dedicated `kimi` (global) or `kimi-cn` (mainland China) provider. Each has a built-in Moonshot OpenAI-compatible `base_url`, so only `model` and the API key are required. The `kimi-k3` context window and max output are in the built-in registry, so the metadata overrides can stay unset.
+
+```toml
+# Global site (https://api.moonshot.ai/v1)
+[model]
+provider = "kimi"
+model = "kimi-k3"
+api_key = "MOONSHOT_API_KEY"
+
+# Mainland China site (https://api.moonshot.cn/v1)
+# [model]
+# provider = "kimi-cn"
+# model = "kimi-k3"
+# api_key = "MOONSHOT_API_KEY"
+
+# base_url is optional for kimi/kimi-cn; set it only to override the default
+# (e.g. a proxy or self-hosted gateway).
+```
 
 ## `[log]`
 

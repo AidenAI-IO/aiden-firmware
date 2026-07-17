@@ -125,3 +125,40 @@ func TestRetryTransportRetriesTooManyRequests(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 }
+
+func TestBuildKimiProvidersResolveBaseURL(t *testing.T) {
+	tests := []struct {
+		name        string
+		provider    string
+		baseURL     string
+		wantBaseURL string
+	}{
+		{"kimi default global", "kimi", "", moonshotGlobalBaseURL},
+		{"kimi-cn default cn", "kimi-cn", "", moonshotCNBaseURL},
+		{"kimi case insensitive", "Kimi", "", moonshotGlobalBaseURL},
+		{"kimi custom base url", "kimi", "https://gateway.example.com/v1", "https://gateway.example.com/v1"},
+		{"kimi-cn custom base url", "kimi-cn", "https://gateway.example.com/v1", "https://gateway.example.com/v1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mgr := NewModelManager(ModelConfig{
+				Provider: tt.provider,
+				Model:    "kimi-k3",
+				APIKey:   "test-key",
+				BaseURL:  tt.baseURL,
+			}, ProxyConfig{})
+
+			model, err := mgr.build(mgr.config)
+			if err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			compatible, ok := model.(*openAICompatibleModel)
+			if !ok {
+				t.Fatalf("model type = %T, want *openAICompatibleModel", model)
+			}
+			if compatible.baseURL != tt.wantBaseURL {
+				t.Errorf("baseURL = %q, want %q", compatible.baseURL, tt.wantBaseURL)
+			}
+		})
+	}
+}

@@ -108,7 +108,7 @@ func ConfigMeta() ConfigMetadata {
 				Name: "model",
 				Fields: []FieldMeta{
 					{Key: "provider", Widget: WidgetSelect,
-						Enum:    enumOptions("openrouter", "openai", "ollama", "fake"),
+						Enum:    enumOptions("openrouter", "openai", "kimi", "kimi-cn", "ollama", "fake"),
 						Default: defaults.Model.Provider},
 					{Key: "token_env", Widget: WidgetText},
 					{Key: "model", Widget: WidgetText, Default: defaults.Model.Model},

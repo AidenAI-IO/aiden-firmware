@@ -66,6 +66,7 @@ const char* kDefaultConfig =
     "\"channels\":1,\"bit_width\":16},"
     "\"audio_archive\":{\"enabled\":true,\"max_files\":500,\"max_size_mb\":100,"
     "\"storage_path\":\"/userdata/audio\"},"
+    "\"ota\":{\"github_proxy_url\":\"\"},"
     "\"hid\":{\"keyboard_device\":\"/dev/hidg0\",\"mouse_device\":\"/dev/hidg1\","
     "\"android_keyboard_device\":\"/dev/hidg2\","
     "\"frame_socket\":\"/run/frame_service/frame_service.sock\",\"pointer_mode\":\"absolute\"},"
