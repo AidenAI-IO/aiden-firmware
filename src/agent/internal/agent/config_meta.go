@@ -224,16 +224,7 @@ func ConfigMeta() ConfigMetadata {
 			{
 				Name: "ota",
 				Fields: []FieldMeta{
-					{Key: "github_proxy_url", Widget: WidgetSelect,
-						Enum: []EnumOption{
-							{Value: "", Label: "Direct connection (no proxy)"},
-							{Value: "https://gh-proxy.com/", Label: "gh-proxy.com"},
-							{Value: "https://ghfast.top/", Label: "ghfast.top"},
-							{Value: "custom", Label: "Custom proxy URL"},
-						},
-						Default: ""},
-					{Key: "github_proxy_url_custom", Widget: WidgetText,
-						VisibleWhen: all(eq("ota.github_proxy_url", "custom"))},
+					{Key: "github_proxy_url", Widget: WidgetText, Default: ""},
 				},
 			},
 			{
