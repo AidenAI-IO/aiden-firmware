@@ -58,12 +58,17 @@ struct LogToml {
     int llm_http_retention_days = 7;
 };
 
+struct OTAToml {
+    std::string github_proxy_url;
+};
+
 struct HIDToml {
     std::string keyboard_device = "/dev/hidg0";
     std::string mouse_device = "/dev/hidg1";
     std::string android_keyboard_device = "/dev/hidg2";
     std::string frame_socket = "/run/frame_service/frame_service.sock";
     std::string pointer_mode = "absolute";
+    std::string input_backend = "hid";
 };
 
 struct SearchToml {
@@ -123,6 +128,7 @@ struct AgentToml {
     AudioToml audio;
     AudioArchiveToml audio_archive;
     LogToml log;
+    OTAToml ota;
     HIDToml hid;
     SearchToml search;
     TelemetryToml telemetry;

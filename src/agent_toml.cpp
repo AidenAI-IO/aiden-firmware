@@ -370,12 +370,16 @@ void apply_kv(AgentToml& cfg,
     } else if (section == "log") {
         if (key == "llm_http_retention_days") assign_non_negative_int(&cfg.log.llm_http_retention_days, raw, &sub_err);
         if (!sub_err.empty()) fail(sub_err);
+    } else if (section == "ota") {
+        if (key == "github_proxy_url") assign_string(&cfg.ota.github_proxy_url, raw, &sub_err);
+        if (!sub_err.empty()) fail(sub_err);
     } else if (section == "hid") {
         if (key == "keyboard_device") assign_string(&cfg.hid.keyboard_device, raw, &sub_err);
         else if (key == "mouse_device") assign_string(&cfg.hid.mouse_device, raw, &sub_err);
         else if (key == "android_keyboard_device") assign_string(&cfg.hid.android_keyboard_device, raw, &sub_err);
         else if (key == "frame_socket") assign_string(&cfg.hid.frame_socket, raw, &sub_err);
         else if (key == "pointer_mode") assign_string(&cfg.hid.pointer_mode, raw, &sub_err);
+        else if (key == "input_backend") assign_string(&cfg.hid.input_backend, raw, &sub_err);
         if (!sub_err.empty()) fail(sub_err);
     } else if (section == "search") {
         if (key == "provider") assign_string(&cfg.search.provider, raw, &sub_err);
@@ -721,12 +725,17 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
     if (cfg.log.llm_http_retention_days != 0) emit_int(out, "llm_http_retention_days", cfg.log.llm_http_retention_days);
     out << "\n";
 
+    out << "[ota]\n";
+    if (!cfg.ota.github_proxy_url.empty()) emit_string(out, "github_proxy_url", cfg.ota.github_proxy_url);
+    out << "\n";
+
     out << "[hid]\n";
     emit_string(out, "keyboard_device", cfg.hid.keyboard_device);
     emit_string(out, "mouse_device", cfg.hid.mouse_device);
     emit_string(out, "android_keyboard_device", cfg.hid.android_keyboard_device);
     emit_string(out, "frame_socket", cfg.hid.frame_socket);
     if (!cfg.hid.pointer_mode.empty()) emit_string(out, "pointer_mode", cfg.hid.pointer_mode);
+    if (!cfg.hid.input_backend.empty()) emit_string(out, "input_backend", cfg.hid.input_backend);
     out << "\n";
 
     out << "[search]\n";

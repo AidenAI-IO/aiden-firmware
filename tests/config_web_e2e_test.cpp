@@ -1791,9 +1791,10 @@ TEST_CASE("config_web: exports support log archive with langfuse agent and http 
     const std::string entries = run_command_capture("LC_ALL=C tar -tzf " + archive);
     CHECK(entries.find("langfuse.yaml\n") != std::string::npos);
     CHECK(entries.find("agent.log\n") != std::string::npos);
-    CHECK(entries.find("http.log\n") != std::string::npos);
+    // Expect the original LLM log filename, not the generic http.log
+    CHECK(entries.find("llm-http-20260701080000123.log\n") != std::string::npos);
 
-    const std::string http_log = run_command_capture("LC_ALL=C tar -xOzf " + archive + " http.log");
+    const std::string http_log = run_command_capture("LC_ALL=C tar -xOzf " + archive + " llm-http-20260701080000123.log");
     CHECK(http_log.find("new http log") != std::string::npos);
 
     const std::string langfuse = run_command_capture("LC_ALL=C tar -xOzf " + archive + " langfuse.yaml");
@@ -1818,11 +1819,37 @@ TEST_CASE("config_web: support log archive caps staged http log tail") {
     const std::string archive_path = handle->tmp_dir + "/support-logs-large.tar.gz";
     write_binary_file(archive_path, resp.body);
     const std::string archive = shell_quote(archive_path);
-    const std::string http_log = run_command_capture("LC_ALL=C tar -xOzf " + archive + " http.log");
+    const std::string http_log = run_command_capture("LC_ALL=C tar -xOzf " + archive + " llm-http-20260701090000123.log");
     CHECK(http_log.find("# truncated: copied latest ") != std::string::npos);
     CHECK(http_log.find("begin-marker") == std::string::npos);
     CHECK(http_log.find("end-marker") != std::string::npos);
     CHECK(http_log.size() < content.size());
+}
+
+TEST_CASE("config_web: support log archive falls back to http.log when no LLM log exists") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    const std::string log_dir = handle->tmp_dir + "/log";
+    REQUIRE(::mkdir(log_dir.c_str(), 0755) == 0);
+    // Do not create any llm-http-*.log files
+
+    const std::string memory_dir = handle->tmp_dir + "/memory";
+    REQUIRE(::mkdir(memory_dir.c_str(), 0755) == 0);
+
+    HttpResponse resp = http_request(handle->port, "GET", "/api/logs/export");
+    REQUIRE(resp.status == 200);
+
+    const std::string archive_path = handle->tmp_dir + "/support-logs-nohttp.tar.gz";
+    write_binary_file(archive_path, resp.body);
+    const std::string archive = shell_quote(archive_path);
+    const std::string entries = run_command_capture("LC_ALL=C tar -tzf " + archive);
+    // When no LLM log exists, should fall back to http.log
+    CHECK(entries.find("http.log\n") != std::string::npos);
+
+    const std::string http_log = run_command_capture("LC_ALL=C tar -xOzf " + archive + " http.log");
+    // Should contain placeholder text
+    CHECK(http_log.find("HTTP log unavailable") != std::string::npos);
 }
 
 TEST_CASE("config_web: legacy llm log JSON file endpoint is removed") {

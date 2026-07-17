@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	defaultStableWaitTimeoutMs = 2200
+	defaultStableWaitTimeoutMs = 2000
 	defaultStableDurationMs    = 250
 	defaultDiffThreshold       = 6.0
 	stableWaitPollInterval     = 200 * time.Millisecond
@@ -102,13 +102,16 @@ func (t *WaitStableScreenTool) Name() string { return "wait_for_stable_screen" }
 
 func (t *WaitStableScreenTool) ReturnsVisualObservation() bool { return true }
 
+func (t *WaitStableScreenTool) DynamicExampleInput() string {
+	return "{}"
+}
+
 func (t *WaitStableScreenTool) Description() string {
 	resolved := t.defaults.Resolved()
 	return fmt.Sprintf(
 		`Wait until the connected display stops changing before judging UI result. `+
 			`Use only while operating a visible target UI, after a UI action or known UI transition that may animate, navigate, or load; do not call for text-only reasoning, arithmetic, comparison, or memory lookup. `+
-			`Input JSON: {"timeout_ms":%d,"stable_ms":%d,"diff_threshold":%g}. `+
-			`Omitted fields use agent config defaults. `+
+			`Input: {} (empty JSON object). Configured timeouts: timeout_ms=%d, stable_ms=%d, diff_threshold=%g. `+
 			`The screen is stable when consecutive frames stay below diff_threshold for stable_ms. `+
 			`Returns {"ok":true,"stable":true/false,"elapsed_ms":N,"screen_changed":true/false,...} plus a screenshot observation with width, height, format, size, and base64 JPEG data. `+
 			`screen_changed=false means no visible frame change was observed during the wait window; if a previous UI action was expected to change the screen, do not assume it succeeded and inspect the screenshot. `+
@@ -120,11 +123,8 @@ func (t *WaitStableScreenTool) Description() string {
 }
 
 func (t *WaitStableScreenTool) ArgsSchema() map[string]any {
-	return objectArgsSchema(map[string]any{
-		"timeout_ms":     minIntegerArgSchema("Maximum time to wait for stability in milliseconds.", 1),
-		"stable_ms":      minIntegerArgSchema("Required continuous stable duration in milliseconds.", 1),
-		"diff_threshold": numberArgSchema("Maximum frame difference considered stable."),
-	})
+	// No parameters - tool uses configured timeouts only
+	return objectArgsSchema(map[string]any{})
 }
 
 func (t *WaitStableScreenTool) Call(ctx context.Context, input string) (string, error) {
@@ -241,21 +241,13 @@ func (t *WaitStableScreenTool) wait(ctx context.Context, input string) (waitStab
 	}
 
 	resolvedDefaults := t.defaults.Resolved()
+	// Always use configured values; ignore LLM parameters to enforce config authority
 	timeout := time.Duration(resolvedDefaults.TimeoutMs) * time.Millisecond
-	if args.TimeoutMs > 0 {
-		timeout = time.Duration(args.TimeoutMs) * time.Millisecond
-	}
 	stableFor := time.Duration(resolvedDefaults.StableMs) * time.Millisecond
-	if args.StableMs > 0 {
-		stableFor = time.Duration(args.StableMs) * time.Millisecond
-	}
 	if stableFor > timeout {
 		stableFor = timeout
 	}
-	diffThreshold := args.DiffThreshold
-	if diffThreshold <= 0 {
-		diffThreshold = resolvedDefaults.DiffThreshold
-	}
+	diffThreshold := resolvedDefaults.DiffThreshold
 	if touchscreenRCADebugEnabledCached() {
 		touchscreenRCALogf(
 			"wait_stable.wait start timeout_ms=%d stable_ms=%d diff_threshold=%.3f mapping_before={%s}",

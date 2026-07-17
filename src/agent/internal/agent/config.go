@@ -123,6 +123,47 @@ func (c LogConfig) LLMHTTPRetentionDaysOrDefault() int {
 	return c.LLMHTTPRetentionDays
 }
 
+// OTAConfig controls OTA update behavior.
+type OTAConfig struct {
+	GitHubProxyURL string `toml:"github_proxy_url,omitempty"`
+}
+
+// GitHubProxyURLOrDefault returns GitHubProxyURL if non-empty and valid, else empty string.
+func (c OTAConfig) GitHubProxyURLOrDefault() string {
+	return strings.TrimSpace(c.GitHubProxyURL)
+}
+
+// Validate checks if the GitHub proxy URL is valid when configured
+func (c OTAConfig) Validate() error {
+	proxyURL := strings.TrimSpace(c.GitHubProxyURL)
+	if proxyURL == "" {
+		return nil // Empty is valid (no proxy)
+	}
+
+	// Parse the URL
+	parsed, err := url.Parse(proxyURL)
+	if err != nil {
+		return fmt.Errorf("ota.github_proxy_url: invalid URL: %w", err)
+	}
+
+	// Must have a scheme
+	if parsed.Scheme == "" {
+		return fmt.Errorf("ota.github_proxy_url: must be an absolute URL with scheme (e.g., https://example.com/)")
+	}
+
+	// Must be HTTPS
+	if parsed.Scheme != "https" {
+		return fmt.Errorf("ota.github_proxy_url: must use https, got %s", parsed.Scheme)
+	}
+
+	// Must have a host
+	if parsed.Host == "" {
+		return fmt.Errorf("ota.github_proxy_url: missing host")
+	}
+
+	return nil
+}
+
 type Config struct {
 	Model                      ModelConfig             `toml:"model"`
 	ModelText                  ModelConfig             `toml:"model_text,omitempty"` // Override for STT-then-text mode
@@ -133,6 +174,7 @@ type Config struct {
 	Audio                      AudioConfig             `toml:"audio,omitempty"`
 	AudioArchive               AudioArchiveConfig      `toml:"audio_archive,omitempty"`
 	Log                        LogConfig               `toml:"log,omitempty"`
+	OTA                        OTAConfig               `toml:"ota,omitempty"`
 	Search                     SearchConfig            `toml:"search,omitempty"`
 	EnvironmentBridge          EnvironmentBridgeConfig `toml:"-"` // Only set via CLI flags, never from config file
 	Benchmark                  BenchmarkConfig         `toml:"-"` // Only set via CLI flags, never from config file
@@ -363,6 +405,9 @@ type HIDConfig struct {
 	// plus limited hid.usb2 media keys) or "touchscreen" (Android HID digitizer
 	// plus full hid.usb2 Android extension keys).
 	PointerMode string `toml:"pointer_mode,omitempty"`
+	// InputBackend selects the low-level input path for keyboard/touch tools:
+	// "hid" writes USB HID reports, "adb" sends Android adb shell input commands.
+	InputBackend string `toml:"input_backend,omitempty"`
 }
 
 type DeviceConfig struct {
@@ -417,6 +462,19 @@ func (h HIDConfig) PointerModeOrDefault() string {
 
 func (h HIDConfig) PointerTouchscreen() bool {
 	return h.PointerModeOrDefault() == "touchscreen"
+}
+
+func (h HIDConfig) InputBackendOrDefault() string {
+	switch strings.ToLower(strings.TrimSpace(h.InputBackend)) {
+	case "adb":
+		return "adb"
+	default:
+		return "hid"
+	}
+}
+
+func (h HIDConfig) InputBackendADB() bool {
+	return h.InputBackendOrDefault() == "adb"
 }
 
 type ModelConfig struct {
@@ -884,11 +942,19 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("invalid hid.pointer_mode: %s (expected absolute or touchscreen)", c.HID.PointerMode)
 	}
+	switch strings.ToLower(strings.TrimSpace(c.HID.InputBackend)) {
+	case "", "hid", "adb":
+	default:
+		return fmt.Errorf("invalid hid.input_backend: %s (expected hid or adb)", c.HID.InputBackend)
+	}
 
 	if err := c.Telemetry.Validate(); err != nil {
 		return err
 	}
 	if err := c.LiveActivity.Validate(); err != nil {
+		return err
+	}
+	if err := c.OTA.Validate(); err != nil {
 		return err
 	}
 

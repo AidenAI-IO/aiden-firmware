@@ -120,6 +120,7 @@ speed = 1.0                   # Speech speed: 0.5 - 2.0
 # frame_socket = "/run/frame_service/frame_service.sock"
 # pointer_mode = "absolute"     # default, iOS AssistiveTouch / absolute mouse
 # pointer_mode = "touchscreen"  # Android HID touch screen / digitizer + full hid.usb2 Android extension keys
+# input_backend = "hid"         # "hid" writes USB HID reports; "adb" uses adb shell input for Android taps/keys/text
 
 # Web search tool configuration
 # provider: "duckduckgo" (free, no key), "brave" (Brave Search, needs api_key), or "tavily" (needs api_key)

@@ -222,11 +222,20 @@ func ConfigMeta() ConfigMetadata {
 				},
 			},
 			{
+				Name: "ota",
+				Fields: []FieldMeta{
+					{Key: "github_proxy_url", Widget: WidgetText, Default: ""},
+				},
+			},
+			{
 				Name: "hid",
 				Fields: []FieldMeta{
 					{Key: "pointer_mode", Widget: WidgetSelect,
 						Enum:    enumOptions("absolute", "touchscreen"),
 						Default: defaults.HID.PointerMode},
+					{Key: "input_backend", Widget: WidgetSelect,
+						Enum:    enumOptions("hid", "adb"),
+						Default: defaults.HID.InputBackend},
 					{Key: "keyboard_device", Widget: WidgetText, Default: defaults.HID.KeyboardDevice},
 					{Key: "mouse_device", Widget: WidgetText, Default: defaults.HID.MouseDevice},
 					{Key: "android_keyboard_device", Widget: WidgetText, Default: defaults.HID.AndroidKeyboardDevice},

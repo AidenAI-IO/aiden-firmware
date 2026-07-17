@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -341,15 +342,15 @@ func TestWheelNudgeLargeSupportsDown(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
 
-	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":500,"remaining_gap":12,"current_value":12,"target_value":0,"cycle_size":0,"cycle_start":0,"row_spacing":42,"value_step":1}`)
+	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":500,"current_value":16,"target_value":0,"cycle_size":0,"cycle_start":0,"row_spacing":42,"value_step":1}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
-	if !strings.Contains(out, "wheel_nudge direction=down") || !strings.Contains(out, "rows=4") {
+	if !strings.Contains(out, "wheel_nudge direction=down") || !strings.Contains(out, "rows=5") {
 		t.Fatalf("Call output = %q, want large wheel_nudge summary", out)
 	}
-	if !strings.Contains(out, "physical_travel=168") || !strings.Contains(out, "duration_ms=1") {
-		t.Fatalf("Call output = %q, want four-row slow drag", out)
+	if !strings.Contains(out, "physical_travel=210") || !strings.Contains(out, "duration_ms=2") {
+		t.Fatalf("Call output = %q, want five-row slow drag", out)
 	}
 
 	reports := readMouseReports(t, dev, path)
@@ -358,8 +359,8 @@ func TestWheelNudgeLargeSupportsDown(t *testing.T) {
 	}
 	// Large drags start near the highlighted row so they cannot begin at a
 	// screen edge and trigger an iOS system gesture.
-	expectedX, expectedStartY := normalizedToAbsolutePoint(500, 376)
-	_, expectedEndY := normalizedToAbsolutePoint(500, 544)
+	expectedX, expectedStartY := normalizedToAbsolutePoint(500, 355)
+	_, expectedEndY := normalizedToAbsolutePoint(500, 565)
 	if reports[0].x != uint16(expectedX) || reports[0].y != uint16(expectedStartY) || reports[0].buttons != 0x00 {
 		t.Fatalf("pre-move = (%d,%d,%d), want (%d,%d,0)", reports[0].x, reports[0].y, reports[0].buttons, expectedX, expectedStartY)
 	}
@@ -373,7 +374,7 @@ func TestWheelNudgeReportsEffectiveTravelAfterEdgeClamping(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
 
-	out, err := tool.Call(context.Background(), `{"picker_id":"edge-picker","column_x":500,"remaining_gap":12,"current_value":0,"target_value":12,"cycle_size":0,"cycle_start":0,"row_spacing":300,"value_step":1,"center_y":990}`)
+	out, err := tool.Call(context.Background(), `{"picker_id":"edge-picker","column_x":500,"current_value":0,"target_value":12,"cycle_size":0,"cycle_start":0,"row_spacing":300,"value_step":1,"center_y":990}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
@@ -399,7 +400,7 @@ func TestWheelNudgeUsesScreenshotRelativeColumnAndCenter(t *testing.T) {
 	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})
 	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: screen, durationMs: 1}
 
-	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":195,"remaining_gap":3,"current_value":10,"target_value":13,"cycle_size":24,"cycle_start":0,"row_spacing":38,"value_step":1,"center_y":273,"coord_space":"screenshot"}`)
+	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":195,"current_value":10,"target_value":13,"cycle_size":24,"cycle_start":0,"row_spacing":38,"value_step":1,"center_y":273,"coord_space":"screenshot"}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
@@ -427,7 +428,7 @@ func TestWheelNudgeDerivesBoundedTravelFromGapAndRowSpacing(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
 
-	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":500,"center_y":500,"remaining_gap":5,"current_value":8,"target_value":13,"cycle_size":24,"cycle_start":0,"row_spacing":42,"value_step":1}`)
+	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":500,"center_y":500,"current_value":8,"target_value":13,"cycle_size":24,"cycle_start":0,"row_spacing":42,"value_step":1}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
@@ -449,11 +450,24 @@ func TestWheelNudgeDerivesBoundedTravelFromGapAndRowSpacing(t *testing.T) {
 	}
 }
 
+func TestWheelNudgeIgnoresLegacyRemainingGapAndDerivesShortestPath(t *testing.T) {
+	dev, _ := newTestHIDDevice(t)
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
+
+	out, err := tool.Call(context.Background(), `{"picker_id":"minute-picker","column_x":500,"center_y":500,"remaining_gap":46,"current_value":47,"target_value":1,"cycle_size":60,"cycle_start":0,"row_spacing":42,"value_step":1}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "direction=up") || !strings.Contains(out, "rows=5") {
+		t.Fatalf("Call output = %q, want runtime-derived 14-row shortest path with a five-row coarse drag", out)
+	}
+}
+
 func TestWheelNudgeFirstMicroProbeUsesExactlyOneMeasuredRow(t *testing.T) {
 	dev, _ := newTestHIDDevice(t)
 	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
 
-	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":500,"center_y":500,"remaining_gap":1,"current_value":2,"target_value":12,"cycle_size":60,"cycle_start":0,"row_spacing":42}`)
+	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":500,"center_y":500,"current_value":2,"target_value":12,"cycle_size":60,"cycle_start":0,"row_spacing":42}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
@@ -467,10 +481,10 @@ func TestWheelNudgeSchemaDerivesTravelFromGap(t *testing.T) {
 	props := schema["properties"].(map[string]any)
 	want := map[string]bool{
 		"picker_id": true, "column_x": true,
-		"remaining_gap": true, "current_value": true, "target_value": true,
+		"current_value": true, "target_value": true,
 		"cycle_size": true, "cycle_start": true,
 		"row_spacing": true, "value_step": true, "visible_target_y": true,
-		"center_y": true, "coord_space": true,
+		"center_y": true,
 	}
 	if len(props) != len(want) {
 		t.Fatalf("wheel_nudge schema properties = %#v, want only portable contract %#v", props, want)
@@ -495,20 +509,27 @@ func TestTouchGestureSchemaDoesNotExposeWheelMetadata(t *testing.T) {
 	}
 }
 
-func TestWheelNudgeDescriptionDefinesRemainingGapThresholds(t *testing.T) {
+func TestWheelNudgeDescriptionDefinesAdaptiveTravelAndKeyboardFirst(t *testing.T) {
 	description := (&WheelNudgeTool{}).Description()
 	for _, want := range []string{
 		"tap or slow drag",
-		"gaps of 1",
+		"9+",
 		"2-4",
 		"5-8",
-		"9+ picker rows",
 		"final requested value",
 		"never substitute an intermediate visible value",
+		"normalized 0-1000 coordinates",
+		"screenshot height",
+		"tap the selected current value",
+		"keyboard_text",
+		"derives the shortest row gap",
 	} {
 		if !strings.Contains(description, want) {
 			t.Fatalf("wheel_nudge description = %q, want %q", description, want)
 		}
+	}
+	if strings.Contains(description, "coord_space") {
+		t.Fatalf("wheel_nudge description must not expose coord_space: %q", description)
 	}
 }
 
@@ -573,6 +594,429 @@ func TestTouchGestureSchemaRequiresNamedPointCoordinates(t *testing.T) {
 	}
 	if _, ok := pointProps["y"]; !ok {
 		t.Fatalf("point schema missing y: %#v", pointProps)
+	}
+}
+
+type recordingADBRunner struct {
+	commands [][]string
+	timeouts []time.Duration
+	ctxErrs  []error
+	handler  func(args []string) (string, error)
+}
+
+func (r *recordingADBRunner) run(ctx context.Context, _ string, args ...string) ([]byte, []byte, error) {
+	copied := append([]string(nil), args...)
+	r.commands = append(r.commands, copied)
+	r.ctxErrs = append(r.ctxErrs, ctx.Err())
+	if deadline, ok := ctx.Deadline(); ok {
+		r.timeouts = append(r.timeouts, time.Until(deadline))
+	} else {
+		r.timeouts = append(r.timeouts, 0)
+	}
+	if r.handler == nil {
+		return nil, nil, nil
+	}
+	out, err := r.handler(copied)
+	if err != nil {
+		return []byte(out), nil, err
+	}
+	return []byte(out), nil, nil
+}
+
+func newTestADBInputController(t *testing.T, screen *screenState, runner *recordingADBRunner) *ADBInputController {
+	t.Helper()
+	t.Setenv("AIDEN_ADB_PATH", "/fake/adb")
+	t.Setenv("AIDEN_ADB_SERIAL", "serial123")
+	if screen == nil {
+		screen = &screenState{}
+	}
+	return &ADBInputController{
+		screen: screen,
+		client: NewADBScreenClient(),
+		runADB: runner.run,
+	}
+}
+
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func stringSliceMatrixEqual(a, b [][]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !stringSlicesEqual(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func TestADBMouseClickUsesInputTapWithNormalizedCoordinates(t *testing.T) {
+	screen := &screenState{}
+	screen.UpdatePhoneScreenInfo(PhoneScreenInfo{WidthPixels: intPtr(1080), HeightPixels: intPtr(2400)})
+	runner := &recordingADBRunner{}
+	tool := &MouseClickTool{screen: screen, adb: newTestADBInputController(t, screen, runner)}
+
+	out, err := tool.Call(context.Background(), `{"x":500,"y":250,"coord_space":"normalized"}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("Call output = %q, want ok", out)
+	}
+
+	want := []string{"-s", "serial123", "shell", "input", "tap", "540", "600"}
+	if len(runner.commands) != 1 || !stringSlicesEqual(runner.commands[0], want) {
+		t.Fatalf("adb commands = %#v, want %#v", runner.commands, want)
+	}
+}
+
+func TestADBMouseClickAutoRejectsOutOfRangeCoordinates(t *testing.T) {
+	screen := &screenState{}
+	screen.UpdatePhoneScreenInfo(PhoneScreenInfo{WidthPixels: intPtr(1080), HeightPixels: intPtr(2400)})
+	runner := &recordingADBRunner{}
+	tool := &MouseClickTool{screen: screen, adb: newTestADBInputController(t, screen, runner)}
+
+	out, err := tool.Call(context.Background(), `{"x":1500,"y":500,"coord_space":"auto"}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "auto only supports 0-1000 normalized coordinates") {
+		t.Fatalf("Call output = %q, want auto coordinate error", out)
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("adb commands = %#v, want no command for invalid auto coordinates", runner.commands)
+	}
+}
+
+func TestADBTouchGestureSwipeUsesInputSwipe(t *testing.T) {
+	screen := &screenState{}
+	screen.UpdatePhoneScreenInfo(PhoneScreenInfo{WidthPixels: intPtr(1001), HeightPixels: intPtr(1001)})
+	runner := &recordingADBRunner{}
+	tool := &TouchGestureTool{screen: screen, adb: newTestADBInputController(t, screen, runner)}
+
+	out, err := tool.Call(context.Background(), `{"type":"swipe","start":{"x":100,"y":900},"end":{"x":900,"y":100},"duration_ms":321}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("Call output = %q, want ok", out)
+	}
+
+	want := []string{"-s", "serial123", "shell", "input", "swipe", "100", "900", "900", "100", "321"}
+	if len(runner.commands) != 1 || !stringSlicesEqual(runner.commands[0], want) {
+		t.Fatalf("adb commands = %#v, want %#v", runner.commands, want)
+	}
+}
+
+func TestADBTouchGestureSwipeAndDragRejectSameResolvedPoint(t *testing.T) {
+	for _, gestureType := range []string{"swipe", "drag"} {
+		t.Run(gestureType, func(t *testing.T) {
+			screen := &screenState{}
+			screen.UpdatePhoneScreenInfo(PhoneScreenInfo{WidthPixels: intPtr(1001), HeightPixels: intPtr(1001)})
+			runner := &recordingADBRunner{}
+			tool := &TouchGestureTool{screen: screen, adb: newTestADBInputController(t, screen, runner)}
+			ctx, _ := WithToolError(context.Background())
+
+			out, err := tool.Call(ctx, fmt.Sprintf(`{"type":%q,"start":{"x":500,"y":500},"end":{"x":500,"y":500}}`, gestureType))
+			if err != nil {
+				t.Fatalf("Call returned error: %v", err)
+			}
+			if !strings.Contains(out, gestureType+" start and end resolve to the same point") {
+				t.Fatalf("Call output = %q, want same-point error", out)
+			}
+			if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeInvalidArguments || got.Message != out {
+				t.Fatalf("ToolError = %+v, want invalid_arguments with output message", got)
+			}
+			if len(runner.commands) != 0 {
+				t.Fatalf("adb commands = %#v, want no swipe command for identical points", runner.commands)
+			}
+		})
+	}
+}
+
+func TestADBTouchGestureLongPressExtendsCommandTimeout(t *testing.T) {
+	screen := &screenState{}
+	screen.UpdatePhoneScreenInfo(PhoneScreenInfo{WidthPixels: intPtr(1001), HeightPixels: intPtr(1001)})
+	runner := &recordingADBRunner{}
+	tool := &TouchGestureTool{screen: screen, adb: newTestADBInputController(t, screen, runner)}
+
+	out, err := tool.Call(context.Background(), `{"type":"long_press","point":{"x":50,"y":50},"duration_ms":9000}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("Call output = %q, want ok", out)
+	}
+
+	want := []string{"-s", "serial123", "shell", "input", "swipe", "50", "50", "50", "50", "9000"}
+	if len(runner.commands) != 1 || !stringSlicesEqual(runner.commands[0], want) {
+		t.Fatalf("adb commands = %#v, want %#v", runner.commands, want)
+	}
+	if len(runner.timeouts) != 1 {
+		t.Fatalf("adb timeouts = %#v, want one timeout", runner.timeouts)
+	}
+	if runner.timeouts[0] < 11*time.Second {
+		t.Fatalf("adb timeout = %v, want at least 11s for 9s gesture", runner.timeouts[0])
+	}
+}
+
+func TestADBTouchGestureBackUsesKeyevent(t *testing.T) {
+	runner := &recordingADBRunner{}
+	tool := &TouchGestureTool{screen: &screenState{}, adb: newTestADBInputController(t, nil, runner)}
+
+	out, err := tool.Call(context.Background(), `{"type":"back"}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("Call output = %q, want ok", out)
+	}
+
+	want := []string{"-s", "serial123", "shell", "input", "keyevent", "KEYCODE_BACK"}
+	if len(runner.commands) != 1 || !stringSlicesEqual(runner.commands[0], want) {
+		t.Fatalf("adb commands = %#v, want %#v", runner.commands, want)
+	}
+}
+
+func TestADBTouchGestureBackDoesNotPrimeTouchscreenMapping(t *testing.T) {
+	runner := &recordingADBRunner{}
+	tool := &TouchGestureTool{
+		screen: &screenState{},
+		adb:    newTestADBInputController(t, nil, runner),
+		primeScreenMapping: func(context.Context) error {
+			return errors.New("mapping should not run for adb")
+		},
+	}
+
+	out, err := tool.Call(context.Background(), `{"type":"back"}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("Call output = %q, want ok", out)
+	}
+	want := []string{"-s", "serial123", "shell", "input", "keyevent", "KEYCODE_BACK"}
+	if len(runner.commands) != 1 || !stringSlicesEqual(runner.commands[0], want) {
+		t.Fatalf("adb commands = %#v, want %#v", runner.commands, want)
+	}
+}
+
+func TestADBKeyboardTapAndroidAliasesAlignWithBridge(t *testing.T) {
+	tests := []struct {
+		name string
+		keys []string
+		want string
+	}{
+		{name: "home", keys: []string{"home"}, want: "KEYCODE_HOME"},
+		{name: "keycode home", keys: []string{"KEYCODE_HOME"}, want: "KEYCODE_HOME"},
+		{name: "escape as android back", keys: []string{"escape"}, want: "KEYCODE_BACK"},
+		{name: "return", keys: []string{"return"}, want: "KEYCODE_ENTER"},
+		{name: "delete backward", keys: []string{"delete_backward"}, want: "KEYCODE_DEL"},
+		{name: "app switch", keys: []string{"keycode_app_switch"}, want: "KEYCODE_APP_SWITCH"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &recordingADBRunner{}
+			tool := &KeyboardTapTool{adb: newTestADBInputController(t, nil, runner)}
+
+			payload, err := json.Marshal(map[string]any{"keys": tt.keys})
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, err := tool.Call(context.Background(), string(payload))
+			if err != nil {
+				t.Fatalf("Call returned error: %v", err)
+			}
+			if out != "ok" {
+				t.Fatalf("Call output = %q, want ok", out)
+			}
+			want := []string{"-s", "serial123", "shell", "input", "keyevent", tt.want}
+			if len(runner.commands) != 1 || !stringSlicesEqual(runner.commands[0], want) {
+				t.Fatalf("adb commands = %#v, want %#v", runner.commands, want)
+			}
+		})
+	}
+}
+
+func TestADBKeyboardTapUsesKeyCombinationForChords(t *testing.T) {
+	runner := &recordingADBRunner{}
+	tool := &KeyboardTapTool{adb: newTestADBInputController(t, nil, runner)}
+
+	out, err := tool.Call(context.Background(), `{"keys":["ctrl","c"],"hold_ms":77}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("Call output = %q, want ok", out)
+	}
+
+	want := []string{"-s", "serial123", "shell", "input", "keycombination", "-t", "77", "KEYCODE_CTRL_LEFT", "KEYCODE_C"}
+	if len(runner.commands) != 1 || !stringSlicesEqual(runner.commands[0], want) {
+		t.Fatalf("adb commands = %#v, want %#v", runner.commands, want)
+	}
+}
+
+func TestADBKeyboardTextUsesADBKeyboardBroadcastAndRestoresIME(t *testing.T) {
+	origSleep := sleepMs
+	sleepMs = func(int) {}
+	defer func() { sleepMs = origSleep }()
+
+	runner := &recordingADBRunner{handler: func(args []string) (string, error) {
+		if strings.Join(args, " ") == "-s serial123 shell settings get secure default_input_method" {
+			return "com.example/.Keyboard", nil
+		}
+		return "", nil
+	}}
+	tool := &KeyboardTextTool{adb: newTestADBInputController(t, nil, runner)}
+
+	out, err := tool.Call(context.Background(), `{"text":"Hello!"}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("Call output = %q, want ok", out)
+	}
+
+	encoded := base64.StdEncoding.EncodeToString([]byte("Hello!"))
+	want := [][]string{
+		{"-s", "serial123", "shell", "settings", "get", "secure", "default_input_method"},
+		{"-s", "serial123", "shell", "ime", "set", adbKeyboardIME},
+		{"-s", "serial123", "shell", "am", "broadcast", "-a", "ADB_INPUT_B64", "--es", "msg", encoded},
+		{"-s", "serial123", "shell", "ime", "set", "com.example/.Keyboard"},
+	}
+	if !stringSliceMatrixEqual(runner.commands, want) {
+		t.Fatalf("adb commands = %#v, want %#v", runner.commands, want)
+	}
+}
+
+func TestADBKeyboardTextRestoresIMEAfterCallerContextCanceled(t *testing.T) {
+	origSleep := sleepMs
+	sleepMs = func(int) {}
+	defer func() { sleepMs = origSleep }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runner := &recordingADBRunner{handler: func(args []string) (string, error) {
+		switch strings.Join(args, " ") {
+		case "-s serial123 shell settings get secure default_input_method":
+			return "com.example/.Keyboard", nil
+		case "-s serial123 shell am broadcast -a ADB_INPUT_B64 --es msg " + base64.StdEncoding.EncodeToString([]byte("Hello")):
+			cancel()
+		}
+		return "", nil
+	}}
+	tool := &KeyboardTextTool{adb: newTestADBInputController(t, nil, runner)}
+
+	out, err := tool.Call(ctx, `{"text":"Hello"}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("Call output = %q, want ok", out)
+	}
+
+	wantRestore := []string{"-s", "serial123", "shell", "ime", "set", "com.example/.Keyboard"}
+	if len(runner.commands) != 4 || !stringSlicesEqual(runner.commands[3], wantRestore) {
+		t.Fatalf("adb commands = %#v, want final restore command %#v", runner.commands, wantRestore)
+	}
+	if runner.ctxErrs[3] != nil {
+		t.Fatalf("restore ctx err = %v, want independent uncanceled context", runner.ctxErrs[3])
+	}
+}
+
+func TestADBKeyboardTextFallsBackToKeyEventsWhenADBKeyboardUnavailable(t *testing.T) {
+	runner := &recordingADBRunner{handler: func(args []string) (string, error) {
+		if strings.Join(args, " ") == "-s serial123 shell settings get secure default_input_method" {
+			return "com.example/.Keyboard", nil
+		}
+		if strings.Join(args, " ") == "-s serial123 shell ime set "+adbKeyboardIME {
+			return "Unknown input method", errors.New("exit status 1")
+		}
+		return "", nil
+	}}
+	tool := &KeyboardTextTool{adb: newTestADBInputController(t, nil, runner)}
+
+	out, err := tool.Call(context.Background(), `{"text":"A z!"}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("Call output = %q, want ok", out)
+	}
+
+	want := [][]string{
+		{"-s", "serial123", "shell", "settings", "get", "secure", "default_input_method"},
+		{"-s", "serial123", "shell", "ime", "set", adbKeyboardIME},
+		{"-s", "serial123", "shell", "input", "keycombination", "-t", "50", "KEYCODE_SHIFT_LEFT", "KEYCODE_A"},
+		{"-s", "serial123", "shell", "input", "keyevent", "KEYCODE_SPACE"},
+		{"-s", "serial123", "shell", "input", "keyevent", "KEYCODE_Z"},
+		{"-s", "serial123", "shell", "input", "keycombination", "-t", "50", "KEYCODE_SHIFT_LEFT", "KEYCODE_1"},
+	}
+	if !stringSliceMatrixEqual(runner.commands, want) {
+		t.Fatalf("adb commands = %#v, want %#v", runner.commands, want)
+	}
+}
+
+func TestADBMouseMoveRejectsUnsupportedAfterCoordinateValidation(t *testing.T) {
+	screen := &screenState{}
+	screen.UpdatePhoneScreenInfo(PhoneScreenInfo{WidthPixels: intPtr(1080), HeightPixels: intPtr(2400)})
+	runner := &recordingADBRunner{}
+	tool := &MouseMoveTool{screen: screen, adb: newTestADBInputController(t, screen, runner)}
+	ctx, _ := WithToolError(context.Background())
+
+	out, err := tool.Call(ctx, `{"x":500,"y":250,"coord_space":"normalized"}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "adb mouse_move is unsupported") {
+		t.Fatalf("Call output = %q, want unsupported adb mouse_move error", out)
+	}
+	if got := ToolErrorFromContext(ctx); got == nil || got.Code != CodeModuleUnavailable || got.Message != out {
+		t.Fatalf("ToolError = %+v, want module_unavailable with output message", got)
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("adb commands = %#v, want no command for unsupported mouse_move", runner.commands)
+	}
+}
+
+func TestADBMouseScrollUsesSwipeApproximation(t *testing.T) {
+	screen := &screenState{}
+	screen.UpdatePhoneScreenInfo(PhoneScreenInfo{WidthPixels: intPtr(1001), HeightPixels: intPtr(1001)})
+	runner := &recordingADBRunner{}
+	tool := &MouseScrollTool{adb: newTestADBInputController(t, screen, runner)}
+
+	out, err := tool.Call(context.Background(), `{"delta":-3}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("Call output = %q, want ok", out)
+	}
+	want := []string{"-s", "serial123", "shell", "input", "swipe", "500", "750", "500", "250", "650"}
+	if len(runner.commands) != 1 || !stringSlicesEqual(runner.commands[0], want) {
+		t.Fatalf("adb commands = %#v, want %#v", runner.commands, want)
+	}
+}
+
+func TestParseADBWMSizePrefersOverrideSize(t *testing.T) {
+	size, ok := parseADBWMSize("Physical size: 1080x2400\nOverride size: 720x1600\n")
+	if !ok {
+		t.Fatal("parseADBWMSize ok = false")
+	}
+	if size.width != 720 || size.height != 1600 {
+		t.Fatalf("size = %+v, want 720x1600", size)
 	}
 }
 
@@ -731,7 +1175,7 @@ func TestResolvePointerPositionScreenshotUsesReturnedCropPixels(t *testing.T) {
 	}
 }
 
-func TestScreenshotCoordinateSpaceIsExposedForTouchAndWheel(t *testing.T) {
+func TestScreenshotCoordinateSpaceIsExposedForTouchButNotWheel(t *testing.T) {
 	touchSchema := (&TouchGestureTool{}).ArgsSchema()
 	touchProps := touchSchema["properties"].(map[string]any)
 	touchSpaces := touchProps["coord_space"].(map[string]any)["enum"].([]string)
@@ -741,9 +1185,8 @@ func TestScreenshotCoordinateSpaceIsExposedForTouchAndWheel(t *testing.T) {
 
 	wheelSchema := (&WheelNudgeTool{}).ArgsSchema()
 	wheelProps := wheelSchema["properties"].(map[string]any)
-	wheelSpaces := wheelProps["coord_space"].(map[string]any)["enum"].([]string)
-	if !slices.Contains(wheelSpaces, "screenshot") {
-		t.Fatalf("wheel coord_space enum = %#v, want screenshot", wheelSpaces)
+	if _, ok := wheelProps["coord_space"]; ok {
+		t.Fatalf("wheel coord_space must not be exposed to the model: %#v", wheelProps)
 	}
 }
 

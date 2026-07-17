@@ -397,5 +397,3 @@ func TestRuntimeConcurrentFallbackStoreInitialization(t *testing.T) {
 	// All runtimes should reference the exact same store instance
 	t.Logf("Success: %d concurrent runtimes all share store %p", concurrency, firstStore)
 }
-
-

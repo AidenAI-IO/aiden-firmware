@@ -23,6 +23,8 @@ const (
 var (
 	adbLookPath       = exec.LookPath
 	adbCommandContext = exec.CommandContext
+	autoADBSerialMu   sync.Mutex
+	autoADBSerial     string
 )
 
 // ADBScreenClient captures the connected Android device screen via adb
@@ -147,6 +149,44 @@ func configuredADBSerial() string {
 	return ""
 }
 
+func setAutoConfiguredADBSerial(serial string) error {
+	serial = strings.TrimSpace(serial)
+	if serial == "" || strings.TrimSpace(os.Getenv("ANDROID_SERIAL")) != "" {
+		return nil
+	}
+
+	autoADBSerialMu.Lock()
+	defer autoADBSerialMu.Unlock()
+
+	current := strings.TrimSpace(os.Getenv("AIDEN_ADB_SERIAL"))
+	if current != "" && current != autoADBSerial {
+		return nil
+	}
+	if err := os.Setenv("AIDEN_ADB_SERIAL", serial); err != nil {
+		return fmt.Errorf("set AIDEN_ADB_SERIAL: %w", err)
+	}
+	autoADBSerial = serial
+	return nil
+}
+
+func clearAutoConfiguredADBSerial(serial string) {
+	serial = strings.TrimSpace(serial)
+	if serial == "" {
+		return
+	}
+
+	autoADBSerialMu.Lock()
+	defer autoADBSerialMu.Unlock()
+
+	if autoADBSerial != serial {
+		return
+	}
+	if strings.TrimSpace(os.Getenv("AIDEN_ADB_SERIAL")) == serial {
+		_ = os.Unsetenv("AIDEN_ADB_SERIAL")
+	}
+	autoADBSerial = ""
+}
+
 func (c *ADBScreenClient) resolveSerial(ctx context.Context, adbPath string) (string, error) {
 	if serial := configuredADBSerial(); serial != "" {
 		return serial, nil
@@ -158,6 +198,9 @@ func (c *ADBScreenClient) resolveSerial(ctx context.Context, adbPath string) (st
 	cachedExpiry := c.cachedAutoSerialExpiry
 	c.mu.Unlock()
 	if cachedSerial != "" && now.Before(cachedExpiry) {
+		if err := setAutoConfiguredADBSerial(cachedSerial); err != nil {
+			return "", err
+		}
 		return cachedSerial, nil
 	}
 
@@ -181,6 +224,9 @@ func (c *ADBScreenClient) resolveSerial(ctx context.Context, adbPath string) (st
 	}
 
 	serial := connected[0]
+	if err := setAutoConfiguredADBSerial(serial); err != nil {
+		return "", err
+	}
 	c.mu.Lock()
 	c.cachedAutoSerial = serial
 	c.cachedAutoSerialExpiry = now.Add(adbDeviceListCacheTTL)
@@ -189,7 +235,11 @@ func (c *ADBScreenClient) resolveSerial(ctx context.Context, adbPath string) (st
 }
 
 func (c *ADBScreenClient) invalidateAutoSerial(serial string) {
-	if serial == "" || configuredADBSerial() != "" {
+	if serial == "" {
+		return
+	}
+	clearAutoConfiguredADBSerial(serial)
+	if configuredADBSerial() != "" {
 		return
 	}
 	c.mu.Lock()
