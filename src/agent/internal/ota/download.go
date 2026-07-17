@@ -13,6 +13,7 @@ const defaultProgressInterval = 5 * time.Second
 
 type DownloadOptions struct {
 	BearerToken      string
+	GitHubProxyURL   string
 	Progress         func(DownloadProgress)
 	ProgressInterval time.Duration
 }
@@ -58,7 +59,14 @@ func DownloadFileWithOptions(ctx context.Context, url string, dst string, expect
 		}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	// Apply GitHub proxy if configured
+	downloadURL := ApplyGitHubProxy(url, options.GitHubProxyURL)
+	if downloadURL != url && resumeAt == 0 {
+		// Log proxy usage for diagnostics (only log once per download, not on resume)
+		fmt.Fprintf(os.Stderr, "ota: using GitHub proxy for download\n")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return err
 	}

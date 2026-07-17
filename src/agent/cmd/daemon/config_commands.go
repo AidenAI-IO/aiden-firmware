@@ -53,6 +53,7 @@ type webConfigDTO struct {
 	Audio             audioDTO                      `json:"audio"`
 	AudioArchive      audioArchiveDTO               `json:"audio_archive"`
 	Log               logDTO                        `json:"log"`
+	OTA               otaDTO                        `json:"ota"`
 	HID               hidDTO                        `json:"hid"`
 	Search            searchDTO                     `json:"search"`
 	Telemetry         telemetryDTO                  `json:"telemetry"`
@@ -140,6 +141,10 @@ type audioArchiveDTO struct {
 
 type logDTO struct {
 	LLMHTTPRetentionDays int `json:"llm_http_retention_days"`
+}
+
+type otaDTO struct {
+	GitHubProxyURL string `json:"github_proxy_url"`
 }
 
 type hidDTO struct {
@@ -299,6 +304,9 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 		Log: agent.LogConfig{
 			LLMHTTPRetentionDays: d.Log.LLMHTTPRetentionDays,
 		},
+		OTA: agent.OTAConfig{
+			GitHubProxyURL: d.OTA.GitHubProxyURL,
+		},
 		HID: agent.HIDConfig{
 			KeyboardDevice:        d.HID.KeyboardDevice,
 			MouseDevice:           d.HID.MouseDevice,
@@ -433,6 +441,9 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 		},
 		Log: logDTO{
 			LLMHTTPRetentionDays: cfg.Log.LLMHTTPRetentionDaysOrDefault(),
+		},
+		OTA: otaDTO{
+			GitHubProxyURL: cfg.OTA.GitHubProxyURLOrDefault(),
 		},
 		HID: hidDTO{
 			KeyboardDevice:        cfg.HID.KeyboardDeviceOrDefault(),
