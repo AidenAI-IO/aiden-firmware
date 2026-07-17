@@ -77,11 +77,11 @@ func (t *ImageDiffTool) Call(ctx context.Context, input string) (string, error) 
 	if len(afterData) < 4 {
 		return toolErrorResultString(ctx, CodeInvalidArguments, "after data too short"), nil
 	}
-	// PNG magic: 0x89504E47, JPEG magic: 0xFFD8
-	if beforeData[0] == 0x89 && beforeData[1] == 0x50 {
+	// PNG signature: 0x89 0x50 0x4E 0x47
+	if len(beforeData) >= 4 && beforeData[0] == 0x89 && beforeData[1] == 0x50 && beforeData[2] == 0x4E && beforeData[3] == 0x47 {
 		return toolErrorResultString(ctx, CodeInvalidArguments, "before is PNG format, but image_diff requires JPEG. Use the 'data' field from screenshot tool results."), nil
 	}
-	if afterData[0] == 0x89 && afterData[1] == 0x50 {
+	if len(afterData) >= 4 && afterData[0] == 0x89 && afterData[1] == 0x50 && afterData[2] == 0x4E && afterData[3] == 0x47 {
 		return toolErrorResultString(ctx, CodeInvalidArguments, "after is PNG format, but image_diff requires JPEG. Use the 'data' field from screenshot tool results."), nil
 	}
 
