@@ -50,6 +50,7 @@ type UpdaterConfig struct {
 	PartitionSizes         map[string]int64             `json:"partition_sizes,omitempty"`
 	GitHubToken            string                       `json:"github_token,omitempty"`
 	GitHubTokenPath        string                       `json:"github_token_path,omitempty"`
+	GitHubProxyURL         string                       `json:"github_proxy_url,omitempty"`
 	SwitchTries            uint8                        `json:"switch_tries,omitempty"`
 	HealthTimeout          time.Duration                `json:"-"`
 	HealthTimeoutSecs      int                          `json:"health_timeout_seconds,omitempty"`
@@ -791,15 +792,6 @@ func deriveAssetURL(manifestURL, assetName string) (string, error) {
 	return parsed.String(), nil
 }
 
-func isGitHubURL(rawURL string) bool {
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		return false
-	}
-	host := strings.ToLower(parsed.Host)
-	return host == "api.github.com" || host == "github.com" || strings.HasSuffix(host, ".github.com")
-}
-
 func (u *Updater) validateAssetFitsPartition(partName string, target Slot, asset ManifestAsset) error {
 	if isCompressedImageAssetName(asset.Name) {
 		return nil
@@ -832,7 +824,7 @@ func (u *Updater) partitionSizes() map[string]int64 {
 func (u *Updater) fetchLatestReleaseAssets(parent context.Context, releaseURL string, token string) (map[string]string, error) {
 	ctx, cancel := u.httpContext(parent)
 	defer cancel()
-	return FetchLatestReleaseAssets(ctx, releaseURL, token)
+	return FetchLatestReleaseAssetsWithProxy(ctx, releaseURL, token, u.config.GitHubProxyURL)
 }
 
 func (u *Updater) fetchBytesWithTokenLimit(parent context.Context, url string, token string, limit int64) ([]byte, error) {
@@ -845,8 +837,9 @@ func (u *Updater) downloadFileWithToken(parent context.Context, url string, dst 
 	ctx, cancel := u.httpContext(parent)
 	defer cancel()
 	return DownloadFileWithOptions(ctx, url, dst, expectedSize, DownloadOptions{
-		BearerToken: token,
-		Progress:    u.logDownloadProgress,
+		BearerToken:    token,
+		GitHubProxyURL: u.config.GitHubProxyURL,
+		Progress:       u.logDownloadProgress,
 	})
 }
 
