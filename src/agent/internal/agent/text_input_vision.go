@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"aiden-agent/internal/agent/model"
+
 	"github.com/tmc/langchaingo/llms"
 )
 
@@ -32,13 +34,13 @@ type textInputCandidateClick struct {
 }
 
 type textInputScreenAnalysis struct {
-	ObservedMode        textInputMode             `json:"observed_mode"`
-	FieldText           string                    `json:"field_text"`
-	CompositionPending  bool                      `json:"composition_pending"`
-	WrongIMESuspected   bool                      `json:"wrong_ime_suspected"`
-	SuggestSwitchIME    bool                      `json:"suggest_switch_ime"`
-	Candidates          []textInputCandidateClick `json:"candidates"`
-	Evidence            []string                  `json:"evidence,omitempty"`
+	ObservedMode       textInputMode             `json:"observed_mode"`
+	FieldText          string                    `json:"field_text"`
+	CompositionPending bool                      `json:"composition_pending"`
+	WrongIMESuspected  bool                      `json:"wrong_ime_suspected"`
+	SuggestSwitchIME   bool                      `json:"suggest_switch_ime"`
+	Candidates         []textInputCandidateClick `json:"candidates"`
+	Evidence           []string                  `json:"evidence,omitempty"`
 }
 
 type textInputVision interface {
@@ -46,10 +48,10 @@ type textInputVision interface {
 }
 
 type llmTextInputVision struct {
-	models ModelResolver
+	models model.ModelResolver
 }
 
-func newLLMTextInputVision(models ModelResolver) textInputVision {
+func newLLMTextInputVision(models model.ModelResolver) textInputVision {
 	if models == nil {
 		return nil
 	}
