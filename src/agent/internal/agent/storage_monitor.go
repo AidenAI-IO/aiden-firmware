@@ -490,9 +490,12 @@ func (m *StorageMonitor) ValidateCleanupTargets(targets []string) error {
 		if target == "" {
 			return fmt.Errorf("storage cleanup target must not be empty")
 		}
+		if isStorageCleanupCategory(target) {
+			continue
+		}
 		matched := false
 		for _, cleaner := range m.cleaners {
-			if cleanerSelected(cleaner.Name(), []string{target}) {
+			if cleaner.Name() == target {
 				matched = true
 				break
 			}
@@ -502,6 +505,15 @@ func (m *StorageMonitor) ValidateCleanupTargets(targets []string) error {
 		}
 	}
 	return nil
+}
+
+func isStorageCleanupCategory(target string) bool {
+	switch StorageCapability(target) {
+	case StorageCapabilityLLMHTTPLog, StorageCapabilityAudioArchive, StorageCapabilitySessionArchive:
+		return true
+	default:
+		return false
+	}
 }
 
 func (m *StorageMonitor) sampleStatus(ctx context.Context, path string) (StorageStatus, error) {
