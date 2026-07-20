@@ -706,6 +706,14 @@ TEST_CASE("config_web: setup page exposes an immediate persisted locale switch")
     CHECK(resp.body.find("applyLocale") != std::string::npos);
     CHECK(resp.body.find("'Configuration':'配置'") != std::string::npos);
     CHECK(resp.body.find("applyLocale(previous,false)") != std::string::npos);
+    CHECK(resp.body.find("let localeRevision=0") != std::string::npos);
+    CHECK(resp.body.find("localeSavePending=true") != std::string::npos);
+    CHECK(resp.body.find("requestLocaleRevision===localeRevision&&!localeSavePending") !=
+          std::string::npos);
+    CHECK(resp.body.find("applyLocale(payload.locale||requested,true)") != std::string::npos);
+    CHECK(resp.body.find("try{await loadAuthoritativeLocale();}catch(refreshErr){}") !=
+          std::string::npos);
+    CHECK(resp.body.find("async function loadAuthoritativeLocale()") != std::string::npos);
     CHECK(resp.body.find("const configuredLocale=") != std::string::npos);
     CHECK(resp.body.find("try{await loadConfig();") != std::string::npos);
     CHECK(resp.body.find("if(metaOk){await loadConfig();") == std::string::npos);
@@ -772,9 +780,18 @@ TEST_CASE("config_web: GET /api/config reads resolved config from agent") {
 TEST_CASE("config_web: PUT /api/config/locale updates only the device locale") {
     StubEnv env;
     auto handle = start_server(env);
-    write_file(handle->tmp_dir + "/agent.toml",
-               "locale = \"zh-CN\"\n"
-               "custom_instruction = \"Keep this instruction.\"\n");
+    const std::string original =
+        "# Keep comments and fields owned by the Go agent.\n"
+        "\"locale\" = \"zh-CN\"  # setup language\n"
+        "custom_instruction = \"Keep this instruction.\"\n"
+        "todo_reminder_tool_calls = 7\n"
+        "skills_dirs = [\"/userdata/skills\"]\n"
+        "future_plugin_flag = true\n"
+        "\n"
+        "[device]\n"
+        "backend = \"hdmi\"\n"
+        "future_device_option = \"keep me\"\n";
+    write_file(handle->tmp_dir + "/agent.toml", original);
 
     HttpResponse resp = http_request(handle->port, "PUT", "/api/config/locale",
                                      "{\"locale\":\"en-US\"}");
@@ -792,8 +809,43 @@ TEST_CASE("config_web: PUT /api/config/locale updates only the device locale") {
     cJSON_Delete(parsed);
 
     const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
-    CHECK(saved.find("locale = \"en-US\"") != std::string::npos);
-    CHECK(saved.find("custom_instruction = \"Keep this instruction.\"") != std::string::npos);
+    std::string expected = original;
+    const size_t locale_pos = expected.find("\"zh-CN\"");
+    REQUIRE(locale_pos != std::string::npos);
+    expected.replace(locale_pos, std::strlen("\"zh-CN\""), "\"en-US\"");
+    CHECK(saved == expected);
+}
+
+TEST_CASE("config_web: PUT /api/config/locale inserts a missing locale before sections") {
+    StubEnv env;
+    auto handle = start_server(env);
+    const std::string original =
+        "# Existing top-level config stays in place.\n"
+        "todo_reminder_tool_calls = 4\n"
+        "custom_instruction = \"\"\"\n"
+        "locale = \"this is instruction text\"\n"
+        "[not-a-real-section]\n"
+        "\"\"\"\n"
+        "\n"
+        "[device]\n"
+        "backend = \"hdmi\"\n";
+    write_file(handle->tmp_dir + "/agent.toml", original);
+
+    HttpResponse resp = http_request(handle->port, "PUT", "/api/config/locale",
+                                     "{\"locale\":\"en-US\"}");
+    CHECK(resp.status == 200);
+
+    CHECK(read_file(handle->tmp_dir + "/agent.toml") ==
+          "# Existing top-level config stays in place.\n"
+          "todo_reminder_tool_calls = 4\n"
+          "custom_instruction = \"\"\"\n"
+          "locale = \"this is instruction text\"\n"
+          "[not-a-real-section]\n"
+          "\"\"\"\n"
+          "\n"
+          "locale = \"en-US\"\n"
+          "[device]\n"
+          "backend = \"hdmi\"\n");
 }
 
 TEST_CASE("config_web: PUT /api/config/locale rejects unsupported locales without saving") {

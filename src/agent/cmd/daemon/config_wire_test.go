@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -219,5 +221,41 @@ func TestConfigCheck_InvalidJSON(t *testing.T) {
 	_, err := checkConfig(strings.NewReader("not json"))
 	if err == nil {
 		t.Fatal("expected decode error for malformed JSON, got nil")
+	}
+}
+
+func TestConfigCheckPath_ValidatesFullTOMLWithoutRejectingUnknownFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	content := `locale = "en-US"
+todo_reminder_tool_calls = 7
+skills_dirs = ["/userdata/skills"]
+future_plugin_flag = true
+
+[device]
+backend = "hdmi"
+future_device_option = "keep me"
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	result := checkConfigPath(path)
+	if !result.Valid {
+		t.Fatalf("expected valid config, got errors: %+v", result.Errors)
+	}
+}
+
+func TestConfigCheckPath_RejectsInvalidTOML(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	if err := os.WriteFile(path, []byte("locale = [\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	result := checkConfigPath(path)
+	if result.Valid {
+		t.Fatal("expected malformed TOML to be rejected")
+	}
+	if len(result.Errors) == 0 || !strings.Contains(result.Errors[0].Message, "TOML") {
+		t.Fatalf("expected TOML decode error, got: %+v", result.Errors)
 	}
 }
