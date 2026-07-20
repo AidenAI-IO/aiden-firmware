@@ -11,8 +11,17 @@ package model
 // accept a single fixed temperature, so a global default would be rejected. A
 // nil value means the model imposes no requirement and the global fallback
 // applies. It is only a default: an explicit model.temperature always wins.
+//
+// DefaultReasoningEffort, when non-nil, is the reasoning_effort applied when the
+// user has not set model.reasoning_effort explicitly (empty string). Some models
+// (e.g. Kimi K3) are forced-reasoning and default to a heavy effort that adds
+// several seconds of latency before any content streams; pinning a lighter
+// default keeps voice interactions responsive. A nil value leaves reasoning in
+// auto mode (field omitted from the request). It is only a default: an explicit
+// model.reasoning_effort always wins.
 type ModelSpec struct {
-	ContextWindow      int
-	MaxOutput          int
-	DefaultTemperature *float64
+	ContextWindow          int
+	MaxOutput              int
+	DefaultTemperature     *float64
+	DefaultReasoningEffort *string
 }

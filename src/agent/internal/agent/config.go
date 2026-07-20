@@ -603,6 +603,7 @@ func LoadRuntimeConfig(path string) (Config, error) {
 
 	applyRuntimeOptionalProviderDefaults(&cfg, metadata)
 	applyRuntimeModelTemperatureDefaults(&cfg)
+	applyRuntimeModelReasoningEffortDefaults(&cfg)
 	applyRuntimeInstructionDefault(&cfg)
 
 	if err := cfg.Validate(); err != nil {
@@ -643,6 +644,35 @@ func applyModelTemperatureDefault(m *ModelConfig) {
 	}
 	temp := defaultModelTemperature
 	m.Temperature = &temp
+}
+
+// applyRuntimeModelReasoningEffortDefaults resolves reasoning_effort for model
+// and model_text when the user has not set it (empty string). The default is
+// sourced from the model's metadata; forced-reasoning models (e.g. Kimi K3)
+// pin a lighter effort to keep streaming responsive. Unlike temperature there
+// is no global fallback: unknown models stay in auto mode (empty). An explicit
+// model.reasoning_effort always takes precedence. Like the temperature defaults,
+// this only runs in LoadRuntimeConfig; LoadResolvedConfig (config editor) keeps
+// reasoning_effort as-is so the editor does not bake a default into agent.toml.
+func applyRuntimeModelReasoningEffortDefaults(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+	applyModelReasoningEffortDefault(&cfg.Model)
+	// model_text is an optional override; only resolve a default when it is
+	// actually configured, otherwise leave the unused section untouched.
+	if strings.TrimSpace(cfg.ModelText.Provider) != "" || strings.TrimSpace(cfg.ModelText.Model) != "" {
+		applyModelReasoningEffortDefault(&cfg.ModelText)
+	}
+}
+
+func applyModelReasoningEffortDefault(m *ModelConfig) {
+	if m == nil || strings.TrimSpace(m.ReasoningEffort) != "" {
+		return
+	}
+	if spec, ok := LookupModelSpec(m.Provider, m.Model); ok && spec.DefaultReasoningEffort != nil {
+		m.ReasoningEffort = *spec.DefaultReasoningEffort
+	}
 }
 
 func applyRuntimeOptionalProviderDefaults(cfg *Config, metadata toml.MetaData) {

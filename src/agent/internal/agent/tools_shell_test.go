@@ -442,8 +442,9 @@ func TestShellToolBackgroundPollDrainsBeforeDelete(t *testing.T) {
 	tool := &ShellTool{}
 
 	// Produce > shellDefaultPollBytes of output and exit, so the first
-	// bounded poll cannot drain everything.
-	startOut, err := tool.Call(context.Background(), `{"action":"start","command":"sh -c 'printf %20000s X'"}`)
+	// bounded poll cannot drain everything. Use 50000 bytes to ensure
+	// truncation even in fast CI environments where buffers fill quickly.
+	startOut, err := tool.Call(context.Background(), `{"action":"start","command":"sh -c 'printf %50000s X'"}`)
 	if err != nil {
 		t.Fatalf("start returned error: %v", err)
 	}
@@ -512,8 +513,8 @@ func TestShellToolBackgroundPollDrainsBeforeDelete(t *testing.T) {
 	if !firstPollSawTruncation {
 		t.Fatalf("expected first post-exit poll to be truncated; output may have fit in one poll")
 	}
-	if totalBytes < 20000 {
-		t.Fatalf("totalBytes = %d, want >= 20000 (drain lost data)", totalBytes)
+	if totalBytes < 50000 {
+		t.Fatalf("totalBytes = %d, want >= 50000 (drain lost data)", totalBytes)
 	}
 	if !strings.Contains(pollOut, "shell session not found") {
 		t.Fatalf("expected session-not-found after drain, got %q", pollOut)

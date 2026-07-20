@@ -48,9 +48,12 @@ var modelSpecRegistry = map[string]model.ModelSpec{
 	// Moonshot Kimi K3 (vision + tool calling). Reached via the Moonshot
 	// OpenAI-compatible endpoint (bare model name) or the OpenRouter route.
 	// K3 only accepts temperature=1, so pin it as the default; a user-set
-	// model.temperature still overrides.
-	"moonshotai/kimi-k3": {ContextWindow: 1_048_576, MaxOutput: 131_072, DefaultTemperature: floatPtr(1)},
-	"kimi-k3":            {ContextWindow: 1_048_576, MaxOutput: 131_072, DefaultTemperature: floatPtr(1)},
+	// model.temperature still overrides. K3 is forced-reasoning and defaults to
+	// "max" effort, which stalls streaming for several seconds before any content
+	// arrives; pin "low" as the default to keep voice interactions responsive. A
+	// user-set model.reasoning_effort still overrides.
+	"moonshotai/kimi-k3": {ContextWindow: 1_048_576, MaxOutput: 131_072, DefaultTemperature: floatPtr(1), DefaultReasoningEffort: stringPtr("low")},
+	"kimi-k3":            {ContextWindow: 1_048_576, MaxOutput: 131_072, DefaultTemperature: floatPtr(1), DefaultReasoningEffort: stringPtr("low")},
 
 	// Existing entries retained for back-compat with dev/staging configs.
 	"anthropic/claude-3.5-sonnet":  {ContextWindow: 200_000, MaxOutput: 8_192},
@@ -63,6 +66,12 @@ var modelSpecRegistry = map[string]model.ModelSpec{
 // floatPtr returns a pointer to v, letting map-literal ModelSpec entries set
 // optional float fields like DefaultTemperature inline.
 func floatPtr(v float64) *float64 {
+	return &v
+}
+
+// stringPtr returns a pointer to v, letting map-literal ModelSpec entries set
+// optional string fields like DefaultReasoningEffort inline.
+func stringPtr(v string) *string {
 	return &v
 }
 
