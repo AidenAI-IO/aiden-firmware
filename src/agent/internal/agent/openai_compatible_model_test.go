@@ -1620,6 +1620,72 @@ func TestOpenRouterSupportedModelAddsPromptCacheControlToSystemPrefix(t *testing
 	}
 }
 
+func TestOpenRouterLocaleSwitchKeepsCacheableSystemPrefixStable(t *testing.T) {
+	var captured []json.RawMessage
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/endpoints"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"endpoints":[{"supported_parameters":["cache_control"]}]}}`))
+		case r.URL.Path == "/chat/completions":
+			var request struct {
+				Messages []struct {
+					Content json.RawMessage `json:"content"`
+				} `json:"messages"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			if len(request.Messages) == 0 {
+				t.Fatal("request missing messages")
+			}
+			captured = append(captured, append(json.RawMessage(nil), request.Messages[0].Content...))
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	manager := NewModelManager(ModelConfig{Provider: "openrouter", Model: "vendor/cache-control-model", APIKey: "k", BaseURL: server.URL}, ProxyConfig{})
+	model, err := manager.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	for _, locale := range []string{"zh-CN", "en-US"} {
+		profile := testPromptProfile(AgentConfig{Locale: locale})
+		if _, err := model.GenerateContent(context.Background(), []llms.MessageContent{
+			{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextPart(profile.StableSystemPrompt), llms.TextPart(profile.DynamicSystemPrompt)}},
+			{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("hello")}},
+		}); err != nil {
+			t.Fatalf("GenerateContent(%s) error = %v", locale, err)
+		}
+	}
+
+	if len(captured) != 2 {
+		t.Fatalf("captured %d system messages, want 2", len(captured))
+	}
+	zh := decodePromptCacheSystemContent(t, captured[0])
+	en := decodePromptCacheSystemContent(t, captured[1])
+	if len(zh) != 2 || len(en) != 2 {
+		t.Fatalf("locale requests must keep stable/dynamic split: zh=%#v en=%#v", zh, en)
+	}
+	if zh[0].Text != en[0].Text {
+		t.Fatal("locale switch changed the cacheable stable system prefix")
+	}
+	if zh[0].CacheControl == nil || en[0].CacheControl == nil {
+		t.Fatal("stable prefix must carry cache_control for both locales")
+	}
+	if zh[1].CacheControl != nil || en[1].CacheControl != nil {
+		t.Fatal("dynamic locale tail must not carry cache_control")
+	}
+	if !strings.Contains(zh[1].Text, "configured response locale is zh-CN") ||
+		!strings.Contains(en[1].Text, "configured response locale is en-US") {
+		t.Fatalf("dynamic locale guidance missing: zh=%q en=%q", zh[1].Text, en[1].Text)
+	}
+}
+
 func TestOpenRouterSupportedModelAddsPromptCacheControlToSingleSystemPart(t *testing.T) {
 	var captured struct {
 		Messages []struct {

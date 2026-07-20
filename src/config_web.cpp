@@ -145,6 +145,8 @@ const char* kUsbBindAddress = "192.168.42.1";
 const char* kLoopbackBindAddress = "127.0.0.1";
 const char* kAgentInitScript = "/etc/init.d/S53agent";
 const char* kAgentLogPath = "/var/log/agent/agent.log";
+const char* kLocaleSimplifiedChinese = "zh-CN";
+const char* kLocaleEnglishUS = "en-US";
 // Default path to the agent binary on device. Tests override this via the
 // AIDEN_AGENT_BIN environment variable, resolved once on first use to keep
 // production calls free of getenv overhead.
@@ -716,6 +718,7 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"live_activity", "private_key_pem", CONFIG_FIELD_STRING},
         {"live_activity", "has_private_key_pem", CONFIG_FIELD_BOOL},
         {"live_activity", "timeout_sec", CONFIG_FIELD_NUMBER},
+        {"agent", "locale", CONFIG_FIELD_STRING},
         {"agent", "custom_instruction", CONFIG_FIELD_STRING},
         {"agent", "additional_prompt", CONFIG_FIELD_STRING},
         {"agent", "input_mode", CONFIG_FIELD_STRING},
@@ -2454,6 +2457,7 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddNumberToObject(live_activity, "timeout_sec", config.live_activity.timeout_sec);
 
     cJSON* agent = add_object(root, "agent");
+    cJSON_AddStringToObject(agent, "locale", config.locale.c_str());
     cJSON_AddStringToObject(agent, "custom_instruction", config.custom_instruction.c_str());
     cJSON_AddStringToObject(agent, "additional_prompt", config.additional_prompt.c_str());
     cJSON_AddStringToObject(agent, "input_mode", config.input_mode.c_str());
@@ -2779,6 +2783,7 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
 
     cJSON* agent = cJSON_GetObjectItem(root, "agent");
     if (json_is_object(agent)) {
+        set_json_str(&config->locale, agent, "locale");
         set_json_str(&config->custom_instruction, agent, "custom_instruction");
         set_json_str(&config->additional_prompt, agent, "additional_prompt");
         set_json_str(&config->input_mode, agent, "input_mode");
@@ -5068,6 +5073,54 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     return make_json_ok(response);
 }
 
+ApiResponse handle_put_config_locale(const Options& options, const std::string& body) {
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (!root) {
+        return make_json_error(400, "invalid JSON body");
+    }
+
+    cJSON* locale_item = cJSON_GetObjectItem(root, "locale");
+    if (!json_is_string(locale_item)) {
+        cJSON_Delete(root);
+        return make_json_error(400, "missing locale string");
+    }
+    const std::string locale = locale_item->valuestring;
+    cJSON_Delete(root);
+
+    if (locale != kLocaleSimplifiedChinese && locale != kLocaleEnglishUS) {
+        return make_json_error(400, "unsupported locale; expected zh-CN or en-US");
+    }
+
+    aiden::AgentToml config;
+    if (file_exists(options.agent_config_path.c_str())) {
+        std::string load_error;
+        if (!aiden::load_agent_toml(options.agent_config_path.c_str(), config, &load_error)) {
+            return make_json_error(500, load_error.empty() ? "failed to load agent config" : load_error);
+        }
+    }
+    config.locale = locale;
+
+    ValidationResult validation = validate_agent_config_for_save(config);
+    if (validation.outcome != ValidationOutcome::OK) {
+        const int status = validation.outcome == ValidationOutcome::UNAVAILABLE ? 503 : 400;
+        return make_json_error(status, validation.message);
+    }
+
+    std::string save_error;
+    if (!aiden::save_agent_toml(options.agent_config_path.c_str(), config, &save_error)) {
+        return make_json_error(500, save_error);
+    }
+
+    schedule_agent_restart();
+
+    cJSON* response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "ok", 1);
+    cJSON_AddStringToObject(response, "locale", config.locale.c_str());
+    cJSON_AddStringToObject(response, "message", "locale saved; agent restarting");
+    cJSON_AddBoolToObject(response, "agent_restart_scheduled", 1);
+    return make_json_ok(response);
+}
+
 ApiResponse handle_post_poweroff() {
     schedule_poweroff();
 
@@ -6108,6 +6161,10 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
 
     if (request.method == "POST" && request.path == "/api/config") {
         return handle_post_config(options, request.body);
+    }
+
+    if (request.method == "PUT" && request.path == "/api/config/locale") {
+        return handle_put_config_locale(options, request.body);
     }
 
     if (request.method == "POST" && request.path == "/api/system/env") {

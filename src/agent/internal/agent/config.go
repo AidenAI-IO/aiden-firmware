@@ -179,6 +179,7 @@ type Config struct {
 	EnvironmentBridge          EnvironmentBridgeConfig `toml:"-"` // Only set via CLI flags, never from config file
 	Benchmark                  BenchmarkConfig         `toml:"-"` // Only set via CLI flags, never from config file
 	LiveActivity               LiveActivityConfig      `toml:"live_activity,omitempty"`
+	Locale                     string                  `toml:"locale,omitempty"`
 	Instruction                string                  `toml:"custom_instruction,omitempty"`
 	AdditionalPrompt           string                  `toml:"additional_prompt,omitempty"`
 	InputMode                  string                  `toml:"input_mode,omitempty"`   // "text" or "stt"
@@ -497,6 +498,7 @@ type ModelConfig struct {
 type AgentConfig struct {
 	Instruction      string
 	AdditionalPrompt string
+	Locale           string
 }
 
 // MemoryConfig is used internally by the memory manager.
@@ -819,6 +821,13 @@ func legacyModelMaxTokens(raw map[string]interface{}, section string) (int, erro
 }
 
 func (c Config) Validate() error {
+	locale := strings.TrimSpace(c.Locale)
+	switch locale {
+	case "", localeSimplifiedChinese, localeEnglishUS:
+	default:
+		return fmt.Errorf("invalid locale: %s (expected zh-CN or en-US)", c.Locale)
+	}
+
 	switch c.Search.ProviderOrDefault() {
 	case searchProviderDuckDuckGo:
 	case searchProviderTavily:
@@ -977,6 +986,14 @@ func (c Config) Validate() error {
 	}
 
 	return nil
+}
+
+func (c Config) LocaleOrDefault() string {
+	locale := strings.TrimSpace(c.Locale)
+	if locale == "" {
+		return defaultLocale
+	}
+	return locale
 }
 
 func (t TelemetryConfig) Validate() error {

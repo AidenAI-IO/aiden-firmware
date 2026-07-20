@@ -186,14 +186,14 @@ func mergePromptText(existing, addition string) string {
 
 // InitializeContextManager initializes a context manager with a system prompt and a session folder if session is new.
 func InitializeContextManager(
-	systemPrompt string,
+	systemPrompt contextmanager.SystemPrompt,
 	sessionFolder string,
 	hooks []contextmanager.AppendMessageHook,
 ) (*contextmanager.ContextManager, error) {
 	manager, err := contextmanager.LoadContextManagerFromCurrentSession(sessionFolder)
 	if err != nil {
 		// create a new context manager
-		manager, err = contextmanager.NewContextManager(sessionFolder, systemPrompt)
+		manager, err = contextmanager.NewContextManager(sessionFolder, systemPrompt.String())
 		if err != nil {
 			return nil, fmt.Errorf("failed to create context manager: %w", err)
 		}
@@ -202,6 +202,7 @@ func InitializeContextManager(
 	if manager == nil {
 		return nil, fmt.Errorf("failed to create context manager")
 	}
+	manager.SetSystemPrompt(systemPrompt)
 
 	// set hooks
 	manager.AddAppendMessageHooks(hooks)

@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"strings"
 	"testing"
 
 	"aiden-agent/internal/agent/contextmanager"
@@ -12,7 +11,7 @@ import (
 func TestFreshNewContextManagerSeedsSystemPromptOnlyForFreshSession(t *testing.T) {
 	sessionFolder := t.TempDir()
 
-	manager, err := InitializeContextManager("system v1", sessionFolder, nil)
+	manager, err := InitializeContextManager(contextmanager.SystemPrompt{StablePrefix: "system v1"}, sessionFolder, nil)
 	if err != nil {
 		t.Fatalf("freshNewContextManager() error = %v", err)
 	}
@@ -27,7 +26,7 @@ func TestFreshNewContextManagerSeedsSystemPromptOnlyForFreshSession(t *testing.T
 		t.Fatalf("AppendMessage() error = %v", err)
 	}
 
-	reloaded, err := InitializeContextManager("system v2", sessionFolder, nil)
+	reloaded, err := InitializeContextManager(contextmanager.SystemPrompt{StablePrefix: "system v2"}, sessionFolder, nil)
 	if err != nil {
 		t.Fatalf("reload freshNewContextManager() error = %v", err)
 	}
@@ -35,16 +34,36 @@ func TestFreshNewContextManagerSeedsSystemPromptOnlyForFreshSession(t *testing.T
 	if len(reloadedMessages) != 2 {
 		t.Fatalf("messages = %d, want 2", len(reloadedMessages))
 	}
-	if strings.Contains(messageText(reloadedMessages), "system v2") {
-		t.Fatalf("reloaded context should not re-seed a second system prompt:\n%s", messageText(reloadedMessages))
+	if text := messageText(reloadedMessages[:1]); text != "system v2\n" {
+		t.Fatalf("reloaded context should use the current system prompt, got %q", text)
 	}
 	if text := messageText(reloadedMessages[1:2]); text != "first request\n" {
 		t.Fatalf("reloaded user message = %q", text)
 	}
 }
 
+func TestInitializeContextManagerPreservesStableAndDynamicSystemParts(t *testing.T) {
+	manager, err := InitializeContextManager(contextmanager.SystemPrompt{
+		StablePrefix: "stable cache prefix",
+		DynamicTail:  "dynamic locale tail",
+	}, t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("InitializeContextManager() error = %v", err)
+	}
+
+	messages := manager.ConvertToStandardMessageList()
+	if len(messages) != 1 || len(messages[0].Parts) != 2 {
+		t.Fatalf("system message parts = %#v, want stable + dynamic", messages)
+	}
+	stable, stableOK := messages[0].Parts[0].(llms.TextContent)
+	dynamic, dynamicOK := messages[0].Parts[1].(llms.TextContent)
+	if !stableOK || stable.Text != "stable cache prefix" || !dynamicOK || dynamic.Text != "dynamic locale tail" {
+		t.Fatalf("system parts = %#v, want stable then dynamic", messages[0].Parts)
+	}
+}
+
 func TestUserMessageFromInputPreservesAttachments(t *testing.T) {
-	manager, err := InitializeContextManager("system", t.TempDir(), nil)
+	manager, err := InitializeContextManager(contextmanager.SystemPrompt{StablePrefix: "system"}, t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("freshNewContextManager() error = %v", err)
 	}

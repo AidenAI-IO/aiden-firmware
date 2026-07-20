@@ -289,6 +289,9 @@ func ConfigMeta() ConfigMetadata {
 				// The "agent" UI section maps to the top-level Config fields.
 				Name: "agent",
 				Fields: []FieldMeta{
+					{Key: "locale", Widget: WidgetSelect,
+						Enum:    enumOptions(localeSimplifiedChinese, localeEnglishUS),
+						Default: defaults.LocaleOrDefault()},
 					{Key: "input_mode", Widget: WidgetSelect,
 						Enum:    enumOptions("text", "stt"),
 						Default: defaults.InputMode},

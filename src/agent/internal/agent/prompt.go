@@ -18,8 +18,8 @@ type hostRuntimeInfo struct {
 	Architecture    string
 }
 
-func currentDateContext() string {
-	return formatCurrentDate(promptNow())
+func currentDateContext(locale string) string {
+	return formatCurrentDate(promptNow(), locale)
 }
 
 func hostRuntimeInfoContext() string {
@@ -73,9 +73,36 @@ func hostInfoValue(value string) string {
 	return value
 }
 
-func formatCurrentDate(t time.Time) string {
+func formatCurrentDate(t time.Time, locale string) string {
+	if normalizeResponseLocale(locale) == localeEnglishUS {
+		weekdays := []string{"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"}
+		return "Current date: " + t.Format("2006-01-02") + " (" + weekdays[t.Weekday()] + ")"
+	}
 	weekdays := []string{"星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"}
 	return "Current date: " + t.Format("2006-01-02") + " (" + weekdays[t.Weekday()] + ")"
+}
+
+func normalizeResponseLocale(locale string) string {
+	switch strings.ToLower(strings.TrimSpace(locale)) {
+	case "en-us":
+		return localeEnglishUS
+	default:
+		return localeSimplifiedChinese
+	}
+}
+
+func responseLanguageGuidance(locale string) string {
+	locale = normalizeResponseLocale(locale)
+	language := "Simplified Chinese"
+	if locale == localeEnglishUS {
+		language = "English"
+	}
+	return strings.Join([]string{
+		"The configured response locale is " + locale + ".",
+		"Write all conversational assistant content in " + language + " from the first generated token. This includes progress messages, final answers, and all text inside <tts>...</tts>.",
+		"Only use another language for content the user explicitly asks to translate, quote, draft, or generate. Keep any surrounding explanation in " + language + ".",
+		"Do not infer the response language from STT language, phone locale, screenshot language, proper nouns, or an isolated foreign-language phrase.",
+	}, "\n")
 }
 
 func combinedAgentInstruction(cfg AgentConfig) string {
@@ -104,7 +131,7 @@ func agentEnvironmentGuidance() string {
 
 func defaultAgentBehavior() string {
 	rules := []string{
-		"- Default to replying in Simplified Chinese; follow the user's language when they clearly use another language. Keep final replies natural; avoid Markdown tables or long lists unless the user asks for them.",
+		"- Keep final replies natural; avoid Markdown tables or long lists unless the user asks for them.",
 		"- Responses must be ordinary user-facing text, followed by exactly one <tts>...</tts> block containing the concise text to speak aloud. The <tts> text is not required to be the same as the response text. Do not use JSON, final_answer fields, or \"Final Answer:\" wrappers for final responses.",
 		"- When invoking tools, put brief progress text in assistant content only when it should be spoken, and include exactly one <tts>...</tts> block containing the spoken text. Content outside <tts> is not spoken. Do not put speech or description arguments in tool inputs. Do not put the final answer in tool-call assistant content.",
 		"- Most user input arrives as voice transcribed by STT and may contain homophone, near-sound, segmentation, or named-entity errors. Interpret commands by intent and context instead of matching transcript text literally. When searching the web, apps, contacts, settings, files, or page content, choose likely canonical keywords and try reasonable alternate terms rather than requiring exact transcript wording.",

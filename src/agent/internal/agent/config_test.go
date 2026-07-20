@@ -74,6 +74,30 @@ func TestConfigInputModeDefaultContract(t *testing.T) {
 	}
 }
 
+func TestConfigLocaleContract(t *testing.T) {
+	if got := DefaultConfig().Locale; got != "zh-CN" {
+		t.Fatalf("DefaultConfig().Locale = %q, want zh-CN", got)
+	}
+	if got := (Config{}).LocaleOrDefault(); got != "zh-CN" {
+		t.Fatalf("Config{}.LocaleOrDefault() = %q, want zh-CN", got)
+	}
+
+	english := Config{Model: ModelConfig{Provider: "fake"}, Locale: "en-US"}
+	if err := english.Validate(); err != nil {
+		t.Fatalf("Validate(en-US) error = %v", err)
+	}
+	if got := english.LocaleOrDefault(); got != "en-US" {
+		t.Fatalf("LocaleOrDefault() = %q, want en-US", got)
+	}
+
+	for _, locale := range []string{"fr-FR", "en-us"} {
+		invalid := Config{Model: ModelConfig{Provider: "fake"}, Locale: locale}
+		if err := invalid.Validate(); err == nil || !strings.Contains(err.Error(), "locale") {
+			t.Fatalf("Validate(%s) error = %v, want locale rejection", locale, err)
+		}
+	}
+}
+
 func TestLoadRuntimeConfigParsesTerminationPolicyOverrides(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.toml")
 	contents := `

@@ -26,6 +26,32 @@ func TestRolePromptsIncludeCurrentDate(t *testing.T) {
 	}
 }
 
+func TestRolePromptKeepsLocaleInDynamicCacheTail(t *testing.T) {
+	manager := NewSkillManager(NewSkillIndex())
+	zh := buildProfile(AgentConfig{Locale: "zh-CN"}, manager, nil, agentRoleRules())
+	en := buildProfile(AgentConfig{Locale: "en-US"}, manager, nil, agentRoleRules())
+
+	if zh.StableSystemPrompt == "" || zh.StableSystemPrompt != en.StableSystemPrompt {
+		t.Fatalf("stable prompt changed with locale:\nzh=%q\nen=%q", zh.StableSystemPrompt, en.StableSystemPrompt)
+	}
+	if !strings.Contains(zh.DynamicSystemPrompt, "configured response locale is zh-CN") ||
+		!strings.Contains(zh.DynamicSystemPrompt, "from the first generated token") ||
+		!strings.Contains(zh.DynamicSystemPrompt, "Simplified Chinese") {
+		t.Fatalf("Chinese dynamic prompt missing response-language prefill guidance:\n%s", zh.DynamicSystemPrompt)
+	}
+	if !strings.Contains(en.DynamicSystemPrompt, "configured response locale is en-US") ||
+		!strings.Contains(en.DynamicSystemPrompt, "from the first generated token") ||
+		!strings.Contains(en.DynamicSystemPrompt, "English") {
+		t.Fatalf("English dynamic prompt missing response-language prefill guidance:\n%s", en.DynamicSystemPrompt)
+	}
+	if strings.Contains(zh.StableSystemPrompt, "Default to replying in Simplified Chinese") {
+		t.Fatalf("stable prompt still contains fixed Chinese response rule:\n%s", zh.StableSystemPrompt)
+	}
+	if !strings.HasSuffix(zh.SystemPrompt, zh.DynamicSystemPrompt) || !strings.HasSuffix(en.SystemPrompt, en.DynamicSystemPrompt) {
+		t.Fatal("dynamic locale guidance must be the final system-prompt segment")
+	}
+}
+
 func TestRolePromptsIncludeRealHostRuntimeInfo(t *testing.T) {
 	hostname, err := os.Hostname()
 	if err != nil {
@@ -69,7 +95,8 @@ func TestRolePromptsIncludeGlobalEnvironmentAndDeviceGuidance(t *testing.T) {
 		"extra prompt",
 		"## Environment",
 		"## Default behavior",
-		"Default to replying in Simplified Chinese",
+		"configured response locale is zh-CN",
+		"from the first generated token",
 		"Most user input arrives as voice transcribed by STT",
 		"homophone, near-sound, segmentation, or named-entity errors",
 		"choose likely canonical keywords and try reasonable alternate terms",

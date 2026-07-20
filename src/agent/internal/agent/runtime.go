@@ -976,7 +976,10 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 
 	// setup context manager if not initialized
 	if r.contextManager == nil {
-		r.contextManager, err = InitializeContextManager(profile.SystemPrompt, agentpath.ContextManagerSessionFolder(r.config.ConfigDir), []contextmanager.AppendMessageHook{r.getStateHook()})
+		r.contextManager, err = InitializeContextManager(contextmanager.SystemPrompt{
+			StablePrefix: profile.StableSystemPrompt,
+			DynamicTail:  profile.DynamicSystemPrompt,
+		}, agentpath.ContextManagerSessionFolder(r.config.ConfigDir), []contextmanager.AppendMessageHook{r.getStateHook()})
 		if err != nil {
 			return RunResult{}, err
 		}
@@ -1007,6 +1010,10 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 			return RunResult{}, err
 		}
 		if compacted {
+			newManager.SetSystemPrompt(contextmanager.SystemPrompt{
+				StablePrefix: profile.StableSystemPrompt,
+				DynamicTail:  profile.DynamicSystemPrompt,
+			})
 			// setup hooks
 			newManager.AddAppendMessageHook(r.getStateHook())
 			// switch to new session
@@ -1104,9 +1111,12 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}, nil
 }
 
-func (r *Runtime) getSystemPrompt() string {
+func (r *Runtime) getSystemPrompt() contextmanager.SystemPrompt {
 	profile := r.buildAgentProfile(r.skills, r.availableTools())
-	return profile.SystemPrompt
+	return contextmanager.SystemPrompt{
+		StablePrefix: profile.StableSystemPrompt,
+		DynamicTail:  profile.DynamicSystemPrompt,
+	}
 }
 
 func (r *Runtime) getStateHook() contextmanager.AppendMessageHook {
@@ -1308,10 +1318,12 @@ func (r *Runtime) ContextDump() contextmanager.MessageListDump {
 }
 
 func (r *Runtime) rotateContext() {
-	newContextManager, err := contextmanager.NewContextManager(agentpath.ContextManagerSessionFolder(r.config.ConfigDir), r.getSystemPrompt())
+	systemPrompt := r.getSystemPrompt()
+	newContextManager, err := contextmanager.NewContextManager(agentpath.ContextManagerSessionFolder(r.config.ConfigDir), systemPrompt.String())
 	if err != nil {
 		return
 	}
+	newContextManager.SetSystemPrompt(systemPrompt)
 	newContextManager.AddAppendMessageHooks([]contextmanager.AppendMessageHook{r.getStateHook()})
 	r.contextManager = newContextManager
 }
@@ -1537,6 +1549,7 @@ func (r *Runtime) buildAgentProfile(skills *SkillManager, availableTools []langt
 		AgentConfig{
 			Instruction:      r.config.Instruction,
 			AdditionalPrompt: r.config.AdditionalPrompt,
+			Locale:           r.config.LocaleOrDefault(),
 		},
 		skills,
 		availableTools,

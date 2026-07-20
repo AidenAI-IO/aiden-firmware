@@ -7,9 +7,11 @@ import (
 )
 
 type RoleProfile struct {
-	SystemPrompt string
-	Skills       *SkillManager
-	Tools        []langtools.Tool
+	SystemPrompt        string
+	StableSystemPrompt  string
+	DynamicSystemPrompt string
+	Skills              *SkillManager
+	Tools               []langtools.Tool
 }
 
 func agentRoleRules() []string {
@@ -32,12 +34,8 @@ func buildProfile(
 	tools []langtools.Tool,
 	roleRules []string,
 ) RoleProfile {
-	staticParts := []string{
+	stableParts := []string{
 		"You are the Aiden agent.",
-		currentDateContext(),
-		"",
-		"## Base instruction",
-		combinedAgentInstruction(cfg),
 		"",
 		"## Environment",
 		agentEnvironmentGuidance(),
@@ -50,16 +48,28 @@ func buildProfile(
 		skills.CatalogSummary(),
 	}
 
-	staticParts = append(staticParts, "", "## Role rules")
+	stableParts = append(stableParts, "", "## Role rules")
 	for _, rule := range roleRules {
-		staticParts = append(staticParts, "- "+rule)
+		stableParts = append(stableParts, "- "+rule)
 	}
+	stablePrompt := strings.Join(stableParts, "\n")
 
-	staticPrompt := strings.Join(staticParts, "\n")
+	dynamicPrompt := strings.Join([]string{
+		currentDateContext(cfg.Locale),
+		"",
+		"## Base instruction",
+		combinedAgentInstruction(cfg),
+		"",
+		"## Response language",
+		responseLanguageGuidance(cfg.Locale),
+	}, "\n")
+	fullPrompt := strings.TrimSpace(stablePrompt) + "\n\n" + strings.TrimSpace(dynamicPrompt)
 
 	return RoleProfile{
-		SystemPrompt: staticPrompt,
-		Skills:       skills,
-		Tools:        append([]langtools.Tool{}, tools...),
+		SystemPrompt:        fullPrompt,
+		StableSystemPrompt:  stablePrompt,
+		DynamicSystemPrompt: dynamicPrompt,
+		Skills:              skills,
+		Tools:               append([]langtools.Tool{}, tools...),
 	}
 }

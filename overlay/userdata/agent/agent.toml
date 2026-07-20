@@ -1,3 +1,7 @@
+# Device UI and Agent response language: "zh-CN" or "en-US".
+# This is independent from [stt].language, which only controls speech recognition.
+locale = "zh-CN"
+
 # Agent instruction and behavior
 # custom_instruction = ""
 # additional_prompt = ""

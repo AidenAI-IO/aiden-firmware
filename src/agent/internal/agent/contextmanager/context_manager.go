@@ -53,6 +53,29 @@ type Message struct {
 	Attachments []Attachment `json:"attachments,omitempty"`
 }
 
+// SystemPrompt keeps the cacheable prompt prefix separate from the small
+// runtime-dependent tail. Model adapters can cache the stable first part while
+// locale, date, and deployment overrides change independently.
+type SystemPrompt struct {
+	StablePrefix string
+	DynamicTail  string
+}
+
+func (p SystemPrompt) Parts() []string {
+	parts := make([]string, 0, 2)
+	if stable := strings.TrimSpace(p.StablePrefix); stable != "" {
+		parts = append(parts, stable)
+	}
+	if dynamic := strings.TrimSpace(p.DynamicTail); dynamic != "" {
+		parts = append(parts, dynamic)
+	}
+	return parts
+}
+
+func (p SystemPrompt) String() string {
+	return strings.Join(p.Parts(), "\n\n")
+}
+
 type AppendMessageHook func(Message) AppendMessageHookResult
 
 type AppendMessageHookResult struct {
@@ -95,15 +118,37 @@ type Attachment struct {
 // It is thread safe and can be used concurrently by multiple goroutines.
 // SessionID is the id of the session, it is used to identify the session of the agent. Conversation in a same session are shared the same context.
 type ContextManager struct {
-	sessionID       string
-	messageList     []Message
-	appendHooks     []appendMessageHookEntry
-	transient       []transientMessageEntry
-	nextHookID      uint64
-	nextTransientID uint64
-	attachmentStore *attachmentStore
-	mu              sync.RWMutex
-	sessionFolder   string
+	sessionID         string
+	messageList       []Message
+	appendHooks       []appendMessageHookEntry
+	transient         []transientMessageEntry
+	nextHookID        uint64
+	nextTransientID   uint64
+	attachmentStore   *attachmentStore
+	systemPromptParts []string
+	mu                sync.RWMutex
+	sessionFolder     string
+}
+
+// SetSystemPrompt replaces the leading system message in memory and records
+// its content parts for model conversion. Session history stays intact, while
+// a restarted runtime immediately uses its current prompt configuration.
+func (c *ContextManager) SetSystemPrompt(prompt SystemPrompt) {
+	if c == nil {
+		return
+	}
+	parts := prompt.Parts()
+	joined := strings.Join(parts, "\n\n")
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.systemPromptParts = append([]string(nil), parts...)
+	if len(c.messageList) > 0 && c.messageList[0].Role == MessageRoleSystem {
+		c.messageList[0].Content = joined
+		return
+	}
+	if joined != "" {
+		c.messageList = append([]Message{{Role: MessageRoleSystem, Content: joined}}, c.messageList...)
+	}
 }
 
 // LoadContextManagerFromSessionID loads a context manager from the session folder
@@ -401,8 +446,9 @@ func cloneMessage(msg Message) Message {
 func (c *ContextManager) ConvertToStandardMessageList() []llms.MessageContent {
 	c.mu.RLock()
 	messages := cloneMessages(c.messageList)
+	systemPromptParts := append([]string(nil), c.systemPromptParts...)
 	c.mu.RUnlock()
-	return convertToStandardMessageList(messages)
+	return convertToStandardMessageList(messages, systemPromptParts)
 }
 
 // TakeStandardMessageListForModel returns persisted context plus one-shot
@@ -410,15 +456,16 @@ func (c *ContextManager) ConvertToStandardMessageList() []llms.MessageContent {
 func (c *ContextManager) TakeStandardMessageListForModel() []llms.MessageContent {
 	c.mu.Lock()
 	messages := cloneMessages(c.messageList)
+	systemPromptParts := append([]string(nil), c.systemPromptParts...)
 	for _, entry := range c.transient {
 		messages = append(messages, cloneMessage(entry.Message))
 	}
 	c.transient = nil
 	c.mu.Unlock()
-	return convertToStandardMessageList(messages)
+	return convertToStandardMessageList(messages, systemPromptParts)
 }
 
-func convertToStandardMessageList(messages []Message) []llms.MessageContent {
+func convertToStandardMessageList(messages []Message, systemPromptParts []string) []llms.MessageContent {
 	standardMessageList := make([]llms.MessageContent, len(messages))
 	for i, message := range messages {
 		newMessage := llms.MessageContent{
@@ -440,7 +487,11 @@ func convertToStandardMessageList(messages []Message) []llms.MessageContent {
 			standardMessageList[i] = newMessage
 			continue
 		}
-		if content := strings.TrimSpace(message.Content); content != "" {
+		if i == 0 && message.Role == MessageRoleSystem && len(systemPromptParts) > 0 {
+			for _, part := range systemPromptParts {
+				newMessage.Parts = append(newMessage.Parts, llms.TextPart(part))
+			}
+		} else if content := strings.TrimSpace(message.Content); content != "" {
 			newMessage.Parts = append(newMessage.Parts, llms.TextPart(content))
 		}
 		for toolIndex, call := range message.ToolCalls {

@@ -78,6 +78,13 @@ func TestConfigCheck_WireFormatContract(t *testing.T) {
 			wantInField: "input_mode",
 		},
 		{
+			name: "invalid locale nested under agent",
+			payload: `{"model":{"provider":"openai","model":"gpt-4"},
+				"search":{"provider":"duckduckgo"},
+				"agent":{"locale":"fr-FR"}}`,
+			wantInField: "locale",
+		},
+		{
 			name: "missing model provider",
 			payload: `{"model":{"model":"gpt-4"},
 				"search":{"provider":"duckduckgo"},"agent":{}}`,
@@ -140,6 +147,21 @@ func TestConfigCheck_WireCustomInstructionMapsToAgentConfig(t *testing.T) {
 	cfg := dto.toAgentConfig()
 	if cfg.Instruction != "Use custom behavior." {
 		t.Fatalf("Instruction = %q, want custom instruction", cfg.Instruction)
+	}
+}
+
+func TestConfigCheck_WireLocaleMapsToAgentConfig(t *testing.T) {
+	dto := webConfigDTO{
+		Model:  modelDTO{Provider: "openai", Model: "gpt-4"},
+		Search: searchDTO{Provider: "duckduckgo"},
+		Agent:  agentDTO{Locale: "en-US"},
+	}
+	cfg := dto.toAgentConfig()
+	if cfg.Locale != "en-US" {
+		t.Fatalf("Locale = %q, want en-US", cfg.Locale)
+	}
+	if got := webConfigDTOFromAgentConfig(cfg).Agent.Locale; got != "en-US" {
+		t.Fatalf("round-trip locale = %q, want en-US", got)
 	}
 }
 

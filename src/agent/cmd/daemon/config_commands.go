@@ -193,6 +193,7 @@ type liveActivityDTO struct {
 }
 
 type agentDTO struct {
+	Locale                     string  `json:"locale"`
 	CustomInstruction          string  `json:"custom_instruction"`
 	AdditionalPrompt           string  `json:"additional_prompt"`
 	InputMode                  string  `json:"input_mode"`
@@ -346,6 +347,7 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			TimeoutSec:     d.LiveActivity.TimeoutSec,
 		},
 		TerminationPolicy:          d.TerminationPolicy,
+		Locale:                     d.Agent.Locale,
 		Instruction:                d.Agent.CustomInstruction,
 		AdditionalPrompt:           d.Agent.AdditionalPrompt,
 		InputMode:                  d.Agent.InputMode,
@@ -485,6 +487,7 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 		},
 		TerminationPolicy: cfg.TerminationPolicyOrDefault(),
 		Agent: agentDTO{
+			Locale:                     cfg.LocaleOrDefault(),
 			CustomInstruction:          customInstructionValue(cfg.Instruction),
 			AdditionalPrompt:           cfg.AdditionalPrompt,
 			InputMode:                  cfg.InputModeOrDefault(),

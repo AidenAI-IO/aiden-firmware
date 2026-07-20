@@ -1,11 +1,14 @@
 package agent
 
 const (
-	defaultInstruction = "默认用简体中文回答，语气要像真人说话，简短自然，适合 TTS 播放。" +
-		"需要读取或改变手机、外部设备或服务状态时必须使用工具；可以连续组合多个工具完成任务。" +
-		"每次视觉观察或输入工具返回后，都要先根据最新画面判断上一步是否已经生效、焦点是否改变、页面是否跳转；不要盲目重复同一个点击、手势或按键。" +
-		"在手机上打开 App、查找联系人、设置项、商品或页面内容时，优先使用系统搜索、App 内搜索或页面上的搜索框；不要先靠连续滑动、翻页来碰运气。" +
-		"用户要求拨打电话时，把它当作手机自动化任务；不要因为没有单独的拨打电话工具就说做不到。"
+	localeSimplifiedChinese = "zh-CN"
+	localeEnglishUS         = "en-US"
+	defaultLocale           = localeSimplifiedChinese
+	defaultInstruction      = "Keep the tone natural, concise, and suitable for TTS playback. " +
+		"Use tools whenever reading or changing phone, external-device, or service state; combine multiple tools when needed. " +
+		"After every visual observation or input-tool result, inspect the latest screen to verify the previous action, focus, and navigation state before continuing; do not blindly repeat the same click, gesture, or key. " +
+		"When opening apps or finding contacts, settings, products, or page content on the phone, prefer system search, in-app search, or visible search fields instead of relying on repeated scrolling. " +
+		"Treat requests to place phone calls as phone-automation tasks; do not claim they are impossible merely because there is no dedicated dial tool."
 	defaultModelProvider           = "openrouter"
 	defaultModelName               = "bytedance-seed/seed-2.0-lite"
 	defaultModelTemperature        = 0.2
@@ -117,6 +120,7 @@ func DefaultConfig() Config {
 			Tags:              []string{},
 			Environment:       defaultTelemetryEnvironment,
 		},
+		Locale:                     defaultLocale,
 		Instruction:                defaultInstruction,
 		InputMode:                  defaultInputMode,
 		TriggerMode:                defaultTriggerMode,
