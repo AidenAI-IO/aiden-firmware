@@ -23,8 +23,18 @@ grep -Fq 'write_refresh_state()' "$WATCHDOG" ||
 grep -Fq 'reset_composite()' "$WATCHDOG" ||
     fail "watchdog must recover by resetting the composite gadget"
 
-grep -Fq 'reset_composite "ECM stall"' "$WATCHDOG" ||
-    fail "watchdog_main must reset the composite gadget on ECM stalls"
+grep -Fq 'ECM stall detected; preserving HID session and requiring explicit refresh' "$WATCHDOG" ||
+    fail "watchdog_main must preserve HID when ECM probes fail"
+
+grep -Fq 'write_refresh_state "ECM stall" "skipped"' "$WATCHDOG" ||
+    fail "watchdog_main must persist suppressed ECM reset diagnostics"
+
+grep -Fq 'if [ ! -d "$ECM_FUNC" ]; then' "$WATCHDOG" ||
+    fail "watchdog_main must skip ECM probes when the active profile omits ECM"
+
+if grep -Fq 'reset_composite "ECM stall"' "$WATCHDOG"; then
+    fail "watchdog must not automatically reset the composite gadget on ECM probe failures"
+fi
 
 grep -Fq 'UDC state changed:' "$WATCHDOG" ||
     fail "watchdog_main must track host UDC state transitions"

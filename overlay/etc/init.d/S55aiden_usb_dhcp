@@ -5,6 +5,7 @@ DNSMASQ_BIN=/usr/bin/dnsmasq
 CONF_FILE=/etc/dnsmasq.d/usb0.conf
 PID_FILE=/run/aiden_usb_dhcp.pid
 LOG_FILE=/var/log/aiden_usb_dhcp.log
+ECM_FUNC=/sys/kernel/config/usb_gadget/aiden_hid/functions/ecm.usb0
 
 is_running() {
 	pid="$1"
@@ -28,6 +29,11 @@ current_pid() {
 }
 
 start() {
+	if [ ! -d "$ECM_FUNC" ]; then
+		echo "Aiden USB profile has no ECM function; not starting dnsmasq"
+		return 0
+	fi
+
 	pid="$(current_pid)"
 	if is_running "$pid"; then
 		echo "aiden_usb_dhcp already running (pid $pid)"

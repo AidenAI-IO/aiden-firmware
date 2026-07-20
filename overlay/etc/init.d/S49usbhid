@@ -1,44 +1,36 @@
 #!/bin/sh
 #
-# Aiden USB composite gadget: HID (keyboard + touch) + CDC ECM (usb0).
-# ECM brings up usb0 at 192.168.42.1/24 so the device serves the config portal
-# to a phone/PC over USB while WiFi handles the data plane.
+# iOS keyboard + pointer routing experiment.
+#
+# Keep the proven E11 keyboard-only baseline and add exactly one absolute mouse
+# pointer function. Consumer Control, Apple vendor HID, and CDC ECM functions
+# are intentionally omitted. Build the complete descriptor tree, wait for it
+# to settle, and bind the UDC exactly once with keyboard first.
 #
 
 GADGET_DIR=/sys/kernel/config/usb_gadget/aiden_hid
 USB_MODE_PATH=/proc/device-tree/usbdrd/usb@ffb00000/dr_mode
-AGENT_TOML=/userdata/agent/agent.toml
 
-USB0_ADDR=192.168.42.1
-USB0_NETMASK=255.255.255.0
-# Locally-administered MACs (0x02 bit set, not multicast).
-ECM_HOST_MAC=02:aa:bb:cc:dd:01
-ECM_DEV_MAC=02:aa:bb:cc:dd:02
+cleanup_gadget() {
+	[ -d "$GADGET_DIR" ] || return
 
-read_pointer_mode() {
-	POINTER_MODE=absolute
-	if [ ! -f "$AGENT_TOML" ]; then
-		return
-	fi
-	line=$(grep -E '^[[:space:]]*pointer_mode[[:space:]]*=' "$AGENT_TOML" | tail -n1)
-	case "$line" in
-		*\"touchscreen\"*|*\'touchscreen\'*|*touchscreen*) POINTER_MODE=touchscreen ;;
-		*\"absolute\"*|*\'absolute\'*|*absolute*) POINTER_MODE=absolute ;;
-	esac
-}
-
-reenumerate_composite() {
-	# iOS can retain a stale external-keyboard session when the phone is already
-	# attached during boot. Force a clean host-visible reconnect after the final
-	# HID descriptors are bound.
-	echo "Re-enumerating Aiden USB composite gadget..."
 	echo "" > "$GADGET_DIR/UDC" 2>/dev/null
-	sleep 1
-	echo "$UDC" > "$GADGET_DIR/UDC"
+	rm -f "$GADGET_DIR"/configs/c.1/hid.* 2>/dev/null
+	rm -f "$GADGET_DIR"/configs/c.1/ecm.* 2>/dev/null
+	rmdir "$GADGET_DIR"/functions/hid.usb0 2>/dev/null
+	rmdir "$GADGET_DIR"/functions/hid.usb1 2>/dev/null
+	rmdir "$GADGET_DIR"/functions/hid.usb2 2>/dev/null
+	rmdir "$GADGET_DIR"/functions/hid.usb3 2>/dev/null
+	rmdir "$GADGET_DIR"/functions/hid.usb4 2>/dev/null
+	rmdir "$GADGET_DIR"/functions/ecm.usb0 2>/dev/null
+	rmdir "$GADGET_DIR"/configs/c.1/strings/0x409 2>/dev/null
+	rmdir "$GADGET_DIR"/configs/c.1 2>/dev/null
+	rmdir "$GADGET_DIR"/strings/0x409 2>/dev/null
+	rmdir "$GADGET_DIR" 2>/dev/null
 }
 
 start() {
-	echo "Setting up Aiden USB composite gadget (HID + ECM)..."
+	echo "Setting up iOS keyboard + pointer routing experiment..."
 
 	USB_MODE=$(cat "$USB_MODE_PATH" 2>/dev/null)
 	if [ "$USB_MODE" != "peripheral" ]; then
@@ -60,131 +52,69 @@ start() {
 	modprobe dwc2 2>/dev/null
 	modprobe libcomposite 2>/dev/null
 	modprobe usb_f_hid 2>/dev/null
-	modprobe usb_f_ecm 2>/dev/null
 	sleep 1
 
-	# Clean up stale instance
-	if [ -d "$GADGET_DIR" ]; then
-		echo "" > "$GADGET_DIR/UDC" 2>/dev/null
-		rm -f "$GADGET_DIR"/configs/c.1/hid.* 2>/dev/null
-		rm -f "$GADGET_DIR"/configs/c.1/ecm.* 2>/dev/null
-		rmdir "$GADGET_DIR"/functions/hid.usb0 2>/dev/null
-		rmdir "$GADGET_DIR"/functions/hid.usb1 2>/dev/null
-		rmdir "$GADGET_DIR"/functions/hid.usb2 2>/dev/null
-		rmdir "$GADGET_DIR"/functions/ecm.usb0 2>/dev/null
-		rmdir "$GADGET_DIR"/configs/c.1/strings/0x409 2>/dev/null
-		rmdir "$GADGET_DIR"/configs/c.1 2>/dev/null
-		rmdir "$GADGET_DIR"/strings/0x409 2>/dev/null
-		rmdir "$GADGET_DIR" 2>/dev/null
-	fi
+	cleanup_gadget
 
-	# Create gadget
 	mkdir -p "$GADGET_DIR"
 	echo 0x1d6b > "$GADGET_DIR/idVendor"
 	echo 0x0104 > "$GADGET_DIR/idProduct"
-	echo 0x0100 > "$GADGET_DIR/bcdDevice"
+	echo 0x0101 > "$GADGET_DIR/bcdDevice"
 	echo 0x0200 > "$GADGET_DIR/bcdUSB"
+	echo full-speed > "$GADGET_DIR/max_speed"
 
-	# IAD-based multi-function device
-	echo 0xEF > "$GADGET_DIR/bDeviceClass"
-	echo 0x02 > "$GADGET_DIR/bDeviceSubClass"
-	echo 0x01 > "$GADGET_DIR/bDeviceProtocol"
+	# Use per-interface class identification, matching the E11 control profile.
+	echo 0x00 > "$GADGET_DIR/bDeviceClass"
+	echo 0x00 > "$GADGET_DIR/bDeviceSubClass"
+	echo 0x00 > "$GADGET_DIR/bDeviceProtocol"
 
 	mkdir -p "$GADGET_DIR/strings/0x409"
-	echo "0123456789ABCDEF" > "$GADGET_DIR/strings/0x409/serialnumber"
+	echo "AIDENKEYPTRTEST01" > "$GADGET_DIR/strings/0x409/serialnumber"
 	echo "Aiden" > "$GADGET_DIR/strings/0x409/manufacturer"
-	echo "Aiden HID+ECM" > "$GADGET_DIR/strings/0x409/product"
+	echo "Aiden Keyboard Pointer Test" > "$GADGET_DIR/strings/0x409/product"
 
 	mkdir -p "$GADGET_DIR/configs/c.1/strings/0x409"
-	echo "HID + ECM Composite" > "$GADGET_DIR/configs/c.1/strings/0x409/configuration"
+	echo "HID Keyboard + Pointer Control" > "$GADGET_DIR/configs/c.1/strings/0x409/configuration"
 	echo 500 > "$GADGET_DIR/configs/c.1/MaxPower"
 
-	# Keyboard HID function (8-byte boot keyboard report).
-	# Keep the boot subclass/protocol for broad host compatibility. iOS modifier
-	# failures are caused by stale host-side HID sessions; force a clean
-	# re-enumeration after binding instead of changing the advertised protocol.
+	# Standard 8-byte USB boot keyboard report:
+	# [modifier, reserved, key1, key2, key3, key4, key5, key6].
 	mkdir -p "$GADGET_DIR/functions/hid.usb0"
 	echo 1 > "$GADGET_DIR/functions/hid.usb0/protocol"
 	echo 1 > "$GADGET_DIR/functions/hid.usb0/subclass"
+	echo 1 > "$GADGET_DIR/functions/hid.usb0/no_out_endpoint"
 	echo 8 > "$GADGET_DIR/functions/hid.usb0/report_length"
 	printf '\x05\x01\x09\x06\xa1\x01\x05\x07\x19\xe0\x29\xe7\x15\x00\x25\x01\x75\x01\x95\x08\x81\x02\x95\x01\x75\x08\x81\x01\x95\x06\x75\x08\x15\x00\x25\x65\x05\x07\x19\x00\x29\x65\x81\x00\xc0' \
 		> "$GADGET_DIR/functions/hid.usb0/report_desc"
 
-	# Touch / mouse HID function (report format follows agent.toml pointer_mode)
+	# Six-byte absolute mouse report: buttons, X, Y, and wheel. Merely exposing
+	# this pointer service is the variable under test; no pointer report needs to
+	# be sent before the first modifier-routing check.
 	mkdir -p "$GADGET_DIR/functions/hid.usb1"
 	echo 0 > "$GADGET_DIR/functions/hid.usb1/protocol"
 	echo 0 > "$GADGET_DIR/functions/hid.usb1/subclass"
-	read_pointer_mode
-	if [ "$POINTER_MODE" = "touchscreen" ]; then
-		echo 6 > "$GADGET_DIR/functions/hid.usb1/report_length"
-		printf '\x05\x0d\x09\x04\xa1\x01\x09\x22\xa1\x02\x05\x0d\x09\x42\x09\x32\x15\x00\x25\x01\x75\x01\x95\x02\x81\x02\x75\x06\x95\x01\x81\x03\x09\x51\x75\x08\x95\x01\x15\x00\x25\x0f\x81\x02\x05\x01\x09\x30\x09\x31\x16\x00\x00\x26\xff\x7f\x75\x10\x95\x02\x81\x02\xc0\xc0' \
-			> "$GADGET_DIR/functions/hid.usb1/report_desc"
-	else
-		echo 6 > "$GADGET_DIR/functions/hid.usb1/report_length"
-		printf '\x05\x01\x09\x02\xa1\x01\x09\x01\xa1\x00\x05\x09\x19\x01\x29\x08\x15\x00\x25\x01\x95\x08\x75\x01\x81\x02\x05\x01\x09\x30\x09\x31\x16\x00\x00\x26\xff\x7f\x75\x10\x95\x02\x81\x02\x09\x38\x15\x81\x25\x7f\x75\x08\x95\x01\x81\x06\xc0\xc0' \
-			> "$GADGET_DIR/functions/hid.usb1/report_desc"
-	fi
+	echo 1 > "$GADGET_DIR/functions/hid.usb1/no_out_endpoint"
+	echo 6 > "$GADGET_DIR/functions/hid.usb1/report_length"
+	printf '\x05\x01\x09\x02\xa1\x01\x09\x01\xa1\x00\x05\x09\x19\x01\x29\x08\x15\x00\x25\x01\x95\x08\x75\x01\x81\x02\x05\x01\x09\x30\x09\x31\x16\x00\x00\x26\xff\x7f\x75\x10\x95\x02\x81\x02\x09\x38\x15\x81\x25\x7f\x75\x08\x95\x01\x81\x06\xc0\xc0' \
+		> "$GADGET_DIR/functions/hid.usb1/report_desc"
 
-	mkdir -p "$GADGET_DIR/functions/hid.usb2"
-	echo 0 > "$GADGET_DIR/functions/hid.usb2/protocol"
-	echo 0 > "$GADGET_DIR/functions/hid.usb2/subclass"
-	echo 2 > "$GADGET_DIR/functions/hid.usb2/report_length"
-	if [ "$POINTER_MODE" = "touchscreen" ]; then
-		printf '\x05\x0c\x09\x01\xa1\x01\x15\x00\x26\xff\x03\x1a\x00\x00\x2a\xff\x03\x75\x10\x95\x01\x81\x00\xc0' \
-			> "$GADGET_DIR/functions/hid.usb2/report_desc"
-	else
-		printf '\x05\x0c\x09\x01\xa1\x01\x15\x00\x25\x01\x09\xe2\x09\xe9\x09\xea\x09\xcd\x09\xb7\x09\xb5\x09\xb6\x09\xb4\x09\xb3\x09\x65\x09\x6f\x09\x70\x75\x01\x95\x0c\x81\x02\x75\x01\x95\x04\x81\x03\xc0' \
-			> "$GADGET_DIR/functions/hid.usb2/report_desc"
-	fi
+	# Link keyboard first so it remains interface 0, then pointer as interface 1.
+	ln -s "$GADGET_DIR/functions/hid.usb0" "$GADGET_DIR/configs/c.1/hid.usb0"
+	ln -s "$GADGET_DIR/functions/hid.usb1" "$GADGET_DIR/configs/c.1/hid.usb1"
 
-	# CDC ECM function (usb0 network interface)
-	mkdir -p "$GADGET_DIR/functions/ecm.usb0"
-	echo "$ECM_HOST_MAC" > "$GADGET_DIR/functions/ecm.usb0/host_addr"
-	echo "$ECM_DEV_MAC"  > "$GADGET_DIR/functions/ecm.usb0/dev_addr"
-
-	# Link all functions, THEN bind UDC (configfs requires this order)
-	ln -s "$GADGET_DIR/functions/hid.usb0" "$GADGET_DIR/configs/c.1/hid.usb0" 2>/dev/null
-	ln -s "$GADGET_DIR/functions/hid.usb1" "$GADGET_DIR/configs/c.1/hid.usb1" 2>/dev/null
-	ln -s "$GADGET_DIR/functions/hid.usb2" "$GADGET_DIR/configs/c.1/hid.usb2" 2>/dev/null
-	ln -s "$GADGET_DIR/functions/ecm.usb0" "$GADGET_DIR/configs/c.1/ecm.usb0" 2>/dev/null
-
-	echo "$UDC" > "$GADGET_DIR/UDC"
+	# Give configfs and both HID functions one quiet second, then bind once.
 	sleep 1
-	reenumerate_composite
+	echo "$UDC" > "$GADGET_DIR/UDC"
 
-	# Bring up usb0 with a static address once the kernel netdev appears.
-	for i in $(seq 1 20); do
-		[ -d /sys/class/net/usb0 ] && break
-		sleep 1
-	done
-	if [ -d /sys/class/net/usb0 ]; then
-		if ifconfig usb0 "$USB0_ADDR" netmask "$USB0_NETMASK" up; then
-			echo "usb0 up at $USB0_ADDR/$USB0_NETMASK"
-		else
-			echo "usb0 ifconfig failed"
-		fi
-	else
-		echo "usb0 did not appear; ECM may not be bound"
-	fi
-
-	if [ "$POINTER_MODE" = "touchscreen" ]; then
-		echo "Aiden USB composite ready: /dev/hidg0 (keyboard) /dev/hidg1 (pointer:$POINTER_MODE) /dev/hidg2 (android-extension) usb0 (ECM)"
-	else
-		echo "Aiden USB composite ready: /dev/hidg0 (keyboard) /dev/hidg1 (pointer:$POINTER_MODE) /dev/hidg2 (media-keys) usb0 (ECM)"
-	fi
+	echo "Keyboard + pointer experiment ready: /dev/hidg0 keyboard, /dev/hidg1 pointer; no hidg2 or ECM"
 }
 
 stop() {
-	if [ -d "$GADGET_DIR" ]; then
-		echo "" > "$GADGET_DIR/UDC" 2>/dev/null
-	fi
-	if [ -d /sys/class/net/usb0 ]; then
-		ifconfig usb0 down 2>/dev/null || true
-	fi
+	cleanup_gadget
 }
 
 restart() {
-	echo "USB HID hot restart is unsafe; use poweroff and reconnect power to apply changes." >&2
+	echo "USB HID hot restart is unsafe; power-cycle and reconnect to apply changes." >&2
 	exit 1
 }
 
