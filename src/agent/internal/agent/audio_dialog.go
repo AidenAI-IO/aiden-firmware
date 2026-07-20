@@ -625,7 +625,7 @@ func (d *AudioDialog) ProcessUtterance(ctx context.Context, utterance []int16, r
 	result, err := d.RunVoiceTurn(ctx, input, utterance, runtime)
 	if err != nil {
 		if !result.SpeechStreamed {
-			prepared := runtime.PrepareSpokenText(ctx, "", result.TurnFailure, false)
+			prepared := runtime.PrepareSpokenText(ctx, SpokenTextInput{TurnFailure: result.TurnFailure})
 			if prepared.Text != "" {
 				if speakErr := d.Speak(ctx, prepared.Text, nil); speakErr != nil {
 					log.Printf("[error] failure replacement TTS failed: %v", speakErr)
@@ -637,7 +637,10 @@ func (d *AudioDialog) ProcessUtterance(ctx context.Context, utterance []int16, r
 	if result.SpeechStreamed {
 		return nil
 	}
-	prepared := runtime.PrepareSpokenText(ctx, result.SpokenTextForConfig(d.config), nil, d.CanSpeakFinalText())
+	prepared := runtime.PrepareSpokenText(ctx, SpokenTextInput{
+		ResponseText:   result.SpokenTextForConfig(d.config),
+		TailAppendable: d.CanSpeakFinalText(),
+	})
 	err = d.Speak(ctx, prepared.Text, nil)
 	runtime.ReportSpokenTextDelivery(prepared.DeliveryToken, err)
 	return err
@@ -1285,7 +1288,7 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 	}
 	if err != nil {
 		if d.ttsManager != nil && !result.SpeechStreamed {
-			prepared := runtime.PrepareSpokenText(ctx, "", result.TurnFailure, false)
+			prepared := runtime.PrepareSpokenText(ctx, SpokenTextInput{TurnFailure: result.TurnFailure})
 			if prepared.Text != "" {
 				if speakErr := d.Speak(ctx, prepared.Text, nil); speakErr != nil {
 					log.Printf("[error] failure replacement TTS failed: %v", speakErr)
@@ -1302,8 +1305,8 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 
 	// Speak response if TTS is available
 	speechText := result.SpokenTextForConfig(d.config)
-	if d.ttsManager != nil && speechText != "" && !result.SpeechStreamed {
-		prepared := runtime.PrepareSpokenText(ctx, speechText, nil, true)
+	if d.CanSpeakFinalText() && speechText != "" && !result.SpeechStreamed {
+		prepared := runtime.PrepareSpokenText(ctx, SpokenTextInput{ResponseText: speechText, TailAppendable: true})
 		if err := d.Speak(ctx, prepared.Text, nil); err != nil {
 			runtime.ReportSpokenTextDelivery(prepared.DeliveryToken, err)
 			log.Printf("[error] TTS streaming failed: %v", err)

@@ -1222,7 +1222,7 @@ func (s *Server) handleChatAsync(
 				}
 			}
 			if !canceled && !result.SpeechStreamed && s.canSpeakFinalText() {
-				prepared := s.runtime.PrepareSpokenText(runCtx, "", result.TurnFailure, false)
+				prepared := s.runtime.PrepareSpokenText(runCtx, SpokenTextInput{TurnFailure: result.TurnFailure})
 				s.speakFinalText(runCtx, requestID, prepared)
 			}
 			return
@@ -1242,7 +1242,7 @@ func (s *Server) handleChatAsync(
 		// still see the active run/output and interrupt it reliably.
 		speechText := result.SpokenTextForConfig(s.runtime.config)
 		if s.canSpeakFinalText() && speechText != "" && !result.SpeechStreamed {
-			prepared := s.runtime.PrepareSpokenText(runCtx, speechText, nil, true)
+			prepared := s.runtime.PrepareSpokenText(runCtx, SpokenTextInput{ResponseText: speechText, TailAppendable: true})
 			s.speakFinalText(runCtx, requestID, prepared)
 		}
 	}()
@@ -1587,7 +1587,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			s.logger.Error("Agent run failed: %v", err)
 		}
 		if !result.SpeechStreamed && s.canSpeakFinalText() {
-			prepared := s.runtime.PrepareSpokenText(ctx, "", result.TurnFailure, false)
+			prepared := s.runtime.PrepareSpokenText(ctx, SpokenTextInput{TurnFailure: result.TurnFailure})
 			s.speakFinalText(ctx, req.RequestID, prepared)
 		}
 		stream.Write(ChatStreamEvent{Type: "error", Error: err.Error(), History: s.historySnapshot()})
@@ -1601,7 +1601,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 
 	speechText := result.SpokenTextForConfig(s.runtime.config)
 	if s.canSpeakFinalText() && speechText != "" && !result.SpeechStreamed {
-		prepared := s.runtime.PrepareSpokenText(ctx, speechText, nil, true)
+		prepared := s.runtime.PrepareSpokenText(ctx, SpokenTextInput{ResponseText: speechText, TailAppendable: true})
 		// Let request-scoped final TTS outlive the streaming handler while
 		// /api/chat/cancel can still interrupt it via the active run/output.
 		finalTTSCtx := context.Background()

@@ -1382,7 +1382,7 @@ func TestRunVoiceTurnKeepsVoiceNotificationPendingWhenSpeechIsUnavailable(t *tes
 		t.Fatalf("speech-unavailable turn consumed tail: %#v", dialog.spoken)
 	}
 
-	prepared := runtime.PrepareSpokenText(context.Background(), "next reply", nil, true)
+	prepared := runtime.PrepareSpokenText(context.Background(), agent.SpokenTextInput{ResponseText: "next reply", TailAppendable: true})
 	if prepared.Mode != agent.SpokenTextModeTail {
 		t.Fatalf("pending reminder mode = %q, want %q", prepared.Mode, agent.SpokenTextModeTail)
 	}

@@ -875,12 +875,11 @@ thinking:
 	if result.SpeechStreamed {
 		return voiceTurnResult{}
 	}
-	prepared := runtime.PrepareSpokenText(
-		context.Background(),
-		speechText,
-		result.TurnFailure,
-		turnErr == nil && !result.SpeechStreamed && dialog.CanSpeakFinalText(),
-	)
+	prepared := runtime.PrepareSpokenText(context.Background(), agent.SpokenTextInput{
+		ResponseText:   speechText,
+		TurnFailure:    result.TurnFailure,
+		TailAppendable: turnErr == nil && !result.SpeechStreamed && dialog.CanSpeakFinalText(),
+	})
 	if prepared.Text == "" {
 		return voiceTurnResult{}
 	}

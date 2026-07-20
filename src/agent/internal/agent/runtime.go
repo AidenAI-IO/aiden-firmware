@@ -19,7 +19,6 @@ import (
 	"aiden-agent/internal/agent/agentpath"
 	"aiden-agent/internal/agent/compactor"
 	"aiden-agent/internal/agent/contextmanager"
-	"aiden-agent/internal/agent/executor"
 	"aiden-agent/internal/agent/model"
 	"aiden-agent/internal/agent/statemanager"
 	"aiden-agent/internal/util"
@@ -1013,7 +1012,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		}
 		newManager, compacted, err := compactor.Compact(ctx, r.contextManager)
 		if err != nil {
-			return RunResult{}, executor.MarkLLMCallError(err)
+			return RunResult{}, err
 		}
 		if compacted {
 			// setup hooks

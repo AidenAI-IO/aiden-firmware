@@ -572,7 +572,38 @@ func TestProcessUtteranceKeepsVoiceNotificationPendingWithoutTTS(t *testing.T) {
 	if err := dialog.ProcessUtterance(context.Background(), []int16{100, -100, 200, -200}, runtime); err != nil {
 		t.Fatalf("ProcessUtterance() error = %v", err)
 	}
-	prepared := runtime.PrepareSpokenText(context.Background(), "next reply", nil, true)
+	prepared := runtime.PrepareSpokenText(context.Background(), SpokenTextInput{ResponseText: "next reply", TailAppendable: true})
+	if prepared.Mode != SpokenTextModeTail {
+		t.Fatalf("pending reminder mode = %q, want %q", prepared.Mode, SpokenTextModeTail)
+	}
+}
+
+func TestProcessTextInputKeepsVoiceNotificationPendingWithoutAudioClient(t *testing.T) {
+	model := &scriptedModel{responses: roleDirectResponses("Setup completed.\n<tts>Setup completed.</tts>")}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	if err := runtime.VoiceNotificationSink().Publish(context.Background(), VoiceNotificationEvent{
+		Code: "storage", Severity: SeverityWarning, State: VoiceNotificationActive, DedupeKey: "storage:device",
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	dialog := &AudioDialog{
+		config: Config{
+			Model:                    ModelConfig{Provider: "fake"},
+			VoiceStreamingTTSEnabled: boolPtr(false),
+		},
+		ttsManager: ttsmodule.NewProviderManager(&recordingTTSProvider{name: "no-audio-client"}, nil),
+	}
+
+	if err := dialog.ProcessTextInput(context.Background(), "check volume", runtime); err != nil {
+		t.Fatalf("ProcessTextInput() error = %v", err)
+	}
+	prepared := runtime.PrepareSpokenText(context.Background(), SpokenTextInput{ResponseText: "next reply", TailAppendable: true})
 	if prepared.Mode != SpokenTextModeTail {
 		t.Fatalf("pending reminder mode = %q, want %q", prepared.Mode, SpokenTextModeTail)
 	}

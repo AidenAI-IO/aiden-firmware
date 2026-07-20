@@ -320,16 +320,11 @@ func (r *Runtime) VoiceNotificationSink() VoiceNotificationSink {
 	return r.voiceNotifications
 }
 
-func (r *Runtime) PrepareSpokenText(ctx context.Context, responseText string, turnFailure *TurnFailure, tailAppendable bool) SpokenTextResult {
-	result := SpokenTextResult{Text: responseText, Mode: SpokenTextModeNormal}
+func (r *Runtime) PrepareSpokenText(ctx context.Context, input SpokenTextInput) SpokenTextResult {
+	result := SpokenTextResult{Text: input.ResponseText, Mode: SpokenTextModeNormal}
 	if r == nil || r.voiceNotifications == nil {
 		return result
 	}
-	input := SpokenTextInput{
-		ResponseText:   responseText,
-		TailAppendable: tailAppendable,
-	}
-	input.TurnFailure = turnFailure
 	return r.voiceNotifications.PrepareSpokenText(ctx, input)
 }
 

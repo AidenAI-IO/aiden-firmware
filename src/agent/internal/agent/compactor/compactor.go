@@ -2,6 +2,7 @@ package compactor
 
 import (
 	"aiden-agent/internal/agent/contextmanager"
+	"aiden-agent/internal/agent/executor"
 	"aiden-agent/internal/agent/model"
 	"aiden-agent/internal/agent/tokencounter"
 	"context"
@@ -89,7 +90,10 @@ func (c *Compactor) Compact(ctx context.Context, session *contextmanager.Context
 	tails := messageList[len(messageList)-TailN:]
 	mids := messageList[HeadN : len(messageList)-TailN]
 	// compact mids into one single user message
-	summary := c.generateSummary(ctx, mids)
+	summary, err := c.generateSummary(ctx, mids)
+	if err != nil {
+		return nil, false, err
+	}
 	if summary == "" {
 		return nil, false, fmt.Errorf("failed to generate summary")
 	}
@@ -107,7 +111,7 @@ func (c *Compactor) Compact(ctx context.Context, session *contextmanager.Context
 	return newManager, true, nil
 }
 
-func (c *Compactor) generateSummary(ctx context.Context, messageList []contextmanager.Message) string {
+func (c *Compactor) generateSummary(ctx context.Context, messageList []contextmanager.Message) (string, error) {
 	var transcript strings.Builder
 	for _, msg := range messageList {
 		switch msg.Role {
@@ -120,12 +124,12 @@ func (c *Compactor) generateSummary(ctx context.Context, messageList []contextma
 		}
 	}
 	if transcript.Len() == 0 {
-		return ""
+		return "", nil
 	}
 
 	model, err := c.Models.Get()
 	if err != nil {
-		return ""
+		return "", executor.MarkLLMCallError(err)
 	}
 	prompt := `
 Please summarize the conversation in a concised summary. Template:
@@ -155,9 +159,13 @@ And here are the conversation details:
 	// TODO: dynamic token budget for summary
 	result, err := llms.GenerateFromSinglePrompt(ctx, model, prompt, llms.WithMaxTokens(800))
 	if err != nil {
-		return ""
+		return "", executor.MarkLLMCallError(err)
 	}
-	return strings.TrimSpace(result)
+	result = strings.TrimSpace(result)
+	if result == "" {
+		return "", executor.MarkLLMCallError(fmt.Errorf("LLM returned an empty summary"))
+	}
+	return result, nil
 }
 
 func (c *Compactor) formatSummary(summary string) string {

@@ -497,6 +497,31 @@ func TestRuntimeSharesVoiceNotificationManagerWithScenarioProducers(t *testing.T
 	}
 }
 
+func TestRuntimePrepareSpokenTextPreservesRelatedCodes(t *testing.T) {
+	runtime := NewRuntimeWithDeps(DefaultConfig(), nil, nil, nil, NewSkillIndex())
+	if err := runtime.VoiceNotifications().RegisterPersistentText("battery", SeverityWarning, "zh-CN", "battery warning"); err != nil {
+		t.Fatalf("RegisterPersistentText() error = %v", err)
+	}
+	ctx := context.Background()
+	for _, event := range []VoiceNotificationEvent{
+		{Code: "storage", Severity: SeverityCritical, State: VoiceNotificationActive, DedupeKey: "storage:device"},
+		{Code: "battery", Severity: SeverityWarning, State: VoiceNotificationActive, DedupeKey: "battery:device"},
+	} {
+		if err := runtime.VoiceNotificationSink().Publish(ctx, event); err != nil {
+			t.Fatalf("Publish(%q) error = %v", event.Code, err)
+		}
+	}
+
+	prepared := runtime.PrepareSpokenText(ctx, SpokenTextInput{
+		ResponseText:   "reply",
+		TailAppendable: true,
+		RelatedCodes:   []string{"battery"},
+	})
+	if !strings.Contains(prepared.Text, "battery warning") {
+		t.Fatalf("Runtime.PrepareSpokenText() dropped RelatedCodes: %q", prepared.Text)
+	}
+}
+
 func TestVoiceNotificationManagerPrefersTaskRelatedPolicy(t *testing.T) {
 	manager := NewVoiceNotificationManager(VoiceNotificationsConfig{})
 	if err := manager.RegisterPersistentText("battery", SeverityWarning, "zh-CN", "另外提醒一下，设备电量较低。"); err != nil {
