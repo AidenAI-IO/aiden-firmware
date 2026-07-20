@@ -626,18 +626,21 @@ func applyRuntimeOptionalProviderDefaults(cfg *Config, metadata toml.MetaData) {
 		cfg.STT.Model = ""
 	}
 
-	// base_url is only honored for the openai provider; every other provider
-	// pins its own endpoint, so drop any stray override to keep runtime
+	// base_url is only honored for openai and ollama providers; every other
+	// provider pins its own endpoint, so drop any stray override to keep runtime
 	// behavior consistent with the config web UI (which hides the field).
-	clearNonOpenAIModelBaseURL(&cfg.Model)
-	clearNonOpenAIModelBaseURL(&cfg.ModelText)
+	clearNonAllowedModelBaseURL(&cfg.Model)
+	clearNonAllowedModelBaseURL(&cfg.ModelText)
 }
 
-func clearNonOpenAIModelBaseURL(m *ModelConfig) {
+func clearNonAllowedModelBaseURL(m *ModelConfig) {
 	if m == nil {
 		return
 	}
-	if strings.ToLower(strings.TrimSpace(m.Provider)) != "openai" {
+	provider := strings.ToLower(strings.TrimSpace(m.Provider))
+	// Only openai and ollama support base_url override.
+	// openai: custom gateway/proxy; ollama: local server address
+	if provider != "openai" && provider != "ollama" {
 		m.BaseURL = ""
 	}
 }

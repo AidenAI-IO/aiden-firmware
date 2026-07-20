@@ -119,10 +119,11 @@ func TestLoadRuntimeConfigClearsBaseURLForNonOpenAIProvider(t *testing.T) {
 	}{
 		{"openai keeps base_url", "openai", "https://gateway.example.com/v1"},
 		{"OpenAI case insensitive keeps base_url", "OpenAI", "https://gateway.example.com/v1"},
+		{"ollama keeps base_url", "ollama", "https://gateway.example.com/v1"},
+		{"Ollama case insensitive keeps base_url", "Ollama", "https://gateway.example.com/v1"},
 		{"openrouter drops base_url", "openrouter", ""},
 		{"kimi drops base_url", "kimi", ""},
 		{"kimi-cn drops base_url", "kimi-cn", ""},
-		{"ollama drops base_url", "ollama", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
