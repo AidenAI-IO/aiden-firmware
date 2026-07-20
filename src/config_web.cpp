@@ -2629,11 +2629,17 @@ void update_model_from_json(cJSON* obj, aiden::ModelToml* m) {
     set_json_str(&m->api_key, obj, "api_key");
     set_json_str(&m->token_env, obj, "token_env");
     set_json_str(&m->reasoning_effort, obj, "reasoning_effort");
-    // Temperature is nullable: if the key is present, set has_temperature.
+    // Temperature is nullable: presence of the key sets has_temperature, and
+    // its absence clears it. This function applies JSON as a patch onto an
+    // existing config (see handle_post_config), so an omitted key must unset the
+    // value rather than leave a stale one, letting the UI clear temperature by
+    // omitting it.
     cJSON* temp_item = cJSON_GetObjectItem(obj, "temperature");
     if (temp_item && json_is_number(temp_item)) {
         m->temperature = temp_item->valuedouble;
         m->has_temperature = true;
+    } else {
+        m->has_temperature = false;
     }
     set_json_int(&m->max_response_tokens, obj, "max_response_tokens");
     set_json_int(&m->context_window, obj, "context_window");
