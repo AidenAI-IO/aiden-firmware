@@ -1034,7 +1034,7 @@ type MouseClickTool struct {
 func (t *MouseClickTool) Name() string { return "mouse_click" }
 
 func (t *MouseClickTool) Description() string {
-	return `Move the mouse to a position and click. Prefer normalized coordinates (0-1000) from the latest screenshot, aiming at the visual center of the target. Use coord_space:"screenshot" only for pixels measured directly in that returned image. Click once and inspect the post-action screenshot before repeating.`
+	return `Move the mouse to a position and click. Use normalized coordinates (0-1000) from the latest screenshot, aiming at the visual center of the target, where (0,0) is top-left, (1000,1000) is bottom-right, and (500,500) is center. Click once and inspect the post-action screenshot before repeating.`
 }
 
 func (t *MouseClickTool) ArgsSchema() map[string]any {
@@ -1094,7 +1094,7 @@ type MouseMoveTool struct {
 func (t *MouseMoveTool) Name() string { return "mouse_move" }
 
 func (t *MouseMoveTool) Description() string {
-	return `Move the mouse without clicking. Prefer normalized coordinates (0-1000); use coord_space:"screenshot" only for pixels measured directly in the latest returned image.`
+	return `Move the mouse without clicking. Use normalized coordinates (0-1000) from the latest screenshot, where (500,500) is center.`
 }
 
 func (t *MouseMoveTool) ArgsSchema() map[string]any {
@@ -1146,7 +1146,7 @@ func (t *TouchGestureTool) Name() string { return "touch_gesture" }
 
 func (t *TouchGestureTool) Description() string {
 	return `Perform a custom touch/pointer gesture via HID. Prefer quick_action for semantic platform actions; use this for tap/swipe/drag and other freehand screen gestures. ` +
-		`Base coordinates on the latest screenshot and aim at the visual center of the target. Use coord_space:"screenshot" only for pixels measured directly in that returned image. Swipe direction names describe finger movement, not content scroll. ` +
+		`Base coordinates on the latest screenshot and aim at the visual center of the target using normalized 0-1000 coordinates where (500,500) is center. Swipe direction names describe finger movement, not content scroll. ` +
 		`This is a generic input tool and has no picker/wheel movement semantics. Before the first wheel_nudge on a numeric picker, use one tap on the selected center row to probe for keyboard/edit mode even when the keyboard is initially hidden; use keyboard_text once if edit mode appears. Use wheel_nudge for unselected-row taps and every picker drag.`
 }
 
