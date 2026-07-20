@@ -1129,11 +1129,11 @@ func (r *Runtime) getStateHook() contextmanager.AppendMessageHook {
 		// key1: value1
 		// key2: value2
 		// ...
-		formated := ""
+		var formated strings.Builder
 		for _, entry := range entries {
-			formated += fmt.Sprintf("%s: %s\n", entry.Key, entry.Value)
+			fmt.Fprintf(&formated, "%s: %s\n", entry.Key, entry.Value)
 		}
-		tagged := fmt.Sprintf("<state>\n%s\n</state>", formated)
+		tagged := util.STag("state", formated.String())
 		// create a new StateMessage
 		stateMessage := contextmanager.Message{
 			Role:    contextmanager.MessageRoleState,
