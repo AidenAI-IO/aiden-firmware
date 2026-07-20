@@ -207,7 +207,7 @@ var absolutePointerModeExtensionReports = map[string]uint16{
 	"key_usage_brightness_down": 1 << 11,
 }
 
-const absolutePointerModeExtensionKeyList = "KEYCODE_VOLUME_MUTE, KEYCODE_VOLUME_UP, KEYCODE_VOLUME_DOWN, KEYCODE_MEDIA_PLAY_PAUSE, KEYCODE_MEDIA_STOP, KEYCODE_MEDIA_NEXT, KEYCODE_MEDIA_PREVIOUS, KEYCODE_MEDIA_REWIND, KEYCODE_MEDIA_FAST_FORWARD, KEY_USAGE_SCREENSHOT, KEY_USAGE_BRIGHTNESS_UP, KEY_USAGE_BRIGHTNESS_DOWN"
+const absolutePointerModeExtensionKeyList = "KEYCODE_VOLUME_MUTE, KEYCODE_VOLUME_UP, KEYCODE_VOLUME_DOWN, KEYCODE_MEDIA_PLAY_PAUSE, KEYCODE_MEDIA_STOP, KEYCODE_MEDIA_NEXT, KEYCODE_MEDIA_PREVIOUS, KEYCODE_MEDIA_REWIND, KEYCODE_MEDIA_FAST_FORWARD, KEYCODE_SCREENSHOT, KEYCODE_BRIGHTNESS_UP, KEYCODE_BRIGHTNESS_DOWN"
 
 type androidKeyboardTapAlias struct {
 	Keycode           int
@@ -314,6 +314,69 @@ var androidKeyboardTapAliases = map[string]androidKeyboardTapAlias{
 	"keycode_app_switch": {
 		Keycode:     187,
 		Replacement: "app_switch",
+	},
+	// HID-backed Android KeyEvent aliases. The API levels are from
+	// android.view.KeyEvent; replacements keep the existing Consumer Control
+	// usage values in androidExtensionUsageMap unchanged.
+	"keycode_window": { // API 11
+		Keycode:     171,
+		Replacement: "window",
+	},
+	"keycode_settings": { // API 11
+		Keycode:     176,
+		Replacement: "settings",
+	},
+	"keycode_language_switch": { // API 14
+		Keycode:     204,
+		Replacement: "language_switch",
+	},
+	"keycode_brightness_down": { // API 18
+		Keycode:     220,
+		Replacement: "brightness_down",
+	},
+	"keycode_brightness_up": { // API 18
+		Keycode:     221,
+		Replacement: "brightness_up",
+	},
+	"keycode_media_audio_track": { // API 19
+		Keycode:     222,
+		Replacement: "media_audio_track",
+	},
+	"keycode_refresh": { // API 28
+		Keycode:     285,
+		Replacement: "refresh",
+	},
+	"keycode_profile_switch": { // API 29
+		Keycode:     288,
+		Replacement: "profile_switch",
+	},
+	"keycode_emoji_picker": { // API 35
+		Keycode:     317,
+		Replacement: "emoji_picker",
+	},
+	"keycode_screenshot": { // API 35
+		Keycode:     318,
+		Replacement: "screenshot",
+	},
+	"keycode_dictate": { // API 36
+		Keycode:     319,
+		Replacement: "dictate",
+	},
+	"keycode_new": { // API 36
+		Keycode:     320,
+		Replacement: "new",
+	},
+	"keycode_close": { // API 36
+		Keycode:     321,
+		Replacement: "close",
+	},
+	"keycode_print": { // API 36
+		Keycode:     323,
+		Replacement: "print",
+	},
+	"keycode_fullscreen": { // API 36
+		Keycode:     325,
+		Replacement: "fullscreen",
 	},
 }
 
@@ -775,7 +838,7 @@ func (t *KeyboardTapTool) ArgsSchema() map[string]any {
 	keysSchema := stringArrayArgSchema("Keys pressed simultaneously, e.g. [\"ctrl\",\"c\"] or [\"meta\"]. "+
 		"Standard boot-keyboard keys: a-z, 0-9, f1-f12, enter, escape, backspace, tab, space, delete, arrows, home, end, pageup/down, insert, printscreen; modifiers ctrl, shift, alt, meta/super/win/cmd; modifier-only taps allowed. "+
 		"Use backspace for ordinary text deletion before the cursor; delete is forward-delete after the cursor. "+
-		"Android extension keys (hid.usb2) use KEYCODE_*/KEY_USAGE_* aliases (see the Android key guide for the full list), are single-key taps only, and cannot be combined with modifiers/chords. "+
+		"Android extension keys (hid.usb2) use Android KEYCODE_* aliases (see the Android key guide for the full list; legacy KEY_USAGE_* names are accepted where previously supported), are single-key taps only, and cannot be combined with modifiers/chords. "+
 		"When hid.pointer_mode is absolute, hid.usb2 only supports media, volume, screenshot, and brightness keys: "+absolutePointerModeExtensionKeyList+".", []string{"ctrl", "c"}, []string{"meta"})
 	keysSchema["minItems"] = 1
 	keysSchema["maxItems"] = 6

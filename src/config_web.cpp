@@ -2629,6 +2629,13 @@ void update_model_from_json(cJSON* obj, aiden::ModelToml* m) {
     set_json_int(&m->max_response_tokens, obj, "max_response_tokens");
     set_json_int(&m->context_window, obj, "context_window");
     set_json_int(&m->model_max_output_tokens, obj, "model_max_output_tokens");
+
+    // Clear base_url for non-whitelisted providers to keep config file clean.
+    // Only openai and ollama support base_url override.
+    std::string provider_lower = lowercase_copy(trim_copy(m->provider));
+    if (!m->base_url.empty() && provider_lower != "openai" && provider_lower != "ollama") {
+        m->base_url.clear();
+    }
 }
 
 void update_config_from_json(cJSON* root, aiden::AgentToml* config) {

@@ -34,10 +34,25 @@ func (s *recordingTextInputTool) Call(_ context.Context, input string) (string, 
 func TestEnterTextInFieldDescriptionDocumentsStrategyAndVerification(t *testing.T) {
 	desc := (&EnterTextInFieldTool{}).Description()
 	// Description keeps only the load-bearing rules: keyboard_text disambiguation,
-	// the committed-only success contract, and the coordinate reference. Clipboard/IME
-	// strategy detail lives in device-operator SKILL.md; field mechanics live in ArgsSchema.
+	// the committed-only success contract, and the chat-message clipboard handoff.
+	// Field mechanics live in ArgsSchema.
 	for _, want := range []string{
 		"keyboard_text",
+		"latest screenshot",
+		"actual editable field",
+		"folder/list view",
+		"create/new button",
+		"guessed blank-space coordinate",
+		"search fields",
+		"contact lookup",
+		"already-open composer",
+		"runtime app_text_entry_strategy",
+		"target-preserving",
+		"do not use this",
+		"call enter_text_via_bridge directly",
+		"reported app_platform",
+		"send_after_commit=true",
+		"enter_text_via_bridge",
 		"committed:true",
 		"field_text matches target exactly",
 		"normalized coordinates",
@@ -55,6 +70,128 @@ func TestEnterTextInFieldDescriptionDocumentsStrategyAndVerification(t *testing.
 	segSchema, _ := props["segments"].(map[string]any)
 	if segDesc, _ := segSchema["description"].(string); !strings.Contains(segDesc, "romanization") {
 		t.Fatalf("segments schema missing romanization semantics:\n%v", segSchema)
+	}
+	focusSchema, _ := props["focus"].(map[string]any)
+	if focusDesc, _ := focusSchema["description"].(string); !strings.Contains(focusDesc, "actual editable field") || !strings.Contains(focusDesc, "blank space") {
+		t.Fatalf("focus schema missing input-readiness guard:\n%v", focusSchema)
+	}
+}
+
+func TestEnterTextInFieldBridgePreferenceUsesInteractionAndBridgeState(t *testing.T) {
+	pb := newTestPhoneBridge(t)
+	pb.platform = "ios"
+	pb.appState = "background"
+	pb.appStateAt = time.Now()
+	pb.pipBridgeEnabled = true
+	pb.pipBridgeSeen = true
+	tool := &EnterTextInFieldTool{bridgeTool: &EnterTextViaBridgeTool{bridgeFn: func() *PhoneBridge { return pb }}}
+
+	if tool.shouldPreferBridgeClipboard(enterTextInFieldArgs{
+		Text: "小红书", Platform: "ios", Mode: "search", SendAfterCommit: true,
+	}) {
+		t.Fatal("search input should stay on IME even when PiP clipboard queue is available")
+	}
+	if !tool.shouldPreferBridgeClipboard(enterTextInFieldArgs{
+		Text: "桥接测试", Platform: "ios",
+	}) {
+		t.Fatal("short non-search CJK input should use a fresh target-preserving PiP clipboard route")
+	}
+	if !tool.shouldPreferBridgeClipboard(enterTextInFieldArgs{
+		Text: "请确认桥接输入结果。", Platform: "ios", SendAfterCommit: true,
+	}) {
+		t.Fatal("final non-ASCII composer text should use fresh target-preserving PiP clipboard route")
+	}
+
+	pb.appStateAt = time.Now().Add(-phoneBridgeBackgroundStateMaxAge - time.Second)
+	if tool.shouldPreferBridgeClipboard(enterTextInFieldArgs{
+		Text: "请确认桥接输入结果。", Platform: "ios", SendAfterCommit: true,
+	}) {
+		t.Fatal("stale PiP state should not select bridge clipboard route")
+	}
+}
+
+func TestEnterTextInFieldUsesConnectedAndroidBackgroundClipboardRoute(t *testing.T) {
+	pb := newTestPhoneBridge(t)
+	pb.connected = true
+	pb.platform = "android"
+	pb.appState = "background"
+	tool := &EnterTextInFieldTool{bridgeTool: &EnterTextViaBridgeTool{bridgeFn: func() *PhoneBridge { return pb }}}
+	args := enterTextInFieldArgs{Text: "桥接测试", Platform: "android"}
+
+	if !tool.shouldPreferBridgeClipboard(args) {
+		t.Fatal("connected Android background bridge should expose clipboard_write as a target-preserving route")
+	}
+	if strategy := phoneBridgeTextEntryState(pb.getStatus()); strategy != phoneBridgeTextEntryTargetPreserving {
+		t.Fatalf("strategy = %q, want %q", strategy, phoneBridgeTextEntryTargetPreserving)
+	}
+}
+
+func TestEnterTextInFieldAutoRoutesShortCJKThroughFreshPiPClipboard(t *testing.T) {
+	message := "桥接测试"
+	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
+		ObservedMode: textInputModeComposition,
+		FieldText:    message,
+	}}}
+	pb := newTestPhoneBridge(t)
+	pb.platform = "ios"
+	pb.appState = "background"
+	pb.appStateAt = time.Now()
+	pb.pipBridgeEnabled = true
+	pb.pipBridgeSeen = true
+	keyboardText := &recordingTextInputTool{name: "keyboard_text", out: "ok"}
+	hw := &textInputHardwareDeps{
+		mouseClick:   &recordingTextInputTool{name: "mouse_click", out: "ok"},
+		touchGesture: &recordingTextInputTool{name: "touch_gesture", out: "ok"},
+		keyboardTap:  &recordingTextInputTool{name: "keyboard_tap", out: "ok"},
+		keyboardText: keyboardText,
+		quickAction:  &recordingTextInputTool{name: "quick_action", out: `{"ok":true}`},
+		screenshot:   textInputStubTool{name: "screenshot", out: `{"format":"jpeg","width":100,"height":100,"data":"abc"}`},
+	}
+	bridgeTool := &EnterTextViaBridgeTool{
+		hw:       hw,
+		vision:   vision,
+		bridgeFn: func() *PhoneBridge { return pb },
+		sleep:    testNoWaitSleep,
+	}
+	tool := &EnterTextInFieldTool{
+		engine:     newFastTextInputEngine(*hw, vision),
+		bridgeTool: bridgeTool,
+	}
+
+	queueResult := make(chan string, 1)
+	go func() {
+		command, err := waitForQueuedBridgeCommand(pb.queue, "ios", 500*time.Millisecond)
+		if err != nil {
+			queueResult <- err.Error()
+			return
+		}
+		if command.Type != "clipboard_write" {
+			queueResult <- "short CJK input did not enqueue one clipboard_write command"
+			return
+		}
+		if err := pb.queue.SubmitResult(BridgeCommandResponse{ID: command.ID, Method: "queued"}); err != nil {
+			queueResult <- err.Error()
+			return
+		}
+		queueResult <- ""
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	out, err := tool.Call(ctx, `{"text":"`+message+`","platform":"ios","focus":{"x":300,"y":940,"coord_space":"normalized"},"segments":["qiao","jie","ce","shi"]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queueErr := <-queueResult; queueErr != "" {
+		t.Fatal(queueErr)
+	}
+	for _, want := range []string{`"committed": true`, "wrote clipboard through background bridge queue", "quick_action-pasted clipboard"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("unexpected output, missing %q: %s", want, out)
+		}
+	}
+	if len(keyboardText.calls) != 0 {
+		t.Fatalf("keyboard_text calls=%v, want no IME typing for fresh PiP short CJK route", keyboardText.calls)
 	}
 }
 
@@ -302,17 +439,11 @@ func TestEnterTextInFieldUsesPreparedClipboardInCurrentIOSApp(t *testing.T) {
 	}
 }
 
-func TestEnterTextInFieldFallbackDoesNotReportSendAfterCommitSuccess(t *testing.T) {
-	message := "Example Contact number 555-0101 still active?"
+func TestEnterTextInFieldPreservesUnverifiedBridgeTextBeforeCorrection(t *testing.T) {
+	message := "bridge verification target"
 	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{
 		ObservedMode: textInputModeASCII,
 		FieldText:    "partial paste",
-	}, {
-		ObservedMode: textInputModeASCII,
-		FieldText:    "partial paste",
-	}, {
-		ObservedMode: textInputModeASCII,
-		FieldText:    message,
 	}}}
 	pb := newTestPhoneBridge(t)
 	pb.NoteClipboardWrite(message)
@@ -342,26 +473,26 @@ func TestEnterTextInFieldFallbackDoesNotReportSendAfterCommitSuccess(t *testing.
 		bridgeTool: bridgeTool,
 	}
 
-	out, err := tool.Call(context.Background(), `{"text":"`+message+`","platform":"ios","focus":{"x":400,"y":950,"coord_space":"normalized"},"send_after_commit":true}`)
+	out, err := tool.Call(context.Background(), `{"text":"`+message+`","platform":"ios","focus":{"x":400,"y":950,"coord_space":"normalized"}}`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
 		`"ok": false`,
-		`"committed": true`,
-		"field verified but send was not verified",
-		"cleared field before input",
-		"clipboard-first: falling back to HID/IME",
+		`"committed": false`,
+		`"field_text": "partial paste"`,
+		"preserving unverified field text",
+		"fresh observation required before corrective input",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("unexpected output, missing %q: %s", want, out)
 		}
 	}
-	if len(keyboardText.calls) == 0 {
-		t.Fatalf("keyboard_text calls=%v", keyboardText.calls)
+	if len(keyboardText.calls) != 0 {
+		t.Fatalf("keyboard_text calls=%v, want no corrective input before fresh observation", keyboardText.calls)
 	}
-	if len(keyboardTap.calls) == 0 {
-		t.Fatalf("keyboard_tap calls=%v, want clear-field backspaces before fallback input", keyboardTap.calls)
+	if len(keyboardTap.calls) != 0 {
+		t.Fatalf("keyboard_tap calls=%v, want field content preserved", keyboardTap.calls)
 	}
 }
 
