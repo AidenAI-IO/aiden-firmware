@@ -261,6 +261,7 @@ type audioDialogRunner interface {
 	WaitForVoiceRunIdle(ctx context.Context) bool
 	ForceResetVoiceRun()
 	InterruptOutput()
+	CanSpeakFinalText() bool
 	Speak(ctx context.Context, text string, interrupt <-chan struct{}) error
 	FlushVAD() []int16
 	FinishManualUtterance(pending []int16) []int16
@@ -874,7 +875,12 @@ thinking:
 	if result.SpeechStreamed {
 		return voiceTurnResult{}
 	}
-	prepared := runtime.PrepareSpokenText(context.Background(), speechText, turnErr, turnErr == nil && !result.SpeechStreamed)
+	prepared := runtime.PrepareSpokenText(
+		context.Background(),
+		speechText,
+		result.TurnFailure,
+		turnErr == nil && !result.SpeechStreamed && dialog.CanSpeakFinalText(),
+	)
 	if prepared.Text == "" {
 		return voiceTurnResult{}
 	}

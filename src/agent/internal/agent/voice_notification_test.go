@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -389,6 +390,9 @@ func TestTurnFailureFromErrorClassifiesFinalLLMFailures(t *testing.T) {
 		{name: "dns", err: &net.DNSError{Err: "no such host", Name: "api.example.com"}, want: TurnFailureNetworkUnavailable},
 		{name: "timeout", err: context.DeadlineExceeded, want: TurnFailureNetworkUnavailable},
 		{name: "quota", err: errors.New("provider returned 402: insufficient balance"), want: TurnFailureTokenInsufficient},
+		{name: "openai quota code", err: errors.New(`API error 429: {"error":{"code":"insufficient_quota"}}`), want: TurnFailureTokenInsufficient},
+		{name: "openai quota message", err: errors.New("You exceeded your current quota, please check your plan and billing details."), want: TurnFailureTokenInsufficient},
+		{name: "rate limited", err: errors.New("API error 429: rate limit exceeded"), want: TurnFailureNetworkUnavailable},
 		{name: "generic", err: errors.New("provider returned 500"), want: TurnFailureLLMUnavailable},
 	}
 	for _, tt := range tests {
@@ -404,6 +408,40 @@ func TestTurnFailureFromErrorClassifiesFinalLLMFailures(t *testing.T) {
 				t.Fatalf("TurnFailureFromError() = %#v, want code %q", failure, tt.want)
 			}
 		})
+	}
+}
+
+func TestVoiceNotificationManagerDoesNotRankRecentDowngradeAsUpgrade(t *testing.T) {
+	now := time.Unix(1000, 0)
+	manager := NewVoiceNotificationManager(DefaultConfig().VoiceNotifications, WithVoiceNotificationClock(func() time.Time { return now }))
+	if err := manager.RegisterPersistentText("storage", SeverityWarning, "zh-CN", "storage warning"); err != nil {
+		t.Fatalf("RegisterPersistentText(storage) error = %v", err)
+	}
+	if err := manager.RegisterPersistentText("battery", SeverityWarning, "zh-CN", "battery warning"); err != nil {
+		t.Fatalf("RegisterPersistentText(battery) error = %v", err)
+	}
+	ctx := context.Background()
+	if err := manager.Publish(ctx, VoiceNotificationEvent{
+		Code: "storage", Severity: SeverityCritical, State: VoiceNotificationActive, DedupeKey: "storage:device",
+	}); err != nil {
+		t.Fatalf("Publish(storage critical) error = %v", err)
+	}
+	now = now.Add(time.Minute)
+	if err := manager.Publish(ctx, VoiceNotificationEvent{
+		Code: "battery", Severity: SeverityWarning, State: VoiceNotificationActive, DedupeKey: "battery:device",
+	}); err != nil {
+		t.Fatalf("Publish(battery warning) error = %v", err)
+	}
+	now = now.Add(time.Minute)
+	if err := manager.Publish(ctx, VoiceNotificationEvent{
+		Code: "storage", Severity: SeverityWarning, State: VoiceNotificationActive, DedupeKey: "storage:device",
+	}); err != nil {
+		t.Fatalf("Publish(storage downgrade) error = %v", err)
+	}
+
+	prepared := manager.PrepareSpokenText(ctx, SpokenTextInput{ResponseText: "reply", TailAppendable: true})
+	if !strings.Contains(prepared.Text, "battery warning") {
+		t.Fatalf("recent downgrade outranked actual pending condition: %q", prepared.Text)
 	}
 }
 

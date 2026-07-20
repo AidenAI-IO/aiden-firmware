@@ -544,6 +544,40 @@ func TestProcessUtteranceAppendsVoiceNotificationOnlyToSpokenText(t *testing.T) 
 	}
 }
 
+func TestProcessUtteranceKeepsVoiceNotificationPendingWithoutTTS(t *testing.T) {
+	model := &scriptedModel{responses: roleDirectResponses("Setup completed.")}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	if err := runtime.VoiceNotificationSink().Publish(context.Background(), VoiceNotificationEvent{
+		Code: "storage", Severity: SeverityWarning, State: VoiceNotificationActive, DedupeKey: "storage:device",
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	dialog := &AudioDialog{
+		config: Config{
+			Model:                    ModelConfig{Provider: "fake"},
+			Audio:                    AudioConfig{SampleRate: 16000},
+			InputMode:                "stt",
+			VoiceStreamingTTSEnabled: boolPtr(false),
+		},
+		sttClient:    &stubSTTClient{transcript: "check volume"},
+		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
+	}
+
+	if err := dialog.ProcessUtterance(context.Background(), []int16{100, -100, 200, -200}, runtime); err != nil {
+		t.Fatalf("ProcessUtterance() error = %v", err)
+	}
+	prepared := runtime.PrepareSpokenText(context.Background(), "next reply", nil, true)
+	if prepared.Mode != SpokenTextModeTail {
+		t.Fatalf("pending reminder mode = %q, want %q", prepared.Mode, SpokenTextModeTail)
+	}
+}
+
 func TestAudioDialogSpeaksToolContentAsynchronously(t *testing.T) {
 	toolSpeech := true
 	model := &scriptedModel{
@@ -714,6 +748,34 @@ func TestAudioDialogStreamingSpeechErrorDoesNotHideWaitForWakeupRequest(t *testi
 	}
 	if result.SpeechStreamed {
 		t.Fatal("SpeechStreamed = true, want false when TTS playback failed before successful speech")
+	}
+}
+
+func TestAudioDialogCountsPartialStreamingPlaybackAsStreamedWhenCloseFails(t *testing.T) {
+	model := &scriptedModel{responses: roleDirectResponses("Partial spoken reply.")}
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	dialog := &AudioDialog{
+		config: Config{
+			Model:                    ModelConfig{Provider: "fake"},
+			Audio:                    AudioConfig{SampleRate: 16000},
+			VoiceStreamingTTSEnabled: boolPtr(true),
+		},
+		audioClient: NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
+		ttsManager:  ttsmodule.NewProviderManager(&playbackStartedTransientErrorProvider{name: "partial-stream"}, nil),
+	}
+
+	result, err := dialog.RunAgentTurn(context.Background(), TurnInput{InputText: "say something"}, runtime)
+	if err != nil {
+		t.Fatalf("RunAgentTurn() error = %v", err)
+	}
+	if !result.SpeechStreamed {
+		t.Fatal("SpeechStreamed = false after PCM playback began; caller could replay the full response")
 	}
 }
 

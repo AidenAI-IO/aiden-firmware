@@ -36,8 +36,10 @@ func TurnFailureFromError(err error) *TurnFailure {
 	for _, marker := range []string{
 		"insufficient balance",
 		"insufficient quota",
+		"insufficient_quota",
 		"quota exceeded",
 		"quota is exhausted",
+		"exceeded your current quota",
 		"credits exhausted",
 		"credit balance",
 		"payment required",
@@ -58,12 +60,26 @@ func TurnFailureFromError(err error) *TurnFailure {
 		"tls handshake timeout",
 		"temporary failure in name resolution",
 		"deadline exceeded",
+		"rate limit",
+		"rate_limit",
+		"too many requests",
+		"status 429",
+		"status code 429",
 	} {
 		if strings.Contains(message, marker) {
 			return &TurnFailure{Code: TurnFailureNetworkUnavailable}
 		}
 	}
 	return &TurnFailure{Code: TurnFailureLLMUnavailable}
+}
+
+type llmTurnFailureSource interface {
+	IsLLMTurnFailureSource()
+}
+
+func isLLMTurnFailureSource(err error) bool {
+	var source llmTurnFailureSource
+	return errors.As(err, &source)
 }
 
 func DeliveryStatusFromError(err error) DeliveryStatus {
@@ -304,7 +320,7 @@ func (r *Runtime) VoiceNotificationSink() VoiceNotificationSink {
 	return r.voiceNotifications
 }
 
-func (r *Runtime) PrepareSpokenText(ctx context.Context, responseText string, turnErr error, tailAppendable bool) SpokenTextResult {
+func (r *Runtime) PrepareSpokenText(ctx context.Context, responseText string, turnFailure *TurnFailure, tailAppendable bool) SpokenTextResult {
 	result := SpokenTextResult{Text: responseText, Mode: SpokenTextModeNormal}
 	if r == nil || r.voiceNotifications == nil {
 		return result
@@ -313,9 +329,7 @@ func (r *Runtime) PrepareSpokenText(ctx context.Context, responseText string, tu
 		ResponseText:   responseText,
 		TailAppendable: tailAppendable,
 	}
-	if turnErr != nil {
-		input.TurnFailure = TurnFailureFromError(turnErr)
-	}
+	input.TurnFailure = turnFailure
 	return r.voiceNotifications.PrepareSpokenText(ctx, input)
 }
 
@@ -380,8 +394,12 @@ func (m *VoiceNotificationManager) Publish(_ context.Context, event VoiceNotific
 	record.params = cloneVoiceNotificationParams(event.Params)
 	record.lastSeenAt = now
 	record.leaseExpiresAt = m.leaseExpiration(event.Code, now)
-	if event.Severity != previousSeverity {
+	if event.Severity > previousSeverity {
 		record.severityChangedAt = now
+	} else if event.Severity < previousSeverity {
+		record.severityChangedAt = time.Time{}
+	}
+	if event.Severity != previousSeverity {
 		m.refreshDeliveryStateLocked(record)
 	}
 	return nil

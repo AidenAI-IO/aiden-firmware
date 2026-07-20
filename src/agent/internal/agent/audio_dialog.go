@@ -625,7 +625,7 @@ func (d *AudioDialog) ProcessUtterance(ctx context.Context, utterance []int16, r
 	result, err := d.RunVoiceTurn(ctx, input, utterance, runtime)
 	if err != nil {
 		if !result.SpeechStreamed {
-			prepared := runtime.PrepareSpokenText(ctx, "", err, false)
+			prepared := runtime.PrepareSpokenText(ctx, "", result.TurnFailure, false)
 			if prepared.Text != "" {
 				if speakErr := d.Speak(ctx, prepared.Text, nil); speakErr != nil {
 					log.Printf("[error] failure replacement TTS failed: %v", speakErr)
@@ -637,7 +637,7 @@ func (d *AudioDialog) ProcessUtterance(ctx context.Context, utterance []int16, r
 	if result.SpeechStreamed {
 		return nil
 	}
-	prepared := runtime.PrepareSpokenText(ctx, result.SpokenTextForConfig(d.config), nil, true)
+	prepared := runtime.PrepareSpokenText(ctx, result.SpokenTextForConfig(d.config), nil, d.CanSpeakFinalText())
 	err = d.Speak(ctx, prepared.Text, nil)
 	runtime.ReportSpokenTextDelivery(prepared.DeliveryToken, err)
 	return err
@@ -962,7 +962,7 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 		if closeErr != nil {
 			log.Printf("[error] new TTS stream failed: %v", closeErr)
 		}
-		result.SpeechStreamed = closeErr == nil && newStream.spokeSuccessfully()
+		result.SpeechStreamed = newStream.emittedSpeech(closeErr)
 	}
 	if err != nil {
 		return result, fmt.Errorf("LLM request failed: %w", err)
@@ -1104,6 +1104,10 @@ func (d *AudioDialog) SpeakToolContent(content string) {
 
 func (d *AudioDialog) Speak(ctx context.Context, text string, interrupt <-chan struct{}) error {
 	return d.speak(ctx, text, interrupt, 0)
+}
+
+func (d *AudioDialog) CanSpeakFinalText() bool {
+	return d != nil && d.ttsManager != nil && d.audioClient != nil
 }
 
 func (d *AudioDialog) ConfigureRuntimeTools(ctx context.Context, runtime *Runtime) context.Context {
@@ -1277,11 +1281,11 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 		if closeErr != nil {
 			log.Printf("[error] new TTS stream failed: %v", closeErr)
 		}
-		result.SpeechStreamed = closeErr == nil && newStream.spokeSuccessfully()
+		result.SpeechStreamed = newStream.emittedSpeech(closeErr)
 	}
 	if err != nil {
 		if d.ttsManager != nil && !result.SpeechStreamed {
-			prepared := runtime.PrepareSpokenText(ctx, "", err, false)
+			prepared := runtime.PrepareSpokenText(ctx, "", result.TurnFailure, false)
 			if prepared.Text != "" {
 				if speakErr := d.Speak(ctx, prepared.Text, nil); speakErr != nil {
 					log.Printf("[error] failure replacement TTS failed: %v", speakErr)

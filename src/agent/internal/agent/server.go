@@ -1178,7 +1178,7 @@ func (s *Server) handleChatAsync(
 			if closeErr != nil && s.logger != nil {
 				s.logger.Error("new TTS stream failed: %v", closeErr)
 			}
-			result.SpeechStreamed = closeErr == nil && newStream.spokeSuccessfully()
+			result.SpeechStreamed = newStream.emittedSpeech(closeErr)
 		}
 
 		pending.mu.Lock()
@@ -1222,7 +1222,7 @@ func (s *Server) handleChatAsync(
 				}
 			}
 			if !canceled && !result.SpeechStreamed && s.canSpeakFinalText() {
-				prepared := s.runtime.PrepareSpokenText(runCtx, "", err, false)
+				prepared := s.runtime.PrepareSpokenText(runCtx, "", result.TurnFailure, false)
 				s.speakFinalText(runCtx, requestID, prepared)
 			}
 			return
@@ -1553,7 +1553,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		if closeErr != nil && s.logger != nil {
 			s.logger.Error("new TTS stream failed: %v", closeErr)
 		}
-		result.SpeechStreamed = closeErr == nil && newStream.spokeSuccessfully()
+		result.SpeechStreamed = newStream.emittedSpeech(closeErr)
 	}
 	if err != nil {
 		canceled := errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled)
@@ -1587,7 +1587,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			s.logger.Error("Agent run failed: %v", err)
 		}
 		if !result.SpeechStreamed && s.canSpeakFinalText() {
-			prepared := s.runtime.PrepareSpokenText(ctx, "", err, false)
+			prepared := s.runtime.PrepareSpokenText(ctx, "", result.TurnFailure, false)
 			s.speakFinalText(ctx, req.RequestID, prepared)
 		}
 		stream.Write(ChatStreamEvent{Type: "error", Error: err.Error(), History: s.historySnapshot()})

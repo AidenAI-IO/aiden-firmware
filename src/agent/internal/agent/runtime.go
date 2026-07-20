@@ -19,6 +19,7 @@ import (
 	"aiden-agent/internal/agent/agentpath"
 	"aiden-agent/internal/agent/compactor"
 	"aiden-agent/internal/agent/contextmanager"
+	"aiden-agent/internal/agent/executor"
 	"aiden-agent/internal/agent/model"
 	"aiden-agent/internal/agent/statemanager"
 	"aiden-agent/internal/util"
@@ -110,9 +111,10 @@ type RunResult struct {
 	// Deprecated: use WaitForWakeupRequested.
 	SleepRequested bool `json:"sleep_requested,omitempty"`
 	// Deprecated: use WaitForWakeupReason.
-	SleepReason    string `json:"sleep_reason,omitempty"`
-	SpeechStreamed bool   `json:"-"`
-	Preempted      bool   `json:"preempted,omitempty"`
+	SleepReason    string       `json:"sleep_reason,omitempty"`
+	SpeechStreamed bool         `json:"-"`
+	Preempted      bool         `json:"preempted,omitempty"`
+	TurnFailure    *TurnFailure `json:"-"`
 }
 
 func canonicalTurnInputFromRunRequest(req RunRequest) TurnInput {
@@ -642,6 +644,11 @@ func (r *Runtime) exportInterruptedEpisodesBestEffort(episodes []TaskEpisode) {
 }
 
 func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, runErr error) {
+	defer func() {
+		if runErr != nil && isLLMTurnFailureSource(runErr) {
+			result.TurnFailure = TurnFailureFromError(runErr)
+		}
+	}()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -1006,7 +1013,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		}
 		newManager, compacted, err := compactor.Compact(ctx, r.contextManager)
 		if err != nil {
-			return RunResult{}, err
+			return RunResult{}, executor.MarkLLMCallError(err)
 		}
 		if compacted {
 			// setup hooks

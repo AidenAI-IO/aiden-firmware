@@ -45,6 +45,7 @@ type fakeAudioDialog struct {
 	vadErr               error
 	onRead               func(*fakeAudioDialog, *agent.AudioChunkResult)
 	spoken               []string
+	speechUnavailable    bool
 	voiceTurnContexts    []agent.VoiceTurnContext
 	repeatEmpty          bool
 	readDelay            time.Duration
@@ -243,6 +244,10 @@ func (d *fakeAudioDialog) InterruptOutput() {
 	if d.interruptOutput != nil {
 		d.interruptOutput()
 	}
+}
+
+func (d *fakeAudioDialog) CanSpeakFinalText() bool {
+	return !d.speechUnavailable
 }
 
 func (d *fakeAudioDialog) PersistVoiceTurn(input agent.TurnInput, result agent.RunResult, utterance []int16) {
@@ -1353,11 +1358,41 @@ func TestRunVoiceTurnAppendsAndConfirmsVoiceNotificationTail(t *testing.T) {
 	}
 }
 
+func TestRunVoiceTurnKeepsVoiceNotificationPendingWhenSpeechIsUnavailable(t *testing.T) {
+	runtime := agent.NewRuntimeWithDeps(agent.DefaultConfig(), nil, nil, nil, agent.NewSkillIndex())
+	if err := runtime.VoiceNotificationSink().Publish(context.Background(), agent.VoiceNotificationEvent{
+		Code: "storage", Severity: agent.SeverityWarning, State: agent.VoiceNotificationActive, DedupeKey: "storage:device",
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	dialog := &fakeAudioDialog{speechUnavailable: true}
+
+	runVoiceTurnWithInputContext(
+		agent.Config{},
+		dialog,
+		runtime,
+		agent.TurnInput{InputText: "voice"},
+		nil,
+		make(chan os.Signal, 1),
+		make(chan voiceEvent, 1),
+		agent.VoiceTurnContext{},
+		true,
+	)
+	if len(dialog.spoken) != 1 || dialog.spoken[0] != "reply" {
+		t.Fatalf("speech-unavailable turn consumed tail: %#v", dialog.spoken)
+	}
+
+	prepared := runtime.PrepareSpokenText(context.Background(), "next reply", nil, true)
+	if prepared.Mode != agent.SpokenTextModeTail {
+		t.Fatalf("pending reminder mode = %q, want %q", prepared.Mode, agent.SpokenTextModeTail)
+	}
+}
+
 func TestRunVoiceTurnSpeaksReplacementForFinalLLMFailure(t *testing.T) {
 	runtime := agent.NewRuntimeWithDeps(agent.DefaultConfig(), nil, nil, nil, agent.NewSkillIndex())
 	dialog := &fakeAudioDialog{
 		runTurn: func(context.Context) (agent.RunResult, error) {
-			return agent.RunResult{}, errors.New("dial tcp: network is unreachable")
+			return agent.RunResult{TurnFailure: &agent.TurnFailure{Code: agent.TurnFailureNetworkUnavailable}}, errors.New("dial tcp: network is unreachable")
 		},
 	}
 
@@ -1374,6 +1409,30 @@ func TestRunVoiceTurnSpeaksReplacementForFinalLLMFailure(t *testing.T) {
 	)
 	if len(dialog.spoken) != 1 || dialog.spoken[0] != "当前网络不可用，暂时无法完成这个请求。" {
 		t.Fatalf("spoken replacement = %#v", dialog.spoken)
+	}
+}
+
+func TestRunVoiceTurnDoesNotSpeakReplacementForNonLLMFailure(t *testing.T) {
+	runtime := agent.NewRuntimeWithDeps(agent.DefaultConfig(), nil, nil, nil, agent.NewSkillIndex())
+	dialog := &fakeAudioDialog{
+		runTurn: func(context.Context) (agent.RunResult, error) {
+			return agent.RunResult{}, errors.New("reload skills: invalid manifest")
+		},
+	}
+
+	runVoiceTurnWithInputContext(
+		agent.Config{},
+		dialog,
+		runtime,
+		agent.TurnInput{InputText: "voice"},
+		nil,
+		make(chan os.Signal, 1),
+		make(chan voiceEvent, 1),
+		agent.VoiceTurnContext{},
+		true,
+	)
+	if len(dialog.spoken) != 0 {
+		t.Fatalf("non-LLM failure spoke replacement: %#v", dialog.spoken)
 	}
 }
 

@@ -3,10 +3,45 @@ package executor
 import (
 	"aiden-agent/internal/agent/contextmanager"
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/tmc/langchaingo/llms"
 )
+
+// LLMCallError marks failures that occurred while requesting or validating an
+// LLM response. Callers can distinguish these from local runtime, persistence,
+// skill, and configuration failures without matching error strings.
+type LLMCallError struct {
+	err error
+}
+
+func MarkLLMCallError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var existing *LLMCallError
+	if errors.As(err, &existing) {
+		return err
+	}
+	return &LLMCallError{err: err}
+}
+
+func (e *LLMCallError) Error() string {
+	if e == nil || e.err == nil {
+		return ""
+	}
+	return e.err.Error()
+}
+
+func (e *LLMCallError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+func (e *LLMCallError) IsLLMTurnFailureSource() {}
 
 type LLMExecutor struct {
 	model          llms.Model
@@ -32,10 +67,10 @@ func (e *LLMExecutor) GenerateContent(ctx context.Context, options ...llms.CallO
 	messages := e.contextManager.ConvertToStandardMessageList()
 	contentResponse, err := e.model.GenerateContent(ctx, messages, options...)
 	if err != nil {
-		return nil, err
+		return nil, MarkLLMCallError(err)
 	}
 	if len(contentResponse.Choices) == 0 || contentResponse.Choices[0] == nil {
-		return contentResponse, fmt.Errorf("model returned no choices")
+		return contentResponse, MarkLLMCallError(fmt.Errorf("model returned no choices"))
 	}
 	return contentResponse, nil
 }

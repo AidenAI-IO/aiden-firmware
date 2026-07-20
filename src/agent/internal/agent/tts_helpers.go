@@ -360,6 +360,13 @@ func (w *streamSessionWriter) startedPlayback() bool {
 	return w.sink != nil && w.sink.PCMBytes() > 0
 }
 
+// emittedSpeech reports whether callers must treat the response as already
+// spoken. Once PCM reaches the playback sink, a later stream-close error must
+// not cause the full response or a failure replacement to be played again.
+func (w *streamSessionWriter) emittedSpeech(closeErr error) bool {
+	return w.startedPlayback() || (closeErr == nil && w.spokeSuccessfully())
+}
+
 // closeAndWait flushes the session and waits for playback to drain.
 func (w *streamSessionWriter) closeAndWait() error {
 	w.mu.Lock()
