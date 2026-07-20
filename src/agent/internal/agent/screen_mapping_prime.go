@@ -75,9 +75,6 @@ func (r *Runtime) PrimeScreenMappingOnStartup(ctx context.Context) error {
 		select {
 		case <-primeCtx.Done():
 			timer.Stop()
-			if lastErr == nil {
-				lastErr = primeCtx.Err()
-			}
 			if r.logger != nil {
 				r.logger.Warn("screen mapping prime failed: attempts=%d elapsed_ms=%d err=%v", attempts, time.Since(startedAt).Milliseconds(), lastErr)
 			}
