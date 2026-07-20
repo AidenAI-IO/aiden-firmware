@@ -94,7 +94,11 @@ func (c *LLMHTTPLogCleaner) EstimateReclaimable(context.Context) (uint64, error)
 	return total, nil
 }
 
-func (c *LLMHTTPLogCleaner) Clean(context.Context) (uint64, error) {
+func (c *LLMHTTPLogCleaner) Clean(ctx context.Context) (uint64, error) {
+	return c.clean(ctx, false)
+}
+
+func (c *LLMHTTPLogCleaner) clean(_ context.Context, force bool) (uint64, error) {
 	if c.logDir == "" {
 		return 0, nil
 	}
@@ -131,9 +135,11 @@ func (c *LLMHTTPLogCleaner) Clean(context.Context) (uint64, error) {
 			continue
 		}
 
-		logTime := logFileTime(entry.Name(), info.ModTime())
-		if !logTime.Before(cutoff) {
-			continue
+		if !force {
+			logTime := logFileTime(entry.Name(), info.ModTime())
+			if !logTime.Before(cutoff) {
+				continue
+			}
 		}
 
 		path := filepath.Join(c.logDir, entry.Name())
@@ -156,9 +162,7 @@ func (c *LLMHTTPLogCleaner) Clean(context.Context) (uint64, error) {
 }
 
 func (c *LLMHTTPLogCleaner) ForceClean(ctx context.Context) (uint64, error) {
-	forced := *c
-	forced.retentionAge = 0
-	return forced.Clean(ctx)
+	return c.clean(ctx, true)
 }
 
 func (c *LLMHTTPLogCleaner) protectedName() (string, error) {

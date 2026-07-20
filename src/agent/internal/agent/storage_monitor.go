@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -224,6 +225,7 @@ type StorageMonitor struct {
 
 	notificationActive bool
 	notifiedLevel      StorageLevel
+	lastNotifiedEvent  VoiceNotificationEvent
 	lastCleanupAttempt time.Time
 	writeCheckMu       sync.Mutex
 	writeCheckPending  bool
@@ -277,10 +279,16 @@ func (m *StorageMonitor) CheckAndRemediate(ctx context.Context, request StorageC
 	if path == "" {
 		path = "/userdata"
 	}
+	if m.logger != nil {
+		m.logger.Debug("storage_monitor: check started reason=%s path=%s", request.Reason, path)
+	}
 	previous := m.Status()
 	initial, err := m.sampleStatus(ctx, path)
 	if err != nil {
 		return StorageStatus{}, err
+	}
+	if m.logger != nil && initial.Level != StorageLevelNormal {
+		m.logger.Warn("storage_monitor: %s %s (%dMB available), warning threshold: %dMB", path, initial.Level, initial.AvailableBytes/storageMegabyte, m.config.WarningThresholdMB)
 	}
 	final := initial
 	var cleanupHistory []StorageCleanupResult
@@ -303,6 +311,9 @@ func (m *StorageMonitor) CheckAndRemediate(ctx context.Context, request StorageC
 			}
 			var freed uint64
 			var cleanErr error
+			if m.logger != nil {
+				m.logger.Info("storage_cleanup: running cleaner %s (priority %d)", cleaner.Name(), cleaner.Priority())
+			}
 			if request.Force {
 				if forceCleaner, ok := cleaner.(forceStorageCleaner); ok {
 					freed, cleanErr = forceCleaner.ForceClean(ctx)
@@ -313,6 +324,9 @@ func (m *StorageMonitor) CheckAndRemediate(ctx context.Context, request StorageC
 				estimate, estimateErr := cleaner.EstimateReclaimable(ctx)
 				if estimateErr != nil {
 					cleanupHistory = append(cleanupHistory, StorageCleanupResult{Timestamp: time.Now(), Cleaner: cleaner.Name(), Status: "failed", Error: estimateErr.Error()})
+					if m.logger != nil {
+						m.logger.Warn("storage_cleanup: cleaner %s estimate failed: %v", cleaner.Name(), estimateErr)
+					}
 					continue
 				}
 				if estimate == 0 {
@@ -324,6 +338,13 @@ func (m *StorageMonitor) CheckAndRemediate(ctx context.Context, request StorageC
 			if cleanErr != nil {
 				result.Status = "failed"
 				result.Error = cleanErr.Error()
+			}
+			if m.logger != nil {
+				if cleanErr != nil {
+					m.logger.Warn("storage_cleanup: cleaner %s failed after freeing %dMB: %v", cleaner.Name(), freed/storageMegabyte, cleanErr)
+				} else {
+					m.logger.Info("storage_cleanup: %s freed %dMB", cleaner.Name(), freed/storageMegabyte)
+				}
 			}
 			cleanupHistory = append(cleanupHistory, result)
 			totalFreed += freed
@@ -363,6 +384,16 @@ func (m *StorageMonitor) CheckAndRemediate(ctx context.Context, request StorageC
 	m.statusMu.Lock()
 	m.status = cloneStorageStatus(final)
 	m.statusMu.Unlock()
+	if m.logger != nil && (previous.Level != final.Level || len(cleanupHistory) > 0) {
+		m.logger.Info("storage_monitor: final level %s, %s %dMB available", final.Level, final.Path, final.AvailableBytes/storageMegabyte)
+	}
+	if m.logger != nil && !reflect.DeepEqual(previous.UnavailableCapabilities, final.UnavailableCapabilities) {
+		if len(final.UnavailableCapabilities) == 0 {
+			m.logger.Info("storage_monitor: storage capabilities recovered")
+		} else {
+			m.logger.Warn("storage_monitor: degraded capabilities=%v", final.UnavailableCapabilities)
+		}
+	}
 	m.publishStatusTransition(ctx, final)
 	return cloneStorageStatus(final), nil
 }
@@ -384,12 +415,16 @@ func (m *StorageMonitor) publishStatusTransition(ctx context.Context, status Sto
 		}
 		m.notificationActive = false
 		m.notifiedLevel = StorageLevelNormal
-		return
-	}
-	if m.notificationActive && m.notifiedLevel == status.Level {
+		m.lastNotifiedEvent = VoiceNotificationEvent{}
+		if m.logger != nil {
+			m.logger.Info("storage_alert: published code=storage state=resolved dedupe_key=storage:device")
+		}
 		return
 	}
 	event := m.notificationEvent(status, "active", status.Level)
+	if m.notificationActive && m.notifiedLevel == status.Level && reflect.DeepEqual(m.lastNotifiedEvent.Params, event.Params) {
+		return
+	}
 	if err := m.notifier.Publish(ctx, event); err != nil {
 		if m.logger != nil {
 			m.logger.Warn("storage notification publish failed: %v", err)
@@ -398,6 +433,10 @@ func (m *StorageMonitor) publishStatusTransition(ctx context.Context, status Sto
 	}
 	m.notificationActive = true
 	m.notifiedLevel = status.Level
+	m.lastNotifiedEvent = event
+	if m.logger != nil {
+		m.logger.Info("storage_alert: published code=storage severity=%s dedupe_key=storage:device", status.Level)
+	}
 }
 
 func (m *StorageMonitor) notificationEvent(status StorageStatus, state string, severity StorageLevel) VoiceNotificationEvent {

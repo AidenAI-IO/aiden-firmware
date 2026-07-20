@@ -326,23 +326,47 @@ func TestStorageMonitorPublishesActiveUpgradeAndResolvedEvents(t *testing.T) {
 		}
 	}
 
-	if len(notifier.events) != 3 {
-		t.Fatalf("published %d events, want 3: %+v", len(notifier.events), notifier.events)
+	if len(notifier.events) != 4 {
+		t.Fatalf("published %d events, want 4: %+v", len(notifier.events), notifier.events)
 	}
 	warning := notifier.events[0]
 	if warning.Code != "storage" || warning.DedupeKey != "storage:device" || warning.State != "active" || warning.Severity != StorageLevelWarning {
 		t.Fatalf("warning event = %+v", warning)
 	}
-	critical := notifier.events[1]
+	updatedWarning := notifier.events[1]
+	if updatedWarning.State != "active" || updatedWarning.Severity != StorageLevelWarning || updatedWarning.Params["available_mb"] != uint64(35) {
+		t.Fatalf("updated warning event = %+v", updatedWarning)
+	}
+	critical := notifier.events[2]
 	if critical.State != "active" || critical.Severity != StorageLevelCritical {
 		t.Fatalf("critical event = %+v", critical)
 	}
-	resolved := notifier.events[2]
+	resolved := notifier.events[3]
 	if resolved.State != "resolved" || resolved.Severity != StorageLevelCritical {
 		t.Fatalf("resolved event = %+v, want resolved with previous critical severity", resolved)
 	}
 	if got := resolved.Params["available_mb"]; got != uint64(60) {
 		t.Fatalf("resolved available_mb = %#v, want 60", got)
+	}
+}
+
+func TestStorageMonitorSuppressesEquivalentActiveEvent(t *testing.T) {
+	sampler := &sequenceStorageSampler{samples: []StorageSample{
+		storageSampleWithAvailableMB(40),
+		storageSampleWithAvailableMB(40),
+	}}
+	notifier := &recordingVoiceNotificationSink{}
+	config := DefaultStorageConfig()
+	config.Cleanup.Enabled = false
+	monitor := NewStorageMonitor(config, sampler, nil, nil, notifier)
+
+	for range sampler.samples {
+		if _, err := monitor.CheckAndRemediate(context.Background(), StorageCheckRequest{Reason: CheckReasonPeriodic}); err != nil {
+			t.Fatalf("CheckAndRemediate() error = %v", err)
+		}
+	}
+	if len(notifier.events) != 1 {
+		t.Fatalf("published %d equivalent active events, want 1: %+v", len(notifier.events), notifier.events)
 	}
 }
 
@@ -576,6 +600,23 @@ func TestLLMHTTPLogCleanerFailsClosedWhenCurrentSessionCannotBeResolved(t *testi
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("log was removed after session resolution failure: %v", err)
+	}
+}
+
+func TestLLMHTTPLogCleanerForceCleanDeletesSameDayNonCurrentLog(t *testing.T) {
+	tmpDir := t.TempDir()
+	name := "llm-http-" + time.Now().Add(-time.Minute).Format("200601021504") + ".log"
+	path := filepath.Join(tmpDir, name)
+	if err := os.WriteFile(path, []byte("log"), 0o644); err != nil {
+		t.Fatalf("write same-day log: %v", err)
+	}
+	cleaner := NewLLMHTTPLogCleanerWithSessionProvider(tmpDir, 7, 1, func() string { return "current-session" })
+
+	if _, err := cleaner.ForceClean(context.Background()); err != nil {
+		t.Fatalf("ForceClean() error = %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("same-day non-current log still exists, stat error = %v", err)
 	}
 }
 

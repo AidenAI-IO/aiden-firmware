@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -83,6 +84,15 @@ func TestMemoryManagerSkipsPersistenceAtCriticalAndResumesAfterRecovery(t *testi
 	}
 	if _, err := os.Stat(manager.sessionEventsPath()); err != nil {
 		t.Fatalf("session events not persisted after recovery: %v", err)
+	}
+	persisted, err := os.ReadFile(manager.sessionEventsPath())
+	if err != nil {
+		t.Fatalf("ReadFile() after recovery error = %v", err)
+	}
+	for _, content := range []string{"keep in memory", "persist now"} {
+		if !bytes.Contains(persisted, []byte(content)) {
+			t.Fatalf("session events missing deferred content %q: %s", content, persisted)
+		}
 	}
 	if manager.PersistencePending() {
 		t.Fatal("PersistencePending() = true after successful recovery write")
