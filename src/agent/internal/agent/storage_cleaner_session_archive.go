@@ -113,6 +113,12 @@ func (c *SessionArchiveCleaner) EstimateReclaimable(context.Context) (uint64, er
 	}
 
 	var total uint64
+	if c.retentionAge == 0 && c.maxCount == 0 {
+		for _, archive := range archives {
+			total += uint64(archive.size)
+		}
+		return total, nil
+	}
 	now := time.Now()
 	cutoff := now.Add(-c.retentionAge)
 
@@ -132,7 +138,10 @@ func (c *SessionArchiveCleaner) EstimateReclaimable(context.Context) (uint64, er
 	return total, nil
 }
 
-func (c *SessionArchiveCleaner) Clean(context.Context) (uint64, error) {
+func (c *SessionArchiveCleaner) Clean(ctx context.Context) (uint64, error) {
+	if c.retentionAge == 0 && c.maxCount == 0 {
+		return c.cleanAll(ctx)
+	}
 	archives, err := c.collectArchives()
 	if err != nil {
 		return 0, err

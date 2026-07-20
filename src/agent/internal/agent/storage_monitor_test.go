@@ -886,6 +886,42 @@ func TestSessionArchiveCleaner(t *testing.T) {
 	}
 }
 
+func TestSessionArchiveCleanerZeroRetentionDeletesAllArchives(t *testing.T) {
+	tmpDir := t.TempDir()
+	for _, name := range []string{"session-one", "session-two"} {
+		archiveDir := filepath.Join(tmpDir, name)
+		if err := os.MkdirAll(archiveDir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(%q) error = %v", name, err)
+		}
+		if err := os.WriteFile(filepath.Join(archiveDir, "events.jsonl"), []byte("event"), 0o644); err != nil {
+			t.Fatalf("WriteFile(%q) error = %v", name, err)
+		}
+	}
+	cleaner := NewSessionArchiveCleaner(tmpDir, 0, 0, 1)
+
+	estimate, err := cleaner.EstimateReclaimable(context.Background())
+	if err != nil {
+		t.Fatalf("EstimateReclaimable() error = %v", err)
+	}
+	if estimate != uint64(2*len("event")) {
+		t.Fatalf("EstimateReclaimable() = %d, want %d", estimate, 2*len("event"))
+	}
+	freed, err := cleaner.Clean(context.Background())
+	if err != nil {
+		t.Fatalf("Clean() error = %v", err)
+	}
+	if freed != estimate {
+		t.Fatalf("Clean() freed = %d, want estimate %d", freed, estimate)
+	}
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("ReadDir() error = %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("zero-retention cleanup left %d archives, want 0", len(entries))
+	}
+}
+
 func TestSessionArchiveCleanerForceCleanIgnoresRetention(t *testing.T) {
 	tmpDir := t.TempDir()
 	archiveDir := filepath.Join(tmpDir, "recent-session")
