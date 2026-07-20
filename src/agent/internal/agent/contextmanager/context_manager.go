@@ -261,10 +261,14 @@ func (c *ContextManager) AddAppendMessageHooks(hooks []AppendMessageHook) {
 	if len(hooks) == 0 {
 		return
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	log.Println("[CM] Adding append message hooks", len(hooks))
-	c.appendHooks = append(c.appendHooks, hooks...)
+	for _, hook := range hooks {
+		if hook == nil {
+			continue
+		}
+		c.mu.Lock()
+		c.appendHooks = append(c.appendHooks, hook)
+		c.mu.Unlock()
+	}
 }
 
 func (c *ContextManager) IsEmpty() bool {
