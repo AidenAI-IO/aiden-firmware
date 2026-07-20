@@ -30,6 +30,8 @@ func TestRolePromptKeepsLocaleInDynamicCacheTail(t *testing.T) {
 	manager := NewSkillManager(NewSkillIndex())
 	zh := buildProfile(AgentConfig{Locale: "zh-CN"}, manager, nil, agentRoleRules())
 	en := buildProfile(AgentConfig{Locale: "en-US"}, manager, nil, agentRoleRules())
+	zhFinalRule := "IMPORTANT: Always respond in Simplified Chinese, regardless of the language used by the user, except when the user explicitly asks to translate, quote, draft, or generate content in another language."
+	enFinalRule := "IMPORTANT: Always respond in English, regardless of the language used by the user, except when the user explicitly asks to translate, quote, draft, or generate content in another language."
 
 	if zh.StableSystemPrompt == "" || zh.StableSystemPrompt != en.StableSystemPrompt {
 		t.Fatalf("stable prompt changed with locale:\nzh=%q\nen=%q", zh.StableSystemPrompt, en.StableSystemPrompt)
@@ -49,6 +51,12 @@ func TestRolePromptKeepsLocaleInDynamicCacheTail(t *testing.T) {
 	}
 	if !strings.HasSuffix(zh.SystemPrompt, zh.DynamicSystemPrompt) || !strings.HasSuffix(en.SystemPrompt, en.DynamicSystemPrompt) {
 		t.Fatal("dynamic locale guidance must be the final system-prompt segment")
+	}
+	if !strings.HasSuffix(zh.DynamicSystemPrompt, zhFinalRule) {
+		t.Fatalf("Chinese response-language rule must be the final prompt line:\n%s", zh.DynamicSystemPrompt)
+	}
+	if !strings.HasSuffix(en.DynamicSystemPrompt, enFinalRule) {
+		t.Fatalf("English response-language rule must be the final prompt line:\n%s", en.DynamicSystemPrompt)
 	}
 }
 

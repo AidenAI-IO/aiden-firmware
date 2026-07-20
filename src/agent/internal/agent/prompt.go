@@ -102,6 +102,7 @@ func responseLanguageGuidance(locale string) string {
 		"Write all conversational assistant content in " + language + " from the first generated token. This includes progress messages, final answers, and all text inside <tts>...</tts>.",
 		"Only use another language for content the user explicitly asks to translate, quote, draft, or generate. Keep any surrounding explanation in " + language + ".",
 		"Do not infer the response language from STT language, phone locale, screenshot language, proper nouns, or an isolated foreign-language phrase.",
+		"IMPORTANT: Always respond in " + language + ", regardless of the language used by the user, except when the user explicitly asks to translate, quote, draft, or generate content in another language.",
 	}, "\n")
 }
 
