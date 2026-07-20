@@ -227,7 +227,7 @@ func coordinateSchema(description string, examples ...float64) map[string]any {
 }
 
 func coordSpaceSchema() map[string]any {
-	return stringEnumArgSchema("Coordinate space; screenshot uses pixels in the latest returned cropped screenshot, while normalized uses 0-1000 screen coordinates.", "auto", "screenshot", "normalized", "absolute")
+	return stringEnumArgSchema("Coordinate space; normalized uses 0-1000 screen coordinates where (500,500) is center.", "auto", "normalized", "absolute")
 }
 
 func nonNegativeIntegerSchema(description string) map[string]any {
