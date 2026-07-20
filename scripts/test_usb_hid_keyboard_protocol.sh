@@ -29,16 +29,23 @@ grep -Fq 'echo 1 > "$GADGET_DIR/functions/hid.usb0/no_out_endpoint"' "$INIT_SCRI
     fail "keyboard must not expose an unused OUT endpoint"
 
 grep -Fq 'echo 0 > "$GADGET_DIR/functions/hid.usb1/protocol"' "$INIT_SCRIPT" ||
-    fail "pointer must use protocol=0"
+    fail "touchscreen digitizer must use protocol=0"
 
 grep -Fq 'echo 0 > "$GADGET_DIR/functions/hid.usb1/subclass"' "$INIT_SCRIPT" ||
-    fail "pointer must use subclass=0"
+    fail "touchscreen digitizer must use subclass=0"
 
 grep -Fq 'echo 6 > "$GADGET_DIR/functions/hid.usb1/report_length"' "$INIT_SCRIPT" ||
-    fail "pointer must keep the six-byte absolute mouse report"
+    fail "touchscreen digitizer must keep the six-byte single-contact report"
 
 grep -Fq 'echo 1 > "$GADGET_DIR/functions/hid.usb1/no_out_endpoint"' "$INIT_SCRIPT" ||
-    fail "pointer must not expose an unused OUT endpoint"
+    fail "touchscreen digitizer must not expose an unused OUT endpoint"
+
+grep -Fq "printf '\\x05\\x0d\\x09\\x04" "$INIT_SCRIPT" ||
+    fail "hid.usb1 must advertise Digitizers / Touch Screen rather than Generic Desktop / Mouse"
+
+if grep -Fq "printf '\\x05\\x01\\x09\\x02" "$INIT_SCRIPT"; then
+    fail "touchscreen experiment must not advertise a Generic Desktop / Mouse collection"
+fi
 
 for forbidden in \
     'mkdir -p "$GADGET_DIR/functions/hid.usb2"' \
@@ -65,7 +72,10 @@ awk \
     pointer && $0 ~ /^[[:space:]]*sleep[[:space:]]+1[[:space:]]*$/ { delayed=NR; next }
     index($0, bind) { bound=NR; exit }
     END { exit(keyboard && pointer && delayed && bound && keyboard < pointer && pointer < delayed && delayed < bound ? 0 : 1) }
-' "$INIT_SCRIPT" || fail "profile must link keyboard first, pointer second, wait one second, and bind once"
+' "$INIT_SCRIPT" || fail "profile must link keyboard first, touchscreen second, wait one second, and bind once"
+
+grep -Fq 'pointer_mode = "touchscreen"' "$ROOT_DIR/overlay/userdata/agent/agent.toml" ||
+    fail "experimental agent configuration must emit touchscreen digitizer reports"
 
 grep -Fq 'ECM_FUNC=/sys/kernel/config/usb_gadget/aiden_hid/functions/ecm.usb0' "$DHCP_SCRIPT" ||
     fail "USB DHCP startup must identify whether the active profile exposes ECM"
@@ -73,4 +83,4 @@ grep -Fq 'ECM_FUNC=/sys/kernel/config/usb_gadget/aiden_hid/functions/ecm.usb0' "
 grep -Fq 'if [ ! -d "$ECM_FUNC" ]; then' "$DHCP_SCRIPT" ||
     fail "USB DHCP startup must exit immediately when the active profile omits ECM"
 
-echo "iOS keyboard + pointer control checks passed"
+echo "iOS keyboard + touchscreen control checks passed"

@@ -1,11 +1,11 @@
 #!/bin/sh
 #
-# iOS keyboard + pointer routing experiment.
+# iOS keyboard + USB touchscreen routing experiment.
 #
-# Keep the proven E11 keyboard-only baseline and add exactly one absolute mouse
-# pointer function. Consumer Control, Apple vendor HID, and CDC ECM functions
-# are intentionally omitted. Build the complete descriptor tree, wait for it
-# to settle, and bind the UDC exactly once with keyboard first.
+# Keep the proven E11 keyboard-only baseline and add exactly one Digitizers /
+# Touch Screen function. Consumer Control, mouse, Apple vendor HID, and CDC ECM
+# functions are intentionally omitted. Build the complete descriptor tree,
+# wait for it to settle, and bind the UDC exactly once with keyboard first.
 #
 
 GADGET_DIR=/sys/kernel/config/usb_gadget/aiden_hid
@@ -30,7 +30,7 @@ cleanup_gadget() {
 }
 
 start() {
-	echo "Setting up iOS keyboard + pointer routing experiment..."
+	echo "Setting up iOS keyboard + USB touchscreen routing experiment..."
 
 	USB_MODE=$(cat "$USB_MODE_PATH" 2>/dev/null)
 	if [ "$USB_MODE" != "peripheral" ]; then
@@ -59,7 +59,7 @@ start() {
 	mkdir -p "$GADGET_DIR"
 	echo 0x1d6b > "$GADGET_DIR/idVendor"
 	echo 0x0104 > "$GADGET_DIR/idProduct"
-	echo 0x0101 > "$GADGET_DIR/bcdDevice"
+	echo 0x0102 > "$GADGET_DIR/bcdDevice"
 	echo 0x0200 > "$GADGET_DIR/bcdUSB"
 	echo full-speed > "$GADGET_DIR/max_speed"
 
@@ -69,12 +69,12 @@ start() {
 	echo 0x00 > "$GADGET_DIR/bDeviceProtocol"
 
 	mkdir -p "$GADGET_DIR/strings/0x409"
-	echo "AIDENKEYPTRTEST01" > "$GADGET_DIR/strings/0x409/serialnumber"
+	echo "AIDENKEYTOUCHTEST1" > "$GADGET_DIR/strings/0x409/serialnumber"
 	echo "Aiden" > "$GADGET_DIR/strings/0x409/manufacturer"
-	echo "Aiden Keyboard Pointer Test" > "$GADGET_DIR/strings/0x409/product"
+	echo "Aiden Keyboard Touchscreen Test" > "$GADGET_DIR/strings/0x409/product"
 
 	mkdir -p "$GADGET_DIR/configs/c.1/strings/0x409"
-	echo "HID Keyboard + Pointer Control" > "$GADGET_DIR/configs/c.1/strings/0x409/configuration"
+	echo "HID Keyboard + Touchscreen Control" > "$GADGET_DIR/configs/c.1/strings/0x409/configuration"
 	echo 500 > "$GADGET_DIR/configs/c.1/MaxPower"
 
 	# Standard 8-byte USB boot keyboard report:
@@ -87,18 +87,19 @@ start() {
 	printf '\x05\x01\x09\x06\xa1\x01\x05\x07\x19\xe0\x29\xe7\x15\x00\x25\x01\x75\x01\x95\x08\x81\x02\x95\x01\x75\x08\x81\x01\x95\x06\x75\x08\x15\x00\x25\x65\x05\x07\x19\x00\x29\x65\x81\x00\xc0' \
 		> "$GADGET_DIR/functions/hid.usb0/report_desc"
 
-	# Six-byte absolute mouse report: buttons, X, Y, and wheel. Merely exposing
-	# this pointer service is the variable under test; no pointer report needs to
-	# be sent before the first modifier-routing check.
+	# Six-byte single-contact touchscreen report:
+	# [flags, contact_id, x_lo, x_hi, y_lo, y_hi]. flags bit0=tip switch and
+	# bit1=in range. This deliberately avoids Generic Desktop / Mouse usages so
+	# iOS should not register the function as GCMouse if it accepts the digitizer.
 	mkdir -p "$GADGET_DIR/functions/hid.usb1"
 	echo 0 > "$GADGET_DIR/functions/hid.usb1/protocol"
 	echo 0 > "$GADGET_DIR/functions/hid.usb1/subclass"
 	echo 1 > "$GADGET_DIR/functions/hid.usb1/no_out_endpoint"
 	echo 6 > "$GADGET_DIR/functions/hid.usb1/report_length"
-	printf '\x05\x01\x09\x02\xa1\x01\x09\x01\xa1\x00\x05\x09\x19\x01\x29\x08\x15\x00\x25\x01\x95\x08\x75\x01\x81\x02\x05\x01\x09\x30\x09\x31\x16\x00\x00\x26\xff\x7f\x75\x10\x95\x02\x81\x02\x09\x38\x15\x81\x25\x7f\x75\x08\x95\x01\x81\x06\xc0\xc0' \
+	printf '\x05\x0d\x09\x04\xa1\x01\x09\x22\xa1\x02\x05\x0d\x09\x42\x09\x32\x15\x00\x25\x01\x75\x01\x95\x02\x81\x02\x75\x06\x95\x01\x81\x03\x09\x51\x75\x08\x95\x01\x15\x00\x25\x0f\x81\x02\x05\x01\x09\x30\x09\x31\x16\x00\x00\x26\xff\x7f\x75\x10\x95\x02\x81\x02\xc0\xc0' \
 		> "$GADGET_DIR/functions/hid.usb1/report_desc"
 
-	# Link keyboard first so it remains interface 0, then pointer as interface 1.
+	# Link keyboard first so it remains interface 0, then touchscreen as interface 1.
 	ln -s "$GADGET_DIR/functions/hid.usb0" "$GADGET_DIR/configs/c.1/hid.usb0"
 	ln -s "$GADGET_DIR/functions/hid.usb1" "$GADGET_DIR/configs/c.1/hid.usb1"
 
@@ -106,7 +107,7 @@ start() {
 	sleep 1
 	echo "$UDC" > "$GADGET_DIR/UDC"
 
-	echo "Keyboard + pointer experiment ready: /dev/hidg0 keyboard, /dev/hidg1 pointer; no hidg2 or ECM"
+	echo "Keyboard + touchscreen experiment ready: /dev/hidg0 keyboard, /dev/hidg1 digitizer; no mouse, hidg2, or ECM"
 }
 
 stop() {
