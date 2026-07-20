@@ -118,31 +118,33 @@ type PhoneBridgeStatus struct {
 }
 
 type PhoneBridge struct {
-	mu               sync.Mutex
-	conn             *websocket.Conn
-	connected        bool
-	platform         string
-	phoneID          string
-	lastHeartbeatAt  time.Time
-	appState         string
-	appStateAt       time.Time
-	returnEntry      string
-	returnEntryOK    bool
-	returnEntrySeen  bool
-	pipBridgeEnabled bool
-	pipBridgeSeen    bool
-	fgsBridgeEnabled bool
-	fgsBridgeSeen    bool
-	fgsBridgeAt      time.Time
-	environment      *PhoneEnvironment
-	environmentAt    time.Time
-	clipboardText    string
-	clipboardAt      time.Time
-	pendingCmds      map[string]chan BridgeCommandResponse
-	logger           *Logger
-	done             chan struct{}
-	queue            *CommandQueue // HTTP queue for background-compatible commands
-	stateManager     *statemanager.StateManager
+	mu                sync.Mutex
+	statusPublishMu   sync.Mutex
+	statusExpiryTimer *time.Timer
+	conn              *websocket.Conn
+	connected         bool
+	platform          string
+	phoneID           string
+	lastHeartbeatAt   time.Time
+	appState          string
+	appStateAt        time.Time
+	returnEntry       string
+	returnEntryOK     bool
+	returnEntrySeen   bool
+	pipBridgeEnabled  bool
+	pipBridgeSeen     bool
+	fgsBridgeEnabled  bool
+	fgsBridgeSeen     bool
+	fgsBridgeAt       time.Time
+	environment       *PhoneEnvironment
+	environmentAt     time.Time
+	clipboardText     string
+	clipboardAt       time.Time
+	pendingCmds       map[string]chan BridgeCommandResponse
+	logger            *Logger
+	done              chan struct{}
+	queue             *CommandQueue // HTTP queue for background-compatible commands
+	stateManager      *statemanager.StateManager
 }
 
 func NewPhoneBridge(logger *Logger, stateManager *statemanager.StateManager) *PhoneBridge {
@@ -595,6 +597,16 @@ func (pb *PhoneBridge) currentPhoneID() string {
 }
 
 func (pb *PhoneBridge) statusUpdated() {
+	if pb == nil || pb.stateManager == nil {
+		return
+	}
+
+	// Serialize snapshot publication so an older status callback cannot publish
+	// after a newer HTTP poll or WebSocket event. The freshness expiry callback
+	// uses the same path.
+	pb.statusPublishMu.Lock()
+	defer pb.statusPublishMu.Unlock()
+
 	status := pb.getStatus()
 	// update stateManager with the new status
 	// if connected, set app_connected to true
@@ -622,11 +634,96 @@ func (pb *PhoneBridge) statusUpdated() {
 		pb.stateManager.DeleteState("app_fgs_enabled")
 	}
 
-	if status.Environment != nil {
-		pb.stateManager.SetState("app_platform", status.Platform)
+	platform := strings.ToLower(strings.TrimSpace(status.Platform))
+	if platform == "ios" || platform == "android" {
+		pb.stateManager.SetState("app_platform", platform)
 	} else {
 		pb.stateManager.DeleteState("app_platform")
 	}
+
+	if strategy := phoneBridgeTextEntryState(status); strategy != "" {
+		pb.stateManager.SetState("app_text_entry_strategy", strategy)
+	} else {
+		pb.stateManager.DeleteState("app_text_entry_strategy")
+	}
+
+	pb.scheduleStatusExpiryLocked(status)
+}
+
+const (
+	phoneBridgeTextEntryTargetPreserving = "target_preserving_bridge"
+	phoneBridgeTextEntryConnected        = "bridge_connected"
+	phoneBridgeTextEntryRestoreAvailable = "bridge_restore_available"
+	phoneBridgeTextEntryIMEFallback      = "ime_fallback"
+)
+
+func phoneBridgeTextEntryState(status PhoneBridgeStatus) string {
+	platform := strings.ToLower(strings.TrimSpace(status.Platform))
+	if platform != "ios" && platform != "android" {
+		return ""
+	}
+	if phoneBridgeCanUsePiPBackground(status, "clipboard_write") || phoneBridgeCanUseFGSBackground(status, "clipboard_write") {
+		return phoneBridgeTextEntryTargetPreserving
+	}
+	if platform == "android" && phoneBridgeAppNeedsForeground(status) && phoneBridgeReadyForCommand(status, "clipboard_write") {
+		return phoneBridgeTextEntryTargetPreserving
+	}
+	if phoneBridgePiPBackgroundEnabled(status) || phoneBridgeFGSBackgroundEnabled(status) {
+		return phoneBridgeTextEntryIMEFallback
+	}
+	if phoneBridgeReadyForCommand(status, "clipboard_write") {
+		return phoneBridgeTextEntryConnected
+	}
+	if phoneBridgeCanRestoreFromReturnEntry(status) {
+		return phoneBridgeTextEntryRestoreAvailable
+	}
+	return phoneBridgeTextEntryIMEFallback
+}
+
+func (pb *PhoneBridge) scheduleStatusExpiryLocked(status PhoneBridgeStatus) {
+	if pb.statusExpiryTimer != nil {
+		pb.statusExpiryTimer.Stop()
+		pb.statusExpiryTimer = nil
+	}
+
+	delay, ok := phoneBridgeTextEntryStateExpiry(status)
+	if !ok {
+		return
+	}
+	pb.statusExpiryTimer = time.AfterFunc(delay, pb.statusUpdated)
+}
+
+func phoneBridgeTextEntryStateExpiry(status PhoneBridgeStatus) (time.Duration, bool) {
+	var deadline time.Time
+	now := time.Now()
+	consider := func(updatedAt *time.Time) {
+		if updatedAt == nil {
+			return
+		}
+		candidate := updatedAt.Add(phoneBridgeBackgroundStateMaxAge).Add(time.Millisecond)
+		if !candidate.After(now) {
+			return
+		}
+		if deadline.IsZero() || candidate.Before(deadline) {
+			deadline = candidate
+		}
+	}
+
+	if phoneBridgePiPBackgroundEnabled(status) {
+		consider(status.AppStateUpdatedAt)
+	}
+	if phoneBridgeFGSBackgroundEnabled(status) {
+		consider(status.FgsBridgeUpdatedAt)
+	}
+	if deadline.IsZero() {
+		return 0, false
+	}
+
+	delay := time.Until(deadline)
+	if delay <= 0 {
+		return 0, false
+	}
+	return delay, true
 }
 
 func (pb *PhoneBridge) getStatus() PhoneBridgeStatus {

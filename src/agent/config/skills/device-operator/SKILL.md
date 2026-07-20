@@ -95,6 +95,8 @@ Required pattern:
 ```
 
 - Focus coordinates must come from the latest screenshot.
+- Before calling either text-entry tool, the latest screenshot must clearly show the actual editable field or composer, and `focus` must be inside that visible field. An app home screen, folder/list view, blank area, or screen that only shows a create/new button is not input-ready; first create/open the document or message and observe its editor.
+- Treat `search_launch_app` success as app-open confirmation only. It does not prove an in-app editor or input field is ready.
 - Success requires `committed:true` and `field_text` matching the requested text, or a fresh screenshot that visibly confirms the field content.
 - `committed:false` means failure; do not tell the user text was entered.
 - For Chinese/CJK composition, provide `segments` as romanization syllables in typing order, e.g. `"你好"` -> `["ni","hao"]`.
@@ -103,11 +105,14 @@ Required pattern:
 
 Use `enter_text_via_bridge` only when:
 
+- the latest screenshot already shows the actual editable field/composer and the supplied `focus` point is inside it;
+- runtime `app_text_entry_strategy` is `target_preserving_bridge` and the target is non-search CJK/non-ASCII, multiline, or final composer text;
 - the user explicitly asks to use the companion app, bridge, or clipboard;
 - direct field entry failed and the bridge is available;
 - the text is long, emoji-heavy, or otherwise unsuitable for HID typing.
 
 After bridge entry, verify the target field or submitted result before reporting success.
+If the structured result from `enter_text_via_bridge` conflicts with its attached screenshot, treat this as uncertain verification rather than immediate input failure. Call `wait_for_stable_screen` once and compare the requested text with the fresh observation. Preserve the current field while evidence conflicts; do not perform corrective input until the fresh observation identifies a concrete mismatch. If correction is necessary, change only the confirmed mismatch and keep already-correct content intact.
 
 For simple keys:
 
