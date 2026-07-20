@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,16 +24,17 @@ func NewAudioArchiveManager(config AudioArchiveConfig) *AudioArchiveManager {
 	}
 }
 
-// SetStorageManager routes recordings through the SD/eMMC storage modes. An
-// explicit storage_path in the config always wins over the mode machinery.
+// SetStorageManager routes recordings through the SD/eMMC storage modes. A
+// non-default storage_path in the config wins over the mode machinery (the
+// built-in default names the managed eMMC tier, see ExplicitStoragePath).
 func (m *AudioArchiveManager) SetStorageManager(sm *StorageManager) {
 	m.storage = sm
 }
 
 // writeDir returns the directory new recordings should be written to.
 func (m *AudioArchiveManager) writeDir() string {
-	if strings.TrimSpace(m.config.StoragePath) != "" {
-		return m.config.StoragePathOrDefault()
+	if path := m.config.ExplicitStoragePath(); path != "" {
+		return path
 	}
 	if m.storage != nil {
 		if dir, err := m.storage.ResolveDir(StorageClassAudio); err == nil {
@@ -47,10 +47,10 @@ func (m *AudioArchiveManager) writeDir() string {
 // cleanupRoots returns the directories the retention limits apply to. With
 // the storage manager present, eMMC space is governed by watermark migration
 // and the limits act as the final eviction tier (SD when a card is mounted,
-// eMMC otherwise); an explicit storage_path bypasses all of that.
+// eMMC otherwise); a non-default storage_path bypasses all of that.
 func (m *AudioArchiveManager) cleanupRoots() []string {
-	if strings.TrimSpace(m.config.StoragePath) != "" {
-		return []string{m.config.StoragePathOrDefault()}
+	if path := m.config.ExplicitStoragePath(); path != "" {
+		return []string{path}
 	}
 	if m.storage != nil {
 		return m.storage.CleanupRoots(StorageClassAudio)
