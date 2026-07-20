@@ -12,12 +12,6 @@ import (
 	"time"
 )
 
-// recentScreenWindow bounds how many distinct recent screenshots are tracked
-// to detect oscillating loops (e.g. a tap that toggles the keyboard on/off,
-// making the screen alternate between two states). A repeated action that only
-// revisits a screen inside this window is not making progress.
-const recentScreenWindow = 6
-
 // StopReason explains why the agent loop stopped or intervened.
 type StopReason string
 
@@ -163,7 +157,6 @@ type TerminationPolicy struct {
 	lastScreenHash             string
 	screenUnchangedAfterAction int
 	screenHashBeforeAction     string
-	recentScreenHashes         []string
 
 	parseFailures  int
 	stallScore     int
@@ -192,7 +185,6 @@ func (p *TerminationPolicy) ResetForSteer() {
 	p.lastScreenHash = ""
 	p.screenUnchangedAfterAction = 0
 	p.screenHashBeforeAction = ""
-	p.recentScreenHashes = nil
 	p.parseFailures = 0
 	p.stallScore = 0
 	p.tier = TierNone
@@ -264,13 +256,6 @@ func (p *TerminationPolicy) AfterToolCall(toolName, input, observation string, i
 	sameSignature := signature != "" && signature == previousSignature
 	madeProgress := false
 
-	// Revisiting a screen seen in the recent window is oscillation, not
-	// progress: a repeated action toggling the UI between a few states keeps
-	// changing the hash but goes nowhere. Computed up front so both the
-	// result-hash and screen-hash progress checks below respect it.
-	screenHash := extractScreenshotDataHash(observation)
-	revisitedScreen := screenHash != "" && p.seenRecentScreen(screenHash)
-
 	if sameSignature {
 		p.sameSigStreak++
 	} else {
@@ -284,21 +269,20 @@ func (p *TerminationPolicy) AfterToolCall(toolName, input, observation string, i
 		p.lastResultHash = resultHash
 		p.sameResultStreak = 1
 	}
-	if resultHash != "" && previousResultHash != "" && resultHash != previousResultHash && !isError && !revisitedScreen {
+	if resultHash != "" && previousResultHash != "" && resultHash != previousResultHash && !isError {
 		madeProgress = true
 	}
 
+	screenHash := extractScreenshotDataHash(observation)
 	if screenHash != "" {
-		if previousScreenHash != "" && screenHash != previousScreenHash && !isError && !revisitedScreen {
+		if previousScreenHash != "" && screenHash != previousScreenHash && !isError {
 			madeProgress = true
 		}
 		if isLoopRestrictedActionTool(toolName) {
 			if p.screenHashBeforeAction == "" {
 				p.screenHashBeforeAction = p.lastScreenHash
 			}
-			staticScreen := screenHash == previousScreenHash && previousScreenHash != ""
-			oscillating := sameSignature && revisitedScreen && !staticScreen
-			if staticScreen || oscillating {
+			if screenHash == previousScreenHash && previousScreenHash != "" {
 				p.screenUnchangedAfterAction++
 				p.bumpStall(2)
 			} else {
@@ -307,7 +291,6 @@ func (p *TerminationPolicy) AfterToolCall(toolName, input, observation string, i
 			}
 		}
 		p.lastScreenHash = screenHash
-		p.pushRecentScreen(screenHash)
 	} else if isLoopRestrictedActionTool(toolName) && !isError {
 		p.screenUnchangedAfterAction++
 		p.bumpStall(1)
@@ -363,40 +346,6 @@ func (p *TerminationPolicy) recordProgress() {
 	p.sameResultStreak = 1
 	p.screenUnchangedAfterAction = 0
 	p.screenHashBeforeAction = ""
-	// Intentionally keep recentScreenHashes: clearing it here would let an
-	// A-B-A-B oscillation reset the window on every "new" state and never be
-	// recognized as a revisit.
-}
-
-// seenRecentScreen reports whether hash was observed within the recent window.
-func (p *TerminationPolicy) seenRecentScreen(hash string) bool {
-	if hash == "" {
-		return false
-	}
-	for _, h := range p.recentScreenHashes {
-		if h == hash {
-			return true
-		}
-	}
-	return false
-}
-
-// pushRecentScreen records hash in the bounded recent-screen window, moving an
-// existing entry to the most-recent position.
-func (p *TerminationPolicy) pushRecentScreen(hash string) {
-	if hash == "" {
-		return
-	}
-	for i, h := range p.recentScreenHashes {
-		if h == hash {
-			p.recentScreenHashes = append(p.recentScreenHashes[:i], p.recentScreenHashes[i+1:]...)
-			break
-		}
-	}
-	p.recentScreenHashes = append(p.recentScreenHashes, hash)
-	if len(p.recentScreenHashes) > recentScreenWindow {
-		p.recentScreenHashes = p.recentScreenHashes[len(p.recentScreenHashes)-recentScreenWindow:]
-	}
 }
 
 func (p *TerminationPolicy) refreshTier() {
