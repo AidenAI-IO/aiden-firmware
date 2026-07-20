@@ -1221,6 +1221,10 @@ func (s *Server) handleChatAsync(
 					s.logger.Error("Agent run failed: request_id=%s error=%v", requestID, err)
 				}
 			}
+			if !canceled && !result.SpeechStreamed && s.canSpeakFinalText() {
+				prepared := s.runtime.PrepareSpokenText(runCtx, "", err, false)
+				s.speakFinalText(runCtx, requestID, prepared)
+			}
 			return
 		}
 
@@ -1237,8 +1241,9 @@ func (s *Server) handleChatAsync(
 		// Keep request-scoped final TTS inside the async run goroutine so Stop can
 		// still see the active run/output and interrupt it reliably.
 		speechText := result.SpokenTextForConfig(s.runtime.config)
-		if s.audioClient != nil && speechText != "" && !result.SpeechStreamed {
-			s.speakFinalText(runCtx, requestID, speechText)
+		if s.canSpeakFinalText() && speechText != "" && !result.SpeechStreamed {
+			prepared := s.runtime.PrepareSpokenText(runCtx, speechText, nil, true)
+			s.speakFinalText(runCtx, requestID, prepared)
 		}
 	}()
 }
@@ -1581,6 +1586,10 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		if s.logger != nil {
 			s.logger.Error("Agent run failed: %v", err)
 		}
+		if !result.SpeechStreamed && s.canSpeakFinalText() {
+			prepared := s.runtime.PrepareSpokenText(ctx, "", err, false)
+			s.speakFinalText(ctx, req.RequestID, prepared)
+		}
 		stream.Write(ChatStreamEvent{Type: "error", Error: err.Error(), History: s.historySnapshot()})
 		return
 	}
@@ -1591,16 +1600,17 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	speechText := result.SpokenTextForConfig(s.runtime.config)
-	if s.audioClient != nil && speechText != "" && !result.SpeechStreamed {
+	if s.canSpeakFinalText() && speechText != "" && !result.SpeechStreamed {
+		prepared := s.runtime.PrepareSpokenText(ctx, speechText, nil, true)
 		// Let request-scoped final TTS outlive the streaming handler while
 		// /api/chat/cancel can still interrupt it via the active run/output.
 		finalTTSCtx := context.Background()
 		finishRun := cleanupRun
 		cleanupRunAtReturn = false
-		go func(text string, ttsCtx context.Context, finish func()) {
+		go func(prepared SpokenTextResult, ttsCtx context.Context, finish func()) {
 			defer finish()
-			s.speakFinalText(ttsCtx, req.RequestID, text)
-		}(speechText, finalTTSCtx, finishRun)
+			s.speakFinalText(ttsCtx, req.RequestID, prepared)
+		}(prepared, finalTTSCtx, finishRun)
 	}
 
 	stream.Write(ChatStreamEvent{
@@ -1875,11 +1885,20 @@ func (s *Server) currentTTSManager() *tts.ProviderManager {
 	return s.ttsManager
 }
 
-func (s *Server) speakFinalText(ctx context.Context, requestID, text string) {
-	if s.logger != nil {
-		s.logger.Info("TTS playback: %q", text)
+func (s *Server) canSpeakFinalText() bool {
+	return s != nil && s.audioClient != nil && s.currentTTSManager() != nil
+}
+
+func (s *Server) speakFinalText(ctx context.Context, requestID string, prepared SpokenTextResult) {
+	if strings.TrimSpace(prepared.Text) == "" {
+		return
 	}
-	if err := s.speakTextForRequest(ctx, requestID, text, 0); err != nil && s.logger != nil {
+	if s.logger != nil {
+		s.logger.Info("TTS playback: %q", prepared.Text)
+	}
+	err := s.speakTextForRequest(ctx, requestID, prepared.Text, 0)
+	s.runtime.ReportSpokenTextDelivery(prepared.DeliveryToken, err)
+	if err != nil && s.logger != nil {
 		s.logger.Error("TTS playback failed: %v", err)
 	}
 }

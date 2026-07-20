@@ -353,6 +353,48 @@ func formatFloatPtr(p *float64) string {
 	return fmt.Sprintf("%v", *p)
 }
 
+func TestLoadRuntimeConfigParsesVoiceNotificationOverrides(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	contents := `
+[model]
+provider = "fake"
+
+[voice_notifications]
+enabled = true
+default_locale = "en-US"
+max_pending = 4
+
+[voice_notifications.response_tail]
+enabled = false
+max_items = 1
+max_text_chars = 64
+
+[voice_notifications.expiration]
+default_ttl_seconds = 30
+
+[voice_notifications.expiration.code_ttl_seconds]
+storage = 120
+`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	voice := cfg.VoiceNotifications
+	if !voice.EnabledOrDefault() || voice.DefaultLocale != "en-US" || voice.MaxPending != 4 {
+		t.Fatalf("voice notification overrides = %#v", voice)
+	}
+	if voice.ResponseTail.EnabledOrDefault() || voice.ResponseTail.MaxItems != 1 || voice.ResponseTail.MaxTextChars != 64 {
+		t.Fatalf("response tail overrides = %#v", voice.ResponseTail)
+	}
+	if voice.Expiration.DefaultTTLSeconds != 30 || voice.Expiration.CodeTTLSeconds["storage"] != 120 {
+		t.Fatalf("expiration overrides = %#v", voice.Expiration)
+	}
+}
+
 func TestConfigRejectsInvalidTerminationPolicyThresholdOrder(t *testing.T) {
 	cfg := Config{
 		Model: ModelConfig{Provider: "fake"},

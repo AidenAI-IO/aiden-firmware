@@ -29,6 +29,7 @@ The Go Agent supports device-side voice interaction, primarily consisting of `in
 | STT | `stt.go`, `tencent_asr_stt.go` | OpenAI Whisper / OpenRouter / Tencent Cloud ASR (`tencent-asr`; legacy values `tencent` / `tencent_asr` are compatible) |
 | TTS | `tts/`, `tts_helpers.go` | Pluggable TTS provider, outputs PCM for playback via `audio_service`; automatically resamples to device playback sample rate when necessary |
 | Dialog manager | `audio_dialog.go` | Orchestrates recording, VAD, STT/LLM/TTS flow |
+| Voice notifications | `voice_notification.go` | Adds a persistent response tail or final-turn failure replacement immediately before TTS |
 
 ## Input Modes
 
@@ -48,6 +49,8 @@ Device-side audio loop:
 3. Sends WAV to STT;
 4. STT text goes to Agent runtime;
 5. TTS synthesizes reply and plays via `audio_service`.
+
+Before final non-streaming TTS, the runtime passes the spoken reply through the shared [Voice Notification manager](voice-notifications.md). A successful turn may receive one short persistent tail. A final LLM failure may use a fixed replacement. These changes affect spoken text only, not assistant history or UI response text.
 
 ## Trigger Modes
 

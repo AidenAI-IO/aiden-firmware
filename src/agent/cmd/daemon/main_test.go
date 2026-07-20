@@ -722,7 +722,6 @@ func TestSignalVoiceWakeupEventCoalescesPendingEvents(t *testing.T) {
 	}
 }
 
-
 func TestProcessAudioLoopStopsRecordingBeforeProcessingUtterance(t *testing.T) {
 	dialog := &fakeAudioDialog{
 		frameSamples:    2,
@@ -1310,6 +1309,71 @@ func TestRunVoiceSessionDoesNotRecordWhileSpeaking(t *testing.T) {
 		if dialog.ops[i] != want {
 			t.Fatalf("dialog ops = %#v, want %#v", dialog.ops, wantOps)
 		}
+	}
+}
+
+func TestRunVoiceTurnAppendsAndConfirmsVoiceNotificationTail(t *testing.T) {
+	runtime := agent.NewRuntimeWithDeps(agent.DefaultConfig(), nil, nil, nil, agent.NewSkillIndex())
+	if err := runtime.VoiceNotificationSink().Publish(context.Background(), agent.VoiceNotificationEvent{
+		Code: "storage", Severity: agent.SeverityWarning, State: agent.VoiceNotificationActive, DedupeKey: "storage:device",
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	dialog := &fakeAudioDialog{}
+
+	runVoiceTurnWithInputContext(
+		agent.Config{},
+		dialog,
+		runtime,
+		agent.TurnInput{InputText: "voice"},
+		nil,
+		make(chan os.Signal, 1),
+		make(chan voiceEvent, 1),
+		agent.VoiceTurnContext{},
+		true,
+	)
+	if len(dialog.spoken) != 1 || dialog.spoken[0] != "reply。另外提醒一下，设备存储空间不足。" {
+		t.Fatalf("spoken texts = %#v", dialog.spoken)
+	}
+
+	dialog.spoken = nil
+	runVoiceTurnWithInputContext(
+		agent.Config{},
+		dialog,
+		runtime,
+		agent.TurnInput{InputText: "voice"},
+		nil,
+		make(chan os.Signal, 1),
+		make(chan voiceEvent, 1),
+		agent.VoiceTurnContext{},
+		true,
+	)
+	if len(dialog.spoken) != 1 || dialog.spoken[0] != "reply" {
+		t.Fatalf("completed tail repeated in same active cycle: %#v", dialog.spoken)
+	}
+}
+
+func TestRunVoiceTurnSpeaksReplacementForFinalLLMFailure(t *testing.T) {
+	runtime := agent.NewRuntimeWithDeps(agent.DefaultConfig(), nil, nil, nil, agent.NewSkillIndex())
+	dialog := &fakeAudioDialog{
+		runTurn: func(context.Context) (agent.RunResult, error) {
+			return agent.RunResult{}, errors.New("dial tcp: network is unreachable")
+		},
+	}
+
+	runVoiceTurnWithInputContext(
+		agent.Config{},
+		dialog,
+		runtime,
+		agent.TurnInput{InputText: "voice"},
+		nil,
+		make(chan os.Signal, 1),
+		make(chan voiceEvent, 1),
+		agent.VoiceTurnContext{},
+		true,
+	)
+	if len(dialog.spoken) != 1 || dialog.spoken[0] != "当前网络不可用，暂时无法完成这个请求。" {
+		t.Fatalf("spoken replacement = %#v", dialog.spoken)
 	}
 }
 

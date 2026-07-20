@@ -58,6 +58,7 @@ type Runtime struct {
 	logger             *Logger
 	profileDebouncer   *ProfileDebouncer
 	waitForWakeup      *WaitForWakeupController
+	voiceNotifications *VoiceNotificationManager
 	memoryPlane        MemoryPlane
 	sessionManager     SessionManager
 	contextManager     *contextmanager.ContextManager
@@ -466,6 +467,7 @@ func NewRuntimeWithDeps(cfg Config, models model.ModelResolver, memories *Memory
 		skills:             skillManager,
 		skillsLoaded:       skillIndex != nil && len(skillIndex.Names()) > 0,
 		waitForWakeup:      waitForWakeupController,
+		voiceNotifications: NewVoiceNotificationManager(cfg.VoiceNotifications),
 		runtimeID:          uuid.NewString(),
 		telemetrySessionID: uuid.NewString(),
 		environmentBridge:  environmentBridge,

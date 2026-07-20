@@ -494,6 +494,56 @@ func TestProcessUtteranceSpeaksTaggedTTSOutput(t *testing.T) {
 	}
 }
 
+func TestProcessUtteranceAppendsVoiceNotificationOnlyToSpokenText(t *testing.T) {
+	output := "Setup completed.\n<tts>Setup completed.</tts>"
+	model := &scriptedModel{responses: roleDirectResponses(output)}
+	store := NewChatHistoryStore(t.TempDir())
+	runtime := NewRuntimeWithDeps(
+		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."}),
+		&testModelResolver{model: model},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	if err := runtime.VoiceNotificationSink().Publish(context.Background(), VoiceNotificationEvent{
+		Code: "storage", Severity: SeverityWarning, State: VoiceNotificationActive, DedupeKey: "storage:device",
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	provider := &recordingTTSProvider{name: "dialog-provider"}
+	dialog := &AudioDialog{
+		config: Config{
+			Model:                    ModelConfig{Provider: "fake"},
+			Audio:                    AudioConfig{SampleRate: 16000},
+			InputMode:                "stt",
+			VoiceStreamingTTSEnabled: boolPtr(false),
+		},
+		sttClient:    &stubSTTClient{transcript: "check volume"},
+		audioClient:  NewAudioServiceClient(startTTSPlaybackAudioSocket(t)),
+		ttsManager:   ttsmodule.NewProviderManager(provider, nil),
+		audioArchive: NewAudioArchiveManager(AudioArchiveConfig{Enabled: false}),
+	}
+	dialog.SetHistoryStore(store)
+
+	if err := dialog.ProcessUtterance(context.Background(), []int16{100, -100, 200, -200}, runtime); err != nil {
+		t.Fatalf("ProcessUtterance() error = %v", err)
+	}
+	texts := provider.texts()
+	if len(texts) != 1 || texts[0] != "Setup completed.另外提醒一下，设备存储空间不足。" {
+		t.Fatalf("spoken texts = %#v", texts)
+	}
+
+	messages, err := store.Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	assistant, ok := firstMessageOfType(messages, "assistant")
+	if !ok || strings.Contains(assistant.Content, "存储空间") {
+		t.Fatalf("assistant history was changed by voice notification: %#v", assistant)
+	}
+}
+
 func TestAudioDialogSpeaksToolContentAsynchronously(t *testing.T) {
 	toolSpeech := true
 	model := &scriptedModel{

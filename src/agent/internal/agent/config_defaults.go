@@ -96,6 +96,22 @@ func DefaultConfig() Config {
 			MaxSizeMB:   defaultAudioArchiveMaxSizeMB,
 			StoragePath: defaultAudioArchiveStoragePath,
 		},
+		VoiceNotifications: VoiceNotificationsConfig{
+			Enabled:       defaultBoolPtr(true),
+			DefaultLocale: "zh-CN",
+			MaxPending:    8,
+			ResponseTail: VoiceNotificationResponseTailConfig{
+				Enabled:      defaultBoolPtr(true),
+				MaxItems:     1,
+				MaxTextChars: 40,
+			},
+			Expiration: VoiceNotificationExpirationConfig{
+				DefaultTTLSeconds: 0,
+				CodeTTLSeconds: map[string]int{
+					"storage": 900,
+				},
+			},
+		},
 		Log: LogConfig{
 			LLMHTTPRetentionDays: defaultLLMHTTPLogRetentionDays,
 		},

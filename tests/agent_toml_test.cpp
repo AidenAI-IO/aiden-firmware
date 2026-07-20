@@ -266,6 +266,38 @@ TEST_CASE("agent_toml defaults missing android keyboard device for old configs")
     std::remove(path.c_str());
 }
 
+TEST_CASE("agent_toml round-trip preserves voice notification settings") {
+    aiden::AgentToml cfg;
+    cfg.voice_notifications.enabled = false;
+    cfg.voice_notifications.default_locale = "en-US";
+    cfg.voice_notifications.max_pending = 6;
+    cfg.voice_notifications.response_tail.enabled = false;
+    cfg.voice_notifications.response_tail.max_items = 1;
+    cfg.voice_notifications.response_tail.max_text_chars = 72;
+    cfg.voice_notifications.expiration.default_ttl_seconds = 120;
+    cfg.voice_notifications.expiration.code_ttl_seconds["storage"] = 900;
+
+    std::string path = make_temp_path("voice_notifications.toml");
+    std::string err;
+    REQUIRE(aiden::save_agent_toml(path.c_str(), cfg, &err));
+    REQUIRE(err.empty());
+
+    aiden::AgentToml loaded;
+    REQUIRE(aiden::load_agent_toml(path.c_str(), loaded, &err));
+    REQUIRE(err.empty());
+    CHECK(loaded.voice_notifications.enabled == false);
+    CHECK(loaded.voice_notifications.default_locale == "en-US");
+    CHECK(loaded.voice_notifications.max_pending == 6);
+    CHECK(loaded.voice_notifications.response_tail.enabled == false);
+    CHECK(loaded.voice_notifications.response_tail.max_items == 1);
+    CHECK(loaded.voice_notifications.response_tail.max_text_chars == 72);
+    CHECK(loaded.voice_notifications.expiration.default_ttl_seconds == 120);
+    REQUIRE(loaded.voice_notifications.expiration.code_ttl_seconds.size() == 1);
+    CHECK(loaded.voice_notifications.expiration.code_ttl_seconds.at("storage") == 900);
+
+    std::remove(path.c_str());
+}
+
 TEST_CASE("agent_toml rejects negative live_activity timeout") {
     std::string path = make_temp_path("negative_live_activity_timeout.toml");
     {

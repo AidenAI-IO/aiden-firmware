@@ -624,12 +624,23 @@ func (d *AudioDialog) ProcessUtterance(ctx context.Context, utterance []int16, r
 	}
 	result, err := d.RunVoiceTurn(ctx, input, utterance, runtime)
 	if err != nil {
+		if !result.SpeechStreamed {
+			prepared := runtime.PrepareSpokenText(ctx, "", err, false)
+			if prepared.Text != "" {
+				if speakErr := d.Speak(ctx, prepared.Text, nil); speakErr != nil {
+					log.Printf("[error] failure replacement TTS failed: %v", speakErr)
+				}
+			}
+		}
 		return err
 	}
 	if result.SpeechStreamed {
 		return nil
 	}
-	return d.Speak(ctx, result.SpokenTextForConfig(d.config), nil)
+	prepared := runtime.PrepareSpokenText(ctx, result.SpokenTextForConfig(d.config), nil, true)
+	err = d.Speak(ctx, prepared.Text, nil)
+	runtime.ReportSpokenTextDelivery(prepared.DeliveryToken, err)
+	return err
 }
 
 // SetHistoryStore wires the chat history store. When non-nil, voice messages
@@ -954,7 +965,7 @@ func (d *AudioDialog) runAgentTurnWithActiveRequest(ctx context.Context, input T
 		result.SpeechStreamed = closeErr == nil && newStream.spokeSuccessfully()
 	}
 	if err != nil {
-		return RunResult{}, fmt.Errorf("LLM request failed: %w", err)
+		return result, fmt.Errorf("LLM request failed: %w", err)
 	}
 	if finalAssistantEvent != nil {
 		d.appendVoiceRunEvent(*finalAssistantEvent, requestID)
@@ -1269,6 +1280,14 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 		result.SpeechStreamed = closeErr == nil && newStream.spokeSuccessfully()
 	}
 	if err != nil {
+		if d.ttsManager != nil && !result.SpeechStreamed {
+			prepared := runtime.PrepareSpokenText(ctx, "", err, false)
+			if prepared.Text != "" {
+				if speakErr := d.Speak(ctx, prepared.Text, nil); speakErr != nil {
+					log.Printf("[error] failure replacement TTS failed: %v", speakErr)
+				}
+			}
+		}
 		return fmt.Errorf("LLM request failed: %w", err)
 	}
 	if finalAssistantEvent != nil {
@@ -1280,8 +1299,12 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 	// Speak response if TTS is available
 	speechText := result.SpokenTextForConfig(d.config)
 	if d.ttsManager != nil && speechText != "" && !result.SpeechStreamed {
-		if err := d.Speak(ctx, speechText, nil); err != nil {
+		prepared := runtime.PrepareSpokenText(ctx, speechText, nil, true)
+		if err := d.Speak(ctx, prepared.Text, nil); err != nil {
+			runtime.ReportSpokenTextDelivery(prepared.DeliveryToken, err)
 			log.Printf("[error] TTS streaming failed: %v", err)
+		} else {
+			runtime.ReportSpokenTextDelivery(prepared.DeliveryToken, nil)
 		}
 	} else if result.Output != "" {
 		log.Printf("[reply] %s\n", result.Output)
