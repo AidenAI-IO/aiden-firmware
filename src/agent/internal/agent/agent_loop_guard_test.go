@@ -89,7 +89,7 @@ func TestAgentLoopCombinesTerminationPolicyWithToolExecutionHooks(t *testing.T) 
 	}
 }
 
-func TestAgentLoopDeliversSoftNoticeAsTransient(t *testing.T) {
+func TestAgentLoopPersistsSoftNoticeInContext(t *testing.T) {
 	t.Parallel()
 
 	model := &scriptedModel{responses: []*llms.ContentResponse{
@@ -130,14 +130,16 @@ func TestAgentLoopDeliversSoftNoticeAsTransient(t *testing.T) {
 	if got := countLoopGuardNotices(model.messages[1]); got != 1 {
 		t.Fatalf("soft notice count in deciding prompt = %d, want 1", got)
 	}
-	for _, message := range manager.MessageListDump().Messages {
-		if message.Role == contextmanager.MessageRoleNotice {
-			t.Fatalf("soft notice should not persist: %#v", manager.MessageListDump().Messages)
-		}
+	notices := collectMessagesByRole(manager.MessageListDump().Messages, contextmanager.MessageRoleNotice)
+	if len(notices) != 1 {
+		t.Fatalf("persisted notice count = %d, want 1; messages=%#v", len(notices), manager.MessageListDump().Messages)
+	}
+	if !strings.Contains(notices[0].Content, "Loop guard: recent tool calls are repeating or not changing the screen.") {
+		t.Fatalf("persisted notice = %#v", notices[0])
 	}
 }
 
-func TestAgentLoopEscalatesFromTransientNoticeToRestrictionAndTermination(t *testing.T) {
+func TestAgentLoopEscalatesFromPersistedNoticeToRestrictionAndTermination(t *testing.T) {
 	t.Parallel()
 
 	screen := `{"width":100,"height":100,"format":"jpeg","data":"same-screen"}`
@@ -176,10 +178,12 @@ func TestAgentLoopEscalatesFromTransientNoticeToRestrictionAndTermination(t *tes
 	if got := countLoopGuardNotices(model.messages[2]); got != 1 {
 		t.Fatalf("restriction notice count in deciding prompt = %d, want 1", got)
 	}
-	for _, message := range manager.MessageListDump().Messages {
-		if message.Role == contextmanager.MessageRoleNotice {
-			t.Fatalf("loop guard notice should not persist in context manager: %#v", manager.MessageListDump().Messages)
-		}
+	notices := collectMessagesByRole(manager.MessageListDump().Messages, contextmanager.MessageRoleNotice)
+	if len(notices) != 1 {
+		t.Fatalf("persisted notice count = %d, want 1; messages=%#v", len(notices), manager.MessageListDump().Messages)
+	}
+	if !strings.Contains(notices[0].Content, "Loop guard: UI action tools are temporarily restricted because repeated actions produced no progress.") {
+		t.Fatalf("persisted notice = %#v", notices[0])
 	}
 }
 
@@ -264,4 +268,14 @@ func countLoopGuardNotices(messages []llms.MessageContent) int {
 		}
 	}
 	return notices
+}
+
+func collectMessagesByRole(messages []contextmanager.Message, role contextmanager.MessageRole) []contextmanager.Message {
+	var result []contextmanager.Message
+	for _, message := range messages {
+		if message.Role == role {
+			result = append(result, message)
+		}
+	}
+	return result
 }

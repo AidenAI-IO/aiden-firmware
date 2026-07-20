@@ -47,8 +47,10 @@ var modelSpecRegistry = map[string]model.ModelSpec{
 
 	// Moonshot Kimi K3 (vision + tool calling). Reached via the Moonshot
 	// OpenAI-compatible endpoint (bare model name) or the OpenRouter route.
-	"moonshotai/kimi-k3": {ContextWindow: 1_048_576, MaxOutput: 131_072},
-	"kimi-k3":            {ContextWindow: 1_048_576, MaxOutput: 131_072},
+	// K3 only accepts temperature=1, so pin it as the default; a user-set
+	// model.temperature still overrides.
+	"moonshotai/kimi-k3": {ContextWindow: 1_048_576, MaxOutput: 131_072, DefaultTemperature: floatPtr(1)},
+	"kimi-k3":            {ContextWindow: 1_048_576, MaxOutput: 131_072, DefaultTemperature: floatPtr(1)},
 
 	// Existing entries retained for back-compat with dev/staging configs.
 	"anthropic/claude-3.5-sonnet":  {ContextWindow: 200_000, MaxOutput: 8_192},
@@ -56,6 +58,12 @@ var modelSpecRegistry = map[string]model.ModelSpec{
 	"bytedance-seed/seed-2.0-lite": {ContextWindow: 128_000, MaxOutput: 8_192},
 	"openai/gpt-4o":                {ContextWindow: 128_000, MaxOutput: 16_384},
 	"openai/gpt-4o-mini":           {ContextWindow: 128_000, MaxOutput: 16_384},
+}
+
+// floatPtr returns a pointer to v, letting map-literal ModelSpec entries set
+// optional float fields like DefaultTemperature inline.
+func floatPtr(v float64) *float64 {
+	return &v
 }
 
 // LookupModelSpec returns the spec for the given (provider, model). It tries

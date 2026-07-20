@@ -2336,7 +2336,9 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddStringToObject(model, "base_url", config.model.base_url.c_str());
     cJSON_AddStringToObject(model, "token_env", config.model.token_env.c_str());
     cJSON_AddStringToObject(model, "reasoning_effort", config.model.reasoning_effort.c_str());
-    cJSON_AddNumberToObject(model, "temperature", config.model.temperature);
+    if (config.model.has_temperature) {
+        cJSON_AddNumberToObject(model, "temperature", config.model.temperature);
+    }
     cJSON_AddNumberToObject(model, "max_response_tokens", config.model.max_response_tokens);
     cJSON_AddNumberToObject(model, "context_window", config.model.context_window);
     cJSON_AddNumberToObject(model, "model_max_output_tokens", config.model.model_max_output_tokens);
@@ -2347,7 +2349,9 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddStringToObject(model_text, "model", config.model_text.model.c_str());
     cJSON_AddStringToObject(model_text, "base_url", config.model_text.base_url.c_str());
     cJSON_AddStringToObject(model_text, "token_env", config.model_text.token_env.c_str());
-    cJSON_AddNumberToObject(model_text, "temperature", config.model_text.temperature);
+    if (config.model_text.has_temperature) {
+        cJSON_AddNumberToObject(model_text, "temperature", config.model_text.temperature);
+    }
     cJSON_AddNumberToObject(model_text, "max_response_tokens", config.model_text.max_response_tokens);
     cJSON_AddNumberToObject(model_text, "context_window", config.model_text.context_window);
     cJSON_AddNumberToObject(model_text, "model_max_output_tokens", config.model_text.model_max_output_tokens);
@@ -2625,7 +2629,18 @@ void update_model_from_json(cJSON* obj, aiden::ModelToml* m) {
     set_json_str(&m->api_key, obj, "api_key");
     set_json_str(&m->token_env, obj, "token_env");
     set_json_str(&m->reasoning_effort, obj, "reasoning_effort");
-    set_json_double(&m->temperature, obj, "temperature");
+    // Temperature is nullable: presence of the key sets has_temperature, and
+    // its absence clears it. This function applies JSON as a patch onto an
+    // existing config (see handle_post_config), so an omitted key must unset the
+    // value rather than leave a stale one, letting the UI clear temperature by
+    // omitting it.
+    cJSON* temp_item = cJSON_GetObjectItem(obj, "temperature");
+    if (temp_item && json_is_number(temp_item)) {
+        m->temperature = temp_item->valuedouble;
+        m->has_temperature = true;
+    } else {
+        m->has_temperature = false;
+    }
     set_json_int(&m->max_response_tokens, obj, "max_response_tokens");
     set_json_int(&m->context_window, obj, "context_window");
     set_json_int(&m->model_max_output_tokens, obj, "model_max_output_tokens");
@@ -5525,7 +5540,10 @@ ApiResponse handle_config_test(const Options& options, const std::string& body) 
                 cJSON* req = cJSON_CreateObject();
                 cJSON_AddStringToObject(req, "model", model_name.c_str());
                 cJSON_AddNumberToObject(req, "max_tokens", 4);
-                cJSON_AddNumberToObject(req, "temperature", 0);
+                // Omit temperature: this is only an auth/connectivity probe, and
+                // some models (e.g. Kimi K3) reject any temperature but their own
+                // fixed value. Letting the model use its default keeps the check
+                // valid across every provider.
                 cJSON* msgs = add_array(req, "messages");
                 cJSON* msg = cJSON_CreateObject();
                 cJSON_AddStringToObject(msg, "role", "user");

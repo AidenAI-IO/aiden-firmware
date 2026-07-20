@@ -66,11 +66,11 @@ type modelDTO struct {
 	Provider             string  `json:"provider"`
 	APIKey               string  `json:"api_key"`
 	Model                string  `json:"model"`
-	BaseURL              string  `json:"base_url"`
-	TokenEnv             string  `json:"token_env"`
-	ReasoningEffort      string  `json:"reasoning_effort"`
-	Temperature          float64 `json:"temperature"`
-	MaxResponseTokens    int     `json:"max_response_tokens"`
+	BaseURL              string   `json:"base_url"`
+	TokenEnv             string   `json:"token_env"`
+	ReasoningEffort      string   `json:"reasoning_effort"`
+	Temperature          *float64 `json:"temperature,omitempty"`
+	MaxResponseTokens    int      `json:"max_response_tokens"`
 	ContextWindow        int     `json:"context_window"`
 	ModelMaxOutputTokens int     `json:"model_max_output_tokens"`
 }
