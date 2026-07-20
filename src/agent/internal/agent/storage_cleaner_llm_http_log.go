@@ -86,7 +86,7 @@ func (c *LLMHTTPLogCleaner) EstimateReclaimable(context.Context) (uint64, error)
 		}
 
 		logTime := logFileTime(entry.Name(), info.ModTime())
-		if logTime.Before(cutoff) {
+		if c.retentionAge == 0 || logTime.Before(cutoff) {
 			total += uint64(info.Size())
 		}
 	}
@@ -95,7 +95,7 @@ func (c *LLMHTTPLogCleaner) EstimateReclaimable(context.Context) (uint64, error)
 }
 
 func (c *LLMHTTPLogCleaner) Clean(ctx context.Context) (uint64, error) {
-	return c.clean(ctx, false)
+	return c.clean(ctx, c.retentionAge == 0)
 }
 
 func (c *LLMHTTPLogCleaner) clean(_ context.Context, force bool) (uint64, error) {

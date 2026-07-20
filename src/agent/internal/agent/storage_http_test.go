@@ -119,8 +119,9 @@ func TestStorageCleanupHTTPReportsOnlyCurrentOperationFreedSpace(t *testing.T) {
 		storageSampleWithAvailableMB(60),
 	}}
 	cleaner := &recordingStorageCleaner{name: "llm_http_log_7d", priority: 1, freed: 7 * storageMegabyte}
+	noOpCleaner := &recordingStorageCleaner{name: "audio_archive_30d", priority: 2, freed: 0}
 	config := DefaultStorageConfig()
-	monitor := NewStorageMonitor(config, sampler, nil, []StorageCleaner{cleaner}, nil)
+	monitor := NewStorageMonitor(config, sampler, nil, []StorageCleaner{cleaner, noOpCleaner}, nil)
 	if _, err := monitor.CheckAndRemediate(context.Background(), StorageCheckRequest{Reason: CheckReasonManual}); err != nil {
 		t.Fatalf("initial cleanup error = %v", err)
 	}
@@ -140,5 +141,39 @@ func TestStorageCleanupHTTPReportsOnlyCurrentOperationFreedSpace(t *testing.T) {
 	}
 	if response.FreedMB != 0 {
 		t.Fatalf("freed_mb = %d, want 0 for current no-op cleanup", response.FreedMB)
+	}
+}
+
+func TestStorageCleanupHTTPRejectsTrailingJSON(t *testing.T) {
+	monitor := NewStorageMonitor(DefaultStorageConfig(), &sequenceStorageSampler{
+		samples: []StorageSample{storageSampleWithAvailableMB(60)},
+	}, nil, nil, nil)
+	server := &Server{storageMonitor: monitor}
+	body := bytes.NewBufferString(`{"force":false}{"force":true}`)
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/storage/cleanup", body))
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("POST cleanup code = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestStorageCleanupHTTPRejectsUnknownTarget(t *testing.T) {
+	cleaner := &recordingStorageCleaner{name: "llm_http_log_7d", priority: 1, freed: storageMegabyte}
+	monitor := NewStorageMonitor(DefaultStorageConfig(), &sequenceStorageSampler{
+		samples: []StorageSample{storageSampleWithAvailableMB(60)},
+	}, nil, []StorageCleaner{cleaner}, nil)
+	server := &Server{storageMonitor: monitor}
+	body := bytes.NewBufferString(`{"targets":["unknown_cleanup"]}`)
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/storage/cleanup", body))
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("POST cleanup code = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
+	}
+	if cleaner.calls != 0 {
+		t.Fatalf("cleaner calls = %d after invalid target, want 0", cleaner.calls)
 	}
 }

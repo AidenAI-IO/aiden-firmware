@@ -124,6 +124,42 @@ func TestStorageMonitorPublishesFinalLevelToRuntimeStateFile(t *testing.T) {
 	}
 }
 
+func TestStorageMonitorDisabledStartClearsStaleRuntimeStateFile(t *testing.T) {
+	levelPath := filepath.Join(t.TempDir(), "storage_level")
+	if err := os.WriteFile(levelPath, []byte("critical\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	config := DefaultStorageConfig()
+	config.Enabled = false
+	monitor := NewStorageMonitor(config, nil, nil, nil, nil)
+	monitor.SetLevelStatePath(levelPath)
+
+	if err := monitor.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if _, err := os.Stat(levelPath); !os.IsNotExist(err) {
+		t.Fatalf("disabled Start() left stale level state, stat error = %v", err)
+	}
+}
+
+func TestStorageMonitorStopClearsRuntimeStateFile(t *testing.T) {
+	levelPath := filepath.Join(t.TempDir(), "storage_level")
+	config := DefaultStorageConfig()
+	config.Cleanup.Enabled = false
+	monitor := NewStorageMonitor(config, &sequenceStorageSampler{
+		samples: []StorageSample{storageSampleWithAvailableMB(8)},
+	}, nil, nil, nil)
+	monitor.SetLevelStatePath(levelPath)
+
+	if err := monitor.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	monitor.Stop()
+	if _, err := os.Stat(levelPath); !os.IsNotExist(err) {
+		t.Fatalf("Stop() left stale level state, stat error = %v", err)
+	}
+}
+
 func TestStorageMonitorCheckAndRemediatePublishesOnlyCleanupFinalState(t *testing.T) {
 	sampler := &sequenceStorageSampler{samples: []StorageSample{
 		storageSampleWithAvailableMB(40),
@@ -280,6 +316,31 @@ func TestStorageMonitorManualCleanupRunsAtNormalLevelWithoutForce(t *testing.T) 
 		t.Fatalf("cleaner calls = %d, want 1 for manual cleanup", cleaner.calls)
 	}
 	if status.AvailableBytes != 65*storageMegabyte || status.Level != StorageLevelNormal {
+		t.Fatalf("manual cleanup status = %+v", status)
+	}
+}
+
+func TestStorageMonitorManualCleanupWithoutForceSkipsEmergencyStages(t *testing.T) {
+	sampler := &sequenceStorageSampler{samples: []StorageSample{
+		storageSampleWithAvailableMB(60),
+		storageSampleWithAvailableMB(61),
+	}}
+	regular := &recordingStorageCleaner{name: "llm_http_log_7d", priority: 1, freed: 0}
+	emergency := &recordingStorageCleaner{name: "llm_http_log_0d", priority: 2, freed: storageMegabyte}
+	config := DefaultStorageConfig()
+	monitor := NewStorageMonitor(config, sampler, nil, []StorageCleaner{
+		withMinimumStorageLevel(regular, StorageLevelNormal),
+		withMinimumStorageLevel(emergency, StorageLevelEmergency),
+	}, nil)
+
+	status, err := monitor.CheckAndRemediate(context.Background(), StorageCheckRequest{Reason: CheckReasonManual})
+	if err != nil {
+		t.Fatalf("CheckAndRemediate() error = %v", err)
+	}
+	if emergency.calls != 0 {
+		t.Fatalf("emergency cleaner calls = %d for non-force manual cleanup, want 0", emergency.calls)
+	}
+	if status.Level != StorageLevelNormal || status.CurrentCleanupFreedBytes != 0 {
 		t.Fatalf("manual cleanup status = %+v", status)
 	}
 }
@@ -656,6 +717,30 @@ func TestLLMHTTPLogCleanerForceCleanDeletesSameDayNonCurrentLog(t *testing.T) {
 
 	if _, err := cleaner.ForceClean(context.Background()); err != nil {
 		t.Fatalf("ForceClean() error = %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("same-day non-current log still exists, stat error = %v", err)
+	}
+}
+
+func TestLLMHTTPLogCleanerZeroDayDeletesSameDayNonCurrentLog(t *testing.T) {
+	tmpDir := t.TempDir()
+	name := "llm-http-" + time.Now().Add(-time.Minute).Format("200601021504") + ".log"
+	path := filepath.Join(tmpDir, name)
+	if err := os.WriteFile(path, []byte("log"), 0o644); err != nil {
+		t.Fatalf("write same-day log: %v", err)
+	}
+	cleaner := NewLLMHTTPLogCleanerWithSessionProvider(tmpDir, 0, 1, func() string { return "current-session" })
+
+	estimate, err := cleaner.EstimateReclaimable(context.Background())
+	if err != nil {
+		t.Fatalf("EstimateReclaimable() error = %v", err)
+	}
+	if estimate != uint64(len("log")) {
+		t.Fatalf("EstimateReclaimable() = %d, want %d", estimate, len("log"))
+	}
+	if _, err := cleaner.Clean(context.Background()); err != nil {
+		t.Fatalf("Clean() error = %v", err)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("same-day non-current log still exists, stat error = %v", err)

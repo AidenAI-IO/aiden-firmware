@@ -315,8 +315,15 @@ func (m *StorageMonitor) CheckAndRemediate(ctx context.Context, request StorageC
 				continue
 			}
 			currentLevel := m.applyRecoveryHysteresis(previous.Level, final.AvailableBytes, final.Level)
-			if leveled, ok := cleaner.(storageCleanerLevel); ok && !request.Force && request.Reason != CheckReasonManual && storageLevelRank(currentLevel) < storageLevelRank(leveled.MinimumLevel()) {
-				continue
+			if leveled, ok := cleaner.(storageCleanerLevel); ok && !request.Force {
+				minimumLevel := leveled.MinimumLevel()
+				if request.Reason == CheckReasonManual {
+					if minimumLevel == StorageLevelEmergency && storageLevelRank(currentLevel) < storageLevelRank(StorageLevelEmergency) {
+						continue
+					}
+				} else if storageLevelRank(currentLevel) < storageLevelRank(minimumLevel) {
+					continue
+				}
 			}
 			var freed uint64
 			var cleanErr error
@@ -477,6 +484,26 @@ func cleanerSelected(name string, targets []string) bool {
 	return false
 }
 
+func (m *StorageMonitor) ValidateCleanupTargets(targets []string) error {
+	for _, target := range targets {
+		target = strings.TrimSpace(target)
+		if target == "" {
+			return fmt.Errorf("storage cleanup target must not be empty")
+		}
+		matched := false
+		for _, cleaner := range m.cleaners {
+			if cleanerSelected(cleaner.Name(), []string{target}) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return fmt.Errorf("unknown storage cleanup target %q", target)
+		}
+	}
+	return nil
+}
+
 func (m *StorageMonitor) sampleStatus(ctx context.Context, path string) (StorageStatus, error) {
 	sample, err := m.sampler.Sample(ctx, path)
 	if err != nil {
@@ -569,7 +596,7 @@ func (m *StorageMonitor) unavailableCapabilities(level StorageLevel) []StorageCa
 
 func (m *StorageMonitor) Start() error {
 	if !m.config.Enabled {
-		return nil
+		return m.clearLevelState()
 	}
 	m.startMu.Lock()
 	if m.started {
@@ -608,6 +635,9 @@ func (m *StorageMonitor) monitorLoop() {
 func (m *StorageMonitor) Stop() {
 	m.cancel()
 	m.wg.Wait()
+	if err := m.clearLevelState(); err != nil && m.logger != nil {
+		m.logger.Warn("storage_monitor: clear level state failed: %v", err)
+	}
 }
 
 func (m *StorageMonitor) SetVoiceNotificationSink(notifier VoiceNotificationSink) {
@@ -644,6 +674,20 @@ func (m *StorageMonitor) publishLevelState(level StorageLevel) {
 	if err := os.Rename(tmpPath, path); err != nil && m.logger != nil {
 		m.logger.Warn("storage_monitor: publish level state failed: %v", err)
 	}
+}
+
+func (m *StorageMonitor) clearLevelState() error {
+	m.checkMu.Lock()
+	defer m.checkMu.Unlock()
+	if m.levelStatePath == "" {
+		return nil
+	}
+	for _, path := range []string{m.levelStatePath, m.levelStatePath + ".tmp"} {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove storage level state %q: %w", path, err)
+		}
+	}
+	return nil
 }
 
 func (m *StorageMonitor) ForceCleanup(path string) error {

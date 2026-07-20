@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"time"
 )
@@ -97,6 +98,14 @@ func (s *Server) handleStorageCleanup(w http.ResponseWriter, r *http.Request) {
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil {
 		http.Error(w, "invalid storage cleanup request", http.StatusBadRequest)
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		http.Error(w, "invalid storage cleanup request", http.StatusBadRequest)
+		return
+	}
+	if err := s.storageMonitor.ValidateCleanupTargets(request.Targets); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	status, err := s.storageMonitor.CheckAndRemediate(r.Context(), StorageCheckRequest{
