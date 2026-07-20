@@ -1139,11 +1139,11 @@ func (r *Runtime) getStateHook() contextmanager.AppendMessageHook {
 		// key1: value1
 		// key2: value2
 		// ...
-		formated := ""
+		var formated strings.Builder
 		for _, entry := range entries {
-			formated += fmt.Sprintf("%s: %s\n", entry.Key, entry.Value)
+			fmt.Fprintf(&formated, "%s: %s\n", entry.Key, entry.Value)
 		}
-		tagged := fmt.Sprintf("<state>\n%s\n</state>", formated)
+		tagged := util.STag("state", formated.String())
 		// create a new StateMessage
 		stateMessage := contextmanager.Message{
 			Role:    contextmanager.MessageRoleState,
@@ -1511,8 +1511,8 @@ func (r *Runtime) enrichEpisodeRuntimeTelemetry(episode *TaskEpisode) {
 
 func telemetryModelParametersFromModelConfig(cfg ModelConfig) map[string]interface{} {
 	params := map[string]interface{}{}
-	if cfg.Temperature != 0 {
-		params["temperature"] = cfg.Temperature
+	if cfg.Temperature != nil {
+		params["temperature"] = *cfg.Temperature
 	}
 	if cfg.MaxResponseTokens > 0 {
 		params["max_response_tokens"] = cfg.MaxResponseTokens

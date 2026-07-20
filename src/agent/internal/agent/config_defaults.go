@@ -67,9 +67,11 @@ func defaultBoolPtr(value bool) *bool {
 func DefaultConfig() Config {
 	return Config{
 		Model: ModelConfig{
-			Provider:          defaultModelProvider,
-			Model:             defaultModelName,
-			Temperature:       defaultModelTemperature,
+			Provider: defaultModelProvider,
+			Model:    defaultModelName,
+			// Temperature is intentionally left unset here; the effective default
+			// is resolved from model metadata at load time (see
+			// applyModelTemperatureDefault), falling back to defaultModelTemperature.
 			MaxResponseTokens: defaultModelMaxResponseTokens,
 			LogRawHTTP:        defaultModelLogRawHTTP,
 			ReasoningEffort:   defaultModelReasoningEffort,

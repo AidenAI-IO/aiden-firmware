@@ -233,7 +233,7 @@ The three stall-score thresholds must satisfy
 | `base_url` | Custom OpenAI-compatible endpoint. Optional for `kimi`/`kimi-cn` (each has a built-in default). |
 | `api_key` | API key written directly |
 | `token_env` | Read the API key from the specified environment variable; only supported by `[model]` |
-| `temperature` | Sampling temperature |
+| `temperature` | Sampling temperature. When unset, the default is model-dependent (some models such as Kimi K3 require a fixed temperature), falling back to `0.2`. An explicit value always takes precedence. |
 | `max_response_tokens` | Maximum output tokens passed to the model on request |
 | `context_window` | Optional total context window override in tokens. Unset or `0` uses provider metadata for OpenRouter/Ollama when available, then the built-in registry, then memory fallback. |
 | `model_max_output_tokens` | Optional advertised max output override in tokens. Unset or `0` uses provider metadata when fetched, then the built-in registry. |

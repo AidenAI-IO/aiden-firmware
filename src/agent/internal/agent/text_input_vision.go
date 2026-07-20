@@ -146,7 +146,10 @@ func (v *llmTextInputVision) visionJSON(ctx context.Context, prompt string, scre
 			llms.ImageURLPart(imgURL),
 		}},
 	}
-	resp, err := model.GenerateContent(ctx, msgs, llms.WithTemperature(0), llms.WithJSONMode())
+	// Use the model's configured temperature for vision analysis. Previously
+	// hardcoded to 0 for determinism, but that breaks kimi-k3 (requires temp=1)
+	// and the temperature difference has minimal impact on vision text extraction.
+	resp, err := model.GenerateContent(ctx, msgs, llms.WithJSONMode())
 	if err != nil {
 		return "", err
 	}

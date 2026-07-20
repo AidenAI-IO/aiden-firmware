@@ -972,6 +972,45 @@ TEST_CASE("config_web: POST /api/config writes audio_archive section") {
     CHECK(saved.find("storage_path = \"/userdata/custom-audio\"") != std::string::npos);
 }
 
+TEST_CASE("config_web: POST /api/config omitting temperature clears a saved value") {
+    // Regression test: update_model_from_json() applies JSON as a patch onto the
+    // config pre-loaded from disk. Omitting the temperature key must clear the
+    // previously-saved value (has_temperature=false), letting the UI unset it.
+    StubEnv env;
+    auto handle = start_server(env);
+
+    // First save an explicit temperature.
+    const std::string with_temp =
+        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\","
+        "\"temperature\":0.7},"
+        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    HttpResponse first = http_request(handle->port, "POST", "/api/config", with_temp);
+    CHECK(first.status == 200);
+    {
+        std::ifstream saved_in((handle->tmp_dir + "/agent.toml").c_str());
+        REQUIRE(saved_in.good());
+        std::ostringstream buf;
+        buf << saved_in.rdbuf();
+        CHECK(buf.str().find("temperature = 0.7") != std::string::npos);
+    }
+
+    // Now save again without the temperature key: it must be cleared.
+    const std::string without_temp =
+        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
+        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    HttpResponse second = http_request(handle->port, "POST", "/api/config", without_temp);
+    CHECK(second.status == 200);
+
+    std::ifstream saved_in((handle->tmp_dir + "/agent.toml").c_str());
+    REQUIRE(saved_in.good());
+    std::ostringstream saved_buffer;
+    saved_buffer << saved_in.rdbuf();
+    const std::string saved = saved_buffer.str();
+    CHECK(saved.find("temperature") == std::string::npos);
+}
+
 TEST_CASE("config_web: POST /api/config writes ota section") {
     // Regression test: update_config_from_json() must handle the ota section.
     // It was added to AgentToml, TOML read/write, and validation, but was

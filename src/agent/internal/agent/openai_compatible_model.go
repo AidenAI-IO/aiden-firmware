@@ -29,6 +29,7 @@ type openAICompatibleModel struct {
 	explicitPromptCache bool
 	routerMetadata      bool
 	reasoningEffort     string
+	temperature         *float64
 	// sessionIDProvider, when set, supplies the value for the x-session-id
 	// request header. It is only wired up for the OpenRouter provider, whose
 	// sticky routing uses the session id to keep multi-turn requests on the same
@@ -108,6 +109,12 @@ func withOpenAICompatibleRouterMetadata() openAICompatibleModelOption {
 func withOpenAICompatibleReasoningEffort(effort string) openAICompatibleModelOption {
 	return func(m *openAICompatibleModel) {
 		m.reasoningEffort = strings.TrimSpace(effort)
+	}
+}
+
+func withOpenAICompatibleTemperature(temp *float64) openAICompatibleModelOption {
+	return func(m *openAICompatibleModel) {
+		m.temperature = temp
 	}
 }
 
@@ -357,8 +364,9 @@ type compatibleChatStreamResponse struct {
 	ID      string `json:"id,omitempty"`
 	Choices []struct {
 		Delta struct {
-			Content   any                       `json:"content,omitempty"`
-			ToolCalls []compatibleToolCallDelta `json:"tool_calls,omitempty"`
+			Content          any                       `json:"content,omitempty"`
+			ReasoningContent any                       `json:"reasoning_content,omitempty"`
+			ToolCalls        []compatibleToolCallDelta `json:"tool_calls,omitempty"`
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
@@ -388,8 +396,9 @@ type compatibleStreamingLogChoice struct {
 }
 
 type compatibleStreamingLogMessage struct {
-	Content   string               `json:"content"`
-	ToolCalls []compatibleToolCall `json:"tool_calls,omitempty"`
+	Content          string               `json:"content"`
+	ReasoningContent string               `json:"reasoning_content,omitempty"`
+	ToolCalls        []compatibleToolCall `json:"tool_calls,omitempty"`
 }
 
 func newOpenAICompatibleModel(baseURL, model, token string, httpClient *http.Client, opts ...openAICompatibleModelOption) llms.Model {
@@ -446,7 +455,14 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 		ToolChoice:       normalizeToolChoice(callOpts.ToolChoice, callOpts.FunctionCallBehavior),
 		Stream:           callOpts.StreamingFunc != nil,
 	}
-	if callOpts.Temperature != 0 {
+	// Temperature precedence: model field (set at construction via
+	// withOpenAICompatibleTemperature, lets explicit 0 through) > callOpts
+	// (langchaingo convention, 0 means unset). The model field is the primary
+	// channel for openAI-compatible models; callOpts remains for telemetry and
+	// non-openai-compatible providers (ollama, fake).
+	if m.temperature != nil {
+		reqPayload.Temperature = m.temperature
+	} else if callOpts.Temperature != 0 {
 		reqPayload.Temperature = &callOpts.Temperature
 	}
 	if callOpts.JSONMode {
@@ -597,6 +613,7 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 		generationInfo = map[string]any{}
 	}
 	var content strings.Builder
+	var reasoningContent strings.Builder
 	stopReason := ""
 	toolCalls := map[int]*compatibleToolCall{}
 	var usageInfo map[string]any
@@ -606,8 +623,10 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 	streamReadStart := time.Now()
 	firstSSESeen := false
 	firstContentSeen := false
+	firstReasoningSeen := false
 	sseEvents := 0
 	contentChunks := 0
+	reasoningChunks := 0
 	commentCount := 0
 	rawLoggingEnabled := m.rawLogger != nil && rawHTTPLogEnabled(ctx)
 	logRawStream := func(scanErr error) {
@@ -627,7 +646,7 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 				rawSSE = rawStream.String()
 			}
 		}
-		body := formatStreamingRawHTTPLogBody(content.String(), stopReason, orderedCompatibleToolCalls(toolCalls), usageInfo, streamDone, scanErr, rawSSE)
+		body := formatStreamingRawHTTPLogBody(content.String(), reasoningContent.String(), stopReason, orderedCompatibleToolCalls(toolCalls), usageInfo, streamDone, scanErr, rawSSE)
 		_ = m.logRawHTTP(ctx, requestModel, "response", logStatusCode, body)
 	}
 	var scanErr error
@@ -684,6 +703,19 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 			stopReason = choice.FinishReason
 		}
 
+		// Process reasoning_content delta (e.g., from kimi-k3 forced-reasoning models)
+		reasoningChunk := flattenResponseContent(choice.Delta.ReasoningContent)
+		if reasoningChunk != "" {
+			if !firstReasoningSeen {
+				generationInfo["llm_time_to_first_reasoning_ms"] = time.Since(callStarted).Milliseconds()
+				firstReasoningSeen = true
+			}
+			reasoningChunks++
+			reasoningContent.WriteString(reasoningChunk)
+			// TODO: Emit "thinking" audio cue or progress indicator for voice interaction
+			// During reasoning phase, TTS is silent which causes poor UX in voice mode
+		}
+
 		chunk := flattenResponseContent(choice.Delta.Content)
 		if chunk != "" {
 			if !firstContentSeen {
@@ -727,6 +759,7 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 	generationInfo["llm_stream_read_ms"] = time.Since(streamReadStart).Milliseconds()
 	generationInfo["llm_stream_sse_events"] = sseEvents
 	generationInfo["llm_stream_content_chunks"] = contentChunks
+	generationInfo["llm_stream_reasoning_chunks"] = reasoningChunks
 	generationInfo["llm_stream_comment_count"] = commentCount
 	if err := scanner.Err(); err != nil {
 		scanErr = err
@@ -736,9 +769,10 @@ func (m *openAICompatibleModel) decodeStreamingResponse(ctx context.Context, bod
 	orderedToolCalls := orderedCompatibleToolCalls(toolCalls)
 
 	choice := &llms.ContentChoice{
-		Content:    content.String(),
-		StopReason: stopReason,
-		ToolCalls:  convertResponseToolCalls(orderedToolCalls),
+		Content:          content.String(),
+		ReasoningContent: reasoningContent.String(),
+		StopReason:       stopReason,
+		ToolCalls:        convertResponseToolCalls(orderedToolCalls),
 	}
 	if len(choice.ToolCalls) > 0 {
 		choice.FuncCall = choice.ToolCalls[0].FunctionCall
@@ -832,14 +866,15 @@ func orderedCompatibleToolCalls(toolCalls map[int]*compatibleToolCall) []compati
 	return orderedToolCalls
 }
 
-func formatStreamingRawHTTPLogBody(content, finishReason string, toolCalls []compatibleToolCall, usage map[string]any, done bool, streamErr error, rawSSE string) string {
+func formatStreamingRawHTTPLogBody(content, reasoningContent, finishReason string, toolCalls []compatibleToolCall, usage map[string]any, done bool, streamErr error, rawSSE string) string {
 	resp := compatibleStreamingLogResponse{
 		Stream: true,
 		Done:   done,
 		Choices: []compatibleStreamingLogChoice{{
 			Message: compatibleStreamingLogMessage{
-				Content:   content,
-				ToolCalls: toolCalls,
+				Content:          content,
+				ReasoningContent: reasoningContent,
+				ToolCalls:        toolCalls,
 			},
 			FinishReason: finishReason,
 		}},
