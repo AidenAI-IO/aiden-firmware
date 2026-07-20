@@ -1905,7 +1905,7 @@ func (s *Server) speakTextForRequest(ctx context.Context, requestID string, text
 }
 
 func (s *Server) playPromptSoundAsync(kind promptSoundKind, label string) {
-	s.logger.Info("Playing prompt sound: %s, %s", kind, label)
+	s.logger.Info("Playing prompt sound: %v, %s", kind, label)
 	if s.audioClient == nil {
 		return
 	}

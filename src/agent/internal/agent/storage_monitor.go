@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -40,6 +42,7 @@ const (
 	StorageCapabilityAudioArchive       StorageCapability = "audio_archive"
 	StorageCapabilitySessionArchive     StorageCapability = "session_archive"
 	StorageCapabilitySessionPersistence StorageCapability = "session_persistence"
+	StorageCapabilityAgentLog           StorageCapability = "agent_log"
 )
 
 // StorageSample is a point-in-time filesystem sample.
@@ -218,11 +221,12 @@ type VoiceNotificationEvent struct {
 
 // StorageMonitor owns storage sampling, remediation and final-state projection.
 type StorageMonitor struct {
-	config   StorageConfig
-	sampler  StorageSampler
-	logger   *Logger
-	cleaners []StorageCleaner
-	notifier VoiceNotificationSink
+	config         StorageConfig
+	sampler        StorageSampler
+	logger         *Logger
+	cleaners       []StorageCleaner
+	notifier       VoiceNotificationSink
+	levelStatePath string
 
 	checkMu  sync.Mutex
 	statusMu sync.RWMutex
@@ -389,6 +393,7 @@ func (m *StorageMonitor) CheckAndRemediate(ctx context.Context, request StorageC
 	m.statusMu.Lock()
 	m.status = cloneStorageStatus(final)
 	m.statusMu.Unlock()
+	m.publishLevelState(final.Level)
 	if m.logger != nil && (previous.Level != final.Level || len(cleanupHistory) > 0) {
 		m.logger.Info("storage_monitor: final level %s, %s %dMB available", final.Level, final.Path, final.AvailableBytes/storageMegabyte)
 	}
@@ -609,6 +614,36 @@ func (m *StorageMonitor) SetVoiceNotificationSink(notifier VoiceNotificationSink
 	m.checkMu.Lock()
 	defer m.checkMu.Unlock()
 	m.notifier = notifier
+}
+
+// SetLevelStatePath publishes the final storage level for deployment-side guards.
+func (m *StorageMonitor) SetLevelStatePath(path string) {
+	m.checkMu.Lock()
+	defer m.checkMu.Unlock()
+	m.levelStatePath = strings.TrimSpace(path)
+}
+
+func (m *StorageMonitor) publishLevelState(level StorageLevel) {
+	path := m.levelStatePath
+	if path == "" {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		if m.logger != nil {
+			m.logger.Warn("storage_monitor: create level state directory failed: %v", err)
+		}
+		return
+	}
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, []byte(string(level)+"\n"), 0o644); err != nil {
+		if m.logger != nil {
+			m.logger.Warn("storage_monitor: write level state failed: %v", err)
+		}
+		return
+	}
+	if err := os.Rename(tmpPath, path); err != nil && m.logger != nil {
+		m.logger.Warn("storage_monitor: publish level state failed: %v", err)
+	}
 }
 
 func (m *StorageMonitor) ForceCleanup(path string) error {

@@ -103,6 +103,27 @@ func TestStorageMonitorThresholdsUseExactBytes(t *testing.T) {
 	}
 }
 
+func TestStorageMonitorPublishesFinalLevelToRuntimeStateFile(t *testing.T) {
+	levelPath := filepath.Join(t.TempDir(), "storage_level")
+	config := DefaultStorageConfig()
+	config.Cleanup.Enabled = false
+	monitor := NewStorageMonitor(config, &sequenceStorageSampler{
+		samples: []StorageSample{storageSampleWithAvailableMB(8)},
+	}, nil, nil, nil)
+	monitor.SetLevelStatePath(levelPath)
+
+	if _, err := monitor.CheckAndRemediate(context.Background(), StorageCheckRequest{Reason: CheckReasonPeriodic}); err != nil {
+		t.Fatalf("CheckAndRemediate() error = %v", err)
+	}
+	data, err := os.ReadFile(levelPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(data) != "critical\n" {
+		t.Fatalf("level state = %q, want critical", data)
+	}
+}
+
 func TestStorageMonitorCheckAndRemediatePublishesOnlyCleanupFinalState(t *testing.T) {
 	sampler := &sequenceStorageSampler{samples: []StorageSample{
 		storageSampleWithAvailableMB(40),

@@ -90,7 +90,12 @@ func newRuntimeStorageMonitor(cfg Config, logger *Logger, memories *MemoryManage
 		priority++
 		cleaners = append(cleaners, withMinimumStorageLevel(cleaner, StorageLevelEmergency))
 	}
-	return NewStorageMonitor(storageConfig, nil, logger, cleaners, nil)
+	monitor := NewStorageMonitor(storageConfig, nil, logger, cleaners, nil)
+	monitor.SetLevelStatePath("/run/agent/storage_level")
+	if logger != nil {
+		logger.SetStorageMonitor(monitor)
+	}
+	return monitor
 }
 
 func splitStorageRetentionDays(days []int) (regular []int, aggressive []int) {

@@ -4,11 +4,35 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
+
+type storageFailureWriter struct{}
+
+func (storageFailureWriter) Write([]byte) (int, error) { return 0, syscall.ENOSPC }
+
+func TestLoggerTriggersStorageRemediationOnWriteFailure(t *testing.T) {
+	sampler := &sequenceStorageSampler{samples: []StorageSample{storageSampleWithAvailableMB(8)}}
+	config := DefaultStorageConfig()
+	config.Cleanup.Enabled = false
+	monitor := NewStorageMonitor(config, sampler, nil, nil, nil)
+	logger := &Logger{logger: log.New(storageFailureWriter{}, "", 0)}
+	logger.SetStorageMonitor(monitor)
+
+	logger.Info("write should fail")
+	deadline := time.Now().Add(time.Second)
+	for sampler.calls == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if sampler.calls == 0 {
+		t.Fatal("storage remediation was not triggered after logger ENOSPC")
+	}
+}
 
 func TestLLMRawHTTPLoggerHonorsStorageCapability(t *testing.T) {
 	dir := t.TempDir()
