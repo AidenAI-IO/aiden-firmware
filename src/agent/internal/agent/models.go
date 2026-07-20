@@ -99,8 +99,8 @@ func (m *ModelManager) Get() (llms.Model, error) {
 
 func (m *ModelManager) CallOptions() []chains.ChainCallOption {
 	options := make([]chains.ChainCallOption, 0, 2)
-	if m.config.Temperature != 0 {
-		options = append(options, chains.WithTemperature(m.config.Temperature))
+	if m.config.Temperature != nil {
+		options = append(options, chains.WithTemperature(*m.config.Temperature))
 	}
 	if m.config.MaxResponseTokens > 0 {
 		options = append(options, chains.WithMaxTokens(m.config.MaxResponseTokens))
@@ -211,6 +211,9 @@ func (m *ModelManager) openAICompatibleOptions(cfg ModelConfig) []openAICompatib
 	}
 	if cfg.ReasoningEffort != "" {
 		opts = append(opts, withOpenAICompatibleReasoningEffort(cfg.ReasoningEffort))
+	}
+	if cfg.Temperature != nil {
+		opts = append(opts, withOpenAICompatibleTemperature(cfg.Temperature))
 	}
 	return opts
 }
