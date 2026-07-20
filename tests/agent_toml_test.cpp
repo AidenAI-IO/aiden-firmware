@@ -64,6 +64,7 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.model.api_key = "sk-or-test";
     cfg.model.token_env = "OPENROUTER_API_KEY";
     cfg.model.temperature = 0.2;
+    cfg.model.has_temperature = true;
     cfg.model.max_response_tokens = 1000;
     cfg.model.context_window = 64000;
     cfg.model.model_max_output_tokens = 4096;

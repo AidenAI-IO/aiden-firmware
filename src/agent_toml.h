@@ -13,6 +13,7 @@ struct ModelToml {
     std::string token_env;
     std::string reasoning_effort;
     double temperature = 0.0;
+    bool has_temperature = false;
     int max_response_tokens = 0;
     int context_window = 0;
     int model_max_output_tokens = 0;

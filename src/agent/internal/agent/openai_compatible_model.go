@@ -29,6 +29,7 @@ type openAICompatibleModel struct {
 	explicitPromptCache bool
 	routerMetadata      bool
 	reasoningEffort     string
+	temperature         *float64
 	// sessionIDProvider, when set, supplies the value for the x-session-id
 	// request header. It is only wired up for the OpenRouter provider, whose
 	// sticky routing uses the session id to keep multi-turn requests on the same
@@ -108,6 +109,12 @@ func withOpenAICompatibleRouterMetadata() openAICompatibleModelOption {
 func withOpenAICompatibleReasoningEffort(effort string) openAICompatibleModelOption {
 	return func(m *openAICompatibleModel) {
 		m.reasoningEffort = strings.TrimSpace(effort)
+	}
+}
+
+func withOpenAICompatibleTemperature(temp *float64) openAICompatibleModelOption {
+	return func(m *openAICompatibleModel) {
+		m.temperature = temp
 	}
 }
 
@@ -446,7 +453,14 @@ func (m *openAICompatibleModel) GenerateContent(ctx context.Context, messages []
 		ToolChoice:       normalizeToolChoice(callOpts.ToolChoice, callOpts.FunctionCallBehavior),
 		Stream:           callOpts.StreamingFunc != nil,
 	}
-	if callOpts.Temperature != 0 {
+	// Temperature precedence: model field (set at construction via
+	// withOpenAICompatibleTemperature, lets explicit 0 through) > callOpts
+	// (langchaingo convention, 0 means unset). The model field is the primary
+	// channel for openAI-compatible models; callOpts remains for telemetry and
+	// non-openai-compatible providers (ollama, fake).
+	if m.temperature != nil {
+		reqPayload.Temperature = m.temperature
+	} else if callOpts.Temperature != 0 {
 		reqPayload.Temperature = &callOpts.Temperature
 	}
 	if callOpts.JSONMode {
