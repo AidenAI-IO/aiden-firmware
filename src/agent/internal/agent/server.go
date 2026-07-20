@@ -2657,11 +2657,11 @@ func (s *Server) handleAudioFile(w http.ResponseWriter, r *http.Request) {
 }
 
 // audioReadRoots lists every directory that may hold archived recordings.
-// An explicit storage_path bypasses the storage-mode machinery.
+// A non-default storage_path bypasses the storage-mode machinery.
 func (s *Server) audioReadRoots() []string {
 	archive := s.runtime.config.AudioArchive
-	if strings.TrimSpace(archive.StoragePath) != "" {
-		return []string{archive.StoragePathOrDefault()}
+	if path := archive.ExplicitStoragePath(); path != "" {
+		return []string{path}
 	}
 	if sm := s.storageManager(); sm != nil {
 		return sm.ReadRoots(StorageClassAudio)

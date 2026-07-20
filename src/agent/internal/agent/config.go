@@ -110,6 +110,21 @@ func (c AudioArchiveConfig) StoragePathOrDefault() string {
 	return path
 }
 
+// ExplicitStoragePath returns the storage path only when it opts out of
+// storage-manager routing, else "". DefaultConfig seeds StoragePath with the
+// built-in default and the config portal persists resolved values, so a stored
+// "/userdata/audio" is indistinguishable from "never configured" — and it names
+// the same directory the storage manager already uses as the audio eMMC tier.
+// Treat it as unset; only a non-default path pins recordings to a fixed
+// directory.
+func (c AudioArchiveConfig) ExplicitStoragePath() string {
+	path := strings.TrimSpace(c.StoragePath)
+	if path == defaultAudioArchiveStoragePath {
+		return ""
+	}
+	return path
+}
+
 // StorageConfig tunes the optional microSD data store managed by
 // StorageManager. The storage mode itself is not configurable: a usable
 // card means dual storage, otherwise eMMC only (docs/04-agent/storage-modes.md).
