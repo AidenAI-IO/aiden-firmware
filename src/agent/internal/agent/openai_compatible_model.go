@@ -118,6 +118,7 @@ type llmRawHTTPLogger struct {
 	dir               string
 	sessionID         string
 	sessionIDProvider func() string
+	storageMonitor    *StorageMonitor
 	now               func() time.Time
 	mu                sync.Mutex
 }
@@ -143,6 +144,15 @@ func (l *llmRawHTTPLogger) SetSessionIDProvider(provider func() string) {
 	l.sessionIDProvider = provider
 }
 
+func (l *llmRawHTTPLogger) SetStorageMonitor(monitor *StorageMonitor) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.storageMonitor = monitor
+}
+
 func (l *llmRawHTTPLogger) Log(model, kind string, statusCode int, raw string) error {
 	return l.LogWithFileTime(model, kind, statusCode, raw, time.Time{})
 }
@@ -153,6 +163,12 @@ func (l *llmRawHTTPLogger) LogWithFileTime(model, kind string, statusCode int, r
 
 func (l *llmRawHTTPLogger) LogWithFileScope(model, kind string, statusCode int, raw string, fileTime time.Time, sessionID string) error {
 	if l == nil || strings.TrimSpace(l.dir) == "" {
+		return nil
+	}
+	l.mu.Lock()
+	storageMonitor := l.storageMonitor
+	l.mu.Unlock()
+	if storageMonitor != nil && !storageMonitor.AllowWrite(StorageCapabilityLLMHTTPLog) {
 		return nil
 	}
 	now := l.currentTime()
@@ -190,6 +206,9 @@ func (l *llmRawHTTPLogger) LogWithFileScope(model, kind string, statusCode int, 
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if err := os.MkdirAll(l.dir, 0755); err != nil {
+		if storageMonitor != nil && storageMonitor.HandleWriteError(err) {
+			return nil
+		}
 		return err
 	}
 
@@ -203,10 +222,16 @@ func (l *llmRawHTTPLogger) LogWithFileScope(model, kind string, statusCode int, 
 	path := filepath.Join(l.dir, fileName)
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
+		if storageMonitor != nil && storageMonitor.HandleWriteError(err) {
+			return nil
+		}
 		return err
 	}
 	defer file.Close()
 	_, err = file.Write(append(entryBytes, '\n'))
+	if err != nil && storageMonitor != nil && storageMonitor.HandleWriteError(err) {
+		return nil
+	}
 	return err
 }
 

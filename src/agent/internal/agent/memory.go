@@ -80,6 +80,7 @@ type MemoryManager struct {
 	longTermOnce                   sync.Once
 	lockTimeout                    time.Duration
 	logger                         *Logger
+	storageMonitor                 *StorageMonitor
 	sessionBoundaryEnabledOverride *bool
 
 	maintenanceMu      sync.Mutex
@@ -195,6 +196,25 @@ func WithLongTermMemoryStore(store *LongTermMemoryStore) MemoryManagerOption {
 // WithMemoryLogger sets the logger for memory operations.
 func WithMemoryLogger(logger *Logger) MemoryManagerOption {
 	return func(m *MemoryManager) { m.logger = logger }
+}
+
+func (m *MemoryManager) SetStorageMonitor(monitor *StorageMonitor) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.storageMonitor = monitor
+}
+
+func (m *MemoryManager) allowStorageWrite(capability string) bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	monitor := m.storageMonitor
+	m.mu.Unlock()
+	return monitor == nil || monitor.AllowWrite(capability)
 }
 
 // WithContextWindowFn lets the runtime supply the active model's context
@@ -408,7 +428,11 @@ func (m *MemoryManager) ClearAll(ctx context.Context, agentName string) error {
 }
 
 // Save persists the current memory state into session events and triggers maintenance.
-func (m *MemoryManager) Save(ctx context.Context, agentName string) error {
+func (m *MemoryManager) Save(ctx context.Context, agentName string) (retErr error) {
+	defer func() { retErr = m.suppressStorageWriteError(retErr) }()
+	if !m.allowStorageWrite(StorageCapabilitySessionPersistence) {
+		return nil
+	}
 	records, err := m.Snapshot(ctx, agentName)
 	if err != nil {
 		return err
@@ -491,8 +515,12 @@ func (m *MemoryManager) AppendMessages(ctx context.Context, agentName string, re
 	return m.AppendMessagesWithMetadata(ctx, agentName, records, SessionEventMetadata{})
 }
 
-func (m *MemoryManager) AppendMessagesWithMetadata(ctx context.Context, agentName string, records []MessageRecord, meta SessionEventMetadata) error {
+func (m *MemoryManager) AppendMessagesWithMetadata(ctx context.Context, agentName string, records []MessageRecord, meta SessionEventMetadata) (retErr error) {
+	defer func() { retErr = m.suppressStorageWriteError(retErr) }()
 	if m.storageDir == "" {
+		return nil
+	}
+	if !m.allowStorageWrite(StorageCapabilitySessionPersistence) {
 		return nil
 	}
 	if len(records) == 0 {
@@ -544,8 +572,12 @@ func (m *MemoryManager) AppendMessagesWithMetadata(ctx context.Context, agentNam
 	return nil
 }
 
-func (m *MemoryManager) AppendSessionEvent(ctx context.Context, agentName string, event SessionEvent, meta SessionEventMetadata) error {
+func (m *MemoryManager) AppendSessionEvent(ctx context.Context, agentName string, event SessionEvent, meta SessionEventMetadata) (retErr error) {
+	defer func() { retErr = m.suppressStorageWriteError(retErr) }()
 	if m.storageDir == "" {
+		return nil
+	}
+	if !m.allowStorageWrite(StorageCapabilitySessionPersistence) {
 		return nil
 	}
 	if err := ctx.Err(); err != nil {
@@ -587,6 +619,22 @@ func (m *MemoryManager) AppendSessionEvent(ctx context.Context, agentName string
 	return nil
 }
 
+func (m *MemoryManager) suppressStorageWriteError(err error) error {
+	if err == nil || m == nil {
+		return err
+	}
+	m.mu.Lock()
+	monitor := m.storageMonitor
+	m.mu.Unlock()
+	if monitor != nil && monitor.HandleWriteError(err) {
+		if m.logger != nil {
+			m.logger.Warn("[memory] persistence deferred after storage write failure: %v", err)
+		}
+		return nil
+	}
+	return err
+}
+
 func (m *MemoryManager) ensureEventCountLoadedLocked(agentName string) error {
 	if m.eventCount[agentName] != 0 {
 		return nil
@@ -619,6 +667,9 @@ func (m *MemoryManager) RotateSessionEvents() (string, error) {
 
 func (m *MemoryManager) RotateSessionEventsDetailed() (SessionRotationResult, error) {
 	if m.storageDir == "" {
+		return SessionRotationResult{}, nil
+	}
+	if !m.allowStorageWrite(StorageCapabilitySessionArchive) {
 		return SessionRotationResult{}, nil
 	}
 	rotation, err := func() (SessionRotationResult, error) {

@@ -1,11 +1,40 @@
 package agent
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestAudioArchiveManagerSkipsWriteWhenStorageCapabilityUnavailable(t *testing.T) {
+	tmpDir := t.TempDir()
+	sampler := &sequenceStorageSampler{samples: []StorageSample{storageSampleWithAvailableMB(8)}}
+	storageConfig := DefaultStorageConfig()
+	storageConfig.Cleanup.Enabled = false
+	monitor := NewStorageMonitor(storageConfig, sampler, nil, nil, nil)
+	if _, err := monitor.CheckAndRemediate(context.Background(), StorageCheckRequest{Reason: CheckReasonPeriodic}); err != nil {
+		t.Fatalf("CheckAndRemediate() error = %v", err)
+	}
+	mgr := NewAudioArchiveManager(AudioArchiveConfig{Enabled: true, StoragePath: tmpDir})
+	mgr.SetStorageMonitor(monitor)
+
+	path, duration, err := mgr.SaveAudio(make([]int16, 16000), 16000)
+	if err != nil {
+		t.Fatalf("SaveAudio() error = %v", err)
+	}
+	if path != "" || duration != 1000 {
+		t.Fatalf("SaveAudio() = path %q duration %d, want skipped path and preserved duration", path, duration)
+	}
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("ReadDir() error = %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("archive directory contains %d files, want none", len(entries))
+	}
+}
 
 func TestAudioArchiveManagerSaveAndCleanup(t *testing.T) {
 	tmpDir := t.TempDir()

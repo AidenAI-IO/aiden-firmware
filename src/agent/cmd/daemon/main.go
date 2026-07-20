@@ -116,6 +116,9 @@ func main() {
 		os.Exit(1)
 	}
 	defer runtime.Close()
+	if err := runtime.StartStorageMonitor(); err != nil {
+		log.Printf("[storage_monitor] startup check failed: %v", err)
+	}
 	if wrote, err := ota.WriteHealthMarkerIfPending("/userdata/ota/pending_boot.json", "/userdata/ota/health.ok"); err != nil {
 		log.Printf("[ota] health marker not written: %v", err)
 	} else if wrote {
@@ -193,6 +196,7 @@ func runAudioMode(cfg agent.Config, runtime *agent.Runtime, server *agent.Server
 		fmt.Fprintf(os.Stderr, "create audio dialog: %v\n", err)
 		os.Exit(1)
 	}
+	dialog.SetStorageMonitor(runtime.StorageMonitor())
 	dialog.SetHistoryAppender(server.AppendHistory)
 
 	inputMode := cfg.InputModeOrDefault()

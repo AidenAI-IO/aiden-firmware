@@ -96,6 +96,7 @@ func DefaultConfig() Config {
 		Log: LogConfig{
 			LLMHTTPRetentionDays: defaultLLMHTTPLogRetentionDays,
 		},
+		Storage: DefaultStorageConfig(),
 		HID: HIDConfig{
 			KeyboardDevice:        defaultKeyboardDevice,
 			MouseDevice:           defaultMouseDevice,

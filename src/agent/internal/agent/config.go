@@ -133,6 +133,7 @@ type Config struct {
 	Audio                      AudioConfig             `toml:"audio,omitempty"`
 	AudioArchive               AudioArchiveConfig      `toml:"audio_archive,omitempty"`
 	Log                        LogConfig               `toml:"log,omitempty"`
+	Storage                    StorageConfig           `toml:"storage,omitempty"`
 	Search                     SearchConfig            `toml:"search,omitempty"`
 	EnvironmentBridge          EnvironmentBridgeConfig `toml:"-"` // Only set via CLI flags, never from config file
 	Benchmark                  BenchmarkConfig         `toml:"-"` // Only set via CLI flags, never from config file
@@ -855,6 +856,9 @@ func (c Config) Validate() error {
 	}
 	if c.Log.LLMHTTPRetentionDays < 0 {
 		return fmt.Errorf("log.llm_http_retention_days must be >= 0, got %d", c.Log.LLMHTTPRetentionDays)
+	}
+	if err := c.Storage.Validate(); err != nil {
+		return err
 	}
 	if c.ScreenshotKeepN < 0 {
 		return fmt.Errorf("screenshot_keep_n must be >= 0, got %d", c.ScreenshotKeepN)

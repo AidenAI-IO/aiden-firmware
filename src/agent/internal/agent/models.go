@@ -42,6 +42,29 @@ type ModelManager struct {
 	providerMetadataCachePath string
 	rawHTTPLogDir             string
 	rawHTTPLogSessionID       func() string
+	storageMu                 sync.RWMutex
+	storageMonitor            *StorageMonitor
+}
+
+func (m *ModelManager) SetStorageMonitor(monitor *StorageMonitor) {
+	if m == nil {
+		return
+	}
+	m.storageMu.Lock()
+	m.storageMonitor = monitor
+	m.storageMu.Unlock()
+	if model, ok := m.model.(*openAICompatibleModel); ok && model.rawLogger != nil {
+		model.rawLogger.SetStorageMonitor(monitor)
+	}
+}
+
+func (m *ModelManager) currentStorageMonitor() *StorageMonitor {
+	if m == nil {
+		return nil
+	}
+	m.storageMu.RLock()
+	defer m.storageMu.RUnlock()
+	return m.storageMonitor
 }
 
 type ModelManagerOption func(*ModelManager)
@@ -196,6 +219,7 @@ func (m *ModelManager) openAICompatibleOptions(cfg ModelConfig) []openAICompatib
 	if cfg.LogRawHTTP && strings.TrimSpace(m.rawHTTPLogDir) != "" {
 		logger := newLLMRawHTTPLogger(m.rawHTTPLogDir, "")
 		logger.SetSessionIDProvider(m.rawHTTPLogSessionID)
+		logger.SetStorageMonitor(m.currentStorageMonitor())
 		opts = append(opts, withOpenAICompatibleRawHTTPLogger(logger))
 	}
 	if cfg.ReasoningEffort != "" {

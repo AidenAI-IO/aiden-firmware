@@ -66,6 +66,7 @@ type Server struct {
 	steerSignals         map[string]chan struct{}
 	steersMu             sync.Mutex
 	eventBroadcaster     *EventBroadcaster
+	storageMonitor       *StorageMonitor
 }
 
 type webAudioRecording struct {
@@ -364,6 +365,7 @@ func NewServer(runtime *Runtime, addr string) *Server {
 		pendingSteers:       make(map[string]pendingSteerMessage),
 		steerSignals:        make(map[string]chan struct{}),
 		eventBroadcaster:    NewEventBroadcaster(),
+		storageMonitor:      runtime.storageMonitor,
 	}
 	if runtime.config.ConfigDir != "" {
 		memoryDir := filepath.Join(runtime.config.ConfigDir, "memory")
@@ -416,8 +418,8 @@ func NewServer(runtime *Runtime, addr string) *Server {
 	return s
 }
 
-// Start starts the HTTP server
-func (s *Server) Start() error {
+// Handler returns the HTTP API and web UI routes served by Server.
+func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	// API endpoints
@@ -460,6 +462,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/phone-bridge/results/", s.handlePhoneBridgeResults)
 	mux.HandleFunc("/api/android-adb/status", s.handleAndroidADBStatus)
 	mux.HandleFunc("/api/android-adb/pair", s.handleAndroidADBPair)
+	mux.HandleFunc("/api/storage/status", s.handleStorageStatus)
+	mux.HandleFunc("/api/storage/cleanup", s.handleStorageCleanup)
 
 	// Coordinate debug tool and its screenshot feed. Exposes live screen data,
 	// so it is intentionally available on all listen addresses (including the
@@ -475,6 +479,12 @@ func (s *Server) Start() error {
 
 	// Static web UI
 	mux.HandleFunc("/", s.handleIndex)
+	return mux
+}
+
+// Start starts the HTTP server
+func (s *Server) Start() error {
+	handler := s.Handler()
 
 	if s.logger != nil {
 		s.logger.Info("Starting HTTP server on %s", s.addr)
@@ -482,7 +492,7 @@ func (s *Server) Start() error {
 
 	srv := &http.Server{
 		Addr:    s.addr,
-		Handler: mux,
+		Handler: handler,
 	}
 
 	errCh := make(chan error, 1)

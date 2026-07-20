@@ -13,7 +13,12 @@ import (
 
 // AudioArchiveManager handles saving and cleanup of audio recordings.
 type AudioArchiveManager struct {
-	config AudioArchiveConfig
+	config         AudioArchiveConfig
+	storageMonitor *StorageMonitor
+}
+
+func (m *AudioArchiveManager) SetStorageMonitor(monitor *StorageMonitor) {
+	m.storageMonitor = monitor
 }
 
 // NewAudioArchiveManager creates a new audio archive manager.
@@ -37,10 +42,14 @@ func (m *AudioArchiveManager) SaveAudio(samples []int16, sampleRate int) (string
 	if !m.config.Enabled {
 		return "", durationMs, nil
 	}
+	if m.storageMonitor != nil && !m.storageMonitor.AllowWrite(StorageCapabilityAudioArchive) {
+		return "", durationMs, nil
+	}
 
 	// Ensure storage directory exists
 	storagePath := m.config.StoragePathOrDefault()
 	if err := os.MkdirAll(storagePath, 0755); err != nil {
+		m.handleStorageWriteError(err)
 		return "", 0, fmt.Errorf("create storage dir: %w", err)
 	}
 
@@ -52,6 +61,7 @@ func (m *AudioArchiveManager) SaveAudio(samples []int16, sampleRate int) (string
 
 	// Write WAV file
 	if err := writeWAVFile(filePath, samples, sampleRate); err != nil {
+		m.handleStorageWriteError(err)
 		return "", 0, fmt.Errorf("write WAV: %w", err)
 	}
 
@@ -62,6 +72,12 @@ func (m *AudioArchiveManager) SaveAudio(samples []int16, sampleRate int) (string
 	}
 
 	return filePath, durationMs, nil
+}
+
+func (m *AudioArchiveManager) handleStorageWriteError(err error) {
+	if m.storageMonitor != nil {
+		m.storageMonitor.HandleWriteError(err)
+	}
 }
 
 // cleanup removes old audio files based on max_files and max_size_mb limits.

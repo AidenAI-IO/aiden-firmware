@@ -1,0 +1,72 @@
+package agent
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+func TestStorageStatusHTTPReturnsConsistentSnapshot(t *testing.T) {
+	sampler := &sequenceStorageSampler{samples: []StorageSample{storageSampleWithAvailableMB(40)}}
+	config := DefaultStorageConfig()
+	config.Cleanup.Enabled = false
+	monitor := NewStorageMonitor(config, sampler, nil, nil, nil)
+	if _, err := monitor.CheckAndRemediate(context.Background(), StorageCheckRequest{Reason: CheckReasonPeriodic}); err != nil {
+		t.Fatalf("CheckAndRemediate() error = %v", err)
+	}
+	server := &Server{storageMonitor: monitor}
+
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/storage/status", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET status code = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Path           string       `json:"path"`
+		AvailableMB    uint64       `json:"available_mb"`
+		AlertLevel     StorageLevel `json:"alert_level"`
+		StatusRevision uint64       `json:"status_revision"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode GET response: %v", err)
+	}
+	if response.Path != "/userdata" || response.AvailableMB != 40 || response.AlertLevel != StorageLevelWarning || response.StatusRevision != 1 {
+		t.Fatalf("GET response = %+v", response)
+	}
+}
+
+func TestStorageCleanupHTTPUsesMonitorRemediationFlow(t *testing.T) {
+	sampler := &sequenceStorageSampler{samples: []StorageSample{
+		storageSampleWithAvailableMB(40),
+		storageSampleWithAvailableMB(60),
+	}}
+	cleaner := &recordingStorageCleaner{name: "llm_http_log_7d", priority: 1, freed: 7 * 1024 * 1024}
+	config := DefaultStorageConfig()
+	monitor := NewStorageMonitor(config, sampler, nil, []StorageCleaner{cleaner}, nil)
+	server := &Server{storageMonitor: monitor}
+
+	body := bytes.NewBufferString(`{"force":true,"targets":["llm_http_log"]}`)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/storage/cleanup", body))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("POST cleanup code = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Success         bool         `json:"success"`
+		FreedMB         uint64       `json:"freed_mb"`
+		FinalAlertLevel StorageLevel `json:"final_alert_level"`
+		AvailableMB     uint64       `json:"available_mb"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode POST response: %v", err)
+	}
+	if !response.Success || response.FreedMB != 7 || response.FinalAlertLevel != StorageLevelNormal || response.AvailableMB != 60 {
+		t.Fatalf("POST response = %+v", response)
+	}
+	if cleaner.calls != 1 {
+		t.Fatalf("cleaner calls = %d, want 1", cleaner.calls)
+	}
+}

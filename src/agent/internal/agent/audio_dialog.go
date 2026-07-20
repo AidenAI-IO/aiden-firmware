@@ -165,6 +165,13 @@ func NewAudioDialog(cfg Config) (*AudioDialog, error) {
 	}, nil
 }
 
+// SetStorageMonitor connects non-essential audio archival to storage capability gating.
+func (d *AudioDialog) SetStorageMonitor(monitor *StorageMonitor) {
+	if d != nil && d.audioArchive != nil {
+		d.audioArchive.SetStorageMonitor(monitor)
+	}
+}
+
 // StartRecording starts an audio recording session
 func (d *AudioDialog) StartRecording() error {
 	d.recordMu.Lock()

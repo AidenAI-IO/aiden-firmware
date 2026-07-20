@@ -111,6 +111,48 @@ parse_failure_limit = 13
 	}
 }
 
+func TestLoadRuntimeConfigParsesStorageOverrides(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	contents := `
+[model]
+provider = "fake"
+
+[storage]
+enabled = true
+root_path = "/mnt/device"
+check_interval_seconds = 42
+warning_threshold_mb = 80
+critical_threshold_mb = 20
+emergency_threshold_mb = 6
+recovery_hysteresis_mb = 9
+
+[storage.cleanup]
+enabled = false
+llm_http_log_retention_days = [9, 2]
+audio_archive_retention_days = [14]
+session_archive_retention_days = [45]
+cleanup_retry_interval_seconds = 75
+`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	storage := cfg.Storage
+	if storage.RootPath != "/mnt/device" || storage.CheckIntervalSeconds != 42 || storage.WarningThresholdMB != 80 ||
+		storage.CriticalThresholdMB != 20 || storage.EmergencyThresholdMB != 6 || storage.RecoveryHysteresisMB != 9 {
+		t.Fatalf("storage overrides = %+v", storage)
+	}
+	if storage.Cleanup.Enabled || !reflect.DeepEqual(storage.Cleanup.LLMHTTPLogRetentionDays, []int{9, 2}) ||
+		!reflect.DeepEqual(storage.Cleanup.AudioArchiveRetentionDays, []int{14}) ||
+		!reflect.DeepEqual(storage.Cleanup.SessionArchiveRetentionDays, []int{45}) || storage.Cleanup.CleanupRetryIntervalSeconds != 75 {
+		t.Fatalf("storage cleanup overrides = %+v", storage.Cleanup)
+	}
+}
+
 func TestConfigRejectsInvalidTerminationPolicyThresholdOrder(t *testing.T) {
 	cfg := Config{
 		Model: ModelConfig{Provider: "fake"},
