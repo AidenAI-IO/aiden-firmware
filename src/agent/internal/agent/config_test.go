@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -155,6 +156,115 @@ base_url = "https://gateway.example.com/v1"
 			}
 		})
 	}
+}
+
+func TestLoadRuntimeConfigResolvesModelTemperatureDefault(t *testing.T) {
+	tests := []struct {
+		name    string
+		model   string
+		explSet string // explicit temperature line, empty means unset
+		want    *float64
+	}{
+		{
+			name:  "kimi-k3 without explicit temperature pins model default",
+			model: "kimi-k3",
+			want:  floatPtr(1),
+		},
+		{
+			name:    "explicit temperature overrides kimi-k3 model default",
+			model:   "kimi-k3",
+			explSet: "temperature = 0.5",
+			want:    floatPtr(0.5),
+		},
+		{
+			name:  "unknown model without explicit temperature uses fallback",
+			model: "gpt-5.5",
+			want:  floatPtr(defaultModelTemperature),
+		},
+		{
+			name:    "explicit zero temperature is respected",
+			model:   "kimi-k3",
+			explSet: "temperature = 0.0",
+			want:    floatPtr(0),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "agent.toml")
+			contents := "[model]\nprovider = \"openai\"\nmodel = \"" + tt.model + "\"\n" + tt.explSet + "\n"
+			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+
+			cfg, err := LoadRuntimeConfig(path)
+			if err != nil {
+				t.Fatalf("LoadRuntimeConfig() error = %v", err)
+			}
+			if !floatPtrEqual(cfg.Model.Temperature, tt.want) {
+				t.Errorf("model.temperature = %v, want %v", formatFloatPtr(cfg.Model.Temperature), formatFloatPtr(tt.want))
+			}
+		})
+	}
+}
+
+func TestLoadRuntimeConfigResolvesModelTextTemperatureDefault(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	contents := `
+[model]
+provider = "openai"
+model = "gpt-5.5"
+
+[model_text]
+provider = "kimi"
+model = "kimi-k3"
+`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	if !floatPtrEqual(cfg.Model.Temperature, floatPtr(defaultModelTemperature)) {
+		t.Errorf("model.temperature = %v, want %v (fallback)", formatFloatPtr(cfg.Model.Temperature), defaultModelTemperature)
+	}
+	if !floatPtrEqual(cfg.ModelText.Temperature, floatPtr(1)) {
+		t.Errorf("model_text.temperature = %v, want 1 (kimi-k3 default)", formatFloatPtr(cfg.ModelText.Temperature))
+	}
+}
+
+func TestLoadResolvedConfigKeepsTemperatureUnset(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	contents := "[model]\nprovider = \"kimi\"\nmodel = \"kimi-k3\"\n"
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadResolvedConfig(path)
+	if err != nil {
+		t.Fatalf("LoadResolvedConfig() error = %v", err)
+	}
+	if cfg.Model.Temperature != nil {
+		t.Errorf("model.temperature = %v, want nil (LoadResolvedConfig keeps unset for editor)", formatFloatPtr(cfg.Model.Temperature))
+	}
+}
+
+func floatPtrEqual(a, b *float64) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
+}
+
+func formatFloatPtr(p *float64) string {
+	if p == nil {
+		return "nil"
+	}
+	return fmt.Sprintf("%v", *p)
 }
 
 func TestConfigRejectsInvalidTerminationPolicyThresholdOrder(t *testing.T) {

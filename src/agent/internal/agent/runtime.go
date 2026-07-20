@@ -1499,8 +1499,8 @@ func (r *Runtime) enrichEpisodeRuntimeTelemetry(episode *TaskEpisode) {
 
 func telemetryModelParametersFromModelConfig(cfg ModelConfig) map[string]interface{} {
 	params := map[string]interface{}{}
-	if cfg.Temperature != 0 {
-		params["temperature"] = cfg.Temperature
+	if cfg.Temperature != nil {
+		params["temperature"] = *cfg.Temperature
 	}
 	if cfg.MaxResponseTokens > 0 {
 		params["max_response_tokens"] = cfg.MaxResponseTokens
