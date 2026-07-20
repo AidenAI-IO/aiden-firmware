@@ -2258,6 +2258,9 @@ Memory entries:
 
 // Close releases resources held by the runtime
 func (r *Runtime) Close() error {
+	if r.storage != nil {
+		r.storage.Stop()
+	}
 	if r.mergeWorker != nil {
 		r.mergeWorker.Stop()
 	}
