@@ -126,6 +126,12 @@ critical_threshold_mb = 20
 emergency_threshold_mb = 6
 recovery_hysteresis_mb = 9
 
+[storage.degraded_mode]
+disable_llm_http_log = false
+disable_audio_archive = false
+disable_session_archive = false
+max_agent_log_mb = 3
+
 [storage.cleanup]
 enabled = false
 llm_http_log_retention_days = [9, 2]
@@ -145,6 +151,9 @@ cleanup_retry_interval_seconds = 75
 	if storage.RootPath != "/mnt/device" || storage.CheckIntervalSeconds != 42 || storage.WarningThresholdMB != 80 ||
 		storage.CriticalThresholdMB != 20 || storage.EmergencyThresholdMB != 6 || storage.RecoveryHysteresisMB != 9 {
 		t.Fatalf("storage overrides = %+v", storage)
+	}
+	if storage.DegradedMode.DisableLLMHTTPLog || storage.DegradedMode.DisableAudioArchive || storage.DegradedMode.DisableSessionArchive || storage.DegradedMode.MaxAgentLogMB != 3 {
+		t.Fatalf("storage degraded mode overrides = %+v", storage.DegradedMode)
 	}
 	if storage.Cleanup.Enabled || !reflect.DeepEqual(storage.Cleanup.LLMHTTPLogRetentionDays, []int{9, 2}) ||
 		!reflect.DeepEqual(storage.Cleanup.AudioArchiveRetentionDays, []int{14}) ||

@@ -118,6 +118,7 @@ type StorageDegradedModeConfig struct {
 	DisableLLMHTTPLog     bool `toml:"disable_llm_http_log"`
 	DisableAudioArchive   bool `toml:"disable_audio_archive"`
 	DisableSessionArchive bool `toml:"disable_session_archive"`
+	MaxAgentLogMB         int  `toml:"max_agent_log_mb,omitempty"`
 }
 
 type StorageCleanupConfig struct {
@@ -154,6 +155,7 @@ func DefaultStorageConfig() StorageConfig {
 			DisableLLMHTTPLog:     true,
 			DisableAudioArchive:   true,
 			DisableSessionArchive: true,
+			MaxAgentLogMB:         1,
 		},
 		Cleanup: StorageCleanupConfig{
 			Enabled:                     true,
@@ -180,6 +182,9 @@ func (c StorageConfig) Validate() error {
 	}
 	if c.Cleanup.CleanupRetryIntervalSeconds < 0 {
 		return fmt.Errorf("storage.cleanup.cleanup_retry_interval_seconds must be >= 0, got %d", c.Cleanup.CleanupRetryIntervalSeconds)
+	}
+	if c.DegradedMode.MaxAgentLogMB <= 0 {
+		return fmt.Errorf("storage.degraded_mode.max_agent_log_mb must be > 0, got %d", c.DegradedMode.MaxAgentLogMB)
 	}
 	retentionFields := []struct {
 		name   string

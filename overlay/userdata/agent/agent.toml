@@ -82,6 +82,22 @@ api_key = "OPENAI_API_KEY"
 [log]
 # llm_http_retention_days = 7  # Keep llm-http-*.log files for this many days
 
+# Storage monitoring and degraded-mode limits
+[storage]
+# enabled = true
+# root_path = "/userdata"
+# check_interval_seconds = 300
+# warning_threshold_mb = 50
+# critical_threshold_mb = 10
+# emergency_threshold_mb = 5
+# recovery_hysteresis_mb = 5
+
+[storage.degraded_mode]
+# disable_llm_http_log = true
+# disable_audio_archive = true
+# disable_session_archive = true
+max_agent_log_mb = 1
+
 # Speech-to-Text (STT) configuration
 # Required when input_mode = "stt"
 [stt]
