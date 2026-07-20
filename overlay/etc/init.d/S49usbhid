@@ -2,10 +2,11 @@
 #
 # iOS keyboard + USB touchscreen routing experiment.
 #
-# Keep the proven E11 keyboard-only baseline and add exactly one Digitizers /
-# Touch Screen function. Consumer Control, mouse, Apple vendor HID, and CDC ECM
-# functions are intentionally omitted. Build the complete descriptor tree,
-# wait for it to settle, and bind the UDC exactly once with keyboard first.
+# Keep the proven E11 keyboard-only baseline, add one Digitizers / Touch Screen
+# function, and expose only the Consumer Control Eject usage for toggling the
+# iOS onscreen keyboard. Mouse, other Consumer Control usages, Apple vendor HID,
+# and CDC ECM functions are intentionally omitted. Build the complete descriptor
+# tree, wait for it to settle, and bind the UDC exactly once with keyboard first.
 #
 
 GADGET_DIR=/sys/kernel/config/usb_gadget/aiden_hid
@@ -59,7 +60,7 @@ start() {
 	mkdir -p "$GADGET_DIR"
 	echo 0x1d6b > "$GADGET_DIR/idVendor"
 	echo 0x0104 > "$GADGET_DIR/idProduct"
-	echo 0x0102 > "$GADGET_DIR/bcdDevice"
+	echo 0x0103 > "$GADGET_DIR/bcdDevice"
 	echo 0x0200 > "$GADGET_DIR/bcdUSB"
 	echo full-speed > "$GADGET_DIR/max_speed"
 
@@ -69,12 +70,12 @@ start() {
 	echo 0x00 > "$GADGET_DIR/bDeviceProtocol"
 
 	mkdir -p "$GADGET_DIR/strings/0x409"
-	echo "AIDENKEYTOUCHTEST1" > "$GADGET_DIR/strings/0x409/serialnumber"
+	echo "AIDENKEYTOUCHEJECT1" > "$GADGET_DIR/strings/0x409/serialnumber"
 	echo "Aiden" > "$GADGET_DIR/strings/0x409/manufacturer"
-	echo "Aiden Keyboard Touchscreen Test" > "$GADGET_DIR/strings/0x409/product"
+	echo "Aiden Keyboard Touchscreen Eject Test" > "$GADGET_DIR/strings/0x409/product"
 
 	mkdir -p "$GADGET_DIR/configs/c.1/strings/0x409"
-	echo "HID Keyboard + Touchscreen Control" > "$GADGET_DIR/configs/c.1/strings/0x409/configuration"
+	echo "HID Keyboard + Touchscreen + Eject" > "$GADGET_DIR/configs/c.1/strings/0x409/configuration"
 	echo 500 > "$GADGET_DIR/configs/c.1/MaxPower"
 
 	# Standard 8-byte USB boot keyboard report:
@@ -99,15 +100,28 @@ start() {
 	printf '\x05\x0d\x09\x04\xa1\x01\x09\x22\xa1\x02\x05\x0d\x09\x42\x09\x32\x15\x00\x25\x01\x75\x01\x95\x02\x81\x02\x75\x06\x95\x01\x81\x03\x09\x51\x75\x08\x95\x01\x15\x00\x25\x0f\x81\x02\x05\x01\x09\x30\x09\x31\x16\x00\x00\x26\xff\x7f\x75\x10\x95\x02\x81\x02\xc0\xc0' \
 		> "$GADGET_DIR/functions/hid.usb1/report_desc"
 
-	# Link keyboard first so it remains interface 0, then touchscreen as interface 1.
+	# One-byte Consumer Control report advertising only Eject (usage 0xB8):
+	# bit0=pressed, bits1..7=constant padding. Keeping this interface narrowly
+	# scoped avoids restoring mouse or unrelated media-control capabilities.
+	mkdir -p "$GADGET_DIR/functions/hid.usb2"
+	echo 0 > "$GADGET_DIR/functions/hid.usb2/protocol"
+	echo 0 > "$GADGET_DIR/functions/hid.usb2/subclass"
+	echo 1 > "$GADGET_DIR/functions/hid.usb2/no_out_endpoint"
+	echo 1 > "$GADGET_DIR/functions/hid.usb2/report_length"
+	printf '\x05\x0c\x09\x01\xa1\x01\x15\x00\x25\x01\x09\xb8\x75\x01\x95\x01\x81\x02\x75\x07\x95\x01\x81\x03\xc0' \
+		> "$GADGET_DIR/functions/hid.usb2/report_desc"
+
+	# Keep keyboard at interface 0, touchscreen at interface 1, and the isolated
+	# Eject control last so the two proven input paths retain their ordering.
 	ln -s "$GADGET_DIR/functions/hid.usb0" "$GADGET_DIR/configs/c.1/hid.usb0"
 	ln -s "$GADGET_DIR/functions/hid.usb1" "$GADGET_DIR/configs/c.1/hid.usb1"
+	ln -s "$GADGET_DIR/functions/hid.usb2" "$GADGET_DIR/configs/c.1/hid.usb2"
 
 	# Give configfs and both HID functions one quiet second, then bind once.
 	sleep 1
 	echo "$UDC" > "$GADGET_DIR/UDC"
 
-	echo "Keyboard + touchscreen experiment ready: /dev/hidg0 keyboard, /dev/hidg1 digitizer; no mouse, hidg2, or ECM"
+	echo "Keyboard + touchscreen + Eject experiment ready: /dev/hidg0 keyboard, /dev/hidg1 digitizer, /dev/hidg2 Eject; no mouse or ECM"
 }
 
 stop() {
@@ -119,9 +133,24 @@ restart() {
 	exit 1
 }
 
+eject() {
+	DEVICE=/dev/hidg2
+	if [ ! -c "$DEVICE" ]; then
+		echo "Eject HID device is unavailable: $DEVICE" >&2
+		exit 1
+	fi
+
+	# The one-byte report maps bit 0 to Consumer Control Eject (usage 0xB8).
+	printf '\001' > "$DEVICE" || exit 1
+	sleep 0.05
+	printf '\000' > "$DEVICE" || exit 1
+	echo "Sent one Eject press/release through $DEVICE"
+}
+
 case "$1" in
   start) start ;;
   stop) stop ;;
   restart|reload) restart ;;
-  *) echo "Usage: $0 {start|stop|restart|reload}"; exit 1 ;;
+  eject) eject ;;
+  *) echo "Usage: $0 {start|stop|restart|reload|eject}"; exit 1 ;;
 esac
