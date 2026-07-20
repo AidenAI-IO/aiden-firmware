@@ -207,10 +207,16 @@ func speechStreamWriterForConfig(target io.Writer, cfg Config) io.Writer {
 }
 
 type TTSTagStreamWriter struct {
-	target  io.Writer
-	pending []byte
-	inTTS   bool
-	emitted bool
+	target         io.Writer
+	pending        []byte
+	inTTS          bool
+	streamTTS      bool
+	outsideContent bool
+	emitted        bool
+}
+
+type ttsStreamFlusher interface {
+	Flush() error
 }
 
 func NewTTSTagStreamWriter(target io.Writer) *TTSTagStreamWriter {
@@ -223,6 +229,8 @@ func (w *TTSTagStreamWriter) ResetStreamState() {
 	}
 	w.pending = nil
 	w.inTTS = false
+	w.streamTTS = false
+	w.outsideContent = false
 	w.emitted = false
 }
 
@@ -249,36 +257,60 @@ func (w *TTSTagStreamWriter) Write(p []byte) (int, error) {
 		if !w.inTTS {
 			idx := bytes.Index(asciiLowerBytes(w.pending), []byte(ttsStartTag))
 			if idx < 0 {
+				searchSuffixLen := len(ttsStartTag) - 1
+				if discardLen := len(w.pending) - searchSuffixLen; discardLen > 0 {
+					w.markOutsideContent(w.pending[:discardLen])
+				}
 				w.pending = keepTagSearchSuffix(w.pending, len(ttsStartTag)-1)
 				return len(p), nil
 			}
+			w.markOutsideContent(w.pending[:idx])
 			w.pending = w.pending[idx+len(ttsStartTag):]
 			w.inTTS = true
+			// Only a leading TTS block is streamed immediately. Tool-call progress
+			// uses user-facing content before its TTS block and is spoken through
+			// the dedicated tool-event path, avoiding duplicate playback.
+			w.streamTTS = !w.outsideContent
 			continue
 		}
 
 		idx := bytes.Index(asciiLowerBytes(w.pending), []byte(ttsEndTag))
 		if idx >= 0 {
-			// Find the longest valid UTF-8 prefix before the end tag
-			skipBytes := 0
-			for idx > skipBytes {
-				safeIdx := validUTF8PrefixLen(w.pending[skipBytes:], idx-skipBytes)
-				if safeIdx > 0 {
-					if err := w.writeTTSBytes(w.pending[skipBytes : skipBytes+safeIdx]); err != nil {
-						return 0, err
+			if w.streamTTS {
+				// Find the longest valid UTF-8 prefix before the end tag.
+				skipBytes := 0
+				for idx > skipBytes {
+					safeIdx := validUTF8PrefixLen(w.pending[skipBytes:], idx-skipBytes)
+					if safeIdx > 0 {
+						if err := w.writeTTSBytes(w.pending[skipBytes : skipBytes+safeIdx]); err != nil {
+							return 0, err
+						}
+						break
 					}
-					break
+					// Skip this invalid leading byte.
+					skipBytes++
 				}
-				// Skip this invalid leading byte
-				skipBytes++
 			}
 			w.pending = w.pending[idx+len(ttsEndTag):]
 			w.inTTS = false
+			if w.streamTTS {
+				if flusher, ok := w.target.(ttsStreamFlusher); ok {
+					if err := flusher.Flush(); err != nil {
+						return 0, err
+					}
+				}
+			}
+			w.streamTTS = false
+			w.outsideContent = false
 			continue
 		}
 
 		safeLen := len(w.pending) - (len(ttsEndTag) - 1)
 		if safeLen <= 0 {
+			return len(p), nil
+		}
+		if !w.streamTTS {
+			w.pending = append(w.pending[:0], w.pending[safeLen:]...)
 			return len(p), nil
 		}
 		safeLen = validUTF8PrefixLen(w.pending, safeLen)
@@ -299,6 +331,21 @@ func (w *TTSTagStreamWriter) Write(p []byte) (int, error) {
 		return len(p), nil
 	}
 	return len(p), nil
+}
+
+func (w *TTSTagStreamWriter) markOutsideContent(p []byte) {
+	if w.outsideContent {
+		return
+	}
+	for _, b := range p {
+		switch b {
+		case ' ', '\t', '\r', '\n':
+			continue
+		default:
+			w.outsideContent = true
+			return
+		}
+	}
 }
 
 func validUTF8PrefixLen(buf []byte, n int) int {

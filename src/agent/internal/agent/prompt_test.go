@@ -146,6 +146,22 @@ func TestDefaultAgentBehaviorExcludesEnvironmentGuidance(t *testing.T) {
 	}
 }
 
+func TestDefaultAgentBehaviorRequiresTTSBeforeVisibleText(t *testing.T) {
+	behavior := defaultAgentBehavior()
+	for _, want := range []string{
+		"Responses must begin with exactly one <tts>...</tts> block",
+		"followed by ordinary user-facing text",
+		"after the user-facing progress text",
+	} {
+		if !strings.Contains(behavior, want) {
+			t.Fatalf("defaultAgentBehavior missing %q:\n%s", want, behavior)
+		}
+	}
+	if strings.Contains(behavior, "ordinary user-facing text, followed by exactly one <tts>") {
+		t.Fatalf("defaultAgentBehavior still requests trailing TTS:\n%s", behavior)
+	}
+}
+
 func TestGlobalPromptsExcludeKeyboardTextInputDetails(t *testing.T) {
 	for name, prompt := range map[string]string{
 		"defaultAgentBehavior": defaultAgentBehavior(),

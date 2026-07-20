@@ -115,6 +115,8 @@ Common fields in `[tts]` are `provider`, `api_key`, `model`, `voice_id`, `emotio
 
 All TTS providers are called through a unified streaming session: the Agent writes LLM output fragments to the adapter, and the adapter decides when to send to the backend. Fish Audio, Alicloud, and Volcengine are true streaming WebSocket links; the Minimax WebSocket adapter buffers internally at sentence boundaries before sending, so the upper layer doesn't need to distinguish between “true streaming” or “sentence-level streaming”. The runtime can switch providers via `POST /api/settings/tts`; playback that has already started will continue using the old provider, and subsequent requests will use the new provider.
 
+Final assistant responses begin with the concise spoken form in `<tts>...</tts>`, followed by the full user-facing text. Only a leading TTS block is sent through the final-response streaming path; when its closing `</tts>` tag arrives, the runtime immediately flushes the provider so short Minimax speech does not wait for the remaining visible response. Tool-call progress keeps its user-facing text before the TTS block and is played by the separate tool-call speech path, preventing duplicate playback.
+
 ```toml
 # Minimax WebSocket
 [tts]

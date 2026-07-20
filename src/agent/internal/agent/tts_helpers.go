@@ -309,6 +309,31 @@ func (w *streamSessionWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// Flush asks the provider to synthesize any text it has buffered so a complete
+// <tts> block can start playing before the rest of the assistant response has
+// finished streaming. As with Write, provider errors are recorded without
+// interrupting the LLM response stream.
+func (w *streamSessionWriter) Flush() error {
+	w.mu.Lock()
+	if w.interrupted {
+		w.mu.Unlock()
+		return nil
+	}
+	session := w.session
+	w.mu.Unlock()
+
+	if err := session.Flush(); err != nil {
+		w.mu.Lock()
+		if w.lastErr == nil && !w.interrupted {
+			w.lastErr = err
+		}
+		w.mu.Unlock()
+	}
+	// Keep TTS failures isolated from the LLM stream; closeAndWait reports the
+	// recorded error after the model response has completed.
+	return nil
+}
+
 // ttsBufferResetter is implemented by TTS sessions that buffer text internally
 // (e.g. sentence-boundary buffering in non-incremental providers) and can drop
 // that buffer on demand.

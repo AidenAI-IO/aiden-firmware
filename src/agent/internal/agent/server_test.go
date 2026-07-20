@@ -620,11 +620,11 @@ func TestStreamFanoutWriterReportsAnyChildEmission(t *testing.T) {
 		t.Fatal("fanout writer must track stream emission")
 	}
 
-	if _, err := fanout.Write([]byte("Complete answer.\n<tts>Short answer.</tts>")); err != nil {
+	if _, err := fanout.Write([]byte("<tts>Short answer.</tts>\nComplete answer.")); err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
 
-	if webDelta.String() != "Complete answer.\n<tts>Short answer.</tts>" {
+	if webDelta.String() != "<tts>Short answer.</tts>\nComplete answer." {
 		t.Fatalf("web delta stream = %q", webDelta.String())
 	}
 	if speech.String() != "Short answer." {

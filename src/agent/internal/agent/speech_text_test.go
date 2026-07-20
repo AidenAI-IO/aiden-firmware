@@ -16,6 +16,18 @@ func (s *resettableSpeechSink) ResetBuffer() {
 	s.Builder.Reset()
 }
 
+type flushingSpeechSink struct {
+	strings.Builder
+	flushCalls     int
+	flushedContent []string
+}
+
+func (s *flushingSpeechSink) Flush() error {
+	s.flushCalls++
+	s.flushedContent = append(s.flushedContent, s.String())
+	return nil
+}
+
 type validatingSpeechChunkSink struct {
 	parts   []string
 	invalid [][]byte
@@ -133,7 +145,7 @@ func TestSpeechStreamWriterExtractsPartialTTSTag(t *testing.T) {
 	writer := NewSpeechStreamWriter(&sink)
 
 	chunks := []string{
-		"已完成设置。\n<t",
+		"\n<t",
 		"ts>已完成",
 		"，当前音量是 42。</tts>\n正文继续。",
 	}
@@ -152,12 +164,53 @@ func TestSpeechStreamWriterIgnoresTextOutsideTTSTag(t *testing.T) {
 	var sink strings.Builder
 	writer := NewSpeechStreamWriter(&sink)
 
-	if _, err := writer.Write([]byte("正文不播报。<tts>播报这个。</tts>尾部不播报。")); err != nil {
+	if _, err := writer.Write([]byte("<tts>播报这个。</tts>尾部不播报。")); err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
 
 	if got := sink.String(); got != "播报这个。" {
 		t.Fatalf("streamed speech = %q", got)
+	}
+}
+
+func TestSpeechStreamWriterLeavesTrailingTTSTagForToolEventSpeech(t *testing.T) {
+	sink := &flushingSpeechSink{}
+	writer := NewSpeechStreamWriter(sink)
+
+	if _, err := writer.Write([]byte("正在检查音量。<tts>正在检查音量。</tts>")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if got := sink.String(); got != "" {
+		t.Fatalf("streamed speech = %q, want trailing TTS block handled outside stream", got)
+	}
+	if sink.flushCalls != 0 {
+		t.Fatalf("Flush() calls = %d, want 0 for trailing TTS block", sink.flushCalls)
+	}
+}
+
+func TestSpeechStreamWriterFlushesAtClosingTagBeforeTrailingText(t *testing.T) {
+	sink := &flushingSpeechSink{}
+	writer := NewSpeechStreamWriter(sink)
+
+	chunks := []string{
+		"<tts>好的，",
+		"已经完成。</tt",
+		"s>下面是详细说明。",
+	}
+	for _, chunk := range chunks {
+		if _, err := writer.Write([]byte(chunk)); err != nil {
+			t.Fatalf("Write(%q) error = %v", chunk, err)
+		}
+	}
+
+	if got := sink.String(); got != "好的，已经完成。" {
+		t.Fatalf("streamed speech = %q", got)
+	}
+	if sink.flushCalls != 1 {
+		t.Fatalf("Flush() calls = %d, want 1", sink.flushCalls)
+	}
+	if got := sink.flushedContent[0]; got != "好的，已经完成。" {
+		t.Fatalf("content at Flush() = %q", got)
 	}
 }
 
@@ -274,14 +327,17 @@ func TestSpeechStreamWriterFiltersInvalidUTF8BeforeStreaming(t *testing.T) {
 }
 
 func TestSpeechStreamWriterHandlesMultipleTTSTags(t *testing.T) {
-	var sink strings.Builder
-	writer := NewSpeechStreamWriter(&sink)
-	payload := `<tts>第一句。</tts>正文<tts>第二句。</tts>`
+	sink := &flushingSpeechSink{}
+	writer := NewSpeechStreamWriter(sink)
+	payload := `<tts>第一句。</tts> <tts>第二句。</tts>正文`
 	if _, err := writer.Write([]byte(payload)); err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
 	if got := sink.String(); got != "第一句。第二句。" {
 		t.Fatalf("streamed speech = %q", got)
+	}
+	if sink.flushCalls != 2 {
+		t.Fatalf("Flush() calls = %d, want 2", sink.flushCalls)
 	}
 }
 

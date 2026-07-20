@@ -121,6 +121,25 @@ func TestStreamSessionWriterClosesSessionWhenTextWritten(t *testing.T) {
 	}
 }
 
+func TestStreamSessionWriterFlushesProviderWithoutInterruptingLLMStream(t *testing.T) {
+	flushErr := errors.New("flush failed")
+	session := &flushTrackingStreamSession{flushErr: flushErr}
+	w := &streamSessionWriter{session: session}
+
+	if _, err := w.Write([]byte("short speech")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatalf("Flush() error = %v, want provider error isolated from LLM stream", err)
+	}
+	if session.flushCalls != 1 {
+		t.Fatalf("provider Flush() calls = %d, want 1", session.flushCalls)
+	}
+	if err := w.closeAndWait(); !errors.Is(err, flushErr) {
+		t.Fatalf("closeAndWait() error = %v, want recorded flush error", err)
+	}
+}
+
 func TestHandleTTSSettingsPostInitializesManagerWhenAbsent(t *testing.T) {
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
@@ -280,8 +299,8 @@ func containsProviderName(values []string, target string) bool {
 
 func TestAudioDialogRunAgentTurnStreamsTTSTagThroughProviderManager(t *testing.T) {
 	model := &rawStreamingModel{
-		content: "streamed answer\n<tts>streamed answer</tts>",
-		chunks:  []string{"streamed answer\n<t", "ts>streamed ", "answer</tts>"},
+		content: "<tts>streamed answer</tts>\nstreamed answer",
+		chunks:  []string{"<t", "ts>streamed ", "answer</tts>\nstreamed answer"},
 	}
 	runtime := NewRuntimeWithDeps(
 		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}}),
@@ -316,10 +335,10 @@ func TestAudioDialogRunAgentTurnStreamsTTSTagThroughProviderManager(t *testing.T
 
 func TestAudioDialogRunAgentTurnReturnsFullAnswerWithStreamedSpeech(t *testing.T) {
 	model := &rawStreamingModel{
-		content: "已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。\n<tts>已完成设置，当前音量是 42。</tts>",
+		content: "<tts>已完成设置，当前音量是 42。</tts>\n已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。",
 		chunks: []string{
-			"已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。\n<t",
-			"ts>已完成设置，当前音量是 42。</tts>",
+			"<tts>已完成设置，当前音量是 42。</tt",
+			"s>\n已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。",
 		},
 	}
 	runtime := NewRuntimeWithDeps(
@@ -348,7 +367,7 @@ func TestAudioDialogRunAgentTurnReturnsFullAnswerWithStreamedSpeech(t *testing.T
 	if !result.SpeechStreamed {
 		t.Fatal("SpeechStreamed = false, want true with streaming callback")
 	}
-	wantOutput := "已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。\n<tts>已完成设置，当前音量是 42。</tts>"
+	wantOutput := "<tts>已完成设置，当前音量是 42。</tts>\n已完成设置，当前音量是 42。\n\n完整回答保留给屏幕。"
 	if result.Output != wantOutput {
 		t.Fatalf("Output = %q", result.Output)
 	}
@@ -388,10 +407,10 @@ func TestAudioDialogInterruptOutputStopsBackgroundToolSpeech(t *testing.T) {
 
 func TestRuntimeRunStreamsTTSTaggedChunksToWriter(t *testing.T) {
 	model := &rawStreamingModel{
-		content: "完整回答保留给屏幕。\n<tts>播报摘要。</tts>",
+		content: "<tts>播报摘要。</tts>\n完整回答保留给屏幕。",
 		chunks: []string{
-			"完整回答保留给屏幕。\n<t",
-			"ts>播报摘要。</tts>",
+			"<t",
+			"ts>播报摘要。</tts>\n完整回答保留给屏幕。",
 		},
 	}
 	runtime := NewRuntimeWithDeps(
@@ -413,7 +432,7 @@ func TestRuntimeRunStreamsTTSTaggedChunksToWriter(t *testing.T) {
 	if stream.String() != "播报摘要。" {
 		t.Fatalf("stream = %q, want TTS tag content", stream.String())
 	}
-	if result.Output != "完整回答保留给屏幕。\n<tts>播报摘要。</tts>" {
+	if result.Output != "<tts>播报摘要。</tts>\n完整回答保留给屏幕。" {
 		t.Fatalf("Output = %q", result.Output)
 	}
 }
@@ -717,6 +736,19 @@ func (s *abortableStreamSession) Abort() error {
 	return nil
 }
 func (s *abortableStreamSession) Err() error { return nil }
+
+type flushTrackingStreamSession struct {
+	flushCalls int
+	flushErr   error
+}
+
+func (s *flushTrackingStreamSession) WriteText(string) error { return nil }
+func (s *flushTrackingStreamSession) Flush() error {
+	s.flushCalls++
+	return s.flushErr
+}
+func (s *flushTrackingStreamSession) Close() error { return nil }
+func (s *flushTrackingStreamSession) Err() error   { return s.flushErr }
 
 type formatCheckingTTSProvider struct {
 	name       string
