@@ -394,11 +394,11 @@ func (m *StorageMonitor) CheckAndRemediate(ctx context.Context, request StorageC
 			m.logger.Warn("storage_monitor: degraded capabilities=%v", final.UnavailableCapabilities)
 		}
 	}
-	m.publishStatusTransition(ctx, final)
+	m.publishStatusTransition(ctx, final, request.Reason == CheckReasonPeriodic)
 	return cloneStorageStatus(final), nil
 }
 
-func (m *StorageMonitor) publishStatusTransition(ctx context.Context, status StorageStatus) {
+func (m *StorageMonitor) publishStatusTransition(ctx context.Context, status StorageStatus, refreshActive bool) {
 	if m.notifier == nil {
 		return
 	}
@@ -422,7 +422,7 @@ func (m *StorageMonitor) publishStatusTransition(ctx context.Context, status Sto
 		return
 	}
 	event := m.notificationEvent(status, "active", status.Level)
-	if m.notificationActive && m.notifiedLevel == status.Level && reflect.DeepEqual(m.lastNotifiedEvent.Params, event.Params) {
+	if m.notificationActive && m.notifiedLevel == status.Level && reflect.DeepEqual(m.lastNotifiedEvent.Params, event.Params) && !refreshActive {
 		return
 	}
 	if err := m.notifier.Publish(ctx, event); err != nil {

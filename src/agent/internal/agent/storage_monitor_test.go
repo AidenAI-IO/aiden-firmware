@@ -361,12 +361,33 @@ func TestStorageMonitorSuppressesEquivalentActiveEvent(t *testing.T) {
 	monitor := NewStorageMonitor(config, sampler, nil, nil, notifier)
 
 	for range sampler.samples {
-		if _, err := monitor.CheckAndRemediate(context.Background(), StorageCheckRequest{Reason: CheckReasonPeriodic}); err != nil {
+		if _, err := monitor.CheckAndRemediate(context.Background(), StorageCheckRequest{Reason: CheckReasonStartup}); err != nil {
 			t.Fatalf("CheckAndRemediate() error = %v", err)
 		}
 	}
 	if len(notifier.events) != 1 {
 		t.Fatalf("published %d equivalent active events, want 1: %+v", len(notifier.events), notifier.events)
+	}
+}
+
+func TestStorageMonitorRefreshesEquivalentActiveEventOnPeriodicCheck(t *testing.T) {
+	sampler := &sequenceStorageSampler{samples: []StorageSample{
+		storageSampleWithAvailableMB(40),
+		storageSampleWithAvailableMB(40),
+	}}
+	notifier := &recordingVoiceNotificationSink{}
+	config := DefaultStorageConfig()
+	config.Cleanup.Enabled = false
+	monitor := NewStorageMonitor(config, sampler, nil, nil, notifier)
+
+	if _, err := monitor.CheckAndRemediate(context.Background(), StorageCheckRequest{Reason: CheckReasonStartup}); err != nil {
+		t.Fatalf("startup CheckAndRemediate() error = %v", err)
+	}
+	if _, err := monitor.CheckAndRemediate(context.Background(), StorageCheckRequest{Reason: CheckReasonPeriodic}); err != nil {
+		t.Fatalf("periodic CheckAndRemediate() error = %v", err)
+	}
+	if len(notifier.events) != 2 {
+		t.Fatalf("published %d active events, want initial plus periodic refresh: %+v", len(notifier.events), notifier.events)
 	}
 }
 
@@ -396,8 +417,8 @@ func TestStorageMonitorRetriesFailedNotificationWithoutRollingBackState(t *testi
 	if _, err := monitor.CheckAndRemediate(context.Background(), StorageCheckRequest{Reason: CheckReasonPeriodic}); err != nil {
 		t.Fatalf("steady-state CheckAndRemediate() error = %v", err)
 	}
-	if len(notifier.events) != 2 {
-		t.Fatalf("notification attempts = %d, want failed attempt plus one retry", len(notifier.events))
+	if len(notifier.events) != 3 {
+		t.Fatalf("notification attempts = %d, want failed attempt, retry, and periodic refresh", len(notifier.events))
 	}
 }
 
