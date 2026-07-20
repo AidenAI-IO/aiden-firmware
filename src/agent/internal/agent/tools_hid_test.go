@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -1194,6 +1195,39 @@ func TestScreenshotCoordinateSpaceIsNotExposedToModel(t *testing.T) {
 	wheelProps := wheelSchema["properties"].(map[string]any)
 	if _, ok := wheelProps["coord_space"]; ok {
 		t.Fatalf("wheel coord_space must not be exposed to the model: %#v", wheelProps)
+	}
+}
+
+func TestModelFacingDeviceGuidanceUsesNormalizedCoordinatesOnly(t *testing.T) {
+	screenshotSpacePattern := regexp.MustCompile(`(?i)coord_space\s*[:=]\s*["']?screenshot`)
+	assertNoScreenshotCoordinateGuidance := func(name, content string) {
+		t.Helper()
+		lower := strings.ToLower(content)
+		if screenshotSpacePattern.MatchString(content) || strings.Contains(lower, "use screenshot coordinates") || strings.Contains(lower, "screenshot coordinate space") {
+			t.Fatalf("%s still advertises screenshot coordinates: %q", name, content)
+		}
+	}
+
+	descriptions := map[string]string{
+		"mouse_click":   (&MouseClickTool{}).Description(),
+		"mouse_move":    (&MouseMoveTool{}).Description(),
+		"touch_gesture": (&TouchGestureTool{}).Description(),
+		"wheel_nudge":   (&WheelNudgeTool{}).Description(),
+		"screenshot":    (&ScreenshotTool{}).Description(),
+	}
+	for name, description := range descriptions {
+		assertNoScreenshotCoordinateGuidance(name+" description", description)
+	}
+
+	skillPath := filepath.Join("..", "..", "config", "skills", "device-operator", "SKILL.md")
+	data, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatalf("read device-operator SKILL.md: %v", err)
+	}
+	content := string(data)
+	assertNoScreenshotCoordinateGuidance("device-operator SKILL.md", content)
+	if !strings.Contains(content, `coord_space: "normalized"`) {
+		t.Fatalf("device-operator SKILL.md must direct coordinate tools to normalized space")
 	}
 }
 

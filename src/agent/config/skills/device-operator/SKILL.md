@@ -71,10 +71,9 @@ If a semantic tool fails, read the message and choose a different approach. Do n
 Before using coordinates:
 
 - Inspect the screenshot and identify the intended target visually.
-- Use `coord_space: "normalized"` with 0-1000 coordinates when possible: `(0,0)` is top-left, `(1000,1000)` is bottom-right, `(500,500)` is center.
-- When using pixels measured in a returned cropped screenshot, use `coord_space:"screenshot"`; its width and height are the coordinate bounds. Do not label screenshot pixels as normalized or uncropped `pixel` coordinates.
+- Use `coord_space: "normalized"` with 0-1000 coordinates: `(0,0)` is top-left, `(1000,1000)` is bottom-right, `(500,500)` is center.
+- Never pass screenshot pixels directly to a coordinate tool. Convert point measurements from the latest returned image first: `x_normalized = pixel_x / max(screenshot_width - 1, 1) * 1000` and `y_normalized = pixel_y / max(screenshot_height - 1, 1) * 1000`.
 - Choose the visual center of the target. For small controls, estimate the control bounds and aim for the midpoint, biased slightly inward.
-- Prefer normalized coordinates. Use `coord_space:"screenshot"` only for pixels measured directly in the latest returned cropped screenshot.
 - Avoid edges unless performing an edge gesture. For phone edge gestures, do not use conservative insets like 50-100: left-edge `back` starts at normalized `x=1`, and bottom-edge `home` starts at normalized `y=999`.
 - Do not guess a coordinate if the target is not visible or the screen is stale.
 - If a tap misses, observe again before adjusting. Do not repeat the exact same coordinate blindly.
@@ -187,7 +186,7 @@ If the same list boundary appears again, stop searching in that direction. Try s
 
 For picker/wheel controls, discover columns from the current UI rather than assuming hour/minute positions. Give the current visible picker screen a stable `picker_id` (for example `alarm-create` or `date-editor`) and change it after navigating to another picker screen. For each column, identify the selected value, target value, adjacent values, `column_x`, `center_y`, and measured `row_spacing`. Use numeric values or stable ordinal indices for textual lists.
 
-All `wheel_nudge` geometry uses normalized 0-1000 coordinates. Convert horizontal `column_x` with `pixel_x / screenshot_width * 1000`. Convert vertical `center_y`, `row_spacing`, and `visible_target_y` with `pixel_y_or_distance / screenshot_height * 1000`; never divide a vertical distance by screenshot width. Do not pass a coordinate-space selector to `wheel_nudge`.
+All `wheel_nudge` geometry uses normalized 0-1000 coordinates. Convert horizontal `column_x` with `pixel_x / max(screenshot_width - 1, 1) * 1000`. Convert vertical `center_y`, `row_spacing`, and `visible_target_y` with `pixel_y_or_distance / max(screenshot_height - 1, 1) * 1000`; never divide a vertical distance by screenshot width. Do not pass a coordinate-space selector to `wheel_nudge`.
 
 Numeric picker keyboard support is often hidden until the selected value is tapped. Therefore, before the first `wheel_nudge` on a numeric picker, tap the selected center row exactly once as an edit-mode probe. Do not skip this probe merely because no keyboard or text field is visible in the initial screenshot. If keyboard/edit mode appears, make one verified keyboard attempt using `keyboard_text` and confirm the exact requested value in the fresh post-action screenshot. If the tap has no effect, the keyboard does not appear, the input has no effect, the value is wrong, or the result cannot be confirmed, stop: Do not repeat blind keyboard input. Dismiss the keyboard if necessary and fall back to `wheel_nudge`. After wheel fallback starts for this picker, stay with `wheel_nudge` instead of trying keyboard input again. Direct taps on unselected picker rows and all picker drags still belong to `wheel_nudge`.
 
