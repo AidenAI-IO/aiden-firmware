@@ -14,7 +14,7 @@ type LLMHTTPLogCleaner struct {
 	logDir           string
 	retentionAge     time.Duration
 	priority         int
-	currentSessionID func() string
+	currentSessionID func() (string, error)
 }
 
 // NewLLMHTTPLogCleaner creates a new LLM HTTP log cleaner
@@ -24,6 +24,15 @@ func NewLLMHTTPLogCleaner(logDir string, retentionDays int, priority int) *LLMHT
 
 // NewLLMHTTPLogCleanerWithSessionProvider protects the active session log from cleanup.
 func NewLLMHTTPLogCleanerWithSessionProvider(logDir string, retentionDays int, priority int, currentSessionID func() string) *LLMHTTPLogCleaner {
+	var provider func() (string, error)
+	if currentSessionID != nil {
+		provider = func() (string, error) { return currentSessionID(), nil }
+	}
+	return NewLLMHTTPLogCleanerWithCheckedSessionProvider(logDir, retentionDays, priority, provider)
+}
+
+// NewLLMHTTPLogCleanerWithCheckedSessionProvider fails closed when the active session cannot be resolved.
+func NewLLMHTTPLogCleanerWithCheckedSessionProvider(logDir string, retentionDays int, priority int, currentSessionID func() (string, error)) *LLMHTTPLogCleaner {
 	return &LLMHTTPLogCleaner{
 		logDir:           logDir,
 		retentionAge:     time.Duration(retentionDays) * 24 * time.Hour,
@@ -54,6 +63,10 @@ func (c *LLMHTTPLogCleaner) EstimateReclaimable(context.Context) (uint64, error)
 	}
 
 	cutoff := time.Now().Add(-c.retentionAge)
+	protectedName, err := c.protectedName()
+	if err != nil {
+		return 0, err
+	}
 	var total uint64
 
 	for _, entry := range entries {
@@ -63,7 +76,7 @@ func (c *LLMHTTPLogCleaner) EstimateReclaimable(context.Context) (uint64, error)
 		if !strings.HasPrefix(entry.Name(), "llm-http-") {
 			continue
 		}
-		if c.protected(entry.Name()) {
+		if entry.Name() == protectedName {
 			continue
 		}
 
@@ -95,6 +108,10 @@ func (c *LLMHTTPLogCleaner) Clean(context.Context) (uint64, error) {
 	}
 
 	cutoff := time.Now().Add(-c.retentionAge)
+	protectedName, err := c.protectedName()
+	if err != nil {
+		return 0, err
+	}
 	var totalFreed uint64
 	var deletedCount int
 
@@ -105,7 +122,7 @@ func (c *LLMHTTPLogCleaner) Clean(context.Context) (uint64, error) {
 		if !strings.HasPrefix(entry.Name(), "llm-http-") {
 			continue
 		}
-		if c.protected(entry.Name()) {
+		if entry.Name() == protectedName {
 			continue
 		}
 
@@ -144,10 +161,17 @@ func (c *LLMHTTPLogCleaner) ForceClean(ctx context.Context) (uint64, error) {
 	return forced.Clean(ctx)
 }
 
-func (c *LLMHTTPLogCleaner) protected(name string) bool {
+func (c *LLMHTTPLogCleaner) protectedName() (string, error) {
 	if c.currentSessionID == nil {
-		return false
+		return "", nil
 	}
-	sessionID := strings.TrimSpace(c.currentSessionID())
-	return sessionID != "" && name == "llm-http-"+sessionID+".log"
+	sessionID, err := c.currentSessionID()
+	if err != nil {
+		return "", fmt.Errorf("resolve current session for log cleanup: %w", err)
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return "", nil
+	}
+	return "llm-http-" + sessionID + ".log", nil
 }

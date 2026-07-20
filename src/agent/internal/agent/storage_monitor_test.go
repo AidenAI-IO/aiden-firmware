@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -549,6 +550,32 @@ func TestLLMHTTPLogCleanerProtectsCurrentSession(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(tmpDir, "llm-http-old-session.log")); !os.IsNotExist(err) {
 		t.Fatalf("old session log still exists, stat error = %v", err)
+	}
+}
+
+func TestLLMHTTPLogCleanerFailsClosedWhenCurrentSessionCannotBeResolved(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "llm-http-old-session.log")
+	if err := os.WriteFile(path, []byte("log"), 0o644); err != nil {
+		t.Fatalf("write old session log: %v", err)
+	}
+	old := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatalf("chtimes old session log: %v", err)
+	}
+	wantErr := fmt.Errorf("session index unavailable")
+	cleaner := NewLLMHTTPLogCleanerWithCheckedSessionProvider(tmpDir, 0, 1, func() (string, error) {
+		return "", wantErr
+	})
+
+	if _, err := cleaner.EstimateReclaimable(context.Background()); !errors.Is(err, wantErr) {
+		t.Fatalf("EstimateReclaimable() error = %v, want %v", err, wantErr)
+	}
+	if _, err := cleaner.ForceClean(context.Background()); !errors.Is(err, wantErr) {
+		t.Fatalf("ForceClean() error = %v, want %v", err, wantErr)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("log was removed after session resolution failure: %v", err)
 	}
 }
 

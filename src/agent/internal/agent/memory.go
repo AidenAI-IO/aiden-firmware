@@ -81,6 +81,7 @@ type MemoryManager struct {
 	lockTimeout                    time.Duration
 	logger                         *Logger
 	storageMonitor                 *StorageMonitor
+	persistencePending             bool
 	sessionBoundaryEnabledOverride *bool
 
 	maintenanceMu      sync.Mutex
@@ -215,6 +216,24 @@ func (m *MemoryManager) allowStorageWrite(capability StorageCapability) bool {
 	monitor := m.storageMonitor
 	m.mu.Unlock()
 	return monitor == nil || monitor.AllowWrite(capability)
+}
+
+func (m *MemoryManager) setPersistencePending(pending bool) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.persistencePending = pending
+	m.mu.Unlock()
+}
+
+func (m *MemoryManager) PersistencePending() bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.persistencePending
 }
 
 // WithContextWindowFn lets the runtime supply the active model's context
@@ -431,6 +450,7 @@ func (m *MemoryManager) ClearAll(ctx context.Context, agentName string) error {
 func (m *MemoryManager) Save(ctx context.Context, agentName string) (retErr error) {
 	defer func() { retErr = m.suppressStorageWriteError(retErr) }()
 	if !m.allowStorageWrite(StorageCapabilitySessionPersistence) {
+		m.setPersistencePending(true)
 		return nil
 	}
 	records, err := m.Snapshot(ctx, agentName)
@@ -440,12 +460,20 @@ func (m *MemoryManager) Save(ctx context.Context, agentName string) (retErr erro
 	if err := m.syncSessionRecords(agentName, records); err != nil {
 		return err
 	}
-	return m.maintainFilesystemMemory(ctx)
+	if err := m.maintainFilesystemMemory(ctx); err != nil {
+		return err
+	}
+	m.setPersistencePending(false)
+	return nil
 }
 
 // RequestMaintenance schedules asynchronous memory maintenance.
 func (m *MemoryManager) RequestMaintenance() {
 	if m.storageDir == "" {
+		return
+	}
+	if !m.allowStorageWrite(StorageCapabilitySessionPersistence) {
+		m.setPersistencePending(true)
 		return
 	}
 
@@ -485,7 +513,7 @@ func (m *MemoryManager) WaitMaintenance(ctx context.Context) error {
 func (m *MemoryManager) maintenanceLoop() {
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-		err := m.maintainFilesystemMemory(ctx)
+		err := m.suppressStorageWriteError(m.maintainFilesystemMemory(ctx))
 		cancel()
 		if err != nil && m.logger != nil {
 			m.logger.Error("[memory] async maintenance failed: %v", err)
@@ -521,6 +549,7 @@ func (m *MemoryManager) AppendMessagesWithMetadata(ctx context.Context, agentNam
 		return nil
 	}
 	if !m.allowStorageWrite(StorageCapabilitySessionPersistence) {
+		m.setPersistencePending(true)
 		return nil
 	}
 	if len(records) == 0 {
@@ -569,6 +598,7 @@ func (m *MemoryManager) AppendMessagesWithMetadata(ctx context.Context, agentNam
 		}
 	}
 	m.eventCount[agentName] += len(records)
+	m.persistencePending = false
 	return nil
 }
 
@@ -578,6 +608,7 @@ func (m *MemoryManager) AppendSessionEvent(ctx context.Context, agentName string
 		return nil
 	}
 	if !m.allowStorageWrite(StorageCapabilitySessionPersistence) {
+		m.setPersistencePending(true)
 		return nil
 	}
 	if err := ctx.Err(); err != nil {
@@ -616,6 +647,7 @@ func (m *MemoryManager) AppendSessionEvent(ctx context.Context, agentName string
 		return fmt.Errorf("append session event for %q: %w", agentName, err)
 	}
 	m.eventCount[agentName]++
+	m.persistencePending = false
 	return nil
 }
 
@@ -627,6 +659,7 @@ func (m *MemoryManager) suppressStorageWriteError(err error) error {
 	monitor := m.storageMonitor
 	m.mu.Unlock()
 	if monitor != nil && monitor.HandleWriteError(err) {
+		m.setPersistencePending(true)
 		if m.logger != nil {
 			m.logger.Warn("[memory] persistence deferred after storage write failure: %v", err)
 		}
@@ -1193,6 +1226,10 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 	if m.storageDir == "" {
 		return nil
 	}
+	if !m.allowStorageWrite(StorageCapabilitySessionPersistence) {
+		m.setPersistencePending(true)
+		return nil
+	}
 	session := NewSessionMemoryStore(filepath.Join(m.storageDir, "session"), m.extraction.SummaryMaxChunks)
 	eventsPath := session.eventsPath()
 
@@ -1319,6 +1356,10 @@ func (m *MemoryManager) maintainFilesystemMemory(ctx context.Context) error {
 	// phase 1 unlock and now). If new events were appended, merge them into
 	// hotEvents before replacing the file. This prevents data loss when
 	// persistSnapshot runs concurrently with maintenance.
+	if !m.allowStorageWrite(StorageCapabilitySessionPersistence) {
+		m.setPersistencePending(true)
+		return nil
+	}
 	m.mu.Lock()
 	if err := fl.Lock(m.lockTimeout); err != nil {
 		m.mu.Unlock()

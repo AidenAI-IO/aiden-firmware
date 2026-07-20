@@ -28,15 +28,11 @@ func newRuntimeStorageMonitor(cfg Config, logger *Logger, memories *MemoryManage
 	cleaners := make([]StorageCleaner, 0)
 	priority := 1
 
-	currentSessionID := func() string {
+	currentSessionID := func() (string, error) {
 		if memories == nil {
-			return ""
+			return "", nil
 		}
-		sessionID, err := memories.ActiveSessionID()
-		if err != nil {
-			return ""
-		}
-		return sessionID
+		return memories.ActiveSessionID()
 	}
 	logDir := ""
 	sessionArchiveDir := ""
@@ -50,7 +46,7 @@ func newRuntimeStorageMonitor(cfg Config, logger *Logger, memories *MemoryManage
 	regularSessions, aggressiveSessionDays := splitStorageRetentionDays(storageConfig.Cleanup.SessionArchiveRetentionDays)
 
 	for index, retentionDays := range regularLLM {
-		cleaner := NewLLMHTTPLogCleanerWithSessionProvider(logDir, retentionDays, priority, currentSessionID)
+		cleaner := NewLLMHTTPLogCleanerWithCheckedSessionProvider(logDir, retentionDays, priority, currentSessionID)
 		priority++
 		minimumLevel := StorageLevelCritical
 		if index == 0 {
@@ -80,7 +76,7 @@ func newRuntimeStorageMonitor(cfg Config, logger *Logger, memories *MemoryManage
 	}
 
 	for range aggressiveLLMDays {
-		cleaner := NewLLMHTTPLogCleanerWithSessionProvider(logDir, 0, priority, currentSessionID)
+		cleaner := NewLLMHTTPLogCleanerWithCheckedSessionProvider(logDir, 0, priority, currentSessionID)
 		priority++
 		cleaners = append(cleaners, withMinimumStorageLevel(cleaner, StorageLevelEmergency))
 	}

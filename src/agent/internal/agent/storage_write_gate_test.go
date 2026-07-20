@@ -2,8 +2,11 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLLMRawHTTPLoggerHonorsStorageCapability(t *testing.T) {
@@ -68,6 +71,9 @@ func TestMemoryManagerSkipsPersistenceAtCriticalAndResumesAfterRecovery(t *testi
 	if _, err := os.Stat(manager.sessionEventsPath()); !os.IsNotExist(err) {
 		t.Fatalf("session events were persisted at critical, stat error = %v", err)
 	}
+	if !manager.PersistencePending() {
+		t.Fatal("PersistencePending() = false after skipped critical write")
+	}
 
 	if _, err := monitor.CheckAndRemediate(context.Background(), StorageCheckRequest{Reason: CheckReasonPeriodic}); err != nil {
 		t.Fatalf("recovery CheckAndRemediate() error = %v", err)
@@ -77,6 +83,9 @@ func TestMemoryManagerSkipsPersistenceAtCriticalAndResumesAfterRecovery(t *testi
 	}
 	if _, err := os.Stat(manager.sessionEventsPath()); err != nil {
 		t.Fatalf("session events not persisted after recovery: %v", err)
+	}
+	if manager.PersistencePending() {
+		t.Fatal("PersistencePending() = true after successful recovery write")
 	}
 }
 
@@ -104,5 +113,56 @@ func TestMemoryManagerSkipsSessionArchiveAtCritical(t *testing.T) {
 	}
 	if _, err := os.Stat(manager.sessionEventsPath()); err != nil {
 		t.Fatalf("active session was removed while archive capability unavailable: %v", err)
+	}
+}
+
+func TestMemoryManagerSkipsBackgroundMaintenanceAtCritical(t *testing.T) {
+	ctx := context.Background()
+	storageDir := t.TempDir()
+	cfg := DefaultMemoryExtractionConfig()
+	cfg.ContextWindow = 1000
+	cfg.CompressAtPercent = 50
+	cfg.HotWindowEvents = 100
+	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg))
+	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
+	now := time.Now().UTC()
+	for i := 0; i < 5; i++ {
+		if _, err := session.AppendEvent(ctx, SessionEvent{
+			EventID: fmt.Sprintf("evt_%d", i),
+			Ts:      now.Format(time.RFC3339Nano),
+			Type:    "user_input",
+			Role:    "user",
+			Content: "message",
+		}); err != nil {
+			t.Fatalf("AppendEvent() error = %v", err)
+		}
+	}
+	manager.SetLastPromptTokens(600)
+
+	storageConfig := DefaultStorageConfig()
+	storageConfig.Cleanup.Enabled = false
+	monitor := NewStorageMonitor(storageConfig, &sequenceStorageSampler{
+		samples: []StorageSample{storageSampleWithAvailableMB(8)},
+	}, nil, nil, nil)
+	manager.SetStorageMonitor(monitor)
+	if _, err := monitor.CheckAndRemediate(ctx, StorageCheckRequest{Reason: CheckReasonPeriodic}); err != nil {
+		t.Fatalf("critical CheckAndRemediate() error = %v", err)
+	}
+
+	manager.RequestMaintenance()
+	waitCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	if err := manager.WaitMaintenance(waitCtx); err != nil {
+		t.Fatalf("WaitMaintenance() error = %v", err)
+	}
+	chunks, err := session.RecallChunks(ctx, ChunkRecallQuery{Limit: 10})
+	if err != nil {
+		t.Fatalf("RecallChunks() error = %v", err)
+	}
+	if len(chunks) != 0 {
+		t.Fatalf("background maintenance wrote %d chunks at critical", len(chunks))
+	}
+	if !manager.PersistencePending() {
+		t.Fatal("PersistencePending() = false after skipped background maintenance")
 	}
 }

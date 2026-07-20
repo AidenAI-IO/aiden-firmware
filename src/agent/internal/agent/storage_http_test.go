@@ -38,6 +38,40 @@ func TestStorageStatusHTTPReturnsConsistentSnapshot(t *testing.T) {
 	}
 }
 
+func TestStorageStatusHTTPCleanupHistoryUsesCleanerField(t *testing.T) {
+	sampler := &sequenceStorageSampler{samples: []StorageSample{
+		storageSampleWithAvailableMB(40),
+		storageSampleWithAvailableMB(60),
+	}}
+	cleaner := &recordingStorageCleaner{name: "llm_http_log_7d", priority: 1, freed: storageMegabyte}
+	monitor := NewStorageMonitor(DefaultStorageConfig(), sampler, nil, []StorageCleaner{cleaner}, nil)
+	if _, err := monitor.CheckAndRemediate(context.Background(), StorageCheckRequest{Reason: CheckReasonManual}); err != nil {
+		t.Fatalf("manual cleanup error = %v", err)
+	}
+	server := &Server{storageMonitor: monitor}
+
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/storage/status", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET status code = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		CleanupHistory []map[string]any `json:"cleanup_history"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode GET response: %v", err)
+	}
+	if len(response.CleanupHistory) != 1 {
+		t.Fatalf("cleanup_history = %+v, want one result", response.CleanupHistory)
+	}
+	if got := response.CleanupHistory[0]["cleaner"]; got != "llm_http_log_7d" {
+		t.Fatalf("cleanup_history cleaner = %#v", got)
+	}
+	if _, exists := response.CleanupHistory[0]["name"]; exists {
+		t.Fatalf("cleanup_history unexpectedly contains name: %+v", response.CleanupHistory[0])
+	}
+}
+
 func TestStorageCleanupHTTPUsesMonitorRemediationFlow(t *testing.T) {
 	sampler := &sequenceStorageSampler{samples: []StorageSample{
 		storageSampleWithAvailableMB(40),
@@ -55,16 +89,23 @@ func TestStorageCleanupHTTPUsesMonitorRemediationFlow(t *testing.T) {
 		t.Fatalf("POST cleanup code = %d, body=%s", recorder.Code, recorder.Body.String())
 	}
 	var response struct {
-		Success         bool         `json:"success"`
-		FreedMB         uint64       `json:"freed_mb"`
-		FinalAlertLevel StorageLevel `json:"final_alert_level"`
-		AvailableMB     uint64       `json:"available_mb"`
+		Success         bool             `json:"success"`
+		FreedMB         uint64           `json:"freed_mb"`
+		FinalAlertLevel StorageLevel     `json:"final_alert_level"`
+		AvailableMB     uint64           `json:"available_mb"`
+		CleanersRun     []map[string]any `json:"cleaners_run"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode POST response: %v", err)
 	}
 	if !response.Success || response.FreedMB != 7 || response.FinalAlertLevel != StorageLevelNormal || response.AvailableMB != 60 {
 		t.Fatalf("POST response = %+v", response)
+	}
+	if len(response.CleanersRun) != 1 || response.CleanersRun[0]["name"] != "llm_http_log_7d" {
+		t.Fatalf("cleaners_run = %+v", response.CleanersRun)
+	}
+	if _, exists := response.CleanersRun[0]["cleaner"]; exists {
+		t.Fatalf("cleaners_run unexpectedly contains cleaner: %+v", response.CleanersRun[0])
 	}
 	if cleaner.calls != 1 {
 		t.Fatalf("cleaner calls = %d, want 1", cleaner.calls)
