@@ -625,6 +625,21 @@ func applyRuntimeOptionalProviderDefaults(cfg *Config, metadata toml.MetaData) {
 	} else if !usesDefaultSTTModel(cfg.STT.Provider) && !metadata.IsDefined("stt", "model") {
 		cfg.STT.Model = ""
 	}
+
+	// base_url is only honored for the openai provider; every other provider
+	// pins its own endpoint, so drop any stray override to keep runtime
+	// behavior consistent with the config web UI (which hides the field).
+	clearNonOpenAIModelBaseURL(&cfg.Model)
+	clearNonOpenAIModelBaseURL(&cfg.ModelText)
+}
+
+func clearNonOpenAIModelBaseURL(m *ModelConfig) {
+	if m == nil {
+		return
+	}
+	if strings.ToLower(strings.TrimSpace(m.Provider)) != "openai" {
+		m.BaseURL = ""
+	}
 }
 
 func normalizeTTSProvider(provider string) string {

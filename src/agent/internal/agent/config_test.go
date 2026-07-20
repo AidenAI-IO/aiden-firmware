@@ -111,6 +111,51 @@ parse_failure_limit = 13
 	}
 }
 
+func TestLoadRuntimeConfigClearsBaseURLForNonOpenAIProvider(t *testing.T) {
+	tests := []struct {
+		name        string
+		provider    string
+		wantBaseURL string
+	}{
+		{"openai keeps base_url", "openai", "https://gateway.example.com/v1"},
+		{"OpenAI case insensitive keeps base_url", "OpenAI", "https://gateway.example.com/v1"},
+		{"openrouter drops base_url", "openrouter", ""},
+		{"kimi drops base_url", "kimi", ""},
+		{"kimi-cn drops base_url", "kimi-cn", ""},
+		{"ollama drops base_url", "ollama", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "agent.toml")
+			contents := `
+[model]
+provider = "` + tt.provider + `"
+model = "some-model"
+base_url = "https://gateway.example.com/v1"
+
+[model_text]
+provider = "` + tt.provider + `"
+model = "some-model"
+base_url = "https://gateway.example.com/v1"
+`
+			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+
+			cfg, err := LoadRuntimeConfig(path)
+			if err != nil {
+				t.Fatalf("LoadRuntimeConfig() error = %v", err)
+			}
+			if cfg.Model.BaseURL != tt.wantBaseURL {
+				t.Errorf("model.base_url = %q, want %q", cfg.Model.BaseURL, tt.wantBaseURL)
+			}
+			if cfg.ModelText.BaseURL != tt.wantBaseURL {
+				t.Errorf("model_text.base_url = %q, want %q", cfg.ModelText.BaseURL, tt.wantBaseURL)
+			}
+		})
+	}
+}
+
 func TestConfigRejectsInvalidTerminationPolicyThresholdOrder(t *testing.T) {
 	cfg := Config{
 		Model: ModelConfig{Provider: "fake"},

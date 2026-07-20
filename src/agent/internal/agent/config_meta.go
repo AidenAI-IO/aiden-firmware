@@ -114,7 +114,7 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "model", Widget: WidgetText, Default: defaults.Model.Model},
 					{Key: "api_key", Widget: WidgetText, Secret: true},
 					{Key: "base_url", Widget: WidgetText,
-						VisibleWhen: all(ne("model.provider", "openrouter"))},
+						VisibleWhen: all(eq("model.provider", "openai"))},
 					{Key: "temperature", Widget: WidgetNumber, Default: defaults.Model.Temperature},
 					{Key: "max_response_tokens", Widget: WidgetNumber, Default: defaults.Model.MaxResponseTokens},
 					{Key: "log_raw_http", Widget: WidgetBoolean, Default: defaults.Model.LogRawHTTP},
