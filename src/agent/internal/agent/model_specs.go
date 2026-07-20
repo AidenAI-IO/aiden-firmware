@@ -1,16 +1,9 @@
 package agent
 
-import "strings"
-
-// ModelSpec describes static capabilities of a chat completion model that the
-// runtime needs at decision time (e.g. when to compress session history).
-//
-// ContextWindow is the model's total context window in tokens (input + output).
-// MaxOutput is the per-request output cap the model advertises; 0 means unknown.
-type ModelSpec struct {
-	ContextWindow int
-	MaxOutput     int
-}
+import (
+	"aiden-agent/internal/agent/model"
+	"strings"
+)
 
 // modelSpecRegistry covers the chat models referenced from this repo (overlay
 // agent.toml, configuration docs, common OpenRouter routes used in dev/staging)
@@ -23,7 +16,7 @@ type ModelSpec struct {
 //
 // Only models that support both image input and tool/function calling are
 // listed here, since those are the capabilities the agent relies on.
-var modelSpecRegistry = map[string]ModelSpec{
+var modelSpecRegistry = map[string]model.ModelSpec{
 	// OpenAI GPT-5.x family (vision + tool calling). ContextWindow is the total
 	// advertised window; compaction logic uses (ContextWindow - MaxOutput) for
 	// the actual input budget.
@@ -52,6 +45,11 @@ var modelSpecRegistry = map[string]ModelSpec{
 	"google/gemini-3.5-flash": {ContextWindow: 1_048_576, MaxOutput: 65_536},
 	"gemini-3.5-flash":        {ContextWindow: 1_048_576, MaxOutput: 65_536},
 
+	// Moonshot Kimi K3 (vision + tool calling). Reached via the Moonshot
+	// OpenAI-compatible endpoint (bare model name) or the OpenRouter route.
+	"moonshotai/kimi-k3": {ContextWindow: 1_048_576, MaxOutput: 131_072},
+	"kimi-k3":            {ContextWindow: 1_048_576, MaxOutput: 131_072},
+
 	// Existing entries retained for back-compat with dev/staging configs.
 	"anthropic/claude-3.5-sonnet":  {ContextWindow: 200_000, MaxOutput: 8_192},
 	"anthropic/claude-3.7-sonnet":  {ContextWindow: 200_000, MaxOutput: 8_192},
@@ -65,10 +63,10 @@ var modelSpecRegistry = map[string]ModelSpec{
 // back to the bare model name without a provider prefix so configurations that
 // drop the prefix still resolve. The boolean is false when the model is
 // unknown; callers must then fall back to a configured default.
-func LookupModelSpec(provider, model string) (ModelSpec, bool) {
-	key := strings.ToLower(strings.TrimSpace(model))
+func LookupModelSpec(provider, modelName string) (model.ModelSpec, bool) {
+	key := strings.ToLower(strings.TrimSpace(modelName))
 	if key == "" {
-		return ModelSpec{}, false
+		return model.ModelSpec{}, false
 	}
 	if spec, ok := modelSpecRegistry[key]; ok {
 		return spec, true
@@ -85,5 +83,5 @@ func LookupModelSpec(provider, model string) (ModelSpec, bool) {
 			return spec, true
 		}
 	}
-	return ModelSpec{}, false
+	return model.ModelSpec{}, false
 }

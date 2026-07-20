@@ -17,8 +17,11 @@ import (
 	"unicode/utf8"
 
 	"aiden-agent/internal/agent/agentpath"
+	"aiden-agent/internal/agent/compactor"
 	"aiden-agent/internal/agent/contextmanager"
+	"aiden-agent/internal/agent/model"
 	"aiden-agent/internal/agent/statemanager"
+	"aiden-agent/internal/util"
 
 	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/agents"
@@ -43,7 +46,7 @@ const (
 
 type Runtime struct {
 	config             Config
-	models             ModelResolver
+	models             model.ModelResolver
 	memories           *MemoryManager
 	tools              *ToolSet
 	skills             *SkillManager
@@ -355,7 +358,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	summarizeFn := buildLLMSummarizeFn(modelManager)
 	structuredSummarizeFn := buildLLMStructuredSummarizeFn(modelManager, logger)
 	profileFn := buildLLMProfileFn(modelManager)
-	contextWindowFn := func() ModelSpec { return modelManager.Spec() }
+	contextWindowFn := func() model.ModelSpec { return modelManager.Spec() }
 
 	longTermDir := ""
 	if memoryDir != "" {
@@ -406,7 +409,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	return rt, nil
 }
 
-func NewRuntimeWithDeps(cfg Config, models ModelResolver, memories *MemoryManager, tools *ToolSet, skillIndex *SkillIndex) *Runtime {
+func NewRuntimeWithDeps(cfg Config, models model.ModelResolver, memories *MemoryManager, tools *ToolSet, skillIndex *SkillIndex) *Runtime {
 	waitForWakeupController := NewWaitForWakeupController()
 	if tools != nil {
 		if tool, ok := tools.Get(toolWaitForWakeup); ok {
@@ -736,7 +739,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		return RunResult{}, err
 	}
 
-	model, err := r.models.Get()
+	m, err := r.models.Get()
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -747,11 +750,11 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 			r.logger.Info("Resolved model context window: context_window=%d", contextWindow)
 		}
 	}
-	model = &usageTrackingModel{inner: model, metrics: metrics, promptCapture: promptCapture, contextWindowFn: func() ModelSpec {
+	m = &usageTrackingModel{inner: m, metrics: metrics, promptCapture: promptCapture, contextWindowFn: func() model.ModelSpec {
 		if r.models != nil {
 			return r.models.Spec()
 		}
-		return ModelSpec{}
+		return model.ModelSpec{}
 	}}
 
 	memoryCfg := MemoryConfig{Type: "buffer"}
@@ -992,7 +995,30 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		return RunResult{}, err
 	}
 
-	agentLoop := NewAgentLoop(model, profile, plannerMemory, maxIterations, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault(), r.contextManager)
+	compactor := compactor.NewCompactor(compactor.DefaultProtectRule, r.models)
+	tokenUsage := compactor.EstimateTokenUsage(r.contextManager)
+	// TODO: make this configurable
+	if tokenUsage > int(float64(max(contextWindow, 8192))*0.8) {
+		if r.logger != nil {
+			r.logger.Info("Compaction: token usage reached the threshold, try to compact the context... tokenUsage: %d, contextWindow: %d", tokenUsage, contextWindow)
+		}
+		newManager, compacted, err := compactor.Compact(ctx, r.contextManager)
+		if err != nil {
+			return RunResult{}, err
+		}
+		if compacted {
+			// setup hooks
+			newManager.AddAppendMessageHook(r.getStateHook())
+			// switch to new session
+			err = contextmanager.SwitchSession(newManager.GetSessionFolder(), newManager.GetSessionID())
+			if err != nil {
+				return RunResult{}, err
+			}
+			r.contextManager = newManager
+		}
+	}
+
+	agentLoop := NewAgentLoop(m, profile, plannerMemory, maxIterations, executorHandler, episodeRecorder, r.config.ScreenshotPruningOrDefault(), r.contextManager)
 	agentLoop.toolExecutionHookFactory = func() toolExecutionHookHandler {
 		if r.tools == nil {
 			return newWheelNudgeGuard(nil)
@@ -1583,38 +1609,23 @@ func recordUsageMetrics(metrics *RunMetrics, res *llms.ContentResponse) {
 	// tool-assisted iterations). Accumulate token counts across calls so the run
 	// metrics reflect the whole run rather than only the last call. LastPromptTokens
 	// keeps the largest single-call prompt size for the compression heuristic.
-	if v, ok := usageMetricInt(info["prompt_tokens"]); ok {
+	if v, ok := util.UsageMetricInt(info["prompt_tokens"]); ok {
 		metrics.PromptTokens += v
 		if v > metrics.LastPromptTokens {
 			metrics.LastPromptTokens = v
 		}
 	}
-	if v, ok := usageMetricInt(info["completion_tokens"]); ok {
+	if v, ok := util.UsageMetricInt(info["completion_tokens"]); ok {
 		metrics.CompletionTokens += v
 	}
-	if v, ok := usageMetricInt(info["total_tokens"]); ok {
+	if v, ok := util.UsageMetricInt(info["total_tokens"]); ok {
 		metrics.TotalTokens += v
 	}
-	if v, ok := usageMetricInt(info["cached_tokens"]); ok {
+	if v, ok := util.UsageMetricInt(info["cached_tokens"]); ok {
 		metrics.CachedPromptTokens += v
 	}
-	if v, ok := usageMetricInt(info["reasoning_tokens"]); ok {
+	if v, ok := util.UsageMetricInt(info["reasoning_tokens"]); ok {
 		metrics.ReasoningTokens += v
-	}
-}
-
-func usageMetricInt(value any) (int, bool) {
-	switch typed := value.(type) {
-	case int:
-		return typed, true
-	case int32:
-		return int(typed), true
-	case int64:
-		return int(typed), true
-	case float64:
-		return int(typed), true
-	default:
-		return 0, false
 	}
 }
 
@@ -2073,7 +2084,7 @@ func truncateForLog(text string, max int) string {
 	return string(runes[:max]) + "..."
 }
 
-func buildLLMSummarizeFn(models ModelResolver) SummarizeFn {
+func buildLLMSummarizeFn(models model.ModelResolver) SummarizeFn {
 	return func(ctx context.Context, events []SessionEvent) string {
 		model, err := models.Get()
 		if err != nil {
@@ -2127,7 +2138,7 @@ const (
 	structuredSummaryMaxSummaryRune = 480
 )
 
-func buildLLMStructuredSummarizeFn(models ModelResolver, logger *Logger) StructuredSummarizeFn {
+func buildLLMStructuredSummarizeFn(models model.ModelResolver, logger *Logger) StructuredSummarizeFn {
 	return func(ctx context.Context, events []SessionEvent) ChunkStructuredSummary {
 		model, err := models.Get()
 		if err != nil {
@@ -2213,7 +2224,7 @@ func capRunes(text string, max int) string {
 	return string(runes[:max])
 }
 
-func buildLLMProfileFn(models ModelResolver) ProfileFn {
+func buildLLMProfileFn(models model.ModelResolver) ProfileFn {
 	return func(ctx context.Context, entries []ProfileEntry) string {
 		model, err := models.Get()
 		if err != nil {

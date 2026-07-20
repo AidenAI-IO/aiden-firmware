@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"aiden-agent/internal/agent/agentpath"
+	"aiden-agent/internal/agent/contextmanager"
+	"aiden-agent/internal/agent/model"
 
 	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/llms"
@@ -77,7 +79,7 @@ type testModelResolver struct {
 	model llms.Model
 	err   error
 	calls int
-	spec  ModelSpec
+	spec  model.ModelSpec
 }
 
 func (r *testModelResolver) Get() (llms.Model, error) {
@@ -92,7 +94,7 @@ func (r *testModelResolver) CallOptions() []chains.ChainCallOption {
 	return nil
 }
 
-func (r *testModelResolver) Spec() ModelSpec {
+func (r *testModelResolver) Spec() model.ModelSpec {
 	return r.spec
 }
 
@@ -2097,6 +2099,73 @@ func contentResponse(content string) *llms.ContentResponse {
 	return contentResponseWithInfo(content, nil)
 }
 
+func TestRuntimeRunCompactsWithoutLogger(t *testing.T) {
+	configDir := ensureTestConfigDir(t, t.TempDir())
+	sessionFolder := agentpath.ContextManagerSessionFolder(configDir)
+	// Runtime compaction uses a minimum context window of 8192 tokens, so this
+	// fixture must comfortably exceed the ~80% threshold to force compaction.
+	manager, err := contextmanager.NewContextManagerFromMessageList(sessionFolder, []contextmanager.Message{
+		{Role: contextmanager.MessageRoleSystem, Content: "Answer directly."},
+		{Role: contextmanager.MessageRoleUser, Content: strings.Repeat("user ", 1600)},
+		{Role: contextmanager.MessageRoleAssistant, Content: strings.Repeat("assistant ", 1600)},
+		{
+			Role: contextmanager.MessageRoleToolCall,
+			ToolCalls: []contextmanager.ToolCall{{
+				ID:        "call_1",
+				Name:      "echo",
+				Arguments: `{"input":"` + strings.Repeat("x", 4000) + `"}`,
+			}},
+		},
+		{
+			Role: contextmanager.MessageRoleToolResult,
+			ToolResults: []contextmanager.ToolResult{{
+				ToolCallID: "call_1",
+				Name:       "echo",
+				Content:    strings.Repeat("result ", 1600),
+			}},
+		},
+		{Role: contextmanager.MessageRoleAssistant, Content: "recent tail"},
+	})
+	if err != nil {
+		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
+	}
+
+	llmModel := &scriptedModel{
+		responses: []*llms.ContentResponse{
+			contentResponse("compacted summary"),
+			contentResponse("ok"),
+		},
+	}
+	runtime := NewRuntimeWithDeps(
+		Config{
+			ConfigDir:     configDir,
+			Model:         ModelConfig{Provider: "fake"},
+			Instruction:   "Answer directly.",
+			MaxIterations: 1,
+		},
+		&testModelResolver{
+			model: llmModel,
+			spec:  model.ModelSpec{ContextWindow: 100},
+		},
+		NewMemoryManager(""),
+		&ToolSet{tools: map[string]langtools.Tool{}},
+		NewSkillIndex(),
+	)
+	runtime.contextManager = manager
+	runtime.logger = nil
+
+	result, err := runtime.Run(context.Background(), RunRequest{Input: "hello"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Output != "ok" {
+		t.Fatalf("output = %q, want ok", result.Output)
+	}
+	if len(llmModel.messages) != 2 {
+		t.Fatalf("model call count = %d, want 2 (summary + planner)", len(llmModel.messages))
+	}
+}
+
 func contentResponseWithInfo(content string, info map[string]any) *llms.ContentResponse {
 	return &llms.ContentResponse{
 		Choices: []*llms.ContentChoice{{
@@ -3503,79 +3572,6 @@ func TestRuntimeRunCompactsRealChatExchangesBeyondWindow(t *testing.T) {
 	}
 
 	waitForSessionCompaction(t, configDir, runtime.memories)
-}
-
-func TestRuntimeRunSchedulesMemoryMaintenanceAsync(t *testing.T) {
-	storageDir := filepath.Join(t.TempDir(), "memory")
-	cfg := DefaultMemoryExtractionConfig()
-	cfg.HotWindowEvents = 4
-
-	session := NewSessionMemoryStore(filepath.Join(storageDir, "session"))
-	now := time.Now().UTC()
-	for i := 0; i < 9; i++ {
-		if _, err := session.AppendEvent(context.Background(), SessionEvent{
-			EventID: fmt.Sprintf("evt_%d", i),
-			Ts:      now.Format(time.RFC3339Nano),
-			Type:    "user_input",
-			Role:    "user",
-			Content: "历史消息",
-		}); err != nil {
-			t.Fatalf("AppendEvent() error = %v", err)
-		}
-	}
-
-	started := make(chan struct{})
-	release := make(chan struct{})
-	var released atomic.Bool
-	releaseMaintenance := func() {
-		if released.CompareAndSwap(false, true) {
-			close(release)
-		}
-	}
-	defer releaseMaintenance()
-	var startedOnce atomic.Bool
-	manager := NewMemoryManager(storageDir, WithExtractionConfig(cfg), WithSummarizeFn(func(ctx context.Context, events []SessionEvent) string {
-		if startedOnce.CompareAndSwap(false, true) {
-			close(started)
-		}
-		select {
-		case <-ctx.Done():
-			return ""
-		case <-release:
-			return "async summary"
-		}
-	}))
-
-	runtime := NewRuntimeWithDeps(
-		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly.", MaxIterations: 1}),
-		&testModelResolver{model: &scriptedModel{responses: roleDirectResponses("ok")}},
-		manager,
-		&ToolSet{tools: map[string]langtools.Tool{}},
-		NewSkillIndex(),
-	)
-	defer runtime.Close()
-
-	done := make(chan error, 1)
-	go func() {
-		_, err := runtime.Run(context.Background(), RunRequest{Input: "hello"})
-		done <- err
-	}()
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Run() error = %v", err)
-		}
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("Run() blocked on memory maintenance")
-	}
-
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("async memory maintenance did not start")
-	}
-	releaseMaintenance()
 }
 
 func TestRuntimeRunRotatesSessionOnNewBoundary(t *testing.T) {

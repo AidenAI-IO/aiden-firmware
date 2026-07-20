@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/util"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -271,16 +272,16 @@ func telemetryUsageDetails(res *llms.ContentResponse) map[string]int {
 		return nil
 	}
 	usage := map[string]int{}
-	if v, ok := usageMetricInt(info["prompt_tokens"]); ok {
+	if v, ok := util.UsageMetricInt(info["prompt_tokens"]); ok {
 		usage["input"] = v
 	}
-	if v, ok := usageMetricInt(info["completion_tokens"]); ok {
+	if v, ok := util.UsageMetricInt(info["completion_tokens"]); ok {
 		usage["output"] = v
 	}
-	if v, ok := usageMetricInt(info["total_tokens"]); ok {
+	if v, ok := util.UsageMetricInt(info["total_tokens"]); ok {
 		usage["total"] = v
 	}
-	if v, ok := usageMetricInt(info["cached_tokens"]); ok {
+	if v, ok := util.UsageMetricInt(info["cached_tokens"]); ok {
 		usage["cached"] = v
 	}
 	if usage["total"] == 0 && (usage["input"] > 0 || usage["output"] > 0) {

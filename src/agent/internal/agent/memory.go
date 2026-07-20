@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/model"
 	"context"
 	"encoding/json"
 	"errors"
@@ -58,7 +59,7 @@ type StructuredSummarizeFn func(ctx context.Context, events []SessionEvent) Chun
 // it on every compression decision so model swaps take effect at runtime without
 // restart. Implementations should return a zero ContextWindow when the window is
 // unknown; callers fall back to the yaml-configured default.
-type ContextWindowFn func() ModelSpec
+type ContextWindowFn func() model.ModelSpec
 
 // MemoryManager maintains session memory, handling compression, chunk management,
 // and long-term profile generation. It coordinates between in-memory chat history

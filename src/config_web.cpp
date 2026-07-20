@@ -1496,7 +1496,7 @@ bool validate_agent_config_patch_json(cJSON* root, std::string* error = NULL) {
 
     const char* sections[] = {
         "model", "model_text", "tts", "stt", "audio", "audio_archive",
-        "log", "hid", "search", "telemetry", "termination_policy",
+        "log", "ota", "hid", "search", "telemetry", "termination_policy",
         "live_activity", "agent", NULL,
     };
     for (int i = 0; sections[i]; ++i) {
@@ -2387,6 +2387,9 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON* log_config = add_object(root, "log");
     cJSON_AddNumberToObject(log_config, "llm_http_retention_days", config.log.llm_http_retention_days);
 
+    cJSON* ota = add_object(root, "ota");
+    cJSON_AddStringToObject(ota, "github_proxy_url", config.ota.github_proxy_url.c_str());
+
     cJSON* hid = add_object(root, "hid");
     cJSON_AddStringToObject(hid, "keyboard_device", config.hid.keyboard_device.c_str());
     cJSON_AddStringToObject(hid, "mouse_device", config.hid.mouse_device.c_str());
@@ -2679,6 +2682,11 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
     cJSON* log_config = cJSON_GetObjectItem(root, "log");
     if (json_is_object(log_config)) {
         set_json_int(&config->log.llm_http_retention_days, log_config, "llm_http_retention_days");
+    }
+
+    cJSON* ota = cJSON_GetObjectItem(root, "ota");
+    if (json_is_object(ota)) {
+        set_json_str(&config->ota.github_proxy_url, ota, "github_proxy_url");
     }
 
     cJSON* hid = cJSON_GetObjectItem(root, "hid");

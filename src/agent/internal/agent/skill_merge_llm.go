@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/model"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,10 +11,10 @@ import (
 )
 
 type LLMSkillMergeModel struct {
-	models ModelResolver
+	models model.ModelResolver
 }
 
-func NewLLMSkillMergeModel(models ModelResolver) *LLMSkillMergeModel {
+func NewLLMSkillMergeModel(models model.ModelResolver) *LLMSkillMergeModel {
 	return &LLMSkillMergeModel{models: models}
 }
 
