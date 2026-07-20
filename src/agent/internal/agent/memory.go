@@ -207,7 +207,7 @@ func (m *MemoryManager) SetStorageMonitor(monitor *StorageMonitor) {
 	m.storageMonitor = monitor
 }
 
-func (m *MemoryManager) allowStorageWrite(capability string) bool {
+func (m *MemoryManager) allowStorageWrite(capability StorageCapability) bool {
 	if m == nil {
 		return false
 	}

@@ -186,3 +186,10 @@ func (c *AudioArchiveCleaner) Clean(context.Context) (uint64, error) {
 
 	return totalFreed, nil
 }
+
+func (c *AudioArchiveCleaner) ForceClean(ctx context.Context) (uint64, error) {
+	forced := *c
+	forced.retentionAge = 0
+	forced.maxFiles = 0
+	return forced.Clean(ctx)
+}

@@ -138,6 +138,12 @@ func (c *LLMHTTPLogCleaner) Clean(context.Context) (uint64, error) {
 	return totalFreed, nil
 }
 
+func (c *LLMHTTPLogCleaner) ForceClean(ctx context.Context) (uint64, error) {
+	forced := *c
+	forced.retentionAge = 0
+	return forced.Clean(ctx)
+}
+
 func (c *LLMHTTPLogCleaner) protected(name string) bool {
 	if c.currentSessionID == nil {
 		return false

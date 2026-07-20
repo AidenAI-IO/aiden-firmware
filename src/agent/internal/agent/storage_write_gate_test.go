@@ -47,10 +47,10 @@ func TestLLMRawHTTPLoggerHonorsStorageCapability(t *testing.T) {
 	}
 }
 
-func TestMemoryManagerSkipsPersistenceAtEmergencyAndResumesAfterRecovery(t *testing.T) {
+func TestMemoryManagerSkipsPersistenceAtCriticalAndResumesAfterRecovery(t *testing.T) {
 	storageDir := t.TempDir()
 	sampler := &sequenceStorageSampler{samples: []StorageSample{
-		storageSampleWithAvailableMB(4),
+		storageSampleWithAvailableMB(8),
 		storageSampleWithAvailableMB(60),
 	}}
 	config := DefaultStorageConfig()
@@ -60,13 +60,13 @@ func TestMemoryManagerSkipsPersistenceAtEmergencyAndResumesAfterRecovery(t *test
 	manager.SetStorageMonitor(monitor)
 
 	if _, err := monitor.CheckAndRemediate(context.Background(), StorageCheckRequest{Reason: CheckReasonPeriodic}); err != nil {
-		t.Fatalf("emergency CheckAndRemediate() error = %v", err)
+		t.Fatalf("critical CheckAndRemediate() error = %v", err)
 	}
 	if err := manager.AppendMessages(context.Background(), "agent", []MessageRecord{{Role: "user", Content: "keep in memory"}}); err != nil {
-		t.Fatalf("AppendMessages() at emergency error = %v", err)
+		t.Fatalf("AppendMessages() at critical error = %v", err)
 	}
 	if _, err := os.Stat(manager.sessionEventsPath()); !os.IsNotExist(err) {
-		t.Fatalf("session events were persisted at emergency, stat error = %v", err)
+		t.Fatalf("session events were persisted at critical, stat error = %v", err)
 	}
 
 	if _, err := monitor.CheckAndRemediate(context.Background(), StorageCheckRequest{Reason: CheckReasonPeriodic}); err != nil {
@@ -88,11 +88,11 @@ func TestMemoryManagerSkipsSessionArchiveAtCritical(t *testing.T) {
 	monitor := NewStorageMonitor(config, sampler, nil, nil, nil)
 	manager := NewMemoryManager(storageDir)
 	manager.SetStorageMonitor(monitor)
+	if err := manager.AppendMessages(context.Background(), "agent", []MessageRecord{{Role: "user", Content: "current session"}}); err != nil {
+		t.Fatalf("AppendMessages() before critical state error = %v", err)
+	}
 	if _, err := monitor.CheckAndRemediate(context.Background(), StorageCheckRequest{Reason: CheckReasonPeriodic}); err != nil {
 		t.Fatalf("critical CheckAndRemediate() error = %v", err)
-	}
-	if err := manager.AppendMessages(context.Background(), "agent", []MessageRecord{{Role: "user", Content: "current session"}}); err != nil {
-		t.Fatalf("AppendMessages() error = %v", err)
 	}
 
 	result, err := manager.RotateSessionEventsDetailed()

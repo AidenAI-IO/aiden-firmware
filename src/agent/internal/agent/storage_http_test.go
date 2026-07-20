@@ -70,3 +70,34 @@ func TestStorageCleanupHTTPUsesMonitorRemediationFlow(t *testing.T) {
 		t.Fatalf("cleaner calls = %d, want 1", cleaner.calls)
 	}
 }
+
+func TestStorageCleanupHTTPReportsOnlyCurrentOperationFreedSpace(t *testing.T) {
+	sampler := &sequenceStorageSampler{samples: []StorageSample{
+		storageSampleWithAvailableMB(40),
+		storageSampleWithAvailableMB(60),
+		storageSampleWithAvailableMB(60),
+	}}
+	cleaner := &recordingStorageCleaner{name: "llm_http_log_7d", priority: 1, freed: 7 * storageMegabyte}
+	config := DefaultStorageConfig()
+	monitor := NewStorageMonitor(config, sampler, nil, []StorageCleaner{cleaner}, nil)
+	if _, err := monitor.CheckAndRemediate(context.Background(), StorageCheckRequest{Reason: CheckReasonManual}); err != nil {
+		t.Fatalf("initial cleanup error = %v", err)
+	}
+	server := &Server{storageMonitor: monitor}
+
+	body := bytes.NewBufferString(`{"targets":["audio_archive"]}`)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/storage/cleanup", body))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("POST cleanup code = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		FreedMB uint64 `json:"freed_mb"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.FreedMB != 0 {
+		t.Fatalf("freed_mb = %d, want 0 for current no-op cleanup", response.FreedMB)
+	}
+}

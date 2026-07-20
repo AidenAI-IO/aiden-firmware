@@ -21,9 +21,6 @@ const (
 	StorageLevelWarning   StorageLevel = "warning"
 	StorageLevelCritical  StorageLevel = "critical"
 	StorageLevelEmergency StorageLevel = "emergency"
-
-	// StorageLevelGreen is kept as a compatibility alias for early callers.
-	StorageLevelGreen = StorageLevelNormal
 )
 
 type CheckReason string
@@ -35,11 +32,13 @@ const (
 	CheckReasonManual   CheckReason = "manual"
 )
 
+type StorageCapability string
+
 const (
-	StorageCapabilityLLMHTTPLog         = "llm_http_log"
-	StorageCapabilityAudioArchive       = "audio_archive"
-	StorageCapabilitySessionArchive     = "session_archive"
-	StorageCapabilitySessionPersistence = "session_persistence"
+	StorageCapabilityLLMHTTPLog         StorageCapability = "llm_http_log"
+	StorageCapabilityAudioArchive       StorageCapability = "audio_archive"
+	StorageCapabilitySessionArchive     StorageCapability = "session_archive"
+	StorageCapabilitySessionPersistence StorageCapability = "session_persistence"
 )
 
 // StorageSample is a point-in-time filesystem sample.
@@ -76,23 +75,20 @@ type StorageCleanupResult struct {
 
 // StorageStatus is a consistent snapshot of the final state after remediation.
 type StorageStatus struct {
-	Path                    string                 `json:"path"`
-	TotalBytes              uint64                 `json:"total_bytes"`
-	UsedBytes               uint64                 `json:"used_bytes"`
-	AvailableBytes          uint64                 `json:"available_bytes"`
-	PercentUsed             float64                `json:"percent_used"`
-	Level                   StorageLevel           `json:"alert_level"`
-	UnavailableCapabilities []string               `json:"unavailable_capabilities"`
-	Revision                uint64                 `json:"status_revision"`
-	LastCleanupAt           time.Time              `json:"last_cleanup,omitempty"`
-	LastCleanupFreedBytes   uint64                 `json:"last_cleanup_freed_bytes"`
-	CleanupHistory          []StorageCleanupResult `json:"cleanup_history,omitempty"`
-	LastCleanupResults      []StorageCleanupResult `json:"-"`
-	CheckedAt               time.Time              `json:"checked_at"`
-
-	// Compatibility fields used by the early prototype.
-	Partition string    `json:"-"`
-	LastCheck time.Time `json:"-"`
+	Path                     string                 `json:"path"`
+	TotalBytes               uint64                 `json:"total_bytes"`
+	UsedBytes                uint64                 `json:"used_bytes"`
+	AvailableBytes           uint64                 `json:"available_bytes"`
+	PercentUsed              float64                `json:"percent_used"`
+	Level                    StorageLevel           `json:"alert_level"`
+	UnavailableCapabilities  []StorageCapability    `json:"unavailable_capabilities"`
+	Revision                 uint64                 `json:"status_revision"`
+	LastCleanupAt            time.Time              `json:"last_cleanup,omitempty"`
+	LastCleanupFreedBytes    uint64                 `json:"last_cleanup_freed_bytes"`
+	CleanupHistory           []StorageCleanupResult `json:"cleanup_history,omitempty"`
+	LastCleanupResults       []StorageCleanupResult `json:"-"`
+	CurrentCleanupFreedBytes uint64                 `json:"-"`
+	CheckedAt                time.Time              `json:"checked_at"`
 }
 
 type StorageCheckRequest struct {
@@ -107,6 +103,14 @@ type StorageCleaner interface {
 	Priority() int
 	EstimateReclaimable(ctx context.Context) (uint64, error)
 	Clean(ctx context.Context) (freed uint64, err error)
+}
+
+type forceStorageCleaner interface {
+	ForceClean(ctx context.Context) (freed uint64, err error)
+}
+
+type storageCleanerLevel interface {
+	MinimumLevel() StorageLevel
 }
 
 type StorageDegradedModeConfig struct {
@@ -136,9 +140,6 @@ type StorageConfig struct {
 	Cleanup              StorageCleanupConfig      `toml:"cleanup,omitempty"`
 }
 
-// StorageMonitorConfig is an alias retained for the prototype API.
-type StorageMonitorConfig = StorageConfig
-
 func DefaultStorageConfig() StorageConfig {
 	return StorageConfig{
 		Enabled:              true,
@@ -163,8 +164,6 @@ func DefaultStorageConfig() StorageConfig {
 	}
 }
 
-func DefaultStorageMonitorConfig() StorageConfig { return DefaultStorageConfig() }
-
 func (c StorageConfig) Validate() error {
 	if !c.Enabled {
 		return nil
@@ -180,6 +179,21 @@ func (c StorageConfig) Validate() error {
 	}
 	if c.Cleanup.CleanupRetryIntervalSeconds < 0 {
 		return fmt.Errorf("storage.cleanup.cleanup_retry_interval_seconds must be >= 0, got %d", c.Cleanup.CleanupRetryIntervalSeconds)
+	}
+	retentionFields := []struct {
+		name   string
+		values []int
+	}{
+		{name: "llm_http_log_retention_days", values: c.Cleanup.LLMHTTPLogRetentionDays},
+		{name: "audio_archive_retention_days", values: c.Cleanup.AudioArchiveRetentionDays},
+		{name: "session_archive_retention_days", values: c.Cleanup.SessionArchiveRetentionDays},
+	}
+	for _, field := range retentionFields {
+		for _, value := range field.values {
+			if value < 0 {
+				return fmt.Errorf("storage.cleanup.%s must contain values >= 0, got %d", field.name, value)
+			}
+		}
 	}
 	return nil
 }
@@ -211,6 +225,8 @@ type StorageMonitor struct {
 	notificationActive bool
 	notifiedLevel      StorageLevel
 	lastCleanupAttempt time.Time
+	writeCheckMu       sync.Mutex
+	writeCheckPending  bool
 
 	ctx     context.Context
 	cancel  context.CancelFunc
@@ -243,10 +259,8 @@ func (m *StorageMonitor) Status() StorageStatus {
 	return cloneStorageStatus(m.status)
 }
 
-func (m *StorageMonitor) GetStatus() StorageStatus { return m.Status() }
-
 func cloneStorageStatus(status StorageStatus) StorageStatus {
-	status.UnavailableCapabilities = append([]string(nil), status.UnavailableCapabilities...)
+	status.UnavailableCapabilities = append([]StorageCapability(nil), status.UnavailableCapabilities...)
 	status.CleanupHistory = append([]StorageCleanupResult(nil), status.CleanupHistory...)
 	status.LastCleanupResults = append([]StorageCleanupResult(nil), status.LastCleanupResults...)
 	return status
@@ -275,22 +289,37 @@ func (m *StorageMonitor) CheckAndRemediate(ctx context.Context, request StorageC
 	retryInterval := time.Duration(m.config.Cleanup.CleanupRetryIntervalSeconds) * time.Second
 	cleanupDue := m.lastCleanupAttempt.IsZero() || retryInterval <= 0 || time.Since(m.lastCleanupAttempt) >= retryInterval
 	bypassRetry := request.Force || request.Reason == CheckReasonManual || request.Reason == CheckReasonWrite
-	shouldClean := m.config.Cleanup.Enabled && (request.Force || request.Reason == CheckReasonManual || initial.Level != StorageLevelNormal) && (cleanupDue || bypassRetry)
+	maintenanceCheck := request.Reason == CheckReasonStartup || request.Reason == CheckReasonPeriodic
+	shouldClean := m.config.Cleanup.Enabled && (request.Force || request.Reason == CheckReasonManual || initial.Level != StorageLevelNormal || maintenanceCheck) && (cleanupDue || bypassRetry)
 	if shouldClean {
 		m.lastCleanupAttempt = time.Now()
 		for _, cleaner := range m.cleaners {
 			if !cleanerSelected(cleaner.Name(), request.Targets) {
 				continue
 			}
-			estimate, estimateErr := cleaner.EstimateReclaimable(ctx)
-			if estimateErr != nil {
-				cleanupHistory = append(cleanupHistory, StorageCleanupResult{Timestamp: time.Now(), Cleaner: cleaner.Name(), Status: "failed", Error: estimateErr.Error()})
+			currentLevel := m.applyRecoveryHysteresis(previous.Level, final.AvailableBytes, final.Level)
+			if leveled, ok := cleaner.(storageCleanerLevel); ok && !request.Force && request.Reason != CheckReasonManual && storageLevelRank(currentLevel) < storageLevelRank(leveled.MinimumLevel()) {
 				continue
 			}
-			if estimate == 0 && !request.Force {
-				continue
+			var freed uint64
+			var cleanErr error
+			if request.Force {
+				if forceCleaner, ok := cleaner.(forceStorageCleaner); ok {
+					freed, cleanErr = forceCleaner.ForceClean(ctx)
+				} else {
+					freed, cleanErr = cleaner.Clean(ctx)
+				}
+			} else {
+				estimate, estimateErr := cleaner.EstimateReclaimable(ctx)
+				if estimateErr != nil {
+					cleanupHistory = append(cleanupHistory, StorageCleanupResult{Timestamp: time.Now(), Cleaner: cleaner.Name(), Status: "failed", Error: estimateErr.Error()})
+					continue
+				}
+				if estimate == 0 {
+					continue
+				}
+				freed, cleanErr = cleaner.Clean(ctx)
 			}
-			freed, cleanErr := cleaner.Clean(ctx)
 			result := StorageCleanupResult{Timestamp: time.Now(), Cleaner: cleaner.Name(), FreedBytes: freed, Status: "success"}
 			if cleanErr != nil {
 				result.Status = "failed"
@@ -316,6 +345,7 @@ func (m *StorageMonitor) CheckAndRemediate(ctx context.Context, request StorageC
 	final.Revision = previous.Revision + 1
 	if len(cleanupHistory) > 0 {
 		final.LastCleanupFreedBytes = totalFreed
+		final.CurrentCleanupFreedBytes = totalFreed
 		final.LastCleanupResults = append([]StorageCleanupResult(nil), cleanupHistory...)
 		final.LastCleanupAt = cleanupHistory[len(cleanupHistory)-1].Timestamp
 		final.CleanupHistory = append(append([]StorageCleanupResult(nil), previous.CleanupHistory...), cleanupHistory...)
@@ -327,6 +357,7 @@ func (m *StorageMonitor) CheckAndRemediate(ctx context.Context, request StorageC
 		final.LastCleanupFreedBytes = previous.LastCleanupFreedBytes
 		final.CleanupHistory = previous.CleanupHistory
 		final.LastCleanupResults = nil
+		final.CurrentCleanupFreedBytes = 0
 	}
 
 	m.statusMu.Lock()
@@ -379,7 +410,7 @@ func (m *StorageMonitor) notificationEvent(status StorageStatus, state string, s
 			"path":                     status.Path,
 			"available_mb":             status.AvailableBytes / storageMegabyte,
 			"cleanup_result":           append([]StorageCleanupResult(nil), status.LastCleanupResults...),
-			"unavailable_capabilities": append([]string(nil), status.UnavailableCapabilities...),
+			"unavailable_capabilities": append([]StorageCapability(nil), status.UnavailableCapabilities...),
 		},
 	}
 }
@@ -413,25 +444,22 @@ func (m *StorageMonitor) sampleStatus(ctx context.Context, path string) (Storage
 	now := time.Now()
 	return StorageStatus{
 		Path:           path,
-		Partition:      path,
 		TotalBytes:     sample.TotalBytes,
 		UsedBytes:      used,
 		AvailableBytes: sample.AvailableBytes,
 		PercentUsed:    percent,
 		Level:          m.levelForAvailable(sample.AvailableBytes),
 		CheckedAt:      now,
-		LastCheck:      now,
 	}, nil
 }
 
 func (m *StorageMonitor) levelForAvailable(availableBytes uint64) StorageLevel {
-	availableMB := availableBytes / storageMegabyte
 	switch {
-	case availableMB <= m.config.EmergencyThresholdMB:
+	case availableBytes <= m.config.EmergencyThresholdMB*storageMegabyte:
 		return StorageLevelEmergency
-	case availableMB <= m.config.CriticalThresholdMB:
+	case availableBytes <= m.config.CriticalThresholdMB*storageMegabyte:
 		return StorageLevelCritical
-	case availableMB <= m.config.WarningThresholdMB:
+	case availableBytes <= m.config.WarningThresholdMB*storageMegabyte:
 		return StorageLevelWarning
 	default:
 		return StorageLevelNormal
@@ -453,7 +481,7 @@ func (m *StorageMonitor) applyRecoveryHysteresis(previous StorageLevel, availabl
 	default:
 		return raw
 	}
-	if availableBytes/storageMegabyte <= thresholdMB+m.config.RecoveryHysteresisMB {
+	if availableBytes <= (thresholdMB+m.config.RecoveryHysteresisMB)*storageMegabyte {
 		return previous
 	}
 	return raw
@@ -472,11 +500,11 @@ func storageLevelRank(level StorageLevel) int {
 	}
 }
 
-func (m *StorageMonitor) unavailableCapabilities(level StorageLevel) []string {
+func (m *StorageMonitor) unavailableCapabilities(level StorageLevel) []StorageCapability {
 	if level != StorageLevelCritical && level != StorageLevelEmergency {
 		return nil
 	}
-	capabilities := make([]string, 0, 4)
+	capabilities := make([]StorageCapability, 0, 4)
 	if m.config.DegradedMode.DisableLLMHTTPLog {
 		capabilities = append(capabilities, StorageCapabilityLLMHTTPLog)
 	}
@@ -486,9 +514,7 @@ func (m *StorageMonitor) unavailableCapabilities(level StorageLevel) []string {
 	if m.config.DegradedMode.DisableSessionArchive {
 		capabilities = append(capabilities, StorageCapabilitySessionArchive)
 	}
-	if level == StorageLevelEmergency {
-		capabilities = append(capabilities, StorageCapabilitySessionPersistence)
-	}
+	capabilities = append(capabilities, StorageCapabilitySessionPersistence)
 	return capabilities
 }
 
@@ -549,7 +575,7 @@ func (m *StorageMonitor) ForceCleanup(path string) error {
 	return err
 }
 
-func (m *StorageMonitor) AllowWrite(capability string) bool {
+func (m *StorageMonitor) AllowWrite(capability StorageCapability) bool {
 	status := m.Status()
 	for _, unavailable := range status.UnavailableCapabilities {
 		if unavailable == capability {
@@ -564,7 +590,19 @@ func (m *StorageMonitor) HandleWriteError(err error) bool {
 	if m == nil || (!errors.Is(err, syscall.ENOSPC) && !errors.Is(err, syscall.EROFS)) {
 		return false
 	}
+	m.writeCheckMu.Lock()
+	if m.writeCheckPending {
+		m.writeCheckMu.Unlock()
+		return true
+	}
+	m.writeCheckPending = true
+	m.writeCheckMu.Unlock()
 	go func() {
+		defer func() {
+			m.writeCheckMu.Lock()
+			m.writeCheckPending = false
+			m.writeCheckMu.Unlock()
+		}()
 		_, _ = m.CheckAndRemediate(context.Background(), StorageCheckRequest{Reason: CheckReasonWrite})
 	}()
 	return true

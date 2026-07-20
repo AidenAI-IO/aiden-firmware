@@ -190,3 +190,25 @@ func (c *SessionArchiveCleaner) Clean(context.Context) (uint64, error) {
 
 	return totalFreed, nil
 }
+
+func (c *SessionArchiveCleaner) ForceClean(ctx context.Context) (uint64, error) {
+	forced := *c
+	forced.retentionAge = 0
+	forced.maxCount = 0
+	return forced.cleanAll(ctx)
+}
+
+func (c *SessionArchiveCleaner) cleanAll(context.Context) (uint64, error) {
+	archives, err := c.collectArchives()
+	if err != nil {
+		return 0, err
+	}
+	var totalFreed uint64
+	for _, archive := range archives {
+		if err := os.RemoveAll(archive.path); err != nil {
+			return totalFreed, fmt.Errorf("remove %s: %w", filepath.Base(archive.path), err)
+		}
+		totalFreed += uint64(archive.size)
+	}
+	return totalFreed, nil
+}

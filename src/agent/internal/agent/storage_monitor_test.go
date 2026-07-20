@@ -85,6 +85,23 @@ func storageSampleWithAvailableMB(availableMB uint64) StorageSample {
 	}
 }
 
+func TestStorageMonitorThresholdsUseExactBytes(t *testing.T) {
+	sampler := &sequenceStorageSampler{samples: []StorageSample{{
+		TotalBytes:     100 * storageMegabyte,
+		AvailableBytes: 50*storageMegabyte + 1,
+	}}}
+	config := DefaultStorageConfig()
+	config.Cleanup.Enabled = false
+	monitor := NewStorageMonitor(config, sampler, nil, nil, nil)
+	status, err := monitor.CheckAndRemediate(context.Background(), StorageCheckRequest{Reason: CheckReasonPeriodic})
+	if err != nil {
+		t.Fatalf("CheckAndRemediate() error = %v", err)
+	}
+	if status.Level != StorageLevelNormal {
+		t.Fatalf("level at 50MB+1 byte = %q, want normal", status.Level)
+	}
+}
+
 func TestStorageMonitorCheckAndRemediatePublishesOnlyCleanupFinalState(t *testing.T) {
 	sampler := &sequenceStorageSampler{samples: []StorageSample{
 		storageSampleWithAvailableMB(40),
@@ -262,15 +279,11 @@ func TestStorageMonitorAllowWriteTracksDegradedCapabilities(t *testing.T) {
 	if critical.Level != StorageLevelCritical {
 		t.Fatalf("critical level = %q, want critical", critical.Level)
 	}
-	for _, capability := range []string{StorageCapabilityLLMHTTPLog, StorageCapabilityAudioArchive, StorageCapabilitySessionArchive} {
+	for _, capability := range []StorageCapability{StorageCapabilityLLMHTTPLog, StorageCapabilityAudioArchive, StorageCapabilitySessionArchive, StorageCapabilitySessionPersistence} {
 		if monitor.AllowWrite(capability) {
 			t.Errorf("AllowWrite(%q) = true at critical, want false", capability)
 		}
 	}
-	if !monitor.AllowWrite(StorageCapabilitySessionPersistence) {
-		t.Error("session persistence should remain available at critical")
-	}
-
 	emergency, err := monitor.CheckAndRemediate(context.Background(), StorageCheckRequest{Reason: CheckReasonWrite})
 	if err != nil {
 		t.Fatalf("emergency CheckAndRemediate() error = %v", err)
@@ -286,7 +299,7 @@ func TestStorageMonitorAllowWriteTracksDegradedCapabilities(t *testing.T) {
 	if recovered.Level != StorageLevelNormal {
 		t.Fatalf("recovered level = %q, want normal", recovered.Level)
 	}
-	for _, capability := range []string{StorageCapabilityLLMHTTPLog, StorageCapabilityAudioArchive, StorageCapabilitySessionArchive, StorageCapabilitySessionPersistence} {
+	for _, capability := range []StorageCapability{StorageCapabilityLLMHTTPLog, StorageCapabilityAudioArchive, StorageCapabilitySessionArchive, StorageCapabilitySessionPersistence} {
 		if !monitor.AllowWrite(capability) {
 			t.Errorf("AllowWrite(%q) = false after recovery, want true", capability)
 		}
@@ -376,6 +389,55 @@ func TestRuntimeStartStorageMonitorRunsStartupCheck(t *testing.T) {
 	defer monitor.Stop()
 	if status := monitor.Status(); status.Level != StorageLevelWarning || status.Revision != 1 {
 		t.Fatalf("startup status = %+v, want warning revision 1", status)
+	}
+}
+
+func TestRuntimeStorageCleanerOrderAndLevels(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ConfigDir = t.TempDir()
+	cfg.AudioArchive.StoragePath = t.TempDir()
+	monitor := newRuntimeStorageMonitor(cfg, nil, NewMemoryManager(filepath.Join(cfg.ConfigDir, "memory")))
+
+	wantNames := []string{
+		"llm_http_log_7d",
+		"llm_http_log_3d",
+		"llm_http_log_1d",
+		"audio_archive_30d",
+		"audio_archive_7d",
+		"session_archive_30d",
+		"llm_http_log_0d",
+		"audio_archive_keep_0",
+	}
+	wantLevels := []StorageLevel{
+		StorageLevelNormal,
+		StorageLevelWarning,
+		StorageLevelCritical,
+		StorageLevelWarning,
+		StorageLevelCritical,
+		StorageLevelWarning,
+		StorageLevelEmergency,
+		StorageLevelEmergency,
+	}
+	if len(monitor.cleaners) != len(wantNames) {
+		t.Fatalf("cleaner count = %d, want %d", len(monitor.cleaners), len(wantNames))
+	}
+	for index, cleaner := range monitor.cleaners {
+		if cleaner.Name() != wantNames[index] {
+			t.Errorf("cleaner %d name = %q, want %q", index, cleaner.Name(), wantNames[index])
+		}
+		leveled, ok := cleaner.(storageCleanerLevel)
+		if !ok {
+			t.Errorf("cleaner %q has no minimum level", cleaner.Name())
+			continue
+		}
+		if leveled.MinimumLevel() != wantLevels[index] {
+			t.Errorf("cleaner %q minimum level = %v, want %v", cleaner.Name(), leveled.MinimumLevel(), wantLevels[index])
+		}
+	}
+	firstAudio := monitor.cleaners[3].(leveledStorageCleaner).StorageCleaner.(*AudioArchiveCleaner)
+	secondAudio := monitor.cleaners[4].(leveledStorageCleaner).StorageCleaner.(*AudioArchiveCleaner)
+	if firstAudio.maxFiles != 10 || secondAudio.maxFiles != 3 {
+		t.Fatalf("audio max files = %d/%d, want 10/3", firstAudio.maxFiles, secondAudio.maxFiles)
 	}
 }
 
@@ -626,5 +688,23 @@ func TestSessionArchiveCleaner(t *testing.T) {
 
 	if len(entries) != 3 {
 		t.Errorf("expected 3 sessions remaining, got %d", len(entries))
+	}
+}
+
+func TestSessionArchiveCleanerForceCleanIgnoresRetention(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveDir := filepath.Join(tmpDir, "recent-session")
+	if err := os.MkdirAll(archiveDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(archiveDir, "events.jsonl"), []byte("event"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	cleaner := NewSessionArchiveCleaner(tmpDir, 30, 0, 1)
+	if _, err := cleaner.ForceClean(context.Background()); err != nil {
+		t.Fatalf("ForceClean() error = %v", err)
+	}
+	if _, err := os.Stat(archiveDir); !os.IsNotExist(err) {
+		t.Fatalf("recent archive still exists after force cleanup, stat error = %v", err)
 	}
 }
