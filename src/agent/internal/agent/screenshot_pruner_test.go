@@ -150,7 +150,10 @@ func TestAnthropicScreenshotPrunerRewritesPairedToolResultWhenPruning(t *testing
 		},
 	}
 
-	out := AnthropicScreenshotPruner{Enabled: true, Config: ScreenshotPruningConfig{}.WithDefaults()}.Transform(msgs)
+	out := AnthropicScreenshotPruner{
+		Enabled: true,
+		Config:  ScreenshotPruningConfig{KeepN: 2, Interval: 1},
+	}.Transform(msgs)
 
 	if got := out[0].ToolResults[0].Content; !strings.Contains(got, "replaced with a placeholder") {
 		t.Fatalf("first tool result content = %q, want placeholder notice", got)
