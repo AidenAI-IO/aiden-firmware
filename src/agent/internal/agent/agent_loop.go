@@ -11,6 +11,7 @@ import (
 
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/executor"
+	"aiden-agent/internal/agent/model"
 	"aiden-agent/internal/util"
 
 	"github.com/tmc/langchaingo/agents"
@@ -33,7 +34,7 @@ const (
 )
 
 type AgentLoop struct {
-	Model                    llms.Model
+	Model                    model.Model
 	Profile                  RoleProfile
 	Memory                   schema.Memory
 	CallbacksHandler         callbacks.Handler
@@ -53,7 +54,7 @@ type AgentLoop struct {
 }
 
 func NewAgentLoop(
-	model llms.Model,
+	model model.Model,
 	profile RoleProfile,
 	memory schema.Memory,
 	maxIterations int,
@@ -77,8 +78,19 @@ func NewAgentLoop(
 	}
 }
 
+func (l *AgentLoop) outboundTransforms() []executor.OutboundMessageTransform {
+	modelName := l.Model.Spec().Name
+	modelProvider := l.Model.Spec().Provider
+	return []executor.OutboundMessageTransform{
+		AnthropicScreenshotPruner{
+			Enabled: IsAnthropicModel(modelProvider, modelName),
+			Config:  l.ScreenshotPruning,
+		},
+	}
+}
+
 func (l *AgentLoop) Run(ctx context.Context, input string, options ...chains.ChainCallOption) (string, error) {
-	llmExecutor := executor.NewLLMExecutor(l.Model, l.contextManager)
+	llmExecutor := executor.NewLLMExecutor(l.Model, l.contextManager, l.outboundTransforms()...)
 
 	agentTools := l.Profile.Tools
 	toolSpecs := NewToolSpecs(agentTools)

@@ -16,7 +16,8 @@ func TestFreshNewContextManagerSeedsSystemPromptOnlyForFreshSession(t *testing.T
 	if err != nil {
 		t.Fatalf("freshNewContextManager() error = %v", err)
 	}
-	messages := manager.ConvertToStandardMessageList()
+	rawMessages := manager.CloneMessageList()
+	messages := contextmanager.ConvertMessageList(rawMessages)
 	if len(messages) != 1 {
 		t.Fatalf("messages = %d, want 1", len(messages))
 	}
@@ -31,7 +32,7 @@ func TestFreshNewContextManagerSeedsSystemPromptOnlyForFreshSession(t *testing.T
 	if err != nil {
 		t.Fatalf("reload freshNewContextManager() error = %v", err)
 	}
-	reloadedMessages := reloaded.ConvertToStandardMessageList()
+	reloadedMessages := contextmanager.ConvertMessageList(reloaded.CloneMessageList())
 	if len(reloadedMessages) != 2 {
 		t.Fatalf("messages = %d, want 2", len(reloadedMessages))
 	}
@@ -57,7 +58,7 @@ func TestUserMessageFromInputPreservesAttachments(t *testing.T) {
 		t.Fatalf("AppendMessage() error = %v", err)
 	}
 
-	messages := manager.ConvertToStandardMessageList()
+	messages := contextmanager.ConvertMessageList(manager.CloneMessageList())
 	if len(messages) != 2 {
 		t.Fatalf("messages = %#v", messages)
 	}
@@ -67,5 +68,43 @@ func TestUserMessageFromInputPreservesAttachments(t *testing.T) {
 	}
 	if len(userMessage.Parts) != 2 {
 		t.Fatalf("parts = %#v, want text + binary attachment", userMessage.Parts)
+	}
+}
+
+func TestVisualFollowupMarksScreenshotObservationSource(t *testing.T) {
+	manager, err := InitializeContextManager("system", t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("InitializeContextManager() error = %v", err)
+	}
+	msg := visualFollowupMessageFromLLMContent(manager, llms.MessageContent{
+		Role: llms.ChatMessageTypeHuman,
+		Parts: []llms.ContentPart{
+			llms.TextPart("This image is the screenshot observation returned by the screenshot tool."),
+			llms.BinaryPart("image/jpeg", []byte("jpeg-bytes")),
+		},
+	})
+	if len(msg.Attachments) != 1 {
+		t.Fatalf("attachments = %#v", msg.Attachments)
+	}
+	if msg.Attachments[0].Source != contextmanager.AttachmentSourceScreenshotObservation {
+		t.Fatalf("Source = %q", msg.Attachments[0].Source)
+	}
+}
+
+func TestUserMessageAttachmentsRemainUnmarked(t *testing.T) {
+	manager, err := InitializeContextManager("system", t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("InitializeContextManager() error = %v", err)
+	}
+	msg := userMessageFromInput(manager, "hello", []InputAttachment{{
+		Kind:     AttachmentKindImage,
+		MIMEType: "image/png",
+		Data:     []byte("png"),
+	}})
+	if len(msg.Attachments) != 1 {
+		t.Fatalf("attachments = %#v", msg.Attachments)
+	}
+	if msg.Attachments[0].Source != "" {
+		t.Fatalf("user upload Source = %q, want empty", msg.Attachments[0].Source)
 	}
 }

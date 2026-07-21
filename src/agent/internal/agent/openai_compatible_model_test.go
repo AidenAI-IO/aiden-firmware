@@ -619,7 +619,7 @@ func TestRuntimeConfiguresRawHTTPLogWithActiveMemorySessionID(t *testing.T) {
 	memories := NewMemoryManager(memoryDir)
 	NewRuntimeWithDeps(Config{}, manager, memories, nil, nil)
 
-	model, err := manager.Get()
+	model, err := manager.get()
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -689,7 +689,7 @@ func TestRuntimeRawHTTPLogUsesSessionIDForFileName(t *testing.T) {
 	memories := NewMemoryManager(memoryDir)
 	NewRuntimeWithDeps(Config{}, manager, memories, nil, nil)
 
-	model, err := manager.Get()
+	model, err := manager.get()
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -752,7 +752,7 @@ func TestRuntimeRawHTTPLogSwitchesSessionFileAfterRotation(t *testing.T) {
 	memories := NewMemoryManager(memoryDir)
 	NewRuntimeWithDeps(Config{}, manager, memories, nil, nil)
 
-	model, err := manager.Get()
+	model, err := manager.get()
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -969,7 +969,7 @@ func TestModelManagerEnablesRawHTTPLoggingFromModelConfig(t *testing.T) {
 		BaseURL:    server.URL,
 		LogRawHTTP: true,
 	}, ProxyConfig{}, WithLLMRawHTTPLogDir(logDir))
-	model, err := manager.Get()
+	model, err := manager.get()
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -1017,7 +1017,7 @@ func TestModelManagerEnablesRawHTTPLoggingFromDefaultConfig(t *testing.T) {
 	cfg.Model = "test-model"
 	cfg.BaseURL = server.URL
 	manager := NewModelManager(cfg, ProxyConfig{}, WithLLMRawHTTPLogDir(logDir))
-	model, err := manager.Get()
+	model, err := manager.get()
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -1064,7 +1064,7 @@ func TestModelManagerDoesNotLogRawHTTPWhenDisabled(t *testing.T) {
 		Model:    "test-model",
 		BaseURL:  server.URL,
 	}, ProxyConfig{}, WithLLMRawHTTPLogDir(logDir))
-	model, err := manager.Get()
+	model, err := manager.get()
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -1549,7 +1549,7 @@ func TestModelManagerSendsSessionHeaderOnlyForOpenRouter(t *testing.T) {
 
 			mgr := NewModelManager(ModelConfig{Provider: tc.provider, Model: "m", APIKey: "k", BaseURL: server.URL}, ProxyConfig{})
 			mgr.SetRawHTTPLogSessionIDProvider(func() string { return "sess-123" })
-			model, err := mgr.Get()
+			model, err := mgr.get()
 			if err != nil {
 				t.Fatalf("Get() error = %v", err)
 			}
@@ -1594,7 +1594,7 @@ func TestOpenRouterSupportedModelAddsPromptCacheControlToSystemPrefix(t *testing
 	defer server.Close()
 
 	manager := NewModelManager(ModelConfig{Provider: "openrouter", Model: "vendor/cache-control-model", APIKey: "k", BaseURL: server.URL}, ProxyConfig{})
-	model, err := manager.Get()
+	model, err := manager.get()
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -1645,7 +1645,7 @@ func TestOpenRouterSupportedModelAddsPromptCacheControlToSingleSystemPart(t *tes
 	defer server.Close()
 
 	manager := NewModelManager(ModelConfig{Provider: "openrouter", Model: "vendor/cache-control-model", APIKey: "k", BaseURL: server.URL}, ProxyConfig{})
-	model, err := manager.Get()
+	model, err := manager.get()
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -1693,7 +1693,7 @@ func TestOpenRouterUnsupportedModelDoesNotSendPromptCacheControl(t *testing.T) {
 	defer server.Close()
 
 	manager := NewModelManager(ModelConfig{Provider: "openrouter", Model: "openai/gpt-4o", APIKey: "k", BaseURL: server.URL}, ProxyConfig{})
-	model, err := manager.Get()
+	model, err := manager.get()
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
@@ -1973,7 +1973,7 @@ func TestModelManagerOpenRouterRetriesEOFInModelCall(t *testing.T) {
 		APIKey:   "token",
 		BaseURL:  server.URL,
 	}, ProxyConfig{})
-	model, err := manager.Get()
+	model, err := manager.get()
 	if err != nil {
 		t.Fatalf("Get model: %v", err)
 	}
