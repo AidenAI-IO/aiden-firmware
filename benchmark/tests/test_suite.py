@@ -71,6 +71,8 @@ def test_adb_android_basic_suite_loads_device_operation_tasks():
     # and it may pick quick_action vs touch_gesture for the same outcome.
     by_id = {task.id: task for task in suite.tasks}
     assert by_id["screenshot_home"].hard_assertions.required_tools == ["screenshot"]
+    assert "英文/Latin 键盘" in suite.prompt_prefix
+    assert "中文输入法" in suite.prompt_prefix
     for task_id in (
         "go_home",
         "open_settings",
@@ -81,9 +83,29 @@ def test_adb_android_basic_suite_loads_device_operation_tasks():
         "open_app_drawer",
     ):
         assert by_id[task_id].hard_assertions.required_tools == []
-    # The ported multi-step tasks genuinely need navigation before observing.
-    for task_id in ("clock_count_alarms", "settings_check_wifi", "open_app_drawer"):
+    assert by_id["settings_check_wifi"].hard_assertions.min_tool_calls == 1
+    # These ported multi-step tasks genuinely need navigation before observing.
+    for task_id in ("clock_count_alarms", "open_app_drawer"):
         assert by_id[task_id].hard_assertions.min_tool_calls >= 2
+
+
+def test_quick_action_suite_marks_non_android_action_tasks():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "quick_action_v1.json"
+    suite = load_suite(suite_path)
+    task_by_id = {task.id: task for task in suite.tasks}
+
+    for task_id in (
+        "quick_action_switch_left",
+        "quick_action_switch_right",
+        "quick_action_home_screen_left",
+        "quick_action_home_screen_right",
+        "quick_action_control_center",
+        "quick_action_control_center_dismiss",
+        "quick_action_browser_new_tab",
+        "quick_action_browser_close_tab",
+        "quick_action_browser_address_and_refresh",
+    ):
+        assert "android" not in task_by_id[task_id].platforms
 
 
 def test_benchmark_suites_do_not_use_tool_sequence():
@@ -142,6 +164,39 @@ def test_load_suite_parses_expected_recalled_memory_ids(tmp_path: Path):
     suite = load_suite(p)
 
     assert suite.tasks[0].expected_recalled_memory_ids == ["mem_expected"]
+
+def test_load_suite_parses_task_platforms(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "tasks": [
+            {
+                **FIXTURE["tasks"][0],
+                "platforms": ["Android", "ios", "android"],
+            }
+        ],
+    }
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    suite = load_suite(p)
+
+    assert suite.tasks[0].platforms == ["android", "ios"]
+
+def test_load_suite_rejects_invalid_task_platform(tmp_path: Path):
+    fixture = {
+        **FIXTURE,
+        "tasks": [
+            {
+                **FIXTURE["tasks"][0],
+                "platforms": ["windows"],
+            }
+        ],
+    }
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps(fixture), encoding="utf-8")
+
+    with pytest.raises(SuiteValidationError, match="invalid platform"):
+        load_suite(p)
 
 def test_load_suite_parses_required_and_forbidden_tools(tmp_path: Path):
     fixture = {
@@ -344,6 +399,21 @@ def test_phone_control_suite_constrains_agent_to_phone_ui():
     assert "device-operator" in suite.prompt_prefix
     assert "quick_action" in suite.prompt_prefix
     assert "只能通过截图" not in suite.prompt_prefix
+
+
+def test_mobile_text_entry_suites_prompt_for_ime_switching():
+    suites_root = Path(__file__).resolve().parents[1] / "suites"
+    for suite_name in (
+        "adb_android_basic.json",
+        "app_workflow_v1.json",
+        "phone_control_v1.json",
+        "quick_action_v1.json",
+        "skill_discovery_v1.json",
+    ):
+        suite = load_suite(suites_root / suite_name)
+        assert "中文输入法" in suite.prompt_prefix, suite_name
+        assert "英文/Latin" in suite.prompt_prefix, suite_name
+        assert "地球/输入法键" in suite.prompt_prefix, suite_name
 
 
 def test_phone_control_navigation_tasks_have_setup_pages():

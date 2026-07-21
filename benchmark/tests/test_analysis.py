@@ -6,6 +6,7 @@ from runner import analysis
 def test_config_from_env_enables_analysis_and_reads_limits(monkeypatch):
     monkeypatch.setenv("AIDEN_BENCHMARK_LLM_ANALYSIS", "1")
     monkeypatch.setenv("AIDEN_BENCHMARK_ANALYSIS_MODEL", "anthropic/claude-sonnet-4-6")
+    monkeypatch.setenv("AIDEN_BENCHMARK_ANALYSIS_BASE_URL", "https://analysis.example.com/v1")
     monkeypatch.setenv("AIDEN_BENCHMARK_ANALYSIS_MAX_LOG_BYTES", "1234")
     monkeypatch.setenv("AIDEN_BENCHMARK_ANALYSIS_MAX_CODE_BYTES", "5678")
     monkeypatch.setenv("AIDEN_BENCHMARK_ANALYSIS_TIMEOUT_SEC", "9")
@@ -14,6 +15,7 @@ def test_config_from_env_enables_analysis_and_reads_limits(monkeypatch):
 
     assert cfg.enabled is True
     assert cfg.model == "anthropic/claude-sonnet-4-6"
+    assert cfg.base_url == "https://analysis.example.com/v1"
     assert cfg.max_log_bytes == 1234
     assert cfg.max_code_bytes == 5678
     assert cfg.timeout_sec == 9
@@ -51,6 +53,50 @@ def test_resolve_analysis_api_key_accepts_explicit_override(monkeypatch):
 
     assert analysis.resolve_analysis_api_key(cfg) == ("provided", "ui-secret")
     assert "ui-secret" not in analysis.redact_text("token ui-secret", cfg)
+
+
+def test_chat_analysis_model_uses_configured_base_url(monkeypatch):
+    seen = {}
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps({
+                "choices": [{"message": {"content": json.dumps({
+                    "summary": "ok",
+                    "classification_counts": {"insufficient_evidence": 0},
+                    "failure_clusters": [],
+                    "recommendations": [],
+                })}}]
+            }).encode("utf-8")
+
+    def fake_urlopen(req, timeout):
+        seen["url"] = req.full_url
+        seen["authorization"] = req.headers.get("Authorization")
+        seen["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr(analysis.urllib.request, "urlopen", fake_urlopen)
+
+    raw = analysis.chat_analysis_model(
+        analysis.AnalysisConfig(enabled=True, base_url="https://analysis.example.com/v1/", timeout_sec=7),
+        {"failures": []},
+        "sk-analysis",
+    )
+
+    assert "summary" in raw
+    assert seen == {
+        "url": "https://analysis.example.com/v1/chat/completions",
+        "authorization": "Bearer sk-analysis",
+        "timeout": 7,
+    }
 
 
 def test_redact_removes_known_and_custom_secrets(monkeypatch):

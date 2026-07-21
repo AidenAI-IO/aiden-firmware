@@ -277,6 +277,17 @@ def test_quick_action_list_returns_catalog(bridge):
     assert {"back", "home", "app_switch", "open_settings", "notification_center", "send"} <= ids
 
 
+def test_quick_action_non_android_platform_is_reserved(bridge):
+    _, device, base_url = bridge
+    status, body = _invoke(base_url, "quick_action", {"platform": "ios", "action": "home"})
+    assert status == 200 and body["is_error"] is False
+    output = json.loads(body["output"])
+    assert output["ok"] is False
+    assert output["platform"] == "ios"
+    assert output["status"] == "reserved"
+    assert device.calls == []
+
+
 def test_quick_action_open_settings(bridge):
     _, device, base_url = bridge
     status, body = _invoke(base_url, "quick_action", {"platform": "android", "action": "open_settings"})

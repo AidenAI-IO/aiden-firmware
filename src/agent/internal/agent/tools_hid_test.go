@@ -1647,6 +1647,7 @@ func TestKeyboardTextDescriptionWarnsAgainstNonASCII(t *testing.T) {
 		"Do NOT pass non-ASCII",
 		"enter_text_in_field",
 		"Do not transliterate Chinese/CJK targets to pinyin",
+		"English/Latin keyboard",
 		`{"text":"App Store"}`,
 		"do not pass a bare string",
 	} {

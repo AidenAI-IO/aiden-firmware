@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 VALID_CATEGORIES = {"diagnostic", "single_step", "multi_step", "memory", "perception", "device_operation"}
+VALID_PLATFORMS = {"ios", "android", "mac"}
 
 class SuiteValidationError(ValueError):
     pass
@@ -47,6 +48,7 @@ class TaskSpec:
     input_screenshot: str | None = None
     expected_answer: str | None = None
     answer_format: str | None = None
+    platforms: list[str] = dc.field(default_factory=list)
     expected_recalled_memory_ids: list[str] = dc.field(default_factory=list)
 
 @dc.dataclass
@@ -152,6 +154,7 @@ def load_suite(path: Path) -> Suite:
             isinstance(item, str) and item.strip() for item in expected_recalled_memory_ids
         ):
             raise SuiteValidationError(f"task {tid}: expected_recalled_memory_ids must be a list of non-empty strings")
+        platforms = _platform_list(raw.get("platforms", []), tid)
         tasks.append(TaskSpec(
             id=tid, category=cat,
             description_for_judge=raw["description_for_judge"],
@@ -162,6 +165,7 @@ def load_suite(path: Path) -> Suite:
             input_screenshot=raw.get("input_screenshot"),
             expected_answer=expected_answer,
             answer_format=answer_format,
+            platforms=platforms,
             expected_recalled_memory_ids=expected_recalled_memory_ids,
         ))
     prompt_prefix = data.get("prompt_prefix", "")
@@ -225,4 +229,19 @@ def _string_list_assertion(raw: Any, task_id: str, field: str) -> list[str]:
             continue
         seen.add(name)
         out.append(name)
+    return out
+
+
+def _platform_list(raw: Any, task_id: str) -> list[str]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise SuiteValidationError(f"task {task_id}: platforms must be a list of ios/android/mac")
+    out: list[str] = []
+    for item in raw:
+        platform = str(item or "").strip().lower()
+        if platform not in VALID_PLATFORMS:
+            raise SuiteValidationError(f"task {task_id}: invalid platform {item!r}")
+        if platform not in out:
+            out.append(platform)
     return out

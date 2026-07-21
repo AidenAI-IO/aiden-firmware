@@ -280,13 +280,13 @@ class ADBToolsAPIHandler:
             },
             {
                 "name": "quick_action",
-                "description": "Execute common platform navigation actions such as back, home, or open_settings.",
+                "description": "Execute common Android navigation actions such as back, home, or open_settings.",
                 "args_schema": {
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
                         "action": {"type": "string"},
-                        "platform": {"type": "string", "enum": ["ios", "android", "mac"]},
+                        "platform": {"type": "string", "enum": ["android"]},
                         "list": {"type": "boolean"},
                         "alternative": {"type": "boolean"},
                         "alternative_index": {"type": "integer", "minimum": 1},
@@ -622,6 +622,12 @@ class ADBToolsAPIHandler:
             return {"output": f"error: unsupported platform: {tool_input.get('platform')!r}", "is_error": True}
 
         action = _quick_action_id(tool_input)
+        if platform != "android":
+            return _adb_reserved_quick_action(
+                action,
+                platform,
+                "adb android benchmark bridge only supports platform=android quick_action bindings",
+            )
         if bool(tool_input.get("list")) or action == "list":
             output = {"ok": True, "platform": platform, "actions": _adb_quick_action_catalog()}
             return {"output": json.dumps(output), "is_error": False}

@@ -1030,6 +1030,7 @@ func (t *KeyboardTextTool) Description() string {
 		`For model/tool calls, pass JSON only, for example {"text":"App Store"}; do not pass a bare string. ` +
 		`Do NOT pass non-ASCII text, emoji, or spaced romanization — use enter_text_in_field for input box entry. ` +
 		`Do not transliterate Chinese/CJK targets to pinyin or guessed ASCII keywords; if enter_text_in_field is unavailable, report the blocker instead. ` +
+		`If a Chinese IME is active but the target text is English, switch to the English/Latin keyboard first, commonly with the globe/input-method key; do not leave English text in Chinese IME preedit/candidate state. ` +
 		`For a numeric picker, prefer this before wheel_nudge when the latest screenshot visibly shows keyboard/edit mode. Make one verified attempt, then inspect the post-action screenshot; if the value did not change exactly as intended, stop keyboard input and use wheel_nudge. Once wheel fallback begins for that picker, do not switch back to keyboard input. ` +
 		`keyboard_text remains for simple standalone ASCII typing outside the enter_text_in_field workflow. ` +
 		`Bare plain text is accepted only as a legacy compatibility fallback.`

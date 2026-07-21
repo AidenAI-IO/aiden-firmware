@@ -63,6 +63,7 @@ DEFAULT_DAEMON_READY_TIMEOUT_SEC = 90
 DEFAULT_MOBILEGYM_READY_TIMEOUT_SEC = 120
 DEFAULT_MOBILEGYM_PARALLEL_ENVS = 5
 DEFAULT_JUDGE_MODEL = JudgeConfig().model
+DEFAULT_JUDGE_BASE_URL = JudgeConfig().base_url
 WEBUI_SETTINGS_FILE = "webui-settings.json"
 JOB_RECORD_FILE = "job.json"
 LOG_TAIL_BYTES = 96 * 1024
@@ -145,6 +146,7 @@ class Job:
     task_records: list[TaskRecord] = dc.field(default_factory=list)
     no_judge: bool = False
     judge_model: str = DEFAULT_JUDGE_MODEL
+    judge_base_url: str = DEFAULT_JUDGE_BASE_URL
     judge_api_key_set: bool = False
     repeats: int | None = None
     parallel_tasks: int = 1
@@ -222,6 +224,9 @@ class BenchmarkWebApp:
         if "model" in incoming_judge:
             model = str(incoming_judge.get("model") or "").strip() or DEFAULT_JUDGE_MODEL
             current_judge["model"] = model
+        if "base_url" in incoming_judge:
+            base_url = str(incoming_judge.get("base_url") or "").strip() or DEFAULT_JUDGE_BASE_URL
+            current_judge["base_url"] = base_url
         if "api_key" in incoming_judge:
             api_key = str(incoming_judge.get("api_key") or "").strip()
             if api_key:
@@ -402,6 +407,11 @@ class BenchmarkWebApp:
             or str(judge_settings.get("model") or "").strip()
             or DEFAULT_JUDGE_MODEL
         )
+        judge_base_url = (
+            str(payload.get("judge_base_url") or "").strip()
+            or str(judge_settings.get("base_url") or "").strip()
+            or DEFAULT_JUDGE_BASE_URL
+        )
         judge_api_key = (
             str(payload.get("judge_api_key") or "").strip()
             or str(judge_settings.get("api_key") or "").strip()
@@ -474,6 +484,7 @@ class BenchmarkWebApp:
             daemon_log=str(job_dir / "daemon.log"),
             no_judge=no_judge,
             judge_model=judge_model,
+            judge_base_url=judge_base_url,
             judge_api_key_set=bool(judge_api_key) and not no_judge,
             repeats=repeats_value,
             parallel_tasks=parallel_tasks,
@@ -1018,6 +1029,7 @@ class BenchmarkWebApp:
                 cmd.append("--no-judge")
             else:
                 cmd.extend(["--judge-model", job.judge_model or DEFAULT_JUDGE_MODEL])
+                cmd.extend(["--judge-base-url", job.judge_base_url or DEFAULT_JUDGE_BASE_URL])
             if job.repeats:
                 cmd.extend(["--repeats", str(job.repeats)])
             env = os.environ.copy()
@@ -1219,6 +1231,7 @@ class BenchmarkWebApp:
             cmd.append("--no-judge")
         else:
             cmd.extend(["--judge-model", job.judge_model or DEFAULT_JUDGE_MODEL])
+            cmd.extend(["--judge-base-url", job.judge_base_url or DEFAULT_JUDGE_BASE_URL])
         if job.repeats:
             cmd.extend(["--repeats", str(job.repeats)])
         append_log(Path(job.runner_log), "\n$ " + " ".join(cmd))
@@ -1418,6 +1431,7 @@ def default_webui_settings(include_secrets: bool = False) -> dict[str, Any]:
     judge: dict[str, Any] = {
         "enabled": True,
         "model": DEFAULT_JUDGE_MODEL,
+        "base_url": DEFAULT_JUDGE_BASE_URL,
     }
     if include_secrets:
         judge["api_key"] = ""
@@ -1461,6 +1475,7 @@ def normalize_webui_settings(data: Any, include_secrets: bool = False) -> dict[s
     judge: dict[str, Any] = {
         "enabled": bool(raw_judge.get("enabled", True)),
         "model": str(raw_judge.get("model") or DEFAULT_JUDGE_MODEL).strip() or DEFAULT_JUDGE_MODEL,
+        "base_url": str(raw_judge.get("base_url") or DEFAULT_JUDGE_BASE_URL).strip() or DEFAULT_JUDGE_BASE_URL,
     }
     if include_secrets:
         judge["api_key"] = api_key
@@ -2097,7 +2112,7 @@ def write_job_report(job: Job, *, analysis_api_key: str = "") -> str:
         "selected_task_ids": [str(row.get("task_id") or "") for row in rows],
         "agent_url": job.agent_url,
         "environment_url": job.environment_endpoint or None,
-        "judge_config": None if job.no_judge else {"provider": "openrouter", "model": job.judge_model or DEFAULT_JUDGE_MODEL},
+        "judge_config": None if job.no_judge else {"provider": "openrouter", "model": job.judge_model or DEFAULT_JUDGE_MODEL, "base_url": job.judge_base_url or DEFAULT_JUDGE_BASE_URL},
         "started_at": job.started_at,
         "finished_at": job.finished_at or now_iso(),
         "totals": totals_from_report_rows(rows),
@@ -2124,6 +2139,8 @@ def _run_job_analysis_if_enabled(
         return None
     if not os.environ.get("AIDEN_BENCHMARK_ANALYSIS_MODEL") and job.judge_model:
         cfg.model = job.judge_model or DEFAULT_JUDGE_MODEL
+    if not os.environ.get("AIDEN_BENCHMARK_ANALYSIS_BASE_URL"):
+        cfg.base_url = job.judge_base_url or DEFAULT_JUDGE_BASE_URL
     if analysis_api_key:
         cfg.api_key_value = analysis_api_key
     result = analyze_run(report_dir, REPO_ROOT, cfg)
@@ -3293,7 +3310,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     .judge-inline {
       display: grid;
-      grid-template-columns: auto minmax(220px, 1fr) minmax(180px, 0.8fr);
+      grid-template-columns: auto minmax(220px, 1fr) minmax(240px, 1fr) minmax(180px, 0.8fr);
       gap: 12px;
       align-items: end;
     }
@@ -3455,6 +3472,7 @@ INDEX_HTML = r"""<!doctype html>
           <div class="judge-inline">
             <label class="check-label"><input id="judgeEnabled" type="checkbox" checked> Enable judge</label>
             <div class="field"><label for="judgeModel">Judge model</label><input id="judgeModel" autocomplete="off" placeholder="anthropic/claude-sonnet-4-6"></div>
+            <div class="field"><label for="judgeBaseUrl">Base URL</label><input id="judgeBaseUrl" autocomplete="off" placeholder="https://openrouter.ai/api/v1"></div>
             <div class="field"><label for="judgeApiKey">API key</label><input id="judgeApiKey" type="password" autocomplete="off" placeholder="OPENROUTER_API_KEY"></div>
           </div>
           <div class="run-actions">
@@ -3609,6 +3627,7 @@ INDEX_HTML = r"""<!doctype html>
   </div>
   <script>
     const DEFAULT_JUDGE_MODEL = 'anthropic/claude-sonnet-4-6';
+    const DEFAULT_JUDGE_BASE_URL = 'https://openrouter.ai/api/v1';
     let deviceEnvironments = [];
     let mobilegymEnvironments = [];
     let adbAndroidEnvironments = [];
@@ -3652,6 +3671,7 @@ INDEX_HTML = r"""<!doctype html>
       const judge = settings.judge || {};
       document.getElementById('judgeEnabled').checked = judge.enabled !== false;
       document.getElementById('judgeModel').value = String(judge.model || DEFAULT_JUDGE_MODEL);
+      document.getElementById('judgeBaseUrl').value = String(judge.base_url || DEFAULT_JUDGE_BASE_URL);
       const keyInput = document.getElementById('judgeApiKey');
       keyInput.value = '';
       keyInput.placeholder = judge.has_api_key ? 'Saved; leave blank to keep' : 'OPENROUTER_API_KEY';
@@ -3661,7 +3681,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     async function saveWebuiSettings(options = {}){
       const judge = currentJudgeSettings();
-      const judgePayload = {enabled: judge.enabled, model: judge.model};
+      const judgePayload = {enabled: judge.enabled, model: judge.model, base_url: judge.baseUrl};
       if(judge.apiKey) judgePayload.api_key = judge.apiKey;
       const payload = {
         judge: judgePayload,
@@ -3712,8 +3732,9 @@ INDEX_HTML = r"""<!doctype html>
     function currentJudgeSettings(){
       const enabled = document.getElementById('judgeEnabled').checked;
       const model = document.getElementById('judgeModel').value.trim() || DEFAULT_JUDGE_MODEL;
+      const baseUrl = document.getElementById('judgeBaseUrl').value.trim() || DEFAULT_JUDGE_BASE_URL;
       const apiKey = document.getElementById('judgeApiKey').value.trim();
-      return {enabled, model, apiKey};
+      return {enabled, model, baseUrl, apiKey};
     }
 
     function persistJudgeSettings(){
@@ -3725,6 +3746,7 @@ INDEX_HTML = r"""<!doctype html>
     function syncJudgePanel(){
       const enabled = document.getElementById('judgeEnabled').checked;
       document.getElementById('judgeModel').disabled = !enabled;
+      document.getElementById('judgeBaseUrl').disabled = !enabled;
       document.getElementById('judgeApiKey').disabled = !enabled;
     }
 
@@ -4165,7 +4187,8 @@ INDEX_HTML = r"""<!doctype html>
           suites: Array.from(selectedSuites),
           parallel_tasks: env.type === 'mobilegym' ? (env.parallel_envs || 5) : 1,
           no_judge: !judge.enabled,
-          judge_model: judge.model
+          judge_model: judge.model,
+          judge_base_url: judge.baseUrl
         })
       });
       const body = await res.json();
@@ -4388,6 +4411,7 @@ INDEX_HTML = r"""<!doctype html>
     document.getElementById('resetAgentConfig').onclick = resetAgentConfig;
     document.getElementById('judgeEnabled').onchange = persistJudgeSettings;
     document.getElementById('judgeModel').oninput = persistJudgeSettings;
+    document.getElementById('judgeBaseUrl').oninput = persistJudgeSettings;
     document.getElementById('judgeApiKey').oninput = syncRunState;
     document.getElementById('judgeApiKey').onchange = persistJudgeSettings;
     document.getElementById('agentConfigText').oninput = () => {
@@ -4397,12 +4421,22 @@ INDEX_HTML = r"""<!doctype html>
     };
     document.getElementById('suiteFilter').oninput = renderSuites;
     document.getElementById('jobCategoryFilter').onchange = renderJobs;
+    const runEnvDialog = document.getElementById('runEnvDialog');
+    let runEnvBackdropPointerDown = false;
     document.getElementById('runBtn').onclick = openRunEnvironmentDialog;
     document.getElementById('closeRunEnv').onclick = closeRunEnvironmentDialog;
     document.getElementById('cancelRunEnv').onclick = closeRunEnvironmentDialog;
     document.getElementById('confirmRunBtn').onclick = confirmRun;
-    document.getElementById('runEnvDialog').onclick = e => {
-      if(e.target.id === 'runEnvDialog') closeRunEnvironmentDialog();
+    runEnvDialog.onpointerdown = e => {
+      runEnvBackdropPointerDown = e.target === runEnvDialog;
+    };
+    runEnvDialog.onpointercancel = () => {
+      runEnvBackdropPointerDown = false;
+    };
+    runEnvDialog.onclick = e => {
+      const backdropClick = e.target === runEnvDialog && runEnvBackdropPointerDown;
+      runEnvBackdropPointerDown = false;
+      if(backdropClick) closeRunEnvironmentDialog();
     };
     document.getElementById('activeStopJob').onclick = () => { if(activeJobId) stopJob(activeJobId); };
     document.getElementById('showJobLog').onclick = () => { activeTaskLogId = null; if(activeJobId) loadActiveJob(); };

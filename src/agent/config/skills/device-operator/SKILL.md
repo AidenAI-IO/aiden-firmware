@@ -60,6 +60,7 @@ Prefer the highest-level reliable tool for the job:
 - Use `touch_gesture` for mobile taps, swipes, drag, back, and home gestures.
 - For a numeric picker, before the first `wheel_nudge` on that picker, tap the selected center row once to probe for keyboard/edit mode; do not infer that keyboard entry is unsupported merely because the keyboard is initially hidden. If edit mode appears, make one verified `keyboard_text` attempt and inspect the returned screenshot. If the tap has no effect, the keyboard does not appear, or the typed value is not exactly confirmed, fall back to `wheel_nudge`; once wheel fallback begins for that picker, do not switch back to keyboard input. Use `wheel_nudge` for all direct unselected-row taps and picker drags; after a successful wheel nudge, runtime reserves that region so generic input cannot activate a field outside the picker.
 - Use `enter_text_in_field` for normal text input into fields, including Chinese/CJK, emoji, IME, and verified field entry.
+- Before entering English/ASCII text into any field, inspect the visible keyboard language. If a Chinese IME is active, for example the space bar says `拼音` or candidate/preedit text is shown, first switch to the English/Latin keyboard with the globe/input-method key, then type. Do not use `keyboard_text` while English text remains in Chinese IME preedit/candidate state.
 - Use `keyboard_tap` for enter, escape, tab, arrows, shortcuts, and simple key actions.
 - Use `keyboard_text` only for simple standalone ASCII typing or a visibly focused numeric picker edit mode. Never use it for Chinese/CJK or emoji field entry.
 - Use `mouse_click`, `mouse_move`, and `mouse_scroll` only when touch-style controls are not appropriate.
@@ -101,6 +102,7 @@ Required pattern:
 - `committed:false` means failure; do not tell the user text was entered.
 - For Chinese/CJK composition, provide `segments` as romanization syllables in typing order, e.g. `"你好"` -> `["ni","hao"]`.
 - Never pass Chinese, emoji, or romanization blobs to `keyboard_text`.
+- When English text must be entered while a Chinese IME is active, switch to the English/Latin keyboard first, commonly via the globe/input-method key. Do not leave the English text in Chinese IME preedit/candidate state.
 - If text remains in the IME candidate/preedit area instead of the field, retry once with corrected focus/segments or report the blocker.
 
 Use `enter_text_via_bridge` only when:

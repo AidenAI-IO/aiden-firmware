@@ -351,6 +351,7 @@ def test_webui_settings_persist_judge_and_device_environments(tmp_path: Path):
     assert saved["judge"] == {
         "enabled": True,
         "model": "anthropic/test-judge",
+        "base_url": webui.DEFAULT_JUDGE_BASE_URL,
         "has_api_key": True,
     }
     assert "api_key" not in saved["judge"]
@@ -733,6 +734,7 @@ def test_run_suite_passes_judge_model_and_api_key_env(tmp_path: Path, monkeypatc
         state_file=str(tmp_path / "runs" / "job-test" / "state.json"),
         runner_log=str(tmp_path / "runs" / "job-test" / "runner.log"),
         judge_model="anthropic/test-judge",
+        judge_base_url="https://judge.example.com/v1",
         judge_api_key_set=True,
     )
     app._job_judge_api_keys[job.id] = "sk-judge-secret"
@@ -753,6 +755,8 @@ def test_run_suite_passes_judge_model_and_api_key_env(tmp_path: Path, monkeypatc
 
     assert "--judge-model" in captured["cmd"]
     assert captured["cmd"][captured["cmd"].index("--judge-model") + 1] == "anthropic/test-judge"
+    assert "--judge-base-url" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("--judge-base-url") + 1] == "https://judge.example.com/v1"
     assert "--no-judge" not in captured["cmd"]
     assert captured["env"]["OPENROUTER_API_KEY"] == "sk-judge-secret"
 
@@ -1091,6 +1095,7 @@ def test_refresh_job_report_runs_llm_analysis_by_default_with_webui_judge_key(mo
         runner_log=str(tmp_path / "runs" / "job-test" / "runner.log"),
         started_at="2026-06-22T00:00:00+00:00",
         judge_model="bytedance-seed/seed-2.0-lite",
+        judge_base_url="https://judge.example.com/v1",
         suite_results=[{"suite": "suite.json", "task_id": "t1", "exit_code": 1, "run_id": "run-a"}],
     )
 
@@ -1100,6 +1105,7 @@ def test_refresh_job_report_runs_llm_analysis_by_default_with_webui_judge_key(mo
     assert calls and calls[0][0] == report_dir
     assert calls[0][2].enabled is True
     assert calls[0][2].model == "bytedance-seed/seed-2.0-lite"
+    assert calls[0][2].base_url == "https://judge.example.com/v1"
     assert calls[0][2].api_key_value == "ui-judge-key"
     html = (report_dir / "report.html").read_text(encoding="utf-8")
     assert "LLM 分析" in html
@@ -1419,6 +1425,9 @@ def test_index_html_exposes_judge_settings_panel():
     assert 'id="confirmRunBtn"' in webui.INDEX_HTML
     assert "document.getElementById('runBtn').onclick = openRunEnvironmentDialog" in webui.INDEX_HTML
     assert "document.getElementById('confirmRunBtn').onclick = confirmRun" in webui.INDEX_HTML
+    assert "let runEnvBackdropPointerDown = false" in webui.INDEX_HTML
+    assert "runEnvDialog.onpointerdown" in webui.INDEX_HTML
+    assert "e.target === runEnvDialog && runEnvBackdropPointerDown" in webui.INDEX_HTML
     assert "document.getElementById('runBtn').disabled = selectedSuites.size === 0" in webui.INDEX_HTML
     assert "document.getElementById('runEnvDialog').hidden = false" in webui.INDEX_HTML
     assert "async function startRun(env)" in webui.INDEX_HTML
@@ -1700,6 +1709,8 @@ def test_adb_android_environment_lifecycle(tmp_path: Path, monkeypatch):
         adb_env_mod, "start_adb_bridge_process", lambda **kwargs: launched.append(kwargs) or FakeProc()
     )
     monkeypatch.setattr(adb_env_mod, "wait_for_http_health", lambda url, timeout: None)
+    monkeypatch.setattr(adb_env_mod, "pid_alive", lambda pid: pid == 6161)
+    monkeypatch.setattr(adb_env_mod, "check_endpoint_health", lambda url, timeout=2.0: True)
     monkeypatch.setattr(adb_env_mod, "terminate_pid", lambda pid, **kwargs: killed.append(pid))
 
     app = webui.BenchmarkWebApp(

@@ -243,6 +243,8 @@ def test_tools_catalog_lists_expected_tools(bridge):
         "mouse_scroll",
         "quick_action",
     }
+    quick_action = next(tool for tool in body["tools"] if tool["name"] == "quick_action")
+    assert quick_action["args_schema"]["properties"]["platform"]["enum"] == ["android"]
 
 
 def test_request_handler_applies_socket_timeout():
