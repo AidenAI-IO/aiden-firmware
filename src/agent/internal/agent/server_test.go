@@ -160,6 +160,7 @@ func TestServerHandleChatReturnsToolHistory(t *testing.T) {
 		}},
 		NewSkillIndex(),
 	)
+	defer runtime.Close()
 	server := newServerForTest(runtime)
 
 	body := bytes.NewBufferString(`{"message":"What is the current volume?"}`)
@@ -1447,15 +1448,10 @@ func TestServerHandleChatSkipsToolContentTTSWhenDisabled(t *testing.T) {
 	if requestID == "" {
 		t.Fatalf("missing request_id in response: %#v", startResp)
 	}
-	select {
-	case <-provider.started:
-		t.Fatal("tool content TTS started despite voice_tool_call_speech=false")
-	case <-time.After(50 * time.Millisecond):
-	}
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		resultReq := httptest.NewRequest(http.MethodGet, "/api/chat/result?request_id="+requestID+"&wait=true", nil)
+		resultReq := httptest.NewRequest(http.MethodGet, "/api/chat/result?request_id="+requestID, nil)
 		resultRec := httptest.NewRecorder()
 		server.handleChatResult(resultRec, resultReq)
 		if resultRec.Code != http.StatusOK {
@@ -1466,10 +1462,18 @@ func TestServerHandleChatSkipsToolContentTTSWhenDisabled(t *testing.T) {
 			t.Fatalf("decode result response: %v", err)
 		}
 		if resp.Status == "complete" {
+			select {
+			case <-provider.started:
+				t.Fatal("tool content TTS started despite voice_tool_call_speech=false")
+			default:
+			}
 			return
 		}
 		if resp.Status == "error" {
 			t.Fatalf("chat request failed: %s", resp.Error)
+		}
+		if resp.Status == "running" {
+			time.Sleep(10 * time.Millisecond)
 		}
 	}
 	t.Fatalf("chat request did not complete before deadline: request_id=%s", requestID)
