@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/langfuse"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -82,12 +83,20 @@ type testModelResolver struct {
 	spec  model.ModelSpec
 }
 
-func (r *testModelResolver) Get() (llms.Model, error) {
+func (r *testModelResolver) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
 	r.calls++
 	if r.err != nil {
 		return nil, r.err
 	}
-	return r.model, nil
+	return r.model.GenerateContent(ctx, messages, options...)
+}
+
+func (r *testModelResolver) Call(ctx context.Context, prompt string, options ...llms.CallOption) (string, error) {
+	r.calls++
+	if r.err != nil {
+		return "", r.err
+	}
+	return r.model.Call(ctx, prompt, options...)
 }
 
 func (r *testModelResolver) CallOptions() []chains.ChainCallOption {
@@ -148,13 +157,13 @@ func TestRuntimeRunMarksMainAgentModelCallsForRawHTTPLog(t *testing.T) {
 }
 
 func TestRuntimeRunExportsFailedTraceWhenModelBuildFails(t *testing.T) {
-	ingestCh := make(chan langfuseIngestionRequest, 1)
+	ingestCh := make(chan langfuse.IngestionRequest, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/public/ingestion" {
 			http.NotFound(w, r)
 			return
 		}
-		var req langfuseIngestionRequest
+		var req langfuse.IngestionRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -192,7 +201,7 @@ func TestRuntimeRunExportsFailedTraceWhenModelBuildFails(t *testing.T) {
 		t.Fatalf("Run() error = %v, want %v", err, buildErr)
 	}
 
-	var ingest langfuseIngestionRequest
+	var ingest langfuse.IngestionRequest
 	select {
 	case ingest = <-ingestCh:
 	case <-time.After(2 * time.Second):
@@ -2094,6 +2103,16 @@ func (m *scriptedModel) GenerateContent(ctx context.Context, messages []llms.Mes
 func (m *scriptedModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
 	panic("unexpected Call invocation")
 }
+
+func (m *scriptedModel) Spec() model.ModelSpec {
+	return model.ModelSpec{
+		Provider:      "fake",
+		Name:          "scripted",
+		ContextWindow: 100,
+	}
+}
+
+func (m *scriptedModel) CallOptions() []chains.ChainCallOption { return nil }
 
 func contentResponse(content string) *llms.ContentResponse {
 	return contentResponseWithInfo(content, nil)

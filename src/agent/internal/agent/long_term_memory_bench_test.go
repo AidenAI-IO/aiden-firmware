@@ -15,8 +15,7 @@ func BenchmarkLongTermMemorySearchCacheHit(b *testing.B) {
 		b.Fatalf("warm Search error: %v", err)
 	}
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if _, err := store.Search(ctx, MemoryQuery{Limit: 10}); err != nil {
 			b.Fatalf("Search error: %v", err)
 		}
@@ -31,8 +30,7 @@ func BenchmarkLongTermMemorySearchOverCapacity(b *testing.B) {
 		b.Fatalf("warm Search error: %v", err)
 	}
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if _, err := store.Search(ctx, MemoryQuery{Limit: 10}); err != nil {
 			b.Fatalf("Search error: %v", err)
 		}
@@ -43,7 +41,7 @@ func benchmarkLongTermMemoryStore(b *testing.B, count int, capacity int) *LongTe
 	b.Helper()
 	ctx := context.Background()
 	store := NewLongTermMemoryStore(filepath.Join(b.TempDir(), "long_term"), withParsedCacheCapacity(capacity))
-	for i := 0; i < count; i++ {
+	for i := range count {
 		if _, err := store.AddMemory(ctx, MemoryItem{
 			ID:               fmt.Sprintf("mem_bench_%03d", i),
 			Type:             "fact",

@@ -112,6 +112,7 @@ func visualFollowupMessageFromLLMContent(manager *contextmanager.ContextManager,
 			if ok && strings.HasPrefix(strings.ToLower(mimeType), "image/") && len(data) > 0 && manager != nil {
 				stored, err := manager.StoreAttachment(mimeType, data)
 				if err == nil {
+					stored.Source = contextmanager.AttachmentSourceScreenshotObservation
 					message.Attachments = append(message.Attachments, stored)
 					continue
 				}
@@ -130,6 +131,7 @@ func visualFollowupMessageFromLLMContent(manager *contextmanager.ContextManager,
 				message.Content = mergePromptText(message.Content, attachmentStorageFailureText(typed.MIMEType, err))
 				continue
 			}
+			stored.Source = contextmanager.AttachmentSourceScreenshotObservation
 			message.Attachments = append(message.Attachments, stored)
 		default:
 			fallback := messageFromLLMContent(manager, llms.MessageContent{

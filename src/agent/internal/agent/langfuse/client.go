@@ -1,4 +1,4 @@
-package agent
+package langfuse
 
 import (
 	"bytes"
@@ -13,40 +13,47 @@ import (
 	"time"
 )
 
-type langfuseClient struct {
+type Config struct {
+	BaseURL       string
+	PublicKey     string
+	SecretKey     string
+	UploadTimeout time.Duration
+}
+
+type Client struct {
 	baseURL    string
 	publicKey  string
 	secretKey  string
 	httpClient *http.Client
 }
 
-func newLangfuseClient(cfg TelemetryConfig) *langfuseClient {
-	return &langfuseClient{
+func NewClient(cfg Config) *Client {
+	return &Client{
 		baseURL:   strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/"),
 		publicKey: strings.TrimSpace(cfg.PublicKey),
 		secretKey: strings.TrimSpace(cfg.SecretKey),
 		httpClient: &http.Client{
-			Timeout: cfg.UploadTimeoutOrDefault(),
+			Timeout: cfg.UploadTimeout,
 		},
 	}
 }
 
-func (c *langfuseClient) configured() bool {
+func (c *Client) Configured() bool {
 	return c != nil && c.baseURL != "" && c.publicKey != "" && c.secretKey != ""
 }
 
-type langfuseIngestionRequest struct {
-	Batch []langfuseIngestionEvent `json:"batch"`
+type IngestionRequest struct {
+	Batch []IngestionEvent `json:"batch"`
 }
 
-type langfuseIngestionEvent struct {
+type IngestionEvent struct {
 	ID        string          `json:"id"`
 	Timestamp string          `json:"timestamp"`
 	Type      string          `json:"type"`
 	Body      json.RawMessage `json:"body"`
 }
 
-type langfuseIngestionResponse struct {
+type IngestionResponse struct {
 	Successes []struct {
 		ID     string `json:"id"`
 		Status int    `json:"status"`
@@ -59,14 +66,14 @@ type langfuseIngestionResponse struct {
 	} `json:"errors"`
 }
 
-func (c *langfuseClient) ingest(ctx context.Context, batch []langfuseIngestionEvent) error {
+func (c *Client) Ingest(ctx context.Context, batch []IngestionEvent) error {
 	if len(batch) == 0 {
 		return nil
 	}
-	if !c.configured() {
+	if !c.Configured() {
 		return fmt.Errorf("langfuse client is not configured")
 	}
-	payload, err := json.Marshal(langfuseIngestionRequest{Batch: batch})
+	payload, err := json.Marshal(IngestionRequest{Batch: batch})
 	if err != nil {
 		return fmt.Errorf("marshal ingestion batch: %w", err)
 	}
@@ -86,7 +93,7 @@ func (c *langfuseClient) ingest(ctx context.Context, batch []langfuseIngestionEv
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("ingestion HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
-	var parsed langfuseIngestionResponse
+	var parsed IngestionResponse
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return fmt.Errorf("decode ingestion response: %w", err)
 	}
@@ -107,7 +114,7 @@ func (c *langfuseClient) ingest(ctx context.Context, batch []langfuseIngestionEv
 	return nil
 }
 
-type langfuseMediaCreateRequest struct {
+type MediaCreateRequest struct {
 	TraceID       string `json:"traceId"`
 	ObservationID string `json:"observationId,omitempty"`
 	ContentType   string `json:"contentType"`
@@ -116,23 +123,23 @@ type langfuseMediaCreateRequest struct {
 	Field         string `json:"field"`
 }
 
-type langfuseMediaCreateResponse struct {
+type MediaCreateResponse struct {
 	MediaID   string `json:"mediaId"`
 	UploadURL string `json:"uploadUrl"`
 }
 
-type langfuseMediaPatchRequest struct {
+type MediaPatchRequest struct {
 	UploadedAt       string  `json:"uploadedAt"`
 	UploadHTTPStatus int     `json:"uploadHttpStatus"`
 	UploadHTTPError  *string `json:"uploadHttpError,omitempty"`
 	UploadTimeMs     *int64  `json:"uploadTimeMs,omitempty"`
 }
 
-func (c *langfuseClient) uploadMedia(ctx context.Context, traceID, observationID, contentType string, data []byte, field string) (string, error) {
+func (c *Client) UploadMedia(ctx context.Context, traceID, observationID, contentType string, data []byte, field string) (string, error) {
 	if len(data) == 0 {
 		return "", nil
 	}
-	if !c.configured() {
+	if !c.Configured() {
 		return "", fmt.Errorf("langfuse client is not configured")
 	}
 	if field == "" {
@@ -141,7 +148,7 @@ func (c *langfuseClient) uploadMedia(ctx context.Context, traceID, observationID
 	hash := sha256.Sum256(data)
 	hashB64 := base64.StdEncoding.EncodeToString(hash[:])
 
-	createBody, err := json.Marshal(langfuseMediaCreateRequest{
+	createBody, err := json.Marshal(MediaCreateRequest{
 		TraceID:       traceID,
 		ObservationID: strings.TrimSpace(observationID),
 		ContentType:   contentType,
@@ -168,7 +175,7 @@ func (c *langfuseClient) uploadMedia(ctx context.Context, traceID, observationID
 	if createResp.StatusCode < 200 || createResp.StatusCode >= 300 {
 		return "", fmt.Errorf("media create HTTP %d: %s", createResp.StatusCode, strings.TrimSpace(string(createPayload)))
 	}
-	var created langfuseMediaCreateResponse
+	var created MediaCreateResponse
 	if err := json.Unmarshal(createPayload, &created); err != nil {
 		return "", fmt.Errorf("decode media create response: %w", err)
 	}
@@ -201,7 +208,7 @@ func (c *langfuseClient) uploadMedia(ctx context.Context, traceID, observationID
 	return created.MediaID, nil
 }
 
-func (c *langfuseClient) patchMediaUploadStatus(ctx context.Context, mediaID string, statusCode int, uploadBody string, uploadTimeMs int64) error {
+func (c *Client) patchMediaUploadStatus(ctx context.Context, mediaID string, statusCode int, uploadBody string, uploadTimeMs int64) error {
 	var uploadErr *string
 	if statusCode < 200 || statusCode >= 300 {
 		msg := strings.TrimSpace(uploadBody)
@@ -210,8 +217,8 @@ func (c *langfuseClient) patchMediaUploadStatus(ctx context.Context, mediaID str
 		}
 		uploadErr = &msg
 	}
-	payload, err := json.Marshal(langfuseMediaPatchRequest{
-		UploadedAt:       langfuseRFC3339(time.Now().UTC()),
+	payload, err := json.Marshal(MediaPatchRequest{
+		UploadedAt:       RFC3339(time.Now().UTC()),
 		UploadHTTPStatus: statusCode,
 		UploadHTTPError:  uploadErr,
 		UploadTimeMs:     &uploadTimeMs,
@@ -238,10 +245,10 @@ func (c *langfuseClient) patchMediaUploadStatus(ctx context.Context, mediaID str
 	return nil
 }
 
-func langfuseMediaToken(contentType, mediaID string) string {
+func MediaToken(contentType, mediaID string) string {
 	return fmt.Sprintf("@@@langfuseMedia:type=%s|id=%s|source=bytes@@@", contentType, mediaID)
 }
 
-func langfuseRFC3339(t time.Time) string {
+func RFC3339(t time.Time) string {
 	return t.UTC().Format(time.RFC3339Nano)
 }
