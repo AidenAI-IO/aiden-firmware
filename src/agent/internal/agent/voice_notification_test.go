@@ -359,11 +359,11 @@ func TestVoiceNotificationManagerCapsActiveRecords(t *testing.T) {
 	}
 }
 
-func TestVoiceNotificationManagerUsesConfiguredLocale(t *testing.T) {
-	manager := NewVoiceNotificationManager(VoiceNotificationsConfig{
-		DefaultLocale: "en-US",
-		ResponseTail:  VoiceNotificationResponseTailConfig{MaxTextChars: 100},
-	})
+func TestRuntimeInjectsResolvedVoiceNotificationLocale(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.VoiceNotifications.DefaultLocale = "en-US"
+	cfg.VoiceNotifications.ResponseTail.MaxTextChars = 100
+	manager := NewRuntimeWithDeps(cfg, nil, nil, nil, NewSkillIndex()).VoiceNotifications()
 	ctx := context.Background()
 	if err := manager.Publish(ctx, VoiceNotificationEvent{Code: "storage", Severity: SeverityWarning, State: VoiceNotificationActive, DedupeKey: "storage:device"}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
@@ -377,6 +377,30 @@ func TestVoiceNotificationManagerUsesConfiguredLocale(t *testing.T) {
 	replacement := manager.PrepareSpokenText(ctx, SpokenTextInput{TurnFailure: &TurnFailure{Code: TurnFailureTokenInsufficient}})
 	if replacement.Text != "The service quota is exhausted, so I cannot complete this request right now." {
 		t.Fatalf("localized replacement = %q", replacement.Text)
+	}
+}
+
+func TestVoiceNotificationManagerLocaleInjectionOverridesLegacyConfig(t *testing.T) {
+	manager := NewVoiceNotificationManager(
+		VoiceNotificationsConfig{
+			DefaultLocale: "zh-CN",
+			ResponseTail:  VoiceNotificationResponseTailConfig{MaxTextChars: 100},
+		},
+		WithVoiceNotificationLocale("en-US"),
+	)
+	ctx := context.Background()
+	if err := manager.Publish(ctx, VoiceNotificationEvent{Code: "storage", Severity: SeverityWarning, State: VoiceNotificationActive, DedupeKey: "storage:device"}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	tail := manager.PrepareSpokenText(ctx, SpokenTextInput{ResponseText: "Done", TailAppendable: true})
+	if tail.Text != "Done. Also, your device is running low on storage." {
+		t.Fatalf("injected-locale tail = %q", tail.Text)
+	}
+
+	replacement := manager.PrepareSpokenText(ctx, SpokenTextInput{TurnFailure: &TurnFailure{Code: TurnFailureTokenInsufficient}})
+	if replacement.Text != "The service quota is exhausted, so I cannot complete this request right now." {
+		t.Fatalf("injected-locale replacement = %q", replacement.Text)
 	}
 }
 

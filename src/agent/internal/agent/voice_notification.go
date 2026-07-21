@@ -155,6 +155,8 @@ type VoiceNotificationsConfig struct {
 	Expiration    VoiceNotificationExpirationConfig   `toml:"expiration,omitempty"`
 }
 
+const defaultVoiceNotificationLocale = "zh-CN"
+
 type VoiceNotificationResponseTailConfig struct {
 	Enabled      *bool `toml:"enabled,omitempty"`
 	MaxItems     int   `toml:"max_items,omitempty"`
@@ -184,7 +186,7 @@ func (c VoiceNotificationsConfig) DefaultLocaleOrDefault() string {
 	if locale := strings.TrimSpace(c.DefaultLocale); locale != "" {
 		return locale
 	}
-	return "zh-CN"
+	return defaultVoiceNotificationLocale
 }
 
 func (c VoiceNotificationResponseTailConfig) EnabledOrDefault() bool {
@@ -238,6 +240,7 @@ type VoiceNotificationManager struct {
 	mu               sync.Mutex
 	now              func() time.Time
 	config           VoiceNotificationsConfig
+	locale           string
 	records          map[string]*voiceNotificationRecord
 	deliveries       map[string]voiceNotificationDelivery
 	persistentTexts  map[voiceNotificationPolicyKey]string
@@ -256,10 +259,25 @@ func WithVoiceNotificationClock(now func() time.Time) VoiceNotificationManagerOp
 	}
 }
 
+func WithVoiceNotificationLocale(locale string) VoiceNotificationManagerOption {
+	return func(manager *VoiceNotificationManager) {
+		if locale = normalizeVoiceNotificationLocale(locale); locale != "" {
+			manager.locale = locale
+		}
+	}
+}
+
+// resolvedVoiceNotificationLocale is the single config seam for built-in
+// notification text, punctuation, and prerecorded fallback selection.
+func resolvedVoiceNotificationLocale(cfg Config) string {
+	return normalizeVoiceNotificationLocale(cfg.VoiceNotifications.DefaultLocaleOrDefault())
+}
+
 func NewVoiceNotificationManager(config VoiceNotificationsConfig, opts ...VoiceNotificationManagerOption) *VoiceNotificationManager {
 	manager := &VoiceNotificationManager{
 		now:              time.Now,
 		config:           config,
+		locale:           normalizeVoiceNotificationLocale(defaultVoiceNotificationLocale),
 		records:          make(map[string]*voiceNotificationRecord),
 		deliveries:       make(map[string]voiceNotificationDelivery),
 		persistentTexts:  make(map[voiceNotificationPolicyKey]string),
@@ -487,7 +505,7 @@ func (m *VoiceNotificationManager) PrepareSpokenText(_ context.Context, input Sp
 			severitySnapshot: record.currentSeverity,
 		}
 		record.deliveryState = "in_flight"
-		result.Text = appendVoiceNotificationTail(input.ResponseText, tail, m.config.DefaultLocaleOrDefault())
+		result.Text = appendVoiceNotificationTail(input.ResponseText, tail, m.locale)
 		result.Mode = SpokenTextModeTail
 		result.DeliveryToken = token
 		return result
@@ -545,7 +563,7 @@ func (m *VoiceNotificationManager) turnFailureTextLocked(failure *TurnFailure) s
 	if failure == nil {
 		return ""
 	}
-	locale := normalizeVoiceNotificationLocale(m.config.DefaultLocaleOrDefault())
+	locale := m.locale
 	for _, candidate := range voiceNotificationLocaleFallbacks(locale) {
 		if text := m.turnFailureTexts[turnFailurePolicyKey{code: strings.TrimSpace(failure.Code), locale: candidate}]; text != "" {
 			return renderVoiceNotificationText(text, failure.Params)
@@ -632,7 +650,7 @@ func (m *VoiceNotificationManager) persistentTextLocked(record *voiceNotificatio
 	if record == nil {
 		return ""
 	}
-	locale := normalizeVoiceNotificationLocale(m.config.DefaultLocaleOrDefault())
+	locale := m.locale
 	for _, candidate := range voiceNotificationLocaleFallbacks(locale) {
 		key := voiceNotificationPolicyKey{code: record.code, severity: record.currentSeverity, locale: candidate}
 		if text := m.persistentTexts[key]; text != "" {

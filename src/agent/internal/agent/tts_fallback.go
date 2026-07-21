@@ -32,7 +32,7 @@ func ttsUnavailableFallbackPath(cfg Config) string {
 		dir = defaultTTSUnavailableFallbackDir
 	}
 	filename := ttsUnavailableFallbackChinese
-	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(cfg.VoiceNotifications.DefaultLocaleOrDefault())), "en") {
+	if strings.HasPrefix(resolvedVoiceNotificationLocale(cfg), "en") {
 		filename = ttsUnavailableFallbackEnglish
 	}
 	return filepath.Join(dir, filename)

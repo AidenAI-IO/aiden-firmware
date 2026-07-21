@@ -88,7 +88,7 @@ The fallback is deliberately limited:
 - playing the fallback does not acknowledge a pending response-tail notification, because the original reply and reminder were not spoken;
 - disabling `[voice_notifications]` also disables this fallback.
 
-Locale selection follows `voice_notifications.default_locale`: locales beginning with `en` use the English file, and all others use the Chinese file. Development and custom images may override the asset directory with `AIDEN_TTS_FALLBACK_DIR`.
+Locale selection currently follows `voice_notifications.default_locale`: locales beginning with `en` use the English file, and all others use the Chinese file. The Agent resolves this value through one shared locale seam used by built-in notification text, response-tail punctuation, and prerecorded fallback selection, so device-level locale integration only needs to replace that single config source. Development and custom images may override the asset directory with `AIDEN_TTS_FALLBACK_DIR`.
 
 ## Selection rules
 

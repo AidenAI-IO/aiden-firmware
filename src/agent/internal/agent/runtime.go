@@ -461,14 +461,17 @@ func NewRuntimeWithDeps(cfg Config, models model.ModelResolver, memories *Memory
 	}
 
 	rt := &Runtime{
-		config:             cfg,
-		models:             models,
-		memories:           memories,
-		tools:              tools,
-		skills:             skillManager,
-		skillsLoaded:       skillIndex != nil && len(skillIndex.Names()) > 0,
-		waitForWakeup:      waitForWakeupController,
-		voiceNotifications: NewVoiceNotificationManager(cfg.VoiceNotifications),
+		config:        cfg,
+		models:        models,
+		memories:      memories,
+		tools:         tools,
+		skills:        skillManager,
+		skillsLoaded:  skillIndex != nil && len(skillIndex.Names()) > 0,
+		waitForWakeup: waitForWakeupController,
+		voiceNotifications: NewVoiceNotificationManager(
+			cfg.VoiceNotifications,
+			WithVoiceNotificationLocale(resolvedVoiceNotificationLocale(cfg)),
+		),
 		runtimeID:          uuid.NewString(),
 		telemetrySessionID: uuid.NewString(),
 		environmentBridge:  environmentBridge,
