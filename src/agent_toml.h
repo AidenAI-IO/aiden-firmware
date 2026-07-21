@@ -157,6 +157,7 @@ struct AgentToml {
     LiveActivityToml live_activity;
     TerminationPolicyToml termination_policy;
 
+    std::string locale = "zh-CN";
     std::string custom_instruction;
     std::string additional_prompt;
     std::string input_mode;

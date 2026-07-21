@@ -92,7 +92,7 @@ The fallback is deliberately limited:
 - playing the fallback does not acknowledge a pending response-tail notification, because the original reply and reminder were not spoken;
 - disabling `[voice_notifications]` also disables this fallback.
 
-Locale selection currently follows `voice_notifications.default_locale`: locales beginning with `en` use the English file, and all others use the Chinese file. The Agent resolves this value through one shared locale seam used by built-in notification text, response-tail punctuation, and prerecorded fallback selection, so device-level locale integration only needs to replace that single config source. Development and custom images may override the asset directory with `AIDEN_TTS_FALLBACK_DIR`.
+Locale selection follows the device-level `locale`: `en-US` uses the English file and `zh-CN` uses the Chinese file. The same locale drives built-in notification text, response-tail punctuation, and prerecorded fallback selection. The legacy `voice_notifications.default_locale` value is consulted only when a top-level locale is absent. Development and custom images may override the asset directory with `AIDEN_TTS_FALLBACK_DIR`.
 
 ## Selection rules
 
@@ -110,9 +110,10 @@ Final turn failures do not enter the persistent queue. They are classified as ne
 ## Configuration
 
 ```toml
+locale = "zh-CN"
+
 [voice_notifications]
 enabled = true
-default_locale = "zh-CN"
 max_pending = 8
 
 [voice_notifications.response_tail]

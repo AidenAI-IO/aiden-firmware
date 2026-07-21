@@ -270,7 +270,11 @@ func WithVoiceNotificationLocale(locale string) VoiceNotificationManagerOption {
 // resolvedVoiceNotificationLocale is the single config seam for built-in
 // notification text, punctuation, and prerecorded fallback selection.
 func resolvedVoiceNotificationLocale(cfg Config) string {
-	return normalizeVoiceNotificationLocale(cfg.VoiceNotifications.DefaultLocaleOrDefault())
+	locale := strings.TrimSpace(cfg.Locale)
+	if locale == "" {
+		locale = cfg.VoiceNotifications.DefaultLocaleOrDefault()
+	}
+	return normalizeVoiceNotificationLocale(locale)
 }
 
 func NewVoiceNotificationManager(config VoiceNotificationsConfig, opts ...VoiceNotificationManagerOption) *VoiceNotificationManager {

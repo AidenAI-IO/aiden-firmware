@@ -1550,6 +1550,7 @@ func (r *Runtime) buildAgentProfile(skills *SkillManager, availableTools []langt
 		AgentConfig{
 			Instruction:      r.config.Instruction,
 			AdditionalPrompt: r.config.AdditionalPrompt,
+			Locale:           r.config.LocaleOrDefault(),
 		},
 		skills,
 		availableTools,

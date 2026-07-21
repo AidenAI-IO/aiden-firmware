@@ -378,9 +378,10 @@ func TestVoiceNotificationManagerCapsActiveRecords(t *testing.T) {
 	}
 }
 
-func TestRuntimeInjectsResolvedVoiceNotificationLocale(t *testing.T) {
+func TestRuntimeUsesDeviceLocaleForVoiceNotifications(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.VoiceNotifications.DefaultLocale = "en-US"
+	cfg.Locale = "en-US"
+	cfg.VoiceNotifications.DefaultLocale = "zh-CN"
 	cfg.VoiceNotifications.ResponseTail.MaxTextChars = 100
 	manager := NewRuntimeWithDeps(cfg, nil, nil, nil, NewSkillIndex()).VoiceNotifications()
 	ctx := context.Background()

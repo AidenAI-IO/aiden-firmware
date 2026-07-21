@@ -32,9 +32,9 @@ func buildProfile(
 	tools []langtools.Tool,
 	roleRules []string,
 ) RoleProfile {
-	staticParts := []string{
+	promptParts := []string{
 		"You are the Aiden agent.",
-		currentDateContext(),
+		currentDateContext(cfg.Locale),
 		"",
 		"## Base instruction",
 		combinedAgentInstruction(cfg),
@@ -50,15 +50,15 @@ func buildProfile(
 		skills.CatalogSummary(),
 	}
 
-	staticParts = append(staticParts, "", "## Role rules")
+	promptParts = append(promptParts, "", "## Role rules")
 	for _, rule := range roleRules {
-		staticParts = append(staticParts, "- "+rule)
+		promptParts = append(promptParts, "- "+rule)
 	}
-
-	staticPrompt := strings.Join(staticParts, "\n")
+	promptParts = append(promptParts, "", "## Response language", responseLanguageGuidance(cfg.Locale))
+	systemPrompt := strings.Join(promptParts, "\n")
 
 	return RoleProfile{
-		SystemPrompt: staticPrompt,
+		SystemPrompt: systemPrompt,
 		Skills:       skills,
 		Tools:        append([]langtools.Tool{}, tools...),
 	}

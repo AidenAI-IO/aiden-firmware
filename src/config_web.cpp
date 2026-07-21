@@ -147,6 +147,8 @@ const char* kUsbBindAddress = "192.168.42.1";
 const char* kLoopbackBindAddress = "127.0.0.1";
 const char* kAgentInitScript = "/etc/init.d/S53agent";
 const char* kAgentLogPath = "/var/log/agent/agent.log";
+const char* kLocaleSimplifiedChinese = "zh-CN";
+const char* kLocaleEnglishUS = "en-US";
 // Default path to the agent binary on device. Tests override this via the
 // AIDEN_AGENT_BIN environment variable, resolved once on first use to keep
 // production calls free of getenv overhead.
@@ -200,6 +202,7 @@ const int kClientReadTimeoutSeconds = 5;
 const char* kDefaultNoProxy = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16";
 const int kSystemEnvCommandTimeoutMs = 1500;
 const size_t kMaxSystemEnvSize = 64 * 1024;
+const size_t kMaxAgentConfigSize = 1024 * 1024;
 
 std::string read_file_contents(const char* path, size_t max_size);
 bool read_file_contents_checked(const char* path, size_t max_size, std::string* contents, std::string* error);
@@ -301,6 +304,8 @@ struct ValidationResult {
 };
 
 ValidationResult validate_agent_config_via_cli(const aiden::AgentToml& config, const char* agent_bin_path);
+ValidationResult validate_agent_config_path_via_cli(const std::string& config_path,
+                                                     const char* agent_bin_path);
 
 enum ReadStatus {
     READ_STATUS_OK,
@@ -756,6 +761,7 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"live_activity", "private_key_pem", CONFIG_FIELD_STRING},
         {"live_activity", "has_private_key_pem", CONFIG_FIELD_BOOL},
         {"live_activity", "timeout_sec", CONFIG_FIELD_NUMBER},
+        {"agent", "locale", CONFIG_FIELD_STRING},
         {"agent", "custom_instruction", CONFIG_FIELD_STRING},
         {"agent", "additional_prompt", CONFIG_FIELD_STRING},
         {"agent", "input_mode", CONFIG_FIELD_STRING},
@@ -2581,6 +2587,7 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddNumberToObject(live_activity, "timeout_sec", config.live_activity.timeout_sec);
 
     cJSON* agent = add_object(root, "agent");
+    cJSON_AddStringToObject(agent, "locale", config.locale.c_str());
     cJSON_AddStringToObject(agent, "custom_instruction", config.custom_instruction.c_str());
     cJSON_AddStringToObject(agent, "additional_prompt", config.additional_prompt.c_str());
     cJSON_AddStringToObject(agent, "input_mode", config.input_mode.c_str());
@@ -2945,6 +2952,7 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
 
     cJSON* agent = cJSON_GetObjectItem(root, "agent");
     if (json_is_object(agent)) {
+        set_json_str(&config->locale, agent, "locale");
         set_json_str(&config->custom_instruction, agent, "custom_instruction");
         set_json_str(&config->additional_prompt, agent, "additional_prompt");
         set_json_str(&config->input_mode, agent, "input_mode");
@@ -2975,25 +2983,7 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
     }
 }
 
-ValidationResult validate_agent_config_via_cli(const aiden::AgentToml& config, const char* agent_bin_path) {
-    // Convert config to JSON
-    cJSON* config_json = config_to_json(config, true);
-    char* json_str = cJSON_PrintUnformatted(config_json);
-    cJSON_Delete(config_json);
-
-    if (!json_str) {
-        // Server-side serialization failure: not the user's fault, treat as
-        // unavailable so the UI surfaces it as a server problem.
-        return ValidationResult::unavailable("failed to serialize config to JSON");
-    }
-
-    std::string input(json_str);
-    free(json_str);
-
-    // Call agent config-check CLI
-    std::string cmd = std::string(agent_bin_path) + " config-check --stdin --format=json";
-    CommandResult result = run_command_with_stdin(cmd, input, 2000);
-
+ValidationResult parse_agent_config_validation_result(const CommandResult& result) {
     if (result.timed_out) {
         return ValidationResult::unavailable("config validation timed out");
     }
@@ -3049,6 +3039,33 @@ ValidationResult validate_agent_config_via_cli(const aiden::AgentToml& config, c
     }
 
     return ValidationResult::invalid(error_msg);
+}
+
+ValidationResult validate_agent_config_via_cli(const aiden::AgentToml& config, const char* agent_bin_path) {
+    // Convert config to JSON
+    cJSON* config_json = config_to_json(config, true);
+    char* json_str = cJSON_PrintUnformatted(config_json);
+    cJSON_Delete(config_json);
+
+    if (!json_str) {
+        // Server-side serialization failure: not the user's fault, treat as
+        // unavailable so the UI surfaces it as a server problem.
+        return ValidationResult::unavailable("failed to serialize config to JSON");
+    }
+
+    std::string input(json_str);
+    free(json_str);
+
+    // Call agent config-check CLI
+    std::string cmd = shell_quote(agent_bin_path) + " config-check --stdin --format=json";
+    return parse_agent_config_validation_result(run_command_with_stdin(cmd, input, 2000));
+}
+
+ValidationResult validate_agent_config_path_via_cli(const std::string& config_path,
+                                                     const char* agent_bin_path) {
+    std::string cmd = shell_quote(agent_bin_path) + " config-check --config="
+                    + shell_quote(config_path) + " --format=json";
+    return parse_agent_config_validation_result(run_command_with_stdin(cmd, "", 2000));
 }
 
 ValidationResult validate_agent_config_for_save(const aiden::AgentToml& config) {
@@ -3796,6 +3813,239 @@ bool atomic_write_file(const std::string& path,
         return false;
     }
     return true;
+}
+
+size_t find_toml_line_comment(const std::string& line, size_t start) {
+    bool in_basic_string = false;
+    bool in_literal_string = false;
+    bool escaped = false;
+    for (size_t i = start; i < line.size(); ++i) {
+        const char ch = line[i];
+        if (in_basic_string) {
+            if (escaped) {
+                escaped = false;
+            } else if (ch == '\\') {
+                escaped = true;
+            } else if (ch == '"') {
+                in_basic_string = false;
+            }
+            continue;
+        }
+        if (in_literal_string) {
+            if (ch == '\'') {
+                in_literal_string = false;
+            }
+            continue;
+        }
+        if (ch == '"') {
+            in_basic_string = true;
+        } else if (ch == '\'') {
+            in_literal_string = true;
+        } else if (ch == '#') {
+            return i;
+        }
+    }
+    return std::string::npos;
+}
+
+bool find_top_level_locale_assignment(const std::string& line, size_t* equals_offset) {
+    size_t pos = 0;
+    while (pos < line.size() && (line[pos] == ' ' || line[pos] == '\t')) {
+        ++pos;
+    }
+    size_t key_size = 0;
+    if (line.compare(pos, 6, "locale") == 0) {
+        key_size = 6;
+    } else if (line.compare(pos, 8, "\"locale\"") == 0 ||
+               line.compare(pos, 8, "'locale'") == 0) {
+        key_size = 8;
+    } else {
+        return false;
+    }
+    pos += key_size;
+    while (pos < line.size() && (line[pos] == ' ' || line[pos] == '\t')) {
+        ++pos;
+    }
+    if (pos >= line.size() || line[pos] != '=') {
+        return false;
+    }
+    if (equals_offset) {
+        *equals_offset = pos;
+    }
+    return true;
+}
+
+void update_toml_multiline_string_state(const std::string& line,
+                                        bool* in_multiline_basic,
+                                        bool* in_multiline_literal) {
+    bool in_basic = false;
+    bool in_literal = false;
+    bool escaped = false;
+    for (size_t i = 0; i < line.size();) {
+        if (*in_multiline_basic) {
+            if (i + 2 < line.size() && line.compare(i, 3, "\"\"\"") == 0 && !escaped) {
+                *in_multiline_basic = false;
+                i += 3;
+                continue;
+            }
+            if (line[i] == '\\' && !escaped) {
+                escaped = true;
+            } else {
+                escaped = false;
+            }
+            ++i;
+            continue;
+        }
+        if (*in_multiline_literal) {
+            if (i + 2 < line.size() && line.compare(i, 3, "'''") == 0) {
+                *in_multiline_literal = false;
+                i += 3;
+            } else {
+                ++i;
+            }
+            continue;
+        }
+        if (in_basic) {
+            if (escaped) {
+                escaped = false;
+            } else if (line[i] == '\\') {
+                escaped = true;
+            } else if (line[i] == '"') {
+                in_basic = false;
+            }
+            ++i;
+            continue;
+        }
+        if (in_literal) {
+            if (line[i] == '\'') {
+                in_literal = false;
+            }
+            ++i;
+            continue;
+        }
+        if (line[i] == '#') {
+            break;
+        }
+        if (i + 2 < line.size() && line.compare(i, 3, "\"\"\"") == 0) {
+            *in_multiline_basic = true;
+            escaped = false;
+            i += 3;
+        } else if (i + 2 < line.size() && line.compare(i, 3, "'''") == 0) {
+            *in_multiline_literal = true;
+            i += 3;
+        } else if (line[i] == '"') {
+            in_basic = true;
+            escaped = false;
+            ++i;
+        } else if (line[i] == '\'') {
+            in_literal = true;
+            ++i;
+        } else {
+            ++i;
+        }
+    }
+}
+
+std::string update_top_level_locale(const std::string& content, const std::string& locale) {
+    size_t first_section_offset = std::string::npos;
+    size_t line_start = 0;
+    bool in_multiline_basic = false;
+    bool in_multiline_literal = false;
+    while (line_start < content.size()) {
+        size_t line_end = content.find('\n', line_start);
+        if (line_end == std::string::npos) {
+            line_end = content.size();
+        }
+        size_t logical_end = line_end;
+        if (logical_end > line_start && content[logical_end - 1] == '\r') {
+            --logical_end;
+        }
+        const std::string line = content.substr(line_start, logical_end - line_start);
+
+        const bool line_starts_inside_multiline = in_multiline_basic || in_multiline_literal;
+        update_toml_multiline_string_state(line, &in_multiline_basic, &in_multiline_literal);
+        if (line_starts_inside_multiline) {
+            if (line_end == content.size()) {
+                break;
+            }
+            line_start = line_end + 1;
+            continue;
+        }
+
+        size_t first_non_space = 0;
+        while (first_non_space < line.size() &&
+               (line[first_non_space] == ' ' || line[first_non_space] == '\t')) {
+            ++first_non_space;
+        }
+        if (first_non_space < line.size() && line[first_non_space] == '[') {
+            first_section_offset = line_start;
+            break;
+        }
+
+        size_t equals_offset = 0;
+        if (find_top_level_locale_assignment(line, &equals_offset)) {
+            size_t value_start = equals_offset + 1;
+            while (value_start < line.size() &&
+                   (line[value_start] == ' ' || line[value_start] == '\t')) {
+                ++value_start;
+            }
+            size_t comment_offset = find_toml_line_comment(line, value_start);
+            size_t value_end = comment_offset == std::string::npos ? line.size() : comment_offset;
+            while (value_end > value_start &&
+                   (line[value_end - 1] == ' ' || line[value_end - 1] == '\t')) {
+                --value_end;
+            }
+            const size_t absolute_value_start = line_start + value_start;
+            const size_t absolute_value_end = line_start + value_end;
+            return content.substr(0, absolute_value_start) + "\"" + locale + "\""
+                 + content.substr(absolute_value_end);
+        }
+
+        if (line_end == content.size()) {
+            break;
+        }
+        line_start = line_end + 1;
+    }
+
+    const size_t insert_offset = first_section_offset == std::string::npos
+        ? content.size() : first_section_offset;
+    std::string insertion;
+    if (insert_offset > 0 && content[insert_offset - 1] != '\n') {
+        insertion += "\n";
+    }
+    insertion += "locale = \"" + locale + "\"\n";
+    return content.substr(0, insert_offset) + insertion + content.substr(insert_offset);
+}
+
+ValidationResult validate_agent_toml_content_for_save(const std::string& content,
+                                                       const std::string& config_path) {
+    const char* agent_bin = agent_bin_path();
+    if (!file_exists(agent_bin)) {
+        std::cerr << "[config] agent binary not found at " << agent_bin
+                  << ", refusing to save unvalidated config\n";
+        return ValidationResult::unavailable(
+                "config validation unavailable: agent binary not found");
+    }
+
+    std::string temp_dir;
+    std::string error;
+    std::string validation_dir = parent_dir(config_path);
+    if (validation_dir.empty()) {
+        validation_dir = ".";
+    }
+    if (!create_temp_dir_in_dir(validation_dir, "agent-locale-check-", &temp_dir, &error)) {
+        return ValidationResult::unavailable("config validation unavailable: " + error);
+    }
+    const std::string temp_path = temp_dir + "/agent.toml";
+    if (!atomic_write_file(temp_path, content, 0600, &error)) {
+        rmdir(temp_dir.c_str());
+        return ValidationResult::unavailable("config validation unavailable: " + error);
+    }
+
+    ValidationResult result = validate_agent_config_path_via_cli(temp_path, agent_bin);
+    unlink(temp_path.c_str());
+    rmdir(temp_dir.c_str());
+    return result;
 }
 
 bool copy_regular_file_tail(const std::string& source,
@@ -5234,6 +5484,63 @@ ApiResponse handle_post_config(const Options& options, const std::string& body) 
     return make_json_ok(response);
 }
 
+ApiResponse handle_put_config_locale(const Options& options, const std::string& body) {
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (!root) {
+        return make_json_error(400, "invalid JSON body");
+    }
+
+    cJSON* locale_item = cJSON_GetObjectItem(root, "locale");
+    if (!json_is_string(locale_item)) {
+        cJSON_Delete(root);
+        return make_json_error(400, "missing locale string");
+    }
+    const std::string locale = locale_item->valuestring;
+    cJSON_Delete(root);
+
+    if (locale != kLocaleSimplifiedChinese && locale != kLocaleEnglishUS) {
+        return make_json_error(400, "unsupported locale; expected zh-CN or en-US");
+    }
+
+    std::string original_content;
+    mode_t config_mode = 0600;
+    if (file_exists(options.agent_config_path.c_str())) {
+        std::string read_error;
+        if (!read_file_contents_checked(options.agent_config_path.c_str(),
+                                        kMaxAgentConfigSize,
+                                        &original_content,
+                                        &read_error)) {
+            return make_json_error(500, read_error.empty() ? "failed to read agent config" : read_error);
+        }
+        struct stat st;
+        if (stat(options.agent_config_path.c_str(), &st) == 0) {
+            config_mode = st.st_mode & 0777;
+        }
+    }
+    const std::string updated_content = update_top_level_locale(original_content, locale);
+
+    ValidationResult validation = validate_agent_toml_content_for_save(
+            updated_content, options.agent_config_path);
+    if (validation.outcome != ValidationOutcome::OK) {
+        const int status = validation.outcome == ValidationOutcome::UNAVAILABLE ? 503 : 400;
+        return make_json_error(status, validation.message);
+    }
+
+    std::string save_error;
+    if (!atomic_write_file(options.agent_config_path, updated_content, config_mode, &save_error)) {
+        return make_json_error(500, save_error);
+    }
+
+    schedule_agent_restart();
+
+    cJSON* response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "ok", 1);
+    cJSON_AddStringToObject(response, "locale", locale.c_str());
+    cJSON_AddStringToObject(response, "message", "locale saved; agent restarting");
+    cJSON_AddBoolToObject(response, "agent_restart_scheduled", 1);
+    return make_json_ok(response);
+}
+
 ApiResponse handle_post_poweroff() {
     schedule_poweroff();
 
@@ -6277,6 +6584,10 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
 
     if (request.method == "POST" && request.path == "/api/config") {
         return handle_post_config(options, request.body);
+    }
+
+    if (request.method == "PUT" && request.path == "/api/config/locale") {
+        return handle_put_config_locale(options, request.body);
     }
 
     if (request.method == "POST" && request.path == "/api/system/env") {
