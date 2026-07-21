@@ -82,12 +82,20 @@ type testModelResolver struct {
 	spec  model.ModelSpec
 }
 
-func (r *testModelResolver) Get() (llms.Model, error) {
+func (r *testModelResolver) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
 	r.calls++
 	if r.err != nil {
 		return nil, r.err
 	}
-	return r.model, nil
+	return r.model.GenerateContent(ctx, messages, options...)
+}
+
+func (r *testModelResolver) Call(ctx context.Context, prompt string, options ...llms.CallOption) (string, error) {
+	r.calls++
+	if r.err != nil {
+		return "", r.err
+	}
+	return r.model.Call(ctx, prompt, options...)
 }
 
 func (r *testModelResolver) CallOptions() []chains.ChainCallOption {
@@ -2094,6 +2102,16 @@ func (m *scriptedModel) GenerateContent(ctx context.Context, messages []llms.Mes
 func (m *scriptedModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
 	panic("unexpected Call invocation")
 }
+
+func (m *scriptedModel) Spec() model.ModelSpec {
+	return model.ModelSpec{
+		Provider:      "fake",
+		Name:          "scripted",
+		ContextWindow: 100,
+	}
+}
+
+func (m *scriptedModel) CallOptions() []chains.ChainCallOption { return nil }
 
 func contentResponse(content string) *llms.ContentResponse {
 	return contentResponseWithInfo(content, nil)

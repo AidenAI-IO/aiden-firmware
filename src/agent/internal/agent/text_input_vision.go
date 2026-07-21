@@ -48,10 +48,10 @@ type textInputVision interface {
 }
 
 type llmTextInputVision struct {
-	models model.ModelResolver
+	models model.Model
 }
 
-func newLLMTextInputVision(models model.ModelResolver) textInputVision {
+func newLLMTextInputVision(models model.Model) textInputVision {
 	if models == nil {
 		return nil
 	}
@@ -129,10 +129,6 @@ Rules:
 }
 
 func (v *llmTextInputVision) visionJSON(ctx context.Context, prompt string, screenshot screenshotResult) (string, error) {
-	model, err := v.models.Get()
-	if err != nil {
-		return "", err
-	}
 	if strings.TrimSpace(screenshot.Data) == "" {
 		return "", fmt.Errorf("screenshot data missing")
 	}
@@ -149,7 +145,7 @@ func (v *llmTextInputVision) visionJSON(ctx context.Context, prompt string, scre
 	// Use the model's configured temperature for vision analysis. Previously
 	// hardcoded to 0 for determinism, but that breaks kimi-k3 (requires temp=1)
 	// and the temperature difference has minimal impact on vision text extraction.
-	resp, err := model.GenerateContent(ctx, msgs, llms.WithJSONMode())
+	resp, err := v.models.GenerateContent(ctx, msgs, llms.WithJSONMode())
 	if err != nil {
 		return "", err
 	}

@@ -11,21 +11,16 @@ import (
 )
 
 type LLMSkillMergeModel struct {
-	models model.ModelResolver
+	model model.Model
 }
 
-func NewLLMSkillMergeModel(models model.ModelResolver) *LLMSkillMergeModel {
-	return &LLMSkillMergeModel{models: models}
+func NewLLMSkillMergeModel(models model.Model) *LLMSkillMergeModel {
+	return &LLMSkillMergeModel{model: models}
 }
 
 func (m *LLMSkillMergeModel) MergeSkill(ctx context.Context, input SkillMergeInput) (*SkillMergeResult, error) {
-	model, err := m.models.Get()
-	if err != nil {
-		return nil, fmt.Errorf("get model: %w", err)
-	}
-
 	prompt := buildMergePrompt(input)
-	raw, err := llms.GenerateFromSinglePrompt(ctx, model, prompt, llms.WithMaxTokens(4096))
+	raw, err := llms.GenerateFromSinglePrompt(ctx, m.model, prompt, llms.WithMaxTokens(4096))
 	if err != nil {
 		return nil, fmt.Errorf("LLM call: %w", err)
 	}
