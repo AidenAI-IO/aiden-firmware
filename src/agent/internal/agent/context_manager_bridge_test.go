@@ -8,10 +8,10 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
-func TestFreshNewContextManagerSeedsSystemPromptOnlyForFreshSession(t *testing.T) {
+func TestInitializeContextManagerStartsNewSessionWhenSystemPromptChanges(t *testing.T) {
 	sessionFolder := t.TempDir()
 
-	manager, err := InitializeContextManager(contextmanager.SystemPrompt{StablePrefix: "system v1"}, sessionFolder, nil)
+	manager, err := InitializeContextManager("system v1", sessionFolder, nil)
 	if err != nil {
 		t.Fatalf("freshNewContextManager() error = %v", err)
 	}
@@ -25,45 +25,56 @@ func TestFreshNewContextManagerSeedsSystemPromptOnlyForFreshSession(t *testing.T
 	if err := manager.AppendMessage(contextmanager.Message{Role: contextmanager.MessageRoleUser, Content: "first request"}); err != nil {
 		t.Fatalf("AppendMessage() error = %v", err)
 	}
+	originalSessionID := manager.GetSessionID()
 
-	reloaded, err := InitializeContextManager(contextmanager.SystemPrompt{StablePrefix: "system v2"}, sessionFolder, nil)
+	reloaded, err := InitializeContextManager("system v2", sessionFolder, nil)
 	if err != nil {
 		t.Fatalf("reload freshNewContextManager() error = %v", err)
 	}
 	reloadedMessages := reloaded.ConvertToStandardMessageList()
-	if len(reloadedMessages) != 2 {
-		t.Fatalf("messages = %d, want 2", len(reloadedMessages))
+	if reloaded.GetSessionID() == originalSessionID {
+		t.Fatal("system prompt change reused the existing session")
 	}
-	if text := messageText(reloadedMessages[:1]); text != "system v2\n" {
-		t.Fatalf("reloaded context should use the current system prompt, got %q", text)
+	if len(reloadedMessages) != 1 {
+		t.Fatalf("messages = %d, want only the new system prompt", len(reloadedMessages))
 	}
-	if text := messageText(reloadedMessages[1:2]); text != "first request\n" {
-		t.Fatalf("reloaded user message = %q", text)
+	if text := messageText(reloadedMessages); text != "system v2\n" {
+		t.Fatalf("new session system prompt = %q, want system v2", text)
+	}
+
+	original, err := contextmanager.LoadContextManagerFromSessionID(sessionFolder, originalSessionID)
+	if err != nil {
+		t.Fatalf("LoadContextManagerFromSessionID() error = %v", err)
+	}
+	if text := messageText(original.ConvertToStandardMessageList()); text != "system v1\nfirst request\n" {
+		t.Fatalf("original session was modified: %q", text)
 	}
 }
 
-func TestInitializeContextManagerPreservesStableAndDynamicSystemParts(t *testing.T) {
-	manager, err := InitializeContextManager(contextmanager.SystemPrompt{
-		StablePrefix: "stable cache prefix",
-		DynamicTail:  "dynamic locale tail",
-	}, t.TempDir(), nil)
+func TestInitializeContextManagerReusesSessionWhenSystemPromptMatches(t *testing.T) {
+	sessionFolder := t.TempDir()
+	manager, err := InitializeContextManager("system", sessionFolder, nil)
 	if err != nil {
 		t.Fatalf("InitializeContextManager() error = %v", err)
 	}
-
-	messages := manager.ConvertToStandardMessageList()
-	if len(messages) != 1 || len(messages[0].Parts) != 2 {
-		t.Fatalf("system message parts = %#v, want stable + dynamic", messages)
+	if err := manager.AppendMessage(contextmanager.Message{Role: contextmanager.MessageRoleUser, Content: "hello"}); err != nil {
+		t.Fatalf("AppendMessage() error = %v", err)
 	}
-	stable, stableOK := messages[0].Parts[0].(llms.TextContent)
-	dynamic, dynamicOK := messages[0].Parts[1].(llms.TextContent)
-	if !stableOK || stable.Text != "stable cache prefix" || !dynamicOK || dynamic.Text != "dynamic locale tail" {
-		t.Fatalf("system parts = %#v, want stable then dynamic", messages[0].Parts)
+
+	reloaded, err := InitializeContextManager("system", sessionFolder, nil)
+	if err != nil {
+		t.Fatalf("InitializeContextManager() reload error = %v", err)
+	}
+	if reloaded.GetSessionID() != manager.GetSessionID() {
+		t.Fatal("unchanged system prompt started a new session")
+	}
+	if text := messageText(reloaded.ConvertToStandardMessageList()); text != "system\nhello\n" {
+		t.Fatalf("reloaded session = %q", text)
 	}
 }
 
 func TestUserMessageFromInputPreservesAttachments(t *testing.T) {
-	manager, err := InitializeContextManager(contextmanager.SystemPrompt{StablePrefix: "system"}, t.TempDir(), nil)
+	manager, err := InitializeContextManager("system", t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("freshNewContextManager() error = %v", err)
 	}

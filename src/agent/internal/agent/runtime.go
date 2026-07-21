@@ -471,7 +471,6 @@ func NewRuntimeWithDeps(cfg Config, models model.ModelResolver, memories *Memory
 		environmentBridge:  environmentBridge,
 		stateManager:       statemanager.NewStateManager(),
 	}
-	rt.syncResponseLanguageState()
 	// Use the active memory session ID for raw HTTP log partitioning.
 	if modelManager, ok := models.(*ModelManager); ok {
 		modelManager.SetRawHTTPLogSessionIDProvider(func() string {
@@ -977,10 +976,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 
 	// setup context manager if not initialized
 	if r.contextManager == nil {
-		r.contextManager, err = InitializeContextManager(contextmanager.SystemPrompt{
-			StablePrefix: profile.StableSystemPrompt,
-			DynamicTail:  profile.DynamicSystemPrompt,
-		}, agentpath.ContextManagerSessionFolder(r.config.ConfigDir), []contextmanager.AppendMessageHook{r.getStateHook()})
+		r.contextManager, err = InitializeContextManager(profile.SystemPrompt, agentpath.ContextManagerSessionFolder(r.config.ConfigDir), []contextmanager.AppendMessageHook{r.getStateHook()})
 		if err != nil {
 			return RunResult{}, err
 		}
@@ -1011,10 +1007,6 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 			return RunResult{}, err
 		}
 		if compacted {
-			newManager.SetSystemPrompt(contextmanager.SystemPrompt{
-				StablePrefix: profile.StableSystemPrompt,
-				DynamicTail:  profile.DynamicSystemPrompt,
-			})
 			// setup hooks
 			newManager.AddAppendMessageHook(r.getStateHook())
 			// switch to new session
@@ -1112,12 +1104,9 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 	}, nil
 }
 
-func (r *Runtime) getSystemPrompt() contextmanager.SystemPrompt {
+func (r *Runtime) getSystemPrompt() string {
 	profile := r.buildAgentProfile(r.skills, r.availableTools())
-	return contextmanager.SystemPrompt{
-		StablePrefix: profile.StableSystemPrompt,
-		DynamicTail:  profile.DynamicSystemPrompt,
-	}
+	return profile.SystemPrompt
 }
 
 func (r *Runtime) getStateHook() contextmanager.AppendMessageHook {
@@ -1128,7 +1117,6 @@ func (r *Runtime) getStateHook() contextmanager.AppendMessageHook {
 				Message: &message,
 			}
 		}
-		r.syncResponseLanguageState()
 		entries := r.stateManager.GetAllStates()
 		// if no state entries, just skip
 		if len(entries) == 0 {
@@ -1152,22 +1140,11 @@ func (r *Runtime) getStateHook() contextmanager.AppendMessageHook {
 			Content: tagged,
 		}
 		return contextmanager.AppendMessageHookResult{
+			Before:  []contextmanager.Message{stateMessage},
 			Message: &message,
-			After:   []contextmanager.Message{stateMessage},
+			After:   []contextmanager.Message{},
 		}
 	}
-}
-
-func (r *Runtime) syncResponseLanguageState() {
-	if r == nil {
-		return
-	}
-	if r.stateManager == nil {
-		r.stateManager = statemanager.NewStateManager()
-	}
-	locale, language := responseLanguageState(r.config.LocaleOrDefault())
-	r.stateManager.SetState(responseLocaleStateKey, locale)
-	r.stateManager.SetState(responseLanguageStateKey, language)
 }
 
 func (r *Runtime) beginSession(ctx context.Context, req SessionBeginRequest) (SessionBeginResult, error) {
@@ -1331,12 +1308,10 @@ func (r *Runtime) ContextDump() contextmanager.MessageListDump {
 }
 
 func (r *Runtime) rotateContext() {
-	systemPrompt := r.getSystemPrompt()
-	newContextManager, err := contextmanager.NewContextManager(agentpath.ContextManagerSessionFolder(r.config.ConfigDir), systemPrompt.String())
+	newContextManager, err := contextmanager.NewContextManager(agentpath.ContextManagerSessionFolder(r.config.ConfigDir), r.getSystemPrompt())
 	if err != nil {
 		return
 	}
-	newContextManager.SetSystemPrompt(systemPrompt)
 	newContextManager.AddAppendMessageHooks([]contextmanager.AppendMessageHook{r.getStateHook()})
 	r.contextManager = newContextManager
 }

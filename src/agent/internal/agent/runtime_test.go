@@ -559,7 +559,7 @@ func TestRuntimeRunInjectsCurrentDateIntoPlannerPrompt(t *testing.T) {
 		t.Fatalf("expected model to receive planner prompt")
 	}
 	systemPrompt := messageText(model.messages[0][:1])
-	want := "Current date: 2026-06-15 (Monday)"
+	want := "Current date: 2026-06-15 (星期一)"
 	if !strings.Contains(systemPrompt, want) {
 		t.Fatalf("planner system prompt missing current date %q:\n%s", want, systemPrompt)
 	}
@@ -4473,19 +4473,15 @@ func TestRuntimeRunPlacesSystemPromptBeforeCurrentUserMessage(t *testing.T) {
 	}
 
 	messages := model.messages[0]
-	if len(messages) < 3 {
-		t.Fatalf("expected system, current user, and state messages, got %#v", messages)
+	if len(messages) < 2 {
+		t.Fatalf("expected system and current user messages, got %#v", messages)
 	}
 	if messages[0].Role != llms.ChatMessageTypeSystem {
 		t.Fatalf("first message role = %q, want system", messages[0].Role)
 	}
-	userMessage := messages[len(messages)-2]
+	userMessage := messages[len(messages)-1]
 	if userMessage.Role != llms.ChatMessageTypeHuman {
 		t.Fatalf("current user message role = %q, want human", userMessage.Role)
-	}
-	stateMessage := messages[len(messages)-1]
-	if stateMessage.Role != llms.ChatMessageTypeHuman || !strings.Contains(messageText([]llms.MessageContent{stateMessage}), "response_locale: zh-CN") {
-		t.Fatalf("current turn state message = %#v, want zh-CN human state", stateMessage)
 	}
 	userPrompt := messageText([]llms.MessageContent{userMessage})
 	if !strings.Contains(userPrompt, userText) || !strings.Contains(userPrompt, "Attached content") || !strings.Contains(userPrompt, "photo.png") {
@@ -4554,16 +4550,12 @@ func TestRuntimeRunIncludesUserAttachments(t *testing.T) {
 	}
 
 	lastCall := model.messages[0]
-	if len(lastCall) < 3 {
+	if len(lastCall) < 2 {
 		t.Fatalf("expected messages in model call")
 	}
-	userMessage := lastCall[len(lastCall)-2]
+	userMessage := lastCall[len(lastCall)-1]
 	if userMessage.Role != llms.ChatMessageTypeHuman {
 		t.Fatalf("expected raw user message to be human, got %q", userMessage.Role)
-	}
-	stateMessage := lastCall[len(lastCall)-1]
-	if stateMessage.Role != llms.ChatMessageTypeHuman || !strings.Contains(messageText([]llms.MessageContent{stateMessage}), "response_locale: zh-CN") {
-		t.Fatalf("current turn state message = %#v, want zh-CN human state", stateMessage)
 	}
 
 	var textContent string

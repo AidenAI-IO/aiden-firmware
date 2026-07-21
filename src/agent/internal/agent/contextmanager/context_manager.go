@@ -53,29 +53,6 @@ type Message struct {
 	Attachments []Attachment `json:"attachments,omitempty"`
 }
 
-// SystemPrompt keeps the cacheable prompt prefix separate from the small
-// runtime-dependent tail. Model adapters can cache the stable first part while
-// date and deployment overrides change independently.
-type SystemPrompt struct {
-	StablePrefix string
-	DynamicTail  string
-}
-
-func (p SystemPrompt) Parts() []string {
-	parts := make([]string, 0, 2)
-	if stable := strings.TrimSpace(p.StablePrefix); stable != "" {
-		parts = append(parts, stable)
-	}
-	if dynamic := strings.TrimSpace(p.DynamicTail); dynamic != "" {
-		parts = append(parts, dynamic)
-	}
-	return parts
-}
-
-func (p SystemPrompt) String() string {
-	return strings.Join(p.Parts(), "\n\n")
-}
-
 type AppendMessageHook func(Message) AppendMessageHookResult
 
 type AppendMessageHookResult struct {
@@ -108,25 +85,12 @@ type Attachment struct {
 // It is thread safe and can be used concurrently by multiple goroutines.
 // SessionID is the id of the session, it is used to identify the session of the agent. Conversation in a same session are shared the same context.
 type ContextManager struct {
-	sessionID         string
-	messageList       []Message
-	appendHooks       []AppendMessageHook
-	attachmentStore   *attachmentStore
-	systemPromptParts []string
-	mu                sync.RWMutex
-	sessionFolder     string
-}
-
-// SetSystemPrompt records a runtime-only prompt overlay for model conversion.
-// It deliberately leaves the persisted session append-only.
-func (c *ContextManager) SetSystemPrompt(prompt SystemPrompt) {
-	if c == nil {
-		return
-	}
-	parts := prompt.Parts()
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.systemPromptParts = append([]string(nil), parts...)
+	sessionID       string
+	messageList     []Message
+	appendHooks     []AppendMessageHook
+	attachmentStore *attachmentStore
+	mu              sync.RWMutex
+	sessionFolder   string
 }
 
 // LoadContextManagerFromSessionID loads a context manager from the session folder
@@ -220,27 +184,6 @@ func (c *ContextManager) CloneMessageList() []Message {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return cloneMessages(c.messageList)
-}
-
-// CloneEffectiveMessageList returns the model-facing text view while preserving
-// the original context message types. Runtime prompt overlays are applied only
-// to the clone so token accounting can match model conversion without mutating
-// the append-only session.
-func (c *ContextManager) CloneEffectiveMessageList() []Message {
-	c.mu.RLock()
-	messages := cloneMessages(c.messageList)
-	parts := append([]string(nil), c.systemPromptParts...)
-	c.mu.RUnlock()
-
-	if len(parts) == 0 {
-		return messages
-	}
-	systemMessage := Message{Role: MessageRoleSystem, Content: strings.Join(parts, "\n\n")}
-	if len(messages) > 0 && messages[0].Role == MessageRoleSystem {
-		messages[0] = systemMessage
-		return messages
-	}
-	return append([]Message{systemMessage}, messages...)
 }
 
 func (c *ContextManager) GetSessionFolder() string {
@@ -389,23 +332,12 @@ func cloneMessage(msg Message) Message {
 func (c *ContextManager) ConvertToStandardMessageList() []llms.MessageContent {
 	c.mu.RLock()
 	messages := cloneMessages(c.messageList)
-	systemPromptParts := append([]string(nil), c.systemPromptParts...)
 	c.mu.RUnlock()
-	return convertToStandardMessageList(messages, systemPromptParts)
+	return convertToStandardMessageList(messages)
 }
 
-func convertToStandardMessageList(messages []Message, systemPromptParts []string) []llms.MessageContent {
-	messageOffset := 0
-	if len(systemPromptParts) > 0 && (len(messages) == 0 || messages[0].Role != MessageRoleSystem) {
-		messageOffset = 1
-	}
-	standardMessageList := make([]llms.MessageContent, len(messages)+messageOffset)
-	if messageOffset == 1 {
-		standardMessageList[0] = llms.MessageContent{
-			Role:  llms.ChatMessageTypeSystem,
-			Parts: textParts(systemPromptParts),
-		}
-	}
+func convertToStandardMessageList(messages []Message) []llms.MessageContent {
+	standardMessageList := make([]llms.MessageContent, len(messages))
 	for i, message := range messages {
 		newMessage := llms.MessageContent{
 			Role:  message.Role.ToStandardRole(),
@@ -423,12 +355,10 @@ func convertToStandardMessageList(messages []Message, systemPromptParts []string
 					Content:    result.Content,
 				})
 			}
-			standardMessageList[i+messageOffset] = newMessage
+			standardMessageList[i] = newMessage
 			continue
 		}
-		if i == 0 && message.Role == MessageRoleSystem && len(systemPromptParts) > 0 {
-			newMessage.Parts = append(newMessage.Parts, textParts(systemPromptParts)...)
-		} else if content := strings.TrimSpace(message.Content); content != "" {
+		if content := strings.TrimSpace(message.Content); content != "" {
 			newMessage.Parts = append(newMessage.Parts, llms.TextPart(content))
 		}
 		for toolIndex, call := range message.ToolCalls {
@@ -460,17 +390,9 @@ func convertToStandardMessageList(messages []Message, systemPromptParts []string
 			}
 			newMessage.Parts = append(newMessage.Parts, llms.BinaryPart(attachment.MIMEType, data))
 		}
-		standardMessageList[i+messageOffset] = newMessage
+		standardMessageList[i] = newMessage
 	}
 	return standardMessageList
-}
-
-func textParts(parts []string) []llms.ContentPart {
-	result := make([]llms.ContentPart, 0, len(parts))
-	for _, part := range parts {
-		result = append(result, llms.TextPart(part))
-	}
-	return result
 }
 
 func attachmentOmittedMessage(mimeType string, err error) string {

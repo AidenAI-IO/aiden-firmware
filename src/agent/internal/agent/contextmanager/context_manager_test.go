@@ -569,64 +569,6 @@ func TestLoadContextManagerFromSessionIDReloadsMessages(t *testing.T) {
 	}
 }
 
-func TestSetSystemPromptKeepsSessionAppendOnlyAndOverlaysModelPrompt(t *testing.T) {
-	sessionFolder := t.TempDir()
-	manager, err := NewContextManager(sessionFolder, "system v1")
-	if err != nil {
-		t.Fatalf("NewContextManager() error = %v", err)
-	}
-	if err := manager.AppendMessage(Message{Role: MessageRoleUser, Content: "hello"}); err != nil {
-		t.Fatalf("AppendMessage() error = %v", err)
-	}
-
-	before := manager.MessageListDump()
-	manager.SetSystemPrompt(SystemPrompt{
-		StablePrefix: "system v2 stable",
-		DynamicTail:  "system v2 dynamic",
-	})
-	after := manager.MessageListDump()
-	if !reflect.DeepEqual(after, before) {
-		t.Fatalf("SetSystemPrompt() mutated append-only session:\nbefore=%#v\nafter=%#v", before, after)
-	}
-
-	modelMessages := manager.ConvertToStandardMessageList()
-	if got, want := standardMessageText(modelMessages[0]), "system v2 stable\nsystem v2 dynamic"; got != want {
-		t.Fatalf("model system prompt = %q, want %q", got, want)
-	}
-	if got, want := standardMessageText(modelMessages[1]), "hello"; got != want {
-		t.Fatalf("model user message = %q, want %q", got, want)
-	}
-
-	reloaded, err := LoadContextManagerFromSessionID(sessionFolder, manager.GetSessionID())
-	if err != nil {
-		t.Fatalf("LoadContextManagerFromSessionID() error = %v", err)
-	}
-	if got := reloaded.MessageListDump(); !reflect.DeepEqual(got, before) {
-		t.Fatalf("persisted session changed:\nwant=%#v\ngot=%#v", before, got)
-	}
-}
-
-func TestSetSystemPromptSynthesizesModelSystemMessageWithoutMutatingHistory(t *testing.T) {
-	manager := newTestContextManager(t)
-	if err := manager.AppendMessage(Message{Role: MessageRoleUser, Content: "hello"}); err != nil {
-		t.Fatalf("AppendMessage() error = %v", err)
-	}
-	before := manager.MessageListDump()
-
-	manager.SetSystemPrompt(SystemPrompt{StablePrefix: "runtime system"})
-
-	if got := manager.MessageListDump(); !reflect.DeepEqual(got, before) {
-		t.Fatalf("SetSystemPrompt() mutated history without leading system:\nwant=%#v\ngot=%#v", before, got)
-	}
-	modelMessages := manager.ConvertToStandardMessageList()
-	if len(modelMessages) != 2 || modelMessages[0].Role != llms.ChatMessageTypeSystem || modelMessages[1].Role != llms.ChatMessageTypeHuman {
-		t.Fatalf("model messages = %#v, want synthesized system then user", modelMessages)
-	}
-	if got := standardMessageText(modelMessages[0]); got != "runtime system" {
-		t.Fatalf("model system prompt = %q, want runtime system", got)
-	}
-}
-
 func TestConvertToStandardMessageListLoadsAttachmentFromFilePath(t *testing.T) {
 	manager := newTestContextManager(t)
 	filePath := filepath.Join(t.TempDir(), "manual.png")

@@ -34,4 +34,4 @@ The web interface allows:
 - Testing voice recognition and synthesis
 - Restarting the Agent service
 
-The header switch saves only the top-level `locale` through `PUT /api/config/locale`. The UI updates immediately and rolls back if persistence fails. The last confirmed value is cached in `localStorage` for first paint, but `GET /api/config` remains authoritative. `locale` is intentionally separate from `[stt].language`, which only configures speech recognition.
+The header switch saves only the top-level `locale` through `PUT /api/config/locale`. The UI updates immediately and rolls back if persistence fails. The last confirmed value is cached in `localStorage` for first paint, but `GET /api/config` remains authoritative. The Agent restart creates a new context session when the locale-specific system prompt changes; it does not rewrite the previous session. `locale` is intentionally separate from `[stt].language`, which only configures speech recognition.
