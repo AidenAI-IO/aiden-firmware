@@ -471,6 +471,7 @@ func NewRuntimeWithDeps(cfg Config, models model.ModelResolver, memories *Memory
 		environmentBridge:  environmentBridge,
 		stateManager:       statemanager.NewStateManager(),
 	}
+	rt.syncResponseLanguageState()
 	// Use the active memory session ID for raw HTTP log partitioning.
 	if modelManager, ok := models.(*ModelManager); ok {
 		modelManager.SetRawHTTPLogSessionIDProvider(func() string {
@@ -1127,6 +1128,7 @@ func (r *Runtime) getStateHook() contextmanager.AppendMessageHook {
 				Message: &message,
 			}
 		}
+		r.syncResponseLanguageState()
 		entries := r.stateManager.GetAllStates()
 		// if no state entries, just skip
 		if len(entries) == 0 {
@@ -1150,11 +1152,22 @@ func (r *Runtime) getStateHook() contextmanager.AppendMessageHook {
 			Content: tagged,
 		}
 		return contextmanager.AppendMessageHookResult{
-			Before:  []contextmanager.Message{stateMessage},
 			Message: &message,
-			After:   []contextmanager.Message{},
+			After:   []contextmanager.Message{stateMessage},
 		}
 	}
+}
+
+func (r *Runtime) syncResponseLanguageState() {
+	if r == nil {
+		return
+	}
+	if r.stateManager == nil {
+		r.stateManager = statemanager.NewStateManager()
+	}
+	locale, language := responseLanguageState(r.config.LocaleOrDefault())
+	r.stateManager.SetState(responseLocaleStateKey, locale)
+	r.stateManager.SetState(responseLanguageStateKey, language)
 }
 
 func (r *Runtime) beginSession(ctx context.Context, req SessionBeginRequest) (SessionBeginResult, error) {

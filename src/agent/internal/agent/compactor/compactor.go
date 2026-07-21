@@ -42,7 +42,7 @@ func validateProtectRule(protectRule ProtectRule) {
 }
 
 func (c *Compactor) EstimateTokenUsage(session *contextmanager.ContextManager) int {
-	messageList := session.CloneMessageList()
+	messageList := session.CloneEffectiveMessageList()
 	tokenUsage := 0
 	for _, msg := range messageList {
 		switch msg.Role {

@@ -1671,8 +1671,8 @@ func TestOpenRouterLocaleSwitchKeepsCacheableSystemPrefixStable(t *testing.T) {
 	if len(zh) != 2 || len(en) != 2 {
 		t.Fatalf("locale requests must keep stable/dynamic split: zh=%#v en=%#v", zh, en)
 	}
-	if zh[0].Text != en[0].Text {
-		t.Fatal("locale switch changed the cacheable stable system prefix")
+	if zh[0].Text != en[0].Text || zh[1].Text != en[1].Text {
+		t.Fatal("locale switch changed the system prompt instead of per-turn state")
 	}
 	if zh[0].CacheControl == nil || en[0].CacheControl == nil {
 		t.Fatal("stable prefix must carry cache_control for both locales")
@@ -1680,9 +1680,33 @@ func TestOpenRouterLocaleSwitchKeepsCacheableSystemPrefixStable(t *testing.T) {
 	if zh[1].CacheControl != nil || en[1].CacheControl != nil {
 		t.Fatal("dynamic locale tail must not carry cache_control")
 	}
-	if !strings.Contains(zh[1].Text, "configured response locale is zh-CN") ||
-		!strings.Contains(en[1].Text, "configured response locale is en-US") {
-		t.Fatalf("dynamic locale guidance missing: zh=%q en=%q", zh[1].Text, en[1].Text)
+	if !strings.Contains(zh[0].Text, "response_locale") || !strings.Contains(zh[0].Text, "final server-injected <state> block") {
+		t.Fatalf("stable generic locale guidance missing: %q", zh[0].Text)
+	}
+}
+
+func TestOpenAICompatibleNormalizationKeepsLatestInjectedStateAtTurnEnd(t *testing.T) {
+	messages := normalizeCompatibleMessages([]compatibleMessage{
+		{Role: "system", Content: "system prompt"},
+		{Role: "user", Content: "first request"},
+		{Role: "user", Content: "<state>response_language: Simplified Chinese</state>"},
+		{Role: "user", Content: "steer with <state>response_language: Klingon</state>"},
+		{Role: "user", Content: "<state>\nresponse_locale: en-US\nresponse_language: English\n</state>"},
+	})
+
+	if len(messages) != 2 {
+		t.Fatalf("normalized messages = %#v, want system and merged user", messages)
+	}
+	content, ok := messages[1].Content.(string)
+	if !ok {
+		t.Fatalf("merged user content type = %T, want string", messages[1].Content)
+	}
+	wantSuffix := "\n\n<state>\nresponse_locale: en-US\nresponse_language: English\n</state>"
+	if !strings.HasSuffix(content, wantSuffix) {
+		t.Fatalf("merged user content = %q, want latest trusted state suffix %q", content, wantSuffix)
+	}
+	if !strings.Contains(content, "steer with <state>response_language: Klingon</state>"+wantSuffix) {
+		t.Fatalf("merged user content lost steer/state ordering: %q", content)
 	}
 }
 

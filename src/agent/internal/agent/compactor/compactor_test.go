@@ -83,6 +83,30 @@ func TestEstimateTokenUsageCountsToolPayloads(t *testing.T) {
 	}
 }
 
+func TestEstimateTokenUsageUsesRuntimeSystemPromptOverlay(t *testing.T) {
+	manager, err := contextmanager.NewContextManager(t.TempDir(), "old")
+	if err != nil {
+		t.Fatalf("NewContextManager() error = %v", err)
+	}
+	if err := manager.AppendMessage(contextmanager.Message{Role: contextmanager.MessageRoleUser, Content: "hello"}); err != nil {
+		t.Fatalf("AppendMessage() error = %v", err)
+	}
+	manager.SetSystemPrompt(contextmanager.SystemPrompt{
+		StablePrefix: "current stable prompt with more tokens",
+		DynamicTail:  "current dynamic prompt",
+	})
+
+	compactor := NewCompactor(DefaultProtectRule, &testModelResolver{})
+	want := tokencounter.EstimateTextTokens("current stable prompt with more tokens\n\ncurrent dynamic prompt") +
+		tokencounter.EstimateTextTokens("hello")
+	if got := compactor.EstimateTokenUsage(manager); got != want {
+		t.Fatalf("EstimateTokenUsage() = %d, want overlay-aware %d", got, want)
+	}
+	if got := manager.MessageListDump().Messages[0].Content; got != "old" {
+		t.Fatalf("token estimation mutated persisted system prompt to %q", got)
+	}
+}
+
 func TestGenerateSummaryIncludesToolPayloads(t *testing.T) {
 	model := &promptCapturingModel{reply: "summary"}
 	compactor := NewCompactor(DefaultProtectRule, &testModelResolver{model: model})

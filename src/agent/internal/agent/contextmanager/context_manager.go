@@ -55,7 +55,7 @@ type Message struct {
 
 // SystemPrompt keeps the cacheable prompt prefix separate from the small
 // runtime-dependent tail. Model adapters can cache the stable first part while
-// locale, date, and deployment overrides change independently.
+// date and deployment overrides change independently.
 type SystemPrompt struct {
 	StablePrefix string
 	DynamicTail  string
@@ -117,25 +117,16 @@ type ContextManager struct {
 	sessionFolder     string
 }
 
-// SetSystemPrompt replaces the leading system message in memory and records
-// its content parts for model conversion. Session history stays intact, while
-// a restarted runtime immediately uses its current prompt configuration.
+// SetSystemPrompt records a runtime-only prompt overlay for model conversion.
+// It deliberately leaves the persisted session append-only.
 func (c *ContextManager) SetSystemPrompt(prompt SystemPrompt) {
 	if c == nil {
 		return
 	}
 	parts := prompt.Parts()
-	joined := strings.Join(parts, "\n\n")
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.systemPromptParts = append([]string(nil), parts...)
-	if len(c.messageList) > 0 && c.messageList[0].Role == MessageRoleSystem {
-		c.messageList[0].Content = joined
-		return
-	}
-	if joined != "" {
-		c.messageList = append([]Message{{Role: MessageRoleSystem, Content: joined}}, c.messageList...)
-	}
 }
 
 // LoadContextManagerFromSessionID loads a context manager from the session folder
@@ -229,6 +220,27 @@ func (c *ContextManager) CloneMessageList() []Message {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return cloneMessages(c.messageList)
+}
+
+// CloneEffectiveMessageList returns the model-facing text view while preserving
+// the original context message types. Runtime prompt overlays are applied only
+// to the clone so token accounting can match model conversion without mutating
+// the append-only session.
+func (c *ContextManager) CloneEffectiveMessageList() []Message {
+	c.mu.RLock()
+	messages := cloneMessages(c.messageList)
+	parts := append([]string(nil), c.systemPromptParts...)
+	c.mu.RUnlock()
+
+	if len(parts) == 0 {
+		return messages
+	}
+	systemMessage := Message{Role: MessageRoleSystem, Content: strings.Join(parts, "\n\n")}
+	if len(messages) > 0 && messages[0].Role == MessageRoleSystem {
+		messages[0] = systemMessage
+		return messages
+	}
+	return append([]Message{systemMessage}, messages...)
 }
 
 func (c *ContextManager) GetSessionFolder() string {
@@ -383,7 +395,17 @@ func (c *ContextManager) ConvertToStandardMessageList() []llms.MessageContent {
 }
 
 func convertToStandardMessageList(messages []Message, systemPromptParts []string) []llms.MessageContent {
-	standardMessageList := make([]llms.MessageContent, len(messages))
+	messageOffset := 0
+	if len(systemPromptParts) > 0 && (len(messages) == 0 || messages[0].Role != MessageRoleSystem) {
+		messageOffset = 1
+	}
+	standardMessageList := make([]llms.MessageContent, len(messages)+messageOffset)
+	if messageOffset == 1 {
+		standardMessageList[0] = llms.MessageContent{
+			Role:  llms.ChatMessageTypeSystem,
+			Parts: textParts(systemPromptParts),
+		}
+	}
 	for i, message := range messages {
 		newMessage := llms.MessageContent{
 			Role:  message.Role.ToStandardRole(),
@@ -401,13 +423,11 @@ func convertToStandardMessageList(messages []Message, systemPromptParts []string
 					Content:    result.Content,
 				})
 			}
-			standardMessageList[i] = newMessage
+			standardMessageList[i+messageOffset] = newMessage
 			continue
 		}
 		if i == 0 && message.Role == MessageRoleSystem && len(systemPromptParts) > 0 {
-			for _, part := range systemPromptParts {
-				newMessage.Parts = append(newMessage.Parts, llms.TextPart(part))
-			}
+			newMessage.Parts = append(newMessage.Parts, textParts(systemPromptParts)...)
 		} else if content := strings.TrimSpace(message.Content); content != "" {
 			newMessage.Parts = append(newMessage.Parts, llms.TextPart(content))
 		}
@@ -440,9 +460,17 @@ func convertToStandardMessageList(messages []Message, systemPromptParts []string
 			}
 			newMessage.Parts = append(newMessage.Parts, llms.BinaryPart(attachment.MIMEType, data))
 		}
-		standardMessageList[i] = newMessage
+		standardMessageList[i+messageOffset] = newMessage
 	}
 	return standardMessageList
+}
+
+func textParts(parts []string) []llms.ContentPart {
+	result := make([]llms.ContentPart, 0, len(parts))
+	for _, part := range parts {
+		result = append(result, llms.TextPart(part))
+	}
+	return result
 }
 
 func attachmentOmittedMessage(mimeType string, err error) string {
