@@ -78,7 +78,7 @@ func (e *LLMExecutor) GenerateContent(ctx context.Context, options ...llms.CallO
 	if err != nil {
 		return nil, MarkLLMCallError(err)
 	}
-	if len(contentResponse.Choices) == 0 || contentResponse.Choices[0] == nil {
+	if contentResponse == nil || len(contentResponse.Choices) == 0 || contentResponse.Choices[0] == nil {
 		return contentResponse, MarkLLMCallError(fmt.Errorf("model returned no choices"))
 	}
 	return contentResponse, nil

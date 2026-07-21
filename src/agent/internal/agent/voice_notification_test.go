@@ -12,7 +12,7 @@ import (
 func TestVoiceNotificationManagerDeliversPersistentTailOncePerSeverity(t *testing.T) {
 	now := time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)
 	manager := NewVoiceNotificationManager(
-		VoiceNotificationsConfig{},
+		DefaultConfig().VoiceNotifications,
 		WithVoiceNotificationClock(func() time.Time { return now }),
 	)
 
@@ -55,7 +55,7 @@ func TestVoiceNotificationManagerDeliversPersistentTailOncePerSeverity(t *testin
 }
 
 func TestVoiceNotificationManagerResolvedEndsActiveCycle(t *testing.T) {
-	manager := NewVoiceNotificationManager(VoiceNotificationsConfig{})
+	manager := NewVoiceNotificationManager(DefaultConfig().VoiceNotifications)
 	ctx := context.Background()
 
 	if err := manager.Publish(ctx, VoiceNotificationEvent{
@@ -100,7 +100,7 @@ func TestVoiceNotificationManagerResolvedEndsActiveCycle(t *testing.T) {
 }
 
 func TestVoiceNotificationManagerPublishValidatesEventIdentity(t *testing.T) {
-	manager := NewVoiceNotificationManager(VoiceNotificationsConfig{})
+	manager := NewVoiceNotificationManager(DefaultConfig().VoiceNotifications)
 	tests := []struct {
 		name  string
 		event VoiceNotificationEvent
@@ -123,7 +123,7 @@ func TestVoiceNotificationManagerPublishValidatesEventIdentity(t *testing.T) {
 }
 
 func TestVoiceNotificationManagerKeepsSeverityUpgradePendingDuringPlayback(t *testing.T) {
-	manager := NewVoiceNotificationManager(VoiceNotificationsConfig{})
+	manager := NewVoiceNotificationManager(DefaultConfig().VoiceNotifications)
 	ctx := context.Background()
 
 	if err := manager.Publish(ctx, VoiceNotificationEvent{Code: "storage", Severity: SeverityWarning, State: VoiceNotificationActive, DedupeKey: "storage:device"}); err != nil {
@@ -157,7 +157,7 @@ func TestVoiceNotificationManagerKeepsSeverityUpgradePendingDuringPlayback(t *te
 }
 
 func TestVoiceNotificationManagerDoesNotDuplicateDowngradedAlertDuringPlayback(t *testing.T) {
-	manager := NewVoiceNotificationManager(VoiceNotificationsConfig{})
+	manager := NewVoiceNotificationManager(DefaultConfig().VoiceNotifications)
 	ctx := context.Background()
 
 	if err := manager.Publish(ctx, VoiceNotificationEvent{Code: "storage", Severity: SeverityCritical, State: VoiceNotificationActive, DedupeKey: "storage:device"}); err != nil {
@@ -184,7 +184,7 @@ func TestVoiceNotificationManagerDoesNotDuplicateDowngradedAlertDuringPlayback(t
 }
 
 func TestVoiceNotificationManagerRetriesFailedOrCanceledDeliveryButNotHeartbeat(t *testing.T) {
-	manager := NewVoiceNotificationManager(VoiceNotificationsConfig{})
+	manager := NewVoiceNotificationManager(DefaultConfig().VoiceNotifications)
 	ctx := context.Background()
 	event := VoiceNotificationEvent{Code: "storage", Severity: SeverityWarning, State: VoiceNotificationActive, DedupeKey: "storage:device"}
 	if err := manager.Publish(ctx, event); err != nil {
@@ -215,7 +215,7 @@ func TestVoiceNotificationManagerRetriesFailedOrCanceledDeliveryButNotHeartbeat(
 }
 
 func TestVoiceNotificationManagerTurnFailureReplacesResponseWithoutConsumingPending(t *testing.T) {
-	manager := NewVoiceNotificationManager(VoiceNotificationsConfig{})
+	manager := NewVoiceNotificationManager(DefaultConfig().VoiceNotifications)
 	ctx := context.Background()
 	if err := manager.Publish(ctx, VoiceNotificationEvent{Code: "storage", Severity: SeverityWarning, State: VoiceNotificationActive, DedupeKey: "storage:device"}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
@@ -243,10 +243,11 @@ func TestVoiceNotificationManagerTurnFailureReplacesResponseWithoutConsumingPend
 
 func TestVoiceNotificationManagerLeaseExpiresAndHeartbeatRenewsIt(t *testing.T) {
 	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	config := DefaultConfig().VoiceNotifications
+	config.Expiration.DefaultTTLSeconds = 10
+	config.Expiration.CodeTTLSeconds = nil
 	manager := NewVoiceNotificationManager(
-		VoiceNotificationsConfig{
-			Expiration: VoiceNotificationExpirationConfig{DefaultTTLSeconds: 10},
-		},
+		config,
 		WithVoiceNotificationClock(func() time.Time { return now }),
 	)
 	ctx := context.Background()
@@ -282,7 +283,7 @@ func TestVoiceNotificationManagerLeaseExpiresAndHeartbeatRenewsIt(t *testing.T) 
 }
 
 func TestVoiceNotificationManagerSelectsAtMostOneHighestSeverityPending(t *testing.T) {
-	manager := NewVoiceNotificationManager(VoiceNotificationsConfig{})
+	manager := NewVoiceNotificationManager(DefaultConfig().VoiceNotifications)
 	ctx := context.Background()
 	for _, event := range []VoiceNotificationEvent{
 		{Code: "storage", Severity: SeverityWarning, State: VoiceNotificationActive, DedupeKey: "storage:secondary"},
@@ -310,9 +311,9 @@ func TestVoiceNotificationManagerSelectsAtMostOneHighestSeverityPending(t *testi
 
 func TestVoiceNotificationManagerKeepsPendingWhenTailCannotBeAppended(t *testing.T) {
 	disabled := false
-	disabledManager := NewVoiceNotificationManager(VoiceNotificationsConfig{
-		ResponseTail: VoiceNotificationResponseTailConfig{Enabled: &disabled},
-	})
+	disabledConfig := DefaultConfig().VoiceNotifications
+	disabledConfig.ResponseTail.Enabled = &disabled
+	disabledManager := NewVoiceNotificationManager(disabledConfig)
 	ctx := context.Background()
 	event := VoiceNotificationEvent{Code: "storage", Severity: SeverityWarning, State: VoiceNotificationActive, DedupeKey: "storage:device"}
 	if err := disabledManager.Publish(ctx, event); err != nil {
@@ -324,7 +325,7 @@ func TestVoiceNotificationManagerKeepsPendingWhenTailCannotBeAppended(t *testing
 		t.Fatalf("disabled response tail changed reply: %#v", disabledTail)
 	}
 
-	manager := NewVoiceNotificationManager(VoiceNotificationsConfig{})
+	manager := NewVoiceNotificationManager(DefaultConfig().VoiceNotifications)
 	if err := manager.Publish(ctx, event); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
@@ -339,8 +340,26 @@ func TestVoiceNotificationManagerKeepsPendingWhenTailCannotBeAppended(t *testing
 	}
 }
 
+func TestVoiceNotificationManagerMaxItemsZeroDisablesTailWithoutConsumingPending(t *testing.T) {
+	config := DefaultConfig().VoiceNotifications
+	config.ResponseTail.MaxItems = 0
+	manager := NewVoiceNotificationManager(config)
+	ctx := context.Background()
+	event := VoiceNotificationEvent{Code: "storage", Severity: SeverityWarning, State: VoiceNotificationActive, DedupeKey: "storage:device"}
+	if err := manager.Publish(ctx, event); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	prepared := manager.PrepareSpokenText(ctx, SpokenTextInput{ResponseText: "正常回复。", TailAppendable: true})
+	if prepared.Mode != SpokenTextModeNormal || prepared.Text != "正常回复。" || prepared.DeliveryToken != "" {
+		t.Fatalf("max_items=0 changed or consumed reply: %#v", prepared)
+	}
+}
+
 func TestVoiceNotificationManagerCapsActiveRecords(t *testing.T) {
-	manager := NewVoiceNotificationManager(VoiceNotificationsConfig{MaxPending: 1})
+	config := DefaultConfig().VoiceNotifications
+	config.MaxPending = 1
+	manager := NewVoiceNotificationManager(config)
 	ctx := context.Background()
 	first := VoiceNotificationEvent{Code: "storage", Severity: SeverityWarning, State: VoiceNotificationActive, DedupeKey: "storage:device"}
 	second := VoiceNotificationEvent{Code: "storage", Severity: SeverityCritical, State: VoiceNotificationActive, DedupeKey: "storage:secondary"}
@@ -381,11 +400,11 @@ func TestRuntimeInjectsResolvedVoiceNotificationLocale(t *testing.T) {
 }
 
 func TestVoiceNotificationManagerLocaleInjectionOverridesLegacyConfig(t *testing.T) {
+	config := DefaultConfig().VoiceNotifications
+	config.DefaultLocale = "zh-CN"
+	config.ResponseTail.MaxTextChars = 100
 	manager := NewVoiceNotificationManager(
-		VoiceNotificationsConfig{
-			DefaultLocale: "zh-CN",
-			ResponseTail:  VoiceNotificationResponseTailConfig{MaxTextChars: 100},
-		},
+		config,
 		WithVoiceNotificationLocale("en-US"),
 	)
 	ctx := context.Background()
@@ -547,7 +566,7 @@ func TestRuntimePrepareSpokenTextPreservesRelatedCodes(t *testing.T) {
 }
 
 func TestVoiceNotificationManagerPrefersTaskRelatedPolicy(t *testing.T) {
-	manager := NewVoiceNotificationManager(VoiceNotificationsConfig{})
+	manager := NewVoiceNotificationManager(DefaultConfig().VoiceNotifications)
 	if err := manager.RegisterPersistentText("battery", SeverityWarning, "zh-CN", "另外提醒一下，设备电量较低。"); err != nil {
 		t.Fatalf("RegisterPersistentText() error = %v", err)
 	}

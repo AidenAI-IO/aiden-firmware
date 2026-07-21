@@ -897,7 +897,7 @@ TEST_CASE("config_web: POST /api/config preserves voice notification settings") 
         "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
         "\"voice_notifications\":{\"enabled\":false,\"default_locale\":\"en-US\",\"max_pending\":6,"
         "\"response_tail\":{\"enabled\":false,\"max_items\":1,\"max_text_chars\":72},"
-        "\"expiration\":{\"default_ttl_seconds\":120,\"code_ttl_seconds\":{\"storage\":900}}},"
+        "\"expiration\":{\"default_ttl_seconds\":120,\"code_ttl_seconds\":{\"network\":123}}},"
         "\"hid\":{\"pointer_mode\":\"absolute\"},"
         "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
     HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
@@ -912,7 +912,39 @@ TEST_CASE("config_web: POST /api/config preserves voice notification settings") 
     CHECK(saved.find("[voice_notifications.expiration]") != std::string::npos);
     CHECK(saved.find("default_ttl_seconds = 120") != std::string::npos);
     CHECK(saved.find("[voice_notifications.expiration.code_ttl_seconds]") != std::string::npos);
-    CHECK(saved.find("storage = 900") != std::string::npos);
+    CHECK(saved.find("network = 123") != std::string::npos);
+    CHECK(saved.find("storage = 900") == std::string::npos);
+}
+
+TEST_CASE("config_web: POST /api/config rejects invalid voice notification integers and TTL keys") {
+    StubEnv env;
+    auto handle = start_server(env);
+
+    struct InvalidCase {
+        const char* name;
+        const char* voice_notifications;
+        const char* expected_error;
+    };
+    const InvalidCase cases[] = {
+        {"max_pending", "{\"max_pending\":0.5}", "non-negative integer"},
+        {"max_items", "{\"response_tail\":{\"max_items\":0.5}}", "non-negative integer"},
+        {"max_text_chars", "{\"response_tail\":{\"max_text_chars\":0.5}}", "non-negative integer"},
+        {"default_ttl_seconds", "{\"expiration\":{\"default_ttl_seconds\":0.5}}", "non-negative integer"},
+        {"code_ttl_seconds", "{\"expiration\":{\"code_ttl_seconds\":{\"network\":0.5}}}", "non-negative integer"},
+        {"invalid_ttl_key", "{\"expiration\":{\"code_ttl_seconds\":{\"bad key\":123}}}", "bare TOML key"},
+    };
+
+    for (const auto& test_case : cases) {
+        const std::string body =
+            std::string("{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},") +
+            "\"voice_notifications\":" + test_case.voice_notifications + "," +
+            "\"hid\":{\"pointer_mode\":\"absolute\"}," +
+            "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+        HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
+        CHECK_MESSAGE(resp.status == 400, test_case.name << ": status=" << resp.status);
+        CHECK_MESSAGE(resp.body.find(test_case.expected_error) != std::string::npos,
+                      test_case.name << ": body=" << resp.body);
+    }
 }
 
 TEST_CASE("config_web: POST /api/config writes ota section") {

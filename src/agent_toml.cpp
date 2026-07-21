@@ -74,6 +74,18 @@ std::string quote(const std::string& s) {
     return out;
 }
 
+bool is_valid_bare_toml_key(const std::string& key) {
+    if (key.empty()) return false;
+    for (char c : key) {
+        bool valid = (c >= 'a' && c <= 'z') ||
+                     (c >= 'A' && c <= 'Z') ||
+                     (c >= '0' && c <= '9') ||
+                     c == '_' || c == '-';
+        if (!valid) return false;
+    }
+    return true;
+}
+
 bool parse_int(const std::string& raw, int* out, std::string* err) {
     if (raw.empty()) {
         if (err) *err = "empty integer";
@@ -763,6 +775,13 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
 
     out << "[voice_notifications.expiration.code_ttl_seconds]\n";
     for (const auto& item : cfg.voice_notifications.expiration.code_ttl_seconds) {
+        if (!is_valid_bare_toml_key(item.first)) {
+            if (error) {
+                *error = "invalid voice notification TTL code '" + item.first
+                       + "': expected a bare TOML key";
+            }
+            return false;
+        }
         emit_int(out, item.first.c_str(), item.second);
     }
     out << "\n";

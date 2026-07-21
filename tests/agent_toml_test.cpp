@@ -275,12 +275,19 @@ TEST_CASE("agent_toml round-trip preserves voice notification settings") {
     cfg.voice_notifications.response_tail.max_items = 1;
     cfg.voice_notifications.response_tail.max_text_chars = 72;
     cfg.voice_notifications.expiration.default_ttl_seconds = 120;
-    cfg.voice_notifications.expiration.code_ttl_seconds["storage"] = 900;
+    cfg.voice_notifications.expiration.code_ttl_seconds.clear();
+    cfg.voice_notifications.expiration.code_ttl_seconds["network"] = 123;
 
     std::string path = make_temp_path("voice_notifications.toml");
     std::string err;
     REQUIRE(aiden::save_agent_toml(path.c_str(), cfg, &err));
     REQUIRE(err.empty());
+
+    std::ifstream saved_in(path);
+    REQUIRE(saved_in.good());
+    std::string saved((std::istreambuf_iterator<char>(saved_in)), std::istreambuf_iterator<char>());
+    CHECK(saved.find("network = 123") != std::string::npos);
+    CHECK(saved.find("storage = 900") == std::string::npos);
 
     aiden::AgentToml loaded;
     REQUIRE(aiden::load_agent_toml(path.c_str(), loaded, &err));
@@ -292,8 +299,19 @@ TEST_CASE("agent_toml round-trip preserves voice notification settings") {
     CHECK(loaded.voice_notifications.response_tail.max_items == 1);
     CHECK(loaded.voice_notifications.response_tail.max_text_chars == 72);
     CHECK(loaded.voice_notifications.expiration.default_ttl_seconds == 120);
-    REQUIRE(loaded.voice_notifications.expiration.code_ttl_seconds.size() == 1);
-    CHECK(loaded.voice_notifications.expiration.code_ttl_seconds.at("storage") == 900);
+    CHECK(loaded.voice_notifications.expiration.code_ttl_seconds.at("network") == 123);
+
+    std::remove(path.c_str());
+}
+
+TEST_CASE("agent_toml rejects invalid voice notification TTL code keys") {
+    aiden::AgentToml cfg;
+    cfg.voice_notifications.expiration.code_ttl_seconds["bad key"] = 123;
+
+    std::string path = make_temp_path("invalid_voice_notification_ttl_key.toml");
+    std::string err;
+    CHECK_FALSE(aiden::save_agent_toml(path.c_str(), cfg, &err));
+    CHECK(err.find("expected a bare TOML key") != std::string::npos);
 
     std::remove(path.c_str());
 }

@@ -31,7 +31,9 @@
 
 #include <iostream>
 #include <algorithm>
+#include <cmath>
 #include <functional>
+#include <limits>
 #include <map>
 #include <set>
 #include <sstream>
@@ -467,6 +469,33 @@ bool config_schema_error(std::string* error,
     return false;
 }
 
+bool is_valid_bare_toml_key(const std::string& key) {
+    if (key.empty()) return false;
+    for (char c : key) {
+        bool valid = (c >= 'a' && c <= 'z') ||
+                     (c >= 'A' && c <= 'Z') ||
+                     (c >= '0' && c <= '9') ||
+                     c == '_' || c == '-';
+        if (!valid) return false;
+    }
+    return true;
+}
+
+bool validate_non_negative_json_integer(cJSON* item,
+                                        const std::string& path,
+                                        std::string* error) {
+    if (!item) return true;
+    double value = item->valuedouble;
+    if (!json_is_number(item) || !std::isfinite(value) || value < 0.0 ||
+        std::floor(value) != value || value > std::numeric_limits<int>::max()) {
+        if (error) {
+            *error = "agent config invalid field " + path + ": expected non-negative integer";
+        }
+        return false;
+    }
+    return true;
+}
+
 std::string config_field_path(const char* section, const char* key) {
     return std::string(section) + "." + key;
 }
@@ -773,11 +802,27 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
 
     cJSON* voice_notifications = cJSON_GetObjectItem(root, "voice_notifications");
     if (json_is_object(voice_notifications)) {
+        if (!validate_non_negative_json_integer(
+                cJSON_GetObjectItem(voice_notifications, "max_pending"),
+                "voice_notifications.max_pending",
+                error)) {
+            return false;
+        }
         cJSON* response_tail = cJSON_GetObjectItem(voice_notifications, "response_tail");
         if (json_is_object(response_tail)) {
             if (!validate_config_field_type(response_tail, "voice_notifications.response_tail", "enabled", CONFIG_FIELD_BOOL, error) ||
                 !validate_config_field_type(response_tail, "voice_notifications.response_tail", "max_items", CONFIG_FIELD_NUMBER, error) ||
                 !validate_config_field_type(response_tail, "voice_notifications.response_tail", "max_text_chars", CONFIG_FIELD_NUMBER, error)) {
+                return false;
+            }
+            if (!validate_non_negative_json_integer(
+                    cJSON_GetObjectItem(response_tail, "max_items"),
+                    "voice_notifications.response_tail.max_items",
+                    error) ||
+                !validate_non_negative_json_integer(
+                    cJSON_GetObjectItem(response_tail, "max_text_chars"),
+                    "voice_notifications.response_tail.max_text_chars",
+                    error)) {
                 return false;
             }
         }
@@ -788,15 +833,35 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
                 !validate_config_field_type(expiration, "voice_notifications.expiration", "code_ttl_seconds", CONFIG_FIELD_OBJECT, error)) {
                 return false;
             }
+            if (!validate_non_negative_json_integer(
+                    cJSON_GetObjectItem(expiration, "default_ttl_seconds"),
+                    "voice_notifications.expiration.default_ttl_seconds",
+                    error)) {
+                return false;
+            }
             cJSON* code_ttl_seconds = cJSON_GetObjectItem(expiration, "code_ttl_seconds");
             if (json_is_object(code_ttl_seconds)) {
                 for (cJSON* item = code_ttl_seconds->child; item; item = item->next) {
+                    const std::string code = item->string ? item->string : "";
+                    if (!is_valid_bare_toml_key(code)) {
+                        if (error) {
+                            *error = "agent config invalid field voice_notifications.expiration.code_ttl_seconds."
+                                   + code + ": expected bare TOML key";
+                        }
+                        return false;
+                    }
                     if (!json_is_number(item)) {
                         return config_schema_error(
                             error,
-                            std::string("voice_notifications.expiration.code_ttl_seconds.") + item->string,
+                            std::string("voice_notifications.expiration.code_ttl_seconds.") + code,
                             "number",
                             item);
+                    }
+                    if (!validate_non_negative_json_integer(
+                            item,
+                            std::string("voice_notifications.expiration.code_ttl_seconds.") + code,
+                            error)) {
+                        return false;
                     }
                 }
             }

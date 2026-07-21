@@ -454,7 +454,7 @@ func (m *VoiceNotificationManager) PrepareSpokenText(_ context.Context, input Sp
 		result.Mode = SpokenTextModeReplacement
 		return result
 	}
-	if !m.config.ResponseTail.EnabledOrDefault() || !input.TailAppendable || strings.TrimSpace(input.ResponseText) == "" {
+	if !m.config.ResponseTail.EnabledOrDefault() || m.config.ResponseTail.MaxItems == 0 || !input.TailAppendable || strings.TrimSpace(input.ResponseText) == "" {
 		return result
 	}
 

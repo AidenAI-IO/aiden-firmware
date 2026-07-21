@@ -60,8 +60,12 @@ Each active cycle is isolated by an internal cycle ID:
 Final reply paths call `PrepareSpokenText` immediately before TTS. Selecting a tail marks it in flight and returns a delivery token. The caller must report the playback result with the same token:
 
 ```go
-prepared := runtime.PrepareSpokenText(ctx, responseText, turnErr, tailAppendable)
-err := dialog.Speak(ctx, prepared.Text, nil)
+prepared := runtime.PrepareSpokenText(ctx, agent.SpokenTextInput{
+    ResponseText:   responseText,
+    TurnFailure:    turnFailure,
+    TailAppendable: tailAppendable,
+})
+err := dialog.SpeakFinal(ctx, prepared.Text, nil)
 runtime.ReportSpokenTextDelivery(prepared.DeliveryToken, err)
 ```
 
