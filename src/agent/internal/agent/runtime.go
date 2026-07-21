@@ -447,7 +447,7 @@ func NewRuntimeWithDeps(cfg Config, models model.ModelResolver, memories *Memory
 				}
 			})
 			longTermStore = memories.longTerm
-		} else if longTermStore == nil {
+		} else {
 			// No manager provided, create a standalone store
 			storeOpts := []LongTermMemoryOption{WithLifecycleDir(filepath.Join(memoryDir, "lifecycle"))}
 			longTermStore = NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"), storeOpts...)
