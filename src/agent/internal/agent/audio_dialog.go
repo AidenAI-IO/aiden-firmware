@@ -627,7 +627,7 @@ func (d *AudioDialog) ProcessUtterance(ctx context.Context, utterance []int16, r
 		if !result.SpeechStreamed {
 			prepared := runtime.PrepareSpokenText(ctx, SpokenTextInput{TurnFailure: result.TurnFailure})
 			if prepared.Text != "" {
-				if speakErr := d.Speak(ctx, prepared.Text, nil); speakErr != nil {
+				if speakErr := d.SpeakFinal(ctx, prepared.Text, nil); speakErr != nil {
 					log.Printf("[error] failure replacement TTS failed: %v", speakErr)
 				}
 			}
@@ -641,7 +641,7 @@ func (d *AudioDialog) ProcessUtterance(ctx context.Context, utterance []int16, r
 		ResponseText:   result.SpokenTextForConfig(d.config),
 		TailAppendable: d.CanSpeakFinalText(),
 	})
-	err = d.Speak(ctx, prepared.Text, nil)
+	err = d.SpeakFinal(ctx, prepared.Text, nil)
 	runtime.ReportSpokenTextDelivery(prepared.DeliveryToken, err)
 	return err
 }
@@ -1100,17 +1100,21 @@ func (d *AudioDialog) SpeakToolContent(content string) {
 	}
 	// Detached from the agent turn context so tool TTS is not cut off when
 	// runtime.Run returns or the parent context is cancelled.
-	if err := d.speak(context.Background(), content, nil, toolContentSpeechTimeout); err != nil {
+	if err := d.speak(context.Background(), content, nil, toolContentSpeechTimeout, false); err != nil {
 		log.Printf("[error] Tool content TTS failed: %v", err)
 	}
 }
 
 func (d *AudioDialog) Speak(ctx context.Context, text string, interrupt <-chan struct{}) error {
-	return d.speak(ctx, text, interrupt, 0)
+	return d.speak(ctx, text, interrupt, 0, false)
+}
+
+func (d *AudioDialog) SpeakFinal(ctx context.Context, text string, interrupt <-chan struct{}) error {
+	return d.speak(ctx, text, interrupt, 0, true)
 }
 
 func (d *AudioDialog) CanSpeakFinalText() bool {
-	return d != nil && d.ttsManager != nil && d.audioClient != nil
+	return d != nil && d.audioClient != nil && (d.ttsManager != nil || canPlayTTSUnavailableFallback(d.config))
 }
 
 func (d *AudioDialog) ConfigureRuntimeTools(ctx context.Context, runtime *Runtime) context.Context {
@@ -1128,7 +1132,7 @@ func (d *AudioDialog) ConfigureRuntimeTools(ctx context.Context, runtime *Runtim
 	})
 }
 
-func (d *AudioDialog) speak(ctx context.Context, text string, interrupt <-chan struct{}, timeoutAfterLock time.Duration) error {
+func (d *AudioDialog) speak(ctx context.Context, text string, interrupt <-chan struct{}, timeoutAfterLock time.Duration, allowFallback bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -1147,52 +1151,73 @@ func (d *AudioDialog) speak(ctx context.Context, text string, interrupt <-chan s
 			}
 		}()
 	}
-	// Speak response if TTS is available
-	if d.ttsManager != nil && text != "" {
-		if err := baseCtx.Err(); err != nil {
-			return err
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	log.Printf("[reply] %s\n", text)
+	if d.ttsManager == nil && !allowFallback {
+		return nil
+	}
+	if d.audioClient == nil {
+		if allowFallback {
+			return fmt.Errorf("audio service is not configured")
 		}
-		outputCtx, cancelOutput := context.WithCancel(baseCtx)
-		output := newActiveTTSOutput(cancelOutput)
-		unregisterOutput := d.registerActiveOutput(output)
-		defer func() {
-			unregisterOutput()
-			cancelOutput()
-		}()
-		d.speechMu.Lock()
-		defer d.speechMu.Unlock()
-		if err := outputCtx.Err(); err != nil {
-			return err
-		}
-		speakCtx := outputCtx
-		cancelTimeout := func() {}
-		if timeoutAfterLock > 0 {
-			speakCtx, cancelTimeout = context.WithTimeout(outputCtx, timeoutAfterLock)
-			defer cancelTimeout()
-		}
-		if err := speakCtx.Err(); err != nil {
-			return err
-		}
-		log.Printf("[reply] %s\n", text)
+		return nil
+	}
+	if err := baseCtx.Err(); err != nil {
+		return err
+	}
+	outputCtx, cancelOutput := context.WithCancel(baseCtx)
+	output := newActiveTTSOutput(cancelOutput)
+	unregisterOutput := d.registerActiveOutput(output)
+	defer func() {
+		unregisterOutput()
+		cancelOutput()
+	}()
+	d.speechMu.Lock()
+	defer d.speechMu.Unlock()
+	if err := outputCtx.Err(); err != nil {
+		return err
+	}
+	speakCtx := outputCtx
+	cancelTimeout := func() {}
+	if timeoutAfterLock > 0 {
+		speakCtx, cancelTimeout = context.WithTimeout(outputCtx, timeoutAfterLock)
+		defer cancelTimeout()
+	}
+	if err := speakCtx.Err(); err != nil {
+		return err
+	}
+
+	speechStarted := false
+	ttsErr := errTTSNotConfigured
+	if d.ttsManager != nil {
 		log.Printf("[tts] Starting streaming playback...\n")
-		_, err := speakWithTTSManagerObserved(speakCtx, d.ttsManager, d.audioClient, d.config, text, func(stream *streamSessionWriter) func() {
+		speechStarted, ttsErr = speakWithTTSManagerObserved(speakCtx, d.ttsManager, d.audioClient, d.config, text, func(stream *streamSessionWriter) func() {
 			stream.setCancel(cancelOutput)
 			output.setStream(stream)
 			return func() {
 				output.clearStream(stream)
 			}
 		})
-		if err != nil {
-			log.Printf("[error] TTS streaming failed: %v", err)
-			return err
-		} else {
-			log.Printf("[tts] Streaming playback complete\n")
+		if ttsErr == nil && !speechStarted && allowFallback {
+			ttsErr = errTTSNoAudio
 		}
-	} else if text != "" {
-		log.Printf("[reply] %s\n", text)
+		if ttsErr == nil {
+			log.Printf("[tts] Streaming playback complete\n")
+			return nil
+		}
+		log.Printf("[error] TTS streaming failed: %v", ttsErr)
 	}
-
-	return nil
+	if !allowFallback {
+		return ttsErr
+	}
+	fallbackPlayed, resultErr := attemptTTSUnavailableFallback(speakCtx, d.audioClient, d.config, speechStarted, ttsErr)
+	if fallbackPlayed {
+		log.Printf("[tts] Local unavailable fallback played: %s\n", ttsUnavailableFallbackPath(d.config))
+	}
+	return resultErr
 }
 
 func (d *AudioDialog) playPromptSoundAsync(kind promptSoundKind, label string) {
@@ -1287,10 +1312,10 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 		result.SpeechStreamed = newStream.emittedSpeech(closeErr)
 	}
 	if err != nil {
-		if d.ttsManager != nil && !result.SpeechStreamed {
+		if d.CanSpeakFinalText() && !result.SpeechStreamed {
 			prepared := runtime.PrepareSpokenText(ctx, SpokenTextInput{TurnFailure: result.TurnFailure})
 			if prepared.Text != "" {
-				if speakErr := d.Speak(ctx, prepared.Text, nil); speakErr != nil {
+				if speakErr := d.SpeakFinal(ctx, prepared.Text, nil); speakErr != nil {
 					log.Printf("[error] failure replacement TTS failed: %v", speakErr)
 				}
 			}
@@ -1307,7 +1332,7 @@ func (d *AudioDialog) ProcessTextInput(ctx context.Context, text string, runtime
 	speechText := result.SpokenTextForConfig(d.config)
 	if d.CanSpeakFinalText() && speechText != "" && !result.SpeechStreamed {
 		prepared := runtime.PrepareSpokenText(ctx, SpokenTextInput{ResponseText: speechText, TailAppendable: true})
-		if err := d.Speak(ctx, prepared.Text, nil); err != nil {
+		if err := d.SpeakFinal(ctx, prepared.Text, nil); err != nil {
 			runtime.ReportSpokenTextDelivery(prepared.DeliveryToken, err)
 			log.Printf("[error] TTS streaming failed: %v", err)
 		} else {

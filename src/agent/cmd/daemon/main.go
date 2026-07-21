@@ -263,6 +263,7 @@ type audioDialogRunner interface {
 	InterruptOutput()
 	CanSpeakFinalText() bool
 	Speak(ctx context.Context, text string, interrupt <-chan struct{}) error
+	SpeakFinal(ctx context.Context, text string, interrupt <-chan struct{}) error
 	FlushVAD() []int16
 	FinishManualUtterance(pending []int16) []int16
 	ResetVAD()
@@ -893,7 +894,7 @@ thinking:
 	speakCtx, cancelSpeak := context.WithCancel(context.Background())
 	speakCh := make(chan error, 1)
 	go func() {
-		speakCh <- dialog.Speak(speakCtx, prepared.Text, nil)
+		speakCh <- dialog.SpeakFinal(speakCtx, prepared.Text, nil)
 	}()
 
 speaking:

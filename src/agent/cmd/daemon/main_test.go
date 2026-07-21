@@ -270,6 +270,10 @@ func (d *fakeAudioDialog) Speak(ctx context.Context, text string, interrupt <-ch
 	return nil
 }
 
+func (d *fakeAudioDialog) SpeakFinal(ctx context.Context, text string, interrupt <-chan struct{}) error {
+	return d.Speak(ctx, text, interrupt)
+}
+
 func (d *fakeAudioDialog) FlushVAD() []int16 {
 	if d.vad != nil {
 		return d.vad.Flush()

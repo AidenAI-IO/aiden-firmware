@@ -69,6 +69,27 @@ Only completed playback records a reminder as delivered. Failed or canceled play
 
 Streaming replies that have already emitted speech are not modified. Their pending reminder remains available for the next non-streamed, appendable reply.
 
+## Local TTS-unavailable fallback
+
+Official firmware bundles prerecorded Chinese and English messages under:
+
+```text
+/oem/usr/share/aiden/audio/voice-notifications/tts-unavailable.zh-CN.wav
+/oem/usr/share/aiden/audio/voice-notifications/tts-unavailable.en-US.wav
+```
+
+When a final reply cannot use the configured TTS provider, the Agent bypasses TTS and plays the matching WAV directly through `audio_service`. This also covers startup-time TTS initialization failure and providers that complete without producing audio.
+
+The fallback is deliberately limited:
+
+- it runs only for final reply speech, not tool-progress speech;
+- it runs only before any PCM from the failed TTS attempt has started playing;
+- cancellation and preemption never trigger it;
+- playing the fallback does not acknowledge a pending response-tail notification, because the original reply and reminder were not spoken;
+- disabling `[voice_notifications]` also disables this fallback.
+
+Locale selection follows `voice_notifications.default_locale`: locales beginning with `en` use the English file, and all others use the Chinese file. Development and custom images may override the asset directory with `AIDEN_TTS_FALLBACK_DIR`.
+
 ## Selection rules
 
 One reply carries at most one persistent reminder. Eligible records are ordered by:
@@ -111,4 +132,3 @@ The Config Web service preserves these sections when saving other settings. The 
 - The manager does not detect storage conditions; StorageMonitor or another producer must publish them.
 - Network and quota failures are derived only from the current turn's final error, not background health checks.
 - A tail is not injected after streaming TTS has already produced audio.
-- Replacement speech currently uses the configured TTS path; a bundled prerecorded fallback is not included yet.
