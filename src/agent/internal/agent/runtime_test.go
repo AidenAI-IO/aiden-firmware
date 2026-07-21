@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/langfuse"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -156,13 +157,13 @@ func TestRuntimeRunMarksMainAgentModelCallsForRawHTTPLog(t *testing.T) {
 }
 
 func TestRuntimeRunExportsFailedTraceWhenModelBuildFails(t *testing.T) {
-	ingestCh := make(chan langfuseIngestionRequest, 1)
+	ingestCh := make(chan langfuse.IngestionRequest, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/public/ingestion" {
 			http.NotFound(w, r)
 			return
 		}
-		var req langfuseIngestionRequest
+		var req langfuse.IngestionRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -200,7 +201,7 @@ func TestRuntimeRunExportsFailedTraceWhenModelBuildFails(t *testing.T) {
 		t.Fatalf("Run() error = %v, want %v", err, buildErr)
 	}
 
-	var ingest langfuseIngestionRequest
+	var ingest langfuse.IngestionRequest
 	select {
 	case ingest = <-ingestCh:
 	case <-time.After(2 * time.Second):
