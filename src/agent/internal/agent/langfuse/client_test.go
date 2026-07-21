@@ -1,4 +1,4 @@
-package agent
+package langfuse
 
 import (
 	"context"
@@ -28,7 +28,7 @@ func TestUploadMediaCompletesWithPatch(t *testing.T) {
 		case r.Method == http.MethodPatch && r.URL.Path == "/api/public/media/media-abc":
 			patchCalled = true
 			body, _ := io.ReadAll(r.Body)
-			var patch langfuseMediaPatchRequest
+			var patch MediaPatchRequest
 			if err := json.Unmarshal(body, &patch); err != nil {
 				t.Fatalf("decode patch body: %v", err)
 			}
@@ -45,13 +45,13 @@ func TestUploadMediaCompletesWithPatch(t *testing.T) {
 	}))
 	defer langfuseServer.Close()
 
-	client := newLangfuseClient(TelemetryConfig{
+	client := NewClient(Config{
 		BaseURL:   langfuseServer.URL,
 		PublicKey: "pk-test",
 		SecretKey: "sk-test",
 	})
 
-	mediaID, err := client.uploadMedia(context.Background(), "trace-1", "observation-1", "image/jpeg", []byte("jpeg-bytes"), "output")
+	mediaID, err := client.UploadMedia(context.Background(), "trace-1", "observation-1", "image/jpeg", []byte("jpeg-bytes"), "output")
 	if err != nil {
 		t.Fatalf("uploadMedia() error = %v", err)
 	}

@@ -480,11 +480,15 @@ func (h HIDConfig) InputBackendADB() bool {
 type ModelConfig struct {
 	Provider          string  `toml:"provider"`
 	Model             string  `toml:"model"`
-	BaseURL           string  `toml:"base_url,omitempty"`
-	APIKey            string  `toml:"api_key,omitempty"`
-	TokenEnv          string  `toml:"token_env,omitempty"`
-	Temperature       float64 `toml:"temperature,omitempty"`
-	MaxResponseTokens int     `toml:"max_response_tokens,omitempty"`
+	BaseURL  string `toml:"base_url,omitempty"`
+	APIKey   string `toml:"api_key,omitempty"`
+	TokenEnv string `toml:"token_env,omitempty"`
+	// Temperature is a pointer so nil (unset) is distinct from an explicit 0.0.
+	// Unset means the effective value is resolved at runtime from model metadata
+	// (see applyModelTemperatureDefault); an explicit value, including 0, is
+	// always honored and sent to the provider.
+	Temperature       *float64 `toml:"temperature,omitempty"`
+	MaxResponseTokens int      `toml:"max_response_tokens,omitempty"`
 	LogRawHTTP        bool    `toml:"log_raw_http,omitempty"`
 	ReasoningEffort   string  `toml:"reasoning_effort,omitempty"`
 	// These override static model metadata; zero means use the registry/fallback.
@@ -598,6 +602,8 @@ func LoadRuntimeConfig(path string) (Config, error) {
 	}
 
 	applyRuntimeOptionalProviderDefaults(&cfg, metadata)
+	applyRuntimeModelTemperatureDefaults(&cfg)
+	applyRuntimeModelReasoningEffortDefaults(&cfg)
 	applyRuntimeInstructionDefault(&cfg)
 
 	if err := cfg.Validate(); err != nil {
@@ -605,6 +611,68 @@ func LoadRuntimeConfig(path string) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// applyRuntimeModelTemperatureDefaults resolves the sampling temperature for
+// model and model_text when the user has not set it. The default is sourced
+// from the model's metadata (some models, e.g. Kimi K3, require a fixed
+// temperature) and falls back to defaultModelTemperature. An explicit
+// model.temperature always takes precedence. This is only called in
+// LoadRuntimeConfig; LoadResolvedConfig (config editor) keeps temperature unset
+// so the editor displays empty and saves without baking defaults into agent.toml.
+func applyRuntimeModelTemperatureDefaults(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+	applyModelTemperatureDefault(&cfg.Model)
+	// model_text is an optional override; only resolve a default when it is
+	// actually configured, otherwise leave the unused section untouched.
+	if strings.TrimSpace(cfg.ModelText.Provider) != "" || strings.TrimSpace(cfg.ModelText.Model) != "" {
+		applyModelTemperatureDefault(&cfg.ModelText)
+	}
+}
+
+func applyModelTemperatureDefault(m *ModelConfig) {
+	if m == nil || m.Temperature != nil {
+		return
+	}
+	if spec, ok := LookupModelSpec(m.Provider, m.Model); ok && spec.DefaultTemperature != nil {
+		// Copy the value rather than aliasing the registry pointer.
+		temp := *spec.DefaultTemperature
+		m.Temperature = &temp
+		return
+	}
+	temp := defaultModelTemperature
+	m.Temperature = &temp
+}
+
+// applyRuntimeModelReasoningEffortDefaults resolves reasoning_effort for model
+// and model_text when the user has not set it (empty string). The default is
+// sourced from the model's metadata; forced-reasoning models (e.g. Kimi K3)
+// pin a lighter effort to keep streaming responsive. Unlike temperature there
+// is no global fallback: unknown models stay in auto mode (empty). An explicit
+// model.reasoning_effort always takes precedence. Like the temperature defaults,
+// this only runs in LoadRuntimeConfig; LoadResolvedConfig (config editor) keeps
+// reasoning_effort as-is so the editor does not bake a default into agent.toml.
+func applyRuntimeModelReasoningEffortDefaults(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+	applyModelReasoningEffortDefault(&cfg.Model)
+	// model_text is an optional override; only resolve a default when it is
+	// actually configured, otherwise leave the unused section untouched.
+	if strings.TrimSpace(cfg.ModelText.Provider) != "" || strings.TrimSpace(cfg.ModelText.Model) != "" {
+		applyModelReasoningEffortDefault(&cfg.ModelText)
+	}
+}
+
+func applyModelReasoningEffortDefault(m *ModelConfig) {
+	if m == nil || strings.TrimSpace(m.ReasoningEffort) != "" {
+		return
+	}
+	if spec, ok := LookupModelSpec(m.Provider, m.Model); ok && spec.DefaultReasoningEffort != nil {
+		m.ReasoningEffort = *spec.DefaultReasoningEffort
+	}
 }
 
 func applyRuntimeOptionalProviderDefaults(cfg *Config, metadata toml.MetaData) {
@@ -693,7 +761,7 @@ func LoadResolvedConfig(path string) (Config, error) {
 
 	cfg := DefaultConfig()
 	if exists {
-		if _, err := decodeConfigFile(resolvedPath, &cfg); err != nil {
+		if _, err = decodeConfigFile(resolvedPath, &cfg); err != nil {
 			return Config{}, err
 		}
 	}

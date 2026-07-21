@@ -46,7 +46,7 @@ const (
 
 type Runtime struct {
 	config             Config
-	models             model.ModelResolver
+	models             model.Model
 	memories           *MemoryManager
 	tools              *ToolSet
 	skills             *SkillManager
@@ -236,10 +236,16 @@ type RunEvent struct {
 }
 
 type usageTrackingModel struct {
-	inner           llms.Model
+	inner           model.Model
 	metrics         *RunMetrics
 	promptCapture   *telemetryPromptCapture
 	contextWindowFn ContextWindowFn
+}
+
+func (m *usageTrackingModel) CallOptions() []chains.ChainCallOption { return m.inner.CallOptions() }
+
+func (m *usageTrackingModel) Spec() model.ModelSpec {
+	return m.inner.Spec()
 }
 
 func (m *usageTrackingModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
@@ -409,7 +415,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	return rt, nil
 }
 
-func NewRuntimeWithDeps(cfg Config, models model.ModelResolver, memories *MemoryManager, tools *ToolSet, skillIndex *SkillIndex) *Runtime {
+func NewRuntimeWithDeps(cfg Config, models model.Model, memories *MemoryManager, tools *ToolSet, skillIndex *SkillIndex) *Runtime {
 	waitForWakeupController := NewWaitForWakeupController()
 	if tools != nil {
 		if tool, ok := tools.Get(toolWaitForWakeup); ok {
@@ -447,7 +453,7 @@ func NewRuntimeWithDeps(cfg Config, models model.ModelResolver, memories *Memory
 				}
 			})
 			longTermStore = memories.longTerm
-		} else if longTermStore == nil {
+		} else {
 			// No manager provided, create a standalone store
 			storeOpts := []LongTermMemoryOption{WithLifecycleDir(filepath.Join(memoryDir, "lifecycle"))}
 			longTermStore = NewLongTermMemoryStore(filepath.Join(memoryDir, "long_term"), storeOpts...)
@@ -739,10 +745,6 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 		return RunResult{}, err
 	}
 
-	m, err := r.models.Get()
-	if err != nil {
-		return RunResult{}, err
-	}
 	contextWindow := r.effectiveContextWindow()
 	if contextWindow > 0 {
 		metrics.ContextWindow = contextWindow
@@ -750,7 +752,7 @@ func (r *Runtime) Run(ctx context.Context, req RunRequest) (result RunResult, ru
 			r.logger.Info("Resolved model context window: context_window=%d", contextWindow)
 		}
 	}
-	m = &usageTrackingModel{inner: m, metrics: metrics, promptCapture: promptCapture, contextWindowFn: func() model.ModelSpec {
+	m := &usageTrackingModel{inner: r.models, metrics: metrics, promptCapture: promptCapture, contextWindowFn: func() model.ModelSpec {
 		if r.models != nil {
 			return r.models.Spec()
 		}
@@ -1129,11 +1131,11 @@ func (r *Runtime) getStateHook() contextmanager.AppendMessageHook {
 		// key1: value1
 		// key2: value2
 		// ...
-		formated := ""
+		var formated strings.Builder
 		for _, entry := range entries {
-			formated += fmt.Sprintf("%s: %s\n", entry.Key, entry.Value)
+			fmt.Fprintf(&formated, "%s: %s\n", entry.Key, entry.Value)
 		}
-		tagged := fmt.Sprintf("<state>\n%s\n</state>", formated)
+		tagged := util.STag("state", formated.String())
 		// create a new StateMessage
 		stateMessage := contextmanager.Message{
 			Role:    contextmanager.MessageRoleState,
@@ -1499,8 +1501,8 @@ func (r *Runtime) enrichEpisodeRuntimeTelemetry(episode *TaskEpisode) {
 
 func telemetryModelParametersFromModelConfig(cfg ModelConfig) map[string]interface{} {
 	params := map[string]interface{}{}
-	if cfg.Temperature != 0 {
-		params["temperature"] = cfg.Temperature
+	if cfg.Temperature != nil {
+		params["temperature"] = *cfg.Temperature
 	}
 	if cfg.MaxResponseTokens > 0 {
 		params["max_response_tokens"] = cfg.MaxResponseTokens
@@ -2084,12 +2086,8 @@ func truncateForLog(text string, max int) string {
 	return string(runes[:max]) + "..."
 }
 
-func buildLLMSummarizeFn(models model.ModelResolver) SummarizeFn {
+func buildLLMSummarizeFn(models model.Model) SummarizeFn {
 	return func(ctx context.Context, events []SessionEvent) string {
-		model, err := models.Get()
-		if err != nil {
-			return ""
-		}
 		var transcript strings.Builder
 		for _, evt := range events {
 			if evt.Content == "" {
@@ -2101,7 +2099,7 @@ func buildLLMSummarizeFn(models model.ModelResolver) SummarizeFn {
 			return ""
 		}
 		prompt := "Summarize this conversation in 2-3 concise sentences. Focus on what was discussed, decided, or requested. Write in the same language as the conversation.\n\n" + transcript.String()
-		result, err := llms.GenerateFromSinglePrompt(ctx, model, prompt, llms.WithMaxTokens(200))
+		result, err := llms.GenerateFromSinglePrompt(ctx, models, prompt, llms.WithMaxTokens(200))
 		if err != nil {
 			return ""
 		}
@@ -2138,15 +2136,8 @@ const (
 	structuredSummaryMaxSummaryRune = 480
 )
 
-func buildLLMStructuredSummarizeFn(models model.ModelResolver, logger *Logger) StructuredSummarizeFn {
+func buildLLMStructuredSummarizeFn(models model.Model, logger *Logger) StructuredSummarizeFn {
 	return func(ctx context.Context, events []SessionEvent) ChunkStructuredSummary {
-		model, err := models.Get()
-		if err != nil {
-			if logger != nil {
-				logger.Warn("[memory] structured summary: failed to get model: %v", err)
-			}
-			return ChunkStructuredSummary{}
-		}
 		var transcript strings.Builder
 		for _, evt := range events {
 			content := strings.TrimSpace(evt.Content)
@@ -2158,7 +2149,7 @@ func buildLLMStructuredSummarizeFn(models model.ModelResolver, logger *Logger) S
 		if transcript.Len() == 0 {
 			return ChunkStructuredSummary{}
 		}
-		result, err := llms.GenerateFromSinglePrompt(ctx, model, structuredSummarizerPrompt+transcript.String(), llms.WithMaxTokens(800))
+		result, err := llms.GenerateFromSinglePrompt(ctx, models, structuredSummarizerPrompt+transcript.String(), llms.WithMaxTokens(800))
 		if err != nil {
 			if logger != nil {
 				logger.Warn("[memory] structured summary: LLM generation failed: %v", err)
@@ -2224,12 +2215,8 @@ func capRunes(text string, max int) string {
 	return string(runes[:max])
 }
 
-func buildLLMProfileFn(models model.ModelResolver) ProfileFn {
+func buildLLMProfileFn(models model.Model) ProfileFn {
 	return func(ctx context.Context, entries []ProfileEntry) string {
-		model, err := models.Get()
-		if err != nil {
-			return ""
-		}
 		var input strings.Builder
 		for _, e := range entries {
 			input.WriteString(fmt.Sprintf("[%s] %s\n", e.Type, e.Content))
@@ -2248,7 +2235,7 @@ Rules:
 
 Memory entries:
 ` + input.String()
-		result, err := llms.GenerateFromSinglePrompt(ctx, model, prompt, llms.WithMaxTokens(400))
+		result, err := llms.GenerateFromSinglePrompt(ctx, models, prompt, llms.WithMaxTokens(400))
 		if err != nil {
 			return ""
 		}

@@ -58,6 +58,7 @@ type FieldMeta struct {
 	Range       *Range       `json:"range,omitempty"`
 	Default     interface{}  `json:"default,omitempty"`
 	Secret      bool         `json:"secret,omitempty"`
+	Nullable    bool         `json:"nullable,omitempty"` // For number fields: empty input means unset (omit key), not 0
 	VisibleWhen *VisibleRule `json:"visibleWhen,omitempty"`
 }
 
@@ -115,7 +116,9 @@ func ConfigMeta() ConfigMetadata {
 					{Key: "api_key", Widget: WidgetText, Secret: true},
 					{Key: "base_url", Widget: WidgetText,
 						VisibleWhen: all(in("model.provider", "openai", "openrouter", "kimi", "kimi-cn", "ollama"))},
-					{Key: "temperature", Widget: WidgetNumber, Default: defaults.Model.Temperature},
+					// The effective default is model-dependent (resolved at load
+					// time); show the global fallback here as the UI placeholder.
+					{Key: "temperature", Widget: WidgetNumber, Default: defaultModelTemperature, Nullable: true},
 					{Key: "max_response_tokens", Widget: WidgetNumber, Default: defaults.Model.MaxResponseTokens},
 					{Key: "log_raw_http", Widget: WidgetBoolean, Default: defaults.Model.LogRawHTTP},
 					{Key: "reasoning_effort", Widget: WidgetSelect,

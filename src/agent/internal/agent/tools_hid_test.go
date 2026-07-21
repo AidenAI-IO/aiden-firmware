@@ -1175,18 +1175,35 @@ func TestResolvePointerPositionScreenshotUsesReturnedCropPixels(t *testing.T) {
 	}
 }
 
-func TestScreenshotCoordinateSpaceIsExposedForTouchButNotWheel(t *testing.T) {
+func TestScreenshotCoordinateSpaceIsNotExposedToModel(t *testing.T) {
+	// screenshot was a renamed "pixel" space; LLMs pass cropped-screenshot
+	// pixels that overflow the active-area width and fail bounds checks. It is
+	// no longer advertised on any tool, only kept as an internal alias for
+	// backward compatibility. See resolvePointerPositionForSurface.
 	touchSchema := (&TouchGestureTool{}).ArgsSchema()
 	touchProps := touchSchema["properties"].(map[string]any)
 	touchSpaces := touchProps["coord_space"].(map[string]any)["enum"].([]string)
-	if !slices.Contains(touchSpaces, "screenshot") {
-		t.Fatalf("touch coord_space enum = %#v, want screenshot", touchSpaces)
+	if slices.Contains(touchSpaces, "screenshot") {
+		t.Fatalf("touch coord_space enum = %#v, must not expose screenshot", touchSpaces)
+	}
+	if !slices.Contains(touchSpaces, "normalized") {
+		t.Fatalf("touch coord_space enum = %#v, want normalized", touchSpaces)
 	}
 
 	wheelSchema := (&WheelNudgeTool{}).ArgsSchema()
 	wheelProps := wheelSchema["properties"].(map[string]any)
 	if _, ok := wheelProps["coord_space"]; ok {
 		t.Fatalf("wheel coord_space must not be exposed to the model: %#v", wheelProps)
+	}
+}
+
+func TestScreenshotCoordinateSpaceStillResolvesForBackwardCompat(t *testing.T) {
+	// A model that still emits the retired "screenshot" space must not hard
+	// fail; the resolver keeps interpreting it as cropped-screenshot pixels.
+	screen := &screenState{}
+	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 0, Y: 0, Width: 496, Height: 1080, Valid: true})
+	if _, _, err := resolvePointerPositionForSurface(screen, false, 248, 540, "screenshot", coordinateSpaceNormalized); err != nil {
+		t.Fatalf("screenshot space should still resolve for backward compat: %v", err)
 	}
 }
 
