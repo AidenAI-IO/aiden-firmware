@@ -174,6 +174,7 @@ type StorageManager struct {
 	stateWriteErr  bool             // log the mirror-write failure only once
 	formatJob      StorageFormatJob // async format task state
 	autoFormatDone bool             // one auto-format attempt per insertion
+	mounting       bool             // a mount attempt runs ops.Prepare off m.mu
 
 	migration        StorageMigrationJob
 	migrationCancel  chan struct{} // non-nil while a migration run is active
@@ -589,7 +590,7 @@ func (m *StorageManager) listMigratable(dir string) ([]string, error) {
 
 // migrateOneFile is the idempotent per-file transaction:
 // copy to a .aiden-partial temp name → fsync → verify size → rename →
-// delete source. A crash at any point leaves either both copies (resolved by
+// fsync destination dir → delete source. A crash at any point leaves either both copies (resolved by
 // the destination-exists check on the next run and by eMMC-first ReadRoots)
 // or the migrated file only.
 func (m *StorageManager) migrateOneFile(src, dst string) (int64, error) {
@@ -600,7 +601,12 @@ func (m *StorageManager) migrateOneFile(src, dst string) (int64, error) {
 	if dstInfo, err := os.Stat(dst); err == nil {
 		if dstInfo.Size() == info.Size() {
 			// Left over from an interrupted run: the copy completed but the
-			// source was not deleted. Just finish the transaction.
+			// source was not deleted. The interrupted run may not have made
+			// its commit rename durable, so sync the directory before
+			// finishing the transaction.
+			if err := syncDir(filepath.Dir(dst)); err != nil {
+				return 0, fmt.Errorf("sync destination directory: %w", err)
+			}
 			if err := os.Remove(src); err != nil {
 				return 0, fmt.Errorf("destination already migrated but removing source failed: %w", err)
 			}
@@ -635,6 +641,15 @@ func (m *StorageManager) migrateOneFile(src, dst string) (int64, error) {
 		}
 		return 0, fmt.Errorf("commit rename: %w", err)
 	}
+	// The rename is durable only once the destination directory's metadata
+	// reaches the card. Source and destination live on different filesystems
+	// with independently ordered journals, so without this the eMMC unlink
+	// below can survive a power cut that the SD-side rename does not —
+	// losing the file. On failure keep the source; both copies coexisting is
+	// the safe state the next run resolves.
+	if err := syncDir(filepath.Dir(dst)); err != nil {
+		return 0, fmt.Errorf("sync destination directory: %w", err)
+	}
 	if err := os.Remove(src); err != nil {
 		return 0, fmt.Errorf("copied to SD but removing eMMC source failed: %w", err)
 	}
@@ -661,6 +676,18 @@ func (m *StorageManager) cleanStalePartials(dir string) {
 			m.logf("[storage] migration: removed stale partial %s", path)
 		}
 	}
+}
+
+// syncDir fsyncs a directory so renames and creates inside it are durable.
+// FAT32, exFAT, and ext4 (the filesystems StartFormat offers) all support
+// fsync on a directory handle.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }
 
 func copyFileSync(src, dst string) error {
@@ -773,6 +800,13 @@ func (m *StorageManager) tick() {
 	if m.formatJob.Status == StorageFormatRunning {
 		return
 	}
+	// A mount attempt is in flight, running ops.Prepare with m.mu released.
+	// Skip this tick; it will land its result and set state itself. Without
+	// this guard a second tick could launch a concurrent Prepare on the same
+	// device or race the in-flight one's state write.
+	if m.mounting {
+		return
+	}
 
 	// Debounce: require two consecutive observations before accepting a
 	// presence change (contact bounce on physical slots is common).
@@ -827,6 +861,13 @@ func (m *StorageManager) tick() {
 }
 
 // tryMountLocked runs the usability gate and mounts. Caller holds m.mu.
+//
+// ops.Prepare shells out to fsck and mount with no timeout, so running it
+// under m.mu would freeze Status/EffectiveMode/ReadRoots/CleanupRoots for the
+// duration. It is instead released across the Prepare call — guarded by the
+// m.mounting latch (checked in tick) so no second tick launches a concurrent
+// Prepare — and re-acquired to land the result, following the same
+// lock-release pattern as runFormatJob and runMigration.
 func (m *StorageManager) tryMountLocked() {
 	dev, present := m.ops.CardDevice()
 	if !present {
@@ -835,7 +876,27 @@ func (m *StorageManager) tryMountLocked() {
 	mountPoint := m.cfg.MountPointOrDefault()
 	m.card.Present = true
 	m.card.Device = dev
-	if err := m.ops.Prepare(dev, mountPoint); err != nil {
+
+	m.mounting = true
+	m.mu.Unlock()
+	err := m.ops.Prepare(dev, mountPoint)
+	m.mu.Lock()
+	m.mounting = false
+
+	// The card may have been ejected or removed while Prepare ran with the
+	// lock released; the removal path already reset m.card, so discard this
+	// stale result rather than resurrecting a gone card.
+	if m.ejected || !m.card.Present || m.card.Device != dev {
+		if err == nil {
+			// A mount succeeded for a card no longer wanted here; detach it so
+			// it does not linger. Best effort — the card is likely already gone.
+			_ = m.ops.Unmount(mountPoint, true)
+		}
+		m.logf("[storage] discarding mount result for %s: card state changed during mount", dev)
+		return
+	}
+
+	if err != nil {
 		m.card.Mounted = false
 		m.card.Reason = err.Error()
 		m.mountFailed = true

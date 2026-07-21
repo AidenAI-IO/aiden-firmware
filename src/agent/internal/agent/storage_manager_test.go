@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -14,6 +15,12 @@ type fakeStorageOps struct {
 	dev        string
 	prepareErr error
 	healthy    bool
+	// prepareBlock, when non-nil, makes Prepare block until it is closed. Used
+	// to prove the read endpoints stay responsive while a mount is in flight.
+	// prepareEntered is closed by Prepare once it has begun blocking.
+	prepareBlock   chan struct{}
+	prepareEntered chan struct{}
+	prepareOnce    sync.Once
 	free       int64
 	total      int64
 	spaceErr   error
@@ -45,6 +52,10 @@ func (f *fakeStorageOps) CardDevice() (string, bool) {
 
 func (f *fakeStorageOps) Prepare(dev, mountPoint string) error {
 	f.prepares++
+	if f.prepareBlock != nil {
+		f.prepareOnce.Do(func() { close(f.prepareEntered) })
+		<-f.prepareBlock
+	}
 	if f.prepareErr != nil {
 		return f.prepareErr
 	}
@@ -147,6 +158,55 @@ func TestStorageManagerMountsOnInsertWithDebounce(t *testing.T) {
 	}
 	if status.EffectiveMode != StorageModeDual {
 		t.Fatalf("effective mode = %d, want dual", status.EffectiveMode)
+	}
+}
+
+func TestStorageManagerReadEndpointsStayResponsiveDuringMount(t *testing.T) {
+	ops := &fakeStorageOps{
+		present:        true,
+		free:           1 << 30,
+		total:          1 << 31,
+		healthy:        true,
+		prepareBlock:   make(chan struct{}),
+		prepareEntered: make(chan struct{}),
+	}
+	m := newTestStorageManager(t, ops)
+	m.card.Present = true // pre-accept presence so the first tick mounts
+
+	// Run the mounting tick in the background; it blocks inside ops.Prepare.
+	tickDone := make(chan struct{})
+	go func() { defer close(tickDone); m.tick() }()
+
+	select {
+	case <-ops.prepareEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Prepare was never reached")
+	}
+
+	// Prepare is blocking with the mount in flight. Every read endpoint must
+	// still return promptly instead of waiting on m.mu.
+	endpoints := map[string]func(){
+		"Status":        func() { m.Status() },
+		"EffectiveMode": func() { m.EffectiveMode() },
+		"ReadRoots":     func() { m.ReadRoots(StorageClassAudio) },
+		"CleanupRoots":  func() { m.CleanupRoots(StorageClassAudio) },
+	}
+	for name, call := range endpoints {
+		done := make(chan struct{})
+		go func() { defer close(done); call() }()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			close(ops.prepareBlock)
+			t.Fatalf("%s blocked while a mount was in flight", name)
+		}
+	}
+
+	// Let the mount finish and confirm it lands normally.
+	close(ops.prepareBlock)
+	<-tickDone
+	if status := m.Status(); !status.Card.Mounted {
+		t.Fatalf("card not mounted after Prepare unblocked: %+v", status.Card)
 	}
 }
 
