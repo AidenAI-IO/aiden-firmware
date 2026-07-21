@@ -6,7 +6,6 @@ AGENT_BIN=/oem/usr/bin/agent
 ENV_RUN_BIN=${ENV_RUN_BIN:-/oem/usr/bin/aiden-env-run}
 CONFIG_DIR=${CONFIG_DIR:-/userdata/agent}
 ADDR=0.0.0.0:8080
-LOG_PATH=${LOG_PATH:-/var/log/agent/agent.log}
 STORAGE_LEVEL_PATH=${STORAGE_LEVEL_PATH:-/run/agent/storage_level}
 PID_FILE=/run/agent/agent.pid
 WATCHDOG_PID_FILE=/run/agent/agent_watchdog.pid
@@ -16,6 +15,7 @@ if [ -f "$BOOT_CONF" ]; then
     . "$BOOT_CONF"
 fi
 : "${ENABLE_AGENT:=1}"
+LOG_PATH=${LOG_PATH:-$CONFIG_DIR/log/agent.log}
 
 configured_agent_log_max_mb() {
     config_path="$CONFIG_DIR/agent.toml"

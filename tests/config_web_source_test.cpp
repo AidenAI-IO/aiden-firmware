@@ -224,7 +224,9 @@ TEST_CASE("config web exposes agent runtime status") {
     CHECK(source.find("\"/api/agent/status\"") != std::string::npos);
     CHECK(source.find("query_agent_status") != std::string::npos);
     CHECK(source.find("check_tcp_port") != std::string::npos);
-    CHECK(source.find("/var/log/agent/agent.log") != std::string::npos);
+    CHECK(source.find("/var/log/agent/agent.log") == std::string::npos);
+    CHECK(source.find("std::string agent_log_path(const Options& options)") != std::string::npos);
+    CHECK(source.find("return llm_log_dir(options) + \"/agent.log\";") != std::string::npos);
 
     CHECK(html.find("<h2>Agent") != std::string::npos);
     CHECK(html.find("agentProcessStatus") != std::string::npos);

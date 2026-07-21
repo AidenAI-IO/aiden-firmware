@@ -12,7 +12,7 @@ import (
 )
 
 // Logger provides structured logging to stdout/stderr
-// Output is captured by the init script and written to /var/log/agent/agent.log
+// Output is captured by the init script and written to <config_dir>/log/agent.log.
 type Logger struct {
 	logger         *log.Logger
 	mu             sync.Mutex
@@ -20,7 +20,7 @@ type Logger struct {
 }
 
 // NewLogger creates a new logger that writes to stdout/stderr
-// The init script redirects output to /var/log/agent/agent.log
+// The init script redirects output to <config_dir>/log/agent.log.
 func NewLogger(configDir string, llmHTTPRetentionDays int) (*Logger, error) {
 	logger := log.New(os.Stderr, "", log.LstdFlags)
 	log.SetOutput(os.Stderr)

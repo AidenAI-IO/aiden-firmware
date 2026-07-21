@@ -144,7 +144,6 @@ const char* kAnyBindAddress = "0.0.0.0";
 const char* kUsbBindAddress = "192.168.42.1";
 const char* kLoopbackBindAddress = "127.0.0.1";
 const char* kAgentInitScript = "/etc/init.d/S53agent";
-const char* kAgentLogPath = "/var/log/agent/agent.log";
 // Default path to the agent binary on device. Tests override this via the
 // AIDEN_AGENT_BIN environment variable, resolved once on first use to keep
 // production calls free of getenv overhead.
@@ -206,6 +205,7 @@ std::string lowercase_copy(const std::string& text);
 bool parse_decimal(const std::string& text, int min_value, int max_value, int* value);
 std::string parent_dir(const std::string& path);
 std::string llm_log_dir(const Options& options);
+std::string agent_log_path(const Options& options);
 bool mkdir_p(const std::string& dir, std::string* error);
 bool prepare_ota_update_log_file(const std::string& path, std::string* error);
 bool set_fd_cloexec(int fd, std::string* error);
@@ -240,7 +240,7 @@ bool finish_stt_test_recording(const STTTestRecordingState& state,
 std::string base64_encode_bytes(const uint8_t* data, size_t len);
 std::vector<uint8_t> wrap_pcm_in_wav(const std::vector<uint8_t>& pcm,
                                      const aiden::AudioFormat& format);
-AgentRuntimeStatus query_agent_status();
+AgentRuntimeStatus query_agent_status(const Options& options);
 ApiResponse run_agent_stt_config_test(const Options& options,
                                       cJSON* stt_values,
                                       const std::string& audio_base64);
@@ -2215,7 +2215,7 @@ bool resolve_agent_http_target(const Options& options,
         return parse_http_base_url(override_url, target, error);
     }
 
-    AgentRuntimeStatus status = query_agent_status();
+    AgentRuntimeStatus status = query_agent_status(options);
     if (target) {
         target->host = trim_copy(status.port_host).empty() ? kAgentPortHost : status.port_host;
         target->port = status.port > 0 ? status.port : kDefaultAgentPort;
@@ -2224,7 +2224,6 @@ bool resolve_agent_http_target(const Options& options,
     if (error) {
         error->clear();
     }
-    (void)options;
     return true;
 }
 
@@ -3800,8 +3799,9 @@ AgentLogSnapshot read_log_snapshot(const char* path, size_t read_size, size_t di
     return snapshot;
 }
 
-AgentLogSnapshot read_agent_log_snapshot() {
-    return read_log_snapshot(kAgentLogPath, kAgentLogReadSize, kAgentLogDisplaySize);
+AgentLogSnapshot read_agent_log_snapshot(const Options& options) {
+    std::string path = agent_log_path(options);
+    return read_log_snapshot(path.c_str(), kAgentLogReadSize, kAgentLogDisplaySize);
 }
 
 AgentLogSnapshot read_ota_log_snapshot() {
@@ -3969,8 +3969,9 @@ TcpPortStatus check_tcp_port(const std::string& host, int port) {
     return status;
 }
 
-std::string recent_agent_startup_log() {
-    std::string log = read_file_tail(kAgentLogPath, kAgentStatusLogReadSize);
+std::string recent_agent_startup_log(const Options& options) {
+    std::string path = agent_log_path(options);
+    std::string log = read_file_tail(path.c_str(), kAgentStatusLogReadSize);
     if (log.empty()) {
         return "";
     }
@@ -3994,7 +3995,7 @@ bool log_excerpt_looks_like_startup_failure(const std::string& log) {
            lower.find("panic") != std::string::npos;
 }
 
-AgentRuntimeStatus query_agent_status() {
+AgentRuntimeStatus query_agent_status(const Options& options) {
     AgentRuntimeStatus status;
     status.addr = ":8080";
     status.port_host = kAgentPortHost;
@@ -4047,7 +4048,7 @@ AgentRuntimeStatus query_agent_status() {
     if (status.process_running) {
         status.state = status.port_reachable ? "running" : "port_unreachable";
     } else if (status.watchdog_running) {
-        std::string log = recent_agent_startup_log();
+        std::string log = recent_agent_startup_log(options);
         if (!log.empty()) {
             status.startup_error = log;
         }
@@ -4256,7 +4257,7 @@ ApiResponse handle_get_config(const Options& options) {
     aiden::AgentToml config;
     aiden::WifiNetworkConfig wifi;
     WifiRuntimeStatus wifi_status = query_wifi_status(options);
-    AgentRuntimeStatus agent_status = query_agent_status();
+    AgentRuntimeStatus agent_status = query_agent_status(options);
     std::string config_error;
     std::string wifi_error;
     load_current_agent_config(options, &config, &config_error);
@@ -4327,17 +4328,17 @@ ApiResponse handle_get_config_meta() {
     return response;
 }
 
-ApiResponse handle_get_agent_status() {
+ApiResponse handle_get_agent_status(const Options& options) {
     cJSON* root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "ok", 1);
-    cJSON_AddItemToObject(root, "agent_status", agent_status_to_json(query_agent_status()));
+    cJSON_AddItemToObject(root, "agent_status", agent_status_to_json(query_agent_status(options)));
     return make_json_ok(root);
 }
 
-ApiResponse handle_get_agent_log() {
+ApiResponse handle_get_agent_log(const Options& options) {
     cJSON* root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "ok", 1);
-    cJSON_AddItemToObject(root, "agent_log", agent_log_to_json(read_agent_log_snapshot()));
+    cJSON_AddItemToObject(root, "agent_log", agent_log_to_json(read_agent_log_snapshot(options)));
     return make_json_ok(root);
 }
 // LLM_LOG_HANDLERS_PLACEHOLDER
@@ -4386,6 +4387,10 @@ std::string llm_log_dir(const Options& options) {
         return "/log";
     }
     return base + "/log";
+}
+
+std::string agent_log_path(const Options& options) {
+    return llm_log_dir(options) + "/agent.log";
 }
 
 std::string llm_log_path(const Options& options, const std::string& name) {
@@ -4719,6 +4724,7 @@ void remove_tree_best_effort(const std::string& path) {
 ApiResponse handle_export_support_logs(const Options& options) {
     std::string stage_dir;
     std::string error;
+    std::string log_path = agent_log_path(options);
     if (!create_temp_dir_in_dir("/tmp", kSupportLogStagePrefix, &stage_dir, &error)) {
         return make_json_error(500, error.empty() ? "failed to create log staging directory" : error);
     }
@@ -4732,10 +4738,10 @@ ApiResponse handle_export_support_logs(const Options& options) {
         kSupportLogLangfuseMaxBytes,
         &error);
     staged = staged && stage_file_or_placeholder(
-        kAgentLogPath,
+        log_path,
         stage_dir + "/" + kSupportLogAgentName,
         "Agent log",
-        std::string("Agent log path not available: ") + kAgentLogPath + "\n",
+        "Agent log path not available: " + log_path + "\n",
         kSupportLogAgentMaxBytes,
         &error);
     staged = staged && stage_file_or_placeholder(
@@ -5985,11 +5991,11 @@ ApiResponse handle_request(const Options& options, const HttpRequest& request) {
     }
 
     if (request.method == "GET" && request.path == "/api/agent/status") {
-        return handle_get_agent_status();
+        return handle_get_agent_status(options);
     }
 
     if (request.method == "GET" && request.path == "/api/agent/logs") {
-        return handle_get_agent_log();
+        return handle_get_agent_log(options);
     }
 
     if (request.method == "GET" && request.path == "/api/logs/export") {
