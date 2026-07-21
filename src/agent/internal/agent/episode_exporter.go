@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"aiden-agent/internal/agent/langfuse"
 	"aiden-agent/internal/util"
 	"context"
 	"encoding/json"
@@ -17,9 +18,12 @@ import (
 )
 
 const (
-	langfuseBatchSize          = 40
+	langfuseBatchSize          = 10
 	langfuseTraceIngestReserve = 5 * time.Second
 )
+
+type langfuseClient = langfuse.Client
+type langfuseIngestionEvent = langfuse.IngestionEvent
 
 type langfuseIterationWindow struct {
 	Index int
@@ -47,8 +51,13 @@ type EpisodeExporter struct {
 
 func NewEpisodeExporter(cfg TelemetryConfig, logger *Logger) *EpisodeExporter {
 	return &EpisodeExporter{
-		cfg:    cfg,
-		client: newLangfuseClient(cfg),
+		cfg: cfg,
+		client: langfuse.NewClient(langfuse.Config{
+			BaseURL:       cfg.BaseURL,
+			PublicKey:     cfg.PublicKey,
+			SecretKey:     cfg.SecretKey,
+			UploadTimeout: cfg.UploadTimeoutOrDefault(),
+		}),
 		logger: logger,
 	}
 }
@@ -57,7 +66,7 @@ func (e *EpisodeExporter) ExportEpisodeDir(ctx context.Context, episodeDir strin
 	if e == nil || !e.cfg.EnabledOrDefault() {
 		return nil
 	}
-	if !e.client.configured() {
+	if !e.client.Configured() {
 		return fmt.Errorf("langfuse credentials or base_url missing")
 	}
 	metaPath := filepath.Join(episodeDir, "episode.yaml")
@@ -106,7 +115,7 @@ func (e *EpisodeExporter) ingestWithRetry(ctx context.Context, batch []langfuseI
 			if end > len(batch) {
 				end = len(batch)
 			}
-			if err := e.client.ingest(ctx, batch[i:end]); err != nil {
+			if err := e.client.Ingest(ctx, batch[i:end]); err != nil {
 				lastErr = err
 				break
 			}
@@ -985,14 +994,14 @@ func (e *EpisodeExporter) uploadPromptMedia(ctx context.Context, traceID string,
 		replacement := "[media omitted: upload unavailable]"
 		uploadCtx, cancel, ok := langfuseScreenshotUploadContext(ctx, e.cfg.UploadTimeoutOrDefault())
 		if ok {
-			mediaID, err := e.client.uploadMedia(uploadCtx, traceID, call.ID, media.ContentType, media.Data, "input")
+			mediaID, err := e.client.UploadMedia(uploadCtx, traceID, call.ID, media.ContentType, media.Data, "input")
 			cancel()
 			if err != nil {
 				if e.logger != nil {
 					e.logger.Warn("[telemetry] prompt media upload failed (%s, %d bytes): %v", media.ContentType, len(media.Data), err)
 				}
 			} else if mediaID != "" {
-				replacement = langfuseMediaToken(media.ContentType, mediaID)
+				replacement = langfuse.MediaToken(media.ContentType, mediaID)
 			}
 		}
 		replaceTelemetryMediaPlaceholder(call.Input, media.Placeholder, replacement)
@@ -1685,11 +1694,11 @@ func (e *EpisodeExporter) uploadScreenshot(ctx context.Context, traceID, observa
 		return "", err
 	}
 	contentType := screenshotContentType(path)
-	mediaID, err := e.client.uploadMedia(ctx, traceID, observationID, contentType, data, "output")
+	mediaID, err := e.client.UploadMedia(ctx, traceID, observationID, contentType, data, "output")
 	if err != nil {
 		return "", err
 	}
-	return langfuseMediaToken(contentType, mediaID), nil
+	return langfuse.MediaToken(contentType, mediaID), nil
 }
 
 func (e *EpisodeExporter) traceTags(episode TaskEpisode) []string {
@@ -2055,6 +2064,10 @@ func newLangfuseEvent(eventType string, ts time.Time, body map[string]interface{
 		Type:      eventType,
 		Body:      raw,
 	}, nil
+}
+
+func langfuseRFC3339(t time.Time) string {
+	return langfuse.RFC3339(t)
 }
 
 func parseEpisodeTime(raw string, fallback time.Time) time.Time {
