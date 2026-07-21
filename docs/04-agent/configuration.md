@@ -283,7 +283,6 @@ Voice notifications attach system reminders to a normal spoken reply or replace 
 ```toml
 [voice_notifications]
 enabled = true
-default_locale = "zh-CN"
 max_pending = 8
 
 [voice_notifications.response_tail]
@@ -301,7 +300,6 @@ storage = 900
 | Field | Default | Description |
 | --- | --- | --- |
 | `enabled` | `true` | Enable persistent tails and final-turn replacements |
-| `default_locale` | `zh-CN` | Legacy fallback used only when the top-level `locale` is absent; the device locale normally controls built-in messages |
 | `max_pending` | `8` | Maximum active condition records kept by the in-memory manager |
 | `response_tail.enabled` | `true` | Allow persistent reminders to be appended to normal replies |
 | `response_tail.max_items` | `1` | Maximum reminders per reply; the current implementation supports only `1` |

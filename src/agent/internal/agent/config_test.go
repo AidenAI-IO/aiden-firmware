@@ -385,7 +385,6 @@ provider = "fake"
 
 [voice_notifications]
 enabled = true
-default_locale = "en-US"
 max_pending = 4
 
 [voice_notifications.response_tail]
@@ -408,7 +407,7 @@ storage = 120
 		t.Fatalf("LoadRuntimeConfig() error = %v", err)
 	}
 	voice := cfg.VoiceNotifications
-	if !voice.EnabledOrDefault() || voice.DefaultLocale != "en-US" || voice.MaxPending != 4 {
+	if !voice.EnabledOrDefault() || voice.MaxPending != 4 {
 		t.Fatalf("voice notification overrides = %#v", voice)
 	}
 	if voice.ResponseTail.EnabledOrDefault() || voice.ResponseTail.MaxItems != 1 || voice.ResponseTail.MaxTextChars != 64 {

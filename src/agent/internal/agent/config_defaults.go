@@ -100,9 +100,8 @@ func DefaultConfig() Config {
 			StoragePath: defaultAudioArchiveStoragePath,
 		},
 		VoiceNotifications: VoiceNotificationsConfig{
-			Enabled:       defaultBoolPtr(true),
-			DefaultLocale: "zh-CN",
-			MaxPending:    8,
+			Enabled:    defaultBoolPtr(true),
+			MaxPending: 8,
 			ResponseTail: VoiceNotificationResponseTailConfig{
 				Enabled:      defaultBoolPtr(true),
 				MaxItems:     1,

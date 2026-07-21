@@ -16,13 +16,12 @@ func TestTTSUnavailableFallbackPathSelectsLocale(t *testing.T) {
 	t.Setenv(ttsUnavailableFallbackDirEnv, dir)
 
 	zhPath := ttsUnavailableFallbackPath(Config{
-		Locale:             "zh-CN",
-		VoiceNotifications: VoiceNotificationsConfig{DefaultLocale: "en-US"},
+		Locale: "zh-CN",
 	})
 	if want := filepath.Join(dir, ttsUnavailableFallbackChinese); zhPath != want {
 		t.Fatalf("zh fallback path = %q, want %q", zhPath, want)
 	}
-	enPath := ttsUnavailableFallbackPath(Config{VoiceNotifications: VoiceNotificationsConfig{DefaultLocale: "en-GB"}})
+	enPath := ttsUnavailableFallbackPath(Config{Locale: "en-US"})
 	if want := filepath.Join(dir, ttsUnavailableFallbackEnglish); enPath != want {
 		t.Fatalf("en fallback path = %q, want %q", enPath, want)
 	}
@@ -98,8 +97,7 @@ func TestServerFinalSpeechUsesFallbackWithoutTTSManager(t *testing.T) {
 	writeTestTTSFallback(t, dir, ttsUnavailableFallbackEnglish)
 
 	cfg := Config{
-		Locale:             "en-US",
-		VoiceNotifications: VoiceNotificationsConfig{DefaultLocale: "zh-CN"},
+		Locale: "en-US",
 	}
 	ops := &recordedAudioOps{}
 	server := &Server{

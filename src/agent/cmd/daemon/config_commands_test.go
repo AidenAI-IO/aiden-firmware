@@ -291,9 +291,8 @@ func TestWebConfigDTOMapsVoiceNotifications(t *testing.T) {
 	enabled := false
 	tailEnabled := false
 	voiceNotifications := agent.VoiceNotificationsConfig{
-		Enabled:       &enabled,
-		DefaultLocale: "en-US",
-		MaxPending:    6,
+		Enabled:    &enabled,
+		MaxPending: 6,
 		ResponseTail: agent.VoiceNotificationResponseTailConfig{
 			Enabled:      &tailEnabled,
 			MaxItems:     1,

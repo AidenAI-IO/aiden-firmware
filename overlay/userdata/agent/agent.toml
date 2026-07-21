@@ -93,7 +93,6 @@ api_key = "OPENAI_API_KEY"
 # Voice notifications follow a normal Agent reply; they never announce independently.
 [voice_notifications]
 # enabled = true
-# default_locale = "zh-CN"  # Legacy fallback; top-level locale takes precedence
 # max_pending = 8
 
 [voice_notifications.response_tail]

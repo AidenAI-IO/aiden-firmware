@@ -148,14 +148,11 @@ const (
 )
 
 type VoiceNotificationsConfig struct {
-	Enabled       *bool                               `toml:"enabled,omitempty"`
-	DefaultLocale string                              `toml:"default_locale,omitempty"`
-	MaxPending    int                                 `toml:"max_pending,omitempty"`
-	ResponseTail  VoiceNotificationResponseTailConfig `toml:"response_tail,omitempty"`
-	Expiration    VoiceNotificationExpirationConfig   `toml:"expiration,omitempty"`
+	Enabled      *bool                               `toml:"enabled,omitempty"`
+	MaxPending   int                                 `toml:"max_pending,omitempty"`
+	ResponseTail VoiceNotificationResponseTailConfig `toml:"response_tail,omitempty"`
+	Expiration   VoiceNotificationExpirationConfig   `toml:"expiration,omitempty"`
 }
-
-const defaultVoiceNotificationLocale = "zh-CN"
 
 type VoiceNotificationResponseTailConfig struct {
 	Enabled      *bool `toml:"enabled,omitempty"`
@@ -180,13 +177,6 @@ func (c VoiceNotificationsConfig) MaxPendingOrDefault() int {
 		return c.MaxPending
 	}
 	return 8
-}
-
-func (c VoiceNotificationsConfig) DefaultLocaleOrDefault() string {
-	if locale := strings.TrimSpace(c.DefaultLocale); locale != "" {
-		return locale
-	}
-	return defaultVoiceNotificationLocale
 }
 
 func (c VoiceNotificationResponseTailConfig) EnabledOrDefault() bool {
@@ -270,18 +260,14 @@ func WithVoiceNotificationLocale(locale string) VoiceNotificationManagerOption {
 // resolvedVoiceNotificationLocale is the single config seam for built-in
 // notification text, punctuation, and prerecorded fallback selection.
 func resolvedVoiceNotificationLocale(cfg Config) string {
-	locale := strings.TrimSpace(cfg.Locale)
-	if locale == "" {
-		locale = cfg.VoiceNotifications.DefaultLocaleOrDefault()
-	}
-	return normalizeVoiceNotificationLocale(locale)
+	return normalizeVoiceNotificationLocale(cfg.LocaleOrDefault())
 }
 
 func NewVoiceNotificationManager(config VoiceNotificationsConfig, opts ...VoiceNotificationManagerOption) *VoiceNotificationManager {
 	manager := &VoiceNotificationManager{
 		now:              time.Now,
 		config:           config,
-		locale:           normalizeVoiceNotificationLocale(defaultVoiceNotificationLocale),
+		locale:           normalizeVoiceNotificationLocale(defaultLocale),
 		records:          make(map[string]*voiceNotificationRecord),
 		deliveries:       make(map[string]voiceNotificationDelivery),
 		persistentTexts:  make(map[voiceNotificationPolicyKey]string),

@@ -500,8 +500,11 @@ func TestProcessUtteranceAppendsVoiceNotificationOnlyToSpokenText(t *testing.T) 
 	output := "Setup completed.\n<tts>Setup completed.</tts>"
 	model := &scriptedModel{responses: roleDirectResponses(output)}
 	store := NewChatHistoryStore(t.TempDir())
+	cfg := DefaultConfig()
+	cfg.Model = ModelConfig{Provider: "fake"}
+	cfg.Instruction = "Answer directly."
 	runtime := NewRuntimeWithDeps(
-		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."}),
+		withTestConfigDir(t, cfg),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -548,8 +551,11 @@ func TestProcessUtteranceAppendsVoiceNotificationOnlyToSpokenText(t *testing.T) 
 
 func TestProcessUtteranceKeepsVoiceNotificationPendingWithoutTTS(t *testing.T) {
 	model := &scriptedModel{responses: roleDirectResponses("Setup completed.")}
+	cfg := DefaultConfig()
+	cfg.Model = ModelConfig{Provider: "fake"}
+	cfg.Instruction = "Answer directly."
 	runtime := NewRuntimeWithDeps(
-		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."}),
+		withTestConfigDir(t, cfg),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},
@@ -582,8 +588,11 @@ func TestProcessUtteranceKeepsVoiceNotificationPendingWithoutTTS(t *testing.T) {
 
 func TestProcessTextInputKeepsVoiceNotificationPendingWithoutAudioClient(t *testing.T) {
 	model := &scriptedModel{responses: roleDirectResponses("Setup completed.\n<tts>Setup completed.</tts>")}
+	cfg := DefaultConfig()
+	cfg.Model = ModelConfig{Provider: "fake"}
+	cfg.Instruction = "Answer directly."
 	runtime := NewRuntimeWithDeps(
-		withTestConfigDir(t, Config{Model: ModelConfig{Provider: "fake"}, Instruction: "Answer directly."}),
+		withTestConfigDir(t, cfg),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},

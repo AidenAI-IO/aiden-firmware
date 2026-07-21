@@ -381,7 +381,6 @@ func TestVoiceNotificationManagerCapsActiveRecords(t *testing.T) {
 func TestRuntimeUsesDeviceLocaleForVoiceNotifications(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Locale = "en-US"
-	cfg.VoiceNotifications.DefaultLocale = "zh-CN"
 	cfg.VoiceNotifications.ResponseTail.MaxTextChars = 100
 	manager := NewRuntimeWithDeps(cfg, nil, nil, nil, NewSkillIndex()).VoiceNotifications()
 	ctx := context.Background()
@@ -400,9 +399,8 @@ func TestRuntimeUsesDeviceLocaleForVoiceNotifications(t *testing.T) {
 	}
 }
 
-func TestVoiceNotificationManagerLocaleInjectionOverridesLegacyConfig(t *testing.T) {
+func TestVoiceNotificationManagerLocaleInjectionUsesConfiguredDeviceLocale(t *testing.T) {
 	config := DefaultConfig().VoiceNotifications
-	config.DefaultLocale = "zh-CN"
 	config.ResponseTail.MaxTextChars = 100
 	manager := NewVoiceNotificationManager(
 		config,
@@ -491,7 +489,7 @@ func TestVoiceNotificationManagerDoesNotRankRecentDowngradeAsUpgrade(t *testing.
 
 func TestVoiceNotificationsConfigDefaultsAndValidation(t *testing.T) {
 	defaults := DefaultConfig().VoiceNotifications
-	if !defaults.EnabledOrDefault() || defaults.DefaultLocaleOrDefault() != "zh-CN" || defaults.MaxPendingOrDefault() != 8 {
+	if !defaults.EnabledOrDefault() || defaults.MaxPendingOrDefault() != 8 {
 		t.Fatalf("voice notification defaults = %#v", defaults)
 	}
 	if !defaults.ResponseTail.EnabledOrDefault() || defaults.ResponseTail.MaxItems != 1 || defaults.ResponseTail.MaxTextCharsOrDefault() != 40 {

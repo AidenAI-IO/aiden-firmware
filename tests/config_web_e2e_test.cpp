@@ -229,7 +229,7 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"channels\":1,\"bit_width\":16},"
         "\"audio_archive\":{\"enabled\":true,\"max_files\":500,\"max_size_mb\":100,"
         "\"storage_path\":\"/userdata/audio\"},"
-        "\"voice_notifications\":{\"enabled\":false,\"default_locale\":\"en-US\",\"max_pending\":6,"
+        "\"voice_notifications\":{\"enabled\":false,\"max_pending\":6,"
         "\"response_tail\":{\"enabled\":false,\"max_items\":1,\"max_text_chars\":72},"
         "\"expiration\":{\"default_ttl_seconds\":120,\"code_ttl_seconds\":{\"storage\":900}}},"
         "\"ota\":{\"github_proxy_url\":\"https://gh-proxy.com\"},"
@@ -768,7 +768,7 @@ TEST_CASE("config_web: GET /api/config reads resolved config from agent") {
 
     cJSON* voice_notifications = cJSON_GetObjectItem(config, "voice_notifications");
     REQUIRE(voice_notifications != nullptr);
-    CHECK(required_json_string(voice_notifications, "default_locale") == "zh-CN");
+    CHECK(cJSON_GetObjectItem(voice_notifications, "default_locale") == nullptr);
     CHECK(required_json_int(voice_notifications, "max_pending") == 8);
     cJSON* response_tail = cJSON_GetObjectItem(voice_notifications, "response_tail");
     REQUIRE(response_tail != nullptr);
@@ -1028,7 +1028,7 @@ TEST_CASE("config_web: POST /api/config preserves voice notification settings") 
 
     const std::string body =
         "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
-        "\"voice_notifications\":{\"enabled\":false,\"default_locale\":\"en-US\",\"max_pending\":6,"
+        "\"voice_notifications\":{\"enabled\":false,\"max_pending\":6,"
         "\"response_tail\":{\"enabled\":false,\"max_items\":1,\"max_text_chars\":72},"
         "\"expiration\":{\"default_ttl_seconds\":120,\"code_ttl_seconds\":{\"network\":123}}},"
         "\"hid\":{\"pointer_mode\":\"absolute\"},"
@@ -1038,7 +1038,7 @@ TEST_CASE("config_web: POST /api/config preserves voice notification settings") 
 
     const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
     CHECK(saved.find("[voice_notifications]") != std::string::npos);
-    CHECK(saved.find("default_locale = \"en-US\"") != std::string::npos);
+    CHECK(saved.find("default_locale") == std::string::npos);
     CHECK(saved.find("max_pending = 6") != std::string::npos);
     CHECK(saved.find("[voice_notifications.response_tail]") != std::string::npos);
     CHECK(saved.find("max_text_chars = 72") != std::string::npos);
@@ -1133,7 +1133,6 @@ TEST_CASE("config_web: GET /api/config returns ota and voice notification sectio
     CHECK(std::string(proxy_url->valuestring) == "https://gh-proxy.com");
     cJSON* voice_notifications = cJSON_GetObjectItem(config, "voice_notifications");
     REQUIRE(voice_notifications != nullptr);
-    CHECK(required_json_string(voice_notifications, "default_locale") == "en-US");
     CHECK(required_json_int(voice_notifications, "max_pending") == 6);
     cJSON* expiration = cJSON_GetObjectItem(voice_notifications, "expiration");
     REQUIRE(expiration != nullptr);

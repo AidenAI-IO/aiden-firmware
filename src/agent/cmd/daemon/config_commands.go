@@ -141,11 +141,10 @@ type audioArchiveDTO struct {
 }
 
 type voiceNotificationsDTO struct {
-	Enabled       *bool                            `json:"enabled"`
-	DefaultLocale string                           `json:"default_locale"`
-	MaxPending    int                              `json:"max_pending"`
-	ResponseTail  voiceNotificationResponseTailDTO `json:"response_tail"`
-	Expiration    voiceNotificationExpirationDTO   `json:"expiration"`
+	Enabled      *bool                            `json:"enabled"`
+	MaxPending   int                              `json:"max_pending"`
+	ResponseTail voiceNotificationResponseTailDTO `json:"response_tail"`
+	Expiration   voiceNotificationExpirationDTO   `json:"expiration"`
 }
 
 type voiceNotificationResponseTailDTO struct {
@@ -323,9 +322,8 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			StoragePath: d.AudioArchive.StoragePath,
 		},
 		VoiceNotifications: agent.VoiceNotificationsConfig{
-			Enabled:       d.VoiceNotifications.Enabled,
-			DefaultLocale: d.VoiceNotifications.DefaultLocale,
-			MaxPending:    d.VoiceNotifications.MaxPending,
+			Enabled:    d.VoiceNotifications.Enabled,
+			MaxPending: d.VoiceNotifications.MaxPending,
 			ResponseTail: agent.VoiceNotificationResponseTailConfig{
 				Enabled:      d.VoiceNotifications.ResponseTail.Enabled,
 				MaxItems:     d.VoiceNotifications.ResponseTail.MaxItems,
@@ -476,9 +474,8 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			StoragePath: audioArchive.StoragePathOrDefault(),
 		},
 		VoiceNotifications: voiceNotificationsDTO{
-			Enabled:       cfg.VoiceNotifications.Enabled,
-			DefaultLocale: cfg.VoiceNotifications.DefaultLocaleOrDefault(),
-			MaxPending:    cfg.VoiceNotifications.MaxPendingOrDefault(),
+			Enabled:    cfg.VoiceNotifications.Enabled,
+			MaxPending: cfg.VoiceNotifications.MaxPendingOrDefault(),
 			ResponseTail: voiceNotificationResponseTailDTO{
 				Enabled:      cfg.VoiceNotifications.ResponseTail.Enabled,
 				MaxItems:     cfg.VoiceNotifications.ResponseTail.MaxItems,

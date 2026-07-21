@@ -69,7 +69,6 @@ struct VoiceNotificationExpirationToml {
 
 struct VoiceNotificationsToml {
     bool enabled = true;
-    std::string default_locale = "zh-CN";
     int max_pending = 8;
     VoiceNotificationResponseTailToml response_tail;
     VoiceNotificationExpirationToml expiration;

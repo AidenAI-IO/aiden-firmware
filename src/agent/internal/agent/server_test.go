@@ -1273,12 +1273,12 @@ func TestServerSpeakToolContentUsesTTS(t *testing.T) {
 func TestServerAsyncChatAppendsVoiceNotificationOnlyToFinalSpeech(t *testing.T) {
 	streamingDisabled := false
 	model := &scriptedModel{responses: roleDirectResponses("Done.\n<tts>Done.</tts>")}
+	cfg := DefaultConfig()
+	cfg.Model = ModelConfig{Provider: "fake"}
+	cfg.Instruction = "Answer directly."
+	cfg.VoiceStreamingTTSEnabled = &streamingDisabled
 	runtime := NewRuntimeWithDeps(
-		withTestConfigDir(t, Config{
-			Model:                    ModelConfig{Provider: "fake"},
-			Instruction:              "Answer directly.",
-			VoiceStreamingTTSEnabled: &streamingDisabled,
-		}),
+		withTestConfigDir(t, cfg),
 		&testModelResolver{model: model},
 		NewMemoryManager(""),
 		&ToolSet{tools: map[string]langtools.Tool{}},

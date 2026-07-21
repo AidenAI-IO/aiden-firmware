@@ -386,7 +386,6 @@ void apply_kv(AgentToml& cfg,
         if (!sub_err.empty()) fail(sub_err);
     } else if (section == "voice_notifications") {
         if (key == "enabled") assign_bool(&cfg.voice_notifications.enabled, raw, &sub_err);
-        else if (key == "default_locale") assign_string(&cfg.voice_notifications.default_locale, raw, &sub_err);
         else if (key == "max_pending") assign_non_negative_int(&cfg.voice_notifications.max_pending, raw, &sub_err);
         if (!sub_err.empty()) fail(sub_err);
     } else if (section == "voice_notifications.response_tail") {
@@ -762,7 +761,6 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
 
     out << "[voice_notifications]\n";
     emit_bool(out, "enabled", cfg.voice_notifications.enabled);
-    emit_string(out, "default_locale", cfg.voice_notifications.default_locale);
     emit_int(out, "max_pending", cfg.voice_notifications.max_pending);
     out << "\n";
 

@@ -66,7 +66,7 @@ const char* kDefaultConfig =
     "\"channels\":1,\"bit_width\":16},"
     "\"audio_archive\":{\"enabled\":true,\"max_files\":500,\"max_size_mb\":100,"
     "\"storage_path\":\"/userdata/audio\"},"
-    "\"voice_notifications\":{\"enabled\":true,\"default_locale\":\"zh-CN\",\"max_pending\":8,"
+    "\"voice_notifications\":{\"enabled\":true,\"max_pending\":8,"
     "\"response_tail\":{\"enabled\":true,\"max_items\":1,\"max_text_chars\":40},"
     "\"expiration\":{\"default_ttl_seconds\":0,\"code_ttl_seconds\":{\"storage\":900}}},"
     "\"ota\":{\"github_proxy_url\":\"\"},"

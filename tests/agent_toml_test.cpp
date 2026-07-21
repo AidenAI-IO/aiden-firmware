@@ -272,7 +272,6 @@ TEST_CASE("agent_toml defaults missing android keyboard device for old configs")
 TEST_CASE("agent_toml round-trip preserves voice notification settings") {
     aiden::AgentToml cfg;
     cfg.voice_notifications.enabled = false;
-    cfg.voice_notifications.default_locale = "en-US";
     cfg.voice_notifications.max_pending = 6;
     cfg.voice_notifications.response_tail.enabled = false;
     cfg.voice_notifications.response_tail.max_items = 1;
@@ -289,6 +288,7 @@ TEST_CASE("agent_toml round-trip preserves voice notification settings") {
     std::ifstream saved_in(path);
     REQUIRE(saved_in.good());
     std::string saved((std::istreambuf_iterator<char>(saved_in)), std::istreambuf_iterator<char>());
+    CHECK(saved.find("default_locale") == std::string::npos);
     CHECK(saved.find("network = 123") != std::string::npos);
     CHECK(saved.find("storage = 900") == std::string::npos);
 
@@ -296,7 +296,6 @@ TEST_CASE("agent_toml round-trip preserves voice notification settings") {
     REQUIRE(aiden::load_agent_toml(path.c_str(), loaded, &err));
     REQUIRE(err.empty());
     CHECK(loaded.voice_notifications.enabled == false);
-    CHECK(loaded.voice_notifications.default_locale == "en-US");
     CHECK(loaded.voice_notifications.max_pending == 6);
     CHECK(loaded.voice_notifications.response_tail.enabled == false);
     CHECK(loaded.voice_notifications.response_tail.max_items == 1);

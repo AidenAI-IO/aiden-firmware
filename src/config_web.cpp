@@ -712,7 +712,6 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"audio_archive", "max_files", CONFIG_FIELD_NUMBER},
         {"audio_archive", "max_size_mb", CONFIG_FIELD_NUMBER},
         {"voice_notifications", "enabled", CONFIG_FIELD_BOOL},
-        {"voice_notifications", "default_locale", CONFIG_FIELD_STRING},
         {"voice_notifications", "max_pending", CONFIG_FIELD_NUMBER},
         {"voice_notifications", "response_tail", CONFIG_FIELD_OBJECT},
         {"voice_notifications", "expiration", CONFIG_FIELD_OBJECT},
@@ -2504,7 +2503,6 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
 
     cJSON* voice_notifications = add_object(root, "voice_notifications");
     cJSON_AddBoolToObject(voice_notifications, "enabled", config.voice_notifications.enabled ? 1 : 0);
-    cJSON_AddStringToObject(voice_notifications, "default_locale", config.voice_notifications.default_locale.c_str());
     cJSON_AddNumberToObject(voice_notifications, "max_pending", config.voice_notifications.max_pending);
     cJSON* response_tail = add_object(voice_notifications, "response_tail");
     cJSON_AddBoolToObject(response_tail, "enabled", config.voice_notifications.response_tail.enabled ? 1 : 0);
@@ -2834,7 +2832,6 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
     cJSON* voice_notifications = cJSON_GetObjectItem(root, "voice_notifications");
     if (json_is_object(voice_notifications)) {
         set_json_bool(&config->voice_notifications.enabled, voice_notifications, "enabled");
-        set_json_str(&config->voice_notifications.default_locale, voice_notifications, "default_locale");
         set_json_int(&config->voice_notifications.max_pending, voice_notifications, "max_pending");
 
         cJSON* response_tail = cJSON_GetObjectItem(voice_notifications, "response_tail");
