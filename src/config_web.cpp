@@ -204,7 +204,7 @@ std::string validate_proxy_url(const std::string& url);
 std::string lowercase_copy(const std::string& text);
 bool parse_decimal(const std::string& text, int min_value, int max_value, int* value);
 std::string parent_dir(const std::string& path);
-std::string llm_log_dir(const Options& options);
+std::string runtime_log_dir(const Options& options);
 std::string agent_log_path(const Options& options);
 bool mkdir_p(const std::string& dir, std::string* error);
 bool prepare_ota_update_log_file(const std::string& path, std::string* error);
@@ -1356,7 +1356,7 @@ HttpRequest parse_request(int client_fd, const Options& options) {
             int temp_fd = -1;
             std::string temp_path;
             std::string temp_error;
-            if (!create_temp_file_in_dir(llm_log_dir(options), "llm-log-upload-", 0644, &temp_fd, &temp_path, &temp_error)) {
+            if (!create_temp_file_in_dir(runtime_log_dir(options), "llm-log-upload-", 0644, &temp_fd, &temp_path, &temp_error)) {
                 set_request_error(&req, 500, "Internal Server Error",
                                   temp_error.empty() ? "failed to prepare import body file" : temp_error.c_str());
                 return req;
@@ -4375,10 +4375,9 @@ std::string url_decode(const std::string& in) {
     return out;
 }
 
-// llm_log_dir returns the directory holding the agent's raw LLM HTTP logs.
-// The agent writes them to <config_dir>/log (see runtime.go), so we derive
-// the directory from the config path the server was launched with.
-std::string llm_log_dir(const Options& options) {
+// runtime_log_dir returns the directory shared by the Agent main log and raw
+// LLM HTTP logs. Derive it from the config path the server was launched with.
+std::string runtime_log_dir(const Options& options) {
     std::string base = parent_dir(options.agent_config_path);
     if (base.empty()) {
         return "log";
@@ -4390,11 +4389,11 @@ std::string llm_log_dir(const Options& options) {
 }
 
 std::string agent_log_path(const Options& options) {
-    return llm_log_dir(options) + "/agent.log";
+    return runtime_log_dir(options) + "/agent.log";
 }
 
 std::string llm_log_path(const Options& options, const std::string& name) {
-    return llm_log_dir(options) + "/" + name;
+    return runtime_log_dir(options) + "/" + name;
 }
 
 // is_llm_log_name reports whether name is a plain llm-http-*.log filename with
@@ -4489,7 +4488,7 @@ ApiResponse handle_get_llm_logs(const Options& options) {
     cJSON_AddBoolToObject(root, "ok", 1);
     cJSON* files = add_array(root, "files");
 
-    const std::string dir_path = llm_log_dir(options);
+    const std::string dir_path = runtime_log_dir(options);
     DIR* dir = opendir(dir_path.c_str());
     if (dir) {
         // Collect matching names, then sort descending so the newest session
@@ -4598,7 +4597,7 @@ std::string episode_dir(const Options& options) {
 }
 
 std::string latest_llm_log_name(const Options& options) {
-    const std::string dir_path = llm_log_dir(options);
+    const std::string dir_path = runtime_log_dir(options);
     DIR* dir = opendir(dir_path.c_str());
     if (!dir) {
         return "";
@@ -4748,7 +4747,7 @@ ApiResponse handle_export_support_logs(const Options& options) {
         latest_llm_log_path(options),
         stage_dir + "/" + kSupportLogHttpName,
         "HTTP log",
-        "No llm-http-*.log files found under " + llm_log_dir(options) + ".\n",
+        "No llm-http-*.log files found under " + runtime_log_dir(options) + ".\n",
         kSupportLogHttpMaxBytes,
         &error);
     if (!staged) {

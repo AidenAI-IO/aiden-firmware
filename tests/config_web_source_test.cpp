@@ -225,8 +225,6 @@ TEST_CASE("config web exposes agent runtime status") {
     CHECK(source.find("query_agent_status") != std::string::npos);
     CHECK(source.find("check_tcp_port") != std::string::npos);
     CHECK(source.find("/var/log/agent/agent.log") == std::string::npos);
-    CHECK(source.find("std::string agent_log_path(const Options& options)") != std::string::npos);
-    CHECK(source.find("return llm_log_dir(options) + \"/agent.log\";") != std::string::npos);
 
     CHECK(html.find("<h2>Agent") != std::string::npos);
     CHECK(html.find("agentProcessStatus") != std::string::npos);
@@ -256,6 +254,9 @@ TEST_CASE("config web listens on all interfaces by default") {
     CHECK(source.find("const char* kAnyBindAddress = \"0.0.0.0\"") != std::string::npos);
     CHECK(source.find("bind_address == kAnyBindAddress") != std::string::npos);
     CHECK(script.find("--bind=0.0.0.0") != std::string::npos);
+    CHECK(script.find("CONFIG_DIR=${CONFIG_DIR:-/userdata/agent}") != std::string::npos);
+    CHECK(script.find("CONFIG_PATH=${CONFIG_PATH:-$CONFIG_DIR/agent.toml}") != std::string::npos);
+    CHECK(script.find(". \"$BOOT_CONF\"") != std::string::npos);
 }
 
 TEST_CASE("config web agent status review constraints") {

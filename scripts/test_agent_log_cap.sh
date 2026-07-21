@@ -5,10 +5,13 @@ repo_root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 tmp_dir=$(mktemp -d)
 trap 'rm -rf "$tmp_dir"' EXIT INT TERM
 
-grep -Fq 'LOG_PATH=${LOG_PATH:-$CONFIG_DIR/log/agent.log}' "$repo_root/overlay/etc/init.d/S53agent"
-
 log_path="$tmp_dir/agent.log"
 level_path="$tmp_dir/storage_level"
+config_dir="$tmp_dir/userdata/agent"
+
+CONFIG_DIR="$config_dir" sh "$repo_root/overlay/etc/init.d/S53agent" status |
+    grep -Fq "log_path=$config_dir/log/agent.log"
+
 printf '0123456789abcdef' > "$log_path"
 
 LOG_PATH="$log_path" STORAGE_LEVEL_PATH="$level_path" AGENT_LOG_MAX_BYTES=10 \

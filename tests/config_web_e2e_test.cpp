@@ -1763,6 +1763,7 @@ TEST_CASE("config_web: exports support log archive with langfuse agent and http 
 
     const std::string log_dir = handle->tmp_dir + "/log";
     REQUIRE(::mkdir(log_dir.c_str(), 0755) == 0);
+    write_file(log_dir + "/agent.log", "agent runtime log\n");
     write_file(log_dir + "/llm-http-20260701070000123.log", "old http log\n");
     write_file(log_dir + "/llm-http-20260701080000123.log", "new http log\n");
 
@@ -1795,6 +1796,9 @@ TEST_CASE("config_web: exports support log archive with langfuse agent and http 
 
     const std::string http_log = run_command_capture("LC_ALL=C tar -xOzf " + archive + " http.log");
     CHECK(http_log.find("new http log") != std::string::npos);
+
+    const std::string agent_log = run_command_capture("LC_ALL=C tar -xOzf " + archive + " agent.log");
+    CHECK(agent_log.find("agent runtime log") != std::string::npos);
 
     const std::string langfuse = run_command_capture("LC_ALL=C tar -xOzf " + archive + " langfuse.yaml");
     CHECK(langfuse.find("id: new") != std::string::npos);

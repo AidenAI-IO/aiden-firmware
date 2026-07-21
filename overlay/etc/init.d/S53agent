@@ -186,6 +186,7 @@ stop() {
 status() {
     wpid="$(watchdog_pid)"
     spid="$(service_pid)"
+    echo "log_path=$LOG_PATH"
     if is_running "$wpid"; then
         echo "watchdog=running pid=$wpid"
     else
