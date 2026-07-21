@@ -279,7 +279,8 @@ check "no partial files left on SD" [ -z "$partials" ]
 log "--- phase 2: no trigger above 10%"
 make_loop_image
 bsh "rm -f $SD_AUDIO/${PREFIX}*"
-bsh "dd if=/dev/zero of=$EMMC/audio/${PREFIX}01.wav bs=1M count=$FILE_MB 2>/dev/null && touch -t 202601010101 $EMMC/audio/${PREFIX}01.wav"
+bsh "dd if=/dev/zero of=$EMMC/audio/${PREFIX}01.wav bs=1M count=$FILE_MB 2>/dev/null && touch -t 202601010101 $EMMC/audio/${PREFIX}01.wav" \
+    || fatal "phase 2 test file generation failed"
 p2_pct="$(loop_free_pct)"; p2_pct="${p2_pct:-100}"
 log "  loop fs free (phase 2): ${p2_pct}%"
 [ "$p2_pct" -ge 10 ] || fatal "phase 2 setup unexpectedly below 10% (got ${p2_pct}%)"
