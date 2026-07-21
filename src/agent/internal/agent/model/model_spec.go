@@ -20,6 +20,8 @@ package model
 // auto mode (field omitted from the request). It is only a default: an explicit
 // model.reasoning_effort always wins.
 type ModelSpec struct {
+	Provider               string
+	Name                   string
 	ContextWindow          int
 	MaxOutput              int
 	DefaultTemperature     *float64

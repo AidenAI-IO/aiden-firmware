@@ -12,9 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tmc/langchaingo/chains"
 	"github.com/tmc/langchaingo/llms"
 	langtools "github.com/tmc/langchaingo/tools"
 
+	"aiden-agent/internal/agent/model"
 	ttsmodule "aiden-agent/internal/agent/tts"
 )
 
@@ -1438,6 +1440,16 @@ func (m *blockingFirstCallModel) Call(ctx context.Context, prompt string, option
 	}
 	return resp.Choices[0].Content, nil
 }
+
+func (m *blockingFirstCallModel) Spec() model.ModelSpec {
+	return model.ModelSpec{
+		Provider:      "fake",
+		Name:          "scripted",
+		ContextWindow: 100,
+	}
+}
+
+func (m *blockingFirstCallModel) CallOptions() []chains.ChainCallOption { return nil }
 
 func TestAudioDialogRunScriptUsesConfiguredTTS(t *testing.T) {
 	configDir := ensureTestConfigDir(t, t.TempDir())

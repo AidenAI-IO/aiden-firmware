@@ -25,14 +25,14 @@ var DefaultProtectRule = ProtectRule{
 
 type Compactor struct {
 	ProtectRule ProtectRule
-	Models      model.ModelResolver
+	Model       model.Model
 }
 
-func NewCompactor(protectRule ProtectRule, models model.ModelResolver) *Compactor {
+func NewCompactor(protectRule ProtectRule, model model.Model) *Compactor {
 	validateProtectRule(protectRule)
 	return &Compactor{
 		ProtectRule: protectRule,
-		Models:      models,
+		Model:       model,
 	}
 }
 
@@ -127,10 +127,6 @@ func (c *Compactor) generateSummary(ctx context.Context, messageList []contextma
 		return "", nil
 	}
 
-	model, err := c.Models.Get()
-	if err != nil {
-		return "", executor.MarkLLMCallError(err)
-	}
 	prompt := `
 Please summarize the conversation in a concised summary. Template:
 ## Goal
@@ -157,7 +153,7 @@ And here are the conversation details:
 
 ` + transcript.String()
 	// TODO: dynamic token budget for summary
-	result, err := llms.GenerateFromSinglePrompt(ctx, model, prompt, llms.WithMaxTokens(800))
+	result, err := llms.GenerateFromSinglePrompt(ctx, c.Model, prompt, llms.WithMaxTokens(800))
 	if err != nil {
 		return "", executor.MarkLLMCallError(err)
 	}

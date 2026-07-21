@@ -15,16 +15,14 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
-type testModelResolver struct {
-	model llms.Model
-	spec  model.ModelSpec
+type testModel struct {
+	llms.Model
+	model.ModelSpec
 }
 
-func (r *testModelResolver) Get() (llms.Model, error) { return r.model, nil }
+func (m *testModel) CallOptions() []chains.ChainCallOption { return nil }
 
-func (r *testModelResolver) CallOptions() []chains.ChainCallOption { return nil }
-
-func (r *testModelResolver) Spec() model.ModelSpec { return r.spec }
+func (m *testModel) Spec() model.ModelSpec { return m.ModelSpec }
 
 type promptCapturingModel struct {
 	prompts []string
@@ -90,7 +88,7 @@ func TestEstimateTokenUsageCountsToolPayloads(t *testing.T) {
 		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
 	}
 
-	compactor := NewCompactor(DefaultProtectRule, &testModelResolver{})
+	compactor := NewCompactor(DefaultProtectRule, &testModel{})
 	want := tokencounter.EstimateTextTokens(`{"input":"hello world"}`) + tokencounter.EstimateTextTokens(`{"output":"done"}`)
 	if got := compactor.EstimateTokenUsage(manager); got != want {
 		t.Fatalf("EstimateTokenUsage() = %d, want %d", got, want)
@@ -99,7 +97,7 @@ func TestEstimateTokenUsageCountsToolPayloads(t *testing.T) {
 
 func TestGenerateSummaryIncludesToolPayloads(t *testing.T) {
 	model := &promptCapturingModel{reply: "summary"}
-	compactor := NewCompactor(DefaultProtectRule, &testModelResolver{model: model})
+	compactor := NewCompactor(DefaultProtectRule, &testModel{Model: model})
 
 	got, err := compactor.generateSummary(context.Background(), []contextmanager.Message{
 		{
@@ -152,8 +150,8 @@ func TestCompactPreservesLLMFailureSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewContextManagerFromMessageList() error = %v", err)
 	}
-	compactor := NewCompactor(DefaultProtectRule, &testModelResolver{
-		model: failingSummaryModel{err: errors.New("API error 429: insufficient_quota")},
+	compactor := NewCompactor(DefaultProtectRule, &testModel{
+		Model: failingSummaryModel{err: errors.New("API error 429: insufficient_quota")},
 	})
 
 	_, _, err = compactor.Compact(context.Background(), manager)

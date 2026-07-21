@@ -28,6 +28,7 @@ const (
 	moonshotGlobalBaseURL = "https://api.moonshot.ai/v1"
 	moonshotCNBaseURL     = "https://api.moonshot.cn/v1"
 )
+
 type ModelManager struct {
 	config ModelConfig
 	proxy  ProxyConfig
@@ -84,7 +85,7 @@ func (m *ModelManager) activeSessionID() string {
 	return m.rawHTTPLogSessionID()
 }
 
-func (m *ModelManager) Get() (llms.Model, error) {
+func (m *ModelManager) get() (llms.Model, error) {
 	if m.model != nil {
 		return m.model, nil
 	}
@@ -95,6 +96,22 @@ func (m *ModelManager) Get() (llms.Model, error) {
 	}
 	m.model = built
 	return built, nil
+}
+
+func (m *ModelManager) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	model, err := m.get()
+	if err != nil {
+		return nil, err
+	}
+	return model.GenerateContent(ctx, messages, options...)
+}
+
+func (m *ModelManager) Call(ctx context.Context, prompt string, options ...llms.CallOption) (string, error) {
+	model, err := m.get()
+	if err != nil {
+		return "", err
+	}
+	return model.Call(ctx, prompt, options...)
 }
 
 func (m *ModelManager) CallOptions() []chains.ChainCallOption {
@@ -129,6 +146,10 @@ func (m *ModelManager) Spec() model.ModelSpec {
 			spec.MaxOutput = providerSpec.MaxOutput
 		}
 	}
+
+	spec.Provider = m.config.Provider
+	spec.Name = m.config.Model
+
 	return spec
 }
 
