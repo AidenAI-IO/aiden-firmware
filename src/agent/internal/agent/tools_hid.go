@@ -398,16 +398,17 @@ type HIDDevice struct {
 }
 
 type screenState struct {
-	mu                  sync.RWMutex
-	width               int
-	height              int
-	active              screenActiveArea
-	phoneScreen         PhoneScreenInfo
-	updatedAt           time.Time
-	screenshotJPEG      []byte
-	screenshotWidth     int
-	screenshotHeight    int
-	screenshotUpdatedAt time.Time
+	mu                   sync.RWMutex
+	width                int
+	height               int
+	active               screenActiveArea
+	phoneScreen          PhoneScreenInfo
+	updatedAt            time.Time
+	screenshotJPEG       []byte
+	screenshotWidth      int
+	screenshotHeight     int
+	screenshotUpdatedAt  time.Time
+	screenshotGeneration uint64
 }
 
 type screenMappingState struct {
@@ -1718,7 +1719,7 @@ func (t *WheelNudgeTool) Call(ctx context.Context, input string) (string, error)
 	if err != nil {
 		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 	}
-	if imageCalibrated && !plan.probe {
+	if imageCalibrated && !plan.probe && plan.tapY == nil {
 		plan.rows = wheelNudgeRowsForConfidentGap(plan.gap)
 		measurementSummary += " motion_profile=image_calibrated"
 	}
@@ -1904,32 +1905,36 @@ func parseWheelNudgeArgs(input string) (wheelNudgeArgs, error) {
 	return args, nil
 }
 
-func wheelNudgeRowsForGap(gap int) int {
+type wheelNudgeMotionProfile struct {
+	nearRows   int
+	mediumRows int
+	farRows    int
+}
+
+var (
+	wheelNudgeConservativeProfile = wheelNudgeMotionProfile{nearRows: 2, mediumRows: 3, farRows: 5}
+	wheelNudgeCalibratedProfile   = wheelNudgeMotionProfile{nearRows: 3, mediumRows: 4, farRows: 6}
+)
+
+func wheelNudgeRowsForGapWithProfile(gap int, profile wheelNudgeMotionProfile) int {
 	switch {
 	case gap <= 1:
 		return 1
 	case gap <= 4:
-		return min(gap, 2)
+		return min(gap, profile.nearRows)
 	case gap <= 8:
-		return min(gap, 3)
+		return min(gap, profile.mediumRows)
 	default:
-		return min(gap, 5)
+		return min(gap, profile.farRows)
 	}
 }
 
+func wheelNudgeRowsForGap(gap int) int {
+	return wheelNudgeRowsForGapWithProfile(gap, wheelNudgeConservativeProfile)
+}
+
 func wheelNudgeRowsForConfidentGap(gap int) int {
-	switch {
-	case gap <= 1:
-		return 1
-	case gap == 2:
-		return 2
-	case gap <= 4:
-		return min(gap, 3)
-	case gap <= 8:
-		return min(gap, 4)
-	default:
-		return min(gap, 6)
-	}
+	return wheelNudgeRowsForGapWithProfile(gap, wheelNudgeCalibratedProfile)
 }
 
 // MouseScrollTool sends mouse wheel events.

@@ -110,7 +110,7 @@ Strategy:
    - For stepped cyclic wheels, `cycle_size` is the numeric modulus rather than visible row count (for example `00..59` by fives still uses `cycle_size:60`, `value_step:5`)
    - If row ordering is unknown, omit `value_step` for the single-row probe
 3. Call `wheel_nudge` directly. Do not tap the selected row to expose keyboard/edit mode, and do not use `keyboard_text` or `keyboard_tap` to change picker values
-4. `wheel_nudge` validates that the target is reachable by `value_step`, requires a recent current-screen screenshot in the production tool set, measures repeated text-row geometry, overrides an inaccurate row-spacing estimate when confidence is sufficient, and derives the shortest direction and row gap internally. Confident image measurement enables at most 6/4/3/2/1 measured rows for gaps of 9+/5-8/3-4/2/1; low-confidence fallback remains at 5/3/2/1
+4. `wheel_nudge` validates that the target is reachable by `value_step`, requires a screenshot captured during the current Agent run, measures repeated text-row geometry, overrides an inaccurate row-spacing estimate when confidence is sufficient, and derives the shortest direction and row gap internally. Confident image measurement enables at most 6/4/3/2/1 measured rows for gaps of 9+/5-8/3-4/2/1; low-confidence fallback remains at 5/3/2/1
 5. When the target is an actually visible adjacent row, pass its exact `visible_target_y`; otherwise omit it and use the bounded drag path
 6. Wait for the returned screenshot and read the new centered value
 7. Continue from the new observation; if no movement occurred, retry one micro probe rather than repeating a large gesture

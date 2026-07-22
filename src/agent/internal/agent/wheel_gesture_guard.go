@@ -22,11 +22,12 @@ const (
 // wheelNudgeGuard is a run-scoped tool execution policy. It validates wheel
 // progress before execution and commits usage only after a successful result.
 type wheelNudgeGuard struct {
-	screen            *screenState
-	total             int
-	columns           []wheelNudgeColumnUsage
-	pendingWheel      *wheelNudgeAttempt
-	pendingNavigation string
+	screen                      *screenState
+	initialScreenshotGeneration uint64
+	total                       int
+	columns                     []wheelNudgeColumnUsage
+	pendingWheel                *wheelNudgeAttempt
+	pendingNavigation           string
 }
 
 type wheelNudgeColumnUsage struct {
@@ -64,7 +65,7 @@ type wheelNudgeObservation struct {
 }
 
 func newWheelNudgeGuard(screen *screenState) *wheelNudgeGuard {
-	return &wheelNudgeGuard{screen: screen}
+	return &wheelNudgeGuard{screen: screen, initialScreenshotGeneration: screen.ScreenshotGeneration()}
 }
 
 func (g *wheelNudgeGuard) BeforeToolCall(_ context.Context, call ToolCall) (ToolResult, bool) {
@@ -86,6 +87,12 @@ func (g *wheelNudgeGuard) BeforeToolCall(_ context.Context, call ToolCall) (Tool
 		return ToolResult{}, true
 	}
 	g.pendingWheel = nil
+	if g.screen != nil && g.screen.ScreenshotGeneration() <= g.initialScreenshotGeneration {
+		return invalidWheelResult(
+			"wheel_nudge requires a fresh screenshot captured during the current task before moving a picker",
+			map[string]any{"fresh_screenshot_required": true},
+		), false
+	}
 
 	args, err := parseWheelNudgeArgs(call.Input)
 	if err != nil {

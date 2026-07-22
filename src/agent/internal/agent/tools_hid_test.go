@@ -190,6 +190,69 @@ func TestWheelNudgeUsesConfidentImageMotionProfileForLargeGap(t *testing.T) {
 	}
 }
 
+func TestWheelNudgeUsesConservativeProfileWhenImageMeasurementRejected(t *testing.T) {
+	dev, _ := newTestHIDDevice(t)
+	screen := &screenState{}
+	screen.UpdateActiveArea(500, 1000, screenActiveArea{})
+	screen.UpdateScreenshot(uniformWheelScreenshotJPEG(t, 500, 1000), 500, 1000)
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: screen, durationMs: 1}
+
+	out, err := tool.Call(context.Background(), `{"picker_id":"alarm-create","column_x":600,"current_value":57,"target_value":9,"cycle_size":60,"cycle_start":0,"row_spacing":35,"value_step":1,"center_y":300}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "rows=5") || !strings.Contains(out, "physical_travel=175") {
+		t.Fatalf("Call output = %q, want conservative five-row travel", out)
+	}
+	if strings.Contains(out, "motion_profile=image_calibrated") {
+		t.Fatalf("Call output = %q, low-confidence image must not enable calibrated motion", out)
+	}
+}
+
+func TestWheelNudgeMotionProfileBoundaries(t *testing.T) {
+	tests := []struct {
+		gap          int
+		conservative int
+		calibrated   int
+	}{
+		{gap: 1, conservative: 1, calibrated: 1},
+		{gap: 2, conservative: 2, calibrated: 2},
+		{gap: 3, conservative: 2, calibrated: 3},
+		{gap: 4, conservative: 2, calibrated: 3},
+		{gap: 5, conservative: 3, calibrated: 4},
+		{gap: 8, conservative: 3, calibrated: 4},
+		{gap: 9, conservative: 5, calibrated: 6},
+		{gap: 12, conservative: 5, calibrated: 6},
+	}
+	for _, tt := range tests {
+		if got := wheelNudgeRowsForGap(tt.gap); got != tt.conservative {
+			t.Errorf("wheelNudgeRowsForGap(%d) = %d, want %d", tt.gap, got, tt.conservative)
+		}
+		if got := wheelNudgeRowsForConfidentGap(tt.gap); got != tt.calibrated {
+			t.Errorf("wheelNudgeRowsForConfidentGap(%d) = %d, want %d", tt.gap, got, tt.calibrated)
+		}
+	}
+}
+
+func TestWheelNudgeTapDoesNotReportCalibratedDragProfile(t *testing.T) {
+	dev, _ := newTestHIDDevice(t)
+	screen := &screenState{}
+	screen.UpdateActiveArea(500, 1000, screenActiveArea{})
+	screen.UpdateScreenshot(syntheticWheelPickerJPEG(t, 500, 1000, 300, 300, 40), 500, 1000)
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: screen, durationMs: 1}
+
+	out, err := tool.Call(context.Background(), `{"picker_id":"alarm-create","column_x":600,"current_value":8,"target_value":9,"cycle_size":60,"cycle_start":0,"row_spacing":40,"value_step":1,"center_y":300,"visible_target_y":340}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "interaction=tap") {
+		t.Fatalf("Call output = %q, want adjacent-row tap", out)
+	}
+	if strings.Contains(out, "motion_profile=image_calibrated") {
+		t.Fatalf("Call output = %q, tap must not report a drag profile", out)
+	}
+}
+
 func TestWheelNudgeRequiresFreshScreenshotWhenConfigured(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := &WheelNudgeTool{
@@ -248,6 +311,19 @@ func syntheticWheelPickerJPEG(t *testing.T, width, height, columnX, centerY, spa
 	var encoded bytes.Buffer
 	if err := jpeg.Encode(&encoded, img, &jpeg.Options{Quality: 90}); err != nil {
 		t.Fatalf("encode synthetic picker: %v", err)
+	}
+	return encoded.Bytes()
+}
+
+func uniformWheelScreenshotJPEG(t *testing.T, width, height int) []byte {
+	t.Helper()
+	img := image.NewGray(image.Rect(0, 0, width, height))
+	for index := range img.Pix {
+		img.Pix[index] = 24
+	}
+	var encoded bytes.Buffer
+	if err := jpeg.Encode(&encoded, img, &jpeg.Options{Quality: 90}); err != nil {
+		t.Fatalf("encode uniform wheel screenshot: %v", err)
 	}
 	return encoded.Bytes()
 }

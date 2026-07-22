@@ -34,7 +34,17 @@ func (s *screenState) UpdateScreenshot(jpegData []byte, width, height int) {
 	s.screenshotWidth = width
 	s.screenshotHeight = height
 	s.screenshotUpdatedAt = time.Now()
+	s.screenshotGeneration++
 	s.mu.Unlock()
+}
+
+func (s *screenState) ScreenshotGeneration() uint64 {
+	if s == nil {
+		return 0
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.screenshotGeneration
 }
 
 func (s *screenState) LatestScreenshot(maxAge time.Duration) (jpegData []byte, width, height int, age time.Duration, ok bool) {
