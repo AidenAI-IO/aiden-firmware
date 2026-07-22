@@ -510,7 +510,7 @@ func TestTouchGestureSchemaDoesNotExposeWheelMetadata(t *testing.T) {
 	}
 }
 
-func TestWheelNudgeDescriptionDefinesAdaptiveTravelAndKeyboardFirst(t *testing.T) {
+func TestWheelNudgeDescriptionDefinesAdaptiveTravelAndConservativeInput(t *testing.T) {
 	description := (&WheelNudgeTool{}).Description()
 	for _, want := range []string{
 		"tap or slow drag",
@@ -521,8 +521,9 @@ func TestWheelNudgeDescriptionDefinesAdaptiveTravelAndKeyboardFirst(t *testing.T
 		"never substitute an intermediate visible value",
 		"normalized 0-1000 coordinates",
 		"screenshot height",
-		"tap the selected current value",
-		"keyboard_text",
+		"Use wheel_nudge directly from the latest screenshot",
+		"Do not tap the selected row",
+		"do not use keyboard_text for picker values",
 		"derives the shortest row gap",
 	} {
 		if !strings.Contains(description, want) {
@@ -1725,22 +1726,20 @@ func TestKeyboardTextDescriptionWarnsAgainstNonASCII(t *testing.T) {
 	}
 }
 
-func TestKeyboardTextDescriptionDefinesNumericPickerFallback(t *testing.T) {
+func TestKeyboardTextDescriptionRejectsNumericPickerInput(t *testing.T) {
 	desc := (&KeyboardTextTool{}).Description()
 	for _, want := range []string{
-		"numeric picker",
-		"prefer this before wheel_nudge",
-		"latest screenshot visibly shows",
-		"one verified attempt",
-		"do not switch back to keyboard input",
+		"Do not use keyboard_text for picker/wheel values",
+		"use wheel_nudge",
+		"verify each returned screenshot",
 	} {
 		if !strings.Contains(desc, want) {
-			t.Fatalf("description missing picker fallback guidance %q:\n%s", want, desc)
+			t.Fatalf("description missing conservative picker guidance %q:\n%s", want, desc)
 		}
 	}
 }
 
-func TestDeviceOperatorSkillDefinesKeyboardToWheelFallback(t *testing.T) {
+func TestDeviceOperatorSkillUsesWheelOnlyForPickers(t *testing.T) {
 	skillPath := filepath.Join("..", "..", "config", "skills", "device-operator", "SKILL.md")
 	data, err := os.ReadFile(skillPath)
 	if err != nil {
@@ -1748,30 +1747,27 @@ func TestDeviceOperatorSkillDefinesKeyboardToWheelFallback(t *testing.T) {
 	}
 	content := string(data)
 	for _, want := range []string{
-		"before the first `wheel_nudge` on that picker",
-		"do not infer that keyboard entry is unsupported merely because the keyboard is initially hidden",
-		"one verified keyboard attempt",
-		"fresh post-action screenshot",
-		"fall back to `wheel_nudge`",
-		"Do not repeat blind keyboard input",
-		"do not switch back to keyboard input",
+		"use `wheel_nudge` directly from the latest screenshot",
+		"Do not tap the selected row to probe for keyboard/edit mode",
+		"do not use `keyboard_text` for picker values",
+		"do not use `keyboard_text` or `keyboard_tap` to change picker values",
+		"issue one bounded `wheel_nudge`, then read the returned screenshot",
 	} {
 		if !strings.Contains(content, want) {
-			t.Fatalf("device-operator SKILL.md missing keyboard fallback guidance %q", want)
+			t.Fatalf("device-operator SKILL.md missing conservative picker guidance %q", want)
 		}
 	}
 }
 
-func TestTouchGestureDescriptionDefinesNumericPickerEditProbe(t *testing.T) {
+func TestTouchGestureDescriptionReservesPickerForWheelNudge(t *testing.T) {
 	desc := (&TouchGestureTool{}).Description()
 	for _, want := range []string{
-		"Before the first wheel_nudge on a numeric picker",
-		"selected center row",
-		"even when the keyboard is initially hidden",
-		"use keyboard_text once if edit mode appears",
+		"Do not tap picker rows to probe for keyboard/edit mode",
+		"do not drag picker columns with this tool",
+		"use wheel_nudge for the entire picker interaction",
 	} {
 		if !strings.Contains(desc, want) {
-			t.Fatalf("touch_gesture description missing numeric picker edit probe guidance %q:\n%s", want, desc)
+			t.Fatalf("touch_gesture description missing wheel ownership guidance %q:\n%s", want, desc)
 		}
 	}
 }
