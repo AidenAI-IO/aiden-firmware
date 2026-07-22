@@ -112,90 +112,36 @@ It is recommended to use normalized coordinates (`0..1000`, with center at `500,
 For dense targets such as small buttons, list items, and input boxes, prioritize estimating the normalized coordinates of the target center; only explicitly pass `coord_space: "pixel"` when the screenshot pixel coordinates and HID touch coordinates are already calibrated. After successful input tool execution, a post-action screenshot is returned; screen changes should be confirmed before proceeding to avoid duplicate clicks.
 `keyboard_text` simulates a US keyboard and can only input ASCII typeable characters; Chinese input should be completed through pinyin/English search terms and on-screen candidates, and Chinese character strings cannot be passed directly to the tool.
 
-## On-demand iOS keyboard profile
+## iOS AssistiveTouch modifier isolation
 
-The on-demand profile is used on iOS with AssistiveTouch when the software
-keyboard must remain available while Aiden is idle. Enable it with:
+On iOS, AssistiveTouch can make modifier routing unstable when an external
+keyboard and pointer are advertised by the same USB composite. Plain key input
+may work while shortcuts such as `Cmd+A` or `Cmd+V` are ignored.
 
-```toml
-[hid]
-pointer_mode = "absolute"
-input_backend = "hid"
-dynamic_keyboard = true
-dynamic_keyboard_control = "/oem/usr/bin/aiden-dynamic-keyboard"
-```
+When `hid.pointer_mode = "absolute"`, firmware builds that include
+`/oem/usr/bin/aiden-dynamic-keyboard` automatically isolate only keyboard taps
+that contain Ctrl, Shift, Option/Alt, or Cmd/Meta. Plain key taps,
+`keyboard_text`, pointer input, and Consumer Control continue to use the normal
+keyboard + pointer + Consumer Control + ECM composite.
 
-At boot, this profile exposes only the absolute mouse and ECM functions. It
-does not link the standard keyboard or Consumer Control function into the
-active USB configuration. A keyboard operation switches to an isolated
-keyboard + ECM profile; the AssistiveTouch pointer is deliberately absent so
-iOS cannot route modifier chords through the pointer session. The mouse profile
-is restored immediately when that keyboard tool or high-level input transaction
-finishes, fails, or is canceled; it is not held down for the whole conversational
-Agent run. A high-level text-entry transaction may switch back to mouse + ECM
-for a focus click or paste-menu fallback, then return to keyboard + ECM for the
-next keystroke. Both dynamic profiles omit
-`hid.usb2`, so media and Android extension keys are not host-visible.
+Immediately before a modifier shortcut, the Agent switches the single USB
+gadget to keyboard + ECM only. After key release, including error and
+cancellation paths, it restores the normal composite. The isolated profile uses
+a distinct USB product ID and serial number so iOS does not reuse the
+pointer-bearing descriptor for the shortcut.
 
-The Luckfox board has one UDC, so this is a full gadget profile switch rather
-than an independent pointer-interface hotplug. The USB cable stays connected,
-but the whole composite gadget briefly disconnects and re-enumerates on each
-transition; therefore iOS may still log a hardware-keyboard detach/attach even
-though removing the pointer is the behavioral goal. The two profiles use
-different product IDs and serial numbers to prevent iOS from reusing a cached
-descriptor from the other profile.
-Use `pointer_mode = "absolute"` for iOS AssistiveTouch; touchscreen Digitizer
-reports are intended for Android and are not accepted as taps by the tested iOS
-device. Dynamic keyboard mode requires `input_backend = "hid"`.
-
-Inspect or switch the profile manually on the board:
+The Luckfox board has one UDC, so isolation and restore briefly disconnect the
+complete composite, including ECM. The dynamic controller and ECM watchdog
+share `/run/aiden_dynamic_keyboard.lock` to prevent overlapping UDC resets.
+Inspect or exercise the profiles manually with:
 
 ```bash
 /oem/usr/bin/aiden-dynamic-keyboard status
-/oem/usr/bin/aiden-dynamic-keyboard on
-/oem/usr/bin/aiden-dynamic-keyboard off
+/oem/usr/bin/aiden-dynamic-keyboard isolate
+/oem/usr/bin/aiden-dynamic-keyboard restore
 ```
 
-Because ECM disappears during each switch, run the first end-to-end Agent test
-through the board-local HTTP endpoint instead of from the Mac:
-
-```bash
-curl -X POST http://127.0.0.1:8080/api/tools/keyboard_text \
-  -H 'Content-Type: application/json' \
-  -d '{"input":{"text":"Aiden123"}}'
-```
-
-After the call, `status` should report `mode=off`, the linked functions should
-be `hid.usb1` and `ecm.usb0`, and refocusing an iOS text field should show the
-software keyboard again. Validate mouse clicks and ECM recovery separately. A
-successful HTTP tool result confirms the board transaction, but HDMI or direct
-iOS observation is still required to confirm that all characters arrived.
-
-When deploying the profile manually, copy the startup-script backup outside
-`/etc/init.d` (for example `/root/S49usbhid.backup`). Buildroot executes files
-matching `/etc/init.d/S??*`; a backup left there can silently run at boot and
-restore the old keyboard-present profile.
-
-## iOS shortcut paste prerequisite
-
-On iOS, HID text input and HID keyboard shortcuts are separate failure domains. `keyboard_text` can successfully type ASCII while shortcuts such as paste (`keyboard_tap` with `["meta","v"]` / `Cmd+V`) still have no UI effect.
-
-The keyboard HID function is advertised as a boot keyboard (`protocol=1`, `subclass=1`) for broad host compatibility. If iOS retains a stale external-keyboard session, it may accept plain keycodes while ignoring modifier chords; symptoms include `Shift+1` producing `1` instead of `!`, and `Cmd+A` / `Cmd+V` doing nothing. The on-demand keyboard-only profile performs the required clean re-enumeration for each keyboard transaction, so validate the active profile before chasing HID timing or key mappings.
-
-For suspected USB stalls, capture the current watchdog snapshot:
-
-```bash
-/etc/init.d/S60usb_ecm_watchdog snapshot
-```
-
-The watchdog intentionally preserves normal `configured` transitions. ECM ARP probe failures are diagnostic-only because a transient or unsupported ARP response is not proof that the USB HID session is stale. It does not expose a composite refresh path: forced resets can leave `/dev/hidg0` or `/dev/hidg1` present but unopenable until the phone fully re-enumerates the interfaces. Dynamic keyboard profile changes are owned by `aiden-dynamic-keyboard`; for a genuinely wedged USB session, physically reconnect or power-cycle the device before continuing HID input.
-
-Before validating shortcut-based paste on iPhone or iPad, turn on:
-
-```text
-Settings > Accessibility > Keyboards & Typing > Full Keyboard Access
-```
-
-On some iOS versions this path may be shown as `Settings > Accessibility > Keyboards > Full Keyboard Access`.
-
-Use HDMI visual feedback after the shortcut. A successful `/dev/hidg0` write only means the HID report was accepted by the device node; it does not prove that iOS executed the paste action. If clipboard content is known to be present and plain typing works but `meta+v` / `rmeta+v` does nothing, check Full Keyboard Access first before changing HID timing or retrying the same shortcut path.
+After any test, `status` should report `mode=normal` and list `hid.usb0`,
+`hid.usb1`, `hid.usb2`, and `ecm.usb0`. Use HDMI visual feedback to verify the
+shortcut effect; a successful `/dev/hidg0` write only proves that the gadget
+accepted the HID report.

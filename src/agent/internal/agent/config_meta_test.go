@@ -230,8 +230,6 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"hid.keyboard_device", defaults.HID.KeyboardDevice},
 		{"hid.mouse_device", defaults.HID.MouseDevice},
 		{"hid.android_keyboard_device", defaults.HID.AndroidKeyboardDevice},
-		{"hid.dynamic_keyboard", defaults.HID.DynamicKeyboard},
-		{"hid.dynamic_keyboard_control", defaults.HID.DynamicKeyboardControlOrDefault()},
 		{"hid.frame_socket", defaults.HID.FrameSocket},
 		{"hid.pointer_mode", defaults.HID.PointerMode},
 		{"hid.input_backend", defaults.HID.InputBackend},

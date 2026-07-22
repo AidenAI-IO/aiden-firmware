@@ -70,8 +70,6 @@ struct HIDToml {
     std::string frame_socket = "/run/frame_service/frame_service.sock";
     std::string pointer_mode = "absolute";
     std::string input_backend = "hid";
-    bool dynamic_keyboard = false;
-    std::string dynamic_keyboard_control = "/oem/usr/bin/aiden-dynamic-keyboard";
 };
 
 struct SearchToml {

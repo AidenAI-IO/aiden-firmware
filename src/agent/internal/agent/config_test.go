@@ -49,57 +49,6 @@ func TestConfigValidateRejectsRemovedAudioMode(t *testing.T) {
 	}
 }
 
-func TestConfigValidateDynamicKeyboardRequirements(t *testing.T) {
-	tests := []struct {
-		name    string
-		hid     HIDConfig
-		wantErr string
-	}{
-		{
-			name: "absolute mouse HID accepted",
-			hid: HIDConfig{
-				DynamicKeyboard: true,
-				PointerMode:     "absolute",
-				InputBackend:    "hid",
-			},
-		},
-		{
-			name: "touchscreen rejected",
-			hid: HIDConfig{
-				DynamicKeyboard: true,
-				PointerMode:     "touchscreen",
-				InputBackend:    "hid",
-			},
-			wantErr: "hid.dynamic_keyboard requires hid.pointer_mode=absolute",
-		},
-		{
-			name: "ADB backend rejected",
-			hid: HIDConfig{
-				DynamicKeyboard: true,
-				PointerMode:     "touchscreen",
-				InputBackend:    "adb",
-			},
-			wantErr: "hid.dynamic_keyboard requires hid.input_backend=hid",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := Config{Model: ModelConfig{Provider: "fake"}, HID: tt.hid}
-			err := cfg.Validate()
-			if tt.wantErr == "" {
-				if err != nil {
-					t.Fatalf("Validate() error = %v", err)
-				}
-				return
-			}
-			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("Validate() error = %v, want %q", err, tt.wantErr)
-			}
-		})
-	}
-}
-
 func TestConfigInputModeDefaultContract(t *testing.T) {
 	const want = "text"
 

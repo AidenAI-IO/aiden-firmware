@@ -385,8 +385,6 @@ void apply_kv(AgentToml& cfg,
         else if (key == "frame_socket") assign_string(&cfg.hid.frame_socket, raw, &sub_err);
         else if (key == "pointer_mode") assign_string(&cfg.hid.pointer_mode, raw, &sub_err);
         else if (key == "input_backend") assign_string(&cfg.hid.input_backend, raw, &sub_err);
-        else if (key == "dynamic_keyboard") assign_bool(&cfg.hid.dynamic_keyboard, raw, &sub_err);
-        else if (key == "dynamic_keyboard_control") assign_string(&cfg.hid.dynamic_keyboard_control, raw, &sub_err);
         if (!sub_err.empty()) fail(sub_err);
     } else if (section == "search") {
         if (key == "provider") assign_string(&cfg.search.provider, raw, &sub_err);
@@ -744,10 +742,6 @@ bool save_agent_toml(const char* path, const AgentToml& cfg, std::string* error)
     emit_string(out, "frame_socket", cfg.hid.frame_socket);
     if (!cfg.hid.pointer_mode.empty()) emit_string(out, "pointer_mode", cfg.hid.pointer_mode);
     if (!cfg.hid.input_backend.empty()) emit_string(out, "input_backend", cfg.hid.input_backend);
-    emit_bool(out, "dynamic_keyboard", cfg.hid.dynamic_keyboard);
-    if (!cfg.hid.dynamic_keyboard_control.empty()) {
-        emit_string(out, "dynamic_keyboard_control", cfg.hid.dynamic_keyboard_control);
-    }
     out << "\n";
 
     out << "[search]\n";

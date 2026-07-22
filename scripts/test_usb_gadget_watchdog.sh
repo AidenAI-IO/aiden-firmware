@@ -12,24 +12,28 @@ fail() {
 sh -n "$WATCHDOG" || fail "S60usb_ecm_watchdog has invalid shell syntax"
 
 grep -Fq 'STATE_FILE=' "$WATCHDOG" ||
-    fail "watchdog must persist structured diagnostics"
+    fail "watchdog must persist last refresh diagnostics"
 
 grep -Fq 'log_snapshot()' "$WATCHDOG" ||
     fail "watchdog must expose USB/HID/ECM state snapshots"
 
-grep -Fq 'write_watchdog_state()' "$WATCHDOG" ||
-    fail "watchdog must write structured diagnostic state"
+grep -Fq 'write_refresh_state()' "$WATCHDOG" ||
+    fail "watchdog must write structured refresh state"
 
-grep -Fq 'ECM stall detected; preserving HID session (diagnostic only)' "$WATCHDOG" ||
-    fail "watchdog_main must preserve HID when ECM probes fail"
+grep -Fq 'reset_composite()' "$WATCHDOG" ||
+    fail "watchdog must recover by resetting the composite gadget"
 
-grep -Fq 'write_watchdog_state "ECM stall" "observed"' "$WATCHDOG" ||
-    fail "watchdog_main must persist suppressed ECM reset diagnostics"
+grep -Fq 'GADGET_SWITCH_LOCK_DIR=/run/aiden_dynamic_keyboard.lock' "$WATCHDOG" ||
+    fail "watchdog and iOS keyboard isolation must share the gadget switch lock"
 
-if grep -Fq 'reset_composite' "$WATCHDOG" ||
-    grep -Fq 'refresh)' "$WATCHDOG"; then
-    fail "watchdog must not expose legacy composite reset paths"
-fi
+grep -Fq 'acquire_gadget_switch_lock || return 1' "$WATCHDOG" ||
+    fail "watchdog must defer resets while the iOS keyboard profile is switching"
+
+grep -Fq 'release_gadget_switch_lock' "$WATCHDOG" ||
+    fail "watchdog must release the shared gadget switch lock after reset"
+
+grep -Fq 'reset_composite "ECM stall"' "$WATCHDOG" ||
+    fail "watchdog_main must reset the composite gadget on ECM stalls"
 
 grep -Fq 'UDC state changed:' "$WATCHDOG" ||
     fail "watchdog_main must track host UDC state transitions"
@@ -46,11 +50,29 @@ if grep -Fq 'configured_refresh_pending=1' "$WATCHDOG" ||
     fail "watchdog must not automatically refresh the composite gadget after healthy host configuration"
 fi
 
-grep -Fq 'write_watchdog_state "watchdog start" "monitoring"' "$WATCHDOG" ||
-    fail "watchdog start must replace legacy state with current diagnostic state"
+grep -Fq 'refresh) reset_composite "manual refresh" ;;' "$WATCHDOG" ||
+    fail "watchdog must expose a manual refresh command for stale HID sessions"
 
-grep -Fq 'write_watchdog_state "manual snapshot" "observed"' "$WATCHDOG" ||
-    fail "watchdog must expose a non-mutating snapshot command for incident capture"
+grep -Fq 'snapshot) log_snapshot "manual snapshot"; cat "$STATE_FILE" 2>/dev/null || true ;;' "$WATCHDOG" ||
+    fail "watchdog must expose a non-refreshing snapshot command for incident capture"
+
+grep -Fq 'echo "" > "$GADGET_UDC"' "$WATCHDOG" ||
+    fail "watchdog must unbind the UDC during composite recovery"
+
+grep -Fq 'echo "$UDC_NAME" > "$GADGET_UDC"' "$WATCHDOG" ||
+    fail "watchdog must rebind the UDC during composite recovery"
+
+grep -Fq 'UDC did not reach configured state after composite reset' "$WATCHDOG" ||
+    fail "watchdog reset must fail when the gadget never reaches configured"
+
+grep -Fq 'ifconfig usb0 "$USB0_ADDR" netmask "$USB0_NETMASK" up' "$WATCHDOG" ||
+    fail "watchdog must restore usb0 after composite recovery"
+
+grep -Fq 'log_snapshot "before reset ($reason)"' "$WATCHDOG" ||
+    fail "watchdog must log state before composite recovery"
+
+grep -Fq 'log_snapshot "after reset ($reason)"' "$WATCHDOG" ||
+    fail "watchdog must log state after composite recovery"
 
 grep -Fq '"$0" _watchdog </dev/null >/dev/null 2>&1 &' "$WATCHDOG" ||
     fail "watchdog must start the loop through a detached _watchdog subprocess"

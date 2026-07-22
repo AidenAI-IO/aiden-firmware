@@ -232,9 +232,7 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"ota\":{\"github_proxy_url\":\"https://gh-proxy.com\"},"
         "\"hid\":{\"keyboard_device\":\"/dev/hidg0\",\"mouse_device\":\"/dev/hidg1\","
         "\"android_keyboard_device\":\"/dev/hidg2\","
-        "\"frame_socket\":\"/run/frame_service/frame_service.sock\",\"pointer_mode\":\"absolute\","
-        "\"input_backend\":\"hid\",\"dynamic_keyboard\":true,"
-        "\"dynamic_keyboard_control\":\"/oem/usr/bin/aiden-dynamic-keyboard\"},"
+        "\"frame_socket\":\"/run/frame_service/frame_service.sock\",\"pointer_mode\":\"absolute\"},"
         "\"search\":{\"provider\":\"") + search_provider + "\",\"has_api_key\":" +
         (search_has_api_key ? "true" : "false") +
         "},"
@@ -1035,29 +1033,6 @@ TEST_CASE("config_web: POST /api/config writes ota section") {
     const std::string saved = saved_buffer.str();
     CHECK(saved.find("[ota]") != std::string::npos);
     CHECK(saved.find("github_proxy_url = \"https://gh-proxy.com\"") != std::string::npos);
-}
-
-TEST_CASE("config_web: POST /api/config preserves dynamic keyboard settings") {
-    auto tmp = make_temp_dir();
-    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
-        const_cast<char*>(tmp.c_str()),
-        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
-    );
-    write_file(tmp + "/config.json", resolved_config_json("duckduckgo", false));
-    StubEnv env;
-    env.set("AIDEN_AGENT_STUB_CONFIG_FILE", tmp + "/config.json");
-    auto handle = start_server(env);
-
-    const std::string body =
-        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
-        "\"hid\":{\"pointer_mode\":\"absolute\"},"
-        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
-    HttpResponse resp = http_request(handle->port, "POST", "/api/config", body);
-    CHECK(resp.status == 200);
-
-    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
-    CHECK(saved.find("dynamic_keyboard = true") != std::string::npos);
-    CHECK(saved.find("dynamic_keyboard_control = \"/oem/usr/bin/aiden-dynamic-keyboard\"") != std::string::npos);
 }
 
 TEST_CASE("config_web: GET /api/config returns ota section from resolved config") {

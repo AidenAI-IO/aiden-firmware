@@ -21,7 +21,7 @@ import (
 const (
 	absMouseMaxPos = 32767
 
-	defaultHIDProfileStatePath = "/run/aiden_dynamic_keyboard.state"
+	defaultHIDRefreshStatePath = "/run/aiden_usb_ecm_watchdog.state"
 
 	// defaultTapHoldMs is the dwell between a touch press and release so iOS
 	// registers a tap rather than dropping the sub-millisecond event or
@@ -394,7 +394,7 @@ type HIDDevice struct {
 	open         func(string) (io.WriteCloser, error)
 	writeTimeout time.Duration
 	openedAt     time.Time
-	profileState string
+	refreshState string
 }
 
 type screenState struct {
@@ -607,10 +607,10 @@ func (s *pointerState) Current() (x, y int, ok bool) {
 
 // pointerController sends hid.usb1 reports in absolute mouse or touchscreen mode.
 type pointerController struct {
-	dev             *HIDDevice
-	state           *pointerState
-	touchscreen     bool
-	dynamicKeyboard *dynamicKeyboardController
+	dev                  *HIDDevice
+	state                *pointerState
+	touchscreen          bool
+	iosKeyboardIsolation *iosKeyboardIsolationController
 }
 
 func newPointerController(hid HIDConfig) *pointerController {
@@ -621,18 +621,18 @@ func newPointerController(hid HIDConfig) *pointerController {
 	}
 }
 
-func withDynamicPointerCall(ctx context.Context, pc *pointerController, action dynamicKeyboardSessionCall) (string, error) {
-	if pc == nil || pc.dynamicKeyboard == nil {
+func withIOSPointerCall(ctx context.Context, pc *pointerController, action func(context.Context) (string, error)) (string, error) {
+	if pc == nil || pc.iosKeyboardIsolation == nil {
 		return action(ctx)
 	}
-	return pc.dynamicKeyboard.withPointerCall(ctx, action)
+	return pc.iosKeyboardIsolation.withPointerCall(ctx, action)
 }
 
 func NewHIDDevice(path string) *HIDDevice {
 	return &HIDDevice{
 		path:         path,
 		writeTimeout: defaultHIDWriteTimeout,
-		profileState: defaultHIDProfileStatePath,
+		refreshState: defaultHIDRefreshStatePath,
 		open: func(path string) (io.WriteCloser, error) {
 			return os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0)
 		},
@@ -780,8 +780,8 @@ func (d *HIDDevice) reopenStaleFileLocked() error {
 	if d.file == nil {
 		return nil
 	}
-	if !d.openedAt.IsZero() && d.profileState != "" {
-		if info, err := os.Stat(d.profileState); err == nil && info.ModTime().After(d.openedAt) {
+	if !d.openedAt.IsZero() && d.refreshState != "" {
+		if info, err := os.Stat(d.refreshState); err == nil && info.ModTime().After(d.openedAt) {
 			d.closeLocked()
 			return d.ensureOpenLocked()
 		}
@@ -830,11 +830,11 @@ func hidWriteWouldBlock(err error) bool {
 
 // KeyboardTapTool sends a key press then release via HID.
 type KeyboardTapTool struct {
-	dev             *HIDDevice
-	androidDev      *HIDDevice
-	pointerMode     string
-	adb             *ADBInputController
-	dynamicKeyboard *dynamicKeyboardController
+	dev                  *HIDDevice
+	androidDev           *HIDDevice
+	pointerMode          string
+	adb                  *ADBInputController
+	iosKeyboardIsolation *iosKeyboardIsolationController
 }
 
 func (t *KeyboardTapTool) Name() string { return "keyboard_tap" }
@@ -887,7 +887,9 @@ func (t *KeyboardTapTool) Call(ctx context.Context, input string) (string, error
 		if holdMs <= 0 {
 			holdMs = defaultKeyboardTapHoldMs
 		}
-		if err := t.tapAndroidExtension(resolved.AndroidExtensionKey, resolved.AndroidUsage, holdMs); err != nil {
+		if err := t.iosKeyboardIsolation.withExtraKeys(func() error {
+			return t.tapAndroidExtension(resolved.AndroidExtensionKey, resolved.AndroidUsage, holdMs)
+		}); err != nil {
 			code := CodeToolExecutionFailed
 			if errors.Is(err, errAndroidExtensionUnavailable) {
 				code = CodeModuleUnavailable
@@ -922,7 +924,7 @@ func (t *KeyboardTapTool) Call(ctx context.Context, input string) (string, error
 		}
 	}
 
-	if err := t.dynamicKeyboard.withKeyboard(ctx, func() error {
+	if err := t.iosKeyboardIsolation.withKeyboard(ctx, modifier != 0, func() error {
 		return t.tapKeyboardChord(modifier, keys, holdMs)
 	}); err != nil {
 		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
@@ -1029,9 +1031,9 @@ func (t *KeyboardTapTool) tapKeyboardChord(modifier uint8, keys []uint8, holdMs 
 
 // KeyboardTextTool types a string character by character via HID.
 type KeyboardTextTool struct {
-	dev             *HIDDevice
-	adb             *ADBInputController
-	dynamicKeyboard *dynamicKeyboardController
+	dev                  *HIDDevice
+	adb                  *ADBInputController
+	iosKeyboardIsolation *iosKeyboardIsolationController
 }
 
 func (t *KeyboardTextTool) Name() string { return "keyboard_text" }
@@ -1078,7 +1080,7 @@ func (t *KeyboardTextTool) Call(ctx context.Context, input string) (string, erro
 		return "ok", nil
 	}
 
-	err := t.dynamicKeyboard.withKeyboard(ctx, func() error {
+	err := t.iosKeyboardIsolation.withKeyboard(ctx, false, func() error {
 		releaseReport := make([]byte, 8)
 		for _, ch := range text {
 			modifier, code, ok := charToHIDKey(byte(ch))
@@ -1132,7 +1134,7 @@ func (t *MouseClickTool) Call(ctx context.Context, input string) (string, error)
 	if t != nil {
 		pc = t.pc
 	}
-	return withDynamicPointerCall(ctx, pc, func(callCtx context.Context) (string, error) {
+	return withIOSPointerCall(ctx, pc, func(callCtx context.Context) (string, error) {
 		return t.call(callCtx, input)
 	})
 }
@@ -1201,7 +1203,7 @@ func (t *MouseMoveTool) Call(ctx context.Context, input string) (string, error) 
 	if t != nil {
 		pc = t.pc
 	}
-	return withDynamicPointerCall(ctx, pc, func(callCtx context.Context) (string, error) {
+	return withIOSPointerCall(ctx, pc, func(callCtx context.Context) (string, error) {
 		return t.call(callCtx, input)
 	})
 }
@@ -1285,7 +1287,7 @@ func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, erro
 	if t != nil {
 		pc = t.pc
 	}
-	return withDynamicPointerCall(ctx, pc, func(callCtx context.Context) (string, error) {
+	return withIOSPointerCall(ctx, pc, func(callCtx context.Context) (string, error) {
 		return t.call(callCtx, input)
 	})
 }
@@ -1719,7 +1721,7 @@ func (t *WheelNudgeTool) Call(ctx context.Context, input string) (string, error)
 	if t != nil {
 		pc = t.pc
 	}
-	return withDynamicPointerCall(ctx, pc, func(callCtx context.Context) (string, error) {
+	return withIOSPointerCall(ctx, pc, func(callCtx context.Context) (string, error) {
 		return t.call(callCtx, input)
 	})
 }
@@ -1966,7 +1968,7 @@ func (t *MouseScrollTool) Call(ctx context.Context, input string) (string, error
 	if t != nil {
 		pc = t.pc
 	}
-	return withDynamicPointerCall(ctx, pc, func(callCtx context.Context) (string, error) {
+	return withIOSPointerCall(ctx, pc, func(callCtx context.Context) (string, error) {
 		return t.call(callCtx, input)
 	})
 }

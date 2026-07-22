@@ -94,8 +94,8 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	androidKbDev := NewHIDDevice(hidCfg.AndroidKeyboardDeviceOrDefault())
 	screen := &screenState{}
 	pointer := newPointerController(hidCfg)
-	dynamicKeyboard := newDynamicKeyboardController(hidCfg, kbDev, pointer.dev)
-	pointer.dynamicKeyboard = dynamicKeyboard
+	iosKeyboardIsolation := newIOSKeyboardIsolationController(hidCfg, kbDev, pointer.dev, androidKbDev)
+	pointer.iosKeyboardIsolation = iosKeyboardIsolation
 	var adbInput *ADBInputController
 	if hidCfg.InputBackendADB() {
 		adbInput = NewADBInputController(screen)
@@ -111,20 +111,19 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	screenshot := NewScreenshotTool(hidCfg.FrameSocketOrDefault(), screen)
 	screenStable := toolOptions.screenStable.Resolved()
 	waitStable := NewWaitStableScreenTool(hidCfg.FrameSocketOrDefault(), screenStable, screen)
-	keyboardTap := &KeyboardTapTool{dev: kbDev, androidDev: androidKbDev, pointerMode: hidCfg.PointerModeOrDefault(), adb: adbInput, dynamicKeyboard: dynamicKeyboard}
-	keyboardText := &KeyboardTextTool{dev: kbDev, adb: adbInput, dynamicKeyboard: dynamicKeyboard}
+	keyboardTap := &KeyboardTapTool{dev: kbDev, androidDev: androidKbDev, pointerMode: hidCfg.PointerModeOrDefault(), adb: adbInput, iosKeyboardIsolation: iosKeyboardIsolation}
+	keyboardText := &KeyboardTextTool{dev: kbDev, adb: adbInput, iosKeyboardIsolation: iosKeyboardIsolation}
 	touchGesture := &TouchGestureTool{pc: pointer, screen: screen, adb: adbInput}
 	wheelNudge := &WheelNudgeTool{pc: pointer, screen: screen}
 	quickAction := &QuickActionTool{keyboard: keyboardTap, touch: touchGesture}
 	mouseClick := &MouseClickTool{pc: pointer, screen: screen, adb: adbInput}
 	textInputHW := &textInputHardwareDeps{
-		mouseClick:      mouseClick,
-		touchGesture:    touchGesture,
-		keyboardTap:     keyboardTap,
-		keyboardText:    keyboardText,
-		quickAction:     quickAction,
-		screenshot:      screenshot,
-		dynamicKeyboard: dynamicKeyboard,
+		mouseClick:   mouseClick,
+		touchGesture: touchGesture,
+		keyboardTap:  keyboardTap,
+		keyboardText: keyboardText,
+		quickAction:  quickAction,
+		screenshot:   screenshot,
 	}
 
 	tools := map[string]langtools.Tool{
@@ -135,7 +134,7 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 		"mouse_scroll":           newPostActionStableScreenshotTool(&MouseScrollTool{pc: pointer, adb: adbInput}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"touch_gesture":          newPostActionStableScreenshotTool(touchGesture, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"wheel_nudge":            newPostActionStableScreenshotTool(wheelNudge, waitStable, screenshot, postActionScreenshotDelay, screenStable),
-		"quick_action":           newPostActionStableScreenshotTool(newDynamicKeyboardSessionTool(quickAction, dynamicKeyboard), waitStable, screenshot, postActionScreenshotDelay, screenStable),
+		"quick_action":           newPostActionStableScreenshotTool(quickAction, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"screenshot":             screenshot,
 		"wait_for_stable_screen": waitStable,
 		"image_diff":             &ImageDiffTool{},
@@ -179,7 +178,7 @@ func (s *ToolSet) RegisterEnterTextInFieldTool(models model.Model, platformFn fu
 	}
 	engine := newTextInputEngine(*s.textInputHW, newLLMTextInputVision(models))
 	tool := &EnterTextInFieldTool{engine: engine, platformFn: platformFn}
-	s.tools["enter_text_in_field"] = newPostActionScreenshotTool(newDynamicKeyboardSessionTool(tool, s.textInputHW.dynamicKeyboard), s.textInputHW.screenshot, 300*time.Millisecond)
+	s.tools["enter_text_in_field"] = newPostActionScreenshotTool(tool, s.textInputHW.screenshot, 300*time.Millisecond)
 	searchOpenTool := &appSearchOpenTool{
 		hw:          s.textInputHW,
 		vision:      newLLMTextInputVision(models),
@@ -187,10 +186,10 @@ func (s *ToolSet) RegisterEnterTextInFieldTool(models model.Model, platformFn fu
 		entryTool:   tool,
 		launchDelay: appSearchOpenLaunchDelay,
 	}
-	s.tools["search_launch_app"] = newDynamicKeyboardSessionTool(searchOpenTool, s.textInputHW.dynamicKeyboard)
+	s.tools["search_launch_app"] = searchOpenTool
 	bridgeTool := &EnterTextViaBridgeTool{hw: s.textInputHW, vision: newLLMTextInputVision(models), bridgeFn: func() *PhoneBridge { return s.phoneBridge }, platformFn: platformFn}
 	tool.bridgeTool = bridgeTool
-	s.tools["enter_text_via_bridge"] = newPostActionScreenshotTool(newDynamicKeyboardSessionTool(bridgeTool, s.textInputHW.dynamicKeyboard), s.textInputHW.screenshot, 300*time.Millisecond)
+	s.tools["enter_text_via_bridge"] = newPostActionScreenshotTool(bridgeTool, s.textInputHW.screenshot, 300*time.Millisecond)
 }
 
 func (s *ToolSet) SetRunScriptSpeaker(speaker runScriptSpeaker) {

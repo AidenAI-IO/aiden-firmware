@@ -94,9 +94,6 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     cfg.hid.mouse_device = "/dev/hidg1";
     cfg.hid.frame_socket = "/run/frame_service/frame_service.sock";
     cfg.hid.pointer_mode = "touchscreen";
-    cfg.hid.input_backend = "hid";
-    cfg.hid.dynamic_keyboard = true;
-    cfg.hid.dynamic_keyboard_control = "/oem/usr/bin/aiden-dynamic-keyboard-test";
 
     cfg.search.provider = "duckduckgo";
     cfg.search.api_key = "tvly-test";
@@ -216,9 +213,6 @@ TEST_CASE("agent_toml round-trip preserves Go-agent schema fields") {
     CHECK(loaded.hid.android_keyboard_device == "/dev/hidg2");
     CHECK(loaded.hid.frame_socket == "/run/frame_service/frame_service.sock");
     CHECK(loaded.hid.pointer_mode == "touchscreen");
-    CHECK(loaded.hid.input_backend == "hid");
-    CHECK(loaded.hid.dynamic_keyboard == true);
-    CHECK(loaded.hid.dynamic_keyboard_control == "/oem/usr/bin/aiden-dynamic-keyboard-test");
 
     CHECK(loaded.search.provider == "duckduckgo");
     CHECK(loaded.search.api_key == "tvly-test");

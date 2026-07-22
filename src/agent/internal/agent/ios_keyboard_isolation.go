@@ -1,0 +1,148 @@
+package agent
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+	"sync"
+	"time"
+)
+
+const (
+	defaultIOSKeyboardIsolationControl = "/oem/usr/bin/aiden-dynamic-keyboard"
+	iosKeyboardProfileSwitchTimeout    = 30 * time.Second
+)
+
+type iosKeyboardIsolationCommand func(context.Context, string, ...string) ([]byte, error)
+
+// iosKeyboardIsolationController serializes access to the three HID devices.
+// Modifier shortcuts temporarily use a keyboard-only USB profile; plain text,
+// pointer input, and Consumer Control keep using the normal composite profile.
+type iosKeyboardIsolationController struct {
+	controlPath  string
+	keyboardDev  *HIDDevice
+	pointerDev   *HIDDevice
+	extraKeysDev *HIDDevice
+	run          iosKeyboardIsolationCommand
+	mu           sync.Mutex
+	needsRestore bool
+}
+
+func newIOSKeyboardIsolationController(cfg HIDConfig, keyboardDev, pointerDev, extraKeysDev *HIDDevice) *iosKeyboardIsolationController {
+	if cfg.InputBackendADB() || cfg.PointerModeOrDefault() != "absolute" {
+		return nil
+	}
+	info, err := os.Stat(defaultIOSKeyboardIsolationControl)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return nil
+	}
+	return &iosKeyboardIsolationController{
+		controlPath:  defaultIOSKeyboardIsolationControl,
+		keyboardDev:  keyboardDev,
+		pointerDev:   pointerDev,
+		extraKeysDev: extraKeysDev,
+		run: func(ctx context.Context, path string, args ...string) ([]byte, error) {
+			return exec.CommandContext(ctx, path, args...).CombinedOutput()
+		},
+	}
+}
+
+func (c *iosKeyboardIsolationController) closeHIDDevices() {
+	if c == nil {
+		return
+	}
+	if c.keyboardDev != nil {
+		c.keyboardDev.Close()
+	}
+	if c.pointerDev != nil {
+		c.pointerDev.Close()
+	}
+	if c.extraKeysDev != nil {
+		c.extraKeysDev.Close()
+	}
+}
+
+func (c *iosKeyboardIsolationController) switchProfile(command string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), iosKeyboardProfileSwitchTimeout)
+	defer cancel()
+	output, err := c.run(ctx, c.controlPath, command)
+	if err == nil {
+		return nil
+	}
+	detail := strings.TrimSpace(string(output))
+	if detail == "" {
+		return fmt.Errorf("switch iOS HID profile with %s failed: %w", command, err)
+	}
+	return fmt.Errorf("switch iOS HID profile with %s failed: %w: %s", command, err, detail)
+}
+
+func (c *iosKeyboardIsolationController) ensureNormalProfileLocked() error {
+	if !c.needsRestore {
+		return nil
+	}
+	err := c.switchProfile("restore")
+	c.needsRestore = err != nil
+	return err
+}
+
+func (c *iosKeyboardIsolationController) withKeyboard(ctx context.Context, isolate bool, action func() error) (err error) {
+	if c == nil {
+		return action()
+	}
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !isolate {
+		if err := c.ensureNormalProfileLocked(); err != nil {
+			return err
+		}
+		return action()
+	}
+
+	c.closeHIDDevices()
+	if isolateErr := c.switchProfile("isolate"); isolateErr != nil {
+		restoreErr := c.switchProfile("restore")
+		c.needsRestore = restoreErr != nil
+		return errors.Join(isolateErr, restoreErr)
+	}
+	c.needsRestore = true
+	defer func() {
+		c.closeHIDDevices()
+		restoreErr := c.switchProfile("restore")
+		c.needsRestore = restoreErr != nil
+		err = errors.Join(err, restoreErr)
+	}()
+	return action()
+}
+
+func (c *iosKeyboardIsolationController) withPointerCall(ctx context.Context, action func(context.Context) (string, error)) (string, error) {
+	if c == nil {
+		return action(ctx)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.ensureNormalProfileLocked(); err != nil {
+		return "", err
+	}
+	return action(ctx)
+}
+
+func (c *iosKeyboardIsolationController) withExtraKeys(action func() error) error {
+	if c == nil {
+		return action()
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.ensureNormalProfileLocked(); err != nil {
+		return err
+	}
+	return action()
+}

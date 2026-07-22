@@ -2012,7 +2012,7 @@ func TestHIDDeviceWriteReopensWhenDeviceNodeRecreated(t *testing.T) {
 		t.Fatalf("create test hid device: %v", err)
 	}
 	dev := NewHIDDevice(path)
-	dev.profileState = ""
+	dev.refreshState = ""
 
 	if err := dev.Write([]byte{1, 2, 3}); err != nil {
 		t.Fatalf("first Write returned error: %v", err)
@@ -2038,25 +2038,25 @@ func TestHIDDeviceWriteReopensWhenDeviceNodeRecreated(t *testing.T) {
 	}
 }
 
-func TestHIDDeviceWriteReopensAfterDynamicProfileStateChange(t *testing.T) {
+func TestHIDDeviceWriteReopensAfterWatchdogRefreshState(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "hidg0")
-	statePath := filepath.Join(dir, "aiden_dynamic_keyboard.state")
+	statePath := filepath.Join(dir, "aiden_usb_ecm_watchdog.state")
 	if err := os.WriteFile(path, nil, 0o600); err != nil {
 		t.Fatalf("create test hid device: %v", err)
 	}
 	dev := NewHIDDevice(path)
-	dev.profileState = statePath
+	dev.refreshState = statePath
 
 	if err := dev.Write([]byte{1, 2, 3}); err != nil {
 		t.Fatalf("first Write returned error: %v", err)
 	}
-	if err := os.WriteFile(statePath, []byte("mode=on\nresult=ok\n"), 0o600); err != nil {
-		t.Fatalf("write dynamic profile state: %v", err)
+	if err := os.WriteFile(statePath, []byte("last_refresh_result=ok\n"), 0o600); err != nil {
+		t.Fatalf("write watchdog state: %v", err)
 	}
-	profileChangeTime := dev.openedAt.Add(time.Second)
-	if err := os.Chtimes(statePath, profileChangeTime, profileChangeTime); err != nil {
-		t.Fatalf("set dynamic profile state mtime: %v", err)
+	refreshTime := dev.openedAt.Add(time.Second)
+	if err := os.Chtimes(statePath, refreshTime, refreshTime); err != nil {
+		t.Fatalf("set watchdog state mtime: %v", err)
 	}
 
 	if err := dev.Write([]byte{4, 5, 6}); err != nil {

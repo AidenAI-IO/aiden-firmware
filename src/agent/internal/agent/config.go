@@ -402,11 +402,6 @@ type HIDConfig struct {
 	MouseDevice           string `toml:"mouse_device,omitempty"`
 	AndroidKeyboardDevice string `toml:"android_keyboard_device,omitempty"`
 	FrameSocket           string `toml:"frame_socket,omitempty"`
-	// DynamicKeyboard switches the single UDC between pointer+ECM and
-	// keyboard+ECM profiles. Standard keyboard actions select the isolated
-	// keyboard profile; pointer actions switch back before writing hid.usb1.
-	DynamicKeyboard        bool   `toml:"dynamic_keyboard,omitempty"`
-	DynamicKeyboardControl string `toml:"dynamic_keyboard_control,omitempty"`
 	// PointerMode selects the hid.usb1 report format: "absolute" (iOS AssistiveTouch
 	// plus limited hid.usb2 media keys) or "touchscreen" (Android HID digitizer
 	// plus full hid.usb2 Android extension keys).
@@ -455,13 +450,6 @@ func (h HIDConfig) FrameSocketOrDefault() string {
 		return h.FrameSocket
 	}
 	return defaultFrameServiceSocket
-}
-
-func (h HIDConfig) DynamicKeyboardControlOrDefault() string {
-	if control := strings.TrimSpace(h.DynamicKeyboardControl); control != "" {
-		return control
-	}
-	return defaultDynamicKeyboardControl
 }
 
 func (h HIDConfig) PointerModeOrDefault() string {
@@ -1053,14 +1041,6 @@ func (c Config) Validate() error {
 	case "", "hid", "adb":
 	default:
 		return fmt.Errorf("invalid hid.input_backend: %s (expected hid or adb)", c.HID.InputBackend)
-	}
-	if c.HID.DynamicKeyboard {
-		if c.HID.InputBackendADB() {
-			return fmt.Errorf("hid.dynamic_keyboard requires hid.input_backend=hid")
-		}
-		if c.HID.PointerModeOrDefault() != "absolute" {
-			return fmt.Errorf("hid.dynamic_keyboard requires hid.pointer_mode=absolute")
-		}
 	}
 
 	if err := c.Telemetry.Validate(); err != nil {

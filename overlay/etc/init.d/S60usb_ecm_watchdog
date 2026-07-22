@@ -6,9 +6,9 @@
 # the host-side composite/HID session is stale. Resetting only the ECM function
 # can leave iOS with a stale external-keyboard session where plain keys work but
 # modifiers/shortcuts are ignored. This watchdog keeps diagnostics for host
-# configuration changes. ECM probe failures are diagnostic only: an ARP failure
-# is not proof that the HID session is stale, and resetting the composite gadget
-# can leave HID gadget nodes present but unopenable.
+# configuration changes, exposes an explicit full refresh command for stale HID
+# sessions, and automatically refreshes the composite gadget only when ECM
+# connectivity stalls.
 
 GADGET_UDC=/sys/kernel/config/usb_gadget/aiden_hid/UDC
 GADGET_DIR=/sys/kernel/config/usb_gadget/aiden_hid
@@ -19,14 +19,23 @@ LOG_FILE=/var/log/aiden_usb_ecm_watchdog.log
 PID_FILE=/run/aiden_usb_ecm_watchdog.pid
 STATE_FILE=/run/aiden_usb_ecm_watchdog.state
 LEASE_FILE=/tmp/dnsmasq.leases
+GADGET_SWITCH_LOCK_DIR=/run/aiden_dynamic_keyboard.lock
+USB0_ADDR=192.168.42.1
+USB0_NETMASK=255.255.255.0
+
 PROBE_INTERVAL=5       # probe ECM connectivity every N seconds
-PROBE_FAIL_THRESHOLD=2 # report a stall after N consecutive probe failures
+PROBE_FAIL_THRESHOLD=2 # reset after N consecutive probe failures
 ARPING_COUNT=2         # ARP requests per probe
 ARPING_TIMEOUT=2       # seconds to wait for ARP reply
-COOLDOWN=30            # minimum seconds between repeated stall reports
+COOLDOWN=30            # minimum seconds between resets
 
 log() {
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE"
+}
+
+is_configured() {
+    state=$(read_udc_state)
+    [ "$state" = "configured" ]
 }
 
 read_udc_state() {
@@ -71,17 +80,17 @@ describe_usb0() {
     printf 'present flags=%s addr=%s' "$flags" "$addr"
 }
 
-write_watchdog_state() {
+write_refresh_state() {
     reason="$1"
     result="$2"
-    observed_at="$3"
+    started_at="$3"
     detail="$4"
     {
-        printf 'last_event_epoch=%s\n' "$(date +%s)"
-        printf 'last_event_reason=%s\n' "$reason"
-        printf 'last_event_result=%s\n' "$result"
-        printf 'last_event_observed_epoch=%s\n' "$observed_at"
-        printf 'last_event_detail=%s\n' "$detail"
+        printf 'last_refresh_epoch=%s\n' "$(date +%s)"
+        printf 'last_refresh_reason=%s\n' "$reason"
+        printf 'last_refresh_result=%s\n' "$result"
+        printf 'last_refresh_started_epoch=%s\n' "$started_at"
+        printf 'last_refresh_detail=%s\n' "$detail"
         printf 'udc_state=%s\n' "$(read_udc_state)"
         printf 'gadget_udc=%s\n' "$(read_gadget_udc)"
         printf 'hid_keyboard_%s\n' "$(describe_hid_keyboard)"
@@ -107,9 +116,107 @@ probe_ecm_connectivity() {
     return 1
 }
 
+acquire_gadget_switch_lock() {
+    if mkdir "$GADGET_SWITCH_LOCK_DIR" 2>/dev/null; then
+        echo "$$" > "$GADGET_SWITCH_LOCK_DIR/pid"
+        return 0
+    fi
+
+    owner=$(cat "$GADGET_SWITCH_LOCK_DIR/pid" 2>/dev/null || true)
+    case "$owner" in
+        ''|*[!0-9]*) ;;
+        *)
+            if ! kill -0 "$owner" 2>/dev/null; then
+                rm -f "$GADGET_SWITCH_LOCK_DIR/pid"
+                rmdir "$GADGET_SWITCH_LOCK_DIR" 2>/dev/null || true
+                if mkdir "$GADGET_SWITCH_LOCK_DIR" 2>/dev/null; then
+                    echo "$$" > "$GADGET_SWITCH_LOCK_DIR/pid"
+                    return 0
+                fi
+            fi
+            ;;
+    esac
+
+    log "USB composite reset deferred; gadget switch lock is busy (owner=${owner:-unknown})"
+    return 1
+}
+
+release_gadget_switch_lock() {
+    rm -f "$GADGET_SWITCH_LOCK_DIR/pid"
+    rmdir "$GADGET_SWITCH_LOCK_DIR" 2>/dev/null || true
+}
+
+reset_composite_locked() {
+    reason="$1"
+    started_at=$(date +%s)
+    log "resetting USB composite gadget: $reason"
+    log_snapshot "before reset ($reason)"
+    write_refresh_state "$reason" "started" "$started_at" "reset started"
+
+    if [ ! -f "$GADGET_UDC" ]; then
+        log "UDC control file missing: $GADGET_UDC"
+        write_refresh_state "$reason" "failed" "$started_at" "UDC control file missing"
+        return 1
+    fi
+
+    cur_udc=$(cat "$GADGET_UDC" 2>/dev/null)
+    if [ -n "$cur_udc" ]; then
+        if ! echo "" > "$GADGET_UDC" 2>>"$LOG_FILE"; then
+            log "UDC unbind failed"
+            write_refresh_state "$reason" "failed" "$started_at" "UDC unbind failed"
+            return 1
+        fi
+    fi
+
+    sleep 1
+
+    if ! echo "$UDC_NAME" > "$GADGET_UDC" 2>>"$LOG_FILE"; then
+        log "UDC rebind failed"
+        write_refresh_state "$reason" "failed" "$started_at" "UDC rebind failed"
+        return 1
+    fi
+
+    configured=0
+    for i in $(seq 1 10); do
+        if is_configured; then
+            configured=1
+            break
+        fi
+        sleep 1
+    done
+
+    if [ "$configured" -ne 1 ]; then
+        log "UDC did not reach configured state after composite reset (udc state=$(cat "$UDC_STATE" 2>/dev/null))"
+        write_refresh_state "$reason" "failed" "$started_at" "UDC did not reach configured"
+        return 1
+    fi
+
+    if [ -d /sys/class/net/usb0 ]; then
+        ifconfig usb0 "$USB0_ADDR" netmask "$USB0_NETMASK" up 2>>"$LOG_FILE" || log "usb0 ifconfig failed after composite reset"
+    fi
+
+    finished_at=$(date +%s)
+    duration=$((finished_at - started_at))
+    log "USB composite reset complete (reason=$reason duration=${duration}s udc state=$(cat "$UDC_STATE" 2>/dev/null))"
+    log_snapshot "after reset ($reason)"
+    write_refresh_state "$reason" "ok" "$started_at" "duration=${duration}s"
+}
+
+reset_composite() {
+    reason="$1"
+    acquire_gadget_switch_lock || return 1
+    if reset_composite_locked "$reason"; then
+        result=0
+    else
+        result=$?
+    fi
+    release_gadget_switch_lock
+    return "$result"
+}
+
 watchdog_main() {
     ecm_fail_count=0
-    last_stall_notice=0
+    last_reset=0
     last_udc_state=$(read_udc_state)
 
     log_snapshot "watchdog loop start"
@@ -150,14 +257,17 @@ watchdog_main() {
         log "ECM probe failed ($ecm_fail_count/$PROBE_FAIL_THRESHOLD hosts=$(describe_ecm_hosts))"
 
         if [ $ecm_fail_count -ge $PROBE_FAIL_THRESHOLD ]; then
-            if [ $((now - last_stall_notice)) -lt $COOLDOWN ]; then
+            if [ $((now - last_reset)) -lt $COOLDOWN ]; then
                 continue
             fi
 
-            log "ECM stall detected; preserving HID session (diagnostic only)"
-            last_stall_notice=$now
-            write_watchdog_state "ECM stall" "observed" "$now" "composite reset disabled to preserve HID session"
-            ecm_fail_count=0
+            log "ECM stall detected; resetting composite gadget"
+            # Start the cooldown window from the attempt itself: even if the
+            # reset fails, we don't want to hammer the gadget every interval.
+            last_reset=$now
+            if reset_composite "ECM stall"; then
+                ecm_fail_count=0
+            fi
         fi
     done
 }
@@ -175,8 +285,6 @@ start() {
     mkdir -p "$(dirname "$LOG_FILE")"
     log "starting (interval=${PROBE_INTERVAL}s threshold=${PROBE_FAIL_THRESHOLD} cooldown=${COOLDOWN}s)"
     log_snapshot "start command"
-    now=$(date +%s)
-    write_watchdog_state "watchdog start" "monitoring" "$now" "diagnostic-only watchdog active"
     "$0" _watchdog </dev/null >/dev/null 2>&1 &
     pid=$!
     echo "$pid" > "$PID_FILE"
@@ -199,12 +307,8 @@ case "$1" in
     start) start ;;
     stop) stop ;;
     restart) stop; sleep 1; start ;;
-    snapshot)
-        now=$(date +%s)
-        write_watchdog_state "manual snapshot" "observed" "$now" "snapshot requested"
-        log_snapshot "manual snapshot"
-        cat "$STATE_FILE" 2>/dev/null || true
-        ;;
+    refresh) reset_composite "manual refresh" ;;
+    snapshot) log_snapshot "manual snapshot"; cat "$STATE_FILE" 2>/dev/null || true ;;
     status)
         if [ -f "$PID_FILE" ]; then
             pid=$(cat "$PID_FILE" 2>/dev/null)
@@ -218,5 +322,5 @@ case "$1" in
         echo "stopped"
         exit 1
         ;;
-    *) echo "Usage: $0 {start|stop|restart|status|snapshot}" >&2; exit 1 ;;
+    *) echo "Usage: $0 {start|stop|restart|status|refresh|snapshot}" >&2; exit 1 ;;
 esac

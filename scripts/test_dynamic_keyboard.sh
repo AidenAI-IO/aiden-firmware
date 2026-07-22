@@ -2,80 +2,50 @@
 set -eu
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-INIT_SCRIPT="$ROOT_DIR/overlay/etc/init.d/S49usbhid"
 CONTROL_SCRIPT="$ROOT_DIR/overlay/oem/usr/bin/aiden-dynamic-keyboard"
 CONF_FILE="$ROOT_DIR/overlay/etc/aiden_dynamic_keyboard.conf"
-AGENT_CONFIG="$ROOT_DIR/overlay/userdata/agent/agent.toml"
 
 fail() {
 	echo "$*" >&2
 	exit 1
 }
 
-sh -n "$INIT_SCRIPT" || fail "S49usbhid has invalid shell syntax"
 sh -n "$CONTROL_SCRIPT" || fail "aiden-dynamic-keyboard has invalid shell syntax"
 sh -n "$CONF_FILE" || fail "aiden_dynamic_keyboard.conf has invalid shell syntax"
 [ -x "$CONTROL_SCRIPT" ] || fail "aiden-dynamic-keyboard must be executable"
 
-grep -Eq '^[[:space:]]*dynamic_keyboard[[:space:]]*=[[:space:]]*true([[:space:]]|$)' "$AGENT_CONFIG" ||
-	fail "firmware agent.toml must enable the iOS dynamic keyboard profile"
+grep -Fq "trap release_lock EXIT" "$CONTROL_SCRIPT" ||
+	fail "gadget switch lock cleanup must remain in the EXIT trap"
+grep -Fq "trap 'exit 129' HUP" "$CONTROL_SCRIPT" ||
+	fail "HUP must terminate before releasing the gadget switch lock"
+grep -Fq "trap 'exit 130' INT" "$CONTROL_SCRIPT" ||
+	fail "INT must terminate before releasing the gadget switch lock"
+grep -Fq "trap 'exit 143' TERM" "$CONTROL_SCRIPT" ||
+	fail "TERM must terminate before releasing the gadget switch lock"
 
-grep -Fq 'dynamic_keyboard_control = "/oem/usr/bin/aiden-dynamic-keyboard"' "$AGENT_CONFIG" ||
-	fail "firmware agent.toml must configure the dynamic keyboard controller"
+isolated_branch=$(awk '/link_isolated_profile\(\)/,/^}/' "$CONTROL_SCRIPT")
+printf '%s\n' "$isolated_branch" | grep -Fq 'hid.usb0' ||
+	fail "isolated profile must keep the standard keyboard"
+if printf '%s\n' "$isolated_branch" | grep -Eq 'hid\.usb1|hid\.usb2'; then
+	fail "isolated profile must omit pointer and Consumer Control functions"
+fi
 
-grep -Fq 'if [ "$DYNAMIC_KEYBOARD" -ne 1 ]; then' "$INIT_SCRIPT" ||
-	fail "S49usbhid must omit the keyboard link in dynamic mode"
-
-grep -Fq 'write_dynamic_keyboard_state' "$INIT_SCRIPT" ||
-	fail "S49usbhid must initialize keyboard-off state"
-
-grep -Fq 'echo "" > "$UDC_PATH"' "$CONTROL_SCRIPT" ||
-	fail "runtime switch must unbind the whole UDC"
-
-grep -Fq 'unlink_functions' "$CONTROL_SCRIPT" ||
-	fail "runtime switch must rebuild configuration links"
-
-grep -Fq 'ln -s "$KEYBOARD_FUNC" "$CONFIG_DIR/hid.usb0"' "$CONTROL_SCRIPT" ||
-	fail "keyboard-on profile must link the keyboard function"
-
-grep -Fq "printf 'invalid\\n'" "$CONTROL_SCRIPT" ||
-	fail "runtime switch must reject mixed or missing HID profile links"
+normal_branch=$(awk '/link_normal_profile\(\)/,/^}/' "$CONTROL_SCRIPT")
+for function_name in hid.usb0 hid.usb1 hid.usb2; do
+	printf '%s\n' "$normal_branch" | grep -Fq "$function_name" ||
+		fail "normal profile must restore $function_name"
+done
 
 grep -Fq 'link_ecm' "$CONTROL_SCRIPT" ||
 	fail "both profiles must restore ECM"
-
-grep -Fq 'POINTER_FUNC=$GADGET_DIR/functions/hid.usb1' "$CONTROL_SCRIPT" ||
-	fail "keyboard-off profile must preserve the configured pointer function"
-
-on_branch=$(awk 'index($0, "if [ \"$mode\" = on ]; then") { capture=1; next } capture && /^[[:space:]]*else$/ { exit } capture { print }' "$CONTROL_SCRIPT")
-printf '%s\n' "$on_branch" | grep -Fq 'hid.usb0' ||
-	fail "keyboard-on profile must link hid.usb0"
-if printf '%s\n' "$on_branch" | grep -Fq 'hid.usb1'; then
-	fail "keyboard-on profile must not expose the AssistiveTouch pointer"
-fi
-
-if awk '/link_ecm\(\)/,/^}/' "$CONTROL_SCRIPT" | grep -Fq 'hid.usb2'; then
-	fail "dynamic iOS profiles must not expose Consumer Control during the isolation test"
-fi
-
+grep -Fq 'echo "" > "$UDC_PATH"' "$CONTROL_SCRIPT" ||
+	fail "profile switching must unbind the single UDC"
 grep -Fq 'wait_for_configuration "$udc"' "$CONTROL_SCRIPT" ||
-	fail "runtime switch must wait for host configuration"
+	fail "profile switching must wait for iOS to configure the gadget"
 
-grep -Fq '> "$DYNAMIC_KEYBOARD_STATE_FILE"' "$CONTROL_SCRIPT" ||
-	fail "runtime switch must publish profile state for stale HID descriptor detection"
-
-grep -Fq 'kill -0 "$owner"' "$CONTROL_SCRIPT" ||
-	fail "runtime switch must recover a lock left by a killed controller"
-
-off_pid=$(sed -n 's/^DYNAMIC_KEYBOARD_OFF_ID_PRODUCT=//p' "$CONF_FILE")
-on_pid=$(sed -n 's/^DYNAMIC_KEYBOARD_ON_ID_PRODUCT=//p' "$CONF_FILE")
-[ -n "$off_pid" ] && [ -n "$on_pid" ] && [ "$off_pid" != "$on_pid" ] ||
-	fail "keyboard-off and keyboard-on must use distinct product IDs for iOS descriptor cache isolation"
-
-grep -Fq 'Aiden Mouse ECM' "$CONF_FILE" ||
-	fail "keyboard-off identity must advertise the restored mouse profile"
-
-grep -Fq 'Aiden Keyboard ECM' "$CONF_FILE" ||
-	fail "keyboard-on identity must advertise the isolated keyboard profile"
+normal_pid=$(sed -n 's/^DYNAMIC_KEYBOARD_NORMAL_ID_PRODUCT=//p' "$CONF_FILE")
+isolated_pid=$(sed -n 's/^DYNAMIC_KEYBOARD_ISOLATED_ID_PRODUCT=//p' "$CONF_FILE")
+[ -n "$normal_pid" ] && [ -n "$isolated_pid" ] && [ "$normal_pid" != "$isolated_pid" ] ||
+	fail "normal and isolated profiles must use distinct product IDs"
 
 echo "dynamic keyboard checks passed"
