@@ -5,11 +5,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import signal
 import stat
 import sys
 import threading
 from pathlib import Path
+
+from dotenv import dotenv_values
 
 from vphone.bridge.client import VPhoneSocketError
 from vphone.bridge.device import (
@@ -21,23 +24,64 @@ from vphone.bridge.device import (
 from vphone.bridge.server import VPhoneBridgeServer
 
 
-def main(argv: list[str] | None = None) -> int:
+DEFAULT_ENV_FILE = Path(__file__).resolve().parents[1] / "vphone.env"
+
+
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument(
+        "--env-file",
+        default=os.environ.get("VPHONE_ENV_FILE", str(DEFAULT_ENV_FILE)),
+    )
+    pre_args, _ = pre_parser.parse_known_args(argv)
+    env_file = Path(pre_args.env_file).expanduser().resolve()
+    file_values = dotenv_values(env_file) if env_file.is_file() else {}
+    defaults = {key: str(value) for key, value in file_values.items() if value is not None}
+    defaults.update(os.environ)
+
     parser = argparse.ArgumentParser(prog="vphone.scripts.start_bridge")
-    parser.add_argument("--socket", required=True, help="Path to vm/vphone.sock")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8899)
+    parser.add_argument("--env-file", default=str(env_file), help="VPhone environment file")
+    parser.add_argument(
+        "--socket",
+        default=defaults.get("VPHONE_SOCKET", ""),
+        help="Path to vm/vphone.sock",
+    )
+    parser.add_argument("--host", default=defaults.get("VPHONE_BRIDGE_HOST", "127.0.0.1"))
+    parser.add_argument("--port", type=int, default=defaults.get("VPHONE_BRIDGE_PORT", "8899"))
     parser.add_argument("--request-timeout-sec", type=float, default=120)
     parser.add_argument("--action-settle-sec", type=float, default=0.6)
     parser.add_argument("--screenshot-max-width", type=int, default=DEFAULT_SCREENSHOT_MAX_WIDTH)
     parser.add_argument("--jpeg-quality", type=int, default=DEFAULT_JPEG_QUALITY)
-    parser.add_argument("--guest-ssh-host", default="192.168.64.5")
-    parser.add_argument("--guest-ssh-port", type=int, default=22222)
-    parser.add_argument("--guest-ssh-user", default="root")
-    parser.add_argument("--guest-ssh-identity", default="~/.ssh/vphone_ecdsa")
+    parser.add_argument("--guest-ssh-host", default=defaults.get("VPHONE_GUEST_SSH_HOST", ""))
+    parser.add_argument(
+        "--guest-ssh-port",
+        type=int,
+        default=defaults.get("VPHONE_GUEST_SSH_PORT", "22222"),
+    )
+    parser.add_argument("--guest-ssh-user", default=defaults.get("VPHONE_GUEST_SSH_USER", "root"))
+    parser.add_argument("--guest-ssh-identity", default=defaults.get("VPHONE_GUEST_SSH_IDENTITY", ""))
+    parser.add_argument(
+        "--benchmark-task-id",
+        default=defaults.get("VPHONE_BENCHMARK_TASK_ID", "vphone-ios-cli"),
+    )
     parser.add_argument("--no-guest-ssh-fallback", action="store_true")
     parser.add_argument("--allow-unready", action="store_true", help="Start even when the VM health check fails")
     parser.add_argument("--json", action="store_true")
-    args = parser.parse_args(argv)
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
+
+    if not args.socket:
+        print("error: VPHONE_SOCKET is required in vphone.env or --socket", file=sys.stderr)
+        return 2
+    if not args.no_guest_ssh_fallback and not str(args.guest_ssh_host).strip():
+        print(
+            "error: VPHONE_GUEST_SSH_HOST is required in vphone.env or --guest-ssh-host",
+            file=sys.stderr,
+        )
+        return 2
 
     socket_path = Path(args.socket).expanduser().resolve()
     try:
@@ -88,15 +132,17 @@ def main(argv: list[str] | None = None) -> int:
     daemon_command = (
         "uv run python -m runner start-agent-daemon "
         f"--environment-bridge-endpoint {environment_url} "
-        "--benchmark-task-id vphone-ios-cli"
+        f"--benchmark-task-id {args.benchmark_task_id}"
     )
     payload = {
         "type": "vphone-ios-env",
+        "env_file": str(Path(args.env_file).expanduser().resolve()),
         "environment_url": environment_url,
         "socket": str(socket_path),
         "screen_width": status.get("screen_width"),
         "screen_height": status.get("screen_height"),
         "capabilities": status.get("capabilities") or [],
+        "benchmark_task_id": args.benchmark_task_id,
         "agent_daemon_command": daemon_command,
     }
     if args.json:

@@ -71,7 +71,7 @@ def test_app_and_url_validation_happens_before_socket(device):
 def test_open_url_falls_back_to_ssh_uiopen_for_legacy_host(monkeypatch):
     value = VPhoneDevice(
         "/tmp/unused-vphone.sock",
-        guest_ssh=GuestSSHConfig(host="192.168.64.5", port=22222, user="root"),
+        guest_ssh=GuestSSHConfig(host="192.168.64.8", port=22222, user="root"),
     )
 
     class LegacyClient:
@@ -94,7 +94,7 @@ def test_open_url_falls_back_to_ssh_uiopen_for_legacy_host(monkeypatch):
 
     command, kwargs = commands[0]
     assert command[-4:] == [
-        "root@192.168.64.5",
+        "root@192.168.64.8",
         "/var/jb/usr/bin/uiopen",
         "-u",
         "https://www.baidu.com",
