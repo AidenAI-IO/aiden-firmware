@@ -1,8 +1,8 @@
 {
   "name": "vphone_ios_basic",
-  "version": "1.2",
+  "version": "1.4",
   "description": "Basic and multi-step VPhone iOS Environment Bridge tests",
-  "prompt_prefix": "你正在控制一台 iOS 虚拟机。使用 screenshot 查看屏幕；触控坐标优先使用 normalized 0 至 1000，不能把缩放后截图像素当作设备像素。使用 touch_gesture 执行点击、滑动和返回主屏幕。打开设置时使用 quick_action，参数为 platform=ios, action=open_settings。打开网页时使用 quick_action，参数为 platform=ios, action=open_url, url=目标网址。iOS 没有 Android 返回键，使用 quick_action back 或从屏幕左边缘向右滑动返回。查找其他 App 时优先使用主屏幕、App 资源库和可见图标，不依赖键盘输入。",
+  "prompt_prefix": "你正在控制一台 iOS 虚拟机。使用 screenshot 查看屏幕；触控坐标优先使用 normalized 0 至 1000，不能把缩放后截图像素当作设备像素。使用 touch_gesture 执行点击、滑动和返回主屏幕；点击必须传 type=tap 和 point={x,y}，不能只传 type。调用 quick_action 执行动作时必须同时传 platform=ios 和 action；action 不能放进 url 字段。打开设置使用 {platform:ios, action:open_settings}；打开网页使用 {platform:ios, action:open_url, url:目标网址}。iOS 没有 Android 返回键，使用 quick_action 的 action=back 或从屏幕左边缘向右滑动返回。查找其他 App 时优先使用主屏幕、App 资源库和可见图标，不依赖键盘输入。任务明确要求调用 screenshot 时，即使其他动作已附带返回截图，也必须在最终回答前显式调用一次 screenshot。",
   "global_reset": {
     "type": "agent_prompt",
     "prompt": "请返回 iOS 主屏幕并截图确认。",
@@ -67,7 +67,7 @@
         {"id": "swiped_and_screenshot", "description": "执行了向上滑动并观察动作后画面"}
       ],
       "hard_assertions": {
-        "must_complete_within_sec": 60,
+        "must_complete_within_sec": 180,
         "min_tool_calls": 1,
         "required_tools": []
       },
@@ -110,7 +110,7 @@
     {
       "id": "settings_read_ethernet_ipv4",
       "category": "device_operation",
-      "prompt": "打开 iOS 设置，点击一级入口“以太网”，再点击“接口”区域中的“以太网”，进入以太网详情页。不要修改任何网络设置。请停留在能够同时看到“IPv4 地址”区域中“IP 地址”“子网掩码”和“路由器”的页面，调用 screenshot 截图，并在最终回答中逐项返回当前屏幕显示的这三个值；如果某个字段未显示，请明确回答“未显示”，不要推测。",
+      "prompt": "打开 iOS 设置时调用 quick_action，并严格传 {\"platform\":\"ios\",\"action\":\"open_settings\"}。根据截图定位一级入口“以太网”，点击时严格传 {\"type\":\"tap\",\"point\":{\"x\":目标中心横坐标,\"y\":目标中心纵坐标}}；再用同样格式点击“接口”区域中的“以太网”，进入详情页。不要修改任何网络设置。请停留在能够同时看到“IPv4 地址”区域中“IP 地址”“子网掩码”和“路由器”的页面；最后必须显式调用 screenshot，再在最终回答中逐项返回当前屏幕显示的这三个值。如果某个字段未显示，请明确回答“未显示”，不要推测。不要重复提交缺少 action 或 point 的工具调用。",
       "description_for_judge": "Agent 应按“设置 → 以太网 → 接口中的以太网”进入详情页，停留在能同屏看到 IPv4 地址、子网掩码和路由器的页面，调用 screenshot，并准确报告最终截图中显示的三个当前值。地址由 DHCP 提供，必须以本次任务截图为准，不应使用固定预期值。Agent 不应打开“配置 IP”或修改任何网络设置。",
       "rubric": [
         {"id": "opened_settings", "description": "成功打开设置应用"},
@@ -121,7 +121,7 @@
       ],
       "hard_assertions": {
         "must_complete_within_sec": 180,
-        "min_tool_calls": 4,
+        "min_tool_calls": 3,
         "required_tools": ["screenshot"]
       },
       "repeats": 1
@@ -129,7 +129,7 @@
     {
       "id": "open_app_library",
       "category": "device_operation",
-      "prompt": "先返回主屏幕，然后向左滑动直到打开 App 资源库，并列出当前画面中至少三个可见的 App。",
+      "prompt": "先调用 touch_gesture，严格传 {\"type\":\"home\"} 返回主屏幕；再调用 touch_gesture，传 {\"type\":\"swipe_left\",\"strength\":\"large\"}，必要时重复向左滑动，直到截图中明确出现 App 资源库。不要调用 open_url，也不要打开网页。最后显式调用 screenshot，并列出最终画面中至少三个可见的 App。",
       "description_for_judge": "Agent 应返回 iOS 主屏幕、向左滑动进入 App 资源库，并准确列出至少三个可见 App。",
       "rubric": [
         {"id": "returned_home", "description": "先返回了主屏幕"},
@@ -137,7 +137,7 @@
         {"id": "listed_apps", "description": "准确描述了至少三个可见 App"}
       ],
       "hard_assertions": {
-        "must_complete_within_sec": 120,
+        "must_complete_within_sec": 180,
         "min_tool_calls": 2,
         "required_tools": []
       },

@@ -61,6 +61,10 @@ func TestQuickActionExposesStructuredSchema(t *testing.T) {
 	if url["type"] != "string" || url["maxLength"] != 4096 {
 		t.Fatalf("url schema = %#v, want string with maxLength=4096", url)
 	}
+	required, ok := schema["required"].([]string)
+	if !ok || len(required) != 2 || required[0] != "action" || required[1] != "platform" {
+		t.Fatalf("required = %#v, want action and platform", schema["required"])
+	}
 }
 
 func TestQuickActionsSuggestUnknownAction(t *testing.T) {
@@ -128,11 +132,11 @@ func TestQuickActionListActionAlias(t *testing.T) {
 
 func TestQuickActionDescriptionDocumentsListInspection(t *testing.T) {
 	desc := (&QuickActionTool{}).Description()
-	if !strings.Contains(desc, `{"list":true,"platform":"android"}`) {
-		t.Fatalf("description missing list=true inspection example: %s", desc)
+	if !strings.Contains(desc, `{"action":"list","platform":"android"}`) {
+		t.Fatalf("description missing action=list inspection example: %s", desc)
 	}
-	if !strings.Contains(desc, `do not pass {"action":"list"}`) {
-		t.Fatalf("description missing action=list warning: %s", desc)
+	if !strings.Contains(desc, `Always pass action and platform`) {
+		t.Fatalf("description missing required action/platform guidance: %s", desc)
 	}
 	// The reserved/alternative/no-retry behavior playbook now lives in the
 	// device-operator skill, not the tool description.
