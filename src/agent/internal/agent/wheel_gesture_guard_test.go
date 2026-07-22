@@ -620,6 +620,22 @@ func TestWheelGestureGuardBlocksDirectionalSwipeWhilePickerIsActive(t *testing.T
 	}
 }
 
+func TestWheelGestureGuardBlocksDirectionalSwipeWithExplicitWheelPoints(t *testing.T) {
+	guard := newWheelNudgeGuard(nil)
+	allowAndCommitWheel(t, guard, wheelNudgeGuardCall(validWheelGuardInput(400, 260, 15, 7, 24, 0, "normalized")))
+
+	// This is the exact malformed fallback emitted after wheel_nudge failed on
+	// the alarm picker. Directional aliases ignore start/end at execution time,
+	// but those points still reveal an attempt to bypass the owned wheel column.
+	swipe := ToolCall{
+		Spec:  ToolSpec{Name: "touch_gesture"},
+		Input: `{"type":"swipe_up","start":{"x":400,"y":300},"end":{"x":400,"y":600}}`,
+	}
+	if result, allowed := guard.BeforeToolCall(context.Background(), swipe); allowed || result.Error == nil {
+		t.Fatalf("directional swipe with explicit wheel points should be blocked: allowed=%v result=%#v", allowed, result)
+	}
+}
+
 func TestWheelGestureGuardAllowsDirectionalSwipeOutsidePickerColumns(t *testing.T) {
 	screen := &screenState{}
 	screen.UpdateActiveArea(1920, 1080, screenActiveArea{X: 711, Y: 28, Width: 498, Height: 1052, Valid: true})

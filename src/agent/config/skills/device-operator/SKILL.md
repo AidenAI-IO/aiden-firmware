@@ -184,7 +184,7 @@ Calibration loop:
 
 If the same list boundary appears again, stop searching in that direction. Try search/filter, a different tab, or ask the user.
 
-For picker/wheel controls, discover columns from the current UI rather than assuming hour/minute positions. Give the current visible picker screen a stable `picker_id` (for example `alarm-create` or `date-editor`) and change it after navigating to another picker screen. For each column, identify the selected value, target value, adjacent values, `column_x`, `center_y`, and measured `row_spacing`. Use numeric values or stable ordinal indices for textual lists.
+For picker/wheel controls, discover columns from the current UI rather than assuming hour/minute positions. Give the current visible picker screen a stable `picker_id` (for example `alarm-create` or `date-editor`) and change it after navigating to another picker screen. For each column, identify the selected value, target value, adjacent values, `column_x`, `center_y`, and measured `row_spacing`. `center_y` is mandatory on every `wheel_nudge` call: measure it from the selected center row in the latest screenshot, and never omit it or substitute a fixed default. Use numeric values or stable ordinal indices for textual lists.
 
 All `wheel_nudge` geometry uses normalized 0-1000 coordinates. Convert horizontal `column_x` with `pixel_x / max(screenshot_width - 1, 1) * 1000`. Convert vertical `center_y`, `row_spacing`, and `visible_target_y` with `pixel_y_or_distance / max(screenshot_height - 1, 1) * 1000`; never divide a vertical distance by screenshot width. Do not pass a coordinate-space selector to `wheel_nudge`.
 

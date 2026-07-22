@@ -343,7 +343,7 @@ func TestWheelNudgeLargeSupportsDown(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
 
-	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":500,"current_value":16,"target_value":0,"cycle_size":0,"cycle_start":0,"row_spacing":42,"value_step":1}`)
+	out, err := tool.Call(context.Background(), `{"picker_id":"test-picker","column_x":500,"center_y":460,"current_value":16,"target_value":0,"cycle_size":0,"cycle_start":0,"row_spacing":42,"value_step":1}`)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
@@ -536,7 +536,8 @@ func TestWheelNudgeDescriptionDefinesAdaptiveTravelAndKeyboardFirst(t *testing.T
 
 func TestWheelNudgeRejectsInputsThatWouldBypassGestureGuard(t *testing.T) {
 	invalidInputs := map[string]string{
-		`{"column_x":350,"remaining_gap":1,"current_value":1,"target_value":2,"cycle_size":0,"cycle_start":0,"row_spacing":42,"value_step":1}`: "picker_id is required",
+		`{"picker_id":"alarm-create","column_x":400,"current_value":15,"target_value":7,"cycle_size":24,"cycle_start":0,"row_spacing":40,"value_step":1}`: "center_y is required",
+		`{"column_x":350,"remaining_gap":1,"current_value":1,"target_value":2,"cycle_size":0,"cycle_start":0,"row_spacing":42,"value_step":1}`:            "picker_id is required",
 		`{"column_x":350,"remaining_gap":1,"duration_ms":0}`:    `unknown field "duration_ms"`,
 		`{"column_x":350,"remaining_gap":1,"distance":"micro"}`: `unknown field "distance"`,
 		`{"column_x":"350"}`:                           "cannot unmarshal string",
@@ -560,6 +561,14 @@ func TestWheelNudgeRejectsInputsThatWouldBypassGestureGuard(t *testing.T) {
 				t.Fatalf("invalid input wrote %d HID reports", len(reports))
 			}
 		})
+	}
+}
+
+func TestWheelNudgeSchemaRequiresMeasuredCenterY(t *testing.T) {
+	schema := (&WheelNudgeTool{}).ArgsSchema()
+	required, _ := schema["required"].([]string)
+	if !slices.Contains(required, "center_y") {
+		t.Fatalf("wheel_nudge schema required = %v, want center_y", required)
 	}
 }
 

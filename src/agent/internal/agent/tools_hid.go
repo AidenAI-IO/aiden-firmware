@@ -51,7 +51,6 @@ const (
 	directionalSwipeSmallDistance   = 200.0
 	directionalSwipeTinyDistance    = 40.0
 
-	wheelNudgeDefaultY     = 460.0
 	wheelNudgeDefaultMs    = 1400
 	wheelNudgeDefaultSteps = 18
 	wheelNudgeRowTolerance = 0.20
@@ -1645,6 +1644,7 @@ func (t *WheelNudgeTool) Description() string {
 		`target_value is the final requested value for this column and must remain fixed across calls; never substitute an intermediate visible value just because it is closer on screen. ` +
 		`When the target is exactly one visibly observed row above or below the selected row, pass visible_target_y and the tool taps that coordinate. Without that evidence it performs one bounded low-inertia drag. ` +
 		`Input JSON: {"picker_id":"alarm-create","column_x":393,"current_value":10,"target_value":16,"cycle_size":24,"cycle_start":0,"row_spacing":39,"value_step":1,"center_y":253}. ` +
+		`center_y is mandatory and must be measured from the selected center row in the latest screenshot; never omit it or reuse a fixed default across picker layouts. ` +
 		`All wheel geometry uses normalized 0-1000 coordinates. Normalize column_x using max(screenshot width-1,1); normalize center_y, row_spacing, and visible_target_y using max(screenshot height-1,1). In particular, row_spacing=(pixel row spacing/max(screenshot height-1,1))*1000, never divide a vertical distance by screenshot width. ` +
 		`value_step is the signed numeric change for one visible row downward. The tool derives the shortest row gap, numeric direction, and finger movement from current_value, target_value, value_step, and the declared domain, so callers must not calculate a gap or guess gesture directions. Omit value_step only when visible ordering is insufficient; the tool then performs one fixed finger-up row probe. ` +
 		`Actual drag travel is coarse-to-fine: gaps of 9+, 5-8, 2-4, and 1 picker rows move at most 5, 3, 2, and 1 measured rows using row_spacing. Longer coarse drags also take proportionally longer so they remain low-inertia rather than becoming a fling or leaving the visible picker area. ` +
@@ -1661,9 +1661,9 @@ func (t *WheelNudgeTool) ArgsSchema() map[string]any {
 		"cycle_start":      nonNegativeIntegerSchema("Lowest value in a cyclic wheel. Use 0 for 00-based time wheels and 1 for one-based wheels such as months, calendar days, or 12-hour clocks. Ignored when cycle_size is 0."),
 		"row_spacing":      coordinateSchema("Normalized 0-1000 vertical distance between adjacent visible row centers. Compute pixel spacing / max(screenshot height-1,1) * 1000; do not divide by screenshot width."),
 		"value_step":       integerArgSchema("Signed numeric change for one visible row downward. The tool derives gesture direction from this value; omit only for a genuinely unknown one-row probe."),
-		"center_y":         coordinateSchema("Normalized 0-1000 vertical center of the visible wheel selection area. Default is 460."),
+		"center_y":         coordinateSchema("Required normalized 0-1000 vertical center of the selected wheel row, measured from the latest screenshot."),
 		"visible_target_y": coordinateSchema("Exact normalized 0-1000 Y coordinate of a target value visibly observed one row above or below center_y. Omit unless the target row is actually visible in the latest screenshot."),
-	}, "picker_id", "column_x", "current_value", "target_value", "cycle_size", "cycle_start", "row_spacing")
+	}, "picker_id", "column_x", "current_value", "target_value", "cycle_size", "cycle_start", "row_spacing", "center_y")
 }
 
 func (t *WheelNudgeTool) Call(ctx context.Context, input string) (string, error) {
@@ -1688,7 +1688,7 @@ func (t *WheelNudgeTool) Call(ctx context.Context, input string) (string, error)
 		coordSpace = coordinateSpaceNormalized
 	}
 
-	centerY := wheelNudgeDefaultY
+	centerY := *args.CenterY
 	gestureTravel := travel
 	maxY := 1000.0
 	if coordSpace == coordinateSpaceScreenshot {
@@ -1700,10 +1700,6 @@ func (t *WheelNudgeTool) Call(ctx context.Context, input string) (string, error)
 			return toolErrorResultString(ctx, CodeInvalidArguments, "screenshot coordinates require a fresh screenshot"), nil
 		}
 		maxY = float64(active.Height - 1)
-		centerY = (wheelNudgeDefaultY / 1000.0) * maxY
-	}
-	if args.CenterY != nil {
-		centerY = *args.CenterY
 	}
 	if centerY < 0 || centerY > maxY {
 		return toolErrorResultf(ctx, CodeInvalidArguments, "center_y=%.0f is outside the visible coordinate range 0..%.0f", centerY, maxY), nil
@@ -1860,8 +1856,8 @@ func parseWheelNudgeArgs(input string) (wheelNudgeArgs, error) {
 	if args.CoordSpace != "" && args.CoordSpace != coordinateSpaceAuto && args.CoordSpace != coordinateSpaceScreenshot && args.CoordSpace != coordinateSpaceNormalized {
 		return wheelNudgeArgs{}, fmt.Errorf("unsupported coord_space for wheel_nudge: %q", args.CoordSpace)
 	}
-	if args.CenterY != nil && (math.IsNaN(*args.CenterY) || math.IsInf(*args.CenterY, 0)) {
-		return wheelNudgeArgs{}, fmt.Errorf("center_y must be a finite number")
+	if args.CenterY == nil || math.IsNaN(*args.CenterY) || math.IsInf(*args.CenterY, 0) {
+		return wheelNudgeArgs{}, fmt.Errorf("center_y is required and must be a finite number measured from the selected row in the latest screenshot")
 	}
 	if args.VisibleTargetY != nil && (math.IsNaN(*args.VisibleTargetY) || math.IsInf(*args.VisibleTargetY, 0)) {
 		return wheelNudgeArgs{}, fmt.Errorf("visible_target_y must be a finite number")

@@ -496,10 +496,7 @@ func (g *wheelNudgeGuard) guardCoordinates(coordSpace string, x, y, rowSpacing f
 }
 
 func wheelCenterY(args wheelNudgeArgs) float64 {
-	if args.CenterY != nil {
-		return *args.CenterY
-	}
-	return wheelNudgeDefaultY
+	return *args.CenterY
 }
 
 func (g *wheelNudgeGuard) beforeTouchGesture(call ToolCall) (ToolResult, bool) {
@@ -529,11 +526,25 @@ func (g *wheelNudgeGuard) beforeTouchGesture(call ToolCall) (ToolResult, bool) {
 		if args.Anchor != nil {
 			anchor = *args.Anchor
 		}
-		for _, column := range g.columns {
-			x, _, _, pointSpace := g.guardCoordinates(coordinateSpaceNormalized, anchor, column.centerY, 0)
-			if column.coordSpace == pointSpace && math.Abs(column.centerX-x) <= wheelNudgeColumnTolerance {
-				message := "active picker column is owned by wheel_nudge: refusing a directional swipe anchored on that column"
-				return invalidWheelResult(message, map[string]any{"column_x": column.centerX, "retry_same_column": true}), false
+		type directionalAnchor struct {
+			x          float64
+			coordSpace string
+		}
+		candidateAnchors := []directionalAnchor{
+			{x: anchor, coordSpace: coordinateSpaceNormalized},
+		}
+		for _, point := range []*pointerPoint{args.Start, args.End} {
+			if point != nil {
+				candidateAnchors = append(candidateAnchors, directionalAnchor{x: point.X.Float64(), coordSpace: normalizedWheelCoordSpace(args.CoordSpace)})
+			}
+		}
+		for _, candidate := range candidateAnchors {
+			for _, column := range g.columns {
+				x, _, _, pointSpace := g.guardCoordinates(candidate.coordSpace, candidate.x, column.centerY, 0)
+				if column.coordSpace == pointSpace && math.Abs(column.centerX-x) <= wheelNudgeColumnTolerance {
+					message := "active picker column is owned by wheel_nudge: refusing a directional swipe anchored on that column"
+					return invalidWheelResult(message, map[string]any{"column_x": column.centerX, "retry_same_column": true}), false
+				}
 			}
 		}
 		return ToolResult{}, true
