@@ -222,6 +222,9 @@ def test_catalog_omits_keyboard_when_host_does_not_support_it():
     assert "keyboard_text" not in names
     assert "keyboard_tap" not in names
     assert "enter_text_via_bridge" not in names
+    quick_action = next(tool for tool in body["tools"] if tool["name"] == "quick_action")
+    assert quick_action["args_schema"]["additionalProperties"] is False
+    assert quick_action["args_schema"]["properties"]["url"]["maxLength"] == 4096
 
 
 def test_parallel_tool_requests_are_serialized_by_device_lock():

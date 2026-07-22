@@ -50,12 +50,16 @@ func TestQuickActionExposesStructuredSchema(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing properties: %#v", schema)
 	}
-	if props["action"] == nil || props["platform"] == nil || props["list"] == nil {
+	if props["action"] == nil || props["platform"] == nil || props["list"] == nil || props["url"] == nil {
 		t.Fatalf("quick_action schema missing expected fields: %#v", props)
 	}
 	platform := props["platform"].(map[string]any)
 	if platform["type"] != "string" {
 		t.Fatalf("platform type = %#v, want string", platform["type"])
+	}
+	url := props["url"].(map[string]any)
+	if url["type"] != "string" || url["maxLength"] != 4096 {
+		t.Fatalf("url schema = %#v, want string with maxLength=4096", url)
 	}
 }
 

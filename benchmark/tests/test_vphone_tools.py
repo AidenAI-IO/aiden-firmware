@@ -180,10 +180,38 @@ def test_quick_actions(bridge):
     _, device, base_url = bridge
     invoke(base_url, "quick_action", {"platform": "ios", "action": "home"})
     invoke(base_url, "quick_action", {"platform": "ios", "action": "open_settings"})
+    status, body = invoke(
+        base_url,
+        "quick_action",
+        {"platform": "ios", "action": "open_url", "url": "https://www.baidu.com"},
+    )
     invoke(base_url, "quick_action", {"platform": "ios", "action": "send"})
     assert ("reset_home",) in device.calls
     assert ("launch_app", "com.apple.Preferences") in device.calls
+    assert ("open_url", "https://www.baidu.com") in device.calls
     assert ("keyboard_key", "enter") in device.calls
+    assert status == 200 and body["is_error"] is False
+    assert json.loads(body["output"])["source_width"] == 1290
+
+
+def test_quick_action_open_url_validates_before_device_action(bridge):
+    _, device, base_url = bridge
+    for value in (None, "", "javascript:alert(1)", "https:///missing-host"):
+        status, body = invoke(
+            base_url,
+            "quick_action",
+            {"platform": "ios", "action": "open_url", "url": value},
+        )
+        assert status == 200 and body["is_error"] is True
+        assert body["error"] == "invalid_url"
+    assert all(call[0] != "open_url" for call in device.calls)
+
+
+def test_quick_action_catalog_advertises_open_url(bridge):
+    _, _, base_url = bridge
+    _, body = invoke(base_url, "quick_action", {"platform": "ios", "list": True})
+    actions = {item["id"]: item for item in json.loads(body["output"])["actions"]}
+    assert actions["open_url"]["status"] == "active"
 
 
 def test_quick_action_panels_and_app_switcher(bridge):

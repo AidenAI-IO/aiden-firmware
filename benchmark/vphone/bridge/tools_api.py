@@ -7,6 +7,7 @@ import math
 import time
 from http.server import BaseHTTPRequestHandler
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 from .client import VPhoneSocketError
 from .device import MAX_TEXT_LENGTH, unsupported_vphone_text_chars
@@ -17,6 +18,7 @@ from .state import NoBridgeEnvAvailableError, VPhoneBridgeState, benchmark_task_
 HID_ABSOLUTE_MAX = 32767.0
 MAX_ACTION_DURATION_MS = 10_000
 MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024
+MAX_URL_LENGTH = 4096
 DEFAULT_ACTION_SETTLE_SEC = 0.6
 DEFAULT_DOUBLE_TAP_PAUSE_MS = 120
 DEFAULT_LONG_PRESS_MS = 650
@@ -157,12 +159,17 @@ class VPhoneToolsAPIHandler:
             },
             {
                 "name": "quick_action",
-                "description": "Execute iOS navigation such as home, back, app_switch, open_settings, notification_center, or control_center.",
+                "description": "Execute iOS navigation such as home, back, app_switch, open_settings, open_url, notification_center, or control_center.",
                 "args_schema": {
                     "type": "object", "additionalProperties": False,
                     "properties": {
                         "action": {"type": "string"},
                         "platform": {"type": "string", "enum": ["ios"]},
+                        "url": {
+                            "type": "string",
+                            "maxLength": MAX_URL_LENGTH,
+                            "description": "Absolute http/https URL required when action=open_url.",
+                        },
                         "list": {"type": "boolean"},
                         "alternative": {"type": "boolean"},
                         "alternative_index": {"type": "integer", "minimum": 1},
@@ -605,6 +612,15 @@ class VPhoneToolsAPIHandler:
                 lambda: self.state.device.launch_app("com.apple.Preferences"),
                 "quick_action", tool_input, "app_launch com.apple.Preferences",
             )
+        if action == "open_url":
+            try:
+                url = _validated_http_url(tool_input.get("url"))
+            except ValueError as exc:
+                return {"output": f"error: {exc}", "is_error": True, "error": "invalid_url"}
+            return self._execute_device(
+                lambda: self.state.device.open_url(url),
+                "quick_action", tool_input, "open_url",
+            )
         if action == "notification_center":
             return self._edge_panel(100, tool_input, "notification_center")
         if action == "control_center":
@@ -872,6 +888,7 @@ def _quick_action_id(tool_input: dict[str, Any]) -> str:
         "quick_settings": "control_center", "quick_setting": "control_center", "快捷设置": "control_center",
         "close_panel": "dismiss_panel", "enter": "send", "press_enter": "send", "submit": "send",
         "settings": "open_settings", "system_settings": "open_settings", "设置": "open_settings",
+        "url": "open_url", "open_web_url": "open_url", "browser_open": "open_url",
     }
     return aliases.get(action, action)
 
@@ -885,6 +902,7 @@ def _quick_action_catalog(keyboard_available: bool) -> list[dict[str, str]]:
         {"id": "control_center", "status": "active", "tool": "quick_action"},
         {"id": "dismiss_panel", "status": "active", "tool": "quick_action"},
         {"id": "open_settings", "status": "active", "tool": "quick_action"},
+        {"id": "open_url", "status": "active", "tool": "quick_action"},
         {"id": "spotlight_search", "status": "active", "tool": "quick_action"},
         {"id": "quit_app", "status": "active", "tool": "quick_action"},
         {"id": "copy", "status": "reserved", "tool": "keyboard_tap"},
@@ -898,6 +916,16 @@ def _quick_action_catalog(keyboard_available: bool) -> list[dict[str, str]]:
         }
     )
     return actions
+
+
+def _validated_http_url(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("url is required when action=open_url")
+    url = value.strip()
+    parsed = urlsplit(url)
+    if len(url) > MAX_URL_LENGTH or parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"url must be an absolute http/https URL no longer than {MAX_URL_LENGTH} characters")
+    return url
 
 
 def _unsupported_keyboard_result() -> dict[str, Any]:

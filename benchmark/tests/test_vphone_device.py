@@ -1,9 +1,16 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
 
-from vphone.bridge.device import MAX_TEXT_LENGTH, VPhoneDevice, unsupported_vphone_text_chars
+from vphone.bridge.client import VPhoneSocketError
+from vphone.bridge.device import (
+    MAX_TEXT_LENGTH,
+    GuestSSHConfig,
+    VPhoneDevice,
+    unsupported_vphone_text_chars,
+)
 
 
 class RecordingClient:
@@ -59,6 +66,40 @@ def test_app_and_url_validation_happens_before_socket(device):
     device.open_url("https://www.apple.com.cn/")
     assert device.client.calls[0][0]["t"] == "app_launch"
     assert device.client.calls[1][0]["t"] == "open_url"
+
+
+def test_open_url_falls_back_to_ssh_uiopen_for_legacy_host(monkeypatch):
+    value = VPhoneDevice(
+        "/tmp/unused-vphone.sock",
+        guest_ssh=GuestSSHConfig(host="192.168.64.5", port=22222, user="root"),
+    )
+
+    class LegacyClient:
+        def request(self, payload, *, timeout_sec=None):
+            del payload, timeout_sec
+            raise VPhoneSocketError("command_failed", "unknown command: open_url")
+
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    value.client = LegacyClient()
+    monkeypatch.setattr("vphone.bridge.device.subprocess.run", fake_run)
+    try:
+        value.open_url("https://www.baidu.com")
+    finally:
+        value.close()
+
+    command, kwargs = commands[0]
+    assert command[-4:] == [
+        "root@192.168.64.5",
+        "/var/jb/usr/bin/uiopen",
+        "-u",
+        "https://www.baidu.com",
+    ]
+    assert kwargs.get("shell", False) is False
 
 
 def test_screenshot_uses_private_random_file_and_removes_it(device):

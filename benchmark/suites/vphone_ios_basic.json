@@ -1,8 +1,8 @@
 {
   "name": "vphone_ios_basic",
-  "version": "1.0",
+  "version": "1.2",
   "description": "Basic and multi-step VPhone iOS Environment Bridge tests",
-  "prompt_prefix": "你正在控制一台 iOS 虚拟机。使用 screenshot 查看屏幕；触控坐标优先使用 normalized 0 至 1000，不能把缩放后截图像素当作设备像素。使用 touch_gesture 执行点击、滑动和返回主屏幕。打开设置时使用 quick_action，参数为 platform=ios, action=open_settings。iOS 没有 Android 返回键，使用 quick_action back 或从屏幕左边缘向右滑动返回。需要查找其他 App 时，可以返回主屏幕后使用 quick_action spotlight_search，再输入 App 名称。",
+  "prompt_prefix": "你正在控制一台 iOS 虚拟机。使用 screenshot 查看屏幕；触控坐标优先使用 normalized 0 至 1000，不能把缩放后截图像素当作设备像素。使用 touch_gesture 执行点击、滑动和返回主屏幕。打开设置时使用 quick_action，参数为 platform=ios, action=open_settings。打开网页时使用 quick_action，参数为 platform=ios, action=open_url, url=目标网址。iOS 没有 Android 返回键，使用 quick_action back 或从屏幕左边缘向右滑动返回。查找其他 App 时优先使用主屏幕、App 资源库和可见图标，不依赖键盘输入。",
   "global_reset": {
     "type": "agent_prompt",
     "prompt": "请返回 iOS 主屏幕并截图确认。",
@@ -74,19 +74,19 @@
       "repeats": 1
     },
     {
-      "id": "type_english_text",
+      "id": "open_web_url",
       "category": "device_operation",
-      "prompt": "请打开 Spotlight 搜索，输入 hello ios，然后截图确认输入结果。",
-      "description_for_judge": "Agent 应打开 iOS Spotlight，在可见搜索框中输入 hello ios，并观察输入后的屏幕。",
+      "prompt": "请使用 iOS URL 打开能力访问 https://www.baidu.com，并截图确认 Safari 已显示百度页面。",
+      "description_for_judge": "Agent 应通过 quick_action open_url 打开 https://www.baidu.com，最终画面应显示 Safari 中的 baidu.com 或可识别的百度页面。本任务不要求键盘逐字输入网址。",
       "rubric": [
-        {"id": "opened_input", "description": "打开并聚焦了 Spotlight 搜索框"},
-        {"id": "typed_text", "description": "输入了 hello ios"},
-        {"id": "confirmed_with_screenshot", "description": "用截图确认了输入结果"}
+        {"id": "opened_url", "description": "使用 URL 打开能力访问了 https://www.baidu.com"},
+        {"id": "loaded_baidu", "description": "Safari 显示 baidu.com 或可识别的百度页面"},
+        {"id": "confirmed_with_screenshot", "description": "用截图确认了页面结果"}
       ],
       "hard_assertions": {
         "must_complete_within_sec": 120,
-        "min_tool_calls": 2,
-        "required_tools": []
+        "min_tool_calls": 1,
+        "required_tools": ["quick_action"]
       },
       "repeats": 1
     },
@@ -108,21 +108,21 @@
       "repeats": 1
     },
     {
-      "id": "settings_check_wifi",
+      "id": "settings_read_ethernet_ipv4",
       "category": "device_operation",
-      "prompt": "打开 iOS 设置，进入无线局域网设置，告诉我 Wi-Fi 当前是否已开启。不要改变开关状态。",
-      "description_for_judge": "Agent 应打开 iOS 设置、进入无线局域网页面，只读取并正确报告 Wi-Fi 状态，不应修改设置。",
+      "prompt": "打开 iOS 设置，点击一级入口“以太网”，再点击“接口”区域中的“以太网”，进入以太网详情页。不要修改任何网络设置。请停留在能够同时看到“IPv4 地址”区域中“IP 地址”“子网掩码”和“路由器”的页面，调用 screenshot 截图，并在最终回答中逐项返回当前屏幕显示的这三个值；如果某个字段未显示，请明确回答“未显示”，不要推测。",
+      "description_for_judge": "Agent 应按“设置 → 以太网 → 接口中的以太网”进入详情页，停留在能同屏看到 IPv4 地址、子网掩码和路由器的页面，调用 screenshot，并准确报告最终截图中显示的三个当前值。地址由 DHCP 提供，必须以本次任务截图为准，不应使用固定预期值。Agent 不应打开“配置 IP”或修改任何网络设置。",
       "rubric": [
         {"id": "opened_settings", "description": "成功打开设置应用"},
-        {"id": "found_wifi_settings", "description": "进入并查看了无线局域网设置"},
-        {"id": "reported_status", "description": "正确报告了 Wi-Fi 当前状态"},
-        {"id": "did_not_modify", "description": "没有修改 Wi-Fi 开关"}
+        {"id": "opened_ethernet_interface", "description": "依次进入以太网入口和接口中的以太网详情页"},
+        {"id": "captured_ipv4_details", "description": "调用 screenshot，且最终画面同时清楚显示 IPv4 地址区域中的 IP 地址、子网掩码和路由器"},
+        {"id": "reported_ipv4_details", "description": "最终回答逐项给出的 IP 地址、子网掩码和路由器与最终截图完全一致；未显示的字段被明确报告为未显示"},
+        {"id": "did_not_modify", "description": "没有进入配置 IP 页面，也没有修改、续租或保存任何网络设置"}
       ],
       "hard_assertions": {
         "must_complete_within_sec": 180,
-        "min_tool_calls": 2,
-        "required_tools": [],
-        "prohibited_actions": ["toggle wifi", "change wifi state"]
+        "min_tool_calls": 4,
+        "required_tools": ["screenshot"]
       },
       "repeats": 1
     },
@@ -145,4 +145,3 @@
     }
   ]
 }
-

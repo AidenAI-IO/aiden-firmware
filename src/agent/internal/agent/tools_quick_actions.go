@@ -333,13 +333,17 @@ func (t *QuickActionTool) Name() string { return "quick_action" }
 
 func (t *QuickActionTool) Description() string {
 	return strings.TrimSpace(`Execute a predefined platform shortcut from quick_actions.json. Prefer before keyboard_tap/touch_gesture when a catalog entry matches the goal. ` +
-		`Use {"list":true,"platform":"android"} to inspect available actions; do not pass {"action":"list"}.`)
+		`Use {"list":true,"platform":"android"} to inspect available actions; do not pass {"action":"list"}. ` +
+		`A compatible environment bridge may expose open_url; pass an absolute http/https URL in url when action=open_url.`)
 }
 
 func (t *QuickActionTool) ArgsSchema() map[string]any {
+	urlSchema := stringArgSchema("Absolute http/https URL used by bridge-defined actions such as open_url.")
+	urlSchema["maxLength"] = 4096
 	return objectArgsSchema(map[string]any{
 		"action":            stringArgSchema(`Action id or alias, for example "back", "copy", or "spotlight_search". Do not use "list" here; set list=true to inspect actions.`),
 		"platform":          stringEnumArgSchema("Target platform inferred from the observed screen or user context.", "ios", "android", "mac"),
+		"url":               urlSchema,
 		"list":              boolArgSchema("Set true to list available actions for the platform instead of executing an action."),
 		"alternative":       boolArgSchema("Set true to execute an alternative binding listed by a previous quick_action result."),
 		"alternative_index": minIntegerArgSchema("1-based alternative binding index; defaults to 1 when alternative=true.", 1),

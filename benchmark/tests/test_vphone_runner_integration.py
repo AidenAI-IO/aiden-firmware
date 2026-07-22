@@ -19,12 +19,22 @@ def test_vphone_ios_basic_suite_loads():
         "go_home",
         "open_settings",
         "swipe_screen",
-        "type_english_text",
+        "open_web_url",
         "clock_count_alarms",
-        "settings_check_wifi",
+        "settings_read_ethernet_ipv4",
         "open_app_library",
     ]
     assert all(task.repeats == 1 for task in suite.tasks)
+
+    ethernet = next(task for task in suite.tasks if task.id == "settings_read_ethernet_ipv4")
+    assert ethernet.hard_assertions.min_tool_calls >= 4
+    assert ethernet.hard_assertions.required_tools == ["screenshot"]
+    assert {item.id for item in ethernet.rubric} >= {
+        "opened_ethernet_interface",
+        "captured_ipv4_details",
+        "reported_ipv4_details",
+        "did_not_modify",
+    }
 
 
 def test_vphone_loopback_endpoint_is_rewritten_for_agent_container():
