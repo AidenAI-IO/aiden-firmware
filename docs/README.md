@@ -45,6 +45,7 @@ This documentation hub is the structured entry point for the project. The root `
 - [Phone Bridge Protocol](04-agent/phone-bridge-protocol.md)
 - [Swipe Interaction](04-agent/swipe-interaction.md)
 - [Telemetry with Langfuse](04-agent/telemetry-langfuse.md)
+- [Storage Manager / StorageMonitor](04-agent/storage-manager.md)
 
 ### 05. SDK & Tools
 

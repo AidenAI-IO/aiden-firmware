@@ -1,0 +1,434 @@
+# Storage Manager
+
+## Overview
+
+The Storage Manager protects the Agent from persistent-storage exhaustion. Its Go implementation is named StorageMonitor and is responsible for:
+
+- Sampling the configured storage root.
+- Classifying the final storage level.
+- Running ordered cleanup stages.
+- Resampling after every cleaner.
+- Applying recovery hysteresis.
+- Disabling non-essential writes under pressure.
+- Triggering remediation after ENOSPC or EROFS errors.
+- Exposing status and manual-cleanup HTTP endpoints.
+- Publishing the final level to deployment-side guards.
+
+This module manages storage state and remediation only. Notification consumers, Companion App behavior, LED presentation, and other user-facing delivery policies are outside its scope.
+
+Related documentation:
+
+- [Paths, Artifacts & Config Cheat Sheet](../02-architecture/paths-and-artifacts.md)
+- [Agent Configuration Reference](configuration.md)
+
+## Implementation Status
+
+| Capability | Status | Notes |
+| --- | --- | --- |
+| Startup check | Available | Runs once when the Agent runtime starts |
+| Periodic monitoring | Available | Defaults to a 300-second interval |
+| Tiered classification | Available | Normal, Warning, Critical, Emergency |
+| Recovery hysteresis | Available | Prevents level flapping near thresholds |
+| Automatic cleanup | Available | LLM HTTP logs, audio archives, session archives |
+| Post-cleanup resampling | Available | Final state always comes from statfs |
+| Degraded write controls | Available | Suspends non-essential persistence |
+| Write-error remediation | Available | Handles ENOSPC and EROFS |
+| Status endpoint | Available | GET /api/storage/status |
+| Cleanup endpoint | Available | POST /api/storage/cleanup |
+| Deployment state file | Available | /run/agent/storage_level |
+| Agent log integration | Available | Default path is /userdata/agent/log/agent.log |
+| Notification event output | Interface available | No production consumer is injected by this module |
+| LED and App presentation | Out of scope | Consumers can poll the status endpoint |
+
+## Storage Scope
+
+### Managed Root
+
+StorageMonitor manages one configured persistent-storage root. The default is:
+
+~~~text
+/userdata
+~~~
+
+The default Agent configuration directory is /userdata/agent. Important persistent paths include:
+
+| Data | Default path |
+| --- | --- |
+| Agent main log | /userdata/agent/log/agent.log |
+| LLM HTTP logs | /userdata/agent/log/llm-http-*.log |
+| Session data | /userdata/agent/memory |
+| Session archives | /userdata/agent/memory/session_archive |
+| Long-term memory | /userdata/agent/memory/long_term |
+| Audio archives | /userdata/audio |
+| Agent configuration | /userdata/agent/agent.toml |
+
+The Agent main log has moved from /var/log/agent/agent.log to `<CONFIG_DIR>/log/agent.log`. With the default configuration directory, the resolved path is /userdata/agent/log/agent.log. The legacy file is not migrated and is not used as a fallback.
+
+Other services may still write logs under /var/log, including audio_service, frame_service, and adb. Those logs are not managed by the Agent StorageMonitor cleaners.
+
+### Protected Data
+
+The Storage Manager does not delete:
+
+- The active session.
+- Long-term memory.
+- Agent or device configuration.
+- OTA files currently in use.
+- Arbitrary files outside configured cleaner directories.
+
+It also does not manage RAM, CPU, temperature, battery pressure, or volatile /tmp usage.
+
+## Runtime Flow
+
+~~~text
+Startup check ───────┐
+Periodic check ──────┤
+ENOSPC / EROFS ──────┼→ StorageMonitor.CheckAndRemediate
+Manual cleanup ──────┘              │
+                                    ├→ statfs(root_path)
+                                    ├→ classify initial level
+                                    ├→ run eligible cleaners by priority
+                                    ├→ statfs after every cleaner
+                                    ├→ apply recovery hysteresis
+                                    └→ publish final StorageStatus
+                                           ├→ update write capabilities
+                                           ├→ update storage_level file
+                                           ├→ serve HTTP status
+                                           └→ optionally publish an event
+~~~
+
+All entry points share the same remediation path. A monitor-wide mutex serializes checks so startup, periodic, write-failure, and manual cleanup requests cannot delete the same files concurrently.
+
+## Check Triggers
+
+### Startup
+
+The daemon calls StartStorageMonitor after creating the Agent runtime.
+
+StartStorageMonitor:
+
+1. Runs CheckAndRemediate with the startup reason.
+2. Starts the periodic monitor loop even if the initial check reports an error.
+3. Stops the loop and removes the deployment state file when the runtime closes.
+
+### Periodic Monitoring
+
+The default interval is 300 seconds. Periodic checks can run maintenance cleaners while the storage level is Normal. For example, the normal LLM HTTP log stage removes files beyond the default retention window.
+
+### Write Errors
+
+Writers pass storage-related errors to StorageMonitor. An immediate asynchronous check is scheduled only for:
+
+- ENOSPC: no space left on device.
+- EROFS: read-only filesystem.
+
+Repeated failures are coalesced. At most one write-failure remediation request is pending at a time.
+
+### Manual Cleanup
+
+POST /api/storage/cleanup uses the same CheckAndRemediate flow with the manual reason.
+
+- With force=false, Normal, Warning, and Critical cleanup stages are eligible even when the current level is Normal. Emergency-only stages remain gated unless the effective level is Emergency. The flow still stops after a cleaner resamples at Normal.
+- With force=true, selected cleaners ignore ordinary retention thresholds and run their force-clean behavior.
+- Force cleanup still respects cleaner-directory boundaries and protected-data rules.
+
+## Storage Levels
+
+Levels are based on available bytes, not percent used.
+
+| Level | Default available-space range | Behavior |
+| --- | --- | --- |
+| Normal | Greater than 50 MB | Normal operation and low-risk maintenance |
+| Warning | Greater than 10 MB and at most 50 MB | Warning-stage cleanup |
+| Critical | Greater than 5 MB and at most 10 MB | Aggressive cleanup and non-essential write suspension |
+| Emergency | At most 5 MB | Enables configured emergency cleanup stages while the effective level remains Emergency |
+
+Threshold comparisons use exact bytes. Exactly 10 MB is Critical, and exactly 5 MB is Emergency.
+
+### Recovery Hysteresis
+
+Escalation takes effect immediately. De-escalation requires available space to exceed the previous level threshold plus recovery_hysteresis_mb.
+
+With the default 5 MB hysteresis:
+
+| Previous level | Space required to de-escalate |
+| --- | --- |
+| Warning | Greater than 55 MB |
+| Critical | Greater than 15 MB |
+| Emergency | Greater than 10 MB |
+
+This prevents repeated transitions when available space oscillates near a threshold.
+
+### Final-State Rule
+
+The initial sample only decides whether remediation should begin. StorageMonitor resamples the filesystem after every cleaner.
+
+The final level, unavailable capabilities, deployment state file, and HTTP response are based on the final statfs sample after hysteresis. A cleaner's reported freed-byte count is retained for audit history but never replaces resampling.
+
+## Cleanup Pipeline
+
+### Cleaner Interface
+
+~~~go
+type StorageCleaner interface {
+    Name() string
+    Priority() int
+    EstimateReclaimable(ctx context.Context) (uint64, error)
+    Clean(ctx context.Context) (freed uint64, err error)
+}
+~~~
+
+Cleaners run in ascending Priority order. Non-force checks call EstimateReclaimable first and skip a cleaner when its estimate is zero.
+
+### Default Stages
+
+The runtime builds cleanup stages from the configured retention arrays.
+
+| Data | Default stage | Minimum level | Protection |
+| --- | --- | --- | --- |
+| LLM HTTP logs | 7 days | Normal | Protects the active session log |
+| LLM HTTP logs | 3 days | Warning | Protects the active session log |
+| LLM HTTP logs | 1 day | Critical | Protects the active session log |
+| LLM HTTP logs | 0 days | Emergency | Removes matching logs except the active session log |
+| Audio archives | 30 days, keep up to 10 | Warning | Only touches the audio archive directory |
+| Audio archives | 7 days, keep up to 3 | Critical | Only touches the audio archive directory |
+| Audio archives | 0 days, keep none | Emergency | Only touches the audio archive directory |
+| Session archives | 30 days | Warning | Does not touch the active session or long-term memory |
+
+A retention value of 0 creates an emergency cleanup stage. The default session_archive_retention_days value is [30], so an all-session-archives emergency stage is not enabled unless 0 is explicitly added.
+
+### Stage Eligibility and Stop Conditions
+
+After each cleaner, StorageMonitor resamples and recalculates the effective level.
+
+- Non-force remediation stops after recovery to Normal.
+- Automatic startup, periodic, and write-error remediation skip a cleaner when its minimum level is above the recalculated effective level.
+- Non-force manual cleanup bypasses the Normal, Warning, and Critical minimum-level gates, but retains the Emergency gate.
+- A cleanup that raises the level from Emergency to Critical prevents later Emergency-only stages from running.
+- Force cleanup continues through all selected cleaners.
+- A cleaner failure is recorded and does not prevent later cleaners from running.
+
+### Cleanup Retry Interval
+
+Automatic cleanup has a default minimum retry interval of 60 seconds to avoid repeatedly scanning directories under sustained pressure.
+
+The retry interval is bypassed for:
+
+- force=true.
+- Manual cleanup.
+- ENOSPC or EROFS remediation.
+
+## Degraded Writes
+
+Warning triggers cleanup but does not disable capabilities. Critical and Emergency compute unavailable capabilities from the degraded-mode configuration.
+
+| Capability | Default behavior |
+| --- | --- |
+| llm_http_log | Stops new raw LLM HTTP logs |
+| audio_archive | Stops new audio archives |
+| session_archive | Stops new session archives |
+| session_persistence | Keeps the in-memory session and marks persistence as pending |
+
+Capabilities are recalculated after every successful check and recover automatically when storage returns to a safe level.
+
+### Agent Main Log
+
+The Agent main log is not completely disabled through AllowWrite. Instead, the S53agent deployment script reads /run/agent/storage_level.
+
+At Critical or Emergency, S53agent trims `<CONFIG_DIR>/log/agent.log` to storage.degraded_mode.max_agent_log_mb, which defaults to 1 MB. It preserves the newest content so storage pressure does not remove the most useful diagnostics.
+
+## Status Model
+
+StorageStatus is the immutable snapshot produced by a successful check.
+
+| Field | Meaning |
+| --- | --- |
+| Path | Managed root |
+| TotalBytes, UsedBytes, AvailableBytes | Final statfs values |
+| PercentUsed | Used-space percentage |
+| Level | Final storage level |
+| UnavailableCapabilities | Writes currently suspended |
+| Revision | Increments after every successful check |
+| LastCleanupAt | Time of the most recent cleaner execution |
+| LastCleanupFreedBytes | Bytes reported by the latest cleanup flow |
+| CleanupHistory | Most recent cleaner results, capped at 50 entries |
+| CheckedAt | Final sample time |
+
+Status returns copies of slice fields so callers cannot mutate the monitor's internal state.
+
+### Deployment State File
+
+Every successful check atomically updates:
+
+~~~text
+/run/agent/storage_level
+~~~
+
+The file contains normal, warning, critical, or emergency. Deployment-side guards use it to apply the Agent main-log limit.
+
+Disabling or stopping StorageMonitor removes both the state file and its temporary file so deployment scripts do not consume stale state.
+
+## HTTP API
+
+### Get Status
+
+~~~http
+GET /api/storage/status
+~~~
+
+Example response:
+
+~~~json
+{
+  "path": "/userdata",
+  "total_mb": 3072,
+  "used_mb": 3027,
+  "available_mb": 45,
+  "percent_used": 98.5,
+  "alert_level": "warning",
+  "degraded_mode": false,
+  "unavailable_capabilities": [],
+  "status_revision": 12,
+  "last_cleanup": "2026-07-22T08:30:00Z",
+  "last_cleanup_freed_mb": 32,
+  "cleanup_history": [
+    {
+      "timestamp": "2026-07-22T08:30:00Z",
+      "cleaner": "llm_http_log_7d",
+      "freed_mb": 32,
+      "status": "success"
+    }
+  ]
+}
+~~~
+
+The endpoint provides a consistent snapshot suitable for polling. Real-time push and user-interface presentation are outside this module.
+
+### Run Cleanup
+
+~~~http
+POST /api/storage/cleanup
+Content-Type: application/json
+~~~
+
+Example request:
+
+~~~json
+{
+  "force": false,
+  "targets": ["llm_http_log", "audio_archive"]
+}
+~~~
+
+targets can be empty or contain these cleanup categories:
+
+- llm_http_log
+- audio_archive
+- session_archive
+
+Full cleaner names are also accepted. Unknown categories, abbreviations, unknown JSON fields, trailing JSON documents, and request bodies larger than 64 KB return HTTP 400.
+
+Example response:
+
+~~~json
+{
+  "success": true,
+  "freed_mb": 45,
+  "final_alert_level": "normal",
+  "available_mb": 90,
+  "cleaners_run": [
+    {
+      "name": "llm_http_log_7d",
+      "freed_mb": 45,
+      "status": "success"
+    }
+  ]
+}
+~~~
+
+freed_mb reports only cleaners executed by the current POST request. It does not repeat the previous cleanup's freed-space value.
+
+## Configuration
+
+Default configuration:
+
+~~~toml
+[storage]
+enabled = true
+root_path = "/userdata"
+check_interval_seconds = 300
+warning_threshold_mb = 50
+critical_threshold_mb = 10
+emergency_threshold_mb = 5
+recovery_hysteresis_mb = 5
+
+[storage.degraded_mode]
+disable_llm_http_log = true
+disable_audio_archive = true
+disable_session_archive = true
+max_agent_log_mb = 1
+
+[storage.cleanup]
+enabled = true
+llm_http_log_retention_days = [7, 3, 1, 0]
+audio_archive_retention_days = [30, 7, 0]
+session_archive_retention_days = [30]
+cleanup_retry_interval_seconds = 60
+~~~
+
+Validation rules:
+
+- root_path is required when storage monitoring is enabled.
+- check_interval_seconds must be greater than zero.
+- Thresholds must satisfy emergency < critical < warning.
+- max_agent_log_mb must be greater than zero.
+- cleanup_retry_interval_seconds cannot be negative.
+- Retention values cannot be negative.
+
+## Optional Event Output
+
+StorageMonitor exposes a VoiceNotificationSink interface for final storage-state events.
+
+- Non-Normal states publish active.
+- Severity changes update the stable storage:device condition.
+- Recovery to Normal publishes resolved.
+- Periodic checks can refresh an equivalent active event.
+- Publish failures do not roll back cleanup or StorageStatus.
+
+No concrete consumer is created or injected by this module. Queueing, presentation, playback, deduplication, and delivery policy belong to the consuming subsystem.
+
+## Testing
+
+The current test suite covers:
+
+- Exact-byte threshold boundaries.
+- Recovery hysteresis.
+- Post-cleanup resampling and final-state publication.
+- Cleanup retry intervals.
+- Manual and force cleanup behavior.
+- Runtime cleaner order and minimum levels.
+- Capability degradation and recovery.
+- ENOSPC and EROFS remediation.
+- Deployment state-file lifecycle.
+- Event activation, severity updates, resolution, and retry.
+- GET status consistency and cleanup history.
+- POST cleanup target and JSON validation.
+- Agent main-log capping under Critical and Emergency.
+
+Common checks:
+
+~~~bash
+cd src/agent
+go test ./internal/agent
+
+cd ../..
+./scripts/test_agent_log_cap.sh
+~~~
+
+## Current Limitations
+
+- Only one root_path is managed.
+- Logs for other services under /var/log are not cleaned.
+- The status API supports polling but not real-time push.
+- LED, Companion App, and complete Web UI presentation are outside this module.
+- The event sink has no production consumer in this module.
