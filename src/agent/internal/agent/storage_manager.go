@@ -282,6 +282,12 @@ func (m *StorageManager) SafeEject() error {
 	if m.formatJob.Status == StorageFormatRunning {
 		return fmt.Errorf("cannot eject while a format job is running")
 	}
+	// A mount attempt in flight has not set m.card.Mounted yet, so reporting
+	// "no mounted card" here would be wrong and the mount would land right
+	// after the eject. Make the caller retry once the attempt settles.
+	if m.mounting {
+		return fmt.Errorf("a mount attempt is in progress; retry shortly")
+	}
 	if !m.card.Mounted {
 		return fmt.Errorf("no mounted card to eject")
 	}
@@ -316,6 +322,13 @@ func (m *StorageManager) StartFormat(fs, confirm string) error {
 	defer m.mu.Unlock()
 	if m.formatJob.Status == StorageFormatRunning {
 		return fmt.Errorf("a format job is already running")
+	}
+	// A mount attempt holds the card with m.mu released, and m.card.Mounted is
+	// still false until it lands — so without this the unmount guard below is
+	// skipped and mkfs would run concurrently with mount. Mount attempts are
+	// short and the caller can retry.
+	if m.mounting {
+		return fmt.Errorf("a mount attempt is in progress; retry shortly")
 	}
 	if _, present := m.ops.CardDevice(); !present {
 		return fmt.Errorf("no card present")

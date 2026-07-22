@@ -210,6 +210,63 @@ func TestStorageManagerReadEndpointsStayResponsiveDuringMount(t *testing.T) {
 	}
 }
 
+// A format must never run concurrently with an in-flight mount: during the
+// ops.Prepare window m.card.Mounted is still false, so without the m.mounting
+// guard StartFormat would skip its unmount step and hand mkfs a device that
+// mount is actively working on.
+func TestStorageManagerFormatRejectedWhileMountInFlight(t *testing.T) {
+	ops := &fakeStorageOps{
+		present:        true,
+		free:           1 << 30,
+		total:          1 << 31,
+		healthy:        true,
+		prepareBlock:   make(chan struct{}),
+		prepareEntered: make(chan struct{}),
+	}
+	m := newTestStorageManager(t, ops)
+	m.card.Present = true // pre-accept presence so the first tick mounts
+
+	tickDone := make(chan struct{})
+	go func() { defer close(tickDone); m.tick() }()
+
+	select {
+	case <-ops.prepareEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Prepare was never reached")
+	}
+
+	err := m.StartFormat(StorageFormatFAT32, StorageFormatConfirmToken)
+	if err == nil {
+		close(ops.prepareBlock)
+		t.Fatal("StartFormat() succeeded while a mount was in flight; mkfs would race mount")
+	}
+	if !strings.Contains(err.Error(), "mount attempt is in progress") {
+		close(ops.prepareBlock)
+		t.Fatalf("StartFormat() error = %v, want an in-progress mount rejection", err)
+	}
+	if ops.formats != 0 {
+		close(ops.prepareBlock)
+		t.Fatalf("FormatDisk called %d times during an in-flight mount, want 0", ops.formats)
+	}
+
+	// SafeEject must not report "no mounted card" during the same window.
+	if err := m.SafeEject(); err == nil || !strings.Contains(err.Error(), "mount attempt is in progress") {
+		close(ops.prepareBlock)
+		t.Fatalf("SafeEject() error = %v, want an in-progress mount rejection", err)
+	}
+
+	// Once the mount lands, a format is accepted again.
+	close(ops.prepareBlock)
+	<-tickDone
+	if err := m.StartFormat(StorageFormatFAT32, StorageFormatConfirmToken); err != nil {
+		t.Fatalf("StartFormat() after the mount settled = %v, want success", err)
+	}
+	// Drain the async job so it cannot outlive the test's temp dir.
+	if job := waitForFormatJob(t, m); job.Status != StorageFormatSuccess {
+		t.Fatalf("format job = %+v, want success", job)
+	}
+}
+
 func TestStorageManagerRemovalFallsBackToEMMCOnly(t *testing.T) {
 	ops := &fakeStorageOps{present: true, free: 1 << 30, total: 1 << 31, healthy: true}
 	m := newTestStorageManager(t, ops)
