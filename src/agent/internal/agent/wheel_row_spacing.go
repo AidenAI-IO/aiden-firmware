@@ -14,6 +14,7 @@ const (
 	wheelRowSpacingMaxNormalized  = 80.0
 	wheelRowSpacingMinCorrelation = 0.28
 	wheelRowSpacingMinProminence  = 0.12
+	wheelRowSpacingMinConfidence  = 0.50
 )
 
 type wheelRowSpacingMeasurement struct {
@@ -117,40 +118,18 @@ func measureWheelRowSpacingImage(img image.Image, columnX, centerY float64) (whe
 	}
 
 	correlations := make([]float64, maxLag-minLag+1)
-	bestIndex := -1
-	bestCorrelation := -1.0
 	for lag := minLag; lag <= maxLag; lag++ {
 		correlation := normalizedWheelAutocorrelation(smoothed, lag)
 		index := lag - minLag
 		correlations[index] = correlation
-		if correlation > bestCorrelation {
-			bestCorrelation = correlation
-			bestIndex = index
-		}
-	}
-	if bestIndex < 0 {
-		return wheelRowSpacingMeasurement{}, false
 	}
 
-	medianValues := append([]float64(nil), correlations...)
-	sort.Float64s(medianValues)
-	medianCorrelation := medianValues[len(medianValues)/2]
-	if bestCorrelation < wheelRowSpacingMinCorrelation || bestCorrelation-medianCorrelation < wheelRowSpacingMinProminence {
+	chosenIndex, confidence, ok := selectWheelRowSpacingPeak(correlations)
+	if !ok {
 		return wheelRowSpacingMeasurement{}, false
-	}
-
-	chosenIndex := bestIndex
-	strongThreshold := bestCorrelation * 0.90
-	for index := 1; index+1 < len(correlations); index++ {
-		if correlations[index] >= strongThreshold && correlations[index] >= correlations[index-1] && correlations[index] >= correlations[index+1] {
-			chosenIndex = index
-			break
-		}
 	}
 	chosenLag := minLag + chosenIndex
 	chosenCorrelation := correlations[chosenIndex]
-	confidence := 0.5*clampFloat(chosenCorrelation/0.50, 0, 1) +
-		0.5*clampFloat((chosenCorrelation-medianCorrelation)/0.30, 0, 1)
 
 	return wheelRowSpacingMeasurement{
 		Normalized:  float64(chosenLag) / float64(height-1) * 1000.0,
@@ -158,6 +137,45 @@ func measureWheelRowSpacingImage(img image.Image, columnX, centerY float64) (whe
 		Confidence:  confidence,
 		Correlation: chosenCorrelation,
 	}, true
+}
+
+func selectWheelRowSpacingPeak(correlations []float64) (chosenIndex int, confidence float64, ok bool) {
+	if len(correlations) == 0 {
+		return 0, 0, false
+	}
+	bestIndex := 0
+	bestCorrelation := correlations[0]
+	for index := 1; index < len(correlations); index++ {
+		if correlations[index] > bestCorrelation {
+			bestCorrelation = correlations[index]
+			bestIndex = index
+		}
+	}
+
+	medianValues := append([]float64(nil), correlations...)
+	sort.Float64s(medianValues)
+	medianCorrelation := medianValues[len(medianValues)/2]
+	if bestCorrelation < wheelRowSpacingMinCorrelation || bestCorrelation-medianCorrelation < wheelRowSpacingMinProminence {
+		return 0, 0, false
+	}
+
+	chosenIndex = bestIndex
+	strongThreshold := bestCorrelation * 0.90
+	for index := 1; index+1 < len(correlations); index++ {
+		if correlations[index] >= strongThreshold && correlations[index] >= correlations[index-1] && correlations[index] >= correlations[index+1] {
+			chosenIndex = index
+			break
+		}
+	}
+
+	chosenCorrelation := correlations[chosenIndex]
+	prominence := chosenCorrelation - medianCorrelation
+	confidence = 0.5*clampFloat(chosenCorrelation/0.50, 0, 1) +
+		0.5*clampFloat(prominence/0.30, 0, 1)
+	if chosenCorrelation < wheelRowSpacingMinCorrelation || prominence < wheelRowSpacingMinProminence || confidence < wheelRowSpacingMinConfidence {
+		return 0, confidence, false
+	}
+	return chosenIndex, confidence, true
 }
 
 func smoothWheelRowEnergy(values []float64, radius int) []float64 {

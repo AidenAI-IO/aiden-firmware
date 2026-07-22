@@ -145,6 +145,13 @@ func TestMeasureWheelRowSpacingRejectsUniformImage(t *testing.T) {
 	}
 }
 
+func TestSelectWheelRowSpacingPeakRejectsWeakEarlyHarmonic(t *testing.T) {
+	correlations := []float64{0.10, 0.27, 0.10, 0.10, 0.30, 0.10, 0.10}
+	if index, confidence, ok := selectWheelRowSpacingPeak(correlations); ok {
+		t.Fatalf("selectWheelRowSpacingPeak() = index %d confidence %.2f, want low-confidence fallback", index, confidence)
+	}
+}
+
 func TestWheelNudgeUsesMeasuredRowSpacingFromLatestScreenshot(t *testing.T) {
 	dev, _ := newTestHIDDevice(t)
 	screen := &screenState{}
