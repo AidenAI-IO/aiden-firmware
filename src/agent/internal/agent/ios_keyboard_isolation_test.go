@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func newTestIOSKeyboardIsolationController(events *[]string) *iosKeyboardIsolationController {
@@ -98,7 +99,7 @@ func TestIOSKeyboardIsolationAttemptsRestoreWhenIsolationFails(t *testing.T) {
 	}
 }
 
-func TestIOSKeyboardIsolationRetriesFailedRestoreBeforePointerInput(t *testing.T) {
+func TestIOSKeyboardIsolationCooldownsFailedRestoreBeforePointerInput(t *testing.T) {
 	events := []string{}
 	restoreCalls := 0
 	pointerCalled := false
@@ -122,14 +123,28 @@ func TestIOSKeyboardIsolationRetriesFailedRestoreBeforePointerInput(t *testing.T
 	if _, err := controller.withPointerCall(context.Background(), func(context.Context) (string, error) {
 		pointerCalled = true
 		return "ok", nil
+	}); err == nil || !strings.Contains(err.Error(), "restore failed") {
+		t.Fatalf("withPointerCall() error = %v, want cached restore failure", err)
+	}
+	if pointerCalled {
+		t.Fatal("pointer action ran during restore retry cooldown")
+	}
+	if want := []string{"isolate", "restore"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+
+	controller.lastRestoreFailure = time.Now().Add(-iosKeyboardRestoreRetryCooldown)
+	if _, err := controller.withPointerCall(context.Background(), func(context.Context) (string, error) {
+		pointerCalled = true
+		return "ok", nil
 	}); err != nil {
-		t.Fatalf("withPointerCall() error = %v", err)
+		t.Fatalf("withPointerCall() after cooldown error = %v", err)
 	}
 	if !pointerCalled {
 		t.Fatal("pointer action did not run after successful restore retry")
 	}
 	if want := []string{"isolate", "restore", "restore"}; !reflect.DeepEqual(events, want) {
-		t.Fatalf("events = %v, want %v", events, want)
+		t.Fatalf("events after cooldown = %v, want %v", events, want)
 	}
 }
 
@@ -175,6 +190,39 @@ func TestKeyboardTextDoesNotReenumerateIOSProfile(t *testing.T) {
 	}
 	if len(events) != 0 {
 		t.Fatalf("keyboard_text profile events = %v, want none", events)
+	}
+}
+
+func TestKeyboardTapExtraKeysRemainOnNormalProfile(t *testing.T) {
+	keyboardDev, keyboardPath := newTestHIDDevice(t)
+	extraKeysDev, extraKeysPath := newTestHIDDevice(t)
+	events := []string{}
+	controller := newTestIOSKeyboardIsolationController(&events)
+	controller.keyboardDev = keyboardDev
+	controller.extraKeysDev = extraKeysDev
+	tool := &KeyboardTapTool{
+		dev:                  keyboardDev,
+		androidDev:           extraKeysDev,
+		pointerMode:          "absolute",
+		iosKeyboardIsolation: controller,
+	}
+
+	out, err := tool.Call(context.Background(), `{"keys":["volume_up"],"hold_ms":1}`)
+	if err != nil || out != "ok" {
+		t.Fatalf("Call() = %q, %v", out, err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("extra-key profile events = %v, want none", events)
+	}
+	if data, err := os.ReadFile(keyboardPath); err != nil {
+		t.Fatalf("ReadFile(keyboard) error = %v", err)
+	} else if len(data) != 0 {
+		t.Fatalf("standard keyboard report bytes = %d, want 0", len(data))
+	}
+	if data, err := os.ReadFile(extraKeysPath); err != nil {
+		t.Fatalf("ReadFile(extra keys) error = %v", err)
+	} else if len(data) != 4 {
+		t.Fatalf("extra-key report bytes = %d, want 4", len(data))
 	}
 }
 

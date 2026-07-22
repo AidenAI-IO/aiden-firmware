@@ -14,6 +14,7 @@ import (
 const (
 	defaultIOSKeyboardIsolationControl = "/oem/usr/bin/aiden-dynamic-keyboard"
 	iosKeyboardProfileSwitchTimeout    = 30 * time.Second
+	iosKeyboardRestoreRetryCooldown    = 5 * time.Second
 )
 
 type iosKeyboardIsolationCommand func(context.Context, string, ...string) ([]byte, error)
@@ -22,13 +23,15 @@ type iosKeyboardIsolationCommand func(context.Context, string, ...string) ([]byt
 // Modifier shortcuts temporarily use a keyboard-only USB profile; plain text,
 // pointer input, and Consumer Control keep using the normal composite profile.
 type iosKeyboardIsolationController struct {
-	controlPath  string
-	keyboardDev  *HIDDevice
-	pointerDev   *HIDDevice
-	extraKeysDev *HIDDevice
-	run          iosKeyboardIsolationCommand
-	mu           sync.Mutex
-	needsRestore bool
+	controlPath        string
+	keyboardDev        *HIDDevice
+	pointerDev         *HIDDevice
+	extraKeysDev       *HIDDevice
+	run                iosKeyboardIsolationCommand
+	mu                 sync.Mutex
+	needsRestore       bool
+	lastRestoreErr     error
+	lastRestoreFailure time.Time
 }
 
 func newIOSKeyboardIsolationController(cfg HIDConfig, keyboardDev, pointerDev, extraKeysDev *HIDDevice) *iosKeyboardIsolationController {
@@ -83,9 +86,22 @@ func (c *iosKeyboardIsolationController) ensureNormalProfileLocked() error {
 	if !c.needsRestore {
 		return nil
 	}
+	if c.lastRestoreErr != nil && time.Since(c.lastRestoreFailure) < iosKeyboardRestoreRetryCooldown {
+		return c.lastRestoreErr
+	}
 	err := c.switchProfile("restore")
-	c.needsRestore = err != nil
+	c.recordRestoreResult(err)
 	return err
+}
+
+func (c *iosKeyboardIsolationController) recordRestoreResult(err error) {
+	c.needsRestore = err != nil
+	c.lastRestoreErr = err
+	if err != nil {
+		c.lastRestoreFailure = time.Now()
+	} else {
+		c.lastRestoreFailure = time.Time{}
+	}
 }
 
 func (c *iosKeyboardIsolationController) withKeyboard(ctx context.Context, isolate bool, action func() error) (err error) {
@@ -100,24 +116,29 @@ func (c *iosKeyboardIsolationController) withKeyboard(ctx context.Context, isola
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !isolate {
-		if err := c.ensureNormalProfileLocked(); err != nil {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
 			return err
 		}
+	}
+	if err := c.ensureNormalProfileLocked(); err != nil {
+		return err
+	}
+	if !isolate {
 		return action()
 	}
 
 	c.closeHIDDevices()
 	if isolateErr := c.switchProfile("isolate"); isolateErr != nil {
 		restoreErr := c.switchProfile("restore")
-		c.needsRestore = restoreErr != nil
+		c.recordRestoreResult(restoreErr)
 		return errors.Join(isolateErr, restoreErr)
 	}
 	c.needsRestore = true
 	defer func() {
 		c.closeHIDDevices()
 		restoreErr := c.switchProfile("restore")
-		c.needsRestore = restoreErr != nil
+		c.recordRestoreResult(restoreErr)
 		err = errors.Join(err, restoreErr)
 	}()
 	return action()
