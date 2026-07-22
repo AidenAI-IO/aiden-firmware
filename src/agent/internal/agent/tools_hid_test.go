@@ -1,13 +1,18 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -108,6 +113,97 @@ func TestWheelNudgeWritesLowInertiaDrag(t *testing.T) {
 	finalMove := reports[1+wheelNudgeDefaultSteps]
 	if finalMove.x != uint16(expectedX) || finalMove.y != uint16(expectedEndY) || finalMove.buttons != 0x01 {
 		t.Fatalf("final move = (%d,%d,%d), want (%d,%d,1)", finalMove.x, finalMove.y, finalMove.buttons, expectedX, expectedEndY)
+	}
+}
+
+func TestMeasureWheelRowSpacingFindsSyntheticPickerRows(t *testing.T) {
+	jpegData := syntheticWheelPickerJPEG(t, 500, 1000, 300, 300, 40)
+
+	measurement, ok := measureWheelRowSpacingJPEG(jpegData, 600, 300)
+	if !ok {
+		t.Fatal("measureWheelRowSpacingJPEG() did not find synthetic picker rows")
+	}
+	if math.Abs(measurement.Normalized-40) > 2 {
+		t.Fatalf("normalized spacing = %.2f, want about 40", measurement.Normalized)
+	}
+	if measurement.Confidence < 0.5 {
+		t.Fatalf("confidence = %.2f, want at least 0.5", measurement.Confidence)
+	}
+}
+
+func TestMeasureWheelRowSpacingRejectsUniformImage(t *testing.T) {
+	img := image.NewGray(image.Rect(0, 0, 500, 1000))
+	for i := range img.Pix {
+		img.Pix[i] = 24
+	}
+	var encoded bytes.Buffer
+	if err := jpeg.Encode(&encoded, img, &jpeg.Options{Quality: 90}); err != nil {
+		t.Fatalf("encode uniform image: %v", err)
+	}
+	if measurement, ok := measureWheelRowSpacingJPEG(encoded.Bytes(), 600, 300); ok {
+		t.Fatalf("uniform image produced measurement %+v", measurement)
+	}
+}
+
+func TestWheelNudgeUsesMeasuredRowSpacingFromLatestScreenshot(t *testing.T) {
+	dev, _ := newTestHIDDevice(t)
+	screen := &screenState{}
+	screen.UpdateActiveArea(500, 1000, screenActiveArea{})
+	screen.UpdateScreenshot(syntheticWheelPickerJPEG(t, 500, 1000, 300, 300, 40), 500, 1000)
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: screen, durationMs: 1}
+
+	out, err := tool.Call(context.Background(), `{"picker_id":"alarm-create","column_x":600,"current_value":4,"target_value":2,"cycle_size":60,"cycle_start":0,"row_spacing":61,"value_step":1,"center_y":300}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "row_spacing_source=image") {
+		t.Fatalf("Call output = %q, want image measurement metadata", out)
+	}
+	if !strings.Contains(out, "physical_travel=80") {
+		t.Fatalf("Call output = %q, want two measured 40-unit rows", out)
+	}
+}
+
+func syntheticWheelPickerJPEG(t *testing.T, width, height, columnX, centerY, spacing int) []byte {
+	t.Helper()
+	img := image.NewGray(image.Rect(0, 0, width, height))
+	for i := range img.Pix {
+		img.Pix[i] = 20
+	}
+	for y := centerY - 20; y <= centerY+20; y++ {
+		for x := 0; x < width; x++ {
+			img.SetGray(x, y, color.Gray{Y: 38})
+		}
+	}
+	for row := -4; row <= 4; row++ {
+		y := centerY + row*spacing
+		brightness := uint8(max(70, 225-35*absInt(row)))
+		drawSyntheticWheelDigits(img, columnX, y, brightness)
+	}
+	var encoded bytes.Buffer
+	if err := jpeg.Encode(&encoded, img, &jpeg.Options{Quality: 90}); err != nil {
+		t.Fatalf("encode synthetic picker: %v", err)
+	}
+	return encoded.Bytes()
+}
+
+func drawSyntheticWheelDigits(img *image.Gray, centerX, centerY int, brightness uint8) {
+	for _, digitX := range []int{centerX - 13, centerX + 7} {
+		for y := centerY - 10; y <= centerY+10; y++ {
+			for x := digitX; x <= digitX+3; x++ {
+				img.SetGray(x, y, color.Gray{Y: brightness})
+			}
+		}
+		for y := centerY - 10; y <= centerY-7; y++ {
+			for x := digitX; x <= digitX+10; x++ {
+				img.SetGray(x, y, color.Gray{Y: brightness})
+			}
+		}
+		for y := centerY + 7; y <= centerY+10; y++ {
+			for x := digitX; x <= digitX+10; x++ {
+				img.SetGray(x, y, color.Gray{Y: brightness})
+			}
+		}
 	}
 }
 
@@ -525,6 +621,9 @@ func TestWheelNudgeDescriptionDefinesAdaptiveTravelAndConservativeInput(t *testi
 		"Do not tap the selected row",
 		"do not use keyboard_text for picker values",
 		"derives the shortest row gap",
+		"measures the row spacing",
+		"overrides the caller estimate",
+		"low-confidence images keep the caller estimate",
 	} {
 		if !strings.Contains(description, want) {
 			t.Fatalf("wheel_nudge description = %q, want %q", description, want)

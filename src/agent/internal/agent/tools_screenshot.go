@@ -176,6 +176,9 @@ func (t *ScreenshotTool) Call(_ context.Context, _ string) (string, error) {
 		displayHeight = croppedHeight
 		displayData = croppedData
 	}
+	if t.screen != nil {
+		t.screen.UpdateScreenshot(displayData, displayWidth, displayHeight)
+	}
 
 	result := screenshotResult{
 		Width:  displayWidth,

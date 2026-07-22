@@ -397,12 +397,16 @@ type HIDDevice struct {
 }
 
 type screenState struct {
-	mu          sync.RWMutex
-	width       int
-	height      int
-	active      screenActiveArea
-	phoneScreen PhoneScreenInfo
-	updatedAt   time.Time
+	mu                  sync.RWMutex
+	width               int
+	height              int
+	active              screenActiveArea
+	phoneScreen         PhoneScreenInfo
+	updatedAt           time.Time
+	screenshotJPEG      []byte
+	screenshotWidth     int
+	screenshotHeight    int
+	screenshotUpdatedAt time.Time
 }
 
 type screenMappingState struct {
@@ -1645,7 +1649,7 @@ func (t *WheelNudgeTool) Description() string {
 		`When the target is exactly one visibly observed row above or below the selected row, pass visible_target_y and the tool taps that coordinate. Without that evidence it performs one bounded low-inertia drag. ` +
 		`Input JSON: {"picker_id":"alarm-create","column_x":393,"current_value":10,"target_value":16,"cycle_size":24,"cycle_start":0,"row_spacing":39,"value_step":1,"center_y":253}. ` +
 		`center_y is mandatory and must be measured from the selected center row in the latest screenshot; never omit it or reuse a fixed default across picker layouts. ` +
-		`All wheel geometry uses normalized 0-1000 coordinates. Normalize column_x using max(screenshot width-1,1); normalize center_y, row_spacing, and visible_target_y using max(screenshot height-1,1). In particular, row_spacing=(pixel row spacing/max(screenshot height-1,1))*1000, never divide a vertical distance by screenshot width. ` +
+		`All wheel geometry uses normalized 0-1000 coordinates. Normalize column_x using max(screenshot width-1,1); normalize center_y, row_spacing, and visible_target_y using max(screenshot height-1,1). In particular, row_spacing=(pixel row spacing/max(screenshot height-1,1))*1000, never divide a vertical distance by screenshot width. Runtime also measures the row spacing from repeated text-line geometry in the latest screenshot and overrides the caller estimate when that image measurement is confident; low-confidence images keep the caller estimate. ` +
 		`value_step is the signed numeric change for one visible row downward. The tool derives the shortest row gap, numeric direction, and finger movement from current_value, target_value, value_step, and the declared domain, so callers must not calculate a gap or guess gesture directions. Omit value_step only when visible ordering is insufficient; the tool then performs one fixed finger-up row probe. ` +
 		`Actual drag travel is coarse-to-fine: gaps of 9+, 5-8, 2-4, and 1 picker rows move at most 5, 3, 2, and 1 measured rows using row_spacing. Longer coarse drags also take proportionally longer so they remain low-inertia rather than becoming a fling or leaving the visible picker area. ` +
 		`The tool performs one tap or slow drag and returns a post-action screenshot; read the new centered value and call it again with the fresh observation.`
@@ -1659,7 +1663,7 @@ func (t *WheelNudgeTool) ArgsSchema() map[string]any {
 		"target_value":     nonNegativeIntegerSchema("Requested numeric target value for this wheel column."),
 		"cycle_size":       nonNegativeIntegerSchema("Numeric span/modulus of the cyclic domain, not the number of displayed rows; use 0 for a non-cyclic numeric wheel. For a 00..59 minute wheel with value_step 5, cycle_size is still 60."),
 		"cycle_start":      nonNegativeIntegerSchema("Lowest value in a cyclic wheel. Use 0 for 00-based time wheels and 1 for one-based wheels such as months, calendar days, or 12-hour clocks. Ignored when cycle_size is 0."),
-		"row_spacing":      coordinateSchema("Normalized 0-1000 vertical distance between adjacent visible row centers. Compute pixel spacing / max(screenshot height-1,1) * 1000; do not divide by screenshot width."),
+		"row_spacing":      coordinateSchema("Best normalized 0-1000 estimate of the vertical distance between adjacent visible row centers. Compute pixel spacing / max(screenshot height-1,1) * 1000; runtime may replace this estimate with a confident image-derived measurement."),
 		"value_step":       integerArgSchema("Signed numeric change for one visible row downward. The tool derives gesture direction from this value; omit only for a genuinely unknown one-row probe."),
 		"center_y":         coordinateSchema("Required normalized 0-1000 vertical center of the selected wheel row, measured from the latest screenshot."),
 		"visible_target_y": coordinateSchema("Exact normalized 0-1000 Y coordinate of a target value visibly observed one row above or below center_y. Omit unless the target row is actually visible in the latest screenshot."),
@@ -1678,15 +1682,33 @@ func (t *WheelNudgeTool) Call(ctx context.Context, input string) (string, error)
 	if args.CurrentValue == nil || args.TargetValue == nil || args.CycleSize == nil || args.CycleStart == nil {
 		return toolErrorResultString(ctx, CodeInvalidArguments, "current_value, target_value, cycle_size, and cycle_start are required"), nil
 	}
+	coordSpace := args.CoordSpace
+	if coordSpace == "" || coordSpace == coordinateSpaceAuto {
+		coordSpace = coordinateSpaceNormalized
+	}
+	modelRowSpacing := *args.RowSpacing
+	measurementSummary := ""
+	if coordSpace == coordinateSpaceNormalized && t.screen != nil {
+		if jpegData, _, _, _, ok := t.screen.LatestScreenshot(screenDimensionsStaleAfter); ok {
+			startedAt := time.Now()
+			if measurement, measured := measureWheelRowSpacingJPEG(jpegData, *args.ColumnX, *args.CenterY); measured {
+				measuredRowSpacing := measurement.Normalized
+				args.RowSpacing = &measuredRowSpacing
+				measurementSummary = fmt.Sprintf(
+					" row_spacing_source=image measured_row_spacing=%.1f model_row_spacing=%.1f confidence=%.2f measurement_ms=%.1f",
+					measurement.Normalized,
+					modelRowSpacing,
+					measurement.Confidence,
+					float64(time.Since(startedAt).Microseconds())/1000.0,
+				)
+			}
+		}
+	}
 	plan, err := planWheelNudge(args)
 	if err != nil {
 		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
 	}
 	travel := float64(plan.rows) * *args.RowSpacing
-	coordSpace := args.CoordSpace
-	if coordSpace == "" || coordSpace == coordinateSpaceAuto {
-		coordSpace = coordinateSpaceNormalized
-	}
 
 	centerY := *args.CenterY
 	gestureTravel := travel
@@ -1718,7 +1740,7 @@ func (t *WheelNudgeTool) Call(ctx context.Context, input string) (string, error)
 		if err := tapPointerWithHold(t.pc, point.x, point.y, mouseButtonByte("left"), defaultTapHoldMs); err != nil {
 			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 		}
-		return fmt.Sprintf("ok: wheel_nudge interaction=tap row_offset=%d target_value=%d", plan.rowOffset, *args.TargetValue), nil
+		return fmt.Sprintf("ok: wheel_nudge interaction=tap row_offset=%d target_value=%d%s", plan.rowOffset, *args.TargetValue, measurementSummary), nil
 	}
 
 	startOffset := gestureTravel / 2
@@ -1764,7 +1786,7 @@ func (t *WheelNudgeTool) Call(ctx context.Context, input string) (string, error)
 		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
 
-	return fmt.Sprintf("ok: wheel_nudge direction=%s distance=%s rows=%d physical_travel=%.0f duration_ms=%d", plan.direction, plan.distance, plan.rows, physicalTravel, durationMs), nil
+	return fmt.Sprintf("ok: wheel_nudge direction=%s distance=%s rows=%d physical_travel=%.0f duration_ms=%d%s", plan.direction, plan.distance, plan.rows, physicalTravel, durationMs, measurementSummary), nil
 }
 
 func planWheelNudge(args wheelNudgeArgs) (wheelNudgePlan, error) {
