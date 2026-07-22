@@ -43,13 +43,6 @@ func (t *EnterTextInFieldTool) ArgsSchema() map[string]any {
 }
 
 func (t *EnterTextInFieldTool) Call(ctx context.Context, input string) (string, error) {
-	if t != nil && t.engine != nil {
-		if controller := t.engine.hw.dynamicKeyboard; controller != nil && controller.sessionFromContext(ctx) == nil {
-			return controller.withSessionCall(ctx, func(sessionCtx context.Context) (string, error) {
-				return t.Call(sessionCtx, input)
-			})
-		}
-	}
 	if t == nil || t.engine == nil {
 		return toolErrorResultString(ctx, CodeModuleUnavailable, "enter_text_in_field is not fully configured"), nil
 	}

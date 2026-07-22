@@ -62,13 +62,6 @@ func (t *appSearchOpenTool) ArgsSchema() map[string]any {
 }
 
 func (t *appSearchOpenTool) Call(ctx context.Context, input string) (string, error) {
-	if t != nil && t.hw != nil {
-		if controller := t.hw.dynamicKeyboard; controller != nil && controller.sessionFromContext(ctx) == nil {
-			return controller.withSessionCall(ctx, func(sessionCtx context.Context) (string, error) {
-				return t.Call(sessionCtx, input)
-			})
-		}
-	}
 	if t == nil || t.hw == nil || t.vision == nil {
 		return "error: search_launch_app is not fully configured", nil
 	}

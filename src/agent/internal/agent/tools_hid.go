@@ -21,7 +21,7 @@ import (
 const (
 	absMouseMaxPos = 32767
 
-	defaultHIDRefreshStatePath = "/run/aiden_usb_ecm_watchdog.state"
+	defaultHIDProfileStatePath = "/run/aiden_dynamic_keyboard.state"
 
 	// defaultTapHoldMs is the dwell between a touch press and release so iOS
 	// registers a tap rather than dropping the sub-millisecond event or
@@ -394,7 +394,7 @@ type HIDDevice struct {
 	open         func(string) (io.WriteCloser, error)
 	writeTimeout time.Duration
 	openedAt     time.Time
-	refreshState string
+	profileState string
 }
 
 type screenState struct {
@@ -632,7 +632,7 @@ func NewHIDDevice(path string) *HIDDevice {
 	return &HIDDevice{
 		path:         path,
 		writeTimeout: defaultHIDWriteTimeout,
-		refreshState: defaultHIDRefreshStatePath,
+		profileState: defaultHIDProfileStatePath,
 		open: func(path string) (io.WriteCloser, error) {
 			return os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0)
 		},
@@ -780,8 +780,8 @@ func (d *HIDDevice) reopenStaleFileLocked() error {
 	if d.file == nil {
 		return nil
 	}
-	if !d.openedAt.IsZero() && d.refreshState != "" {
-		if info, err := os.Stat(d.refreshState); err == nil && info.ModTime().After(d.openedAt) {
+	if !d.openedAt.IsZero() && d.profileState != "" {
+		if info, err := os.Stat(d.profileState); err == nil && info.ModTime().After(d.openedAt) {
 			d.closeLocked()
 			return d.ensureOpenLocked()
 		}

@@ -14,7 +14,6 @@ import (
 func TestDynamicKeyboardWrapsOneAction(t *testing.T) {
 	events := []string{}
 	controller := &dynamicKeyboardController{
-		enabled:     true,
 		controlPath: "/test/control",
 		run: func(_ context.Context, path string, args ...string) ([]byte, error) {
 			events = append(events, path+":"+args[0])
@@ -38,7 +37,6 @@ func TestDynamicKeyboardWrapsOneAction(t *testing.T) {
 func TestDynamicKeyboardSessionReusesOneEnumeration(t *testing.T) {
 	events := []string{}
 	controller := &dynamicKeyboardController{
-		enabled:     true,
 		controlPath: "/test/control",
 		run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 			events = append(events, args[0])
@@ -72,7 +70,6 @@ func TestDynamicKeyboardSessionReusesOneEnumeration(t *testing.T) {
 func TestDynamicKeyboardSessionSwitchesBetweenKeyboardAndPointerProfiles(t *testing.T) {
 	events := []string{}
 	controller := &dynamicKeyboardController{
-		enabled:     true,
 		controlPath: "/test/control",
 		run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 			events = append(events, args[0])
@@ -110,10 +107,50 @@ func TestDynamicKeyboardSessionSwitchesBetweenKeyboardAndPointerProfiles(t *test
 	}
 }
 
+func TestDynamicKeyboardSessionRetriesPointerRestoreAfterSwitchFailure(t *testing.T) {
+	events := []string{}
+	offCalls := 0
+	pointerCalled := false
+	controller := &dynamicKeyboardController{
+		controlPath: "/test/control",
+		run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			events = append(events, args[0])
+			if args[0] == "off" {
+				offCalls++
+				if offCalls == 1 {
+					return nil, errors.New("pointer enumeration failed")
+				}
+			}
+			return nil, nil
+		},
+	}
+
+	_, err := controller.withSessionCall(context.Background(), func(ctx context.Context) (string, error) {
+		if err := controller.withKeyboard(ctx, func() error { return nil }); err != nil {
+			return "", err
+		}
+		return controller.withPointerCall(ctx, func(context.Context) (string, error) {
+			pointerCalled = true
+			return "ok", nil
+		})
+	})
+	if err == nil || !strings.Contains(err.Error(), "pointer enumeration failed") {
+		t.Fatalf("withSessionCall() error = %v, want pointer switch failure", err)
+	}
+	if pointerCalled {
+		t.Fatal("pointer action ran after its profile switch failed")
+	}
+	if want := []string{"on", "off", "off"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+	if controller.mode != dynamicHIDModePointer {
+		t.Fatalf("controller mode = %q, want pointer after deferred recovery", controller.mode)
+	}
+}
+
 func TestDynamicKeyboardSessionReattachesWhenDeviceDisappears(t *testing.T) {
 	events := []string{}
 	controller := &dynamicKeyboardController{
-		enabled:     true,
 		controlPath: "/test/control",
 		run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 			events = append(events, args[0])
@@ -144,7 +181,6 @@ func TestDynamicKeyboardSessionReattachesWhenDeviceDisappears(t *testing.T) {
 func TestDynamicKeyboardSessionIsLazyWhenNoKeyboardActionRuns(t *testing.T) {
 	events := []string{}
 	controller := &dynamicKeyboardController{
-		enabled:     true,
 		controlPath: "/test/control",
 		run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 			events = append(events, args[0])
@@ -163,18 +199,41 @@ func TestDynamicKeyboardSessionIsLazyWhenNoKeyboardActionRuns(t *testing.T) {
 	}
 }
 
-func TestEnterTextInFieldSharesOneDynamicKeyboardSessionAcrossSubtools(t *testing.T) {
+func TestDynamicKeyboardCachesRestoredPointerProfileAcrossCalls(t *testing.T) {
 	events := []string{}
 	controller := &dynamicKeyboardController{
-		enabled:     true,
 		controlPath: "/test/control",
 		run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 			events = append(events, args[0])
 			return nil, nil
 		},
 	}
-	keyboardText := &dynamicKeyboardSessionTool{name: "keyboard_text", controller: controller, events: &events}
-	keyboardTap := &dynamicKeyboardSessionTool{name: "keyboard_tap", controller: controller, events: &events}
+
+	for range 2 {
+		if _, err := controller.withPointerCall(context.Background(), func(context.Context) (string, error) {
+			events = append(events, "pointer")
+			return "ok", nil
+		}); err != nil {
+			t.Fatalf("withPointerCall() error = %v", err)
+		}
+	}
+
+	if want := []string{"off", "pointer", "pointer"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
+func TestEnterTextInFieldSharesOneDynamicKeyboardSessionAcrossSubtools(t *testing.T) {
+	events := []string{}
+	controller := &dynamicKeyboardController{
+		controlPath: "/test/control",
+		run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			events = append(events, args[0])
+			return nil, nil
+		},
+	}
+	keyboardText := &dynamicKeyboardActionStub{name: "keyboard_text", controller: controller, events: &events}
+	keyboardTap := &dynamicKeyboardActionStub{name: "keyboard_tap", controller: controller, events: &events}
 	vision := &stubTextInputVision{analyses: []textInputScreenAnalysis{{FieldText: "hello test"}}}
 	engine := newFastTextInputEngine(textInputHardwareDeps{
 		mouseClick:      textInputStubTool{name: "mouse_click", out: "ok"},
@@ -185,8 +244,9 @@ func TestEnterTextInFieldSharesOneDynamicKeyboardSessionAcrossSubtools(t *testin
 		dynamicKeyboard: controller,
 	}, vision)
 	tool := &EnterTextInFieldTool{engine: engine}
+	wrapped := newDynamicKeyboardSessionTool(tool, controller)
 
-	out, err := tool.Call(context.Background(), `{"text":"hello test","focus":{"x":500,"y":100}}`)
+	out, err := wrapped.Call(context.Background(), `{"text":"hello test","focus":{"x":500,"y":100}}`)
 	if err != nil {
 		t.Fatalf("Call() error = %v", err)
 	}
@@ -199,15 +259,15 @@ func TestEnterTextInFieldSharesOneDynamicKeyboardSessionAcrossSubtools(t *testin
 	}
 }
 
-type dynamicKeyboardSessionTool struct {
+type dynamicKeyboardActionStub struct {
 	name       string
 	controller *dynamicKeyboardController
 	events     *[]string
 }
 
-func (t *dynamicKeyboardSessionTool) Name() string        { return t.name }
-func (t *dynamicKeyboardSessionTool) Description() string { return t.name }
-func (t *dynamicKeyboardSessionTool) Call(ctx context.Context, _ string) (string, error) {
+func (t *dynamicKeyboardActionStub) Name() string        { return t.name }
+func (t *dynamicKeyboardActionStub) Description() string { return t.name }
+func (t *dynamicKeyboardActionStub) Call(ctx context.Context, _ string) (string, error) {
 	err := t.controller.withKeyboard(ctx, func() error {
 		*t.events = append(*t.events, t.name)
 		return nil
@@ -219,7 +279,6 @@ func TestDynamicKeyboardTurnsOffAfterActionFailure(t *testing.T) {
 	actionErr := errors.New("write failed")
 	events := []string{}
 	controller := &dynamicKeyboardController{
-		enabled:     true,
 		controlPath: "/test/control",
 		run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 			events = append(events, args[0])
@@ -242,7 +301,6 @@ func TestDynamicKeyboardDoesNotRunActionWhenEnableFails(t *testing.T) {
 	onErr := errors.New("enumeration failed")
 	actionCalled := false
 	controller := &dynamicKeyboardController{
-		enabled:     true,
 		controlPath: "/test/control",
 		run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 			if args[0] == "on" {
@@ -282,9 +340,8 @@ func TestKeyboardTextUsesOneDynamicKeyboardSession(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	events := []string{}
 	controller := &dynamicKeyboardController{
-		enabled:     true,
 		controlPath: "/test/control",
-		dev:         dev,
+		keyboardDev: dev,
 		run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 			events = append(events, args[0])
 			return nil, nil
@@ -315,9 +372,8 @@ func TestKeyboardTapUsesOneDynamicKeyboardSession(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	events := []string{}
 	controller := &dynamicKeyboardController{
-		enabled:     true,
 		controlPath: "/test/control",
-		dev:         dev,
+		keyboardDev: dev,
 		run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 			events = append(events, args[0])
 			return nil, nil
@@ -349,9 +405,8 @@ func TestKeyboardTapAndroidExtensionDoesNotAttachDynamicKeyboard(t *testing.T) {
 	androidDev, androidPath := newTestHIDDevice(t)
 	events := []string{}
 	controller := &dynamicKeyboardController{
-		enabled:     true,
 		controlPath: "/test/control",
-		dev:         dev,
+		keyboardDev: dev,
 		run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 			events = append(events, args[0])
 			return nil, nil
@@ -392,9 +447,8 @@ func TestRuntimeRestoresPointerBetweenDynamicKeyboardToolCalls(t *testing.T) {
 	dev, path := newTestHIDDevice(t)
 	events := []string{}
 	controller := &dynamicKeyboardController{
-		enabled:     true,
 		controlPath: "/test/control",
-		dev:         dev,
+		keyboardDev: dev,
 		run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 			events = append(events, args[0])
 			return nil, nil
@@ -452,7 +506,6 @@ func TestRuntimeRestoresPointerBetweenDynamicKeyboardToolCalls(t *testing.T) {
 func TestDynamicKeyboardSessionRestoresPointerOnCancellation(t *testing.T) {
 	events := []string{}
 	controller := &dynamicKeyboardController{
-		enabled:     true,
 		controlPath: "/test/control",
 		run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 			events = append(events, args[0])

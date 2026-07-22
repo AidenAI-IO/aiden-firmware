@@ -17,8 +17,11 @@ sh -n "$CONTROL_SCRIPT" || fail "aiden-dynamic-keyboard has invalid shell syntax
 sh -n "$CONF_FILE" || fail "aiden_dynamic_keyboard.conf has invalid shell syntax"
 [ -x "$CONTROL_SCRIPT" ] || fail "aiden-dynamic-keyboard must be executable"
 
-grep -Fq 'dynamic_keyboard' "$AGENT_CONFIG" ||
-	fail "agent.toml must document hid.dynamic_keyboard"
+grep -Eq '^[[:space:]]*dynamic_keyboard[[:space:]]*=[[:space:]]*true([[:space:]]|$)' "$AGENT_CONFIG" ||
+	fail "firmware agent.toml must enable the iOS dynamic keyboard profile"
+
+grep -Fq 'dynamic_keyboard_control = "/oem/usr/bin/aiden-dynamic-keyboard"' "$AGENT_CONFIG" ||
+	fail "firmware agent.toml must configure the dynamic keyboard controller"
 
 grep -Fq 'if [ "$DYNAMIC_KEYBOARD" -ne 1 ]; then' "$INIT_SCRIPT" ||
 	fail "S49usbhid must omit the keyboard link in dynamic mode"
@@ -34,6 +37,9 @@ grep -Fq 'unlink_functions' "$CONTROL_SCRIPT" ||
 
 grep -Fq 'ln -s "$KEYBOARD_FUNC" "$CONFIG_DIR/hid.usb0"' "$CONTROL_SCRIPT" ||
 	fail "keyboard-on profile must link the keyboard function"
+
+grep -Fq "printf 'invalid\\n'" "$CONTROL_SCRIPT" ||
+	fail "runtime switch must reject mixed or missing HID profile links"
 
 grep -Fq 'link_ecm' "$CONTROL_SCRIPT" ||
 	fail "both profiles must restore ECM"
@@ -55,8 +61,8 @@ fi
 grep -Fq 'wait_for_configuration "$udc"' "$CONTROL_SCRIPT" ||
 	fail "runtime switch must wait for host configuration"
 
-grep -Fq 'touch "$DYNAMIC_KEYBOARD_REFRESH_STATE"' "$CONTROL_SCRIPT" ||
-	fail "runtime switch must invalidate stale Agent HID descriptors"
+grep -Fq '> "$DYNAMIC_KEYBOARD_STATE_FILE"' "$CONTROL_SCRIPT" ||
+	fail "runtime switch must publish profile state for stale HID descriptor detection"
 
 grep -Fq 'kill -0 "$owner"' "$CONTROL_SCRIPT" ||
 	fail "runtime switch must recover a lock left by a killed controller"
@@ -64,7 +70,7 @@ grep -Fq 'kill -0 "$owner"' "$CONTROL_SCRIPT" ||
 off_pid=$(sed -n 's/^DYNAMIC_KEYBOARD_OFF_ID_PRODUCT=//p' "$CONF_FILE")
 on_pid=$(sed -n 's/^DYNAMIC_KEYBOARD_ON_ID_PRODUCT=//p' "$CONF_FILE")
 [ -n "$off_pid" ] && [ -n "$on_pid" ] && [ "$off_pid" != "$on_pid" ] ||
-	fail "keyboard-off and keyboard-on must use distinct product IDs for the iOS cache experiment"
+	fail "keyboard-off and keyboard-on must use distinct product IDs for iOS descriptor cache isolation"
 
 grep -Fq 'Aiden Mouse ECM' "$CONF_FILE" ||
 	fail "keyboard-off identity must advertise the restored mouse profile"

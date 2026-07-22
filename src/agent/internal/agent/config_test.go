@@ -56,20 +56,21 @@ func TestConfigValidateDynamicKeyboardRequirements(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name: "touchscreen HID accepted",
-			hid: HIDConfig{
-				DynamicKeyboard: true,
-				PointerMode:     "touchscreen",
-				InputBackend:    "hid",
-			},
-		},
-		{
 			name: "absolute mouse HID accepted",
 			hid: HIDConfig{
 				DynamicKeyboard: true,
 				PointerMode:     "absolute",
 				InputBackend:    "hid",
 			},
+		},
+		{
+			name: "touchscreen rejected",
+			hid: HIDConfig{
+				DynamicKeyboard: true,
+				PointerMode:     "touchscreen",
+				InputBackend:    "hid",
+			},
+			wantErr: "hid.dynamic_keyboard requires hid.pointer_mode=absolute",
 		},
 		{
 			name: "ADB backend rejected",

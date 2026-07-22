@@ -135,7 +135,7 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 		"mouse_scroll":           newPostActionStableScreenshotTool(&MouseScrollTool{pc: pointer, adb: adbInput}, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"touch_gesture":          newPostActionStableScreenshotTool(touchGesture, waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"wheel_nudge":            newPostActionStableScreenshotTool(wheelNudge, waitStable, screenshot, postActionScreenshotDelay, screenStable),
-		"quick_action":           newPostActionStableScreenshotTool(quickAction, waitStable, screenshot, postActionScreenshotDelay, screenStable),
+		"quick_action":           newPostActionStableScreenshotTool(newDynamicKeyboardSessionTool(quickAction, dynamicKeyboard), waitStable, screenshot, postActionScreenshotDelay, screenStable),
 		"screenshot":             screenshot,
 		"wait_for_stable_screen": waitStable,
 		"image_diff":             &ImageDiffTool{},
@@ -179,7 +179,7 @@ func (s *ToolSet) RegisterEnterTextInFieldTool(models model.Model, platformFn fu
 	}
 	engine := newTextInputEngine(*s.textInputHW, newLLMTextInputVision(models))
 	tool := &EnterTextInFieldTool{engine: engine, platformFn: platformFn}
-	s.tools["enter_text_in_field"] = newPostActionScreenshotTool(tool, s.textInputHW.screenshot, 300*time.Millisecond)
+	s.tools["enter_text_in_field"] = newPostActionScreenshotTool(newDynamicKeyboardSessionTool(tool, s.textInputHW.dynamicKeyboard), s.textInputHW.screenshot, 300*time.Millisecond)
 	searchOpenTool := &appSearchOpenTool{
 		hw:          s.textInputHW,
 		vision:      newLLMTextInputVision(models),
@@ -187,10 +187,10 @@ func (s *ToolSet) RegisterEnterTextInFieldTool(models model.Model, platformFn fu
 		entryTool:   tool,
 		launchDelay: appSearchOpenLaunchDelay,
 	}
-	s.tools["search_launch_app"] = searchOpenTool
+	s.tools["search_launch_app"] = newDynamicKeyboardSessionTool(searchOpenTool, s.textInputHW.dynamicKeyboard)
 	bridgeTool := &EnterTextViaBridgeTool{hw: s.textInputHW, vision: newLLMTextInputVision(models), bridgeFn: func() *PhoneBridge { return s.phoneBridge }, platformFn: platformFn}
 	tool.bridgeTool = bridgeTool
-	s.tools["enter_text_via_bridge"] = newPostActionScreenshotTool(bridgeTool, s.textInputHW.screenshot, 300*time.Millisecond)
+	s.tools["enter_text_via_bridge"] = newPostActionScreenshotTool(newDynamicKeyboardSessionTool(bridgeTool, s.textInputHW.dynamicKeyboard), s.textInputHW.screenshot, 300*time.Millisecond)
 }
 
 func (s *ToolSet) SetRunScriptSpeaker(speaker runScriptSpeaker) {

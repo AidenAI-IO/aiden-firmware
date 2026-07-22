@@ -491,8 +491,8 @@ func (h HIDConfig) InputBackendADB() bool {
 }
 
 type ModelConfig struct {
-	Provider string `toml:"provider"`
-	Model    string `toml:"model"`
+	Provider          string  `toml:"provider"`
+	Model             string  `toml:"model"`
 	BaseURL  string `toml:"base_url,omitempty"`
 	APIKey   string `toml:"api_key,omitempty"`
 	TokenEnv string `toml:"token_env,omitempty"`
@@ -502,8 +502,8 @@ type ModelConfig struct {
 	// always honored and sent to the provider.
 	Temperature       *float64 `toml:"temperature,omitempty"`
 	MaxResponseTokens int      `toml:"max_response_tokens,omitempty"`
-	LogRawHTTP        bool     `toml:"log_raw_http,omitempty"`
-	ReasoningEffort   string   `toml:"reasoning_effort,omitempty"`
+	LogRawHTTP        bool    `toml:"log_raw_http,omitempty"`
+	ReasoningEffort   string  `toml:"reasoning_effort,omitempty"`
 	// These override static model metadata; zero means use the registry/fallback.
 	ContextWindow        int      `toml:"context_window,omitempty"`
 	ModelMaxOutputTokens int      `toml:"model_max_output_tokens,omitempty"`
@@ -1057,6 +1057,9 @@ func (c Config) Validate() error {
 	if c.HID.DynamicKeyboard {
 		if c.HID.InputBackendADB() {
 			return fmt.Errorf("hid.dynamic_keyboard requires hid.input_backend=hid")
+		}
+		if c.HID.PointerModeOrDefault() != "absolute" {
+			return fmt.Errorf("hid.dynamic_keyboard requires hid.pointer_mode=absolute")
 		}
 	}
 

@@ -59,10 +59,12 @@ read_udc() {
 }
 
 current_mode() {
-	if [ -L "$CONFIG_DIR/hid.usb0" ]; then
+	if [ -L "$CONFIG_DIR/hid.usb0" ] && [ ! -L "$CONFIG_DIR/hid.usb1" ]; then
 		printf 'on\n'
-	else
+	elif [ -L "$CONFIG_DIR/hid.usb1" ] && [ ! -L "$CONFIG_DIR/hid.usb0" ]; then
 		printf 'off\n'
+	else
+		printf 'invalid\n'
 	fi
 }
 
@@ -105,7 +107,6 @@ write_state() {
 		printf 'udc=%s\n' "$(cat "$UDC_PATH" 2>/dev/null || true)"
 		printf 'udc_state=%s\n' "$(cat /sys/class/udc/*/state 2>/dev/null | head -n1 || true)"
 	} > "$DYNAMIC_KEYBOARD_STATE_FILE"
-	touch "$DYNAMIC_KEYBOARD_REFRESH_STATE"
 }
 
 restore_usb0() {
