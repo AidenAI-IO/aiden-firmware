@@ -2113,6 +2113,13 @@ def daemon_compose_env(
     environment_bridge_mode: bool | None = None,
 ) -> dict[str, str]:
     env = dict(os.environ)
+    # Benchmark runs never go through an HTTP proxy: strip any proxy variables the
+    # host shell may have exported (e.g. a running Clash), so neither the docker
+    # build (base image / go mod / apt) nor the daemon container inherits them.
+    # NO_PROXY is a bypass list, not a proxy, and is set explicitly below.
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                "http_proxy", "https_proxy", "all_proxy"):
+        env.pop(key, None)
     env["AIDEN_DAEMON_IMAGE"] = image
     bridge_enabled = bool(environment_bridge_endpoint) if environment_bridge_mode is None else bool(environment_bridge_mode)
     env["AIDEN_ENVIRONMENT_BRIDGE_MODE"] = "1" if bridge_enabled else "0"

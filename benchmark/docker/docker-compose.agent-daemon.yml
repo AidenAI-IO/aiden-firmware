@@ -5,10 +5,6 @@ services:
       context: ../..
       dockerfile: benchmark/docker/Dockerfile.agent-daemon
       target: agent-daemon-runtime
-      args:
-        HTTP_PROXY: ${HTTP_PROXY:-}
-        HTTPS_PROXY: ${HTTPS_PROXY:-}
-        NO_PROXY: ${NO_PROXY:-}
     ports:
       - "127.0.0.1:${AIDEN_DAEMON_HOST_PORT:-8080}:8080"
     volumes:
@@ -20,9 +16,7 @@ services:
       AIDEN_BENCHMARK_TASK_ID: ${AIDEN_BENCHMARK_TASK_ID:-}
       AIDEN_BENCHMARK_TOKEN_FILE: ${AIDEN_BENCHMARK_TOKEN_FILE:-}
       AIDEN_RUNTIME_CONFIG_DIR: /tmp/aiden-config
-      HTTPS_PROXY: ${HTTPS_PROXY:-}
-      HTTP_PROXY: ${HTTP_PROXY:-}
-      ALL_PROXY: ${ALL_PROXY:-}
+      # Benchmark runs never use an HTTP proxy; NO_PROXY is only a bypass list.
       NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,host.docker.internal}
       no_proxy: ${no_proxy:-localhost,127.0.0.1,host.docker.internal}
     extra_hosts:
