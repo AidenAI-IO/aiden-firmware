@@ -542,6 +542,7 @@ def test_auto_agent_setup_injects_environment_url_as_bridge_endpoint(monkeypatch
     )
 
     captured = {}
+    stale_clears = []
 
     class FakeClient:
         def __init__(self, base_url, benchmark_token=""):
@@ -558,6 +559,7 @@ def test_auto_agent_setup_injects_environment_url_as_bridge_endpoint(monkeypatch
     monkeypatch.setattr(main, "wait_for_agent_clock", lambda *args, **kwargs: True)
     monkeypatch.setattr(main, "generate_report_html", lambda run_dir: "<html></html>")
     monkeypatch.setattr(main, "call_environment_release", lambda *args, **kwargs: None)
+    monkeypatch.setattr(main, "clear_stale_adb_android_owner", lambda url: stale_clears.append(url))
     monkeypatch.setattr(webui, "ensure_daemon_image", lambda *args, **kwargs: None)
     monkeypatch.setattr(webui, "read_environment_bridge_concurrency", lambda *args, **kwargs: 1)
     def fake_prepare_run_config(base_config_dir, config_dir, **kwargs):
@@ -621,6 +623,7 @@ def test_auto_agent_setup_injects_environment_url_as_bridge_endpoint(monkeypatch
     assert captured["kwargs"]["environment_bridge_endpoint"] == "http://host.docker.internal:19090"
     assert captured["kwargs"]["environment_bridge_mode"] is True
     assert captured["task_kwargs"]["active_skills"] == ["device-operator"]
+    assert stale_clears == ["http://127.0.0.1:19090"]
 
 
 def test_auto_agent_setup_caps_environment_concurrency(monkeypatch, tmp_path):
@@ -777,6 +780,7 @@ def test_run_releases_environment_route_per_non_auto_attempt(monkeypatch, tmp_pa
     )
     route_ids = []
     releases = []
+    stale_clears = []
 
     class FakeClient:
         def __init__(self, base_url):
@@ -814,6 +818,7 @@ def test_run_releases_environment_route_per_non_auto_attempt(monkeypatch, tmp_pa
         "call_environment_release",
         lambda environment_url, task_id=None, **kwargs: releases.append((environment_url, task_id)),
     )
+    monkeypatch.setattr(main, "clear_stale_adb_android_owner", lambda url: stale_clears.append(url))
 
     rc = main.cli(
         [
@@ -840,3 +845,4 @@ def test_run_releases_environment_route_per_non_auto_attempt(monkeypatch, tmp_pa
         ("http://127.0.0.1:19090", "suite.json:open_clock:attempt-1"),
         ("http://127.0.0.1:19090", "suite.json:open_clock:attempt-2"),
     ]
+    assert stale_clears == ["http://127.0.0.1:19090"]

@@ -179,6 +179,13 @@ class ADBAndroidDevice:
             raise ValueError("text is required")
         self._run(["shell", "input", "text", escape_adb_text(text)])
 
+    def dump_window_xml(self) -> str:
+        """Return the current Android UI hierarchy XML."""
+        return self._run_text(
+            ["shell", "uiautomator", "dump", "/dev/tty"],
+            timeout=5,
+        )
+
     def start_settings(self) -> None:
         self._run(["shell", "am", "start", "-a", "android.settings.SETTINGS"])
 

@@ -1,4 +1,5 @@
 import base64
+import html
 import json
 import urllib.error
 import urllib.request
@@ -18,6 +19,8 @@ class FakeADBAndroidDevice:
         self.height = height
         self.calls: list[tuple] = []
         self.serial = "127.0.0.1:6555"
+        self.last_input_text = ""
+        self.window_text_override: str | None = None
 
     def check_device(self):
         self.calls.append(("check_device",))
@@ -43,6 +46,20 @@ class FakeADBAndroidDevice:
 
     def input_text(self, text):
         self.calls.append(("input_text", text))
+        self.last_input_text = text
+
+    def dump_window_xml(self):
+        self.calls.append(("dump_window_xml",))
+        text = self.window_text_override
+        if text is None:
+            text = self.last_input_text
+        text = html.escape(text, quote=True)
+        return (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<hierarchy>'
+            f'<node class="android.widget.EditText" text="{text}" focused="true" focusable="true" />'
+            "</hierarchy>"
+        )
 
     def start_settings(self):
         self.calls.append(("start_settings",))

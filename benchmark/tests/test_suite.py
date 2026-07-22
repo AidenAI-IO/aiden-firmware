@@ -434,6 +434,13 @@ def test_phone_control_text_editing_tasks_have_input_setup():
     suite = load_suite(suite_path)
     task_by_id = {task.id: task for task in suite.tasks}
 
+    mixed_setup = task_by_id["type_long_mixed_text"].setup
+    assert mixed_setup is not None
+    assert mixed_setup["type"] == "agent_prompt"
+    assert "空白可编辑输入框" in mixed_setup["prompt"]
+    assert "不要输入任何文字" in mixed_setup["prompt"]
+    assert mixed_setup["clear_history_after"] is True
+
     select_setup = task_by_id["select_all_and_delete"].setup
     assert select_setup is not None
     assert select_setup["type"] == "agent_prompt"
@@ -446,7 +453,21 @@ def test_phone_control_text_editing_tasks_have_input_setup():
     assert copy_setup["type"] == "agent_prompt"
     assert "标题输入框" in copy_setup["prompt"]
     assert "正文输入区域" in copy_setup["prompt"]
+    assert "短信" in copy_setup["prompt"]
+    assert "翻译应用" in copy_setup["prompt"]
     assert copy_setup["clear_history_after"] is True
+
+
+def test_phone_control_icon_tasks_target_visible_app_icons():
+    suite_path = Path(__file__).resolve().parents[1] / "suites" / "phone_control_v1.json"
+    suite = load_suite(suite_path)
+    task_by_id = {task.id: task for task in suite.tasks}
+
+    for task_id in ("long_press_app_icon", "drag_app_icon"):
+        task = task_by_id[task_id]
+        assert "普通应用图标" in task.prompt
+        assert "设置图标" not in task.prompt
+        assert "小组件" in task.prompt
 
 
 def test_phone_control_wifi_toggle_is_split_into_on_and_off_tasks():

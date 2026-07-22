@@ -16,7 +16,7 @@ from runner.html_report import generate_report_html, upload_report
 from runner.judge import DEFAULT_JUDGE_BASE_URL, JudgeConfig
 from runner.report import git_sha, write_jsonl, write_manifest, write_summary, now_iso
 from runner.recovery import recover_agent_after_timeout, wait_for_agent_ready
-from runner.reset import ResetError, call_environment_release
+from runner.reset import ResetError, call_environment_release, clear_stale_adb_android_owner
 from runner.runtask import run_one_task, skipped_task_result
 from runner.suite import Suite, TaskSpec, load_suite
 
@@ -402,6 +402,7 @@ def _cmd_run_auto_agent_setup(
     total_runs = len(units)
     has_runnable_units = any(not unit[4] for unit in units)
     if has_runnable_units:
+        clear_stale_adb_android_owner(args.environment_url)
         ensure_daemon_image(args.daemon_image, not args.no_build_daemon_image, setup_log)
         concurrency = read_environment_bridge_concurrency(args.environment_url) or 1
         if args.max_concurrency > 0:
@@ -611,6 +612,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
     has_runnable_units = any(not unit[4] for unit in units)
     client = None
     if has_runnable_units:
+        if args.environment_url:
+            clear_stale_adb_android_owner(args.environment_url)
         client = _new_agent_client(args.agent_url, _read_optional_token(args.benchmark_token_file))
         if not client.health():
             print(f"agent at {args.agent_url} is not reachable", file=sys.stderr)

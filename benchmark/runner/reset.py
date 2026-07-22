@@ -39,6 +39,16 @@ def environment_release_endpoint(environment_url: str) -> str:
     return _environment_api_endpoint(environment_url, "release")
 
 
+def environment_health_endpoint(environment_url: str) -> str:
+    raw = str(environment_url or "").strip()
+    if not raw:
+        raise ResetError("environment_url is required")
+    parsed = urllib.parse.urlparse(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ResetError(f"invalid environment_url: {environment_url!r}")
+    return urllib.parse.urlunparse(parsed._replace(path="/health", params="", query="", fragment=""))
+
+
 def _environment_headers(task_id: str | None = None) -> dict[str, str]:
     headers = {"Content-Type": "application/json"}
     task_id = str(task_id or "").strip()
@@ -92,6 +102,37 @@ def call_environment_release(environment_url: str, timeout: int = 30, task_id: s
         headers=_environment_headers(task_id),
         action="release",
     )
+
+
+def clear_stale_adb_android_owner(environment_url: str, timeout: float = 2.0) -> str:
+    """Release a leftover ADB Android bridge owner before a fresh benchmark run."""
+    req = urllib.request.Request(environment_health_endpoint(environment_url), method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read()
+    except urllib.error.URLError:
+        return ""
+    except TimeoutError:
+        return ""
+    try:
+        payload = json.loads(body.decode("utf-8")) if body else {}
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    if not isinstance(data, dict):
+        return ""
+    if str(data.get("bridge_type") or "").strip().lower() != "adb_android":
+        return ""
+    active_task_id = str(data.get("active_task_id") or "").strip()
+    if not active_task_id:
+        return ""
+    try:
+        call_environment_release(environment_url, timeout=max(1, int(timeout)), task_id=active_task_id)
+    except ResetError:
+        return ""
+    return active_task_id
 
 
 def per_task_setup(client: AgentClient, setup: dict[str, Any] | None) -> None:
