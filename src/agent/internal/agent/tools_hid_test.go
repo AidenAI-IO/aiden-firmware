@@ -182,11 +182,33 @@ func TestWheelNudgeUsesConfidentImageMotionProfileForLargeGap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
-	if !strings.Contains(out, "rows=6") || !strings.Contains(out, "physical_travel=240") {
-		t.Fatalf("Call output = %q, want six measured rows / 240 units", out)
+	if !strings.Contains(out, "rows=6") || !strings.Contains(out, "physical_travel=258") {
+		t.Fatalf("Call output = %q, want six measured rows plus settling compensation / 258 units", out)
 	}
 	if !strings.Contains(out, "motion_profile=image_calibrated") {
 		t.Fatalf("Call output = %q, want calibrated motion metadata", out)
+	}
+	if !strings.Contains(out, "settle_compensation_rows=0.45") {
+		t.Fatalf("Call output = %q, want settling compensation metadata", out)
+	}
+}
+
+func TestWheelNudgeDoesNotCompensateWhenPlannedRowsReachTarget(t *testing.T) {
+	dev, _ := newTestHIDDevice(t)
+	screen := &screenState{}
+	screen.UpdateActiveArea(500, 1000, screenActiveArea{})
+	screen.UpdateScreenshot(syntheticWheelPickerJPEG(t, 500, 1000, 300, 300, 40), 500, 1000)
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: screen, durationMs: 1}
+
+	out, err := tool.Call(context.Background(), `{"picker_id":"alarm-create","column_x":600,"current_value":6,"target_value":9,"cycle_size":60,"cycle_start":0,"row_spacing":35,"value_step":1,"center_y":300}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "rows=3") || !strings.Contains(out, "physical_travel=120") {
+		t.Fatalf("Call output = %q, want exact three-row travel without over-target compensation", out)
+	}
+	if strings.Contains(out, "settle_compensation_rows") {
+		t.Fatalf("Call output = %q, exact-target drag must not add settling compensation", out)
 	}
 }
 

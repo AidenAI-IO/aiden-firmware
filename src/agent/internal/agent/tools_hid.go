@@ -55,6 +55,11 @@ const (
 	wheelNudgeDefaultSteps   = 18
 	wheelNudgeRowTolerance   = 0.20
 	wheelNudgeEndpointHoldMs = 120
+	// wheelNudgeMultiRowCompensation crosses the picker snap threshold that
+	// otherwise makes calibrated drags of three or more rows settle one row
+	// short. It is only applied when the plan leaves at least one full row of
+	// target margin, so an exact-target drag cannot be pushed past its target.
+	wheelNudgeMultiRowCompensation = 0.45
 
 	phoneBackStartX = 1
 	phoneBackEndX   = 750
@@ -1654,7 +1659,7 @@ func (t *WheelNudgeTool) Description() string {
 		`center_y is mandatory and must be measured from the selected center row in the latest screenshot; never omit it or reuse a fixed default across picker layouts. ` +
 		`All wheel geometry uses normalized 0-1000 coordinates. Normalize column_x using max(screenshot width-1,1); normalize center_y, row_spacing, and visible_target_y using max(screenshot height-1,1). In particular, row_spacing=(pixel row spacing/max(screenshot height-1,1))*1000, never divide a vertical distance by screenshot width. Runtime also measures the row spacing from repeated text-line geometry in the latest screenshot and overrides the caller estimate when that image measurement is confident; low-confidence images keep the caller estimate. ` +
 		`value_step is the signed numeric change for one visible row downward. The tool derives the shortest row gap, numeric direction, and finger movement from current_value, target_value, value_step, and the declared domain, so callers must not calculate a gap or guess gesture directions. Omit value_step only when visible ordering is insufficient; the tool then performs one fixed finger-up row probe. ` +
-		`Actual drag travel is coarse-to-fine. With a confident runtime image measurement, gaps of 9+, 5-8, 3-4, 2, and 1 picker rows move at most 6, 4, 3, 2, and 1 measured rows; otherwise the conservative limits remain 5, 3, 2, and 1. Longer coarse drags also take proportionally longer so they remain low-inertia rather than becoming a fling or leaving the visible picker area. ` +
+		`Actual drag travel is coarse-to-fine. With a confident runtime image measurement, gaps of 9+, 5-8, 3-4, 2, and 1 picker rows move at most 6, 4, 3, 2, and 1 measured rows; otherwise the conservative limits remain 5, 3, 2, and 1. Calibrated multi-row drags add a sub-row settling allowance only when at least one full target row remains, preserving the exact-target no-overshoot boundary. Longer coarse drags also take proportionally longer so they remain low-inertia rather than becoming a fling or leaving the visible picker area. ` +
 		`The tool performs one tap or slow drag and returns a post-action screenshot; read the new centered value and call it again with the fresh observation.`
 }
 
@@ -1723,7 +1728,12 @@ func (t *WheelNudgeTool) Call(ctx context.Context, input string) (string, error)
 		plan.rows = wheelNudgeRowsForConfidentGap(plan.gap)
 		measurementSummary += " motion_profile=image_calibrated"
 	}
-	travel := float64(plan.rows) * *args.RowSpacing
+	travelRows := float64(plan.rows)
+	if imageCalibrated && plan.rows >= 3 && plan.rows < plan.gap {
+		travelRows += wheelNudgeMultiRowCompensation
+		measurementSummary += fmt.Sprintf(" settle_compensation_rows=%.2f", wheelNudgeMultiRowCompensation)
+	}
+	travel := travelRows * *args.RowSpacing
 
 	centerY := *args.CenterY
 	gestureTravel := travel
