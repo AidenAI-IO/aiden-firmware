@@ -171,6 +171,64 @@ func TestWheelNudgeUsesMeasuredRowSpacingFromLatestScreenshot(t *testing.T) {
 	}
 }
 
+func TestWheelNudgeUsesConfidentImageMotionProfileForLargeGap(t *testing.T) {
+	dev, _ := newTestHIDDevice(t)
+	screen := &screenState{}
+	screen.UpdateActiveArea(500, 1000, screenActiveArea{})
+	screen.UpdateScreenshot(syntheticWheelPickerJPEG(t, 500, 1000, 300, 300, 40), 500, 1000)
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: screen, durationMs: 1}
+
+	out, err := tool.Call(context.Background(), `{"picker_id":"alarm-create","column_x":600,"current_value":57,"target_value":9,"cycle_size":60,"cycle_start":0,"row_spacing":35,"value_step":1,"center_y":300}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "rows=6") || !strings.Contains(out, "physical_travel=240") {
+		t.Fatalf("Call output = %q, want six measured rows / 240 units", out)
+	}
+	if !strings.Contains(out, "motion_profile=image_calibrated") {
+		t.Fatalf("Call output = %q, want calibrated motion metadata", out)
+	}
+}
+
+func TestWheelNudgeRequiresFreshScreenshotWhenConfigured(t *testing.T) {
+	dev, path := newTestHIDDevice(t)
+	tool := &WheelNudgeTool{
+		pc:                     testPointerController(dev, &pointerState{}),
+		screen:                 &screenState{},
+		durationMs:             1,
+		requireFreshScreenshot: true,
+	}
+
+	out, err := tool.Call(context.Background(), `{"picker_id":"alarm-create","column_x":600,"current_value":57,"target_value":9,"cycle_size":60,"cycle_start":0,"row_spacing":35,"value_step":1,"center_y":300}`)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !strings.Contains(out, "fresh screenshot") {
+		t.Fatalf("Call output = %q, want fresh screenshot requirement", out)
+	}
+	if reports := readMouseReports(t, dev, path); len(reports) != 0 {
+		t.Fatalf("len(reports) = %d, want no gesture without a fresh screenshot", len(reports))
+	}
+}
+
+func TestWheelNudgeDwellsAtFinalCoordinateBeforeRelease(t *testing.T) {
+	originalSleep := sleepMs
+	var sleeps []int
+	sleepMs = func(milliseconds int) {
+		sleeps = append(sleeps, milliseconds)
+	}
+	t.Cleanup(func() { sleepMs = originalSleep })
+
+	dev, _ := newTestHIDDevice(t)
+	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: &screenState{}, durationMs: 1}
+	if _, err := tool.Call(context.Background(), `{"picker_id":"alarm-create","column_x":600,"current_value":5,"target_value":9,"cycle_size":60,"cycle_start":0,"row_spacing":35,"value_step":1,"center_y":300}`); err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if !slices.Contains(sleeps, wheelNudgeEndpointHoldMs) {
+		t.Fatalf("sleep calls = %v, want endpoint hold %dms", sleeps, wheelNudgeEndpointHoldMs)
+	}
+}
+
 func syntheticWheelPickerJPEG(t *testing.T, width, height, columnX, centerY, spacing int) []byte {
 	t.Helper()
 	img := image.NewGray(image.Rect(0, 0, width, height))
@@ -618,8 +676,10 @@ func TestWheelNudgeDescriptionDefinesAdaptiveTravelAndConservativeInput(t *testi
 	for _, want := range []string{
 		"tap or slow drag",
 		"9+",
-		"2-4",
+		"3-4",
 		"5-8",
+		"confident runtime image measurement",
+		"conservative limits remain",
 		"final requested value",
 		"never substitute an intermediate visible value",
 		"normalized 0-1000 coordinates",

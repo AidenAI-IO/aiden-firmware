@@ -51,9 +51,10 @@ const (
 	directionalSwipeSmallDistance   = 200.0
 	directionalSwipeTinyDistance    = 40.0
 
-	wheelNudgeDefaultMs    = 1400
-	wheelNudgeDefaultSteps = 18
-	wheelNudgeRowTolerance = 0.20
+	wheelNudgeDefaultMs      = 1400
+	wheelNudgeDefaultSteps   = 18
+	wheelNudgeRowTolerance   = 0.20
+	wheelNudgeEndpointHoldMs = 120
 
 	phoneBackStartX = 1
 	phoneBackEndX   = 750
@@ -1610,9 +1611,10 @@ func sameResolvedPointerPoint(first, second resolvedPointerPoint) bool {
 // column. It taps an adjacent target row when possible, otherwise it uses a
 // low-inertia vertical drag that is less likely to fling past the target.
 type WheelNudgeTool struct {
-	pc         *pointerController
-	screen     *screenState
-	durationMs int
+	pc                     *pointerController
+	screen                 *screenState
+	durationMs             int
+	requireFreshScreenshot bool
 }
 
 type wheelNudgeArgs struct {
@@ -1651,7 +1653,7 @@ func (t *WheelNudgeTool) Description() string {
 		`center_y is mandatory and must be measured from the selected center row in the latest screenshot; never omit it or reuse a fixed default across picker layouts. ` +
 		`All wheel geometry uses normalized 0-1000 coordinates. Normalize column_x using max(screenshot width-1,1); normalize center_y, row_spacing, and visible_target_y using max(screenshot height-1,1). In particular, row_spacing=(pixel row spacing/max(screenshot height-1,1))*1000, never divide a vertical distance by screenshot width. Runtime also measures the row spacing from repeated text-line geometry in the latest screenshot and overrides the caller estimate when that image measurement is confident; low-confidence images keep the caller estimate. ` +
 		`value_step is the signed numeric change for one visible row downward. The tool derives the shortest row gap, numeric direction, and finger movement from current_value, target_value, value_step, and the declared domain, so callers must not calculate a gap or guess gesture directions. Omit value_step only when visible ordering is insufficient; the tool then performs one fixed finger-up row probe. ` +
-		`Actual drag travel is coarse-to-fine: gaps of 9+, 5-8, 2-4, and 1 picker rows move at most 5, 3, 2, and 1 measured rows using row_spacing. Longer coarse drags also take proportionally longer so they remain low-inertia rather than becoming a fling or leaving the visible picker area. ` +
+		`Actual drag travel is coarse-to-fine. With a confident runtime image measurement, gaps of 9+, 5-8, 3-4, 2, and 1 picker rows move at most 6, 4, 3, 2, and 1 measured rows; otherwise the conservative limits remain 5, 3, 2, and 1. Longer coarse drags also take proportionally longer so they remain low-inertia rather than becoming a fling or leaving the visible picker area. ` +
 		`The tool performs one tap or slow drag and returns a post-action screenshot; read the new centered value and call it again with the fresh observation.`
 }
 
@@ -1688,12 +1690,18 @@ func (t *WheelNudgeTool) Call(ctx context.Context, input string) (string, error)
 	}
 	modelRowSpacing := *args.RowSpacing
 	measurementSummary := ""
-	if coordSpace == coordinateSpaceNormalized && t.screen != nil {
-		if jpegData, _, _, _, ok := t.screen.LatestScreenshot(screenDimensionsStaleAfter); ok {
+	imageCalibrated := false
+	if coordSpace == coordinateSpaceNormalized {
+		if t.screen == nil {
+			if t.requireFreshScreenshot {
+				return toolErrorResultString(ctx, CodeInvalidArguments, "wheel_nudge requires a fresh screenshot from the current screen before moving a picker"), nil
+			}
+		} else if jpegData, _, _, _, ok := t.screen.LatestScreenshot(screenDimensionsStaleAfter); ok {
 			startedAt := time.Now()
 			if measurement, measured := measureWheelRowSpacingJPEG(jpegData, *args.ColumnX, *args.CenterY); measured {
 				measuredRowSpacing := measurement.Normalized
 				args.RowSpacing = &measuredRowSpacing
+				imageCalibrated = true
 				measurementSummary = fmt.Sprintf(
 					" row_spacing_source=image measured_row_spacing=%.1f model_row_spacing=%.1f confidence=%.2f measurement_ms=%.1f",
 					measurement.Normalized,
@@ -1702,11 +1710,17 @@ func (t *WheelNudgeTool) Call(ctx context.Context, input string) (string, error)
 					float64(time.Since(startedAt).Microseconds())/1000.0,
 				)
 			}
+		} else if t.requireFreshScreenshot {
+			return toolErrorResultString(ctx, CodeInvalidArguments, "wheel_nudge requires a fresh screenshot from the current screen before moving a picker"), nil
 		}
 	}
 	plan, err := planWheelNudge(args)
 	if err != nil {
 		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
+	}
+	if imageCalibrated && !plan.probe {
+		plan.rows = wheelNudgeRowsForConfidentGap(plan.gap)
+		measurementSummary += " motion_profile=image_calibrated"
 	}
 	travel := float64(plan.rows) * *args.RowSpacing
 
@@ -1780,7 +1794,7 @@ func (t *WheelNudgeTool) Call(ctx context.Context, input string) (string, error)
 		mouseButtonByte("left"),
 		durationMs,
 		80,
-		0,
+		wheelNudgeEndpointHoldMs,
 		wheelNudgeDefaultSteps,
 	); err != nil {
 		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
@@ -1900,6 +1914,21 @@ func wheelNudgeRowsForGap(gap int) int {
 		return min(gap, 3)
 	default:
 		return min(gap, 5)
+	}
+}
+
+func wheelNudgeRowsForConfidentGap(gap int) int {
+	switch {
+	case gap <= 1:
+		return 1
+	case gap == 2:
+		return 2
+	case gap <= 4:
+		return min(gap, 3)
+	case gap <= 8:
+		return min(gap, 4)
+	default:
+		return min(gap, 6)
 	}
 }
 
