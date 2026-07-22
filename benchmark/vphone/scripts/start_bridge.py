@@ -33,7 +33,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--guest-ssh-host", default="192.168.64.5")
     parser.add_argument("--guest-ssh-port", type=int, default=22222)
     parser.add_argument("--guest-ssh-user", default="root")
-    parser.add_argument("--guest-ssh-identity", default="")
+    parser.add_argument("--guest-ssh-identity", default="~/.ssh/vphone_ecdsa")
     parser.add_argument("--no-guest-ssh-fallback", action="store_true")
     parser.add_argument("--allow-unready", action="store_true", help="Start even when the VM health check fails")
     parser.add_argument("--json", action="store_true")
