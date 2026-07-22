@@ -1728,12 +1728,12 @@ func (t *WheelNudgeTool) Call(ctx context.Context, input string) (string, error)
 		plan.rows = wheelNudgeRowsForConfidentGap(plan.gap)
 		measurementSummary += " motion_profile=image_calibrated"
 	}
-	travelRows := float64(plan.rows)
+	plannedTravel := float64(plan.rows) * *args.RowSpacing
+	travel := plannedTravel
 	if imageCalibrated && plan.rows >= 3 && plan.rows < plan.gap {
-		travelRows += wheelNudgeMultiRowCompensation
+		travel += wheelNudgeMultiRowCompensation * *args.RowSpacing
 		measurementSummary += fmt.Sprintf(" settle_compensation_rows=%.2f", wheelNudgeMultiRowCompensation)
 	}
-	travel := travelRows * *args.RowSpacing
 
 	centerY := *args.CenterY
 	gestureTravel := travel
@@ -1768,7 +1768,10 @@ func (t *WheelNudgeTool) Call(ctx context.Context, input string) (string, error)
 		return fmt.Sprintf("ok: wheel_nudge interaction=tap row_offset=%d target_value=%d%s", plan.rowOffset, *args.TargetValue, measurementSummary), nil
 	}
 
-	startOffset := gestureTravel / 2
+	// Keep touchdown at the original planned-row boundary. Extending both ends
+	// symmetrically can move the press beyond the outermost visible picker row,
+	// so apply any settling allowance only at the drag destination.
+	startOffset := plannedTravel / 2
 	var startY, endY float64
 	if plan.direction == "up" {
 		startY = clampFloat(centerY+startOffset, 0, maxY)

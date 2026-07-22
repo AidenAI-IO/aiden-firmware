@@ -172,10 +172,11 @@ func TestWheelNudgeUsesMeasuredRowSpacingFromLatestScreenshot(t *testing.T) {
 }
 
 func TestWheelNudgeUsesConfidentImageMotionProfileForLargeGap(t *testing.T) {
-	dev, _ := newTestHIDDevice(t)
+	dev, path := newTestHIDDevice(t)
 	screen := &screenState{}
 	screen.UpdateActiveArea(500, 1000, screenActiveArea{})
-	screen.UpdateScreenshot(syntheticWheelPickerJPEG(t, 500, 1000, 300, 300, 40), 500, 1000)
+	jpegData := syntheticWheelPickerJPEG(t, 500, 1000, 300, 300, 40)
+	screen.UpdateScreenshot(jpegData, 500, 1000)
 	tool := &WheelNudgeTool{pc: testPointerController(dev, &pointerState{}), screen: screen, durationMs: 1}
 
 	out, err := tool.Call(context.Background(), `{"picker_id":"alarm-create","column_x":600,"current_value":57,"target_value":9,"cycle_size":60,"cycle_start":0,"row_spacing":35,"value_step":1,"center_y":300}`)
@@ -190,6 +191,24 @@ func TestWheelNudgeUsesConfidentImageMotionProfileForLargeGap(t *testing.T) {
 	}
 	if !strings.Contains(out, "settle_compensation_rows=0.45") {
 		t.Fatalf("Call output = %q, want settling compensation metadata", out)
+	}
+
+	reports := readMouseReports(t, dev, path)
+	// Keep touchdown at the original three-row boundary inside the picker,
+	// then extend only the destination by the 0.45-row settling allowance.
+	measurement, measured := measureWheelRowSpacingJPEG(jpegData, 600, 300)
+	if !measured {
+		t.Fatal("synthetic picker row spacing was not measurable")
+	}
+	plannedTravel := 6 * measurement.Normalized
+	expectedX, expectedStartY := normalizedToAbsolutePoint(600, 300+plannedTravel/2)
+	_, expectedEndY := normalizedToAbsolutePoint(600, 300+plannedTravel/2-(6+wheelNudgeMultiRowCompensation)*measurement.Normalized)
+	if reports[0].x != uint16(expectedX) || reports[0].y != uint16(expectedStartY) {
+		t.Fatalf("pre-move = (%d,%d), want compensated drag to start at (%d,%d)", reports[0].x, reports[0].y, expectedX, expectedStartY)
+	}
+	finalMove := reports[1+wheelNudgeDefaultSteps]
+	if finalMove.x != uint16(expectedX) || finalMove.y != uint16(expectedEndY) {
+		t.Fatalf("final move = (%d,%d), want compensated drag to end at (%d,%d)", finalMove.x, finalMove.y, expectedX, expectedEndY)
 	}
 }
 
