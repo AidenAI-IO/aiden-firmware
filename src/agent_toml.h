@@ -13,6 +13,7 @@ struct ModelToml {
     std::string token_env;
     std::string reasoning_effort;
     double temperature = 0.0;
+    bool has_temperature = false;
     int max_response_tokens = 0;
     int context_window = 0;
     int model_max_output_tokens = 0;
@@ -135,6 +136,7 @@ struct AgentToml {
     LiveActivityToml live_activity;
     TerminationPolicyToml termination_policy;
 
+    std::string locale = "zh-CN";
     std::string custom_instruction;
     std::string additional_prompt;
     std::string input_mode;

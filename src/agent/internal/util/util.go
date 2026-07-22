@@ -1,5 +1,7 @@
 package util
 
+import "fmt"
+
 func UsageMetricInt(value any) (int, bool) {
 	switch typed := value.(type) {
 	case int:
@@ -13,4 +15,8 @@ func UsageMetricInt(value any) (int, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func STag(tag string, content string) string {
+	return fmt.Sprintf("<%s>\n%s\n</%s>", tag, content, tag)
 }

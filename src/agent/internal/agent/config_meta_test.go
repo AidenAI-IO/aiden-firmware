@@ -206,7 +206,10 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 	}{
 		{"model.provider", defaults.Model.Provider},
 		{"model.model", defaults.Model.Model},
-		{"model.temperature", defaults.Model.Temperature},
+		// temperature's effective default is model-dependent and resolved at
+		// load time, so the metadata placeholder is the global fallback rather
+		// than the (now unset) DefaultConfig value.
+		{"model.temperature", defaultModelTemperature},
 		{"model.max_response_tokens", defaults.Model.MaxResponseTokens},
 		{"model.log_raw_http", defaults.Model.LogRawHTTP},
 		{"tts.provider", defaults.TTS.Provider},
@@ -232,6 +235,7 @@ func TestConfigMeta_RuntimeDefaultsMatch(t *testing.T) {
 		{"hid.input_backend", defaults.HID.InputBackend},
 		{"search.provider", defaults.Search.ProviderOrDefault()},
 		{"agent.input_mode", defaults.InputMode},
+		{"agent.locale", defaults.LocaleOrDefault()},
 		{"agent.trigger_mode", defaults.TriggerMode},
 		{"agent.vad_backend", defaults.VADBackend},
 		{"agent.vad_model_path", defaults.VADModelPath},

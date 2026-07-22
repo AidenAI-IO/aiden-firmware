@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"strings"
 	"testing"
 
 	"aiden-agent/internal/agent/contextmanager"
@@ -9,14 +8,15 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
-func TestFreshNewContextManagerSeedsSystemPromptOnlyForFreshSession(t *testing.T) {
+func TestInitializeContextManagerStartsNewSessionWhenSystemPromptChanges(t *testing.T) {
 	sessionFolder := t.TempDir()
 
 	manager, err := InitializeContextManager("system v1", sessionFolder, nil)
 	if err != nil {
 		t.Fatalf("freshNewContextManager() error = %v", err)
 	}
-	messages := manager.ConvertToStandardMessageList()
+	rawMessages := manager.CloneMessageList()
+	messages := contextmanager.ConvertMessageList(rawMessages)
 	if len(messages) != 1 {
 		t.Fatalf("messages = %d, want 1", len(messages))
 	}
@@ -26,20 +26,51 @@ func TestFreshNewContextManagerSeedsSystemPromptOnlyForFreshSession(t *testing.T
 	if err := manager.AppendMessage(contextmanager.Message{Role: contextmanager.MessageRoleUser, Content: "first request"}); err != nil {
 		t.Fatalf("AppendMessage() error = %v", err)
 	}
+	originalSessionID := manager.GetSessionID()
 
 	reloaded, err := InitializeContextManager("system v2", sessionFolder, nil)
 	if err != nil {
 		t.Fatalf("reload freshNewContextManager() error = %v", err)
 	}
-	reloadedMessages := reloaded.ConvertToStandardMessageList()
-	if len(reloadedMessages) != 2 {
-		t.Fatalf("messages = %d, want 2", len(reloadedMessages))
+	reloadedMessages := contextmanager.ConvertMessageList(reloaded.CloneMessageList())
+	if reloaded.GetSessionID() == originalSessionID {
+		t.Fatal("system prompt change reused the existing session")
 	}
-	if strings.Contains(messageText(reloadedMessages), "system v2") {
-		t.Fatalf("reloaded context should not re-seed a second system prompt:\n%s", messageText(reloadedMessages))
+	if len(reloadedMessages) != 1 {
+		t.Fatalf("messages = %d, want only the new system prompt", len(reloadedMessages))
 	}
-	if text := messageText(reloadedMessages[1:2]); text != "first request\n" {
-		t.Fatalf("reloaded user message = %q", text)
+	if text := messageText(reloadedMessages); text != "system v2\n" {
+		t.Fatalf("new session system prompt = %q, want system v2", text)
+	}
+
+	original, err := contextmanager.LoadContextManagerFromSessionID(sessionFolder, originalSessionID)
+	if err != nil {
+		t.Fatalf("LoadContextManagerFromSessionID() error = %v", err)
+	}
+	if text := messageText(contextmanager.ConvertMessageList(original.CloneMessageList())); text != "system v1\nfirst request\n" {
+		t.Fatalf("original session was modified: %q", text)
+	}
+}
+
+func TestInitializeContextManagerReusesSessionWhenSystemPromptMatches(t *testing.T) {
+	sessionFolder := t.TempDir()
+	manager, err := InitializeContextManager("system", sessionFolder, nil)
+	if err != nil {
+		t.Fatalf("InitializeContextManager() error = %v", err)
+	}
+	if err := manager.AppendMessage(contextmanager.Message{Role: contextmanager.MessageRoleUser, Content: "hello"}); err != nil {
+		t.Fatalf("AppendMessage() error = %v", err)
+	}
+
+	reloaded, err := InitializeContextManager("system", sessionFolder, nil)
+	if err != nil {
+		t.Fatalf("InitializeContextManager() reload error = %v", err)
+	}
+	if reloaded.GetSessionID() != manager.GetSessionID() {
+		t.Fatal("unchanged system prompt started a new session")
+	}
+	if text := messageText(contextmanager.ConvertMessageList(reloaded.CloneMessageList())); text != "system\nhello\n" {
+		t.Fatalf("reloaded session = %q", text)
 	}
 }
 
@@ -57,7 +88,7 @@ func TestUserMessageFromInputPreservesAttachments(t *testing.T) {
 		t.Fatalf("AppendMessage() error = %v", err)
 	}
 
-	messages := manager.ConvertToStandardMessageList()
+	messages := contextmanager.ConvertMessageList(manager.CloneMessageList())
 	if len(messages) != 2 {
 		t.Fatalf("messages = %#v", messages)
 	}
@@ -67,5 +98,43 @@ func TestUserMessageFromInputPreservesAttachments(t *testing.T) {
 	}
 	if len(userMessage.Parts) != 2 {
 		t.Fatalf("parts = %#v, want text + binary attachment", userMessage.Parts)
+	}
+}
+
+func TestVisualFollowupMarksScreenshotObservationSource(t *testing.T) {
+	manager, err := InitializeContextManager("system", t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("InitializeContextManager() error = %v", err)
+	}
+	msg := visualFollowupMessageFromLLMContent(manager, llms.MessageContent{
+		Role: llms.ChatMessageTypeHuman,
+		Parts: []llms.ContentPart{
+			llms.TextPart("This image is the screenshot observation returned by the screenshot tool."),
+			llms.BinaryPart("image/jpeg", []byte("jpeg-bytes")),
+		},
+	})
+	if len(msg.Attachments) != 1 {
+		t.Fatalf("attachments = %#v", msg.Attachments)
+	}
+	if msg.Attachments[0].Source != contextmanager.AttachmentSourceScreenshotObservation {
+		t.Fatalf("Source = %q", msg.Attachments[0].Source)
+	}
+}
+
+func TestUserMessageAttachmentsRemainUnmarked(t *testing.T) {
+	manager, err := InitializeContextManager("system", t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("InitializeContextManager() error = %v", err)
+	}
+	msg := userMessageFromInput(manager, "hello", []InputAttachment{{
+		Kind:     AttachmentKindImage,
+		MIMEType: "image/png",
+		Data:     []byte("png"),
+	}})
+	if len(msg.Attachments) != 1 {
+		t.Fatalf("attachments = %#v", msg.Attachments)
+	}
+	if msg.Attachments[0].Source != "" {
+		t.Fatalf("user upload Source = %q, want empty", msg.Attachments[0].Source)
 	}
 }

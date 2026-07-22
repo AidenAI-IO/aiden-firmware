@@ -239,7 +239,7 @@ std::string resolved_config_json(const std::string& search_provider, bool search
         "\"telemetry\":{\"enabled\":false,\"provider\":\"langfuse\",\"base_url\":\"\","
         "\"public_key\":\"\",\"secret_key\":\"\",\"upload_screenshots\":true,"
         "\"upload_timeout_sec\":30,\"max_retry\":2,\"tags\":[],\"environment\":\"default\"},"
-        "\"agent\":{\"custom_instruction\":\"stub custom instruction\",\"additional_prompt\":\"\","
+        "\"agent\":{\"locale\":\"zh-CN\",\"custom_instruction\":\"stub custom instruction\",\"additional_prompt\":\"\","
         "\"input_mode\":\"text\",\"trigger_mode\":\"manual\",\"vad_backend\":\"rknn\","
         "\"vad_model_path\":\"/oem/usr/model/silero_vad_6_2_encoder_rv1106_w8a8_v1.rknn\","
         "\"vad_helper_path\":\"/oem/usr/bin/rknn_vad\",\"vad_speech_threshold\":0.5,"
@@ -695,6 +695,31 @@ std::unique_ptr<ServerHandle> start_server(const StubEnv& stub_env) {
 // contract we guard: a missing dependency MUST surface as 503 (server-side
 // outage), a CLI rejection MUST surface as 400 (user input).
 
+TEST_CASE("config_web: setup page exposes an immediate persisted locale switch") {
+    StubEnv env;
+    auto handle = start_server(env);
+    HttpResponse resp = http_request(handle->port, "GET", "/");
+    CHECK(resp.status == 200);
+    CHECK(resp.body.find("id=\"localeSelect\"") != std::string::npos);
+    CHECK(resp.body.find("/api/config/locale") != std::string::npos);
+    CHECK(resp.body.find("localStorage") != std::string::npos);
+    CHECK(resp.body.find("applyLocale") != std::string::npos);
+    CHECK(resp.body.find("'Configuration':'配置'") != std::string::npos);
+    CHECK(resp.body.find("applyLocale(previous,false)") != std::string::npos);
+    CHECK(resp.body.find("let localeRevision=0") != std::string::npos);
+    CHECK(resp.body.find("localeSavePending=true") != std::string::npos);
+    CHECK(resp.body.find("requestLocaleRevision===localeRevision&&!localeSavePending") !=
+          std::string::npos);
+    CHECK(resp.body.find("applyLocale(payload.locale||requested,true)") != std::string::npos);
+    CHECK(resp.body.find("try{await loadAuthoritativeLocale();}catch(refreshErr){}") !=
+          std::string::npos);
+    CHECK(resp.body.find("async function loadAuthoritativeLocale()") != std::string::npos);
+    CHECK(resp.body.find("const configuredLocale=") != std::string::npos);
+    CHECK(resp.body.find("try{await loadConfig();") != std::string::npos);
+    CHECK(resp.body.find("if(metaOk){await loadConfig();") == std::string::npos);
+    CHECK(resp.body.find("window.confirm(localizedText(") != std::string::npos);
+}
+
 TEST_CASE("config_web: GET /api/config/meta returns 200 + parseable JSON when stub agent works") {
     StubEnv env;  // defaults: meta returns minimal valid JSON
     auto handle = start_server(env);
@@ -744,8 +769,116 @@ TEST_CASE("config_web: GET /api/config reads resolved config from agent") {
     REQUIRE(custom_instruction != nullptr);
     REQUIRE(custom_instruction->valuestring != nullptr);
     CHECK(std::string(custom_instruction->valuestring) == "stub custom instruction");
+    cJSON* locale = cJSON_GetObjectItem(agent, "locale");
+    REQUIRE(locale != nullptr);
+    REQUIRE(locale->valuestring != nullptr);
+    CHECK(std::string(locale->valuestring) == "zh-CN");
     CHECK(cJSON_GetObjectItem(agent, "instruction") == nullptr);
     cJSON_Delete(parsed);
+}
+
+TEST_CASE("config_web: PUT /api/config/locale updates only the device locale") {
+    StubEnv env;
+    auto handle = start_server(env);
+    const std::string original =
+        "# Keep comments and fields owned by the Go agent.\n"
+        "\"locale\" = \"zh-CN\"  # setup language\n"
+        "custom_instruction = \"Keep this instruction.\"\n"
+        "todo_reminder_tool_calls = 7\n"
+        "skills_dirs = [\"/userdata/skills\"]\n"
+        "future_plugin_flag = true\n"
+        "\n"
+        "[device]\n"
+        "backend = \"hdmi\"\n"
+        "future_device_option = \"keep me\"\n";
+    write_file(handle->tmp_dir + "/agent.toml", original);
+
+    HttpResponse resp = http_request(handle->port, "PUT", "/api/config/locale",
+                                     "{\"locale\":\"en-US\"}");
+    CHECK(resp.status == 200);
+
+    cJSON* parsed = cJSON_Parse(resp.body.c_str());
+    REQUIRE(parsed != nullptr);
+    cJSON* locale = cJSON_GetObjectItem(parsed, "locale");
+    REQUIRE(locale != nullptr);
+    REQUIRE(locale->valuestring != nullptr);
+    CHECK(std::string(locale->valuestring) == "en-US");
+    cJSON* restart = cJSON_GetObjectItem(parsed, "agent_restart_scheduled");
+    REQUIRE(restart != nullptr);
+    CHECK((restart->type & 0xff) == cJSON_True);
+    cJSON_Delete(parsed);
+
+    const std::string saved = read_file(handle->tmp_dir + "/agent.toml");
+    std::string expected = original;
+    const size_t locale_pos = expected.find("\"zh-CN\"");
+    REQUIRE(locale_pos != std::string::npos);
+    expected.replace(locale_pos, std::strlen("\"zh-CN\""), "\"en-US\"");
+    CHECK(saved == expected);
+}
+
+TEST_CASE("config_web: PUT /api/config/locale inserts a missing locale before sections") {
+    StubEnv env;
+    auto handle = start_server(env);
+    const std::string original =
+        "# Existing top-level config stays in place.\n"
+        "todo_reminder_tool_calls = 4\n"
+        "custom_instruction = \"\"\"\n"
+        "locale = \"this is instruction text\"\n"
+        "[not-a-real-section]\n"
+        "\"\"\"\n"
+        "\n"
+        "[device]\n"
+        "backend = \"hdmi\"\n";
+    write_file(handle->tmp_dir + "/agent.toml", original);
+
+    HttpResponse resp = http_request(handle->port, "PUT", "/api/config/locale",
+                                     "{\"locale\":\"en-US\"}");
+    CHECK(resp.status == 200);
+
+    CHECK(read_file(handle->tmp_dir + "/agent.toml") ==
+          "# Existing top-level config stays in place.\n"
+          "todo_reminder_tool_calls = 4\n"
+          "custom_instruction = \"\"\"\n"
+          "locale = \"this is instruction text\"\n"
+          "[not-a-real-section]\n"
+          "\"\"\"\n"
+          "\n"
+          "locale = \"en-US\"\n"
+          "[device]\n"
+          "backend = \"hdmi\"\n");
+}
+
+TEST_CASE("config_web: PUT /api/config/locale rejects unsupported locales without saving") {
+    StubEnv env;
+    auto handle = start_server(env);
+    write_file(handle->tmp_dir + "/agent.toml", "locale = \"zh-CN\"\n");
+
+    HttpResponse resp = http_request(handle->port, "PUT", "/api/config/locale",
+                                     "{\"locale\":\"fr-FR\"}");
+    CHECK(resp.status == 400);
+    CHECK(resp.body.find("unsupported locale") != std::string::npos);
+    CHECK(read_file(handle->tmp_dir + "/agent.toml").find("locale = \"zh-CN\"") != std::string::npos);
+}
+
+TEST_CASE("config_web: PUT /api/config/locale preserves the confirmed locale when validation fails") {
+    auto tmp = make_temp_dir();
+    auto cleanup = std::unique_ptr<void, void(*)(void*)>(
+        const_cast<char*>(tmp.c_str()),
+        [](void* p) { std::string cmd = std::string("rm -rf '") + (char*)p + "'"; (void)std::system(cmd.c_str()); }
+    );
+    write_file(tmp + "/check.json",
+               "{\"valid\":false,\"errors\":[{\"field\":\"locale\",\"message\":\"stub locale rejection\"}]}\n");
+    StubEnv env;
+    env.set("AIDEN_AGENT_STUB_CHECK_FILE", tmp + "/check.json");
+    env.set("AIDEN_AGENT_STUB_CHECK_EXIT", "1");
+    auto handle = start_server(env);
+    write_file(handle->tmp_dir + "/agent.toml", "locale = \"zh-CN\"\n");
+
+    HttpResponse resp = http_request(handle->port, "PUT", "/api/config/locale",
+                                     "{\"locale\":\"en-US\"}");
+    CHECK(resp.status == 400);
+    CHECK(resp.body.find("stub locale rejection") != std::string::npos);
+    CHECK(read_file(handle->tmp_dir + "/agent.toml").find("locale = \"zh-CN\"") != std::string::npos);
 }
 
 TEST_CASE("config_web: GET /api/config reports running OTA target version when health failed") {
@@ -837,6 +970,45 @@ TEST_CASE("config_web: POST /api/config writes audio_archive section") {
     CHECK(saved.find("max_files = 123") != std::string::npos);
     CHECK(saved.find("max_size_mb = 45") != std::string::npos);
     CHECK(saved.find("storage_path = \"/userdata/custom-audio\"") != std::string::npos);
+}
+
+TEST_CASE("config_web: POST /api/config omitting temperature clears a saved value") {
+    // Regression test: update_model_from_json() applies JSON as a patch onto the
+    // config pre-loaded from disk. Omitting the temperature key must clear the
+    // previously-saved value (has_temperature=false), letting the UI unset it.
+    StubEnv env;
+    auto handle = start_server(env);
+
+    // First save an explicit temperature.
+    const std::string with_temp =
+        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\","
+        "\"temperature\":0.7},"
+        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    HttpResponse first = http_request(handle->port, "POST", "/api/config", with_temp);
+    CHECK(first.status == 200);
+    {
+        std::ifstream saved_in((handle->tmp_dir + "/agent.toml").c_str());
+        REQUIRE(saved_in.good());
+        std::ostringstream buf;
+        buf << saved_in.rdbuf();
+        CHECK(buf.str().find("temperature = 0.7") != std::string::npos);
+    }
+
+    // Now save again without the temperature key: it must be cleared.
+    const std::string without_temp =
+        "{\"config\":{\"model\":{\"provider\":\"openai\",\"model\":\"x\",\"api_key\":\"k\"},"
+        "\"hid\":{\"pointer_mode\":\"absolute\"},"
+        "\"search\":{\"provider\":\"duckduckgo\"},\"agent\":{}},\"apply_wifi\":false}";
+    HttpResponse second = http_request(handle->port, "POST", "/api/config", without_temp);
+    CHECK(second.status == 200);
+
+    std::ifstream saved_in((handle->tmp_dir + "/agent.toml").c_str());
+    REQUIRE(saved_in.good());
+    std::ostringstream saved_buffer;
+    saved_buffer << saved_in.rdbuf();
+    const std::string saved = saved_buffer.str();
+    CHECK(saved.find("temperature") == std::string::npos);
 }
 
 TEST_CASE("config_web: POST /api/config writes ota section") {

@@ -112,6 +112,7 @@ func visualFollowupMessageFromLLMContent(manager *contextmanager.ContextManager,
 			if ok && strings.HasPrefix(strings.ToLower(mimeType), "image/") && len(data) > 0 && manager != nil {
 				stored, err := manager.StoreAttachment(mimeType, data)
 				if err == nil {
+					stored.Source = contextmanager.AttachmentSourceScreenshotObservation
 					message.Attachments = append(message.Attachments, stored)
 					continue
 				}
@@ -130,6 +131,7 @@ func visualFollowupMessageFromLLMContent(manager *contextmanager.ContextManager,
 				message.Content = mergePromptText(message.Content, attachmentStorageFailureText(typed.MIMEType, err))
 				continue
 			}
+			stored.Source = contextmanager.AttachmentSourceScreenshotObservation
 			message.Attachments = append(message.Attachments, stored)
 		default:
 			fallback := messageFromLLMContent(manager, llms.MessageContent{
@@ -191,8 +193,9 @@ func InitializeContextManager(
 	hooks []contextmanager.AppendMessageHook,
 ) (*contextmanager.ContextManager, error) {
 	manager, err := contextmanager.LoadContextManagerFromCurrentSession(sessionFolder)
-	if err != nil {
-		// create a new context manager
+	if err != nil || !contextManagerHasSystemPrompt(manager, systemPrompt) {
+		// Create a new append-only session when there is no current session or
+		// when configuration changes require a different system prompt.
 		manager, err = contextmanager.NewContextManager(sessionFolder, systemPrompt)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create context manager: %w", err)
@@ -207,4 +210,14 @@ func InitializeContextManager(
 	manager.AddAppendMessageHooks(hooks)
 
 	return manager, nil
+}
+
+func contextManagerHasSystemPrompt(manager *contextmanager.ContextManager, systemPrompt string) bool {
+	if manager == nil {
+		return false
+	}
+	messages := manager.MessageListDump().Messages
+	return len(messages) > 0 &&
+		messages[0].Role == contextmanager.MessageRoleSystem &&
+		strings.TrimSpace(messages[0].Content) == strings.TrimSpace(systemPrompt)
 }

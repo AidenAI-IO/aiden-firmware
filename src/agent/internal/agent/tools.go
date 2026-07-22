@@ -170,7 +170,7 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	return toolSet
 }
 
-func (s *ToolSet) RegisterEnterTextInFieldTool(models model.ModelResolver, platformFn func() string) {
+func (s *ToolSet) RegisterEnterTextInFieldTool(models model.Model, platformFn func() string) {
 	if s == nil || s.textInputHW == nil || models == nil {
 		return
 	}

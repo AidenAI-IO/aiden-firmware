@@ -11,6 +11,8 @@ import (
 
 	"aiden-agent/internal/agent/contextmanager"
 	"aiden-agent/internal/agent/executor"
+	"aiden-agent/internal/agent/model"
+	"aiden-agent/internal/util"
 
 	"github.com/tmc/langchaingo/agents"
 	"github.com/tmc/langchaingo/callbacks"
@@ -32,7 +34,7 @@ const (
 )
 
 type AgentLoop struct {
-	Model                    llms.Model
+	Model                    model.Model
 	Profile                  RoleProfile
 	Memory                   schema.Memory
 	CallbacksHandler         callbacks.Handler
@@ -52,7 +54,7 @@ type AgentLoop struct {
 }
 
 func NewAgentLoop(
-	model llms.Model,
+	model model.Model,
 	profile RoleProfile,
 	memory schema.Memory,
 	maxIterations int,
@@ -76,8 +78,19 @@ func NewAgentLoop(
 	}
 }
 
+func (l *AgentLoop) outboundTransforms() []executor.OutboundMessageTransform {
+	modelName := l.Model.Spec().Name
+	modelProvider := l.Model.Spec().Provider
+	return []executor.OutboundMessageTransform{
+		AnthropicScreenshotPruner{
+			Enabled: IsAnthropicModel(modelProvider, modelName),
+			Config:  l.ScreenshotPruning,
+		},
+	}
+}
+
 func (l *AgentLoop) Run(ctx context.Context, input string, options ...chains.ChainCallOption) (string, error) {
-	llmExecutor := executor.NewLLMExecutor(l.Model, l.contextManager)
+	llmExecutor := executor.NewLLMExecutor(l.Model, l.contextManager, l.outboundTransforms()...)
 
 	agentTools := l.Profile.Tools
 	toolSpecs := NewToolSpecs(agentTools)
@@ -92,8 +105,6 @@ func (l *AgentLoop) Run(ctx context.Context, input string, options ...chains.Cha
 		toolExecutionHooks = l.toolExecutionHookFactory()
 	}
 	policy := l.loopGuardPolicy()
-	transientMessages := newTransientMessageScope(l.contextManager)
-	defer transientMessages.Clear()
 
 restartBudget:
 	for {
@@ -108,7 +119,7 @@ restartBudget:
 				}
 				continue restartBudget
 			}
-			answer, outcome, err := l.runIteration(ctx, i+1, callOptions, llmExecutor, parser, toolSpecs, toolExecutionHooks, policy, transientMessages)
+			answer, outcome, err := l.runIteration(ctx, i+1, callOptions, llmExecutor, parser, toolSpecs, toolExecutionHooks, policy)
 			if err != nil {
 				return "", err
 			}
@@ -154,7 +165,7 @@ func (l *AgentLoop) stopWithSteerCheck(ctx context.Context, executor *executor.L
 	return answer, true, err
 }
 
-func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions []llms.CallOption, llmExecutor *executor.LLMExecutor, parser *FunctionAgent, toolSpecs *ToolSpecs, toolExecutionHooks toolExecutionHookHandler, policy *TerminationPolicy, transientMessages *transientMessageScope) (string, iterationOutcome, error) {
+func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions []llms.CallOption, llmExecutor *executor.LLMExecutor, parser *FunctionAgent, toolSpecs *ToolSpecs, toolExecutionHooks toolExecutionHookHandler, policy *TerminationPolicy) (string, iterationOutcome, error) {
 	iterationStartTime := time.Now()
 	toolCallsInIteration := 0
 	if l.Recorder != nil {
@@ -261,7 +272,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		if decision.Stop {
 			return l.finishStopDecision(ctx, policy, decision)
 		}
-		l.applyLoopGuardDecision(decision, transientMessages)
+		l.applyLoopGuardDecision(decision)
 
 		// Problem 4: Check for pending steer after parse failure (continue iteration)
 		if steer, hasPending, err := l.consumeAndPersistSteer(ctx, llmExecutor); err != nil {
@@ -401,7 +412,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 		if decision.Stop {
 			return l.finishStopDecision(ctx, policy, decision)
 		}
-		l.applyLoopGuardDecision(decision, transientMessages)
+		l.applyLoopGuardDecision(decision)
 		return "", iterationContinue, nil
 	}
 	if appendErr != nil {
@@ -444,7 +455,7 @@ func (l *AgentLoop) runIteration(ctx context.Context, iteration int, callOptions
 	if decision.Stop {
 		return l.finishStopDecision(ctx, policy, decision)
 	}
-	l.applyLoopGuardDecision(decision, transientMessages)
+	l.applyLoopGuardDecision(decision)
 
 	return "", iterationContinue, nil
 }
@@ -467,14 +478,16 @@ func (l *AgentLoop) finishStopDecision(ctx context.Context, policy *TerminationP
 	return answer, iterationDone, err
 }
 
-func (l *AgentLoop) applyLoopGuardDecision(decision TerminationDecision, transientMessages *transientMessageScope) {
-	if transientMessages == nil || strings.TrimSpace(decision.Notice) == "" {
+func (l *AgentLoop) applyLoopGuardDecision(decision TerminationDecision) {
+	if strings.TrimSpace(decision.Notice) == "" {
 		return
 	}
-	transientMessages.Append(contextmanager.Message{
+	if err := l.contextManager.AppendMessage(contextmanager.Message{
 		Role:    contextmanager.MessageRoleNotice,
-		Content: decision.Notice,
-	})
+		Content: util.STag("notice", decision.Notice),
+	}); err != nil {
+		log.Printf("[loop guard] failed to append notice message: %v", err)
+	}
 }
 
 func (l *AgentLoop) stopWithDecision(ctx context.Context, policy *TerminationPolicy, decision TerminationDecision) (string, error) {
@@ -501,32 +514,6 @@ func (l *AgentLoop) stopWithDecision(ctx context.Context, policy *TerminationPol
 		l.Recorder.RecordDefaultFinish(answer)
 	}
 	return l.finishRun(ctx, answer)
-}
-
-type transientMessageScope struct {
-	contextManager *contextmanager.ContextManager
-	remove         []func()
-}
-
-func newTransientMessageScope(contextManager *contextmanager.ContextManager) *transientMessageScope {
-	return &transientMessageScope{contextManager: contextManager}
-}
-
-func (s *transientMessageScope) Append(message contextmanager.Message) {
-	if s == nil || s.contextManager == nil {
-		return
-	}
-	s.remove = append(s.remove, s.contextManager.AppendTransientMessage(message))
-}
-
-func (s *transientMessageScope) Clear() {
-	if s == nil {
-		return
-	}
-	for _, remove := range s.remove {
-		remove()
-	}
-	s.remove = nil
 }
 
 func loadAgentLoopInputs(ctx context.Context, memory schema.Memory, input string) (map[string]string, error) {

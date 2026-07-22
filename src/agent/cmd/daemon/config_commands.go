@@ -66,11 +66,11 @@ type modelDTO struct {
 	Provider             string  `json:"provider"`
 	APIKey               string  `json:"api_key"`
 	Model                string  `json:"model"`
-	BaseURL              string  `json:"base_url"`
-	TokenEnv             string  `json:"token_env"`
-	ReasoningEffort      string  `json:"reasoning_effort"`
-	Temperature          float64 `json:"temperature"`
-	MaxResponseTokens    int     `json:"max_response_tokens"`
+	BaseURL              string   `json:"base_url"`
+	TokenEnv             string   `json:"token_env"`
+	ReasoningEffort      string   `json:"reasoning_effort"`
+	Temperature          *float64 `json:"temperature,omitempty"`
+	MaxResponseTokens    int      `json:"max_response_tokens"`
 	ContextWindow        int     `json:"context_window"`
 	ModelMaxOutputTokens int     `json:"model_max_output_tokens"`
 }
@@ -193,6 +193,7 @@ type liveActivityDTO struct {
 }
 
 type agentDTO struct {
+	Locale                     string  `json:"locale"`
 	CustomInstruction          string  `json:"custom_instruction"`
 	AdditionalPrompt           string  `json:"additional_prompt"`
 	InputMode                  string  `json:"input_mode"`
@@ -346,6 +347,7 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			TimeoutSec:     d.LiveActivity.TimeoutSec,
 		},
 		TerminationPolicy:          d.TerminationPolicy,
+		Locale:                     d.Agent.Locale,
 		Instruction:                d.Agent.CustomInstruction,
 		AdditionalPrompt:           d.Agent.AdditionalPrompt,
 		InputMode:                  d.Agent.InputMode,
@@ -485,6 +487,7 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 		},
 		TerminationPolicy: cfg.TerminationPolicyOrDefault(),
 		Agent: agentDTO{
+			Locale:                     cfg.LocaleOrDefault(),
 			CustomInstruction:          customInstructionValue(cfg.Instruction),
 			AdditionalPrompt:           cfg.AdditionalPrompt,
 			InputMode:                  cfg.InputModeOrDefault(),
@@ -529,6 +532,7 @@ func runConfigCheck(args []string) int {
 	fs := flag.NewFlagSet("config-check", flag.ExitOnError)
 	formatFlag := fs.String("format", "json", "output format (only json supported)")
 	stdinFlag := fs.Bool("stdin", false, "read config from stdin")
+	configFlag := fs.String("config", "", "path to agent.toml or config directory")
 
 	if err := fs.Parse(args); err != nil {
 		writeConfigCheckError("failed to parse flags: " + err.Error())
@@ -540,15 +544,22 @@ func runConfigCheck(args []string) int {
 		return 1
 	}
 
-	if !*stdinFlag {
-		writeConfigCheckError("--stdin flag is required")
+	configPath := strings.TrimSpace(*configFlag)
+	if *stdinFlag == (configPath != "") {
+		writeConfigCheckError("exactly one of --stdin or --config is required")
 		return 1
 	}
 
-	result, decodeErr := checkConfig(os.Stdin)
-	if decodeErr != nil {
-		writeConfigCheckError("invalid JSON input: " + decodeErr.Error())
-		return 1
+	var result ValidationResult
+	if *stdinFlag {
+		var decodeErr error
+		result, decodeErr = checkConfig(os.Stdin)
+		if decodeErr != nil {
+			writeConfigCheckError("invalid JSON input: " + decodeErr.Error())
+			return 1
+		}
+	} else {
+		result = checkConfigPath(configPath)
 	}
 
 	// Output result as JSON
@@ -563,6 +574,13 @@ func runConfigCheck(args []string) int {
 		return 0
 	}
 	return 1
+}
+
+func checkConfigPath(path string) ValidationResult {
+	if _, err := agent.LoadResolvedConfig(path); err != nil {
+		return ValidationResult{Valid: false, Errors: parseValidationErrors(err)}
+	}
+	return ValidationResult{Valid: true, Errors: []ValidationError{}}
 }
 
 // checkConfig reads a config_web wire-format payload from r, maps it onto

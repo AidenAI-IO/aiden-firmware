@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -71,6 +72,30 @@ func TestConfigInputModeDefaultContract(t *testing.T) {
 	}
 	if metaDefault != want {
 		t.Fatalf("ConfigMeta agent.input_mode default = %#v, want %q", metaDefault, want)
+	}
+}
+
+func TestConfigLocaleContract(t *testing.T) {
+	if got := DefaultConfig().Locale; got != "zh-CN" {
+		t.Fatalf("DefaultConfig().Locale = %q, want zh-CN", got)
+	}
+	if got := (Config{}).LocaleOrDefault(); got != "zh-CN" {
+		t.Fatalf("Config{}.LocaleOrDefault() = %q, want zh-CN", got)
+	}
+
+	english := Config{Model: ModelConfig{Provider: "fake"}, Locale: "en-US"}
+	if err := english.Validate(); err != nil {
+		t.Fatalf("Validate(en-US) error = %v", err)
+	}
+	if got := english.LocaleOrDefault(); got != "en-US" {
+		t.Fatalf("LocaleOrDefault() = %q, want en-US", got)
+	}
+
+	for _, locale := range []string{"fr-FR", "en-us"} {
+		invalid := Config{Model: ModelConfig{Provider: "fake"}, Locale: locale}
+		if err := invalid.Validate(); err == nil || !strings.Contains(err.Error(), "locale") {
+			t.Fatalf("Validate(%s) error = %v, want locale rejection", locale, err)
+		}
 	}
 }
 
@@ -155,6 +180,201 @@ base_url = "https://gateway.example.com/v1"
 			}
 		})
 	}
+}
+
+func TestLoadRuntimeConfigResolvesModelTemperatureDefault(t *testing.T) {
+	tests := []struct {
+		name    string
+		model   string
+		explSet string // explicit temperature line, empty means unset
+		want    *float64
+	}{
+		{
+			name:  "kimi-k3 without explicit temperature pins model default",
+			model: "kimi-k3",
+			want:  floatPtr(1),
+		},
+		{
+			name:    "explicit temperature overrides kimi-k3 model default",
+			model:   "kimi-k3",
+			explSet: "temperature = 0.5",
+			want:    floatPtr(0.5),
+		},
+		{
+			name:  "unknown model without explicit temperature uses fallback",
+			model: "gpt-5.5",
+			want:  floatPtr(defaultModelTemperature),
+		},
+		{
+			name:    "explicit zero temperature is respected",
+			model:   "kimi-k3",
+			explSet: "temperature = 0.0",
+			want:    floatPtr(0),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "agent.toml")
+			contents := "[model]\nprovider = \"openai\"\nmodel = \"" + tt.model + "\"\n" + tt.explSet + "\n"
+			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+
+			cfg, err := LoadRuntimeConfig(path)
+			if err != nil {
+				t.Fatalf("LoadRuntimeConfig() error = %v", err)
+			}
+			if !floatPtrEqual(cfg.Model.Temperature, tt.want) {
+				t.Errorf("model.temperature = %v, want %v", formatFloatPtr(cfg.Model.Temperature), formatFloatPtr(tt.want))
+			}
+		})
+	}
+}
+
+func TestLoadRuntimeConfigResolvesModelTextTemperatureDefault(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	contents := `
+[model]
+provider = "openai"
+model = "gpt-5.5"
+
+[model_text]
+provider = "kimi"
+model = "kimi-k3"
+`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	if !floatPtrEqual(cfg.Model.Temperature, floatPtr(defaultModelTemperature)) {
+		t.Errorf("model.temperature = %v, want %v (fallback)", formatFloatPtr(cfg.Model.Temperature), defaultModelTemperature)
+	}
+	if !floatPtrEqual(cfg.ModelText.Temperature, floatPtr(1)) {
+		t.Errorf("model_text.temperature = %v, want 1 (kimi-k3 default)", formatFloatPtr(cfg.ModelText.Temperature))
+	}
+}
+
+func TestLoadResolvedConfigKeepsTemperatureUnset(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	contents := "[model]\nprovider = \"kimi\"\nmodel = \"kimi-k3\"\n"
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadResolvedConfig(path)
+	if err != nil {
+		t.Fatalf("LoadResolvedConfig() error = %v", err)
+	}
+	if cfg.Model.Temperature != nil {
+		t.Errorf("model.temperature = %v, want nil (LoadResolvedConfig keeps unset for editor)", formatFloatPtr(cfg.Model.Temperature))
+	}
+}
+
+func TestLoadRuntimeConfigResolvesModelReasoningEffortDefault(t *testing.T) {
+	tests := []struct {
+		name    string
+		model   string
+		explSet string // explicit reasoning_effort line, empty means unset
+		want    string
+	}{
+		{
+			name:  "kimi-k3 without explicit reasoning_effort pins model default",
+			model: "kimi-k3",
+			want:  "low",
+		},
+		{
+			name:    "explicit reasoning_effort overrides kimi-k3 model default",
+			model:   "kimi-k3",
+			explSet: `reasoning_effort = "high"`,
+			want:    "high",
+		},
+		{
+			name:  "unknown model without explicit reasoning_effort stays auto (empty)",
+			model: "gpt-5.5",
+			want:  "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "agent.toml")
+			contents := "[model]\nprovider = \"openai\"\nmodel = \"" + tt.model + "\"\n" + tt.explSet + "\n"
+			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+
+			cfg, err := LoadRuntimeConfig(path)
+			if err != nil {
+				t.Fatalf("LoadRuntimeConfig() error = %v", err)
+			}
+			if cfg.Model.ReasoningEffort != tt.want {
+				t.Errorf("model.reasoning_effort = %q, want %q", cfg.Model.ReasoningEffort, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadRuntimeConfigResolvesModelTextReasoningEffortDefault(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	contents := `
+[model]
+provider = "openai"
+model = "gpt-5.5"
+
+[model_text]
+provider = "kimi"
+model = "kimi-k3"
+`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig() error = %v", err)
+	}
+	if cfg.Model.ReasoningEffort != "" {
+		t.Errorf("model.reasoning_effort = %q, want \"\" (unknown model stays auto)", cfg.Model.ReasoningEffort)
+	}
+	if cfg.ModelText.ReasoningEffort != "low" {
+		t.Errorf("model_text.reasoning_effort = %q, want \"low\" (kimi-k3 default)", cfg.ModelText.ReasoningEffort)
+	}
+}
+
+func TestLoadResolvedConfigKeepsReasoningEffortUnset(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.toml")
+	contents := "[model]\nprovider = \"kimi\"\nmodel = \"kimi-k3\"\n"
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadResolvedConfig(path)
+	if err != nil {
+		t.Fatalf("LoadResolvedConfig() error = %v", err)
+	}
+	if cfg.Model.ReasoningEffort != "" {
+		t.Errorf("model.reasoning_effort = %q, want \"\" (LoadResolvedConfig keeps unset for editor)", cfg.Model.ReasoningEffort)
+	}
+}
+
+func floatPtrEqual(a, b *float64) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
+}
+
+func formatFloatPtr(p *float64) string {
+	if p == nil {
+		return "nil"
+	}
+	return fmt.Sprintf("%v", *p)
 }
 
 func TestConfigRejectsInvalidTerminationPolicyThresholdOrder(t *testing.T) {
