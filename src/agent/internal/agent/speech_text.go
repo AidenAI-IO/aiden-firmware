@@ -210,6 +210,7 @@ type TTSTagStreamWriter struct {
 	target         io.Writer
 	pending        []byte
 	inTTS          bool
+	seenTTS        bool
 	streamTTS      bool
 	outsideContent bool
 	emitted        bool
@@ -229,6 +230,7 @@ func (w *TTSTagStreamWriter) ResetStreamState() {
 	}
 	w.pending = nil
 	w.inTTS = false
+	w.seenTTS = false
 	w.streamTTS = false
 	w.outsideContent = false
 	w.emitted = false
@@ -270,7 +272,8 @@ func (w *TTSTagStreamWriter) Write(p []byte) (int, error) {
 			// Only a leading TTS block is streamed immediately. Tool-call progress
 			// uses user-facing content before its TTS block and is spoken through
 			// the dedicated tool-event path, avoiding duplicate playback.
-			w.streamTTS = !w.outsideContent
+			w.streamTTS = !w.outsideContent && !w.seenTTS
+			w.seenTTS = true
 			continue
 		}
 

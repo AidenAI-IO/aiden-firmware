@@ -326,18 +326,18 @@ func TestSpeechStreamWriterFiltersInvalidUTF8BeforeStreaming(t *testing.T) {
 	}
 }
 
-func TestSpeechStreamWriterHandlesMultipleTTSTags(t *testing.T) {
+func TestSpeechStreamWriterStreamsOnlyFirstLeadingTTSTag(t *testing.T) {
 	sink := &flushingSpeechSink{}
 	writer := NewSpeechStreamWriter(sink)
 	payload := `<tts>第一句。</tts> <tts>第二句。</tts>正文`
 	if _, err := writer.Write([]byte(payload)); err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
-	if got := sink.String(); got != "第一句。第二句。" {
+	if got := sink.String(); got != "第一句。" {
 		t.Fatalf("streamed speech = %q", got)
 	}
-	if sink.flushCalls != 2 {
-		t.Fatalf("Flush() calls = %d, want 2", sink.flushCalls)
+	if sink.flushCalls != 1 {
+		t.Fatalf("Flush() calls = %d, want 1", sink.flushCalls)
 	}
 }
 
