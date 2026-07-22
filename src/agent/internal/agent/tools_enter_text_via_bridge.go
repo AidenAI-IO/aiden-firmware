@@ -81,7 +81,7 @@ func (t *EnterTextViaBridgeTool) Name() string { return "enter_text_via_bridge" 
 func (t *EnterTextViaBridgeTool) Description() string {
 	return `Use the Phone Bridge clipboard path to place known text into an input field, then focus, paste, and verify. ` +
 		`Do not call this until the latest screenshot clearly shows the actual editable field or composer and the focus coordinates are inside it. Merely opening an app, reaching a folder/list view, or seeing a create/new button does not mean text entry is ready; first create or open the document/message and observe its editor. Never paste into guessed blank space. ` +
-		`Use this for final chat/message composer text when runtime Phone Bridge status reports a usable clipboard route, especially for long, multiline, CJK, or other non-ASCII text. Target-preserving routes such as a prepared clipboard, iOS PiP queue, or Android connected/FGS bridge are suitable even for short replies. ` +
+		`Use this for final chat/message composer text when runtime Phone Bridge status reports a usable clipboard route, especially for long, multiline, CJK, or other non-ASCII text. Target-preserving routes such as a prepared clipboard, iOS PiP queue, or Android connected/FGS bridge are suitable even for short replies. When platform is omitted, runtime resolves it from the request environment, then the live Phone Bridge status, then static config. ` +
 		`It writes the clipboard itself when needed, so do not call bridge_clipboard first as a staging step. It verifies whether shortcut paste actually changed the field and falls back to long-pressing the field and tapping the visible Paste/粘贴 menu action when needed. If Bridge would need app restoration or is unavailable, prefer enter_text_in_field for short search terms, contact lookup, and normal IME/pinyin entry. ` +
 		`Returns committed:true only when the exact target text is verified in the field; when send_after_commit=true, ok=true also requires send_verified:true. If the structured result conflicts with the attached screenshot, call wait_for_stable_screen once before deciding. Preserve the current field while evidence conflicts, and perform corrective input only after the fresh observation identifies a concrete mismatch.`
 }
@@ -96,6 +96,13 @@ func (t *EnterTextViaBridgeTool) ArgsSchema() map[string]any {
 }
 
 func (t *EnterTextViaBridgeTool) Call(ctx context.Context, input string) (string, error) {
+	if t != nil && t.hw != nil {
+		if controller := t.hw.dynamicKeyboard; controller != nil && controller.sessionFromContext(ctx) == nil {
+			return controller.withSessionCall(ctx, func(sessionCtx context.Context) (string, error) {
+				return t.Call(sessionCtx, input)
+			})
+		}
+	}
 	if t == nil || t.hw == nil || t.vision == nil {
 		return "error: enter_text_via_bridge is not fully configured", nil
 	}

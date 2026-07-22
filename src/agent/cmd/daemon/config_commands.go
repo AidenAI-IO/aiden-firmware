@@ -63,16 +63,16 @@ type webConfigDTO struct {
 }
 
 type modelDTO struct {
-	Provider             string  `json:"provider"`
-	APIKey               string  `json:"api_key"`
-	Model                string  `json:"model"`
+	Provider             string   `json:"provider"`
+	APIKey               string   `json:"api_key"`
+	Model                string   `json:"model"`
 	BaseURL              string   `json:"base_url"`
 	TokenEnv             string   `json:"token_env"`
 	ReasoningEffort      string   `json:"reasoning_effort"`
 	Temperature          *float64 `json:"temperature,omitempty"`
 	MaxResponseTokens    int      `json:"max_response_tokens"`
-	ContextWindow        int     `json:"context_window"`
-	ModelMaxOutputTokens int     `json:"model_max_output_tokens"`
+	ContextWindow        int      `json:"context_window"`
+	ModelMaxOutputTokens int      `json:"model_max_output_tokens"`
 }
 
 type ttsDTO struct {
@@ -148,12 +148,14 @@ type otaDTO struct {
 }
 
 type hidDTO struct {
-	KeyboardDevice        string `json:"keyboard_device"`
-	MouseDevice           string `json:"mouse_device"`
-	AndroidKeyboardDevice string `json:"android_keyboard_device"`
-	FrameSocket           string `json:"frame_socket"`
-	PointerMode           string `json:"pointer_mode"`
-	InputBackend          string `json:"input_backend"`
+	KeyboardDevice         string `json:"keyboard_device"`
+	MouseDevice            string `json:"mouse_device"`
+	AndroidKeyboardDevice  string `json:"android_keyboard_device"`
+	FrameSocket            string `json:"frame_socket"`
+	PointerMode            string `json:"pointer_mode"`
+	InputBackend           string `json:"input_backend"`
+	DynamicKeyboard        bool   `json:"dynamic_keyboard"`
+	DynamicKeyboardControl string `json:"dynamic_keyboard_control"`
 }
 
 type searchDTO struct {
@@ -309,12 +311,14 @@ func (d webConfigDTO) toAgentConfig() agent.Config {
 			GitHubProxyURL: d.OTA.GitHubProxyURL,
 		},
 		HID: agent.HIDConfig{
-			KeyboardDevice:        d.HID.KeyboardDevice,
-			MouseDevice:           d.HID.MouseDevice,
-			AndroidKeyboardDevice: d.HID.AndroidKeyboardDevice,
-			FrameSocket:           d.HID.FrameSocket,
-			PointerMode:           d.HID.PointerMode,
-			InputBackend:          d.HID.InputBackend,
+			KeyboardDevice:         d.HID.KeyboardDevice,
+			MouseDevice:            d.HID.MouseDevice,
+			AndroidKeyboardDevice:  d.HID.AndroidKeyboardDevice,
+			FrameSocket:            d.HID.FrameSocket,
+			PointerMode:            d.HID.PointerMode,
+			InputBackend:           d.HID.InputBackend,
+			DynamicKeyboard:        d.HID.DynamicKeyboard,
+			DynamicKeyboardControl: d.HID.DynamicKeyboardControl,
 		},
 		Search: agent.SearchConfig{
 			Provider: d.Search.Provider,
@@ -448,12 +452,14 @@ func webConfigDTOFromAgentConfig(cfg agent.Config) webConfigDTO {
 			GitHubProxyURL: cfg.OTA.GitHubProxyURLOrDefault(),
 		},
 		HID: hidDTO{
-			KeyboardDevice:        cfg.HID.KeyboardDeviceOrDefault(),
-			MouseDevice:           cfg.HID.MouseDeviceOrDefault(),
-			AndroidKeyboardDevice: cfg.HID.AndroidKeyboardDeviceOrDefault(),
-			FrameSocket:           cfg.HID.FrameSocketOrDefault(),
-			PointerMode:           cfg.HID.PointerModeOrDefault(),
-			InputBackend:          cfg.HID.InputBackendOrDefault(),
+			KeyboardDevice:         cfg.HID.KeyboardDeviceOrDefault(),
+			MouseDevice:            cfg.HID.MouseDeviceOrDefault(),
+			AndroidKeyboardDevice:  cfg.HID.AndroidKeyboardDeviceOrDefault(),
+			FrameSocket:            cfg.HID.FrameSocketOrDefault(),
+			PointerMode:            cfg.HID.PointerModeOrDefault(),
+			InputBackend:           cfg.HID.InputBackendOrDefault(),
+			DynamicKeyboard:        cfg.HID.DynamicKeyboard,
+			DynamicKeyboardControl: cfg.HID.DynamicKeyboardControlOrDefault(),
 		},
 		Search: searchDTO{
 			Provider:  cfg.Search.ProviderOrDefault(),

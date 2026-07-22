@@ -607,9 +607,10 @@ func (s *pointerState) Current() (x, y int, ok bool) {
 
 // pointerController sends hid.usb1 reports in absolute mouse or touchscreen mode.
 type pointerController struct {
-	dev         *HIDDevice
-	state       *pointerState
-	touchscreen bool
+	dev             *HIDDevice
+	state           *pointerState
+	touchscreen     bool
+	dynamicKeyboard *dynamicKeyboardController
 }
 
 func newPointerController(hid HIDConfig) *pointerController {
@@ -618,6 +619,13 @@ func newPointerController(hid HIDConfig) *pointerController {
 		state:       &pointerState{},
 		touchscreen: hid.PointerTouchscreen(),
 	}
+}
+
+func withDynamicPointerCall(ctx context.Context, pc *pointerController, action dynamicKeyboardSessionCall) (string, error) {
+	if pc == nil || pc.dynamicKeyboard == nil {
+		return action(ctx)
+	}
+	return pc.dynamicKeyboard.withPointerCall(ctx, action)
 }
 
 func NewHIDDevice(path string) *HIDDevice {
@@ -822,10 +830,11 @@ func hidWriteWouldBlock(err error) bool {
 
 // KeyboardTapTool sends a key press then release via HID.
 type KeyboardTapTool struct {
-	dev         *HIDDevice
-	androidDev  *HIDDevice
-	pointerMode string
-	adb         *ADBInputController
+	dev             *HIDDevice
+	androidDev      *HIDDevice
+	pointerMode     string
+	adb             *ADBInputController
+	dynamicKeyboard *dynamicKeyboardController
 }
 
 func (t *KeyboardTapTool) Name() string { return "keyboard_tap" }
@@ -913,7 +922,9 @@ func (t *KeyboardTapTool) Call(ctx context.Context, input string) (string, error
 		}
 	}
 
-	if err := t.tapKeyboardChord(modifier, keys, holdMs); err != nil {
+	if err := t.dynamicKeyboard.withKeyboard(ctx, func() error {
+		return t.tapKeyboardChord(modifier, keys, holdMs)
+	}); err != nil {
 		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
 	return "ok", nil
@@ -1018,8 +1029,9 @@ func (t *KeyboardTapTool) tapKeyboardChord(modifier uint8, keys []uint8, holdMs 
 
 // KeyboardTextTool types a string character by character via HID.
 type KeyboardTextTool struct {
-	dev *HIDDevice
-	adb *ADBInputController
+	dev             *HIDDevice
+	adb             *ADBInputController
+	dynamicKeyboard *dynamicKeyboardController
 }
 
 func (t *KeyboardTextTool) Name() string { return "keyboard_text" }
@@ -1066,22 +1078,28 @@ func (t *KeyboardTextTool) Call(ctx context.Context, input string) (string, erro
 		return "ok", nil
 	}
 
-	releaseReport := make([]byte, 8)
-	for _, ch := range text {
-		modifier, code, ok := charToHIDKey(byte(ch))
-		if !ok {
-			continue
+	err := t.dynamicKeyboard.withKeyboard(ctx, func() error {
+		releaseReport := make([]byte, 8)
+		for _, ch := range text {
+			modifier, code, ok := charToHIDKey(byte(ch))
+			if !ok {
+				continue
+			}
+			report := make([]byte, 8)
+			report[0] = modifier
+			report[2] = code
+			// Press then release immediately, same as keyboard_tap.
+			if err := t.dev.Write(report); err != nil {
+				return err
+			}
+			if err := t.dev.Write(releaseReport); err != nil {
+				return err
+			}
 		}
-		report := make([]byte, 8)
-		report[0] = modifier
-		report[2] = code
-		// Press then release immediately, same as keyboard_tap.
-		if err := t.dev.Write(report); err != nil {
-			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
-		}
-		if err := t.dev.Write(releaseReport); err != nil {
-			return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
-		}
+		return nil
+	})
+	if err != nil {
+		return toolErrorResultf(ctx, CodeToolExecutionFailed, "%v", err), nil
 	}
 
 	return "ok", nil
@@ -1110,6 +1128,16 @@ func (t *MouseClickTool) ArgsSchema() map[string]any {
 }
 
 func (t *MouseClickTool) Call(ctx context.Context, input string) (string, error) {
+	var pc *pointerController
+	if t != nil {
+		pc = t.pc
+	}
+	return withDynamicPointerCall(ctx, pc, func(callCtx context.Context) (string, error) {
+		return t.call(callCtx, input)
+	})
+}
+
+func (t *MouseClickTool) call(ctx context.Context, input string) (string, error) {
 	var args struct {
 		X          pointerCoordinate `json:"x"`
 		Y          pointerCoordinate `json:"y"`
@@ -1169,6 +1197,16 @@ func (t *MouseMoveTool) ArgsSchema() map[string]any {
 }
 
 func (t *MouseMoveTool) Call(ctx context.Context, input string) (string, error) {
+	var pc *pointerController
+	if t != nil {
+		pc = t.pc
+	}
+	return withDynamicPointerCall(ctx, pc, func(callCtx context.Context) (string, error) {
+		return t.call(callCtx, input)
+	})
+}
+
+func (t *MouseMoveTool) call(ctx context.Context, input string) (string, error) {
 	var args struct {
 		X          pointerCoordinate `json:"x"`
 		Y          pointerCoordinate `json:"y"`
@@ -1243,6 +1281,16 @@ func pointSchema(description string) map[string]any {
 }
 
 func (t *TouchGestureTool) Call(ctx context.Context, input string) (string, error) {
+	var pc *pointerController
+	if t != nil {
+		pc = t.pc
+	}
+	return withDynamicPointerCall(ctx, pc, func(callCtx context.Context) (string, error) {
+		return t.call(callCtx, input)
+	})
+}
+
+func (t *TouchGestureTool) call(ctx context.Context, input string) (string, error) {
 	var args struct {
 		Type         string        `json:"type"`
 		Point        *pointerPoint `json:"point"`
@@ -1667,6 +1715,16 @@ func (t *WheelNudgeTool) ArgsSchema() map[string]any {
 }
 
 func (t *WheelNudgeTool) Call(ctx context.Context, input string) (string, error) {
+	var pc *pointerController
+	if t != nil {
+		pc = t.pc
+	}
+	return withDynamicPointerCall(ctx, pc, func(callCtx context.Context) (string, error) {
+		return t.call(callCtx, input)
+	})
+}
+
+func (t *WheelNudgeTool) call(ctx context.Context, input string) (string, error) {
 	args, err := parseWheelNudgeArgs(input)
 	if err != nil {
 		return toolErrorResultf(ctx, CodeInvalidArguments, "%v", err), nil
@@ -1904,6 +1962,16 @@ func (t *MouseScrollTool) ArgsSchema() map[string]any {
 }
 
 func (t *MouseScrollTool) Call(ctx context.Context, input string) (string, error) {
+	var pc *pointerController
+	if t != nil {
+		pc = t.pc
+	}
+	return withDynamicPointerCall(ctx, pc, func(callCtx context.Context) (string, error) {
+		return t.call(callCtx, input)
+	})
+}
+
+func (t *MouseScrollTool) call(ctx context.Context, input string) (string, error) {
 	var args struct {
 		Delta int `json:"delta"`
 	}

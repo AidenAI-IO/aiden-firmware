@@ -8,6 +8,7 @@
 GADGET_DIR=/sys/kernel/config/usb_gadget/aiden_hid
 USB_MODE_PATH=/proc/device-tree/usbdrd/usb@ffb00000/dr_mode
 AGENT_TOML=/userdata/agent/agent.toml
+DYNAMIC_KEYBOARD_CONF=/etc/aiden_dynamic_keyboard.conf
 
 USB0_ADDR=192.168.42.1
 USB0_NETMASK=255.255.255.0
@@ -25,6 +26,29 @@ read_pointer_mode() {
 		*\"touchscreen\"*|*\'touchscreen\'*|*touchscreen*) POINTER_MODE=touchscreen ;;
 		*\"absolute\"*|*\'absolute\'*|*absolute*) POINTER_MODE=absolute ;;
 	esac
+}
+
+read_dynamic_keyboard_mode() {
+	DYNAMIC_KEYBOARD=0
+	if [ ! -f "$AGENT_TOML" ]; then
+		return
+	fi
+	line=$(grep -E '^[[:space:]]*dynamic_keyboard[[:space:]]*=' "$AGENT_TOML" | tail -n1)
+	case "$line" in
+		*=*[Tt][Rr][Uu][Ee]*|*=*1*) DYNAMIC_KEYBOARD=1 ;;
+	esac
+}
+
+write_dynamic_keyboard_state() {
+	[ -n "${DYNAMIC_KEYBOARD_STATE_FILE:-}" ] || return
+	{
+		echo "mode=off"
+		echo "result=initialized"
+		echo "duration_ms=0"
+		echo "updated_epoch=$(date +%s)"
+		echo "udc=$(cat "$GADGET_DIR/UDC" 2>/dev/null || true)"
+		echo "udc_state=$(cat /sys/class/udc/*/state 2>/dev/null | head -n1 || true)"
+	} > "$DYNAMIC_KEYBOARD_STATE_FILE"
 }
 
 reenumerate_composite() {
@@ -63,6 +87,16 @@ start() {
 	modprobe usb_f_ecm 2>/dev/null
 	sleep 1
 
+	read_pointer_mode
+	read_dynamic_keyboard_mode
+	if [ "$DYNAMIC_KEYBOARD" -eq 1 ]; then
+		if [ ! -f "$DYNAMIC_KEYBOARD_CONF" ]; then
+			echo "Dynamic keyboard config missing: $DYNAMIC_KEYBOARD_CONF"
+			return 1
+		fi
+		. "$DYNAMIC_KEYBOARD_CONF"
+	fi
+
 	# Clean up stale instance
 	if [ -d "$GADGET_DIR" ]; then
 		echo "" > "$GADGET_DIR/UDC" 2>/dev/null
@@ -81,8 +115,13 @@ start() {
 	# Create gadget
 	mkdir -p "$GADGET_DIR"
 	echo 0x1d6b > "$GADGET_DIR/idVendor"
-	echo 0x0104 > "$GADGET_DIR/idProduct"
-	echo 0x0100 > "$GADGET_DIR/bcdDevice"
+	if [ "$DYNAMIC_KEYBOARD" -eq 1 ]; then
+		echo "$DYNAMIC_KEYBOARD_OFF_ID_PRODUCT" > "$GADGET_DIR/idProduct"
+		echo "$DYNAMIC_KEYBOARD_OFF_BCD_DEVICE" > "$GADGET_DIR/bcdDevice"
+	else
+		echo 0x0104 > "$GADGET_DIR/idProduct"
+		echo 0x0100 > "$GADGET_DIR/bcdDevice"
+	fi
 	echo 0x0200 > "$GADGET_DIR/bcdUSB"
 
 	# IAD-based multi-function device
@@ -91,9 +130,17 @@ start() {
 	echo 0x01 > "$GADGET_DIR/bDeviceProtocol"
 
 	mkdir -p "$GADGET_DIR/strings/0x409"
-	echo "0123456789ABCDEF" > "$GADGET_DIR/strings/0x409/serialnumber"
+	if [ "$DYNAMIC_KEYBOARD" -eq 1 ]; then
+		echo "$DYNAMIC_KEYBOARD_OFF_SERIAL" > "$GADGET_DIR/strings/0x409/serialnumber"
+	else
+		echo "0123456789ABCDEF" > "$GADGET_DIR/strings/0x409/serialnumber"
+	fi
 	echo "Aiden" > "$GADGET_DIR/strings/0x409/manufacturer"
-	echo "Aiden HID+ECM" > "$GADGET_DIR/strings/0x409/product"
+	if [ "$DYNAMIC_KEYBOARD" -eq 1 ]; then
+		echo "$DYNAMIC_KEYBOARD_OFF_PRODUCT" > "$GADGET_DIR/strings/0x409/product"
+	else
+		echo "Aiden HID+ECM" > "$GADGET_DIR/strings/0x409/product"
+	fi
 
 	mkdir -p "$GADGET_DIR/configs/c.1/strings/0x409"
 	echo "HID + ECM Composite" > "$GADGET_DIR/configs/c.1/strings/0x409/configuration"
@@ -114,7 +161,6 @@ start() {
 	mkdir -p "$GADGET_DIR/functions/hid.usb1"
 	echo 0 > "$GADGET_DIR/functions/hid.usb1/protocol"
 	echo 0 > "$GADGET_DIR/functions/hid.usb1/subclass"
-	read_pointer_mode
 	if [ "$POINTER_MODE" = "touchscreen" ]; then
 		echo 6 > "$GADGET_DIR/functions/hid.usb1/report_length"
 		printf '\x05\x0d\x09\x04\xa1\x01\x09\x22\xa1\x02\x05\x0d\x09\x42\x09\x32\x15\x00\x25\x01\x75\x01\x95\x02\x81\x02\x75\x06\x95\x01\x81\x03\x09\x51\x75\x08\x95\x01\x15\x00\x25\x0f\x81\x02\x05\x01\x09\x30\x09\x31\x16\x00\x00\x26\xff\x7f\x75\x10\x95\x02\x81\x02\xc0\xc0' \
@@ -142,15 +188,24 @@ start() {
 	echo "$ECM_HOST_MAC" > "$GADGET_DIR/functions/ecm.usb0/host_addr"
 	echo "$ECM_DEV_MAC"  > "$GADGET_DIR/functions/ecm.usb0/dev_addr"
 
-	# Link all functions, THEN bind UDC (configfs requires this order)
-	ln -s "$GADGET_DIR/functions/hid.usb0" "$GADGET_DIR/configs/c.1/hid.usb0" 2>/dev/null
+	# Dynamic mode boots without a keyboard. The function instance still exists
+	# and reserves /dev/hidg0, but only linked functions enter USB descriptors.
+	if [ "$DYNAMIC_KEYBOARD" -ne 1 ]; then
+		ln -s "$GADGET_DIR/functions/hid.usb0" "$GADGET_DIR/configs/c.1/hid.usb0" 2>/dev/null
+	fi
 	ln -s "$GADGET_DIR/functions/hid.usb1" "$GADGET_DIR/configs/c.1/hid.usb1" 2>/dev/null
-	ln -s "$GADGET_DIR/functions/hid.usb2" "$GADGET_DIR/configs/c.1/hid.usb2" 2>/dev/null
+	if [ "$DYNAMIC_KEYBOARD" -ne 1 ]; then
+		ln -s "$GADGET_DIR/functions/hid.usb2" "$GADGET_DIR/configs/c.1/hid.usb2" 2>/dev/null
+	fi
 	ln -s "$GADGET_DIR/functions/ecm.usb0" "$GADGET_DIR/configs/c.1/ecm.usb0" 2>/dev/null
 
 	echo "$UDC" > "$GADGET_DIR/UDC"
-	sleep 1
-	reenumerate_composite
+	if [ "$DYNAMIC_KEYBOARD" -eq 1 ]; then
+		write_dynamic_keyboard_state
+	else
+		sleep 1
+		reenumerate_composite
+	fi
 
 	# Bring up usb0 with a static address once the kernel netdev appears.
 	for i in $(seq 1 20); do
@@ -167,7 +222,9 @@ start() {
 		echo "usb0 did not appear; ECM may not be bound"
 	fi
 
-	if [ "$POINTER_MODE" = "touchscreen" ]; then
+	if [ "$DYNAMIC_KEYBOARD" -eq 1 ]; then
+		echo "Aiden dynamic keyboard ready: keyboard=off /dev/hidg1 (pointer:$POINTER_MODE) usb0 (ECM)"
+	elif [ "$POINTER_MODE" = "touchscreen" ]; then
 		echo "Aiden USB composite ready: /dev/hidg0 (keyboard) /dev/hidg1 (pointer:$POINTER_MODE) /dev/hidg2 (android-extension) usb0 (ECM)"
 	else
 		echo "Aiden USB composite ready: /dev/hidg0 (keyboard) /dev/hidg1 (pointer:$POINTER_MODE) /dev/hidg2 (media-keys) usb0 (ECM)"

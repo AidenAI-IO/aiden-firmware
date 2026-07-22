@@ -354,6 +354,13 @@ type quickActionArgs struct {
 }
 
 func (t *QuickActionTool) Call(ctx context.Context, input string) (string, error) {
+	if t != nil && t.keyboard != nil {
+		if controller := t.keyboard.dynamicKeyboard; controller != nil && controller.sessionFromContext(ctx) == nil {
+			return controller.withSessionCall(ctx, func(sessionCtx context.Context) (string, error) {
+				return t.Call(sessionCtx, input)
+			})
+		}
+	}
 	var args quickActionArgs
 	trimmed := strings.TrimSpace(input)
 	if touchscreenRCADebugEnabledCached() {

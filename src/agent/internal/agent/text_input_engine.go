@@ -11,12 +11,13 @@ import (
 )
 
 type textInputHardwareDeps struct {
-	mouseClick   langtools.Tool
-	touchGesture langtools.Tool
-	keyboardTap  langtools.Tool
-	keyboardText langtools.Tool
-	quickAction  langtools.Tool
-	screenshot   langtools.Tool
+	mouseClick      langtools.Tool
+	touchGesture    langtools.Tool
+	keyboardTap     langtools.Tool
+	keyboardText    langtools.Tool
+	quickAction     langtools.Tool
+	screenshot      langtools.Tool
+	dynamicKeyboard *dynamicKeyboardController
 }
 
 type textInputEngine struct {

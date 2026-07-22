@@ -31,25 +31,14 @@ awk -v unbind="echo \"\" > \"\$GADGET_DIR/UDC\" 2>/dev/null" \
 ' "$INIT_SCRIPT" ||
     fail "S49usbhid startup re-enumeration must unbind and rebind the UDC in reenumerate_composite"
 
-awk -v bind="echo \"\$UDC\" > \"\$GADGET_DIR/UDC\"" '
-    /^start\(\)[[:space:]]*\{/ { in_start=1; next }
-    in_start && /^\}/ { exit }
-    !in_start { next }
-    index($0, bind) { after_bind=1; step=0; next }
-    after_bind && $0 ~ /^[[:space:]]*(#.*)?$/ { next }
-    after_bind {
-        step++
-        if (step == 1 && $0 !~ /^[[:space:]]*sleep[[:space:]]+1[[:space:]]*$/) {
-            exit
-        }
-        if (step == 2) {
-            found=($0 ~ /^[[:space:]]*reenumerate_composite[[:space:]]*$/)
-            exit
-        }
-    }
-    END { exit(found ? 0 : 1) }
-' "$INIT_SCRIPT" ||
-    fail "S49usbhid must re-enumerate the composite gadget immediately after initial bind"
+grep -Fq 'if [ "$DYNAMIC_KEYBOARD" -eq 1 ]; then' "$INIT_SCRIPT" ||
+    fail "S49usbhid must distinguish dynamic and persistent keyboard startup"
+
+grep -Fq 'write_dynamic_keyboard_state' "$INIT_SCRIPT" ||
+    fail "dynamic keyboard startup must bind once and record keyboard-off state"
+
+grep -Fq 'reenumerate_composite' "$INIT_SCRIPT" ||
+    fail "persistent keyboard startup must retain the existing iOS re-enumeration"
 
 grep -Fq 'write_text_file(function_path + "/protocol", "1");' "$EXAMPLE_SRC" ||
     fail "example_usb_hid setup must keep keyboard HID boot protocol=1"

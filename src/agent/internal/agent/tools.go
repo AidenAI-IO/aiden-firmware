@@ -94,6 +94,8 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	androidKbDev := NewHIDDevice(hidCfg.AndroidKeyboardDeviceOrDefault())
 	screen := &screenState{}
 	pointer := newPointerController(hidCfg)
+	dynamicKeyboard := newDynamicKeyboardController(hidCfg, kbDev, pointer.dev)
+	pointer.dynamicKeyboard = dynamicKeyboard
 	var adbInput *ADBInputController
 	if hidCfg.InputBackendADB() {
 		adbInput = NewADBInputController(screen)
@@ -109,19 +111,20 @@ func newHardwareToolSet(hidCfg HIDConfig, audioCfg AudioConfig, searchCfg Search
 	screenshot := NewScreenshotTool(hidCfg.FrameSocketOrDefault(), screen)
 	screenStable := toolOptions.screenStable.Resolved()
 	waitStable := NewWaitStableScreenTool(hidCfg.FrameSocketOrDefault(), screenStable, screen)
-	keyboardTap := &KeyboardTapTool{dev: kbDev, androidDev: androidKbDev, pointerMode: hidCfg.PointerModeOrDefault(), adb: adbInput}
-	keyboardText := &KeyboardTextTool{dev: kbDev, adb: adbInput}
+	keyboardTap := &KeyboardTapTool{dev: kbDev, androidDev: androidKbDev, pointerMode: hidCfg.PointerModeOrDefault(), adb: adbInput, dynamicKeyboard: dynamicKeyboard}
+	keyboardText := &KeyboardTextTool{dev: kbDev, adb: adbInput, dynamicKeyboard: dynamicKeyboard}
 	touchGesture := &TouchGestureTool{pc: pointer, screen: screen, adb: adbInput}
 	wheelNudge := &WheelNudgeTool{pc: pointer, screen: screen}
 	quickAction := &QuickActionTool{keyboard: keyboardTap, touch: touchGesture}
 	mouseClick := &MouseClickTool{pc: pointer, screen: screen, adb: adbInput}
 	textInputHW := &textInputHardwareDeps{
-		mouseClick:   mouseClick,
-		touchGesture: touchGesture,
-		keyboardTap:  keyboardTap,
-		keyboardText: keyboardText,
-		quickAction:  quickAction,
-		screenshot:   screenshot,
+		mouseClick:      mouseClick,
+		touchGesture:    touchGesture,
+		keyboardTap:     keyboardTap,
+		keyboardText:    keyboardText,
+		quickAction:     quickAction,
+		screenshot:      screenshot,
+		dynamicKeyboard: dynamicKeyboard,
 	}
 
 	tools := map[string]langtools.Tool{

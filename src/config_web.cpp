@@ -684,6 +684,8 @@ bool validate_known_config_field_types(cJSON* root, std::string* error) {
         {"hid", "frame_socket", CONFIG_FIELD_STRING},
         {"hid", "pointer_mode", CONFIG_FIELD_STRING},
         {"hid", "input_backend", CONFIG_FIELD_STRING},
+        {"hid", "dynamic_keyboard", CONFIG_FIELD_BOOL},
+        {"hid", "dynamic_keyboard_control", CONFIG_FIELD_STRING},
         {"search", "provider", CONFIG_FIELD_STRING},
         {"search", "api_key", CONFIG_FIELD_STRING},
         {"search", "has_api_key", CONFIG_FIELD_BOOL},
@@ -2407,6 +2409,8 @@ cJSON* config_to_json(const aiden::AgentToml& config, bool include_secrets = fal
     cJSON_AddStringToObject(hid, "frame_socket", config.hid.frame_socket.c_str());
     cJSON_AddStringToObject(hid, "pointer_mode", normalize_pointer_mode(config.hid.pointer_mode).c_str());
     cJSON_AddStringToObject(hid, "input_backend", normalize_input_backend(config.hid.input_backend).c_str());
+    cJSON_AddBoolToObject(hid, "dynamic_keyboard", config.hid.dynamic_keyboard ? 1 : 0);
+    cJSON_AddStringToObject(hid, "dynamic_keyboard_control", config.hid.dynamic_keyboard_control.c_str());
 
     cJSON* search = add_object(root, "search");
     cJSON_AddStringToObject(search, "provider", config.search.provider.c_str());
@@ -2726,6 +2730,8 @@ void update_config_from_json(cJSON* root, aiden::AgentToml* config) {
         set_json_str(&config->hid.frame_socket, hid, "frame_socket");
         set_json_str(&config->hid.pointer_mode, hid, "pointer_mode");
         set_json_str(&config->hid.input_backend, hid, "input_backend");
+        set_json_bool(&config->hid.dynamic_keyboard, hid, "dynamic_keyboard");
+        set_json_str(&config->hid.dynamic_keyboard_control, hid, "dynamic_keyboard_control");
     }
 
     cJSON* search = cJSON_GetObjectItem(root, "search");

@@ -1,0 +1,209 @@
+#!/bin/sh
+# Switch the single Aiden UDC between mutually exclusive pointer and keyboard
+# profiles. Every switch re-enumerates the whole composite gadget; the USB
+# cable remains connected, but ECM and both HID functions briefly disconnect.
+set -eu
+
+CONF_FILE=/etc/aiden_dynamic_keyboard.conf
+[ -f "$CONF_FILE" ] || {
+	echo "missing $CONF_FILE" >&2
+	exit 1
+}
+. "$CONF_FILE"
+
+GADGET_DIR=$DYNAMIC_KEYBOARD_GADGET_DIR
+UDC_PATH=$GADGET_DIR/UDC
+CONFIG_DIR=$GADGET_DIR/configs/c.1
+KEYBOARD_FUNC=$GADGET_DIR/functions/hid.usb0
+POINTER_FUNC=$GADGET_DIR/functions/hid.usb1
+ECM_FUNC=$GADGET_DIR/functions/ecm.usb0
+
+now_ms() {
+	awk '{ printf "%d\n", $1 * 1000 }' /proc/uptime
+}
+
+die() {
+	echo "aiden-dynamic-keyboard: $*" >&2
+	exit 1
+}
+
+acquire_lock() {
+	i=0
+	while ! mkdir "$DYNAMIC_KEYBOARD_LOCK_DIR" 2>/dev/null; do
+		owner=$(cat "$DYNAMIC_KEYBOARD_LOCK_DIR/pid" 2>/dev/null || true)
+		case "$owner" in
+			''|*[!0-9]*) ;;
+			*)
+				if ! kill -0 "$owner" 2>/dev/null; then
+					rm -f "$DYNAMIC_KEYBOARD_LOCK_DIR/pid"
+					rmdir "$DYNAMIC_KEYBOARD_LOCK_DIR" 2>/dev/null || true
+					continue
+				fi
+				;;
+		esac
+		i=$((i + 1))
+		[ "$i" -lt 100 ] || die "timed out waiting for $DYNAMIC_KEYBOARD_LOCK_DIR"
+		sleep 0.1
+	done
+	echo "$$" > "$DYNAMIC_KEYBOARD_LOCK_DIR/pid"
+	trap 'rm -f "$DYNAMIC_KEYBOARD_LOCK_DIR/pid"; rmdir "$DYNAMIC_KEYBOARD_LOCK_DIR" 2>/dev/null || true' EXIT HUP INT TERM
+}
+
+read_udc() {
+	udc=$(cat "$UDC_PATH" 2>/dev/null || true)
+	if [ -z "$udc" ]; then
+		udc=$(ls /sys/class/udc 2>/dev/null | head -n1)
+	fi
+	[ -n "$udc" ] || die "no UDC available"
+	printf '%s\n' "$udc"
+}
+
+current_mode() {
+	if [ -L "$CONFIG_DIR/hid.usb0" ]; then
+		printf 'on\n'
+	else
+		printf 'off\n'
+	fi
+}
+
+unlink_functions() {
+	rm -f "$CONFIG_DIR"/hid.* "$CONFIG_DIR"/ecm.* 2>/dev/null || true
+}
+
+link_ecm() {
+	ln -s "$ECM_FUNC" "$CONFIG_DIR/ecm.usb0"
+}
+
+set_identity() {
+	mode=$1
+	case "$mode" in
+		on)
+			echo "$DYNAMIC_KEYBOARD_ON_ID_PRODUCT" > "$GADGET_DIR/idProduct"
+			echo "$DYNAMIC_KEYBOARD_ON_BCD_DEVICE" > "$GADGET_DIR/bcdDevice"
+			echo "$DYNAMIC_KEYBOARD_ON_SERIAL" > "$GADGET_DIR/strings/0x409/serialnumber"
+			echo "$DYNAMIC_KEYBOARD_ON_PRODUCT" > "$GADGET_DIR/strings/0x409/product"
+			;;
+		off)
+			echo "$DYNAMIC_KEYBOARD_OFF_ID_PRODUCT" > "$GADGET_DIR/idProduct"
+			echo "$DYNAMIC_KEYBOARD_OFF_BCD_DEVICE" > "$GADGET_DIR/bcdDevice"
+			echo "$DYNAMIC_KEYBOARD_OFF_SERIAL" > "$GADGET_DIR/strings/0x409/serialnumber"
+			echo "$DYNAMIC_KEYBOARD_OFF_PRODUCT" > "$GADGET_DIR/strings/0x409/product"
+			;;
+		*) die "unknown mode: $mode" ;;
+	esac
+}
+
+write_state() {
+	mode=$1
+	result=$2
+	duration_ms=$3
+	{
+		printf 'mode=%s\n' "$mode"
+		printf 'result=%s\n' "$result"
+		printf 'duration_ms=%s\n' "$duration_ms"
+		printf 'updated_epoch=%s\n' "$(date +%s)"
+		printf 'udc=%s\n' "$(cat "$UDC_PATH" 2>/dev/null || true)"
+		printf 'udc_state=%s\n' "$(cat /sys/class/udc/*/state 2>/dev/null | head -n1 || true)"
+	} > "$DYNAMIC_KEYBOARD_STATE_FILE"
+	touch "$DYNAMIC_KEYBOARD_REFRESH_STATE"
+}
+
+restore_usb0() {
+	if [ -d /sys/class/net/usb0 ]; then
+		ifconfig usb0 "$DYNAMIC_KEYBOARD_USB0_ADDR" netmask "$DYNAMIC_KEYBOARD_USB0_NETMASK" up >/dev/null 2>&1 || true
+	fi
+}
+
+wait_for_configuration() {
+	udc=$1
+	i=0
+	while [ "$i" -lt "$DYNAMIC_KEYBOARD_CONFIGURE_TIMEOUT_TENTHS" ]; do
+		state=$(cat "/sys/class/udc/$udc/state" 2>/dev/null || true)
+		[ "$state" = configured ] && return 0
+		i=$((i + 1))
+		sleep 0.1
+	done
+	return 1
+}
+
+validate_layout() {
+	for path in "$GADGET_DIR" "$CONFIG_DIR" "$KEYBOARD_FUNC" "$POINTER_FUNC" "$ECM_FUNC"; do
+		[ -e "$path" ] || die "required gadget path is missing: $path"
+	done
+}
+
+switch_mode() {
+	mode=$1
+	validate_layout
+	acquire_lock
+
+	current_udc=$(cat "$UDC_PATH" 2>/dev/null || true)
+	current_state=""
+	if [ -n "$current_udc" ]; then
+		current_state=$(cat "/sys/class/udc/$current_udc/state" 2>/dev/null || true)
+	fi
+	if [ "$(current_mode)" = "$mode" ] && [ "$current_state" = configured ]; then
+		echo "keyboard already $mode"
+		return 0
+	fi
+
+	start_ms=$(now_ms)
+	udc=$(read_udc)
+
+	echo "" > "$UDC_PATH"
+	sleep 0.1
+	unlink_functions
+	set_identity "$mode"
+	if [ "$mode" = on ]; then
+		# Keyboard-only is the modifier-safe iOS profile. In particular, never
+		# expose the AssistiveTouch pointer alongside Cmd/Option shortcuts.
+		ln -s "$KEYBOARD_FUNC" "$CONFIG_DIR/hid.usb0"
+	else
+		ln -s "$POINTER_FUNC" "$CONFIG_DIR/hid.usb1"
+	fi
+	link_ecm
+	echo "$udc" > "$UDC_PATH"
+	restore_usb0
+
+	if ! wait_for_configuration "$udc"; then
+		end_ms=$(now_ms)
+		write_state "$mode" failed "$((end_ms - start_ms))"
+		die "UDC did not reach configured state after switching keyboard $mode"
+	fi
+
+	sleep "$DYNAMIC_KEYBOARD_HOST_SETTLE_SECONDS"
+	restore_usb0
+	end_ms=$(now_ms)
+	write_state "$mode" ok "$((end_ms - start_ms))"
+	echo "keyboard $mode; total_ms=$((end_ms - start_ms))"
+}
+
+status() {
+	[ -d "$GADGET_DIR" ] || die "gadget is not initialized"
+	echo "mode=$(current_mode)"
+	echo "product=$(cat "$GADGET_DIR/strings/0x409/product" 2>/dev/null || true)"
+	echo "id_product=$(cat "$GADGET_DIR/idProduct" 2>/dev/null || true)"
+	echo "bcd_device=$(cat "$GADGET_DIR/bcdDevice" 2>/dev/null || true)"
+	echo "udc=$(cat "$UDC_PATH" 2>/dev/null || true)"
+	echo "udc_state=$(cat /sys/class/udc/*/state 2>/dev/null | head -n1 || true)"
+	echo "links:"
+	ls -la "$CONFIG_DIR" 2>/dev/null | awk '$1 ~ /^l/ { print "  " $9 " -> " $11 }'
+	echo "hid_devices:"
+	for dev in "$GADGET_DIR"/functions/hid.*/dev; do
+		[ -f "$dev" ] || continue
+		printf '  %s=' "$(basename "$(dirname "$dev")")"
+		cat "$dev"
+	done
+	ls -l /dev/hidg* 2>/dev/null || true
+	if [ -f "$DYNAMIC_KEYBOARD_STATE_FILE" ]; then
+		echo "last_switch:"
+		sed 's/^/  /' "$DYNAMIC_KEYBOARD_STATE_FILE"
+	fi
+}
+
+case "${1:-}" in
+	on) switch_mode on ;;
+	off) switch_mode off ;;
+	status) status ;;
+	*) echo "Usage: $0 {on|off|status}" >&2; exit 1 ;;
+esac
