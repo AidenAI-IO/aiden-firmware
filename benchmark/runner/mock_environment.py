@@ -60,6 +60,13 @@ class MockEnvironmentServer:
         self._httpd = None
         self._thread = None
 
+    def activate(self, spec: MockEnvironmentSpec) -> None:
+        """Switch the scripted fixture before starting an isolated task worker."""
+        with self._lock:
+            self.spec = spec
+            self.calls.clear()
+            self.screen_text = spec.screen_text or "Mock phone environment ready."
+
     def reset(self) -> None:
         with self._lock:
             self.calls.clear()

@@ -109,8 +109,8 @@ Notes:
 #### Mock Aiden App environments
 
 Phone Bridge strategy tests usually do not need a physical phone or emulator. A
-suite can declare `mock_environment` to start an in-process scripted environment
-bridge that provides:
+suite can declare a default `mock_environment`, and each task can override it, to
+start an in-process scripted environment bridge that provides:
 
 - A fixed Phone Bridge runtime state, including iOS/Android, foreground/background,
   iOS PiP Bridge, and Android FGS Bridge.
@@ -119,29 +119,43 @@ bridge that provides:
 - A generated phone screen artifact whose text can change after scripted tool
   calls; prompt-conditioned policy suites do not require the Agent to inspect it.
 
-Keep these suites in a separate directory such as `suites/aiden_app/`. The iOS
-PiP and Android FGS Notes examples declare three different UI states directly in
-`prompt_prefix`, so the benchmark tests policy selection without mixing in visual
-perception:
+Keep these suites in a separate directory such as `suites/aiden_app/`. Prefer one
+policy-matrix suite with task-level mocks when cases only differ by runtime state
+or scripted tool results. A suite-level mock remains useful as a default; an
+individual task may override it. If there is no suite-level default, every task
+must declare its own mock.
+
+The Notes entry suite declares three UI states directly in task prompts, so the
+benchmark tests policy selection without mixing in visual perception:
 
 | Prompt-defined UI state | Expected app-entry policy | Suite |
 | --- | --- | --- |
-| Blank Notes editor already visible | Do not reopen or search; enter text directly | `ios_pip_notes_open_v1.json` |
-| Home screen with Notes icon visible | Click the visible icon; do not search | `ios_pip_notes_icon_visible_v1.json` |
-| Notes page/icon not visible | Use `search_launch_app` | `ios_pip_background_v1.json` |
-| Blank Notes editor already visible on Android FGS | Do not reopen or search; enter text directly | `android_fgs_notes_open_v1.json` |
-| Android home screen with Notes icon visible | Click the visible icon; do not search | `android_fgs_notes_icon_visible_v1.json` |
-| Android FGS with Notes page/icon not visible | Use `search_launch_app`; do not use `bridge_open_app` | `android_fgs_background_v1.json` |
+| Blank Notes editor already visible | Do not reopen or search; enter text directly | `notes_entry_policy_v1.json` |
+| Home screen with Notes icon visible | Click the visible icon; do not search | `notes_entry_policy_v1.json` |
+| Notes page/icon not visible | Use `search_launch_app`; do not use `bridge_open_app` | `notes_entry_policy_v1.json` |
 
-All six return the same fixed Biden contact, hide the unavailable
-`bridge_open_app`, require `enter_text_via_bridge` with the matching platform,
-and forbid a separate `bridge_clipboard` staging call.
+All three return the same fixed Biden contact, hide the unavailable
+`bridge_open_app`, require `enter_text_via_bridge`, and forbid a separate
+`bridge_clipboard` staging call.
+
+`phone_bridge_data_policy_v1.json` covers contacts, calendar query/create,
+clipboard read/write, and notifications across these runtime policies:
+
+| Runtime state | Expected Phone Bridge policy |
+| --- | --- |
+| iOS background, PiP disabled, Dynamic Island return entry reachable | Call the `bridge_*` data tool directly; the tool restores Aiden internally before sending the command. Do not click Dynamic Island manually. |
+| iOS background with PiP enabled | Send background-safe data commands directly through the PiP queue. |
+| Android background with FGS enabled | Send background-safe data commands directly through the FGS queue. |
+
+`bridge_open_app` is excluded in all of these background-policy cases. PiP and
+FGS keep data commands available; they do not turn app launch into a
+background-safe operation.
 
 Run it with:
 
 ```bash
 uv run python -m runner run \
-  --suite suites/aiden_app/ios_pip_background_v1.json \
+  --suite suites/aiden_app/phone_bridge_data_policy_v1.json \
   --auto-agent-setup \
   --no-judge \
   --verbose
@@ -157,31 +171,34 @@ Example schema:
 
 ```json
 {
-  "mock_environment": {
-    "phone_bridge": {
-      "connected": false,
-      "platform": "ios",
-      "app_state": "background",
-      "pip_bridge_enabled": true,
-      "fgs_bridge_enabled": false
-    },
-    "screen_text": "iPhone home screen; Aiden PiP Bridge is active.",
-    "tools": {
-      "bridge_contacts": {
-        "input_contains": {"action": "query", "query": "Biden"},
-        "output": {
-          "ok": true,
-          "contacts": [{"name": "Biden", "phone_numbers": ["+1 202-555-0147"]}]
+  "tasks": [
+    {
+      "id": "ios_dynamic_island_contacts_query",
+      "prompt": "iOS，Aiden 在后台，PiP 未开启，灵动岛入口可达。查询 Biden。",
+      "mock_environment": {
+        "phone_bridge": {
+          "connected": false,
+          "platform": "ios",
+          "app_state": "background",
+          "return_entry": "dynamic_island",
+          "return_entry_available": true,
+          "pip_bridge_enabled": false,
+          "fgs_bridge_enabled": false
+        },
+        "screen_text": "Aiden Dynamic Island return entry is reachable.",
+        "tools": {
+          "bridge_contacts": {
+            "input_contains": {"action": "query", "query": "Biden"},
+            "output": {
+              "ok": true,
+              "restored_from_return_entry": true,
+              "contacts": [{"name": "Biden", "phone_numbers": ["+1 202-555-0147"]}]
+            }
+          }
         }
-      },
-      "enter_text_via_bridge": {
-        "input_contains": {"text": "+1 202-555-0147", "platform": "ios"},
-        "screen_contains": "Apple Notes is open",
-        "output": {"ok": true, "committed": true},
-        "screen_text": "Notes contains +1 202-555-0147"
       }
     }
-  }
+  ]
 }
 ```
 
@@ -303,7 +320,7 @@ Common fields:
 | `input_screenshot` | Static image input, suitable for perception tasks |
 | `expected_answer` | Direct answer for multiple-choice/fixed-answer tasks |
 | `trace_observations` | Checks on specific behaviors in the trace, e.g. whether a given skill was read |
-| `mock_environment` | Suite-level scripted Phone Bridge state, tool responses, and mock screen |
+| `mock_environment` | Suite-level default or task-level scripted Phone Bridge state, tool responses, and mock screen |
 
 A unit suite is a different format with `kind` set to `unit`; it tests a tool's
 input/output directly without going through agent chat.

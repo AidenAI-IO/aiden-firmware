@@ -66,6 +66,7 @@ class TaskSpec:
     rubric: list[RubricItem]
     hard_assertions: HardAssertions
     setup: dict[str, Any] | None = None
+    mock_environment: MockEnvironmentSpec | None = None
     repeats: int = 1
     input_screenshot: str | None = None
     expected_answer: str | None = None
@@ -180,12 +181,17 @@ def load_suite(path: Path) -> Suite:
             isinstance(item, str) and item.strip() for item in expected_recalled_memory_ids
         ):
             raise SuiteValidationError(f"task {tid}: expected_recalled_memory_ids must be a list of non-empty strings")
+        task_mock_environment = _parse_mock_environment(
+            raw.get("mock_environment"),
+            path=f"task {tid}.mock_environment",
+        )
         tasks.append(TaskSpec(
             id=tid, category=cat,
             description_for_judge=raw["description_for_judge"],
             prompt=raw["prompt"],
             rubric=rubric, hard_assertions=hard,
             setup=raw.get("setup"),
+            mock_environment=task_mock_environment,
             repeats=repeats,
             input_screenshot=raw.get("input_screenshot"),
             expected_answer=expected_answer,
@@ -230,6 +236,14 @@ def load_suite(path: Path) -> Suite:
         )
 
     mock_environment = _parse_mock_environment(data.get("mock_environment"))
+    if mock_environment is None and any(task.mock_environment is not None for task in tasks):
+        missing_task_ids = [task.id for task in tasks if task.mock_environment is None]
+        if missing_task_ids:
+            raise SuiteValidationError(
+                "a suite using task-level mock_environment must define it for every task "
+                "or provide a suite-level mock_environment default; missing: "
+                + ", ".join(missing_task_ids)
+            )
 
     return Suite(
         name=data.get("name", Path(path).stem),
@@ -286,23 +300,27 @@ def _required_tool_call_assertions(raw: Any, task_id: str) -> list[RequiredToolC
     return out
 
 
-def _parse_mock_environment(raw: Any) -> MockEnvironmentSpec | None:
+def _parse_mock_environment(
+    raw: Any,
+    *,
+    path: str = "mock_environment",
+) -> MockEnvironmentSpec | None:
     if raw is None:
         return None
     if not isinstance(raw, dict):
-        raise SuiteValidationError("mock_environment must be an object")
+        raise SuiteValidationError(f"{path} must be an object")
     phone_bridge = raw.get("phone_bridge") or {}
     if not isinstance(phone_bridge, dict):
-        raise SuiteValidationError("mock_environment.phone_bridge must be an object")
+        raise SuiteValidationError(f"{path}.phone_bridge must be an object")
     platform = str(phone_bridge.get("platform") or "").strip().lower()
     if platform and platform not in {"ios", "android"}:
         raise SuiteValidationError(
-            "mock_environment.phone_bridge.platform must be ios or android"
+            f"{path}.phone_bridge.platform must be ios or android"
         )
     app_state = str(phone_bridge.get("app_state") or "").strip().lower()
     if app_state and app_state not in {"active", "background", "inactive"}:
         raise SuiteValidationError(
-            "mock_environment.phone_bridge.app_state must be active, background, or inactive"
+            f"{path}.phone_bridge.app_state must be active, background, or inactive"
         )
     for field in (
         "connected",
@@ -312,24 +330,24 @@ def _parse_mock_environment(raw: Any) -> MockEnvironmentSpec | None:
     ):
         if field in phone_bridge and not isinstance(phone_bridge[field], bool):
             raise SuiteValidationError(
-                f"mock_environment.phone_bridge.{field} must be boolean"
+                f"{path}.phone_bridge.{field} must be boolean"
             )
 
     tools_raw = raw.get("tools") or {}
     if not isinstance(tools_raw, dict):
-        raise SuiteValidationError("mock_environment.tools must be an object")
+        raise SuiteValidationError(f"{path}.tools must be an object")
     tools: dict[str, list[MockToolResponseSpec]] = {}
     for raw_name, raw_responses in tools_raw.items():
         name = str(raw_name or "").strip()
         if not name:
-            raise SuiteValidationError("mock_environment.tools contains an empty tool name")
+            raise SuiteValidationError(f"{path}.tools contains an empty tool name")
         items = raw_responses if isinstance(raw_responses, list) else [raw_responses]
         if not items:
             raise SuiteValidationError(
-                f"mock_environment.tools.{name} must contain at least one response"
+                f"{path}.tools.{name} must contain at least one response"
             )
         tools[name] = [
-            _parse_mock_tool_response(item, f"mock_environment.tools.{name}")
+            _parse_mock_tool_response(item, f"{path}.tools.{name}")
             for item in items
         ]
 
@@ -337,14 +355,14 @@ def _parse_mock_environment(raw: Any) -> MockEnvironmentSpec | None:
     default_response = None
     if default_raw is not None:
         default_response = _parse_mock_tool_response(
-            default_raw, "mock_environment.default_tool_response"
+            default_raw, f"{path}.default_tool_response"
         )
     screen = raw.get("screen")
     if screen is not None and (not isinstance(screen, str) or not screen.strip()):
-        raise SuiteValidationError("mock_environment.screen must be a non-empty string")
+        raise SuiteValidationError(f"{path}.screen must be a non-empty string")
     screen_text = raw.get("screen_text", "")
     if not isinstance(screen_text, str):
-        raise SuiteValidationError("mock_environment.screen_text must be a string")
+        raise SuiteValidationError(f"{path}.screen_text must be a string")
     return MockEnvironmentSpec(
         phone_bridge=dict(phone_bridge),
         tools=tools,

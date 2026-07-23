@@ -292,25 +292,29 @@ def _cmd_run_auto_agent_setup(
     run_dir: Path,
 ) -> int:
     mock_server = None
-    if suite.mock_environment is not None:
+    if _suite_has_mock_environment(suite):
         if args.environment_url:
             print(
-                "Error: suites with mock_environment manage their own environment; "
+                "Error: suites or tasks with mock_environment manage their own environment; "
                 "do not pass --environment-url",
                 file=sys.stderr,
             )
             return 2
         from runner.mock_environment import MockEnvironmentServer
 
-        mock_server = MockEnvironmentServer(
-            suite.mock_environment,
-            suite.source_path.parent,
-        )
+        initial_spec = suite.mock_environment
+        if initial_spec is None:
+            initial_spec = next(
+                spec
+                for task in suite.tasks
+                if (spec := task.mock_environment) is not None
+            )
+        mock_server = MockEnvironmentServer(initial_spec, suite.source_path.parent)
         args.environment_url = mock_server.start()
         print(f"mock environment started: {args.environment_url}", flush=True)
     try:
         return _cmd_run_auto_agent_setup_inner(
-            args, suite, selected_task_ids, run_id, run_dir
+            args, suite, selected_task_ids, run_id, run_dir, mock_server=mock_server
         )
     finally:
         if mock_server is not None:
@@ -323,6 +327,7 @@ def _cmd_run_auto_agent_setup_inner(
     selected_task_ids: list[str],
     run_id: str,
     run_dir: Path,
+    mock_server=None,
 ) -> int:
     if not args.environment_url:
         print("Error: --auto-agent-setup requires --environment-url", file=sys.stderr)
@@ -418,6 +423,18 @@ def _cmd_run_auto_agent_setup_inner(
         art_dir = run_dir / "tasks" / task.id / (f"attempt_{attempt}" if repeats > 1 else "")
         try:
             print(f"[{progress}] STARTING   {task.id} attempt={attempt}", flush=True)
+            task_mock_environment = _task_mock_environment(suite, task)
+            if mock_server is not None:
+                if task_mock_environment is None:
+                    return skipped_task_result(
+                        suite,
+                        task,
+                        attempt,
+                        art_dir,
+                        run_id,
+                        "task has no mock_environment and the suite has no default",
+                    )
+                mock_server.activate(task_mock_environment)
             container_id = start_daemon_compose(
                 job,
                 image=args.daemon_image,
@@ -442,8 +459,8 @@ def _cmd_run_auto_agent_setup_inner(
                     run_id,
                     f"agent not ready within {args.agent_ready_timeout_sec}s",
                 )
-            if suite.mock_environment is not None:
-                client.set_phone_bridge_state(suite.mock_environment.phone_bridge)
+            if task_mock_environment is not None:
+                client.set_phone_bridge_state(task_mock_environment.phone_bridge)
             if not args.skip_clock_wait and not wait_for_agent_clock(client, timeout_sec=args.clock_timeout_sec):
                 return skipped_task_result(suite, task, attempt, art_dir, run_id, "agent board clock did not sync before benchmark start")
             print(f"[{progress}] RUNNING    {task.id} attempt={attempt}", flush=True)
@@ -557,9 +574,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print(f"Error: invalid --run-id: {run_id!r}", file=sys.stderr)
         return 2
     run_dir = Path(args.out) / run_id
-    if suite.mock_environment is not None and not args.auto_agent_setup:
+    if _suite_has_mock_environment(suite) and not args.auto_agent_setup:
         print(
-            "Error: suites with mock_environment require --auto-agent-setup so tool calls "
+            "Error: suites or tasks with mock_environment require --auto-agent-setup so tool calls "
             "can be routed to the scripted environment",
             file=sys.stderr,
         )
@@ -759,7 +776,22 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
 
 def _mock_environment_manifest(suite: Suite) -> dict[str, object] | None:
-    spec = suite.mock_environment
+    task_specs = {
+        task.id: _serialize_mock_environment(task.mock_environment)
+        for task in suite.tasks
+        if task.mock_environment is not None
+    }
+    if suite.mock_environment is None and not task_specs:
+        return None
+    if suite.mock_environment is not None and not task_specs:
+        return _serialize_mock_environment(suite.mock_environment)
+    return {
+        "default": _serialize_mock_environment(suite.mock_environment),
+        "tasks": task_specs,
+    }
+
+
+def _serialize_mock_environment(spec) -> dict[str, object] | None:
     if spec is None:
         return None
     return {
@@ -768,6 +800,16 @@ def _mock_environment_manifest(suite: Suite) -> dict[str, object] | None:
         "screen": spec.screen,
         "screen_text": spec.screen_text,
     }
+
+
+def _task_mock_environment(suite: Suite, task: TaskSpec):
+    return task.mock_environment or suite.mock_environment
+
+
+def _suite_has_mock_environment(suite: Suite) -> bool:
+    return suite.mock_environment is not None or any(
+        task.mock_environment is not None for task in suite.tasks
+    )
 
 
 def _read_optional_token(path: str | Path | None) -> str:

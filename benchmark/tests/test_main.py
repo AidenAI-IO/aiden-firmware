@@ -521,11 +521,6 @@ def test_auto_agent_setup_starts_mock_environment_and_injects_phone_state(
         json.dumps(
             {
                 "name": "mock_suite",
-                "mock_environment": {
-                    "phone_bridge": phone_state,
-                    "screen_text": "mock home screen",
-                    "tools": {"screenshot": {"output": {"ok": True}}},
-                },
                 "tasks": [
                     {
                         "id": "policy",
@@ -533,6 +528,11 @@ def test_auto_agent_setup_starts_mock_environment_and_injects_phone_state(
                         "prompt": "test policy",
                         "description_for_judge": "test policy",
                         "rubric": [{"id": "done", "check": "done"}],
+                        "mock_environment": {
+                            "phone_bridge": phone_state,
+                            "screen_text": "mock home screen",
+                            "tools": {"screenshot": {"output": {"ok": True}}},
+                        },
                     }
                 ],
             }
@@ -620,7 +620,8 @@ def test_auto_agent_setup_starts_mock_environment_and_injects_phone_state(
             encoding="utf-8"
         )
     )
-    assert manifest["mock_environment"]["phone_bridge"] == phone_state
+    assert manifest["mock_environment"]["default"] is None
+    assert manifest["mock_environment"]["tasks"]["policy"]["phone_bridge"] == phone_state
 
 
 def test_auto_agent_setup_caps_environment_concurrency(monkeypatch, tmp_path):

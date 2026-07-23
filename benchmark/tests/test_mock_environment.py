@@ -5,7 +5,7 @@ import urllib.request
 from pathlib import Path
 
 from runner.mock_environment import MockEnvironmentServer
-from runner.suite import load_suite
+from runner.suite import MockEnvironmentSpec, MockToolResponseSpec, load_suite
 
 
 def _json_request(url: str, method: str = "GET", payload: dict | None = None) -> dict:
@@ -20,16 +20,22 @@ def _json_request(url: str, method: str = "GET", payload: dict | None = None) ->
         return json.loads(response.read().decode("utf-8"))
 
 
-def test_mock_environment_returns_scripted_tool_result_and_updates_screen():
+def _task_mock_environment(suite_name: str, task_id: str):
     suite_path = (
-        Path(__file__).resolve().parents[1]
-        / "suites"
-        / "aiden_app"
-        / "ios_pip_background_v1.json"
+        Path(__file__).resolve().parents[1] / "suites" / "aiden_app" / suite_name
     )
     suite = load_suite(suite_path)
-    assert suite.mock_environment is not None
-    server = MockEnvironmentServer(suite.mock_environment, suite_path.parent)
+    task = next(task for task in suite.tasks if task.id == task_id)
+    assert task.mock_environment is not None
+    return suite_path, task.mock_environment
+
+
+def test_mock_environment_returns_scripted_tool_result_and_updates_screen():
+    suite_path, spec = _task_mock_environment(
+        "notes_entry_policy_v1.json",
+        "ios_pip_notes_icon_missing",
+    )
+    server = MockEnvironmentServer(spec, suite_path.parent)
     base_url = server.start()
     try:
         setup = _json_request(f"{base_url}/api/setup", "POST", {})
@@ -97,15 +103,11 @@ def test_mock_environment_returns_scripted_tool_result_and_updates_screen():
 
 
 def test_mock_environment_requires_visible_icon_click_before_text_entry():
-    suite_path = (
-        Path(__file__).resolve().parents[1]
-        / "suites"
-        / "aiden_app"
-        / "ios_pip_notes_icon_visible_v1.json"
+    suite_path, spec = _task_mock_environment(
+        "notes_entry_policy_v1.json",
+        "ios_pip_notes_icon_visible",
     )
-    suite = load_suite(suite_path)
-    assert suite.mock_environment is not None
-    server = MockEnvironmentServer(suite.mock_environment, suite_path.parent)
+    server = MockEnvironmentServer(spec, suite_path.parent)
     base_url = server.start()
     try:
         blocked = _json_request(
@@ -153,15 +155,11 @@ def test_mock_environment_requires_visible_icon_click_before_text_entry():
 
 
 def test_mock_environment_allows_direct_entry_when_notes_is_already_open():
-    suite_path = (
-        Path(__file__).resolve().parents[1]
-        / "suites"
-        / "aiden_app"
-        / "ios_pip_notes_open_v1.json"
+    suite_path, spec = _task_mock_environment(
+        "notes_entry_policy_v1.json",
+        "ios_pip_notes_already_open",
     )
-    suite = load_suite(suite_path)
-    assert suite.mock_environment is not None
-    server = MockEnvironmentServer(suite.mock_environment, suite_path.parent)
+    server = MockEnvironmentServer(spec, suite_path.parent)
     base_url = server.start()
     try:
         entered = _json_request(
@@ -182,65 +180,32 @@ def test_mock_environment_allows_direct_entry_when_notes_is_already_open():
         server.stop()
 
 
-def test_android_fgs_mock_environment_uses_android_text_entry_after_search():
-    suite_path = (
-        Path(__file__).resolve().parents[1]
-        / "suites"
-        / "aiden_app"
-        / "android_fgs_background_v1.json"
+def test_android_fgs_mock_environment_returns_background_calendar_result():
+    suite_path, spec = _task_mock_environment(
+        "phone_bridge_data_policy_v1.json",
+        "android_fgs_calendar_query",
     )
-    suite = load_suite(suite_path)
-    assert suite.mock_environment is not None
-    server = MockEnvironmentServer(suite.mock_environment, suite_path.parent)
+    server = MockEnvironmentServer(spec, suite_path.parent)
     base_url = server.start()
     try:
-        contacts = _json_request(
-            f"{base_url}/api/tools/bridge_contacts",
-            "POST",
-            {"input": json.dumps({"action": "query", "query": "Biden"})},
-        )
-        assert json.loads(contacts["output"])["contacts"][0]["phone_numbers"] == [
-            "+1 202-555-0147"
-        ]
-
-        blocked = _json_request(
-            f"{base_url}/api/tools/enter_text_via_bridge",
+        calendar = _json_request(
+            f"{base_url}/api/tools/bridge_calendar",
             "POST",
             {
                 "input": json.dumps(
                     {
-                        "text": "+1 202-555-0147",
-                        "platform": "android",
-                        "focus": {"x": 500, "y": 360, "coord_space": "normalized"},
+                        "action": "query",
+                        "from": "2026-07-25T00:00:00+08:00",
+                        "to": "2026-07-26T00:00:00+08:00",
                     }
                 )
             },
         )
-        assert blocked["is_error"] is True
-
-        opened = _json_request(
-            f"{base_url}/api/tools/search_launch_app",
-            "POST",
-            {"input": json.dumps({"app": "备忘录"})},
-        )
-        assert json.loads(opened["output"])["ok"] is True
-
-        entered = _json_request(
-            f"{base_url}/api/tools/enter_text_via_bridge",
-            "POST",
-            {
-                "input": json.dumps(
-                    {
-                        "text": "+1 202-555-0147",
-                        "platform": "android",
-                        "focus": {"x": 500, "y": 360, "coord_space": "normalized"},
-                    }
-                )
-            },
-        )
-        assert json.loads(entered["output"])["committed"] is True
+        output = json.loads(calendar["output"])
+        assert output["delivery"] == "fgs_background_queue"
+        assert output["events"][0]["title"] == "Android FGS 例会"
         state = _json_request(f"{base_url}/api/state")
-        assert "Android Notes" in state["data"]["screen_text"]
+        assert state["data"]["phone_bridge"]["fgs_bridge_enabled"] is True
     finally:
         server.stop()
 
@@ -285,5 +250,47 @@ def test_mock_environment_rejects_unconfigured_input_when_no_default_matches(tmp
         )
         assert result["is_error"] is True
         assert "no mock response" in result["error"]
+    finally:
+        server.stop()
+
+
+def test_mock_environment_activate_switches_task_fixture(tmp_path):
+    ios = MockEnvironmentSpec(
+        phone_bridge={"platform": "ios"},
+        tools={
+            "bridge_contacts": [
+                MockToolResponseSpec(output={"ok": True, "platform": "ios"})
+            ]
+        },
+        screen_text="iOS fixture",
+    )
+    android = MockEnvironmentSpec(
+        phone_bridge={"platform": "android"},
+        tools={
+            "bridge_calendar": [
+                MockToolResponseSpec(output={"ok": True, "platform": "android"})
+            ]
+        },
+        screen_text="Android fixture",
+    )
+    server = MockEnvironmentServer(ios, tmp_path)
+    base_url = server.start()
+    try:
+        ios_tools = _json_request(f"{base_url}/api/tools")
+        assert [tool["name"] for tool in ios_tools["tools"]] == [
+            "bridge_contacts",
+            "screenshot",
+        ]
+
+        server.activate(android)
+
+        android_tools = _json_request(f"{base_url}/api/tools")
+        assert [tool["name"] for tool in android_tools["tools"]] == [
+            "bridge_calendar",
+            "screenshot",
+        ]
+        state = _json_request(f"{base_url}/api/state")
+        assert state["data"]["phone_bridge"]["platform"] == "android"
+        assert state["data"]["screen_text"] == "Android fixture"
     finally:
         server.stop()

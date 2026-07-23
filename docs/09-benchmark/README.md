@@ -55,41 +55,42 @@ uv run python -m runner run \
 
 ### Aiden App Policy Without a Phone
 
-Use a suite-level `mock_environment` for deterministic Phone Bridge strategy
-tests. The runner simulates platform/app state and tool results, so contacts and
-similar app-side data do not require a physical phone or emulator:
+Use suite-level defaults or task-level `mock_environment` fixtures for
+deterministic Phone Bridge strategy tests. The runner simulates platform/app state
+and tool results, so contacts and similar app-side data do not require a physical
+phone or emulator. Task-level fixtures let one suite hold a runtime policy matrix
+without creating a JSON file for every case:
 
 ```bash
 cd benchmark
 uv run python -m runner run \
-  --suite suites/aiden_app/ios_pip_background_v1.json \
+  --suite suites/aiden_app/phone_bridge_data_policy_v1.json \
   --auto-agent-setup \
   --no-judge \
   --verbose
 ```
 
-The iOS background + PiP and Android background + FGS examples each declare
-three UI states directly in their prompts:
+The Aiden App cases are consolidated into two suites:
 
-- `ios_pip_notes_open_v1.json`: Notes is already open, so reopening/searching is
-  forbidden.
-- `ios_pip_notes_icon_visible_v1.json`: the Notes icon is visible, so the Agent
-  clicks it directly and must not search.
-- `ios_pip_background_v1.json`: neither Notes nor its icon is visible, so
-  `search_launch_app` is required.
-- `android_fgs_notes_open_v1.json`: Android Notes is already open, so
-  reopening/searching is forbidden.
-- `android_fgs_notes_icon_visible_v1.json`: the Android Notes icon is visible,
-  so the Agent clicks it directly and must not search.
-- `android_fgs_background_v1.json`: Android FGS keeps background-safe data tools
-  available, but opening Notes still uses `search_launch_app`; `bridge_open_app`
-  is forbidden because FGS is not a foreground App launcher.
+- `notes_entry_policy_v1.json`: Notes is already open, its icon is visible, or
+  neither is visible. The Agent respectively enters text directly, clicks the
+  visible icon, or uses `search_launch_app`.
+- `phone_bridge_data_policy_v1.json`: contacts, calendar query/create, clipboard
+  read/write, and notification cases for iOS Dynamic Island restoration, iOS PiP,
+  and Android FGS.
 
-All six use a fixed `bridge_contacts` result and require
-`enter_text_via_bridge` with the matching `ios` or `android` platform, without a
-separate `bridge_clipboard` call. The generated screen is retained for runner
-pre/post artifacts and fixture state transitions; the policy tests do not require
-the Agent to inspect it. Scripted
+For iOS background without PiP, a reachable Dynamic Island return entry keeps the
+data tools visible. The Agent calls the requested `bridge_*` tool directly; the
+tool restores Aiden internally before executing, so the Agent must not click the
+Dynamic Island or call `bridge_open_app`. With iOS PiP or Android FGS enabled,
+background-safe data tools execute directly through the background queue.
+`bridge_open_app` remains excluded because PiP/FGS do not provide background app
+launching.
+
+The Notes cases use a fixed `bridge_contacts` result and require
+`enter_text_via_bridge` without a separate `bridge_clipboard` call. The generated
+screen is retained for runner pre/post artifacts and fixture state transitions;
+the policy tests do not require the Agent to inspect it. Scripted
 `screen_contains` preconditions prevent text entry before the fixture has actually
 reached the Notes editor.
 
@@ -166,8 +167,9 @@ Common options:
 - `--state-file PATH` - Write progress JSON for WebUI or scripts.
 - `--verbose` - Print detailed rubric results.
 
-Suites with `mock_environment` require `--auto-agent-setup` and must not also pass
-`--environment-url`; the runner starts the scripted bridge itself.
+Suites with suite-level or task-level `mock_environment` require
+`--auto-agent-setup` and must not also pass `--environment-url`; the runner starts
+the scripted bridge itself and activates the matching fixture before each task.
 
 ### `rejudge`
 
