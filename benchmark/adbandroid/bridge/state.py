@@ -110,7 +110,7 @@ class ADBBridgeState:
                 newly_acquired = self.active_task_id != task_id
                 self.active_task_id = task_id
                 self.active_task_expires_at = self._new_task_expiry()
-            else:
+            elif not self.active_task_id:
                 self.active_task_expires_at = 0.0
             self.active_episode_id = task_id or f"reset-{uuid.uuid4().hex}"
             self.action_log.clear()

@@ -171,6 +171,23 @@ def test_health_reports_expired_task_lease_not_active(bridge):
     assert body["data"]["active_task_lease_state"] == "expired"
 
 
+def test_anonymous_setup_preserves_active_task_lease_expiry(bridge):
+    server, _, base_url = bridge
+    status, _ = _request(base_url, "/api/setup", method="POST", task_id="suite:task-1")
+    assert status == 200
+    expires_at = time.monotonic() + 5
+    with server.state.lock:
+        server.state.active_task_expires_at = expires_at
+
+    status, body = _request(base_url, "/api/setup", method="POST")
+
+    assert status == 200
+    assert body["data"]["episode_id"].startswith("reset-")
+    with server.state.lock:
+        assert server.state.active_task_id == "suite:task-1"
+        assert server.state.active_task_expires_at == expires_at
+
+
 def test_setup_with_different_task_id_returns_429(bridge):
     _, _, base_url = bridge
     status, _ = _request(base_url, "/api/setup", method="POST", task_id="suite:task-1")
