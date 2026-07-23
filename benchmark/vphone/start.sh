@@ -11,6 +11,9 @@
 #   ./start.sh webui  [extra webui args...]
 #   ./start.sh env                # print the loaded config (no secrets)
 #
+# `bridge` auto-detects the VM's current guest IP from the macOS DHCP leases, so
+# you don't edit vphone.env after a VM reboot; it falls back to
+# VPHONE_GUEST_SSH_HOST if none is reachable.
 # `run` auto-discovers the running agent daemon's port and control token, so you
 # never paste --agent-url / --benchmark-token-file. Start a daemon first with
 # `./start.sh agent`. Judging is OFF by default (it needs OPENROUTER_API_KEY);
@@ -27,7 +30,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_ENV_FILE="$SCRIPT_DIR/vphone.env"
 
 usage() {
-  sed -n '7,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '7,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
   exit "${1:-2}"
 }
 
@@ -71,11 +74,51 @@ require_free_port() {
   fi
 }
 
+# Print the guest VM IP that currently answers on the SSH port, or nothing.
+# The iOS VM gets a fresh DHCP address (192.168.64.x) on each boot; macOS records
+# it in /var/db/dhcpd_leases. We take the iPhone leases newest-first and return
+# the first one whose SSH port actually accepts a connection, so stale leases
+# from previous boots are ignored.
+detect_guest_ip() {
+  local leases=/var/db/dhcpd_leases
+  local port="${VPHONE_GUEST_SSH_PORT:-22222}"
+  [ -r "$leases" ] || return 0
+  local ip
+  for ip in $(awk '
+      /^{/        {name=""; ip=""; lease=""}
+      /name=/       {n=$0; sub(/.*name=/,"",n); name=n}
+      /ip_address=/ {i=$0; sub(/.*ip_address=/,"",i); ip=i}
+      /lease=/      {l=$0; sub(/.*lease=/,"",l); lease=l}
+      /^}/          {if (name=="iPhone" && ip!="") print lease, ip}
+    ' "$leases" | sort -r | awk '{print $2}'); do
+    if nc -z -G 2 "$ip" "$port" 2>/dev/null; then
+      printf '%s\n' "$ip"
+      return 0
+    fi
+  done
+  return 0
+}
+
 case "$SUBCMD" in
   bridge)
     require_free_port "${VPHONE_BRIDGE_PORT:-8899}" "bridge"
-    echo "starting VPhone bridge (guest_ssh_host=${VPHONE_GUEST_SSH_HOST:-<unset>}, env=$ENV_FILE)"
-    exec uv run python -m vphone.scripts.start_bridge --env-file "$ENV_FILE" "$@"
+    # Auto-detect the VM's current guest IP so you don't edit vphone.env after a
+    # reboot. If detection fails, fall back to VPHONE_GUEST_SSH_HOST from the env.
+    guest_ip_args=()
+    detected_ip="$(detect_guest_ip)"
+    if [ -n "$detected_ip" ]; then
+      if [ "$detected_ip" != "${VPHONE_GUEST_SSH_HOST:-}" ]; then
+        echo "detected VM guest IP $detected_ip (env has ${VPHONE_GUEST_SSH_HOST:-<unset>}); using detected"
+      else
+        echo "detected VM guest IP $detected_ip (matches env)"
+      fi
+      guest_ip_args=(--guest-ssh-host "$detected_ip")
+    else
+      echo "no reachable VM guest IP detected; using env value ${VPHONE_GUEST_SSH_HOST:-<unset>}"
+    fi
+    echo "starting VPhone bridge (env=$ENV_FILE)"
+    exec uv run python -m vphone.scripts.start_bridge --env-file "$ENV_FILE" \
+      ${guest_ip_args[@]+"${guest_ip_args[@]}"} "$@"
     ;;
   agent)
     : "${VPHONE_BRIDGE_ENDPOINT:?VPHONE_BRIDGE_ENDPOINT missing from env}"
@@ -131,9 +174,10 @@ case "$SUBCMD" in
       *) judge_args=(--no-judge) ;;        # default: no scoring
     esac
     echo "running against daemon $agent_url (task_id=$VPHONE_BENCHMARK_TASK_ID)"
+    # Expand possibly-empty arrays safely under `set -u` on bash 3.2 (macOS).
     exec uv run python -m runner run \
-      "${suite_args[@]}" \
-      "${judge_args[@]}" \
+      ${suite_args[@]+"${suite_args[@]}"} \
+      ${judge_args[@]+"${judge_args[@]}"} \
       --agent-url "$agent_url" \
       --benchmark-token-file "$token_file" \
       --environment-url "$VPHONE_BRIDGE_ENDPOINT" \

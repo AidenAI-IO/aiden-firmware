@@ -305,13 +305,22 @@ uv run python -m vphone.scripts.start_bridge \
   --env-file "$VPHONE_ENV_FILE"
 ```
 
-Or use the no-`source` launcher (equivalent, and it reports clearly when the
-port is already in use):
+Or use the no-`source` launcher (recommended; besides skipping `source` and
+reporting port conflicts clearly, it also auto-detects the VM's current guest
+IP):
 
 ```bash
 cd path_to_project/benchmark/vphone
 ./start.sh bridge
 ```
+
+Before starting, `./start.sh bridge` looks up the iPhone VM's current IP from the
+macOS DHCP leases (`/var/db/dhcpd_leases`) — specifically the one whose SSH port
+is reachable — and passes it to the Bridge as `VPHONE_GUEST_SSH_HOST`. So **after
+a VM reboot changes the IP, you no longer edit `vphone.env`; just rerun
+`./start.sh bridge`.** The startup log prints the IP in use, e.g.
+`detected VM guest IP 192.168.64.10 (...)`. If no reachable IP is found, it falls
+back to `VPHONE_GUEST_SSH_HOST` from `vphone.env`.
 
 The expected output is:
 
@@ -324,9 +333,12 @@ screen_height=<native height>
 
 The guest IP address, port, user, and key are provided by
 `VPHONE_GUEST_SSH_HOST`, `VPHONE_GUEST_SSH_PORT`, `VPHONE_GUEST_SSH_USER`, and
-`VPHONE_GUEST_SSH_IDENTITY`, respectively. After changing the guest network
-configuration, update only `vphone.env` and restart the Bridge; do not modify the
-Python code.
+`VPHONE_GUEST_SSH_IDENTITY`, respectively. When you use `./start.sh bridge`, the
+guest IP is auto-detected and overridden (see above), so you generally do not
+maintain `VPHONE_GUEST_SSH_HOST` by hand; only when starting the Bridge directly
+with `uv run python -m vphone.scripts.start_bridge` do you need to update the
+guest IP in `vphone.env` and restart. For port, user, or key changes, still edit
+only `vphone.env`; do not modify the Python code.
 
 Using `--no-guest-ssh-fallback` is not recommended during initial integration.
 Even if the newer socket directly supports `open_url`, retaining the fallback
@@ -818,8 +830,12 @@ ssh -i "$VPHONE_GUEST_SSH_IDENTITY" \
   'test -x /var/jb/usr/bin/uiopen && echo uiopen-ready'
 ```
 
-If the IP address, port, user, or key changes, update `vphone.env` and restart
-the Bridge.
+If the IP address changes, just restart with `./start.sh bridge` — it
+auto-detects the VM's current guest IP, so you need not edit `vphone.env`. For
+port, user, or key changes, update `vphone.env` and restart the Bridge. If
+`./start.sh bridge` detects the wrong IP (for example when several VMs run at
+once), inspect `/var/db/dhcpd_leases`, or pass it explicitly with
+`uv run python -m vphone.scripts.start_bridge --guest-ssh-host <IP>`.
 
 ### All Tool Calls Return 429
 
