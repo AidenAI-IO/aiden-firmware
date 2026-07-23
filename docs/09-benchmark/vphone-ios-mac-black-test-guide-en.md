@@ -7,9 +7,10 @@ In this guide, the Mac used to run the tests is referred to as `mac-black`.
 There are two ways to run the benchmark. Both use the preparation and Bridge
 validation procedures in Sections 3–6:
 
-- **Command-line workflow (Sections 7–9):** Manually start the Agent daemon and
-  then run tasks step by step with `runner run`. This workflow is suitable for
-  debugging individual tasks and troubleshooting the execution path.
+- **Command-line workflow (Sections 7–9):** Start the Agent daemon with
+  `./start.sh agent`, then run tasks step by step with `./start.sh run`. This
+  workflow is suitable for debugging individual tasks and troubleshooting the
+  execution path.
 - **WebUI workflow (Section 7A):** Select a suite, configure the environment, and
   start a run from the browser. The WebUI manages the daemon and task IDs
   automatically. This workflow is suitable for routine regression testing and
@@ -43,11 +44,12 @@ address. The current key variables include:
 - `$VPHONE_BRIDGE_ENDPOINT`
 - `$VPHONE_BENCHMARK_TASK_ID`
 
-### Launcher Script (No Manual `source`)
+### The `start.sh` Launcher Script
 
-To start the Bridge, Agent daemon, or WebUI, use the wrapper script
-`benchmark/vphone/start.sh`. It sources `vphone.env` itself, so you do not have
-to export the variables in each terminal first:
+This guide uses the wrapper script `benchmark/vphone/start.sh` to start the
+Bridge, the Agent daemon, and the WebUI, and to run the benchmark. It sources
+`vphone.env` itself, so you do not have to export the variables in each terminal
+first:
 
 ```bash
 cd path_to_project/benchmark/vphone
@@ -319,18 +321,9 @@ Before starting automation, also confirm the following manually:
 
 ## 5. Start the VPhone Bridge
 
-Run the following in Terminal B and leave it running in the foreground:
-
-```bash
-cd "$VPHONE_BENCHMARK_ROOT"
-
-uv run python -m vphone.scripts.start_bridge \
-  --env-file "$VPHONE_ENV_FILE"
-```
-
-Or use the no-`source` launcher (recommended; besides skipping `source` and
-reporting port conflicts clearly, it also auto-detects the VM's current guest
-IP):
+Run the following in Terminal B and leave it running in the foreground. The
+script sources `vphone.env` itself, checks for port conflicts, and auto-detects
+the VM's current guest IP:
 
 ```bash
 cd path_to_project/benchmark/vphone
@@ -356,12 +349,11 @@ screen_height=<native height>
 
 The guest IP address, port, user, and key are provided by
 `VPHONE_GUEST_SSH_HOST`, `VPHONE_GUEST_SSH_PORT`, `VPHONE_GUEST_SSH_USER`, and
-`VPHONE_GUEST_SSH_IDENTITY`, respectively. When you use `./start.sh bridge`, the
-guest IP is auto-detected and overridden (see above), so you generally do not
-maintain `VPHONE_GUEST_SSH_HOST` by hand; only when starting the Bridge directly
-with `uv run python -m vphone.scripts.start_bridge` do you need to update the
-guest IP in `vphone.env` and restart. For port, user, or key changes, still edit
-only `vphone.env`; do not modify the Python code.
+`VPHONE_GUEST_SSH_IDENTITY`, respectively. `./start.sh bridge` auto-detects and
+overrides the guest IP (see above), so you generally do not maintain
+`VPHONE_GUEST_SSH_HOST` by hand. For port, user, or key changes, edit only
+`vphone.env` and rerun `./start.sh bridge`; do not modify the Python code. (See
+Section 12 for the fallback when detection finds no IP or the wrong one.)
 
 Using `--no-guest-ssh-fallback` is not recommended during initial integration.
 Even if the newer socket directly supports `open_url`, retaining the fallback
@@ -434,35 +426,25 @@ page. Regardless of whether validation succeeds, always call the final
 
 The WebUI automatically builds and starts the Agent daemon, generates a
 separate benchmark task ID for each task, and handles setup and release.
-Therefore, when using this workflow, Sections 7 (manual
-`start-agent-daemon`) and 8 (manual `runner run`) are **not required**.
-Preparation and Bridge validation in Sections 3–6 must still be performed as
-usual, and both the VM (Section 4) and Bridge (Section 5) must remain running.
+Therefore, when using this workflow, Sections 7 (`./start.sh agent`) and 8
+(`./start.sh run`) are **not required**. Preparation and Bridge validation in
+Sections 3–6 must still be performed as usual, and both the VM (Section 4) and
+Bridge (Section 5) must remain running.
 
 ### 7A.1 Start the WebUI Service
 
 Open another terminal on mac-black, or reuse Terminal C, and leave the process
-running in the foreground:
-
-```bash
-set -a; source path_to_project/benchmark/vphone/vphone.env; set +a
-cd "$VPHONE_BENCHMARK_ROOT"
-
-uv run python -m runner webui \
-  --host 127.0.0.1 \
-  --port 8765 \
-  --agent-config "$VPHONE_AGENT_CONFIG"
-```
-
-Or use the no-`source` launcher (equivalent):
+running in the foreground. The script sources `vphone.env`, binds
+`127.0.0.1:8765`, and uses `$VPHONE_AGENT_CONFIG` as the WebUI's "Agent config":
 
 ```bash
 cd path_to_project/benchmark/vphone
 ./start.sh webui
 ```
 
-- `--agent-config` makes the WebUI's "Agent config" use the same model
-  configuration as the command-line workflow
+- The `--agent-config` that `./start.sh webui` fills in from `vphone.env` makes
+  the WebUI's "Agent config" use the same model configuration as the
+  command-line workflow
   (`provider=openrouter`, `model=moonshotai/kimi-k2.6`) instead of the default
   template.
 - After a successful start, the log prints
@@ -566,21 +548,9 @@ docker compose \
 
 Do not continue using the old `$VPHONE_AGENT_URL` after stopping the instance.
 
-Run the following in Terminal C:
-
-```bash
-cd "$VPHONE_BENCHMARK_ROOT"
-
-uv run python -m runner start-agent-daemon \
-  --name vphone-ios \
-  --environment-bridge-endpoint "$VPHONE_BRIDGE_ENDPOINT" \
-  --benchmark-task-id "$VPHONE_BENCHMARK_TASK_ID" \
-  --agent-config "$VPHONE_AGENT_CONFIG"
-```
-
-Or use the no-`source` launcher (equivalent; `--name`,
-`--environment-bridge-endpoint`, `--benchmark-task-id`, and `--agent-config`
-are filled in from `vphone.env`, and any extra arguments are passed through):
+Run the following in Terminal C (`--name`, `--environment-bridge-endpoint`,
+`--benchmark-task-id`, and `--agent-config` are filled in from `vphone.env`, and
+any extra arguments are passed through):
 
 ```bash
 cd path_to_project/benchmark/vphone
@@ -590,8 +560,8 @@ cd path_to_project/benchmark/vphone
 This command builds or reuses the Agent image and starts the container in the
 background. Record the following values from its output:
 
-- `agent_url`: The address used by subsequent `runner run --agent-url`
-  commands.
+- `agent_url`: The daemon's address; `./start.sh run` discovers it
+  automatically.
 - `docker_environment_bridge_endpoint`: This should be
   `http://host.docker.internal:8899`.
 - `benchmark_task_id`: This must match `$VPHONE_BENCHMARK_TASK_ID`.
@@ -601,66 +571,36 @@ The `config_dir` in the output must be the service configuration directory
 created for this run. The `agent.toml` in that directory should be copied from
 `$VPHONE_AGENT_CONFIG`, rather than from the default `qwen3.6-35b` template.
 
-Save the actual Agent URL in a variable:
-
-> If you run tasks with `./start.sh run` (see Section 8), you can skip the manual
-> `VPHONE_AGENT_URL` / `VPHONE_AGENT_TOKEN_FILE` exports below — `run`
-> auto-discovers the current daemon's port and token. The manual exports are only
-> needed if you insist on the full `runner run` command.
-
-```bash
-export VPHONE_AGENT_URL="http://127.0.0.1:<port printed by start-agent-daemon>"
-# The daemon's liveness probe uses the root path and returns HTTP 200.
-# It does not provide a /health endpoint.
-curl -sS -o /dev/null -w '%{http_code}\n' "$VPHONE_AGENT_URL/"
-```
-
-The `start-agent-daemon` output also prints a ready-to-use `run_command`
-containing `--benchmark-token-file <config_dir>/control_token`. The runner uses
-this token to communicate with the daemon's control interface. Therefore, every
-`runner run` command in Section 8 must include `--benchmark-token-file`;
-otherwise, authentication fails. Save it in a variable for reuse:
+Section 8 uses `./start.sh run`, which auto-discovers the current daemon's port
+(`agent_url`) and its `config_dir/control_token` control token, so you do **not**
+need to record or export the agent URL or token by hand. To quickly check that
+the daemon is ready, probe the `agent_url` from the output (the daemon's liveness
+probe uses the root path and returns HTTP 200; it has no `/health` endpoint):
 
 ```bash
-export VPHONE_AGENT_TOKEN_FILE="<config_dir>/control_token"
+curl -sS -o /dev/null -w '%{http_code}\n' "<agent_url printed by start-agent-daemon>/"
 ```
 
-Replace the text in angle brackets; do not leave it unchanged. If
-`--name vphone-ios` reports that a service with the same name is already
-running, first confirm whether it is the daemon required for the current test.
-When a restart is required, use the `stop_command` from the previous output or
-choose a new `--name`.
+If `./start.sh agent` reports that a `vphone-ios` service with the same name is
+already running, first confirm whether it is the daemon required for the current
+test. When a restart is required, use the `stop_command` from the previous output
+(see Section 11).
 
 ## 8. Run the Benchmark From Low to High Risk (Command-Line Workflow)
 
 > This section applies only to the command-line workflow. If using the WebUI in
 > Section 7A, runs and reports are handled in the browser; skip this section.
 
-All commands below must use the same
-`--benchmark-task-id "$VPHONE_BENCHMARK_TASK_ID"`. If the daemon and runner use
-different task IDs, tool requests receive `429 no_bridge_env_available`.
+Run tasks with `./start.sh run`. It auto-discovers the current daemon's port
+(`agent_url`) and control token and fills in `--environment-url` and
+`--benchmark-task-id` from `vphone.env`; you only pass task arguments such as
+`--task-id`. The daemon and runner therefore always share a task ID, so you never
+hit a task-ID mismatch that would cause `429 no_bridge_env_available`.
 
-> **Prefer `./start.sh run`.** `start-agent-daemon` assigns a different
-> `agent_url` port each time, so hand-writing `--agent-url "$VPHONE_AGENT_URL"`
-> easily fails with `unknown url type: '/api/tools'` (empty variable) or
-> `agent ... is not reachable` (stale port). `./start.sh run` auto-discovers the
-> current daemon's port and control token and fills in `--environment-url` and
-> `--benchmark-task-id` from `vphone.env`; you only pass task arguments such as
-> `--task-id`:
->
-> ```bash
-> cd path_to_project/benchmark/vphone
-> ./start.sh run --task-id screenshot_home -v   # a single task
-> ./start.sh run -v                             # the full set
-> ```
->
 > **`./start.sh run` does not score by default (it adds `--no-judge`)**, because
 > the Judge needs an OpenRouter key and forgetting it turns every task into
 > `JUDGE_ERROR`. To score, add `--judge-model` and pass the judge key inline with
 > `--judge-key <key>` (see Section 9); the script checks the key is present first.
->
-> Each step below shows the `./start.sh run` shorthand and the equivalent full
-> `runner run` command; use either one.
 
 ### 8.1 Run the Screenshot Task First
 
@@ -669,41 +609,11 @@ cd path_to_project/benchmark/vphone
 ./start.sh run --task-id screenshot_home -v
 ```
 
-Equivalent full command:
-
-```bash
-cd "$VPHONE_BENCHMARK_ROOT"
-
-uv run python -m runner run \
-  --suite suites/vphone_ios_basic.json \
-  --task-id screenshot_home \
-  --agent-url "$VPHONE_AGENT_URL" \
-  --benchmark-token-file "$VPHONE_AGENT_TOKEN_FILE" \
-  --environment-url "$VPHONE_BRIDGE_ENDPOINT" \
-  --benchmark-task-id "$VPHONE_BENCHMARK_TASK_ID" \
-  --no-judge \
-  -v
-```
-
 ### 8.2 Run the New URL Task Next
 
 ```bash
 cd path_to_project/benchmark/vphone
 ./start.sh run --task-id open_web_url -v
-```
-
-Equivalent full command:
-
-```bash
-uv run python -m runner run \
-  --suite suites/vphone_ios_basic.json \
-  --task-id open_web_url \
-  --agent-url "$VPHONE_AGENT_URL" \
-  --benchmark-token-file "$VPHONE_AGENT_TOKEN_FILE" \
-  --environment-url "$VPHONE_BRIDGE_ENDPOINT" \
-  --benchmark-task-id "$VPHONE_BENCHMARK_TASK_ID" \
-  --no-judge \
-  -v
 ```
 
 This step checks not only the Bridge, but also whether the Agent's
@@ -716,23 +626,10 @@ cd path_to_project/benchmark/vphone
 ./start.sh run -v
 ```
 
-Equivalent full command:
-
-```bash
-uv run python -m runner run \
-  --suite suites/vphone_ios_basic.json \
-  --agent-url "$VPHONE_AGENT_URL" \
-  --benchmark-token-file "$VPHONE_AGENT_TOKEN_FILE" \
-  --environment-url "$VPHONE_BRIDGE_ENDPOINT" \
-  --benchmark-task-id "$VPHONE_BENCHMARK_TASK_ID" \
-  --no-judge \
-  -v
-```
-
 The first task to run is `warmup`, which waits for the daemon to become ready;
 the eight scored tasks follow. A pre-started daemon with a fixed task ID is
 suitable for sequential debugging. Do not add `--repeats` in this topology. To
-repeat a test, run `runner run` multiple times separately.
+repeat a test, run `./start.sh run` multiple times separately.
 
 `--no-judge` is used only to validate the execution path. In this mode,
 acceptance of a completed run means:
@@ -769,21 +666,8 @@ cd path_to_project/benchmark/vphone
 ```
 
 `--judge-key` is consumed by `./start.sh` and not forwarded to the runner; the
-script sets it as the `OPENROUTER_API_KEY` the judge needs. Equivalent full
-command (the runner reads the key only from the environment, so set it as an
-inline command prefix — still no separate `export`):
-
-```bash
-OPENROUTER_API_KEY="<OpenRouter API key used by the Judge>" \
-uv run python -m runner run \
-  --suite suites/vphone_ios_basic.json \
-  --agent-url "$VPHONE_AGENT_URL" \
-  --benchmark-token-file "$VPHONE_AGENT_TOKEN_FILE" \
-  --environment-url "$VPHONE_BRIDGE_ENDPOINT" \
-  --benchmark-task-id "$VPHONE_BENCHMARK_TASK_ID" \
-  --judge-model anthropic/claude-sonnet-4-6 \
-  -v
-```
+script sets it as the `OPENROUTER_API_KEY` the judge needs, so you do not have to
+`export` it separately.
 
 Manually review the following aspects of the formal results:
 
@@ -816,10 +700,9 @@ Review `report.html` first. For a failed task, inspect its corresponding
 Clean up in the following order:
 
 1. Stop the Agent container:
-   - Command-line workflow: Run the `stop_command` printed by
-     `start-agent-daemon`.
-   - WebUI workflow: Press `Ctrl-C` in the terminal to stop `runner webui`; it
-     also stops the daemon container that it started. If a local SSH port
+   - Command-line workflow: Run the `stop_command` printed by `./start.sh agent`.
+   - WebUI workflow: Press `Ctrl-C` in the terminal running `./start.sh webui`;
+     it also stops the daemon container that it started. If a local SSH port
      forward was created, close the tunnel with
      `pkill -f 'L 18765:127.0.0.1:8765'`.
 2. Press `Ctrl-C` in the terminal running the Bridge to stop the VPhone Bridge.
